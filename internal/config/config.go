@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"ollama-loadbalancer/pkg/types"
 )
@@ -47,8 +48,26 @@ func LoadFromEnv() (*Config, error) {
 	
 	// LoadBalancer settings
 	config.LoadBalancer.Host = getEnv("LB_HOST", "0.0.0.0")
-	config.LoadBalancer.Port = getEnvInt("LB_PORT", 8080)
-	config.LoadBalancer.APIPort = getEnvInt("LB_API_PORT", 8081)
+	config.LoadBalancer.Port = getEnvInt("LB_PORT", 18080)
+	config.LoadBalancer.APIPort = getEnvInt("LB_API_PORT", 18081)
+	config.LoadBalancer.TLSHost = getEnv("LB_TLS_HOST", "")
+	config.LoadBalancer.TLSPort = getEnvInt("LB_TLS_PORT", 8443)
+	
+	// TLS settings
+	config.TLS.Enabled = getEnvBool("TLS_ENABLED", false)
+	config.TLS.CertFile = getEnv("TLS_CERT_FILE", "certs/server.crt")
+	config.TLS.KeyFile = getEnv("TLS_KEY_FILE", "certs/server.key")
+	config.TLS.MinVersion = getEnv("TLS_MIN_VERSION", "TLS12")
+	config.TLS.AutoCert = getEnvBool("TLS_AUTO_CERT", false)
+	
+	// Auth settings
+	config.Auth.Enabled = getEnvBool("AUTH_ENABLED", false)
+	config.Auth.Tokens = parseAuthTokensFromEnv()
+	config.Auth.HeaderName = getEnv("AUTH_HEADER_NAME", "X-API-Token")
+	
+	// API Rate Limiting settings
+	config.API.RateLimit = getEnvFloat("API_RATE_LIMIT", 100)
+	config.API.RateBurst = getEnvFloat("API_RATE_BURST", 200)
 	
 	// Balancing settings
 	config.Balancing.Algorithm = types.BalancingAlgorithm(getEnv("LB_ALGORITHM", "resource-aware"))
@@ -145,10 +164,37 @@ func setDefaults(config *types.LoadBalancerConfig) {
 		config.LoadBalancer.Host = "0.0.0.0"
 	}
 	if config.LoadBalancer.Port == 0 {
-		config.LoadBalancer.Port = 8080
+		config.LoadBalancer.Port = 18080
 	}
 	if config.LoadBalancer.APIPort == 0 {
-		config.LoadBalancer.APIPort = 8081
+		config.LoadBalancer.APIPort = 18081
+	}
+	if config.LoadBalancer.TLSPort == 0 {
+		config.LoadBalancer.TLSPort = 8443
+	}
+	
+	// TLS defaults
+	if config.TLS.MinVersion == "" {
+		config.TLS.MinVersion = "TLS12"
+	}
+	if config.TLS.CertFile == "" {
+		config.TLS.CertFile = "certs/server.crt"
+	}
+	if config.TLS.KeyFile == "" {
+		config.TLS.KeyFile = "certs/server.key"
+	}
+	
+	// Auth defaults
+	if config.Auth.HeaderName == "" {
+		config.Auth.HeaderName = "X-API-Token"
+	}
+	
+	// API Rate Limiting defaults
+	if config.API.RateLimit == 0 {
+		config.API.RateLimit = 100 // 100 запросов в секунду
+	}
+	if config.API.RateBurst == 0 {
+		config.API.RateBurst = 200 // burst capacity
 	}
 	
 	// Balancing defaults
@@ -211,8 +257,8 @@ func setDefaults(config *types.LoadBalancerConfig) {
 			config.Backends[i].OllamaPort = 11434
 		}
 		if config.Backends[i].AgentPort == 0 {
-			config.Backends[i].AgentPort = 9090
-		}
+				config.Backends[i].AgentPort = 18032
+			}
 		config.Backends[i].Status = types.StatusStarting
 	}
 }
@@ -256,6 +302,25 @@ func parseBackendsFromEnv() []types.Backend {
 	}
 	
 	return backends
+}
+
+// parseAuthTokensFromEnv - парсинг API токенов из переменных окружения
+func parseAuthTokensFromEnv() []string {
+	tokensStr := os.Getenv("AUTH_TOKENS")
+	if tokensStr == "" {
+		return []string{}
+	}
+	
+	// Разделение по запятой
+	parts := strings.Split(tokensStr, ",")
+	tokens := make([]string, 0, len(parts))
+	for _, token := range parts {
+		token = strings.TrimSpace(token)
+		if token != "" {
+			tokens = append(tokens, token)
+		}
+	}
+	return tokens
 }
 
 // Вспомогательные функции для переменных окружения

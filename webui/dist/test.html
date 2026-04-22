@@ -1,0 +1,29 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Ollama Load Balancer - Test Page</title>
+    <style>
+        body { font-family: Arial, sans-serif; background: #0d1117; color: #c9d1d9; padding: 20px; }
+        h1 { color: #58a6ff; }
+        .status { padding: 15px; background: #161b22; border: 1px solid #30363d; border-radius: 6px; margin: 20px 0; }
+        .success { color: #3fb950; }
+        .info { color: #8b949e; }
+    </style>
+</head>
+<body>
+    <h1>Ollama Load Balancer - Test Page</h1>
+    <div class="status">
+        <p class="success">✓ Nginx is serving static files correctly</p>
+        <p class="info">Host: <span id="host"></span></p>
+        <p class="info">Path: <span id="path"></span></p>
+        <p class="info">Protocol: <span id="protocol"></span></p>
+    </div>
+    <script>
+        document.getElementById('host').textContent = window.location.host;
+        document.getElementById('path').textContent = window.location.pathname;
+        document.getElementById('protocol').textContent = window.location.protocol;
+    </script>
+</body>
+</html>

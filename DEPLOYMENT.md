@@ -21,12 +21,12 @@
 ┌─────────────────────────────────────────────────────────────────┐
 │                    Балансировщик нагрузки                       │
 │                    (Load Balancer)                              │
-│                    Порт: 8080 (прокси)                          │
-│                    Порт: 8081 (API)                             │
+│                    Порт: 18080 (прокси)                          │
+│                    Порт: 18081 (API + WebSocket)                 │
 └─────────────────────────────────────────────────────────────────┘
-                              │
-                              │ HTTP/REST
-                              ▼
+                               │
+                               │ HTTP/REST + WebSocket
+                               ▼
 ┌─────────────────────────────────────────────────────────────────┐
 │                    GPU Серверы (Агенты)                         │
 │  ┌─────────────┐  ┌─────────────┐  ┌─────────────┐             │
@@ -55,10 +55,11 @@
 
 | Требование | Описание |
 |------------|----------|
-| **ОС** | Linux (Ubuntu 20.04+, Debian 11+, CentOS 8+) |
+| **ОС** | Linux (Ubuntu 20.04+, Debian 11+, CentOS 8+) или Windows Server |
 | **Docker** | 20.10+ с поддержкой NVIDIA Container Toolkit |
 | **NVIDIA Driver** | 470.x или новее |
 | **NVIDIA Container Toolkit** | Требуется для доступа к GPU метрикам |
+| **NVML Library** | NVIDIA Management Library для точных метрик GPU |
 | **Ollama** | Установлен и запущен на стандартном порту 11434 |
 | **Сеть** | Доступ к балансировщику по HTTP/HTTPS |
 | **RAM** | Минимум 128 MB для агента |
@@ -78,13 +79,16 @@ curl http://localhost:11434/api/tags
 
 # Проверка nvidia-smi
 nvidia-smi
+
+# Проверка NVML (для разработчиков)
+ldconfig -p | grep nvml
 ```
 
 ---
 
-## Развертывание агента через Docker
+## Развертывание агента через Docker Compose (рекомендуемый способ)
 
-Это рекомендуемый способ развертывания.
+Это рекомендуемый способ развертывания с использованием Docker Compose.
 
 ### Шаг 1: Подготовка
 
@@ -93,6 +97,10 @@ nvidia-smi
 ```bash
 # Установка Docker (Ubuntu/Debian)
 curl -fsSL https://get.docker.com | sh
+
+# Установка Docker Compose (если не установлен)
+sudo curl -L "https://github.com/docker/compose/releases/latest/download/docker-compose-$(uname -s)-$(uname -m)" -o /usr/local/bin/docker-compose
+sudo chmod +x /usr/local/bin/docker-compose
 
 # Установка NVIDIA Container Toolkit
 curl -fsSL https://nvidia.github.io/libnvidia-container/gpgkey | sudo gpg --dearmor -o /usr/share/keyrings/nvidia-container-toolkit.gpg
@@ -104,7 +112,101 @@ sudo apt-get install -y nvidia-container-toolkit
 sudo systemctl restart docker
 ```
 
-### Шаг 2: Загрузка образа агента
+### Шаг 2: Настройка конфигурации
+
+```bash
+# Перейдите в директорию с конфигурацией
+cd /path/to/ollama-loadbalancer/deployments
+
+# Скопируйте пример конфигурации
+cp ../config/agent.example.env .env
+
+# Отредактируйте .env файл
+nano .env
+```
+
+Отредактируйте следующие параметры в `.env`:
+
+```bash
+AGENT_ID=gpu-1
+BALANCER_URL=http://<BALANCER_IP>:18081
+```
+
+### Шаг 3: Запуск через Docker Compose
+
+```bash
+# Запуск агента
+docker-compose -f docker-compose.agent.yml up -d
+
+# Просмотр логов
+docker-compose -f docker-compose.agent.yml logs -f
+
+# Проверка статуса
+docker-compose -f docker-compose.agent.yml ps
+```
+
+### Шаг 4: Проверка
+
+```bash
+# Проверка статуса контейнера
+docker ps | grep ollama-lb-agent
+
+# Проверка метрик агента
+curl http://localhost:18032/metrics
+
+# Проверка подключения к Ollama
+curl http://localhost:11434/api/tags
+```
+
+---
+
+## Развертывание через скрипт deploy-agent-docker.sh
+
+Для быстрого развертывания используйте скрипт:
+
+```bash
+# Перейдите в директорию скриптов
+cd /path/to/ollama-loadbalancer/scripts
+
+# Запуск с параметрами
+./deploy-agent-docker.sh --balancer-url http://<BALANCER_IP>:18081 --agent-id gpu-1
+
+# Или кратко:
+./deploy-agent-docker.sh -b http://<BALANCER_IP>:18081 -i gpu-1
+```
+
+**Параметры скрипта:**
+
+| Параметр | Краткий | Описание | Обязательный |
+|----------|---------|----------|--------------|
+| `--balancer-url` | `-b` | URL балансировщика | Да |
+| `--agent-id` | `-i` | Идентификатор агента | Да |
+| `--agent-port` | `-p` | Порт агента (по умолчанию: 18032) | Нет |
+| `--ollama-url` | `-o` | URL Ollama (по умолчанию: http://localhost:11434) | Нет |
+| `--nvml-enabled` | `-n` | Включить NVML (по умолчанию: true) | Нет |
+| `--metrics-interval` | `-m` | Интервал метрик (по умолчанию: 5s) | Нет |
+| `--help` | `-h` | Показать справку | Нет |
+
+### Примеры использования
+
+```bash
+# Базовый запуск
+./deploy-agent-docker.sh -b http://192.168.1.100:18081 -i gpu-1
+
+# С кастомными параметрами
+./deploy-agent-docker.sh -b http://lb:18081 -i gpu-2 -p 18032 -m 10s
+
+# С полным путем к compose файлу
+./deploy-agent-docker.sh -b http://lb:18081 -i gpu-3 --compose-file docker-compose.agent.yml
+```
+
+---
+
+## Развертывание агента через Docker (docker run)
+
+Альтернативный способ запуска без Docker Compose.
+
+### Шаг 1: Загрузка образа агента
 
 ```bash
 # Загрузка готового образа (если доступен в реестре)
@@ -115,16 +217,19 @@ cd /path/to/ollama-loadbalancer
 docker build -f docker/agent/Dockerfile -t ollama-lb/agent:latest .
 ```
 
-### Шаг 3: Запуск контейнера
+### Шаг 2: Запуск контейнера
 
 ```bash
 docker run -d \
   --name ollama-agent \
   --restart unless-stopped \
   -e AGENT_ID=gpu-1 \
-  -e BALANCER_URL=http://<BALANCER_IP>:8081 \
-  -e COLLECT_INTERVAL=5 \
-  -e HEARTBEAT_INTERVAL=3 \
+  -e BALANCER_URL=http://<BALANCER_IP>:18081 \
+  -e AGENT_PORT=18032 \
+  -e OLLAMA_URL=http://localhost:11434 \
+  -e NVML_ENABLED=true \
+  -e METRICS_INTERVAL=5s \
+  -e HEARTBEAT_INTERVAL=3s \
   -v /usr/bin/nvidia-smi:/usr/bin/nvidia-smi:ro \
   -v /var/run/nvidia-top-level-device:/var/run/nvidia-top-level-device:ro \
   -v /proc:/host/proc:ro \
@@ -142,12 +247,17 @@ docker run -d \
 | `--restart` | Автоматический перезапуск |
 | `-e AGENT_ID` | Уникальный идентификатор агента |
 | `-e BALANCER_URL` | URL балансировщика |
+| `-e AGENT_PORT` | Порт для локальных метрик |
+| `-e OLLAMA_URL` | URL локального Ollama |
+| `-e NVML_ENABLED` | Включить NVML |
+| `-e METRICS_INTERVAL` | Интервал отправки метрик |
+| `-e HEARTBEAT_INTERVAL` | Интервал heartbeat |
 | `-v /usr/bin/nvidia-smi` | Доступ к nvidia-smi |
 | `-v /proc` | Доступ к системным метрикам |
 | `--network host` | Сетевой режим хоста |
 | `--gpus all` | Доступ ко всем GPU |
 
-### Шаг 4: Проверка
+### Шаг 3: Проверка
 
 ```bash
 # Проверка статуса контейнера
@@ -157,7 +267,7 @@ docker ps | grep ollama-agent
 docker logs -f ollama-agent
 
 # Проверка метрик агента
-curl http://localhost:9090/metrics
+curl http://localhost:18032/metrics
 ```
 
 ---
@@ -205,9 +315,10 @@ Type=simple
 User=ollama
 Group=ollama
 Environment="AGENT_ID=gpu-1"
-Environment="BALANCER_URL=http://<BALANCER_IP>:8081"
+Environment="BALANCER_URL=http://<BALANCER_IP>:18081"
 Environment="COLLECT_INTERVAL=5"
 Environment="HEARTBEAT_INTERVAL=3"
+Environment="METRICS_PORT=9090"
 ExecStart=/usr/local/bin/agent
 Restart=always
 RestartSec=10
@@ -247,7 +358,7 @@ journalctl -u ollama-agent -f
 | `AGENT_ID` | Уникальный идентификатор агента | `gpu-1`, `server-a100` |
 | `BALANCER_URL` | URL балансировщика | `http://192.168.1.100:8081` |
 
-### Опциональные переменные
+### Опциональные переменные агента
 
 | Переменная | По умолчанию | Описание |
 |------------|--------------|----------|
@@ -255,6 +366,31 @@ journalctl -u ollama-agent -f
 | `COLLECT_INTERVAL` | `5` | Интервал сбора метрик (сек) |
 | `HEARTBEAT_INTERVAL` | `3` | Интервал отправки heartbeat (сек) |
 | `CONFIG_PATH` | - | Путь к файлу конфигурации |
+| `NVML_ENABLED` | `true` | Включить NVML поддержку |
+
+### Переменные окружения балансировщика
+
+| Переменная | По умолчанию | Описание |
+|------------|--------------|----------|
+| `LB_HOST` | `0.0.0.0` | Хост для прослушивания |
+| `LB_PORT` | `18080` | Порт прокси для Ollama API |
+| `LB_API_PORT` | `18081` | Порт Management API |
+| `LB_ALGORITHM` | `resource-aware` | Алгоритм балансировки |
+| `LB_MODEL_AFFINITY` | `true` | Привязка к модели |
+| `LB_SESSION_STICKINESS` | `true` | Привязка сессии |
+| `LB_HEALTH_CHECK_INTERVAL` | `10` | Интервал health check (сек) |
+| `LB_METRICS_INTERVAL` | `5` | Интервал метрик (сек) |
+| `LB_REQUEST_TIMEOUT` | `120` | Таймаут запроса (сек) |
+| `LB_QUEUE_TIMEOUT` | `300` | Таймаут очереди (сек) |
+| `LB_QUEUE_MAX_SIZE` | `100` | Макс. размер очереди |
+| `LB_GPU_MAX_USAGE` | `90` | Макс. загрузка GPU (%) |
+| `LB_GPU_MAX_VRAM` | `85` | Макс. использование VRAM (%) |
+| `LB_GPU_MAX_TEMP` | `85` | Макс. температура GPU (°C) |
+| `LB_CPU_MAX_USAGE` | `80` | Макс. загрузка CPU (%) |
+| `LB_MEMORY_MAX_USAGE` | `85` | Макс. использование RAM (%) |
+| `LB_DISK_MIN_FREE_MB` | `10240` | Мин. свободно на диске (MB) |
+| `LB_LOG_LEVEL` | `info` | Уровень логирования |
+| `LB_LOG_FORMAT` | `json` | Формат логов |
 
 ### Пример .env файла
 
@@ -265,7 +401,7 @@ journalctl -u ollama-agent -f
 AGENT_ID=gpu-1
 
 # URL балансировщика
-BALANCER_URL=http://192.168.1.100:8081
+BALANCER_URL=http://192.168.1.100:18081
 
 # Интервалы (секунды)
 COLLECT_INTERVAL=5
@@ -273,6 +409,9 @@ HEARTBEAT_INTERVAL=3
 
 # Порт для метрик
 METRICS_PORT=9090
+
+# NVML настройки
+NVML_ENABLED=true
 ```
 
 Запуск с .env файлом:
@@ -295,7 +434,7 @@ set -a; source .env; set +a; /usr/local/bin/agent
 
 ```bash
 # Регистрация нового бэкенда
-curl -X POST http://<BALANCER_IP>:8081/api/v1/backends \
+curl -X POST http://<BALANCER_IP>:18081/api/v1/backends \
   -H "Content-Type: application/json" \
   -d '{
     "id": "gpu-1",
@@ -311,13 +450,13 @@ curl -X POST http://<BALANCER_IP>:8081/api/v1/backends \
 ### Проверка зарегистрированных бэкендов
 
 ```bash
-curl http://<BALANCER_IP>:8081/api/v1/backends
+curl http://<BALANCER_IP>:18081/api/v1/backends
 ```
 
 ### Удаление бэкенда
 
 ```bash
-curl -X DELETE http://<BALANCER_IP>:8081/api/v1/backends/gpu-1
+curl -X DELETE http://<BALANCER_IP>:18081/api/v1/backends/gpu-1
 ```
 
 ---
@@ -331,7 +470,7 @@ curl -X DELETE http://<BALANCER_IP>:8081/api/v1/backends/gpu-1
 curl http://localhost:9090/metrics
 
 # Проверка через API балансировщика
-curl http://<BALANCER_IP>:8081/api/v1/cluster
+curl http://<BALANCER_IP>:18081/api/v1/cluster
 ```
 
 ### 2. Проверка GPU метрик
@@ -368,6 +507,7 @@ curl -s http://<BALANCER_IP>:8081/api/v1/cluster | jq
   "totalBackends": 2,
   "healthyBackends": 2,
   "activeRequests": 0,
+  "queuedRequests": 0,
   "backends": [
     {
       "id": "gpu-1",
@@ -376,11 +516,33 @@ curl -s http://<BALANCER_IP>:8081/api/v1/cluster | jq
         "usagePercent": 0,
         "memoryTotal": 24576,
         "memoryUsed": 512,
-        "temperature": 35
+        "temperature": 35,
+        "powerUsage": 50,
+        "powerLimit": 450
+      },
+      "system": {
+        "cpuUsagePercent": 15,
+        "memoryTotal": 65536,
+        "memoryUsed": 8000
+      },
+      "ollama": {
+        "runningModels": [],
+        "activeRequests": 0,
+        "requestsPerSecond": 0
       }
     }
   ]
 }
+```
+
+### 5. Проверка WebSocket подключения
+
+```bash
+# Установка wscat
+npm install -g wscat
+
+# Подключение к WebSocket
+wscat -c ws://<BALANCER_IP>:18081/ws/metrics
 ```
 
 ---
@@ -395,7 +557,7 @@ curl -s http://<BALANCER_IP>:8081/api/v1/cluster | jq
 
 ```bash
 # Проверка доступности балансировщика
-curl -v http://<BALANCER_IP>:8081/api/v1/health
+curl -v http://<BALANCER_IP>:18081/api/v1/health
 
 # Проверка firewall
 sudo ufw status
@@ -415,6 +577,9 @@ docker logs ollama-agent
 # Проверка NVIDIA Container Toolkit
 docker run --rm --gpus all nvidia/cuda:11.0-base nvidia-smi
 
+# Проверка NVML
+docker exec ollama-agent nvidia-smi
+
 # Пересоздание контейнера с правильными правами
 docker rm -f ollama-agent
 docker run -d \
@@ -422,7 +587,8 @@ docker run -d \
   --gpus all \
   --network host \
   -e AGENT_ID=gpu-1 \
-  -e BALANCER_URL=http://<BALANCER_IP>:8081 \
+  -e BALANCER_URL=http://<BALANCER_IP>:18081 \
+  -e NVML_ENABLED=true \
   ollama-lb/agent:latest
 ```
 
@@ -464,29 +630,92 @@ docker exec ollama-agent nvidia-smi
 docker restart ollama-agent
 ```
 
+### Очередь переполнена
+
+**Проблема:** Запросы отклоняются из-за переполненной очереди
+
+**Решение:**
+
+1. Увеличьте размер очереди:
+```bash
+-e LB_QUEUE_MAX_SIZE=200
+```
+
+2. Увеличьте таймаут очереди:
+```bash
+-e LB_QUEUE_TIMEOUT=600
+```
+
+3. Добавьте больше бэкендов или увеличьте `maxConcurrentRequests`
+
+### WebSocket не подключается
+
+**Проблема:** Не удается подключиться к WebSocket для real-time метрик
+
+**Решение:**
+
+```bash
+# Проверка доступности порта
+telnet <BALANCER_IP> 8081
+
+# Проверка CORS настроек
+curl -v -X OPTIONS http://<BALANCER_IP>:18081/ws/metrics
+
+# Проверка логов балансировщика
+docker logs loadbalancer | grep -i websocket
+```
+
 ---
 
 ## Быстрое развертывание
 
-Используйте скрипт автоматического развертывания:
+### Скрипт deploy-agent-docker.sh (рекомендуется)
+
+Используйте скрипт для автоматического развертывания через Docker Compose:
 
 ```bash
 # На GPU сервере
 cd /path/to/ollama-loadbalancer/scripts
 
-# Запуск скрипта развертывания
-./deploy-agent.sh gpu-1 http://192.168.1.100:8081
+# Запуск с параметрами
+./deploy-agent-docker.sh --balancer-url http://192.168.1.100:18081 --agent-id gpu-1
+
+# Или кратко:
+./deploy-agent-docker.sh -b http://192.168.1.100:18081 -i gpu-1
 ```
 
 Скрипт автоматически:
-1. Проверит зависимости (Docker, NVIDIA Toolkit)
-2. Загрузит/соберет образ агента
-3. Запустит контейнер с правильными параметрами
+1. Проверит зависимости (Docker, Docker Compose, NVIDIA Toolkit)
+2. Проверит наличие docker-compose.agent.yml
+3. Запустит контейнер с указанными параметрами
+4. Покажет статус развертывания
+
+### Скрипт deploy-agent.sh (альтернативный)
+
+Для развертывания через docker run:
+
+```bash
+./deploy-agent.sh gpu-1 http://192.168.1.100:18081
+```
 
 ---
 
 ## Дополнительные ресурсы
 
-- [README.md](README.md) - Общая информация о проекте
-- [scripts/deploy-agent.sh](scripts/deploy-agent.sh) - Скрипт автоматического развертывания
-- [docker-compose.yml](deployments/docker-compose.yml) - Конфигурация Docker Compose
+### Файлы конфигурации
+
+- [`deployments/docker-compose.agent.yml`](deployments/docker-compose.agent.yml) - Docker Compose конфигурация для агента
+- [`config/agent.example.env`](config/agent.example.env) - Пример файла окружения ��ля агента
+- [`config/config.example.json`](config/config.example.json) - Пример конфигурации балансировщика
+
+### Скрипты развертывания
+
+- [`scripts/deploy-agent-docker.sh`](scripts/deploy-agent-docker.sh) - Скрипт развертывания через Docker Compose
+- [`scripts/deploy-agent.sh`](scripts/deploy-agent.sh) - Скрипт развертывания через docker run
+- [`scripts/build-agent.sh`](scripts/build-agent.sh) - Скрипт сборки агента
+
+### Документация
+
+- [`README.md`](README.md) - Общая информация о проекте
+- [`CHANGELOG.md`](CHANGELOG.md) - История изменений проекта
+- [`deployments/docker-compose.yml`](deployments/docker-compose.yml) - Конфигурация Docker Compose для балансировщика

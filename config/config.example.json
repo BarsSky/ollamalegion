@@ -1,8 +1,8 @@
 {
   "loadBalancer": {
     "host": "0.0.0.0",
-    "port": 8080,
-    "apiPort": 8081
+    "port": 18080,
+    "apiPort": 18081
   },
   "backends": [
     {
@@ -10,7 +10,7 @@
       "name": "GPU Server 1",
       "host": "192.168.13.66",
       "ollamaPort": 11434,
-      "agentPort": 9090,
+      "agentPort": 18030,
       "weight": 1,
       "maxConcurrentRequests": 10,
       "labels": ["nvidia", "rtx4090"]
@@ -20,7 +20,7 @@
       "name": "GPU Server 2",
       "host": "192.168.13.70",
       "ollamaPort": 11434,
-      "agentPort": 9090,
+      "agentPort": 18030,
       "weight": 1,
       "maxConcurrentRequests": 10,
       "labels": ["nvidia", "rtx4090"]
@@ -55,5 +55,23 @@
   "logging": {
     "level": "info",
     "format": "json"
+  },
+  "api": {
+    "rateLimit": 100,
+    "rateBurst": 200
+  },
+  "tls": {
+    "enabled": false,
+    "certFile": "certs/server.crt",
+    "keyFile": "certs/server.key",
+    "minVersion": "TLS12",
+    "autoCert": true
+  },
+  "auth": {
+    "enabled": false,
+    "tokens": [
+      "your-master-token-here-change-in-production"
+    ],
+    "headerName": "X-API-Token"
   }
 }

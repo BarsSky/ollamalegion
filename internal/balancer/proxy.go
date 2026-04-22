@@ -51,10 +51,14 @@ type MetricsManager struct {
 
 // QueueManager - менеджер очереди
 type QueueManager struct {
-	queue     []*QueuedRequest
-	mu        sync.Mutex
-	maxSize   int
-	notify    chan struct{}
+	queue      []*QueuedRequest
+	mu         sync.Mutex
+	maxSize    int
+	notify     chan struct{}
+	processed  int64
+	timeout    time.Duration
+	shutdownCh chan struct{}
+	wg         sync.WaitGroup
 }
 
 // QueuedRequest - запрос в очереди
@@ -74,7 +78,7 @@ func NewProxy(config *types.LoadBalancerConfig) *Proxy {
 		backends:   make(map[string]*BackendState),
 		sessionMgr: NewSessionManager(),
 		metricsMgr: NewMetricsManager(),
-		queueMgr:   NewQueueManager(config.Balancing.QueueMaxSize),
+		queueMgr:   NewQueueManager(config.Balancing.QueueMaxSize, time.Duration(config.Balancing.QueueTimeout)*time.Second),
 		client: &http.Client{
 			Timeout: time.Duration(config.Balancing.RequestTimeout) * time.Second,
 			Transport: &http.Transport{
@@ -100,6 +104,9 @@ func NewProxy(config *types.LoadBalancerConfig) *Proxy {
 		}
 	}
 	
+	// Запуск обработчика очереди
+	p.queueMgr.StartWorkers(p)
+	
 	return p
 }
 
@@ -124,12 +131,26 @@ func NewMetricsManager() *MetricsManager {
 }
 
 // NewQueueManager - создание менеджера очереди
-func NewQueueManager(maxSize int) *QueueManager {
+func NewQueueManager(maxSize int, timeout time.Duration) *QueueManager {
 	return &QueueManager{
-		queue:   make([]*QueuedRequest, 0),
-		maxSize: maxSize,
-		notify:  make(chan struct{}, 1),
+		queue:      make([]*QueuedRequest, 0, maxSize),
+		maxSize:    maxSize,
+		notify:     make(chan struct{}, 1),
+		timeout:    timeout,
+		shutdownCh: make(chan struct{}),
 	}
+}
+
+// StartWorkers - запуск обработчиков очереди
+func (qm *QueueManager) StartWorkers(proxy *Proxy) {
+	qm.wg.Add(1)
+	go qm.queueWorker(proxy)
+}
+
+// Stop - остановка обработчиков очереди
+func (qm *QueueManager) Stop() {
+	close(qm.shutdownCh)
+	qm.wg.Wait()
 }
 
 // ServeHTTP - обработка HTTP запросов
@@ -527,8 +548,164 @@ func (sm *SessionManager) Set(id, backendID, model string) {
 
 // queueRequest - постановка запроса в очередь
 func (p *Proxy) queueRequest(w http.ResponseWriter, r *http.Request, model string) bool {
-	// TODO: реализовать очередь запросов
-	return false
+	p.queueMgr.mu.Lock()
+	
+	// Проверка переполнения очереди
+	if len(p.queueMgr.queue) >= p.queueMgr.maxSize {
+		p.queueMgr.mu.Unlock()
+		return false
+	}
+	
+	// Создание запроса в очереди
+	done := make(chan bool, 1)
+	queuedReq := &QueuedRequest{
+		Request:  r,
+		Writer:   w,
+		Model:    model,
+		Enqueued: time.Now(),
+		Done:     done,
+	}
+	
+	// Добавление в очередь
+	p.queueMgr.queue = append(p.queueMgr.queue, queuedReq)
+	p.queueMgr.mu.Unlock()
+	
+	// Сигнал обработчику
+	select {
+	case p.queueMgr.notify <- struct{}{}:
+	default:
+		// Обработчик уже уведомлен
+	}
+	
+	// Ожидание результата с таймаутом
+	select {
+	case success := <-done:
+		return success
+	case <-time.After(p.queueMgr.timeout):
+		// Таймаут ожидания - удаляем запрос из очереди
+		p.queueMgr.mu.Lock()
+		for i, req := range p.queueMgr.queue {
+			if req == queuedReq {
+				p.queueMgr.queue = append(p.queueMgr.queue[:i], p.queueMgr.queue[i+1:]...)
+				break
+			}
+		}
+		p.queueMgr.mu.Unlock()
+		return false
+	case <-p.queueMgr.shutdownCh:
+		return false
+	}
+}
+
+// queueWorker - обработчик очереди запросов
+func (qm *QueueManager) queueWorker(proxy *Proxy) {
+	defer qm.wg.Done()
+	
+	for {
+		select {
+		case <-qm.shutdownCh:
+			// Остановка - отменяем все ожидающие запросы
+			qm.mu.Lock()
+			for _, req := range qm.queue {
+				select {
+				case req.Done <- false:
+				default:
+				}
+			}
+			qm.queue = nil
+			qm.mu.Unlock()
+			return
+			
+		case <-qm.notify:
+			// Попытка обработать очередь
+			qm.processQueue(proxy)
+		}
+	}
+}
+
+// processQueue - обработка очереди
+func (qm *QueueManager) processQueue(proxy *Proxy) {
+	qm.mu.Lock()
+	defer qm.mu.Unlock()
+	
+	if len(qm.queue) == 0 {
+		return
+	}
+	
+	// Берем первый запрос из очереди
+	req := qm.queue[0]
+	qm.queue = append(qm.queue[:0], qm.queue[1:]...)
+	
+	// Попытка найти доступный бэкенд
+	targetBackend := proxy.selectBackend(req.Model)
+	
+	if targetBackend == "" {
+		// Нет доступных бэкендов - возвращаем запрос в начало очереди
+		qm.queue = append([]*QueuedRequest{req}, qm.queue...)
+		
+		// Повторное уведомление через небольшую задержку
+		time.AfterFunc(100*time.Millisecond, func() {
+			select {
+			case qm.notify <- struct{}{}:
+			default:
+			}
+		})
+		return
+	}
+	
+	// Устанавливаем целевой бэкенд и выполняем запрос
+	req.Target = targetBackend
+	
+	// Проксируем запрос
+	proxy.proxyRequest(req.Writer, req.Request, targetBackend)
+	
+	// Сигнал о успешном выполнении
+	select {
+	case req.Done <- true:
+	default:
+	}
+	
+	// Обновление счетчика
+	qm.processed++
+}
+
+// getQueueStats - получение статистики очереди
+func (p *Proxy) getQueueStats() QueueStats {
+	p.queueMgr.mu.Lock()
+	defer p.queueMgr.mu.Unlock()
+	
+	return QueueStats{
+		CurrentSize:   len(p.queueMgr.queue),
+		MaxSize:       p.queueMgr.maxSize,
+		Processed:     p.queueMgr.processed,
+		WaitTimeAvgMs: p.calculateAvgWaitTime(),
+	}
+}
+
+// calculateAvgWaitTime - вычисление среднего времени ожидания
+func (p *Proxy) calculateAvgWaitTime() int64 {
+	p.queueMgr.mu.Lock()
+	defer p.queueMgr.mu.Unlock()
+	
+	if len(p.queueMgr.queue) == 0 {
+		return 0
+	}
+	
+	var totalWait int64
+	now := time.Now()
+	for _, req := range p.queueMgr.queue {
+		totalWait += int64(now.Sub(req.Enqueued))
+	}
+	
+	return totalWait / int64(len(p.queueMgr.queue)) / int64(time.Millisecond)
+}
+
+// QueueStats - статистика очереди
+type QueueStats struct {
+	CurrentSize   int   `json:"current_size"`
+	MaxSize       int   `json:"max_size"`
+	Processed     int64 `json:"processed_total"`
+	WaitTimeAvgMs int64 `json:"avg_wait_time_ms"`
 }
 
 // AddBackend - добавление нового бэкенда

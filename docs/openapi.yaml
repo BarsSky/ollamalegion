@@ -1,0 +1,1094 @@
+openapi: 3.0.3
+info:
+  title: Ollama Load Balancer API
+  description: |
+    REST API для интеллектуального балансировщика нагрузки Ollama с мониторингом ресурсов GPU/CPU/RAM/Disk
+    и умным распределением запросов.
+    
+    ## Особенности
+    - Умная балансировка на основе доступных ресурсов
+    - Model Affinity - направление запросов к серверам с загруженной моделью
+    - Real-time мониторинг через WebSocket
+    - Health Check - автоматическое обнаружение нерабочих бэкендов
+    - Session Stickiness - сохранение сессии на одном сервере
+    - Queue Manager - обработка перегрузок с очередью запросов
+    
+    ## Аутентификация
+    API использует токены для аутентификации. Токен передается в заголовке `X-API-Token`.
+    Master token (первый в списке) может создавать и отзывать другие токены.
+  version: 1.0.0
+  contact:
+    name: Ollama Load Balancer
+  license:
+    name: MIT License
+
+servers:
+  - url: http://localhost:18081
+    description: Local development server
+  - url: https://localhost:8443
+    description: Production server (HTTPS)
+  - url: http://{host}:{port}
+    description: Custom server
+    variables:
+      host:
+        default: localhost
+        description: Hostname or IP address
+      port:
+        default: "8081"
+        description: API port
+
+tags:
+  - name: Health
+    description: Health check endpoints
+  - name: Cluster
+    description: Cluster status and information
+  - name: Metrics
+    description: System and backend metrics
+  - name: Backends
+    description: Backend management
+  - name: Sessions
+    description: Session management
+  - name: Models
+    description: Model information
+  - name: Agents
+    description: Agent registration and metrics
+  - name: Auth
+    description: Authentication and token management
+  - name: Rate Limit
+    description: Rate limiter status
+  - name: WebSocket
+    description: WebSocket endpoints for real-time data
+
+security:
+  - ApiKeyAuth: []
+
+paths:
+  /api/v1/health:
+    get:
+      tags:
+        - Health
+      summary: Health check
+      description: Проверка здоровья API. Не требует аутентификации.
+      operationId: getHealth
+      security: []
+      responses:
+        '200':
+          description: API is healthy
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HealthResponse'
+        '500':
+          description: Internal server error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /api/v1/cluster:
+    get:
+      tags:
+        - Cluster
+      summary: Get cluster status
+      description: Получение информации о состоянии кластера
+      operationId: getClusterStatus
+      responses:
+        '200':
+          description: Cluster status retrieved successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ClusterStatus'
+        '401':
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '500':
+          description: Internal server error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /api/v1/metrics:
+    get:
+      tags:
+        - Metrics
+      summary: Get system metrics
+      description: Получение метрик всех бэкендов кластера
+      operationId: getMetrics
+      responses:
+        '200':
+          description: Metrics retrieved successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MetricsResponse'
+        '401':
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /api/v1/metrics/{backend_id}:
+    get:
+      tags:
+        - Metrics
+      summary: Get backend metrics
+      description: Получение метрик конкретного бэкенда
+      operationId: getBackendMetrics
+      parameters:
+        - name: backend_id
+          in: path
+          required: true
+          description: ID бэкенда
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Backend metrics retrieved successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BackendMetrics'
+        '401':
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '404':
+          description: Backend not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /api/v1/backends:
+    get:
+      tags:
+        - Backends
+      summary: List all backends
+      description: Получение списка всех бэкендов
+      operationId: listBackends
+      responses:
+        '200':
+          description: Backends list retrieved successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  backends:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/BackendInfo'
+                  total:
+                    type: integer
+                    example: 2
+        '401':
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+    post:
+      tags:
+        - Backends
+      summary: Add backend
+      description: Добавление нового бэкенда в кластер
+      operationId: addBackend
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateBackendRequest'
+      responses:
+        '201':
+          description: Backend added successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                    example: true
+                  backend:
+                    $ref: '#/components/schemas/BackendInfo'
+                  message:
+                    type: string
+                    example: Backend added successfully. Health check will run automatically.
+        '400':
+          description: Invalid request body
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '401':
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '409':
+          description: Backend already exists
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /api/v1/backends/{backend_id}:
+    get:
+      tags:
+        - Backends
+      summary: Get backend info
+      description: Получение информации о конкретном бэкенде
+      operationId: getBackend
+      parameters:
+        - name: backend_id
+          in: path
+          required: true
+          description: ID бэкенда
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Backend info retrieved successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BackendInfo'
+        '401':
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '404':
+          description: Backend not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+    delete:
+      tags:
+        - Backends
+      summary: Delete backend
+      description: Удаление бэкенда из кластера
+      operationId: deleteBackend
+      parameters:
+        - name: backend_id
+          in: path
+          required: true
+          description: ID бэкенда
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Backend deleted successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                    example: true
+                  id:
+                    type: string
+                    example: gpu-1
+                  message:
+                    type: string
+                    example: Backend removed successfully
+        '401':
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '404':
+          description: Backend not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /api/v1/sessions:
+    get:
+      tags:
+        - Sessions
+      summary: List sessions
+      description: Получение списка активных сессий
+      operationId: listSessions
+      responses:
+        '200':
+          description: Sessions list retrieved successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  sessions:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/SessionInfo'
+                  total:
+                    type: integer
+                    example: 0
+        '401':
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+    delete:
+      tags:
+        - Sessions
+      summary: Clear all sessions
+      description: Очистка всех активных сессий
+      operationId: clearSessions
+      responses:
+        '200':
+          description: All sessions cleared successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                    example: true
+                  message:
+                    type: string
+                    example: All sessions cleared
+        '401':
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /api/v1/sessions/{session_id}:
+    delete:
+      tags:
+        - Sessions
+      summary: Delete session
+      description: Удаление конкретной сессии
+      operationId: deleteSession
+      parameters:
+        - name: session_id
+          in: path
+          required: true
+          description: ID сессии
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Session deleted successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                    example: true
+                  session_id:
+                    type: string
+                  message:
+                    type: string
+                    example: Session removed successfully
+        '401':
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '404':
+          description: Session not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /api/v1/models:
+    get:
+      tags:
+        - Models
+      summary: List models
+      description: Получение списка запущенных моделей на всех бэкендах
+      operationId: listModels
+      responses:
+        '200':
+          description: Models list retrieved successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  models:
+                    type: object
+                    additionalProperties:
+                      type: array
+                      items:
+                        type: string
+                    example:
+                      gpu-1:
+                        - llama3.1:70b
+                        - mistral:7b
+                      gpu-2:
+                        - llama3.1:8b
+        '401':
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /api/v1/agents/stats:
+    get:
+      tags:
+        - Agents
+      summary: Get agent statistics
+      description: Получение статистики всех зарегистрированных агентов
+      operationId: getAgentStats
+      responses:
+        '200':
+          description: Agent statistics retrieved successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AgentStats'
+        '401':
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /api/v1/agents/{agent_id}:
+    get:
+      tags:
+        - Agents
+      summary: Get agent info
+      description: Получение информации о конкретном агенте
+      operationId: getAgent
+      parameters:
+        - name: agent_id
+          in: path
+          required: true
+          description: ID агента
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Agent info retrieved successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BackendInfo'
+        '401':
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '404':
+          description: Agent not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /api/v1/auth/status:
+    get:
+      tags:
+        - Auth
+      summary: Get authentication status
+      description: Получение статуса системы аутентификации
+      operationId: getAuthStatus
+      responses:
+        '200':
+          description: Authentication status retrieved successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AuthStatus'
+        '401':
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /api/v1/auth/token:
+    post:
+      tags:
+        - Auth
+      summary: Create token
+      description: |
+        Создание нового API токена. Требует master token.
+        
+        Master token - первый токен в списке конфигурации.
+      operationId: createToken
+      responses:
+        '201':
+          description: Token created successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TokenResponse'
+        '401':
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '403':
+          description: Forbidden - master token required
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+    delete:
+      tags:
+        - Auth
+      summary: Revoke token
+      description: |
+        Отзыв (удаление) API токена. Требует master token.
+        
+        Master token нельзя отозвать.
+      operationId: revokeToken
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/TokenRevokeRequest'
+      parameters:
+        - name: token
+          in: query
+          required: false
+          description: Токен для отзыва (альтернатива body)
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Token revoked successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                    example: true
+                  message:
+                    type: string
+                    example: Token revoked successfully
+        '400':
+          description: Invalid request
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '401':
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '403':
+          description: Forbidden - master token required
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /api/v1/ratelimit/status:
+    get:
+      tags:
+        - Rate Limit
+      summary: Get rate limiter status
+      description: |
+        Получение статуса rate limiter.
+        
+        Не требует аутентификации.
+      operationId: getRateLimitStatus
+      security: []
+      responses:
+        '200':
+          description: Rate limiter status retrieved successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RateLimitStatus'
+
+  /ws/metrics:
+    get:
+      tags:
+        - WebSocket
+      summary: WebSocket for real-time metrics
+      description: |
+        WebSocket подключение для получения метрик в реальном времени.
+        
+        Протокол: WebSocket
+        Формат сообщений: JSON
+        
+        После подключения клиент получает начальное состояние кластера,
+        затем обновления по мере поступления новых метрик от бэкендов.
+      operationId: wsMetrics
+      responses:
+        '101':
+          description: WebSocket connection upgraded
+        '401':
+          description: Unauthorized
+      x-websocket:
+        enabled: true
+        messageSchema:
+          $ref: '#/components/schemas/BackendMetrics'
+
+components:
+  securitySchemes:
+    ApiKeyAuth:
+      type: apiKey
+      in: header
+      name: X-API-Token
+      description: API токен для аутентификации
+
+  schemas:
+    HealthResponse:
+      type: object
+      properties:
+        status:
+          type: string
+          enum:
+            - healthy
+            - unhealthy
+          example: healthy
+        timestamp:
+          type: string
+          format: date-time
+          example: 2024-01-15T10:30:00Z
+        version:
+          type: string
+          example: "1.0.0"
+
+    ClusterStatus:
+      type: object
+      properties:
+        timestamp:
+          type: string
+          format: date-time
+          example: 2024-01-15T10:30:00Z
+        totalBackends:
+          type: integer
+          example: 2
+        healthyBackends:
+          type: integer
+          example: 2
+        totalRequests:
+          type: integer
+          format: int64
+          example: 1500
+        activeRequests:
+          type: integer
+          example: 5
+        queuedRequests:
+          type: integer
+          example: 0
+        backends:
+          type: array
+          items:
+            $ref: '#/components/schemas/BackendMetrics'
+
+    MetricsResponse:
+      type: object
+      properties:
+        timestamp:
+          type: string
+          format: date-time
+        totalBackends:
+          type: integer
+        healthyBackends:
+          type: integer
+        backends:
+          type: array
+          items:
+            $ref: '#/components/schemas/BackendMetrics'
+
+    BackendStatus:
+      type: string
+      enum:
+        - healthy
+        - unhealthy
+        - offline
+        - starting
+      description: Статус бэкенда
+
+    BackendInfo:
+      type: object
+      properties:
+        id:
+          type: string
+          example: gpu-1
+        name:
+          type: string
+          example: GPU Server 1
+        host:
+          type: string
+          example: 192.168.13.66
+        ollamaPort:
+          type: integer
+          example: 11434
+        agentPort:
+          type: integer
+          example: 9090
+        weight:
+          type: integer
+          example: 1
+        maxConcurrentRequests:
+          type: integer
+          example: 10
+        labels:
+          type: array
+          items:
+            type: string
+          example:
+            - nvidia
+            - rtx4090
+        status:
+          $ref: '#/components/schemas/BackendStatus'
+        lastHealthCheck:
+          type: string
+          format: date-time
+        consecutiveFailures:
+          type: integer
+          example: 0
+        activeRequests:
+          type: integer
+          example: 3
+
+    CreateBackendRequest:
+      type: object
+      required:
+        - id
+        - host
+      properties:
+        id:
+          type: string
+          example: gpu-3
+        name:
+          type: string
+          example: GPU Server 3
+        host:
+          type: string
+          example: 192.168.13.80
+        ollamaPort:
+          type: integer
+          default: 11434
+          example: 11434
+        agentPort:
+          type: integer
+          default: 9090
+          example: 9090
+        weight:
+          type: integer
+          default: 1
+          example: 1
+        maxConcurrentRequests:
+          type: integer
+          default: 10
+          example: 10
+        labels:
+          type: array
+          items:
+            type: string
+          example:
+            - nvidia
+            - a100
+
+    BackendMetrics:
+      type: object
+      properties:
+        id:
+          type: string
+          example: gpu-1
+        timestamp:
+          type: string
+          format: date-time
+          example: 2024-01-15T10:30:00Z
+        gpu:
+          $ref: '#/components/schemas/GPUMetrics'
+        system:
+          $ref: '#/components/schemas/SystemMetrics'
+        ollama:
+          $ref: '#/components/schemas/OllamaMetrics'
+
+    GPUMetrics:
+      type: object
+      description: Метрики GPU
+      properties:
+        usagePercent:
+          type: number
+          format: float
+          example: 45.5
+          description: Загрузка GPU в процентах
+        memoryTotal:
+          type: integer
+          example: 24576
+          description: Всего VRAM (MB)
+        memoryUsed:
+          type: integer
+          example: 12000
+          description: Использовано VRAM (MB)
+        memoryFree:
+          type: integer
+          example: 12576
+          description: Свободно VRAM (MB)
+        temperature:
+          type: integer
+          example: 65
+          description: Температура GPU (°C)
+        powerUsage:
+          type: integer
+          example: 250
+          description: Потребление энергии (W)
+        powerLimit:
+          type: integer
+          example: 450
+          description: Лимит мощности (W)
+        gpuClock:
+          type: integer
+          example: 1800
+          description: Частота GPU (MHz)
+        memClock:
+          type: integer
+          example: 10000
+          description: Частота памяти (MHz)
+
+    SystemMetrics:
+      type: object
+      description: Системные метрики
+      properties:
+        cpuUsagePercent:
+          type: number
+          format: float
+          example: 30.2
+          description: Загрузка CPU в процентах
+        memoryTotal:
+          type: integer
+          example: 65536
+          description: Всего RAM (MB)
+        memoryUsed:
+          type: integer
+          example: 20000
+          description: Использовано RAM (MB)
+        memoryFree:
+          type: integer
+          example: 45536
+          description: Свободно RAM (MB)
+        diskTotal:
+          type: integer
+          example: 1000000
+          description: Всего диска (MB)
+        diskUsed:
+          type: integer
+          example: 500000
+          description: Использовано диска (MB)
+        diskFree:
+          type: integer
+          example: 500000
+          description: Свободно диска (MB)
+        networkRX:
+          type: integer
+          example: 1048576
+          description: Получено байт
+        networkTX:
+          type: integer
+          example: 524288
+          description: Отправлено байт
+
+    OllamaMetrics:
+      type: object
+      description: Метрики Ollama
+      properties:
+        runningModels:
+          type: array
+          items:
+            $ref: '#/components/schemas/RunningModel'
+        activeRequests:
+          type: integer
+          example: 3
+        totalRequests:
+          type: integer
+          format: int64
+          example: 1500
+        avgResponseTime:
+          type: number
+          format: float
+          example: 250.5
+          description: Среднее время ответа (ms)
+        requestsPerSecond:
+          type: number
+          format: float
+          example: 12.5
+          description: Запросов в секунду
+
+    RunningModel:
+      type: object
+      description: Информация о запущенной модели
+      properties:
+        name:
+          type: string
+          example: llama3.1:70b
+        size:
+          type: integer
+          format: int64
+          example: 70000000000
+          description: Размер модели (bytes)
+        vramUsage:
+          type: integer
+          example: 18000
+          description: Использование VRAM (MB)
+        expiresAt:
+          type: string
+          format: date-time
+          description: Время истечения
+        digest:
+          type: string
+          description: Хеш модели
+
+    SessionInfo:
+      type: object
+      properties:
+        id:
+          type: string
+          example: session-abc123
+        backendId:
+          type: string
+          example: gpu-1
+        model:
+          type: string
+          example: llama3.1:70b
+        createdAt:
+          type: string
+          format: date-time
+        lastRequestAt:
+          type: string
+          format: date-time
+        requestCount:
+          type: integer
+          example: 5
+
+    ModelInfo:
+      type: object
+      properties:
+        name:
+          type: string
+          example: llama3.1:70b
+        size:
+          type: integer
+          format: int64
+        digest:
+          type: string
+        modifiedAt:
+          type: string
+          format: date-time
+
+    AgentStats:
+      type: object
+      properties:
+        totalAgents:
+          type: integer
+          example: 2
+        healthyAgents:
+          type: integer
+          example: 2
+        agents:
+          type: array
+          items:
+            type: object
+            properties:
+              id:
+                type: string
+              hostname:
+                type: string
+              status:
+                type: string
+              lastHeartbeat:
+                type: string
+                format: date-time
+
+    AuthStatus:
+      type: object
+      properties:
+        enabled:
+          type: boolean
+          example: true
+        headerName:
+          type: string
+          example: X-API-Token
+        tokenCount:
+          type: integer
+          example: 3
+
+    TokenRequest:
+      type: object
+      description: Запрос на создание токена (пустое тело)
+
+    TokenResponse:
+      type: object
+      properties:
+        success:
+          type: boolean
+          example: true
+        token:
+          type: string
+          example: a1b2c3d4e5f6g7h8i9j0k1l2m3n4o5p6q7r8s9t0u1v2w3x4y5z6
+        message:
+          type: string
+          example: Token generated successfully
+
+    TokenRevokeRequest:
+      type: object
+      properties:
+        token:
+          type: string
+          description: Токен для отзыва
+
+    RateLimitStatus:
+      type: object
+      properties:
+        tokens:
+          type: number
+          format: float
+          example: 100.0
+          description: Доступно токенов
+        max_tokens:
+          type: integer
+          example: 100
+          description: Максимальное количество токенов
+        refill_rate:
+          type: number
+          format: float
+          example: 10.0
+          description: Скорость пополнения (токенов в секунду)
+
+    Error:
+      type: object
+      properties:
+        success:
+          type: boolean
+          example: false
+        error:
+          type: string
+          example: Unauthorized: valid API token required
+        code:
+          type: string
+          description: Код ошибки (опционально)

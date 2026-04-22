@@ -7,8 +7,8 @@
 #
 # Переменные окружения:
 #   LB_HOST - хост для прослушивания (по умолчанию 0.0.0.0)
-#   LB_PORT - порт прокси (по умолчанию 8080)
-#   LB_API_PORT - порт API (по умолчанию 8081)
+#   LB_PORT - порт прокси (по умолчанию 18080)
+#   LB_API_PORT - порт API (по умолчанию 18081)
 #   BACKENDS - JSON список бэкендов или использовать BACKEND_0_HOST, BACKEND_1_HOST и т.д.
 #
 # Агент на GPU-серверах:
@@ -29,9 +29,9 @@ services:
     
     ports:
       # Порт для проксирования запросов к Ollama API
-      - "${LB_PORT:-18080}:8080"
+      - "${LB_PORT:-18080}:18080"
       # Порт для Management API
-      - "${LB_API_PORT:-18081}:8081"
+      - "${LB_API_PORT:-18081}:18081"
     
     volumes:
       # Конфигурация
@@ -40,8 +40,8 @@ services:
     environment:
       # Основные настройки
       - LB_HOST=${LB_HOST:-0.0.0.0}
-      - LB_PORT=${LB_PORT:-8080}
-      - LB_API_PORT=${LB_API_PORT:-8081}
+      - LB_PORT=${LB_PORT:-18080}
+      - LB_API_PORT=${LB_API_PORT:-18081}
       
       # Алгоритм балансировки: roundrobin, leastconn, resource-aware, model-affinity
       - LB_ALGORITHM=${LB_ALGORITHM:-resource-aware}
@@ -94,7 +94,7 @@ services:
       - ollama-lb-net
     
     healthcheck:
-      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:8081/api/v1/health"]
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:18081/api/v1/health"]
       interval: 30s
       timeout: 10s
       retries: 3
@@ -104,8 +104,10 @@ services:
       - "ollama-lb.role=balancer"
 
   # ============================================
-  # Web UI (Dashboard)
+  # Web UI (Dashboard) - Static files only
   # ============================================
+  # Web UI now serves only static files on port 18030
+  # API and WebSocket connections go directly to balancer on port 18081
   webui:
     image: nginx:alpine
     container_name: ollama-lb-webui
@@ -116,13 +118,17 @@ services:
     
     volumes:
       - ../webui/dist:/usr/share/nginx/html:ro
-      - ../webui/nginx.conf:/etc/nginx/conf.d/default.conf:ro
-    
-    depends_on:
-      - loadbalancer
+      - ../docker/webui/nginx.conf:/etc/nginx/conf.d/default.conf:ro
     
     networks:
       - ollama-lb-net
+    
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://127.0.0.1:80/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
     
     labels:
       - "ollama-lb.role=webui"
@@ -165,7 +171,7 @@ services:
   #     - "9090:9090"
   #   environment:
   #     - AGENT_ID=local-test
-  #     - BALANCER_URL=http://loadbalancer:8081
+  #     - BALANCER_URL=http://loadbalancer:18081
   #     - COLLECT_INTERVAL=5
   #     - HEARTBEAT_INTERVAL=3
   #   # Для работы с GPU требуется NVIDIA Container Toolkit

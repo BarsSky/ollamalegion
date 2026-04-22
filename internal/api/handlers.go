@@ -8,60 +8,119 @@ import (
 	"strings"
 	"time"
 
+	"github.com/gorilla/websocket"
 	"ollama-loadbalancer/internal/balancer"
 	"ollama-loadbalancer/pkg/types"
 )
 
 // Server - API сервер
 type Server struct {
-	proxy        *balancer.Proxy
-	config       *types.LoadBalancerConfig
-	mux          *http.ServeMux
+	proxy         *balancer.Proxy
+	config        *types.LoadBalancerConfig
+	mux           *http.ServeMux
 	healthChecker *balancer.HealthChecker
+	metricsBroker *MetricsBroker
+	rateLimiter   *RateLimiter
+	wsRateLimiter *RateLimiter
+	authenticator *TokenAuthenticator
+}
+
+// upgrader - апгрейдер HTTP до WebSocket
+var upgrader = websocket.Upgrader{
+	ReadBufferSize:  1024,
+	WriteBufferSize: 1024,
+	CheckOrigin: func(r *http.Request) bool {
+		// Разрешаем все origin (для production нужно ограничить)
+		return true
+	},
 }
 
 // NewServer - создание API сервера
 func NewServer(proxy *balancer.Proxy, config *types.LoadBalancerConfig, healthChecker *balancer.HealthChecker) *Server {
+	// Инициализация rate limiter с параметрами из конфига
+	rateLimiter := NewRateLimiter(config.API.RateBurst, config.API.RateLimit)
+	
+	// Отдельный rate limiter для WebSocket с более высоким лимитом
+	wsRateLimiter := NewRateLimiter(config.API.RateBurst*2, config.API.RateLimit*2)
+	
+	// Инициализация аутентификатора
+	authenticator := NewTokenAuthenticator(
+		config.Auth.Tokens,
+		config.Auth.HeaderName,
+		config.Auth.Enabled,
+	)
+	
 	s := &Server{
-		proxy:        proxy,
-		config:       config,
-		mux:          http.NewServeMux(),
+		proxy:         proxy,
+		config:        config,
+		mux:           http.NewServeMux(),
 		healthChecker: healthChecker,
+		metricsBroker: NewMetricsBroker(),
+		rateLimiter:   rateLimiter,
+		wsRateLimiter: wsRateLimiter,
+		authenticator: authenticator,
 	}
 	
 	s.setupRoutes()
+	
+	// Запуск goroutine для периодической отправки метрик
+	go s.metricsPublishLoop()
+	
 	return s
+}
+
+// metricsPublishLoop - периодическая публикация метрик в брокер
+func (s *Server) metricsPublishLoop() {
+	ticker := time.NewTicker(500 * time.Millisecond)
+	defer ticker.Stop()
+	
+	for {
+		<-ticker.C
+		state := s.proxy.GetClusterState()
+		
+		// Публикация метрик каждого бэкенда
+		for i := range state.Backends {
+			s.metricsBroker.Publish(&state.Backends[i])
+		}
+	}
 }
 
 // setupRoutes - настройка маршрутов
 func (s *Server) setupRoutes() {
-	// Health check
+	// Health check (без аутентификации и rate limiting)
 	s.mux.HandleFunc("/api/v1/health", s.healthHandler)
 	
-	// Backends
-	s.mux.HandleFunc("/api/v1/backends", s.backendsHandler)
-	s.mux.HandleFunc("/api/v1/backends/", s.backendHandler)
+	// Auth endpoints (требуют токен, кроме health)
+	s.mux.Handle("/api/v1/auth/status", AuthMiddleware(RateLimitMiddleware(AuthStatusHandler(s.authenticator), s.rateLimiter), s.authenticator))
+	s.mux.Handle("/api/v1/auth/token", AuthMiddleware(RateLimitMiddleware(TokenManagementHandler(s.authenticator), s.rateLimiter), s.authenticator))
 	
-	// Metrics
-	s.mux.HandleFunc("/api/v1/metrics", s.metricsHandler)
-	s.mux.HandleFunc("/api/v1/metrics/", s.metricHandler)
+	// Rate limit status endpoint (публичный, без аутентификации)
+	s.mux.HandleFunc("/api/v1/ratelimit/status", RateLimitStatusHandler(s.rateLimiter))
 	
-	// Sessions
-	s.mux.HandleFunc("/api/v1/sessions", s.sessionsHandler)
+	// Backends (с аутентификацией и rate limiting)
+	s.mux.Handle("/api/v1/backends", AuthMiddleware(RateLimitMiddleware(s.backendsHandler, s.rateLimiter), s.authenticator))
+	s.mux.Handle("/api/v1/backends/", AuthMiddleware(RateLimitMiddleware(s.backendHandler, s.rateLimiter), s.authenticator))
 	
-	// Models
-	s.mux.HandleFunc("/api/v1/models", s.modelsHandler)
+	// Metrics (с аутентификацией и rate limiting)
+	s.mux.Handle("/api/v1/metrics", AuthMiddleware(RateLimitMiddleware(s.metricsHandler, s.rateLimiter), s.authenticator))
+	s.mux.Handle("/api/v1/metrics/", AuthMiddleware(RateLimitMiddleware(s.metricHandler, s.rateLimiter), s.authenticator))
 	
-	// Cluster state
-	s.mux.HandleFunc("/api/v1/cluster", s.clusterHandler)
+	// Sessions (с аутентификацией и rate limiting)
+	s.mux.Handle("/api/v1/sessions", AuthMiddleware(RateLimitMiddleware(s.sessionsHandler, s.rateLimiter), s.authenticator))
 	
-	// Agents endpoints
-	s.mux.HandleFunc("/api/v1/agents/register", s.agentRegisterHandler)
-	s.mux.HandleFunc("/api/v1/agents/metrics", s.agentMetricsHandler)
-	s.mux.HandleFunc("/api/v1/agents/heartbeat", s.agentHeartbeatHandler)
+	// Models (с аутентификацией и rate limiting)
+	s.mux.Handle("/api/v1/models", AuthMiddleware(RateLimitMiddleware(s.modelsHandler, s.rateLimiter), s.authenticator))
 	
-	// WebSocket
-	s.mux.HandleFunc("/ws/metrics", s.wsMetricsHandler)
+	// Cluster state (с аутентификацией и rate limiting)
+	s.mux.Handle("/api/v1/cluster", AuthMiddleware(RateLimitMiddleware(s.clusterHandler, s.rateLimiter), s.authenticator))
+	
+	// Agents endpoints (с аутентификацией и rate limiting)
+	s.mux.Handle("/api/v1/agents/register", AuthMiddleware(RateLimitMiddleware(s.agentRegisterHandler, s.rateLimiter), s.authenticator))
+	s.mux.Handle("/api/v1/agents/metrics", AuthMiddleware(RateLimitMiddleware(s.agentMetricsHandler, s.rateLimiter), s.authenticator))
+	s.mux.Handle("/api/v1/agents/heartbeat", AuthMiddleware(RateLimitMiddleware(s.agentHeartbeatHandler, s.rateLimiter), s.authenticator))
+	
+	// WebSocket (с аутентификацией и отдельным rate limiting)
+	s.mux.Handle("/ws/metrics", AuthMiddleware(RateLimitMiddleware(s.wsMetricsHandler, s.wsRateLimiter), s.authenticator))
 }
 
 // ServeHTTP - обработка HTTP запросов
@@ -134,18 +193,47 @@ func (s *Server) backendHandler(w http.ResponseWriter, r *http.Request) {
 func (s *Server) listBackends(w http.ResponseWriter, r *http.Request) {
 	backends := make([]map[string]interface{}, 0)
 	
-	// Получение состояния кластера
+	// Получение всех бэкендов из прокси
+	allBackends := s.proxy.GetAllBackends()
+	
+	// Получение метрик из состояния кластера
 	state := s.proxy.GetClusterState()
 	
-	for _, metrics := range state.Backends {
-		backend := map[string]interface{}{
-			"id":        metrics.ID,
-			"timestamp": metrics.Timestamp,
-			"gpu":       metrics.GPU,
-			"system":    metrics.System,
-			"ollama":    metrics.Ollama,
+	// Создание карты метрик для быстрого доступа
+	metricsMap := make(map[string]*types.BackendMetrics)
+	for i := range state.Backends {
+		metricsMap[state.Backends[i].ID] = &state.Backends[i]
+	}
+	
+	// Формирование ответа для каждого бэкенда
+	for _, backend := range allBackends {
+		backendData := map[string]interface{}{
+			"id":                backend.ID,
+			"name":              backend.Name,
+			"host":              backend.Host,
+			"ollamaPort":        backend.OllamaPort,
+			"agentPort":         backend.AgentPort,
+			"weight":            backend.Weight,
+			"maxConcurrentReqs": backend.MaxConcurrentReqs,
+			"labels":            backend.Labels,
+			"status":            backend.Status,
 		}
-		backends = append(backends, backend)
+		
+		// Добавление метрик если они доступны
+		if metrics, ok := metricsMap[backend.ID]; ok {
+			backendData["timestamp"] = metrics.Timestamp
+			backendData["gpu"] = metrics.GPU
+			backendData["system"] = metrics.System
+			backendData["ollama"] = metrics.Ollama
+		} else {
+			// Пустые метрики если данные недоступны
+			backendData["timestamp"] = time.Time{}
+			backendData["gpu"] = types.GPUMetrics{}
+			backendData["system"] = types.SystemMetrics{}
+			backendData["ollama"] = types.OllamaMetrics{}
+		}
+		
+		backends = append(backends, backendData)
 	}
 	
 	s.writeJSON(w, http.StatusOK, map[string]interface{}{
@@ -597,8 +685,71 @@ func (s *Server) agentHeartbeatHandler(w http.ResponseWriter, r *http.Request) {
 
 // wsMetricsHandler - WebSocket для real-time метрик
 func (s *Server) wsMetricsHandler(w http.ResponseWriter, r *http.Request) {
-	// TODO: реализация WebSocket
-	http.Error(w, "WebSocket not implemented", http.StatusNotImplemented)
+	// Upgrade HTTP соединения до WebSocket
+	conn, err := upgrader.Upgrade(w, r, nil)
+	if err != nil {
+		fmt.Printf("WebSocket upgrade error: %v\n", err)
+		return
+	}
+	defer conn.Close()
+	
+	// Генерация уникального ID клиента
+	clientID := fmt.Sprintf("client-%d", time.Now().UnixNano())
+	
+	// Канал для сигнала об отключении
+	done := make(chan struct{})
+	defer close(done)
+	
+	// Подписка на обновления метрик
+	metricsChan := s.metricsBroker.Subscribe(clientID, done)
+	defer s.metricsBroker.Unsubscribe(clientID)
+	
+	// Канал для ошибок
+	errChan := make(chan error, 1)
+	
+	// Goroutine для чтения сообщений от клиента (ping/pong)
+	go func() {
+		for {
+			_, _, err := conn.ReadMessage()
+			if err != nil {
+				errChan <- err
+				return
+			}
+		}
+	}()
+	
+	// Отправка начального состояния кластера
+	initialState := s.metricsBroker.GetClusterState(s.proxy)
+	if err := conn.WriteJSON(initialState); err != nil {
+		fmt.Printf("Failed to send initial state: %v\n", err)
+		return
+	}
+	
+	// Основной цикл отправки метрик
+	for {
+		select {
+		case data, ok := <-metricsChan:
+			if !ok {
+				// Канал закрыт, клиент отписан
+				return
+			}
+			
+			// Отправка метрик через WebSocket
+			if err := conn.WriteMessage(websocket.TextMessage, data); err != nil {
+				fmt.Printf("Failed to send metrics: %v\n", err)
+				return
+			}
+			
+		case err := <-errChan:
+			// Ошибка чтения (клиент отключился)
+			fmt.Printf("WebSocket read error: %v\n", err)
+			return
+			
+		case <-done:
+			// Сигнал об отключении
+			return
+		}
+	}
 }
 
 // writeJSON - запись JSON ответа

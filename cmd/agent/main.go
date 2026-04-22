@@ -14,7 +14,7 @@ import (
 
 var (
 	agentID         = flag.String("id", "", "Agent identifier")
-	balancerURL     = flag.String("balancer", "http://localhost:8081", "Balancer URL")
+	balancerURL     = flag.String("balancer", "http://localhost:18081", "Balancer URL")
 	metricsPort     = flag.Int("metrics-port", 9090, "Local metrics port")
 	collectInterval = flag.Int("collect-interval", 5, "Metrics collection interval (seconds)")
 	heartbeatInterval = flag.Int("heartbeat-interval", 3, "Heartbeat interval (seconds)")

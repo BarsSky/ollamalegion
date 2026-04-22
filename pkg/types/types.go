@@ -132,6 +132,22 @@ type DiskLimits struct {
 	MinFreeMB uint64 `json:"minFreeMB"` // Минимум свободного места (MB)
 }
 
+// TLSConfig - конфигурация TLS/SSL
+type TLSConfig struct {
+	Enabled    bool   `json:"enabled"`    // включение TLS
+	CertFile   string `json:"certFile"`   // путь к SSL сертификату
+	KeyFile    string `json:"keyFile"`    // путь к SSL ключу
+	MinVersion string `json:"minVersion"` // минимальная версия TLS (TLS12, TLS13)
+	AutoCert   bool   `json:"autoCert"`   // автоматическая генерация self-signed сертификата
+}
+
+// AuthConfig - конфигурация аутентификации API
+type AuthConfig struct {
+	Enabled    bool     `json:"enabled"`    // включение аутентификации
+	Tokens     []string `json:"tokens"`     // список валидных API токенов
+	HeaderName string   `json:"headerName"` // имя заголовка для токена (по умолчанию "X-API-Token")
+}
+
 // LoadBalancerConfig - конфигурация балансировщика
 type LoadBalancerConfig struct {
 	LoadBalancer LoadBalancerSettings `json:"loadBalancer"`
@@ -139,6 +155,15 @@ type LoadBalancerConfig struct {
 	Balancing    BalancingSettings    `json:"balancing"`
 	Resources    ResourceLimits       `json:"resources"`
 	Logging      LoggingSettings      `json:"logging"`
+	API          APISettings          `json:"api"`
+	TLS          TLSConfig            `json:"tls"`
+	Auth         AuthConfig           `json:"auth"`
+}
+
+// APISettings - настройки API
+type APISettings struct {
+	RateLimit       float64 `json:"rateLimit"`       // запросов в секунду
+	RateBurst       float64 `json:"rateBurst"`       // максимальное количество токенов (burst)
 }
 
 // LoadBalancerSettings - настройки балансировщика
@@ -146,6 +171,8 @@ type LoadBalancerSettings struct {
 	Host    string `json:"host"`
 	Port    int    `json:"port"`
 	APIPort int    `json:"apiPort"`
+	TLSHost string `json:"tlsHost"` // хост для HTTPS (если отличается от Host)
+	TLSPort int    `json:"tlsPort"` // порт для HTTPS
 }
 
 // BalancingSettings - настройки балансировки

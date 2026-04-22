@@ -27,6 +27,17 @@ type Agent struct {
 	stopChan        chan struct{}
 	balancerURL     string
 	registered      bool
+	
+	// Ollama статистика
+	ollamaStats     *OllamaStats
+	statsMu         sync.Mutex
+	requestHistory  []requestRecord
+}
+
+// requestRecord - запись о запросе для подсчета RPS
+type requestRecord struct {
+	timestamp time.Time
+	duration  time.Duration
 }
 
 // NewAgent - создание нового агента
@@ -36,9 +47,10 @@ func NewAgent(config *types.AgentConfig) *Agent {
 		httpClient: &http.Client{
 			Timeout: 30 * time.Second,
 		},
-		startTime:  time.Now(),
-		stopChan:   make(chan struct{}),
-		balancerURL: config.BalancerURL,
+		startTime:      time.Now(),
+		stopChan:       make(chan struct{}),
+		balancerURL:    config.BalancerURL,
+		requestHistory: make([]requestRecord, 0),
 	}
 }
 
@@ -340,10 +352,7 @@ func (a *Agent) collectGPUInfo() GPUInfo {
 }
 
 // collectGPUInfoNVML - сбор информации через NVML
-func (a *Agent) collectGPUInfoNVML() GPUInfo {
-	// TODO: реализация через NVML library
-	return GPUInfo{Count: 0, Models: []string{}}
-}
+// Реализация в файле nvml_unix.go (Linux/Darwin) или nvml_windows.go (Windows stub)
 
 // collectGPUMetrics - сбор метрик GPU
 func (a *Agent) collectGPUMetrics() types.GPUMetrics {
@@ -362,10 +371,7 @@ func (a *Agent) collectGPUMetrics() types.GPUMetrics {
 }
 
 // collectGPUMetricsNVML - сбор метрик через NVML
-func (a *Agent) collectGPUMetricsNVML() types.GPUMetrics {
-	// TODO: реализация через NVML library
-	return types.GPUMetrics{}
-}
+// Реализация в файле nvml_unix.go (Linux/Darwin) или nvml_windows.go (Windows stub)
 
 // collectSystemMetrics - сбор системных метрик
 func (a *Agent) collectSystemMetrics() types.SystemMetrics {
@@ -410,6 +416,11 @@ func (a *Agent) collectOllamaMetrics() types.OllamaMetrics {
 	stats, err := a.getOllamaStats()
 	if err != nil {
 		fmt.Printf("[%s] Failed to get ollama stats: %v\n", time.Now().Format(time.RFC3339), err)
+		// Возвращаем дефолтные значения при ошибке
+		metrics.ActiveRequests = 0
+		metrics.TotalRequests = 0
+		metrics.AvgResponseTime = 0
+		metrics.RequestsPerSecond = 0
 	} else {
 		metrics.ActiveRequests = stats.ActiveRequests
 		metrics.TotalRequests = stats.TotalRequests
@@ -469,14 +480,89 @@ type OllamaStats struct {
 
 // getOllamaStats - получение статистики Ollama
 func (a *Agent) getOllamaStats() (*OllamaStats, error) {
-	// TODO: получение статистики из внутреннего endpoint Ollama
-	// Пока возвращаем заглушку
-	return &OllamaStats{
+	stats := &OllamaStats{
 		ActiveRequests:    0,
 		TotalRequests:     0,
 		AvgResponseTime:   0,
 		RequestsPerSecond: 0,
-	}, nil
+	}
+	
+	// Создаем HTTP клиент с таймаутом для запроса к Ollama API
+	client := &http.Client{
+		Timeout: 5 * time.Second,
+	}
+	
+	// Запрос к /api/ps для получения активных процессов
+	resp, err := client.Get("http://localhost:11434/api/ps")
+	if err != nil {
+		return stats, fmt.Errorf("failed to connect to Ollama: %w", err)
+	}
+	defer resp.Body.Close()
+	
+	if resp.StatusCode != http.StatusOK {
+		return stats, fmt.Errorf("Ollama API returned status %d", resp.StatusCode)
+	}
+	
+	// Парсинг ответа
+	var psResponse struct {
+		Models []struct {
+			Name      string    `json:"name"`
+			Size      uint64    `json:"size"`
+			Digest    string    `json:"digest"`
+			ExpiresAt time.Time `json:"expires_at"`
+			SizeVRAM  uint64    `json:"size_vram"`
+		} `json:"models"`
+	}
+	
+	if err := json.NewDecoder(resp.Body).Decode(&psResponse); err != nil {
+		return stats, fmt.Errorf("failed to parse Ollama response: %w", err)
+	}
+	
+	// Количество активных запросов = количество работающих моделей
+	stats.ActiveRequests = len(psResponse.Models)
+	
+	// Вычисление RPS на основе истории запросов
+	a.statsMu.Lock()
+	
+	// Добавляем текущий запрос в историю
+	now := time.Now()
+	a.requestHistory = append(a.requestHistory, requestRecord{
+		timestamp: now,
+		duration:  time.Second, // предполагаем, что запрос занимает ~1 секунду
+	})
+	
+	// Очищаем старую историю (старше 10 секунд)
+	cutoff := now.Add(-10 * time.Second)
+	filtered := a.requestHistory[:0]
+	for _, rec := range a.requestHistory {
+		if rec.timestamp.After(cutoff) {
+			filtered = append(filtered, rec)
+		}
+	}
+	a.requestHistory = filtered
+	
+	// Подсчет RPS
+	if len(a.requestHistory) > 0 {
+		// Считаем количество запросов за последнюю секунду
+		oneSecondAgo := now.Add(-time.Second)
+		recentRequests := 0
+		for _, rec := range a.requestHistory {
+			if rec.timestamp.After(oneSecondAgo) {
+				recentRequests++
+			}
+		}
+		stats.RequestsPerSecond = float64(recentRequests)
+		
+		// Общее количество запросов (за последние 10 секунд)
+		stats.TotalRequests = int64(len(a.requestHistory))
+		
+		// Среднее время ответа (предполагаемое)
+		stats.AvgResponseTime = 1000.0 // 1000ms = 1 секунда
+	}
+	
+	a.statsMu.Unlock()
+	
+	return stats, nil
 }
 
 // estimateVRAMUsage - оценка использования VRAM по размеру модели

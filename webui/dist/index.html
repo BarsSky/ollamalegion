@@ -1,0 +1,1086 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Ollama Load Balancer - Dashboard</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, sans-serif;
+            background: linear-gradient(135deg, #1a1a2e 0%, #16213e 100%);
+            min-height: 100vh;
+            color: #fff;
+        }
+        
+        .container {
+            max-width: 1400px;
+            margin: 0 auto;
+            padding: 20px;
+        }
+        
+        header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 20px 0;
+            border-bottom: 1px solid rgba(255,255,255,0.1);
+            margin-bottom: 30px;
+        }
+        
+        .logo {
+            display: flex;
+            align-items: center;
+            gap: 15px;
+        }
+        
+        .logo h1 {
+            font-size: 24px;
+            font-weight: 600;
+        }
+        
+        .logo-icon {
+            width: 40px;
+            height: 40px;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            border-radius: 10px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 20px;
+        }
+        
+        .status-badge {
+            padding: 8px 16px;
+            border-radius: 20px;
+            font-size: 14px;
+            font-weight: 500;
+        }
+        
+        .status-healthy {
+            background: rgba(34, 197, 94, 0.2);
+            color: #22c55e;
+            border: 1px solid #22c55e;
+        }
+        
+        .status-unhealthy {
+            background: rgba(239, 68, 68, 0.2);
+            color: #ef4444;
+            border: 1px solid #ef4444;
+        }
+        
+        .dashboard {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+            gap: 20px;
+            margin-bottom: 30px;
+        }
+        
+        .card {
+            background: rgba(255,255,255,0.05);
+            border-radius: 16px;
+            padding: 24px;
+            border: 1px solid rgba(255,255,255,0.1);
+            backdrop-filter: blur(10px);
+        }
+        
+        .card-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 20px;
+        }
+        
+        .card-title {
+            font-size: 14px;
+            color: rgba(255,255,255,0.6);
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+        }
+        
+        .card-value {
+            font-size: 36px;
+            font-weight: 700;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+        }
+        
+        .card-subtitle {
+            font-size: 14px;
+            color: rgba(255,255,255,0.4);
+            margin-top: 8px;
+        }
+        
+        .backends-list {
+            grid-column: 1 / -1;
+        }
+        
+        .backend-item {
+            display: grid;
+            grid-template-columns: 1fr 2fr 1fr 1fr 1fr;
+            padding: 16px;
+            border-bottom: 1px solid rgba(255,255,255,0.1);
+            align-items: center;
+        }
+        
+        .backend-item:last-child {
+            border-bottom: none;
+        }
+        
+        .backend-name {
+            font-weight: 600;
+        }
+        
+        .backend-host {
+            color: rgba(255,255,255,0.5);
+            font-size: 14px;
+        }
+        
+        .metric-bar {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+        
+        .bar {
+            flex: 1;
+            height: 8px;
+            background: rgba(255,255,255,0.1);
+            border-radius: 4px;
+            overflow: hidden;
+        }
+        
+        .bar-fill {
+            height: 100%;
+            border-radius: 4px;
+            transition: width 0.5s ease;
+        }
+        
+        .bar-fill.low { background: #22c55e; }
+        .bar-fill.medium { background: #eab308; }
+        .bar-fill.high { background: #ef4444; }
+        
+        .metric-value {
+            min-width: 50px;
+            text-align: right;
+            font-weight: 500;
+        }
+        
+        .models-list {
+            margin-top: 16px;
+        }
+        
+        .model-item {
+            display: flex;
+            justify-content: space-between;
+            padding: 12px 0;
+            border-bottom: 1px solid rgba(255,255,255,0.05);
+        }
+        
+        .model-name {
+            font-family: monospace;
+            font-size: 14px;
+        }
+        
+        .model-size {
+            color: rgba(255,255,255,0.5);
+            font-size: 13px;
+        }
+        
+        .loading {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            padding: 40px;
+        }
+        
+        .spinner {
+            width: 40px;
+            height: 40px;
+            border: 3px solid rgba(255,255,255,0.1);
+            border-top-color: #667eea;
+            border-radius: 50%;
+            animation: spin 1s linear infinite;
+        }
+        
+        @keyframes spin {
+            to { transform: rotate(360deg); }
+        }
+        
+        .refresh-btn {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            border: none;
+            padding: 10px 20px;
+            border-radius: 8px;
+            color: white;
+            cursor: pointer;
+            font-size: 14px;
+            transition: opacity 0.2s;
+        }
+        
+        .refresh-btn:hover {
+            opacity: 0.8;
+        }
+        
+        .error-message {
+            background: rgba(239, 68, 68, 0.2);
+            border: 1px solid #ef4444;
+            border-radius: 8px;
+            padding: 16px;
+            color: #ef4444;
+            margin-bottom: 20px;
+        }
+        
+        .grid-3 {
+            display: grid;
+            grid-template-columns: repeat(3, 1fr);
+            gap: 15px;
+        }
+        
+        .small-stat {
+            text-align: center;
+            padding: 15px;
+            background: rgba(255,255,255,0.03);
+            border-radius: 12px;
+        }
+        
+        .small-stat-value {
+            font-size: 24px;
+            font-weight: 600;
+        }
+        
+        .small-stat-label {
+            font-size: 12px;
+            color: rgba(255,255,255,0.5);
+            margin-top: 5px;
+        }
+        
+        /* Agent Management Styles */
+        .agent-management {
+            grid-column: 1 / -1;
+        }
+        
+        .agent-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 20px;
+        }
+        
+        .add-agent-btn {
+            background: linear-gradient(135deg, #22c55e 0%, #16a34a 100%);
+            border: none;
+            padding: 10px 20px;
+            border-radius: 8px;
+            color: white;
+            cursor: pointer;
+            font-size: 14px;
+            transition: opacity 0.2s;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+        
+        .add-agent-btn:hover {
+            opacity: 0.8;
+        }
+        
+        .agent-table {
+            width: 100%;
+            border-collapse: collapse;
+        }
+        
+        .agent-table th {
+            text-align: left;
+            padding: 12px 16px;
+            color: rgba(255,255,255,0.6);
+            font-size: 12px;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+            border-bottom: 1px solid rgba(255,255,255,0.1);
+        }
+        
+        .agent-table td {
+            padding: 16px;
+            border-bottom: 1px solid rgba(255,255,255,0.05);
+            vertical-align: middle;
+        }
+        
+        .agent-table tr:last-child td {
+            border-bottom: none;
+        }
+        
+        .agent-status {
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+            padding: 4px 10px;
+            border-radius: 12px;
+            font-size: 12px;
+            font-weight: 500;
+        }
+        
+        .agent-status-healthy {
+            background: rgba(34, 197, 94, 0.2);
+            color: #22c55e;
+        }
+        
+        .agent-status-unhealthy {
+            background: rgba(239, 68, 68, 0.2);
+            color: #ef4444;
+        }
+        
+        .status-dot {
+            width: 8px;
+            height: 8px;
+            border-radius: 50%;
+            background: currentColor;
+        }
+        
+        .agent-actions {
+            display: flex;
+            gap: 8px;
+        }
+        
+        .action-btn {
+            padding: 6px 12px;
+            border-radius: 6px;
+            border: none;
+            cursor: pointer;
+            font-size: 13px;
+            transition: opacity 0.2s;
+        }
+        
+        .edit-btn {
+            background: rgba(102, 126, 234, 0.2);
+            color: #667eea;
+            border: 1px solid #667eea;
+        }
+        
+        .delete-btn {
+            background: rgba(239, 68, 68, 0.2);
+            color: #ef4444;
+            border: 1px solid #ef4444;
+        }
+        
+        .action-btn:hover {
+            opacity: 0.8;
+        }
+        
+        /* Modal Styles */
+        .modal-overlay {
+            display: none;
+            position: fixed;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background: rgba(0, 0, 0, 0.7);
+            z-index: 1000;
+            align-items: center;
+            justify-content: center;
+        }
+        
+        .modal-overlay.active {
+            display: flex;
+        }
+        
+        .modal {
+            background: linear-gradient(135deg, #1a1a2e 0%, #16213e 100%);
+            border-radius: 16px;
+            padding: 32px;
+            width: 100%;
+            max-width: 500px;
+            max-height: 90vh;
+            overflow-y: auto;
+            border: 1px solid rgba(255,255,255,0.1);
+        }
+        
+        .modal-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 24px;
+        }
+        
+        .modal-title {
+            font-size: 20px;
+            font-weight: 600;
+        }
+        
+        .modal-close {
+            background: none;
+            border: none;
+            color: rgba(255,255,255,0.5);
+            cursor: pointer;
+            font-size: 24px;
+            padding: 4px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+        
+        .modal-close:hover {
+            color: white;
+        }
+        
+        .form-group {
+            margin-bottom: 20px;
+        }
+        
+        .form-label {
+            display: block;
+            margin-bottom: 8px;
+            font-size: 14px;
+            color: rgba(255,255,255,0.8);
+        }
+        
+        .form-input {
+            width: 100%;
+            padding: 12px 16px;
+            border-radius: 8px;
+            border: 1px solid rgba(255,255,255,0.1);
+            background: rgba(255,255,255,0.05);
+            color: white;
+            font-size: 14px;
+            transition: border-color 0.2s;
+        }
+        
+        .form-input:focus {
+            outline: none;
+            border-color: #667eea;
+        }
+        
+        .form-input::placeholder {
+            color: rgba(255,255,255,0.3);
+        }
+        
+        .form-row {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 16px;
+        }
+        
+        .modal-footer {
+            display: flex;
+            gap: 12px;
+            justify-content: flex-end;
+            margin-top: 24px;
+        }
+        
+        .cancel-btn {
+            background: rgba(255,255,255,0.1);
+            border: 1px solid rgba(255,255,255,0.2);
+            padding: 12px 24px;
+            border-radius: 8px;
+            color: white;
+            cursor: pointer;
+            font-size: 14px;
+            transition: opacity 0.2s;
+        }
+        
+        .cancel-btn:hover {
+            opacity: 0.8;
+        }
+        
+        .submit-btn {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            border: none;
+            padding: 12px 24px;
+            border-radius: 8px;
+            color: white;
+            cursor: pointer;
+            font-size: 14px;
+            transition: opacity 0.2s;
+        }
+        
+        .submit-btn:hover {
+            opacity: 0.8;
+        }
+        
+        .submit-btn:disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
+        }
+        
+        /* Toast Notifications */
+        .toast-container {
+            position: fixed;
+            top: 20px;
+            right: 20px;
+            z-index: 2000;
+            display: flex;
+            flex-direction: column;
+            gap: 10px;
+        }
+        
+        .toast {
+            padding: 16px 20px;
+            border-radius: 8px;
+            font-size: 14px;
+            font-weight: 500;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            animation: slideIn 0.3s ease;
+            max-width: 350px;
+        }
+        
+        @keyframes slideIn {
+            from {
+                transform: translateX(100%);
+                opacity: 0;
+            }
+            to {
+                transform: translateX(0);
+                opacity: 1;
+            }
+        }
+        
+        .toast-success {
+            background: rgba(34, 197, 94, 0.2);
+            border: 1px solid #22c55e;
+            color: #22c55e;
+        }
+        
+        .toast-error {
+            background: rgba(239, 68, 68, 0.2);
+            border: 1px solid #ef4444;
+            color: #ef4444;
+        }
+        
+        .empty-state {
+            text-align: center;
+            padding: 40px;
+            color: rgba(255,255,255,0.5);
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <header>
+            <div class="logo">
+                <div class="logo-icon">⚖️</div>
+                <div>
+                    <h1>Ollama Load Balancer</h1>
+                    <p style="color: rgba(255,255,255,0.5); font-size: 14px;">Dashboard</p>
+                </div>
+            </div>
+            <div style="display: flex; gap: 15px; align-items: center;">
+                <span id="statusBadge" class="status-badge status-healthy">Connected</span>
+                <button class="refresh-btn" onclick="refreshData()">⟳ Refresh</button>
+                <button class="add-agent-btn" onclick="openAddModal()">+ Добавить агент</button>
+            </div>
+        </header>
+        
+        <div id="errorContainer"></div>
+        
+        <div class="dashboard">
+            <div class="card">
+                <div class="card-header">
+                    <span class="card-title">Total Backends</span>
+                </div>
+                <div class="card-value" id="totalBackends">-</div>
+                <div class="card-subtitle">
+                    <span id="healthyBackends">-</span> healthy
+                </div>
+            </div>
+            
+            <div class="card">
+                <div class="card-header">
+                    <span class="card-title">Active Requests</span>
+                </div>
+                <div class="card-value" id="activeRequests">-</div>
+                <div class="card-subtitle">Across all backends</div>
+            </div>
+            
+            <div class="card">
+                <div class="card-header">
+                    <span class="card-title">Cluster Status</span>
+                </div>
+                <div class="grid-3" style="margin-top: 15px;">
+                    <div class="small-stat">
+                        <div class="small-stat-value" id="avgGpuUsage">-</div>
+                        <div class="small-stat-label">Avg GPU</div>
+                    </div>
+                    <div class="small-stat">
+                        <div class="small-stat-value" id="avgVramUsage">-</div>
+                        <div class="small-stat-label">Avg VRAM</div>
+                    </div>
+                    <div class="small-stat">
+                        <div class="small-stat-value" id="avgCpuUsage">-</div>
+                        <div class="small-stat-label">Avg CPU</div>
+                    </div>
+                </div>
+            </div>
+            
+            <div class="card agent-management">
+                <div class="agent-header">
+                    <span class="card-title">Управление агентами</span>
+                </div>
+                <table class="agent-table">
+                    <thead>
+                        <tr>
+                            <th>ID</th>
+                            <th>Название</th>
+                            <th>Хост</th>
+                            <th>Порт</th>
+                            <th>Вес</th>
+                            <th>Статус</th>
+                            <th>Действия</th>
+                        </tr>
+                    </thead>
+                    <tbody id="agentsTableBody">
+                        <tr>
+                            <td colspan="7" class="empty-state">Загрузка...</td>
+                        </tr>
+                    </tbody>
+                </table>
+            </div>
+            
+            <div class="card backends-list">
+                <div class="card-header">
+                    <span class="card-title">Backend Servers</span>
+                </div>
+                <div id="backendsContainer">
+                    <div class="loading">
+                        <div class="spinner"></div>
+                    </div>
+                </div>
+            </div>
+            
+            <div class="card">
+                <div class="card-header">
+                    <span class="card-title">Running Models</span>
+                </div>
+                <div id="modelsContainer" class="models-list">
+                    <div class="loading">
+                        <div class="spinner"></div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+    
+    <!-- Add/Edit Agent Modal -->
+    <div id="agentModal" class="modal-overlay">
+        <div class="modal">
+            <div class="modal-header">
+                <h2 class="modal-title" id="modalTitle">Добавить агент</h2>
+                <button class="modal-close" onclick="closeModal()">&times;</button>
+            </div>
+            <form id="agentForm" onsubmit="submitAgentForm(event)">
+                <input type="hidden" id="agentId" value="">
+                <div class="form-group">
+                    <label class="form-label" for="agentName">Название</label>
+                    <input type="text" class="form-input" id="agentName" placeholder="my-agent" required>
+                </div>
+                <div class="form-group">
+                    <label class="form-label" for="agentHost">IP адрес или хост *</label>
+                    <input type="text" class="form-input" id="agentHost" placeholder="192.168.1.100" required>
+                </div>
+                <div class="form-row">
+                    <div class="form-group">
+                        <label class="form-label" for="ollamaPort">Порт Ollama</label>
+                        <input type="number" class="form-input" id="ollamaPort" value="11434" min="1" max="65535">
+                    </div>
+                    <div class="form-group">
+                        <label class="form-label" for="agentPort">Порт агента</label>
+                        <input type="number" class="form-input" id="agentPort" value="9090" min="1" max="65535">
+                    </div>
+                </div>
+                <div class="form-row">
+                    <div class="form-group">
+                        <label class="form-label" for="agentWeight">Вес</label>
+                        <input type="number" class="form-input" id="agentWeight" value="1" min="1">
+                    </div>
+                    <div class="form-group">
+                        <label class="form-label" for="maxConcurrentRequests">Макс. запросов</label>
+                        <input type="number" class="form-input" id="maxConcurrentRequests" value="10" min="1">
+                    </div>
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="cancel-btn" onclick="closeModal()">Отмена</button>
+                    <button type="submit" class="submit-btn" id="submitBtn">Добавить</button>
+                </div>
+            </form>
+        </div>
+    </div>
+    
+    <!-- Toast Notifications Container -->
+    <div id="toastContainer" class="toast-container"></div>
+    
+    <script>
+        const API_BASE = '/api/v1';
+        let refreshInterval;
+        
+        async function fetchJSON(url) {
+            const response = await fetch(url);
+            if (!response.ok) {
+                throw new Error(`HTTP ${response.status}`);
+            }
+            return response.json();
+        }
+        
+        function showError(message) {
+            document.getElementById('errorContainer').innerHTML = 
+                `<div class="error-message">⚠️ ${message}</div>`;
+        }
+        
+        function clearError() {
+            document.getElementById('errorContainer').innerHTML = '';
+        }
+        
+        function updateStatus(healthy) {
+            const badge = document.getElementById('statusBadge');
+            if (healthy) {
+                badge.className = 'status-badge status-healthy';
+                badge.textContent = 'Connected';
+            } else {
+                badge.className = 'status-badge status-unhealthy';
+                badge.textContent = 'Disconnected';
+            }
+        }
+        
+        function formatBytes(bytes) {
+            if (bytes === 0) return '0 B';
+            const k = 1024;
+            const sizes = ['B', 'KB', 'MB', 'GB', 'TB'];
+            const i = Math.floor(Math.log(bytes) / Math.log(k));
+            return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
+        }
+        
+        function getBarClass(percent) {
+            if (percent < 60) return 'low';
+            if (percent < 80) return 'medium';
+            return 'high';
+        }
+        
+        async function refreshData() {
+            try {
+                clearError();
+                
+                // Fetch cluster state
+                const state = await fetchJSON(`${API_BASE}/cluster`);
+                
+                // Update summary cards
+                document.getElementById('totalBackends').textContent = state.totalBackends;
+                document.getElementById('healthyBackends').textContent = state.healthyBackends;
+                document.getElementById('activeRequests').textContent = state.activeRequests || '-';
+                
+                // Calculate averages
+                if (state.backends && state.backends.length > 0) {
+                    let totalGpu = 0, totalVram = 0, totalCpu = 0;
+                    state.backends.forEach(b => {
+                        totalGpu += b.gpu?.usagePercent || 0;
+                        totalCpu += b.system?.cpuUsagePercent || 0;
+                        if (b.gpu?.memoryTotal > 0) {
+                            totalVram += (b.gpu.memoryUsed / b.gpu.memoryTotal) * 100;
+                        }
+                    });
+                    
+                    document.getElementById('avgGpuUsage').textContent = 
+                        Math.round(totalGpu / state.backends.length) + '%';
+                    document.getElementById('avgVramUsage').textContent = 
+                        Math.round(totalVram / state.backends.length) + '%';
+                    document.getElementById('avgCpuUsage').textContent = 
+                        Math.round(totalCpu / state.backends.length) + '%';
+                }
+                
+                // Update backends list
+                const backendsContainer = document.getElementById('backendsContainer');
+                if (state.backends && state.backends.length > 0) {
+                    backendsContainer.innerHTML = state.backends.map(b => `
+                        <div class="backend-item">
+                            <div>
+                                <div class="backend-name">${b.id}</div>
+                                <div class="backend-host">${b.timestamp ? new Date(b.timestamp).toLocaleTimeString() : ''}</div>
+                            </div>
+                            <div class="metric-bar">
+                                <span>GPU</span>
+                                <div class="bar">
+                                    <div class="bar-fill ${getBarClass(b.gpu?.usagePercent || 0)}" 
+                                         style="width: ${b.gpu?.usagePercent || 0}%"></div>
+                                </div>
+                                <span class="metric-value">${Math.round(b.gpu?.usagePercent || 0)}%</span>
+                            </div>
+                            <div class="metric-bar">
+                                <span>VRAM</span>
+                                <div class="bar">
+                                    <div class="bar-fill ${getBarClass((b.gpu?.memoryUsed / b.gpu?.memoryTotal * 100) || 0)}" 
+                                         style="width: ${Math.round((b.gpu?.memoryUsed / b.gpu?.memoryTotal * 100) || 0)}%"></div>
+                                </div>
+                                <span class="metric-value">${Math.round((b.gpu?.memoryUsed / b.gpu?.memoryTotal * 100) || 0)}%</span>
+                            </div>
+                            <div class="metric-bar">
+                                <span>CPU</span>
+                                <div class="bar">
+                                    <div class="bar-fill ${getBarClass(b.system?.cpuUsagePercent || 0)}" 
+                                         style="width: ${b.system?.cpuUsagePercent || 0}%"></div>
+                                </div>
+                                <span class="metric-value">${Math.round(b.system?.cpuUsagePercent || 0)}%</span>
+                            </div>
+                            <div class="metric-bar">
+                                <span>RAM</span>
+                                <div class="bar">
+                                    <div class="bar-fill ${getBarClass((b.system?.memoryUsed / b.system?.memoryTotal * 100) || 0)}" 
+                                         style="width: ${Math.round((b.system?.memoryUsed / b.system?.memoryTotal * 100) || 0)}%"></div>
+                                </div>
+                                <span class="metric-value">${Math.round((b.system?.memoryUsed / b.system?.memoryTotal * 100) || 0)}%</span>
+                            </div>
+                        </div>
+                    `).join('');
+                } else {
+                    backendsContainer.innerHTML = '<div style="padding: 20px; text-align: center; color: rgba(255,255,255,0.5);">No backends configured</div>';
+                }
+                
+                // Update models list
+                const modelsResponse = await fetchJSON(`${API_BASE}/models`);
+                const modelsContainer = document.getElementById('modelsContainer');
+                
+                const allModels = [];
+                Object.entries(modelsResponse.models || {}).forEach(([backendId, models]) => {
+                    models.forEach(m => allModels.push({ backend: backendId, model: m }));
+                });
+                
+                if (allModels.length > 0) {
+                    modelsContainer.innerHTML = allModels.map(m => `
+                        <div class="model-item">
+                            <span class="model-name">${m.model}</span>
+                            <span class="model-size">${m.backend}</span>
+                        </div>
+                    `).join('');
+                } else {
+                    modelsContainer.innerHTML = '<div style="color: rgba(255,255,255,0.5);">No models running</div>';
+                }
+                
+                updateStatus(true);
+                
+            } catch (error) {
+                showError(`Failed to fetch data: ${error.message}`);
+                updateStatus(false);
+            }
+        }
+        
+        // Initial load
+        refreshData();
+        
+        // Auto-refresh every 5 seconds
+        refreshInterval = setInterval(refreshData, 5000);
+        
+        // Cleanup on page unload
+        window.addEventListener('beforeunload', () => {
+            clearInterval(refreshInterval);
+        });
+        
+        // Agent Management Functions
+        let isEditMode = false;
+        
+        function showToast(message, type) {
+            const container = document.getElementById('toastContainer');
+            const toast = document.createElement('div');
+            toast.className = `toast toast-${type}`;
+            toast.innerHTML = `<span>${type === 'success' ? '✓' : '✗'}</span> ${message}`;
+            container.appendChild(toast);
+            
+            setTimeout(() => {
+                toast.style.animation = 'slideIn 0.3s ease reverse';
+                setTimeout(() => toast.remove(), 300);
+            }, 3000);
+        }
+        
+        async function loadAgents() {
+            try {
+                const data = await fetchJSON(`${API_BASE}/backends`);
+                const backends = data.backends || [];
+                renderAgentsTable(backends);
+            } catch (error) {
+                console.error('Failed to load agents:', error);
+                document.getElementById('agentsTableBody').innerHTML =
+                    '<tr><td colspan="7" class="empty-state">Ошибка загрузки агентов</td></tr>';
+            }
+        }
+        
+        function renderAgentsTable(backends) {
+            const tbody = document.getElementById('agentsTableBody');
+            
+            if (!backends || backends.length === 0) {
+                tbody.innerHTML = '<tr><td colspan="7" class="empty-state">Нет настроенных агентов</td></tr>';
+                return;
+            }
+            
+            tbody.innerHTML = backends.map(b => {
+                const isHealthy = b.healthy !== undefined ? b.healthy : true;
+                return `
+                    <tr>
+                        <td><code style="font-size: 12px;">${b.id || '-'}</code></td>
+                        <td>${b.name || b.id || '-'}</td>
+                        <td>${b.host || '-'}</td>
+                        <td>${b.ollamaPort || b.agentPort || '-'}</td>
+                        <td>${b.weight || 1}</td>
+                        <td>
+                            <span class="agent-status ${isHealthy ? 'agent-status-healthy' : 'agent-status-unhealthy'}">
+                                <span class="status-dot"></span>
+                                ${isHealthy ? 'Здоров' : 'Не здоров'}
+                            </span>
+                        </td>
+                        <td>
+                            <div class="agent-actions">
+                                <button class="action-btn edit-btn" onclick="openEditModal('${b.id}')">✎</button>
+                                <button class="action-btn delete-btn" onclick="deleteAgent('${b.id}')">🗑</button>
+                            </div>
+                        </td>
+                    </tr>
+                `;
+            }).join('');
+        }
+        
+        function openAddModal() {
+            isEditMode = false;
+            document.getElementById('modalTitle').textContent = 'Добавить агент';
+            document.getElementById('submitBtn').textContent = 'Добавить';
+            document.getElementById('agentForm').reset();
+            document.getElementById('agentId').value = '';
+            document.getElementById('ollamaPort').value = '11434';
+            document.getElementById('agentPort').value = '9090';
+            document.getElementById('agentWeight').value = '1';
+            document.getElementById('maxConcurrentRequests').value = '10';
+            document.getElementById('agentModal').classList.add('active');
+        }
+        
+        function openEditModal(id) {
+            isEditMode = true;
+            document.getElementById('modalTitle').textContent = 'Редактировать агент';
+            document.getElementById('submitBtn').textContent = 'Сохранить';
+            document.getElementById('agentId').value = id;
+            
+            // Fetch backend data and populate form
+            fetchJSON(`${API_BASE}/backends`).then(data => {
+                const backends = data.backends || [];
+                const backend = backends.find(b => b.id === id);
+                if (backend) {
+                    document.getElementById('agentName').value = backend.name || '';
+                    document.getElementById('agentHost').value = backend.host || '';
+                    document.getElementById('ollamaPort').value = backend.ollamaPort || '11434';
+                    document.getElementById('agentPort').value = backend.agentPort || '9090';
+                    document.getElementById('agentWeight').value = backend.weight || '1';
+                    document.getElementById('maxConcurrentRequests').value = backend.maxConcurrentRequests || '10';
+                }
+            }).catch(err => {
+                console.error('Failed to load backend data:', err);
+                showToast('Ошибка загрузки данных агента', 'error');
+            });
+            
+            document.getElementById('agentModal').classList.add('active');
+        }
+        
+        function closeModal() {
+            document.getElementById('agentModal').classList.remove('active');
+        }
+        
+        async function submitAgentForm(event) {
+            event.preventDefault();
+            
+            const id = document.getElementById('agentId').value;
+            const data = {
+                name: document.getElementById('agentName').value,
+                host: document.getElementById('agentHost').value,
+                ollamaPort: parseInt(document.getElementById('ollamaPort').value) || 11434,
+                agentPort: parseInt(document.getElementById('agentPort').value) || 9090,
+                weight: parseInt(document.getElementById('agentWeight').value) || 1,
+                maxConcurrentRequests: parseInt(document.getElementById('maxConcurrentRequests').value) || 10
+            };
+            
+            // Generate ID if empty
+            if (!id && !data.name) {
+                data.name = `agent-${Date.now()}`;
+            }
+            
+            const submitBtn = document.getElementById('submitBtn');
+            submitBtn.disabled = true;
+            submitBtn.textContent = isEditMode ? 'Сохранение...' : 'Добавление...';
+            
+            try {
+                if (isEditMode && id) {
+                    // Update existing backend
+                    const response = await fetch(`${API_BASE}/backends/${encodeURIComponent(id)}`, {
+                        method: 'PUT',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify(data)
+                    });
+                    
+                    if (!response.ok) {
+                        throw new Error(`HTTP ${response.status}`);
+                    }
+                    
+                    showToast('Агент успешно обновлен', 'success');
+                } else {
+                    // Create new backend
+                    const response = await fetch(`${API_BASE}/backends`, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify(data)
+                    });
+                    
+                    if (!response.ok) {
+                        throw new Error(`HTTP ${response.status}`);
+                    }
+                    
+                    showToast('Агент успешно добавлен', 'success');
+                }
+                
+                closeModal();
+                loadAgents();
+                refreshData();
+                
+            } catch (error) {
+                console.error('Failed to save agent:', error);
+                showToast(`Ошибка: ${error.message}`, 'error');
+            } finally {
+                submitBtn.disabled = false;
+                submitBtn.textContent = isEditMode ? 'Сохранить' : 'Добавить';
+            }
+        }
+        
+        async function deleteAgent(id) {
+            if (!confirm(`Вы уверены, что хотите удалить агент "${id}"?`)) {
+                return;
+            }
+            
+            try {
+                const response = await fetch(`${API_BASE}/backends/${encodeURIComponent(id)}`, {
+                    method: 'DELETE'
+                });
+                
+                if (!response.ok) {
+                    throw new Error(`HTTP ${response.status}`);
+                }
+                
+                showToast('Агент успешно удален', 'success');
+                loadAgents();
+                refreshData();
+                
+            } catch (error) {
+                console.error('Failed to delete agent:', error);
+                showToast(`Ошибка удаления: ${error.message}`, 'error');
+            }
+        }
+        
+        // Close modal on overlay click
+        document.getElementById('agentModal').addEventListener('click', (e) => {
+            if (e.target === e.currentTarget) {
+                closeModal();
+            }
+        });
+        
+        // Load agents on page load
+        loadAgents();
+    </script>
+</body>
+</html>

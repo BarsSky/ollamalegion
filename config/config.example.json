@@ -1,0 +1,59 @@
+{
+  "loadBalancer": {
+    "host": "0.0.0.0",
+    "port": 8080,
+    "apiPort": 8081
+  },
+  "backends": [
+    {
+      "id": "gpu-1",
+      "name": "GPU Server 1",
+      "host": "192.168.13.66",
+      "ollamaPort": 11434,
+      "agentPort": 9090,
+      "weight": 1,
+      "maxConcurrentRequests": 10,
+      "labels": ["nvidia", "rtx4090"]
+    },
+    {
+      "id": "gpu-2",
+      "name": "GPU Server 2",
+      "host": "192.168.13.70",
+      "ollamaPort": 11434,
+      "agentPort": 9090,
+      "weight": 1,
+      "maxConcurrentRequests": 10,
+      "labels": ["nvidia", "rtx4090"]
+    }
+  ],
+  "balancing": {
+    "algorithm": "resource-aware",
+    "modelAffinity": true,
+    "sessionStickiness": true,
+    "healthCheckInterval": 10,
+    "metricsInterval": 5,
+    "requestTimeout": 120,
+    "queueTimeout": 300,
+    "queueMaxSize": 100
+  },
+  "resources": {
+    "gpu": {
+      "maxUsagePercent": 90,
+      "maxVramUsagePercent": 85,
+      "maxTemperature": 85
+    },
+    "cpu": {
+      "maxUsagePercent": 80
+    },
+    "memory": {
+      "maxUsagePercent": 85
+    },
+    "disk": {
+      "minFreeMB": 10240
+    }
+  },
+  "logging": {
+    "level": "info",
+    "format": "json"
+  }
+}

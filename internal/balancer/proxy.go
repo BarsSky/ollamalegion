@@ -297,8 +297,39 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Проксирование запроса
-	p.proxyRequest(w, r, targetBackend)
+	// Проксирование запроса с retry/failover (до 3 попыток)
+	attemptedBackends := make(map[string]bool)
+	for attempt := 0; attempt < 3; attempt++ {
+		if attempt > 0 {
+			// Retry: выбираем другой бэкенд, исключая уже попробованные
+			fmt.Printf("[%s] Retry attempt %d: selecting new backend (excluding: %v)\n",
+				time.Now().Format(time.RFC3339), attempt, attemptedBackends)
+			targetBackend = p.selectBackendExcluding(model, attemptedBackends)
+			if targetBackend == "" {
+				break
+			}
+			// Обновляем сессию для retry
+			if sessionID != "" && p.config.Balancing.SessionStickiness {
+				p.sessionMgr.Set(sessionID, targetBackend, model)
+			}
+		}
+
+		attemptedBackends[targetBackend] = true
+		err := p.proxyRequest(w, r, targetBackend)
+		if err == nil {
+			return // Успешно
+		}
+
+		fmt.Printf("[%s] Backend %s failed on attempt %d: %v\n",
+			time.Now().Format(time.RFC3339), targetBackend, attempt, err)
+
+		// Помечаем бэкенд как недоступный и планируем проверку восстановления
+		p.UpdateBackendStatus(targetBackend, types.StatusUnhealthy)
+		p.scheduleRecoveryCheck(targetBackend)
+	}
+
+	// Все попытки исчерпаны
+	http.Error(w, "Service unavailable - all backends failed", http.StatusServiceUnavailable)
 }
 
 // extractModel - извлечение модели из запроса
@@ -346,17 +377,22 @@ func (p *Proxy) getSessionID(r *http.Request) string {
 // selectBackend - выбор бэкенда для запроса
 func (p *Proxy) selectBackend(model string) string {
 	p.mu.RLock()
-	defer p.mu.RUnlock()
 
 	// Model Affinity - проверяем, есть ли модель уже загружена
 	if p.config.Balancing.ModelAffinity && model != "" {
 		if backend := p.findBackendWithModel(model); backend != "" {
+			p.mu.RUnlock()
 			return backend
 		}
 	}
+	p.mu.RUnlock()
 
-	// Resource-Aware выбор
-	return p.selectByResources()
+	// Resource-Aware выбор (с проверкой, что есть доступные бэкенды)
+	backend := p.selectByResources()
+	if backend == "" {
+		fmt.Printf("[%s] ⚠️  Нет доступных бэкендов - балансировщик ждёт восстановления...\n", time.Now().Format(time.RFC3339))
+	}
+	return backend
 }
 
 // findBackendWithModel - поиск бэкенда с загруженной моделью
@@ -407,6 +443,9 @@ func (p *Proxy) findBackendWithModel(modelName string) string {
 
 // selectByResources - выбор бэкенда по ресурсам
 func (p *Proxy) selectByResources() string {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+
 	var bestBackend string
 	var bestScore float64 = -1
 
@@ -511,11 +550,11 @@ func (p *Proxy) calculateScore(backendID string) float64 {
 }
 
 // proxyRequest - проксирование запроса к бэкенду с поддержкой streaming/SSE
-func (p *Proxy) proxyRequest(w http.ResponseWriter, r *http.Request, backendID string) {
+// Возвращает ошибку, если запрос не удалось выполнить (для retry/failover)
+func (p *Proxy) proxyRequest(w http.ResponseWriter, r *http.Request, backendID string) error {
 	state, ok := p.backends[backendID]
 	if !ok {
-		http.Error(w, "Backend not found", http.StatusInternalServerError)
-		return
+		return fmt.Errorf("backend %s not found", backendID)
 	}
 
 	// Увеличение счетчика активных запросов
@@ -534,8 +573,7 @@ func (p *Proxy) proxyRequest(w http.ResponseWriter, r *http.Request, backendID s
 
 	target, err := url.Parse(targetURL)
 	if err != nil {
-		http.Error(w, fmt.Sprintf("Invalid backend URL: %v", err), http.StatusInternalServerError)
-		return
+		return fmt.Errorf("invalid backend URL: %v", err)
 	}
 
 	// Проверяем, является ли запрос streaming запросом (по телу запроса)
@@ -550,8 +588,7 @@ func (p *Proxy) proxyRequest(w http.ResponseWriter, r *http.Request, backendID s
 	// Создание нового запроса с тем же телом и заголовками
 	req, err := http.NewRequestWithContext(r.Context(), r.Method, targetURL+r.URL.String(), r.Body)
 	if err != nil {
-		http.Error(w, fmt.Sprintf("Failed to create request: %v", err), http.StatusInternalServerError)
-		return
+		return fmt.Errorf("failed to create request: %v", err)
 	}
 
 	// Копирование заголовков запроса
@@ -570,8 +607,7 @@ func (p *Proxy) proxyRequest(w http.ResponseWriter, r *http.Request, backendID s
 	resp, err := client.Do(req)
 	if err != nil {
 		p.logStreamingError(backendID, err)
-		http.Error(w, "Backend error", http.StatusBadGateway)
-		return
+		return fmt.Errorf("backend error: %v", err)
 	}
 	defer resp.Body.Close()
 
@@ -599,6 +635,8 @@ func (p *Proxy) proxyRequest(w http.ResponseWriter, r *http.Request, backendID s
 		w.WriteHeader(resp.StatusCode)
 		io.Copy(w, resp.Body)
 	}
+
+	return nil
 }
 
 // isStreamingRequest - проверка, является ли запрос streaming запросом
@@ -786,6 +824,8 @@ func (p *Proxy) GetClusterState() *types.ClusterState {
 			// Сохраняем статус из конфигурации бэкенда
 			metrics.Status = backendState.Backend.Status
 			state.ActiveRequests += agentMetrics.Ollama.ActiveRequests
+			state.RPS += agentMetrics.Ollama.RequestsPerSecond
+			state.TotalGPUUsage += agentMetrics.GPU.UsagePercent
 		}
 
 		state.Backends = append(state.Backends, metrics)

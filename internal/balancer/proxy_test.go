@@ -21,25 +21,25 @@ func createTestConfig() *types.LoadBalancerConfig {
 		},
 		Backends: []types.Backend{
 			{
-				ID:                 "backend-1",
-				Name:               "Backend 1",
-				Host:               "localhost",
-				OllamaPort:         11434,
-				AgentPort:          9090,
-				Weight:             1,
-				MaxConcurrentReqs:  10,
-				Status:             types.StatusHealthy,
+				ID:                  "backend-1",
+				Name:                "Backend 1",
+				Host:                "localhost",
+				OllamaPort:          11434,
+				AgentPort:           9090,
+				Weight:              1,
+				MaxConcurrentReqs:   10,
+				Status:              types.StatusHealthy,
 				ConsecutiveFailures: 0,
 			},
 			{
-				ID:                 "backend-2",
-				Name:               "Backend 2",
-				Host:               "localhost",
-				OllamaPort:         11435,
-				AgentPort:          9091,
-				Weight:             2,
-				MaxConcurrentReqs:  20,
-				Status:             types.StatusHealthy,
+				ID:                  "backend-2",
+				Name:                "Backend 2",
+				Host:                "localhost",
+				OllamaPort:          11435,
+				AgentPort:           9091,
+				Weight:              2,
+				MaxConcurrentReqs:   20,
+				Status:              types.StatusHealthy,
 				ConsecutiveFailures: 0,
 			},
 		},
@@ -50,6 +50,7 @@ func createTestConfig() *types.LoadBalancerConfig {
 			RequestTimeout:    30,
 			QueueTimeout:      10,
 			QueueMaxSize:      100,
+			QueueWorkers:      4,
 		},
 		Resources: types.ResourceLimits{
 			GPU: types.GPULimits{
@@ -68,20 +69,21 @@ func createTestConfig() *types.LoadBalancerConfig {
 	}
 }
 
-// TestQueueManagerEnqueue - проверка постановки в очередь
+// TestQueueManagerEnqueue - проверка постановки в очередь через канал
 func TestQueueManagerEnqueue(t *testing.T) {
 	t.Parallel()
 
 	config := createTestConfig()
 	proxy := NewProxy(config)
+	proxy.SetQueueManagerProxy()
 	defer proxy.queueMgr.Stop()
 
 	queueMgr := proxy.queueMgr
-	_ = queueMgr // используем переменную
 
 	// Проверяем начальное состояние
 	assert.Equal(t, 0, len(queueMgr.queue))
 	assert.Equal(t, 100, queueMgr.maxSize)
+	assert.Equal(t, 4, queueMgr.numWorkers)
 
 	// Создаем тестовый запрос
 	req := httptest.NewRequest(http.MethodPost, "/api/generate", strings.NewReader(`{"model": "llama2"}`))
@@ -96,35 +98,46 @@ func TestQueueManagerEnqueue(t *testing.T) {
 		Done:     done,
 	}
 
-	// Добавляем запрос в очередь вручную для проверки
-	queueMgr.mu.Lock()
-	queueMgr.queue = append(queueMgr.queue, queuedReq)
-	queueMgr.mu.Unlock()
+	// Отправляем запрос в канал очереди
+	select {
+	case queueMgr.queue <- queuedReq:
+		// Успешно
+	default:
+		t.Fatal("Не удалось отправить запрос в очередь")
+	}
 
 	// Проверяем что очередь увеличилась
 	assert.Equal(t, 1, len(queueMgr.queue))
-	assert.Equal(t, "llama2", queueMgr.queue[0].Model)
 }
 
 // TestQueueManagerFull - проверка переполненной очереди
 func TestQueueManagerFull(t *testing.T) {
 	t.Parallel()
 
-	// Создаем QueueManager с маленьким размером
-	queueMgr := NewQueueManager(2, 5*time.Second)
+	// Создаем QueueManager с буфером 1, 0 workers (без proxy чтобы не паниковали workers)
+	queueMgr := NewQueueManager(nil, 1, 0, 5*time.Second)
 	defer queueMgr.Stop()
 
-	// Заполняем очередь
-	queueMgr.mu.Lock()
-	queueMgr.queue = append(queueMgr.queue, &QueuedRequest{Model: "model1"})
-	queueMgr.queue = append(queueMgr.queue, &QueuedRequest{Model: "model2"})
-	queueMgr.mu.Unlock()
+	// Отправляем запрос в канал
+	done1 := make(chan bool, 1)
+	select {
+	case queueMgr.queue <- &QueuedRequest{Model: "model1", Done: done1}:
+		// Успешно
+	default:
+		t.Fatal("Не удалось отправить первый запрос")
+	}
 
-	// Проверяем что очередь полная
-	assert.Equal(t, 2, len(queueMgr.queue))
+	// Пытаемся отправить второй — канал буферизованный на 1, должен заблокироваться
+	done2 := make(chan bool, 1)
+	select {
+	case queueMgr.queue <- &QueuedRequest{Model: "model2", Done: done2}:
+		t.Fatal("Очередь должна быть переполнена")
+	default:
+		// Ожидаемое поведение — канал переполнен
+	}
 
 	// Проверяем maxSize
-	assert.Equal(t, 2, queueMgr.maxSize)
+	assert.Equal(t, 1, queueMgr.maxSize)
 }
 
 // TestQueueManagerProcess - проверка обработки очереди
@@ -133,6 +146,7 @@ func TestQueueManagerProcess(t *testing.T) {
 
 	config := createTestConfig()
 	proxy := NewProxy(config)
+	proxy.SetQueueManagerProxy()
 	defer proxy.queueMgr.Stop()
 
 	// Инициализируем метрики для бэкендов
@@ -155,57 +169,35 @@ func TestQueueManagerProcess(t *testing.T) {
 	assert.NotEmpty(t, backend, "Должен быть выбран бэкенд")
 }
 
-// TestQueueManagerNotify - проверка уведомления обработчика
-func TestQueueManagerNotify(t *testing.T) {
-	t.Parallel()
-
-	queueMgr := NewQueueManager(10, 5*time.Second)
-	defer queueMgr.Stop()
-
-	// Проверяем что канал notify существует
-	assert.NotNil(t, queueMgr.notify)
-
-	// Отправляем уведомление
-	select {
-	case queueMgr.notify <- struct{}{}:
-		// Успешно
-	default:
-		// Уже есть уведомление - это нормально
-	}
-}
-
 // TestQueueManagerShutdown - проверка остановки QueueManager
 func TestQueueManagerShutdown(t *testing.T) {
 	t.Parallel()
 
-	queueMgr := NewQueueManager(10, 5*time.Second)
+	// 0 workers чтобы избежать panic с nil proxy
+	queueMgr := NewQueueManager(nil, 10, 0, 5*time.Second)
 
-	// Создаем запрос в очереди
+	// Создаем запрос в канале
 	done := make(chan bool, 1)
-	queueMgr.mu.Lock()
-	queueMgr.queue = append(queueMgr.queue, &QueuedRequest{
+	select {
+	case queueMgr.queue <- &QueuedRequest{
 		Model: "test",
 		Done:  done,
-	})
-	queueMgr.mu.Unlock()
-
-	// Останавливаем
-	queueMgr.Stop()
-
-	// Канал shutdown должен быть закрыт
-	select {
-	case _, ok := <-queueMgr.shutdownCh:
-		assert.False(t, ok, "Канал shutdown должен быть закрыт")
+	}:
 	default:
-		// Канал еще не обработан
 	}
+
+	// Останавливаем — не должно паниковать
+	assert.NotPanics(t, func() {
+		queueMgr.Stop()
+	})
 }
 
 // TestQueueManagerProcessedCount - проверка счетчика обработанных запросов
 func TestQueueManagerProcessedCount(t *testing.T) {
 	t.Parallel()
 
-	queueMgr := NewQueueManager(10, 5*time.Second)
+	// 0 workers чтобы избежать panic с nil proxy
+	queueMgr := NewQueueManager(nil, 10, 0, 5*time.Second)
 	defer queueMgr.Stop()
 
 	// Начальное значение
@@ -216,13 +208,14 @@ func TestQueueManagerProcessedCount(t *testing.T) {
 func TestNewQueueManager(t *testing.T) {
 	t.Parallel()
 
-	queueMgr := NewQueueManager(50, 10*time.Second)
+	// 0 workers чтобы избежать panic с nil proxy
+	queueMgr := NewQueueManager(nil, 50, 0, 10*time.Second)
 	defer queueMgr.Stop()
 
 	assert.Equal(t, 50, queueMgr.maxSize)
 	assert.Equal(t, 10*time.Second, queueMgr.timeout)
-	assert.NotNil(t, queueMgr.notify)
-	assert.NotNil(t, queueMgr.shutdownCh)
+	assert.Equal(t, 0, queueMgr.numWorkers)
+	assert.NotNil(t, queueMgr.queue)
 }
 
 // TestProxyNew - проверка создания Proxy
@@ -231,6 +224,7 @@ func TestProxyNew(t *testing.T) {
 
 	config := createTestConfig()
 	proxy := NewProxy(config)
+	proxy.SetQueueManagerProxy()
 	defer proxy.queueMgr.Stop()
 
 	assert.NotNil(t, proxy)
@@ -247,6 +241,7 @@ func TestProxySelectBackend(t *testing.T) {
 
 	config := createTestConfig()
 	proxy := NewProxy(config)
+	proxy.SetQueueManagerProxy()
 	defer proxy.queueMgr.Stop()
 
 	// Инициализируем метрики
@@ -273,6 +268,7 @@ func TestProxyGetClusterState(t *testing.T) {
 
 	config := createTestConfig()
 	proxy := NewProxy(config)
+	proxy.SetQueueManagerProxy()
 	defer proxy.queueMgr.Stop()
 
 	state := proxy.GetClusterState()
@@ -289,6 +285,7 @@ func TestProxyUpdateMetrics(t *testing.T) {
 
 	config := createTestConfig()
 	proxy := NewProxy(config)
+	proxy.SetQueueManagerProxy()
 	defer proxy.queueMgr.Stop()
 
 	metrics := &types.BackendMetrics{
@@ -315,6 +312,7 @@ func TestProxyUpdateBackendStatus(t *testing.T) {
 
 	config := createTestConfig()
 	proxy := NewProxy(config)
+	proxy.SetQueueManagerProxy()
 	defer proxy.queueMgr.Stop()
 
 	// Обновляем статус
@@ -334,6 +332,7 @@ func TestProxyBackendExists(t *testing.T) {
 
 	config := createTestConfig()
 	proxy := NewProxy(config)
+	proxy.SetQueueManagerProxy()
 	defer proxy.queueMgr.Stop()
 
 	assert.True(t, proxy.BackendExists("backend-1"))
@@ -347,6 +346,7 @@ func TestProxyGetBackend(t *testing.T) {
 
 	config := createTestConfig()
 	proxy := NewProxy(config)
+	proxy.SetQueueManagerProxy()
 	defer proxy.queueMgr.Stop()
 
 	backend := proxy.GetBackend("backend-1")
@@ -361,6 +361,7 @@ func TestProxyGetAllBackends(t *testing.T) {
 
 	config := createTestConfig()
 	proxy := NewProxy(config)
+	proxy.SetQueueManagerProxy()
 	defer proxy.queueMgr.Stop()
 
 	backends := proxy.GetAllBackends()
@@ -373,12 +374,13 @@ func TestProxyAddBackend(t *testing.T) {
 
 	config := createTestConfig()
 	proxy := NewProxy(config)
+	proxy.SetQueueManagerProxy()
 	defer proxy.queueMgr.Stop()
 
 	newBackend := types.Backend{
-		ID:        "backend-3",
-		Name:      "Backend 3",
-		Host:      "localhost",
+		ID:         "backend-3",
+		Name:       "Backend 3",
+		Host:       "localhost",
 		OllamaPort: 11436,
 	}
 
@@ -393,6 +395,7 @@ func TestProxyAddBackendDuplicate(t *testing.T) {
 
 	config := createTestConfig()
 	proxy := NewProxy(config)
+	proxy.SetQueueManagerProxy()
 	defer proxy.queueMgr.Stop()
 
 	// Пытаемся добавить существующий бэкенд
@@ -409,6 +412,7 @@ func TestProxyRemoveBackend(t *testing.T) {
 
 	config := createTestConfig()
 	proxy := NewProxy(config)
+	proxy.SetQueueManagerProxy()
 	defer proxy.queueMgr.Stop()
 
 	err := proxy.RemoveBackend("backend-1")
@@ -422,6 +426,7 @@ func TestProxyRemoveBackendNotFound(t *testing.T) {
 
 	config := createTestConfig()
 	proxy := NewProxy(config)
+	proxy.SetQueueManagerProxy()
 	defer proxy.queueMgr.Stop()
 
 	err := proxy.RemoveBackend("non-existent")
@@ -435,6 +440,7 @@ func TestProxyUpdateBackend(t *testing.T) {
 
 	config := createTestConfig()
 	proxy := NewProxy(config)
+	proxy.SetQueueManagerProxy()
 	defer proxy.queueMgr.Stop()
 
 	updated := types.Backend{
@@ -458,6 +464,7 @@ func TestProxyUpdateBackendNotFound(t *testing.T) {
 
 	config := createTestConfig()
 	proxy := NewProxy(config)
+	proxy.SetQueueManagerProxy()
 	defer proxy.queueMgr.Stop()
 
 	err := proxy.UpdateBackend("non-existent", types.Backend{})
@@ -470,6 +477,7 @@ func TestSessionManager(t *testing.T) {
 	t.Parallel()
 
 	sm := NewSessionManager()
+	defer sm.Clear()
 
 	// Создаем сессию
 	sm.Set("session-1", "backend-1", "llama2")
@@ -497,6 +505,18 @@ func TestSessionManagerGetNonExistent(t *testing.T) {
 	assert.Nil(t, session)
 }
 
+// TestSessionManagerDelete - проверка удаления сессии
+func TestSessionManagerDelete(t *testing.T) {
+	t.Parallel()
+
+	sm := NewSessionManager()
+	sm.Set("session-1", "backend-1", "llama2")
+
+	assert.True(t, sm.Delete("session-1"))
+	assert.Nil(t, sm.Get("session-1"))
+	assert.False(t, sm.Delete("non-existent"))
+}
+
 // TestMetricsManager - проверка менеджера метрик
 func TestMetricsManager(t *testing.T) {
 	t.Parallel()
@@ -510,24 +530,27 @@ func TestMetricsManager(t *testing.T) {
 func TestQueueRequestTimeout(t *testing.T) {
 	t.Parallel()
 
-	// Создаем новый queue manager для теста
-	queueMgr := NewQueueManager(10, 100*time.Millisecond)
+	// Создаем новый queue manager для теста (0 workers чтобы не обрабатывать)
+	queueMgr := NewQueueManager(nil, 10, 0, 100*time.Millisecond)
 	defer queueMgr.Stop()
-	
+
 	done := make(chan bool, 1)
 	queuedReq := &QueuedRequest{
 		Model:    "test",
 		Enqueued: time.Now(),
 		Done:     done,
 	}
-	
-	queueMgr.mu.Lock()
-	queueMgr.queue = append(queueMgr.queue, queuedReq)
-	queueMgr.mu.Unlock()
-	
+
+	// Отправляем в канал
+	select {
+	case queueMgr.queue <- queuedReq:
+	default:
+		t.Fatal("Не удалось отправить в очередь")
+	}
+
 	// Ждем немного
 	time.Sleep(50 * time.Millisecond)
-	
+
 	// Проверяем что запрос в очереди
 	assert.Equal(t, 1, len(queueMgr.queue))
 }
@@ -538,6 +561,7 @@ func TestCalculateScore(t *testing.T) {
 
 	config := createTestConfig()
 	proxy := NewProxy(config)
+	proxy.SetQueueManagerProxy()
 	defer proxy.queueMgr.Stop()
 
 	// Устанавливаем метрики
@@ -563,6 +587,7 @@ func TestCheckResourceLimits(t *testing.T) {
 
 	config := createTestConfig()
 	proxy := NewProxy(config)
+	proxy.SetQueueManagerProxy()
 	defer proxy.queueMgr.Stop()
 
 	// Устанавливаем метрики в пределах лимитов
@@ -591,6 +616,7 @@ func TestCheckResourceLimitsExceeded(t *testing.T) {
 
 	config := createTestConfig()
 	proxy := NewProxy(config)
+	proxy.SetQueueManagerProxy()
 	defer proxy.queueMgr.Stop()
 
 	// Устанавливаем метрики с превышением лимитов
@@ -611,4 +637,114 @@ func TestCheckResourceLimitsExceeded(t *testing.T) {
 
 	// Проверяем что лимиты превышены
 	assert.False(t, proxy.checkResourceLimits("backend-1"))
+}
+
+// TestFindBackendWithModel - проверка поиска бэкенда с моделью
+func TestFindBackendWithModel(t *testing.T) {
+	t.Parallel()
+
+	config := createTestConfig()
+	config.Balancing.ModelAffinity = true
+	proxy := NewProxy(config)
+	proxy.SetQueueManagerProxy()
+	defer proxy.queueMgr.Stop()
+
+	// Устанавливаем метрики с запущенной моделью
+	proxy.UpdateMetrics("backend-1", &types.BackendMetrics{
+		ID: "backend-1",
+		GPU: types.GPUMetrics{
+			UsagePercent: 10,
+			MemoryTotal:  16384,
+			MemoryFree:   14000,
+		},
+		System: types.SystemMetrics{
+			CPUUsagePercent: 20,
+		},
+		Ollama: types.OllamaMetrics{
+			RunningModels: []types.RunningModel{
+				{Name: "llama2:7b"},
+			},
+		},
+	})
+
+	// Ищем бэкенд с моделью
+	backend := proxy.findBackendWithModel("llama2:7b")
+	assert.Equal(t, "backend-1", backend)
+}
+
+// TestSelectByResourcesWithLimits - проверка выбора с учетом лимитов активных запросов
+func TestSelectByResourcesWithLimits(t *testing.T) {
+	t.Parallel()
+
+	config := createTestConfig()
+	proxy := NewProxy(config)
+	proxy.SetQueueManagerProxy()
+	defer proxy.queueMgr.Stop()
+
+	// Устанавливаем метрики для обоих бэкендов
+	proxy.UpdateMetrics("backend-1", &types.BackendMetrics{
+		ID: "backend-1",
+		GPU: types.GPUMetrics{
+			UsagePercent: 50,
+			MemoryTotal:  16384,
+			MemoryFree:   8000,
+		},
+		System: types.SystemMetrics{
+			CPUUsagePercent: 50,
+		},
+	})
+
+	proxy.UpdateMetrics("backend-2", &types.BackendMetrics{
+		ID: "backend-2",
+		GPU: types.GPUMetrics{
+			UsagePercent: 20,
+			MemoryTotal:  16384,
+			MemoryFree:   12000,
+		},
+		System: types.SystemMetrics{
+			CPUUsagePercent: 30,
+			MemoryTotal:     32768,
+			MemoryFree:      28000,
+			DiskFree:        5000,
+		},
+	})
+
+	// Выбираем бэкенд — должен выбрать backend-2 (меньше загрузка)
+	backend := proxy.selectByResources()
+	assert.Equal(t, "backend-2", backend)
+}
+
+// TestSelectBackendAllBusy - проверка когда все бэкенды заняты
+func TestSelectBackendAllBusy(t *testing.T) {
+	t.Parallel()
+
+	config := createTestConfig()
+	proxy := NewProxy(config)
+	proxy.SetQueueManagerProxy()
+	defer proxy.queueMgr.Stop()
+
+	// Устанавливаем max concurrent requests = 0 чтобы заблокировать
+	proxy.mu.Lock()
+	for _, state := range proxy.backends {
+		state.Backend.MaxConcurrentReqs = 0
+	}
+	proxy.mu.Unlock()
+
+	// Выбираем бэкенд — должен вернуть пустую строку
+	backend := proxy.selectBackend("")
+	assert.Empty(t, backend)
+}
+
+// TestGetQueueStats - проверка получения статистики очереди
+func TestGetQueueStats(t *testing.T) {
+	t.Parallel()
+
+	config := createTestConfig()
+	proxy := NewProxy(config)
+	proxy.SetQueueManagerProxy()
+	defer proxy.queueMgr.Stop()
+
+	stats := proxy.getQueueStats()
+	assert.Equal(t, 100, stats.MaxSize)
+	assert.Equal(t, int64(0), stats.Processed)
 }

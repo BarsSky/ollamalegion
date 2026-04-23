@@ -825,3 +825,232 @@ func TestSessionHandler_Delete(t *testing.T) {
 	// или 200 если сессия удалена
 	assert.Contains(t, []int{http.StatusOK, http.StatusNotFound}, resp.StatusCode)
 }
+
+// ==================== Тесты для agentRegisterHandler ====================
+
+func TestAgentRegisterHandler(t *testing.T) {
+	server, _, _ := createTestServer(t)
+	defer server.Close()
+
+	payload := map[string]interface{}{
+		"agentId":    "agent-test-1",
+		"hostname":   "test-host",
+		"host":       "192.168.1.100",
+		"ollamaPort": 11434,
+		"agentPort":  9090,
+		"gpuCount":   1,
+		"name":       "Test Agent",
+		"labels":     []string{"gpu:nvidia"},
+	}
+	body, _ := json.Marshal(payload)
+
+	resp, err := http.Post(server.URL+"/api/v1/agents/register", "application/json", bytes.NewBuffer(body))
+	assert.NoError(t, err)
+	defer resp.Body.Close()
+
+	assert.Equal(t, http.StatusCreated, resp.StatusCode)
+
+	var response map[string]interface{}
+	err = json.NewDecoder(resp.Body).Decode(&response)
+	assert.NoError(t, err)
+	assert.Equal(t, true, response["success"])
+	assert.Equal(t, "created", response["action"])
+	assert.Equal(t, "agent-test-1", response["agentId"])
+}
+
+func TestAgentRegisterHandler_MissingAgentID(t *testing.T) {
+	server, _, _ := createTestServer(t)
+	defer server.Close()
+
+	payload := map[string]interface{}{
+		"hostname": "test-host",
+	}
+	body, _ := json.Marshal(payload)
+
+	resp, err := http.Post(server.URL+"/api/v1/agents/register", "application/json", bytes.NewBuffer(body))
+	assert.NoError(t, err)
+	defer resp.Body.Close()
+
+	assert.Equal(t, http.StatusBadRequest, resp.StatusCode)
+
+	var response map[string]interface{}
+	err = json.NewDecoder(resp.Body).Decode(&response)
+	assert.NoError(t, err)
+	assert.Equal(t, false, response["success"])
+	assert.Equal(t, "agentId is required", response["error"])
+}
+
+func TestAgentRegisterHandler_UpdateExisting(t *testing.T) {
+	server, _, _ := createTestServer(t)
+	defer server.Close()
+
+	// Сначала регистрируем агента
+	payload := map[string]interface{}{
+		"agentId":  "agent-test-2",
+		"host":     "192.168.1.101",
+		"name":     "Original Name",
+		"labels":   []string{"gpu:nvidia"},
+	}
+	body, _ := json.Marshal(payload)
+	resp, _ := http.Post(server.URL+"/api/v1/agents/register", "application/json", bytes.NewBuffer(body))
+	resp.Body.Close()
+
+	// Теперь обновляем
+	payload["name"] = "Updated Name"
+	body, _ = json.Marshal(payload)
+	resp, err := http.Post(server.URL+"/api/v1/agents/register", "application/json", bytes.NewBuffer(body))
+	assert.NoError(t, err)
+	defer resp.Body.Close()
+
+	assert.Equal(t, http.StatusOK, resp.StatusCode)
+
+	var response map[string]interface{}
+	err = json.NewDecoder(resp.Body).Decode(&response)
+	assert.NoError(t, err)
+	assert.Equal(t, true, response["success"])
+	assert.Equal(t, "updated", response["action"])
+}
+
+func TestAgentRegisterHandler_InvalidJSON(t *testing.T) {
+	server, _, _ := createTestServer(t)
+	defer server.Close()
+
+	resp, err := http.Post(server.URL+"/api/v1/agents/register", "application/json", bytes.NewBuffer([]byte("invalid")))
+	assert.NoError(t, err)
+	defer resp.Body.Close()
+
+	assert.Equal(t, http.StatusBadRequest, resp.StatusCode)
+}
+
+// ==================== Тесты для agentMetricsHandler ====================
+
+func TestAgentMetricsHandler(t *testing.T) {
+	server, _, proxy := createTestServer(t)
+	defer server.Close()
+
+	// Сначала регистрируем агента
+	proxy.AddBackend(types.Backend{
+		ID:         "agent-metrics-1",
+		Name:       "Agent Metrics",
+		Host:       "localhost",
+		OllamaPort: 11434,
+		AgentPort:  9090,
+	})
+
+	metrics := types.BackendMetrics{
+		ID: "agent-metrics-1",
+		GPU: types.GPUMetrics{
+			UsagePercent: 45.5,
+			MemoryTotal:  16384,
+			MemoryUsed:   8000,
+		},
+		System: types.SystemMetrics{
+			CPUUsagePercent: 30,
+		},
+		Ollama: types.OllamaMetrics{
+			ActiveRequests:    2,
+			RequestsPerSecond: 5.5,
+		},
+	}
+	body, _ := json.Marshal(metrics)
+
+	req, _ := http.NewRequest(http.MethodPost, server.URL+"/api/v1/agents/metrics", bytes.NewBuffer(body))
+	req.Header.Set("X-Agent-ID", "agent-metrics-1")
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := http.DefaultClient.Do(req)
+	assert.NoError(t, err)
+	defer resp.Body.Close()
+
+	assert.Equal(t, http.StatusOK, resp.StatusCode)
+
+	var response map[string]interface{}
+	err = json.NewDecoder(resp.Body).Decode(&response)
+	assert.NoError(t, err)
+	assert.Equal(t, "received", response["status"])
+}
+
+func TestAgentMetricsHandler_MissingAgentID(t *testing.T) {
+	server, _, _ := createTestServer(t)
+	defer server.Close()
+
+	metrics := types.BackendMetrics{ID: "test"}
+	body, _ := json.Marshal(metrics)
+
+	req, _ := http.NewRequest(http.MethodPost, server.URL+"/api/v1/agents/metrics", bytes.NewBuffer(body))
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := http.DefaultClient.Do(req)
+	assert.NoError(t, err)
+	defer resp.Body.Close()
+
+	assert.Equal(t, http.StatusBadRequest, resp.StatusCode)
+}
+
+func TestAgentMetricsHandler_InvalidMetrics(t *testing.T) {
+	server, _, _ := createTestServer(t)
+	defer server.Close()
+
+	req, _ := http.NewRequest(http.MethodPost, server.URL+"/api/v1/agents/metrics", bytes.NewBuffer([]byte("invalid")))
+	req.Header.Set("X-Agent-ID", "agent-1")
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := http.DefaultClient.Do(req)
+	assert.NoError(t, err)
+	defer resp.Body.Close()
+
+	assert.Equal(t, http.StatusBadRequest, resp.StatusCode)
+}
+
+// ==================== Тесты для agentHeartbeatHandler ====================
+
+func TestAgentHeartbeatHandler(t *testing.T) {
+	server, _, proxy := createTestServer(t)
+	defer server.Close()
+
+	proxy.AddBackend(types.Backend{
+		ID:         "agent-hb-1",
+		Name:       "Agent HB",
+		Host:       "localhost",
+		OllamaPort: 11434,
+		AgentPort:  9090,
+	})
+
+	req, _ := http.NewRequest(http.MethodPost, server.URL+"/api/v1/agents/heartbeat", nil)
+	req.Header.Set("X-Agent-ID", "agent-hb-1")
+
+	resp, err := http.DefaultClient.Do(req)
+	assert.NoError(t, err)
+	defer resp.Body.Close()
+
+	assert.Equal(t, http.StatusOK, resp.StatusCode)
+
+	var response map[string]interface{}
+	err = json.NewDecoder(resp.Body).Decode(&response)
+	assert.NoError(t, err)
+	assert.Equal(t, "ok", response["status"])
+}
+
+func TestAgentHeartbeatHandler_MissingAgentID(t *testing.T) {
+	server, _, _ := createTestServer(t)
+	defer server.Close()
+
+	req, _ := http.NewRequest(http.MethodPost, server.URL+"/api/v1/agents/heartbeat", nil)
+
+	resp, err := http.DefaultClient.Do(req)
+	assert.NoError(t, err)
+	defer resp.Body.Close()
+
+	assert.Equal(t, http.StatusBadRequest, resp.StatusCode)
+}
+
+func TestAgentHeartbeatHandler_MethodNotAllowed(t *testing.T) {
+	server, _, _ := createTestServer(t)
+	defer server.Close()
+
+	resp, err := http.Get(server.URL + "/api/v1/agents/heartbeat")
+	assert.NoError(t, err)
+	defer resp.Body.Close()
+
+	assert.Equal(t, http.StatusMethodNotAllowed, resp.StatusCode)
+}

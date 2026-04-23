@@ -248,5 +248,7 @@ type ClusterState struct {
 	TotalRequests  int64             `json:"totalRequests"`
 	ActiveRequests int               `json:"activeRequests"`
 	QueuedRequests int               `json:"queuedRequests"`
+	RPS            float64           `json:"rps"`
+	TotalGPUUsage  float64           `json:"totalGpuUsage"`
 	Backends       []BackendMetrics  `json:"backends"`
 }

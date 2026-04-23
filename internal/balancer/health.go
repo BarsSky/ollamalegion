@@ -168,8 +168,8 @@ func (hc *HealthChecker) performCheck(backend *types.Backend) *HealthCheckResult
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	
-	// Проверка через Ollama API endpoint
-	url := fmt.Sprintf("http://%s:%d/api/tags", backend.Host, backend.OllamaPort)
+	// Проверка через Ollama API endpoint (используем /api/version для минимальной нагрузки)
+	url := fmt.Sprintf("http://%s:%d/api/version", backend.Host, backend.OllamaPort)
 	
 	start := time.Now()
 	

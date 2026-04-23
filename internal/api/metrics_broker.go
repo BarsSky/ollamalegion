@@ -25,6 +25,7 @@ type MetricsBroker struct {
 	mu          sync.RWMutex
 	subscribers map[string]*MetricsClient
 	metricsChan chan *types.BackendMetrics
+	clusterChan chan *types.ClusterState
 	stopChan    chan struct{}
 }
 
@@ -33,6 +34,7 @@ func NewMetricsBroker() *MetricsBroker {
 	mb := &MetricsBroker{
 		subscribers: make(map[string]*MetricsClient),
 		metricsChan: make(chan *types.BackendMetrics, 100),
+		clusterChan: make(chan *types.ClusterState, 100),
 		stopChan:    make(chan struct{}),
 	}
 
@@ -50,7 +52,9 @@ func (mb *MetricsBroker) run() {
 	for {
 		select {
 		case metrics := <-mb.metricsChan:
-			mb.publish(metrics)
+			mb.publishMetrics(metrics)
+		case clusterState := <-mb.clusterChan:
+			mb.publishClusterState(clusterState)
 		case <-ticker.C:
 			// Периодическая отправка для поддержания соединения
 		case <-mb.stopChan:
@@ -85,7 +89,7 @@ func (mb *MetricsBroker) Unsubscribe(clientID string) {
 	}
 }
 
-// Publish - публикация метрик всем подписчикам
+// Publish - публикация метрик бэкенда всем подписчикам
 func (mb *MetricsBroker) Publish(metrics *types.BackendMetrics) {
 	select {
 	case mb.metricsChan <- metrics:
@@ -94,12 +98,43 @@ func (mb *MetricsBroker) Publish(metrics *types.BackendMetrics) {
 	}
 }
 
-// publish - рассылка метрик всем активным подписчикам
-func (mb *MetricsBroker) publish(metrics *types.BackendMetrics) {
+// PublishClusterState - публикация полного состояния кластера всем подписчикам
+func (mb *MetricsBroker) PublishClusterState(state *types.ClusterState) {
+	select {
+	case mb.clusterChan <- state:
+	default:
+		// Канал переполнен, пропускаем
+	}
+}
+
+// publishMetrics - рассылка метрик одного бэкенда всем активным подписчикам
+func (mb *MetricsBroker) publishMetrics(metrics *types.BackendMetrics) {
 	mb.mu.RLock()
 	defer mb.mu.RUnlock()
 
 	data, err := json.Marshal(metrics)
+	if err != nil {
+		return
+	}
+
+	for id, client := range mb.subscribers {
+		select {
+		case client.Conn <- data:
+		case <-client.Done:
+			// Клиент отключился, помечаем для удаления
+			go mb.Unsubscribe(id)
+		default:
+			// Канал клиента переполнен, пропускаем
+		}
+	}
+}
+
+// publishClusterState - рассылка полного состояния кластера всем активным подписчикам
+func (mb *MetricsBroker) publishClusterState(state *types.ClusterState) {
+	mb.mu.RLock()
+	defer mb.mu.RUnlock()
+
+	data, err := json.Marshal(state)
 	if err != nil {
 		return
 	}

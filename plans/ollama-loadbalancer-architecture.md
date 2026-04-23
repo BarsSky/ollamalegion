@@ -169,7 +169,7 @@ POST /api/delete             - Delete модели
       "name": "GPU Server 1",
       "host": "192.168.13.66",
       "ollamaPort": 11434,
-      "agentPort": 9090,
+      "agentPort": 18032,
       "weight": 1,
       "maxConcurrentRequests": 10,
       "labels": ["nvidia", "rtx4090"]
@@ -253,12 +253,12 @@ graph LR
     end
     
     subgraph Host 1
-        A1[agent:9090]
+        A1[agent:18032]
         O1[ollama:11434]
     end
     
     subgraph Host 2
-        A2[agent:9090]
+        A2[agent:18032]
         O2[ollama:11434]
     end
     
@@ -308,7 +308,7 @@ services:
   ollama-agent:
     image: ollama-lb/agent:latest
     ports:
-      - "9090:9090"
+      - "18032:18032"
     volumes:
       - /var/run/nvidia-smi:/var/run/nvidia-smi
       - /proc:/host/proc:ro

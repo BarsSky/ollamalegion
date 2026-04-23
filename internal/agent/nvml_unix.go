@@ -1,5 +1,4 @@
-//go:build nvml && (linux || darwin)
-// +build nvml,linux nvml,darwin
+//go:build (linux || darwin) && nvml
 
 package agent
 

@@ -414,6 +414,192 @@ fetch('http://localhost:18081/api/v1/cluster', {
 
 ---
 
+### Agents (Registration & Metrics)
+
+#### POST /api/v1/agents/register
+
+Регистрация агента в системе балансировки. Агент отправляет этот запрос при запуске для автоматической регистрации в кластере.
+
+**Аутентификация:** Требуется (API Token)
+
+**Request Body:**
+```json
+{
+  "agentId": "gpu-1",
+  "hostname": "gpu-server-1",
+  "host": "192.168.1.100",
+  "ollamaPort": 11434,
+  "agentPort": 18032,
+  "gpuCount": 1,
+  "name": "GPU Server 1",
+  "labels": ["nvidia", "rtx4090"]
+}
+```
+
+**Параметры запроса:**
+
+| Параметр | Тип | Обязательный | Описание |
+|----------|-----|--------------|----------|
+| `agentId` | string | Да | Уникальный идентификатор агента |
+| `hostname` | string | Нет | Имя хоста агента |
+| `host` | string | Нет | IP-адрес агента (если не указан, используется hostname или RemoteAddr) |
+| `ollamaPort` | int | Нет | Порт Ollama API (по умолчанию: 11434) |
+| `agentPort` | int | Нет | Порт агента (по умолчанию: 9090) |
+| `gpuCount` | int | Нет | Количество GPU |
+| `name` | string | Нет | Отображаемое имя агента |
+| `labels` | string[] | Нет | Метки для классификации агента |
+
+**Response:** 201 Created (новый агент) или 200 OK (обновление существующего)
+```json
+{
+  "success": true,
+  "action": "created",
+  "agentId": "gpu-1",
+  "backend": {
+    "id": "gpu-1",
+    "name": "GPU Server 1",
+    "host": "192.168.1.100",
+    "ollamaPort": 11434,
+    "agentPort": 18032,
+    "weight": 1,
+    "maxConcurrentRequests": 10,
+    "labels": ["nvidia", "rtx4090"],
+    "status": "starting"
+  },
+  "message": "Agent registered successfully. Backend added to the pool."
+}
+```
+
+**Пример запроса (cURL):**
+```bash
+curl -X POST http://localhost:18081/api/v1/agents/register \
+  -H "Content-Type: application/json" \
+  -H "X-API-Token: your-api-token" \
+  -d '{
+    "agentId": "gpu-1",
+    "host": "192.168.1.100",
+    "ollamaPort": 11434,
+    "agentPort": 18032,
+    "name": "GPU Server 1",
+    "labels": ["nvidia", "rtx4090"]
+  }'
+```
+
+---
+
+#### POST /api/v1/agents/metrics
+
+Отправка метрик от агента балансировщику. Агент должен периодически отправлять метрики для мониторинга состояния.
+
+**Аутентификация:** Требуется (API Token)
+
+**Headers:**
+
+| Header | Значение | Описание |
+|--------|----------|----------|
+| `X-Agent-ID` | string | ID агента (обязательно) |
+
+**Request Body:**
+```json
+{
+  "id": "gpu-1",
+  "timestamp": "2024-01-15T10:30:00Z",
+  "gpu": {
+    "usagePercent": 45.5,
+    "memoryTotal": 24576,
+    "memoryUsed": 12000,
+    "memoryFree": 12576,
+    "temperature": 65,
+    "powerUsage": 250,
+    "powerLimit": 450,
+    "gpuClock": 1800,
+    "memClock": 10000
+  },
+  "system": {
+    "cpuUsagePercent": 30.2,
+    "memoryTotal": 65536,
+    "memoryUsed": 20000,
+    "memoryFree": 45536,
+    "diskTotal": 1000000,
+    "diskUsed": 500000,
+    "diskFree": 500000,
+    "networkRX": 1048576,
+    "networkTX": 524288
+  },
+  "ollama": {
+    "runningModels": [
+      {
+        "name": "llama3.1:70b",
+        "size": 70000000000,
+        "vramUsage": 18000
+      }
+    ],
+    "activeRequests": 3,
+    "totalRequests": 1500,
+    "avgResponseTime": 250.5,
+    "requestsPerSecond": 12.5
+  }
+}
+```
+
+**Response:** 200 OK
+```json
+{
+  "status": "received"
+}
+```
+
+**Пример запроса (cURL):**
+```bash
+curl -X POST http://localhost:18081/api/v1/agents/metrics \
+  -H "Content-Type: application/json" \
+  -H "X-API-Token: your-api-token" \
+  -H "X-Agent-ID: gpu-1" \
+  -d '{
+    "id": "gpu-1",
+    "timestamp": "2024-01-15T10:30:00Z",
+    "gpu": {
+      "usagePercent": 45.5,
+      "memoryTotal": 24576,
+      "memoryUsed": 12000
+    },
+    "system": {...},
+    "ollama": {...}
+  }'
+```
+
+---
+
+#### POST /api/v1/agents/heartbeat
+
+Отправка heartbeat сигнала от агента для подтверждения активности.
+
+**Аутентификация:** Требуется (API Token)
+
+**Headers:**
+
+| Header | Значение | Описание |
+|--------|----------|----------|
+| `X-Agent-ID` | string | ID агента (обязательно) |
+
+**Request Body:** Не требуется (может быть пустым)
+
+**Response:** 200 OK
+```json
+{
+  "status": "ok"
+}
+```
+
+**Пример запроса (cURL):**
+```bash
+curl -X POST http://localhost:18081/api/v1/agents/heartbeat \
+  -H "X-API-Token: your-api-token" \
+  -H "X-Agent-ID: gpu-1"
+```
+
+---
+
 ### Auth
 
 #### GET /api/v1/auth/status
@@ -489,13 +675,21 @@ fetch('http://localhost:18081/api/v1/cluster', {
 
 WebSocket подключение для получения метрик в реальном времени.
 
-**Протокол:** WebSocket  
+**Протокол:** WebSocket
 **Формат сообщений:** JSON
+**Аутентификация:** Требуется токен в query параметре `?token=xxx`
+
+### Аутентификация
+
+Токен должен быть передан в query параметре URL. Это необходимо для защиты от DoS-атак, так как проверка аутентификации выполняется ДО WebSocket upgrade.
+
+**Важно:** При отсутствии или невалидности токена сервер вернет HTTP 401 ошибку до установления WebSocket соединения.
 
 ### Подключение
 
 ```javascript
-const ws = new WebSocket('ws://localhost:18081/ws/metrics');
+// Передача токена через query параметр
+const ws = new WebSocket('ws://localhost:18081/ws/metrics?token=your-api-token');
 
 ws.onopen = () => {
   console.log('Connected to metrics stream');
@@ -520,6 +714,22 @@ ws.onerror = (error) => {
 ws.onclose = () => {
   console.log('Connection closed');
 };
+```
+
+### Примеры подключения
+
+```javascript
+// Browser JavaScript
+const token = 'your-api-token';
+const ws = new WebSocket(`ws://localhost:18081/ws/metrics?token=${token}`);
+
+// Node.js с библиотекой ws
+const WebSocket = require('ws');
+const token = 'your-api-token';
+const ws = new WebSocket(`ws://localhost:18081/ws/metrics?token=${token}`);
+
+// Secure WebSocket (если включен TLS)
+const wss = new WebSocket(`wss://localhost:8443/ws/metrics?token=${token}`);
 ```
 
 ### Пример ответа WebSocket
@@ -699,9 +909,10 @@ async function deleteBackend(id) {
   console.log(response.data);
 }
 
-// WebSocket connection
+// WebSocket connection (token required in query parameter)
 const WebSocket = require('ws');
-const ws = new WebSocket(`ws://${API_BASE}/ws/metrics`);
+const TOKEN = 'your-api-token';
+const ws = new WebSocket(`ws://${API_BASE}/ws/metrics?token=${TOKEN}`);
 
 ws.on('message', (data) => {
   const metrics = JSON.parse(data);
@@ -749,13 +960,16 @@ docker run -d -p 8080:8080 -e SWAGGER_JSON=/api/swagger.json \
 | `DELETE` | `/api/v1/sessions` | Очистить сессии | ✅ |
 | `DELETE` | `/api/v1/sessions/{id}` | Удалить сессию | ✅ |
 | `GET` | `/api/v1/models` | Запущенные модели | ✅ |
+| `POST` | `/api/v1/agents/register` | Регистрация агента | ✅ |
+| `POST` | `/api/v1/agents/metrics` | Отправка метрик от агента | ✅ |
+| `POST` | `/api/v1/agents/heartbeat` | Heartbeat сигнал агента | ✅ |
 | `GET` | `/api/v1/agents/stats` | Статистика агентов | ✅ |
 | `GET` | `/api/v1/agents/{id}` | Информация об агенте | ✅ |
 | `GET` | `/api/v1/auth/status` | Статус аутентификации | ✅ |
 | `POST` | `/api/v1/auth/token` | Создать токен | ✅ (master) |
 | `DELETE` | `/api/v1/auth/token` | Отозвать токен | ✅ (master) |
 | `GET` | `/api/v1/ratelimit/status` | Статус rate limiter | ❌ |
-| `GET` | `/ws/metrics` | WebSocket метрики | ✅ |
+| `GET` | `/ws/metrics?token=xxx` | WebSocket метрики | ✅ (token в query) |
 
 ---
 

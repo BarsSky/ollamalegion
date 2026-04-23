@@ -32,7 +32,7 @@
 │  ┌─────────────┐  ┌─────────────┐  ┌─────────────┐             │
 │  │  Agent 1    │  │  Agent 2    │  │  Agent N    │             │
 │  │  GPU Server │  │  GPU Server │  │  GPU Server │             │
-│  │  :9090      │  │  :9090      │  │  :9090      │             │
+│  │  :18032     │  │  :18032     │  │  :18032     │             │
 │  └──────┬──────┘  └──────┬──────┘  └──────┬──────┘             │
 │         │                │                │                     │
 │         ▼                ▼                ▼                     │
@@ -318,7 +318,7 @@ Environment="AGENT_ID=gpu-1"
 Environment="BALANCER_URL=http://<BALANCER_IP>:18081"
 Environment="COLLECT_INTERVAL=5"
 Environment="HEARTBEAT_INTERVAL=3"
-Environment="METRICS_PORT=9090"
+Environment="METRICS_PORT=18032"
 ExecStart=/usr/local/bin/agent
 Restart=always
 RestartSec=10
@@ -362,7 +362,7 @@ journalctl -u ollama-agent -f
 
 | Переменная | По умолчанию | Описание |
 |------------|--------------|----------|
-| `METRICS_PORT` | `9090` | Порт для локальных метрик |
+| `METRICS_PORT` | `18032` | Порт для локальных метрик |
 | `COLLECT_INTERVAL` | `5` | Интервал сбора метрик (сек) |
 | `HEARTBEAT_INTERVAL` | `3` | Интервал отправки heartbeat (сек) |
 | `CONFIG_PATH` | - | Путь к файлу конфигурации |
@@ -408,7 +408,7 @@ COLLECT_INTERVAL=5
 HEARTBEAT_INTERVAL=3
 
 # Порт для метрик
-METRICS_PORT=9090
+METRICS_PORT=18032
 
 # NVML настройки
 NVML_ENABLED=true
@@ -441,7 +441,7 @@ curl -X POST http://<BALANCER_IP>:18081/api/v1/backends \
     "name": "GPU Server 1",
     "host": "192.168.13.66",
     "port": 11434,
-    "agent_port": 9090,
+    "agent_port": 18032,
     "weight": 1,
     "max_requests": 10
   }'
@@ -467,7 +467,7 @@ curl -X DELETE http://<BALANCER_IP>:18081/api/v1/backends/gpu-1
 
 ```bash
 # Локальная проверка метрик
-curl http://localhost:9090/metrics
+curl http://localhost:18032/metrics
 
 # Проверка через API балансировщика
 curl http://<BALANCER_IP>:18081/api/v1/cluster

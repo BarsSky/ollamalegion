@@ -44,6 +44,7 @@ type Backend struct {
 type BackendMetrics struct {
 	ID        string    `json:"id"`
 	Timestamp time.Time `json:"timestamp"`
+	Status    BackendStatus `json:"status"`
 	
 	// GPU метрики
 	GPU GPUMetrics `json:"gpu"`
@@ -86,11 +87,13 @@ type SystemMetrics struct {
 
 // OllamaMetrics - метрики Ollama
 type OllamaMetrics struct {
-	RunningModels    []RunningModel `json:"runningModels"`    // Запущенные модели
-	ActiveRequests   int            `json:"activeRequests"`   // Активные запросы
-	TotalRequests    int64          `json:"totalRequests"`    // Всего запросов
-	AvgResponseTime  float64        `json:"avgResponseTime"`  // Среднее время ответа (ms)
-	RequestsPerSecond float64       `json:"requestsPerSecond"` // RPS
+	RunningModels         []RunningModel `json:"runningModels"`         // Запущенные модели
+	ActiveRequests        int            `json:"activeRequests"`        // Активные запросы
+	TotalRequests         int64          `json:"totalRequests"`         // Всего запросов
+	AvgResponseTime       float64        `json:"avgResponseTime"`       // Среднее время ответа (ms)
+	RequestsPerSecond     float64        `json:"requestsPerSecond"`     // RPS
+	MaxModels             int            `json:"maxModels"`             // Максимум доступных для загрузки моделей
+	MaxConcurrentRequests int            `json:"maxConcurrentRequests"` // Максимум одновременных запросов
 }
 
 // RunningModel - информация о запущенной модели
@@ -100,6 +103,11 @@ type RunningModel struct {
 	VRAMUsage uint64    `json:"vramUsage"` // Использование VRAM (MB)
 	ExpiresAt time.Time `json:"expiresAt"` // Время истечения
 	Digest    string    `json:"digest"`    // Хеш модели
+	LoadCount int       `json:"loadCount"` // Количество загрузок
+	Family    string    `json:"family"`    // Семейство моделей (llama, mistral, etc.)
+	Format    string    `json:"format"`    // Формат модели (gguf, etc.)
+	ParameterSize string `json:"parameterSize"` // Размер параметров (7B, 13B, etc.)
+	Quantization string `json:"quantization"`  // Квантование (Q4_0, Q8_0, etc.)
 }
 
 // ResourceLimits - лимиты ресурсов для принятия решений
@@ -185,6 +193,7 @@ type BalancingSettings struct {
 	RequestTimeout      int                `json:"requestTimeout"`      // секунды
 	QueueTimeout        int                `json:"queueTimeout"`        // секунды
 	QueueMaxSize        int                `json:"queueMaxSize"`        // макс. размер очереди
+	QueueWorkers        int                `json:"queueWorkers"`        // количество workers очереди
 }
 
 // LoggingSettings - настройки логирования
@@ -195,11 +204,12 @@ type LoggingSettings struct {
 
 // AgentConfig - конфигурация агента
 type AgentConfig struct {
-	AgentID       string `json:"agentId"`
-	BalancerURL   string `json:"balancerUrl"`
-	MetricsPort   int    `json:"metricsPort"`
-	CollectInterval int  `json:"collectInterval"` // секунды
-	HeartbeatInterval int `json:"heartbeatInterval"` // секунды
+	AgentID           string `json:"agentId"`
+	BalancerURL       string `json:"balancerUrl"`
+	OllamaURL         string `json:"ollamaUrl"`
+	MetricsPort       int    `json:"metricsPort"`
+	CollectInterval   int    `json:"collectInterval"`   // секунды
+	HeartbeatInterval int    `json:"heartbeatInterval"` // секунды
 }
 
 // QueuedRequest - запрос в очереди

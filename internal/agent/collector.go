@@ -85,55 +85,62 @@ func (a *Agent) register() error {
 	if osName == "" {
 		osName = "linux"
 	}
-	
+
 	gpuInfo := a.collectGPUInfo()
-	ollamaVersion := a.getOllamaVersion()
-	
-	req := protocol.NewRegisterRequest(
-		a.config.AgentID,
-		hostname,
-		osName,
-		"amd64",
-		gpuInfo.Count,
-		gpuInfo.Models,
-		ollamaVersion,
-		11434,
-	)
-	
-	msg, err := protocol.NewMessage(protocol.MsgTypeRegister, a.config.AgentID, req)
-	if err != nil {
-		return err
+
+	// Отправляем регистрацию напрямую в формате, который ожидает балансировщик
+	reqBody := map[string]interface{}{
+		"agentId":    a.config.AgentID,
+		"hostname":   hostname,
+		"host":       hostname,
+		"ollamaPort": 11434,
+		"agentPort":  a.config.MetricsPort,
+		"gpuCount":   gpuInfo.Count,
+		"name":       a.config.AgentID,
+		"labels":     []string{osName, "amd64"},
 	}
-	
-	data, err := msg.Marshal()
+
+	data, err := json.Marshal(reqBody)
 	if err != nil {
-		return err
+		return fmt.Errorf("failed to marshal registration: %w", err)
 	}
-	
-	resp, err := a.httpClient.Post(
+
+	httpReq, err := http.NewRequest(http.MethodPost,
 		fmt.Sprintf("%s/api/v1/agents/register", a.balancerURL),
-		"application/json",
-		bytes.NewReader(data),
-	)
+		bytes.NewReader(data))
+	if err != nil {
+		return err
+	}
+	httpReq.Header.Set("Content-Type", "application/json")
+	httpReq.Header.Set("X-Agent-ID", a.config.AgentID)
+
+	resp, err := a.httpClient.Do(httpReq)
 	if err != nil {
 		return err
 	}
 	defer resp.Body.Close()
-	
-	if resp.StatusCode != http.StatusOK {
+
+	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusCreated {
 		body, _ := io.ReadAll(resp.Body)
 		return fmt.Errorf("registration failed with status %d: %s", resp.StatusCode, string(body))
 	}
-	
-	var registerResp protocol.RegisterResponse
+
+	// Балансировщик возвращает {success, action, agentId, backend, message}
+	var registerResp map[string]interface{}
 	if err := json.NewDecoder(resp.Body).Decode(&registerResp); err != nil {
 		return err
 	}
-	
-	if !registerResp.Success {
-		return fmt.Errorf("registration rejected: %s", registerResp.Error)
+
+	if success, ok := registerResp["success"].(bool); ok && !success {
+		errorMsg := "unknown"
+		if msg, ok := registerResp["error"].(string); ok {
+			errorMsg = msg
+		}
+		return fmt.Errorf("registration rejected: %s", errorMsg)
 	}
-	
+
+	fmt.Printf("[%s] Agent registered successfully: %s\n",
+		time.Now().Format(time.RFC3339), a.config.AgentID)
 	return nil
 }
 
@@ -163,31 +170,33 @@ func (a *Agent) collectLoop() {
 // collectAndSend - сбор и отправка метрик
 func (a *Agent) collectAndSend() {
 	metrics := a.collectMetrics()
-	
+
+	// Логирование собранных метрик для диагностики
+	fmt.Printf("[%s] Metrics collected: CPU=%.1f%% RAM=%d/%dMB GPU=%.1f%% GPU_Mem=%d/%dMB RPS=%.1f Models=%d\n",
+		time.Now().Format(time.RFC3339),
+		metrics.System.CPUUsagePercent,
+		metrics.System.MemoryUsed, metrics.System.MemoryTotal,
+		metrics.GPU.UsagePercent,
+		metrics.GPU.MemoryUsed, metrics.GPU.MemoryTotal,
+		metrics.Ollama.RequestsPerSecond,
+		len(metrics.Ollama.RunningModels),
+	)
+
 	a.mu.Lock()
 	a.metricsSeq++
 	seq := a.metricsSeq
 	a.currentMetrics = metrics
 	a.mu.Unlock()
-	
+
 	_ = protocol.NewMetricsMessage(a.config.AgentID, seq, metrics)
-	
-	// Сериализация сообщения
-	wrapper := map[string]interface{}{
-		"type":      "metrics",
-		"agentId":   a.config.AgentID,
-		"timestamp": time.Now().UTC(),
-		"sequence":  seq,
-		"metrics":   metrics,
-	}
-	
-	data, err := json.Marshal(wrapper)
+
+	// Отправляем метрики напрямую как BackendMetrics (без wrapper)
+	data, err := json.Marshal(metrics)
 	if err != nil {
 		fmt.Printf("[%s] Failed to marshal metrics: %v\n", time.Now().Format(time.RFC3339), err)
 		return
 	}
-	
-	// Отправка метрик
+
 	a.sendMetrics(data)
 }
 
@@ -195,7 +204,7 @@ func (a *Agent) collectAndSend() {
 func (a *Agent) sendMetrics(data []byte) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	
+
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost,
 		fmt.Sprintf("%s/api/v1/agents/metrics", a.balancerURL),
 		bytes.NewReader(data))
@@ -203,20 +212,20 @@ func (a *Agent) sendMetrics(data []byte) {
 		fmt.Printf("[%s] Failed to create request: %v\n", time.Now().Format(time.RFC3339), err)
 		return
 	}
-	
+
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("X-Agent-ID", a.config.AgentID)
-	
+
 	resp, err := a.httpClient.Do(req)
 	if err != nil {
 		fmt.Printf("[%s] Failed to send metrics: %v\n", time.Now().Format(time.RFC3339), err)
 		return
 	}
 	defer resp.Body.Close()
-	
+
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(resp.Body)
-		fmt.Printf("[%s] Metrics send failed with status %d: %s\n", 
+		fmt.Printf("[%s] Metrics send failed with status %d: %s\n",
 			time.Now().Format(time.RFC3339), resp.StatusCode, string(body))
 	}
 }
@@ -400,6 +409,14 @@ func (a *Agent) collectSystemMetrics() types.SystemMetrics {
 	return metrics
 }
 
+// getOllamaBaseURL - базовый URL Ollama из конфигурации
+func (a *Agent) getOllamaBaseURL() string {
+	if a.config.OllamaURL != "" {
+		return a.config.OllamaURL
+	}
+	return "http://localhost:11434"
+}
+
 // collectOllamaMetrics - сбор метрик Ollama
 func (a *Agent) collectOllamaMetrics() types.OllamaMetrics {
 	metrics := types.OllamaMetrics{}
@@ -433,7 +450,7 @@ func (a *Agent) collectOllamaMetrics() types.OllamaMetrics {
 
 // getRunningModels - получение списка запущенных моделей
 func (a *Agent) getRunningModels() ([]types.RunningModel, error) {
-	resp, err := a.httpClient.Get(fmt.Sprintf("http://localhost:11434/api/ps"))
+	resp, err := a.httpClient.Get(fmt.Sprintf("%s/api/ps", a.getOllamaBaseURL()))
 	if err != nil {
 		return nil, err
 	}
@@ -493,7 +510,7 @@ func (a *Agent) getOllamaStats() (*OllamaStats, error) {
 	}
 	
 	// Запрос к /api/ps для получения активных процессов
-	resp, err := client.Get("http://localhost:11434/api/ps")
+	resp, err := client.Get(fmt.Sprintf("%s/api/ps", a.getOllamaBaseURL()))
 	if err != nil {
 		return stats, fmt.Errorf("failed to connect to Ollama: %w", err)
 	}
@@ -574,7 +591,7 @@ func estimateVRAMUsage(modelSize uint64) uint64 {
 
 // getOllamaVersion - получение версии Ollama
 func (a *Agent) getOllamaVersion() string {
-	resp, err := a.httpClient.Get("http://localhost:11434/api/version")
+	resp, err := a.httpClient.Get(fmt.Sprintf("%s/api/version", a.getOllamaBaseURL()))
 	if err != nil {
 		return "unknown"
 	}

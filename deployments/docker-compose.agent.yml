@@ -29,33 +29,41 @@ services:
     container_name: ollama-lb-agent
     restart: unless-stopped
     
-    # Сетевой режим host для доступа к локальному Ollama
-    network_mode: host
+    # Проброс GPU для NVML доступа
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
     
-    # Volume для доступа к NVIDIA драйверам и системным метрикам
-    volumes:
-      # Доступ к nvidia-smi утилите
-      - /usr/bin/nvidia-smi:/usr/bin/nvidia-smi:ro
-      # Доступ к NVIDIA драйверам
-      - /var/run/nvidia-top-level-device:/var/run/nvidia-top-level-device:ro
-      # Доступ к системным метрикам
-      - /proc:/host/proc:ro
-      - /sys:/host/sys:ro
-      # Доступ к Ollama данным (опционально)
-      - /root/.ollama:/root/.ollama:ro
+    # Сеть для связи с балансировщиком
+    networks:
+      - ollama-lb-net
+    
+    # Порты для доступа к метрикам агента
+    ports:
+      - "${AGENT_PORT:-18032}:18032"
+    
+    # Volume для доступа к Ollama данным (опционально)
+    # Примечание: На Windows агент использует встроенные API для сбора метрик
+    # volumes:
+    #   # Для Windows используйте абсолютный путь, например:
+    #   # - C:/Users/<user>/.ollama:C:/root/.ollama:ro
     
     environment:
       # Обязательные параметры
       # Уникальный идентификатор агента (должен совпадать с ID бэкенда в балансировщике)
       - AGENT_ID=${AGENT_ID:-gpu-agent}
-      # URL балансировщика для подключения
-      - BALANCER_URL=${BALANCER_URL:-http://host.docker.internal:18081}
+      # URL балансировщика для подключения (используем service name)
+      - BALANCER_URL=${BALANCER_URL:-http://loadbalancer:18081}
       
       # Настройки портов
       # Порт для локальных метрик агента
       - AGENT_PORT=${AGENT_PORT:-18032}
       # URL локального Ollama для получения метрик моделей
-      - OLLAMA_URL=${OLLAMA_URL:-http://localhost:11434}
+      - OLLAMA_URL=${OLLAMA_URL:-http://host.docker.internal:11434}
       
       # Настройки NVML
       # Включить NVML для точных GPU метрик
@@ -75,13 +83,22 @@ services:
     
     # Health check для проверки состояния агента
     healthcheck:
-      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:11434/api/tags"]
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:${AGENT_PORT:-18032}/metrics"]
       interval: 30s
       timeout: 10s
       retries: 3
       start_period: 15s
     
+    # extra_hosts для доступа к хост-машине из контейнера (Linux совместимость)
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    
     # Метки для идентификации
     labels:
       - "ollama-lb.role=agent"
       - "ollama-lb.component=metrics-collector"
+
+networks:
+  ollama-lb-net:
+    external: true
+    name: deployments_ollama-lb-net

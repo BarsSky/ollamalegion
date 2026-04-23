@@ -44,7 +44,14 @@ func (a *TokenAuthenticator) Authenticate(r *http.Request) (bool, string) {
 		return true, "" // Аутентификация отключена
 	}
 
+	// Проверка заголовка
 	token := r.Header.Get(a.headerName)
+	
+	// Для WebSocket: проверка query parameter (браузер не поддерживает custom headers)
+	if token == "" {
+		token = r.URL.Query().Get("token")
+	}
+
 	if token == "" {
 		return false, ""
 	}

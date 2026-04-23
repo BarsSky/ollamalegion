@@ -1,11 +1,13 @@
 package main
 
 import (
+	"encoding/json"
 	"flag"
 	"fmt"
 	"log"
 	"os"
 	"os/signal"
+	"strconv"
 	"syscall"
 
 	"ollama-loadbalancer/internal/agent"
@@ -23,33 +25,25 @@ var (
 
 func main() {
 	flag.Parse()
-	
-	// Загрузка конфигурации
-	var cfg *types.AgentConfig
-	
+
+	// Загрузка конфигурации из переменных окружения и флагов
+	cfg := &types.AgentConfig{
+		AgentID:           getEnv("AGENT_ID", *agentID),
+		BalancerURL:       getEnv("BALANCER_URL", *balancerURL),
+		OllamaURL:         getEnv("OLLAMA_URL", "http://localhost:11434"),
+		MetricsPort:       getEnvInt("AGENT_PORT", *metricsPort),
+		CollectInterval:   getEnvInt("COLLECT_INTERVAL", *collectInterval),
+		HeartbeatInterval: getEnvInt("HEARTBEAT_INTERVAL", *heartbeatInterval),
+	}
+
+	// Если передан файл конфигурации — загружаем из него
 	if *configPath != "" {
-		// Загрузка из файла
-		_, err := os.ReadFile(*configPath)
+		data, err := os.ReadFile(*configPath)
 		if err != nil {
 			log.Fatalf("Failed to read config file: %v", err)
 		}
-		
-		// Парсинг JSON (упрощенно)
-		cfg = &types.AgentConfig{
-			AgentID:           *agentID,
-			BalancerURL:       *balancerURL,
-			MetricsPort:       *metricsPort,
-			CollectInterval:   *collectInterval,
-			HeartbeatInterval: *heartbeatInterval,
-		}
-	} else {
-		// Использование параметров командной строки
-		cfg = &types.AgentConfig{
-			AgentID:           getEnv("AGENT_ID", *agentID),
-			BalancerURL:       getEnv("BALANCER_URL", *balancerURL),
-			MetricsPort:       *metricsPort,
-			CollectInterval:   *collectInterval,
-			HeartbeatInterval: *heartbeatInterval,
+		if err := json.Unmarshal(data, cfg); err != nil {
+			log.Fatalf("Failed to parse config file: %v", err)
 		}
 	}
 	
@@ -98,6 +92,16 @@ func main() {
 func getEnv(key, defaultValue string) string {
 	if value := os.Getenv(key); value != "" {
 		return value
+	}
+	return defaultValue
+}
+
+// getEnvInt - получение int из переменной окружения или значения по умолчанию
+func getEnvInt(key string, defaultValue int) int {
+	if value := os.Getenv(key); value != "" {
+		if n, err := strconv.Atoi(value); err == nil {
+			return n
+		}
 	}
 	return defaultValue
 }

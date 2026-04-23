@@ -35,7 +35,7 @@ services:
     
     volumes:
       # Конфигурация
-      - ../config/config.example.json:/app/config.json:ro
+      - ../config/config.json:/app/config.json:ro
     
     environment:
       # Основные настройки
@@ -74,21 +74,23 @@ services:
       - LB_LOG_FORMAT=${LB_LOG_FORMAT:-json}
       
       # Бэкенды (альтернатива конфигурационному файлу)
-      - BACKEND_0_ID=${BACKEND_0_ID:-gpu-1}
-      - BACKEND_0_NAME=${BACKEND_0_NAME:-GPU Server 1}
-      - BACKEND_0_HOST=${BACKEND_0_HOST:-192.168.13.66}
-      - BACKEND_0_PORT=${BACKEND_0_PORT:-11434}
-      - BACKEND_0_AGENT_PORT=${BACKEND_0_AGENT_PORT:-9090}
-      - BACKEND_0_WEIGHT=${BACKEND_0_WEIGHT:-1}
-      - BACKEND_0_MAX_REQS=${BACKEND_0_MAX_REQS:-10}
-      
-      - BACKEND_1_ID=${BACKEND_1_ID:-gpu-2}
-      - BACKEND_1_NAME=${BACKEND_1_NAME:-GPU Server 2}
-      - BACKEND_1_HOST=${BACKEND_1_HOST:-192.168.13.70}
-      - BACKEND_1_PORT=${BACKEND_1_PORT:-11434}
-      - BACKEND_1_AGENT_PORT=${BACKEND_1_AGENT_PORT:-9090}
-      - BACKEND_1_WEIGHT=${BACKEND_1_WEIGHT:-1}
-      - BACKEND_1_MAX_REQS=${BACKEND_1_MAX_REQS:-10}
+      # Раскомментируйте и настройте под свои серверы.
+      # Агенты также могут регистрироваться автоматически через API.
+      # - BACKEND_0_ID=${BACKEND_0_ID}
+      # - BACKEND_0_NAME=${BACKEND_0_NAME}
+      # - BACKEND_0_HOST=${BACKEND_0_HOST}
+      # - BACKEND_0_PORT=${BACKEND_0_PORT:-11434}
+      # - BACKEND_0_AGENT_PORT=${BACKEND_0_AGENT_PORT:-9090}
+      # - BACKEND_0_WEIGHT=${BACKEND_0_WEIGHT:-1}
+      # - BACKEND_0_MAX_REQS=${BACKEND_0_MAX_REQS:-10}
+      # 
+      # - BACKEND_1_ID=${BACKEND_1_ID}
+      # - BACKEND_1_NAME=${BACKEND_1_NAME}
+      # - BACKEND_1_HOST=${BACKEND_1_HOST}
+      # - BACKEND_1_PORT=${BACKEND_1_PORT:-11434}
+      # - BACKEND_1_AGENT_PORT=${BACKEND_1_AGENT_PORT:-9090}
+      # - BACKEND_1_WEIGHT=${BACKEND_1_WEIGHT:-1}
+      # - BACKEND_1_MAX_REQS=${BACKEND_1_MAX_REQS:-10}
     
     networks:
       - ollama-lb-net

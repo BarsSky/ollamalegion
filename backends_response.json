@@ -1,0 +1,238 @@
+{
+  "backends": [
+    {
+      "agentPort": 18030,
+      "gpu": {
+        "usagePercent": 0,
+        "memoryTotal": 0,
+        "memoryUsed": 0,
+        "memoryFree": 0,
+        "temperature": 0,
+        "powerUsage": 0,
+        "powerLimit": 0,
+        "gpuClock": 0,
+        "memClock": 0
+      },
+      "host": "192.168.13.66",
+      "id": "gpu-1",
+      "labels": [
+        "nvidia",
+        "rtx4090"
+      ],
+      "maxConcurrentReqs": 10,
+      "name": "GPU Server 1",
+      "ollama": {
+        "runningModels": null,
+        "activeRequests": 0,
+        "totalRequests": 0,
+        "avgResponseTime": 0,
+        "requestsPerSecond": 0
+      },
+      "ollamaPort": 11434,
+      "status": "healthy",
+      "system": {
+        "cpuUsagePercent": 0,
+        "memoryTotal": 0,
+        "memoryUsed": 0,
+        "memoryFree": 0,
+        "diskTotal": 0,
+        "diskUsed": 0,
+        "diskFree": 0,
+        "networkRX": 0,
+        "networkTX": 0
+      },
+      "timestamp": "0001-01-01T00:00:00Z",
+      "weight": 1
+    },
+    {
+      "agentPort": 18030,
+      "gpu": {
+        "usagePercent": 0,
+        "memoryTotal": 0,
+        "memoryUsed": 0,
+        "memoryFree": 0,
+        "temperature": 0,
+        "powerUsage": 0,
+        "powerLimit": 0,
+        "gpuClock": 0,
+        "memClock": 0
+      },
+      "host": "192.168.13.70",
+      "id": "gpu-2",
+      "labels": [
+        "nvidia",
+        "rtx4090"
+      ],
+      "maxConcurrentReqs": 10,
+      "name": "GPU Server 2",
+      "ollama": {
+        "runningModels": null,
+        "activeRequests": 0,
+        "totalRequests": 0,
+        "avgResponseTime": 0,
+        "requestsPerSecond": 0
+      },
+      "ollamaPort": 11434,
+      "status": "healthy",
+      "system": {
+        "cpuUsagePercent": 0,
+        "memoryTotal": 0,
+        "memoryUsed": 0,
+        "memoryFree": 0,
+        "diskTotal": 0,
+        "diskUsed": 0,
+        "diskFree": 0,
+        "networkRX": 0,
+        "networkTX": 0
+      },
+      "timestamp": "0001-01-01T00:00:00Z",
+      "weight": 1
+    },
+    {
+      "agentPort": 9090,
+      "gpu": {
+        "usagePercent": 0,
+        "memoryTotal": 0,
+        "memoryUsed": 0,
+        "memoryFree": 0,
+        "temperature": 0,
+        "powerUsage": 0,
+        "powerLimit": 0,
+        "gpuClock": 0,
+        "memClock": 0
+      },
+      "host": "172.28.0.1",
+      "id": "gpu-local",
+      "labels": null,
+      "maxConcurrentReqs": 10,
+      "name": "",
+      "ollama": {
+        "runningModels": null,
+        "activeRequests": 0,
+        "totalRequests": 0,
+        "avgResponseTime": 0,
+        "requestsPerSecond": 0
+      },
+      "ollamaPort": 11434,
+      "status": "healthy",
+      "system": {
+        "cpuUsagePercent": 0,
+        "memoryTotal": 0,
+        "memoryUsed": 0,
+        "memoryFree": 0,
+        "diskTotal": 0,
+        "diskUsed": 0,
+        "diskFree": 0,
+        "networkRX": 0,
+        "networkTX": 0
+      },
+      "timestamp": "0001-01-01T00:00:00Z",
+      "weight": 1
+    },
+    {
+      "agentPort": 9090,
+      "gpu": {
+        "usagePercent": 10,
+        "memoryTotal": 8192,
+        "memoryUsed": 1632,
+        "memoryFree": 6386,
+        "temperature": 58,
+        "powerUsage": 0,
+        "powerLimit": 0,
+        "gpuClock": 210,
+        "memClock": 405
+      },
+      "host": "SKYWORKER",
+      "id": "test-agent",
+      "labels": [
+        "Windows_NT",
+        "amd64"
+      ],
+      "maxConcurrentReqs": 10,
+      "name": "test-agent",
+      "ollama": {
+        "runningModels": [
+          {
+            "name": "nomic-embed-text:latest",
+            "size": 595142656,
+            "vramUsage": 567,
+            "expiresAt": "2026-04-23T09:09:46.486603685Z",
+            "digest": "0a109f422b47e3a30ba2b10eca18548e944e8a23073ee3f3e947efcf3c45e59f"
+          }
+        ],
+        "activeRequests": 1,
+        "totalRequests": 4,
+        "avgResponseTime": 1000,
+        "requestsPerSecond": 1
+      },
+      "ollamaPort": 11434,
+      "status": "unhealthy",
+      "system": {
+        "cpuUsagePercent": 42,
+        "memoryTotal": 46058,
+        "memoryUsed": 20474,
+        "memoryFree": 25584,
+        "diskTotal": 398769,
+        "diskUsed": 365150,
+        "diskFree": 33619,
+        "networkRX": 0,
+        "networkTX": 0
+      },
+      "timestamp": "2026-04-23T07:41:23.0200259Z",
+      "weight": 1
+    },
+    {
+      "agentPort": 9090,
+      "gpu": {
+        "usagePercent": 37,
+        "memoryTotal": 8192,
+        "memoryUsed": 1641,
+        "memoryFree": 6377,
+        "temperature": 58,
+        "powerUsage": 0,
+        "powerLimit": 0,
+        "gpuClock": 210,
+        "memClock": 405
+      },
+      "host": "SKYWORKER",
+      "id": "test-agent-2",
+      "labels": [
+        "Windows_NT",
+        "amd64"
+      ],
+      "maxConcurrentReqs": 10,
+      "name": "test-agent-2",
+      "ollama": {
+        "runningModels": [
+          {
+            "name": "nomic-embed-text:latest",
+            "size": 595142656,
+            "vramUsage": 567,
+            "expiresAt": "2026-04-23T09:22:35.556888393Z",
+            "digest": "0a109f422b47e3a30ba2b10eca18548e944e8a23073ee3f3e947efcf3c45e59f"
+          }
+        ],
+        "activeRequests": 1,
+        "totalRequests": 2,
+        "avgResponseTime": 1000,
+        "requestsPerSecond": 1
+      },
+      "ollamaPort": 11434,
+      "status": "unhealthy",
+      "system": {
+        "cpuUsagePercent": 57,
+        "memoryTotal": 46058,
+        "memoryUsed": 21431,
+        "memoryFree": 24627,
+        "diskTotal": 398769,
+        "diskUsed": 365192,
+        "diskFree": 33577,
+        "networkRX": 0,
+        "networkTX": 0
+      },
+      "timestamp": "2026-04-23T07:54:40.9291477Z",
+      "weight": 1
+    }
+  ],
+  "total": 5
+}

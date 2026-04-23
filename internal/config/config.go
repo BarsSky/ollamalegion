@@ -78,6 +78,7 @@ func LoadFromEnv() (*Config, error) {
 	config.Balancing.RequestTimeout = getEnvInt("LB_REQUEST_TIMEOUT", 120)
 	config.Balancing.QueueTimeout = getEnvInt("LB_QUEUE_TIMEOUT", 300)
 	config.Balancing.QueueMaxSize = getEnvInt("LB_QUEUE_MAX_SIZE", 100)
+	config.Balancing.QueueWorkers = getEnvInt("LB_QUEUE_WORKERS", 4)
 	
 	// Resource limits
 	config.Resources.GPU.MaxUsagePercent = getEnvFloat("LB_GPU_MAX_USAGE", 90.0)
@@ -215,6 +216,9 @@ func setDefaults(config *types.LoadBalancerConfig) {
 	}
 	if config.Balancing.QueueMaxSize == 0 {
 		config.Balancing.QueueMaxSize = 100
+	}
+	if config.Balancing.QueueWorkers == 0 {
+		config.Balancing.QueueWorkers = 4
 	}
 	
 	// Resource limits defaults

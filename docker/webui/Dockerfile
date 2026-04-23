@@ -12,7 +12,7 @@ RUN rm -rf ./*
 COPY dist/ .
 
 # Копирование конфигурации nginx
-COPY nginx.conf /etc/nginx/conf.d/default.conf
+COPY docker/webui/nginx.conf /etc/nginx/conf.d/default.conf
 
 EXPOSE 80
 

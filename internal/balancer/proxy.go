@@ -2,12 +2,12 @@ package balancer
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
 	"net"
 	"net/http"
-	"net/http/httputil"
 	"net/url"
 	"strings"
 	"sync"
@@ -18,22 +18,23 @@ import (
 
 // Proxy - HTTP прокси для балансировки запросов
 type Proxy struct {
-	config      *types.LoadBalancerConfig
-	backends    map[string]*BackendState
-	mu          sync.RWMutex
-	roundRobin  int
-	sessionMgr  *SessionManager
-	metricsMgr  *MetricsManager
-	queueMgr    *QueueManager
-	client      *http.Client
+	config          *types.LoadBalancerConfig
+	backends        map[string]*BackendState
+	mu              sync.RWMutex
+	roundRobin      int
+	sessionMgr      *SessionManager
+	metricsMgr      *MetricsManager
+	queueMgr        *QueueManager
+	client          *http.Client      // Клиент для обычных запросов
+	streamingClient *http.Client      // Клиент для streaming/SSE запросов (без таймаута)
 }
 
 // BackendState - состояние бэкенда
 type BackendState struct {
-	Backend       *types.Backend
-	ActiveReqs    int
-	LastUsed      time.Time
-	mu            sync.Mutex
+	Backend    *types.Backend
+	ActiveReqs int
+	LastUsed   time.Time
+	mu         sync.Mutex
 }
 
 // SessionManager - менеджер сессий
@@ -49,51 +50,73 @@ type MetricsManager struct {
 	mu      sync.RWMutex
 }
 
-// QueueManager - менеджер очереди
+// QueueManager - менеджер очереди с pool workers
 type QueueManager struct {
-	queue      []*QueuedRequest
+	queue      chan *QueuedRequest
 	mu         sync.Mutex
 	maxSize    int
-	notify     chan struct{}
+	numWorkers int
 	processed  int64
 	timeout    time.Duration
-	shutdownCh chan struct{}
+	ctx        context.Context
+	cancel     context.CancelFunc
 	wg         sync.WaitGroup
+	proxy      *Proxy
 }
 
 // QueuedRequest - запрос в очереди
 type QueuedRequest struct {
-	Request   *http.Request
-	Writer    http.ResponseWriter
-	Model     string
-	Enqueued  time.Time
-	Done      chan bool
-	Target    string
+	Request  *http.Request
+	Writer   http.ResponseWriter
+	Model    string
+	Enqueued time.Time
+	Done     chan bool
+	Target   string
 }
 
 // NewProxy - создание нового прокси
 func NewProxy(config *types.LoadBalancerConfig) *Proxy {
+	// Транспорт для обычных запросов
+	regularTransport := &http.Transport{
+		DialContext: (&net.Dialer{
+			Timeout:   30 * time.Second,
+			KeepAlive: 30 * time.Second,
+		}).DialContext,
+		MaxIdleConns:          100,
+		MaxIdleConnsPerHost:   10,
+		IdleConnTimeout:       90 * time.Second,
+		ExpectContinueTimeout: 1 * time.Second,
+	}
+
+	// Транспорт для streaming запросов - без сжатия и с увеличенными буферами
+	streamingTransport := &http.Transport{
+		DialContext: (&net.Dialer{
+			Timeout:   30 * time.Second,
+			KeepAlive: 30 * time.Second,
+		}).DialContext,
+		MaxIdleConns:        100,
+		MaxIdleConnsPerHost: 10,
+		IdleConnTimeout:     90 * time.Second,
+		DisableCompression:  true, // Важно для SSE
+	}
+
 	p := &Proxy{
 		config:     config,
 		backends:   make(map[string]*BackendState),
 		sessionMgr: NewSessionManager(),
 		metricsMgr: NewMetricsManager(),
-		queueMgr:   NewQueueManager(config.Balancing.QueueMaxSize, time.Duration(config.Balancing.QueueTimeout)*time.Second),
+		queueMgr:   NewQueueManager(nil, config.Balancing.QueueMaxSize, config.Balancing.QueueWorkers, time.Duration(config.Balancing.QueueTimeout)*time.Second),
 		client: &http.Client{
-			Timeout: time.Duration(config.Balancing.RequestTimeout) * time.Second,
-			Transport: &http.Transport{
-				DialContext: (&net.Dialer{
-					Timeout:   30 * time.Second,
-					KeepAlive: 30 * time.Second,
-				}).DialContext,
-				MaxIdleConns:          100,
-				MaxIdleConnsPerHost:   10,
-				IdleConnTimeout:       90 * time.Second,
-				ExpectContinueTimeout: 1 * time.Second,
-			},
+			Timeout:   time.Duration(config.Balancing.RequestTimeout) * time.Second,
+			Transport: regularTransport,
+		},
+		// Streaming клиент без общего таймаута для long-running запросов
+		streamingClient: &http.Client{
+			Timeout:   0, // Нет таймаута для streaming
+			Transport: streamingTransport,
 		},
 	}
-	
+
 	// Инициализация бэкендов
 	for i := range config.Backends {
 		backend := config.Backends[i]
@@ -103,11 +126,13 @@ func NewProxy(config *types.LoadBalancerConfig) *Proxy {
 			LastUsed:   time.Time{},
 		}
 	}
-	
-	// Запуск обработчика очереди
-	p.queueMgr.StartWorkers(p)
-	
+
 	return p
+}
+
+// SetQueueManagerProxy - установка proxy для QueueManager (вызывается после создания)
+func (p *Proxy) SetQueueManagerProxy() {
+	p.queueMgr.proxy = p
 }
 
 // NewSessionManager - создание менеджера сессий
@@ -116,10 +141,10 @@ func NewSessionManager() *SessionManager {
 		sessions: make(map[string]*types.Session),
 		ttl:      30 * time.Minute,
 	}
-	
+
 	// Запуск очистителя просроченных сессий
 	go sm.cleanupLoop()
-	
+
 	return sm
 }
 
@@ -130,50 +155,140 @@ func NewMetricsManager() *MetricsManager {
 	}
 }
 
-// NewQueueManager - создание менеджера очереди
-func NewQueueManager(maxSize int, timeout time.Duration) *QueueManager {
-	return &QueueManager{
-		queue:      make([]*QueuedRequest, 0, maxSize),
+// NewQueueManager - создание менеджера очереди с pool workers
+func NewQueueManager(proxy *Proxy, maxSize int, numWorkers int, timeout time.Duration) *QueueManager {
+	ctx, cancel := context.WithCancel(context.Background())
+	qm := &QueueManager{
+		queue:      make(chan *QueuedRequest, maxSize),
 		maxSize:    maxSize,
-		notify:     make(chan struct{}, 1),
+		numWorkers: numWorkers,
 		timeout:    timeout,
-		shutdownCh: make(chan struct{}),
+		ctx:        ctx,
+		cancel:     cancel,
+		proxy:      proxy,
+	}
+	// Запускаем pool workers
+	for i := 0; i < qm.numWorkers; i++ {
+		qm.wg.Add(1)
+		go qm.worker(i)
+	}
+	return qm
+}
+
+// worker - обработчик запросов из очереди
+func (qm *QueueManager) worker(id int) {
+	defer qm.wg.Done()
+	fmt.Printf("[QueueManager] Worker %d started\n", id)
+	defer fmt.Printf("[QueueManager] Worker %d stopped\n", id)
+	
+	for {
+		select {
+		case <-qm.ctx.Done():
+			return
+		case req := <-qm.queue:
+			qm.processRequest(req, id)
+		}
 	}
 }
 
-// StartWorkers - запуск обработчиков очереди
-func (qm *QueueManager) StartWorkers(proxy *Proxy) {
-	qm.wg.Add(1)
-	go qm.queueWorker(proxy)
+// processRequest - обработка одного запроса
+func (qm *QueueManager) processRequest(req *QueuedRequest, workerID int) {
+	fmt.Printf("[QueueManager] Worker %d processing request for model: %s\n", workerID, req.Model)
+	
+	// Попытка найти доступный бэкенд
+	targetBackend := qm.proxy.selectBackend(req.Model)
+
+	if targetBackend == "" {
+		fmt.Printf("[QueueManager] Worker %d no backend available, re-queueing request\n", workerID)
+		// Нет доступных бэкендов - возвращаем запрос в очередь с задержкой
+		time.AfterFunc(100*time.Millisecond, func() {
+			select {
+			case qm.queue <- req:
+			case <-qm.ctx.Done():
+				// При остановке отменяем запрос
+				select {
+				case req.Done <- false:
+				default:
+				}
+			}
+		})
+		return
+	}
+
+	// Устанавливаем целевой бэкенд и выполняем запрос
+	req.Target = targetBackend
+	fmt.Printf("[QueueManager] Worker %d proxying request to backend: %s\n", workerID, targetBackend)
+
+	// Проксируем запрос
+	qm.proxy.proxyRequest(req.Writer, req.Request, targetBackend)
+
+	// Сигнал о успешном выполнении
+	select {
+	case req.Done <- true:
+	default:
+	}
+
+	// Обновление счетчика обработанных запросов
+	qm.mu.Lock()
+	qm.processed++
+	qm.mu.Unlock()
+	fmt.Printf("[QueueManager] Worker %d completed request. Total processed: %d\n", workerID, qm.processed)
 }
 
-// Stop - остановка обработчиков очереди
+// Stop - остановка всех workers
 func (qm *QueueManager) Stop() {
-	close(qm.shutdownCh)
+	// Отменяем контекст - это остановит всех workers
+	qm.cancel()
+	// Ждем завершения всех workers
 	qm.wg.Wait()
+	// Отменяем все запросы в очереди
+	close(qm.queue)
+	for req := range qm.queue {
+		select {
+		case req.Done <- false:
+		default:
+		}
+	}
 }
 
 // ServeHTTP - обработка HTTP запросов
 func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// Получение модели из запроса
 	model := p.extractModel(r)
-	
+
 	// Проверка сессии
 	sessionID := p.getSessionID(r)
 	var targetBackend string
-	
+
 	if sessionID != "" && p.config.Balancing.SessionStickiness {
 		// Есть сессия - используем тот же бэкенд
 		if session := p.sessionMgr.Get(sessionID); session != nil {
 			targetBackend = session.BackendID
+			
+			// Проверяем статус бэкенда из сессии
+			p.mu.RLock()
+			backendState, exists := p.backends[targetBackend]
+			p.mu.RUnlock()
+			
+			if !exists || backendState.Backend.Status != types.StatusHealthy {
+				// Бэкенд из сессии недоступен, выбираем новый
+				fmt.Printf("[%s] Session backend %s unavailable (exists: %v, status: %s), selecting new backend\n",
+					time.Now().Format(time.RFC3339), targetBackend, exists, backendState.Backend.Status)
+				targetBackend = ""
+			}
 		}
 	}
-	
+
 	// Если нет сессии или сессия не найдена - выбираем бэкенд
 	if targetBackend == "" {
 		targetBackend = p.selectBackend(model)
+		
+		// Обновляем сессию с новым бэкендом
+		if sessionID != "" && targetBackend != "" && p.config.Balancing.SessionStickiness {
+			p.sessionMgr.Set(sessionID, targetBackend, model)
+		}
 	}
-	
+
 	// Если бэкенд не выбран - ставим в очередь
 	if targetBackend == "" {
 		if !p.queueRequest(w, r, model) {
@@ -181,7 +296,7 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 		return
 	}
-	
+
 	// Проксирование запроса
 	p.proxyRequest(w, r, targetBackend)
 }
@@ -194,21 +309,21 @@ func (p *Proxy) extractModel(r *http.Request) string {
 		if err != nil {
 			return ""
 		}
-		
+
 		// Восстанавливаем тело для дальнейшего использования
 		r.Body = io.NopCloser(bytes.NewBuffer(body))
-		
+
 		// Парсим JSON
 		var req map[string]interface{}
 		if err := json.Unmarshal(body, &req); err != nil {
 			return ""
 		}
-		
+
 		if model, ok := req["model"].(string); ok {
 			return model
 		}
 	}
-	
+
 	return ""
 }
 
@@ -218,12 +333,12 @@ func (p *Proxy) getSessionID(r *http.Request) string {
 	if sessionID := r.Header.Get("X-Session-ID"); sessionID != "" {
 		return sessionID
 	}
-	
+
 	// Проверяем cookie
 	if cookie, err := r.Cookie("session_id"); err == nil {
 		return cookie.Value
 	}
-	
+
 	// Используем IP как идентификатор сессии
 	return r.RemoteAddr
 }
@@ -232,54 +347,79 @@ func (p *Proxy) getSessionID(r *http.Request) string {
 func (p *Proxy) selectBackend(model string) string {
 	p.mu.RLock()
 	defer p.mu.RUnlock()
-	
+
 	// Model Affinity - проверяем, есть ли модель уже загружена
 	if p.config.Balancing.ModelAffinity && model != "" {
 		if backend := p.findBackendWithModel(model); backend != "" {
 			return backend
 		}
 	}
-	
+
 	// Resource-Aware выбор
 	return p.selectByResources()
 }
 
 // findBackendWithModel - поиск бэкенда с загруженной моделью
-func (p *Proxy) findBackendWithModel(model string) string {
-	p.metricsMgr.mu.RLock()
-	defer p.metricsMgr.mu.RUnlock()
+func (p *Proxy) findBackendWithModel(modelName string) string {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
 	
-	for backendID, metrics := range p.metricsMgr.metrics {
+	var bestBackendID string
+	var bestScore float64 = -1
+	
+	for id, state := range p.backends {
+		// Проверяем статус бэкенда (только healthy)
+		if state.Backend.Status != types.StatusHealthy {
+			continue
+		}
+		
+		// Проверяем наличие модели через метрики
+		p.metricsMgr.mu.RLock()
+		metrics, hasMetrics := p.metricsMgr.metrics[id]
+		p.metricsMgr.mu.RUnlock()
+		
+		if !hasMetrics {
+			continue
+		}
+		
+		// Проверяем наличие модели (точное совпадение или частичное)
+		hasModel := false
 		for _, m := range metrics.Ollama.RunningModels {
-			if strings.Contains(m.Name, model) {
-				// Проверяем, что бэкенд здоров и имеет ресурсы
-				if state, ok := p.backends[backendID]; ok {
-					if state.Backend.Status == types.StatusHealthy {
-						return backendID
-					}
-				}
+			if m.Name == modelName || strings.Contains(m.Name, modelName) {
+				hasModel = true
+				break
 			}
+		}
+		if !hasModel {
+			continue
+		}
+		
+		// Вычисляем score для бэкенда
+		score := p.calculateScore(id)
+		if score > bestScore {
+			bestScore = score
+			bestBackendID = id
 		}
 	}
 	
-	return ""
+	return bestBackendID
 }
 
 // selectByResources - выбор бэкенда по ресурсам
 func (p *Proxy) selectByResources() string {
 	var bestBackend string
 	var bestScore float64 = -1
-	
+
 	for id, state := range p.backends {
 		if state.Backend.Status != types.StatusHealthy {
 			continue
 		}
-		
+
 		// Проверка лимитов
 		if !p.checkResourceLimits(id) {
 			continue
 		}
-		
+
 		// Проверка максимального количества запросов
 		state.mu.Lock()
 		if state.ActiveReqs >= state.Backend.MaxConcurrentReqs {
@@ -287,7 +427,7 @@ func (p *Proxy) selectByResources() string {
 			continue
 		}
 		state.mu.Unlock()
-		
+
 		// Вычисление scores
 		score := p.calculateScore(id)
 		if score > bestScore {
@@ -295,7 +435,7 @@ func (p *Proxy) selectByResources() string {
 			bestBackend = id
 		}
 	}
-	
+
 	return bestBackend
 }
 
@@ -303,14 +443,14 @@ func (p *Proxy) selectByResources() string {
 func (p *Proxy) checkResourceLimits(backendID string) bool {
 	p.metricsMgr.mu.RLock()
 	defer p.metricsMgr.mu.RUnlock()
-	
+
 	metrics, ok := p.metricsMgr.metrics[backendID]
 	if !ok {
 		return true // Нет метрик - разрешаем
 	}
-	
+
 	limits := p.config.Resources
-	
+
 	// Проверка GPU
 	if metrics.GPU.UsagePercent > limits.GPU.MaxUsagePercent {
 		return false
@@ -321,12 +461,12 @@ func (p *Proxy) checkResourceLimits(backendID string) bool {
 			return false
 		}
 	}
-	
+
 	// Проверка CPU
 	if metrics.System.CPUUsagePercent > limits.CPU.MaxUsagePercent {
 		return false
 	}
-	
+
 	// Проверка RAM
 	if limits.Memory.MaxUsagePercent > 0 {
 		memPercent := float64(metrics.System.MemoryUsed) * 100 / float64(metrics.System.MemoryTotal)
@@ -334,12 +474,12 @@ func (p *Proxy) checkResourceLimits(backendID string) bool {
 			return false
 		}
 	}
-	
+
 	// Проверка диска
 	if metrics.System.DiskFree < limits.Disk.MinFreeMB {
 		return false
 	}
-	
+
 	return true
 }
 
@@ -347,99 +487,235 @@ func (p *Proxy) checkResourceLimits(backendID string) bool {
 func (p *Proxy) calculateScore(backendID string) float64 {
 	p.metricsMgr.mu.RLock()
 	defer p.metricsMgr.mu.RUnlock()
-	
+
 	state := p.backends[backendID]
 	if state == nil {
 		return 0
 	}
-	
+
 	metrics, ok := p.metricsMgr.metrics[backendID]
 	if !ok {
 		// Нет метрик - используем weight
 		return float64(state.Backend.Weight)
 	}
-	
+
 	// Score на основе доступных ресурсов
 	gpuFree := 100 - metrics.GPU.UsagePercent
 	vramFree := float64(metrics.GPU.MemoryFree) * 100 / float64(metrics.GPU.MemoryTotal)
 	cpuFree := 100 - metrics.System.CPUUsagePercent
-	
+
 	// Weighted score
 	score := (gpuFree*0.4 + vramFree*0.3 + cpuFree*0.3) * float64(state.Backend.Weight) / 100
-	
+
 	return score
 }
 
-// proxyRequest - проксирование запроса к бэкенду
+// proxyRequest - проксирование запроса к бэкенду с поддержкой streaming/SSE
 func (p *Proxy) proxyRequest(w http.ResponseWriter, r *http.Request, backendID string) {
 	state, ok := p.backends[backendID]
 	if !ok {
 		http.Error(w, "Backend not found", http.StatusInternalServerError)
 		return
 	}
-	
+
 	// Увеличение счетчика активных запросов
 	state.mu.Lock()
 	state.ActiveReqs++
 	state.mu.Unlock()
-	
+
 	defer func() {
 		state.mu.Lock()
 		state.ActiveReqs--
 		state.mu.Unlock()
 	}()
-	
+
 	// Создание URL для бэкенда
 	targetURL := fmt.Sprintf("http://%s:%d", state.Backend.Host, state.Backend.OllamaPort)
-	
+
 	target, err := url.Parse(targetURL)
 	if err != nil {
 		http.Error(w, fmt.Sprintf("Invalid backend URL: %v", err), http.StatusInternalServerError)
 		return
 	}
-	
-	// Создание reverse proxy
-	proxy := httputil.NewSingleHostReverseProxy(target)
-	
-	// Кастомный ErrorHandler
-	proxy.ErrorHandler = func(w http.ResponseWriter, r *http.Request, err error) {
-		p.logError(backendID, err)
+
+	// Проверяем, является ли запрос streaming запросом (по телу запроса)
+	isStreamingRequest := p.isStreamingRequest(r)
+
+	// Выбираем клиент: streaming для streaming запросов, обычный для остальных
+	client := p.client
+	if isStreamingRequest {
+		client = p.streamingClient
+	}
+
+	// Создание нового запроса с тем же телом и заголовками
+	req, err := http.NewRequestWithContext(r.Context(), r.Method, targetURL+r.URL.String(), r.Body)
+	if err != nil {
+		http.Error(w, fmt.Sprintf("Failed to create request: %v", err), http.StatusInternalServerError)
+		return
+	}
+
+	// Копирование заголовков запроса
+	for key, values := range r.Header {
+		for _, value := range values {
+			req.Header.Add(key, value)
+		}
+	}
+
+	// Добавление заголовков проксирования
+	req.Header.Set("X-Forwarded-For", r.RemoteAddr)
+	req.Header.Set("X-Real-IP", r.RemoteAddr)
+	req.Host = target.Host
+
+	// Выполнение запроса к бэкенду
+	resp, err := client.Do(req)
+	if err != nil {
+		p.logStreamingError(backendID, err)
 		http.Error(w, "Backend error", http.StatusBadGateway)
+		return
 	}
-	
-	// Модификация запроса
-	originalDirector := proxy.Director
-	proxy.Director = func(req *http.Request) {
-		originalDirector(req)
-		req.Host = target.Host
-		req.URL.Host = target.Host
-		req.URL.Scheme = target.Scheme
-		
-		// Добавление заголовков
-		req.Header.Set("X-Forwarded-For", r.RemoteAddr)
-		req.Header.Set("X-Real-IP", r.RemoteAddr)
+	defer resp.Body.Close()
+
+	// Копирование заголовков ответа
+	for key, values := range resp.Header {
+		for _, value := range values {
+			w.Header().Add(key, value)
+		}
 	}
-	
-	// Модификация ответа для добавления session ID
-	originalModifyResponse := proxy.ModifyResponse
-	proxy.ModifyResponse = func(resp *http.Response) error {
-		if originalModifyResponse != nil {
-			if err := originalModifyResponse(resp); err != nil {
-				return err
+
+	// Добавление заголовка сессии
+	sessionID := p.getSessionID(r)
+	if sessionID != "" {
+		p.sessionMgr.Set(sessionID, backendID, p.extractModel(r))
+		w.Header().Set("X-Session-ID", sessionID)
+	}
+
+	// Проверка на streaming ответ (SSE или chunked transfer)
+	isStreaming := p.isStreamingResponse(resp)
+
+	if isStreaming {
+		p.handleStreamingResponse(w, r, resp, backendID)
+	} else {
+		// Обычный ответ - копируем тело
+		w.WriteHeader(resp.StatusCode)
+		io.Copy(w, resp.Body)
+	}
+}
+
+// isStreamingRequest - проверка, является ли запрос streaming запросом
+// Ollama API использует параметр "stream" в теле запроса
+func (p *Proxy) isStreamingRequest(r *http.Request) bool {
+	// Только POST запросы могут быть streaming
+	if r.Method != http.MethodPost {
+		return false
+	}
+
+	// Читаем тело для проверки параметра stream
+	if r.Body == nil {
+		return false
+	}
+
+	body, err := io.ReadAll(r.Body)
+	if err != nil {
+		return false
+	}
+
+	// Восстанавливаем тело для дальнейшего использования
+	r.Body = io.NopCloser(bytes.NewBuffer(body))
+
+	// Парсим JSON
+	var req map[string]interface{}
+	if err := json.Unmarshal(body, &req); err != nil {
+		return false
+	}
+
+	// Проверяем параметр stream (по умолчанию true для Ollama)
+	if stream, ok := req["stream"].(bool); ok {
+		return stream
+	}
+
+	// По умолчанию считаем запрос streaming (Ollama API behavior)
+	return true
+}
+
+// isStreamingResponse - проверка на streaming ответ (SSE или chunked)
+func (p *Proxy) isStreamingResponse(resp *http.Response) bool {
+	// Проверяем Content-Type на text/event-stream (SSE)
+	contentType := resp.Header.Get("Content-Type")
+	if strings.Contains(contentType, "text/event-stream") {
+		return true
+	}
+
+	// Проверяем Transfer-Encoding на chunked
+	if resp.Header.Get("Transfer-Encoding") == "chunked" {
+		return true
+	}
+
+	// Проверяем ContentLength = -1 (неизвестная длина = streaming)
+	if resp.ContentLength == -1 {
+		return true
+	}
+
+	// Проверяем заголовок X-Accel-Buffering (для nginx)
+	if resp.Header.Get("X-Accel-Buffering") == "no" {
+		return true
+	}
+
+	return false
+}
+
+// handleStreamingResponse - обработка streaming ответа с использованием Flusher
+func (p *Proxy) handleStreamingResponse(w http.ResponseWriter, r *http.Request, resp *http.Response, backendID string) {
+	// Отправляем статус ответа
+	w.WriteHeader(resp.StatusCode)
+
+	// Пытаемся получить Flusher для потоковой передачи
+	flusher, ok := w.(http.Flusher)
+	if !ok {
+		// Если Flusher недоступен, просто копируем тело
+		fmt.Printf("[%s] Streaming detected but Flusher not supported, falling back to regular copy\n", time.Now().Format(time.RFC3339))
+		io.Copy(w, resp.Body)
+		return
+	}
+
+	// Логирование начала streaming сессии
+	fmt.Printf("[%s] Starting streaming session for backend %s (Content-Type: %s)\n",
+		time.Now().Format(time.RFC3339), backendID, resp.Header.Get("Content-Type"))
+
+	// Буфер для чтения данных
+	buf := make([]byte, 32*1024)
+	bytesStreamed := 0
+
+	// Потоковая передача данных
+	for {
+		n, err := resp.Body.Read(buf)
+		if n > 0 {
+			_, writeErr := w.Write(buf[:n])
+			if writeErr != nil {
+				fmt.Printf("[%s] Error writing to client: %v\n", time.Now().Format(time.RFC3339), writeErr)
+				break
 			}
+			bytesStreamed += n
+			flusher.Flush()
 		}
-		
-		// Добавление заголовка сессии
-		sessionID := p.getSessionID(r)
-		if sessionID != "" {
-			p.sessionMgr.Set(sessionID, backendID, p.extractModel(r))
-			resp.Header.Set("X-Session-ID", sessionID)
+		if err != nil {
+			if err == io.EOF {
+				// Нормальное завершение streaming
+				break
+			}
+			// Логирование других ошибок
+			fmt.Printf("[%s] Error reading from backend: %v\n", time.Now().Format(time.RFC3339), err)
+			break
 		}
-		
-		return nil
 	}
-	
-	proxy.ServeHTTP(w, r)
+
+	// Логирование завершения streaming сессии
+	fmt.Printf("[%s] Streaming session completed for backend %s (total bytes: %d)\n",
+		time.Now().Format(time.RFC3339), backendID, bytesStreamed)
+}
+
+// logStreamingError - логирование ошибок streaming
+func (p *Proxy) logStreamingError(backendID string, err error) {
+	fmt.Printf("[%s] Streaming error for backend %s: %v\n", time.Now().Format(time.RFC3339), backendID, err)
 }
 
 // logError - логирование ошибки
@@ -452,7 +728,7 @@ func (p *Proxy) logError(backendID string, err error) {
 func (p *Proxy) UpdateMetrics(backendID string, metrics *types.BackendMetrics) {
 	p.metricsMgr.mu.Lock()
 	defer p.metricsMgr.mu.Unlock()
-	
+
 	p.metricsMgr.metrics[backendID] = metrics
 }
 
@@ -460,7 +736,7 @@ func (p *Proxy) UpdateMetrics(backendID string, metrics *types.BackendMetrics) {
 func (p *Proxy) UpdateBackendStatus(backendID string, status types.BackendStatus) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	
+
 	if state, ok := p.backends[backendID]; ok {
 		state.Backend.Status = status
 	}
@@ -469,28 +745,52 @@ func (p *Proxy) UpdateBackendStatus(backendID string, status types.BackendStatus
 // GetClusterState - получение состояния кластера
 func (p *Proxy) GetClusterState() *types.ClusterState {
 	p.mu.RLock()
-	p.metricsMgr.mu.RLock()
-	defer p.mu.RUnlock()
-	defer p.metricsMgr.mu.RUnlock()
 	
-	state := &types.ClusterState{
-		Timestamp:      time.Now().UTC(),
-		TotalBackends:  len(p.backends),
-		HealthyBackends: 0,
-		Backends:       make([]types.BackendMetrics, 0),
+	// Создаем копию бэкендов для безопасной итерации
+	// Это предотвращает race condition при модификации мапы во время итерации
+	backendsCopy := make(map[string]*BackendState, len(p.backends))
+	for id, state := range p.backends {
+		backendsCopy[id] = state
 	}
 	
-	for id, backendState := range p.backends {
+	p.mu.RUnlock()
+	
+	p.metricsMgr.mu.RLock()
+	defer p.metricsMgr.mu.RUnlock()
+
+	state := &types.ClusterState{
+		Timestamp:       time.Now().UTC(),
+		TotalBackends:   len(backendsCopy),
+		HealthyBackends: 0,
+		Backends:        make([]types.BackendMetrics, 0, len(backendsCopy)),
+	}
+
+	for id, backendState := range backendsCopy {
 		if backendState.Backend.Status == types.StatusHealthy {
 			state.HealthyBackends++
 		}
-		
-		if metrics, ok := p.metricsMgr.metrics[id]; ok {
-			state.Backends = append(state.Backends, *metrics)
-			state.ActiveRequests += metrics.Ollama.ActiveRequests
+
+		// Создаем метрики для каждого бэкенда, даже если нет данных от агента
+		metrics := types.BackendMetrics{
+			ID:        id,
+			Timestamp: time.Now().UTC(),
+			Status:    backendState.Backend.Status,
+			GPU:       types.GPUMetrics{},
+			System:    types.SystemMetrics{},
+			Ollama:    types.OllamaMetrics{RunningModels: []types.RunningModel{}},
 		}
+
+		// Если есть метрики от агента - используем их
+		if agentMetrics, ok := p.metricsMgr.metrics[id]; ok {
+			metrics = *agentMetrics
+			// Сохраняем статус из конфигурации бэкенда
+			metrics.Status = backendState.Backend.Status
+			state.ActiveRequests += agentMetrics.Ollama.ActiveRequests
+		}
+
+		state.Backends = append(state.Backends, metrics)
 	}
-	
+
 	return state
 }
 
@@ -498,7 +798,7 @@ func (p *Proxy) GetClusterState() *types.ClusterState {
 func (sm *SessionManager) cleanupLoop() {
 	ticker := time.NewTicker(5 * time.Minute)
 	defer ticker.Stop()
-	
+
 	for range ticker.C {
 		sm.cleanup()
 	}
@@ -508,7 +808,7 @@ func (sm *SessionManager) cleanupLoop() {
 func (sm *SessionManager) cleanup() {
 	sm.mu.Lock()
 	defer sm.mu.Unlock()
-	
+
 	now := time.Now()
 	for id, session := range sm.sessions {
 		if now.Sub(session.LastRequestAt) > sm.ttl {
@@ -521,15 +821,47 @@ func (sm *SessionManager) cleanup() {
 func (sm *SessionManager) Get(id string) *types.Session {
 	sm.mu.RLock()
 	defer sm.mu.RUnlock()
-	
+
 	return sm.sessions[id]
+}
+
+// GetAll - получение всех сессий
+func (sm *SessionManager) GetAll() []*types.Session {
+	sm.mu.RLock()
+	defer sm.mu.RUnlock()
+
+	sessions := make([]*types.Session, 0, len(sm.sessions))
+	for _, s := range sm.sessions {
+		sessions = append(sessions, s)
+	}
+	return sessions
+}
+
+// Delete - удаление сессии по ID
+func (sm *SessionManager) Delete(id string) bool {
+	sm.mu.Lock()
+	defer sm.mu.Unlock()
+
+	if _, exists := sm.sessions[id]; exists {
+		delete(sm.sessions, id)
+		return true
+	}
+	return false
+}
+
+// Clear - удаление всех сессий
+func (sm *SessionManager) Clear() {
+	sm.mu.Lock()
+	defer sm.mu.Unlock()
+
+	sm.sessions = make(map[string]*types.Session)
 }
 
 // Set - установка сессии
 func (sm *SessionManager) Set(id, backendID, model string) {
 	sm.mu.Lock()
 	defer sm.mu.Unlock()
-	
+
 	now := time.Now()
 	if session, ok := sm.sessions[id]; ok {
 		session.LastRequestAt = now
@@ -548,15 +880,6 @@ func (sm *SessionManager) Set(id, backendID, model string) {
 
 // queueRequest - постановка запроса в очередь
 func (p *Proxy) queueRequest(w http.ResponseWriter, r *http.Request, model string) bool {
-	p.queueMgr.mu.Lock()
-	
-	// Проверка переполнения очереди
-	if len(p.queueMgr.queue) >= p.queueMgr.maxSize {
-		p.queueMgr.mu.Unlock()
-		return false
-	}
-	
-	// Создание запроса в очереди
 	done := make(chan bool, 1)
 	queuedReq := &QueuedRequest{
 		Request:  r,
@@ -565,139 +888,41 @@ func (p *Proxy) queueRequest(w http.ResponseWriter, r *http.Request, model strin
 		Enqueued: time.Now(),
 		Done:     done,
 	}
-	
-	// Добавление в очередь
-	p.queueMgr.queue = append(p.queueMgr.queue, queuedReq)
-	p.queueMgr.mu.Unlock()
-	
-	// Сигнал обработчику
+
+	// Попытка отправить запрос в очередь
 	select {
-	case p.queueMgr.notify <- struct{}{}:
+	case p.queueMgr.queue <- queuedReq:
+		// Запрос успешно отправлен в очередь
+	case <-p.queueMgr.ctx.Done():
+		return false
 	default:
-		// Обработчик уже уведомлен
+		// Очередь переполнена
+		return false
 	}
-	
+
 	// Ожидание результата с таймаутом
 	select {
 	case success := <-done:
 		return success
 	case <-time.After(p.queueMgr.timeout):
-		// Таймаут ожидания - удаляем запрос из очереди
-		p.queueMgr.mu.Lock()
-		for i, req := range p.queueMgr.queue {
-			if req == queuedReq {
-				p.queueMgr.queue = append(p.queueMgr.queue[:i], p.queueMgr.queue[i+1:]...)
-				break
-			}
-		}
-		p.queueMgr.mu.Unlock()
 		return false
-	case <-p.queueMgr.shutdownCh:
+	case <-p.queueMgr.ctx.Done():
 		return false
 	}
-}
-
-// queueWorker - обработчик очереди запросов
-func (qm *QueueManager) queueWorker(proxy *Proxy) {
-	defer qm.wg.Done()
-	
-	for {
-		select {
-		case <-qm.shutdownCh:
-			// Остановка - отменяем все ожидающие запросы
-			qm.mu.Lock()
-			for _, req := range qm.queue {
-				select {
-				case req.Done <- false:
-				default:
-				}
-			}
-			qm.queue = nil
-			qm.mu.Unlock()
-			return
-			
-		case <-qm.notify:
-			// Попытка обработать очередь
-			qm.processQueue(proxy)
-		}
-	}
-}
-
-// processQueue - обработка очереди
-func (qm *QueueManager) processQueue(proxy *Proxy) {
-	qm.mu.Lock()
-	defer qm.mu.Unlock()
-	
-	if len(qm.queue) == 0 {
-		return
-	}
-	
-	// Берем первый запрос из очереди
-	req := qm.queue[0]
-	qm.queue = append(qm.queue[:0], qm.queue[1:]...)
-	
-	// Попытка найти доступный бэкенд
-	targetBackend := proxy.selectBackend(req.Model)
-	
-	if targetBackend == "" {
-		// Нет доступных бэкендов - возвращаем запрос в начало очереди
-		qm.queue = append([]*QueuedRequest{req}, qm.queue...)
-		
-		// Повторное уведомление через небольшую задержку
-		time.AfterFunc(100*time.Millisecond, func() {
-			select {
-			case qm.notify <- struct{}{}:
-			default:
-			}
-		})
-		return
-	}
-	
-	// Устанавливаем целевой бэкенд и выполняем запрос
-	req.Target = targetBackend
-	
-	// Проксируем запрос
-	proxy.proxyRequest(req.Writer, req.Request, targetBackend)
-	
-	// Сигнал о успешном выполнении
-	select {
-	case req.Done <- true:
-	default:
-	}
-	
-	// Обновление счетчика
-	qm.processed++
 }
 
 // getQueueStats - получение статистики очереди
 func (p *Proxy) getQueueStats() QueueStats {
 	p.queueMgr.mu.Lock()
-	defer p.queueMgr.mu.Unlock()
-	
+	processed := p.queueMgr.processed
+	p.queueMgr.mu.Unlock()
+
 	return QueueStats{
 		CurrentSize:   len(p.queueMgr.queue),
 		MaxSize:       p.queueMgr.maxSize,
-		Processed:     p.queueMgr.processed,
-		WaitTimeAvgMs: p.calculateAvgWaitTime(),
+		Processed:     processed,
+		WaitTimeAvgMs: 0, // Упрощено для новой архитектуры
 	}
-}
-
-// calculateAvgWaitTime - вычисление среднего времени ожидания
-func (p *Proxy) calculateAvgWaitTime() int64 {
-	p.queueMgr.mu.Lock()
-	defer p.queueMgr.mu.Unlock()
-	
-	if len(p.queueMgr.queue) == 0 {
-		return 0
-	}
-	
-	var totalWait int64
-	now := time.Now()
-	for _, req := range p.queueMgr.queue {
-		totalWait += int64(now.Sub(req.Enqueued))
-	}
-	
-	return totalWait / int64(len(p.queueMgr.queue)) / int64(time.Millisecond)
 }
 
 // QueueStats - статистика очереди
@@ -712,12 +937,12 @@ type QueueStats struct {
 func (p *Proxy) AddBackend(backend types.Backend) error {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	
+
 	// Проверка на дубликат
 	if _, exists := p.backends[backend.ID]; exists {
 		return fmt.Errorf("backend with ID %s already exists", backend.ID)
 	}
-	
+
 	// Установка значений по умолчанию
 	if backend.Weight == 0 {
 		backend.Weight = 1
@@ -734,13 +959,13 @@ func (p *Proxy) AddBackend(backend types.Backend) error {
 	if backend.Status == "" {
 		backend.Status = types.StatusStarting
 	}
-	
+
 	p.backends[backend.ID] = &BackendState{
 		Backend:    &backend,
 		ActiveReqs: 0,
 		LastUsed:   time.Time{},
 	}
-	
+
 	return nil
 }
 
@@ -748,18 +973,18 @@ func (p *Proxy) AddBackend(backend types.Backend) error {
 func (p *Proxy) RemoveBackend(backendID string) error {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	
+
 	if _, exists := p.backends[backendID]; !exists {
 		return fmt.Errorf("backend with ID %s not found", backendID)
 	}
-	
+
 	delete(p.backends, backendID)
-	
+
 	// Также удаляем метрики
 	p.metricsMgr.mu.Lock()
 	delete(p.metricsMgr.metrics, backendID)
 	p.metricsMgr.mu.Unlock()
-	
+
 	return nil
 }
 
@@ -767,22 +992,22 @@ func (p *Proxy) RemoveBackend(backendID string) error {
 func (p *Proxy) UpdateBackend(backendID string, updated types.Backend) error {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	
+
 	state, exists := p.backends[backendID]
 	if !exists {
 		return fmt.Errorf("backend with ID %s not found", backendID)
 	}
-	
+
 	// Сохраняем текущий статус и активные запросы
 	currentStatus := state.Backend.Status
 	currentActiveReqs := state.ActiveReqs
-	
+
 	// Обновляем конфигурацию
 	updated.ID = backendID
 	updated.Status = currentStatus
 	state.Backend = &updated
 	state.ActiveReqs = currentActiveReqs
-	
+
 	return nil
 }
 
@@ -790,18 +1015,33 @@ func (p *Proxy) UpdateBackend(backendID string, updated types.Backend) error {
 func (p *Proxy) GetBackend(backendID string) *types.Backend {
 	p.mu.RLock()
 	defer p.mu.RUnlock()
-	
+
 	if state, exists := p.backends[backendID]; exists {
 		return state.Backend
 	}
 	return nil
 }
 
+// GetSessions - получение всех сессий
+func (p *Proxy) GetSessions() []*types.Session {
+	return p.sessionMgr.GetAll()
+}
+
+// DeleteSession - удаление сессии
+func (p *Proxy) DeleteSession(id string) bool {
+	return p.sessionMgr.Delete(id)
+}
+
+// ClearSessions - очистка всех сессий
+func (p *Proxy) ClearSessions() {
+	p.sessionMgr.Clear()
+}
+
 // GetAllBackends - получение всех бэкендов
 func (p *Proxy) GetAllBackends() []types.Backend {
 	p.mu.RLock()
 	defer p.mu.RUnlock()
-	
+
 	backends := make([]types.Backend, 0, len(p.backends))
 	for _, state := range p.backends {
 		backends = append(backends, *state.Backend)
@@ -813,7 +1053,7 @@ func (p *Proxy) GetAllBackends() []types.Backend {
 func (p *Proxy) BackendExists(backendID string) bool {
 	p.mu.RLock()
 	defer p.mu.RUnlock()
-	
+
 	_, exists := p.backends[backendID]
 	return exists
 }

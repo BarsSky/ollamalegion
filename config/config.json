@@ -2,9 +2,31 @@
   "loadBalancer": {
     "host": "0.0.0.0",
     "port": 18080,
-    "apiPort": 18081
+    "apiPort": 18081,
+    "tlsPort": 18443
   },
-  "backends": [],
+  "backends": [
+    {
+      "id": "gpu-local",
+      "name": "Local GPU Server",
+      "host": "host.docker.internal",
+      "ollamaPort": 11434,
+      "agentPort": 18032,
+      "weight": 1,
+      "maxConcurrentRequests": 10,
+      "labels": ["local", "gpu"]
+    },
+    {
+      "id": "local",
+      "name": "local gpu",
+      "host": "SKYWORKER",
+      "ollamaPort": 11434,
+      "agentPort": 18032,
+      "weight": 1,
+      "maxConcurrentRequests": 10,
+      "labels": []
+    }
+  ],
   "balancing": {
     "algorithm": "resource-aware",
     "modelAffinity": true,
@@ -33,7 +55,7 @@
   },
   "logging": {
     "level": "info",
-    "format": "json"
+    "format": "text"
   },
   "api": {
     "rateLimit": 100,

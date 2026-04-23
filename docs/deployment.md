@@ -239,6 +239,47 @@ docker-compose -f docker-compose.agent.yml logs -f agent
 docker-compose -f docker-compose.agent.yml ps
 ```
 
+#### GPU проброс для NVML
+
+Конфигурация [`docker-compose.agent.yml`](../deployments/docker-compose.agent.yml) включает проброс GPU через NVIDIA Container Toolkit:
+
+```yaml
+services:
+  agent:
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+```
+
+**Требования для GPU проброса:**
+- NVIDIA Driver (версия 535+ для Linux, 528+ для Windows)
+- NVIDIA Container Toolkit установлен на хосте
+- Docker Compose v3.8+
+
+**Проверка NVIDIA Container Toolkit:**
+```bash
+# Проверка доступности GPU в Docker
+docker run --rm --gpus all nvidia/cuda:12.2.0-base-ubuntu22.04 nvidia-smi
+
+# Если команда выше работает, GPU проброс настроен корректно
+```
+
+**Проверка работы NVML внутри контейнера:**
+```bash
+# Подключение к контейнеру агента
+docker exec -it ollama-lb-agent bash
+
+# Проверка доступности nvidia-smi
+nvidia-smi
+
+# Проверка метрик агента
+curl http://localhost:18032/metrics
+```
+
 ### Способ 3: Docker run
 
 ```bash

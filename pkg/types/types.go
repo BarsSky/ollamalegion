@@ -57,6 +57,9 @@ type BackendMetrics struct {
 	
 	// Ollama метрики
 	Ollama OllamaMetrics `json:"ollama"`
+
+	// Прогноз критического состояния
+	Prediction Prediction `json:"prediction"`
 }
 
 // PlatformMode - режим работы платформы
@@ -118,12 +121,13 @@ type SystemMetrics struct {
 type OllamaMetrics struct {
 	RunningModels         []RunningModel `json:"runningModels"`         // Запущенные (загруженные в память) модели
 	AvailableModels       []RunningModel `json:"availableModels"`       // Доступные модели (все, что можно загрузить)
-	ActiveRequests        int            `json:"activeRequests"`        // Активные запросы
-	TotalRequests         int64          `json:"totalRequests"`         // Всего запросов
+	ActiveRequests        int            `json:"activeRequests"`        // Активные запросы (от балансировщика — точные)
+	TotalRequests         int64          `json:"totalRequests"`         // Всего запросов (от балансировщика)
 	AvgResponseTime       float64        `json:"avgResponseTime"`       // Среднее время ответа (ms)
-	RequestsPerSecond     float64        `json:"requestsPerSecond"`     // RPS
-	MaxModels             int            `json:"maxModels"`             // Максимум доступных для загрузки моделей (-1 = не задано)
-	MaxConcurrentRequests int            `json:"maxConcurrentRequests"` // Максимум одновременных запросов (-1 = не задано)
+	RequestsPerSecond     float64        `json:"requestsPerSecond"`     // RPS (от балансировщика)
+	MaxModels             int            `json:"maxModels"`             // Максимум доступных для загрузки моделей (-1 = авто)
+	MaxConcurrentRequests int            `json:"maxConcurrentRequests"` // Максимум одновременных запросов (-1 = авто)
+	FreeSlots             int            `json:"freeSlots"`             // Свободные слоты для запросов
 }
 
 // RunningModel - информация о запущенной модели
@@ -276,15 +280,38 @@ type HealthCheckResult struct {
 	Timestamp time.Time     `json:"timestamp"`
 }
 
+// Prediction - прогноз критического состояния бэкенда
+type Prediction struct {
+	SecondsToCritical float64 `json:"secondsToCritical"` // Секунд до критического состояния (-1 = нет данных, +Inf = не определено)
+	CriticalReason    string  `json:"criticalReason"`      // Причина: "gpu_usage", "vram", "ram", "disk", "concurrent_requests", "models_capacity", "none"
+	GPUUsageTrend     float64 `json:"gpuUsageTrend"`       // Тренд загрузки GPU (% в минуту, >0 — рост)
+	VRAMUsageTrend    float64 `json:"vramUsageTrend"`      // Тренд использования VRAM (% в минуту)
+	RAMUsageTrend     float64 `json:"ramUsageTrend"`       // Тренд использования RAM (% в минуту)
+	FreeSlotsTrend    float64 `json:"freeSlotsTrend"`      // Тренд свободных слотов (слотов в минуту, <0 — уменьшение)
+	RequestCapacity   float64 `json:"requestCapacity"`     // Текущая ёмкость запросов (0-100%, 100% = полная загрузка)
+}
+
+// MetricsSnapshot - точка истории метрик для прогнозирования
+type MetricsSnapshot struct {
+	Timestamp         time.Time `json:"timestamp"`
+	GPUUsagePercent   float64   `json:"gpuUsagePercent"`
+	VRAMUsagePercent  float64   `json:"vramUsagePercent"`
+	RAMUsagePercent   float64   `json:"ramUsagePercent"`
+	ActiveRequests    int       `json:"activeRequests"`
+	RunningModels     int       `json:"runningModels"`
+	FreeSlots         int       `json:"freeSlots"`
+	RequestsPerSecond float64   `json:"requestsPerSecond"`
+}
+
 // ClusterState - состояние кластера
 type ClusterState struct {
-	Timestamp      time.Time         `json:"timestamp"`
-	TotalBackends  int               `json:"totalBackends"`
+	Timestamp       time.Time        `json:"timestamp"`
+	TotalBackends   int              `json:"totalBackends"`
 	HealthyBackends int              `json:"healthyBackends"`
-	TotalRequests  int64             `json:"totalRequests"`
-	ActiveRequests int               `json:"activeRequests"`
-	QueuedRequests int               `json:"queuedRequests"`
-	RPS            float64           `json:"rps"`
-	TotalGPUUsage  float64           `json:"totalGpuUsage"`
-	Backends       []BackendMetrics  `json:"backends"`
+	TotalRequests   int64            `json:"totalRequests"`
+	ActiveRequests  int              `json:"activeRequests"`
+	QueuedRequests  int              `json:"queuedRequests"`
+	RPS             float64          `json:"rps"`
+	TotalGPUUsage   float64          `json:"totalGpuUsage"`
+	Backends        []BackendMetrics `json:"backends"`
 }

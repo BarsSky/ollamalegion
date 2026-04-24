@@ -621,7 +621,7 @@ func (a *Agent) getRunningModels() ([]types.RunningModel, error) {
 		return nil, err
 	}
 
-	models := make([]types.RunningModel, len(result.Models))
+		models := make([]types.RunningModel, len(result.Models))
 	for i, m := range result.Models {
 		models[i] = types.RunningModel{
 			Name:      m.Name,
@@ -630,12 +630,16 @@ func (a *Agent) getRunningModels() ([]types.RunningModel, error) {
 			ExpiresAt: m.ExpiresAt,
 		}
 
-		if a.platformMode == types.ModeGPU {
+		// Используем реальное значение VRAM от Ollama если доступно
+		if m.SizeVRAM > 0 {
+			models[i].VRAMUsage = m.SizeVRAM / 1024 / 1024 // bytes → MB
+		} else if a.platformMode == types.ModeGPU {
+			// Fallback: оценка по размеру модели
 			models[i].VRAMUsage = estimateVRAMUsage(m.Size)
-			models[i].RAMUsage = 0
-		} else {
-			// CPU: модели загружены в RAM
-			models[i].VRAMUsage = 0
+		}
+
+		if a.platformMode == types.ModeCPU {
+			// CPU: модели загружаются в RAM
 			models[i].RAMUsage = estimateRAMUsage(m.Size)
 		}
 	}
@@ -740,49 +744,16 @@ func (a *Agent) getOllamaStats() (*OllamaStats, error) {
 		return stats, fmt.Errorf("failed to parse Ollama response: %w", err)
 	}
 
-	// Количество активных запросов = количество работающих моделей
-	stats.ActiveRequests = len(psResponse.Models)
+	// Ollama /api/ps возвращает загруженные в память модели, НЕ активные HTTP-запросы.
+	// Реальное количество активных запросов нельзя получить через публичный API Ollama.
+	// Оставляем 0 — точное значение будет рассчитываться балансировщиком по счётчику проксируемых запросов.
+	stats.ActiveRequests = 0
 
-	// Вычисление RPS на основе истории запросов
-	a.statsMu.Lock()
-
-	// Добавляем текущий запрос в историю
-	now := time.Now()
-	a.requestHistory = append(a.requestHistory, requestRecord{
-		timestamp: now,
-		duration:  time.Second, // предполагаем, что запрос занимает ~1 секунду
-	})
-
-	// Очищаем старую историю (старше 10 секунд)
-	cutoff := now.Add(-10 * time.Second)
-	filtered := a.requestHistory[:0]
-	for _, rec := range a.requestHistory {
-		if rec.timestamp.After(cutoff) {
-			filtered = append(filtered, rec)
-		}
-	}
-	a.requestHistory = filtered
-
-	// Подсчет RPS
-	if len(a.requestHistory) > 0 {
-		// Считаем количество запросов за последнюю секунду
-		oneSecondAgo := now.Add(-time.Second)
-		recentRequests := 0
-		for _, rec := range a.requestHistory {
-			if rec.timestamp.After(oneSecondAgo) {
-				recentRequests++
-			}
-		}
-		stats.RequestsPerSecond = float64(recentRequests)
-
-		// Общее количество запросов (за последние 10 секунд)
-		stats.TotalRequests = int64(len(a.requestHistory))
-
-		// Среднее время ответа (предполагаемое)
-		stats.AvgResponseTime = 1000.0 // 1000ms = 1 секунда
-	}
-
-	a.statsMu.Unlock()
+	// RPS/TotalRequests также нельзя достоверно получить на стороне агента.
+	// Балансировщик имеет точные счётчики проксированных запросов.
+	stats.RequestsPerSecond = 0
+	stats.TotalRequests = 0
+	stats.AvgResponseTime = 0
 
 	return stats, nil
 }

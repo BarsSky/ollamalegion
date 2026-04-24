@@ -1,0 +1,32 @@
+# Ollama Load Balancer - Agent GPU Override
+#
+# Этот файл расширяет docker-compose.agent.yml GPU-специфичными настройками.
+#
+# Использование:
+#   GPU сервер (требуется NVIDIA Container Toolkit):
+#     docker compose -f docker-compose.agent.yml -f docker-compose.agent.gpu.yml up -d --build
+#
+#   Или через скрипт автоматизации:
+#     bash scripts/deploy-agent-docker.sh --gpu --env-file .env
+#
+# Требования:
+#   - NVIDIA Container Toolkit должен быть установлен: https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/install-guide.html
+#   - Docker Engine 20.10+ с BuildKit enabled
+#   - nvidia-docker2 runtime (для старых версий Docker)
+
+services:
+  agent:
+    # Переопределяем базовый образ на CUDA runtime для доступа к GPU
+    build:
+      args:
+        ENABLE_NVML: "true"
+        BASE_IMAGE: nvidia/cuda:12.2.0-runtime-ubuntu22.04
+    
+    # Резервирование GPU устройств через Docker deploy
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]

@@ -1,3 +1,7 @@
+# Глобальный build arg для базового образа runtime stage
+# Доступен для FROM ниже, т.к. объявлен ДО первого FROM
+ARG BASE_IMAGE=ubuntu:22.04
+
 # Build stage
 # Используем golang:1.21 (Debian-based) для совместимости с NVML/glibc
 FROM golang:1.21 AS builder
@@ -28,8 +32,14 @@ RUN if [ "$ENABLE_NVML" = "true" ]; then \
     fi
 
 # Runtime stage
-# Используем образ с поддержкой NVIDIA Container Toolkit
-FROM nvidia/cuda:12.2.0-runtime-ubuntu22.04
+# Базовый образ берется из глобального ARG BASE_IMAGE, объявленного выше.
+# По умолчанию ubuntu:22.04 (CPU-режим).
+# Для GPU: docker build --build-arg BASE_IMAGE=nvidia/cuda:12.2.0-runtime-ubuntu22.04
+FROM ${BASE_IMAGE}
+
+# Объявляем ARG повторно внутри stage, т.к. каждый FROM сбрасывает scope build args.
+# Значение уже задано глобально, здесь достаточно имени без значения.
+ARG BASE_IMAGE
 
 WORKDIR /app
 

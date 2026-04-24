@@ -1,10 +1,20 @@
 # Ollama Load Balancer - Agent Docker Compose конфигурация
 #
 # Использование:
-#   GPU сервер: docker-compose -f docker-compose.agent.yml up -d
-#   CPU сервер: GPU_MODE=cpu docker-compose -f docker-compose.agent.yml up -d
-#   Просмотр логов: docker-compose -f docker-compose.agent.yml logs -f
-#   Остановка: docker-compose -f docker-compose.agent.yml down
+#   CPU сервер (по умолчанию):
+#     docker compose -f docker-compose.agent.yml up -d --build
+#
+#   GPU сервер (требуется NVIDIA Container Toolkit):
+#     docker compose -f docker-compose.agent.yml -f docker-compose.agent.gpu.yml up -d --build
+#
+#   Просмотр логов:
+#     docker compose -f docker-compose.agent.yml logs -f
+#
+#   Остановка:
+#     docker compose -f docker-compose.agent.yml down
+#
+#   Автоматический выбор CPU/GPU:
+#     bash scripts/deploy-agent-docker.sh --env-file .env
 #
 # Переменные окружения:
 #   AGENT_ID - уникальный идентификатор агента
@@ -13,7 +23,8 @@
 #   OLLAMA_URL - URL локального Ollama
 #   AGENT_PUBLIC_HOST - публичный IP/hostname, доступный балансеру (обязателен!)
 #   GPU_MODE - режим: auto, gpu, cpu (по умолчанию auto)
-#   NVML_ENABLED - включение NVML (false)
+#   NVML_ENABLED - включение NVML при сборке (false)
+#   BASE_IMAGE - базовый образ для runtime (по умолчанию ubuntu:22.04)
 #   METRICS_INTERVAL - интервал отправки метрик (5s)
 #
 # СЕТЕВОЕ ВЗАИМОДЕЙСТВИЕ:
@@ -38,17 +49,11 @@ services:
     build:
       context: ..
       dockerfile: docker/agent/Dockerfile
+      args:
+        ENABLE_NVML: ${ENABLE_NVML:-false}
+        BASE_IMAGE: ${BASE_IMAGE:-ubuntu:22.04}
     container_name: ollama-legion-agent
     restart: unless-stopped
-    
-    # Проброс GPU для NVML доступа (раскомментируйте для GPU серверов)
-    deploy:
-      resources:
-        reservations:
-          devices:
-            - driver: nvidia
-              count: all
-              capabilities: [gpu]
     
     # Сеть: bridge по умолчанию. Для Linux с host-доступом можно использовать:
     # network_mode: host
@@ -65,49 +70,49 @@ services:
       # ==================== ОБЯЗАТЕЛЬНЫЕ ПАРАМЕТРЫ ====================
       
       # Уникальный идентификатор агента (должен совпадать с ID бэкенда в балансировщике)
-      - AGENT_ID=${AGENT_ID:-agent}
+      AGENT_ID: ${AGENT_ID:-agent}
       
       # URL балансировщика для подключения.
       # Укажите публичный IP или hostname балансера (НЕ Docker service name!)
       # Пример: http://192.168.1.10:18081 или http://balancer.example.com:18081
       # ПРИМЕЧАНИЕ: Если агент и балансер на одном хосте, можно использовать service name
-      - BALANCER_URL=${BALANCER_URL:-http://REPLACE_WITH_BALANCER_IP:18081}
+      BALANCER_URL: ${BALANCER_URL:-http://REPLACE_WITH_BALANCER_IP:18081}
       
       # Публичный IP/hostname этого агента, доступный балансеру.
       # Балансер использует этот адрес для health check и проксирования запросов к Ollama.
       # Пример: 192.168.1.20 или gpu-server-1.example.com
-      - AGENT_PUBLIC_HOST=${AGENT_PUBLIC_HOST:-REPLACE_WITH_AGENT_PUBLIC_IP}
+      AGENT_PUBLIC_HOST: ${AGENT_PUBLIC_HOST:-REPLACE_WITH_AGENT_PUBLIC_IP}
       
       # ==================== НАСТРОЙКИ ПОРТОВ ====================
       
       # Порт для локальных метрик агента
-      - AGENT_PORT=${AGENT_PORT:-18032}
+      AGENT_PORT: ${AGENT_PORT:-18032}
       
       # URL локального Ollama для получения метрик моделей
       # Linux: используйте IP хоста (например, http://192.168.1.20:11434) или network_mode: host
       # Windows/macOS: host.docker.internal работает из коробки
-      - OLLAMA_URL=${OLLAMA_URL:-http://host.docker.internal:11434}
+      OLLAMA_URL: ${OLLAMA_URL:-http://host.docker.internal:11434}
       
-      # ==================== ПРОЧИЕ НАСТРОЙКИ ====================
+      # ==================== ПРОЧЕЕ ====================
       
       # Режим платформы (auto/gpu/cpu)
-      - GPU_MODE=${GPU_MODE:-auto}
+      GPU_MODE: ${GPU_MODE:-auto}
       
       # Включить NVML для точных GPU метрик (только для GPU серверов)
-      - NVML_ENABLED=${NVML_ENABLED:-false}
+      NVML_ENABLED: ${NVML_ENABLED:-false}
       
       # Интервалы
-      - METRICS_INTERVAL=${METRICS_INTERVAL:-5s}
-      - HEARTBEAT_INTERVAL=${HEARTBEAT_INTERVAL:-3s}
-      - COLLECT_INTERVAL=${COLLECT_INTERVAL:-5s}
+      METRICS_INTERVAL: ${METRICS_INTERVAL:-5s}
+      HEARTBEAT_INTERVAL: ${HEARTBEAT_INTERVAL:-3s}
+      COLLECT_INTERVAL: ${COLLECT_INTERVAL:-5s}
       
       # Логирование
-      - LOG_LEVEL=${LOG_LEVEL:-info}
-      - LOG_FORMAT=${LOG_FORMAT:-text}
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+      LOG_FORMAT: ${LOG_FORMAT:-text}
       
       # Лимиты Ollama
-      - AGENT_MAX_MODELS=${AGENT_MAX_MODELS:--1}
-      - AGENT_MAX_CONCURRENT_REQUESTS=${AGENT_MAX_CONCURRENT_REQUESTS:--1}
+      AGENT_MAX_MODELS: ${AGENT_MAX_MODELS:--1}
+      AGENT_MAX_CONCURRENT_REQUESTS: ${AGENT_MAX_CONCURRENT_REQUESTS:--1}
     
     # Health check для проверки состояния агента
     healthcheck:

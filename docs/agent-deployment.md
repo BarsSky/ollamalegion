@@ -2,6 +2,8 @@
 
 Подробное руководство по развертыванию агента сбора метрик на серверах с Ollama. Агент поддерживает два режима работы: **GPU** (с NVIDIA GPU и NVML) и **CPU** (без GPU, только системные метрики).
 
+> **Кроссплатформенность:** Примеры команд приведены для **bash** (Linux/macOS) и **PowerShell** (Windows). Выберите вариант для вашей ОС.
+
 ---
 
 ## Содержание
@@ -13,7 +15,8 @@
 5. [Переменные окружения](#переменные-окружения)
 6. [Примеры конфигураций](#примеры-конфигураций)
 7. [Проверка работоспособности](#проверка-работоспособности)
-8. [Troubleshooting](#troubleshooting)
+8. [Генерация Docker контейнеров](#генерация-docker-контейнеров)
+9. [Troubleshooting](#troubleshooting)
 
 ---
 
@@ -41,6 +44,22 @@
 | **CUDA** | 11.0+ | 12.0+ |
 
 > **Важно:** Без NVIDIA Container Toolkit GPU-проброс в Docker не работает. Агент автоматически перейдёт в CPU-режим, но точные GPU-метрики будут недоступны.
+
+### Windows: Docker Desktop + WSL2 + GPU
+
+Для запуска GPU-контейнеров на Windows через Docker Desktop:
+
+1. **Docker Desktop** → Settings → General → ✅ Use the WSL 2 based engine
+2. **Docker Desktop** → Settings → Resources → WSL Integration → ✅ Enable integration with my default WSL distro
+3. **Docker Desktop** → Settings → Resources → WSL Integration → ✅ Enable NVIDIA Container Toolkit (появится если установлен драйвер NVIDIA с WSL2 поддержкой)
+4. **NVIDIA Driver** для WSL2: https://developer.nvidia.com/cuda/wsl (установите на Windows хост, НЕ внутри WSL)
+
+Проверка GPU в Docker Desktop:
+```powershell
+docker run --rm --gpus all nvidia/cuda:12.2.0-base-ubuntu22.04 nvidia-smi
+```
+
+Если образ `nvidia/cuda:12.2.0-base-ubuntu22.04` не найден локально, Docker сделает pull автоматически — это может занять несколько минут в первый раз.
 
 ---
 
@@ -80,67 +99,107 @@ curl http://localhost:11434/api/tags
 
 ### Шаг 2: Создание .env файла
 
+**Linux/macOS (bash):**
+```bash
+# Из корня репозитория
+cp config/agent.example.env deployments/.env
+
+# Отредактируйте deployments/.env — замените placeholder-значения
+code deployments/.env
+```
+
+**Windows (PowerShell):**
+```powershell
+# Из корня репозитория
+Copy-Item "config\agent.example.env" "deployments\.env"
+
+# Отредактируйте deployments/.env — замените placeholder-значения
+notepad "deployments\.env"
+```
+
+Ключевые переменные для GPU:
+```env
+AGENT_ID=gpu-1
+BALANCER_URL=http://192.168.1.10:18081
+AGENT_PUBLIC_HOST=192.168.1.20
+GPU_MODE=gpu
+NVML_ENABLED=true
+ENABLE_NVML=true
+OLLAMA_URL=http://host.docker.internal:11434
+```
+
+### Шаг 3: Запуск через Docker Compose (GPU)
+
+Используйте **override-файл** `docker-compose.agent.gpu.yml` — он автоматически подключает NVIDIA Container Toolkit и CUDA runtime:
+
+**Linux/macOS (bash):**
 ```bash
 cd deployments
 
-cat > .env << 'EOF'
-# Идентификатор агента (уникальный в рамках кластера)
-AGENT_ID=gpu-1
-
-# URL балансировщика (публичный IP/hostname)
-BALANCER_URL=http://192.168.1.10:18081
-
-# Публичный IP/hostname этого сервера (доступен балансировщику)
-AGENT_PUBLIC_HOST=192.168.1.20
-
-# Режим работы
-GPU_MODE=gpu
-NVML_ENABLED=true
-
-# Порты
-AGENT_PORT=18032
-OLLAMA_URL=http://host.docker.internal:11434
-
-# Интервалы
-METRICS_INTERVAL=5s
-HEARTBEAT_INTERVAL=3s
-
-# Логирование
-LOG_LEVEL=info
-LOG_FORMAT=json
-EOF
-```
-
-### Шаг 3: Запуск через Docker Compose
-
-В файле `deployments/docker-compose.agent.yml` **раскомментируйте** секцию `deploy.resources.reservations.devices` для GPU проброса:
-
-```yaml
-services:
-  agent:
-    # ...
-    deploy:
-      resources:
-        reservations:
-          devices:
-            - driver: nvidia
-              count: all
-              capabilities: [gpu]
-```
-
-Запуск:
-
-```bash
-docker-compose -f docker-compose.agent.yml --env-file .env up -d
+# Запуск с GPU пробросом
+docker compose -f docker-compose.agent.yml -f docker-compose.agent.gpu.yml --env-file .env up -d --build
 
 # Просмотр логов
-docker-compose -f docker-compose.agent.yml logs -f
+docker compose -f docker-compose.agent.yml -f docker-compose.agent.gpu.yml logs -f
 
 # Проверка статуса
-docker-compose -f docker-compose.agent.yml ps
+docker compose -f docker-compose.agent.yml -f docker-compose.agent.gpu.yml ps
 ```
 
-### Шаг 4: Альтернатива — docker run
+**Windows (PowerShell):**
+```powershell
+Set-Location deployments
+
+# Запуск с GPU пробросом
+docker compose -f docker-compose.agent.yml -f docker-compose.agent.gpu.yml --env-file .env up -d --build
+
+# Просмотр логов
+docker compose -f docker-compose.agent.yml -f docker-compose.agent.gpu.yml logs -f
+
+# Проверка статуса
+docker compose -f docker-compose.agent.yml -f docker-compose.agent.gpu.yml ps
+```
+
+> **Windows + GPU:** Docker Desktop должен использовать WSL2 backend с включенной опцией "Use the WSL 2 based engine" и "Enable NVIDIA Container Toolkit" в Settings > Resources > WSL Integration.
+
+> **Почему два файла?** Базовый `docker-compose.agent.yml` содержит общую конфигурацию. Override-файл `docker-compose.agent.gpu.yml` добавляет только GPU-специфичные настройки (`deploy.resources.reservations.devices` и `BASE_IMAGE=nvidia/cuda...`). Это позволяет запускать один и тот же базовый файл на CPU и GPU без модификаций.
+
+### Шаг 4: Альтернатива — скрипт автоматизации (рекомендуется)
+
+**Linux/macOS (bash):**
+```bash
+# Автоопределение GPU и запуск с правильными параметрами
+bash scripts/deploy-agent-docker.sh --env-file deployments/.env
+
+# Принудительно GPU (если автоопределение не сработало)
+bash scripts/deploy-agent-docker.sh --gpu --env-file deployments/.env
+
+# Только перезапуск без пересборки
+bash scripts/deploy-agent-docker.sh --no-build --env-file deployments/.env
+```
+
+**Windows (PowerShell):**
+```powershell
+# Автоопределение GPU и запуск с правильными параметрами
+.\scripts\deploy-agent-docker.ps1 -EnvFile "deployments\.env"
+
+# Принудительно GPU
+.\scripts\deploy-agent-docker.ps1 -Gpu -EnvFile "deployments\.env"
+
+# Только перезапуск без пересборки
+.\scripts\deploy-agent-docker.ps1 -NoBuild -EnvFile "deployments\.env"
+
+# С pull базовых образов
+.\scripts\deploy-agent-docker.ps1 -Pull -Build -EnvFile "deployments\.env"
+```
+
+Скрипт автоматически:
+- Определяет наличие GPU через `nvidia-smi`
+- Проверяет NVIDIA Container Toolkit
+- Выбирает правильный compose-файл (CPU или GPU)
+- Валидирует обязательные переменные в `.env`
+
+### Шаг 5: Альтернатива — docker run
 
 ```bash
 docker run -d \
@@ -160,7 +219,7 @@ docker run -d \
   ollama-legion/agent:latest
 ```
 
-### Шаг 5: Альтернатива — systemd сервис
+### Шаг 6: Альтернатива — systemd сервис
 
 См. [DEPLOYMENT.md](../DEPLOYMENT.md) → раздел "Развертывание агента как бинарного файла" для инструкций по сборке и созданию systemd unit.
 
@@ -180,63 +239,79 @@ curl http://localhost:11434/api/tags
 
 ### Шаг 2: Создание .env файла
 
+**Linux/macOS (bash):**
+```bash
+# Из корня репозитория
+cp config/agent.example.env deployments/.env
+
+# Отредактируйте deployments/.env
+code deployments/.env
+```
+
+**Windows (PowerShell):**
+```powershell
+Copy-Item "config\agent.example.env" "deployments\.env"
+notepad "deployments\.env"
+```
+
+Ключевые переменные для CPU:
+```env
+AGENT_ID=cpu-1
+BALANCER_URL=http://192.168.1.10:18081
+AGENT_PUBLIC_HOST=192.168.1.30
+GPU_MODE=cpu
+NVML_ENABLED=false
+ENABLE_NVML=false
+OLLAMA_URL=http://host.docker.internal:11434
+```
+
+### Шаг 3: Запуск через Docker Compose (CPU)
+
+Базовый файл `docker-compose.agent.yml` не содержит GPU-специфичных настроек — запускайте без override:
+
+**Linux/macOS (bash):**
 ```bash
 cd deployments
 
-cat > .env << 'EOF'
-# Идентификатор агента
-AGENT_ID=cpu-1
+docker compose -f docker-compose.agent.yml --env-file .env up -d --build
 
-# URL балансировщика
-BALANCER_URL=http://192.168.1.10:18081
-
-# Публичный IP/hostname этого сервера
-AGENT_PUBLIC_HOST=192.168.1.30
-
-# Режим работы — CPU
-GPU_MODE=cpu
-NVML_ENABLED=false
-
-# Порты
-AGENT_PORT=18032
-OLLAMA_URL=http://host.docker.internal:11434
-
-# Интервалы
-METRICS_INTERVAL=5s
-HEARTBEAT_INTERVAL=3s
-
-# Логирование
-LOG_LEVEL=info
-LOG_FORMAT=text
-EOF
+# Просмотр логов
+docker compose -f docker-compose.agent.yml logs -f
 ```
 
-### Шаг 3: Запуск через Docker Compose
+**Windows (PowerShell):**
+```powershell
+Set-Location deployments
 
-В файле `deployments/docker-compose.agent.yml` **убедитесь, что секция GPU закомментирована**:
+docker compose -f docker-compose.agent.yml --env-file .env up -d --build
 
-```yaml
-services:
-  agent:
-    # ...
-    # deploy:
-    #   resources:
-    #     reservations:
-    #       devices:
-    #         - driver: nvidia
-    #           count: all
-    #           capabilities: [gpu]
+# Просмотр логов
+docker compose -f docker-compose.agent.yml logs -f
 ```
 
-Запуск:
+> **Важно:** Для CPU-режима не используйте `docker-compose.agent.gpu.yml` — он попытается инициализировать NVIDIA Container Toolkit и выдаст ошибку `nvidia-container-cli: driver not loaded` на машине без GPU.
 
+### Шаг 4: Альтернатива — скрипт автоматизации
+
+**Linux/macOS (bash):**
 ```bash
-docker-compose -f docker-compose.agent.yml --env-file .env up -d
+# Автоопределение (на CPU-сервере запустится в CPU-режиме)
+bash scripts/deploy-agent-docker.sh --env-file deployments/.env
+
+# Принудительно CPU
+bash scripts/deploy-agent-docker.sh --cpu --env-file deployments/.env
 ```
 
-> **Важно:** Для CPU-режима не нужны `--gpus` и NVIDIA Container Toolkit. Образ агента собирается с флагом `ENABLE_NVML=false` или используется стандартный образ (в runtime NVML просто не инициализируется).
+**Windows (PowerShell):**
+```powershell
+# Автоопределение (на CPU-сервере запустится в CPU-режиме)
+.\scripts\deploy-agent-docker.ps1 -EnvFile "deployments\.env"
 
-### Шаг 4: Альтернатива — docker run
+# Принудительно CPU
+.\scripts\deploy-agent-docker.ps1 -Cpu -EnvFile "deployments\.env"
+```
+
+### Шаг 5: Альтернатива — docker run
 
 ```bash
 docker run -d \
@@ -255,7 +330,7 @@ docker run -d \
   ollama-legion/agent:latest
 ```
 
-### Шаг 5: Альтернатива — systemd сервис
+### Шаг 6: Альтернатива — systemd сервис
 
 Для CPU-серверов сборка агента упрощается — NVML не требуется:
 
@@ -477,7 +552,133 @@ nvidia-smi
 
 ---
 
+## Генерация Docker контейнеров
+
+### Сборка образа агента
+
+**Linux/macOS (bash):**
+```bash
+# CPU сборка (быстрее, меньше размер)
+docker build -f docker/agent/Dockerfile \
+  --build-arg ENABLE_NVML=false \
+  --build-arg BASE_IMAGE=ubuntu:22.04 \
+  -t ollama-legion/agent:cpu-latest .
+
+# GPU сборка (с NVML + CUDA runtime)
+docker build -f docker/agent/Dockerfile \
+  --build-arg ENABLE_NVML=true \
+  --build-arg BASE_IMAGE=nvidia/cuda:12.2.0-runtime-ubuntu22.04 \
+  -t ollama-legion/agent:gpu-latest .
+```
+
+**Windows (PowerShell):**
+```powershell
+# CPU сборка
+docker build -f docker\agent\Dockerfile `
+  --build-arg ENABLE_NVML=false `
+  --build-arg BASE_IMAGE=ubuntu:22.04 `
+  -t ollama-legion/agent:cpu-latest .
+
+# GPU сборка
+docker build -f docker\agent\Dockerfile `
+  --build-arg ENABLE_NVML=true `
+  --build-arg BASE_IMAGE=nvidia/cuda:12.2.0-runtime-ubuntu22.04 `
+  -t ollama-legion/agent:gpu-latest .
+```
+
+### Сборка через Docker Compose
+
+**Linux/macOS (bash):**
+```bash
+cd deployments
+
+# CPU — базовый файл
+docker compose -f docker-compose.agent.yml build
+
+# GPU — с override
+docker compose -f docker-compose.agent.yml -f docker-compose.agent.gpu.yml build
+```
+
+**Windows (PowerShell):**
+```powershell
+Set-Location deployments
+
+# CPU — базовый файл
+docker compose -f docker-compose.agent.yml build
+
+# GPU — с override
+docker compose -f docker-compose.agent.yml -f docker-compose.agent.gpu.yml build
+```
+
+### Push в registry
+
+```bash
+# Тегируем и пушим
+docker tag ollama-legion/agent:latest registry.example.com/ollama-legion/agent:latest
+docker push registry.example.com/ollama-legion/agent:latest
+```
+
+### Генерация multi-arch образов (amd64 + arm64)
+
+**Linux/macOS (bash):**
+```bash
+# Создание builder (один раз)
+docker buildx create --name ollama-legion-builder --use
+
+# Сборка и пуш multi-arch
+docker buildx build \
+  --platform linux/amd64,linux/arm64 \
+  -f docker/agent/Dockerfile \
+  --build-arg ENABLE_NVML=false \
+  -t registry.example.com/ollama-legion/agent:latest \
+  --push .
+```
+
+**Windows (PowerShell):**
+```powershell
+# Создание builder (один раз)
+docker buildx create --name ollama-legion-builder --use
+
+# Сборка и пуш multi-arch
+docker buildx build `
+  --platform linux/amd64,linux/arm64 `
+  -f docker\agent\Dockerfile `
+  --build-arg ENABLE_NVML=false `
+  -t registry.example.com/ollama-legion/agent:latest `
+  --push .
+```
+
+---
+
 ## Troubleshooting
+
+### Ошибка: base name (${BASE_IMAGE}) should not be blank
+
+**Причина:** Docker BuildKit не видит `BASE_IMAGE` как build-arg при сборке через docker-compose.
+
+**Решение:** Образец уже исправлен в `docker/agent/Dockerfile` — `ARG BASE_IMAGE` объявлен после `FROM`. Убедитесь, что используете `docker compose` (v2) вместо `docker-compose` (v1):
+
+```bash
+# Правильно (v2)
+docker compose -f docker-compose.agent.yml build
+
+# Неправильно (v1, может иметь проблемы с build args)
+docker-compose -f docker-compose.agent.yml build
+```
+
+### Ошибка: nvidia-container-cli: driver not loaded
+
+**Причина:** На CPU-сервере использован `docker-compose.agent.gpu.yml` с `deploy.resources.reservations.devices`.
+
+**Решение:** Для CPU-серверов не используйте GPU override:
+
+```bash
+# Правильно (CPU)
+docker compose -f docker-compose.agent.yml up -d
+
+# Неправильно (CPU с GPU override)
+docker compose -f docker-compose.agent.yml -f docker-compose.agent.gpu.yml up -d
+```
 
 ### Агент не может инициализировать NVML (GPU режим)
 
@@ -490,18 +691,28 @@ nvidia-smi
    docker run --rm --gpus all nvidia/cuda:12.2.0-base-ubuntu22.04 nvidia-smi
    ```
 
-2. Проверьте, что в `docker-compose.agent.yml` раскомментирована секция `deploy.resources.reservations.devices`.
+2. Убедитесь, что запущены оба compose-файла:
+   ```bash
+   docker compose -f docker-compose.agent.yml -f docker-compose.agent.gpu.yml up -d --build
+   ```
 
-3. Если GPU проброс невозможен (например, облачный VPS без GPU), переключитесь в CPU режим:
+3. Проверьте переменные в `.env`:
+   ```env
+   ENABLE_NVML=true
+   BASE_IMAGE=nvidia/cuda:12.2.0-runtime-ubuntu22.04
+   ```
+
+4. Если GPU проброс невозможен (например, облачный VPS без GPU), переключитесь в CPU режим:
    ```bash
    GPU_MODE=cpu
    NVML_ENABLED=false
+   ENABLE_NVML=false
    ```
 
-4. Пересоздайте контейнер:
+5. Пересоздайте контейнер:
    ```bash
-   docker-compose -f docker-compose.agent.yml down
-   docker-compose -f docker-compose.agent.yml up -d
+   docker compose -f docker-compose.agent.yml down
+   docker compose -f docker-compose.agent.yml up -d --build
    ```
 
 ### Агент не подключается к балансировщику

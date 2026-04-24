@@ -1,235 +1,313 @@
-#!/bin/bash
+#!/usr/bin/env bash
 #
-# Скрипт для быстрого развертывания агента Ollama Load Balancer на GPU серверах
+# Ollama Load Balancer - Agent Docker Deployment Script
+#
+# Автоматически определяет GPU-сервер и выбирает правильный compose-файл.
+# Поддерживает ручное переключение CPU ↔ GPU через флаги.
 #
 # Использование:
 #   ./deploy-agent-docker.sh [OPTIONS]
 #
-# Параметры:
-#   --balancer-url  URL балансировщика (обязательно)
-#   --agent-id      Уникальный идентификатор агента (обязательно)
-#   --agent-port    Порт агента (по умолчанию: 18032)
-#   --ollama-url    URL локального Ollama (по умолчанию: http://localhost:11434)
-#   --nvml-enabled  Включить NVML (по умолчанию: true)
-#   --metrics-interval Интервал отправки метрик (по умолчанию: 5s)
-#   --help          Показать справку
+# Опции:
+#   --gpu              Принудительно использовать GPU-конфигурацию
+#   --cpu              Принудительно использовать CPU-конфигурацию
+#   --env-file FILE    Путь к файлу .env (по умолчанию: .env)
+#   --build            Пересобрать образ (аналог --build)
+#   --pull             Pull base images перед сборкой
+#   --no-build         Использовать существующий образ (без --build)
+#   -h, --help         Показать справку
 #
 # Примеры:
-#   ./deploy-agent-docker.sh --balancer-url http://192.168.1.100:18081 --agent-id gpu-1
-#   ./deploy-agent-docker.sh -b http://lb:18081 -i gpu-2 -p 18032
+#   # Автоопределение (рекомендуется):
+#   ./deploy-agent-docker.sh --env-file deployments/.env
+#
+#   # Принудительно GPU:
+#   ./deploy-agent-docker.sh --gpu --env-file .env
+#
+#   # Принудительно CPU:
+#   ./deploy-agent-docker.sh --cpu --env-file .env
+#
+#   # Только перезапуск без пересборки:
+#   ./deploy-agent-docker.sh --no-build --env-file .env
+#
+#   # С pull базовых образов:
+#   ./deploy-agent-docker.sh --pull --build --env-file .env
 #
 
-set -e
+set -euo pipefail
 
-# Цвета для вывода
+# --- Цвета для вывода ---
 RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
+BLUE='\033[0;34m'
 NC='\033[0m' # No Color
 
-# Параметры по умолчанию
-BALANCER_URL=""
-AGENT_ID=""
-AGENT_PORT="18032"
-OLLAMA_URL="http://localhost:11434"
-NVML_ENABLED="true"
-METRICS_INTERVAL="5s"
-HEARTBEAT_INTERVAL="3s"
-COLLECT_INTERVAL="5s"
-LOG_LEVEL="info"
-LOG_FORMAT="text"
-COMPOSE_FILE="docker-compose.agent.yml"
+# --- Значения по умолчанию ---
+COMPOSE_DIR="$(cd "$(dirname "$0")/.." && pwd)/deployments"
+ENV_FILE="${COMPOSE_DIR}/.env"
+FORCE_GPU=false
+FORCE_CPU=false
+BUILD_FLAG="--build"
+PULL_FLAG=""
 
-# Функция для вывода справки
+# --- Функции ---
+
+log_info() {
+    echo -e "${GREEN}[INFO]${NC} $1"
+}
+
+log_warn() {
+    echo -e "${YELLOW}[WARN]${NC} $1"
+}
+
+log_error() {
+    echo -e "${RED}[ERROR]${NC} $1"
+}
+
+log_debug() {
+    echo -e "${BLUE}[DEBUG]${NC} $1"
+}
+
 show_help() {
-    cat << EOF
-Скрипт для развертывания агента Ollama Load Balancer
-
-Использование:
-    $0 [OPTIONS]
-
-Обязательные параметры:
-    -b, --balancer-url      URL балансировщика (например, http://192.168.1.100:18081)
-    -i, --agent-id          Уникальный идентификатор агента (например, gpu-1)
-
-Опциональные параметры:
-    -p, --agent-port        Порт агента (по умолчанию: 18032)
-    -o, --ollama-url        URL локального Ollama (по умолчанию: http://localhost:11434)
-    -n, --nvml-enabled      Включить NVML (по умолчанию: true)
-    -m, --metrics-interval  Интервал отправки метрик (по умолчанию: 5s)
-    -H, --heartbeat-interval Интервал heartbeat (по умолчанию: 3s)
-    -c, --collect-interval  Интервал сбора метрик (по умолчанию: 5s)
-    -l, --log-level         Уровень логиров��ния (по умолчанию: info)
-    -f, --log-format        Формат логов (по умолчанию: text)
-    --compose-file          Путь к docker-compose файлу (по умолчанию: docker-compose.agent.yml)
-    -h, --help              Показать эту справку
-
-Примеры:
-    $0 -b http://192.168.1.100:18081 -i gpu-1
-    $0 --balancer-url http://lb:18081 --agent-id gpu-2 --agent-port 18032
-    $0 -b http://lb:18081 -i gpu-3 -m 10s -l debug
-
-EOF
+    sed -n '/^# Опции/,/^#$/p' "$0" | sed 's/^# //' | sed 's/^#//'
     exit 0
 }
 
-# Парсинг аргументов командной строки
-while [[ $# -gt 0 ]]; do
-    case $1 in
-        -b|--balancer-url)
-            BALANCER_URL="$2"
-            shift 2
-            ;;
-        -i|--agent-id)
-            AGENT_ID="$2"
-            shift 2
-            ;;
-        -p|--agent-port)
-            AGENT_PORT="$2"
-            shift 2
-            ;;
-        -o|--ollama-url)
-            OLLAMA_URL="$2"
-            shift 2
-            ;;
-        -n|--nvml-enabled)
-            NVML_ENABLED="$2"
-            shift 2
-            ;;
-        -m|--metrics-interval)
-            METRICS_INTERVAL="$2"
-            shift 2
-            ;;
-        -H|--heartbeat-interval)
-            HEARTBEAT_INTERVAL="$2"
-            shift 2
-            ;;
-        -c|--collect-interval)
-            COLLECT_INTERVAL="$2"
-            shift 2
-            ;;
-        -l|--log-level)
-            LOG_LEVEL="$2"
-            shift 2
-            ;;
-        -f|--log-format)
-            LOG_FORMAT="$2"
-            shift 2
-            ;;
-        --compose-file)
-            COMPOSE_FILE="$2"
-            shift 2
-            ;;
-        -h|--help)
-            show_help
-            ;;
-        *)
-            echo -e "${RED}Неизвестный параметр: $1${NC}"
-            echo "Используйте --help для получения справки"
+# Проверка наличия Docker
+check_docker() {
+    if ! command -v docker &> /dev/null; then
+        log_error "Docker не найден. Установите Docker: https://docs.docker.com/get-docker/"
+        exit 1
+    fi
+
+    if ! docker info &> /dev/null; then
+        log_error "Docker daemon не запущен или нет прав доступа."
+        log_info "Попробуйте: sudo usermod -aG docker $USER && newgrp docker"
+        exit 1
+    fi
+}
+
+# Проверка наличия NVIDIA Container Toolkit
+check_nvidia_toolkit() {
+    # Проверяем наличие nvidia-ctk
+    if command -v nvidia-ctk &> /dev/null; then
+        if nvidia-ctk --version &> /dev/null; then
+            return 0
+        fi
+    fi
+
+    # Проверяем наличие nvidia-docker2 runtime
+    if docker info --format '{{json .Runtimes}}' 2>/dev/null | grep -q nvidia; then
+        return 0
+    fi
+
+    return 1
+}
+
+# Проверка наличия GPU
+has_gpu() {
+    # 1. Проверяем nvidia-smi
+    if command -v nvidia-smi &> /dev/null; then
+        if nvidia-smi -L &> /dev/null && nvidia-smi -L | grep -q "GPU"; then
+            return 0
+        fi
+    fi
+
+    # 2. Проверяем через lspci
+    if command -v lspci &> /dev/null; then
+        if lspci 2>/dev/null | grep -qi "nvidia\\|vga.*nvidia\\|3d.*nvidia"; then
+            return 0
+        fi
+    fi
+
+    # 3. Проверяем /proc/driver/nvidia/version
+    if [ -f /proc/driver/nvidia/version ]; then
+        return 0
+    fi
+
+    return 1
+}
+
+# Определение режима (GPU/CPU)
+detect_mode() {
+    if [ "$FORCE_GPU" = true ]; then
+        echo "gpu"
+        return
+    fi
+
+    if [ "$FORCE_CPU" = true ]; then
+        echo "cpu"
+        return
+    fi
+
+    if has_gpu; then
+        echo "gpu"
+    else
+        echo "cpu"
+    fi
+}
+
+# Проверка .env файла
+check_env_file() {
+    if [ ! -f "$ENV_FILE" ]; then
+        log_warn "Файл .env не найден: $ENV_FILE"
+        log_info "Создаю шаблон .env из config/agent.example.env..."
+        
+        if [ -f "${COMPOSE_DIR}/../config/agent.example.env" ]; then
+            cp "${COMPOSE_DIR}/../config/agent.example.env" "$ENV_FILE"
+            log_info "Шаблон скопирован в $ENV_FILE"
+            log_warn "ВАЖНО: Отредактируйте $ENV_FILE и замените placeholder-значения!"
+        else
+            log_error "config/agent.example.env не найден. Создайте .env вручную."
             exit 1
-            ;;
-    esac
-done
+        fi
+    fi
+}
 
-# Проверка обязательных параметров
-if [[ -z "$BALANCER_URL" ]]; then
-    echo -e "${RED}Ошибка: Параметр --balancer-url (-b) обязателен${NC}"
-    echo "Используйте --help для получения справки"
-    exit 1
-fi
+# Валидация обязательных переменных
+validate_env() {
+    local missing=0
 
-if [[ -z "$AGENT_ID" ]]; then
-    echo -e "${RED}Ошибка: Параметр --agent-id (-i) обязателен${NC}"
-    echo "Используйте --help для получения справки"
-    exit 1
-fi
+    # Загружаем переменные из .env
+    set -a
+    # shellcheck source=/dev/null
+    source "$ENV_FILE"
+    set +a
 
-# Определение директории скрипта
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
-DEPLOYMENTS_DIR="$PROJECT_ROOT/deployments"
+    if [ -z "${AGENT_ID:-}" ] || [ "$AGENT_ID" = "agent" ]; then
+        log_warn "AGENT_ID не установлен или имеет значение по умолчанию (agent)"
+        missing=$((missing + 1))
+    fi
 
-# Проверка существования docker-compose файла
-if [[ ! -f "$DEPLOYMENTS_DIR/$COMPOSE_FILE" ]]; then
-    echo -e "${RED}Ошибка: Файл $DEPLOYMENTS_DIR/$COMPOSE_FILE не найден${NC}"
-    exit 1
-fi
+    if [ -z "${BALANCER_URL:-}" ] || echo "$BALANCER_URL" | grep -q "REPLACE_WITH"; then
+        log_warn "BALANCER_URL не установлен или содержит placeholder"
+        missing=$((missing + 1))
+    fi
 
-echo -e "${GREEN}╔═══════════════════════════════════════════════════════════╗${NC}"
-echo -e "${GREEN}║      Ollama Load Balancer - Развертывание агента          ║${NC}"
-echo -e "${GREEN}╠═══════════════════════════════════════════════════════════╣${NC}"
-echo -e "${GREEN}║ Agent ID:       ${AGENT_ID}%*s║${NC}" 46
-echo -e "${GREEN}║ Balancer URL:   ${BALANCER_URL}%*s║${NC}" 46
-echo -e "${GREEN}║ Agent Port:     ${AGENT_PORT}%*s║${NC}" 46
-echo -e "${GREEN}║ Ollama URL:     ${OLLAMA_URL}%*s║${NC}" 46
-echo -e "${GREEN}║ NVML Enabled:   ${NVML_ENABLED}%*s║${NC}" 46
-echo -e "${GREEN}║ Metrics:        ${METRICS_INTERVAL}%*s║${NC}" 46
-echo -e "${GREEN}╚═══════════════════════════════════════════════════════════╝${NC}"
+    if [ -z "${AGENT_PUBLIC_HOST:-}" ] || echo "$AGENT_PUBLIC_HOST" | grep -q "REPLACE_WITH"; then
+        log_warn "AGENT_PUBLIC_HOST не установлен или содержит placeholder"
+        missing=$((missing + 1))
+    fi
 
-# Проверка Docker
-echo -e "\n${YELLOW}[1/4] Проверка Docker...${NC}"
-if ! command -v docker &> /dev/null; then
-    echo -e "${RED}Ошибка: Docker не найден${NC}"
-    exit 1
-fi
-docker --version
-echo -e "${GREEN}Docker найден${NC}"
+    if [ $missing -gt 0 ]; then
+        log_error "Найдены незаполненные обязательные переменные в $ENV_FILE"
+        log_info "Отредактируйте файл и запустите скрипт снова."
+        exit 1
+    fi
 
-# Проверка docker-compose
-echo -e "\n${YELLOW}[2/4] Проверка docker-compose...${NC}"
-if command -v docker-compose &> /dev/null; then
-    COMPOSE_CMD="docker-compose"
-elif docker compose version &> /dev/null; then
-    COMPOSE_CMD="docker compose"
-else
-    echo -e "${RED}Ошибка: docker-compose не найден${NC}"
-    exit 1
-fi
-$COMPOSE_CMD version --short
-echo -e "${GREEN}docker-compose найден${NC}"
+    log_info "Переменные окружения валидны."
+}
 
-# Проверка NVIDIA Container Toolkit (опционально)
-echo -e "\n${YELLOW}[3/4] Проверка NVIDIA Container Toolkit...${NC}"
-if docker run --rm --gpus all nvidia/cuda:11.0-base nvidia-smi &> /dev/null; then
-    echo -e "${GREEN}NVIDIA Container Toolkit доступен${NC}"
-else
-    echo -e "${YELLOW}Предупреждение: NVIDIA Container Toolkit может быть недоступен${NC}"
-    echo "GPU метрики могут быть недоступны"
-fi
+# Запуск Docker Compose
+deploy() {
+    local mode=$1
+    local compose_files=()
+    local build_args=()
 
-# Развертывание
-echo -e "\n${YELLOW}[4/4] Развертывание агента...${NC}"
+    compose_files+=("-f" "${COMPOSE_DIR}/docker-compose.agent.yml")
 
-cd "$DEPLOYMENTS_DIR"
+    if [ "$mode" = "gpu" ]; then
+        compose_files+=("-f" "${COMPOSE_DIR}/docker-compose.agent.gpu.yml")
+        log_info "Режим: GPU (с NVIDIA Container Toolkit)"
+        
+        if ! check_nvidia_toolkit; then
+            log_warn "NVIDIA Container Toolkit не обнаружен!"
+            log_info "Для GPU-режима установите toolkit:"
+            log_info "  https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/install-guide.html"
+            log_info ""
+            log_warn "Если toolkit установлен, но не обнаружен, используйте --gpu для принудительного режима."
+            read -p "Продолжить anyway? [y/N] " -n 1 -r
+            echo
+            if [[ ! $REPLY =~ ^[Yy]$ ]]; then
+                log_info "Отменено. Установите NVIDIA Container Toolkit и попробуйте снова."
+                exit 1
+            fi
+        fi
+    else
+        log_info "Режим: CPU"
+    fi
 
-# Экспорт переменных окружения
-export AGENT_ID
-export BALANCER_URL
-export AGENT_PORT
-export OLLAMA_URL
-export NVML_ENABLED
-export METRICS_INTERVAL
-export HEARTBEAT_INTERVAL
-export COLLECT_INTERVAL
-export LOG_LEVEL
-export LOG_FORMAT
+    # Формируем команду
+    local cmd=("docker" "compose" "${compose_files[@]}" "--env-file" "$ENV_FILE")
 
-# Запуск docker-compose
-echo -e "\n${YELLOW}Запуск контейнера...${NC}"
-$COMPOSE_CMD -f "$COMPOSE_FILE" up -d
+    if [ "$PULL_FLAG" = "--pull" ]; then
+        log_info "Pull base images..."
+        "${cmd[@]}" pull
+    fi
 
-# Проверка статуса
-echo -e "\n${YELLOW}Проверка статуса контейнера...${NC}"
-sleep 2
-$COMPOSE_CMD -f "$COMPOSE_FILE" ps
+    if [ "$BUILD_FLAG" = "--build" ]; then
+        build_args+=("--build")
+    fi
 
-echo -e "\n${GREEN}═══════════════════════════════════════════════════════════${NC}"
-echo -e "${GREEN}Агент успешно развернут!${NC}"
-echo -e "${GREEN}═══════════════════════════════════════════════════════════${NC}"
-echo -e "\n${YELLOW}Полезные команды:${NC}"
-echo -e "  Просмотр логов:     ${COMPOSE_CMD} -f $COMPOSE_FILE logs -f"
-echo -e "  Остановка:          ${COMPOSE_CMD} -f $COMPOSE_FILE down"
-echo -e "  Перезапуск:         ${COMPOSE_CMD} -f $COMPOSE_FILE restart"
-echo -e "  Статус:             ${COMPOSE_CMD} -f $COMPOSE_FILE ps"
-echo -e "\n${YELLOW}Проверка метрик:${NC}"
-echo -e "  curl http://localhost:$AGENT_PORT/metrics"
+    log_info "Запуск контейнера..."
+    # shellcheck disable=SC2086
+    "${cmd[@]}" up -d "${build_args[@]}"
+
+    log_info "Контейнер запущен. Просмотр логов:"
+    echo ""
+    echo "  ${cmd[*]} logs -f"
+    echo ""
+}
+
+# --- Main ---
+
+main() {
+    # Разбор аргументов
+    while [[ $# -gt 0 ]]; do
+        case $1 in
+            --gpu)
+                FORCE_GPU=true
+                shift
+                ;;
+            --cpu)
+                FORCE_CPU=true
+                shift
+                ;;
+            --env-file)
+                ENV_FILE="$2"
+                shift 2
+                ;;
+            --build)
+                BUILD_FLAG="--build"
+                shift
+                ;;
+            --no-build)
+                BUILD_FLAG=""
+                shift
+                ;;
+            --pull)
+                PULL_FLAG="--pull"
+                shift
+                ;;
+            -h|--help)
+                show_help
+                ;;
+            *)
+                log_error "Неизвестный аргумент: $1"
+                show_help
+                ;;
+        esac
+    done
+
+    # Показываем help если не передано аргументов
+    if [ $# -eq 0 ] && [ "$FORCE_GPU" = false ] && [ "$FORCE_CPU" = false ] && [ "$BUILD_FLAG" = "--build" ] && [ "$PULL_FLAG" = "" ]; then
+        : # OK, запуск с дефолтами
+    fi
+
+    log_info "Ollama Load Balancer - Agent Deployment"
+    log_debug "ENV_FILE: $ENV_FILE"
+    log_debug "COMPOSE_DIR: $COMPOSE_DIR"
+
+    check_docker
+    check_env_file
+    validate_env
+
+    local mode
+    mode=$(detect_mode)
+    deploy "$mode"
+
+    log_info "Готово! Агент развернут в режиме: $mode"
+}
+
+main "$@"

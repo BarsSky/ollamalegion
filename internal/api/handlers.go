@@ -119,6 +119,10 @@ func (s *Server) setupRoutes() {
 	// Cluster state (с аутентификацией и rate limiting)
 	s.mux.Handle("/api/v1/cluster", AuthMiddleware(RateLimitMiddleware(s.clusterHandler, s.rateLimiter), s.authenticator))
 
+	// Predictions (с аутентификацией и rate limiting)
+	s.mux.Handle("/api/v1/predictions", AuthMiddleware(RateLimitMiddleware(s.predictionsHandler, s.rateLimiter), s.authenticator))
+	s.mux.Handle("/api/v1/predictions/", AuthMiddleware(RateLimitMiddleware(s.predictionHandler, s.rateLimiter), s.authenticator))
+
 	// Agents endpoints (с аутентификацией и rate limiting)
 	s.mux.Handle("/api/v1/agents/register", AuthMiddleware(RateLimitMiddleware(s.agentRegisterHandler, s.rateLimiter), s.authenticator))
 	s.mux.Handle("/api/v1/agents/metrics", AuthMiddleware(RateLimitMiddleware(s.agentMetricsHandler, s.rateLimiter), s.authenticator))
@@ -336,20 +340,28 @@ func (s *Server) listBackends(w http.ResponseWriter, r *http.Request) {
 			backendData["timestamp"] = metrics.Timestamp
 			backendData["gpu"] = metrics.GPU
 			backendData["system"] = metrics.System
+			backendData["prediction"] = metrics.Prediction
 			
-			// Получаем модели с Ollama API
 			ollamaMetrics := metrics.Ollama
-			models, maxModels, maxConcurrent, err := fetchModelsFromOllama(backend.Host, backend.OllamaPort)
-			if err != nil {
-				// Если не удалось получить модели, используем данные из метрик
-				backendData["ollama"] = ollamaMetrics
-			} else {
-				// Обновляем метрики с данными о моделях
-				ollamaMetrics.RunningModels = models
-				ollamaMetrics.MaxModels = maxModels
-				ollamaMetrics.MaxConcurrentRequests = maxConcurrent
-				backendData["ollama"] = ollamaMetrics
+			
+			// Fallback: получаем модели напрямую с Ollama API (только если агент не прислал)
+			if len(ollamaMetrics.RunningModels) == 0 {
+				models, _, _, err := fetchModelsFromOllama(backend.Host, backend.OllamaPort)
+				if err == nil {
+					ollamaMetrics.RunningModels = models
+				}
 			}
+			
+			// Вычисляем свободные слоты (fallback для старых агентов без proxy-счётчика)
+			if ollamaMetrics.MaxConcurrentRequests > 0 {
+				freeSlots := ollamaMetrics.MaxConcurrentRequests - ollamaMetrics.ActiveRequests
+				if freeSlots < 0 {
+					freeSlots = 0
+				}
+				ollamaMetrics.FreeSlots = freeSlots
+			}
+			
+			backendData["ollama"] = ollamaMetrics
 		} else {
 			// Пустые метрики если данные недоступны
 			backendData["timestamp"] = time.Time{}
@@ -853,18 +865,19 @@ func (s *Server) agentMetricsHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Сначала валидируем JSON (тест ожидает 400 для невалидного JSON)
+	var metrics types.BackendMetrics
+	if err := json.NewDecoder(r.Body).Decode(&metrics); err != nil {
+		http.Error(w, "Invalid metrics format", http.StatusBadRequest)
+		return
+	}
+
 	// Игнорируем метрики, если бэкенд не зарегистрирован
 	if !s.proxy.BackendExists(agentID) {
 		s.writeJSON(w, http.StatusNotFound, map[string]interface{}{
 			"status": "error",
 			"error":  "Backend not found. Please register agent first.",
 		})
-		return
-	}
-
-	var metrics types.BackendMetrics
-	if err := json.NewDecoder(r.Body).Decode(&metrics); err != nil {
-		http.Error(w, "Invalid metrics format", http.StatusBadRequest)
 		return
 	}
 
@@ -962,6 +975,76 @@ func (s *Server) agentInfoHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	s.writeJSON(w, http.StatusOK, backend)
+}
+
+// predictionsHandler - прогнозы для всех бэкендов
+func (s *Server) predictionsHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	state := s.proxy.GetClusterState()
+
+	predictions := make(map[string]interface{})
+	for _, backend := range state.Backends {
+		pred := s.proxy.GetPrediction(backend.ID)
+		predictions[backend.ID] = map[string]interface{}{
+			"backendId":         backend.ID,
+			"secondsToCritical": pred.SecondsToCritical,
+			"criticalReason":    pred.CriticalReason,
+			"gpuUsageTrend":     pred.GPUUsageTrend,
+			"vramUsageTrend":    pred.VRAMUsageTrend,
+			"ramUsageTrend":     pred.RAMUsageTrend,
+			"freeSlotsTrend":    pred.FreeSlotsTrend,
+			"requestCapacity":   pred.RequestCapacity,
+			"capacityPercent":   int(pred.RequestCapacity),
+			"timeToCritical":    balancer.FormatDuration(pred.SecondsToCritical),
+		}
+	}
+
+	s.writeJSON(w, http.StatusOK, map[string]interface{}{
+		"timestamp":   time.Now().UTC(),
+		"predictions": predictions,
+	})
+}
+
+// predictionHandler - прогноз для конкретного бэкенда
+func (s *Server) predictionHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	parts := strings.Split(strings.TrimPrefix(r.URL.Path, "/api/v1/predictions/"), "/")
+	if len(parts) == 0 || parts[0] == "" {
+		http.Error(w, "Backend ID required", http.StatusBadRequest)
+		return
+	}
+
+	backendID := parts[0]
+
+	state := s.proxy.GetClusterState()
+	for _, backend := range state.Backends {
+		if backend.ID == backendID {
+			pred := s.proxy.GetPrediction(backendID)
+			s.writeJSON(w, http.StatusOK, map[string]interface{}{
+				"backendId":         backendID,
+				"secondsToCritical": pred.SecondsToCritical,
+				"criticalReason":    pred.CriticalReason,
+				"gpuUsageTrend":     pred.GPUUsageTrend,
+				"vramUsageTrend":    pred.VRAMUsageTrend,
+				"ramUsageTrend":     pred.RAMUsageTrend,
+				"freeSlotsTrend":    pred.FreeSlotsTrend,
+				"requestCapacity":   pred.RequestCapacity,
+				"capacityPercent":   int(pred.RequestCapacity),
+				"timeToCritical":    balancer.FormatDuration(pred.SecondsToCritical),
+			})
+			return
+		}
+	}
+
+	http.Error(w, "Backend not found", http.StatusNotFound)
 }
 
 // wsMetricsHandler - WebSocket для real-time метрик

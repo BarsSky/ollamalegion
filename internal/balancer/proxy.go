@@ -25,16 +25,19 @@ type Proxy struct {
 	sessionMgr      *SessionManager
 	metricsMgr      *MetricsManager
 	queueMgr        *QueueManager
+	predictor       *Predictor
 	client          *http.Client      // Клиент для обычных запросов
 	streamingClient *http.Client      // Клиент для streaming/SSE запросов (без таймаута)
 }
 
 // BackendState - состояние бэкенда
 type BackendState struct {
-	Backend    *types.Backend
-	ActiveReqs int
-	LastUsed   time.Time
-	mu         sync.Mutex
+	Backend         *types.Backend
+	ActiveReqs      int
+	LastUsed        time.Time
+	MetricsHistory  []types.MetricsSnapshot // История метрик для прогнозирования
+	Prediction      types.Prediction        // Последний прогноз
+	mu              sync.Mutex
 }
 
 // SessionManager - менеджер сессий
@@ -105,6 +108,7 @@ func NewProxy(config *types.LoadBalancerConfig) *Proxy {
 		backends:   make(map[string]*BackendState),
 		sessionMgr: NewSessionManager(),
 		metricsMgr: NewMetricsManager(),
+		predictor:  NewPredictor(),
 		client: &http.Client{
 			Timeout:   time.Duration(config.Balancing.RequestTimeout) * time.Second,
 			Transport: regularTransport,
@@ -1101,12 +1105,38 @@ func (p *Proxy) logError(backendID string, err error) {
 	fmt.Printf("[%s] Error: %v\n", time.Now().Format(time.RFC3339), err)
 }
 
-// UpdateMetrics - обновление метрик бэкенда
+// UpdateMetrics - обновление метрик бэкенда с прогнозированием
 func (p *Proxy) UpdateMetrics(backendID string, metrics *types.BackendMetrics) {
-	p.metricsMgr.mu.Lock()
-	defer p.metricsMgr.mu.Unlock()
+	// Получаем proxy-счётчик активных запросов
+	p.mu.RLock()
+	state, exists := p.backends[backendID]
+	p.mu.RUnlock()
 
+	if exists {
+		state.mu.Lock()
+		proxyActiveReqs := state.ActiveReqs
+		state.mu.Unlock()
+
+		// Переопределяем ActiveRequests точным значением от proxy
+		// (агент не может достоверно определить количество HTTP-запросов)
+		if metrics.Ollama.ActiveRequests == 0 && proxyActiveReqs > 0 {
+			metrics.Ollama.ActiveRequests = proxyActiveReqs
+		}
+
+		// Вычисляем свободные слоты
+		freeSlots := metrics.Ollama.MaxConcurrentRequests - metrics.Ollama.ActiveRequests
+		if freeSlots < 0 {
+			freeSlots = 0
+		}
+		metrics.Ollama.FreeSlots = freeSlots
+
+		// Обновляем историю и прогноз
+		p.predictor.UpdateHistory(state, metrics)
+	}
+
+	p.metricsMgr.mu.Lock()
 	p.metricsMgr.metrics[backendID] = metrics
+	p.metricsMgr.mu.Unlock()
 }
 
 // UpdateBackendStatus - обновление статуса бэкенда
@@ -1196,6 +1226,8 @@ func (p *Proxy) GetClusterState() *types.ClusterState {
 			metrics.Status = backendState.Backend.Status
 			// Сохраняем флаг агента из конфигурации бэкенда
 			metrics.HasAgent = backendState.Backend.HasAgent
+			// Добавляем прогноз из состояния бэкенда
+			metrics.Prediction = backendState.Prediction
 			state.ActiveRequests += agentMetrics.Ollama.ActiveRequests
 			state.RPS += agentMetrics.Ollama.RequestsPerSecond
 			state.TotalGPUUsage += agentMetrics.GPU.UsagePercent
@@ -1468,6 +1500,20 @@ func (p *Proxy) GetAllBackends() []types.Backend {
 		backends = append(backends, *state.Backend)
 	}
 	return backends
+}
+
+// GetPrediction - получение прогноза для бэкенда
+func (p *Proxy) GetPrediction(backendID string) types.Prediction {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+
+	if state, ok := p.backends[backendID]; ok {
+		return state.Prediction
+	}
+	return types.Prediction{
+		SecondsToCritical: -1,
+		CriticalReason:      "none",
+	}
 }
 
 // BackendExists - проверка существования бэкенда

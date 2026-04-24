@@ -47,6 +47,7 @@ type BackendMetrics struct {
 	ID        string    `json:"id"`
 	Timestamp time.Time `json:"timestamp"`
 	Status    BackendStatus `json:"status"`
+	HasAgent  bool          `json:"hasAgent"` // Флаг наличия активного агента
 	
 	// GPU метрики
 	GPU GPUMetrics `json:"gpu"`

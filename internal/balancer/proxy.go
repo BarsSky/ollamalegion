@@ -105,7 +105,6 @@ func NewProxy(config *types.LoadBalancerConfig) *Proxy {
 		backends:   make(map[string]*BackendState),
 		sessionMgr: NewSessionManager(),
 		metricsMgr: NewMetricsManager(),
-		queueMgr:   NewQueueManager(nil, config.Balancing.QueueMaxSize, config.Balancing.QueueWorkers, time.Duration(config.Balancing.QueueTimeout)*time.Second),
 		client: &http.Client{
 			Timeout:   time.Duration(config.Balancing.RequestTimeout) * time.Second,
 			Transport: regularTransport,
@@ -116,6 +115,9 @@ func NewProxy(config *types.LoadBalancerConfig) *Proxy {
 			Transport: streamingTransport,
 		},
 	}
+
+	// QueueManager создаём после инициализации p, чтобы передать корректный proxy
+	p.queueMgr = NewQueueManager(p, config.Balancing.QueueMaxSize, config.Balancing.QueueWorkers, time.Duration(config.Balancing.QueueTimeout)*time.Second)
 
 	// Инициализация бэкендов
 	for i := range config.Backends {
@@ -1181,6 +1183,7 @@ func (p *Proxy) GetClusterState() *types.ClusterState {
 			ID:        id,
 			Timestamp: time.Now().UTC(),
 			Status:    backendState.Backend.Status,
+			HasAgent:  backendState.Backend.HasAgent,
 			GPU:       types.GPUMetrics{},
 			System:    types.SystemMetrics{},
 			Ollama:    types.OllamaMetrics{RunningModels: []types.RunningModel{}},
@@ -1191,6 +1194,8 @@ func (p *Proxy) GetClusterState() *types.ClusterState {
 			metrics = *agentMetrics
 			// Сохраняем статус из конфигурации бэкенда
 			metrics.Status = backendState.Backend.Status
+			// Сохраняем флаг агента из конфигурации бэкенда
+			metrics.HasAgent = backendState.Backend.HasAgent
 			state.ActiveRequests += agentMetrics.Ollama.ActiveRequests
 			state.RPS += agentMetrics.Ollama.RequestsPerSecond
 			state.TotalGPUUsage += agentMetrics.GPU.UsagePercent

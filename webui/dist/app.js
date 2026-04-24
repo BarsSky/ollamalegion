@@ -313,7 +313,7 @@ function updateBackendMetrics(metricsData) {
             GPU: normalizedMetrics.GPU || normalizedMetrics.gpu || existingBackend.GPU,
             System: normalizedMetrics.System || normalizedMetrics.system || existingBackend.System,
             Ollama: normalizedMetrics.Ollama || normalizedMetrics.ollama || existingBackend.Ollama,
-            HasAgent: true,
+            HasAgent: normalizedMetrics.HasAgent !== undefined ? normalizedMetrics.HasAgent : true,
             Timestamp: normalizedMetrics.Timestamp || normalizedMetrics.timestamp || existingBackend.Timestamp
         };
         

@@ -116,13 +116,14 @@ type SystemMetrics struct {
 
 // OllamaMetrics - метрики Ollama
 type OllamaMetrics struct {
-	RunningModels         []RunningModel `json:"runningModels"`         // Запущенные модели
+	RunningModels         []RunningModel `json:"runningModels"`         // Запущенные (загруженные в память) модели
+	AvailableModels       []RunningModel `json:"availableModels"`       // Доступные модели (все, что можно загрузить)
 	ActiveRequests        int            `json:"activeRequests"`        // Активные запросы
 	TotalRequests         int64          `json:"totalRequests"`         // Всего запросов
 	AvgResponseTime       float64        `json:"avgResponseTime"`       // Среднее время ответа (ms)
 	RequestsPerSecond     float64        `json:"requestsPerSecond"`     // RPS
-	MaxModels             int            `json:"maxModels"`             // Максимум доступных для загрузки моделей
-	MaxConcurrentRequests int            `json:"maxConcurrentRequests"` // Максимум одновременных запросов
+	MaxModels             int            `json:"maxModels"`             // Максимум доступных для загрузки моделей (-1 = не задано)
+	MaxConcurrentRequests int            `json:"maxConcurrentRequests"` // Максимум одновременных запросов (-1 = не задано)
 }
 
 // RunningModel - информация о запущенной модели
@@ -234,15 +235,17 @@ type LoggingSettings struct {
 
 // AgentConfig - конфигурация агента
 type AgentConfig struct {
-	AgentID           string       `json:"agentId"`
-	BalancerURL       string       `json:"balancerUrl"`
-	OllamaURL         string       `json:"ollamaUrl"`
-	MetricsPort       int          `json:"metricsPort"`
-	CollectInterval   int          `json:"collectInterval"`   // секунды
-	HeartbeatInterval int          `json:"heartbeatInterval"` // секунды
-	GPUMode           PlatformMode `json:"gpuMode"`           // auto/gpu/cpu
-	NVMLEnabled       bool         `json:"nvmlEnabled"`       // включить NVML
-	PublicHost        string       `json:"publicHost"`      // публичный IP/hostname, доступный балансеру
+	AgentID               string       `json:"agentId"`
+	BalancerURL           string       `json:"balancerUrl"`
+	OllamaURL             string       `json:"ollamaUrl"`
+	MetricsPort           int          `json:"metricsPort"`
+	CollectInterval       int          `json:"collectInterval"`       // секунды
+	HeartbeatInterval     int          `json:"heartbeatInterval"`     // секунды
+	GPUMode               PlatformMode `json:"gpuMode"`               // auto/gpu/cpu
+	NVMLEnabled           bool         `json:"nvmlEnabled"`           // включить NVML
+	PublicHost            string       `json:"publicHost"`            // публичный IP/hostname, доступный балансеру
+	MaxModels             int          `json:"maxModels"`             // максимум моделей (-1 = авто/не задано)
+	MaxConcurrentRequests int          `json:"maxConcurrentRequests"` // максимум одновременных запросов (-1 = авто/не задано)
 }
 
 // QueuedRequest - запрос в очереди

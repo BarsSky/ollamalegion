@@ -104,6 +104,10 @@ services:
       # Логирование
       - LOG_LEVEL=${LOG_LEVEL:-info}
       - LOG_FORMAT=${LOG_FORMAT:-text}
+      
+      # Лимиты Ollama
+      - AGENT_MAX_MODELS=${AGENT_MAX_MODELS:--1}
+      - AGENT_MAX_CONCURRENT_REQUESTS=${AGENT_MAX_CONCURRENT_REQUESTS:--1}
     
     # Health check для проверки состояния агента
     healthcheck:

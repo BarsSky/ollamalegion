@@ -192,19 +192,26 @@ function normalizeSystem(system) {
 function normalizeOllama(ollama) {
     if (!ollama) return {};
     
-    const rawModels = ollama.RunningModels || ollama.runningModels || [];
-    const normalizedModels = Array.isArray(rawModels)
-        ? rawModels.map(m => normalizeModel(m))
+    const rawRunningModels = ollama.RunningModels || ollama.runningModels || [];
+    const normalizedRunningModels = Array.isArray(rawRunningModels)
+        ? rawRunningModels.map(m => normalizeModel(m))
         : [];
     
+    const rawAvailableModels = ollama.AvailableModels || ollama.availableModels || [];
+    const normalizedAvailableModels = Array.isArray(rawAvailableModels)
+        ? rawAvailableModels.map(m => normalizeModel(m))
+        : [];
+    
+    // Используем ?? (nullish coalescing) чтобы -1 не превращался в 0
     return {
-        RunningModels: normalizedModels,
+        RunningModels: normalizedRunningModels,
+        AvailableModels: normalizedAvailableModels,
         ActiveRequests: ollama.ActiveRequests || ollama.activeRequests || 0,
         TotalRequests: ollama.TotalRequests || ollama.totalRequests || 0,
         AvgResponseTime: ollama.AvgResponseTime || ollama.avgResponseTime || 0,
         RequestsPerSecond: ollama.RequestsPerSecond || ollama.requestsPerSecond || 0,
-        MaxModels: ollama.MaxModels || ollama.maxModels || 0,
-        MaxConcurrentRequests: ollama.MaxConcurrentRequests || ollama.maxConcurrentRequests || 0
+        MaxModels: ollama.maxModels ?? ollama.MaxModels ?? -1,
+        MaxConcurrentRequests: ollama.maxConcurrentRequests ?? ollama.MaxConcurrentRequests ?? -1
     };
 }
 
@@ -558,6 +565,30 @@ function createBackendCard(backend) {
                 <div class="limit-value max-concurrent-requests">${ollama.MaxConcurrentRequests || '-'}</div>
             </div>
         </div>
+        
+        ${ollama.AvailableModels && ollama.AvailableModels.length > 0 ? `
+            <div class="models-section available-models">
+                <div class="models-header">
+                    <span class="metric-row-icon">📚</span>
+                    Available Models (${ollama.AvailableModels.length})
+                </div>
+                <div class="models-list">
+                    ${ollama.AvailableModels.map(m => `
+                        <div class="model-item">
+                            <div class="model-info">
+                                <span class="model-name">${escapeHtml(m.Name)}</span>
+                                <span class="model-size">${formatBytes(m.Size || 0)}</span>
+                            </div>
+                            <div class="model-details">
+                                ${m.Family ? `<span class="model-badge">${escapeHtml(m.Family)}</span>` : ''}
+                                ${m.ParameterSize ? `<span class="model-badge">${escapeHtml(m.ParameterSize)}</span>` : ''}
+                                ${m.Quantization ? `<span class="model-badge quant">${escapeHtml(m.Quantization)}</span>` : ''}
+                            </div>
+                        </div>
+                    `).join('')}
+                </div>
+            </div>
+        ` : ''}
         
         ${ollama.RunningModels && ollama.RunningModels.length > 0 ? `
             <div class="models-section">

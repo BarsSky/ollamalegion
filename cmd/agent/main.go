@@ -24,6 +24,8 @@ import (
 		gpuMode         = flag.String("gpu-mode", "auto", "Platform mode: auto, gpu, cpu")
 		nvmlEnabled     = flag.Bool("nvml", false, "Enable NVML")
 		publicHost      = flag.String("public-host", "", "Public IP/hostname accessible by balancer (optional, auto-detected if empty)")
+		maxModels       = flag.Int("max-models", -1, "Max models limit (-1 = unlimited/not set)")
+		maxConcurrentRequests = flag.Int("max-concurrent-requests", -1, "Max concurrent requests limit (-1 = unlimited/not set)")
 	)
 
 func main() {
@@ -37,9 +39,11 @@ func main() {
 		MetricsPort:       getEnvInt("AGENT_PORT", *metricsPort),
 		CollectInterval:   getEnvInt("COLLECT_INTERVAL", *collectInterval),
 		HeartbeatInterval: getEnvInt("HEARTBEAT_INTERVAL", *heartbeatInterval),
-		GPUMode:           types.PlatformMode(getEnv("GPU_MODE", *gpuMode)),
-		NVMLEnabled:       getEnvBool("NVML_ENABLED", *nvmlEnabled),
-		PublicHost:        getEnv("AGENT_PUBLIC_HOST", *publicHost),
+		GPUMode:               types.PlatformMode(getEnv("GPU_MODE", *gpuMode)),
+		NVMLEnabled:           getEnvBool("NVML_ENABLED", *nvmlEnabled),
+		PublicHost:            getEnv("AGENT_PUBLIC_HOST", *publicHost),
+		MaxModels:             getEnvInt("AGENT_MAX_MODELS", *maxModels),
+		MaxConcurrentRequests: getEnvInt("AGENT_MAX_CONCURRENT_REQUESTS", *maxConcurrentRequests),
 	}
 
 	// Если передан файл конфигурации — загружаем из него

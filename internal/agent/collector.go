@@ -556,12 +556,24 @@ func (a *Agent) getOllamaBaseURL() string {
 func (a *Agent) collectOllamaMetrics() types.OllamaMetrics {
 	metrics := types.OllamaMetrics{}
 
-	// Получение запущенных моделей через /api/ps
+	// Устанавливаем лимиты из конфигурации (-1 = не задано)
+	metrics.MaxModels = a.config.MaxModels
+	metrics.MaxConcurrentRequests = a.config.MaxConcurrentRequests
+
+	// Получение запущенных (загруженных в память) моделей через /api/ps
 	runningModels, err := a.getRunningModels()
 	if err != nil {
 		fmt.Printf("[%s] Failed to get running models: %v\n", time.Now().Format(time.RFC3339), err)
 	} else {
 		metrics.RunningModels = runningModels
+	}
+
+	// Получение доступных моделей через /api/tags
+	availableModels, err := a.getAvailableModels()
+	if err != nil {
+		fmt.Printf("[%s] Failed to get available models: %v\n", time.Now().Format(time.RFC3339), err)
+	} else {
+		metrics.AvailableModels = availableModels
 	}
 
 	// Получение статистики запросов
@@ -625,6 +637,55 @@ func (a *Agent) getRunningModels() ([]types.RunningModel, error) {
 			// CPU: модели загружены в RAM
 			models[i].VRAMUsage = 0
 			models[i].RAMUsage = estimateRAMUsage(m.Size)
+		}
+	}
+
+	return models, nil
+}
+
+// getAvailableModels - получение списка доступных моделей из /api/tags
+func (a *Agent) getAvailableModels() ([]types.RunningModel, error) {
+	resp, err := a.httpClient.Get(fmt.Sprintf("%s/api/tags", a.getOllamaBaseURL()))
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("status code: %d", resp.StatusCode)
+	}
+
+	var result struct {
+		Models []struct {
+			Name       string `json:"name"`
+			Model      string `json:"model"`
+			Size       uint64 `json:"size"`
+			Digest     string `json:"digest"`
+			ModifiedAt string `json:"modified_at"`
+			Details    struct {
+				Format        string `json:"format"`
+				Family        string `json:"family"`
+				Families      []string `json:"families"`
+				ParameterSize string `json:"parameter_size"`
+				Quantization  string `json:"quantization_level"`
+			} `json:"details"`
+		} `json:"models"`
+	}
+
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return nil, err
+	}
+
+	models := make([]types.RunningModel, len(result.Models))
+	for i, m := range result.Models {
+		models[i] = types.RunningModel{
+			Name:      m.Name,
+			Size:      m.Size,
+			Digest:    m.Digest,
+			Family:    m.Details.Family,
+			Format:    m.Details.Format,
+			ParameterSize: m.Details.ParameterSize,
+			Quantization: m.Details.Quantization,
 		}
 	}
 

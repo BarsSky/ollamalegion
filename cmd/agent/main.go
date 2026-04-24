@@ -14,14 +14,17 @@ import (
 	"ollama-loadbalancer/pkg/types"
 )
 
-var (
-	agentID         = flag.String("id", "", "Agent identifier")
-	balancerURL     = flag.String("balancer", "http://localhost:18081", "Balancer URL")
-	metricsPort     = flag.Int("metrics-port", 9090, "Local metrics port")
-	collectInterval = flag.Int("collect-interval", 5, "Metrics collection interval (seconds)")
-	heartbeatInterval = flag.Int("heartbeat-interval", 3, "Heartbeat interval (seconds)")
-	configPath      = flag.String("config", "", "Path to configuration file")
-)
+	var (
+		agentID         = flag.String("id", "", "Agent identifier")
+		balancerURL     = flag.String("balancer", "http://localhost:18081", "Balancer URL")
+		metricsPort     = flag.Int("metrics-port", 18032, "Local metrics port")
+		collectInterval = flag.Int("collect-interval", 5, "Metrics collection interval (seconds)")
+		heartbeatInterval = flag.Int("heartbeat-interval", 3, "Heartbeat interval (seconds)")
+		configPath      = flag.String("config", "", "Path to configuration file")
+		gpuMode         = flag.String("gpu-mode", "auto", "Platform mode: auto, gpu, cpu")
+		nvmlEnabled     = flag.Bool("nvml", false, "Enable NVML")
+		publicHost      = flag.String("public-host", "", "Public IP/hostname accessible by balancer (optional, auto-detected if empty)")
+	)
 
 func main() {
 	flag.Parse()
@@ -34,6 +37,9 @@ func main() {
 		MetricsPort:       getEnvInt("AGENT_PORT", *metricsPort),
 		CollectInterval:   getEnvInt("COLLECT_INTERVAL", *collectInterval),
 		HeartbeatInterval: getEnvInt("HEARTBEAT_INTERVAL", *heartbeatInterval),
+		GPUMode:           types.PlatformMode(getEnv("GPU_MODE", *gpuMode)),
+		NVMLEnabled:       getEnvBool("NVML_ENABLED", *nvmlEnabled),
+		PublicHost:        getEnv("AGENT_PUBLIC_HOST", *publicHost),
 	}
 
 	// Если передан файл конфигурации — загружаем из него
@@ -63,6 +69,9 @@ func main() {
 	fmt.Printf("╠═══════════════════════════════════════════════════════════╣\n")
 	fmt.Printf("║ Agent ID:    %-46s║\n", cfg.AgentID)
 	fmt.Printf("║ Balancer:    %-46s║\n", cfg.BalancerURL)
+	fmt.Printf("║ Public Host:  %-46s║\n", cfg.PublicHost)
+	fmt.Printf("║ Mode:        %-46s║\n", string(cfg.GPUMode))
+	fmt.Printf("║ NVML:        %-46v║\n", cfg.NVMLEnabled)
 	fmt.Printf("║ Collect:     %-46ds║\n", cfg.CollectInterval)
 	fmt.Printf("║ Heartbeat:   %-46ds║\n", cfg.HeartbeatInterval)
 	fmt.Printf("╚═══════════════════════════════════════════════════════════╝\n")
@@ -101,6 +110,16 @@ func getEnvInt(key string, defaultValue int) int {
 	if value := os.Getenv(key); value != "" {
 		if n, err := strconv.Atoi(value); err == nil {
 			return n
+		}
+	}
+	return defaultValue
+}
+
+// getEnvBool - получение bool из переменной окружения или значения по умолчанию
+func getEnvBool(key string, defaultValue bool) bool {
+	if value := os.Getenv(key); value != "" {
+		if b, err := strconv.ParseBool(value); err == nil {
+			return b
 		}
 	}
 	return defaultValue

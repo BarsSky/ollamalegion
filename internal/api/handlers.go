@@ -153,9 +153,16 @@ func (s *Server) healthHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	response := map[string]interface{}{
-		"status":    "healthy",
-		"timestamp": time.Now().UTC(),
-		"version":   "1.0.0",
+		"status":      "healthy",
+		"timestamp":   time.Now().UTC(),
+		"version":     "1.0.0",
+		"authEnabled": false,
+		"authHeader":  "X-API-Token",
+		"wsEndpoint":  "/ws/metrics",
+	}
+
+	if s.authenticator != nil {
+		response["authEnabled"] = s.authenticator.IsEnabled()
 	}
 
 	s.writeJSON(w, http.StatusOK, response)
@@ -350,6 +357,10 @@ func (s *Server) listBackends(w http.ResponseWriter, r *http.Request) {
 			backendData["system"] = types.SystemMetrics{}
 			backendData["ollama"] = types.OllamaMetrics{}
 		}
+
+		// Флаг наличия активного агента
+		backendData["hasAgent"] = backend.HasAgent
+		backendData["lastAgentContact"] = backend.LastAgentContact
 
 		backends = append(backends, backendData)
 	}
@@ -745,7 +756,7 @@ func (s *Server) agentRegisterHandler(w http.ResponseWriter, r *http.Request) {
 	}
 	agentPort := req.AgentPort
 	if agentPort == 0 {
-		agentPort = 9090
+		agentPort = 18032
 	}
 
 	// Проверка, существует ли уже бэкенд
@@ -842,6 +853,15 @@ func (s *Server) agentMetricsHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Игнорируем метрики, если бэкенд не зарегистрирован
+	if !s.proxy.BackendExists(agentID) {
+		s.writeJSON(w, http.StatusNotFound, map[string]interface{}{
+			"status": "error",
+			"error":  "Backend not found. Please register agent first.",
+		})
+		return
+	}
+
 	var metrics types.BackendMetrics
 	if err := json.NewDecoder(r.Body).Decode(&metrics); err != nil {
 		http.Error(w, "Invalid metrics format", http.StatusBadRequest)
@@ -850,6 +870,9 @@ func (s *Server) agentMetricsHandler(w http.ResponseWriter, r *http.Request) {
 
 	// Обновление метрик в прокси
 	s.proxy.UpdateMetrics(agentID, &metrics)
+
+	// Обновляем флаг активного агента
+	s.proxy.UpdateBackendAgentStatus(agentID, true)
 
 	s.writeJSON(w, http.StatusOK, map[string]interface{}{
 		"status": "received",
@@ -871,6 +894,9 @@ func (s *Server) agentHeartbeatHandler(w http.ResponseWriter, r *http.Request) {
 
 	// Обновление статуса
 	s.proxy.UpdateBackendStatus(agentID, types.StatusHealthy)
+
+	// Обновляем флаг активного агента
+	s.proxy.UpdateBackendAgentStatus(agentID, true)
 
 	s.writeJSON(w, http.StatusOK, map[string]interface{}{
 		"status": "ok",
@@ -940,9 +966,9 @@ func (s *Server) agentInfoHandler(w http.ResponseWriter, r *http.Request) {
 
 // wsMetricsHandler - WebSocket для real-time метрик
 func (s *Server) wsMetricsHandler(w http.ResponseWriter, r *http.Request) {
-	// Проверяем токен ДО WebSocket upgrade для защиты от DoS-атак
-	if s.authenticator != nil {
-		// Получаем токен из query параметра
+	// Проверяем токен ДО WebSocket upgrade, но только если auth включена
+	if s.authenticator != nil && s.authenticator.IsEnabled() {
+		// Получаем токен из query параметра (браузер не поддерживает custom headers в WebSocket)
 		token := r.URL.Query().Get("token")
 		
 		// Проверяем на пустой токен

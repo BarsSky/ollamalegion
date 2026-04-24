@@ -74,21 +74,18 @@ curl http://localhost:11434/api/tags
 ### Шаг 1: Клонирование репозитория
 
 ```bash
-git clone https://github.com/your-org/ollama-loadbalancer.git
-cd ollama-loadbalancer
+git clone https://github.com/BarsSky/ollamalegion.git
+cd ollamalegion
 ```
 
 ### Шаг 2: Подготовка конфигурации
 
 ```bash
-# Перейдите в директорию с конфигурацией
-cd deployments
-
 # Скопируйте пример конфигурации балансировщика
-cp ../config/config.example.json ./config.json
+cp config/config.example.json config/config.json
 
 # Отредактируйте конфигурацию под ваши нужды
-nano config.json
+nano config/config.json
 ```
 
 ### Шаг 3: Запуск через Docker Compose
@@ -137,7 +134,7 @@ docker run -d \
   -v /proc:/host/proc:ro \
   -v /sys:/host/sys:ro \
   --network host \
-  ollama-lb/agent:latest
+  ollama-legion/agent:latest
 ```
 
 ---
@@ -226,16 +223,15 @@ export NVML_ENABLED=true
 ### Шаг 8: Сборка и запуск Web UI
 
 ```bash
-# Web UI использует nginx для раздачи статических файлов
-# Собранный UI должен находиться в webui/dist/
+# Web UI собирается из docker/webui/Dockerfile
+# Запуск в составе основного docker-compose.yml:
+cd deployments
+docker-compose up -d
 
-# Запуск через Docker (рекомендуется)
-docker-compose up -d webui
-
-# Или напрямую через nginx
+# Или напрямую через nginx (статика должна быть в webui/dist/)
 sudo apt-get install -y nginx
-sudo cp webui/nginx.conf /etc/nginx/sites-available/ollama-lb
-sudo ln -s /etc/nginx/sites-available/ollama-lb /etc/nginx/sites-enabled/
+sudo cp webui/nginx.conf /etc/nginx/sites-available/ollama-legion
+sudo ln -s /etc/nginx/sites-available/ollama-legion /etc/nginx/sites-enabled/
 sudo systemctl restart nginx
 ```
 
@@ -401,13 +397,13 @@ chmod +x scripts/build-agent.bat
 
 ```bash
 # Балансировщик
-docker build -f docker/balancer/Dockerfile -t ollama-lb/balancer:latest .
+docker build -f docker/balancer/Dockerfile -t ollama-legion/balancer:latest .
 
 # Агент
-docker build -f docker/agent/Dockerfile -t ollama-lb/agent:latest .
+docker build -f docker/agent/Dockerfile -t ollama-legion/agent:latest .
 
 # Web UI
-docker build -f docker/webui/Dockerfile -t ollama-lb/webui:latest .
+docker build -f docker/webui/Dockerfile -t ollama-legion/webui:latest .
 ```
 
 ### Мульти-архитектурные образы
@@ -420,7 +416,7 @@ docker buildx create --use
 docker buildx build \
   --platform linux/amd64,linux/arm64 \
   -f docker/balancer/Dockerfile \
-  -t ollama-lb/balancer:latest \
+  -t ollama-legion/balancer:latest \
   --push \
   .
 ```
@@ -452,7 +448,7 @@ wscat -c ws://localhost:18081/ws/metrics
 
 ### Диагностика проблем
 
-См. раздел [Troubleshooting](troubleshooting.md) для решения常见 проблем.
+См. раздел [Troubleshooting](troubleshooting.md) для решения часто встречающихся проблем.
 
 ---
 

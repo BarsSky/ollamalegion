@@ -276,18 +276,18 @@ version: '3.8'
 
 services:
   loadbalancer:
-    image: ollama-lb/balancer:latest
+    image: ollama-legion/balancer:latest
     ports:
       - "8080:8080"  # Ollama API proxy
       - "8081:8081"  # Management API
     volumes:
       - ./config:/app/config
     networks:
-      - ollama-lb-net
+      - ollama-legion-net
     restart: unless-stopped
 
   webui:
-    image: ollama-lb/webui:latest
+    image: ollama-legion/webui:latest
     ports:
       - "3000:3000"
     environment:
@@ -295,7 +295,7 @@ services:
     depends_on:
       - loadbalancer
     networks:
-      - ollama-lb-net
+      - ollama-legion-net
     restart: unless-stopped
 ```
 
@@ -306,7 +306,7 @@ version: '3.8'
 
 services:
   ollama-agent:
-    image: ollama-lb/agent:latest
+    image: ollama-legion/agent:latest
     ports:
       - "18032:18032"
     volumes:

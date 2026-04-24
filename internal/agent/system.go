@@ -13,6 +13,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"ollama-loadbalancer/pkg/types"
 )
 
 // getCPUUsage - получение загрузки CPU
@@ -263,13 +265,15 @@ func getProcessCount() int {
 }
 
 // getCPUInfo - получение информации о CPU
-func getCPUInfo() (model string, cores int, err error) {
+func getCPUInfo() (model string, cores int, threads int, err error) {
 	file, err := os.Open("/proc/cpuinfo")
 	if err != nil {
-		return "", 0, err
+		return "", 0, 0, err
 	}
 	defer file.Close()
-	
+
+	uniqueCores := make(map[string]bool)
+
 	scanner := bufio.NewScanner(file)
 	for scanner.Scan() {
 		line := scanner.Text()
@@ -280,11 +284,71 @@ func getCPUInfo() (model string, cores int, err error) {
 			}
 		}
 		if strings.HasPrefix(line, "processor") {
-			cores++
+			threads++
+		}
+		if strings.HasPrefix(line, "core id") {
+			parts := strings.SplitN(line, ":", 2)
+			if len(parts) == 2 {
+				uniqueCores[strings.TrimSpace(parts[1])] = true
+			}
 		}
 	}
-	
+
+	cores = len(uniqueCores)
+	if cores == 0 {
+		cores = threads // fallback
+	}
+
 	return
+}
+
+// getCPUMetrics - сбор расширенных CPU метрик
+func getCPUMetrics() types.CPUMetrics {
+	metrics := types.CPUMetrics{}
+
+	// Load average
+	load1, load5, load15 := getLoadAverage()
+	metrics.LoadAverage1 = load1
+	metrics.LoadAverage5 = load5
+	metrics.LoadAverage15 = load15
+
+	// CPU info
+	model, cores, threads, err := getCPUInfo()
+	if err == nil {
+		metrics.Model = model
+		metrics.CoreCount = cores
+		metrics.ThreadCount = threads
+	}
+
+	// Temperature
+	temps := getThermalInfo()
+	for _, temp := range temps {
+		if temp > metrics.Temperature {
+			metrics.Temperature = temp
+		}
+	}
+
+	// Throttling detection
+	metrics.Throttled = detectCPUThrottling()
+
+	return metrics
+}
+
+// detectCPUThrottling - определение троттлинга CPU
+func detectCPUThrottling() bool {
+	// Проверка thermal throttling через /sys
+	throttleFiles := []string{
+		"/sys/devices/system/cpu/cpu0/thermal_throttle/core_throttle_count",
+		"/sys/devices/system/cpu/cpu0/thermal_throttle/package_throttle_count",
+	}
+
+	for _, path := range throttleFiles {
+		val := readProcFile(path)
+		if val > 0 {
+			return true
+		}
+	}
+	return false
 }
 
 // getDockerStats - получение статистики Docker контейнеров (если доступно)

@@ -659,6 +659,7 @@ func TestFindBackendWithModel(t *testing.T) {
 		},
 		System: types.SystemMetrics{
 			CPUUsagePercent: 20,
+			DiskFree:        20480,
 		},
 		Ollama: types.OllamaMetrics{
 			RunningModels: []types.RunningModel{

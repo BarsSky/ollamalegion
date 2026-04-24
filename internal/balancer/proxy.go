@@ -127,6 +127,9 @@ func NewProxy(config *types.LoadBalancerConfig) *Proxy {
 		}
 	}
 
+	// Запуск фоновой проверки таймаута агентов (30 секунд)
+	go p.StartAgentTimeoutChecker(30 * time.Second)
+
 	return p
 }
 
@@ -395,6 +398,121 @@ func (p *Proxy) selectBackend(model string) string {
 	return backend
 }
 
+// selectBackendExcluding - выбор бэкенда, исключая указанные
+func (p *Proxy) selectBackendExcluding(model string, exclude map[string]bool) string {
+	p.mu.RLock()
+
+	// Model Affinity - проверяем, есть ли модель уже загружена (исключая failed)
+	if p.config.Balancing.ModelAffinity && model != "" {
+		if backend := p.findBackendWithModelExcluding(model, exclude); backend != "" {
+			p.mu.RUnlock()
+			return backend
+		}
+	}
+	p.mu.RUnlock()
+
+	// Resource-Aware выбор с исключением
+	backend := p.selectByResourcesExcluding(exclude)
+	if backend == "" {
+		fmt.Printf("[%s] ⚠️  Нет доступных бэкендов (с исключениями)...\n", time.Now().Format(time.RFC3339))
+	}
+	return backend
+}
+
+// findBackendWithModelExcluding - поиск бэкенда с моделью, исключая указанные
+func (p *Proxy) findBackendWithModelExcluding(modelName string, exclude map[string]bool) string {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+
+	var bestBackendID string
+	var bestScore float64 = -1
+
+	for id, state := range p.backends {
+		if exclude[id] {
+			continue
+		}
+		if state.Backend.Status != types.StatusHealthy {
+			continue
+		}
+
+		// Проверка лимитов ресурсов
+		if !p.checkResourceLimits(id) {
+			continue
+		}
+
+		p.metricsMgr.mu.RLock()
+		metrics, hasMetrics := p.metricsMgr.metrics[id]
+		p.metricsMgr.mu.RUnlock()
+		if !hasMetrics {
+			continue
+		}
+
+		// Проверка лимита concurrent requests
+		state.mu.Lock()
+		if state.ActiveReqs >= state.Backend.MaxConcurrentReqs {
+			state.mu.Unlock()
+			continue
+		}
+		state.mu.Unlock()
+
+		hasModel := false
+		for _, m := range metrics.Ollama.RunningModels {
+			if m.Name == modelName || strings.Contains(m.Name, modelName) {
+				hasModel = true
+				break
+			}
+		}
+		if !hasModel {
+			continue
+		}
+
+		score := p.calculateScore(id)
+		if score > bestScore {
+			bestScore = score
+			bestBackendID = id
+		}
+	}
+
+	return bestBackendID
+}
+
+// selectByResourcesExcluding - выбор по ресурсам с исключением бэкендов
+func (p *Proxy) selectByResourcesExcluding(exclude map[string]bool) string {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+
+	var bestBackend string
+	var bestScore float64 = -1
+
+	for id, state := range p.backends {
+		if exclude[id] {
+			continue
+		}
+		if state.Backend.Status != types.StatusHealthy {
+			continue
+		}
+
+		if !p.checkResourceLimits(id) {
+			continue
+		}
+
+		state.mu.Lock()
+		if state.ActiveReqs >= state.Backend.MaxConcurrentReqs {
+			state.mu.Unlock()
+			continue
+		}
+		state.mu.Unlock()
+
+		score := p.calculateScore(id)
+		if score > bestScore {
+			bestScore = score
+			bestBackend = id
+		}
+	}
+
+	return bestBackend
+}
+
 // findBackendWithModel - поиск бэкенда с загруженной моделью
 func (p *Proxy) findBackendWithModel(modelName string) string {
 	p.mu.RLock()
@@ -408,6 +526,19 @@ func (p *Proxy) findBackendWithModel(modelName string) string {
 		if state.Backend.Status != types.StatusHealthy {
 			continue
 		}
+
+		// Проверка лимитов ресурсов
+		if !p.checkResourceLimits(id) {
+			continue
+		}
+
+		// Проверка лимита concurrent requests
+		state.mu.Lock()
+		if state.ActiveReqs >= state.Backend.MaxConcurrentReqs {
+			state.mu.Unlock()
+			continue
+		}
+		state.mu.Unlock()
 		
 		// Проверяем наличие модели через метрики
 		p.metricsMgr.mu.RLock()
@@ -415,6 +546,7 @@ func (p *Proxy) findBackendWithModel(modelName string) string {
 		p.metricsMgr.mu.RUnlock()
 		
 		if !hasMetrics {
+			// Бэкенд без метрик — не можем проверить наличие модели, пропускаем
 			continue
 		}
 		
@@ -481,11 +613,26 @@ func (p *Proxy) selectByResources() string {
 // checkResourceLimits - проверка лимитов ресурсов
 func (p *Proxy) checkResourceLimits(backendID string) bool {
 	p.metricsMgr.mu.RLock()
-	defer p.metricsMgr.mu.RUnlock()
-
 	metrics, ok := p.metricsMgr.metrics[backendID]
+	p.metricsMgr.mu.RUnlock()
+
 	if !ok {
-		return true // Нет метрик - разрешаем
+		// Нет метрик от агента — используем консервативные проверки по proxy-счётчикам
+		p.mu.RLock()
+		state, exists := p.backends[backendID]
+		p.mu.RUnlock()
+		if !exists {
+			return false
+		}
+		// Если активных запросов >= 50% от лимита — считаем что бэкенд под нагрузкой
+		state.mu.Lock()
+		active := state.ActiveReqs
+		maxReqs := state.Backend.MaxConcurrentReqs
+		state.mu.Unlock()
+		if maxReqs > 0 && active >= maxReqs/2 {
+			return false
+		}
+		return true
 	}
 
 	limits := p.config.Resources
@@ -494,7 +641,7 @@ func (p *Proxy) checkResourceLimits(backendID string) bool {
 	if metrics.GPU.UsagePercent > limits.GPU.MaxUsagePercent {
 		return false
 	}
-	if limits.GPU.MaxVRAMUsagePercent > 0 {
+	if limits.GPU.MaxVRAMUsagePercent > 0 && metrics.GPU.MemoryTotal > 0 {
 		vramPercent := float64(metrics.GPU.MemoryUsed) * 100 / float64(metrics.GPU.MemoryTotal)
 		if vramPercent > limits.GPU.MaxVRAMUsagePercent {
 			return false
@@ -507,7 +654,7 @@ func (p *Proxy) checkResourceLimits(backendID string) bool {
 	}
 
 	// Проверка RAM
-	if limits.Memory.MaxUsagePercent > 0 {
+	if limits.Memory.MaxUsagePercent > 0 && metrics.System.MemoryTotal > 0 {
 		memPercent := float64(metrics.System.MemoryUsed) * 100 / float64(metrics.System.MemoryTotal)
 		if memPercent > limits.Memory.MaxUsagePercent {
 			return false
@@ -519,34 +666,224 @@ func (p *Proxy) checkResourceLimits(backendID string) bool {
 		return false
 	}
 
+	// Проверка лимита моделей Ollama (если агент сообщил MaxModels > 0)
+	if metrics.Ollama.MaxModels > 0 {
+		if len(metrics.Ollama.RunningModels) >= metrics.Ollama.MaxModels {
+			return false
+		}
+	}
+
+	// Проверка лимита одновременных запросов Ollama (если агент сообщил MaxConcurrentRequests > 0)
+	if metrics.Ollama.MaxConcurrentRequests > 0 {
+		if metrics.Ollama.ActiveRequests >= metrics.Ollama.MaxConcurrentRequests {
+			return false
+		}
+	}
+
 	return true
 }
 
-// calculateScore - вычисление scores для бэкенда
+// calculateScore - вычисление scores для бэкенда с учётом Ollama-специфических метрик
 func (p *Proxy) calculateScore(backendID string) float64 {
 	p.metricsMgr.mu.RLock()
-	defer p.metricsMgr.mu.RUnlock()
+	metrics, ok := p.metricsMgr.metrics[backendID]
+	p.metricsMgr.mu.RUnlock()
 
 	state := p.backends[backendID]
 	if state == nil {
 		return 0
 	}
 
-	metrics, ok := p.metricsMgr.metrics[backendID]
 	if !ok {
-		// Нет метрик - используем weight
-		return float64(state.Backend.Weight)
+		// Нет метрик от агента — используем fallback scoring на основе proxy-счётчиков
+		state.mu.Lock()
+		active := state.ActiveReqs
+		maxReqs := state.Backend.MaxConcurrentReqs
+		state.mu.Unlock()
+
+		// Базовый score = weight, штраф за активные запросы
+		score := float64(state.Backend.Weight)
+		if maxReqs > 0 {
+			loadRatio := float64(active) / float64(maxReqs)
+			score -= loadRatio * 20.0 // штраф за загрузку
+		}
+		if score < 1 {
+			score = 1 // минимальный score чтобы бэкенд оставался в пуле
+		}
+		return score
 	}
 
-	// Score на основе доступных ресурсов
+	// --- Базовый score на основе доступных ресурсов ---
 	gpuFree := 100 - metrics.GPU.UsagePercent
-	vramFree := float64(metrics.GPU.MemoryFree) * 100 / float64(metrics.GPU.MemoryTotal)
+	var vramFree float64 = 100
+	if metrics.GPU.MemoryTotal > 0 {
+		vramFree = float64(metrics.GPU.MemoryFree) * 100 / float64(metrics.GPU.MemoryTotal)
+	}
 	cpuFree := 100 - metrics.System.CPUUsagePercent
 
-	// Weighted score
-	score := (gpuFree*0.4 + vramFree*0.3 + cpuFree*0.3) * float64(state.Backend.Weight) / 100
+	baseScore := gpuFree*0.35 + vramFree*0.25 + cpuFree*0.20
+
+	// --- Штраф за нагрузку запросами Ollama ---
+	// Чем больше активных запросов относительно максимума — тем ниже score
+	requestPenalty := 0.0
+	if metrics.Ollama.MaxConcurrentRequests > 0 {
+		reqRatio := float64(metrics.Ollama.ActiveRequests) / float64(metrics.Ollama.MaxConcurrentRequests)
+		requestPenalty = reqRatio * 15.0 // max 15 points penalty
+	} else {
+		// Fallback: штраф за количество активных запросов от агента
+		if metrics.Ollama.ActiveRequests > 5 {
+			requestPenalty = float64(metrics.Ollama.ActiveRequests) * 1.5
+		}
+	}
+
+	// --- Score за capacity моделей ---
+	// Чем больше свободных слотов для моделей — тем лучше
+	modelCapacityScore := 0.0
+	if metrics.Ollama.MaxModels > 0 {
+		loaded := len(metrics.Ollama.RunningModels)
+		capacityRatio := float64(metrics.Ollama.MaxModels-loaded) / float64(metrics.Ollama.MaxModels)
+		modelCapacityScore = capacityRatio * 10.0 // max 10 points
+	} else {
+		// Fallback: оценка по VRAM если MaxModels неизвестен
+		if metrics.GPU.MemoryTotal > 0 {
+			// Суммарный размер загруженных моделей
+			var loadedModelVRAM uint64
+			for _, m := range metrics.Ollama.RunningModels {
+				loadedModelVRAM += m.VRAMUsage
+			}
+			// Если загруженные модели занимают больше 80% VRAM — штраф
+			if metrics.GPU.MemoryTotal > 0 {
+				vramUsedByModels := float64(loadedModelVRAM) * 100 / float64(metrics.GPU.MemoryTotal)
+				if vramUsedByModels > 80 {
+					modelCapacityScore = -5.0
+				} else if vramUsedByModels > 50 {
+					modelCapacityScore = 2.0
+				} else {
+					modelCapacityScore = 8.0
+				}
+			}
+		}
+	}
+
+	// --- Итоговый score ---
+	score := (baseScore - requestPenalty + modelCapacityScore) * float64(state.Backend.Weight) / 100
+
+	// Не меньше 0
+	if score < 0 {
+		score = 0
+	}
 
 	return score
+}
+
+// calculateModelLoadPenalty - оценка стоимости загрузки модели на бэкенд
+// Возвращает 0 если модель уже загружена, положительное значение если требуется загрузка
+func (p *Proxy) calculateModelLoadPenalty(backendID string, modelName string) float64 {
+	if modelName == "" {
+		return 0
+	}
+
+	p.metricsMgr.mu.RLock()
+	metrics, ok := p.metricsMgr.metrics[backendID]
+	p.metricsMgr.mu.RUnlock()
+	if !ok {
+		return 5.0 // небольшой штраф за отсутствие метрик (неизвестно, загружена ли модель)
+	}
+
+	// Проверяем, загружена ли модель
+	for _, m := range metrics.Ollama.RunningModels {
+		if m.Name == modelName || strings.Contains(m.Name, modelName) {
+			return 0 // модель уже загружена — без штрафа
+		}
+	}
+
+	// Модель не загружена — штраф зависит от загруженности VRAM
+	penalty := 5.0 // базовый штраф за загрузку модели
+	if metrics.GPU.MemoryTotal > 0 {
+		vramUsedPercent := float64(metrics.GPU.MemoryUsed) * 100 / float64(metrics.GPU.MemoryTotal)
+		if vramUsedPercent > 80 {
+			penalty = 20.0 // высокий штраф при малом свободном VRAM
+		} else if vramUsedPercent > 60 {
+			penalty = 10.0
+		}
+	}
+
+	return penalty
+}
+
+// getBackendModelCapacity - оценка оставшихся слотов для моделей на бэкенде
+func (p *Proxy) getBackendModelCapacity(backendID string) int {
+	p.metricsMgr.mu.RLock()
+	metrics, ok := p.metricsMgr.metrics[backendID]
+	p.metricsMgr.mu.RUnlock()
+	if !ok {
+		return 0
+	}
+
+	if metrics.Ollama.MaxModels > 0 {
+		available := metrics.Ollama.MaxModels - len(metrics.Ollama.RunningModels)
+		if available < 0 {
+			return 0
+		}
+		return available
+	}
+
+	// Fallback: оценка по VRAM
+	if metrics.GPU.MemoryTotal > 0 && metrics.GPU.MemoryTotal > metrics.GPU.MemoryUsed {
+		freeVRAM := metrics.GPU.MemoryTotal - metrics.GPU.MemoryUsed
+		// Предполагаем среднюю модель 4GB
+		avgModelSize := uint64(4096) // MB
+		return int(freeVRAM / avgModelSize)
+	}
+
+	return 0
+}
+
+// estimateModelVRAM - оценка VRAM, необходимого для модели
+func estimateModelVRAM(modelName string) uint64 {
+	// Простая эвристика на основе названия модели
+	// Форматы: llama3.1:8b, qwen2.5:14b, deepseek-r1:32b, etc.
+	lower := strings.ToLower(modelName)
+
+	// Извлекаем размер из названия (последнее число с 'b' в конце)
+	var sizeGB uint64 = 4 // default 4GB
+
+	// Проверяем известные шаблоны
+	sizeMap := map[string]uint64{
+		":0.5b": 1, ":1b": 1, ":1.5b": 2,
+		":3b": 3, ":4b": 4, ":7b": 5, ":8b": 6,
+		":13b": 9, ":14b": 10, ":20b": 14,
+		":32b": 22, ":34b": 24, ":40b": 28,
+		":65b": 45, ":70b": 48, ":72b": 50,
+		":110b": 75, ":405b": 250,
+	}
+
+	for suffix, vram := range sizeMap {
+		if strings.Contains(lower, suffix) {
+			sizeGB = vram
+			break
+		}
+	}
+
+	// Учитываем квантование (Q4 занимает ~60% от fp16, Q8 ~80%)
+	if strings.Contains(lower, "q4") || strings.Contains(lower, "4bit") {
+		sizeGB = sizeGB * 6 / 10
+	} else if strings.Contains(lower, "q5") || strings.Contains(lower, "5bit") {
+		sizeGB = sizeGB * 7 / 10
+	} else if strings.Contains(lower, "q8") || strings.Contains(lower, "8bit") {
+		sizeGB = sizeGB * 8 / 10
+	} else if strings.Contains(lower, "fp16") || strings.Contains(lower, "f16") {
+		// full precision, no change
+	} else if strings.Contains(lower, "q2") {
+		sizeGB = sizeGB * 4 / 10
+	}
+
+	// Минимум 512MB
+	if sizeGB < 1 {
+		sizeGB = 1
+	}
+
+	return sizeGB * 1024 // MB
 }
 
 // proxyRequest - проксирование запроса к бэкенду с поддержкой streaming/SSE
@@ -780,6 +1117,37 @@ func (p *Proxy) UpdateBackendStatus(backendID string, status types.BackendStatus
 	}
 }
 
+// UpdateBackendAgentStatus - обновление флага активного агента
+func (p *Proxy) UpdateBackendAgentStatus(backendID string, hasAgent bool) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	if state, ok := p.backends[backendID]; ok {
+		state.Backend.HasAgent = hasAgent
+		state.Backend.LastAgentContact = time.Now()
+	}
+}
+
+// StartAgentTimeoutChecker - запуск фоновой проверки таймаута агентов
+func (p *Proxy) StartAgentTimeoutChecker(timeout time.Duration) {
+	go func() {
+		ticker := time.NewTicker(timeout / 2)
+		defer ticker.Stop()
+
+		for range ticker.C {
+			p.mu.Lock()
+			for _, state := range p.backends {
+				if state.Backend.HasAgent && time.Since(state.Backend.LastAgentContact) > timeout {
+					state.Backend.HasAgent = false
+					fmt.Printf("[%s] Agent timeout for backend %s - no metrics received for %v\n",
+						time.Now().Format(time.RFC3339), state.Backend.ID, timeout)
+				}
+			}
+			p.mu.Unlock()
+		}
+	}()
+}
+
 // GetClusterState - получение состояния кластера
 func (p *Proxy) GetClusterState() *types.ClusterState {
 	p.mu.RLock()
@@ -994,7 +1362,7 @@ func (p *Proxy) AddBackend(backend types.Backend) error {
 		backend.OllamaPort = 11434
 	}
 	if backend.AgentPort == 0 {
-		backend.AgentPort = 9090
+		backend.AgentPort = 18032
 	}
 	if backend.Status == "" {
 		backend.Status = types.StatusStarting
@@ -1049,6 +1417,14 @@ func (p *Proxy) UpdateBackend(backendID string, updated types.Backend) error {
 	state.ActiveReqs = currentActiveReqs
 
 	return nil
+}
+
+// scheduleRecoveryCheck - планирование проверки восстановления бэкенда
+// Заглушка: recovery check выполняется health checker автоматически через периодические проверки
+func (p *Proxy) scheduleRecoveryCheck(backendID string) {
+	fmt.Printf("[%s] Scheduled recovery check for backend %s\n",
+		time.Now().Format(time.RFC3339), backendID)
+	// Реальная реализация может быть добавлена через HealthChecker
 }
 
 // GetBackend - получение бэкенда по ID

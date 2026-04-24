@@ -6,8 +6,11 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"os"
+	"os/exec"
+	"runtime"
 	"sync"
 	"time"
 
@@ -17,21 +20,23 @@ import (
 
 // Agent - агент сбора метрик
 type Agent struct {
-	config          *types.AgentConfig
-	httpClient      *http.Client
-	metricsSeq      int64
-	heartbeatSeq    int64
-	startTime       time.Time
-	mu              sync.Mutex
-	currentMetrics  *types.BackendMetrics
-	stopChan        chan struct{}
-	balancerURL     string
-	registered      bool
-	
+	config         *types.AgentConfig
+	httpClient     *http.Client
+	metricsSeq     int64
+	heartbeatSeq   int64
+	startTime      time.Time
+	mu             sync.Mutex
+	currentMetrics *types.BackendMetrics
+	stopChan       chan struct{}
+	balancerURL    string
+	registered     bool
+	platformMode   types.PlatformMode
+	gpuUnavailable bool // кэш: GPU недоступна на этой ноде
+
 	// Ollama статистика
-	ollamaStats     *OllamaStats
-	statsMu         sync.Mutex
-	requestHistory  []requestRecord
+	ollamaStats    *OllamaStats
+	statsMu        sync.Mutex
+	requestHistory []requestRecord
 }
 
 // requestRecord - запись о запросе для подсчета RPS
@@ -43,7 +48,7 @@ type requestRecord struct {
 // NewAgent - создание нового агента
 func NewAgent(config *types.AgentConfig) *Agent {
 	return &Agent{
-		config: config,
+		config:         config,
 		httpClient: &http.Client{
 			Timeout: 30 * time.Second,
 		},
@@ -56,25 +61,105 @@ func NewAgent(config *types.AgentConfig) *Agent {
 
 // Start - запуск агента
 func (a *Agent) Start() error {
+	// Определяем режим платформы
+	a.platformMode = a.detectPlatformMode()
+	fmt.Printf("[%s] Platform mode detected: %s\n", time.Now().Format(time.RFC3339), a.platformMode)
+
 	// Регистрация на балансировщике
 	if err := a.register(); err != nil {
 		return fmt.Errorf("registration failed: %w", err)
 	}
-	
+
 	a.registered = true
-	
+
 	// Запуск сбора метрик
 	go a.collectLoop()
-	
+
 	// Запуск heartbeat
 	go a.heartbeatLoop()
-	
+
 	return nil
 }
 
 // Stop - остановка агента
 func (a *Agent) Stop() {
 	close(a.stopChan)
+}
+
+// detectPlatformMode - runtime автоопределение GPU/CPU режима
+func (a *Agent) detectPlatformMode() types.PlatformMode {
+	// Если явно задан режим
+	if a.config.GPUMode != types.ModeAuto {
+		fmt.Printf("[%s] Platform mode override: %s\n", time.Now().Format(time.RFC3339), a.config.GPUMode)
+		return a.config.GPUMode
+	}
+
+	// Проверяем nvidia-smi
+	if _, err := exec.LookPath("nvidia-smi"); err == nil {
+		// Пробуем выполнить
+		cmd := exec.Command("nvidia-smi", "--query-gpu=name", "--format=csv,noheader")
+		if out, err := cmd.Output(); err == nil && len(bytes.TrimSpace(out)) > 0 {
+			fmt.Printf("[%s] nvidia-smi found, GPU mode detected\n", time.Now().Format(time.RFC3339))
+			return types.ModeGPU
+		}
+	}
+
+	// Проверяем NVML (если собрано с тегом)
+	if nvmlAvailable() {
+		fmt.Printf("[%s] NVML available, GPU mode detected\n", time.Now().Format(time.RFC3339))
+		return types.ModeGPU
+	}
+
+	// Проверяем /dev/nvidia* (Linux)
+	if runtime.GOOS == "linux" {
+		if _, err := os.Stat("/dev/nvidia0"); err == nil {
+			fmt.Printf("[%s] /dev/nvidia0 found, GPU mode detected\n", time.Now().Format(time.RFC3339))
+			return types.ModeGPU
+		}
+	}
+
+	fmt.Printf("[%s] No GPU detected, CPU mode\n", time.Now().Format(time.RFC3339))
+	return types.ModeCPU
+}
+
+// getPublicHost - определение публичного хоста для регистрации
+// Приоритет: AGENT_PUBLIC_HOST > auto-detected IP > hostname
+func (a *Agent) getPublicHost() string {
+	// Если явно задан PublicHost — используем его
+	if a.config.PublicHost != "" {
+		return a.config.PublicHost
+	}
+
+	// Попытка получить публичный IP
+	publicIP := a.getOutboundIP()
+	if publicIP != "" && publicIP != "127.0.0.1" {
+		return publicIP
+	}
+
+	// Fallback на hostname
+	hostname, _ := os.Hostname()
+	if hostname != "" {
+		return hostname
+	}
+
+	return "localhost"
+}
+
+// getOutboundIP - получение исходящего IP адреса (публичного интерфейса)
+func (a *Agent) getOutboundIP() string {
+	// Подключаемся к произвольному внешнему адресу для определения исходящего интерфейса
+	// Используем адрес балансера если он доступен
+	conn, err := net.Dial("udp", "8.8.8.8:80")
+	if err != nil {
+		return ""
+	}
+	defer conn.Close()
+
+	localAddr := conn.LocalAddr().(*net.UDPAddr)
+	if localAddr == nil {
+		return ""
+	}
+	return localAddr.IP.String()
 }
 
 // register - регистрация на балансировщике
@@ -87,17 +172,21 @@ func (a *Agent) register() error {
 	}
 
 	gpuInfo := a.collectGPUInfo()
+	publicHost := a.getPublicHost()
+
+	fmt.Printf("[%s] Detected public host for registration: %s\n",
+		time.Now().Format(time.RFC3339), publicHost)
 
 	// Отправляем регистрацию напрямую в формате, который ожидает балансировщик
 	reqBody := map[string]interface{}{
 		"agentId":    a.config.AgentID,
 		"hostname":   hostname,
-		"host":       hostname,
+		"host":       publicHost,
 		"ollamaPort": 11434,
 		"agentPort":  a.config.MetricsPort,
 		"gpuCount":   gpuInfo.Count,
 		"name":       a.config.AgentID,
-		"labels":     []string{osName, "amd64"},
+		"labels":     []string{osName, "amd64", string(a.platformMode)},
 	}
 
 	data, err := json.Marshal(reqBody)
@@ -150,13 +239,13 @@ func (a *Agent) collectLoop() {
 	if interval == 0 {
 		interval = 5 * time.Second
 	}
-	
+
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
-	
+
 	// Первый сбор сразу
 	a.collectAndSend()
-	
+
 	for {
 		select {
 		case <-ticker.C:
@@ -172,15 +261,26 @@ func (a *Agent) collectAndSend() {
 	metrics := a.collectMetrics()
 
 	// Логирование собранных метрик для диагностики
-	fmt.Printf("[%s] Metrics collected: CPU=%.1f%% RAM=%d/%dMB GPU=%.1f%% GPU_Mem=%d/%dMB RPS=%.1f Models=%d\n",
-		time.Now().Format(time.RFC3339),
-		metrics.System.CPUUsagePercent,
-		metrics.System.MemoryUsed, metrics.System.MemoryTotal,
-		metrics.GPU.UsagePercent,
-		metrics.GPU.MemoryUsed, metrics.GPU.MemoryTotal,
-		metrics.Ollama.RequestsPerSecond,
-		len(metrics.Ollama.RunningModels),
-	)
+	if a.platformMode == types.ModeGPU {
+		fmt.Printf("[%s] Metrics collected: CPU=%.1f%% RAM=%d/%dMB GPU=%.1f%% GPU_Mem=%d/%dMB RPS=%.1f Models=%d\n",
+			time.Now().Format(time.RFC3339),
+			metrics.System.CPUUsagePercent,
+			metrics.System.MemoryUsed, metrics.System.MemoryTotal,
+			metrics.GPU.UsagePercent,
+			metrics.GPU.MemoryUsed, metrics.GPU.MemoryTotal,
+			metrics.Ollama.RequestsPerSecond,
+			len(metrics.Ollama.RunningModels),
+		)
+	} else {
+		fmt.Printf("[%s] Metrics collected: CPU=%.1f%% Load=%.2f RAM=%d/%dMB RPS=%.1f Models=%d\n",
+			time.Now().Format(time.RFC3339),
+			metrics.System.CPUUsagePercent,
+			metrics.System.CPU.LoadAverage1,
+			metrics.System.MemoryUsed, metrics.System.MemoryTotal,
+			metrics.Ollama.RequestsPerSecond,
+			len(metrics.Ollama.RunningModels),
+		)
+	}
 
 	a.mu.Lock()
 	a.metricsSeq++
@@ -236,10 +336,10 @@ func (a *Agent) heartbeatLoop() {
 	if interval == 0 {
 		interval = 3 * time.Second
 	}
-	
+
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
-	
+
 	for {
 		select {
 		case <-ticker.C:
@@ -261,22 +361,36 @@ func (a *Agent) heartbeatInterval() int {
 // sendHeartbeat - отправка heartbeat
 func (a *Agent) sendHeartbeat() {
 	uptime := int64(time.Since(a.startTime).Seconds())
-	
+
 	a.mu.Lock()
 	a.heartbeatSeq++
 	seq := a.heartbeatSeq
 	status := "healthy"
+
 	if a.currentMetrics != nil {
-		// Проверка на критические метрики
-		if a.currentMetrics.GPU.UsagePercent > 95 || 
-		   a.currentMetrics.GPU.Temperature > 90 {
-			status = "degraded"
+		if a.platformMode == types.ModeGPU {
+			// GPU: degraded при высокой загрузке GPU или VRAM
+			if a.currentMetrics.GPU.UsagePercent > 95 ||
+				(a.currentMetrics.GPU.MemoryTotal > 0 && float64(a.currentMetrics.GPU.MemoryUsed)/float64(a.currentMetrics.GPU.MemoryTotal)*100 > 95) ||
+				a.currentMetrics.GPU.Temperature > 90 {
+				status = "degraded"
+			}
+		} else {
+			// CPU: degraded при высоком load average или RAM
+			cpu := a.currentMetrics.System.CPU
+			ramPercent := float64(0)
+			if a.currentMetrics.System.MemoryTotal > 0 {
+				ramPercent = float64(a.currentMetrics.System.MemoryUsed) / float64(a.currentMetrics.System.MemoryTotal) * 100
+			}
+			if (cpu.CoreCount > 0 && cpu.LoadAverage1 > float64(cpu.CoreCount)*2) || ramPercent > 95 {
+				status = "degraded"
+			}
 		}
 	}
 	a.mu.Unlock()
-	
+
 	_ = protocol.NewHeartbeatMessage(a.config.AgentID, seq, uptime, status)
-	
+
 	// Сериализация сообщения
 	wrapper := map[string]interface{}{
 		"type":      "heartbeat",
@@ -285,17 +399,18 @@ func (a *Agent) sendHeartbeat() {
 		"uptime":    uptime,
 		"sequence":  seq,
 		"status":    status,
+		"platform":  a.platformMode,
 	}
-	
+
 	data, err := json.Marshal(wrapper)
 	if err != nil {
 		fmt.Printf("[%s] Failed to marshal heartbeat: %v\n", time.Now().Format(time.RFC3339), err)
 		return
 	}
-	
+
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	
+
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost,
 		fmt.Sprintf("%s/api/v1/agents/heartbeat", a.balancerURL),
 		bytes.NewReader(data))
@@ -303,10 +418,10 @@ func (a *Agent) sendHeartbeat() {
 		fmt.Printf("[%s] Failed to create heartbeat request: %v\n", time.Now().Format(time.RFC3339), err)
 		return
 	}
-	
+
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("X-Agent-ID", a.config.AgentID)
-	
+
 	resp, err := a.httpClient.Do(req)
 	if err != nil {
 		fmt.Printf("[%s] Failed to send heartbeat: %v\n", time.Now().Format(time.RFC3339), err)
@@ -318,21 +433,25 @@ func (a *Agent) sendHeartbeat() {
 // collectMetrics - сбор всех метрик
 func (a *Agent) collectMetrics() *types.BackendMetrics {
 	now := time.Now().UTC()
-	
+
 	metrics := &types.BackendMetrics{
 		ID:        a.config.AgentID,
 		Timestamp: now,
 	}
-	
-	// Сбор GPU метрик
-	metrics.GPU = a.collectGPUMetrics()
-	
+
+	// Сбор GPU метрик (только для GPU нод)
+	if a.platformMode == types.ModeGPU {
+		metrics.GPU = a.collectGPUMetrics()
+	} else {
+		metrics.GPU = types.GPUMetrics{}
+	}
+
 	// Сбор системных метрик
 	metrics.System = a.collectSystemMetrics()
-	
+
 	// Сбор Ollama метрик
 	metrics.Ollama = a.collectOllamaMetrics()
-	
+
 	return metrics
 }
 
@@ -345,18 +464,23 @@ type GPUInfo struct {
 // collectGPUInfo - сбор информации о GPU
 func (a *Agent) collectGPUInfo() GPUInfo {
 	info := GPUInfo{}
-	
+
+	// Если уже определено что GPU недоступна — сразу возвращаем пустой результат
+	if a.gpuUnavailable {
+		return info
+	}
+
 	// Попытка получить информацию через nvidia-smi
 	output, err := executeNvidiaSmi()
 	if err != nil {
 		// Если nvidia-smi недоступен, пробуем через NVML
 		return a.collectGPUInfoNVML()
 	}
-	
+
 	// Парсинг вывода nvidia-smi
 	info.Count = countGPUs(output)
 	info.Models = parseGPUMModels(output)
-	
+
 	return info
 }
 
@@ -366,16 +490,24 @@ func (a *Agent) collectGPUInfo() GPUInfo {
 // collectGPUMetrics - сбор метрик GPU
 func (a *Agent) collectGPUMetrics() types.GPUMetrics {
 	metrics := types.GPUMetrics{}
-	
+
+	// Если уже определено что GPU недоступна — сразу возвращаем пустой результат
+	if a.gpuUnavailable {
+		return metrics
+	}
+
 	// Попытка получить метрики через nvidia-smi
 	output, err := executeNvidiaSmi()
 	if err != nil {
+		// Кэшируем недоступность GPU для последующих циклов
+		a.gpuUnavailable = true
+		fmt.Printf("[%s] nvidia-smi unavailable, GPU metrics disabled\n", time.Now().Format(time.RFC3339))
 		return a.collectGPUMetricsNVML()
 	}
-	
+
 	// Парсинг вывода nvidia-smi
 	metrics = parseNvidiaSmiOutput(output)
-	
+
 	return metrics
 }
 
@@ -385,27 +517,30 @@ func (a *Agent) collectGPUMetrics() types.GPUMetrics {
 // collectSystemMetrics - сбор системных метрик
 func (a *Agent) collectSystemMetrics() types.SystemMetrics {
 	metrics := types.SystemMetrics{}
-	
+
 	// CPU usage
 	metrics.CPUUsagePercent = getCPUUsage()
-	
+
+	// Расширенные CPU метрики
+	metrics.CPU = getCPUMetrics()
+
 	// Memory
 	total, used, free := getMemoryInfo()
 	metrics.MemoryTotal = total
 	metrics.MemoryUsed = used
 	metrics.MemoryFree = free
-	
+
 	// Disk
 	diskTotal, diskUsed, diskFree := getDiskInfo()
 	metrics.DiskTotal = diskTotal
 	metrics.DiskUsed = diskUsed
 	metrics.DiskFree = diskFree
-	
+
 	// Network
 	rx, tx := getNetworkIO()
 	metrics.NetworkRX = rx
 	metrics.NetworkTX = tx
-	
+
 	return metrics
 }
 
@@ -420,7 +555,7 @@ func (a *Agent) getOllamaBaseURL() string {
 // collectOllamaMetrics - сбор метрик Ollama
 func (a *Agent) collectOllamaMetrics() types.OllamaMetrics {
 	metrics := types.OllamaMetrics{}
-	
+
 	// Получение запущенных моделей через /api/ps
 	runningModels, err := a.getRunningModels()
 	if err != nil {
@@ -428,7 +563,7 @@ func (a *Agent) collectOllamaMetrics() types.OllamaMetrics {
 	} else {
 		metrics.RunningModels = runningModels
 	}
-	
+
 	// Получение статистики запросов
 	stats, err := a.getOllamaStats()
 	if err != nil {
@@ -444,7 +579,7 @@ func (a *Agent) collectOllamaMetrics() types.OllamaMetrics {
 		metrics.AvgResponseTime = stats.AvgResponseTime
 		metrics.RequestsPerSecond = stats.RequestsPerSecond
 	}
-	
+
 	return metrics
 }
 
@@ -455,24 +590,25 @@ func (a *Agent) getRunningModels() ([]types.RunningModel, error) {
 		return nil, err
 	}
 	defer resp.Body.Close()
-	
+
 	if resp.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("status code: %d", resp.StatusCode)
 	}
-	
+
 	var result struct {
 		Models []struct {
 			Name      string    `json:"name"`
 			Size      uint64    `json:"size"`
 			Digest    string    `json:"digest"`
 			ExpiresAt time.Time `json:"expires_at"`
+			SizeVRAM  uint64    `json:"size_vram"`
 		} `json:"models"`
 	}
-	
+
 	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
 		return nil, err
 	}
-	
+
 	models := make([]types.RunningModel, len(result.Models))
 	for i, m := range result.Models {
 		models[i] = types.RunningModel{
@@ -480,10 +616,18 @@ func (a *Agent) getRunningModels() ([]types.RunningModel, error) {
 			Size:      m.Size,
 			Digest:    m.Digest,
 			ExpiresAt: m.ExpiresAt,
-			VRAMUsage: estimateVRAMUsage(m.Size),
+		}
+
+		if a.platformMode == types.ModeGPU {
+			models[i].VRAMUsage = estimateVRAMUsage(m.Size)
+			models[i].RAMUsage = 0
+		} else {
+			// CPU: модели загружены в RAM
+			models[i].VRAMUsage = 0
+			models[i].RAMUsage = estimateRAMUsage(m.Size)
 		}
 	}
-	
+
 	return models, nil
 }
 
@@ -503,23 +647,23 @@ func (a *Agent) getOllamaStats() (*OllamaStats, error) {
 		AvgResponseTime:   0,
 		RequestsPerSecond: 0,
 	}
-	
+
 	// Создаем HTTP клиент с таймаутом для запроса к Ollama API
 	client := &http.Client{
 		Timeout: 5 * time.Second,
 	}
-	
+
 	// Запрос к /api/ps для получения активных процессов
 	resp, err := client.Get(fmt.Sprintf("%s/api/ps", a.getOllamaBaseURL()))
 	if err != nil {
 		return stats, fmt.Errorf("failed to connect to Ollama: %w", err)
 	}
 	defer resp.Body.Close()
-	
+
 	if resp.StatusCode != http.StatusOK {
 		return stats, fmt.Errorf("Ollama API returned status %d", resp.StatusCode)
 	}
-	
+
 	// Парсинг ответа
 	var psResponse struct {
 		Models []struct {
@@ -530,24 +674,24 @@ func (a *Agent) getOllamaStats() (*OllamaStats, error) {
 			SizeVRAM  uint64    `json:"size_vram"`
 		} `json:"models"`
 	}
-	
+
 	if err := json.NewDecoder(resp.Body).Decode(&psResponse); err != nil {
 		return stats, fmt.Errorf("failed to parse Ollama response: %w", err)
 	}
-	
+
 	// Количество активных запросов = количество работающих моделей
 	stats.ActiveRequests = len(psResponse.Models)
-	
+
 	// Вычисление RPS на основе истории запросов
 	a.statsMu.Lock()
-	
+
 	// Добавляем текущий запрос в историю
 	now := time.Now()
 	a.requestHistory = append(a.requestHistory, requestRecord{
 		timestamp: now,
 		duration:  time.Second, // предполагаем, что запрос занимает ~1 секунду
 	})
-	
+
 	// Очищаем старую историю (старше 10 секунд)
 	cutoff := now.Add(-10 * time.Second)
 	filtered := a.requestHistory[:0]
@@ -557,7 +701,7 @@ func (a *Agent) getOllamaStats() (*OllamaStats, error) {
 		}
 	}
 	a.requestHistory = filtered
-	
+
 	// Подсчет RPS
 	if len(a.requestHistory) > 0 {
 		// Считаем количество запросов за последнюю секунду
@@ -569,16 +713,16 @@ func (a *Agent) getOllamaStats() (*OllamaStats, error) {
 			}
 		}
 		stats.RequestsPerSecond = float64(recentRequests)
-		
+
 		// Общее количество запросов (за последние 10 секунд)
 		stats.TotalRequests = int64(len(a.requestHistory))
-		
+
 		// Среднее время ответа (предполагаемое)
 		stats.AvgResponseTime = 1000.0 // 1000ms = 1 секунда
 	}
-	
+
 	a.statsMu.Unlock()
-	
+
 	return stats, nil
 }
 
@@ -589,6 +733,12 @@ func estimateVRAMUsage(modelSize uint64) uint64 {
 	return modelSize / 1024 / 1024 // конвертация в MB
 }
 
+// estimateRAMUsage - оценка использования RAM на CPU по размеру модели
+func estimateRAMUsage(modelSize uint64) uint64 {
+	// На CPU модели загружаются в RAM с небольшим оверхедом
+	return modelSize / 1024 / 1024 // конвертация в MB
+}
+
 // getOllamaVersion - получение версии Ollama
 func (a *Agent) getOllamaVersion() string {
 	resp, err := a.httpClient.Get(fmt.Sprintf("%s/api/version", a.getOllamaBaseURL()))
@@ -596,14 +746,14 @@ func (a *Agent) getOllamaVersion() string {
 		return "unknown"
 	}
 	defer resp.Body.Close()
-	
+
 	var result struct {
 		Version string `json:"version"`
 	}
-	
+
 	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
 		return "unknown"
 	}
-	
+
 	return result.Version
 }

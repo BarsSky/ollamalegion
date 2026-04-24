@@ -6,7 +6,11 @@
 // ============================================
 // When served through nginx, API and WebSocket are proxied to the balancer
 const API_BASE_URL = '/api/v1';
-const WS_URL = `ws://${window.location.host}/ws/metrics`;
+const WS_PROTOCOL = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+const WS_URL = `${WS_PROTOCOL}//${window.location.host}/ws/metrics`;
+const WS_FALLBACK_HOST = 'localhost:18081';
+const WS_FALLBACK_URL = `${WS_PROTOCOL}//${WS_FALLBACK_HOST}/ws/metrics`;
+let wsFallbackUsed = false;
 
 // ============================================
 // Global State
@@ -36,11 +40,22 @@ const backendCardCache = new Map();
 // ============================================
 // WebSocket Connection
 // ============================================
+function buildWsUrl() {
+    const baseUrl = wsFallbackUsed ? WS_FALLBACK_URL : WS_URL;
+    // Не добавляем token если auth отключена
+    if (!authRequired) return baseUrl;
+    const token = getApiToken();
+    const separator = baseUrl.includes('?') ? '&' : '?';
+    return `${baseUrl}${separator}token=${encodeURIComponent(token)}`;
+}
+
 function connectWebSocket() {
     const indicator = document.getElementById('websocketIndicator');
     const indicatorText = indicator.querySelector('.indicator-text');
     
-    wsConnection = new WebSocket(WS_URL);
+    const url = buildWsUrl();
+    console.log('WebSocket connecting to:', url);
+    wsConnection = new WebSocket(url);
     
     wsConnection.onopen = () => {
         console.log('WebSocket connected');
@@ -49,11 +64,19 @@ function connectWebSocket() {
         indicatorText.textContent = 'Connected';
     };
     
-    wsConnection.onclose = () => {
-        console.log('WebSocket disconnected');
+    wsConnection.onclose = (event) => {
+        console.log('WebSocket disconnected', event ? event.code : '');
         indicator.classList.add('disconnected');
         indicator.classList.remove('connected');
         indicatorText.textContent = 'Disconnected';
+        
+        // If connection failed and we haven't tried fallback yet, switch to fallback
+        if (!wsFallbackUsed && event && (event.code === 1006 || event.code === 1001)) {
+            console.log('Switching to fallback WebSocket URL:', WS_FALLBACK_URL);
+            wsFallbackUsed = true;
+            setTimeout(connectWebSocket, 1000);
+            return;
+        }
         
         // Reconnect after 3 seconds
         setTimeout(connectWebSocket, 3000);
@@ -93,15 +116,24 @@ function normalizeBackend(backend) {
     if (!backend) return {};
     
     // Generate fallback Name from ID or Host if not provided
-    const fallbackName = backend.Name || backend.name ||
-                         backend.Host || backend.host ||
-                         backend.ID || backend.id ||
-                         'Unknown';
+    // Use strict undefined check to allow empty string from API (preserve intentional blanks)
+    let fallbackName;
+    if (backend.Name !== undefined) {
+        fallbackName = backend.Name;
+    } else if (backend.name !== undefined) {
+        fallbackName = backend.name;
+    } else if (backend.Host || backend.host) {
+        fallbackName = backend.Host || backend.host;
+    } else if (backend.ID || backend.id) {
+        fallbackName = backend.ID || backend.id;
+    } else {
+        fallbackName = 'Unknown';
+    }
     
     // Generate fallback Host from ID if not provided (ID may contain host info)
     const fallbackHost = backend.Host || backend.host ||
-                         (backend.ID || backend.id || '').split(':')[0] ||
-                         'N/A';
+                          (backend.ID || backend.id || '').split(':')[0] ||
+                          'N/A';
     
     return {
         ID: backend.ID || backend.id || '',
@@ -109,13 +141,15 @@ function normalizeBackend(backend) {
         Host: fallbackHost,
         Status: backend.Status || backend.status || 'unknown',
         OllamaPort: backend.OllamaPort || backend.ollamaPort || 11434,
-        AgentPort: backend.AgentPort || backend.agentPort || 9090,
+        AgentPort: backend.AgentPort || backend.agentPort || 18032,
         Weight: backend.Weight || backend.weight || 1,
-        MaxConcurrentRequests: backend.MaxConcurrentRequests || backend.maxConcurrentRequests || 10,
+        MaxConcurrentRequests: backend.MaxConcurrentRequests || backend.maxConcurrentRequests || backend.MaxConcurrentReqs || backend.maxConcurrentReqs || 10,
         Labels: backend.Labels || backend.labels || [],
         GPU: backend.GPU || backend.gpu || {},
         System: backend.System || backend.system || {},
         Ollama: backend.Ollama || backend.ollama || {},
+        HasAgent: backend.HasAgent || backend.hasAgent || false,
+        LastAgentContact: backend.LastAgentContact || backend.lastAgentContact || '',
         Timestamp: backend.Timestamp || backend.timestamp
     };
 }
@@ -158,8 +192,13 @@ function normalizeSystem(system) {
 function normalizeOllama(ollama) {
     if (!ollama) return {};
     
+    const rawModels = ollama.RunningModels || ollama.runningModels || [];
+    const normalizedModels = Array.isArray(rawModels)
+        ? rawModels.map(m => normalizeModel(m))
+        : [];
+    
     return {
-        RunningModels: ollama.RunningModels || ollama.runningModels || [],
+        RunningModels: normalizedModels,
         ActiveRequests: ollama.ActiveRequests || ollama.activeRequests || 0,
         TotalRequests: ollama.TotalRequests || ollama.totalRequests || 0,
         AvgResponseTime: ollama.AvgResponseTime || ollama.avgResponseTime || 0,
@@ -274,6 +313,7 @@ function updateBackendMetrics(metricsData) {
             GPU: normalizedMetrics.GPU || normalizedMetrics.gpu || existingBackend.GPU,
             System: normalizedMetrics.System || normalizedMetrics.system || existingBackend.System,
             Ollama: normalizedMetrics.Ollama || normalizedMetrics.ollama || existingBackend.Ollama,
+            HasAgent: true,
             Timestamp: normalizedMetrics.Timestamp || normalizedMetrics.timestamp || existingBackend.Timestamp
         };
         
@@ -377,10 +417,25 @@ function getStatusClass(status) {
     return normalizedStatus === 'healthy' ? 'online' : (normalizedStatus === 'unhealthy' ? 'offline' : 'warning');
 }
 
+// Normalize model data inside RunningModels
+function normalizeModel(model) {
+    if (!model) return {};
+    return {
+        Name: model.Name || model.name || '',
+        Size: model.Size || model.size || 0,
+        VramUsage: model.VramUsage || model.vramUsage || 0,
+        ExpiresAt: model.ExpiresAt || model.expiresAt || '',
+        Digest: model.Digest || model.digest || '',
+        Family: model.Family || model.family || '',
+        ParameterSize: model.ParameterSize || model.parameterSize || '',
+        Quantization: model.Quantization || model.quantization || ''
+    };
+}
+
 // Get status text for backend status
 function getStatusText(status) {
     const normalizedStatus = (status || 'unknown').toLowerCase();
-    return normalizedStatus === 'healthy' ? 'Online' : (normalizedStatus === 'unhealthy' ? 'Offline' : 'Starting');
+    return normalizedStatus === 'healthy' ? 'Online' : (normalizedStatus === 'unhealthy' ? 'Unhealthy' : 'Starting');
 }
 
 // Create a new backend card element
@@ -388,6 +443,7 @@ function createBackendCard(backend) {
     const status = backend.Status || 'unknown';
     const statusClass = getStatusClass(status);
     const statusText = getStatusText(status);
+    const hasAgent = backend.HasAgent || backend.hasAgent || false;
     
     // Normalize nested objects
     const gpu = normalizeGPU(backend.GPU || backend.gpu);
@@ -395,22 +451,26 @@ function createBackendCard(backend) {
     const ollama = normalizeOllama(backend.Ollama || backend.ollama);
     
     const gpuUsage = gpu.UsagePercent || 0;
-    const gpuMemory = gpu.MemoryUsed && gpu.MemoryTotal
-        ? ((gpu.MemoryUsed / gpu.MemoryTotal) * 100).toFixed(1)
+    const gpuMemoryRaw = gpu.MemoryUsed && gpu.MemoryTotal
+        ? ((gpu.MemoryUsed / gpu.MemoryTotal) * 100)
         : 0;
+    const gpuMemory = parseFloat(gpuMemoryRaw.toFixed(1));
     const cpuUsage = system.CPUUsagePercent || 0;
-    const ramUsage = system.MemoryUsed && system.MemoryTotal
-        ? ((system.MemoryUsed / system.MemoryTotal) * 100).toFixed(1)
+    const ramUsageRaw = system.MemoryUsed && system.MemoryTotal
+        ? ((system.MemoryUsed / system.MemoryTotal) * 100)
         : 0;
+    const ramUsage = parseFloat(ramUsageRaw.toFixed(1));
     
     const card = document.createElement('div');
     card.className = `backend-card ${statusClass} fade-in`;
     card.dataset.backendId = backend.ID;
     card.innerHTML = `
+        ${!hasAgent ? `<div class="agent-warning">⚠️ Agent not connected — metrics unavailable, load balancing simplified</div>` : ''}
         <div class="backend-header">
             <div class="backend-header-left">
                 <span class="backend-id">${escapeHtml(backend.Name || backend.ID)}</span>
                 <span class="backend-status ${statusClass}">${statusText}</span>
+                <span class="agent-indicator ${hasAgent ? 'agent-online' : 'agent-offline'}" title="${hasAgent ? 'Agent Online' : 'Agent Offline'}">${hasAgent ? '🟢' : '⚪'}</span>
             </div>
             <div class="backend-actions">
                 <button class="action-btn" title="Download .env" onclick="downloadEnvConfig('${escapeHtml(backend.ID)}')">📥</button>
@@ -546,17 +606,42 @@ function updateBackendCard(card, backend) {
     const ollama = normalizeOllama(backend.Ollama || backend.ollama);
     
     const gpuUsage = gpu.UsagePercent || 0;
-    const gpuMemory = gpu.MemoryUsed && gpu.MemoryTotal
-        ? ((gpu.MemoryUsed / gpu.MemoryTotal) * 100).toFixed(1)
+    const gpuMemoryRaw = gpu.MemoryUsed && gpu.MemoryTotal
+        ? ((gpu.MemoryUsed / gpu.MemoryTotal) * 100)
         : 0;
+    const gpuMemory = parseFloat(gpuMemoryRaw.toFixed(1));
     const cpuUsage = system.CPUUsagePercent || 0;
-    const ramUsage = system.MemoryUsed && system.MemoryTotal
-        ? ((system.MemoryUsed / system.MemoryTotal) * 100).toFixed(1)
+    const ramUsageRaw = system.MemoryUsed && system.MemoryTotal
+        ? ((system.MemoryUsed / system.MemoryTotal) * 100)
         : 0;
+    const ramUsage = parseFloat(ramUsageRaw.toFixed(1));
     
     // Update text values only
     card.querySelector('.backend-id').textContent = escapeHtml(backend.Name || backend.ID);
     card.querySelector('.backend-status').textContent = statusText;
+    
+    // Update agent indicator
+    const hasAgent = backend.HasAgent || backend.hasAgent || false;
+    const agentIndicator = card.querySelector('.agent-indicator');
+    if (agentIndicator) {
+        agentIndicator.className = `agent-indicator ${hasAgent ? 'agent-online' : 'agent-offline'}`;
+        agentIndicator.textContent = hasAgent ? '🟢' : '⚪';
+        agentIndicator.title = hasAgent ? 'Agent Online' : 'Agent Offline';
+    }
+    
+    // Update agent warning
+    const existingWarning = card.querySelector('.agent-warning');
+    if (!hasAgent && !existingWarning) {
+        const header = card.querySelector('.backend-header');
+        if (header) {
+            const warning = document.createElement('div');
+            warning.className = 'agent-warning';
+            warning.textContent = '⚠️ Agent not connected — metrics unavailable, load balancing simplified';
+            card.insertBefore(warning, header);
+        }
+    } else if (hasAgent && existingWarning) {
+        existingWarning.remove();
+    }
     
     // Update metrics values
     card.querySelector('.gpu-usage').textContent = gpuUsage.toFixed(1) + '%';
@@ -721,7 +806,10 @@ function updateSessionsTable(data) {
 
 function updateFooter(data) {
     document.getElementById('apiVersion').textContent = '1.0.0';
-    document.getElementById('lastUpdate').textContent = new Date(data.Timestamp || Date.now()).toLocaleTimeString();
+    const ts = data.Timestamp || data.timestamp;
+    // Filter out Go zero-value timestamp to avoid displaying year 1901/2001
+    const isGoZero = ts && (ts.startsWith('0001-01-01') || ts.startsWith('0001-01-01T00:00:00'));
+    document.getElementById('lastUpdate').textContent = new Date((!isGoZero && ts) ? ts : Date.now()).toLocaleTimeString();
 }
 
 // ============================================
@@ -837,7 +925,11 @@ document.getElementById('addBackendForm').addEventListener('submit', async (e) =
         const result = await response.json();
         
         if (response.ok && result.success) {
-            alert('Backend added successfully!');
+            const generateConfig = e.target.querySelector('[name="generateAgentConfig"]')?.checked;
+            if (generateConfig) {
+                downloadEnvConfig(backend.id);
+            }
+            alert('Backend added successfully!' + (generateConfig ? ' Agent config downloaded.' : ''));
             e.target.reset();
         } else {
             alert(`Error: ${result.error || 'Failed to add backend'}`);
@@ -881,10 +973,11 @@ function downloadEnvConfig(backendId) {
     
     // Use normalized values
     const normalizedBackend = normalizeBackend(backend);
+    const balancerHost = window.location.host || 'localhost:18081';
     const envContent = `# Agent Configuration for ${normalizedBackend.Name || backendId}
 AGENT_ID=${backendId}
-BALANCER_URL=http://<BALANCER_HOST>:18081
-AGENT_PORT=${normalizedBackend.AgentPort || 9090}
+BALANCER_URL=http://${balancerHost}
+AGENT_PORT=${normalizedBackend.AgentPort || 18032}
 OLLAMA_URL=http://localhost:11434
 NVML_ENABLED=true
 METRICS_INTERVAL=5s
@@ -942,7 +1035,7 @@ document.getElementById('configUpload').addEventListener('change', async (e) => 
                         name: backend.name || backend.Name,
                         host: backend.host || backend.Host,
                         ollamaPort: backend.ollamaPort || backend.OllamaPort || 11434,
-                        agentPort: backend.agentPort || backend.AgentPort || 9090,
+agentPort: backend.agentPort || backend.AgentPort || 18032,
                         weight: backend.weight || backend.Weight || 1,
                         maxConcurrentRequests: backend.maxConcurrentRequests || backend.MaxConcurrentReqs || 10,
                         labels: backend.labels || backend.Labels || []
@@ -1012,15 +1105,90 @@ const safeStorage = {
 };
 
 function getApiToken() {
-    // In production, this should be properly authenticated
-    return safeStorage.get('apiToken') || 'your-master-token-here-change-in-production';
+    return safeStorage.get('apiToken') || '';
+}
+
+function setApiToken(token) {
+    safeStorage.set('apiToken', token);
 }
 
 // ============================================
 // Initialization
 // ============================================
-document.addEventListener('DOMContentLoaded', () => {
-    // Show loading state immediately
+// ============================================
+// Token Modal & Auth Flow
+// ============================================
+let authRequired = false;
+let authHeaderName = 'X-API-Token';
+
+function showTokenModal(show = true) {
+    const modal = document.getElementById('tokenModal');
+    if (modal) {
+        modal.classList.toggle('active', show);
+        if (show) {
+            const input = document.getElementById('tokenModalInput');
+            if (input) {
+                input.value = getApiToken();
+                input.focus();
+            }
+        }
+    }
+}
+
+async function verifyToken(token) {
+    try {
+        const resp = await fetch(`${API_BASE_URL}/auth/status`, {
+            headers: { 'X-API-Token': token }
+        });
+        return resp.ok;
+    } catch (e) {
+        return false;
+    }
+}
+
+async function initAuth() {
+    // 1. Probe health endpoint to check if auth is enabled
+    let healthData = null;
+    try {
+        const resp = await fetch(`${API_BASE_URL}/health`);
+        if (resp.ok) {
+            healthData = await resp.json();
+        }
+    } catch (e) {
+        console.warn('Health check failed, assuming auth is required', e);
+    }
+
+    authRequired = healthData?.authEnabled ?? true;
+    authHeaderName = healthData?.authHeader || 'X-API-Token';
+    const wsEndpoint = healthData?.wsEndpoint || '/ws/metrics';
+
+    // 2. If auth is disabled, proceed without token
+    if (!authRequired) {
+        console.log('Auth is disabled, proceeding without token');
+        proceedToApp();
+        return;
+    }
+
+    // 3. Try existing stored token
+    const storedToken = getApiToken();
+    if (storedToken) {
+        const valid = await verifyToken(storedToken);
+        if (valid) {
+            console.log('Stored token is valid');
+            proceedToApp();
+            return;
+        }
+    }
+
+    // 4. Show token modal for user input
+    console.log('Auth required, showing token modal');
+    showTokenModal(true);
+}
+
+function proceedToApp() {
+    showTokenModal(false);
+
+    // Show loading state
     const grid = document.getElementById('backendsGrid');
     if (grid) {
         grid.innerHTML = `
@@ -1031,17 +1199,68 @@ document.addEventListener('DOMContentLoaded', () => {
         `;
     }
     isLoadingBackends = true;
-    
+
     // Initialize charts first
     initCharts();
-    
+
     // Fetch backends from API BEFORE connecting WebSocket
-    // This ensures we have data before real-time updates start
     fetchBackends();
-    
+
     // Connect WebSocket after initiating API fetch
-    // WebSocket will only update existing data, not trigger initial render
     connectWebSocket();
+}
+
+function handleTokenModalSubmit() {
+    const input = document.getElementById('tokenModalInput');
+    const errorEl = document.getElementById('tokenModalError');
+    const token = input?.value.trim();
+
+    if (!token) {
+        if (errorEl) {
+            errorEl.textContent = 'Please enter a token';
+            errorEl.classList.add('active');
+        }
+        return;
+    }
+
+    // Verify token before saving
+    verifyToken(token).then(valid => {
+        if (valid) {
+            setApiToken(token);
+            if (errorEl) errorEl.classList.remove('active');
+            proceedToApp();
+        } else {
+            if (errorEl) {
+                errorEl.textContent = 'Invalid token. Please check and try again.';
+                errorEl.classList.add('active');
+            }
+        }
+    });
+}
+
+// Bind modal events
+document.addEventListener('DOMContentLoaded', () => {
+    const submitBtn = document.getElementById('tokenModalSubmit');
+    const skipBtn = document.getElementById('tokenModalSkip');
+    const input = document.getElementById('tokenModalInput');
+
+    if (submitBtn) {
+        submitBtn.addEventListener('click', handleTokenModalSubmit);
+    }
+    if (skipBtn) {
+        skipBtn.addEventListener('click', () => {
+            // Skip token check — will proceed with empty token (works if auth disabled)
+            proceedToApp();
+        });
+    }
+    if (input) {
+        input.addEventListener('keydown', (e) => {
+            if (e.key === 'Enter') handleTokenModalSubmit();
+        });
+    }
+
+    // Start auth flow
+    initAuth();
 });
 
 async function fetchBackends() {

@@ -120,6 +120,11 @@ func (a *TokenAuthenticator) GetTokenCount() int {
 	return len(a.tokens)
 }
 
+// IsEnabled - проверка, включена ли аутентификация
+func (a *TokenAuthenticator) IsEnabled() bool {
+	return a.enabled
+}
+
 // isMasterTokenLocked - проверка master токена без блокировки (для внутреннего использования)
 func (a *TokenAuthenticator) isMasterTokenLocked(token string) bool {
 	if len(a.tokens) == 0 {

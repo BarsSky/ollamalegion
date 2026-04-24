@@ -1,5 +1,5 @@
 # Web UI Dockerfile
-# Простой nginx контейнер для статического Web UI
+# Сборка статического Web UI на nginx
 
 FROM nginx:alpine
 
@@ -8,11 +8,11 @@ WORKDIR /usr/share/nginx/html
 # Удаление стандартных файлов nginx
 RUN rm -rf ./*
 
-# Копирование статических файлов UI
-COPY dist/ .
+# Копирование статических файлов UI из webui/dist/
+COPY webui/dist/ .
 
-# Копирование конфигурации nginx
-COPY docker/webui/nginx.conf /etc/nginx/conf.d/default.conf
+# Копирование конфигурации nginx из webui/
+COPY webui/nginx.conf /etc/nginx/conf.d/default.conf
 
 EXPOSE 80
 

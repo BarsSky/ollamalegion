@@ -149,7 +149,7 @@ docker-compose -f docker-compose.agent.yml ps
 
 ```bash
 # Проверка статуса контейнера
-docker ps | grep ollama-lb-agent
+docker ps | grep ollama-legion-agent
 
 # Проверка метрик агента
 curl http://localhost:18032/metrics
@@ -210,11 +210,11 @@ cd /path/to/ollama-loadbalancer/scripts
 
 ```bash
 # Загрузка готового образа (если доступен в реестре)
-docker pull ollama-lb/agent:latest
+docker pull ollama-legion/agent:latest
 
 # ИЛИ сборка локально
 cd /path/to/ollama-loadbalancer
-docker build -f docker/agent/Dockerfile -t ollama-lb/agent:latest .
+docker build -f docker/agent/Dockerfile -t ollama-legion/agent:latest .
 ```
 
 ### Шаг 2: Запуск контейнера
@@ -236,7 +236,7 @@ docker run -d \
   -v /sys:/host/sys:ro \
   --network host \
   --gpus all \
-  ollama-lb/agent:latest
+  ollama-legion/agent:latest
 ```
 
 **Параметры:**
@@ -418,7 +418,7 @@ NVML_ENABLED=true
 
 ```bash
 # Docker
-docker run --env-file .env ... ollama-lb/agent:latest
+docker run --env-file .env ... ollama-legion/agent:latest
 
 # Бинарный файл
 set -a; source .env; set +a; /usr/local/bin/agent
@@ -589,7 +589,7 @@ docker run -d \
   -e AGENT_ID=gpu-1 \
   -e BALANCER_URL=http://<BALANCER_IP>:18081 \
   -e NVML_ENABLED=true \
-  ollama-lb/agent:latest
+  ollama-legion/agent:latest
 ```
 
 ### Высокая задержка heartbeat

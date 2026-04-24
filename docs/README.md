@@ -11,6 +11,7 @@
 | [Установка](installation.md) | Требования и инструкции по установке |
 | [Конфигурация](configuration.md) | Настройка всех компонентов системы |
 | [Развертывание](deployment.md) | Docker Compose и production развертывание |
+| [Развертывание агента](agent-deployment.md) | Развертывание агента в режимах CPU/GPU |
 | [API](api.md) | REST API и WebSocket документация |
 | [Troubleshooting](troubleshooting.md) | Решение проблем и отладка |
 
@@ -91,10 +92,10 @@ graph TB
         MM[Metrics Collector]
     end
     
-    subgraph AgentLayer [Слой агентов]
-        A1[Agent GPU 1]
-        A2[Agent GPU 2]
-        A3[Agent GPU N]
+    subgraph AgentLayer [Слой агентов — любые сети]
+        A1[Agent GPU 1<br/>своя сеть]
+        A2[Agent GPU 2<br/>своя сеть]
+        A3[Agent GPU N<br/>своя сеть]
     end
     
     subgraph OllamaCluster [Кластер Ollama]
@@ -110,16 +111,19 @@ graph TB
     LB --> QM
     LB --> SM
     LB --> MM
-    HM --> A1
-    HM --> A2
-    HM --> A3
-    MM --> A1
-    MM --> A2
-    MM --> A3
-    A1 --> O1
-    A2 --> O2
-    A3 --> O3
+    HM -->|"HTTP health check"| A1
+    HM -->|"HTTP health check"| A2
+    HM -->|"HTTP health check"| A3
+    MM -->|"HTTP metrics"| A1
+    MM -->|"HTTP metrics"| A2
+    MM -->|"HTTP metrics"| A3
+    A1 -->|"HTTP API"| O1
+    A2 -->|"HTTP API"| O2
+    A3 -->|"HTTP API"| O3
 ```
+
+> **Примечание:** Агенты и балансер **НЕ обязаны** находиться в одной сети. 
+> Единственное требование — взаимная IP-доступность по HTTP между компонентами.
 
 ### Алгоритм принятия решений
 
@@ -239,6 +243,7 @@ ollama-loadbalancer/
 - 📖 [Установка и сборка](installation.md) — Требования, Docker установка, сборка из исходников
 - ⚙️ [Конфигурация](configuration.md) — Настройка балансировщика, агента, TLS, аутентификация
 - 🚀 [Развертывание](deployment.md) — Docker Compose, production deployment, масштабирование
+- 🤖 [Развертывание агента](agent-deployment.md) — Развертывание агента в режимах CPU/GPU
 - 📡 [API документация](api.md) — REST API endpoints, WebSocket, примеры запросов
 - 🔧 [Troubleshooting](troubleshooting.md) — Частые ошибки, логирование, отладка NVML
 - 📋 [OpenAPI спецификация](openapi.yaml) — Полная API спецификация в формате OpenAPI 3.0.3

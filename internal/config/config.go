@@ -284,7 +284,7 @@ func parseBackendsFromEnv() []types.Backend {
 		}
 		
 		port := getEnvInt(fmt.Sprintf("BACKEND_%d_PORT", i), 11434)
-		agentPort := getEnvInt(fmt.Sprintf("BACKEND_%d_AGENT_PORT", i), 9090)
+		agentPort := getEnvInt(fmt.Sprintf("BACKEND_%d_AGENT_PORT", i), 18032)
 		weight := getEnvInt(fmt.Sprintf("BACKEND_%d_WEIGHT", i), 1)
 		maxReqs := getEnvInt(fmt.Sprintf("BACKEND_%d_MAX_REQS", i), 10)
 		

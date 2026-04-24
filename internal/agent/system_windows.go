@@ -7,6 +7,8 @@ import (
 	"os/exec"
 	"strconv"
 	"strings"
+
+	"ollama-loadbalancer/pkg/types"
 )
 
 // getCPUUsage - получение загрузки CPU через WMIC
@@ -86,4 +88,68 @@ func parseWMICValueUint64(output, key string) uint64 {
 		}
 	}
 	return 0
+}
+
+// getCPUMetrics - сбор расширенных CPU метрик (Windows)
+func getCPUMetrics() types.CPUMetrics {
+	metrics := types.CPUMetrics{}
+
+	// CPU info через WMIC
+	cmd := exec.Command("wmic", "cpu", "get", "Name,NumberOfCores,NumberOfLogicalProcessors", "/format:csv")
+	output, err := cmd.Output()
+	if err == nil {
+		lines := strings.Split(string(output), "\n")
+		for _, line := range lines {
+			line = strings.TrimSpace(line)
+			if line == "" || strings.HasPrefix(line, "Node") {
+				continue
+			}
+			parts := strings.Split(line, ",")
+			if len(parts) >= 4 {
+				metrics.Model = strings.TrimSpace(parts[2])
+				metrics.CoreCount, _ = strconv.Atoi(strings.TrimSpace(parts[3]))
+				metrics.ThreadCount, _ = strconv.Atoi(strings.TrimSpace(parts[4]))
+			}
+		}
+	}
+
+	// Load average через typeperf (performance counter)
+	cmd = exec.Command("typeperf", "\\System\\Processor Queue Length", "-sc", "1")
+	output, err = cmd.Output()
+	if err == nil {
+		lines := strings.Split(string(output), "\n")
+		for _, line := range lines {
+			line = strings.TrimSpace(line)
+			if strings.Contains(line, "\"") && !strings.Contains(line, "Time") {
+				parts := strings.Split(line, "\",\"")
+				if len(parts) >= 2 {
+					valStr := strings.Trim(parts[1], "\"")
+					val, _ := strconv.ParseFloat(valStr, 64)
+					metrics.LoadAverage1 = val
+				}
+			}
+		}
+	}
+
+	// CPU temperature через WMIC (если доступно)
+	cmd = exec.Command("wmic", "/namespace:\\\\root\\wmi", "PATH", "MSAcpi_ThermalZoneTemperature", "GET", "CurrentTemperature")
+	output, err = cmd.Output()
+	if err == nil {
+		lines := strings.Split(string(output), "\n")
+		for _, line := range lines {
+			line = strings.TrimSpace(line)
+			if line != "" && !strings.HasPrefix(line, "CurrentTemperature") {
+				tempK, _ := strconv.Atoi(line)
+				if tempK > 0 {
+					// Температура в десятых долях Кельвина
+					tempC := (tempK / 10) - 273
+					if tempC > metrics.Temperature {
+						metrics.Temperature = tempC
+					}
+				}
+			}
+		}
+	}
+
+	return metrics
 }

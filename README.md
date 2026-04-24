@@ -8,8 +8,11 @@
 
 ```bash
 # Клонирование репозитория
-git clone https://github.com/your-org/ollama-loadbalancer.git
-cd ollama-loadbalancer/deployments
+git clone https://github.com/BarsSky/ollamalegion.git
+cd ollamalegion/deployments
+
+# Статические файлы WebUI должны быть в webui/dist/
+# Убедитесь, что index.html и связанные файлы находятся там
 
 # Запуск балансировщика и Web UI
 docker-compose up -d
@@ -21,15 +24,60 @@ docker-compose ps
 docker-compose logs -f loadbalancer
 ```
 
-### Развертывание агента на GPU сервере
+### Развертывание агента
+
+Агент запускается **на каждом сервере с Ollama** и собирает метрики для балансировщика. Поддерживаются режимы **GPU** (с NVIDIA GPU и NVML) и **CPU** (без GPU).
+
+#### GPU-развертывание (с NVIDIA GPU)
+
+Требуется: NVIDIA Driver 470+, NVIDIA Container Toolkit, Docker 20.10+.
 
 ```bash
-# На каждом GPU сервере с Ollama
-cd scripts
-./deploy-agent-docker.sh \
-  --balancer-url http://<balancer-ip>:18081 \
-  --agent-id gpu-1
+cd deployments
+
+# Создайте .env
+cat > .env << 'EOF'
+AGENT_ID=gpu-1
+BALANCER_URL=http://<balancer-ip>:18081
+AGENT_PUBLIC_HOST=<agent-public-ip>
+GPU_MODE=gpu
+NVML_ENABLED=true
+AGENT_PORT=18032
+OLLAMA_URL=http://host.docker.internal:11434
+METRICS_INTERVAL=5s
+HEARTBEAT_INTERVAL=3s
+EOF
+
+# Раскомментируйте секцию deploy.resources.reservations.devices в docker-compose.agent.yml
+# Запуск
+docker-compose -f docker-compose.agent.yml --env-file .env up -d
 ```
+
+#### CPU-развертывание (без GPU)
+
+Требуется: Docker 20.10+, Ollama на порту 11434. GPU не нужен.
+
+```bash
+cd deployments
+
+# Создайте .env
+cat > .env << 'EOF'
+AGENT_ID=cpu-1
+BALANCER_URL=http://<balancer-ip>:18081
+AGENT_PUBLIC_HOST=<agent-public-ip>
+GPU_MODE=cpu
+NVML_ENABLED=false
+AGENT_PORT=18032
+OLLAMA_URL=http://host.docker.internal:11434
+METRICS_INTERVAL=5s
+HEARTBEAT_INTERVAL=3s
+EOF
+
+# Запуск (секция GPU в docker-compose.agent.yml должна быть закомментирована)
+docker-compose -f docker-compose.agent.yml --env-file .env up -d
+```
+
+> 📖 **Подробное руководство** по развертыванию агента в обоих режимах, требованиям к системе и troubleshooting — в файле [`docs/agent-deployment.md`](docs/agent-deployment.md).
 
 ### Проверка
 
@@ -50,7 +98,8 @@ curl http://localhost:18081/api/v1/health
 | [docs/README.md](docs/README.md) | 📖 Полная документация |
 | [docs/installation.md](docs/installation.md) | 🔧 Установка и сборка |
 | [docs/configuration.md](docs/configuration.md) | ⚙️ Конфигурация системы |
-| [docs/deployment.md](docs/deployment.md) | 🚀 Развертывание |
+| [docs/deployment.md](docs/deployment.md) | 🚀 Развертывание всех компонентов |
+| [docs/agent-deployment.md](docs/agent-deployment.md) | 🤖 Развертывание агента (CPU/GPU) |
 | [docs/api.md](docs/api.md) | 📡 API документация |
 | [docs/troubleshooting.md](docs/troubleshooting.md) | 🔧 Решение проблем |
 | [docs/openapi.yaml](docs/openapi.yaml) | 📋 OpenAPI спецификация |
@@ -226,11 +275,14 @@ ollama-loadbalancer/
 - Docker (опционально)
 - 512 MB RAM, 2 CPU cores
 
-### Агент (на каждом GPU сервере)
-- Docker 20.10+ с NVIDIA Container Toolkit
-- nvidia-smi (для GPU метрик)
-- Ollama на порту 11434
-- 128 MB RAM
+### Агент
+
+| Режим | Требования |
+|-------|------------|
+| **GPU** | Docker 20.10+, NVIDIA GPU, NVIDIA Driver 470+, NVIDIA Container Toolkit, Ollama на порту 11434, 128 MB RAM |
+| **CPU** | Docker 20.10+, Ollama на порту 11434, 128 MB RAM (NVIDIA не требуется) |
+
+> 📖 Полная таблица требований и рекомендуемые версии — в [`docs/agent-deployment.md`](docs/agent-deployment.md#требования-к-системе).
 
 ---
 
@@ -239,7 +291,8 @@ ollama-loadbalancer/
 - 📖 [Полная документация](docs/README.md)
 - 🔧 [Установка и сборка](docs/installation.md)
 - ⚙️ [Конфигурация](docs/configuration.md)
-- 🚀 [Развертывание](docs/deployment.md)
+- 🚀 [Развертывание всех компонентов](docs/deployment.md)
+- 🤖 [Развертывание агента (CPU/GPU)](docs/agent-deployment.md)
 - 📡 [API документация](docs/api.md)
 - 🔧 [Troubleshooting](docs/troubleshooting.md)
 - 📋 [OpenAPI спецификация](docs/openapi.yaml)

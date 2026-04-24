@@ -36,13 +36,13 @@ RUN addgroup -g 1000 appgroup && \
 USER appuser
 
 # Экспозиция портов
-# 8080 - прокси для Ollama API
-# 8081 - Management API
-EXPOSE 8080 8081
+# 18080 - прокси для Ollama API
+# 18081 - Management API
+EXPOSE 18080 18081
 
 # Health check
 HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
-    CMD wget --no-verbose --tries=1 --spider http://localhost:8081/api/v1/health || exit 1
+    CMD wget --no-verbose --tries=1 --spider http://localhost:18081/api/v1/health || exit 1
 
 # Запуск
 ENTRYPOINT ["./balancer"]

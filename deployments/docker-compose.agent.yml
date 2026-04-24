@@ -1,35 +1,47 @@
 # Ollama Load Balancer - Agent Docker Compose конфигурация
 #
 # Использование:
-#   Запуск: docker-compose -f docker-compose.agent.yml up -d
+#   GPU сервер: docker-compose -f docker-compose.agent.yml up -d
+#   CPU сервер: GPU_MODE=cpu docker-compose -f docker-compose.agent.yml up -d
 #   Просмотр логов: docker-compose -f docker-compose.agent.yml logs -f
 #   Остановка: docker-compose -f docker-compose.agent.yml down
 #
 # Переменные окружения:
 #   AGENT_ID - уникальный идентификатор агента
-#   BALANCER_URL - URL балансировщика (http://host.docker.internal:18081)
+#   BALANCER_URL - URL балансировщика (обязателен!)
 #   AGENT_PORT - порт агента (18032)
-#   OLLAMA_URL - URL локального Ollama (http://localhost:11434)
-#   NVML_ENABLED - включение NVML (true)
+#   OLLAMA_URL - URL локального Ollama
+#   AGENT_PUBLIC_HOST - публичный IP/hostname, доступный балансеру (обязателен!)
+#   GPU_MODE - режим: auto, gpu, cpu (по умолчанию auto)
+#   NVML_ENABLED - включение NVML (false)
 #   METRICS_INTERVAL - интервал отправки метрик (5s)
 #
-# Примечание:
-#   Эта конфигурация предназначена для запуска агента на удаленных GPU серверах
-#   с локально установленным Ollama и NVIDIA драйверами.
+# СЕТЕВОЕ ВЗАИМОДЕЙСТВИЕ:
+#   Агент и балансер НЕ обязаны быть в одной Docker-сети.
+#   Требуется только IP-доступность по HTTP:
+#     1. Агент → Балансер: HTTP POST/GET на BALANCER_URL
+#     2. Балансер → Агент/Ollama: HTTP GET на AGENT_PUBLIC_HOST
+#
+#   Режимы сети:
+#     A) bridge (по умолчанию) — агент в своей сети, порты проброшены на хост
+#     B) network_mode: host — агент напрямую использует сетевой стек хоста
+#     C) Docker Swarm overlay — для кластеров в swarm-режиме
+#
+#   На Linux для доступа к Ollama используйте IP хоста или network_mode: host.
 
 services:
   # ============================================
-  # Агент для сбора метрик GPU сервера
+  # Агент для сбора метрик (GPU/CPU адаптивный)
   # ============================================
   agent:
-    image: ollama-lb/agent:latest
+    image: ollama-legion/agent:latest
     build:
       context: ..
       dockerfile: docker/agent/Dockerfile
-    container_name: ollama-lb-agent
+    container_name: ollama-legion-agent
     restart: unless-stopped
     
-    # Проброс GPU для NVML доступа
+    # Проброс GPU для NVML доступа (раскомментируйте для GPU серверов)
     deploy:
       resources:
         reservations:
@@ -38,43 +50,55 @@ services:
               count: all
               capabilities: [gpu]
     
-    # Сеть для связи с балансировщиком
+    # Сеть: bridge по умолчанию. Для Linux с host-доступом можно использовать:
+    # network_mode: host
+    # (если используете network_mode: host, закомментируйте секцию ports и networks)
     networks:
-      - ollama-lb-net
+      - ollama-legion-agent-net
     
-    # Порты для доступа к метрикам агента
+    # Порты для доступа к метрикам агента.
+    # Балансер будет обращаться к агенту по AGENT_PUBLIC_HOST:AGENT_PORT
     ports:
       - "${AGENT_PORT:-18032}:18032"
     
-    # Volume для доступа к Ollama данным (опционально)
-    # Примечание: На Windows агент использует встроенные API для сбора метрик
-    # volumes:
-    #   # Для Windows используйте абсолютный путь, например:
-    #   # - C:/Users/<user>/.ollama:C:/root/.ollama:ro
-    
     environment:
-      # Обязательные параметры
-      # Уникальный идентификатор агента (должен совпадать с ID бэкенда в балансировщике)
-      - AGENT_ID=${AGENT_ID:-gpu-agent}
-      # URL балансировщика для подключения (используем service name)
-      - BALANCER_URL=${BALANCER_URL:-http://loadbalancer:18081}
+      # ==================== ОБЯЗАТЕЛЬНЫЕ ПАРАМЕТРЫ ====================
       
-      # Настройки портов
+      # Уникальный идентификатор агента (должен совпадать с ID бэкенда в балансировщике)
+      - AGENT_ID=${AGENT_ID:-agent}
+      
+      # URL балансировщика для подключения.
+      # Укажите публичный IP или hostname балансера (НЕ Docker service name!)
+      # Пример: http://192.168.1.10:18081 или http://balancer.example.com:18081
+      # ПРИМЕЧАНИЕ: Если агент и балансер на одном хосте, можно использовать service name
+      - BALANCER_URL=${BALANCER_URL:-http://REPLACE_WITH_BALANCER_IP:18081}
+      
+      # Публичный IP/hostname этого агента, доступный балансеру.
+      # Балансер использует этот адрес для health check и проксирования запросов к Ollama.
+      # Пример: 192.168.1.20 или gpu-server-1.example.com
+      - AGENT_PUBLIC_HOST=${AGENT_PUBLIC_HOST:-REPLACE_WITH_AGENT_PUBLIC_IP}
+      
+      # ==================== НАСТРОЙКИ ПОРТОВ ====================
+      
       # Порт для локальных метрик агента
       - AGENT_PORT=${AGENT_PORT:-18032}
+      
       # URL локального Ollama для получения метрик моделей
+      # Linux: используйте IP хоста (например, http://192.168.1.20:11434) или network_mode: host
+      # Windows/macOS: host.docker.internal работает из коробки
       - OLLAMA_URL=${OLLAMA_URL:-http://host.docker.internal:11434}
       
-      # Настройки NVML
-      # Включить NVML для точных GPU метрик
-      - NVML_ENABLED=${NVML_ENABLED:-true}
+      # ==================== ПРОЧИЕ НАСТРОЙКИ ====================
+      
+      # Режим платформы (auto/gpu/cpu)
+      - GPU_MODE=${GPU_MODE:-auto}
+      
+      # Включить NVML для точных GPU метрик (только для GPU серверов)
+      - NVML_ENABLED=${NVML_ENABLED:-false}
       
       # Интервалы
-      # Интервал сбора и отправки метрик
       - METRICS_INTERVAL=${METRICS_INTERVAL:-5s}
-      # Интервал heartbeat сигналов
       - HEARTBEAT_INTERVAL=${HEARTBEAT_INTERVAL:-3s}
-      # Интервал сбора метрик
       - COLLECT_INTERVAL=${COLLECT_INTERVAL:-5s}
       
       # Логирование
@@ -95,10 +119,16 @@ services:
     
     # Метки для идентификации
     labels:
-      - "ollama-lb.role=agent"
-      - "ollama-lb.component=metrics-collector"
+      - "ollama-legion.role=agent"
+      - "ollama-legion.component=metrics-collector"
 
+# Локальная bridge-сеть агента. При network_mode: host эта секция не нужна.
+# ВАЖНО: Используйте уникальное имя сети, отличное от сети балансировщика,
+# чтобы избежать конфликта при одновременном запуске compose-файлов на одном хосте.
+# Для Docker Swarm замените на:
+#   networks:
+#     ollama-legion-agent-net:
+#       external: true
 networks:
-  ollama-lb-net:
-    external: true
-    name: deployments_ollama-lb-net
+  ollama-legion-agent-net:
+    driver: bridge

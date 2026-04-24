@@ -1038,7 +1038,7 @@
           },
           "agentPort": {
             "type": "integer",
-            "example": 9090
+            "example": 18032
           },
           "weight": {
             "type": "integer",
@@ -1095,8 +1095,8 @@
           },
           "agentPort": {
             "type": "integer",
-            "default": 9090,
-            "example": 9090
+            "default": 18032,
+            "example": 18032
           },
           "weight": {
             "type": "integer",

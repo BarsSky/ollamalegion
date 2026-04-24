@@ -20,11 +20,11 @@ services:
   # Балансировщик нагрузки (Load Balancer)
   # ============================================
   loadbalancer:
-    image: ollama-lb/balancer:latest
+    image: ollama-legion/balancer:latest
     build:
       context: ..
       dockerfile: docker/balancer/Dockerfile
-    container_name: ollama-lb-balancer
+    container_name: ollama-legion-balancer
     restart: unless-stopped
     
     ports:
@@ -80,7 +80,7 @@ services:
       # - BACKEND_0_NAME=${BACKEND_0_NAME}
       # - BACKEND_0_HOST=${BACKEND_0_HOST}
       # - BACKEND_0_PORT=${BACKEND_0_PORT:-11434}
-      # - BACKEND_0_AGENT_PORT=${BACKEND_0_AGENT_PORT:-9090}
+      # - BACKEND_0_AGENT_PORT=${BACKEND_0_AGENT_PORT:-18032}
       # - BACKEND_0_WEIGHT=${BACKEND_0_WEIGHT:-1}
       # - BACKEND_0_MAX_REQS=${BACKEND_0_MAX_REQS:-10}
       # 
@@ -88,12 +88,12 @@ services:
       # - BACKEND_1_NAME=${BACKEND_1_NAME}
       # - BACKEND_1_HOST=${BACKEND_1_HOST}
       # - BACKEND_1_PORT=${BACKEND_1_PORT:-11434}
-      # - BACKEND_1_AGENT_PORT=${BACKEND_1_AGENT_PORT:-9090}
+      # - BACKEND_1_AGENT_PORT=${BACKEND_1_AGENT_PORT:-18032}
       # - BACKEND_1_WEIGHT=${BACKEND_1_WEIGHT:-1}
       # - BACKEND_1_MAX_REQS=${BACKEND_1_MAX_REQS:-10}
     
     networks:
-      - ollama-lb-net
+      - ollama-legion-net
     
     healthcheck:
       test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:18081/api/v1/health"]
@@ -103,37 +103,39 @@ services:
       start_period: 10s
     
     labels:
-      - "ollama-lb.role=balancer"
+      - "ollama-legion.role=balancer"
 
   # ============================================
-  # Web UI (Dashboard) - Static files only
+  # Web UI (Dashboard)
   # ============================================
-  # Web UI now serves only static files on port 18030
-  # API and WebSocket connections go directly to balancer on port 18081
+  # Статические файлы WebUI берутся из webui/dist/ при сборке образа.
+  # Убедитесь, что файлы index.html, styles.css и т.д. находятся в webui/dist/.
   webui:
-    image: nginx:alpine
-    container_name: ollama-lb-webui
+    image: ollama-legion/webui:latest
+    build:
+      context: ..
+      dockerfile: docker/webui/Dockerfile
+    container_name: ollama-legion-webui
     restart: unless-stopped
     
     ports:
       - "${WEBUI_PORT:-18030}:80"
     
-    volumes:
-      - ../webui/dist:/usr/share/nginx/html:ro
-      - ../docker/webui/nginx.conf:/etc/nginx/conf.d/default.conf:ro
-    
     networks:
-      - ollama-lb-net
+      - ollama-legion-net
+    
+    depends_on:
+      - loadbalancer
     
     healthcheck:
-      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://127.0.0.1:80/health"]
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://127.0.0.1:80/"]
       interval: 30s
       timeout: 10s
       retries: 3
       start_period: 10s
     
     labels:
-      - "ollama-lb.role=webui"
+      - "ollama-legion.role=webui"
 
   # ============================================
   # Агент для GPU сервера (пример - закомментирован)
@@ -152,7 +154,7 @@ services:
   #     -v /usr/bin/nvidia-smi:/usr/bin/nvidia-smi:ro \
   #     -v /proc:/host/proc:ro \
   #     --network host \
-  #     ollama-lb/agent:latest
+  #     ollama-legion/agent:latest
   #
   # Для развертывания агента используйте скрипт:
   #   ../scripts/deploy-agent.sh <AGENT_ID> <BALANCER_URL>
@@ -163,14 +165,14 @@ services:
   # Пример конфигурации для локального тестирования агента:
   # ============================================
   # agent-local:
-  #   image: ollama-lb/agent:latest
+  #   image: ollama-legion/agent:latest
   #   build:
   #     context: ..
   #     dockerfile: docker/agent/Dockerfile
-  #   container_name: ollama-lb-agent-local
+  #   container_name: ollama-legion-agent-local
   #   restart: unless-stopped
   #   ports:
-  #     - "9090:9090"
+  #     - "18032:18032"
   #   environment:
   #     - AGENT_ID=local-test
   #     - BALANCER_URL=http://loadbalancer:18081
@@ -183,10 +185,10 @@ services:
   #   #   - /sys:/host/sys:ro
   #   # network_mode: "host"
   #   labels:
-  #     - "ollama-lb.role=agent"
+  #     - "ollama-legion.role=agent"
 
 networks:
-  ollama-lb-net:
+  ollama-legion-net:
     driver: bridge
     ipam:
       config:

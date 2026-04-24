@@ -748,7 +748,7 @@ components:
           example: 11434
         agentPort:
           type: integer
-          example: 9090
+          example: 18032
         weight:
           type: integer
           example: 1
@@ -795,8 +795,8 @@ components:
           example: 11434
         agentPort:
           type: integer
-          default: 9090
-          example: 9090
+          default: 18032
+          example: 18032
         weight:
           type: integer
           default: 1

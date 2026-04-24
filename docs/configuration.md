@@ -289,7 +289,7 @@ LOG_FORMAT=text
 docker-compose -f docker-compose.agent.yml --env-file .env up -d
 
 # Docker run
-docker run --env-file .env ollama-lb/agent:latest
+docker run --env-file .env ollama-legion/agent:latest
 
 # Бинарный файл
 set -a; source .env; set +a; ./bin/agent
@@ -408,7 +408,7 @@ openssl req -x509 -nodes -days 365 -newkey rsa:4096 \
   -keyout certs/server.key \
   -out certs/server.crt \
   -subj "/CN=localhost" \
-  -addext "subjectAltName=DNS:localhost,DNS:ollama-lb,IP:127.0.0.1"
+  -addext "subjectAltName=DNS:localhost,DNS:ollama-legion,IP:127.0.0.1"
 ```
 
 ### Использование с Docker Compose
@@ -416,7 +416,7 @@ openssl req -x509 -nodes -days 365 -newkey rsa:4096 \
 ```yaml
 services:
   loadbalancer:
-    image: ollama-lb/balancer:latest
+    image: ollama-legion/balancer:latest
     ports:
       - "18080:18080"
       - "8443:8443"
@@ -450,19 +450,40 @@ response = requests.get('https://localhost:8443/api/v1/health', verify=False)
 
 ### Аутентификация
 
-Балансировщик поддерживает аутентификацию API запросов на основе токенов.
+Балансировщик поддерживает **токен-аутентификацию** с возможностью полного отключения. Это удобно для разработки, внутренних сетей и Docker-окружений.
 
-#### Включение аутентификации
+#### Принципы работы
 
-**JSON конфигурация:**
+| Режим | `auth.enabled` | Поведение | Когда использовать |
+|-------|----------------|-----------|-------------------|
+| **Отключена** | `false` | Все endpoint'ы публичные. WebSocket работает без токена. | Разработка, внутренняя сеть, Docker Compose |
+| **Включена** | `true` | Защищённые endpoint'ы требуют токен. WebSocket — через `?token=`. | Production, публичный доступ |
+
+> **💡 Рекомендация:** Для production всегда включайте аутентификацию. Для локальной разработки или внутренних сетей можно отключить.
+
+#### Включение/отключение аутентификации
+
+**JSON конфигурация (`config.json`):**
+
+```json
+{
+  "auth": {
+    "enabled": false,
+    "tokens": [],
+    "headerName": "X-API-Token"
+  }
+}
+```
+
+**Для production:**
 
 ```json
 {
   "auth": {
     "enabled": true,
     "tokens": [
-      "your-master-token-here-change-in-production",
-      "additional-token-for-clients"
+      "secure-master-token-at-least-32-chars-long",
+      "client-api-token-for-dashboard"
     ],
     "headerName": "X-API-Token"
   }
@@ -472,6 +493,10 @@ response = requests.get('https://localhost:8443/api/v1/health', verify=False)
 **Переменные окружения:**
 
 ```bash
+# Отключить auth (по умолчанию)
+AUTH_ENABLED=false
+
+# Включить auth
 AUTH_ENABLED=true
 AUTH_TOKENS=master-token,client-token-1,client-token-2
 AUTH_HEADER_NAME=X-API-Token
@@ -481,38 +506,96 @@ AUTH_HEADER_NAME=X-API-Token
 
 | Параметр | Тип | По умолчанию | Описание |
 |----------|-----|--------------|----------|
-| `enabled` | bool | `false` | Включение аутентификации |
+| `enabled` | bool | `false` | Включение/отключение аутентификации |
 | `tokens` | array | `[]` | Список валидных API токенов |
-| `headerName` | string | `X-API-Token` | Имя заголовка для передачи токена |
+| `headerName` | string | `X-API-Token` | Имя HTTP-заголовка для токена |
 
 #### Master Token
 
-Первый токен в списке считается **master token**. Master token может:
-- Создавать новые токены через API
-- Отзывать другие токены
-- Master token нельзя отозвать через API
+Первый токен в списке считается **master token**. Master token обладает расширенными правами:
 
-#### Endpoints аутентификации
+- ✅ Создавать новые токены через `POST /api/v1/auth/token`
+- ✅ Отзывать другие токены через `DELETE /api/v1/auth/token`
+- ❌ Нельзя отозвать самого себя через API
 
-```bash
-# Статус ��утентификации
-GET /api/v1/auth/status
-X-API-Token: your-token
+> **🔒 Безопасность:** Храните master token в защищённом хранилище. Не коммитьте его в репозиторий.
 
-# Генерация нового токена (требует master token)
-POST /api/v1/auth/token
-X-API-Token: your-master-token
+#### WebSocket и аутентификация
 
-# Отзыв токена (требует master token)
-DELETE /api/v1/auth/token?token=token-to-revoke
-X-API-Token: your-master-token
+Браузер **не поддерживает** установку произвольных HTTP-заголовков при создании WebSocket. Поэтому токен передаётся через **query parameter**:
+
+```javascript
+// Правильно — токен в URL
+const ws = new WebSocket('ws://localhost:18081/ws/metrics?token=your-api-token');
+
+// Неправильно — заголовки игнорируются
+const ws = new WebSocket('ws://...', null, { headers: { 'X-API-Token': '...' } }); // ❌
 ```
 
-#### Исключения (не требуют аутентификации)
+На стороне сервера:
+- Если `auth.enabled: false` → WebSocket upgrade выполняется **без проверки токена**
+- Если `auth.enabled: true` → требуется `?token=...`; пустой токен → HTTP 401
 
-Следующие endpoints доступны без токена:
-- `/api/v1/health` — проверка здоровья API
-- `/api/v1/ratelimit/status` — статус rate limiter
+#### Как WebUI определяет настройки auth
+
+WebUI использует **публичный** endpoint `GET /api/v1/health` для автоопределения:
+
+```json
+{
+  "status": "healthy",
+  "authEnabled": true,
+  "authHeader": "X-API-Token",
+  "wsEndpoint": "/ws/metrics"
+}
+```
+
+Flow WebUI:
+1. Загрузка страницы → `GET /api/v1/health` (без токена)
+2. Если `authEnabled: false` → приложение стартует сразу
+3. Если `authEnabled: true` → проверяется сохранённый токен в `localStorage`
+4. Если токен валиден → стартует; если нет — показывается модальное окно ввода
+
+#### Публичные endpoint'ы (не требуют токена)
+
+| Endpoint | Описание |
+|----------|----------|
+| `GET /api/v1/health` | Проверка здоровья + метаданные auth |
+| `GET /api/v1/ratelimit/status` | Статус rate limiter |
+
+Все остальные endpoint'ы требуют токен при `auth.enabled: true`. Полная матрица endpoint'ов — в [API документации](api.md#матрица-endpointов-и-аутентификации).
+
+#### Управление токенами через API
+
+```bash
+# Проверка статуса аутентификации (любой валидный токен)
+curl -H "X-API-Token: your-token" \
+  http://localhost:18081/api/v1/auth/status
+
+# Генерация нового токена (только master token)
+curl -X POST -H "X-API-Token: your-master-token" \
+  http://localhost:18081/api/v1/auth/token
+
+# Отзыв токена (только master token)
+curl -X DELETE \
+  -H "X-API-Token: your-master-token" \
+  "http://localhost:18081/api/v1/auth/token?token=token-to-revoke"
+```
+
+#### Генерация токена вручную
+
+Токен можно сгенерировать через API или с помощью утилиты:
+
+```bash
+# Через API (требует master token)
+curl -X POST -H "X-API-Token: your-master-token" \
+  http://localhost:18081/api/v1/auth/token
+
+# Через openssl (локально)
+openssl rand -hex 32
+# Результат: a1b2c3d4e5f6... (64 hex символа)
+```
+
+> **📏 Требования к токену:** Минимум 16 символов. Рекомендуется 64 hex символа (32 байта энтропии).
 
 ### Rate Limiting
 
@@ -628,8 +711,8 @@ GET /api/v1/ratelimit/status
   },
   "tls": {
     "enabled": true,
-    "certFile": "/etc/ssl/certs/ollama-lb.crt",
-    "keyFile": "/etc/ssl/private/ollama-lb.key",
+    "certFile": "/etc/ssl/certs/ollama-legion.crt",
+    "keyFile": "/etc/ssl/private/ollama-legion.key",
     "minVersion": "TLS13",
     "autoCert": false
   },

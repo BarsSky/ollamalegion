@@ -60,7 +60,7 @@
                             </div>
                             <div class="form-group">
                                 <label for="backendAgentPort">Agent Port</label>
-                                <input type="number" id="backendAgentPort" name="agentPort" value="9090">
+                                <input type="number" id="backendAgentPort" name="agentPort" value="18032">
                             </div>
                         </div>
                         <div class="form-row">
@@ -75,6 +75,14 @@
                             <div class="form-group">
                                 <label for="backendLabels">Labels (comma-separated)</label>
                                 <input type="text" id="backendLabels" name="labels" placeholder="gpu,nvidia,rtx4090">
+                            </div>
+                        </div>
+                        <div class="form-row">
+                            <div class="form-group form-group-checkbox">
+                                <label class="checkbox-label">
+                                    <input type="checkbox" name="generateAgentConfig" checked>
+                                    <span>Generate and download agent config (.env)</span>
+                                </label>
                             </div>
                         </div>
                         <button type="submit" class="btn btn-primary">Add Backend</button>
@@ -199,6 +207,31 @@
             <span class="copyright">© 2024 Ollama Legion</span>
         </div>
     </footer>
+
+    <!-- Token Modal -->
+    <div id="tokenModal" class="token-modal-overlay">
+        <div class="token-modal">
+            <h2 class="token-modal-title">🔐 Authentication Required</h2>
+            <p class="token-modal-subtitle">
+                This dashboard requires an API token. Please enter your token to continue.
+            </p>
+            <div id="tokenModalError" class="token-modal-error"></div>
+            <input
+                type="password"
+                id="tokenModalInput"
+                class="token-modal-input"
+                placeholder="Paste your API token here..."
+                autocomplete="off"
+            >
+            <p class="token-modal-hint">
+                💡 Tip: The token is displayed in the balancer logs on first startup or configured in <code>config.json</code>.
+            </p>
+            <div class="token-modal-actions">
+                <button id="tokenModalSkip" class="token-modal-btn token-modal-btn-secondary">Skip</button>
+                <button id="tokenModalSubmit" class="token-modal-btn token-modal-btn-primary">Authenticate</button>
+            </div>
+        </div>
+    </div>
 
     <script src="app.js"></script>
 </body>

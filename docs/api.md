@@ -51,14 +51,49 @@ https://localhost:8443
 
 ## Аутентификация
 
-API использует токены для аутентификации. Токен передается в заголовке `X-API-Token`.
+API использует токен-аутентификацию на основе заголовка `X-API-Token`. Аутентификацию можно **включить или отключить** в конфигурации балансера (`config.json` → `auth.enabled`).
 
-### Исключения (не требуют аутентификации)
+| Состояние auth | Поведение |
+|----------------|-----------|
+| `enabled: false` | Все endpoint'ы публичные, токен не требуется |
+| `enabled: true` | Защищённые endpoint'ы требуют валидный токен в заголовке |
 
-- `GET /api/v1/health`
-- `GET /api/v1/ratelimit/status`
+### Включение/отключение аутентификации
 
-### Передача токена
+В `config.json`:
+
+```json
+{
+  "auth": {
+    "enabled": true,
+    "tokens": ["your-master-token"],
+    "headerName": "X-API-Token"
+  }
+}
+```
+
+- `enabled: false` — публичный доступ ко всем endpoint'ам (удобно для разработки и внутренних сетей)
+- `tokens` — список валидных токенов; **первый токен** = master (используется для генерации новых токенов)
+- `headerName` — имя HTTP-заголовка (по умолчанию `X-API-Token`)
+
+### Матрица endpoint'ов и аутентификации
+
+| Endpoint | Метод | Auth требуется | Примечание |
+|----------|-------|----------------|------------|
+| `GET /api/v1/health` | — | ❌ Нет | Публичный, используется WebUI для определения настроек |
+| `GET /api/v1/ratelimit/status` | — | ❌ Нет | Публичный |
+| `GET /api/v1/auth/status` | — | ✅ Да | Требует токен |
+| `POST /api/v1/auth/token` | — | ✅ Master only | Генерация нового токена |
+| `GET /api/v1/cluster` | — | ✅ Да | |
+| `GET /api/v1/backends` | — | ✅ Да | |
+| `POST /api/v1/backends` | — | ✅ Да | |
+| `GET /api/v1/metrics` | — | ✅ Да | |
+| `GET /api/v1/models` | — | ✅ Да | |
+| `GET /api/v1/sessions` | — | ✅ Да | |
+| `GET /api/v1/agents/stats` | — | ✅ Да | |
+| `WebSocket /ws/metrics` | — | ✅ Если auth enabled | Токен передаётся через query parameter |
+
+### Передача токена в HTTP
 
 ```bash
 # cURL
@@ -76,6 +111,22 @@ fetch('http://localhost:18081/api/v1/cluster', {
 })
 ```
 
+### Передача токена в WebSocket
+
+Браузер **не поддерживает** установку произвольных HTTP-заголовков при создании WebSocket. Поэтому токен передаётся через **query parameter**:
+
+```javascript
+// Правильный способ
+const ws = new WebSocket('ws://localhost:18081/ws/metrics?token=your-api-token');
+
+// Неправильный — заголовки игнорируются браузером
+const ws = new WebSocket('ws://...'); // new WebSocket(url, protocols) не поддерживает headers
+```
+
+На стороне сервера (`wsMetricsHandler`):
+- Если `auth.enabled: false` → WebSocket upgrade выполняется без проверки токена
+- Если `auth.enabled: true` → требуется непустой `?token=...`; токен валидируется через `Authenticate()`
+
 ---
 
 ## REST API Endpoints
@@ -84,17 +135,46 @@ fetch('http://localhost:18081/api/v1/cluster', {
 
 #### GET /api/v1/health
 
-Проверка здоровья API. Не требует аутентификации.
+Проверка здоровья API. **Не требует аутентификации** — используется WebUI и внешними health check'ами для определения состояния системы.
 
-**Ответ:**
+В ответе передаются метаданные, необходимые клиенту для корректного подключения:
+
+| Поле | Тип | Описание |
+|------|-----|----------|
+| `status` | string | Состояние API: `"healthy"` |
+| `timestamp` | string | ISO 8601 время на сервере |
+| `version` | string | Версия API |
+| `authEnabled` | boolean | `true` — аутентификация включена, `false` — отключена |
+| `authHeader` | string | Имя заголовка для токена (по умолчанию `"X-API-Token"`) |
+| `wsEndpoint` | string | Путь WebSocket endpoint'а (по умолчанию `"/ws/metrics"`) |
+
+**Пример ответа при auth отключена:**
 
 ```json
 {
   "status": "healthy",
   "timestamp": "2024-01-15T10:30:00Z",
-  "version": "1.0.0"
+  "version": "1.0.0",
+  "authEnabled": false,
+  "authHeader": "X-API-Token",
+  "wsEndpoint": "/ws/metrics"
 }
 ```
+
+**Пример ответа при auth включена:**
+
+```json
+{
+  "status": "healthy",
+  "timestamp": "2024-01-15T10:30:00Z",
+  "version": "1.0.0",
+  "authEnabled": true,
+  "authHeader": "X-API-Token",
+  "wsEndpoint": "/ws/metrics"
+}
+```
+
+> **💡 Принцип работы WebUI:** При загрузке dashboard сначала вызывается `GET /api/v1/health` **без токена**. Если `authEnabled: false` — приложение стартует сразу. Если `authEnabled: true` — показывается модальное окно для ввода токена.
 
 ---
 
@@ -444,7 +524,7 @@ fetch('http://localhost:18081/api/v1/cluster', {
 | `hostname` | string | Нет | Имя хоста агента |
 | `host` | string | Нет | IP-адрес агента (если не указан, используется hostname или RemoteAddr) |
 | `ollamaPort` | int | Нет | Порт Ollama API (по умолчанию: 11434) |
-| `agentPort` | int | Нет | Порт агента (по умолчанию: 9090) |
+| `agentPort` | int | Нет | Порт агента (по умолчанию: 18032) |
 | `gpuCount` | int | Нет | Количество GPU |
 | `name` | string | Нет | Отображаемое имя агента |
 | `labels` | string[] | Нет | Метки для классификации агента |

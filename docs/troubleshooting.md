@@ -135,7 +135,7 @@ docker run -d \
   -e AGENT_ID=gpu-1 \
   -e BALANCER_URL=http://<balancer-ip>:18081 \
   -e NVML_ENABLED=true \
-  ollama-lb/agent:latest
+  ollama-legion/agent:latest
 ```
 
 **Возможные причины:**
@@ -339,11 +339,11 @@ journalctl -u ollama-agent -f | grep -i error
 
 ```bash
 # Логи контейнера
-docker logs -f ollama-lb-balancer
+docker logs -f ollama-legion-balancer
 docker logs -f ollama-agent
 
 # Последние N строк
-docker logs --tail 100 ollama-lb-balancer
+docker logs --tail 100 ollama-legion-balancer
 ```
 
 ---

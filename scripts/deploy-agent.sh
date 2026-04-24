@@ -27,10 +27,10 @@ NC='\033[0m' # No Color
 # Параметры по умолчанию
 AGENT_ID="${1:-}"
 BALANCER_URL="${2:-}"
-METRICS_PORT="${3:-9090}"
+METRICS_PORT="${3:-18032}"
 COLLECT_INTERVAL="${4:-5}"
 HEARTBEAT_INTERVAL="${5:-3}"
-IMAGE_NAME="ollama-lb/agent:latest"
+IMAGE_NAME="ollama-legion/agent:latest"
 CONTAINER_NAME="ollama-agent"
 
 # Функция вывода
@@ -280,14 +280,14 @@ print_summary() {
     printf "║ Agent ID:     %-46s║\n" "$AGENT_ID"
     printf "║ Balancer:     %-46s║\n" "$BALANCER_URL"
     printf "║ Container:    %-46s║\n" "$CONTAINER_NAME"
-    printf "║ Metrics Port: %-46s║\n" "$METRICS_PORT"
+      printf "║ Agent Port:   %-46s║\n" "$METRICS_PORT"
     echo "╠═══════════════════════════════════════════════════════════╣"
     echo "║ Useful commands:                                          ║"
     echo "║   Check status:  docker ps | grep $CONTAINER_NAME"
     echo "║   View logs:     docker logs -f $CONTAINER_NAME"
     echo "║   Stop agent:    docker stop $CONTAINER_NAME"
     echo "║   Remove agent:  docker rm -f $CONTAINER_NAME"
-    echo "║   Metrics:       curl http://localhost:$METRICS_PORT/metrics"
+      echo "║   Metrics:       curl http://localhost:$METRICS_PORT/metrics"
     echo "╚═══════════════════════════════════════════════════════════╝"
     echo ""
 }

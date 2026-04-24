@@ -38,6 +38,8 @@ type Backend struct {
 	LastHealthCheck     time.Time     `json:"lastHealthCheck"`
 	ConsecutiveFailures int           `json:"consecutiveFailures"`
 	ActiveRequests      int           `json:"activeRequests"`
+	HasAgent            bool          `json:"hasAgent"`
+	LastAgentContact    time.Time     `json:"lastAgentContact"`
 }
 
 // BackendMetrics - метрики бэкенда в реальном времени
@@ -56,6 +58,15 @@ type BackendMetrics struct {
 	Ollama OllamaMetrics `json:"ollama"`
 }
 
+// PlatformMode - режим работы платформы
+type PlatformMode string
+
+const (
+	ModeAuto PlatformMode = "auto"
+	ModeGPU  PlatformMode = "gpu"
+	ModeCPU  PlatformMode = "cpu"
+)
+
 // GPUMetrics - метрики GPU
 type GPUMetrics struct {
 	UsagePercent    float64 `json:"usagePercent"`    // Загрузка GPU %
@@ -69,9 +80,26 @@ type GPUMetrics struct {
 	MemClock        int     `json:"memClock"`        // Частота памяти (MHz)
 }
 
+// CPUMetrics - расширенные метрики CPU
+type CPUMetrics struct {
+	UsagePercent  float64   `json:"usagePercent"`  // Общая загрузка CPU %
+	UsagePerCore  []float64 `json:"usagePerCore"`  // Загрузка по ядрам
+	CoreCount     int       `json:"coreCount"`     // Количество ядер
+	ThreadCount   int       `json:"threadCount"`   // Количество потоков
+	Model         string    `json:"model"`         // Модель процессора
+	LoadAverage1  float64   `json:"loadAverage1"`  // Load average 1 мин
+	LoadAverage5  float64   `json:"loadAverage5"`  // Load average 5 мин
+	LoadAverage15 float64   `json:"loadAverage15"` // Load average 15 мин
+	Temperature   int       `json:"temperature"`   // Температура CPU (°C)
+	Throttled     bool      `json:"throttled"`     // CPU троттлинг
+}
+
 // SystemMetrics - системные метрики
 type SystemMetrics struct {
 	CPUUsagePercent float64 `json:"cpuUsagePercent"` // Загрузка CPU %
+	
+	// Расширенные CPU метрики
+	CPU CPUMetrics `json:"cpu"`
 	
 	MemoryTotal     uint64  `json:"memoryTotal"`     // Всего RAM (MB)
 	MemoryUsed      uint64  `json:"memoryUsed"`      // Использовано RAM (MB)
@@ -101,6 +129,7 @@ type RunningModel struct {
 	Name      string    `json:"name"`      // Название модели
 	Size      uint64    `json:"size"`      // Размер модели (bytes)
 	VRAMUsage uint64    `json:"vramUsage"` // Использование VRAM (MB)
+	RAMUsage  uint64    `json:"ramUsage"`  // Использование RAM на CPU (MB)
 	ExpiresAt time.Time `json:"expiresAt"` // Время истечения
 	Digest    string    `json:"digest"`    // Хеш модели
 	LoadCount int       `json:"loadCount"` // Количество загрузок
@@ -204,12 +233,15 @@ type LoggingSettings struct {
 
 // AgentConfig - конфигурация агента
 type AgentConfig struct {
-	AgentID           string `json:"agentId"`
-	BalancerURL       string `json:"balancerUrl"`
-	OllamaURL         string `json:"ollamaUrl"`
-	MetricsPort       int    `json:"metricsPort"`
-	CollectInterval   int    `json:"collectInterval"`   // секунды
-	HeartbeatInterval int    `json:"heartbeatInterval"` // секунды
+	AgentID           string       `json:"agentId"`
+	BalancerURL       string       `json:"balancerUrl"`
+	OllamaURL         string       `json:"ollamaUrl"`
+	MetricsPort       int          `json:"metricsPort"`
+	CollectInterval   int          `json:"collectInterval"`   // секунды
+	HeartbeatInterval int          `json:"heartbeatInterval"` // секунды
+	GPUMode           PlatformMode `json:"gpuMode"`           // auto/gpu/cpu
+	NVMLEnabled       bool         `json:"nvmlEnabled"`       // включить NVML
+	PublicHost        string       `json:"publicHost"`      // публичный IP/hostname, доступный балансеру
 }
 
 // QueuedRequest - запрос в очереди

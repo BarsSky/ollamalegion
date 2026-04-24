@@ -45,7 +45,7 @@ func GenerateSelfSignedCert(certFile, keyFile string) error {
 		KeyUsage:              x509.KeyUsageKeyEncipherment | x509.KeyUsageDigitalSignature,
 		ExtKeyUsage:           []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
 		BasicConstraintsValid: true,
-		DNSNames:              []string{"localhost", "ollama-lb"},
+		DNSNames:              []string{"localhost", "ollama-legion"},
 		IPAddresses:           nil, // будет добавлено ниже
 	}
 

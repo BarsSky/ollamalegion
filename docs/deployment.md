@@ -39,11 +39,11 @@ docker-compose down
 ```yaml
 services:
   loadbalancer:
-    image: ollama-lb/balancer:latest
+    image: ollama-legion/balancer:latest
     build:
       context: ..
       dockerfile: docker/balancer/Dockerfile
-    container_name: ollama-lb-balancer
+    container_name: ollama-legion-balancer
     restart: unless-stopped
     
     ports:
@@ -79,12 +79,12 @@ services:
       - BACKEND_0_NAME=${BACKEND_0_NAME:-GPU Server 1}
       - BACKEND_0_HOST=${BACKEND_0_HOST:-192.168.13.66}
       - BACKEND_0_PORT=${BACKEND_0_PORT:-11434}
-      - BACKEND_0_AGENT_PORT=${BACKEND_0_AGENT_PORT:-9090}
+      - BACKEND_0_AGENT_PORT=${BACKEND_0_AGENT_PORT:-18032}
       - BACKEND_0_WEIGHT=${BACKEND_0_WEIGHT:-1}
       - BACKEND_0_MAX_REQS=${BACKEND_0_MAX_REQS:-10}
     
     networks:
-      - ollama-lb-net
+      - ollama-legion-net
     
     healthcheck:
       test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:18081/api/v1/health"]
@@ -95,7 +95,7 @@ services:
 
   webui:
     image: nginx:alpine
-    container_name: ollama-lb-webui
+    container_name: ollama-legion-webui
     restart: unless-stopped
     
     ports:
@@ -103,13 +103,13 @@ services:
     
     volumes:
       - ../webui/dist:/usr/share/nginx/html:ro
-      - ../docker/webui/nginx.conf:/etc/nginx/conf.d/default.conf:ro
+      - ../webui/nginx.conf:/etc/nginx/conf.d/default.conf:ro
     
     networks:
-      - ollama-lb-net
+      - ollama-legion-net
 
 networks:
-  ollama-lb-net:
+  ollama-legion-net:
     driver: bridge
     ipam:
       config:
@@ -179,6 +179,11 @@ BACKEND_1_MAX_REQS=10
 
 Агент должен запускаться **отдельно на каждом GPU сервере** с установленным Ollama.
 
+> **Важно:** Агент и балансер **НЕ обязаны** находиться в одной Docker-сети или на одном хосте.
+> Единственное требование — **взаимная IP-доступность по HTTP**:
+> - Агент → Балансер: HTTP запросы на `BALANCER_URL`
+> - Балансер → Агент/Ollama: HTTP запросы на публичный IP агента
+
 ### Способ 1: Скрипт автоматического развертывания (рекомендуется)
 
 Используйте скрипт [`deploy-agent-docker.sh`](../scripts/deploy-agent-docker.sh):
@@ -187,21 +192,23 @@ BACKEND_1_MAX_REQS=10
 # Перейдите в директорию скриптов
 cd scripts
 
-# Запуск с параметрами
+# Запуск с параметрами (укажите публичный IP балансера)
 ./deploy-agent-docker.sh \
-  --balancer-url http://<balancer-ip>:18081 \
-  --agent-id gpu-1
+  --balancer-url http://192.168.1.10:18081 \
+  --agent-id gpu-1 \
+  --public-host 192.168.1.20
 
 # Или кратко:
-./deploy-agent-docker.sh -b http://<balancer-ip>:18081 -i gpu-1
+./deploy-agent-docker.sh -b http://192.168.1.10:18081 -i gpu-1 -h 192.168.1.20
 ```
 
 #### Параметры скрипта
 
 | Параметр | Краткий | Описание | Обязательный |
 |----------|---------|----------|--------------|
-| `--balancer-url` | `-b` | URL балансировщика | Да |
+| `--balancer-url` | `-b` | URL балансировщика (публичный IP) | Да |
 | `--agent-id` | `-i` | Идентификатор агента | Да |
+| `--public-host` | `-h` | Публичный IP/hostname агента | Да |
 | `--agent-port` | `-p` | Порт агента (по умолчанию: 18032) | Нет |
 | `--ollama-url` | `-o` | URL Ollama (по умолчанию: http://localhost:11434) | Нет |
 | `--nvml-enabled` | `-n` | Включить NVML (по умолчанию: true) | Нет |
@@ -218,13 +225,23 @@ cd deployments
 
 # Создание .env файла
 cat > .env << EOF
+# Обязательные параметры
 AGENT_ID=gpu-1
-BALANCER_URL=http://<balancer-ip>:18081
+BALANCER_URL=http://192.168.1.10:18081
+AGENT_PUBLIC_HOST=192.168.1.20
+
+# Сетевые настройки
+# Для Linux используйте IP хоста или network_mode: host
+# Для Windows/macOS host.docker.internal работает из коробки
 AGENT_PORT=18032
-OLLAMA_URL=http://localhost:11434
+OLLAMA_URL=http://host.docker.internal:11434
+
+# GPU настройки
 NVML_ENABLED=true
 METRICS_INTERVAL=5s
 HEARTBEAT_INTERVAL=3s
+
+# Логирование
 LOG_LEVEL=info
 LOG_FORMAT=text
 EOF
@@ -237,6 +254,33 @@ docker-compose -f docker-compose.agent.yml logs -f agent
 
 # Проверка статуса
 docker-compose -f docker-compose.agent.yml ps
+```
+
+#### Сетевые режимы Docker
+
+**A) Bridge (по умолчанию)** — агент в изолированной сети, порты проброшены:
+```yaml
+# Порты проброшены на хост, балансер обращается к AGENT_PUBLIC_HOST:AGENT_PORT
+ports:
+  - "18032:18032"
+```
+
+**B) Host network (Linux)** — агент использует сетевой стек хоста напрямую:
+```yaml
+services:
+  agent:
+    network_mode: host
+    # При host mode не нужны ports и networks
+    environment:
+      - AGENT_PUBLIC_HOST=192.168.1.20  # IP хоста
+```
+
+**C) Docker Swarm overlay** — для кластеров в swarm-режиме:
+```yaml
+networks:
+  ollama-legion-net:
+    driver: overlay
+    external: true
 ```
 
 #### GPU проброс для NVML
@@ -271,7 +315,7 @@ docker run --rm --gpus all nvidia/cuda:12.2.0-base-ubuntu22.04 nvidia-smi
 **Проверка работы NVML внутри контейнера:**
 ```bash
 # Подключение к контейнеру агента
-docker exec -it ollama-lb-agent bash
+docker exec -it ollama-legion-agent bash
 
 # Проверка доступности nvidia-smi
 nvidia-smi
@@ -283,22 +327,33 @@ curl http://localhost:18032/metrics
 ### Способ 3: Docker run
 
 ```bash
+# С bridge-сетью (порты проброшены)
 docker run -d \
   --name ollama-agent \
   --restart unless-stopped \
   -e AGENT_ID=gpu-1 \
-  -e BALANCER_URL=http://<balancer-ip>:18081 \
+  -e BALANCER_URL=http://192.168.1.10:18081 \
+  -e AGENT_PUBLIC_HOST=192.168.1.20 \
   -e AGENT_PORT=18032 \
-  -e OLLAMA_URL=http://localhost:11434 \
+  -e OLLAMA_URL=http://192.168.1.20:11434 \
   -e NVML_ENABLED=true \
   -e METRICS_INTERVAL=5s \
   -e HEARTBEAT_INTERVAL=3s \
-  -v /usr/bin/nvidia-smi:/usr/bin/nvidia-smi:ro \
-  -v /var/run/nvidia-top-level-device:/var/run/nvidia-top-level-device:ro \
-  -v /proc:/host/proc:ro \
-  -v /sys:/host/sys:ro \
+  -p 18032:18032 \
+  ollama-legion/agent:latest
+
+# С host-сетью (Linux)
+docker run -d \
+  --name ollama-agent \
+  --restart unless-stopped \
   --network host \
-  ollama-lb/agent:latest
+  -e AGENT_ID=gpu-1 \
+  -e BALANCER_URL=http://192.168.1.10:18081 \
+  -e AGENT_PUBLIC_HOST=192.168.1.20 \
+  -e AGENT_PORT=18032 \
+  -e OLLAMA_URL=http://localhost:11434 \
+  -e NVML_ENABLED=true \
+  ollama-legion/agent:latest
 ```
 
 ### Способ 4: Бинарный файл как systemd сервис
@@ -399,8 +454,8 @@ version: '3.8'
 
 services:
   loadbalancer-1:
-    image: ollama-lb/balancer:latest
-    container_name: ollama-lb-1
+    image: ollama-legion/balancer:latest
+    container_name: ollama-legion-1
     restart: unless-stopped
     ports:
       - "18080:18080"
@@ -412,7 +467,7 @@ services:
       - LB_PORT=18080
       - LB_API_PORT=18081
     networks:
-      - ollama-lb-net
+      - ollama-legion-net
     healthcheck:
       test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:18081/api/v1/health"]
       interval: 10s
@@ -420,8 +475,8 @@ services:
       retries: 3
 
   loadbalancer-2:
-    image: ollama-lb/balancer:latest
-    container_name: ollama-lb-2
+    image: ollama-legion/balancer:latest
+    container_name: ollama-legion-2
     restart: unless-stopped
     ports:
       - "18082:18080"
@@ -433,7 +488,7 @@ services:
       - LB_PORT=18080
       - LB_API_PORT=18081
     networks:
-      - ollama-lb-net
+      - ollama-legion-net
     healthcheck:
       test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:18081/api/v1/health"]
       interval: 10s
@@ -454,10 +509,10 @@ services:
       - loadbalancer-1
       - loadbalancer-2
     networks:
-      - ollama-lb-net
+      - ollama-legion-net
 
 networks:
-  ollama-lb-net:
+  ollama-legion-net:
     driver: bridge
 ```
 
@@ -523,7 +578,7 @@ http {
 openssl req -x509 -nodes -days 365 -newkey rsa:4096 \
   -keyout certs/server.key \
   -out certs/server.crt \
-  -subj "/CN=ollama-lb.example.com"
+  -subj "/CN=ollama-legion.example.com"
 ```
 
 #### 2. Firewall правила
@@ -670,7 +725,7 @@ curl -X POST http://localhost:18080/api/generate \
 
 ### Диагностика проблем
 
-См. раздел [Troubleshooting](troubleshooting.md) для решения常见 проблем.
+См. раздел [Troubleshooting](troubleshooting.md) для решения часто встречающихся проблем.
 
 ---
 

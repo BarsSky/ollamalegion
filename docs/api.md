@@ -579,7 +579,10 @@ curl -X POST http://localhost:18081/api/v1/agents/register \
 |--------|----------|----------|
 | `X-Agent-ID` | string | ID агента (обязательно) |
 
-**Request Body:**
+**Request Body — Полная структура метрик от агента:**
+
+> **Важно:** Поля `activeRequests`, `totalRequests`, `avgResponseTime`, `requestsPerSecond` в секции `ollama` возвращаются агентом как `0` и **переопределяются балансером** на основе внутреннего proxy-счётчика.
+
 ```json
 {
   "id": "gpu-1",
@@ -611,13 +614,30 @@ curl -X POST http://localhost:18081/api/v1/agents/register \
       {
         "name": "llama3.1:70b",
         "size": 70000000000,
-        "vramUsage": 18000
+        "vramUsage": 18000,
+        "expiresAt": "2024-01-15T11:00:00Z",
+        "digest": "sha256:...",
+        "family": "llama",
+        "parameterSize": "70B",
+        "quantization": "Q4_0"
       }
     ],
-    "activeRequests": 3,
-    "totalRequests": 1500,
-    "avgResponseTime": 250.5,
-    "requestsPerSecond": 12.5
+    "availableModels": [
+      {
+        "name": "mistral:7b",
+        "size": 4000000000,
+        "family": "mistral",
+        "parameterSize": "7B",
+        "quantization": "Q4_0"
+      }
+    ],
+    "activeRequests": 0,
+    "totalRequests": 0,
+    "avgResponseTime": 0,
+    "requestsPerSecond": 0,
+    "maxModels": -1,
+    "maxConcurrentRequests": -1,
+    "freeSlots": 0
   }
 }
 ```
@@ -647,6 +667,42 @@ curl -X POST http://localhost:18081/api/v1/agents/metrics \
     "ollama": {...}
   }'
 ```
+
+---
+
+### Predictions (Прогнозирование)
+
+Балансер автоматически рассчитывает прогнозы критических состояний для каждого бэкенда на основе истории метрик (до 120 точек, окно 2 минуты).
+
+#### GET /api/v1/predictions
+
+Получение прогнозов для всех бэкендов.
+
+**Ответ:**
+```json
+{
+  "gpu-1": {
+    "backendId": "gpu-1",
+    "secondsToCritical": 300,
+    "criticalReason": "vram",
+    "gpuUsageTrend": 0.5,
+    "vramUsageTrend": 2.1,
+    "ramUsageTrend": 0.3,
+    "freeSlotsTrend": -0.8,
+    "requestCapacity": 65.5
+  }
+}
+```
+
+| Поле | Тип | Описание |
+|------|-----|----------|
+| `secondsToCritical` | float | Секунд до критического состояния. `-1` = нет угрозы |
+| `criticalReason` | string | Причина: `gpu_usage`, `vram`, `ram`, `concurrent_requests`, `models_capacity`, `none` |
+| `gpuUsageTrend` | float | Тренд загрузки GPU (%/мин) |
+| `vramUsageTrend` | float | Тренд использования VRAM (%/мин) |
+| `ramUsageTrend` | float | Тренд использования RAM (%/мин) |
+| `freeSlotsTrend` | float | Тренд свободных слотов (штук/мин) |
+| `requestCapacity` | float | Текущая загрузка бэкенда (0-100%) |
 
 ---
 

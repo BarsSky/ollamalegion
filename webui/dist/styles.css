@@ -1,7 +1,3 @@
-/* ============================================
-   Ollama Legion Dashboard - Lama Theme Styles
-   ============================================ */
-
 /* CSS Variables - Lama Color Palette from Logo */
 :root {
     --primary: #C4916B;
@@ -638,6 +634,104 @@ body::before {
 
 .copyright {
     color: var(--text-muted);
+}
+
+/* ============================================
+   Prediction Bar
+   ============================================ */
+.prediction-bar {
+    padding: 8px 12px;
+    border-radius: var(--radius-md);
+    margin-bottom: 12px;
+    font-size: 0.85rem;
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+}
+
+.prediction-bar.info {
+    background: linear-gradient(135deg, rgba(127, 184, 231, 0.15), rgba(90, 159, 212, 0.1));
+    border: 1px solid rgba(127, 184, 231, 0.3);
+    color: var(--accent-dark);
+}
+
+.prediction-bar.warning {
+    background: linear-gradient(135deg, rgba(237, 137, 54, 0.15), rgba(214, 112, 32, 0.1));
+    border: 1px solid rgba(237, 137, 54, 0.3);
+    color: var(--warning);
+}
+
+.prediction-bar.critical {
+    background: linear-gradient(135deg, rgba(245, 101, 101, 0.15), rgba(224, 72, 72, 0.1));
+    border: 1px solid rgba(245, 101, 101, 0.3);
+    color: var(--danger);
+    animation: pulse-warning 2s infinite;
+}
+
+@keyframes pulse-warning {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.7; }
+}
+
+.prediction-header {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    font-weight: 500;
+}
+
+.prediction-icon {
+    font-size: 1rem;
+}
+
+.prediction-label {
+    flex: 1;
+}
+
+.prediction-value {
+    font-weight: 700;
+    font-variant-numeric: tabular-nums;
+}
+
+.prediction-capacity {
+    font-size: 0.8rem;
+    opacity: 0.85;
+}
+
+/* ============================================
+   Session Status Badges
+   ============================================ */
+.session-status-badge {
+    display: inline-block;
+    padding: 2px 8px;
+    border-radius: 10px;
+    font-size: 0.75rem;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+}
+
+.session-status-badge.active {
+    background: var(--success-bg);
+    color: var(--accent-green);
+}
+
+.session-status-badge.completed {
+    background: rgba(127, 184, 231, 0.15);
+    color: var(--accent-blue);
+}
+
+.session-status-badge.error {
+    background: var(--error-bg);
+    color: var(--accent-red);
+}
+
+/* ============================================
+   Free Slots Stat
+   ============================================ */
+.stat-value.free-slots {
+    color: var(--accent-blue);
+    font-weight: 700;
 }
 
 /* ============================================

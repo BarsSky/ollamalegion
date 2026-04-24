@@ -16,11 +16,6 @@
 
 *.log
 
-# Generated WebUI static assets (built output)
-# If your webui/dist/ contains hand-written static files,
-# remove or comment out this line.
-webui/dist/
-
 .vscode/
 
 bin/

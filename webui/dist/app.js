@@ -211,7 +211,23 @@ function normalizeOllama(ollama) {
         AvgResponseTime: ollama.AvgResponseTime || ollama.avgResponseTime || 0,
         RequestsPerSecond: ollama.RequestsPerSecond || ollama.requestsPerSecond || 0,
         MaxModels: ollama.maxModels ?? ollama.MaxModels ?? -1,
-        MaxConcurrentRequests: ollama.maxConcurrentRequests ?? ollama.MaxConcurrentRequests ?? -1
+        MaxConcurrentRequests: ollama.maxConcurrentRequests ?? ollama.MaxConcurrentRequests ?? -1,
+        FreeSlots: ollama.freeSlots ?? ollama.FreeSlots ?? 0
+    };
+}
+
+// Normalize Prediction data
+function normalizePrediction(pred) {
+    if (!pred) return null;
+    
+    return {
+        SecondsToCritical: pred.SecondsToCritical ?? pred.secondsToCritical ?? -1,
+        CriticalReason: pred.CriticalReason || pred.criticalReason || 'none',
+        GPUUsageTrend: pred.GPUUsageTrend ?? pred.gpuUsageTrend ?? 0,
+        VRAMUsageTrend: pred.VRAMUsageTrend ?? pred.vramUsageTrend ?? 0,
+        RAMUsageTrend: pred.RAMUsageTrend ?? pred.ramUsageTrend ?? 0,
+        FreeSlotsTrend: pred.FreeSlotsTrend ?? pred.freeSlotsTrend ?? 0,
+        RequestCapacity: pred.RequestCapacity ?? pred.requestCapacity ?? 0
     };
 }
 
@@ -456,6 +472,7 @@ function createBackendCard(backend) {
     const gpu = normalizeGPU(backend.GPU || backend.gpu);
     const system = normalizeSystem(backend.System || backend.system);
     const ollama = normalizeOllama(backend.Ollama || backend.ollama);
+    const prediction = normalizePrediction(backend.Prediction || backend.prediction);
     
     const gpuUsage = gpu.UsagePercent || 0;
     const gpuMemoryRaw = gpu.MemoryUsed && gpu.MemoryTotal
@@ -467,12 +484,39 @@ function createBackendCard(backend) {
         ? ((system.MemoryUsed / system.MemoryTotal) * 100)
         : 0;
     const ramUsage = parseFloat(ramUsageRaw.toFixed(1));
+    const freeSlots = ollama.FreeSlots ?? 0;
+    
+    // Build prediction HTML if available
+    let predictionHtml = '';
+    if (prediction && prediction.CriticalReason !== 'none') {
+        const criticalClass = prediction.SecondsToCritical > 0 && prediction.SecondsToCritical < 60 ? 'critical' : (prediction.SecondsToCritical > 0 && prediction.SecondsToCritical < 300 ? 'warning' : 'info');
+        const reasonText = {
+            'gpu_usage': 'GPU usage',
+            'vram': 'VRAM',
+            'ram': 'RAM',
+            'concurrent_requests': 'Concurrent requests',
+            'models_capacity': 'Models capacity'
+        }[prediction.CriticalReason] || prediction.CriticalReason;
+        predictionHtml = `
+            <div class="prediction-bar ${criticalClass}">
+                <div class="prediction-header">
+                    <span class="prediction-icon">⏱️</span>
+                    <span class="prediction-label">${escapeHtml(reasonText)} critical in</span>
+                    <span class="prediction-value">${formatDuration(prediction.SecondsToCritical)}</span>
+                </div>
+                <div class="prediction-capacity">
+                    <span>Capacity: ${prediction.RequestCapacity.toFixed(1)}%</span>
+                </div>
+            </div>
+        `;
+    }
     
     const card = document.createElement('div');
     card.className = `backend-card ${statusClass} fade-in`;
     card.dataset.backendId = backend.ID;
     card.innerHTML = `
         ${!hasAgent ? `<div class="agent-warning">⚠️ Agent not connected — metrics unavailable, load balancing simplified</div>` : ''}
+        ${predictionHtml}
         <div class="backend-header">
             <div class="backend-header-left">
                 <span class="backend-id">${escapeHtml(backend.Name || backend.ID)}</span>
@@ -547,12 +591,12 @@ function createBackendCard(backend) {
                 <div class="stat-value active-requests">${ollama.ActiveRequests || 0}</div>
             </div>
             <div class="stat-item">
-                <div class="stat-label">Models Loaded</div>
-                <div class="stat-value models-loaded">${ollama.RunningModels ? ollama.RunningModels.length : 0}</div>
+                <div class="stat-label">Free Slots</div>
+                <div class="stat-value free-slots">${freeSlots}</div>
             </div>
             <div class="stat-item">
-                <div class="stat-label">Max Models</div>
-                <div class="stat-value max-models">${ollama.MaxModels || '-'}</div>
+                <div class="stat-label">Models Loaded</div>
+                <div class="stat-value models-loaded">${ollama.RunningModels ? ollama.RunningModels.length : 0}</div>
             </div>
         </div>
         
@@ -560,9 +604,16 @@ function createBackendCard(backend) {
             <div class="limit-item">
                 <div class="limit-label">
                     <span class="limit-icon">📊</span>
-                    Max Concurrent Requests
+                    Max Concurrent
                 </div>
                 <div class="limit-value max-concurrent-requests">${ollama.MaxConcurrentRequests || '-'}</div>
+            </div>
+            <div class="limit-item">
+                <div class="limit-label">
+                    <span class="limit-icon">📦</span>
+                    Max Models
+                </div>
+                <div class="limit-value max-models">${ollama.MaxModels || '-'}</div>
             </div>
         </div>
         
@@ -693,11 +744,55 @@ function updateBackendCard(card, backend) {
         progressFills[3].className = 'progress-fill ' + getProgressClass(ramUsage);
     }
     
+    // Update free slots
+    const freeSlotsEl = card.querySelector('.free-slots');
+    if (freeSlotsEl) {
+        freeSlotsEl.textContent = ollama.FreeSlots ?? 0;
+    }
+    
     // Update stats
     card.querySelector('.active-requests').textContent = ollama.ActiveRequests || 0;
     card.querySelector('.models-loaded').textContent = ollama.RunningModels ? ollama.RunningModels.length : 0;
     card.querySelector('.max-models').textContent = ollama.MaxModels || '-';
     card.querySelector('.max-concurrent-requests').textContent = ollama.MaxConcurrentRequests || '-';
+    
+    // Update predictions
+    const prediction = normalizePrediction(backend.Prediction || backend.prediction);
+    const existingPrediction = card.querySelector('.prediction-bar');
+    if (prediction && prediction.CriticalReason !== 'none') {
+        const criticalClass = prediction.SecondsToCritical > 0 && prediction.SecondsToCritical < 60 ? 'critical' : (prediction.SecondsToCritical > 0 && prediction.SecondsToCritical < 300 ? 'warning' : 'info');
+        const reasonText = {
+            'gpu_usage': 'GPU usage',
+            'vram': 'VRAM',
+            'ram': 'RAM',
+            'concurrent_requests': 'Concurrent requests',
+            'models_capacity': 'Models capacity'
+        }[prediction.CriticalReason] || prediction.CriticalReason;
+        const predictionHtml = `
+            <div class="prediction-bar ${criticalClass}">
+                <div class="prediction-header">
+                    <span class="prediction-icon">⏱️</span>
+                    <span class="prediction-label">${escapeHtml(reasonText)} critical in</span>
+                    <span class="prediction-value">${formatDuration(prediction.SecondsToCritical)}</span>
+                </div>
+                <div class="prediction-capacity">
+                    <span>Capacity: ${prediction.RequestCapacity.toFixed(1)}%</span>
+                </div>
+            </div>
+        `;
+        if (existingPrediction) {
+            existingPrediction.outerHTML = predictionHtml;
+        } else {
+            const header = card.querySelector('.backend-header');
+            if (header) {
+                const wrapper = document.createElement('div');
+                wrapper.innerHTML = predictionHtml;
+                card.insertBefore(wrapper.firstElementChild, header);
+            }
+        }
+    } else if (existingPrediction) {
+        existingPrediction.remove();
+    }
     
     // Update status classes
     card.classList.remove('online', 'offline', 'warning');
@@ -823,16 +918,59 @@ function updateBackendsGrid(data) {
     isLoadingBackends = false;
 }
 
+// Fetch and display real sessions from API
+async function fetchSessions() {
+    try {
+        const response = await fetch(`${API_BASE_URL}/sessions`, {
+            headers: {
+                'X-API-Token': getApiToken()
+            }
+        });
+        
+        if (response.ok) {
+            const data = await response.json();
+            return data.sessions || data.Sessions || [];
+        }
+    } catch (error) {
+        console.error('Failed to fetch sessions:', error);
+    }
+    return [];
+}
+
 function updateSessionsTable(data) {
     const tbody = document.getElementById('sessionsTableBody');
     
-    // For now, show empty state
-    // In a real implementation, you would fetch session data from the API
-    tbody.innerHTML = `
-        <tr class="empty-row">
-            <td colspan="6">No active sessions</td>
-        </tr>
-    `;
+    // Async fetch sessions and update table
+    fetchSessions().then(sessions => {
+        if (!sessions || sessions.length === 0) {
+            tbody.innerHTML = `
+                <tr class="empty-row">
+                    <td colspan="6">No active sessions</td>
+                </tr>
+            `;
+            return;
+        }
+        
+        tbody.innerHTML = sessions.map(session => {
+            const sessionId = session.ID || session.id || 'unknown';
+            const backendId = session.BackendID || session.backendId || '-';
+            const model = session.Model || session.model || '-';
+            const duration = session.Duration || session.duration || '-';
+            const tokens = session.Tokens || session.tokens || '-';
+            const status = session.Status || session.status || 'active';
+            
+            return `
+                <tr>
+                    <td><code>${escapeHtml(sessionId.substring(0, 16))}</code></td>
+                    <td>${escapeHtml(backendId)}</td>
+                    <td>${escapeHtml(model)}</td>
+                    <td>${escapeHtml(typeof duration === 'number' ? formatDuration(duration) : String(duration))}</td>
+                    <td>${escapeHtml(String(tokens))}</td>
+                    <td><span class="session-status session-status-${status.toLowerCase()}">${escapeHtml(status)}</span></td>
+                </tr>
+            `;
+        }).join('');
+    });
 }
 
 function updateFooter(data) {
@@ -1112,6 +1250,15 @@ function formatBytes(bytes) {
     const sizes = ['B', 'KB', 'MB', 'GB', 'TB'];
     const i = Math.floor(Math.log(bytes) / Math.log(k));
     return parseFloat((bytes / Math.pow(k, i)).toFixed(1)) + ' ' + sizes[i];
+}
+
+// Format duration in seconds to human-readable string
+function formatDuration(seconds) {
+    if (seconds === -1 || seconds === undefined || seconds === null) return '∞';
+    if (seconds < 60) return `${Math.round(seconds)}s`;
+    if (seconds < 3600) return `${Math.round(seconds / 60)}m`;
+    if (seconds < 86400) return `${Math.round(seconds / 3600)}h`;
+    return `${Math.round(seconds / 86400)}d`;
 }
 
 // Safe localStorage wrapper - handles browsers with storage restrictions

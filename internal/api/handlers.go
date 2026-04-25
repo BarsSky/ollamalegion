@@ -119,6 +119,9 @@ func (s *Server) setupRoutes() {
 	// Cluster state (с аутентификацией и rate limiting)
 	s.mux.Handle("/api/v1/cluster", AuthMiddleware(RateLimitMiddleware(s.clusterHandler, s.rateLimiter), s.authenticator))
 
+	// Queue stats (с аутентификацией и rate limiting)
+	s.mux.Handle("/api/v1/queue/stats", AuthMiddleware(RateLimitMiddleware(s.queueStatsHandler, s.rateLimiter), s.authenticator))
+
 	// Predictions (с аутентификацией и rate limiting)
 	s.mux.Handle("/api/v1/predictions", AuthMiddleware(RateLimitMiddleware(s.predictionsHandler, s.rateLimiter), s.authenticator))
 	s.mux.Handle("/api/v1/predictions/", AuthMiddleware(RateLimitMiddleware(s.predictionHandler, s.rateLimiter), s.authenticator))
@@ -710,6 +713,17 @@ func (s *Server) clusterHandler(w http.ResponseWriter, r *http.Request) {
 	state := s.proxy.GetClusterState()
 
 	s.writeJSON(w, http.StatusOK, state)
+}
+
+// queueStatsHandler - статистика очереди
+func (s *Server) queueStatsHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	stats := s.proxy.GetQueueStats()
+	s.writeJSON(w, http.StatusOK, stats)
 }
 
 // agentRegisterHandler - регистрация агента (самостоятельная регистрация бэкенда)

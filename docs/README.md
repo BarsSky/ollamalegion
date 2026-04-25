@@ -13,6 +13,7 @@
 | [Развертывание](deployment.md) | Docker Compose и production развертывание |
 | [Развертывание агента](agent-deployment.md) | Развертывание агента в режимах CPU/GPU |
 | [API](api.md) | REST API и WebSocket документация |
+| [Метрики](ollamalegion-metrics.md) | Полный справочник всех метрик и алгоритмов |
 | [Troubleshooting](troubleshooting.md) | Решение проблем и отладка |
 
 ---
@@ -38,9 +39,10 @@ Ollama Load Balancer — это распределенная система ба
 | Компонент | Описание | Порт(ы) |
 |-----------|----------|---------|
 | **Load Balancer** | Reverse proxy с балансировкой нагрузки | 18080, 18081 |
-| **Queue Manager** | Обработка перегрузок с очередью запросов | - |
-| **WebSocket Server** | Real-time трансляция метрик | 18081/ws |
-| **Metrics Broker** | Pub/sub система для распределения метрик | - |
+  | **Queue Manager** | Обработка перегрузок с очередью запросов | - |
+  | **WebSocket Server** | Real-time трансляция метрик | 18081/ws |
+  | **Predictor** | Прогнозирование критических состояний | - |
+  | **Metrics Broker** | Pub/sub система для распределения метрик | - |
 | **Agent (Linux/Windows)** | Сбор метрик GPU/CPU/RAM/Disk | 18032 |
 | **NVML Integration** | NVIDIA Management Library для GPU метрик | - |
 | **Ollama API** | Интеграция с Ollama API для статистики | 11434 |

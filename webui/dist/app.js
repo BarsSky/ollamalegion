@@ -327,6 +327,20 @@ function updateBackendMetrics(metricsData) {
         
         // ВАЖНО: Сохраняем Name и Host из кэша/существующего бэкенда чтобы не потерять их
         // Метрики могут приходить без Name/Host, поэтому защищаем от перезаписи пустыми значениями
+        // Ollama мержим глубоко чтобы не потерять RunningModels при partial update
+        const incomingOllama = normalizedMetrics.Ollama || normalizedMetrics.ollama || {};
+        const mergedOllama = {
+            ...existingBackend.Ollama,
+            ...incomingOllama,
+            // RunningModels: берём из incoming если есть, иначе сохраняем существующие
+            RunningModels: (incomingOllama.RunningModels && incomingOllama.RunningModels.length > 0)
+                ? incomingOllama.RunningModels
+                : (existingBackend.Ollama && existingBackend.Ollama.RunningModels) || [],
+            AvailableModels: (incomingOllama.AvailableModels && incomingOllama.AvailableModels.length > 0)
+                ? incomingOllama.AvailableModels
+                : (existingBackend.Ollama && existingBackend.Ollama.AvailableModels) || []
+        };
+        
         clusterState.Backends[backendIndex] = {
             ...existingBackend,
             // Используем кэшированные оригинальные значения вместо перезаписи из WebSocket
@@ -335,7 +349,7 @@ function updateBackendMetrics(metricsData) {
             // Обновляем только метрики
             GPU: normalizedMetrics.GPU || normalizedMetrics.gpu || existingBackend.GPU,
             System: normalizedMetrics.System || normalizedMetrics.system || existingBackend.System,
-            Ollama: normalizedMetrics.Ollama || normalizedMetrics.ollama || existingBackend.Ollama,
+            Ollama: mergedOllama,
             HasAgent: normalizedMetrics.HasAgent !== undefined ? normalizedMetrics.HasAgent : true,
             Timestamp: normalizedMetrics.Timestamp || normalizedMetrics.timestamp || existingBackend.Timestamp
         };
@@ -514,6 +528,21 @@ function createBackendCard(backend) {
     const card = document.createElement('div');
     card.className = `backend-card ${statusClass} fade-in`;
     card.dataset.backendId = backend.ID;
+    card.style.cursor = 'pointer';
+    card.onclick = function(e) {
+        // Don't open modal if clicked on action buttons
+        if (e.target.closest('.backend-actions') || e.target.closest('.action-btn') || e.target.closest('.delete-backend-btn')) return;
+        openDetailModal(backend.ID);
+    };
+
+    // Record metrics history
+    recordMetricsHistory(backend.ID, gpuUsage, gpuMemory, cpuUsage);
+
+    const sparkGpu = renderSparkline(backend.ID, 'gpu', '#48BB78');
+    const sparkVram = renderSparkline(backend.ID, 'vram', '#9F7AEA');
+    const capacityBar = renderCapacityBar(ollama.ActiveRequests || 0, ollama.MaxConcurrentRequests || 0);
+    const perCore = renderPerCoreSection(system.Cores || system.cores);
+
     card.innerHTML = `
         ${!hasAgent ? `<div class="agent-warning">⚠️ Agent not connected — metrics unavailable, load balancing simplified</div>` : ''}
         ${predictionHtml}
@@ -524,8 +553,8 @@ function createBackendCard(backend) {
                 <span class="agent-indicator ${hasAgent ? 'agent-online' : 'agent-offline'}" title="${hasAgent ? 'Agent Online' : 'Agent Offline'}">${hasAgent ? '🟢' : '⚪'}</span>
             </div>
             <div class="backend-actions">
-                <button class="action-btn" title="Download .env" onclick="downloadEnvConfig('${escapeHtml(backend.ID)}')">📥</button>
-                <button class="delete-backend-btn" title="Delete backend" onclick="deleteBackend('${escapeHtml(backend.ID)}')">🗑️</button>
+                <button class="action-btn" title="Download .env" onclick="event.stopPropagation(); downloadEnvConfig('${escapeHtml(backend.ID)}')">📥</button>
+                <button class="delete-backend-btn" title="Delete backend" onclick="event.stopPropagation(); deleteBackend('${escapeHtml(backend.ID)}')">🗑️</button>
             </div>
         </div>
         <div class="backend-ip">
@@ -539,11 +568,15 @@ function createBackendCard(backend) {
                     <span class="metric-row-icon">🔥</span>
                     GPU Usage
                 </span>
-                <span class="metric-row-value gpu-usage">${gpuUsage.toFixed(1)}%</span>
+                <span class="metric-row-value metric-row-value-with-unit gpu-usage">
+                    ${gpuUsage.toFixed(1)}%
+                    ${gpu.Temperature ? `<span class="metric-absolute">${gpu.Temperature}°C</span>` : ''}
+                </span>
             </div>
             <div class="progress-bar">
                 <div class="progress-fill ${getProgressClass(gpuUsage)}" style="width: ${gpuUsage}%"></div>
             </div>
+            ${sparkGpu}
         </div>
         
         <div class="metric-row">
@@ -552,11 +585,15 @@ function createBackendCard(backend) {
                     <span class="metric-row-icon">💾</span>
                     GPU Memory
                 </span>
-                <span class="metric-row-value gpu-memory">${gpuMemory}%</span>
+                <span class="metric-row-value metric-row-value-with-unit gpu-memory">
+                    ${gpuMemory}%
+                    ${gpu.MemoryUsed && gpu.MemoryTotal ? `<span class="metric-absolute">${(gpu.MemoryUsed/1024).toFixed(1)} / ${(gpu.MemoryTotal/1024).toFixed(1)} GB</span>` : ''}
+                </span>
             </div>
             <div class="progress-bar">
                 <div class="progress-fill ${getProgressClass(gpuMemory)}" style="width: ${gpuMemory}%"></div>
             </div>
+            ${sparkVram}
         </div>
         
         <div class="metric-row">
@@ -571,6 +608,7 @@ function createBackendCard(backend) {
                 <div class="progress-fill ${getProgressClass(cpuUsage)}" style="width: ${cpuUsage}%"></div>
             </div>
         </div>
+        ${perCore}
         
         <div class="metric-row">
             <div class="metric-row-header">
@@ -578,7 +616,10 @@ function createBackendCard(backend) {
                     <span class="metric-row-icon">🧠</span>
                     RAM Usage
                 </span>
-                <span class="metric-row-value ram-usage">${ramUsage}%</span>
+                <span class="metric-row-value metric-row-value-with-unit ram-usage">
+                    ${ramUsage}%
+                    ${system.MemoryUsed && system.MemoryTotal ? `<span class="metric-absolute">${(system.MemoryUsed/1024/1024/1024).toFixed(1)} / ${(system.MemoryTotal/1024/1024/1024).toFixed(1)} GB</span>` : ''}
+                </span>
             </div>
             <div class="progress-bar">
                 <div class="progress-fill ${getProgressClass(ramUsage)}" style="width: ${ramUsage}%"></div>
@@ -599,6 +640,8 @@ function createBackendCard(backend) {
                 <div class="stat-value models-loaded">${ollama.RunningModels ? ollama.RunningModels.length : 0}</div>
             </div>
         </div>
+        
+        ${capacityBar}
         
         <div class="backend-limits">
             <div class="limit-item">
@@ -725,11 +768,23 @@ function updateBackendCard(card, backend) {
         existingWarning.remove();
     }
     
-    // Update metrics values
-    card.querySelector('.gpu-usage').textContent = gpuUsage.toFixed(1) + '%';
-    card.querySelector('.gpu-memory').textContent = gpuMemory + '%';
-    card.querySelector('.cpu-usage').textContent = cpuUsage.toFixed(1) + '%';
-    card.querySelector('.ram-usage').textContent = ramUsage + '%';
+    // Update metrics values with absolute units
+    const gpuUsageEl = card.querySelector('.gpu-usage');
+    if (gpuUsageEl) {
+        gpuUsageEl.innerHTML = `${gpuUsage.toFixed(1)}%${gpu.Temperature ? ` <span class="metric-absolute">${gpu.Temperature}°C</span>` : ''}`;
+    }
+    const gpuMemoryEl = card.querySelector('.gpu-memory');
+    if (gpuMemoryEl) {
+        gpuMemoryEl.innerHTML = `${gpuMemory}%${gpu.MemoryUsed && gpu.MemoryTotal ? ` <span class="metric-absolute">${(gpu.MemoryUsed/1024).toFixed(1)} / ${(gpu.MemoryTotal/1024).toFixed(1)} GB</span>` : ''}`;
+    }
+    const cpuUsageEl = card.querySelector('.cpu-usage');
+    if (cpuUsageEl) {
+        cpuUsageEl.textContent = cpuUsage.toFixed(1) + '%';
+    }
+    const ramUsageEl = card.querySelector('.ram-usage');
+    if (ramUsageEl) {
+        ramUsageEl.innerHTML = `${ramUsage}%${system.MemoryUsed && system.MemoryTotal ? ` <span class="metric-absolute">${(system.MemoryUsed/1024/1024/1024).toFixed(1)} / ${(system.MemoryTotal/1024/1024/1024).toFixed(1)} GB</span>` : ''}`;
+    }
     
     // Update progress bar widths
     const progressFills = card.querySelectorAll('.progress-fill');
@@ -951,22 +1006,33 @@ function updateSessionsTable(data) {
             return;
         }
         
+        const now = new Date();
+        
         tbody.innerHTML = sessions.map(session => {
             const sessionId = session.ID || session.id || 'unknown';
             const backendId = session.BackendID || session.backendId || '-';
             const model = session.Model || session.model || '-';
-            const duration = session.Duration || session.duration || '-';
-            const tokens = session.Tokens || session.tokens || '-';
-            const status = session.Status || session.status || 'active';
+            const requestCount = session.RequestCount || session.requestCount || 0;
+            const createdAt = session.CreatedAt || session.createdAt;
+            const lastRequestAt = session.LastRequestAt || session.lastRequestAt;
+            
+            // Calculate duration from CreatedAt to now (or LastRequestAt)
+            let duration = '-';
+            if (createdAt) {
+                const start = new Date(createdAt);
+                const end = lastRequestAt ? new Date(lastRequestAt) : now;
+                const seconds = Math.max(0, Math.floor((end - start) / 1000));
+                duration = formatDuration(seconds);
+            }
             
             return `
                 <tr>
                     <td><code>${escapeHtml(sessionId.substring(0, 16))}</code></td>
                     <td>${escapeHtml(backendId)}</td>
                     <td>${escapeHtml(model)}</td>
-                    <td>${escapeHtml(typeof duration === 'number' ? formatDuration(duration) : String(duration))}</td>
-                    <td>${escapeHtml(String(tokens))}</td>
-                    <td><span class="session-status session-status-${status.toLowerCase()}">${escapeHtml(status)}</span></td>
+                    <td>${escapeHtml(duration)}</td>
+                    <td>${escapeHtml(String(requestCount))}</td>
+                    <td><span class="session-status session-status-active">Active</span></td>
                 </tr>
             `;
         }).join('');
@@ -1475,4 +1541,173 @@ async function fetchBackends() {
         clusterState = { Backends: [], HealthyBackends: 0, TotalBackends: 0 };
         updateDashboard(clusterState);
     }
+}
+
+// ============ Detail Modal (4.2) ============
+let detailModalChartInstances = {};
+let detailCurrentBackendId = null;
+let detailTimeRange = 60; // minutes
+
+function openDetailModal(backendId) {
+    detailCurrentBackendId = backendId;
+    const modal = document.getElementById('detailModal');
+    document.getElementById('detailTitle').textContent = backendId + ' — Detailed Metrics';
+    modal.classList.add('active');
+    loadDetailCharts(backendId);
+}
+
+function closeDetailModal() {
+    document.getElementById('detailModal').classList.remove('active');
+    Object.values(detailModalChartInstances).forEach(c => c.destroy());
+    detailModalChartInstances = {};
+}
+
+function setDetailRange(minutes) {
+    detailTimeRange = minutes;
+    document.querySelectorAll('.detail-time-btn').forEach(btn => btn.classList.remove('active'));
+    event.target.classList.add('active');
+    if (detailCurrentBackendId) loadDetailCharts(detailCurrentBackendId);
+}
+
+function loadDetailCharts(backendId) {
+    // Use history if available, else mock
+    const history = (window.metricsHistory || {})[backendId] || [];
+    const now = Date.now();
+    const cutoff = now - detailTimeRange * 60 * 1000;
+    const filtered = history.filter(pt => pt.t > cutoff);
+    
+    if (filtered.length < 2) {
+        // Not enough data — show message
+        ['detailGpuChart','detailVramChart','detailCpuChart'].forEach(id => {
+            const ctx = document.getElementById(id).getContext('2d');
+            if (detailModalChartInstances[id]) detailModalChartInstances[id].destroy();
+            detailModalChartInstances[id] = new Chart(ctx, {
+                type: 'line',
+                data: { labels: ['No Data'], datasets: [{ data: [0], borderColor: 'var(--text-muted)' }] },
+                options: { plugins: { title: { display: true, text: 'Not enough history data' } } }
+            });
+        });
+        return;
+    }
+
+    const labels = filtered.map(p => {
+        const d = new Date(p.t);
+        return d.getHours().toString().padStart(2,'0') + ':' + d.getMinutes().toString().padStart(2,'0');
+    });
+    
+    const gpuData = filtered.map(p => p.gpu || 0);
+    const vramData = filtered.map(p => p.vram || 0);
+    const cpuData = filtered.map(p => p.cpu || 0);
+
+    createDetailChart('detailGpuChart', 'GPU Usage %', labels, gpuData, '#48BB78');
+    createDetailChart('detailVramChart', 'VRAM Usage %', labels, vramData, '#9F7AEA');
+    createDetailChart('detailCpuChart', 'CPU Usage %', labels, cpuData, '#ED8936');
+}
+
+function createDetailChart(canvasId, label, labels, data, color) {
+    const ctx = document.getElementById(canvasId).getContext('2d');
+    if (detailModalChartInstances[canvasId]) detailModalChartInstances[canvasId].destroy();
+    detailModalChartInstances[canvasId] = new Chart(ctx, {
+        type: 'line',
+        data: {
+            labels: labels,
+            datasets: [{
+                label: label,
+                data: data,
+                borderColor: color,
+                backgroundColor: color + '20',
+                fill: true,
+                tension: 0.4,
+                pointRadius: 2,
+                borderWidth: 2
+            }]
+        },
+        options: {
+            responsive: true,
+            maintainAspectRatio: false,
+            plugins: { legend: { display: false } },
+            scales: {
+                x: { ticks: { color: 'var(--text-muted)', maxTicksLimit: 8 } },
+                y: { ticks: { color: 'var(--text-muted)' }, beginAtZero: true, max: 100 }
+            }
+        }
+    });
+}
+
+// ============ Capacity Bar (4.3) ============
+function renderCapacityBar(used, total) {
+    if (!total) return '';
+    const pct = Math.round((used / total) * 100);
+    let colorClass = 'green';
+    if (pct > 75) colorClass = 'yellow';
+    if (pct > 90) colorClass = 'red';
+    return `
+        <div class="capacity-indicator">
+            <div class="capacity-bar-outer">
+                <div class="capacity-bar-fill ${colorClass}" style="width: ${pct}%"></div>
+            </div>
+            <span class="capacity-text">${pct}%</span>
+        </div>
+    `;
+}
+
+// ============ Sparkline (4.1) ============
+function renderSparkline(backendId, metricKey, color) {
+    const history = (window.metricsHistory || {})[backendId] || [];
+    if (history.length < 2) return '';
+    const values = history.slice(-20).map(p => p[metricKey] || 0);
+    const min = Math.min(...values), max = Math.max(...values);
+    const range = max - min || 1;
+    const width = 60, height = 24;
+    const points = values.map((v, i) => {
+        const x = (i / (values.length - 1)) * width;
+        const y = height - ((v - min) / range) * (height - 4) - 2;
+        return `${x.toFixed(1)},${y.toFixed(1)}`;
+    });
+    const areaPath = `M0,${height} L${points[0]} ` + points.slice(1).map(p => `L${p}`).join(' ') + ` L${width},${height} Z`;
+    const linePath = `M${points[0]} ` + points.slice(1).map(p => `L${p}`).join(' ');
+    return `
+        <div class="sparkline-container" title="Trend (last 20 points)">
+            <svg class="sparkline-svg" viewBox="0 0 ${width} ${height}">
+                <path class="sparkline-area" d="${areaPath}" fill="${color}"></path>
+                <path class="sparkline-path" d="${linePath}" stroke="${color}"></path>
+            </svg>
+            <span class="sparkline-label">${values[values.length-1].toFixed(1)}%</span>
+        </div>
+    `;
+}
+
+// ============ Per-core CPU (4.5) ============
+function renderPerCoreSection(cores) {
+    if (!cores || cores.length < 2) return '';
+    const items = cores.map((c, i) => {
+        const usage = c.UsagePercent || c.usagePercent || 0;
+        let fillColor = '#48BB78';
+        if (usage > 70) fillColor = '#ED8936';
+        if (usage > 90) fillColor = '#F56565';
+        return `
+            <div class="per-core-item">
+                <div class="per-core-name">Core ${i}</div>
+                <div class="per-core-bar"><div class="per-core-fill" style="width:${usage}%;background:${fillColor}"></div></div>
+                <div class="per-core-value">${usage.toFixed(1)}%</div>
+            </div>
+        `;
+    }).join('');
+    return `
+        <div class="per-core-section">
+            <div class="per-core-toggle" onclick="this.nextElementSibling.classList.toggle('hidden')">
+                <span>▸</span> Per-core CPU (${cores.length} cores)
+            </div>
+            <div class="per-core-grid hidden">${items}</div>
+        </div>
+    `;
+}
+
+// Metrics history storage (for sparklines & detail modal)
+window.metricsHistory = {};
+function recordMetricsHistory(backendId, gpu, vram, cpu) {
+    if (!window.metricsHistory[backendId]) window.metricsHistory[backendId] = [];
+    window.metricsHistory[backendId].push({ t: Date.now(), gpu, vram, cpu });
+    // Keep last 200 points (~16 minutes at 5s interval)
+    if (window.metricsHistory[backendId].length > 200) window.metricsHistory[backendId].shift();
 }

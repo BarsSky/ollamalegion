@@ -745,7 +745,7 @@ func TestGetQueueStats(t *testing.T) {
 	proxy.SetQueueManagerProxy()
 	defer proxy.queueMgr.Stop()
 
-	stats := proxy.getQueueStats()
+	stats := proxy.GetQueueStats()
 	assert.Equal(t, 100, stats.MaxSize)
 	assert.Equal(t, int64(0), stats.Processed)
 }

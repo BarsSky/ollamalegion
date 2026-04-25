@@ -2,7 +2,8 @@
   "loadBalancer": {
     "host": "0.0.0.0",
     "port": 18080,
-    "apiPort": 18081
+    "apiPort": 18081,
+    "statePath": "data/state.json"
   },
   "backends": [],
   "balancing": {

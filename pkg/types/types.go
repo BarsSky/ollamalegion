@@ -211,11 +211,12 @@ type APISettings struct {
 
 // LoadBalancerSettings - настройки балансировщика
 type LoadBalancerSettings struct {
-	Host    string `json:"host"`
-	Port    int    `json:"port"`
-	APIPort int    `json:"apiPort"`
-	TLSHost string `json:"tlsHost"` // хост для HTTPS (если отличается от Host)
-	TLSPort int    `json:"tlsPort"` // порт для HTTPS
+	Host      string `json:"host"`
+	Port      int    `json:"port"`
+	APIPort   int    `json:"apiPort"`
+	TLSHost   string `json:"tlsHost"` // хост для HTTPS (если отличается от Host)
+	TLSPort   int    `json:"tlsPort"` // порт для HTTPS
+	StatePath string `json:"statePath"` // путь к файлу сохранения состояния (по умолчанию "data/state.json")
 }
 
 // BalancingSettings - настройки балансировки

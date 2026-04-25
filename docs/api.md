@@ -91,6 +91,7 @@ API использует токен-аутентификацию на основ
 | `GET /api/v1/models` | — | ✅ Да | |
 | `GET /api/v1/sessions` | — | ✅ Да | |
 | `GET /api/v1/agents/stats` | — | ✅ Да | |
+| `GET /api/v1/queue/stats` | — | ✅ Да | Статистика очереди запросов |
 | `WebSocket /ws/metrics` | — | ✅ Если auth enabled | Токен передаётся через query parameter |
 
 ### Передача токена в HTTP
@@ -1104,6 +1105,7 @@ docker run -d -p 8080:8080 -e SWAGGER_JSON=/api/swagger.json \
 | `GET` | `/api/v1/auth/status` | Статус аутентификации | ✅ |
 | `POST` | `/api/v1/auth/token` | Создать токен | ✅ (master) |
 | `DELETE` | `/api/v1/auth/token` | Отозвать токен | ✅ (master) |
+| `GET` | `/api/v1/queue/stats` | Статистика очереди | ✅ |
 | `GET` | `/api/v1/ratelimit/status` | Статус rate limiter | ❌ |
 | `GET` | `/ws/metrics?token=xxx` | WebSocket метрики | ✅ (token в query) |
 

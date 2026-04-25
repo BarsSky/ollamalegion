@@ -52,6 +52,7 @@ func LoadFromEnv() (*Config, error) {
 	config.LoadBalancer.APIPort = getEnvInt("LB_API_PORT", 18081)
 	config.LoadBalancer.TLSHost = getEnv("LB_TLS_HOST", "")
 	config.LoadBalancer.TLSPort = getEnvInt("LB_TLS_PORT", 8443)
+	config.LoadBalancer.StatePath = getEnv("LB_STATE_PATH", "data/state.json")
 	
 	// TLS settings
 	config.TLS.Enabled = getEnvBool("TLS_ENABLED", false)
@@ -172,6 +173,9 @@ func setDefaults(config *types.LoadBalancerConfig) {
 	}
 	if config.LoadBalancer.TLSPort == 0 {
 		config.LoadBalancer.TLSPort = 8443
+	}
+	if config.LoadBalancer.StatePath == "" {
+		config.LoadBalancer.StatePath = "data/state.json"
 	}
 	
 	// TLS defaults

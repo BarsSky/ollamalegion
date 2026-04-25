@@ -9,6 +9,8 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -28,6 +30,9 @@ type Proxy struct {
 	predictor       *Predictor
 	client          *http.Client      // Клиент для обычных запросов
 	streamingClient *http.Client      // Клиент для streaming/SSE запросов (без таймаута)
+	statePath       string            // Путь к state файлу
+	saveTimer       *time.Timer       // Таймер для debounced autosave
+	saveMu          sync.Mutex        // Мьютекс для защиты saveTimer
 }
 
 // BackendState - состояние бэкенда
@@ -37,6 +42,8 @@ type BackendState struct {
 	LastUsed        time.Time
 	MetricsHistory  []types.MetricsSnapshot // История метрик для прогнозирования
 	Prediction      types.Prediction        // Последний прогноз
+	RequestHistory  []time.Time             // Таймстемпы запросов для расчёта RPS (окно 60с)
+	CalculatedRPS   float64                 // Вычисленный RPS
 	mu              sync.Mutex
 }
 
@@ -109,6 +116,7 @@ func NewProxy(config *types.LoadBalancerConfig) *Proxy {
 		sessionMgr: NewSessionManager(),
 		metricsMgr: NewMetricsManager(),
 		predictor:  NewPredictor(),
+		statePath:  config.LoadBalancer.StatePath,
 		client: &http.Client{
 			Timeout:   time.Duration(config.Balancing.RequestTimeout) * time.Second,
 			Transport: regularTransport,
@@ -123,7 +131,7 @@ func NewProxy(config *types.LoadBalancerConfig) *Proxy {
 	// QueueManager создаём после инициализации p, чтобы передать корректный proxy
 	p.queueMgr = NewQueueManager(p, config.Balancing.QueueMaxSize, config.Balancing.QueueWorkers, time.Duration(config.Balancing.QueueTimeout)*time.Second)
 
-	// Инициализация бэкендов
+	// Инициализация бэкендов из config
 	for i := range config.Backends {
 		backend := config.Backends[i]
 		p.backends[backend.ID] = &BackendState{
@@ -131,6 +139,11 @@ func NewProxy(config *types.LoadBalancerConfig) *Proxy {
 			ActiveReqs: 0,
 			LastUsed:   time.Time{},
 		}
+	}
+
+	// Загрузка сохранённого state (поверх config — runtime-данные приоритетнее)
+	if err := p.LoadState(); err != nil {
+		fmt.Printf("[Proxy] State file not loaded: %v (using config only)\n", err)
 	}
 
 	// Запуск фоновой проверки таймаута агентов (30 секунд)
@@ -461,6 +474,12 @@ func (p *Proxy) findBackendWithModelExcluding(modelName string, exclude map[stri
 		}
 		state.mu.Unlock()
 
+		// 5.1 Prediction-based filtering
+		pred := state.Prediction
+		if pred.SecondsToCritical > 0 && pred.SecondsToCritical < 300 {
+			continue
+		}
+
 		hasModel := false
 		for _, m := range metrics.Ollama.RunningModels {
 			if m.Name == modelName || strings.Contains(m.Name, modelName) {
@@ -546,6 +565,12 @@ func (p *Proxy) findBackendWithModel(modelName string) string {
 		}
 		state.mu.Unlock()
 		
+		// 5.1 Prediction-based filtering
+		pred := state.Prediction
+		if pred.SecondsToCritical > 0 && pred.SecondsToCritical < 300 {
+			continue
+		}
+		
 		// Проверяем наличие модели через метрики
 		p.metricsMgr.mu.RLock()
 		metrics, hasMetrics := p.metricsMgr.metrics[id]
@@ -604,6 +629,12 @@ func (p *Proxy) selectByResources() string {
 			continue
 		}
 		state.mu.Unlock()
+
+		// 5.1 Prediction-based filtering: skip backends predicted critical within 5 min
+		pred := state.Prediction
+		if pred.SecondsToCritical > 0 && pred.SecondsToCritical < 300 {
+			continue // Backend will be critical within 5 minutes — avoid routing new requests
+		}
 
 		// Вычисление scores
 		score := p.calculateScore(id)
@@ -771,8 +802,22 @@ func (p *Proxy) calculateScore(backendID string) float64 {
 		}
 	}
 
+	// --- 5.2 Prediction-based bonus ---
+	predictionBonus := 0.0
+	pred := state.Prediction
+	if pred.SecondsToCritical < 0 || pred.SecondsToCritical >= 600 {
+		// Backend safe for >10 min — bonus
+		predictionBonus = 3.0
+	} else if pred.SecondsToCritical >= 300 {
+		// Backend safe for >5 min — small bonus
+		predictionBonus = 1.5
+	} else if pred.SecondsToCritical > 0 && pred.SecondsToCritical < 120 {
+		// Backend critical soon — penalty
+		predictionBonus = -5.0
+	}
+
 	// --- Итоговый score ---
-	score := (baseScore - requestPenalty + modelCapacityScore) * float64(state.Backend.Weight) / 100
+	score := (baseScore - requestPenalty + modelCapacityScore + predictionBonus) * float64(state.Backend.Weight) / 100
 
 	// Не меньше 0
 	if score < 0 {
@@ -892,6 +937,34 @@ func estimateModelVRAM(modelName string) uint64 {
 	return sizeGB * 1024 // MB
 }
 
+// recordRequest - записывает таймстемп запроса для расчёта RPS
+func (p *Proxy) recordRequest(backendID string) {
+	p.mu.RLock()
+	state, ok := p.backends[backendID]
+	p.mu.RUnlock()
+	if !ok {
+		return
+	}
+
+	now := time.Now()
+	state.mu.Lock()
+	state.RequestHistory = append(state.RequestHistory, now)
+	// Оставляем только записи за последние 60 секунд
+	cutoff := now.Add(-60 * time.Second)
+	var startIdx int
+	for i, t := range state.RequestHistory {
+		if t.After(cutoff) {
+			startIdx = i
+			break
+		}
+	}
+	if startIdx > 0 {
+		state.RequestHistory = state.RequestHistory[startIdx:]
+	}
+	state.CalculatedRPS = float64(len(state.RequestHistory)) / 60.0
+	state.mu.Unlock()
+}
+
 // proxyRequest - проксирование запроса к бэкенду с поддержкой streaming/SSE
 // Возвращает ошибку, если запрос не удалось выполнить (для retry/failover)
 func (p *Proxy) proxyRequest(w http.ResponseWriter, r *http.Request, backendID string) error {
@@ -900,10 +973,11 @@ func (p *Proxy) proxyRequest(w http.ResponseWriter, r *http.Request, backendID s
 		return fmt.Errorf("backend %s not found", backendID)
 	}
 
-	// Увеличение счетчика активных запросов
+	// Увеличение счетчика активных запросов + запись для RPS
 	state.mu.Lock()
 	state.ActiveReqs++
 	state.mu.Unlock()
+	p.recordRequest(backendID)
 
 	defer func() {
 		state.mu.Lock()
@@ -1229,7 +1303,15 @@ func (p *Proxy) GetClusterState() *types.ClusterState {
 			// Добавляем прогноз из состояния бэкенда
 			metrics.Prediction = backendState.Prediction
 			state.ActiveRequests += agentMetrics.Ollama.ActiveRequests
-			state.RPS += agentMetrics.Ollama.RequestsPerSecond
+			// Используем proxy-calculated RPS (более точный, чем агентский)
+			backendState.mu.Lock()
+			if backendState.CalculatedRPS > 0 {
+				state.RPS += backendState.CalculatedRPS
+				metrics.Ollama.RequestsPerSecond = backendState.CalculatedRPS
+			} else {
+				state.RPS += agentMetrics.Ollama.RequestsPerSecond
+			}
+			backendState.mu.Unlock()
 			state.TotalGPUUsage += agentMetrics.GPU.UsagePercent
 		}
 
@@ -1356,8 +1438,8 @@ func (p *Proxy) queueRequest(w http.ResponseWriter, r *http.Request, model strin
 	}
 }
 
-// getQueueStats - получение статистики очереди
-func (p *Proxy) getQueueStats() QueueStats {
+// GetQueueStats - получение статистики очереди
+func (p *Proxy) GetQueueStats() QueueStats {
 	p.queueMgr.mu.Lock()
 	processed := p.queueMgr.processed
 	p.queueMgr.mu.Unlock()
@@ -1411,6 +1493,9 @@ func (p *Proxy) AddBackend(backend types.Backend) error {
 		LastUsed:   time.Time{},
 	}
 
+	// Запланировать autosave
+	p.scheduleSave()
+
 	return nil
 }
 
@@ -1429,6 +1514,9 @@ func (p *Proxy) RemoveBackend(backendID string) error {
 	p.metricsMgr.mu.Lock()
 	delete(p.metricsMgr.metrics, backendID)
 	p.metricsMgr.mu.Unlock()
+
+	// Запланировать autosave
+	p.scheduleSave()
 
 	return nil
 }
@@ -1452,6 +1540,9 @@ func (p *Proxy) UpdateBackend(backendID string, updated types.Backend) error {
 	updated.Status = currentStatus
 	state.Backend = &updated
 	state.ActiveReqs = currentActiveReqs
+
+	// Запланировать autosave
+	p.scheduleSave()
 
 	return nil
 }
@@ -1523,4 +1614,130 @@ func (p *Proxy) BackendExists(backendID string) bool {
 
 	_, exists := p.backends[backendID]
 	return exists
+}
+
+// SaveState - сохранение текущего состояния backends в state.json
+func (p *Proxy) SaveState() error {
+	p.mu.RLock()
+	backends := make([]types.Backend, 0, len(p.backends))
+	for _, state := range p.backends {
+		backends = append(backends, *state.Backend)
+	}
+	p.mu.RUnlock()
+
+	state := types.StateFile{
+		Version:  types.StateVersion,
+		Updated:  time.Now().UTC(),
+		Backends: backends,
+	}
+
+	data, err := json.MarshalIndent(state, "", "  ")
+	if err != nil {
+		return fmt.Errorf("failed to marshal state: %w", err)
+	}
+
+	// Создаём директорию если нужно
+	dir := filepath.Dir(p.statePath)
+	if dir != "" && dir != "." {
+		if err := os.MkdirAll(dir, 0755); err != nil {
+			return fmt.Errorf("failed to create state directory: %w", err)
+		}
+	}
+
+	if err := os.WriteFile(p.statePath, data, 0644); err != nil {
+		return fmt.Errorf("failed to write state file: %w", err)
+	}
+
+	fmt.Printf("[Proxy] State saved to %s (%d backends)\n", p.statePath, len(backends))
+	return nil
+}
+
+// LoadState - загрузка состояния из state.json (merge поверх текущих backends)
+func (p *Proxy) LoadState() error {
+	data, err := os.ReadFile(p.statePath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return fmt.Errorf("state file does not exist")
+		}
+		return fmt.Errorf("failed to read state file: %w", err)
+	}
+
+	var state types.StateFile
+	if err := json.Unmarshal(data, &state); err != nil {
+		return fmt.Errorf("failed to parse state file: %w", err)
+	}
+
+	if state.Version != types.StateVersion {
+		fmt.Printf("[Proxy] Warning: state version mismatch (got %d, expected %d)\n", state.Version, types.StateVersion)
+	}
+
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	// Merge: state-данные приоритетнее для runtime-полей
+	stateBackendMap := make(map[string]types.Backend)
+	for _, b := range state.Backends {
+		stateBackendMap[b.ID] = b
+	}
+
+	for i := range p.config.Backends {
+		if saved, ok := stateBackendMap[p.config.Backends[i].ID]; ok {
+			// Сохраняем runtime-поля из state
+			p.config.Backends[i].Status = saved.Status
+			p.config.Backends[i].LastHealthCheck = saved.LastHealthCheck
+			p.config.Backends[i].ConsecutiveFailures = saved.ConsecutiveFailures
+			p.config.Backends[i].ActiveRequests = saved.ActiveRequests
+			p.config.Backends[i].HasAgent = saved.HasAgent
+			p.config.Backends[i].LastAgentContact = saved.LastAgentContact
+
+			// Обновляем BackendState
+			if bs, exists := p.backends[p.config.Backends[i].ID]; exists {
+				bs.Backend = &p.config.Backends[i]
+			}
+		}
+	}
+
+	// Добавляем backends из state, которых нет в config
+	for _, saved := range state.Backends {
+		if _, exists := p.backends[saved.ID]; !exists {
+			backend := saved
+			p.backends[backend.ID] = &BackendState{
+				Backend:    &backend,
+				ActiveReqs: 0,
+				LastUsed:   time.Time{},
+			}
+			p.config.Backends = append(p.config.Backends, backend)
+		}
+	}
+
+	fmt.Printf("[Proxy] State loaded from %s (%d backends)\n", p.statePath, len(state.Backends))
+	return nil
+}
+
+// scheduleSave - debounced autosave через 5 секунд
+func (p *Proxy) scheduleSave() {
+	p.saveMu.Lock()
+	defer p.saveMu.Unlock()
+
+	if p.saveTimer != nil {
+		p.saveTimer.Stop()
+	}
+
+	p.saveTimer = time.AfterFunc(5*time.Second, func() {
+		if err := p.SaveState(); err != nil {
+			fmt.Printf("[Proxy] Autosave error: %v\n", err)
+		}
+	})
+}
+
+// FlushState - немедленное сохранение состояния (для graceful shutdown)
+func (p *Proxy) FlushState() error {
+	p.saveMu.Lock()
+	if p.saveTimer != nil {
+		p.saveTimer.Stop()
+		p.saveTimer = nil
+	}
+	p.saveMu.Unlock()
+
+	return p.SaveState()
 }

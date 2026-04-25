@@ -52,6 +52,8 @@ tags:
     description: Model information
   - name: Agents
     description: Agent registration and metrics
+  - name: Queue
+    description: Request queue management and statistics
   - name: Auth
     description: Authentication and token management
   - name: Rate Limit
@@ -99,6 +101,35 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ClusterStatus'
+        '401':
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '500':
+          description: Internal server error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /api/v1/queue/stats:
+    get:
+      tags:
+        - Queue
+      summary: Get queue statistics
+      description: |
+        Получение статистики очереди запросов. Отображает текущую загрузку очереди,
+        максимальный размер, количество обработанных запросов и среднее время ожидания.
+      operationId: getQueueStats
+      responses:
+        '200':
+          description: Queue statistics retrieved successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/QueueStats'
         '401':
           description: Unauthorized
           content:
@@ -1061,6 +1092,28 @@ components:
         token:
           type: string
           description: Токен для отзыва
+
+    QueueStats:
+      type: object
+      description: Статистика очереди запросов
+      properties:
+        current_size:
+          type: integer
+          example: 5
+          description: Текущее количество запросов в очереди
+        max_size:
+          type: integer
+          example: 100
+          description: Максимальный размер очереди
+        processed_total:
+          type: integer
+          format: int64
+          example: 1500
+          description: Всего обработано запросов
+        avg_wait_time_ms:
+          type: integer
+          example: 250
+          description: Среднее время ожидания в очереди (мс)
 
     RateLimitStatus:
       type: object

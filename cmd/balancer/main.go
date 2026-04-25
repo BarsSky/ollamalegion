@@ -241,6 +241,12 @@ func main() {
 		}
 	}
 	
+	// Сохраняем состояние перед завершением
+	fmt.Println("[State]  Saving state...")
+	if err := proxy.FlushState(); err != nil {
+		log.Printf("State flush error: %v", err)
+	}
+
 	healthChecker.Stop()
 	
 	fmt.Println("Ollama Load Balancer stopped.")

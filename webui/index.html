@@ -1,0 +1,439 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>OllamaLegion — Dashboard</title>
+    <link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+    <div class="app">
+        <!-- Sidebar -->
+        <aside class="sidebar">
+            <div class="logo">
+                <img src="logo.svg" alt="OllamaLegion" onerror="this.style.display='none'">
+                <span>OllamaLegion</span>
+            </div>
+            <nav class="nav">
+                <a href="#dashboard" class="nav-item active" data-page="dashboard">
+                    <span class="icon">📊</span> Dashboard
+                </a>
+                <a href="#backends" class="nav-item" data-page="backends">
+                    <span class="icon">🖥️</span> Бэкенды
+                </a>
+                <a href="#models" class="nav-item" data-page="models">
+                    <span class="icon">🧠</span> Модели
+                </a>
+                <a href="#sessions" class="nav-item" data-page="sessions">
+                    <span class="icon">🔗</span> Сессии
+                </a>
+                <a href="#queue" class="nav-item" data-page="queue">
+                    <span class="icon">📥</span> Очередь
+                </a>
+                <a href="#logs" class="nav-item" data-page="logs">
+                    <span class="icon">📋</span> Логи
+                </a>
+                <a href="#settings" class="nav-item" data-page="settings">
+                    <span class="icon">⚙️</span> Настройки
+                </a>
+            </nav>
+            <div class="sidebar-footer">
+                <div class="connection-status" id="connectionStatus">
+                    <span class="status-dot"></span>
+                    <span class="status-text">Подключение...</span>
+                </div>
+                <div class="version">v1.0.0</div>
+            </div>
+        </aside>
+
+        <!-- Main Content -->
+        <main class="main">
+            <!-- Header -->
+            <header class="header">
+                <h1 id="pageTitle">Dashboard</h1>
+                <div class="header-actions">
+                    <button class="btn btn-secondary" id="refreshBtn">🔄 Обновить</button>
+                    <button class="btn btn-primary" id="addBackendBtn">➕ Добавить бэкенд</button>
+                </div>
+            </header>
+
+            <!-- Dashboard Page -->
+            <div class="page active" id="dashboard-page">
+                <!-- Cluster Overview -->
+                <div class="metrics-grid">
+                    <div class="metric-card">
+                        <div class="metric-header">
+                            <span class="metric-icon">🖥️</span>
+                            <span class="metric-label">Всего бэкендов</span>
+                        </div>
+                        <div class="metric-value" id="totalBackends">-</div>
+                        <div class="metric-sub" id="healthyBackends">- здоровых</div>
+                    </div>
+                    <div class="metric-card">
+                        <div class="metric-header">
+                            <span class="metric-icon">🧠</span>
+                            <span class="metric-label">Активных моделей</span>
+                        </div>
+                        <div class="metric-value" id="totalModels">-</div>
+                        <div class="metric-sub" id="loadedModels">- загружено</div>
+                    </div>
+                    <div class="metric-card">
+                        <div class="metric-header">
+                            <span class="metric-icon">🔗</span>
+                            <span class="metric-label">Активных сессий</span>
+                        </div>
+                        <div class="metric-value" id="totalSessions">-</div>
+                        <div class="metric-sub" id="sessionRate">- req/s</div>
+                    </div>
+                    <div class="metric-card">
+                        <div class="metric-header">
+                            <span class="metric-icon">📥</span>
+                            <span class="metric-label">Очередь</span>
+                        </div>
+                        <div class="metric-value" id="queueSize">-</div>
+                        <div class="metric-sub" id="queueProcessed">- обработано</div>
+                    </div>
+                </div>
+
+                <!-- GPU Cluster Chart -->
+                <div class="card">
+                    <div class="card-header">
+                        <h3>🎮 GPU Кластер</h3>
+                        <span class="badge" id="gpuClusterBadge">-</span>
+                    </div>
+                    <div class="gpu-cluster" id="gpuCluster">
+                        <div class="loading">Ожидание данных...</div>
+                    </div>
+                </div>
+
+                <!-- Backends Table -->
+                <div class="card">
+                    <div class="card-header">
+                        <h3>🖥️ Бэкенды</h3>
+                        <div class="card-actions">
+                            <input type="text" class="search-input" placeholder="Поиск..." id="backendSearch">
+                        </div>
+                    </div>
+                    <div class="table-responsive">
+                        <table class="data-table" id="backendsTable">
+                            <thead>
+                                <tr>
+                                    <th>ID</th>
+                                    <th>Статус</th>
+                                    <th>GPU</th>
+                                    <th>VRAM</th>
+                                    <th>CPU</th>
+                                    <th>RAM</th>
+                                    <th>Active Req</th>
+                                    <th>Модели</th>
+                                    <th>RPS</th>
+                                    <th>Предиктор</th>
+                                    <th>Действия</th>
+                                </tr>
+                            </thead>
+                            <tbody id="backendsTableBody">
+                                <tr><td colspan="11" class="loading-cell">Ожидание данных...</td></tr>
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+
+                <!-- Prediction Alerts -->
+                <div class="card" id="predictionAlerts">
+                    <div class="card-header">
+                        <h3>⚠️ Предупреждения предиктора</h3>
+                    </div>
+                    <div class="alerts-list" id="alertsList">
+                        <div class="alert alert-info">Нет активных предупреждений</div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Backends Page -->
+            <div class="page" id="backends-page">
+                <div class="card">
+                    <div class="card-header">
+                        <h3>Управление бэкендами</h3>
+                        <div class="card-actions">
+                            <button class="btn btn-secondary" id="exportBackends">📤 Экспорт</button>
+                            <button class="btn btn-primary" id="addBackendBtn2">➕ Добавить</button>
+                        </div>
+                    </div>
+                    <div class="table-responsive">
+                        <table class="data-table" id="backendsManageTable">
+                            <thead>
+                                <tr>
+                                    <th>ID</th>
+                                    <th>Имя</th>
+                                    <th>Хост</th>
+                                    <th>Порт</th>
+                                    <th>Вес</th>
+                                    <th>Max Concurrent</th>
+                                    <th>Max Models</th>
+                                    <th>Агент</th>
+                                    <th>Статус</th>
+                                    <th>Действия</th>
+                                </tr>
+                            </thead>
+                            <tbody id="backendsManageBody">
+                                <tr><td colspan="10" class="loading-cell">Ожидание данных...</td></tr>
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Models Page -->
+            <div class="page" id="models-page">
+                <div class="metrics-grid">
+                    <div class="metric-card">
+                        <div class="metric-header">
+                            <span class="metric-icon">🧠</span>
+                            <span class="metric-label">Всего моделей</span>
+                        </div>
+                        <div class="metric-value" id="modelsTotal">-</div>
+                    </div>
+                    <div class="metric-card">
+                        <div class="metric-header">
+                            <span class="metric-icon">⚡</span>
+                            <span class="metric-label">Загружено сейчас</span>
+                        </div>
+                        <div class="metric-value" id="modelsLoaded">-</div>
+                    </div>
+                </div>
+                <div class="card">
+                    <div class="card-header">
+                        <h3>🧠 Запущенные модели</h3>
+                    </div>
+                    <div class="models-grid" id="modelsGrid">
+                        <div class="loading">Ожидание данных...</div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Sessions Page -->
+            <div class="page" id="sessions-page">
+                <div class="card">
+                    <div class="card-header">
+                        <h3>🔗 Активные сессии</h3>
+                        <div class="card-actions">
+                            <input type="text" class="search-input" placeholder="Поиск сессии..." id="sessionSearch">
+                        </div>
+                    </div>
+                    <div class="table-responsive">
+                        <table class="data-table" id="sessionsTable">
+                            <thead>
+                                <tr>
+                                    <th>ID</th>
+                                    <th>Бэкенд</th>
+                                    <th>Модель</th>
+                                    <th>Запросов</th>
+                                    <th>Последняя активность</th>
+                                    <th>Статус</th>
+                                </tr>
+                            </thead>
+                            <tbody id="sessionsTableBody">
+                                <tr><td colspan="6" class="loading-cell">Ожидание данных...</td></tr>
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Queue Page -->
+            <div class="page" id="queue-page">
+                <div class="metrics-grid">
+                    <div class="metric-card">
+                        <div class="metric-header">
+                            <span class="metric-icon">📥</span>
+                            <span class="metric-label">Текущий размер</span>
+                        </div>
+                        <div class="metric-value" id="queueCurrentSize">-</div>
+                    </div>
+                    <div class="metric-card">
+                        <div class="metric-header">
+                            <span class="metric-icon">📦</span>
+                            <span class="metric-label">Максимум</span>
+                        </div>
+                        <div class="metric-value" id="queueMaxSize">-</div>
+                    </div>
+                    <div class="metric-card">
+                        <div class="metric-header">
+                            <span class="metric-icon">✅</span>
+                            <span class="metric-label">Обработано</span>
+                        </div>
+                        <div class="metric-value" id="queueProcessed">-</div>
+                    </div>
+                    <div class="metric-card">
+                        <div class="metric-header">
+                            <span class="metric-icon">👷</span>
+                            <span class="metric-label">Воркеры</span>
+                        </div>
+                        <div class="metric-value" id="queueWorkers">-</div>
+                    </div>
+                </div>
+                <div class="card">
+                    <div class="card-header">
+                        <h3>📥 Состояние очереди</h3>
+                    </div>
+                    <div class="queue-visualization" id="queueVisualization">
+                        <div class="queue-bar">
+                            <div class="queue-fill" id="queueFill" style="width: 0%"></div>
+                        </div>
+                        <div class="queue-labels">
+                            <span>0</span>
+                            <span id="queueMidLabel">50%</span>
+                            <span id="queueMaxLabel">100%</span>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Logs Page -->
+            <div class="page" id="logs-page">
+                <div class="card">
+                    <div class="card-header">
+                        <h3>📋 События и логи</h3>
+                        <div class="card-actions">
+                            <button class="btn btn-secondary" id="clearLogs">🗑️ Очистить</button>
+                            <button class="btn btn-secondary" id="exportLogs">📤 Экспорт</button>
+                        </div>
+                    </div>
+                    <div class="logs-container" id="logsContainer">
+                        <div class="log-entry log-info">
+                            <span class="log-time">--:--:--</span>
+                            <span class="log-level">INFO</span>
+                            <span class="log-message">WebUI инициализирован. Ожидание подключения...</span>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Settings Page -->
+            <div class="page" id="settings-page">
+                <div class="card">
+                    <div class="card-header">
+                        <h3>⚙️ Настройки балансировки</h3>
+                    </div>
+                    <div class="settings-form" id="settingsForm">
+                        <div class="form-group">
+                            <label>Алгоритм балансировки</label>
+                            <select id="balancingAlgorithm" class="form-control">
+                                <option value="resource-aware">Resource-Aware (по умолчанию)</option>
+                                <option value="least-connections">Least Connections</option>
+                                <option value="round-robin">Round Robin</option>
+                            </select>
+                        </div>
+                        <div class="form-group">
+                            <label>Model Affinity</label>
+                            <label class="toggle">
+                                <input type="checkbox" id="modelAffinity" checked>
+                                <span class="toggle-slider"></span>
+                            </label>
+                        </div>
+                        <div class="form-group">
+                            <label>Session Stickiness</label>
+                            <label class="toggle">
+                                <input type="checkbox" id="sessionStickiness" checked>
+                                <span class="toggle-slider"></span>
+                            </label>
+                        </div>
+                        <div class="form-group">
+                            <label>Prediction-based Filtering</label>
+                            <label class="toggle">
+                                <input type="checkbox" id="predictionFiltering" checked>
+                                <span class="toggle-slider"></span>
+                            </label>
+                        </div>
+                        <div class="form-group">
+                            <label>GPU Max Usage (%)</label>
+                            <input type="number" id="gpuMaxUsage" class="form-control" value="90" min="50" max="100">
+                        </div>
+                        <div class="form-group">
+                            <label>VRAM Max Usage (%)</label>
+                            <input type="number" id="vramMaxUsage" class="form-control" value="85" min="50" max="100">
+                        </div>
+                        <div class="form-group">
+                            <label>CPU Max Usage (%)</label>
+                            <input type="number" id="cpuMaxUsage" class="form-control" value="80" min="50" max="100">
+                        </div>
+                        <div class="form-group">
+                            <label>RAM Max Usage (%)</label>
+                            <input type="number" id="ramMaxUsage" class="form-control" value="85" min="50" max="100">
+                        </div>
+                        <div class="form-group">
+                            <label>Min Free Disk (MB)</label>
+                            <input type="number" id="minFreeDisk" class="form-control" value="10240" min="0">
+                        </div>
+                        <div class="form-actions">
+                            <button class="btn btn-secondary" id="resetSettings">↩️ Сбросить</button>
+                            <button class="btn btn-primary" id="saveSettings">💾 Сохранить</button>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </main>
+    </div>
+
+    <!-- Modal: Add/Edit Backend -->
+    <div class="modal" id="backendModal">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h3 id="modalTitle">Добавить бэкенд</h3>
+                <button class="modal-close" id="modalClose">&times;</button>
+            </div>
+            <div class="modal-body">
+                <form id="backendForm">
+                    <input type="hidden" id="backendId">
+                    <div class="form-group">
+                        <label>ID *</label>
+                        <input type="text" id="formBackendId" class="form-control" placeholder="gpu-1" required>
+                    </div>
+                    <div class="form-group">
+                        <label>Имя</label>
+                        <input type="text" id="formBackendName" class="form-control" placeholder="GPU Server 1">
+                    </div>
+                    <div class="form-group">
+                        <label>Хост *</label>
+                        <input type="text" id="formBackendHost" class="form-control" placeholder="192.168.1.100" required>
+                    </div>
+                    <div class="form-row">
+                        <div class="form-group">
+                            <label>Порт Ollama</label>
+                            <input type="number" id="formBackendOllamaPort" class="form-control" value="11434">
+                        </div>
+                        <div class="form-group">
+                            <label>Порт агента</label>
+                            <input type="number" id="formBackendAgentPort" class="form-control" value="18032">
+                        </div>
+                    </div>
+                    <div class="form-row">
+                        <div class="form-group">
+                            <label>Вес</label>
+                            <input type="number" id="formBackendWeight" class="form-control" value="1" min="0" step="0.1">
+                        </div>
+                        <div class="form-group">
+                            <label>Max Concurrent</label>
+                            <input type="number" id="formBackendMaxConcurrent" class="form-control" value="10" min="1">
+                        </div>
+                    </div>
+                    <div class="form-group">
+                        <label>Метки (через запятую)</label>
+                        <input type="text" id="formBackendLabels" class="form-control" placeholder="nvidia,rtx4090">
+                    </div>
+                </form>
+            </div>
+            <div class="modal-footer">
+                <button class="btn btn-secondary" id="modalCancel">Отмена</button>
+                <button class="btn btn-danger" id="modalDelete" style="display:none">🗑️ Удалить</button>
+                <button class="btn btn-primary" id="modalSave">💾 Сохранить</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Toast Container -->
+    <div class="toast-container" id="toastContainer"></div>
+
+    <script src="js/app.js"></script>
+</body>
+</html>

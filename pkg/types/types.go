@@ -132,17 +132,25 @@ type OllamaMetrics struct {
 
 // RunningModel - информация о запущенной модели
 type RunningModel struct {
-	Name      string    `json:"name"`      // Название модели
-	Size      uint64    `json:"size"`      // Размер модели (bytes)
-	VRAMUsage uint64    `json:"vramUsage"` // Использование VRAM (MB)
-	RAMUsage  uint64    `json:"ramUsage"`  // Использование RAM на CPU (MB)
-	ExpiresAt time.Time `json:"expiresAt"` // Время истечения
-	Digest    string    `json:"digest"`    // Хеш модели
-	LoadCount int       `json:"loadCount"` // Количество загрузок
-	Family    string    `json:"family"`    // Семейство моделей (llama, mistral, etc.)
-	Format    string    `json:"format"`    // Формат модели (gguf, etc.)
-	ParameterSize string `json:"parameterSize"` // Размер параметров (7B, 13B, etc.)
-	Quantization string `json:"quantization"`  // Квантование (Q4_0, Q8_0, etc.)
+	Name          string    `json:"name"`          // Название модели
+	Size          uint64    `json:"size"`          // Размер модели (bytes)
+	VRAMUsage     uint64    `json:"vramUsage"`     // Использование VRAM (MB)
+	RAMUsage      uint64    `json:"ramUsage"`      // Использование RAM на CPU (MB)
+	ExpiresAt     time.Time `json:"expiresAt"`     // Время истечения
+	Digest        string    `json:"digest"`        // Хеш модели
+	LoadCount     int       `json:"loadCount"`     // Количество загрузок
+	Family        string    `json:"family"`        // Семейство моделей (llama, mistral, etc.)
+	Format        string    `json:"format"`        // Формат модели (gguf, etc.)
+	ParameterSize string    `json:"parameterSize"` // Размер параметров (7B, 13B, etc.)
+	Quantization  string    `json:"quantization"`  // Квантование (Q4_0, Q8_0, etc.)
+}
+
+// ModelDetails - детали модели из /api/tags
+type ModelDetails struct {
+	Family        string `json:"family"`
+	Format        string `json:"format"`
+	ParameterSize string `json:"parameterSize"`
+	Quantization  string `json:"quantization"`
 }
 
 // ResourceLimits - лимиты ресурсов для принятия решений

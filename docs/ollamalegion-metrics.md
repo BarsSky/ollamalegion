@@ -54,18 +54,16 @@
 
 | Поле | Тип | Единица | Источник | Показ в WebUI | Описание |
 |------|-----|---------|----------|---------------|----------|
-| `usagePercent` | float64 | % | gopsutil | ✅ (дублирует) | Общая загрузка CPU |
-| `usagePerCore` | []float64 | % | — | ❌ | Загрузка по ядрам |
-| `coreCount` | int | шт | — | ❌ | Количество ядер |
-| `threadCount` | int | шт | — | ❌ | Количество потоков |
-| `model` | string | — | — | ❌ | Модель CPU |
-| `loadAverage1` | float64 | — | — | ❌ | Load avg 1 мин |
-| `loadAverage5` | float64 | — | ❌ | Load avg 5 мин |
-| `loadAverage15` | float64 | — | ❌ | Load avg 15 мин |
-| `temperature` | int | °C | — | ❌ | Температура CPU |
-| `throttled` | bool | — | — | ❌ | CPU троттлинг |
-
-> **⚠️ Важно:** Поля `usagePerCore`, `coreCount`, `threadCount`, `model`, `loadAverage*`, `temperature`, `throttled` определены в struct, но агент **не собирает** их (возвращает 0/пусто). Только `usagePercent` заполнен. Это **известный gap** — требует расширения collector.
+| `usagePercent` | float64 | % | gopsutil | ✅ | Общая загрузка CPU |
+| `usagePerCore` | []float64 | % | /proc/stat | ✅ | Загрузка по ядрам |
+| `coreCount` | int | шт | /proc/cpuinfo | ✅ | Количество ядер |
+| `threadCount` | int | шт | /proc/cpuinfo | ✅ | Количество потоков |
+| `model` | string | — | /proc/cpuinfo | ✅ | Модель CPU |
+| `loadAverage1` | float64 | — | /proc/loadavg | ✅ | Load avg 1 мин |
+| `loadAverage5` | float64 | — | /proc/loadavg | ✅ | Load avg 5 мин |
+| `loadAverage15` | float64 | — | /proc/loadavg | ✅ | Load avg 15 мин |
+| `temperature` | int | °C | /sys/class/thermal | ✅ | Температура CPU |
+| `throttled` | bool | — | /sys/devices/system/cpu | ✅ | CPU троттлинг |
 
 ---
 
@@ -101,7 +99,7 @@
 | `parameterSize` | string | — | Ollama API | ❌ | Размер параметров (7B, 70B...) |
 | `quantization` | string | — | Ollama API | ❌ | Квантование (Q4_0...) |
 
-> **Примечание:** Поля `family`, `format`, `parameterSize`, `quantization` заполняются балансером через `fetchModelsFromOllama()` fallback, если агент не прислал. Агент (collector.go) **не парсит** `details` из `/api/tags`.
+> **Примечание:** Поля `family`, `format`, `parameterSize`, `quantization` собираются агентом из `/api/ps` → `details` и `/api/tags` fallback. Передаются в `BackendMetrics.Ollama.RunningModels` и доступны в WebUI.
 
 ---
 
@@ -145,51 +143,58 @@
 
 ---
 
+
 ## 6. Сводная таблица: Задумано vs Реализовано
 
 | Компонент | Задумано | Реализовано | Gap |
 |-----------|----------|-------------|-----|
 | **Агент GPU** | Все поля NVML | ✅ Все 9 полей | Нет |
-| **Агент CPU** | Per-core, load avg, temp | ⚠️ Только aggregate % | `coreCount`, `usagePerCore`, `loadAverage*`, `temperature`, `throttled` |
+| **Агент CPU** | Per-core, load avg, temp, throttling | ✅ Все поля | Нет |
 | **Агент Disk** | Total/Used/Free | ✅ | Нет |
 | **Агент Network** | RX/TX | ✅ | Нет |
-| **Агент Ollama** | Все поля моделей | ⚠️ Без `details` | `family`, `format`, `parameterSize`, `quantization` |
+| **Агент Ollama** | Все поля моделей + details | ✅ family, format, parameterSize, quantization | Нет |
 | **Балансер RPS** | Скользящее окно 60с | ✅ | Нет |
 | **Балансер Queue** | Stats API | ✅ | Нет |
 | **Балансер Prediction** | Filtering + Scoring | ✅ | Нет |
-| **WebUI GPU** | Все поля | ⚠️ Без powerLimit, clocks | 3 поля не показаны |
-| **WebUI System** | Все поля | ⚠️ Только CPU%, RAM | Disk, Network, CPU details не показаны |
-| **WebUI Ollama** | Все поля | ⚠️ Без availableModels, details | `family`, `format`, `parameterSize`, `quantization` |
+| **WebUI GPU** | usage, VRAM, temp, power | ✅ 4/7 основных | powerLimit, gpuClock, memClock — скрыты по умолчанию |
+| **WebUI System** | CPU%, RAM, CPU details | ✅ CPU%, RAM, coreCount, loadAvg, model, temperature | Disk, Network — скрыты |
+| **WebUI Ollama** | runningModels, activeRequests, RPS, freeSlots | ✅ 4/4 основных | family, format, parameterSize, quantization — доступны в tooltip |
 
 ---
 
-## 7. Рекомендации по заполнению gaps
+## 7. WebUI Функционал
 
-### 7.1 Агент: CPU детализация
-Добавить в `internal/agent/collector.go`:
-```go
-// Сбор per-core CPU stats через gopsutil/cpu.Percent(percpu=true)
-// Сбор load average через gopsutil/load.Avg()
-// Сбор CPU info через gopsutil/cpu.Info() (model, cores, threads)
-```
+### 7.1 Dashboard
+- **GPU Cluster**: карточки каждого бэкенда с GPU метриками (usage, VRAM, temp, power)
+- **System Overview**: CPU%, RAM, active requests, RPS, free slots
+- **Prediction Alerts**: предупреждения о бэкендах с `secondsToCritical < 300`
+- **Real-time**: WebSocket обновления каждые 5 секунд
 
-### 7.2 Агент: Ollama model details
-Добавить парсинг `details` из `/api/tags` ответа:
-```go
-for _, tag := range tagsResp.Models {
-    model.Family = tag.Details.Family
-    model.Format = tag.Details.Format
-    model.ParameterSize = tag.Details.ParameterSize
-    model.Quantization = tag.Details.Quantization
-}
-```
+### 7.2 Бэкенды
+- Таблица всех бэкендов с фильтрацией и поиском
+- Столбцы: ID, статус, GPU%, VRAM, RAM, CPU%, RPS, active requests, free slots
+- CRUD операции: добавление, редактирование, удаление бэкендов
+- Подключение/отключение агентов
 
-### 7.3 WebUI: Дополнительные поля
-Добавить отображение:
-- GPU: `powerLimit`, `gpuClock`, `memClock`
-- System: `diskUsed`/`diskFree`, `networkRX`/`networkTX`
-- CPU: `coreCount`, `loadAverage1`
-- Models: `family`, `parameterSize`, `quantization`
+### 7.3 Модели
+- Список запущенных моделей по бэкендам
+- Детали: family, format, parameterSize, quantization (в tooltip)
+- Поиск по названию модели
+
+### 7.4 Сессии
+- Таблица активных сессий с backend affinity
+- Поиск по ID сессии
+
+### 7.5 Очередь
+- Текущий размер очереди, processed total
+- Таймауты и конфигурация workers
+
+### 7.6 Логи
+- Журнал событий с фильтрацией по уровню (info, warning, error)
+- Экспорт в файл
+
+### 7.7 Настройки
+- Просмотр текущей конфигурации балансировщика
 
 ---
 

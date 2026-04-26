@@ -13,6 +13,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"ollama-loadbalancer/pkg/types"
@@ -33,12 +34,14 @@ type Proxy struct {
 	statePath       string            // Путь к state файлу
 	saveTimer       *time.Timer       // Таймер для debounced autosave
 	saveMu          sync.Mutex        // Мьютекс для защиты saveTimer
+	totalRequests   int64             // Atomic: всего запросов через прокси
 }
 
 // BackendState - состояние бэкенда
 type BackendState struct {
 	Backend         *types.Backend
 	ActiveReqs      int
+	TotalRequests   int64                 // Atomic: всего запросов на этот бэкенд
 	LastUsed        time.Time
 	MetricsHistory  []types.MetricsSnapshot // История метрик для прогнозирования
 	Prediction      types.Prediction        // Последний прогноз
@@ -1028,6 +1031,10 @@ func (p *Proxy) proxyRequest(w http.ResponseWriter, r *http.Request, backendID s
 	}
 	defer resp.Body.Close()
 
+	// Инкремент total requests (atomic)
+	atomic.AddInt64(&p.totalRequests, 1)
+	atomic.AddInt64(&state.TotalRequests, 1)
+
 	// Копирование заголовков ответа
 	for key, values := range resp.Header {
 		for _, value := range values {
@@ -1277,6 +1284,9 @@ func (p *Proxy) GetClusterState() *types.ClusterState {
 		Backends:        make([]types.BackendMetrics, 0, len(backendsCopy)),
 	}
 
+	// Заполняем общий счётчик запросов
+	state.TotalRequests = atomic.LoadInt64(&p.totalRequests)
+
 	for id, backendState := range backendsCopy {
 		if backendState.Backend.Status == types.StatusHealthy {
 			state.HealthyBackends++
@@ -1311,8 +1321,15 @@ func (p *Proxy) GetClusterState() *types.ClusterState {
 			} else {
 				state.RPS += agentMetrics.Ollama.RequestsPerSecond
 			}
+			// Переносим proxy-calculated total requests в метрики
+			metrics.Ollama.TotalRequests = backendState.TotalRequests
 			backendState.mu.Unlock()
 			state.TotalGPUUsage += agentMetrics.GPU.UsagePercent
+		} else {
+			// Нет метрик от агента — всё равно показываем proxy-calculated total requests
+			backendState.mu.Lock()
+			metrics.Ollama.TotalRequests = backendState.TotalRequests
+			backendState.mu.Unlock()
 		}
 
 		state.Backends = append(state.Backends, metrics)

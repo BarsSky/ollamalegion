@@ -1202,6 +1202,9 @@
             "example": 30.2,
             "description": "Загрузка CPU в процентах"
           },
+          "cpu": {
+            "$ref": "#/components/schemas/CPUMetrics"
+          },
           "memoryTotal": {
             "type": "integer",
             "example": 65536,
@@ -1241,6 +1244,70 @@
             "type": "integer",
             "example": 524288,
             "description": "Отправлено байт"
+          }
+        }
+      },
+      "CPUMetrics": {
+        "type": "object",
+        "description": "Расширенные метрики CPU",
+        "properties": {
+          "usagePercent": {
+            "type": "number",
+            "format": "float",
+            "example": 30.2,
+            "description": "Общая загрузка CPU %"
+          },
+          "usagePerCore": {
+            "type": "array",
+            "items": {
+              "type": "number",
+              "format": "float"
+            },
+            "example": [25.0, 30.0, 35.0, 28.0],
+            "description": "Загрузка по ядрам"
+          },
+          "coreCount": {
+            "type": "integer",
+            "example": 8,
+            "description": "Количество ядер"
+          },
+          "threadCount": {
+            "type": "integer",
+            "example": 16,
+            "description": "Количество потоков"
+          },
+          "model": {
+            "type": "string",
+            "example": "AMD Ryzen 7 5800X",
+            "description": "Модель CPU"
+          },
+          "loadAverage1": {
+            "type": "number",
+            "format": "float",
+            "example": 2.5,
+            "description": "Load average 1 мин"
+          },
+          "loadAverage5": {
+            "type": "number",
+            "format": "float",
+            "example": 2.3,
+            "description": "Load average 5 мин"
+          },
+          "loadAverage15": {
+            "type": "number",
+            "format": "float",
+            "example": 2.1,
+            "description": "Load average 15 мин"
+          },
+          "temperature": {
+            "type": "integer",
+            "example": 65,
+            "description": "Температура CPU (°C)"
+          },
+          "throttled": {
+            "type": "boolean",
+            "example": false,
+            "description": "CPU троттлинг"
           }
         }
       },
@@ -1296,6 +1363,11 @@
             "example": 18000,
             "description": "Использование VRAM (MB)"
           },
+          "ramUsage": {
+            "type": "integer",
+            "example": 0,
+            "description": "Использование RAM на CPU (MB)"
+          },
           "expiresAt": {
             "type": "string",
             "format": "date-time",
@@ -1304,6 +1376,31 @@
           "digest": {
             "type": "string",
             "description": "Хеш модели"
+          },
+          "loadCount": {
+            "type": "integer",
+            "example": 0,
+            "description": "Количество загрузок"
+          },
+          "family": {
+            "type": "string",
+            "example": "llama",
+            "description": "Семейство моделей"
+          },
+          "format": {
+            "type": "string",
+            "example": "gguf",
+            "description": "Формат модели"
+          },
+          "parameterSize": {
+            "type": "string",
+            "example": "70B",
+            "description": "Размер параметров"
+          },
+          "quantization": {
+            "type": "string",
+            "example": "Q4_0",
+            "description": "Квантование"
           }
         }
       },

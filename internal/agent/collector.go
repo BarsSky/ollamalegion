@@ -610,10 +610,18 @@ func (a *Agent) getRunningModels() ([]types.RunningModel, error) {
 	var result struct {
 		Models []struct {
 			Name      string    `json:"name"`
+			Model     string    `json:"model"`
 			Size      uint64    `json:"size"`
 			Digest    string    `json:"digest"`
 			ExpiresAt time.Time `json:"expires_at"`
 			SizeVRAM  uint64    `json:"size_vram"`
+			Details   struct {
+				Format        string   `json:"format"`
+				Family        string   `json:"family"`
+				Families      []string `json:"families"`
+				ParameterSize string   `json:"parameter_size"`
+				Quantization  string   `json:"quantization_level"`
+			} `json:"details"`
 		} `json:"models"`
 	}
 
@@ -621,13 +629,30 @@ func (a *Agent) getRunningModels() ([]types.RunningModel, error) {
 		return nil, err
 	}
 
-		models := make([]types.RunningModel, len(result.Models))
+	// Получаем details из /api/tags для богатых метаданных
+	detailsMap := a.getModelDetailsMap()
+
+	models := make([]types.RunningModel, len(result.Models))
 	for i, m := range result.Models {
 		models[i] = types.RunningModel{
-			Name:      m.Name,
-			Size:      m.Size,
-			Digest:    m.Digest,
-			ExpiresAt: m.ExpiresAt,
+			Name:          m.Name,
+			Size:          m.Size,
+			Digest:        m.Digest,
+			ExpiresAt:     m.ExpiresAt,
+			Family:        m.Details.Family,
+			Format:        m.Details.Format,
+			ParameterSize: m.Details.ParameterSize,
+			Quantization:  m.Details.Quantization,
+		}
+
+		// Fallback на данные из /api/tags если details пустые
+		if models[i].Family == "" {
+			if details, ok := detailsMap[m.Name]; ok {
+				models[i].Family = details.Family
+				models[i].Format = details.Format
+				models[i].ParameterSize = details.ParameterSize
+				models[i].Quantization = details.Quantization
+			}
 		}
 
 		// Используем реальное значение VRAM от Ollama если доступно
@@ -645,6 +670,48 @@ func (a *Agent) getRunningModels() ([]types.RunningModel, error) {
 	}
 
 	return models, nil
+}
+
+// getModelDetailsMap - получение мапы details моделей из /api/tags
+func (a *Agent) getModelDetailsMap() map[string]types.ModelDetails {
+	resp, err := a.httpClient.Get(fmt.Sprintf("%s/api/tags", a.getOllamaBaseURL()))
+	if err != nil {
+		return nil
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return nil
+	}
+
+	var result struct {
+		Models []struct {
+			Name    string `json:"name"`
+			Details struct {
+				Format        string   `json:"format"`
+				Family        string   `json:"family"`
+				Families      []string `json:"families"`
+				ParameterSize string   `json:"parameter_size"`
+				Quantization  string   `json:"quantization_level"`
+			} `json:"details"`
+		} `json:"models"`
+	}
+
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return nil
+	}
+
+	detailsMap := make(map[string]types.ModelDetails)
+	for _, m := range result.Models {
+		detailsMap[m.Name] = types.ModelDetails{
+			Family:        m.Details.Family,
+			Format:        m.Details.Format,
+			ParameterSize: m.Details.ParameterSize,
+			Quantization:  m.Details.Quantization,
+		}
+	}
+
+	return detailsMap
 }
 
 // getAvailableModels - получение списка доступных моделей из /api/tags

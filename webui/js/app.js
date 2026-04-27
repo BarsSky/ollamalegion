@@ -28,8 +28,10 @@ class OllamaLegionUI {
 
     init() {
         this.setupNavigation();
+        this.fetchClusterState();     // начальная загрузка данных до WebSocket
         this.setupWebSocket();
         this.setupEventListeners();
+        this.startPeriodicRefresh();  // запуск periodic fetch (sessions, queue)
         this.addLog('WebUI инициализирован', 'info');
     }
 
@@ -59,6 +61,11 @@ class OllamaLegionUI {
         
         // Обновить данные страницы
         this.refreshPage(page);
+        
+        // Fallback: при переключении на backends/models/sessions подгрузить данные через REST
+        if (page === 'backends' || page === 'models') {
+            this.fetchClusterState();
+        }
     }
 
     getPageTitle(page) {
@@ -155,10 +162,54 @@ class OllamaLegionUI {
     }
 
     handleWebSocketData(data) {
-        if (data.type === 'metrics') {
-            this.data.backends = data.backends || [];
-            this.renderDashboard();
-            this.renderPredictionAlerts();
+        // Новый event-driven формат WebSocket
+        const eventType = data.eventType || 'legacy';
+
+        switch (eventType) {
+            case 'clusterState':
+                // Periodic snapshot с полным состоянием кластера
+                this.data.backends = (data.data && data.data.backends) || [];
+                this.renderDashboard();
+                this.renderPredictionAlerts();
+                break;
+
+            case 'backendAdd':
+                this.addLog(`Бэкенд добавлен: ${data.data && data.data.name || data.backendId}`, 'info');
+                // Запрашиваем полное состояние для обновления UI
+                this.fetchClusterState();
+                break;
+
+            case 'backendRemove':
+                this.addLog(`Бэкенд удалён: ${data.backendId}`, 'info');
+                this.fetchClusterState();
+                break;
+
+            case 'statusChange':
+                this.addLog(
+                    `Статус ${data.backendId}: ${data.data && data.data.oldStatus} → ${data.data && data.data.newStatus}`,
+                    'warning'
+                );
+                this.fetchClusterState();
+                break;
+
+            case 'limitsChange':
+                this.addLog(`Лимиты ${data.backendId} обновлены`, 'info');
+                this.fetchClusterState();
+                break;
+
+            case 'ping':
+                // heartbeat ping — игнорируем
+                break;
+
+            case 'legacy':
+            default:
+                // Fallback для старых сообщений без eventType
+                if (data.backends) {
+                    this.data.backends = data.backends || [];
+                    this.renderDashboard();
+                    this.renderPredictionAlerts();
+                }
+                break;
         }
     }
 
@@ -852,6 +903,20 @@ class OllamaLegionUI {
                 this.fetchQueue();
             }
         }, 5000);
+    }
+
+    async fetchClusterState() {
+        try {
+            const response = await fetch(`${API_BASE}/api/v1/cluster`);
+            if (!response.ok) throw new Error('Failed to fetch cluster state');
+            
+            const state = await response.json();
+            this.data.backends = state.backends || [];
+            this.renderDashboard();
+            this.renderPredictionAlerts();
+        } catch (e) {
+            console.error('Failed to fetch cluster state:', e);
+        }
     }
 
     async fetchQueue() {

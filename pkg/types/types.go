@@ -40,6 +40,10 @@ type Backend struct {
 	ActiveRequests      int           `json:"activeRequests"`
 	HasAgent            bool          `json:"hasAgent"`
 	LastAgentContact    time.Time     `json:"lastAgentContact"`
+
+	// Runtime-лимиты (меняются через API без перезапуска)
+	RuntimeMaxModels             int `json:"runtimeMaxModels"`
+	RuntimeMaxConcurrentRequests int `json:"runtimeMaxConcurrentRequests"`
 }
 
 // BackendMetrics - метрики бэкенда в реальном времени

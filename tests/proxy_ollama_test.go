@@ -633,7 +633,7 @@ func TestProxyOllama_Version(t *testing.T) {
 	err = json.NewDecoder(resp.Body).Decode(&result)
 	require.NoError(t, err)
 
-	assert.Equal(t, "0.3.0", result["version"])
+	assert.Equal(t, "ollamalegion-1.0.0", result["version"])
 	assert.Equal(t, 1, mock.versionCount)
 }
 

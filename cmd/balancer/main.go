@@ -14,6 +14,7 @@ import (
 	"ollama-loadbalancer/internal/api"
 	"ollama-loadbalancer/internal/balancer"
 	"ollama-loadbalancer/internal/config"
+	"ollama-loadbalancer/pkg/logger"
 )
 
 var (
@@ -39,6 +40,10 @@ func main() {
 	}
 	
 	conf := cfg.Get()
+	
+	// Инициализация structured logger
+	logger.Init(conf.Logging.Level)
+	defer logger.Sync()
 	
 	// Применение переопределений из командной строки
 	if *port > 0 {

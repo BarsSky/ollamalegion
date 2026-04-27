@@ -16,6 +16,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"ollama-loadbalancer/pkg/logger"
 	"ollama-loadbalancer/pkg/types"
 )
 
@@ -35,6 +36,11 @@ type Proxy struct {
 	saveTimer       *time.Timer       // Таймер для debounced autosave
 	saveMu          sync.Mutex        // Мьютекс для защиты saveTimer
 	totalRequests   int64             // Atomic: всего запросов через прокси
+	ollamaRouter    *OllamaRouter     // Маршрутизатор Ollama API endpoint'ов
+
+	// EventBus
+	eventSubs     map[string]chan types.Event
+	eventSubsMu   sync.RWMutex
 }
 
 // BackendState - состояние бэкенда
@@ -120,6 +126,7 @@ func NewProxy(config *types.LoadBalancerConfig) *Proxy {
 		metricsMgr: NewMetricsManager(),
 		predictor:  NewPredictor(),
 		statePath:  config.LoadBalancer.StatePath,
+		eventSubs:  make(map[string]chan types.Event),
 		client: &http.Client{
 			Timeout:   time.Duration(config.Balancing.RequestTimeout) * time.Second,
 			Transport: regularTransport,
@@ -146,11 +153,14 @@ func NewProxy(config *types.LoadBalancerConfig) *Proxy {
 
 	// Загрузка сохранённого state (поверх config — runtime-данные приоритетнее)
 	if err := p.LoadState(); err != nil {
-		fmt.Printf("[Proxy] State file not loaded: %v (using config only)\n", err)
+		logger.Get().Infow("state file not loaded, using config only", "error", err)
 	}
 
 	// Запуск фоновой проверки таймаута агентов (30 секунд)
 	go p.StartAgentTimeoutChecker(30 * time.Second)
+
+	// Инициализация OllamaRouter для агрегации и целевой маршрутизации API
+	p.ollamaRouter = NewOllamaRouter(p)
 
 	return p
 }
@@ -203,12 +213,12 @@ func NewQueueManager(proxy *Proxy, maxSize int, numWorkers int, timeout time.Dur
 // worker - обработчик запросов из очереди
 func (qm *QueueManager) worker(id int) {
 	defer qm.wg.Done()
-	fmt.Printf("[QueueManager] Worker %d started\n", id)
-	defer fmt.Printf("[QueueManager] Worker %d stopped\n", id)
+	logger.Get().Infow("queue worker started", "worker_id", id)
 	
 	for {
 		select {
 		case <-qm.ctx.Done():
+			logger.Get().Infow("queue worker stopped", "worker_id", id)
 			return
 		case req := <-qm.queue:
 			qm.processRequest(req, id)
@@ -218,13 +228,16 @@ func (qm *QueueManager) worker(id int) {
 
 // processRequest - обработка одного запроса
 func (qm *QueueManager) processRequest(req *QueuedRequest, workerID int) {
-	fmt.Printf("[QueueManager] Worker %d processing request for model: %s\n", workerID, req.Model)
+	logger.Get().Debugw("processing queued request",
+		"worker_id", workerID,
+		"model", req.Model,
+	)
 	
 	// Попытка найти доступный бэкенд
 	targetBackend := qm.proxy.selectBackend(req.Model)
 
 	if targetBackend == "" {
-		fmt.Printf("[QueueManager] Worker %d no backend available, re-queueing request\n", workerID)
+		logger.Get().Warnw("no backend available, re-queueing request", "worker_id", workerID)
 		// Нет доступных бэкендов - возвращаем запрос в очередь с задержкой
 		time.AfterFunc(100*time.Millisecond, func() {
 			select {
@@ -242,7 +255,10 @@ func (qm *QueueManager) processRequest(req *QueuedRequest, workerID int) {
 
 	// Устанавливаем целевой бэкенд и выполняем запрос
 	req.Target = targetBackend
-	fmt.Printf("[QueueManager] Worker %d proxying request to backend: %s\n", workerID, targetBackend)
+	logger.Get().Debugw("proxying queued request to backend",
+		"worker_id", workerID,
+		"backend", targetBackend,
+	)
 
 	// Проксируем запрос
 	qm.proxy.proxyRequest(req.Writer, req.Request, targetBackend)
@@ -256,8 +272,12 @@ func (qm *QueueManager) processRequest(req *QueuedRequest, workerID int) {
 	// Обновление счетчика обработанных запросов
 	qm.mu.Lock()
 	qm.processed++
+	processed := qm.processed
 	qm.mu.Unlock()
-	fmt.Printf("[QueueManager] Worker %d completed request. Total processed: %d\n", workerID, qm.processed)
+	logger.Get().Debugw("queued request completed",
+		"worker_id", workerID,
+		"processed_total", processed,
+	)
 }
 
 // Stop - остановка всех workers
@@ -278,7 +298,14 @@ func (qm *QueueManager) Stop() {
 
 // ServeHTTP - обработка HTTP запросов
 func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	// Получение модели из запроса
+	// === Диспетчеризация Ollama API ===
+	// Read-only и management endpoint'ы обрабатываются через OllamaRouter
+	// с агрегацией или целевой маршрутизацией.
+	if p.ollamaRouter != nil && p.ollamaRouter.Route(w, r) {
+		return
+	}
+
+	// === Чат / Генерация — требуют session stickiness ===
 	model := p.extractModel(r)
 
 	// Проверка сессии
@@ -297,8 +324,11 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			
 			if !exists || backendState.Backend.Status != types.StatusHealthy {
 				// Бэкенд из сессии недоступен, выбираем новый
-				fmt.Printf("[%s] Session backend %s unavailable (exists: %v, status: %s), selecting new backend\n",
-					time.Now().Format(time.RFC3339), targetBackend, exists, backendState.Backend.Status)
+			logger.Get().Warnw("session backend unavailable, selecting new backend",
+				"session_backend", targetBackend,
+				"exists", exists,
+				"status", backendState.Backend.Status,
+			)
 				targetBackend = ""
 			}
 		}
@@ -327,8 +357,10 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	for attempt := 0; attempt < 3; attempt++ {
 		if attempt > 0 {
 			// Retry: выбираем другой бэкенд, исключая уже попробованные
-			fmt.Printf("[%s] Retry attempt %d: selecting new backend (excluding: %v)\n",
-				time.Now().Format(time.RFC3339), attempt, attemptedBackends)
+		logger.Get().Warnw("retry selecting new backend",
+			"attempt", attempt,
+			"excluded", attemptedBackends,
+		)
 			targetBackend = p.selectBackendExcluding(model, attemptedBackends)
 			if targetBackend == "" {
 				break
@@ -345,8 +377,11 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			return // Успешно
 		}
 
-		fmt.Printf("[%s] Backend %s failed on attempt %d: %v\n",
-			time.Now().Format(time.RFC3339), targetBackend, attempt, err)
+		logger.Get().Errorw("backend request failed",
+			"backend", targetBackend,
+			"attempt", attempt,
+			"error", err,
+		)
 
 		// Помечаем бэкенд как недоступный и планируем проверку восстановления
 		p.UpdateBackendStatus(targetBackend, types.StatusUnhealthy)
@@ -415,7 +450,7 @@ func (p *Proxy) selectBackend(model string) string {
 	// Resource-Aware выбор (с проверкой, что есть доступные бэкенды)
 	backend := p.selectByResources()
 	if backend == "" {
-		fmt.Printf("[%s] ⚠️  Нет доступных бэкендов - балансировщик ждёт восстановления...\n", time.Now().Format(time.RFC3339))
+		logger.Get().Warnw("no available backends - balancer waiting for recovery")
 	}
 	return backend
 }
@@ -436,7 +471,7 @@ func (p *Proxy) selectBackendExcluding(model string, exclude map[string]bool) st
 	// Resource-Aware выбор с исключением
 	backend := p.selectByResourcesExcluding(exclude)
 	if backend == "" {
-		fmt.Printf("[%s] ⚠️  Нет доступных бэкендов (с исключениями)...\n", time.Now().Format(time.RFC3339))
+		logger.Get().Warnw("no available backends with exclusions")
 	}
 	return backend
 }
@@ -1134,14 +1169,18 @@ func (p *Proxy) handleStreamingResponse(w http.ResponseWriter, r *http.Request, 
 	flusher, ok := w.(http.Flusher)
 	if !ok {
 		// Если Flusher недоступен, просто копируем тело
-		fmt.Printf("[%s] Streaming detected but Flusher not supported, falling back to regular copy\n", time.Now().Format(time.RFC3339))
+		logger.Get().Warnw("streaming detected but Flusher not supported, falling back to regular copy",
+			"backend", backendID,
+		)
 		io.Copy(w, resp.Body)
 		return
 	}
 
 	// Логирование начала streaming сессии
-	fmt.Printf("[%s] Starting streaming session for backend %s (Content-Type: %s)\n",
-		time.Now().Format(time.RFC3339), backendID, resp.Header.Get("Content-Type"))
+	logger.Get().Infow("starting streaming session",
+		"backend", backendID,
+		"content_type", resp.Header.Get("Content-Type"),
+	)
 
 	// Буфер для чтения данных
 	buf := make([]byte, 32*1024)
@@ -1153,7 +1192,10 @@ func (p *Proxy) handleStreamingResponse(w http.ResponseWriter, r *http.Request, 
 		if n > 0 {
 			_, writeErr := w.Write(buf[:n])
 			if writeErr != nil {
-				fmt.Printf("[%s] Error writing to client: %v\n", time.Now().Format(time.RFC3339), writeErr)
+				logger.Get().Errorw("error writing to client",
+					"backend", backendID,
+					"error", writeErr,
+				)
 				break
 			}
 			bytesStreamed += n
@@ -1165,25 +1207,35 @@ func (p *Proxy) handleStreamingResponse(w http.ResponseWriter, r *http.Request, 
 				break
 			}
 			// Логирование других ошибок
-			fmt.Printf("[%s] Error reading from backend: %v\n", time.Now().Format(time.RFC3339), err)
+			logger.Get().Errorw("error reading from backend",
+				"backend", backendID,
+				"error", err,
+			)
 			break
 		}
 	}
 
 	// Логирование завершения streaming сессии
-	fmt.Printf("[%s] Streaming session completed for backend %s (total bytes: %d)\n",
-		time.Now().Format(time.RFC3339), backendID, bytesStreamed)
+	logger.Get().Infow("streaming session completed",
+		"backend", backendID,
+		"bytes_streamed", bytesStreamed,
+	)
 }
 
 // logStreamingError - логирование ошибок streaming
 func (p *Proxy) logStreamingError(backendID string, err error) {
-	fmt.Printf("[%s] Streaming error for backend %s: %v\n", time.Now().Format(time.RFC3339), backendID, err)
+	logger.Get().Errorw("streaming error",
+		"backend", backendID,
+		"error", err,
+	)
 }
 
 // logError - логирование ошибки
 func (p *Proxy) logError(backendID string, err error) {
-	// TODO: реализовать логирование
-	fmt.Printf("[%s] Error: %v\n", time.Now().Format(time.RFC3339), err)
+	logger.Get().Errorw("proxy error",
+		"backend", backendID,
+		"error", err,
+	)
 }
 
 // UpdateMetrics - обновление метрик бэкенда с прогнозированием
@@ -1226,7 +1278,19 @@ func (p *Proxy) UpdateBackendStatus(backendID string, status types.BackendStatus
 	defer p.mu.Unlock()
 
 	if state, ok := p.backends[backendID]; ok {
-		state.Backend.Status = status
+		oldStatus := state.Backend.Status
+		if oldStatus != status {
+			state.Backend.Status = status
+			p.PublishEvent(types.Event{
+				Type:      types.EventStatusChange,
+				Timestamp: time.Now().UTC(),
+				BackendID: backendID,
+				Data: map[string]interface{}{
+					"oldStatus": string(oldStatus),
+					"newStatus": string(status),
+				},
+			})
+		}
 	}
 }
 
@@ -1252,8 +1316,10 @@ func (p *Proxy) StartAgentTimeoutChecker(timeout time.Duration) {
 			for _, state := range p.backends {
 				if state.Backend.HasAgent && time.Since(state.Backend.LastAgentContact) > timeout {
 					state.Backend.HasAgent = false
-					fmt.Printf("[%s] Agent timeout for backend %s - no metrics received for %v\n",
-						time.Now().Format(time.RFC3339), state.Backend.ID, timeout)
+					logger.Get().Warnw("agent timeout",
+						"backend", state.Backend.ID,
+						"timeout", timeout,
+					)
 				}
 			}
 			p.mu.Unlock()
@@ -1510,6 +1576,17 @@ func (p *Proxy) AddBackend(backend types.Backend) error {
 		LastUsed:   time.Time{},
 	}
 
+	// Публикуем событие добавления бэкенда
+	p.PublishEvent(types.Event{
+		Type:      types.EventBackendAdd,
+		Timestamp: time.Now().UTC(),
+		BackendID: backend.ID,
+		Data: map[string]interface{}{
+			"name": backend.Name,
+			"host": backend.Host,
+		},
+	})
+
 	// Запланировать autosave
 	p.scheduleSave()
 
@@ -1531,6 +1608,14 @@ func (p *Proxy) RemoveBackend(backendID string) error {
 	p.metricsMgr.mu.Lock()
 	delete(p.metricsMgr.metrics, backendID)
 	p.metricsMgr.mu.Unlock()
+
+	// Публикуем событие удаления бэкенда
+	p.PublishEvent(types.Event{
+		Type:      types.EventBackendRemove,
+		Timestamp: time.Now().UTC(),
+		BackendID: backendID,
+		Data:      map[string]interface{}{},
+	})
 
 	// Запланировать autosave
 	p.scheduleSave()
@@ -1567,8 +1652,7 @@ func (p *Proxy) UpdateBackend(backendID string, updated types.Backend) error {
 // scheduleRecoveryCheck - планирование проверки восстановления бэкенда
 // Заглушка: recovery check выполняется health checker автоматически через периодические проверки
 func (p *Proxy) scheduleRecoveryCheck(backendID string) {
-	fmt.Printf("[%s] Scheduled recovery check for backend %s\n",
-		time.Now().Format(time.RFC3339), backendID)
+	logger.Get().Infow("scheduled recovery check", "backend", backendID)
 	// Реальная реализация может быть добавлена через HealthChecker
 }
 
@@ -1665,7 +1749,7 @@ func (p *Proxy) SaveState() error {
 		return fmt.Errorf("failed to write state file: %w", err)
 	}
 
-	fmt.Printf("[Proxy] State saved to %s (%d backends)\n", p.statePath, len(backends))
+	logger.Get().Infow("state saved", "path", p.statePath, "backends", len(backends))
 	return nil
 }
 
@@ -1685,7 +1769,10 @@ func (p *Proxy) LoadState() error {
 	}
 
 	if state.Version != types.StateVersion {
-		fmt.Printf("[Proxy] Warning: state version mismatch (got %d, expected %d)\n", state.Version, types.StateVersion)
+		logger.Get().Warnw("state version mismatch",
+			"got", state.Version,
+			"expected", types.StateVersion,
+		)
 	}
 
 	p.mu.Lock()
@@ -1727,7 +1814,7 @@ func (p *Proxy) LoadState() error {
 		}
 	}
 
-	fmt.Printf("[Proxy] State loaded from %s (%d backends)\n", p.statePath, len(state.Backends))
+	logger.Get().Infow("state loaded", "path", p.statePath, "backends", len(state.Backends))
 	return nil
 }
 
@@ -1742,7 +1829,7 @@ func (p *Proxy) scheduleSave() {
 
 	p.saveTimer = time.AfterFunc(5*time.Second, func() {
 		if err := p.SaveState(); err != nil {
-			fmt.Printf("[Proxy] Autosave error: %v\n", err)
+			logger.Get().Errorw("autosave error", "error", err)
 		}
 	})
 }
@@ -1757,4 +1844,74 @@ func (p *Proxy) FlushState() error {
 	p.saveMu.Unlock()
 
 	return p.SaveState()
+}
+
+// SubscribeEvents — подписка на события, возвращает канал и ID подписки
+func (p *Proxy) SubscribeEvents() (string, <-chan types.Event) {
+	p.eventSubsMu.Lock()
+	defer p.eventSubsMu.Unlock()
+
+	id := fmt.Sprintf("sub-%d", time.Now().UnixNano())
+	ch := make(chan types.Event, 64)
+	p.eventSubs[id] = ch
+	return id, ch
+}
+
+// UnsubscribeEvents — отписка от событий
+func (p *Proxy) UnsubscribeEvents(id string) {
+	p.eventSubsMu.Lock()
+	defer p.eventSubsMu.Unlock()
+
+	if ch, ok := p.eventSubs[id]; ok {
+		close(ch)
+		delete(p.eventSubs, id)
+	}
+}
+
+// PublishEvent — публикация события всем подписчикам (неблокирующая)
+func (p *Proxy) PublishEvent(ev types.Event) {
+	p.eventSubsMu.RLock()
+	subs := make([]chan types.Event, 0, len(p.eventSubs))
+	for _, ch := range p.eventSubs {
+		subs = append(subs, ch)
+	}
+	p.eventSubsMu.RUnlock()
+
+	for _, ch := range subs {
+		select {
+		case ch <- ev:
+		default:
+			// канал переполнен — пропускаем
+		}
+	}
+}
+
+// UpdateBackendLimits — обновление runtime-лимитов бэкенда
+func (p *Proxy) UpdateBackendLimits(backendID string, maxModels, maxConcurrentRequests int) error {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	state, exists := p.backends[backendID]
+	if !exists {
+		return fmt.Errorf("backend with ID %s not found", backendID)
+	}
+
+	state.Backend.RuntimeMaxModels = maxModels
+	state.Backend.RuntimeMaxConcurrentRequests = maxConcurrentRequests
+
+	// Публикуем событие изменения лимитов
+	p.PublishEvent(types.Event{
+		Type:      types.EventLimitsChange,
+		Timestamp: time.Now().UTC(),
+		BackendID: backendID,
+		Data: map[string]interface{}{
+			"maxModels":             maxModels,
+			"maxConcurrentRequests": maxConcurrentRequests,
+		},
+	})
+
+	// Запланировать autosave
+	p.scheduleSave()
+
+	return nil
 }

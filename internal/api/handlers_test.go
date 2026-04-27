@@ -560,7 +560,8 @@ func TestModelsHandler(t *testing.T) {
 	err = json.NewDecoder(resp.Body).Decode(&response)
 	assert.NoError(t, err)
 
-	assert.Contains(t, response, "models")
+	assert.Contains(t, response, "backends")
+	assert.Contains(t, response, "total")
 }
 
 func TestModelsHandler_MethodNotAllowed(t *testing.T) {
@@ -1029,6 +1030,25 @@ func TestAgentHeartbeatHandler(t *testing.T) {
 	err = json.NewDecoder(resp.Body).Decode(&response)
 	assert.NoError(t, err)
 	assert.Equal(t, "ok", response["status"])
+
+	// Расширенный heartbeat: serverTime, acknowledged, config
+	assert.Contains(t, response, "serverTime")
+	assert.Contains(t, response, "acknowledged")
+	assert.Contains(t, response, "config")
+
+	// Проверяем, что serverTime и acknowledged валидные RFC3339
+	for _, field := range []string{"serverTime", "acknowledged"} {
+		ts, ok := response[field].(string)
+		assert.True(t, ok, "%s должен быть строкой", field)
+		_, err = time.Parse(time.RFC3339Nano, ts)
+		assert.NoError(t, err, "%s должен быть валидным временем", field)
+	}
+
+	// config содержит runtime-лимиты
+	config, ok := response["config"].(map[string]interface{})
+	assert.True(t, ok, "config должен быть объектом")
+	assert.Contains(t, config, "maxModels")
+	assert.Contains(t, config, "maxConcurrentRequests")
 }
 
 func TestAgentHeartbeatHandler_MissingAgentID(t *testing.T) {

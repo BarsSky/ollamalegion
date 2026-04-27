@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"ollama-loadbalancer/internal/balancer"
+	"ollama-loadbalancer/pkg/logger"
 	"ollama-loadbalancer/pkg/types"
 
 	"github.com/gorilla/websocket"
@@ -187,9 +188,9 @@ func (s *Server) backendsHandler(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// backendHandler - управление конкретным бэкендом
+// backendHandler - управление конкретным бэкендом (включая подпути /limits)
 func (s *Server) backendHandler(w http.ResponseWriter, r *http.Request) {
-	// Извлечение ID из пути
+	// Извлечение ID и подпути
 	parts := strings.Split(strings.TrimPrefix(r.URL.Path, "/api/v1/backends/"), "/")
 	if len(parts) == 0 || parts[0] == "" {
 		http.Error(w, "Backend ID required", http.StatusBadRequest)
@@ -197,6 +198,16 @@ func (s *Server) backendHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	backendID := parts[0]
+
+	// Подпуть /limits
+	if len(parts) > 1 && parts[1] == "limits" {
+		if r.Method == http.MethodPut {
+			s.updateBackendLimits(w, r, backendID)
+			return
+		}
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
 
 	switch r.Method {
 	case http.MethodGet:
@@ -489,7 +500,10 @@ func (s *Server) addBackend(w http.ResponseWriter, r *http.Request) {
 			} else {
 				// Бэкенд недоступен - оставляем статус unhealthy
 				if err != nil {
-					fmt.Printf("[HealthCheck] Backend %s is unreachable: %v\n", req.ID, err)
+					logger.Get().Errorw("backend health check unreachable",
+						"backend", req.ID,
+						"error", err,
+					)
 				}
 				s.proxy.UpdateBackendStatus(req.ID, types.StatusUnhealthy)
 			}
@@ -682,7 +696,7 @@ func (s *Server) sessionHandler(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// modelsHandler - получение запущенных моделей
+// modelsHandler - получение запущенных моделей с полными details
 func (s *Server) modelsHandler(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
@@ -691,15 +705,33 @@ func (s *Server) modelsHandler(w http.ResponseWriter, r *http.Request) {
 
 	state := s.proxy.GetClusterState()
 
-	models := make(map[string][]string)
+	type BackendModels struct {
+		BackendID     string              `json:"backendId"`
+		BackendName   string              `json:"backendName"`
+		BackendStatus types.BackendStatus `json:"backendStatus"`
+		HasAgent      bool                `json:"hasAgent"`
+		Models        []types.RunningModel `json:"models"`
+	}
+
+	result := make([]BackendModels, 0, len(state.Backends))
 	for _, metrics := range state.Backends {
-		for _, model := range metrics.Ollama.RunningModels {
-			models[metrics.ID] = append(models[metrics.ID], model.Name)
+		backend := s.proxy.GetBackend(metrics.ID)
+		name := ""
+		if backend != nil {
+			name = backend.Name
 		}
+		result = append(result, BackendModels{
+			BackendID:     metrics.ID,
+			BackendName:   name,
+			BackendStatus: metrics.Status,
+			HasAgent:      metrics.HasAgent,
+			Models:        metrics.Ollama.RunningModels,
+		})
 	}
 
 	s.writeJSON(w, http.StatusOK, map[string]interface{}{
-		"models": models,
+		"backends": result,
+		"total":    len(result),
 	})
 }
 
@@ -850,7 +882,10 @@ func (s *Server) agentRegisterHandler(w http.ResponseWriter, r *http.Request) {
 			} else {
 				// Бэкенд недоступен - оставляем статус unhealthy
 				if err != nil {
-					fmt.Printf("[HealthCheck] Agent %s is unreachable: %v\n", req.AgentID, err)
+					logger.Get().Errorw("agent health check unreachable",
+						"agent", req.AgentID,
+						"error", err,
+					)
 				}
 				s.proxy.UpdateBackendStatus(req.AgentID, types.StatusUnhealthy)
 			}
@@ -906,7 +941,7 @@ func (s *Server) agentMetricsHandler(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// agentHeartbeatHandler - получение heartbeat от агента
+// agentHeartbeatHandler - получение heartbeat от агента (расширенный)
 func (s *Server) agentHeartbeatHandler(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
@@ -925,8 +960,28 @@ func (s *Server) agentHeartbeatHandler(w http.ResponseWriter, r *http.Request) {
 	// Обновляем флаг активного агента
 	s.proxy.UpdateBackendAgentStatus(agentID, true)
 
+	now := time.Now().UTC()
+
+	// Получаем runtime-конфигурацию бэкенда
+	backend := s.proxy.GetBackend(agentID)
+	config := map[string]interface{}{
+		"maxModels":             -1,
+		"maxConcurrentRequests": -1,
+	}
+	if backend != nil {
+		if backend.RuntimeMaxModels != 0 {
+			config["maxModels"] = backend.RuntimeMaxModels
+		}
+		if backend.RuntimeMaxConcurrentRequests != 0 {
+			config["maxConcurrentRequests"] = backend.RuntimeMaxConcurrentRequests
+		}
+	}
+
 	s.writeJSON(w, http.StatusOK, map[string]interface{}{
-		"status": "ok",
+		"status":       "ok",
+		"serverTime":   now,
+		"acknowledged": now,
+		"config":       config,
 	})
 }
 
@@ -1061,31 +1116,25 @@ func (s *Server) predictionHandler(w http.ResponseWriter, r *http.Request) {
 	http.Error(w, "Backend not found", http.StatusNotFound)
 }
 
-// wsMetricsHandler - WebSocket для real-time метрик
+// wsMetricsHandler - WebSocket для real-time метрик (event-driven + гибридный ping)
 func (s *Server) wsMetricsHandler(w http.ResponseWriter, r *http.Request) {
 	// Проверяем токен ДО WebSocket upgrade, но только если auth включена
 	if s.authenticator != nil && s.authenticator.IsEnabled() {
-		// Получаем токен из query параметра (браузер не поддерживает custom headers в WebSocket)
 		token := r.URL.Query().Get("token")
-		
-		// Проверяем на пустой токен
 		if token == "" {
 			http.Error(w, "Unauthorized: token is required", http.StatusUnauthorized)
 			return
 		}
-		
-		// Проверяем валидность токена
 		valid, _ := s.authenticator.Authenticate(r)
 		if !valid {
 			http.Error(w, "Unauthorized: invalid token", http.StatusUnauthorized)
 			return
 		}
 	}
-	
-	// Теперь делаем WebSocket upgrade
+
 	conn, err := upgrader.Upgrade(w, r, nil)
 	if err != nil {
-		fmt.Printf("WebSocket upgrade error: %v\n", err)
+		logger.Get().Errorw("websocket upgrade error", "error", err)
 		return
 	}
 	defer conn.Close()
@@ -1097,14 +1146,18 @@ func (s *Server) wsMetricsHandler(w http.ResponseWriter, r *http.Request) {
 	done := make(chan struct{})
 	defer close(done)
 
-	// Подписка на обновления метрик
+	// Подписка на EventBus (event-driven)
+	eventSubID, eventChan := s.proxy.SubscribeEvents()
+	defer s.proxy.UnsubscribeEvents(eventSubID)
+
+	// Подписка на periodic snapshot (fallback / heartbeat)
 	metricsChan := s.metricsBroker.Subscribe(clientID, done)
 	defer s.metricsBroker.Unsubscribe(clientID)
 
-	// Канал для ошибок
+	// Канал для ошибок чтения
 	errChan := make(chan error, 1)
 
-	// Goroutine для чтения сообщений от клиента (ping/pong)
+	// Goroutine для чтения сообщений от клиента (ping/pong/close)
 	go func() {
 		for {
 			_, _, err := conn.ReadMessage()
@@ -1115,38 +1168,129 @@ func (s *Server) wsMetricsHandler(w http.ResponseWriter, r *http.Request) {
 		}
 	}()
 
+	// Ping ticker (каждые 30 секунд)
+	pingTicker := time.NewTicker(30 * time.Second)
+	defer pingTicker.Stop()
+
 	// Отправка начального состояния кластера
 	initialState := s.metricsBroker.GetClusterState(s.proxy)
-	if err := conn.WriteJSON(initialState); err != nil {
-		fmt.Printf("Failed to send initial state: %v\n", err)
+	if err := conn.WriteJSON(map[string]interface{}{
+		"eventType": "clusterState",
+		"timestamp": time.Now().UTC(),
+		"data":      initialState,
+	}); err != nil {
+		logger.Get().Errorw("failed to send initial websocket state", "error", err)
 		return
 	}
 
-	// Основной цикл отправки метрик
+	// Основной цикл: event-driven + periodic snapshot + ping
 	for {
 		select {
-		case data, ok := <-metricsChan:
+		case ev, ok := <-eventChan:
 			if !ok {
-				// Канал закрыт, клиент отписан
+				return
+			}
+			// Отправляем событие клиенту с eventType wrapper
+			wrapper := map[string]interface{}{
+				"eventType": string(ev.Type),
+				"timestamp": ev.Timestamp,
+				"backendId": ev.BackendID,
+				"data":      ev.Data,
+			}
+			if err := conn.WriteJSON(wrapper); err != nil {
+				logger.Get().Errorw("failed to send websocket event", "error", err)
 				return
 			}
 
-			// Отправка метрик через WebSocket
-			if err := conn.WriteMessage(websocket.TextMessage, data); err != nil {
-				fmt.Printf("Failed to send metrics: %v\n", err)
+		case data, ok := <-metricsChan:
+			if !ok {
+				return
+			}
+			// Periodic snapshot — отправляем как clusterState
+			// data приходит из metrics_broker как []byte (json.Marshal),
+			// поэтому нужно сначала unmarshal в структуру,
+			// иначе data будет сериализована как base64-строка в map[string]interface{}.
+			var clusterState types.ClusterState
+			if err := json.Unmarshal(data, &clusterState); err != nil {
+				logger.Get().Errorw("failed to unmarshal cluster state", "error", err)
+				continue
+			}
+			wrapper := map[string]interface{}{
+				"eventType": "clusterState",
+				"timestamp": time.Now().UTC(),
+				"data":      clusterState,
+			}
+			if err := conn.WriteJSON(wrapper); err != nil {
+				logger.Get().Errorw("failed to send websocket snapshot", "error", err)
+				return
+			}
+
+		case <-pingTicker.C:
+			// Ping для поддержания соединения
+			if err := conn.WriteJSON(map[string]interface{}{
+				"eventType": "ping",
+				"timestamp": time.Now().UTC(),
+			}); err != nil {
 				return
 			}
 
 		case err := <-errChan:
-			// Ошибка чтения (клиент отключился)
-			fmt.Printf("WebSocket read error: %v\n", err)
+			logger.Get().Warnw("websocket read error", "error", err)
 			return
 
 		case <-done:
-			// Сигнал об отключении
 			return
 		}
 	}
+}
+
+// updateBackendLimits - обновление runtime-лимитов бэкенда
+func (s *Server) updateBackendLimits(w http.ResponseWriter, r *http.Request, backendID string) {
+	var req struct {
+		MaxModels             int `json:"maxModels"`
+		MaxConcurrentRequests int `json:"maxConcurrentRequests"`
+	}
+
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		s.writeJSON(w, http.StatusBadRequest, map[string]interface{}{
+			"success": false,
+			"error":   "Invalid request body",
+		})
+		return
+	}
+
+	// Проверка существования бэкенда
+	if !s.proxy.BackendExists(backendID) {
+		s.writeJSON(w, http.StatusNotFound, map[string]interface{}{
+			"success": false,
+			"error":   fmt.Sprintf("Backend with ID %s not found", backendID),
+		})
+		return
+	}
+
+	// Обновление лимитов
+	if err := s.proxy.UpdateBackendLimits(backendID, req.MaxModels, req.MaxConcurrentRequests); err != nil {
+		s.writeJSON(w, http.StatusInternalServerError, map[string]interface{}{
+			"success": false,
+			"error":   err.Error(),
+		})
+		return
+	}
+
+	backend := s.proxy.GetBackend(backendID)
+	s.writeJSON(w, http.StatusOK, map[string]interface{}{
+		"success": true,
+		"backendId": backendID,
+		"limits": map[string]interface{}{
+			"maxModels":             req.MaxModels,
+			"maxConcurrentRequests": req.MaxConcurrentRequests,
+		},
+		"runtime": map[string]interface{}{
+			"runtimeMaxModels":             backend.RuntimeMaxModels,
+			"runtimeMaxConcurrentRequests": backend.RuntimeMaxConcurrentRequests,
+		},
+		"message": "Backend limits updated successfully",
+	})
 }
 
 // writeJSON - запись JSON ответа

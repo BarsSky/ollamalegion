@@ -28,9 +28,10 @@ RUN apk add --no-cache tzdata ca-certificates
 COPY --from=builder /build/balancer .
 COPY --from=builder /build/config/config.example.json ./config.json
 
-# Создание пользователя без root прав
+# Создание директории для state и пользователя без root прав
 RUN addgroup -g 1000 appgroup && \
     adduser -u 1000 -G appgroup -D -s /bin/sh appuser && \
+    mkdir -p /app/data && \
     chown -R appuser:appgroup /app
 
 USER appuser

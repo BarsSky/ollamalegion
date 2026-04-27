@@ -1,0 +1,64 @@
+# cocoindex-code MCP Server для ollamalegion
+#
+# Семантический поиск по кодовой базе через AST-based индексацию.
+# Образ: cocoindex/cocoindex-code:latest (slim, LiteLLM + Ollama)
+#
+# Запуск контейнера:
+#   docker compose -f deployments/docker-compose.cocoindex.yml up -d
+#
+# Инициализация проекта:
+#   docker exec ollamalegion-cocoindex ccc init /workspace/ollamalegion
+#
+# Индексация кодовой базы:
+#   docker exec ollamalegion-cocoindex ccc index /workspace/ollamalegion
+#
+# Статус индекса:
+#   docker exec ollamalegion-cocoindex ccc status /workspace/ollamalegion
+#
+# Ручной поиск:
+#   docker exec ollamalegion-cocoindex ccc search /workspace/ollamalegion "authentication logic"
+
+services:
+  cocoindex-code:
+    image: ${COCOINDEX_CODE_IMAGE:-cocoindex/cocoindex-code:latest}
+    container_name: ollamalegion-cocoindex
+    restart: unless-stopped
+
+    volumes:
+      # Корень проекта ollamalegion (read-only — код не меняем изнутри)
+      - ..:/workspace/ollamalegion:ro
+      # Volume для данных индекса (LMDB работает быстрее на нативной ФС)
+      - cocoindex-data:/var/cocoindex
+      # Глобальные настройки (эмбеддинг через Ollama)
+      - ../docker/cocoindex/global_settings.yml:/root/.cocoindex_code/global_settings.yml:ro
+
+    environment:
+      # Ollama API через балансировщик ollamalegion на хост-машине (Windows)
+      OLLAMA_API_BASE: ${OLLAMA_API_BASE:-http://host.docker.internal:18080}
+      # Альтернатива: если контейнер в той же Docker-сети что и loadbalancer
+      # OLLAMA_API_BASE: http://loadbalancer:18080
+      # Переменные для Linux (на Windows не используются)
+      PUID: ${PUID:-}
+      PGID: ${PGID:-}
+
+    networks:
+      - ollama-legion-net
+
+    healthcheck:
+      test: ["CMD", "ccc", "daemon", "status"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 15s
+
+    labels:
+      - "ollama-legion.role=cocoindex"
+
+volumes:
+  cocoindex-data:
+    name: ollamalegion-cocoindex-data
+
+networks:
+  ollama-legion-net:
+    external: true
+    name: deployments_ollama-legion-net

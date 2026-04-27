@@ -36,6 +36,8 @@ services:
     volumes:
       # Конфигурация
       - ../config/config.json:/app/config.json:ro
+      # Сохранение состояния между перезапусками контейнера
+      - ollama-legion-state:/app/data:rw
     
     environment:
       # Основные настройки
@@ -193,3 +195,7 @@ networks:
     ipam:
       config:
         - subnet: 172.28.0.0/16
+
+# Docker-managed volume для сохранения state.json между пересборками контейнера
+volumes:
+  ollama-legion-state:

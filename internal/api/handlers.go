@@ -6,6 +6,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"sort"
 	"strings"
 	"time"
 
@@ -106,6 +107,9 @@ func (s *Server) setupRoutes() {
 	s.mux.Handle("/api/v1/backends", AuthMiddleware(RateLimitMiddleware(s.backendsHandler, s.rateLimiter), s.authenticator))
 	s.mux.Handle("/api/v1/backends/", AuthMiddleware(RateLimitMiddleware(s.backendHandler, s.rateLimiter), s.authenticator))
 
+	// Models capacity (global)
+	s.mux.Handle("/api/v1/models/capacity", AuthMiddleware(RateLimitMiddleware(s.modelsCapacityHandler, s.rateLimiter), s.authenticator))
+
 	// Metrics (с аутентификацией и rate limiting)
 	s.mux.Handle("/api/v1/metrics", AuthMiddleware(RateLimitMiddleware(s.metricsHandler, s.rateLimiter), s.authenticator))
 	s.mux.Handle("/api/v1/metrics/", AuthMiddleware(RateLimitMiddleware(s.metricHandler, s.rateLimiter), s.authenticator))
@@ -188,7 +192,7 @@ func (s *Server) backendsHandler(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// backendHandler - управление конкретным бэкендом (включая подпути /limits)
+// backendHandler - управление конкретным бэкендом (включая подпути /limits, /capacity)
 func (s *Server) backendHandler(w http.ResponseWriter, r *http.Request) {
 	// Извлечение ID и подпути
 	parts := strings.Split(strings.TrimPrefix(r.URL.Path, "/api/v1/backends/"), "/")
@@ -203,6 +207,16 @@ func (s *Server) backendHandler(w http.ResponseWriter, r *http.Request) {
 	if len(parts) > 1 && parts[1] == "limits" {
 		if r.Method == http.MethodPut {
 			s.updateBackendLimits(w, r, backendID)
+			return
+		}
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	// Подпуть /capacity
+	if len(parts) > 1 && parts[1] == "capacity" {
+		if r.Method == http.MethodGet {
+			s.backendCapacity(w, r, backendID)
 			return
 		}
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
@@ -325,6 +339,11 @@ func (s *Server) listBackends(w http.ResponseWriter, r *http.Request) {
 
 	// Получение всех бэкендов из прокси
 	allBackends := s.proxy.GetAllBackends()
+
+	// Сортировка по ID для стабильного порядка
+	sort.Slice(allBackends, func(i, j int) bool {
+		return allBackends[i].ID < allBackends[j].ID
+	})
 
 	// Получение метрик из состояния кластера
 	state := s.proxy.GetClusterState()
@@ -1242,6 +1261,88 @@ func (s *Server) wsMetricsHandler(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+}
+
+// backendCapacity - детальная ёмкость конкретного бэкенда
+func (s *Server) backendCapacity(w http.ResponseWriter, r *http.Request, backendID string) {
+	state := s.proxy.GetClusterState()
+	for _, metrics := range state.Backends {
+		if metrics.ID == backendID {
+			s.writeJSON(w, http.StatusOK, map[string]interface{}{
+				"backendId":          backendID,
+				"timestamp":          time.Now().UTC(),
+				"freeVram":           metrics.Ollama.BackendCapacity.FreeVRAM,
+				"guaranteedVram":     metrics.Ollama.BackendCapacity.GuaranteedVRAM,
+				"loadedModelVram":    metrics.Ollama.BackendCapacity.LoadedModelVRAM,
+				"contextOverheadMB":  metrics.Ollama.BackendCapacity.ContextOverheadMB,
+				"availableModels":    metrics.Ollama.BackendCapacity.AvailableModels,
+				"loadableModelCount": metrics.Ollama.BackendCapacity.LoadableModelCount,
+				"mode":               metrics.Ollama.BackendCapacity.Mode,
+				"runtimeFlags":       metrics.Ollama.RuntimeFlags,
+				"modelContexts":      metrics.Ollama.ModelContexts,
+			})
+			return
+		}
+	}
+
+	http.Error(w, "Backend not found", http.StatusNotFound)
+}
+
+// modelsCapacityHandler - глобальная сводка по ёмкости моделей на всех бэкендах
+func (s *Server) modelsCapacityHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	state := s.proxy.GetClusterState()
+
+	type BackendCapacitySummary struct {
+		BackendID          string                   `json:"backendId"`
+		BackendName        string                   `json:"backendName"`
+		Status             types.BackendStatus      `json:"status"`
+		HasAgent           bool                     `json:"hasAgent"`
+		FreeVRAM           uint64                   `json:"freeVram"`
+		GuaranteedVRAM     uint64                   `json:"guaranteedVram"`
+		LoadableModelCount int                      `json:"loadableModelCount"`
+		Mode               types.PlatformMode       `json:"mode"`
+		RuntimeFlags       types.OllamaRuntimeFlags `json:"runtimeFlags"`
+		AvailableModels    []types.AvailableModel   `json:"availableModels"`
+	}
+
+	summaries := make([]BackendCapacitySummary, 0, len(state.Backends))
+	totalLoadable := 0
+
+	for _, metrics := range state.Backends {
+		backend := s.proxy.GetBackend(metrics.ID)
+		name := ""
+		if backend != nil {
+			name = backend.Name
+		}
+
+		summary := BackendCapacitySummary{
+			BackendID:          metrics.ID,
+			BackendName:        name,
+			Status:             metrics.Status,
+			HasAgent:           metrics.HasAgent,
+			FreeVRAM:           metrics.Ollama.BackendCapacity.FreeVRAM,
+			GuaranteedVRAM:     metrics.Ollama.BackendCapacity.GuaranteedVRAM,
+			LoadableModelCount: metrics.Ollama.BackendCapacity.LoadableModelCount,
+			Mode:               metrics.Ollama.BackendCapacity.Mode,
+			RuntimeFlags:       metrics.Ollama.RuntimeFlags,
+			AvailableModels:    metrics.Ollama.BackendCapacity.AvailableModels,
+		}
+
+		summaries = append(summaries, summary)
+		totalLoadable += metrics.Ollama.BackendCapacity.LoadableModelCount
+	}
+
+	s.writeJSON(w, http.StatusOK, map[string]interface{}{
+		"timestamp":        time.Now().UTC(),
+		"totalBackends":    len(state.Backends),
+		"totalLoadable":    totalLoadable,
+		"backends":         summaries,
+	})
 }
 
 // updateBackendLimits - обновление runtime-лимитов бэкенда

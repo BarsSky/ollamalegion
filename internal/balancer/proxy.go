@@ -818,6 +818,18 @@ func (p *Proxy) calculateScore(backendID string) float64 {
 		loaded := len(metrics.Ollama.RunningModels)
 		capacityRatio := float64(metrics.Ollama.MaxModels-loaded) / float64(metrics.Ollama.MaxModels)
 		modelCapacityScore = capacityRatio * 10.0 // max 10 points
+	} else if metrics.Ollama.BackendCapacity.LoadableModelCount > 0 {
+		// Новое: бонус за количество моделей, которые можно загрузить
+		loadableCount := metrics.Ollama.BackendCapacity.LoadableModelCount
+		if loadableCount >= 5 {
+			modelCapacityScore = 10.0
+		} else if loadableCount >= 3 {
+			modelCapacityScore = 7.0
+		} else if loadableCount >= 1 {
+			modelCapacityScore = 4.0
+		} else {
+			modelCapacityScore = -3.0 // штраф если ничего нельзя загрузить
+		}
 	} else {
 		// Fallback: оценка по VRAM если MaxModels неизвестен
 		if metrics.GPU.MemoryTotal > 0 {

@@ -18,22 +18,22 @@ const (
 type BalancingAlgorithm string
 
 const (
-	AlgorithmRoundRobin     BalancingAlgorithm = "roundrobin"
-	AlgorithmLeastConn      BalancingAlgorithm = "leastconn"
-	AlgorithmResourceAware  BalancingAlgorithm = "resource-aware"
-	AlgorithmModelAffinity  BalancingAlgorithm = "model-affinity"
+	AlgorithmRoundRobin    BalancingAlgorithm = "roundrobin"
+	AlgorithmLeastConn     BalancingAlgorithm = "leastconn"
+	AlgorithmResourceAware BalancingAlgorithm = "resource-aware"
+	AlgorithmModelAffinity BalancingAlgorithm = "model-affinity"
 )
 
 // Backend - конфигурация бэкенда
 type Backend struct {
-	ID                  string   `json:"id"`
-	Name                string   `json:"name"`
-	Host                string   `json:"host"`
-	OllamaPort          int      `json:"ollamaPort"`
-	AgentPort           int      `json:"agentPort"`
-	Weight              int      `json:"weight"`
-	MaxConcurrentReqs   int      `json:"maxConcurrentRequests"`
-	Labels              []string `json:"labels"`
+	ID                  string        `json:"id"`
+	Name                string        `json:"name"`
+	Host                string        `json:"host"`
+	OllamaPort          int           `json:"ollamaPort"`
+	AgentPort           int           `json:"agentPort"`
+	Weight              int           `json:"weight"`
+	MaxConcurrentReqs   int           `json:"maxConcurrentRequests"`
+	Labels              []string      `json:"labels"`
 	Status              BackendStatus `json:"status"`
 	LastHealthCheck     time.Time     `json:"lastHealthCheck"`
 	ConsecutiveFailures int           `json:"consecutiveFailures"`
@@ -42,23 +42,23 @@ type Backend struct {
 	LastAgentContact    time.Time     `json:"lastAgentContact"`
 
 	// Runtime-лимиты (меняются через API без перезапуска)
-	RuntimeMaxModels             int `json:"runtimeMaxModels"`
+	RuntimeMaxModels               int `json:"runtimeMaxModels"`
 	RuntimeMaxConcurrentRequests int `json:"runtimeMaxConcurrentRequests"`
 }
 
 // BackendMetrics - метрики бэкенда в реальном времени
 type BackendMetrics struct {
-	ID        string    `json:"id"`
-	Timestamp time.Time `json:"timestamp"`
+	ID        string        `json:"id"`
+	Timestamp time.Time     `json:"timestamp"`
 	Status    BackendStatus `json:"status"`
 	HasAgent  bool          `json:"hasAgent"` // Флаг наличия активного агента
-	
+
 	// GPU метрики
 	GPU GPUMetrics `json:"gpu"`
-	
+
 	// Системные метрики
 	System SystemMetrics `json:"system"`
-	
+
 	// Ollama метрики
 	Ollama OllamaMetrics `json:"ollama"`
 
@@ -77,15 +77,15 @@ const (
 
 // GPUMetrics - метрики GPU
 type GPUMetrics struct {
-	UsagePercent    float64 `json:"usagePercent"`    // Загрузка GPU %
-	MemoryTotal     uint64  `json:"memoryTotal"`     // Всего VRAM (MB)
-	MemoryUsed      uint64  `json:"memoryUsed"`      // Использовано VRAM (MB)
-	MemoryFree      uint64  `json:"memoryFree"`      // Свободно VRAM (MB)
-	Temperature     int     `json:"temperature"`     // Температура (°C)
-	PowerUsage      int     `json:"powerUsage"`      // Потребление (W)
-	PowerLimit      int     `json:"powerLimit"`      // Лимит мощности (W)
-	GPUClock        int     `json:"gpuClock"`        // Частота GPU (MHz)
-	MemClock        int     `json:"memClock"`        // Частота памяти (MHz)
+	UsagePercent float64 `json:"usagePercent"` // Загрузка GPU %
+	MemoryTotal  uint64  `json:"memoryTotal"`  // Всего VRAM (MB)
+	MemoryUsed   uint64  `json:"memoryUsed"`   // Использовано VRAM (MB)
+	MemoryFree   uint64  `json:"memoryFree"`   // Свободно VRAM (MB)
+	Temperature  int     `json:"temperature"`  // Температура (°C)
+	PowerUsage   int     `json:"powerUsage"`   // Потребление (W)
+	PowerLimit   int     `json:"powerLimit"`   // Лимит мощности (W)
+	GPUClock     int     `json:"gpuClock"`     // Частота GPU (MHz)
+	MemClock     int     `json:"memClock"`     // Частота памяти (MHz)
 }
 
 // CPUMetrics - расширенные метрики CPU
@@ -105,33 +105,92 @@ type CPUMetrics struct {
 // SystemMetrics - системные метрики
 type SystemMetrics struct {
 	CPUUsagePercent float64 `json:"cpuUsagePercent"` // Загрузка CPU %
-	
+
 	// Расширенные CPU метрики
 	CPU CPUMetrics `json:"cpu"`
-	
-	MemoryTotal     uint64  `json:"memoryTotal"`     // Всего RAM (MB)
-	MemoryUsed      uint64  `json:"memoryUsed"`      // Использовано RAM (MB)
-	MemoryFree      uint64  `json:"memoryFree"`      // Свободно RAM (MB)
-	
-	DiskTotal       uint64  `json:"diskTotal"`       // Всего диска (MB)
-	DiskUsed        uint64  `json:"diskUsed"`        // Использовано диска (MB)
-	DiskFree        uint64  `json:"diskFree"`        // Свободно диска (MB)
-	
-	NetworkRX       uint64  `json:"networkRX"`       // Получено байт
-	NetworkTX       uint64  `json:"networkTX"`       // Отправлено байт
+
+	MemoryTotal uint64 `json:"memoryTotal"` // Всего RAM (MB)
+	MemoryUsed  uint64 `json:"memoryUsed"`  // Использовано RAM (MB)
+	MemoryFree  uint64 `json:"memoryFree"`  // Свободно RAM (MB)
+
+	DiskTotal uint64 `json:"diskTotal"` // Всего диска (MB)
+	DiskUsed  uint64 `json:"diskUsed"`  // Использовано диска (MB)
+	DiskFree  uint64 `json:"diskFree"`  // Свободно диска (MB)
+
+	NetworkRX uint64 `json:"networkRX"` // Получено байт
+	NetworkTX uint64 `json:"networkTX"` // Отправлено байт
 }
 
 // OllamaMetrics - метрики Ollama
 type OllamaMetrics struct {
-	RunningModels         []RunningModel `json:"runningModels"`         // Запущенные (загруженные в память) модели
-	AvailableModels       []RunningModel `json:"availableModels"`       // Доступные модели (все, что можно загрузить)
-	ActiveRequests        int            `json:"activeRequests"`        // Активные запросы (от балансировщика — точные)
-	TotalRequests         int64          `json:"totalRequests"`         // Всего запросов (от балансировщика)
-	AvgResponseTime       float64        `json:"avgResponseTime"`       // Среднее время ответа (ms)
-	RequestsPerSecond     float64        `json:"requestsPerSecond"`     // RPS (от балансировщика)
-	MaxModels             int            `json:"maxModels"`             // Максимум доступных для загрузки моделей (-1 = авто)
-	MaxConcurrentRequests int            `json:"maxConcurrentRequests"` // Максимум одновременных запросов (-1 = авто)
-	FreeSlots             int            `json:"freeSlots"`             // Свободные слоты для запросов
+	RunningModels         []RunningModel    `json:"runningModels"`         // Запущенные (загруженные в память) модели
+	AvailableModels       []RunningModel    `json:"availableModels"`       // Доступные модели (все, что можно загрузить)
+	ActiveRequests        int               `json:"activeRequests"`        // Активные запросы (от балансировщика — точные)
+	TotalRequests         int64             `json:"totalRequests"`         // Всего запросов (от балансировщика)
+	AvgResponseTime       float64           `json:"avgResponseTime"`       // Среднее время ответа (ms)
+	RequestsPerSecond     float64           `json:"requestsPerSecond"`     // RPS (от балансировщика)
+	MaxModels             int               `json:"maxModels"`             // Максимум доступных для загрузки моделей (-1 = авто)
+	MaxConcurrentRequests int               `json:"maxConcurrentRequests"` // Максимум одновременных запросов (-1 = авто)
+	FreeSlots             int               `json:"freeSlots"`             // Свободные слоты для запросов
+	RuntimeFlags          OllamaRuntimeFlags `json:"runtimeFlags"`          // Флаги запуска Ollama
+	ModelContexts         []ModelContextInfo `json:"modelContexts"`         // Информация о контексте по моделям
+	BackendCapacity       BackendCapacity    `json:"backendCapacity"`       // Оценка ёмкости бэкенда
+}
+
+// OllamaRuntimeFlags - флаги запуска процесса Ollama
+type OllamaRuntimeFlags struct {
+	NumGPULayers   int    `json:"numGpuLayers"`   // Количество слоёв на GPU (-ngl, --num-gpu-layers)
+	ContextLength  int    `json:"contextLength"`  // Размер контекста (-c, --ctx-size)
+	NumParallel    int    `json:"numParallel"`    // Параллельных запросов (-np, --parallel)
+	NumThreads     int    `json:"numThreads"`     // Потоков CPU (-t, --threads)
+	BatchSize      int    `json:"batchSize"`      // Размер батча (-b, --batch-size)
+	GPUSplitMode   string `json:"gpuSplitMode"`   // Режим разделения GPU (--split-mode)
+	MainGPU        int    `json:"mainGpu"`        // Основной GPU (--main-gpu)
+	LowVRAM        bool   `json:"lowVram"`        // Режим low VRAM (--low-vram)
+	F16KV          bool   `json:"f16kv"`          // FP16 для KV cache (--no-kv-offload отключает)
+	KVCacheQuant   string `json:"kvCacheQuant"`   // Квантование KV cache (--cache-type-k)
+	FlashAttention bool   `json:"flashAttention"` // Flash Attention (--flash-attn)
+	Source         string `json:"source"`         // Источник: process-args / env / default
+}
+
+// ModelContextInfo - информация о контексте модели
+type ModelContextInfo struct {
+	Name              string `json:"name"`              // Название модели
+	ContextLength     int    `json:"contextLength"`     // Размер контекста (токенов)
+	ContextSource     string `json:"contextSource"`     // Источник: modelfile / env / runtime / default
+	EffectiveContext  int    `json:"effectiveContext"`  // Фактический контекст с учётом флагов
+	ContextMemoryMB   uint64 `json:"contextMemoryMB"`   // Память контекста (MB)
+	KVCacheMemoryMB   uint64 `json:"kvCacheMemoryMB"`   // Память KV cache (MB)
+	ModelMemoryMB     uint64 `json:"modelMemoryMB"`     // Память самой модели (MB)
+	TotalMemoryMB     uint64 `json:"totalMemoryMB"`     // Общая память модели + контекст (MB)
+	NumLayers         int    `json:"numLayers"`         // Количество слоёв (для расчёта)
+	HiddenSize        int    `json:"hiddenSize"`        // Размер скрытого слоя (для расчёта)
+	PrecisionBits     int    `json:"precisionBits"`     // Точность KV cache (16 или 32)
+}
+
+// AvailableModel - доступная модель с оценкой загружаемости
+type AvailableModel struct {
+	Name           string `json:"name"`           // Название модели
+	Size           uint64 `json:"size"`           // Размер модели (bytes)
+	VRAMUsage      uint64 `json:"vramUsage"`      // Оценка VRAM (MB)
+	CanLoad        bool   `json:"canLoad"`        // Может ли быть загружена
+	LoadReason     string `json:"loadReason"`     // Причина (если не может)
+	ContextLength  int    `json:"contextLength"`  // Контекст модели
+	EstimatedVRAM  uint64 `json:"estimatedVram"`  // Оценка total VRAM с контекстом (MB)
+	Family         string `json:"family"`         // Семейство
+	ParameterSize  string `json:"parameterSize"`  // Размер параметров
+	Quantization   string `json:"quantization"`   // Квантование
+}
+
+// BackendCapacity - оценка ёмкости бэкенда
+type BackendCapacity struct {
+	FreeVRAM           uint64           `json:"freeVram"`           // Свободно VRAM (MB)
+	GuaranteedVRAM     uint64           `json:"guaranteedVram"`     // Гарантированно свободно (90% free) (MB)
+	LoadedModelVRAM    uint64           `json:"loadedModelVram"`    // VRAM загруженных моделей (MB)
+	ContextOverheadMB  uint64           `json:"contextOverheadMB"`  // Память контекстов (MB)
+	AvailableModels    []AvailableModel `json:"availableModels"`    // Доступные модели с оценкой
+	LoadableModelCount int              `json:"loadableModelCount"` // Количество моделей, которые можно загрузить
+	Mode               PlatformMode     `json:"mode"`               // Режим: gpu / cpu
 }
 
 // RunningModel - информация о запущенной модели
@@ -159,10 +218,10 @@ type ModelDetails struct {
 
 // ResourceLimits - лимиты ресурсов для принятия решений
 type ResourceLimits struct {
-	GPU     GPULimits     `json:"gpu"`
-	CPU     CPULimits     `json:"cpu"`
-	Memory  MemoryLimits  `json:"memory"`
-	Disk    DiskLimits    `json:"disk"`
+	GPU    GPULimits    `json:"gpu"`
+	CPU    CPULimits    `json:"cpu"`
+	Memory MemoryLimits `json:"memory"`
+	Disk   DiskLimits   `json:"disk"`
 }
 
 // GPULimits - лимиты GPU
@@ -217,8 +276,8 @@ type LoadBalancerConfig struct {
 
 // APISettings - настройки API
 type APISettings struct {
-	RateLimit       float64 `json:"rateLimit"`       // запросов в секунду
-	RateBurst       float64 `json:"rateBurst"`       // максимальное количество токенов (burst)
+	RateLimit float64 `json:"rateLimit"` // запросов в секунду
+	RateBurst float64 `json:"rateBurst"` // максимальное количество токенов (burst)
 }
 
 // LoadBalancerSettings - настройки балансировщика
@@ -226,8 +285,8 @@ type LoadBalancerSettings struct {
 	Host      string `json:"host"`
 	Port      int    `json:"port"`
 	APIPort   int    `json:"apiPort"`
-	TLSHost   string `json:"tlsHost"` // хост для HTTPS (если отличается от Host)
-	TLSPort   int    `json:"tlsPort"` // порт для HTTPS
+	TLSHost   string `json:"tlsHost"`   // хост для HTTPS (если отличается от Host)
+	TLSPort   int    `json:"tlsPort"`   // порт для HTTPS
 	StatePath string `json:"statePath"` // путь к файлу сохранения состояния (по умолчанию "data/state.json")
 }
 
@@ -254,7 +313,7 @@ type LoggingSettings struct {
 type AgentConfig struct {
 	AgentID               string       `json:"agentId"`
 	BalancerURL           string       `json:"balancerUrl"`
-	OllamaURL             string       `json:"ollamaUrl"`
+	OllamaURL             string       `json:"ollamaURL"`
 	MetricsPort           int          `json:"metricsPort"`
 	CollectInterval       int          `json:"collectInterval"`       // секунды
 	HeartbeatInterval     int          `json:"heartbeatInterval"`     // секунды
@@ -267,11 +326,11 @@ type AgentConfig struct {
 
 // QueuedRequest - запрос в очереди
 type QueuedRequest struct {
-	ID          string        `json:"id"`
-	Model       string        `json:"model"`
-	EnqueuedAt  time.Time     `json:"enqueuedAt"`
-	TargetBackend string      `json:"targetBackend"`
-	Priority    int           `json:"priority"`
+	ID            string    `json:"id"`
+	Model         string    `json:"model"`
+	EnqueuedAt    time.Time `json:"enqueuedAt"`
+	TargetBackend string    `json:"targetBackend"`
+	Priority      int       `json:"priority"`
 }
 
 // Session - активная сессия
@@ -296,11 +355,11 @@ type HealthCheckResult struct {
 // Prediction - прогноз критического состояния бэкенда
 type Prediction struct {
 	SecondsToCritical float64 `json:"secondsToCritical"` // Секунд до критического состояния (-1 = нет данных, +Inf = не определено)
-	CriticalReason    string  `json:"criticalReason"`      // Причина: "gpu_usage", "vram", "ram", "disk", "concurrent_requests", "models_capacity", "none"
-	GPUUsageTrend     float64 `json:"gpuUsageTrend"`       // Тренд загрузки GPU (% в минуту, >0 — рост)
-	VRAMUsageTrend    float64 `json:"vramUsageTrend"`      // Тренд использования VRAM (% в минуту)
-	RAMUsageTrend     float64 `json:"ramUsageTrend"`       // Тренд использования RAM (% в минуту)
-	FreeSlotsTrend    float64 `json:"freeSlotsTrend"`      // Тренд свободных слотов (слотов в минуту, <0 — уменьшение)
+	CriticalReason    string  `json:"criticalReason"`    // Причина: "gpu_usage", "vram", "ram", "disk", "concurrent_requests", "models_capacity", "none"
+	GPUUsageTrend     float64 `json:"gpuUsageTrend"`     // Тренд загрузки GPU (% в минуту, >0 — рост)
+	VRAMUsageTrend    float64 `json:"vramUsageTrend"`    // Тренд использования VRAM (% в минуту)
+	RAMUsageTrend     float64 `json:"ramUsageTrend"`     // Тренд использования RAM (% в минуту)
+	FreeSlotsTrend    float64 `json:"freeSlotsTrend"`    // Тренд свободных слотов (слотов в минуту, <0 — уменьшение)
 	RequestCapacity   float64 `json:"requestCapacity"`     // Текущая ёмкость запросов (0-100%, 100% = полная загрузка)
 }
 

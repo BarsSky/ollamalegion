@@ -291,7 +291,7 @@ class OllamaLegionUI {
 
     // Dashboard
     renderDashboard() {
-        const backends = this.data.backends;
+        const backends = [...this.data.backends].sort((a, b) => (a.id || '').localeCompare(b.id || ''));
         const healthy = backends.filter(b => b.status === 'healthy');
         
         // Summary metrics
@@ -312,11 +312,196 @@ class OllamaLegionUI {
         document.getElementById('queueSize').textContent = queueSize;
         document.getElementById('queueProcessed').textContent = `${queueProcessed} обработано`;
         
+        // Ollama Runtime
+        this.renderRuntimeCluster(backends);
+        
         // GPU Cluster
         this.renderGPUCluster(backends);
         
+        // Backend Capacity
+        this.renderCapacitySection(backends);
+        
+        // Available to Load
+        this.renderAvailableModels(backends);
+        
         // Backends table
         this.renderBackendsTable(backends);
+    }
+
+    renderRuntimeCluster(backends) {
+        const container = document.getElementById('runtimeCluster');
+        if (!backends.length) {
+            container.innerHTML = '<div class="loading">Нет данных о бэкендах</div>';
+            return;
+        }
+        
+        container.innerHTML = backends.map(backend => {
+            const flags = backend.ollama?.runtimeFlags || {};
+            const contexts = backend.ollama?.modelContexts || [];
+            
+            const flagBadges = [];
+            if (flags.numGpuLayers !== undefined && flags.numGpuLayers !== 0) {
+                const cls = flags.numGpuLayers === -1 ? '' : 'warning';
+                flagBadges.push(`<span class="flag-badge ${cls}">GPU:${flags.numGpuLayers === -1 ? 'auto' : flags.numGpuLayers}</span>`);
+            }
+            if (flags.contextLength) flagBadges.push(`<span class="flag-badge">C:${this.formatNumber(flags.contextLength)}</span>`);
+            if (flags.numParallel && flags.numParallel > 1) flagBadges.push(`<span class="flag-badge warning">NP:${flags.numParallel}</span>`);
+            if (flags.numThreads) flagBadges.push(`<span class="flag-badge">T:${flags.numThreads}</span>`);
+            if (flags.batchSize && flags.batchSize !== 512) flagBadges.push(`<span class="flag-badge">B:${flags.batchSize}</span>`);
+            if (flags.lowVram) flagBadges.push(`<span class="flag-badge danger">LOW_VRAM</span>`);
+            if (flags.flashAttention) flagBadges.push(`<span class="flag-badge">FA</span>`);
+            if (flags.kvCacheQuant && flags.kvCacheQuant !== 'f16') flagBadges.push(`<span class="flag-badge warning">KV:${flags.kvCacheQuant}</span>`);
+            
+            const contextBadges = contexts.map(ctx => `
+                <span class="context-info">
+                    ${ctx.name}: Ctx ${this.formatNumber(ctx.effectiveContext)} (${ctx.contextSource})
+                    <div class="context-tooltip">
+                        <div class="context-tooltip-row"><span class="context-tooltip-label">Context</span><span class="context-tooltip-value">${this.formatNumber(ctx.contextLength)}</span></div>
+                        <div class="context-tooltip-row"><span class="context-tooltip-label">Effective</span><span class="context-tooltip-value">${this.formatNumber(ctx.effectiveContext)}</span></div>
+                        <div class="context-tooltip-row"><span class="context-tooltip-label">Model Memory</span><span class="context-tooltip-value">${this.formatMB(ctx.modelMemoryMB)}</span></div>
+                        <div class="context-tooltip-row"><span class="context-tooltip-label">Context Memory</span><span class="context-tooltip-value">${this.formatMB(ctx.contextMemoryMB)}</span></div>
+                        <div class="context-tooltip-row"><span class="context-tooltip-label">KV Cache</span><span class="context-tooltip-value">${this.formatMB(ctx.kvCacheMemoryMB)}</span></div>
+                        <div class="context-tooltip-row"><span class="context-tooltip-label">Total</span><span class="context-tooltip-value">${this.formatMB(ctx.totalMemoryMB)}</span></div>
+                        <div class="context-tooltip-row"><span class="context-tooltip-label">Layers</span><span class="context-tooltip-value">${ctx.numLayers || '-'}</span></div>
+                        <div class="context-tooltip-row"><span class="context-tooltip-label">Precision</span><span class="context-tooltip-value">${ctx.precisionBits || 16}-bit</span></div>
+                    </div>
+                </span>
+            `).join('');
+            
+            return `
+                <div class="runtime-card">
+                    <div class="runtime-header">
+                        <strong>${backend.id}</strong>
+                        <span class="badge ${backend.status === 'healthy' ? 'badge-success' : 'badge-danger'}">${backend.status}</span>
+                    </div>
+                    <div class="runtime-flags">
+                        ${flagBadges.length ? flagBadges.join('') : '<span class="flag-badge">default</span>'}
+                    </div>
+                    ${contextBadges ? `<div style="margin-top:0.5rem;">${contextBadges}</div>` : ''}
+                </div>
+            `;
+        }).join('');
+    }
+
+    renderCapacitySection(backends) {
+        const container = document.getElementById('capacitySection');
+        if (!backends.length) {
+            container.innerHTML = '<div class="loading">Нет данных о бэкендах</div>';
+            return;
+        }
+        
+        container.innerHTML = backends.map(backend => {
+            const cap = backend.ollama?.backendCapacity || {};
+            const gpu = backend.gpu || {};
+            const vramTotal = gpu.memoryTotal || 1;
+            const vramUsed = gpu.memoryUsed || 0;
+            const vramFree = gpu.memoryFree || 0;
+            
+            const loadedVram = cap.loadedModelVram || 0;
+            const ctxOverhead = cap.contextOverheadMB || 0;
+            const guaranteed = cap.guaranteedVram || 0;
+            
+            const usedPct = vramTotal > 0 ? (vramUsed / vramTotal * 100) : 0;
+            const loadedPct = vramTotal > 0 ? (loadedVram / vramTotal * 100) : 0;
+            const ctxPct = vramTotal > 0 ? (ctxOverhead / vramTotal * 100) : 0;
+            const guarPct = vramTotal > 0 ? (guaranteed / vramTotal * 100) : 0;
+            
+            return `
+                <div class="capacity-card">
+                    <div class="runtime-header">
+                        <strong>${backend.id}</strong>
+                        <span class="badge badge-info">${cap.mode || 'gpu'}</span>
+                    </div>
+                    <div class="capacity-bar-container">
+                        <div class="capacity-bar-labels">
+                            <span>VRAM: ${this.formatMB(vramUsed)} / ${this.formatMB(vramTotal)}</span>
+                            <span>${usedPct.toFixed(1)}%</span>
+                        </div>
+                        <div class="capacity-bar">
+                            <div class="capacity-bar-filled" style="width: ${loadedPct}%"></div>
+                            <div class="capacity-bar-context" style="width: ${ctxPct}%"></div>
+                            <div class="capacity-bar-guaranteed" style="width: ${guarPct}%"></div>
+                        </div>
+                    </div>
+                    <div class="capacity-stats">
+                        <div class="capacity-stat"><span>Loaded models</span><span>${this.formatMB(loadedVram)}</span></div>
+                        <div class="capacity-stat"><span>Context overhead</span><span>${this.formatMB(ctxOverhead)}</span></div>
+                        <div class="capacity-stat"><span>Free VRAM</span><span>${this.formatMB(vramFree)}</span></div>
+                        <div class="capacity-stat"><span>Guaranteed (90%)</span><span>${this.formatMB(guaranteed)}</span></div>
+                    </div>
+                </div>
+            `;
+        }).join('');
+    }
+
+    renderAvailableModels(backends) {
+        const container = document.getElementById('availableModelsList');
+        const badge = document.getElementById('loadableModelCount');
+        
+        if (!backends.length) {
+            container.innerHTML = '<div class="loading">Нет данных</div>';
+            badge.textContent = '-';
+            return;
+        }
+        
+        let totalLoadable = 0;
+        const allModels = [];
+        
+        backends.forEach(backend => {
+            const cap = backend.ollama?.backendCapacity || {};
+            const models = cap.availableModels || [];
+            models.forEach(m => {
+                allModels.push({
+                    ...m,
+                    backendId: backend.id,
+                    backendStatus: backend.status
+                });
+                if (m.canLoad) totalLoadable++;
+            });
+        });
+        
+        badge.textContent = totalLoadable;
+        
+        if (!allModels.length) {
+            container.innerHTML = '<div class="loading">Нет доступных моделей</div>';
+            return;
+        }
+        
+        // Sort: loadable first, then by estimated VRAM
+        allModels.sort((a, b) => {
+            if (a.canLoad !== b.canLoad) return b.canLoad - a.canLoad;
+            return (a.estimatedVram || 0) - (b.estimatedVram || 0);
+        });
+        
+        container.innerHTML = allModels.slice(0, 50).map(m => {
+            const loadable = m.canLoad;
+            const cls = loadable ? 'model-loadable' : 'model-unloadable';
+            const vram = m.estimatedVram || 0;
+            return `
+                <div class="available-model-item ${cls}">
+                    <div class="model-indicator"></div>
+                    <span class="model-name">${m.name}</span>
+                    <span class="model-vram">${this.formatMB(vram)} @ ${m.backendId}</span>
+                </div>
+            `;
+        }).join('');
+        
+        if (allModels.length > 50) {
+            container.innerHTML += `<div style="text-align:center;color:var(--text-muted);padding:0.5rem;font-size:0.8rem;">+${allModels.length - 50} моделей</div>`;
+        }
+    }
+
+    formatNumber(n) {
+        if (n === undefined || n === null) return '-';
+        if (n >= 1000000) return (n / 1000000).toFixed(1) + 'M';
+        if (n >= 1000) return (n / 1000).toFixed(1) + 'K';
+        return n.toString();
+    }
+
+    formatMB(mb) {
+        if (mb === undefined || mb === null) return '-';
+        if (mb >= 1024) return (mb / 1024).toFixed(1) + ' GB';
+        return Math.round(mb) + ' MB';
     }
 
     renderGPUCluster(backends) {
@@ -450,30 +635,37 @@ class OllamaLegionUI {
     // Backends Page
     renderBackendsPage() {
         const tbody = document.getElementById('backendsManageBody');
-        const backends = this.data.backends;
+        const backends = [...this.data.backends].sort((a, b) => (a.id || '').localeCompare(b.id || ''));
         
         if (!backends.length) {
-            tbody.innerHTML = '<tr><td colspan="10" class="loading-cell">Нет данных</td></tr>';
+            tbody.innerHTML = '<tr><td colspan="13" class="loading-cell">Нет данных</td></tr>';
             return;
         }
         
-        tbody.innerHTML = backends.map(b => `
+        tbody.innerHTML = backends.map(b => {
+            const labels = (b.labels || []).join(', ') || '-';
+            const lastContact = b.lastAgentContact ? new Date(b.lastAgentContact).toLocaleString('ru') : '-';
+            const maxModels = b.maxModels || b.ollama?.maxModels || b.runtimeMaxModels || '-';
+            return `
             <tr>
                 <td><strong>${b.id}</strong></td>
                 <td>${b.name || b.id}</td>
                 <td>${b.host}</td>
                 <td>${b.ollamaPort || 11434}</td>
+                <td>${b.agentPort || 18032}</td>
                 <td>${b.weight || 1}</td>
                 <td>${b.maxConcurrentRequests || 10}</td>
-                <td>${b.maxModels || '-'}</td>
+                <td>${maxModels}</td>
                 <td><span class="badge badge-${b.hasAgent ? 'success' : 'warning'}">${b.hasAgent ? 'Да' : 'Нет'}</span></td>
+                <td>${labels}</td>
+                <td>${lastContact}</td>
                 <td><span class="badge badge-${b.status === 'healthy' ? 'success' : 'danger'}">${b.status}</span></td>
                 <td>
                     <button class="action-btn edit" onclick="ui.editBackend('${b.id}')">✎</button>
                     <button class="action-btn delete" onclick="ui.confirmDeleteBackend('${b.id}')">🗑</button>
                 </td>
             </tr>
-        `).join('');
+        `}).join('');
     }
 
     // Models Page
@@ -555,13 +747,26 @@ class OllamaLegionUI {
             const response = await fetch(`${API_BASE}/api/v1/sessions`);
             if (!response.ok) throw new Error('Failed to fetch sessions');
             
-            const sessions = await response.json();
-            this.data.sessions = sessions || [];
+            const data = await response.json();
+            this.data.sessions = data.sessions || [];
+            // Обновляем sessions-виджет на dashboard
+            this.updateSessionsDashboard();
             this.renderSessionsTable();
         } catch (e) {
             console.error('Failed to fetch sessions:', e);
             this.addLog('Ошибка загрузки сессий', 'error');
         }
+    }
+
+    // Обновление sessions-виджета на dashboard
+    updateSessionsDashboard() {
+        const sessions = this.data.sessions || [];
+        const activeCount = sessions.filter(s => s.active).length;
+        const totalRequests = sessions.reduce((sum, s) => sum + (s.requestCount || 0), 0);
+        const elTotal = document.getElementById('totalSessions');
+        const elRate = document.getElementById('sessionRate');
+        if (elTotal) elTotal.textContent = activeCount;
+        if (elRate) elRate.textContent = `${totalRequests} запросов`;
     }
 
     renderSessionsTable() {
@@ -895,13 +1100,15 @@ class OllamaLegionUI {
 
     // Periodic refresh for non-WS data
     startPeriodicRefresh() {
+        // Начальная загрузка queue и sessions
+        this.fetchQueue();
+        this.fetchSessions();
+        
         setInterval(() => {
-            if (this.currentPage === 'sessions') {
-                this.fetchSessions();
-            }
-            if (this.currentPage === 'queue') {
-                this.fetchQueue();
-            }
+            // Всегда обновляем queue (нужно для dashboard-виджета)
+            this.fetchQueue();
+            // Всегда обновляем sessions (нужно для dashboard-виджета)
+            this.fetchSessions();
         }, 5000);
     }
 
@@ -921,9 +1128,11 @@ class OllamaLegionUI {
 
     async fetchQueue() {
         try {
-            const response = await fetch(`${API_BASE}/api/v1/queue`);
+            const response = await fetch(`${API_BASE}/api/v1/queue/stats`);
             if (response.ok) {
                 this.data.queue = await response.json();
+                // Обновляем queue-виджеты на dashboard всегда
+                this.updateQueueDashboard();
                 if (this.currentPage === 'queue') {
                     this.renderQueuePage();
                 }
@@ -931,6 +1140,17 @@ class OllamaLegionUI {
         } catch (e) {
             console.error('Failed to fetch queue:', e);
         }
+    }
+
+    // Обновление queue-виджетов на dashboard
+    updateQueueDashboard() {
+        const queue = this.data.queue || {};
+        const queueSize = queue.current_size || 0;
+        const queueProcessed = queue.processed_total || 0;
+        const elSize = document.getElementById('queueSize');
+        const elProcessed = document.getElementById('queueProcessed');
+        if (elSize) elSize.textContent = queueSize;
+        if (elProcessed) elProcessed.textContent = `${queueProcessed} обработано`;
     }
 }
 

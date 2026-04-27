@@ -37,6 +37,9 @@ type Agent struct {
 	ollamaStats    *OllamaStats
 	statsMu        sync.Mutex
 	requestHistory []requestRecord
+
+	// Текущие флаги Ollama (кэш)
+	currentFlags   types.OllamaRuntimeFlags
 }
 
 // requestRecord - запись о запросе для подсчета RPS
@@ -560,6 +563,11 @@ func (a *Agent) collectOllamaMetrics() types.OllamaMetrics {
 	metrics.MaxModels = a.config.MaxModels
 	metrics.MaxConcurrentRequests = a.config.MaxConcurrentRequests
 
+	// Сбор флагов запуска Ollama
+	flags := a.collectOllamaRuntimeFlags()
+	metrics.RuntimeFlags = flags
+	a.currentFlags = flags
+
 	// Получение запущенных (загруженных в память) моделей через /api/ps
 	runningModels, err := a.getRunningModels()
 	if err != nil {
@@ -574,6 +582,16 @@ func (a *Agent) collectOllamaMetrics() types.OllamaMetrics {
 		fmt.Printf("[%s] Failed to get available models: %v\n", time.Now().Format(time.RFC3339), err)
 	} else {
 		metrics.AvailableModels = availableModels
+	}
+
+	// Сбор информации о контексте моделей
+	if len(runningModels) > 0 {
+		metrics.ModelContexts = a.collectModelContextInfo(runningModels, flags)
+	}
+
+	// Оценка ёмкости бэкенда
+	if len(availableModels) > 0 {
+		metrics.BackendCapacity = a.calculateBackendCapacity(runningModels, availableModels, flags)
 	}
 
 	// Получение статистики запросов

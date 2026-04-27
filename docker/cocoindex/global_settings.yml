@@ -1,0 +1,10 @@
+# CocoIndex Code — глобальные настройки
+# https://github.com/cocoindex-io/cocoindex-code
+
+embedding:
+  # LiteLLM-провайдер: Ollama локально через балансировщик ollamalegion
+  model: ollama/nomic-embed-text
+
+# Устройство для вычислений (не используется с LiteLLM,
+# т.к. модель выполняется на стороне Ollama)
+# device: cpu

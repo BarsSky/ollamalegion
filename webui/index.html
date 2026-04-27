@@ -11,30 +11,30 @@
         <!-- Sidebar -->
         <aside class="sidebar">
             <div class="logo">
-                <img src="logo.svg" alt="OllamaLegion" onerror="this.style.display='none'">
+                <img src="img/dark_logo.svg" alt="OllamaLegion" class="logo-img-svg">
                 <span>OllamaLegion</span>
             </div>
             <nav class="nav">
                 <a href="#dashboard" class="nav-item active" data-page="dashboard">
-                    <span class="icon">📊</span> Dashboard
+                    <img src="img/cesar.svg" alt="" class="nav-logo-img"> Dashboard
                 </a>
                 <a href="#backends" class="nav-item" data-page="backends">
-                    <span class="icon">🖥️</span> Бэкенды
+                    <img src="img/wall.svg" alt="" class="nav-logo-img"> Бэкенды
                 </a>
                 <a href="#models" class="nav-item" data-page="models">
-                    <span class="icon">🧠</span> Модели
+                    <img src="img/lance.svg" alt="" class="nav-logo-img"> Модели
                 </a>
                 <a href="#sessions" class="nav-item" data-page="sessions">
-                    <span class="icon">🔗</span> Сессии
+                    <img src="img/meadow.svg" alt="" class="nav-logo-img"> Сессии
                 </a>
                 <a href="#queue" class="nav-item" data-page="queue">
-                    <span class="icon">📥</span> Очередь
+                    <img src="img/guard.svg" alt="" class="nav-logo-img"> Очередь
                 </a>
                 <a href="#logs" class="nav-item" data-page="logs">
-                    <span class="icon">📋</span> Логи
+                    <img src="img/dark-wall.svg" alt="" class="nav-logo-img"> Логи
                 </a>
                 <a href="#settings" class="nav-item" data-page="settings">
-                    <span class="icon">⚙️</span> Настройки
+                    <img src="img/dark_lance.svg" alt="" class="nav-logo-img"> Настройки
                 </a>
             </nav>
             <div class="sidebar-footer">
@@ -52,8 +52,8 @@
             <header class="header">
                 <h1 id="pageTitle">Dashboard</h1>
                 <div class="header-actions">
-                    <button class="btn btn-secondary" id="refreshBtn">🔄 Обновить</button>
-                    <button class="btn btn-primary" id="addBackendBtn">➕ Добавить бэкенд</button>
+                    <button class="btn btn-secondary" id="refreshBtn">Обновить</button>
+                    <button class="btn btn-primary" id="addBackendBtn">Добавить бэкенд</button>
                 </div>
             </header>
 
@@ -61,35 +61,35 @@
             <div class="page active" id="dashboard-page">
                 <!-- Cluster Overview -->
                 <div class="metrics-grid">
-                    <div class="metric-card">
-                        <div class="metric-header">
-                            <span class="metric-icon">🖥️</span>
-                            <span class="metric-label">Всего бэкендов</span>
-                        </div>
+                <div class="metric-card">
+                    <div class="metric-header">
+                        <img src="img/wall.svg" alt="" class="metric-icon-svg">
+                        <span class="metric-label">Всего бэкендов</span>
+                    </div>
                         <div class="metric-value" id="totalBackends">-</div>
                         <div class="metric-sub" id="healthyBackends">- здоровых</div>
                     </div>
-                    <div class="metric-card">
-                        <div class="metric-header">
-                            <span class="metric-icon">🧠</span>
-                            <span class="metric-label">Активных моделей</span>
-                        </div>
+                <div class="metric-card">
+                    <div class="metric-header">
+                        <img src="img/lance.svg" alt="" class="metric-icon-svg">
+                        <span class="metric-label">Активных моделей</span>
+                    </div>
                         <div class="metric-value" id="totalModels">-</div>
                         <div class="metric-sub" id="loadedModels">- загружено</div>
                     </div>
-                    <div class="metric-card">
-                        <div class="metric-header">
-                            <span class="metric-icon">🔗</span>
-                            <span class="metric-label">Активных сессий</span>
-                        </div>
+                <div class="metric-card">
+                    <div class="metric-header">
+                        <img src="img/meadow.svg" alt="" class="metric-icon-svg">
+                        <span class="metric-label">Активных сессий</span>
+                    </div>
                         <div class="metric-value" id="totalSessions">-</div>
                         <div class="metric-sub" id="sessionRate">- req/s</div>
                     </div>
-                    <div class="metric-card">
-                        <div class="metric-header">
-                            <span class="metric-icon">📥</span>
-                            <span class="metric-label">Очередь</span>
-                        </div>
+                <div class="metric-card">
+                    <div class="metric-header">
+                        <img src="img/guard.svg" alt="" class="metric-icon-svg">
+                        <span class="metric-label">Очередь</span>
+                    </div>
                         <div class="metric-value" id="queueSize">-</div>
                         <div class="metric-sub" id="queueProcessed">- обработано</div>
                     </div>
@@ -98,7 +98,7 @@
                 <!-- Ollama Runtime -->
                 <div class="card">
                     <div class="card-header">
-                        <h3>🚀 Ollama Runtime</h3>
+                        <h3><img src="img/cesar.svg" alt="" class="section-icon-svg"> Ollama Runtime</h3>
                     </div>
                     <div class="runtime-cluster" id="runtimeCluster">
                         <div class="loading">Ожидание данных...</div>
@@ -108,7 +108,7 @@
                 <!-- GPU Cluster Chart -->
                 <div class="card">
                     <div class="card-header">
-                        <h3>🎮 GPU Кластер</h3>
+                        <h3><img src="img/dark-wall.svg" alt="" class="section-icon-svg"> GPU Кластер</h3>
                         <span class="badge" id="gpuClusterBadge">-</span>
                     </div>
                     <div class="gpu-cluster" id="gpuCluster">
@@ -119,7 +119,7 @@
                 <!-- Backend Capacity -->
                 <div class="card">
                     <div class="card-header">
-                        <h3>📊 Ёмкость бэкендов</h3>
+                        <h3><img src="img/wall.svg" alt="" class="section-icon-svg"> Ёмкость бэкендов</h3>
                     </div>
                     <div class="capacity-section" id="capacitySection">
                         <div class="loading">Ожидание данных...</div>
@@ -129,7 +129,7 @@
                 <!-- Available to Load -->
                 <div class="card">
                     <div class="card-header">
-                        <h3>📦 Доступные для загрузки</h3>
+                        <h3><img src="img/guard.svg" alt="" class="section-icon-svg"> Доступные для загрузки</h3>
                         <span class="badge badge-info" id="loadableModelCount">-</span>
                     </div>
                     <div class="available-models-list" id="availableModelsList">
@@ -140,7 +140,7 @@
                 <!-- Backends Table -->
                 <div class="card">
                     <div class="card-header">
-                        <h3>🖥️ Бэкенды</h3>
+                        <h3><img src="img/wall.svg" alt="" class="section-icon-svg"> Бэкенды</h3>
                         <div class="card-actions">
                             <input type="text" class="search-input" placeholder="Поиск..." id="backendSearch">
                         </div>
@@ -172,7 +172,7 @@
                 <!-- Prediction Alerts -->
                 <div class="card" id="predictionAlerts">
                     <div class="card-header">
-                        <h3>⚠️ Предупреждения предиктора</h3>
+                        <h3><img src="img/dark_meadow.svg" alt="" class="section-icon-svg"> Предупреждения предиктора</h3>
                     </div>
                     <div class="alerts-list" id="alertsList">
                         <div class="alert alert-info">Нет активных предупреждений</div>
@@ -186,8 +186,8 @@
                     <div class="card-header">
                         <h3>Управление бэкендами</h3>
                         <div class="card-actions">
-                            <button class="btn btn-secondary" id="exportBackends">📤 Экспорт</button>
-                            <button class="btn btn-primary" id="addBackendBtn2">➕ Добавить</button>
+                            <button class="btn btn-secondary" id="exportBackends">Экспорт</button>
+                            <button class="btn btn-primary" id="addBackendBtn2">Добавить</button>
                         </div>
                     </div>
                     <div class="table-responsive">
@@ -221,15 +221,15 @@
             <div class="page" id="models-page">
                 <div class="metrics-grid">
                     <div class="metric-card">
-                        <div class="metric-header">
-                            <span class="metric-icon">🧠</span>
+                    <div class="metric-header">
+                            <img src="img/lance.svg" alt="" class="metric-icon-svg">
                             <span class="metric-label">Всего моделей</span>
                         </div>
                         <div class="metric-value" id="modelsTotal">-</div>
                     </div>
                     <div class="metric-card">
-                        <div class="metric-header">
-                            <span class="metric-icon">⚡</span>
+                    <div class="metric-header">
+                            <img src="img/cesar.svg" alt="" class="metric-icon-svg">
                             <span class="metric-label">Загружено сейчас</span>
                         </div>
                         <div class="metric-value" id="modelsLoaded">-</div>
@@ -237,7 +237,7 @@
                 </div>
                 <div class="card">
                     <div class="card-header">
-                        <h3>🧠 Запущенные модели</h3>
+                        <h3><img src="img/lance.svg" alt="" class="section-icon-svg"> Запущенные модели</h3>
                     </div>
                     <div class="models-grid" id="modelsGrid">
                         <div class="loading">Ожидание данных...</div>
@@ -249,7 +249,7 @@
             <div class="page" id="sessions-page">
                 <div class="card">
                     <div class="card-header">
-                        <h3>🔗 Активные сессии</h3>
+                        <h3><img src="img/meadow.svg" alt="" class="section-icon-svg"> Активные сессии</h3>
                         <div class="card-actions">
                             <input type="text" class="search-input" placeholder="Поиск сессии..." id="sessionSearch">
                         </div>
@@ -278,29 +278,29 @@
             <div class="page" id="queue-page">
                 <div class="metrics-grid">
                     <div class="metric-card">
-                        <div class="metric-header">
-                            <span class="metric-icon">📥</span>
+                    <div class="metric-header">
+                            <img src="img/guard.svg" alt="" class="metric-icon-svg">
                             <span class="metric-label">Текущий размер</span>
                         </div>
                         <div class="metric-value" id="queueCurrentSize">-</div>
                     </div>
                     <div class="metric-card">
-                        <div class="metric-header">
-                            <span class="metric-icon">📦</span>
+                    <div class="metric-header">
+                            <img src="img/dark-wall.svg" alt="" class="metric-icon-svg">
                             <span class="metric-label">Максимум</span>
                         </div>
                         <div class="metric-value" id="queueMaxSize">-</div>
                     </div>
                     <div class="metric-card">
-                        <div class="metric-header">
-                            <span class="metric-icon">✅</span>
+                    <div class="metric-header">
+                            <img src="img/logo.svg" alt="" class="metric-icon-svg">
                             <span class="metric-label">Обработано</span>
                         </div>
                         <div class="metric-value" id="queueProcessed">-</div>
                     </div>
                     <div class="metric-card">
-                        <div class="metric-header">
-                            <span class="metric-icon">👷</span>
+                    <div class="metric-header">
+                            <img src="img/cesar.svg" alt="" class="metric-icon-svg">
                             <span class="metric-label">Воркеры</span>
                         </div>
                         <div class="metric-value" id="queueWorkers">-</div>
@@ -308,7 +308,7 @@
                 </div>
                 <div class="card">
                     <div class="card-header">
-                        <h3>📥 Состояние очереди</h3>
+                        <h3><img src="img/guard.svg" alt="" class="section-icon-svg"> Состояние очереди</h3>
                     </div>
                     <div class="queue-visualization" id="queueVisualization">
                         <div class="queue-bar">
@@ -327,10 +327,10 @@
             <div class="page" id="logs-page">
                 <div class="card">
                     <div class="card-header">
-                        <h3>📋 События и логи</h3>
+                        <h3><img src="img/dark-wall.svg" alt="" class="section-icon-svg"> События и логи</h3>
                         <div class="card-actions">
-                            <button class="btn btn-secondary" id="clearLogs">🗑️ Очистить</button>
-                            <button class="btn btn-secondary" id="exportLogs">📤 Экспорт</button>
+                            <button class="btn btn-secondary" id="clearLogs">Очистить</button>
+                            <button class="btn btn-secondary" id="exportLogs">Экспорт</button>
                         </div>
                     </div>
                     <div class="logs-container" id="logsContainer">
@@ -347,7 +347,7 @@
             <div class="page" id="settings-page">
                 <div class="card">
                     <div class="card-header">
-                        <h3>⚙️ Настройки балансировки</h3>
+                        <h3><img src="img/dark_lance.svg" alt="" class="section-icon-svg"> Настройки балансировки</h3>
                     </div>
                     <div class="settings-form" id="settingsForm">
                         <div class="form-group">
@@ -400,8 +400,8 @@
                             <input type="number" id="minFreeDisk" class="form-control" value="10240" min="0">
                         </div>
                         <div class="form-actions">
-                            <button class="btn btn-secondary" id="resetSettings">↩️ Сбросить</button>
-                            <button class="btn btn-primary" id="saveSettings">💾 Сохранить</button>
+                            <button class="btn btn-secondary" id="resetSettings">Сбросить</button>
+                            <button class="btn btn-primary" id="saveSettings">Сохранить</button>
                         </div>
                     </div>
                 </div>
@@ -459,8 +459,8 @@
             </div>
             <div class="modal-footer">
                 <button class="btn btn-secondary" id="modalCancel">Отмена</button>
-                <button class="btn btn-danger" id="modalDelete" style="display:none">🗑️ Удалить</button>
-                <button class="btn btn-primary" id="modalSave">💾 Сохранить</button>
+                <button class="btn btn-danger" id="modalDelete" style="display:none">Удалить</button>
+                <button class="btn btn-primary" id="modalSave">Сохранить</button>
             </div>
         </div>
     </div>

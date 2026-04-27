@@ -1497,3 +1497,80 @@ body::before {
 .token-modal-error.active {
     display: block;
 }
+
+/* ============================================
+   SVG Icons (from logo/svg)
+   ============================================ */
+
+.metric-icon-svg {
+    width: 20px;
+    height: 20px;
+    vertical-align: middle;
+    margin-right: 0.25rem;
+}
+
+.section-icon-svg {
+    width: 20px;
+    height: 20px;
+    vertical-align: middle;
+    margin-right: 0.25rem;
+}
+
+.nav-logo-img {
+    width: 20px;
+    height: 20px;
+    margin-right: 0.5rem;
+    vertical-align: middle;
+}
+
+.badge-icon-svg {
+    width: 14px;
+    height: 14px;
+    vertical-align: middle;
+}
+
+.action-btn-icon {
+    width: 14px;
+    height: 14px;
+    vertical-align: middle;
+}
+
+.alert-icon-svg {
+    width: 16px;
+    height: 16px;
+    vertical-align: middle;
+    margin-right: 0.25rem;
+}
+
+.limit-icon-svg {
+    width: 14px;
+    height: 14px;
+    vertical-align: middle;
+    margin-right: 0.25rem;
+}
+
+.ip-icon-svg {
+    width: 14px;
+    height: 14px;
+    vertical-align: middle;
+    margin-right: 0.25rem;
+}
+
+.toast-icon-svg {
+    width: 16px;
+    height: 16px;
+    vertical-align: middle;
+}
+
+.theme-icon-svg {
+    width: 20px;
+    height: 20px;
+    vertical-align: middle;
+}
+
+.upload-icon-svg {
+    width: 24px;
+    height: 24px;
+    vertical-align: middle;
+    margin-bottom: 0.5rem;
+}

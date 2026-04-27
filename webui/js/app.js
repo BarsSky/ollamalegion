@@ -302,13 +302,17 @@ class OllamaLegionUI {
         document.getElementById('totalModels').textContent = totalModels;
         document.getElementById('loadedModels').textContent = `${totalModels} загружено`;
         
-        const totalSessions = backends.reduce((sum, b) => sum + (b.activeRequests || 0), 0);
-        const totalRPS = backends.reduce((sum, b) => sum + (b.ollama?.requestsPerSecond || 0), 0);
-        document.getElementById('totalSessions').textContent = totalSessions;
-        document.getElementById('sessionRate').textContent = `${totalRPS.toFixed(1)} req/s`;
+        // Sessions — единый источник: this.data.sessions (не backends.activeRequests)
+        const sessions = this.data.sessions || [];
+        const activeSessions = sessions.filter(s => s.active).length;
+        const totalRequests = sessions.reduce((sum, s) => sum + (s.requestCount || 0), 0);
+        document.getElementById('totalSessions').textContent = activeSessions;
+        document.getElementById('sessionRate').textContent = `${totalRequests} запросов`;
         
-        const queueSize = this.data.queue?.current_size || 0;
-        const queueProcessed = this.data.queue?.processed_total || 0;
+        // Queue — единый источник: this.data.queue
+        const queue = this.data.queue || {};
+        const queueSize = queue.current_size || 0;
+        const queueProcessed = queue.processed_total || 0;
         document.getElementById('queueSize').textContent = queueSize;
         document.getElementById('queueProcessed').textContent = `${queueProcessed} обработано`;
         
@@ -391,30 +395,54 @@ class OllamaLegionUI {
         }
         
         container.innerHTML = backends.map(backend => {
+            const mode = this.getBackendMode(backend);
             const cap = backend.ollama?.backendCapacity || {};
-            const gpu = backend.gpu || {};
-            const vramTotal = gpu.memoryTotal || 1;
-            const vramUsed = gpu.memoryUsed || 0;
-            const vramFree = gpu.memoryFree || 0;
             
-            const loadedVram = cap.loadedModelVram || 0;
+            if (mode === 'cloud') {
+                return `
+                    <div class="capacity-card capacity-cloud">
+                        <div class="runtime-header">
+                            <strong>${backend.id}</strong>
+                            ${this.getBackendModeBadge(backend)}
+                        </div>
+                        <div class="capacity-cloud-info">
+                            <div class="capacity-cloud-row"><span>Хост</span><span>${backend.host || '-'}</span></div>
+                            <div class="capacity-cloud-row"><span>Статус</span><span class="badge badge-${backend.status === 'healthy' ? 'success' : 'danger'}">${backend.status}</span></div>
+                            <div class="capacity-cloud-row"><span>Active Req</span><span>${backend.activeRequests || 0}</span></div>
+                            <div class="capacity-cloud-row"><span>Загружено моделей</span><span>${(backend.ollama?.runningModels || []).length}</span></div>
+                        </div>
+                    </div>
+                `;
+            }
+            
+            // GPU или CPU режим
+            const isCPU = mode === 'cpu';
+            const sys = backend.system || {};
+            
+            const memTotal = isCPU ? (sys.memoryTotal || 1) : (backend.gpu?.memoryTotal || 1);
+            const memUsed = isCPU ? (sys.memoryUsed || 0) : (backend.gpu?.memoryUsed || 0);
+            const memFree = isCPU ? (sys.memoryFree || 0) : (backend.gpu?.memoryFree || 0);
+            
+            const loadedMem = cap.loadedModelVram || 0;
             const ctxOverhead = cap.contextOverheadMB || 0;
             const guaranteed = cap.guaranteedVram || 0;
             
-            const usedPct = vramTotal > 0 ? (vramUsed / vramTotal * 100) : 0;
-            const loadedPct = vramTotal > 0 ? (loadedVram / vramTotal * 100) : 0;
-            const ctxPct = vramTotal > 0 ? (ctxOverhead / vramTotal * 100) : 0;
-            const guarPct = vramTotal > 0 ? (guaranteed / vramTotal * 100) : 0;
+            const usedPct = memTotal > 0 ? (memUsed / memTotal * 100) : 0;
+            const loadedPct = memTotal > 0 ? (loadedMem / memTotal * 100) : 0;
+            const ctxPct = memTotal > 0 ? (ctxOverhead / memTotal * 100) : 0;
+            const guarPct = memTotal > 0 ? (guaranteed / memTotal * 100) : 0;
+            
+            const memLabel = isCPU ? 'RAM' : 'VRAM';
             
             return `
                 <div class="capacity-card">
                     <div class="runtime-header">
                         <strong>${backend.id}</strong>
-                        <span class="badge badge-info">${cap.mode || 'gpu'}</span>
+                        ${this.getBackendModeBadge(backend)}
                     </div>
                     <div class="capacity-bar-container">
                         <div class="capacity-bar-labels">
-                            <span>VRAM: ${this.formatMB(vramUsed)} / ${this.formatMB(vramTotal)}</span>
+                            <span>${memLabel}: ${this.formatMB(memUsed)} / ${this.formatMB(memTotal)}</span>
                             <span>${usedPct.toFixed(1)}%</span>
                         </div>
                         <div class="capacity-bar">
@@ -424,9 +452,9 @@ class OllamaLegionUI {
                         </div>
                     </div>
                     <div class="capacity-stats">
-                        <div class="capacity-stat"><span>Loaded models</span><span>${this.formatMB(loadedVram)}</span></div>
+                        <div class="capacity-stat"><span>Loaded models</span><span>${this.formatMB(loadedMem)}</span></div>
                         <div class="capacity-stat"><span>Context overhead</span><span>${this.formatMB(ctxOverhead)}</span></div>
-                        <div class="capacity-stat"><span>Free VRAM</span><span>${this.formatMB(vramFree)}</span></div>
+                        <div class="capacity-stat"><span>Free ${memLabel}</span><span>${this.formatMB(memFree)}</span></div>
                         <div class="capacity-stat"><span>Guaranteed (90%)</span><span>${this.formatMB(guaranteed)}</span></div>
                     </div>
                 </div>
@@ -504,6 +532,26 @@ class OllamaLegionUI {
         return Math.round(mb) + ' MB';
     }
 
+    // Helpers для определения типа бэкенда
+    isCloudBackend(backend) {
+        return (backend.labels || []).includes('cloud');
+    }
+
+    getBackendMode(backend) {
+        if (this.isCloudBackend(backend)) return 'cloud';
+        return backend.ollama?.backendCapacity?.mode || 'gpu';
+    }
+
+    getBackendModeBadge(backend) {
+        const mode = this.getBackendMode(backend);
+        const badges = {
+            gpu: '<span class="badge badge-success">GPU</span>',
+            cpu: '<span class="badge badge-warning">CPU</span>',
+            cloud: '<span class="badge badge-info"><img src="img/dark_meadow.svg" alt="" class="badge-icon-svg"> Cloud</span>'
+        };
+        return badges[mode] || badges.gpu;
+    }
+
     renderGPUCluster(backends) {
         const container = document.getElementById('gpuCluster');
         const badge = document.getElementById('gpuClusterBadge');
@@ -514,16 +562,100 @@ class OllamaLegionUI {
             return;
         }
         
-        badge.textContent = `${backends.length} GPU`;
+        const gpuBackends = backends.filter(b => this.getBackendMode(b) === 'gpu');
+        const cpuBackends = backends.filter(b => this.getBackendMode(b) === 'cpu');
+        const cloudBackends = backends.filter(b => this.getBackendMode(b) === 'cloud');
         
-        container.innerHTML = backends.map(backend => {
+        badge.innerHTML = `${gpuBackends.length} GPU · ${cpuBackends.length} CPU · ${cloudBackends.length} <img src="img/dark_meadow.svg" alt="" class="badge-icon-svg">`;
+        
+        const renderCard = (backend) => {
+            const mode = this.getBackendMode(backend);
+            
+            if (mode === 'cloud') {
+                const activeReq = backend.activeRequests || 0;
+                const maxReq = backend.maxConcurrentRequests || 10;
+                const models = (backend.ollama?.runningModels || []).length;
+                const rps = backend.ollama?.requestsPerSecond || 0;
+                
+                return `
+                    <div class="gpu-card gpu-card-cloud">
+                        <div class="gpu-card-header">
+                            <span class="gpu-card-title">${backend.id}</span>
+                            <img src="img/dark_meadow.svg" alt="" class="badge-icon-svg">
+                        </div>
+                        <div class="gpu-metrics">
+                            <div class="gpu-metric">
+                                <div class="gpu-metric-label">Req</div>
+                                <div class="gpu-metric-value">${activeReq}/${maxReq}</div>
+                            </div>
+                            <div class="gpu-metric">
+                                <div class="gpu-metric-label">Models</div>
+                                <div class="gpu-metric-value">${models}</div>
+                            </div>
+                            <div class="gpu-metric">
+                                <div class="gpu-metric-label">RPS</div>
+                                <div class="gpu-metric-value">${rps.toFixed(1)}</div>
+                            </div>
+                            <div class="gpu-metric">
+                                <div class="gpu-metric-label">Status</div>
+                                <div class="gpu-metric-value">${backend.status}</div>
+                            </div>
+                        </div>
+                        <div class="progress-bar">
+                            <div class="progress-fill low" style="width: 0%"></div>
+                        </div>
+                    </div>
+                `;
+            }
+            
+            if (mode === 'cpu') {
+                const sys = backend.system || {};
+                const cpuUsage = sys.cpuUsagePercent || 0;
+                const ramTotal = sys.memoryTotal || 1;
+                const ramUsed = sys.memoryUsed || 0;
+                const ramPercent = ramTotal > 0 ? (ramUsed / ramTotal * 100) : 0;
+                const temp = sys.cpuTemperature !== undefined ? sys.cpuTemperature : '-';
+                const loadAvg = sys.loadAverage1 !== undefined ? sys.loadAverage1.toFixed(2) : '-';
+                
+                return `
+                    <div class="gpu-card gpu-card-cpu">
+                        <div class="gpu-card-header">
+                            <span class="gpu-card-title">${backend.id}</span>
+                            <span class="badge badge-warning">CPU</span>
+                        </div>
+                        <div class="gpu-metrics">
+                            <div class="gpu-metric">
+                                <div class="gpu-metric-label">CPU</div>
+                                <div class="gpu-metric-value">${cpuUsage.toFixed(1)}%</div>
+                            </div>
+                            <div class="gpu-metric">
+                                <div class="gpu-metric-label">RAM</div>
+                                <div class="gpu-metric-value">${ramPercent.toFixed(1)}%</div>
+                            </div>
+                            <div class="gpu-metric">
+                                <div class="gpu-metric-label">Load</div>
+                                <div class="gpu-metric-value">${loadAvg}</div>
+                            </div>
+                            <div class="gpu-metric">
+                                <div class="gpu-metric-label">Temp</div>
+                                <div class="gpu-metric-value">${temp}°C</div>
+                            </div>
+                        </div>
+                        <div class="progress-bar">
+                            <div class="progress-fill ${this.getProgressClass(cpuUsage)}" style="width: ${cpuUsage}%"></div>
+                        </div>
+                    </div>
+                `;
+            }
+            
+            // GPU mode (default)
             const gpu = backend.gpu || {};
             const usage = gpu.usagePercent || 0;
             const vramUsed = gpu.memoryUsed || 0;
             const vramTotal = gpu.memoryTotal || 1;
             const vramPercent = (vramUsed / vramTotal * 100).toFixed(1);
-            const temp = gpu.temperature || 0;
-            const power = gpu.powerUsage || 0;
+            const temp = gpu.temperature !== undefined ? gpu.temperature : '-';
+            const power = gpu.powerUsage !== undefined ? gpu.powerUsage : '-';
             const status = this.getGPUStatus(usage, vramPercent, temp);
             
             return `
@@ -555,7 +687,9 @@ class OllamaLegionUI {
                     </div>
                 </div>
             `;
-        }).join('');
+        };
+        
+        container.innerHTML = backends.map(renderCard).join('');
     }
 
     getGPUStatus(gpu, vram, temp) {
@@ -580,19 +714,20 @@ class OllamaLegionUI {
         }
         
         tbody.innerHTML = backends.map(b => {
+            const mode = this.getBackendMode(b);
             const gpu = b.gpu || {};
             const sys = b.system || {};
             const pred = b.prediction || {};
             const oll = b.ollama || {};
             
-            const gpuUsage = gpu.usagePercent || 0;
-            const vramTotal = gpu.memoryTotal || 1;
-            const vramUsed = gpu.memoryUsed || 0;
-            const vramPercent = (vramUsed / vramTotal * 100).toFixed(1);
-            const cpuUsage = sys.cpuUsagePercent || 0;
-            const ramTotal = sys.memoryTotal || 1;
-            const ramUsed = sys.memoryUsed || 0;
-            const ramPercent = (ramUsed / ramTotal * 100).toFixed(1);
+            const isCloud = mode === 'cloud';
+            const isCPU = mode === 'cpu';
+            
+            const gpuUsage = isCloud ? '-' : (gpu.usagePercent !== undefined ? gpu.usagePercent.toFixed(1) + '%' : '-');
+            const vramPercent = isCloud ? '-' : (gpu.memoryTotal > 0 ? (gpu.memoryUsed / gpu.memoryTotal * 100).toFixed(1) + '%' : '-');
+            const cpuUsage = isCloud ? '-' : (sys.cpuUsagePercent !== undefined ? sys.cpuUsagePercent.toFixed(1) + '%' : '-');
+            const ramPercent = isCloud ? '-' : (sys.memoryTotal > 0 ? (sys.memoryUsed / sys.memoryTotal * 100).toFixed(1) + '%' : '-');
+            
             const activeReq = b.activeRequests || 0;
             const maxReq = b.maxConcurrentRequests || 10;
             const models = oll.runningModels?.length || 0;
@@ -603,19 +738,19 @@ class OllamaLegionUI {
             
             return `
                 <tr>
-                    <td><strong>${b.id}</strong></td>
+                    <td><strong>${b.id}</strong> ${this.getBackendModeBadge(b)}</td>
                     <td><span class="badge badge-${b.status === 'healthy' ? 'success' : 'danger'}">${b.status}</span></td>
-                    <td>${gpuUsage.toFixed(1)}%</td>
-                    <td>${vramPercent}%</td>
-                    <td>${cpuUsage.toFixed(1)}%</td>
-                    <td>${ramPercent}%</td>
+                    <td>${gpuUsage}</td>
+                    <td>${vramPercent}</td>
+                    <td>${cpuUsage}</td>
+                    <td>${ramPercent}</td>
                     <td>${activeReq}/${maxReq}</td>
                     <td>${models}</td>
                     <td>${rps.toFixed(1)}</td>
                     <td><span class="badge badge-${predClass}">${predText}</span></td>
                     <td>
-                        <button class="action-btn edit" onclick="ui.editBackend('${b.id}')">✎</button>
-                        <button class="action-btn delete" onclick="ui.confirmDeleteBackend('${b.id}')">🗑</button>
+                        <button class="action-btn edit" onclick="ui.editBackend('${b.id}')">Edit</button>
+                        <button class="action-btn delete" onclick="ui.confirmDeleteBackend('${b.id}')">Del</button>
                     </td>
                 </tr>
             `;
@@ -661,8 +796,8 @@ class OllamaLegionUI {
                 <td>${lastContact}</td>
                 <td><span class="badge badge-${b.status === 'healthy' ? 'success' : 'danger'}">${b.status}</span></td>
                 <td>
-                    <button class="action-btn edit" onclick="ui.editBackend('${b.id}')">✎</button>
-                    <button class="action-btn delete" onclick="ui.confirmDeleteBackend('${b.id}')">🗑</button>
+                        <button class="action-btn edit" onclick="ui.editBackend('${b.id}')">Edit</button>
+                        <button class="action-btn delete" onclick="ui.confirmDeleteBackend('${b.id}')">Del</button>
                 </td>
             </tr>
         `}).join('');
@@ -906,7 +1041,7 @@ class OllamaLegionUI {
         
         container.innerHTML = alerts.map(a => `
             <div class="alert alert-${a.level}">
-                <span>⚠️</span>
+                <img src="img/dark-wall.svg" alt="" class="alert-icon-svg">
                 <span><strong>${a.backend}</strong>: ${a.reason} через ${a.seconds}с</span>
             </div>
         `).join('');
@@ -1080,8 +1215,13 @@ class OllamaLegionUI {
         const toast = document.createElement('div');
         toast.className = `toast ${type}`;
         
-        const icons = { success: '✅', error: '❌', warning: '⚠️', info: 'ℹ️' };
-        toast.innerHTML = `<span>${icons[type] || 'ℹ️'}</span><span>${message}</span>`;
+        const icons = { 
+            success: '<img src="img/cesar.svg" alt="" class="toast-icon-svg">', 
+            error: '<img src="img/dark_meadow.svg" alt="" class="toast-icon-svg">', 
+            warning: '<img src="img/dark-wall.svg" alt="" class="toast-icon-svg">', 
+            info: '<img src="img/logo.svg" alt="" class="toast-icon-svg">' 
+        };
+        toast.innerHTML = `<span>${icons[type] || icons.info}</span><span>${message}</span>`;
         
         container.appendChild(toast);
         
@@ -1145,12 +1285,22 @@ class OllamaLegionUI {
     // Обновление queue-виджетов на dashboard
     updateQueueDashboard() {
         const queue = this.data.queue || {};
-        const queueSize = queue.current_size || 0;
-        const queueProcessed = queue.processed_total || 0;
+        const current = queue.current_size || 0;
+        const max = queue.max_size || 100;
+        const processed = queue.processed_total || 0;
+        const percent = max > 0 ? (current / max * 100) : 0;
+        
         const elSize = document.getElementById('queueSize');
         const elProcessed = document.getElementById('queueProcessed');
-        if (elSize) elSize.textContent = queueSize;
-        if (elProcessed) elProcessed.textContent = `${queueProcessed} обработано`;
+        const elFill = document.getElementById('queueFill');
+        const elMid = document.getElementById('queueMidLabel');
+        const elMax = document.getElementById('queueMaxLabel');
+        
+        if (elSize) elSize.textContent = current;
+        if (elProcessed) elProcessed.textContent = `${processed} обработано`;
+        if (elFill) elFill.style.width = percent + '%';
+        if (elMid) elMid.textContent = Math.round(max / 2);
+        if (elMax) elMax.textContent = max;
     }
 }
 

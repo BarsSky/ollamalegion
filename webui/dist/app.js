@@ -514,7 +514,7 @@ function createBackendCard(backend) {
         predictionHtml = `
             <div class="prediction-bar ${criticalClass}">
                 <div class="prediction-header">
-                    <span class="prediction-icon">⏱️</span>
+                    <img src="img/dark-wall.svg" alt="" class="alert-icon-svg">
                     <span class="prediction-label">${escapeHtml(reasonText)} critical in</span>
                     <span class="prediction-value">${formatDuration(prediction.SecondsToCritical)}</span>
                 </div>
@@ -544,28 +544,28 @@ function createBackendCard(backend) {
     const perCore = renderPerCoreSection(system.Cores || system.cores);
 
     card.innerHTML = `
-        ${!hasAgent ? `<div class="agent-warning">⚠️ Agent not connected — metrics unavailable, load balancing simplified</div>` : ''}
+        ${!hasAgent ? `<div class="agent-warning"><img src="img/dark-wall.svg" alt="" class="alert-icon-svg"> Agent not connected — metrics unavailable, load balancing simplified</div>` : ''}
         ${predictionHtml}
         <div class="backend-header">
             <div class="backend-header-left">
                 <span class="backend-id">${escapeHtml(backend.Name || backend.ID)}</span>
                 <span class="backend-status ${statusClass}">${statusText}</span>
-                <span class="agent-indicator ${hasAgent ? 'agent-online' : 'agent-offline'}" title="${hasAgent ? 'Agent Online' : 'Agent Offline'}">${hasAgent ? '🟢' : '⚪'}</span>
+                <span class="agent-indicator ${hasAgent ? 'agent-online' : 'agent-offline'}" title="${hasAgent ? 'Agent Online' : 'Agent Offline'}">${hasAgent ? '<img src="img/cesar.svg" alt="" class="badge-icon-svg">' : '<img src="img/dark_meadow.svg" alt="" class="badge-icon-svg">'}</span>
             </div>
             <div class="backend-actions">
-                <button class="action-btn" title="Download .env" onclick="event.stopPropagation(); downloadEnvConfig('${escapeHtml(backend.ID)}')">📥</button>
-                <button class="delete-backend-btn" title="Delete backend" onclick="event.stopPropagation(); deleteBackend('${escapeHtml(backend.ID)}')">🗑️</button>
+                <button class="action-btn" title="Download .env" onclick="event.stopPropagation(); downloadEnvConfig('${escapeHtml(backend.ID)}')"><img src="img/load.svg" alt="DL" class="action-btn-icon"></button>
+                <button class="delete-backend-btn" title="Delete backend" onclick="event.stopPropagation(); deleteBackend('${escapeHtml(backend.ID)}')"><img src="img/dark-wall.svg" alt="Del" class="action-btn-icon"></button>
             </div>
         </div>
         <div class="backend-ip">
-            <span>🌐</span>
+            <img src="img/legion_logo.svg" alt="" class="ip-icon-svg">
             <span>${escapeHtml(backend.Host || 'N/A')}:${backend.OllamaPort || 'N/A'}</span>
         </div>
         
         <div class="metric-row">
             <div class="metric-row-header">
                 <span class="metric-row-label">
-                    <span class="metric-row-icon">🔥</span>
+                    <img src="img/dark_meadow.svg" alt="" class="metric-icon-svg">
                     GPU Usage
                 </span>
                 <span class="metric-row-value metric-row-value-with-unit gpu-usage">
@@ -582,7 +582,7 @@ function createBackendCard(backend) {
         <div class="metric-row">
             <div class="metric-row-header">
                 <span class="metric-row-label">
-                    <span class="metric-row-icon">💾</span>
+                    <img src="img/load.svg" alt="" class="metric-icon-svg">
                     GPU Memory
                 </span>
                 <span class="metric-row-value metric-row-value-with-unit gpu-memory">
@@ -599,7 +599,7 @@ function createBackendCard(backend) {
         <div class="metric-row">
             <div class="metric-row-header">
                 <span class="metric-row-label">
-                    <span class="metric-row-icon">⚙️</span>
+                    <img src="img/guard.svg" alt="" class="metric-icon-svg">
                     CPU Usage
                 </span>
                 <span class="metric-row-value cpu-usage">${cpuUsage.toFixed(1)}%</span>
@@ -613,7 +613,7 @@ function createBackendCard(backend) {
         <div class="metric-row">
             <div class="metric-row-header">
                 <span class="metric-row-label">
-                    <span class="metric-row-icon">🧠</span>
+                    <img src="img/logo.svg" alt="" class="metric-icon-svg">
                     RAM Usage
                 </span>
                 <span class="metric-row-value metric-row-value-with-unit ram-usage">
@@ -646,14 +646,14 @@ function createBackendCard(backend) {
         <div class="backend-limits">
             <div class="limit-item">
                 <div class="limit-label">
-                    <span class="limit-icon">📊</span>
+                    <img src="img/legion_logo.svg" alt="" class="limit-icon-svg">
                     Max Concurrent
                 </div>
                 <div class="limit-value max-concurrent-requests">${ollama.MaxConcurrentRequests || '-'}</div>
             </div>
             <div class="limit-item">
                 <div class="limit-label">
-                    <span class="limit-icon">📦</span>
+                    <img src="img/guard.svg" alt="" class="limit-icon-svg">
                     Max Models
                 </div>
                 <div class="limit-value max-models">${ollama.MaxModels || '-'}</div>
@@ -663,7 +663,7 @@ function createBackendCard(backend) {
         ${ollama.AvailableModels && ollama.AvailableModels.length > 0 ? `
             <div class="models-section available-models">
                 <div class="models-header">
-                    <span class="metric-row-icon">📚</span>
+                    <img src="img/load.svg" alt="" class="metric-icon-svg">
                     Available Models (${ollama.AvailableModels.length})
                 </div>
                 <div class="models-list">
@@ -687,7 +687,7 @@ function createBackendCard(backend) {
         ${ollama.RunningModels && ollama.RunningModels.length > 0 ? `
             <div class="models-section">
                 <div class="models-header">
-                    <span class="metric-row-icon">📦</span>
+                    <img src="img/guard.svg" alt="" class="metric-icon-svg">
                     Loaded Models (${ollama.RunningModels.length})
                 </div>
                 <div class="models-list">
@@ -709,7 +709,7 @@ function createBackendCard(backend) {
         ` : `
             <div class="models-section empty">
                 <div class="models-header">
-                    <span class="metric-row-icon">📦</span>
+                    <img src="img/guard.svg" alt="" class="metric-icon-svg">
                     Loaded Models (0)
                 </div>
                 <p class="no-models">No models loaded</p>
@@ -750,7 +750,7 @@ function updateBackendCard(card, backend) {
     const agentIndicator = card.querySelector('.agent-indicator');
     if (agentIndicator) {
         agentIndicator.className = `agent-indicator ${hasAgent ? 'agent-online' : 'agent-offline'}`;
-        agentIndicator.textContent = hasAgent ? '🟢' : '⚪';
+        agentIndicator.innerHTML = hasAgent ? '<img src="img/cesar.svg" alt="" class="badge-icon-svg">' : '<img src="img/dark_meadow.svg" alt="" class="badge-icon-svg">';
         agentIndicator.title = hasAgent ? 'Agent Online' : 'Agent Offline';
     }
     
@@ -761,7 +761,7 @@ function updateBackendCard(card, backend) {
         if (header) {
             const warning = document.createElement('div');
             warning.className = 'agent-warning';
-            warning.textContent = '⚠️ Agent not connected — metrics unavailable, load balancing simplified';
+            warning.innerHTML = '<img src="img/dark-wall.svg" alt="" class="alert-icon-svg"> Agent not connected — metrics unavailable, load balancing simplified';
             card.insertBefore(warning, header);
         }
     } else if (hasAgent && existingWarning) {
@@ -826,7 +826,7 @@ function updateBackendCard(card, backend) {
         const predictionHtml = `
             <div class="prediction-bar ${criticalClass}">
                 <div class="prediction-header">
-                    <span class="prediction-icon">⏱️</span>
+                    <img src="img/dark-wall.svg" alt="" class="alert-icon-svg">
                     <span class="prediction-label">${escapeHtml(reasonText)} critical in</span>
                     <span class="prediction-value">${formatDuration(prediction.SecondsToCritical)}</span>
                 </div>
@@ -860,7 +860,7 @@ function updateBackendCard(card, backend) {
         modelsSection.outerHTML = `
             <div class="models-section">
                 <div class="models-header">
-                    <span class="metric-row-icon">📦</span>
+                    <img src="img/guard.svg" alt="" class="metric-icon-svg">
                     Loaded Models (${ollama.RunningModels.length})
                 </div>
                 <div class="models-list">
@@ -884,7 +884,7 @@ function updateBackendCard(card, backend) {
         modelsSection.outerHTML = `
             <div class="models-section empty">
                 <div class="models-header">
-                    <span class="metric-row-icon">📦</span>
+                    <img src="img/guard.svg" alt="" class="metric-icon-svg">
                     Loaded Models (0)
                 </div>
                 <p class="no-models">No models loaded</p>

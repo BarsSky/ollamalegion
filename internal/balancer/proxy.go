@@ -74,20 +74,31 @@ type MetricsManager struct {
 	mu      sync.RWMutex
 }
 
+// CompletedRequest - выполненный запрос для истории
+type CompletedRequest struct {
+	Model       string    `json:"model"`
+	Target      string    `json:"target"`
+	Enqueued    time.Time `json:"enqueued"`
+	CompletedAt time.Time `json:"completed_at"`
+	WaitTimeMs  int64     `json:"wait_time_ms"`
+}
+
 // QueueManager - менеджер очереди с pool workers
 type QueueManager struct {
-	queue      chan *QueuedRequest
-	mu         sync.Mutex
-	maxSize    int
-	numWorkers int
-	processed  int64
-	timeout    time.Duration
-	ctx        context.Context
-	cancel     context.CancelFunc
-	wg         sync.WaitGroup
-	proxy      *Proxy
-	pendingMu  sync.RWMutex
-	pending    []*QueuedRequest
+	queue            chan *QueuedRequest
+	mu               sync.Mutex
+	maxSize          int
+	numWorkers       int
+	processed        int64
+	timeout          time.Duration
+	ctx              context.Context
+	cancel           context.CancelFunc
+	wg               sync.WaitGroup
+	proxy            *Proxy
+	pendingMu        sync.RWMutex
+	pending          []*QueuedRequest
+	historyMu        sync.RWMutex
+	completedHistory []*CompletedRequest
 }
 
 // QueuedRequest - запрос в очереди
@@ -277,14 +288,34 @@ func (qm *QueueManager) processRequest(req *QueuedRequest, workerID int) {
 	default:
 	}
 
-	// Обновление счетчика обработанных запросов
+	// Обновление счетчика обработанных запросов и истории
+	now := time.Now()
+	waitTimeMs := now.Sub(req.Enqueued).Milliseconds()
 	qm.mu.Lock()
 	qm.processed++
 	processed := qm.processed
 	qm.mu.Unlock()
+
+	// Добавляем в историю выполненных задач
+	qm.historyMu.Lock()
+	qm.completedHistory = append(qm.completedHistory, &CompletedRequest{
+		Model:       req.Model,
+		Target:      req.Target,
+		Enqueued:    req.Enqueued,
+		CompletedAt: now,
+		WaitTimeMs:  waitTimeMs,
+	})
+	// Ограничиваем размер истории до 100 записей
+	const maxHistory = 100
+	if len(qm.completedHistory) > maxHistory {
+		qm.completedHistory = qm.completedHistory[len(qm.completedHistory)-maxHistory:]
+	}
+	qm.historyMu.Unlock()
+
 	logger.Get().Debugw("queued request completed",
 		"worker_id", workerID,
 		"processed_total", processed,
+		"wait_time_ms", waitTimeMs,
 	)
 }
 
@@ -309,7 +340,11 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// === Диспетчеризация Ollama API ===
 	// Read-only и management endpoint'ы обрабатываются через OllamaRouter
 	// с агрегацией или целевой маршрутизацией.
-	if p.ollamaRouter != nil && p.ollamaRouter.Route(w, r) {
+	// ИСКЛЮЧЕНИЕ: если это генерация/чат с активной сессией — идём напрямую на бэкенд
+	path := r.URL.Path
+	isChatOrGenerate := (path == "/api/generate" || path == "/api/chat")
+	sessionID := p.getSessionID(r)
+	if !isChatOrGenerate && p.ollamaRouter != nil && p.ollamaRouter.Route(w, r) {
 		return
 	}
 
@@ -319,8 +354,7 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// (тело запроса может быть прочитано при проксировании)
 	r = r.WithContext(context.WithValue(r.Context(), modelContextKey, model))
 
-	// Проверка сессии
-	sessionID := p.getSessionID(r)
+	// Проверка сессии (уже получена выше для оптимизации)
 	clientName := p.getClientName(r)
 	var targetBackend string
 
@@ -1712,6 +1746,24 @@ func (qm *QueueManager) getPendingDTOs() []map[string]interface{} {
 // GetQueuePendingRequests — получение списка ожидающих запросов в очереди
 func (p *Proxy) GetQueuePendingRequests() []map[string]interface{} {
 	return p.queueMgr.getPendingDTOs()
+}
+
+// GetQueueHistory - получение истории выполненных запросов
+func (p *Proxy) GetQueueHistory() []map[string]interface{} {
+	p.queueMgr.historyMu.RLock()
+	defer p.queueMgr.historyMu.RUnlock()
+
+	result := make([]map[string]interface{}, 0, len(p.queueMgr.completedHistory))
+	for _, req := range p.queueMgr.completedHistory {
+		result = append(result, map[string]interface{}{
+			"model":        req.Model,
+			"target":       req.Target,
+			"enqueued":     req.Enqueued.UTC().Format(time.RFC3339),
+			"completed_at": req.CompletedAt.UTC().Format(time.RFC3339),
+			"wait_time_ms": req.WaitTimeMs,
+		})
+	}
+	return result
 }
 
 // GetQueueStats - получение статистики очереди

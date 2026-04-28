@@ -3,6 +3,9 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
+    <meta http-equiv="Pragma" content="no-cache">
+    <meta http-equiv="Expires" content="0">
     <title>OllamaLegion — Dashboard</title>
     <link rel="stylesheet" href="css/style.css">
 </head>
@@ -61,35 +64,35 @@
             <div class="page active" id="dashboard-page">
                 <!-- Cluster Overview -->
                 <div class="metrics-grid">
-                <div class="metric-card">
-                    <div class="metric-header">
-                        <img src="img/wall.svg" alt="" class="metric-icon-svg">
-                        <span class="metric-label">Всего бэкендов</span>
-                    </div>
+                    <div class="metric-card">
+                        <div class="metric-header">
+                            <img src="img/wall.svg" alt="" class="metric-icon-svg">
+                            <span class="metric-label">Всего бэкендов</span>
+                        </div>
                         <div class="metric-value" id="totalBackends">-</div>
                         <div class="metric-sub" id="healthyBackends">- здоровых</div>
                     </div>
-                <div class="metric-card">
-                    <div class="metric-header">
-                        <img src="img/lance.svg" alt="" class="metric-icon-svg">
-                        <span class="metric-label">Активных моделей</span>
-                    </div>
+                    <div class="metric-card">
+                        <div class="metric-header">
+                            <img src="img/lance.svg" alt="" class="metric-icon-svg">
+                            <span class="metric-label">Активных моделей</span>
+                        </div>
                         <div class="metric-value" id="totalModels">-</div>
                         <div class="metric-sub" id="loadedModels">- загружено</div>
                     </div>
-                <div class="metric-card">
-                    <div class="metric-header">
-                        <img src="img/meadow.svg" alt="" class="metric-icon-svg">
-                        <span class="metric-label">Активных сессий</span>
-                    </div>
+                    <div class="metric-card">
+                        <div class="metric-header">
+                            <img src="img/meadow.svg" alt="" class="metric-icon-svg">
+                            <span class="metric-label">Активных сессий</span>
+                        </div>
                         <div class="metric-value" id="totalSessions">-</div>
                         <div class="metric-sub" id="sessionRate">- req/s</div>
                     </div>
-                <div class="metric-card">
-                    <div class="metric-header">
-                        <img src="img/guard.svg" alt="" class="metric-icon-svg">
-                        <span class="metric-label">Очередь</span>
-                    </div>
+                    <div class="metric-card">
+                        <div class="metric-header">
+                            <img src="img/guard.svg" alt="" class="metric-icon-svg">
+                            <span class="metric-label">Очередь</span>
+                        </div>
                         <div class="metric-value" id="queueSize">-</div>
                         <div class="metric-sub" id="queueProcessed">- обработано</div>
                         <div class="metric-mini-bar">
@@ -103,7 +106,7 @@
                     <div class="card-header">
                         <h3><img src="img/cesar.svg" alt="" class="section-icon-svg"> Ollama Runtime</h3>
                     </div>
-                    <div class="runtime-cluster" id="runtimeCluster">
+                    <div class="runtime-cluster" id="runtimeCluster" data-loading="Ожидание данных...">
                         <div class="loading">Ожидание данных...</div>
                     </div>
                 </div>
@@ -114,7 +117,7 @@
                         <h3><img src="img/dark-wall.svg" alt="" class="section-icon-svg"> GPU Кластер</h3>
                         <span class="badge" id="gpuClusterBadge">-</span>
                     </div>
-                    <div class="gpu-cluster" id="gpuCluster">
+                    <div class="gpu-cluster" id="gpuCluster" data-loading="Ожидание данных...">
                         <div class="loading">Ожидание данных...</div>
                     </div>
                 </div>
@@ -124,7 +127,7 @@
                     <div class="card-header">
                         <h3><img src="img/wall.svg" alt="" class="section-icon-svg"> Ёмкость бэкендов</h3>
                     </div>
-                    <div class="capacity-section" id="capacitySection">
+                    <div class="capacity-section" id="capacitySection" data-loading="Ожидание данных...">
                         <div class="loading">Ожидание данных...</div>
                     </div>
                 </div>
@@ -135,7 +138,7 @@
                         <h3><img src="img/guard.svg" alt="" class="section-icon-svg"> Доступные для загрузки</h3>
                         <span class="badge badge-info" id="loadableModelCount">-</span>
                     </div>
-                    <div class="available-models-list" id="availableModelsList">
+                    <div class="available-models-list" id="availableModelsList" data-loading="Ожидание данных...">
                         <div class="loading">Ожидание данных...</div>
                     </div>
                 </div>
@@ -224,25 +227,34 @@
             <div class="page" id="models-page">
                 <div class="metrics-grid">
                     <div class="metric-card">
-                    <div class="metric-header">
+                        <div class="metric-header">
                             <img src="img/lance.svg" alt="" class="metric-icon-svg">
                             <span class="metric-label">Всего моделей</span>
                         </div>
                         <div class="metric-value" id="modelsTotal">-</div>
                     </div>
                     <div class="metric-card">
-                    <div class="metric-header">
+                        <div class="metric-header">
                             <img src="img/cesar.svg" alt="" class="metric-icon-svg">
                             <span class="metric-label">Загружено сейчас</span>
                         </div>
                         <div class="metric-value" id="modelsLoaded">-</div>
                     </div>
                 </div>
+                <!-- Backend Load Section -->
+                <div class="card">
+                    <div class="card-header">
+                        <h3><img src="img/wall.svg" alt="" class="section-icon-svg"> Загрузка бэкендов</h3>
+                    </div>
+                    <div class="backend-load-list" id="backendLoadList" data-loading="Ожидание данных...">
+                        <div class="loading">Ожидание данных...</div>
+                    </div>
+                </div>
                 <div class="card">
                     <div class="card-header">
                         <h3><img src="img/lance.svg" alt="" class="section-icon-svg"> Запущенные модели</h3>
                     </div>
-                    <div class="models-grid" id="modelsGrid">
+                    <div class="models-grid" id="modelsGrid" data-loading="Ожидание данных...">
                         <div class="loading">Ожидание данных...</div>
                     </div>
                 </div>
@@ -281,32 +293,39 @@
             <div class="page" id="queue-page">
                 <div class="metrics-grid">
                     <div class="metric-card">
-                    <div class="metric-header">
+                        <div class="metric-header">
                             <img src="img/guard.svg" alt="" class="metric-icon-svg">
                             <span class="metric-label">Текущий размер</span>
                         </div>
                         <div class="metric-value" id="queueCurrentSize">-</div>
                     </div>
                     <div class="metric-card">
-                    <div class="metric-header">
+                        <div class="metric-header">
                             <img src="img/dark-wall.svg" alt="" class="metric-icon-svg">
                             <span class="metric-label">Максимум</span>
                         </div>
                         <div class="metric-value" id="queueMaxSize">-</div>
                     </div>
                     <div class="metric-card">
-                    <div class="metric-header">
+                        <div class="metric-header">
                             <img src="img/logo.svg" alt="" class="metric-icon-svg">
-                            <span class="metric-label">Обработано</span>
+                            <span class="metric-label">Выполнено задач</span>
                         </div>
                         <div class="metric-value" id="queueProcessed">-</div>
                     </div>
                     <div class="metric-card">
-                    <div class="metric-header">
+                        <div class="metric-header">
                             <img src="img/cesar.svg" alt="" class="metric-icon-svg">
                             <span class="metric-label">Воркеры</span>
                         </div>
                         <div class="metric-value" id="queueWorkers">-</div>
+                    </div>
+                    <div class="metric-card">
+                        <div class="metric-header">
+                            <img src="img/dark-wall.svg" alt="" class="metric-icon-svg">
+                            <span class="metric-label">Среднее ожидание</span>
+                        </div>
+                        <div class="metric-value" id="queueAvgWait">-</div>
                     </div>
                 </div>
                 <div class="card">
@@ -343,6 +362,30 @@
                             </thead>
                             <tbody id="queueTasksBody">
                                 <tr><td colspan="5" class="loading-cell">Ожидание данных...</td></tr>
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+                <!-- Completed Tasks History -->
+                <div class="card">
+                    <div class="card-header">
+                        <h3><img src="img/logo.svg" alt="" class="section-icon-svg"> История выполненных задач</h3>
+                        <span class="badge badge-success" id="queueHistoryCount">-</span>
+                    </div>
+                    <div class="table-responsive">
+                        <table class="data-table" id="queueHistoryTable">
+                            <thead>
+                                <tr>
+                                    <th>#</th>
+                                    <th>Модель</th>
+                                    <th>Бэкенд</th>
+                                    <th>Время постановки</th>
+                                    <th>Время выполнения</th>
+                                    <th>Ожидание</th>
+                                </tr>
+                            </thead>
+                            <tbody id="queueHistoryBody">
+                                <tr><td colspan="6" class="loading-cell">Ожидание данных...</td></tr>
                             </tbody>
                         </table>
                     </div>
@@ -494,6 +537,14 @@
     <!-- Toast Container -->
     <div class="toast-container" id="toastContainer"></div>
 
-    <script src="js/app.js"></script>
+    <!-- Runtime config injected by entrypoint for Docker / local nginx -->
+    <script>window.WEBUI_CONFIG = window.WEBUI_CONFIG || {};</script>
+    <!-- Modules -->
+    <script src="js/modules/config.js?v=3"></script>
+    <script src="js/modules/utils.js?v=3"></script>
+    <script src="js/modules/api.js?v=3"></script>
+    <script src="js/modules/websocket.js?v=3"></script>
+    <script src="js/modules/renderers.js?v=3"></script>
+    <script src="js/app.js?v=3"></script>
 </body>
 </html>

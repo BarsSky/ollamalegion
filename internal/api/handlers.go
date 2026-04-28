@@ -127,6 +127,7 @@ func (s *Server) setupRoutes() {
 	// Queue stats (с аутентификацией и rate limiting)
 	s.mux.Handle("/api/v1/queue/stats", AuthMiddleware(RateLimitMiddleware(s.queueStatsHandler, s.rateLimiter), s.authenticator))
 	s.mux.Handle("/api/v1/queue/details", AuthMiddleware(RateLimitMiddleware(s.queueDetailsHandler, s.rateLimiter), s.authenticator))
+	s.mux.Handle("/api/v1/queue/history", AuthMiddleware(RateLimitMiddleware(s.queueHistoryHandler, s.rateLimiter), s.authenticator))
 
 	// Cluster config (runtime-смена алгоритма)
 	s.mux.Handle("/api/v1/cluster/config", AuthMiddleware(RateLimitMiddleware(s.clusterConfigHandler, s.rateLimiter), s.authenticator))
@@ -826,6 +827,19 @@ func (s *Server) queueDetailsHandler(w http.ResponseWriter, r *http.Request) {
 	pending := s.proxy.GetQueuePendingRequests()
 	s.writeJSON(w, http.StatusOK, map[string]interface{}{
 		"pending": pending,
+	})
+}
+
+// queueHistoryHandler - история выполненных запросов
+func (s *Server) queueHistoryHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	history := s.proxy.GetQueueHistory()
+	s.writeJSON(w, http.StatusOK, map[string]interface{}{
+		"history": history,
 	})
 }
 

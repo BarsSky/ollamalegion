@@ -1,74 +1,75 @@
 /**
- * OllamaLegion WebUI
- * Real-time dashboard для мониторинга и управления Ollama кластером
+ * OllamaLegion WebUI — Orchestrator
+ * Imports: Utils, Api, WebSocketManager, Renderers (loaded before this file)
  */
+const ui = (function () {
+    const { dashboard, backendsPage, modelsPage, sessionsPage, queuePage, logs: renderLogs, predictionAlerts } = Renderers;
 
-const API_BASE = window.location.hostname === 'localhost' ? 'http://localhost:18081' : '';
-const WS_URL = API_BASE.replace('http', 'ws') + '/ws/metrics';
+    // State
+    const data = {
+        backends: [],
+        sessions: [],
+        queue: {},
+        queueTasks: [],
+        queueHistory: [],
+        logs: [],
+        models: []
+    };
+    let currentPage = 'dashboard';
+    let refreshTimer = null;
 
-class OllamaLegionUI {
-    constructor() {
-        this.ws = null;
-        this.reconnectInterval = 3000;
-        this.reconnectAttempts = 0;
-        this.maxReconnectAttempts = 10;
-        this.data = {
-            backends: [],
-            sessions: [],
-            queue: {},
-            metrics: [],
-            models: [],
-            logs: []
-        };
-        this.currentPage = 'dashboard';
-        this.eventSource = null;
-        
-        this.init();
+    // ---- Initialization ----
+
+    function init() {
+        setupNavigation();
+        setupEventListeners();
+        setupWebSocketEvents();
+        setupApiEvents();
+
+        // Initial data load
+        fetchClusterState();
+        fetchQueue();
+        fetchQueueDetails();
+        fetchQueueHistory();
+        fetchSessions();
+
+        // Periodic refresh
+        startPeriodicRefresh();
+
+        addLog('WebUI инициализирован', 'info');
     }
 
-    init() {
-        this.setupNavigation();
-        this.fetchClusterState();     // начальная загрузка данных до WebSocket
-        this.setupWebSocket();
-        this.setupEventListeners();
-        this.startPeriodicRefresh();  // запуск periodic fetch (sessions, queue)
-        this.addLog('WebUI инициализирован', 'info');
-    }
+    // ---- Navigation ----
 
-    // Navigation
-    setupNavigation() {
+    function setupNavigation() {
         document.querySelectorAll('.nav-item').forEach(item => {
             item.addEventListener('click', (e) => {
                 e.preventDefault();
-                const page = item.dataset.page;
-                this.switchPage(page);
+                switchPage(item.dataset.page);
             });
         });
     }
 
-    switchPage(page) {
+    function switchPage(page) {
         document.querySelectorAll('.page').forEach(p => p.classList.remove('active'));
         document.querySelectorAll('.nav-item').forEach(n => n.classList.remove('active'));
-        
+
         const targetPage = document.getElementById(page + '-page');
         const targetNav = document.querySelector(`[data-page="${page}"]`);
-        
+
         if (targetPage) targetPage.classList.add('active');
         if (targetNav) targetNav.classList.add('active');
-        
-        this.currentPage = page;
-        document.getElementById('pageTitle').textContent = this.getPageTitle(page);
-        
-        // Обновить данные страницы
-        this.refreshPage(page);
-        
-        // Fallback: при переключении на backends/models/sessions подгрузить данные через REST
+
+        currentPage = page;
+        Utils.setText('pageTitle', getPageTitle(page));
+        refreshPage(page);
+
         if (page === 'backends' || page === 'models') {
-            this.fetchClusterState();
+            fetchClusterState();
         }
     }
 
-    getPageTitle(page) {
+    function getPageTitle(page) {
         const titles = {
             dashboard: 'Dashboard',
             backends: 'Управление бэкендами',
@@ -81,1178 +82,245 @@ class OllamaLegionUI {
         return titles[page] || 'Dashboard';
     }
 
-    refreshPage(page) {
-        switch(page) {
+    function refreshPage(page) {
+        switch (page) {
             case 'dashboard':
-                this.renderDashboard();
+                dashboard(data.backends, data.sessions, data.queue);
+                predictionAlerts(data.backends);
                 break;
             case 'backends':
-                this.renderBackendsPage();
+                backendsPage([...data.backends].sort((a, b) => (a.id || '').localeCompare(b.id || '')));
                 break;
             case 'models':
-                this.renderModelsPage();
+                modelsPage(data.backends);
                 break;
             case 'sessions':
-                this.renderSessionsPage();
+                sessionsPage(data.sessions);
                 break;
             case 'queue':
-                this.renderQueuePage();
+                queuePage(data.queue, data.queueTasks, data.queueHistory);
                 break;
             case 'logs':
-                this.renderLogs();
+                renderLogs(data.logs);
                 break;
             case 'settings':
-                this.loadSettings();
+                loadSettings();
                 break;
         }
     }
 
-    // WebSocket
-    setupWebSocket() {
-        this.connectWebSocket();
+    function refreshCurrentPage() {
+        refreshPage(currentPage);
     }
 
-    connectWebSocket() {
-        try {
-            this.ws = new WebSocket(WS_URL);
-            
-            this.ws.onopen = () => {
-                this.reconnectAttempts = 0;
-                this.updateConnectionStatus(true);
-                this.addLog('WebSocket подключен', 'info');
-            };
-            
-            this.ws.onmessage = (event) => {
-                try {
-                    const data = JSON.parse(event.data);
-                    this.handleWebSocketData(data);
-                } catch (e) {
-                    console.error('WS parse error:', e);
-                }
-            };
-            
-            this.ws.onclose = () => {
-                this.updateConnectionStatus(false);
-                this.attemptReconnect();
-            };
-            
-            this.ws.onerror = (error) => {
-                this.updateConnectionStatus(false);
-                this.addLog('Ошибка WebSocket', 'error');
-                console.error('WebSocket error:', error);
-            };
-        } catch (e) {
-            this.updateConnectionStatus(false);
-            this.attemptReconnect();
-        }
+    // ---- Event Listeners ----
+
+    function setupEventListeners() {
+        document.getElementById('refreshBtn').addEventListener('click', () => {
+            refreshCurrentPage();
+            showToast('Данные обновлены', 'success');
+        });
+
+        document.getElementById('addBackendBtn').addEventListener('click', () => openBackendModal());
+        document.getElementById('addBackendBtn2').addEventListener('click', () => openBackendModal());
+
+        document.getElementById('modalClose').addEventListener('click', closeModal);
+        document.getElementById('modalCancel').addEventListener('click', closeModal);
+        document.getElementById('modalSave').addEventListener('click', saveBackend);
+        document.getElementById('modalDelete').addEventListener('click', deleteBackend);
+
+        document.getElementById('backendSearch').addEventListener('input', Utils.debounce((e) => filterBackends(e.target.value), 150));
+        document.getElementById('sessionSearch').addEventListener('input', Utils.debounce((e) => filterSessions(e.target.value), 150));
+
+        document.getElementById('clearLogs').addEventListener('click', () => {
+            data.logs = [];
+            renderLogs(data.logs);
+        });
+        document.getElementById('exportLogs').addEventListener('click', exportLogs);
+        document.getElementById('exportBackends').addEventListener('click', exportBackends);
+
+        document.getElementById('saveSettings').addEventListener('click', saveSettings);
+        document.getElementById('resetSettings').addEventListener('click', loadSettings);
+
+        document.getElementById('backendModal').addEventListener('click', (e) => {
+            if (e.target.id === 'backendModal') closeModal();
+        });
     }
 
-    attemptReconnect() {
-        if (this.reconnectAttempts >= this.maxReconnectAttempts) {
-            this.addLog('Максимальное количество попыток переподключения', 'error');
-            return;
-        }
-        
-        this.reconnectAttempts++;
-        this.addLog(`Переподключение... (${this.reconnectAttempts}/${this.maxReconnectAttempts})`, 'warn');
-        
-        setTimeout(() => {
-            this.connectWebSocket();
-        }, this.reconnectInterval);
+    // ---- WebSocket Events ----
+
+    function setupWebSocketEvents() {
+        window.addEventListener('ws-open', () => {
+            updateConnectionStatus(true);
+            addLog('WebSocket подключен', 'info');
+        });
+
+        window.addEventListener('ws-status', (e) => {
+            updateConnectionStatus(e.detail.connected);
+        });
+
+        window.addEventListener('ws-error', () => {
+            updateConnectionStatus(false);
+            addLog('Ошибка WebSocket', 'error');
+        });
+
+        window.addEventListener('ws-reconnecting', (e) => {
+            const { attempt, max, delay } = e.detail;
+            addLog(`Переподключение... (${attempt}/${max}) через ${Math.round(delay / 1000)}с`, 'warn');
+        });
+
+        window.addEventListener('ws-max-reconnect', () => {
+            addLog('Максимальное количество попыток переподключения', 'error');
+        });
+
+        window.addEventListener('ws-message', (e) => {
+            handleWebSocketData(e.detail);
+        });
+
+        WebSocketManager.connect();
     }
 
-    handleWebSocketData(data) {
-        // Новый event-driven формат WebSocket
-        const eventType = data.eventType || 'legacy';
+    function handleWebSocketData(payload) {
+        const eventType = payload.eventType || 'legacy';
 
         switch (eventType) {
             case 'clusterState':
-                // Periodic snapshot с полным состоянием кластера
-                this.data.backends = (data.data && data.data.backends) || [];
-                this.renderDashboard();
-                this.renderPredictionAlerts();
+                data.backends = payload.data?.backends || [];
+                if (currentPage === 'dashboard') {
+                    refreshPage('dashboard');
+                }
                 break;
 
             case 'backendAdd':
-                this.addLog(`Бэкенд добавлен: ${data.data && data.data.name || data.backendId}`, 'info');
-                // Запрашиваем полное состояние для обновления UI
-                this.fetchClusterState();
+                addLog(`Бэкенд добавлен: ${payload.data?.name || payload.backendId}`, 'info');
+                fetchClusterState();
                 break;
 
             case 'backendRemove':
-                this.addLog(`Бэкенд удалён: ${data.backendId}`, 'info');
-                this.fetchClusterState();
+                addLog(`Бэкенд удалён: ${payload.backendId}`, 'info');
+                fetchClusterState();
                 break;
 
             case 'statusChange':
-                this.addLog(
-                    `Статус ${data.backendId}: ${data.data && data.data.oldStatus} → ${data.data && data.data.newStatus}`,
-                    'warning'
-                );
-                this.fetchClusterState();
+                addLog(`Статус ${payload.backendId}: ${payload.data?.oldStatus} → ${payload.data?.newStatus}`, 'warning');
+                fetchClusterState();
                 break;
 
             case 'limitsChange':
-                this.addLog(`Лимиты ${data.backendId} обновлены`, 'info');
-                this.fetchClusterState();
+                addLog(`Лимиты ${payload.backendId} обновлены`, 'info');
+                fetchClusterState();
                 break;
 
             case 'ping':
-                // heartbeat ping — игнорируем
                 break;
 
             case 'legacy':
             default:
-                // Fallback для старых сообщений без eventType
-                if (data.backends) {
-                    this.data.backends = data.backends || [];
-                    this.renderDashboard();
-                    this.renderPredictionAlerts();
+                if (payload.backends) {
+                    data.backends = payload.backends || [];
+                    if (currentPage === 'dashboard') {
+                        refreshPage('dashboard');
+                    }
                 }
                 break;
         }
     }
 
-    updateConnectionStatus(connected) {
-        const status = document.getElementById('connectionStatus');
-        const dot = status.querySelector('.status-dot');
-        const text = status.querySelector('.status-text');
-        
-        if (connected) {
-            dot.classList.remove('disconnected');
-            dot.classList.add('connected');
-            text.textContent = 'Подключено';
-        } else {
-            dot.classList.remove('connected');
-            dot.classList.add('disconnected');
-            text.textContent = 'Отключено';
-        }
-    }
+    // ---- API Events ----
 
-    // Event Listeners
-    setupEventListeners() {
-        // Refresh button
-        document.getElementById('refreshBtn').addEventListener('click', () => {
-            this.refreshCurrentPage();
-            this.showToast('Данные обновлены', 'success');
-        });
-
-        // Add backend buttons
-        document.getElementById('addBackendBtn').addEventListener('click', () => {
-            this.openBackendModal();
-        });
-        document.getElementById('addBackendBtn2').addEventListener('click', () => {
-            this.openBackendModal();
-        });
-
-        // Modal
-        document.getElementById('modalClose').addEventListener('click', () => this.closeModal());
-        document.getElementById('modalCancel').addEventListener('click', () => this.closeModal());
-        document.getElementById('modalSave').addEventListener('click', () => this.saveBackend());
-        document.getElementById('modalDelete').addEventListener('click', () => this.deleteBackend());
-
-        // Backend search
-        document.getElementById('backendSearch').addEventListener('input', (e) => {
-            this.filterBackends(e.target.value);
-        });
-
-        // Session search
-        document.getElementById('sessionSearch').addEventListener('input', (e) => {
-            this.filterSessions(e.target.value);
-        });
-
-        // Logs
-        document.getElementById('clearLogs').addEventListener('click', () => {
-            this.data.logs = [];
-            this.renderLogs();
-        });
-        document.getElementById('exportLogs').addEventListener('click', () => {
-            this.exportLogs();
-        });
-
-        // Export backends
-        document.getElementById('exportBackends').addEventListener('click', () => {
-            this.exportBackends();
-        });
-
-        // Settings
-        document.getElementById('saveSettings').addEventListener('click', () => {
-            this.saveSettings();
-        });
-        document.getElementById('resetSettings').addEventListener('click', () => {
-            this.loadSettings();
-        });
-
-        // Close modal on outside click
-        document.getElementById('backendModal').addEventListener('click', (e) => {
-            if (e.target.id === 'backendModal') this.closeModal();
+    function setupApiEvents() {
+        window.addEventListener('api-error', (e) => {
+            const { message } = e.detail;
+            showToast(message, 'error');
+            addLog(message, 'error');
         });
     }
 
-    // Dashboard
-    renderDashboard() {
-        const backends = [...this.data.backends].sort((a, b) => (a.id || '').localeCompare(b.id || ''));
-        const healthy = backends.filter(b => b.status === 'healthy');
-        
-        // Summary metrics
-        document.getElementById('totalBackends').textContent = backends.length;
-        document.getElementById('healthyBackends').textContent = `${healthy.length} здоровых`;
-        
-        const totalModels = backends.reduce((sum, b) => sum + (b.ollama?.runningModels?.length || 0), 0);
-        document.getElementById('totalModels').textContent = totalModels;
-        document.getElementById('loadedModels').textContent = `${totalModels} загружено`;
-        
-        // Sessions — единый источник: this.data.sessions (не backends.activeRequests)
-        const sessions = this.data.sessions || [];
-        const activeSessions = sessions.filter(s => s.active).length;
-        const totalRequests = sessions.reduce((sum, s) => sum + (s.requestCount || 0), 0);
-        document.getElementById('totalSessions').textContent = activeSessions;
-        document.getElementById('sessionRate').textContent = `${totalRequests} запросов`;
-        
-        // Queue — единый источник: this.data.queue
-        const queue = this.data.queue || {};
-        const queueSize = queue.current_size || 0;
-        const queueProcessed = queue.processed_total || 0;
-        document.getElementById('queueSize').textContent = queueSize;
-        document.getElementById('queueProcessed').textContent = `${queueProcessed} обработано`;
-        
-        // Ollama Runtime
-        this.renderRuntimeCluster(backends);
-        
-        // GPU Cluster
-        this.renderGPUCluster(backends);
-        
-        // Backend Capacity
-        this.renderCapacitySection(backends);
-        
-        // Available to Load
-        this.renderAvailableModels(backends);
-        
-        // Backends table
-        this.renderBackendsTable(backends);
-    }
+    // ---- Data Fetching ----
 
-    renderRuntimeCluster(backends) {
-        const container = document.getElementById('runtimeCluster');
-        if (!backends.length) {
-            container.innerHTML = '<div class="loading">Нет данных о бэкендах</div>';
-            return;
-        }
-        
-        container.innerHTML = backends.map(backend => {
-            const flags = backend.ollama?.runtimeFlags || {};
-            const contexts = backend.ollama?.modelContexts || [];
-            
-            const flagBadges = [];
-            if (flags.numGpuLayers !== undefined && flags.numGpuLayers !== 0) {
-                const cls = flags.numGpuLayers === -1 ? '' : 'warning';
-                flagBadges.push(`<span class="flag-badge ${cls}">GPU:${flags.numGpuLayers === -1 ? 'auto' : flags.numGpuLayers}</span>`);
-            }
-            if (flags.contextLength) flagBadges.push(`<span class="flag-badge">C:${this.formatNumber(flags.contextLength)}</span>`);
-            if (flags.numParallel && flags.numParallel > 1) flagBadges.push(`<span class="flag-badge warning">NP:${flags.numParallel}</span>`);
-            if (flags.numThreads) flagBadges.push(`<span class="flag-badge">T:${flags.numThreads}</span>`);
-            if (flags.batchSize && flags.batchSize !== 512) flagBadges.push(`<span class="flag-badge">B:${flags.batchSize}</span>`);
-            if (flags.lowVram) flagBadges.push(`<span class="flag-badge danger">LOW_VRAM</span>`);
-            if (flags.flashAttention) flagBadges.push(`<span class="flag-badge">FA</span>`);
-            if (flags.kvCacheQuant && flags.kvCacheQuant !== 'f16') flagBadges.push(`<span class="flag-badge warning">KV:${flags.kvCacheQuant}</span>`);
-            
-            const contextBadges = contexts.map(ctx => `
-                <span class="context-info">
-                    ${ctx.name}: Ctx ${this.formatNumber(ctx.effectiveContext)} (${ctx.contextSource})
-                    <div class="context-tooltip">
-                        <div class="context-tooltip-row"><span class="context-tooltip-label">Context</span><span class="context-tooltip-value">${this.formatNumber(ctx.contextLength)}</span></div>
-                        <div class="context-tooltip-row"><span class="context-tooltip-label">Effective</span><span class="context-tooltip-value">${this.formatNumber(ctx.effectiveContext)}</span></div>
-                        <div class="context-tooltip-row"><span class="context-tooltip-label">Model Memory</span><span class="context-tooltip-value">${this.formatMB(ctx.modelMemoryMB)}</span></div>
-                        <div class="context-tooltip-row"><span class="context-tooltip-label">Context Memory</span><span class="context-tooltip-value">${this.formatMB(ctx.contextMemoryMB)}</span></div>
-                        <div class="context-tooltip-row"><span class="context-tooltip-label">KV Cache</span><span class="context-tooltip-value">${this.formatMB(ctx.kvCacheMemoryMB)}</span></div>
-                        <div class="context-tooltip-row"><span class="context-tooltip-label">Total</span><span class="context-tooltip-value">${this.formatMB(ctx.totalMemoryMB)}</span></div>
-                        <div class="context-tooltip-row"><span class="context-tooltip-label">Layers</span><span class="context-tooltip-value">${ctx.numLayers || '-'}</span></div>
-                        <div class="context-tooltip-row"><span class="context-tooltip-label">Precision</span><span class="context-tooltip-value">${ctx.precisionBits || 16}-bit</span></div>
-                    </div>
-                </span>
-            `).join('');
-            
-            return `
-                <div class="runtime-card">
-                    <div class="runtime-header">
-                        <strong>${backend.id}</strong>
-                        <span class="badge ${backend.status === 'healthy' ? 'badge-success' : 'badge-danger'}">${backend.status}</span>
-                    </div>
-                    <div class="runtime-flags">
-                        ${flagBadges.length ? flagBadges.join('') : '<span class="flag-badge">default</span>'}
-                    </div>
-                    ${contextBadges ? `<div style="margin-top:0.5rem;">${contextBadges}</div>` : ''}
-                </div>
-            `;
-        }).join('');
-    }
-
-    renderCapacitySection(backends) {
-        const container = document.getElementById('capacitySection');
-        if (!backends.length) {
-            container.innerHTML = '<div class="loading">Нет данных о бэкендах</div>';
-            return;
-        }
-        
-        container.innerHTML = backends.map(backend => {
-            const mode = this.getBackendMode(backend);
-            const cap = backend.ollama?.backendCapacity || {};
-            
-            if (mode === 'cloud') {
-                return `
-                    <div class="capacity-card capacity-cloud">
-                        <div class="runtime-header">
-                            <strong>${backend.id}</strong>
-                            ${this.getBackendModeBadge(backend)}
-                        </div>
-                        <div class="capacity-cloud-info">
-                            <div class="capacity-cloud-row"><span>Хост</span><span>${backend.host || '-'}</span></div>
-                            <div class="capacity-cloud-row"><span>Статус</span><span class="badge badge-${backend.status === 'healthy' ? 'success' : 'danger'}">${backend.status}</span></div>
-                            <div class="capacity-cloud-row"><span>Active Req</span><span>${backend.activeRequests || 0}</span></div>
-                            <div class="capacity-cloud-row"><span>Загружено моделей</span><span>${(backend.ollama?.runningModels || []).length}</span></div>
-                        </div>
-                    </div>
-                `;
-            }
-            
-            // GPU или CPU режим
-            const isCPU = mode === 'cpu';
-            const sys = backend.system || {};
-            
-            const memTotal = isCPU ? (sys.memoryTotal || 1) : (backend.gpu?.memoryTotal || 1);
-            const memUsed = isCPU ? (sys.memoryUsed || 0) : (backend.gpu?.memoryUsed || 0);
-            const memFree = isCPU ? (sys.memoryFree || 0) : (backend.gpu?.memoryFree || 0);
-            
-            const loadedMem = cap.loadedModelVram || 0;
-            const ctxOverhead = cap.contextOverheadMB || 0;
-            const guaranteed = cap.guaranteedVram || 0;
-            
-            const usedPct = memTotal > 0 ? (memUsed / memTotal * 100) : 0;
-            const loadedPct = memTotal > 0 ? (loadedMem / memTotal * 100) : 0;
-            const ctxPct = memTotal > 0 ? (ctxOverhead / memTotal * 100) : 0;
-            const guarPct = memTotal > 0 ? (guaranteed / memTotal * 100) : 0;
-            
-            const memLabel = isCPU ? 'RAM' : 'VRAM';
-            
-            return `
-                <div class="capacity-card">
-                    <div class="runtime-header">
-                        <strong>${backend.id}</strong>
-                        ${this.getBackendModeBadge(backend)}
-                    </div>
-                    <div class="capacity-bar-container">
-                        <div class="capacity-bar-labels">
-                            <span>${memLabel}: ${this.formatMB(memUsed)} / ${this.formatMB(memTotal)}</span>
-                            <span>${usedPct.toFixed(1)}%</span>
-                        </div>
-                        <div class="capacity-bar">
-                            <div class="capacity-bar-filled" style="width: ${loadedPct}%"></div>
-                            <div class="capacity-bar-context" style="width: ${ctxPct}%"></div>
-                            <div class="capacity-bar-guaranteed" style="width: ${guarPct}%"></div>
-                        </div>
-                    </div>
-                    <div class="capacity-stats">
-                        <div class="capacity-stat"><span>Loaded models</span><span>${this.formatMB(loadedMem)}</span></div>
-                        <div class="capacity-stat"><span>Context overhead</span><span>${this.formatMB(ctxOverhead)}</span></div>
-                        <div class="capacity-stat"><span>Free ${memLabel}</span><span>${this.formatMB(memFree)}</span></div>
-                        <div class="capacity-stat"><span>Guaranteed (90%)</span><span>${this.formatMB(guaranteed)}</span></div>
-                    </div>
-                </div>
-            `;
-        }).join('');
-    }
-
-    renderAvailableModels(backends) {
-        const container = document.getElementById('availableModelsList');
-        const badge = document.getElementById('loadableModelCount');
-        
-        if (!backends.length) {
-            container.innerHTML = '<div class="loading">Нет данных</div>';
-            badge.textContent = '-';
-            return;
-        }
-        
-        let totalLoadable = 0;
-        const allModels = [];
-        
-        backends.forEach(backend => {
-            const cap = backend.ollama?.backendCapacity || {};
-            const models = cap.availableModels || [];
-            models.forEach(m => {
-                allModels.push({
-                    ...m,
-                    backendId: backend.id,
-                    backendStatus: backend.status
-                });
-                if (m.canLoad) totalLoadable++;
-            });
-        });
-        
-        badge.textContent = totalLoadable;
-        
-        if (!allModels.length) {
-            container.innerHTML = '<div class="loading">Нет доступных моделей</div>';
-            return;
-        }
-        
-        // Sort: loadable first, then by estimated VRAM
-        allModels.sort((a, b) => {
-            if (a.canLoad !== b.canLoad) return b.canLoad - a.canLoad;
-            return (a.estimatedVram || 0) - (b.estimatedVram || 0);
-        });
-        
-        container.innerHTML = allModels.slice(0, 50).map(m => {
-            const loadable = m.canLoad;
-            const cls = loadable ? 'model-loadable' : 'model-unloadable';
-            const vram = m.estimatedVram || 0;
-            return `
-                <div class="available-model-item ${cls}">
-                    <div class="model-indicator"></div>
-                    <span class="model-name">${m.name}</span>
-                    <span class="model-vram">${this.formatMB(vram)} @ ${m.backendId}</span>
-                </div>
-            `;
-        }).join('');
-        
-        if (allModels.length > 50) {
-            container.innerHTML += `<div style="text-align:center;color:var(--text-muted);padding:0.5rem;font-size:0.8rem;">+${allModels.length - 50} моделей</div>`;
-        }
-    }
-
-    formatNumber(n) {
-        if (n === undefined || n === null) return '-';
-        if (n >= 1000000) return (n / 1000000).toFixed(1) + 'M';
-        if (n >= 1000) return (n / 1000).toFixed(1) + 'K';
-        return n.toString();
-    }
-
-    formatMB(mb) {
-        if (mb === undefined || mb === null) return '-';
-        if (mb >= 1024) return (mb / 1024).toFixed(1) + ' GB';
-        return Math.round(mb) + ' MB';
-    }
-
-    // Helpers для определения типа бэкенда
-    isCloudBackend(backend) {
-        return (backend.labels || []).includes('cloud');
-    }
-
-    getBackendMode(backend) {
-        if (this.isCloudBackend(backend)) return 'cloud';
-        return backend.ollama?.backendCapacity?.mode || 'gpu';
-    }
-
-    getBackendModeBadge(backend) {
-        const mode = this.getBackendMode(backend);
-        const badges = {
-            gpu: '<span class="badge badge-success">GPU</span>',
-            cpu: '<span class="badge badge-warning">CPU</span>',
-            cloud: '<span class="badge badge-info"><img src="img/dark_meadow.svg" alt="" class="badge-icon-svg"> Cloud</span>'
-        };
-        return badges[mode] || badges.gpu;
-    }
-
-    renderGPUCluster(backends) {
-        const container = document.getElementById('gpuCluster');
-        const badge = document.getElementById('gpuClusterBadge');
-        
-        if (!backends.length) {
-            container.innerHTML = '<div class="loading">Нет данных о бэкендах</div>';
-            badge.textContent = '-';
-            return;
-        }
-        
-        const gpuBackends = backends.filter(b => this.getBackendMode(b) === 'gpu');
-        const cpuBackends = backends.filter(b => this.getBackendMode(b) === 'cpu');
-        const cloudBackends = backends.filter(b => this.getBackendMode(b) === 'cloud');
-        
-        badge.innerHTML = `${gpuBackends.length} GPU · ${cpuBackends.length} CPU · ${cloudBackends.length} <img src="img/dark_meadow.svg" alt="" class="badge-icon-svg">`;
-        
-        const renderCard = (backend) => {
-            const mode = this.getBackendMode(backend);
-            
-            if (mode === 'cloud') {
-                const activeReq = backend.activeRequests || 0;
-                const maxReq = backend.maxConcurrentRequests || 10;
-                const models = (backend.ollama?.runningModels || []).length;
-                const rps = backend.ollama?.requestsPerSecond || 0;
-                
-                return `
-                    <div class="gpu-card gpu-card-cloud">
-                        <div class="gpu-card-header">
-                            <span class="gpu-card-title">${backend.id}</span>
-                            <img src="img/dark_meadow.svg" alt="" class="badge-icon-svg">
-                        </div>
-                        <div class="gpu-metrics">
-                            <div class="gpu-metric">
-                                <div class="gpu-metric-label">Req</div>
-                                <div class="gpu-metric-value">${activeReq}/${maxReq}</div>
-                            </div>
-                            <div class="gpu-metric">
-                                <div class="gpu-metric-label">Models</div>
-                                <div class="gpu-metric-value">${models}</div>
-                            </div>
-                            <div class="gpu-metric">
-                                <div class="gpu-metric-label">RPS</div>
-                                <div class="gpu-metric-value">${rps.toFixed(1)}</div>
-                            </div>
-                            <div class="gpu-metric">
-                                <div class="gpu-metric-label">Status</div>
-                                <div class="gpu-metric-value">${backend.status}</div>
-                            </div>
-                        </div>
-                        <div class="progress-bar">
-                            <div class="progress-fill low" style="width: 0%"></div>
-                        </div>
-                    </div>
-                `;
-            }
-            
-            if (mode === 'cpu') {
-                const sys = backend.system || {};
-                const cpuUsage = sys.cpuUsagePercent || 0;
-                const ramTotal = sys.memoryTotal || 1;
-                const ramUsed = sys.memoryUsed || 0;
-                const ramPercent = ramTotal > 0 ? (ramUsed / ramTotal * 100) : 0;
-                const temp = sys.cpuTemperature !== undefined ? sys.cpuTemperature : '-';
-                const loadAvg = sys.loadAverage1 !== undefined ? sys.loadAverage1.toFixed(2) : '-';
-                
-                return `
-                    <div class="gpu-card gpu-card-cpu">
-                        <div class="gpu-card-header">
-                            <span class="gpu-card-title">${backend.id}</span>
-                            <span class="badge badge-warning">CPU</span>
-                        </div>
-                        <div class="gpu-metrics">
-                            <div class="gpu-metric">
-                                <div class="gpu-metric-label">CPU</div>
-                                <div class="gpu-metric-value">${cpuUsage.toFixed(1)}%</div>
-                            </div>
-                            <div class="gpu-metric">
-                                <div class="gpu-metric-label">RAM</div>
-                                <div class="gpu-metric-value">${ramPercent.toFixed(1)}%</div>
-                            </div>
-                            <div class="gpu-metric">
-                                <div class="gpu-metric-label">Load</div>
-                                <div class="gpu-metric-value">${loadAvg}</div>
-                            </div>
-                            <div class="gpu-metric">
-                                <div class="gpu-metric-label">Temp</div>
-                                <div class="gpu-metric-value">${temp}°C</div>
-                            </div>
-                        </div>
-                        <div class="progress-bar">
-                            <div class="progress-fill ${this.getProgressClass(cpuUsage)}" style="width: ${cpuUsage}%"></div>
-                        </div>
-                    </div>
-                `;
-            }
-            
-            // GPU mode (default)
-            const gpu = backend.gpu || {};
-            const usage = gpu.usagePercent || 0;
-            const vramUsed = gpu.memoryUsed || 0;
-            const vramTotal = gpu.memoryTotal || 1;
-            const vramPercent = (vramUsed / vramTotal * 100).toFixed(1);
-            const temp = gpu.temperature !== undefined ? gpu.temperature : '-';
-            const power = gpu.powerUsage !== undefined ? gpu.powerUsage : '-';
-            const status = this.getGPUStatus(usage, vramPercent, temp);
-            
-            return `
-                <div class="gpu-card">
-                    <div class="gpu-card-header">
-                        <span class="gpu-card-title">${backend.id}</span>
-                        <span class="gpu-status ${status}"></span>
-                    </div>
-                    <div class="gpu-metrics">
-                        <div class="gpu-metric">
-                            <div class="gpu-metric-label">GPU</div>
-                            <div class="gpu-metric-value">${usage.toFixed(1)}%</div>
-                        </div>
-                        <div class="gpu-metric">
-                            <div class="gpu-metric-label">VRAM</div>
-                            <div class="gpu-metric-value">${vramPercent}%</div>
-                        </div>
-                        <div class="gpu-metric">
-                            <div class="gpu-metric-label">Temp</div>
-                            <div class="gpu-metric-value">${temp}°C</div>
-                        </div>
-                        <div class="gpu-metric">
-                            <div class="gpu-metric-label">Power</div>
-                            <div class="gpu-metric-value">${power}W</div>
-                        </div>
-                    </div>
-                    <div class="progress-bar">
-                        <div class="progress-fill ${this.getProgressClass(usage)}" style="width: ${usage}%"></div>
-                    </div>
-                </div>
-            `;
-        };
-        
-        container.innerHTML = backends.map(renderCard).join('');
-    }
-
-    getGPUStatus(gpu, vram, temp) {
-        if (gpu > 90 || vram > 90 || temp > 85) return 'critical';
-        if (gpu > 70 || vram > 70 || temp > 75) return 'warning';
-        return 'healthy';
-    }
-
-    getProgressClass(value) {
-        if (value > 80) return 'high';
-        if (value > 50) return 'medium';
-        return 'low';
-    }
-
-    // Backends Table
-    renderBackendsTable(backends) {
-        const tbody = document.getElementById('backendsTableBody');
-        
-        if (!backends.length) {
-            tbody.innerHTML = '<tr><td colspan="11" class="loading-cell">Нет данных</td></tr>';
-            return;
-        }
-        
-        tbody.innerHTML = backends.map(b => {
-            const mode = this.getBackendMode(b);
-            const gpu = b.gpu || {};
-            const sys = b.system || {};
-            const pred = b.prediction || {};
-            const oll = b.ollama || {};
-            
-            const isCloud = mode === 'cloud';
-            const isCPU = mode === 'cpu';
-            
-            const gpuUsage = isCloud ? '-' : (gpu.usagePercent !== undefined ? gpu.usagePercent.toFixed(1) + '%' : '-');
-            const vramPercent = isCloud ? '-' : (gpu.memoryTotal > 0 ? (gpu.memoryUsed / gpu.memoryTotal * 100).toFixed(1) + '%' : '-');
-            const cpuUsage = isCloud ? '-' : (sys.cpuUsagePercent !== undefined ? sys.cpuUsagePercent.toFixed(1) + '%' : '-');
-            const ramPercent = isCloud ? '-' : (sys.memoryTotal > 0 ? (sys.memoryUsed / sys.memoryTotal * 100).toFixed(1) + '%' : '-');
-            
-            const activeReq = b.activeRequests || 0;
-            const maxReq = b.maxConcurrentRequests || 10;
-            const models = oll.runningModels?.length || 0;
-            const rps = oll.requestsPerSecond || 0;
-            const secondsToCrit = pred.secondsToCritical || -1;
-            const predClass = secondsToCrit > 0 && secondsToCrit < 300 ? 'warning' : 'success';
-            const predText = secondsToCrit > 0 ? `${Math.round(secondsToCrit)}с` : 'OK';
-            
-            return `
-                <tr>
-                    <td><strong>${b.id}</strong> ${this.getBackendModeBadge(b)}</td>
-                    <td><span class="badge badge-${b.status === 'healthy' ? 'success' : 'danger'}">${b.status}</span></td>
-                    <td>${gpuUsage}</td>
-                    <td>${vramPercent}</td>
-                    <td>${cpuUsage}</td>
-                    <td>${ramPercent}</td>
-                    <td>${activeReq}/${maxReq}</td>
-                    <td>${models}</td>
-                    <td>${rps.toFixed(1)}</td>
-                    <td><span class="badge badge-${predClass}">${predText}</span></td>
-                    <td>
-                        <button class="action-btn edit" onclick="ui.editBackend('${b.id}')">Edit</button>
-                        <button class="action-btn delete" onclick="ui.confirmDeleteBackend('${b.id}')">Del</button>
-                    </td>
-                </tr>
-            `;
-        }).join('');
-    }
-
-    filterBackends(query) {
-        const rows = document.querySelectorAll('#backendsTableBody tr');
-        const lowerQuery = query.toLowerCase();
-        
-        rows.forEach(row => {
-            const text = row.textContent.toLowerCase();
-            row.style.display = text.includes(lowerQuery) ? '' : 'none';
-        });
-    }
-
-    // Backends Page
-    renderBackendsPage() {
-        const tbody = document.getElementById('backendsManageBody');
-        const backends = [...this.data.backends].sort((a, b) => (a.id || '').localeCompare(b.id || ''));
-        
-        if (!backends.length) {
-            tbody.innerHTML = '<tr><td colspan="13" class="loading-cell">Нет данных</td></tr>';
-            return;
-        }
-        
-        tbody.innerHTML = backends.map(b => {
-            const labels = (b.labels || []).join(', ') || '-';
-            const lastContact = b.lastAgentContact ? new Date(b.lastAgentContact).toLocaleString('ru') : '-';
-            const maxModels = b.maxModels || b.ollama?.maxModels || b.runtimeMaxModels || '-';
-            return `
-            <tr>
-                <td><strong>${b.id}</strong></td>
-                <td>${b.name || b.id}</td>
-                <td>${b.host}</td>
-                <td>${b.ollamaPort || 11434}</td>
-                <td>${b.agentPort || 18032}</td>
-                <td>${b.weight || 1}</td>
-                <td>${b.maxConcurrentRequests || 10}</td>
-                <td>${maxModels}</td>
-                <td><span class="badge badge-${b.hasAgent ? 'success' : 'warning'}">${b.hasAgent ? 'Да' : 'Нет'}</span></td>
-                <td>${labels}</td>
-                <td>${lastContact}</td>
-                <td><span class="badge badge-${b.status === 'healthy' ? 'success' : 'danger'}">${b.status}</span></td>
-                <td>
-                        <button class="action-btn edit" onclick="ui.editBackend('${b.id}')">Edit</button>
-                        <button class="action-btn delete" onclick="ui.confirmDeleteBackend('${b.id}')">Del</button>
-                </td>
-            </tr>
-        `}).join('');
-    }
-
-    // Models Page
-    renderModelsPage() {
-        const backends = this.data.backends;
-        const allModels = [];
-        const backendMap = {};
-        
-        backends.forEach(b => {
-            backendMap[b.id] = b;
-            (b.ollama?.runningModels || []).forEach(m => {
-                allModels.push({
-                    ...m,
-                    backend: b.id,
-                    backendStatus: b.status
-                });
-            });
-        });
-        
-        document.getElementById('modelsTotal').textContent = allModels.length;
-        document.getElementById('modelsLoaded').textContent = allModels.filter(m => m.backendStatus === 'healthy').length;
-        
-        const container = document.getElementById('modelsGrid');
-        
-        if (!allModels.length) {
-            container.innerHTML = '<div class="loading">Нет загруженных моделей</div>';
-            return;
-        }
-        
-        container.innerHTML = allModels.map(m => {
-            const vramMB = (m.vramUsage || 0) / 1024 / 1024;
-            const ramMB = (m.ramUsage || 0) / 1024 / 1024;
-            const sizeGB = (m.size || 0) / 1024 / 1024 / 1024;
-            
-            // Получаем данные бэкенда для расчета прогресс-баров
-            const backend = backendMap[m.backend] || {};
-            const mode = this.getBackendMode(backend);
-            const isGPU = mode === 'gpu';
-            
-            const gpu = backend.gpu || {};
-            const sys = backend.system || {};
-            
-            const totalVRAM = isGPU ? (gpu.memoryTotal || 1) : 0;
-            const totalRAM = sys.memoryTotal || 1;
-            
-            const vramPercent = totalVRAM > 0 ? Math.min((vramMB / totalVRAM) * 100, 100) : 0;
-            const ramPercent = totalRAM > 0 ? Math.min((ramMB / totalRAM) * 100, 100) : 0;
-            
-            // Для GPU показываем VRAM + RAM, для CPU только RAM
-            const showVRAM = isGPU && totalVRAM > 0;
-            
-            return `
-                <div class="model-card">
-                    <div class="model-card-header">
-                        <span class="model-name">${m.name}</span>
-                        <span class="badge badge-${m.backendStatus === 'healthy' ? 'success' : 'danger'}">${m.backend}</span>
-                    </div>
-                    <div class="model-size">${sizeGB.toFixed(1)} GB</div>
-                    <div class="model-details">
-                        <div class="model-detail">
-                            <div class="model-detail-label">VRAM</div>
-                            <div class="model-detail-value">${vramMB.toFixed(0)} MB</div>
-                        </div>
-                        <div class="model-detail">
-                            <div class="model-detail-label">RAM</div>
-                            <div class="model-detail-value">${ramMB.toFixed(0)} MB</div>
-                        </div>
-                        <div class="model-detail">
-                            <div class="model-detail-label">Family</div>
-                            <div class="model-detail-value">${m.family || '-'}</div>
-                        </div>
-                    </div>
-                    <!-- Memory Progress Bars -->
-                    <div class="model-memory-section">
-                        <div class="model-memory-title">Использование памяти</div>
-                        ${showVRAM ? `
-                        <div class="model-memory-bar-container">
-                            <div class="model-memory-bar-labels">
-                                <span>VRAM</span>
-                                <span>${vramMB.toFixed(0)} / ${totalVRAM.toFixed(0)} MB (${vramPercent.toFixed(1)}%)</span>
-                            </div>
-                            <div class="model-memory-bar">
-                                <div class="model-memory-bar-fill vram" style="width: ${vramPercent}%"></div>
-                            </div>
-                        </div>
-                        ` : ''}
-                        <div class="model-memory-bar-container">
-                            <div class="model-memory-bar-labels">
-                                <span>RAM</span>
-                                <span>${ramMB.toFixed(0)} / ${totalRAM.toFixed(0)} MB (${ramPercent.toFixed(1)}%)</span>
-                            </div>
-                            <div class="model-memory-bar">
-                                <div class="model-memory-bar-fill ram" style="width: ${ramPercent}%"></div>
-                            </div>
-                        </div>
-                    </div>
-                </div>
-            `;
-        }).join('');
-    }
-
-    // Sessions Page
-    renderSessionsPage() {
-        // Fetch sessions from API
-        this.fetchSessions();
-    }
-
-    async fetchSessions() {
+    async function fetchClusterState() {
         try {
-            const response = await fetch(`${API_BASE}/api/v1/sessions`);
-            if (!response.ok) throw new Error('Failed to fetch sessions');
-            
-            const data = await response.json();
-            this.data.sessions = data.sessions || [];
-            // Обновляем sessions-виджет на dashboard
-            this.updateSessionsDashboard();
-            this.renderSessionsTable();
-        } catch (e) {
-            console.error('Failed to fetch sessions:', e);
-            this.addLog('Ошибка загрузки сессий', 'error');
-        }
-    }
-
-    // Обновление sessions-виджета на dashboard
-    updateSessionsDashboard() {
-        const sessions = this.data.sessions || [];
-        const activeCount = sessions.filter(s => s.active).length;
-        const totalRequests = sessions.reduce((sum, s) => sum + (s.requestCount || 0), 0);
-        const elTotal = document.getElementById('totalSessions');
-        const elRate = document.getElementById('sessionRate');
-        if (elTotal) elTotal.textContent = activeCount;
-        if (elRate) elRate.textContent = `${totalRequests} запросов`;
-    }
-
-    renderSessionsTable() {
-        const tbody = document.getElementById('sessionsTableBody');
-        const sessions = this.data.sessions;
-        
-        if (!sessions.length) {
-            tbody.innerHTML = '<tr><td colspan="6" class="loading-cell">Нет активных сессий</td></tr>';
-            return;
-        }
-        
-        tbody.innerHTML = sessions.map(s => `
-            <tr>
-                <td><code>${s.id?.substring(0, 16) || 'N/A'}...</code></td>
-                <td>${s.backendId || '-'}</td>
-                <td>${s.model || '-'}</td>
-                <td>${s.requestCount || 0}</td>
-                <td>${s.lastActivity ? new Date(s.lastActivity).toLocaleString('ru') : '-'}</td>
-                <td><span class="badge badge-${s.active ? 'success' : 'warning'}">${s.active ? 'Активна' : 'Неактивна'}</span></td>
-            </tr>
-        `).join('');
-    }
-
-    filterSessions(query) {
-        const rows = document.querySelectorAll('#sessionsTableBody tr');
-        const lowerQuery = query.toLowerCase();
-        
-        rows.forEach(row => {
-            const text = row.textContent.toLowerCase();
-            row.style.display = text.includes(lowerQuery) ? '' : 'none';
-        });
-    }
-
-    // Queue Page
-    renderQueuePage() {
-        const queue = this.data.queue || {};
-        const current = queue.current_size || 0;
-        const max = queue.max_size || 100;
-        const processed = queue.processed_total || 0;
-        const workers = queue.workers || 0;
-        const timeout = queue.timeout_sec || 0;
-        
-        document.getElementById('queueCurrentSize').textContent = current;
-        document.getElementById('queueMaxSize').textContent = max;
-        document.getElementById('queueProcessed').textContent = processed;
-        document.getElementById('queueWorkers').textContent = workers;
-        
-        const percent = max > 0 ? (current / max * 100) : 0;
-        const fillEl = document.getElementById('queueFill');
-        if (fillEl) fillEl.style.width = percent + '%';
-        const midEl = document.getElementById('queueMidLabel');
-        if (midEl) midEl.textContent = Math.round(max / 2);
-        const maxEl = document.getElementById('queueMaxLabel');
-        if (maxEl) maxEl.textContent = max;
-        
-        // Обновляем badge с количеством задач
-        const badge = document.getElementById('queueTasksCount');
-        if (badge) badge.textContent = current;
-        
-        // Рендерим таблицу задач из queueDetails
-        this.renderQueueTasks();
-    }
-
-    renderQueueTasks() {
-        const tbody = document.getElementById('queueTasksBody');
-        const tasks = this.data.queueTasks || [];
-        
-        if (!tasks.length) {
-            tbody.innerHTML = '<tr><td colspan="5" class="loading-cell">Нет задач в очереди</td></tr>';
-            return;
-        }
-        
-        tbody.innerHTML = tasks.map((task, index) => {
-            const status = task.status || 'pending';
-            const statusClass = status === 'processing' ? 'processing' : (status === 'completed' ? 'completed' : 'pending');
-            const statusText = status === 'processing' ? 'Обработка' : (status === 'completed' ? 'Завершено' : 'Ожидание');
-            const waitTime = task.waitTimeMs ? (task.waitTimeMs / 1000).toFixed(1) + 'с' : '-';
-            return `
-                <tr>
-                    <td>${index + 1}</td>
-                    <td><code>${task.model || '-'}</code></td>
-                    <td>${task.backend || 'Auto'}</td>
-                    <td>${waitTime}</td>
-                    <td><span class="queue-task-status ${statusClass}">${statusText}</span></td>
-                </tr>
-            `;
-        }).join('');
-    }
-
-    // Logs
-    addLog(message, level = 'info') {
-        const entry = {
-            time: new Date().toLocaleTimeString('ru'),
-            level: level.toUpperCase(),
-            message
-        };
-        
-        this.data.logs.unshift(entry);
-        if (this.data.logs.length > 500) {
-            this.data.logs = this.data.logs.slice(0, 500);
-        }
-        
-        if (this.currentPage === 'logs') {
-            this.renderLogs();
-        }
-    }
-
-    renderLogs() {
-        const container = document.getElementById('logsContainer');
-        
-        if (!this.data.logs.length) {
-            container.innerHTML = '<div class="loading">Нет логов</div>';
-            return;
-        }
-        
-        container.innerHTML = this.data.logs.map(log => `
-            <div class="log-entry">
-                <span class="log-time">${log.time}</span>
-                <span class="log-level ${log.level.toLowerCase()}">${log.level}</span>
-                <span class="log-message">${this.escapeHtml(log.message)}</span>
-            </div>
-        `).join('');
-        
-        container.scrollTop = 0;
-    }
-
-    exportLogs() {
-        const content = this.data.logs.map(l => `[${l.time}] ${l.level}: ${l.message}`).join('\n');
-        this.downloadFile(content, 'ollamalegion-logs.txt', 'text/plain');
-    }
-
-    exportBackends() {
-        const content = JSON.stringify(this.data.backends, null, 2);
-        this.downloadFile(content, 'ollamalegion-backends.json', 'application/json');
-    }
-
-    downloadFile(content, filename, type) {
-        const blob = new Blob([content], { type });
-        const url = URL.createObjectURL(blob);
-        const a = document.createElement('a');
-        a.href = url;
-        a.download = filename;
-        document.body.appendChild(a);
-        a.click();
-        document.body.removeChild(a);
-        URL.revokeObjectURL(url);
-    }
-
-    // Prediction Alerts
-    renderPredictionAlerts() {
-        const alerts = [];
-        const backends = this.data.backends;
-        
-        backends.forEach(b => {
-            const pred = b.prediction || {};
-            const seconds = pred.secondsToCritical;
-            
-            if (seconds > 0 && seconds < 300) {
-                alerts.push({
-                    backend: b.id,
-                    reason: pred.criticalReason || 'unknown',
-                    seconds: Math.round(seconds),
-                    level: seconds < 120 ? 'danger' : 'warning'
-                });
+            const state = await Api.cluster();
+            data.backends = state.backends || [];
+            if (currentPage === 'dashboard') {
+                refreshPage('dashboard');
             }
-        });
-        
-        const container = document.getElementById('alertsList');
-        
-        if (!alerts.length) {
-            container.innerHTML = '<div class="alert alert-info">Нет активных предупреждений</div>';
-            return;
-        }
-        
-        container.innerHTML = alerts.map(a => `
-            <div class="alert alert-${a.level}">
-                <img src="img/dark-wall.svg" alt="" class="alert-icon-svg">
-                <span><strong>${a.backend}</strong>: ${a.reason} через ${a.seconds}с</span>
-            </div>
-        `).join('');
-    }
-
-    // Backend CRUD
-    openBackendModal(backendId = null) {
-        const modal = document.getElementById('backendModal');
-        const title = document.getElementById('modalTitle');
-        const deleteBtn = document.getElementById('modalDelete');
-        
-        if (backendId) {
-            const backend = this.data.backends.find(b => b.id === backendId);
-            if (!backend) return;
-            
-            title.textContent = 'Редактировать бэкенд';
-            deleteBtn.style.display = 'inline-block';
-            
-            document.getElementById('formBackendId').value = backend.id;
-            document.getElementById('formBackendId').disabled = true;
-            document.getElementById('formBackendName').value = backend.name || '';
-            document.getElementById('formBackendHost').value = backend.host || '';
-            document.getElementById('formBackendOllamaPort').value = backend.ollamaPort || 11434;
-            document.getElementById('formBackendAgentPort').value = backend.agentPort || 18032;
-            document.getElementById('formBackendWeight').value = backend.weight || 1;
-            document.getElementById('formBackendMaxConcurrent').value = backend.maxConcurrentRequests || 10;
-            document.getElementById('formBackendLabels').value = (backend.labels || []).join(',');
-        } else {
-            title.textContent = 'Добавить бэкенд';
-            deleteBtn.style.display = 'none';
-            
-            document.getElementById('formBackendId').value = '';
-            document.getElementById('formBackendId').disabled = false;
-            document.getElementById('formBackendName').value = '';
-            document.getElementById('formBackendHost').value = '';
-            document.getElementById('formBackendOllamaPort').value = 11434;
-            document.getElementById('formBackendAgentPort').value = 18032;
-            document.getElementById('formBackendWeight').value = 1;
-            document.getElementById('formBackendMaxConcurrent').value = 10;
-            document.getElementById('formBackendLabels').value = '';
-        }
-        
-        modal.classList.add('active');
-    }
-
-    closeModal() {
-        document.getElementById('backendModal').classList.remove('active');
-    }
-
-    async saveBackend() {
-        const id = document.getElementById('formBackendId').value.trim();
-        const name = document.getElementById('formBackendName').value.trim();
-        const host = document.getElementById('formBackendHost').value.trim();
-        const ollamaPort = parseInt(document.getElementById('formBackendOllamaPort').value) || 11434;
-        const agentPort = parseInt(document.getElementById('formBackendAgentPort').value) || 18032;
-        const weight = parseFloat(document.getElementById('formBackendWeight').value) || 1;
-        const maxConcurrent = parseInt(document.getElementById('formBackendMaxConcurrent').value) || 10;
-        const labels = document.getElementById('formBackendLabels').value.split(',').map(l => l.trim()).filter(Boolean);
-        
-        if (!id || !host) {
-            this.showToast('ID и хост обязательны', 'error');
-            return;
-        }
-        
-        const backend = {
-            id,
-            name: name || id,
-            host,
-            ollamaPort,
-            agentPort,
-            weight,
-            maxConcurrentRequests: maxConcurrent,
-            labels
-        };
-        
-        const isEdit = document.getElementById('formBackendId').disabled;
-        const method = isEdit ? 'PUT' : 'POST';
-        const url = isEdit ? `${API_BASE}/api/v1/backends/${id}` : `${API_BASE}/api/v1/backends`;
-        
-        try {
-            const response = await fetch(url, {
-                method,
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify(backend)
-            });
-            
-            if (!response.ok) throw new Error(`HTTP ${response.status}`);
-            
-            this.closeModal();
-            this.showToast(isEdit ? 'Бэкенд обновлен' : 'Бэкенд добавлен', 'success');
-            this.addLog(`Бэкенд ${id} ${isEdit ? 'обновлен' : 'добавлен'}`, 'info');
-            this.refreshCurrentPage();
         } catch (e) {
-            this.showToast(`Ошибка: ${e.message}`, 'error');
-            this.addLog(`Ошибка сохранения бэкенда: ${e.message}`, 'error');
+            Api.handleError(e, 'Ошибка загрузки состояния кластера');
         }
     }
 
-    editBackend(id) {
-        this.openBackendModal(id);
-    }
-
-    confirmDeleteBackend(id) {
-        this.openBackendModal(id);
-        // The delete button is shown in edit mode
-    }
-
-    async deleteBackend() {
-        const id = document.getElementById('formBackendId').value;
-        
-        if (!confirm(`Удалить бэкенд ${id}?`)) return;
-        
+    async function fetchQueue() {
         try {
-            const response = await fetch(`${API_BASE}/api/v1/backends/${id}`, {
-                method: 'DELETE'
-            });
-            
-            if (!response.ok) throw new Error(`HTTP ${response.status}`);
-            
-            this.closeModal();
-            this.showToast('Бэкенд удален', 'success');
-            this.addLog(`Бэкенд ${id} удален`, 'info');
-            this.refreshCurrentPage();
+            data.queue = await Api.queueStats();
+            Utils.setText('queueSize', data.queue.current_size || 0);
+            Utils.setText('queueProcessed', `${data.queue.processed_total || 0} обработано`);
+            if (currentPage === 'queue') refreshPage('queue');
         } catch (e) {
-            this.showToast(`Ошибка: ${e.message}`, 'error');
+            Api.handleError(e, 'Ошибка загрузки статистики очереди');
         }
     }
 
-    // Settings
-    async loadSettings() {
+    async function fetchQueueDetails() {
         try {
-            const response = await fetch(`${API_BASE}/api/v1/health`);
-            if (!response.ok) return;
-            
-            const config = await response.json();
-            // Note: The health endpoint may not return full config
-            // This is a placeholder - actual implementation would fetch config
+            const res = await Api.queueDetails();
+            const pending = res.pending || [];
+            data.queueTasks = pending.map((item, idx) => ({
+                id: idx + 1,
+                model: item.model || '-',
+                backend: item.target || 'Auto',
+                status: item.target ? 'processing' : 'pending',
+                waitTimeMs: item.enqueued ? (Date.now() - new Date(item.enqueued).getTime()) : 0,
+                enqueued: item.enqueued
+            }));
+            if (currentPage === 'queue') refreshPage('queue');
         } catch (e) {
-            console.error('Failed to load settings:', e);
+            Api.handleError(e, 'Ошибка загрузки деталей очереди');
+            data.queueTasks = [];
+            if (currentPage === 'queue') refreshPage('queue');
         }
     }
 
-    async saveSettings() {
+    async function fetchQueueHistory() {
+        try {
+            const res = await Api.queueHistory();
+            data.queueHistory = res.history || [];
+            if (currentPage === 'queue') refreshPage('queue');
+        } catch (e) {
+            Api.handleError(e, 'Ошибка загрузки истории очереди');
+            data.queueHistory = [];
+            if (currentPage === 'queue') refreshPage('queue');
+        }
+    }
+
+    async function fetchSessions() {
+        try {
+            const res = await Api.sessions();
+            data.sessions = res.sessions || [];
+            // Update dashboard sessions widget
+            const activeCount = data.sessions.filter(s => s.active).length;
+            const totalRequests = data.sessions.reduce((sum, s) => sum + (s.requestCount || 0), 0);
+            Utils.setText('totalSessions', activeCount);
+            Utils.setText('sessionRate', `${totalRequests} запросов`);
+            if (currentPage === 'sessions') refreshPage('sessions');
+        } catch (e) {
+            Api.handleError(e, 'Ошибка загрузки сессий');
+        }
+    }
+
+    async function loadSettings() {
+        try {
+            const config = await Api.config();
+            const el = document.getElementById('balancingAlgorithm');
+            if (el) el.value = config.algorithm || 'resource-aware';
+            document.getElementById('modelAffinity').checked = config.modelAffinity !== false;
+            document.getElementById('sessionStickiness').checked = config.sessionStickiness !== false;
+        } catch (e) {
+            Api.handleError(e, 'Ошибка загрузки настроек');
+        }
+    }
+
+    async function saveSettings() {
         const settings = {
             algorithm: document.getElementById('balancingAlgorithm').value,
             modelAffinity: document.getElementById('modelAffinity').checked,
@@ -1266,33 +334,164 @@ class OllamaLegionUI {
                 disk: { minFreeMB: parseInt(document.getElementById('minFreeDisk').value) }
             }
         };
-        
-        // Note: Currently there's no API endpoint to save settings dynamically
-        // This would need to be implemented in the backend
-        this.showToast('Настройки сохранены (требуется рестарт)', 'success');
-        this.addLog('Настройки обновлены', 'info');
+        showToast('Настройки сохранены (требуется рестарт)', 'success');
+        addLog('Настройки обновлены', 'info');
     }
 
-    // Utility
-    refreshCurrentPage() {
-        this.refreshPage(this.currentPage);
+    // ---- Periodic Refresh ----
+
+    function startPeriodicRefresh() {
+        const interval = (window.WEBUI_CONFIG?.REFRESH_INTERVAL || 5000);
+        refreshTimer = setInterval(() => {
+            fetchQueue();
+            fetchQueueDetails();
+            fetchQueueHistory();
+            fetchSessions();
+        }, interval);
     }
 
-    showToast(message, type = 'info') {
+    // ---- Backend CRUD ----
+
+    function openBackendModal(backendId = null) {
+        const modal = document.getElementById('backendModal');
+        const title = document.getElementById('modalTitle');
+        const deleteBtn = document.getElementById('modalDelete');
+
+        if (backendId) {
+            const backend = data.backends.find(b => b.id === backendId);
+            if (!backend) return;
+            title.textContent = 'Редактировать бэкенд';
+            deleteBtn.style.display = 'inline-block';
+            fillForm(backend, true);
+        } else {
+            title.textContent = 'Добавить бэкенд';
+            deleteBtn.style.display = 'none';
+            fillForm(null, false);
+        }
+
+        modal.classList.add('active');
+    }
+
+    function fillForm(backend, isEdit) {
+        document.getElementById('formBackendId').value = backend?.id || '';
+        document.getElementById('formBackendId').disabled = isEdit;
+        document.getElementById('formBackendName').value = backend?.name || '';
+        document.getElementById('formBackendHost').value = backend?.host || '';
+        document.getElementById('formBackendOllamaPort').value = backend?.ollamaPort || 11434;
+        document.getElementById('formBackendAgentPort').value = backend?.agentPort || 18032;
+        document.getElementById('formBackendWeight').value = backend?.weight || 1;
+        document.getElementById('formBackendMaxConcurrent').value = backend?.maxConcurrentRequests || 10;
+        document.getElementById('formBackendLabels').value = (backend?.labels || []).join(',');
+    }
+
+    function closeModal() {
+        document.getElementById('backendModal').classList.remove('active');
+    }
+
+    async function saveBackend() {
+        const id = document.getElementById('formBackendId').value.trim();
+        const name = document.getElementById('formBackendName').value.trim();
+        const host = document.getElementById('formBackendHost').value.trim();
+        const ollamaPort = parseInt(document.getElementById('formBackendOllamaPort').value) || 11434;
+        const agentPort = parseInt(document.getElementById('formBackendAgentPort').value) || 18032;
+        const weight = parseFloat(document.getElementById('formBackendWeight').value) || 1;
+        const maxConcurrent = parseInt(document.getElementById('formBackendMaxConcurrent').value) || 10;
+        const labels = document.getElementById('formBackendLabels').value.split(',').map(l => l.trim()).filter(Boolean);
+
+        if (!id || !host) {
+            showToast('ID и хост обязательны', 'error');
+            return;
+        }
+
+        const payload = { id, name: name || id, host, ollamaPort, agentPort, weight, maxConcurrentRequests: maxConcurrent, labels };
+        const isEdit = document.getElementById('formBackendId').disabled;
+
+        try {
+            if (isEdit) {
+                await Api.updateBackend(id, payload);
+                showToast('Бэкенд обновлен', 'success');
+                addLog(`Бэкенд ${id} обновлен`, 'info');
+            } else {
+                await Api.createBackend(payload);
+                showToast('Бэкенд добавлен', 'success');
+                addLog(`Бэкенд ${id} добавлен`, 'info');
+            }
+            closeModal();
+            refreshCurrentPage();
+        } catch (e) {
+            showToast(`Ошибка: ${e.message}`, 'error');
+        }
+    }
+
+    async function deleteBackend() {
+        const id = document.getElementById('formBackendId').value;
+        if (!confirm(`Удалить бэкенд ${id}?`)) return;
+
+        try {
+            await Api.deleteBackend(id);
+            closeModal();
+            showToast('Бэкенд удален', 'success');
+            addLog(`Бэкенд ${id} удален`, 'info');
+            refreshCurrentPage();
+        } catch (e) {
+            showToast(`Ошибка: ${e.message}`, 'error');
+        }
+    }
+
+    function editBackend(id) {
+        openBackendModal(id);
+    }
+
+    function confirmDeleteBackend(id) {
+        openBackendModal(id);
+    }
+
+    // ---- Filtering ----
+
+    function filterBackends(query) {
+        const rows = document.querySelectorAll('#backendsTableBody tr');
+        const lower = query.toLowerCase();
+        rows.forEach(row => {
+            row.style.display = row.textContent.toLowerCase().includes(lower) ? '' : 'none';
+        });
+    }
+
+    function filterSessions(query) {
+        const rows = document.querySelectorAll('#sessionsTableBody tr');
+        const lower = query.toLowerCase();
+        rows.forEach(row => {
+            row.style.display = row.textContent.toLowerCase().includes(lower) ? '' : 'none';
+        });
+    }
+
+    // ---- UI Utilities ----
+
+    function updateConnectionStatus(connected) {
+        const status = document.getElementById('connectionStatus');
+        if (!status) return;
+        const dot = status.querySelector('.status-dot');
+        const text = status.querySelector('.status-text');
+        if (!dot || !text) return;
+
+        if (connected) {
+            dot.classList.remove('disconnected');
+            dot.classList.add('connected');
+            text.textContent = 'Подключено';
+        } else {
+            dot.classList.remove('connected');
+            dot.classList.add('disconnected');
+            text.textContent = 'Отключено';
+        }
+    }
+
+    function showToast(message, type = 'info') {
         const container = document.getElementById('toastContainer');
         const toast = document.createElement('div');
         toast.className = `toast ${type}`;
-        
-        const icons = { 
-            success: '<img src="img/cesar.svg" alt="" class="toast-icon-svg">', 
-            error: '<img src="img/dark_meadow.svg" alt="" class="toast-icon-svg">', 
-            warning: '<img src="img/dark-wall.svg" alt="" class="toast-icon-svg">', 
-            info: '<img src="img/logo.svg" alt="" class="toast-icon-svg">' 
-        };
-        toast.innerHTML = `<span>${icons[type] || icons.info}</span><span>${message}</span>`;
-        
+        const iconSvg = '<svg class=\"toast-icon-svg\" viewBox=\"0 0 24 24\" width=\"16\" height=\"16\"><circle cx=\"12\" cy=\"12\" r=\"10\" fill=\"currentColor\"/></svg>';
+        toast.innerHTML = `<span>${iconSvg}</span><span>${Utils.escapeHtml(message)}</span>`;
         container.appendChild(toast);
-        
+
         setTimeout(() => {
             toast.style.opacity = '0';
             toast.style.transform = 'translateX(100%)';
@@ -1300,105 +499,36 @@ class OllamaLegionUI {
         }, 4000);
     }
 
-    escapeHtml(text) {
-        const div = document.createElement('div');
-        div.textContent = text;
-        return div.innerHTML;
+    function addLog(message, level = 'info') {
+        const entry = {
+            time: new Date().toLocaleTimeString('ru'),
+            level: level.toUpperCase(),
+            message
+        };
+        data.logs.unshift(entry);
+        if (data.logs.length > 500) data.logs = data.logs.slice(0, 500);
+        if (currentPage === 'logs') renderLogs(data.logs);
     }
 
-    // Periodic refresh for non-WS data
-    startPeriodicRefresh() {
-        // Начальная загрузка queue и sessions
-        this.fetchQueue();
-        this.fetchQueueDetails();
-        this.fetchSessions();
-        
-        setInterval(() => {
-            // Всегда обновляем queue (нужно для dashboard-виджета)
-            this.fetchQueue();
-            this.fetchQueueDetails();
-            // Всегда обновляем sessions (нужно для dashboard-виджета)
-            this.fetchSessions();
-        }, 5000);
+    // ---- Export ----
+
+    function exportLogs() {
+        const content = data.logs.map(l => `[${l.time}] ${l.level}: ${l.message}`).join('\n');
+        Utils.downloadFile(content, 'ollamalegion-logs.txt', 'text/plain');
     }
 
-    async fetchQueueDetails() {
-        try {
-            const response = await fetch(`${API_BASE}/api/v1/queue/details`);
-            if (response.ok) {
-                const data = await response.json();
-                // Преобразуем данные API в формат задач
-                const pending = data.pending || [];
-                this.data.queueTasks = pending.map((item, idx) => ({
-                    id: idx + 1,
-                    model: item.model || '-',
-                    backend: item.target || 'Auto',
-                    status: item.target ? 'processing' : 'pending',
-                    waitTimeMs: item.enqueued ? (Date.now() - new Date(item.enqueued).getTime()) : 0,
-                    enqueued: item.enqueued
-                }));
-                if (this.currentPage === 'queue') {
-                    this.renderQueueTasks();
-                }
-            }
-        } catch (e) {
-            console.error('Failed to fetch queue details:', e);
-        }
+    function exportBackends() {
+        const content = JSON.stringify(data.backends, null, 2);
+        Utils.downloadFile(content, 'ollamalegion-backends.json', 'application/json');
     }
 
-    async fetchClusterState() {
-        try {
-            const response = await fetch(`${API_BASE}/api/v1/cluster`);
-            if (!response.ok) throw new Error('Failed to fetch cluster state');
-            
-            const state = await response.json();
-            this.data.backends = state.backends || [];
-            this.renderDashboard();
-            this.renderPredictionAlerts();
-        } catch (e) {
-            console.error('Failed to fetch cluster state:', e);
-        }
-    }
+    // ---- Public API ----
+    return {
+        init,
+        editBackend,
+        confirmDeleteBackend
+    };
+})();
 
-    async fetchQueue() {
-        try {
-            const response = await fetch(`${API_BASE}/api/v1/queue/stats`);
-            if (response.ok) {
-                this.data.queue = await response.json();
-                // Обновляем queue-виджеты на dashboard всегда
-                this.updateQueueDashboard();
-                if (this.currentPage === 'queue') {
-                    this.renderQueuePage();
-                }
-            }
-        } catch (e) {
-            console.error('Failed to fetch queue:', e);
-        }
-    }
-
-    // Обновление queue-виджетов на dashboard
-    updateQueueDashboard() {
-        const queue = this.data.queue || {};
-        const current = queue.current_size || 0;
-        const max = queue.max_size || 100;
-        const processed = queue.processed_total || 0;
-        const percent = max > 0 ? (current / max * 100) : 0;
-        
-        const elSize = document.getElementById('queueSize');
-        const elProcessed = document.getElementById('queueProcessed');
-        const elFill = document.getElementById('queueFill');
-        const elMid = document.getElementById('queueMidLabel');
-        const elMax = document.getElementById('queueMaxLabel');
-        const elDashboardFill = document.getElementById('queueDashboardFill');
-        
-        if (elSize) elSize.textContent = current;
-        if (elProcessed) elProcessed.textContent = `${processed} обработано`;
-        if (elFill) elFill.style.width = percent + '%';
-        if (elMid) elMid.textContent = Math.round(max / 2);
-        if (elMax) elMax.textContent = max;
-        if (elDashboardFill) elDashboardFill.style.width = percent + '%';
-    }
-}
-
-// Initialize
-const ui = new OllamaLegionUI();
+// Auto-init when DOM ready
+document.addEventListener('DOMContentLoaded', () => ui.init());

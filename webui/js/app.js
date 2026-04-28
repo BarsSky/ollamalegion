@@ -17,6 +17,8 @@ const ui = (function () {
     };
     let currentPage = 'dashboard';
     let refreshTimer = null;
+    let dashboardRenderTimer = null;
+    let lastBackendsJson = '';
 
     // ---- Initialization ----
 
@@ -185,10 +187,7 @@ const ui = (function () {
 
         switch (eventType) {
             case 'clusterState':
-                data.backends = payload.data?.backends || [];
-                if (currentPage === 'dashboard') {
-                    refreshPage('dashboard');
-                }
+                updateBackends(payload.data?.backends || []);
                 break;
 
             case 'backendAdd':
@@ -203,7 +202,8 @@ const ui = (function () {
 
             case 'statusChange':
                 addLog(`Статус ${payload.backendId}: ${payload.data?.oldStatus} → ${payload.data?.newStatus}`, 'warning');
-                fetchClusterState();
+                // Apply targeted update instead of full refetch when possible
+                applyStatusChange(payload.backendId, payload.data?.newStatus);
                 break;
 
             case 'limitsChange':
@@ -217,13 +217,53 @@ const ui = (function () {
             case 'legacy':
             default:
                 if (payload.backends) {
-                    data.backends = payload.backends || [];
-                    if (currentPage === 'dashboard') {
-                        refreshPage('dashboard');
-                    }
+                    updateBackends(payload.backends || []);
                 }
                 break;
         }
+    }
+
+    function backendsEqual(a, b) {
+        if (a.length !== b.length) return false;
+        const normalize = arr => JSON.stringify(arr.map(x => ({
+            id: x.id,
+            status: x.status,
+            activeRequests: x.activeRequests,
+            'gpu.usagePercent': x.gpu?.usagePercent,
+            'gpu.memoryUsed': x.gpu?.memoryUsed,
+            'system.cpuUsagePercent': x.system?.cpuUsagePercent,
+            'system.memoryUsed': x.system?.memoryUsed,
+            'prediction.secondsToCritical': x.prediction?.secondsToCritical
+        })).sort((m, n) => m.id.localeCompare(n.id)));
+        return normalize(a) === normalize(b);
+    }
+
+    function updateBackends(newBackends) {
+        if (backendsEqual(data.backends, newBackends)) return;
+        data.backends = newBackends;
+        if (currentPage === 'dashboard') {
+            scheduleDashboardRender();
+        }
+    }
+
+    function applyStatusChange(backendId, newStatus) {
+        const b = data.backends.find(x => x.id === backendId);
+        if (b && b.status !== newStatus) {
+            b.status = newStatus;
+            if (currentPage === 'dashboard') {
+                scheduleDashboardRender();
+            }
+        } else if (!b) {
+            fetchClusterState();
+        }
+    }
+
+    function scheduleDashboardRender() {
+        if (dashboardRenderTimer) clearTimeout(dashboardRenderTimer);
+        dashboardRenderTimer = setTimeout(() => {
+            dashboardRenderTimer = null;
+            refreshPage('dashboard');
+        }, 250);
     }
 
     // ---- API Events ----
@@ -241,10 +281,7 @@ const ui = (function () {
     async function fetchClusterState() {
         try {
             const state = await Api.cluster();
-            data.backends = state.backends || [];
-            if (currentPage === 'dashboard') {
-                refreshPage('dashboard');
-            }
+            updateBackends(state.backends || []);
         } catch (e) {
             Api.handleError(e, 'Ошибка загрузки состояния кластера');
         }
@@ -264,12 +301,12 @@ const ui = (function () {
     async function fetchQueueDetails() {
         try {
             const res = await Api.queueDetails();
-            const pending = res.pending || [];
-            data.queueTasks = pending.map((item, idx) => ({
+            const all = res.all || [];
+            data.queueTasks = all.map((item, idx) => ({
                 id: idx + 1,
                 model: item.model || '-',
                 backend: item.target || 'Auto',
-                status: item.target ? 'processing' : 'pending',
+                status: item.status || (item.target ? 'processing' : 'pending'),
                 waitTimeMs: item.enqueued ? (Date.now() - new Date(item.enqueued).getTime()) : 0,
                 enqueued: item.enqueued
             }));

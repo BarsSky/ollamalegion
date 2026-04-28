@@ -27,6 +27,7 @@ RUN apk add --no-cache tzdata ca-certificates
 # Копирование бинарника из builder
 COPY --from=builder /build/balancer .
 COPY --from=builder /build/config/config.example.json ./config.json
+COPY --from=builder /build/cmd/monitor/monitor.html ./monitor.html
 
 # Создание директории для state и пользователя без root прав
 RUN addgroup -g 1000 appgroup && \

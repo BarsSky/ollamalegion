@@ -4,6 +4,11 @@
 const Renderers = (function () {
     const { formatNumber, formatMB, getBackendMode, getBackendModeBadge, getGPUStatus, getProgressClass, percent, escapeHtml } = Utils;
 
+    // Cache for prediction hysteresis to prevent flickering between warning/success
+    const _predCache = {};
+    const PRED_HYSTERESIS = 45; // seconds — must deviate this much from threshold to switch
+    const PRED_THRESHOLD = 300; // seconds
+
     // ---- Generic helpers ----
 
     function badge(status, type) {
@@ -342,8 +347,29 @@ const Renderers = (function () {
             const models = oll.runningModels?.length || 0;
             const rps = oll.requestsPerSecond || 0;
             const secondsToCrit = pred.secondsToCritical || -1;
-            const predClass = secondsToCrit > 0 && secondsToCrit < 300 ? 'warning' : 'success';
-            const predText = secondsToCrit > 0 ? `${Math.round(secondsToCrit)}с` : 'OK';
+            const prev = _predCache[b.id];
+            let predClass, predText;
+
+            if (secondsToCrit > 0) {
+                predText = `${Math.round(secondsToCrit)}с`;
+                const isWarning = secondsToCrit < PRED_THRESHOLD;
+                if (prev) {
+                    // Apply hysteresis: once in warning, stay there until above threshold + margin
+                    if (prev.class === 'warning' && secondsToCrit < PRED_THRESHOLD + PRED_HYSTERESIS) {
+                        predClass = 'warning';
+                    } else if (prev.class === 'success' && secondsToCrit > PRED_THRESHOLD - PRED_HYSTERESIS) {
+                        predClass = 'success';
+                    } else {
+                        predClass = isWarning ? 'warning' : 'success';
+                    }
+                } else {
+                    predClass = isWarning ? 'warning' : 'success';
+                }
+            } else {
+                predText = 'OK';
+                predClass = 'success';
+            }
+            _predCache[b.id] = { class: predClass, text: predText };
 
             return `
                 <tr>

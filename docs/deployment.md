@@ -708,16 +708,24 @@ curl http://localhost:18081/api/v1/health
 curl http://localhost:18081/api/v1/backends
 # Ожидаемый ответ: {"backends": [...], "total": N}
 
-# 3. Проверка Web UI
+# 3. Проверка Web UI (Dashboard)
 # Откройте http://localhost:18030 в браузере
 
-# 4. Проверка агента на GPU сервере
+# 4. Проверка Монитора (real-time визуализация кластера)
+# Откройте http://localhost:18030/monitor.html в браузере
+# Монитор показывает:
+#   - Canvas-визуализацию потока запросов между бэкендами
+#   - Статус бэкендов (Healthy / Busy / Critical)
+#   - Очередь запросов в реальном времени
+#   - Диагностические предупреждения
+
+# 5. Проверка агента на GPU сервере
 curl http://localhost:18032/metrics
 
-# 5. Проверка WebSocket
+# 6. Проверка WebSocket
 wscat -c ws://localhost:18081/ws/metrics
 
-# 6. Тестовый запрос к Ollama через балансировщик
+# 7. Тестовый запрос к Ollama через балансировщик
 curl -X POST http://localhost:18080/api/generate \
   -H "Content-Type: application/json" \
   -d '{"model": "llama3.1:8b", "prompt": "Hello!", "stream": false}'

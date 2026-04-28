@@ -85,8 +85,11 @@ docker-compose -f docker-compose.agent.yml --env-file .env up -d
 # Health check
 curl http://localhost:18081/api/v1/health
 
-# Web UI
+# Web UI Dashboard
 # Откройте http://localhost:18030 в браузере
+
+# Монитор (real-time визуализация кластера)
+# Откройте http://localhost:18030/monitor.html в браузере
 ```
 
 ---

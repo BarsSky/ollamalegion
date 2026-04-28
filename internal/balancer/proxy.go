@@ -85,20 +85,22 @@ type CompletedRequest struct {
 
 // QueueManager - менеджер очереди с pool workers
 type QueueManager struct {
-	queue            chan *QueuedRequest
-	mu               sync.Mutex
-	maxSize          int
-	numWorkers       int
-	processed        int64
-	timeout          time.Duration
-	ctx              context.Context
-	cancel           context.CancelFunc
-	wg               sync.WaitGroup
-	proxy            *Proxy
-	pendingMu        sync.RWMutex
-	pending          []*QueuedRequest
-	historyMu        sync.RWMutex
-	completedHistory []*CompletedRequest
+	queue             chan *QueuedRequest
+	mu                sync.Mutex
+	maxSize           int
+	numWorkers        int
+	processed         int64
+	timeout           time.Duration
+	ctx               context.Context
+	cancel            context.CancelFunc
+	wg                sync.WaitGroup
+	proxy             *Proxy
+	pendingMu         sync.RWMutex
+	pending           []*QueuedRequest
+	processingMu      sync.RWMutex
+	processing        []*QueuedRequest
+	historyMu         sync.RWMutex
+	completedHistory  []*CompletedRequest
 }
 
 // QueuedRequest - запрос в очереди
@@ -240,7 +242,9 @@ func (qm *QueueManager) worker(id int) {
 			return
 		case req := <-qm.queue:
 			qm.removePending(req)
+			qm.addProcessing(req)
 			qm.processRequest(req, id)
+			qm.removeProcessing(req)
 		}
 	}
 }
@@ -377,35 +381,48 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				)
 				targetBackend = ""
 			} else {
-				// --- "Sticky но не жадный": если бэкенд загружен >70% и есть альтернатива с той же моделью ---
-				shouldRebalance := false
-				backendState.mu.Lock()
-				active := backendState.ActiveReqs
-				maxReqs := backendState.Backend.MaxConcurrentReqs
-				backendState.mu.Unlock()
+		// --- "Sticky но не жадный": если бэкенд загружен >50% и есть альтернатива ---
+		shouldRebalance := false
+		backendState.mu.Lock()
+		active := backendState.ActiveReqs
+		maxReqs := backendState.Backend.MaxConcurrentReqs
+		backendState.mu.Unlock()
 
-				if maxReqs > 0 && active > 0 {
-					loadRatio := float64(active) / float64(maxReqs)
-					if loadRatio > 0.70 {
-						// Ищем другой бэкенд с той же моделью, менее загруженный
-						altBackend := p.findLessLoadedBackendWithModel(model, targetBackend)
-						if altBackend != "" {
-							logger.Get().Infow("rebalancing session to less loaded backend",
-								"session", sessionID,
-								"from", targetBackend,
-								"to", altBackend,
-								"load_ratio", loadRatio,
-							)
-							targetBackend = altBackend
-							shouldRebalance = true
-						}
+		if maxReqs > 0 && active > 0 {
+			loadRatio := float64(active) / float64(maxReqs)
+			if loadRatio > 0.50 {
+				// Сначала ищем бэкенд с той же моделью, менее загруженный
+				altBackend := p.findLessLoadedBackendWithModel(model, targetBackend)
+				if altBackend != "" {
+					logger.Get().Infow("rebalancing session to less loaded backend (same model)",
+						"session", sessionID,
+						"from", targetBackend,
+						"to", altBackend,
+						"load_ratio", loadRatio,
+					)
+					targetBackend = altBackend
+					shouldRebalance = true
+				} else {
+					// Fallback: ищем любой менее загруженный бэкенд
+					altBackend = p.findLessLoadedBackendAny(model, targetBackend)
+					if altBackend != "" {
+						logger.Get().Infow("rebalancing session to less loaded backend (any)",
+							"session", sessionID,
+							"from", targetBackend,
+							"to", altBackend,
+							"load_ratio", loadRatio,
+						)
+						targetBackend = altBackend
+						shouldRebalance = true
 					}
 				}
+			}
+		}
 
-				if !shouldRebalance {
-					// Обновляем активность сессии
-					p.sessionMgr.Set(sessionID, targetBackend, model, clientName)
-				}
+		if !shouldRebalance {
+			// Обновляем активность сессии
+			p.sessionMgr.Set(sessionID, targetBackend, model, clientName)
+		}
 			}
 		}
 	}
@@ -726,6 +743,44 @@ func (p *Proxy) findLessLoadedBackendWithModel(modelName, excludeBackendID strin
 		}
 	}
 
+		return bestBackendID
+}
+
+// findLessLoadedBackendAny — поиск любого менее загруженного healthy бэкенда
+func (p *Proxy) findLessLoadedBackendAny(modelName, excludeBackendID string) string {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+
+	var bestBackendID string
+	var bestLoadRatio float64 = 2.0
+
+	for id, state := range p.backends {
+		if id == excludeBackendID {
+			continue
+		}
+		if state.Backend.Status != types.StatusHealthy {
+			continue
+		}
+		if !p.checkResourceLimits(id) {
+			continue
+		}
+
+		state.mu.Lock()
+		active := state.ActiveReqs
+		maxReqs := state.Backend.MaxConcurrentReqs
+		state.mu.Unlock()
+
+		if maxReqs <= 0 {
+			continue
+		}
+
+		loadRatio := float64(active) / float64(maxReqs)
+		if loadRatio < bestLoadRatio {
+			bestLoadRatio = loadRatio
+			bestBackendID = id
+		}
+	}
+
 	return bestBackendID
 }
 
@@ -802,6 +857,8 @@ func (p *Proxy) selectByResources() string {
 
 	var bestBackend string
 	var bestScore float64 = -1
+	var bestLoadRatio float64 = 2.0
+	var bestLastUsed time.Time
 
 	for id, state := range p.backends {
 		if state.Backend.Status != types.StatusHealthy {
@@ -814,12 +871,17 @@ func (p *Proxy) selectByResources() string {
 		}
 
 		// Проверка максимального количества запросов
+		// Проверка максимального количества запросов
+		// maxReqs = 0 означает "не принимать запросы", <0 означает "не ограничено"
 		state.mu.Lock()
-		if state.ActiveReqs >= state.Backend.MaxConcurrentReqs {
-			state.mu.Unlock()
+		active := state.ActiveReqs
+		maxReqs := state.Backend.MaxConcurrentReqs
+		lastUsed := state.LastUsed
+		state.mu.Unlock()
+
+		if maxReqs >= 0 && active >= maxReqs {
 			continue
 		}
-		state.mu.Unlock()
 
 		// 5.1 Prediction-based filtering: skip backends predicted critical within 5 min
 		pred := state.Prediction
@@ -829,9 +891,30 @@ func (p *Proxy) selectByResources() string {
 
 		// Вычисление scores
 		score := p.calculateScore(id)
-		if score > bestScore {
+
+		// Tie-breaker: при равных scores выбираем менее загруженный по activeReqs,
+		// а если и там равенство — тот, кто дольше не использовался (round-robin по времени)
+		loadRatio := 0.0
+		if maxReqs > 0 {
+			loadRatio = float64(active) / float64(maxReqs)
+		}
+
+		if score > bestScore ||
+			(score == bestScore && loadRatio < bestLoadRatio) ||
+			(score == bestScore && loadRatio == bestLoadRatio && lastUsed.Before(bestLastUsed)) {
 			bestScore = score
 			bestBackend = id
+			bestLoadRatio = loadRatio
+			bestLastUsed = lastUsed
+		}
+	}
+
+	// Обновляем LastUsed выбранного бэкенда
+	if bestBackend != "" {
+		if state, ok := p.backends[bestBackend]; ok {
+			state.mu.Lock()
+			state.LastUsed = time.Now()
+			state.mu.Unlock()
 		}
 	}
 
@@ -1020,7 +1103,12 @@ func (p *Proxy) calculateScore(backendID string) float64 {
 	}
 
 	// --- Итоговый score ---
-	score := (baseScore - requestPenalty + modelCapacityScore + predictionBonus) * float64(state.Backend.Weight) / 100
+	// Weight как множитель: weight=1 → ×1, weight=2 → ×2
+	weightFactor := float64(state.Backend.Weight)
+	if weightFactor <= 0 {
+		weightFactor = 1
+	}
+	score := (baseScore - requestPenalty + modelCapacityScore + predictionBonus) * weightFactor
 
 	// Не меньше 0
 	if score < 0 {
@@ -1725,6 +1813,44 @@ func (qm *QueueManager) removePending(req *QueuedRequest) {
 	qm.pendingMu.Unlock()
 }
 
+// addProcessing - добавление запроса в processing список
+func (qm *QueueManager) addProcessing(req *QueuedRequest) {
+	qm.processingMu.Lock()
+	qm.processing = append(qm.processing, req)
+	qm.processingMu.Unlock()
+}
+
+// removeProcessing - удаление запроса из processing списка
+func (qm *QueueManager) removeProcessing(req *QueuedRequest) {
+	qm.processingMu.Lock()
+	for i, r := range qm.processing {
+		if r == req {
+			qm.processing = append(qm.processing[:i], qm.processing[i+1:]...)
+			break
+		}
+	}
+	qm.processingMu.Unlock()
+}
+
+// getProcessingDTOs - получение DTO processing запросов для API
+func (qm *QueueManager) getProcessingDTOs() []map[string]interface{} {
+	qm.processingMu.RLock()
+	defer qm.processingMu.RUnlock()
+
+	result := make([]map[string]interface{}, 0, len(qm.processing))
+	now := time.Now()
+	for _, req := range qm.processing {
+		result = append(result, map[string]interface{}{
+			"model":      req.Model,
+			"enqueued":   req.Enqueued.UTC().Format(time.RFC3339),
+			"waitTimeMs": now.Sub(req.Enqueued).Milliseconds(),
+			"target":     req.Target,
+			"status":     "processing",
+		})
+	}
+	return result
+}
+
 // getPendingDTOs - получение DTO pending запросов для API
 func (qm *QueueManager) getPendingDTOs() []map[string]interface{} {
 	qm.pendingMu.RLock()
@@ -1738,6 +1864,7 @@ func (qm *QueueManager) getPendingDTOs() []map[string]interface{} {
 			"enqueued":   req.Enqueued.UTC().Format(time.RFC3339),
 			"waitTimeMs": now.Sub(req.Enqueued).Milliseconds(),
 			"target":     req.Target,
+			"status":     "pending",
 		})
 	}
 	return result
@@ -1746,6 +1873,11 @@ func (qm *QueueManager) getPendingDTOs() []map[string]interface{} {
 // GetQueuePendingRequests — получение списка ожидающих запросов в очереди
 func (p *Proxy) GetQueuePendingRequests() []map[string]interface{} {
 	return p.queueMgr.getPendingDTOs()
+}
+
+// GetQueueProcessingRequests — получение списка обрабатываемых запросов
+func (p *Proxy) GetQueueProcessingRequests() []map[string]interface{} {
+	return p.queueMgr.getProcessingDTOs()
 }
 
 // GetQueueHistory - получение истории выполненных запросов

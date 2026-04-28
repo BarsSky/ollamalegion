@@ -6,6 +6,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"os"
 	"sort"
 	"strings"
 	"time"
@@ -145,6 +146,9 @@ func (s *Server) setupRoutes() {
 
 	// WebSocket (с rate limiting, аутентификация внутри handler после Upgrade)
 	s.mux.Handle("/ws/metrics", RateLimitMiddleware(s.wsMetricsHandler, s.wsRateLimiter))
+
+	// Monitor HTML page (без аутентификации)
+	s.mux.HandleFunc("/monitor", s.monitorHandler)
 }
 
 // ServeHTTP - обработка HTTP запросов
@@ -817,7 +821,7 @@ func (s *Server) queueStatsHandler(w http.ResponseWriter, r *http.Request) {
 	s.writeJSON(w, http.StatusOK, stats)
 }
 
-// queueDetailsHandler - детали очереди (pending requests)
+// queueDetailsHandler - детали очереди (pending + processing requests)
 func (s *Server) queueDetailsHandler(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
@@ -825,8 +829,20 @@ func (s *Server) queueDetailsHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	pending := s.proxy.GetQueuePendingRequests()
+	processing := s.proxy.GetQueueProcessingRequests()
+
+	// Объединяем в единый список для отображения
+	all := make([]map[string]interface{}, 0, len(pending)+len(processing))
+	all = append(all, pending...)
+	all = append(all, processing...)
+
 	s.writeJSON(w, http.StatusOK, map[string]interface{}{
-		"pending": pending,
+		"pending":    pending,
+		"processing": processing,
+		"all":        all,
+		"pending_count":    len(pending),
+		"processing_count": len(processing),
+		"total":            len(all),
 	})
 }
 
@@ -1523,6 +1539,41 @@ func (s *Server) updateBackendLimits(w http.ResponseWriter, r *http.Request, bac
 		},
 		"message": "Backend limits updated successfully",
 	})
+}
+
+// monitorHandler - отдаёт HTML страницу монитора
+func (s *Server) monitorHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	// Пути для поиска monitor.html (сначала runtime, потом dev)
+	paths := []string{
+		"/app/monitor.html",
+		"cmd/monitor/monitor.html",
+		"../cmd/monitor/monitor.html",
+	}
+
+	var data []byte
+	var err error
+	for _, p := range paths {
+		data, err = os.ReadFile(p)
+		if err == nil {
+			break
+		}
+	}
+
+	if err != nil {
+		logger.Get().Errorw("monitor.html not found", "error", err)
+		http.Error(w, "Monitor page not found", http.StatusNotFound)
+		return
+	}
+
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.WriteHeader(http.StatusOK)
+	w.Write(data)
 }
 
 // writeJSON - запись JSON ответа

@@ -49,6 +49,7 @@ Ollama Load Balancer — это распределенная система ба
 | **Health Checker** | Автоматическая проверка здоровья бэкендов | - |
 | **Session Manager** | Управление сессиями клиентов | - |
 | **Web UI** | Dashboard для мониторинга | 18030 |
+| **Monitor** | Real-time Canvas-визуализация кластера | 18030/monitor.html |
 
 ---
 

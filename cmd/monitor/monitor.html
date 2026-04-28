@@ -1,0 +1,978 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>OllamaLegion Monitor</title>
+  <style>
+    :root {
+      --bg: #0b1120;
+      --bg-panel: #111827;
+      --bg-panel-hover: #1e293b;
+      --text: #e2e8f0;
+      --text-muted: #94a3b8;
+      --border: #334155;
+      --green: #22c55e;
+      --green-dim: #16a34a;
+      --yellow: #f59e0b;
+      --red: #ef4444;
+      --blue: #3b82f6;
+      --purple: #a855f7;
+      --cyan: #38bdf8;
+      --font: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      --font-mono: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+    }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    html, body {
+      background: var(--bg);
+      color: var(--text);
+      font-family: var(--font);
+      font-size: 14px;
+      line-height: 1.45;
+      height: 100%;
+      overflow: hidden;
+    }
+
+    /* Header */
+    header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 10px 16px;
+      background: var(--bg-panel);
+      border-bottom: 1px solid var(--border);
+      flex-shrink: 0;
+    }
+    header h1 {
+      font-size: 16px;
+      font-weight: 600;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+    header h1 .dot {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      background: var(--green);
+      display: inline-block;
+      animation: pulse 2s infinite;
+    }
+    header h1 .dot.offline { background: var(--red); animation: none; }
+    header h1 .dot.error { background: var(--yellow); animation: none; }
+    header h1 .dot.demo { background: var(--cyan); animation: none; }
+    @keyframes pulse {
+      0%, 100% { opacity: 1; }
+      50% { opacity: 0.4; }
+    }
+    .header-right {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+    .badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+      padding: 3px 8px;
+      border-radius: 6px;
+      font-size: 11px;
+      font-weight: 600;
+      font-family: var(--font-mono);
+      background: rgba(255,255,255,0.06);
+      color: var(--text-muted);
+      border: 1px solid var(--border);
+    }
+    .badge-green { background: rgba(34,197,94,0.12); color: var(--green); border-color: rgba(34,197,94,0.25); }
+    .badge-yellow { background: rgba(245,158,11,0.12); color: var(--yellow); border-color: rgba(245,158,11,0.25); }
+    .badge-red { background: rgba(239,68,68,0.12); color: var(--red); border-color: rgba(239,68,68,0.25); }
+    .badge-blue { background: rgba(59,130,246,0.12); color: var(--blue); border-color: rgba(59,130,246,0.25); }
+
+    select, button {
+      background: var(--bg-panel-hover);
+      color: var(--text);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      padding: 4px 10px;
+      font-size: 12px;
+      cursor: pointer;
+    }
+    button:hover { border-color: var(--blue); }
+    button:disabled { opacity: 0.5; cursor: not-allowed; }
+
+    /* Overlay messages */
+    .overlay {
+      position: absolute;
+      inset: 0;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      gap: 12px;
+      background: rgba(11,17,32,0.92);
+      z-index: 10;
+      text-align: center;
+      padding: 24px;
+    }
+    .overlay.hidden { display: none; }
+    .overlay h2 { font-size: 18px; color: var(--text); }
+    .overlay p { color: var(--text-muted); max-width: 480px; }
+    .overlay .spinner {
+      width: 32px; height: 32px;
+      border: 3px solid var(--border);
+      border-top-color: var(--blue);
+      border-radius: 50%;
+      animation: spin 1s linear infinite;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+
+    /* Main layout */
+    main {
+      display: flex;
+      flex-direction: column;
+      height: calc(100vh - 45px);
+      overflow: hidden;
+    }
+    .topo-section {
+      flex: 1 1 auto;
+      position: relative;
+      min-height: 280px;
+      display: flex;
+    }
+    #vizCanvas {
+      width: 100%;
+      height: 100%;
+      display: block;
+    }
+    /* Floating stats bar */
+    .stats-bar {
+      position: absolute;
+      bottom: 8px;
+      left: 50%;
+      transform: translateX(-50%);
+      display: flex;
+      gap: 8px;
+      background: rgba(17,24,39,0.92);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 6px 10px;
+      backdrop-filter: blur(4px);
+      z-index: 5;
+    }
+    .stat-item {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      min-width: 56px;
+      padding: 2px 6px;
+    }
+    .stat-item .stat-val {
+      font-size: 15px;
+      font-weight: 700;
+      color: var(--text);
+      font-family: var(--font-mono);
+    }
+    .stat-item .stat-label {
+      font-size: 10px;
+      color: var(--text-muted);
+      text-transform: uppercase;
+      letter-spacing: 0.3px;
+    }
+
+    /* Tables area */
+    .tables-area {
+      flex: 0 0 auto;
+      max-height: 45vh;
+      overflow-y: auto;
+      border-top: 1px solid var(--border);
+      background: var(--bg-panel);
+    }
+    .panel {
+      border-bottom: 1px solid var(--border);
+    }
+    .panel-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 8px 14px;
+      cursor: pointer;
+      user-select: none;
+      font-weight: 600;
+      font-size: 12px;
+      text-transform: uppercase;
+      letter-spacing: 0.4px;
+      color: var(--text-muted);
+    }
+    .panel-header:hover { color: var(--text); background: var(--bg-panel-hover); }
+    .panel-body { display: none; padding: 0 14px 10px; }
+    .panel.open .panel-body { display: block; }
+    .panel.open .panel-header .chevron { transform: rotate(180deg); }
+    .chevron { transition: transform 0.2s; }
+
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 12px;
+    }
+    thead th {
+      text-align: left;
+      padding: 6px 8px;
+      color: var(--text-muted);
+      font-weight: 600;
+      border-bottom: 1px solid var(--border);
+      position: sticky;
+      top: 0;
+      background: var(--bg-panel);
+    }
+    tbody td {
+      padding: 5px 8px;
+      border-bottom: 1px solid rgba(255,255,255,0.04);
+      vertical-align: middle;
+    }
+    tbody tr:hover { background: rgba(255,255,255,0.03); }
+    .col-right { text-align: right; }
+
+    .bar-track {
+      display: inline-block;
+      width: 48px;
+      height: 6px;
+      background: rgba(255,255,255,0.08);
+      border-radius: 3px;
+      overflow: hidden;
+      vertical-align: middle;
+      margin-right: 6px;
+    }
+    .bar-fill {
+      display: block;
+      height: 100%;
+      border-radius: 3px;
+    }
+
+    .alert-banner {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 8px 12px;
+      border-radius: 6px;
+      margin: 6px 14px 0;
+      font-size: 12px;
+    }
+    .alert-red { background: rgba(239,68,68,0.08); border: 1px solid rgba(239,68,68,0.25); color: var(--red); }
+    .alert-yellow { background: rgba(245,158,11,0.08); border: 1px solid rgba(245,158,11,0.25); color: var(--yellow); }
+
+    /* Scrollbar */
+    ::-webkit-scrollbar { width: 6px; height: 6px; }
+    ::-webkit-scrollbar-track { background: transparent; }
+    ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
+  </style>
+</head>
+<body>
+<header>
+  <h1>
+    <span id="statusDot" class="dot"></span>
+    OllamaLegion — Monitor
+  </h1>
+  <div class="header-right">
+    <select id="intervalSelect">
+      <option value="250">250 ms</option>
+      <option value="500" selected>500 ms</option>
+      <option value="1000">1 s</option>
+      <option value="2000">2 s</option>
+    </select>
+    <button id="pauseBtn" onclick="togglePause()">⏸ Пауза</button>
+    <span id="connBadge" class="badge badge-yellow">Подключение…</span>
+  </div>
+</header>
+
+<main>
+  <div class="topo-section">
+    <canvas id="vizCanvas"></canvas>
+
+    <!-- Loading overlay -->
+    <div id="loadingOverlay" class="overlay">
+      <div class="spinner"></div>
+      <h2>Подключение к API…</h2>
+      <p>Ожидание ответа от балансировщика. Если вы запускаете под Docker, убедитесь, что сервис <code>loadbalancer</code> поднят.</p>
+    </div>
+
+    <!-- Error overlay -->
+    <div id="errorOverlay" class="overlay hidden">
+      <h2>⚠ Нет подключения к балансировщику</h2>
+      <p id="errorText">Не удалось получить данные. Проверьте, что API доступен и CORS настроен корректно.</p>
+      <button onclick="retryNow()">🔄 Повторить</button>
+      <button onclick="enterDemoMode()" style="margin-left:8px">▶ Демо-режим</button>
+    </div>
+
+    <!-- Stats bar -->
+    <div class="stats-bar">
+      <div class="stat-item"><div id="statBackends" class="stat-val">—</div><div class="stat-label">Backends</div></div>
+      <div class="stat-item"><div id="statActive" class="stat-val">—</div><div class="stat-label">Active</div></div>
+      <div class="stat-item"><div id="statPending" class="stat-val">—</div><div class="stat-label">Pending</div></div>
+      <div class="stat-item"><div id="statProcessing" class="stat-val">—</div><div class="stat-label">Processing</div></div>
+      <div class="stat-item"><div id="statSessions" class="stat-val">—</div><div class="stat-label">Sessions</div></div>
+      <div class="stat-item"><div id="statRate" class="stat-val">—</div><div class="stat-label">Req/s</div></div>
+      <div class="stat-item"><div id="statRPSCluster" class="stat-val">—</div><div class="stat-label">Cluster RPS</div></div>
+    </div>
+  </div>
+
+  <!-- Alerts -->
+  <div id="alertContainer"></div>
+
+  <!-- Tables -->
+  <div class="tables-area">
+    <div class="panel open" id="panelBackends">
+      <div class="panel-header" onclick="togglePanel('panelBackends')">
+        <span>🖥️ Backends (<span id="backendCount">0</span>)</span>
+        <span class="chevron">▼</span>
+      </div>
+      <div class="panel-body">
+        <div style="overflow-x:auto">
+          <table id="backendsTable">
+            <thead>
+              <tr>
+                <th>ID</th><th>Статус</th><th>GPU</th><th>VRAM</th><th>CPU</th><th>RAM</th>
+                <th class="col-right">Active</th><th class="col-right">RPS</th><th class="col-right">Score</th>
+                <th>Модели</th><th class="col-right">Uptime</th>
+              </tr>
+            </thead>
+            <tbody><tr><td colspan="11" style="color:var(--text-muted);text-align:center;padding:16px">Нет данных</td></tr></tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+
+    <div class="panel" id="panelQueue">
+      <div class="panel-header" onclick="togglePanel('panelQueue')">
+        <span>📋 Queue (<span id="queueCount">0</span>)</span>
+        <span class="chevron">▼</span>
+      </div>
+      <div class="panel-body">
+        <div style="overflow-x:auto">
+          <table id="queueTable">
+            <thead>
+              <tr>
+                <th>#</th><th>Модель</th><th>Target</th><th>Статус</th><th class="col-right">Ожидание</th><th>Сессия</th>
+              </tr>
+            </thead>
+            <tbody><tr><td colspan="6" style="color:var(--text-muted);text-align:center;padding:16px">Нет данных</td></tr></tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+
+    <div class="panel" id="panelSessions">
+      <div class="panel-header" onclick="togglePanel('panelSessions')">
+        <span>👤 Sessions (<span id="sessionCount">0</span>)</span>
+        <span class="chevron">▼</span>
+      </div>
+      <div class="panel-body">
+        <div style="overflow-x:auto">
+          <table id="sessionsTable">
+            <thead>
+              <tr>
+                <th>ID</th><th>Backend</th><th>Модель</th><th class="col-right">Запросов</th><th class="col-right">Idle</th><th>IP</th>
+              </tr>
+            </thead>
+            <tbody><tr><td colspan="6" style="color:var(--text-muted);text-align:center;padding:16px">Нет данных</td></tr></tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+  </div>
+</main>
+
+<script>
+  // ==================== CONFIG ====================
+  const API_BASE = '';
+  const DEMO_INTERVAL = 500; // ms
+  let refreshInterval = 500;
+  let timerId = null;
+  let paused = false;
+  let demoMode = false;
+  let fetchAttempt = 0;
+  let lastData = null;
+  let lastTime = Date.now();
+  let lastRequestCount = 0;
+  let requestRate = 0;
+
+  // ==================== API ====================
+  function api(path) {
+    const token = new URLSearchParams(location.search).get('token') || localStorage.getItem('apiToken') || '';
+    return fetch(API_BASE + path, {
+      headers: token ? { 'X-API-Token': token } : {}
+    }).then(r => {
+      if (!r.ok) throw new Error(r.status + ' ' + r.statusText);
+      return r.json();
+    });
+  }
+
+  async function fetchAll() {
+    if (paused) return;
+    if (demoMode) { updateUI(demoData()); return; }
+    try {
+      const [cluster, queueDetails, sessions] = await Promise.all([
+        api('/api/v1/cluster').catch(e => { console.error('[monitor] cluster:', e.message); return null; }),
+        api('/api/v1/queue/details').catch(e => { console.error('[monitor] queue:', e.message); return null; }),
+        api('/api/v1/sessions').catch(e => { console.error('[monitor] sessions:', e.message); return null; }),
+      ]);
+      const data = { cluster, queueDetails, sessions };
+      lastData = data;
+      fetchAttempt = 0;
+      hideOverlays();
+      setConnStatus('Live', 'green');
+      updateUI(data);
+    } catch (e) {
+      console.error('[monitor] fetchAll failed:', e);
+      fetchAttempt++;
+      if (fetchAttempt >= 3) {
+        showError('Балансировщик не отвечает после ' + fetchAttempt + ' попыток. Проверьте Docker Compose и healthcheck.');
+      } else {
+        setConnStatus('Offline', 'red');
+      }
+    }
+  }
+
+  // ==================== DEMO DATA ====================
+  function demoData() {
+    const now = new Date().toISOString();
+    return {
+      cluster: {
+        backends: [
+          { id: 'ollama-1', status: 'active', activeRequests: 2, maxConcurrentRequests: 8, gpu: { usagePercent: 45 }, vram: { usagePercent: 62 }, system: { cpuUsagePercent: 30, memoryUsagePercent: 55 }, score: 0.95, models: ['llama3.1', 'gemma2'], lastSeen: now, ollama: { requestsPerSecond: 1.2 } },
+          { id: 'ollama-2', status: 'active', activeRequests: 1, maxConcurrentRequests: 8, gpu: { usagePercent: 12 }, vram: { usagePercent: 28 }, system: { cpuUsagePercent: 18, memoryUsagePercent: 40 }, score: 0.88, models: ['llama3.1'], lastSeen: now, ollama: { requestsPerSecond: 0.5 } },
+          { id: 'ollama-3', status: 'error', activeRequests: 0, maxConcurrentRequests: 8, gpu: { usagePercent: 0 }, vram: { usagePercent: 0 }, system: { cpuUsagePercent: 5, memoryUsagePercent: 20 }, score: 0.0, models: [], lastSeen: now, ollama: { requestsPerSecond: 0 } },
+        ],
+        rps: 1.7,
+        queue: { max_size: 100 }
+      },
+      queueDetails: {
+        pending_count: 3,
+        processing_count: 2,
+        current_size: 5,
+        processed_total: 128,
+        all: [
+          { model: 'llama3.1', target: null, status: 'pending', enqueued: new Date(Date.now() - 4200).toISOString(), sessionId: 'sess-demo-1' },
+          { model: 'gemma2', target: null, status: 'pending', enqueued: new Date(Date.now() - 1800).toISOString(), sessionId: 'sess-demo-2' },
+          { model: 'llama3.1', target: 'ollama-1', status: 'processing', enqueued: new Date(Date.now() - 800).toISOString(), sessionId: 'sess-demo-3' },
+          { model: 'llama3.1', target: 'ollama-2', status: 'processing', enqueued: new Date(Date.now() - 600).toISOString(), sessionId: 'sess-demo-4' },
+          { model: 'llama3.1', target: null, status: 'pending', enqueued: new Date(Date.now() - 200).toISOString(), sessionId: 'sess-demo-5' },
+        ]
+      },
+      sessions: {
+        sessions: [
+          { id: 'sess-demo-1', backendId: 'ollama-1', model: 'llama3.1', clientIP: '172.28.0.10', requestCount: 12, lastActivity: new Date(Date.now() - 3000).toISOString() },
+          { id: 'sess-demo-2', backendId: 'ollama-2', model: 'gemma2', clientIP: '172.28.0.11', requestCount: 5, lastActivity: new Date(Date.now() - 8000).toISOString() },
+          { id: 'sess-demo-3', backendId: 'ollama-1', model: 'llama3.1', clientIP: '172.28.0.12', requestCount: 8, lastActivity: new Date(Date.now() - 1200).toISOString() },
+          { id: 'sess-demo-4', backendId: 'ollama-2', model: 'llama3.1', clientIP: '172.28.0.13', requestCount: 3, lastActivity: new Date(Date.now() - 4000).toISOString() },
+          { id: 'sess-demo-5', backendId: null, model: 'llama3.1', clientIP: '172.28.0.14', requestCount: 1, lastActivity: new Date(Date.now() - 500).toISOString() },
+        ]
+      }
+    };
+  }
+
+  // ==================== UI LOGIC ====================
+  function setConnStatus(text, cls) {
+    const el = document.getElementById('connBadge');
+    el.textContent = text;
+    el.className = 'badge badge-' + cls;
+    const dot = document.getElementById('statusDot');
+    dot.className = 'dot ' + (cls === 'green' ? '' : cls === 'red' ? 'offline' : cls === 'yellow' ? 'error' : 'demo');
+  }
+
+  function hideOverlays() {
+    document.getElementById('loadingOverlay').classList.add('hidden');
+    document.getElementById('errorOverlay').classList.add('hidden');
+  }
+  function showError(msg) {
+    document.getElementById('loadingOverlay').classList.add('hidden');
+    document.getElementById('errorOverlay').classList.remove('hidden');
+    document.getElementById('errorText').textContent = msg;
+    setConnStatus('Offline', 'red');
+  }
+  function retryNow() {
+    fetchAttempt = 0;
+    document.getElementById('errorOverlay').classList.add('hidden');
+    document.getElementById('loadingOverlay').classList.remove('hidden');
+    setConnStatus('Подключение…', 'yellow');
+    fetchAll();
+  }
+  function enterDemoMode() {
+    demoMode = true;
+    hideOverlays();
+    setConnStatus('Demo', 'blue');
+    updateUI(demoData());
+  }
+
+  function togglePause() {
+    paused = !paused;
+    document.getElementById('pauseBtn').textContent = paused ? '▶ Продолжить' : '⏸ Пауза';
+    setConnStatus(paused ? 'Пауза' : (demoMode ? 'Demo' : 'Live'), paused ? 'yellow' : demoMode ? 'blue' : 'green');
+  }
+
+  document.getElementById('intervalSelect').addEventListener('change', e => {
+    refreshInterval = parseInt(e.target.value);
+    if (timerId) { clearInterval(timerId); timerId = setInterval(fetchAll, refreshInterval); }
+  });
+
+  function togglePanel(id) {
+    document.getElementById(id).classList.toggle('open');
+  }
+
+  // ==================== UPDATE UI ====================
+  function updateUI(data) {
+    const backends = data.cluster?.backends || [];
+    const queue = data.queueDetails || {};
+    const sess = data.sessions?.sessions || [];
+
+    const activeReqs = backends.reduce((s, b) => s + (b.activeRequests || 0), 0);
+    const pending = queue.pending_count || 0;
+    const processing = queue.processing_count || 0;
+
+    document.getElementById('statBackends').textContent = backends.length;
+    document.getElementById('statActive').textContent = activeReqs;
+    document.getElementById('statPending').textContent = pending;
+    document.getElementById('statProcessing').textContent = processing;
+    document.getElementById('statSessions').textContent = sess.length;
+
+    const now = Date.now();
+    const dt = (now - lastTime) / 1000;
+    const totalReqs = queue.processed_total || 0;
+    const rate = dt > 0 ? (totalReqs - lastRequestCount) / dt : 0;
+    requestRate = Math.max(0, rate);
+    lastRequestCount = totalReqs;
+    lastTime = now;
+    document.getElementById('statRate').textContent = requestRate.toFixed(1);
+    document.getElementById('statRPSCluster').textContent = (data.cluster?.rps || 0) > 0 ? data.cluster.rps.toFixed(1) : '0';
+
+    diagnose(data);
+    renderBackends(backends);
+    renderQueue(queue);
+    renderSessions(sess);
+
+    // Update canvas topology targets
+    updateTopology(backends, sess, queue);
+  }
+
+  function diagnose(data) {
+    const alerts = [];
+    const backends = data.cluster?.backends || [];
+    const queue = data.queueDetails || {};
+    const all = queue.all || [];
+    const activeBackends = backends.filter(b => b.status === 'active' || b.status === 'ready');
+
+    const freeBackends = activeBackends.filter(b => {
+      const maxReqs = b.maxConcurrentRequests || 10;
+      return (b.activeRequests || 0) / maxReqs < 0.5;
+    });
+    if (queue.pending_count > 0 && freeBackends.length > 0) {
+      alerts.push({ level: 'red', text: `Запросы в ожидании (${queue.pending_count}), хотя есть свободные бэкенды: ${freeBackends.map(b=>b.id).join(', ')}. Возможно, session stickiness блокирует.` });
+    }
+
+    const stuck = all.filter(q => q.status === 'pending' && q.enqueued);
+    for (const q of stuck) {
+      const waitSec = (Date.now() - new Date(q.enqueued).getTime()) / 1000;
+      if (waitSec > 10) alerts.push({ level: 'yellow', text: `Запрос к модели ${q.model} застрял в очереди ${waitSec.toFixed(0)} сек.` });
+    }
+
+    for (const s of (data.sessions?.sessions || [])) {
+      if (!s.backendId) continue;
+      const b = backends.find(x => x.id === s.backendId);
+      if (!b) continue;
+      const maxReqs = b.maxConcurrentRequests || 10;
+      const load = (b.activeRequests || 0) / maxReqs;
+      if (load > 0.8) {
+        const alt = activeBackends.filter(x => x.id !== b.id && (x.activeRequests||0)/(x.maxConcurrentRequests||10) < 0.5);
+        if (alt.length > 0) alerts.push({ level: 'yellow', text: `Session ${s.id.slice(0,8)}… привязана к перегруженному ${b.id} (${(load*100).toFixed(0)}%), но есть свободные: ${alt.map(a=>a.id).join(', ')}` });
+      }
+    }
+
+    for (const b of backends) {
+      const maxReqs = b.maxConcurrentRequests || 10;
+      const load = (b.activeRequests || 0) / maxReqs;
+      if (load >= 1.0) alerts.push({ level: 'red', text: `Бэкенд ${b.id} полностью загружен (${b.activeRequests}/${maxReqs}).` });
+    }
+
+    const maxSize = data.cluster?.queue?.max_size || 100;
+    const currentSize = queue.current_size || 0;
+    if (currentSize > maxSize * 0.8) alerts.push({ level: 'red', text: `Очередь заполнена на ${(currentSize/maxSize*100).toFixed(0)}% (${currentSize}/${maxSize}).` });
+
+    document.getElementById('alertContainer').innerHTML = alerts.map(a => `
+      <div class="alert-banner alert-${a.level}">
+        <span>${a.level==='red'?'❌':'⚠️'}</span>
+        <span>${escapeHtml(a.text)}</span>
+      </div>`).join('');
+  }
+
+  function renderBackends(backends) {
+    document.getElementById('backendCount').textContent = backends.length;
+    const tbody = document.querySelector('#backendsTable tbody');
+    if (!backends.length) { tbody.innerHTML = '<tr><td colspan="11" style="color:var(--text-muted);text-align:center;padding:16px">Нет данных</td></tr>'; return; }
+    tbody.innerHTML = backends.map(b => {
+      const maxReqs = b.maxConcurrentRequests || 10;
+      const active = b.activeRequests || 0;
+      const gpu = b.gpu?.usagePercent || 0;
+      const vram = b.vram?.usagePercent || b.gpu?.memoryUsagePercent || 0;
+      const cpu = b.system?.cpuUsagePercent || 0;
+      const ram = b.system?.memoryUsagePercent || 0;
+      const score = (b.score || b.weight || 0).toFixed(2);
+      const statusClass = b.status === 'healthy' || b.status === 'active' || b.status === 'ready' ? 'badge-green' : (b.status === 'error' || b.status === 'unhealthy' ? 'badge-red' : 'badge-yellow');
+      const uptime = b.lastSeen ? formatDuration(Date.now() - new Date(b.lastSeen).getTime()) : '-';
+      const rps = b.ollama?.requestsPerSecond || 0;
+      return `<tr>
+        <td><strong>${escapeHtml(b.id)}</strong></td>
+        <td><span class="badge ${statusClass}">${b.status}</span></td>
+        <td>${bar(gpu)} ${gpu.toFixed(0)}%</td>
+        <td>${bar(vram)} ${vram.toFixed(0)}%</td>
+        <td>${bar(cpu)} ${cpu.toFixed(0)}%</td>
+        <td>${bar(ram)} ${ram.toFixed(0)}%</td>
+        <td class="col-right">${active}/${maxReqs}</td>
+        <td class="col-right">${rps > 0 ? rps.toFixed(1) : '-'}</td>
+        <td class="col-right">${score}</td>
+        <td>${(b.models||[]).slice(0,3).map(m => `<span class="badge" style="background:rgba(168,85,247,0.12);color:var(--purple);border-color:rgba(168,85,247,0.2)">${escapeHtml(m)}</span>`).join(' ')}</td>
+        <td class="col-right">${uptime}</td>
+      </tr>`;
+    }).join('');
+  }
+
+  function renderQueue(queue) {
+    const all = queue.all || [];
+    document.getElementById('queueCount').textContent = all.length;
+    const tbody = document.querySelector('#queueTable tbody');
+    if (!all.length) { tbody.innerHTML = '<tr><td colspan="6" style="color:var(--text-muted);text-align:center;padding:16px">Нет данных</td></tr>'; return; }
+    tbody.innerHTML = all.map((q, i) => {
+      const waitMs = q.enqueued ? (Date.now() - new Date(q.enqueued).getTime()) : 0;
+      const status = q.status || (q.target ? 'processing' : 'pending');
+      const statusClass = status === 'processing' ? 'badge-green' : 'badge-yellow';
+      return `<tr>
+        <td>${i+1}</td>
+        <td>${escapeHtml(q.model || '-')}</td>
+        <td>${escapeHtml(q.target || 'Auto')}</td>
+        <td><span class="badge ${statusClass}">${status}</span></td>
+        <td class="col-right">${formatDuration(waitMs)}</td>
+        <td>${escapeHtml((q.sessionId || '-').slice(0,12))}</td>
+      </tr>`;
+    }).join('');
+  }
+
+  function renderSessions(sessions) {
+    document.getElementById('sessionCount').textContent = sessions.length;
+    const tbody = document.querySelector('#sessionsTable tbody');
+    if (!sessions.length) { tbody.innerHTML = '<tr><td colspan="6" style="color:var(--text-muted);text-align:center;padding:16px">Нет данных</td></tr>'; return; }
+    tbody.innerHTML = sessions.map(s => {
+      const idle = s.lastActivity ? formatDuration(Date.now() - new Date(s.lastActivity).getTime()) : '-';
+      return `<tr>
+        <td>${escapeHtml(s.id.slice(0,16))}…</td>
+        <td>${escapeHtml(s.backendId || '—')}</td>
+        <td>${escapeHtml(s.model || '-')}</td>
+        <td class="col-right">${s.requestCount || 0}</td>
+        <td class="col-right">${idle}</td>
+        <td>${escapeHtml(s.clientIP || '-')}</td>
+      </tr>`;
+    }).join('');
+  }
+
+  function bar(val) {
+    const v = Math.max(0, Math.min(100, val || 0));
+    let color = 'var(--green)';
+    if (v > 60) color = 'var(--yellow)';
+    if (v > 85) color = 'var(--red)';
+    return `<span class="bar-track"><span class="bar-fill" style="width:${v}%;background:${color}"></span></span>`;
+  }
+  function escapeHtml(s) {
+    if (s == null) return '';
+    return String(s).replace(/[&<>"']/g, c => ({'&':'&','<':'<','>':'>','"':'"',"'":'&#39;'}[c]));
+  }
+  function formatDuration(ms) {
+    if (ms < 0) ms = 0;
+    const s = Math.floor(ms / 1000);
+    if (s < 60) return s + 's';
+    const m = Math.floor(s / 60);
+    if (m < 60) return m + 'm ' + (s % 60) + 's';
+    const h = Math.floor(m / 60);
+    return h + 'h ' + (m % 60) + 'm';
+  }
+
+  // ==================== CANVAS TOPOLOGY ====================
+  const canvas = document.getElementById('vizCanvas');
+  const ctx = canvas.getContext('2d');
+  let topo = { backends: [], sessions: [], queue: {}, width: 0, height: 0 };
+
+  function resizeCanvas() {
+    const rect = canvas.parentElement.getBoundingClientRect();
+    canvas.width = rect.width;
+    canvas.height = rect.height;
+    topo.width = rect.width;
+    topo.height = rect.height;
+  }
+  window.addEventListener('resize', resizeCanvas);
+  resizeCanvas();
+
+  function updateTopology(backends, sessions, queue) {
+    topo.backends = backends;
+    topo.sessions = sessions;
+    topo.queue = queue;
+  }
+
+  // Particles
+  let particles = [];
+  let lastParticleTime = 0;
+
+  function spawnParticles() {
+    const now = performance.now();
+    if (now - lastParticleTime < 200) return; // throttle spawn
+    lastParticleTime = now;
+
+    // From sessions -> balancer (pending requests)
+    const pending = (topo.queue.all || []).filter(q => q.status === 'pending');
+    pending.forEach((q, i) => {
+      if (Math.random() > 0.3) return; // not all at once
+      const sess = topo.sessions.find(s => s.id === q.sessionId);
+      const y = sess ? nodeY('session', topo.sessions.indexOf(sess)) : (topo.height * 0.3 + Math.random() * topo.height * 0.4);
+      particles.push({
+        x: 120, y: y,
+        tx: topo.width / 2, ty: topo.height / 2,
+        color: '#10b981', // green to balancer
+        speed: 2 + Math.random() * 2,
+        life: 1,
+        size: 3 + Math.random() * 2
+      });
+    });
+
+    // From balancer -> backends (processing)
+    const processing = (topo.queue.all || []).filter(q => q.status === 'processing');
+    processing.forEach((q, i) => {
+      if (Math.random() > 0.3) return;
+      const bIdx = topo.backends.findIndex(b => b.id === q.target);
+      if (bIdx < 0) return;
+      const y = nodeY('backend', bIdx);
+      particles.push({
+        x: topo.width / 2, y: topo.height / 2,
+        tx: topo.width - 140, ty: y,
+        color: '#f59e0b', // orange to backend
+        speed: 2 + Math.random() * 2,
+        life: 1,
+        size: 3 + Math.random() * 2
+      });
+    });
+  }
+
+  function nodeY(type, index, total) {
+    const count = type === 'session' ? Math.max(1, topo.sessions.length) : Math.max(1, topo.backends.length);
+    const margin = 80;
+    const avail = topo.height - margin * 2;
+    const step = avail / Math.max(1, count - 1);
+    return margin + index * step;
+  }
+
+  function drawTopology() {
+    const w = topo.width;
+    const h = topo.height;
+    if (!w || !h) return;
+
+    ctx.clearRect(0, 0, w, h);
+
+    // Background grid
+    ctx.strokeStyle = 'rgba(255,255,255,0.03)';
+    ctx.lineWidth = 1;
+    const grid = 40;
+    for (let x = 0; x < w; x += grid) { ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, h); ctx.stroke(); }
+    for (let y = 0; y < h; y += grid) { ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(w, y); ctx.stroke(); }
+
+    const centerX = w / 2;
+    const centerY = h / 2;
+
+    // Draw dashed connections
+    ctx.setLineDash([6, 4]);
+    ctx.strokeStyle = 'rgba(148,163,184,0.25)';
+    ctx.lineWidth = 1.5;
+
+    // Sessions -> balancer
+    topo.sessions.forEach((s, i) => {
+      const y = nodeY('session', i);
+      ctx.beginPath(); ctx.moveTo(140, y); ctx.lineTo(centerX - 90, centerY); ctx.stroke();
+    });
+
+    // Balancer -> backends
+    topo.backends.forEach((b, i) => {
+      const y = nodeY('backend', i);
+      ctx.beginPath(); ctx.moveTo(centerX + 90, centerY); ctx.lineTo(w - 140, y); ctx.stroke();
+    });
+    ctx.setLineDash([]);
+
+    // Draw sessions (left)
+    const sessCount = Math.max(1, topo.sessions.length || 1);
+    topo.sessions.forEach((s, i) => {
+      const y = nodeY('session', i);
+      const isActive = s.backendId != null;
+      const boxColor = isActive ? 'rgba(59,130,246,0.18)' : 'rgba(148,163,184,0.12)';
+      const borderColor = isActive ? 'rgba(59,130,246,0.5)' : 'rgba(148,163,184,0.25)';
+
+      // card
+      ctx.fillStyle = boxColor;
+      roundRect(ctx, 12, y - 22, 120, 44, 8);
+      ctx.fill();
+      ctx.strokeStyle = borderColor;
+      ctx.lineWidth = 1;
+      ctx.stroke();
+
+      // text
+      ctx.fillStyle = '#e2e8f0';
+      ctx.font = 'bold 11px ' + varFont();
+      ctx.textAlign = 'left';
+      ctx.fillText(truncate(s.id, 10), 20, y - 6);
+      ctx.fillStyle = '#94a3b8';
+      ctx.font = '10px ' + varFont();
+      ctx.fillText((s.model || '—') + ' • ' + (s.requestCount || 0) + ' req', 20, y + 8);
+    });
+
+    // Draw balancer (center)
+    const bw = 180;
+    const bh = 100;
+    const bx = centerX - bw / 2;
+    const by = centerY - bh / 2;
+
+    const pending = topo.queue.pending_count || 0;
+    const maxQ = (topo.queue.all || []).length > 0 ? Math.max((topo.queue.all || []).length, 5) : 5;
+    const qRatio = Math.min(pending / maxQ, 1);
+    const bColor = qRatio > 0.75 ? '#ef4444' : qRatio > 0.3 ? '#f59e0b' : '#3b82f6';
+
+    // Balancer glow
+    ctx.shadowColor = bColor;
+    ctx.shadowBlur = 20;
+    ctx.fillStyle = bColor + '18';
+    roundRect(ctx, bx - 4, by - 4, bw + 8, bh + 8, 12);
+    ctx.fill();
+    ctx.shadowBlur = 0;
+
+    ctx.fillStyle = bColor + '22';
+    roundRect(ctx, bx, by, bw, bh, 10);
+    ctx.fill();
+    ctx.strokeStyle = 'rgba(148,163,184,0.4)';
+    ctx.lineWidth = 2;
+    ctx.stroke();
+
+    // Title
+    ctx.fillStyle = '#fff';
+    ctx.font = 'bold 13px ' + varFont();
+    ctx.textAlign = 'center';
+    ctx.fillText('⚖️ БАЛАНСЕР', centerX, centerY - 16);
+    ctx.fillStyle = '#94a3b8';
+    ctx.font = '11px ' + varFont();
+    ctx.fillText('Очередь: ' + pending, centerX, centerY + 4);
+
+    // Queue bar
+    const qbX = bx + 20;
+    const qbY = by + bh / 2 + 14;
+    const qbW = bw - 40;
+    const qbH = 8;
+    ctx.fillStyle = 'rgba(255,255,255,0.06)';
+    roundRect(ctx, qbX, qbY, qbW, qbH, 4);
+    ctx.fill();
+    const fillW = qbW * qRatio;
+    ctx.fillStyle = qRatio > 0.75 ? '#ef4444' : '#60a5fa';
+    roundRect(ctx, qbX, qbY, fillW, qbH, 4);
+    ctx.fill();
+
+    // Draw backends (right)
+    topo.backends.forEach((b, i) => {
+      const y = nodeY('backend', i);
+      const isHealthy = b.status === 'active' || b.status === 'healthy' || b.status === 'ready';
+      const boxColor = isHealthy ? (b.activeRequests > 0 ? 'rgba(245,158,11,0.15)' : 'rgba(34,197,94,0.12)') : 'rgba(239,68,68,0.12)';
+      const borderColor = isHealthy ? (b.activeRequests > 0 ? 'rgba(245,158,11,0.4)' : 'rgba(34,197,94,0.4)') : 'rgba(239,68,68,0.4)';
+
+      ctx.fillStyle = boxColor;
+      roundRect(ctx, w - 140, y - 26, 128, 52, 8);
+      ctx.fill();
+      ctx.strokeStyle = borderColor;
+      ctx.lineWidth = 1.5;
+      ctx.stroke();
+
+      ctx.fillStyle = '#fff';
+      ctx.font = 'bold 11px ' + varFont();
+      ctx.textAlign = 'left';
+      ctx.fillText(truncate(b.id, 12), w - 132, y - 10);
+
+      const maxReqs = b.maxConcurrentRequests || 10;
+      const active = b.activeRequests || 0;
+      const load = active / maxReqs;
+      const loadStr = active > 0 ? `⏳ ${active}/${maxReqs}` : '✅ Idle';
+      ctx.fillStyle = load >= 0.8 ? '#ef4444' : (load >= 0.5 ? '#f59e0b' : '#22c55e');
+      ctx.font = '10px ' + varFont();
+      ctx.fillText(loadStr, w - 132, y + 6);
+
+      const rps = b.ollama?.requestsPerSecond || 0;
+      ctx.fillStyle = '#94a3b8';
+      ctx.fillText('RPS: ' + (rps > 0 ? rps.toFixed(1) : '0'), w - 132, y + 20);
+    });
+
+    // Draw particles
+    spawnParticles();
+    for (let i = particles.length - 1; i >= 0; i--) {
+      const p = particles[i];
+      const dx = p.tx - p.x;
+      const dy = p.ty - p.y;
+      const dist = Math.hypot(dx, dy);
+      if (dist < 4 || p.life <= 0) {
+        particles.splice(i, 1);
+        continue;
+      }
+      p.x += (dx / dist) * p.speed;
+      p.y += (dy / dist) * p.speed;
+      p.life -= 0.005;
+
+      // Glow
+      ctx.beginPath();
+      ctx.arc(p.x, p.y, p.size + 4, 0, Math.PI * 2);
+      ctx.fillStyle = p.color + '25';
+      ctx.fill();
+
+      // Core
+      ctx.beginPath();
+      ctx.arc(p.x, p.y, p.size, 0, Math.PI * 2);
+      ctx.fillStyle = p.color;
+      ctx.fill();
+    }
+
+    // Fallback label when empty
+    if (topo.sessions.length === 0 && topo.backends.length === 0) {
+      ctx.fillStyle = '#475569';
+      ctx.font = '14px ' + varFont();
+      ctx.textAlign = 'center';
+      ctx.fillText('Нет данных для отображения топологии', w / 2, h / 2 + 80);
+      ctx.font = '12px ' + varFont();
+      ctx.fillText('Подключение к API… или включите демо-режим', w / 2, h / 2 + 100);
+    }
+  }
+
+  function varFont() {
+    return 'system-ui, -apple-system, sans-serif';
+  }
+
+  function truncate(str, len) {
+    if (!str) return '';
+    return str.length > len ? str.slice(0, len) + '…' : str;
+  }
+
+  function roundRect(ctx, x, y, w, h, r) {
+    ctx.beginPath();
+    ctx.moveTo(x + r, y);
+    ctx.arcTo(x + w, y, x + w, y + h, r);
+    ctx.arcTo(x + w, y + h, x, y + h, r);
+    ctx.arcTo(x, y + h, x, y, r);
+    ctx.arcTo(x, y, x + w, y, r);
+    ctx.closePath();
+  }
+
+  function animate() {
+    drawTopology();
+    requestAnimationFrame(animate);
+  }
+
+  // ==================== INIT ====================
+  timerId = setInterval(fetchAll, refreshInterval);
+  animate();
+  // First fetch
+  fetchAll();
+</script>
+</body>
+</html>

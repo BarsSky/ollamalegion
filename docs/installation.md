@@ -107,8 +107,12 @@ docker-compose ps
 # Проверка health endpoint
 curl http://localhost:18081/api/v1/health
 
-# Проверка Web UI
+# Проверка Web UI (Dashboard)
 # Откройте http://localhost:18030 в браузере
+
+# Проверка Монитора (real-time визуализация)
+# Откройте http://localhost:18030/monitor.html в браузере
+# Монитор доступен по тому же адресу и порту, что и Web UI Dashboard
 ```
 
 ### Шаг 5: Развертывание агента на GPU серверах
@@ -436,13 +440,16 @@ curl http://localhost:18081/api/v1/health
 curl http://localhost:18081/api/v1/backends
 # Ожидаемый ответ: {"backends": [...], "total": N}
 
-# 3. Проверка Web UI
+# 3. Проверка Web UI (Dashboard)
 # Откройте http://localhost:18030 в браузере
 
-# 4. Проверка агента на GPU сервере
+# 4. Проверка Монитора (real-time визуализация кластера)
+# Откройте http://localhost:18030/monitor.html в браузере
+
+# 5. Проверка агента на GPU сервере
 curl http://localhost:18032/metrics
 
-# 5. Проверка WebSocket подключения
+# 6. Проверка WebSocket подключения
 wscat -c ws://localhost:18081/ws/metrics
 ```
 

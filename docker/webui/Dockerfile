@@ -13,6 +13,7 @@ RUN rm -rf ./*
 
 # Копирование статических файлов UI
 COPY webui/index.html .
+COPY webui/monitor.html .
 COPY webui/css/ ./css/
 COPY webui/js/ ./js/
 COPY webui/img/ ./img/

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"sort"
 	"sync"
 	"time"
 )
@@ -143,6 +144,11 @@ func (or *OllamaRouter) handleTags(w http.ResponseWriter, r *http.Request) {
 	for _, m := range uniqueModels {
 		models = append(models, m)
 	}
+
+	// Сортируем по имени для стабильного порядка (детерминированно для тестов)
+	sort.Slice(models, func(i, j int) bool {
+		return models[i].Name < models[j].Name
+	})
 
 	writeJSON(w, http.StatusOK, OllamaTagsResponse{Models: models})
 }
@@ -292,6 +298,9 @@ func (or *OllamaRouter) handleDelete(w http.ResponseWriter, r *http.Request) {
 			if !gotResult && err == nil && resp != nil && resp.StatusCode == http.StatusOK {
 				firstResp = resp
 				gotResult = true
+			} else if resp != nil {
+				// Закрываем Body для ненужных ответов, чтобы избежать утечки
+				resp.Body.Close()
 			}
 			if firstErr == nil && err != nil {
 				firstErr = err
@@ -549,6 +558,7 @@ func (or *OllamaRouter) proxyHTTP(r *http.Request, backendID string) (*http.Resp
 }
 
 func copyResponse(w http.ResponseWriter, resp *http.Response) {
+	defer resp.Body.Close()
 	for key, values := range resp.Header {
 		for _, value := range values {
 			w.Header().Add(key, value)

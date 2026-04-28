@@ -338,9 +338,12 @@ type Session struct {
 	ID            string    `json:"id"`
 	BackendID     string    `json:"backendId"`
 	Model         string    `json:"model"`
+	ClientName    string    `json:"clientName"`    // Имя клиента (Cline, OpenWebUI, etc.)
+	ClientIP      string    `json:"clientIp"`      // IP клиента (без порта)
 	CreatedAt     time.Time `json:"createdAt"`
 	LastRequestAt time.Time `json:"lastRequestAt"`
 	RequestCount  int       `json:"requestCount"`
+	TotalTokens   int64     `json:"totalTokens"`   // Оценочное количество токенов
 }
 
 // HealthCheckResult - результат проверки здоровья

@@ -115,12 +115,13 @@ services:
       AGENT_MAX_CONCURRENT_REQUESTS: ${AGENT_MAX_CONCURRENT_REQUESTS:--1}
     
     # Health check для проверки состояния агента
+    # Увеличенный timeout (60s) чтобы агент успел инициализироваться
     healthcheck:
-      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:${AGENT_PORT:-18032}/metrics"]
+      test: ["CMD", "sh", "-c", "curl -f -s -o /dev/null http://localhost:${AGENT_PORT:-18032}/metrics || curl -f -s -o /dev/null http://localhost:${AGENT_PORT:-18032}/"]
       interval: 30s
-      timeout: 10s
+      timeout: 60s
       retries: 3
-      start_period: 15s
+      start_period: 60s
     
     # extra_hosts для доступа к хост-машине из контейнера (Linux совместимость)
     extra_hosts:

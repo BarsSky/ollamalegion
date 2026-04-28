@@ -11,6 +11,7 @@ import (
 // TokenAuthenticator - аутентификатор на основе API токенов
 type TokenAuthenticator struct {
 	tokens     map[string]bool
+	masterToken string
 	headerName string
 	enabled    bool
 	mu         sync.RWMutex
@@ -30,10 +31,17 @@ func NewTokenAuthenticator(tokens []string, headerName string, enabled bool) *To
 		headerName = "X-API-Token"
 	}
 
+	// Master token — первый токен в списке (если есть)
+	var master string
+	if len(tokens) > 0 {
+		master = tokens[0]
+	}
+
 	return &TokenAuthenticator{
-		tokens:     tokenMap,
-		headerName: headerName,
-		enabled:    enabled,
+		tokens:      tokenMap,
+		masterToken: master,
+		headerName:  headerName,
+		enabled:     enabled,
 	}
 }
 
@@ -67,7 +75,7 @@ func (a *TokenAuthenticator) Authenticate(r *http.Request) (bool, string) {
 }
 
 // IsMasterToken - проверка, является ли токен master токеном
-// Master token - первый токен в списке
+// Master token - первый токен в списке при инициализации
 func (a *TokenAuthenticator) IsMasterToken(token string) bool {
 	if !a.enabled || token == "" {
 		return false
@@ -76,20 +84,7 @@ func (a *TokenAuthenticator) IsMasterToken(token string) bool {
 	a.mu.RLock()
 	defer a.mu.RUnlock()
 
-	// Master token - первый в списке
-	if len(a.tokens) == 0 {
-		return false
-	}
-
-	// Получаем первый токен из map
-	var masterToken string
-	for t := range a.tokens {
-		if masterToken == "" || t < masterToken {
-			masterToken = t
-		}
-	}
-
-	return token == masterToken
+	return token == a.masterToken
 }
 
 // AddToken - добавление нового токена
@@ -127,18 +122,7 @@ func (a *TokenAuthenticator) IsEnabled() bool {
 
 // isMasterTokenLocked - проверка master токена без блокировки (для внутреннего использования)
 func (a *TokenAuthenticator) isMasterTokenLocked(token string) bool {
-	if len(a.tokens) == 0 {
-		return false
-	}
-
-	var masterToken string
-	for t := range a.tokens {
-		if masterToken == "" || t < masterToken {
-			masterToken = t
-		}
-	}
-
-	return token == masterToken
+	return token == a.masterToken
 }
 
 // GenerateToken - генерация случайного токена заданной длины

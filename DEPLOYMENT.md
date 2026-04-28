@@ -356,7 +356,7 @@ journalctl -u ollama-agent -f
 | Переменная | Описание | Пример |
 |------------|----------|--------|
 | `AGENT_ID` | Уникальный идентификатор агента | `gpu-1`, `server-a100` |
-| `BALANCER_URL` | URL балансировщика | `http://192.168.1.100:8081` |
+| `BALANCER_URL` | URL балансировщика | `http://192.168.1.100:18081` |
 
 ### Опциональные переменные агента
 
@@ -496,7 +496,7 @@ journalctl -u ollama-agent -f
 ### 4. Проверка состояния кластера
 
 ```bash
-curl -s http://<BALANCER_IP>:8081/api/v1/cluster | jq
+curl -s http://<BALANCER_IP>:18081/api/v1/cluster | jq
 ```
 
 Пример ответа:
@@ -656,7 +656,7 @@ docker restart ollama-agent
 
 ```bash
 # Проверка доступности порта
-telnet <BALANCER_IP> 8081
+telnet <BALANCER_IP> 18081
 
 # Проверка CORS настроек
 curl -v -X OPTIONS http://<BALANCER_IP>:18081/ws/metrics

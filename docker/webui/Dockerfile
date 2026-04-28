@@ -12,6 +12,7 @@ RUN rm -rf ./*
 COPY webui/index.html .
 COPY webui/css/ ./css/
 COPY webui/js/ ./js/
+COPY webui/img/ ./img/
 COPY webui/nginx.conf /etc/nginx/conf.d/default.conf
 
 EXPOSE 80

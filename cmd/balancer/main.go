@@ -15,6 +15,7 @@ import (
 	"ollama-loadbalancer/internal/balancer"
 	"ollama-loadbalancer/internal/config"
 	"ollama-loadbalancer/pkg/logger"
+	"ollama-loadbalancer/pkg/types"
 )
 
 var (
@@ -55,6 +56,28 @@ func main() {
 	if *logLevel != "" {
 		conf.Logging.Level = *logLevel
 	}
+
+	// Применение переопределений из environment (приоритет выше config.json)
+	if algo := os.Getenv("LB_ALGORITHM"); algo != "" {
+		validAlgorithms := map[string]bool{
+			"roundrobin":     true,
+			"leastconn":      true,
+			"resource-aware": true,
+			"model-affinity": true,
+		}
+		if validAlgorithms[algo] {
+			conf.Balancing.Algorithm = types.BalancingAlgorithm(algo)
+			logger.Get().Infow("algorithm overridden from environment", "algorithm", algo)
+		} else {
+			logger.Get().Warnw("invalid LB_ALGORITHM environment value, ignoring", "value", algo)
+		}
+	}
+	if os.Getenv("LB_MODEL_AFFINITY") != "" {
+		conf.Balancing.ModelAffinity = os.Getenv("LB_MODEL_AFFINITY") == "true"
+	}
+	if os.Getenv("LB_SESSION_STICKINESS") != "" {
+		conf.Balancing.SessionStickiness = os.Getenv("LB_SESSION_STICKINESS") == "true"
+	}
 	
 	// Проверка и настройка TLS
 	if conf.TLS.Enabled {
@@ -64,15 +87,6 @@ func main() {
 		if err := api.EnsureTLSCertificates(&conf.TLS); err != nil {
 			log.Fatalf("Failed to setup TLS certificates: %v", err)
 		}
-		
-		// Загрузка TLS конфигурации
-		tlsConfig, err := api.LoadTLSConfig(&conf.TLS)
-		if err != nil {
-			log.Fatalf("Failed to load TLS configuration: %v", err)
-		}
-		
-		// Сохраняем TLS конфигурацию для использования в серверах
-		_ = tlsConfig // будет использовано ниже
 	}
 	
 	fmt.Printf("╔═══════════════════════════════════════════════════════════╗\n")

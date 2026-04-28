@@ -126,6 +126,10 @@ func (s *Server) setupRoutes() {
 
 	// Queue stats (с аутентификацией и rate limiting)
 	s.mux.Handle("/api/v1/queue/stats", AuthMiddleware(RateLimitMiddleware(s.queueStatsHandler, s.rateLimiter), s.authenticator))
+	s.mux.Handle("/api/v1/queue/details", AuthMiddleware(RateLimitMiddleware(s.queueDetailsHandler, s.rateLimiter), s.authenticator))
+
+	// Cluster config (runtime-смена алгоритма)
+	s.mux.Handle("/api/v1/cluster/config", AuthMiddleware(RateLimitMiddleware(s.clusterConfigHandler, s.rateLimiter), s.authenticator))
 
 	// Predictions (с аутентификацией и rate limiting)
 	s.mux.Handle("/api/v1/predictions", AuthMiddleware(RateLimitMiddleware(s.predictionsHandler, s.rateLimiter), s.authenticator))
@@ -671,9 +675,44 @@ func (s *Server) sessionsHandler(w http.ResponseWriter, r *http.Request) {
 	switch r.Method {
 	case http.MethodGet:
 		sessions := s.proxy.GetSessions()
+
+		type SessionInfo struct {
+			ID            string        `json:"id"`
+			ClientName    string        `json:"clientName"`
+			ClientIP      string        `json:"clientIP"`
+			BackendID     string        `json:"backendId"`
+			BackendName   string        `json:"backendName"`
+			Model         string        `json:"model"`
+			CreatedAt     time.Time     `json:"createdAt"`
+			LastRequestAt time.Time     `json:"lastRequestAt"`
+			RequestCount  int           `json:"requestCount"`
+			IdleSeconds   int           `json:"idleSeconds"`
+		}
+
+		result := make([]SessionInfo, 0, len(sessions))
+		for _, session := range sessions {
+			backend := s.proxy.GetBackend(session.BackendID)
+			backendName := ""
+			if backend != nil {
+				backendName = backend.Name
+			}
+			result = append(result, SessionInfo{
+				ID:            session.ID,
+				ClientName:    session.ClientName,
+				ClientIP:      session.ClientIP,
+				BackendID:     session.BackendID,
+				BackendName:   backendName,
+				Model:         session.Model,
+				CreatedAt:     session.CreatedAt,
+				LastRequestAt: session.LastRequestAt,
+				RequestCount:  session.RequestCount,
+				IdleSeconds:   int(time.Since(session.LastRequestAt).Seconds()),
+			})
+		}
+
 		s.writeJSON(w, http.StatusOK, map[string]interface{}{
-			"sessions": sessions,
-			"total":    len(sessions),
+			"total":    len(result),
+			"sessions": result,
 		})
 	case http.MethodDelete:
 		s.proxy.ClearSessions()
@@ -775,6 +814,84 @@ func (s *Server) queueStatsHandler(w http.ResponseWriter, r *http.Request) {
 
 	stats := s.proxy.GetQueueStats()
 	s.writeJSON(w, http.StatusOK, stats)
+}
+
+// queueDetailsHandler - детали очереди (pending requests)
+func (s *Server) queueDetailsHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	pending := s.proxy.GetQueuePendingRequests()
+	s.writeJSON(w, http.StatusOK, map[string]interface{}{
+		"pending": pending,
+	})
+}
+
+// clusterConfigHandler - runtime конфигурация кластера (смена алгоритма и т.д.)
+func (s *Server) clusterConfigHandler(w http.ResponseWriter, r *http.Request) {
+	switch r.Method {
+	case http.MethodGet:
+		s.writeJSON(w, http.StatusOK, map[string]interface{}{
+			"algorithm":         s.config.Balancing.Algorithm,
+			"modelAffinity":     s.config.Balancing.ModelAffinity,
+			"sessionStickiness": s.config.Balancing.SessionStickiness,
+			"queueMaxSize":      s.config.Balancing.QueueMaxSize,
+			"queueTimeout":      s.config.Balancing.QueueTimeout,
+			"requestTimeout":    s.config.Balancing.RequestTimeout,
+		})
+	case http.MethodPut:
+		var req struct {
+			Algorithm         string `json:"algorithm"`
+			ModelAffinity     *bool  `json:"modelAffinity"`
+			SessionStickiness *bool  `json:"sessionStickiness"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			s.writeJSON(w, http.StatusBadRequest, map[string]interface{}{
+				"success": false,
+				"error":   "Invalid request body",
+			})
+			return
+		}
+
+		// Валидация алгоритма
+		if req.Algorithm != "" {
+			validAlgorithms := map[string]bool{
+				"roundrobin":     true,
+				"leastconn":      true,
+				"resource-aware": true,
+				"model-affinity": true,
+			}
+			if !validAlgorithms[req.Algorithm] {
+				s.writeJSON(w, http.StatusBadRequest, map[string]interface{}{
+					"success": false,
+					"error":   "Invalid algorithm. Valid: roundrobin, leastconn, resource-aware, model-affinity",
+				})
+				return
+			}
+			s.config.Balancing.Algorithm = types.BalancingAlgorithm(req.Algorithm)
+		}
+
+		if req.ModelAffinity != nil {
+			s.config.Balancing.ModelAffinity = *req.ModelAffinity
+		}
+		if req.SessionStickiness != nil {
+			s.config.Balancing.SessionStickiness = *req.SessionStickiness
+		}
+
+		s.writeJSON(w, http.StatusOK, map[string]interface{}{
+			"success": true,
+			"config": map[string]interface{}{
+				"algorithm":         s.config.Balancing.Algorithm,
+				"modelAffinity":     s.config.Balancing.ModelAffinity,
+				"sessionStickiness": s.config.Balancing.SessionStickiness,
+			},
+			"message": "Cluster configuration updated successfully",
+		})
+	default:
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+	}
 }
 
 // agentRegisterHandler - регистрация агента (самостоятельная регистрация бэкенда)

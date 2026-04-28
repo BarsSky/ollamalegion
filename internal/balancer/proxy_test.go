@@ -480,17 +480,18 @@ func TestSessionManager(t *testing.T) {
 	defer sm.Clear()
 
 	// Создаем сессию
-	sm.Set("session-1", "backend-1", "llama2")
+	sm.Set("session-1", "backend-1", "llama2", "TestClient")
 
 	// Получаем сессию
 	session := sm.Get("session-1")
 	assert.NotNil(t, session)
 	assert.Equal(t, "backend-1", session.BackendID)
 	assert.Equal(t, "llama2", session.Model)
+	assert.Equal(t, "TestClient", session.ClientName)
 	assert.Equal(t, 1, session.RequestCount)
 
 	// Обновляем сессию
-	sm.Set("session-1", "backend-1", "llama2")
+	sm.Set("session-1", "backend-1", "llama2", "TestClient")
 	session = sm.Get("session-1")
 	assert.Equal(t, 2, session.RequestCount)
 }
@@ -510,7 +511,7 @@ func TestSessionManagerDelete(t *testing.T) {
 	t.Parallel()
 
 	sm := NewSessionManager()
-	sm.Set("session-1", "backend-1", "llama2")
+	sm.Set("session-1", "backend-1", "llama2", "TestClient")
 
 	assert.True(t, sm.Delete("session-1"))
 	assert.Nil(t, sm.Get("session-1"))

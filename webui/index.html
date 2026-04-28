@@ -92,6 +92,9 @@
                     </div>
                         <div class="metric-value" id="queueSize">-</div>
                         <div class="metric-sub" id="queueProcessed">- обработано</div>
+                        <div class="metric-mini-bar">
+                            <div class="metric-mini-fill" id="queueDashboardFill" style="width: 0%"></div>
+                        </div>
                     </div>
                 </div>
 
@@ -319,6 +322,29 @@
                             <span id="queueMidLabel">50%</span>
                             <span id="queueMaxLabel">100%</span>
                         </div>
+                    </div>
+                </div>
+                <!-- Queue Tasks Table -->
+                <div class="card">
+                    <div class="card-header">
+                        <h3><img src="img/dark-wall.svg" alt="" class="section-icon-svg"> Задачи в очереди</h3>
+                        <span class="badge badge-info" id="queueTasksCount">-</span>
+                    </div>
+                    <div class="table-responsive">
+                        <table class="data-table" id="queueTasksTable">
+                            <thead>
+                                <tr>
+                                    <th>#</th>
+                                    <th>Модель</th>
+                                    <th>Бэкенд</th>
+                                    <th>Время в очереди</th>
+                                    <th>Статус</th>
+                                </tr>
+                            </thead>
+                            <tbody id="queueTasksBody">
+                                <tr><td colspan="5" class="loading-cell">Ожидание данных...</td></tr>
+                            </tbody>
+                        </table>
                     </div>
                 </div>
             </div>

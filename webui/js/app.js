@@ -807,8 +807,10 @@ class OllamaLegionUI {
     renderModelsPage() {
         const backends = this.data.backends;
         const allModels = [];
+        const backendMap = {};
         
         backends.forEach(b => {
+            backendMap[b.id] = b;
             (b.ollama?.runningModels || []).forEach(m => {
                 allModels.push({
                     ...m,
@@ -833,6 +835,23 @@ class OllamaLegionUI {
             const ramMB = (m.ramUsage || 0) / 1024 / 1024;
             const sizeGB = (m.size || 0) / 1024 / 1024 / 1024;
             
+            // Получаем данные бэкенда для расчета прогресс-баров
+            const backend = backendMap[m.backend] || {};
+            const mode = this.getBackendMode(backend);
+            const isGPU = mode === 'gpu';
+            
+            const gpu = backend.gpu || {};
+            const sys = backend.system || {};
+            
+            const totalVRAM = isGPU ? (gpu.memoryTotal || 1) : 0;
+            const totalRAM = sys.memoryTotal || 1;
+            
+            const vramPercent = totalVRAM > 0 ? Math.min((vramMB / totalVRAM) * 100, 100) : 0;
+            const ramPercent = totalRAM > 0 ? Math.min((ramMB / totalRAM) * 100, 100) : 0;
+            
+            // Для GPU показываем VRAM + RAM, для CPU только RAM
+            const showVRAM = isGPU && totalVRAM > 0;
+            
             return `
                 <div class="model-card">
                     <div class="model-card-header">
@@ -853,17 +872,29 @@ class OllamaLegionUI {
                             <div class="model-detail-label">Family</div>
                             <div class="model-detail-value">${m.family || '-'}</div>
                         </div>
-                        <div class="model-detail">
-                            <div class="model-detail-label">Format</div>
-                            <div class="model-detail-value">${m.format || '-'}</div>
+                    </div>
+                    <!-- Memory Progress Bars -->
+                    <div class="model-memory-section">
+                        <div class="model-memory-title">Использование памяти</div>
+                        ${showVRAM ? `
+                        <div class="model-memory-bar-container">
+                            <div class="model-memory-bar-labels">
+                                <span>VRAM</span>
+                                <span>${vramMB.toFixed(0)} / ${totalVRAM.toFixed(0)} MB (${vramPercent.toFixed(1)}%)</span>
+                            </div>
+                            <div class="model-memory-bar">
+                                <div class="model-memory-bar-fill vram" style="width: ${vramPercent}%"></div>
+                            </div>
                         </div>
-                        <div class="model-detail">
-                            <div class="model-detail-label">Params</div>
-                            <div class="model-detail-value">${m.parameterSize || '-'}</div>
-                        </div>
-                        <div class="model-detail">
-                            <div class="model-detail-label">Quant</div>
-                            <div class="model-detail-value">${m.quantization || '-'}</div>
+                        ` : ''}
+                        <div class="model-memory-bar-container">
+                            <div class="model-memory-bar-labels">
+                                <span>RAM</span>
+                                <span>${ramMB.toFixed(0)} / ${totalRAM.toFixed(0)} MB (${ramPercent.toFixed(1)}%)</span>
+                            </div>
+                            <div class="model-memory-bar">
+                                <div class="model-memory-bar-fill ram" style="width: ${ramPercent}%"></div>
+                            </div>
                         </div>
                     </div>
                 </div>
@@ -941,7 +972,8 @@ class OllamaLegionUI {
         const current = queue.current_size || 0;
         const max = queue.max_size || 100;
         const processed = queue.processed_total || 0;
-        const workers = queue.workers || 4;
+        const workers = queue.workers || 0;
+        const timeout = queue.timeout_sec || 0;
         
         document.getElementById('queueCurrentSize').textContent = current;
         document.getElementById('queueMaxSize').textContent = max;
@@ -949,9 +981,45 @@ class OllamaLegionUI {
         document.getElementById('queueWorkers').textContent = workers;
         
         const percent = max > 0 ? (current / max * 100) : 0;
-        document.getElementById('queueFill').style.width = percent + '%';
-        document.getElementById('queueMidLabel').textContent = Math.round(max / 2);
-        document.getElementById('queueMaxLabel').textContent = max;
+        const fillEl = document.getElementById('queueFill');
+        if (fillEl) fillEl.style.width = percent + '%';
+        const midEl = document.getElementById('queueMidLabel');
+        if (midEl) midEl.textContent = Math.round(max / 2);
+        const maxEl = document.getElementById('queueMaxLabel');
+        if (maxEl) maxEl.textContent = max;
+        
+        // Обновляем badge с количеством задач
+        const badge = document.getElementById('queueTasksCount');
+        if (badge) badge.textContent = current;
+        
+        // Рендерим таблицу задач из queueDetails
+        this.renderQueueTasks();
+    }
+
+    renderQueueTasks() {
+        const tbody = document.getElementById('queueTasksBody');
+        const tasks = this.data.queueTasks || [];
+        
+        if (!tasks.length) {
+            tbody.innerHTML = '<tr><td colspan="5" class="loading-cell">Нет задач в очереди</td></tr>';
+            return;
+        }
+        
+        tbody.innerHTML = tasks.map((task, index) => {
+            const status = task.status || 'pending';
+            const statusClass = status === 'processing' ? 'processing' : (status === 'completed' ? 'completed' : 'pending');
+            const statusText = status === 'processing' ? 'Обработка' : (status === 'completed' ? 'Завершено' : 'Ожидание');
+            const waitTime = task.waitTimeMs ? (task.waitTimeMs / 1000).toFixed(1) + 'с' : '-';
+            return `
+                <tr>
+                    <td>${index + 1}</td>
+                    <td><code>${task.model || '-'}</code></td>
+                    <td>${task.backend || 'Auto'}</td>
+                    <td>${waitTime}</td>
+                    <td><span class="queue-task-status ${statusClass}">${statusText}</span></td>
+                </tr>
+            `;
+        }).join('');
     }
 
     // Logs
@@ -1242,14 +1310,40 @@ class OllamaLegionUI {
     startPeriodicRefresh() {
         // Начальная загрузка queue и sessions
         this.fetchQueue();
+        this.fetchQueueDetails();
         this.fetchSessions();
         
         setInterval(() => {
             // Всегда обновляем queue (нужно для dashboard-виджета)
             this.fetchQueue();
+            this.fetchQueueDetails();
             // Всегда обновляем sessions (нужно для dashboard-виджета)
             this.fetchSessions();
         }, 5000);
+    }
+
+    async fetchQueueDetails() {
+        try {
+            const response = await fetch(`${API_BASE}/api/v1/queue/details`);
+            if (response.ok) {
+                const data = await response.json();
+                // Преобразуем данные API в формат задач
+                const pending = data.pending || [];
+                this.data.queueTasks = pending.map((item, idx) => ({
+                    id: idx + 1,
+                    model: item.model || '-',
+                    backend: item.target || 'Auto',
+                    status: item.target ? 'processing' : 'pending',
+                    waitTimeMs: item.enqueued ? (Date.now() - new Date(item.enqueued).getTime()) : 0,
+                    enqueued: item.enqueued
+                }));
+                if (this.currentPage === 'queue') {
+                    this.renderQueueTasks();
+                }
+            }
+        } catch (e) {
+            console.error('Failed to fetch queue details:', e);
+        }
     }
 
     async fetchClusterState() {
@@ -1295,12 +1389,14 @@ class OllamaLegionUI {
         const elFill = document.getElementById('queueFill');
         const elMid = document.getElementById('queueMidLabel');
         const elMax = document.getElementById('queueMaxLabel');
+        const elDashboardFill = document.getElementById('queueDashboardFill');
         
         if (elSize) elSize.textContent = current;
         if (elProcessed) elProcessed.textContent = `${processed} обработано`;
         if (elFill) elFill.style.width = percent + '%';
         if (elMid) elMid.textContent = Math.round(max / 2);
         if (elMax) elMax.textContent = max;
+        if (elDashboardFill) elDashboardFill.style.width = percent + '%';
     }
 }
 

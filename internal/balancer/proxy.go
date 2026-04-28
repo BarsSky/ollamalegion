@@ -43,6 +43,11 @@ type Proxy struct {
 	eventSubsMu   sync.RWMutex
 }
 
+// contextKey - типизированный ключ для context.Value
+type contextKey string
+
+const modelContextKey contextKey = "model"
+
 // BackendState - состояние бэкенда
 type BackendState struct {
 	Backend         *types.Backend
@@ -81,6 +86,8 @@ type QueueManager struct {
 	cancel     context.CancelFunc
 	wg         sync.WaitGroup
 	proxy      *Proxy
+	pendingMu  sync.RWMutex
+	pending    []*QueuedRequest
 }
 
 // QueuedRequest - запрос в очереди
@@ -156,8 +163,8 @@ func NewProxy(config *types.LoadBalancerConfig) *Proxy {
 		logger.Get().Infow("state file not loaded, using config only", "error", err)
 	}
 
-	// Запуск фоновой проверки таймаута агентов (30 секунд)
-	go p.StartAgentTimeoutChecker(30 * time.Second)
+	// Запуск фоновой проверки таймаута агентов (60 секунд — увеличено для стабильности)
+	go p.StartAgentTimeoutChecker(60 * time.Second)
 
 	// Инициализация OllamaRouter для агрегации и целевой маршрутизации API
 	p.ollamaRouter = NewOllamaRouter(p)
@@ -174,7 +181,7 @@ func (p *Proxy) SetQueueManagerProxy() {
 func NewSessionManager() *SessionManager {
 	sm := &SessionManager{
 		sessions: make(map[string]*types.Session),
-		ttl:      30 * time.Minute,
+		ttl:      5 * time.Minute, // Уменьшено с 30 минут: быстрая ротация бэкендов
 	}
 
 	// Запуск очистителя просроченных сессий
@@ -221,6 +228,7 @@ func (qm *QueueManager) worker(id int) {
 			logger.Get().Infow("queue worker stopped", "worker_id", id)
 			return
 		case req := <-qm.queue:
+			qm.removePending(req)
 			qm.processRequest(req, id)
 		}
 	}
@@ -307,40 +315,74 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	// === Чат / Генерация — требуют session stickiness ===
 	model := p.extractModel(r)
+	// Сохраняем модель в контексте запроса для использования в proxyRequest
+	// (тело запроса может быть прочитано при проксировании)
+	r = r.WithContext(context.WithValue(r.Context(), modelContextKey, model))
 
 	// Проверка сессии
 	sessionID := p.getSessionID(r)
+	clientName := p.getClientName(r)
 	var targetBackend string
 
 	if sessionID != "" && p.config.Balancing.SessionStickiness {
-		// Есть сессия - используем тот же бэкенд
+		// Есть сессия - используем тот же бэкенд, но с проверкой загруженности
 		if session := p.sessionMgr.Get(sessionID); session != nil {
 			targetBackend = session.BackendID
-			
+
 			// Проверяем статус бэкенда из сессии
 			p.mu.RLock()
 			backendState, exists := p.backends[targetBackend]
 			p.mu.RUnlock()
-			
+
 			if !exists || backendState.Backend.Status != types.StatusHealthy {
-				// Бэкенд из сессии недоступен, выбираем новый
-			logger.Get().Warnw("session backend unavailable, selecting new backend",
-				"session_backend", targetBackend,
-				"exists", exists,
-				"status", backendState.Backend.Status,
-			)
+				// Бэкенд из сессии недоступен — выбираем новый
+				logger.Get().Warnw("session backend unavailable, selecting new backend",
+					"session_backend", targetBackend,
+					"exists", exists,
+					"status", backendState.Backend.Status,
+				)
 				targetBackend = ""
+			} else {
+				// --- "Sticky но не жадный": если бэкенд загружен >70% и есть альтернатива с той же моделью ---
+				shouldRebalance := false
+				backendState.mu.Lock()
+				active := backendState.ActiveReqs
+				maxReqs := backendState.Backend.MaxConcurrentReqs
+				backendState.mu.Unlock()
+
+				if maxReqs > 0 && active > 0 {
+					loadRatio := float64(active) / float64(maxReqs)
+					if loadRatio > 0.70 {
+						// Ищем другой бэкенд с той же моделью, менее загруженный
+						altBackend := p.findLessLoadedBackendWithModel(model, targetBackend)
+						if altBackend != "" {
+							logger.Get().Infow("rebalancing session to less loaded backend",
+								"session", sessionID,
+								"from", targetBackend,
+								"to", altBackend,
+								"load_ratio", loadRatio,
+							)
+							targetBackend = altBackend
+							shouldRebalance = true
+						}
+					}
+				}
+
+				if !shouldRebalance {
+					// Обновляем активность сессии
+					p.sessionMgr.Set(sessionID, targetBackend, model, clientName)
+				}
 			}
 		}
 	}
 
-	// Если нет сессии или сессия не найдена - выбираем бэкенд
+	// Если нет сессии или сессия не найдена — выбираем бэкенд
 	if targetBackend == "" {
 		targetBackend = p.selectBackend(model)
-		
-		// Обновляем сессию с новым бэкендом
+
+		// Создаем сессию с новым бэкендом
 		if sessionID != "" && targetBackend != "" && p.config.Balancing.SessionStickiness {
-			p.sessionMgr.Set(sessionID, targetBackend, model)
+			p.sessionMgr.Set(sessionID, targetBackend, model, clientName)
 		}
 	}
 
@@ -367,7 +409,7 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			}
 			// Обновляем сессию для retry
 			if sessionID != "" && p.config.Balancing.SessionStickiness {
-				p.sessionMgr.Set(sessionID, targetBackend, model)
+				p.sessionMgr.Set(sessionID, targetBackend, model, clientName)
 			}
 		}
 
@@ -392,16 +434,15 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	http.Error(w, "Service unavailable - all backends failed", http.StatusServiceUnavailable)
 }
 
-// extractModel - извлечение модели из запроса
+// extractModel - извлечение модели из запроса (с восстановлением тела)
 func (p *Proxy) extractModel(r *http.Request) string {
 	// Для POST запросов читаем тело
-	if r.Method == http.MethodPost {
+	if r.Method == http.MethodPost && r.Body != nil {
 		body, err := io.ReadAll(r.Body)
 		if err != nil {
 			return ""
 		}
-
-		// Восстанавливаем тело для дальнейшего использования
+		// Восстанавливаем тело для дальнейшего использования (проксирования)
 		r.Body = io.NopCloser(bytes.NewBuffer(body))
 
 		// Парсим JSON
@@ -418,20 +459,41 @@ func (p *Proxy) extractModel(r *http.Request) string {
 	return ""
 }
 
-// getSessionID - получение ID сессии из запроса
+// getSessionID - получение ID сессии из запроса (стабильный, без эфемерного порта)
 func (p *Proxy) getSessionID(r *http.Request) string {
-	// Проверяем заголовок X-Session-ID
+	// Приоритет: X-Client-ID > X-Session-ID > cookie > IP (без порта)
+	if clientID := r.Header.Get("X-Client-ID"); clientID != "" {
+		return clientID
+	}
 	if sessionID := r.Header.Get("X-Session-ID"); sessionID != "" {
 		return sessionID
 	}
-
-	// Проверяем cookie
 	if cookie, err := r.Cookie("session_id"); err == nil {
 		return cookie.Value
 	}
 
-	// Используем IP как идентификатор сессии
-	return r.RemoteAddr
+	// Извлекаем только IP, без порта — иначе NAT-клиенты создают сотни сессий
+	ip, _, err := net.SplitHostPort(r.RemoteAddr)
+	if err != nil {
+		ip = r.RemoteAddr
+	}
+	return ip
+}
+
+// getClientName - извлечение имени клиента из запроса (Cline, OpenWebUI, etc.)
+func (p *Proxy) getClientName(r *http.Request) string {
+	if name := r.Header.Get("X-Client-Name"); name != "" {
+		return name
+	}
+	// Fallback по User-Agent
+	ua := r.UserAgent()
+	if strings.Contains(ua, "cline") || strings.Contains(ua, "Cline") {
+		return "Cline"
+	}
+	if strings.Contains(ua, "open-webui") || strings.Contains(ua, "OpenWebUI") {
+		return "OpenWebUI"
+	}
+	return ua
 }
 
 // selectBackend - выбор бэкенда для запроса
@@ -574,6 +636,63 @@ func (p *Proxy) selectByResourcesExcluding(exclude map[string]bool) string {
 	}
 
 	return bestBackend
+}
+
+// findLessLoadedBackendWithModel — поиск менее загруженного бэкенда с той же моделью
+func (p *Proxy) findLessLoadedBackendWithModel(modelName, excludeBackendID string) string {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+
+	var bestBackendID string
+	var bestLoadRatio float64 = 2.0 // >1.0 чтобы любой бэкенд был лучше
+
+	for id, state := range p.backends {
+		if id == excludeBackendID {
+			continue
+		}
+		if state.Backend.Status != types.StatusHealthy {
+			continue
+		}
+		if !p.checkResourceLimits(id) {
+			continue
+		}
+
+		state.mu.Lock()
+		active := state.ActiveReqs
+		maxReqs := state.Backend.MaxConcurrentReqs
+		state.mu.Unlock()
+
+		if maxReqs <= 0 {
+			continue
+		}
+
+		// Проверяем наличие модели
+		p.metricsMgr.mu.RLock()
+		metrics, hasMetrics := p.metricsMgr.metrics[id]
+		p.metricsMgr.mu.RUnlock()
+		if !hasMetrics {
+			continue
+		}
+
+		hasModel := false
+		for _, m := range metrics.Ollama.RunningModels {
+			if m.Name == modelName || strings.Contains(m.Name, modelName) {
+				hasModel = true
+				break
+			}
+		}
+		if !hasModel {
+			continue
+		}
+
+		loadRatio := float64(active) / float64(maxReqs)
+		if loadRatio < bestLoadRatio {
+			bestLoadRatio = loadRatio
+			bestBackendID = id
+		}
+	}
+
+	return bestBackendID
 }
 
 // findBackendWithModel - поиск бэкенда с загруженной моделью
@@ -1092,7 +1211,12 @@ func (p *Proxy) proxyRequest(w http.ResponseWriter, r *http.Request, backendID s
 	// Добавление заголовка сессии
 	sessionID := p.getSessionID(r)
 	if sessionID != "" {
-		p.sessionMgr.Set(sessionID, backendID, p.extractModel(r))
+		// Берём модель из контекста (тело запроса уже могло быть прочитано)
+		modelFromCtx := ""
+		if m, ok := r.Context().Value(modelContextKey).(string); ok {
+			modelFromCtx = m
+		}
+		p.sessionMgr.Set(sessionID, backendID, modelFromCtx, p.getClientName(r))
 		w.Header().Set("X-Session-ID", sessionID)
 	}
 
@@ -1479,20 +1603,30 @@ func (sm *SessionManager) Clear() {
 	sm.sessions = make(map[string]*types.Session)
 }
 
-// Set - установка сессии
-func (sm *SessionManager) Set(id, backendID, model string) {
+// Set - установка сессии (с clientName и clientIP)
+func (sm *SessionManager) Set(id, backendID, model, clientName string) {
 	sm.mu.Lock()
 	defer sm.mu.Unlock()
 
 	now := time.Now()
 	if session, ok := sm.sessions[id]; ok {
+		session.BackendID = backendID
+		session.Model = model
+		session.ClientName = clientName
 		session.LastRequestAt = now
 		session.RequestCount++
 	} else {
+		// Извлекаем IP без порта для clientIP
+		clientIP := id
+		if ip, _, err := net.SplitHostPort(id); err == nil {
+			clientIP = ip
+		}
 		sm.sessions[id] = &types.Session{
 			ID:            id,
 			BackendID:     backendID,
 			Model:         model,
+			ClientName:    clientName,
+			ClientIP:      clientIP,
 			CreatedAt:     now,
 			LastRequestAt: now,
 			RequestCount:  1,
@@ -1511,14 +1645,19 @@ func (p *Proxy) queueRequest(w http.ResponseWriter, r *http.Request, model strin
 		Done:     done,
 	}
 
+	// Добавляем в pending список ДО отправки в канал
+	p.queueMgr.addPending(queuedReq)
+
 	// Попытка отправить запрос в очередь
 	select {
 	case p.queueMgr.queue <- queuedReq:
 		// Запрос успешно отправлен в очередь
 	case <-p.queueMgr.ctx.Done():
+		p.queueMgr.removePending(queuedReq)
 		return false
 	default:
 		// Очередь переполнена
+		p.queueMgr.removePending(queuedReq)
 		return false
 	}
 
@@ -1533,10 +1672,54 @@ func (p *Proxy) queueRequest(w http.ResponseWriter, r *http.Request, model strin
 	}
 }
 
+// addPending - добавление запроса в pending список
+func (qm *QueueManager) addPending(req *QueuedRequest) {
+	qm.pendingMu.Lock()
+	qm.pending = append(qm.pending, req)
+	qm.pendingMu.Unlock()
+}
+
+// removePending - удаление запроса из pending списка
+func (qm *QueueManager) removePending(req *QueuedRequest) {
+	qm.pendingMu.Lock()
+	for i, r := range qm.pending {
+		if r == req {
+			qm.pending = append(qm.pending[:i], qm.pending[i+1:]...)
+			break
+		}
+	}
+	qm.pendingMu.Unlock()
+}
+
+// getPendingDTOs - получение DTO pending запросов для API
+func (qm *QueueManager) getPendingDTOs() []map[string]interface{} {
+	qm.pendingMu.RLock()
+	defer qm.pendingMu.RUnlock()
+
+	result := make([]map[string]interface{}, 0, len(qm.pending))
+	now := time.Now()
+	for _, req := range qm.pending {
+		result = append(result, map[string]interface{}{
+			"model":      req.Model,
+			"enqueued":   req.Enqueued.UTC().Format(time.RFC3339),
+			"waitTimeMs": now.Sub(req.Enqueued).Milliseconds(),
+			"target":     req.Target,
+		})
+	}
+	return result
+}
+
+// GetQueuePendingRequests — получение списка ожидающих запросов в очереди
+func (p *Proxy) GetQueuePendingRequests() []map[string]interface{} {
+	return p.queueMgr.getPendingDTOs()
+}
+
 // GetQueueStats - получение статистики очереди
 func (p *Proxy) GetQueueStats() QueueStats {
 	p.queueMgr.mu.Lock()
 	processed := p.queueMgr.processed
+	workers := p.queueMgr.numWorkers
+	timeout := p.queueMgr.timeout
 	p.queueMgr.mu.Unlock()
 
 	return QueueStats{
@@ -1544,6 +1727,8 @@ func (p *Proxy) GetQueueStats() QueueStats {
 		MaxSize:       p.queueMgr.maxSize,
 		Processed:     processed,
 		WaitTimeAvgMs: 0, // Упрощено для новой архитектуры
+		Workers:       workers,
+		TimeoutSec:    int(timeout.Seconds()),
 	}
 }
 
@@ -1553,6 +1738,8 @@ type QueueStats struct {
 	MaxSize       int   `json:"max_size"`
 	Processed     int64 `json:"processed_total"`
 	WaitTimeAvgMs int64 `json:"avg_wait_time_ms"`
+	Workers       int   `json:"workers"`
+	TimeoutSec    int   `json:"timeout_sec"`
 }
 
 // AddBackend - добавление нового бэкенда

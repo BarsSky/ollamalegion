@@ -151,6 +151,9 @@ func (s *Server) setupRoutes() {
 
 	// Monitor HTML page (без аутентификации)
 	s.mux.HandleFunc("/monitor", s.monitorHandler)
+
+	// Restart endpoint (c аутентификацией и rate limiting, только от webui)
+	s.mux.Handle("/api/v1/admin/restart", AuthMiddleware(RateLimitMiddleware(s.restartHandler, s.rateLimiter), s.authenticator))
 }
 
 // ServeHTTP - обработка HTTP запросов
@@ -1631,6 +1634,29 @@ func (s *Server) monitorHandler(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Cache-Control", "no-cache")
 	w.WriteHeader(http.StatusOK)
 	w.Write([]byte(htmlStr))
+}
+
+// restartHandler - перезапуск балансера (только для webui)
+func (s *Server) restartHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	logger.Get().Infow("balancer restart requested via API")
+
+	// Запускаем перезапуск в goroutine, чтобы ответить клиенту до остановки
+	go func() {
+		time.Sleep(500 * time.Millisecond) // Даём время на отправку ответа
+		if err := s.proxy.Restart(); err != nil {
+			logger.Get().Errorw("balancer restart failed", "error", err)
+		}
+	}()
+
+	s.writeJSON(w, http.StatusOK, map[string]interface{}{
+		"success": true,
+		"message": "Balancer restart initiated. The process will exit and be restarted by the supervisor.",
+	})
 }
 
 // writeJSON - запись JSON ответа

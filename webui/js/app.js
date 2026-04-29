@@ -18,13 +18,15 @@ const ui = (function () {
     let currentPage = 'dashboard';
     let refreshTimer = null;
     let dashboardRenderTimer = null;
-    let lastBackendsJson = '';
 
     // ---- Initialization ----
 
     function init() {
+        initTheme();
+        setupI18n();
         setupNavigation();
         setupEventListeners();
+        setupRestartHandler();
         setupWebSocketEvents();
         setupApiEvents();
 
@@ -39,6 +41,110 @@ const ui = (function () {
         startPeriodicRefresh();
 
         addLog('WebUI инициализирован', 'info');
+    }
+
+    // ---- Theme ----
+
+    function initTheme() {
+        var saved = localStorage.getItem('ollamalegion_theme') || 'dark';
+        document.documentElement.setAttribute('data-theme', saved);
+        updateThemeToggleIcon(saved);
+        var toggleBtn = document.getElementById('themeToggle');
+        if (toggleBtn) {
+            toggleBtn.addEventListener('click', function () {
+                var current = document.documentElement.getAttribute('data-theme') || 'dark';
+                var next = current === 'dark' ? 'light' : 'dark';
+                document.documentElement.setAttribute('data-theme', next);
+                localStorage.setItem('ollamalegion_theme', next);
+                updateThemeToggleIcon(next);
+            });
+        }
+    }
+
+    function updateThemeToggleIcon(theme) {
+        var btn = document.getElementById('themeToggle');
+        if (btn) {
+            btn.innerHTML = theme === 'dark' ? '☀️' : '🌙';
+            btn.title = theme === 'dark'
+                ? (window.I18N ? I18N.t('settings.theme_light') : 'Светлая тема')
+                : (window.I18N ? I18N.t('settings.theme_dark') : 'Темная тема');
+        }
+    }
+
+    // ---- i18n ----
+
+    function updateUITranslations() {
+        document.querySelectorAll('[data-i18n]').forEach(function (el) {
+            var key = el.getAttribute('data-i18n');
+            if (key && window.I18N) {
+                if (el.tagName === 'INPUT' && el.hasAttribute('data-i18n-placeholder')) {
+                    el.placeholder = I18N.t(el.getAttribute('data-i18n-placeholder'));
+                } else {
+                    el.textContent = I18N.t(key);
+                }
+            }
+        });
+        // Update page title
+        if (currentPage && window.I18N) {
+            var titleKey = 'header.' + currentPage;
+            var h1 = document.getElementById('pageTitle');
+            if (h1) h1.textContent = I18N.t(titleKey);
+        }
+    }
+
+    function setupI18n() {
+        var langSelect = document.getElementById('langSelect');
+        if (langSelect && window.I18N) {
+            var currentLang = I18N.getLang();
+            langSelect.value = currentLang;
+            langSelect.addEventListener('change', function () {
+                I18N.setLang(this.value);
+                updateUITranslations();
+                updateThemeToggleIcon(document.documentElement.getAttribute('data-theme') || 'dark');
+                showToast(currentLang === 'ru' ? 'Язык изменён' : 'Language changed', 'success');
+            });
+        }
+        window.addEventListener('i18n:changed', function () {
+            updateUITranslations();
+            updateThemeToggleIcon(document.documentElement.getAttribute('data-theme') || 'dark');
+        });
+        updateUITranslations();
+    }
+
+    // ---- Restart Handler ----
+
+    function setupRestartHandler() {
+        var restartBtn = document.getElementById('restartBalancerBtn');
+        var restartModal = document.getElementById('restartConfirmModal');
+        var modalConfirm = document.getElementById('restartModalConfirm');
+        var modalCancel = document.getElementById('restartModalCancel');
+        var modalClose = document.getElementById('restartModalClose');
+        var indicator = document.getElementById('restartIndicator');
+
+        function showRestartModal() { if (restartModal) restartModal.classList.add('active'); }
+        function hideRestartModal() { if (restartModal) restartModal.classList.remove('active'); }
+
+        if (restartBtn) restartBtn.addEventListener('click', showRestartModal);
+        if (modalClose) modalClose.addEventListener('click', hideRestartModal);
+        if (modalCancel) modalCancel.addEventListener('click', hideRestartModal);
+        if (restartModal) restartModal.addEventListener('click', function (e) { if (e.target.id === 'restartConfirmModal') hideRestartModal(); });
+
+        if (modalConfirm) {
+            modalConfirm.addEventListener('click', function () {
+                hideRestartModal();
+                if (indicator) {
+                    indicator.style.display = 'block';
+                    indicator.innerHTML = '<div class="restart-indicator"><div class="restart-spinner"></div><span>' + (window.I18N ? I18N.t('settings.restarting') : 'Перезапуск балансера...') + '</span></div>';
+                }
+                Api.post('/restart').then(function () {
+                    if (indicator) indicator.innerHTML = '<div style="color: var(--success); padding: 8px;">' + (window.I18N ? I18N.t('settings.restarted') : 'Балансер успешно перезапущен') + '</div>';
+                    showToast(window.I18N ? I18N.t('settings.restarted') : 'Балансер успешно перезапущен', 'success');
+                }).catch(function (err) {
+                    if (indicator) indicator.innerHTML = '<div style="color: var(--danger); padding: 8px;">' + (window.I18N ? I18N.t('settings.restart_error') : 'Ошибка перезапуска') + '</div>';
+                    showToast((window.I18N ? I18N.t('settings.restart_error') : 'Ошибка') + ': ' + (err.message || err), 'error');
+                });
+            });
+        }
     }
 
     // ---- Navigation ----
@@ -63,7 +169,11 @@ const ui = (function () {
         if (targetNav) targetNav.classList.add('active');
 
         currentPage = page;
-        Utils.setText('pageTitle', getPageTitle(page));
+        var titleKey = 'header.' + page;
+        var h1 = document.getElementById('pageTitle');
+        if (h1 && window.I18N) h1.textContent = I18N.t(titleKey);
+        else Utils.setText('pageTitle', getPageTitle(page));
+
         refreshPage(page);
 
         if (page === 'backends' || page === 'models') {
@@ -92,7 +202,6 @@ const ui = (function () {
                 predictionAlerts(data.backends);
                 break;
             case 'monitor':
-                // Передаём конфиг в iframe монитора
                 sendMonitorConfig();
                 break;
             case 'backends':
@@ -137,26 +246,32 @@ const ui = (function () {
     function setupEventListeners() {
         document.getElementById('refreshBtn').addEventListener('click', () => {
             refreshCurrentPage();
-            showToast('Данные обновлены', 'success');
+            showToast(window.I18N ? I18N.t('common.success') : 'Данные обновлены', 'success');
         });
 
         document.getElementById('addBackendBtn').addEventListener('click', () => openBackendModal());
-        document.getElementById('addBackendBtn2').addEventListener('click', () => openBackendModal());
+        if (document.getElementById('addBackendBtn2')) {
+            document.getElementById('addBackendBtn2').addEventListener('click', () => openBackendModal());
+        }
 
         document.getElementById('modalClose').addEventListener('click', closeModal);
         document.getElementById('modalCancel').addEventListener('click', closeModal);
         document.getElementById('modalSave').addEventListener('click', saveBackend);
         document.getElementById('modalDelete').addEventListener('click', deleteBackend);
 
-        document.getElementById('backendSearch').addEventListener('input', Utils.debounce((e) => filterBackends(e.target.value), 150));
-        document.getElementById('sessionSearch').addEventListener('input', Utils.debounce((e) => filterSessions(e.target.value), 150));
+        var backendSearch = document.getElementById('backendSearch');
+        if (backendSearch) backendSearch.addEventListener('input', Utils.debounce((e) => filterBackends(e.target.value), 150));
+        var sessionSearch = document.getElementById('sessionSearch');
+        if (sessionSearch) sessionSearch.addEventListener('input', Utils.debounce((e) => filterSessions(e.target.value), 150));
 
         document.getElementById('clearLogs').addEventListener('click', () => {
             data.logs = [];
             renderLogs(data.logs);
         });
-        document.getElementById('exportLogs').addEventListener('click', exportLogs);
-        document.getElementById('exportBackends').addEventListener('click', exportBackends);
+        var exportLogsBtn = document.getElementById('exportLogs');
+        if (exportLogsBtn) exportLogsBtn.addEventListener('click', exportLogs);
+        var exportBackendsBtn = document.getElementById('exportBackends');
+        if (exportBackendsBtn) exportBackendsBtn.addEventListener('click', exportBackends);
 
         document.getElementById('saveSettings').addEventListener('click', saveSettings);
         document.getElementById('resetSettings').addEventListener('click', loadSettings);
@@ -206,31 +321,24 @@ const ui = (function () {
             case 'clusterState':
                 updateBackends(payload.data?.backends || []);
                 break;
-
             case 'backendAdd':
                 addLog(`Бэкенд добавлен: ${payload.data?.name || payload.backendId}`, 'info');
                 fetchClusterState();
                 break;
-
             case 'backendRemove':
                 addLog(`Бэкенд удалён: ${payload.backendId}`, 'info');
                 fetchClusterState();
                 break;
-
             case 'statusChange':
                 addLog(`Статус ${payload.backendId}: ${payload.data?.oldStatus} → ${payload.data?.newStatus}`, 'warning');
-                // Apply targeted update instead of full refetch when possible
                 applyStatusChange(payload.backendId, payload.data?.newStatus);
                 break;
-
             case 'limitsChange':
                 addLog(`Лимиты ${payload.backendId} обновлены`, 'info');
                 fetchClusterState();
                 break;
-
             case 'ping':
                 break;
-
             case 'legacy':
             default:
                 if (payload.backends) {
@@ -256,22 +364,17 @@ const ui = (function () {
     }
 
     function updateBackends(newBackends) {
-        // Стабилизируем порядок бэкендов по id
         newBackends = [...newBackends].sort((a, b) => (a.id || '').localeCompare(b.id || ''));
         if (backendsEqual(data.backends, newBackends)) return;
         data.backends = newBackends;
-        if (currentPage === 'dashboard') {
-            scheduleDashboardRender();
-        }
+        if (currentPage === 'dashboard') scheduleDashboardRender();
     }
 
     function applyStatusChange(backendId, newStatus) {
         const b = data.backends.find(x => x.id === backendId);
         if (b && b.status !== newStatus) {
             b.status = newStatus;
-            if (currentPage === 'dashboard') {
-                scheduleDashboardRender();
-            }
+            if (currentPage === 'dashboard') scheduleDashboardRender();
         } else if (!b) {
             fetchClusterState();
         }
@@ -310,7 +413,7 @@ const ui = (function () {
         try {
             data.queue = await Api.queueStats();
             Utils.setText('queueSize', data.queue.current_size || 0);
-            Utils.setText('queueProcessed', `${data.queue.processed_total || 0} обработано`);
+            Utils.setText('queueProcessed', (data.queue.processed_total || 0) + ' обработано');
             if (currentPage === 'queue') refreshPage('queue');
         } catch (e) {
             Api.handleError(e, 'Ошибка загрузки статистики очереди');
@@ -353,51 +456,86 @@ const ui = (function () {
         try {
             const res = await Api.sessions();
             data.sessions = res.sessions || [];
-            // Update dashboard sessions widget
             const activeCount = data.sessions.filter(s => s.active).length;
             const totalRequests = data.sessions.reduce((sum, s) => sum + (s.requestCount || 0), 0);
             Utils.setText('totalSessions', activeCount);
-            Utils.setText('sessionRate', `${totalRequests} запросов`);
+            Utils.setText('sessionRate', totalRequests + ' запросов');
             if (currentPage === 'sessions') refreshPage('sessions');
         } catch (e) {
             Api.handleError(e, 'Ошибка загрузки сессий');
         }
     }
 
-    async function loadSettings() {
-        try {
-            const config = await Api.config();
-            const el = document.getElementById('balancingAlgorithm');
-            if (el) el.value = config.algorithm || 'resource-aware';
-            document.getElementById('modelAffinity').checked = config.modelAffinity !== false;
-            document.getElementById('sessionStickiness').checked = config.sessionStickiness !== false;
-        } catch (e) {
-            Api.handleError(e, 'Ошибка загрузки настроек');
+    function loadSettings() {
+        var saved = localStorage.getItem('ollamalegion_config');
+        var config = saved ? JSON.parse(saved) : null;
+
+        if (config) {
+            var algEl = document.getElementById('balancingAlgorithm');
+            if (algEl && config.algorithm) algEl.value = config.algorithm;
+            var maEl = document.getElementById('modelAffinity');
+            if (maEl) maEl.checked = config.modelAffinity !== false;
+            var ssEl = document.getElementById('sessionStickiness');
+            if (ssEl) ssEl.checked = config.sessionStickiness !== false;
+            var pfEl = document.getElementById('predictionFiltering');
+            if (pfEl) pfEl.checked = config.predictionFiltering !== false;
+            var gpuEl = document.getElementById('gpuMaxUsage');
+            if (gpuEl && config.gpuMaxUsage) gpuEl.value = config.gpuMaxUsage;
+            var vramEl = document.getElementById('vramMaxUsage');
+            if (vramEl && config.vramMaxUsage) vramEl.value = config.vramMaxUsage;
+            var cpuEl = document.getElementById('cpuMaxUsage');
+            if (cpuEl && config.cpuMaxUsage) cpuEl.value = config.cpuMaxUsage;
+            var ramEl = document.getElementById('ramMaxUsage');
+            if (ramEl && config.ramMaxUsage) ramEl.value = config.ramMaxUsage;
+            var diskEl = document.getElementById('minFreeDisk');
+            if (diskEl && config.minFreeDisk) diskEl.value = config.minFreeDisk;
+            var tokenEl = document.getElementById('apiToken');
+            if (tokenEl && config.apiToken) tokenEl.value = config.apiToken;
         }
+
+        // Also fetch from server if available
+        Api.config().then(function (serverConfig) {
+            var algEl = document.getElementById('balancingAlgorithm');
+            if (algEl && serverConfig.algorithm) algEl.value = serverConfig.algorithm;
+            var maEl = document.getElementById('modelAffinity');
+            if (maEl) maEl.checked = serverConfig.modelAffinity !== false;
+            var ssEl = document.getElementById('sessionStickiness');
+            if (ssEl) ssEl.checked = serverConfig.sessionStickiness !== false;
+        }).catch(function () {});
     }
 
-    async function saveSettings() {
-        const settings = {
-            algorithm: document.getElementById('balancingAlgorithm').value,
-            modelAffinity: document.getElementById('modelAffinity').checked,
-            sessionStickiness: document.getElementById('sessionStickiness').checked,
-            predictionFiltering: document.getElementById('predictionFiltering').checked,
-            resources: {
-                gpu: { maxUsagePercent: parseInt(document.getElementById('gpuMaxUsage').value) },
-                vram: { maxUsagePercent: parseInt(document.getElementById('vramMaxUsage').value) },
-                cpu: { maxUsagePercent: parseInt(document.getElementById('cpuMaxUsage').value) },
-                memory: { maxUsagePercent: parseInt(document.getElementById('ramMaxUsage').value) },
-                disk: { minFreeMB: parseInt(document.getElementById('minFreeDisk').value) }
-            }
+    function saveSettings() {
+        var algorithm = (document.getElementById('balancingAlgorithm') && document.getElementById('balancingAlgorithm').value) || 'resource-aware';
+        var modelAffinity = (document.getElementById('modelAffinity') && document.getElementById('modelAffinity').checked) !== false;
+        var sessionStickiness = (document.getElementById('sessionStickiness') && document.getElementById('sessionStickiness').checked) !== false;
+        var predictionFiltering = (document.getElementById('predictionFiltering') && document.getElementById('predictionFiltering').checked) !== false;
+        var gpuMax = parseInt((document.getElementById('gpuMaxUsage') && document.getElementById('gpuMaxUsage').value)) || 90;
+        var vramMax = parseInt((document.getElementById('vramMaxUsage') && document.getElementById('vramMaxUsage').value)) || 85;
+        var cpuMax = parseInt((document.getElementById('cpuMaxUsage') && document.getElementById('cpuMaxUsage').value)) || 80;
+        var ramMax = parseInt((document.getElementById('ramMaxUsage') && document.getElementById('ramMaxUsage').value)) || 85;
+        var minDisk = parseInt((document.getElementById('minFreeDisk') && document.getElementById('minFreeDisk').value)) || 10240;
+        var apiToken = (document.getElementById('apiToken') && document.getElementById('apiToken').value) || '';
+
+        var config = {
+            algorithm: algorithm,
+            modelAffinity: modelAffinity,
+            sessionStickiness: sessionStickiness,
+            predictionFiltering: predictionFiltering,
+            gpuMaxUsage: gpuMax,
+            vramMaxUsage: vramMax,
+            cpuMaxUsage: cpuMax,
+            ramMaxUsage: ramMax,
+            minFreeDisk: minDisk,
+            apiToken: apiToken
         };
-        try {
-            await Api.updateConfig(settings);
-            showToast('Настройки сохранены', 'success');
-            addLog('Настройки обновлены', 'info');
-        } catch (e) {
-            showToast('Ошибка сохранения настроек', 'error');
-            addLog('Ошибка сохранения настроек', 'error');
-        }
+
+        localStorage.setItem('ollamalegion_config', JSON.stringify(config));
+
+        Api.post('/config', config).then(function () {
+            showToast(window.I18N ? I18N.t('settings.saved') : 'Настройки сохранены', 'success');
+        }).catch(function (err) {
+            showToast((window.I18N ? I18N.t('common.error') : 'Ошибка') + ': ' + (err.message || err), 'error');
+        });
     }
 
     // ---- Periodic Refresh ----
@@ -422,11 +560,11 @@ const ui = (function () {
         if (backendId) {
             const backend = data.backends.find(b => b.id === backendId);
             if (!backend) return;
-            title.textContent = 'Редактировать бэкенд';
+            title.textContent = window.I18N ? I18N.t('backends.edit') : 'Редактировать бэкенд';
             deleteBtn.style.display = 'inline-block';
             fillForm(backend, true);
         } else {
-            title.textContent = 'Добавить бэкенд';
+            title.textContent = window.I18N ? I18N.t('backends.add') : 'Добавить бэкенд';
             deleteBtn.style.display = 'none';
             fillForm(null, false);
         }
@@ -461,7 +599,7 @@ const ui = (function () {
         const labels = document.getElementById('formBackendLabels').value.split(',').map(l => l.trim()).filter(Boolean);
 
         if (!id || !host) {
-            showToast('ID и хост обязательны', 'error');
+            showToast(window.I18N ? I18N.t('common.error') : 'ID и хост обязательны', 'error');
             return;
         }
 
@@ -481,13 +619,13 @@ const ui = (function () {
             closeModal();
             refreshCurrentPage();
         } catch (e) {
-            showToast(`Ошибка: ${e.message}`, 'error');
+            showToast((window.I18N ? I18N.t('common.error') : 'Ошибка') + ': ' + (e.message || e), 'error');
         }
     }
 
     async function deleteBackend() {
         const id = document.getElementById('formBackendId').value;
-        if (!confirm(`Удалить бэкенд ${id}?`)) return;
+        if (!confirm(window.I18N ? I18N.t('backends.confirm_delete', { name: id }) : `Удалить бэкенд ${id}?`)) return;
 
         try {
             await Api.deleteBackend(id);
@@ -496,7 +634,7 @@ const ui = (function () {
             addLog(`Бэкенд ${id} удален`, 'info');
             refreshCurrentPage();
         } catch (e) {
-            showToast(`Ошибка: ${e.message}`, 'error');
+            showToast((window.I18N ? I18N.t('common.error') : 'Ошибка') + ': ' + (e.message || e), 'error');
         }
     }
 
@@ -538,20 +676,20 @@ const ui = (function () {
         if (connected) {
             dot.classList.remove('disconnected');
             dot.classList.add('connected');
-            text.textContent = 'Подключено';
+            text.textContent = window.I18N ? I18N.t('common.connected') : 'Подключено';
         } else {
             dot.classList.remove('connected');
             dot.classList.add('disconnected');
-            text.textContent = 'Отключено';
+            text.textContent = window.I18N ? I18N.t('common.disconnected') : 'Отключено';
         }
     }
 
     function showToast(message, type = 'info') {
         const container = document.getElementById('toastContainer');
+        if (!container) return;
         const toast = document.createElement('div');
         toast.className = `toast ${type}`;
-        const iconSvg = '<svg class=\"toast-icon-svg\" viewBox=\"0 0 24 24\" width=\"16\" height=\"16\"><circle cx=\"12\" cy=\"12\" r=\"10\" fill=\"currentColor\"/></svg>';
-        toast.innerHTML = `<span>${iconSvg}</span><span>${Utils.escapeHtml(message)}</span>`;
+        toast.innerHTML = `<span>${Utils.escapeHtml(message)}</span>`;
         container.appendChild(toast);
 
         setTimeout(() => {

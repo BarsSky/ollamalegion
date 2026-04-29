@@ -53,6 +53,10 @@ type BackendMetrics struct {
 	Status    BackendStatus `json:"status"`
 	HasAgent  bool          `json:"hasAgent"` // Флаг наличия активного агента
 
+	// Конфигурация бэкенда (атомарно копируется из Backend)
+	Host       string `json:"host"`
+	OllamaPort int    `json:"ollamaPort"`
+
 	// GPU метрики
 	GPU GPUMetrics `json:"gpu"`
 

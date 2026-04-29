@@ -1,5 +1,6 @@
-// monitor-common.js — shared utilities for both monitor.html files
+// monitor-common.js — shared utilities for monitor.html and webui
 // Supports: ?api_base= URL param, localStorage override, same-origin fallback
+// Theme and i18n integration
 
 function getApiBase() {
   // 1. URL parameter ?api_base=... (highest priority)
@@ -47,9 +48,43 @@ function goToDashboard() {
   window.location.href = dashboardUrl;
 }
 
+// --- i18n support for monitor pages ---
+// Uses the same OllamaLegionI18n if loaded from webui, or provides a simple fallback.
+function t(key, lang) {
+  if (typeof window !== 'undefined' && window.OllamaLegionI18n && typeof window.OllamaLegionI18n.t === 'function') {
+    return window.OllamaLegionI18n.t(key, lang);
+  }
+  // Fallback: return the key itself
+  return key;
+}
+
+// --- Theme support for monitor pages ---
+// Reads theme from localStorage (set by webui) and applies 'light' class to body.
+function applyMonitorTheme() {
+  const saved = localStorage.getItem('ollamaLegionTheme');
+  const theme = saved === 'light' ? 'light' : 'dark';
+  document.documentElement.setAttribute('data-theme', theme);
+  if (theme === 'light') {
+    document.body.classList.add('light');
+  } else {
+    document.body.classList.remove('light');
+  }
+}
+
+// Initialize theme on load
+if (document.readyState === 'loading') {
+  document.addEventListener('DOMContentLoaded', applyMonitorTheme);
+} else {
+  applyMonitorTheme();
+}
+
 // Expose for global use
-window.getApiBase = getApiBase;
-window.api = api;
-window.escapeHtml = escapeHtml;
-window.formatDuration = formatDuration;
-window.goToDashboard = goToDashboard;
+window.monitorCommon = {
+  getApiBase,
+  api,
+  escapeHtml,
+  formatDuration,
+  goToDashboard,
+  t,
+  applyMonitorTheme
+};

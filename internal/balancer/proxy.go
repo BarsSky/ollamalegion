@@ -622,8 +622,33 @@ func (p *Proxy) selectBackend(model string) string {
 	// Model Affinity - проверяем, есть ли модель уже загружена
 	if p.config.Balancing.ModelAffinity && model != "" {
 		if backend := p.findBackendWithModel(model); backend != "" {
-			p.mu.RUnlock()
-			return backend
+			// Проверяем, насколько загружен бэкенд с моделью
+			// Если он сильно перегружен (>80% от max) — пробуем fallback на менее загруженный
+			state := p.backends[backend]
+			state.mu.Lock()
+			active := state.ActiveReqs
+			maxReqs := state.Backend.MaxConcurrentReqs
+			state.mu.Unlock()
+
+			loadRatio := 0.0
+			if maxReqs > 0 {
+				loadRatio = float64(active) / float64(maxReqs)
+			}
+
+			if loadRatio < 0.80 {
+				// Бэкенд с моделью не сильно загружен — используем его
+				p.mu.RUnlock()
+				return backend
+			}
+
+			// Бэкенд с моделью перегружен — ищем менее загруженный fallback
+			logger.Get().Warnw("model-affinity backend overloaded, trying resource-aware fallback",
+				"backend", backend,
+				"model", model,
+				"load_ratio", loadRatio,
+				"active", active,
+				"max", maxReqs,
+			)
 		}
 	}
 	p.mu.RUnlock()
@@ -1710,6 +1735,8 @@ func (p *Proxy) GetClusterState() *types.ClusterState {
 			Timestamp: time.Now().UTC(),
 			Status:    status,
 			HasAgent:  hasAgent,
+			Host:      backendState.Backend.Host,
+			OllamaPort: backendState.Backend.OllamaPort,
 			GPU:       types.GPUMetrics{},
 			System:    types.SystemMetrics{},
 			Ollama:    types.OllamaMetrics{RunningModels: []types.RunningModel{}},
@@ -2070,6 +2097,25 @@ func (p *Proxy) AddBackend(backend types.Backend) error {
 	// Запланировать autosave
 	p.scheduleSave()
 
+	return nil
+}
+
+// Restart - инициирует перезапуск балансера через graceful shutdown
+// Процесс завершится с кодом 0 после сохранения состояния.
+// Supervisor (Docker restart policy / systemd) должен перезапустить процесс.
+func (p *Proxy) Restart() error {
+	logger.Get().Infow("restart triggered, flushing state and exiting")
+
+	// Сохраняем состояние перед выходом
+	if err := p.FlushState(); err != nil {
+		logger.Get().Errorw("failed to flush state during restart", "error", err)
+	}
+
+	// Небольшая задержка для завершения всех текущих операций
+	time.Sleep(100 * time.Millisecond)
+
+	// Выходим с кодом 0 - supervisor перезапустит процесс
+	os.Exit(0)
 	return nil
 }
 

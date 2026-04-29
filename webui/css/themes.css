@@ -1,0 +1,92 @@
+/* ================================================
+   OllamaLegion Theme System
+   Supports: dark (default), light
+   Includes: Liquid Glass tokens
+   ================================================ */
+
+/* Dark Theme (default) */
+:root,
+[data-theme="dark"] {
+    --bg-primary: #0f0f23;
+    --bg-secondary: #1a1a2e;
+    --bg-card: #16213e;
+    --bg-hover: #1e2a4a;
+    --text-primary: #e0e0e0;
+    --text-secondary: #a0a0b0;
+    --text-muted: #6a6a7a;
+    --accent: #4a9eff;
+    --accent-hover: #6ab2ff;
+    --success: #4ade80;
+    --warning: #fbbf24;
+    --danger: #f87171;
+    --info: #60a5fa;
+    --border: #2a2a4a;
+    --radius: 12px;
+    --shadow: 0 4px 20px rgba(0, 0, 0, 0.3);
+    --transition: background-color 0.2s ease, color 0.2s ease, border-color 0.2s ease, box-shadow 0.2s ease, transform 0.2s ease, opacity 0.2s ease;
+
+    /* SVG icon filter for dark theme (white icons) */
+    --svg-filter: invert(1) brightness(2);
+    --svg-accent-glow: drop-shadow(0 0 4px rgba(74, 158, 255, 0.3));
+    --svg-hover-glow: drop-shadow(0 0 6px rgba(74, 158, 255, 0.6));
+
+    /* Overlay */
+    --modal-overlay: rgba(0, 0, 0, 0.5);
+
+    /* Bar backgrounds */
+    --bar-bg: rgba(255, 255, 255, 0.05);
+
+    /* ===== Liquid Glass (Dark) ===== */
+    --glass-bg: rgba(15, 15, 35, 0.55);
+    --glass-border: rgba(255, 255, 255, 0.08);
+    --glass-blur: 16px;
+    --glass-shadow: 0 8px 32px rgba(0, 0, 0, 0.3);
+    --glass-highlight: rgba(255, 255, 255, 0.06);
+}
+
+/* Light Theme */
+[data-theme="light"] {
+    --bg-primary: #f5f6fa;
+    --bg-secondary: #ffffff;
+    --bg-card: #ffffff;
+    --bg-hover: #f0f2f5;
+    --text-primary: #1a1a2e;
+    --text-secondary: #4a4a5a;
+    --text-muted: #8a8a9a;
+    --accent: #2563eb;
+    --accent-hover: #1d4ed8;
+    --success: #16a34a;
+    --warning: #d97706;
+    --danger: #dc2626;
+    --info: #2563eb;
+    --border: #d1d5db;
+    --radius: 12px;
+    --shadow: 0 4px 20px rgba(0, 0, 0, 0.08);
+    --transition: background-color 0.2s ease, color 0.2s ease, border-color 0.2s ease, box-shadow 0.2s ease, transform 0.2s ease, opacity 0.2s ease;
+
+    /* SVG icon filter for light theme (keep original colors) */
+    --svg-filter: none;
+    --svg-accent-glow: none;
+    --svg-hover-glow: none;
+
+    /* Overlay */
+    --modal-overlay: rgba(0, 0, 0, 0.3);
+
+    /* Bar backgrounds */
+    --bar-bg: rgba(0, 0, 0, 0.05);
+
+    /* ===== Liquid Glass (Light) ===== */
+    --glass-bg: rgba(255, 255, 255, 0.6);
+    --glass-border: rgba(0, 0, 0, 0.06);
+    --glass-blur: 16px;
+    --glass-shadow: 0 8px 32px rgba(0, 0, 0, 0.06);
+    --glass-highlight: rgba(255, 255, 255, 0.8);
+}
+
+/* Theme transition — excluded backdrop-filter */
+body,
+body *,
+body *::before,
+body *::after {
+    transition: background-color 0.3s ease, color 0.3s ease, border-color 0.3s ease, box-shadow 0.3s ease;
+}

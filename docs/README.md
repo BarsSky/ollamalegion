@@ -1,6 +1,8 @@
-# Ollama Load Balancer - Полная документация
+# Ollama Load Balancer — Полная документация
 
 Интеллектуальный балансировщик нагрузки для кластера Ollama с мониторингом ресурсов GPU/CPU/RAM/Disk и умным распределением запросов.
+
+> 🌐 **Языки документации:** [English](en/README.md) | **Русский** (текущий)
 
 ## 📚 Содержание документации
 
@@ -39,10 +41,10 @@ Ollama Load Balancer — это распределенная система ба
 | Компонент | Описание | Порт(ы) |
 |-----------|----------|---------|
 | **Load Balancer** | Reverse proxy с балансировкой нагрузки | 18080, 18081 |
-  | **Queue Manager** | Обработка перегрузок с очередью запросов | - |
-  | **WebSocket Server** | Real-time трансляция метрик | 18081/ws |
-  | **Predictor** | Прогнозирование критических состояний | - |
-  | **Metrics Broker** | Pub/sub система для распределения метрик | - |
+|   **Queue Manager** | Обработка перегрузок с очередью запросов | - |
+|   **WebSocket Server** | Real-time трансляция метрик | 18081/ws |
+|   **Predictor** | Прогнозирование критических состояний | - |
+|   **Metrics Broker** | Pub/sub система для распределения метрик | - |
 | **Agent (Linux/Windows)** | Сбор метрик GPU/CPU/RAM/Disk | 18032 |
 | **NVML Integration** | NVIDIA Management Library для GPU метрик | - |
 | **Ollama API** | Интеграция с Ollama API для статистики | 11434 |
@@ -232,6 +234,8 @@ ollama-loadbalancer/
 │   └── config.example.json # Пример конфигурации
 └── docs/
     ├── README.md          # Эта документация
+    ├── ru/                # Русская версия документации
+    ├── en/                # English documentation
     ├── installation.md    # Установка
     ├── configuration.md   # Конфигурация
     ├── deployment.md      # Развертывание

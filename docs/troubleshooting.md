@@ -176,6 +176,38 @@ docker logs loadbalancer | grep -i websocket
 
 ---
 
+### Балансировщик падает с panic при POST /api/generate
+
+**Симптомы:**
+- При отправке POST-запросов на `/api/generate` балансировщик падает с `panic: runtime error: invalid memory address or nil pointer dereference`
+- В логах: `http: panic serving ...: ollama-loadbalancer/internal/balancer.(*Proxy).ServeHTTP ... proxy.go:397`
+- Docker-контейнер перезапускается, но падает снова при каждом POST generate
+- GET-запросы (`/api/tags`, `/api/version`) работают корректно
+
+**Решение:**
+
+```bash
+# 1. Проверьте версию образа
+docker images | grep balancer
+
+# 2. Пересоберите образ из актуального кода
+docker-compose -f deployments/docker-compose.yml build --no-cache loadbalancer
+
+# 3. Перезапустите контейнер
+docker-compose -f deployments/docker-compose.yml up -d --no-deps loadbalancer
+
+# 4. Убедитесь, что больше нет panic в логах
+docker logs --tail 20 ollama-legion-balancer | grep -i panic
+# Должно быть пусто
+```
+
+**Возможные причины:**
+- Docker-образ собран из устаревшего кода без фикса nil pointer dereference
+- Бинарник в образе отличается от актуального исходного кода
+- Слой сборки закэширован и не обновлялся после исправления
+
+---
+
 ### Очередь переполнена
 
 **Симптомы:**

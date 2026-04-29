@@ -1,6 +1,13 @@
 # Ollama Load Balancer
 
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE.md)
+[![Go Version](https://img.shields.io/badge/Go-1.21+-00ADD8.svg)](https://go.dev/)
+[![Docker](https://img.shields.io/badge/Docker-Ready-2496ED.svg)](https://www.docker.com/)
+
 Интеллектуальный балансировщик нагрузки для кластера Ollama с мониторингом ресурсов GPU/CPU/RAM/Disk и умным распределением запросов.
+
+> 📚 **Документация:** [Русский](docs/README.md) | [English](docs/en/README.md)  
+> 🌐 **WebUI:** тёмная/светлая тема • русский/English
 
 ## 🚀 Быстрый старт
 

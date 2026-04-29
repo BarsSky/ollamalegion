@@ -1,0 +1,1484 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>OllamaLegion WebUI Field Tests</title>
+<style>
+:root {
+    --bg: #0f172a;
+    --card: #1e293b;
+    --text: #e2e8f0;
+    --muted: #94a3b8;
+    --pri: #3b82f6;
+    --ok: #22c55e;
+    --warn: #f59e0b;
+    --err: #ef4444;
+    --info: #06b6d4;
+    --bdr: #334155
+}
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:system-ui,sans-serif;background:var(--bg);color:var(--text);display:flex;min-height:100vh}
+.sidebar{width:200px;background:var(--card);border-right:1px solid var(--bdr);padding:1rem;flex-shrink:0}
+.main{flex:1;padding:1.5rem;overflow:auto}
+.page{display:none}.page.active{display:block}
+.metrics-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(180px,1fr));gap:1rem;margin-bottom:1.5rem}
+.metric-card{background:var(--card);border:1px solid var(--bdr);border-radius:.5rem;padding:1rem}
+.metric-header{color:var(--muted);font-size:.8rem;margin-bottom:.5rem}
+.metric-value{font-size:1.5rem;font-weight:700}
+.metric-sub{font-size:.7rem;color:var(--muted);margin-top:.25rem}
+.metric-mini-bar{height:4px;background:var(--bdr);border-radius:2px;margin-top:.5rem;overflow:hidden}
+.metric-mini-fill{height:100%;background:var(--pri);border-radius:2px}
+.card{background:var(--card);border:1px solid var(--bdr);border-radius:.5rem;margin-bottom:1.5rem}
+.card-header{padding:1rem;border-bottom:1px solid var(--bdr);display:flex;justify-content:space-between;align-items:center}
+.data-table{width:100%;border-collapse:collapse;font-size:.8rem}
+.data-table th,.data-table td{padding:.5rem .7rem;text-align:left;border-bottom:1px solid var(--bdr)}
+.data-table th{color:var(--muted);font-weight:500}
+.loading-cell{text-align:center;color:var(--muted);padding:2rem}
+.badge{display:inline-flex;padding:.1rem .4rem;border-radius:9999px;font-size:.7rem;font-weight:600}
+.bg-ok{background:rgba(34,197,94,.15);color:var(--ok)}
+.bg-err{background:rgba(239,68,68,.15);color:var(--err)}
+.bg-warn{background:rgba(245,158,11,.15);color:var(--warn)}
+.bg-info{background:rgba(6,182,212,.15);color:var(--info)}
+.btn{padding:.4rem .8rem;border-radius:.3rem;border:none;cursor:pointer;font-size:.8rem;background:var(--bdr);color:var(--text)}
+.btn-pri{background:var(--pri);color:#fff}
+.loading{text-align:center;color:var(--muted);padding:2rem}
+.rc,.gc,.cc,.ami,.bli,.mc{background:var(--bg);border:1px solid var(--bdr);border-radius:.3rem;padding:.8rem;margin-bottom:.6rem}
+.rh,.gch,.blh,.mch{display:flex;justify-content:space-between;align-items:center;margin-bottom:.4rem}
+.rf{display:flex;flex-wrap:wrap;gap:.2rem;margin-top:.4rem}
+.fb{padding:.1rem .3rem;border-radius:.2rem;font-size:.7rem;background:var(--bdr);color:var(--muted)}
+.fb.w2{background:rgba(245,158,11,.2);color:var(--warn)}
+.fb.d2{background:rgba(239,68,68,.2);color:var(--err)}
+.ci{position:relative;cursor:help;display:inline-block;margin-right:.4rem;padding:.2rem .4rem;background:var(--bdr);border-radius:.2rem;font-size:.7rem}
+.ct{display:none;position:absolute;z-index:100;background:var(--card);border:1px solid var(--bdr);border-radius:.3rem;padding:.5rem;min-width:180px}
+.ci:hover .ct{display:block}
+.ctr{display:flex;justify-content:space-between;padding:.1rem 0;font-size:.7rem}
+.ctl{color:var(--muted)}
+.gm{display:grid;grid-template-columns:repeat(4,1fr);gap:.4rem;margin-top:.4rem}
+.gml{font-size:.6rem;color:var(--muted);text-transform:uppercase}
+.gmv{font-size:.8rem;font-weight:600}
+.pb{height:6px;background:var(--bdr);border-radius:3px;margin-top:.4rem;overflow:hidden}
+.pf{height:100%;border-radius:3px}
+.pf.lo{background:var(--ok)}.pf.md{background:var(--warn)}.pf.hi{background:var(--err)}
+.cbc{margin:.7rem 0}
+.cbl{display:flex;justify-content:space-between;font-size:.7rem;margin-bottom:.2rem}
+.cb{height:8px;background:var(--bdr);border-radius:4px;overflow:hidden;position:relative}
+.cbf{height:100%;background:var(--pri);position:absolute;left:0;top:0}
+.cbx{height:100%;background:var(--warn);position:absolute;left:0;top:0;opacity:.6}
+.cbg{height:100%;background:var(--ok);position:absolute;left:0;top:0;opacity:.3}
+.cst{display:grid;grid-template-columns:repeat(2,1fr);gap:.4rem;font-size:.7rem;margin-top:.4rem}
+.cs2{display:flex;align-items:center;gap:.4rem;font-size:.7rem;color:var(--muted)}
+.ami{display:flex;align-items:center;gap:.4rem;padding:.4rem .6rem}
+.mi{width:8px;height:8px;border-radius:50%;flex-shrink:0}
+.ml .mi{background:var(--ok)}.mul .mi{background:var(--err)}
+.mn{font-weight:500}.mv{margin-left:auto;font-size:.7rem;color:var(--muted)}
+.alert{padding:.6rem .8rem;border-radius:.3rem;margin-bottom:.4rem;display:flex;align-items:center;gap:.4rem}
+.al-info{background:rgba(59,130,246,.1);color:var(--pri)}
+.al-warn{background:rgba(245,158,11,.1);color:var(--warn)}
+.al-err{background:rgba(239,68,68,.1);color:var(--err)}
+.bls{display:flex;gap:.8rem;font-size:.7rem;color:var(--muted);margin-bottom:.4rem}
+.blbr{display:flex;justify-content:space-between;font-size:.7rem;margin-bottom:.2rem}
+.blb{height:6px;background:var(--bdr);border-radius:3px;margin-bottom:.4rem;overflow:hidden}
+.blf{height:100%;border-radius:3px}
+.blf.vr{background:var(--pri)}.blf.ra{background:var(--info)}
+.mc{display:flex;flex-direction:column}
+.ms{font-size:.7rem;color:var(--muted);margin-bottom:.4rem}
+.mdg{display:grid;grid-template-columns:repeat(3,1fr);gap:.4rem;margin-bottom:.6rem}
+.mdl{font-size:.6rem;color:var(--muted);text-transform:uppercase}
+.mdv{font-size:.8rem;font-weight:600}
+.mmt{font-size:.7rem;color:var(--muted);margin-bottom:.4rem}
+.mmbc{margin-bottom:.4rem}
+.mmbl{display:flex;justify-content:space-between;font-size:.7rem;margin-bottom:.2rem}
+.mmb{height:6px;background:var(--bdr);border-radius:3px;overflow:hidden}
+.mmbf{height:100%;border-radius:3px}
+.mmbf.vr{background:var(--pri)}.mmbf.ra{background:var(--info)}
+.qv{padding:1rem}
+.qb{height:12px;background:var(--bdr);border-radius:6px;overflow:hidden;margin-bottom:.4rem}
+.qf{height:100%;background:var(--pri);border-radius:6px}
+.ql{display:flex;justify-content:space-between;font-size:.7rem;color:var(--muted)}
+.qts{padding:.1rem .4rem;border-radius:.2rem;font-size:.7rem;font-weight:500}
+.qts.pr{background:rgba(59,130,246,.15);color:var(--pri)}
+.qts.cp{background:rgba(34,197,94,.15);color:var(--ok)}
+.qts.pd{background:rgba(148,163,184,.15);color:var(--muted)}
+.lc{max-height:400px;overflow:auto;padding:1rem}
+.le{display:flex;gap:.6rem;padding:.3rem 0;border-bottom:1px solid var(--bdr);font-size:.8rem}
+.lt{color:var(--muted);font-family:monospace;white-space:nowrap}
+.ll{font-weight:600;font-size:.7rem;padding:.1rem .3rem;border-radius:.2rem}
+.ll.in{background:rgba(59,130,246,.15);color:var(--pri)}
+.ll.er{background:rgba(239,68,68,.15);color:var(--err)}
+.ll.wa{background:rgba(245,158,11,.15);color:var(--warn)}
+.sf{padding:1rem;max-width:500px}
+.fg{margin-bottom:.8rem}.fg>label{display:block;margin-bottom:.3rem;font-size:.8rem;color:var(--muted)}
+.fc{width:100%;background:var(--bg);border:1px solid var(--bdr);color:var(--text);padding:.4rem .6rem;border-radius:.3rem}
+.tg{position:relative;display:inline-block;width:36px;height:20px}
+.tg input{opacity:0;width:0;height:0}
+.tgs{position:absolute;cursor:pointer;top:0;left:0;right:0;bottom:0;background:var(--bdr);border-radius:20px;transition:.2s}
+.tg input:checked+.tgs{background:var(--pri)}
+.fa{display:flex;gap:.4rem;justify-content:flex-end;margin-top:1rem}
+.modal{display:none;position:fixed;inset:0;background:rgba(0,0,0,.5);z-index:100;align-items:center;justify-content:center}
+.modal.active{display:flex}
+.mo{background:var(--card);border:1px solid var(--bdr);border-radius:.5rem;width:460px;max-width:90%;max-height:90vh;overflow:auto}
+.mh{padding:1rem;border-bottom:1px solid var(--bdr);display:flex;justify-content:space-between;align-items:center}
+.mcl{background:none;border:none;color:var(--muted);font-size:1.5rem;cursor:pointer}
+.mb{padding:1rem}.mf{padding:1rem;border-top:1px solid var(--bdr);display:flex;gap:.4rem;justify-content:flex-end}
+.fr{display:grid;grid-template-columns:1fr 1fr;gap:.8rem}
+.sd{width:8px;height:8px;border-radius:50%}.sd.cn{background:var(--ok)}.sd.dc{background:var(--err)}
+.gs{width:10px;height:10px;border-radius:50%;display:inline-block}
+.gs.ok2{background:var(--ok)}.gs.wn2{background:var(--warn)}.gs.er2{background:var(--err)}
+
+#testPanel {
+    position: fixed;
+    top: 0;
+    right: 0;
+    width: 480px;
+    max-height: 100vh;
+    overflow: auto;
+    background: #0a0f1c;
+    color: #e2e8f0;
+    padding: 1rem;
+    font-family: ui-monospace, monospace;
+    font-size: 11px;
+    z-index: 9999;
+    border-left: 1px solid var(--bdr);
+}
+#testPanel h3 {
+    margin-bottom: .6rem;
+    font-size: 13px;
+    border-bottom: 1px solid var(--bdr);
+    padding-bottom: .4rem;
+    color: #3b82f6;
+}
+.tp {color: var(--ok);}
+.tf {color: var(--err);}
+.tw {color: var(--warn);}
+.tr2 {padding: 2px 0; border-bottom: 1px solid rgba(51,65,85,.3);}
+.tsu {font-weight: 700; margin-bottom: .4rem; padding: .4rem; background: rgba(30,41,59,.8); border-radius: .2rem; font-size: 13px;}
+.tse {color: var(--pri); font-weight: 600; margin-top: .6rem; margin-bottom: .2rem; font-size: 12px; border-bottom: 1px solid var(--bdr); padding-bottom: 2px;}
+.tsection {margin-bottom: .5rem;}
+</style>
+</head>
+<body>
+
+<!-- Sidebar -->
+<div class="sidebar">
+    <div><b>OllamaLegion</b></div>
+    <nav>
+        <a href="#" data-page="dashboard" style="display:block;color:var(--muted);padding:.25rem 0;text-decoration:none">Dashboard</a>
+        <a href="#" data-page="backends" style="display:block;color:var(--muted);padding:.25rem 0;text-decoration:none">Backends</a>
+        <a href="#" data-page="models" style="display:block;color:var(--muted);padding:.25rem 0;text-decoration:none">Models</a>
+        <a href="#" data-page="sessions" style="display:block;color:var(--muted);padding:.25rem 0;text-decoration:none">Sessions</a>
+        <a href="#" data-page="queue" style="display:block;color:var(--muted);padding:.25rem 0;text-decoration:none">Queue</a>
+        <a href="#" data-page="logs" style="display:block;color:var(--muted);padding:.25rem 0;text-decoration:none">Logs</a>
+        <a href="#" data-page="settings" style="display:block;color:var(--muted);padding:.25rem 0;text-decoration:none">Settings</a>
+    </nav>
+    <div class="cs2"><span class="sd cn"></span>Подключено</div>
+</div>
+
+<!-- Main content -->
+<div class="main">
+    <div style="display:flex;justify-content:space-between;margin-bottom:1.5rem">
+        <h1 id="pageTitle">Dashboard</h1>
+        <div>
+            <button class="btn" id="refreshBtn">Обновить</button>
+            <button class="btn btn-pri" style="margin-left:.5rem" id="addBackendBtn">Добавить бэкенд</button>
+        </div>
+    </div>
+
+    <!-- === DASHBOARD PAGE === -->
+    <div class="page active" id="dashboard-page">
+        <!-- Metric Cards -->
+        <div class="metrics-grid" id="dashboardMetrics">
+            <div class="metric-card" id="card-totalBackends">
+                <div class="metric-header">Всего бэкендов</div>
+                <div class="metric-value" id="totalBackends">-</div>
+                <div class="metric-sub" id="healthyBackends">- здоровых</div>
+            </div>
+            <div class="metric-card" id="card-totalModels">
+                <div class="metric-header">Активных моделей</div>
+                <div class="metric-value" id="totalModels">-</div>
+                <div class="metric-sub" id="loadedModels">- загружено</div>
+            </div>
+            <div class="metric-card" id="card-totalSessions">
+                <div class="metric-header">Активных сессий</div>
+                <div class="metric-value" id="totalSessions">-</div>
+                <div class="metric-sub" id="sessionRate">- запросов</div>
+            </div>
+            <div class="metric-card" id="card-queueSize">
+                <div class="metric-header">Очередь</div>
+                <div class="metric-value" id="queueSize">-</div>
+                <div class="metric-sub" id="queueProcessed">- обработано</div>
+                <div class="metric-mini-bar"><div class="metric-mini-fill" id="queueDashboardFill" style="width:0%"></div></div>
+            </div>
+        </div>
+
+        <!-- Ollama Runtime -->
+        <div class="card" id="card-runtime">
+            <div class="card-header"><h3>Ollama Runtime</h3></div>
+            <div id="runtimeCluster"><div class="loading">Ожидание данных...</div></div>
+        </div>
+
+        <!-- GPU Cluster -->
+        <div class="card" id="card-gpu">
+            <div class="card-header"><h3>GPU Кластер</h3><span class="badge bg-info" id="gpuClusterBadge">-</span></div>
+            <div id="gpuCluster"><div class="loading">Ожидание данных...</div></div>
+        </div>
+
+        <!-- Capacity Section -->
+        <div class="card" id="card-capacity">
+            <div class="card-header"><h3>Ёмкость бэкендов</h3></div>
+            <div id="capacitySection"><div class="loading">Ожидание данных...</div></div>
+        </div>
+
+        <!-- Available Models -->
+        <div class="card" id="card-available">
+            <div class="card-header"><h3>Доступные для загрузки</h3><span class="badge bg-info" id="loadableModelCount">-</span></div>
+            <div id="availableModelsList"><div class="loading">Ожидание данных...</div></div>
+        </div>
+
+        <!-- Backends Table -->
+        <div class="card" id="card-backendsTable">
+            <div class="card-header"><h3>Бэкенды</h3></div>
+            <table class="data-table">
+                <thead><tr><th>ID</th><th>Статус</th><th>GPU</th><th>VRAM</th><th>CPU</th><th>RAM</th><th>Active Req</th><th>Модели</th><th>RPS</th><th>Предиктор</th><th>Действия</th></tr></thead>
+                <tbody id="backendsTableBody"><tr><td colspan="11" class="loading-cell">Ожидание данных...</td></tr></tbody>
+            </table>
+        </div>
+
+        <!-- Prediction Alerts -->
+        <div class="card" id="card-predictionAlerts">
+            <div class="card-header"><h3>Предупреждения предиктора</h3></div>
+            <div id="alertsList"><div class="alert al-info">Нет активных предупреждений</div></div>
+        </div>
+    </div>
+
+    <!-- === BACKENDS MANAGEMENT PAGE === -->
+    <div class="page" id="backends-page">
+        <div class="card" id="card-backendsManage">
+            <div class="card-header"><h3>Управление бэкендами</h3></div>
+            <table class="data-table">
+                <thead><tr>
+                    <th>ID</th><th>Имя</th><th>Хост</th><th>Ollama Порт</th><th>Agent Порт</th>
+                    <th>Вес</th><th>Max Concurrent</th><th>Max Models</th><th>Агент</th>
+                    <th>Метки</th><th>Последний контакт</th><th>Статус</th><th>Действия</th>
+                </tr></thead>
+                <tbody id="backendsManageBody"><tr><td colspan="13" class="loading-cell">Ожидание данных...</td></tr></tbody>
+            </table>
+        </div>
+    </div>
+
+    <!-- === MODELS PAGE === -->
+    <div class="page" id="models-page">
+        <div class="metrics-grid" id="modelsMetrics">
+            <div class="metric-card" id="card-modelsTotal">
+                <div class="metric-header">Всего моделей</div>
+                <div class="metric-value" id="modelsTotal">-</div>
+            </div>
+            <div class="metric-card" id="card-modelsLoaded">
+                <div class="metric-header">Загружено сейчас</div>
+                <div class="metric-value" id="modelsLoaded">-</div>
+            </div>
+        </div>
+        <div class="card" id="card-backendLoad">
+            <div class="card-header"><h3>Загрузка бэкендов</h3></div>
+            <div id="backendLoadList"><div class="loading">Ожидание данных...</div></div>
+        </div>
+        <div class="card" id="card-modelsGrid">
+            <div class="card-header"><h3>Запущенные модели</h3></div>
+            <div id="modelsGrid"><div class="loading">Ожидание данных...</div></div>
+        </div>
+    </div>
+
+    <!-- === SESSIONS PAGE === -->
+    <div class="page" id="sessions-page">
+        <div class="card" id="card-sessions">
+            <div class="card-header"><h3>Активные сессии</h3></div>
+            <table class="data-table">
+                <thead><tr><th>ID</th><th>Бэкенд</th><th>Модель</th><th>Запросов</th><th>Последняя активность</th><th>IP</th><th>Клиент</th><th>Статус</th></tr></thead>
+                <tbody id="sessionsTableBody"><tr><td colspan="8" class="loading-cell">Ожидание данных...</td></tr></tbody>
+            </table>
+        </div>
+    </div>
+
+    <!-- === QUEUE PAGE === -->
+    <div class="page" id="queue-page">
+        <div class="metrics-grid" id="queueMetrics">
+            <div class="metric-card" id="card-queueCurrentSize">
+                <div class="metric-header">Текущий размер</div>
+                <div class="metric-value" id="queueCurrentSize">-</div>
+            </div>
+            <div class="metric-card" id="card-queueMaxSize">
+                <div class="metric-header">Максимум</div>
+                <div class="metric-value" id="queueMaxSize">-</div>
+            </div>
+            <div class="metric-card" id="card-queueProcessed">
+                <div class="metric-header">Выполнено задач</div>
+                <div class="metric-value" id="queueProcessedTab">-</div>
+            </div>
+            <div class="metric-card" id="card-queueWorkers">
+                <div class="metric-header">Воркеры</div>
+                <div class="metric-value" id="queueWorkers">-</div>
+            </div>
+            <div class="metric-card" id="card-queueAvgWait">
+                <div class="metric-header">Среднее ожидание</div>
+                <div class="metric-value" id="queueAvgWait">-</div>
+            </div>
+        </div>
+        <div class="card" id="card-queueState">
+            <div class="card-header"><h3>Состояние очереди</h3></div>
+            <div class="qv">
+                <div class="qb"><div class="qf" id="queueFill" style="width:0%"></div></div>
+                <div class="ql"><span id="queueMinLabel">0</span><span id="queueMidLabel">-</span><span id="queueMaxLabel">-</span></div>
+            </div>
+        </div>
+        <div class="card" id="card-queueTasks">
+            <div class="card-header"><h3>Задачи в очереди</h3><span class="badge bg-info" id="queueTasksCount">-</span></div>
+            <table class="data-table">
+                <thead><tr><th>#</th><th>Модель</th><th>Бэкенд</th><th>Время в очереди</th><th>Статус</th></tr></thead>
+                <tbody id="queueTasksBody"><tr><td colspan="5" class="loading-cell">Ожидание данных...</td></tr></tbody>
+            </table>
+        </div>
+        <div class="card" id="card-queueHistory">
+            <div class="card-header"><h3>История выполненных задач</h3><span class="badge bg-ok" id="queueHistoryCount">-</span></div>
+            <table class="data-table">
+                <thead><tr><th>#</th><th>Модель</th><th>Бэкенд</th><th>Время постановки</th><th>Время выполнения</th><th>Ожидание</th></tr></thead>
+                <tbody id="queueHistoryBody"><tr><td colspan="6" class="loading-cell">Ожидание данных...</td></tr></tbody>
+            </table>
+        </div>
+    </div>
+
+    <!-- === LOGS PAGE === -->
+    <div class="page" id="logs-page">
+        <div class="card" id="card-logs">
+            <div class="card-header"><h3>События и логи</h3>
+                <div>
+                    <button class="btn" id="clearLogsBtn">Очистить</button>
+                    <button class="btn" style="margin-left:.4rem" id="exportLogsBtn">Экспорт</button>
+                </div>
+            </div>
+            <div class="lc" id="logsContainer">
+                <div class="le"><span class="lt">--:--:--</span><span class="ll in">INFO</span>WebUI инициализирован</div>
+            </div>
+        </div>
+    </div>
+
+    <!-- === SETTINGS PAGE === -->
+    <div class="page" id="settings-page">
+        <div class="card" id="card-settings">
+            <div class="card-header"><h3>Настройки балансировки</h3></div>
+            <div class="sf">
+                <div class="fg" id="fg-balancingAlgorithm">
+                    <label>Алгоритм балансировки</label>
+                    <select id="balancingAlgorithm" class="fc">
+                        <option value="resource-aware">Resource-Aware</option>
+                        <option value="least-connections">Least Connections</option>
+                        <option value="round-robin">Round Robin</option>
+                    </select>
+                </div>
+                <div class="fg" id="fg-modelAffinity">
+                    <label>Model Affinity</label>
+                    <label class="tg"><input type="checkbox" id="modelAffinity" checked><span class="tgs"></span></label>
+                </div>
+                <div class="fg" id="fg-sessionStickiness">
+                    <label>Session Stickiness</label>
+                    <label class="tg"><input type="checkbox" id="sessionStickiness" checked><span class="tgs"></span></label>
+                </div>
+                <div class="fg" id="fg-predictionFiltering">
+                    <label>Prediction-based Filtering</label>
+                    <label class="tg"><input type="checkbox" id="predictionFiltering" checked><span class="tgs"></span></label>
+                </div>
+                <div class="fg" id="fg-gpuMaxUsage">
+                    <label>GPU Max Usage (%)</label>
+                    <input type="number" id="gpuMaxUsage" class="fc" value="90" min="50" max="100">
+                </div>
+                <div class="fg" id="fg-vramMaxUsage">
+                    <label>VRAM Max Usage (%)</label>
+                    <input type="number" id="vramMaxUsage" class="fc" value="85" min="50" max="100">
+                </div>
+                <div class="fg" id="fg-cpuMaxUsage">
+                    <label>CPU Max Usage (%)</label>
+                    <input type="number" id="cpuMaxUsage" class="fc" value="80" min="50" max="100">
+                </div>
+                <div class="fg" id="fg-ramMaxUsage">
+                    <label>RAM Max Usage (%)</label>
+                    <input type="number" id="ramMaxUsage" class="fc" value="85" min="50" max="100">
+                </div>
+                <div class="fg" id="fg-minFreeDisk">
+                    <label>Min Free Disk (MB)</label>
+                    <input type="number" id="minFreeDisk" class="fc" value="10240" min="0">
+                </div>
+                <div class="fa">
+                    <button class="btn" id="resetSettingsBtn">Сбросить</button>
+                    <button class="btn btn-pri" style="margin-left:.4rem" id="saveSettingsBtn">Сохранить</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- === MODAL === -->
+    <div class="modal" id="backendModal">
+        <div class="mo">
+            <div class="mh">
+                <h3 id="modalTitle">Добавить бэкенд</h3>
+                <button class="mcl" id="modalCloseBtn">&times;</button>
+            </div>
+            <div class="mb">
+                <div class="fg" id="fg-formBackendId">
+                    <label>ID *</label>
+                    <input type="text" id="formBackendId" class="fc" placeholder="gpu-1">
+                </div>
+                <div class="fg" id="fg-formBackendName">
+                    <label>Имя</label>
+                    <input type="text" id="formBackendName" class="fc" placeholder="GPU Server 1">
+                </div>
+                <div class="fg" id="fg-formBackendHost">
+                    <label>Хост *</label>
+                    <input type="text" id="formBackendHost" class="fc" placeholder="192.168.1.100">
+                </div>
+                <div class="fr">
+                    <div class="fg" id="fg-formBackendOllamaPort">
+                        <label>Порт Ollama</label>
+                        <input type="number" id="formBackendOllamaPort" class="fc" value="11434">
+                    </div>
+                    <div class="fg" id="fg-formBackendAgentPort">
+                        <label>Порт агента</label>
+                        <input type="number" id="formBackendAgentPort" class="fc" value="18032">
+                    </div>
+                </div>
+                <div class="fr">
+                    <div class="fg" id="fg-formBackendWeight">
+                        <label>Вес</label>
+                        <input type="number" id="formBackendWeight" class="fc" value="1" step="0.1">
+                    </div>
+                    <div class="fg" id="fg-formBackendMaxConcurrent">
+                        <label>Max Concurrent</label>
+                        <input type="number" id="formBackendMaxConcurrent" class="fc" value="10">
+                    </div>
+                </div>
+                <div class="fg" id="fg-formBackendLabels">
+                    <label>Метки</label>
+                    <input type="text" id="formBackendLabels" class="fc" placeholder="nvidia,rtx4090">
+                </div>
+            </div>
+            <div class="mf">
+                <button class="btn" id="modalCancelBtn">Отмена</button>
+                <button class="btn btn-pri" style="margin-left:.4rem" id="modalSaveBtn">Сохранить</button>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Test Results Panel -->
+<div id="testPanel">
+    <h3>🧪 WebUI Field Tests</h3>
+    <div class="tsu" id="ts">Running...</div>
+    <div id="td"></div>
+</div>
+
+<script>
+(function() {
+    'use strict';
+
+    // ===== UTILITIES =====
+    function formatNumber(n) {
+        if (n === undefined || n === null) return '-';
+        if (n >= 1000000) return (n / 1000000).toFixed(1) + 'M';
+        if (n >= 1000) return (n / 1000).toFixed(1) + 'K';
+        return String(n);
+    }
+
+    function formatMB(mb) {
+        if (mb === undefined || mb === null) return '-';
+        if (mb >= 1024) return (mb / 1024).toFixed(1) + ' GB';
+        return Math.round(mb) + ' MB';
+    }
+
+    function escapeHtml(text) {
+        if (text == null) return '';
+        var d = document.createElement('div');
+        d.textContent = String(text);
+        return d.innerHTML;
+    }
+
+    function percent(value, total) {
+        return total > 0 ? (value / total * 100) : 0;
+    }
+
+    function getBackendMode(backend) {
+        if ((backend.labels || []).indexOf('cloud') >= 0) return 'cloud';
+        var mode = (backend.ollama && backend.ollama.backendCapacity) ? backend.ollama.backendCapacity.mode : 'gpu';
+        return mode || 'gpu';
+    }
+
+    function getBackendModeBadge(backend) {
+        var m = getBackendMode(backend);
+        var badges = {
+            gpu: '<span class="badge bg-ok">GPU</span>',
+            cpu: '<span class="badge bg-warn">CPU</span>',
+            cloud: '<span class="badge bg-info">Cloud</span>'
+        };
+        return badges[m] || badges.gpu;
+    }
+
+    function getGPUStatus(gpuUsage, vramPercent, temp) {
+        if (gpuUsage > 90 || vramPercent > 90 || temp > 85) return 'er2';
+        if (gpuUsage > 70 || vramPercent > 70 || temp > 75) return 'wn2';
+        return 'ok2';
+    }
+
+    function getProgressClass(value) {
+        if (value > 80) return 'hi';
+        if (value > 50) return 'md';
+        return 'lo';
+    }
+
+    function badgeHtml(status, type) {
+        return '<span class="badge bg-' + type + '">' + escapeHtml(status) + '</span>';
+    }
+
+    function loadingHtml(text) {
+        return '<div class="loading">' + escapeHtml(text || 'Ожидание данных...') + '</div>';
+    }
+
+    function emptyRowHtml(cols, text) {
+        return '<tr><td colspan="' + cols + '" class="loading-cell">' + escapeHtml(text) + '</td></tr>';
+    }
+
+    function metricHtml(label, value) {
+        return '<div class="gml">' + label + '</div><div class="gmv">' + escapeHtml(String(value)) + '</div>';
+    }
+
+    function getClientIcon(name) {
+        if (!name) return '👤';
+        var n = name.toLowerCase();
+        if (n.indexOf('cline') >= 0) return '🦾';
+        if (n.indexOf('openwebui') >= 0 || n.indexOf('open-webui') >= 0) return '🌐';
+        if (n.indexOf('curl') >= 0) return '📡';
+        if (n.indexOf('python') >= 0 || n.indexOf('requests') >= 0) return '🐍';
+        return '👤';
+    }
+
+    // ===== MOCK DATA =====
+    var now = new Date();
+
+    var mockBackends = [
+        {
+            id: 'gpu-node-01', name: 'GPU Node 01', host: '192.168.1.101', ollamaPort: 11434, agentPort: 18032,
+            weight: 1, maxConcurrentRequests: 10, labels: ['nvidia','rtx4090'], status: 'healthy',
+            hasAgent: true, lastAgentContact: now.toISOString(), activeRequests: 3,
+            gpu: { usagePercent: 65.2, memoryTotal: 24576, memoryUsed: 18200, memoryFree: 6376, temperature: 72, powerUsage: 280, powerLimit: 450 },
+            system: { cpuUsagePercent: 34.5, memoryTotal: 65536, memoryUsed: 28000, memoryFree: 37536, loadAverage1: 4.2, cpuTemperature: 55 },
+            ollama: {
+                runningModels: [
+                    { name: 'llama3:8b', size: 5000000000, vramUsage: 5120000000, ramUsage: 500000000, family: 'llama', format: 'gguf' },
+                    { name: 'mistral:7b', size: 4370000000, vramUsage: 4505600000, ramUsage: 409600000, family: 'mistral', format: 'gguf' }
+                ],
+                activeRequests: 3, totalRequests: 15000, avgResponseTime: 45.3, requestsPerSecond: 12.5,
+                maxModels: 4, maxConcurrentRequests: 10, freeSlots: 7,
+                runtimeFlags: { numGpuLayers: -1, contextLength: 8192, numParallel: 4, numThreads: 16, batchSize: 1024, lowVram: false, flashAttention: true, kvCacheQuant: 'f16' },
+                modelContexts: [
+                    { name: 'llama3:8b', contextLength: 8192, contextSource: 'modelfile', effectiveContext: 8192, contextMemoryMB: 2048, kvCacheMemoryMB: 512, modelMemoryMB: 4800, totalMemoryMB: 7360, numLayers: 32, hiddenSize: 4096, precisionBits: 16 }
+                ],
+                backendCapacity: {
+                    freeVram: 6376, guaranteedVram: 5738, loadedModelVram: 9400, contextOverheadMB: 2048,
+                    availableModels: [
+                        { name: 'gemma2:9b', size: 5500000000, vramUsage: 5632000000, canLoad: true, estimatedVram: 5800, family: 'gemma' },
+                        { name: 'llama3:70b', size: 40000000000, vramUsage: 40960000000, canLoad: false, loadReason: 'Недостаточно VRAM', estimatedVram: 41000 }
+                    ],
+                    loadableModelCount: 3, mode: 'gpu'
+                }
+            },
+            prediction: { secondsToCritical: 450, criticalReason: 'none' }
+        },
+        {
+            id: 'cpu-node-01', name: 'CPU Node 01', host: '192.168.1.201', ollamaPort: 11434, agentPort: 18032,
+            weight: 1, maxConcurrentRequests: 5, labels: ['cpu-only'], status: 'healthy',
+            hasAgent: true, lastAgentContact: now.toISOString(), activeRequests: 1,
+            gpu: { usagePercent: 0, memoryTotal: 0, memoryUsed: 0, memoryFree: 0, temperature: 0, powerUsage: 0 },
+            system: { cpuUsagePercent: 42.1, memoryTotal: 131072, memoryUsed: 55000, memoryFree: 76072, loadAverage1: 6.8, cpuTemperature: 62 },
+            ollama: {
+                runningModels: [
+                    { name: 'phi3:mini', size: 3800000000, vramUsage: 0, ramUsage: 3891200000, family: 'phi', format: 'gguf' }
+                ],
+                activeRequests: 1, totalRequests: 5000, avgResponseTime: 120.7, requestsPerSecond: 3.2,
+                maxModels: 3, maxConcurrentRequests: 5, freeSlots: 4,
+                runtimeFlags: { numGpuLayers: 0, contextLength: 4096, numParallel: 2, numThreads: 32, batchSize: 512, lowVram: true, flashAttention: false, kvCacheQuant: 'q4_0' },
+                modelContexts: [
+                    { name: 'phi3:mini', contextLength: 4096, contextSource: 'runtime', effectiveContext: 4096, contextMemoryMB: 1024, kvCacheMemoryMB: 256, modelMemoryMB: 3800, totalMemoryMB: 5080, numLayers: 32, precisionBits: 16 }
+                ],
+                backendCapacity: {
+                    freeVram: 0, guaranteedVram: 0, loadedModelVram: 0, contextOverheadMB: 1024,
+                    availableModels: [
+                        { name: 'llama3:8b', size: 5000000000, vramUsage: 0, canLoad: true, estimatedVram: 0 }
+                    ],
+                    loadableModelCount: 5, mode: 'cpu'
+                }
+            },
+            prediction: { secondsToCritical: 200, criticalReason: 'cpu_usage' }
+        },
+        {
+            id: 'cloud-api-01', name: 'OpenAI API', host: 'api.openai.com', ollamaPort: 443, agentPort: 0,
+            weight: 2, maxConcurrentRequests: 50, labels: ['cloud','openai'], status: 'healthy',
+            hasAgent: false, lastAgentContact: null, activeRequests: 12,
+            gpu: { usagePercent: 0, memoryTotal: 0, memoryUsed: 0, memoryFree: 0 },
+            system: { cpuUsagePercent: 0, memoryTotal: 0, memoryUsed: 0, memoryFree: 0 },
+            ollama: {
+                runningModels: [{ name: 'gpt-4o', size: 0, vramUsage: 0, ramUsage: 0 }],
+                activeRequests: 12, totalRequests: 80000, avgResponseTime: 350.2, requestsPerSecond: 25.0,
+                maxModels: 0, maxConcurrentRequests: 50, freeSlots: 38,
+                runtimeFlags: { numGpuLayers: 0 },
+                modelContexts: [],
+                backendCapacity: {
+                    freeVram: 0, guaranteedVram: 0, loadedModelVram: 0, contextOverheadMB: 0,
+                    availableModels: [], loadableModelCount: 0, mode: 'cloud'
+                }
+            },
+            prediction: { secondsToCritical: -1, criticalReason: 'none' }
+        },
+        {
+            id: 'gpu-node-02', name: 'GPU Node 02', host: '192.168.1.102', ollamaPort: 11434, agentPort: 18032,
+            weight: 1, maxConcurrentRequests: 8, labels: ['nvidia','a100'], status: 'healthy',
+            hasAgent: true, lastAgentContact: new Date(now.getTime() - 86400000).toISOString(), activeRequests: 7,
+            gpu: { usagePercent: 92.5, memoryTotal: 81920, memoryUsed: 77000, memoryFree: 4920, temperature: 82, powerUsage: 380, powerLimit: 500 },
+            system: { cpuUsagePercent: 55.0, memoryTotal: 262144, memoryUsed: 180000, memoryFree: 82144, loadAverage1: 8.1, cpuTemperature: 68 },
+            ollama: {
+                runningModels: [
+                    { name: 'llama3:70b', size: 40000000000, vramUsage: 40960000000, ramUsage: 2048000000, family: 'llama', format: 'gguf' }
+                ],
+                activeRequests: 7, totalRequests: 3000, avgResponseTime: 85.0, requestsPerSecond: 8.0,
+                maxModels: 2, maxConcurrentRequests: 8, freeSlots: 1,
+                runtimeFlags: { numGpuLayers: 80, contextLength: 16384, numParallel: 1, numThreads: 8, batchSize: 2048, lowVram: false, flashAttention: true },
+                modelContexts: [],
+                backendCapacity: {
+                    freeVram: 4920, guaranteedVram: 4428, loadedModelVram: 40000, contextOverheadMB: 32768,
+                    availableModels: [], loadableModelCount: 0, mode: 'gpu'
+                }
+            },
+            prediction: { secondsToCritical: 85, criticalReason: 'vram' }
+        }
+    ];
+
+    var mockSessions = [
+        { id: 'sess-a1b2c3d4e5f6g7h8', backendId: 'gpu-node-01', model: 'llama3:8b', clientName: 'Cline', clientIP: '10.0.1.50', lastRequestAt: now.toISOString(), requestCount: 42, active: true },
+        { id: 'sess-x9y8z7w6v5u4t3s2', backendId: 'gpu-node-01', model: 'mistral:7b', clientName: 'OpenWebUI', clientIP: '10.0.1.100', lastRequestAt: new Date(now.getTime() - 300000).toISOString(), requestCount: 15, active: true },
+        { id: 'sess-q1w2e3r4t5y6u7i8', backendId: 'cloud-api-01', model: 'gpt-4o', clientName: 'Python/requests', clientIP: '10.0.1.200', lastRequestAt: new Date(now.getTime() - 120000).toISOString(), requestCount: 230, active: true }
+    ];
+
+    var mockQueue = { current_size: 3, max_size: 100, processed_total: 45230, workers: 4, avg_wait_time_ms: 2500 };
+
+    var mockQueueTasks = [
+        { model: 'llama3:8b', backend: 'gpu-node-01', status: 'processing', waitTimeMs: 10000 },
+        { model: 'mistral:7b', backend: 'Auto', status: 'pending', waitTimeMs: 5000 },
+        { model: 'phi3:mini', backend: 'cpu-node-01', status: 'processing', waitTimeMs: 30000 }
+    ];
+
+    var mockQueueHistory = [
+        { model: 'llama3:8b', target: 'gpu-node-01', enqueued: new Date(now.getTime() - 120000).toISOString(), completed_at: new Date(now.getTime() - 115000).toISOString(), wait_time_ms: 5000 },
+        { model: 'gpt-4o', target: 'cloud-api-01', enqueued: new Date(now.getTime() - 60000).toISOString(), completed_at: new Date(now.getTime() - 57000).toISOString(), wait_time_ms: 3000 }
+    ];
+
+    var mockLogs = [
+        { time: now.toLocaleTimeString('ru'), level: 'INFO', message: 'WebUI инициализирован' },
+        { time: new Date(now.getTime() - 5000).toLocaleTimeString('ru'), level: 'WARNING', message: 'Бэкенд gpu-node-02: высокая загрузка VRAM (94%)' },
+        { time: new Date(now.getTime() - 10000).toLocaleTimeString('ru'), level: 'INFO', message: 'Сессия sess-a1b2... создана для llama3:8b' }
+    ];
+
+    // ===== RENDERERS =====
+    function renderRuntimeCluster(backends) {
+        if (!backends.length) return loadingHtml('Нет данных о бэкендах');
+        var html = '';
+        for (var i = 0; i < backends.length; i++) {
+            var b = backends[i];
+            var flags = b.ollama.runtimeFlags || {};
+            var contexts = b.ollama.modelContexts || [];
+            var flagBadges = [];
+            if (flags.numGpuLayers !== undefined && flags.numGpuLayers !== 0) {
+                var c = flags.numGpuLayers === -1 ? '' : ' w2';
+                flagBadges.push('<span class="fb' + c + '">GPU:' + (flags.numGpuLayers === -1 ? 'auto' : flags.numGpuLayers) + '</span>');
+            }
+            if (flags.contextLength) flagBadges.push('<span class="fb">C:' + formatNumber(flags.contextLength) + '</span>');
+            if (flags.numParallel && flags.numParallel > 1) flagBadges.push('<span class="fb w2">NP:' + flags.numParallel + '</span>');
+            if (flags.numThreads) flagBadges.push('<span class="fb">T:' + flags.numThreads + '</span>');
+            if (flags.batchSize && flags.batchSize !== 512) flagBadges.push('<span class="fb">B:' + flags.batchSize + '</span>');
+            if (flags.lowVram) flagBadges.push('<span class="fb d2">LOW_VRAM</span>');
+            if (flags.flashAttention) flagBadges.push('<span class="fb">FA</span>');
+            if (flags.kvCacheQuant && flags.kvCacheQuant !== 'f16') flagBadges.push('<span class="fb w2">KV:' + flags.kvCacheQuant + '</span>');
+            var cbadges = '';
+            for (var j = 0; j < contexts.length; j++) {
+                var ctx = contexts[j];
+                cbadges += '<span class="ci">' + escapeHtml(ctx.name) + ': Ctx ' + formatNumber(ctx.effectiveContext) + ' (' + ctx.contextSource + ')'
+                    + '<div class="ct">'
+                    + '<div class="ctr"><span class="ctl">Context</span><span>' + formatNumber(ctx.contextLength) + '</span></div>'
+                    + '<div class="ctr"><span class="ctl">Effective</span><span>' + formatNumber(ctx.effectiveContext) + '</span></div>'
+                    + '<div class="ctr"><span class="ctl">Model Memory</span><span>' + formatMB(ctx.modelMemoryMB) + '</span></div>'
+                    + '<div class="ctr"><span class="ctl">Context Memory</span><span>' + formatMB(ctx.contextMemoryMB) + '</span></div>'
+                    + '<div class="ctr"><span class="ctl">KV Cache</span><span>' + formatMB(ctx.kvCacheMemoryMB) + '</span></div>'
+                    + '<div class="ctr"><span class="ctl">Total</span><span>' + formatMB(ctx.totalMemoryMB) + '</span></div>'
+                    + '<div class="ctr"><span class="ctl">Layers</span><span>' + (ctx.numLayers || '-') + '</span></div>'
+                    + '<div class="ctr"><span class="ctl">Precision</span><span>' + (ctx.precisionBits || 16) + '-bit</span></div>'
+                    + '</div></span>';
+            }
+            html += '<div class="rc"><div class="rh"><strong>' + escapeHtml(b.id) + '</strong>' + badgeHtml(b.status, b.status === 'healthy' ? 'ok' : 'err') + '</div>'
+                + '<div class="rf">' + (flagBadges.length ? flagBadges.join('') : '<span class="fb">default</span>') + '</div>'
+                + (cbadges ? '<div style="margin-top:.5rem">' + cbadges + '</div>' : '')
+                + '</div>';
+        }
+        return html;
+    }
+
+    function renderGpuCard(backend) {
+        var mode = getBackendMode(backend);
+        if (mode === 'cloud') {
+            var ar = backend.activeRequests || 0, mr = backend.maxConcurrentRequests || 10;
+            var mo = (backend.ollama.runningModels || []).length, rps = backend.ollama.requestsPerSecond || 0;
+            return '<div class="gc"><div class="gch"><span>' + escapeHtml(backend.id) + '</span><span class="badge bg-info">Cloud</span></div>'
+                + '<div class="gm">' + metricHtml('Req', ar + '/' + mr) + metricHtml('Models', mo) + metricHtml('RPS', rps.toFixed(1)) + metricHtml('Status', backend.status) + '</div>'
+                + '<div class="pb"><div class="pf lo" style="width:0%"></div></div></div>';
+        }
+        if (mode === 'cpu') {
+            var sys = backend.system || {};
+            var cpuU = sys.cpuUsagePercent || 0, ramT = sys.memoryTotal || 1, ramU = sys.memoryUsed || 0;
+            var ramP = percent(ramU, ramT);
+            var temp = sys.cpuTemperature != null ? sys.cpuTemperature : '-';
+            var load = sys.loadAverage1 != null ? sys.loadAverage1.toFixed(2) : '-';
+            return '<div class="gc"><div class="gch"><span>' + escapeHtml(backend.id) + '</span><span class="badge bg-warn">CPU</span></div>'
+                + '<div class="gm">' + metricHtml('CPU', cpuU.toFixed(1) + '%') + metricHtml('RAM', ramP.toFixed(1) + '%') + metricHtml('Load', load) + metricHtml('Temp', temp + '°C') + '</div>'
+                + '<div class="pb"><div class="pf ' + getProgressClass(cpuU) + '" style="width:' + cpuU + '%"></div></div></div>';
+        }
+        var gpu = backend.gpu || {};
+        var usage = gpu.usagePercent || 0, vramU = gpu.memoryUsed || 0, vramT = gpu.memoryTotal || 1;
+        var vramP = percent(vramU, vramT);
+        var temp = gpu.temperature != null ? gpu.temperature : '-';
+        var power = gpu.powerUsage != null ? gpu.powerUsage : '-';
+        var status = getGPUStatus(usage, vramP, temp);
+        return '<div class="gc"><div class="gch"><span>' + escapeHtml(backend.id) + '</span><span class="gs ' + status + '"></span></div>'
+            + '<div class="gm">' + metricHtml('GPU', usage.toFixed(1) + '%') + metricHtml('VRAM', vramP.toFixed(1) + '%') + metricHtml('Temp', temp + '°C') + metricHtml('Power', power + 'W') + '</div>'
+            + '<div class="pb"><div class="pf ' + getProgressClass(usage) + '" style="width:' + usage + '%"></div></div></div>';
+    }
+
+    function renderGpuCluster(backends) {
+        if (!backends.length) return loadingHtml('Нет данных о бэкендах');
+        var g = 0, c = 0, cl = 0;
+        for (var i = 0; i < backends.length; i++) {
+            var m = getBackendMode(backends[i]);
+            if (m === 'gpu') g++;
+            else if (m === 'cpu') c++;
+            else cl++;
+        }
+        var badgeEl = document.getElementById('gpuClusterBadge');
+        if (badgeEl) badgeEl.innerHTML = g + ' GPU · ' + c + ' CPU · ' + cl + ' Cloud';
+        var html = '';
+        for (var i = 0; i < backends.length; i++) {
+            html += renderGpuCard(backends[i]);
+        }
+        return html;
+    }
+
+    function renderCapacitySection(backends) {
+        if (!backends.length) return loadingHtml('Нет данных о бэкендах');
+        var html = '';
+        for (var i = 0; i < backends.length; i++) {
+            var b = backends[i];
+            var mode = getBackendMode(b);
+            var cap = (b.ollama && b.ollama.backendCapacity) ? b.ollama.backendCapacity : {};
+            if (mode === 'cloud') {
+                html += '<div class="cc"><div class="rh"><strong>' + escapeHtml(b.id) + '</strong>' + getBackendModeBadge(b) + '</div>'
+                    + '<div style="font-size:.75rem"><div><span>Хост</span> ' + escapeHtml(b.host || '-') + '</div>'
+                    + '<div><span>Статус</span> ' + badgeHtml(b.status, b.status === 'healthy' ? 'ok' : 'err') + '</div>'
+                    + '<div><span>Active Req</span> ' + (b.activeRequests || 0) + '</div>'
+                    + '<div><span>Загружено моделей</span> ' + (b.ollama.runningModels || []).length + '</div></div></div>';
+                continue;
+            }
+            var isCPU = mode === 'cpu';
+            var sys = b.system || {};
+            var memTotal = isCPU ? (sys.memoryTotal || 1) : ((b.gpu && b.gpu.memoryTotal) ? b.gpu.memoryTotal : 1);
+            var memUsed = isCPU ? (sys.memoryUsed || 0) : ((b.gpu && b.gpu.memoryUsed) ? b.gpu.memoryUsed : 0);
+            var memFree = isCPU ? (sys.memoryFree || 0) : ((b.gpu && b.gpu.memoryFree) ? b.gpu.memoryFree : 0);
+            var loadedMem = cap.loadedModelVram || 0;
+            var ctxOverhead = cap.contextOverheadMB || 0;
+            var guaranteed = cap.guaranteedVram || 0;
+            var usedPct = percent(memUsed, memTotal);
+            var loadedPct = percent(loadedMem, memTotal);
+            var ctxPct = percent(ctxOverhead, memTotal);
+            var guarPct = percent(guaranteed, memTotal);
+            var ml = isCPU ? 'RAM' : 'VRAM';
+            html += '<div class="cc"><div class="rh"><strong>' + escapeHtml(b.id) + '</strong>' + getBackendModeBadge(b) + '</div>'
+                + '<div class="cbc"><div class="cbl"><span>' + ml + ': ' + formatMB(memUsed) + ' / ' + formatMB(memTotal) + '</span><span>' + usedPct.toFixed(1) + '%</span></div>'
+                + '<div class="cb"><div class="cbf" style="width:' + loadedPct + '%"></div><div class="cbx" style="width:' + ctxPct + '%"></div><div class="cbg" style="width:' + guarPct + '%"></div></div></div>'
+                + '<div class="cst"><div class="cs"><span>Loaded models</span><span>' + formatMB(loadedMem) + '</span></div>'
+                + '<div class="cs"><span>Context overhead</span><span>' + formatMB(ctxOverhead) + '</span></div>'
+                + '<div class="cs"><span>Free ' + ml + '</span><span>' + formatMB(memFree) + '</span></div>'
+                + '<div class="cs"><span>Guaranteed (90%)</span><span>' + formatMB(guaranteed) + '</span></div></div></div>';
+        }
+        return html;
+    }
+
+    function renderAvailableModels(backends) {
+        var badgeEl = document.getElementById('loadableModelCount');
+        if (!backends.length) {
+            if (badgeEl) badgeEl.textContent = '-';
+            return loadingHtml('Нет данных');
+        }
+        var totalLoadable = 0;
+        var all = [];
+        for (var i = 0; i < backends.length; i++) {
+            var b = backends[i];
+            var models = (b.ollama && b.ollama.backendCapacity && b.ollama.backendCapacity.availableModels) ? b.ollama.backendCapacity.availableModels : [];
+            for (var j = 0; j < models.length; j++) {
+                var m = models[j];
+                all.push({ name: m.name, canLoad: m.canLoad, estimatedVram: m.estimatedVram || 0, backendId: b.id, backendStatus: b.status });
+                if (m.canLoad) totalLoadable++;
+            }
+        }
+        if (badgeEl) badgeEl.textContent = totalLoadable;
+        if (!all.length) return loadingHtml('Нет доступных моделей');
+        all.sort(function(a, b) {
+            if (a.canLoad !== b.canLoad) return b.canLoad - a.canLoad;
+            return (a.estimatedVram || 0) - (b.estimatedVram || 0);
+        });
+        var html = '';
+        for (var i = 0; i < Math.min(all.length, 30); i++) {
+            var m = all[i];
+            var cls = m.canLoad ? 'ml' : 'mul';
+            html += '<div class="ami ' + cls + '"><div class="mi"></div><span class="mn">' + escapeHtml(m.name) + '</span><span class="mv">' + formatMB(m.estimatedVram || 0) + ' @ ' + escapeHtml(m.backendId) + '</span></div>';
+        }
+        return html;
+    }
+
+    function renderBackendsTable(backends) {
+        if (!backends.length) return emptyRowHtml(11, 'Нет данных');
+        var PRED_THRESHOLD = 300;
+        var html = '';
+        for (var i = 0; i < backends.length; i++) {
+            var b = backends[i];
+            var mode = getBackendMode(b);
+            var gpu = b.gpu || {}, sys = b.system || {}, pred = b.prediction || {}, oll = b.ollama || {};
+            var isCloud = mode === 'cloud';
+            var gpuUsage = isCloud ? '-' : (gpu.usagePercent !== undefined ? gpu.usagePercent.toFixed(1) + '%' : '-');
+            var vramPercentStr = isCloud ? '-' : (gpu.memoryTotal > 0 ? percent(gpu.memoryUsed, gpu.memoryTotal).toFixed(1) + '%' : '-');
+            var cpuUsage = isCloud ? '-' : (sys.cpuUsagePercent !== undefined ? sys.cpuUsagePercent.toFixed(1) + '%' : '-');
+            var ramPercentStr = isCloud ? '-' : (sys.memoryTotal > 0 ? percent(sys.memoryUsed, sys.memoryTotal).toFixed(1) + '%' : '-');
+            var activeReq = b.activeRequests || 0, maxReq = b.maxConcurrentRequests || 10;
+            var models = (oll.runningModels || []).length;
+            var rps = oll.requestsPerSecond || 0;
+            var secondsToCrit = pred.secondsToCritical || -1;
+            var predClass, predText;
+            if (secondsToCrit > 0) {
+                predText = Math.round(secondsToCrit) + 'с';
+                predClass = secondsToCrit < PRED_THRESHOLD ? 'warn' : 'ok';
+            } else {
+                predText = 'OK';
+                predClass = 'ok';
+            }
+            html += '<tr><td><strong>' + escapeHtml(b.id) + '</strong> ' + getBackendModeBadge(b) + '</td>'
+                + '<td>' + badgeHtml(b.status, b.status === 'healthy' ? 'ok' : 'err') + '</td>'
+                + '<td>' + escapeHtml(gpuUsage) + '</td><td>' + escapeHtml(vramPercentStr) + '</td><td>' + escapeHtml(cpuUsage) + '</td><td>' + escapeHtml(ramPercentStr) + '</td>'
+                + '<td>' + activeReq + '/' + maxReq + '</td><td>' + models + '</td><td>' + rps.toFixed(1) + '</td>'
+                + '<td>' + badgeHtml(predText, predClass) + '</td>'
+                + '<td><button class="btn" style="font-size:.6rem;padding:.1rem .3rem">Edit</button> <button class="btn" style="font-size:.6rem;padding:.1rem .3rem;background:var(--err);color:#fff">Del</button></td></tr>';
+        }
+        return html;
+    }
+
+    function renderPredictionAlerts(backends) {
+        var alerts = [];
+        for (var i = 0; i < backends.length; i++) {
+            var b = backends[i];
+            var pred = b.prediction || {};
+            var sec = pred.secondsToCritical;
+            if (sec > 0 && sec < 300) {
+                alerts.push({ backend: b.id, reason: pred.criticalReason || 'unknown', seconds: Math.round(sec), level: sec < 120 ? 'err' : 'warn' });
+            }
+        }
+        var container = document.getElementById('alertsList');
+        if (!container) return;
+        if (!alerts.length) {
+            container.innerHTML = '<div class="alert al-info">Нет активных предупреждений</div>';
+            return;
+        }
+        var html = '';
+        for (var i = 0; i < alerts.length; i++) {
+            var a = alerts[i];
+            html += '<div class="alert al-' + a.level + '"><strong>' + escapeHtml(a.backend) + '</strong>: ' + escapeHtml(a.reason) + ' через ' + a.seconds + 'с</div>';
+        }
+        container.innerHTML = html;
+    }
+
+    function renderDashboard(backends, sessions, queue) {
+        var healthy = [];
+        for (var i = 0; i < backends.length; i++) {
+            if (backends[i].status === 'healthy') healthy.push(backends[i]);
+        }
+        var totalModels = 0;
+        for (var i = 0; i < backends.length; i++) {
+            totalModels += (backends[i].ollama && backends[i].ollama.runningModels) ? backends[i].ollama.runningModels.length : 0;
+        }
+        var activeSessions = 0, totalRequests = 0;
+        for (var i = 0; i < (sessions || []).length; i++) {
+            if (sessions[i].active) activeSessions++;
+            totalRequests += sessions[i].requestCount || 0;
+        }
+        var queueSize = (queue && queue.current_size) ? queue.current_size : 0;
+        var queueProcessed = (queue && queue.processed_total) ? queue.processed_total : 0;
+        var queueMax = (queue && queue.max_size) ? queue.max_size : 100;
+        var queuePct = percent(queueSize, queueMax);
+
+        document.getElementById('totalBackends').textContent = backends.length;
+        document.getElementById('healthyBackends').textContent = healthy.length + ' здоровых';
+        document.getElementById('totalModels').textContent = totalModels;
+        document.getElementById('loadedModels').textContent = totalModels + ' загружено';
+        document.getElementById('totalSessions').textContent = activeSessions;
+        document.getElementById('sessionRate').textContent = totalRequests + ' запросов';
+        document.getElementById('queueSize').textContent = queueSize;
+        document.getElementById('queueProcessed').textContent = queueProcessed + ' обработано';
+        document.getElementById('queueDashboardFill').style.width = queuePct + '%';
+
+        document.getElementById('runtimeCluster').innerHTML = renderRuntimeCluster(backends);
+        document.getElementById('gpuCluster').innerHTML = renderGpuCluster(backends);
+        document.getElementById('capacitySection').innerHTML = renderCapacitySection(backends);
+        document.getElementById('availableModelsList').innerHTML = renderAvailableModels(backends);
+        document.getElementById('backendsTableBody').innerHTML = renderBackendsTable(backends);
+    }
+
+    function renderBackendLoad(backends) {
+        if (!backends.length) return loadingHtml('Нет данных');
+        var html = '';
+        for (var i = 0; i < backends.length; i++) {
+            var b = backends[i];
+            var mode = getBackendMode(b);
+            var isGPU = mode === 'gpu';
+            var gpu = b.gpu || {}, sys = b.system || {}, oll = b.ollama || {};
+            var totalVRAM = gpu.memoryTotal || 0, usedVRAM = gpu.memoryUsed || 0;
+            var totalRAM = sys.memoryTotal || 0, usedRAM = sys.memoryUsed || 0;
+            var vramPercent = percent(usedVRAM, totalVRAM), ramPercent = percent(usedRAM, totalRAM);
+            var models = oll.runningModels || [];
+            var activeReq = oll.activeRequests || 0, maxReq = oll.maxConcurrentRequests || 10;
+            var freeSlots = oll.freeSlots || 0;
+            var vramBar = isGPU ? ('<div class="blbr"><span>VRAM ' + formatMB(usedVRAM) + ' / ' + formatMB(totalVRAM) + '</span><span>' + vramPercent.toFixed(1) + '%</span></div>'
+                + '<div class="blb"><div class="blf vr" style="width:' + vramPercent + '%"></div></div>') : '';
+            html += '<div class="bli"><div class="blh"><strong>' + escapeHtml(b.id) + '</strong>' + badgeHtml(b.status, b.status === 'healthy' ? 'ok' : 'err') + '</div>'
+                + '<div class="bls"><span>Моделей: <strong>' + models.length + '</strong></span><span>Active: <strong>' + activeReq + '/' + maxReq + '</strong></span><span>Свободно: <strong>' + freeSlots + '</strong></span></div>'
+                + vramBar
+                + '<div class="blbr"><span>RAM ' + formatMB(usedRAM) + ' / ' + formatMB(totalRAM) + '</span><span>' + ramPercent.toFixed(1) + '%</span></div>'
+                + '<div class="blb"><div class="blf ra" style="width:' + ramPercent + '%"></div></div></div>';
+        }
+        return html;
+    }
+
+    function renderModelsGrid(allModels, backends) {
+        if (!allModels.length) return loadingHtml('Нет загруженных моделей');
+        var backendMap = {};
+        for (var i = 0; i < backends.length; i++) {
+            backendMap[backends[i].id] = backends[i];
+        }
+        var html = '';
+        for (var i = 0; i < allModels.length; i++) {
+            var m = allModels[i];
+            var vramMB = (m.vramUsage || 0) / 1024 / 1024;
+            var ramMB = (m.ramUsage || 0) / 1024 / 1024;
+            var sizeGB = (m.size || 0) / 1024 / 1024 / 1024;
+            var backend = backendMap[m.backend] || {};
+            var mode = getBackendMode(backend);
+            var isGPU = mode === 'gpu';
+            var gpu = backend.gpu || {}, sys = backend.system || {};
+            var totalVRAM = isGPU ? (gpu.memoryTotal || 1) : 0;
+            var totalRAM = sys.memoryTotal || 1;
+            var vrP = totalVRAM > 0 ? Math.min(percent(vramMB, totalVRAM), 100) : 0;
+            var raP = totalRAM > 0 ? Math.min(percent(ramMB, totalRAM), 100) : 0;
+            var showVRAM = isGPU && totalVRAM > 0;
+            html += '<div class="mc"><div class="mch"><span class="mn">' + escapeHtml(m.name) + '</span>' + badgeHtml(m.backend, m.backendStatus === 'healthy' ? 'ok' : 'err') + '</div>'
+                + '<div class="ms">' + sizeGB.toFixed(1) + ' GB</div>'
+                + '<div class="mdg"><div><div class="mdl">VRAM</div><div class="mdv">' + vramMB.toFixed(0) + ' MB</div></div>'
+                + '<div><div class="mdl">RAM</div><div class="mdv">' + ramMB.toFixed(0) + ' MB</div></div>'
+                + '<div><div class="mdl">Family</div><div class="mdv">' + escapeHtml(m.family || '-') + '</div></div></div>'
+                + '<div class="mmt">Использование памяти</div>'
+                + (showVRAM ? ('<div class="mmbc"><div class="mmbl"><span>VRAM</span><span>' + vramMB.toFixed(0) + ' / ' + totalVRAM + ' MB (' + vrP.toFixed(1) + '%)</span></div><div class="mmb"><div class="mmbf vr" style="width:' + vrP + '%"></div></div></div>') : '')
+                + '<div class="mmbc"><div class="mmbl"><span>RAM</span><span>' + ramMB.toFixed(0) + ' / ' + totalRAM + ' MB (' + raP.toFixed(1) + '%)</span></div><div class="mmb"><div class="mmbf ra" style="width:' + raP + '%"></div></div></div></div>';
+        }
+        return html;
+    }
+
+    function renderModelsPage(backends) {
+        var allModels = [];
+        for (var i = 0; i < backends.length; i++) {
+            var b = backends[i];
+            var models = (b.ollama && b.ollama.runningModels) ? b.ollama.runningModels : [];
+            for (var j = 0; j < models.length; j++) {
+                allModels.push({
+                    name: models[j].name,
+                    vramUsage: models[j].vramUsage || 0,
+                    ramUsage: models[j].ramUsage || 0,
+                    size: models[j].size || 0,
+                    family: models[j].family,
+                    backend: b.id,
+                    backendStatus: b.status
+                });
+            }
+        }
+        document.getElementById('modelsTotal').textContent = allModels.length;
+        var loadedCount = 0;
+        for (var i = 0; i < allModels.length; i++) {
+            if (allModels[i].backendStatus === 'healthy') loadedCount++;
+        }
+        document.getElementById('modelsLoaded').textContent = loadedCount;
+        document.getElementById('backendLoadList').innerHTML = renderBackendLoad(backends);
+        document.getElementById('modelsGrid').innerHTML = renderModelsGrid(allModels, backends);
+    }
+
+    function renderSessionsPage(sessions) {
+        var tbody = document.getElementById('sessionsTableBody');
+        if (!tbody) return;
+        if (!sessions.length) {
+            tbody.innerHTML = emptyRowHtml(8, 'Нет активных сессий');
+            return;
+        }
+        var html = '';
+        for (var i = 0; i < sessions.length; i++) {
+            var s = sessions[i];
+            var icon = getClientIcon(s.clientName);
+            var rawId = s.id || 'N/A';
+            var displayId = rawId.length > 16 ? rawId.substring(0, 16) + '...' : rawId;
+            html += '<tr><td><code>' + escapeHtml(displayId) + '</code></td>'
+                + '<td>' + escapeHtml(s.backendId || '-') + '</td><td>' + escapeHtml(s.model || '-') + '</td>'
+                + '<td>' + (s.requestCount || 0) + '</td>'
+                + '<td>' + (s.lastRequestAt ? new Date(s.lastRequestAt).toLocaleString('ru') : '-') + '</td>'
+                + '<td>' + escapeHtml(s.clientIP || '-') + '</td>'
+                + '<td>' + icon + ' ' + escapeHtml(s.clientName || '-') + '</td>'
+                + '<td>' + (s.active ? badgeHtml('ACTIVE', 'ok') : badgeHtml('IDLE', 'warn')) + '</td></tr>';
+        }
+        tbody.innerHTML = html;
+    }
+
+    function renderQueuePage(queue, queueTasks, queueHistory) {
+        var current = (queue && queue.current_size) ? queue.current_size : 0;
+        var max = (queue && queue.max_size) ? queue.max_size : 100;
+        var processed = (queue && queue.processed_total) ? queue.processed_total : 0;
+        var workers = (queue && queue.workers) ? queue.workers : 0;
+        var avgWait = (queue && queue.avg_wait_time_ms) ? queue.avg_wait_time_ms : 0;
+
+        document.getElementById('queueCurrentSize').textContent = current;
+        document.getElementById('queueMaxSize').textContent = max;
+        document.getElementById('queueProcessedTab').textContent = processed;
+        document.getElementById('queueWorkers').textContent = workers;
+        document.getElementById('queueAvgWait').textContent = avgWait > 0 ? (avgWait / 1000).toFixed(1) + ' с' : '-';
+
+        var pct = percent(current, max);
+        document.getElementById('queueFill').style.width = pct + '%';
+        document.getElementById('queueMidLabel').textContent = Math.round(max / 2);
+        document.getElementById('queueMaxLabel').textContent = max;
+
+        var badgeEl = document.getElementById('queueTasksCount');
+        if (badgeEl) badgeEl.textContent = current;
+
+        // Queue tasks table
+        var tasksHtml = '';
+        if (!queueTasks.length) {
+            tasksHtml = emptyRowHtml(5, 'Нет задач в очереди');
+        } else {
+            for (var i = 0; i < queueTasks.length; i++) {
+                var t = queueTasks[i];
+                var st = t.status || 'pending';
+                var sc = st === 'processing' ? 'pr' : (st === 'completed' ? 'cp' : 'pd');
+                var stxt = st === 'processing' ? 'Обработка' : (st === 'completed' ? 'Завершено' : 'Ожидание');
+                var wt = t.waitTimeMs ? (t.waitTimeMs / 1000).toFixed(1) + 'с' : '-';
+                tasksHtml += '<tr><td>' + (i + 1) + '</td><td><code>' + escapeHtml(t.model || '-') + '</code></td><td>' + escapeHtml(t.backend || 'Auto') + '</td><td>' + wt + '</td><td><span class="qts ' + sc + '">' + stxt + '</span></td></tr>';
+            }
+        }
+        document.getElementById('queueTasksBody').innerHTML = tasksHtml;
+
+        // Queue history table
+        var historyBadgeEl = document.getElementById('queueHistoryCount');
+        if (historyBadgeEl) historyBadgeEl.textContent = queueHistory.length;
+        var historyHtml = '';
+        if (!queueHistory.length) {
+            historyHtml = emptyRowHtml(6, 'Нет выполненных задач');
+        } else {
+            for (var i = 0; i < queueHistory.length; i++) {
+                var t = queueHistory[i];
+                var enq = t.enqueued ? new Date(t.enqueued).toLocaleString('ru', { hour: '2-digit', minute: '2-digit', second: '2-digit' }) : '-';
+                var comp = t.completed_at ? new Date(t.completed_at).toLocaleString('ru', { hour: '2-digit', minute: '2-digit', second: '2-digit' }) : '-';
+                var wms = t.wait_time_ms || 0;
+                var ws = wms > 0 ? (wms / 1000).toFixed(1) + ' с' : '-';
+                historyHtml += '<tr><td>' + (i + 1) + '</td><td><code>' + escapeHtml(t.model || '-') + '</code></td><td>' + escapeHtml(t.target || 'Auto') + '</td><td>' + enq + '</td><td>' + comp + '</td><td>' + ws + '</td></tr>';
+            }
+        }
+        document.getElementById('queueHistoryBody').innerHTML = historyHtml;
+    }
+
+    function renderLogsPage(logEntries) {
+        var container = document.getElementById('logsContainer');
+        if (!container) return;
+        if (!logEntries.length) {
+            container.innerHTML = loadingHtml('Нет логов');
+            return;
+        }
+        var html = '';
+        for (var i = 0; i < logEntries.length; i++) {
+            var l = logEntries[i];
+            var lvlClass;
+            var lvl = l.level.toLowerCase();
+            if (lvl === 'error') lvlClass = 'er';
+            else if (lvl === 'warning') lvlClass = 'wa';
+            else lvlClass = 'in';
+            html += '<div class="le"><span class="lt">' + escapeHtml(l.time) + '</span><span class="ll ' + lvlClass + '">' + escapeHtml(l.level) + '</span>' + escapeHtml(l.message) + '</div>';
+        }
+        container.innerHTML = html;
+    }
+
+    function renderBackendsManagePage(backends) {
+        var tbody = document.getElementById('backendsManageBody');
+        if (!tbody) return;
+        if (!backends.length) {
+            tbody.innerHTML = '<tr><td colspan="13" class="loading-cell">Нет данных</td></tr>';
+            return;
+        }
+        var html = '';
+        for (var i = 0; i < backends.length; i++) {
+            var b = backends[i];
+            var labels = (b.labels || []).join(', ') || '-';
+            var lastContact = b.lastAgentContact ? new Date(b.lastAgentContact).toLocaleString('ru') : '-';
+            var maxModels = (b.maxModels != null) ? b.maxModels : ((b.ollama && b.ollama.maxModels != null) ? b.ollama.maxModels : '-');
+            html += '<tr><td><strong>' + escapeHtml(b.id) + '</strong></td><td>' + escapeHtml(b.name || b.id) + '</td><td>' + escapeHtml(b.host) + '</td>'
+                + '<td>' + (b.ollamaPort || 11434) + '</td><td>' + (b.agentPort || 18032) + '</td>'
+                + '<td>' + (b.weight || 1) + '</td><td>' + (b.maxConcurrentRequests || 10) + '</td><td>' + maxModels + '</td>'
+                + '<td><span class="badge ' + (b.hasAgent ? 'bg-ok' : 'bg-warn') + '">' + (b.hasAgent ? 'Да' : 'Нет') + '</span></td>'
+                + '<td>' + escapeHtml(labels) + '</td><td>' + escapeHtml(lastContact) + '</td>'
+                + '<td><span class="badge ' + (b.status === 'healthy' ? 'bg-ok' : 'bg-err') + '">' + b.status + '</span></td>'
+                + '<td><button class="btn" style="font-size:.6rem;padding:.1rem .3rem">Edit</button> <button class="btn" style="font-size:.6rem;padding:.1rem .3rem;background:var(--err);color:#fff">Del</button></td></tr>';
+        }
+        tbody.innerHTML = html;
+    }
+
+    // ===== INITIALIZE ALL PAGES =====
+    function initAllPages() {
+        renderDashboard(mockBackends, mockSessions, mockQueue);
+
+        // Models page
+        var modelsPage = document.getElementById('models-page');
+        modelsPage.classList.add('active');
+        renderModelsPage(mockBackends);
+        modelsPage.classList.remove('active');
+
+        // Sessions page
+        var sessionsPage = document.getElementById('sessions-page');
+        sessionsPage.classList.add('active');
+        renderSessionsPage(mockSessions);
+        sessionsPage.classList.remove('active');
+
+        // Queue page
+        var queuePage = document.getElementById('queue-page');
+        queuePage.classList.add('active');
+        renderQueuePage(mockQueue, mockQueueTasks, mockQueueHistory);
+        queuePage.classList.remove('active');
+
+        // Logs page
+        var logsPage = document.getElementById('logs-page');
+        logsPage.classList.add('active');
+        renderLogsPage(mockLogs);
+        logsPage.classList.remove('active');
+
+        // Prediction alerts (dashboard must be active)
+        renderPredictionAlerts(mockBackends);
+
+        // Backends management page
+        renderBackendsManagePage(mockBackends);
+    }
+
+    // ===== TEST ENGINE =====
+    var passCount = 0, failCount = 0, warnCount = 0;
+    var details = [];
+
+    function P(selector, name) {
+        var el = document.querySelector(selector);
+        if (el) { passCount++; details.push('<div class="tr2 tp">✅ ' + name + '</div>'); }
+        else { failCount++; details.push('<div class="tr2 tf">❌ ' + name + ' — NOT FOUND: ' + selector + '</div>'); }
+    }
+
+    function PN(selector, name) {
+        var el = document.querySelector(selector);
+        if (!el) { failCount++; details.push('<div class="tr2 tf">❌ ' + name + ' — NOT FOUND: ' + selector + '</div>'); return; }
+        var t = el.textContent.trim();
+        if (!t || t === '-') { failCount++; details.push('<div class="tr2 tf">❌ ' + name + ' — EMPTY placeholder</div>'); }
+        else if (t.length > 3 && t.indexOf('…') >= 0) { failCount++; details.push('<div class="tr2 tf">❌ ' + name + ' — truncated placeholder</div>'); }
+        else { passCount++; details.push('<div class="tr2 tp">✅ ' + name + ' = "' + escapeHtml(t.substring(0, 40)) + '"</div>'); }
+    }
+
+    function PNN(selector, name) {
+        var el = document.querySelector(selector);
+        if (!el) { failCount++; details.push('<div class="tr2 tf">❌ ' + name + ' — NOT FOUND</div>'); return; }
+        var t = el.textContent.trim();
+        var n = parseInt(t.replace(/[^0-9-]/g, ''));
+        if (isNaN(n)) { failCount++; details.push('<div class="tr2 tf">❌ ' + name + ' — NOT NUMERIC: "' + t + '"</div>'); }
+        else if (n < 0) { warnCount++; details.push('<div class="tr2 tw">⚠️ ' + name + ' = ' + n + '</div>'); }
+        else { passCount++; details.push('<div class="tr2 tp">✅ ' + name + ' = ' + n + '</div>'); }
+    }
+
+    function PT(selector, substr, name) {
+        var el = document.querySelector(selector);
+        if (!el) { failCount++; details.push('<div class="tr2 tf">❌ ' + name + ' — NOT FOUND</div>'); return; }
+        var t = el.textContent.toLowerCase();
+        if (t.indexOf(substr.toLowerCase()) >= 0) { passCount++; details.push('<div class="tr2 tp">✅ ' + name + ' — contains "' + substr + '"</div>'); }
+        else { failCount++; details.push('<div class="tr2 tf">❌ ' + name + ' — does NOT contain "' + substr + '": ' + escapeHtml(el.textContent.substring(0, 50)) + '</div>'); }
+    }
+
+    function PC(selector, expected, name) {
+        var els = document.querySelectorAll(selector);
+        if (expected === null) {
+            if (els.length > 0) { passCount++; details.push('<div class="tr2 tp">✅ ' + name + ' (' + els.length + ' шт.)</div>'); }
+            else { failCount++; details.push('<div class="tr2 tf">❌ ' + name + ' — got 0</div>'); }
+        } else {
+            if (els.length === expected) { passCount++; details.push('<div class="tr2 tp">✅ ' + name + ' (' + expected + ' шт.)</div>'); }
+            else { failCount++; details.push('<div class="tr2 tf">❌ ' + name + ' — expected ' + expected + ', got ' + els.length + '</div>'); }
+        }
+    }
+
+    function PS(selector, name) {
+        var el = document.querySelector(selector);
+        if (!el) { failCount++; details.push('<div class="tr2 tf">❌ ' + name + ' — NOT FOUND</div>'); return; }
+        var w = el.style.width;
+        if (w && w !== '0px' && w !== '0%') {
+            passCount++;
+            details.push('<div class="tr2 tp">✅ ' + name + ' width=' + w + '</div>');
+        } else {
+            warnCount++;
+            details.push('<div class="tr2 tw">⚠️ ' + name + ' width=' + (w || 'N/A') + '</div>');
+        }
+    }
+
+    function runTests() {
+        details = [];
+        passCount = failCount = warnCount = 0;
+
+        // === DASHBOARD — METRIC CARDS ===
+        details.push('<div class="tse">📊 Dashboard — Metric Cards</div>');
+        PNN('#totalBackends', 'totalBackends (число)');
+        PT('#healthyBackends', 'здоровых', 'healthyBackends');
+        PNN('#totalModels', 'totalModels (число)');
+        PT('#loadedModels', 'загружено', 'loadedModels');
+        PNN('#totalSessions', 'totalSessions (число)');
+        PT('#sessionRate', 'запросов', 'sessionRate');
+        PNN('#queueSize', 'queueSize');
+        PT('#queueProcessed', 'обработано', 'queueProcessed');
+        PS('#queueDashboardFill', 'queueDashboardFill bar');
+
+        // === DASHBOARD — OLLAMA RUNTIME ===
+        details.push('<div class="tse">⚙️ Dashboard — Ollama Runtime</div>');
+        PC('.rc', mockBackends.length, 'runtime-cards count');
+        P('.rc strong', 'Runtime: has ID strong');
+        P('.rc .badge', 'Runtime: has status badge');
+        PC('.fb', null, 'runtime-flags badges exist');
+        PC('.ci', null, 'context-info badges exist');
+        PC('.ct .ctr', null, 'context-tooltip rows exist');
+
+        // === DASHBOARD — GPU CLUSTER ===
+        details.push('<div class="tse">🎛️ Dashboard — GPU Кластер</div>');
+        P('#gpuClusterBadge', 'gpuClusterBadge exists');
+        PC('.gc', mockBackends.length, 'GPU cluster cards count');
+        PC('.gch', mockBackends.length, 'GPU card headers');
+        PC('.gm', mockBackends.length, 'GPU metric grids');
+        P('.gs', 'GPU status dots exist');
+        PC('.badge.bg-warn', null, 'CPU badge exists');
+        PC('.badge.bg-info', null, 'Cloud badge exists');
+        PC('.pf', null, 'progress-fill bars exist');
+
+        // === DASHBOARD — CAPACITY SECTION ===
+        details.push('<div class="tse">💾 Dashboard — Ёмкость бэкендов</div>');
+        PC('.cc', mockBackends.length, 'capacity cards count');
+        PC('.cbc', null, 'capacity bar containers exist');
+        PC('.cst', null, 'capacity stats grids exist');
+        PC('.cbf', null, 'capacity-bar-filled elements');
+        PC('.cbx', null, 'capacity-bar-context elements');
+        PC('.cbg', null, 'capacity-bar-guaranteed elements');
+        PC('.cs', null, 'capacity stat rows');
+
+        // === DASHBOARD — AVAILABLE MODELS ===
+        details.push('<div class="tse">📥 Dashboard — Доступные модели</div>');
+        P('#loadableModelCount', 'loadableModelCount badge');
+        PC('.ami', null, 'available model items exist');
+
+        // === DASHBOARD — BACKENDS TABLE ===
+        details.push('<div class="tse">📋 Dashboard — Таблица бэкендов</div>');
+        PC('#backendsTableBody tr', mockBackends.length, 'backends table rows');
+        P('#backendsTableBody strong', 'BT: has ID strong');
+        PC('#backendsTableBody .badge', null, 'BT: status badges');
+        PC('#backendsTableBody .btn', null, 'BT: action buttons');
+
+        // === DASHBOARD — PREDICTION ALERTS ===
+        details.push('<div class="tse">🚨 Dashboard — Предупреждения предиктора</div>');
+        P('#alertsList', 'alertsList exists');
+        P('#alertsList .alert', 'alertsList has alert entries');
+
+        // === BACKENDS MANAGEMENT PAGE ===
+        details.push('<div class="tse">🖥️ Бэкенды — Управление</div>');
+        PC('#backendsManageBody tr', mockBackends.length, 'manage backends rows');
+        P('#backendsManageBody strong', 'manage: ID column');
+        P('#backendsManageBody .badge', 'manage: status/agent badges');
+
+        // Check columns of first row
+        var firstRow = document.querySelector('#backendsManageBody tr');
+        if (firstRow) {
+            var cells = firstRow.querySelectorAll('td');
+            for (var i = 0; i < cells.length; i++) {
+                var ct = cells[i].textContent.trim();
+                if (ct && ct !== '-') {
+                    passCount++;
+                    details.push('<div class="tr2 tp">✅ manage: col ' + i + ' filled: ' + escapeHtml(ct.substring(0, 30)) + '</div>');
+                } else {
+                    failCount++;
+                    details.push('<div class="tr2 tf">❌ manage: col ' + i + ' EMPTY</div>');
+                }
+            }
+        }
+
+        // === MODELS PAGE ===
+        details.push('<div class="tse">🔬 Модели — Страница</div>');
+        PNN('#modelsTotal', 'modelsTotal');
+        PNN('#modelsLoaded', 'modelsLoaded');
+        PC('.bli', mockBackends.length, 'backend-load items');
+        PC('.mc', null, 'model cards');
+        PC('.mmt', null, 'memory title sections');
+        PC('.mmbf', null, 'memory bar fills');
+
+        // === SESSIONS PAGE ===
+        details.push('<div class="tse">👥 Сессии — Таблица</div>');
+        PC('#sessionsTableBody tr', mockSessions.length, 'sessions rows');
+        P('#sessionsTableBody code', 'Session: has ID code');
+        PT('#sessionsTableBody', '🦾', 'client icon (Cline)');
+        PT('#sessionsTableBody', '🌐', 'client icon (OpenWebUI)');
+        PT('#sessionsTableBody', '🐍', 'client icon (Python)');
+
+        // === QUEUE PAGE ===
+        details.push('<div class="tse">⏳ Очередь — Статистика</div>');
+        PNN('#queueCurrentSize', 'queueCurrentSize');
+        PNN('#queueMaxSize', 'queueMaxSize');
+        PNN('#queueProcessedTab', 'queueProcessed');
+        PNN('#queueWorkers', 'queueWorkers');
+        P('#queueAvgWait', 'queueAvgWait');
+        PS('#queueFill', 'queueFill bar');
+        PC('#queueTasksBody tr', mockQueueTasks.length, 'queue tasks rows');
+        PC('#queueHistoryBody tr', mockQueueHistory.length, 'queue history rows');
+        P('#queueTasksCount', 'queueTasksCount badge');
+        P('#queueHistoryCount', 'queueHistoryCount badge');
+
+        // === LOGS PAGE ===
+        details.push('<div class="tse">📜 Логи — Отображение</div>');
+        PC('.le', mockLogs.length, 'log entries');
+        P('.lt', 'log time');
+        P('.ll', 'log level');
+
+        // === SETTINGS PAGE ===
+        details.push('<div class="tse">⚙️ Настройки — Форма</div>');
+        P('#balancingAlgorithm', 'balancingAlgorithm select');
+        P('#modelAffinity', 'modelAffinity checkbox');
+        P('#sessionStickiness', 'sessionStickiness checkbox');
+        P('#predictionFiltering', 'predictionFiltering checkbox');
+        P('#gpuMaxUsage', 'gpuMaxUsage input');
+        P('#vramMaxUsage', 'vramMaxUsage input');
+        P('#cpuMaxUsage', 'cpuMaxUsage input');
+        P('#ramMaxUsage', 'ramMaxUsage input');
+        P('#minFreeDisk', 'minFreeDisk input');
+
+        // Check settings default values
+        var settings = [
+            ['gpuMaxUsage', '90'],
+            ['vramMaxUsage', '85'],
+            ['cpuMaxUsage', '80'],
+            ['ramMaxUsage', '85'],
+            ['minFreeDisk', '10240']
+        ];
+        for (var i = 0; i < settings.length; i++) {
+            var id = settings[i][0];
+            var expectedVal = settings[i][1];
+            var el = document.getElementById(id);
+            if (el && el.value === expectedVal) {
+                passCount++;
+                details.push('<div class="tr2 tp">✅ ' + id + ' value = ' + expectedVal + '</div>');
+            } else {
+                failCount++;
+                details.push('<div class="tr2 tf">❌ ' + id + ' value = ' + (el ? el.value : 'N/A') + ' expected ' + expectedVal + '</div>');
+            }
+        }
+
+        // === MODAL FORM ===
+        details.push('<div class="tse">🔲 Модальное окно — Форма бэкенда</div>');
+        P('#formBackendId', 'formBackendId');
+        P('#formBackendName', 'formBackendName');
+        P('#formBackendHost', 'formBackendHost');
+        P('#formBackendOllamaPort', 'formBackendOllamaPort');
+        P('#formBackendAgentPort', 'formBackendAgentPort');
+        P('#formBackendWeight', 'formBackendWeight');
+        P('#formBackendMaxConcurrent', 'formBackendMaxConcurrent');
+        P('#formBackendLabels', 'formBackendLabels');
+
+        // Fill modal and test
+        var sample = mockBackends[0];
+        document.getElementById('formBackendId').value = sample.id;
+        document.getElementById('formBackendName').value = sample.name;
+        document.getElementById('formBackendHost').value = sample.host;
+        document.getElementById('modalTitle').textContent = 'Редактировать бэкенд';
+        P('#modalTitle', 'modal title exists');
+        PN('#formBackendId', 'formBackendId filled');
+
+        // === XSS PROTECTION ===
+        details.push('<div class="tse">🛡️ Edge Cases — XSS защита</div>');
+        var bodyHtml = document.body.innerHTML.toLowerCase();
+        // Check that rendered content doesn't contain unescaped script tags from data
+        if (bodyHtml.indexOf('<script>alert') < 0) {
+            passCount++;
+            details.push('<div class="tr2 tp">✅ XSS: no unescaped script in rendered content</div>');
+        } else {
+            failCount++;
+            details.push('<div class="tr2 tf">❌ XSS: found unescaped script</div>');
+        }
+
+        // === EMPTY DATA ===
+        details.push('<div class="tse">🕳️ Edge Cases — Пустые данные</div>');
+        document.getElementById('runtimeCluster').innerHTML = loadingHtml();
+        var emptyMsg = document.querySelector('#runtimeCluster .loading');
+        if (emptyMsg) {
+            passCount++;
+            details.push('<div class="tr2 tp">✅ Empty state: loading placeholder shown</div>');
+        } else {
+            failCount++;
+            details.push('<div class="tr2 tf">❌ Empty state: no loading placeholder</div>');
+        }
+        // Restore
+        initAllPages();
+
+        // === PAGE STRUCTURE ===
+        details.push('<div class="tse">📑 Структура страниц</div>');
+        var pages = ['dashboard-page', 'backends-page', 'models-page', 'sessions-page', 'queue-page', 'logs-page', 'settings-page'];
+        for (var i = 0; i < pages.length; i++) {
+            P('#' + pages[i], 'Page: ' + pages[i]);
+        }
+
+        // === BUTTONS ===
+        details.push('<div class="tse">🔘 Кнопки действий</div>');
+        P('#refreshBtn', 'refreshBtn');
+        P('#addBackendBtn', 'addBackendBtn');
+        P('#clearLogsBtn', 'clearLogsBtn');
+        P('#exportLogsBtn', 'exportLogsBtn');
+        P('#resetSettingsBtn', 'resetSettingsBtn');
+        P('#saveSettingsBtn', 'saveSettingsBtn');
+        P('#modalCloseBtn', 'modalCloseBtn');
+        P('#modalCancelBtn', 'modalCancelBtn');
+        P('#modalSaveBtn', 'modalSaveBtn');
+
+        // === SUMMARY ===
+        var total = passCount + failCount + warnCount;
+        var pct = total > 0 ? Math.round(passCount / total * 100) : 0;
+        var status = pct >= 95 ? '🟢 ALL CLEAR' : (pct >= 80 ? '🟡 NEEDS ATTENTION' : '🔴 CRITICAL');
+        document.getElementById('ts').innerHTML = status + ' | Total: ' + total + ' | ✅ ' + passCount + ' | ❌ ' + failCount + ' | ⚠️ ' + warnCount + ' | ' + pct + '% passed';
+        document.getElementById('td').innerHTML = details.join('');
+    }
+
+    // ===== STARTUP =====
+    window.addEventListener('DOMContentLoaded', function() {
+        initAllPages();
+        setTimeout(runTests, 200);
+    });
+
+})();
+</script>
+
+</body>
+</html>

@@ -8,9 +8,12 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"os/exec"
 	"runtime"
+	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -186,12 +189,15 @@ func (a *Agent) register() error {
 	fmt.Printf("[%s] Detected public host for registration: %s\n",
 		time.Now().Format(time.RFC3339), publicHost)
 
+	// Извлекаем порт Ollama из конфигурации (OLLAMA_URL)
+	ollamaPort := a.extractOllamaPort()
+
 	// Отправляем регистрацию напрямую в формате, который ожидает балансировщик
 	reqBody := map[string]interface{}{
 		"agentId":    a.config.AgentID,
 		"hostname":   hostname,
 		"host":       publicHost,
-		"ollamaPort": 11434,
+		"ollamaPort": ollamaPort,
 		"agentPort":  a.config.MetricsPort,
 		"gpuCount":   gpuInfo.Count,
 		"name":       a.config.AgentID,
@@ -561,6 +567,39 @@ func (a *Agent) getOllamaBaseURL() string {
 		return a.config.OllamaURL
 	}
 	return "http://localhost:11434"
+}
+
+// extractOllamaPort - извлечение порта Ollama из OllamaURL
+func (a *Agent) extractOllamaPort() int {
+	if a.config.OllamaURL != "" {
+		// Парсим URL вида http://host:port или host:port
+		urlStr := a.config.OllamaURL
+		if !strings.HasPrefix(urlStr, "http://") && !strings.HasPrefix(urlStr, "https://") {
+			urlStr = "http://" + urlStr
+		}
+		if u, err := url.Parse(urlStr); err == nil && u.Port() != "" {
+			if port, err := strconv.Atoi(u.Port()); err == nil {
+				return port
+			}
+		}
+	}
+	return 11434 // fallback
+}
+
+// healthCheckOllama - проверка доступности Ollama перед регистрацией
+func (a *Agent) healthCheckOllama() error {
+	client := &http.Client{
+		Timeout: 5 * time.Second,
+	}
+	resp, err := client.Get(fmt.Sprintf("%s/api/version", a.getOllamaBaseURL()))
+	if err != nil {
+		return fmt.Errorf("ollama health-check failed: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("ollama health-check returned status %d", resp.StatusCode)
+	}
+	return nil
 }
 
 // collectOllamaMetrics - сбор метрик Ollama

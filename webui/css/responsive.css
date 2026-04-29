@@ -1,0 +1,22 @@
+/* ================================================
+   OllamaLegion Responsive — Media Queries
+   ================================================ */
+
+@media (max-width: 1024px) {
+    .sidebar { width: 200px; }
+    .main { margin-left: 200px; }
+    .metrics-grid { grid-template-columns: repeat(2, 1fr); }
+}
+
+@media (max-width: 768px) {
+    .sidebar { transform: translateX(-100%); }
+    .main { margin-left: 0; }
+    .metrics-grid { grid-template-columns: 1fr; }
+    .gpu-cluster,
+    .models-grid,
+    .runtime-cluster,
+    .capacity-section { grid-template-columns: 1fr; }
+    .available-models-list { grid-template-columns: 1fr; }
+    .app-footer { flex-direction: column; gap: 12px; }
+    .footer-separator { width: 60%; height: 1px; }
+}

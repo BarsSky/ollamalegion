@@ -1,0 +1,368 @@
+/* ================================================
+   OllamaLegion Data — Tables, Models, Runtime, Capacity, Backend Load
+   ================================================ */
+
+/* ===== Tables ===== */
+.table-responsive { overflow-x: auto; }
+.data-table {
+    width: 100%;
+    border-collapse: collapse;
+}
+.data-table th,
+.data-table td {
+    padding: 14px 20px;
+    text-align: left;
+    border-bottom: 1px solid var(--border);
+    font-size: 14px;
+}
+.data-table th {
+    font-weight: 600;
+    color: var(--text-secondary);
+    text-transform: uppercase;
+    font-size: 11px;
+    letter-spacing: 0.5px;
+    background: var(--glass-bg);
+    backdrop-filter: blur(4px);
+    -webkit-backdrop-filter: blur(4px);
+}
+.data-table tbody tr:hover { background: var(--bg-hover); }
+.loading-cell {
+    text-align: center;
+    color: var(--text-muted);
+    padding: 40px;
+}
+
+/* ===== Models Grid ===== */
+.models-grid {
+    padding: 24px;
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+    gap: 20px;
+}
+
+.model-card {
+    position: relative;
+    background: var(--glass-bg);
+    border-radius: var(--radius);
+    border: 1px solid var(--glass-border);
+    backdrop-filter: blur(var(--glass-blur));
+    -webkit-backdrop-filter: blur(var(--glass-blur));
+    box-shadow: var(--glass-shadow);
+    padding: 20px;
+    overflow: hidden;
+    transition: var(--transition);
+}
+.model-card::before {
+    content: '';
+    position: absolute;
+    top: 0; left: 0; right: 0;
+    height: 1px;
+    background: var(--glass-highlight);
+    pointer-events: none;
+}
+.model-card:hover {
+    border-color: var(--accent);
+    box-shadow: var(--glass-shadow), 0 8px 32px rgba(74, 158, 255, 0.1);
+}
+.model-card-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 12px;
+}
+.model-name { font-weight: 600; font-size: 16px; }
+.model-size { font-size: 12px; color: var(--text-muted); }
+.model-details {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 12px;
+    margin-top: 12px;
+}
+.model-detail { text-align: center; }
+.model-detail-label { font-size: 11px; color: var(--text-muted); }
+.model-detail-value { font-size: 14px; font-weight: 600; margin-top: 2px; }
+
+/* Model Memory Bars */
+.model-memory-section {
+    margin-top: 16px;
+    padding-top: 16px;
+    border-top: 1px solid var(--border);
+}
+.model-memory-title {
+    font-size: 12px;
+    color: var(--text-secondary);
+    margin-bottom: 10px;
+    font-weight: 500;
+}
+.model-memory-bar-container { margin-bottom: 8px; }
+.model-memory-bar-labels {
+    display: flex;
+    justify-content: space-between;
+    font-size: 11px;
+    color: var(--text-muted);
+    margin-bottom: 3px;
+}
+.model-memory-bar {
+    height: 6px;
+    background: var(--bar-bg);
+    border-radius: 3px;
+    overflow: hidden;
+}
+.model-memory-bar-fill {
+    height: 100%;
+    border-radius: 3px;
+    transition: width 0.5s ease;
+}
+.model-memory-bar-fill.vram { background: linear-gradient(90deg, var(--success), var(--warning)); }
+.model-memory-bar-fill.ram  { background: linear-gradient(90deg, var(--info), var(--accent)); }
+.model-memory-legend {
+    display: flex;
+    gap: 16px;
+    margin-top: 8px;
+    font-size: 11px;
+    color: var(--text-muted);
+}
+.model-memory-legend-item { display: flex; align-items: center; gap: 6px; }
+.model-memory-legend-dot {
+    width: 8px; height: 8px;
+    border-radius: 2px;
+}
+.model-memory-legend-dot.vram { background: var(--success); }
+.model-memory-legend-dot.ram  { background: var(--info); }
+
+/* Available Models List */
+.available-models-list {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+    gap: 0.5rem;
+    max-height: 400px;
+    overflow-y: auto;
+}
+.available-model-item {
+    display: flex;
+    align-items: center;
+    gap: 0.75rem;
+    padding: 0.5rem 0.75rem;
+    border-radius: 6px;
+    background: var(--glass-bg);
+    border: 1px solid var(--glass-border);
+    backdrop-filter: blur(4px);
+    -webkit-backdrop-filter: blur(4px);
+    font-size: 0.85rem;
+}
+.available-model-item .model-indicator {
+    width: 8px; height: 8px;
+    border-radius: 50%;
+    flex-shrink: 0;
+}
+.model-loadable .model-indicator { background: var(--success); }
+.model-unloadable .model-indicator { background: var(--danger); }
+.model-loadable { opacity: 1; }
+.model-unloadable { opacity: 0.6; }
+.available-model-item .model-name {
+    flex: 1;
+    font-weight: 500;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+.available-model-item .model-vram {
+    font-size: 0.75rem;
+    color: var(--text-muted);
+}
+
+/* ===== Ollama Runtime ===== */
+.runtime-cluster {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+    gap: 1rem;
+}
+.runtime-card {
+    position: relative;
+    background: var(--glass-bg);
+    border: 1px solid var(--glass-border);
+    border-radius: 8px;
+    padding: 1rem;
+    backdrop-filter: blur(var(--glass-blur));
+    -webkit-backdrop-filter: blur(var(--glass-blur));
+    box-shadow: var(--glass-shadow);
+    overflow: hidden;
+}
+.runtime-card::before {
+    content: '';
+    position: absolute;
+    top: 0; left: 0; right: 0;
+    height: 1px;
+    background: var(--glass-highlight);
+    pointer-events: none;
+}
+.runtime-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 0.5rem;
+    font-size: 0.9rem;
+}
+.runtime-flags {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.4rem;
+    margin-top: 0.5rem;
+}
+.flag-badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.3rem;
+    padding: 0.25rem 0.6rem;
+    border-radius: 4px;
+    font-size: 0.75rem;
+    font-weight: 600;
+    background: rgba(74, 158, 255, 0.15);
+    color: var(--accent);
+    border: 1px solid rgba(74, 158, 255, 0.3);
+}
+.flag-badge.warning {
+    background: rgba(251, 191, 36, 0.15);
+    color: var(--warning);
+    border-color: rgba(251, 191, 36, 0.3);
+}
+.flag-badge.danger {
+    background: rgba(248, 113, 113, 0.15);
+    color: var(--danger);
+    border-color: rgba(248, 113, 113, 0.3);
+}
+
+/* ===== Backend Capacity ===== */
+.capacity-section {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(350px, 1fr));
+    gap: 1rem;
+}
+.capacity-card {
+    position: relative;
+    background: var(--glass-bg);
+    border: 1px solid var(--glass-border);
+    border-radius: 8px;
+    padding: 1rem;
+    backdrop-filter: blur(var(--glass-blur));
+    -webkit-backdrop-filter: blur(var(--glass-blur));
+    box-shadow: var(--glass-shadow);
+    overflow: hidden;
+}
+.capacity-card::before {
+    content: '';
+    position: absolute;
+    top: 0; left: 0; right: 0;
+    height: 1px;
+    background: var(--glass-highlight);
+    pointer-events: none;
+}
+.capacity-bar-container { margin: 0.75rem 0; }
+.capacity-bar-labels {
+    display: flex;
+    justify-content: space-between;
+    font-size: 0.8rem;
+    color: var(--text-secondary);
+    margin-bottom: 0.25rem;
+}
+.capacity-bar {
+    height: 8px;
+    background: var(--bar-bg);
+    border-radius: 4px;
+    overflow: hidden;
+    display: flex;
+}
+.capacity-bar-filled     { background: var(--success); height: 100%; transition: width 0.3s ease; }
+.capacity-bar-context    { background: var(--warning); height: 100%; transition: width 0.3s ease; }
+.capacity-bar-guaranteed { background: var(--info);    height: 100%; opacity: 0.5; transition: width 0.3s ease; }
+
+.capacity-stats {
+    display: grid;
+    grid-template-columns: repeat(2, 1fr);
+    gap: 0.5rem;
+    font-size: 0.8rem;
+    margin-top: 0.5rem;
+}
+.capacity-stat {
+    display: flex;
+    justify-content: space-between;
+    color: var(--text-secondary);
+}
+
+/* Cloud capacity variant */
+.capacity-cloud {
+    border-left: 3px solid var(--info);
+    background: linear-gradient(135deg, var(--glass-bg) 0%, rgba(96, 165, 250, 0.05) 100%);
+}
+.capacity-cloud-info { padding: 0.75rem; }
+.capacity-cloud-row {
+    display: flex;
+    justify-content: space-between;
+    padding: 0.35rem 0;
+    border-bottom: 1px solid var(--border);
+    font-size: 0.85rem;
+}
+.capacity-cloud-row:last-child { border-bottom: none; }
+.capacity-cloud-row span:first-child { color: var(--text-muted); }
+.capacity-cloud-row span:last-child  { font-weight: 600; }
+
+/* ===== Backend Load ===== */
+.backend-load-list {
+    padding: 1rem;
+    display: flex;
+    flex-direction: column;
+    gap: 1rem;
+}
+.backend-load-item {
+    position: relative;
+    background: var(--glass-bg);
+    border: 1px solid var(--glass-border);
+    border-radius: var(--radius);
+    padding: 1rem;
+    backdrop-filter: blur(var(--glass-blur));
+    -webkit-backdrop-filter: blur(var(--glass-blur));
+    box-shadow: var(--glass-shadow);
+    overflow: hidden;
+    transition: var(--transition);
+}
+.backend-load-item::before {
+    content: '';
+    position: absolute;
+    top: 0; left: 0; right: 0;
+    height: 1px;
+    background: var(--glass-highlight);
+    pointer-events: none;
+}
+.backend-load-item:hover { border-color: var(--accent); }
+.backend-load-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 0.75rem;
+}
+.backend-load-name { font-size: 1rem; color: var(--text-primary); }
+.backend-load-stats { display: flex; gap: 1.5rem; margin-bottom: 0.75rem; font-size: 0.85rem; }
+.backend-load-stat  { color: var(--text-secondary); }
+.backend-load-stat strong { color: var(--text-primary); font-weight: 600; }
+.backend-load-bar-row {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 0.25rem;
+    font-size: 0.8rem;
+    color: var(--text-muted);
+}
+.backend-load-bar {
+    height: 6px;
+    background: var(--bar-bg);
+    border-radius: 3px;
+    overflow: hidden;
+    margin-bottom: 0.75rem;
+}
+.backend-load-fill {
+    height: 100%;
+    border-radius: 3px;
+    transition: width 0.5s ease;
+}
+.backend-load-fill.vram { background: linear-gradient(90deg, var(--success), var(--warning)); }
+.backend-load-fill.ram  { background: linear-gradient(90deg, var(--info), var(--accent)); }

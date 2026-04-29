@@ -1,0 +1,182 @@
+/* ================================================
+   OllamaLegion Metrics — Metric Cards, GPU, Progress Bars
+   ================================================ */
+
+/* ===== Metrics Grid ===== */
+.metrics-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+    gap: 20px;
+    margin-bottom: 24px;
+}
+
+.metric-card {
+    position: relative;
+    background: var(--glass-bg);
+    border-radius: var(--radius);
+    border: 1px solid var(--glass-border);
+    backdrop-filter: blur(var(--glass-blur));
+    -webkit-backdrop-filter: blur(var(--glass-blur));
+    box-shadow: var(--glass-shadow);
+    padding: 20px;
+    transition: var(--transition);
+    overflow: hidden;
+}
+.metric-card::before {
+    content: '';
+    position: absolute;
+    top: 0; left: 0; right: 0;
+    height: 1px;
+    background: var(--glass-highlight);
+    pointer-events: none;
+}
+.metric-card:hover {
+    border-color: var(--accent);
+    transform: translateY(-2px);
+    box-shadow: var(--glass-shadow), 0 8px 32px rgba(74, 158, 255, 0.15);
+}
+
+.metric-header {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-bottom: 12px;
+}
+.metric-icon { font-size: 20px; }
+.metric-label {
+    font-size: 13px;
+    color: var(--text-secondary);
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+}
+.metric-value {
+    font-size: 32px;
+    font-weight: 700;
+    color: var(--text-primary);
+    line-height: 1;
+}
+.metric-sub {
+    font-size: 13px;
+    color: var(--text-muted);
+    margin-top: 8px;
+}
+
+.metric-mini-bar {
+    width: 100%;
+    height: 4px;
+    background: var(--bar-bg);
+    border-radius: 2px;
+    margin-top: 10px;
+    overflow: hidden;
+}
+.metric-mini-fill {
+    height: 100%;
+    border-radius: 2px;
+    transition: width 0.5s ease;
+    background: linear-gradient(90deg, var(--success), var(--warning), var(--danger));
+}
+
+/* ===== GPU Cluster ===== */
+.gpu-cluster {
+    padding: 24px;
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+    gap: 20px;
+}
+
+.gpu-card {
+    position: relative;
+    background: var(--glass-bg);
+    border-radius: var(--radius);
+    border: 1px solid var(--glass-border);
+    backdrop-filter: blur(var(--glass-blur));
+    -webkit-backdrop-filter: blur(var(--glass-blur));
+    box-shadow: var(--glass-shadow);
+    padding: 20px;
+    overflow: hidden;
+    transition: var(--transition);
+}
+.gpu-card::before {
+    content: '';
+    position: absolute;
+    top: 0; left: 0; right: 0;
+    height: 1px;
+    background: var(--glass-highlight);
+    pointer-events: none;
+}
+.gpu-card:hover {
+    border-color: var(--accent);
+    box-shadow: var(--glass-shadow), 0 8px 32px rgba(74, 158, 255, 0.1);
+}
+.gpu-card-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 16px;
+}
+.gpu-card-title { font-weight: 600; font-size: 16px; }
+.gpu-status {
+    width: 10px; height: 10px;
+    border-radius: 50%;
+    transition: background-color 0.4s ease;
+}
+.gpu-status.healthy  { background: var(--success); }
+.gpu-status.warning  { background: var(--warning); }
+.gpu-status.critical { background: var(--danger); }
+
+.gpu-metrics { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+.gpu-metric { text-align: center; }
+.gpu-metric-label  { font-size: 11px; color: var(--text-muted); text-transform: uppercase; }
+.gpu-metric-value  { font-size: 20px; font-weight: 700; margin-top: 4px; }
+
+/* CPU variant */
+.gpu-card-cpu {
+    border-left: 3px solid var(--warning);
+    background: linear-gradient(135deg, var(--glass-bg) 0%, rgba(251, 191, 36, 0.08) 100%);
+}
+
+/* Cloud variant */
+.gpu-card-cloud {
+    border-left: 3px solid var(--info);
+    background: linear-gradient(135deg, var(--glass-bg) 0%, rgba(96, 165, 250, 0.08) 100%);
+}
+
+/* ===== Progress Bars ===== */
+.progress-bar {
+    width: 100%;
+    height: 8px;
+    background: var(--bar-bg);
+    border-radius: 4px;
+    margin-top: 16px;
+    overflow: hidden;
+}
+.progress-fill {
+    height: 100%;
+    border-radius: 4px;
+    transition: width 0.5s ease;
+}
+.progress-fill.low    { background: var(--success); }
+.progress-fill.medium { background: var(--warning); }
+.progress-fill.high   { background: var(--danger); }
+
+/* ===== Prediction Bar ===== */
+.prediction-bar {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+.prediction-value {
+    font-weight: 600;
+    font-size: 13px;
+}
+.prediction-bar-visual {
+    width: 60px; height: 6px;
+    background: var(--bar-bg);
+    border-radius: 3px;
+    overflow: hidden;
+}
+.prediction-bar-fill {
+    height: 100%;
+    border-radius: 3px;
+    transition: width 0.3s ease;
+}

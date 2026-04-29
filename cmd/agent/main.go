@@ -26,6 +26,7 @@ import (
 		publicHost      = flag.String("public-host", "", "Public IP/hostname accessible by balancer (optional, auto-detected if empty)")
 		maxModels       = flag.Int("max-models", -1, "Max models limit (-1 = unlimited/not set)")
 		maxConcurrentRequests = flag.Int("max-concurrent-requests", -1, "Max concurrent requests limit (-1 = unlimited/not set)")
+		weight          = flag.Int("weight", 1, "Backend priority weight (1-100)")
 	)
 
 func main() {
@@ -44,6 +45,7 @@ func main() {
 		PublicHost:            getEnv("AGENT_PUBLIC_HOST", *publicHost),
 		MaxModels:             getEnvInt("AGENT_MAX_MODELS", *maxModels),
 		MaxConcurrentRequests: getEnvInt("AGENT_MAX_CONCURRENT_REQUESTS", *maxConcurrentRequests),
+		Weight:                getEnvInt("AGENT_WEIGHT", *weight),
 	}
 
 	// Если передан файл конфигурации — загружаем из него

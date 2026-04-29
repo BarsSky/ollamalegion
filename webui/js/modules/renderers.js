@@ -9,6 +9,42 @@ const Renderers = (function () {
     const PRED_HYSTERESIS = 45; // seconds — must deviate this much from threshold to switch
     const PRED_THRESHOLD = 300; // seconds
 
+    // Stable backend order: new backends appended at the end, removed ones leave
+    // gaps that are filled by shifting remaining backends. Ensures visual stability.
+    const _backendOrder = new Map(); // id -> { index, addedAt }
+
+    function stableBackendOrder(backends) {
+      const now = Date.now();
+      const seen = new Set();
+      // Mark existing and assign insertion indices for new backends
+      backends.forEach(b => {
+        const id = b.id || b.ID;
+        if (!id) return;
+        seen.add(id);
+        if (!_backendOrder.has(id)) {
+          _backendOrder.set(id, { index: _backendOrder.size, addedAt: now });
+        }
+      });
+      // Remove backends that no longer exist and recompact indices
+      const entries = [];
+      for (const [id, meta] of _backendOrder) {
+        if (seen.has(id)) {
+          entries.push({ id, index: meta.index, addedAt: meta.addedAt });
+        }
+      }
+      entries.sort((a, b) => a.index - b.index);
+      _backendOrder.clear();
+      entries.forEach((e, i) => {
+        _backendOrder.set(e.id, { index: i, addedAt: e.addedAt });
+      });
+      // Sort backends by their stable index
+      return [...backends].sort((a, b) => {
+        const ia = _backendOrder.get(a.id || a.ID)?.index ?? Infinity;
+        const ib = _backendOrder.get(b.id || b.ID)?.index ?? Infinity;
+        return ia - ib;
+      });
+    }
+
     // ---- Generic helpers ----
 
     function badge(status, type) {
@@ -55,6 +91,7 @@ const Renderers = (function () {
     // ---- Runtime Cluster ----
 
     function runtimeCluster(backends) {
+        backends = stableBackendOrder(backends);
         if (!backends.length) return loading('Нет данных о бэкендах');
         return backends.map(backend => {
             const flags = backend.ollama?.runtimeFlags || {};
@@ -111,6 +148,7 @@ const Renderers = (function () {
     // ---- GPU Cluster ----
 
     function gpuCluster(backends) {
+        backends = stableBackendOrder(backends);
         if (!backends.length) return loading('Нет данных о бэкендах');
 
         const gpuBackends = backends.filter(b => getBackendMode(b) === 'gpu');
@@ -210,6 +248,7 @@ const Renderers = (function () {
     // ---- Capacity Section ----
 
     function capacitySection(backends) {
+        backends = stableBackendOrder(backends);
         if (!backends.length) return loading('Нет данных о бэкендах');
         return backends.map(b => capacityCard(b)).join('');
     }
@@ -327,6 +366,7 @@ const Renderers = (function () {
     // ---- Backends Table (Dashboard) ----
 
     function backendsTable(backends) {
+        backends = stableBackendOrder(backends);
         if (!backends.length) return emptyRow(11, 'Нет данных');
 
         return backends.map(b => {
@@ -432,6 +472,7 @@ const Renderers = (function () {
     // ---- Models Page ----
 
     function modelsPage(backends) {
+        backends = stableBackendOrder(backends);
         const allModels = [];
         const backendMap = {};
         backends.forEach(b => {
@@ -449,6 +490,7 @@ const Renderers = (function () {
     }
 
     function backendLoad(backends) {
+        backends = stableBackendOrder(backends);
         if (!backends.length) return loading('Нет данных');
 
         return backends.map(b => {
@@ -567,23 +609,39 @@ const Renderers = (function () {
 
     // ---- Sessions Page ----
 
+    function getClientIcon(clientName) {
+        if (!clientName) return '👤';
+        const name = clientName.toLowerCase();
+        if (name.includes('cline')) return '🦾';
+        if (name.includes('openwebui') || name.includes('open-webui')) return '🌐';
+        if (name.includes('curl')) return '📡';
+        if (name.includes('python') || name.includes('requests')) return '🐍';
+        if (name.includes('postman')) return '📮';
+        if (name.includes('insomnia')) return '💤';
+        return '👤';
+    }
+
     function sessionsPage(sessions) {
         const tbody = document.getElementById('sessionsTableBody');
         if (!tbody) return;
         if (!sessions.length) {
-            tbody.innerHTML = emptyRow(6, 'Нет активных сессий');
+            tbody.innerHTML = emptyRow(7, 'Нет активных сессий');
             return;
         }
-        tbody.innerHTML = sessions.map(s => `
+        tbody.innerHTML = sessions.map(s => {
+            const clientIcon = getClientIcon(s.clientName);
+            return `
             <tr>
                 <td><code>${escapeHtml(s.id?.substring(0, 16) || 'N/A')}...</code></td>
                 <td>${escapeHtml(s.backendId || '-')}</td>
                 <td>${escapeHtml(s.model || '-')}</td>
                 <td>${s.requestCount || 0}</td>
-                <td>${s.lastActivity ? new Date(s.lastActivity).toLocaleString('ru') : '-'}</td>
-                <td>${badge(s.active ? 'Активна' : 'Неактивна', s.active ? 'success' : 'warning')}</td>
+                <td>${s.lastRequestAt ? new Date(s.lastRequestAt).toLocaleString('ru') : '-'}</td>
+                <td>${escapeHtml(s.clientIP || '-')}</td>
+                <td>${clientIcon} ${escapeHtml(s.clientName || '-')}</td>
             </tr>
-        `).join('');
+            `;
+        }).join('');
     }
 
     // ---- Queue Page ----

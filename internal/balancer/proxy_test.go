@@ -73,17 +73,14 @@ func createTestConfig() *types.LoadBalancerConfig {
 func TestQueueManagerEnqueue(t *testing.T) {
 	t.Parallel()
 
-	config := createTestConfig()
-	proxy := NewProxy(config)
-	proxy.SetQueueManagerProxy()
-	defer proxy.queueMgr.Stop()
-
-	queueMgr := proxy.queueMgr
+	// Создаём QueueManager с 0 workers, чтобы элемент гарантированно остался в канале
+	queueMgr := NewQueueManager(nil, 100, 0, 5*time.Second)
+	defer queueMgr.Stop()
 
 	// Проверяем начальное состояние
 	assert.Equal(t, 0, len(queueMgr.queue))
 	assert.Equal(t, 100, queueMgr.maxSize)
-	assert.Equal(t, 4, queueMgr.numWorkers)
+	assert.Equal(t, 0, queueMgr.numWorkers)
 
 	// Создаем тестовый запрос
 	req := httptest.NewRequest(http.MethodPost, "/api/generate", strings.NewReader(`{"model": "llama2"}`))

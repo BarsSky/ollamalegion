@@ -1,12 +1,14 @@
 package api
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"io"
 	"net"
 	"net/http"
 	"os"
+	"path/filepath"
 	"sort"
 	"strings"
 	"time"
@@ -940,6 +942,7 @@ func (s *Server) agentRegisterHandler(w http.ResponseWriter, r *http.Request) {
 		GPUCount   int      `json:"gpuCount"`
 		Name       string   `json:"name"`
 		Labels     []string `json:"labels"`
+		Weight     int      `json:"weight"`
 	}
 
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -983,6 +986,12 @@ func (s *Server) agentRegisterHandler(w http.ResponseWriter, r *http.Request) {
 		agentPort = 18032
 	}
 
+	// Определяем вес (по умолчанию 1)
+	weight := req.Weight
+	if weight <= 0 {
+		weight = 1
+	}
+
 	// Проверка, существует ли уже бэкенд
 	if s.proxy.BackendExists(req.AgentID) {
 		// Обновляем существующий
@@ -993,7 +1002,7 @@ func (s *Server) agentRegisterHandler(w http.ResponseWriter, r *http.Request) {
 			Host:              host,
 			OllamaPort:        ollamaPort,
 			AgentPort:         agentPort,
-			Weight:            existing.Weight,
+			Weight:            weight,
 			MaxConcurrentReqs: existing.MaxConcurrentReqs,
 			Labels:            req.Labels,
 			Status:            types.StatusHealthy,
@@ -1016,7 +1025,7 @@ func (s *Server) agentRegisterHandler(w http.ResponseWriter, r *http.Request) {
 		Host:              host,
 		OllamaPort:        ollamaPort,
 		AgentPort:         agentPort,
-		Weight:            1,
+		Weight:            weight,
 		MaxConcurrentReqs: 10,
 		Labels:            req.Labels,
 		Status:            types.StatusStarting,
@@ -1120,11 +1129,30 @@ func (s *Server) agentHeartbeatHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Читаем weight из heartbeat payload
+	body, _ := io.ReadAll(r.Body)
+	r.Body = io.NopCloser(bytes.NewBuffer(body))
+
+	var hbPayload struct {
+		Weight int `json:"weight"`
+	}
+	_ = json.Unmarshal(body, &hbPayload)
+
 	// Обновление статуса
 	s.proxy.UpdateBackendStatus(agentID, types.StatusHealthy)
 
 	// Обновляем флаг активного агента
 	s.proxy.UpdateBackendAgentStatus(agentID, true)
+
+	// Обновляем вес, если передан
+	if hbPayload.Weight > 0 {
+		backend := s.proxy.GetBackend(agentID)
+		if backend != nil && backend.Weight != hbPayload.Weight {
+			updated := *backend
+			updated.Weight = hbPayload.Weight
+			s.proxy.UpdateBackend(agentID, updated)
+		}
+	}
 
 	now := time.Now().UTC()
 
@@ -1556,10 +1584,12 @@ func (s *Server) monitorHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var data []byte
+	var monitorPath string
 	var err error
 	for _, p := range paths {
 		data, err = os.ReadFile(p)
 		if err == nil {
+			monitorPath = p
 			break
 		}
 	}
@@ -1570,10 +1600,37 @@ func (s *Server) monitorHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	htmlStr := string(data)
+
+	// Встраиваем WEBUI_CONFIG и config.js inline
+	configPath := filepath.Join(filepath.Dir(monitorPath), "config.js")
+	if configData, configErr := os.ReadFile(configPath); configErr == nil {
+		inline := fmt.Sprintf(
+			`<script>window.WEBUI_CONFIG={apiBase:"",dashboardUrl:"/"};</script>`+"\n"+
+				`<script>%s</script>`,
+			string(configData),
+		)
+		// Заменяем <script src="config.js"></script> на inline-скрипты
+		if strings.Contains(htmlStr, `<script src="config.js"></script>`) {
+			htmlStr = strings.Replace(htmlStr, `<script src="config.js"></script>`, inline, 1)
+		} else {
+			// Fallback: вставляем перед </head>
+			htmlStr = strings.Replace(htmlStr, "</head>", inline+"\n</head>", 1)
+		}
+	} else {
+		// config.js не найден — встраиваем только WEBUI_CONFIG
+		inline := `<script>window.WEBUI_CONFIG={apiBase:"",dashboardUrl:"/"};</script>`
+		if strings.Contains(htmlStr, `<script src="config.js"></script>`) {
+			htmlStr = strings.Replace(htmlStr, `<script src="config.js"></script>`, inline, 1)
+		} else {
+			htmlStr = strings.Replace(htmlStr, "</head>", inline+"\n</head>", 1)
+		}
+	}
+
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.Header().Set("Cache-Control", "no-cache")
 	w.WriteHeader(http.StatusOK)
-	w.Write(data)
+	w.Write([]byte(htmlStr))
 }
 
 // writeJSON - запись JSON ответа

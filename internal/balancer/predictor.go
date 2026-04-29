@@ -78,7 +78,9 @@ func (pr *Predictor) calculateFreeSlots(state *BackendState, metrics *types.Back
 		active := metrics.Ollama.ActiveRequests
 		if active == 0 {
 			// Fallback: используем proxy-счётчик активных запросов
+			state.mu.Lock()
 			active = state.ActiveReqs
+			state.mu.Unlock()
 		}
 		free := metrics.Ollama.MaxConcurrentRequests - active
 		if free < 0 {

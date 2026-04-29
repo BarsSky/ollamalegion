@@ -77,7 +77,9 @@ func TestRateLimiterGetStatus(t *testing.T) {
 	limiter.Allow()
 
 	tokens, _ = limiter.GetStatus()
-	assert.Equal(t, 7.0, tokens)
+	// Используем InDelta, т.к. между Allow() и GetStatus() может пройти время,
+	// и bucket может слегка наполниться (flaky test при race detector)
+	assert.InDelta(t, 7.0, tokens, 0.01)
 }
 
 // TestRateLimiterGetRetryAfter - проверка времени до следующего токена

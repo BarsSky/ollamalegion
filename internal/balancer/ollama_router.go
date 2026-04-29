@@ -9,6 +9,8 @@ import (
 	"sort"
 	"sync"
 	"time"
+
+	"ollama-loadbalancer/pkg/types"
 )
 
 // OllamaTag — модель из ответа /api/tags
@@ -441,18 +443,22 @@ func (or *OllamaRouter) fetchVersion(host string, port int) (string, error) {
 
 func (or *OllamaRouter) findBackendWithModel(model string) string {
 	backends := or.proxy.GetAllBackends()
+	state := or.proxy.GetClusterState()
+
+	// Строим мапу ID → RunningModels для O(1) поиска
+	runningModelsMap := make(map[string][]types.RunningModel, len(state.Backends))
+	for _, metrics := range state.Backends {
+		runningModelsMap[metrics.ID] = metrics.Ollama.RunningModels
+	}
+
 	for _, b := range backends {
 		if b.Status != "healthy" {
 			continue
 		}
-		// Проверяем через метрики запущенные модели
-		state := or.proxy.GetClusterState()
-		for _, metrics := range state.Backends {
-			if metrics.ID == b.ID {
-				for _, m := range metrics.Ollama.RunningModels {
-					if m.Name == model {
-						return b.ID
-					}
+		if models, ok := runningModelsMap[b.ID]; ok {
+			for _, m := range models {
+				if m.Name == model {
+					return b.ID
 				}
 			}
 		}
@@ -463,18 +469,23 @@ func (or *OllamaRouter) findBackendWithModel(model string) string {
 func (or *OllamaRouter) findBackendsWithModel(model string) []string {
 	var result []string
 	backends := or.proxy.GetAllBackends()
+	state := or.proxy.GetClusterState()
+
+	// Строим мапу ID → RunningModels для O(1) поиска
+	runningModelsMap := make(map[string][]types.RunningModel, len(state.Backends))
+	for _, metrics := range state.Backends {
+		runningModelsMap[metrics.ID] = metrics.Ollama.RunningModels
+	}
+
 	for _, b := range backends {
 		if b.Status != "healthy" {
 			continue
 		}
-		state := or.proxy.GetClusterState()
-		for _, metrics := range state.Backends {
-			if metrics.ID == b.ID {
-				for _, m := range metrics.Ollama.RunningModels {
-					if m.Name == model {
-						result = append(result, b.ID)
-						break
-					}
+		if models, ok := runningModelsMap[b.ID]; ok {
+			for _, m := range models {
+				if m.Name == model {
+					result = append(result, b.ID)
+					break
 				}
 			}
 		}

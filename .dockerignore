@@ -1,0 +1,77 @@
+# Git и CI/CD
+.git/
+.gitignore
+.github/
+.gitattributes
+
+# Документация и планы
+docs/
+plans/
+*.md
+CHANGELOG.md
+LICENSE.md
+DEPLOYMENT.md
+
+# Конфигурация IDE и редакторов
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Go артефакты
+*.exe
+*.dll
+*.so
+*.dylib
+*.test
+*.out
+coverage.out
+/vendor/
+
+# Бинарники
+bin/
+dist/
+build/
+
+# Локальные конфигурации и данные
+*.env
+*.env.local
+*.env.*.local
+deployments/.env
+data/
+state.json
+
+# Тесты (исключаем из production образа, но оставляем для test stage)
+# tests/  — оставляем для stage test
+
+# Скрипты сборки и деплоя (не нужны в runtime)
+scripts/
+*.bat
+*.ps1
+
+# Node.js (если появится в webui)
+node_modules/
+package.json
+package-lock.json
+yarn.lock
+
+# Docker файлы (не нужны внутри образа)
+deployments/
+Dockerfile*
+docker-compose*.yml
+
+# Исключаем docker файлы, кроме webui
+docker/agent/
+docker/balancer/
+docker/cocoindex/
+
+# Логи
+*.log
+logs/
+
+# Временные файлы
+tmp/
+temp/
+.DS_Store
+Thumbs.db

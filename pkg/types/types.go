@@ -64,6 +64,15 @@ type BackendMetrics struct {
 
 	// Прогноз критического состояния
 	Prediction Prediction `json:"prediction"`
+
+	// --- Monitor-friendly computed fields (filled by GetClusterState) ---
+	Score                 float64  `json:"score"`                 // Calculated routing score
+	MaxConcurrentRequests int      `json:"maxConcurrentRequests"` // From backend config
+	Models                []string `json:"models"`                // Names of running models
+	VRAMUsagePercent      float64  `json:"vramUsagePercent"`        // GPU memory usage %
+	VRAMTotalGB           float64  `json:"vramTotalGB"`           // Total VRAM in GB
+	VRAMUsedGB            float64  `json:"vramUsedGB"`             // Used VRAM in GB
+	MemoryUsagePercent    float64  `json:"memoryUsagePercent"`      // RAM usage %
 }
 
 // PlatformMode - режим работы платформы
@@ -301,6 +310,7 @@ type BalancingSettings struct {
 	QueueTimeout        int                `json:"queueTimeout"`        // секунды
 	QueueMaxSize        int                `json:"queueMaxSize"`        // макс. размер очереди
 	QueueWorkers        int                `json:"queueWorkers"`        // количество workers очереди
+	SessionTTL          int                `json:"sessionTTL"`          // секунды (0 = дефолт 900)
 }
 
 // LoggingSettings - настройки логирования
@@ -322,6 +332,7 @@ type AgentConfig struct {
 	PublicHost            string       `json:"publicHost"`            // публичный IP/hostname, доступный балансеру
 	MaxModels             int          `json:"maxModels"`             // максимум моделей (-1 = авто/не задано)
 	MaxConcurrentRequests int          `json:"maxConcurrentRequests"` // максимум одновременных запросов (-1 = авто/не задано)
+	Weight                int          `json:"weight"`                // приоритетный вес бэкенда (1-100, по умолчанию 1)
 }
 
 // QueuedRequest - запрос в очереди
@@ -340,6 +351,7 @@ type Session struct {
 	Model         string    `json:"model"`
 	ClientName    string    `json:"clientName"`    // Имя клиента (Cline, OpenWebUI, etc.)
 	ClientIP      string    `json:"clientIp"`      // IP клиента (без порта)
+	UserAgent     string    `json:"userAgent"`     // Полный User-Agent для отладки
 	CreatedAt     time.Time `json:"createdAt"`
 	LastRequestAt time.Time `json:"lastRequestAt"`
 	RequestCount  int       `json:"requestCount"`

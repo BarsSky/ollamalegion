@@ -21,7 +21,7 @@
                 <a href="#dashboard" class="nav-item active" data-page="dashboard">
                     <img src="img/cesar.svg" alt="" class="nav-logo-img"> Dashboard
                 </a>
-                <a href="monitor.html" class="nav-item">
+                <a href="#monitor" class="nav-item" data-page="monitor">
                     <img src="img/lance.svg" alt="" class="nav-logo-img"> Монитор
                 </a>
                 <a href="#backends" class="nav-item" data-page="backends">
@@ -281,11 +281,13 @@
                                     <th>Модель</th>
                                     <th>Запросов</th>
                                     <th>Последняя активность</th>
+                                    <th>IP</th>
+                                    <th>Клиент</th>
                                     <th>Статус</th>
                                 </tr>
                             </thead>
                             <tbody id="sessionsTableBody">
-                                <tr><td colspan="6" class="loading-cell">Ожидание данных...</td></tr>
+                                <tr><td colspan="8" class="loading-cell">Ожидание данных...</td></tr>
                             </tbody>
                         </table>
                     </div>
@@ -393,6 +395,11 @@
                         </table>
                     </div>
                 </div>
+            </div>
+
+            <!-- Monitor Page -->
+            <div class="page" id="monitor-page">
+                <iframe id="monitorFrame" src="monitor.html" class="monitor-iframe"></iframe>
             </div>
 
             <!-- Logs Page -->

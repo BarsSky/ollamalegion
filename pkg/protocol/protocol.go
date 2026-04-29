@@ -32,14 +32,15 @@ type Message struct {
 
 // RegisterRequest - запрос регистрации агента
 type RegisterRequest struct {
-	AgentID       string `json:"agentId"`
-	Hostname      string `json:"hostname"`
-	OS            string `json:"os"`
-	Arch          string `json:"arch"`
-	GPUCount      int    `json:"gpuCount"`
+	AgentID       string   `json:"agentId"`
+	Hostname      string   `json:"hostname"`
+	OS            string   `json:"os"`
+	Arch          string   `json:"arch"`
+	GPUCount      int      `json:"gpuCount"`
 	GPUModels     []string `json:"gpuModels"`
-	OllamaVersion string `json:"ollamaVersion"`
-	OllamaPort    int    `json:"ollamaPort"`
+	OllamaVersion string   `json:"ollamaVersion"`
+	OllamaPort    int      `json:"ollamaPort"`
+	Weight        int      `json:"weight"` // Приоритетный вес бэкенда (1-100, по умолчанию 1)
 }
 
 // RegisterResponse - ответ на регистрацию
@@ -65,6 +66,7 @@ type HeartbeatMessage struct {
 	Uptime    int64     `json:"uptime"` // секунды аптайма
 	Sequence  int64     `json:"sequence"`
 	Status    string    `json:"status"` // healthy, degraded, unhealthy
+	Weight    int       `json:"weight"` // Приоритетный вес бэкенда (1-100, по умолчанию 1)
 }
 
 // ConfigRequest - запрос конфигурации от агента
@@ -153,7 +155,10 @@ func (m *Message) UnmarshalData(v interface{}) error {
 }
 
 // NewRegisterRequest - создание запроса регистрации
-func NewRegisterRequest(agentID, hostname, os, arch string, gpuCount int, gpuModels []string, ollamaVersion string, ollamaPort int) *RegisterRequest {
+func NewRegisterRequest(agentID, hostname, os, arch string, gpuCount int, gpuModels []string, ollamaVersion string, ollamaPort int, weight int) *RegisterRequest {
+	if weight <= 0 {
+		weight = 1
+	}
 	return &RegisterRequest{
 		AgentID:       agentID,
 		Hostname:      hostname,
@@ -163,6 +168,7 @@ func NewRegisterRequest(agentID, hostname, os, arch string, gpuCount int, gpuMod
 		GPUModels:     gpuModels,
 		OllamaVersion: ollamaVersion,
 		OllamaPort:    ollamaPort,
+		Weight:        weight,
 	}
 }
 
@@ -177,12 +183,16 @@ func NewMetricsMessage(agentID string, sequence int64, metrics *types.BackendMet
 }
 
 // NewHeartbeatMessage - создание heartbeat сообщения
-func NewHeartbeatMessage(agentID string, sequence int64, uptime int64, status string) *HeartbeatMessage {
+func NewHeartbeatMessage(agentID string, sequence int64, uptime int64, status string, weight int) *HeartbeatMessage {
+	if weight <= 0 {
+		weight = 1
+	}
 	return &HeartbeatMessage{
 		AgentID:   agentID,
 		Timestamp: time.Now().UTC(),
 		Uptime:    uptime,
 		Sequence:  sequence,
 		Status:    status,
+		Weight:    weight,
 	}
 }

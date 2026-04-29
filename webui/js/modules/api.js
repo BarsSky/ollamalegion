@@ -106,6 +106,14 @@ const Api = (function () {
             return response.ok;
         },
 
+        async updateConfig(data) {
+            const response = await request(`${API_BASE}/api/v1/cluster/config`, {
+                method: 'PUT',
+                body: JSON.stringify(data)
+            });
+            return response.ok;
+        },
+
         // Generic error handler for UI
         handleError(err, fallbackMessage = 'Ошибка API') {
             console.error(err);

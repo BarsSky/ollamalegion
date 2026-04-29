@@ -47,6 +47,7 @@ type Proxy struct {
 type contextKey string
 
 const modelContextKey contextKey = "model"
+const streamContextKey contextKey = "stream"
 
 // BackendState - состояние бэкенда
 type BackendState struct {
@@ -139,10 +140,16 @@ func NewProxy(config *types.LoadBalancerConfig) *Proxy {
 		DisableCompression:  true, // Важно для SSE
 	}
 
+	// Определяем TTL сессий из конфигурации (дефолт 15 минут)
+	sessionTTL := time.Duration(config.Balancing.SessionTTL) * time.Second
+	if sessionTTL <= 0 {
+		sessionTTL = 15 * time.Minute
+	}
+
 	p := &Proxy{
 		config:     config,
 		backends:   make(map[string]*BackendState),
-		sessionMgr: NewSessionManager(),
+		sessionMgr: NewSessionManagerWithTTL(sessionTTL),
 		metricsMgr: NewMetricsManager(),
 		predictor:  NewPredictor(),
 		statePath:  config.LoadBalancer.StatePath,
@@ -190,14 +197,19 @@ func (p *Proxy) SetQueueManagerProxy() {
 	p.queueMgr.proxy = p
 }
 
-// NewSessionManager - создание менеджера сессий
+// NewSessionManager - создание менеджера сессий с дефолтным TTL
 func NewSessionManager() *SessionManager {
+	return NewSessionManagerWithTTL(15 * time.Minute)
+}
+
+// NewSessionManagerWithTTL - создание менеджера сессий с заданным TTL
+func NewSessionManagerWithTTL(ttl time.Duration) *SessionManager {
 	sm := &SessionManager{
 		sessions: make(map[string]*types.Session),
-		ttl:      5 * time.Minute, // Уменьшено с 30 минут: быстрая ротация бэкендов
+		ttl:      ttl,
 	}
 
-	// Запуск очистителя просроченных сессий
+	// Запуск очистителя просроченных сессий с интервалом ttl/3
 	go sm.cleanupLoop()
 
 	return sm
@@ -347,19 +359,24 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// ИСКЛЮЧЕНИЕ: если это генерация/чат с активной сессией — идём напрямую на бэкенд
 	path := r.URL.Path
 	isChatOrGenerate := (path == "/api/generate" || path == "/api/chat")
-	sessionID := p.getSessionID(r)
+
+	// Сначала определяем clientName, чтобы формировать составной sessionID
+	clientName := p.getClientName(r)
+
+	// === Чат / Генерация — требуют session stickiness ===
+	model, isStream := p.extractModel(r)
+	// Сохраняем модель и stream-флаг в контексте запроса для повторного использования
+	// (тело запроса уже прочитано и восстановлено в extractModel)
+	ctx := context.WithValue(r.Context(), modelContextKey, model)
+	ctx = context.WithValue(ctx, streamContextKey, isStream)
+	r = r.WithContext(ctx)
+
+	// Формируем составной sessionID с учётом clientName (различает клиентов за одним IP)
+	sessionID := p.getSessionID(r, clientName)
 	if !isChatOrGenerate && p.ollamaRouter != nil && p.ollamaRouter.Route(w, r) {
 		return
 	}
 
-	// === Чат / Генерация — требуют session stickiness ===
-	model := p.extractModel(r)
-	// Сохраняем модель в контексте запроса для использования в proxyRequest
-	// (тело запроса может быть прочитано при проксировании)
-	r = r.WithContext(context.WithValue(r.Context(), modelContextKey, model))
-
-	// Проверка сессии (уже получена выше для оптимизации)
-	clientName := p.getClientName(r)
 	var targetBackend string
 
 	if sessionID != "" && p.config.Balancing.SessionStickiness {
@@ -383,6 +400,7 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			} else {
 		// --- "Sticky но не жадный": если бэкенд загружен >50% и есть альтернатива ---
 		shouldRebalance := false
+		forceRebalance := false
 		backendState.mu.Lock()
 		active := backendState.ActiveReqs
 		maxReqs := backendState.Backend.MaxConcurrentReqs
@@ -390,7 +408,10 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 		if maxReqs > 0 && active > 0 {
 			loadRatio := float64(active) / float64(maxReqs)
-			if loadRatio > 0.50 {
+			if loadRatio >= 1.0 {
+				forceRebalance = true
+			}
+			if loadRatio > 0.50 || forceRebalance {
 				// Сначала ищем бэкенд с той же моделью, менее загруженный
 				altBackend := p.findLessLoadedBackendWithModel(model, targetBackend)
 				if altBackend != "" {
@@ -399,6 +420,7 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 						"from", targetBackend,
 						"to", altBackend,
 						"load_ratio", loadRatio,
+						"force", forceRebalance,
 					)
 					targetBackend = altBackend
 					shouldRebalance = true
@@ -411,9 +433,18 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 							"from", targetBackend,
 							"to", altBackend,
 							"load_ratio", loadRatio,
+							"force", forceRebalance,
 						)
 						targetBackend = altBackend
 						shouldRebalance = true
+					} else if forceRebalance {
+						// Нет альтернатив — сбрасываем targetBackend для queue
+						logger.Get().Warnw("force rebalance failed, queueing request",
+							"session", sessionID,
+							"backend", targetBackend,
+							"load_ratio", loadRatio,
+						)
+						targetBackend = ""
 					}
 				}
 			}
@@ -421,7 +452,7 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 		if !shouldRebalance {
 			// Обновляем активность сессии
-			p.sessionMgr.Set(sessionID, targetBackend, model, clientName)
+			p.sessionMgr.Set(sessionID, targetBackend, model, clientName, r.UserAgent())
 		}
 			}
 		}
@@ -432,8 +463,10 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		targetBackend = p.selectBackend(model)
 
 		// Создаем сессию с новым бэкендом
-		if sessionID != "" && targetBackend != "" && p.config.Balancing.SessionStickiness {
-			p.sessionMgr.Set(sessionID, targetBackend, model, clientName)
+		if targetBackend != "" && p.config.Balancing.SessionStickiness {
+			// Пересоздаём sessionID с учётом модели для уникальности
+			sessionID = p.getSessionIDWithModel(r, clientName, model)
+			p.sessionMgr.Set(sessionID, targetBackend, model, clientName, r.UserAgent())
 		}
 	}
 
@@ -460,7 +493,7 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			}
 			// Обновляем сессию для retry
 			if sessionID != "" && p.config.Balancing.SessionStickiness {
-				p.sessionMgr.Set(sessionID, targetBackend, model, clientName)
+				p.sessionMgr.Set(sessionID, targetBackend, model, clientName, r.UserAgent())
 			}
 		}
 
@@ -485,13 +518,14 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	http.Error(w, "Service unavailable - all backends failed", http.StatusServiceUnavailable)
 }
 
-// extractModel - извлечение модели из запроса (с восстановлением тела)
-func (p *Proxy) extractModel(r *http.Request) string {
+// extractModel - извлечение модели и stream-флага из запроса (с восстановлением тела)
+// Возвращает название модели и флаг stream (true по умолчанию для Ollama API)
+func (p *Proxy) extractModel(r *http.Request) (string, bool) {
 	// Для POST запросов читаем тело
 	if r.Method == http.MethodPost && r.Body != nil {
 		body, err := io.ReadAll(r.Body)
 		if err != nil {
-			return ""
+			return "", true
 		}
 		// Восстанавливаем тело для дальнейшего использования (проксирования)
 		r.Body = io.NopCloser(bytes.NewBuffer(body))
@@ -499,20 +533,30 @@ func (p *Proxy) extractModel(r *http.Request) string {
 		// Парсим JSON
 		var req map[string]interface{}
 		if err := json.Unmarshal(body, &req); err != nil {
-			return ""
+			return "", true
 		}
 
-		if model, ok := req["model"].(string); ok {
-			return model
+		var model string
+		if m, ok := req["model"].(string); ok {
+			model = m
 		}
+
+		// Извлекаем stream-флаг (дефолт true для Ollama API)
+		isStream := true
+		if stream, ok := req["stream"].(bool); ok {
+			isStream = stream
+		}
+
+		return model, isStream
 	}
 
-	return ""
+	return "", false
 }
 
 // getSessionID - получение ID сессии из запроса (стабильный, без эфемерного порта)
-func (p *Proxy) getSessionID(r *http.Request) string {
-	// Приоритет: X-Client-ID > X-Session-ID > cookie > IP (без порта)
+// Если несколько клиентов за одним IP, формирует составной fingerprint: IP + "::" + clientName + "::" + model
+func (p *Proxy) getSessionID(r *http.Request, clientName string) string {
+	// Приоритет: X-Client-ID > X-Session-ID > cookie (явные ID всегда приоритетнее)
 	if clientID := r.Header.Get("X-Client-ID"); clientID != "" {
 		return clientID
 	}
@@ -523,12 +567,36 @@ func (p *Proxy) getSessionID(r *http.Request) string {
 		return cookie.Value
 	}
 
-	// Извлекаем только IP, без порта — иначе NAT-клиенты создают сотни сессий
+	// Извлекаем только IP, без порта
 	ip, _, err := net.SplitHostPort(r.RemoteAddr)
 	if err != nil {
 		ip = r.RemoteAddr
 	}
-	return ip
+
+	// Составной fingerprint: различает клиентов за одним IP по clientName и модели
+	// Это позволяет монитору показывать разные сессии для Cline и OpenWebUI с одного IP
+	return ip + "::" + clientName
+}
+
+// getSessionIDWithModel - версия с учётом модели (используется при создании сессии)
+func (p *Proxy) getSessionIDWithModel(r *http.Request, clientName, model string) string {
+	// Явные ID — всегда приоритетнее
+	if clientID := r.Header.Get("X-Client-ID"); clientID != "" {
+		return clientID
+	}
+	if sessionID := r.Header.Get("X-Session-ID"); sessionID != "" {
+		return sessionID
+	}
+	if cookie, err := r.Cookie("session_id"); err == nil {
+		return cookie.Value
+	}
+
+	ip, _, err := net.SplitHostPort(r.RemoteAddr)
+	if err != nil {
+		ip = r.RemoteAddr
+	}
+
+	return ip + "::" + clientName + "::" + model
 }
 
 // getClientName - извлечение имени клиента из запроса (Cline, OpenWebUI, etc.)
@@ -1331,14 +1399,15 @@ func (p *Proxy) proxyRequest(w http.ResponseWriter, r *http.Request, backendID s
 	}
 
 	// Добавление заголовка сессии
-	sessionID := p.getSessionID(r)
+	clientNameForSession := p.getClientName(r)
+	sessionID := p.getSessionID(r, clientNameForSession)
 	if sessionID != "" {
 		// Берём модель из контекста (тело запроса уже могло быть прочитано)
 		modelFromCtx := ""
 		if m, ok := r.Context().Value(modelContextKey).(string); ok {
 			modelFromCtx = m
 		}
-		p.sessionMgr.Set(sessionID, backendID, modelFromCtx, p.getClientName(r))
+		p.sessionMgr.Set(sessionID, backendID, modelFromCtx, clientNameForSession, r.UserAgent())
 		w.Header().Set("X-Session-ID", sessionID)
 	}
 
@@ -1364,7 +1433,12 @@ func (p *Proxy) isStreamingRequest(r *http.Request) bool {
 		return false
 	}
 
-	// Читаем тело для проверки параметра stream
+	// Проверяем контекст — значение уже извлечено в extractModel() в ServeHTTP()
+	if isStream, ok := r.Context().Value(streamContextKey).(bool); ok {
+		return isStream
+	}
+
+	// Fallback: читаем тело для прямых вызовов (например, из очереди worker'ов)
 	if r.Body == nil {
 		return false
 	}
@@ -1533,12 +1607,16 @@ func (p *Proxy) UpdateMetrics(backendID string, metrics *types.BackendMetrics) {
 // UpdateBackendStatus - обновление статуса бэкенда
 func (p *Proxy) UpdateBackendStatus(backendID string, status types.BackendStatus) {
 	p.mu.Lock()
-	defer p.mu.Unlock()
 
 	if state, ok := p.backends[backendID]; ok {
+		state.mu.Lock()
 		oldStatus := state.Backend.Status
 		if oldStatus != status {
 			state.Backend.Status = status
+		}
+		state.mu.Unlock()
+
+		if oldStatus != status {
 			p.PublishEvent(types.Event{
 				Type:      types.EventStatusChange,
 				Timestamp: time.Now().UTC(),
@@ -1550,17 +1628,20 @@ func (p *Proxy) UpdateBackendStatus(backendID string, status types.BackendStatus
 			})
 		}
 	}
+	p.mu.Unlock()
 }
 
 // UpdateBackendAgentStatus - обновление флага активного агента
 func (p *Proxy) UpdateBackendAgentStatus(backendID string, hasAgent bool) {
 	p.mu.Lock()
-	defer p.mu.Unlock()
 
 	if state, ok := p.backends[backendID]; ok {
+		state.mu.Lock()
 		state.Backend.HasAgent = hasAgent
 		state.Backend.LastAgentContact = time.Now()
+		state.mu.Unlock()
 	}
+	p.mu.Unlock()
 }
 
 // StartAgentTimeoutChecker - запуск фоновой проверки таймаута агентов
@@ -1612,7 +1693,14 @@ func (p *Proxy) GetClusterState() *types.ClusterState {
 	state.TotalRequests = atomic.LoadInt64(&p.totalRequests)
 
 	for id, backendState := range backendsCopy {
-		if backendState.Backend.Status == types.StatusHealthy {
+		// Блокируем для безопасного чтения Status и HasAgent
+		backendState.mu.Lock()
+		status := backendState.Backend.Status
+		hasAgent := backendState.Backend.HasAgent
+		prediction := backendState.Prediction
+		backendState.mu.Unlock()
+
+		if status == types.StatusHealthy {
 			state.HealthyBackends++
 		}
 
@@ -1620,8 +1708,8 @@ func (p *Proxy) GetClusterState() *types.ClusterState {
 		metrics := types.BackendMetrics{
 			ID:        id,
 			Timestamp: time.Now().UTC(),
-			Status:    backendState.Backend.Status,
-			HasAgent:  backendState.Backend.HasAgent,
+			Status:    status,
+			HasAgent:  hasAgent,
 			GPU:       types.GPUMetrics{},
 			System:    types.SystemMetrics{},
 			Ollama:    types.OllamaMetrics{RunningModels: []types.RunningModel{}},
@@ -1631,11 +1719,11 @@ func (p *Proxy) GetClusterState() *types.ClusterState {
 		if agentMetrics, ok := p.metricsMgr.metrics[id]; ok {
 			metrics = *agentMetrics
 			// Сохраняем статус из конфигурации бэкенда
-			metrics.Status = backendState.Backend.Status
+			metrics.Status = status
 			// Сохраняем флаг агента из конфигурации бэкенда
-			metrics.HasAgent = backendState.Backend.HasAgent
+			metrics.HasAgent = hasAgent
 			// Добавляем прогноз из состояния бэкенда
-			metrics.Prediction = backendState.Prediction
+			metrics.Prediction = prediction
 			state.ActiveRequests += agentMetrics.Ollama.ActiveRequests
 			// Используем proxy-calculated RPS (более точный, чем агентский)
 			backendState.mu.Lock()
@@ -1664,7 +1752,12 @@ func (p *Proxy) GetClusterState() *types.ClusterState {
 
 // cleanupLoop - цикл очистки сессий
 func (sm *SessionManager) cleanupLoop() {
-	ticker := time.NewTicker(5 * time.Minute)
+	// Интервал очистки = 1/3 от TTL, минимум 1 минута
+	interval := sm.ttl / 3
+	if interval < time.Minute {
+		interval = time.Minute
+	}
+	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 
 	for range ticker.C {
@@ -1725,8 +1818,8 @@ func (sm *SessionManager) Clear() {
 	sm.sessions = make(map[string]*types.Session)
 }
 
-// Set - установка сессии (с clientName и clientIP)
-func (sm *SessionManager) Set(id, backendID, model, clientName string) {
+// Set - установка сессии (с clientName, clientIP и userAgent)
+func (sm *SessionManager) Set(id, backendID, model, clientName, userAgent string) {
 	sm.mu.Lock()
 	defer sm.mu.Unlock()
 
@@ -1735,12 +1828,15 @@ func (sm *SessionManager) Set(id, backendID, model, clientName string) {
 		session.BackendID = backendID
 		session.Model = model
 		session.ClientName = clientName
+		session.UserAgent = userAgent
 		session.LastRequestAt = now
 		session.RequestCount++
 	} else {
-		// Извлекаем IP без порта для clientIP
+		// Извлекаем IP из составного sessionID (формат: IP::clientName::model)
 		clientIP := id
-		if ip, _, err := net.SplitHostPort(id); err == nil {
+		if idx := strings.Index(id, "::"); idx > 0 {
+			clientIP = id[:idx]
+		} else if ip, _, err := net.SplitHostPort(id); err == nil {
 			clientIP = ip
 		}
 		sm.sessions[id] = &types.Session{
@@ -1749,6 +1845,7 @@ func (sm *SessionManager) Set(id, backendID, model, clientName string) {
 			Model:         model,
 			ClientName:    clientName,
 			ClientIP:      clientIP,
+			UserAgent:     userAgent,
 			CreatedAt:     now,
 			LastRequestAt: now,
 			RequestCount:  1,

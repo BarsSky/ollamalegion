@@ -19,6 +19,7 @@
       --blue: #3b82f6;
       --purple: #a855f7;
       --cyan: #38bdf8;
+      --orange: #f97316;
       --font: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
       --font-mono: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
     }
@@ -87,6 +88,8 @@
     .badge-yellow { background: rgba(245,158,11,0.12); color: var(--yellow); border-color: rgba(245,158,11,0.25); }
     .badge-red { background: rgba(239,68,68,0.12); color: var(--red); border-color: rgba(239,68,68,0.25); }
     .badge-blue { background: rgba(59,130,246,0.12); color: var(--blue); border-color: rgba(59,130,246,0.25); }
+    .badge-purple { background: rgba(168,85,247,0.12); color: var(--purple); border-color: rgba(168,85,247,0.2); }
+    .badge-orange { background: rgba(249,115,22,0.12); color: var(--orange); border-color: rgba(249,115,22,0.25); }
 
     select, button {
       background: var(--bg-panel-hover);
@@ -260,10 +263,71 @@
     .alert-red { background: rgba(239,68,68,0.08); border: 1px solid rgba(239,68,68,0.25); color: var(--red); }
     .alert-yellow { background: rgba(245,158,11,0.08); border: 1px solid rgba(245,158,11,0.25); color: var(--yellow); }
 
+    /* Model capacity section */
+    .capacity-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+      gap: 8px;
+      padding: 10px 14px;
+    }
+    .capacity-card {
+      background: rgba(255,255,255,0.03);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 10px 12px;
+    }
+    .capacity-card h4 {
+      font-size: 11px;
+      color: var(--text-muted);
+      margin-bottom: 6px;
+      text-transform: uppercase;
+      letter-spacing: 0.4px;
+    }
+    .capacity-bar {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      margin-bottom: 4px;
+    }
+    .capacity-bar .bar-track-wide {
+      flex: 1;
+      height: 8px;
+      background: rgba(255,255,255,0.06);
+      border-radius: 4px;
+      overflow: hidden;
+    }
+    .capacity-bar .bar-fill-wide {
+      height: 100%;
+      border-radius: 4px;
+      transition: width 0.3s ease;
+    }
+    .capacity-val {
+      font-size: 11px;
+      font-family: var(--font-mono);
+      color: var(--text-muted);
+      min-width: 60px;
+      text-align: right;
+    }
+    .capacity-models {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 4px;
+      margin-top: 6px;
+    }
+
     /* Scrollbar */
     ::-webkit-scrollbar { width: 6px; height: 6px; }
     ::-webkit-scrollbar-track { background: transparent; }
     ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
+
+    /* Loading progress on backend node */
+    @keyframes loadPulse {
+      0%, 100% { opacity: 0.6; }
+      50% { opacity: 1; }
+    }
+    .loading-indicator {
+      animation: loadPulse 1.5s infinite;
+    }
   </style>
 </head>
 <body>
@@ -273,6 +337,7 @@
     OllamaLegion — Monitor
   </h1>
   <div class="header-right">
+    <button id="dashboardBtn" onclick="goToDashboard()" title="Перейти к основному дашборду">← Dashboard</button>
     <select id="intervalSelect">
       <option value="250">250 ms</option>
       <option value="500" selected>500 ms</option>
@@ -280,6 +345,7 @@
       <option value="2000">2 s</option>
     </select>
     <button id="pauseBtn" onclick="togglePause()">⏸ Пауза</button>
+    <button id="demoBtn" onclick="enterDemoMode()" style="display:none">▶ Демо</button>
     <span id="connBadge" class="badge badge-yellow">Подключение…</span>
   </div>
 </header>
@@ -293,14 +359,18 @@
       <div class="spinner"></div>
       <h2>Подключение к API…</h2>
       <p>Ожидание ответа от балансировщика. Если вы запускаете под Docker, убедитесь, что сервис <code>loadbalancer</code> поднят.</p>
+      <p style="font-size:11px;color:var(--text-muted);margin-top:4px">API Base: <code id="apiBaseDisplay">—</code></p>
     </div>
 
     <!-- Error overlay -->
     <div id="errorOverlay" class="overlay hidden">
       <h2>⚠ Нет подключения к балансировщику</h2>
       <p id="errorText">Не удалось получить данные. Проверьте, что API доступен и CORS настроен корректно.</p>
-      <button onclick="retryNow()">🔄 Повторить</button>
-      <button onclick="enterDemoMode()" style="margin-left:8px">▶ Демо-режим</button>
+      <div id="errorDetails" style="font-size:11px;color:var(--text-muted);max-width:480px;text-align:left;background:rgba(255,255,255,0.03);padding:8px 12px;border-radius:6px;margin-top:4px;line-height:1.6"></div>
+      <div style="margin-top:8px">
+        <button onclick="retryNow()">🔄 Повторить</button>
+        <button onclick="enterDemoMode()" style="margin-left:8px">▶ Демо-режим</button>
+      </div>
     </div>
 
     <!-- Stats bar -->
@@ -312,6 +382,8 @@
       <div class="stat-item"><div id="statSessions" class="stat-val">—</div><div class="stat-label">Sessions</div></div>
       <div class="stat-item"><div id="statRate" class="stat-val">—</div><div class="stat-label">Req/s</div></div>
       <div class="stat-item"><div id="statRPSCluster" class="stat-val">—</div><div class="stat-label">Cluster RPS</div></div>
+      <div class="stat-item"><div id="statVRAM" class="stat-val">—</div><div class="stat-label">VRAM</div></div>
+      <div class="stat-item"><div id="statModelsLoaded" class="stat-val">—</div><div class="stat-label">Models</div></div>
     </div>
   </div>
 
@@ -320,6 +392,39 @@
 
   <!-- Tables -->
   <div class="tables-area">
+    <!-- Panel: Cluster Resources -->
+    <div class="panel open" id="panelCluster">
+      <div class="panel-header" onclick="togglePanel('panelCluster')">
+        <span>📊 Ресурсы кластера</span>
+        <span class="chevron">▼</span>
+      </div>
+      <div class="panel-body">
+        <div class="capacity-grid" id="capacityGrid">
+          <!-- Populated by JS -->
+        </div>
+      </div>
+    </div>
+
+    <!-- Panel: Models in Memory -->
+    <div class="panel" id="panelModels">
+      <div class="panel-header" onclick="togglePanel('panelModels')">
+        <span>🧠 Модели в памяти (<span id="modelsCount">0</span>)</span>
+        <span class="chevron">▼</span>
+      </div>
+      <div class="panel-body">
+        <div style="overflow-x:auto">
+          <table id="modelsTable">
+            <thead>
+              <tr>
+                <th>Модель</th><th>Бэкенды</th><th class="col-right">Сессий</th><th class="col-right">VRAM</th><th class="col-right">Загрузка</th>
+              </tr>
+            </thead>
+            <tbody><tr><td colspan="5" style="color:var(--text-muted);text-align:center;padding:16px">Нет данных</td></tr></tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+
     <div class="panel open" id="panelBackends">
       <div class="panel-header" onclick="togglePanel('panelBackends')">
         <span>🖥️ Backends (<span id="backendCount">0</span>)</span>
@@ -370,7 +475,7 @@
           <table id="sessionsTable">
             <thead>
               <tr>
-                <th>ID</th><th>Backend</th><th>Модель</th><th class="col-right">Запросов</th><th class="col-right">Idle</th><th>IP</th>
+                <th>ID</th><th>Backend</th><th>Модель</th><th class="col-right">Запросов</th><th class="col-right">Idle</th><th>IP</th><th>Клиент</th>
               </tr>
             </thead>
             <tbody><tr><td colspan="6" style="color:var(--text-muted);text-align:center;padding:16px">Нет данных</td></tr></tbody>
@@ -381,9 +486,26 @@
   </div>
 </main>
 
+<script src="config.js"></script>
 <script>
   // ==================== CONFIG ====================
-  const API_BASE = '';
+  // Auto-detect API base from multiple sources
+  function detectApiBase() {
+    // 1. From WEBUI_CONFIG (injected by nginx/Docker entrypoint)
+    if (typeof window !== 'undefined' && window.WEBUI_CONFIG && window.WEBUI_CONFIG.apiBase) {
+      return window.WEBUI_CONFIG.apiBase.replace(/\/$/, '');
+    }
+    // 2. From localStorage (user override)
+    const stored = localStorage.getItem('monitorApiBase');
+    if (stored) return stored.replace(/\/$/, '');
+    // 3. From query param
+    const qp = new URLSearchParams(location.search).get('api_base');
+    if (qp) return qp.replace(/\/$/, '');
+    // 4. Same origin (works when served by nginx proxy)
+    return '';
+  }
+
+  const API_BASE = detectApiBase();
   const DEMO_INTERVAL = 500; // ms
   let refreshInterval = 500;
   let timerId = null;
@@ -394,6 +516,10 @@
   let lastTime = Date.now();
   let lastRequestCount = 0;
   let requestRate = 0;
+  let corsErrorDetected = false;
+
+  // Show detected API base in loading overlay
+  document.getElementById('apiBaseDisplay').textContent = API_BASE || location.origin;
 
   // ==================== API ====================
   function api(path) {
@@ -418,18 +544,55 @@
       const data = { cluster, queueDetails, sessions };
       lastData = data;
       fetchAttempt = 0;
+      corsErrorDetected = false;
       hideOverlays();
       setConnStatus('Live', 'green');
+      document.getElementById('demoBtn').style.display = 'none';
       updateUI(data);
     } catch (e) {
       console.error('[monitor] fetchAll failed:', e);
       fetchAttempt++;
+      // Detect CORS / network errors
+      const isNetworkError = e.message === 'Failed to fetch' || e.name === 'TypeError';
+      const isCorsError = isNetworkError && API_BASE === '';
+      if (isCorsError) corsErrorDetected = true;
+
       if (fetchAttempt >= 3) {
-        showError('Балансировщик не отвечает после ' + fetchAttempt + ' попыток. Проверьте Docker Compose и healthcheck.');
+        let msg = 'Балансировщик не отвечает после ' + fetchAttempt + ' попыток.';
+        if (corsErrorDetected) {
+          msg += ' Возможно, проблема с CORS: файл открыт напрямую (file://), а не через nginx. Используйте сервер или укажите api_base в URL.';
+        } else if (isNetworkError) {
+          msg += ' Проверьте, что балансировщик запущен и доступен по адресу ' + (API_BASE || location.origin) + '.';
+        }
+        showError(msg);
+        renderErrorDetails(e);
+        // Auto-enter demo if no connection after 3 attempts
+        if (!demoMode && fetchAttempt >= 3) {
+          setTimeout(() => {
+            if (fetchAttempt >= 3 && !lastData) {
+              enterDemoMode();
+            }
+          }, 2000);
+        }
       } else {
         setConnStatus('Offline', 'red');
       }
     }
+  }
+
+  function renderErrorDetails(err) {
+    const el = document.getElementById('errorDetails');
+    const details = [];
+    details.push('API Base: ' + (API_BASE || location.origin));
+    details.push('Protocol: ' + location.protocol);
+    details.push('Error: ' + (err.message || err.name || 'Unknown'));
+    if (corsErrorDetected) {
+      details.push('CORS: файл открыт напрямую. Решения:');
+      details.push('  1. Открыть через nginx proxy');
+      details.push('  2. Добавить ?api_base=http://localhost:8081');
+      details.push('  3. Установить localStorage.monitorApiBase');
+    }
+    el.innerHTML = details.map(d => '<div>' + escapeHtml(d) + '</div>').join('');
   }
 
   // ==================== DEMO DATA ====================
@@ -438,9 +601,9 @@
     return {
       cluster: {
         backends: [
-          { id: 'ollama-1', status: 'active', activeRequests: 2, maxConcurrentRequests: 8, gpu: { usagePercent: 45 }, vram: { usagePercent: 62 }, system: { cpuUsagePercent: 30, memoryUsagePercent: 55 }, score: 0.95, models: ['llama3.1', 'gemma2'], lastSeen: now, ollama: { requestsPerSecond: 1.2 } },
-          { id: 'ollama-2', status: 'active', activeRequests: 1, maxConcurrentRequests: 8, gpu: { usagePercent: 12 }, vram: { usagePercent: 28 }, system: { cpuUsagePercent: 18, memoryUsagePercent: 40 }, score: 0.88, models: ['llama3.1'], lastSeen: now, ollama: { requestsPerSecond: 0.5 } },
-          { id: 'ollama-3', status: 'error', activeRequests: 0, maxConcurrentRequests: 8, gpu: { usagePercent: 0 }, vram: { usagePercent: 0 }, system: { cpuUsagePercent: 5, memoryUsagePercent: 20 }, score: 0.0, models: [], lastSeen: now, ollama: { requestsPerSecond: 0 } },
+          { id: 'ollama-1', status: 'active', activeRequests: 2, maxConcurrentRequests: 8, gpu: { usagePercent: 45 }, vram: { usagePercent: 62, totalGB: 24, usedGB: 14.88 }, system: { cpuUsagePercent: 30, memoryUsagePercent: 55 }, score: 0.95, models: ['llama3.1', 'gemma2'], lastSeen: now, ollama: { requestsPerSecond: 1.2 } },
+          { id: 'ollama-2', status: 'active', activeRequests: 1, maxConcurrentRequests: 8, gpu: { usagePercent: 12 }, vram: { usagePercent: 28, totalGB: 24, usedGB: 6.72 }, system: { cpuUsagePercent: 18, memoryUsagePercent: 40 }, score: 0.88, models: ['llama3.1'], lastSeen: now, ollama: { requestsPerSecond: 0.5 } },
+          { id: 'ollama-3', status: 'error', activeRequests: 0, maxConcurrentRequests: 8, gpu: { usagePercent: 0 }, vram: { usagePercent: 0, totalGB: 24, usedGB: 0 }, system: { cpuUsagePercent: 5, memoryUsagePercent: 20 }, score: 0.0, models: [], lastSeen: now, ollama: { requestsPerSecond: 0 } },
         ],
         rps: 1.7,
         queue: { max_size: 100 }
@@ -460,11 +623,13 @@
       },
       sessions: {
         sessions: [
-          { id: 'sess-demo-1', backendId: 'ollama-1', model: 'llama3.1', clientIP: '172.28.0.10', requestCount: 12, lastActivity: new Date(Date.now() - 3000).toISOString() },
-          { id: 'sess-demo-2', backendId: 'ollama-2', model: 'gemma2', clientIP: '172.28.0.11', requestCount: 5, lastActivity: new Date(Date.now() - 8000).toISOString() },
-          { id: 'sess-demo-3', backendId: 'ollama-1', model: 'llama3.1', clientIP: '172.28.0.12', requestCount: 8, lastActivity: new Date(Date.now() - 1200).toISOString() },
-          { id: 'sess-demo-4', backendId: 'ollama-2', model: 'llama3.1', clientIP: '172.28.0.13', requestCount: 3, lastActivity: new Date(Date.now() - 4000).toISOString() },
-          { id: 'sess-demo-5', backendId: null, model: 'llama3.1', clientIP: '172.28.0.14', requestCount: 1, lastActivity: new Date(Date.now() - 500).toISOString() },
+          // Разные клиенты с ОДНОГО IP — демонстрация разделения сессий
+          { id: '192.168.1.100::Cline::llama3.1', backendId: 'ollama-1', model: 'llama3.1', clientIP: '192.168.1.100', clientName: 'Cline', requestCount: 12, lastRequestAt: new Date(Date.now() - 3000).toISOString() },
+          { id: '192.168.1.100::OpenWebUI::gemma2', backendId: 'ollama-2', model: 'gemma2', clientIP: '192.168.1.100', clientName: 'OpenWebUI', requestCount: 5, lastRequestAt: new Date(Date.now() - 8000).toISOString() },
+          { id: '192.168.1.100::python-requests::llama3.1', backendId: 'ollama-1', model: 'llama3.1', clientIP: '192.168.1.100', clientName: 'python-requests/2.31.0', requestCount: 3, lastRequestAt: new Date(Date.now() - 1200).toISOString() },
+          { id: '192.168.1.100::curl::qwen2.5', backendId: 'ollama-2', model: 'qwen2.5', clientIP: '192.168.1.100', clientName: 'curl/8.5.0', requestCount: 1, lastRequestAt: new Date(Date.now() - 500).toISOString() },
+          // Клиент с другого IP
+          { id: '10.0.0.50::Cline::deepseek-r1', backendId: 'ollama-1', model: 'deepseek-r1', clientIP: '10.0.0.50', clientName: 'Cline', requestCount: 8, lastRequestAt: new Date(Date.now() - 4000).toISOString() },
         ]
       }
     };
@@ -488,6 +653,7 @@
     document.getElementById('errorOverlay').classList.remove('hidden');
     document.getElementById('errorText').textContent = msg;
     setConnStatus('Offline', 'red');
+    document.getElementById('demoBtn').style.display = '';
   }
   function retryNow() {
     fetchAttempt = 0;
@@ -500,7 +666,15 @@
     demoMode = true;
     hideOverlays();
     setConnStatus('Demo', 'blue');
+    document.getElementById('demoBtn').style.display = 'none';
     updateUI(demoData());
+  }
+
+  function goToDashboard() {
+    const dashboardUrl = (typeof window !== 'undefined' && window.WEBUI_CONFIG && window.WEBUI_CONFIG.dashboardUrl)
+      ? window.WEBUI_CONFIG.dashboardUrl
+      : '/';
+    window.location.href = dashboardUrl;
   }
 
   function togglePause() {
@@ -520,6 +694,42 @@
 
   // ==================== UPDATE UI ====================
   function updateUI(data) {
+    // === ADAPTER: transform Go API format → JS expected format ===
+    const adaptBackend = (b) => {
+      if (!b) return b;
+      // If already in JS flat format, return as-is
+      if (b.activeRequests !== undefined && b.vram !== undefined) return b;
+      // Convert from Go nested format
+      const ollama = b.ollama || b.Ollama || {};
+      const gpu = b.gpu || b.GPU || {};
+      const sys = b.system || b.System || {};
+      const statusRaw = (b.status || b.Status || '').toString().toLowerCase();
+      const statusMap = { healthy: 'active', active: 'active', ready: 'ready', unhealthy: 'error', offline: 'offline', starting: 'starting' };
+      return {
+        ...b,
+        id: b.id || b.ID,
+        status: statusMap[statusRaw] || statusRaw || 'unknown',
+        score: b.score !== undefined ? b.score : (b.Score !== undefined ? b.Score : 50),
+        activeRequests: b.activeRequests !== undefined ? b.activeRequests : (ollama.activeRequests || ollama.ActiveRequests || 0),
+        maxConcurrentRequests: b.maxConcurrentRequests !== undefined ? b.maxConcurrentRequests : (ollama.maxConcurrentRequests || ollama.MaxConcurrentRequests || 10),
+        models: b.models || (ollama.runningModels || ollama.RunningModels || []).map(m => m.name || m.Name),
+        vram: b.vram || {
+          totalGB: (gpu.memoryTotal || gpu.MemoryTotal || 0) / 1024,
+          usedGB: (gpu.memoryUsed || gpu.MemoryUsed || 0) / 1024
+        },
+        gpu: gpu,
+        system: sys,
+        ollama: ollama
+      };
+    };
+    if (data.cluster?.backends) {
+      data.cluster.backends = data.cluster.backends.map(adaptBackend);
+    }
+    if (data.cluster?.backendMetrics) {
+      data.cluster.backendMetrics = data.cluster.backendMetrics.map(adaptBackend);
+    }
+    // === END ADAPTER ===
+
     const backends = data.cluster?.backends || [];
     const queue = data.queueDetails || {};
     const sess = data.sessions?.sessions || [];
@@ -527,6 +737,9 @@
     const activeReqs = backends.reduce((s, b) => s + (b.activeRequests || 0), 0);
     const pending = queue.pending_count || 0;
     const processing = queue.processing_count || 0;
+    const totalVRAM = backends.reduce((s, b) => s + ((b.vram?.totalGB || 0)), 0);
+    const usedVRAM = backends.reduce((s, b) => s + ((b.vram?.usedGB || 0)), 0);
+    const totalModelsLoaded = backends.reduce((s, b) => s + ((b.models || []).length), 0);
 
     document.getElementById('statBackends').textContent = backends.length;
     document.getElementById('statActive').textContent = activeReqs;
@@ -543,8 +756,12 @@
     lastTime = now;
     document.getElementById('statRate').textContent = requestRate.toFixed(1);
     document.getElementById('statRPSCluster').textContent = (data.cluster?.rps || 0) > 0 ? data.cluster.rps.toFixed(1) : '0';
+    document.getElementById('statVRAM').textContent = totalVRAM > 0 ? usedVRAM.toFixed(1) + '/' + totalVRAM.toFixed(0) + 'G' : '—';
+    document.getElementById('statModelsLoaded').textContent = totalModelsLoaded;
 
     diagnose(data);
+    renderClusterResources(backends);
+    renderModelsInMemory(backends, sess);
     renderBackends(backends);
     renderQueue(queue);
     renderSessions(sess);
@@ -596,11 +813,124 @@
     const currentSize = queue.current_size || 0;
     if (currentSize > maxSize * 0.8) alerts.push({ level: 'red', text: `Очередь заполнена на ${(currentSize/maxSize*100).toFixed(0)}% (${currentSize}/${maxSize}).` });
 
+    // NEW: VRAM capacity alert
+    const totalVRAM = backends.reduce((s, b) => s + ((b.vram?.totalGB || 0)), 0);
+    const usedVRAM = backends.reduce((s, b) => s + ((b.vram?.usedGB || 0)), 0);
+    if (totalVRAM > 0 && usedVRAM / totalVRAM > 0.85) {
+      alerts.push({ level: 'red', text: `VRAM кластера заполнена на ${(usedVRAM/totalVRAM*100).toFixed(0)}% (${usedVRAM.toFixed(1)}/${totalVRAM.toFixed(0)} GB). Возможна выгрузка моделей.` });
+    }
+
     document.getElementById('alertContainer').innerHTML = alerts.map(a => `
       <div class="alert-banner alert-${a.level}">
         <span>${a.level==='red'?'❌':'⚠️'}</span>
         <span>${escapeHtml(a.text)}</span>
       </div>`).join('');
+  }
+
+  // ==================== CLUSTER RESOURCES ====================
+  function renderClusterResources(backends) {
+    const grid = document.getElementById('capacityGrid');
+    if (!backends.length) {
+      grid.innerHTML = '<div style="color:var(--text-muted);text-align:center;padding:8px">Нет данных</div>';
+      return;
+    }
+
+    const metrics = [
+      { label: 'GPU', key: 'gpu', unit: '%', color: 'var(--blue)' },
+      { label: 'VRAM', key: 'vram', unit: '%', color: 'var(--purple)' },
+      { label: 'CPU', key: 'system', subkey: 'cpuUsagePercent', unit: '%', color: 'var(--green)' },
+      { label: 'RAM', key: 'system', subkey: 'memoryUsagePercent', unit: '%', color: 'var(--yellow)' },
+    ];
+
+    grid.innerHTML = metrics.map(m => {
+      const vals = backends.map(b => {
+        if (m.subkey) return (b[m.key] && b[m.key][m.subkey]) || 0;
+        return (b[m.key] && b[m.key].usagePercent) || 0;
+      }).filter(v => v > 0);
+      const avg = vals.length ? (vals.reduce((a,b) => a+b, 0) / vals.length) : 0;
+      const max = vals.length ? Math.max(...vals) : 0;
+      return `
+        <div class="capacity-card">
+          <h4>${escapeHtml(m.label)}</h4>
+          <div class="capacity-bar">
+            <div class="bar-track-wide"><div class="bar-fill-wide" style="width:${avg}%;background:${m.color}"></div></div>
+            <span class="capacity-val">avg ${avg.toFixed(0)}${m.unit}</span>
+          </div>
+          <div class="capacity-bar">
+            <div class="bar-track-wide"><div class="bar-fill-wide" style="width:${max}%;background:${m.color};opacity:0.5"></div></div>
+            <span class="capacity-val">max ${max.toFixed(0)}${m.unit}</span>
+          </div>
+        </div>
+      `;
+    }).join('') + `
+      <div class="capacity-card">
+        <h4>Свободные слоты</h4>
+        ${backends.map(b => {
+          const maxReqs = b.maxConcurrentRequests || 10;
+          const active = b.activeRequests || 0;
+          const free = maxReqs - active;
+          const pct = active / maxReqs * 100;
+          const color = pct >= 80 ? 'var(--red)' : pct >= 50 ? 'var(--yellow)' : 'var(--green)';
+          return `<div class="capacity-bar">
+            <span style="font-size:11px;min-width:80px">${escapeHtml(b.id)}</span>
+            <div class="bar-track-wide"><div class="bar-fill-wide" style="width:${pct}%;background:${color}"></div></div>
+            <span class="capacity-val">${free}/${maxReqs}</span>
+          </div>`;
+        }).join('')}
+      </div>
+      <div class="capacity-card">
+        <h4>VRAM по бэкендам</h4>
+        ${backends.map(b => {
+          const total = b.vram?.totalGB || 0;
+          const used = b.vram?.usedGB || 0;
+          const pct = total > 0 ? (used / total * 100) : 0;
+          const color = pct >= 85 ? 'var(--red)' : pct >= 60 ? 'var(--yellow)' : 'var(--green)';
+          return `<div class="capacity-bar">
+            <span style="font-size:11px;min-width:80px">${escapeHtml(b.id)}</span>
+            <div class="bar-track-wide"><div class="bar-fill-wide" style="width:${pct}%;background:${color}"></div></div>
+            <span class="capacity-val">${used.toFixed(1)}/${total.toFixed(0)}G</span>
+          </div>`;
+        }).join('')}
+      </div>
+    `;
+  }
+
+  // ==================== MODELS IN MEMORY ====================
+  function renderModelsInMemory(backends, sessions) {
+    // Build model → backends map
+    const modelMap = {};
+    for (const b of backends) {
+      for (const m of (b.models || [])) {
+        if (!modelMap[m]) modelMap[m] = { backends: [], sessionCount: 0 };
+        modelMap[m].backends.push(b.id);
+      }
+    }
+    for (const s of sessions) {
+      if (s.model && modelMap[s.model]) {
+        modelMap[s.model].sessionCount++;
+      }
+    }
+    const models = Object.entries(modelMap).sort((a,b) => b[1].sessionCount - a[1].sessionCount);
+
+    document.getElementById('modelsCount').textContent = models.length;
+    const tbody = document.querySelector('#modelsTable tbody');
+    if (!models.length) {
+      tbody.innerHTML = '<tr><td colspan="5" style="color:var(--text-muted);text-align:center;padding:16px">Нет данных</td></tr>';
+      return;
+    }
+    tbody.innerHTML = models.map(([name, info]) => {
+      // Estimate VRAM: find first backend with this model
+      const firstBackend = backends.find(b => (b.models || []).includes(name));
+      const vramGB = firstBackend?.vram?.usedGB ? (firstBackend.vram.usedGB / (firstBackend.models || []).length).toFixed(1) : '—';
+      const load = info.sessionCount > 0 ? '🔥 ' + info.sessionCount : '—';
+      return `<tr>
+        <td><strong>${escapeHtml(name)}</strong></td>
+        <td>${info.backends.map(bid => `<span class="badge badge-purple">${escapeHtml(bid)}</span>`).join(' ')}</td>
+        <td class="col-right">${info.sessionCount}</td>
+        <td class="col-right">~${vramGB} GB</td>
+        <td class="col-right">${load}</td>
+      </tr>`;
+    }).join('');
   }
 
   function renderBackends(backends) {
@@ -654,12 +984,25 @@
     }).join('');
   }
 
+  function getClientIcon(clientName) {
+    if (!clientName) return '👤';
+    const name = clientName.toLowerCase();
+    if (name.includes('cline')) return '🦾';
+    if (name.includes('openwebui') || name.includes('open-webui')) return '🌐';
+    if (name.includes('curl')) return '📡';
+    if (name.includes('python') || name.includes('requests')) return '🐍';
+    if (name.includes('postman')) return '📮';
+    if (name.includes('insomnia')) return '💤';
+    return '👤';
+  }
+
   function renderSessions(sessions) {
     document.getElementById('sessionCount').textContent = sessions.length;
     const tbody = document.querySelector('#sessionsTable tbody');
-    if (!sessions.length) { tbody.innerHTML = '<tr><td colspan="6" style="color:var(--text-muted);text-align:center;padding:16px">Нет данных</td></tr>'; return; }
+    if (!sessions.length) { tbody.innerHTML = '<tr><td colspan="7" style="color:var(--text-muted);text-align:center;padding:16px">Нет данных</td></tr>'; return; }
     tbody.innerHTML = sessions.map(s => {
-      const idle = s.lastActivity ? formatDuration(Date.now() - new Date(s.lastActivity).getTime()) : '-';
+      const idle = s.lastRequestAt ? formatDuration(Date.now() - new Date(s.lastRequestAt).getTime()) : '-';
+      const clientIcon = getClientIcon(s.clientName);
       return `<tr>
         <td>${escapeHtml(s.id.slice(0,16))}…</td>
         <td>${escapeHtml(s.backendId || '—')}</td>
@@ -667,6 +1010,7 @@
         <td class="col-right">${s.requestCount || 0}</td>
         <td class="col-right">${idle}</td>
         <td>${escapeHtml(s.clientIP || '-')}</td>
+        <td>${clientIcon} ${escapeHtml(s.clientName || '-')}</td>
       </tr>`;
     }).join('');
   }
@@ -815,11 +1159,13 @@
       ctx.lineWidth = 1;
       ctx.stroke();
 
-      // text
+      // text: client name with icon
+      const clientIcon = getClientIcon(s.clientName);
+      const clientLabel = s.clientName ? truncate(s.clientName, 8) : truncate(s.id, 10);
       ctx.fillStyle = '#e2e8f0';
       ctx.font = 'bold 11px ' + varFont();
       ctx.textAlign = 'left';
-      ctx.fillText(truncate(s.id, 10), 20, y - 6);
+      ctx.fillText(clientIcon + ' ' + clientLabel, 20, y - 6);
       ctx.fillStyle = '#94a3b8';
       ctx.font = '10px ' + varFont();
       ctx.fillText((s.model || '—') + ' • ' + (s.requestCount || 0) + ' req', 20, y + 8);
@@ -900,9 +1246,34 @@
       ctx.font = '10px ' + varFont();
       ctx.fillText(loadStr, w - 132, y + 6);
 
-      const rps = b.ollama?.requestsPerSecond || 0;
-      ctx.fillStyle = '#94a3b8';
-      ctx.fillText('RPS: ' + (rps > 0 ? rps.toFixed(1) : '0'), w - 132, y + 20);
+      // Show model count / loading indicator
+      const modelCount = (b.models || []).length;
+      if (modelCount > 0) {
+        ctx.fillStyle = '#a855f7';
+        ctx.font = '9px ' + varFont();
+        ctx.fillText('🧠 ' + modelCount + ' models', w - 132, y + 20);
+      } else if (isHealthy && active > 0) {
+        // Show loading indicator for backends with active requests but no models reported yet
+        ctx.fillStyle = '#f97316';
+        ctx.font = '9px ' + varFont();
+        ctx.fillText('⏳ loading…', w - 132, y + 20);
+      }
+
+      // NEW: VRAM mini bar on backend node
+      const vramPct = b.vram?.usagePercent || 0;
+      if (vramPct > 0) {
+        const vramBarW = 100;
+        const vramBarH = 3;
+        const vramBarX = w - 132;
+        const vramBarY = y + 26;
+        ctx.fillStyle = 'rgba(255,255,255,0.06)';
+        roundRect(ctx, vramBarX, vramBarY, vramBarW, vramBarH, 2);
+        ctx.fill();
+        const vramColor = vramPct > 85 ? '#ef4444' : vramPct > 60 ? '#f59e0b' : '#22c55e';
+        ctx.fillStyle = vramColor;
+        roundRect(ctx, vramBarX, vramBarY, vramBarW * (vramPct / 100), vramBarH, 2);
+        ctx.fill();
+      }
     });
 
     // Draw particles

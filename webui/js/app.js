@@ -74,6 +74,7 @@ const ui = (function () {
     function getPageTitle(page) {
         const titles = {
             dashboard: 'Dashboard',
+            monitor: 'Монитор кластера',
             backends: 'Управление бэкендами',
             models: 'Модели',
             sessions: 'Сессии',
@@ -89,6 +90,10 @@ const ui = (function () {
             case 'dashboard':
                 dashboard(data.backends, data.sessions, data.queue);
                 predictionAlerts(data.backends);
+                break;
+            case 'monitor':
+                // Передаём конфиг в iframe монитора
+                sendMonitorConfig();
                 break;
             case 'backends':
                 backendsPage([...data.backends].sort((a, b) => (a.id || '').localeCompare(b.id || '')));
@@ -109,6 +114,18 @@ const ui = (function () {
                 loadSettings();
                 break;
         }
+    }
+
+    function sendMonitorConfig() {
+        const frame = document.getElementById('monitorFrame');
+        if (!frame || !frame.contentWindow) return;
+        const CFG = window.WEBUI_CONFIG || {};
+        frame.contentWindow.postMessage({
+            type: 'ollamalegion-config',
+            apiBase: CFG.API_BASE || '',
+            apiToken: CFG.API_TOKEN || '',
+            refreshInterval: 2000
+        }, '*');
     }
 
     function refreshCurrentPage() {
@@ -239,6 +256,8 @@ const ui = (function () {
     }
 
     function updateBackends(newBackends) {
+        // Стабилизируем порядок бэкендов по id
+        newBackends = [...newBackends].sort((a, b) => (a.id || '').localeCompare(b.id || ''));
         if (backendsEqual(data.backends, newBackends)) return;
         data.backends = newBackends;
         if (currentPage === 'dashboard') {
@@ -371,8 +390,14 @@ const ui = (function () {
                 disk: { minFreeMB: parseInt(document.getElementById('minFreeDisk').value) }
             }
         };
-        showToast('Настройки сохранены (требуется рестарт)', 'success');
-        addLog('Настройки обновлены', 'info');
+        try {
+            await Api.updateConfig(settings);
+            showToast('Настройки сохранены', 'success');
+            addLog('Настройки обновлены', 'info');
+        } catch (e) {
+            showToast('Ошибка сохранения настроек', 'error');
+            addLog('Ошибка сохранения настроек', 'error');
+        }
     }
 
     // ---- Periodic Refresh ----

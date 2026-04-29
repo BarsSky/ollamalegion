@@ -40,6 +40,11 @@ type Agent struct {
 
 	// Текущие флаги Ollama (кэш)
 	currentFlags   types.OllamaRuntimeFlags
+
+	// Кэш версии Ollama (TTL 5 минут)
+	cachedVersion      string
+	cachedVersionAt    time.Time
+	versionCacheTTL    time.Duration
 }
 
 // requestRecord - запись о запросе для подсчета RPS
@@ -55,10 +60,11 @@ func NewAgent(config *types.AgentConfig) *Agent {
 		httpClient: &http.Client{
 			Timeout: 30 * time.Second,
 		},
-		startTime:      time.Now(),
-		stopChan:       make(chan struct{}),
-		balancerURL:    config.BalancerURL,
-		requestHistory: make([]requestRecord, 0),
+		startTime:       time.Now(),
+		stopChan:        make(chan struct{}),
+		balancerURL:     config.BalancerURL,
+		requestHistory:  make([]requestRecord, 0),
+		versionCacheTTL: 5 * time.Minute,
 	}
 }
 
@@ -190,6 +196,7 @@ func (a *Agent) register() error {
 		"gpuCount":   gpuInfo.Count,
 		"name":       a.config.AgentID,
 		"labels":     []string{osName, "amd64", string(a.platformMode)},
+		"weight":     a.config.Weight,
 	}
 
 	data, err := json.Marshal(reqBody)
@@ -392,7 +399,7 @@ func (a *Agent) sendHeartbeat() {
 	}
 	a.mu.Unlock()
 
-	_ = protocol.NewHeartbeatMessage(a.config.AgentID, seq, uptime, status)
+	_ = protocol.NewHeartbeatMessage(a.config.AgentID, seq, uptime, status, a.config.Weight)
 
 	// Сериализация сообщения
 	wrapper := map[string]interface{}{
@@ -403,6 +410,7 @@ func (a *Agent) sendHeartbeat() {
 		"sequence":  seq,
 		"status":    status,
 		"platform":  a.platformMode,
+		"weight":    a.config.Weight,
 	}
 
 	data, err := json.Marshal(wrapper)
@@ -856,8 +864,13 @@ func estimateRAMUsage(modelSize uint64) uint64 {
 	return modelSize / 1024 / 1024 // конвертация в MB
 }
 
-// getOllamaVersion - получение версии Ollama
+// getOllamaVersion - получение версии Ollama с кэшированием
 func (a *Agent) getOllamaVersion() string {
+	// Проверяем кэш
+	if a.cachedVersion != "" && time.Since(a.cachedVersionAt) < a.versionCacheTTL {
+		return a.cachedVersion
+	}
+
 	resp, err := a.httpClient.Get(fmt.Sprintf("%s/api/version", a.getOllamaBaseURL()))
 	if err != nil {
 		return "unknown"
@@ -871,6 +884,10 @@ func (a *Agent) getOllamaVersion() string {
 	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
 		return "unknown"
 	}
+
+	// Обновляем кэш
+	a.cachedVersion = result.Version
+	a.cachedVersionAt = time.Now()
 
 	return result.Version
 }

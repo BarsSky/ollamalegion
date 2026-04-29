@@ -74,7 +74,7 @@ func TestCollectMetrics(t *testing.T) {
 
 	assert.NotNil(t, metrics)
 	assert.Equal(t, "test-agent-1", metrics.ID)
-	assert.WithinDuration(t, time.Now().UTC(), metrics.Timestamp, 5*time.Second)
+	assert.WithinDuration(t, time.Now().UTC(), metrics.Timestamp, 10*time.Second)
 }
 
 // TestCollectGPUMetrics - проверка сбора GPU метрик

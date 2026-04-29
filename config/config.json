@@ -16,7 +16,8 @@
     "metricsInterval": 5,
     "requestTimeout": 120,
     "queueTimeout": 300,
-    "queueMaxSize": 100
+    "queueMaxSize": 100,
+    "sessionTTL": 900
   },
   "resources": {
     "gpu": {

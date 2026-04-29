@@ -1481,3 +1481,12 @@ body {
 .backend-load-fill.ram {
     background: linear-gradient(90deg, var(--info), var(--accent));
 }
+
+/* Monitor iframe (embedded in webui) */
+.monitor-iframe {
+    width: 100%;
+    height: calc(100vh - 120px);
+    border: none;
+    border-radius: var(--radius);
+    background: var(--bg-primary);
+}

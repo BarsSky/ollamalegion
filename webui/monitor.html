@@ -817,7 +817,7 @@
       return (b.activeRequests || 0) / maxReqs < 0.5;
     });
     if (queue.pending_count > 0 && freeBackends.length > 0) {
-      alerts.push({ level: 'red', text: `Запросы в ожидании (${queue.pending_count}), хотя есть свободные бэкенды: ${freeBackends.map(b=>b.id).join(', ')}. Возможно, session stickiness блокирует.` });
+      alerts.push({ level: 'red', text: `Запросы в ожидании (${queue.pending_count}), хотя есть свободные бэкенды: ${freeBackends.map(b=>b.id).join(', ')}. Возможно, session stickiness блокирует.`, action: 'rebalance' });
     }
 
     const stuck = all.filter(q => q.status === 'pending' && q.enqueued);
@@ -859,6 +859,7 @@
       <div class="alert-banner alert-${a.level}">
         <span>${a.level==='red'?'❌':'⚠️'}</span>
         <span>${escapeHtml(a.text)}</span>
+        ${a.action === 'rebalance' ? `<button onclick="forceRebalance()" style="margin-left:8px;padding:2px 8px;font-size:11px;background:var(--red);color:#fff;border:none;border-radius:4px;cursor:pointer">⚡ Перераспределить</button>` : ''}
       </div>`).join('');
   }
 
@@ -1160,64 +1161,113 @@
     const centerX = w / 2;
     const centerY = h / 2;
 
-    // === CONVEYOR BELT VISUALIZATION ===
-    // Animated request dots traveling on conveyor belts
-    // Sessions → Balancer (inbound belt)
-    ctx.setLineDash([4, 4]);
+    // === CONVEYOR BELT VISUALIZATION (L-shaped, factory style) ===
+    // Animated request dots traveling on L-shaped conveyor belts with 90° turns
+    // Sessions → Balancer (inbound belt): horizontal → vertical
+    ctx.setLineDash([5, 3]);
     topo.sessions.forEach((s, i) => {
       const y = nodeY('session', i);
-      // Draw conveyor belt track
-      ctx.strokeStyle = s.backendId ? 'rgba(59,130,246,0.2)' : 'rgba(148,163,184,0.15)';
+      const trackColor = s.backendId ? 'rgba(59,130,246,0.25)' : 'rgba(148,163,184,0.18)';
+      ctx.strokeStyle = trackColor;
       ctx.lineWidth = s.backendId ? 3 : 2;
-      ctx.beginPath(); ctx.moveTo(140, y); ctx.lineTo(centerX - 90, centerY); ctx.stroke();
 
-      // Animated dots on belt
+      // L-shaped track: from session card edge → horizontal to turn point → vertical to balancer
+      const turnX = 140 + (centerX - 90 - 140) * 0.65; // Turn at 65% of horizontal span
+      const startX = 140;
+      const endX = centerX - 90;
+      const endY = centerY;
+
+      // Horizontal segment
+      ctx.beginPath(); ctx.moveTo(startX, y); ctx.lineTo(turnX, y); ctx.stroke();
+      // Vertical segment
+      ctx.beginPath(); ctx.moveTo(turnX, y); ctx.lineTo(turnX, endY); ctx.stroke();
+      // Final horizontal into balancer
+      ctx.beginPath(); ctx.moveTo(turnX, endY); ctx.lineTo(endX, endY); ctx.stroke();
+
+      // Corner roller (small circle at turn)
+      ctx.fillStyle = trackColor.replace('0.25','0.5').replace('0.18','0.35');
+      ctx.beginPath(); ctx.arc(turnX, y, 5, 0, Math.PI * 2); ctx.fill();
+      ctx.fillStyle = trackColor.replace('0.25','0.5').replace('0.18','0.35');
+      ctx.beginPath(); ctx.arc(turnX, endY, 4, 0, Math.PI * 2); ctx.fill();
+
+      // Animated dots moving along L-shaped path
       const reqCount = s.requestCount || 0;
       const maxDots = Math.min(reqCount, 8);
-      const beltStartX = 140;
-      const beltEndX = centerX - 90;
-      const beltLen = beltEndX - beltStartX;
-      const beltStartY = y;
-      const beltEndY = centerY;
+      // Calculate total path length: horizontal + vertical + horizontal
+      const seg1Len = turnX - startX;
+      const seg2Len = Math.abs(endY - y);
+      const seg3Len = endX - turnX;
+      const totalLen = seg1Len + seg2Len + seg3Len;
       for (let d = 0; d < maxDots; d++) {
-        const progress = ((animationFrame * 0.02 + d * (1 / maxDots)) % 1);
-        const dx = beltStartX + (beltEndX - beltStartX) * progress;
-        const dy = beltStartY + (beltEndY - beltStartY) * progress;
-        const dotAlpha = 1 - progress * 0.5;
-        // dot color = model color or blue
-        const dotColor = s.modelColor ? s.modelColor : 'rgba(96,165,250,' + dotAlpha.toFixed(2) + ')';
+        const rawProgress = ((animationFrame * 0.015 + d * (1 / maxDots)) % 1);
+        const dist = rawProgress * totalLen;
+        let dx, dy;
+        if (dist <= seg1Len) {
+          dx = startX + dist;
+          dy = y;
+        } else if (dist <= seg1Len + seg2Len) {
+          dx = turnX;
+          const vDist = dist - seg1Len;
+          dy = y < endY ? y + vDist : y - vDist;
+        } else {
+          const hDist = dist - seg1Len - seg2Len;
+          dx = turnX + hDist;
+          dy = endY;
+        }
+        const dotAlpha = 0.7 + 0.3 * Math.sin(animationFrame * 0.1 + d);
+        const dotColor = s.modelColor || 'rgba(96,165,250,' + dotAlpha.toFixed(2) + ')';
         ctx.beginPath();
         ctx.arc(dx, dy, 5, 0, Math.PI * 2);
         ctx.fillStyle = dotColor;
         ctx.fill();
-        ctx.strokeStyle = 'rgba(255,255,255,0.3)';
+        ctx.strokeStyle = 'rgba(255,255,255,0.35)';
         ctx.lineWidth = 1;
         ctx.stroke();
       }
     });
 
-    // Balancer → Backends (outbound belt)
+    // Balancer → Backends (outbound belt): vertical → horizontal (L-shaped)
     topo.backends.forEach((b, i) => {
       const y = nodeY('backend', i);
       const isHealthy = b.status === 'active' || b.status === 'healthy' || b.status === 'ready';
-      // Draw conveyor belt track
-      ctx.strokeStyle = isHealthy ? 'rgba(59,130,246,0.2)' : 'rgba(239,68,68,0.2)';
+      const trackColor = isHealthy ? 'rgba(59,130,246,0.25)' : 'rgba(239,68,68,0.25)';
+      ctx.strokeStyle = trackColor;
       ctx.lineWidth = isHealthy ? 3 : 2;
-      ctx.beginPath(); ctx.moveTo(centerX + 90, centerY); ctx.lineTo(w - 140, y); ctx.stroke();
 
-      // Animated dots on belt (active requests)
-      const activeReqs = b.active_requests || 0;
+      // L-shaped track: from balancer → vertical to turn point → horizontal to backend
+      const startX = centerX + 90;
+      const startY = centerY;
+      const turnX = startX + (w - 140 - startX) * 0.35; // Turn at 35% of horizontal span
+      const endX = w - 140;
+
+      // Vertical segment
+      ctx.beginPath(); ctx.moveTo(startX, startY); ctx.lineTo(startX, y); ctx.stroke();
+      // Horizontal segment
+      ctx.beginPath(); ctx.moveTo(startX, y); ctx.lineTo(endX, y); ctx.stroke();
+
+      // Corner roller
+      ctx.fillStyle = trackColor.replace('0.25','0.5');
+      ctx.beginPath(); ctx.arc(startX, y, 5, 0, Math.PI * 2); ctx.fill();
+
+      // Animated dots moving along L-shaped path
+      const activeReqs = b.activeRequests || 0;
       const maxDots = Math.min(activeReqs, 12);
-      const beltStartX = centerX + 90;
-      const beltEndX = w - 140;
-      const beltLen = beltEndX - beltStartX;
-      const beltStartY = centerY;
-      const beltEndY = y;
+      const seg1Len = Math.abs(y - startY);
+      const seg2Len = endX - startX;
+      const totalLen = seg1Len + seg2Len;
       for (let d = 0; d < maxDots; d++) {
-        const progress = ((animationFrame * 0.03 + d * (1 / maxDots)) % 1);
-        const dx = beltStartX + (beltEndX - beltStartX) * progress;
-        const dy = beltStartY + (beltEndY - beltStartY) * progress;
-        const dotAlpha = 1 - progress * 0.5;
+        const rawProgress = ((animationFrame * 0.02 + d * (1 / maxDots)) % 1);
+        const dist = rawProgress * totalLen;
+        let dx, dy;
+        if (dist <= seg1Len) {
+          dx = startX;
+          dy = startY < y ? startY + dist : startY - dist;
+        } else {
+          const hDist = dist - seg1Len;
+          dx = startX + hDist;
+          dy = y;
+        }
+        const dotAlpha = 0.7 + 0.3 * Math.sin(animationFrame * 0.1 + d);
         const dotColor = isHealthy
           ? 'rgba(34,197,94,' + dotAlpha.toFixed(2) + ')'
           : 'rgba(239,68,68,' + dotAlpha.toFixed(2) + ')';
@@ -1225,7 +1275,7 @@
         ctx.arc(dx, dy, 4, 0, Math.PI * 2);
         ctx.fillStyle = dotColor;
         ctx.fill();
-        ctx.strokeStyle = 'rgba(255,255,255,0.2)';
+        ctx.strokeStyle = 'rgba(255,255,255,0.25)';
         ctx.lineWidth = 1;
         ctx.stroke();
       }
@@ -1440,6 +1490,33 @@
     animationFrame++;
     drawTopology();
     requestAnimationFrame(animate);
+  }
+
+  // ==================== FORCE REBALANCE ====================
+  function forceRebalance() {
+    if (demoMode) {
+      alert('[Demo] Принудительное перераспределение недоступно в демо-режиме.');
+      return;
+    }
+    api('/api/v1/queue/rebalance')
+      .then(result => {
+        console.log('[monitor] rebalance result:', result);
+        // Показываем уведомление
+        const container = document.getElementById('alertContainer');
+        const banner = document.createElement('div');
+        banner.className = 'alert-banner alert-green';
+        banner.style.cssText = 'background:rgba(34,197,94,0.08);border:1px solid rgba(34,197,94,0.25);color:var(--green)';
+        banner.innerHTML = '<span>✅</span><span>Перераспределение инициировано. Запросы в очереди будут перенаправлены на свободные бэкенды.</span>';
+        container.insertBefore(banner, container.firstChild);
+        // Автоматически убираем через 6 секунд
+        setTimeout(() => { if (banner.parentNode) banner.remove(); }, 6000);
+        // Trigger immediate refresh
+        fetchAll();
+      })
+      .catch(err => {
+        console.error('[monitor] rebalance failed:', err);
+        alert('Ошибка перераспределения: ' + err.message);
+      });
   }
 
   // ==================== INIT ====================

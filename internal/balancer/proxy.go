@@ -106,12 +106,13 @@ type QueueManager struct {
 
 // QueuedRequest - запрос в очереди
 type QueuedRequest struct {
-	Request  *http.Request
-	Writer   http.ResponseWriter
-	Model    string
-	Enqueued time.Time
-	Done     chan bool
-	Target   string
+	Request      *http.Request
+	Writer       http.ResponseWriter
+	Model        string
+	Enqueued     time.Time
+	Done         chan bool
+	Target       string
+	RequeueCount int // Счётчик повторных постановок в очередь
 }
 
 // NewProxy - создание нового прокси
@@ -266,14 +267,45 @@ func (qm *QueueManager) processRequest(req *QueuedRequest, workerID int) {
 	logger.Get().Debugw("processing queued request",
 		"worker_id", workerID,
 		"model", req.Model,
+		"requeue_count", req.RequeueCount,
 	)
-	
+
 	// Попытка найти доступный бэкенд
-	targetBackend := qm.proxy.selectBackend(req.Model)
+	var targetBackend string
+
+	// Если запрос requeue'ится более 3 раз — принудительно выбираем любой
+	// свободный бэкенд без учёта model affinity и session stickiness.
+	// Это решает проблему «зависших» запросов, когда сессия привязана
+	// к перегруженному бэкенду, а другие свободны.
+	const maxRequeues = 3
+	if req.RequeueCount >= maxRequeues {
+		logger.Get().Warnw("max requeues exceeded, forcing rebalance to any free backend",
+			"worker_id", workerID,
+			"requeue_count", req.RequeueCount,
+			"model", req.Model,
+		)
+		// Принудительно выбираем любой свободный healthy бэкенд
+		targetBackend = qm.proxy.selectFreeBackendAny()
+		if targetBackend != "" {
+			logger.Get().Infow("force rebalanced to free backend",
+				"worker_id", workerID,
+				"backend", targetBackend,
+				"model", req.Model,
+			)
+		}
+	}
 
 	if targetBackend == "" {
-		logger.Get().Warnw("no backend available, re-queueing request", "worker_id", workerID)
+		targetBackend = qm.proxy.selectBackend(req.Model)
+	}
+
+	if targetBackend == "" {
 		// Нет доступных бэкендов - возвращаем запрос в очередь с задержкой
+		req.RequeueCount++
+		logger.Get().Warnw("no backend available, re-queueing request",
+			"worker_id", workerID,
+			"requeue_count", req.RequeueCount,
+		)
 		time.AfterFunc(100*time.Millisecond, func() {
 			select {
 			case qm.queue <- req:
@@ -941,6 +973,53 @@ func (p *Proxy) findBackendWithModel(modelName string) string {
 	}
 	
 	return bestBackendID
+}
+
+// selectFreeBackendAny — выбор любого свободного healthy бэкенда с наименьшей загрузкой
+// Используется для принудительного ребаланса «зависших» запросов в очереди.
+// Игнорирует model affinity и session stickiness.
+func (p *Proxy) selectFreeBackendAny() string {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+
+	var bestBackend string
+	var bestLoadRatio float64 = 2.0
+
+	for id, state := range p.backends {
+		if state.Backend.Status != types.StatusHealthy {
+			continue
+		}
+		if !p.checkResourceLimits(id) {
+			continue
+		}
+
+		state.mu.Lock()
+		active := state.ActiveReqs
+		maxReqs := state.Backend.MaxConcurrentReqs
+		state.mu.Unlock()
+
+		if maxReqs >= 0 && active >= maxReqs {
+			continue
+		}
+
+		loadRatio := 0.0
+		if maxReqs > 0 {
+			loadRatio = float64(active) / float64(maxReqs)
+		}
+
+		if loadRatio < bestLoadRatio {
+			bestLoadRatio = loadRatio
+			bestBackend = id
+		}
+	}
+
+	if bestBackend != "" {
+		logger.Get().Infow("selectFreeBackendAny: selected",
+			"backend", bestBackend,
+			"load_ratio", bestLoadRatio,
+		)
+	}
+	return bestBackend
 }
 
 // selectByResources - выбор бэкенда по ресурсам

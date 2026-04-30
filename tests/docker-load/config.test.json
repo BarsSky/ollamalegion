@@ -1,0 +1,74 @@
+{
+  "loadBalancer": {
+    "host": "0.0.0.0",
+    "port": 18080,
+    "apiPort": 18081,
+    "statePath": "data/state.json"
+  },
+  "backends": [
+    {
+      "id": "mock-a",
+      "name": "Mock Backend A",
+      "host": "mock-a",
+      "ollamaPort": 11434,
+      "agentPort": 18032,
+      "weight": 1,
+      "maxConcurrentReqs": 2,
+      "status": "healthy"
+    },
+    {
+      "id": "mock-b",
+      "name": "Mock Backend B",
+      "host": "mock-b",
+      "ollamaPort": 11434,
+      "agentPort": 18032,
+      "weight": 1,
+      "maxConcurrentReqs": 2,
+      "status": "healthy"
+    },
+    {
+      "id": "mock-c",
+      "name": "Mock Backend C",
+      "host": "mock-c",
+      "ollamaPort": 11434,
+      "agentPort": 18032,
+      "weight": 2,
+      "maxConcurrentReqs": 4,
+      "status": "healthy"
+    }
+  ],
+  "balancing": {
+    "algorithm": "resource-aware",
+    "modelAffinity": true,
+    "sessionStickiness": true,
+    "healthCheckInterval": 5,
+    "metricsInterval": 3,
+    "requestTimeout": 15,
+    "firstByteTimeout": 5,
+    "streamingIdleTimeout": 10,
+    "queueTimeout": 30,
+    "queueMaxSize": 50,
+    "queueWorkers": 4,
+    "sessionTTL": 60
+  },
+  "resources": {
+    "gpu": {
+      "maxUsagePercent": 95,
+      "maxVramUsagePercent": 90,
+      "maxTemperature": 90
+    },
+    "cpu": {
+      "maxUsagePercent": 90
+    },
+    "memory": {
+      "maxUsagePercent": 90
+    },
+    "disk": {
+      "minFreeMB": 100
+    }
+  },
+  "logging": {
+    "level": "info",
+    "format": "text"
+  }
+}

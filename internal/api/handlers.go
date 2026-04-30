@@ -30,15 +30,32 @@ type Server struct {
 	rateLimiter   *RateLimiter
 	wsRateLimiter *RateLimiter
 	authenticator *TokenAuthenticator
+	stopCh        chan struct{} // graceful shutdown for metricsPublishLoop
 }
 
-// upgrader - апгрейдер HTTP до WebSocket
+// upgrader - апгрейдер HTTP до WebSocket с CORS whitelist
 var upgrader = websocket.Upgrader{
 	ReadBufferSize:  1024,
 	WriteBufferSize: 1024,
 	CheckOrigin: func(r *http.Request) bool {
-		// Разрешаем все origin (для production нужно ограничить)
-		return true
+		origin := r.Header.Get("Origin")
+		if origin == "" {
+			return true // same-origin запросы
+		}
+		// Whitelist допустимых origin
+		allowedOrigins := []string{
+			"http://localhost:3000",
+			"http://localhost:8080",
+			"http://localhost:18081",
+			"http://127.0.0.1:18081",
+		}
+		for _, allowed := range allowedOrigins {
+			if strings.HasPrefix(origin, allowed) {
+				return true
+			}
+		}
+		logger.Get().Warnw("websocket origin rejected", "origin", origin)
+		return false
 	},
 }
 
@@ -66,6 +83,7 @@ func NewServer(proxy *balancer.Proxy, config *types.LoadBalancerConfig, healthCh
 		rateLimiter:   rateLimiter,
 		wsRateLimiter: wsRateLimiter,
 		authenticator: authenticator,
+		stopCh:        make(chan struct{}),
 	}
 
 	s.setupRoutes()
@@ -82,16 +100,25 @@ func (s *Server) metricsPublishLoop() {
 	defer ticker.Stop()
 
 	for {
-		<-ticker.C
-		state := s.proxy.GetClusterState()
-		if state == nil {
-			continue
-		}
+		select {
+		case <-ticker.C:
+			state := s.proxy.GetClusterState()
+			if state == nil {
+				continue
+			}
 
-		// Публикуем полное состояние кластера для WebSocket клиентов
-		stateCopy := *state
-		s.metricsBroker.PublishClusterState(&stateCopy)
+			// Публикуем полное состояние кластера для WebSocket клиентов
+			stateCopy := *state
+			s.metricsBroker.PublishClusterState(&stateCopy)
+		case <-s.stopCh:
+			return
+		}
 	}
+}
+
+// StopMetricsLoop - остановка metrics publish loop
+func (s *Server) StopMetricsLoop() {
+	close(s.stopCh)
 }
 
 // setupRoutes - настройка маршрутов
@@ -171,27 +198,54 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	s.mux.ServeHTTP(w, r)
 }
 
-// healthHandler - проверка здоровья API
+// healthHandler - глубокая проверка здоровья API (Docker healthcheck)
 func (s *Server) healthHandler(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
 
+	state := s.proxy.GetClusterState()
+
+	// Считаем бэкенды с агентом
+	hasAgentCount := 0
+	for _, b := range state.Backends {
+		if b.HasAgent {
+			hasAgentCount++
+		}
+	}
+
+	// Статус HTTP: 503 если нет ни одного healthy бэкенда при наличии зарегистрированных
+	httpStatus := http.StatusOK
+	statusText := "healthy"
+
+	if state.TotalBackends > 0 && state.HealthyBackends == 0 {
+		httpStatus = http.StatusServiceUnavailable
+		statusText = "degraded"
+	}
+
 	response := map[string]interface{}{
-		"status":      "healthy",
-		"timestamp":   time.Now().UTC(),
-		"version":     "1.0.0",
-		"authEnabled": false,
-		"authHeader":  "X-API-Token",
-		"wsEndpoint":  "/ws/metrics",
+		"status":          statusText,
+		"timestamp":       time.Now().UTC(),
+		"version":         "1.0.0",
+		"healthyBackends": state.HealthyBackends,
+		"totalBackends":   state.TotalBackends,
+		"hasAgents":       hasAgentCount,
+		"totalRequests":   state.TotalRequests,
+		"authEnabled":     false,
+		"authHeader":      "X-API-Token",
+		"wsEndpoint":      "/ws/metrics",
 	}
 
 	if s.authenticator != nil {
 		response["authEnabled"] = s.authenticator.IsEnabled()
 	}
 
-	s.writeJSON(w, http.StatusOK, response)
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(httpStatus)
+	encoder := json.NewEncoder(w)
+	encoder.SetIndent("", "  ")
+	encoder.Encode(response)
 }
 
 // backendsHandler - список бэкендов
@@ -1343,6 +1397,9 @@ func (s *Server) wsMetricsHandler(w http.ResponseWriter, r *http.Request) {
 	done := make(chan struct{})
 	defer close(done)
 
+	// Устанавливаем начальный write deadline
+	conn.SetWriteDeadline(time.Now().Add(60 * time.Second))
+
 	// Подписка на EventBus (event-driven)
 	eventSubID, eventChan := s.proxy.SubscribeEvents()
 	defer s.proxy.UnsubscribeEvents(eventSubID)
@@ -1353,6 +1410,13 @@ func (s *Server) wsMetricsHandler(w http.ResponseWriter, r *http.Request) {
 
 	// Канал для ошибок чтения
 	errChan := make(chan error, 1)
+
+	// Настраиваем read deadline и pong handler
+	conn.SetReadDeadline(time.Now().Add(90 * time.Second))
+	conn.SetPongHandler(func(string) error {
+		conn.SetReadDeadline(time.Now().Add(90 * time.Second))
+		return nil
+	})
 
 	// Goroutine для чтения сообщений от клиента (ping/pong/close)
 	go func() {
@@ -1365,8 +1429,8 @@ func (s *Server) wsMetricsHandler(w http.ResponseWriter, r *http.Request) {
 		}
 	}()
 
-	// Ping ticker (каждые 30 секунд)
-	pingTicker := time.NewTicker(30 * time.Second)
+	// Ping ticker (каждые 15 секунд для быстрого обнаружения разрывов)
+	pingTicker := time.NewTicker(15 * time.Second)
 	defer pingTicker.Stop()
 
 	// Отправка начального состояния кластера
@@ -1387,7 +1451,8 @@ func (s *Server) wsMetricsHandler(w http.ResponseWriter, r *http.Request) {
 			if !ok {
 				return
 			}
-			// Отправляем событие клиенту с eventType wrapper
+			// Отправляем событие клиенту с eventType wrapper + write deadline
+			conn.SetWriteDeadline(time.Now().Add(30 * time.Second))
 			wrapper := map[string]interface{}{
 				"eventType": string(ev.Type),
 				"timestamp": ev.Timestamp,
@@ -1403,10 +1468,8 @@ func (s *Server) wsMetricsHandler(w http.ResponseWriter, r *http.Request) {
 			if !ok {
 				return
 			}
+			conn.SetWriteDeadline(time.Now().Add(30 * time.Second))
 			// Periodic snapshot — отправляем как clusterState
-			// data приходит из metrics_broker как []byte (json.Marshal),
-			// поэтому нужно сначала unmarshal в структуру,
-			// иначе data будет сериализована как base64-строка в map[string]interface{}.
 			var clusterState types.ClusterState
 			if err := json.Unmarshal(data, &clusterState); err != nil {
 				logger.Get().Errorw("failed to unmarshal cluster state", "error", err)
@@ -1423,7 +1486,8 @@ func (s *Server) wsMetricsHandler(w http.ResponseWriter, r *http.Request) {
 			}
 
 		case <-pingTicker.C:
-			// Ping для поддержания соединения
+			// Ping для поддержания соединения с write deadline
+			conn.SetWriteDeadline(time.Now().Add(10 * time.Second))
 			if err := conn.WriteJSON(map[string]interface{}{
 				"eventType": "ping",
 				"timestamp": time.Now().UTC(),

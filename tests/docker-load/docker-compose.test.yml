@@ -1,0 +1,90 @@
+# =============================================================================
+# Ollama Legion — тестовое окружение для нагрузочного тестирования
+#
+# Использование:
+#   docker compose -f docker-compose.test.yml build
+#   docker compose -f docker-compose.test.yml up -d
+#   python load_test_comprehensive.py
+#   docker compose -f docker-compose.test.yml down -v
+# =============================================================================
+
+services:
+  # ============================================
+  # Load Balancer
+  # ============================================
+  balancer:
+    build:
+      context: ../..
+      dockerfile: docker/balancer/Dockerfile
+    container_name: ollama-legion-test-balancer
+    ports:
+      - "18090:18080"
+      - "18091:18081"
+    volumes:
+      - ./config.test.json:/app/config.json:ro
+    networks:
+      - test-net
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:18081/api/v1/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+
+  # ============================================
+  # Mock Backend A — llama3.2:3b + deepseek-r1:32b
+  # ============================================
+  mock-a:
+    build:
+      context: .
+      dockerfile: mock.Dockerfile
+    container_name: ollama-legion-test-mock-a
+    command: ["python", "/mock_extended.py", "11434"]
+    environment:
+      BACKEND_NAME: "mock-a"
+      BACKEND_MODELS: '["llama3.2:3b","deepseek-r1:32b"]'
+      HUNG_MODE: "false"
+    networks:
+      test-net:
+        aliases:
+          - mock-a
+
+  # ============================================
+  # Mock Backend B — llama3.2:3b + qwen2.5:14b
+  # ============================================
+  mock-b:
+    build:
+      context: .
+      dockerfile: mock.Dockerfile
+    container_name: ollama-legion-test-mock-b
+    command: ["python", "/mock_extended.py", "11434"]
+    environment:
+      BACKEND_NAME: "mock-b"
+      BACKEND_MODELS: '["llama3.2:3b","qwen2.5:14b"]'
+      HUNG_MODE: "false"
+    networks:
+      test-net:
+        aliases:
+          - mock-b
+
+  # ============================================
+  # Mock Backend C — deepseek-r1:32b + qwen2.5:14b (weight=2)
+  # ============================================
+  mock-c:
+    build:
+      context: .
+      dockerfile: mock.Dockerfile
+    container_name: ollama-legion-test-mock-c
+    command: ["python", "/mock_extended.py", "11434"]
+    environment:
+      BACKEND_NAME: "mock-c"
+      BACKEND_MODELS: '["deepseek-r1:32b","qwen2.5:14b"]'
+      HUNG_MODE: "false"
+    networks:
+      test-net:
+        aliases:
+          - mock-c
+
+networks:
+  test-net:
+    driver: bridge

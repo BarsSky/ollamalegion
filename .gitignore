@@ -22,3 +22,5 @@ bin/
 deployments/.env
 deployments/data/
 data/
+
+*.txt

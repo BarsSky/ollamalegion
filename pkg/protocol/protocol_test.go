@@ -102,7 +102,7 @@ func TestUnmarshalData(t *testing.T) {
 func TestNewRegisterRequest(t *testing.T) {
 	t.Parallel()
 
-	req := NewRegisterRequest("agent-1", "localhost", "linux", "amd64", 1, []string{"NVIDIA A100"}, "0.1.0", 11434)
+	req := NewRegisterRequest("agent-1", "localhost", "linux", "amd64", 1, []string{"NVIDIA A100"}, "0.1.0", 11434, 1)
 
 	assert.Equal(t, "agent-1", req.AgentID)
 	assert.Equal(t, "localhost", req.Hostname)
@@ -138,7 +138,7 @@ func TestNewMetricsMessage(t *testing.T) {
 func TestNewHeartbeatMessage(t *testing.T) {
 	t.Parallel()
 
-	msg := NewHeartbeatMessage("agent-1", 1, 3600, "healthy")
+	msg := NewHeartbeatMessage("agent-1", 1, 3600, "healthy", 1)
 
 	assert.Equal(t, "agent-1", msg.AgentID)
 	assert.Equal(t, int64(1), msg.Sequence)

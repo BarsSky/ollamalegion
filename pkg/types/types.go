@@ -144,7 +144,8 @@ type OllamaMetrics struct {
 	RequestsPerSecond     float64           `json:"requestsPerSecond"`     // RPS (от балансировщика)
 	MaxModels             int               `json:"maxModels"`             // Максимум доступных для загрузки моделей (-1 = авто)
 	MaxConcurrentRequests int               `json:"maxConcurrentRequests"` // Максимум одновременных запросов (-1 = авто)
-	FreeSlots             int               `json:"freeSlots"`             // Свободные слоты для запросов
+	FreeSlots             int                `json:"freeSlots"`             // Свободные слоты для запросов (от балансера)
+	AvailableSlots        int                `json:"availableSlots"`        // Реальные доступные слоты (от агента, с учётом VRAM)
 	RuntimeFlags          OllamaRuntimeFlags `json:"runtimeFlags"`          // Флаги запуска Ollama
 	ModelContexts         []ModelContextInfo `json:"modelContexts"`         // Информация о контексте по моделям
 	BackendCapacity       BackendCapacity    `json:"backendCapacity"`       // Оценка ёмкости бэкенда
@@ -305,16 +306,18 @@ type LoadBalancerSettings struct {
 
 // BalancingSettings - настройки балансировки
 type BalancingSettings struct {
-	Algorithm           BalancingAlgorithm `json:"algorithm"`
-	ModelAffinity       bool               `json:"modelAffinity"`
-	SessionStickiness   bool               `json:"sessionStickiness"`
-	HealthCheckInterval int                `json:"healthCheckInterval"` // секунды
-	MetricsInterval     int                `json:"metricsInterval"`     // секунды
-	RequestTimeout      int                `json:"requestTimeout"`      // секунды
-	QueueTimeout        int                `json:"queueTimeout"`        // секунды
-	QueueMaxSize        int                `json:"queueMaxSize"`        // макс. размер очереди
-	QueueWorkers        int                `json:"queueWorkers"`        // количество workers очереди
-	SessionTTL          int                `json:"sessionTTL"`          // секунды (0 = дефолт 900)
+	Algorithm            BalancingAlgorithm `json:"algorithm"`
+	ModelAffinity        bool               `json:"modelAffinity"`
+	SessionStickiness    bool               `json:"sessionStickiness"`
+	HealthCheckInterval  int                `json:"healthCheckInterval"`  // секунды
+	MetricsInterval      int                `json:"metricsInterval"`      // секунды
+	RequestTimeout       int                `json:"requestTimeout"`       // секунды
+	FirstByteTimeout     int                `json:"firstByteTimeout"`     // таймаут первого байта streaming (сек, 0=дефолт 30)
+	StreamingIdleTimeout int                `json:"streamingIdleTimeout"` // таймаут простоя между чанками streaming (сек, 0=дефолт 120)
+	QueueTimeout         int                `json:"queueTimeout"`         // секунды
+	QueueMaxSize         int                `json:"queueMaxSize"`         // макс. размер очереди
+	QueueWorkers         int                `json:"queueWorkers"`         // количество workers очереди
+	SessionTTL           int                `json:"sessionTTL"`           // секунды (0 = дефолт 900)
 }
 
 // LoggingSettings - настройки логирования
@@ -360,6 +363,8 @@ type Session struct {
 	LastRequestAt time.Time `json:"lastRequestAt"`
 	RequestCount  int       `json:"requestCount"`
 	TotalTokens   int64     `json:"totalTokens"`   // Оценочное количество токенов
+	NumCtx        int       `json:"numCtx"`        // Размер контекста запроса (токенов)
+	SessionWeight float64   `json:"sessionWeight"` // Вес сессии для адаптивного переключения
 }
 
 // HealthCheckResult - результат проверки здоровья

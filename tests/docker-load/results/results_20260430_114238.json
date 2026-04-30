@@ -1,0 +1,151 @@
+{
+  "timestamp": "20260430_114238",
+  "total_elapsed_s": 9.8,
+  "cluster_state": {
+    "error": "404, message='Attempt to decode JSON with unexpected mimetype: text/plain; charset=utf-8', url='http://localhost:18091/api/v1/cluster/state'"
+  },
+  "scenarios": [
+    {
+      "name": "S1",
+      "desc": "Non-streaming, 3 concurrent",
+      "total": 9,
+      "successful": 9,
+      "failed": 0,
+      "latency_min_ms": 41.14750000007916,
+      "latency_avg_ms": 72.43254444620106,
+      "latency_p95_ms": 90.67859999777284,
+      "latency_max_ms": 90.67859999777284,
+      "rps": 99.25,
+      "backend_dist": {
+        "unknown": 9
+      },
+      "errors": [],
+      "notes": [
+        "Ожидается: все 9 успешны, равномерное распределение, latency < 500ms"
+      ]
+    },
+    {
+      "name": "S2",
+      "desc": "Streaming SSE, 3 concurrent",
+      "total": 9,
+      "successful": 9,
+      "failed": 0,
+      "latency_min_ms": 32.57419999863487,
+      "latency_avg_ms": 69.00733333249163,
+      "latency_p95_ms": 97.75509999599308,
+      "latency_max_ms": 97.75509999599308,
+      "rps": 92.07,
+      "backend_dist": {
+        "unknown": 9
+      },
+      "errors": [],
+      "notes": [
+        "Ожидается: все 9 успешны, first-byte < 5s, все токены получены"
+      ]
+    },
+    {
+      "name": "S3",
+      "desc": "GPU-hang на mock-a, first-byte timeout → retry",
+      "total": 6,
+      "successful": 6,
+      "failed": 0,
+      "latency_min_ms": 42.799699993338436,
+      "latency_avg_ms": 72.77781666440812,
+      "latency_p95_ms": 92.79549999337178,
+      "latency_max_ms": 92.79549999337178,
+      "rps": 64.66,
+      "backend_dist": {
+        "unknown": 6
+      },
+      "errors": [],
+      "notes": [
+        "Ожидается: запросы на mock-a получают first-byte timeout (5s)",
+        "И затем retry на mock-b или mock-c",
+        "mock-a помечается unhealthy после нескольких неудач"
+      ]
+    },
+    {
+      "name": "S4",
+      "desc": "2 клиента (Cline/OpenWebUI) с одного IP",
+      "total": 6,
+      "successful": 6,
+      "failed": 0,
+      "latency_min_ms": 56.22610000136774,
+      "latency_avg_ms": 206.02069999828623,
+      "latency_p95_ms": 355.9903999994276,
+      "latency_max_ms": 355.9903999994276,
+      "rps": 16.85,
+      "backend_dist": {
+        "unknown": 6
+      },
+      "errors": [],
+      "notes": [
+        "Уникальных сессий: 2 (ожидается 2: Cline + OpenWebUI)",
+        "Ожидается: разные sessionID для разных clientName"
+      ]
+    },
+    {
+      "name": "S5",
+      "desc": "Model affinity (llama3.2, qwen2.5, deepseek-r1)",
+      "total": 9,
+      "successful": 9,
+      "failed": 0,
+      "latency_min_ms": 48.79709999659099,
+      "latency_avg_ms": 90.46888888729478,
+      "latency_p95_ms": 126.7195999971591,
+      "latency_max_ms": 126.7195999971591,
+      "rps": 71.02,
+      "backend_dist": {
+        "unknown": 9
+      },
+      "errors": [],
+      "notes": [
+        "Распределение модель→бэкенд: {'llama3.2:3b → ': 3, 'qwen2.5:14b → ': 3, 'deepseek-r1:32b → ': 3}",
+        "Ожидается: каждая модель идёт на бэкенд где она загружена",
+        "llama3.2: mock-a, mock-b | qwen2.5: mock-b, mock-c | deepseek-r1: mock-a, mock-c"
+      ]
+    },
+    {
+      "name": "S6",
+      "desc": "12 запросов, MaxConcurrentReqs=2",
+      "total": 12,
+      "successful": 12,
+      "failed": 0,
+      "latency_min_ms": 59.16900000011083,
+      "latency_avg_ms": 84.79250833382441,
+      "latency_p95_ms": 113.7589999998454,
+      "latency_max_ms": 113.7589999998454,
+      "rps": 105.49,
+      "backend_dist": {
+        "unknown": 12
+      },
+      "errors": [],
+      "notes": [
+        "Ожидается: все 12 успешны (через очередь)",
+        "Не должно быть 503 (Service Unavailable)"
+      ]
+    },
+    {
+      "name": "S7",
+      "desc": "Падение бэкенда, failover, восстановление",
+      "total": 9,
+      "successful": 9,
+      "failed": 0,
+      "latency_min_ms": 42.475199996260926,
+      "latency_avg_ms": 141.74262221947882,
+      "latency_p95_ms": 395.2586999948835,
+      "latency_max_ms": 395.2586999948835,
+      "rps": 22.77,
+      "backend_dist": {
+        "unknown": 9
+      },
+      "errors": [],
+      "notes": [
+        "Phase 1 (normal): 3/3 успешно",
+        "Phase 2 (hung mock-a): 3/3 успешно",
+        "Phase 3 (recovery): 3/3 успешно",
+        "Ожидается: Phase 2 — retry на другие бэкенды; Phase 3 — восстановление"
+      ]
+    }
+  ]
+}

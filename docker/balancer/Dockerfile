@@ -87,9 +87,13 @@ USER appuser
 #   18081 — Management API + WebSocket
 EXPOSE 18080 18081
 
-# Health check — проверка доступности Management API
-HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
-    CMD wget --no-verbose --tries=1 --spider http://localhost:18081/api/v1/health || exit 1
+# Health check — глубокая проверка через Management API.
+# Использует wget с проверкой HTTP статуса (200 = healthy, 503 = degraded/unhealthy).
+# --start-period=30s: даём балансеру время на полную инициализацию.
+# --retries=5: больше попыток для стабильности при временных сбоях.
+# --interval=15s: чаще, чтобы быстрее обнаруживать проблемы.
+HEALTHCHECK --interval=15s --timeout=10s --start-period=30s --retries=5 \
+    CMD wget --no-verbose --tries=1 --server-response --spider http://localhost:18081/api/v1/health 2>&1 | grep -q "200 OK" || exit 1
 
 # Запуск
 ENTRYPOINT ["./balancer"]

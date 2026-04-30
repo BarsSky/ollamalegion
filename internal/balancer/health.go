@@ -27,6 +27,7 @@ type HealthChecker struct {
 	mu         sync.Mutex
 	results    map[string]*HealthStatus
 	stopChan   chan struct{}
+	wg         sync.WaitGroup
 }
 
 // HealthStatus - статус здоровья бэкенда
@@ -66,13 +67,17 @@ func (hc *HealthChecker) Start() {
 	go hc.checkLoop()
 }
 
-// Stop - остановка проверок
+// Stop - остановка проверок с ожиданием завершения checkLoop
 func (hc *HealthChecker) Stop() {
 	close(hc.stopChan)
+	hc.wg.Wait()
 }
 
 // checkLoop - основной цикл проверок
 func (hc *HealthChecker) checkLoop() {
+	hc.wg.Add(1)
+	defer hc.wg.Done()
+
 	ticker := time.NewTicker(hc.interval)
 	defer ticker.Stop()
 	

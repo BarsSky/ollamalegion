@@ -82,11 +82,11 @@ services:
 
     # Health check с увеличенным timeout для инициализации
     healthcheck:
-      test: ["CMD", "sh", "-c", "curl -f -s -o /dev/null http://localhost:${AGENT_PORT:-18032}/health || curl -f -s -o /dev/null http://localhost:${AGENT_PORT:-18032}/metrics || curl -f -s -o /dev/null http://localhost:${AGENT_PORT:-18032}/"]
-      interval: 30s
-      timeout: 60s
-      retries: 3
-      start_period: 60s
+      test: ["CMD", "sh", "-c", "curl -f -s -m 15 -o /dev/null http://localhost:${AGENT_PORT:-18032}/health || curl -f -s -o /dev/null http://localhost:${AGENT_PORT:-18032}/metrics || curl -f -s -o /dev/null http://localhost:${AGENT_PORT:-18032}/"]
+      interval: 15s
+      timeout: 15s
+      retries: 5
+      start_period: 90s
 
     extra_hosts:
       - "host.docker.internal:host-gateway"
@@ -146,11 +146,11 @@ services:
               capabilities: [gpu]
 
     healthcheck:
-      test: ["CMD", "sh", "-c", "curl -f -s -o /dev/null http://localhost:${AGENT_PORT:-18032}/health || curl -f -s -o /dev/null http://localhost:${AGENT_PORT:-18032}/metrics || curl -f -s -o /dev/null http://localhost:${AGENT_PORT:-18032}/"]
-      interval: 30s
-      timeout: 60s
-      retries: 3
-      start_period: 60s
+      test: ["CMD", "sh", "-c", "curl -f -s -m 15 -o /dev/null http://localhost:${AGENT_PORT:-18032}/health || curl -f -s -o /dev/null http://localhost:${AGENT_PORT:-18032}/metrics || curl -f -s -o /dev/null http://localhost:${AGENT_PORT:-18032}/"]
+      interval: 15s
+      timeout: 15s
+      retries: 5
+      start_period: 90s
 
     extra_hosts:
       - "host.docker.internal:host-gateway"

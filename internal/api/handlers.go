@@ -46,7 +46,9 @@ var upgrader = websocket.Upgrader{
 		allowedOrigins := []string{
 			"http://localhost:3000",
 			"http://localhost:8080",
+			"http://localhost:18030",
 			"http://localhost:18081",
+			"http://127.0.0.1:18030",
 			"http://127.0.0.1:18081",
 		}
 		for _, allowed := range allowedOrigins {

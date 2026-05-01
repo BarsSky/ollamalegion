@@ -48,6 +48,9 @@ type Agent struct {
 	cachedVersion      string
 	cachedVersionAt    time.Time
 	versionCacheTTL    time.Duration
+
+	// Health HTTP-сервер (для Docker HEALTHCHECK)
+	healthServer *http.Server
 }
 
 // requestRecord - запись о запросе для подсчета RPS
@@ -90,12 +93,44 @@ func (a *Agent) Start() error {
 	// Запуск heartbeat
 	go a.heartbeatLoop()
 
+	// Запуск health HTTP-сервера (для Docker HEALTHCHECK)
+	a.startHealthServer()
+
 	return nil
 }
 
 // Stop - остановка агента
 func (a *Agent) Stop() {
 	close(a.stopChan)
+	// Остановка health-сервера
+	if a.healthServer != nil {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		a.healthServer.Shutdown(ctx)
+	}
+}
+
+// startHealthServer — запускает HTTP-сервер с /health эндпоинтом для Docker HEALTHCHECK
+func (a *Agent) startHealthServer() {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		fmt.Fprint(w, `{"status":"ok"}`)
+	})
+
+	addr := fmt.Sprintf(":%d", a.config.MetricsPort)
+	a.healthServer = &http.Server{
+		Addr:    addr,
+		Handler: mux,
+	}
+
+	go func() {
+		fmt.Printf("[%s] Health server listening on %s\n", time.Now().Format(time.RFC3339), addr)
+		if err := a.healthServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+			fmt.Printf("[%s] Health server error: %v\n", time.Now().Format(time.RFC3339), err)
+		}
+	}()
 }
 
 // detectPlatformMode - runtime автоопределение GPU/CPU режима
@@ -249,11 +284,18 @@ func (a *Agent) register() error {
 	return nil
 }
 
+// minCollectInterval — минимальный допустимый интервал сбора метрик
+// для предотвращения DDoS Ollama API со стороны агента
+const minCollectInterval = 10 * time.Second
+
 // collectLoop - цикл сбора метрик
 func (a *Agent) collectLoop() {
 	interval := time.Duration(a.config.CollectInterval) * time.Second
-	if interval == 0 {
-		interval = 5 * time.Second
+	if interval < minCollectInterval {
+		// Защита от слишком частого опроса: не чаще чем раз в 10 секунд
+		fmt.Printf("[%s] WARNING: collect interval %v is below minimum %v, clamping to %v\n",
+			time.Now().Format(time.RFC3339), interval, minCollectInterval, minCollectInterval)
+		interval = minCollectInterval
 	}
 
 	ticker := time.NewTicker(interval)

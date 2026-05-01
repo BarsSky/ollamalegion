@@ -487,18 +487,6 @@
 
 <script>
   // ==================== CONFIG ====================
-  // Receive config from parent webui via postMessage
-  window.addEventListener('message', (e) => {
-    if (e.data && e.data.type === 'ollamalegion-config') {
-      if (e.data.apiBase !== undefined) API_BASE = e.data.apiBase;
-      if (e.data.apiToken !== undefined) localStorage.setItem('apiToken', e.data.apiToken);
-      if (e.data.refreshInterval && !demoMode) {
-        refreshInterval = e.data.refreshInterval;
-        if (timerId) { clearInterval(timerId); timerId = setInterval(fetchAll, refreshInterval); }
-      }
-    }
-  });
-
   // Auto-detect API base from multiple sources
   function detectApiBase() {
     // 1. From WEBUI_CONFIG (injected by nginx/Docker entrypoint)
@@ -515,7 +503,19 @@
     return '';
   }
 
-  const API_BASE = detectApiBase();
+  let API_BASE = detectApiBase();
+
+  // Receive config from parent webui via postMessage
+  window.addEventListener('message', (e) => {
+    if (e.data && e.data.type === 'ollamalegion-config') {
+      if (e.data.apiBase !== undefined) API_BASE = e.data.apiBase;
+      if (e.data.apiToken !== undefined) localStorage.setItem('apiToken', e.data.apiToken);
+      if (e.data.refreshInterval && !demoMode) {
+        refreshInterval = e.data.refreshInterval;
+        if (timerId) { clearInterval(timerId); timerId = setInterval(fetchAll, refreshInterval); }
+      }
+    }
+  });
   const DEMO_INTERVAL = 500; // ms
   let refreshInterval = 2000;
   let timerId = null;

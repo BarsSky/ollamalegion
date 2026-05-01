@@ -5,12 +5,13 @@ import (
 	"flag"
 	"fmt"
 	"log"
+	"net/http"
 	"os"
 	"os/signal"
-	"strconv"
 	"syscall"
 
 	"ollama-loadbalancer/internal/agent"
+	"ollama-loadbalancer/pkg/env"
 	"ollama-loadbalancer/pkg/types"
 )
 
@@ -27,25 +28,32 @@ import (
 		maxModels       = flag.Int("max-models", -1, "Max models limit (-1 = unlimited/not set)")
 		maxConcurrentRequests = flag.Int("max-concurrent-requests", -1, "Max concurrent requests limit (-1 = unlimited/not set)")
 		weight          = flag.Int("weight", 1, "Backend priority weight (1-100)")
+		healthcheckFlag = flag.Bool("healthcheck", false, "Run healthcheck and exit (for Docker HEALTHCHECK)")
 	)
 
 func main() {
 	flag.Parse()
 
+	// Режим healthcheck — проверка /health endpoint и выход
+	if *healthcheckFlag {
+		runHealthcheck(*metricsPort)
+		return
+	}
+
 	// Загрузка конфигурации из переменных окружения и флагов
 	cfg := &types.AgentConfig{
-		AgentID:           getEnv("AGENT_ID", *agentID),
-		BalancerURL:       getEnv("BALANCER_URL", *balancerURL),
-		OllamaURL:         getEnv("OLLAMA_URL", "http://localhost:11434"),
-		MetricsPort:       getEnvInt("AGENT_PORT", *metricsPort),
-		CollectInterval:   getEnvInt("COLLECT_INTERVAL", *collectInterval),
-		HeartbeatInterval: getEnvInt("HEARTBEAT_INTERVAL", *heartbeatInterval),
-		GPUMode:               types.PlatformMode(getEnv("GPU_MODE", *gpuMode)),
-		NVMLEnabled:           getEnvBool("NVML_ENABLED", *nvmlEnabled),
-		PublicHost:            getEnv("AGENT_PUBLIC_HOST", *publicHost),
-		MaxModels:             getEnvInt("AGENT_MAX_MODELS", *maxModels),
-		MaxConcurrentRequests: getEnvInt("AGENT_MAX_CONCURRENT_REQUESTS", *maxConcurrentRequests),
-		Weight:                getEnvInt("AGENT_WEIGHT", *weight),
+		AgentID:           env.Get("AGENT_ID", *agentID),
+		BalancerURL:       env.Get("BALANCER_URL", *balancerURL),
+		OllamaURL:         env.Get("OLLAMA_URL", "http://localhost:11434"),
+		MetricsPort:       env.GetInt("AGENT_PORT", *metricsPort),
+		CollectInterval:   env.GetInt("COLLECT_INTERVAL", *collectInterval),
+		HeartbeatInterval: env.GetInt("HEARTBEAT_INTERVAL", *heartbeatInterval),
+		GPUMode:               types.PlatformMode(env.Get("GPU_MODE", *gpuMode)),
+		NVMLEnabled:           env.GetBool("NVML_ENABLED", *nvmlEnabled),
+		PublicHost:            env.Get("AGENT_PUBLIC_HOST", *publicHost),
+		MaxModels:             env.GetInt("AGENT_MAX_MODELS", *maxModels),
+		MaxConcurrentRequests: env.GetInt("AGENT_MAX_CONCURRENT_REQUESTS", *maxConcurrentRequests),
+		Weight:                env.GetInt("AGENT_WEIGHT", *weight),
 	}
 
 	// Если передан файл конфигурации — загружаем из него
@@ -103,30 +111,17 @@ func main() {
 	fmt.Println("[Agent]  Stopped.")
 }
 
-// getEnv - получение переменной окружения или значения по умолчанию
-func getEnv(key, defaultValue string) string {
-	if value := os.Getenv(key); value != "" {
-		return value
+// runHealthcheck — проверяет /health endpoint агента и завершает процесс с кодом 0 (успех) или 1 (ошибка).
+// Используется для Docker HEALTHCHECK без внешних зависимостей (curl/wget).
+func runHealthcheck(port int) {
+	resp, err := http.Get(fmt.Sprintf("http://localhost:%d/health", port))
+	if err != nil {
+		os.Exit(1)
 	}
-	return defaultValue
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		os.Exit(1)
+	}
+	os.Exit(0)
 }
 
-// getEnvInt - получение int из переменной окружения или значения по умолчанию
-func getEnvInt(key string, defaultValue int) int {
-	if value := os.Getenv(key); value != "" {
-		if n, err := strconv.Atoi(value); err == nil {
-			return n
-		}
-	}
-	return defaultValue
-}
-
-// getEnvBool - получение bool из переменной окружения или значения по умолчанию
-func getEnvBool(key string, defaultValue bool) bool {
-	if value := os.Getenv(key); value != "" {
-		if b, err := strconv.ParseBool(value); err == nil {
-			return b
-		}
-	}
-	return defaultValue
-}

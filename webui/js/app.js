@@ -27,15 +27,16 @@ const ui = (function () {
         setupNavigation();
         setupEventListeners();
         setupRestartHandler();
-        setupWebSocketEvents();
         setupApiEvents();
+        setupWebSocketEvents();
 
-        // Initial data load
-        fetchClusterState();
-        fetchQueue();
-        fetchQueueDetails();
-        fetchQueueHistory();
-        fetchSessions();
+        // Initial data load — cluster state first, drives connection status
+        fetchClusterState().then(function () {
+            fetchQueue();
+            fetchQueueDetails();
+            fetchQueueHistory();
+            fetchSessions();
+        });
 
         // Periodic refresh
         startPeriodicRefresh();
@@ -392,9 +393,13 @@ const ui = (function () {
 
     function setupApiEvents() {
         window.addEventListener('api-error', (e) => {
-            const { message } = e.detail;
+            const { message, error } = e.detail;
             showToast(message, 'error');
             addLog(message, 'error');
+            // If it's a network error or the balancer is unreachable, mark as disconnected
+            if (message && (message.includes('Network error') || message.includes('Failed to fetch') || message.includes('NetworkError'))) {
+                updateConnectionStatus(false);
+            }
         });
     }
 
@@ -404,6 +409,8 @@ const ui = (function () {
         try {
             const state = await Api.cluster();
             updateBackends(state.backends || []);
+            // Successful REST request — balancer is reachable
+            updateConnectionStatus(true);
         } catch (e) {
             Api.handleError(e, 'Ошибка загрузки состояния кластера');
         }

@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"ollama-loadbalancer/pkg/env"
 	"ollama-loadbalancer/pkg/types"
 )
 
@@ -47,54 +48,54 @@ func LoadFromEnv() (*Config, error) {
 	config := &types.LoadBalancerConfig{}
 	
 	// LoadBalancer settings
-	config.LoadBalancer.Host = getEnv("LB_HOST", "0.0.0.0")
-	config.LoadBalancer.Port = getEnvInt("LB_PORT", 18080)
-	config.LoadBalancer.APIPort = getEnvInt("LB_API_PORT", 18081)
-	config.LoadBalancer.TLSHost = getEnv("LB_TLS_HOST", "")
-	config.LoadBalancer.TLSPort = getEnvInt("LB_TLS_PORT", 8443)
-	config.LoadBalancer.StatePath = getEnv("LB_STATE_PATH", "data/state.json")
+	config.LoadBalancer.Host = env.Get("LB_HOST", "0.0.0.0")
+	config.LoadBalancer.Port = env.GetInt("LB_PORT", 18080)
+	config.LoadBalancer.APIPort = env.GetInt("LB_API_PORT", 18081)
+	config.LoadBalancer.TLSHost = env.Get("LB_TLS_HOST", "")
+	config.LoadBalancer.TLSPort = env.GetInt("LB_TLS_PORT", 8443)
+	config.LoadBalancer.StatePath = env.Get("LB_STATE_PATH", "data/state.json")
 	
 	// TLS settings
-	config.TLS.Enabled = getEnvBool("TLS_ENABLED", false)
-	config.TLS.CertFile = getEnv("TLS_CERT_FILE", "certs/server.crt")
-	config.TLS.KeyFile = getEnv("TLS_KEY_FILE", "certs/server.key")
-	config.TLS.MinVersion = getEnv("TLS_MIN_VERSION", "TLS12")
-	config.TLS.AutoCert = getEnvBool("TLS_AUTO_CERT", false)
+	config.TLS.Enabled = env.GetBool("TLS_ENABLED", false)
+	config.TLS.CertFile = env.Get("TLS_CERT_FILE", "certs/server.crt")
+	config.TLS.KeyFile = env.Get("TLS_KEY_FILE", "certs/server.key")
+	config.TLS.MinVersion = env.Get("TLS_MIN_VERSION", "TLS12")
+	config.TLS.AutoCert = env.GetBool("TLS_AUTO_CERT", false)
 	
 	// Auth settings
-	config.Auth.Enabled = getEnvBool("AUTH_ENABLED", false)
+	config.Auth.Enabled = env.GetBool("AUTH_ENABLED", false)
 	config.Auth.Tokens = parseAuthTokensFromEnv()
-	config.Auth.HeaderName = getEnv("AUTH_HEADER_NAME", "X-API-Token")
+	config.Auth.HeaderName = env.Get("AUTH_HEADER_NAME", "X-API-Token")
 	
 	// API Rate Limiting settings
-	config.API.RateLimit = getEnvFloat("API_RATE_LIMIT", 100)
-	config.API.RateBurst = getEnvFloat("API_RATE_BURST", 200)
+	config.API.RateLimit = env.GetFloat("API_RATE_LIMIT", 100)
+	config.API.RateBurst = env.GetFloat("API_RATE_BURST", 200)
 	
 	// Balancing settings
-	config.Balancing.Algorithm = types.BalancingAlgorithm(getEnv("LB_ALGORITHM", "resource-aware"))
-	config.Balancing.ModelAffinity = getEnvBool("LB_MODEL_AFFINITY", true)
-	config.Balancing.SessionStickiness = getEnvBool("LB_SESSION_STICKINESS", true)
-	config.Balancing.HealthCheckInterval = getEnvInt("LB_HEALTH_CHECK_INTERVAL", 10)
-	config.Balancing.MetricsInterval = getEnvInt("LB_METRICS_INTERVAL", 5)
-	config.Balancing.RequestTimeout = getEnvInt("LB_REQUEST_TIMEOUT", 120)
-	config.Balancing.QueueTimeout = getEnvInt("LB_QUEUE_TIMEOUT", 300)
-	config.Balancing.QueueMaxSize = getEnvInt("LB_QUEUE_MAX_SIZE", 100)
-	config.Balancing.QueueWorkers = getEnvInt("LB_QUEUE_WORKERS", 4)
+	config.Balancing.Algorithm = types.BalancingAlgorithm(env.Get("LB_ALGORITHM", "resource-aware"))
+	config.Balancing.ModelAffinity = env.GetBool("LB_MODEL_AFFINITY", true)
+	config.Balancing.SessionStickiness = env.GetBool("LB_SESSION_STICKINESS", true)
+	config.Balancing.HealthCheckInterval = env.GetInt("LB_HEALTH_CHECK_INTERVAL", 10)
+	config.Balancing.MetricsInterval = env.GetInt("LB_METRICS_INTERVAL", 5)
+	config.Balancing.RequestTimeout = env.GetInt("LB_REQUEST_TIMEOUT", 120)
+	config.Balancing.QueueTimeout = env.GetInt("LB_QUEUE_TIMEOUT", 300)
+	config.Balancing.QueueMaxSize = env.GetInt("LB_QUEUE_MAX_SIZE", 100)
+	config.Balancing.QueueWorkers = env.GetInt("LB_QUEUE_WORKERS", 4)
 	
 	// Resource limits
-	config.Resources.GPU.MaxUsagePercent = getEnvFloat("LB_GPU_MAX_USAGE", 90.0)
-	config.Resources.GPU.MaxVRAMUsagePercent = getEnvFloat("LB_GPU_MAX_VRAM", 85.0)
-	config.Resources.GPU.MaxTemperature = getEnvInt("LB_GPU_MAX_TEMP", 85)
+	config.Resources.GPU.MaxUsagePercent = env.GetFloat("LB_GPU_MAX_USAGE", 90.0)
+	config.Resources.GPU.MaxVRAMUsagePercent = env.GetFloat("LB_GPU_MAX_VRAM", 85.0)
+	config.Resources.GPU.MaxTemperature = env.GetInt("LB_GPU_MAX_TEMP", 85)
 	
-	config.Resources.CPU.MaxUsagePercent = getEnvFloat("LB_CPU_MAX_USAGE", 80.0)
+	config.Resources.CPU.MaxUsagePercent = env.GetFloat("LB_CPU_MAX_USAGE", 80.0)
 	
-	config.Resources.Memory.MaxUsagePercent = getEnvFloat("LB_MEMORY_MAX_USAGE", 85.0)
+	config.Resources.Memory.MaxUsagePercent = env.GetFloat("LB_MEMORY_MAX_USAGE", 85.0)
 	
-	config.Resources.Disk.MinFreeMB = uint64(getEnvInt("LB_DISK_MIN_FREE_MB", 10240))
+	config.Resources.Disk.MinFreeMB = uint64(env.GetInt("LB_DISK_MIN_FREE_MB", 10240))
 	
 	// Logging
-	config.Logging.Level = getEnv("LB_LOG_LEVEL", "info")
-	config.Logging.Format = getEnv("LB_LOG_FORMAT", "json")
+	config.Logging.Level = env.Get("LB_LOG_LEVEL", "info")
+	config.Logging.Format = env.Get("LB_LOG_FORMAT", "json")
 	
 	// Backends из переменных окружения
 	backends := parseBackendsFromEnv()
@@ -287,10 +288,10 @@ func parseBackendsFromEnv() []types.Backend {
 			host = "localhost"
 		}
 		
-		port := getEnvInt(fmt.Sprintf("BACKEND_%d_PORT", i), 11434)
-		agentPort := getEnvInt(fmt.Sprintf("BACKEND_%d_AGENT_PORT", i), 18032)
-		weight := getEnvInt(fmt.Sprintf("BACKEND_%d_WEIGHT", i), 1)
-		maxReqs := getEnvInt(fmt.Sprintf("BACKEND_%d_MAX_REQS", i), 10)
+		port := env.GetInt(fmt.Sprintf("BACKEND_%d_PORT", i), 11434)
+		agentPort := env.GetInt(fmt.Sprintf("BACKEND_%d_AGENT_PORT", i), 18032)
+		weight := env.GetInt(fmt.Sprintf("BACKEND_%d_WEIGHT", i), 1)
+		maxReqs := env.GetInt(fmt.Sprintf("BACKEND_%d_MAX_REQS", i), 10)
 		
 		name := os.Getenv(fmt.Sprintf("BACKEND_%d_NAME", i))
 		if name == "" {
@@ -331,37 +332,3 @@ func parseAuthTokensFromEnv() []string {
 	return tokens
 }
 
-// Вспомогательные функции для переменных окружения
-func getEnv(key, defaultValue string) string {
-	if value := os.Getenv(key); value != "" {
-		return value
-	}
-	return defaultValue
-}
-
-func getEnvInt(key string, defaultValue int) int {
-	if value := os.Getenv(key); value != "" {
-		var v int
-		if _, err := fmt.Sscanf(value, "%d", &v); err == nil {
-			return v
-		}
-	}
-	return defaultValue
-}
-
-func getEnvFloat(key string, defaultValue float64) float64 {
-	if value := os.Getenv(key); value != "" {
-		var v float64
-		if _, err := fmt.Sscanf(value, "%f", &v); err == nil {
-			return v
-		}
-	}
-	return defaultValue
-}
-
-func getEnvBool(key string, defaultValue bool) bool {
-	if value := os.Getenv(key); value != "" {
-		return value == "true" || value == "1" || value == "yes"
-	}
-	return defaultValue
-}

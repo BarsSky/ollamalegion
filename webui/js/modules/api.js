@@ -114,6 +114,17 @@ const Api = (function () {
             return response.ok;
         },
 
+        // Generic POST helper returning JSON
+        async post(endpoint, data) {
+            const response = await request(`${API_BASE}${endpoint}`, {
+                method: 'POST',
+                ...(data ? { body: JSON.stringify(data) } : {})
+            });
+            if (response.status === 204 || response.headers.get('content-length') === '0') return null;
+            const ct = response.headers.get('content-type') || '';
+            return ct.includes('application/json') ? response.json() : response.text();
+        },
+
         // Generic error handler for UI
         handleError(err, fallbackMessage = 'Ошибка API') {
             console.error(err);

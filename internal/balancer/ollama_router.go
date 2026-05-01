@@ -10,6 +10,7 @@ import (
 	"sync"
 	"time"
 
+	"ollama-loadbalancer/pkg/logger"
 	"ollama-loadbalancer/pkg/types"
 )
 
@@ -366,11 +367,16 @@ type backendInfo struct {
 	port int
 }
 
+// getHealthyBackends — возвращает все healthy И degraded бэкенды для агрегации.
+// Раньше использовались только healthy, из-за чего /api/tags показывал модели
+// только от одного бэкенда, а не суммарно со всех доступных.
+// Теперь degraded-бэкенды тоже участвуют в агрегации (у них могут быть модели).
 func (or *OllamaRouter) getHealthyBackends() []backendInfo {
 	backends := or.proxy.GetAllBackends()
 	result := make([]backendInfo, 0, len(backends))
 	for _, b := range backends {
-		if b.Status == "healthy" {
+		// Включаем healthy и degraded — оба могут иметь загруженные модели
+		if b.Status == "healthy" || b.Status == "degraded" {
 			result = append(result, backendInfo{
 				id:   b.ID,
 				host: b.Host,
@@ -378,6 +384,10 @@ func (or *OllamaRouter) getHealthyBackends() []backendInfo {
 			})
 		}
 	}
+	logger.Get().Debugw("getHealthyBackends for aggregation",
+		"total_backends", len(backends),
+		"included", len(result),
+	)
 	return result
 }
 

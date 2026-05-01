@@ -67,6 +67,7 @@ type SessionManager struct {
 	sessions map[string]*types.Session
 	mu       sync.RWMutex
 	ttl      time.Duration
+	stopCh   chan struct{}
 }
 
 // MetricsManager - менеджер метрик
@@ -1101,72 +1102,113 @@ func (p *Proxy) selectByResources() string {
 	return bestBackend
 }
 
-// checkResourceLimits - проверка лимитов ресурсов
+// checkResourceLimits - проверка лимитов ресурсов (SOFT-режим)
+// Возвращает true если бэкенд может принимать запросы.
+// VRAM warning (>85%) не блокирует бэкенд жёстко — только снижает его score в calculateScore().
+// Это решает проблему «красного предупреждения о заполненности кластера VRAM»,
+// которое раньше полностью исключало бэкенд из пула.
 func (p *Proxy) checkResourceLimits(backendID string) bool {
 	p.metricsMgr.mu.RLock()
 	metrics, ok := p.metricsMgr.metrics[backendID]
 	p.metricsMgr.mu.RUnlock()
 
 	if !ok {
-		// Нет метрик от агента — используем консервативные проверки по proxy-счётчикам
+		// Нет метрик от агента — разрешаем запрос если бэкенд существует и healthy.
+		// Best-effort: при отсутствии метрик не блокируем запросы.
+		// Балансировщик будет использовать консервативные proxy-счётчики в calculateScore().
 		p.mu.RLock()
 		state, exists := p.backends[backendID]
 		p.mu.RUnlock()
 		if !exists {
 			return false
 		}
-		// Если активных запросов >= 50% от лимита — считаем что бэкенд под нагрузкой
+		// Только блокируем если бэкенд явно перегружен (>100% лимита запросов)
 		state.mu.Lock()
 		active := state.ActiveReqs
 		maxReqs := state.Backend.MaxConcurrentReqs
 		state.mu.Unlock()
-		if maxReqs > 0 && active >= maxReqs/2 {
+		if maxReqs > 0 && active >= maxReqs {
 			return false
 		}
-		return true
+		return true // Best-effort: разрешаем, даже без метрик
 	}
 
 	limits := p.config.Resources
 
-	// Проверка GPU
-	if metrics.GPU.UsagePercent > limits.GPU.MaxUsagePercent {
+	// Проверка GPU usage (SOFT: только при >95% блокируем)
+	if metrics.GPU.UsagePercent > 95 {
+		logger.Get().Warnw("backend GPU usage critical, blocking",
+			"backend", backendID,
+			"gpu_usage", metrics.GPU.UsagePercent,
+		)
 		return false
 	}
+
+	// Проверка VRAM (SOFT: не блокируем, только логируем warning)
+	// Раньше это было hard-fail при >85%, теперь degraded — score снижается в calculateScore()
 	if limits.GPU.MaxVRAMUsagePercent > 0 && metrics.GPU.MemoryTotal > 0 {
 		vramPercent := float64(metrics.GPU.MemoryUsed) * 100 / float64(metrics.GPU.MemoryTotal)
 		if vramPercent > limits.GPU.MaxVRAMUsagePercent {
-			return false
+			logger.Get().Warnw("backend VRAM usage above threshold (degraded, not blocked)",
+				"backend", backendID,
+				"vram_percent", vramPercent,
+				"threshold", limits.GPU.MaxVRAMUsagePercent,
+			)
+			// НЕ блокируем — score будет снижен в calculateScore()
 		}
 	}
 
-	// Проверка CPU
-	if metrics.System.CPUUsagePercent > limits.CPU.MaxUsagePercent {
+	// Проверка CPU (SOFT: только при >95% блокируем)
+	if metrics.System.CPUUsagePercent > 95 {
+		logger.Get().Warnw("backend CPU usage critical, blocking",
+			"backend", backendID,
+			"cpu_usage", metrics.System.CPUUsagePercent,
+		)
 		return false
 	}
 
-	// Проверка RAM
+	// Проверка RAM (SOFT: только при >98% блокируем)
 	if limits.Memory.MaxUsagePercent > 0 && metrics.System.MemoryTotal > 0 {
 		memPercent := float64(metrics.System.MemoryUsed) * 100 / float64(metrics.System.MemoryTotal)
-		if memPercent > limits.Memory.MaxUsagePercent {
+		if memPercent > 98 {
+			logger.Get().Warnw("backend RAM usage critical, blocking",
+				"backend", backendID,
+				"ram_percent", memPercent,
+			)
 			return false
 		}
 	}
 
-	// Проверка диска
+	// Проверка диска (hard — критично для загрузки моделей)
 	if metrics.System.DiskFree < limits.Disk.MinFreeMB {
+		logger.Get().Warnw("backend disk space critical, blocking",
+			"backend", backendID,
+			"disk_free_mb", metrics.System.DiskFree,
+			"min_required_mb", limits.Disk.MinFreeMB,
+		)
 		return false
 	}
 
-	// Проверка лимита моделей Ollama (если агент сообщил MaxModels > 0)
+	// Проверка лимита моделей Ollama (SOFT: не блокируем, score снижается)
 	if metrics.Ollama.MaxModels > 0 {
 		if len(metrics.Ollama.RunningModels) >= metrics.Ollama.MaxModels {
-			return false
+			logger.Get().Debugw("backend model slots full (degraded, not blocked)",
+				"backend", backendID,
+				"loaded_models", len(metrics.Ollama.RunningModels),
+				"max_models", metrics.Ollama.MaxModels,
+			)
+			// НЕ блокируем — Ollama сама выгрузит неиспользуемую модель при необходимости
 		}
 	}
 
-	// Проверка лимита одновременных запросов Ollama (если агент сообщил MaxConcurrentRequests > 0)
+	// Проверка лимита одновременных запросов (hard — защита от перегрузки)
 	if metrics.Ollama.MaxConcurrentRequests > 0 {
 		if metrics.Ollama.ActiveRequests >= metrics.Ollama.MaxConcurrentRequests {
+			logger.Get().Debugw("backend request slots full, blocking",
+				"backend", backendID,
+				"active_requests", metrics.Ollama.ActiveRequests,
+				"max_requests", metrics.Ollama.MaxConcurrentRequests,
+			)
 			return false
 		}
 	}
@@ -1868,6 +1910,17 @@ func (p *Proxy) GetClusterState() *types.ClusterState {
 	return state
 }
 
+
+// Stop - остановка cleanup loop
+func (sm *SessionManager) Stop() {
+	select {
+	case <-sm.stopCh:
+		// уже остановлен
+	default:
+		close(sm.stopCh)
+	}
+}
+
 // cleanupLoop - цикл очистки сессий
 func (sm *SessionManager) cleanupLoop() {
 	// Интервал очистки = 1/3 от TTL, минимум 1 минута
@@ -1878,8 +1931,13 @@ func (sm *SessionManager) cleanupLoop() {
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 
-	for range ticker.C {
-		sm.cleanup()
+	for {
+		select {
+		case <-ticker.C:
+			sm.cleanup()
+		case <-sm.stopCh:
+			return
+		}
 	}
 }
 
@@ -2501,6 +2559,26 @@ func (p *Proxy) PublishEvent(ev types.Event) {
 			// канал переполнен — пропускаем
 		}
 	}
+}
+
+// StopQueue — остановка QueueManager и всех workers
+func (p *Proxy) StopQueue() {
+	if p.queueMgr != nil {
+		p.queueMgr.Stop()
+	}
+}
+
+// StopSessionManager — остановка SessionManager (cleanup loop)
+func (p *Proxy) StopSessionManager() {
+	if p.sessionMgr != nil {
+		p.sessionMgr.Stop()
+	}
+}
+
+// StopAgentTimeoutChecker — остановка проверки таймаута агентов
+func (p *Proxy) StopAgentTimeoutChecker() {
+	// Таймер работает в горутине с тикером, явной остановки не требует
+	// Флаг HasAgent будет сброшен при завершении процесса
 }
 
 // UpdateBackendLimits — обновление runtime-лимитов бэкенда

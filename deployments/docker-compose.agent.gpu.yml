@@ -1,31 +1,42 @@
-# Ollama Load Balancer - Agent GPU Override
+# Ollama Load Balancer - Agent GPU Production Override
+# =============================================================================
+# Этот файл содержит production-настройки для GPU-агента.
+# Основной GPU-образ теперь собирается через --target agent-gpu в
+# docker/agent/Dockerfile и запускается через docker-compose.agent.yml
+# с профилем --profile gpu.
 #
-# Этот файл расширяет docker-compose.agent.yml GPU-специфичными настройками.
+# Использование (стандартное):
+#   docker compose -f docker-compose.agent.yml --profile gpu up -d --build
 #
-# Использование:
-#   GPU сервер (требуется NVIDIA Container Toolkit):
-#     docker compose -f docker-compose.agent.yml -f docker-compose.agent.gpu.yml up -d --build
-#
-#   Или через скрипт автоматизации:
-#     bash scripts/deploy-agent-docker.sh --gpu --env-file .env
+# Использование с оверлеем (host-сеть, кастомные лимиты):
+#   docker compose -f docker-compose.agent.yml -f docker-compose.agent.gpu.yml --profile gpu up -d --build
 #
 # Требования:
-#   - NVIDIA Container Toolkit должен быть установлен: https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/install-guide.html
+#   - NVIDIA Container Toolkit: https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/install-guide.html
 #   - Docker Engine 20.10+ с BuildKit enabled
-#   - nvidia-docker2 runtime (для старых версий Docker)
+#   - nvidia-container-runtime настроен как default runtime или через --gpus
 
 services:
-  agent:
-    # Переопределяем базовый образ на CUDA runtime для доступа к GPU
-    build:
-      args:
-        ENABLE_NVML: "true"
-        BASE_IMAGE: nvidia/cuda:12.2.0-runtime-ubuntu22.04
-    
-    # Резервирование GPU устройств через Docker deploy
+  agent-gpu:
+    # Раскомментируйте для работы в host-сети (прямой доступ к GPU и сети хоста)
+    # ПРЕДУПРЕЖДЕНИЕ: host-сеть обходит изоляцию контейнера, используйте только в доверенной среде
+    # network_mode: host
+
+    # Дополнительные переменные окружения для production
+    environment:
+      LOG_LEVEL: ${LOG_LEVEL:-warn}
+      METRICS_INTERVAL: ${METRICS_INTERVAL:-10s}
+      COLLECT_INTERVAL: ${COLLECT_INTERVAL:-10s}
+
+    # Увеличенные resource limits для production GPU-ноды
     deploy:
       resources:
+        limits:
+          cpus: '8'
+          memory: 1024M
         reservations:
+          cpus: '2'
+          memory: 256M
           devices:
             - driver: nvidia
               count: all

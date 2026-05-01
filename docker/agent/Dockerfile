@@ -1,44 +1,51 @@
 # =============================================================================
-# Ollama Agent — Dockerfile
+# Ollama Agent — Dockerfile (оптимизированный, локальные образы)
 # =============================================================================
+# Использует локально доступные базовые образы для обхода блокировки Docker Hub.
+#
 # Multi-stage build:
 #   1. deps       — загрузка Go модулей (кэшируется отдельно)
 #   2. test       — запуск тестов с coverage
 #   3. builder    — сборка production бинарника
-#   4. production — минимальный runtime образ
+#   4. agent-cpu  — минимальный distroless образ (~8 MB)
+#   5. agent-gpu  — образ с NVIDIA CUDA (~350 MB)
 # =============================================================================
 # Build args:
-#   BASE_IMAGE    — базовый образ runtime (по умолчанию ubuntu:22.04)
-#   ENABLE_NVML   — включить NVML/GPU поддержку (true/false)
+#   ENABLE_NVML — включить NVML/GPU поддержку (true/false, по умолчанию false)
+# =============================================================================
+# Сборка CPU (по умолчанию):
+#   docker build -t ollama-legion/agent:latest --target agent-cpu -f docker/agent/Dockerfile .
+#
+# Сборка GPU:
+#   docker build --build-arg ENABLE_NVML=true \
+#     -t ollama-legion/agent:latest-gpu --target agent-gpu -f docker/agent/Dockerfile .
 # =============================================================================
 
-ARG BASE_IMAGE=ubuntu:22.04
-
 # -----------------------------------------------------------------------------
-# Stage 1: deps — загрузка зависимостей
+# Stage 1: deps — загрузка зависимостей (golang:1.24-alpine, локальный)
 # -----------------------------------------------------------------------------
-FROM golang:1.21 AS deps
+FROM golang:1.24-alpine AS deps
 
 WORKDIR /build
 
-# Минимальные зависимости для CGO/NVML
-RUN apt-get update && apt-get install -y --no-install-recommends git gcc libc6-dev && \
-    rm -rf /var/lib/apt/lists/*
+# Alpine: gcc + libc-dev для CGO/NVML (только для test и gpu-builder)
+RUN apk add --no-cache git gcc musl-dev
 
 # Копируем только go.mod/go.sum для кэширования слоя зависимостей
 COPY go.mod go.sum ./
-RUN go mod download && go mod verify
+RUN --mount=type=cache,target=/go/pkg/mod \
+    go mod download && go mod verify
 
 # -----------------------------------------------------------------------------
 # Stage 2: test — запуск тестов
 # -----------------------------------------------------------------------------
 FROM deps AS test
 
-# Копируем исходный код
 COPY . .
 
-# Запускаем тесты (NVML stub всегда компилируется, race detector отключен для CGO)
-RUN CGO_ENABLED=1 go test -coverprofile=coverage.out -covermode=atomic ./... || \
+RUN --mount=type=cache,target=/go/pkg/mod \
+    --mount=type=cache,target=/root/.cache/go-build \
+    CGO_ENABLED=1 go test -coverprofile=coverage.out -covermode=atomic ./... || \
     (echo "=== TEST FAILURES ===" && cat coverage.out 2>/dev/null; exit 1)
 
 # -----------------------------------------------------------------------------
@@ -46,60 +53,113 @@ RUN CGO_ENABLED=1 go test -coverprofile=coverage.out -covermode=atomic ./... || 
 # -----------------------------------------------------------------------------
 FROM deps AS builder
 
-# Копируем исходный код (повторно используем кэш deps)
+COPY . .
+
+ARG ENABLE_NVML=false
+
+# -trimpath — воспроизводимая сборка
+# -ldflags "-w -s" — минимизация размера (strip debug info)
+# CGO_ENABLED=0 для CPU (статический бинарник, alpine musl не нужен)
+# CGO_ENABLED=1 для GPU — но на alpine musl NVML может не собраться,
+#   поэтому GPU-вариант требует glibc-совместимого билдера.
+#   Для GPU используйте отдельный builder (см. stage builder-gpu ниже).
+RUN --mount=type=cache,target=/go/pkg/mod \
+    --mount=type=cache,target=/root/.cache/go-build \
+    CGO_ENABLED=0 GOOS=linux GOARCH=amd64 \
+    go build -trimpath -ldflags "-w -s -extldflags '-static'" \
+    -a -installsuffix cgo -o agent ./cmd/agent
+
+# -----------------------------------------------------------------------------
+# Stage 3b: builder-gpu — сборка с NVML (требует glibc, не alpine)
+# Использует локальный nvidia/cuda образ с установленным golang
+# -----------------------------------------------------------------------------
+FROM nvidia/cuda:12.2.0-base-ubuntu22.04 AS builder-gpu
+
+# Устанавливаем Go 1.22 напрямую (обход Docker Hub)
+# Используем go1.22.10 — stable, не требует Docker Hub
+ARG GO_VERSION=1.22.10
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    wget ca-certificates gcc libc6-dev && \
+    wget -q "https://go.dev/dl/go${GO_VERSION}.linux-amd64.tar.gz" -O /tmp/go.tar.gz && \
+    tar -C /usr/local -xzf /tmp/go.tar.gz && \
+    rm /tmp/go.tar.gz && \
+    rm -rf /var/lib/apt/lists/*
+
+ENV PATH="/usr/local/go/bin:${PATH}"
+ENV GOPATH="/go"
+ENV GOMODCACHE="/go/pkg/mod"
+
+WORKDIR /build
+
+# Копируем go.mod/go.sum и скачиваем зависимости
+COPY go.mod go.sum ./
+RUN go mod download && go mod verify
+
+# Копируем исходный код
 COPY . .
 
 ARG ENABLE_NVML=true
 
-# Сборка агента с условным включением NVML
-# -trimpath — воспроизводимая сборка
-# -ldflags "-w -s" — минимизация размера
-RUN if [ "$ENABLE_NVML" = "true" ]; then \
-        CGO_ENABLED=1 GOOS=linux GOARCH=amd64 \
-        go build -trimpath -ldflags "-w -s" \
-        -tags nvml -o agent ./cmd/agent; \
-    else \
-        CGO_ENABLED=0 GOOS=linux GOARCH=amd64 \
-        go build -trimpath -ldflags "-w -s -extldflags '-static'" \
-        -a -installsuffix cgo -o agent ./cmd/agent; \
-    fi
+# Сборка с NVML под glibc (nvidia/cuda base)
+RUN --mount=type=cache,target=/go/pkg/mod \
+    --mount=type=cache,target=/root/.cache/go-build \
+    CGO_ENABLED=1 GOOS=linux GOARCH=amd64 \
+    go build -trimpath -ldflags "-w -s" \
+    -tags nvml -o agent ./cmd/agent
 
 # -----------------------------------------------------------------------------
-# Stage 4: production — минимальный runtime
+# Stage 4: agent-cpu — distroless (статический бинарник, без shell)
 # -----------------------------------------------------------------------------
-FROM ${BASE_IMAGE} AS production
+FROM gcr.io/distroless/static-debian12:nonroot AS agent-cpu
 
 WORKDIR /app
-
-# Минимальные зависимости runtime
-RUN apt-get update && \
-    apt-get install -y --no-install-recommends tzdata ca-certificates curl wget && \
-    rm -rf /var/lib/apt/lists/*
-
-# Копирование бинарника из builder
 COPY --from=builder /build/agent .
 
-# Создание непривилегированного пользователя
-RUN groupadd -g 1000 appgroup && \
-    useradd -u 1000 -g appgroup -m -s /bin/sh appuser && \
-    chown -R appuser:appgroup /app
-
-USER appuser
-
-# Экспозиция порта агента
 EXPOSE 18032
 
-# Метки образа
-LABEL org.opencontainers.image.title="Ollama Load Balancer Agent"
-LABEL org.opencontainers.image.description="Agent for collecting GPU/CPU metrics from Ollama servers"
+LABEL org.opencontainers.image.title="Ollama Load Balancer Agent (CPU)"
+LABEL org.opencontainers.image.description="Agent for collecting CPU metrics from Ollama servers"
 LABEL org.opencontainers.image.vendor="OllamaLegion"
-LABEL org.opencontainers.image.version="1.1.0"
+LABEL org.opencontainers.image.version="1.2.0"
 LABEL org.opencontainers.image.source="https://github.com/BarsSky/ollamalegion"
 
-# Health check — проверка /health endpoint агента
-HEALTHCHECK --interval=30s --timeout=10s --start-period=10s --retries=3 \
-    CMD wget --no-verbose --tries=1 --spider http://localhost:18032/health || exit 1
+HEALTHCHECK --interval=30s --timeout=10s --start-period=15s --retries=3 \
+    CMD ["/app/agent", "-healthcheck"]
 
-# Запуск агента
-ENTRYPOINT ["./agent"]
+ENTRYPOINT ["/app/agent"]
+CMD []
+
+# -----------------------------------------------------------------------------
+# Stage 5: agent-gpu — NVIDIA CUDA base (локальный образ)
+# -----------------------------------------------------------------------------
+FROM nvidia/cuda:12.2.0-base-ubuntu22.04 AS agent-gpu
+
+WORKDIR /app
+COPY --from=builder-gpu /build/agent .
+
+# Минимальные runtime-зависимости
+RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
+    --mount=type=cache,target=/var/lib/apt,sharing=locked \
+    apt-get update && \
+    apt-get install -y --no-install-recommends tzdata ca-certificates wget && \
+    rm -rf /var/lib/apt/lists/*
+
+RUN groupadd -g 65532 appgroup && \
+    useradd -u 65532 -g appgroup -m -s /bin/sh appuser && \
+    chown -R appuser:appgroup /app
+
+USER 65532
+
+EXPOSE 18032
+
+LABEL org.opencontainers.image.title="Ollama Load Balancer Agent (GPU)"
+LABEL org.opencontainers.image.description="Agent for collecting GPU/CPU metrics from Ollama servers with NVML"
+LABEL org.opencontainers.image.vendor="OllamaLegion"
+LABEL org.opencontainers.image.version="1.2.0"
+LABEL org.opencontainers.image.source="https://github.com/BarsSky/ollamalegion"
+
+HEALTHCHECK --interval=30s --timeout=10s --start-period=15s --retries=3 \
+    CMD ["/app/agent", "-healthcheck"]
+
+ENTRYPOINT ["/app/agent"]
 CMD []

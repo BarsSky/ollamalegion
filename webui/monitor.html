@@ -3,35 +3,51 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>OllamaLegion Monitor</title>
-  <style>
+    <title>OllamaLegion Monitor</title>
+    <link rel="icon" type="image/png" sizes="32x32" href="favicon-32x32.png">
+    <link rel="icon" type="image/png" sizes="16x16" href="favicon-16x16.png">
+    <link rel="shortcut icon" href="favicon.ico">
+    <!-- Shared theme system -->
+    <link rel="stylesheet" href="css/themes.css?v=5">
+    <link rel="stylesheet" href="css/base.css?v=5">
+    <!-- i18n Language Packs -->
+    <script src="js/i18n/ru.js?v=4"></script>
+    <script src="js/i18n/en.js?v=4"></script>
+    <script src="js/i18n/index.js?v=4"></script>
+    <style>
     :root {
-      --bg: #0b1120;
-      --bg-panel: #111827;
-      --bg-panel-hover: #1e293b;
-      --text: #e2e8f0;
-      --text-muted: #94a3b8;
-      --border: #334155;
-      --green: #22c55e;
-      --green-dim: #16a34a;
-      --yellow: #f59e0b;
-      --red: #ef4444;
-      --blue: #3b82f6;
-      --purple: #a855f7;
-      --cyan: #38bdf8;
-      --orange: #f97316;
+      /* Monitor-specific tokens (theme colors come from themes.css) */
       --font: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
       --font-mono: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+      /* Alias border-color → themes.css --border */
+      --border-color: var(--border);
+      /* Row separator / subtle bg */
+      --row-border: rgba(255, 255, 255, 0.07);
+      --row-stripe: rgba(255, 255, 255, 0.015);
+    }
+    [data-theme="light"] {
+      --row-border: rgba(0, 0, 0, 0.06);
+      --row-stripe: rgba(0, 0, 0, 0.01);
     }
     * { box-sizing: border-box; margin: 0; padding: 0; }
     html, body {
-      background: var(--bg);
-      color: var(--text);
+      background: var(--bg-primary);
+      color: var(--text-primary);
       font-family: var(--font);
       font-size: 14px;
-      line-height: 1.45;
+      line-height: 1.5;
       height: 100%;
       overflow: hidden;
+    }
+    body::before {
+      content: '';
+      position: fixed;
+      inset: 0;
+      background: radial-gradient(ellipse at 20% 50%, rgba(59,130,246,0.06) 0%, transparent 55%),
+                  radial-gradient(ellipse at 80% 30%, rgba(168,85,247,0.05) 0%, transparent 50%),
+                  radial-gradient(ellipse at 50% 80%, rgba(34,197,94,0.04) 0%, transparent 45%);
+      pointer-events: none;
+      z-index: 0;
     }
 
     /* Header */
@@ -40,9 +56,23 @@
       align-items: center;
       justify-content: space-between;
       padding: 10px 16px;
-      background: var(--bg-panel);
-      border-bottom: 1px solid var(--border);
+      background: var(--glass-bg);
+      backdrop-filter: blur(var(--glass-blur));
+      -webkit-backdrop-filter: blur(var(--glass-blur));
+      border-bottom: 1px solid var(--glass-border);
+      box-shadow: var(--glass-shadow);
       flex-shrink: 0;
+      position: relative;
+      z-index: 2;
+      overflow: hidden;
+    }
+    header::after {
+      content: '';
+      position: absolute;
+      top: 0; left: 0; right: 0;
+      height: 1px;
+      background: var(--glass-highlight);
+      pointer-events: none;
     }
     header h1 {
       font-size: 16px;
@@ -55,13 +85,13 @@
       width: 8px;
       height: 8px;
       border-radius: 50%;
-      background: var(--green);
+      background: var(--success);
       display: inline-block;
       animation: pulse 2s infinite;
     }
-    header h1 .dot.offline { background: var(--red); animation: none; }
-    header h1 .dot.error { background: var(--yellow); animation: none; }
-    header h1 .dot.demo { background: var(--cyan); animation: none; }
+    header h1 .dot.offline { background: var(--danger); animation: none; }
+    header h1 .dot.error { background: var(--warning); animation: none; }
+    header h1 .dot.demo { background: var(--info); animation: none; }
     @keyframes pulse {
       0%, 100% { opacity: 1; }
       50% { opacity: 0.4; }
@@ -81,26 +111,26 @@
       font-weight: 600;
       font-family: var(--font-mono);
       background: rgba(255,255,255,0.06);
-      color: var(--text-muted);
-      border: 1px solid var(--border);
+      color: var(--text-secondary);
+      border: 1px solid var(--border-color);
     }
-    .badge-green { background: rgba(34,197,94,0.12); color: var(--green); border-color: rgba(34,197,94,0.25); }
-    .badge-yellow { background: rgba(245,158,11,0.12); color: var(--yellow); border-color: rgba(245,158,11,0.25); }
-    .badge-red { background: rgba(239,68,68,0.12); color: var(--red); border-color: rgba(239,68,68,0.25); }
-    .badge-blue { background: rgba(59,130,246,0.12); color: var(--blue); border-color: rgba(59,130,246,0.25); }
-    .badge-purple { background: rgba(168,85,247,0.12); color: var(--purple); border-color: rgba(168,85,247,0.2); }
-    .badge-orange { background: rgba(249,115,22,0.12); color: var(--orange); border-color: rgba(249,115,22,0.25); }
+    .badge-green { background: rgba(34,197,94,0.12); color: var(--success); border-color: rgba(34,197,94,0.25); }
+    .badge-yellow { background: rgba(245,158,11,0.12); color: var(--warning); border-color: rgba(245,158,11,0.25); }
+    .badge-red { background: rgba(239,68,68,0.12); color: var(--danger); border-color: rgba(239,68,68,0.25); }
+    .badge-blue { background: rgba(59,130,246,0.12); color: var(--accent); border-color: rgba(59,130,246,0.25); }
+    .badge-purple { background: rgba(168,85,247,0.12); color: var(--purple-accent); border-color: rgba(168,85,247,0.2); }
+    .badge-orange { background: rgba(249,115,22,0.12); color: #f97316; border-color: rgba(249,115,22,0.25); }
 
     select, button {
-      background: var(--bg-panel-hover);
-      color: var(--text);
-      border: 1px solid var(--border);
+      background: var(--bg-hover);
+      color: var(--text-primary);
+      border: 1px solid var(--border-color);
       border-radius: 6px;
       padding: 4px 10px;
       font-size: 12px;
       cursor: pointer;
     }
-    button:hover { border-color: var(--blue); }
+    button:hover { border-color: var(--accent); }
     button:disabled { opacity: 0.5; cursor: not-allowed; }
 
     /* Overlay messages */
@@ -112,18 +142,20 @@
       align-items: center;
       justify-content: center;
       gap: 12px;
-      background: rgba(11,17,32,0.92);
+      background: rgba(11,17,32,0.85);
+      backdrop-filter: blur(12px);
+      -webkit-backdrop-filter: blur(12px);
       z-index: 10;
       text-align: center;
       padding: 24px;
     }
     .overlay.hidden { display: none; }
-    .overlay h2 { font-size: 18px; color: var(--text); }
-    .overlay p { color: var(--text-muted); max-width: 480px; }
+    .overlay h2 { font-size: 18px; color: var(--text-primary); }
+    .overlay p { color: var(--text-secondary); max-width: 480px; }
     .overlay .spinner {
       width: 32px; height: 32px;
-      border: 3px solid var(--border);
-      border-top-color: var(--blue);
+      border: 3px solid var(--border-color);
+      border-top-color: var(--accent);
       border-radius: 50%;
       animation: spin 1s linear infinite;
     }
@@ -155,12 +187,24 @@
       transform: translateX(-50%);
       display: flex;
       gap: 8px;
-      background: rgba(17,24,39,0.92);
-      border: 1px solid var(--border);
-      border-radius: 10px;
+      background: var(--glass-bg);
+      border: 1px solid var(--glass-border);
+      border-radius: 12px;
       padding: 6px 10px;
-      backdrop-filter: blur(4px);
+      backdrop-filter: blur(var(--glass-blur));
+      -webkit-backdrop-filter: blur(var(--glass-blur));
+      box-shadow: var(--glass-shadow);
       z-index: 5;
+      overflow: hidden;
+    }
+    .stats-bar::after {
+      content: '';
+      position: absolute;
+      top: 0; left: 0; right: 0;
+      height: 1px;
+      background: var(--glass-highlight);
+      pointer-events: none;
+      border-radius: 12px 12px 0 0;
     }
     .stat-item {
       display: flex;
@@ -172,12 +216,12 @@
     .stat-item .stat-val {
       font-size: 15px;
       font-weight: 700;
-      color: var(--text);
+      color: var(--text-primary);
       font-family: var(--font-mono);
     }
     .stat-item .stat-label {
       font-size: 10px;
-      color: var(--text-muted);
+      color: var(--text-secondary);
       text-transform: uppercase;
       letter-spacing: 0.3px;
     }
@@ -187,26 +231,40 @@
       flex: 0 0 auto;
       max-height: 45vh;
       overflow-y: auto;
-      border-top: 1px solid var(--border);
-      background: var(--bg-panel);
+      border-top: 1px solid var(--glass-border);
+      background: var(--glass-bg);
+      backdrop-filter: blur(var(--glass-blur));
+      -webkit-backdrop-filter: blur(var(--glass-blur));
+      box-shadow: var(--glass-shadow);
+      position: relative;
+    }
+    .tables-area::after {
+      content: '';
+      position: sticky;
+      top: 0; left: 0; right: 0;
+      height: 1px;
+      background: var(--glass-highlight);
+      pointer-events: none;
+      z-index: 10;
     }
     .panel {
-      border-bottom: 1px solid var(--border);
+      border-bottom: 1px solid var(--border-color);
     }
     .panel-header {
       display: flex;
       align-items: center;
       justify-content: space-between;
-      padding: 8px 14px;
+      padding: 10px 16px;
       cursor: pointer;
       user-select: none;
       font-weight: 600;
       font-size: 12px;
       text-transform: uppercase;
-      letter-spacing: 0.4px;
-      color: var(--text-muted);
+      letter-spacing: 0.5px;
+      color: var(--text-secondary);
+      transition: background 0.2s, color 0.2s;
     }
-    .panel-header:hover { color: var(--text); background: var(--bg-panel-hover); }
+    .panel-header:hover { color: var(--text-primary); background: var(--bg-hover); }
     .panel-body { display: none; padding: 0 14px 10px; }
     .panel.open .panel-body { display: block; }
     .panel.open .panel-header .chevron { transform: rotate(180deg); }
@@ -215,24 +273,26 @@
     table {
       width: 100%;
       border-collapse: collapse;
-      font-size: 12px;
+      font-size: 13px;
     }
     thead th {
       text-align: left;
-      padding: 6px 8px;
-      color: var(--text-muted);
+      padding: 7px 10px;
+      color: var(--text-secondary);
       font-weight: 600;
-      border-bottom: 1px solid var(--border);
+      border-bottom: 1px solid var(--border-color);
       position: sticky;
       top: 0;
-      background: var(--bg-panel);
+      background: var(--bg-secondary);
+      z-index: 2;
     }
     tbody td {
-      padding: 5px 8px;
-      border-bottom: 1px solid rgba(255,255,255,0.04);
+      padding: 7px 10px;
+      border-bottom: 1px solid var(--row-border);
       vertical-align: middle;
     }
-    tbody tr:hover { background: rgba(255,255,255,0.03); }
+    tbody tr:nth-child(even) { background: var(--row-stripe); }
+    tbody tr:hover { background: rgba(255,255,255,0.04); }
     .col-right { text-align: right; }
 
     .bar-track {
@@ -260,8 +320,8 @@
       margin: 6px 14px 0;
       font-size: 12px;
     }
-    .alert-red { background: rgba(239,68,68,0.08); border: 1px solid rgba(239,68,68,0.25); color: var(--red); }
-    .alert-yellow { background: rgba(245,158,11,0.08); border: 1px solid rgba(245,158,11,0.25); color: var(--yellow); }
+    .alert-red { background: rgba(239,68,68,0.08); border: 1px solid rgba(239,68,68,0.25); color: var(--danger); }
+    .alert-yellow { background: rgba(245,158,11,0.08); border: 1px solid rgba(245,158,11,0.25); color: var(--warning); }
 
     /* Model capacity section */
     .capacity-grid {
@@ -271,17 +331,30 @@
       padding: 10px 14px;
     }
     .capacity-card {
-      background: rgba(255,255,255,0.03);
-      border: 1px solid var(--border);
-      border-radius: 8px;
+      background: var(--glass-bg);
+      border: 1px solid var(--glass-border);
+      border-radius: 12px;
       padding: 10px 12px;
+      backdrop-filter: blur(4px);
+      -webkit-backdrop-filter: blur(4px);
+      box-shadow: var(--glass-shadow);
+      position: relative;
+    }
+    .capacity-card::after {
+      content: '';
+      position: absolute;
+      top: 0; left: 0; right: 0;
+      height: 1px;
+      background: var(--glass-highlight);
+      pointer-events: none;
+      border-radius: 12px 12px 0 0;
     }
     .capacity-card h4 {
       font-size: 11px;
-      color: var(--text-muted);
+      color: var(--text-secondary);
       margin-bottom: 6px;
       text-transform: uppercase;
-      letter-spacing: 0.4px;
+      letter-spacing: 0.5px;
     }
     .capacity-bar {
       display: flex;
@@ -304,7 +377,7 @@
     .capacity-val {
       font-size: 11px;
       font-family: var(--font-mono);
-      color: var(--text-muted);
+      color: var(--text-secondary);
       min-width: 60px;
       text-align: right;
     }
@@ -318,7 +391,7 @@
     /* Scrollbar */
     ::-webkit-scrollbar { width: 6px; height: 6px; }
     ::-webkit-scrollbar-track { background: transparent; }
-    ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
+    ::-webkit-scrollbar-thumb { background: var(--border-color); border-radius: 3px; }
 
     /* Loading progress on backend node */
     @keyframes loadPulse {
@@ -335,6 +408,7 @@
   <h1>
     <span id="statusDot" class="dot"></span>
     OllamaLegion — Monitor
+    <span id="demoIndicator" style="display:none;background:var(--danger);color:#fff;font-size:10px;font-weight:700;padding:2px 8px;border-radius:4px;margin-left:8px;text-transform:uppercase;letter-spacing:0.5px">ДЕМО</span>
   </h1>
   <div class="header-right">
     <select id="intervalSelect">
@@ -358,14 +432,14 @@
       <div class="spinner"></div>
       <h2>Подключение к API…</h2>
       <p>Ожидание ответа от балансировщика. Если вы запускаете под Docker, убедитесь, что сервис <code>loadbalancer</code> поднят.</p>
-      <p style="font-size:11px;color:var(--text-muted);margin-top:4px">API Base: <code id="apiBaseDisplay">—</code></p>
+      <p style="font-size:11px;color:var(--text-secondary);margin-top:4px">API Base: <code id="apiBaseDisplay">—</code></p>
     </div>
 
     <!-- Error overlay -->
     <div id="errorOverlay" class="overlay hidden">
       <h2>⚠ Нет подключения к балансировщику</h2>
       <p id="errorText">Не удалось получить данные. Проверьте, что API доступен и CORS настроен корректно.</p>
-      <div id="errorDetails" style="font-size:11px;color:var(--text-muted);max-width:480px;text-align:left;background:rgba(255,255,255,0.03);padding:8px 12px;border-radius:6px;margin-top:4px;line-height:1.6"></div>
+      <div id="errorDetails" style="font-size:11px;color:var(--text-secondary);max-width:480px;text-align:left;background:rgba(255,255,255,0.03);padding:8px 12px;border-radius:6px;margin-top:4px;line-height:1.6"></div>
       <div style="margin-top:8px">
         <button onclick="retryNow()">🔄 Повторить</button>
         <button onclick="enterDemoMode()" style="margin-left:8px">▶ Демо-режим</button>
@@ -418,7 +492,7 @@
                 <th>Модель</th><th>Бэкенды</th><th class="col-right">Сессий</th><th class="col-right">VRAM</th><th class="col-right">Загрузка</th>
               </tr>
             </thead>
-            <tbody><tr><td colspan="5" style="color:var(--text-muted);text-align:center;padding:16px">Нет данных</td></tr></tbody>
+            <tbody><tr><td colspan="5" style="color:var(--text-secondary);text-align:center;padding:16px">Нет данных</td></tr></tbody>
           </table>
         </div>
       </div>
@@ -439,7 +513,7 @@
                 <th>Модели</th><th class="col-right">Uptime</th>
               </tr>
             </thead>
-            <tbody><tr><td colspan="11" style="color:var(--text-muted);text-align:center;padding:16px">Нет данных</td></tr></tbody>
+            <tbody><tr><td colspan="11" style="color:var(--text-secondary);text-align:center;padding:16px">Нет данных</td></tr></tbody>
           </table>
         </div>
       </div>
@@ -458,7 +532,7 @@
                 <th>#</th><th>Модель</th><th>Target</th><th>Статус</th><th class="col-right">Ожидание</th><th>Сессия</th>
               </tr>
             </thead>
-            <tbody><tr><td colspan="7" style="color:var(--text-muted);text-align:center;padding:16px">Нет данных</td></tr></tbody>
+            <tbody><tr><td colspan="7" style="color:var(--text-secondary);text-align:center;padding:16px">Нет данных</td></tr></tbody>
           </table>
         </div>
       </div>
@@ -477,7 +551,7 @@
                 <th>ID</th><th>Backend</th><th>Модель</th><th class="col-right">Запросов</th><th class="col-right">Idle</th><th>IP</th><th>Клиент</th>
               </tr>
             </thead>
-            <tbody><tr><td colspan="7" style="color:var(--text-muted);text-align:center;padding:16px">Нет данных</td></tr></tbody>
+            <tbody><tr><td colspan="7" style="color:var(--text-secondary);text-align:center;padding:16px">Нет данных</td></tr></tbody>
           </table>
         </div>
       </div>
@@ -524,6 +598,7 @@
   let fetchAttempt = 0;
   let lastData = null;
   let lastTime = Date.now();
+  let lastTotalRequests = 0;
   let lastRequestCount = 0;
   let requestRate = 0;
 
@@ -566,11 +641,18 @@
   // ==================== API ====================
   function api(path) {
     const token = new URLSearchParams(location.search).get('token') || localStorage.getItem('apiToken') || '';
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 5000);
     return fetch(API_BASE + path, {
-      headers: token ? { 'X-API-Token': token } : {}
+      headers: token ? { 'X-API-Token': token } : {},
+      signal: controller.signal
     }).then(r => {
+      clearTimeout(timeoutId);
       if (!r.ok) throw new Error(r.status + ' ' + r.statusText);
       return r.json();
+    }).catch(e => {
+      clearTimeout(timeoutId);
+      throw e;
     });
   }
 
@@ -583,11 +665,17 @@
         api('/api/v1/queue/details').catch(e => { console.error('[monitor] queue:', e.message); return null; }),
         api('/api/v1/sessions').catch(e => { console.error('[monitor] sessions:', e.message); return null; }),
       ]);
-      const data = { cluster, queueDetails, sessions };
-      lastData = data;
+      // Сбрасываем кэш, если backends пуст (чтобы не показывать устаревшие данные)
+      if (cluster && (!cluster.backends || cluster.backends.length === 0)) {
+        lastData = null;
+      } else {
+        const data = { cluster, queueDetails, sessions };
+        lastData = data;
+      }
       fetchAttempt = 0;
       corsErrorDetected = false;
       hideOverlays();
+      document.getElementById('demoIndicator').style.display = 'none';
       setConnStatus('Live', 'green');
       document.getElementById('demoBtn').style.display = 'none';
       updateUI(data);
@@ -608,14 +696,6 @@
         }
         showError(msg);
         renderErrorDetails(e);
-        // Auto-enter demo if no connection after 3 attempts
-        if (!demoMode && fetchAttempt >= 3) {
-          setTimeout(() => {
-            if (fetchAttempt >= 3 && !lastData) {
-              enterDemoMode();
-            }
-          }, 2000);
-        }
       } else {
         setConnStatus('Offline', 'red');
       }
@@ -709,6 +789,7 @@
     hideOverlays();
     setConnStatus('Demo', 'blue');
     document.getElementById('demoBtn').style.display = 'none';
+    document.getElementById('demoIndicator').style.display = 'inline';
     updateUI(demoData());
   }
 
@@ -729,6 +810,24 @@
 
   // ==================== UPDATE UI ====================
   function updateUI(data) {
+    // Если данных нет — сбрасываем счётчики (чтобы не показывать фантомный трафик)
+    if (!data || !data.cluster) {
+      document.getElementById('statRate').textContent = '0';
+      document.getElementById('statRPSCluster').textContent = '0';
+      document.getElementById('statActive').textContent = '0';
+      document.getElementById('statPending').textContent = '0';
+      document.getElementById('statProcessing').textContent = '0';
+      document.getElementById('statSessions').textContent = '0';
+      document.getElementById('statBackends').textContent = '0';
+      document.getElementById('statVRAM').textContent = '—';
+      document.getElementById('statModelsLoaded').textContent = '0';
+      lastTotalRequests = 0;
+      requestRate = 0;
+      // Показываем "Нет активных клиентов" если система в покое
+      setConnStatus('Idle', 'green');
+      return;
+    }
+
     // === ADAPTER: transform Go API format → JS expected format ===
     const adaptBackend = (b) => {
       if (!b) return b;
@@ -749,9 +848,15 @@
         maxConcurrentRequests: b.maxConcurrentRequests !== undefined ? b.maxConcurrentRequests : (ollama.maxConcurrentRequests || ollama.MaxConcurrentRequests || 10),
         models: b.models || (ollama.runningModels || ollama.RunningModels || []).map(m => m.name || m.Name),
         vram: b.vram || {
-          totalGB: (gpu.memoryTotal || gpu.MemoryTotal || 0) / 1024,
-          usedGB: (gpu.memoryUsed || gpu.MemoryUsed || 0) / 1024
+          totalGB: b.vramTotalGB || (gpu.memoryTotal || gpu.MemoryTotal || 0) / 1024,
+          usedGB: b.vramUsedGB || (gpu.memoryUsed || gpu.MemoryUsed || 0) / 1024,
+          usagePercent: b.vramUsagePercent || ((gpu.memoryUsed || gpu.MemoryUsed || 0) / (gpu.memoryTotal || gpu.MemoryTotal || 1) * 100)
         },
+        memoryUsagePercent: b.memoryUsagePercent || (() => {
+          const total = (sys.memoryTotal || sys.MemoryTotal || 0);
+          const used = (sys.memoryUsed || sys.MemoryUsed || 0);
+          return total > 0 ? (used / total * 100) : 0;
+        })(),
         gpu: gpu,
         system: sys,
         ollama: ollama
@@ -784,15 +889,22 @@
 
     const now = Date.now();
     const dt = (now - lastTime) / 1000;
-    const totalReqs = queue.processed_total || 0;
-    const rate = dt > 0 ? (totalReqs - lastRequestCount) / dt : 0;
+    // Используем общий счётчик запросов прокси (работает всегда, не только через очередь)
+    const totalReqs = (data.cluster?.totalRequests || 0);
+    const rate = dt > 0 ? (totalReqs - lastTotalRequests) / dt : 0;
     requestRate = Math.max(0, rate);
-    lastRequestCount = totalReqs;
+    lastTotalRequests = totalReqs;
     lastTime = now;
     document.getElementById('statRate').textContent = requestRate.toFixed(1);
     document.getElementById('statRPSCluster').textContent = (data.cluster?.rps || 0) > 0 ? data.cluster.rps.toFixed(1) : '0';
     document.getElementById('statVRAM').textContent = totalVRAM > 0 ? usedVRAM.toFixed(1) + '/' + totalVRAM.toFixed(0) + 'G' : '—';
     document.getElementById('statModelsLoaded').textContent = totalModelsLoaded;
+
+    // Индикатор: "Нет активных клиентов" когда система в покое
+    if (sess.length === 0 && activeReqs === 0 && pending === 0 && processing === 0) {
+      document.getElementById('statusDot').className = 'dot';
+      setConnStatus('Idle', 'green');
+    }
 
     diagnose(data);
     renderClusterResources(backends);
@@ -859,7 +971,7 @@
       <div class="alert-banner alert-${a.level}">
         <span>${a.level==='red'?'❌':'⚠️'}</span>
         <span>${escapeHtml(a.text)}</span>
-        ${a.action === 'rebalance' ? `<button onclick="forceRebalance()" style="margin-left:8px;padding:2px 8px;font-size:11px;background:var(--red);color:#fff;border:none;border-radius:4px;cursor:pointer">⚡ Перераспределить</button>` : ''}
+        ${a.action === 'rebalance' ? `<button onclick="forceRebalance()" style="margin-left:8px;padding:2px 8px;font-size:11px;background:var(--danger);color:#fff;border:none;border-radius:4px;cursor:pointer">⚡ Перераспределить</button>` : ''}
       </div>`).join('');
   }
 
@@ -867,19 +979,20 @@
   function renderClusterResources(backends) {
     const grid = document.getElementById('capacityGrid');
     if (!backends.length) {
-      grid.innerHTML = '<div style="color:var(--text-muted);text-align:center;padding:8px">Нет данных</div>';
+      grid.innerHTML = '<div style="color:var(--text-secondary);text-align:center;padding:8px">Нет данных</div>';
       return;
     }
 
     const metrics = [
-      { label: 'GPU', key: 'gpu', unit: '%', color: 'var(--blue)' },
-      { label: 'VRAM', key: 'vram', unit: '%', color: 'var(--purple)' },
-      { label: 'CPU', key: 'system', subkey: 'cpuUsagePercent', unit: '%', color: 'var(--green)' },
-      { label: 'RAM', key: 'system', subkey: 'memoryUsagePercent', unit: '%', color: 'var(--yellow)' },
+      { label: 'GPU', key: 'gpu', unit: '%', color: 'var(--accent)' },
+      { label: 'VRAM', key: 'vram', unit: '%', color: 'var(--purple-accent)' },
+      { label: 'CPU', key: 'system', subkey: 'cpuUsagePercent', unit: '%', color: 'var(--success)' },
+      { label: 'RAM', key: 'system', subkey: 'memoryUsagePercent', unit: '%', color: 'var(--warning)', useFlatKey: 'memoryUsagePercent' },
     ];
 
     grid.innerHTML = metrics.map(m => {
       const vals = backends.map(b => {
+        if (m.useFlatKey) return (b[m.useFlatKey]) || 0;
         if (m.subkey) return (b[m.key] && b[m.key][m.subkey]) || 0;
         return (b[m.key] && b[m.key].usagePercent) || 0;
       }).filter(v => v > 0);
@@ -906,7 +1019,7 @@
           const active = b.activeRequests || 0;
           const free = maxReqs - active;
           const pct = active / maxReqs * 100;
-          const color = pct >= 80 ? 'var(--red)' : pct >= 50 ? 'var(--yellow)' : 'var(--green)';
+          const color = pct >= 80 ? 'var(--danger)' : pct >= 50 ? 'var(--warning)' : 'var(--success)';
           return `<div class="capacity-bar">
             <span style="font-size:11px;min-width:80px">${escapeHtml(b.id)}</span>
             <div class="bar-track-wide"><div class="bar-fill-wide" style="width:${pct}%;background:${color}"></div></div>
@@ -920,7 +1033,7 @@
           const total = b.vram?.totalGB || 0;
           const used = b.vram?.usedGB || 0;
           const pct = total > 0 ? (used / total * 100) : 0;
-          const color = pct >= 85 ? 'var(--red)' : pct >= 60 ? 'var(--yellow)' : 'var(--green)';
+          const color = pct >= 85 ? 'var(--danger)' : pct >= 60 ? 'var(--warning)' : 'var(--success)';
           return `<div class="capacity-bar">
             <span style="font-size:11px;min-width:80px">${escapeHtml(b.id)}</span>
             <div class="bar-track-wide"><div class="bar-fill-wide" style="width:${pct}%;background:${color}"></div></div>
@@ -951,7 +1064,7 @@
     document.getElementById('modelsCount').textContent = models.length;
     const tbody = document.querySelector('#modelsTable tbody');
     if (!models.length) {
-      tbody.innerHTML = '<tr><td colspan="5" style="color:var(--text-muted);text-align:center;padding:16px">Нет данных</td></tr>';
+      tbody.innerHTML = '<tr><td colspan="5" style="color:var(--text-secondary);text-align:center;padding:16px">Нет данных</td></tr>';
       return;
     }
     tbody.innerHTML = models.map(([name, info]) => {
@@ -972,14 +1085,14 @@
   function renderBackends(backends) {
     document.getElementById('backendCount').textContent = backends.length;
     const tbody = document.querySelector('#backendsTable tbody');
-    if (!backends.length) { tbody.innerHTML = '<tr><td colspan="11" style="color:var(--text-muted);text-align:center;padding:16px">Нет данных</td></tr>'; return; }
+    if (!backends.length) { tbody.innerHTML = '<tr><td colspan="11" style="color:var(--text-secondary);text-align:center;padding:16px">Нет данных</td></tr>'; return; }
     tbody.innerHTML = backends.map(b => {
       const maxReqs = b.maxConcurrentRequests || 10;
       const active = b.activeRequests || 0;
       const gpu = b.gpu?.usagePercent || 0;
-      const vram = b.vram?.usagePercent || b.gpu?.memoryUsagePercent || 0;
+      const vram = b.vram?.usagePercent || b.vramUsagePercent || 0;
       const cpu = b.system?.cpuUsagePercent || 0;
-      const ram = b.system?.memoryUsagePercent || 0;
+      const ram = b.memoryUsagePercent || b.system?.memoryUsagePercent || 0;
       const score = (b.score || b.weight || 0).toFixed(2);
       const statusClass = b.status === 'healthy' || b.status === 'active' || b.status === 'ready' ? 'badge-green' : (b.status === 'error' || b.status === 'unhealthy' ? 'badge-red' : 'badge-yellow');
       const uptime = b.lastSeen ? formatDuration(Date.now() - new Date(b.lastSeen).getTime()) : '-';
@@ -994,7 +1107,7 @@
         <td class="col-right">${active}/${maxReqs}</td>
         <td class="col-right">${rps > 0 ? rps.toFixed(1) : '-'}</td>
         <td class="col-right">${score}</td>
-        <td>${(b.models||[]).slice(0,3).map(m => `<span class="badge" style="background:rgba(168,85,247,0.12);color:var(--purple);border-color:rgba(168,85,247,0.2)">${escapeHtml(m)}</span>`).join(' ')}</td>
+        <td>${(b.models||[]).slice(0,3).map(m => `<span class="badge" style="background:rgba(168,85,247,0.12);color:var(--purple-accent);border-color:rgba(168,85,247,0.2)">${escapeHtml(m)}</span>`).join(' ')}</td>
         <td class="col-right">${uptime}</td>
       </tr>`;
     }).join('');
@@ -1004,7 +1117,7 @@
     const all = queue.all || [];
     document.getElementById('queueCount').textContent = all.length;
     const tbody = document.querySelector('#queueTable tbody');
-    if (!all.length) { tbody.innerHTML = '<tr><td colspan="6" style="color:var(--text-muted);text-align:center;padding:16px">Нет данных</td></tr>'; return; }
+    if (!all.length) { tbody.innerHTML = '<tr><td colspan="6" style="color:var(--text-secondary);text-align:center;padding:16px">Нет данных</td></tr>'; return; }
     tbody.innerHTML = all.map((q, i) => {
       const waitMs = q.enqueued ? (Date.now() - new Date(q.enqueued).getTime()) : 0;
       const status = q.status || (q.target ? 'processing' : 'pending');
@@ -1023,7 +1136,7 @@
   function renderSessions(sessions) {
     document.getElementById('sessionCount').textContent = sessions.length;
     const tbody = document.querySelector('#sessionsTable tbody');
-    if (!sessions.length) { tbody.innerHTML = '<tr><td colspan="7" style="color:var(--text-muted);text-align:center;padding:16px">Нет данных</td></tr>'; return; }
+    if (!sessions.length) { tbody.innerHTML = '<tr><td colspan="7" style="color:var(--text-secondary);text-align:center;padding:16px">Нет данных</td></tr>'; return; }
     tbody.innerHTML = sessions.map(s => {
       const idle = s.lastRequestAt ? formatDuration(Date.now() - new Date(s.lastRequestAt).getTime()) : '-';
       const clientIcon = getClientIcon(s.clientName);
@@ -1053,9 +1166,9 @@
 
   function bar(val) {
     const v = Math.max(0, Math.min(100, val || 0));
-    let color = 'var(--green)';
-    if (v > 60) color = 'var(--yellow)';
-    if (v > 85) color = 'var(--red)';
+    let color = 'var(--success)';
+    if (v > 60) color = 'var(--warning)';
+    if (v > 85) color = 'var(--danger)';
     return `<span class="bar-track"><span class="bar-fill" style="width:${v}%;background:${color}"></span></span>`;
   }
   function escapeHtml(s) {
@@ -1311,7 +1424,7 @@
       ctx.fillText(clientIcon + ' ' + clientLabel, 20, y - 6);
       ctx.restore();
       // model name + req count (clipped to card width 104px)
-      ctx.fillStyle = '#94a3b8';
+      ctx.fillStyle = '#b0b7c4';
       ctx.font = '10px ' + varFont();
       const modelText = (s.model || '—') + ' • ' + (s.requestCount || 0) + ' req';
       ctx.save();
@@ -1353,7 +1466,7 @@
     ctx.font = 'bold 13px ' + varFont();
     ctx.textAlign = 'center';
     ctx.fillText('⚖️ БАЛАНСЕР', centerX, centerY - 16);
-    ctx.fillStyle = '#94a3b8';
+    ctx.fillStyle = '#b0b7c4';
     ctx.font = '11px ' + varFont();
     ctx.fillText('Очередь: ' + pending, centerX, centerY + 4);
 
@@ -1505,7 +1618,7 @@
         const container = document.getElementById('alertContainer');
         const banner = document.createElement('div');
         banner.className = 'alert-banner alert-green';
-        banner.style.cssText = 'background:rgba(34,197,94,0.08);border:1px solid rgba(34,197,94,0.25);color:var(--green)';
+        banner.style.cssText = 'background:rgba(34,197,94,0.08);border:1px solid rgba(34,197,94,0.25);color:var(--success)';
         banner.innerHTML = '<span>✅</span><span>Перераспределение инициировано. Запросы в очереди будут перенаправлены на свободные бэкенды.</span>';
         container.insertBefore(banner, container.firstChild);
         // Автоматически убираем через 6 секунд
@@ -1524,6 +1637,91 @@
   animate();
   // First fetch
   fetchAll();
+  // ==================== I18N for Monitor ====================
+  // monitor.html uses the same i18n system as index.html
+  // Language packs are already loaded via <script> tags above
+  const M = window.I18N ? {
+    t: function(key, params) { return window.I18N.t(key, params); },
+    getLang: function() { return window.I18N.getLang(); },
+    setLang: function(l) { window.I18N.setLang(l); },
+  } : {
+    t: function(k) { return k; },
+    getLang: function() { return 'ru'; },
+    setLang: function() {},
+  };
+
+  // Sync lang attribute
+  document.documentElement.setAttribute('lang', M.getLang());
+
+  // Sync theme with parent (index.html) if embedded in iframe
+  function syncTheme() {
+    try {
+      const storedTheme = localStorage.getItem('ollamalegion_theme');
+      if (storedTheme) {
+        document.documentElement.setAttribute('data-theme', storedTheme);
+        applyMonitorTheme(storedTheme);
+      }
+      // Also try to read from parent
+      if (window.parent && window.parent !== window) {
+        const parentTheme = window.parent.document.documentElement.getAttribute('data-theme');
+        if (parentTheme) {
+          document.documentElement.setAttribute('data-theme', parentTheme);
+          applyMonitorTheme(parentTheme);
+        }
+        // Sync lang from parent
+        const parentLang = window.parent.document.documentElement.getAttribute('lang');
+        if (parentLang && M.getLang() !== parentLang) {
+          M.setLang(parentLang);
+          document.documentElement.setAttribute('lang', parentLang);
+        }
+      }
+    } catch(e) { /* cross-origin, ignore */ }
+  }
+
+  function applyMonitorTheme(theme) {
+    const root = document.documentElement;
+    // All theme colors come from themes.css via data-theme attribute
+    root.setAttribute('data-theme', theme);
+    // Only overlay backgrounds need manual control (not covered by CSS variables)
+    if (theme === 'light') {
+      document.querySelectorAll('.overlay').forEach(function(el) {
+        el.style.background = 'rgba(241,245,249,0.92)';
+      });
+      document.querySelectorAll('.stats-bar').forEach(function(el) {
+        el.style.background = 'rgba(255,255,255,0.92)';
+      });
+    } else {
+      document.querySelectorAll('.overlay').forEach(function(el) {
+        el.style.background = 'rgba(11,17,32,0.92)';
+      });
+      document.querySelectorAll('.stats-bar').forEach(function(el) {
+        el.style.background = 'rgba(17,24,39,0.92)';
+      });
+    }
+  }
+
+  // Listen for i18n changes
+  window.addEventListener('i18n:changed', function(e) {
+    document.documentElement.setAttribute('lang', e.detail.lang);
+    // Refresh UI text
+    updateMonitorTexts();
+  });
+
+  // Listen for theme changes from localStorage (triggered by index.html)
+  window.addEventListener('storage', function(e) {
+    if (e.key === 'ollamalegion_theme') {
+      applyMonitorTheme(e.newValue || 'dark');
+    }
+    if (e.key === 'ollamalegion_lang') {
+      if (M.getLang() !== e.newValue) {
+        M.setLang(e.newValue);
+      }
+    }
+  });
+
+  // Apply on load
+  syncTheme();
+
 </script>
 </body>
 </html>

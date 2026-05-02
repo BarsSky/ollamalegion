@@ -18,7 +18,33 @@
     "queueTimeout": 300,
     "queueMaxSize": 100,
     "queueWorkers": 4,
-    "sessionTTL": 900
+    "sessionTTL": 900,
+    "prewarm": {
+      "enabled": true,
+      "triggerLoadThreshold": 0.70,
+      "maxPrewarmPerCycle": 2,
+      "checkIntervalSec": 10
+    },
+    "modelInstances": {
+      "defaultMinInstances": 1,
+      "defaultMaxInstances": 3,
+      "idleUnloadAfter": "10m"
+    },
+    "scoring": {
+      "modelAlreadyLoaded": 0.15,
+      "modelLoadingCost": 0.10,
+      "queueDepthPenalty": 0.05,
+      "errorRatePenalty": 0.05,
+      "predictionBonus": 0.10
+    },
+    "syncModelLoad": {
+      "enabled": true,
+      "timeout": "30s"
+    },
+    "resourceReservation": {
+      "gpuHeadroomPercent": 15,
+      "ramHeadroomPercent": 10
+    }
   },
   "resources": {
     "gpu": {

@@ -6,16 +6,12 @@ Welcome to the documentation for **OllamaLegion** — a high-performance load ba
 
 | Document | Description |
 |----------|-------------|
-| [Installation](../installation.md) | Step-by-step installation guide |
-| [Configuration](../configuration.md) | All configuration parameters for balancer and agents |
-| [Balancing Modes](../balancing-guide.md) | Description of balancing strategies: round-robin, resource-aware, model-affinity, session-stickiness |
-| [Deployment](../deployment.md) | Docker Compose, Kubernetes, systemd |
-| [Agent Deployment](../agent-deployment.md) | Monitoring agent setup and configuration |
-| [API Reference](../api.md) | Full REST API description for the balancer |
-| [Metrics](../ollamalegion-metrics.md) | Prometheus metrics and monitoring |
-| [Troubleshooting](../troubleshooting.md) | Common issues and solutions |
-| [Audit](../audit-tracking.md) | Audit system and request tracking |
-| [OpenAPI Specification](../openapi.yaml) | Swagger/OpenAPI 3.0 |
+| [Installation](installation.md) | Step-by-step installation guide |
+| [Configuration](configuration.md) | All configuration parameters for balancer and agents |
+| [Balancing Modes](balancing-guide.md) | Description of balancing strategies: round-robin, resource-aware, model-affinity, session-stickiness |
+| [API Reference](api.md) | Full REST API description for the balancer |
+| [Troubleshooting](troubleshooting.md) | Common issues and solutions |
+| [Main Docs (RU)](../) | Root documentation (Russian) |
 
 ## Quick Start
 

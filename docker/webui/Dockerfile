@@ -18,6 +18,9 @@ COPY webui/css/ ./css/
 COPY webui/js/ ./js/
 COPY webui/img/ ./img/
 COPY webui/logo.svg ./
+COPY webui/favicon-16x16.png .
+COPY webui/favicon-32x32.png .
+COPY webui/favicon.ico .
 
 # Копирование nginx шаблона конфига (будет обработан envsubst при старте)
 COPY webui/nginx.conf /etc/nginx/conf.d/default.conf.template

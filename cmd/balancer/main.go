@@ -103,7 +103,11 @@ func main() {
 	
 	// Создание прокси
 	proxy := balancer.NewProxy(conf)
-	
+
+	// Создание контроллеров оптимизации балансировки
+	prewarmCtrl := balancer.NewPrewarmController(proxy, conf.Balancing.Prewarm)
+	modelInstanceCtrl := balancer.NewModelInstanceController(proxy, conf.Balancing.ModelInstances)
+
 	// Создание health checker
 	healthChecker := balancer.NewHealthChecker(
 		proxy,
@@ -116,7 +120,11 @@ func main() {
 	
 	// Запуск health checker
 	healthChecker.Start()
-	
+
+	// Запуск контроллеров оптимизации
+	prewarmCtrl.Start()
+	modelInstanceCtrl.Start()
+
 	// Создание HTTP сервера для прокси
 	mux := http.NewServeMux()
 	mux.Handle("/", proxy)
@@ -252,6 +260,12 @@ func main() {
 
 	fmt.Println("[Agent]  Stopping agent timeout checker...")
 	proxy.StopAgentTimeoutChecker()
+
+	fmt.Println("[Prewarm] Stopping prewarm controller...")
+	prewarmCtrl.Stop()
+
+	fmt.Println("[ModelCtrl] Stopping model instance controller...")
+	modelInstanceCtrl.Stop()
 
 	// === Phase 4: Graceful HTTP shutdown ===
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)

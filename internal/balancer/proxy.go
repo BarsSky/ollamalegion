@@ -53,13 +53,37 @@ const streamContextKey contextKey = "stream"
 type BackendState struct {
 	Backend         *types.Backend
 	ActiveReqs      int
-	TotalRequests   int64                 // Atomic: всего запросов на этот бэкенд
+	TotalRequests   int64                          // Atomic: всего запросов на этот бэкенд
 	LastUsed        time.Time
-	MetricsHistory  []types.MetricsSnapshot // История метрик для прогнозирования
-	Prediction      types.Prediction        // Последний прогноз
-	RequestHistory  []time.Time             // Таймстемпы запросов для расчёта RPS (окно 60с)
-	CalculatedRPS   float64                 // Вычисленный RPS
+	MetricsHistory  []types.MetricsSnapshot        // История метрик для прогнозирования
+	Prediction      types.Prediction               // Последний прогноз
+	RequestHistory  []time.Time                    // Таймстемпы запросов для расчёта RPS (окно 60с)
+	CalculatedRPS   float64                        // Вычисленный RPS
+	WarmingUpModels map[string]*types.WarmupState  // Модели в превентивной загрузке
+	ErrorCount      int                            // Счётчик ошибок
+	TotalAttempts   int                            // Всего попыток
 	mu              sync.Mutex
+}
+
+// warmupModel — загрузка модели на Ollama через POST /api/pull (асинхронно)
+func (p *Proxy) warmupModel(backendID, host string, port int, model string) {
+	url := fmt.Sprintf("http://%s:%d/api/pull", host, port)
+	body := fmt.Sprintf(`{"name":"%s","stream":false}`, model)
+	go func() {
+		req, err := http.NewRequest("POST", url, strings.NewReader(body))
+		if err != nil {
+			logger.Get().Errorw("warmupModel: request creation failed", "backend", backendID, "model", model, "error", err)
+			return
+		}
+		req.Header.Set("Content-Type", "application/json")
+		resp, err := p.client.Do(req)
+		if err != nil {
+			logger.Get().Errorw("warmupModel: request failed", "backend", backendID, "model", model, "error", err)
+			return
+		}
+		resp.Body.Close()
+		logger.Get().Infow("warmupModel: model loaded", "backend", backendID, "model", model, "status", resp.StatusCode)
+	}()
 }
 
 // SessionManager - менеджер сессий
@@ -276,8 +300,6 @@ func (qm *QueueManager) processRequest(req *QueuedRequest, workerID int) {
 
 	// Если запрос requeue'ится более 3 раз — принудительно выбираем любой
 	// свободный бэкенд без учёта model affinity и session stickiness.
-	// Это решает проблему «зависших» запросов, когда сессия привязана
-	// к перегруженному бэкенду, а другие свободны.
 	const maxRequeues = 3
 	if req.RequeueCount >= maxRequeues {
 		logger.Get().Warnw("max requeues exceeded, forcing rebalance to any free backend",
@@ -285,7 +307,6 @@ func (qm *QueueManager) processRequest(req *QueuedRequest, workerID int) {
 			"requeue_count", req.RequeueCount,
 			"model", req.Model,
 		)
-		// Принудительно выбираем любой свободный healthy бэкенд
 		targetBackend = qm.proxy.selectFreeBackendAny()
 		if targetBackend != "" {
 			logger.Get().Infow("force rebalanced to free backend",
@@ -301,7 +322,6 @@ func (qm *QueueManager) processRequest(req *QueuedRequest, workerID int) {
 	}
 
 	if targetBackend == "" {
-		// Нет доступных бэкендов - возвращаем запрос в очередь с задержкой
 		req.RequeueCount++
 		logger.Get().Warnw("no backend available, re-queueing request",
 			"worker_id", workerID,
@@ -311,7 +331,6 @@ func (qm *QueueManager) processRequest(req *QueuedRequest, workerID int) {
 			select {
 			case qm.queue <- req:
 			case <-qm.ctx.Done():
-				// При остановке отменяем запрос
 				select {
 				case req.Done <- false:
 				default:
@@ -321,23 +340,19 @@ func (qm *QueueManager) processRequest(req *QueuedRequest, workerID int) {
 		return
 	}
 
-	// Устанавливаем целевой бэкенд и выполняем запрос
 	req.Target = targetBackend
 	logger.Get().Debugw("proxying queued request to backend",
 		"worker_id", workerID,
 		"backend", targetBackend,
 	)
 
-	// Проксируем запрос
 	qm.proxy.proxyRequest(req.Writer, req.Request, targetBackend)
 
-	// Сигнал о успешном выполнении
 	select {
 	case req.Done <- true:
 	default:
 	}
 
-	// Обновление счетчика обработанных запросов и истории
 	now := time.Now()
 	waitTimeMs := now.Sub(req.Enqueued).Milliseconds()
 	qm.mu.Lock()
@@ -345,7 +360,6 @@ func (qm *QueueManager) processRequest(req *QueuedRequest, workerID int) {
 	processed := qm.processed
 	qm.mu.Unlock()
 
-	// Добавляем в историю выполненных задач
 	qm.historyMu.Lock()
 	qm.completedHistory = append(qm.completedHistory, &CompletedRequest{
 		Model:       req.Model,
@@ -354,7 +368,6 @@ func (qm *QueueManager) processRequest(req *QueuedRequest, workerID int) {
 		CompletedAt: now,
 		WaitTimeMs:  waitTimeMs,
 	})
-	// Ограничиваем размер истории до 100 записей
 	const maxHistory = 100
 	if len(qm.completedHistory) > maxHistory {
 		qm.completedHistory = qm.completedHistory[len(qm.completedHistory)-maxHistory:]
@@ -370,11 +383,8 @@ func (qm *QueueManager) processRequest(req *QueuedRequest, workerID int) {
 
 // Stop - остановка всех workers
 func (qm *QueueManager) Stop() {
-	// Отменяем контекст - это остановит всех workers
 	qm.cancel()
-	// Ждем завершения всех workers
 	qm.wg.Wait()
-	// Отменяем все запросы в очереди
 	close(qm.queue)
 	for req := range qm.queue {
 		select {
@@ -386,7 +396,6 @@ func (qm *QueueManager) Stop() {
 
 // ServeHTTP - обработка HTTP запросов
 func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	// === Health check ===
 	if r.URL.Path == "/health" {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
@@ -394,25 +403,15 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// === Диспетчеризация Ollama API ===
-	// Read-only и management endpoint'ы обрабатываются через OllamaRouter
-	// с агрегацией или целевой маршрутизацией.
-	// ИСКЛЮЧЕНИЕ: если это генерация/чат с активной сессией — идём напрямую на бэкенд
 	path := r.URL.Path
 	isChatOrGenerate := (path == "/api/generate" || path == "/api/chat")
-
-	// Сначала определяем clientName, чтобы формировать составной sessionID
 	clientName := p.getClientName(r)
 
-	// === Чат / Генерация — требуют session stickiness ===
 	model, isStream := p.extractModel(r)
-	// Сохраняем модель и stream-флаг в контексте запроса для повторного использования
-	// (тело запроса уже прочитано и восстановлено в extractModel)
 	ctx := context.WithValue(r.Context(), modelContextKey, model)
 	ctx = context.WithValue(ctx, streamContextKey, isStream)
 	r = r.WithContext(ctx)
 
-	// Формируем составной sessionID с учётом clientName и модели
 	sessionID := p.getSessionIDWithModel(r, clientName, model)
 	if !isChatOrGenerate && p.ollamaRouter != nil && p.ollamaRouter.Route(w, r) {
 		return
@@ -421,17 +420,14 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	var targetBackend string
 
 	if sessionID != "" && p.config.Balancing.SessionStickiness {
-		// Есть сессия - используем тот же бэкенд, но с проверкой загруженности
 		if session := p.sessionMgr.Get(sessionID); session != nil {
 			targetBackend = session.BackendID
 
-			// Проверяем статус бэкенда из сессии
 			p.mu.RLock()
 			backendState, exists := p.backends[targetBackend]
 			p.mu.RUnlock()
 
 			if !exists || backendState.Backend.Status != types.StatusHealthy {
-				// Бэкенд из сессии недоступен — выбираем новый
 				logger.Get().Warnw("session backend unavailable, selecting new backend",
 					"session_backend", targetBackend,
 					"exists", exists,
@@ -439,79 +435,58 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				)
 				targetBackend = ""
 			} else {
-		// --- "Sticky но не жадный": если бэкенд загружен >50% и есть альтернатива ---
-		shouldRebalance := false
-		forceRebalance := false
-		backendState.mu.Lock()
-		active := backendState.ActiveReqs
-		maxReqs := backendState.Backend.MaxConcurrentReqs
-		backendState.mu.Unlock()
+				shouldRebalance := false
+				forceRebalance := false
+				backendState.mu.Lock()
+				active := backendState.ActiveReqs
+				maxReqs := backendState.Backend.MaxConcurrentReqs
+				backendState.mu.Unlock()
 
-		if maxReqs > 0 && active > 0 {
-			loadRatio := float64(active) / float64(maxReqs)
-			if loadRatio >= 1.0 {
-				forceRebalance = true
-			}
-			if loadRatio > 0.50 || forceRebalance {
-				// Сначала ищем бэкенд с той же моделью, менее загруженный
-				altBackend := p.findLessLoadedBackendWithModel(model, targetBackend)
-				if altBackend != "" {
-					logger.Get().Infow("rebalancing session to less loaded backend (same model)",
-						"session", sessionID,
-						"from", targetBackend,
-						"to", altBackend,
-						"load_ratio", loadRatio,
-						"force", forceRebalance,
-					)
-					targetBackend = altBackend
-					shouldRebalance = true
-				} else {
-					// Fallback: ищем любой менее загруженный бэкенд
-					altBackend = p.findLessLoadedBackendAny(model, targetBackend)
-					if altBackend != "" {
-						logger.Get().Infow("rebalancing session to less loaded backend (any)",
-							"session", sessionID,
-							"from", targetBackend,
-							"to", altBackend,
-							"load_ratio", loadRatio,
-							"force", forceRebalance,
-						)
-						targetBackend = altBackend
-						shouldRebalance = true
-					} else if forceRebalance {
-						// Нет альтернатив — сбрасываем targetBackend для queue
-						logger.Get().Warnw("force rebalance failed, queueing request",
-							"session", sessionID,
-							"backend", targetBackend,
-							"load_ratio", loadRatio,
-						)
-						targetBackend = ""
+				if maxReqs > 0 && active > 0 {
+					loadRatio := float64(active) / float64(maxReqs)
+					if loadRatio >= 1.0 {
+						forceRebalance = true
+					}
+					if loadRatio > 0.50 || forceRebalance {
+						altBackend := p.findLessLoadedBackendWithModel(model, targetBackend)
+						if altBackend != "" {
+							logger.Get().Infow("rebalancing session to less loaded backend (same model)",
+								"session", sessionID, "from", targetBackend, "to", altBackend,
+								"load_ratio", loadRatio, "force", forceRebalance)
+							targetBackend = altBackend
+							shouldRebalance = true
+						} else {
+							altBackend = p.findLessLoadedBackendAny(model, targetBackend)
+							if altBackend != "" {
+								logger.Get().Infow("rebalancing session to less loaded backend (any)",
+									"session", sessionID, "from", targetBackend, "to", altBackend,
+									"load_ratio", loadRatio, "force", forceRebalance)
+								targetBackend = altBackend
+								shouldRebalance = true
+							} else if forceRebalance {
+								logger.Get().Warnw("force rebalance failed, queueing request",
+									"session", sessionID, "backend", targetBackend, "load_ratio", loadRatio)
+								targetBackend = ""
+							}
+						}
 					}
 				}
-			}
-		}
 
-		if !shouldRebalance {
-			// Обновляем активность сессии
-			p.sessionMgr.Set(sessionID, targetBackend, model, clientName, r.UserAgent())
-		}
+				if !shouldRebalance {
+					p.sessionMgr.Set(sessionID, targetBackend, model, clientName, r.UserAgent())
+				}
 			}
 		}
 	}
 
-	// Если нет сессии или сессия не найдена — выбираем бэкенд
 	if targetBackend == "" {
 		targetBackend = p.selectBackend(model)
-
-		// Создаем сессию с новым бэкендом
 		if targetBackend != "" && p.config.Balancing.SessionStickiness {
-			// Пересоздаём sessionID с учётом модели для уникальности
 			sessionID = p.getSessionIDWithModel(r, clientName, model)
 			p.sessionMgr.Set(sessionID, targetBackend, model, clientName, r.UserAgent())
 		}
 	}
 
-	// Если бэкенд не выбран - ставим в очередь
 	if targetBackend == "" {
 		if !p.queueRequest(w, r, model) {
 			http.Error(w, "Service unavailable - all backends busy", http.StatusServiceUnavailable)
@@ -519,20 +494,14 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Проксирование запроса с retry/failover (до 3 попыток)
 	attemptedBackends := make(map[string]bool)
 	for attempt := 0; attempt < 3; attempt++ {
 		if attempt > 0 {
-			// Retry: выбираем другой бэкенд, исключая уже попробованные
-		logger.Get().Warnw("retry selecting new backend",
-			"attempt", attempt,
-			"excluded", attemptedBackends,
-		)
+			logger.Get().Warnw("retry selecting new backend", "attempt", attempt, "excluded", attemptedBackends)
 			targetBackend = p.selectBackendExcluding(model, attemptedBackends)
 			if targetBackend == "" {
 				break
 			}
-			// Обновляем сессию для retry
 			if sessionID != "" && p.config.Balancing.SessionStickiness {
 				p.sessionMgr.Set(sessionID, targetBackend, model, clientName, r.UserAgent())
 			}
@@ -541,37 +510,26 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		attemptedBackends[targetBackend] = true
 		err := p.proxyRequest(w, r, targetBackend)
 		if err == nil {
-			return // Успешно
+			return
 		}
 
-		logger.Get().Errorw("backend request failed",
-			"backend", targetBackend,
-			"attempt", attempt,
-			"error", err,
-		)
-
-		// Помечаем бэкенд как недоступный и планируем проверку восстановления
+		logger.Get().Errorw("backend request failed", "backend", targetBackend, "attempt", attempt, "error", err)
 		p.UpdateBackendStatus(targetBackend, types.StatusUnhealthy)
 		p.scheduleRecoveryCheck(targetBackend)
 	}
 
-	// Все попытки исчерпаны
 	http.Error(w, "Service unavailable - all backends failed", http.StatusServiceUnavailable)
 }
 
 // extractModel - извлечение модели и stream-флага из запроса (с восстановлением тела)
-// Возвращает название модели и флаг stream (true по умолчанию для Ollama API)
 func (p *Proxy) extractModel(r *http.Request) (string, bool) {
-	// Для POST запросов читаем тело
 	if r.Method == http.MethodPost && r.Body != nil {
 		body, err := io.ReadAll(r.Body)
 		if err != nil {
 			return "", true
 		}
-		// Восстанавливаем тело для дальнейшего использования (проксирования)
 		r.Body = io.NopCloser(bytes.NewBuffer(body))
 
-		// Парсим JSON
 		var req map[string]interface{}
 		if err := json.Unmarshal(body, &req); err != nil {
 			return "", true
@@ -582,7 +540,6 @@ func (p *Proxy) extractModel(r *http.Request) (string, bool) {
 			model = m
 		}
 
-		// Извлекаем stream-флаг (дефолт true для Ollama API)
 		isStream := true
 		if stream, ok := req["stream"].(bool); ok {
 			isStream = stream
@@ -595,9 +552,7 @@ func (p *Proxy) extractModel(r *http.Request) (string, bool) {
 }
 
 // getSessionID - получение ID сессии из запроса (стабильный, без эфемерного порта)
-// Если несколько клиентов за одним IP, формирует составной fingerprint: IP + "::" + clientName + "::" + model
 func (p *Proxy) getSessionID(r *http.Request, clientName string) string {
-	// Приоритет: X-Client-ID > X-Session-ID > cookie (явные ID всегда приоритетнее)
 	if clientID := r.Header.Get("X-Client-ID"); clientID != "" {
 		return clientID
 	}
@@ -608,20 +563,16 @@ func (p *Proxy) getSessionID(r *http.Request, clientName string) string {
 		return cookie.Value
 	}
 
-	// Извлекаем только IP, без порта
 	ip, _, err := net.SplitHostPort(r.RemoteAddr)
 	if err != nil {
 		ip = r.RemoteAddr
 	}
 
-	// Составной fingerprint: различает клиентов за одним IP по clientName и модели
-	// Это позволяет монитору показывать разные сессии для Cline и OpenWebUI с одного IP
 	return ip + "::" + clientName
 }
 
 // getSessionIDWithModel - версия с учётом модели (используется при создании сессии)
 func (p *Proxy) getSessionIDWithModel(r *http.Request, clientName, model string) string {
-	// Явные ID — всегда приоритетнее
 	if clientID := r.Header.Get("X-Client-ID"); clientID != "" {
 		return clientID
 	}
@@ -645,7 +596,6 @@ func (p *Proxy) getClientName(r *http.Request) string {
 	if name := r.Header.Get("X-Client-Name"); name != "" {
 		return name
 	}
-	// Fallback по User-Agent
 	ua := r.UserAgent()
 	if strings.Contains(ua, "cline") || strings.Contains(ua, "Cline") {
 		return "Cline"
@@ -656,15 +606,14 @@ func (p *Proxy) getClientName(r *http.Request) string {
 	return ua
 }
 
-// selectBackend - выбор бэкенда для запроса
+// selectBackend - выбор бэкенда для запроса (5-этапный алгоритм)
 func (p *Proxy) selectBackend(model string) string {
 	p.mu.RLock()
+	defer p.mu.RUnlock()
 
-	// Model Affinity - проверяем, есть ли модель уже загружена
+	// 1. Model Affinity (LOADED only)
 	if p.config.Balancing.ModelAffinity && model != "" {
 		if backend := p.findBackendWithModel(model); backend != "" {
-			// Проверяем, насколько загружен бэкенд с моделью
-			// Если он сильно перегружен (>80% от max) — пробуем fallback на менее загруженный
 			state := p.backends[backend]
 			state.mu.Lock()
 			active := state.ActiveReqs
@@ -672,41 +621,65 @@ func (p *Proxy) selectBackend(model string) string {
 			state.mu.Unlock()
 
 			loadRatio := 0.0
-			if maxReqs > 0 {
-				loadRatio = float64(active) / float64(maxReqs)
-			}
+			if maxReqs > 0 { loadRatio = float64(active) / float64(maxReqs) }
+			if loadRatio < 0.80 { return backend }
 
-			if loadRatio < 0.80 {
-				// Бэкенд с моделью не сильно загружен — используем его
-				p.mu.RUnlock()
-				return backend
-			}
-
-			// Бэкенд с моделью перегружен — ищем менее загруженный fallback
-			logger.Get().Warnw("model-affinity backend overloaded, trying resource-aware fallback",
-				"backend", backend,
-				"model", model,
-				"load_ratio", loadRatio,
-				"active", active,
-				"max", maxReqs,
-			)
+			logger.Get().Warnw("model-affinity backend overloaded, trying fallback",
+				"backend", backend, "model", model, "load_ratio", loadRatio)
 		}
 	}
-	p.mu.RUnlock()
 
-	// Resource-Aware выбор (с проверкой, что есть доступные бэкенды)
-	backend := p.selectByResources()
-	if backend == "" {
-		logger.Get().Warnw("no available backends - balancer waiting for recovery")
+	// 2. Model Warming (WARMING_UP + ETA < threshold)
+	if warmingBackend := p.findWarmingBackendForModelUnsafe(model); warmingBackend != "" {
+		state := p.backends[warmingBackend]
+		state.mu.Lock()
+		ws, exists := state.WarmingUpModels[model]
+		state.mu.Unlock()
+
+		if exists {
+			eta := time.Until(ws.EstimatedReadyAt)
+			syncTimeout := 30 * time.Second
+			if p.config.Balancing.SyncModelLoad.Timeout != "" {
+				if d, err := time.ParseDuration(p.config.Balancing.SyncModelLoad.Timeout); err == nil { syncTimeout = d }
+			}
+			if eta > 0 && eta < syncTimeout {
+				start := time.Now()
+				for time.Since(start) < syncTimeout {
+					if p.checkModelReadyUnsafe(warmingBackend, model) { return warmingBackend }
+					time.Sleep(500 * time.Millisecond)
+				}
+				logger.Get().Warnw("model warmup timeout", "backend", warmingBackend, "model", model)
+			}
+		}
 	}
-	return backend
+
+	// 3. Sync Model Load (запуск загрузки с таймаутом)
+	if p.config.Balancing.SyncModelLoad.Enabled {
+		freeBackend := p.findFreeBackendForModelUnsafe(model)
+		if freeBackend != "" {
+			state := p.backends[freeBackend]
+			p.warmupModel(freeBackend, state.Backend.Host, state.Backend.OllamaPort, model)
+			syncTimeout := 30 * time.Second
+			if p.config.Balancing.SyncModelLoad.Timeout != "" {
+				if d, err := time.ParseDuration(p.config.Balancing.SyncModelLoad.Timeout); err == nil { syncTimeout = d }
+			}
+			start := time.Now()
+			for time.Since(start) < syncTimeout {
+				if p.checkModelReadyUnsafe(freeBackend, model) { return freeBackend }
+				time.Sleep(500 * time.Millisecond)
+			}
+			logger.Get().Warnw("sync model load timeout", "backend", freeBackend, "model", model)
+		}
+	}
+
+	// 4. selectByResources (scoring v2)
+	return p.selectByResources()
 }
 
 // selectBackendExcluding - выбор бэкенда, исключая указанные
 func (p *Proxy) selectBackendExcluding(model string, exclude map[string]bool) string {
 	p.mu.RLock()
 
-	// Model Affinity - проверяем, есть ли модель уже загружена (исключая failed)
 	if p.config.Balancing.ModelAffinity && model != "" {
 		if backend := p.findBackendWithModelExcluding(model, exclude); backend != "" {
 			p.mu.RUnlock()
@@ -715,7 +688,6 @@ func (p *Proxy) selectBackendExcluding(model string, exclude map[string]bool) st
 	}
 	p.mu.RUnlock()
 
-	// Resource-Aware выбор с исключением
 	backend := p.selectByResourcesExcluding(exclude)
 	if backend == "" {
 		logger.Get().Warnw("no available backends with exclusions")
@@ -739,7 +711,6 @@ func (p *Proxy) findBackendWithModelExcluding(modelName string, exclude map[stri
 			continue
 		}
 
-		// Проверка лимитов ресурсов
 		if !p.checkResourceLimits(id) {
 			continue
 		}
@@ -751,7 +722,6 @@ func (p *Proxy) findBackendWithModelExcluding(modelName string, exclude map[stri
 			continue
 		}
 
-		// Проверка лимита concurrent requests
 		state.mu.Lock()
 		if state.ActiveReqs >= state.Backend.MaxConcurrentReqs {
 			state.mu.Unlock()
@@ -759,7 +729,6 @@ func (p *Proxy) findBackendWithModelExcluding(modelName string, exclude map[stri
 		}
 		state.mu.Unlock()
 
-		// 5.1 Prediction-based filtering
 		pred := state.Prediction
 		if pred.SecondsToCritical > 0 && pred.SecondsToCritical < 300 {
 			continue
@@ -829,7 +798,7 @@ func (p *Proxy) findLessLoadedBackendWithModel(modelName, excludeBackendID strin
 	defer p.mu.RUnlock()
 
 	var bestBackendID string
-	var bestLoadRatio float64 = 2.0 // >1.0 чтобы любой бэкенд был лучше
+	var bestLoadRatio float64 = 2.0
 
 	for id, state := range p.backends {
 		if id == excludeBackendID {
@@ -851,7 +820,6 @@ func (p *Proxy) findLessLoadedBackendWithModel(modelName, excludeBackendID strin
 			continue
 		}
 
-		// Проверяем наличие модели
 		p.metricsMgr.mu.RLock()
 		metrics, hasMetrics := p.metricsMgr.metrics[id]
 		p.metricsMgr.mu.RUnlock()
@@ -877,7 +845,7 @@ func (p *Proxy) findLessLoadedBackendWithModel(modelName, excludeBackendID strin
 		}
 	}
 
-		return bestBackendID
+	return bestBackendID
 }
 
 // findLessLoadedBackendAny — поиск любого менее загруженного healthy бэкенда
@@ -927,17 +895,14 @@ func (p *Proxy) findBackendWithModel(modelName string) string {
 	var bestScore float64 = -1
 	
 	for id, state := range p.backends {
-		// Проверяем статус бэкенда (только healthy)
 		if state.Backend.Status != types.StatusHealthy {
 			continue
 		}
 
-		// Проверка лимитов ресурсов
 		if !p.checkResourceLimits(id) {
 			continue
 		}
 
-		// Проверка лимита concurrent requests
 		state.mu.Lock()
 		if state.ActiveReqs >= state.Backend.MaxConcurrentReqs {
 			state.mu.Unlock()
@@ -945,23 +910,19 @@ func (p *Proxy) findBackendWithModel(modelName string) string {
 		}
 		state.mu.Unlock()
 		
-		// 5.1 Prediction-based filtering
 		pred := state.Prediction
 		if pred.SecondsToCritical > 0 && pred.SecondsToCritical < 300 {
 			continue
 		}
 		
-		// Проверяем наличие модели через метрики
 		p.metricsMgr.mu.RLock()
 		metrics, hasMetrics := p.metricsMgr.metrics[id]
 		p.metricsMgr.mu.RUnlock()
 		
 		if !hasMetrics {
-			// Бэкенд без метрик — не можем проверить наличие модели, пропускаем
 			continue
 		}
 		
-		// Проверяем наличие модели (точное совпадение или частичное)
 		hasModel := false
 		for _, m := range metrics.Ollama.RunningModels {
 			if m.Name == modelName || strings.Contains(m.Name, modelName) {
@@ -973,7 +934,6 @@ func (p *Proxy) findBackendWithModel(modelName string) string {
 			continue
 		}
 		
-		// Вычисляем score для бэкенда
 		score := p.calculateScore(id)
 		if score > bestScore {
 			bestScore = score
@@ -984,9 +944,55 @@ func (p *Proxy) findBackendWithModel(modelName string) string {
 	return bestBackendID
 }
 
+// findWarmingBackendForModelUnsafe — поиск WARMING_UP бэкенда (без блокировки, вызывается под p.mu.RLock)
+func (p *Proxy) findWarmingBackendForModelUnsafe(model string) string {
+	for id, state := range p.backends {
+		if state.Backend.Status != types.StatusHealthy { continue }
+		state.mu.Lock()
+		ws, exists := state.WarmingUpModels[model]
+		state.mu.Unlock()
+		if exists && ws != nil && time.Now().Before(ws.EstimatedReadyAt) { return id }
+	}
+	return ""
+}
+
+// findFreeBackendForModelUnsafe — свободный бэкенд с достаточным VRAM (без блокировки)
+func (p *Proxy) findFreeBackendForModelUnsafe(model string) string {
+	var best string
+	var maxFree uint64
+	for id, state := range p.backends {
+		if state.Backend.Status != types.StatusHealthy { continue }
+		if !p.checkResourceLimits(id) { continue }
+		state.mu.Lock()
+		active := state.ActiveReqs
+		maxReqs := state.Backend.MaxConcurrentReqs
+		state.mu.Unlock()
+		if active > 0 || (maxReqs > 0 && active >= maxReqs) { continue }
+		metrics, ok := p.metricsMgr.metrics[id]
+		if !ok || metrics.GPU.MemoryTotal == 0 { continue }
+		freeVRAM := metrics.GPU.MemoryTotal - metrics.GPU.MemoryUsed
+		needed := estimateModelVRAM(model)
+		if freeVRAM <= needed { continue }
+		hasModel := false
+		for _, m := range metrics.Ollama.RunningModels {
+			if m.Name == model || strings.Contains(m.Name, model) { hasModel = true; break }
+		}
+		if !hasModel && freeVRAM > maxFree { maxFree = freeVRAM; best = id }
+	}
+	return best
+}
+
+// checkModelReadyUnsafe — готова ли модель на бэкенде (без блокировки)
+func (p *Proxy) checkModelReadyUnsafe(backendID, model string) bool {
+	metrics, ok := p.metricsMgr.metrics[backendID]
+	if !ok { return false }
+	for _, m := range metrics.Ollama.RunningModels {
+		if m.Name == model || strings.Contains(m.Name, model) { return true }
+	}
+	return false
+}
+
 // selectFreeBackendAny — выбор любого свободного healthy бэкенда с наименьшей загрузкой
-// Используется для принудительного ребаланса «зависших» запросов в очереди.
-// Игнорирует model affinity и session stickiness.
 func (p *Proxy) selectFreeBackendAny() string {
 	p.mu.RLock()
 	defer p.mu.RUnlock()
@@ -1023,10 +1029,7 @@ func (p *Proxy) selectFreeBackendAny() string {
 	}
 
 	if bestBackend != "" {
-		logger.Get().Infow("selectFreeBackendAny: selected",
-			"backend", bestBackend,
-			"load_ratio", bestLoadRatio,
-		)
+		logger.Get().Infow("selectFreeBackendAny: selected", "backend", bestBackend, "load_ratio", bestLoadRatio)
 	}
 	return bestBackend
 }
@@ -1046,14 +1049,10 @@ func (p *Proxy) selectByResources() string {
 			continue
 		}
 
-		// Проверка лимитов
 		if !p.checkResourceLimits(id) {
 			continue
 		}
 
-		// Проверка максимального количества запросов
-		// Проверка максимального количества запросов
-		// maxReqs = 0 означает "не принимать запросы", <0 означает "не ограничено"
 		state.mu.Lock()
 		active := state.ActiveReqs
 		maxReqs := state.Backend.MaxConcurrentReqs
@@ -1064,17 +1063,13 @@ func (p *Proxy) selectByResources() string {
 			continue
 		}
 
-		// 5.1 Prediction-based filtering: skip backends predicted critical within 5 min
 		pred := state.Prediction
 		if pred.SecondsToCritical > 0 && pred.SecondsToCritical < 300 {
-			continue // Backend will be critical within 5 minutes — avoid routing new requests
+			continue
 		}
 
-		// Вычисление scores
 		score := p.calculateScore(id)
 
-		// Tie-breaker: при равных scores выбираем менее загруженный по activeReqs,
-		// а если и там равенство — тот, кто дольше не использовался (round-robin по времени)
 		loadRatio := 0.0
 		if maxReqs > 0 {
 			loadRatio = float64(active) / float64(maxReqs)
@@ -1090,7 +1085,6 @@ func (p *Proxy) selectByResources() string {
 		}
 	}
 
-	// Обновляем LastUsed выбранного бэкенда
 	if bestBackend != "" {
 		if state, ok := p.backends[bestBackend]; ok {
 			state.mu.Lock()
@@ -1103,26 +1097,18 @@ func (p *Proxy) selectByResources() string {
 }
 
 // checkResourceLimits - проверка лимитов ресурсов (SOFT-режим)
-// Возвращает true если бэкенд может принимать запросы.
-// VRAM warning (>85%) не блокирует бэкенд жёстко — только снижает его score в calculateScore().
-// Это решает проблему «красного предупреждения о заполненности кластера VRAM»,
-// которое раньше полностью исключало бэкенд из пула.
 func (p *Proxy) checkResourceLimits(backendID string) bool {
 	p.metricsMgr.mu.RLock()
 	metrics, ok := p.metricsMgr.metrics[backendID]
 	p.metricsMgr.mu.RUnlock()
 
 	if !ok {
-		// Нет метрик от агента — разрешаем запрос если бэкенд существует и healthy.
-		// Best-effort: при отсутствии метрик не блокируем запросы.
-		// Балансировщик будет использовать консервативные proxy-счётчики в calculateScore().
 		p.mu.RLock()
 		state, exists := p.backends[backendID]
 		p.mu.RUnlock()
 		if !exists {
 			return false
 		}
-		// Только блокируем если бэкенд явно перегружен (>100% лимита запросов)
 		state.mu.Lock()
 		active := state.ActiveReqs
 		maxReqs := state.Backend.MaxConcurrentReqs
@@ -1130,85 +1116,65 @@ func (p *Proxy) checkResourceLimits(backendID string) bool {
 		if maxReqs > 0 && active >= maxReqs {
 			return false
 		}
-		return true // Best-effort: разрешаем, даже без метрик
+		return true
 	}
 
 	limits := p.config.Resources
 
-	// Проверка GPU usage (SOFT: только при >95% блокируем)
-	if metrics.GPU.UsagePercent > 95 {
-		logger.Get().Warnw("backend GPU usage critical, blocking",
-			"backend", backendID,
-			"gpu_usage", metrics.GPU.UsagePercent,
-		)
-		return false
-	}
-
-	// Проверка VRAM (SOFT: не блокируем, только логируем warning)
-	// Раньше это было hard-fail при >85%, теперь degraded — score снижается в calculateScore()
-	if limits.GPU.MaxVRAMUsagePercent > 0 && metrics.GPU.MemoryTotal > 0 {
+	// Headroom reservation: учитываем GPU headroom из конфигурации balancing
+	headroom := p.config.Balancing.ResourceReservation.GPUHeadroomPercent
+	if headroom > 0 && metrics.GPU.MemoryTotal > 0 {
 		vramPercent := float64(metrics.GPU.MemoryUsed) * 100 / float64(metrics.GPU.MemoryTotal)
-		if vramPercent > limits.GPU.MaxVRAMUsagePercent {
-			logger.Get().Warnw("backend VRAM usage above threshold (degraded, not blocked)",
-				"backend", backendID,
-				"vram_percent", vramPercent,
-				"threshold", limits.GPU.MaxVRAMUsagePercent,
-			)
-			// НЕ блокируем — score будет снижен в calculateScore()
-		}
-	}
-
-	// Проверка CPU (SOFT: только при >95% блокируем)
-	if metrics.System.CPUUsagePercent > 95 {
-		logger.Get().Warnw("backend CPU usage critical, blocking",
-			"backend", backendID,
-			"cpu_usage", metrics.System.CPUUsagePercent,
-		)
-		return false
-	}
-
-	// Проверка RAM (SOFT: только при >98% блокируем)
-	if limits.Memory.MaxUsagePercent > 0 && metrics.System.MemoryTotal > 0 {
-		memPercent := float64(metrics.System.MemoryUsed) * 100 / float64(metrics.System.MemoryTotal)
-		if memPercent > 98 {
-			logger.Get().Warnw("backend RAM usage critical, blocking",
-				"backend", backendID,
-				"ram_percent", memPercent,
-			)
+		if vramPercent > (100 - headroom) {
+			logger.Get().Warnw("backend VRAM exceeds headroom reservation, blocking",
+				"backend", backendID, "vram_percent", vramPercent, "headroom_pct", headroom)
 			return false
 		}
 	}
 
-	// Проверка диска (hard — критично для загрузки моделей)
-	if metrics.System.DiskFree < limits.Disk.MinFreeMB {
-		logger.Get().Warnw("backend disk space critical, blocking",
-			"backend", backendID,
-			"disk_free_mb", metrics.System.DiskFree,
-			"min_required_mb", limits.Disk.MinFreeMB,
-		)
+	if metrics.GPU.UsagePercent > 95 {
+		logger.Get().Warnw("backend GPU usage critical, blocking", "backend", backendID, "gpu_usage", metrics.GPU.UsagePercent)
 		return false
 	}
 
-	// Проверка лимита моделей Ollama (SOFT: не блокируем, score снижается)
-	if metrics.Ollama.MaxModels > 0 {
-		if len(metrics.Ollama.RunningModels) >= metrics.Ollama.MaxModels {
-			logger.Get().Debugw("backend model slots full (degraded, not blocked)",
-				"backend", backendID,
-				"loaded_models", len(metrics.Ollama.RunningModels),
-				"max_models", metrics.Ollama.MaxModels,
-			)
-			// НЕ блокируем — Ollama сама выгрузит неиспользуемую модель при необходимости
+	if limits.GPU.MaxVRAMUsagePercent > 0 && metrics.GPU.MemoryTotal > 0 {
+		vramPercent := float64(metrics.GPU.MemoryUsed) * 100 / float64(metrics.GPU.MemoryTotal)
+		if vramPercent > limits.GPU.MaxVRAMUsagePercent {
+			logger.Get().Warnw("backend VRAM usage above threshold (degraded, not blocked)",
+				"backend", backendID, "vram_percent", vramPercent, "threshold", limits.GPU.MaxVRAMUsagePercent)
 		}
 	}
 
-	// Проверка лимита одновременных запросов (hard — защита от перегрузки)
+	if metrics.System.CPUUsagePercent > 95 {
+		logger.Get().Warnw("backend CPU usage critical, blocking", "backend", backendID, "cpu_usage", metrics.System.CPUUsagePercent)
+		return false
+	}
+
+	if limits.Memory.MaxUsagePercent > 0 && metrics.System.MemoryTotal > 0 {
+		memPercent := float64(metrics.System.MemoryUsed) * 100 / float64(metrics.System.MemoryTotal)
+		if memPercent > 98 {
+			logger.Get().Warnw("backend RAM usage critical, blocking", "backend", backendID, "ram_percent", memPercent)
+			return false
+		}
+	}
+
+	if metrics.System.DiskFree < limits.Disk.MinFreeMB {
+		logger.Get().Warnw("backend disk space critical, blocking", "backend", backendID,
+			"disk_free_mb", metrics.System.DiskFree, "min_required_mb", limits.Disk.MinFreeMB)
+		return false
+	}
+
+	if metrics.Ollama.MaxModels > 0 {
+		if len(metrics.Ollama.RunningModels) >= metrics.Ollama.MaxModels {
+			logger.Get().Debugw("backend model slots full (degraded, not blocked)",
+				"backend", backendID, "loaded_models", len(metrics.Ollama.RunningModels), "max_models", metrics.Ollama.MaxModels)
+		}
+	}
+
 	if metrics.Ollama.MaxConcurrentRequests > 0 {
 		if metrics.Ollama.ActiveRequests >= metrics.Ollama.MaxConcurrentRequests {
 			logger.Get().Debugw("backend request slots full, blocking",
-				"backend", backendID,
-				"active_requests", metrics.Ollama.ActiveRequests,
-				"max_requests", metrics.Ollama.MaxConcurrentRequests,
-			)
+				"backend", backendID, "active_requests", metrics.Ollama.ActiveRequests, "max_requests", metrics.Ollama.MaxConcurrentRequests)
 			return false
 		}
 	}
@@ -1216,7 +1182,7 @@ func (p *Proxy) checkResourceLimits(backendID string) bool {
 	return true
 }
 
-// calculateScore - вычисление scores для бэкенда с учётом Ollama-специфических метрик
+// calculateScore - вычисление scores для бэкенда (v2: model affinity, queue depth, error rate)
 func (p *Proxy) calculateScore(backendID string) float64 {
 	p.metricsMgr.mu.RLock()
 	metrics, ok := p.metricsMgr.metrics[backendID]
@@ -1227,121 +1193,97 @@ func (p *Proxy) calculateScore(backendID string) float64 {
 		return 0
 	}
 
+	// Веса из конфига (с дефолтами)
+	sc := p.config.Balancing.Scoring
+	wModelLoaded := sc.ModelAlreadyLoaded; if wModelLoaded <= 0 { wModelLoaded = 0.15 }
+	wModelCost := sc.ModelLoadingCost; if wModelCost <= 0 { wModelCost = 0.10 }
+	wQueueDepth := sc.QueueDepthPenalty; if wQueueDepth <= 0 { wQueueDepth = 0.05 }
+	wErrorRate := sc.ErrorRatePenalty; if wErrorRate <= 0 { wErrorRate = 0.05 }
+	wPrediction := sc.PredictionBonus; if wPrediction <= 0 { wPrediction = 0.10 }
+
 	if !ok {
-		// Нет метрик от агента — используем fallback scoring на основе proxy-счётчиков
 		state.mu.Lock()
 		active := state.ActiveReqs
 		maxReqs := state.Backend.MaxConcurrentReqs
 		state.mu.Unlock()
-
-		// Базовый score = weight, штраф за активные запросы
 		score := float64(state.Backend.Weight)
 		if maxReqs > 0 {
-			loadRatio := float64(active) / float64(maxReqs)
-			score -= loadRatio * 20.0 // штраф за загрузку
+			score -= float64(active) / float64(maxReqs) * 20.0
 		}
-		if score < 1 {
-			score = 1 // минимальный score чтобы бэкенд оставался в пуле
-		}
+		if score < 1 { score = 1 }
 		return score
 	}
 
-	// --- Базовый score на основе доступных ресурсов ---
+	// Базовые ресурсы (обновлённые веса: GPU*0.30, VRAM*0.20, CPU*0.15)
 	gpuFree := 100 - metrics.GPU.UsagePercent
-	var vramFree float64 = 100
-	if metrics.GPU.MemoryTotal > 0 {
-		vramFree = float64(metrics.GPU.MemoryFree) * 100 / float64(metrics.GPU.MemoryTotal)
-	}
+	vramFree := 100.0
+	if metrics.GPU.MemoryTotal > 0 { vramFree = float64(metrics.GPU.MemoryFree) * 100 / float64(metrics.GPU.MemoryTotal) }
 	cpuFree := 100 - metrics.System.CPUUsagePercent
+	baseScore := gpuFree*0.30 + vramFree*0.20 + cpuFree*0.15
 
-	baseScore := gpuFree*0.35 + vramFree*0.25 + cpuFree*0.20
-
-	// --- Штраф за нагрузку запросами Ollama ---
-	// Чем больше активных запросов относительно максимума — тем ниже score
+	// Request penalty
 	requestPenalty := 0.0
 	if metrics.Ollama.MaxConcurrentRequests > 0 {
-		reqRatio := float64(metrics.Ollama.ActiveRequests) / float64(metrics.Ollama.MaxConcurrentRequests)
-		requestPenalty = reqRatio * 15.0 // max 15 points penalty
-	} else {
-		// Fallback: штраф за количество активных запросов от агента
-		if metrics.Ollama.ActiveRequests > 5 {
-			requestPenalty = float64(metrics.Ollama.ActiveRequests) * 1.5
-		}
+		requestPenalty = float64(metrics.Ollama.ActiveRequests) / float64(metrics.Ollama.MaxConcurrentRequests) * 15.0
+	} else if metrics.Ollama.ActiveRequests > 5 {
+		requestPenalty = float64(metrics.Ollama.ActiveRequests) * 1.5
 	}
 
-	// --- Score за capacity моделей ---
-	// Чем больше свободных слотов для моделей — тем лучше
+	// Model capacity score (сохранено)
 	modelCapacityScore := 0.0
 	if metrics.Ollama.MaxModels > 0 {
 		loaded := len(metrics.Ollama.RunningModels)
-		capacityRatio := float64(metrics.Ollama.MaxModels-loaded) / float64(metrics.Ollama.MaxModels)
-		modelCapacityScore = capacityRatio * 10.0 // max 10 points
+		modelCapacityScore = float64(metrics.Ollama.MaxModels-loaded) / float64(metrics.Ollama.MaxModels) * 10.0
 	} else if metrics.Ollama.BackendCapacity.LoadableModelCount > 0 {
-		// Новое: бонус за количество моделей, которые можно загрузить
-		loadableCount := metrics.Ollama.BackendCapacity.LoadableModelCount
-		if loadableCount >= 5 {
-			modelCapacityScore = 10.0
-		} else if loadableCount >= 3 {
-			modelCapacityScore = 7.0
-		} else if loadableCount >= 1 {
-			modelCapacityScore = 4.0
-		} else {
-			modelCapacityScore = -3.0 // штраф если ничего нельзя загрузить
+		switch {
+		case metrics.Ollama.BackendCapacity.LoadableModelCount >= 5: modelCapacityScore = 10.0
+		case metrics.Ollama.BackendCapacity.LoadableModelCount >= 3: modelCapacityScore = 7.0
+		case metrics.Ollama.BackendCapacity.LoadableModelCount >= 1: modelCapacityScore = 4.0
+		default: modelCapacityScore = -3.0
 		}
-	} else {
-		// Fallback: оценка по VRAM если MaxModels неизвестен
-		if metrics.GPU.MemoryTotal > 0 {
-			// Суммарный размер загруженных моделей
-			var loadedModelVRAM uint64
-			for _, m := range metrics.Ollama.RunningModels {
-				loadedModelVRAM += m.VRAMUsage
-			}
-			// Если загруженные модели занимают больше 80% VRAM — штраф
-			if metrics.GPU.MemoryTotal > 0 {
-				vramUsedByModels := float64(loadedModelVRAM) * 100 / float64(metrics.GPU.MemoryTotal)
-				if vramUsedByModels > 80 {
-					modelCapacityScore = -5.0
-				} else if vramUsedByModels > 50 {
-					modelCapacityScore = 2.0
-				} else {
-					modelCapacityScore = 8.0
-				}
-			}
+	} else if metrics.GPU.MemoryTotal > 0 {
+		var loadedVRAM uint64
+		for _, m := range metrics.Ollama.RunningModels { loadedVRAM += m.VRAMUsage }
+		vramRatio := float64(loadedVRAM) * 100 / float64(metrics.GPU.MemoryTotal)
+		switch {
+		case vramRatio > 80: modelCapacityScore = -5.0
+		case vramRatio > 50: modelCapacityScore = 2.0
+		default: modelCapacityScore = 8.0
 		}
 	}
 
-	// --- 5.2 Prediction-based bonus ---
+	// Model already loaded bonus (model affinity)
+	modelLoadedBonus := float64(len(metrics.Ollama.RunningModels)) * wModelLoaded * 10.0
+
+	// Queue depth penalty (глобальная очередь)
+	queueDepthPenalty := float64(len(p.queueMgr.queue)) * wQueueDepth
+
+	// Error rate penalty
+	errorRatePenalty := 0.0
+	state.mu.Lock()
+	if state.TotalAttempts > 10 {
+		errorRatePenalty = float64(state.ErrorCount) / float64(state.TotalAttempts) * wErrorRate * 100
+	}
+	state.mu.Unlock()
+
+	// Prediction bonus
 	predictionBonus := 0.0
-	pred := state.Prediction
-	if pred.SecondsToCritical < 0 || pred.SecondsToCritical >= 600 {
-		// Backend safe for >10 min — bonus
-		predictionBonus = 3.0
+	if pred := state.Prediction; pred.SecondsToCritical < 0 || pred.SecondsToCritical >= 600 {
+		predictionBonus = 3.0 * wPrediction
 	} else if pred.SecondsToCritical >= 300 {
-		// Backend safe for >5 min — small bonus
-		predictionBonus = 1.5
+		predictionBonus = 1.5 * wPrediction
 	} else if pred.SecondsToCritical > 0 && pred.SecondsToCritical < 120 {
-		// Backend critical soon — penalty
-		predictionBonus = -5.0
+		predictionBonus = -5.0 * wPrediction
 	}
 
-	// --- Итоговый score ---
-	// Weight как множитель: weight=1 → ×1, weight=2 → ×2
 	weightFactor := float64(state.Backend.Weight)
-	if weightFactor <= 0 {
-		weightFactor = 1
-	}
-	score := (baseScore - requestPenalty + modelCapacityScore + predictionBonus) * weightFactor
-
-	// Не меньше 0
-	if score < 0 {
-		score = 0
-	}
-
+	if weightFactor <= 0 { weightFactor = 1 }
+	score := (baseScore - requestPenalty + modelCapacityScore + modelLoadedBonus - queueDepthPenalty - errorRatePenalty + predictionBonus) * weightFactor
+	if score < 0 { score = 0 }
 	return score
 }
 
 // calculateModelLoadPenalty - оценка стоимости загрузки модели на бэкенд
-// Возвращает 0 если модель уже загружена, положительное значение если требуется загрузка
 func (p *Proxy) calculateModelLoadPenalty(backendID string, modelName string) float64 {
 	if modelName == "" {
 		return 0
@@ -1351,22 +1293,20 @@ func (p *Proxy) calculateModelLoadPenalty(backendID string, modelName string) fl
 	metrics, ok := p.metricsMgr.metrics[backendID]
 	p.metricsMgr.mu.RUnlock()
 	if !ok {
-		return 5.0 // небольшой штраф за отсутствие метрик (неизвестно, загружена ли модель)
+		return 5.0
 	}
 
-	// Проверяем, загружена ли модель
 	for _, m := range metrics.Ollama.RunningModels {
 		if m.Name == modelName || strings.Contains(m.Name, modelName) {
-			return 0 // модель уже загружена — без штрафа
+			return 0
 		}
 	}
 
-	// Модель не загружена — штраф зависит от загруженности VRAM
-	penalty := 5.0 // базовый штраф за загрузку модели
+	penalty := 5.0
 	if metrics.GPU.MemoryTotal > 0 {
 		vramUsedPercent := float64(metrics.GPU.MemoryUsed) * 100 / float64(metrics.GPU.MemoryTotal)
 		if vramUsedPercent > 80 {
-			penalty = 20.0 // высокий штраф при малом свободном VRAM
+			penalty = 20.0
 		} else if vramUsedPercent > 60 {
 			penalty = 10.0
 		}
@@ -1392,11 +1332,9 @@ func (p *Proxy) getBackendModelCapacity(backendID string) int {
 		return available
 	}
 
-	// Fallback: оценка по VRAM
 	if metrics.GPU.MemoryTotal > 0 && metrics.GPU.MemoryTotal > metrics.GPU.MemoryUsed {
 		freeVRAM := metrics.GPU.MemoryTotal - metrics.GPU.MemoryUsed
-		// Предполагаем среднюю модель 4GB
-		avgModelSize := uint64(4096) // MB
+		avgModelSize := uint64(4096)
 		return int(freeVRAM / avgModelSize)
 	}
 
@@ -1405,14 +1343,10 @@ func (p *Proxy) getBackendModelCapacity(backendID string) int {
 
 // estimateModelVRAM - оценка VRAM, необходимого для модели
 func estimateModelVRAM(modelName string) uint64 {
-	// Простая эвристика на основе названия модели
-	// Форматы: llama3.1:8b, qwen2.5:14b, deepseek-r1:32b, etc.
 	lower := strings.ToLower(modelName)
 
-	// Извлекаем размер из названия (последнее число с 'b' в конце)
-	var sizeGB uint64 = 4 // default 4GB
+	var sizeGB uint64 = 4
 
-	// Проверяем известные шаблоны
 	sizeMap := map[string]uint64{
 		":0.5b": 1, ":1b": 1, ":1.5b": 2,
 		":3b": 3, ":4b": 4, ":7b": 5, ":8b": 6,
@@ -1429,25 +1363,21 @@ func estimateModelVRAM(modelName string) uint64 {
 		}
 	}
 
-	// Учитываем квантование (Q4 занимает ~60% от fp16, Q8 ~80%)
 	if strings.Contains(lower, "q4") || strings.Contains(lower, "4bit") {
 		sizeGB = sizeGB * 6 / 10
 	} else if strings.Contains(lower, "q5") || strings.Contains(lower, "5bit") {
 		sizeGB = sizeGB * 7 / 10
 	} else if strings.Contains(lower, "q8") || strings.Contains(lower, "8bit") {
 		sizeGB = sizeGB * 8 / 10
-	} else if strings.Contains(lower, "fp16") || strings.Contains(lower, "f16") {
-		// full precision, no change
 	} else if strings.Contains(lower, "q2") {
 		sizeGB = sizeGB * 4 / 10
 	}
 
-	// Минимум 512MB
 	if sizeGB < 1 {
 		sizeGB = 1
 	}
 
-	return sizeGB * 1024 // MB
+	return sizeGB * 1024
 }
 
 // recordRequest - записывает таймстемп запроса для расчёта RPS
@@ -1462,7 +1392,6 @@ func (p *Proxy) recordRequest(backendID string) {
 	now := time.Now()
 	state.mu.Lock()
 	state.RequestHistory = append(state.RequestHistory, now)
-	// Оставляем только записи за последние 60 секунд
 	cutoff := now.Add(-60 * time.Second)
 	var startIdx int
 	for i, t := range state.RequestHistory {
@@ -1479,14 +1408,12 @@ func (p *Proxy) recordRequest(backendID string) {
 }
 
 // proxyRequest - проксирование запроса к бэкенду с поддержкой streaming/SSE
-// Возвращает ошибку, если запрос не удалось выполнить (для retry/failover)
 func (p *Proxy) proxyRequest(w http.ResponseWriter, r *http.Request, backendID string) error {
 	state, ok := p.backends[backendID]
 	if !ok {
 		return fmt.Errorf("backend %s not found", backendID)
 	}
 
-	// Увеличение счетчика активных запросов + запись для RPS
 	state.mu.Lock()
 	state.ActiveReqs++
 	state.mu.Unlock()
@@ -1498,7 +1425,6 @@ func (p *Proxy) proxyRequest(w http.ResponseWriter, r *http.Request, backendID s
 		state.mu.Unlock()
 	}()
 
-	// Создание URL для бэкенда
 	targetURL := fmt.Sprintf("http://%s:%d", state.Backend.Host, state.Backend.OllamaPort)
 
 	target, err := url.Parse(targetURL)
@@ -1506,34 +1432,28 @@ func (p *Proxy) proxyRequest(w http.ResponseWriter, r *http.Request, backendID s
 		return fmt.Errorf("invalid backend URL: %v", err)
 	}
 
-	// Проверяем, является ли запрос streaming запросом (по телу запроса)
 	isStreamingRequest := p.isStreamingRequest(r)
 
-	// Выбираем клиент: streaming для streaming запросов, обычный для остальных
 	client := p.client
 	if isStreamingRequest {
 		client = p.streamingClient
 	}
 
-	// Создание нового запроса с тем же телом и заголовками
 	req, err := http.NewRequestWithContext(r.Context(), r.Method, targetURL+r.URL.String(), r.Body)
 	if err != nil {
 		return fmt.Errorf("failed to create request: %v", err)
 	}
 
-	// Копирование заголовков запроса
 	for key, values := range r.Header {
 		for _, value := range values {
 			req.Header.Add(key, value)
 		}
 	}
 
-	// Добавление заголовков проксирования
 	req.Header.Set("X-Forwarded-For", r.RemoteAddr)
 	req.Header.Set("X-Real-IP", r.RemoteAddr)
 	req.Host = target.Host
 
-	// Выполнение запроса к бэкенду
 	resp, err := client.Do(req)
 	if err != nil {
 		p.logStreamingError(backendID, err)
@@ -1541,18 +1461,15 @@ func (p *Proxy) proxyRequest(w http.ResponseWriter, r *http.Request, backendID s
 	}
 	defer resp.Body.Close()
 
-	// Инкремент total requests (atomic)
 	atomic.AddInt64(&p.totalRequests, 1)
 	atomic.AddInt64(&state.TotalRequests, 1)
 
-	// Копирование заголовков ответа
 	for key, values := range resp.Header {
 		for _, value := range values {
 			w.Header().Add(key, value)
 		}
 	}
 
-	// Добавление заголовка сессии
 	clientNameForSession := p.getClientName(r)
 	modelFromCtx := ""
 	if m, ok := r.Context().Value(modelContextKey).(string); ok {
@@ -1560,22 +1477,15 @@ func (p *Proxy) proxyRequest(w http.ResponseWriter, r *http.Request, backendID s
 	}
 	sessionID := p.getSessionIDWithModel(r, clientNameForSession, modelFromCtx)
 	if sessionID != "" {
-		// Берём модель из контекста (тело запроса уже могло быть прочитано)
-		modelFromCtx := ""
-		if m, ok := r.Context().Value(modelContextKey).(string); ok {
-			modelFromCtx = m
-		}
 		p.sessionMgr.Set(sessionID, backendID, modelFromCtx, clientNameForSession, r.UserAgent())
 		w.Header().Set("X-Session-ID", sessionID)
 	}
 
-	// Проверка на streaming ответ (SSE или chunked transfer)
 	isStreaming := p.isStreamingResponse(resp)
 
 	if isStreaming {
 		p.handleStreamingResponse(w, r, resp, backendID)
 	} else {
-		// Обычный ответ - копируем тело
 		w.WriteHeader(resp.StatusCode)
 		io.Copy(w, resp.Body)
 	}
@@ -1584,19 +1494,15 @@ func (p *Proxy) proxyRequest(w http.ResponseWriter, r *http.Request, backendID s
 }
 
 // isStreamingRequest - проверка, является ли запрос streaming запросом
-// Ollama API использует параметр "stream" в теле запроса
 func (p *Proxy) isStreamingRequest(r *http.Request) bool {
-	// Только POST запросы могут быть streaming
 	if r.Method != http.MethodPost {
 		return false
 	}
 
-	// Проверяем контекст — значение уже извлечено в extractModel() в ServeHTTP()
 	if isStream, ok := r.Context().Value(streamContextKey).(bool); ok {
 		return isStream
 	}
 
-	// Fallback: читаем тело для прямых вызовов (например, из очереди worker'ов)
 	if r.Body == nil {
 		return false
 	}
@@ -1606,43 +1512,35 @@ func (p *Proxy) isStreamingRequest(r *http.Request) bool {
 		return false
 	}
 
-	// Восстанавливаем тело для дальнейшего использования
 	r.Body = io.NopCloser(bytes.NewBuffer(body))
 
-	// Парсим JSON
 	var req map[string]interface{}
 	if err := json.Unmarshal(body, &req); err != nil {
 		return false
 	}
 
-	// Проверяем параметр stream (по умолчанию true для Ollama)
 	if stream, ok := req["stream"].(bool); ok {
 		return stream
 	}
 
-	// По умолчанию считаем запрос streaming (Ollama API behavior)
 	return true
 }
 
 // isStreamingResponse - проверка на streaming ответ (SSE или chunked)
 func (p *Proxy) isStreamingResponse(resp *http.Response) bool {
-	// Проверяем Content-Type на text/event-stream (SSE)
 	contentType := resp.Header.Get("Content-Type")
 	if strings.Contains(contentType, "text/event-stream") {
 		return true
 	}
 
-	// Проверяем Transfer-Encoding на chunked
 	if resp.Header.Get("Transfer-Encoding") == "chunked" {
 		return true
 	}
 
-	// Проверяем ContentLength = -1 (неизвестная длина = streaming)
 	if resp.ContentLength == -1 {
 		return true
 	}
 
-	// Проверяем заголовок X-Accel-Buffering (для nginx)
 	if resp.Header.Get("X-Accel-Buffering") == "no" {
 		return true
 	}
@@ -1652,40 +1550,26 @@ func (p *Proxy) isStreamingResponse(resp *http.Response) bool {
 
 // handleStreamingResponse - обработка streaming ответа с использованием Flusher
 func (p *Proxy) handleStreamingResponse(w http.ResponseWriter, r *http.Request, resp *http.Response, backendID string) {
-	// Отправляем статус ответа
 	w.WriteHeader(resp.StatusCode)
 
-	// Пытаемся получить Flusher для потоковой передачи
 	flusher, ok := w.(http.Flusher)
 	if !ok {
-		// Если Flusher недоступен, просто копируем тело
-		logger.Get().Warnw("streaming detected but Flusher not supported, falling back to regular copy",
-			"backend", backendID,
-		)
+		logger.Get().Warnw("streaming detected but Flusher not supported, falling back to regular copy", "backend", backendID)
 		io.Copy(w, resp.Body)
 		return
 	}
 
-	// Логирование начала streaming сессии
-	logger.Get().Infow("starting streaming session",
-		"backend", backendID,
-		"content_type", resp.Header.Get("Content-Type"),
-	)
+	logger.Get().Infow("starting streaming session", "backend", backendID, "content_type", resp.Header.Get("Content-Type"))
 
-	// Буфер для чтения данных
 	buf := make([]byte, 32*1024)
 	bytesStreamed := 0
 
-	// Потоковая передача данных
 	for {
 		n, err := resp.Body.Read(buf)
 		if n > 0 {
 			_, writeErr := w.Write(buf[:n])
 			if writeErr != nil {
-				logger.Get().Errorw("error writing to client",
-					"backend", backendID,
-					"error", writeErr,
-				)
+				logger.Get().Errorw("error writing to client", "backend", backendID, "error", writeErr)
 				break
 			}
 			bytesStreamed += n
@@ -1693,44 +1577,28 @@ func (p *Proxy) handleStreamingResponse(w http.ResponseWriter, r *http.Request, 
 		}
 		if err != nil {
 			if err == io.EOF {
-				// Нормальное завершение streaming
 				break
 			}
-			// Логирование других ошибок
-			logger.Get().Errorw("error reading from backend",
-				"backend", backendID,
-				"error", err,
-			)
+			logger.Get().Errorw("error reading from backend", "backend", backendID, "error", err)
 			break
 		}
 	}
 
-	// Логирование завершения streaming сессии
-	logger.Get().Infow("streaming session completed",
-		"backend", backendID,
-		"bytes_streamed", bytesStreamed,
-	)
+	logger.Get().Infow("streaming session completed", "backend", backendID, "bytes_streamed", bytesStreamed)
 }
 
 // logStreamingError - логирование ошибок streaming
 func (p *Proxy) logStreamingError(backendID string, err error) {
-	logger.Get().Errorw("streaming error",
-		"backend", backendID,
-		"error", err,
-	)
+	logger.Get().Errorw("streaming error", "backend", backendID, "error", err)
 }
 
 // logError - логирование ошибки
 func (p *Proxy) logError(backendID string, err error) {
-	logger.Get().Errorw("proxy error",
-		"backend", backendID,
-		"error", err,
-	)
+	logger.Get().Errorw("proxy error", "backend", backendID, "error", err)
 }
 
 // UpdateMetrics - обновление метрик бэкенда с прогнозированием
 func (p *Proxy) UpdateMetrics(backendID string, metrics *types.BackendMetrics) {
-	// Получаем proxy-счётчик активных запросов
 	p.mu.RLock()
 	state, exists := p.backends[backendID]
 	p.mu.RUnlock()
@@ -1740,20 +1608,16 @@ func (p *Proxy) UpdateMetrics(backendID string, metrics *types.BackendMetrics) {
 		proxyActiveReqs := state.ActiveReqs
 		state.mu.Unlock()
 
-		// Переопределяем ActiveRequests точным значением от proxy
-		// (агент не может достоверно определить количество HTTP-запросов)
 		if metrics.Ollama.ActiveRequests == 0 && proxyActiveReqs > 0 {
 			metrics.Ollama.ActiveRequests = proxyActiveReqs
 		}
 
-		// Вычисляем свободные слоты
 		freeSlots := metrics.Ollama.MaxConcurrentRequests - metrics.Ollama.ActiveRequests
 		if freeSlots < 0 {
 			freeSlots = 0
 		}
 		metrics.Ollama.FreeSlots = freeSlots
 
-		// Обновляем историю и прогноз
 		p.predictor.UpdateHistory(state, metrics)
 	}
 
@@ -1813,10 +1677,7 @@ func (p *Proxy) StartAgentTimeoutChecker(timeout time.Duration) {
 			for _, state := range p.backends {
 				if state.Backend.HasAgent && time.Since(state.Backend.LastAgentContact) > timeout {
 					state.Backend.HasAgent = false
-					logger.Get().Warnw("agent timeout",
-						"backend", state.Backend.ID,
-						"timeout", timeout,
-					)
+					logger.Get().Warnw("agent timeout", "backend", state.Backend.ID, "timeout", timeout)
 				}
 			}
 			p.mu.Unlock()
@@ -1828,8 +1689,6 @@ func (p *Proxy) StartAgentTimeoutChecker(timeout time.Duration) {
 func (p *Proxy) GetClusterState() *types.ClusterState {
 	p.mu.RLock()
 	
-	// Создаем копию бэкендов для безопасной итерации
-	// Это предотвращает race condition при модификации мапы во время итерации
 	backendsCopy := make(map[string]*BackendState, len(p.backends))
 	for id, state := range p.backends {
 		backendsCopy[id] = state
@@ -1847,11 +1706,9 @@ func (p *Proxy) GetClusterState() *types.ClusterState {
 		Backends:        make([]types.BackendMetrics, 0, len(backendsCopy)),
 	}
 
-	// Заполняем общий счётчик запросов
 	state.TotalRequests = atomic.LoadInt64(&p.totalRequests)
 
 	for id, backendState := range backendsCopy {
-		// Блокируем для безопасного чтения Status и HasAgent
 		backendState.mu.Lock()
 		status := backendState.Backend.Status
 		hasAgent := backendState.Backend.HasAgent
@@ -1862,7 +1719,6 @@ func (p *Proxy) GetClusterState() *types.ClusterState {
 			state.HealthyBackends++
 		}
 
-		// Создаем метрики для каждого бэкенда, даже если нет данных от агента
 		metrics := types.BackendMetrics{
 			ID:        id,
 			Timestamp: time.Now().UTC(),
@@ -1875,17 +1731,12 @@ func (p *Proxy) GetClusterState() *types.ClusterState {
 			Ollama:    types.OllamaMetrics{RunningModels: []types.RunningModel{}},
 		}
 
-		// Если есть метрики от агента - используем их
 		if agentMetrics, ok := p.metricsMgr.metrics[id]; ok {
 			metrics = *agentMetrics
-			// Сохраняем статус из конфигурации бэкенда
 			metrics.Status = status
-			// Сохраняем флаг агента из конфигурации бэкенда
 			metrics.HasAgent = hasAgent
-			// Добавляем прогноз из состояния бэкенда
 			metrics.Prediction = prediction
 			state.ActiveRequests += agentMetrics.Ollama.ActiveRequests
-			// Используем proxy-calculated RPS (более точный, чем агентский)
 			backendState.mu.Lock()
 			if backendState.CalculatedRPS > 0 {
 				state.RPS += backendState.CalculatedRPS
@@ -1893,12 +1744,10 @@ func (p *Proxy) GetClusterState() *types.ClusterState {
 			} else {
 				state.RPS += agentMetrics.Ollama.RequestsPerSecond
 			}
-			// Переносим proxy-calculated total requests в метрики
 			metrics.Ollama.TotalRequests = backendState.TotalRequests
 			backendState.mu.Unlock()
 			state.TotalGPUUsage += agentMetrics.GPU.UsagePercent
 		} else {
-			// Нет метрик от агента — всё равно показываем proxy-calculated total requests
 			backendState.mu.Lock()
 			metrics.Ollama.TotalRequests = backendState.TotalRequests
 			backendState.mu.Unlock()
@@ -1910,12 +1759,10 @@ func (p *Proxy) GetClusterState() *types.ClusterState {
 	return state
 }
 
-
 // Stop - остановка cleanup loop
 func (sm *SessionManager) Stop() {
 	select {
 	case <-sm.stopCh:
-		// уже остановлен
 	default:
 		close(sm.stopCh)
 	}
@@ -1923,7 +1770,6 @@ func (sm *SessionManager) Stop() {
 
 // cleanupLoop - цикл очистки сессий
 func (sm *SessionManager) cleanupLoop() {
-	// Интервал очистки = 1/3 от TTL, минимум 1 минута
 	interval := sm.ttl / 3
 	if interval < time.Minute {
 		interval = time.Minute
@@ -2008,7 +1854,6 @@ func (sm *SessionManager) Set(id, backendID, model, clientName, userAgent string
 		session.LastRequestAt = now
 		session.RequestCount++
 	} else {
-		// Извлекаем IP из составного sessionID (формат: IP::clientName::model)
 		clientIP := id
 		if idx := strings.Index(id, "::"); idx > 0 {
 			clientIP = id[:idx]
@@ -2031,6 +1876,16 @@ func (sm *SessionManager) Set(id, backendID, model, clientName, userAgent string
 
 // queueRequest - постановка запроса в очередь
 func (p *Proxy) queueRequest(w http.ResponseWriter, r *http.Request, model string) bool {
+	// Backpressure: проверяем fill rate очереди
+	queueFillPct := float64(len(p.queueMgr.queue)) / float64(p.queueMgr.maxSize)
+	if queueFillPct > 0.90 {
+		logger.Get().Warnw("queue overflow, rejecting request with 503",
+			"model", model, "queue_fill_pct", queueFillPct, "queue_size", len(p.queueMgr.queue))
+		w.Header().Set("Retry-After", "5")
+		http.Error(w, "Service overloaded", http.StatusServiceUnavailable)
+		return false
+	}
+
 	done := make(chan bool, 1)
 	queuedReq := &QueuedRequest{
 		Request:  r,
@@ -2040,23 +1895,18 @@ func (p *Proxy) queueRequest(w http.ResponseWriter, r *http.Request, model strin
 		Done:     done,
 	}
 
-	// Добавляем в pending список ДО отправки в канал
 	p.queueMgr.addPending(queuedReq)
 
-	// Попытка отправить запрос в очередь
 	select {
 	case p.queueMgr.queue <- queuedReq:
-		// Запрос успешно отправлен в очередь
 	case <-p.queueMgr.ctx.Done():
 		p.queueMgr.removePending(queuedReq)
 		return false
 	default:
-		// Очередь переполнена
 		p.queueMgr.removePending(queuedReq)
 		return false
 	}
 
-	// Ожидание результата с таймаутом
 	select {
 	case success := <-done:
 		return success
@@ -2183,7 +2033,7 @@ func (p *Proxy) GetQueueStats() QueueStats {
 		CurrentSize:   len(p.queueMgr.queue),
 		MaxSize:       p.queueMgr.maxSize,
 		Processed:     processed,
-		WaitTimeAvgMs: 0, // Упрощено для новой архитектуры
+		WaitTimeAvgMs: 0,
 		Workers:       workers,
 		TimeoutSec:    int(timeout.Seconds()),
 	}
@@ -2204,12 +2054,10 @@ func (p *Proxy) AddBackend(backend types.Backend) error {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
-	// Проверка на дубликат
 	if _, exists := p.backends[backend.ID]; exists {
 		return fmt.Errorf("backend with ID %s already exists", backend.ID)
 	}
 
-	// Установка значений по умолчанию
 	if backend.Weight == 0 {
 		backend.Weight = 1
 	}
@@ -2232,7 +2080,6 @@ func (p *Proxy) AddBackend(backend types.Backend) error {
 		LastUsed:   time.Time{},
 	}
 
-	// Публикуем событие добавления бэкенда
 	p.PublishEvent(types.Event{
 		Type:      types.EventBackendAdd,
 		Timestamp: time.Now().UTC(),
@@ -2243,27 +2090,21 @@ func (p *Proxy) AddBackend(backend types.Backend) error {
 		},
 	})
 
-	// Запланировать autosave
 	p.scheduleSave()
 
 	return nil
 }
 
 // Restart - инициирует перезапуск балансера через graceful shutdown
-// Процесс завершится с кодом 0 после сохранения состояния.
-// Supervisor (Docker restart policy / systemd) должен перезапустить процесс.
 func (p *Proxy) Restart() error {
 	logger.Get().Infow("restart triggered, flushing state and exiting")
 
-	// Сохраняем состояние перед выходом
 	if err := p.FlushState(); err != nil {
 		logger.Get().Errorw("failed to flush state during restart", "error", err)
 	}
 
-	// Небольшая задержка для завершения всех текущих операций
 	time.Sleep(100 * time.Millisecond)
 
-	// Выходим с кодом 0 - supervisor перезапустит процесс
 	os.Exit(0)
 	return nil
 }
@@ -2279,12 +2120,10 @@ func (p *Proxy) RemoveBackend(backendID string) error {
 
 	delete(p.backends, backendID)
 
-	// Также удаляем метрики
 	p.metricsMgr.mu.Lock()
 	delete(p.metricsMgr.metrics, backendID)
 	p.metricsMgr.mu.Unlock()
 
-	// Публикуем событие удаления бэкенда
 	p.PublishEvent(types.Event{
 		Type:      types.EventBackendRemove,
 		Timestamp: time.Now().UTC(),
@@ -2292,7 +2131,6 @@ func (p *Proxy) RemoveBackend(backendID string) error {
 		Data:      map[string]interface{}{},
 	})
 
-	// Запланировать autosave
 	p.scheduleSave()
 
 	return nil
@@ -2308,27 +2146,22 @@ func (p *Proxy) UpdateBackend(backendID string, updated types.Backend) error {
 		return fmt.Errorf("backend with ID %s not found", backendID)
 	}
 
-	// Сохраняем текущий статус и активные запросы
 	currentStatus := state.Backend.Status
 	currentActiveReqs := state.ActiveReqs
 
-	// Обновляем конфигурацию
 	updated.ID = backendID
 	updated.Status = currentStatus
 	state.Backend = &updated
 	state.ActiveReqs = currentActiveReqs
 
-	// Запланировать autosave
 	p.scheduleSave()
 
 	return nil
 }
 
 // scheduleRecoveryCheck - планирование проверки восстановления бэкенда
-// Заглушка: recovery check выполняется health checker автоматически через периодические проверки
 func (p *Proxy) scheduleRecoveryCheck(backendID string) {
 	logger.Get().Infow("scheduled recovery check", "backend", backendID)
-	// Реальная реализация может быть добавлена через HealthChecker
 }
 
 // GetBackend - получение бэкенда по ID
@@ -2412,7 +2245,6 @@ func (p *Proxy) SaveState() error {
 		return fmt.Errorf("failed to marshal state: %w", err)
 	}
 
-	// Создаём директорию если нужно
 	dir := filepath.Dir(p.statePath)
 	if dir != "" && dir != "." {
 		if err := os.MkdirAll(dir, 0755); err != nil {
@@ -2444,16 +2276,12 @@ func (p *Proxy) LoadState() error {
 	}
 
 	if state.Version != types.StateVersion {
-		logger.Get().Warnw("state version mismatch",
-			"got", state.Version,
-			"expected", types.StateVersion,
-		)
+		logger.Get().Warnw("state version mismatch", "got", state.Version, "expected", types.StateVersion)
 	}
 
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
-	// Merge: state-данные приоритетнее для runtime-полей
 	stateBackendMap := make(map[string]types.Backend)
 	for _, b := range state.Backends {
 		stateBackendMap[b.ID] = b
@@ -2461,7 +2289,6 @@ func (p *Proxy) LoadState() error {
 
 	for i := range p.config.Backends {
 		if saved, ok := stateBackendMap[p.config.Backends[i].ID]; ok {
-			// Сохраняем runtime-поля из state
 			p.config.Backends[i].Status = saved.Status
 			p.config.Backends[i].LastHealthCheck = saved.LastHealthCheck
 			p.config.Backends[i].ConsecutiveFailures = saved.ConsecutiveFailures
@@ -2469,14 +2296,12 @@ func (p *Proxy) LoadState() error {
 			p.config.Backends[i].HasAgent = saved.HasAgent
 			p.config.Backends[i].LastAgentContact = saved.LastAgentContact
 
-			// Обновляем BackendState
 			if bs, exists := p.backends[p.config.Backends[i].ID]; exists {
 				bs.Backend = &p.config.Backends[i]
 			}
 		}
 	}
 
-	// Добавляем backends из state, которых нет в config
 	for _, saved := range state.Backends {
 		if _, exists := p.backends[saved.ID]; !exists {
 			backend := saved
@@ -2556,7 +2381,6 @@ func (p *Proxy) PublishEvent(ev types.Event) {
 		select {
 		case ch <- ev:
 		default:
-			// канал переполнен — пропускаем
 		}
 	}
 }
@@ -2577,8 +2401,6 @@ func (p *Proxy) StopSessionManager() {
 
 // StopAgentTimeoutChecker — остановка проверки таймаута агентов
 func (p *Proxy) StopAgentTimeoutChecker() {
-	// Таймер работает в горутине с тикером, явной остановки не требует
-	// Флаг HasAgent будет сброшен при завершении процесса
 }
 
 // UpdateBackendLimits — обновление runtime-лимитов бэкенда
@@ -2594,7 +2416,6 @@ func (p *Proxy) UpdateBackendLimits(backendID string, maxModels, maxConcurrentRe
 	state.Backend.RuntimeMaxModels = maxModels
 	state.Backend.RuntimeMaxConcurrentRequests = maxConcurrentRequests
 
-	// Публикуем событие изменения лимитов
 	p.PublishEvent(types.Event{
 		Type:      types.EventLimitsChange,
 		Timestamp: time.Now().UTC(),
@@ -2605,7 +2426,6 @@ func (p *Proxy) UpdateBackendLimits(backendID string, maxModels, maxConcurrentRe
 		},
 	})
 
-	// Запланировать autosave
 	p.scheduleSave()
 
 	return nil

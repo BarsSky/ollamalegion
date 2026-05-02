@@ -183,6 +183,12 @@ func (s *Server) setupRoutes() {
 
 	// Restart endpoint (c аутентификацией и rate limiting, только от webui)
 	s.mux.Handle("/api/v1/admin/restart", AuthMiddleware(RateLimitMiddleware(s.restartHandler, s.rateLimiter), s.authenticator))
+
+	// Favicon и статические ресурсы (без аутентификации, для браузеров)
+	s.mux.HandleFunc("/favicon.ico", s.staticFileHandler)
+	s.mux.HandleFunc("/favicon-16x16.png", s.staticFileHandler)
+	s.mux.HandleFunc("/favicon-32x32.png", s.staticFileHandler)
+	s.mux.HandleFunc("/logo.svg", s.staticFileHandler)
 }
 
 // ServeHTTP - обработка HTTP запросов
@@ -1723,6 +1729,58 @@ func (s *Server) restartHandler(w http.ResponseWriter, r *http.Request) {
 		"success": true,
 		"message": "Balancer restart initiated. The process will exit and be restarted by the supervisor.",
 	})
+}
+
+// staticFileHandler — обработчик статических файлов (favicon, logo, etc.)
+// Ищет файлы в webui/ директории (или в /app/ для Docker runtime)
+func (s *Server) staticFileHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	fileName := filepath.Base(r.URL.Path)
+	if fileName == "." || fileName == "/" {
+		http.NotFound(w, r)
+		return
+	}
+
+	// Пути для поиска (сначала runtime Docker, потом локальная разработка)
+	paths := []string{
+		filepath.Join("/app", fileName),
+		filepath.Join("webui", fileName),
+		filepath.Join("../webui", fileName),
+	}
+
+	var data []byte
+	var err error
+	for _, p := range paths {
+		data, err = os.ReadFile(p)
+		if err == nil {
+			break
+		}
+	}
+
+	if err != nil {
+		http.NotFound(w, r)
+		return
+	}
+
+	// Определяем Content-Type
+	contentType := "application/octet-stream"
+	switch {
+	case strings.HasSuffix(fileName, ".png"):
+		contentType = "image/png"
+	case strings.HasSuffix(fileName, ".ico"):
+		contentType = "image/x-icon"
+	case strings.HasSuffix(fileName, ".svg"):
+		contentType = "image/svg+xml"
+	}
+
+	w.Header().Set("Content-Type", contentType)
+	w.Header().Set("Cache-Control", "public, max-age=3600")
+	w.WriteHeader(http.StatusOK)
+	w.Write(data)
 }
 
 // writeJSON - запись JSON ответа

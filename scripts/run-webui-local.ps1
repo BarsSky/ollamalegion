@@ -21,6 +21,8 @@ $ErrorActionPreference = "Stop"
 
 $Root = Resolve-Path "$PSScriptRoot\.."
 $Webui = "$Root\webui"
+# Nginx on Windows expects forward slashes in paths
+$WebuiNginx = $Webui -replace '\\', '/'
 $NginxConf = "$Webui\nginx.local.conf"
 
 # Проверка наличия nginx
@@ -37,7 +39,7 @@ $NginxTemplate = @"
 server {
     listen $NginxPort;
     server_name localhost;
-    root $Webui;
+    root $WebuiNginx;
     index index.html;
 
     gzip on;
@@ -101,6 +103,8 @@ Write-Host "[run-webui-local] Starting nginx on http://localhost:$NginxPort"
 Write-Host "[run-webui-local] Press Ctrl+C to stop"
 
 # Запуск nginx с кастомным конфигом
-nginx -c $NginxConf -p $Webui
+# NOTE: -p (prefix) is omitted because all config paths are absolute.
+# Using -p with a Windows path containing backslashes causes path resolution issues.
+nginx -c $NginxConf
 
 Write-Host "[run-webui-local] nginx stopped"

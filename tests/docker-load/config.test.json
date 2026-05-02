@@ -47,9 +47,24 @@
     "firstByteTimeout": 5,
     "streamingIdleTimeout": 10,
     "queueTimeout": 30,
-    "queueMaxSize": 50,
+    "queueMaxSize": 10,
     "queueWorkers": 4,
-    "sessionTTL": 60
+    "sessionTTL": 60,
+    "prewarm": {
+      "enabled": true,
+      "checkIntervalSec": 8,
+      "triggerLoadThreshold": 0.7,
+      "maxPrewarmPerCycle": 3
+    },
+    "modelInstances": {
+      "defaultMinInstances": 2,
+      "defaultMaxInstances": 3,
+      "idleUnloadAfter": "60s"
+    },
+    "syncModelLoad": {
+      "enabled": false,
+      "timeout": "30s"
+    }
   },
   "resources": {
     "gpu": {

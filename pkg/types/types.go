@@ -14,6 +14,24 @@ const (
 	StatusStarting  BackendStatus = "starting"
 )
 
+// ModelState - состояние модели на бэкенде
+type ModelState string
+
+const (
+	ModelStateLoaded    ModelState = "LOADED"
+	ModelStateLoading   ModelState = "LOADING"
+	ModelStateNotLoaded ModelState = "NOT_LOADED"
+	ModelStateUnloading ModelState = "UNLOADING"
+	ModelStateWarmingUp ModelState = "WARMING_UP"
+)
+
+// WarmupState - состояние превентивной загрузки модели
+type WarmupState struct {
+	StartedAt        time.Time `json:"startedAt"`
+	EstimatedReadyAt time.Time `json:"estimatedReadyAt"`
+	TriggerReason    string    `json:"triggerReason"` // "load_threshold", "queue_depth", "min_instances"
+}
+
 // BalancingAlgorithm - алгоритмы балансировки
 type BalancingAlgorithm string
 
@@ -42,7 +60,7 @@ type Backend struct {
 	LastAgentContact    time.Time     `json:"lastAgentContact"`
 
 	// Runtime-лимиты (меняются через API без перезапуска)
-	RuntimeMaxModels               int `json:"runtimeMaxModels"`
+	RuntimeMaxModels             int `json:"runtimeMaxModels"`
 	RuntimeMaxConcurrentRequests int `json:"runtimeMaxConcurrentRequests"`
 }
 
@@ -73,10 +91,10 @@ type BackendMetrics struct {
 	Score                 float64  `json:"score"`                 // Calculated routing score
 	MaxConcurrentRequests int      `json:"maxConcurrentRequests"` // From backend config
 	Models                []string `json:"models"`                // Names of running models
-	VRAMUsagePercent      float64  `json:"vramUsagePercent"`        // GPU memory usage %
+	VRAMUsagePercent      float64  `json:"vramUsagePercent"`      // GPU memory usage %
 	VRAMTotalGB           float64  `json:"vramTotalGB"`           // Total VRAM in GB
-	VRAMUsedGB            float64  `json:"vramUsedGB"`             // Used VRAM in GB
-	MemoryUsagePercent    float64  `json:"memoryUsagePercent"`      // RAM usage %
+	VRAMUsedGB            float64  `json:"vramUsedGB"`            // Used VRAM in GB
+	MemoryUsagePercent    float64  `json:"memoryUsagePercent"`    // RAM usage %
 }
 
 // PlatformMode - режим работы платформы
@@ -132,6 +150,9 @@ type SystemMetrics struct {
 
 	NetworkRX uint64 `json:"networkRX"` // Получено байт
 	NetworkTX uint64 `json:"networkTX"` // Отправлено байт
+
+	NetworkRXRate float64 `json:"networkRXRate"` // Скорость получения (байт/с)
+	NetworkTXRate float64 `json:"networkTXRate"` // Скорость отправки (байт/с)
 }
 
 // OllamaMetrics - метрики Ollama
@@ -144,8 +165,8 @@ type OllamaMetrics struct {
 	RequestsPerSecond     float64           `json:"requestsPerSecond"`     // RPS (от балансировщика)
 	MaxModels             int               `json:"maxModels"`             // Максимум доступных для загрузки моделей (-1 = авто)
 	MaxConcurrentRequests int               `json:"maxConcurrentRequests"` // Максимум одновременных запросов (-1 = авто)
-	FreeSlots             int                `json:"freeSlots"`             // Свободные слоты для запросов (от балансера)
-	AvailableSlots        int                `json:"availableSlots"`        // Реальные доступные слоты (от агента, с учётом VRAM)
+	FreeSlots             int               `json:"freeSlots"`             // Свободные слоты для запросов (от балансера)
+	AvailableSlots        int               `json:"availableSlots"`        // Реальные доступные слоты (от агента, с учётом VRAM)
 	RuntimeFlags          OllamaRuntimeFlags `json:"runtimeFlags"`          // Флаги запуска Ollama
 	ModelContexts         []ModelContextInfo `json:"modelContexts"`         // Информация о контексте по моделям
 	BackendCapacity       BackendCapacity    `json:"backendCapacity"`       // Оценка ёмкости бэкенда
@@ -304,20 +325,63 @@ type LoadBalancerSettings struct {
 	StatePath string `json:"statePath"` // путь к файлу сохранения состояния (по умолчанию "data/state.json")
 }
 
+// PrewarmConfig - конфигурация превентивной загрузки
+type PrewarmConfig struct {
+	Enabled              bool    `json:"enabled"`
+	TriggerLoadThreshold float64 `json:"triggerLoadThreshold"` // загрузка бэкенда для триггера (0.0-1.0)
+	MaxPrewarmPerCycle   int     `json:"maxPrewarmPerCycle"`   // макс. одновременных pre-warm
+	CheckIntervalSec     int     `json:"checkIntervalSec"`     // интервал проверки (сек)
+}
+
+// ModelInstanceConfig - конфигурация управления экземплярами модели
+type ModelInstanceConfig struct {
+	DefaultMinInstances int    `json:"defaultMinInstances"` // минимум экземпляров по умолчанию
+	DefaultMaxInstances int    `json:"defaultMaxInstances"` // максимум экземпляров по умолчанию
+	IdleUnloadAfter     string `json:"idleUnloadAfter"`     // выгрузить после простоя ("5m", "10m")
+}
+
+// ScoringWeights - веса для формулы скоринга
+type ScoringWeights struct {
+	ModelAlreadyLoaded float64 `json:"modelAlreadyLoaded"` // бонус за готовую модель
+	ModelLoadingCost   float64 `json:"modelLoadingCost"`   // штраф за необходимость загрузки
+	QueueDepthPenalty  float64 `json:"queueDepthPenalty"`  // штраф за глубину очереди
+	ErrorRatePenalty   float64 `json:"errorRatePenalty"`   // штраф за историю ошибок
+	PredictionBonus    float64 `json:"predictionBonus"`    // бонус за прогноз
+}
+
+// SyncModelLoadConfig - конфигурация синхронной загрузки модели
+type SyncModelLoadConfig struct {
+	Enabled bool   `json:"enabled"`
+	Timeout string `json:"timeout"` // таймаут ожидания ("30s")
+}
+
+// ResourceReservationConfig - конфигурация резервирования ресурсов
+type ResourceReservationConfig struct {
+	GPUHeadroomPercent float64 `json:"gpuHeadroomPercent"` // резерв GPU памяти (%)
+	RAMHeadroomPercent float64 `json:"ramHeadroomPercent"` // резерв RAM (%)
+}
+
 // BalancingSettings - настройки балансировки
 type BalancingSettings struct {
-	Algorithm            BalancingAlgorithm `json:"algorithm"`
-	ModelAffinity        bool               `json:"modelAffinity"`
-	SessionStickiness    bool               `json:"sessionStickiness"`
-	HealthCheckInterval  int                `json:"healthCheckInterval"`  // секунды
-	MetricsInterval      int                `json:"metricsInterval"`      // секунды
-	RequestTimeout       int                `json:"requestTimeout"`       // секунды
-	FirstByteTimeout     int                `json:"firstByteTimeout"`     // таймаут первого байта streaming (сек, 0=дефолт 30)
-	StreamingIdleTimeout int                `json:"streamingIdleTimeout"` // таймаут простоя между чанками streaming (сек, 0=дефолт 120)
-	QueueTimeout         int                `json:"queueTimeout"`         // секунды
-	QueueMaxSize         int                `json:"queueMaxSize"`         // макс. размер очереди
-	QueueWorkers         int                `json:"queueWorkers"`         // количество workers очереди
-	SessionTTL           int                `json:"sessionTTL"`           // секунды (0 = дефолт 900)
+	Algorithm            BalancingAlgorithm      `json:"algorithm"`
+	ModelAffinity        bool                    `json:"modelAffinity"`
+	SessionStickiness    bool                    `json:"sessionStickiness"`
+	HealthCheckInterval  int                     `json:"healthCheckInterval"`  // секунды
+	MetricsInterval      int                     `json:"metricsInterval"`      // секунды
+	RequestTimeout       int                     `json:"requestTimeout"`       // секунды
+	FirstByteTimeout     int                     `json:"firstByteTimeout"`     // таймаут первого байта streaming (сек, 0=дефолт 30)
+	StreamingIdleTimeout int                     `json:"streamingIdleTimeout"` // таймаут простоя между чанками streaming (сек, 0=дефолт 120)
+	QueueTimeout         int                     `json:"queueTimeout"`         // секунды
+	QueueMaxSize         int                     `json:"queueMaxSize"`         // макс. размер очереди
+	QueueWorkers         int                     `json:"queueWorkers"`         // количество workers очереди
+	SessionTTL           int                     `json:"sessionTTL"`           // секунды (0 = дефолт 900)
+
+	// Новые поля оптимизации балансировки
+	Prewarm             PrewarmConfig            `json:"prewarm"`
+	ModelInstances      ModelInstanceConfig      `json:"modelInstances"`
+	Scoring             ScoringWeights           `json:"scoring"`
+	SyncModelLoad       SyncModelLoadConfig      `json:"syncModelLoad"`
+	ResourceReservation ResourceReservationConfig `json:"resourceReservation"`
 }
 
 // LoggingSettings - настройки логирования
@@ -384,7 +448,7 @@ type Prediction struct {
 	VRAMUsageTrend    float64 `json:"vramUsageTrend"`    // Тренд использования VRAM (% в минуту)
 	RAMUsageTrend     float64 `json:"ramUsageTrend"`     // Тренд использования RAM (% в минуту)
 	FreeSlotsTrend    float64 `json:"freeSlotsTrend"`    // Тренд свободных слотов (слотов в минуту, <0 — уменьшение)
-	RequestCapacity   float64 `json:"requestCapacity"`     // Текущая ёмкость запросов (0-100%, 100% = полная загрузка)
+	RequestCapacity   float64 `json:"requestCapacity"`   // Текущая ёмкость запросов (0-100%, 100% = полная загрузка)
 }
 
 // MetricsSnapshot - точка истории метрик для прогнозирования

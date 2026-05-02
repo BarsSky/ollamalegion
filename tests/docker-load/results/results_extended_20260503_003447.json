@@ -1,0 +1,671 @@
+{
+  "timestamp": "20260503_003447",
+  "total_elapsed_s": 62.3,
+  "cluster_state": {
+    "timestamp": "2026-05-02T21:34:47.790287471Z",
+    "totalBackends": 3,
+    "healthyBackends": 3,
+    "totalRequests": 54,
+    "activeRequests": 0,
+    "queuedRequests": 0,
+    "rps": 0,
+    "totalGpuUsage": 0,
+    "backends": [
+      {
+        "id": "mock-c",
+        "timestamp": "2026-05-02T21:34:47.790309778Z",
+        "status": "healthy",
+        "hasAgent": false,
+        "host": "mock-c",
+        "ollamaPort": 11434,
+        "gpu": {
+          "usagePercent": 0,
+          "memoryTotal": 0,
+          "memoryUsed": 0,
+          "memoryFree": 0,
+          "temperature": 0,
+          "powerUsage": 0,
+          "powerLimit": 0,
+          "gpuClock": 0,
+          "memClock": 0
+        },
+        "system": {
+          "cpuUsagePercent": 0,
+          "cpu": {
+            "usagePercent": 0,
+            "usagePerCore": null,
+            "coreCount": 0,
+            "threadCount": 0,
+            "model": "",
+            "loadAverage1": 0,
+            "loadAverage5": 0,
+            "loadAverage15": 0,
+            "temperature": 0,
+            "throttled": false
+          },
+          "memoryTotal": 0,
+          "memoryUsed": 0,
+          "memoryFree": 0,
+          "diskTotal": 0,
+          "diskUsed": 0,
+          "diskFree": 0,
+          "networkRX": 0,
+          "networkTX": 0,
+          "networkRXRate": 0,
+          "networkTXRate": 0
+        },
+        "ollama": {
+          "runningModels": [],
+          "availableModels": null,
+          "activeRequests": 0,
+          "totalRequests": 23,
+          "avgResponseTime": 0,
+          "requestsPerSecond": 0,
+          "maxModels": 0,
+          "maxConcurrentRequests": 0,
+          "freeSlots": 0,
+          "availableSlots": 0,
+          "runtimeFlags": {
+            "numGpuLayers": 0,
+            "contextLength": 0,
+            "numParallel": 0,
+            "numThreads": 0,
+            "batchSize": 0,
+            "gpuSplitMode": "",
+            "mainGpu": 0,
+            "lowVram": false,
+            "f16kv": false,
+            "kvCacheQuant": "",
+            "flashAttention": false,
+            "source": ""
+          },
+          "modelContexts": null,
+          "backendCapacity": {
+            "freeVram": 0,
+            "guaranteedVram": 0,
+            "loadedModelVram": 0,
+            "contextOverheadMB": 0,
+            "availableModels": null,
+            "loadableModelCount": 0,
+            "mode": ""
+          }
+        },
+        "prediction": {
+          "secondsToCritical": 0,
+          "criticalReason": "",
+          "gpuUsageTrend": 0,
+          "vramUsageTrend": 0,
+          "ramUsageTrend": 0,
+          "freeSlotsTrend": 0,
+          "requestCapacity": 0
+        },
+        "score": 0,
+        "maxConcurrentRequests": 0,
+        "models": null,
+        "vramUsagePercent": 0,
+        "vramTotalGB": 0,
+        "vramUsedGB": 0,
+        "memoryUsagePercent": 0
+      },
+      {
+        "id": "mock-a",
+        "timestamp": "2026-05-02T21:34:47.790328685Z",
+        "status": "healthy",
+        "hasAgent": false,
+        "host": "mock-a",
+        "ollamaPort": 11434,
+        "gpu": {
+          "usagePercent": 0,
+          "memoryTotal": 0,
+          "memoryUsed": 0,
+          "memoryFree": 0,
+          "temperature": 0,
+          "powerUsage": 0,
+          "powerLimit": 0,
+          "gpuClock": 0,
+          "memClock": 0
+        },
+        "system": {
+          "cpuUsagePercent": 0,
+          "cpu": {
+            "usagePercent": 0,
+            "usagePerCore": null,
+            "coreCount": 0,
+            "threadCount": 0,
+            "model": "",
+            "loadAverage1": 0,
+            "loadAverage5": 0,
+            "loadAverage15": 0,
+            "temperature": 0,
+            "throttled": false
+          },
+          "memoryTotal": 0,
+          "memoryUsed": 0,
+          "memoryFree": 0,
+          "diskTotal": 0,
+          "diskUsed": 0,
+          "diskFree": 0,
+          "networkRX": 0,
+          "networkTX": 0,
+          "networkRXRate": 0,
+          "networkTXRate": 0
+        },
+        "ollama": {
+          "runningModels": [],
+          "availableModels": null,
+          "activeRequests": 0,
+          "totalRequests": 19,
+          "avgResponseTime": 0,
+          "requestsPerSecond": 0,
+          "maxModels": 0,
+          "maxConcurrentRequests": 0,
+          "freeSlots": 0,
+          "availableSlots": 0,
+          "runtimeFlags": {
+            "numGpuLayers": 0,
+            "contextLength": 0,
+            "numParallel": 0,
+            "numThreads": 0,
+            "batchSize": 0,
+            "gpuSplitMode": "",
+            "mainGpu": 0,
+            "lowVram": false,
+            "f16kv": false,
+            "kvCacheQuant": "",
+            "flashAttention": false,
+            "source": ""
+          },
+          "modelContexts": null,
+          "backendCapacity": {
+            "freeVram": 0,
+            "guaranteedVram": 0,
+            "loadedModelVram": 0,
+            "contextOverheadMB": 0,
+            "availableModels": null,
+            "loadableModelCount": 0,
+            "mode": ""
+          }
+        },
+        "prediction": {
+          "secondsToCritical": 0,
+          "criticalReason": "",
+          "gpuUsageTrend": 0,
+          "vramUsageTrend": 0,
+          "ramUsageTrend": 0,
+          "freeSlotsTrend": 0,
+          "requestCapacity": 0
+        },
+        "score": 0,
+        "maxConcurrentRequests": 0,
+        "models": null,
+        "vramUsagePercent": 0,
+        "vramTotalGB": 0,
+        "vramUsedGB": 0,
+        "memoryUsagePercent": 0
+      },
+      {
+        "id": "mock-b",
+        "timestamp": "2026-05-02T21:34:47.790354093Z",
+        "status": "healthy",
+        "hasAgent": false,
+        "host": "mock-b",
+        "ollamaPort": 11434,
+        "gpu": {
+          "usagePercent": 0,
+          "memoryTotal": 0,
+          "memoryUsed": 0,
+          "memoryFree": 0,
+          "temperature": 0,
+          "powerUsage": 0,
+          "powerLimit": 0,
+          "gpuClock": 0,
+          "memClock": 0
+        },
+        "system": {
+          "cpuUsagePercent": 0,
+          "cpu": {
+            "usagePercent": 0,
+            "usagePerCore": null,
+            "coreCount": 0,
+            "threadCount": 0,
+            "model": "",
+            "loadAverage1": 0,
+            "loadAverage5": 0,
+            "loadAverage15": 0,
+            "temperature": 0,
+            "throttled": false
+          },
+          "memoryTotal": 0,
+          "memoryUsed": 0,
+          "memoryFree": 0,
+          "diskTotal": 0,
+          "diskUsed": 0,
+          "diskFree": 0,
+          "networkRX": 0,
+          "networkTX": 0,
+          "networkRXRate": 0,
+          "networkTXRate": 0
+        },
+        "ollama": {
+          "runningModels": [],
+          "availableModels": null,
+          "activeRequests": 0,
+          "totalRequests": 12,
+          "avgResponseTime": 0,
+          "requestsPerSecond": 0,
+          "maxModels": 0,
+          "maxConcurrentRequests": 0,
+          "freeSlots": 0,
+          "availableSlots": 0,
+          "runtimeFlags": {
+            "numGpuLayers": 0,
+            "contextLength": 0,
+            "numParallel": 0,
+            "numThreads": 0,
+            "batchSize": 0,
+            "gpuSplitMode": "",
+            "mainGpu": 0,
+            "lowVram": false,
+            "f16kv": false,
+            "kvCacheQuant": "",
+            "flashAttention": false,
+            "source": ""
+          },
+          "modelContexts": null,
+          "backendCapacity": {
+            "freeVram": 0,
+            "guaranteedVram": 0,
+            "loadedModelVram": 0,
+            "contextOverheadMB": 0,
+            "availableModels": null,
+            "loadableModelCount": 0,
+            "mode": ""
+          }
+        },
+        "prediction": {
+          "secondsToCritical": 0,
+          "criticalReason": "",
+          "gpuUsageTrend": 0,
+          "vramUsageTrend": 0,
+          "ramUsageTrend": 0,
+          "freeSlotsTrend": 0,
+          "requestCapacity": 0
+        },
+        "score": 0,
+        "maxConcurrentRequests": 0,
+        "models": null,
+        "vramUsagePercent": 0,
+        "vramTotalGB": 0,
+        "vramUsedGB": 0,
+        "memoryUsagePercent": 0
+      }
+    ]
+  },
+  "scenarios": [
+    {
+      "name": "S1",
+      "desc": "Non-streaming, 3 concurrent",
+      "total": 9,
+      "successful": 9,
+      "failed": 0,
+      "latency_min_ms": 31.774799979757518,
+      "latency_avg_ms": 58.97056665788922,
+      "latency_p95_ms": 86.05579999857582,
+      "latency_max_ms": 86.05579999857582,
+      "rps": 104.58,
+      "backend_dist": {
+        "unknown": 9
+      },
+      "errors": [],
+      "notes": [
+        "Ожидается: все 9 успешны, равномерное распределение, latency < 300ms"
+      ]
+    },
+    {
+      "name": "S2",
+      "desc": "Streaming SSE, 3 concurrent",
+      "total": 9,
+      "successful": 9,
+      "failed": 0,
+      "latency_min_ms": 36.12289999728091,
+      "latency_avg_ms": 63.59572221926,
+      "latency_p95_ms": 82.27479999186471,
+      "latency_max_ms": 82.27479999186471,
+      "rps": 109.39,
+      "backend_dist": {
+        "unknown": 9
+      },
+      "errors": [],
+      "notes": [
+        "Ожидается: все 9 успешны, first-byte < 5s, все токены получены"
+      ]
+    },
+    {
+      "name": "S3",
+      "desc": "GPU-hang на mock-a, first-byte timeout - retry",
+      "total": 6,
+      "successful": 6,
+      "failed": 0,
+      "latency_min_ms": 36.53769998345524,
+      "latency_avg_ms": 65.52206667159528,
+      "latency_p95_ms": 104.00560000562109,
+      "latency_max_ms": 104.00560000562109,
+      "rps": 57.69,
+      "backend_dist": {
+        "unknown": 6
+      },
+      "errors": [],
+      "notes": [
+        "Ожидается: запросы на mock-a таймаутят; retry на mock-b/c; mock-a -> unhealthy"
+      ]
+    },
+    {
+      "name": "S4",
+      "desc": "2 клиента (Cline/OpenWebUI) с одного IP",
+      "total": 6,
+      "successful": 6,
+      "failed": 0,
+      "latency_min_ms": 51.90089999814518,
+      "latency_avg_ms": 78.82260000527215,
+      "latency_p95_ms": 115.7132999796886,
+      "latency_max_ms": 115.7132999796886,
+      "rps": 51.85,
+      "backend_dist": {
+        "unknown": 6
+      },
+      "errors": [],
+      "notes": [
+        "Уникальных сессий: 2 (ожидается 2)",
+        "Ожидается: разные sessionID для разных clientName"
+      ]
+    },
+    {
+      "name": "S5",
+      "desc": "Model affinity (llama3.2, qwen2.5, deepseek-r1)",
+      "total": 9,
+      "successful": 9,
+      "failed": 0,
+      "latency_min_ms": 52.52170001040213,
+      "latency_avg_ms": 94.19315555715002,
+      "latency_p95_ms": 114.99430000549182,
+      "latency_max_ms": 114.99430000549182,
+      "rps": 78.26,
+      "backend_dist": {
+        "unknown": 9
+      },
+      "errors": [],
+      "notes": [
+        "Распределение: {'llama3.2:3b -> ': 3, 'qwen2.5:14b -> ': 3, 'deepseek-r1:32b -> ': 3}",
+        "Ожидается: каждая модель идёт на бэкенд где она загружена"
+      ]
+    },
+    {
+      "name": "S6",
+      "desc": "12 запросов, MaxConcurrentReqs=2 per backend",
+      "total": 12,
+      "successful": 12,
+      "failed": 0,
+      "latency_min_ms": 59.08189999172464,
+      "latency_avg_ms": 90.79908333418037,
+      "latency_p95_ms": 123.65620001219213,
+      "latency_max_ms": 123.65620001219213,
+      "rps": 97.04,
+      "backend_dist": {
+        "unknown": 12
+      },
+      "errors": [],
+      "notes": [
+        "Ожидается: все 12 успешны (через очередь), без 503"
+      ]
+    },
+    {
+      "name": "S7",
+      "desc": "Fallback, health-check, recovery",
+      "total": 9,
+      "successful": 9,
+      "failed": 0,
+      "latency_min_ms": 47.74129998986609,
+      "latency_avg_ms": 73.06914443486474,
+      "latency_p95_ms": 98.34300001966767,
+      "latency_max_ms": 98.34300001966767,
+      "rps": 91.52,
+      "backend_dist": {
+        "unknown": 9
+      },
+      "errors": [],
+      "notes": [
+        "Phase1 (normal): 3/3",
+        "Phase2 (hung): 3/3",
+        "Phase3 (recovery): 3/3"
+      ]
+    },
+    {
+      "name": "S8",
+      "desc": "Predictor scoring после накопления истории",
+      "total": 6,
+      "successful": 6,
+      "failed": 0,
+      "latency_min_ms": 47.311400005128235,
+      "latency_avg_ms": 86.70590000110678,
+      "latency_p95_ms": 112.94869999983348,
+      "latency_max_ms": 112.94869999983348,
+      "rps": 53.12,
+      "backend_dist": {
+        "unknown": 6
+      },
+      "errors": [],
+      "notes": [
+        "Backend statuses: {'mock-a': {'status': 'healthy', 'prediction': {'secondsToCritical': 0, 'criticalReason': '', 'gpuUsageTrend': 0, 'vramUsageTrend': 0, 'ramUsageTrend': 0, 'freeSlotsTrend': 0, 'requestCapacity': 0}, 'capacity': 0}, 'mock-b': {'status': 'healthy', 'prediction': {'secondsToCritical': 0, 'criticalReason': '', 'gpuUsageTrend': 0, 'vramUsageTrend': 0, 'ramUsageTrend': 0, 'freeSlotsTrend': 0, 'requestCapacity': 0}, 'capacity': 0}, 'mock-c': {'status': 'healthy', 'prediction': {'secondsToCritical': 0, 'criticalReason': '', 'gpuUsageTrend': 0, 'vramUsageTrend': 0, 'ramUsageTrend': 0, 'freeSlotsTrend': 0, 'requestCapacity': 0}, 'capacity': 0}}",
+        "Ожидается: predictor даёт Capacity для каждого бэкенда, запросы идут на менее загруженные"
+      ]
+    },
+    {
+      "name": "S9",
+      "desc": "Prewarm controller check",
+      "total": 1,
+      "successful": 1,
+      "failed": 0,
+      "latency_min_ms": 67.71100001060404,
+      "latency_avg_ms": 67.71100001060404,
+      "latency_p95_ms": 67.71100001060404,
+      "latency_max_ms": 67.71100001060404,
+      "rps": 0,
+      "backend_dist": {
+        "unknown": 1
+      },
+      "errors": [],
+      "notes": [
+        "WarmingUpModels: {}",
+        "Prewarm in progress: -1",
+        "Ожидается: prewarm триггерится при load > 70%"
+      ]
+    },
+    {
+      "name": "S10",
+      "desc": "Model instance controller",
+      "total": 6,
+      "successful": 6,
+      "failed": 0,
+      "latency_min_ms": 53.4678999974858,
+      "latency_avg_ms": 66.26968333633461,
+      "latency_p95_ms": 90.50920000299811,
+      "latency_max_ms": 90.50920000299811,
+      "rps": 66.29,
+      "backend_dist": {
+        "unknown": 6
+      },
+      "errors": [],
+      "notes": [
+        "Model instance counts: {}",
+        "Ожидается min=2: llama3.2 присутствует на >=2 бэкендах",
+        "Ожидается max=3: не более 3 экземпляров одной модели",
+        "idleUnloadAfter=60s: выгрузка неиспользуемых экземпляров"
+      ]
+    },
+    {
+      "name": "S11",
+      "desc": "25 запросов при queueMaxSize=10",
+      "total": 25,
+      "successful": 25,
+      "failed": 0,
+      "latency_min_ms": 57.9174000013154,
+      "latency_avg_ms": 107.17968399636447,
+      "latency_p95_ms": 144.53530000173487,
+      "latency_max_ms": 155.34619998652488,
+      "rps": 160.93,
+      "backend_dist": {
+        "unknown": 25
+      },
+      "errors": [],
+      "notes": [
+        "200 OK: 25, 503: 0, Other errors: 0",
+        "Queue depth after test: -1",
+        "Ожидается: избыточные получают 503, часть через очередь успешны"
+      ]
+    },
+    {
+      "name": "S12a",
+      "desc": "Resource-aware distribution check",
+      "total": 9,
+      "successful": 9,
+      "failed": 0,
+      "latency_min_ms": 37.36029998981394,
+      "latency_avg_ms": 83.24441111310281,
+      "latency_p95_ms": 116.68310000095516,
+      "latency_max_ms": 116.68310000095516,
+      "rps": 77.13,
+      "backend_dist": {
+        "unknown": 9
+      },
+      "errors": [],
+      "notes": [
+        "Backend distribution: {'unknown': 9}",
+        "Imbalance (max-min): 0",
+        "Ожидается: распределение учитывает веса (mock-c weight=2 получает больше)"
+      ]
+    },
+    {
+      "name": "S13",
+      "desc": "Ollama API aggregation",
+      "total": 3,
+      "successful": 3,
+      "failed": 0,
+      "latency_min_ms": 0,
+      "latency_avg_ms": 0,
+      "latency_p95_ms": 0,
+      "latency_max_ms": 0,
+      "rps": 0,
+      "backend_dist": {},
+      "errors": [],
+      "notes": [
+        "tags: status=200, ok=True, detail=3",
+        "version: status=200, ok=True, detail={'mock-a': '0.5.0-mock', 'mock-b': '0.5.0-mock', 'mock-c': '0.5.0-mock'}",
+        "ps: status=200, ok=True, detail=6",
+        "Ожидается: /api/tags union всех бэкендов, /api/version с map версий"
+      ]
+    },
+    {
+      "name": "S14",
+      "desc": "Health check recovery after container restart",
+      "total": 8,
+      "successful": 8,
+      "failed": 0,
+      "latency_min_ms": 49.181100010173395,
+      "latency_avg_ms": 70.22263750332058,
+      "latency_p95_ms": 95.14550000312738,
+      "latency_max_ms": 95.14550000312738,
+      "rps": 84.08,
+      "backend_dist": {
+        "unknown": 8
+      },
+      "errors": [],
+      "notes": [
+        "Phase1 (mock-a stopped): 4/4",
+        "Phase2 (mock-a back): 4/4",
+        "Ожидается: Phase1 - failover на другие; Phase2 - mock-a healthy и принимает запросы"
+      ]
+    },
+    {
+      "name": "S15",
+      "desc": "Session rebalancing при load_ratio > 50%",
+      "total": 5,
+      "successful": 5,
+      "failed": 0,
+      "latency_min_ms": 46.028299984754995,
+      "latency_avg_ms": 70.12152000097558,
+      "latency_p95_ms": 89.25270001054741,
+      "latency_max_ms": 89.25270001054741,
+      "rps": 56.02,
+      "backend_dist": {
+        "unknown": 5
+      },
+      "errors": [],
+      "notes": [
+        "Исходный бэкенд: ",
+        "Запрос после нагрузки ушёл на: ",
+        "Ожидается: если load_ratio > 50%, сессия ребалансируется на менее загруженный бэкенд"
+      ]
+    },
+    {
+      "name": "S16",
+      "desc": "Graceful shutdown persistence",
+      "total": 1,
+      "successful": 1,
+      "failed": 0,
+      "latency_min_ms": 0,
+      "latency_avg_ms": 0,
+      "latency_p95_ms": 0,
+      "latency_max_ms": 0,
+      "rps": 0,
+      "backend_dist": {},
+      "errors": [],
+      "notes": [
+        "Sessions after restart: 2",
+        "Backends healthy: True",
+        "Ожидается: state.json сохраняется, бэкенды восстанавливаются после перезапуска"
+      ]
+    },
+    {
+      "name": "S17",
+      "desc": "Retry исключая упавший бэкенд",
+      "total": 4,
+      "successful": 4,
+      "failed": 0,
+      "latency_min_ms": 45.60959999798797,
+      "latency_avg_ms": 57.02690000180155,
+      "latency_p95_ms": 68.44440000713803,
+      "latency_max_ms": 68.44440000713803,
+      "rps": 58.44,
+      "backend_dist": {
+        "unknown": 4
+      },
+      "errors": [],
+      "notes": [
+        "Ожидается: запросы уходят на mock-c (тоже имеет deepseek-r1:32b), не на mock-a",
+        "3 попытки retry с исключением failed backend"
+      ]
+    },
+    {
+      "name": "S18",
+      "desc": "50 concurrent, проверка race conditions",
+      "total": 50,
+      "successful": 50,
+      "failed": 0,
+      "latency_min_ms": 33.48230000119656,
+      "latency_avg_ms": 67.64123399974778,
+      "latency_p95_ms": 109.8033000016585,
+      "latency_max_ms": 124.34760000905953,
+      "rps": 402.1,
+      "backend_dist": {
+        "unknown": 50
+      },
+      "errors": [],
+      "notes": [
+        "Total proxy requests: -1",
+        "Sum of activeRequests: 0",
+        "Ожидается: totalRequests монотонно растёт, ActiveReqs >= 0, нет паники",
+        "Успешно: 50/50"
+      ]
+    }
+  ]
+}

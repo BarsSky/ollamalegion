@@ -20,6 +20,7 @@
     --warning: #fbbf24;
     --danger: #f87171;
     --info: #60a5fa;
+    --purple-accent: #a855f7;
     --border: #2a2a4a;
     --radius: 12px;
     --shadow: 0 4px 20px rgba(0, 0, 0, 0.3);
@@ -38,10 +39,11 @@
 
     /* ===== Liquid Glass (Dark) ===== */
     --glass-bg: rgba(15, 15, 35, 0.55);
-    --glass-border: rgba(255, 255, 255, 0.08);
-    --glass-blur: 16px;
-    --glass-shadow: 0 8px 32px rgba(0, 0, 0, 0.3);
-    --glass-highlight: rgba(255, 255, 255, 0.06);
+    --glass-border: rgba(255, 255, 255, 0.1);
+    --glass-blur: 20px;
+    --glass-shadow: 0 8px 32px rgba(0, 0, 0, 0.4), 0 2px 8px rgba(0, 0, 0, 0.2), inset 0 1px 0 rgba(255, 255, 255, 0.04);
+    --glass-highlight: rgba(255, 255, 255, 0.08);
+    --glass-glow: radial-gradient(ellipse at 50% 0%, rgba(59, 130, 246, 0.06) 0%, transparent 70%);
 }
 
 /* Light Theme */
@@ -59,6 +61,7 @@
     --warning: #d97706;
     --danger: #dc2626;
     --info: #2563eb;
+    --purple-accent: #9333ea;
     --border: #d1d5db;
     --radius: 12px;
     --shadow: 0 4px 20px rgba(0, 0, 0, 0.08);
@@ -76,11 +79,12 @@
     --bar-bg: rgba(0, 0, 0, 0.05);
 
     /* ===== Liquid Glass (Light) ===== */
-    --glass-bg: rgba(255, 255, 255, 0.6);
-    --glass-border: rgba(0, 0, 0, 0.06);
-    --glass-blur: 16px;
-    --glass-shadow: 0 8px 32px rgba(0, 0, 0, 0.06);
+    --glass-bg: rgba(255, 255, 255, 0.65);
+    --glass-border: rgba(0, 0, 0, 0.08);
+    --glass-blur: 20px;
+    --glass-shadow: 0 8px 32px rgba(0, 0, 0, 0.08), 0 2px 8px rgba(0, 0, 0, 0.04), inset 0 1px 0 rgba(255, 255, 255, 0.6);
     --glass-highlight: rgba(255, 255, 255, 0.8);
+    --glass-glow: radial-gradient(ellipse at 50% 0%, rgba(37, 99, 235, 0.04) 0%, transparent 70%);
 }
 
 /* Theme transition — excluded backdrop-filter */

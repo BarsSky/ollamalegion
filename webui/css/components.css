@@ -94,10 +94,19 @@
 .card::before {
     content: '';
     position: absolute;
+    inset: 0;
+    background: var(--glass-glow);
+    pointer-events: none;
+    z-index: 0;
+}
+.card::after {
+    content: '';
+    position: absolute;
     top: 0; left: 0; right: 0;
     height: 1px;
     background: var(--glass-highlight);
     pointer-events: none;
+    z-index: 1;
 }
 .card-header {
     padding: 20px 24px;

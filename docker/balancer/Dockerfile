@@ -76,8 +76,8 @@ COPY --from=builder /build/balancer .
 # Копирование конфигурации по умолчанию
 COPY --from=builder /build/config/config.example.json ./config.json
 
-# Копирование monitor.html
-COPY --from=builder /build/cmd/monitor/monitor.html ./monitor.html
+# Копирование monitor.html (из webui/ — синхронизировано с изменениями)
+COPY --from=builder /build/webui/monitor.html ./monitor.html
 
 # Создание непривилегированного пользователя
 RUN addgroup -g 1000 appgroup && \

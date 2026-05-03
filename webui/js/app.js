@@ -234,7 +234,8 @@ const ui = (function () {
             type: 'ollamalegion-config',
             apiBase: CFG.API_BASE || '',
             apiToken: CFG.API_TOKEN || '',
-            refreshInterval: 2000
+            refreshInterval: 2000,
+            lang: localStorage.getItem('ollamalegion_lang') || 'ru'
         }, '*');
     }
 

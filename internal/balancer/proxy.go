@@ -419,7 +419,8 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	var targetBackend string
 
-	if sessionID != "" && p.config.Balancing.SessionStickiness {
+	isEmbed := path == "/api/embeddings"
+	if sessionID != "" && p.config.Balancing.SessionStickiness && !isEmbed {
 		if session := p.sessionMgr.Get(sessionID); session != nil {
 			targetBackend = session.BackendID
 
@@ -435,46 +436,44 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				)
 				targetBackend = ""
 			} else {
-				shouldRebalance := false
 				forceRebalance := false
 				backendState.mu.Lock()
 				active := backendState.ActiveReqs
 				maxReqs := backendState.Backend.MaxConcurrentReqs
 				backendState.mu.Unlock()
 
-				if maxReqs > 0 && active > 0 {
-					loadRatio := float64(active) / float64(maxReqs)
-					if loadRatio >= 1.0 {
-						forceRebalance = true
-					}
-					if loadRatio > 0.50 || forceRebalance {
-						altBackend := p.findLessLoadedBackendWithModel(model, targetBackend)
+			if maxReqs > 0 && active > 0 {
+				loadRatio := float64(active) / float64(maxReqs)
+				if loadRatio >= 1.0 {
+					forceRebalance = true
+				}
+				if loadRatio > 0.50 || forceRebalance {
+					altBackend := p.findLessLoadedBackendWithModel(model, targetBackend)
+					if altBackend != "" {
+						logger.Get().Infow("rebalancing session to less loaded backend (same model)",
+							"session", sessionID, "from", targetBackend, "to", altBackend,
+							"load_ratio", loadRatio, "force", forceRebalance)
+						targetBackend = altBackend
+					} else {
+						altBackend = p.findLessLoadedBackendAny(model, targetBackend)
 						if altBackend != "" {
-							logger.Get().Infow("rebalancing session to less loaded backend (same model)",
+							logger.Get().Infow("rebalancing session to less loaded backend (any)",
 								"session", sessionID, "from", targetBackend, "to", altBackend,
 								"load_ratio", loadRatio, "force", forceRebalance)
 							targetBackend = altBackend
-							shouldRebalance = true
-						} else {
-							altBackend = p.findLessLoadedBackendAny(model, targetBackend)
-							if altBackend != "" {
-								logger.Get().Infow("rebalancing session to less loaded backend (any)",
-									"session", sessionID, "from", targetBackend, "to", altBackend,
-									"load_ratio", loadRatio, "force", forceRebalance)
-								targetBackend = altBackend
-								shouldRebalance = true
-							} else if forceRebalance {
-								logger.Get().Warnw("force rebalance failed, queueing request",
-									"session", sessionID, "backend", targetBackend, "load_ratio", loadRatio)
-								targetBackend = ""
-							}
+						} else if forceRebalance {
+							logger.Get().Warnw("force rebalance failed, queueing request",
+								"session", sessionID, "backend", targetBackend, "load_ratio", loadRatio)
+							targetBackend = ""
 						}
 					}
 				}
+			}
 
-				if !shouldRebalance {
-					p.sessionMgr.Set(sessionID, targetBackend, model, clientName, r.UserAgent())
-				}
+			// Always update session binding — new backend or re-sticky to current
+			if targetBackend != "" && p.config.Balancing.SessionStickiness {
+				p.sessionMgr.Set(sessionID, targetBackend, model, clientName, r.UserAgent())
+			}
 			}
 		}
 	}
@@ -574,13 +573,13 @@ func (p *Proxy) getSessionID(r *http.Request, clientName string) string {
 // getSessionIDWithModel - версия с учётом модели (используется при создании сессии)
 func (p *Proxy) getSessionIDWithModel(r *http.Request, clientName, model string) string {
 	if clientID := r.Header.Get("X-Client-ID"); clientID != "" {
-		return clientID
+		return clientID + "::" + model
 	}
 	if sessionID := r.Header.Get("X-Session-ID"); sessionID != "" {
-		return sessionID
+		return sessionID + "::" + model
 	}
 	if cookie, err := r.Cookie("session_id"); err == nil {
-		return cookie.Value
+		return cookie.Value + "::" + model
 	}
 
 	ip, _, err := net.SplitHostPort(r.RemoteAddr)
@@ -723,11 +722,14 @@ func (p *Proxy) findBackendWithModelExcluding(modelName string, exclude map[stri
 		}
 
 		state.mu.Lock()
-		if state.ActiveReqs >= state.Backend.MaxConcurrentReqs {
-			state.mu.Unlock()
+		active := state.ActiveReqs
+		maxReqs := state.Backend.MaxConcurrentReqs
+		state.mu.Unlock()
+
+		// Согласно документации: model affinity только при loadRatio < 80%
+		if maxReqs > 0 && float64(active)/float64(maxReqs) >= 0.80 {
 			continue
 		}
-		state.mu.Unlock()
 
 		pred := state.Prediction
 		if pred.SecondsToCritical > 0 && pred.SecondsToCritical < 300 {
@@ -849,6 +851,7 @@ func (p *Proxy) findLessLoadedBackendWithModel(modelName, excludeBackendID strin
 }
 
 // findLessLoadedBackendAny — поиск любого менее загруженного healthy бэкенда
+// Если модель не загружена на выбранном бэкенде — запускает асинхронный warmup
 func (p *Proxy) findLessLoadedBackendAny(modelName, excludeBackendID string) string {
 	p.mu.RLock()
 	defer p.mu.RUnlock()
@@ -883,6 +886,28 @@ func (p *Proxy) findLessLoadedBackendAny(modelName, excludeBackendID string) str
 		}
 	}
 
+	// Если нашли бэкенд без модели — запускаем warmup асинхронно
+	if bestBackendID != "" && modelName != "" {
+		p.metricsMgr.mu.RLock()
+		metrics, hasMetrics := p.metricsMgr.metrics[bestBackendID]
+		p.metricsMgr.mu.RUnlock()
+		if hasMetrics {
+			hasModel := false
+			for _, m := range metrics.Ollama.RunningModels {
+				if m.Name == modelName || strings.Contains(m.Name, modelName) {
+					hasModel = true
+					break
+				}
+			}
+			if !hasModel {
+				state := p.backends[bestBackendID]
+				p.warmupModel(bestBackendID, state.Backend.Host, state.Backend.OllamaPort, modelName)
+				logger.Get().Infow("rebalance: triggering model warmup on new backend",
+					"backend", bestBackendID, "model", modelName)
+			}
+		}
+	}
+
 	return bestBackendID
 }
 
@@ -904,11 +929,14 @@ func (p *Proxy) findBackendWithModel(modelName string) string {
 		}
 
 		state.mu.Lock()
-		if state.ActiveReqs >= state.Backend.MaxConcurrentReqs {
-			state.mu.Unlock()
+		active := state.ActiveReqs
+		maxReqs := state.Backend.MaxConcurrentReqs
+		state.mu.Unlock()
+
+		// Согласно документации: model affinity только при loadRatio < 80%
+		if maxReqs > 0 && float64(active)/float64(maxReqs) >= 0.80 {
 			continue
 		}
-		state.mu.Unlock()
 		
 		pred := state.Prediction
 		if pred.SecondsToCritical > 0 && pred.SecondsToCritical < 300 {
@@ -1132,7 +1160,7 @@ func (p *Proxy) checkResourceLimits(backendID string) bool {
 		}
 	}
 
-	if metrics.GPU.UsagePercent > 95 {
+	if metrics.GPU.UsagePercent > 90 {
 		logger.Get().Warnw("backend GPU usage critical, blocking", "backend", backendID, "gpu_usage", metrics.GPU.UsagePercent)
 		return false
 	}

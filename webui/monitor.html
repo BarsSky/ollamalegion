@@ -3,25 +3,20 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>OllamaLegion Monitor</title>
-    <link rel="icon" type="image/png" sizes="32x32" href="favicon-32x32.png">
-    <link rel="icon" type="image/png" sizes="16x16" href="favicon-16x16.png">
-    <link rel="shortcut icon" href="favicon.ico">
-    <!-- Shared theme system -->
-    <link rel="stylesheet" href="css/themes.css?v=5">
-    <link rel="stylesheet" href="css/base.css?v=5">
-    <!-- i18n Language Packs -->
-    <script src="js/i18n/ru.js?v=4"></script>
-    <script src="js/i18n/en.js?v=4"></script>
-    <script src="js/i18n/index.js?v=4"></script>
-    <style>
+  <title>OllamaLegion Monitor</title>
+  <link rel="icon" type="image/png" sizes="32x32" href="favicon-32x32.png">
+  <link rel="icon" type="image/png" sizes="16x16" href="favicon-16x16.png">
+  <link rel="shortcut icon" href="favicon.ico">
+  <link rel="stylesheet" href="css/themes.css?v=5">
+  <link rel="stylesheet" href="css/base.css?v=5">
+  <script src="js/i18n/ru.js?v=4"></script>
+  <script src="js/i18n/en.js?v=4"></script>
+  <script src="js/i18n/index.js?v=4"></script>
+  <style>
     :root {
-      /* Monitor-specific tokens (theme colors come from themes.css) */
       --font: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
       --font-mono: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
-      /* Alias border-color → themes.css --border */
       --border-color: var(--border);
-      /* Row separator / subtle bg */
       --row-border: rgba(255, 255, 255, 0.07);
       --row-stripe: rgba(255, 255, 255, 0.015);
     }
@@ -49,8 +44,6 @@
       pointer-events: none;
       z-index: 0;
     }
-
-    /* Header */
     header {
       display: flex;
       align-items: center;
@@ -74,333 +67,67 @@
       background: var(--glass-highlight);
       pointer-events: none;
     }
-    header h1 {
-      font-size: 16px;
-      font-weight: 600;
-      display: flex;
-      align-items: center;
-      gap: 8px;
-    }
-    header h1 .dot {
-      width: 8px;
-      height: 8px;
-      border-radius: 50%;
-      background: var(--success);
-      display: inline-block;
-      animation: pulse 2s infinite;
-    }
+    header h1 { font-size: 16px; font-weight: 600; display: flex; align-items: center; gap: 8px; }
+    header h1 .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--success); display: inline-block; animation: pulse 2s infinite; }
     header h1 .dot.offline { background: var(--danger); animation: none; }
     header h1 .dot.error { background: var(--warning); animation: none; }
     header h1 .dot.demo { background: var(--info); animation: none; }
-    @keyframes pulse {
-      0%, 100% { opacity: 1; }
-      50% { opacity: 0.4; }
-    }
-    .header-right {
-      display: flex;
-      align-items: center;
-      gap: 10px;
-    }
-    .badge {
-      display: inline-flex;
-      align-items: center;
-      gap: 4px;
-      padding: 3px 8px;
-      border-radius: 6px;
-      font-size: 11px;
-      font-weight: 600;
-      font-family: var(--font-mono);
-      background: rgba(255,255,255,0.06);
-      color: var(--text-secondary);
-      border: 1px solid var(--border-color);
-    }
+    @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.4; } }
+    .header-right { display: flex; align-items: center; gap: 10px; }
+    .badge { display: inline-flex; align-items: center; gap: 4px; padding: 3px 8px; border-radius: 6px; font-size: 11px; font-weight: 600; font-family: var(--font-mono); background: rgba(255,255,255,0.06); color: var(--text-secondary); border: 1px solid var(--border-color); }
     .badge-green { background: rgba(34,197,94,0.12); color: var(--success); border-color: rgba(34,197,94,0.25); }
     .badge-yellow { background: rgba(245,158,11,0.12); color: var(--warning); border-color: rgba(245,158,11,0.25); }
     .badge-red { background: rgba(239,68,68,0.12); color: var(--danger); border-color: rgba(239,68,68,0.25); }
     .badge-blue { background: rgba(59,130,246,0.12); color: var(--accent); border-color: rgba(59,130,246,0.25); }
     .badge-purple { background: rgba(168,85,247,0.12); color: var(--purple-accent); border-color: rgba(168,85,247,0.2); }
-    .badge-orange { background: rgba(249,115,22,0.12); color: #f97316; border-color: rgba(249,115,22,0.25); }
-
-    select, button {
-      background: var(--bg-hover);
-      color: var(--text-primary);
-      border: 1px solid var(--border-color);
-      border-radius: 6px;
-      padding: 4px 10px;
-      font-size: 12px;
-      cursor: pointer;
-    }
+    select, button { background: var(--bg-hover); color: var(--text-primary); border: 1px solid var(--border-color); border-radius: 6px; padding: 4px 10px; font-size: 12px; cursor: pointer; }
     button:hover { border-color: var(--accent); }
     button:disabled { opacity: 0.5; cursor: not-allowed; }
-
-    /* Overlay messages */
-    .overlay {
-      position: absolute;
-      inset: 0;
-      display: flex;
-      flex-direction: column;
-      align-items: center;
-      justify-content: center;
-      gap: 12px;
-      background: rgba(11,17,32,0.85);
-      backdrop-filter: blur(12px);
-      -webkit-backdrop-filter: blur(12px);
-      z-index: 10;
-      text-align: center;
-      padding: 24px;
-    }
+    .overlay { position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 12px; background: rgba(11,17,32,0.85); backdrop-filter: blur(12px); -webkit-backdrop-filter: blur(12px); z-index: 10; text-align: center; padding: 24px; }
     .overlay.hidden { display: none; }
     .overlay h2 { font-size: 18px; color: var(--text-primary); }
     .overlay p { color: var(--text-secondary); max-width: 480px; }
-    .overlay .spinner {
-      width: 32px; height: 32px;
-      border: 3px solid var(--border-color);
-      border-top-color: var(--accent);
-      border-radius: 50%;
-      animation: spin 1s linear infinite;
-    }
+    .overlay .spinner { width: 32px; height: 32px; border: 3px solid var(--border-color); border-top-color: var(--accent); border-radius: 50%; animation: spin 1s linear infinite; }
     @keyframes spin { to { transform: rotate(360deg); } }
-
-    /* Main layout */
-    main {
-      display: flex;
-      flex-direction: column;
-      height: calc(100vh - 45px);
-      overflow: hidden;
-    }
-    .topo-section {
-      flex: 1 1 auto;
-      position: relative;
-      min-height: 280px;
-      display: flex;
-    }
-    #vizCanvas {
-      width: 100%;
-      height: 100%;
-      display: block;
-    }
-    /* Floating stats bar */
-    .stats-bar {
-      position: absolute;
-      bottom: 8px;
-      left: 50%;
-      transform: translateX(-50%);
-      display: flex;
-      gap: 8px;
-      background: var(--glass-bg);
-      border: 1px solid var(--glass-border);
-      border-radius: 12px;
-      padding: 6px 10px;
-      backdrop-filter: blur(var(--glass-blur));
-      -webkit-backdrop-filter: blur(var(--glass-blur));
-      box-shadow: var(--glass-shadow);
-      z-index: 5;
-      overflow: hidden;
-    }
-    .stats-bar::after {
-      content: '';
-      position: absolute;
-      top: 0; left: 0; right: 0;
-      height: 1px;
-      background: var(--glass-highlight);
-      pointer-events: none;
-      border-radius: 12px 12px 0 0;
-    }
-    .stat-item {
-      display: flex;
-      flex-direction: column;
-      align-items: center;
-      min-width: 56px;
-      padding: 2px 6px;
-    }
-    .stat-item .stat-val {
-      font-size: 15px;
-      font-weight: 700;
-      color: var(--text-primary);
-      font-family: var(--font-mono);
-    }
-    .stat-item .stat-label {
-      font-size: 10px;
-      color: var(--text-secondary);
-      text-transform: uppercase;
-      letter-spacing: 0.3px;
-    }
-
-    /* Tables area */
-    .tables-area {
-      flex: 0 0 auto;
-      max-height: 45vh;
-      overflow-y: auto;
-      border-top: 1px solid var(--glass-border);
-      background: var(--glass-bg);
-      backdrop-filter: blur(var(--glass-blur));
-      -webkit-backdrop-filter: blur(var(--glass-blur));
-      box-shadow: var(--glass-shadow);
-      position: relative;
-    }
-    .tables-area::after {
-      content: '';
-      position: sticky;
-      top: 0; left: 0; right: 0;
-      height: 1px;
-      background: var(--glass-highlight);
-      pointer-events: none;
-      z-index: 10;
-    }
-    .panel {
-      border-bottom: 1px solid var(--border-color);
-    }
-    .panel-header {
-      display: flex;
-      align-items: center;
-      justify-content: space-between;
-      padding: 10px 16px;
-      cursor: pointer;
-      user-select: none;
-      font-weight: 600;
-      font-size: 12px;
-      text-transform: uppercase;
-      letter-spacing: 0.5px;
-      color: var(--text-secondary);
-      transition: background 0.2s, color 0.2s;
-    }
+    main { display: flex; flex-direction: column; height: calc(100vh - 45px); overflow: hidden; }
+    .topo-section { flex: 1 1 auto; position: relative; min-height: 280px; display: flex; }
+    #vizCanvas { width: 100%; height: 100%; display: block; }
+    .stats-bar { position: absolute; bottom: 8px; left: 50%; transform: translateX(-50%); display: flex; gap: 8px; background: var(--glass-bg); border: 1px solid var(--glass-border); border-radius: 12px; padding: 6px 10px; backdrop-filter: blur(var(--glass-blur)); -webkit-backdrop-filter: blur(var(--glass-blur)); box-shadow: var(--glass-shadow); z-index: 1; overflow: hidden; }
+    .stats-bar::after { content: ''; position: absolute; top: 0; left: 0; right: 0; height: 1px; background: var(--glass-highlight); pointer-events: none; border-radius: 12px 12px 0 0; }
+    .stat-item { display: flex; flex-direction: column; align-items: center; min-width: 56px; padding: 2px 6px; }
+    .stat-val { font-size: 15px; font-weight: 700; color: var(--text-primary); font-family: var(--font-mono); }
+    .stat-label { font-size: 10px; color: var(--text-secondary); text-transform: uppercase; letter-spacing: 0.3px; }
+    .tables-area { flex: 0 0 auto; max-height: 45vh; overflow-y: auto; border-top: 1px solid var(--glass-border); background: var(--glass-bg); backdrop-filter: blur(var(--glass-blur)); -webkit-backdrop-filter: blur(var(--glass-blur)); box-shadow: var(--glass-shadow); position: relative; z-index: 2; }
+    .tables-area::after { content: ''; position: sticky; top: 0; left: 0; right: 0; height: 1px; background: var(--glass-highlight); pointer-events: none; z-index: 10; }
+    .panel { border-bottom: 1px solid var(--border-color); }
+    .panel-header { display: flex; align-items: center; justify-content: space-between; padding: 10px 16px; cursor: pointer; user-select: none; font-weight: 600; font-size: 12px; text-transform: uppercase; letter-spacing: 0.5px; color: var(--text-secondary); transition: background 0.2s, color 0.2s; }
     .panel-header:hover { color: var(--text-primary); background: var(--bg-hover); }
     .panel-body { display: none; padding: 0 14px 10px; }
     .panel.open .panel-body { display: block; }
     .panel.open .panel-header .chevron { transform: rotate(180deg); }
     .chevron { transition: transform 0.2s; }
-
-    table {
-      width: 100%;
-      border-collapse: collapse;
-      font-size: 13px;
-    }
-    thead th {
-      text-align: left;
-      padding: 7px 10px;
-      color: var(--text-secondary);
-      font-weight: 600;
-      border-bottom: 1px solid var(--border-color);
-      position: sticky;
-      top: 0;
-      background: var(--bg-secondary);
-      z-index: 2;
-    }
-    tbody td {
-      padding: 7px 10px;
-      border-bottom: 1px solid var(--row-border);
-      vertical-align: middle;
-    }
+    table { width: 100%; border-collapse: collapse; font-size: 13px; }
+    thead th { text-align: left; padding: 7px 10px; color: var(--text-secondary); font-weight: 600; border-bottom: 1px solid var(--border-color); position: sticky; top: 0; background: var(--bg-secondary); z-index: 2; }
+    tbody td { padding: 7px 10px; border-bottom: 1px solid var(--row-border); vertical-align: middle; }
     tbody tr:nth-child(even) { background: var(--row-stripe); }
     tbody tr:hover { background: rgba(255,255,255,0.04); }
     .col-right { text-align: right; }
-
-    .bar-track {
-      display: inline-block;
-      width: 48px;
-      height: 6px;
-      background: rgba(255,255,255,0.08);
-      border-radius: 3px;
-      overflow: hidden;
-      vertical-align: middle;
-      margin-right: 6px;
-    }
-    .bar-fill {
-      display: block;
-      height: 100%;
-      border-radius: 3px;
-    }
-
-    .alert-banner {
-      display: flex;
-      align-items: center;
-      gap: 8px;
-      padding: 8px 12px;
-      border-radius: 6px;
-      margin: 6px 14px 0;
-      font-size: 12px;
-    }
+    .bar-track { display: inline-block; width: 48px; height: 6px; background: rgba(255,255,255,0.08); border-radius: 3px; overflow: hidden; vertical-align: middle; margin-right: 6px; }
+    .bar-fill { display: block; height: 100%; border-radius: 3px; }
+    .alert-banner { display: flex; align-items: center; gap: 8px; padding: 8px 12px; border-radius: 6px; margin: 6px 14px 0; font-size: 12px; }
     .alert-red { background: rgba(239,68,68,0.08); border: 1px solid rgba(239,68,68,0.25); color: var(--danger); }
     .alert-yellow { background: rgba(245,158,11,0.08); border: 1px solid rgba(245,158,11,0.25); color: var(--warning); }
-
-    /* Model capacity section */
-    .capacity-grid {
-      display: grid;
-      grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
-      gap: 8px;
-      padding: 10px 14px;
-    }
-    .capacity-card {
-      background: var(--glass-bg);
-      border: 1px solid var(--glass-border);
-      border-radius: 12px;
-      padding: 10px 12px;
-      backdrop-filter: blur(4px);
-      -webkit-backdrop-filter: blur(4px);
-      box-shadow: var(--glass-shadow);
-      position: relative;
-    }
-    .capacity-card::after {
-      content: '';
-      position: absolute;
-      top: 0; left: 0; right: 0;
-      height: 1px;
-      background: var(--glass-highlight);
-      pointer-events: none;
-      border-radius: 12px 12px 0 0;
-    }
-    .capacity-card h4 {
-      font-size: 11px;
-      color: var(--text-secondary);
-      margin-bottom: 6px;
-      text-transform: uppercase;
-      letter-spacing: 0.5px;
-    }
-    .capacity-bar {
-      display: flex;
-      align-items: center;
-      gap: 8px;
-      margin-bottom: 4px;
-    }
-    .capacity-bar .bar-track-wide {
-      flex: 1;
-      height: 8px;
-      background: rgba(255,255,255,0.06);
-      border-radius: 4px;
-      overflow: hidden;
-    }
-    .capacity-bar .bar-fill-wide {
-      height: 100%;
-      border-radius: 4px;
-      transition: width 0.3s ease;
-    }
-    .capacity-val {
-      font-size: 11px;
-      font-family: var(--font-mono);
-      color: var(--text-secondary);
-      min-width: 60px;
-      text-align: right;
-    }
-    .capacity-models {
-      display: flex;
-      flex-wrap: wrap;
-      gap: 4px;
-      margin-top: 6px;
-    }
-
-    /* Scrollbar */
+    .capacity-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 8px; padding: 10px 14px; }
+    .capacity-card { background: var(--glass-bg); border: 1px solid var(--glass-border); border-radius: 12px; padding: 10px 12px; backdrop-filter: blur(4px); -webkit-backdrop-filter: blur(4px); box-shadow: var(--glass-shadow); position: relative; }
+    .capacity-card::after { content: ''; position: absolute; top: 0; left: 0; right: 0; height: 1px; background: var(--glass-highlight); pointer-events: none; border-radius: 12px 12px 0 0; }
+    .capacity-card h4 { font-size: 11px; color: var(--text-secondary); margin-bottom: 6px; text-transform: uppercase; letter-spacing: 0.5px; }
+    .capacity-bar { display: flex; align-items: center; gap: 8px; margin-bottom: 4px; }
+    .bar-track-wide { flex: 1; height: 8px; background: rgba(255,255,255,0.06); border-radius: 4px; overflow: hidden; }
+    .bar-fill-wide { height: 100%; border-radius: 4px; transition: width 0.3s ease; }
+    .capacity-val { font-size: 11px; font-family: var(--font-mono); color: var(--text-secondary); min-width: 60px; text-align: right; }
     ::-webkit-scrollbar { width: 6px; height: 6px; }
     ::-webkit-scrollbar-track { background: transparent; }
     ::-webkit-scrollbar-thumb { background: var(--border-color); border-radius: 3px; }
-
-    /* Loading progress on backend node */
-    @keyframes loadPulse {
-      0%, 100% { opacity: 0.6; }
-      50% { opacity: 1; }
-    }
-    .loading-indicator {
-      animation: loadPulse 1.5s infinite;
-    }
   </style>
 </head>
 <body>
@@ -422,20 +149,15 @@
     <span id="connBadge" class="badge badge-yellow">Подключение…</span>
   </div>
 </header>
-
 <main>
   <div class="topo-section">
     <canvas id="vizCanvas"></canvas>
-
-    <!-- Loading overlay -->
     <div id="loadingOverlay" class="overlay">
       <div class="spinner"></div>
       <h2>Подключение к API…</h2>
       <p>Ожидание ответа от балансировщика. Если вы запускаете под Docker, убедитесь, что сервис <code>loadbalancer</code> поднят.</p>
       <p style="font-size:11px;color:var(--text-secondary);margin-top:4px">API Base: <code id="apiBaseDisplay">—</code></p>
     </div>
-
-    <!-- Error overlay -->
     <div id="errorOverlay" class="overlay hidden">
       <h2>⚠ Нет подключения к балансировщику</h2>
       <p id="errorText">Не удалось получить данные. Проверьте, что API доступен и CORS настроен корректно.</p>
@@ -445,8 +167,6 @@
         <button onclick="enterDemoMode()" style="margin-left:8px">▶ Демо-режим</button>
       </div>
     </div>
-
-    <!-- Stats bar -->
     <div class="stats-bar">
       <div class="stat-item"><div id="statBackends" class="stat-val">—</div><div class="stat-label">Backends</div></div>
       <div class="stat-item"><div id="statActive" class="stat-val">—</div><div class="stat-label">Active</div></div>
@@ -459,1269 +179,489 @@
       <div class="stat-item"><div id="statModelsLoaded" class="stat-val">—</div><div class="stat-label">Models</div></div>
     </div>
   </div>
-
-  <!-- Alerts -->
   <div id="alertContainer"></div>
-
-  <!-- Tables -->
   <div class="tables-area">
-    <!-- Panel: Cluster Resources -->
     <div class="panel open" id="panelCluster">
       <div class="panel-header" onclick="togglePanel('panelCluster')">
-        <span>📊 Ресурсы кластера</span>
-        <span class="chevron">▼</span>
+        <span>📊 Ресурсы кластера</span><span class="chevron">▼</span>
       </div>
-      <div class="panel-body">
-        <div class="capacity-grid" id="capacityGrid">
-          <!-- Populated by JS -->
-        </div>
-      </div>
+      <div class="panel-body"><div class="capacity-grid" id="capacityGrid"></div></div>
     </div>
-
-    <!-- Panel: Models in Memory -->
     <div class="panel" id="panelModels">
       <div class="panel-header" onclick="togglePanel('panelModels')">
-        <span>🧠 Модели в памяти (<span id="modelsCount">0</span>)</span>
-        <span class="chevron">▼</span>
+        <span>🧠 Модели в памяти (<span id="modelsCount">0</span>)</span><span class="chevron">▼</span>
       </div>
-      <div class="panel-body">
-        <div style="overflow-x:auto">
-          <table id="modelsTable">
-            <thead>
-              <tr>
-                <th>Модель</th><th>Бэкенды</th><th class="col-right">Сессий</th><th class="col-right">VRAM</th><th class="col-right">Загрузка</th>
-              </tr>
-            </thead>
-            <tbody><tr><td colspan="5" style="color:var(--text-secondary);text-align:center;padding:16px">Нет данных</td></tr></tbody>
-          </table>
-        </div>
-      </div>
+      <div class="panel-body"><div style="overflow-x:auto"><table id="modelsTable"><thead><tr><th>Модель</th><th>Бэкенды</th><th class="col-right">Сессий</th><th class="col-right">VRAM</th><th class="col-right">Загрузка</th></tr></thead><tbody><tr><td colspan="5" style="color:var(--text-secondary);text-align:center;padding:16px">Нет данных</td></tr></tbody></table></div></div>
     </div>
-
     <div class="panel open" id="panelBackends">
       <div class="panel-header" onclick="togglePanel('panelBackends')">
-        <span>🖥️ Backends (<span id="backendCount">0</span>)</span>
-        <span class="chevron">▼</span>
+        <span>🖥️ Backends (<span id="backendCount">0</span>)</span><span class="chevron">▼</span>
       </div>
-      <div class="panel-body">
-        <div style="overflow-x:auto">
-          <table id="backendsTable">
-            <thead>
-              <tr>
-                <th>ID</th><th>Статус</th><th>GPU</th><th>VRAM</th><th>CPU</th><th>RAM</th>
-                <th class="col-right">Active</th><th class="col-right">RPS</th><th class="col-right">Score</th>
-                <th>Модели</th><th class="col-right">Uptime</th>
-              </tr>
-            </thead>
-            <tbody><tr><td colspan="11" style="color:var(--text-secondary);text-align:center;padding:16px">Нет данных</td></tr></tbody>
-          </table>
-        </div>
-      </div>
+      <div class="panel-body"><div style="overflow-x:auto"><table id="backendsTable"><thead><tr><th>ID</th><th>Статус</th><th>GPU</th><th>VRAM</th><th>CPU</th><th>RAM</th><th class="col-right">Active</th><th class="col-right">RPS</th><th class="col-right">Score</th><th>Модели</th><th class="col-right">Uptime</th></tr></thead><tbody><tr><td colspan="11" style="color:var(--text-secondary);text-align:center;padding:16px">Нет данных</td></tr></tbody></table></div></div>
     </div>
-
     <div class="panel" id="panelQueue">
       <div class="panel-header" onclick="togglePanel('panelQueue')">
-        <span>📋 Queue (<span id="queueCount">0</span>)</span>
-        <span class="chevron">▼</span>
+        <span>📋 Queue (<span id="queueCount">0</span>)</span><span class="chevron">▼</span>
       </div>
-      <div class="panel-body">
-        <div style="overflow-x:auto">
-          <table id="queueTable">
-            <thead>
-              <tr>
-                <th>#</th><th>Модель</th><th>Target</th><th>Статус</th><th class="col-right">Ожидание</th><th>Сессия</th>
-              </tr>
-            </thead>
-            <tbody><tr><td colspan="7" style="color:var(--text-secondary);text-align:center;padding:16px">Нет данных</td></tr></tbody>
-          </table>
-        </div>
-      </div>
+      <div class="panel-body"><div style="overflow-x:auto"><table id="queueTable"><thead><tr><th>#</th><th>Модель</th><th>Target</th><th>Статус</th><th class="col-right">Ожидание</th><th>Сессия</th></tr></thead><tbody><tr><td colspan="7" style="color:var(--text-secondary);text-align:center;padding:16px">Нет данных</td></tr></tbody></table></div></div>
     </div>
-
     <div class="panel" id="panelSessions">
       <div class="panel-header" onclick="togglePanel('panelSessions')">
-        <span>👤 Sessions (<span id="sessionCount">0</span>)</span>
-        <span class="chevron">▼</span>
+        <span>👤 Sessions (<span id="sessionCount">0</span>)</span><span class="chevron">▼</span>
       </div>
-      <div class="panel-body">
-        <div style="overflow-x:auto">
-          <table id="sessionsTable">
-            <thead>
-              <tr>
-                <th>ID</th><th>Backend</th><th>Модель</th><th class="col-right">Запросов</th><th class="col-right">Idle</th><th>IP</th><th>Клиент</th>
-              </tr>
-            </thead>
-            <tbody><tr><td colspan="7" style="color:var(--text-secondary);text-align:center;padding:16px">Нет данных</td></tr></tbody>
-          </table>
-        </div>
-      </div>
+      <div class="panel-body"><div style="overflow-x:auto"><table id="sessionsTable"><thead><tr><th>ID</th><th>Backend</th><th>Модель</th><th class="col-right">Запросов</th><th class="col-right">Idle</th><th>IP</th><th>Клиент</th></tr></thead><tbody><tr><td colspan="7" style="color:var(--text-secondary);text-align:center;padding:16px">Нет данных</td></tr></tbody></table></div></div>
     </div>
   </div>
 </main>
-
 <script>
-  // ==================== CONFIG ====================
-  // Auto-detect API base from multiple sources
+(function() {
+  var T = function(k, p) { return (window.I18N && window.I18N.t ? window.I18N.t(k, p) : k); };
+  var LANG = function() { return (window.I18N && window.I18N.getLang ? window.I18N.getLang() : 'ru'); };
+  var SETLANG = function(l) { if (window.I18N && window.I18N.setLang) window.I18N.setLang(l); };
+
   function detectApiBase() {
-    // 1. From WEBUI_CONFIG (injected by nginx/Docker entrypoint)
-    if (typeof window !== 'undefined' && window.WEBUI_CONFIG && window.WEBUI_CONFIG.apiBase) {
-      return window.WEBUI_CONFIG.apiBase.replace(/\/$/, '');
-    }
-    // 2. From localStorage (user override)
-    const stored = localStorage.getItem('monitorApiBase');
-    if (stored) return stored.replace(/\/$/, '');
-    // 3. From query param
-    const qp = new URLSearchParams(location.search).get('api_base');
-    if (qp) return qp.replace(/\/$/, '');
-    // 4. Same origin (works when served by nginx proxy)
+    if (typeof window !== 'undefined' && window.WEBUI_CONFIG && window.WEBUI_CONFIG.apiBase) return window.WEBUI_CONFIG.apiBase.replace(/\/$/, '');
+    var s = localStorage.getItem('monitorApiBase'); if (s) return s.replace(/\/$/, '');
+    var q = new URLSearchParams(location.search).get('api_base'); if (q) return q.replace(/\/$/, '');
     return '';
   }
+  var API_BASE = detectApiBase();
+  document.getElementById('apiBaseDisplay').textContent = API_BASE || location.origin;
 
-  let API_BASE = detectApiBase();
+  var refreshInterval = 2000, timerId = null, paused = false, demoMode = false, fetchAttempt = 0;
+  var lastData = null, lastTime = Date.now(), lastTotalRequests = 0, requestRate = 0;
+  var fetching = false, corsErrorDetected = false;
+  var _backendOrder = new Map(); // stable order
 
-  // Receive config from parent webui via postMessage
-  window.addEventListener('message', (e) => {
+  function stableBackendOrder(backends) {
+    var now = Date.now(), seen = new Set();
+    backends.forEach(function(b) { var id = b.id || b.ID; if (!id) return; seen.add(id); if (!_backendOrder.has(id)) _backendOrder.set(id, { index: _backendOrder.size, addedAt: now }); });
+    var entries = [];
+    _backendOrder.forEach(function(m, id) { if (seen.has(id)) entries.push({ id: id, index: m.index, addedAt: m.addedAt }); });
+    entries.sort(function(a, b) { return a.index - b.index; });
+    _backendOrder.clear();
+    entries.forEach(function(e, i) { _backendOrder.set(e.id, { index: i, addedAt: e.addedAt }); });
+    return [].concat(backends).sort(function(a, b) { var ia = (_backendOrder.get(a.id || a.ID) || { index: Infinity }).index; var ib = (_backendOrder.get(b.id || b.ID) || { index: Infinity }).index; return ia - ib; });
+  }
+
+  window.addEventListener('message', function(e) {
     if (e.data && e.data.type === 'ollamalegion-config') {
       if (e.data.apiBase !== undefined) API_BASE = e.data.apiBase;
       if (e.data.apiToken !== undefined) localStorage.setItem('apiToken', e.data.apiToken);
-      if (e.data.refreshInterval && !demoMode) {
-        refreshInterval = e.data.refreshInterval;
-        if (timerId) { clearInterval(timerId); timerId = setInterval(fetchAll, refreshInterval); }
-      }
+      if (e.data.lang) { SETLANG(e.data.lang); document.documentElement.setAttribute('lang', e.data.lang); updateMonitorTexts(); }
+      if (e.data.refreshInterval && !demoMode) { refreshInterval = e.data.refreshInterval; if (timerId) { clearInterval(timerId); timerId = setInterval(fetchAllSafe, refreshInterval); } }
     }
   });
-  const DEMO_INTERVAL = 500; // ms
-  let refreshInterval = 2000;
-  let timerId = null;
-  let paused = false;
-  let demoMode = false;
-  let fetchAttempt = 0;
-  let lastData = null;
-  let lastTime = Date.now();
-  let lastTotalRequests = 0;
-  let lastRequestCount = 0;
-  let requestRate = 0;
 
-  // Stable backend order: new backends appended, removed ones leave gaps
-  const _backendOrder = new Map(); // id -> { index, addedAt }
-
-  function stableBackendOrder(backends) {
-    const now = Date.now();
-    const seen = new Set();
-    backends.forEach(b => {
-      const id = b.id || b.ID;
-      if (!id) return;
-      seen.add(id);
-      if (!_backendOrder.has(id)) {
-        _backendOrder.set(id, { index: _backendOrder.size, addedAt: now });
-      }
-    });
-    const entries = [];
-    for (const [id, meta] of _backendOrder) {
-      if (seen.has(id)) {
-        entries.push({ id, index: meta.index, addedAt: meta.addedAt });
-      }
-    }
-    entries.sort((a, b) => a.index - b.index);
-    _backendOrder.clear();
-    entries.forEach((e, i) => {
-      _backendOrder.set(e.id, { index: i, addedAt: e.addedAt });
-    });
-    return [...backends].sort((a, b) => {
-      const ia = _backendOrder.get(a.id || a.ID)?.index ?? Infinity;
-      const ib = _backendOrder.get(b.id || b.ID)?.index ?? Infinity;
-      return ia - ib;
-    });
-  }
-  let corsErrorDetected = false;
-
-  // Show detected API base in loading overlay
-  document.getElementById('apiBaseDisplay').textContent = API_BASE || location.origin;
-
-  // ==================== API ====================
   function api(path) {
-    const token = new URLSearchParams(location.search).get('token') || localStorage.getItem('apiToken') || '';
-    const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 5000);
-    return fetch(API_BASE + path, {
-      headers: token ? { 'X-API-Token': token } : {},
-      signal: controller.signal
-    }).then(r => {
-      clearTimeout(timeoutId);
-      if (!r.ok) throw new Error(r.status + ' ' + r.statusText);
-      return r.json();
-    }).catch(e => {
-      clearTimeout(timeoutId);
-      throw e;
-    });
+    var token = new URLSearchParams(location.search).get('token') || localStorage.getItem('apiToken') || '';
+    var ctrl = new AbortController();
+    var tid = setTimeout(function() { ctrl.abort(); }, 15000);
+    return fetch(API_BASE + path, { headers: token ? { 'X-API-Token': token } : {}, signal: ctrl.signal })
+      .then(function(r) { clearTimeout(tid); if (!r.ok) throw new Error(r.status + ' ' + r.statusText); return r.json(); })
+      .catch(function(e) { clearTimeout(tid); throw e; });
   }
 
-  async function fetchAll() {
-    if (paused) return;
-    if (demoMode) { updateUI(demoData()); return; }
-    try {
-      const [cluster, queueDetails, sessions] = await Promise.all([
-        api('/api/v1/cluster').catch(e => { console.error('[monitor] cluster:', e.message); return null; }),
-        api('/api/v1/queue/details').catch(e => { console.error('[monitor] queue:', e.message); return null; }),
-        api('/api/v1/sessions').catch(e => { console.error('[monitor] sessions:', e.message); return null; }),
-      ]);
-      // Сбрасываем кэш, если backends пуст (чтобы не показывать устаревшие данные)
-      if (cluster && (!cluster.backends || cluster.backends.length === 0)) {
-        lastData = null;
-      } else {
-        const data = { cluster, queueDetails, sessions };
-        lastData = data;
-      }
-      fetchAttempt = 0;
-      corsErrorDetected = false;
+  function isAbortError(e) { return e && (e.name === 'AbortError' || (e.message && e.message.indexOf('aborted') >= 0)); }
+
+  function fetchAll() {
+    if (paused || fetching) return Promise.resolve();
+    if (demoMode) { updateUI(demoData()); return Promise.resolve(); }
+    fetching = true;
+    return Promise.all([
+      api('/api/v1/cluster').catch(function(e) { if (!isAbortError(e)) console.warn('[monitor] cluster:', e.message); return null; }),
+      api('/api/v1/queue/details').catch(function(e) { if (!isAbortError(e)) console.warn('[monitor] queue:', e.message); return null; }),
+      api('/api/v1/sessions').catch(function(e) { if (!isAbortError(e)) console.warn('[monitor] sessions:', e.message); return null; })
+    ]).then(function(r) {
+      var cluster = r[0], qd = r[1], sess = r[2];
+      var data;
+      if (cluster && (!cluster.backends || cluster.backends.length === 0)) { lastData = null; data = null; }
+      else { data = { cluster: cluster, queueDetails: qd, sessions: sess }; lastData = data; }
+      fetchAttempt = 0; corsErrorDetected = false;
       hideOverlays();
       document.getElementById('demoIndicator').style.display = 'none';
-      setConnStatus('Live', 'green');
+      setConnStatus(T('monitor.status.live'), 'green');
       document.getElementById('demoBtn').style.display = 'none';
       updateUI(data);
-    } catch (e) {
-      console.error('[monitor] fetchAll failed:', e);
-      fetchAttempt++;
-      // Detect CORS / network errors
-      const isNetworkError = e.message === 'Failed to fetch' || e.name === 'TypeError';
-      const isCorsError = isNetworkError && API_BASE === '';
-      if (isCorsError) corsErrorDetected = true;
+    }).finally(function() { fetching = false; });
+  }
 
+  function fetchAllSafe() {
+    fetchAll().catch(function(e) {
+      if (!isAbortError(e)) console.error('[monitor] fetchAll failed:', e);
+      fetchAttempt++; fetching = false;
+      var isNetwork = e.message === 'Failed to fetch' || e.name === 'TypeError';
+      var isCors = isNetwork && API_BASE === '';
+      if (isCors) corsErrorDetected = true;
       if (fetchAttempt >= 3) {
-        let msg = 'Балансировщик не отвечает после ' + fetchAttempt + ' попыток.';
-        if (corsErrorDetected) {
-          msg += ' Возможно, проблема с CORS: файл открыт напрямую (file://), а не через nginx. Используйте сервер или укажите api_base в URL.';
-        } else if (isNetworkError) {
-          msg += ' Проверьте, что балансировщик запущен и доступен по адресу ' + (API_BASE || location.origin) + '.';
-        }
-        showError(msg);
-        renderErrorDetails(e);
-      } else {
-        setConnStatus('Offline', 'red');
-      }
-    }
+        var msg = T('monitor.error.balancerUnreachable', { count: fetchAttempt });
+        if (corsErrorDetected) msg += T('monitor.error.corsHint');
+        else if (isNetwork) msg += T('monitor.error.networkHint', { addr: API_BASE || location.origin });
+        showError(msg); renderErrorDetails(e);
+      } else { setConnStatus(T('monitor.status.offline'), 'red'); }
+    });
   }
 
   function renderErrorDetails(err) {
-    const el = document.getElementById('errorDetails');
-    const details = [];
-    details.push('API Base: ' + (API_BASE || location.origin));
-    details.push('Protocol: ' + location.protocol);
-    details.push('Error: ' + (err.message || err.name || 'Unknown'));
-    if (corsErrorDetected) {
-      details.push('CORS: файл открыт напрямую. Решения:');
-      details.push('  1. Открыть через nginx proxy');
-      details.push('  2. Добавить ?api_base=http://localhost:8081');
-      details.push('  3. Установить localStorage.monitorApiBase');
-    }
-    el.innerHTML = details.map(d => '<div>' + escapeHtml(d) + '</div>').join('');
+    var el = document.getElementById('errorDetails'), d = [];
+    d.push('API Base: ' + (API_BASE || location.origin));
+    d.push('Protocol: ' + location.protocol);
+    d.push('Error: ' + (err.message || err.name || 'Unknown'));
+    if (corsErrorDetected) { d.push(T('monitor.error.corsDetails1')); d.push(T('monitor.error.corsDetails2')); d.push(T('monitor.error.corsDetails3')); d.push(T('monitor.error.corsDetails4')); }
+    el.innerHTML = d.map(function(s) { return '<div>' + esc(s) + '</div>'; }).join('');
   }
 
-  // ==================== DEMO DATA ====================
   function demoData() {
-    const now = new Date().toISOString();
+    var n = new Date().toISOString();
     return {
       cluster: {
         backends: [
-          { id: 'ollama-1', status: 'active', activeRequests: 2, maxConcurrentRequests: 8, gpu: { usagePercent: 45 }, vram: { usagePercent: 62, totalGB: 24, usedGB: 14.88 }, system: { cpuUsagePercent: 30, memoryUsagePercent: 55 }, score: 0.95, models: ['llama3.1', 'gemma2'], lastSeen: now, ollama: { requestsPerSecond: 1.2 } },
-          { id: 'ollama-2', status: 'active', activeRequests: 1, maxConcurrentRequests: 8, gpu: { usagePercent: 12 }, vram: { usagePercent: 28, totalGB: 24, usedGB: 6.72 }, system: { cpuUsagePercent: 18, memoryUsagePercent: 40 }, score: 0.88, models: ['llama3.1'], lastSeen: now, ollama: { requestsPerSecond: 0.5 } },
-          { id: 'ollama-3', status: 'error', activeRequests: 0, maxConcurrentRequests: 8, gpu: { usagePercent: 0 }, vram: { usagePercent: 0, totalGB: 24, usedGB: 0 }, system: { cpuUsagePercent: 5, memoryUsagePercent: 20 }, score: 0.0, models: [], lastSeen: now, ollama: { requestsPerSecond: 0 } },
-        ],
-        rps: 1.7,
-        queue: { max_size: 100 }
+          { id: 'ollama-1', status: 'active', activeRequests: 2, maxConcurrentRequests: 8, gpu: { usagePercent: 45 }, vram: { usagePercent: 62, totalGB: 24, usedGB: 14.88 }, system: { cpuUsagePercent: 30, memoryUsagePercent: 55 }, score: 0.95, models: ['llama3.1', 'gemma2'], lastSeen: n, ollama: { requestsPerSecond: 1.2 } },
+          { id: 'ollama-2', status: 'active', activeRequests: 1, maxConcurrentRequests: 8, gpu: { usagePercent: 12 }, vram: { usagePercent: 28, totalGB: 24, usedGB: 6.72 }, system: { cpuUsagePercent: 18, memoryUsagePercent: 40 }, score: 0.88, models: ['llama3.1'], lastSeen: n, ollama: { requestsPerSecond: 0.5 } },
+          { id: 'ollama-3', status: 'error', activeRequests: 0, maxConcurrentRequests: 8, gpu: { usagePercent: 0 }, vram: { usagePercent: 0, totalGB: 24, usedGB: 0 }, system: { cpuUsagePercent: 5, memoryUsagePercent: 20 }, score: 0.0, models: [], lastSeen: n, ollama: { requestsPerSecond: 0 } }
+        ], rps: 1.7, queue: { max_size: 100 }
       },
-      queueDetails: {
-        pending_count: 3,
-        processing_count: 2,
-        current_size: 5,
-        processed_total: 128,
-        all: [
-          { model: 'llama3.1', target: null, status: 'pending', enqueued: new Date(Date.now() - 4200).toISOString(), sessionId: 'sess-demo-1' },
-          { model: 'gemma2', target: null, status: 'pending', enqueued: new Date(Date.now() - 1800).toISOString(), sessionId: 'sess-demo-2' },
-          { model: 'llama3.1', target: 'ollama-1', status: 'processing', enqueued: new Date(Date.now() - 800).toISOString(), sessionId: 'sess-demo-3' },
-          { model: 'llama3.1', target: 'ollama-2', status: 'processing', enqueued: new Date(Date.now() - 600).toISOString(), sessionId: 'sess-demo-4' },
-          { model: 'llama3.1', target: null, status: 'pending', enqueued: new Date(Date.now() - 200).toISOString(), sessionId: 'sess-demo-5' },
-        ]
-      },
-      sessions: {
-        sessions: [
-          // Разные клиенты с ОДНОГО IP — демонстрация разделения сессий
-          { id: '192.168.1.100::Cline::llama3.1', backendId: 'ollama-1', model: 'llama3.1', clientIP: '192.168.1.100', clientName: 'Cline', requestCount: 12, lastRequestAt: new Date(Date.now() - 3000).toISOString() },
-          { id: '192.168.1.100::OpenWebUI::gemma2', backendId: 'ollama-2', model: 'gemma2', clientIP: '192.168.1.100', clientName: 'OpenWebUI', requestCount: 5, lastRequestAt: new Date(Date.now() - 8000).toISOString() },
-          { id: '192.168.1.100::python-requests::llama3.1', backendId: 'ollama-1', model: 'llama3.1', clientIP: '192.168.1.100', clientName: 'python-requests/2.31.0', requestCount: 3, lastRequestAt: new Date(Date.now() - 1200).toISOString() },
-          { id: '192.168.1.100::curl::qwen2.5', backendId: 'ollama-2', model: 'qwen2.5', clientIP: '192.168.1.100', clientName: 'curl/8.5.0', requestCount: 1, lastRequestAt: new Date(Date.now() - 500).toISOString() },
-          // Клиент с другого IP
-          { id: '10.0.0.50::Cline::deepseek-r1', backendId: 'ollama-1', model: 'deepseek-r1', clientIP: '10.0.0.50', clientName: 'Cline', requestCount: 8, lastRequestAt: new Date(Date.now() - 4000).toISOString() },
-        ]
-      }
+      queueDetails: { pending_count: 3, processing_count: 2, current_size: 5, processed_total: 128, all: [
+        { model: 'llama3.1', target: null, status: 'pending', enqueued: new Date(Date.now() - 4200).toISOString(), sessionId: 'sess-demo-1' },
+        { model: 'gemma2', target: null, status: 'pending', enqueued: new Date(Date.now() - 1800).toISOString(), sessionId: 'sess-demo-2' },
+        { model: 'llama3.1', target: 'ollama-1', status: 'processing', enqueued: new Date(Date.now() - 800).toISOString(), sessionId: 'sess-demo-3' },
+        { model: 'llama3.1', target: 'ollama-2', status: 'processing', enqueued: new Date(Date.now() - 600).toISOString(), sessionId: 'sess-demo-4' },
+        { model: 'llama3.1', target: null, status: 'pending', enqueued: new Date(Date.now() - 200).toISOString(), sessionId: 'sess-demo-5' }
+      ]},
+      sessions: { sessions: [
+        { id: '192.168.1.100::Cline::llama3.1', backendId: 'ollama-1', model: 'llama3.1', clientIP: '192.168.1.100', clientName: 'Cline', requestCount: 12, lastRequestAt: new Date(Date.now()-3000).toISOString() },
+        { id: '192.168.1.100::OpenWebUI::gemma2', backendId: 'ollama-2', model: 'gemma2', clientIP: '192.168.1.100', clientName: 'OpenWebUI', requestCount: 5, lastRequestAt: new Date(Date.now()-8000).toISOString() },
+        { id: '192.168.1.100::python-requests::llama3.1', backendId: 'ollama-1', model: 'llama3.1', clientIP: '192.168.1.100', clientName: 'python-requests/2.31.0', requestCount: 3, lastRequestAt: new Date(Date.now()-1200).toISOString() },
+        { id: '192.168.1.100::curl::qwen2.5', backendId: 'ollama-2', model: 'qwen2.5', clientIP: '192.168.1.100', clientName: 'curl/8.5.0', requestCount: 1, lastRequestAt: new Date(Date.now()-500).toISOString() },
+        { id: '10.0.0.50::Cline::deepseek-r1', backendId: 'ollama-1', model: 'deepseek-r1', clientIP: '10.0.0.50', clientName: 'Cline', requestCount: 8, lastRequestAt: new Date(Date.now()-4000).toISOString() }
+      ]}
     };
   }
 
-  // ==================== UI LOGIC ====================
   function setConnStatus(text, cls) {
-    const el = document.getElementById('connBadge');
-    el.textContent = text;
-    el.className = 'badge badge-' + cls;
-    const dot = document.getElementById('statusDot');
+    document.getElementById('connBadge').textContent = text;
+    document.getElementById('connBadge').className = 'badge badge-' + cls;
+    var dot = document.getElementById('statusDot');
     dot.className = 'dot ' + (cls === 'green' ? '' : cls === 'red' ? 'offline' : cls === 'yellow' ? 'error' : 'demo');
   }
+  function hideOverlays() { document.getElementById('loadingOverlay').classList.add('hidden'); document.getElementById('errorOverlay').classList.add('hidden'); }
+  function showError(msg) { document.getElementById('loadingOverlay').classList.add('hidden'); document.getElementById('errorOverlay').classList.remove('hidden'); document.getElementById('errorText').textContent = msg; setConnStatus(T('monitor.status.offline'), 'red'); document.getElementById('demoBtn').style.display = ''; }
 
-  function hideOverlays() {
-    document.getElementById('loadingOverlay').classList.add('hidden');
-    document.getElementById('errorOverlay').classList.add('hidden');
-  }
-  function showError(msg) {
-    document.getElementById('loadingOverlay').classList.add('hidden');
-    document.getElementById('errorOverlay').classList.remove('hidden');
-    document.getElementById('errorText').textContent = msg;
-    setConnStatus('Offline', 'red');
-    document.getElementById('demoBtn').style.display = '';
-  }
-  function retryNow() {
-    fetchAttempt = 0;
-    document.getElementById('errorOverlay').classList.add('hidden');
-    document.getElementById('loadingOverlay').classList.remove('hidden');
-    setConnStatus('Подключение…', 'yellow');
-    fetchAll();
-  }
-  function enterDemoMode() {
-    demoMode = true;
-    hideOverlays();
-    setConnStatus('Demo', 'blue');
-    document.getElementById('demoBtn').style.display = 'none';
-    document.getElementById('demoIndicator').style.display = 'inline';
-    updateUI(demoData());
-  }
-
+  function retryNow() { fetchAttempt = 0; document.getElementById('errorOverlay').classList.add('hidden'); document.getElementById('loadingOverlay').classList.remove('hidden'); setConnStatus(T('monitor.header.connecting'), 'yellow'); fetchAll(); }
+  window.retryNow = retryNow;
+  function enterDemoMode() { demoMode = true; hideOverlays(); setConnStatus(T('monitor.status.demo'), 'blue'); document.getElementById('demoBtn').style.display = 'none'; document.getElementById('demoIndicator').style.display = 'inline'; updateUI(demoData()); updateMonitorTexts(); }
+  window.enterDemoMode = enterDemoMode;
   function togglePause() {
     paused = !paused;
-    document.getElementById('pauseBtn').textContent = paused ? '▶ Продолжить' : '⏸ Пауза';
-    setConnStatus(paused ? 'Пауза' : (demoMode ? 'Demo' : 'Live'), paused ? 'yellow' : demoMode ? 'blue' : 'green');
+    document.getElementById('pauseBtn').textContent = paused ? '▶ ' + T('monitor.header.continue') : '⏸ ' + T('monitor.header.pause');
+    setConnStatus(paused ? T('monitor.header.pause') : (demoMode ? T('monitor.status.demo') : T('monitor.status.live')), paused ? 'yellow' : demoMode ? 'blue' : 'green');
   }
+  window.togglePause = togglePause;
+  document.getElementById('intervalSelect').addEventListener('change', function(e) { refreshInterval = parseInt(e.target.value); if (timerId) { clearInterval(timerId); timerId = setInterval(fetchAllSafe, refreshInterval); } });
+  function togglePanel(id) { document.getElementById(id).classList.toggle('open'); }
+  window.togglePanel = togglePanel;
 
-  document.getElementById('intervalSelect').addEventListener('change', e => {
-    refreshInterval = parseInt(e.target.value);
-    if (timerId) { clearInterval(timerId); timerId = setInterval(fetchAll, refreshInterval); }
-  });
-
-  function togglePanel(id) {
-    document.getElementById(id).classList.toggle('open');
-  }
-
-  // ==================== UPDATE UI ====================
+  // ---- UI update ----
   function updateUI(data) {
-    // Если данных нет — сбрасываем счётчики (чтобы не показывать фантомный трафик)
     if (!data || !data.cluster) {
-      document.getElementById('statRate').textContent = '0';
-      document.getElementById('statRPSCluster').textContent = '0';
-      document.getElementById('statActive').textContent = '0';
-      document.getElementById('statPending').textContent = '0';
-      document.getElementById('statProcessing').textContent = '0';
-      document.getElementById('statSessions').textContent = '0';
-      document.getElementById('statBackends').textContent = '0';
-      document.getElementById('statVRAM').textContent = '—';
-      document.getElementById('statModelsLoaded').textContent = '0';
-      lastTotalRequests = 0;
-      requestRate = 0;
-      // Показываем "Нет активных клиентов" если система в покое
-      setConnStatus('Idle', 'green');
-      return;
+      ['statRate','statRPSCluster','statActive','statPending','statProcessing','statSessions','statBackends','statVRAM','statModelsLoaded'].forEach(function(id) { document.getElementById(id).textContent = id === 'statVRAM' ? '—' : '0'; });
+      lastTotalRequests = 0; requestRate = 0; setConnStatus(T('monitor.status.idle'), 'green'); return;
     }
-
-    // === ADAPTER: transform Go API format → JS expected format ===
-    const adaptBackend = (b) => {
-      if (!b) return b;
-      // If already in JS flat format, return as-is
-      if (b.activeRequests !== undefined && b.vram !== undefined) return b;
-      // Convert from Go nested format
-      const ollama = b.ollama || b.Ollama || {};
-      const gpu = b.gpu || b.GPU || {};
-      const sys = b.system || b.System || {};
-      const statusRaw = (b.status || b.Status || '').toString().toLowerCase();
-      const statusMap = { healthy: 'active', active: 'active', ready: 'ready', unhealthy: 'error', offline: 'offline', starting: 'starting' };
-      return {
-        ...b,
-        id: b.id || b.ID,
-        status: statusMap[statusRaw] || statusRaw || 'unknown',
-        score: b.score !== undefined ? b.score : (b.Score !== undefined ? b.Score : 50),
-        activeRequests: b.activeRequests !== undefined ? b.activeRequests : (ollama.activeRequests || ollama.ActiveRequests || 0),
-        maxConcurrentRequests: b.maxConcurrentRequests !== undefined ? b.maxConcurrentRequests : (ollama.maxConcurrentRequests || ollama.MaxConcurrentRequests || 10),
-        models: b.models || (ollama.runningModels || ollama.RunningModels || []).map(m => m.name || m.Name),
-        vram: b.vram || {
-          totalGB: b.vramTotalGB || (gpu.memoryTotal || gpu.MemoryTotal || 0) / 1024,
-          usedGB: b.vramUsedGB || (gpu.memoryUsed || gpu.MemoryUsed || 0) / 1024,
-          usagePercent: b.vramUsagePercent || ((gpu.memoryUsed || gpu.MemoryUsed || 0) / (gpu.memoryTotal || gpu.MemoryTotal || 1) * 100)
-        },
-        memoryUsagePercent: b.memoryUsagePercent || (() => {
-          const total = (sys.memoryTotal || sys.MemoryTotal || 0);
-          const used = (sys.memoryUsed || sys.MemoryUsed || 0);
-          return total > 0 ? (used / total * 100) : 0;
-        })(),
-        gpu: gpu,
-        system: sys,
-        ollama: ollama
-      };
+    var adapt = function(b) {
+      if (!b) return b; if (b.activeRequests !== undefined && b.vram !== undefined) return b;
+      var o = b.ollama || b.Ollama || {}, g = b.gpu || b.GPU || {}, s = b.system || b.System || {};
+      var sr = (b.status||b.Status||'').toString().toLowerCase(), sm = { healthy:'active', active:'active', ready:'ready', unhealthy:'error', offline:'offline', starting:'starting' };
+      return Object.assign({}, b, {
+        id: b.id||b.ID, status: sm[sr]||sr||'unknown',
+        score: b.score!==undefined?b.score:(b.Score!==undefined?b.Score:50),
+        activeRequests: b.activeRequests!==undefined?b.activeRequests:(o.activeRequests||o.ActiveRequests||0),
+        maxConcurrentRequests: b.maxConcurrentRequests!==undefined?b.maxConcurrentRequests:(o.maxConcurrentRequests||o.MaxConcurrentRequests||10),
+        models: b.models||((o.runningModels||o.RunningModels||[]).map(function(m){return m.name||m.Name})),
+        vram: b.vram || { totalGB: (g.memoryTotal||g.MemoryTotal||0)/1024, usedGB: (g.memoryUsed||g.MemoryUsed||0)/1024, usagePercent: (g.memoryTotal||g.MemoryTotal||0)>0 ? (g.memoryUsed||g.MemoryUsed||0)/(g.memoryTotal||g.MemoryTotal||1)*100 : 0 },
+        memoryUsagePercent: b.memoryUsagePercent || (function(){ var t=s.memoryTotal||s.MemoryTotal||0, u=s.memoryUsed||s.MemoryUsed||0; return t>0?u/t*100:0; })(),
+        gpu: g, system: s, ollama: o
+      });
     };
-    if (data.cluster?.backends) {
-      data.cluster.backends = data.cluster.backends.map(adaptBackend);
-    }
-    if (data.cluster?.backendMetrics) {
-      data.cluster.backendMetrics = data.cluster.backendMetrics.map(adaptBackend);
-    }
-    // === END ADAPTER ===
+    if (data.cluster && data.cluster.backends) data.cluster.backends = data.cluster.backends.map(adapt);
+    if (data.cluster && data.cluster.backendMetrics) data.cluster.backendMetrics = data.cluster.backendMetrics.map(adapt);
 
-    let backends = stableBackendOrder(data.cluster?.backends || []);
-    const queue = data.queueDetails || {};
-    const sess = data.sessions?.sessions || [];
-
-    const activeReqs = backends.reduce((s, b) => s + (b.activeRequests || 0), 0);
-    const pending = queue.pending_count || 0;
-    const processing = queue.processing_count || 0;
-    const totalVRAM = backends.reduce((s, b) => s + ((b.vram?.totalGB || 0)), 0);
-    const usedVRAM = backends.reduce((s, b) => s + ((b.vram?.usedGB || 0)), 0);
-    const totalModelsLoaded = backends.reduce((s, b) => s + ((b.models || []).length), 0);
-
-    document.getElementById('statBackends').textContent = backends.length;
-    document.getElementById('statActive').textContent = activeReqs;
-    document.getElementById('statPending').textContent = pending;
-    document.getElementById('statProcessing').textContent = processing;
-    document.getElementById('statSessions').textContent = sess.length;
-
-    const now = Date.now();
-    const dt = (now - lastTime) / 1000;
-    // Используем общий счётчик запросов прокси (работает всегда, не только через очередь)
-    const totalReqs = (data.cluster?.totalRequests || 0);
-    const rate = dt > 0 ? (totalReqs - lastTotalRequests) / dt : 0;
-    requestRate = Math.max(0, rate);
-    lastTotalRequests = totalReqs;
-    lastTime = now;
+    var bk = stableBackendOrder(data.cluster.backends || []);
+    var q = data.queueDetails || {}, ss = (data.sessions && data.sessions.sessions) || [];
+    var act = bk.reduce(function(s,b){return s+(b.activeRequests||0);},0);
+    var pend = q.pending_count||0, proc = q.processing_count||0;
+    var totV = bk.reduce(function(s,b){return s+((b.vram&&b.vram.totalGB)||0);},0);
+    var usdV = bk.reduce(function(s,b){return s+((b.vram&&b.vram.usedGB)||0);},0);
+    var tml = bk.reduce(function(s,b){return s+((b.models||[]).length);},0);
+    document.getElementById('statBackends').textContent = bk.length;
+    document.getElementById('statActive').textContent = act; document.getElementById('statPending').textContent = pend;
+    document.getElementById('statProcessing').textContent = proc; document.getElementById('statSessions').textContent = ss.length;
+    var now = Date.now(), dt = (now - lastTime)/1000;
+    var tr = data.cluster.totalRequests || 0;
+    requestRate = Math.max(0, dt>0 ? (tr-lastTotalRequests)/dt : 0);
+    lastTotalRequests = tr; lastTime = now;
     document.getElementById('statRate').textContent = requestRate.toFixed(1);
-    document.getElementById('statRPSCluster').textContent = (data.cluster?.rps || 0) > 0 ? data.cluster.rps.toFixed(1) : '0';
-    document.getElementById('statVRAM').textContent = totalVRAM > 0 ? usedVRAM.toFixed(1) + '/' + totalVRAM.toFixed(0) + 'G' : '—';
-    document.getElementById('statModelsLoaded').textContent = totalModelsLoaded;
-
-    // Индикатор: "Нет активных клиентов" когда система в покое
-    if (sess.length === 0 && activeReqs === 0 && pending === 0 && processing === 0) {
-      document.getElementById('statusDot').className = 'dot';
-      setConnStatus('Idle', 'green');
-    }
-
-    diagnose(data);
-    renderClusterResources(backends);
-    renderModelsInMemory(backends, sess);
-    renderBackends(backends);
-    renderQueue(queue);
-    renderSessions(sess);
-
-    // Update canvas topology targets
-    updateTopology(backends, sess, queue);
+    document.getElementById('statRPSCluster').textContent = (data.cluster.rps||0)>0 ? data.cluster.rps.toFixed(1) : '0';
+    document.getElementById('statVRAM').textContent = totV>0 ? usdV.toFixed(1)+'/'+totV.toFixed(0)+'G' : '—';
+    document.getElementById('statModelsLoaded').textContent = tml;
+    if (ss.length===0 && act===0 && pend===0 && proc===0) { document.getElementById('statusDot').className='dot'; setConnStatus(T('monitor.status.idle'),'green'); }
+    diagnose(data); renderClusterResources(bk); renderModelsInMemory(bk, ss); renderBackends(bk); renderQueue(q); renderSessions(ss);
+    updateTopology(bk, ss, q);
   }
 
   function diagnose(data) {
-    const alerts = [];
-    const backends = data.cluster?.backends || [];
-    const queue = data.queueDetails || {};
-    const all = queue.all || [];
-    const activeBackends = backends.filter(b => b.status === 'active' || b.status === 'ready');
-
-    const freeBackends = activeBackends.filter(b => {
-      const maxReqs = b.maxConcurrentRequests || 10;
-      return (b.activeRequests || 0) / maxReqs < 0.5;
-    });
-    if (queue.pending_count > 0 && freeBackends.length > 0) {
-      alerts.push({ level: 'red', text: `Запросы в ожидании (${queue.pending_count}), хотя есть свободные бэкенды: ${freeBackends.map(b=>b.id).join(', ')}. Возможно, session stickiness блокирует.`, action: 'rebalance' });
-    }
-
-    const stuck = all.filter(q => q.status === 'pending' && q.enqueued);
-    for (const q of stuck) {
-      const waitSec = (Date.now() - new Date(q.enqueued).getTime()) / 1000;
-      if (waitSec > 10) alerts.push({ level: 'yellow', text: `Запрос к модели ${q.model} застрял в очереди ${waitSec.toFixed(0)} сек.` });
-    }
-
-    for (const s of (data.sessions?.sessions || [])) {
-      if (!s.backendId) continue;
-      const b = backends.find(x => x.id === s.backendId);
-      if (!b) continue;
-      const maxReqs = b.maxConcurrentRequests || 10;
-      const load = (b.activeRequests || 0) / maxReqs;
-      if (load > 0.8) {
-        const alt = activeBackends.filter(x => x.id !== b.id && (x.activeRequests||0)/(x.maxConcurrentRequests||10) < 0.5);
-        if (alt.length > 0) alerts.push({ level: 'yellow', text: `Session ${s.id.slice(0,8)}… привязана к перегруженному ${b.id} (${(load*100).toFixed(0)}%), но есть свободные: ${alt.map(a=>a.id).join(', ')}` });
-      }
-    }
-
-    for (const b of backends) {
-      const maxReqs = b.maxConcurrentRequests || 10;
-      const load = (b.activeRequests || 0) / maxReqs;
-      if (load >= 1.0) alerts.push({ level: 'red', text: `Бэкенд ${b.id} полностью загружен (${b.activeRequests}/${maxReqs}).` });
-    }
-
-    const maxSize = data.cluster?.queue?.max_size || 100;
-    const currentSize = queue.current_size || 0;
-    if (currentSize > maxSize * 0.8) alerts.push({ level: 'red', text: `Очередь заполнена на ${(currentSize/maxSize*100).toFixed(0)}% (${currentSize}/${maxSize}).` });
-
-    // NEW: VRAM capacity alert
-    const totalVRAM = backends.reduce((s, b) => s + ((b.vram?.totalGB || 0)), 0);
-    const usedVRAM = backends.reduce((s, b) => s + ((b.vram?.usedGB || 0)), 0);
-    if (totalVRAM > 0 && usedVRAM / totalVRAM > 0.85) {
-      alerts.push({ level: 'red', text: `VRAM кластера заполнена на ${(usedVRAM/totalVRAM*100).toFixed(0)}% (${usedVRAM.toFixed(1)}/${totalVRAM.toFixed(0)} GB). Возможна выгрузка моделей.` });
-    }
-
-    document.getElementById('alertContainer').innerHTML = alerts.map(a => `
-      <div class="alert-banner alert-${a.level}">
-        <span>${a.level==='red'?'❌':'⚠️'}</span>
-        <span>${escapeHtml(a.text)}</span>
-        ${a.action === 'rebalance' ? `<button onclick="forceRebalance()" style="margin-left:8px;padding:2px 8px;font-size:11px;background:var(--danger);color:#fff;border:none;border-radius:4px;cursor:pointer">⚡ Перераспределить</button>` : ''}
-      </div>`).join('');
+    var alerts = [], bks = data.cluster.backends || [], q = data.queueDetails || {}, all = q.all || [];
+    var activeBks = bks.filter(function(b){ return b.status==='active'||b.status==='ready'; });
+    var freeBks = activeBks.filter(function(b){ var m=b.maxConcurrentRequests||10; return (b.activeRequests||0)/m < 0.5; });
+    if (q.pending_count > 0 && freeBks.length > 0) alerts.push({ level:'red', action:'rebalance', text: T('monitor.alert.pendingWithFree', { pending: q.pending_count, backends: freeBks.map(function(b){return b.id;}).join(', ') }) });
+    all.forEach(function(r) { if (r.status==='pending'&&r.enqueued) { var w=(Date.now()-new Date(r.enqueued).getTime())/1000; if (w>10) alerts.push({ level:'yellow', text: T('monitor.alert.stuckInQueue', { model: r.model, sec: w.toFixed(0) }) }); } });
+    (data.sessions&&data.sessions.sessions||[]).forEach(function(s) { if (!s.backendId) return; var b=bks.find(function(x){return x.id===s.backendId;}); if (!b) return; var m=b.maxConcurrentRequests||10, l=(b.activeRequests||0)/m; if (l>0.8) { var alt=activeBks.filter(function(x){ return x.id!==b.id && (x.activeRequests||0)/(x.maxConcurrentRequests||10)<0.5; }); if (alt.length>0) alerts.push({ level:'yellow', text: T('monitor.alert.sessionOverloaded',{id:s.id.slice(0,8),backend:b.id,load:(l*100).toFixed(0),alt:alt.map(function(a){return a.id;}).join(', ')})}); } });
+    bks.forEach(function(b){ var m=b.maxConcurrentRequests||10, l=(b.activeRequests||0)/m; if (l>=1.0) alerts.push({level:'red',text:T('monitor.alert.backendFull',{backend:b.id,active:b.activeRequests||0,max:m})}); });
+    var ms = data.cluster.queue? data.cluster.queue.max_size : 100, cs = q.current_size||0;
+    if (cs > ms*0.8) alerts.push({ level:'red', text: T('monitor.alert.queueFull',{pct:(cs/ms*100).toFixed(0),size:cs,max:ms}) });
+    var tv = bks.reduce(function(s,b){return s+((b.vram&&b.vram.totalGB)||0);},0), uv = bks.reduce(function(s,b){return s+((b.vram&&b.vram.usedGB)||0);},0);
+    if (tv>0 && uv/tv>0.85) alerts.push({ level:'red', text: T('monitor.alert.vramFull',{pct:(uv/tv*100).toFixed(0),used:uv.toFixed(1),total:tv.toFixed(0)}) });
+    document.getElementById('alertContainer').innerHTML = alerts.map(function(a) {
+      return '<div class="alert-banner alert-'+a.level+'"><span>'+(a.level==='red'?'❌':'⚠️')+'</span><span>'+esc(a.text)+'</span>'+(a.action==='rebalance'?'<button onclick="forceRebalance()" style="margin-left:8px;padding:2px 8px;font-size:11px;background:var(--danger);color:#fff;border:none;border-radius:4px;cursor:pointer">'+T('monitor.alert.rebalance')+'</button>':'')+'</div>';
+    }).join('');
   }
 
-  // ==================== CLUSTER RESOURCES ====================
-  function renderClusterResources(backends) {
-    const grid = document.getElementById('capacityGrid');
-    if (!backends.length) {
-      grid.innerHTML = '<div style="color:var(--text-secondary);text-align:center;padding:8px">Нет данных</div>';
-      return;
-    }
-
-    const metrics = [
-      { label: 'GPU', key: 'gpu', unit: '%', color: 'var(--accent)' },
-      { label: 'VRAM', key: 'vram', unit: '%', color: 'var(--purple-accent)' },
-      { label: 'CPU', key: 'system', subkey: 'cpuUsagePercent', unit: '%', color: 'var(--success)' },
-      { label: 'RAM', key: 'system', subkey: 'memoryUsagePercent', unit: '%', color: 'var(--warning)', useFlatKey: 'memoryUsagePercent' },
+  function renderClusterResources(bk) {
+    var g = document.getElementById('capacityGrid');
+    if (!bk.length) { g.innerHTML = '<div style="color:var(--text-secondary);text-align:center;padding:8px">'+T('monitor.common.noData')+'</div>'; return; }
+    var metrics = [
+      { label: T('metrics.gpuUtil'), key:'gpu', unit:'%', color:'var(--accent)' },
+      { label: T('metrics.vramUsed'), key:'vram', unit:'%', color:'var(--purple-accent)' },
+      { label: T('metrics.cpuUsed'), key:'system', subkey:'cpuUsagePercent', unit:'%', color:'var(--success)' },
+      { label: T('metrics.ramUsed'), key:'system', subkey:'memoryUsagePercent', unit:'%', color:'var(--warning)', useFlatKey:'memoryUsagePercent' }
     ];
-
-    grid.innerHTML = metrics.map(m => {
-      const vals = backends.map(b => {
-        if (m.useFlatKey) return (b[m.useFlatKey]) || 0;
-        if (m.subkey) return (b[m.key] && b[m.key][m.subkey]) || 0;
-        return (b[m.key] && b[m.key].usagePercent) || 0;
-      }).filter(v => v > 0);
-      const avg = vals.length ? (vals.reduce((a,b) => a+b, 0) / vals.length) : 0;
-      const max = vals.length ? Math.max(...vals) : 0;
-      return `
-        <div class="capacity-card">
-          <h4>${escapeHtml(m.label)}</h4>
-          <div class="capacity-bar">
-            <div class="bar-track-wide"><div class="bar-fill-wide" style="width:${avg}%;background:${m.color}"></div></div>
-            <span class="capacity-val">avg ${avg.toFixed(0)}${m.unit}</span>
-          </div>
-          <div class="capacity-bar">
-            <div class="bar-track-wide"><div class="bar-fill-wide" style="width:${max}%;background:${m.color};opacity:0.5"></div></div>
-            <span class="capacity-val">max ${max.toFixed(0)}${m.unit}</span>
-          </div>
-        </div>
-      `;
-    }).join('') + `
-      <div class="capacity-card">
-        <h4>Свободные слоты</h4>
-        ${backends.map(b => {
-          const maxReqs = b.maxConcurrentRequests || 10;
-          const active = b.activeRequests || 0;
-          const free = maxReqs - active;
-          const pct = active / maxReqs * 100;
-          const color = pct >= 80 ? 'var(--danger)' : pct >= 50 ? 'var(--warning)' : 'var(--success)';
-          return `<div class="capacity-bar">
-            <span style="font-size:11px;min-width:80px">${escapeHtml(b.id)}</span>
-            <div class="bar-track-wide"><div class="bar-fill-wide" style="width:${pct}%;background:${color}"></div></div>
-            <span class="capacity-val">${free}/${maxReqs}</span>
-          </div>`;
-        }).join('')}
-      </div>
-      <div class="capacity-card">
-        <h4>VRAM по бэкендам</h4>
-        ${backends.map(b => {
-          const total = b.vram?.totalGB || 0;
-          const used = b.vram?.usedGB || 0;
-          const pct = total > 0 ? (used / total * 100) : 0;
-          const color = pct >= 85 ? 'var(--danger)' : pct >= 60 ? 'var(--warning)' : 'var(--success)';
-          return `<div class="capacity-bar">
-            <span style="font-size:11px;min-width:80px">${escapeHtml(b.id)}</span>
-            <div class="bar-track-wide"><div class="bar-fill-wide" style="width:${pct}%;background:${color}"></div></div>
-            <span class="capacity-val">${used.toFixed(1)}/${total.toFixed(0)}G</span>
-          </div>`;
-        }).join('')}
-      </div>
-    `;
+    g.innerHTML = metrics.map(function(m) {
+      var vals = bk.map(function(b) { if (m.useFlatKey) return b[m.useFlatKey]||0; if (m.subkey) return (b[m.key]&&b[m.key][m.subkey])||0; return (b[m.key]&&b[m.key].usagePercent)||0; }).filter(function(v){return v>0;});
+      var avg = vals.length ? vals.reduce(function(a,b){return a+b;},0)/vals.length : 0;
+      var max = vals.length ? Math.max.apply(null, vals) : 0;
+      return '<div class="capacity-card"><h4>'+esc(m.label)+'</h4><div class="capacity-bar"><div class="bar-track-wide"><div class="bar-fill-wide" style="width:'+avg+'%;background:'+m.color+'"></div></div><span class="capacity-val">avg '+avg.toFixed(0)+m.unit+'</span></div><div class="capacity-bar"><div class="bar-track-wide"><div class="bar-fill-wide" style="width:'+max+'%;background:'+m.color+';opacity:0.5"></div></div><span class="capacity-val">max '+max.toFixed(0)+m.unit+'</span></div></div>';
+    }).join('') + '<div class="capacity-card"><h4>'+T('monitor.capacity.freeSlots')+'</h4>'+bk.map(function(b){var m=b.maxConcurrentRequests||10,a=b.activeRequests||0,f=m-a,p=a/m*100,c=p>=80?'var(--danger)':p>=50?'var(--warning)':'var(--success)';return'<div class="capacity-bar"><span style="font-size:11px;min-width:80px">'+esc(b.id)+'</span><div class="bar-track-wide"><div class="bar-fill-wide" style="width:'+p+'%;background:'+c+'"></div></div><span class="capacity-val">'+f+'/'+m+'</span></div>';}).join('')+'</div>'+'<div class="capacity-card"><h4>'+T('monitor.capacity.vramPerBackend')+'</h4>'+bk.map(function(b){var t=b.vram?b.vram.totalGB:0,u=b.vram?b.vram.usedGB:0,p=t>0?u/t*100:0,c=p>=85?'var(--danger)':p>=60?'var(--warning)':'var(--success)';return'<div class="capacity-bar"><span style="font-size:11px;min-width:80px">'+esc(b.id)+'</span><div class="bar-track-wide"><div class="bar-fill-wide" style="width:'+p+'%;background:'+c+'"></div></div><span class="capacity-val">'+u.toFixed(1)+'/'+t.toFixed(0)+'G</span></div>';}).join('')+'</div>';
   }
 
-  // ==================== MODELS IN MEMORY ====================
-  function renderModelsInMemory(backends, sessions) {
-    // Build model → backends map
-    const modelMap = {};
-    for (const b of backends) {
-      for (const m of (b.models || [])) {
-        if (!modelMap[m]) modelMap[m] = { backends: [], sessionCount: 0 };
-        modelMap[m].backends.push(b.id);
-      }
-    }
-    for (const s of sessions) {
-      if (s.model && modelMap[s.model]) {
-        modelMap[s.model].sessionCount++;
-      }
-    }
-    const models = Object.entries(modelMap).sort((a,b) => b[1].sessionCount - a[1].sessionCount);
-
+  function renderModelsInMemory(bk, ss) {
+    var mm = {};
+    bk.forEach(function(b) { (b.models||[]).forEach(function(m) { if (!mm[m]) mm[m]={bks:[],sc:0}; mm[m].bks.push(b.id); }); });
+    ss.forEach(function(s) { if (s.model && mm[s.model]) mm[s.model].sc++; });
+    var models = Object.keys(mm).map(function(k){return{name:k,info:mm[k]};}).sort(function(a,b){return b.info.sc-a.info.sc;});
     document.getElementById('modelsCount').textContent = models.length;
-    const tbody = document.querySelector('#modelsTable tbody');
-    if (!models.length) {
-      tbody.innerHTML = '<tr><td colspan="5" style="color:var(--text-secondary);text-align:center;padding:16px">Нет данных</td></tr>';
-      return;
-    }
-    tbody.innerHTML = models.map(([name, info]) => {
-      // Estimate VRAM: find first backend with this model
-      const firstBackend = backends.find(b => (b.models || []).includes(name));
-      const vramGB = firstBackend?.vram?.usedGB ? (firstBackend.vram.usedGB / (firstBackend.models || []).length).toFixed(1) : '—';
-      const load = info.sessionCount > 0 ? '🔥 ' + info.sessionCount : '—';
-      return `<tr>
-        <td><strong>${escapeHtml(name)}</strong></td>
-        <td>${info.backends.map(bid => `<span class="badge badge-purple">${escapeHtml(bid)}</span>`).join(' ')}</td>
-        <td class="col-right">${info.sessionCount}</td>
-        <td class="col-right">~${vramGB} GB</td>
-        <td class="col-right">${load}</td>
-      </tr>`;
+    var tb = document.querySelector('#modelsTable tbody');
+    if (!models.length) { tb.innerHTML = '<tr><td colspan="5" style="color:var(--text-secondary);text-align:center;padding:16px">'+T('monitor.common.noData')+'</td></tr>'; return; }
+    tb.innerHTML = models.map(function(m) {
+      var fb = bk.find(function(b){ return (b.models||[]).indexOf(m.name)>=0; });
+      var vg = fb&&fb.vram&&fb.vram.usedGB ? (fb.vram.usedGB/(fb.models||[]).length).toFixed(1) : '—';
+      return '<tr><td><strong>'+esc(m.name)+'</strong></td><td>'+m.info.bks.map(function(bid){return'<span class="badge badge-purple">'+esc(bid)+'</span>';}).join(' ')+'</td><td class="col-right">'+m.info.sc+'</td><td class="col-right">~'+vg+' GB</td><td class="col-right">'+(m.info.sc>0?'🔥 '+m.info.sc:'—')+'</td></tr>';
     }).join('');
   }
 
-  function renderBackends(backends) {
-    document.getElementById('backendCount').textContent = backends.length;
-    const tbody = document.querySelector('#backendsTable tbody');
-    if (!backends.length) { tbody.innerHTML = '<tr><td colspan="11" style="color:var(--text-secondary);text-align:center;padding:16px">Нет данных</td></tr>'; return; }
-    tbody.innerHTML = backends.map(b => {
-      const maxReqs = b.maxConcurrentRequests || 10;
-      const active = b.activeRequests || 0;
-      const gpu = b.gpu?.usagePercent || 0;
-      const vram = b.vram?.usagePercent || b.vramUsagePercent || 0;
-      const cpu = b.system?.cpuUsagePercent || 0;
-      const ram = b.memoryUsagePercent || b.system?.memoryUsagePercent || 0;
-      const score = (b.score || b.weight || 0).toFixed(2);
-      const statusClass = b.status === 'healthy' || b.status === 'active' || b.status === 'ready' ? 'badge-green' : (b.status === 'error' || b.status === 'unhealthy' ? 'badge-red' : 'badge-yellow');
-      const uptime = b.lastSeen ? formatDuration(Date.now() - new Date(b.lastSeen).getTime()) : '-';
-      const rps = b.ollama?.requestsPerSecond || 0;
-      return `<tr>
-        <td><strong>${escapeHtml(b.id)}</strong></td>
-        <td><span class="badge ${statusClass}">${b.status}</span></td>
-        <td>${bar(gpu)} ${gpu.toFixed(0)}%</td>
-        <td>${bar(vram)} ${vram.toFixed(0)}%</td>
-        <td>${bar(cpu)} ${cpu.toFixed(0)}%</td>
-        <td>${bar(ram)} ${ram.toFixed(0)}%</td>
-        <td class="col-right">${active}/${maxReqs}</td>
-        <td class="col-right">${rps > 0 ? rps.toFixed(1) : '-'}</td>
-        <td class="col-right">${score}</td>
-        <td>${(b.models||[]).slice(0,3).map(m => `<span class="badge" style="background:rgba(168,85,247,0.12);color:var(--purple-accent);border-color:rgba(168,85,247,0.2)">${escapeHtml(m)}</span>`).join(' ')}</td>
-        <td class="col-right">${uptime}</td>
-      </tr>`;
+  function renderBackends(bk) {
+    document.getElementById('backendCount').textContent = bk.length;
+    var tb = document.querySelector('#backendsTable tbody');
+    if (!bk.length) { tb.innerHTML = '<tr><td colspan="11" style="color:var(--text-secondary);text-align:center;padding:16px">'+T('monitor.common.noData')+'</td></tr>'; return; }
+    tb.innerHTML = bk.map(function(b) {
+      var mr = b.maxConcurrentRequests||10, a = b.activeRequests||0;
+      var gu = b.gpu?b.gpu.usagePercent:0, vu = b.vram?b.vram.usagePercent:b.vramUsagePercent||0;
+      var cu = b.system?b.system.cpuUsagePercent:0, ru = b.memoryUsagePercent||(b.system?b.system.memoryUsagePercent:0);
+      var sc = (b.score||b.weight||0).toFixed(2);
+      var scs = b.status==='healthy'||b.status==='active'||b.status==='ready' ? 'badge-green' : (b.status==='error'||b.status==='unhealthy'?'badge-red':'badge-yellow');
+      var up = b.lastSeen ? fmtDur(Date.now()-new Date(b.lastSeen).getTime()) : '-';
+      var rps = (b.ollama && b.ollama.requestsPerSecond != null) ? b.ollama.requestsPerSecond : 0;
+      return '<tr><td><strong>'+esc(b.id)+'</strong></td><td><span class="badge '+scs+'">'+b.status+'</span></td><td>'+bar(gu)+' '+gu.toFixed(0)+'%</td><td>'+bar(vu)+' '+vu.toFixed(0)+'%</td><td>'+bar(cu)+' '+cu.toFixed(0)+'%</td><td>'+bar(ru)+' '+ru.toFixed(0)+'%</td><td class="col-right">'+a+'/'+mr+'</td><td class="col-right">'+(rps>0?rps.toFixed(1):'-')+'</td><td class="col-right">'+sc+'</td><td>'+ (b.models||[]).slice(0,3).map(function(m){return'<span class="badge" style="background:rgba(168,85,247,0.12);color:var(--purple-accent);border-color:rgba(168,85,247,0.2)">'+esc(m)+'</span>';}).join(' ') +'</td><td class="col-right">'+up+'</td></tr>';
     }).join('');
   }
 
-  function renderQueue(queue) {
-    const all = queue.all || [];
+  function renderQueue(q) {
+    var all = q.all||[];
     document.getElementById('queueCount').textContent = all.length;
-    const tbody = document.querySelector('#queueTable tbody');
-    if (!all.length) { tbody.innerHTML = '<tr><td colspan="6" style="color:var(--text-secondary);text-align:center;padding:16px">Нет данных</td></tr>'; return; }
-    tbody.innerHTML = all.map((q, i) => {
-      const waitMs = q.enqueued ? (Date.now() - new Date(q.enqueued).getTime()) : 0;
-      const status = q.status || (q.target ? 'processing' : 'pending');
-      const statusClass = status === 'processing' ? 'badge-green' : 'badge-yellow';
-      return `<tr>
-        <td>${i+1}</td>
-        <td>${escapeHtml(q.model || '-')}</td>
-        <td>${escapeHtml(q.target || 'Auto')}</td>
-        <td><span class="badge ${statusClass}">${status}</span></td>
-        <td class="col-right">${formatDuration(waitMs)}</td>
-        <td>${escapeHtml((q.sessionId || '-').slice(0,12))}</td>
-      </tr>`;
+    var tb = document.querySelector('#queueTable tbody');
+    if (!all.length) { tb.innerHTML = '<tr><td colspan="6" style="color:var(--text-secondary);text-align:center;padding:16px">'+T('monitor.common.noData')+'</td></tr>'; return; }
+    tb.innerHTML = all.map(function(r,i) {
+      var w = r.enqueued ? Date.now()-new Date(r.enqueued).getTime() : 0;
+      var st = r.status || (r.target?'processing':'pending');
+      return '<tr><td>'+(i+1)+'</td><td>'+esc(r.model||'-')+'</td><td>'+esc(r.target||'Auto')+'</td><td><span class="badge '+(st==='processing'?'badge-green':'badge-yellow')+'">'+st+'</span></td><td class="col-right">'+fmtDur(w)+'</td><td>'+esc((r.sessionId||'-').slice(0,12))+'</td></tr>';
     }).join('');
   }
 
-  function renderSessions(sessions) {
-    document.getElementById('sessionCount').textContent = sessions.length;
-    const tbody = document.querySelector('#sessionsTable tbody');
-    if (!sessions.length) { tbody.innerHTML = '<tr><td colspan="7" style="color:var(--text-secondary);text-align:center;padding:16px">Нет данных</td></tr>'; return; }
-    tbody.innerHTML = sessions.map(s => {
-      const idle = s.lastRequestAt ? formatDuration(Date.now() - new Date(s.lastRequestAt).getTime()) : '-';
-      const clientIcon = getClientIcon(s.clientName);
-      return `<tr>
-        <td>${escapeHtml(s.id.slice(0,16))}…</td>
-        <td>${escapeHtml(s.backendId || '—')}</td>
-        <td>${escapeHtml(s.model || '-')}</td>
-        <td class="col-right">${s.requestCount || 0}</td>
-        <td class="col-right">${idle}</td>
-        <td>${escapeHtml(s.clientIP || '-')}</td>
-        <td>${clientIcon} ${escapeHtml(s.clientName || '-')}</td>
-      </tr>`;
+  function renderSessions(ss) {
+    document.getElementById('sessionCount').textContent = ss.length;
+    var tb = document.querySelector('#sessionsTable tbody');
+    if (!ss.length) { tb.innerHTML = '<tr><td colspan="7" style="color:var(--text-secondary);text-align:center;padding:16px">'+T('monitor.common.noData')+'</td></tr>'; return; }
+    tb.innerHTML = ss.map(function(s) {
+      var idl = s.lastRequestAt ? fmtDur(Date.now()-new Date(s.lastRequestAt).getTime()) : '-';
+      return '<tr><td>'+esc(s.id.slice(0,16))+'…</td><td>'+esc(s.backendId||'—')+'</td><td>'+esc(s.model||'-')+'</td><td class="col-right">'+(s.requestCount||0)+'</td><td class="col-right">'+idl+'</td><td>'+esc(s.clientIP||'-')+'</td><td>'+getCI(s.clientName)+' '+esc(s.clientName||'-')+'</td></tr>';
     }).join('');
   }
 
-  function getClientIcon(clientName) {
-    if (!clientName) return '👤';
-    const name = clientName.toLowerCase();
-    if (name.includes('cline')) return '🦾';
-    if (name.includes('openwebui') || name.includes('open-webui')) return '🌐';
-    if (name.includes('curl')) return '📡';
-    if (name.includes('python') || name.includes('requests')) return '🐍';
-    if (name.includes('postman')) return '📮';
-    if (name.includes('insomnia')) return '💤';
-    return '👤';
-  }
+  function getCI(n) { if (!n) return '👤'; var l=n.toLowerCase(); if (l.indexOf('cline')>=0) return '🦾'; if (l.indexOf('openwebui')>=0||l.indexOf('open-webui')>=0) return '🌐'; if (l.indexOf('curl')>=0) return '📡'; if (l.indexOf('python')>=0||l.indexOf('requests')>=0) return '🐍'; return '👤'; }
+  function bar(v) { var x=Math.max(0,Math.min(100,v||0)),c='var(--success)'; if (x>60) c='var(--warning)'; if (x>85) c='var(--danger)'; return '<span class="bar-track"><span class="bar-fill" style="width:'+x+'%;background:'+c+'"></span></span>'; }
+  function esc(s) { if (s==null) return ''; return String(s).replace(/[&<>"']/g,function(c){return{'&':'&','<':'<','>':'>','"':'"',"'":'&#39;'}[c];}); }
+  function fmtDur(ms) { if (ms<0) ms=0; var s=Math.floor(ms/1000); if (s<60) return s+'s'; var m=Math.floor(s/60); if (m<60) return m+'m '+(s%60)+'s'; var h=Math.floor(m/60); return h+'h '+(m%60)+'m'; }
 
-  function bar(val) {
-    const v = Math.max(0, Math.min(100, val || 0));
-    let color = 'var(--success)';
-    if (v > 60) color = 'var(--warning)';
-    if (v > 85) color = 'var(--danger)';
-    return `<span class="bar-track"><span class="bar-fill" style="width:${v}%;background:${color}"></span></span>`;
-  }
-  function escapeHtml(s) {
-    if (s == null) return '';
-    return String(s).replace(/[&<>"']/g, c => ({'&':'&','<':'<','>':'>','"':'"',"'":'&#39;'}[c]));
-  }
-  function formatDuration(ms) {
-    if (ms < 0) ms = 0;
-    const s = Math.floor(ms / 1000);
-    if (s < 60) return s + 's';
-    const m = Math.floor(s / 60);
-    if (m < 60) return m + 'm ' + (s % 60) + 's';
-    const h = Math.floor(m / 60);
-    return h + 'h ' + (m % 60) + 'm';
-  }
+  // ---- Canvas ----
+  var cv = document.getElementById('vizCanvas'), cx = cv.getContext('2d');
+  var topo = { backends:[], sessions:[], queue:{}, w:0, h:0 };
+  function rsz() { var r=cv.parentElement.getBoundingClientRect(); cv.width=r.width; cv.height=r.height; topo.w=r.width; topo.h=r.height; }
+  window.addEventListener('resize', rsz); rsz();
+  function updateTopology(bk, ss, q) { topo.backends=bk; topo.sessions=ss; topo.queue=q; }
+  function isLightTheme() { return document.documentElement.getAttribute('data-theme') === 'light'; }
+  var particles = [];
+  function sp() {} // legacy, disabled
+  function nY(type, i) { var cnt=type==='session'?Math.max(1,topo.sessions.length):Math.max(1,topo.backends.length); var m=80, av=topo.h-m*2, st=av/Math.max(1,cnt-1); return m+i*st; }
+  function vF() { return 'system-ui,-apple-system,sans-serif'; }
+  function trunc(s,l) { if (!s) return ''; return s.length>l?s.slice(0,l)+'…':s; }
+  function rr(ctx,x,y,w,h,r) { ctx.beginPath(); ctx.moveTo(x+r,y); ctx.arcTo(x+w,y,x+w,y+h,r); ctx.arcTo(x+w,y+h,x,y+h,r); ctx.arcTo(x,y+h,x,y,r); ctx.arcTo(x,y,x+w,y,r); ctx.closePath(); }
+  var af = 0;
 
-  // ==================== CANVAS TOPOLOGY ====================
-  const canvas = document.getElementById('vizCanvas');
-  const ctx = canvas.getContext('2d');
-  let topo = { backends: [], sessions: [], queue: {}, width: 0, height: 0 };
-
-  function resizeCanvas() {
-    const rect = canvas.parentElement.getBoundingClientRect();
-    canvas.width = rect.width;
-    canvas.height = rect.height;
-    topo.width = rect.width;
-    topo.height = rect.height;
-  }
-  window.addEventListener('resize', resizeCanvas);
-  resizeCanvas();
-
-  function updateTopology(backends, sessions, queue) {
-    topo.backends = backends;
-    topo.sessions = sessions;
-    topo.queue = queue;
-  }
-
-  // Particles
-  let particles = [];
-  let lastParticleTime = 0;
-
-  function spawnParticles() {
-    const now = performance.now();
-    if (now - lastParticleTime < 200) return; // throttle spawn
-    lastParticleTime = now;
-
-    // From sessions -> balancer (pending requests)
-    const pending = (topo.queue.all || []).filter(q => q.status === 'pending');
-    pending.forEach((q, i) => {
-      if (Math.random() > 0.3) return; // not all at once
-      const sess = topo.sessions.find(s => s.id === q.sessionId);
-      const y = sess ? nodeY('session', topo.sessions.indexOf(sess)) : (topo.height * 0.3 + Math.random() * topo.height * 0.4);
-      particles.push({
-        x: 120, y: y,
-        tx: topo.width / 2, ty: topo.height / 2,
-        color: '#10b981', // green to balancer
-        speed: 2 + Math.random() * 2,
-        life: 1,
-        size: 3 + Math.random() * 2
-      });
+  function drawTopo() {
+    var w=topo.w, h=topo.h; if (!w||!h) return;
+    var lt=isLightTheme();
+    cx.clearRect(0,0,w,h);
+    cx.strokeStyle=lt?'rgba(0,0,0,0.05)':'rgba(255,255,255,0.03)'; cx.lineWidth=1;
+    for (var x=0;x<w;x+=40){cx.beginPath();cx.moveTo(x,0);cx.lineTo(x,h);cx.stroke();}
+    for (var y=0;y<h;y+=40){cx.beginPath();cx.moveTo(0,y);cx.lineTo(w,y);cx.stroke();}
+    var cX=w/2,cY=h/2;
+    cx.setLineDash([5,3]);
+    topo.sessions.forEach(function(s,i){
+      var y=nY('session',i), tc=s.backendId?'rgba(59,130,246,0.25)':'rgba(148,163,184,0.18)';
+      cx.strokeStyle=tc; cx.lineWidth=s.backendId?3:2;
+      var tX=140+(cX-90-140)*0.65, sX=140, eX=cX-90, eY=cY;
+      cx.beginPath();cx.moveTo(sX,y);cx.lineTo(tX,y);cx.stroke();
+      cx.beginPath();cx.moveTo(tX,y);cx.lineTo(tX,eY);cx.stroke();
+      cx.beginPath();cx.moveTo(tX,eY);cx.lineTo(eX,eY);cx.stroke();
+      cx.fillStyle=tc.replace('0.25','0.5').replace('0.18','0.35'); cx.beginPath();cx.arc(tX,y,5,0,Math.PI*2);cx.fill();
+      cx.fillStyle=tc.replace('0.25','0.5').replace('0.18','0.35'); cx.beginPath();cx.arc(tX,eY,4,0,Math.PI*2);cx.fill();
     });
-
-    // From balancer -> backends (processing)
-    const processing = (topo.queue.all || []).filter(q => q.status === 'processing');
-    processing.forEach((q, i) => {
-      if (Math.random() > 0.3) return;
-      const bIdx = topo.backends.findIndex(b => b.id === q.target);
-      if (bIdx < 0) return;
-      const y = nodeY('backend', bIdx);
-      particles.push({
-        x: topo.width / 2, y: topo.height / 2,
-        tx: topo.width - 140, ty: y,
-        color: '#f59e0b', // orange to backend
-        speed: 2 + Math.random() * 2,
-        life: 1,
-        size: 3 + Math.random() * 2
-      });
+    topo.backends.forEach(function(b,i){
+      var y=nY('backend',i), ih=b.status==='active'||b.status==='healthy'||b.status==='ready', tc=ih?'rgba(59,130,246,0.25)':'rgba(239,68,68,0.25)';
+      cx.strokeStyle=tc; cx.lineWidth=ih?3:2;
+      var sX=cX+90, sY=cY, tX=sX+(w-140-sX)*0.35, eX=w-140;
+      cx.beginPath();cx.moveTo(sX,sY);cx.lineTo(sX,y);cx.stroke();
+      cx.beginPath();cx.moveTo(sX,y);cx.lineTo(eX,y);cx.stroke();
+      cx.fillStyle=tc.replace('0.25','0.5');cx.beginPath();cx.arc(sX,y,5,0,Math.PI*2);cx.fill();
     });
-  }
-
-  function nodeY(type, index, total) {
-    const count = type === 'session' ? Math.max(1, topo.sessions.length) : Math.max(1, topo.backends.length);
-    const margin = 80;
-    const avail = topo.height - margin * 2;
-    const step = avail / Math.max(1, count - 1);
-    return margin + index * step;
-  }
-
-  function drawTopology() {
-    const w = topo.width;
-    const h = topo.height;
-    if (!w || !h) return;
-
-    ctx.clearRect(0, 0, w, h);
-
-    // Background grid
-    ctx.strokeStyle = 'rgba(255,255,255,0.03)';
-    ctx.lineWidth = 1;
-    const grid = 40;
-    for (let x = 0; x < w; x += grid) { ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, h); ctx.stroke(); }
-    for (let y = 0; y < h; y += grid) { ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(w, y); ctx.stroke(); }
-
-    const centerX = w / 2;
-    const centerY = h / 2;
-
-    // === CONVEYOR BELT VISUALIZATION (L-shaped, factory style) ===
-    // Animated request dots traveling on L-shaped conveyor belts with 90° turns
-    // Sessions → Balancer (inbound belt): horizontal → vertical
-    ctx.setLineDash([5, 3]);
-    topo.sessions.forEach((s, i) => {
-      const y = nodeY('session', i);
-      const trackColor = s.backendId ? 'rgba(59,130,246,0.25)' : 'rgba(148,163,184,0.18)';
-      ctx.strokeStyle = trackColor;
-      ctx.lineWidth = s.backendId ? 3 : 2;
-
-      // L-shaped track: from session card edge → horizontal to turn point → vertical to balancer
-      const turnX = 140 + (centerX - 90 - 140) * 0.65; // Turn at 65% of horizontal span
-      const startX = 140;
-      const endX = centerX - 90;
-      const endY = centerY;
-
-      // Horizontal segment
-      ctx.beginPath(); ctx.moveTo(startX, y); ctx.lineTo(turnX, y); ctx.stroke();
-      // Vertical segment
-      ctx.beginPath(); ctx.moveTo(turnX, y); ctx.lineTo(turnX, endY); ctx.stroke();
-      // Final horizontal into balancer
-      ctx.beginPath(); ctx.moveTo(turnX, endY); ctx.lineTo(endX, endY); ctx.stroke();
-
-      // Corner roller (small circle at turn)
-      ctx.fillStyle = trackColor.replace('0.25','0.5').replace('0.18','0.35');
-      ctx.beginPath(); ctx.arc(turnX, y, 5, 0, Math.PI * 2); ctx.fill();
-      ctx.fillStyle = trackColor.replace('0.25','0.5').replace('0.18','0.35');
-      ctx.beginPath(); ctx.arc(turnX, endY, 4, 0, Math.PI * 2); ctx.fill();
-
-      // Animated dots moving along L-shaped path
-      const reqCount = s.requestCount || 0;
-      const maxDots = Math.min(reqCount, 8);
-      // Calculate total path length: horizontal + vertical + horizontal
-      const seg1Len = turnX - startX;
-      const seg2Len = Math.abs(endY - y);
-      const seg3Len = endX - turnX;
-      const totalLen = seg1Len + seg2Len + seg3Len;
-      for (let d = 0; d < maxDots; d++) {
-        const rawProgress = ((animationFrame * 0.015 + d * (1 / maxDots)) % 1);
-        const dist = rawProgress * totalLen;
-        let dx, dy;
-        if (dist <= seg1Len) {
-          dx = startX + dist;
-          dy = y;
-        } else if (dist <= seg1Len + seg2Len) {
-          dx = turnX;
-          const vDist = dist - seg1Len;
-          dy = y < endY ? y + vDist : y - vDist;
-        } else {
-          const hDist = dist - seg1Len - seg2Len;
-          dx = turnX + hDist;
-          dy = endY;
-        }
-        const dotAlpha = 0.7 + 0.3 * Math.sin(animationFrame * 0.1 + d);
-        const dotColor = s.modelColor || 'rgba(96,165,250,' + dotAlpha.toFixed(2) + ')';
-        ctx.beginPath();
-        ctx.arc(dx, dy, 5, 0, Math.PI * 2);
-        ctx.fillStyle = dotColor;
-        ctx.fill();
-        ctx.strokeStyle = 'rgba(255,255,255,0.35)';
-        ctx.lineWidth = 1;
-        ctx.stroke();
-      }
+    cx.setLineDash([]);
+    var textLight=lt?'#1e293b':'#e2e8f0', textMuted=lt?'#475569':'#b0b7c4';
+    topo.sessions.forEach(function(s,i){
+      var y=nY('session',i), ia=s.backendId!=null, bc=ia?'rgba(59,130,246,0.18)':'rgba(148,163,184,0.12)', br=ia?'rgba(59,130,246,0.5)':'rgba(148,163,184,0.25)';
+      cx.fillStyle=bc; rr(cx,12,y-22,120,44,8); cx.fill(); cx.strokeStyle=br; cx.lineWidth=1; cx.stroke();
+      cx.fillStyle=textLight; cx.font='bold 11px '+vF(); cx.textAlign='left';
+      cx.save();cx.beginPath();cx.rect(16,y-18,108,14);cx.clip();cx.fillText(getCI(s.clientName)+' '+trunc(s.clientName,8),20,y-6);cx.restore();
+      cx.fillStyle=textMuted; cx.font='10px '+vF();
+      cx.save();cx.beginPath();cx.rect(16,y+1,108,14);cx.clip();cx.fillText((s.model||'—')+' • '+(s.requestCount||0)+' req',20,y+8);cx.restore();
     });
-
-    // Balancer → Backends (outbound belt): vertical → horizontal (L-shaped)
-    topo.backends.forEach((b, i) => {
-      const y = nodeY('backend', i);
-      const isHealthy = b.status === 'active' || b.status === 'healthy' || b.status === 'ready';
-      const trackColor = isHealthy ? 'rgba(59,130,246,0.25)' : 'rgba(239,68,68,0.25)';
-      ctx.strokeStyle = trackColor;
-      ctx.lineWidth = isHealthy ? 3 : 2;
-
-      // L-shaped track: from balancer → vertical to turn point → horizontal to backend
-      const startX = centerX + 90;
-      const startY = centerY;
-      const turnX = startX + (w - 140 - startX) * 0.35; // Turn at 35% of horizontal span
-      const endX = w - 140;
-
-      // Vertical segment
-      ctx.beginPath(); ctx.moveTo(startX, startY); ctx.lineTo(startX, y); ctx.stroke();
-      // Horizontal segment
-      ctx.beginPath(); ctx.moveTo(startX, y); ctx.lineTo(endX, y); ctx.stroke();
-
-      // Corner roller
-      ctx.fillStyle = trackColor.replace('0.25','0.5');
-      ctx.beginPath(); ctx.arc(startX, y, 5, 0, Math.PI * 2); ctx.fill();
-
-      // Animated dots moving along L-shaped path
-      const activeReqs = b.activeRequests || 0;
-      const maxDots = Math.min(activeReqs, 12);
-      const seg1Len = Math.abs(y - startY);
-      const seg2Len = endX - startX;
-      const totalLen = seg1Len + seg2Len;
-      for (let d = 0; d < maxDots; d++) {
-        const rawProgress = ((animationFrame * 0.02 + d * (1 / maxDots)) % 1);
-        const dist = rawProgress * totalLen;
-        let dx, dy;
-        if (dist <= seg1Len) {
-          dx = startX;
-          dy = startY < y ? startY + dist : startY - dist;
-        } else {
-          const hDist = dist - seg1Len;
-          dx = startX + hDist;
-          dy = y;
-        }
-        const dotAlpha = 0.7 + 0.3 * Math.sin(animationFrame * 0.1 + d);
-        const dotColor = isHealthy
-          ? 'rgba(34,197,94,' + dotAlpha.toFixed(2) + ')'
-          : 'rgba(239,68,68,' + dotAlpha.toFixed(2) + ')';
-        ctx.beginPath();
-        ctx.arc(dx, dy, 4, 0, Math.PI * 2);
-        ctx.fillStyle = dotColor;
-        ctx.fill();
-        ctx.strokeStyle = 'rgba(255,255,255,0.25)';
-        ctx.lineWidth = 1;
-        ctx.stroke();
-      }
+    var bw=180,bh=100,bx=cX-bw/2,by=cY-bh/2;
+    var pend=topo.queue.pending_count||0, mq=(topo.queue.all||[]).length>0?Math.max((topo.queue.all||[]).length,5):5;
+    var qr=Math.min(pend/mq,1), bc=qr>0.75?'#ef4444':qr>0.3?'#f59e0b':'#3b82f6';
+    cx.shadowColor=bc; cx.shadowBlur=20; cx.fillStyle=bc+'18'; rr(cx,bx-4,by-4,bw+8,bh+8,12);cx.fill();cx.shadowBlur=0;
+    cx.fillStyle=bc+'22'; rr(cx,bx,by,bw,bh,10);cx.fill();cx.strokeStyle='rgba(148,163,184,0.4)';cx.lineWidth=2;cx.stroke();
+    cx.fillStyle=lt?'#0f172a':'#fff'; cx.font='bold 13px '+vF(); cx.textAlign='center'; cx.fillText(T('monitor.canvas.balancer'),cX,cY-16);
+    cx.fillStyle=textMuted; cx.font='11px '+vF(); cx.fillText(T('monitor.canvas.queue')+pend,cX,cY+4);
+    var qbX=bx+20,qbY=by+bh/2+14,qbW=bw-40,qbH=8;
+    cx.fillStyle=lt?'rgba(0,0,0,0.08)':'rgba(255,255,255,0.06)'; rr(cx,qbX,qbY,qbW,qbH,4);cx.fill();
+    cx.fillStyle=qr>0.75?'#ef4444':'#60a5fa'; rr(cx,qbX,qbY,qbW*qr,qbH,4);cx.fill();
+    var backendIdleTxt=lt?'#1e293b':'#fff';
+    topo.backends.forEach(function(b,i){
+      var y=nY('backend',i), ih=b.status==='active'||b.status==='healthy'||b.status==='ready';
+      var bc=ih?(b.activeRequests>0?'rgba(245,158,11,0.15)':'rgba(34,197,94,0.12)'):'rgba(239,68,68,0.12)';
+      var br=ih?(b.activeRequests>0?'rgba(245,158,11,0.4)':'rgba(34,197,94,0.4)'):'rgba(239,68,68,0.4)';
+      cx.fillStyle=bc; rr(cx,w-140,y-26,128,52,8);cx.fill();cx.strokeStyle=br;cx.lineWidth=1.5;cx.stroke();
+      cx.fillStyle=backendIdleTxt; cx.font='bold 11px '+vF(); cx.textAlign='left'; cx.fillText(trunc(b.id,12),w-132,y-10);
+      var mr=b.maxConcurrentRequests||10,a=b.activeRequests||0,l=a/mr;
+      cx.fillStyle=l>=0.8?'#ef4444':l>=0.5?'#f59e0b':'#22c55e'; cx.font='10px '+vF();
+      cx.fillText(a>0?'⏳ '+a+'/'+mr:'✅ Idle',w-132,y+6);
+      var mc=(b.models||[]).length;
+      if(mc>0){cx.fillStyle='#a855f7';cx.font='9px '+vF();cx.fillText('🧠 '+mc+T('models_lower'),w-132,y+20);}
+      else if(ih&&a>0){cx.fillStyle='#f97316';cx.font='9px '+vF();cx.fillText(T('loading'),w-132,y+20);}
+      var vp=b.vram?b.vram.usagePercent:0;
+      if(vp>0){cx.fillStyle=lt?'rgba(0,0,0,0.06)':'rgba(255,255,255,0.06)';rr(cx,w-132,y+26,100,3,2);cx.fill();cx.fillStyle=vp>85?'#ef4444':vp>60?'#f59e0b':'#22c55e';rr(cx,w-132,y+26,100*(vp/100),3,2);cx.fill();}
     });
-    ctx.setLineDash([]);
-
-    // Draw sessions (left)
-    const sessCount = Math.max(1, topo.sessions.length || 1);
-    topo.sessions.forEach((s, i) => {
-      const y = nodeY('session', i);
-      const isActive = s.backendId != null;
-      const boxColor = isActive ? 'rgba(59,130,246,0.18)' : 'rgba(148,163,184,0.12)';
-      const borderColor = isActive ? 'rgba(59,130,246,0.5)' : 'rgba(148,163,184,0.25)';
-
-      // card
-      ctx.fillStyle = boxColor;
-      roundRect(ctx, 12, y - 22, 120, 44, 8);
-      ctx.fill();
-      ctx.strokeStyle = borderColor;
-      ctx.lineWidth = 1;
-      ctx.stroke();
-
-      // text: client name with icon (clipped to card width 104px)
-      const clientIcon = getClientIcon(s.clientName);
-      const clientLabel = s.clientName ? truncate(s.clientName, 8) : truncate(s.id, 10);
-      ctx.fillStyle = '#e2e8f0';
-      ctx.font = 'bold 11px ' + varFont();
-      ctx.textAlign = 'left';
-      ctx.save();
-      ctx.beginPath();
-      ctx.rect(16, y - 18, 108, 14);
-      ctx.clip();
-      ctx.fillText(clientIcon + ' ' + clientLabel, 20, y - 6);
-      ctx.restore();
-      // model name + req count (clipped to card width 104px)
-      ctx.fillStyle = '#b0b7c4';
-      ctx.font = '10px ' + varFont();
-      const modelText = (s.model || '—') + ' • ' + (s.requestCount || 0) + ' req';
-      ctx.save();
-      ctx.beginPath();
-      ctx.rect(16, y + 1, 108, 14);
-      ctx.clip();
-      ctx.fillText(modelText, 20, y + 8);
-      ctx.restore();
-    });
-
-    // Draw balancer (center)
-    const bw = 180;
-    const bh = 100;
-    const bx = centerX - bw / 2;
-    const by = centerY - bh / 2;
-
-    const pending = topo.queue.pending_count || 0;
-    const maxQ = (topo.queue.all || []).length > 0 ? Math.max((topo.queue.all || []).length, 5) : 5;
-    const qRatio = Math.min(pending / maxQ, 1);
-    const bColor = qRatio > 0.75 ? '#ef4444' : qRatio > 0.3 ? '#f59e0b' : '#3b82f6';
-
-    // Balancer glow
-    ctx.shadowColor = bColor;
-    ctx.shadowBlur = 20;
-    ctx.fillStyle = bColor + '18';
-    roundRect(ctx, bx - 4, by - 4, bw + 8, bh + 8, 12);
-    ctx.fill();
-    ctx.shadowBlur = 0;
-
-    ctx.fillStyle = bColor + '22';
-    roundRect(ctx, bx, by, bw, bh, 10);
-    ctx.fill();
-    ctx.strokeStyle = 'rgba(148,163,184,0.4)';
-    ctx.lineWidth = 2;
-    ctx.stroke();
-
-    // Title
-    ctx.fillStyle = '#fff';
-    ctx.font = 'bold 13px ' + varFont();
-    ctx.textAlign = 'center';
-    ctx.fillText('⚖️ БАЛАНСЕР', centerX, centerY - 16);
-    ctx.fillStyle = '#b0b7c4';
-    ctx.font = '11px ' + varFont();
-    ctx.fillText('Очередь: ' + pending, centerX, centerY + 4);
-
-    // Queue bar
-    const qbX = bx + 20;
-    const qbY = by + bh / 2 + 14;
-    const qbW = bw - 40;
-    const qbH = 8;
-    ctx.fillStyle = 'rgba(255,255,255,0.06)';
-    roundRect(ctx, qbX, qbY, qbW, qbH, 4);
-    ctx.fill();
-    const fillW = qbW * qRatio;
-    ctx.fillStyle = qRatio > 0.75 ? '#ef4444' : '#60a5fa';
-    roundRect(ctx, qbX, qbY, fillW, qbH, 4);
-    ctx.fill();
-
-    // Draw backends (right)
-    topo.backends.forEach((b, i) => {
-      const y = nodeY('backend', i);
-      const isHealthy = b.status === 'active' || b.status === 'healthy' || b.status === 'ready';
-      const boxColor = isHealthy ? (b.activeRequests > 0 ? 'rgba(245,158,11,0.15)' : 'rgba(34,197,94,0.12)') : 'rgba(239,68,68,0.12)';
-      const borderColor = isHealthy ? (b.activeRequests > 0 ? 'rgba(245,158,11,0.4)' : 'rgba(34,197,94,0.4)') : 'rgba(239,68,68,0.4)';
-
-      ctx.fillStyle = boxColor;
-      roundRect(ctx, w - 140, y - 26, 128, 52, 8);
-      ctx.fill();
-      ctx.strokeStyle = borderColor;
-      ctx.lineWidth = 1.5;
-      ctx.stroke();
-
-      ctx.fillStyle = '#fff';
-      ctx.font = 'bold 11px ' + varFont();
-      ctx.textAlign = 'left';
-      ctx.fillText(truncate(b.id, 12), w - 132, y - 10);
-
-      const maxReqs = b.maxConcurrentRequests || 10;
-      const active = b.activeRequests || 0;
-      const load = active / maxReqs;
-      const loadStr = active > 0 ? `⏳ ${active}/${maxReqs}` : '✅ Idle';
-      ctx.fillStyle = load >= 0.8 ? '#ef4444' : (load >= 0.5 ? '#f59e0b' : '#22c55e');
-      ctx.font = '10px ' + varFont();
-      ctx.fillText(loadStr, w - 132, y + 6);
-
-      // Show model count / loading indicator
-      const modelCount = (b.models || []).length;
-      if (modelCount > 0) {
-        ctx.fillStyle = '#a855f7';
-        ctx.font = '9px ' + varFont();
-        ctx.fillText('🧠 ' + modelCount + ' models', w - 132, y + 20);
-      } else if (isHealthy && active > 0) {
-        // Show loading indicator for backends with active requests but no models reported yet
-        ctx.fillStyle = '#f97316';
-        ctx.font = '9px ' + varFont();
-        ctx.fillText('⏳ loading…', w - 132, y + 20);
-      }
-
-      // NEW: VRAM mini bar on backend node
-      const vramPct = b.vram?.usagePercent || 0;
-      if (vramPct > 0) {
-        const vramBarW = 100;
-        const vramBarH = 3;
-        const vramBarX = w - 132;
-        const vramBarY = y + 26;
-        ctx.fillStyle = 'rgba(255,255,255,0.06)';
-        roundRect(ctx, vramBarX, vramBarY, vramBarW, vramBarH, 2);
-        ctx.fill();
-        const vramColor = vramPct > 85 ? '#ef4444' : vramPct > 60 ? '#f59e0b' : '#22c55e';
-        ctx.fillStyle = vramColor;
-        roundRect(ctx, vramBarX, vramBarY, vramBarW * (vramPct / 100), vramBarH, 2);
-        ctx.fill();
-      }
-    });
-
-    // Draw particles
-    spawnParticles();
-    for (let i = particles.length - 1; i >= 0; i--) {
-      const p = particles[i];
-      const dx = p.tx - p.x;
-      const dy = p.ty - p.y;
-      const dist = Math.hypot(dx, dy);
-      if (dist < 4 || p.life <= 0) {
-        particles.splice(i, 1);
-        continue;
-      }
-      p.x += (dx / dist) * p.speed;
-      p.y += (dy / dist) * p.speed;
-      p.life -= 0.005;
-
-      // Glow
-      ctx.beginPath();
-      ctx.arc(p.x, p.y, p.size + 4, 0, Math.PI * 2);
-      ctx.fillStyle = p.color + '25';
-      ctx.fill();
-
-      // Core
-      ctx.beginPath();
-      ctx.arc(p.x, p.y, p.size, 0, Math.PI * 2);
-      ctx.fillStyle = p.color;
-      ctx.fill();
-    }
-
-    // Fallback label when empty
-    if (topo.sessions.length === 0 && topo.backends.length === 0) {
-      ctx.fillStyle = '#475569';
-      ctx.font = '14px ' + varFont();
-      ctx.textAlign = 'center';
-      ctx.fillText('Нет данных для отображения топологии', w / 2, h / 2 + 80);
-      ctx.font = '12px ' + varFont();
-      ctx.fillText('Подключение к API… или включите демо-режим', w / 2, h / 2 + 100);
+    sp();
+    for (var i=particles.length-1;i>=0;i--){var p=particles[i];particles.splice(i,1);}
+    if(topo.sessions.length===0&&topo.backends.length===0){
+      cx.fillStyle='#475569';cx.font='14px '+vF();cx.textAlign='center';
+      cx.fillText(T('monitor.overlay.topologyNoData'),w/2,h/2+80);
+      cx.font='12px '+vF();cx.fillText(T('monitor.overlay.topologyHint'),w/2,h/2+100);
     }
   }
+  function anim() { af++; drawTopo(); requestAnimationFrame(anim); }
 
-  function varFont() {
-    return 'system-ui, -apple-system, sans-serif';
-  }
-
-  function truncate(str, len) {
-    if (!str) return '';
-    return str.length > len ? str.slice(0, len) + '…' : str;
-  }
-
-  function roundRect(ctx, x, y, w, h, r) {
-    ctx.beginPath();
-    ctx.moveTo(x + r, y);
-    ctx.arcTo(x + w, y, x + w, y + h, r);
-    ctx.arcTo(x + w, y + h, x, y + h, r);
-    ctx.arcTo(x, y + h, x, y, r);
-    ctx.arcTo(x, y, x + w, y, r);
-    ctx.closePath();
-  }
-
-  let animationFrame = 0;
-  function animate() {
-    animationFrame++;
-    drawTopology();
-    requestAnimationFrame(animate);
-  }
-
-  // ==================== FORCE REBALANCE ====================
-  function forceRebalance() {
-    if (demoMode) {
-      alert('[Demo] Принудительное перераспределение недоступно в демо-режиме.');
-      return;
-    }
-    api('/api/v1/queue/rebalance')
-      .then(result => {
-        console.log('[monitor] rebalance result:', result);
-        // Показываем уведомление
-        const container = document.getElementById('alertContainer');
-        const banner = document.createElement('div');
-        banner.className = 'alert-banner alert-green';
-        banner.style.cssText = 'background:rgba(34,197,94,0.08);border:1px solid rgba(34,197,94,0.25);color:var(--success)';
-        banner.innerHTML = '<span>✅</span><span>Перераспределение инициировано. Запросы в очереди будут перенаправлены на свободные бэкенды.</span>';
-        container.insertBefore(banner, container.firstChild);
-        // Автоматически убираем через 6 секунд
-        setTimeout(() => { if (banner.parentNode) banner.remove(); }, 6000);
-        // Trigger immediate refresh
-        fetchAll();
-      })
-      .catch(err => {
-        console.error('[monitor] rebalance failed:', err);
-        alert('Ошибка перераспределения: ' + err.message);
-      });
-  }
-
-  // ==================== INIT ====================
-  timerId = setInterval(fetchAll, refreshInterval);
-  animate();
-  // First fetch
-  fetchAll();
-  // ==================== I18N for Monitor ====================
-  // monitor.html uses the same i18n system as index.html
-  // Language packs are already loaded via <script> tags above
-  const M = window.I18N ? {
-    t: function(key, params) { return window.I18N.t(key, params); },
-    getLang: function() { return window.I18N.getLang(); },
-    setLang: function(l) { window.I18N.setLang(l); },
-  } : {
-    t: function(k) { return k; },
-    getLang: function() { return 'ru'; },
-    setLang: function() {},
+  // ---- Rebalance ----
+  window.forceRebalance = function() {
+    if (demoMode) { alert(T('monitor.rebalance.disabled')); return; }
+    api('/api/v1/queue/rebalance').then(function(r) {
+      console.log('[monitor] rebalance result:', r);
+      var c=document.getElementById('alertContainer'), b=document.createElement('div');
+      b.className='alert-banner'; b.style.cssText='background:rgba(34,197,94,0.08);border:1px solid rgba(34,197,94,0.25);color:var(--success)';
+      b.innerHTML='<span>✅</span><span>'+T('monitor.rebalance.success')+'</span>';
+      c.insertBefore(b,c.firstChild);
+      setTimeout(function(){ if(b.parentNode) b.remove(); },6000);
+      fetchAll();
+    }).catch(function(e){ console.error('[monitor] rebalance failed:',e); alert(T('monitor.rebalance.error')+e.message); });
   };
 
-  // Sync lang attribute
-  document.documentElement.setAttribute('lang', M.getLang());
+  // ---- INIT ----
+  timerId = setInterval(fetchAllSafe, refreshInterval);
+  anim();
+  fetchAll();
 
-  // Sync theme with parent (index.html) if embedded in iframe
+  // ---- I18N ----
+  document.documentElement.setAttribute('lang', LANG());
+
   function syncTheme() {
     try {
-      const storedTheme = localStorage.getItem('ollamalegion_theme');
-      if (storedTheme) {
-        document.documentElement.setAttribute('data-theme', storedTheme);
-        applyMonitorTheme(storedTheme);
-      }
-      // Also try to read from parent
+      var st = localStorage.getItem('ollamalegion_theme');
+      if (st) { document.documentElement.setAttribute('data-theme', st); applyMT(st); }
       if (window.parent && window.parent !== window) {
-        const parentTheme = window.parent.document.documentElement.getAttribute('data-theme');
-        if (parentTheme) {
-          document.documentElement.setAttribute('data-theme', parentTheme);
-          applyMonitorTheme(parentTheme);
-        }
-        // Sync lang from parent
-        const parentLang = window.parent.document.documentElement.getAttribute('lang');
-        if (parentLang && M.getLang() !== parentLang) {
-          M.setLang(parentLang);
-          document.documentElement.setAttribute('lang', parentLang);
-        }
+        var pt = window.parent.document.documentElement.getAttribute('data-theme');
+        if (pt) { document.documentElement.setAttribute('data-theme', pt); applyMT(pt); }
+        var pl = window.parent.document.documentElement.getAttribute('lang');
+        if (pl && LANG() !== pl) { SETLANG(pl); document.documentElement.setAttribute('lang', pl); }
       }
-    } catch(e) { /* cross-origin, ignore */ }
+    } catch(e) {}
+  }
+  function applyMT(t) {
+    document.documentElement.setAttribute('data-theme', t);
+    var ov = document.querySelectorAll('.overlay'), sb = document.querySelectorAll('.stats-bar');
+    if (t === 'light') { ov.forEach(function(e){e.style.background='rgba(241,245,249,0.92)';}); sb.forEach(function(e){e.style.background='rgba(255,255,255,0.92)';}); }
+    else { ov.forEach(function(e){e.style.background='rgba(11,17,32,0.92)';}); sb.forEach(function(e){e.style.background='rgba(17,24,39,0.92)';}); }
+    drawTopo();
   }
 
-  function applyMonitorTheme(theme) {
-    const root = document.documentElement;
-    // All theme colors come from themes.css via data-theme attribute
-    root.setAttribute('data-theme', theme);
-    // Only overlay backgrounds need manual control (not covered by CSS variables)
-    if (theme === 'light') {
-      document.querySelectorAll('.overlay').forEach(function(el) {
-        el.style.background = 'rgba(241,245,249,0.92)';
-      });
-      document.querySelectorAll('.stats-bar').forEach(function(el) {
-        el.style.background = 'rgba(255,255,255,0.92)';
-      });
-    } else {
-      document.querySelectorAll('.overlay').forEach(function(el) {
-        el.style.background = 'rgba(11,17,32,0.92)';
-      });
-      document.querySelectorAll('.stats-bar').forEach(function(el) {
-        el.style.background = 'rgba(17,24,39,0.92)';
-      });
-    }
+  function updateMonitorTexts() {
+    var t=T;
+    document.querySelectorAll('.stat-label').forEach(function(el){
+      var mp={Backends:t('monitor.stats.backends'),Active:t('monitor.stats.active'),Pending:t('monitor.stats.pending'),Processing:t('monitor.stats.processing'),Sessions:t('monitor.stats.sessions'),'Req/s':t('monitor.stats.rate'),'Cluster RPS':t('monitor.stats.clusterRps'),VRAM:t('monitor.stats.vram'),Models:t('monitor.stats.models')};
+      var tx=el.textContent.trim(); if(mp[tx]) el.textContent=mp[tx];
+    });
+    var hm={'📊 Ресурсы кластера':t('monitor.panel.clusterResources'),'🧠 Модели в памяти':t('monitor.panel.modelsInMemory'),'🖥️ Backends':t('monitor.panel.backends'),'📋 Queue':t('monitor.panel.queue'),'👤 Sessions':t('monitor.panel.sessions')};
+    document.querySelectorAll('.panel-header span:first-child').forEach(function(el){
+      var tx=el.textContent.replace(/\s*\(\d+\)\s*$/,'').trim();
+      var b=hm[tx]; if(b) el.childNodes[0]&&el.childNodes[0].nodeType===3?el.childNodes[0].textContent=b+' ':el.textContent=b;
+    });
+    var thm={'Модель':t('monitor.table.model'),'Бэкенды':t('monitor.table.backends'),'Сессий':t('monitor.table.sessionsCount'),VRAM:t('monitor.table.vram'),'Загрузка':t('monitor.table.load'),ID:t('monitor.table.id'),'Статус':t('monitor.table.status'),GPU:t('monitor.table.gpu'),CPU:t('monitor.table.cpu'),RAM:t('monitor.table.ram'),Active:t('monitor.table.active'),RPS:t('monitor.table.rps'),Score:t('monitor.table.score'),'Модели':t('monitor.table.models'),Uptime:t('monitor.table.uptime'),Target:t('monitor.table.target'),'Ожидание':t('monitor.table.wait'),'Сессия':t('monitor.table.session'),Backend:t('monitor.table.backend'),'Запросов':t('monitor.table.requests'),Idle:t('monitor.table.idle'),IP:t('monitor.table.ip'),'Клиент':t('monitor.table.client')};
+    document.querySelectorAll('thead th').forEach(function(th){ var tx=th.textContent.trim(); if(thm[tx]) th.textContent=thm[tx]; });
+    var pb=document.getElementById('pauseBtn'); if(pb) pb.textContent=paused?'▶ '+t('monitor.header.continue'):'⏸ '+t('monitor.header.pause');
+    var db=document.getElementById('demoBtn'); if(db) db.textContent='▶ '+t('monitor.header.demo');
+    var cb=document.getElementById('connBadge'); if(cb&&cb.textContent==='Подключение…') cb.textContent=t('monitor.header.connecting');
+    var lo=document.querySelector('#loadingOverlay h2'); if(lo) lo.textContent=t('monitor.overlay.connecting');
+    var eo=document.querySelector('#errorOverlay h2'); if(eo) eo.textContent=t('monitor.overlay.noConnection');
+    var et=document.getElementById('errorText'); if(et&&et.textContent.indexOf('Не удалось')>=0) et.textContent=t('monitor.overlay.checkConnection');
+    var rb=document.querySelector('#errorOverlay button:first-of-type'); if(rb) rb.textContent='🔄 '+t('monitor.overlay.retry');
+    var dob=document.querySelector('#errorOverlay button:last-of-type'); if(dob) dob.textContent='▶ '+t('monitor.overlay.demoMode');
+    var di=document.getElementById('demoIndicator'); if(di&&demoMode) di.textContent=t('monitor.header.demoIndicator');
+    var cm={GPU:t('metrics.gpuUtil'),VRAM:t('metrics.vramUsed'),CPU:t('metrics.cpuUsed'),RAM:t('metrics.ramUsed'),'Свободные слоты':t('monitor.capacity.freeSlots'),'VRAM по бэкендам':t('monitor.capacity.vramPerBackend'),'Free Slots':t('monitor.capacity.freeSlots'),'VRAM per Backend':t('monitor.capacity.vramPerBackend')};
+    document.querySelectorAll('.capacity-card h4').forEach(function(el){ var tx=el.textContent.trim(); if(cm[tx]) el.textContent=cm[tx]; });
+    document.querySelector('#loadingOverlay p').innerHTML = t('monitor.overlay.waitingDesc').replace('loadbalancer','<code>loadbalancer</code>');
   }
 
-  // Listen for i18n changes
-  window.addEventListener('i18n:changed', function(e) {
-    document.documentElement.setAttribute('lang', e.detail.lang);
-    // Refresh UI text
-    updateMonitorTexts();
-  });
-
-  // Listen for theme changes from localStorage (triggered by index.html)
-  window.addEventListener('storage', function(e) {
-    if (e.key === 'ollamalegion_theme') {
-      applyMonitorTheme(e.newValue || 'dark');
-    }
-    if (e.key === 'ollamalegion_lang') {
-      if (M.getLang() !== e.newValue) {
-        M.setLang(e.newValue);
-      }
-    }
-  });
-
-  // Apply on load
+  window.addEventListener('i18n:changed', function(e) { document.documentElement.setAttribute('lang', e.detail.lang); updateMonitorTexts(); });
+  window.addEventListener('storage', function(e) { if (e.key==='ollamalegion_theme') applyMT(e.newValue||'dark'); if (e.key==='ollamalegion_lang'&&LANG()!==e.newValue) SETLANG(e.newValue); });
   syncTheme();
-
+  updateMonitorTexts();
+})();
 </script>
 </body>
 </html>

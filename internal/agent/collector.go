@@ -413,7 +413,7 @@ func (a *Agent) heartbeatInterval() int {
 	if a.config.HeartbeatInterval > 0 {
 		return a.config.HeartbeatInterval
 	}
-	return 3
+	return 5
 }
 
 // sendHeartbeat - отправка heartbeat
@@ -449,16 +449,18 @@ func (a *Agent) sendHeartbeat() {
 
 	_ = protocol.NewHeartbeatMessage(a.config.AgentID, seq, uptime, status, a.config.Weight)
 
-	// Сериализация сообщения
+	// Сериализация сообщения с локальными лимитами
 	wrapper := map[string]interface{}{
-		"type":      "heartbeat",
-		"agentId":   a.config.AgentID,
-		"timestamp": time.Now().UTC(),
-		"uptime":    uptime,
-		"sequence":  seq,
-		"status":    status,
-		"platform":  a.platformMode,
-		"weight":    a.config.Weight,
+		"type":                    "heartbeat",
+		"agentId":                 a.config.AgentID,
+		"timestamp":               time.Now().UTC(),
+		"uptime":                  uptime,
+		"sequence":                seq,
+		"status":                  status,
+		"platform":                a.platformMode,
+		"weight":                  a.config.Weight,
+		"maxConcurrentRequests":   a.config.MaxConcurrentRequests,
+		"maxModels":               a.config.MaxModels,
 	}
 
 	data, err := json.Marshal(wrapper)
@@ -487,6 +489,35 @@ func (a *Agent) sendHeartbeat() {
 		return
 	}
 	defer resp.Body.Close()
+
+	// Принимаем runtime-лимиты из ответа балансера
+	if resp.Body != nil {
+		var respBody map[string]interface{}
+		bodyBytes, _ := io.ReadAll(resp.Body)
+		resp.Body = io.NopCloser(bytes.NewBuffer(bodyBytes))
+		if err := json.Unmarshal(bodyBytes, &respBody); err == nil {
+			if cfg, ok := respBody["config"].(map[string]interface{}); ok {
+				if maxConcurrent, ok := cfg["maxConcurrentRequests"].(float64); ok {
+					if maxConcurrent > 0 {
+						a.config.MaxConcurrentRequests = int(maxConcurrent)
+						fmt.Printf("[%s] Heartbeat response: applied maxConcurrentRequests=%d from balancer\n",
+							time.Now().Format(time.RFC3339), int(maxConcurrent))
+					} else {
+						fmt.Printf("[%s] Heartbeat response: keeping local maxConcurrentRequests=%d (balancer returned %.0f)\n",
+							time.Now().Format(time.RFC3339), a.config.MaxConcurrentRequests, maxConcurrent)
+					}
+				}
+				if maxModels, ok := cfg["maxModels"].(float64); ok {
+					if maxModels > 0 {
+						a.config.MaxModels = int(maxModels)
+					} else {
+						fmt.Printf("[%s] Heartbeat response: keeping local maxModels=%d (balancer returned %.0f)\n",
+							time.Now().Format(time.RFC3339), a.config.MaxModels, maxModels)
+					}
+				}
+			}
+		}
+	}
 }
 
 // collectMetrics - сбор всех метрик
@@ -644,7 +675,7 @@ func (a *Agent) healthCheckOllama() error {
 	return nil
 }
 
-// collectOllamaMetrics - сбор метрик Ollama
+// collectOllamaMetrics - сбор метрик Ollama (оптимизировано: 2 запроса вместо 4)
 func (a *Agent) collectOllamaMetrics() types.OllamaMetrics {
 	metrics := types.OllamaMetrics{}
 
@@ -657,20 +688,22 @@ func (a *Agent) collectOllamaMetrics() types.OllamaMetrics {
 	metrics.RuntimeFlags = flags
 	a.currentFlags = flags
 
-	// Получение запущенных (загруженных в память) моделей через /api/ps
-	runningModels, err := a.getRunningModels()
-	if err != nil {
-		fmt.Printf("[%s] Failed to get running models: %v\n", time.Now().Format(time.RFC3339), err)
+	// Единый запрос к /api/tags (один раз вместо двух)
+	tagsResp, tagsErr := a.fetchOllamaTags()
+	var availableModels []types.RunningModel
+	if tagsErr != nil {
+		fmt.Printf("[%s] Failed to get available models: %v\n", time.Now().Format(time.RFC3339), tagsErr)
 	} else {
-		metrics.RunningModels = runningModels
+		availableModels = tagsResp.models
+		metrics.AvailableModels = availableModels
 	}
 
-	// Получение доступных моделей через /api/tags
-	availableModels, err := a.getAvailableModels()
-	if err != nil {
-		fmt.Printf("[%s] Failed to get available models: %v\n", time.Now().Format(time.RFC3339), err)
+	// Единый запрос к /api/ps (один раз вместо двух)
+	runningModels, psErr := a.getRunningModelsWithDetails(tagsResp.details)
+	if psErr != nil {
+		fmt.Printf("[%s] Failed to get running models: %v\n", time.Now().Format(time.RFC3339), psErr)
 	} else {
-		metrics.AvailableModels = availableModels
+		metrics.RunningModels = runningModels
 	}
 
 	// Сбор информации о контексте моделей
@@ -683,23 +716,150 @@ func (a *Agent) collectOllamaMetrics() types.OllamaMetrics {
 		metrics.BackendCapacity = a.calculateBackendCapacity(runningModels, availableModels, flags)
 	}
 
-	// Получение статистики запросов
-	stats, err := a.getOllamaStats()
-	if err != nil {
-		fmt.Printf("[%s] Failed to get ollama stats: %v\n", time.Now().Format(time.RFC3339), err)
-		// Возвращаем дефолтные значения при ошибке
-		metrics.ActiveRequests = 0
-		metrics.TotalRequests = 0
-		metrics.AvgResponseTime = 0
-		metrics.RequestsPerSecond = 0
-	} else {
-		metrics.ActiveRequests = stats.ActiveRequests
-		metrics.TotalRequests = stats.TotalRequests
-		metrics.AvgResponseTime = stats.AvgResponseTime
-		metrics.RequestsPerSecond = stats.RequestsPerSecond
-	}
+	// Статистика запросов — агент не может получить реальные active requests,
+	// это отслеживается балансировщиком через счётчик прокси.
+	metrics.ActiveRequests = 0
+	metrics.TotalRequests = 0
+	metrics.AvgResponseTime = 0
+	metrics.RequestsPerSecond = 0
 
 	return metrics
+}
+
+// tagsResult — результат запроса к /api/tags (модели + details map)
+type tagsResult struct {
+	models  []types.RunningModel
+	details map[string]types.ModelDetails
+}
+
+// fetchOllamaTags — единый запрос к /api/tags, возвращает модели и details
+func (a *Agent) fetchOllamaTags() (*tagsResult, error) {
+	resp, err := a.httpClient.Get(fmt.Sprintf("%s/api/tags", a.getOllamaBaseURL()))
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("status code: %d", resp.StatusCode)
+	}
+
+	var result struct {
+		Models []struct {
+			Name       string `json:"name"`
+			Model      string `json:"model"`
+			Size       uint64 `json:"size"`
+			Digest     string `json:"digest"`
+			ModifiedAt string `json:"modified_at"`
+			Details    struct {
+				Format        string `json:"format"`
+				Family        string `json:"family"`
+				Families      []string `json:"families"`
+				ParameterSize string `json:"parameter_size"`
+				Quantization  string `json:"quantization_level"`
+			} `json:"details"`
+		} `json:"models"`
+	}
+
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return nil, err
+	}
+
+	models := make([]types.RunningModel, len(result.Models))
+	details := make(map[string]types.ModelDetails, len(result.Models))
+	for i, m := range result.Models {
+		models[i] = types.RunningModel{
+			Name:          m.Name,
+			Size:          m.Size,
+			Digest:        m.Digest,
+			Family:        m.Details.Family,
+			Format:        m.Details.Format,
+			ParameterSize: m.Details.ParameterSize,
+			Quantization:  m.Details.Quantization,
+		}
+		details[m.Name] = types.ModelDetails{
+			Family:        m.Details.Family,
+			Format:        m.Details.Format,
+			ParameterSize: m.Details.ParameterSize,
+			Quantization:  m.Details.Quantization,
+		}
+	}
+
+	return &tagsResult{models: models, details: details}, nil
+}
+
+// getRunningModelsWithDetails — получение запущенных моделей с details из кэша
+func (a *Agent) getRunningModelsWithDetails(detailsMap map[string]types.ModelDetails) ([]types.RunningModel, error) {
+	resp, err := a.httpClient.Get(fmt.Sprintf("%s/api/ps", a.getOllamaBaseURL()))
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("status code: %d", resp.StatusCode)
+	}
+
+	var result struct {
+		Models []struct {
+			Name      string    `json:"name"`
+			Model     string    `json:"model"`
+			Size      uint64    `json:"size"`
+			Digest    string    `json:"digest"`
+			ExpiresAt time.Time `json:"expires_at"`
+			SizeVRAM  uint64    `json:"size_vram"`
+			Details   struct {
+				Format        string   `json:"format"`
+				Family        string   `json:"family"`
+				Families      []string `json:"families"`
+				ParameterSize string   `json:"parameter_size"`
+				Quantization  string   `json:"quantization_level"`
+			} `json:"details"`
+		} `json:"models"`
+	}
+
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return nil, err
+	}
+
+	models := make([]types.RunningModel, len(result.Models))
+	for i, m := range result.Models {
+		models[i] = types.RunningModel{
+			Name:          m.Name,
+			Size:          m.Size,
+			Digest:        m.Digest,
+			ExpiresAt:     m.ExpiresAt,
+			Family:        m.Details.Family,
+			Format:        m.Details.Format,
+			ParameterSize: m.Details.ParameterSize,
+			Quantization:  m.Details.Quantization,
+		}
+
+		// Fallback на данные из /api/tags если details пустые
+		if models[i].Family == "" {
+			if details, ok := detailsMap[m.Name]; ok {
+				models[i].Family = details.Family
+				models[i].Format = details.Format
+				models[i].ParameterSize = details.ParameterSize
+				models[i].Quantization = details.Quantization
+			}
+		}
+
+		// Используем реальное значение VRAM от Ollama если доступно
+		if m.SizeVRAM > 0 {
+			models[i].VRAMUsage = m.SizeVRAM / 1024 / 1024 // bytes → MB
+		} else if a.platformMode == types.ModeGPU {
+			// Fallback: оценка по размеру модели
+			models[i].VRAMUsage = estimateVRAMUsage(m.Size)
+		}
+
+		if a.platformMode == types.ModeCPU {
+			// CPU: модели загружаются в RAM
+			models[i].RAMUsage = estimateRAMUsage(m.Size)
+		}
+	}
+
+	return models, nil
 }
 
 // getRunningModels - получение списка запущенных моделей

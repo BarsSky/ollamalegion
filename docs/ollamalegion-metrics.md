@@ -80,6 +80,7 @@
 | `maxModels` | int | шт | — | ❌ | Лимит моделей |
 | `maxConcurrentRequests` | int | шт | — | ❌ | Лимит запросов |
 | `freeSlots` | int | шт | **Proxy** | ✅ | Свободные слоты |
+| `availableSlots` | int | шт | **Proxy** | ✅ | Доступные слоты (с учётом headroom) |
 
 > **⚠️ Критически важно:** `activeRequests`, `totalRequests`, `requestsPerSecond`, `freeSlots` — вычисляются **балансером** (proxy-calculated), а не агентом. Агент отправляет `0` для этих полей, балансер переопределяет их точными значениями.
 

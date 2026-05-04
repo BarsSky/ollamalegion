@@ -318,7 +318,7 @@ Environment="AGENT_ID=gpu-1"
 Environment="BALANCER_URL=http://<BALANCER_IP>:18081"
 Environment="COLLECT_INTERVAL=5"
 Environment="HEARTBEAT_INTERVAL=3"
-Environment="METRICS_PORT=18032"
+Environment="AGENT_PORT=18032"
 ExecStart=/usr/local/bin/agent
 Restart=always
 RestartSec=10
@@ -440,10 +440,10 @@ curl -X POST http://<BALANCER_IP>:18081/api/v1/backends \
     "id": "gpu-1",
     "name": "GPU Server 1",
     "host": "192.168.13.66",
-    "port": 11434,
-    "agent_port": 18032,
+    "ollamaPort": 11434,
+    "agentPort": 18032,
     "weight": 1,
-    "max_requests": 10
+    "maxConcurrentRequests": 10
   }'
 ```
 

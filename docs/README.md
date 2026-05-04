@@ -205,12 +205,14 @@ flowchart TD
 ollama-loadbalancer/
 ├── cmd/
 │   ├── balancer/          # Бинарник балансировщика
-│   └── agent/             # Бинарник агента
+│   ├── agent/             # Бинарник агента
+│   └── monitor/           # Монитор (отдельный бинарник)
 ├── internal/
 │   ├── balancer/          # Логика балансировки
-│   │   ├── proxy.go       # Reverse proxy
+│   │   ├── proxy.go       # Reverse proxy + selectBackend
 │   │   ├── health.go      # Health check
-│   │   └── queue.go       # Queue manager
+│   │   ├── predictor.go   # Прогнозирование загрузки
+│   │   └── sessions.go    # Управление сессиями
 │   ├── agent/             # Логика агента
 │   │   ├── collector.go   # Сбор метрик
 │   │   ├── nvml_unix.go   # NVML integration (Linux)
@@ -218,24 +220,38 @@ ollama-loadbalancer/
 │   │   └── system.go      # Системные метрики
 │   ├── api/               # REST API handlers
 │   │   ├── handlers.go    # API endpoints
+│   │   ├── queue.go       # Queue manager
+│   │   ├── auth.go        # Аутентификация
 │   │   └── metrics_broker.go # WebSocket pub/sub
 │   └── config/            # Конфигурация
 ├── pkg/
+│   ├── logger/            # Библиотека логирования
+│   ├── protocol/          # Протокол агент↔балансер
 │   └── types/             # Типы данных
 ├── webui/
-│   └── nginx.conf         # Web UI конфигурация
+│   ├── js/                # JavaScript модули (app, i18n)
+│   ├── css/               # Стили (style, themes)
+│   └── monitor.html       # Монитор real-time
 ├── docker/
 │   ├── balancer/          # Dockerfile балансировщика
 │   ├── agent/             # Dockerfile агента
-│   └── webui/             # Dockerfile UI
+│   ├── webui/             # Dockerfile UI
+│   └── cocoindex/         # CocoIndex embeddings
 ├── deployments/
-│   └── docker-compose.yml # Docker Compose
+│   ├── docker-compose.yml # Docker Compose (ядро)
+│   └── docker-compose.agent.yml # Docker Compose (агент)
+├── tests/                 # Интеграционные и сценарные тесты
+├── scripts/               # Скрипты сборки и деплоя
+├── logo/                  # Логотип (png, svg)
 ├── config/
 │   └── config.example.json # Пример конфигурации
 └── docs/
     ├── README.md          # Эта документация
     ├── ru/                # Русская версия документации
     ├── en/                # English documentation
+    ├── plans/             # Планы развития
+    ├── ollamalegion-metrics.md # Справочник метрик
+    ├── balancing-guide.md  # Руководство по балансировке
     ├── installation.md    # Установка
     ├── configuration.md   # Конфигурация
     ├── deployment.md      # Развертывание

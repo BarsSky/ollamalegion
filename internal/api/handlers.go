@@ -98,7 +98,7 @@ func NewServer(proxy *balancer.Proxy, config *types.LoadBalancerConfig, healthCh
 
 // metricsPublishLoop - периодическая публикация метрик в брокер
 func (s *Server) metricsPublishLoop() {
-	ticker := time.NewTicker(500 * time.Millisecond)
+	ticker := time.NewTicker(2000 * time.Millisecond)
 	defer ticker.Stop()
 
 	for {
@@ -432,6 +432,17 @@ func (s *Server) listBackends(w http.ResponseWriter, r *http.Request) {
 
 	// Формирование ответа для каждого бэкенда
 	for _, backend := range allBackends {
+		// Приоритет: RuntimeMaxConcurrentRequests > MaxConcurrentReqs
+		maxConcurrent := backend.MaxConcurrentReqs
+		if backend.RuntimeMaxConcurrentRequests > 0 {
+			maxConcurrent = backend.RuntimeMaxConcurrentRequests
+		}
+		// Приоритет: RuntimeMaxModels > MaxModels
+		maxModels := backend.MaxModels
+		if backend.RuntimeMaxModels != 0 {
+			maxModels = backend.RuntimeMaxModels
+		}
+
 		backendData := map[string]interface{}{
 			"id":                    backend.ID,
 			"name":                  backend.Name,
@@ -439,7 +450,10 @@ func (s *Server) listBackends(w http.ResponseWriter, r *http.Request) {
 			"ollamaPort":            backend.OllamaPort,
 			"agentPort":             backend.AgentPort,
 			"weight":                backend.Weight,
-			"maxConcurrentRequests": backend.MaxConcurrentReqs,
+			"maxConcurrentRequests": maxConcurrent,
+			"maxModels":             maxModels,
+			"runtimeMaxModels":              backend.RuntimeMaxModels,
+			"runtimeMaxConcurrentRequests":  backend.RuntimeMaxConcurrentRequests,
 			"labels":                backend.Labels,
 			"status":                backend.Status,
 		}
@@ -453,15 +467,7 @@ func (s *Server) listBackends(w http.ResponseWriter, r *http.Request) {
 			
 			ollamaMetrics := metrics.Ollama
 			
-			// Fallback: получаем модели напрямую с Ollama API (только если агент не прислал)
-			if len(ollamaMetrics.RunningModels) == 0 {
-				models, _, _, err := fetchModelsFromOllama(backend.Host, backend.OllamaPort)
-				if err == nil {
-					ollamaMetrics.RunningModels = models
-				}
-			}
-			
-			// Вычисляем свободные слоты (fallback для старых агентов без proxy-счётчика)
+			// FreeSlots вычисляем на основе лимитов
 			if ollamaMetrics.MaxConcurrentRequests > 0 {
 				freeSlots := ollamaMetrics.MaxConcurrentRequests - ollamaMetrics.ActiveRequests
 				if freeSlots < 0 {
@@ -523,6 +529,8 @@ func (s *Server) addBackend(w http.ResponseWriter, r *http.Request) {
 		AgentPort         int      `json:"agentPort"`
 		Weight            int      `json:"weight"`
 		MaxConcurrentReqs int      `json:"maxConcurrentRequests"`
+		MaxModels         int      `json:"maxModels"`
+		GPUMode           string   `json:"gpuMode"`
 		Labels            []string `json:"labels"`
 	}
 
@@ -621,6 +629,8 @@ func (s *Server) updateBackend(w http.ResponseWriter, r *http.Request, backendID
 		AgentPort         int      `json:"agentPort"`
 		Weight            int      `json:"weight"`
 		MaxConcurrentReqs int      `json:"maxConcurrentRequests"`
+		MaxModels         int      `json:"maxModels"`
+		GPUMode           string   `json:"gpuMode"`
 		Labels            []string `json:"labels"`
 	}
 
@@ -643,15 +653,22 @@ func (s *Server) updateBackend(w http.ResponseWriter, r *http.Request, backendID
 	}
 
 	updated := types.Backend{
-		ID:                backendID,
-		Name:              req.Name,
-		Host:              req.Host,
-		OllamaPort:        req.OllamaPort,
-		AgentPort:         req.AgentPort,
-		Weight:            req.Weight,
-		MaxConcurrentReqs: req.MaxConcurrentReqs,
-		Labels:            req.Labels,
-		Status:            existing.Status,
+		ID:                            backendID,
+		Name:                          req.Name,
+		Host:                          req.Host,
+		OllamaPort:                    req.OllamaPort,
+		AgentPort:                     req.AgentPort,
+		Weight:                        req.Weight,
+		MaxConcurrentReqs:             req.MaxConcurrentReqs,
+		Labels:                        req.Labels,
+		Status:                        existing.Status,
+		HasAgent:                      existing.HasAgent,
+		LastAgentContact:              existing.LastAgentContact,
+		LastHealthCheck:               existing.LastHealthCheck,
+		ConsecutiveFailures:           existing.ConsecutiveFailures,
+		ActiveRequests:                existing.ActiveRequests,
+		RuntimeMaxModels:              existing.RuntimeMaxModels,
+		RuntimeMaxConcurrentRequests:  existing.RuntimeMaxConcurrentRequests,
 	}
 
 	// Обновление бэкенда в прокси
@@ -897,6 +914,7 @@ func (s *Server) queueDetailsHandler(w http.ResponseWriter, r *http.Request) {
 
 	pending := s.proxy.GetQueuePendingRequests()
 	processing := s.proxy.GetQueueProcessingRequests()
+	stats := s.proxy.GetQueueStats()
 
 	// Объединяем в единый список для отображения
 	all := make([]map[string]interface{}, 0, len(pending)+len(processing))
@@ -910,6 +928,8 @@ func (s *Server) queueDetailsHandler(w http.ResponseWriter, r *http.Request) {
 		"pending_count":    len(pending),
 		"processing_count": len(processing),
 		"total":            len(all),
+		"current_size":     stats.CurrentSize,
+		"processed_total":  stats.Processed,
 	})
 }
 
@@ -1199,7 +1219,9 @@ func (s *Server) agentHeartbeatHandler(w http.ResponseWriter, r *http.Request) {
 	r.Body = io.NopCloser(bytes.NewBuffer(body))
 
 	var hbPayload struct {
-		Weight int `json:"weight"`
+		Weight                int `json:"weight"`
+		MaxConcurrentRequests int `json:"maxConcurrentRequests"`
+		MaxModels             int `json:"maxModels"`
 	}
 	_ = json.Unmarshal(body, &hbPayload)
 
@@ -1209,30 +1231,49 @@ func (s *Server) agentHeartbeatHandler(w http.ResponseWriter, r *http.Request) {
 	// Обновляем флаг активного агента
 	s.proxy.UpdateBackendAgentStatus(agentID, true)
 
-	// Обновляем вес, если передан
-	if hbPayload.Weight > 0 {
-		backend := s.proxy.GetBackend(agentID)
-		if backend != nil && backend.Weight != hbPayload.Weight {
-			updated := *backend
+	// Применяем лимиты из heartbeat агента (если > 0 — агент явно задал лимит)
+	backend := s.proxy.GetBackend(agentID)
+	if backend != nil {
+		needUpdate := false
+		updated := *backend
+
+		if hbPayload.Weight > 0 && backend.Weight != hbPayload.Weight {
 			updated.Weight = hbPayload.Weight
+			needUpdate = true
+		}
+		if hbPayload.MaxConcurrentRequests > 0 && updated.RuntimeMaxConcurrentRequests != hbPayload.MaxConcurrentRequests {
+			updated.RuntimeMaxConcurrentRequests = hbPayload.MaxConcurrentRequests
+			needUpdate = true
+		}
+		if hbPayload.MaxModels > 0 && updated.RuntimeMaxModels != hbPayload.MaxModels {
+			updated.RuntimeMaxModels = hbPayload.MaxModels
+			needUpdate = true
+		}
+
+		if needUpdate {
 			s.proxy.UpdateBackend(agentID, updated)
 		}
 	}
 
 	now := time.Now().UTC()
 
-	// Получаем runtime-конфигурацию бэкенда
-	backend := s.proxy.GetBackend(agentID)
+	// Получаем runtime-конфигурацию бэкенда для передачи агенту
+	backend = s.proxy.GetBackend(agentID)
 	config := map[string]interface{}{
 		"maxModels":             -1,
 		"maxConcurrentRequests": -1,
 	}
 	if backend != nil {
+		// Приоритет: Runtime-значение > статический MaxConcurrentReqs из конфига
 		if backend.RuntimeMaxModels != 0 {
 			config["maxModels"] = backend.RuntimeMaxModels
+		} else if backend.MaxModels != 0 {
+			config["maxModels"] = backend.MaxModels
 		}
 		if backend.RuntimeMaxConcurrentRequests != 0 {
 			config["maxConcurrentRequests"] = backend.RuntimeMaxConcurrentRequests
+		} else if backend.MaxConcurrentReqs != 0 {
+			config["maxConcurrentRequests"] = backend.MaxConcurrentReqs
 		}
 	}
 

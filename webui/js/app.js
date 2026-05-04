@@ -588,8 +588,19 @@ const ui = (function () {
         document.getElementById('formBackendOllamaPort').value = backend?.ollamaPort || 11434;
         document.getElementById('formBackendAgentPort').value = backend?.agentPort || 18032;
         document.getElementById('formBackendWeight').value = backend?.weight || 1;
-        document.getElementById('formBackendMaxConcurrent').value = backend?.maxConcurrentRequests || 10;
+        document.getElementById('formBackendMaxConcurrent').value = backend?.maxConcurrentRequests || backend?.maxConcurrentReqs || 10;
+        document.getElementById('formBackendMaxModels').value = backend?.maxModels || backend?.runtimeMaxModels || 0;
         document.getElementById('formBackendLabels').value = (backend?.labels || []).join(',');
+
+        // GPU Mode — из capacity.mode или platformMode
+        var gpuMode = backend?.gpuMode || backend?.platformMode || 'auto';
+        if (backend?.ollama?.backendCapacity?.mode) {
+            gpuMode = backend.ollama.backendCapacity.mode;
+        }
+        var modeEl = document.getElementById('formBackendGpuMode');
+        if (modeEl) {
+            modeEl.value = gpuMode;
+        }
     }
 
     function closeModal() {
@@ -604,6 +615,8 @@ const ui = (function () {
         const agentPort = parseInt(document.getElementById('formBackendAgentPort').value) || 18032;
         const weight = parseFloat(document.getElementById('formBackendWeight').value) || 1;
         const maxConcurrent = parseInt(document.getElementById('formBackendMaxConcurrent').value) || 10;
+        const maxModels = parseInt(document.getElementById('formBackendMaxModels').value) || 0;
+        const gpuMode = (document.getElementById('formBackendGpuMode') && document.getElementById('formBackendGpuMode').value) || 'auto';
         const labels = document.getElementById('formBackendLabels').value.split(',').map(l => l.trim()).filter(Boolean);
 
         if (!id || !host) {
@@ -611,18 +624,25 @@ const ui = (function () {
             return;
         }
 
-        const payload = { id, name: name || id, host, ollamaPort, agentPort, weight, maxConcurrentRequests: maxConcurrent, labels };
+        const payload = { id, name: name || id, host, ollamaPort, agentPort, weight, maxConcurrentRequests: maxConcurrent, maxModels, gpuMode, labels };
         const isEdit = document.getElementById('formBackendId').disabled;
 
         try {
             if (isEdit) {
                 await Api.updateBackend(id, payload);
+                // Дополнительно обновляем runtime-лимиты через PUT /api/v1/backends/{id}/limits
+                try {
+                    await Api.updateBackendLimitsFull(id, maxConcurrent, maxModels);
+                } catch (limitsErr) {
+                    // Не фатально — лимиты может установить позже через агента
+                    addLog('Предупреждение: runtime-лимиты для ' + id + ' не обновлены', 'warn');
+                }
                 showToast('Бэкенд обновлен', 'success');
-                addLog(`Бэкенд ${id} обновлен`, 'info');
+                addLog('Бэкенд ' + id + ' обновлен', 'info');
             } else {
                 await Api.createBackend(payload);
                 showToast('Бэкенд добавлен', 'success');
-                addLog(`Бэкенд ${id} добавлен`, 'info');
+                addLog('Бэкенд ' + id + ' добавлен', 'info');
             }
             closeModal();
             refreshCurrentPage();

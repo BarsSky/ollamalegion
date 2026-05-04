@@ -1,0 +1,21 @@
+* text=auto
+
+# Shell scripts, .env files, YAML, and Dockerfiles must use LF
+*.sh text eol=lf
+*.env text eol=lf
+*.yml text eol=lf
+*.yaml text eol=lf
+Dockerfile text eol=lf
+
+# Go source
+*.go text eol=lf
+go.mod text eol=lf
+go.sum text eol=lf
+
+# Config files
+*.json text eol=lf
+*.toml text eol=lf
+*.cfg text eol=lf
+
+# Documentation
+*.md text eol=lf

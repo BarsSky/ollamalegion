@@ -19,7 +19,8 @@ import (
 		agentID         = flag.String("id", "", "Agent identifier")
 		balancerURL     = flag.String("balancer", "http://localhost:18081", "Balancer URL")
 		metricsPort     = flag.Int("metrics-port", 18032, "Local metrics port")
-		collectInterval = flag.Int("collect-interval", 5, "Metrics collection interval (seconds)")
+		collectInterval = flag.Int("collect-interval", -1, "Metrics collection interval in seconds (-1 = use METRICS_INTERVAL env or default 5)")
+		metricsInterval = flag.Int("metrics-interval", -1, "Metrics collection interval in seconds (alias for collect-interval, -1 = use COLLECT_INTERVAL env or default 5)")
 		heartbeatInterval = flag.Int("heartbeat-interval", 3, "Heartbeat interval (seconds)")
 		configPath      = flag.String("config", "", "Path to configuration file")
 		gpuMode         = flag.String("gpu-mode", "auto", "Platform mode: auto, gpu, cpu")
@@ -46,7 +47,7 @@ func main() {
 		BalancerURL:       env.Get("BALANCER_URL", *balancerURL),
 		OllamaURL:         env.Get("OLLAMA_URL", "http://localhost:11434"),
 		MetricsPort:       env.GetInt("AGENT_PORT", *metricsPort),
-		CollectInterval:   env.GetInt("COLLECT_INTERVAL", *collectInterval),
+		CollectInterval:   resolveInterval(env.GetInt("METRICS_INTERVAL", -1), env.GetInt("COLLECT_INTERVAL", -1), *collectInterval, *metricsInterval, 5),
 		HeartbeatInterval: env.GetInt("HEARTBEAT_INTERVAL", *heartbeatInterval),
 		GPUMode:               types.PlatformMode(env.Get("GPU_MODE", *gpuMode)),
 		NVMLEnabled:           env.GetBool("NVML_ENABLED", *nvmlEnabled),
@@ -109,6 +110,24 @@ func main() {
 	fmt.Println("\n[Agent]  Shutting down...")
 	agentInstance.Stop()
 	fmt.Println("[Agent]  Stopped.")
+}
+
+// resolveInterval — выбирает первый неотрицательный приоритет:
+// env METRICS_INTERVAL > env COLLECT_INTERVAL > flag metrics-interval > flag collect-interval > default
+func resolveInterval(metricsEnv, collectEnv, collectFlag, metricsFlag, defaultVal int) int {
+	if metricsEnv > 0 {
+		return metricsEnv
+	}
+	if collectEnv > 0 {
+		return collectEnv
+	}
+	if metricsFlag > 0 {
+		return metricsFlag
+	}
+	if collectFlag > 0 {
+		return collectFlag
+	}
+	return defaultVal
 }
 
 // runHealthcheck — проверяет /health endpoint агента и завершает процесс с кодом 0 (успех) или 1 (ошибка).

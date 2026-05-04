@@ -10,14 +10,15 @@
     <link rel="icon" type="image/png" sizes="32x32" href="favicon-32x32.png">
     <link rel="icon" type="image/png" sizes="16x16" href="favicon-16x16.png">
     <link rel="shortcut icon" href="favicon.ico">
-    <link rel="stylesheet" href="css/themes.css?v=2">
+    <link rel="stylesheet" href="css/font-awesome.min.css?v=3">
+    <link rel="stylesheet" href="css/themes.css?v=3">
     <link rel="stylesheet" href="css/base.css?v=2">
-    <link rel="stylesheet" href="css/icons.css?v=2">
+    <link rel="stylesheet" href="css/icons.css?v=3">
     <link rel="stylesheet" href="css/components.css?v=2">
     <link rel="stylesheet" href="css/metrics.css?v=2">
-    <link rel="stylesheet" href="css/data.css?v=2">
+    <link rel="stylesheet" href="css/data.css?v=3">
     <link rel="stylesheet" href="css/pages.css?v=2">
-    <link rel="stylesheet" href="css/layout.css?v=2">
+    <link rel="stylesheet" href="css/layout.css?v=3">
     <link rel="stylesheet" href="css/responsive.css?v=2">
 </head>
 <body>
@@ -30,28 +31,28 @@
             </div>
             <nav class="nav">
                 <a href="#dashboard" class="nav-item active" data-page="dashboard">
-                    <img src="img/cesar.svg" alt="" class="nav-logo-img"> <span data-i18n="nav.dashboard">Дашборд</span>
+                    <span class="nav-icon-wrap"><i class="fas fa-gauge-high fa-fw"></i></span> <span data-i18n="nav.dashboard">Дашборд</span>
                 </a>
                 <a href="#monitor" class="nav-item" data-page="monitor">
-                    <img src="img/lance.svg" alt="" class="nav-logo-img"> <span data-i18n="nav.monitor">Монитор</span>
+                    <span class="nav-icon-wrap"><i class="fas fa-chart-line fa-fw"></i></span> <span data-i18n="nav.monitor">Монитор</span>
                 </a>
                 <a href="#backends" class="nav-item" data-page="backends">
-                    <img src="img/wall.svg" alt="" class="nav-logo-img"> <span data-i18n="nav.backends">Бэкенды</span>
+                    <span class="nav-icon-wrap"><i class="fas fa-server fa-fw"></i></span> <span data-i18n="nav.backends">Бэкенды</span>
                 </a>
                 <a href="#models" class="nav-item" data-page="models">
-                    <img src="img/lance.svg" alt="" class="nav-logo-img"> <span data-i18n="nav.models">Модели</span>
+                    <span class="nav-icon-wrap"><i class="fas fa-brain fa-fw"></i></span> <span data-i18n="nav.models">Модели</span>
                 </a>
                 <a href="#sessions" class="nav-item" data-page="sessions">
-                    <img src="img/meadow.svg" alt="" class="nav-logo-img"> <span data-i18n="nav.sessions">Сессии</span>
+                    <span class="nav-icon-wrap"><i class="fas fa-list-check fa-fw"></i></span> <span data-i18n="nav.sessions">Сессии</span>
                 </a>
                 <a href="#queue" class="nav-item" data-page="queue">
-                    <img src="img/guard.svg" alt="" class="nav-logo-img"> <span data-i18n="nav.queue">Очередь</span>
+                    <span class="nav-icon-wrap"><i class="fas fa-layer-group fa-fw"></i></span> <span data-i18n="nav.queue">Очередь</span>
                 </a>
                 <a href="#logs" class="nav-item" data-page="logs">
-                    <img src="img/dark-wall.svg" alt="" class="nav-logo-img"> <span data-i18n="nav.logs">Логи</span>
+                    <span class="nav-icon-wrap"><i class="fas fa-file-lines fa-fw"></i></span> <span data-i18n="nav.logs">Логи</span>
                 </a>
                 <a href="#settings" class="nav-item" data-page="settings">
-                    <img src="img/dark_lance.svg" alt="" class="nav-logo-img"> <span data-i18n="nav.settings">Настройки</span>
+                    <span class="nav-icon-wrap"><i class="fas fa-gear fa-fw"></i></span> <span data-i18n="nav.settings">Настройки</span>
                 </a>
             </nav>
             <div class="sidebar-footer">
@@ -85,7 +86,7 @@
                 <div class="metrics-grid">
                     <div class="metric-card">
                         <div class="metric-header">
-                            <img src="img/wall.svg" alt="" class="metric-icon-svg">
+                            <i class="fas fa-server metric-icon-i"></i>
                             <span class="metric-label" data-i18n="dashboard.active_backends">Активных узлов</span>
                         </div>
                         <div class="metric-value" id="totalBackends">-</div>
@@ -93,7 +94,7 @@
                     </div>
                     <div class="metric-card">
                         <div class="metric-header">
-                            <img src="img/lance.svg" alt="" class="metric-icon-svg">
+                            <i class="fas fa-brain metric-icon-i"></i>
                             <span class="metric-label" data-i18n="dashboard.loaded_models">Загружено моделей</span>
                         </div>
                         <div class="metric-value" id="totalModels">-</div>
@@ -101,7 +102,7 @@
                     </div>
                     <div class="metric-card">
                         <div class="metric-header">
-                            <img src="img/meadow.svg" alt="" class="metric-icon-svg">
+                            <i class="fas fa-list-check metric-icon-i"></i>
                             <span class="metric-label" data-i18n="nav.sessions">Активных сессий</span>
                         </div>
                         <div class="metric-value" id="totalSessions">-</div>
@@ -109,7 +110,7 @@
                     </div>
                     <div class="metric-card">
                         <div class="metric-header">
-                            <img src="img/guard.svg" alt="" class="metric-icon-svg">
+                            <i class="fas fa-layer-group metric-icon-i"></i>
                             <span class="metric-label" data-i18n="dashboard.queue_size">В очереди</span>
                         </div>
                         <div class="metric-value" id="queueSize">-</div>
@@ -123,7 +124,7 @@
                 <!-- Ollama Runtime -->
                 <div class="card">
                     <div class="card-header">
-                        <h3><img src="img/cesar.svg" alt="" class="section-icon-svg"> <span data-i18n="dashboard.ollama_runtime">Ollama Runtime</span></h3>
+                        <h3><i class="fas fa-microchip section-icon-i"></i> <span data-i18n="dashboard.ollama_runtime">Ollama Runtime</span></h3>
                     </div>
                     <div class="runtime-cluster" id="runtimeCluster">
                         <div class="loading" data-i18n="common.loading">Загрузка...</div>
@@ -133,7 +134,7 @@
                 <!-- GPU Cluster Chart -->
                 <div class="card">
                     <div class="card-header">
-                        <h3><img src="img/dark-wall.svg" alt="" class="section-icon-svg"> <span data-i18n="dashboard.gpu_cluster">GPU Кластер</span></h3>
+                        <h3><i class="fas fa-microchip section-icon-i"></i> <span data-i18n="dashboard.gpu_cluster">GPU Кластер</span></h3>
                         <span class="badge" id="gpuClusterBadge">-</span>
                     </div>
                     <div class="gpu-cluster" id="gpuCluster">
@@ -144,7 +145,7 @@
                 <!-- Backend Capacity -->
                 <div class="card">
                     <div class="card-header">
-                        <h3><img src="img/wall.svg" alt="" class="section-icon-svg"> <span data-i18n="dashboard.backend_capacity">Ресурсы бэкендов</span></h3>
+                        <h3><i class="fas fa-hard-drive section-icon-i"></i> <span data-i18n="dashboard.backend_capacity">Ресурсы бэкендов</span></h3>
                     </div>
                     <div class="capacity-section" id="capacitySection">
                         <div class="loading" data-i18n="common.loading">Загрузка...</div>
@@ -154,7 +155,7 @@
                 <!-- Available to Load -->
                 <div class="card">
                     <div class="card-header">
-                        <h3><img src="img/guard.svg" alt="" class="section-icon-svg"> <span data-i18n="dashboard.available_models">Доступные модели</span></h3>
+                        <h3><i class="fas fa-box-archive section-icon-i"></i> <span data-i18n="dashboard.available_models">Доступные модели</span></h3>
                         <span class="badge badge-info" id="loadableModelCount">-</span>
                     </div>
                     <div class="available-models-list" id="availableModelsList">
@@ -165,7 +166,7 @@
                 <!-- Backends Table -->
                 <div class="card">
                     <div class="card-header">
-                        <h3><img src="img/wall.svg" alt="" class="section-icon-svg"> <span data-i18n="nav.backends">Бэкенды</span></h3>
+                        <h3><i class="fas fa-server section-icon-i"></i> <span data-i18n="nav.backends">Бэкенды</span></h3>
                         <div class="card-actions">
                             <input type="text" class="search-input" placeholder="Поиск..." id="backendSearch" data-i18n-placeholder="backends.search">
                         </div>
@@ -197,7 +198,7 @@
                 <!-- Prediction Alerts -->
                 <div class="card" id="predictionAlerts">
                     <div class="card-header">
-                        <h3><img src="img/dark_meadow.svg" alt="" class="section-icon-svg"> <span data-i18n="dashboard.prediction_alerts">Прогнозы и уведомления</span></h3>
+                        <h3><i class="fas fa-bell section-icon-i"></i> <span data-i18n="dashboard.prediction_alerts">Прогнозы и уведомления</span></h3>
                     </div>
                     <div class="alerts-list" id="alertsList">
                         <div class="alert alert-info">-</div>
@@ -247,14 +248,14 @@
                 <div class="metrics-grid">
                     <div class="metric-card">
                         <div class="metric-header">
-                            <img src="img/lance.svg" alt="" class="metric-icon-svg">
+                            <i class="fas fa-brain metric-icon-i"></i>
                             <span class="metric-label" data-i18n="models.title">Всего моделей</span>
                         </div>
                         <div class="metric-value" id="modelsTotal">-</div>
                     </div>
                     <div class="metric-card">
                         <div class="metric-header">
-                            <img src="img/cesar.svg" alt="" class="metric-icon-svg">
+                            <i class="fas fa-microchip metric-icon-i"></i>
                             <span class="metric-label" data-i18n="models.loaded">Загружено сейчас</span>
                         </div>
                         <div class="metric-value" id="modelsLoaded">-</div>
@@ -263,7 +264,7 @@
                 <!-- Backend Load Section -->
                 <div class="card">
                     <div class="card-header">
-                        <h3><img src="img/wall.svg" alt="" class="section-icon-svg"> <span data-i18n="dashboard.backend_load">Загрузка бэкендов</span></h3>
+                        <h3><i class="fas fa-chart-bar section-icon-i"></i> <span data-i18n="dashboard.backend_load">Загрузка бэкендов</span></h3>
                     </div>
                     <div class="backend-load-list" id="backendLoadList">
                         <div class="loading" data-i18n="common.loading">Загрузка...</div>
@@ -271,7 +272,7 @@
                 </div>
                 <div class="card">
                     <div class="card-header">
-                        <h3><img src="img/lance.svg" alt="" class="section-icon-svg"> <span data-i18n="models.loaded">Загруженные модели</span></h3>
+                        <h3><i class="fas fa-brain section-icon-i"></i> <span data-i18n="models.loaded">Загруженные модели</span></h3>
                     </div>
                     <div class="models-grid" id="modelsGrid">
                         <div class="loading" data-i18n="common.loading">Загрузка...</div>
@@ -283,7 +284,7 @@
             <div class="page" id="sessions-page">
                 <div class="card">
                     <div class="card-header">
-                        <h3><img src="img/meadow.svg" alt="" class="section-icon-svg"> <span data-i18n="sessions.title">Активные сессии</span></h3>
+                        <h3><i class="fas fa-list-check section-icon-i"></i> <span data-i18n="sessions.title">Активные сессии</span></h3>
                         <div class="card-actions">
                             <input type="text" class="search-input" placeholder="Поиск сессии..." id="sessionSearch">
                         </div>
@@ -315,35 +316,35 @@
                 <div class="metrics-grid">
                     <div class="metric-card">
                         <div class="metric-header">
-                            <img src="img/guard.svg" alt="" class="metric-icon-svg">
+                            <i class="fas fa-layer-group metric-icon-i"></i>
                             <span class="metric-label" data-i18n="queue.position">Текущий размер</span>
                         </div>
                         <div class="metric-value" id="queueCurrentSize">-</div>
                     </div>
                     <div class="metric-card">
                         <div class="metric-header">
-                            <img src="img/dark-wall.svg" alt="" class="metric-icon-svg">
+                            <i class="fas fa-arrow-up-wide-short metric-icon-i"></i>
                             <span class="metric-label">Максимум</span>
                         </div>
                         <div class="metric-value" id="queueMaxSize">-</div>
                     </div>
                     <div class="metric-card">
                         <div class="metric-header">
-                            <img src="img/logo.svg" alt="" class="metric-icon-svg">
+                            <i class="fas fa-circle-check metric-icon-i"></i>
                             <span class="metric-label" data-i18n="queue.completed">Выполнено задач</span>
                         </div>
                         <div class="metric-value" id="queueProcessed">-</div>
                     </div>
                     <div class="metric-card">
                         <div class="metric-header">
-                            <img src="img/cesar.svg" alt="" class="metric-icon-svg">
+                            <i class="fas fa-people-arrows metric-icon-i"></i>
                             <span class="metric-label">Воркеры</span>
                         </div>
                         <div class="metric-value" id="queueWorkers">-</div>
                     </div>
                     <div class="metric-card">
                         <div class="metric-header">
-                            <img src="img/dark-wall.svg" alt="" class="metric-icon-svg">
+                            <i class="fas fa-clock metric-icon-i"></i>
                             <span class="metric-label" data-i18n="queue.estimated_wait">Среднее ожидание</span>
                         </div>
                         <div class="metric-value" id="queueAvgWait">-</div>
@@ -351,7 +352,7 @@
                 </div>
                 <div class="card">
                     <div class="card-header">
-                        <h3><img src="img/guard.svg" alt="" class="section-icon-svg"> <span data-i18n="queue.visualization">Состояние очереди</span></h3>
+                        <h3><i class="fas fa-layer-group section-icon-i"></i> <span data-i18n="queue.visualization">Состояние очереди</span></h3>
                     </div>
                     <div class="queue-visualization" id="queueVisualization">
                         <div class="queue-bar">
@@ -367,7 +368,7 @@
                 <!-- Queue Tasks Table -->
                 <div class="card">
                     <div class="card-header">
-                        <h3><img src="img/dark-wall.svg" alt="" class="section-icon-svg"> <span data-i18n="queue.title">Задачи в очереди</span></h3>
+                        <h3><i class="fas fa-list-ol section-icon-i"></i> <span data-i18n="queue.title">Задачи в очереди</span></h3>
                         <span class="badge badge-info" id="queueTasksCount">-</span>
                     </div>
                     <div class="table-responsive">
@@ -398,7 +399,7 @@
             <div class="page" id="logs-page">
                 <div class="card">
                     <div class="card-header">
-                        <h3><img src="img/dark-wall.svg" alt="" class="section-icon-svg"> <span data-i18n="logs.title">События и логи</span></h3>
+                        <h3><i class="fas fa-file-lines section-icon-i"></i> <span data-i18n="logs.title">События и логи</span></h3>
                         <div class="card-actions">
                             <button class="btn btn-secondary" id="clearLogs" data-i18n="logs.clear">Очистить</button>
                             <button class="btn btn-secondary" id="exportLogs">Экспорт</button>
@@ -418,7 +419,7 @@
             <div class="page" id="settings-page">
                 <div class="card">
                     <div class="card-header">
-                        <h3><img src="img/dark_lance.svg" alt="" class="section-icon-svg"> <span data-i18n="settings.title">Настройки балансировки</span></h3>
+                        <h3><i class="fas fa-gear section-icon-i"></i> <span data-i18n="settings.title">Настройки балансировки</span></h3>
                     </div>
                     <div class="settings-form" id="settingsForm">
                         <div class="form-group">
@@ -493,7 +494,7 @@
                 <!-- Help Section -->
                 <div class="card">
                     <div class="card-header">
-                        <h3><img src="img/logo.svg" alt="" class="section-icon-svg"> <span data-i18n="help.title">Справка</span></h3>
+                        <h3><i class="fas fa-circle-question section-icon-i"></i> <span data-i18n="help.title">Справка</span></h3>
                     </div>
                     <div class="help-section">
                         <a href="https://github.com/BarsSky/ollamalegion/blob/main/docs/ru/README.md" target="_blank" rel="noopener" class="help-link">
@@ -583,6 +584,22 @@
                             <input type="number" id="formBackendMaxConcurrent" class="form-control" value="10" min="1">
                         </div>
                     </div>
+                    <div class="form-row">
+                        <div class="form-group">
+                            <label>Max Models</label>
+                            <input type="number" id="formBackendMaxModels" class="form-control" value="0" min="0" placeholder="0=авто">
+                            <small style="color: var(--text-muted); font-size: 11px;">Максимум одновременно загруженных моделей (0 = автоопределение)</small>
+                        </div>
+                        <div class="form-group">
+                            <label>GPU Mode</label>
+                            <select id="formBackendGpuMode" class="form-control">
+                                <option value="auto">Auto (автоопределение)</option>
+                                <option value="gpu">GPU (только GPU-метрики)</option>
+                                <option value="cpu">CPU (только CPU-метрики)</option>
+                            </select>
+                            <small style="color: var(--text-muted); font-size: 11px;">Режим сбора метрик агентом</small>
+                        </div>
+                    </div>
                     <div class="form-group">
                         <label>Метки (через запятую)</label>
                         <input type="text" id="formBackendLabels" class="form-control" placeholder="nvidia,rtx4090">
@@ -629,7 +646,7 @@
     <script src="js/modules/utils.js?v=4"></script>
     <script src="js/modules/api.js?v=4"></script>
     <script src="js/modules/websocket.js?v=4"></script>
-    <script src="js/modules/renderers.js?v=4"></script>
+    <script src="js/modules/renderers.js?v=5"></script>
     <script src="js/app.js?v=4"></script>
 </body>
 </html>

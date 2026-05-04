@@ -11,6 +11,8 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
+	"sync"
+	"time"
 
 	"ollama-loadbalancer/pkg/types"
 )
@@ -196,7 +198,25 @@ func (a *Agent) collectModelContextInfo(runningModels []types.RunningModel, flag
 	return contexts
 }
 
-// getModelContext - получение контекста модели из /api/show
+// showCacheEntry — кэш-запись результата /api/show
+type showCacheEntry struct {
+	context types.ModelContextInfo
+	expires time.Time
+}
+
+// showCache — глобальный кэш /api/show с TTL 60 секунд
+var (
+	showCache      = make(map[string]*showCacheEntry)
+	showCacheMu    sync.RWMutex
+	showCacheTTL   = 60 * time.Second
+)
+
+// isCloudModel — проверяет, является ли модель облачной (суффикс :cloud)
+func isCloudModel(name string) bool {
+	return strings.HasSuffix(name, ":cloud") || strings.Contains(name, ":cloud-")
+}
+
+// getModelContext - получение контекста модели из /api/show (с кэшированием)
 func (a *Agent) getModelContext(modelName string, flags types.OllamaRuntimeFlags) types.ModelContextInfo {
 	ctx := types.ModelContextInfo{
 		ContextLength: 2048,
@@ -211,6 +231,30 @@ func (a *Agent) getModelContext(modelName string, flags types.OllamaRuntimeFlags
 	if !flags.F16KV {
 		ctx.PrecisionBits = 32
 	}
+
+	// Cloud-модели не имеют данных в /api/show — сразу возвращаем fallback
+	if isCloudModel(modelName) {
+		ctx.ContextLength = a.getContextFromEnv()
+		if ctx.ContextLength != 2048 {
+			ctx.ContextSource = "env"
+		}
+		ctx.EffectiveContext = max(ctx.ContextLength, flags.ContextLength)
+		ctx.ContextMemoryMB = a.calculateContextMemory(ctx)
+		ctx.KVCacheMemoryMB = a.calculateKVCacheMemory(ctx)
+		return ctx
+	}
+
+	// Проверяем кэш
+	showCacheMu.RLock()
+	if cached, ok := showCache[modelName]; ok && time.Now().Before(cached.expires) {
+		cachedCtx := cached.context
+		showCacheMu.RUnlock()
+		cachedCtx.EffectiveContext = max(cachedCtx.ContextLength, flags.ContextLength)
+		cachedCtx.ContextMemoryMB = a.calculateContextMemory(cachedCtx)
+		cachedCtx.KVCacheMemoryMB = a.calculateKVCacheMemory(cachedCtx)
+		return cachedCtx
+	}
+	showCacheMu.RUnlock()
 
 	// Запрос /api/show для получения параметров модели
 	resp, err := a.httpClient.Get(fmt.Sprintf("%s/api/show?name=%s", a.getOllamaBaseURL(), modelName))
@@ -286,6 +330,11 @@ func (a *Agent) getModelContext(modelName string, flags types.OllamaRuntimeFlags
 	// Расчет памяти
 	ctx.ContextMemoryMB = a.calculateContextMemory(ctx)
 	ctx.KVCacheMemoryMB = a.calculateKVCacheMemory(ctx)
+
+	// Сохраняем в кэш
+	showCacheMu.Lock()
+	showCache[modelName] = &showCacheEntry{context: ctx, expires: time.Now().Add(showCacheTTL)}
+	showCacheMu.Unlock()
 
 	return ctx
 }

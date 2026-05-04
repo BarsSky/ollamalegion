@@ -87,14 +87,14 @@ services:
       - ollama-legion-net
     
     healthcheck:
-      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:18081/api/v1/health"]
+      test: ["CMD", "curl", "-f", "http://localhost:18081/api/v1/health"]
       interval: 30s
-      timeout: 10s
+      timeout: 60s
       retries: 3
-      start_period: 10s
+      start_period: 60s
 
   webui:
-    image: nginx:alpine
+    image: ollama-legion/webui:latest
     container_name: ollama-legion-webui
     restart: unless-stopped
     
@@ -572,6 +572,8 @@ http {
 ### Безопасность production развертывания
 
 #### 1. TLS/SSL шифрование
+
+При включённом TLS прокси доступен на `tlsPort` (8443), а HTTPS Management API — на `tlsPort+1` (8444).
 
 ```bash
 # Генерация сертификатов

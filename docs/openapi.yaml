@@ -34,7 +34,7 @@ servers:
         default: localhost
         description: Hostname or IP address
       port:
-        default: "8081"
+        default: "18081"
         description: API port
 
 tags:
@@ -52,6 +52,8 @@ tags:
     description: Model information
   - name: Agents
     description: Agent registration and metrics
+  - name: Predictions
+    description: Load prediction and capacity forecasting
   - name: Queue
     description: Request queue management and statistics
   - name: Auth
@@ -641,6 +643,289 @@ paths:
               schema:
                 $ref: '#/components/schemas/Error'
 
+  /api/v1/predictions:
+    get:
+      tags:
+        - Predictions
+      summary: Get predictions for all backends
+      description: Прогнозы критических состояний для всех бэкендов
+      operationId: getPredictions
+      responses:
+        '200':
+          description: Predictions retrieved
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties:
+                  $ref: '#/components/schemas/Prediction'
+        '401':
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /api/v1/predictions/{backend_id}:
+    get:
+      tags:
+        - Predictions
+      summary: Get prediction for backend
+      description: Прогноз критического состояния для бэкенда
+      operationId: getBackendPrediction
+      parameters:
+        - name: backend_id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Prediction retrieved
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Prediction'
+        '401':
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '404':
+          description: Backend not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /api/v1/queue/details:
+    get:
+      tags:
+        - Queue
+      summary: Get queue details
+      description: Детали очереди — текущие pending и processing запросы
+      operationId: getQueueDetails
+      responses:
+        '200':
+          description: Queue details retrieved
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/QueueDetails'
+        '401':
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /api/v1/queue/history:
+    get:
+      tags:
+        - Queue
+      summary: Get queue history
+      description: История выполненных запросов из очереди
+      operationId: getQueueHistory
+      responses:
+        '200':
+          description: Queue history retrieved
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/QueueHistory'
+        '401':
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /api/v1/cluster/config:
+    get:
+      tags:
+        - Cluster
+      summary: Get cluster config
+      description: Получение текущей конфигурации кластера
+      operationId: getClusterConfig
+      responses:
+        '200':
+          description: Cluster config retrieved
+          content:
+            application/json:
+              schema:
+                type: object
+        '401':
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+    put:
+      tags:
+        - Cluster
+      summary: Update cluster config
+      description: Смена алгоритма и настроек кластера без перезапуска
+      operationId: updateClusterConfig
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+      responses:
+        '200':
+          description: Config updated
+          content:
+            application/json:
+              schema:
+                type: object
+        '401':
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /api/v1/admin/restart:
+    post:
+      tags:
+        - Cluster
+      summary: Restart balancer
+      description: Перезапуск балансировщика
+      operationId: adminRestart
+      responses:
+        '200':
+          description: Restart initiated
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                  message:
+                    type: string
+        '401':
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /api/v1/backends/{backend_id}/limits:
+    put:
+      tags:
+        - Backends
+      summary: Update backend limits
+      description: Обновление runtime-лимитов бэкенда
+      operationId: updateBackendLimits
+      parameters:
+        - name: backend_id
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                maxConcurrentRequests:
+                  type: integer
+                weight:
+                  type: integer
+      responses:
+        '200':
+          description: Limits updated
+          content:
+            application/json:
+              schema:
+                type: object
+        '401':
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '404':
+          description: Backend not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /api/v1/backends/{backend_id}/capacity:
+    get:
+      tags:
+        - Backends
+      summary: Get backend capacity
+      description: Получение ёмкости бэкенда
+      operationId: getBackendCapacity
+      parameters:
+        - name: backend_id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Capacity retrieved
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BackendCapacity'
+        '401':
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '404':
+          description: Backend not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /api/v1/models/capacity:
+    get:
+      tags:
+        - Models
+      summary: Get global model capacity
+      description: Получение глобальной ёмкости моделей
+      operationId: getModelsCapacity
+      responses:
+        '200':
+          description: Models capacity retrieved
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ModelsCapacity'
+        '401':
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /monitor:
+    get:
+      tags:
+        - WebSocket
+      summary: Monitor page
+      description: HTML-страница монитора кластера
+      operationId: getMonitor
+      responses:
+        '200':
+          description: HTML page
+          content:
+            text/html:
+              schema:
+                type: string
+
   /api/v1/ratelimit/status:
     get:
       tags:
@@ -709,6 +994,35 @@ components:
         version:
           type: string
           example: "1.0.0"
+        healthyBackends:
+          type: integer
+          example: 2
+          description: Количество здоровых бэкендов
+        totalBackends:
+          type: integer
+          example: 2
+          description: Общее количество бэкендов
+        hasAgents:
+          type: boolean
+          example: true
+          description: Есть ли зарегистрированные агенты
+        totalRequests:
+          type: integer
+          format: int64
+          example: 1500
+          description: Всего обработано запросов
+        authEnabled:
+          type: boolean
+          example: false
+          description: Включена ли аутентификация
+        authHeader:
+          type: string
+          example: X-API-Token
+          description: Имя HTTP-заголовка для токена
+        wsEndpoint:
+          type: string
+          example: /ws/metrics
+          description: WebSocket endpoint для метрик
 
     ClusterStatus:
       type: object
@@ -1114,6 +1428,160 @@ components:
           type: integer
           example: 250
           description: Среднее время ожидания в очереди (мс)
+
+    Prediction:
+      type: object
+      description: Прогноз критического состояния
+      properties:
+        backendId:
+          type: string
+          example: gpu-1
+        secondsToCritical:
+          type: number
+          format: float
+          example: 300
+          description: Секунд до критического состояния (-1 = нет угрозы)
+        criticalReason:
+          type: string
+          enum: [gpu_usage, vram, ram, concurrent_requests, models_capacity, none]
+          example: vram
+        gpuUsageTrend:
+          type: number
+          format: float
+          example: 0.5
+        vramUsageTrend:
+          type: number
+          format: float
+          example: 2.1
+        ramUsageTrend:
+          type: number
+          format: float
+          example: 0.3
+        freeSlotsTrend:
+          type: number
+          format: float
+          example: -0.8
+        requestCapacity:
+          type: number
+          format: float
+          example: 65.5
+
+    QueueDetails:
+      type: object
+      description: Детали очереди запросов
+      properties:
+        length:
+          type: integer
+          example: 5
+        maxSize:
+          type: integer
+          example: 100
+        processed:
+          type: integer
+          format: int64
+          example: 1500
+        workers:
+          type: integer
+          example: 4
+        timeout:
+          type: integer
+          example: 300
+        pending:
+          type: array
+          items:
+            type: object
+            properties:
+              id:
+                type: string
+              model:
+                type: string
+              clientName:
+                type: string
+              queuedAt:
+                type: string
+                format: date-time
+
+    QueueHistory:
+      type: object
+      description: История выполненных запросов
+      properties:
+        items:
+          type: array
+          items:
+            type: object
+            properties:
+              id:
+                type: string
+              backendId:
+                type: string
+              model:
+                type: string
+              queuedAt:
+                type: string
+                format: date-time
+              startedAt:
+                type: string
+                format: date-time
+              completedAt:
+                type: string
+                format: date-time
+              queueWaitMs:
+                type: integer
+        total:
+          type: integer
+
+    BackendCapacity:
+      type: object
+      description: Ёмкость бэкенда
+      properties:
+        backendId:
+          type: string
+        maxConcurrentRequests:
+          type: integer
+        availableSlots:
+          type: integer
+        usedSlotsPercent:
+          type: number
+          format: float
+        models:
+          type: array
+          items:
+            type: object
+            properties:
+              name:
+                type: string
+              loaded:
+                type: boolean
+              vramUsage:
+                type: integer
+
+    ModelsCapacity:
+      type: object
+      description: Глобальная ёмкость моделей
+      properties:
+        global:
+          type: object
+          properties:
+            totalSlots:
+              type: integer
+            availableSlots:
+              type: integer
+            usedSlotsPercent:
+              type: number
+              format: float
+        perModel:
+          type: object
+          additionalProperties:
+            type: object
+            properties:
+              totalSlots:
+                type: integer
+              availableSlots:
+                type: integer
+              backends:
+                type: array
+                items:
+                  type: string
 
     RateLimitStatus:
       type: object

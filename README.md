@@ -126,6 +126,11 @@ LB_PORT=18080          # Порт Ollama API proxy
 LB_API_PORT=18081      # Порт Management API
 LB_ALGORITHM=resource-aware
 
+# Очередь запросов
+LB_QUEUE_TIMEOUT=300    # Таймаут очереди (сек)
+LB_QUEUE_MAX_SIZE=100   # Максимальный размер очереди
+LB_QUEUE_WORKERS=4      # Количество workers очереди
+
 # Бэкенды
 BACKEND_0_ID=gpu-1
 BACKEND_0_HOST=192.168.13.66
@@ -149,6 +154,8 @@ NVML_ENABLED=true
 |------|-----------|----------|
 | **18080** | Load Balancer | Ollama API Proxy (внешний) |
 | **18081** | Load Balancer | Management API + WebSocket |
+| **8443** | Load Balancer | HTTPS Proxy (TLS) |
+| **8444** | Load Balancer | HTTPS Management API (TLSPort+1) |
 | **18030** | Web UI | Dashboard |
 | **18032** | Agent | Локальные метрики агента |
 | **11434** | Ollama | Ollama API (на бэкендах) |
@@ -259,21 +266,29 @@ TLS_AUTO_CERT=true
 ollama-loadbalancer/
 ├── cmd/
 │   ├── balancer/          # Балансировщик
-│   └── agent/             # Агент
+│   ├── agent/             # Агент
+│   └── monitor/           # Простой монитор (отдельный бинарник)
 ├── internal/
-│   ├── balancer/          # Логика балансировки
-│   ├── agent/             # Сбор метрик
-│   ├── api/               # REST API
+│   ├── balancer/          # Логика балансировки (proxy, queue, sessions)
+│   ├── agent/             # Сбор метрик GPU/CPU/RAM
+│   ├── api/               # REST API + WebSocket
 │   └── config/            # Конфигурация
+├── pkg/
+│   ├── logger/            # Библиотека логирования
+│   ├── protocol/          # Протокол коммуникации агент↔балансер
+│   └── types/             # Типы данных
 ├── docker/
 │   ├── balancer/          # Dockerfile балансировщика
 │   ├── agent/             # Dockerfile агента
-│   └── webui/             # Dockerfile UI
-├── deployments/
-│   └── docker-compose.yml # Docker Compose
-├── config/
-│   └── config.example.json
-└── docs/                  # Документация
+│   ├── cocoindex/         # CocoIndex embeddings
+│   └── webui/             # Dockerfile Web UI
+├── webui/                 # Web UI (dashboard, monitor, nginx)
+├── deployments/           # Docker Compose конфигурации
+├── tests/                 # Интеграционные и сценарные тесты
+├── config/                # Примеры конфигураций
+├── logo/                  # Логотип (png, svg)
+├── scripts/               # Скрипты сборки и развёртывания
+└── docs/                  # Документация (RU, EN, планы)
 ```
 
 ---

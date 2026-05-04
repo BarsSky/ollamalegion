@@ -132,6 +132,7 @@ const Renderers = (function () {
                         <strong>${escapeHtml(backend.id)}</strong>
                         ${badge(backend.status, backend.status === 'healthy' ? 'success' : 'danger')}
                     </div>
+                    <div class=\"runtime-host\">${escapeHtml(backend.host || '-')}</div>
                     <div class=\"runtime-flags\">
                         ${flagBadges.length ? flagBadges.join('') : '<span class=\"flag-badge\">default</span>'}
                     </div>
@@ -175,6 +176,7 @@ const Renderers = (function () {
                         <svg class=\"badge-icon-svg\" viewBox=\"0 0 24 24\"><circle cx=\"12\" cy=\"12\" r=\"10\" fill=\"currentColor\"/></svg>
                     </div>
                     <div class=\"gpu-metrics\">
+                        ${metric('Host', escapeHtml(backend.host || '-'))}
                         ${metric('Req', `${activeReq}/${maxReq}`)}
                         ${metric('Models', models)}
                         ${metric('RPS', rps.toFixed(1))}
@@ -200,6 +202,7 @@ const Renderers = (function () {
                         ${badge('CPU', 'warning')}
                     </div>
                     <div class=\"gpu-metrics\">
+                        ${metric('Host', escapeHtml(backend.host || '-'))}
                         ${metric('CPU', `${cpuUsage.toFixed(1)}%`)}
                         ${metric('RAM', `${ramPct.toFixed(1)}%`)}
                         ${metric('Load', loadAvg)}
@@ -226,6 +229,7 @@ const Renderers = (function () {
                     <span class=\"gpu-status ${status}\"></span>
                 </div>
                 <div class=\"gpu-metrics\">
+                    ${metric('Host', escapeHtml(backend.host || '-'))}
                     ${metric('GPU', `${usage.toFixed(1)}%`)}
                     ${metric('VRAM', `${vramPct.toFixed(1)}%`)}
                     ${metric('Temp', `${temp}°C`)}
@@ -295,6 +299,7 @@ const Renderers = (function () {
                     <strong>${escapeHtml(backend.id)}</strong>
                     ${getBackendModeBadge(backend)}
                 </div>
+                <div class=\"capacity-host\"><span>Хост</span><span>${escapeHtml(backend.host || '-')}</span></div>
                 <div class=\"capacity-bar-container\">
                     <div class=\"capacity-bar-labels\">
                         <span>${memLabel}: ${formatMB(memUsed)} / ${formatMB(memTotal)}</span>
@@ -434,6 +439,128 @@ const Renderers = (function () {
 
     // ---- Backends Management Page ----
 
+    // Справочник параметров Ollama с русской расшифровкой
+    const OLLAMA_PARAMS = {
+        numGpuLayers:     { label: 'GPU Layers (-ngl)', desc: 'Кол-во слоёв модели на GPU. -1 = все слои, 0 = только CPU. Определяет, какая часть модели загружается в VRAM.' },
+        contextLength:    { label: 'Context Length (-c)', desc: 'Размер контекстного окна в токенах. По умолчанию 2048. Больше = длиннее история диалога, но больше VRAM/RAM.' },
+        numParallel:      { label: 'Parallel Reqs (-np)', desc: 'Максимум одновременных запросов к одной модели. По умолчанию 1. Увеличивает throughput, но требует больше VRAM.' },
+        numThreads:       { label: 'Threads (-t)', desc: 'Количество потоков CPU для вычислений. По умолчанию = кол-во ядер. Влияет на скорость инференса на CPU.' },
+        batchSize:        { label: 'Batch Size (-b)', desc: 'Размер батча токенов для обработки. По умолчанию 512. Больше = быстрее, но больше потребление памяти.' },
+        gpuSplitMode:     { label: 'GPU Split Mode', desc: 'Режим разделения модели по GPU: none (без разделения), layer (по слоям), row (по строкам тензоров).' },
+        mainGpu:          { label: 'Main GPU', desc: 'Индекс основного GPU (0-based) для multi-GPU конфигураций. На него загружается большая часть модели.' },
+        lowVram:          { label: 'Low VRAM Mode', desc: 'Режим экономии VRAM. Не загружает все веса модели в GPU-память сразу, подгружает по мере необходимости. Медленнее, но меньше VRAM.' },
+        f16kv:            { label: 'FP16 KV Cache', desc: 'Использование 16-битной точности для KV-кэша. Экономит ~50% памяти кэша. True = FP16 включён (по умолчанию).' },
+        kvCacheQuant:     { label: 'KV Cache Quant', desc: 'Тип квантования KV-кэша: f16 (без квантования), q8_0 (8-бит), q4_0 (4-бит). Сильнее квантование = меньше памяти, но возможна потеря качества.' },
+        flashAttention:   { label: 'Flash Attention', desc: 'Алгоритм эффективного внимания. Снижает использование VRAM и ускоряет инференс. Требует поддержки GPU (Ampere+).' },
+        source:           { label: 'Источник флагов', desc: 'Откуда взяты настройки: process-args (аргументы командной строки), env (переменные окружения), default (встроенные значения).' }
+    };
+
+    function renderOllamaParams(backend) {
+        const flags = backend.ollama?.runtimeFlags || {};
+        const cap = backend.ollama?.backendCapacity || {};
+        const contexts = backend.ollama?.modelContexts || [];
+        const runningModels = backend.ollama?.runningModels || [];
+
+        // Секция: Runtime-флаги
+        let flagsHtml = '<div class="be-detail-section"><div class="be-detail-title">⚙️ Runtime-флаги Ollama</div><div class="be-params-grid">';
+
+        // Основные флаги
+        const mainFlags = ['numGpuLayers', 'contextLength', 'numParallel', 'numThreads', 'batchSize'];
+        mainFlags.forEach(key => {
+            if (flags[key] !== undefined && flags[key] !== 0 && flags[key] !== '') {
+                const param = OLLAMA_PARAMS[key];
+                const value = key === 'numGpuLayers' && flags[key] === -1 ? 'auto' : String(flags[key]);
+                flagsHtml += `<div class="be-param-item" title="${escapeHtml(param.desc)}">
+                    <span class="be-param-label">${escapeHtml(param.label)}</span>
+                    <span class="be-param-value">${escapeHtml(value)}</span>
+                </div>`;
+            }
+        });
+
+        // Дополнительные флаги
+        const extraFlags = ['gpuSplitMode', 'mainGpu', 'kvCacheQuant', 'source'];
+        extraFlags.forEach(key => {
+            if (flags[key] !== undefined && flags[key] !== '' && String(flags[key]) !== '0') {
+                const param = OLLAMA_PARAMS[key];
+                flagsHtml += `<div class="be-param-item" title="${escapeHtml(param.desc)}">
+                    <span class="be-param-label">${escapeHtml(param.label)}</span>
+                    <span class="be-param-value">${escapeHtml(String(flags[key]))}</span>
+                </div>`;
+            }
+        });
+
+        // Булевы флаги
+        const boolFlags = [
+            { key: 'lowVram', label: 'Low VRAM', desc: OLLAMA_PARAMS.lowVram.desc },
+            { key: 'f16kv', label: 'FP16 KV Cache', desc: OLLAMA_PARAMS.f16kv.desc },
+            { key: 'flashAttention', label: 'Flash Attention', desc: OLLAMA_PARAMS.flashAttention.desc }
+        ];
+        boolFlags.forEach(({ key, label, desc }) => {
+            if (flags[key] !== undefined) {
+                const val = flags[key] ? '✅ Да' : '❌ Нет';
+                const cls = flags[key] ? 'be-param-on' : 'be-param-off';
+                flagsHtml += `<div class="be-param-item ${cls}" title="${escapeHtml(desc)}">
+                    <span class="be-param-label">${escapeHtml(label)}</span>
+                    <span class="be-param-value">${val}</span>
+                </div>`;
+            }
+        });
+
+        flagsHtml += '</div></div>';
+
+        // Секция: Ёмкость бекенда
+        let capHtml = '';
+        if (cap.freeVram !== undefined || cap.loadedModelVram !== undefined) {
+            capHtml = '<div class="be-detail-section"><div class="be-detail-title">💾 Ёмкость бекенда</div><div class="be-params-grid">';
+            if (cap.freeVram !== undefined) capHtml += `<div class="be-param-item"><span class="be-param-label">Свободно VRAM</span><span class="be-param-value">${formatMB(cap.freeVram)}</span></div>`;
+            if (cap.guaranteedVram !== undefined) capHtml += `<div class="be-param-item"><span class="be-param-label">Гарантировано (90%)</span><span class="be-param-value">${formatMB(cap.guaranteedVram)}</span></div>`;
+            if (cap.loadedModelVram !== undefined) capHtml += `<div class="be-param-item"><span class="be-param-label">VRAM моделей</span><span class="be-param-value">${formatMB(cap.loadedModelVram)}</span></div>`;
+            if (cap.contextOverheadMB !== undefined) capHtml += `<div class="be-param-item"><span class="be-param-label">Context overhead</span><span class="be-param-value">${formatMB(cap.contextOverheadMB)}</span></div>`;
+            if (cap.loadableModelCount !== undefined) capHtml += `<div class="be-param-item"><span class="be-param-label">Можно загрузить моделей</span><span class="be-param-value">${cap.loadableModelCount}</span></div>`;
+            if (cap.mode) capHtml += `<div class="be-param-item"><span class="be-param-label">Режим платформы</span><span class="be-param-value">${escapeHtml(String(cap.mode))}</span></div>`;
+            capHtml += '</div></div>';
+        }
+
+        // Секция: Контексты моделей
+        let ctxHtml = '';
+        if (contexts.length > 0) {
+            ctxHtml = '<div class="be-detail-section"><div class="be-detail-title">📐 Контексты моделей</div>';
+            contexts.forEach(ctx => {
+                ctxHtml += `<div class="be-model-ctx">
+                    <div class="be-model-ctx-name">${escapeHtml(ctx.name)}</div>
+                    <div class="be-params-grid" style="margin-bottom:0;">
+                        <div class="be-param-item"><span class="be-param-label">Контекст</span><span class="be-param-value">${formatNumber(ctx.contextLength)}</span></div>
+                        <div class="be-param-item"><span class="be-param-label">Эффективный</span><span class="be-param-value">${formatNumber(ctx.effectiveContext)}</span></div>
+                        <div class="be-param-item"><span class="be-param-label">Источник</span><span class="be-param-value">${escapeHtml(ctx.contextSource || '-')}</span></div>
+                        <div class="be-param-item"><span class="be-param-label">Память модели</span><span class="be-param-value">${formatMB(ctx.modelMemoryMB)}</span></div>
+                        <div class="be-param-item"><span class="be-param-label">Контекст память</span><span class="be-param-value">${formatMB(ctx.contextMemoryMB)}</span></div>
+                        <div class="be-param-item"><span class="be-param-label">KV-кэш</span><span class="be-param-value">${formatMB(ctx.kvCacheMemoryMB)}</span></div>
+                        <div class="be-param-item"><span class="be-param-label">Всего</span><span class="be-param-value">${formatMB(ctx.totalMemoryMB)}</span></div>
+                        <div class="be-param-item"><span class="be-param-label">Слоёв</span><span class="be-param-value">${ctx.numLayers || '-'}</span></div>
+                        <div class="be-param-item"><span class="be-param-label">Точность KV</span><span class="be-param-value">${ctx.precisionBits || 16}-bit</span></div>
+                    </div>
+                </div>`;
+            });
+            ctxHtml += '</div>';
+        }
+
+        // Секция: Загруженные модели
+        let modelsHtml = '';
+        if (runningModels.length > 0) {
+            modelsHtml = '<div class="be-detail-section"><div class="be-detail-title">🤖 Загруженные модели</div><div class="be-params-grid">';
+            runningModels.forEach(m => {
+                const sizeGB = (m.size || 0) / 1024 / 1024 / 1024;
+                modelsHtml += `<div class="be-param-item" style="grid-column: 1/-1;">
+                    <span class="be-param-label">${escapeHtml(m.name)}</span>
+                    <span class="be-param-value">${sizeGB.toFixed(1)} GB | ${escapeHtml(m.family || '-')} | ${escapeHtml(m.parameterSize || '-')} | ${escapeHtml(m.quantization || '-')}</span>
+                </div>`;
+            });
+            modelsHtml += '</div></div>';
+        }
+
+        return flagsHtml + capHtml + ctxHtml + modelsHtml;
+    }
+
     function backendsPage(backends) {
         const tbody = document.getElementById('backendsManageBody');
         if (!tbody) return;
@@ -442,13 +569,16 @@ const Renderers = (function () {
             return;
         }
 
-        tbody.innerHTML = backends.map(b => {
+        tbody.innerHTML = backends.map((b, idx) => {
             const labels = (b.labels || []).join(', ') || '-';
             const lastContact = b.lastAgentContact ? new Date(b.lastAgentContact).toLocaleString('ru') : '-';
-            const maxModels = b.maxModels || b.ollama?.maxModels || b.runtimeMaxModels || '-';
+            const maxModels = b.runtimeMaxModels || b.maxModels || b.ollama?.maxModels || '-';
+            const detailsHtml = renderOllamaParams(b);
+            const rowId = 'be-row-' + idx;
+
             return `
-                <tr>
-                    <td><strong>${escapeHtml(b.id)}</strong></td>
+                <tr class="be-main-row" data-expand="${rowId}" style="cursor:pointer;">
+                    <td><strong>${escapeHtml(b.id)}</strong> <span class="be-expand-icon">▶</span></td>
                     <td>${escapeHtml(b.name || b.id)}</td>
                     <td>${escapeHtml(b.host)}</td>
                     <td>${b.ollamaPort || 11434}</td>
@@ -461,12 +591,37 @@ const Renderers = (function () {
                     <td>${escapeHtml(lastContact)}</td>
                     <td>${badge(b.status, b.status === 'healthy' ? 'success' : 'danger')}</td>
                     <td>
-                        <button class=\"action-btn edit\" onclick=\"ui.editBackend('${escapeHtml(b.id)}')\">Edit</button>
-                        <button class=\"action-btn delete\" onclick=\"ui.confirmDeleteBackend('${escapeHtml(b.id)}')\">Del</button>
+                        <button class=\"action-btn edit\" onclick=\"event.stopPropagation(); ui.editBackend('${escapeHtml(b.id)}')\">Edit</button>
+                        <button class=\"action-btn delete\" onclick=\"event.stopPropagation(); ui.confirmDeleteBackend('${escapeHtml(b.id)}')\">Del</button>
+                    </td>
+                </tr>
+                <tr class="be-detail-row" id="${rowId}" style="display:none;">
+                    <td colspan="13">
+                        <div class="be-detail-content">
+                            ${detailsHtml}
+                        </div>
                     </td>
                 </tr>
             `;
         }).join('');
+
+        // Навешиваем обработчики раскрытия строк
+        tbody.querySelectorAll('.be-main-row').forEach(row => {
+            row.addEventListener('click', function () {
+                const targetId = this.getAttribute('data-expand');
+                const detailRow = document.getElementById(targetId);
+                const icon = this.querySelector('.be-expand-icon');
+                if (detailRow) {
+                    if (detailRow.style.display === 'none' || detailRow.style.display === '') {
+                        detailRow.style.display = 'table-row';
+                        if (icon) icon.textContent = '▼';
+                    } else {
+                        detailRow.style.display = 'none';
+                        if (icon) icon.textContent = '▶';
+                    }
+                }
+            });
+        });
     }
 
     // ---- Models Page ----

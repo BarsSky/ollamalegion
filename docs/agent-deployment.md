@@ -213,7 +213,7 @@ docker run -d \
   -e OLLAMA_URL=http://192.168.1.20:11434 \
   -e GPU_MODE=gpu \
   -e NVML_ENABLED=true \
-  -e METRICS_INTERVAL=5s \
+  -e COLLECT_INTERVAL=5 \
   -e HEARTBEAT_INTERVAL=3s \
   -p 18032:18032 \
   ollama-legion/agent:latest
@@ -324,7 +324,7 @@ docker run -d \
   -e OLLAMA_URL=http://192.168.1.30:11434 \
   -e GPU_MODE=cpu \
   -e NVML_ENABLED=false \
-  -e METRICS_INTERVAL=5s \
+  -e COLLECT_INTERVAL=5 \
   -e HEARTBEAT_INTERVAL=3s \
   -p 18032:18032 \
   ollama-legion/agent:latest
@@ -374,9 +374,8 @@ CGO_ENABLED=0 go build -o bin/agent ./cmd/agent
 
 | Переменная | По умолчанию | Описание |
 |------------|--------------|----------|
-| `METRICS_INTERVAL` | `5s` | Интервал сбора и отправки метрик |
-| `HEARTBEAT_INTERVAL` | `3s` | Интервал heartbeat сигналов балансировщику |
-| `COLLECT_INTERVAL` | `5s` | Интервал опроса системных метрик |
+| `COLLECT_INTERVAL` | `5` | Интервал сбора метрик (секунд). Также принимается `METRICS_INTERVAL` (устар., для совместимости) |
+| `HEARTBEAT_INTERVAL` | `3` | Интервал heartbeat сигналов балансировщику (секунд) |
 
 ### Логирование
 

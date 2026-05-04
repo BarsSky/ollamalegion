@@ -1138,6 +1138,17 @@ docker run -d -p 8080:8080 -e SWAGGER_JSON=/api/swagger.json \
 | `POST` | `/api/v1/auth/token` | Создать токен | ✅ (master) |
 | `DELETE` | `/api/v1/auth/token` | Отозвать токен | ✅ (master) |
 | `GET` | `/api/v1/queue/stats` | Статистика очереди | ✅ |
+| `GET` | `/api/v1/queue/details` | Детали очереди (pending+processing) | ✅ |
+| `GET` | `/api/v1/queue/history` | История выполненных запросов | ✅ |
+| `GET` | `/api/v1/predictions` | Прогнозы для всех бэкендов | ✅ |
+| `GET` | `/api/v1/predictions/{id}` | Прогноз для бэкенда | ✅ |
+| `GET` | `/api/v1/models/capacity` | Глобальная ёмкость моделей | ✅ |
+| `GET` | `/api/v1/backends/{id}/capacity` | Ёмкость бэкенда | ✅ |
+| `PUT` | `/api/v1/backends/{id}/limits` | Обновить runtime-лимиты бэкенда | ✅ |
+| `GET` | `/api/v1/cluster/config` | Текущая конфигурация кластера | ✅ |
+| `PUT` | `/api/v1/cluster/config` | Сменить алгоритм/настройки кластера | ✅ |
+| `POST` | `/api/v1/admin/restart` | Перезапуск балансировщика | ✅ |
+| `GET` | `/monitor` | HTML-страница монитора | ✅ |
 | `GET` | `/api/v1/ratelimit/status` | Статус rate limiter | ❌ |
 | `GET` | `/ws/metrics?token=xxx` | WebSocket метрики | ✅ (token в query) |
 

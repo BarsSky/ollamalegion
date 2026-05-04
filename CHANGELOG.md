@@ -7,6 +7,24 @@
 
 ## [Unreleased]
 
+### Добавлено (2026-05-04 — Консолидация планов и документации)
+
+#### Консолидированный мастер-план
+- Создан `plans/consolidated-plan-2026-05-03.md` — объединяет 6 разрозненных планов в единую дорожную карту (78 задач, 5 блоков).
+- Выполненные планы перемещены в `plans/archive/`: `refactoring-plan-2026-04-29.md`, `optimal-distribution-mechanism.md`, `оптимизация-механизма-распределения.md`, `примечания.md`, `plan_balancer.md`, `fix-docs-plan-2026-05-03.md`.
+
+#### Конфигурируемый порог загрузки (thresholdLoad)
+- **Файл:** `internal/balancer/proxy.go:642-644` — `Model Affinity` теперь использует `Prewarm.TriggerLoadThreshold` из конфигурации вместо hardcoded `0.80`.
+- **Параметр:** `balancing.prewarm.triggerLoadThreshold` (default: `0.80`).
+
+#### Метрики диска
+- **Файл:** `pkg/types/types.go` — в `SystemMetrics` добавлены поля `DiskReadSpeedMBps` и `DiskWriteSpeedMBps`.
+
+#### Документация
+- **`docs/README.md`** — актуализирована структура проекта (добавлены `pkg/logger/`, `cmd/monitor/`, `tests/`, `logo/`, `plans/`, `balancing-guide.md`; исправлено расположение `queue.go`).
+- **`docs/configuration.md`** — добавлен порт `TLSPort+1` (8444) для HTTPS Management API.
+- **`docs/deployment.md`** — добавлен порт `TLSPort+1` (8444) в секцию TLS.
+
 ### Исправлено (Балансировщик — критические проблемы от 2026-04-28)
 
 #### 1. Cline монополизирует балансировщик — Session Stickiness без ребалансировки
@@ -53,45 +71,24 @@
 
 ### Добавлено
 
-#### Интеграционные тесты (83 теста)
+#### Интеграционные тесты (~170 тестов)
 - Полное покрытие тестами основных компонентов системы
-- Тесты агента (`internal/agent/collector_test.go`):
-  - Сбор GPU/Ollama/системных метрик
-  - Регистрация и heartbeat агента
-  - Отправка метрик на балансировщик
-  - Обработка статусов degraded/healthy
-  - **28 тестов**
-
-- Тесты аутентификации (`internal/api/auth_test.go`):
-  - TokenAuthenticator (валидные/невалидные токены)
-  - Master token управление
-  - Генерация и отзыв токенов
-  - Auth middleware
-  - **24 теста**
-
-- Тесты MetricsBroker (`internal/api/metrics_broker_test.go`):
-  - Подписка/отписка клиентов
-  - Публикация метрик
-  - Множественные клиенты
-  - Потокобезопасность
-  - **17 тестов**
-
-- Тесты Rate Limiting (`internal/api/ratelimit_test.go`):
-  - Token bucket алгоритм
-  - Пополнение токенов
-  - Middleware для rate limiting
-  - Потокобезопасность
-  - **11 тестов**
-
-- Тесты Proxy и Queue Manager (`internal/balancer/proxy_test.go`):
-  - Управление очередью запросов
-  - Выбор бэкенда (resource-aware algorithm)
-  - Session manager
-  - Metrics manager
-  - Проверка лимитов ресурсов
-  - **20 тестов**
-  
-- **Файлы:** [`internal/agent/collector_test.go`](internal/agent/collector_test.go), [`internal/api/auth_test.go`](internal/api/auth_test.go), [`internal/api/metrics_broker_test.go`](internal/api/metrics_broker_test.go), [`internal/api/ratelimit_test.go`](internal/api/ratelimit_test.go), [`internal/balancer/proxy_test.go`](internal/balancer/proxy_test.go)
+- **Ядро (internal/):** 100 тестов
+  - Тесты агента (`internal/agent/collector_test.go`): сбор GPU/Ollama/системных метрик, регистрация, heartbeat, статусы degraded/healthy — **28 тестов**
+  - Тесты аутентификации (`internal/api/auth_test.go`): TokenAuthenticator, master token, генерация/отзыв токенов, middleware — **24 теста**
+  - Тесты MetricsBroker (`internal/api/metrics_broker_test.go`): pub/sub, множественные клиенты, потокобезопасность — **17 тестов**
+  - Тесты Rate Limiting (`internal/api/ratelimit_test.go`): token bucket, пополнение, middleware — **11 тестов**
+  - Тесты Proxy/Queue Manager (`internal/balancer/proxy_test.go`): очередь, выбор бэкенда (resource-aware), session/metrics manager — **20 тестов**
+- **Внешние тесты (tests/):** 70 тестов
+  - `balancer_scenarios_test.go` — 9 сценариев (failover, stickiness, health, concurrent)
+  - `agent_metrics_test.go` — 11 тестов структуры метрик, диапазонов, консистентности
+  - `balancer_optimization_test.go` — 11 тестов (prewarm, warmup, model instance controller)
+  - `balancer_new_test.go` — 7 тестов (headroom, backpressure, scoring)
+  - `integration_test.go` — 6 E2E тестов (full workflow, cluster state, error handling)
+  - `monitor_test.go` + `monitor_display_test.go` — 13 тестов (RPS, JSON, endpoints, HTML)
+  - `proxy_ollama_test.go` — 12 тестов (generate, chat, embeddings, stickiness, retry)
+  - `hasagent_test.go` — 1 тест флага hasAgents
+- **Файлы:** [`internal/agent/collector_test.go`](internal/agent/collector_test.go), [`internal/api/auth_test.go`](internal/api/auth_test.go), [`internal/api/metrics_broker_test.go`](internal/api/metrics_broker_test.go), [`internal/api/ratelimit_test.go`](internal/api/ratelimit_test.go), [`internal/balancer/proxy_test.go`](internal/balancer/proxy_test.go), и 9 файлов в [`tests/`](../tests/)
 
 #### OpenAPI/Swagger спецификация
 - Полная спецификация REST API в формате OpenAPI 3.0.3
@@ -139,7 +136,7 @@
 - Поддержка множественных подключений клиентов
 - Автоматическая отправка начального состояния кластера при подключении
 - Heartbeat механизм для поддержания соединения
-- **Файлы:** [`internal/api/metrics_broker.go`](internal/api/metrics_broker.go), [`internal/api/handlers.go`](internal/api/handlers.go:657-724)
+  - **Файлы:** [`internal/api/metrics_broker.go`](internal/api/metrics_broker.go), [`internal/api/handlers.go`](internal/api/handlers.go:1379-1514)
 
 #### Queue Manager для обработки перегрузок
 - Очередь запросов при отсутствии доступных бэкендов
@@ -297,6 +294,7 @@
 | `LB_REQUEST_TIMEOUT` | Таймаут запроса (сек) | `120` |
 | `LB_QUEUE_TIMEOUT` | Таймаут очереди (сек) | `300` |
 | `LB_QUEUE_MAX_SIZE` | Максимальный размер очереди | `100` |
+| `LB_QUEUE_WORKERS` | Количество workers очереди | `4` |
 
 #### Resource лимиты
 | Переменная | Описание | Значение по умолчанию |
@@ -400,7 +398,7 @@
 | Config | 1 | - | ~200 |
 | Web UI | 3 | - | ~100 |
 | Документация | 2 | - | ~1100 |
-| **Итого** | **18** | **83** | **~2800** |
+| **Итого** | **18** | **170** | **~2800** |
 
 ### Покрытие тестами
 
@@ -411,7 +409,7 @@
 | `internal/api` (metrics_broker) | 17 | WebSocket pub/sub система |
 | `internal/api` (ratelimit) | 11 | Token bucket rate limiting |
 | `internal/balancer` | 20 | Proxy, queue manager, session manager |
-| **Всего** | **83** | **~95%** |
+| **Всего** | **170** | **~95%** |
 
 ### Реализованные компоненты
 
@@ -430,7 +428,7 @@
 - [x] REST API (15+ endpoints)
 - [x] OpenAPI/Swagger спецификация
 - [x] Web UI Dashboard
-- [x] Интеграционные тесты (83 теста)
+- [x] Интеграционные тесты (170 тестов)
 - [x] Docker контейнеры (agent, balancer, webui)
 - [x] Docker Compose конфигурация
 

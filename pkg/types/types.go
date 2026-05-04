@@ -51,6 +51,7 @@ type Backend struct {
 	AgentPort           int           `json:"agentPort"`
 	Weight              int           `json:"weight"`
 	MaxConcurrentReqs   int           `json:"maxConcurrentRequests"`
+	MaxModels           int           `json:"maxModels"`
 	Labels              []string      `json:"labels"`
 	Status              BackendStatus `json:"status"`
 	LastHealthCheck     time.Time     `json:"lastHealthCheck"`

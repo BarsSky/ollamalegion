@@ -203,6 +203,11 @@
     margin-bottom: 0.5rem;
     font-size: 0.9rem;
 }
+.runtime-host {
+    font-size: 0.75rem;
+    color: var(--text-muted);
+    margin-bottom: 0.5rem;
+}
 .runtime-flags {
     display: flex;
     flex-wrap: wrap;
@@ -257,6 +262,15 @@
     background: var(--glass-highlight);
     pointer-events: none;
 }
+.capacity-host {
+    display: flex;
+    justify-content: space-between;
+    padding: 0.35rem 0;
+    font-size: 0.8rem;
+    color: var(--text-secondary);
+}
+.capacity-host span:first-child { color: var(--text-muted); }
+.capacity-host span:last-child  { font-weight: 600; }
 .capacity-bar-container { margin: 0.75rem 0; }
 .capacity-bar-labels {
     display: flex;

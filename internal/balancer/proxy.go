@@ -340,11 +340,46 @@ func (qm *QueueManager) processRequest(req *QueuedRequest, workerID int) {
 		return
 	}
 
+	// Атомарный захват слота
+	if !qm.proxy.tryAcquireSlot(targetBackend) {
+		// Пробуем другие бэкенды
+		attempted := map[string]bool{targetBackend: true}
+		const maxAltRetries = 10
+		found := false
+		for retry := 0; retry < maxAltRetries; retry++ {
+			altBackend := qm.proxy.selectBackendExcluding(req.Model, attempted)
+			if altBackend == "" {
+				break
+			}
+			if qm.proxy.tryAcquireSlot(altBackend) {
+				targetBackend = altBackend
+				found = true
+				break
+			}
+			attempted[altBackend] = true
+		}
+		if !found {
+			req.RequeueCount++
+			logger.Get().Warnw("could not acquire slot, re-queueing",
+				"worker_id", workerID, "requeue_count", req.RequeueCount)
+			time.AfterFunc(100*time.Millisecond, func() {
+				select {
+				case qm.queue <- req:
+				case <-qm.ctx.Done():
+				}
+			})
+			return
+		}
+	}
+
 	req.Target = targetBackend
 	logger.Get().Debugw("proxying queued request to backend",
 		"worker_id", workerID,
 		"backend", targetBackend,
 	)
+
+	// Слот захвачен через tryAcquireSlot — гарантируем освобождение
+	defer qm.proxy.releaseSlot(targetBackend)
 
 	qm.proxy.proxyRequest(req.Writer, req.Request, targetBackend)
 
@@ -472,7 +507,7 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 			// Always update session binding — new backend or re-sticky to current
 			if targetBackend != "" && p.config.Balancing.SessionStickiness {
-				p.sessionMgr.Set(sessionID, targetBackend, model, clientName, r.UserAgent())
+				p.sessionMgr.Set(sessionID, targetBackend, model, clientName, p.getClientRealIP(r), r.UserAgent())
 			}
 			}
 		}
@@ -482,39 +517,86 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		targetBackend = p.selectBackend(model)
 		if targetBackend != "" && p.config.Balancing.SessionStickiness {
 			sessionID = p.getSessionIDWithModel(r, clientName, model)
-			p.sessionMgr.Set(sessionID, targetBackend, model, clientName, r.UserAgent())
+			p.sessionMgr.Set(sessionID, targetBackend, model, clientName, p.getClientRealIP(r), r.UserAgent())
 		}
 	}
 
-	if targetBackend == "" {
+	// Атомарный захват слота с retry при неудаче
+	acquired := false
+	if targetBackend != "" {
+		acquired = p.tryAcquireSlot(targetBackend)
+	}
+
+	// Если не удалось захватить слот на выбранном бэкенде — пробуем другие
+	if targetBackend != "" && !acquired {
+		attemptedBackends := map[string]bool{targetBackend: true}
+		const maxRetries = 10
+		for retry := 0; retry < maxRetries; retry++ {
+			altBackend := p.selectBackendExcluding(model, attemptedBackends)
+			if altBackend == "" {
+				break
+			}
+			if p.tryAcquireSlot(altBackend) {
+				targetBackend = altBackend
+				acquired = true
+				if sessionID != "" && p.config.Balancing.SessionStickiness {
+					p.sessionMgr.Set(sessionID, targetBackend, model, clientName, p.getClientRealIP(r), r.UserAgent())
+				}
+				logger.Get().Infow("acquired slot on alternate backend",
+					"backend", targetBackend, "original", attemptedBackends)
+				break
+			}
+			attemptedBackends[altBackend] = true
+		}
+	}
+
+	if !acquired {
+		if targetBackend == "" {
+			// Даже selectBackend не нашёл ни одного — сразу в очередь
+		}
 		if !p.queueRequest(w, r, model) {
 			http.Error(w, "Service unavailable - all backends busy", http.StatusServiceUnavailable)
 		}
 		return
 	}
 
-	attemptedBackends := make(map[string]bool)
-	for attempt := 0; attempt < 3; attempt++ {
-		if attempt > 0 {
-			logger.Get().Warnw("retry selecting new backend", "attempt", attempt, "excluded", attemptedBackends)
-			targetBackend = p.selectBackendExcluding(model, attemptedBackends)
-			if targetBackend == "" {
-				break
-			}
-			if sessionID != "" && p.config.Balancing.SessionStickiness {
-				p.sessionMgr.Set(sessionID, targetBackend, model, clientName, r.UserAgent())
-			}
+	// Слот захвачен — гарантируем освобождение после ответа
+	defer p.releaseSlot(targetBackend)
+
+	// Выполняем запрос
+	err := p.proxyRequest(w, r, targetBackend)
+	if err == nil {
+		return
+	}
+
+	logger.Get().Errorw("backend request failed", "backend", targetBackend, "error", err)
+	p.UpdateBackendStatus(targetBackend, types.StatusUnhealthy)
+	p.scheduleRecoveryCheck(targetBackend)
+
+	// При ошибке пробуем другие бэкенды (без освобождения исходного — releaseSlot уже вызван в defer proxyRequest)
+	attemptedBackends := map[string]bool{targetBackend: true}
+	for attempt := 1; attempt < 3; attempt++ {
+		altBackend := p.selectBackendExcluding(model, attemptedBackends)
+		if altBackend == "" {
+			break
+		}
+		if !p.tryAcquireSlot(altBackend) {
+			attemptedBackends[altBackend] = true
+			continue
+		}
+		if sessionID != "" && p.config.Balancing.SessionStickiness {
+			p.sessionMgr.Set(sessionID, altBackend, model, clientName, p.getClientRealIP(r), r.UserAgent())
 		}
 
-		attemptedBackends[targetBackend] = true
-		err := p.proxyRequest(w, r, targetBackend)
+		attemptedBackends[altBackend] = true
+		// Слот altBackend захвачен — гарантируем освобождение
+		defer p.releaseSlot(altBackend)
+
+		err := p.proxyRequest(w, r, altBackend)
 		if err == nil {
 			return
 		}
-
-		logger.Get().Errorw("backend request failed", "backend", targetBackend, "attempt", attempt, "error", err)
-		p.UpdateBackendStatus(targetBackend, types.StatusUnhealthy)
-		p.scheduleRecoveryCheck(targetBackend)
+		logger.Get().Errorw("backend request failed", "backend", altBackend, "attempt", attempt, "error", err)
 	}
 
 	http.Error(w, "Service unavailable - all backends failed", http.StatusServiceUnavailable)
@@ -550,6 +632,31 @@ func (p *Proxy) extractModel(r *http.Request) (string, bool) {
 	return "", false
 }
 
+// getClientRealIP - извлечение реального IP клиента с учётом reverse proxy заголовков
+func (p *Proxy) getClientRealIP(r *http.Request) string {
+	// X-Forwarded-For: client, proxy1, proxy2...
+	if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
+		// Берём первый IP в цепочке (реальный клиент)
+		parts := strings.Split(xff, ",")
+		if len(parts) > 0 {
+			ip := strings.TrimSpace(parts[0])
+			if ip != "" {
+				return ip
+			}
+		}
+	}
+	// X-Real-IP (используется nginx)
+	if xri := r.Header.Get("X-Real-IP"); xri != "" {
+		return strings.TrimSpace(xri)
+	}
+	// Fallback: RemoteAddr (IP прямого TCP-соединения)
+	ip, _, err := net.SplitHostPort(r.RemoteAddr)
+	if err != nil {
+		return r.RemoteAddr
+	}
+	return ip
+}
+
 // getSessionID - получение ID сессии из запроса (стабильный, без эфемерного порта)
 func (p *Proxy) getSessionID(r *http.Request, clientName string) string {
 	if clientID := r.Header.Get("X-Client-ID"); clientID != "" {
@@ -562,11 +669,7 @@ func (p *Proxy) getSessionID(r *http.Request, clientName string) string {
 		return cookie.Value
 	}
 
-	ip, _, err := net.SplitHostPort(r.RemoteAddr)
-	if err != nil {
-		ip = r.RemoteAddr
-	}
-
+	ip := p.getClientRealIP(r)
 	return ip + "::" + clientName
 }
 
@@ -582,11 +685,7 @@ func (p *Proxy) getSessionIDWithModel(r *http.Request, clientName, model string)
 		return cookie.Value + "::" + model
 	}
 
-	ip, _, err := net.SplitHostPort(r.RemoteAddr)
-	if err != nil {
-		ip = r.RemoteAddr
-	}
-
+	ip := p.getClientRealIP(r)
 	return ip + "::" + clientName + "::" + model
 }
 
@@ -621,7 +720,9 @@ func (p *Proxy) selectBackend(model string) string {
 
 			loadRatio := 0.0
 			if maxReqs > 0 { loadRatio = float64(active) / float64(maxReqs) }
-			if loadRatio < 0.80 { return backend }
+			threshold := p.config.Balancing.Prewarm.TriggerLoadThreshold
+			if threshold <= 0 { threshold = 0.80 }
+			if loadRatio < threshold { return backend }
 
 			logger.Get().Warnw("model-affinity backend overloaded, trying fallback",
 				"backend", backend, "model", model, "load_ratio", loadRatio)
@@ -1062,6 +1163,54 @@ func (p *Proxy) selectFreeBackendAny() string {
 	return bestBackend
 }
 
+// tryAcquireSlot — атомарная проверка и захват слота на бэкенде.
+// Возвращает true если слот успешно захвачен (ActiveReqs < MaxConcurrentReqs).
+// Вызывающий код обязан вызвать releaseSlot после завершения запроса.
+func (p *Proxy) tryAcquireSlot(backendID string) bool {
+	p.mu.RLock()
+	state, ok := p.backends[backendID]
+	p.mu.RUnlock()
+	if !ok {
+		return false
+	}
+
+	state.mu.Lock()
+	defer state.mu.Unlock()
+
+	if state.Backend.Status != types.StatusHealthy {
+		return false
+	}
+
+	maxReqs := state.Backend.MaxConcurrentReqs
+	// Используем RuntimeMaxConcurrentRequests если задан
+	if state.Backend.RuntimeMaxConcurrentRequests > 0 {
+		maxReqs = state.Backend.RuntimeMaxConcurrentRequests
+	}
+	if maxReqs > 0 && state.ActiveReqs >= maxReqs {
+		return false
+	}
+
+	state.ActiveReqs++
+	state.LastUsed = time.Now()
+	return true
+}
+
+// releaseSlot — освобождение слота на бэкенде.
+func (p *Proxy) releaseSlot(backendID string) {
+	p.mu.RLock()
+	state, ok := p.backends[backendID]
+	p.mu.RUnlock()
+	if !ok {
+		return
+	}
+
+	state.mu.Lock()
+	if state.ActiveReqs > 0 {
+		state.ActiveReqs--
+	}
+	state.mu.Unlock()
+}
+
 // selectByResources - выбор бэкенда по ресурсам
 func (p *Proxy) selectByResources() string {
 	p.mu.RLock()
@@ -1199,13 +1348,8 @@ func (p *Proxy) checkResourceLimits(backendID string) bool {
 		}
 	}
 
-	if metrics.Ollama.MaxConcurrentRequests > 0 {
-		if metrics.Ollama.ActiveRequests >= metrics.Ollama.MaxConcurrentRequests {
-			logger.Get().Debugw("backend request slots full, blocking",
-				"backend", backendID, "active_requests", metrics.Ollama.ActiveRequests, "max_requests", metrics.Ollama.MaxConcurrentRequests)
-			return false
-		}
-	}
+	// Проверка слотов запросов вынесена в tryAcquireSlot для атомарности.
+	// checkResourceLimits отвечает только за аппаратные/ресурсные лимиты.
 
 	return true
 }
@@ -1435,23 +1579,16 @@ func (p *Proxy) recordRequest(backendID string) {
 	state.mu.Unlock()
 }
 
-// proxyRequest - проксирование запроса к бэкенду с поддержкой streaming/SSE
+// proxyRequest - проксирование запроса к бэкенду с поддержкой streaming/SSE.
+// Вызывающий код (ServeHTTP / processRequest) должен предварительно захватить слот
+// через tryAcquireSlot и гарантировать вызов releaseSlot через defer после возврата.
 func (p *Proxy) proxyRequest(w http.ResponseWriter, r *http.Request, backendID string) error {
 	state, ok := p.backends[backendID]
 	if !ok {
 		return fmt.Errorf("backend %s not found", backendID)
 	}
 
-	state.mu.Lock()
-	state.ActiveReqs++
-	state.mu.Unlock()
 	p.recordRequest(backendID)
-
-	defer func() {
-		state.mu.Lock()
-		state.ActiveReqs--
-		state.mu.Unlock()
-	}()
 
 	targetURL := fmt.Sprintf("http://%s:%d", state.Backend.Host, state.Backend.OllamaPort)
 
@@ -1498,15 +1635,21 @@ func (p *Proxy) proxyRequest(w http.ResponseWriter, r *http.Request, backendID s
 		}
 	}
 
-	clientNameForSession := p.getClientName(r)
-	modelFromCtx := ""
-	if m, ok := r.Context().Value(modelContextKey).(string); ok {
-		modelFromCtx = m
-	}
-	sessionID := p.getSessionIDWithModel(r, clientNameForSession, modelFromCtx)
-	if sessionID != "" {
-		p.sessionMgr.Set(sessionID, backendID, modelFromCtx, clientNameForSession, r.UserAgent())
-		w.Header().Set("X-Session-ID", sessionID)
+	// Сессии создаются только для реальных клиентских запросов chat/generate/embeddings.
+	// Технические запросы (монитор, агенты, Ollama API) не должны порождать ghost-сессии.
+	path := r.URL.Path
+	isClientRequest := (path == "/api/generate" || path == "/api/chat" || path == "/api/embeddings")
+	if isClientRequest {
+		clientNameForSession := p.getClientName(r)
+		modelFromCtx := ""
+		if m, ok := r.Context().Value(modelContextKey).(string); ok {
+			modelFromCtx = m
+		}
+		sessionID := p.getSessionIDWithModel(r, clientNameForSession, modelFromCtx)
+		if sessionID != "" {
+			p.sessionMgr.Set(sessionID, backendID, modelFromCtx, clientNameForSession, p.getClientRealIP(r), r.UserAgent())
+			w.Header().Set("X-Session-ID", sessionID)
+		}
 	}
 
 	isStreaming := p.isStreamingResponse(resp)
@@ -1576,8 +1719,13 @@ func (p *Proxy) isStreamingResponse(resp *http.Response) bool {
 	return false
 }
 
-// handleStreamingResponse - обработка streaming ответа с использованием Flusher
+// handleStreamingResponse - обработка streaming ответа с использованием Flusher.
+// При разрыве соединения с бэкендом отправляет финальный chunked-маркер,
+// чтобы клиент (OpenWebUI) не получал TransferEncodingError.
 func (p *Proxy) handleStreamingResponse(w http.ResponseWriter, r *http.Request, resp *http.Response, backendID string) {
+	// Проверяем, является ли ответ chunked (Ollama всегда отдаёт chunked для streaming)
+	isChunked := resp.Header.Get("Transfer-Encoding") == "chunked" || resp.ContentLength == -1
+
 	w.WriteHeader(resp.StatusCode)
 
 	flusher, ok := w.(http.Flusher)
@@ -1587,10 +1735,13 @@ func (p *Proxy) handleStreamingResponse(w http.ResponseWriter, r *http.Request, 
 		return
 	}
 
-	logger.Get().Infow("starting streaming session", "backend", backendID, "content_type", resp.Header.Get("Content-Type"))
+	logger.Get().Infow("starting streaming session", "backend", backendID,
+		"content_type", resp.Header.Get("Content-Type"),
+		"is_chunked", isChunked)
 
 	buf := make([]byte, 32*1024)
 	bytesStreamed := 0
+	streamError := false
 
 	for {
 		n, err := resp.Body.Read(buf)
@@ -1598,6 +1749,7 @@ func (p *Proxy) handleStreamingResponse(w http.ResponseWriter, r *http.Request, 
 			_, writeErr := w.Write(buf[:n])
 			if writeErr != nil {
 				logger.Get().Errorw("error writing to client", "backend", backendID, "error", writeErr)
+				streamError = true
 				break
 			}
 			bytesStreamed += n
@@ -1608,11 +1760,23 @@ func (p *Proxy) handleStreamingResponse(w http.ResponseWriter, r *http.Request, 
 				break
 			}
 			logger.Get().Errorw("error reading from backend", "backend", backendID, "error", err)
+			streamError = true
 			break
 		}
 	}
 
-	logger.Get().Infow("streaming session completed", "backend", backendID, "bytes_streamed", bytesStreamed)
+	// Всегда отправляем финальный chunked-маркер для chunked ответов.
+	// Это необходимо для корректного завершения HTTP-ответа по протоколу chunked transfer encoding.
+	// Без этого клиент получает "TransferEncodingError: Not enough data to satisfy transfer length header".
+	// Даже при чистом EOF от бэкенда, Ollama не всегда отправляет финальный chunk — мы гарантируем его.
+	if isChunked {
+		// Финальный chunk: "0\r\n\r\n" — последний chunk нулевой длины + завершающие CRLF
+		w.Write([]byte("0\r\n\r\n"))
+		flusher.Flush()
+	}
+
+	logger.Get().Infow("streaming session completed", "backend", backendID,
+		"bytes_streamed", bytesStreamed, "had_error", streamError, "final_chunk_sent", isChunked)
 }
 
 // logStreamingError - логирование ошибок streaming
@@ -1747,16 +1911,24 @@ func (p *Proxy) GetClusterState() *types.ClusterState {
 			state.HealthyBackends++
 		}
 
+		backendConfig := *backendState.Backend
+
+		// Приоритет: RuntimeMaxConcurrentRequests > MaxConcurrentReqs
+		maxConcurrent := backendConfig.MaxConcurrentReqs
+		if backendConfig.RuntimeMaxConcurrentRequests > 0 {
+			maxConcurrent = backendConfig.RuntimeMaxConcurrentRequests
+		}
 		metrics := types.BackendMetrics{
 			ID:        id,
 			Timestamp: time.Now().UTC(),
 			Status:    status,
 			HasAgent:  hasAgent,
-			Host:      backendState.Backend.Host,
-			OllamaPort: backendState.Backend.OllamaPort,
+			Host:      backendConfig.Host,
+			OllamaPort: backendConfig.OllamaPort,
 			GPU:       types.GPUMetrics{},
 			System:    types.SystemMetrics{},
 			Ollama:    types.OllamaMetrics{RunningModels: []types.RunningModel{}},
+			MaxConcurrentRequests: maxConcurrent,
 		}
 
 		if agentMetrics, ok := p.metricsMgr.metrics[id]; ok {
@@ -1764,6 +1936,7 @@ func (p *Proxy) GetClusterState() *types.ClusterState {
 			metrics.Status = status
 			metrics.HasAgent = hasAgent
 			metrics.Prediction = prediction
+			metrics.MaxConcurrentRequests = maxConcurrent
 			state.ActiveRequests += agentMetrics.Ollama.ActiveRequests
 			backendState.mu.Lock()
 			if backendState.CalculatedRPS > 0 {
@@ -1776,6 +1949,7 @@ func (p *Proxy) GetClusterState() *types.ClusterState {
 			backendState.mu.Unlock()
 			state.TotalGPUUsage += agentMetrics.GPU.UsagePercent
 		} else {
+			metrics.MaxConcurrentRequests = backendConfig.MaxConcurrentReqs
 			backendState.mu.Lock()
 			metrics.Ollama.TotalRequests = backendState.TotalRequests
 			backendState.mu.Unlock()
@@ -1869,7 +2043,7 @@ func (sm *SessionManager) Clear() {
 }
 
 // Set - установка сессии (с clientName, clientIP и userAgent)
-func (sm *SessionManager) Set(id, backendID, model, clientName, userAgent string) {
+func (sm *SessionManager) Set(id, backendID, model, clientName, clientIP, userAgent string) {
 	sm.mu.Lock()
 	defer sm.mu.Unlock()
 
@@ -1878,15 +2052,18 @@ func (sm *SessionManager) Set(id, backendID, model, clientName, userAgent string
 		session.BackendID = backendID
 		session.Model = model
 		session.ClientName = clientName
+		session.ClientIP = clientIP
 		session.UserAgent = userAgent
 		session.LastRequestAt = now
 		session.RequestCount++
 	} else {
-		clientIP := id
-		if idx := strings.Index(id, "::"); idx > 0 {
-			clientIP = id[:idx]
-		} else if ip, _, err := net.SplitHostPort(id); err == nil {
-			clientIP = ip
+		if clientIP == "" {
+			clientIP = id
+			if idx := strings.Index(id, "::"); idx > 0 {
+				clientIP = id[:idx]
+			} else if ip, _, err := net.SplitHostPort(id); err == nil {
+				clientIP = ip
+			}
 		}
 		sm.sessions[id] = &types.Session{
 			ID:            id,

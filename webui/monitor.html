@@ -90,10 +90,10 @@
     .overlay .spinner { width: 32px; height: 32px; border: 3px solid var(--border-color); border-top-color: var(--accent); border-radius: 50%; animation: spin 1s linear infinite; }
     @keyframes spin { to { transform: rotate(360deg); } }
     main { display: flex; flex-direction: column; height: calc(100vh - 45px); overflow: hidden; }
-    .topo-section { flex: 1 1 auto; position: relative; min-height: 280px; display: flex; }
+    .topo-section { flex: 1 1 auto; position: relative; min-height: 280px; display: flex; padding-bottom: 52px; }
     #vizCanvas { width: 100%; height: 100%; display: block; }
-    .stats-bar { position: absolute; bottom: 8px; left: 50%; transform: translateX(-50%); display: flex; gap: 8px; background: var(--glass-bg); border: 1px solid var(--glass-border); border-radius: 12px; padding: 6px 10px; backdrop-filter: blur(var(--glass-blur)); -webkit-backdrop-filter: blur(var(--glass-blur)); box-shadow: var(--glass-shadow); z-index: 1; overflow: hidden; }
-    .stats-bar::after { content: ''; position: absolute; top: 0; left: 0; right: 0; height: 1px; background: var(--glass-highlight); pointer-events: none; border-radius: 12px 12px 0 0; }
+    .stats-bar { position: absolute; bottom: 0; left: 0; right: 0; display: flex; justify-content: center; gap: 12px; background: var(--glass-bg); border: 1px solid var(--glass-border); border-radius: 0; padding: 8px 16px; backdrop-filter: blur(var(--glass-blur)); -webkit-backdrop-filter: blur(var(--glass-blur)); box-shadow: var(--glass-shadow); z-index: 1; border-top: 2px solid var(--glass-border); }
+    .stats-bar::after { content: ''; position: absolute; top: 0; left: 0; right: 0; height: 1px; background: var(--glass-highlight); pointer-events: none; }
     .stat-item { display: flex; flex-direction: column; align-items: center; min-width: 56px; padding: 2px 6px; }
     .stat-val { font-size: 15px; font-weight: 700; color: var(--text-primary); font-family: var(--font-mono); }
     .stat-label { font-size: 10px; color: var(--text-secondary); text-transform: uppercase; letter-spacing: 0.3px; }
@@ -133,8 +133,9 @@
 <body>
 <header>
   <h1>
+    <img src="logo.svg" alt="OllamaLegion" style="height:28px;width:auto;vertical-align:middle;margin-right:4px">
     <span id="statusDot" class="dot"></span>
-    OllamaLegion — Monitor
+    Monitor
     <span id="demoIndicator" style="display:none;background:var(--danger);color:#fff;font-size:10px;font-weight:700;padding:2px 8px;border-radius:4px;margin-left:8px;text-transform:uppercase;letter-spacing:0.5px">ДЕМО</span>
   </h1>
   <div class="header-right">
@@ -149,6 +150,7 @@
     <span id="connBadge" class="badge badge-yellow">Подключение…</span>
   </div>
 </header>
+<div id="topoTooltip" style="display:none;position:fixed;pointer-events:none;z-index:1000;background:var(--glass-bg);backdrop-filter:blur(12px);-webkit-backdrop-filter:blur(12px);border:1px solid var(--glass-border);border-radius:10px;padding:10px 14px;font-size:12px;line-height:1.6;max-width:300px;box-shadow:var(--glass-shadow);color:var(--text-primary);white-space:nowrap"></div>
 <main>
   <div class="topo-section">
     <canvas id="vizCanvas"></canvas>
@@ -329,10 +331,10 @@
         { model: 'llama3.1', target: null, status: 'pending', enqueued: new Date(Date.now() - 200).toISOString(), sessionId: 'sess-demo-5' }
       ]},
       sessions: { sessions: [
-        { id: '192.168.1.100::Cline::llama3.1', backendId: 'ollama-1', model: 'llama3.1', clientIP: '192.168.1.100', clientName: 'Cline', requestCount: 12, lastRequestAt: new Date(Date.now()-3000).toISOString() },
+        { id: '192.168.1.100::Cline::llama3.1:cloud', backendId: '', model: 'llama3.1:cloud', clientIP: '192.168.1.100', clientName: 'Cline', requestCount: 12, lastRequestAt: new Date(Date.now()-3000).toISOString() },
+        { id: '10.0.0.55::Cline::llama3.1:cloud', backendId: '', model: 'llama3.1:cloud', clientIP: '10.0.0.55', clientName: 'Cline', requestCount: 7, lastRequestAt: new Date(Date.now()-1500).toISOString() },
         { id: '192.168.1.100::OpenWebUI::gemma2', backendId: 'ollama-2', model: 'gemma2', clientIP: '192.168.1.100', clientName: 'OpenWebUI', requestCount: 5, lastRequestAt: new Date(Date.now()-8000).toISOString() },
         { id: '192.168.1.100::python-requests::llama3.1', backendId: 'ollama-1', model: 'llama3.1', clientIP: '192.168.1.100', clientName: 'python-requests/2.31.0', requestCount: 3, lastRequestAt: new Date(Date.now()-1200).toISOString() },
-        { id: '192.168.1.100::curl::qwen2.5', backendId: 'ollama-2', model: 'qwen2.5', clientIP: '192.168.1.100', clientName: 'curl/8.5.0', requestCount: 1, lastRequestAt: new Date(Date.now()-500).toISOString() },
         { id: '10.0.0.50::Cline::deepseek-r1', backendId: 'ollama-1', model: 'deepseek-r1', clientIP: '10.0.0.50', clientName: 'Cline', requestCount: 8, lastRequestAt: new Date(Date.now()-4000).toISOString() }
       ]}
     };
@@ -442,18 +444,28 @@
     }).join('') + '<div class="capacity-card"><h4>'+T('monitor.capacity.freeSlots')+'</h4>'+bk.map(function(b){var m=b.maxConcurrentRequests||10,a=b.activeRequests||0,f=m-a,p=a/m*100,c=p>=80?'var(--danger)':p>=50?'var(--warning)':'var(--success)';return'<div class="capacity-bar"><span style="font-size:11px;min-width:80px">'+esc(b.id)+'</span><div class="bar-track-wide"><div class="bar-fill-wide" style="width:'+p+'%;background:'+c+'"></div></div><span class="capacity-val">'+f+'/'+m+'</span></div>';}).join('')+'</div>'+'<div class="capacity-card"><h4>'+T('monitor.capacity.vramPerBackend')+'</h4>'+bk.map(function(b){var t=b.vram?b.vram.totalGB:0,u=b.vram?b.vram.usedGB:0,p=t>0?u/t*100:0,c=p>=85?'var(--danger)':p>=60?'var(--warning)':'var(--success)';return'<div class="capacity-bar"><span style="font-size:11px;min-width:80px">'+esc(b.id)+'</span><div class="bar-track-wide"><div class="bar-fill-wide" style="width:'+p+'%;background:'+c+'"></div></div><span class="capacity-val">'+u.toFixed(1)+'/'+t.toFixed(0)+'G</span></div>';}).join('')+'</div>';
   }
 
+  function isCloudModel(name) { return name && name.indexOf(':cloud') >= 0; }
   function renderModelsInMemory(bk, ss) {
     var mm = {};
-    bk.forEach(function(b) { (b.models||[]).forEach(function(m) { if (!mm[m]) mm[m]={bks:[],sc:0}; mm[m].bks.push(b.id); }); });
-    ss.forEach(function(s) { if (s.model && mm[s.model]) mm[s.model].sc++; });
+    // Local models from backends
+    bk.forEach(function(b) { (b.models||[]).forEach(function(m) { if (!mm[m]) mm[m]={bks:[],sc:0,cloud:false}; mm[m].bks.push(b.id); }); });
+    // Add models from sessions (including cloud models not loaded locally)
+    ss.forEach(function(s) {
+      if (!s.model) return;
+      if (!mm[s.model]) mm[s.model] = {bks:[],sc:0,cloud:isCloudModel(s.model)};
+      if (isCloudModel(s.model)) mm[s.model].cloud = true;
+      mm[s.model].sc++;
+    });
     var models = Object.keys(mm).map(function(k){return{name:k,info:mm[k]};}).sort(function(a,b){return b.info.sc-a.info.sc;});
     document.getElementById('modelsCount').textContent = models.length;
     var tb = document.querySelector('#modelsTable tbody');
     if (!models.length) { tb.innerHTML = '<tr><td colspan="5" style="color:var(--text-secondary);text-align:center;padding:16px">'+T('monitor.common.noData')+'</td></tr>'; return; }
     tb.innerHTML = models.map(function(m) {
       var fb = bk.find(function(b){ return (b.models||[]).indexOf(m.name)>=0; });
-      var vg = fb&&fb.vram&&fb.vram.usedGB ? (fb.vram.usedGB/(fb.models||[]).length).toFixed(1) : '—';
-      return '<tr><td><strong>'+esc(m.name)+'</strong></td><td>'+m.info.bks.map(function(bid){return'<span class="badge badge-purple">'+esc(bid)+'</span>';}).join(' ')+'</td><td class="col-right">'+m.info.sc+'</td><td class="col-right">~'+vg+' GB</td><td class="col-right">'+(m.info.sc>0?'🔥 '+m.info.sc:'—')+'</td></tr>';
+      var vg = fb&&fb.vram&&fb.vram.usedGB ? (fb.vram.usedGB/(fb.models||[]).length).toFixed(1) : (m.info.cloud ? '☁️' : '—');
+      var nameCell = '<strong>' + esc(m.name) + '</strong>' + (m.info.cloud ? ' <span style="font-size:10px;color:var(--accent);background:rgba(59,130,246,0.12);padding:1px 5px;border-radius:4px">☁️ cloud</span>' : '');
+      var bkCell = m.info.cloud && m.info.bks.length === 0 ? '<span class="badge badge-blue">☁️ cloud</span>' : m.info.bks.map(function(bid){return'<span class="badge badge-purple">'+esc(bid)+'</span>';}).join(' ');
+      return '<tr><td>'+nameCell+'</td><td>'+bkCell+'</td><td class="col-right">'+m.info.sc+'</td><td class="col-right">'+(m.info.cloud ? '☁️ N/A' : '~'+vg+' GB')+'</td><td class="col-right">'+(m.info.sc>0?(m.info.cloud?'☁️ '+m.info.sc:'🔥 '+m.info.sc):'—')+'</td></tr>';
     }).join('');
   }
 
@@ -463,8 +475,10 @@
     if (!bk.length) { tb.innerHTML = '<tr><td colspan="11" style="color:var(--text-secondary);text-align:center;padding:16px">'+T('monitor.common.noData')+'</td></tr>'; return; }
     tb.innerHTML = bk.map(function(b) {
       var mr = b.maxConcurrentRequests||10, a = b.activeRequests||0;
-      var gu = b.gpu?b.gpu.usagePercent:0, vu = b.vram?b.vram.usagePercent:b.vramUsagePercent||0;
-      var cu = b.system?b.system.cpuUsagePercent:0, ru = b.memoryUsagePercent||(b.system?b.system.memoryUsagePercent:0);
+      var gu = (b.gpu && b.gpu.usagePercent != null) ? b.gpu.usagePercent : 0;
+      var vu = (b.vram && b.vram.usagePercent != null) ? b.vram.usagePercent : (b.vramUsagePercent || 0);
+      var cu = (b.system && b.system.cpuUsagePercent != null) ? b.system.cpuUsagePercent : 0;
+      var ru = (b.memoryUsagePercent != null) ? b.memoryUsagePercent : ((b.system && b.system.memoryUsagePercent != null) ? b.system.memoryUsagePercent : 0);
       var sc = (b.score||b.weight||0).toFixed(2);
       var scs = b.status==='healthy'||b.status==='active'||b.status==='ready' ? 'badge-green' : (b.status==='error'||b.status==='unhealthy'?'badge-red':'badge-yellow');
       var up = b.lastSeen ? fmtDur(Date.now()-new Date(b.lastSeen).getTime()) : '-';
@@ -485,17 +499,51 @@
     }).join('');
   }
 
+  // Color hash for IP-based coloring
+  function ipColor(ip) {
+    if (!ip) return 'var(--text-secondary)';
+    var h = 0, i, c;
+    for (i = 0; i < ip.length; i++) { c = ip.charCodeAt(i); h = ((h << 5) - h) + c; h |= 0; }
+    h = Math.abs(h);
+    var hue = (h % 12) * 30;
+    return 'hsl(' + hue + ', 60%, 60%)';
+  }
+
+  function isTechnicalClient(cn, ua) {
+    if (!cn) return false;
+    var l = cn.toLowerCase();
+    if (l.indexOf('monitor') >= 0) return true;
+    if (l.indexOf('healthcheck') >= 0 || l.indexOf('health') >= 0) return true;
+    if (l.indexOf('kube-probe') >= 0 || l.indexOf('kube') >= 0) return true;
+    if (l.indexOf('prometheus') >= 0) return true;
+    if (l.indexOf('ollamalegion') >= 0 && l.indexOf('agent') >= 0) return true;
+    return false;
+  }
+
   function renderSessions(ss) {
-    document.getElementById('sessionCount').textContent = ss.length;
+    // Filter out technical sessions (monitor, healthcheck, kube-probe, prometheus)
+    var visibleSessions = ss.filter(function(s) {
+      if (isTechnicalClient(s.clientName, s.userAgent)) return false;
+      // Also skip sessions with no requests and idle > 5 min
+      var idleMs = s.lastRequestAt ? (Date.now() - new Date(s.lastRequestAt).getTime()) : 999999;
+      if ((s.requestCount || 0) === 0 && idleMs > 300000) return false;
+      return true;
+    });
+
+    document.getElementById('sessionCount').textContent = visibleSessions.length;
     var tb = document.querySelector('#sessionsTable tbody');
-    if (!ss.length) { tb.innerHTML = '<tr><td colspan="7" style="color:var(--text-secondary);text-align:center;padding:16px">'+T('monitor.common.noData')+'</td></tr>'; return; }
-    tb.innerHTML = ss.map(function(s) {
+    if (!visibleSessions.length) { tb.innerHTML = '<tr><td colspan="7" style="color:var(--text-secondary);text-align:center;padding:16px">'+T('monitor.common.noData')+'</td></tr>'; return; }
+    tb.innerHTML = visibleSessions.map(function(s) {
       var idl = s.lastRequestAt ? fmtDur(Date.now()-new Date(s.lastRequestAt).getTime()) : '-';
-      return '<tr><td>'+esc(s.id.slice(0,16))+'…</td><td>'+esc(s.backendId||'—')+'</td><td>'+esc(s.model||'-')+'</td><td class="col-right">'+(s.requestCount||0)+'</td><td class="col-right">'+idl+'</td><td>'+esc(s.clientIP||'-')+'</td><td>'+getCI(s.clientName)+' '+esc(s.clientName||'-')+'</td></tr>';
+      var modelCell = esc(s.model||'-');
+      if (isCloudModel(s.model)) modelCell += ' ☁️';
+      var ipCol = ipColor(s.clientIP);
+      var ci = getCI(s.clientName);
+      return '<tr><td>'+esc(s.id.slice(0,16))+'…</td><td>'+esc(s.backendId||'—')+'</td><td>'+modelCell+'</td><td class="col-right">'+(s.requestCount||0)+'</td><td class="col-right">'+idl+'</td><td><span style="color:'+ipCol+';font-weight:600">'+esc(s.clientIP||'-')+'</span></td><td>'+ci+' <span style="color:'+ipCol+'">'+esc(s.clientName||'-')+'</span></td></tr>';
     }).join('');
   }
 
-  function getCI(n) { if (!n) return '👤'; var l=n.toLowerCase(); if (l.indexOf('cline')>=0) return '🦾'; if (l.indexOf('openwebui')>=0||l.indexOf('open-webui')>=0) return '🌐'; if (l.indexOf('curl')>=0) return '📡'; if (l.indexOf('python')>=0||l.indexOf('requests')>=0) return '🐍'; return '👤'; }
+  function getCI(n) { if (!n) return '👤'; var l=n.toLowerCase(); if (l.indexOf('cline')>=0) return '🦾'; if (l.indexOf('openwebui')>=0||l.indexOf('open-webui')>=0) return '🌐'; if (l.indexOf('curl')>=0) return '📡'; if (l.indexOf('python')>=0||l.indexOf('requests')>=0) return '🐍'; if (l.indexOf('node')>=0||l.indexOf('axios')>=0) return '🟢'; return '👤'; }
   function bar(v) { var x=Math.max(0,Math.min(100,v||0)),c='var(--success)'; if (x>60) c='var(--warning)'; if (x>85) c='var(--danger)'; return '<span class="bar-track"><span class="bar-fill" style="width:'+x+'%;background:'+c+'"></span></span>'; }
   function esc(s) { if (s==null) return ''; return String(s).replace(/[&<>"']/g,function(c){return{'&':'&','<':'<','>':'>','"':'"',"'":'&#39;'}[c];}); }
   function fmtDur(ms) { if (ms<0) ms=0; var s=Math.floor(ms/1000); if (s<60) return s+'s'; var m=Math.floor(s/60); if (m<60) return m+'m '+(s%60)+'s'; var h=Math.floor(m/60); return h+'h '+(m%60)+'m'; }
@@ -507,8 +555,151 @@
   window.addEventListener('resize', rsz); rsz();
   function updateTopology(bk, ss, q) { topo.backends=bk; topo.sessions=ss; topo.queue=q; }
   function isLightTheme() { return document.documentElement.getAttribute('data-theme') === 'light'; }
+
+  // Tooltip on canvas
+  var ttEl = document.getElementById('topoTooltip');
+  cv.addEventListener('mousemove', function(e) {
+    var rect = cv.getBoundingClientRect();
+    var mx = e.clientX - rect.left;
+    var my = e.clientY - rect.top;
+    var w = topo.w, h = topo.h, cX = w/2, cY = h/2;
+    var found = null;
+    // Check client boxes (left side)
+    for (var i = topo.sessions.length - 1; i >= 0; i--) {
+      var s = topo.sessions[i];
+      var y = nY('session', i);
+      if (mx >= 12 && mx <= 132 && my >= y-22 && my <= y+22) { found = { type: 'client', session: s }; break; }
+    }
+    // Check backend boxes (right side)
+    if (!found) {
+      for (var i = topo.backends.length - 1; i >= 0; i--) {
+        var b = topo.backends[i];
+        var y = nY('backend', i);
+        if (mx >= w-140 && mx <= w-12 && my >= y-26 && my <= y+26) { found = { type: 'backend', backend: b }; break; }
+      }
+    }
+    // Check balancer box
+    if (!found) {
+      var bw=180,bh=100,bx=cX-bw/2,by=cY-bh/2;
+      if (mx >= bx-4 && mx <= bx+bw+4 && my >= by-4 && my <= by+bh+4) {
+        var pend = topo.queue.pending_count || 0;
+        var proc = topo.queue.processing_count || 0;
+        found = { type: 'balancer', pending: pend, processing: proc, total: (topo.queue.all||[]).length };
+      }
+    }
+    if (found) {
+      var html = '';
+      if (found.type === 'client') {
+        var s = found.session;
+        var idl = s.lastRequestAt ? fmtDur(Date.now() - new Date(s.lastRequestAt).getTime()) : '-';
+        html = '<div><strong>' + esc(s.clientName || '?') + '</strong></div>'
+          + '<div style="color:var(--text-secondary)">IP: <span style="color:' + ipColor(s.clientIP) + ';font-weight:600">' + esc(s.clientIP || '-') + '</span></div>'
+          + '<div style="color:var(--text-secondary)">Модель: ' + esc(s.model || '-') + (isCloudModel(s.model) ? ' ☁️' : '') + '</div>'
+          + '<div style="color:var(--text-secondary)">Бэкенд: ' + esc(s.backendId || 'ждёт') + '</div>'
+          + '<div style="color:var(--text-secondary)">Запросов: <strong>' + (s.requestCount || 0) + '</strong> | Idle: ' + idl + '</div>';
+      } else if (found.type === 'backend') {
+        var b = found.backend;
+        var mr = b.maxConcurrentRequests || 10, a = b.activeRequests || 0;
+        var gu = (b.gpu && b.gpu.usagePercent != null) ? b.gpu.usagePercent : 0;
+        var vu = (b.vram && b.vram.usagePercent != null) ? b.vram.usagePercent : 0;
+        var vtu = b.vram ? b.vram.totalGB : 0, vus = b.vram ? b.vram.usedGB : 0;
+        var cu = (b.system && b.system.cpuUsagePercent != null) ? b.system.cpuUsagePercent : 0;
+        var ru = (b.memoryUsagePercent != null) ? b.memoryUsagePercent : ((b.system && b.system.memoryUsagePercent != null) ? b.system.memoryUsagePercent : 0);
+        var sc = (b.score || 0).toFixed(2);
+        html = '<div><strong>' + esc(b.id) + '</strong> <span style="font-size:10px;color:' + (b.status==='active'||b.status==='ready'?'var(--success)':'var(--danger)') + '">' + b.status + '</span></div>'
+          + '<div style="color:var(--text-secondary)">GPU: ' + gu.toFixed(0) + '% | VRAM: ' + vu.toFixed(0) + '% (' + vus.toFixed(1) + '/' + vtu.toFixed(0) + 'G)</div>'
+          + '<div style="color:var(--text-secondary)">CPU: ' + cu.toFixed(0) + '% | RAM: ' + ru.toFixed(0) + '%</div>'
+          + '<div style="color:var(--text-secondary)">Active: ' + a + '/' + mr + ' | Score: ' + sc + '</div>'
+          + '<div style="color:var(--text-secondary)">Модели: ' + ((b.models||[]).length ? (b.models||[]).slice(0,5).join(', ') : '—') + '</div>'
+          + '<div style="color:var(--text-secondary)">RPS: ' + ((b.ollama && b.ollama.requestsPerSecond != null) ? b.ollama.requestsPerSecond.toFixed(1) : '-') + '</div>';
+      } else if (found.type === 'balancer') {
+        html = '<div><strong>Балансер</strong></div>'
+          + '<div style="color:var(--text-secondary)">Очередь: <strong>' + found.total + '</strong> (ожидают: ' + found.pending + ', обрабатывается: ' + found.processing + ')</div>'
+          + '<div style="color:var(--text-secondary)">Бэкендов: ' + topo.backends.length + ' | Сессий: ' + topo.sessions.length + '</div>';
+      }
+      ttEl.innerHTML = html;
+      ttEl.style.display = 'block';
+      ttEl.style.left = (e.clientX + 16) + 'px';
+      ttEl.style.top = (e.clientY - 10) + 'px';
+    } else {
+      ttEl.style.display = 'none';
+    }
+  });
+  cv.addEventListener('mouseleave', function() { ttEl.style.display = 'none'; });
   var particles = [];
-  function sp() {} // legacy, disabled
+  function spawnParticle(fx, fy, tx, ty, type, model) {
+    particles.push({
+      fx: fx, fy: fy, tx: tx, ty: ty,
+      x: fx, y: fy,
+      createdAt: Date.now(),
+      duration: type === 'pending' ? 2500 : 1800,
+      type: type,
+      model: model || '',
+      alive: true
+    });
+  }
+   function sp() {
+    var cX = topo.w/2, cY = topo.h/2;
+    var now = Date.now();
+    var balInX = cX - 75, balOutX = cX + 75;
+
+    // Spawn request particles from active sessions (client → balancer entry)
+    // Only for sessions with recent activity (last 30s) and non-technical clients
+    topo.sessions.forEach(function(s, i) {
+      var cn = (s.clientName || '').toLowerCase();
+      if (cn.indexOf('monitor') >= 0 || cn.indexOf('health') >= 0 || cn.indexOf('kube') >= 0) return;
+      var idleMs = s.lastRequestAt ? (now - new Date(s.lastRequestAt).getTime()) : 999999;
+      if (idleMs > 30000) return;
+      var sy = nY('session', i);
+      var sX = 140;
+      if (Math.random() < 0.18) spawnParticle(sX, sy, balInX, sy, 'request', s.model);
+    });
+
+    // Spawn particles from balancer to backends
+    topo.backends.forEach(function(b, i) {
+      var active = b.activeRequests || 0;
+      if (active <= 0) return;
+      var by = nY('backend', i);
+      var eX = topo.w - 140;
+      var prob = Math.min(active * 0.08, 0.40);
+      // Vertical: from balancer exit down to backend row
+      if (Math.random() < prob) spawnParticle(balOutX, cY, balOutX, by, 'processing', (b.models && b.models[0]) || '');
+      // Horizontal: along backend row to the endpoint
+      if (Math.random() < prob * 0.5) spawnParticle(balOutX, by, eX, by, 'complete', (b.models && b.models[0]) || '');
+    });
+
+    // Cross-balancer particles: client → balancer-in → balancer-out → backend
+    topo.sessions.forEach(function(s, i) {
+      var cn = (s.clientName || '').toLowerCase();
+      if (cn.indexOf('monitor') >= 0 || cn.indexOf('health') >= 0 || cn.indexOf('kube') >= 0) return;
+      var idleMs = s.lastRequestAt ? (now - new Date(s.lastRequestAt).getTime()) : 999999;
+      if (idleMs > 30000) return;
+      // Only cross if session has an assigned backend
+      if (!s.backendId) return;
+      var bIdx = -1;
+      for (var j = 0; j < topo.backends.length; j++) {
+        if (topo.backends[j].id === s.backendId) { bIdx = j; break; }
+      }
+      if (bIdx < 0) return;
+      var sy = nY('session', i);
+      var by = nY('backend', bIdx);
+      if (Math.random() < 0.06) {
+        spawnParticle(140, sy, balOutX, by, 'request', s.model);
+      }
+    });
+
+    // Pending particles swirling around balancer
+    var pendCount = topo.queue.pending_count || 0;
+    for (var p = 0; p < pendCount; p++) {
+      if (Math.random() < 0.22) {
+        var angle = Math.random() * Math.PI * 2;
+        var radius = 50 + Math.random() * 40;
+        var sx = cX + Math.cos(angle) * radius;
+        var sy = cY + Math.sin(angle) * radius;
+        spawnParticle(sx, sy, cX, cY, 'pending', 'queued');
+      }
+    }
+  }
   function nY(type, i) { var cnt=type==='session'?Math.max(1,topo.sessions.length):Math.max(1,topo.backends.length); var m=80, av=topo.h-m*2, st=av/Math.max(1,cnt-1); return m+i*st; }
   function vF() { return 'system-ui,-apple-system,sans-serif'; }
   function trunc(s,l) { if (!s) return ''; return s.length>l?s.slice(0,l)+'…':s; }
@@ -527,7 +718,7 @@
     topo.sessions.forEach(function(s,i){
       var y=nY('session',i), tc=s.backendId?'rgba(59,130,246,0.25)':'rgba(148,163,184,0.18)';
       cx.strokeStyle=tc; cx.lineWidth=s.backendId?3:2;
-      var tX=140+(cX-90-140)*0.65, sX=140, eX=cX-90, eY=cY;
+      var tX=140+(cX-75-140)*0.65, sX=140, eX=cX-75, eY=cY;
       cx.beginPath();cx.moveTo(sX,y);cx.lineTo(tX,y);cx.stroke();
       cx.beginPath();cx.moveTo(tX,y);cx.lineTo(tX,eY);cx.stroke();
       cx.beginPath();cx.moveTo(tX,eY);cx.lineTo(eX,eY);cx.stroke();
@@ -537,7 +728,7 @@
     topo.backends.forEach(function(b,i){
       var y=nY('backend',i), ih=b.status==='active'||b.status==='healthy'||b.status==='ready', tc=ih?'rgba(59,130,246,0.25)':'rgba(239,68,68,0.25)';
       cx.strokeStyle=tc; cx.lineWidth=ih?3:2;
-      var sX=cX+90, sY=cY, tX=sX+(w-140-sX)*0.35, eX=w-140;
+      var sX=cX+75, sY=cY, tX=sX+(w-140-sX)*0.35, eX=w-140;
       cx.beginPath();cx.moveTo(sX,sY);cx.lineTo(sX,y);cx.stroke();
       cx.beginPath();cx.moveTo(sX,y);cx.lineTo(eX,y);cx.stroke();
       cx.fillStyle=tc.replace('0.25','0.5');cx.beginPath();cx.arc(sX,y,5,0,Math.PI*2);cx.fill();
@@ -545,12 +736,16 @@
     cx.setLineDash([]);
     var textLight=lt?'#1e293b':'#e2e8f0', textMuted=lt?'#475569':'#b0b7c4';
     topo.sessions.forEach(function(s,i){
-      var y=nY('session',i), ia=s.backendId!=null, bc=ia?'rgba(59,130,246,0.18)':'rgba(148,163,184,0.12)', br=ia?'rgba(59,130,246,0.5)':'rgba(148,163,184,0.25)';
+      var y=nY('session',i), ia=s.backendId!=null, isCloud=isCloudModel(s.model);
+      var bc, br;
+      if (isCloud) { bc='rgba(59,130,246,0.15)'; br='rgba(59,130,246,0.45)'; }
+      else if (ia) { bc='rgba(59,130,246,0.18)'; br='rgba(59,130,246,0.5)'; }
+      else { bc='rgba(148,163,184,0.12)'; br='rgba(148,163,184,0.25)'; }
       cx.fillStyle=bc; rr(cx,12,y-22,120,44,8); cx.fill(); cx.strokeStyle=br; cx.lineWidth=1; cx.stroke();
       cx.fillStyle=textLight; cx.font='bold 11px '+vF(); cx.textAlign='left';
       cx.save();cx.beginPath();cx.rect(16,y-18,108,14);cx.clip();cx.fillText(getCI(s.clientName)+' '+trunc(s.clientName,8),20,y-6);cx.restore();
-      cx.fillStyle=textMuted; cx.font='10px '+vF();
-      cx.save();cx.beginPath();cx.rect(16,y+1,108,14);cx.clip();cx.fillText((s.model||'—')+' • '+(s.requestCount||0)+' req',20,y+8);cx.restore();
+      cx.fillStyle=isCloud?'#60a5fa':textMuted; cx.font='10px '+vF();
+      cx.save();cx.beginPath();cx.rect(16,y+1,108,14);cx.clip();cx.fillText((isCloud?'☁️ ':'')+(s.model||'—')+' • '+(s.requestCount||0)+' req',20,y+8);cx.restore();
     });
     var bw=180,bh=100,bx=cX-bw/2,by=cY-bh/2;
     var pend=topo.queue.pending_count||0, mq=(topo.queue.all||[]).length>0?Math.max((topo.queue.all||[]).length,5):5;
@@ -579,7 +774,42 @@
       if(vp>0){cx.fillStyle=lt?'rgba(0,0,0,0.06)':'rgba(255,255,255,0.06)';rr(cx,w-132,y+26,100,3,2);cx.fill();cx.fillStyle=vp>85?'#ef4444':vp>60?'#f59e0b':'#22c55e';rr(cx,w-132,y+26,100*(vp/100),3,2);cx.fill();}
     });
     sp();
-    for (var i=particles.length-1;i>=0;i--){var p=particles[i];particles.splice(i,1);}
+    // Render and manage particle lifecycle
+    var now = Date.now();
+    for (var i = particles.length - 1; i >= 0; i--) {
+      var p = particles[i];
+      var elapsed = now - p.createdAt;
+      var t = Math.min(elapsed / p.duration, 1.0);
+      // Ease-out cubic for smooth deceleration
+      var et = 1 - Math.pow(1 - t, 3);
+      p.x = p.fx + (p.tx - p.fx) * et;
+      p.y = p.fy + (p.ty - p.fy) * et;
+      // Particle colors by type
+      var pColor, pSize;
+      switch (p.type) {
+        case 'request': pColor = '#60a5fa'; pSize = 3; break;
+        case 'pending': pColor = '#f59e0b'; pSize = 4; break;
+        case 'processing': pColor = '#a855f7'; pSize = 4; break;
+        case 'complete': pColor = '#22c55e'; pSize = 2; break;
+        default: pColor = '#94a3b8'; pSize = 3;
+      }
+      // Glow effect
+      cx.shadowColor = pColor;
+      cx.shadowBlur = t < 0.5 ? 6 : 3;
+      cx.fillStyle = pColor;
+      cx.beginPath();
+      cx.arc(p.x, p.y, pSize * (1 + 0.3 * Math.sin(elapsed * 0.01)), 0, Math.PI * 2);
+      cx.fill();
+      cx.shadowBlur = 0;
+      // Remove expired particles
+      if (t >= 1.0) {
+        particles.splice(i, 1);
+      }
+    }
+    // Limit max particles to prevent memory issues
+    if (particles.length > 200) {
+      particles.splice(0, particles.length - 200);
+    }
     if(topo.sessions.length===0&&topo.backends.length===0){
       cx.fillStyle='#475569';cx.font='14px '+vF();cx.textAlign='center';
       cx.fillText(T('monitor.overlay.topologyNoData'),w/2,h/2+80);
@@ -603,12 +833,18 @@
   };
 
   // ---- INIT ----
+  // Apply i18n texts immediately before first data fetch
+  document.documentElement.setAttribute('lang', LANG());
+  updateMonitorTexts();
+  // Deferred re-apply in case I18N packs loaded after this script
+  setTimeout(function() { updateMonitorTexts(); }, 100);
+  setTimeout(function() { updateMonitorTexts(); }, 500);
+
   timerId = setInterval(fetchAllSafe, refreshInterval);
   anim();
   fetchAll();
 
   // ---- I18N ----
-  document.documentElement.setAttribute('lang', LANG());
 
   function syncTheme() {
     try {

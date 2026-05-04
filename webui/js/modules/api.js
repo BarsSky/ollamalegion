@@ -114,6 +114,22 @@ const Api = (function () {
             return response.ok;
         },
 
+        async updateBackendLimits(id, maxConcurrentRequests) {
+            const response = await request(`${API_BASE}/api/v1/backends/${id}/limits`, {
+                method: 'PUT',
+                body: JSON.stringify({ maxConcurrentRequests })
+            });
+            return response.ok;
+        },
+
+        async updateBackendLimitsFull(id, maxConcurrentRequests, maxModels) {
+            const response = await request(`${API_BASE}/api/v1/backends/${id}/limits`, {
+                method: 'PUT',
+                body: JSON.stringify({ maxConcurrentRequests, maxModels })
+            });
+            return response.ok;
+        },
+
         // Generic POST helper returning JSON
         async post(endpoint, data) {
             const response = await request(`${API_BASE}${endpoint}`, {

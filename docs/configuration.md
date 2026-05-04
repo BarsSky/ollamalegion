@@ -185,6 +185,7 @@ LB_METRICS_INTERVAL=5
 LB_REQUEST_TIMEOUT=120
 LB_QUEUE_TIMEOUT=300
 LB_QUEUE_MAX_SIZE=100
+LB_QUEUE_WORKERS=4
 
 # Лимиты ресурсов
 LB_GPU_MAX_USAGE=90
@@ -244,10 +245,9 @@ BACKEND_1_MAX_REQS=10
 |------------|--------------|----------|
 | `AGENT_PORT` | `18032` | Порт для локальных метрик агента |
 | `OLLAMA_URL` | `http://localhost:11434` | URL локального Ollama |
-| `NVML_ENABLED` | `true` | Включить NVML поддержку |
-| `METRICS_INTERVAL` | `5s` | Интервал отправки метрик |
-| `HEARTBEAT_INTERVAL` | `3s` | Интервал heartbeat сигналов |
-| `COLLECT_INTERVAL` | `5s` | Интервал сбора метрик |
+| `NVML_ENABLED` | `true` | Включить NVML поддержку (требуется для GPU-метрик) |
+| `COLLECT_INTERVAL` | `5` | Интервал сбора метрик (секунд). Также принимается `METRICS_INTERVAL` (устар., для совместимости) |
+| `HEARTBEAT_INTERVAL` | `3` | Интервал heartbeat сигналов (секунд) |
 | `LOG_LEVEL` | `info` | Уровень логирования (debug, info, warn, error) |
 | `LOG_FORMAT` | `text` | Формат логов (text, json) |
 | `CONFIG_PATH` | - | Путь к файлу конфигурации |
@@ -273,9 +273,8 @@ OLLAMA_URL=http://localhost:11434
 NVML_ENABLED=true
 
 # Интервалы
-METRICS_INTERVAL=5s
-HEARTBEAT_INTERVAL=3s
-COLLECT_INTERVAL=5s
+COLLECT_INTERVAL=5
+HEARTBEAT_INTERVAL=3
 
 # Логирование
 LOG_LEVEL=info
@@ -390,6 +389,8 @@ LB_TLS_PORT=8443
 | `keyFile` | string | `certs/server.key` | Путь к SSL ключу |
 | `minVersion` | string | `TLS12` | Минимальная версия TLS (TLS12, TLS13) |
 | `autoCert` | bool | `false` | Автоматическая генерация self-signed сертификата |
+
+При включённом TLS прокси доступен на `tlsPort` (8443), а HTTPS Management API — на `tlsPort+1` (8444).
 
 ### Генерация самоподписанного сертификата
 

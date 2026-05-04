@@ -17,6 +17,7 @@ COPY webui/monitor.html .
 COPY webui/css/ ./css/
 COPY webui/js/ ./js/
 COPY webui/img/ ./img/
+COPY webui/webfonts/ ./webfonts/
 COPY webui/logo.svg ./
 COPY webui/favicon-16x16.png .
 COPY webui/favicon-32x32.png .

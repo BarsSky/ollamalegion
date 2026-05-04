@@ -289,6 +289,21 @@ func (qm *QueueManager) worker(id int) {
 
 // processRequest - обработка одного запроса
 func (qm *QueueManager) processRequest(req *QueuedRequest, workerID int) {
+	// Защита от паники: гарантируем освобождение processing и уведомление клиента
+	defer func() {
+		if r := recover(); r != nil {
+			logger.Get().Errorw("panic in processRequest, recovered",
+				"worker_id", workerID,
+				"model", req.Model,
+				"panic", r,
+			)
+			select {
+			case req.Done <- false:
+			default:
+			}
+		}
+	}()
+
 	logger.Get().Debugw("processing queued request",
 		"worker_id", workerID,
 		"model", req.Model,
@@ -365,7 +380,12 @@ func (qm *QueueManager) processRequest(req *QueuedRequest, workerID int) {
 			time.AfterFunc(100*time.Millisecond, func() {
 				select {
 				case qm.queue <- req:
-				case <-qm.ctx.Done():
+				default:
+					// Канал переполнен или ctx.Done — уведомляем клиента о неудаче
+					select {
+					case req.Done <- false:
+					default:
+					}
 				}
 			})
 			return
@@ -1615,8 +1635,14 @@ func (p *Proxy) proxyRequest(w http.ResponseWriter, r *http.Request, backendID s
 		}
 	}
 
-	req.Header.Set("X-Forwarded-For", r.RemoteAddr)
-	req.Header.Set("X-Real-IP", r.RemoteAddr)
+	// Пробрасываем реальный IP клиента, а не адрес контейнера Docker
+	clientRealIP := p.getClientRealIP(r)
+	if existingXFF := r.Header.Get("X-Forwarded-For"); existingXFF != "" {
+		req.Header.Set("X-Forwarded-For", existingXFF)
+	} else {
+		req.Header.Set("X-Forwarded-For", clientRealIP)
+	}
+	req.Header.Set("X-Real-IP", clientRealIP)
 	req.Host = target.Host
 
 	resp, err := client.Do(req)
@@ -2234,11 +2260,33 @@ func (p *Proxy) GetQueueStats() QueueStats {
 	timeout := p.queueMgr.timeout
 	p.queueMgr.mu.Unlock()
 
+	// Вычисляем среднее время ожидания из истории завершённых запросов
+	var avgWaitMs int64
+	p.queueMgr.historyMu.RLock()
+	if len(p.queueMgr.completedHistory) > 0 {
+		// Берём последние 100 записей для актуального среднего
+		history := p.queueMgr.completedHistory
+		start := 0
+		if len(history) > 100 {
+			start = len(history) - 100
+		}
+		var totalMs int64
+		count := 0
+		for i := start; i < len(history); i++ {
+			totalMs += history[i].WaitTimeMs
+			count++
+		}
+		if count > 0 {
+			avgWaitMs = totalMs / int64(count)
+		}
+	}
+	p.queueMgr.historyMu.RUnlock()
+
 	return QueueStats{
 		CurrentSize:   len(p.queueMgr.queue),
 		MaxSize:       p.queueMgr.maxSize,
 		Processed:     processed,
-		WaitTimeAvgMs: 0,
+		WaitTimeAvgMs: avgWaitMs,
 		Workers:       workers,
 		TimeoutSec:    int(timeout.Seconds()),
 	}

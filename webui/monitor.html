@@ -551,7 +551,15 @@
   // ---- Canvas ----
   var cv = document.getElementById('vizCanvas'), cx = cv.getContext('2d');
   var topo = { backends:[], sessions:[], queue:{}, w:0, h:0 };
-  function rsz() { var r=cv.parentElement.getBoundingClientRect(); cv.width=r.width; cv.height=r.height; topo.w=r.width; topo.h=r.height; }
+  function rsz() {
+    var r = cv.parentElement.getBoundingClientRect();
+    cv.width = r.width;
+    cv.height = r.height;
+    topo.w = r.width;
+    // Вычитаем высоту stats-bar (52px padding-bottom), чтобы балансер центрировался
+    // в видимом пространстве над полосой статистики
+    topo.h = r.height - 52;
+  }
   window.addEventListener('resize', rsz); rsz();
   function updateTopology(bk, ss, q) { topo.backends=bk; topo.sessions=ss; topo.queue=q; }
   function isLightTheme() { return document.documentElement.getAttribute('data-theme') === 'light'; }
@@ -619,8 +627,17 @@
       }
       ttEl.innerHTML = html;
       ttEl.style.display = 'block';
-      ttEl.style.left = (e.clientX + 16) + 'px';
-      ttEl.style.top = (e.clientY - 10) + 'px';
+      var ttLeft = e.clientX + 16;
+      var ttTop = e.clientY - 10;
+      // Prevent tooltip from going off-screen
+      var ttWidth = ttEl.offsetWidth || 300;
+      var ttHeight = ttEl.offsetHeight || 100;
+      if (ttLeft + ttWidth > window.innerWidth - 10) ttLeft = e.clientX - ttWidth - 16;
+      if (ttTop + ttHeight > window.innerHeight - 10) ttTop = e.clientY - ttHeight - 10;
+      if (ttLeft < 10) ttLeft = 10;
+      if (ttTop < 10) ttTop = 10;
+      ttEl.style.left = ttLeft + 'px';
+      ttEl.style.top = ttTop + 'px';
     } else {
       ttEl.style.display = 'none';
     }

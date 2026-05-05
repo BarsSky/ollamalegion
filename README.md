@@ -51,8 +51,8 @@ GPU_MODE=gpu
 NVML_ENABLED=true
 AGENT_PORT=18032
 OLLAMA_URL=http://host.docker.internal:11434
-METRICS_INTERVAL=5s
-HEARTBEAT_INTERVAL=3s
+METRICS_INTERVAL=5
+HEARTBEAT_INTERVAL=3
 EOF
 
 # Раскомментируйте секцию deploy.resources.reservations.devices в docker-compose.agent.yml
@@ -76,8 +76,8 @@ GPU_MODE=cpu
 NVML_ENABLED=false
 AGENT_PORT=18032
 OLLAMA_URL=http://host.docker.internal:11434
-METRICS_INTERVAL=5s
-HEARTBEAT_INTERVAL=3s
+METRICS_INTERVAL=5
+HEARTBEAT_INTERVAL=3
 EOF
 
 # Запуск (секция GPU в docker-compose.agent.yml должна быть закомментирована)
@@ -269,7 +269,7 @@ ollama-loadbalancer/
 │   ├── agent/             # Агент
 │   └── monitor/           # Простой монитор (отдельный бинарник)
 ├── internal/
-│   ├── balancer/          # Логика балансировки (proxy, queue, sessions)
+│   ├── balancer/          # Логика балансировки (proxy, health, sessions, predictor)
 │   ├── agent/             # Сбор метрик GPU/CPU/RAM
 │   ├── api/               # REST API + WebSocket
 │   └── config/            # Конфигурация

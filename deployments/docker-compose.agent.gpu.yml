@@ -25,8 +25,8 @@ services:
     # Дополнительные переменные окружения для production
     environment:
       LOG_LEVEL: ${LOG_LEVEL:-warn}
-      METRICS_INTERVAL: ${METRICS_INTERVAL:-10s}
-      COLLECT_INTERVAL: ${COLLECT_INTERVAL:-10s}
+      METRICS_INTERVAL: ${METRICS_INTERVAL:-10}
+      COLLECT_INTERVAL: ${COLLECT_INTERVAL:-10}
 
     # Увеличенные resource limits для production GPU-ноды
     deploy:

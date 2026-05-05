@@ -11,6 +11,7 @@ const (
 	EventBackendRemove EventType = "backend_remove" // удалён бэкенд
 	EventStatusChange  EventType = "status_change"  // изменение статуса бэкенда
 	EventLimitsChange  EventType = "limits_change"  // изменение runtime-лимитов
+	EventReconfigure   EventType = "reconfigure_request"  // запрос на переформирование бэкенда
 )
 
 // Event — событие для WebSocket/внутренней шины

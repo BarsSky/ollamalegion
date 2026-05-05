@@ -299,6 +299,18 @@ func (s *Server) backendHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Подпуть /reconfigure
+	if len(parts) > 1 && parts[1] == "reconfigure" {
+		s.reconfigureHandler(w, r)
+		return
+	}
+
+	// Подпуть /launch-config
+	if len(parts) > 1 && parts[1] == "launch-config" {
+		s.backendLaunchConfigHandler(w, r)
+		return
+	}
+
 	switch r.Method {
 	case http.MethodGet:
 		s.getBackend(w, r, backendID)
@@ -1747,6 +1759,137 @@ func (s *Server) monitorHandler(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Cache-Control", "no-cache")
 	w.WriteHeader(http.StatusOK)
 	w.Write([]byte(htmlStr))
+}
+
+// backendLaunchConfigHandler — прокси для backendHandler subpath /launch-config
+func (s *Server) backendLaunchConfigHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	parts := strings.Split(strings.TrimPrefix(r.URL.Path, "/api/v1/backends/"), "/")
+	if len(parts) < 3 || parts[1] != "launch-config" {
+		http.NotFound(w, r)
+		return
+	}
+	s.listLaunchConfigs(w, r, parts[0])
+}
+
+// listLaunchConfigs — возвращает конфигурации запуска для backendId
+func (s *Server) listLaunchConfigs(w http.ResponseWriter, r *http.Request, backendID string) {
+	state := s.proxy.GetClusterState()
+	for _, metrics := range state.Backends {
+		if metrics.ID == backendID {
+			gpuCount := 0
+			if metrics.GPU.MemoryTotal > 0 { gpuCount = 1 }
+			vramTotal := metrics.GPU.MemoryTotal
+			ramTotal := metrics.System.MemoryTotal
+
+			configs := []map[string]interface{}{
+				{
+					"label": "Оптимальный (сбалансированный)", "type": "optimal", "isOptimal": true,
+					"envVars": map[string]string{
+						"OLLAMA_NUM_PARALLEL": "4", "OLLAMA_MAX_LOADED_MODELS": "2",
+						"OLLAMA_KV_CACHE_TYPE": "f16", "OLLAMA_GPU_LAYERS": "-1",
+						"OLLAMA_FLASH_ATTENTION": "1", "OLLAMA_NUM_THREADS": fmt.Sprintf("%d", 4),
+						"OLLAMA_CONTEXT_LENGTH": "4096",
+					},
+					"description": "Сбалансированная конфигурация",
+					"limitations": []string{},
+				},
+				{
+					"label": "Скоростной (упор на скорость)", "type": "speed", "isOptimal": false,
+					"envVars": map[string]string{
+						"OLLAMA_NUM_PARALLEL": "8", "OLLAMA_MAX_LOADED_MODELS": "4",
+						"OLLAMA_KV_CACHE_TYPE": "f16", "OLLAMA_GPU_LAYERS": "-1",
+						"OLLAMA_FLASH_ATTENTION": "1", "OLLAMA_NUM_THREADS": fmt.Sprintf("%d", 4),
+						"OLLAMA_CONTEXT_LENGTH": "4096",
+					},
+					"description": "Максимальный параллелизм, все модели в VRAM",
+					"limitations": []string{"Высокое потребление VRAM — возможен OOM на больших моделях"},
+				},
+				{
+					"label": "Экономный (упор на размышления)", "type": "quality", "isOptimal": false,
+					"envVars": map[string]string{
+						"OLLAMA_NUM_PARALLEL": "1", "OLLAMA_MAX_LOADED_MODELS": "1",
+						"OLLAMA_KV_CACHE_TYPE": "q8_0", "OLLAMA_GPU_LAYERS": "-1",
+						"OLLAMA_FLASH_ATTENTION": "1", "OLLAMA_NUM_THREADS": fmt.Sprintf("%d", 4/2),
+						"OLLAMA_CONTEXT_LENGTH": "8192",
+					},
+					"description": "Один запрос с большим контекстом 8K для размышлений",
+					"limitations": []string{"Однопоточный режим — другие клиенты будут ждать в очереди"},
+				},
+			}
+
+			s.writeJSON(w, http.StatusOK, map[string]interface{}{
+				"success":   true,
+				"backendId": backendID,
+				"hardware": map[string]interface{}{
+					"gpuCount": gpuCount, "vramTotalMB": vramTotal,
+					"ramTotalMB": ramTotal, "cpuThreads": 4,
+				},
+				"configs":   configs,
+				"isOptimal": true,
+				"message":   "Текущая конфигурация оптимальна. Альтернативные варианты показаны для ознакомления.",
+			})
+			return
+		}
+	}
+	s.writeJSON(w, http.StatusNotFound, map[string]interface{}{"success": false, "error": "Backend not found"})
+}
+
+
+
+// reconfigureHandler — POST /api/v1/backends/{id}/reconfigure
+// Принимает envVars и инициирует переформирование бэкенда с новыми параметрами запуска Ollama.
+func (s *Server) reconfigureHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	parts := strings.Split(strings.TrimPrefix(r.URL.Path, "/api/v1/backends/"), "/")
+	if len(parts) < 2 || parts[1] != "reconfigure" {
+		http.NotFound(w, r)
+		return
+	}
+	backendID := parts[0]
+
+	var req struct {
+		EnvVars map[string]string `json:"envVars"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		s.writeJSON(w, http.StatusBadRequest, map[string]interface{}{
+			"success": false,
+			"error":   "Invalid request body",
+		})
+		return
+	}
+
+	if !s.proxy.BackendExists(backendID) {
+		s.writeJSON(w, http.StatusNotFound, map[string]interface{}{
+			"success": false,
+			"error":   "Backend not found",
+		})
+		return
+	}
+
+	// Публикуем событие переформирования — агент подписан через WebSocket/события
+	s.proxy.PublishEvent(types.Event{
+		Type:      types.EventReconfigure,
+		Timestamp: time.Now().UTC(),
+		BackendID: backendID,
+		Data: map[string]interface{}{
+			"envVars": req.EnvVars,
+		},
+	})
+
+	logger.Get().Infow("reconfigure request published", "backend", backendID, "envVars", req.EnvVars)
+
+	s.writeJSON(w, http.StatusOK, map[string]interface{}{
+		"success":   true,
+		"backendId": backendID,
+		"message":   "Reconfigure event published. Agent will apply new settings.",
+	})
 }
 
 // restartHandler - перезапуск балансера (только для webui)

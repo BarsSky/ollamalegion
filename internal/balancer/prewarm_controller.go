@@ -32,6 +32,11 @@ func NewPrewarmController(proxy *Proxy, config types.PrewarmConfig) *PrewarmCont
 	}
 }
 
+// Evaluate — экспортируемая обёртка для тестов
+func (pc *PrewarmController) Evaluate() {
+	pc.evaluate()
+}
+
 // Start — запуск фонового цикла проверки
 func (pc *PrewarmController) Start() {
 	if !pc.config.Enabled {

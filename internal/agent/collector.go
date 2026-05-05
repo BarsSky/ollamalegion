@@ -696,6 +696,15 @@ func (a *Agent) collectOllamaMetrics() types.OllamaMetrics {
 	} else {
 		availableModels = tagsResp.models
 		metrics.AvailableModels = availableModels
+
+		// Заполняем ModelSizes из /api/tags (размеры всех доступных моделей)
+		modelSizes := make(map[string]int64, len(availableModels))
+		for _, m := range availableModels {
+			if m.Size > 0 {
+				modelSizes[m.Name] = int64(m.Size)
+			}
+		}
+		metrics.ModelSizes = modelSizes
 	}
 
 	// Единый запрос к /api/ps (один раз вместо двух)

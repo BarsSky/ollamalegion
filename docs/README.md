@@ -220,7 +220,6 @@ ollama-loadbalancer/
 │   │   └── system.go      # Системные метрики
 │   ├── api/               # REST API handlers
 │   │   ├── handlers.go    # API endpoints
-│   │   ├── queue.go       # Queue manager
 │   │   ├── auth.go        # Аутентификация
 │   │   └── metrics_broker.go # WebSocket pub/sub
 │   └── config/            # Конфигурация

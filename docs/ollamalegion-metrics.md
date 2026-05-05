@@ -1,4 +1,4 @@
-# Полный справочник метрик OllamaLegion
+ метрик OllamaLegion
 
 ## Описание
 
@@ -157,9 +157,9 @@
 | **Балансер RPS** | Скользящее окно 60с | ✅ | Нет |
 | **Балансер Queue** | Stats API | ✅ | Нет |
 | **Балансер Prediction** | Filtering + Scoring | ✅ | Нет |
-| **WebUI GPU** | usage, VRAM, temp, power | ✅ 4/7 основных | powerLimit, gpuClock, memClock — скрыты по умолчанию |
-| **WebUI System** | CPU%, RAM, CPU details | ✅ CPU%, RAM, coreCount, loadAvg, model, temperature | Disk, Network — скрыты |
-| **WebUI Ollama** | runningModels, activeRequests, RPS, freeSlots | ✅ 4/4 основных | family, format, parameterSize, quantization — доступны в tooltip |
+| **WebUI GPU** | usage, VRAM, temp, power | ✅ 4/9 основных (используются) | powerLimit (W), gpuClock (MHz), memClock (MHz) — собираются агентом, не отображаются (planned) |
+| **WebUI System** | CPU%, RAM, CPU details | ✅ CPU%, RAM, coreCount, loadAvg, model, temperature | Disk total/used/free, Network RX/TX — собираются агентом, не отображаются (planned) |
+| **WebUI Ollama** | runningModels, activeRequests, RPS, freeSlots | ✅ 4/4 основных | family, format, parameterSize, quantization — собираются, доступны в tooltip |
 
 ---
 
@@ -320,9 +320,9 @@
 
 ---
 
-## 6. Расширенный мониторинг Ollama
+## 11. Расширенный мониторинг Ollama
 
-### 6.1 Флаги запуска Ollama (`OllamaRuntimeFlags`)
+### 11.1 Флаги запуска Ollama (`OllamaRuntimeFlags`)
 
 Агент собирает флаги запуска процесса Ollama из трёх источников (по приоритету):
 
@@ -348,7 +348,7 @@
 | `kvCacheQuant` | `--cache-type-k` | Квантование KV cache |
 | `flashAttention` | `--flash-attn` | Flash Attention |
 
-### 6.2 Контекст моделей (`ModelContextInfo`)
+### 11.2 Контекст моделей (`ModelContextInfo`)
 
 Для каждой загруженной модели агент собирает:
 
@@ -379,7 +379,7 @@ KV Cache Memory = num_layers × 2 (K+V) × hidden_size × effective_context × p
 
 Архитектура и размер слоёв определяются из `model_info.general.architecture` от `/api/show`. Fallback-таблицы для `llama`, `qwen2`, `mistral`, `mixtral`, `phi`.
 
-### 6.3 Ёмкость бэкенда (`BackendCapacity`)
+### 11.3 Ёмкость бэкенда (`BackendCapacity`)
 
 Агент оценивает, какие модели можно загрузить на бэкенд:
 
@@ -401,14 +401,14 @@ KV Cache Memory = num_layers × 2 (K+V) × hidden_size × effective_context × p
 
 Для CPU-агента аналогично по RAM, без GPU layers.
 
-### 6.4 API Endpoints
+### 11.4 API Endpoints
 
 Новые endpoints:
 
 - `GET /api/v1/backends/{id}/capacity` — детальная ёмкость бэкенда с флагами, контекстами и доступными моделями
 - `GET /api/v1/models/capacity` — глобальная сводка по всем бэкендам: `totalLoadable`, `backends[]` с `loadableModelCount`, `runtimeFlags`, `availableModels`
 
-### 6.5 WebUI
+### 11.5 WebUI
 
 Dashboard показывает:
 - **Ollama Runtime** — компактные бейджи флагов: `GPU:47 | C:8192 | NP:4 | T:8 | B:512`
@@ -417,7 +417,7 @@ Dashboard показывает:
 - **Available to Load** — список моделей с зелёными/красными индикаторами загружаемости
 - **Loadable Count** — бейдж с общим количеством моделей, доступных для загрузки
 
-### 6.6 CPU Mode
+### 11.6 CPU Mode
 
 При `platformMode = "cpu"`:
 - VRAM не собирается, используется RAM

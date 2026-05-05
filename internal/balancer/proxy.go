@@ -137,7 +137,8 @@ type QueuedRequest struct {
 	Enqueued     time.Time
 	Done         chan bool
 	Target       string
-	RequeueCount int // Счётчик повторных постановок в очередь
+	RequeueCount int       // Счётчик повторных постановок в очередь
+	LoadDeadline time.Time // Дедлайн ожидания загрузки модели (если инициирована)
 }
 
 // NewProxy - создание нового прокси
@@ -724,75 +725,254 @@ func (p *Proxy) getClientName(r *http.Request) string {
 	return ua
 }
 
-// selectBackend - выбор бэкенда для запроса (5-этапный алгоритм)
-func (p *Proxy) selectBackend(model string) string {
+// CandidateGroup — группа бэкендов-кандидатов одного приоритета
+type CandidateGroup struct {
+	Priority   int      // 1=LOADED, 2=WARMING, 3=FREE, 4=FALLBACK
+	BackendIDs []string
+}
+
+// CandidateGroups — упорядоченный список групп кандидатов
+type CandidateGroups []CandidateGroup
+
+// expandCandidates — группирует бэкенды по приоритетам для заданной модели
+// P1 (LOADED): healthy бэкенды с моделью в памяти, loadRatio < 80%
+// P2 (WARMING): healthy бэкенды где модель в WarmingUpModels
+// P3 (FREE): healthy бэкенды со свободными слотами, без модели
+// P4 (FALLBACK): все healthy бэкенды для resource-based scoring
+func (p *Proxy) expandCandidates(modelName string) CandidateGroups {
 	p.mu.RLock()
 	defer p.mu.RUnlock()
 
-	// 1. Model Affinity (LOADED only)
-	if p.config.Balancing.ModelAffinity && model != "" {
-		if backend := p.findBackendWithModel(model); backend != "" {
-			state := p.backends[backend]
+	threshold := p.config.Balancing.Prewarm.TriggerLoadThreshold
+	if threshold <= 0 {
+		threshold = 0.80
+	}
+
+	var loaded, warming, free, fallback []string
+
+	for id, state := range p.backends {
+		if state.Backend.Status != types.StatusHealthy {
+			continue
+		}
+		if !p.checkResourceLimits(id) {
+			continue
+		}
+
+		pred := state.Prediction
+		if pred.SecondsToCritical > 0 && pred.SecondsToCritical < 300 {
+			continue
+		}
+
+		state.mu.Lock()
+		active := state.ActiveReqs
+		maxReqs := state.Backend.MaxConcurrentReqs
+		_, isWarming := state.WarmingUpModels[modelName]
+		state.mu.Unlock()
+
+		loadRatio := 0.0
+		if maxReqs > 0 {
+			loadRatio = float64(active) / float64(maxReqs)
+		}
+
+		p.metricsMgr.mu.RLock()
+		metrics, hasMetrics := p.metricsMgr.metrics[id]
+		p.metricsMgr.mu.RUnlock()
+		if !hasMetrics {
+			fallback = append(fallback, id)
+			continue
+		}
+
+		hasModel := false
+		for _, m := range metrics.Ollama.RunningModels {
+			if m.Name == modelName || strings.Contains(m.Name, modelName) {
+				hasModel = true
+				break
+			}
+		}
+
+		if hasModel && loadRatio < threshold {
+			loaded = append(loaded, id)
+		} else if isWarming {
+			warming = append(warming, id)
+		} else if loadRatio < 1.0 {
+			free = append(free, id)
+		}
+
+		// Все healthy с метриками идут в fallback
+		fallback = append(fallback, id)
+	}
+
+	groups := make(CandidateGroups, 0, 4)
+	if len(loaded) > 0 {
+		groups = append(groups, CandidateGroup{Priority: 1, BackendIDs: loaded})
+	}
+	if len(warming) > 0 {
+		groups = append(groups, CandidateGroup{Priority: 2, BackendIDs: warming})
+	}
+	if len(free) > 0 {
+		groups = append(groups, CandidateGroup{Priority: 3, BackendIDs: free})
+	}
+	if len(fallback) > 0 {
+		groups = append(groups, CandidateGroup{Priority: 4, BackendIDs: fallback})
+	}
+
+	return groups
+}
+
+// dispatchWithModelLoad — инициирует загрузку модели на free бэкенде
+// Возвращает backendID и deadline для ожидания загрузки. Если модель уже загружена — возвращает "".
+func (p *Proxy) dispatchWithModelLoad(model string) (string, time.Time) {
+	candidates := p.expandCandidates(model)
+
+	// Ищем лучший free backend (P3) с максимальным свободным VRAM
+	var bestBackend string
+	var maxFreeVRAM uint64
+	for _, group := range candidates {
+		if group.Priority != 3 {
+			continue
+		}
+		for _, backendID := range group.BackendIDs {
+			_, ok := p.backends[backendID]
+			if !ok {
+				continue
+			}
+			p.metricsMgr.mu.RLock()
+			metrics, hasMetrics := p.metricsMgr.metrics[backendID]
+			p.metricsMgr.mu.RUnlock()
+			if !hasMetrics {
+				continue
+			}
+			freeVRAM := metrics.GPU.MemoryFree
+			if freeVRAM > maxFreeVRAM {
+				maxFreeVRAM = freeVRAM
+				bestBackend = backendID
+			}
+			if bestBackend == "" {
+				bestBackend = backendID
+			}
+		}
+	}
+
+	if bestBackend == "" {
+		return "", time.Time{}
+	}
+
+	// Инициируем загрузку модели
+	backendState := p.backends[bestBackend]
+	p.warmupModel(bestBackend, backendState.Backend.Host, backendState.Backend.OllamaPort, model)
+
+	// Добавляем в WarmingUpModels
+	backendState.mu.Lock()
+	loadTimeout := 120
+	if p.config.Balancing.ModelLoadTimeout > 0 {
+		loadTimeout = p.config.Balancing.ModelLoadTimeout
+	}
+	backendState.WarmingUpModels[model] = &types.WarmupState{
+		StartedAt:        time.Now(),
+		EstimatedReadyAt: time.Now().Add(time.Duration(loadTimeout) * time.Second),
+		TriggerReason:    "dispatch",
+	}
+	backendState.mu.Unlock()
+
+	deadline := time.Now().Add(time.Duration(loadTimeout) * time.Second)
+	logger.Get().Infow("dispatchWithModelLoad: initiated model load",
+		"backend", bestBackend, "model", model, "deadline", deadline)
+
+	return bestBackend, deadline
+}
+
+// selectBackend - выбор бэкенда для запроса (5-этапный алгоритм)
+func (p *Proxy) selectBackend(model string) string {
+	candidates := p.expandCandidates(model)
+
+	// 1. Model Affinity (LOADED) — P1
+	for _, group := range candidates {
+		if group.Priority != 1 {
+			break
+		}
+		for _, backendID := range group.BackendIDs {
+			state := p.backends[backendID]
 			state.mu.Lock()
 			active := state.ActiveReqs
 			maxReqs := state.Backend.MaxConcurrentReqs
 			state.mu.Unlock()
 
 			loadRatio := 0.0
-			if maxReqs > 0 { loadRatio = float64(active) / float64(maxReqs) }
+			if maxReqs > 0 {
+				loadRatio = float64(active) / float64(maxReqs)
+			}
 			threshold := p.config.Balancing.Prewarm.TriggerLoadThreshold
-			if threshold <= 0 { threshold = 0.80 }
-			if loadRatio < threshold { return backend }
-
-			logger.Get().Warnw("model-affinity backend overloaded, trying fallback",
-				"backend", backend, "model", model, "load_ratio", loadRatio)
+			if threshold <= 0 {
+				threshold = 0.80
+			}
+			if loadRatio < threshold {
+				return backendID
+			}
 		}
 	}
 
-	// 2. Model Warming (WARMING_UP + ETA < threshold)
-	if warmingBackend := p.findWarmingBackendForModelUnsafe(model); warmingBackend != "" {
-		state := p.backends[warmingBackend]
-		state.mu.Lock()
-		ws, exists := state.WarmingUpModels[model]
-		state.mu.Unlock()
+	// 2. Model Warming (WARMING_UP) — P2
+	for _, group := range candidates {
+		if group.Priority != 2 {
+			continue
+		}
+		for _, backendID := range group.BackendIDs {
+			state := p.backends[backendID]
+			state.mu.Lock()
+			ws, exists := state.WarmingUpModels[model]
+			state.mu.Unlock()
 
-		if exists {
+			if !exists {
+				continue
+			}
 			eta := time.Until(ws.EstimatedReadyAt)
 			syncTimeout := 30 * time.Second
 			if p.config.Balancing.SyncModelLoad.Timeout != "" {
-				if d, err := time.ParseDuration(p.config.Balancing.SyncModelLoad.Timeout); err == nil { syncTimeout = d }
+				if d, err := time.ParseDuration(p.config.Balancing.SyncModelLoad.Timeout); err == nil {
+					syncTimeout = d
+				}
 			}
 			if eta > 0 && eta < syncTimeout {
 				start := time.Now()
 				for time.Since(start) < syncTimeout {
-					if p.checkModelReadyUnsafe(warmingBackend, model) { return warmingBackend }
+					if p.checkModelReadyUnsafe(backendID, model) {
+						return backendID
+					}
 					time.Sleep(500 * time.Millisecond)
 				}
-				logger.Get().Warnw("model warmup timeout", "backend", warmingBackend, "model", model)
+				logger.Get().Warnw("model warmup timeout", "backend", backendID, "model", model)
 			}
 		}
 	}
 
-	// 3. Sync Model Load (запуск загрузки с таймаутом)
+	// 3. Sync Model Load (запуск загрузки) — P3
 	if p.config.Balancing.SyncModelLoad.Enabled {
-		freeBackend := p.findFreeBackendForModelUnsafe(model)
-		if freeBackend != "" {
-			state := p.backends[freeBackend]
-			p.warmupModel(freeBackend, state.Backend.Host, state.Backend.OllamaPort, model)
-			syncTimeout := 30 * time.Second
-			if p.config.Balancing.SyncModelLoad.Timeout != "" {
-				if d, err := time.ParseDuration(p.config.Balancing.SyncModelLoad.Timeout); err == nil { syncTimeout = d }
+		for _, group := range candidates {
+			if group.Priority != 3 {
+				continue
 			}
-			start := time.Now()
-			for time.Since(start) < syncTimeout {
-				if p.checkModelReadyUnsafe(freeBackend, model) { return freeBackend }
-				time.Sleep(500 * time.Millisecond)
+			for _, backendID := range group.BackendIDs {
+				state := p.backends[backendID]
+				p.warmupModel(backendID, state.Backend.Host, state.Backend.OllamaPort, model)
+				syncTimeout := 30 * time.Second
+				if p.config.Balancing.SyncModelLoad.Timeout != "" {
+					if d, err := time.ParseDuration(p.config.Balancing.SyncModelLoad.Timeout); err == nil {
+						syncTimeout = d
+					}
+				}
+				start := time.Now()
+				for time.Since(start) < syncTimeout {
+					if p.checkModelReadyUnsafe(backendID, model) {
+						return backendID
+					}
+					time.Sleep(500 * time.Millisecond)
+				}
+				logger.Get().Warnw("sync model load timeout", "backend", backendID, "model", model)
 			}
-			logger.Get().Warnw("sync model load timeout", "backend", freeBackend, "model", model)
 		}
 	}
 
-	// 4. selectByResources (scoring v2)
+	// 4. selectByResources (scoring v2) — P4 (FALLBACK)
 	return p.selectByResources()
 }
 
@@ -876,6 +1056,21 @@ func (p *Proxy) findBackendWithModelExcluding(modelName string, exclude map[stri
 	}
 
 	return bestBackendID
+}
+
+// modelIsRunningOnBackendUnsafe — проверяет, запущена ли модель на бэкенде (без блокировки)
+func (p *Proxy) modelIsRunningOnBackendUnsafe(backendID, modelName string) bool {
+	if modelName == "" { return false }
+	p.metricsMgr.mu.RLock()
+	metrics, ok := p.metricsMgr.metrics[backendID]
+	p.metricsMgr.mu.RUnlock()
+	if !ok { return false }
+	for _, m := range metrics.Ollama.RunningModels {
+		if m.Name == modelName || strings.Contains(m.Name, modelName) {
+			return true
+		}
+	}
+	return false
 }
 
 // selectByResourcesExcluding - выбор по ресурсам с исключением бэкендов
@@ -1648,6 +1843,17 @@ func (p *Proxy) proxyRequest(w http.ResponseWriter, r *http.Request, backendID s
 	resp, err := client.Do(req)
 	if err != nil {
 		p.logStreamingError(backendID, err)
+		if p.isStreamingRequest(r) {
+			w.Header().Set("Content-Type", "application/json")
+			w.Header().Set("Connection", "close")
+			w.WriteHeader(http.StatusBadGateway)
+			w.Write([]byte(`{"error":"Backend unreachable"}`))
+			if fl, ok := w.(http.Flusher); ok {
+				fl.Flush()
+			}
+		} else {
+			http.Error(w, "Backend unreachable", http.StatusBadGateway)
+		}
 		return fmt.Errorf("backend error: %v", err)
 	}
 	defer resp.Body.Close()
@@ -2362,16 +2568,62 @@ func (p *Proxy) Restart() error {
 	return nil
 }
 
-// RemoveBackend - удаление бэкенда
+// RemoveBackend - удаление бэкенда с graceful drain активных запросов.
+// Помечает бэкенд как Draining, ждёт завершения активных запросов (с таймаутом 30с),
+// затем удаляет из backends, metrics и принудительно сохраняет state.json.
 func (p *Proxy) RemoveBackend(backendID string) error {
 	p.mu.Lock()
-	defer p.mu.Unlock()
-
-	if _, exists := p.backends[backendID]; !exists {
+	state, exists := p.backends[backendID]
+	if !exists {
+		p.mu.Unlock()
 		return fmt.Errorf("backend with ID %s not found", backendID)
 	}
 
+	// Помечаем как Draining — новые запросы не будут направляться
+	oldStatus := state.Backend.Status
+	state.Backend.Status = types.StatusDraining
+	p.mu.Unlock()
+
+	if oldStatus != types.StatusDraining {
+		p.PublishEvent(types.Event{
+			Type:      types.EventStatusChange,
+			Timestamp: time.Now().UTC(),
+			BackendID: backendID,
+			Data: map[string]interface{}{
+				"oldStatus": string(oldStatus),
+				"newStatus": string(types.StatusDraining),
+			},
+		})
+	}
+
+	// Ждём завершения активных запросов с таймаутом 30 секунд
+	drainTimeout := time.After(30 * time.Second)
+	drainTicker := time.NewTicker(200 * time.Millisecond)
+	defer drainTicker.Stop()
+
+drainLoop:
+	for {
+		select {
+		case <-drainTimeout:
+			logger.Get().Warnw("drain timeout reached, force-removing backend",
+				"backend", backendID)
+			break drainLoop
+		case <-drainTicker.C:
+			state.mu.Lock()
+			active := state.ActiveReqs
+			state.mu.Unlock()
+			if active == 0 {
+				logger.Get().Infow("all active requests drained, removing backend",
+					"backend", backendID)
+				break drainLoop
+			}
+		}
+	}
+
+	// Удаление бэкенда
+	p.mu.Lock()
 	delete(p.backends, backendID)
+	p.mu.Unlock()
 
 	p.metricsMgr.mu.Lock()
 	delete(p.metricsMgr.metrics, backendID)
@@ -2384,8 +2636,12 @@ func (p *Proxy) RemoveBackend(backendID string) error {
 		Data:      map[string]interface{}{},
 	})
 
-	p.scheduleSave()
+	// Немедленное сохранение state.json, чтобы удалённый бэкенд не восстановился при перезагрузке
+	if err := p.FlushState(); err != nil {
+		logger.Get().Errorw("failed to flush state after backend removal", "backend", backendID, "error", err)
+	}
 
+	logger.Get().Infow("backend removed and state flushed", "backend", backendID)
 	return nil
 }
 
@@ -2636,6 +2892,80 @@ func (p *Proxy) PublishEvent(ev types.Event) {
 		default:
 		}
 	}
+}
+
+// --- Exported test helpers ---
+
+// ExpandCandidates — экспортируемая обёртка над expandCandidates для тестов
+func (p *Proxy) ExpandCandidates(modelName string) CandidateGroups {
+	return p.expandCandidates(modelName)
+}
+
+// DispatchWithModelLoad — экспортируемая обёртка над dispatchWithModelLoad для тестов
+func (p *Proxy) DispatchWithModelLoad(model string) (string, time.Time) {
+	return p.dispatchWithModelLoad(model)
+}
+
+// SetBackendMetrics — установка метрик в MetricsManager для тестов
+func (p *Proxy) SetBackendMetrics(backendID string, metrics *types.BackendMetrics) {
+	p.metricsMgr.mu.Lock()
+	p.metricsMgr.metrics[backendID] = metrics
+	p.metricsMgr.mu.Unlock()
+}
+
+// SelectBackend — экспортируемая обёртка для тестов
+func (p *Proxy) SelectBackend(model string) string {
+	return p.selectBackend(model)
+}
+
+// GetBackendState — экспортируемый доступ к BackendState для тестов
+func (p *Proxy) GetBackendState(backendID string) *BackendState {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	return p.backends[backendID]
+}
+
+// GetWarmingUpModels — получение WarmingUpModels для тестов (thread-safe)
+func (p *Proxy) GetWarmingUpModels(backendID string) map[string]*types.WarmupState {
+	p.mu.RLock()
+	state, ok := p.backends[backendID]
+	p.mu.RUnlock()
+	if !ok {
+		return nil
+	}
+	state.mu.Lock()
+	defer state.mu.Unlock()
+	// Return a copy
+	result := make(map[string]*types.WarmupState, len(state.WarmingUpModels))
+	for k, v := range state.WarmingUpModels {
+		result[k] = v
+	}
+	return result
+}
+
+// GetConfig — получение конфигурации для тестов
+func (p *Proxy) GetConfig() *types.LoadBalancerConfig {
+	return p.config
+}
+
+// SetWarmingUpModel — установка warming-модели для тестов
+func (p *Proxy) SetWarmingUpModel(backendID, modelName string, readyAt time.Time) {
+	p.mu.RLock()
+	state, ok := p.backends[backendID]
+	p.mu.RUnlock()
+	if !ok {
+		return
+	}
+	state.mu.Lock()
+	if state.WarmingUpModels == nil {
+		state.WarmingUpModels = make(map[string]*types.WarmupState)
+	}
+	state.WarmingUpModels[modelName] = &types.WarmupState{
+		StartedAt:        time.Now(),
+		EstimatedReadyAt: readyAt,
+		TriggerReason:    "test",
+	}
+	state.mu.Unlock()
 }
 
 // StopQueue — остановка QueueManager и всех workers

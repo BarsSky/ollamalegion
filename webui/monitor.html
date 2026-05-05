@@ -74,6 +74,12 @@
     header h1 .dot.demo { background: var(--info); animation: none; }
     @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.4; } }
     .header-right { display: flex; align-items: center; gap: 10px; }
+    .monitor-legend { display: flex; align-items: center; gap: 6px; padding: 0 12px; border-right: 1px solid var(--border-color); margin-right: 6px; }
+    .legend-dot { width: 10px; height: 10px; border-radius: 50%; display: inline-block; flex-shrink: 0; }
+    .legend-dot.green { background: var(--success); }
+    .legend-dot.yellow { background: var(--warning); }
+    .legend-dot.red { background: var(--danger); }
+    .legend-text { font-size: 11px; color: var(--text-secondary); white-space: nowrap; margin-right: 4px; }
     .badge { display: inline-flex; align-items: center; gap: 4px; padding: 3px 8px; border-radius: 6px; font-size: 11px; font-weight: 600; font-family: var(--font-mono); background: rgba(255,255,255,0.06); color: var(--text-secondary); border: 1px solid var(--border-color); }
     .badge-green { background: rgba(34,197,94,0.12); color: var(--success); border-color: rgba(34,197,94,0.25); }
     .badge-yellow { background: rgba(245,158,11,0.12); color: var(--warning); border-color: rgba(245,158,11,0.25); }
@@ -139,6 +145,11 @@
     <span id="demoIndicator" style="display:none;background:var(--danger);color:#fff;font-size:10px;font-weight:700;padding:2px 8px;border-radius:4px;margin-left:8px;text-transform:uppercase;letter-spacing:0.5px">ДЕМО</span>
   </h1>
   <div class="header-right">
+    <div class="monitor-legend">
+      <span class="legend-dot green"></span><span class="legend-text">🟢 Свободен</span>
+      <span class="legend-dot yellow"></span><span class="legend-text">🟡 Загружен</span>
+      <span class="legend-dot red"></span><span class="legend-text">🔴 Перегружен</span>
+    </div>
     <select id="intervalSelect">
       <option value="250">250 ms</option>
       <option value="500">500 ms</option>
@@ -148,11 +159,28 @@
     <button id="pauseBtn" onclick="togglePause()">⏸ Пауза</button>
     <button id="demoBtn" onclick="enterDemoMode()" style="display:none">▶ Демо</button>
     <span id="connBadge" class="badge badge-yellow">Подключение…</span>
+    <button id="helpBtn" onclick="toggleHelp()" title="Справка" style="font-weight:bold;font-size:14px;padding:2px 10px;border-radius:50%;width:30px;height:30px;line-height:1">?</button>
+  </div>
+  <!-- Help Modal (5.6.2) -->
+  <div id="helpModal" style="display:none;position:fixed;inset:0;z-index:2000;background:rgba(0,0,0,0.6);backdrop-filter:blur(6px);-webkit-backdrop-filter:blur(6px);align-items:center;justify-content:center" onclick="toggleHelp()">
+    <div style="background:var(--glass-bg);border:1px solid var(--glass-border);border-radius:14px;padding:24px 28px;max-width:560px;width:90%;max-height:80vh;overflow-y:auto;box-shadow:var(--glass-shadow);color:var(--text-primary);font-size:13px;line-height:1.7;position:relative" onclick="event.stopPropagation()">
+      <button onclick="toggleHelp()" style="position:absolute;top:12px;right:14px;background:none;border:none;font-size:18px;cursor:pointer;color:var(--text-secondary)">✕</button>
+      <h3 style="margin-bottom:14px;font-size:16px">📖 Справка по режимам балансировки</h3>
+      <p><strong>P1 — Model Affinity (LOADED)</strong><br>Бэкенд с уже загруженной моделью в VRAM. Наивысший приоритет — мгновенный отклик.</p>
+      <p style="margin-top:8px"><strong>P2 — Model Warming (WARMING_UP)</strong><br>Бэкенд в процессе загрузки модели. Балансер ожидает готовности до таймаута.</p>
+      <p style="margin-top:8px"><strong>P3 — Free Backend (FREE)</strong><br>Свободный healthy бэкенд со слотами. Модель загружается синхронно (если `syncModelLoad.enabled`).</p>
+      <p style="margin-top:8px"><strong>P4 — Fallback (FALLBACK)</strong><br>Все healthy бэкенды проходят ресурсный скоринг (GPU/VRAM/CPU/RAM). Выбирается лучший по score.</p>
+      <hr style="margin:14px 0;border-color:var(--border-color)">
+      <p><strong>🎨 Легенда цветов в канвасе:</strong></p>
+      <p>🟢 <span style="color:var(--success)">Зелёный</span> — свободен (Idle) | 🟡 <span style="color:var(--warning)">Жёлтый</span> — загружен (Active) | 🔴 <span style="color:var(--danger)">Красный</span> — перегружен (Full/Error)</p>
+      <p style="margin-top:8px"><strong>📊 Conveyor-лента:</strong> Анимированные частицы показывают поток запросов: синие — в пути, жёлтые — ожидают в очереди у балансера, фиолетовые — обрабатываются, зелёные — завершены.</p>
+    </div>
   </div>
 </header>
 <div id="topoTooltip" style="display:none;position:fixed;pointer-events:none;z-index:1000;background:var(--glass-bg);backdrop-filter:blur(12px);-webkit-backdrop-filter:blur(12px);border:1px solid var(--glass-border);border-radius:10px;padding:10px 14px;font-size:12px;line-height:1.6;max-width:300px;box-shadow:var(--glass-shadow);color:var(--text-primary);white-space:nowrap"></div>
 <main>
   <div class="topo-section">
+    <canvas id="conveyorCanvas" style="position:absolute;top:0;left:0;width:100%;height:100px;z-index:3;pointer-events:none;opacity:0.75"></canvas>
     <canvas id="vizCanvas"></canvas>
     <div id="loadingOverlay" class="overlay">
       <div class="spinner"></div>
@@ -292,12 +320,21 @@
     fetchAll().catch(function(e) {
       if (!isAbortError(e)) console.error('[monitor] fetchAll failed:', e);
       fetchAttempt++; fetching = false;
-      var isNetwork = e.message === 'Failed to fetch' || e.name === 'TypeError';
+      var msgText = e.message || '';
+      var isNetwork = msgText === 'Failed to fetch' || e.name === 'TypeError';
       var isCors = isNetwork && API_BASE === '';
+      var isAuth = msgText.indexOf('401') >= 0 || msgText.indexOf('403') >= 0;
       if (isCors) corsErrorDetected = true;
+      if (isAuth && fetchAttempt < 3) {
+        setConnStatus('🔒 Auth Required', 'red');
+        document.getElementById('errorOverlay').classList.add('hidden');
+        document.getElementById('loadingOverlay').classList.add('hidden');
+        return;
+      }
       if (fetchAttempt >= 3) {
         var msg = T('monitor.error.balancerUnreachable', { count: fetchAttempt });
-        if (corsErrorDetected) msg += T('monitor.error.corsHint');
+        if (isAuth) msg = '🔒 ' + T('monitor.error.authRequired') + ' (' + msgText + ')';
+        else if (corsErrorDetected) msg += T('monitor.error.corsHint');
         else if (isNetwork) msg += T('monitor.error.networkHint', { addr: API_BASE || location.origin });
         showError(msg); renderErrorDetails(e);
       } else { setConnStatus(T('monitor.status.offline'), 'red'); }
@@ -362,6 +399,13 @@
   document.getElementById('intervalSelect').addEventListener('change', function(e) { refreshInterval = parseInt(e.target.value); if (timerId) { clearInterval(timerId); timerId = setInterval(fetchAllSafe, refreshInterval); } });
   function togglePanel(id) { document.getElementById(id).classList.toggle('open'); }
   window.togglePanel = togglePanel;
+
+  function toggleHelp() {
+    var m = document.getElementById('helpModal');
+    if (!m) return;
+    m.style.display = (m.style.display === 'flex' || m.style.display === '') ? 'none' : 'flex';
+  }
+  window.toggleHelp = toggleHelp;
 
   // ---- UI update ----
   function updateUI(data) {
@@ -833,7 +877,150 @@
       cx.font='12px '+vF();cx.fillText(T('monitor.overlay.topologyHint'),w/2,h/2+100);
     }
   }
-  function anim() { af++; drawTopo(); requestAnimationFrame(anim); }
+  function anim() { af++; drawTopo(); drawConveyor(); requestAnimationFrame(anim); }
+
+  // ---- Conveyor belt animation (5.1.1 / 5.1.2) ----
+  var ccv = document.getElementById('conveyorCanvas'), ccx = ccv ? ccv.getContext('2d') : null;
+  // Conveyor particle queue (requests accumulating when backends are busy)
+  var convQueue = [];
+
+  function drawConveyor() {
+    if (!ccv || !ccx) return;
+    var w = ccv.parentElement.clientWidth;
+    var h = 100;
+    ccv.width = w; ccv.height = h;
+    ccv.style.width = w + 'px'; ccv.style.height = h + 'px';
+    ccx.clearRect(0, 0, w, h);
+
+    if (topo.backends.length === 0) return;
+
+    // Layout: 3 columns — Clients | Balancer | Backends
+    var leftBand = w * 0.20;   // Clients zone
+    var midBand = w * 0.40;    // Balancer zone
+    var rightBand = w * 0.40;  // Backends zone
+
+    // Section labels
+    var lt = isLightTheme();
+    var labelColor = lt ? 'rgba(0,0,0,0.3)' : 'rgba(255,255,255,0.2)';
+    ccx.fillStyle = labelColor;
+    ccx.font = '10px ' + vF();
+    ccx.textAlign = 'center';
+    ccx.fillText('Клиенты', leftBand / 2, h - 6);
+    ccx.fillText('Балансер', leftBand + midBand / 2, h - 6);
+    ccx.fillText('Бэкенды', leftBand + midBand + rightBand / 2, h - 6);
+
+    // Draw section dividers
+    ccx.strokeStyle = lt ? 'rgba(0,0,0,0.08)' : 'rgba(255,255,255,0.05)';
+    ccx.lineWidth = 1;
+    ccx.setLineDash([4, 6]);
+    ccx.beginPath(); ccx.moveTo(leftBand, 10); ccx.lineTo(leftBand, h - 14); ccx.stroke();
+    ccx.beginPath(); ccx.moveTo(leftBand + midBand, 10); ccx.lineTo(leftBand + midBand, h - 14); ccx.stroke();
+    ccx.setLineDash([]);
+
+    // Animate requests flowing left → right
+    var now = Date.now();
+
+    // Maintain conveyor queue: add new requests when backends are busy
+    var activeTotal = topo.backends.reduce(function(s, b) { return s + (b.activeRequests || 0); }, 0);
+    var maxTotal = topo.backends.reduce(function(s, b) { return s + (b.maxConcurrentRequests || 10); }, 0);
+    var utilization = maxTotal > 0 ? activeTotal / maxTotal : 0;
+
+    // Spawn new conveyor particles (requests entering the system)
+    if (activeTotal > 0 && Math.random() < utilization * 0.3) {
+      var startX = 5 + Math.random() * (leftBand - 40);
+      var startY = 15 + Math.random() * (h - 35);
+      convQueue.push({
+        x: startX, y: startY,
+        tx: w - 20, ty: startY,
+        spawnTime: now,
+        duration: 2500 + Math.random() * 2000,
+        color: utilization > 0.8 ? '#ef4444' : (utilization > 0.5 ? '#f59e0b' : '#3b82f6'),
+        phase: 'traveling' // traveling | waiting | processing
+      });
+    }
+
+    // If queue has pending items and backends are busy → add waiting particles near balancer
+    var pendCount = topo.queue.pending_count || 0;
+    if (pendCount > 0) {
+      var waitX = leftBand + 10 + Math.random() * (midBand - 60);
+      var waitY = 15 + Math.random() * (h - 35);
+      if (Math.random() < 0.15) {
+        convQueue.push({
+          x: waitX, y: waitY,
+          tx: waitX, ty: waitY + (Math.random() - 0.5) * 20,
+          spawnTime: now,
+          duration: 3000 + Math.random() * 1500,
+          color: '#f59e0b',
+          phase: 'waiting',
+          waitCount: pendCount
+        });
+      }
+    }
+
+    // Render and animate all conveyor particles
+    for (var i = convQueue.length - 1; i >= 0; i--) {
+      var p = convQueue[i];
+      var elapsed = now - p.spawnTime;
+      var t = Math.min(elapsed / p.duration, 1.0);
+
+      if (p.phase === 'waiting') {
+        // Pulsing near balancer
+        var pulse = 1 + 0.3 * Math.sin(elapsed * 0.008 + p.waitCount);
+        var ox = p.x + Math.sin(elapsed * 0.003 + i) * 20 * pulse;
+        var oy = p.y + Math.cos(elapsed * 0.004 + i) * 10 * pulse;
+        ccx.globalAlpha = 0.6 + 0.4 * Math.sin(elapsed * 0.005);
+        ccx.fillStyle = p.color;
+        ccx.shadowColor = p.color;
+        ccx.shadowBlur = 8;
+        ccx.beginPath();
+        ccx.arc(ox, oy, 3 * pulse, 0, Math.PI * 2);
+        ccx.fill();
+        // Accumulation count indicator
+        ccx.fillStyle = '#fff';
+        ccx.font = '8px ' + vF();
+        ccx.textAlign = 'center';
+        ccx.fillText('+' + p.waitCount, ox, oy - 8);
+        ccx.globalAlpha = 1;
+        ccx.shadowBlur = 0;
+      } else {
+        // Traveling particle
+        var et = 1 - Math.pow(1 - t, 2); // ease-out quad
+        var cx = p.x + (p.tx - p.x) * et;
+        var cy = p.y + (p.ty - p.y) * et;
+
+        // Fade out at edges
+        var alpha = 1;
+        if (cx < leftBand * 0.15) alpha = Math.max(0, cx / (leftBand * 0.15));
+        if (cx > leftBand + midBand + rightBand * 0.85) alpha = Math.max(0, (w - 20 - cx) / (rightBand * 0.15));
+
+        ccx.globalAlpha = alpha;
+        ccx.fillStyle = p.color;
+        ccx.shadowColor = p.color;
+        ccx.shadowBlur = 4;
+        ccx.beginPath();
+        ccx.arc(cx, cy, 2.5, 0, Math.PI * 2);
+        ccx.fill();
+        // Motion trail
+        ccx.fillStyle = p.color;
+        ccx.globalAlpha = alpha * 0.3;
+        ccx.beginPath();
+        ccx.arc(cx - 6, cy, 1.5, 0, Math.PI * 2);
+        ccx.fill();
+        ccx.globalAlpha = 1;
+        ccx.shadowBlur = 0;
+      }
+
+      // Remove expired
+      if (t >= 1.0) {
+        convQueue.splice(i, 1);
+      }
+    }
+
+    // Limit queue size
+    if (convQueue.length > 150) {
+      convQueue.splice(0, convQueue.length - 150);
+    }
+  }
 
   // ---- Rebalance ----
   window.forceRebalance = function() {

@@ -12,6 +12,7 @@ const (
 	StatusUnhealthy BackendStatus = "unhealthy"
 	StatusOffline   BackendStatus = "offline"
 	StatusStarting  BackendStatus = "starting"
+	StatusDraining  BackendStatus = "draining"
 )
 
 // ModelState - состояние модели на бэкенде
@@ -171,6 +172,7 @@ type OllamaMetrics struct {
 	RuntimeFlags          OllamaRuntimeFlags `json:"runtimeFlags"`          // Флаги запуска Ollama
 	ModelContexts         []ModelContextInfo `json:"modelContexts"`         // Информация о контексте по моделям
 	BackendCapacity       BackendCapacity    `json:"backendCapacity"`       // Оценка ёмкости бэкенда
+	ModelSizes            map[string]int64   `json:"modelSizes"`            // Размеры всех доступных моделей (modelName → bytes)
 }
 
 // OllamaRuntimeFlags - флаги запуска процесса Ollama
@@ -383,6 +385,10 @@ type BalancingSettings struct {
 	Scoring             ScoringWeights           `json:"scoring"`
 	SyncModelLoad       SyncModelLoadConfig      `json:"syncModelLoad"`
 	ResourceReservation ResourceReservationConfig `json:"resourceReservation"`
+
+	// Feature flags
+	UseEnhancedScoring bool `json:"useEnhancedScoring"` // Расширенный скоринг v2 (полная формула)
+	ModelLoadTimeout   int  `json:"modelLoadTimeout"`   // Таймаут ожидания загрузки модели (сек, default 120)
 }
 
 // LoggingSettings - настройки логирования

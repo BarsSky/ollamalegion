@@ -690,6 +690,10 @@ func TestSelectByResourcesWithLimits(t *testing.T) {
 		},
 		System: types.SystemMetrics{
 			CPUUsagePercent: 50,
+			DiskFree:        10240, // > MinFreeMB (1024)
+		},
+		Ollama: types.OllamaMetrics{
+			OllamaAvailable: true,
 		},
 	})
 
@@ -704,7 +708,10 @@ func TestSelectByResourcesWithLimits(t *testing.T) {
 			CPUUsagePercent: 30,
 			MemoryTotal:     32768,
 			MemoryFree:      28000,
-			DiskFree:        5000,
+			DiskFree:        10240, // > MinFreeMB (1024)
+		},
+		Ollama: types.OllamaMetrics{
+			OllamaAvailable: true,
 		},
 	})
 

@@ -56,6 +56,9 @@ window.I18N_RU = {
   "metrics.queue": "Очередь",
   "metrics.loaded_models": "Модели",
   "metrics.last_seen": "Последняя активность",
+  "metrics.host": "Хост",
+  "metrics.active_requests": "Active Req",
+  "metrics.models": "Моделей",
 
   // Backends
   "backends.title": "Бэкенды",
@@ -79,6 +82,29 @@ window.I18N_RU = {
   "backends.cpu_mode": "CPU режим",
   "backends.gpu_mode": "GPU режим",
   "backends.cloud_mode": "Облачный",
+
+  // Backends Extended
+  "backends.enable": "Включить",
+  "backends.disable": "Отключить",
+  "backends.test": "Проверить",
+  "backends.enabled": "Включён",
+  "backends.disabled": "Отключён",
+  "backends.filter_all": "Все",
+  "backends.filter_healthy": "Здоровые",
+  "backends.filter_warning": "Предупреждение",
+  "backends.filter_error": "Ошибка",
+  "backends.filter_offline": "Офлайн",
+  "backends.filter_by_label": "Фильтр по метке",
+  "backends.batch_enable": "Включить выбранные",
+  "backends.batch_disable": "Отключить выбранные",
+  "backends.batch_delete": "Удалить выбранные",
+  "backends.select_all": "Выбрать все",
+  "backends.import_title": "Импорт бэкендов",
+  "backends.import_desc": "Выберите JSON-файл с конфигурацией бэкендов",
+  "backends.import_btn": "Импортировать",
+  "backends.test_success": "Бэкенд {name} доступен",
+  "backends.test_fail": "Бэкенд {name} не отвечает",
+  "backends.testing": "Проверка {name}...",
 
   // Models
   "models.title": "Модели",
@@ -185,6 +211,9 @@ window.I18N_RU = {
   "common.disconnected": "Отключено",
   "common.connecting": "Подключение...",
   "common.version": "Версия",
+  "common.total": "Всего",
+  "common.free": "Свободно",
+  "common.in": "через",
 
   // Footer
   "footer.documentation": "Документация",
@@ -251,7 +280,39 @@ window.I18N_RU = {
   "monitor.panel.modelsInMemory": "🧠 Модели в памяти",
   "monitor.panel.backends": "🖥️ Бэкенды",
   "monitor.panel.queue": "📋 Очередь",
+  "monitor.panel.dispatch": "⚡ Dispatch Stats",
+  "monitor.panel.autoPull": "⚡ Auto-Pull (Pull-on-Demand)",
+
+  "monitor.autoPull.enabled": "🔌 Auto-Pull",
+  "monitor.autoPull.on": "Вкл",
+  "monitor.autoPull.off": "Выкл",
+  "monitor.autoPull.maxConcurrent": "Макс. одновременно:",
+  "monitor.autoPull.pullTimeout": "Таймаут pull:",
+  "monitor.autoPull.retryCount": "Кол-во повторов:",
+  "monitor.autoPull.save": "💾 Сохранить",
+  "monitor.autoPull.activePulls": "Активных Pull",
+  "monitor.autoPull.totalPulls": "Всего Auto-Pull",
+  "monitor.autoPull.noActive": "Нет активных загрузок",
+  "monitor.autoPull.noData": "Нет данных",
+  "monitor.autoPull.table.model": "Модель",
+  "monitor.autoPull.table.backend": "Бэкенд",
+  "monitor.autoPull.table.started": "Начало",
+  "monitor.autoPull.table.duration": "Длительность",
+  "monitor.autoPull.table.status": "Статус",
+  "monitor.autoPull.table.error": "Ошибка",
+
   "monitor.panel.sessions": "👤 Сессии",
+
+  "monitor.dispatch.title": "⚡ Dispatch Stats",
+  "monitor.dispatch.modelAffinity": "Model Affinity",
+  "monitor.dispatch.resourceAware": "Resource-Aware",
+  "monitor.dispatch.weightConfig": "Weight/Config",
+  "monitor.dispatch.processedTotal": "Processed Total",
+  "monitor.dispatch.total": "Всего обработано",
+  "monitor.dispatch.howItWorks": "💡 Как работает dispatch:",
+  "monitor.dispatch.affinityDesc": "модель уже загружена на бэкенде (P1–P3)",
+  "monitor.dispatch.loadDesc": "выбор по свободным ресурсам + prediction bonus (P4)",
+  "monitor.dispatch.configDesc": "fallback по весам бэкенда (UseEnhancedScoring=false)",
 
   "monitor.table.model": "Модель",
   "monitor.table.backends": "Бэкенды",
@@ -289,6 +350,11 @@ window.I18N_RU = {
   "monitor.canvas.balancer": "Балансер",
   "monitor.canvas.queue": "Очередь:",
 
+  // Canvas labels (NEW)
+  "monitor.canvas.clients": "Клиенты",
+  "monitor.canvas.backends": "Бэкенды",
+  "monitor.canvas.rpsLabel": "RPS: {rps} | Активных: {active}/{max}",
+
   "monitor.rebalance.disabled": "[Demo] Принудительное перераспределение недоступно в демо-режиме.",
   "monitor.rebalance.success": "Перераспределение инициировано. Запросы в очереди будут перенаправлены на свободные бэкенды.",
   "monitor.rebalance.error": "Ошибка перераспределения: ",
@@ -301,4 +367,100 @@ window.I18N_RU = {
   "connection.connected": "Подключено к балансеру",
   "connection.disconnected": "Соединение с балансером потеряно",
   "connection.reconnect": "Попытка переподключения...",
+
+  // App strings (NEW)
+  "app.processed": "обработано",
+  "app.requests": "запросов",
+  "app.webui_initialized": "WebUI инициализирован",
+  "app.ws_connected": "WebSocket подключен",
+  "app.ws_error": "Ошибка WebSocket",
+  "app.ws_reconnect": "Переподключение... ({attempt}/{max}) через {delay}с",
+  "app.ws_max_reconnect": "Максимальное количество попыток переподключения",
+  "app.backend_added": "Бэкенд добавлен: {name}",
+  "app.backend_removed": "Бэкенд удалён: {id}",
+  "app.backend_updated": "Бэкенд {id} обновлен",
+  "app.backend_deleted": "Бэкенд {id} удален",
+  "app.backend_limits_warn": "Предупреждение: runtime-лимиты для {id} не обновлены",
+  "app.backend_saved": "Бэкенд обновлен",
+  "app.backend_created": "Бэкенд добавлен",
+  "app.data_updated": "Данные обновлены",
+  "app.status_changed": "Статус {id}: {old} → {new}",
+  "app.limits_changed": "Лимиты {id} обновлены",
+  "app.lang_changed": "Язык изменён",
+  "app.lang_changed_en": "Language changed",
+  "app.id_and_host_required": "ID и хост обязательны",
+  "app.error_loading_cluster": "Ошибка загрузки состояния кластера",
+  "app.error_loading_queue": "Ошибка загрузки статистики очереди",
+  "app.error_loading_queue_details": "Ошибка загрузки деталей очереди",
+  "app.error_loading_queue_history": "Ошибка загрузки истории очереди",
+  "app.error_loading_sessions": "Ошибка загрузки сессий",
+
+  // Theme toggle title
+  "theme.toggle_dark": "Тёмная тема",
+  "theme.toggle_light": "Светлая тема",
+
+  // Backend search placeholder
+  "backends.search_placeholder": "Поиск...",
+  "backends.session_placeholder": "Поиск сессии...",
+
+  // ===== Renderers keys (NEW) =====
+
+  // loading() default
+  "renderers.loading_data": "Ожидание данных...",
+  "renderers.no_data": "Нет данных",
+  "renderers.no_backend_data": "Нет данных о бэкендах",
+
+  // dashboard
+  "renderers.healthy_count": "{count} здоровых",
+  "renderers.models_count_loaded": "{count} загружено",
+  "renderers.requests_count": "{count} запросов",
+  "renderers.processed_count": "{count} обработано",
+
+  // capacityCard cloud
+  "renderers.host": "Хост",
+  "renderers.active_req": "Active Req",
+  "renderers.models_loaded": "Загружено моделей",
+
+  // capacityCard
+  "renderers.loaded_models": "Loaded models",
+  "renderers.context_overhead": "Context overhead",
+  "renderers.free_memory": "Free {memLabel}",
+  "renderers.guaranteed_90": "Guaranteed (90%)",
+
+  // availableModels
+  "renderers.no_available_models": "Нет доступных моделей",
+  "renderers.extra_models": "+{count} моделей",
+
+  // renderOllamaParams - section titles
+  "renderers.section_runtime_flags": "⚙️ Runtime-флаги Ollama",
+  "renderers.section_backend_capacity": "💾 Ёмкость бекенда",
+  "renderers.section_model_contexts": "📐 Контексты моделей",
+  "renderers.section_loaded_models": "🤖 Загруженные модели",
+
+  // renderOllamaParams - capacity labels
+  "renderers.free_vram": "Свободно VRAM",
+  "renderers.models_vram": "VRAM моделей",
+  "renderers.loadable_models_count": "Можно загрузить моделей",
+  "renderers.platform_mode": "Режим платформы",
+
+  // renderOllamaParams - context labels
+  "renderers.context": "Контекст",
+  "renderers.effective": "Эффективный",
+  "renderers.model_memory": "Память модели",
+  "renderers.context_memory": "Контекст память",
+  "renderers.kv_cache": "KV-кэш",
+  "renderers.layers": "Слоёв",
+  "renderers.kv_precision": "Точность KV",
+
+  // backendsPage / backendLoad
+  "renderers.models_label": "Моделей:",
+  "renderers.free_label": "Свободно:",
+
+  // queue
+  "renderers.seconds": " с",
+  "renderers.queue_avg_wait": "{seconds} с",
+  "renderers.no_completed_tasks": "Нет выполненных задач",
+
+  // predictionAlerts
+  "renderers.no_active_alerts": "Нет активных предупреждений"
 };

@@ -18,7 +18,7 @@
 - **Параметр:** `balancing.prewarm.triggerLoadThreshold` (default: `0.80`).
 
 #### Метрики диска
-- **Файл:** `pkg/types/types.go` — в `SystemMetrics` добавлены поля `DiskReadSpeedMBps` и `DiskWriteSpeedMBps`.
+- **Файл:** `pkg/types/types.go` — в `SystemMetrics` добавлены поля `DiskTotal`, `DiskUsed`, `DiskFree` (Total/Used/Free в MB).
 
 #### Документация
 - **`docs/README.md`** — актуализирована структура проекта (добавлены `pkg/logger/`, `cmd/monitor/`, `tests/`, `logo/`, `plans/`, `balancing-guide.md`; исправлено расположение `queue.go`).

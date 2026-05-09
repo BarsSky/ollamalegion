@@ -62,6 +62,8 @@ tags:
     description: Rate limiter status
   - name: WebSocket
     description: WebSocket endpoints for real-time data
+  - name: Ollama
+    description: Проксирование и агрегация Ollama API endpoints
 
 security:
   - ApiKeyAuth: []
@@ -969,6 +971,214 @@ paths:
         messageSchema:
           $ref: '#/components/schemas/BackendMetrics'
 
+  # Ollama API endpoints (проксирование и агрегация)
+  /api/tags:
+    get:
+      summary: Список моделей (агрегация со всех бэкендов)
+      description: Агрегирует список локальных моделей со всех доступных бэкендов. Дедупликация по имени модели.
+      tags:
+        - Ollama
+      operationId: ollamaTags
+      responses:
+        '200':
+          description: Список моделей
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  models:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/OllamaTag'
+
+  /api/ps:
+    get:
+      summary: Запущенные модели (агрегация со всех бэкендов)
+      description: Агрегирует список моделей, загруженных в VRAM, со всех бэкендов.
+      tags:
+        - Ollama
+      operationId: ollamaPs
+      responses:
+        '200':
+          description: Список запущенных моделей
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  models:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/OllamaProcess'
+
+  /api/version:
+    get:
+      summary: Версия Ollama
+      description: Возвращает версию балансировщика и версии всех доступных бэкендов.
+      tags:
+        - Ollama
+      operationId: ollamaVersion
+      responses:
+        '200':
+          description: Версия балансировщика и бэкендов
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  version:
+                    type: string
+                    example: "ollamalegion-1.0.0"
+                  ollamaVersions:
+                    type: object
+                    additionalProperties:
+                      type: string
+
+  /api/show:
+    post:
+      summary: Информация о модели
+      description: Маршрутизирует запрос на бэкенд с загруженной моделью. Fallback на любой healthy бэкенд.
+      tags:
+        - Ollama
+      operationId: ollamaShow
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                name:
+                  type: string
+                  example: "llama3.1:8b"
+      responses:
+        '200':
+          description: Информация о модели
+
+  /api/create:
+    post:
+      summary: Создание модели
+      description: Маршрутизирует запрос на бэкенд с максимальными свободными ресурсами. SSE streaming ответ.
+      tags:
+        - Ollama
+      operationId: ollamaCreate
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                name:
+                  type: string
+                  example: "custom-model"
+                modelfile:
+                  type: string
+                  example: "FROM llama3.1:8b"
+      responses:
+        '200':
+          description: Streaming прогресс создания
+          content:
+            text/event-stream:
+              schema:
+                type: string
+
+  /api/pull:
+    post:
+      summary: Загрузка модели
+      description: Маршрутизирует запрос на бэкенд с максимальными свободными ресурсами. SSE streaming ответ.
+      tags:
+        - Ollama
+      operationId: ollamaPull
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                name:
+                  type: string
+                  example: "llama3.1:8b"
+      responses:
+        '200':
+          description: Streaming прогресс загрузки
+          content:
+            text/event-stream:
+              schema:
+                type: string
+
+  /api/delete:
+    delete:
+      summary: Удаление модели
+      description: Broadcast-запрос на удаление модели со всех бэкендов, где она присутствует.
+      tags:
+        - Ollama
+      operationId: ollamaDelete
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                name:
+                  type: string
+                  example: "llama3.1:8b"
+      responses:
+        '200':
+          description: Результат удаления
+
+  /api/copy:
+    post:
+      summary: Копирование модели
+      description: Маршрутизирует запрос на бэкенд с исходной моделью.
+      tags:
+        - Ollama
+      operationId: ollamaCopy
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                source:
+                  type: string
+                  example: "llama3.1:8b"
+                destination:
+                  type: string
+                  example: "llama3.1:8b-custom"
+      responses:
+        '200':
+          description: Результат копирования
+
+  /api/push:
+    post:
+      summary: Публикация модели
+      description: Маршрутизирует запрос на бэкенд с моделью. SSE streaming ответ.
+      tags:
+        - Ollama
+      operationId: ollamaPush
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                name:
+                  type: string
+                  example: "llama3.1:8b"
+      responses:
+        '200':
+          description: Streaming прогресс публикации
+          content:
+            text/event-stream:
+              schema:
+                type: string
+
 components:
   securitySchemes:
     ApiKeyAuth:
@@ -1407,6 +1617,8 @@ components:
           type: string
           description: Токен для отзыва
 
+
+
     QueueStats:
       type: object
       description: Статистика очереди запросов
@@ -1428,6 +1640,29 @@ components:
           type: integer
           example: 250
           description: Среднее время ожидания в очереди (мс)
+        workers:
+          type: integer
+          example: 4
+          description: Количество worker-ов обработки очереди
+        timeout_sec:
+          type: integer
+          example: 30
+          description: Таймаут ожидания доступного бэкенда
+        dispatch_by_affinity:
+          type: integer
+          format: int64
+          example: 8750
+          description: Запросов через Model Affinity (модель уже загружена)
+        dispatch_by_load:
+          type: integer
+          format: int64
+          example: 4520
+          description: Запросов через Resource-Aware выбор
+        dispatch_by_config:
+          type: integer
+          format: int64
+          example: 2150
+          description: Запросов через Weight/Config fallback
 
     Prediction:
       type: object
@@ -1613,3 +1848,49 @@ components:
         code:
           type: string
           description: Код ошибки (опционально)
+
+    OllamaTag:
+      type: object
+      description: Модель из ответа /api/tags
+      properties:
+        name:
+          type: string
+          example: "llama3.1:8b"
+        model:
+          type: string
+          example: "llama3.1:8b"
+        modified_at:
+          type: string
+          format: date-time
+        size:
+          type: integer
+          format: int64
+          example: 4928300000
+        digest:
+          type: string
+          example: "sha256:abc123..."
+        details:
+          type: object
+          additionalProperties: true
+
+    OllamaProcess:
+      type: object
+      description: Запущенная модель из ответа /api/ps
+      properties:
+        name:
+          type: string
+          example: "llama3.1:8b"
+        size:
+          type: integer
+          format: int64
+          example: 4928300000
+        digest:
+          type: string
+          example: "sha256:abc123..."
+        expires_at:
+          type: string
+          format: date-time
+        size_vram:
+          type: integer
+          format: int64
+          example: 6000000000

@@ -80,7 +80,31 @@ window.I18N_EN = {
   "backends.gpu_mode": "GPU Mode",
   "backends.cloud_mode": "Cloud",
 
+  // Backends Extended
+  "backends.enable": "Enable",
+  "backends.disable": "Disable",
+  "backends.test": "Test",
+  "backends.enabled": "Enabled",
+  "backends.disabled": "Disabled",
+  "backends.filter_all": "All",
+  "backends.filter_healthy": "Healthy",
+  "backends.filter_warning": "Warning",
+  "backends.filter_error": "Error",
+  "backends.filter_offline": "Offline",
+  "backends.filter_by_label": "Filter by label",
+  "backends.batch_enable": "Enable selected",
+  "backends.batch_disable": "Disable selected",
+  "backends.batch_delete": "Delete selected",
+  "backends.select_all": "Select all",
+  "backends.import_title": "Import Backends",
+  "backends.import_desc": "Select a JSON file with backend configuration",
+  "backends.import_btn": "Import",
+  "backends.test_success": "Backend {name} is available",
+  "backends.test_fail": "Backend {name} is not responding",
+  "backends.testing": "Testing {name}...",
+
   // Models
+
   "models.title": "Models",
   "models.loaded": "Loaded Models",
   "models.size": "Size",
@@ -247,11 +271,45 @@ window.I18N_EN = {
   "monitor.stats.vram": "VRAM",
   "monitor.stats.models": "Models",
 
+
+
   "monitor.panel.clusterResources": "📊 Cluster Resources",
   "monitor.panel.modelsInMemory": "🧠 Models in Memory",
   "monitor.panel.backends": "🖥️ Backends",
   "monitor.panel.queue": "📋 Queue",
+  "monitor.panel.dispatch": "⚡ Dispatch Stats",
+  "monitor.panel.autoPull": "⚡ Auto-Pull (Pull-on-Demand)",
+
+  "monitor.autoPull.enabled": "🔌 Auto-Pull",
+  "monitor.autoPull.on": "On",
+  "monitor.autoPull.off": "Off",
+  "monitor.autoPull.maxConcurrent": "Max Concurrent:",
+  "monitor.autoPull.pullTimeout": "Pull Timeout:",
+  "monitor.autoPull.retryCount": "Retry Count:",
+  "monitor.autoPull.save": "💾 Save",
+  "monitor.autoPull.activePulls": "Active Pulls",
+  "monitor.autoPull.totalPulls": "Total Auto-Pulls",
+  "monitor.autoPull.noActive": "No active pulls",
+  "monitor.autoPull.noData": "No data",
+  "monitor.autoPull.table.model": "Model",
+  "monitor.autoPull.table.backend": "Backend",
+  "monitor.autoPull.table.started": "Started",
+  "monitor.autoPull.table.duration": "Duration",
+  "monitor.autoPull.table.status": "Status",
+  "monitor.autoPull.table.error": "Error",
+
   "monitor.panel.sessions": "👤 Sessions",
+
+  "monitor.dispatch.title": "⚡ Dispatch Stats",
+  "monitor.dispatch.modelAffinity": "Model Affinity",
+  "monitor.dispatch.resourceAware": "Resource-Aware",
+  "monitor.dispatch.weightConfig": "Weight/Config",
+  "monitor.dispatch.processedTotal": "Processed Total",
+  "monitor.dispatch.total": "Total processed",
+  "monitor.dispatch.howItWorks": "💡 How dispatch works:",
+  "monitor.dispatch.affinityDesc": "model already loaded on backend (P1–P3)",
+  "monitor.dispatch.loadDesc": "selection by free resources + prediction bonus (P4)",
+  "monitor.dispatch.configDesc": "fallback by backend weights (UseEnhancedScoring=false)",
 
   "monitor.table.model": "Model",
   "monitor.table.backends": "Backends",
@@ -301,4 +359,106 @@ window.I18N_EN = {
   "connection.connected": "Connected to balancer",
   "connection.disconnected": "Connection to balancer lost",
   "connection.reconnect": "Attempting to reconnect...",
+
+  // Canvas labels (NEW)
+  "monitor.canvas.clients": "Clients",
+  "monitor.canvas.backends": "Backends",
+  "monitor.canvas.rpsLabel": "RPS: {rps} | Active: {active}/{max}",
+
+  // App strings (NEW)
+  "app.processed": "processed",
+  "app.requests": "requests",
+  "app.webui_initialized": "WebUI initialized",
+  "app.ws_connected": "WebSocket connected",
+  "app.ws_error": "WebSocket error",
+  "app.ws_reconnect": "Reconnecting... ({attempt}/{max}) in {delay}s",
+  "app.ws_max_reconnect": "Max reconnection attempts reached",
+  "app.backend_added": "Backend added: {name}",
+  "app.backend_removed": "Backend removed: {id}",
+  "app.backend_updated": "Backend {id} updated",
+  "app.backend_deleted": "Backend {id} deleted",
+  "app.backend_limits_warn": "Warning: runtime limits for {id} not updated",
+  "app.backend_saved": "Backend updated",
+  "app.backend_created": "Backend added",
+  "app.data_updated": "Data updated",
+  "app.status_changed": "Status {id}: {old} → {new}",
+  "app.limits_changed": "Limits {id} updated",
+  "app.lang_changed": "Language changed",
+  "app.lang_changed_en": "Language changed",
+  "app.id_and_host_required": "ID and host are required",
+  "app.error_loading_cluster": "Error loading cluster state",
+  "app.error_loading_queue": "Error loading queue statistics",
+  "app.error_loading_queue_details": "Error loading queue details",
+  "app.error_loading_queue_history": "Error loading queue history",
+  "app.error_loading_sessions": "Error loading sessions",
+
+  // Theme toggle title
+  "theme.toggle_dark": "Dark theme",
+  "theme.toggle_light": "Light theme",
+
+  // Backend search placeholder
+  "backends.search_placeholder": "Search...",
+  "backends.session_placeholder": "Search session...",
+
+  // ===== Renderers keys =====
+
+  // loading() default
+  "renderers.loading_data": "Awaiting data...",
+  "renderers.no_data": "No data",
+  "renderers.no_backend_data": "No backend data",
+
+  // dashboard
+  "renderers.healthy_count": "{count} healthy",
+  "renderers.models_count_loaded": "{count} loaded",
+  "renderers.requests_count": "{count} requests",
+  "renderers.processed_count": "{count} processed",
+
+  // capacityCard cloud
+  "renderers.host": "Host",
+  "renderers.active_req": "Active Req",
+  "renderers.models_loaded": "Loaded models",
+
+  // capacityCard
+  "renderers.loaded_models": "Loaded models",
+  "renderers.context_overhead": "Context overhead",
+  "renderers.free_memory": "Free {memLabel}",
+  "renderers.guaranteed_90": "Guaranteed (90%)",
+
+  // availableModels
+  "renderers.no_available_models": "No available models",
+  "renderers.extra_models": "+{count} models",
+
+  // renderOllamaParams - section titles
+  "renderers.section_runtime_flags": "⚙️ Ollama Runtime Flags",
+  "renderers.section_backend_capacity": "💾 Backend Capacity",
+  "renderers.section_model_contexts": "📐 Model Contexts",
+  "renderers.section_loaded_models": "🤖 Loaded Models",
+
+  // renderOllamaParams - capacity labels
+  "renderers.free_vram": "Free VRAM",
+  "renderers.models_vram": "Models VRAM",
+  "renderers.loadable_models_count": "Loadable models",
+  "renderers.platform_mode": "Platform mode",
+
+  // renderOllamaParams - context labels
+  "renderers.context": "Context",
+  "renderers.effective": "Effective",
+  "renderers.model_memory": "Model Memory",
+  "renderers.context_memory": "Context Memory",
+  "renderers.kv_cache": "KV Cache",
+  "renderers.layers": "Layers",
+  "renderers.kv_precision": "KV Precision",
+
+  // backendsPage / backendLoad
+  "renderers.models_label": "Models:",
+  "renderers.free_label": "Free:",
+
+  // queue
+  "renderers.seconds": " s",
+  "renderers.queue_avg_wait": "{seconds} s",
+  "renderers.no_completed_tasks": "No completed tasks",
+
+  // predictionAlerts
+  "renderers.no_active_alerts": "No active alerts"
 };
+

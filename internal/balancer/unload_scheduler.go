@@ -226,6 +226,9 @@ func (us *UnloadScheduler) unloadModel(modelName, backendID string) {
 
 	// Помечаем модель как выгружаемую чтобы избежать гонки
 	state.mu.Lock()
+	if state.WarmingUpModels == nil {
+		state.WarmingUpModels = make(map[string]*types.WarmupState)
+	}
 	state.WarmingUpModels[modelName] = &types.WarmupState{
 		StartedAt:        time.Now(),
 		EstimatedReadyAt: time.Now(),

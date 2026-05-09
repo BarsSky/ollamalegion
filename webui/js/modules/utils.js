@@ -111,12 +111,19 @@ const Utils = {
     },
 
     /**
-     * Format date to Russian locale string
+     * Get current i18n locale string for date formatting
+     */
+    _locale() {
+        return (window.I18N && I18N.getLang()) || 'en';
+    },
+
+    /**
+     * Format date to locale string
      */
     formatDate(date) {
         if (!date) return '-';
         try {
-            return new Date(date).toLocaleString('ru');
+            return new Date(date).toLocaleString(Utils._locale());
         } catch {
             return '-';
         }
@@ -128,7 +135,7 @@ const Utils = {
     formatTime(date) {
         if (!date) return '--:--:--';
         try {
-            return new Date(date).toLocaleTimeString('ru');
+            return new Date(date).toLocaleTimeString(Utils._locale());
         } catch {
             return '--:--:--';
         }

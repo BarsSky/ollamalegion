@@ -170,6 +170,22 @@ func TestClusterAPI_BackendOllamaFields(t *testing.T) {
 			assert.Contains(t, ollama, field, "OllamaMetrics must contain field: %s", field)
 		}
 
+		// Проверка полей RunningModel (modelSize реализован)
+		if rms, ok := ollama["runningModels"].([]interface{}); ok && len(rms) > 0 {
+			rm := rms[0].(map[string]interface{})
+			requiredRunningModelFields := []string{
+				"name", "size", "vramUsage", "ramUsage", "digest", "loadCount",
+				"family", "format", "parameterSize", "quantization",
+			}
+			for _, field := range requiredRunningModelFields {
+				assert.Contains(t, rm, field, "RunningModel must contain field: %s", field)
+			}
+			// size должен быть числом > 0 (modelSize реализован)
+			if size, ok := rm["size"].(float64); ok {
+				assert.Greater(t, size, float64(0), "RunningModel.size must be > 0")
+			}
+		}
+
 		runtimeFlags := ollama["runtimeFlags"].(map[string]interface{})
 		requiredFlagsFields := []string{
 			"numGpuLayers", "contextLength", "numParallel", "numThreads",
@@ -690,10 +706,15 @@ func registerAgentWithFullMetrics(t *testing.T, baseURL string, _ *balancer.Prox
 		},
 	}
 	body2, _ := json.Marshal(metricsPayload)
-	resp2, err := http.Post(baseURL+"/api/v1/agents/metrics", "application/json", bytes.NewBuffer(body2))
+	req2, err := http.NewRequest("POST", baseURL+"/api/v1/agents/metrics", bytes.NewBuffer(body2))
+	require.NoError(t, err)
+	req2.Header.Set("Content-Type", "application/json")
+	req2.Header.Set("X-Agent-ID", "agent-test-full")
+	resp2, err := http.DefaultClient.Do(req2)
 	require.NoError(t, err)
 	resp2.Body.Close()
 }
+
 
 func registerAgentWithModel(t *testing.T, baseURL string, _ *balancer.Proxy, modelName string) {
 	t.Helper()
@@ -739,10 +760,15 @@ func registerAgentWithModel(t *testing.T, baseURL string, _ *balancer.Proxy, mod
 		},
 	}
 	body2, _ := json.Marshal(metricsPayload)
-	resp2, err := http.Post(baseURL+"/api/v1/agents/metrics", "application/json", bytes.NewBuffer(body2))
+	req2, err := http.NewRequest("POST", baseURL+"/api/v1/agents/metrics", bytes.NewBuffer(body2))
+	require.NoError(t, err)
+	req2.Header.Set("Content-Type", "application/json")
+	req2.Header.Set("X-Agent-ID", "agent-model-test")
+	resp2, err := http.DefaultClient.Do(req2)
 	require.NoError(t, err)
 	resp2.Body.Close()
 }
+
 
 // ==================== Интеграционный тест: монитор получает данные ====================
 

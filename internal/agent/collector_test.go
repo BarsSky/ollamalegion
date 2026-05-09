@@ -227,7 +227,7 @@ func TestAgentHeartbeatIntervalDefault(t *testing.T) {
 	agent := NewAgent(config)
 
 	interval := agent.heartbeatInterval()
-	assert.Equal(t, 3, interval)
+	assert.Equal(t, 5, interval)
 }
 
 // TestEstimateVRAMUsage - проверка оценки использования VRAM

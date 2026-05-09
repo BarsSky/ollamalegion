@@ -13,6 +13,7 @@ NGINX_CONF="/etc/nginx/conf.d/default.conf"
 : "${NGINX_PORT:=80}"
 : "${API_HOST:=loadbalancer}"
 : "${API_PORT:=18081}"
+: "${LB_PORT:=18080}"
 : "${API_TOKEN:=}"
 : "${REFRESH_INTERVAL:=5000}"
 : "${MAX_RECONNECT_ATTEMPTS:=10}"
@@ -24,6 +25,7 @@ awk '{
     gsub(/\$\{NGINX_PORT\}/, "'"$NGINX_PORT"'");
     gsub(/\$\{API_HOST\}/, "'"$API_HOST"'");
     gsub(/\$\{API_PORT\}/, "'"$API_PORT"'");
+    gsub(/\$\{LB_PORT\}/, "'"$LB_PORT"'");
     print
 }' "$NGINX_TEMPLATE" > "$NGINX_CONF"
 

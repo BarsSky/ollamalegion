@@ -1,6 +1,7 @@
 package tests
 
 import (
+	"os"
 	"testing"
 	"time"
 
@@ -13,8 +14,12 @@ import (
 // Тесты используют публичное API через создание Proxy с подготовленными бэкендами и метриками.
 
 func TestExpandCandidates_EmptyBackends(t *testing.T) {
+	statePath := "testdata/test_state_empty.json"
+	// Удаляем предыдущий state-файл чтобы избежать загрузки старых backends
+	os.Remove(statePath)
+
 	cfg := &types.LoadBalancerConfig{
-		LoadBalancer: types.LoadBalancerSettings{Host: "127.0.0.1", Port: 18081, StatePath: "testdata/state.json"},
+		LoadBalancer: types.LoadBalancerSettings{Host: "127.0.0.1", Port: 18081, StatePath: statePath},
 		Backends:     []types.Backend{},
 		Balancing: types.BalancingSettings{
 			ModelAffinity: true,

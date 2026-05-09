@@ -307,6 +307,27 @@ Score = (
 
 ---
 
+## Выполненные задачи 2026-05-06
+
+> **Контекст:** Исправление разрыва SSE-соединения и потери потоковой генерации при проксировании запросов к Ollama.
+
+### Стабилизация streaming-проксирования (S.1–S.8)
+
+| # | Задача | Файл | Примечание |
+|---|--------|------|------------|
+| S.1 | `streamingTransport`: добавлен `ResponseHeaderTimeout` (из `FirstByteTimeout`, default 30s), `TLSHandshakeTimeout`, `ExpectContinueTimeout` | `internal/balancer/proxy.go` | Защита от зависания бэкенда без ответа |
+| S.2 | `handleStreamingResponse`: heartbeat goroutine для SSE (30s ticker) | `internal/balancer/proxy.go` | Предотвращает разрыв соединения при длительных паузах генерации |
+| S.3 | `handleStreamingResponse`: `sendSSEError()` для явных ошибок | `internal/balancer/proxy.go` | Корректная отправка SSE-ошибок клиенту |
+| S.4 | `proxyRequest`: убрана прямая запись в `w` при ошибке `client.Do` | `internal/balancer/proxy.go` | Позволяет `ServeHTTP` выполнять retry на другой бэкенд |
+| S.5 | `UpdateMetrics`: обратная совместимость `OllamaAvailable` (`RunningModels != nil`) | `internal/balancer/proxy.go` | Бэкенд считается доступным, если есть хотя бы одна запущенная модель |
+| S.6 | Добавлено поле `StreamingMaxDuration` в `BalancingSettings` | `pkg/types/types.go` | Конфигурируемый лимит длительности сессии стриминга |
+| S.7 | Исправлены тесты: `OllamaAvailable: true` в setup, корректный expected session ID | `tests/proxy_ollama_test.go` | Соответствие новой логике доступности |
+| S.8 | Исправлены тесты: `OllamaAvailable`, `DiskFree` в `TestSelectByResourcesWithLimits` | `tests/balancer_scenarios_test.go`, `tests/balancer_new_test.go` | Соответствие новой логике scoring |
+
+**Результат:** SSE-соединение не разрывается при длительных паузах; при зависании бэкенда происходит retry; клиент получает стабильный поток.
+
+---
+
 ## Архитектурная справка (reference)
 
 Следующие документы не содержат задач к выполнению, но используются как справка:
@@ -328,7 +349,8 @@ Score = (
 | Блок 3: Завершение документации | 6 | 0 | 6 |
 | Блок 4: Рефакторинг WebUI | 34 | 0 | 34 |
 | Блок 5: Расширение API Ollama | 10 | 0 | 10 |
-| **Итого** | **78** | **0** | **78** |
+| Стабилизация стриминга | 8 | 8 | 0 |
+| **Итого** | **86** | **8** | **78** |
 
 ---
 
@@ -340,3 +362,4 @@ Score = (
 | 2026-04-29 | Создан `refactoring-plan-2026-04-29.md` |
 | 2026-05-02 | Созданы `оптимизация-механизма-распределения.md` и `plan_balancer.md` |
 | 2026-05-03 | Создан `fix-docs-plan-2026-05-03.md` и данный консолидированный план |
+| 2026-05-06 | Выполнена стабилизация streaming-проксирования (S.1–S.8): heartbeat, ResponseHeaderTimeout, retry-logика, обратная совместимость OllamaAvailable |

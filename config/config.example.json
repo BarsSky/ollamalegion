@@ -3,7 +3,16 @@
     "host": "0.0.0.0",
     "port": 18080,
     "apiPort": 18081,
-    "statePath": "data/state.json"
+    "statePath": "data/state.json",
+    "trustedProxies": [
+      "127.0.0.1/8",
+      "172.17.0.0/16",
+      "172.18.0.0/16",
+      "172.28.0.0/16",
+      "10.0.0.0/8",
+      "192.168.0.0/16"
+    ],
+    "clientIPHeaders": ["X-Forwarded-For", "X-Real-IP", "CF-Connecting-IP"]
   },
   "backends": [],
   "balancing": {
@@ -19,6 +28,15 @@
     "queueMaxSize": 100,
     "queueWorkers": 4,
     "sessionTTL": 900,
+    "useEnhancedScoring": true,
+    "modelLoadTimeout": 120,
+    "streamingMaxDuration": 0,
+    "autoPull": {
+      "enabled": true,
+      "maxConcurrent": 2,
+      "pullTimeout": "5m",
+      "retryCount": 1
+    },
     "prewarm": {
       "enabled": true,
       "triggerLoadThreshold": 0.70,

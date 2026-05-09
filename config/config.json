@@ -5,7 +5,16 @@
     "apiPort": 18081,
     "statePath": "data/state.json",
     "tlsHost": "",
-    "tlsPort": 8443
+    "tlsPort": 8443,
+    "trustedProxies": [
+      "127.0.0.1/8",
+      "172.17.0.0/16",
+      "172.18.0.0/16",
+      "172.28.0.0/16",
+      "10.0.0.0/8",
+      "192.168.0.0/16"
+    ],
+    "clientIPHeaders": ["X-Forwarded-For", "X-Real-IP", "CF-Connecting-IP"]
   },
   "backends": [],
   "balancing": {
@@ -19,7 +28,43 @@
     "streamingIdleTimeout": 120,
     "queueTimeout": 300,
     "queueMaxSize": 100,
-    "sessionTTL": 900
+    "queueWorkers": 4,
+    "sessionTTL": 900,
+    "prewarm": {
+      "enabled": true,
+      "triggerLoadThreshold": 0.70,
+      "maxPrewarmPerCycle": 2,
+      "checkIntervalSec": 10
+    },
+    "modelInstances": {
+      "defaultMinInstances": 1,
+      "defaultMaxInstances": 3,
+      "idleUnloadAfter": "10m"
+    },
+    "scoring": {
+      "modelAlreadyLoaded": 0.15,
+      "modelLoadingCost": 0.10,
+      "queueDepthPenalty": 0.05,
+      "errorRatePenalty": 0.05,
+      "predictionBonus": 0.10
+    },
+    "syncModelLoad": {
+      "enabled": true,
+      "timeout": "30s"
+    },
+    "resourceReservation": {
+      "gpuHeadroomPercent": 15,
+      "ramHeadroomPercent": 10
+    },
+    "useEnhancedScoring": true,
+    "modelLoadTimeout": 120,
+    "streamingMaxDuration": 0,
+    "autoPull": {
+      "enabled": true,
+      "maxConcurrent": 2,
+      "pullTimeout": "5m",
+      "retryCount": 1
+    }
   },
   "resources": {
     "gpu": {

@@ -259,13 +259,13 @@ func (or *OllamaRouter) handleShow(w http.ResponseWriter, r *http.Request) {
 
 // handleCreate — маршрутизация на бэкенд с максимальными свободными ресурсами
 func (or *OllamaRouter) handleCreate(w http.ResponseWriter, r *http.Request) {
-	backendID := or.selectBackendByResources()
+	backendID := or.selectBackendByResources(r)
 	or.proxy.proxyRequest(w, r, backendID)
 }
 
 // handlePull — аналогично create
 func (or *OllamaRouter) handlePull(w http.ResponseWriter, r *http.Request) {
-	backendID := or.selectBackendByResources()
+	backendID := or.selectBackendByResources(r)
 	or.proxy.proxyRequest(w, r, backendID)
 }
 
@@ -284,6 +284,11 @@ func (or *OllamaRouter) handleDelete(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Сохраняем тело запроса для параллельного проксирования на все бэкенды
+	// Каждая горутина получит свою копию тела, чтобы избежать race condition
+	bodyBytes, _ := io.ReadAll(r.Body)
+	r.Body = io.NopCloser(bytes.NewBuffer(bodyBytes))
+
 	// Отправляем запрос на все бэкенды параллельно
 	var wg sync.WaitGroup
 	var firstResp *http.Response
@@ -293,9 +298,12 @@ func (or *OllamaRouter) handleDelete(w http.ResponseWriter, r *http.Request) {
 
 	for _, backendID := range targets {
 		wg.Add(1)
-		go func(id string) {
+		go func(id string, bodyCopy []byte) {
 			defer wg.Done()
-			resp, err := or.proxyHTTP(r, id)
+			// Создаём копию запроса с собственным телом для каждой горутины
+			cloneReq := r.Clone(r.Context())
+			cloneReq.Body = io.NopCloser(bytes.NewBuffer(bodyCopy))
+			resp, err := or.proxyHTTP(cloneReq, id)
 			mu.Lock()
 			defer mu.Unlock()
 			if !gotResult && err == nil && resp != nil && resp.StatusCode == http.StatusOK {
@@ -308,7 +316,7 @@ func (or *OllamaRouter) handleDelete(w http.ResponseWriter, r *http.Request) {
 			if firstErr == nil && err != nil {
 				firstErr = err
 			}
-		}(backendID)
+		}(backendID, bodyBytes)
 	}
 	wg.Wait()
 
@@ -513,9 +521,9 @@ func (or *OllamaRouter) selectAnyHealthy() string {
 	return ""
 }
 
-func (or *OllamaRouter) selectBackendByResources() string {
-	// Используем существующую логику выбора бэкенда
-	model := or.extractModelFromBody(nil)
+func (or *OllamaRouter) selectBackendByResources(r *http.Request) string {
+	// Используем существующую логику выбора бэкенда с учётом модели из запроса
+	model := or.extractModelFromBody(r)
 	return or.proxy.selectBackend(model)
 }
 
@@ -537,6 +545,10 @@ func (or *OllamaRouter) extractModelFromBody(r *http.Request) string {
 
 	if model, ok := req["model"].(string); ok {
 		return model
+	}
+	// Ollama API uses "name" for /api/show, /api/delete, /api/pull, /api/push
+	if name, ok := req["name"].(string); ok {
+		return name
 	}
 	// Для /api/copy
 	if source, ok := req["source"].(string); ok {

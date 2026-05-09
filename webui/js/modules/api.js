@@ -122,6 +122,11 @@ const Api = (function () {
             return response.ok;
         },
 
+        // Get single backend config (with weight, maxConcurrentReqs etc.)
+        async getBackend(id) {
+            return getJson(`/api/v1/backends/${id}`);
+        },
+
         async updateBackendLimitsFull(id, maxConcurrentRequests, maxModels) {
             const response = await request(`${API_BASE}/api/v1/backends/${id}/limits`, {
                 method: 'PUT',

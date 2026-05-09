@@ -13,6 +13,8 @@ const Renderers = (function () {
     // gaps that are filled by shifting remaining backends. Ensures visual stability.
     const _backendOrder = new Map(); // id -> { index, addedAt }
 
+    const _t = (k, p) => window.I18N ? window.I18N.t(k, p) : k;
+
     function stableBackendOrder(backends) {
       const now = Date.now();
       const seen = new Set();
@@ -48,15 +50,16 @@ const Renderers = (function () {
     // ---- Generic helpers ----
 
     function badge(status, type) {
-        return `<span class=\"badge badge-${type}\">${escapeHtml(status)}</span>`;
+        return `<span class="badge badge-${type}">${escapeHtml(status)}</span>`;
     }
 
-    function loading(text = 'Ожидание данных...') {
-        return `<div class=\"loading\">${escapeHtml(text)}</div>`;
+    function loading(text) {
+        if (!text) text = _t('renderers.loading_data');
+        return `<div class="loading">${escapeHtml(text)}</div>`;
     }
 
     function emptyRow(cols, text) {
-        return `<tr><td colspan=\"${cols}\" class=\"loading-cell\">${escapeHtml(text)}</td></tr>`;
+        return `<tr><td colspan="${cols}" class="loading-cell">${escapeHtml(text)}</td></tr>`;
     }
 
     // ---- Dashboard ----
@@ -72,13 +75,13 @@ const Renderers = (function () {
         const queuePct = percent(queueSize, queueMax);
 
         Utils.setText('totalBackends', backends.length);
-        Utils.setText('healthyBackends', `${healthy.length} здоровых`);
+        Utils.setText('healthyBackends', _t('renderers.healthy_count', { count: healthy.length }));
         Utils.setText('totalModels', totalModels);
-        Utils.setText('loadedModels', `${totalModels} загружено`);
+        Utils.setText('loadedModels', _t('renderers.models_count_loaded', { count: totalModels }));
         Utils.setText('totalSessions', activeSessions);
-        Utils.setText('sessionRate', `${totalRequests} запросов`);
+        Utils.setText('sessionRate', _t('renderers.requests_count', { count: totalRequests }));
         Utils.setText('queueSize', queueSize);
-        Utils.setText('queueProcessed', `${queueProcessed} обработано`);
+        Utils.setText('queueProcessed', _t('renderers.processed_count', { count: queueProcessed }));
         Utils.setStyle('queueDashboardFill', 'width', `${queuePct}%`);
 
         Utils.setHTML('runtimeCluster', runtimeCluster(backends));
@@ -92,7 +95,7 @@ const Renderers = (function () {
 
     function runtimeCluster(backends) {
         backends = stableBackendOrder(backends);
-        if (!backends.length) return loading('Нет данных о бэкендах');
+        if (!backends.length) return loading(_t('renderers.no_backend_data'));
         return backends.map(backend => {
             const flags = backend.ollama?.runtimeFlags || {};
             const contexts = backend.ollama?.modelContexts || [];
@@ -100,20 +103,20 @@ const Renderers = (function () {
             const flagBadges = [];
             if (flags.numGpuLayers !== undefined && flags.numGpuLayers !== 0) {
                 const cls = flags.numGpuLayers === -1 ? '' : 'warning';
-                flagBadges.push(`<span class=\"flag-badge ${cls}\">GPU:${flags.numGpuLayers === -1 ? 'auto' : flags.numGpuLayers}</span>`);
+                flagBadges.push(`<span class="flag-badge ${cls}">GPU:${flags.numGpuLayers === -1 ? 'auto' : flags.numGpuLayers}</span>`);
             }
-            if (flags.contextLength) flagBadges.push(`<span class=\"flag-badge\">C:${formatNumber(flags.contextLength)}</span>`);
-            if (flags.numParallel && flags.numParallel > 1) flagBadges.push(`<span class=\"flag-badge warning\">NP:${flags.numParallel}</span>`);
-            if (flags.numThreads) flagBadges.push(`<span class=\"flag-badge\">T:${flags.numThreads}</span>`);
-            if (flags.batchSize && flags.batchSize !== 512) flagBadges.push(`<span class=\"flag-badge\">B:${flags.batchSize}</span>`);
-            if (flags.lowVram) flagBadges.push(`<span class=\"flag-badge danger\">LOW_VRAM</span>`);
-            if (flags.flashAttention) flagBadges.push(`<span class=\"flag-badge\">FA</span>`);
-            if (flags.kvCacheQuant && flags.kvCacheQuant !== 'f16') flagBadges.push(`<span class=\"flag-badge warning\">KV:${flags.kvCacheQuant}</span>`);
+            if (flags.contextLength) flagBadges.push(`<span class="flag-badge">C:${formatNumber(flags.contextLength)}</span>`);
+            if (flags.numParallel && flags.numParallel > 1) flagBadges.push(`<span class="flag-badge warning">NP:${flags.numParallel}</span>`);
+            if (flags.numThreads) flagBadges.push(`<span class="flag-badge">T:${flags.numThreads}</span>`);
+            if (flags.batchSize && flags.batchSize !== 512) flagBadges.push(`<span class="flag-badge">B:${flags.batchSize}</span>`);
+            if (flags.lowVram) flagBadges.push(`<span class="flag-badge danger">LOW_VRAM</span>`);
+            if (flags.flashAttention) flagBadges.push(`<span class="flag-badge">FA</span>`);
+            if (flags.kvCacheQuant && flags.kvCacheQuant !== 'f16') flagBadges.push(`<span class="flag-badge warning">KV:${flags.kvCacheQuant}</span>`);
 
             const contextBadges = contexts.map(ctx => `
-                <span class=\"context-info\">
+                <span class="context-info">
                     ${escapeHtml(ctx.name)}: Ctx ${formatNumber(ctx.effectiveContext)} (${ctx.contextSource})
-                    <div class=\"context-tooltip\">
+                    <div class="context-tooltip">
                         ${tooltipRow('Context', formatNumber(ctx.contextLength))}
                         ${tooltipRow('Effective', formatNumber(ctx.effectiveContext))}
                         ${tooltipRow('Model Memory', formatMB(ctx.modelMemoryMB))}
@@ -127,88 +130,101 @@ const Renderers = (function () {
             `).join('');
 
             return `
-                <div class=\"runtime-card\">
-                    <div class=\"runtime-header\">
+                <div class="runtime-card">
+                    <div class="runtime-header">
                         <strong>${escapeHtml(backend.id)}</strong>
                         ${badge(backend.status, backend.status === 'healthy' ? 'success' : 'danger')}
                     </div>
-                    <div class=\"runtime-host\">${escapeHtml(backend.host || '-')}</div>
-                    <div class=\"runtime-flags\">
-                        ${flagBadges.length ? flagBadges.join('') : '<span class=\"flag-badge\">default</span>'}
+                    <div class="runtime-host">${escapeHtml(backend.host || '-')}</div>
+                    <div class="runtime-flags">
+                        ${flagBadges.length ? flagBadges.join('') : '<span class="flag-badge">default</span>'}
                     </div>
-                    ${contextBadges ? `<div style=\"margin-top:0.5rem;\">${contextBadges}</div>` : ''}
+                    ${contextBadges ? `<div style="margin-top:0.5rem;">${contextBadges}</div>` : ''}
                 </div>
             `;
         }).join('');
     }
 
     function tooltipRow(label, value) {
-        return `<div class=\"context-tooltip-row\"><span class=\"context-tooltip-label\">${escapeHtml(label)}</span><span class=\"context-tooltip-value\">${escapeHtml(String(value))}</span></div>`;
+        return `<div class="context-tooltip-row"><span class="context-tooltip-label">${escapeHtml(label)}</span><span class="context-tooltip-value">${escapeHtml(String(value))}</span></div>`;
     }
 
     // ---- GPU Cluster ----
 
     function gpuCluster(backends) {
         backends = stableBackendOrder(backends);
-        if (!backends.length) return loading('Нет данных о бэкендах');
+        if (!backends.length) return loading(_t('renderers.no_backend_data'));
 
         const gpuBackends = backends.filter(b => getBackendMode(b) === 'gpu');
         const cpuBackends = backends.filter(b => getBackendMode(b) === 'cpu');
         const cloudBackends = backends.filter(b => getBackendMode(b) === 'cloud');
 
-        Utils.setHTML('gpuClusterBadge', `${gpuBackends.length} GPU · ${cpuBackends.length} CPU · ${cloudBackends.length} <svg class=\"badge-icon-svg\" viewBox=\"0 0 24 24\"><circle cx=\"12\" cy=\"12\" r=\"10\" fill=\"currentColor\"/></svg>`);
+        Utils.setHTML('gpuClusterBadge', `${gpuBackends.length} GPU · ${cpuBackends.length} CPU · ${cloudBackends.length} <svg class="badge-icon-svg" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10" fill="currentColor"/></svg>`);
 
         return backends.map(b => gpuCard(b)).join('');
     }
 
     function gpuCard(backend) {
         const mode = getBackendMode(backend);
+        const pred = backend.prediction || {};
 
         if (mode === 'cloud') {
             const activeReq = backend.activeRequests || 0;
             const maxReq = backend.maxConcurrentRequests || 10;
             const models = (backend.ollama?.runningModels || []).length;
             const rps = backend.ollama?.requestsPerSecond || 0;
+            const reqCap = pred.requestCapacity !== undefined ? pred.requestCapacity.toFixed(0) + '%' : '-';
             return `
-                <div class=\"gpu-card gpu-card-cloud\">
-                    <div class=\"gpu-card-header\">
-                        <span class=\"gpu-card-title\">${escapeHtml(backend.id)}</span>
-                        <svg class=\"badge-icon-svg\" viewBox=\"0 0 24 24\"><circle cx=\"12\" cy=\"12\" r=\"10\" fill=\"currentColor\"/></svg>
+                <div class="gpu-card gpu-card-cloud">
+                    <div class="gpu-card-header">
+                        <span class="gpu-card-title">${escapeHtml(backend.id)}</span>
+                        <svg class="badge-icon-svg" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10" fill="currentColor"/></svg>
                     </div>
-                    <div class=\"gpu-metrics\">
+                    <div class="gpu-metrics">
                         ${metric('Host', escapeHtml(backend.host || '-'))}
                         ${metric('Req', `${activeReq}/${maxReq}`)}
                         ${metric('Models', models)}
                         ${metric('RPS', rps.toFixed(1))}
+                        ${metric('Capacity', reqCap)}
                         ${metric('Status', backend.status)}
                     </div>
-                    <div class=\"progress-bar\"><div class=\"progress-fill low\" style=\"width: 0%\"></div></div>
+                    <div class="progress-bar"><div class="progress-fill low" style="width: 0%"></div></div>
                 </div>
             `;
         }
 
         if (mode === 'cpu') {
             const sys = backend.system || {};
+            const cpu = sys.cpu || {};
             const cpuUsage = sys.cpuUsagePercent || 0;
             const ramTotal = sys.memoryTotal || 1;
             const ramUsed = sys.memoryUsed || 0;
             const ramPct = percent(ramUsed, ramTotal);
-            const temp = sys.cpuTemperature !== undefined ? sys.cpuTemperature : '-';
-            const loadAvg = sys.loadAverage1 !== undefined ? sys.loadAverage1.toFixed(2) : '-';
+            const temp = cpu.temperature !== undefined ? cpu.temperature : (sys.cpuTemperature !== undefined ? sys.cpuTemperature : '-');
+            const loadAvg1 = cpu.loadAverage1 !== undefined ? cpu.loadAverage1.toFixed(2) : (sys.loadAverage1 !== undefined ? sys.loadAverage1.toFixed(2) : '-');
+            const loadAvg5 = cpu.loadAverage5 !== undefined ? cpu.loadAverage5.toFixed(2) : '-';
+            const loadAvg15 = cpu.loadAverage15 !== undefined ? cpu.loadAverage15.toFixed(2) : '-';
+            const cores = cpu.coreCount || '-';
+            const model = cpu.model || '';
+            const throttled = cpu.throttled !== undefined ? (cpu.throttled ? '⚠️ YES' : 'OK') : '-';
+            const reqCap = pred.requestCapacity !== undefined ? pred.requestCapacity.toFixed(0) + '%' : '-';
             return `
-                <div class=\"gpu-card gpu-card-cpu\">
-                    <div class=\"gpu-card-header\">
-                        <span class=\"gpu-card-title\">${escapeHtml(backend.id)}</span>
+                <div class="gpu-card gpu-card-cpu">
+                    <div class="gpu-card-header">
+                        <span class="gpu-card-title">${escapeHtml(backend.id)}</span>
                         ${badge('CPU', 'warning')}
                     </div>
-                    <div class=\"gpu-metrics\">
+                    <div class="gpu-metrics">
                         ${metric('Host', escapeHtml(backend.host || '-'))}
                         ${metric('CPU', `${cpuUsage.toFixed(1)}%`)}
                         ${metric('RAM', `${ramPct.toFixed(1)}%`)}
-                        ${metric('Load', loadAvg)}
+                        ${metric('Load', `${loadAvg1} / ${loadAvg5} / ${loadAvg15}`)}
+                        ${metric('Cores', `${cores} ${model ? '(' + model + ')' : ''}`)}
                         ${metric('Temp', `${temp}°C`)}
+                        ${metric('Throttle', throttled)}
+                        ${metric('Capacity', reqCap)}
                     </div>
-                    <div class=\"progress-bar\"><div class=\"progress-fill ${getProgressClass(cpuUsage)}\" style=\"width: ${cpuUsage}%\"></div></div>
+                    <div class="progress-bar"><div class="progress-fill ${getProgressClass(cpuUsage)}" style="width: ${cpuUsage}%"></div></div>
                 </div>
             `;
         }
@@ -221,30 +237,37 @@ const Renderers = (function () {
         const vramPct = percent(vramUsed, vramTotal);
         const temp = gpu.temperature !== undefined ? gpu.temperature : '-';
         const power = gpu.powerUsage !== undefined ? gpu.powerUsage : '-';
+        const powerLimit = gpu.powerLimit !== undefined && gpu.powerLimit > 0 ? gpu.powerLimit : '-';
+        const gpuClock = gpu.gpuClock !== undefined && gpu.gpuClock > 0 ? gpu.gpuClock : '-';
+        const memClock = gpu.memClock !== undefined && gpu.memClock > 0 ? gpu.memClock : '-';
         const status = getGPUStatus(usage, vramPct, temp);
+        const reqCap = pred.requestCapacity !== undefined ? pred.requestCapacity.toFixed(0) + '%' : '-';
         return `
-            <div class=\"gpu-card\">
-                <div class=\"gpu-card-header\">
-                    <span class=\"gpu-card-title\">${escapeHtml(backend.id)}</span>
-                    <span class=\"gpu-status ${status}\"></span>
+            <div class="gpu-card">
+                <div class="gpu-card-header">
+                    <span class="gpu-card-title">${escapeHtml(backend.id)}</span>
+                    <span class="gpu-status ${status}"></span>
                 </div>
-                <div class=\"gpu-metrics\">
+                <div class="gpu-metrics">
                     ${metric('Host', escapeHtml(backend.host || '-'))}
                     ${metric('GPU', `${usage.toFixed(1)}%`)}
                     ${metric('VRAM', `${vramPct.toFixed(1)}%`)}
                     ${metric('Temp', `${temp}°C`)}
-                    ${metric('Power', `${power}W`)}
+                    ${metric('Power', `${power}W ${powerLimit !== '-' ? '/ ' + powerLimit + 'W' : ''}`)}
+                    ${metric('Clock', `${gpuClock !== '-' ? gpuClock + ' MHz' : '-'}`)}
+                    ${metric('MemClk', `${memClock !== '-' ? memClock + ' MHz' : '-'}`)}
+                    ${metric('Capacity', reqCap)}
                 </div>
-                <div class=\"progress-bar\"><div class=\"progress-fill ${getProgressClass(usage)}\" style=\"width: ${usage}%\"></div></div>
+                <div class="progress-bar"><div class="progress-fill ${getProgressClass(usage)}" style="width: ${usage}%"></div></div>
             </div>
         `;
     }
 
     function metric(label, value) {
         return `
-            <div class=\"gpu-metric\">
-                <div class=\"gpu-metric-label\">${escapeHtml(label)}</div>
-                <div class=\"gpu-metric-value\">${escapeHtml(String(value))}</div>
+            <div class="gpu-metric">
+                <div class="gpu-metric-label">${escapeHtml(label)}</div>
+                <div class="gpu-metric-value">${escapeHtml(String(value))}</div>
             </div>
         `;
     }
@@ -253,7 +276,7 @@ const Renderers = (function () {
 
     function capacitySection(backends) {
         backends = stableBackendOrder(backends);
-        if (!backends.length) return loading('Нет данных о бэкендах');
+        if (!backends.length) return loading(_t('renderers.no_backend_data'));
         return backends.map(b => capacityCard(b)).join('');
     }
 
@@ -263,16 +286,16 @@ const Renderers = (function () {
 
         if (mode === 'cloud') {
             return `
-                <div class=\"capacity-card capacity-cloud\">
-                    <div class=\"runtime-header\">
+                <div class="capacity-card capacity-cloud">
+                    <div class="runtime-header">
                         <strong>${escapeHtml(backend.id)}</strong>
                         ${getBackendModeBadge(backend)}
                     </div>
-                    <div class=\"capacity-cloud-info\">
-                        <div class=\"capacity-cloud-row\"><span>Хост</span><span>${escapeHtml(backend.host || '-')}</span></div>
-                        <div class=\"capacity-cloud-row\"><span>Статус</span><span>${badge(backend.status, backend.status === 'healthy' ? 'success' : 'danger')}</span></div>
-                        <div class=\"capacity-cloud-row\"><span>Active Req</span><span>${backend.activeRequests || 0}</span></div>
-                        <div class=\"capacity-cloud-row\"><span>Загружено моделей</span><span>${(backend.ollama?.runningModels || []).length}</span></div>
+                    <div class="capacity-cloud-info">
+                        <div class="capacity-cloud-row"><span>${_t('renderers.host')}</span><span>${escapeHtml(backend.host || '-')}</span></div>
+                        <div class="capacity-cloud-row"><span>${_t('metrics.status')}</span><span>${badge(backend.status, backend.status === 'healthy' ? 'success' : 'danger')}</span></div>
+                        <div class="capacity-cloud-row"><span>${_t('renderers.active_req')}</span><span>${backend.activeRequests || 0}</span></div>
+                        <div class="capacity-cloud-row"><span>${_t('renderers.models_loaded')}</span><span>${(backend.ollama?.runningModels || []).length}</span></div>
                     </div>
                 </div>
             `;
@@ -294,28 +317,28 @@ const Renderers = (function () {
         const memLabel = isCPU ? 'RAM' : 'VRAM';
 
         return `
-            <div class=\"capacity-card\">
-                <div class=\"runtime-header\">
+            <div class="capacity-card">
+                <div class="runtime-header">
                     <strong>${escapeHtml(backend.id)}</strong>
                     ${getBackendModeBadge(backend)}
                 </div>
-                <div class=\"capacity-host\"><span>Хост</span><span>${escapeHtml(backend.host || '-')}</span></div>
-                <div class=\"capacity-bar-container\">
-                    <div class=\"capacity-bar-labels\">
+                <div class="capacity-host"><span>${_t('renderers.host')}</span><span>${escapeHtml(backend.host || '-')}</span></div>
+                <div class="capacity-bar-container">
+                    <div class="capacity-bar-labels">
                         <span>${memLabel}: ${formatMB(memUsed)} / ${formatMB(memTotal)}</span>
                         <span>${usedPct.toFixed(1)}%</span>
                     </div>
-                    <div class=\"capacity-bar\">
-                        <div class=\"capacity-bar-filled\" style=\"width: ${loadedPct}%\"></div>
-                        <div class=\"capacity-bar-context\" style=\"width: ${ctxPct}%\"></div>
-                        <div class=\"capacity-bar-guaranteed\" style=\"width: ${guarPct}%\"></div>
+                    <div class="capacity-bar">
+                        <div class="capacity-bar-filled" style="width: ${loadedPct}%"></div>
+                        <div class="capacity-bar-context" style="width: ${ctxPct}%"></div>
+                        <div class="capacity-bar-guaranteed" style="width: ${guarPct}%"></div>
                     </div>
                 </div>
-                <div class=\"capacity-stats\">
-                    <div class=\"capacity-stat\"><span>Loaded models</span><span>${formatMB(loadedMem)}</span></div>
-                    <div class=\"capacity-stat\"><span>Context overhead</span><span>${formatMB(ctxOverhead)}</span></div>
-                    <div class=\"capacity-stat\"><span>Free ${memLabel}</span><span>${formatMB(memFree)}</span></div>
-                    <div class=\"capacity-stat\"><span>Guaranteed (90%)</span><span>${formatMB(guaranteed)}</span></div>
+                <div class="capacity-stats">
+                    <div class="capacity-stat"><span>${_t('renderers.loaded_models')}</span><span>${formatMB(loadedMem)}</span></div>
+                    <div class="capacity-stat"><span>${_t('renderers.context_overhead')}</span><span>${formatMB(ctxOverhead)}</span></div>
+                    <div class="capacity-stat"><span>${_t('renderers.free_memory', { memLabel })}</span><span>${formatMB(memFree)}</span></div>
+                    <div class="capacity-stat"><span>${_t('renderers.guaranteed_90')}</span><span>${formatMB(guaranteed)}</span></div>
                 </div>
             </div>
         `;
@@ -327,7 +350,7 @@ const Renderers = (function () {
         const badge = document.getElementById('loadableModelCount');
         if (!backends.length) {
             if (badge) badge.textContent = '-';
-            return loading('Нет данных');
+            return loading(_t('renderers.no_data'));
         }
 
         let totalLoadable = 0;
@@ -342,7 +365,7 @@ const Renderers = (function () {
 
         if (badge) badge.textContent = totalLoadable;
 
-        if (!allModels.length) return loading('Нет доступных моделей');
+        if (!allModels.length) return loading(_t('renderers.no_available_models'));
 
         allModels.sort((a, b) => {
             if (a.canLoad !== b.canLoad) return b.canLoad - a.canLoad;
@@ -353,16 +376,16 @@ const Renderers = (function () {
             const cls = m.canLoad ? 'model-loadable' : 'model-unloadable';
             const vram = m.estimatedVram || 0;
             return `
-                <div class=\"available-model-item ${cls}\">
-                    <div class=\"model-indicator\"></div>
-                    <span class=\"model-name\">${escapeHtml(m.name)}</span>
-                    <span class=\"model-vram\">${formatMB(vram)} @ ${escapeHtml(m.backendId)}</span>
+                <div class="available-model-item ${cls}">
+                    <div class="model-indicator"></div>
+                    <span class="model-name">${escapeHtml(m.name)}</span>
+                    <span class="model-vram">${formatMB(vram)} @ ${escapeHtml(m.backendId)}</span>
                 </div>
             `;
         }).join('');
 
         const extra = allModels.length > 50
-            ? `<div style=\"text-align:center;color:var(--text-muted);padding:0.5rem;font-size:0.8rem;\">+${allModels.length - 50} моделей</div>`
+            ? `<div style="text-align:center;color:var(--text-muted);padding:0.5rem;font-size:0.8rem;">${_t('renderers.extra_models', { count: allModels.length - 50 })}</div>`
             : '';
 
         return items + extra;
@@ -372,12 +395,13 @@ const Renderers = (function () {
 
     function backendsTable(backends) {
         backends = stableBackendOrder(backends);
-        if (!backends.length) return emptyRow(11, 'Нет данных');
+        if (!backends.length) return emptyRow(13, _t('renderers.no_data'));
 
         return backends.map(b => {
             const mode = getBackendMode(b);
             const gpu = b.gpu || {};
             const sys = b.system || {};
+            const cpu = sys.cpu || {};
             const pred = b.prediction || {};
             const oll = b.ollama || {};
             const isCloud = mode === 'cloud';
@@ -387,10 +411,24 @@ const Renderers = (function () {
             const cpuUsage = isCloud ? '-' : (sys.cpuUsagePercent !== undefined ? sys.cpuUsagePercent.toFixed(1) + '%' : '-');
             const ramPercent = isCloud ? '-' : (sys.memoryTotal > 0 ? percent(sys.memoryUsed, sys.memoryTotal).toFixed(1) + '%' : '-');
 
+            // CPU Details
+            const coreCount = cpu.coreCount || '-';
+            const threadCount = cpu.threadCount || '-';
+            const cpuModel = cpu.model ? cpu.model.split(' ').slice(0, 2).join(' ') : '';
+            const loadAvg = cpu.loadAverage1 !== undefined ? cpu.loadAverage1.toFixed(2) : (sys.loadAverage1 !== undefined ? sys.loadAverage1.toFixed(2) : '-');
+            const cpuTemp = cpu.temperature !== undefined ? cpu.temperature + '°C' : (sys.cpuTemperature !== undefined ? sys.cpuTemperature + '°C' : '-');
+            const throttled = cpu.throttled !== undefined ? (cpu.throttled ? '⚠️' : 'OK') : '-';
+
+            // GPU hidden metrics tooltip
+            const gpuHidden = !isCloud && (gpu.powerLimit > 0 || gpu.gpuClock > 0 || gpu.memClock > 0)
+                ? `<span class="gpu-hidden-hint" title="Limit: ${gpu.powerLimit || '-'}W | GPU: ${gpu.gpuClock || '-'} MHz | Mem: ${gpu.memClock || '-'} MHz">⚡</span>` : '';
+
             const activeReq = b.activeRequests || 0;
             const maxReq = b.maxConcurrentRequests || 10;
             const models = oll.runningModels?.length || 0;
             const rps = oll.requestsPerSecond || 0;
+            const avgRT = oll.avgResponseTime !== undefined && oll.avgResponseTime > 0 ? oll.avgResponseTime.toFixed(0) + 'ms' : '-';
+            const reqCap = pred.requestCapacity !== undefined ? pred.requestCapacity.toFixed(0) + '%' : '-';
             const secondsToCrit = pred.secondsToCritical || -1;
             const prev = _predCache[b.id];
             let predClass, predText;
@@ -399,7 +437,6 @@ const Renderers = (function () {
                 predText = `${Math.round(secondsToCrit)}с`;
                 const isWarning = secondsToCrit < PRED_THRESHOLD;
                 if (prev) {
-                    // Apply hysteresis: once in warning, stay there until above threshold + margin
                     if (prev.class === 'warning' && secondsToCrit < PRED_THRESHOLD + PRED_HYSTERESIS) {
                         predClass = 'warning';
                     } else if (prev.class === 'success' && secondsToCrit > PRED_THRESHOLD - PRED_HYSTERESIS) {
@@ -420,17 +457,19 @@ const Renderers = (function () {
                 <tr>
                     <td><strong>${escapeHtml(b.id)}</strong> ${getBackendModeBadge(b)}</td>
                     <td>${badge(b.status, b.status === 'healthy' ? 'success' : 'danger')}</td>
-                    <td>${escapeHtml(gpuUsage)}</td>
+                    <td>${escapeHtml(gpuUsage)}${gpuHidden}</td>
                     <td>${escapeHtml(vramPercent)}</td>
                     <td>${escapeHtml(cpuUsage)}</td>
                     <td>${escapeHtml(ramPercent)}</td>
-                    <td>${activeReq}/${maxReq}</td>
-                    <td>${models}</td>
-                    <td>${rps.toFixed(1)}</td>
+                    <td class="col-right">${activeReq}/${maxReq}</td>
+                    <td class="col-right">${models}</td>
+                    <td class="col-right">${rps.toFixed(1)}</td>
+                    <td class="col-right">${avgRT}</td>
+                    <td class="col-right">${reqCap}</td>
                     <td>${badge(predText, predClass)}</td>
                     <td>
-                        <button class=\"action-btn edit\" onclick=\"ui.editBackend('${escapeHtml(b.id)}')\">Edit</button>
-                        <button class=\"action-btn delete\" onclick=\"ui.confirmDeleteBackend('${escapeHtml(b.id)}')\">Del</button>
+                        <button class="action-btn edit" onclick="ui.editBackend('${escapeHtml(b.id)}')">Edit</button>
+                        <button class="action-btn delete" onclick="ui.confirmDeleteBackend('${escapeHtml(b.id)}')">Del</button>
                     </td>
                 </tr>
             `;
@@ -439,7 +478,7 @@ const Renderers = (function () {
 
     // ---- Backends Management Page ----
 
-    // Справочник параметров Ollama с русской расшифровкой
+    // Ollama parameter reference with descriptions (technical - kept as-is)
     const OLLAMA_PARAMS = {
         numGpuLayers:     { label: 'GPU Layers (-ngl)', desc: 'Кол-во слоёв модели на GPU. -1 = все слои, 0 = только CPU. Определяет, какая часть модели загружается в VRAM.' },
         contextLength:    { label: 'Context Length (-c)', desc: 'Размер контекстного окна в токенах. По умолчанию 2048. Больше = длиннее история диалога, но больше VRAM/RAM.' },
@@ -461,10 +500,9 @@ const Renderers = (function () {
         const contexts = backend.ollama?.modelContexts || [];
         const runningModels = backend.ollama?.runningModels || [];
 
-        // Секция: Runtime-флаги
-        let flagsHtml = '<div class="be-detail-section"><div class="be-detail-title">⚙️ Runtime-флаги Ollama</div><div class="be-params-grid">';
+        // Section: Runtime Flags
+        let flagsHtml = `<div class="be-detail-section"><div class="be-detail-title">${_t('renderers.section_runtime_flags')}</div><div class="be-params-grid">`;
 
-        // Основные флаги
         const mainFlags = ['numGpuLayers', 'contextLength', 'numParallel', 'numThreads', 'batchSize'];
         mainFlags.forEach(key => {
             if (flags[key] !== undefined && flags[key] !== 0 && flags[key] !== '') {
@@ -477,7 +515,6 @@ const Renderers = (function () {
             }
         });
 
-        // Дополнительные флаги
         const extraFlags = ['gpuSplitMode', 'mainGpu', 'kvCacheQuant', 'source'];
         extraFlags.forEach(key => {
             if (flags[key] !== undefined && flags[key] !== '' && String(flags[key]) !== '0') {
@@ -489,7 +526,6 @@ const Renderers = (function () {
             }
         });
 
-        // Булевы флаги
         const boolFlags = [
             { key: 'lowVram', label: 'Low VRAM', desc: OLLAMA_PARAMS.lowVram.desc },
             { key: 'f16kv', label: 'FP16 KV Cache', desc: OLLAMA_PARAMS.f16kv.desc },
@@ -497,7 +533,7 @@ const Renderers = (function () {
         ];
         boolFlags.forEach(({ key, label, desc }) => {
             if (flags[key] !== undefined) {
-                const val = flags[key] ? '✅ Да' : '❌ Нет';
+                const val = flags[key] ? '✅ ' + _t('common.yes') : '❌ ' + _t('common.no');
                 const cls = flags[key] ? 'be-param-on' : 'be-param-off';
                 flagsHtml += `<div class="be-param-item ${cls}" title="${escapeHtml(desc)}">
                     <span class="be-param-label">${escapeHtml(label)}</span>
@@ -508,46 +544,43 @@ const Renderers = (function () {
 
         flagsHtml += '</div></div>';
 
-        // Секция: Ёмкость бекенда
+        // Section: Backend Capacity
         let capHtml = '';
         if (cap.freeVram !== undefined || cap.loadedModelVram !== undefined) {
-            capHtml = '<div class="be-detail-section"><div class="be-detail-title">💾 Ёмкость бекенда</div><div class="be-params-grid">';
-            if (cap.freeVram !== undefined) capHtml += `<div class="be-param-item"><span class="be-param-label">Свободно VRAM</span><span class="be-param-value">${formatMB(cap.freeVram)}</span></div>`;
-            if (cap.guaranteedVram !== undefined) capHtml += `<div class="be-param-item"><span class="be-param-label">Гарантировано (90%)</span><span class="be-param-value">${formatMB(cap.guaranteedVram)}</span></div>`;
-            if (cap.loadedModelVram !== undefined) capHtml += `<div class="be-param-item"><span class="be-param-label">VRAM моделей</span><span class="be-param-value">${formatMB(cap.loadedModelVram)}</span></div>`;
-            if (cap.contextOverheadMB !== undefined) capHtml += `<div class="be-param-item"><span class="be-param-label">Context overhead</span><span class="be-param-value">${formatMB(cap.contextOverheadMB)}</span></div>`;
-            if (cap.loadableModelCount !== undefined) capHtml += `<div class="be-param-item"><span class="be-param-label">Можно загрузить моделей</span><span class="be-param-value">${cap.loadableModelCount}</span></div>`;
-            if (cap.mode) capHtml += `<div class="be-param-item"><span class="be-param-label">Режим платформы</span><span class="be-param-value">${escapeHtml(String(cap.mode))}</span></div>`;
+            capHtml = `<div class="be-detail-section"><div class="be-detail-title">${_t('renderers.section_backend_capacity')}</div><div class="be-params-grid">`;
+            if (cap.freeVram !== undefined) capHtml += `<div class="be-param-item"><span class="be-param-label">${_t('renderers.free_vram')}</span><span class="be-param-value">${formatMB(cap.freeVram)}</span></div>`;
+            if (cap.guaranteedVram !== undefined) capHtml += `<div class="be-param-item"><span class="be-param-label">${_t('renderers.guaranteed_90')}</span><span class="be-param-value">${formatMB(cap.guaranteedVram)}</span></div>`;
+            if (cap.loadedModelVram !== undefined) capHtml += `<div class="be-param-item"><span class="be-param-label">${_t('renderers.models_vram')}</span><span class="be-param-value">${formatMB(cap.loadedModelVram)}</span></div>`;
+            if (cap.contextOverheadMB !== undefined) capHtml += `<div class="be-param-item"><span class="be-param-label">${_t('renderers.context_overhead')}</span><span class="be-param-value">${formatMB(cap.contextOverheadMB)}</span></div>`;
+            if (cap.loadableModelCount !== undefined) capHtml += `<div class="be-param-item"><span class="be-param-label">${_t('renderers.loadable_models_count')}</span><span class="be-param-value">${cap.loadableModelCount}</span></div>`;
+            if (cap.mode) capHtml += `<div class="be-param-item"><span class="be-param-label">${_t('renderers.platform_mode')}</span><span class="be-param-value">${escapeHtml(String(cap.mode))}</span></div>`;
             capHtml += '</div></div>';
         }
 
-        // Секция: Контексты моделей
+        // Section: Model Contexts
         let ctxHtml = '';
         if (contexts.length > 0) {
-            ctxHtml = '<div class="be-detail-section"><div class="be-detail-title">📐 Контексты моделей</div>';
+            ctxHtml = `<div class="be-detail-section"><div class="be-detail-title">${_t('renderers.section_model_contexts')}</div>`;
             contexts.forEach(ctx => {
                 ctxHtml += `<div class="be-model-ctx">
                     <div class="be-model-ctx-name">${escapeHtml(ctx.name)}</div>
                     <div class="be-params-grid" style="margin-bottom:0;">
-                        <div class="be-param-item"><span class="be-param-label">Контекст</span><span class="be-param-value">${formatNumber(ctx.contextLength)}</span></div>
-                        <div class="be-param-item"><span class="be-param-label">Эффективный</span><span class="be-param-value">${formatNumber(ctx.effectiveContext)}</span></div>
-                        <div class="be-param-item"><span class="be-param-label">Источник</span><span class="be-param-value">${escapeHtml(ctx.contextSource || '-')}</span></div>
-                        <div class="be-param-item"><span class="be-param-label">Память модели</span><span class="be-param-value">${formatMB(ctx.modelMemoryMB)}</span></div>
-                        <div class="be-param-item"><span class="be-param-label">Контекст память</span><span class="be-param-value">${formatMB(ctx.contextMemoryMB)}</span></div>
-                        <div class="be-param-item"><span class="be-param-label">KV-кэш</span><span class="be-param-value">${formatMB(ctx.kvCacheMemoryMB)}</span></div>
-                        <div class="be-param-item"><span class="be-param-label">Всего</span><span class="be-param-value">${formatMB(ctx.totalMemoryMB)}</span></div>
-                        <div class="be-param-item"><span class="be-param-label">Слоёв</span><span class="be-param-value">${ctx.numLayers || '-'}</span></div>
-                        <div class="be-param-item"><span class="be-param-label">Точность KV</span><span class="be-param-value">${ctx.precisionBits || 16}-bit</span></div>
+                        <div class="be-param-item"><span class="be-param-label">${_t('renderers.context')}</span><span class="be-param-value">${formatNumber(ctx.contextLength)}</span></div>
+                        <div class="be-param-item"><span class="be-param-label">${_t('renderers.effective')}</span><span class="be-param-value">${formatNumber(ctx.effectiveContext)}</span></div>
+                        <div class="be-param-item"><span class="be-param-label">${_t('common.total')} (${_t('renderers.model_memory')})</span><span class="be-param-value">${formatMB(ctx.totalMemoryMB)}</span></div>
+                        <div class="be-param-item"><span class="be-param-label">${_t('renderers.kv_cache')}</span><span class="be-param-value">${formatMB(ctx.kvCacheMemoryMB)}</span></div>
+                        <div class="be-param-item"><span class="be-param-label">${_t('renderers.layers')}</span><span class="be-param-value">${ctx.numLayers || '-'}</span></div>
+                        <div class="be-param-item"><span class="be-param-label">${_t('renderers.kv_precision')}</span><span class="be-param-value">${ctx.precisionBits || 16}-bit</span></div>
                     </div>
                 </div>`;
             });
             ctxHtml += '</div>';
         }
 
-        // Секция: Загруженные модели
+        // Section: Loaded Models
         let modelsHtml = '';
         if (runningModels.length > 0) {
-            modelsHtml = '<div class="be-detail-section"><div class="be-detail-title">🤖 Загруженные модели</div><div class="be-params-grid">';
+            modelsHtml = `<div class="be-detail-section"><div class="be-detail-title">${_t('renderers.section_loaded_models')}</div><div class="be-params-grid">`;
             runningModels.forEach(m => {
                 const sizeGB = (m.size || 0) / 1024 / 1024 / 1024;
                 modelsHtml += `<div class="be-param-item" style="grid-column: 1/-1;">
@@ -565,13 +598,13 @@ const Renderers = (function () {
         const tbody = document.getElementById('backendsManageBody');
         if (!tbody) return;
         if (!backends.length) {
-            tbody.innerHTML = emptyRow(13, 'Нет данных');
+            tbody.innerHTML = emptyRow(13, _t('renderers.no_data'));
             return;
         }
 
         tbody.innerHTML = backends.map((b, idx) => {
             const labels = (b.labels || []).join(', ') || '-';
-            const lastContact = b.lastAgentContact ? new Date(b.lastAgentContact).toLocaleString('ru') : '-';
+            const lastContact = b.lastAgentContact ? new Date(b.lastAgentContact).toLocaleString(Utils._locale()) : '-';
             const maxModels = b.runtimeMaxModels || b.maxModels || b.ollama?.maxModels || '-';
             const detailsHtml = renderOllamaParams(b);
             const rowId = 'be-row-' + idx;
@@ -586,13 +619,13 @@ const Renderers = (function () {
                     <td>${b.weight || 1}</td>
                     <td>${b.maxConcurrentRequests || 10}</td>
                     <td>${maxModels}</td>
-                    <td>${badge(b.hasAgent ? 'Да' : 'Нет', b.hasAgent ? 'success' : 'warning')}</td>
+                    <td>${badge(b.hasAgent ? _t('common.yes') : _t('common.no'), b.hasAgent ? 'success' : 'warning')}</td>
                     <td>${escapeHtml(labels)}</td>
                     <td>${escapeHtml(lastContact)}</td>
                     <td>${badge(b.status, b.status === 'healthy' ? 'success' : 'danger')}</td>
                     <td>
-                        <button class=\"action-btn edit\" onclick=\"event.stopPropagation(); ui.editBackend('${escapeHtml(b.id)}')\">Edit</button>
-                        <button class=\"action-btn delete\" onclick=\"event.stopPropagation(); ui.confirmDeleteBackend('${escapeHtml(b.id)}')\">Del</button>
+                        <button class="action-btn edit" onclick="event.stopPropagation(); ui.editBackend('${escapeHtml(b.id)}')">Edit</button>
+                        <button class="action-btn delete" onclick="event.stopPropagation(); ui.confirmDeleteBackend('${escapeHtml(b.id)}')">Del</button>
                     </td>
                 </tr>
                 <tr class="be-detail-row" id="${rowId}" style="display:none;">
@@ -605,7 +638,7 @@ const Renderers = (function () {
             `;
         }).join('');
 
-        // Навешиваем обработчики раскрытия строк
+        // Attach row expand handlers
         tbody.querySelectorAll('.be-main-row').forEach(row => {
             row.addEventListener('click', function () {
                 const targetId = this.getAttribute('data-expand');
@@ -646,7 +679,7 @@ const Renderers = (function () {
 
     function backendLoad(backends) {
         backends = stableBackendOrder(backends);
-        if (!backends.length) return loading('Нет данных');
+        if (!backends.length) return loading(_t('renderers.no_data'));
 
         return backends.map(b => {
             const mode = getBackendMode(b);
@@ -668,37 +701,37 @@ const Renderers = (function () {
             const freeSlots = oll.freeSlots || 0;
 
             const vramBar = isGPU ? `
-                <div class=\"backend-load-bar-row\">
-                    <span class=\"backend-load-bar-label\">VRAM ${formatMB(usedVRAM)} / ${formatMB(totalVRAM)}</span>
-                    <span class=\"backend-load-bar-value\">${vramPercent.toFixed(1)}%</span>
+                <div class="backend-load-bar-row">
+                    <span class="backend-load-bar-label">VRAM ${formatMB(usedVRAM)} / ${formatMB(totalVRAM)}</span>
+                    <span class="backend-load-bar-value">${vramPercent.toFixed(1)}%</span>
                 </div>
-                <div class=\"backend-load-bar\"><div class=\"backend-load-fill vram\" style=\"width: ${vramPercent}%\"></div></div>
+                <div class="backend-load-bar"><div class="backend-load-fill vram" style="width: ${vramPercent}%"></div></div>
             ` : '';
 
             return `
-                <div class=\"backend-load-item\">
-                    <div class=\"backend-load-header\">
-                        <span class=\"backend-load-name\"><strong>${escapeHtml(b.id)}</strong></span>
+                <div class="backend-load-item">
+                    <div class="backend-load-header">
+                        <span class="backend-load-name"><strong>${escapeHtml(b.id)}</strong></span>
                         ${badge(b.status, b.status === 'healthy' ? 'success' : 'danger')}
                     </div>
-                    <div class=\"backend-load-stats\">
-                        <span class=\"backend-load-stat\">Моделей: <strong>${models.length}</strong></span>
-                        <span class=\"backend-load-stat\">Active: <strong>${activeReq}/${maxReq}</strong></span>
-                        <span class=\"backend-load-stat\">Свободно: <strong>${freeSlots}</strong></span>
+                    <div class="backend-load-stats">
+                        <span class="backend-load-stat">${_t('renderers.models_label')} <strong>${models.length}</strong></span>
+                        <span class="backend-load-stat">Active: <strong>${activeReq}/${maxReq}</strong></span>
+                        <span class="backend-load-stat">${_t('renderers.free_label')} <strong>${freeSlots}</strong></span>
                     </div>
                     ${vramBar}
-                    <div class=\"backend-load-bar-row\">
-                        <span class=\"backend-load-bar-label\">RAM ${formatMB(usedRAM)} / ${formatMB(totalRAM)}</span>
-                        <span class=\"backend-load-bar-value\">${ramPercent.toFixed(1)}%</span>
+                    <div class="backend-load-bar-row">
+                        <span class="backend-load-bar-label">RAM ${formatMB(usedRAM)} / ${formatMB(totalRAM)}</span>
+                        <span class="backend-load-bar-value">${ramPercent.toFixed(1)}%</span>
                     </div>
-                    <div class=\"backend-load-bar\"><div class=\"backend-load-fill ram\" style=\"width: ${ramPercent}%\"></div></div>
+                    <div class="backend-load-bar"><div class="backend-load-fill ram" style="width: ${ramPercent}%"></div></div>
                 </div>
             `;
         }).join('');
     }
 
     function modelsGrid(allModels, backendMap) {
-        if (!allModels.length) return loading('Нет загруженных моделей');
+        if (!allModels.length) return loading(_t('models.no_models'));
 
         return allModels.map(m => {
             const vramMB = (m.vramUsage || 0) / 1024 / 1024;
@@ -718,19 +751,19 @@ const Renderers = (function () {
             const showVRAM = isGPU && totalVRAM > 0;
 
             return `
-                <div class=\"model-card\">
-                    <div class=\"model-card-header\">
-                        <span class=\"model-name\">${escapeHtml(m.name)}</span>
+                <div class="model-card">
+                    <div class="model-card-header">
+                        <span class="model-name">${escapeHtml(m.name)}</span>
                         ${badge(m.backend, m.backendStatus === 'healthy' ? 'success' : 'danger')}
                     </div>
-                    <div class=\"model-size\">${sizeGB.toFixed(1)} GB</div>
-                    <div class=\"model-details\">
+                    <div class="model-size">${sizeGB.toFixed(1)} GB</div>
+                    <div class="model-details">
                         ${modelDetail('VRAM', `${vramMB.toFixed(0)} MB`)}
                         ${modelDetail('RAM', `${ramMB.toFixed(0)} MB`)}
                         ${modelDetail('Family', m.family || '-')}
                     </div>
-                    <div class=\"model-memory-section\">
-                        <div class=\"model-memory-title\">Использование памяти</div>
+                    <div class="model-memory-section">
+                        <div class="model-memory-title">${_t('models.memory_title')}</div>
                         ${showVRAM ? memoryBar('VRAM', vramMB, totalVRAM, vramPercent, 'vram') : ''}
                         ${memoryBar('RAM', ramMB, totalRAM, ramPercent, 'ram')}
                     </div>
@@ -741,22 +774,22 @@ const Renderers = (function () {
 
     function modelDetail(label, value) {
         return `
-            <div class=\"model-detail\">
-                <div class=\"model-detail-label\">${escapeHtml(label)}</div>
-                <div class=\"model-detail-value\">${escapeHtml(String(value))}</div>
+            <div class="model-detail">
+                <div class="model-detail-label">${escapeHtml(label)}</div>
+                <div class="model-detail-value">${escapeHtml(String(value))}</div>
             </div>
         `;
     }
 
     function memoryBar(label, used, total, pct, type) {
         return `
-            <div class=\"model-memory-bar-container\">
-                <div class=\"model-memory-bar-labels\">
+            <div class="model-memory-bar-container">
+                <div class="model-memory-bar-labels">
                     <span>${escapeHtml(label)}</span>
                     <span>${used.toFixed(0)} / ${total.toFixed(0)} MB (${pct.toFixed(1)}%)</span>
                 </div>
-                <div class=\"model-memory-bar\">
-                    <div class=\"model-memory-bar-fill ${type}\" style=\"width: ${pct}%\"></div>
+                <div class="model-memory-bar">
+                    <div class="model-memory-bar-fill ${type}" style="width: ${pct}%"></div>
                 </div>
             </div>
         `;
@@ -780,7 +813,7 @@ const Renderers = (function () {
         const tbody = document.getElementById('sessionsTableBody');
         if (!tbody) return;
         if (!sessions.length) {
-            tbody.innerHTML = emptyRow(7, 'Нет активных сессий');
+            tbody.innerHTML = emptyRow(7, _t('sessions.no_sessions'));
             return;
         }
         tbody.innerHTML = sessions.map(s => {
@@ -791,7 +824,7 @@ const Renderers = (function () {
                 <td>${escapeHtml(s.backendId || '-')}</td>
                 <td>${escapeHtml(s.model || '-')}</td>
                 <td>${s.requestCount || 0}</td>
-                <td>${s.lastRequestAt ? new Date(s.lastRequestAt).toLocaleString('ru') : '-'}</td>
+                <td>${s.lastRequestAt ? new Date(s.lastRequestAt).toLocaleString(Utils._locale()) : '-'}</td>
                 <td>${escapeHtml(s.clientIP || '-')}</td>
                 <td>${clientIcon} ${escapeHtml(s.clientName || '-')}</td>
             </tr>
@@ -812,7 +845,7 @@ const Renderers = (function () {
         Utils.setText('queueMaxSize', max);
         Utils.setText('queueProcessed', processed);
         Utils.setText('queueWorkers', workers);
-        Utils.setText('queueAvgWait', avgWait > 0 ? (avgWait / 1000).toFixed(1) + ' с' : '-');
+        Utils.setText('queueAvgWait', avgWait > 0 ? _t('renderers.queue_avg_wait', { seconds: (avgWait / 1000).toFixed(1) }) : '-');
 
         const pct = percent(current, max);
         Utils.setStyle('queueFill', 'width', `${pct}%`);
@@ -827,19 +860,19 @@ const Renderers = (function () {
     }
 
     function queueTasksBody(tasks) {
-        if (!tasks.length) return emptyRow(5, 'Нет задач в очереди');
+        if (!tasks.length) return emptyRow(5, _t('queue.no_tasks'));
         return tasks.map((task, index) => {
             const status = task.status || 'pending';
             const statusClass = status === 'processing' ? 'processing' : (status === 'completed' ? 'completed' : 'pending');
-            const statusText = status === 'processing' ? 'Обработка' : (status === 'completed' ? 'Завершено' : 'Ожидание');
-            const waitTime = task.waitTimeMs ? (task.waitTimeMs / 1000).toFixed(1) + 'с' : '-';
+            const statusText = status === 'processing' ? _t('queue.processing') : (status === 'completed' ? _t('queue.completed') : _t('queue.pending'));
+            const waitTime = task.waitTimeMs ? (task.waitTimeMs / 1000).toFixed(1) + _t('renderers.seconds') : '-';
             return `
                 <tr>
                     <td>${index + 1}</td>
                     <td><code>${escapeHtml(task.model || '-')}</code></td>
                     <td>${escapeHtml(task.backend || 'Auto')}</td>
                     <td>${waitTime}</td>
-                    <td><span class=\"queue-task-status ${statusClass}\">${statusText}</span></td>
+                    <td><span class="queue-task-status ${statusClass}">${statusText}</span></td>
                 </tr>
             `;
         }).join('');
@@ -848,13 +881,13 @@ const Renderers = (function () {
     function queueHistoryBody(history) {
         const badge = document.getElementById('queueHistoryCount');
         if (badge) badge.textContent = history.length;
-        if (!history.length) return emptyRow(6, 'Нет выполненных задач');
+        if (!history.length) return emptyRow(6, _t('renderers.no_completed_tasks'));
 
         return history.map((task, index) => {
-            const enqueued = task.enqueued ? new Date(task.enqueued).toLocaleString('ru', { hour: '2-digit', minute: '2-digit', second: '2-digit' }) : '-';
-            const completed = task.completed_at ? new Date(task.completed_at).toLocaleString('ru', { hour: '2-digit', minute: '2-digit', second: '2-digit' }) : '-';
+            const enqueued = task.enqueued ? new Date(task.enqueued).toLocaleString(Utils._locale(), { hour: '2-digit', minute: '2-digit', second: '2-digit' }) : '-';
+            const completed = task.completed_at ? new Date(task.completed_at).toLocaleString(Utils._locale(), { hour: '2-digit', minute: '2-digit', second: '2-digit' }) : '-';
             const waitMs = task.wait_time_ms || 0;
-            const waitStr = waitMs > 0 ? (waitMs / 1000).toFixed(1) + ' с' : '-';
+            const waitStr = waitMs > 0 ? (waitMs / 1000).toFixed(1) + _t('renderers.seconds') : '-';
             return `
                 <tr>
                     <td>${index + 1}</td>
@@ -874,14 +907,14 @@ const Renderers = (function () {
         const container = document.getElementById('logsContainer');
         if (!container) return;
         if (!logEntries.length) {
-            container.innerHTML = loading('Нет логов');
+            container.innerHTML = loading(_t('logs.no_logs'));
             return;
         }
         container.innerHTML = logEntries.map(log => `
-            <div class=\"log-entry\">
-                <span class=\"log-time\">${escapeHtml(log.time)}</span>
-                <span class=\"log-level ${log.level.toLowerCase()}\">${escapeHtml(log.level)}</span>
-                <span class=\"log-message\">${escapeHtml(log.message)}</span>
+            <div class="log-entry">
+                <span class="log-time">${escapeHtml(log.time)}</span>
+                <span class="log-level ${log.level.toLowerCase()}">${escapeHtml(log.level)}</span>
+                <span class="log-message">${escapeHtml(log.message)}</span>
             </div>
         `).join('');
         container.scrollTop = 0;
@@ -907,13 +940,13 @@ const Renderers = (function () {
         const container = document.getElementById('alertsList');
         if (!container) return;
         if (!alerts.length) {
-            container.innerHTML = '<div class=\"alert alert-info\">Нет активных предупреждений</div>';
+            container.innerHTML = `<div class="alert alert-info">${_t('renderers.no_active_alerts')}</div>`;
             return;
         }
         container.innerHTML = alerts.map(a => `
-            <div class=\"alert alert-${a.level}\">
-                <svg class=\"alert-icon-svg\" viewBox=\"0 0 24 24\"><circle cx=\"12\" cy=\"12\" r=\"10\" fill=\"currentColor\"/></svg>
-                <span><strong>${escapeHtml(a.backend)}</strong>: ${escapeHtml(a.reason)} через ${a.seconds}с</span>
+            <div class="alert alert-${a.level}">
+                <svg class="alert-icon-svg" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10" fill="currentColor"/></svg>
+                <span><strong>${escapeHtml(a.backend)}</strong>: ${escapeHtml(a.reason)} ${_t('common.in')} ${a.seconds}с</span>
             </div>
         `).join('');
     }

@@ -31,7 +31,13 @@ type Server struct {
 	wsRateLimiter *RateLimiter
 	authenticator *TokenAuthenticator
 	stopCh        chan struct{} // graceful shutdown for metricsPublishLoop
+	configSaver   func() error  // функция сохранения конфига на диск (устанавливается из main)
 }
+// SetConfigSaver — устанавливает функцию для сохранения конфигурации на диск
+func (s *Server) SetConfigSaver(saver func() error) {
+	s.configSaver = saver
+}
+
 
 // upgrader - апгрейдер HTTP до WebSocket с CORS whitelist
 var upgrader = websocket.Upgrader{
@@ -123,73 +129,8 @@ func (s *Server) StopMetricsLoop() {
 	close(s.stopCh)
 }
 
-// setupRoutes - настройка маршрутов
-func (s *Server) setupRoutes() {
-	// Health check (без аутентификации и rate limiting)
-	s.mux.HandleFunc("/api/v1/health", s.healthHandler)
+// setupRoutes переехал в routes.go
 
-	// Auth endpoints (требуют токен, кроме health)
-	s.mux.Handle("/api/v1/auth/status", AuthMiddleware(RateLimitMiddleware(AuthStatusHandler(s.authenticator), s.rateLimiter), s.authenticator))
-	s.mux.Handle("/api/v1/auth/token", AuthMiddleware(RateLimitMiddleware(TokenManagementHandler(s.authenticator), s.rateLimiter), s.authenticator))
-
-	// Rate limit status endpoint (публичный, без аутентификации)
-	s.mux.HandleFunc("/api/v1/ratelimit/status", RateLimitStatusHandler(s.rateLimiter))
-
-	// Backends (с аутентификацией и rate limiting)
-	s.mux.Handle("/api/v1/backends", AuthMiddleware(RateLimitMiddleware(s.backendsHandler, s.rateLimiter), s.authenticator))
-	s.mux.Handle("/api/v1/backends/", AuthMiddleware(RateLimitMiddleware(s.backendHandler, s.rateLimiter), s.authenticator))
-
-	// Models capacity (global)
-	s.mux.Handle("/api/v1/models/capacity", AuthMiddleware(RateLimitMiddleware(s.modelsCapacityHandler, s.rateLimiter), s.authenticator))
-
-	// Metrics (с аутентификацией и rate limiting)
-	s.mux.Handle("/api/v1/metrics", AuthMiddleware(RateLimitMiddleware(s.metricsHandler, s.rateLimiter), s.authenticator))
-	s.mux.Handle("/api/v1/metrics/", AuthMiddleware(RateLimitMiddleware(s.metricHandler, s.rateLimiter), s.authenticator))
-
-	// Sessions (с аутентификацией и rate limiting)
-	s.mux.Handle("/api/v1/sessions", AuthMiddleware(RateLimitMiddleware(s.sessionsHandler, s.rateLimiter), s.authenticator))
-	s.mux.Handle("/api/v1/sessions/", AuthMiddleware(RateLimitMiddleware(s.sessionHandler, s.rateLimiter), s.authenticator))
-
-	// Models (с аутентификацией и rate limiting)
-	s.mux.Handle("/api/v1/models", AuthMiddleware(RateLimitMiddleware(s.modelsHandler, s.rateLimiter), s.authenticator))
-
-	// Cluster state (с аутентификацией и rate limiting)
-	s.mux.Handle("/api/v1/cluster", AuthMiddleware(RateLimitMiddleware(s.clusterHandler, s.rateLimiter), s.authenticator))
-
-	// Queue stats (с аутентификацией и rate limiting)
-	s.mux.Handle("/api/v1/queue/stats", AuthMiddleware(RateLimitMiddleware(s.queueStatsHandler, s.rateLimiter), s.authenticator))
-	s.mux.Handle("/api/v1/queue/details", AuthMiddleware(RateLimitMiddleware(s.queueDetailsHandler, s.rateLimiter), s.authenticator))
-	s.mux.Handle("/api/v1/queue/history", AuthMiddleware(RateLimitMiddleware(s.queueHistoryHandler, s.rateLimiter), s.authenticator))
-
-	// Cluster config (runtime-смена алгоритма)
-	s.mux.Handle("/api/v1/cluster/config", AuthMiddleware(RateLimitMiddleware(s.clusterConfigHandler, s.rateLimiter), s.authenticator))
-
-	// Predictions (с аутентификацией и rate limiting)
-	s.mux.Handle("/api/v1/predictions", AuthMiddleware(RateLimitMiddleware(s.predictionsHandler, s.rateLimiter), s.authenticator))
-	s.mux.Handle("/api/v1/predictions/", AuthMiddleware(RateLimitMiddleware(s.predictionHandler, s.rateLimiter), s.authenticator))
-
-	// Agents endpoints (с аутентификацией и rate limiting)
-	s.mux.Handle("/api/v1/agents/register", AuthMiddleware(RateLimitMiddleware(s.agentRegisterHandler, s.rateLimiter), s.authenticator))
-	s.mux.Handle("/api/v1/agents/metrics", AuthMiddleware(RateLimitMiddleware(s.agentMetricsHandler, s.rateLimiter), s.authenticator))
-	s.mux.Handle("/api/v1/agents/heartbeat", AuthMiddleware(RateLimitMiddleware(s.agentHeartbeatHandler, s.rateLimiter), s.authenticator))
-	s.mux.Handle("/api/v1/agents/stats", AuthMiddleware(RateLimitMiddleware(s.agentStatsHandler, s.rateLimiter), s.authenticator))
-	s.mux.Handle("/api/v1/agents/", AuthMiddleware(RateLimitMiddleware(s.agentInfoHandler, s.rateLimiter), s.authenticator))
-
-	// WebSocket (с rate limiting, аутентификация внутри handler после Upgrade)
-	s.mux.Handle("/ws/metrics", RateLimitMiddleware(s.wsMetricsHandler, s.wsRateLimiter))
-
-	// Monitor HTML page (без аутентификации)
-	s.mux.HandleFunc("/monitor", s.monitorHandler)
-
-	// Restart endpoint (c аутентификацией и rate limiting, только от webui)
-	s.mux.Handle("/api/v1/admin/restart", AuthMiddleware(RateLimitMiddleware(s.restartHandler, s.rateLimiter), s.authenticator))
-
-	// Favicon и статические ресурсы (без аутентификации, для браузеров)
-	s.mux.HandleFunc("/favicon.ico", s.staticFileHandler)
-	s.mux.HandleFunc("/favicon-16x16.png", s.staticFileHandler)
-	s.mux.HandleFunc("/favicon-32x32.png", s.staticFileHandler)
-	s.mux.HandleFunc("/logo.svg", s.staticFileHandler)
-}
 
 // ServeHTTP - обработка HTTP запросов
 func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -579,6 +520,15 @@ func (s *Server) addBackend(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Парсинг GPU mode
+	gpuMode := types.ModeAuto
+	switch req.GPUMode {
+	case "gpu":
+		gpuMode = types.ModeGPU
+	case "cpu":
+		gpuMode = types.ModeCPU
+	}
+
 	backend := types.Backend{
 		ID:                req.ID,
 		Name:              req.Name,
@@ -587,8 +537,10 @@ func (s *Server) addBackend(w http.ResponseWriter, r *http.Request) {
 		AgentPort:         req.AgentPort,
 		Weight:            req.Weight,
 		MaxConcurrentReqs: req.MaxConcurrentReqs,
+		MaxModels:         req.MaxModels,
 		Labels:            req.Labels,
 		Status:            types.StatusStarting,
+		GPUMode:           gpuMode,
 	}
 
 	// Добавление бэкенда в прокси
@@ -664,6 +616,17 @@ func (s *Server) updateBackend(w http.ResponseWriter, r *http.Request, backendID
 		return
 	}
 
+	// Парсинг GPU mode
+	gpuMode := existing.GPUMode
+	switch req.GPUMode {
+	case "gpu":
+		gpuMode = types.ModeGPU
+	case "cpu":
+		gpuMode = types.ModeCPU
+	case "auto":
+		gpuMode = types.ModeAuto
+	}
+
 	updated := types.Backend{
 		ID:                            backendID,
 		Name:                          req.Name,
@@ -672,6 +635,7 @@ func (s *Server) updateBackend(w http.ResponseWriter, r *http.Request, backendID
 		AgentPort:                     req.AgentPort,
 		Weight:                        req.Weight,
 		MaxConcurrentReqs:             req.MaxConcurrentReqs,
+		MaxModels:                     req.MaxModels,
 		Labels:                        req.Labels,
 		Status:                        existing.Status,
 		HasAgent:                      existing.HasAgent,
@@ -681,6 +645,7 @@ func (s *Server) updateBackend(w http.ResponseWriter, r *http.Request, backendID
 		ActiveRequests:                existing.ActiveRequests,
 		RuntimeMaxModels:              existing.RuntimeMaxModels,
 		RuntimeMaxConcurrentRequests:  existing.RuntimeMaxConcurrentRequests,
+		GPUMode:                       gpuMode,
 	}
 
 	// Обновление бэкенда в прокси
@@ -963,18 +928,32 @@ func (s *Server) clusterConfigHandler(w http.ResponseWriter, r *http.Request) {
 	switch r.Method {
 	case http.MethodGet:
 		s.writeJSON(w, http.StatusOK, map[string]interface{}{
-			"algorithm":         s.config.Balancing.Algorithm,
-			"modelAffinity":     s.config.Balancing.ModelAffinity,
-			"sessionStickiness": s.config.Balancing.SessionStickiness,
-			"queueMaxSize":      s.config.Balancing.QueueMaxSize,
-			"queueTimeout":      s.config.Balancing.QueueTimeout,
-			"requestTimeout":    s.config.Balancing.RequestTimeout,
+			"algorithm":            s.config.Balancing.Algorithm,
+			"modelAffinity":        s.config.Balancing.ModelAffinity,
+			"sessionStickiness":    s.config.Balancing.SessionStickiness,
+			"queueMaxSize":         s.config.Balancing.QueueMaxSize,
+			"queueTimeout":         s.config.Balancing.QueueTimeout,
+			"requestTimeout":       s.config.Balancing.RequestTimeout,
+			"useEnhancedScoring":   s.config.Balancing.UseEnhancedScoring,
+			"predictionFiltering":  true, // совместимость: всегда true (фильтрация по прогнозу включена по умолчанию)
+			"gpuMaxUsage":          s.config.Resources.GPU.MaxUsagePercent,
+			"vramMaxUsage":         s.config.Resources.GPU.MaxVRAMUsagePercent,
+			"cpuMaxUsage":          s.config.Resources.CPU.MaxUsagePercent,
+			"ramMaxUsage":          s.config.Resources.Memory.MaxUsagePercent,
+			"minFreeDisk":          s.config.Resources.Disk.MinFreeMB,
 		})
 	case http.MethodPut:
 		var req struct {
-			Algorithm         string `json:"algorithm"`
-			ModelAffinity     *bool  `json:"modelAffinity"`
-			SessionStickiness *bool  `json:"sessionStickiness"`
+			Algorithm          string  `json:"algorithm"`
+			ModelAffinity      *bool   `json:"modelAffinity"`
+			SessionStickiness  *bool   `json:"sessionStickiness"`
+			UseEnhancedScoring *bool   `json:"useEnhancedScoring"`
+			PredictionFiltering *bool  `json:"predictionFiltering"`
+			GPUUsage           *float64 `json:"gpuMaxUsage"`
+			VRAMUsage          *float64 `json:"vramMaxUsage"`
+			CPUUsage           *float64 `json:"cpuMaxUsage"`
+			RAMUsage           *float64 `json:"ramMaxUsage"`
+			MinFreeDisk        *float64 `json:"minFreeDisk"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 			s.writeJSON(w, http.StatusBadRequest, map[string]interface{}{
@@ -1008,13 +987,43 @@ func (s *Server) clusterConfigHandler(w http.ResponseWriter, r *http.Request) {
 		if req.SessionStickiness != nil {
 			s.config.Balancing.SessionStickiness = *req.SessionStickiness
 		}
+		if req.UseEnhancedScoring != nil {
+			s.config.Balancing.UseEnhancedScoring = *req.UseEnhancedScoring
+		}
+		if req.PredictionFiltering != nil {
+			// predictionFiltering не хранится напрямую в BalancingSettings,
+			// но используется как feature flag на уровне скоринга
+			// В будущем может быть добавлено в структуру
+		}
+		if req.GPUUsage != nil {
+			s.config.Resources.GPU.MaxUsagePercent = *req.GPUUsage
+		}
+		if req.VRAMUsage != nil {
+			s.config.Resources.GPU.MaxVRAMUsagePercent = *req.VRAMUsage
+		}
+		if req.CPUUsage != nil {
+			s.config.Resources.CPU.MaxUsagePercent = *req.CPUUsage
+		}
+		if req.RAMUsage != nil {
+			s.config.Resources.Memory.MaxUsagePercent = *req.RAMUsage
+		}
+		if req.MinFreeDisk != nil {
+			s.config.Resources.Disk.MinFreeMB = uint64(*req.MinFreeDisk)
+		}
 
 		s.writeJSON(w, http.StatusOK, map[string]interface{}{
 			"success": true,
 			"config": map[string]interface{}{
-				"algorithm":         s.config.Balancing.Algorithm,
-				"modelAffinity":     s.config.Balancing.ModelAffinity,
-				"sessionStickiness": s.config.Balancing.SessionStickiness,
+				"algorithm":            s.config.Balancing.Algorithm,
+				"modelAffinity":        s.config.Balancing.ModelAffinity,
+				"sessionStickiness":    s.config.Balancing.SessionStickiness,
+				"useEnhancedScoring":   s.config.Balancing.UseEnhancedScoring,
+				"predictionFiltering":  true,
+				"gpuMaxUsage":          s.config.Resources.GPU.MaxUsagePercent,
+				"vramMaxUsage":         s.config.Resources.GPU.MaxVRAMUsagePercent,
+				"cpuMaxUsage":          s.config.Resources.CPU.MaxUsagePercent,
+				"ramMaxUsage":          s.config.Resources.Memory.MaxUsagePercent,
+				"minFreeDisk":          s.config.Resources.Disk.MinFreeMB,
 			},
 			"message": "Cluster configuration updated successfully",
 		})
@@ -1967,6 +1976,132 @@ func (s *Server) staticFileHandler(w http.ResponseWriter, r *http.Request) {
 	w.Write(data)
 }
 
+// autoPullHandler — управление конфигурацией автоматической загрузки моделей (Pull-on-Demand).
+// GET: получение текущей конфигурации и статуса
+// PUT: обновление конфигурации
+func (s *Server) autoPullHandler(w http.ResponseWriter, r *http.Request) {
+	switch r.Method {
+	case http.MethodGet:
+		// Возвращаем конфигурацию и активные загрузки
+		activePulls := []map[string]interface{}{}
+		if s.proxy.AutoPull != nil {
+			activePulls = s.proxy.AutoPull.GetActivePulls()
+		}
+
+		s.writeJSON(w, http.StatusOK, map[string]interface{}{
+			"enabled":       s.config.Balancing.AutoPull.Enabled,
+			"maxConcurrent": s.config.Balancing.AutoPull.MaxConcurrent,
+			"pullTimeout":   s.config.Balancing.AutoPull.PullTimeout,
+			"retryCount":    s.config.Balancing.AutoPull.RetryCount,
+			"activePulls":   activePulls,
+		})
+
+	case http.MethodPut:
+		var req struct {
+			Enabled       *bool   `json:"enabled"`
+			MaxConcurrent *int    `json:"maxConcurrent"`
+			PullTimeout   *string `json:"pullTimeout"`
+			RetryCount    *int    `json:"retryCount"`
+		}
+
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			s.writeJSON(w, http.StatusBadRequest, map[string]interface{}{
+				"success": false,
+				"error":   "Invalid request body",
+			})
+			return
+		}
+
+		// Валидация
+		if req.PullTimeout != nil {
+			if _, err := time.ParseDuration(*req.PullTimeout); err != nil {
+				s.writeJSON(w, http.StatusBadRequest, map[string]interface{}{
+					"success": false,
+					"error":   fmt.Sprintf("Invalid pullTimeout: %v. Use Go duration format (e.g. '5m', '10m')", err),
+				})
+				return
+			}
+		}
+		if req.MaxConcurrent != nil && *req.MaxConcurrent < 0 {
+			s.writeJSON(w, http.StatusBadRequest, map[string]interface{}{
+				"success": false,
+				"error":   "maxConcurrent must be >= 0",
+			})
+			return
+		}
+		if req.RetryCount != nil && *req.RetryCount < 0 {
+			s.writeJSON(w, http.StatusBadRequest, map[string]interface{}{
+				"success": false,
+				"error":   "retryCount must be >= 0",
+			})
+			return
+		}
+
+		// Применяем изменения
+		if req.Enabled != nil {
+			s.config.Balancing.AutoPull.Enabled = *req.Enabled
+		}
+		if req.MaxConcurrent != nil {
+			s.config.Balancing.AutoPull.MaxConcurrent = *req.MaxConcurrent
+		}
+		if req.PullTimeout != nil {
+			s.config.Balancing.AutoPull.PullTimeout = *req.PullTimeout
+		}
+		if req.RetryCount != nil {
+			s.config.Balancing.AutoPull.RetryCount = *req.RetryCount
+		}
+
+		// Обновляем конфигурацию в AutoPullManager если он инициализирован
+		if s.proxy.AutoPull != nil {
+			s.proxy.AutoPull.SetConfig(s.config.Balancing.AutoPull)
+		} else if s.config.Balancing.AutoPull.Enabled {
+			// Если менеджер ещё не создан, но мы включили — создаём
+			s.proxy.AutoPull = balancer.NewAutoPullManager(s.proxy, s.config.Balancing.AutoPull)
+		}
+
+		// Сохраняем конфигурацию на диск
+		if s.configSaver != nil {
+			if err := s.configSaver(); err != nil {
+				logger.Get().Warnw("failed to save auto-pull config to disk",
+					"error", err)
+			}
+		}
+
+		s.writeJSON(w, http.StatusOK, map[string]interface{}{
+			"success": true,
+			"config": map[string]interface{}{
+				"enabled":       s.config.Balancing.AutoPull.Enabled,
+				"maxConcurrent": s.config.Balancing.AutoPull.MaxConcurrent,
+				"pullTimeout":   s.config.Balancing.AutoPull.PullTimeout,
+				"retryCount":    s.config.Balancing.AutoPull.RetryCount,
+			},
+			"message": "Auto-pull configuration updated successfully",
+		})
+
+	default:
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+	}
+}
+
+// autoPullStatusHandler — получение статуса активных и завершённых загрузок моделей
+func (s *Server) autoPullStatusHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	activePulls := []map[string]interface{}{}
+	if s.proxy.AutoPull != nil {
+		activePulls = s.proxy.AutoPull.GetActivePulls()
+	}
+
+	s.writeJSON(w, http.StatusOK, map[string]interface{}{
+		"enabled":     s.config.Balancing.AutoPull.Enabled,
+		"activePulls": activePulls,
+		"totalActive": len(activePulls),
+	})
+}
+
 // writeJSON - запись JSON ответа
 func (s *Server) writeJSON(w http.ResponseWriter, status int, data interface{}) {
 	w.Header().Set("Content-Type", "application/json")
@@ -1976,3 +2111,4 @@ func (s *Server) writeJSON(w http.ResponseWriter, status int, data interface{}) 
 	encoder.SetIndent("", "  ")
 	encoder.Encode(data)
 }
+

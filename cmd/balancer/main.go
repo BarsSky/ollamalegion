@@ -108,6 +108,14 @@ func main() {
 	prewarmCtrl := balancer.NewPrewarmController(proxy, conf.Balancing.Prewarm)
 	modelInstanceCtrl := balancer.NewModelInstanceController(proxy, conf.Balancing.ModelInstances)
 
+	// Создание планировщика выгрузки и тюнера весов
+	unloadScheduler := balancer.NewUnloadScheduler(proxy)
+	weightTuner := balancer.NewAdaptiveWeightTuner(proxy)
+
+	// Подключение к proxy
+	proxy.SetUnloadScheduler(unloadScheduler)
+	proxy.SetWeightTuner(weightTuner)
+
 	// Создание health checker
 	healthChecker := balancer.NewHealthChecker(
 		proxy,
@@ -118,12 +126,21 @@ func main() {
 	// Создание API сервера
 	apiServer := api.NewServer(proxy, conf, healthChecker)
 	
+	// Подключаем сохранение конфига на диск для авто-загрузки моделей (AutoPull)
+	apiServer.SetConfigSaver(cfg.Save)
+	
 	// Запуск health checker
 	healthChecker.Start()
 
 	// Запуск контроллеров оптимизации
 	prewarmCtrl.Start()
 	modelInstanceCtrl.Start()
+
+	// Запуск планировщика выгрузки и тюнера весов
+	fmt.Println("[Unload] Starting unload scheduler...")
+	unloadScheduler.Start()
+	fmt.Println("[Weight] Starting adaptive weight tuner...")
+	weightTuner.Start()
 
 	// Создание HTTP сервера для прокси
 	mux := http.NewServeMux()
@@ -266,6 +283,12 @@ func main() {
 
 	fmt.Println("[ModelCtrl] Stopping model instance controller...")
 	modelInstanceCtrl.Stop()
+
+	fmt.Println("[Unload] Stopping unload scheduler...")
+	unloadScheduler.Stop()
+
+	fmt.Println("[Weight] Stopping adaptive weight tuner...")
+	weightTuner.Stop()
 
 	// === Phase 4: Graceful HTTP shutdown ===
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)

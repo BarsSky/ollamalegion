@@ -111,10 +111,21 @@
 | `CalculatedRPS` | float64 | RPS | `len(RequestHistory) / 60.0` | Скользящее окно 60 секунд |
 | `ActiveRequests` | int | шт | `ActiveReqs++ / --` | Точный HTTP счётчик |
 | `FreeSlots` | int | шт | `MaxConcurrent - ActiveRequests` | Свободные слоты |
+
+
 | `QueueStats.current_size` | int | шт | `len(queue)` | Текущая очередь |
 | `QueueStats.processed_total` | int64 | шт | счётчик | Всего обработано |
+| `QueueStats.dispatch_by_affinity` | int64 | шт | `atomic.AddInt64` | Запросов через Model Affinity |
+| `QueueStats.dispatch_by_load` | int64 | шт | `atomic.AddInt64` | Запросов через Resource-Aware |
+| `QueueStats.dispatch_by_config` | int64 | шт | `atomic.AddInt64` | Запросов через Weight/Config |
 
 ---
+
+> **Dispatch-метрики** отражают, через какой механизм балансировки был выбран бэкенд:
+> 1. **Model Affinity** — модель уже загружена на бэкенде (этапы 1–3 в `selectBackend`)
+> 2. **Resource-Aware** — выбор по свободным ресурсам (GPU, VRAM, CPU) + prediction bonus
+> 3. **Config/Weight** — fallback-выбор по весам бэкенда (когда `UseEnhancedScoring=false`)
+
 
 ## 5. Prediction Metrics (Балансер)
 
@@ -153,13 +164,17 @@
 | **Агент CPU** | Per-core, load avg, temp, throttling | ✅ Все поля | Нет |
 | **Агент Disk** | Total/Used/Free | ✅ | Нет |
 | **Агент Network** | RX/TX | ✅ | Нет |
-| **Агент Ollama** | Все поля моделей + details | ✅ family, format, parameterSize, quantization | Нет |
+| **Агент Ollama** | Все поля моделей + details | ✅ family, format, parameterSize, quantization | **Нет** |
+| **Агент modelSize** | Сбор size из `/api/tags` | ✅ Size uint64 в RunningModel, ModelSizes map | Нет |
 | **Балансер RPS** | Скользящее окно 60с | ✅ | Нет |
 | **Балансер Queue** | Stats API | ✅ | Нет |
 | **Балансер Prediction** | Filtering + Scoring | ✅ | Нет |
-| **WebUI GPU** | usage, VRAM, temp, power | ✅ 4/9 основных (используются) | powerLimit (W), gpuClock (MHz), memClock (MHz) — собираются агентом, не отображаются (planned) |
-| **WebUI System** | CPU%, RAM, CPU details | ✅ CPU%, RAM, coreCount, loadAvg, model, temperature | Disk total/used/free, Network RX/TX — собираются агентом, не отображаются (planned) |
+| **Балансер Queue Dispatch** | Счётчики dispatch_by_affinity/load/config | ✅ Реализованы в backend_selector.go | Отображаются в monitor.html Dispatch Stats |
+| **WebUI GPU** | usage, VRAM, temp, power | ✅ 7/9 основных | powerLimit, gpuClock, memClock — отображаются в gpuCard и backendsTable |
+| **WebUI System** | CPU%, RAM, CPU details | ✅ CPU%, RAM, coreCount, loadAvg 1/5/15, model, temperature, throttling | Disk total/used/free, Network RX/TX — собираются агентом, не отображаются (planned) |
+| **WebUI GPU Hidden** | powerLimit, gpuClock, memClock | ✅ Собираются агентом | ✅ Отображаются в gpuCard и backendsTable |
 | **WebUI Ollama** | runningModels, activeRequests, RPS, freeSlots | ✅ 4/4 основных | family, format, parameterSize, quantization — собираются, доступны в tooltip |
+| **WebUI Queue Dispatch** | dispatch_by_affinity/load/config | ✅ Отображаются в monitor.html | ✅ Счётчики реализованы в backend |
 
 ---
 

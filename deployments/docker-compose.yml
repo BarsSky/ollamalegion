@@ -44,6 +44,8 @@ services:
       - LB_HOST=${LB_HOST:-0.0.0.0}
       - LB_PORT=${LB_PORT:-18080}
       - LB_API_PORT=${LB_API_PORT:-18081}
+      # Доверенные прокси — Docker-сети и локальные диапазоны
+      - LB_TRUSTED_PROXIES=172.17.0.0/16,172.18.0.0/16,172.28.0.0/16,10.0.0.0/8,192.168.0.0/16,127.0.0.1/8
       
       # Алгоритм балансировки: roundrobin, leastconn, resource-aware, model-affinity
       - LB_ALGORITHM=${LB_ALGORITHM:-resource-aware}

@@ -29,6 +29,12 @@ type mockOllamaServer struct {
 	tagsCount     int
 	psCount       int
 	versionCount  int
+	showCount     int
+	createCount   int
+	pullCount     int
+	deleteCount   int
+	copyCount     int
+	pushCount     int
 	mu            struct {
 		sync.Mutex
 		models []types.RunningModel
@@ -64,6 +70,24 @@ func (m *mockOllamaServer) handleRequest(w http.ResponseWriter, r *http.Request)
 	case "/api/version":
 		m.versionCount++
 		m.handleVersion(w, r)
+	case "/api/show":
+		m.showCount++
+		m.handleShow(w, r)
+	case "/api/create":
+		m.createCount++
+		m.handleCreate(w, r)
+	case "/api/pull":
+		m.pullCount++
+		m.handlePull(w, r)
+	case "/api/delete":
+		m.deleteCount++
+		m.handleDelete(w, r)
+	case "/api/copy":
+		m.copyCount++
+		m.handleCopy(w, r)
+	case "/api/push":
+		m.pushCount++
+		m.handlePush(w, r)
 	default:
 		w.WriteHeader(http.StatusNotFound)
 		json.NewEncoder(w).Encode(map[string]string{"error": "not found"})
@@ -247,6 +271,193 @@ func (m *mockOllamaServer) handleVersion(w http.ResponseWriter, r *http.Request)
 	})
 }
 
+func (m *mockOllamaServer) handleShow(w http.ResponseWriter, r *http.Request) {
+	body, _ := io.ReadAll(r.Body)
+	var req map[string]interface{}
+	json.Unmarshal(body, &req)
+
+	model := ""
+	if mod, ok := req["name"].(string); ok {
+		model = mod
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"license":    "MIT",
+		"modelfile":  "# Modelfile for " + model,
+		"parameters": "num_ctx 4096",
+		"template":   "[INST] {{ .Prompt }} [/INST]",
+		"details": map[string]interface{}{
+			"parent_model":   "",
+			"format":         "gguf",
+			"family":         "llama",
+			"families":       []string{"llama"},
+			"parameter_size": "8B",
+			"quantization_level": "Q4_0",
+		},
+		"model_info": map[string]interface{}{
+			"general.architecture":           "llama",
+			"general.parameter_count":        8000000000,
+			"llama.context_length":           4096,
+			"llama.embedding_length":         4096,
+		},
+	})
+}
+
+func (m *mockOllamaServer) handleCreate(w http.ResponseWriter, r *http.Request) {
+	body, _ := io.ReadAll(r.Body)
+	var req map[string]interface{}
+	json.Unmarshal(body, &req)
+
+	model := ""
+	if mod, ok := req["name"].(string); ok {
+		model = mod
+	}
+
+	// Streaming ответ (SSE) — имитируем прогресс создания
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.Header().Set("Transfer-Encoding", "chunked")
+	w.WriteHeader(http.StatusOK)
+
+	flusher, ok := w.(http.Flusher)
+	if !ok {
+		http.Error(w, "Streaming not supported", http.StatusInternalServerError)
+		return
+	}
+
+	responses := []map[string]interface{}{
+		{"status": "reading manifest"},
+		{"status": "pulling base model"},
+		{"status": "creating model " + model},
+		{"status": "writing layer"},
+		{"status": "success"},
+	}
+
+	for _, resp := range responses {
+		data, _ := json.Marshal(resp)
+		fmt.Fprintf(w, "data: %s\n\n", data)
+		flusher.Flush()
+		time.Sleep(5 * time.Millisecond)
+	}
+}
+
+func (m *mockOllamaServer) handlePull(w http.ResponseWriter, r *http.Request) {
+	body, _ := io.ReadAll(r.Body)
+	var req map[string]interface{}
+	json.Unmarshal(body, &req)
+
+	_ = ""
+	if mod, ok := req["name"].(string); ok {
+		_ = mod
+	}
+
+	// Streaming ответ (SSE) — имитируем прогресс загрузки
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.Header().Set("Transfer-Encoding", "chunked")
+	w.WriteHeader(http.StatusOK)
+
+	flusher, ok := w.(http.Flusher)
+	if !ok {
+		http.Error(w, "Streaming not supported", http.StatusInternalServerError)
+		return
+	}
+
+	responses := []map[string]interface{}{
+		{"status": "pulling manifest"},
+		{"status": "downloading base layer", "completed": 1024, "total": 4096},
+		{"status": "downloading base layer", "completed": 2048, "total": 4096},
+		{"status": "downloading base layer", "completed": 4096, "total": 4096},
+		{"status": "verifying sha256 digest"},
+		{"status": "writing manifest"},
+		{"status": "success"},
+	}
+
+	for _, resp := range responses {
+		data, _ := json.Marshal(resp)
+		fmt.Fprintf(w, "data: %s\n\n", data)
+		flusher.Flush()
+		time.Sleep(5 * time.Millisecond)
+	}
+}
+
+func (m *mockOllamaServer) handleDelete(w http.ResponseWriter, r *http.Request) {
+	body, _ := io.ReadAll(r.Body)
+	var req map[string]interface{}
+	json.Unmarshal(body, &req)
+
+	model := ""
+	if mod, ok := req["name"].(string); ok {
+		model = mod
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"deleted": true,
+		"model":   model,
+	})
+}
+
+func (m *mockOllamaServer) handleCopy(w http.ResponseWriter, r *http.Request) {
+	body, _ := io.ReadAll(r.Body)
+	var req map[string]interface{}
+	json.Unmarshal(body, &req)
+
+	source := ""
+	if s, ok := req["source"].(string); ok {
+		source = s
+	}
+	dest := ""
+	if d, ok := req["destination"].(string); ok {
+		dest = d
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"copied":      true,
+		"source":      source,
+		"destination": dest,
+	})
+}
+
+func (m *mockOllamaServer) handlePush(w http.ResponseWriter, r *http.Request) {
+	body, _ := io.ReadAll(r.Body)
+	var req map[string]interface{}
+	json.Unmarshal(body, &req)
+
+	_ = ""
+	if mod, ok := req["name"].(string); ok {
+		_ = mod
+	}
+
+	// Streaming ответ (SSE)
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.Header().Set("Transfer-Encoding", "chunked")
+	w.WriteHeader(http.StatusOK)
+
+	flusher, ok := w.(http.Flusher)
+	if !ok {
+		http.Error(w, "Streaming not supported", http.StatusInternalServerError)
+		return
+	}
+
+	responses := []map[string]interface{}{
+		{"status": "pushing manifest"},
+		{"status": "uploading layer", "completed": 1024, "total": 4096},
+		{"status": "uploading layer", "completed": 4096, "total": 4096},
+		{"status": "success"},
+	}
+
+	for _, resp := range responses {
+		data, _ := json.Marshal(resp)
+		fmt.Fprintf(w, "data: %s\n\n", data)
+		flusher.Flush()
+		time.Sleep(5 * time.Millisecond)
+	}
+}
+
 func (m *mockOllamaServer) URL() string {
 	return m.server.URL
 }
@@ -347,6 +558,7 @@ func setupProxyWithMockOllama(t *testing.T, mock *mockOllamaServer) (*httptest.S
 			MaxModels:             5,
 			MaxConcurrentRequests: 10,
 			ActiveRequests:        0,
+			OllamaAvailable:       true,
 			RunningModels: []types.RunningModel{
 				{Name: "llama3.1:8b", VRAMUsage: 6000},
 			},
@@ -637,6 +849,238 @@ func TestProxyOllama_Version(t *testing.T) {
 	assert.Equal(t, 1, mock.versionCount)
 }
 
+func TestProxyOllama_Show(t *testing.T) {
+	mock := newMockOllamaServer()
+	defer mock.Close()
+
+	proxyServer, _ := setupProxyWithMockOllama(t, mock)
+	defer proxyServer.Close()
+
+	payload := map[string]interface{}{
+		"name": "llama3.1:8b",
+	}
+	body, _ := json.Marshal(payload)
+
+	resp, err := http.Post(proxyServer.URL+"/api/show", "application/json", bytes.NewBuffer(body))
+	require.NoError(t, err)
+	defer resp.Body.Close()
+
+	assert.Equal(t, http.StatusOK, resp.StatusCode)
+
+	var result map[string]interface{}
+	err = json.NewDecoder(resp.Body).Decode(&result)
+	require.NoError(t, err)
+
+	assert.NotEmpty(t, result["license"])
+	assert.NotEmpty(t, result["modelfile"])
+	assert.NotEmpty(t, result["parameters"])
+	assert.NotEmpty(t, result["template"])
+
+	details, ok := result["details"].(map[string]interface{})
+	require.True(t, ok)
+	assert.Equal(t, "llama", details["family"])
+
+	assert.Equal(t, 1, mock.showCount)
+}
+
+func TestProxyOllama_Create(t *testing.T) {
+	mock := newMockOllamaServer()
+	defer mock.Close()
+
+	proxyServer, _ := setupProxyWithMockOllama(t, mock)
+	defer proxyServer.Close()
+
+	payload := map[string]interface{}{
+		"name":      "custom-model",
+		"modelfile": "FROM llama3.1:8b",
+	}
+	body, _ := json.Marshal(payload)
+
+	resp, err := http.Post(proxyServer.URL+"/api/create", "application/json", bytes.NewBuffer(body))
+	require.NoError(t, err)
+	defer resp.Body.Close()
+
+	assert.Equal(t, http.StatusOK, resp.StatusCode)
+	assert.Contains(t, resp.Header.Get("Content-Type"), "text/event-stream")
+
+	// Читаем SSE события
+	scanner := bufio.NewScanner(resp.Body)
+	var events []map[string]interface{}
+	for scanner.Scan() {
+		line := scanner.Text()
+		if strings.HasPrefix(line, "data: ") {
+			data := strings.TrimPrefix(line, "data: ")
+			var event map[string]interface{}
+			if err := json.Unmarshal([]byte(data), &event); err == nil {
+				events = append(events, event)
+			}
+		}
+	}
+
+	require.NoError(t, scanner.Err())
+	assert.GreaterOrEqual(t, len(events), 3)
+
+	lastEvent := events[len(events)-1]
+	assert.Equal(t, "success", lastEvent["status"])
+
+	assert.Equal(t, 1, mock.createCount)
+}
+
+func TestProxyOllama_Pull(t *testing.T) {
+	mock := newMockOllamaServer()
+	defer mock.Close()
+
+	proxyServer, _ := setupProxyWithMockOllama(t, mock)
+	defer proxyServer.Close()
+
+	payload := map[string]interface{}{
+		"name": "llama3.1:8b",
+	}
+	body, _ := json.Marshal(payload)
+
+	resp, err := http.Post(proxyServer.URL+"/api/pull", "application/json", bytes.NewBuffer(body))
+	require.NoError(t, err)
+	defer resp.Body.Close()
+
+	assert.Equal(t, http.StatusOK, resp.StatusCode)
+	assert.Contains(t, resp.Header.Get("Content-Type"), "text/event-stream")
+
+	// Читаем SSE события
+	scanner := bufio.NewScanner(resp.Body)
+	var events []map[string]interface{}
+	for scanner.Scan() {
+		line := scanner.Text()
+		if strings.HasPrefix(line, "data: ") {
+			data := strings.TrimPrefix(line, "data: ")
+			var event map[string]interface{}
+			if err := json.Unmarshal([]byte(data), &event); err == nil {
+				events = append(events, event)
+			}
+		}
+	}
+
+	require.NoError(t, scanner.Err())
+	assert.GreaterOrEqual(t, len(events), 4)
+
+	lastEvent := events[len(events)-1]
+	assert.Equal(t, "success", lastEvent["status"])
+
+	assert.Equal(t, 1, mock.pullCount)
+}
+
+func TestProxyOllama_Delete(t *testing.T) {
+	mock := newMockOllamaServer()
+	defer mock.Close()
+
+	// Устанавливаем running models чтобы findBackendsWithModel нашёл модель
+	mock.SetRunningModels([]types.RunningModel{
+		{Name: "llama3.1:8b", Size: 4928300000, Digest: "sha256:abc123", VRAMUsage: 6000},
+	})
+
+	proxyServer, _ := setupProxyWithMockOllama(t, mock)
+	defer proxyServer.Close()
+
+	payload := map[string]interface{}{
+		"name": "llama3.1:8b",
+	}
+	body, _ := json.Marshal(payload)
+
+	req, _ := http.NewRequest(http.MethodDelete, proxyServer.URL+"/api/delete", bytes.NewBuffer(body))
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := http.DefaultClient.Do(req)
+	require.NoError(t, err)
+	defer resp.Body.Close()
+
+	assert.Equal(t, http.StatusOK, resp.StatusCode)
+
+	var result map[string]interface{}
+	err = json.NewDecoder(resp.Body).Decode(&result)
+	require.NoError(t, err)
+
+	assert.Equal(t, true, result["deleted"])
+	assert.Equal(t, "llama3.1:8b", result["model"])
+
+	assert.Equal(t, 1, mock.deleteCount)
+}
+
+func TestProxyOllama_Copy(t *testing.T) {
+	mock := newMockOllamaServer()
+	defer mock.Close()
+
+	proxyServer, _ := setupProxyWithMockOllama(t, mock)
+	defer proxyServer.Close()
+
+	payload := map[string]interface{}{
+		"source":      "llama3.1:8b",
+		"destination": "llama3.1:8b-custom",
+	}
+	body, _ := json.Marshal(payload)
+
+	resp, err := http.Post(proxyServer.URL+"/api/copy", "application/json", bytes.NewBuffer(body))
+	require.NoError(t, err)
+	defer resp.Body.Close()
+
+	assert.Equal(t, http.StatusOK, resp.StatusCode)
+
+	var result map[string]interface{}
+	err = json.NewDecoder(resp.Body).Decode(&result)
+	require.NoError(t, err)
+
+	assert.Equal(t, true, result["copied"])
+	assert.Equal(t, "llama3.1:8b", result["source"])
+	assert.Equal(t, "llama3.1:8b-custom", result["destination"])
+
+	assert.Equal(t, 1, mock.copyCount)
+}
+
+func TestProxyOllama_Push(t *testing.T) {
+	mock := newMockOllamaServer()
+	defer mock.Close()
+
+	// Устанавливаем running models чтобы findBackendWithModel нашёл модель
+	mock.SetRunningModels([]types.RunningModel{
+		{Name: "llama3.1:8b", Size: 4928300000, Digest: "sha256:abc123", VRAMUsage: 6000},
+	})
+
+	proxyServer, _ := setupProxyWithMockOllama(t, mock)
+	defer proxyServer.Close()
+
+	payload := map[string]interface{}{
+		"name": "llama3.1:8b",
+	}
+	body, _ := json.Marshal(payload)
+
+	resp, err := http.Post(proxyServer.URL+"/api/push", "application/json", bytes.NewBuffer(body))
+	require.NoError(t, err)
+	defer resp.Body.Close()
+
+	assert.Equal(t, http.StatusOK, resp.StatusCode)
+	assert.Contains(t, resp.Header.Get("Content-Type"), "text/event-stream")
+
+	// Читаем SSE события
+	scanner := bufio.NewScanner(resp.Body)
+	var events []map[string]interface{}
+	for scanner.Scan() {
+		line := scanner.Text()
+		if strings.HasPrefix(line, "data: ") {
+			data := strings.TrimPrefix(line, "data: ")
+			var event map[string]interface{}
+			if err := json.Unmarshal([]byte(data), &event); err == nil {
+				events = append(events, event)
+			}
+		}
+	}
+
+	require.NoError(t, scanner.Err())
+	assert.GreaterOrEqual(t, len(events), 2)
+
+	lastEvent := events[len(events)-1]
+	assert.Equal(t, "success", lastEvent["status"])
+
+	assert.Equal(t, 1, mock.pushCount)
+}
+
 // ==================== Тесты Session Stickiness ====================
 
 func TestProxyOllama_SessionStickiness(t *testing.T) {
@@ -664,18 +1108,22 @@ func TestProxyOllama_SessionStickiness(t *testing.T) {
 
 	assert.Equal(t, http.StatusOK, resp1.StatusCode)
 
-	// Проверяем, что сессия создана
+	// Проверяем, что сессия создана (ID включает модель: sessionID::model)
 	session := proxy.GetSessions()
 	found := false
+	expectedSessionID := "test-session-123::llama3.1:8b"
 	for _, s := range session {
-		if s.ID == "test-session-123" {
+		if s.ID == expectedSessionID {
 			found = true
 			assert.Equal(t, "ollama-test", s.BackendID)
 			assert.Equal(t, "llama3.1:8b", s.Model)
 			break
 		}
 	}
-	assert.True(t, found, "Session should be created")
+	if !found {
+		t.Logf("Available sessions: %+v", session)
+	}
+	assert.True(t, found, "Session should be created with ID %s", expectedSessionID)
 
 	// Второй запрос с тем же session ID - должен пойти на тот же бэкенд
 	payload2 := map[string]interface{}{

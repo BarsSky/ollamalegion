@@ -59,6 +59,185 @@ http://localhost:18080
 
 > **Примечание:** `X-Client-ID` без эфемерного порта гарантирует стабильность сессии при NAT. Если заголовки не переданы, используется IP без порта.
 
+### Детальное описание Ollama endpoint'ов
+
+#### GET /api/tags
+
+Агрегация списка локальных моделей со всех доступных бэкендов (включая `healthy` и `degraded`). Модели дедуплицируются по полю `name` — если одна и та же модель присутствует на нескольких бэкендах, в итоговом списке она появляется один раз. Результат сортируется по имени для детерминированного порядка.
+
+**Особенности проксирования:**
+- Параллельные запросы ко всем бэкендам (timeout 5 секунд на каждый)
+- Дедупликация по полю `name`
+- Включаются `healthy` и `degraded` бэкенды
+
+**Пример ответа:**
+
+```json
+{
+  "models": [
+    {
+      "name": "llama3.1:8b",
+      "model": "llama3.1:8b",
+      "modified_at": "2024-06-15T10:30:00Z",
+      "size": 4928300000,
+      "digest": "sha256:abc123...",
+      "details": {
+        "family": "llama",
+        "parameter_size": "8B",
+        "quantization_level": "Q4_0"
+      }
+    },
+    {
+      "name": "qwen2.5:14b",
+      "model": "qwen2.5:14b",
+      "modified_at": "2024-06-15T11:00:00Z",
+      "size": 8965234567,
+      "digest": "sha256:def456...",
+      "details": {
+        "family": "qwen",
+        "parameter_size": "14B",
+        "quantization_level": "Q4_K_M"
+      }
+    }
+  ]
+}
+```
+
+#### GET /api/ps
+
+Агрегация списка запущенных моделей со всех бэкендов. Показывает модели, которые в данный момент загружены в VRAM.
+
+**Пример ответа:**
+
+```json
+{
+  "models": [
+    {
+      "name": "llama3.1:8b",
+      "size": 4928300000,
+      "digest": "sha256:abc123...",
+      "expires_at": "2024-06-15T11:00:00Z",
+      "size_vram": 6000000000
+    }
+  ]
+}
+```
+
+#### GET /api/version
+
+Возвращает версию балансировщика + версии всех доступных бэкендов.
+
+**Пример ответа:**
+
+```json
+{
+  "version": "ollamalegion-1.0.0",
+  "ollamaVersions": {
+    "backend-1": "0.3.0",
+    "backend-2": "0.3.0"
+  }
+}
+```
+
+#### POST /api/show
+
+Информация о модели. Запрос маршрутизируется на бэкенд, где модель уже загружена (RunningModels). Если модель не найдена — fallback на любой healthy бэкенд.
+
+**Запрос:**
+
+```json
+{
+  "name": "llama3.1:8b"
+}
+```
+
+**Особенности проксирования:**
+- Роутинг через `findBackendWithModel()` → `RunningModels`
+- Fallback на `selectAnyHealthy()` если модель не загружена
+
+#### POST /api/create
+
+Создание модели. Запрос маршрутизируется на бэкенд с максимальными свободными ресурсами.
+
+**Запрос:**
+
+```json
+{
+  "name": "custom-model",
+  "modelfile": "FROM llama3.1:8b\nPARAMETER temperature 0.7"
+}
+```
+
+**Особенности проксирования:**
+- Роутинг через `selectBackendByResources()`
+- SSE streaming ответ с прогрессом создания
+
+#### POST /api/pull
+
+Загрузка модели. Запрос маршрутизируется на бэкенд с максимальными свободными ресурсами.
+
+**Запрос:**
+
+```json
+{
+  "name": "llama3.1:8b"
+}
+```
+
+**Особенности проксирования:**
+- Роутинг через `selectBackendByResources()`
+- SSE streaming ответ с прогрессом загрузки (status + completed/total)
+
+#### DELETE /api/delete
+
+Удаление модели со всех бэкендов, где она присутствует.
+
+**Запрос:**
+
+```json
+{
+  "name": "llama3.1:8b"
+}
+```
+
+**Особенности проксирования:**
+- **Broadcast** на все бэкенды с моделью (`findBackendsWithModel`)
+- Параллельные запросы, возвращается первый успешный ответ
+- Body закрывается для всех ненужных ответов (защита от утечки соединений)
+
+#### POST /api/copy
+
+Копирование модели. Запрос маршрутизируется на бэкенд с исходной моделью.
+
+**Запрос:**
+
+```json
+{
+  "source": "llama3.1:8b",
+  "destination": "llama3.1:8b-custom"
+}
+```
+
+**Особенности проксирования:**
+- Роутинг через `findBackendWithModel(req.Source)`
+- Body восстанавливается для проксирования (`readBody` + `io.NopCloser`)
+
+#### POST /api/push
+
+Публикация модели. Запрос маршрутизируется на бэкенд с моделью.
+
+**Запрос:**
+
+```json
+{
+  "name": "llama3.1:8b"
+}
+```
+
+**Особенности проксирования:**
+- Роутинг через `findBackendWithModel()`
+- SSE streaming ответ с прогрессом публикации
+
 ### Формат данных
 
 - **Request**: JSON
@@ -817,6 +996,47 @@ curl -X POST http://localhost:18081/api/v1/agents/heartbeat \
   "message": "Token revoked successfully"
 }
 ```
+
+---
+
+### Queue
+
+#### GET /api/v1/queue/stats
+
+Статистика очереди запросов и dispatch-метрики балансировщика.
+
+**Ответ:**
+
+```json
+{
+  "current_size": 0,
+  "max_size": 100,
+  "processed_total": 15420,
+  "avg_wait_time_ms": 12,
+  "workers": 4,
+  "timeout_sec": 30,
+  "dispatch_by_affinity": 8750,
+  "dispatch_by_load": 4520,
+  "dispatch_by_config": 2150
+}
+```
+
+| Поле | Тип | Описание |
+|------|-----|----------|
+| `current_size` | int | Текущее количество запросов в очереди |
+| `max_size` | int | Максимальный размер очереди |
+| `processed_total` | int64 | Всего обработано запросов |
+| `avg_wait_time_ms` | int64 | Среднее время ожидания в очереди (мс) |
+| `workers` | int | Количество worker-ов |
+| `timeout_sec` | int | Таймаут ожидания бэкенда |
+| `dispatch_by_affinity` | int64 | Запросов, направленных через **Model Affinity** (модель уже загружена на бэкенде) |
+| `dispatch_by_load` | int64 | Запросов, направленных через **Resource-Aware** выбор (свободные ресурсы) |
+| `dispatch_by_config` | int64 | Запросов, направленных по **весам/конфигурации** (fallback) |
+
+> **💡 Как работает dispatch:**
+> 1. **Model Affinity** — запрос идёт на бэкенд, где модель уже загружена (этапы 1–3 в `selectBackend`)
+> 2. **Resource-Aware** — выбор по свободным ресурсам (GPU, VRAM, CPU) с prediction bonus
+> 3. **Config/Weight** — fallback-выбор по весам бэкенда (когда `UseEnhancedScoring=false`)
 
 ---
 

@@ -212,16 +212,25 @@ ollama-loadbalancer/
 │   │   ├── proxy.go       # Reverse proxy + selectBackend
 │   │   ├── health.go      # Health check
 │   │   ├── predictor.go   # Прогнозирование загрузки
-│   │   └── sessions.go    # Управление сессиями
+│   │   ├── session_manager.go   # Управление сессиями (TTL + cleanup)
+│   │   ├── metrics_manager.go   # Хранение метрик бэкендов
+│   │   ├── queue_manager.go     # Очередь запросов + workers
+│   │   ├── candidate.go         # Candidate groups (P1-P4) для выбора бэкенда
+│   │   ├── scoring.go           # Мультифакторный scoring (simple + enhanced)
+│   │   ├── streaming.go         # SSE streaming с heartbeat
+│   │   ├── eventbus.go          # Pub/sub событий кластера
+│   │   ├── client.go            # Client fingerprint, session ID, real IP
+│   │   └── state.go             # Сохранение/загрузка state.json
+│   ├── api/               # REST API handlers
+│   │   ├── handlers.go    # API endpoints
+│   │   ├── routes.go      # Регистрация HTTP маршрутов
+│   │   ├── auth.go        # Аутентификация
+│   │   └── metrics_broker.go # WebSocket pub/sub
 │   ├── agent/             # Логика агента
 │   │   ├── collector.go   # Сбор метрик
 │   │   ├── nvml_unix.go   # NVML integration (Linux)
 │   │   ├── nvml_windows.go# NVML integration (Windows)
 │   │   └── system.go      # Системные метрики
-│   ├── api/               # REST API handlers
-│   │   ├── handlers.go    # API endpoints
-│   │   ├── auth.go        # Аутентификация
-│   │   └── metrics_broker.go # WebSocket pub/sub
 │   └── config/            # Конфигурация
 ├── pkg/
 │   ├── logger/            # Библиотека логирования

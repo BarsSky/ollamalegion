@@ -122,7 +122,7 @@ func (hc *HealthChecker) checkBackend(backendID string) {
 	
 	// Выполнение health check
 	result := hc.performCheck(backend)
-	
+
 	// Обновление статуса
 	hc.mu.Lock()
 	status := hc.results[backendID]
@@ -130,34 +130,44 @@ func (hc *HealthChecker) checkBackend(backendID string) {
 		status = &HealthStatus{}
 		hc.results[backendID] = status
 	}
-	
+
 	status.LastCheck = time.Now().UTC()
 	status.LastLatency = result.Latency
-	
+
 	if result.Healthy {
 		status.ConsecutiveFails = 0
 		status.LastSuccess = time.Now().UTC()
 		status.Healthy = true
 		status.LastError = ""
-		
+
 		// Обновление среднего latency
 		if status.AvgLatency == 0 {
 			status.AvgLatency = result.Latency
 		} else {
 			status.AvgLatency = (status.AvgLatency*9 + result.Latency) / 10
 		}
-		
+
 		// Обновление статуса бэкенда
 		hc.proxy.UpdateBackendStatus(backendID, types.StatusHealthy)
 	} else {
 		status.ConsecutiveFails++
 		status.LastFailure = time.Now().UTC()
 		status.LastError = result.Error
-		
+
 		// Проверка порога неудач
 		if status.ConsecutiveFails >= hc.threshold {
 			status.Healthy = false
-			hc.proxy.UpdateBackendStatus(backendID, types.StatusUnhealthy)
+			// Разделение статусов: агент жив, но ollama не отвечает?
+			// Проверяем HasAgent — если агент недавно контактировал, значит ollama_unavailable
+			agentAlive := false
+			if b := hc.proxy.GetBackend(backendID); b != nil {
+				agentAlive = b.HasAgent && time.Since(b.LastAgentContact) < 2*time.Minute
+			}
+			if agentAlive {
+				hc.proxy.UpdateBackendStatus(backendID, types.StatusOllamaUnavailable)
+			} else {
+				hc.proxy.UpdateBackendStatus(backendID, types.StatusUnhealthy)
+			}
 		}
 	}
 	hc.mu.Unlock()

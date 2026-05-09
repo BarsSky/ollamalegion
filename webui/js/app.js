@@ -18,6 +18,7 @@ const ui = (function () {
     let currentPage = 'dashboard';
     let refreshTimer = null;
     let dashboardRenderTimer = null;
+    let autoSaveTimer = null;
 
     // ---- Initialization ----
 
@@ -41,7 +42,7 @@ const ui = (function () {
         // Periodic refresh
         startPeriodicRefresh();
 
-        addLog('WebUI инициализирован', 'info');
+        addLog(window.I18N ? I18N.t('app.webui_initialized') : 'WebUI initialized', 'info');
     }
 
     // ---- Theme ----
@@ -85,6 +86,13 @@ const ui = (function () {
                 }
             }
         });
+        // Process data-i18n-title
+        document.querySelectorAll('[data-i18n-title]').forEach(function (el) {
+            var key = el.getAttribute('data-i18n-title');
+            if (key && window.I18N) {
+                el.title = I18N.t(key);
+            }
+        });
         // Update page title
         if (currentPage && window.I18N) {
             var titleKey = 'header.' + currentPage;
@@ -102,12 +110,19 @@ const ui = (function () {
                 I18N.setLang(this.value);
                 updateUITranslations();
                 updateThemeToggleIcon(document.documentElement.getAttribute('data-theme') || 'dark');
-                showToast(currentLang === 'ru' ? 'Язык изменён' : 'Language changed', 'success');
+                showToast(window.I18N ? I18N.t('app.lang_changed') : 'Language changed', 'success');
             });
         }
         window.addEventListener('i18n:changed', function () {
             updateUITranslations();
             updateThemeToggleIcon(document.documentElement.getAttribute('data-theme') || 'dark');
+        });
+        // Process data-i18n-placeholder on initial load
+        document.querySelectorAll('[data-i18n-placeholder]').forEach(function (el) {
+            var key = el.getAttribute('data-i18n-placeholder');
+            if (key && window.I18N) {
+                el.placeholder = I18N.t(key);
+            }
         });
         updateUITranslations();
     }
@@ -137,7 +152,7 @@ const ui = (function () {
                     indicator.style.display = 'block';
                     indicator.innerHTML = '<div class="restart-indicator"><div class="restart-spinner"></div><span>' + (window.I18N ? I18N.t('settings.restarting') : 'Перезапуск балансера...') + '</span></div>';
                 }
-                Api.post('/restart').then(function () {
+                Api.post('/api/v1/admin/restart').then(function () {
                     if (indicator) indicator.innerHTML = '<div style="color: var(--success); padding: 8px;">' + (window.I18N ? I18N.t('settings.restarted') : 'Балансер успешно перезапущен') + '</div>';
                     showToast(window.I18N ? I18N.t('settings.restarted') : 'Балансер успешно перезапущен', 'success');
                 }).catch(function (err) {
@@ -183,15 +198,16 @@ const ui = (function () {
     }
 
     function getPageTitle(page) {
+        // Fallback only — i18n handles actual titles via header.* keys
         const titles = {
             dashboard: 'Dashboard',
-            monitor: 'Монитор кластера',
-            backends: 'Управление бэкендами',
-            models: 'Модели',
-            sessions: 'Сессии',
-            queue: 'Очередь',
-            logs: 'Логи и события',
-            settings: 'Настройки'
+            monitor: 'Cluster Monitor',
+            backends: 'Backend Management',
+            models: 'Models',
+            sessions: 'Sessions',
+            queue: 'Queue',
+            logs: 'System Logs',
+            settings: 'Settings'
         };
         return titles[page] || 'Dashboard';
     }
@@ -275,8 +291,20 @@ const ui = (function () {
         var exportBackendsBtn = document.getElementById('exportBackends');
         if (exportBackendsBtn) exportBackendsBtn.addEventListener('click', exportBackends);
 
-        document.getElementById('saveSettings').addEventListener('click', saveSettings);
+        document.getElementById('saveSettings').addEventListener('click', function () { saveSettings(false); });
         document.getElementById('resetSettings').addEventListener('click', loadSettings);
+
+        // Auto-save on settings form changes
+        var settingsFields = ['balancingAlgorithm', 'useEnhancedScoring', 'modelAffinity', 'sessionStickiness', 'predictionFiltering', 'gpuMaxUsage', 'vramMaxUsage', 'cpuMaxUsage', 'ramMaxUsage', 'minFreeDisk'];
+        settingsFields.forEach(function (id) {
+            var el = document.getElementById(id);
+            if (el) {
+                el.addEventListener('change', autoSaveSettings);
+                if (el.tagName === 'INPUT' && el.type === 'number') {
+                    el.addEventListener('input', autoSaveSettings);
+                }
+            }
+        });
 
         document.getElementById('backendModal').addEventListener('click', (e) => {
             if (e.target.id === 'backendModal') closeModal();
@@ -288,7 +316,7 @@ const ui = (function () {
     function setupWebSocketEvents() {
         window.addEventListener('ws-open', () => {
             updateConnectionStatus(true);
-            addLog('WebSocket подключен', 'info');
+            addLog(window.I18N ? I18N.t('app.ws_connected') : 'WebSocket connected', 'info');
         });
 
         window.addEventListener('ws-status', (e) => {
@@ -297,16 +325,16 @@ const ui = (function () {
 
         window.addEventListener('ws-error', () => {
             updateConnectionStatus(false);
-            addLog('Ошибка WebSocket', 'error');
+            addLog(window.I18N ? I18N.t('app.ws_error') : 'WebSocket error', 'error');
         });
 
         window.addEventListener('ws-reconnecting', (e) => {
             const { attempt, max, delay } = e.detail;
-            addLog(`Переподключение... (${attempt}/${max}) через ${Math.round(delay / 1000)}с`, 'warn');
+            addLog(window.I18N ? I18N.t('app.ws_reconnect', { attempt: attempt, max: max, delay: Math.round(delay / 1000) }) : `Reconnecting... (${attempt}/${max}) in ${Math.round(delay / 1000)}s`, 'warn');
         });
 
         window.addEventListener('ws-max-reconnect', () => {
-            addLog('Максимальное количество попыток переподключения', 'error');
+            addLog(window.I18N ? I18N.t('app.ws_max_reconnect') : 'Max reconnection attempts reached', 'error');
         });
 
         window.addEventListener('ws-message', (e) => {
@@ -324,19 +352,19 @@ const ui = (function () {
                 updateBackends(payload.data?.backends || []);
                 break;
             case 'backendAdd':
-                addLog(`Бэкенд добавлен: ${payload.data?.name || payload.backendId}`, 'info');
+                addLog(window.I18N ? I18N.t('app.backend_added', { name: payload.data?.name || payload.backendId }) : `Backend added: ${payload.data?.name || payload.backendId}`, 'info');
                 fetchClusterState();
                 break;
             case 'backendRemove':
-                addLog(`Бэкенд удалён: ${payload.backendId}`, 'info');
+                addLog(window.I18N ? I18N.t('app.backend_removed', { id: payload.backendId }) : `Backend removed: ${payload.backendId}`, 'info');
                 fetchClusterState();
                 break;
             case 'statusChange':
-                addLog(`Статус ${payload.backendId}: ${payload.data?.oldStatus} → ${payload.data?.newStatus}`, 'warning');
+                addLog(window.I18N ? I18N.t('app.status_changed', { id: payload.backendId, old: payload.data?.oldStatus, new: payload.data?.newStatus }) : `Status ${payload.backendId}: ${payload.data?.oldStatus} → ${payload.data?.newStatus}`, 'warning');
                 applyStatusChange(payload.backendId, payload.data?.newStatus);
                 break;
             case 'limitsChange':
-                addLog(`Лимиты ${payload.backendId} обновлены`, 'info');
+                addLog(window.I18N ? I18N.t('app.limits_changed', { id: payload.backendId }) : `Limits ${payload.backendId} updated`, 'info');
                 fetchClusterState();
                 break;
             case 'ping':
@@ -413,7 +441,7 @@ const ui = (function () {
             // Successful REST request — balancer is reachable
             updateConnectionStatus(true);
         } catch (e) {
-            Api.handleError(e, 'Ошибка загрузки состояния кластера');
+            Api.handleError(e, window.I18N ? I18N.t('app.error_loading_cluster') : 'Error loading cluster state');
         }
     }
 
@@ -421,10 +449,10 @@ const ui = (function () {
         try {
             data.queue = await Api.queueStats();
             Utils.setText('queueSize', data.queue.current_size || 0);
-            Utils.setText('queueProcessed', (data.queue.processed_total || 0) + ' обработано');
+            Utils.setText('queueProcessed', (data.queue.processed_total || 0) + ' ' + (window.I18N ? I18N.t('app.processed') : 'processed'));
             if (currentPage === 'queue') refreshPage('queue');
         } catch (e) {
-            Api.handleError(e, 'Ошибка загрузки статистики очереди');
+            Api.handleError(e, window.I18N ? I18N.t('app.error_loading_queue') : 'Error loading queue statistics');
         }
     }
 
@@ -442,7 +470,7 @@ const ui = (function () {
             }));
             if (currentPage === 'queue') refreshPage('queue');
         } catch (e) {
-            Api.handleError(e, 'Ошибка загрузки деталей очереди');
+            Api.handleError(e, window.I18N ? I18N.t('app.error_loading_queue_details') : 'Error loading queue details');
             data.queueTasks = [];
             if (currentPage === 'queue') refreshPage('queue');
         }
@@ -454,7 +482,7 @@ const ui = (function () {
             data.queueHistory = res.history || [];
             if (currentPage === 'queue') refreshPage('queue');
         } catch (e) {
-            Api.handleError(e, 'Ошибка загрузки истории очереди');
+            Api.handleError(e, window.I18N ? I18N.t('app.error_loading_queue_history') : 'Error loading queue history');
             data.queueHistory = [];
             if (currentPage === 'queue') refreshPage('queue');
         }
@@ -464,13 +492,13 @@ const ui = (function () {
         try {
             const res = await Api.sessions();
             data.sessions = res.sessions || [];
-            const activeCount = data.sessions.filter(s => s.active).length;
+            const activeCount = data.sessions.length;
             const totalRequests = data.sessions.reduce((sum, s) => sum + (s.requestCount || 0), 0);
             Utils.setText('totalSessions', activeCount);
-            Utils.setText('sessionRate', totalRequests + ' запросов');
+            Utils.setText('sessionRate', totalRequests + ' ' + (window.I18N ? I18N.t('app.requests') : 'requests'));
             if (currentPage === 'sessions') refreshPage('sessions');
         } catch (e) {
-            Api.handleError(e, 'Ошибка загрузки сессий');
+            Api.handleError(e, window.I18N ? I18N.t('app.error_loading_sessions') : 'Error loading sessions');
         }
     }
 
@@ -501,7 +529,7 @@ const ui = (function () {
             if (tokenEl && config.apiToken) tokenEl.value = config.apiToken;
         }
 
-        // Also fetch from server if available
+        // Также загружаем с сервера — серверные значения имеют приоритет
         Api.config().then(function (serverConfig) {
             var algEl = document.getElementById('balancingAlgorithm');
             if (algEl && serverConfig.algorithm) algEl.value = serverConfig.algorithm;
@@ -509,11 +537,34 @@ const ui = (function () {
             if (maEl) maEl.checked = serverConfig.modelAffinity !== false;
             var ssEl = document.getElementById('sessionStickiness');
             if (ssEl) ssEl.checked = serverConfig.sessionStickiness !== false;
+
+            // Новые поля из расширенного конфига
+            var useESEl = document.getElementById('useEnhancedScoring');
+            if (useESEl) useESEl.checked = serverConfig.useEnhancedScoring !== false;
+
+            var pfEl = document.getElementById('predictionFiltering');
+            if (pfEl) pfEl.checked = serverConfig.predictionFiltering !== false;
+
+            var gpuEl = document.getElementById('gpuMaxUsage');
+            if (gpuEl && serverConfig.gpuMaxUsage) gpuEl.value = serverConfig.gpuMaxUsage;
+
+            var vramEl = document.getElementById('vramMaxUsage');
+            if (vramEl && serverConfig.vramMaxUsage) vramEl.value = serverConfig.vramMaxUsage;
+
+            var cpuEl = document.getElementById('cpuMaxUsage');
+            if (cpuEl && serverConfig.cpuMaxUsage) cpuEl.value = serverConfig.cpuMaxUsage;
+
+            var ramEl = document.getElementById('ramMaxUsage');
+            if (ramEl && serverConfig.ramMaxUsage) ramEl.value = serverConfig.ramMaxUsage;
+
+            var diskEl = document.getElementById('minFreeDisk');
+            if (diskEl && serverConfig.minFreeDisk) diskEl.value = serverConfig.minFreeDisk;
         }).catch(function () {});
     }
 
-    function saveSettings() {
+    function saveSettings(silent) {
         var algorithm = (document.getElementById('balancingAlgorithm') && document.getElementById('balancingAlgorithm').value) || 'resource-aware';
+        var useEnhancedScoring = (document.getElementById('useEnhancedScoring') && document.getElementById('useEnhancedScoring').checked) !== false;
         var modelAffinity = (document.getElementById('modelAffinity') && document.getElementById('modelAffinity').checked) !== false;
         var sessionStickiness = (document.getElementById('sessionStickiness') && document.getElementById('sessionStickiness').checked) !== false;
         var predictionFiltering = (document.getElementById('predictionFiltering') && document.getElementById('predictionFiltering').checked) !== false;
@@ -526,6 +577,7 @@ const ui = (function () {
 
         var config = {
             algorithm: algorithm,
+            useEnhancedScoring: useEnhancedScoring,
             modelAffinity: modelAffinity,
             sessionStickiness: sessionStickiness,
             predictionFiltering: predictionFiltering,
@@ -539,11 +591,18 @@ const ui = (function () {
 
         localStorage.setItem('ollamalegion_config', JSON.stringify(config));
 
-        Api.post('/config', config).then(function () {
-            showToast(window.I18N ? I18N.t('settings.saved') : 'Настройки сохранены', 'success');
+        Api.updateConfig(config).then(function () {
+            if (!silent) showToast(window.I18N ? I18N.t('settings.saved') : 'Настройки сохранены', 'success');
         }).catch(function (err) {
-            showToast((window.I18N ? I18N.t('common.error') : 'Ошибка') + ': ' + (err.message || err), 'error');
+            if (!silent) showToast((window.I18N ? I18N.t('common.error') : 'Ошибка') + ': ' + (err.message || err), 'error');
         });
+    }
+
+    function autoSaveSettings() {
+        if (autoSaveTimer) clearTimeout(autoSaveTimer);
+        autoSaveTimer = setTimeout(function () {
+            saveSettings(true);
+        }, 800);
     }
 
     // ---- Periodic Refresh ----
@@ -566,11 +625,42 @@ const ui = (function () {
         const deleteBtn = document.getElementById('modalDelete');
 
         if (backendId) {
+            // Берём метрики для отображения (есть gpu, prediction)
             const backend = data.backends.find(b => b.id === backendId);
             if (!backend) return;
             title.textContent = window.I18N ? I18N.t('backends.edit') : 'Редактировать бэкенд';
             deleteBtn.style.display = 'inline-block';
+            // Сначала показываем форму с данными из кластера
             fillForm(backend, true);
+            // Асинхронно подгружаем конфиг бэкенда с weight, maxModels и т.д.
+            Api.getBackend(backendId).then(function (config) {
+                // config — это BackendMetrics с полями Config внутри (weight, maxConcurrentReqs...)
+                // или сам Backend-объект с weight
+                if (config && config.weight !== undefined && config.weight !== null) {
+                    document.getElementById('formBackendWeight').value = config.weight;
+                }
+                if (config && config.maxConcurrentRequests !== undefined && config.maxConcurrentRequests !== null) {
+                    document.getElementById('formBackendMaxConcurrent').value = config.maxConcurrentRequests;
+                }
+                if (config && config.maxConcurrentReqs !== undefined && config.maxConcurrentReqs !== null) {
+                    document.getElementById('formBackendMaxConcurrent').value = config.maxConcurrentReqs;
+                }
+                if (config && (config.maxModels !== undefined && config.maxModels !== null && config.maxModels !== 0)) {
+                    document.getElementById('formBackendMaxModels').value = config.maxModels;
+                }
+                if (config && config.runtimeMaxModels !== undefined && config.runtimeMaxModels !== null && config.runtimeMaxModels !== 0) {
+                    document.getElementById('formBackendMaxModels').value = config.runtimeMaxModels;
+                }
+                if (config && (config.runtimeMaxConcurrentRequests !== undefined && config.runtimeMaxConcurrentRequests !== null && config.runtimeMaxConcurrentRequests !== 0)) {
+                    document.getElementById('formBackendMaxConcurrent').value = config.runtimeMaxConcurrentRequests;
+                }
+                if (config && config.gpuMode) {
+                    var modeEl = document.getElementById('formBackendGpuMode');
+                    if (modeEl) modeEl.value = config.gpuMode;
+                }
+            }).catch(function () {
+                // Не фатально — данные уже загружены из кластера
+            });
         } else {
             title.textContent = window.I18N ? I18N.t('backends.add') : 'Добавить бэкенд';
             deleteBtn.style.display = 'none';
@@ -635,14 +725,14 @@ const ui = (function () {
                     await Api.updateBackendLimitsFull(id, maxConcurrent, maxModels);
                 } catch (limitsErr) {
                     // Не фатально — лимиты может установить позже через агента
-                    addLog('Предупреждение: runtime-лимиты для ' + id + ' не обновлены', 'warn');
+                    addLog(window.I18N ? I18N.t('app.backend_limits_warn', { id: id }) : 'Warning: runtime limits for ' + id + ' not updated', 'warn');
                 }
-                showToast('Бэкенд обновлен', 'success');
-                addLog('Бэкенд ' + id + ' обновлен', 'info');
+                showToast(window.I18N ? I18N.t('app.backend_saved') : 'Backend updated', 'success');
+                addLog(window.I18N ? I18N.t('app.backend_updated', { id: id }) : 'Backend ' + id + ' updated', 'info');
             } else {
                 await Api.createBackend(payload);
-                showToast('Бэкенд добавлен', 'success');
-                addLog('Бэкенд ' + id + ' добавлен', 'info');
+                showToast(window.I18N ? I18N.t('app.backend_created') : 'Backend added', 'success');
+                addLog(window.I18N ? I18N.t('app.backend_created') : 'Backend ' + id + ' added', 'info');
             }
             closeModal();
             refreshCurrentPage();
@@ -658,8 +748,8 @@ const ui = (function () {
         try {
             await Api.deleteBackend(id);
             closeModal();
-            showToast('Бэкенд удален', 'success');
-            addLog(`Бэкенд ${id} удален`, 'info');
+            showToast(window.I18N ? I18N.t('app.backend_deleted') : 'Backend deleted', 'success');
+            addLog(window.I18N ? I18N.t('app.backend_deleted', { id: id }) : `Backend ${id} deleted`, 'info');
             refreshCurrentPage();
         } catch (e) {
             showToast((window.I18N ? I18N.t('common.error') : 'Ошибка') + ': ' + (e.message || e), 'error');
@@ -728,8 +818,9 @@ const ui = (function () {
     }
 
     function addLog(message, level = 'info') {
+        var locale = (window.I18N && I18N.getLang() === 'ru') ? 'ru' : 'en';
         const entry = {
-            time: new Date().toLocaleTimeString('ru'),
+            time: new Date().toLocaleTimeString(locale),
             level: level.toUpperCase(),
             message
         };

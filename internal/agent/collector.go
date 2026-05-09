@@ -693,6 +693,8 @@ func (a *Agent) collectOllamaMetrics() types.OllamaMetrics {
 	var availableModels []types.RunningModel
 	if tagsErr != nil {
 		fmt.Printf("[%s] Failed to get available models: %v\n", time.Now().Format(time.RFC3339), tagsErr)
+		// Ollama API недоступен — устанавливаем флаг
+		metrics.OllamaAvailable = false
 	} else {
 		availableModels = tagsResp.models
 		metrics.AvailableModels = availableModels
@@ -708,11 +710,25 @@ func (a *Agent) collectOllamaMetrics() types.OllamaMetrics {
 	}
 
 	// Единый запрос к /api/ps (один раз вместо двух)
-	runningModels, psErr := a.getRunningModelsWithDetails(tagsResp.details)
+	var detailsMap map[string]types.ModelDetails
+	if tagsResp != nil {
+		detailsMap = tagsResp.details
+	}
+	runningModels, psErr := a.getRunningModelsWithDetails(detailsMap)
 	if psErr != nil {
 		fmt.Printf("[%s] Failed to get running models: %v\n", time.Now().Format(time.RFC3339), psErr)
+		// Ollama API недоступен если оба запроса провалились
+		if tagsErr != nil {
+			metrics.OllamaAvailable = false
+		}
 	} else {
 		metrics.RunningModels = runningModels
+		metrics.OllamaAvailable = true
+	}
+
+	// Если хотя бы один из запросов успешен — Ollama доступна
+	if tagsErr == nil || psErr == nil {
+		metrics.OllamaAvailable = true
 	}
 
 	// Сбор информации о контексте моделей

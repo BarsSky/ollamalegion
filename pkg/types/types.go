@@ -8,11 +8,12 @@ import (
 type BackendStatus string
 
 const (
-	StatusHealthy   BackendStatus = "healthy"
-	StatusUnhealthy BackendStatus = "unhealthy"
-	StatusOffline   BackendStatus = "offline"
-	StatusStarting  BackendStatus = "starting"
-	StatusDraining  BackendStatus = "draining"
+	StatusHealthy           BackendStatus = "healthy"
+	StatusUnhealthy         BackendStatus = "unhealthy"
+	StatusOffline           BackendStatus = "offline"
+	StatusStarting          BackendStatus = "starting"
+	StatusDraining          BackendStatus = "draining"
+	StatusOllamaUnavailable BackendStatus = "ollama_unavailable" // Агент жив, но Ollama недоступна
 )
 
 // ModelState - состояние модели на бэкенде
@@ -60,6 +61,9 @@ type Backend struct {
 	ActiveRequests      int           `json:"activeRequests"`
 	HasAgent            bool          `json:"hasAgent"`
 	LastAgentContact    time.Time     `json:"lastAgentContact"`
+
+	// GPU Mode (auto / gpu / cpu)
+	GPUMode PlatformMode `json:"gpuMode"`
 
 	// Runtime-лимиты (меняются через API без перезапуска)
 	RuntimeMaxModels             int `json:"runtimeMaxModels"`
@@ -173,6 +177,7 @@ type OllamaMetrics struct {
 	ModelContexts         []ModelContextInfo `json:"modelContexts"`         // Информация о контексте по моделям
 	BackendCapacity       BackendCapacity    `json:"backendCapacity"`       // Оценка ёмкости бэкенда
 	ModelSizes            map[string]int64   `json:"modelSizes"`            // Размеры всех доступных моделей (modelName → bytes)
+	OllamaAvailable       bool              `json:"ollamaAvailable"`       // Доступность Ollama API на бэкенде (от агента)
 }
 
 // OllamaRuntimeFlags - флаги запуска процесса Ollama
@@ -320,12 +325,14 @@ type APISettings struct {
 
 // LoadBalancerSettings - настройки балансировщика
 type LoadBalancerSettings struct {
-	Host      string `json:"host"`
-	Port      int    `json:"port"`
-	APIPort   int    `json:"apiPort"`
-	TLSHost   string `json:"tlsHost"`   // хост для HTTPS (если отличается от Host)
-	TLSPort   int    `json:"tlsPort"`   // порт для HTTPS
-	StatePath string `json:"statePath"` // путь к файлу сохранения состояния (по умолчанию "data/state.json")
+	Host            string   `json:"host"`
+	Port            int      `json:"port"`
+	APIPort         int      `json:"apiPort"`
+	TLSHost         string   `json:"tlsHost"`         // хост для HTTPS (если отличается от Host)
+	TLSPort         int      `json:"tlsPort"`         // порт для HTTPS
+	StatePath       string   `json:"statePath"`       // путь к файлу сохранения состояния (по умолчанию "data/state.json")
+	TrustedProxies  []string `json:"trustedProxies"`  // CIDR или IP доверенных прокси (по умолч. Docker/локальные сети)
+	ClientIPHeaders []string `json:"clientIPHeaders"` // Приоритет заголовков для определения IP клиента
 }
 
 // PrewarmConfig - конфигурация превентивной загрузки
@@ -389,6 +396,20 @@ type BalancingSettings struct {
 	// Feature flags
 	UseEnhancedScoring bool `json:"useEnhancedScoring"` // Расширенный скоринг v2 (полная формула)
 	ModelLoadTimeout   int  `json:"modelLoadTimeout"`   // Таймаут ожидания загрузки модели (сек, default 120)
+
+	// Streaming защита
+	StreamingMaxDuration int `json:"streamingMaxDuration"` // Макс. длительность streaming-запроса (сек, 0=без ограничения)
+
+	// AutoPull - автоматическая загрузка модели при запросе (Pull-on-Demand)
+	AutoPull AutoPullConfig `json:"autoPull"`
+}
+
+// AutoPullConfig - конфигурация автоматической загрузки модели по запросу
+type AutoPullConfig struct {
+	Enabled       bool   `json:"enabled"`       // Включить авто-загрузку модели, если её нет
+	MaxConcurrent int    `json:"maxConcurrent"` // Макс. одновременных загрузок (0 = без лимита)
+	PullTimeout   string `json:"pullTimeout"`   // Таймаут на загрузку модели ("5m", "10m")
+	RetryCount    int    `json:"retryCount"`    // Сколько раз повторить запрос после загрузки
 }
 
 // LoggingSettings - настройки логирования
@@ -424,18 +445,19 @@ type QueuedRequest struct {
 
 // Session - активная сессия
 type Session struct {
-	ID            string    `json:"id"`
-	BackendID     string    `json:"backendId"`
-	Model         string    `json:"model"`
-	ClientName    string    `json:"clientName"`    // Имя клиента (Cline, OpenWebUI, etc.)
-	ClientIP      string    `json:"clientIp"`      // IP клиента (без порта)
-	UserAgent     string    `json:"userAgent"`     // Полный User-Agent для отладки
-	CreatedAt     time.Time `json:"createdAt"`
-	LastRequestAt time.Time `json:"lastRequestAt"`
-	RequestCount  int       `json:"requestCount"`
-	TotalTokens   int64     `json:"totalTokens"`   // Оценочное количество токенов
-	NumCtx        int       `json:"numCtx"`        // Размер контекста запроса (токенов)
-	SessionWeight float64   `json:"sessionWeight"` // Вес сессии для адаптивного переключения
+	ID               string    `json:"id"`
+	BackendID        string    `json:"backendId"`
+	Model            string    `json:"model"`
+	ClientName       string    `json:"clientName"`       // Имя клиента (Cline, OpenWebUI, etc.)
+	ClientIP         string    `json:"clientIp"`         // IP клиента (без порта)
+	UserAgent        string    `json:"userAgent"`        // Полный User-Agent для отладки
+	ClientFingerprint string   `json:"clientFingerprint"` // Хеш для различения клиентов за одним IP
+	CreatedAt        time.Time `json:"createdAt"`
+	LastRequestAt    time.Time `json:"lastRequestAt"`
+	RequestCount     int       `json:"requestCount"`
+	TotalTokens      int64     `json:"totalTokens"`      // Оценочное количество токенов
+	NumCtx           int       `json:"numCtx"`           // Размер контекста запроса (токенов)
+	SessionWeight    float64   `json:"sessionWeight"`    // Вес сессии для адаптивного переключения
 }
 
 // HealthCheckResult - результат проверки здоровья

@@ -10,16 +10,16 @@
     <link rel="icon" type="image/png" sizes="32x32" href="favicon-32x32.png">
     <link rel="icon" type="image/png" sizes="16x16" href="favicon-16x16.png">
     <link rel="shortcut icon" href="favicon.ico">
-    <link rel="stylesheet" href="css/font-awesome.min.css?v=3">
-    <link rel="stylesheet" href="css/themes.css?v=3">
-    <link rel="stylesheet" href="css/base.css?v=2">
-    <link rel="stylesheet" href="css/icons.css?v=3">
-    <link rel="stylesheet" href="css/components.css?v=2">
-    <link rel="stylesheet" href="css/metrics.css?v=2">
-    <link rel="stylesheet" href="css/data.css?v=3">
-    <link rel="stylesheet" href="css/pages.css?v=2">
-    <link rel="stylesheet" href="css/layout.css?v=3">
-    <link rel="stylesheet" href="css/responsive.css?v=2">
+    <link rel="stylesheet" href="css/font-awesome.min.css?v=10">
+    <link rel="stylesheet" href="css/themes.css?v=10">
+    <link rel="stylesheet" href="css/base.css?v=10">
+    <link rel="stylesheet" href="css/icons.css?v=10">
+    <link rel="stylesheet" href="css/components.css?v=10">
+    <link rel="stylesheet" href="css/metrics.css?v=10">
+    <link rel="stylesheet" href="css/data.css?v=10">
+    <link rel="stylesheet" href="css/pages.css?v=10">
+    <link rel="stylesheet" href="css/layout.css?v=10">
+    <link rel="stylesheet" href="css/responsive.css?v=10">
 </head>
 <body>
     <div class="app">
@@ -70,7 +70,7 @@
             <header class="header">
                 <h1 id="pageTitle">Dashboard</h1>
                 <div class="header-actions">
-                    <select class="lang-select" id="langSelect" title="Язык / Language">
+                    <select class="lang-select" id="langSelect" title="Язык / Language" data-i18n-title="settings.language">
                         <option value="ru">🇷🇺 RU</option>
                         <option value="en">🇬🇧 EN</option>
                     </select>
@@ -79,11 +79,6 @@
                     <button class="btn btn-primary" id="addBackendBtn" data-i18n="backends.add">Добавить бэкенд</button>
                 </div>
             </header>
-
-            <!-- Monitor Page (embedded via iframe) -->
-            <div class="page" id="monitor-page">
-                <iframe id="monitorFrame" src="monitor.html" style="width:100%;height:calc(100vh - 140px);border:none;background:var(--bg-primary)" allow="clipboard-write"></iframe>
-            </div>
 
             <!-- Dashboard Page -->
             <div class="page active" id="dashboard-page">
@@ -186,15 +181,17 @@
                                     <th>VRAM</th>
                                     <th>CPU</th>
                                     <th>RAM</th>
-                                    <th>Active Req</th>
-                                    <th data-i18n="metrics.loaded_models">Модели</th>
-                                    <th>RPS</th>
+                                    <th class="col-right">Active Req</th>
+                                    <th class="col-right" data-i18n="metrics.loaded_models">Модели</th>
+                                    <th class="col-right">RPS</th>
+                                    <th class="col-right">Avg RT</th>
+                                    <th class="col-right">Capacity</th>
                                     <th data-i18n="dashboard.prediction_alerts">Предиктор</th>
                                     <th data-i18n="backends.actions">Действия</th>
                                 </tr>
                             </thead>
                             <tbody id="backendsTableBody">
-                                <tr><td colspan="11" class="loading-cell" data-i18n="common.loading">Загрузка...</td></tr>
+                                <tr><td colspan="14" class="loading-cell" data-i18n="common.loading">Загрузка...</td></tr>
                             </tbody>
                         </table>
                     </div>
@@ -291,7 +288,7 @@
                     <div class="card-header">
                         <h3><i class="fas fa-list-check section-icon-i"></i> <span data-i18n="sessions.title">Активные сессии</span></h3>
                         <div class="card-actions">
-                            <input type="text" class="search-input" placeholder="Поиск сессии..." id="sessionSearch">
+                            <input type="text" class="search-input" placeholder="Поиск сессии..." id="sessionSearch" data-i18n-placeholder="backends.session_placeholder">
                         </div>
                     </div>
                     <div class="table-responsive">
@@ -397,7 +394,7 @@
 
             <!-- Monitor Page -->
             <div class="page" id="monitor-page">
-                <iframe id="monitorFrame" src="monitor.html" class="monitor-iframe"></iframe>
+                <iframe id="monitorFrame" src="monitor.html?v=10" class="monitor-iframe"></iframe>
             </div>
 
             <!-- Logs Page -->
@@ -429,7 +426,13 @@
                     <div class="settings-form" id="settingsForm">
                         <div class="form-group">
                             <label data-i18n="settings.balancing_mode">Алгоритм балансировки</label>
-                            <span class="tooltip-trigger">?<span class="tooltip-content" data-i18n="settings.balancing_mode_desc">Выберите алгоритм распределения запросов между бэкендами</span></span>
+                            <span class="tooltip-trigger">?<span class="tooltip-content" data-i18n="settings.balancing_mode_desc">
+<strong>Resource-Aware</strong> — выбор по GPU/VRAM/CPU + скоринг (рекомендуется)<br>
+<strong>Least Connections</strong> — наименьшее число активных запросов<br>
+<strong>Round Robin</strong> — циклическое переключение с учётом веса<br>
+<strong>Weighted</strong> — пропорционально весу бэкенда<br>
+<strong>Model Affinity</strong> — приоритет бэкенда с загруженной моделью
+                            </span></span>
                             <select id="balancingAlgorithm" class="form-control">
                                 <option value="resource-aware" data-i18n="settings.balancing_resource_aware">Resource-Aware (по умолчанию)</option>
                                 <option value="least-connections" data-i18n="settings.balancing_least_conn">Least Connections</option>
@@ -437,6 +440,16 @@
                                 <option value="weighted" data-i18n="settings.balancing_weighted">Weighted</option>
                                 <option value="model-affinity" data-i18n="settings.balancing_model_affinity">Model Affinity</option>
                             </select>
+                        </div>
+                        <div class="form-group">
+                            <label>Use Enhanced Scoring</label>
+                            <span class="tooltip-trigger">?<span class="tooltip-content">
+Включает полную формулу скоринга v2: бонус за загруженные модели, штраф за очередь и ошибки, прогноз критического состояния. При выключении — упрощённый скоринг (GPU/VRAM/CPU + weight).
+                            </span></span>
+                            <label class="toggle">
+                                <input type="checkbox" id="useEnhancedScoring">
+                                <span class="toggle-slider"></span>
+                            </label>
                         </div>
                         <div class="form-group">
                             <label>Model Affinity</label>
@@ -640,18 +653,18 @@
     <div class="toast-container" id="toastContainer"></div>
 
     <!-- i18n Language Packs -->
-    <script src="js/i18n/ru.js?v=4"></script>
-    <script src="js/i18n/en.js?v=4"></script>
-    <script src="js/i18n/index.js?v=4"></script>
+    <script src="js/i18n/ru.js?v=10"></script>
+    <script src="js/i18n/en.js?v=10"></script>
+    <script src="js/i18n/index.js?v=10"></script>
 
     <!-- Runtime config injected by entrypoint for Docker / local nginx -->
     <script>window.WEBUI_CONFIG = window.WEBUI_CONFIG || {};</script>
     <!-- Modules -->
-    <script src="js/modules/config.js?v=4"></script>
-    <script src="js/modules/utils.js?v=4"></script>
-    <script src="js/modules/api.js?v=4"></script>
-    <script src="js/modules/websocket.js?v=4"></script>
-    <script src="js/modules/renderers.js?v=5"></script>
-    <script src="js/app.js?v=4"></script>
+    <script src="js/modules/config.js?v=10"></script>
+    <script src="js/modules/utils.js?v=10"></script>
+    <script src="js/modules/api.js?v=10"></script>
+    <script src="js/modules/websocket.js?v=10"></script>
+    <script src="js/modules/renderers.js?v=10"></script>
+    <script src="js/app.js?v=10"></script>
 </body>
 </html>

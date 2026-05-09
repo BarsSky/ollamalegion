@@ -1,0 +1,178 @@
+/* ==============================
+   Monitor Modules Styles
+   For: monitor-charts.js, monitor-metrics.js, monitor-backends.js
+   ============================== */
+
+/* ---- Charts Container ---- */
+.monitor-charts-container {
+    position: relative;
+    width: 100%;
+    height: 200px;
+    background: var(--glass-bg);
+    border: 1px solid var(--glass-border);
+    border-radius: 8px;
+    overflow: hidden;
+    margin: 8px 0;
+}
+
+.monitor-charts-container canvas {
+    display: block;
+    width: 100%;
+    height: 100%;
+}
+
+/* ---- Backend Table Sorting ---- */
+#backendsTable th[data-sort] {
+    cursor: pointer;
+    user-select: none;
+    position: relative;
+    padding-right: 16px;
+}
+
+#backendsTable th[data-sort]::after {
+    content: '⇅';
+    position: absolute;
+    right: 4px;
+    opacity: 0.3;
+    font-size: 10px;
+}
+
+#backendsTable th[data-sort].sort-asc::after {
+    content: '▲';
+    opacity: 0.8;
+    color: var(--accent);
+}
+
+#backendsTable th[data-sort].sort-desc::after {
+    content: '▼';
+    opacity: 0.8;
+    color: var(--accent);
+}
+
+#backendsTable th[data-sort]:hover {
+    color: var(--text-primary);
+    background: var(--bg-hover);
+}
+
+/* ---- Backend Filter ---- */
+.backend-filter {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 4px 8px;
+    margin-bottom: 8px;
+}
+
+.backend-filter input {
+    flex: 1;
+    min-width: 120px;
+    background: var(--bg-hover);
+    border: 1px solid var(--border-color);
+    border-radius: 6px;
+    padding: 4px 10px;
+    font-size: 12px;
+    color: var(--text-primary);
+}
+
+.backend-filter input::placeholder {
+    color: var(--text-secondary);
+    opacity: 0.6;
+}
+
+/* ---- Progress Bars ---- */
+.bar-track {
+    display: inline-block;
+    width: 60px;
+    height: 6px;
+    background: var(--bg-hover);
+    border-radius: 3px;
+    overflow: hidden;
+    vertical-align: middle;
+    margin-right: 6px;
+}
+
+.bar-fill {
+    display: block;
+    height: 100%;
+    border-radius: 3px;
+    transition: width 0.3s ease, background 0.3s ease;
+}
+
+/* ---- Tooltip Enhancements ---- */
+#topoTooltip {
+    font-family: var(--font-mono);
+    font-size: 11px;
+    line-height: 1.5;
+}
+
+#backendsTable tbody tr[title] {
+    cursor: help;
+}
+
+/* ---- Dispatch Cards ---- */
+.dispatch-card {
+    transition: transform 0.2s, box-shadow 0.2s;
+}
+
+.dispatch-card:hover {
+    transform: translateY(-2px);
+    box-shadow: 0 4px 12px rgba(0,0,0,0.15);
+}
+
+/* ---- Conveyor Canvas ---- */
+#conveyorCanvas {
+    pointer-events: none;
+    opacity: 0.75;
+}
+
+/* ---- Panel Enhancements ---- */
+.panel-body .capacity-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+    gap: 8px;
+}
+
+.capacity-card {
+    background: var(--bg-secondary);
+    border: 1px solid var(--border-color);
+    border-radius: 8px;
+    padding: 12px;
+}
+
+.capacity-card h4 {
+    font-size: 11px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    color: var(--text-secondary);
+    margin-bottom: 8px;
+}
+
+.bar-track-wide {
+    flex: 1;
+    height: 8px;
+    background: var(--bg-hover);
+    border-radius: 4px;
+    overflow: hidden;
+}
+
+.bar-fill-wide {
+    height: 100%;
+    border-radius: 4px;
+    transition: width 0.5s ease;
+}
+
+/* ---- Responsive ---- */
+@media (max-width: 768px) {
+    .monitor-charts-container {
+        height: 160px;
+    }
+    
+    .backend-filter {
+        flex-wrap: wrap;
+    }
+    
+    #backendsTable th[data-sort]::after {
+        display: none;
+    }
+}

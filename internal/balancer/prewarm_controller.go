@@ -119,20 +119,17 @@ func (pc *PrewarmController) evaluate() {
 			continue
 		}
 
-		state.mu.Lock()
-		active := state.ActiveReqs
-		maxReqs := state.Backend.MaxConcurrentReqs
-		state.mu.Unlock()
-
-		if maxReqs > 0 {
-			backendLoad[id] = float64(active) / float64(maxReqs)
-		}
-
 		pc.proxy.metricsMgr.mu.RLock()
 		metrics, ok := pc.proxy.metricsMgr.metrics[id]
 		pc.proxy.metricsMgr.mu.RUnlock()
 		if !ok {
 			continue
+		}
+
+		active := metrics.Ollama.ActiveRequests
+		maxReqs := state.Backend.MaxConcurrentReqs
+		if maxReqs > 0 {
+			backendLoad[id] = float64(active) / float64(maxReqs)
 		}
 
 		for _, m := range metrics.Ollama.RunningModels {
@@ -182,7 +179,7 @@ func (pc *PrewarmController) evaluate() {
 
 		// Запускаем превентивную загрузку
 		state := backends[freeBackend]
-		go pc.triggerPrewarm(freeBackend, state.Backend.Host, state.Backend.OllamaPort, model)
+		pc.triggerPrewarm(freeBackend, state.Backend.Host, state.Backend.OllamaPort, model)
 		pc.activeWarms[model] = now
 	}
 }

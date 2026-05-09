@@ -75,32 +75,61 @@
 
 ### 2.1 Многоэтапный выбор (5 этапов)
 
-Метод `selectBackend()` в `internal/balancer/proxy.go` реализует 5-этапную логику:
+Метод `selectBackend()` в `internal/balancer/proxy.go` реализует 5-этапную логику поверх `expandCandidates()`.  
+Этапы 2–4 опциональны и зависят от конфигурации (`SyncModelLoad.Enabled`, `Prewarm`, etc.).
+
+#### 2.1.1 `expandCandidates(modelName)` — группировка бэкендов по приоритетам
+
+Функция `expandCandidates()` анализирует все healthy бэкенды и группирует их по 4 приоритетам:
+
+| Приоритет | Название | Условие |
+|-----------|----------|---------|
+| **P1** | **LOADED** | Модель в памяти, `loadRatio < triggerLoadThreshold` |
+| **P2** | **WARMING** | Модель в `WarmingUpModels` (загружается) |
+| **P3** | **FREE** | Свободные слоты, модель не загружена |
+| **P4** | **FALLBACK** | Все healthy бэкенды с метриками |
 
 ```text
           Request arrives
                     │
                     ▼
     ┌───────────────────────────────────────┐
+    │      expandCandidates(modelName)       │
+    │  ┌─────────────────────────────────┐   │
+    │  │ P1: LOADED (model in memory)  │   │
+    │  │ P2: WARMING (model loading)   │   │
+    │  │ P3: FREE (slots available)    │   │
+    │  │ P4: FALLBACK (any healthy)    │   │
+    │  └─────────────────────────────────┘   │
+    └──────────────────┬────────────────────┘
+                       ▼
+    ┌───────────────────────────────────────┐
     │           selectBackend(model)         │
     │                                        │
-    │  Этап 1: Model Affinity (LOADED only) │
-    │    ├─ Найти бэкенд с моделью в памяти  │
-    │    ├─ Проверить loadRatio < 80%       │
-    │    └─ Если ок → вернуть бэкенд        │
-    │                                        │
-    │  Этап 2: Model Warming (WARMING_UP)   │
-    │    ├─ Найти бэкенд в процессе загрузки │
-    │    ├─ Проверить ETA < timeout         │
-    │    └─ Ожидать готовности (polling)    │
-    │                                        │
-    │  Этап 3: Sync Model Load              │
-    │    ├─ Найти свободный бэкенд          │
-    │    ├─ Запустить загрузку модели        │
-    │    └─ Ожидать готовности (с таймаутом) │
-    │                                        │
-    │  Этап 4: Resource-Aware Scoring (v2)  │
-    │    └─ calculateScore() с новыми весами │
+     │  Этап 1: Session Stickiness             │
+     │    ├─ Есть сессия с backend affinity?  │
+     │    ├─ Бэкенд healthy и loadRatio < 80%? │
+     │    └─ Да → вернуть тот же бэкенд       │
+     │                                        │
+     │  Этап 2: Model Affinity (P1 — LOADED) │
+     │    ├─ Первый бэкенд из P1             │
+     │    ├─ Проверить loadRatio < threshold │  (default 80%)
+     │    └─ Если ок → вернуть бэкенд        │
+     │                                        │
+     │  Этап 3: Model Warming (P2)           │
+     │    ├─ Найти бэкенд в процессе загрузки │
+     │    ├─ Проверить ETA < syncTimeout     │  (default 30s)
+     │    └─ Ожидать готовности (polling)    │
+     │                                        │
+     │  Этап 4: Sync Model Load (P3 — FREE)  │
+     │    ├─ Если SyncModelLoad.Enabled       │
+     │    ├─ Запустить загрузку на free      │
+     │    └─ Ожидать готовности (с таймаутом) │
+     │                                        │
+     │  Этап 5: Resource-Aware Scoring (P4)  │
+     │    └─ selectByResources() →             │
+     │       calculateScore() /              │
+     │       calculateScoreSimple()           │
     └──────────────────┬────────────────────┘
                        ▼
     ┌───────────────────────────────────────┐
@@ -110,46 +139,90 @@
     │  ├── Нет Capacity → В очередь         │
     │  └── Queue > 90% → 503 (Backpressure) │
     └───────────────────────────────────────┘
-
-   Фоновые контроллеры (горутины):
-   ┌──────────────────────────┐  ┌────────────────────────────┐
-   │ Prewarm Controller       │  │ Model Instance Controller  │
-   │ • Проверка load > 70%    │  │ • Поддержка min/max        │
-   │ • Поиск свободного       │  │ • Idle unload (> 10 мин)   │
-   │ • Триггер pre-load       │  │ • Мониторинг экземпляров   │
-   │ • Каждые 10 сек          │  │ • Каждые 30 сек            │
-   └──────────────────────────┘  └────────────────────────────┘
 ```
+
+#### 2.1.2 `dispatchWithModelLoad()` — асинхронная загрузка модели
+
+Отдельный механизм, инициирующий загрузку модели на free-бэкенд с наибольшим свободным VRAM:
+
+1. Вызывает `expandCandidates()` для получения P3 (FREE)
+2. Выбирает бэкенд с максимальным `GPU.MemoryFree`
+3. Запускает `warmupModel()` через POST `/api/pull`
+4. Добавляет модель в `WarmingUpModels` с дедлайном `ModelLoadTimeout` (default 120s)
+5. Возвращает `backendID` и `deadline` для ожидания
+
+Этот механизм используется для ребалансировки и предварительной загрузки.
 
 ### 2.2 Расширенная формула скоринга (calculateScore v2)
 
-Формула v2 учитывает состояние загрузки модели, глубину очереди и историю ошибок:
+Поведение скоринга контролируется флагом **`useEnhancedScoring`** в `balancing`:
+
+- **`useEnhancedScoring: true`** — полная формула v2 с учётом модели, очереди и ошибок
+- **`useEnhancedScoring: false`** (default) — упрощённая формула (обратная совместимость)
+
+#### Упрощённая формула (`calculateScoreSimple`, default)
 
 ```
 Score = (
     gpuFreePercent        * 0.30  +    // 30% — GPU загрузка
     vramFreePercent       * 0.20  +    // 20% — свободная VRAM
     cpuFreePercent        * 0.15  +    // 15% — свободный CPU
-    modelLoadedBonus      * 0.15  +    // 15% — бонус за загруженные модели
-    predictionBonus       * 0.10  +    // 10% — бонус предиктора
-    modelCapacityScore    * 0.10  +    // 10% — ёмкость под модель
-    − requestPenalty                   // штраф за активные запросы
-    − queueDepthPenalty    * 0.05  −   // 5%  — штраф за глобальную очередь
-    − errorRatePenalty     * 0.05      // 5%  — штраф за историю ошибок
-) * weight                            // Мультипликатор веса бэкенда
+    − requestPenalty                     // штраф за активные запросы
+) * weight                             // Мультипликатор веса бэкенда
 ```
 
-**Новые компоненты v2:**
-- **modelLoadedBonus** — чем больше моделей уже загружено, тем выше score
-- **queueDepthPenalty** — штраф за глубину глобальной очереди
-- **errorRatePenalty** — штраф за высокую частоту ошибок
+#### Полная формула v2 (`calculateScore`, useEnhancedScoring=true)
+
+```
+Score = (
+    gpuFreePercent        * 0.30  +    // 30% — GPU загрузка
+    vramFreePercent       * 0.20  +    // 20% — свободная VRAM
+    cpuFreePercent        * 0.15  +    // 15% — свободный CPU
+    modelLoadedBonus      * wLoaded +  // вес из конфига (default 0.15)
+    predictionBonus       * wPred   +  // вес из конфига (default 0.10)
+    modelCapacityScore               +   // ёмкость под модели
+    − requestPenalty                     // штраф за активные запросы
+    − queueDepthPenalty    * wQueue −  // вес из конфига (default 0.05)
+    − errorRatePenalty     * wError    // вес из конфига (default 0.05)
+) * weight                             // Мультипликатор веса бэкенда
+```
+
+**Дополнительные компоненты v2 (только при useEnhancedScoring=true):**
+- **modelLoadedBonus** — бонус за количество загруженных моделей (`ModelAlreadyLoaded * 10.0 * count`)
+- **queueDepthPenalty** — штраф за глубину глобальной очереди (`QueueDepthPenalty * len(queue)`)
+- **errorRatePenalty** — штраф за высокую частоту ошибок (`ErrorRatePenalty * errorRate * 100`, при `TotalAttempts > 10`)
+- **predictionBonus** — бонус/штраф на основе прогноза критического состояния
+
+**Конфигурация весов (`balancing.scoring`):**
+```json
+{
+  "scoring": {
+    "modelAlreadyLoaded": 0.15,
+    "modelLoadingCost": 0.10,
+    "queueDepthPenalty": 0.05,
+    "errorRatePenalty": 0.05,
+    "predictionBonus": 0.10
+  }
+}
+```
 
 ### 2.3 Headroom Reservation (Ресурсный резерв)
 
-На каждом бэкенде резервируется 15% GPU памяти как горячий резерв.
+На каждом бэкенде резервируется процент GPU памяти как горячий резерв.
 Бэкенд блокируется для новых запросов если VRAM usage > (100 − headroom_percent)%.
 
 Конфигурация: `balancing.resource_reservation.gpu_headroom_percent: 15`.
+
+### 2.4 Feature Flag: useEnhancedScoring
+
+Параметр `balancing.useEnhancedScoring` включает расширенную формулу скоринга:
+
+| Значение | Поведение |
+|----------|-----------|
+| `false` (default) | Упрощённый скоринг: только GPU/VRAM/CPU + weight |
+| `true` | Полная формула v2: + model affinity, queue depth, error rate, prediction |
+
+Рекомендуется включать в продакшене после калибровки весов (`balancing.scoring`).
 
 ### 2.4 Фильтры здоровья (дополненные)
 
@@ -676,6 +749,7 @@ Priority = enqueueTime + (modelSize * weight) + (sessionAge * factor)
 | `balancingAlgorithm` | Алгоритм: resource-aware, least-connections, round-robin | resource-aware |
 | `modelAffinity` | Предпочитать бэкенд с загруженной моделью | true |
 | `sessionStickiness` | Привязывать сессию к бэкенду | true |
+| `useEnhancedScoring` | Использовать расширенную формулу скоринга v2 | true |
 | `predictionFiltering` | Использовать предиктор загрузки | true |
 | `gpuMaxUsage` | Макс. GPU usage (%) | 90 |
 | `vramMaxUsage` | Макс. VRAM usage (%) | 85 |
@@ -703,4 +777,4 @@ Priority = enqueueTime + (modelSize * weight) + (sessionAge * factor)
 
 ---
 
-*Документ версия 1.0 | OllamaLegion Load Balancer | Сгенерирован 2026-04-28*
+*Документ версия 1.1 | OllamaLegion Load Balancer | Скорректирован 2026-05-06*

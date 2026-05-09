@@ -76,8 +76,15 @@ COPY --from=builder /build/balancer .
 # Копирование конфигурации по умолчанию
 COPY --from=builder /build/config/config.example.json ./config.json
 
-# Копирование monitor.html (из webui/ — синхронизировано с изменениями)
-COPY --from=builder /build/webui/monitor.html ./monitor.html
+# Копирование webui статики (monitor.html, css, js, img, favicon)
+COPY --from=builder /build/webui/monitor.html ./webui/monitor.html
+COPY --from=builder /build/webui/css ./webui/css
+COPY --from=builder /build/webui/js ./webui/js
+COPY --from=builder /build/webui/img ./webui/img
+COPY --from=builder /build/webui/favicon.ico ./webui/favicon.ico
+COPY --from=builder /build/webui/favicon-16x16.png ./webui/favicon-16x16.png
+COPY --from=builder /build/webui/favicon-32x32.png ./webui/favicon-32x32.png
+COPY --from=builder /build/webui/logo.svg ./webui/logo.svg
 
 # Создание непривилегированного пользователя
 RUN addgroup -g 1000 appgroup && \

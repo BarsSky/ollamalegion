@@ -1,0 +1,25 @@
+{
+  "version": 1,
+  "updated": "2026-05-07T12:56:29.3945109Z",
+  "backends": [
+    {
+      "id": "test-agent-1",
+      "name": "test-agent-1",
+      "host": "192.168.1.100",
+      "ollamaPort": 11434,
+      "agentPort": 9090,
+      "weight": 100,
+      "maxConcurrentRequests": 8,
+      "maxModels": 0,
+      "labels": null,
+      "status": "healthy",
+      "lastHealthCheck": "0001-01-01T00:00:00Z",
+      "consecutiveFailures": 0,
+      "activeRequests": 0,
+      "hasAgent": true,
+      "lastAgentContact": "0001-01-01T00:00:00Z",
+      "runtimeMaxModels": 4,
+      "runtimeMaxConcurrentRequests": 6
+    }
+  ]
+}

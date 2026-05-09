@@ -42,6 +42,18 @@ const ui = (function () {
         // Periodic refresh
         startPeriodicRefresh();
 
+        // Initialize Settings UI modules
+        if (window.SettingsUI) {
+            SettingsUI.setupAccordion();
+            SettingsUI.restoreAccordionState();
+            SettingsUI.setupModeSelector();
+        }
+
+        // Check if setup wizard should be shown
+        if (window.SetupWizard && !SetupWizard.isInitialized()) {
+            SetupWizard.start();
+        }
+
         addLog(window.I18N ? I18N.t('app.webui_initialized') : 'WebUI initialized', 'info');
     }
 
@@ -294,8 +306,43 @@ const ui = (function () {
         document.getElementById('saveSettings').addEventListener('click', function () { saveSettings(false); });
         document.getElementById('resetSettings').addEventListener('click', loadSettings);
 
+        // Export / Import Config buttons
+        var exportBtn = document.getElementById('exportSettingsBtn');
+        if (exportBtn) exportBtn.addEventListener('click', function () {
+            if (window.ConfigIO) ConfigIO.exportConfig();
+        });
+        var exportBtn2 = document.getElementById('exportSettingsBtn2');
+        if (exportBtn2) exportBtn2.addEventListener('click', function () {
+            if (window.ConfigIO) ConfigIO.exportConfig();
+        });
+
+        var importBtn = document.getElementById('importSettingsBtn');
+        if (importBtn) importBtn.addEventListener('click', function () {
+            if (window.ConfigIO) {
+                ConfigIO.importConfigFromFile().then(function (data) {
+                    return ConfigIO.showImportPreview(data);
+                }).then(function (confirmed) {
+                    if (confirmed) ConfigIO.applyConfig(data);
+                }).catch(function (err) {
+                    showToast(err.message || 'Import failed', 'error');
+                });
+            }
+        });
+        var importBtn2 = document.getElementById('importSettingsBtn2');
+        if (importBtn2) importBtn2.addEventListener('click', function () {
+            if (window.ConfigIO) {
+                ConfigIO.importConfigFromFile().then(function (data) {
+                    return ConfigIO.showImportPreview(data);
+                }).then(function (confirmed) {
+                    if (confirmed) ConfigIO.applyConfig(data);
+                }).catch(function (err) {
+                    showToast(err.message || 'Import failed', 'error');
+                });
+            }
+        });
+
         // Auto-save on settings form changes
-        var settingsFields = ['balancingAlgorithm', 'useEnhancedScoring', 'modelAffinity', 'sessionStickiness', 'predictionFiltering', 'gpuMaxUsage', 'vramMaxUsage', 'cpuMaxUsage', 'ramMaxUsage', 'minFreeDisk'];
+        var settingsFields = ['balancingAlgorithm', 'useEnhancedScoring', 'modelAffinity', 'sessionStickiness', 'predictionFiltering', 'gpuMaxUsage', 'vramMaxUsage', 'cpuMaxUsage', 'ramMaxUsage', 'minFreeDisk', 'modelReplicationMinInstances', 'modelReplicationMaxInstances', 'modelReplicationIdleUnload', 'rpcCoordinatorURL', 'rpcCoordinatorWorkerPort', 'rpcCoordinatorProtocol', 'rpcCoordinatorTimeout', 'virtualModelsCoordMode', 'virtualModelsTimeout', 'distInferenceGrpcPort'];
         settingsFields.forEach(function (id) {
             var el = document.getElementById(id);
             if (el) {
@@ -559,6 +606,42 @@ const ui = (function () {
 
             var diskEl = document.getElementById('minFreeDisk');
             if (diskEl && serverConfig.minFreeDisk) diskEl.value = serverConfig.minFreeDisk;
+
+            // RPC Settings — Model Replication (Вариант A)
+            var mrEnabledEl = document.getElementById('modelReplicationEnabled');
+            if (mrEnabledEl && serverConfig.modelReplication) mrEnabledEl.checked = serverConfig.modelReplication.enabled === true;
+            var mrMinEl = document.getElementById('modelReplicationMinInstances');
+            if (mrMinEl && serverConfig.modelReplication && serverConfig.modelReplication.defaultMinInstances) mrMinEl.value = serverConfig.modelReplication.defaultMinInstances;
+            var mrMaxEl = document.getElementById('modelReplicationMaxInstances');
+            if (mrMaxEl && serverConfig.modelReplication && serverConfig.modelReplication.defaultMaxInstances) mrMaxEl.value = serverConfig.modelReplication.defaultMaxInstances;
+            var mrIdleEl = document.getElementById('modelReplicationIdleUnload');
+            if (mrIdleEl && serverConfig.modelReplication && serverConfig.modelReplication.idleUnloadAfter) mrIdleEl.value = serverConfig.modelReplication.idleUnloadAfter;
+
+            // RPC Settings — RPC Coordinator (Вариант B)
+            var rcEnabledEl = document.getElementById('rpcCoordinatorEnabled');
+            if (rcEnabledEl && serverConfig.rpcCoordinator) rcEnabledEl.checked = serverConfig.rpcCoordinator.enabled === true;
+            var rcUrlEl = document.getElementById('rpcCoordinatorURL');
+            if (rcUrlEl && serverConfig.rpcCoordinator && serverConfig.rpcCoordinator.coordinatorURL) rcUrlEl.value = serverConfig.rpcCoordinator.coordinatorURL;
+            var rcPortEl = document.getElementById('rpcCoordinatorWorkerPort');
+            if (rcPortEl && serverConfig.rpcCoordinator && serverConfig.rpcCoordinator.workerPort) rcPortEl.value = serverConfig.rpcCoordinator.workerPort;
+            var rcProtoEl = document.getElementById('rpcCoordinatorProtocol');
+            if (rcProtoEl && serverConfig.rpcCoordinator && serverConfig.rpcCoordinator.protocol) rcProtoEl.value = serverConfig.rpcCoordinator.protocol;
+            var rcTimeoutEl = document.getElementById('rpcCoordinatorTimeout');
+            if (rcTimeoutEl && serverConfig.rpcCoordinator && serverConfig.rpcCoordinator.timeout) rcTimeoutEl.value = serverConfig.rpcCoordinator.timeout;
+
+            // RPC Settings — Virtual Models (Вариант C)
+            var vmEnabledEl = document.getElementById('virtualModelsEnabled');
+            if (vmEnabledEl && serverConfig.virtualModels) vmEnabledEl.checked = serverConfig.virtualModels.enabled === true;
+            var vmModeEl = document.getElementById('virtualModelsCoordMode');
+            if (vmModeEl && serverConfig.virtualModels && serverConfig.virtualModels.coordMode) vmModeEl.value = serverConfig.virtualModels.coordMode;
+            var vmTimeoutEl = document.getElementById('virtualModelsTimeout');
+            if (vmTimeoutEl && serverConfig.virtualModels && serverConfig.virtualModels.timeout) vmTimeoutEl.value = serverConfig.virtualModels.timeout;
+
+            // RPC Settings — Distributed Inference (Вариант D)
+            var diEnabledEl = document.getElementById('distInferenceEnabled');
+            if (diEnabledEl && serverConfig.distInference) diEnabledEl.checked = serverConfig.distInference.enabled === true;
+            var diPortEl = document.getElementById('distInferenceGrpcPort');
+            if (diPortEl && serverConfig.distInference && serverConfig.distInference.grpcPort) diPortEl.value = serverConfig.distInference.grpcPort;
         }).catch(function () {});
     }
 
@@ -575,6 +658,25 @@ const ui = (function () {
         var minDisk = parseInt((document.getElementById('minFreeDisk') && document.getElementById('minFreeDisk').value)) || 10240;
         var apiToken = (document.getElementById('apiToken') && document.getElementById('apiToken').value) || '';
 
+        // RPC settings
+        var modelReplicationEnabled = document.getElementById('modelReplicationEnabled') ? document.getElementById('modelReplicationEnabled').checked : false;
+        var modelReplicationMinInstances = parseInt((document.getElementById('modelReplicationMinInstances') && document.getElementById('modelReplicationMinInstances').value)) || 1;
+        var modelReplicationMaxInstances = parseInt((document.getElementById('modelReplicationMaxInstances') && document.getElementById('modelReplicationMaxInstances').value)) || 3;
+        var modelReplicationIdleUnload = (document.getElementById('modelReplicationIdleUnload') && document.getElementById('modelReplicationIdleUnload').value) || '10m';
+
+        var rpcCoordinatorEnabled = document.getElementById('rpcCoordinatorEnabled') ? document.getElementById('rpcCoordinatorEnabled').checked : false;
+        var rpcCoordinatorURL = (document.getElementById('rpcCoordinatorURL') && document.getElementById('rpcCoordinatorURL').value) || '';
+        var rpcCoordinatorWorkerPort = parseInt((document.getElementById('rpcCoordinatorWorkerPort') && document.getElementById('rpcCoordinatorWorkerPort').value)) || 18050;
+        var rpcCoordinatorProtocol = (document.getElementById('rpcCoordinatorProtocol') && document.getElementById('rpcCoordinatorProtocol').value) || 'http';
+        var rpcCoordinatorTimeout = (document.getElementById('rpcCoordinatorTimeout') && document.getElementById('rpcCoordinatorTimeout').value) || '30s';
+
+        var virtualModelsEnabled = document.getElementById('virtualModelsEnabled') ? document.getElementById('virtualModelsEnabled').checked : false;
+        var virtualModelsCoordMode = (document.getElementById('virtualModelsCoordMode') && document.getElementById('virtualModelsCoordMode').value) || 'sequential';
+        var virtualModelsTimeout = parseInt((document.getElementById('virtualModelsTimeout') && document.getElementById('virtualModelsTimeout').value)) || 30000;
+
+        var distInferenceEnabled = document.getElementById('distInferenceEnabled') ? document.getElementById('distInferenceEnabled').checked : false;
+        var distInferenceGrpcPort = parseInt((document.getElementById('distInferenceGrpcPort') && document.getElementById('distInferenceGrpcPort').value)) || 19000;
+
         var config = {
             algorithm: algorithm,
             useEnhancedScoring: useEnhancedScoring,
@@ -586,7 +688,29 @@ const ui = (function () {
             cpuMaxUsage: cpuMax,
             ramMaxUsage: ramMax,
             minFreeDisk: minDisk,
-            apiToken: apiToken
+            apiToken: apiToken,
+            modelReplication: {
+                enabled: modelReplicationEnabled,
+                defaultMinInstances: modelReplicationMinInstances,
+                defaultMaxInstances: modelReplicationMaxInstances,
+                idleUnloadAfter: modelReplicationIdleUnload
+            },
+            rpcCoordinator: {
+                enabled: rpcCoordinatorEnabled,
+                coordinatorURL: rpcCoordinatorURL,
+                workerPort: rpcCoordinatorWorkerPort,
+                protocol: rpcCoordinatorProtocol,
+                timeout: rpcCoordinatorTimeout
+            },
+            virtualModels: {
+                enabled: virtualModelsEnabled,
+                coordMode: virtualModelsCoordMode,
+                timeout: virtualModelsTimeout
+            },
+            distInference: {
+                enabled: distInferenceEnabled,
+                grpcPort: distInferenceGrpcPort
+            }
         };
 
         localStorage.setItem('ollamalegion_config', JSON.stringify(config));

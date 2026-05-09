@@ -11,9 +11,30 @@ import (
 
 // selectBackend - выбор бэкенда для запроса (5-этапный алгоритм)
 func (p *Proxy) selectBackend(model string) string {
+	// RPC Module: Model Replication — если модель в группе репликации, выбираем из реплик
+	if p.replicationSelector != nil {
+		if selected := p.replicationSelector.Select(model); selected != "" {
+			logger.Get().Infow("routed through model replication",
+				"model", model, "backend", selected)
+			return selected
+		}
+	}
+
+	// RPC Module: VirtualModel Router — если модель виртуальная, маршрутизируем через неё
+	if p.virtualModelRouter != nil {
+		if selected := p.virtualModelRouter.GetRegistry().IsVirtualModel(model); selected {
+			logger.Get().Infow("routing through virtual model", "model", model)
+			// Virtual Model Pipeline выполняется в proxyRequest или queueRequest,
+			// здесь возвращаем специальный маркер, чтобы outer code знал,
+			// что это виртуальная модель
+			return "__virtual__"
+		}
+	}
+
 	candidates := p.expandCandidates(model)
 
 	// 1. Model Affinity (LOADED) — P1
+
 	for _, group := range candidates {
 		if group.Priority != 1 {
 			break

@@ -431,9 +431,316 @@
     padding: 8px 12px;
     margin-bottom: 8px;
 }
-.be-model-ctx-name {
+ .be-model-ctx-name {
     font-weight: 600;
     font-size: 13px;
     color: var(--text-primary);
     margin-bottom: 4px;
+}
+
+/* ================================================
+   Settings Section Accordion
+   ================================================ */
+.settings-section {
+    margin-bottom: 0;
+    border-bottom: 1px solid var(--border);
+}
+.settings-section-header {
+    padding: 16px 24px;
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    cursor: pointer;
+    transition: background 0.2s;
+    user-select: none;
+}
+.settings-section-header:hover {
+    background: var(--bg-hover);
+}
+.settings-section-header.danger {
+    border-left: 3px solid var(--danger);
+}
+.settings-section-header .section-toggle {
+    font-size: 10px;
+    color: var(--text-muted);
+    width: 16px;
+    text-align: center;
+    transition: transform 0.2s;
+}
+.settings-section-body {
+    max-height: 0;
+    opacity: 0;
+    overflow: hidden;
+    transition: max-height 0.35s ease, opacity 0.3s ease, padding 0.3s ease;
+    padding: 0 24px;
+}
+.settings-section-body.open {
+    max-height: 2000px;
+    opacity: 1;
+    padding: 16px 24px;
+}
+
+/* ================================================
+   Mode Cards (radio-based selection)
+   ================================================ */
+.mode-cards {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
+    gap: 12px;
+    margin-bottom: 16px;
+}
+.mode-card {
+    position: relative;
+    border: 2px solid var(--border);
+    border-radius: 12px;
+    padding: 16px;
+    cursor: pointer;
+    transition: all 0.2s;
+    text-align: center;
+}
+.mode-card input[type="radio"] {
+    display: none;
+}
+.mode-card:hover {
+    border-color: var(--accent);
+    background: var(--bg-hover);
+}
+.mode-card.active {
+    border-color: var(--accent);
+    background: rgba(59,130,246,0.08);
+    box-shadow: 0 0 0 2px rgba(59,130,246,0.2);
+}
+.mode-card-icon {
+    font-size: 28px;
+    margin-bottom: 8px;
+}
+.mode-card-title {
+    font-size: 13px;
+    font-weight: 600;
+    margin-bottom: 4px;
+}
+.mode-card-desc {
+    font-size: 11px;
+    color: var(--text-muted);
+}
+.mode-fields {
+    display: none;
+}
+.mode-fields.active {
+    display: block;
+}
+.mode-fields-container {
+    margin-top: 12px;
+}
+
+/* ================================================
+   Setup Wizard Modal
+   ================================================ */
+.wizard-modal {
+    background: var(--card-bg);
+    border-radius: 16px;
+    max-width: 720px;
+    width: 100%;
+    max-height: 85vh;
+    display: flex;
+    flex-direction: column;
+    box-shadow: 0 20px 60px rgba(0,0,0,0.3);
+}
+.wizard-header {
+    padding: 20px 24px 12px;
+    border-bottom: 1px solid var(--border);
+}
+.wizard-logo {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    margin-bottom: 12px;
+}
+.wizard-title {
+    font-size: 16px;
+    font-weight: 600;
+}
+.wizard-steps {
+    display: flex;
+    align-items: center;
+    gap: 0;
+    margin-top: 8px;
+}
+.wizard-step-dot {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 4px;
+    cursor: default;
+    min-width: 50px;
+}
+.wizard-step-dot.active .wizard-step-number {
+    background: var(--accent);
+    color: #fff;
+}
+.wizard-step-dot.done .wizard-step-number {
+    background: var(--success);
+    color: #fff;
+}
+.wizard-step-number {
+    width: 28px;
+    height: 28px;
+    border-radius: 50%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 12px;
+    font-weight: 600;
+    background: var(--bg-hover);
+    color: var(--text-muted);
+    transition: all 0.2s;
+}
+.wizard-step-label {
+    font-size: 10px;
+    color: var(--text-muted);
+    white-space: nowrap;
+    text-align: center;
+}
+.wizard-step-line {
+    flex: 1;
+    height: 2px;
+    background: var(--border);
+    margin: 0 4px;
+    min-width: 20px;
+}
+.wizard-step-line.done {
+    background: var(--success);
+}
+.wizard-body {
+    flex: 1;
+    overflow-y: auto;
+    padding: 24px;
+}
+.wizard-footer {
+    padding: 16px 24px;
+    border-top: 1px solid var(--border);
+}
+.wizard-nav {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+.wizard-step-content {
+    max-width: 600px;
+}
+.wizard-welcome-icon {
+    font-size: 48px;
+    text-align: center;
+    margin-bottom: 16px;
+}
+.welcome-step h2 {
+    text-align: center;
+    margin-bottom: 12px;
+}
+.welcome-step p {
+    text-align: center;
+    color: var(--text-muted);
+    margin-bottom: 24px;
+}
+.wizard-import-box {
+    background: var(--bg-hover);
+    border: 1px dashed var(--border);
+    border-radius: 12px;
+    padding: 20px;
+    text-align: center;
+    margin-top: 12px;
+}
+.wizard-import-box p {
+    margin-bottom: 12px;
+}
+.wizard-error {
+    background: var(--danger);
+    color: #fff;
+    padding: 12px;
+    border-radius: 8px;
+    margin-bottom: 16px;
+}
+.wizard-summary-card {
+    background: var(--bg-hover);
+    border-radius: 12px;
+    padding: 20px;
+}
+.wizard-summary-row {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 8px 0;
+    border-bottom: 1px solid var(--border);
+}
+.wizard-summary-row:last-child {
+    border-bottom: none;
+}
+.wizard-summary-label {
+    color: var(--text-muted);
+    font-size: 13px;
+}
+.wizard-summary-value {
+    font-weight: 600;
+    font-size: 13px;
+}
+.wizard-summary-divider {
+    height: 1px;
+    background: var(--border);
+    margin: 12px 0;
+}
+
+/* ================================================
+   Import Preview Modal
+   ================================================ */
+.import-preview-list {
+    max-height: 400px;
+    overflow-y: auto;
+}
+.import-preview-item {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 8px 12px;
+    border-radius: 8px;
+    margin-bottom: 4px;
+    font-size: 13px;
+}
+.import-preview-item.preview-change {
+    background: rgba(255,193,7,0.1);
+}
+.import-preview-item.preview-new {
+    background: rgba(40,167,69,0.08);
+}
+.import-preview-item.preview-same {
+    background: transparent;
+    color: var(--text-muted);
+}
+.preview-icon {
+    font-size: 14px;
+    width: 20px;
+    text-align: center;
+    flex-shrink: 0;
+}
+.preview-label {
+    min-width: 120px;
+    font-weight: 500;
+    flex-shrink: 0;
+}
+.preview-old {
+    color: var(--danger);
+    text-decoration: line-through;
+    font-size: 12px;
+}
+.preview-arrow {
+    color: var(--text-muted);
+    font-size: 12px;
+}
+.preview-new-val {
+    color: var(--success);
+    font-weight: 500;
+    font-size: 12px;
+}
+.preview-value {
+    color: var(--text-primary);
+    font-weight: 500;
 }

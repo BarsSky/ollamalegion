@@ -421,128 +421,315 @@
             <div class="page" id="settings-page">
                 <div class="card">
                     <div class="card-header">
-                        <h3><i class="fas fa-gear section-icon-i"></i> <span data-i18n="settings.title">Настройки балансировки</span></h3>
+                        <h3><i class="fas fa-gear section-icon-i"></i> <span data-i18n="settings.title">Настройки</span></h3>
+                        <div class="card-actions">
+                            <button class="btn btn-secondary" id="exportSettingsBtn" data-i18n="config.export">📤 Экспорт</button>
+                            <button class="btn btn-secondary" id="importSettingsBtn" data-i18n="config.import">📥 Импорт</button>
+                        </div>
                     </div>
                     <div class="settings-form" id="settingsForm">
-                        <div class="form-group">
-                            <label data-i18n="settings.balancing_mode">Алгоритм балансировки</label>
-                            <span class="tooltip-trigger">?<span class="tooltip-content" data-i18n="settings.balancing_mode_desc">
+
+                        <!-- ==================== Section: Operating Mode ==================== -->
+                        <div class="settings-section" id="section-mode">
+                            <div class="settings-section-header" data-section="mode">
+                                <span class="section-toggle">▼</span>
+                                <i class="fas fa-project-diagram"></i>
+                                <span data-i18n="settings.section.mode">Режим работы</span>
+                            </div>
+                            <div class="settings-section-body open">
+                                <p style="color:var(--text-muted);margin-bottom:16px;font-size:13px;" data-i18n="settings.rpc_distribution_title">Выберите режим работы балансировщика</p>
+                                <!-- Mode cards (radio-based) -->
+                                <div class="mode-cards">
+                                    <label class="mode-card" data-mode="standard">
+                                        <input type="radio" name="operatingMode" value="standard" checked>
+                                        <div class="mode-card-icon">⚙️</div>
+                                        <div class="mode-card-title" data-i18n="settings.mode.standard">Стандартный балансировщик</div>
+                                        <div class="mode-card-desc" data-i18n="settings.mode.standard_desc">Балансировка без RPC</div>
+                                    </label>
+                                    <label class="mode-card" data-mode="replication">
+                                        <input type="radio" name="operatingMode" value="replication">
+                                        <div class="mode-card-icon">📋</div>
+                                        <div class="mode-card-title" data-i18n="settings.mode.replication">Model Replication (A)</div>
+                                        <div class="mode-card-desc" data-i18n="settings.mode.replication_desc">Репликация моделей на N бэкендов</div>
+                                    </label>
+                                    <label class="mode-card" data-mode="rpc_coordinator">
+                                        <input type="radio" name="operatingMode" value="rpc_coordinator">
+                                        <div class="mode-card-icon">🌐</div>
+                                        <div class="mode-card-title" data-i18n="settings.mode.rpc_coordinator">External RPC Coordinator (B)</div>
+                                        <div class="mode-card-desc" data-i18n="settings.mode.rpc_coordinator_desc">Внешний RPC-координатор</div>
+                                    </label>
+                                    <label class="mode-card" data-mode="virtual_router">
+                                        <input type="radio" name="operatingMode" value="virtual_router">
+                                        <div class="mode-card-icon">🧩</div>
+                                        <div class="mode-card-title" data-i18n="settings.mode.virtual_router">Virtual Model Router (C)</div>
+                                        <div class="mode-card-desc" data-i18n="settings.mode.virtual_router_desc">Маршрутизация через виртуальные модели</div>
+                                    </label>
+                                    <label class="mode-card" data-mode="distributed_inference">
+                                        <input type="radio" name="operatingMode" value="distributed_inference">
+                                        <div class="mode-card-icon">🔬</div>
+                                        <div class="mode-card-title" data-i18n="settings.mode.distributed">Distributed Inference (D)</div>
+                                        <div class="mode-card-desc" data-i18n="settings.mode.distributed_desc">Распределённый инференс</div>
+                                    </label>
+                                </div>
+                                <!-- Mode-specific fields -->
+                                <div class="mode-fields-container">
+                                    <div id="modeFields-standard" class="mode-fields active">
+                                        <p style="color:var(--text-muted);font-size:13px;" data-i18n="wizard.summary_empty">Стандартный режим — дополнительные параметры не требуются</p>
+                                    </div>
+                                    <div id="modeFields-replication" class="mode-fields">
+                                        <div class="form-row">
+                                            <div class="form-group">
+                                                <label data-i18n="settings.model_replication_min">Min Instances</label>
+                                                <input type="number" id="modelReplicationMinInstances" class="form-control" value="1" min="0" max="10">
+                                            </div>
+                                            <div class="form-group">
+                                                <label data-i18n="settings.model_replication_max">Max Instances</label>
+                                                <input type="number" id="modelReplicationMaxInstances" class="form-control" value="3" min="0" max="20">
+                                            </div>
+                                        </div>
+                                        <div class="form-group">
+                                            <label data-i18n="settings.model_replication_idle_unload">Idle Unload After</label>
+                                            <input type="text" id="modelReplicationIdleUnload" class="form-control" value="10m" placeholder="10m, 30m, 1h">
+                                        </div>
+                                    </div>
+                                    <div id="modeFields-rpc_coordinator" class="mode-fields">
+                                        <div class="form-group">
+                                            <label data-i18n="settings.rpc_coordinator_url">Coordinator URL</label>
+                                            <input type="text" id="rpcCoordinatorURL" class="form-control" placeholder="http://coordinator:8080">
+                                        </div>
+                                        <div class="form-row">
+                                            <div class="form-group">
+                                                <label data-i18n="settings.rpc_coordinator_port">Worker Port</label>
+                                                <input type="number" id="rpcCoordinatorWorkerPort" class="form-control" value="18050">
+                                            </div>
+                                            <div class="form-group">
+                                                <label data-i18n="settings.rpc_coordinator_protocol">Protocol</label>
+                                                <select id="rpcCoordinatorProtocol" class="form-control">
+                                                    <option value="http">HTTP</option>
+                                                    <option value="grpc">gRPC</option>
+                                                </select>
+                                            </div>
+                                        </div>
+                                        <div class="form-group">
+                                            <label data-i18n="settings.rpc_coordinator_timeout">Timeout</label>
+                                            <input type="text" id="rpcCoordinatorTimeout" class="form-control" value="30s" placeholder="30s, 60s">
+                                        </div>
+                                    </div>
+                                    <div id="modeFields-virtual_router" class="mode-fields">
+                                        <div class="form-group">
+                                            <label data-i18n="settings.virtual_models_coord_mode">Coordination Mode</label>
+                                            <select id="virtualModelsCoordMode" class="form-control">
+                                                <option value="sequential" data-i18n="settings.virtual_models_mode_sequential">Sequential</option>
+                                                <option value="parallel" data-i18n="settings.virtual_models_mode_parallel">Parallel</option>
+                                                <option value="tree" data-i18n="settings.virtual_models_mode_tree">Tree</option>
+                                            </select>
+                                        </div>
+                                        <div class="form-group">
+                                            <label data-i18n="settings.virtual_models_timeout">Timeout (ms)</label>
+                                            <input type="number" id="virtualModelsTimeout" class="form-control" value="30000" min="1000">
+                                        </div>
+                                    </div>
+                                    <div id="modeFields-distributed_inference" class="mode-fields">
+                                        <div class="form-group">
+                                            <label data-i18n="settings.dist_inference_grpc_port">gRPC Port</label>
+                                            <input type="number" id="distInferenceGrpcPort" class="form-control" value="19000" min="1024" max="65535">
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+
+                        <!-- ==================== Section: General Settings ==================== -->
+                        <div class="settings-section" id="section-general">
+                            <div class="settings-section-header" data-section="general">
+                                <span class="section-toggle">▼</span>
+                                <i class="fas fa-sliders-h"></i>
+                                <span data-i18n="settings.section.general">Основные настройки</span>
+                            </div>
+                            <div class="settings-section-body open">
+                                <div class="form-group">
+                                    <label data-i18n="settings.balancing_mode">Алгоритм балансировки</label>
+                                    <span class="tooltip-trigger">?<span class="tooltip-content" data-i18n="settings.balancing_mode_desc">
 <strong>Resource-Aware</strong> — выбор по GPU/VRAM/CPU + скоринг (рекомендуется)<br>
 <strong>Least Connections</strong> — наименьшее число активных запросов<br>
 <strong>Round Robin</strong> — циклическое переключение с учётом веса<br>
 <strong>Weighted</strong> — пропорционально весу бэкенда<br>
 <strong>Model Affinity</strong> — приоритет бэкенда с загруженной моделью
-                            </span></span>
-                            <select id="balancingAlgorithm" class="form-control">
-                                <option value="resource-aware" data-i18n="settings.balancing_resource_aware">Resource-Aware (по умолчанию)</option>
-                                <option value="least-connections" data-i18n="settings.balancing_least_conn">Least Connections</option>
-                                <option value="round-robin" data-i18n="settings.balancing_round_robin">Round Robin</option>
-                                <option value="weighted" data-i18n="settings.balancing_weighted">Weighted</option>
-                                <option value="model-affinity" data-i18n="settings.balancing_model_affinity">Model Affinity</option>
-                            </select>
-                        </div>
-                        <div class="form-group">
-                            <label>Use Enhanced Scoring</label>
-                            <span class="tooltip-trigger">?<span class="tooltip-content">
+                                    </span></span>
+                                    <select id="balancingAlgorithm" class="form-control">
+                                        <option value="resource-aware" data-i18n="settings.balancing_resource_aware">Resource-Aware (по умолчанию)</option>
+                                        <option value="least-connections" data-i18n="settings.balancing_least_conn">Least Connections</option>
+                                        <option value="round-robin" data-i18n="settings.balancing_round_robin">Round Robin</option>
+                                        <option value="weighted" data-i18n="settings.balancing_weighted">Weighted</option>
+                                        <option value="model-affinity" data-i18n="settings.balancing_model_affinity">Model Affinity</option>
+                                    </select>
+                                </div>
+                                <div class="form-group">
+                                    <label>Use Enhanced Scoring</label>
+                                    <span class="tooltip-trigger">?<span class="tooltip-content">
 Включает полную формулу скоринга v2: бонус за загруженные модели, штраф за очередь и ошибки, прогноз критического состояния. При выключении — упрощённый скоринг (GPU/VRAM/CPU + weight).
-                            </span></span>
-                            <label class="toggle">
-                                <input type="checkbox" id="useEnhancedScoring">
-                                <span class="toggle-slider"></span>
-                            </label>
+                                    </span></span>
+                                    <label class="toggle">
+                                        <input type="checkbox" id="useEnhancedScoring">
+                                        <span class="toggle-slider"></span>
+                                    </label>
+                                </div>
+                                <div class="form-group">
+                                    <label>Model Affinity</label>
+                                    <label class="toggle">
+                                        <input type="checkbox" id="modelAffinity" checked>
+                                        <span class="toggle-slider"></span>
+                                    </label>
+                                </div>
+                                <div class="form-group">
+                                    <label>Session Stickiness</label>
+                                    <label class="toggle">
+                                        <input type="checkbox" id="sessionStickiness" checked>
+                                        <span class="toggle-slider"></span>
+                                    </label>
+                                </div>
+                                <div class="form-group">
+                                    <label>Prediction-based Filtering</label>
+                                    <label class="toggle">
+                                        <input type="checkbox" id="predictionFiltering" checked>
+                                        <span class="toggle-slider"></span>
+                                    </label>
+                                </div>
+                            </div>
                         </div>
-                        <div class="form-group">
-                            <label>Model Affinity</label>
-                            <label class="toggle">
-                                <input type="checkbox" id="modelAffinity" checked>
-                                <span class="toggle-slider"></span>
-                            </label>
+
+                        <!-- ==================== Section: Resource Limits ==================== -->
+                        <div class="settings-section" id="section-limits">
+                            <div class="settings-section-header" data-section="limits">
+                                <span class="section-toggle">▼</span>
+                                <i class="fas fa-tachometer-alt"></i>
+                                <span data-i18n="settings.section.limits">Лимиты ресурсов</span>
+                            </div>
+                            <div class="settings-section-body open">
+                                <div class="form-row">
+                                    <div class="form-group">
+                                        <label>GPU Max Usage (%)</label>
+                                        <input type="number" id="gpuMaxUsage" class="form-control" value="90" min="50" max="100">
+                                    </div>
+                                    <div class="form-group">
+                                        <label>VRAM Max Usage (%)</label>
+                                        <input type="number" id="vramMaxUsage" class="form-control" value="85" min="50" max="100">
+                                    </div>
+                                </div>
+                                <div class="form-row">
+                                    <div class="form-group">
+                                        <label>CPU Max Usage (%)</label>
+                                        <input type="number" id="cpuMaxUsage" class="form-control" value="80" min="50" max="100">
+                                    </div>
+                                    <div class="form-group">
+                                        <label>RAM Max Usage (%)</label>
+                                        <input type="number" id="ramMaxUsage" class="form-control" value="85" min="50" max="100">
+                                    </div>
+                                </div>
+                                <div class="form-group">
+                                    <label>Min Free Disk (MB)</label>
+                                    <input type="number" id="minFreeDisk" class="form-control" value="10240" min="0">
+                                </div>
+                            </div>
                         </div>
-                        <div class="form-group">
-                            <label>Session Stickiness</label>
-                            <label class="toggle">
-                                <input type="checkbox" id="sessionStickiness" checked>
-                                <span class="toggle-slider"></span>
-                            </label>
+
+                        <!-- ==================== Section: Security ==================== -->
+                        <div class="settings-section" id="section-security">
+                            <div class="settings-section-header" data-section="security">
+                                <span class="section-toggle">▼</span>
+                                <i class="fas fa-lock"></i>
+                                <span data-i18n="settings.section.security">Безопасность</span>
+                            </div>
+                            <div class="settings-section-body open">
+                                <div class="form-group">
+                                    <label data-i18n="settings.api_token">API Токен</label>
+                                    <input type="password" id="apiToken" class="form-control" placeholder="••••••••">
+                                </div>
+                            </div>
                         </div>
-                        <div class="form-group">
-                            <label>Prediction-based Filtering</label>
-                            <label class="toggle">
-                                <input type="checkbox" id="predictionFiltering" checked>
-                                <span class="toggle-slider"></span>
-                            </label>
+
+                        <!-- ==================== Section: Import / Export ==================== -->
+                        <div class="settings-section" id="section-io">
+                            <div class="settings-section-header" data-section="io">
+                                <span class="section-toggle">▼</span>
+                                <i class="fas fa-file-import"></i>
+                                <span data-i18n="settings.section.io">Импорт / Экспорт</span>
+                            </div>
+                            <div class="settings-section-body open">
+                                <p style="color:var(--text-muted);margin-bottom:16px;font-size:13px;">
+                                    Экспортируйте текущую конфигурацию в JSON-файл или импортируйте ранее сохранённую.
+                                </p>
+                                <div class="form-row" style="grid-template-columns:1fr 1fr;max-width:400px;">
+                                    <button class="btn btn-secondary" id="exportSettingsBtn2" data-i18n="config.export">📤 Экспорт</button>
+                                    <button class="btn btn-primary" id="importSettingsBtn2" data-i18n="config.import">📥 Импорт</button>
+                                </div>
+                            </div>
                         </div>
-                        <div class="form-group">
-                            <label>GPU Max Usage (%)</label>
-                            <input type="number" id="gpuMaxUsage" class="form-control" value="90" min="50" max="100">
+
+                        <!-- ==================== Section: Danger Zone ==================== -->
+                        <div class="settings-section" id="section-danger">
+                            <div class="settings-section-header danger" data-section="danger">
+                                <span class="section-toggle">▼</span>
+                                <i class="fas fa-exclamation-triangle"></i>
+                                <span data-i18n="settings.section.danger">Danger Zone</span>
+                            </div>
+                            <div class="settings-section-body open">
+                                <div class="form-group">
+                                    <label style="color: var(--danger);" data-i18n="settings.restart_balancer">Перезапустить балансер</label>
+                                    <button class="btn btn-danger" id="restartBalancerBtn" style="margin-top: 8px;" data-i18n="settings.restart_balancer">Перезапустить балансер</button>
+                                    <div id="restartIndicator" style="display:none; margin-top: 12px;"></div>
+                                </div>
+                                <div class="form-group" style="margin-top:12px;">
+                                    <label>Сбросить настройки</label>
+                                    <button class="btn btn-secondary" id="resetSettings" data-i18n="settings.reset">Сбросить</button>
+                                </div>
+                            </div>
                         </div>
-                        <div class="form-group">
-                            <label>VRAM Max Usage (%)</label>
-                            <input type="number" id="vramMaxUsage" class="form-control" value="85" min="50" max="100">
+
+                        <!-- ==================== Section: Help ==================== -->
+                        <div class="settings-section" id="section-help">
+                            <div class="settings-section-header" data-section="help">
+                                <span class="section-toggle">▼</span>
+                                <i class="fas fa-circle-question"></i>
+                                <span data-i18n="settings.section.help">Справка</span>
+                            </div>
+                            <div class="settings-section-body open">
+                                <div class="help-section">
+                                    <a href="https://github.com/BarsSky/ollamalegion/blob/main/docs/ru/README.md" target="_blank" rel="noopener" class="help-link">
+                                        <span class="help-link-icon">📖</span>
+                                        <div class="help-link-text">
+                                            <div class="help-link-title" data-i18n="help.documentation">Полная документация</div>
+                                            <div class="help-link-desc" data-i18n="help.documentation_desc">Руководство по установке, настройке и эксплуатации</div>
+                                        </div>
+                                    </a>
+                                    <a href="https://github.com/BarsSky/ollamalegion/blob/main/docs/ru/api.md" target="_blank" rel="noopener" class="help-link">
+                                        <span class="help-link-icon">🔌</span>
+                                        <div class="help-link-text">
+                                            <div class="help-link-title" data-i18n="help.api_reference">API Справка</div>
+                                            <div class="help-link-desc" data-i18n="help.api_reference_desc">Список API эндпоинтов и WebSocket</div>
+                                        </div>
+                                    </a>
+                                    <a href="https://github.com/BarsSky/ollamalegion/blob/main/docs/ru/balancing-guide.md" target="_blank" rel="noopener" class="help-link">
+                                        <span class="help-link-icon">⚖️</span>
+                                        <div class="help-link-text">
+                                            <div class="help-link-title" data-i18n="help.balancing_guide">Гайд по балансировке</div>
+                                            <div class="help-link-desc" data-i18n="help.balancing_guide_desc">Режимы балансировки и рекомендации</div>
+                                        </div>
+                                    </a>
+                                    <a href="https://github.com/BarsSky/ollamalegion" target="_blank" rel="noopener" class="help-link">
+                                        <span class="help-link-icon">🐙</span>
+                                        <div class="help-link-text">
+                                            <div class="help-link-title" data-i18n="help.github_repo">Репозиторий на GitHub</div>
+                                            <div class="help-link-desc" data-i18n="help.github_repo_desc">Исходный код, задачи и обсуждения</div>
+                                        </div>
+                                    </a>
+                                </div>
+                            </div>
                         </div>
-                        <div class="form-group">
-                            <label>CPU Max Usage (%)</label>
-                            <input type="number" id="cpuMaxUsage" class="form-control" value="80" min="50" max="100">
-                        </div>
-                        <div class="form-group">
-                            <label>RAM Max Usage (%)</label>
-                            <input type="number" id="ramMaxUsage" class="form-control" value="85" min="50" max="100">
-                        </div>
-                        <div class="form-group">
-                            <label>Min Free Disk (MB)</label>
-                            <input type="number" id="minFreeDisk" class="form-control" value="10240" min="0">
-                        </div>
-                        <div class="form-group">
-                            <label data-i18n="settings.api_token">API Токен</label>
-                            <input type="password" id="apiToken" class="form-control" placeholder="••••••••">
-                        </div>
-                        <!-- Danger Zone -->
-                        <div class="form-group" style="margin-top: 24px; padding-top: 24px; border-top: 1px solid var(--danger);">
-                            <label style="color: var(--danger);" data-i18n="settings.restart_balancer">Перезапустить балансер</label>
-                            <button class="btn btn-danger" id="restartBalancerBtn" style="margin-top: 8px;" data-i18n="settings.restart_balancer">Перезапустить балансер</button>
-                            <div id="restartIndicator" style="display:none; margin-top: 12px;"></div>
-                        </div>
+
                         <div class="form-actions">
-                            <button class="btn btn-secondary" id="resetSettings" data-i18n="settings.reset">Сбросить</button>
                             <button class="btn btn-primary" id="saveSettings" data-i18n="settings.save">Сохранить</button>
                         </div>
-                    </div>
-                </div>
-
-                <!-- Help Section -->
-                <div class="card">
-                    <div class="card-header">
-                        <h3><i class="fas fa-circle-question section-icon-i"></i> <span data-i18n="help.title">Справка</span></h3>
-                    </div>
-                    <div class="help-section">
-                        <a href="https://github.com/BarsSky/ollamalegion/blob/main/docs/ru/README.md" target="_blank" rel="noopener" class="help-link">
-                            <span class="help-link-icon">📖</span>
-                            <div class="help-link-text">
-                                <div class="help-link-title" data-i18n="help.documentation">Полная документация</div>
-                                <div class="help-link-desc" data-i18n="help.documentation_desc">Руководство по установке, настройке и эксплуатации</div>
-                            </div>
-                        </a>
-                        <a href="https://github.com/BarsSky/ollamalegion/blob/main/docs/ru/api.md" target="_blank" rel="noopener" class="help-link">
-                            <span class="help-link-icon">🔌</span>
-                            <div class="help-link-text">
-                                <div class="help-link-title" data-i18n="help.api_reference">API Справка</div>
-                                <div class="help-link-desc" data-i18n="help.api_reference_desc">Список API эндпоинтов и WebSocket</div>
-                            </div>
-                        </a>
-                        <a href="https://github.com/BarsSky/ollamalegion/blob/main/docs/ru/balancing-guide.md" target="_blank" rel="noopener" class="help-link">
-                            <span class="help-link-icon">⚖️</span>
-                            <div class="help-link-text">
-                                <div class="help-link-title" data-i18n="help.balancing_guide">Гайд по балансировке</div>
-                                <div class="help-link-desc" data-i18n="help.balancing_guide_desc">Режимы балансировки и рекомендации</div>
-                            </div>
-                        </a>
-                        <a href="https://github.com/BarsSky/ollamalegion" target="_blank" rel="noopener" class="help-link">
-                            <span class="help-link-icon">🐙</span>
-                            <div class="help-link-text">
-                                <div class="help-link-title" data-i18n="help.github_repo">Репозиторий на GitHub</div>
-                                <div class="help-link-desc" data-i18n="help.github_repo_desc">Исходный код, задачи и обсуждения</div>
-                            </div>
-                        </a>
                     </div>
                 </div>
             </div>
@@ -665,6 +852,9 @@
     <script src="js/modules/api.js?v=10"></script>
     <script src="js/modules/websocket.js?v=10"></script>
     <script src="js/modules/renderers.js?v=10"></script>
+    <script src="js/modules/settings-ui.js?v=10"></script>
+    <script src="js/modules/config-io.js?v=10"></script>
+    <script src="js/modules/setup-wizard.js?v=10"></script>
     <script src="js/app.js?v=10"></script>
 </body>
 </html>

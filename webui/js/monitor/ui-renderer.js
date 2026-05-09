@@ -78,6 +78,7 @@
 
     renderAutoPullPanel(data.autoPullConfig || null, data.autoPullStatus || null);
     renderDispatchStats(data.queueStats || {});
+    renderVirtualModels(data.virtualModels || null);
     diagnose(data);
     renderClusterResources(bk);
     renderModelsInMemory(bk, ss);
@@ -325,6 +326,68 @@
       var errorText = p.error ? MA.esc(p.error) : (p.httpStatus ? 'HTTP ' + p.httpStatus : '-');
       return '<tr><td><strong>' + model + '</strong></td><td>' + backend + '</td><td>' + started + '</td><td>' + duration + '</td><td><span class="badge ' + statusClass + '">' + statusText + '</span></td><td style="font-size:11px;color:var(--text-secondary);max-width:200px;overflow:hidden;text-overflow:ellipsis">' + errorText + '</td></tr>';
     }).join('');
+  }
+
+  function renderVirtualModels(vmData) {
+    var tb = document.querySelector('#vmTable tbody');
+    var countEl = document.getElementById('vmCount');
+    var jobDetailsEl = document.getElementById('vmJobDetails');
+    var jobsTb = document.querySelector('#vmJobsTable tbody');
+
+    if (!tb) return; // Panel not rendered
+
+    if (!vmData || !vmData.models || vmData.models.length === 0) {
+      if (countEl) countEl.textContent = '0';
+      if (tb) tb.innerHTML = '<tr><td colspan="6" style="color:var(--text-secondary);text-align:center;padding:16px">' + T('vm.noModels') + '</td></tr>';
+      if (jobDetailsEl) jobDetailsEl.style.display = 'none';
+      return;
+    }
+
+    if (countEl) countEl.textContent = vmData.models.length;
+
+    // Render models table
+    tb.innerHTML = vmData.models.map(function(m) {
+      var slices = m.slices || [];
+      var slicesCount = Array.isArray(slices) ? slices.length : (slices || 0);
+      var activeJobs = m.activeJobs || 0;
+      var timeout = m.timeoutMs || '-';
+      var enabled = vmData.enabled !== false;
+      var status = enabled
+        ? '<span class="badge badge-green">' + T('vm.enabled') + '</span>'
+        : '<span class="badge badge-yellow">' + T('vm.disabled') + '</span>';
+      return '<tr>' +
+        '<td><strong>' + MA.esc(m.name || '-') + '</strong>' + (m.description ? '<br><span style="font-size:10px;color:var(--text-secondary)">' + MA.esc(m.description) + '</span>' : '') + '</td>' +
+        '<td>' + slicesCount + '</td>' +
+        '<td><code>' + MA.esc(m.mode || '-') + '</code></td>' +
+        '<td class="col-right">' + activeJobs + '</td>' +
+        '<td class="col-right">' + timeout + 'ms</td>' +
+        '<td>' + status + '</td>' +
+        '</tr>';
+    }).join('');
+
+    // Aggregate active jobs across all models
+    var allJobs = [];
+    vmData.models.forEach(function(m) {
+      if (m.activeJobs && m.activeJobs > 0) {
+        (m.jobInfos || []).forEach(function(j) {
+          allJobs.push({ model: m.name, job: j });
+        });
+      }
+    });
+
+    if (allJobs.length > 0 && jobDetailsEl) {
+      jobDetailsEl.style.display = 'block';
+      jobsTb.innerHTML = allJobs.map(function(j) {
+        return '<tr>' +
+          '<td>' + MA.esc(j.model) + '</td>' +
+          '<td><code>' + MA.esc(j.job.requestId || '-') + '</code></td>' +
+          '<td>' + (j.job.currentSlice !== undefined ? T('vm.sliceOrdinal') + ' #' + j.job.currentSlice : '-') + '</td>' +
+          '<td class="col-right">' + (j.job.hasError ? '❌ ' + T('vm.jobError') : '⏳ Running') + '</td>' +
+          '</tr>';
+      }).join('');
+    } else if (jobDetailsEl) {
+      jobDetailsEl.style.display = 'none';
+    }
   }
 
   function renderDispatchStats(qs) {

@@ -283,6 +283,53 @@
         </div>
       </div>
     </div>
+    <div class="panel" id="panelVirtualModels">
+      <div class="panel-header" onclick="togglePanel('panelVirtualModels')">
+        <span data-i18n="vm.title">🧩 Виртуальные модели</span> (<span id="vmCount">0</span>)<span class="chevron">▼</span>
+      </div>
+      <div class="panel-body">
+        <div style="overflow-x:auto">
+          <table id="vmTable">
+            <thead>
+              <tr>
+                <th data-i18n="vm.name">Имя</th>
+                <th data-i18n="vm.slices">Срезы</th>
+                <th data-i18n="vm.mode">Режим</th>
+                <th class="col-right" data-i18n="vm.activeJobs">Активных задач</th>
+                <th class="col-right" data-i18n="vm.timeout">Таймаут</th>
+                <th data-i18n="vm.status">Статус</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td colspan="6" style="color:var(--text-secondary);text-align:center;padding:16px" data-i18n="vm.noModels">Нет виртуальных моделей</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+        <!-- Детали активных задач VirtualModel -->
+        <div id="vmJobDetails" style="margin-top:8px;display:none">
+          <div style="font-size:12px;font-weight:600;margin-bottom:6px;color:var(--text-secondary)" data-i18n="vm.activeJobs">Активных pipeline задач</div>
+          <div style="overflow-x:auto">
+            <table id="vmJobsTable" style="font-size:11px">
+              <thead>
+                <tr>
+                  <th data-i18n="vm.name">Модель</th>
+                  <th data-i18n="vm.jobId">ID задачи</th>
+                  <th data-i18n="vm.jobSlice">Текущий срез</th>
+                  <th class="col-right" data-i18n="vm.timeout">Статус</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr>
+                  <td colspan="4" style="color:var(--text-secondary);text-align:center;padding:12px" data-i18n="common.noData">Нет данных</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+    </div>
     <div class="panel" id="panelSessions">
       <div class="panel-header" onclick="togglePanel('panelSessions')">
         <span data-i18n="monitor.panel.sessions">👤 Sessions</span> (<span id="sessionCount">0</span>)<span class="chevron">▼</span>

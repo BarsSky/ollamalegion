@@ -64,8 +64,33 @@
       "maxConcurrent": 2,
       "pullTimeout": "5m",
       "retryCount": 1
+    },
+    "modelReplication": {
+      "enabled": false,
+      "defaultMinInstances": 1,
+      "defaultMaxInstances": 3,
+      "idleUnloadAfter": "10m",
+      "groups": []
+    },
+    "rpcCoordinator": {
+      "enabled": false,
+      "coordinatorURL": "",
+      "workerPort": 18050,
+      "timeout": "30s",
+      "protocol": "http",
+      "maxRetries": 3
+    },
+    "virtualModels": {
+      "enabled": false,
+      "models": []
+    },
+    "distInference": {
+      "enabled": false,
+      "grpcPort": 19000,
+      "workers": []
     }
   },
+
   "resources": {
     "gpu": {
       "maxUsagePercent": 90,

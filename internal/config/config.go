@@ -97,7 +97,41 @@ func LoadFromEnv() (*Config, error) {
 	config.Logging.Level = env.Get("LB_LOG_LEVEL", "info")
 	config.Logging.Format = env.Get("LB_LOG_FORMAT", "json")
 	
+	// --- RPC Model Distribution Module settings (from env) ---
+	// Вариант A: Model Replication
+	config.Balancing.ModelReplication.Enabled = env.GetBool("LB_MODEL_REPLICATION_ENABLED", false)
+	config.Balancing.ModelReplication.DefaultMinInstances = env.GetInt("LB_MODEL_REPLICATION_MIN_INSTANCES", 1)
+	config.Balancing.ModelReplication.DefaultMaxInstances = env.GetInt("LB_MODEL_REPLICATION_MAX_INSTANCES", 3)
+	config.Balancing.ModelReplication.IdleUnloadAfter = env.Get("LB_MODEL_REPLICATION_IDLE_UNLOAD", "10m")
+
+	// Вариант B: RPC Coordinator
+	config.Balancing.RpcCoordinator.Enabled = env.GetBool("LB_RPC_COORDINATOR_ENABLED", false)
+	config.Balancing.RpcCoordinator.CoordinatorURL = env.Get("LB_RPC_COORDINATOR_URL", "")
+	config.Balancing.RpcCoordinator.WorkerPort = env.GetInt("LB_RPC_COORDINATOR_PORT", 18050)
+	config.Balancing.RpcCoordinator.Protocol = env.Get("LB_RPC_COORDINATOR_PROTOCOL", "http")
+	config.Balancing.RpcCoordinator.Timeout = env.Get("LB_RPC_COORDINATOR_TIMEOUT", "30s")
+
+	// Вариант C: Virtual Models
+	config.Balancing.VirtualModels.Enabled = env.GetBool("LB_VIRTUAL_MODELS_ENABLED", false)
+	vmTimeout := env.GetInt("LB_VIRTUAL_MODELS_TIMEOUT", 30000)
+	if len(config.Balancing.VirtualModels.Models) > 0 {
+		for i := range config.Balancing.VirtualModels.Models {
+			m := &config.Balancing.VirtualModels.Models[i]
+			if m.Coordination.TimeoutMs == 0 {
+				m.Coordination.TimeoutMs = vmTimeout
+			}
+			if m.Coordination.Mode == "" {
+				m.Coordination.Mode = env.Get("LB_VIRTUAL_MODELS_COORD_MODE", "sequential")
+			}
+		}
+	}
+
+	// Вариант D: Distributed Inference
+	config.Balancing.DistInference.Enabled = env.GetBool("LB_DIST_INFERENCE_ENABLED", false)
+	config.Balancing.DistInference.GrpcPort = env.GetInt("LB_DIST_INFERENCE_GRPC_PORT", 19000)
+
 	// Backends из переменных окружения
+
 	backends := parseBackendsFromEnv()
 	if len(backends) > 0 {
 		config.Backends = backends
@@ -254,6 +288,69 @@ func setDefaults(config *types.LoadBalancerConfig) {
 		config.Logging.Format = "json"
 	}
 	
+	// Model Replication defaults (Вариант A)
+	mr := &config.Balancing.ModelReplication
+	if mr.DefaultMinInstances == 0 {
+		mr.DefaultMinInstances = 1
+	}
+	if mr.DefaultMaxInstances == 0 {
+		mr.DefaultMaxInstances = 3
+	}
+	if mr.IdleUnloadAfter == "" {
+		mr.IdleUnloadAfter = "10m"
+	}
+	for gi := range mr.Groups {
+		g := &mr.Groups[gi]
+		if g.MinInstances == 0 {
+			g.MinInstances = 1
+		}
+		if g.MaxInstances == 0 {
+			g.MaxInstances = 3
+		}
+	}
+
+	// RPC Coordinator defaults (Вариант B)
+	rc := &config.Balancing.RpcCoordinator
+	if rc.WorkerPort == 0 {
+		rc.WorkerPort = 18050
+	}
+	if rc.Timeout == "" {
+		rc.Timeout = "30s"
+	}
+	if rc.Protocol == "" {
+		rc.Protocol = "http"
+	}
+	if rc.MaxRetries == 0 {
+		rc.MaxRetries = 3
+	}
+
+	// Virtual Models defaults (Вариант C)
+	vm := &config.Balancing.VirtualModels
+	for vi := range vm.Models {
+		m := &vm.Models[vi]
+		if m.Coordination.TimeoutMs == 0 {
+			m.Coordination.TimeoutMs = 30000
+		}
+		if m.Coordination.Mode == "" {
+			m.Coordination.Mode = "sequential"
+		}
+		if m.Coordination.SyncStrategy == "" {
+			m.Coordination.SyncStrategy = "direct-response"
+		}
+		for si := range m.Slices {
+			s := &m.Slices[si]
+			if s.FallbackMode == "" {
+				s.FallbackMode = "retry"
+			}
+		}
+	}
+
+	// Distributed Inference defaults (Вариант D)
+	di := &config.Balancing.DistInference
+	if di.GrpcPort == 0 {
+		di.GrpcPort = 19000
+	}
+
 	// Backend defaults
 	for i := range config.Backends {
 		if config.Backends[i].Weight == 0 {

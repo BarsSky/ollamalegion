@@ -65,6 +65,16 @@ func (s *Server) setupRoutes() {
 	// Restart endpoint (c аутентификацией и rate limiting, только от webui)
 	s.mux.Handle("/api/v1/admin/restart", AuthMiddleware(RateLimitMiddleware(s.restartHandler, s.rateLimiter), s.authenticator))
 
+	// Model Replication endpoints (Variant A) — с аутентификацией и rate limiting
+	s.mux.Handle("/api/v1/replication/groups", AuthMiddleware(RateLimitMiddleware(s.replicationGroupsHandler, s.rateLimiter), s.authenticator))
+	s.mux.Handle("/api/v1/replication/groups/", AuthMiddleware(RateLimitMiddleware(s.replicationGroupHandler, s.rateLimiter), s.authenticator))
+	s.mux.Handle("/api/v1/replication/stats", AuthMiddleware(RateLimitMiddleware(s.replicationStatsHandler, s.rateLimiter), s.authenticator))
+	s.mux.Handle("/api/v1/replication/reconcile", AuthMiddleware(RateLimitMiddleware(s.replicationReconcileHandler, s.rateLimiter), s.authenticator))
+
+	// Virtual Model endpoints (Variant C) — с аутентификацией и rate limiting
+	s.mux.Handle("/api/v1/virtualmodels", AuthMiddleware(RateLimitMiddleware(s.virtualModelsListHandler, s.rateLimiter), s.authenticator))
+	s.mux.Handle("/api/v1/virtualmodels/", AuthMiddleware(RateLimitMiddleware(s.virtualModelsStatusHandler, s.rateLimiter), s.authenticator))
+
 	// Favicon и статические ресурсы (без аутентификации, для браузеров)
 	s.mux.HandleFunc("/favicon.ico", s.staticFileHandler)
 	s.mux.HandleFunc("/favicon-16x16.png", s.staticFileHandler)

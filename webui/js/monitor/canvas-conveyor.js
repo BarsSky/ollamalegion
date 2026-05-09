@@ -135,7 +135,73 @@
 
 
     // ============================================================
+    // 0. VIRTUAL MODEL PIPELINE: виртуальная модель → срез 1 → срез 2 → ... → бэкенд
+    // Частицы pipeline отображают прохождение запроса через срезы VirtualModel
+    // Каждый срез — отдельная частица, перемещающаяся от одного среза к другому
+    // ============================================================
+    var virtualModels = MA.lastData && MA.lastData.virtualModels;
+    var vmActive = virtualModels && virtualModels.enabled && virtualModels.models && virtualModels.models.length > 0;
+
+    if (vmActive && Math.random() < spawnIntensity * 0.4) {
+      // Выбираем случайную VM с активными задачами
+      var activeVms = virtualModels.models.filter(function(m) { return m.activeJobs > 0; });
+      var selectedVm = activeVms.length > 0
+        ? activeVms[Math.floor(Math.random() * activeVms.length)]
+        : virtualModels.models[Math.floor(Math.random() * virtualModels.models.length)];
+
+      var slices = selectedVm.slices || [];
+      if (slices.length >= 2) {
+        // Геометрия: VM слева от бэкендов
+        var vmCenterX = balOutX + (w - balOutX) * 0.2;
+        var vmCenterY = balCenterY;
+
+        // Выбираем реальный бэкенд для финального шага
+        var lastSlice = slices[slices.length - 1];
+        var targetBackends = lastSlice.targetBackends || [];
+        var bkIdx = 0;
+        if (targetBackends.length > 0) {
+          var backendNames = backends.map(function(b) { return b.id; });
+          var matched = targetBackends
+            .map(function(tb) { return backendNames.indexOf(tb); })
+            .filter(function(idx) { return idx >= 0; });
+          if (matched.length > 0) {
+            bkIdx = matched[Math.floor(Math.random() * matched.length)];
+          }
+        }
+        var backendY = 20 + (backends.length > 1 ? bkIdx * (h - 40) / Math.max(1, backends.length - 1) : balCenterY);
+
+        // Строим путь: VM → срез 1 → срез 2 → ... → срез N → бэкенд
+        var path = [{x: balOutX + (w - balOutX) * 0.1, y: vmCenterY}]; // Начало (от VM)
+        var sliceSpacing = (w - balOutX - 140) / (slices.length + 1);
+
+        slices.forEach(function(slice, si) {
+          var sx = balOutX + sliceSpacing * (si + 1);
+          var sy = vmCenterY + (si % 2 === 0 ? -10 : 10);
+          path.push({x: sx, y: sy});
+        });
+
+        // Финальный шаг к бэкенду
+        path.push({x: w - 140, y: backendY});
+
+        var pipelineColors = ['#8b5cf6', '#a855f7', '#c084fc', '#d8b4fe', '#7c3aed'];
+        var colorIdx = Math.floor(Math.random() * pipelineColors.length);
+
+        MA.convQueue.push({
+          path: path,
+          spawnTime: now,
+          duration: 4000 + Math.random() * 2000,
+          type: 'pipeline',
+          size: 3.5 + Math.random() * 1.5,
+          pipelineColor: pipelineColors[colorIdx],
+          sliceCount: slices.length,
+          vmName: selectedVm.name
+        });
+      }
+    }
+
+    // ============================================================
     // 1. ПОЛНЫЙ МАРШРУТ: клиент → балансер → бэкенд → завершено
+
     // Основано на реальных сессиях и бэкендах
     // ============================================================
     if (activeTotal > 0 && Math.random() < spawnIntensity) {
@@ -272,6 +338,63 @@
         ccx.font = '8px ' + MA.vF();
         ccx.textAlign = 'center';
         ccx.fillText('+' + p.waitCount, ox, oy - 8);
+        ccx.globalAlpha = 1;
+        ccx.shadowBlur = 0;
+
+      } else if (p.type === 'pipeline') {
+        // ---- VIRTUAL MODEL PIPELINE частицы: фиолетовый цвет с пометкой среза ----
+        var pos = interpolatePath(path, t);
+
+        // Определяем текущий сегмент (срез)
+        var segCount = path.length - 1;
+        var currentSeg = Math.min(Math.floor(t * segCount), segCount - 1);
+
+        // Цвет pipeline — фиолетовый, с лёгкой вариацией по сегменту
+        var pipelineColor = p.pipelineColor || '#a855f7';
+        var color = pipelineColor;
+
+        // Размер с пульсацией
+        var size = (p.size || 3.5) * (1 + 0.3 * Math.sin(elapsed * 0.012));
+
+        // Прозрачность
+        var alpha = 0.7 + 0.3 * Math.min(1, t * 2);
+        if (t > 0.8) alpha = alpha * Math.max(0, (1 - t) / 0.2);
+
+        // Внешнее свечение
+        ccx.globalAlpha = alpha * 0.4;
+        ccx.fillStyle = color;
+        ccx.shadowColor = color;
+        ccx.shadowBlur = 14;
+        ccx.beginPath();
+        ccx.arc(pos.x, pos.y, size * 1.8, 0, Math.PI * 2);
+        ccx.fill();
+
+        // Основная частица
+        ccx.globalAlpha = alpha;
+        ccx.shadowBlur = 10;
+        ccx.beginPath();
+        ccx.arc(pos.x, pos.y, size, 0, Math.PI * 2);
+        ccx.fill();
+
+        // Подпись среза
+        if (currentSeg < segCount) {
+          var sliceLabel = '🧩 #' + (currentSeg + 1);
+          ccx.fillStyle = '#fff';
+          ccx.font = 'bold 8px ' + MA.vF();
+          ccx.textAlign = 'center';
+          ccx.globalAlpha = alpha * 0.9;
+          ccx.fillText(sliceLabel, pos.x, pos.y - size - 6);
+        }
+
+        // Подпись имени VM (только в начале)
+        if (t < 0.15 && p.vmName) {
+          ccx.fillStyle = color;
+          ccx.font = 'bold 7px ' + MA.vF();
+          ccx.textAlign = 'center';
+          ccx.globalAlpha = alpha * 0.7;
+          ccx.fillText(p.vmName, pos.x, pos.y + size + 10);
+        }
+
         ccx.globalAlpha = 1;
         ccx.shadowBlur = 0;
 

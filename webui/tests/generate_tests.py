@@ -123,6 +123,10 @@ def gen():
     html += '.tr2{padding:2px 0;border-bottom:1px solid rgba(51,65,85,.3)}\n'
     html += '.tsu{font-weight:700;margin-bottom:.4rem;padding:.4rem;background:rgba(30,41,59,.8);border-radius:.2rem}\n'
     html += '.tse{color:var(--pri);font-weight:600;margin-top:.4rem;margin-bottom:.2rem}\n'
+    # Mode fields visibility (CSS class based)
+    html += '.mode-fields{display:none}.mode-fields.active{display:block}\n'
+    # Settings section accordion
+    html += '.settings-section-body{display:none}.settings-section-body.open{display:block}\n'
     html += '</style>\n</head>\n<body>\n'
 
     # Sidebar + header
@@ -184,15 +188,47 @@ def gen():
     # Logs page
     html += '<div class="page" id="logs-page"><div class="card"><div class="card-header"><h3>События и логи</h3><div><button class="btn">Очистить</button><button class="btn" style="margin-left:.4rem">Экспорт</button></div></div><div class="lc" id="logsContainer"><div class="le"><span class="lt">--:--:--</span><span class="ll in">INFO</span>WebUI инициализирован</div></div></div></div>'
 
-    # Settings page
-    html += '<div class="page" id="settings-page"><div class="card"><div class="card-header"><h3>Настройки балансировки</h3></div><div class="sf">'
+    # Settings page (accordion + mode cards)
+    html += '<div class="page" id="settings-page"><div class="card"><div class="card-header"><h3>Настройки балансировки</h3><div><button class="btn" id="exportSettingsBtn">📤 Экспорт</button><button class="btn btn-pri" id="importSettingsBtn" style="margin-left:.4rem">📥 Импорт</button></div></div><div class="sf">'
+
+    # Operating Mode section
+    html += '<div class="settings-section"><div class="settings-section-header" data-section="mode" id="section-mode"><span class="section-toggle">▼</span><span>Режим работы</span></div><div class="settings-section-body open">'
+    html += '<div class="mode-cards">'
+    for mode,icon,title,desc in [('standard','⚙️','Стандартный','Балансировка без RPC'),('replication','📋','Model Replication (A)','Репликация'),('rpc_coordinator','🌐','RPC Coordinator (B)','Внешний RPC'),('virtual_router','🧩','Virtual Router (C)','Виртуальные модели'),('distributed_inference','🔬','Distributed (D)','Распределённый')]:
+        checked = ' checked' if mode == 'standard' else ''
+        html += f'<label class="mode-card" data-mode="{mode}"><input type="radio" name="operatingMode" value="{mode}"{checked}><div class="mode-card-icon">{icon}</div><div class="mode-card-title">{title}</div><div class="mode-card-desc">{desc}</div></label>'
+    html += '</div>'
+    for mode,fields in [('standard','<p style="color:var(--text-muted)">Стандартный режим — доп. параметры не требуются</p>'),('replication','<div class="fg"><label>Min Instances</label><input type="number" id="modelReplicationMinInstances" class="fc" value="1"></div><div class="fg"><label>Max Instances</label><input type="number" id="modelReplicationMaxInstances" class="fc" value="3"></div><div class="fg"><label>Idle Unload</label><input type="text" id="modelReplicationIdleUnload" class="fc" value="10m"></div>'),('rpc_coordinator','<div class="fg"><label>Coordinator URL</label><input type="text" id="rpcCoordinatorURL" class="fc"></div><div class="fg"><label>Worker Port</label><input type="number" id="rpcCoordinatorWorkerPort" class="fc" value="18050"></div><div class="fg"><label>Timeout</label><input type="text" id="rpcCoordinatorTimeout" class="fc" value="30s"></div>'),('virtual_router','<div class="fg"><label>Coord Mode</label><select id="virtualModelsCoordMode" class="fc"><option value="sequential">Sequential</option></select></div><div class="fg"><label>Timeout (ms)</label><input type="number" id="virtualModelsTimeout" class="fc" value="30000"></div>'),('distributed_inference','<div class="fg"><label>gRPC Port</label><input type="number" id="distInferenceGrpcPort" class="fc" value="19000"></div>')]:
+        active_class = ' active' if mode == 'standard' else ''
+        html += f'<div id="modeFields-{mode}" class="mode-fields{active_class}">{fields}</div>'
+    html += '</div></div>'
+
+    # General settings section
+    html += '<div class="settings-section"><div class="settings-section-header" data-section="general" id="section-general"><span class="section-toggle">▼</span><span>Основные настройки</span></div><div class="settings-section-body open">'
     html += '<div class="fg"><label>Алгоритм балансировки</label><select id="balancingAlgorithm" class="fc"><option value="resource-aware">Resource-Aware</option><option value="least-connections">Least Connections</option><option value="round-robin">Round Robin</option></select></div>'
-    for cid,clab in [('modelAffinity','Model Affinity'),('sessionStickiness','Session Stickiness'),('predictionFiltering','Prediction-based Filtering')]:
+    for cid,clab in [('useEnhancedScoring','Use Enhanced Scoring'),('modelAffinity','Model Affinity'),('sessionStickiness','Session Stickiness'),('predictionFiltering','Prediction-based Filtering')]:
         html += f'<div class="fg"><label>{clab}</label><label class="tg"><input type="checkbox" id="{cid}" checked><span class="tgs"></span></label></div>'
+    html += '</div></div>'
+
+    # Resource limits section
+    html += '<div class="settings-section"><div class="settings-section-header" data-section="limits" id="section-limits"><span class="section-toggle">▼</span><span>Лимиты ресурсов</span></div><div class="settings-section-body open">'
     for nid,lab,val,mi,ma in [('gpuMaxUsage','GPU Max Usage (%)','90','50','100'),('vramMaxUsage','VRAM Max Usage (%)','85','50','100'),('cpuMaxUsage','CPU Max Usage (%)','80','50','100'),('ramMaxUsage','RAM Max Usage (%)','85','50','100'),('minFreeDisk','Min Free Disk (MB)','10240','0','-')]:
         maxattr = f'max="{ma}" ' if ma != '-' else ''
         html += f'<div class="fg"><label>{lab}</label><input type="number" id="{nid}" class="fc" value="{val}" min="{mi}" {maxattr}></div>'
-    html += '<div class="fa"><button class="btn">Сбросить</button><button class="btn btn-pri" style="margin-left:.4rem">Сохранить</button></div></div></div></div>'
+    html += '</div></div>'
+
+    # Security section
+    html += '<div class="settings-section"><div class="settings-section-header" data-section="security" id="section-security"><span class="section-toggle">▼</span><span>Безопасность</span></div><div class="settings-section-body open">'
+    html += '<div class="fg"><label>API Токен</label><input type="password" id="apiToken" class="fc"></div>'
+    html += '</div></div>'
+
+    # Danger Zone section
+    html += '<div class="settings-section"><div class="settings-section-header danger" data-section="danger" id="section-danger"><span class="section-toggle">▼</span><span>Danger Zone</span></div><div class="settings-section-body open">'
+    html += '<div class="fg"><label style="color:var(--err);">Перезапустить балансер</label><button class="btn" id="restartBalancerBtn">Перезапустить</button></div>'
+    html += '<div class="fg"><label>Сбросить настройки</label><button class="btn" id="resetSettings">Сбросить</button></div>'
+    html += '</div></div>'
+
+    html += '<div class="fa"><button class="btn btn-pri" id="saveSettings">Сохранить</button></div></div></div></div>'
 
     # Modal
     html += '<div class="modal" id="backendModal"><div class="mo"><div class="mh"><h3>Добавить бэкенд</h3><button class="mcl">&times;</button></div><div class="mb">'
@@ -890,6 +926,195 @@ function runTests() {
         else { failCount++; details.push('<div class="tr2 tf">❌ ' + id + ' value = ' + (el ? el.value : 'N/A') + ' expected ' + expectedVal + '</div>'); }
     }
 
+    // === MODE MUTUAL EXCLUSION ===
+    details.push('<div class="tse">🔄 Operating Mode — Взаимное исключение</div>');
+
+    // 1. All 5 mode cards exist (radio buttons)
+    PC('.mode-card', 5, 'mode-card count (5 шт.)');
+    PC('.mode-card input[type="radio"]', 5, 'mode radio buttons count (5 шт.)');
+
+    // 2. Default mode is Standard (checked)
+    const defaultRadio = document.querySelector('.mode-card input[type="radio"]:checked');
+    if (defaultRadio && defaultRadio.value === 'standard') {
+        passCount++; details.push('<div class="tr2 tp">✅ Default mode = standard (checked)</div>');
+    } else {
+        failCount++; details.push('<div class="tr2 tf">❌ Default mode NOT standard: ' + (defaultRadio ? defaultRadio.value : 'none checked') + '</div>');
+    }
+
+    // 3. Radio mutual exclusion: check each mode, verify only one checked
+    const modeRadios = document.querySelectorAll('.mode-card input[type="radio"]');
+    const modeNames = ['standard', 'replication', 'rpc_coordinator', 'virtual_router', 'distributed_inference'];
+    for (let i = 0; i < modeRadios.length; i++) {
+        modeRadios[i].checked = true;
+        let checkedCount = 0;
+        for (let j = 0; j < modeRadios.length; j++) {
+            if (modeRadios[j].checked) checkedCount++;
+        }
+        if (checkedCount === 1 && modeRadios[i].checked) {
+            passCount++; details.push('<div class="tr2 tp">✅ Mutual exclusion: selecting "' + modeNames[i] + '" leaves only 1 checked</div>');
+        } else {
+            failCount++; details.push('<div class="tr2 tf">❌ Mutual exclusion FAILED for "' + modeNames[i] + '": ' + checkedCount + ' checked</div>');
+        }
+    }
+
+    // 4. Mode fields visibility: only the selected mode\\'s fields are visible
+    const allModeFields = document.querySelectorAll('.mode-fields');
+    for (let i = 0; i < modeRadios.length; i++) {
+        modeRadios[i].checked = true;
+        let activeField = document.getElementById('modeFields-' + modeNames[i]);
+        let ok = true;
+        for (let j = 0; j < allModeFields.length; j++) {
+            const isActive = allModeFields[j].classList.contains('active');
+            const shouldBeActive = j === i;
+            if (isActive !== shouldBeActive) {
+                ok = false;
+                break;
+            }
+        }
+        if (ok) {
+            passCount++; details.push('<div class="tr2 tp">✅ Mode fields visibility: only "' + modeNames[i] + '" active when selected</div>');
+        } else {
+            failCount++; details.push('<div class="tr2 tf">❌ Mode fields visibility FAILED for "' + modeNames[i] + '"</div>');
+        }
+    }
+    // Restore default
+    modeRadios[0].checked = true;
+
+    // 5. Each mode section has correct fields
+    details.push('<div class="tr" style="color:var(--muted);font-size:.8rem;padding-left:1rem;">— Standard: no extra fields</div>');
+    const stdField = document.getElementById('modeFields-standard');
+    if (stdField) { passCount++; details.push('<div class="tr2 tp">✅ #modeFields-standard exists</div>'); }
+    else { failCount++; details.push('<div class="tr2 tf">❌ #modeFields-standard NOT FOUND</div>'); }
+
+    details.push('<div class="tr" style="color:var(--muted);font-size:.8rem;padding-left:1rem;">— Replication: min/max/idle fields</div>');
+    P('#modelReplicationMinInstances', 'modelReplicationMinInstances input');
+    P('#modelReplicationMaxInstances', 'modelReplicationMaxInstances input');
+    P('#modelReplicationIdleUnload', 'modelReplicationIdleUnload input');
+
+    details.push('<div class="tr" style="color:var(--muted);font-size:.8rem;padding-left:1rem;">— RPC Coordinator: url/port/protocol/timeout fields</div>');
+    P('#rpcCoordinatorURL', 'rpcCoordinatorURL input');
+    P('#rpcCoordinatorWorkerPort', 'rpcCoordinatorWorkerPort input');
+    P('#rpcCoordinatorProtocol', 'rpcCoordinatorProtocol select');
+    P('#rpcCoordinatorTimeout', 'rpcCoordinatorTimeout input');
+
+    details.push('<div class="tr" style="color:var(--muted);font-size:.8rem;padding-left:1rem;">— Virtual Router: coordMode/timeout fields</div>');
+    P('#virtualModelsCoordMode', 'virtualModelsCoordMode select');
+    P('#virtualModelsTimeout', 'virtualModelsTimeout input');
+
+    details.push('<div class="tr" style="color:var(--muted);font-size:.8rem;padding-left:1rem;">— Distributed Inference: grpcPort field</div>');
+    P('#distInferenceGrpcPort', 'distInferenceGrpcPort input');
+
+    // === SETTINGS ACCORDION SECTIONS ===
+    details.push('<div class="tse">📂 Settings — Accordion Sections</div>');
+    PC('.settings-section', 5, 'settings-section count (5 шт.)');
+    PC('.settings-section-header', 5, 'section headers count (5 шт.)');
+    P('#section-mode', 'section-mode (Operating Mode)');
+    P('#section-general', 'section-general (General Settings)');
+    P('#section-limits', 'section-limits (Resource Limits)');
+    P('#section-security', 'section-security (Security)');
+    P('#section-danger', 'section-danger (Danger Zone)');
+
+    // Accordion toggle: simulate click on a section header
+    const secondHeader = document.querySelector('#section-general .settings-section-header');
+    if (secondHeader) {
+        const body = document.querySelector('#section-general .settings-section-body');
+        const wasOpen = body && body.classList.contains('open');
+        secondHeader.click();
+        const isOpenAfter = body && body.classList.contains('open');
+        if (wasOpen !== isOpenAfter) {
+            passCount++; details.push('<div class="tr2 tp">✅ Accordion toggle works: section-general open=' + isOpenAfter + '</div>');
+        } else {
+            warnCount++; details.push('<div class="tr2 tw">⚠️ Accordion toggle did not change state: open=' + isOpenAfter + '</div>');
+        }
+        // Click again to restore
+        secondHeader.click();
+    }
+
+    // === EXPORT / IMPORT ===
+    details.push('<div class="tse">📤📥 Settings — Export/Import</div>');
+    P('#exportSettingsBtn', 'exportSettingsBtn in card-header');
+    P('#importSettingsBtn', 'importSettingsBtn in card-header');
+
+    // Check exportSettingsBtn2 and importSettingsBtn2 in section if they exist
+    const exportBtn2 = document.getElementById('exportSettingsBtn2');
+    const importBtn2 = document.getElementById('importSettingsBtn2');
+    if (exportBtn2) { passCount++; details.push('<div class="tr2 tp">✅ exportSettingsBtn2 exists in section</div>'); }
+    else { warnCount++; details.push('<div class="tr2 tw">⚠️ exportSettingsBtn2 not found (may be in different location)</div>'); }
+    if (importBtn2) { passCount++; details.push('<div class="tr2 tp">✅ importSettingsBtn2 exists in section</div>'); }
+    else { warnCount++; details.push('<div class="tr2 tw">⚠️ importSettingsBtn2 not found (may be in different location)</div>'); }
+
+    // === PARAMETER VALIDATION (mode fields) ===
+    details.push('<div class="tse">🔢 Settings — Parameter Validation</div>');
+
+    // Test replication field defaults and constraints
+    modeRadios[1].checked = true; // Replication
+    const mrMin = document.getElementById('modelReplicationMinInstances');
+    const mrMax = document.getElementById('modelReplicationMaxInstances');
+    if (mrMin && mrMax) {
+        if (mrMin.value === '1') { passCount++; details.push('<div class="tr2 tp">✅ modelReplicationMinInstances default = 1</div>'); }
+        else { failCount++; details.push('<div class="tr2 tf">❌ modelReplicationMinInstances default = ' + mrMin.value + ' (expected 1)</div>'); }
+        if (mrMax.value === '3') { passCount++; details.push('<div class="tr2 tp">✅ modelReplicationMaxInstances default = 3</div>'); }
+        else { failCount++; details.push('<div class="tr2 tf">❌ modelReplicationMaxInstances default = ' + mrMax.value + ' (expected 3)</div>'); }
+        // Min <= Max validation
+        if (parseInt(mrMin.value) <= parseInt(mrMax.value)) {
+            passCount++; details.push('<div class="tr2 tp">✅ modelReplication: min (' + mrMin.value + ') <= max (' + mrMax.value + ')</div>');
+        } else {
+            failCount++; details.push('<div class="tr2 tf">❌ modelReplication: min (' + mrMin.value + ') > max (' + mrMax.value + ')</div>');
+        }
+    }
+
+    // Replication idle unload field
+    const mrIdle = document.getElementById('modelReplicationIdleUnload');
+    if (mrIdle && mrIdle.value === '10m') {
+        passCount++; details.push('<div class="tr2 tp">✅ modelReplicationIdleUnload default = "10m"</div>');
+    } else if (mrIdle) {
+        failCount++; details.push('<div class="tr2 tf">❌ modelReplicationIdleUnload = "' + mrIdle.value + '" (expected "10m")</div>');
+    }
+
+    // Switch to RPC Coordinator
+    modeRadios[2].checked = true;
+    const rcUrl = document.getElementById('rpcCoordinatorURL');
+    const rcPort = document.getElementById('rpcCoordinatorWorkerPort');
+    const rcTimeout = document.getElementById('rpcCoordinatorTimeout');
+    if (rcUrl) { passCount++; details.push('<div class="tr2 tp">✅ rpcCoordinatorURL exists</div>'); }
+    if (rcPort && rcPort.value === '18050') {
+        passCount++; details.push('<div class="tr2 tp">✅ rpcCoordinatorWorkerPort default = 18050</div>');
+    } else if (rcPort) {
+        failCount++; details.push('<div class="tr2 tf">❌ rpcCoordinatorWorkerPort = "' + rcPort.value + '" (expected 18050)</div>');
+    }
+    if (rcTimeout && rcTimeout.value === '30s') {
+        passCount++; details.push('<div class="tr2 tp">✅ rpcCoordinatorTimeout default = "30s"</div>');
+    } else if (rcTimeout) {
+        failCount++; details.push('<div class="tr2 tf">❌ rpcCoordinatorTimeout = "' + rcTimeout.value + '" (expected "30s")</div>');
+    }
+
+    // Switch to Virtual Router
+    modeRadios[3].checked = true;
+    const vmCoord = document.getElementById('virtualModelsCoordMode');
+    const vmTimeout = document.getElementById('virtualModelsTimeout');
+    if (vmCoord && vmCoord.value === 'sequential') {
+        passCount++; details.push('<div class="tr2 tp">✅ virtualModelsCoordMode default = "sequential"</div>');
+    } else if (vmCoord) {
+        failCount++; details.push('<div class="tr2 tf">❌ virtualModelsCoordMode = "' + vmCoord.value + '" (expected "sequential")</div>');
+    }
+    if (vmTimeout && vmTimeout.value === '30000') {
+        passCount++; details.push('<div class="tr2 tp">✅ virtualModelsTimeout default = 30000</div>');
+    } else if (vmTimeout) {
+        failCount++; details.push('<div class="tr2 tf">❌ virtualModelsTimeout = "' + vmTimeout.value + '" (expected 30000)</div>');
+    }
+
+    // Switch to Distributed Inference
+    modeRadios[4].checked = true;
+    const diPort = document.getElementById('distInferenceGrpcPort');
+    if (diPort && diPort.value === '19000') {
+        passCount++; details.push('<div class="tr2 tp">✅ distInferenceGrpcPort default = 19000</div>');
+    } else if (diPort) {
+        failCount++; details.push('<div class="tr2 tf">❌ distInferenceGrpcPort = "' + diPort.value + '" (expected 19000)</div>');
+    }
+
+    // Restore default mode: Standard
+    modeRadios[0].checked = true;
+
     // === MODAL FORM ===
     details.push('<div class="tse">🔲 Модальное окно — Форма бэкенда</div>');
     P('#formBackendId', 'formBackendId');
@@ -912,7 +1137,7 @@ function runTests() {
 
     // === XSS ESCAPING ===
     details.push('<div class="tse">🛡️ Edge Cases — XSS защита</div>');
-    const xssBackend = { id: '<script>alert("xss")</script>', name: 'Test', host: '192.168.1.1', ollamaPort: 11434, agentPort: 18032, weight: 1, maxConcurrentRequests: 5, labels: [], status: 'healthy', hasAgent: true, lastAgentContact: new Date().toISOString(), activeRequests: 0,
+    const xssBackend = { id: '<scr' + 'ipt>alert("xss")<' + '/scr' + 'ipt>', name: 'Test', host: '192.168.1.1', ollamaPort: 11434, agentPort: 18032, weight: 1, maxConcurrentRequests: 5, labels: [], status: 'healthy', hasAgent: true, lastAgentContact: new Date().toISOString(), activeRequests: 0,
         gpu: { usagePercent: 0, memoryTotal: 1, memoryUsed: 0, memoryFree: 1 }, system: { cpuUsagePercent: 0, memoryTotal: 1, memoryUsed: 0, memoryFree: 1 },
         ollama: { runningModels: [], activeRequests: 0, totalRequests: 0, requestsPerSecond: 0, runtimeFlags: {}, modelContexts: [], backendCapacity: { freeVram: 0, guaranteedVram: 0, loadedModelVram: 0, contextOverheadMB: 0, availableModels: [], loadableModelCount: 0, mode: 'gpu' } },
         prediction: { secondsToCritical: -1 }
@@ -951,6 +1176,28 @@ function RuntimeRenderers_check(backend) {
 function tempRenderEmpty() {
     Utils.setHTML('runtimeCluster', '<div class="loading">Ожидание данных...</div>');
 }
+
+// Accordion toggle: click on .settings-section-header toggles .open on sibling .settings-section-body
+document.addEventListener('click', function(e) {
+    var header = e.target.closest('.settings-section-header');
+    if (header) {
+        var body = header.nextElementSibling;
+        if (body && body.classList.contains('settings-section-body')) {
+            body.classList.toggle('open');
+        }
+    }
+});
+
+// Mode switch: click on .mode-card input[type="radio"] toggles .active on .mode-fields
+document.addEventListener('change', function(e) {
+    if (e.target.name === 'operatingMode') {
+        var mode = e.target.value;
+        var modeFields = document.querySelectorAll('.mode-fields');
+        for (var i = 0; i < modeFields.length; i++) {
+            modeFields[i].classList.toggle('active', modeFields[i].id === 'modeFields-' + mode);
+        }
+    }
+});
 
 // Run on load
 window.addEventListener('DOMContentLoaded', function() {

@@ -402,6 +402,18 @@ type BalancingSettings struct {
 
 	// AutoPull - автоматическая загрузка модели при запросе (Pull-on-Demand)
 	AutoPull AutoPullConfig `json:"autoPull"`
+
+	// ModelReplication (Вариант A) - репликация модели на несколько бэкендов
+	ModelReplication ModelReplicationConfig `json:"modelReplication"`
+
+	// RpcCoordinator (Вариант B) - внешний RPC координатор
+	RpcCoordinator RpcCoordinatorConfig `json:"rpcCoordinator"`
+
+	// VirtualModels (Вариант C) - виртуальные модели с pipeline slicing
+	VirtualModels VirtualModelsConfig `json:"virtualModels"`
+
+	// DistInference (Вариант D) - распределённый inference через кастомный бэкенд
+	DistInference DistInferenceConfig `json:"distInference"`
 }
 
 // AutoPullConfig - конфигурация автоматической загрузки модели по запросу
@@ -503,4 +515,114 @@ type ClusterState struct {
 	RPS             float64          `json:"rps"`
 	TotalGPUUsage   float64          `json:"totalGpuUsage"`
 	Backends        []BackendMetrics `json:"backends"`
+}
+
+// ============================================================
+// Вариант A: Model Replication Manager
+// ============================================================
+
+// ModelReplicationConfig - конфигурация репликации моделей
+type ModelReplicationConfig struct {
+	Enabled            bool                     `json:"enabled"`            // Включить репликацию
+	DefaultMinInstances int                    `json:"defaultMinInstances"` // Минимум реплик по умолчанию
+	DefaultMaxInstances int                    `json:"defaultMaxInstances"` // Максимум реплик по умолчанию
+	IdleUnloadAfter     string                 `json:"idleUnloadAfter"`     // Выгружать после простоя ("10m")
+	Groups              []ModelGroupConfig     `json:"groups"`              // Группы моделей
+}
+
+// ModelGroupConfig - конфигурация группы моделей (одна модель → N бэкендов)
+type ModelGroupConfig struct {
+	ModelName      string   `json:"modelName"`      // Имя модели
+	MinInstances   int      `json:"minInstances"`   // Минимум экземпляров
+	MaxInstances   int      `json:"maxInstances"`   // Максимум экземпляров
+	TargetBackends []string `json:"targetBackends"` // Целевые бэкенды (пусто = все healthy)
+	IdleUnloadAfter string  `json:"idleUnloadAfter"` // Выгружать после простоя
+}
+
+// ModelInstanceState - состояние экземпляра модели на бэкенде
+type ModelInstanceState struct {
+	BackendID  string       `json:"backendId"`
+	Status     ModelState   `json:"status"`     // loading, loaded, unloading, idle
+	LoadedAt   time.Time    `json:"loadedAt"`
+	LastUsedAt time.Time    `json:"lastUsedAt"`
+	UseCount   int64        `json:"useCount"`
+}
+
+// ============================================================
+// Вариант B: External RPC Coordinator
+// ============================================================
+
+// RpcCoordinatorConfig - конфигурация внешнего RPC координатора
+type RpcCoordinatorConfig struct {
+	Enabled         bool     `json:"enabled"`         // Включить RPC координатор
+	CoordinatorURL  string   `json:"coordinatorURL"`  // URL координатора
+	WorkerPort      int      `json:"workerPort"`      // Порт worker'а на бэкенде
+	Timeout         string   `json:"timeout"`         // Таймаут запроса ("30s")
+	Protocol        string   `json:"protocol"`        // "http" | "grpc"
+	MaxRetries      int      `json:"maxRetries"`      // Макс. повторов при ошибке
+}
+
+// RpcWorkerConfig - конфигурация RPC worker'а
+type RpcWorkerConfig struct {
+	WorkerID    string `json:"workerId"`
+	BackendID   string `json:"backendId"`
+	Host        string `json:"host"`
+	Port        int    `json:"port"`
+	SliceLayers string `json:"sliceLayers"` // "1-40" (какие слои обслуживает)
+}
+
+// ============================================================
+// Вариант C: Virtual Model Router
+// ============================================================
+
+// VirtualModelsConfig - конфигурация виртуальных моделей
+type VirtualModelsConfig struct {
+	Enabled bool                `json:"enabled"` // Включить VirtualModel Router
+	Models  []VirtualModelConfig `json:"models"` // Список виртуальных моделей
+}
+
+// VirtualModelConfig - конфигурация виртуальной модели
+type VirtualModelConfig struct {
+	Name         string            `json:"name"`         // Имя виртуальной модели
+	Description  string            `json:"description"`  // Описание
+	Slices       []ModelSliceConfig `json:"slices"`       // Срезы модели
+	Coordination CoordinationConfig `json:"coordination"` // Координация pipeline
+}
+
+// ModelSliceConfig - конфигурация среза модели
+type ModelSliceConfig struct {
+	ID             string   `json:"id"`             // ID среза
+	ModelName      string   `json:"modelName"`      // Ollama model name
+	Ordinal        int      `json:"ordinal"`        // Порядок в pipeline
+	TargetBackends []string `json:"targetBackends"` // Целевые бэкенды
+	FallbackMode   string   `json:"fallbackMode"`   // "retry" | "skip" | "abort"
+}
+
+// CoordinationConfig - конфигурация координации pipeline
+type CoordinationConfig struct {
+	Mode        string `json:"mode"`        // "sequential" | "parallel" | "tree"
+	TimeoutMs   int    `json:"timeoutMs"`   // Таймаут (мс)
+	SyncStrategy string `json:"syncStrategy"` // "http-callback" | "direct-response"
+}
+
+// ============================================================
+// Вариант D: Distributed Inference (Custom Backend)
+// ============================================================
+
+// DistInferenceConfig - конфигурация распределённого inference
+type DistInferenceConfig struct {
+	Enabled   bool                `json:"enabled"`   // Включить распределённый inference
+	GrpcPort  int                `json:"grpcPort"`   // Порт gRPC для worker'ов
+	Workers   []DistWorkerConfig `json:"workers"`    // Список worker'ов
+}
+
+// DistWorkerConfig - конфигурация worker'а распределённого inference
+type DistWorkerConfig struct {
+	WorkerID        string `json:"workerId"`
+	Host            string `json:"host"`
+	GrpcPort        int    `json:"grpcPort"`
+	LayerRange      string `json:"layerRange"`      // "1-40"
+	GPUMode         string `json:"gpuMode"`          // "auto" | "gpu" | "cpu"
+	MaxBatchSize    int    `json:"maxBatchSize"`     // Макс. размер батча
+	KVCacheSizeMB   int    `json:"kvCacheSizeMB"`    // Размер KV cache (MB)
 }

@@ -88,6 +88,39 @@
           { model: 'llama3.1', target: null, status: 'pending', enqueued: new Date(Date.now() - 200).toISOString(), sessionId: 'sess-demo-5' }
         ]
       },
+      virtualModels: {
+        enabled: true,
+        count: 2,
+        models: [
+          {
+            name: 'deepseek-r1-vm',
+            description: 'Двухсрезная виртуальная модель DeepSeek-R1',
+            mode: 'pipeline',
+            slices: [
+              { id: 'slice-1', model: 'deepseek-r1:1.5b', ordinal: 1, targetBackends: ['ollama-1','ollama-2'], fallbackBackends: ['ollama-3'] },
+              { id: 'slice-2', model: 'deepseek-r1:7b', ordinal: 2, targetBackends: ['ollama-2'], fallbackBackends: ['ollama-1'] }
+            ],
+            activeJobs: 1,
+            timeoutMs: 60000,
+            jobInfos: [
+              { requestId: 'vm-demo-001', currentSlice: 1, hasError: false }
+            ]
+          },
+          {
+            name: 'llama3.1-vm',
+            description: 'Трёхсрезная виртуальная модель LLaMA 3.1',
+            mode: 'pipeline',
+            slices: [
+              { id: 'slice-1', model: 'llama3.1:8b', ordinal: 1, targetBackends: ['ollama-1','ollama-2'] },
+              { id: 'slice-2', model: 'llama3.1:8b', ordinal: 2, targetBackends: ['ollama-2'] },
+              { id: 'slice-3', model: 'llama3.1:70b', ordinal: 3, targetBackends: ['ollama-1'], fallbackBackends: ['ollama-2'] }
+            ],
+            activeJobs: 0,
+            timeoutMs: 120000,
+            jobInfos: []
+          }
+        ]
+      },
       queueStats: {
         current_size: 5,
         max_size: 100,
@@ -151,15 +184,16 @@
       api('/api/v1/queue/stats').catch(function(e) { if (!isAbortError(e)) console.warn('[monitor] queue stats:', e.message); return null; }),
       api('/api/v1/sessions').catch(function(e) { if (!isAbortError(e)) console.warn('[monitor] sessions:', e.message); return null; }),
       api('/api/v1/autopull').catch(function(e) { if (!isAbortError(e)) console.warn('[monitor] autopull config:', e.message); return null; }),
-      api('/api/v1/autopull/status').catch(function(e) { if (!isAbortError(e)) console.warn('[monitor] autopull status:', e.message); return null; })
+      api('/api/v1/autopull/status').catch(function(e) { if (!isAbortError(e)) console.warn('[monitor] autopull status:', e.message); return null; }),
+      api('/api/v1/virtualmodels').catch(function(e) { if (!isAbortError(e)) console.warn('[monitor] virtualmodels:', e.message); return null; })
     ]).then(function(r) {
-      var cluster = r[0], qd = r[1], qs = r[2], sess = r[3], apCfg = r[4], apStatus = r[5];
+      var cluster = r[0], qd = r[1], qs = r[2], sess = r[3], apCfg = r[4], apStatus = r[5], vm = r[6];
       var data;
       if (cluster && (!cluster.backends || cluster.backends.length === 0)) {
         MA.lastData = null;
         data = null;
       } else {
-        data = { cluster: cluster, queueDetails: qd, queueStats: qs, sessions: sess, autoPullConfig: apCfg, autoPullStatus: apStatus };
+        data = { cluster: cluster, queueDetails: qd, queueStats: qs, sessions: sess, autoPullConfig: apCfg, autoPullStatus: apStatus, virtualModels: vm };
         MA.lastData = data;
       }
       MA.fetchAttempt = 0;

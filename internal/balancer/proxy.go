@@ -12,6 +12,10 @@ import (
 	"sync"
 	"time"
 
+	"ollama-loadbalancer/internal/distinference"
+	"ollama-loadbalancer/internal/modelreplication"
+	"ollama-loadbalancer/internal/rpccoordinator"
+	"ollama-loadbalancer/internal/virtualmodel"
 	"ollama-loadbalancer/pkg/logger"
 	"ollama-loadbalancer/pkg/types"
 )
@@ -42,7 +46,17 @@ type Proxy struct {
 	unloadScheduler *UnloadScheduler       // Планировщик выгрузки моделей
 	weightTuner     *AdaptiveWeightTuner   // Адаптивный тюнер весов
 	agentChecker    *agentTimeoutChecker   // Проверка таймаута агентов
+
+	// RPC model distribution modules
+	modelReplication    *modelreplication.ModelGroupManager
+	replicationSelector *modelreplication.GroupAwareSelector
+	replicationCtrl     *modelreplication.GroupController
+	rpcCoordinator      *rpccoordinator.Coordinator
+	virtualModels       *virtualmodel.Registry
+	virtualModelRouter  *virtualmodel.Router
+	distInference       *distinference.Engine
 }
+
 
 // NewProxy - создание нового прокси
 func NewProxy(config *types.LoadBalancerConfig) *Proxy {
@@ -135,7 +149,11 @@ func NewProxy(config *types.LoadBalancerConfig) *Proxy {
 	p.weightTuner = NewAdaptiveWeightTuner(p)
 	p.weightTuner.Start()
 
+	// Инициализация RPC Model Distribution модулей
+	p.initRpcModules()
+
 	return p
+
 }
 
 // SetQueueManagerProxy - установка proxy для QueueManager (вызывается после создания)
@@ -417,8 +435,175 @@ func (p *Proxy) UpdateMetrics(backendID string, metrics *types.BackendMetrics) {
 	p.metricsMgr.mu.Unlock()
 }
 
+// initRpcModules - инициализация RPC Model Distribution модулей по enabled флагам
+func (p *Proxy) initRpcModules() {
+	cfg := &p.config.Balancing
+
+	// Вариант A: Model Replication Manager
+	if cfg.ModelReplication.Enabled {
+		p.modelReplication = modelreplication.NewModelGroupManager()
+		p.modelReplication.SetEnabled(true)
+
+		// Настраиваем callbacks для интеграции с Balancer
+		p.modelReplication.SetBackendLoadFn(func(backendID string) float64 {
+			p.mu.RLock()
+			state, exists := p.backends[backendID]
+			p.mu.RUnlock()
+			if !exists {
+				return 1.0
+			}
+			state.mu.Lock()
+			active := state.ActiveReqs
+			maxReqs := state.Backend.MaxConcurrentReqs
+			state.mu.Unlock()
+			if maxReqs <= 0 {
+				return 0.0
+			}
+			return float64(active) / float64(maxReqs)
+		})
+
+		p.modelReplication.SetFreeBackendFn(func(modelName string, targets []string) []string {
+			p.mu.RLock()
+			defer p.mu.RUnlock()
+			var free []string
+			for id, state := range p.backends {
+				if state.Backend.Status != types.StatusHealthy {
+					continue
+				}
+				if len(targets) > 0 {
+					found := false
+					for _, t := range targets {
+						if id == t {
+							found = true
+							break
+						}
+					}
+					if !found {
+						continue
+					}
+				}
+				state.mu.Lock()
+				active := state.ActiveReqs
+				state.mu.Unlock()
+				if active == 0 {
+					free = append(free, id)
+				}
+			}
+			return free
+		})
+
+		p.modelReplication.SetWarmupFn(func(backendID, modelName string) error {
+			p.mu.RLock()
+			state, exists := p.backends[backendID]
+			p.mu.RUnlock()
+			if !exists {
+				return fmt.Errorf("backend %s not found", backendID)
+			}
+			p.warmupModel(backendID, state.Backend.Host, state.Backend.OllamaPort, modelName)
+			return nil
+		})
+
+		// Создаём селектор и контроллер
+		p.replicationSelector = modelreplication.NewGroupAwareSelector(p.modelReplication)
+		p.replicationCtrl = modelreplication.NewGroupController(p.modelReplication)
+		if err := p.replicationCtrl.Start(); err != nil {
+			logger.Get().Warnw("failed to start group controller", "error", err)
+		}
+
+		// Загружаем группы из конфига
+		for _, groupCfg := range cfg.ModelReplication.Groups {
+			if err := p.modelReplication.CreateGroup(groupCfg); err != nil {
+				logger.Get().Warnw("failed to create model group from config",
+					"model", groupCfg.ModelName, "error", err)
+			}
+		}
+
+		logger.Get().Infow("model replication manager initialized",
+			"defaultMinInstances", cfg.ModelReplication.DefaultMinInstances,
+			"defaultMaxInstances", cfg.ModelReplication.DefaultMaxInstances,
+			"idleUnloadAfter", cfg.ModelReplication.IdleUnloadAfter,
+			"groups", len(cfg.ModelReplication.Groups))
+	}
+
+	// Вариант B: External RPC Coordinator
+	if cfg.RpcCoordinator.Enabled {
+		p.rpcCoordinator = rpccoordinator.NewCoordinator()
+		p.rpcCoordinator.SetEnabled(true)
+		p.rpcCoordinator.SetConfig(
+			cfg.RpcCoordinator.CoordinatorURL,
+			cfg.RpcCoordinator.WorkerPort,
+			cfg.RpcCoordinator.Protocol,
+		)
+		logger.Get().Infow("rpc coordinator initialized",
+			"url", cfg.RpcCoordinator.CoordinatorURL,
+			"port", cfg.RpcCoordinator.WorkerPort,
+			"protocol", cfg.RpcCoordinator.Protocol)
+	}
+
+	// Вариант C: Virtual Model Router
+	if cfg.VirtualModels.Enabled {
+		p.virtualModels = virtualmodel.NewRegistry()
+		p.virtualModels.SetEnabled(true)
+		// Регистрируем виртуальные модели из конфига
+		for _, vmCfg := range cfg.VirtualModels.Models {
+			if err := p.virtualModels.Register(vmCfg); err != nil {
+				logger.Get().Warnw("failed to register virtual model", "name", vmCfg.Name, "error", err)
+			} else {
+				logger.Get().Infow("virtual model registered", "name", vmCfg.Name,
+					"slices", len(vmCfg.Slices))
+			}
+		}
+		// Создаём Router для маршрутизации через VirtualModel pipeline
+		p.virtualModelRouter = virtualmodel.NewRouter(p.virtualModels)
+		logger.Get().Infow("virtual model router initialized",
+			"enabled", true, "count", len(cfg.VirtualModels.Models))
+	}
+
+	// Вариант D: Distributed Inference (Custom Backend)
+	if cfg.DistInference.Enabled {
+		p.distInference = distinference.NewEngine()
+		p.distInference.SetEnabled(true)
+		// Регистрируем worker'ов из конфига
+		for _, wCfg := range cfg.DistInference.Workers {
+			worker := distinference.NewWorker(
+				wCfg.WorkerID,
+				wCfg.Host,
+				wCfg.GrpcPort,
+				wCfg.LayerRange,
+				wCfg.GPUMode,
+			)
+			p.distInference.RegisterWorker(worker)
+			logger.Get().Infow("dist-inference worker registered",
+				"id", wCfg.WorkerID, "host", wCfg.Host, "port", wCfg.GrpcPort)
+		}
+		logger.Get().Infow("distributed inference engine initialized",
+			"workers", len(cfg.DistInference.Workers))
+	}
+}
+
+// GetModelReplicationManager возвращает ModelGroupManager (для API).
+func (p *Proxy) GetModelReplicationManager() *modelreplication.ModelGroupManager {
+	return p.modelReplication
+}
+
+// GetReplicationSelector возвращает GroupAwareSelector (для API).
+func (p *Proxy) GetReplicationSelector() *modelreplication.GroupAwareSelector {
+	return p.replicationSelector
+}
+
+// GetReplicationController возвращает GroupController (для API).
+func (p *Proxy) GetReplicationController() *modelreplication.GroupController {
+	return p.replicationCtrl
+}
+
+// GetVirtualModelRouter возвращает VirtualModel Router (для API).
+func (p *Proxy) GetVirtualModelRouter() *virtualmodel.Router {
+	return p.virtualModelRouter
+}
+
 // queueRequest - постановка запроса в очередь
 func (p *Proxy) queueRequest(w http.ResponseWriter, r *http.Request, model string) bool {
+
 	// Backpressure: проверяем fill rate очереди
 	queueFillPct := float64(len(p.queueMgr.queue)) / float64(p.queueMgr.maxSize)
 	if queueFillPct > 0.90 {

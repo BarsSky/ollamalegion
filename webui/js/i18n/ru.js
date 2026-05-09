@@ -234,10 +234,10 @@ window.I18N_RU = {
   "help.monitor_legend_desc": "Обозначения цветов и элементов на мониторе",
 
   // Monitor
-  "monitor.status.live": "Live",
-  "monitor.status.offline": "Offline",
+  "monitor.status.live": "Загружен",
+  "monitor.status.offline": "Перегружен",
   "monitor.status.demo": "Демо",
-  "monitor.status.idle": "✅ Ожидание",
+  "monitor.status.idle": "Свободен",
 
   "monitor.header.connecting": "Подключение…",
   "monitor.header.pause": "⏸ Пауза",
@@ -326,6 +326,8 @@ window.I18N_RU = {
   "monitor.table.ram": "RAM",
   "monitor.table.active": "Активных",
   "monitor.table.rps": "RPS",
+  "monitor.table.avgRt": "Avg RT",
+  "monitor.table.capacity": "Capacity",
   "monitor.table.score": "Score",
   "monitor.table.models": "Модели",
   "monitor.table.uptime": "Uptime",
@@ -358,6 +360,29 @@ window.I18N_RU = {
   "monitor.rebalance.disabled": "[Demo] Принудительное перераспределение недоступно в демо-режиме.",
   "monitor.rebalance.success": "Перераспределение инициировано. Запросы в очереди будут перенаправлены на свободные бэкенды.",
   "monitor.rebalance.error": "Ошибка перераспределения: ",
+
+  // Help modal (monitor)
+  "monitor.help.title": "📖 Справка по режимам балансировки",
+  "monitor.help.p1": "<strong>P1 — Model Affinity (LOADED)</strong><br>Бэкенд с уже загруженной моделью в VRAM. Наивысший приоритет — мгновенный отклик.",
+  "monitor.help.p2": "<strong>P2 — Model Warming (WARMING_UP)</strong><br>Бэкенд в процессе загрузки модели. Балансер ожидает готовности до таймаута.",
+  "monitor.help.p3": "<strong>P3 — Free Backend (FREE)</strong><br>Свободный healthy бэкенд со слотами. Модель загружается синхронно (если <code>syncModelLoad.enabled</code>).",
+  "monitor.help.p4": "<strong>P4 — Fallback (FALLBACK)</strong><br>Все healthy бэкенды проходят ресурсный скоринг (GPU/VRAM/CPU/RAM). Выбирается лучший по score.",
+  "monitor.help.legendTitle": "<strong>🎨 Легенда цветов в канвасе:</strong>",
+  "monitor.help.legendColors": "🟢 <span style=\"color:var(--success)\">Зелёный</span> — свободен (Idle) | 🟡 <span style=\"color:var(--warning)\">Жёлтый</span> — загружен (Active) | 🔴 <span style=\"color:var(--danger)\">Красный</span> — перегружен (Full/Error)",
+  "monitor.help.conveyor": "<strong>📊 Conveyor-лента:</strong> Анимированные частицы показывают поток запросов: синие — в пути, жёлтые — ожидают в очереди у балансера, фиолетовые — обрабатываются, зелёные — завершены.",
+
+  // Saved indicator
+  "monitor.autoPull.saved": "✓ Сохранено",
+  "monitor.common.apiBase": "API Base:",
+
+  // Filter placeholder
+  "monitor.backendFilter.placeholder": "🔍 Фильтр по ID, статусу или модели...",
+
+  // Table row number
+  "monitor.table.rowNum": "#",
+
+  // Session table ID
+  "monitor.table.sessionId": "ID",
 
   "models_lower": " моделей",
   "loading": "⏳ загрузка…",

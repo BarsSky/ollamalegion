@@ -23,7 +23,7 @@
     if (typeof window.updateAutoPullConfig === 'function') {
       window.updateAutoPullConfig(cfg).then(function() {
         if (statusEl) {
-          statusEl.textContent = '✓ Saved';
+          statusEl.textContent = MA.T('monitor.autoPull.saved');
           statusEl.style.display = 'inline';
           setTimeout(function() { if (statusEl) statusEl.style.display = 'none'; }, 3000);
         }

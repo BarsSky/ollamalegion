@@ -54,7 +54,7 @@
       '👤 Sessions': t('monitor.panel.sessions')
     };
     document.querySelectorAll('.panel-header span:first-child').forEach(function(el) {
-      var tx = el.textContent.replace(/\\s*\\(\\d+\\)\\s*$/, '').trim();
+      var tx = el.textContent.replace(/\s*\(\d+\)\s*$/, '').trim();
       var b = hm[tx];
       if (b) {
         if (el.childNodes[0] && el.childNodes[0].nodeType === 3) el.childNodes[0].textContent = b + ' ';
@@ -69,6 +69,7 @@
       'Статус': t('monitor.table.status'), GPU: t('monitor.table.gpu'),
       CPU: t('monitor.table.cpu'), RAM: t('monitor.table.ram'),
       Active: t('monitor.table.active'), RPS: t('monitor.table.rps'),
+      'Avg RT': t('monitor.table.avgRt'), Capacity: t('monitor.table.capacity'),
       Score: t('monitor.table.score'), 'Модели': t('monitor.table.models'),
       Uptime: t('monitor.table.uptime'), Target: t('monitor.table.target'),
       'Ожидание': t('monitor.table.wait'), 'Сессия': t('monitor.table.session'),
@@ -108,6 +109,25 @@
       var tx = el.textContent.trim();
       if (cm[tx]) el.textContent = cm[tx];
     });
+    // Help modal — use innerHTML because translations contain HTML tags (<strong>, <br>, <code>, <span>)
+    document.querySelectorAll('#helpModal [data-i18n]').forEach(function(el) {
+      var key = el.getAttribute('data-i18n');
+      if (key) el.innerHTML = t(key);
+    });
+
+    // Dispatch card titles
+    var dcm = {
+      'Model Affinity': t('monitor.dispatch.modelAffinity'),
+      'Resource-Aware': t('monitor.dispatch.resourceAware'),
+      'Weight/Config': t('monitor.dispatch.weightConfig'),
+      'Processed Total': t('monitor.dispatch.processedTotal'),
+      'Всего обработано': t('monitor.dispatch.total')
+    };
+    document.querySelectorAll('#dispatchStats .dispatch-card div').forEach(function(el) {
+      var tx = el.textContent.trim();
+      if (dcm[tx]) el.textContent = dcm[tx];
+    });
+
     var lop = document.querySelector('#loadingOverlay p');
     if (lop) lop.innerHTML = t('monitor.overlay.waitingDesc').replace('loadbalancer', '<code>loadbalancer</code>');
   }

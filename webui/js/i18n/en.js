@@ -323,6 +323,8 @@ window.I18N_EN = {
   "monitor.table.ram": "RAM",
   "monitor.table.active": "Active",
   "monitor.table.rps": "RPS",
+  "monitor.table.avgRt": "Avg RT",
+  "monitor.table.capacity": "Capacity",
   "monitor.table.score": "Score",
   "monitor.table.models": "Models",
   "monitor.table.uptime": "Uptime",
@@ -350,6 +352,29 @@ window.I18N_EN = {
   "monitor.rebalance.disabled": "[Demo] Force rebalance is unavailable in demo mode.",
   "monitor.rebalance.success": "Rebalance initiated. Queued requests will be redirected to free backends.",
   "monitor.rebalance.error": "Rebalance error: ",
+
+  // Help modal (monitor)
+  "monitor.help.title": "📖 Balancing Modes Help",
+  "monitor.help.p1": "<strong>P1 — Model Affinity (LOADED)</strong><br>Backend with the model already loaded in VRAM. Highest priority — instant response.",
+  "monitor.help.p2": "<strong>P2 — Model Warming (WARMING_UP)</strong><br>Backend in the process of loading the model. Balancer waits for readiness until timeout.",
+  "monitor.help.p3": "<strong>P3 — Free Backend (FREE)</strong><br>Free healthy backend with slots. Model loads synchronously (if <code>syncModelLoad.enabled</code>).",
+  "monitor.help.p4": "<strong>P4 — Fallback (FALLBACK)</strong><br>All healthy backends go through resource scoring (GPU/VRAM/CPU/RAM). Best score wins.",
+  "monitor.help.legendTitle": "<strong>🎨 Canvas color legend:</strong>",
+  "monitor.help.legendColors": "🟢 <span style=\"color:var(--success)\">Green</span> — idle | 🟡 <span style=\"color:var(--warning)\">Yellow</span> — active | 🔴 <span style=\"color:var(--danger)\">Red</span> — full/error",
+  "monitor.help.conveyor": "<strong>📊 Conveyor belt:</strong> Animated particles show request flow: blue — in transit, yellow — waiting in balancer queue, purple — processing, green — completed.",
+
+  // Saved indicator
+  "monitor.autoPull.saved": "✓ Saved",
+  "monitor.common.apiBase": "API Base:",
+
+  // Filter placeholder
+  "monitor.backendFilter.placeholder": "🔍 Filter by ID, status or model...",
+
+  // Table row number
+  "monitor.table.rowNum": "#",
+
+  // Session table ID
+  "monitor.table.sessionId": "ID",
 
   "models_lower": " models",
   "loading": "⏳ loading…",
@@ -461,4 +486,3 @@ window.I18N_EN = {
   // predictionAlerts
   "renderers.no_active_alerts": "No active alerts"
 };
-

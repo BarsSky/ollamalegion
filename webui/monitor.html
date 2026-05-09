@@ -47,15 +47,15 @@
   <div id="helpModal" style="display:none;position:fixed;inset:0;z-index:2000;background:rgba(0,0,0,0.6);backdrop-filter:blur(6px);-webkit-backdrop-filter:blur(6px);align-items:center;justify-content:center" onclick="toggleHelp()">
     <div style="background:var(--glass-bg);border:1px solid var(--glass-border);border-radius:14px;padding:24px 28px;max-width:560px;width:90%;max-height:80vh;overflow-y:auto;box-shadow:var(--glass-shadow);color:var(--text-primary);font-size:13px;line-height:1.7;position:relative" onclick="event.stopPropagation()">
       <button onclick="toggleHelp()" style="position:absolute;top:12px;right:14px;background:none;border:none;font-size:18px;cursor:pointer;color:var(--text-secondary)">✕</button>
-      <h3 style="margin-bottom:14px;font-size:16px">📖 Справка по режимам балансировки</h3>
-      <p><strong>P1 — Model Affinity (LOADED)</strong><br>Бэкенд с уже загруженной моделью в VRAM. Наивысший приоритет — мгновенный отклик.</p>
-      <p style="margin-top:8px"><strong>P2 — Model Warming (WARMING_UP)</strong><br>Бэкенд в процессе загрузки модели. Балансер ожидает готовности до таймаута.</p>
-      <p style="margin-top:8px"><strong>P3 — Free Backend (FREE)</strong><br>Свободный healthy бэкенд со слотами. Модель загружается синхронно (если `syncModelLoad.enabled`).</p>
-      <p style="margin-top:8px"><strong>P4 — Fallback (FALLBACK)</strong><br>Все healthy бэкенды проходят ресурсный скоринг (GPU/VRAM/CPU/RAM). Выбирается лучший по score.</p>
+      <h3 data-i18n="monitor.help.title" style="margin-bottom:14px;font-size:16px">📖 Справка по режимам балансировки</h3>
+      <p data-i18n="monitor.help.p1"><strong>P1 — Model Affinity (LOADED)</strong><br>Бэкенд с уже загруженной моделью в VRAM. Наивысший приоритет — мгновенный отклик.</p>
+      <p data-i18n="monitor.help.p2" style="margin-top:8px"><strong>P2 — Model Warming (WARMING_UP)</strong><br>Бэкенд в процессе загрузки модели. Балансер ожидает готовности до таймаута.</p>
+      <p data-i18n="monitor.help.p3" style="margin-top:8px"><strong>P3 — Free Backend (FREE)</strong><br>Свободный healthy бэкенд со слотами. Модель загружается синхронно (если <code>syncModelLoad.enabled</code>).</p>
+      <p data-i18n="monitor.help.p4" style="margin-top:8px"><strong>P4 — Fallback (FALLBACK)</strong><br>Все healthy бэкенды проходят ресурсный скоринг (GPU/VRAM/CPU/RAM). Выбирается лучший по score.</p>
       <hr style="margin:14px 0;border-color:var(--border-color)">
-      <p><strong>🎨 Легенда цветов в канвасе:</strong></p>
-      <p>🟢 <span style="color:var(--success)">Зелёный</span> — свободен (Idle) | 🟡 <span style="color:var(--warning)">Жёлтый</span> — загружен (Active) | 🔴 <span style="color:var(--danger)">Красный</span> — перегружен (Full/Error)</p>
-      <p style="margin-top:8px"><strong>📊 Conveyor-лента:</strong> Анимированные частицы показывают поток запросов: синие — в пути, жёлтые — ожидают в очереди у балансера, фиолетовые — обрабатываются, зелёные — завершены.</p>
+      <p data-i18n="monitor.help.legendTitle"><strong>🎨 Легенда цветов в канвасе:</strong></p>
+      <p data-i18n="monitor.help.legendColors">🟢 <span style="color:var(--success)">Зелёный</span> — свободен (Idle) | 🟡 <span style="color:var(--warning)">Жёлтый</span> — загружен (Active) | 🔴 <span style="color:var(--danger)">Красный</span> — перегружен (Full/Error)</p>
+      <p data-i18n="monitor.help.conveyor" style="margin-top:8px"><strong>📊 Conveyor-лента:</strong> Анимированные частицы показывают поток запросов: синие — в пути, жёлтые — ожидают в очереди у балансера, фиолетовые — обрабатываются, зелёные — завершены.</p>
     </div>
   </div>
 </header>
@@ -68,7 +68,7 @@
       <div class="spinner"></div>
       <h2 data-i18n="monitor.overlay.connecting">Подключение к API…</h2>
       <p data-i18n="monitor.overlay.waitingDesc">Ожидание ответа от балансировщика. Если вы запускаете под Docker, убедитесь, что сервис <code>loadbalancer</code> поднят.</p>
-      <p style="font-size:11px;color:var(--text-secondary);margin-top:4px">API Base: <code id="apiBaseDisplay">—</code></p>
+      <p style="font-size:11px;color:var(--text-secondary);margin-top:4px"><span data-i18n="monitor.common.apiBase">API Base:</span> <code id="apiBaseDisplay">—</code></p>
     </div>
     <div id="errorOverlay" class="overlay hidden">
       <h2 data-i18n="monitor.overlay.noConnection">⚠ Нет подключения к балансировщику</h2>
@@ -130,7 +130,7 @@
       </div>
       <div class="panel-body">
         <div class="backend-filter">
-          <input type="text" id="backendFilter" placeholder="🔍 Фильтр по ID, статусу или модели..." />
+          <input type="text" id="backendFilter" data-i18n-placeholder="monitor.backendFilter.placeholder" placeholder="🔍 Фильтр по ID, статусу или модели..." />
         </div>
         <div style="overflow-x:auto">
           <table id="backendsTable">
@@ -144,8 +144,8 @@
                 <th data-sort="ram" data-i18n="monitor.table.ram">RAM</th>
                 <th class="col-right" data-sort="active" data-i18n="monitor.table.active">Active</th>
                 <th class="col-right" data-sort="rps" data-i18n="monitor.table.rps">RPS</th>
-                <th class="col-right" data-sort="avgRT">Avg RT</th>
-                <th class="col-right" data-sort="capacity">Capacity</th>
+                <th class="col-right" data-sort="avgRT" data-i18n="monitor.table.avgRt">Avg RT</th>
+                <th class="col-right" data-sort="capacity" data-i18n="monitor.table.capacity">Capacity</th>
                 <th class="col-right" data-sort="score" data-i18n="monitor.table.score">Score</th>
                 <th data-i18n="monitor.table.models">Модели</th>
                 <th class="col-right" data-sort="uptime" data-i18n="monitor.table.uptime">Uptime</th>
@@ -170,7 +170,7 @@
           <table id="queueTable">
             <thead>
               <tr>
-                <th>#</th>
+                <th data-i18n="monitor.table.rowNum">#</th>
                 <th data-i18n="monitor.table.model">Модель</th>
                 <th data-i18n="monitor.table.target">Target</th>
                 <th data-i18n="monitor.table.status">Статус</th>
@@ -194,24 +194,24 @@
       <div class="panel-body">
         <div id="dispatchStats" style="display:flex;flex-wrap:wrap;gap:12px;padding:8px 0">
           <div class="dispatch-card" style="flex:1;min-width:160px;background:var(--bg-secondary);border:1px solid var(--border-color);border-radius:8px;padding:12px 16px">
-            <div style="font-size:11px;color:var(--text-secondary);text-transform:uppercase;letter-spacing:0.5px">Model Affinity</div>
+            <div data-i18n="monitor.dispatch.modelAffinity" style="font-size:11px;color:var(--text-secondary);text-transform:uppercase;letter-spacing:0.5px">Model Affinity</div>
             <div id="dispatchAffinity" style="font-size:22px;font-weight:700;color:var(--success);margin-top:4px">—</div>
             <div style="font-size:11px;color:var(--text-secondary);margin-top:2px" id="dispatchAffinityPct">—</div>
           </div>
           <div class="dispatch-card" style="flex:1;min-width:160px;background:var(--bg-secondary);border:1px solid var(--border-color);border-radius:8px;padding:12px 16px">
-            <div style="font-size:11px;color:var(--text-secondary);text-transform:uppercase;letter-spacing:0.5px">Resource-Aware</div>
+            <div data-i18n="monitor.dispatch.resourceAware" style="font-size:11px;color:var(--text-secondary);text-transform:uppercase;letter-spacing:0.5px">Resource-Aware</div>
             <div id="dispatchLoad" style="font-size:22px;font-weight:700;color:var(--accent);margin-top:4px">—</div>
             <div style="font-size:11px;color:var(--text-secondary);margin-top:2px" id="dispatchLoadPct">—</div>
           </div>
           <div class="dispatch-card" style="flex:1;min-width:160px;background:var(--bg-secondary);border:1px solid var(--border-color);border-radius:8px;padding:12px 16px">
-            <div style="font-size:11px;color:var(--text-secondary);text-transform:uppercase;letter-spacing:0.5px">Weight/Config</div>
+            <div data-i18n="monitor.dispatch.weightConfig" style="font-size:11px;color:var(--text-secondary);text-transform:uppercase;letter-spacing:0.5px">Weight/Config</div>
             <div id="dispatchConfig" style="font-size:22px;font-weight:700;color:var(--warning);margin-top:4px">—</div>
             <div style="font-size:11px;color:var(--text-secondary);margin-top:2px" id="dispatchConfigPct">—</div>
           </div>
           <div class="dispatch-card" style="flex:1;min-width:160px;background:var(--bg-secondary);border:1px solid var(--border-color);border-radius:8px;padding:12px 16px">
-            <div style="font-size:11px;color:var(--text-secondary);text-transform:uppercase;letter-spacing:0.5px">Processed Total</div>
+            <div data-i18n="monitor.dispatch.processedTotal" style="font-size:11px;color:var(--text-secondary);text-transform:uppercase;letter-spacing:0.5px">Processed Total</div>
             <div id="dispatchTotal" style="font-size:22px;font-weight:700;color:var(--purple-accent);margin-top:4px">—</div>
-            <div style="font-size:11px;color:var(--text-secondary);margin-top:2px">Всего обработано</div>
+            <div data-i18n="monitor.dispatch.total" style="font-size:11px;color:var(--text-secondary);margin-top:2px">Всего обработано</div>
           </div>
         </div>
         <div style="padding:8px 4px;font-size:11px;color:var(--text-secondary);line-height:1.6">
@@ -252,7 +252,7 @@
                   <input type="number" id="autoPullRetryCount" value="1" min="0" max="5" style="width:48px;padding:3px 5px;border:1px solid var(--border-color);border-radius:4px;background:var(--bg-primary);color:var(--text-primary);font-size:12px">
                 </div>
                 <button id="autoPullSaveBtn" onclick="saveAutoPullConfig()" style="padding:4px 12px;font-size:11px;background:var(--accent);color:#fff;border:none;border-radius:4px;cursor:pointer;font-weight:600" data-i18n="monitor.autoPull.save">💾 Save</button>
-                <span id="autoPullSaveStatus" style="font-size:11px;color:var(--success);display:none">✓ Saved</span>
+                <span id="autoPullSaveStatus" style="font-size:11px;color:var(--success);display:none" data-i18n="monitor.autoPull.saved">✓ Saved</span>
               </div>
             </div>
             <div style="flex:1;min-width:200px;background:var(--bg-secondary);border:1px solid var(--border-color);border-radius:8px;padding:10px 14px">
@@ -292,12 +292,12 @@
           <table id="sessionsTable">
             <thead>
               <tr>
-                <th>ID</th>
+                <th data-i18n="monitor.table.sessionId">ID</th>
                 <th data-i18n="monitor.table.backend">Backend</th>
                 <th data-i18n="monitor.table.model">Модель</th>
                 <th class="col-right" data-i18n="monitor.table.requests">Запросов</th>
                 <th class="col-right" data-i18n="monitor.table.idle">Idle</th>
-                <th>IP</th>
+                <th data-i18n="monitor.table.ip">IP</th>
                 <th data-i18n="monitor.table.client">Клиент</th>
               </tr>
             </thead>

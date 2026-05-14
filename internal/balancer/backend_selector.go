@@ -20,25 +20,16 @@ func (p *Proxy) selectBackend(model string) string {
 		}
 	}
 
-	// RPC Module: VirtualModel Router — если модель виртуальная, маршрутизируем через неё
-	if p.virtualModelRouter != nil {
-		if selected := p.virtualModelRouter.GetRegistry().IsVirtualModel(model); selected {
-			logger.Get().Infow("routing through virtual model", "model", model)
-			// Virtual Model Pipeline выполняется в proxyRequest или queueRequest,
-			// здесь возвращаем специальный маркер, чтобы outer code знал,
-			// что это виртуальная модель
-			return "__virtual__"
-		}
-	}
-
 	candidates := p.expandCandidates(model)
 
 	// 1. Model Affinity (LOADED) — P1
-
+	// Выбираем лучший бэкенд по score среди loaded-кандидатов с loadRatio < threshold
 	for _, group := range candidates {
 		if group.Priority != 1 {
 			break
 		}
+		var bestBackendID string
+		var bestScore float64 = -1
 		for _, backendID := range group.BackendIDs {
 			state := p.backends[backendID]
 			state.mu.Lock()
@@ -54,10 +45,19 @@ func (p *Proxy) selectBackend(model string) string {
 			if threshold <= 0 {
 				threshold = 0.80
 			}
-			if loadRatio < threshold {
-				atomic.AddInt64(&p.queueMgr.dispatchAffinity, 1)
-				return backendID
+			if loadRatio >= threshold {
+				continue
 			}
+
+			score := p.calculateScore(backendID)
+			if score > bestScore {
+				bestScore = score
+				bestBackendID = backendID
+			}
+		}
+		if bestBackendID != "" {
+			atomic.AddInt64(&p.queueMgr.dispatchAffinity, 1)
+			return bestBackendID
 		}
 	}
 
@@ -330,14 +330,16 @@ func (p *Proxy) findLessLoadedBackendWithModel(modelName, excludeBackendID strin
 	return bestBackendID
 }
 
-// findLessLoadedBackendAny — поиск любого менее загруженного healthy бэкенда
-// Если модель не загружена на выбранном бэкенде — запускает асинхронный warmup
+// findLessLoadedBackendAny — поиск любого менее загруженного healthy бэкенда.
+// При равном loadRatio выбирает бэкенд с лучшим score (deterministic).
+// Если модель не загружена на выбранном бэкенде — запускает асинхронный warmup.
 func (p *Proxy) findLessLoadedBackendAny(modelName, excludeBackendID string) string {
 	p.mu.RLock()
 	defer p.mu.RUnlock()
 
 	var bestBackendID string
 	var bestLoadRatio float64 = 2.0
+	var bestScore float64 = -1
 
 	for id, state := range p.backends {
 		if id == excludeBackendID {
@@ -360,9 +362,18 @@ func (p *Proxy) findLessLoadedBackendAny(modelName, excludeBackendID string) str
 		}
 
 		loadRatio := float64(active) / float64(maxReqs)
-		if loadRatio < bestLoadRatio {
+
+		// При равном loadRatio используем score для deterministic выбора
+		if loadRatio < bestLoadRatio || (loadRatio == bestLoadRatio && bestScore < 0) {
 			bestLoadRatio = loadRatio
 			bestBackendID = id
+			bestScore = p.calculateScore(id)
+		} else if loadRatio == bestLoadRatio {
+			score := p.calculateScore(id)
+			if score > bestScore {
+				bestScore = score
+				bestBackendID = id
+			}
 		}
 	}
 

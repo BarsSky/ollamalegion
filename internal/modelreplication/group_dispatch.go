@@ -2,6 +2,7 @@ package modelreplication
 
 import (
 	"ollama-loadbalancer/pkg/logger"
+	"ollama-loadbalancer/pkg/types"
 )
 
 // GroupAwareSelector расширяет выбор бэкенда с учётом групп репликации.
@@ -66,7 +67,7 @@ func (s *GroupAwareSelector) GetGroupCandidates(modelName string) []string {
 
 	candidates := make([]string, 0, len(states))
 	for _, st := range states {
-		if st.Status == "loaded" {
+		if st.Status == types.ModelStateLoaded {
 			candidates = append(candidates, st.BackendID)
 		}
 	}

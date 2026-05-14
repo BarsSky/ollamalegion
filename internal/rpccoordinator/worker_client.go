@@ -1,0 +1,204 @@
+// Package rpccoordinator — Worker Client для взаимодействия с RPC worker'ами.
+package rpccoordinator
+
+import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"fmt"
+	"io"
+	"net/http"
+	"sync"
+	"time"
+)
+
+// WorkerClient — HTTP/gRPC клиент для вызова worker'а.
+type WorkerClient struct {
+	WorkerID   string
+	Host       string
+	Port       int
+	Protocol   string // "http" | "grpc"
+	SliceLayers string // "1-40" — какие слои обслуживает
+	httpClient *http.Client
+	mu         sync.RWMutex
+	healthy    bool
+	lastCheck  time.Time
+}
+
+// NewWorkerClient создаёт новый клиент worker'а.
+func NewWorkerClient(workerID, host string, port int, protocol string, httpClient *http.Client) *WorkerClient {
+	if protocol == "" {
+		protocol = "http"
+	}
+	if httpClient == nil {
+		httpClient = &http.Client{
+			Timeout: 30 * time.Second,
+		}
+	}
+	return &WorkerClient{
+		WorkerID:   workerID,
+		Host:       host,
+		Port:       port,
+		Protocol:   protocol,
+		httpClient: httpClient,
+		healthy:    true,
+		lastCheck:  time.Now(),
+	}
+}
+
+// BaseURL возвращает базовый URL worker'а.
+func (wc *WorkerClient) BaseURL() string {
+	return fmt.Sprintf("http://%s:%d", wc.Host, wc.Port)
+}
+
+// HealthCheck проверяет доступность worker'а.
+func (wc *WorkerClient) HealthCheck() (bool, error) {
+	url := fmt.Sprintf("%s/rpc/health", wc.BaseURL())
+	resp, err := wc.httpClient.Get(url)
+	if err != nil {
+		wc.setHealthy(false)
+		return false, err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		wc.setHealthy(false)
+		return false, fmt.Errorf("health check returned %d", resp.StatusCode)
+	}
+
+	wc.setHealthy(true)
+	return true, nil
+}
+
+// LoadSlice загружает срез модели на worker.
+func (wc *WorkerClient) LoadSlice(ctx context.Context, modelName string, layers string) error {
+	url := fmt.Sprintf("%s/rpc/load", wc.BaseURL())
+	reqBody := map[string]interface{}{
+		"model_name": modelName,
+		"layers":     layers,
+	}
+	body, err := json.Marshal(reqBody)
+	if err != nil {
+		return err
+	}
+
+	req, err := http.NewRequestWithContext(ctx, "POST", url, bytes.NewReader(body))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := wc.httpClient.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("load slice failed: %d: %s", resp.StatusCode, string(body))
+	}
+
+	wc.SliceLayers = layers
+	return nil
+}
+
+// UnloadSlice выгружает срез модели.
+func (wc *WorkerClient) UnloadSlice(ctx context.Context, modelName string) error {
+	url := fmt.Sprintf("%s/rpc/unload", wc.BaseURL())
+	reqBody := map[string]interface{}{
+		"model_name": modelName,
+	}
+	body, err := json.Marshal(reqBody)
+	if err != nil {
+		return err
+	}
+
+	req, err := http.NewRequestWithContext(ctx, "POST", url, bytes.NewReader(body))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := wc.httpClient.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("unload slice failed: %d: %s", resp.StatusCode, string(body))
+	}
+
+	return nil
+}
+
+// InferSlice выполняет inference среза модели.
+func (wc *WorkerClient) InferSlice(ctx context.Context, req SliceInferRequest) ([]byte, error) {
+	url := fmt.Sprintf("%s/rpc/infer", wc.BaseURL())
+	body, err := json.Marshal(req)
+	if err != nil {
+		return nil, err
+	}
+
+	httpReq, err := http.NewRequestWithContext(ctx, "POST", url, bytes.NewReader(body))
+	if err != nil {
+		return nil, err
+	}
+	httpReq.Header.Set("Content-Type", "application/json")
+
+	resp, err := wc.httpClient.Do(httpReq)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		respBody, _ := io.ReadAll(resp.Body)
+		return nil, fmt.Errorf("infer slice failed: %d: %s", resp.StatusCode, string(respBody))
+	}
+
+	return io.ReadAll(resp.Body)
+}
+
+// GetMetrics получает метрики worker'а.
+func (wc *WorkerClient) GetMetrics() (map[string]interface{}, error) {
+	url := fmt.Sprintf("%s/rpc/metrics", wc.BaseURL())
+	resp, err := wc.httpClient.Get(url)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("metrics returned %d", resp.StatusCode)
+	}
+
+	var metrics map[string]interface{}
+	if err := json.NewDecoder(resp.Body).Decode(&metrics); err != nil {
+		return nil, err
+	}
+	return metrics, nil
+}
+
+// IsHealthy возвращает последний статус здоровья.
+func (wc *WorkerClient) IsHealthy() bool {
+	wc.mu.RLock()
+	defer wc.mu.RUnlock()
+	return wc.healthy
+}
+
+func (wc *WorkerClient) setHealthy(v bool) {
+	wc.mu.Lock()
+	defer wc.mu.Unlock()
+	wc.healthy = v
+	wc.lastCheck = time.Now()
+}
+
+// LastCheck возвращает время последней проверки.
+func (wc *WorkerClient) LastCheck() time.Time {
+	wc.mu.RLock()
+	defer wc.mu.RUnlock()
+	return wc.lastCheck
+}

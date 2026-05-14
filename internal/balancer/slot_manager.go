@@ -9,6 +9,8 @@ import (
 
 // tryAcquireSlot — атомарная проверка и захват слота на бэкенде.
 // Возвращает true если слот успешно захвачен (ActiveReqs < MaxConcurrentReqs).
+// Если все слоты заняты, проверяет наличие зомби-сессий на бэкенде
+// и принудительно освобождает один слот (preemption).
 // Вызывающий код обязан вызвать releaseSlot после завершения запроса.
 func (p *Proxy) tryAcquireSlot(backendID string) bool {
 	p.mu.RLock()
@@ -30,7 +32,32 @@ func (p *Proxy) tryAcquireSlot(backendID string) bool {
 	if state.Backend.RuntimeMaxConcurrentRequests > 0 {
 		maxReqs = state.Backend.RuntimeMaxConcurrentRequests
 	}
+
 	if maxReqs > 0 && state.ActiveReqs >= maxReqs {
+		// Все слоты заняты — проверяем, не заняты ли они зомби-сессиями.
+		// Если на бэкенде есть зомби-сессия (HasActiveStream=true, но LastRequestAt > 60s),
+		// принудительно освобождаем слот для нового запроса.
+		zombies := p.sessionMgr.DetectZombieSessions(60 * time.Second)
+		for _, zombie := range zombies {
+			if zombie.BackendID == backendID {
+				logger.Get().Warnw("preempting zombie session slot for new request",
+					"backend", backendID,
+					"zombie_session_id", zombie.ID,
+					"zombie_last_request", zombie.LastRequestAt,
+				)
+				// Удаляем зомби-сессию и её слот будет переиспользован
+				p.sessionMgr.ForceRemove(zombie.ID)
+				// Уменьшаем ActiveReqs чтобы освободить место
+				if state.ActiveReqs > 0 {
+					state.ActiveReqs--
+				}
+				// Захватываем слот для нового запроса
+				state.ActiveReqs++
+				state.LastUsed = time.Now()
+				return true
+			}
+		}
+		// Нет зомби для preemption — действительно нет свободных слотов
 		return false
 	}
 

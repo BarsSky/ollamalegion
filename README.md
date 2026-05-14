@@ -265,30 +265,61 @@ TLS_AUTO_CERT=true
 ```
 ollama-loadbalancer/
 ├── cmd/
-│   ├── balancer/          # Балансировщик
-│   ├── agent/             # Агент
+│   ├── balancer/          # Балансировщик (main.go)
+│   ├── agent/             # Агент (main.go)
 │   └── monitor/           # Простой монитор (отдельный бинарник)
 ├── internal/
-│   ├── balancer/          # Логика балансировки (proxy, health, sessions, predictor)
-│   ├── agent/             # Сбор метрик GPU/CPU/RAM
+│   ├── balancer/          # Логика балансировки
+│   │   ├── proxy.go           # HTTP оркестратор (ServeHTTP)
+│   │   ├── backend_selector.go # 4-этапный выбор бэкенда (+ pre-step Model Replication)
+│   │   ├── backend_registry.go # CRUD бэкендов
+│   │   ├── backend_state.go    # Состояние бэкенда
+│   │   ├── candidate.go        # Candidate groups (P1-P4)
+│   │   ├── cluster_state.go    # Состояние кластера + метрики
+│   │   ├── eventbus.go         # Pub/sub событий
+│   │   ├── health.go           # Health checker
+│   │   ├── metrics.go          # Balancer metrics
+│   │   ├── model_instance_controller.go # Контроллер экземпляров
+│   │   ├── model_management.go # Управление моделями (pull/load/unload)
+│   │   ├── prewarm_controller.go # Превентивная загрузка
+│   │   ├── predictor.go        # Прогнозирование загрузки
+│   │   ├── proxy_request.go    # HTTP проксирование
+│   │   ├── queue_dispatch.go   # Dispatch очереди с 4 приоритетами
+│   │   ├── queue_manager.go    # Очередь + workers
+│   │   ├── router.go           # HTTP routing
+│   │   ├── rpc_modules.go      # RPC/Virtual/Replication модули
+│   │   ├── scoring.go          # Мультифакторный scoring
+│   │   ├── session_handler.go  # Session stickiness + rebalance
+│   │   ├── session_manager.go  # Session manager (TTL + cleanup)
+│   │   ├── slot_handler.go     # Slot acquisition + retry
+│   │   ├── slot_manager.go     # Slot management
+│   │   ├── streaming.go        # SSE streaming + heartbeat
+│   │   ├── unload_scheduler.go # LRU выгрузка моделей
+│   │   └── weight_tuner.go     # Адаптивный тюнер весов
+│   ├── agent/             # Сбор метрик GPU/CPU/RAM/Disk/Network
 │   ├── api/               # REST API + WebSocket
-│   └── config/            # Конфигурация
+│   ├── config/            # Конфигурация
+│   ├── modelreplication/  # Репликация моделей (ModelGroupManager)
+│   └── virtualmodel/      # Виртуальные модели (pipeline)
 ├── pkg/
-│   ├── logger/            # Библиотека логирования
+│   ├── logger/            # Библиотека логирования (zap)
 │   ├── protocol/          # Протокол коммуникации агент↔балансер
-│   └── types/             # Типы данных
+│   └── types/             # Типы данных (BackendMetrics, Config и т.д.)
 ├── docker/
 │   ├── balancer/          # Dockerfile балансировщика
 │   ├── agent/             # Dockerfile агента
 │   ├── cocoindex/         # CocoIndex embeddings
 │   └── webui/             # Dockerfile Web UI
-├── webui/                 # Web UI (dashboard, monitor, nginx)
+├── webui/                 # Web UI (dashboard, monitor, nginx, js, css)
 ├── deployments/           # Docker Compose конфигурации
 ├── tests/                 # Интеграционные и сценарные тесты
 ├── config/                # Примеры конфигураций
 ├── logo/                  # Логотип (png, svg)
+├── plans/                 # Архитектурные планы и дорожные карты
 ├── scripts/               # Скрипты сборки и развёртывания
-└── docs/                  # Документация (RU, EN, планы)
+└── docs/                  # Документация
+    ├── en/                # Английская документация
+    └── ru/                # Русская документация
 ```
 
 ---

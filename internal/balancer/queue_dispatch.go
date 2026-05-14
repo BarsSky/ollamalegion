@@ -23,6 +23,10 @@ type DispatchResult struct {
 //   3. Fallback (P4) - выбор по ресурсам без учёта модели
 func (p *Proxy) dispatchRequest(req *QueuedRequest) DispatchResult {
 	model := req.Model
+	queueWaitMs := time.Since(req.Enqueued).Milliseconds()
+	logger.Get().Debugw("dispatchRequest: starting dispatch",
+		"model", model, "queue_wait_ms", queueWaitMs)
+
 
 	// Получаем кандидатов с 4 приоритетами
 	candidates := p.expandCandidates(model)
@@ -173,27 +177,34 @@ func (p *Proxy) canAcceptRequest(backendID string) bool {
 }
 
 // waitForModelReady - ожидание загрузки модели с таймаутом и контекстом.
-// Использует polling с интервалом 500ms.
+// Использует backoff polling: 100ms → 250ms → 500ms → max 1s.
 func (p *Proxy) waitForModelReady(backendID, model string, timeout time.Duration) bool {
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
 
-	ticker := time.NewTicker(500 * time.Millisecond)
-	defer ticker.Stop()
+	intervals := []time.Duration{100 * time.Millisecond, 250 * time.Millisecond, 500 * time.Millisecond}
+	maxInterval := 1 * time.Second
 
 	// Мгновенная проверка
 	if p.checkModelReadyUnsafe(backendID, model) {
 		return true
 	}
 
+	attempt := 0
 	for {
+		interval := maxInterval
+		if attempt < len(intervals) {
+			interval = intervals[attempt]
+		}
+
 		select {
 		case <-ctx.Done():
 			return false
-		case <-ticker.C:
+		case <-time.After(interval):
 			if p.checkModelReadyUnsafe(backendID, model) {
 				return true
 			}
+			attempt++
 		}
 	}
 }

@@ -34,9 +34,10 @@ var defaultTrustedProxies = []string{
 	"fc00::/7", // IPv6 ULA
 }
 
-// initTrustedProxies — парсит CIDR из конфига + дефолты
-func (p *Proxy) initTrustedProxies() []*net.IPNet {
-	raw := p.config.LoadBalancer.TrustedProxies
+// parseTrustedProxyCIDRs — парсит CIDR из конфига + дефолты.
+// Вызывается один раз при создании Proxy, результат кешируется в p.trustedNets.
+func parseTrustedProxyCIDRs(configCIDRs []string) []*net.IPNet {
+	raw := configCIDRs
 	if len(raw) == 0 {
 		raw = defaultTrustedProxies
 	}
@@ -59,14 +60,14 @@ func (p *Proxy) initTrustedProxies() []*net.IPNet {
 	return nets
 }
 
-// isTrustedProxy — проверяет, что IP принадлежит доверенной сети
+// isTrustedProxy — проверяет, что IP принадлежит доверенной сети.
+// Использует кешированные trustedNets, распарсенные при создании Proxy.
 func (p *Proxy) isTrustedProxy(remoteIP string) bool {
 	ip := net.ParseIP(remoteIP)
 	if ip == nil {
 		return false
 	}
-	nets := p.initTrustedProxies()
-	for _, n := range nets {
+	for _, n := range p.trustedNets {
 		if n.Contains(ip) {
 			return true
 		}
@@ -74,16 +75,21 @@ func (p *Proxy) isTrustedProxy(remoteIP string) bool {
 	return false
 }
 
-// getClientRealIP - извлечение реального IP клиента с учётом reverse proxy заголовков
+// getClientRealIP - извлечение реального IP клиента с учётом reverse proxy заголовков.
+// Поддерживает AlwaysTrustProxyHeaders для окружений где балансер всегда за reverse proxy.
 func (p *Proxy) getClientRealIP(r *http.Request) string {
 	remoteIP, _, err := net.SplitHostPort(r.RemoteAddr)
 	if err != nil {
 		remoteIP = r.RemoteAddr
 	}
 
-	// Если прямой TCP-соединитель не из доверенных сетей — игнорируем XFF/X-Real-IP
-	// (защита от подделки заголовков при прямом доступе)
-	trustHeaders := p.isTrustedProxy(remoteIP)
+	// AlwaysTrustProxyHeaders — флаг для окружений где балансер всегда за nginx/traefik
+	// и RemoteAddr всегда от доверенного прокси. Принудительно доверяем XFF даже без проверки trustedProxies.
+	alwaysTrust := p.config.LoadBalancer.AlwaysTrustProxyHeaders
+
+	// Если прямой TCP-соединитель не из доверенных сетей и alwaysTrust выключен —
+	// игнорируем XFF/X-Real-IP (защита от подделки заголовков при прямом доступе)
+	trustHeaders := alwaysTrust || p.isTrustedProxy(remoteIP)
 
 	headers := p.config.LoadBalancer.ClientIPHeaders
 	if len(headers) == 0 {
@@ -103,7 +109,8 @@ func (p *Proxy) getClientRealIP(r *http.Request) string {
 					ip := strings.TrimSpace(parts[0])
 					if ip != "" {
 						logger.Get().Debugw("getClientRealIP: using X-Forwarded-For",
-							"remote_addr", remoteIP, "header", h, "value", val, "extracted_ip", ip, "trusted", trustHeaders)
+							"remote_addr", remoteIP, "header", h, "value", val, "extracted_ip", ip,
+							"trusted", trustHeaders, "always_trust", alwaysTrust)
 						return ip
 					}
 				}
@@ -111,7 +118,8 @@ func (p *Proxy) getClientRealIP(r *http.Request) string {
 				ip := strings.TrimSpace(val)
 				if ip != "" {
 					logger.Get().Debugw("getClientRealIP: using proxy header",
-						"remote_addr", remoteIP, "header", h, "extracted_ip", ip, "trusted", trustHeaders)
+						"remote_addr", remoteIP, "header", h, "extracted_ip", ip,
+						"trusted", trustHeaders, "always_trust", alwaysTrust)
 					return ip
 				}
 			}
@@ -122,24 +130,38 @@ func (p *Proxy) getClientRealIP(r *http.Request) string {
 	ip, _, err := net.SplitHostPort(r.RemoteAddr)
 	if err != nil {
 		logger.Get().Debugw("getClientRealIP: using remote_addr fallback",
-			"remote_addr", r.RemoteAddr, "trusted", trustHeaders, "headers_checked", headers)
+			"remote_addr", r.RemoteAddr, "trusted", trustHeaders,
+			"always_trust", alwaysTrust, "headers_checked", headers)
 		return r.RemoteAddr
 	}
 	logger.Get().Debugw("getClientRealIP: using remote_addr",
-		"remote_addr", ip, "trusted", trustHeaders, "headers_checked", headers)
+		"remote_addr", ip, "trusted", trustHeaders,
+		"always_trust", alwaysTrust, "headers_checked", headers)
 	return ip
 }
 
 // getClientFingerprint - генерация fingerprint клиента для разделения сессий
-// за одним IP (NAT/прокси). Использует Authorization header, Bearer token,
-// или генерирует случайный fingerprint из комбинации IP + User-Agent хеша.
+// за одним IP (NAT/прокси). Использует X-Client-ID, Authorization header,
+// X-Session-ID, или генерирует fingerprint из комбинации IP + User-Agent.
 func (p *Proxy) getClientFingerprint(r *http.Request) string {
-	// Приоритет: Bearer token из Authorization (OpenWebUI передаёт токен)
+	// Приоритет 1: X-Client-ID — явный идентификатор клиента (Cline передаёт)
+	if clientID := r.Header.Get("X-Client-ID"); clientID != "" {
+		h := sha256.Sum256([]byte(clientID))
+		return "cid:" + hex.EncodeToString(h[:8])
+	}
+	// Приоритет 2: Bearer token из Authorization (OpenWebUI передаёт токен на пользователя)
 	if auth := r.Header.Get("Authorization"); auth != "" {
 		h := sha256.Sum256([]byte(auth))
 		return "tkn:" + hex.EncodeToString(h[:8])
 	}
-	// Fallback: хеш от IP + User-Agent (лучше чем просто IP)
+	// Приоритет 3: X-Session-ID — уже назначенный балансером session ID
+	if sessionID := r.Header.Get("X-Session-ID"); sessionID != "" {
+		h := sha256.Sum256([]byte(sessionID))
+		return "sid:" + hex.EncodeToString(h[:8])
+	}
+	// Fallback: хеш от IP + User-Agent (без порта — стабильный для одного агента)
+	// NOTE: клиенты за одним NAT/IP с одинаковым UA будут иметь одинаковый fingerprint.
+	// Для различения им следует передавать X-Client-ID или уникальный Authorization token.
 	ip := p.getClientRealIP(r)
 	ua := r.UserAgent()
 	h := sha256.Sum256([]byte(ip + "::" + ua))
@@ -147,9 +169,16 @@ func (p *Proxy) getClientFingerprint(r *http.Request) string {
 }
 
 // getSessionID - получение ID сессии из запроса (стабильный, без эфемерного порта)
+// ВАЖНО: X-Client-ID комбинируется с IP и clientName, т.к. разные Cline-клиенты
+// отправляют одинаковый X-Client-ID, что приводило к слипанию сессий.
 func (p *Proxy) getSessionID(r *http.Request, clientName string) string {
+	realIP := p.getClientRealIP(r)
+
 	if clientID := r.Header.Get("X-Client-ID"); clientID != "" {
-		return clientID
+		// Комбинируем X-Client-ID с реальным IP — гарантирует уникальность сессий
+		// для разных клиентов за разными IP, даже с одинаковым X-Client-ID
+		h := sha256.Sum256([]byte(clientID + "::" + realIP))
+		return "cid:" + hex.EncodeToString(h[:16])
 	}
 	if sessionID := r.Header.Get("X-Session-ID"); sessionID != "" {
 		return sessionID
@@ -163,19 +192,55 @@ func (p *Proxy) getSessionID(r *http.Request, clientName string) string {
 }
 
 // getSessionIDWithModel - версия с учётом модели (используется при создании сессии)
+// ВАЖНО: X-Client-ID комбинируется с IP и моделью, т.к. разные Cline-клиенты
+// отправляют одинаковый X-Client-ID, что приводило к слипанию сессий.
+// Также учитываются X-Tab-ID, X-Request-ID и тип Ollama-эндпоинта для
+// различения параллельных запросов от одного клиента (разные вкладки/чаты).
 func (p *Proxy) getSessionIDWithModel(r *http.Request, clientName, model string) string {
+	realIP := p.getClientRealIP(r)
+
+	// Извлекаем тип endpoint для разделения сессий chat / generate / embed
+	endpointType := p.getOllamaEndpointType(r.URL.Path)
+
 	if clientID := r.Header.Get("X-Client-ID"); clientID != "" {
-		return clientID + "::" + model
+		// Приоритет 1: X-Client-ID + IP + модель + endpoint type + tab/request ID
+		tabID := r.Header.Get("X-Tab-ID")
+		requestID := r.Header.Get("X-Request-ID")
+		composite := clientID + "::" + realIP + "::" + model + "::" + endpointType
+		if tabID != "" {
+			composite += "::tab:" + tabID
+		}
+		if requestID != "" {
+			composite += "::req:" + requestID
+		}
+		h := sha256.Sum256([]byte(composite))
+		return "cid:" + hex.EncodeToString(h[:16]) + "::" + model
 	}
 	if sessionID := r.Header.Get("X-Session-ID"); sessionID != "" {
-		return sessionID + "::" + model
+		return sessionID + "::" + model + "::" + endpointType
 	}
 	if cookie, err := r.Cookie("session_id"); err == nil {
-		return cookie.Value + "::" + model
+		return cookie.Value + "::" + model + "::" + endpointType
 	}
 
 	fp := p.getClientFingerprint(r)
-	return fp + "::" + clientName + "::" + model
+	return fp + "::" + clientName + "::" + model + "::" + endpointType
+}
+
+// getOllamaEndpointType — определяет тип Ollama эндпоинта для разделения сессий.
+// Разные типы запросов (/api/chat, /api/generate, /api/embed) не должны
+// блокировать друг друга в рамках одного клиента.
+func (p *Proxy) getOllamaEndpointType(path string) string {
+	switch {
+	case strings.HasPrefix(path, "/api/chat"):
+		return "chat"
+	case strings.HasPrefix(path, "/api/generate"):
+		return "gen"
+	case strings.HasPrefix(path, "/api/embed"):
+		return "emb"
+	default:
+		return "api"
+	}
 }
 
 // getClientName - извлечение имени клиента из запроса (Cline, OpenWebUI, etc.)

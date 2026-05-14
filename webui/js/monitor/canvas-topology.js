@@ -9,22 +9,102 @@
   var ttEl = document.getElementById('topoTooltip');
   var af = 0;
 
+  // Pan state
+  var panning = false;
+  var panStartX = 0, panStartY = 0;
+  var panViewportStart = { offsetX: 0, offsetY: 0 };
+
   function rsz() {
     var r = cv.parentElement.getBoundingClientRect();
+    var h = Math.max(100, r.height - 52);
     cv.width = r.width;
-    cv.height = r.height;
+    cv.height = h;
+    cv.style.height = h + 'px';
     MA.topo.w = r.width;
-    MA.topo.h = r.height - 52;
+    MA.topo.h = h;
   }
   window.addEventListener('resize', rsz);
   rsz();
 
-  function updateTopology(bk, ss, q) {
+  function updateTopology(bk, ss, q, recentClients, warmingUpModels) {
     MA.topo.backends = bk;
     MA.topo.sessions = ss;
     MA.topo.queue = q;
+    MA.topo.recentClients = recentClients || [];
+    MA.topo.warmingUpModels = warmingUpModels || [];
   }
   window.updateTopology = updateTopology;
+
+  // --- Pan: drag on empty canvas area ---
+
+  function hitTestNodes(worldX, worldY) {
+    var w = MA.topo.w, h = MA.topo.h, cX = w / 2, cY = h / 2;
+    // Check client boxes
+    for (var i = MA.topo.sessions.length - 1; i >= 0; i--) {
+      var y = MA.nY('session', i);
+      if (worldX >= 12 && worldX <= 132 && worldY >= y - 22 && worldY <= y + 22) return true;
+    }
+    // Check backend boxes
+    for (var i = MA.topo.backends.length - 1; i >= 0; i--) {
+      var y = MA.nY('backend', i);
+      if (worldX >= w - 140 && worldX <= w - 12 && worldY >= y - 26 && worldY <= y + 26) return true;
+    }
+    // Check balancer box
+    var bw = MA.GEOM.bw, bh = MA.GEOM.bh, bx = cX - bw / 2, by = cY - bh / 2;
+    if (worldX >= bx - 4 && worldX <= bx + bw + 4 && worldY >= by - 4 && worldY <= by + bh + 4) return true;
+    return false;
+  }
+
+  cv.addEventListener('mousedown', function(e) {
+    var rect = cv.getBoundingClientRect();
+    var mx = e.clientX - rect.left;
+    var my = e.clientY - rect.top;
+    var wPos = MA.toWorld(mx, my);
+    // If user clicked on a node, don't pan — let tooltip handle it
+    if (hitTestNodes(wPos.x, wPos.y)) return;
+    e.preventDefault();
+    panning = true;
+    panStartX = e.clientX;
+    panStartY = e.clientY;
+    panViewportStart.offsetX = MA.viewport.offsetX;
+    panViewportStart.offsetY = MA.viewport.offsetY;
+    cv.style.cursor = 'grabbing';
+  });
+
+  window.addEventListener('mousemove', function(e) {
+    if (!panning) return;
+    var dx = e.clientX - panStartX;
+    var dy = e.clientY - panStartY;
+    MA.viewport.offsetX = panViewportStart.offsetX + dx;
+    MA.viewport.offsetY = panViewportStart.offsetY + dy;
+  });
+
+  window.addEventListener('mouseup', function(e) {
+    if (panning) {
+      panning = false;
+      cv.style.cursor = '';
+    }
+  });
+
+  // --- Zoom: mouse wheel ---
+
+  cv.addEventListener('wheel', function(e) {
+    e.preventDefault();
+    var rect = cv.getBoundingClientRect();
+    var mx = e.clientX - rect.left;
+    var my = e.clientY - rect.top;
+    var vp = MA.viewport;
+    // World position under cursor
+    var worldX = (mx - vp.offsetX) / vp.scale;
+    var worldY = (my - vp.offsetY) / vp.scale;
+    // Determine zoom direction
+    var factor = e.deltaY > 0 ? 1 / 1.1 : 1.1;
+    var newScale = Math.min(vp.maxScale, Math.max(vp.minScale, vp.scale * factor));
+    // Adjust offset so the world point stays under the cursor
+    vp.offsetX = mx - worldX * newScale;
+    vp.offsetY = my - worldY * newScale;
+    vp.scale = newScale;
+  }, { passive: false });
 
   function isLightTheme() {
     return document.documentElement.getAttribute('data-theme') === 'light';
@@ -35,14 +115,16 @@
     var rect = cv.getBoundingClientRect();
     var mx = e.clientX - rect.left;
     var my = e.clientY - rect.top;
+    var wp = MA.toWorld(mx, my);
+    var wx = wp.x, wy = wp.y;
     var w = MA.topo.w, h = MA.topo.h, cX = w / 2, cY = h / 2;
     var found = null;
 
     // Check client boxes (left side)
     for (var i = MA.topo.sessions.length - 1; i >= 0; i--) {
       var s = MA.topo.sessions[i];
-      var y = nY('session', i);
-      if (mx >= 12 && mx <= 132 && my >= y - 22 && my <= y + 22) {
+      var y = MA.nY('session', i);
+      if (wx >= 12 && wx <= 132 && wy >= y - 22 && wy <= y + 22) {
         found = { type: 'client', session: s };
         break;
       }
@@ -51,8 +133,8 @@
     if (!found) {
       for (var i = MA.topo.backends.length - 1; i >= 0; i--) {
         var b = MA.topo.backends[i];
-        var y = nY('backend', i);
-        if (mx >= w - 140 && mx <= w - 12 && my >= y - 26 && my <= y + 26) {
+        var y = MA.nY('backend', i);
+        if (wx >= w - 140 && wx <= w - 12 && wy >= y - 26 && wy <= y + 26) {
           found = { type: 'backend', backend: b };
           break;
         }
@@ -60,8 +142,8 @@
     }
     // Check balancer box
     if (!found) {
-      var bw = 180, bh = 100, bx = cX - bw / 2, by = cY - bh / 2;
-      if (mx >= bx - 4 && mx <= bx + bw + 4 && my >= by - 4 && my <= by + bh + 4) {
+      var bw = MA.GEOM.bw, bh = MA.GEOM.bh, bx = cX - bw / 2, by = cY - bh / 2;
+      if (wx >= bx - 4 && wx <= bx + bw + 4 && wy >= by - 4 && wy <= by + bh + 4) {
         var pend = MA.topo.queue.pending_count || 0;
         var proc = MA.topo.queue.processing_count || 0;
         found = { type: 'balancer', pending: pend, processing: proc, total: (MA.topo.queue.all || []).length };
@@ -141,7 +223,7 @@
     if (now - lastSpawnTime < SPAWN_INTERVAL_MS) return;
     lastSpawnTime = now;
 
-    var bw = 180, bh = 100;
+    var bw = MA.GEOM.bw, bh = MA.GEOM.bh;
     var balInX = cX - bw / 2, balOutX = cX + bw / 2;
     var byTop = cY - bh / 2, byBot = cY + bh / 2;
 
@@ -151,9 +233,9 @@
       if (cn.indexOf('monitor') >= 0 || cn.indexOf('health') >= 0 || cn.indexOf('kube') >= 0) return;
       var idleMs = s.lastRequestAt ? (now - new Date(s.lastRequestAt).getTime()) : 999999;
       if (idleMs > 30000) return;
-      var sy = nY('session', i);
-      var sX = 140;
-      var tX = sX + (balInX - sX) * 0.65;
+      var sy = MA.nY('session', i);
+      var sX = MA.GEOM.clientX;
+      var tX = sX + (balInX - sX) * 0.55;
       if (Math.random() < 0.08) {
         spawnParticle([
           {x: sX, y: sy},
@@ -164,13 +246,13 @@
       }
     });
 
-    // --- Processing particles: balancer -> backend elbow -> backend
+    // --- Processing particles: balancer -> elbow (50%) -> backend
     MA.topo.backends.forEach(function(b, i) {
       var active = b.activeRequests || 0;
       if (active <= 0) return;
-      var by = nY('backend', i);
-      var eX = MA.topo.w - 140;
-      var tX = balOutX + (eX - balOutX) * 0.35;
+      var by = MA.nY('backend', i);
+      var eX = MA.GEOM.backendX(MA.topo.w);
+      var tX = balOutX + (eX - balOutX) * 0.5;
       var prob = Math.min(active * 0.08, 0.40);
       if (Math.random() < prob) {
         spawnParticle([
@@ -208,38 +290,36 @@
     }
   }
 
-  function nY(type, i) {
-    var cnt = type === 'session' ? Math.max(1, MA.topo.sessions.length) : Math.max(1, MA.topo.backends.length);
-    var m = 80, av = MA.topo.h - m * 2;
-    // Минимальный отступ 30px между линиями, чтобы избежать наложения при 5+ узлах
-    var minSpacing = 30;
-    var st = Math.max(minSpacing, av / Math.max(1, cnt - 1));
-    // Если шаг превышает доступную высоту, центрируем группу
-    var totalHeight = (cnt - 1) * st;
-    var offset = Math.max(0, (av - totalHeight) / 2);
-    return m + offset + i * st;
-  }
-
-
   function drawTopo() {
     var w = MA.topo.w, h = MA.topo.h;
     if (!w || !h) return;
+    var vp = MA.viewport;
     var lt = isLightTheme();
-    cx.clearRect(0, 0, w, h);
+
+    cx.save();
+    cx.setTransform(vp.scale, 0, 0, vp.scale, vp.offsetX, vp.offsetY);
+    cx.clearRect(-vp.offsetX / vp.scale, -vp.offsetY / vp.scale, w / vp.scale, h / vp.scale);
+
+    // Draw grid in world coordinates
+    var gCell = 40;
+    var gx0 = Math.floor((-vp.offsetX / vp.scale) / gCell) * gCell;
+    var gy0 = Math.floor((-vp.offsetY / vp.scale) / gCell) * gCell;
+    var gx1 = Math.ceil((w - vp.offsetX) / vp.scale);
+    var gy1 = Math.ceil((h - vp.offsetY) / vp.scale);
     cx.strokeStyle = lt ? 'rgba(0,0,0,0.05)' : 'rgba(255,255,255,0.03)';
-    cx.lineWidth = 1;
-    for (var x = 0; x < w; x += 40) { cx.beginPath(); cx.moveTo(x, 0); cx.lineTo(x, h); cx.stroke(); }
-    for (var y = 0; y < h; y += 40) { cx.beginPath(); cx.moveTo(0, y); cx.lineTo(w, y); cx.stroke(); }
+    cx.lineWidth = 1 / vp.scale;
+    for (var gx = gx0; gx <= gx1; gx += gCell) { cx.beginPath(); cx.moveTo(gx, gy0); cx.lineTo(gx, gy1); cx.stroke(); }
+    for (var gy = gy0; gy <= gy1; gy += gCell) { cx.beginPath(); cx.moveTo(gx0, gy); cx.lineTo(gx1, gy); cx.stroke(); }
     var cX = w / 2, cY = h / 2;
     cx.setLineDash([5, 3]);
 
-    var bw = 180, bh = 100;
+    var bw = MA.GEOM.bw, bh = MA.GEOM.bh;
     var balInX = cX - bw / 2, balOutX = cX + bw / 2;
 
     MA.topo.sessions.forEach(function(s, i) {
-      var y = nY('session', i), tc = s.backendId ? 'rgba(59,130,246,0.25)' : 'rgba(148,163,184,0.18)';
+      var y = MA.nY('session', i), tc = s.backendId ? 'rgba(59,130,246,0.25)' : 'rgba(148,163,184,0.18)';
       cx.strokeStyle = tc; cx.lineWidth = s.backendId ? 3 : 2;
-      var tX = 140 + (balInX - 140) * 0.65, sX = 140, eX = balInX, eY = cY;
+      var sX = MA.GEOM.clientX, tX = sX + (balInX - sX) * 0.55, eX = balInX, eY = cY;
       cx.beginPath(); cx.moveTo(sX, y); cx.lineTo(tX, y); cx.stroke();
       cx.beginPath(); cx.moveTo(tX, y); cx.lineTo(tX, eY); cx.stroke();
       cx.beginPath(); cx.moveTo(tX, eY); cx.lineTo(eX, eY); cx.stroke();
@@ -248,18 +328,20 @@
     });
 
     MA.topo.backends.forEach(function(b, i) {
-      var y = nY('backend', i), ih = b.status === 'active' || b.status === 'healthy' || b.status === 'ready', isOllamaUnavailable = b.status === 'ollama_unavailable', tc = ih ? 'rgba(59,130,246,0.25)' : (isOllamaUnavailable ? 'rgba(249,115,22,0.25)' : 'rgba(239,68,68,0.25)');
+      var y = MA.nY('backend', i), ih = b.status === 'active' || b.status === 'healthy' || b.status === 'ready', isOllamaUnavailable = b.status === 'ollama_unavailable', tc = ih ? 'rgba(59,130,246,0.25)' : (isOllamaUnavailable ? 'rgba(249,115,22,0.25)' : 'rgba(239,68,68,0.25)');
       cx.strokeStyle = tc; cx.lineWidth = ih ? 3 : 2;
-      var sX = balOutX, sY = cY, tX = sX + (w - 140 - sX) * 0.35, eX = w - 140;
-      cx.beginPath(); cx.moveTo(sX, sY); cx.lineTo(sX, y); cx.stroke();
-      cx.beginPath(); cx.moveTo(sX, y); cx.lineTo(eX, y); cx.stroke();
-      cx.fillStyle = tc.replace('0.25', '0.5'); cx.beginPath(); cx.arc(sX, y, 5, 0, Math.PI * 2); cx.fill();
+      var sX = balOutX, sY = cY, eX = MA.GEOM.backendX(w), tX = sX + (eX - sX) * 0.5;
+      cx.beginPath(); cx.moveTo(sX, sY); cx.lineTo(tX, sY); cx.stroke();
+      cx.beginPath(); cx.moveTo(tX, sY); cx.lineTo(tX, y); cx.stroke();
+      cx.beginPath(); cx.moveTo(tX, y); cx.lineTo(eX, y); cx.stroke();
+      cx.fillStyle = tc.replace('0.25', '0.5'); cx.beginPath(); cx.arc(tX, y, 5, 0, Math.PI * 2); cx.fill();
+      cx.fillStyle = tc.replace('0.25', '0.5'); cx.beginPath(); cx.arc(tX, sY, 4, 0, Math.PI * 2); cx.fill();
     });
 
     cx.setLineDash([]);
     var textLight = lt ? '#1e293b' : '#e2e8f0', textMuted = lt ? '#475569' : '#b0b7c4';
     MA.topo.sessions.forEach(function(s, i) {
-      var y = nY('session', i), ia = s.backendId != null, isCloud = MA.isCloudModel(s.model);
+      var y = MA.nY('session', i), ia = s.backendId != null, isCloud = MA.isCloudModel(s.model);
       var bc, br;
       if (isCloud) { bc = 'rgba(59,130,246,0.15)'; br = 'rgba(59,130,246,0.45)'; }
       else if (ia) { bc = 'rgba(59,130,246,0.18)'; br = 'rgba(59,130,246,0.5)'; }
@@ -283,10 +365,14 @@
     cx.fillStyle = qr > 0.75 ? '#ef4444' : '#60a5fa'; MA.rr(cx, qbX, qbY, qbW * qr, qbH, 4); cx.fill();
     var backendIdleTxt = lt ? '#1e293b' : '#fff';
     MA.topo.backends.forEach(function(b, i) {
-      var y = nY('backend', i), ih = b.status === 'active' || b.status === 'healthy' || b.status === 'ready';
+      var y = MA.nY('backend', i), ih = b.status === 'active' || b.status === 'healthy' || b.status === 'ready';
       var isOllamaUnavailable = b.status === 'ollama_unavailable';
+      var isWarming = (b.warmingUpModels && b.warmingUpModels.length > 0) || b.status === 'warming_up';
       var bc, br;
-      if (ih) {
+      if (isWarming) {
+        bc = 'rgba(249,115,22,0.15)';
+        br = 'rgba(249,115,22,0.6)';
+      } else if (ih) {
         bc = b.activeRequests > 0 ? 'rgba(245,158,11,0.15)' : 'rgba(34,197,94,0.12)';
         br = b.activeRequests > 0 ? 'rgba(245,158,11,0.4)' : 'rgba(34,197,94,0.4)';
       } else if (isOllamaUnavailable) {
@@ -296,13 +382,18 @@
         bc = 'rgba(239,68,68,0.12)';
         br = 'rgba(239,68,68,0.4)';
       }
-      cx.fillStyle = bc; MA.rr(cx, w - 140, y - 26, 128, 52, 8); cx.fill(); cx.strokeStyle = br; cx.lineWidth = 1.5; cx.stroke();
+      cx.fillStyle = bc; MA.rr(cx, w - 140, y - 26, 128, 52, 8); cx.fill(); cx.strokeStyle = br; cx.lineWidth = isWarming ? 2.5 : 1.5; cx.stroke();
       cx.fillStyle = backendIdleTxt; cx.font = 'bold 11px ' + MA.vF(); cx.textAlign = 'left'; cx.fillText(MA.trunc(b.id, 12), w - 132, y - 10);
       var mr = b.maxConcurrentRequests || 10, a = b.activeRequests || 0, l = a / mr;
       cx.fillStyle = l >= 0.8 ? '#ef4444' : l >= 0.5 ? '#f59e0b' : '#22c55e'; cx.font = '10px ' + MA.vF();
       cx.fillText(a > 0 ? '⏳ ' + a + '/' + mr : '✅ Idle', w - 132, y + 6);
       var mc = (b.models || []).length;
-      if (mc > 0) { cx.fillStyle = '#a855f7'; cx.font = '9px ' + MA.vF(); cx.fillText('🧠 ' + mc + MA.T('models_lower'), w - 132, y + 20); }
+      var wmCount = (b.warmingUpModels || []).length;
+      if (isWarming) {
+        cx.fillStyle = '#f97316'; cx.font = 'bold 9px ' + MA.vF();
+        var wmLabel = wmCount > 1 ? wmCount + ' ' + MA.T('monitor.canvas.warmingModels') : MA.T('monitor.canvas.warming');
+        cx.fillText('⏳ ' + wmLabel, w - 132, y + 20);
+      } else if (mc > 0) { cx.fillStyle = '#a855f7'; cx.font = '9px ' + MA.vF(); cx.fillText('🧠 ' + mc + MA.T('models_lower'), w - 132, y + 20); }
       else if (ih && a > 0) { cx.fillStyle = '#f97316'; cx.font = '9px ' + MA.vF(); cx.fillText(MA.T('loading'), w - 132, y + 20); }
       var vp = b.vram ? b.vram.usagePercent : 0;
       if (vp > 0) { cx.fillStyle = lt ? 'rgba(0,0,0,0.06)' : 'rgba(255,255,255,0.06)'; MA.rr(cx, w - 132, y + 26, 100, 3, 2); cx.fill(); cx.fillStyle = vp > 85 ? '#ef4444' : vp > 60 ? '#f59e0b' : '#22c55e'; MA.rr(cx, w - 132, y + 26, 100 * (vp / 100), 3, 2); cx.fill(); }
@@ -321,10 +412,10 @@
       var segLen = 1.0 / segCount;
       var segIdx = Math.min(Math.floor(et / segLen), segCount - 1);
       var segT = (et - segIdx * segLen) / segLen;
-      var segT2 = 1 - Math.pow(1 - segT, 3);
+      // Линейная интерполяция в пределах каждого сегмента — частицы идут строго по линиям
       var p0 = path[segIdx], p1 = path[segIdx + 1];
-      p.x = p0.x + (p1.x - p0.x) * segT2;
-      p.y = p0.y + (p1.y - p0.y) * segT2;
+      p.x = p0.x + (p1.x - p0.x) * segT;
+      p.y = p0.y + (p1.y - p0.y) * segT;
       var pColor, pSize;
       switch (p.type) {
         case 'request': pColor = '#60a5fa'; pSize = 3; break;
@@ -352,6 +443,8 @@
       cx.fillText(MA.T('monitor.overlay.topologyNoData'), w / 2, h / 2 + 80);
       cx.font = '12px ' + MA.vF(); cx.fillText(MA.T('monitor.overlay.topologyHint'), w / 2, h / 2 + 100);
     }
+
+    cx.restore();
   }
 
   window.drawTopo = drawTopo;

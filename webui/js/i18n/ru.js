@@ -105,6 +105,8 @@ window.I18N_RU = {
   "backends.test_success": "Бэкенд {name} доступен",
   "backends.test_fail": "Бэкенд {name} не отвечает",
   "backends.testing": "Проверка {name}...",
+  "backends.host": "Хост",
+  "backends.agent_port": "Порт агента",
 
   // Models
   "models.title": "Модели",
@@ -246,6 +248,7 @@ window.I18N_RU = {
   "settings.rpc_coordinator_port": "Worker Port",
   "settings.rpc_coordinator_protocol": "Protocol",
   "settings.rpc_coordinator_timeout": "Timeout",
+  "settings.rpc_coordinator_retries": "Max Retries",
   "settings.virtual_models_title": "Virtual Model Router (Вариант C)",
   "settings.virtual_models_desc": "Pipeline parallelism через срезы модели. Виртуальные модели с последовательной/параллельной координацией срезов.",
   "settings.virtual_models_coord_mode": "Coordination Mode",
@@ -295,6 +298,19 @@ window.I18N_RU = {
   "wizard.success": "Настройка завершена!",
   "wizard.retake": "Пройти настройку заново",
   "wizard.retake_confirm": "Все текущие настройки будут сброшены. Продолжить?",
+  "wizard.examples_title": "Примеры конфигурации",
+  "wizard.preview_title": "Превью изменений",
+  "wizard.params_title": "Параметры режима",
+  "wizard.apply": "Применить и сохранить",
+  "wizard.applying": "Применение...",
+  "wizard.error": "Ошибка применения режима",
+  "wizard.mode_applied": "Режим успешно применён",
+  "wizard.param_docs_title": "Справка по параметрам",
+  "wizard.param_name": "Параметр",
+  "wizard.param_desc": "Описание",
+  "wizard.param_values": "Возможные значения",
+  "wizard.json_example_title": "Пример конфигурации (JSON)",
+  "wizard.validation_error": "Ошибка валидации",
 
   // ===== Config Import/Export (NEW) =====
   "config.export": "Экспорт конфигурации",
@@ -316,6 +332,21 @@ window.I18N_RU = {
   "settings.section.io": "Импорт / Экспорт",
   "settings.section.danger": "Danger Zone",
   "settings.section.help": "Справка",
+  "settings.section.agent": "Настройки агентов",
+  "settings.section.backend_limits": "Лимиты бэкендов",
+
+  // Backend Limits Settings
+  "settings.backend_limits_desc": "Настройка максимального числа параллельных запросов и моделей для каждого бэкенда. Для бэкендов без агента лимиты применяются только на уровне балансировщика.",
+  "settings.backend_limits_max_concurrent": "Макс. параллельно",
+  "settings.backend_limits_max_models": "Макс. моделей",
+  "settings.save_backend_limits": "Сохранить лимиты бэкендов",
+
+  // Agent Settings
+  "settings.agent.collect_interval": "Интервал сбора (сек)",
+  "settings.agent.heartbeat_interval": "Интервал heartbeat (сек)",
+  "settings.agent.max_concurrent": "Макс. параллельных запросов",
+  "settings.agent.max_models": "Макс. моделей",
+  "settings.agent.timeout": "Таймаут агента (сек)",
 
   // Monitor
   "monitor.status.live": "Загружен",
@@ -364,8 +395,8 @@ window.I18N_RU = {
   "monitor.panel.modelsInMemory": "🧠 Модели в памяти",
   "monitor.panel.backends": "🖥️ Бэкенды",
   "monitor.panel.queue": "📋 Очередь",
-  "monitor.panel.dispatch": "⚡ Dispatch Stats",
-  "monitor.panel.autoPull": "⚡ Auto-Pull (Pull-on-Demand)",
+  "monitor.panel.dispatch": "⚡ Статистика Dispatch",
+  "monitor.panel.autoPull": "⚡ Auto-Pull (Загрузка по требованию)",
 
   "monitor.autoPull.enabled": "🔌 Auto-Pull",
   "monitor.autoPull.on": "Вкл",
@@ -385,9 +416,17 @@ window.I18N_RU = {
   "monitor.autoPull.table.status": "Статус",
   "monitor.autoPull.table.error": "Ошибка",
 
+  "monitor.panel.modelOps": "🔧 Операции с моделями",
   "monitor.panel.sessions": "👤 Сессии",
+  "monitor.panel.candidates": "🎯 Кандидаты бэкендов",
+  "monitor.panel.feasibility": "📊 Загрузка и возможности",
+  "monitor.panel.diskNetwork": "💾 Диск / 🌐 Сеть",
 
-  "monitor.dispatch.title": "⚡ Dispatch Stats",
+  "monitor.table.loading": "Загрузка",
+  "monitor.table.operation": "Операция",
+
+
+  "monitor.dispatch.title": "⚡ Статистика Dispatch",
   "monitor.dispatch.modelAffinity": "Model Affinity",
   "monitor.dispatch.resourceAware": "Resource-Aware",
   "monitor.dispatch.weightConfig": "Weight/Config",
@@ -440,6 +479,8 @@ window.I18N_RU = {
   "monitor.canvas.clients": "Клиенты",
   "monitor.canvas.backends": "Бэкенды",
   "monitor.canvas.rpsLabel": "RPS: {rps} | Активных: {active}/{max}",
+  "monitor.canvas.warming": "разогрев",
+  "monitor.canvas.warmingModels": "моделей разогревается",
 
   "monitor.rebalance.disabled": "[Demo] Принудительное перераспределение недоступно в демо-режиме.",
   "monitor.rebalance.success": "Перераспределение инициировано. Запросы в очереди будут перенаправлены на свободные бэкенды.",
@@ -572,6 +613,79 @@ window.I18N_RU = {
 
   // predictionAlerts
   "renderers.no_active_alerts": "Нет активных предупреждений",
+  "renderers.digest": "Digest",
+  "renderers.expires": "Истекает",
+  "renderers.expired": "Истёк",
+  "renderers.no_candidate_data": "Нет данных о кандидатах",
+
+  // ===== Исправления локализации (2026-05-12) =====
+  "monitor.feasibility.canLoad": "Можно загрузить:",
+  "monitor.feasibility.cannotLoad": "Не хватает VRAM:",
+  "monitor.feasibility.modeCpu": "CPU",
+  "monitor.feasibility.modeGpu": "GPU",
+  "monitor.feasibility.noCapacity": "Нет данных о ёмкости",
+  "monitor.feasibility.vramShort": "VRAM",
+  "monitor.feasibility.vram": "VRAM",
+  "monitor.feasibility.freeVram": "Свободно VRAM",
+  "monitor.feasibility.loadable": "Можно загрузить",
+  "monitor.feasibility.available": "Доступно",
+
+  "monitor.models.expired": "Истёк",
+  "monitor.models.cloudNA": "N/A",
+
+  "monitor.autoPull.statusDone": "Готово",
+  "monitor.autoPull.statusError": "Ошибка",
+  "monitor.autoPull.statusPulling": "Загрузка...",
+
+  "monitor.candidates.ready": "Готов",
+  "monitor.candidates.warming": "Разогрев",
+  "monitor.candidates.p1Loaded": "LOADED",
+  "monitor.candidates.p2Warming": "WARMING",
+  "monitor.candidates.p3Free": "FREE",
+  "monitor.candidates.p4Fallback": "FALLBACK",
+
+  "monitor.common.error": "Ошибка",
+
+  "monitor.diskNetwork.disk": "Диск",
+  "monitor.diskNetwork.network": "Сеть",
+  "monitor.diskNetwork.used": "Использовано",
+  "monitor.diskNetwork.free": "Свободно",
+  "monitor.diskNetwork.rx": "RX",
+  "monitor.diskNetwork.tx": "TX",
+
+  "vm.jobRunning": "Выполняется",
+
+  "renderers.cpuMode": "CPU",
+  "renderers.gpuMode": "GPU",
+  "renderers.throttledYes": "⚠️ ДА",
+  "renderers.throttledOk": "OK",
+  "renderers.cloud": "облако",
+  "renderers.active": "Активен",
+  "renderers.minutes": "м",
+
+  "common.ok": "OK",
+  "common.edit": "Редактировать",
+  "common.delete": "Удалить",
+  "common.load": "Загрузить",
+  "common.loaded": "Загружено",
+  "common.notLoaded": "Не загружено",
+
+  // ===== Disk/Network details (NEW) =====
+  "renderers.section_disk_network": "💾 Диск / 🌐 Сеть",
+  "renderers.disk_total": "Всего на диске",
+  "renderers.disk_used": "Использовано диска",
+  "renderers.disk_free": "Свободно на диске",
+  "renderers.network_rx": "Сеть RX",
+  "renderers.network_tx": "Сеть TX",
+
+  "renderers.section_gpu": "Метрики GPU",
+  "renderers.section_system": "Метрики системы",
+  "renderers.common_in": "через",
+
+  // ===== Model details in grid (NEW) =====
+  "models.format": "Формат",
+  "models.parameter_size": "Параметры",
+  "models.digest": "Digest",
 
   // Virtual Models
   "vm.title": "🧩 Виртуальные модели",

@@ -1,6 +1,8 @@
 package balancer
 
 import (
+	"fmt"
+	"sort"
 	"sync/atomic"
 	"time"
 
@@ -25,6 +27,7 @@ func (p *Proxy) GetClusterState() *types.ClusterState {
 		Timestamp:       time.Now().UTC(),
 		TotalBackends:   len(backendsCopy),
 		HealthyBackends: 0,
+		OperatingMode:   p.config.Balancing.OperatingMode,
 		Backends:        make([]types.BackendMetrics, 0, len(backendsCopy)),
 	}
 
@@ -62,11 +65,20 @@ func (p *Proxy) GetClusterState() *types.ClusterState {
 		}
 
 		if agentMetrics, ok := p.metricsMgr.metrics[id]; ok {
+			// Сохраняем конфигурационные поля из backendConfig до перезаписи agent-метрик
+			savedHost := metrics.Host
+			savedOllamaPort := metrics.OllamaPort
+			savedMaxConcurrent := metrics.MaxConcurrentRequests
+
 			metrics = *agentMetrics
+
+			// Восстанавливаем конфигурационные поля — агент не отправляет их
+			metrics.Host = savedHost
+			metrics.OllamaPort = savedOllamaPort
+			metrics.MaxConcurrentRequests = savedMaxConcurrent
 			metrics.Status = status
 			metrics.HasAgent = hasAgent
 			metrics.Prediction = prediction
-			metrics.MaxConcurrentRequests = maxConcurrent
 			metrics.Models = make([]string, 0, len(metrics.Ollama.RunningModels))
 			for _, m := range metrics.Ollama.RunningModels {
 				metrics.Models = append(metrics.Models, m.Name)
@@ -87,18 +99,31 @@ func (p *Proxy) GetClusterState() *types.ClusterState {
 			} else {
 				state.RPS += agentMetrics.Ollama.RequestsPerSecond
 			}
-			metrics.Ollama.TotalRequests = backendState.TotalRequests
+			metrics.Ollama.TotalRequests = atomic.LoadInt64(&backendState.TotalRequests)
 			backendState.mu.Unlock()
 			state.TotalGPUUsage += agentMetrics.GPU.UsagePercent
 		} else {
 			metrics.MaxConcurrentRequests = backendConfig.MaxConcurrentReqs
 			backendState.mu.Lock()
-			metrics.Ollama.TotalRequests = backendState.TotalRequests
+			metrics.Ollama.TotalRequests = atomic.LoadInt64(&backendState.TotalRequests)
 			backendState.mu.Unlock()
 		}
 
+		// --- WarmingUpModels для монитора ---
+		backendState.mu.Lock()
+		if len(backendState.WarmingUpModels) > 0 {
+			metrics.WarmingUpModels = make([]string, 0, len(backendState.WarmingUpModels))
+			for model := range backendState.WarmingUpModels {
+				metrics.WarmingUpModels = append(metrics.WarmingUpModels, model)
+			}
+		}
+		backendState.mu.Unlock()
+
 		state.Backends = append(state.Backends, metrics)
 	}
+
+	// --- RecentClients для монитора ---
+	state.RecentClients = p.getRecentClients()
 
 	return state
 }
@@ -290,4 +315,96 @@ func (p *Proxy) GetUnloadScheduler() *UnloadScheduler {
 // GetWeightTuner — получение адаптивного тюнера весов
 func (p *Proxy) GetWeightTuner() *AdaptiveWeightTuner {
 	return p.weightTuner
+}
+
+// CandidateGroupDTO — DTO для группы кандидатов (приоритет + список бэкендов)
+type CandidateGroupDTO struct {
+	Priority   int      `json:"priority"`
+	Label      string   `json:"label"`
+	BackendIDs []string `json:"backend_ids"`
+}
+
+// ModelCandidatesDTO — DTO для кандидатов по одной модели
+type ModelCandidatesDTO struct {
+	Model    string              `json:"model"`
+	Groups   []CandidateGroupDTO `json:"groups"`
+	Total    int                 `json:"total"` // общее количество бэкендов-кандидатов
+	HasReady bool                `json:"has_ready"` // есть ли P1 (LOADED)
+}
+
+// GetCandidates — получение кандидатов для всех моделей, известных системе
+// Вызывает expandCandidates для каждой модели и возвращает результаты
+func (p *Proxy) GetCandidates() []ModelCandidatesDTO {
+	// Собираем уникальные модели из всех источников
+	modelSet := make(map[string]bool)
+
+	// Модели из running models на бэкендах
+	p.mu.RLock()
+	for _, state := range p.backends {
+		state.mu.Lock()
+		for model := range state.WarmingUpModels {
+			modelSet[model] = true
+		}
+		state.mu.Unlock()
+	}
+	p.mu.RUnlock()
+
+	// Модели из метрик
+	p.metricsMgr.mu.RLock()
+	for _, m := range p.metricsMgr.metrics {
+		for _, rm := range m.Ollama.RunningModels {
+			if rm.Name != "" {
+				modelSet[rm.Name] = true
+			}
+		}
+	}
+	p.metricsMgr.mu.RUnlock()
+
+	if len(modelSet) == 0 {
+		return nil
+	}
+
+	priorityLabels := map[int]string{
+		1: "LOADED",
+		2: "WARMING",
+		3: "FREE",
+		4: "FALLBACK",
+	}
+
+	result := make([]ModelCandidatesDTO, 0, len(modelSet))
+	for model := range modelSet {
+		groups := p.expandCandidates(model)
+		dto := ModelCandidatesDTO{
+			Model:  model,
+			Groups: make([]CandidateGroupDTO, 0, len(groups)),
+		}
+
+		for _, g := range groups {
+			label, ok := priorityLabels[g.Priority]
+			if !ok {
+				label = fmt.Sprintf("P%d", g.Priority)
+			}
+			dto.Groups = append(dto.Groups, CandidateGroupDTO{
+				Priority:   g.Priority,
+				Label:      label,
+				BackendIDs: g.BackendIDs,
+			})
+			dto.Total += len(g.BackendIDs)
+			if g.Priority == 1 && len(g.BackendIDs) > 0 {
+				dto.HasReady = true
+			}
+		}
+
+		// Не показываем модели без кандидатов
+		if dto.Total > 0 {
+			result = append(result, dto)
+		}
+	}
+
+	// Сортируем по имени модели для стабильного порядка
+	sort.Slice(result, func(i, j int) bool {
+		return result[i].Model < result[j].Model
+	})
+
+	return result
 }

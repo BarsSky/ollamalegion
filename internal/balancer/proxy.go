@@ -9,10 +9,11 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"sort"
 	"sync"
+	"sync/atomic"
 	"time"
 
-	"ollama-loadbalancer/internal/distinference"
 	"ollama-loadbalancer/internal/modelreplication"
 	"ollama-loadbalancer/internal/rpccoordinator"
 	"ollama-loadbalancer/internal/virtualmodel"
@@ -51,11 +52,33 @@ type Proxy struct {
 	modelReplication    *modelreplication.ModelGroupManager
 	replicationSelector *modelreplication.GroupAwareSelector
 	replicationCtrl     *modelreplication.GroupController
-	rpcCoordinator      *rpccoordinator.Coordinator
 	virtualModels       *virtualmodel.Registry
 	virtualModelRouter  *virtualmodel.Router
-	distInference       *distinference.Engine
+	rpcCoordinator      *rpccoordinator.ModelCoordinator
+
+	// Прокси-логгер для отслеживания запросов
+	proxyLogger *ProxyLogger
+
+	// Model management
+	modelManager *ModelManager
+
+	// Recent clients tracking (for monitor discovery particles)
+	recentClients   map[string]*types.RecentClient
+	recentClientsMu sync.RWMutex
+
+	// Кеширование доверенных прокси-сетей (парсятся один раз при инициализации)
+	trustedNets []*net.IPNet
+
+	// Graceful shutdown
+	shuttingDown  atomic.Bool
+	activeStreams sync.WaitGroup // счётчик активных SSE-сессий
+
+	// Семафор для ограничения одновременных warmup (загрузка моделей в VRAM).
+	// Каждая загрузка делает POST /api/generate, который блокирует слот Ollama.
+	// Ограничение предотвращает исчерпание всех свободных слотов загрузками.
+	warmupSem chan struct{}
 }
+
 
 
 // NewProxy - создание нового прокси
@@ -72,32 +95,44 @@ func NewProxy(config *types.LoadBalancerConfig) *Proxy {
 		ExpectContinueTimeout: 1 * time.Second,
 	}
 
-	// Транспорт для streaming запросов - без сжатия и с увеличенными буферами
+	// Транспорт для streaming запросов - без сжатия и с увеличенными буферами.
+	// ResponseHeaderTimeout — ключевой параметр для предотвращения UND_ERR_HEADERS_TIMEOUT
+	// у клиента (OpenWebUI/undici): если Ollama не отдаёт заголовки ответа за это время,
+	// балансер сам обрывает соединение и уходит в retry, не заставляя клиента ждать.
 	streamingTransport := &http.Transport{
 		DialContext: (&net.Dialer{
 			Timeout:   30 * time.Second,
 			KeepAlive: 30 * time.Second,
 		}).DialContext,
-		MaxIdleConns:        100,
-		MaxIdleConnsPerHost: 10,
-		IdleConnTimeout:     90 * time.Second,
-		DisableCompression:  true, // Важно для SSE
+		MaxIdleConns:          100,
+		MaxIdleConnsPerHost:   10,
+		IdleConnTimeout:       90 * time.Second,
+		DisableCompression:    true, // Важно для SSE
+		ResponseHeaderTimeout: 45 * time.Second, // Макс. ожидание заголовков от Ollama (меньше чем undici headersTimeout ~60s)
 	}
 
-	// Определяем TTL сессий из конфигурации (дефолт 15 минут)
+	// Определяем TTL сессий из конфигурации
 	sessionTTL := time.Duration(config.Balancing.SessionTTL) * time.Second
 	if sessionTTL <= 0 {
 		sessionTTL = 15 * time.Minute
 	}
+	sessionIdleTTL := time.Duration(config.Balancing.SessionIdleTTL) * time.Second
+	if sessionIdleTTL <= 0 {
+		sessionIdleTTL = 5 * time.Minute
+	}
 
 	p := &Proxy{
-		config:     config,
-		backends:   make(map[string]*BackendState),
-		sessionMgr: NewSessionManagerWithTTL(sessionTTL),
-		metricsMgr: NewMetricsManager(),
-		predictor:  NewPredictor(),
-		statePath:  config.LoadBalancer.StatePath,
-		eventBus:   NewEventBus(),
+		config:        config,
+		backends:      make(map[string]*BackendState),
+		sessionMgr:    NewSessionManagerWithTTL(sessionTTL, sessionIdleTTL),
+		metricsMgr:    NewMetricsManager(),
+		predictor:     NewPredictor(),
+		statePath:     config.LoadBalancer.StatePath,
+		eventBus:      NewEventBus(),
+		recentClients: make(map[string]*types.RecentClient),
+		trustedNets:   parseTrustedProxyCIDRs(config.LoadBalancer.TrustedProxies),
+		warmupSem:     make(chan struct{}, maxConcurrentWarmups(config)),
+
 		client: &http.Client{
 			Timeout:   time.Duration(config.Balancing.RequestTimeout) * time.Second,
 			Transport: regularTransport,
@@ -111,6 +146,9 @@ func NewProxy(config *types.LoadBalancerConfig) *Proxy {
 
 	// QueueManager создаём после инициализации p, чтобы передать корректный proxy
 	p.queueMgr = NewQueueManager(p, config.Balancing.QueueMaxSize, config.Balancing.QueueWorkers, time.Duration(config.Balancing.QueueTimeout)*time.Second)
+
+	// Прокси-логгер использует тот же EventBus для WebSocket-трансляции
+	p.proxyLogger = NewProxyLogger(1000, p.eventBus)
 
 	// Инициализация бэкендов из config
 	for i := range config.Backends {
@@ -152,8 +190,68 @@ func NewProxy(config *types.LoadBalancerConfig) *Proxy {
 	// Инициализация RPC Model Distribution модулей
 	p.initRpcModules()
 
+	// Инициализация ModelManager для управления моделями на бэкендах
+	p.modelManager = NewModelManager(p)
+	logger.Get().Infow("model manager initialized")
+
 	return p
 
+}
+
+// maxConcurrentWarmups — пакетная функция для использования до создания Proxy.
+func maxConcurrentWarmups(config *types.LoadBalancerConfig) int {
+	n := config.Balancing.AdvancedTiming.MaxConcurrentWarmups
+	if n <= 0 {
+		n = 3
+	}
+	return n
+}
+
+// --- AdvancedTiming helpers (замена хардкодных магических чисел) ---
+
+// getZombieSessionThreshold — порог зомби-сессий в секундах (default: 120).
+func (p *Proxy) getZombieSessionThreshold() time.Duration {
+	sec := p.config.Balancing.AdvancedTiming.ZombieSessionThresholdSec
+	if sec <= 0 {
+		sec = 120
+	}
+	return time.Duration(sec) * time.Second
+}
+
+// getStreamingRetryDelay — задержка перед retry streaming запроса (default: 500ms).
+func (p *Proxy) getStreamingRetryDelay() time.Duration {
+	ms := p.config.Balancing.AdvancedTiming.StreamingRetryDelayMs
+	if ms <= 0 {
+		ms = 500
+	}
+	return time.Duration(ms) * time.Millisecond
+}
+
+// getMaxConcurrentWarmups — макс. одновременных warmup (default: 3).
+func (p *Proxy) getMaxConcurrentWarmups() int {
+	n := p.config.Balancing.AdvancedTiming.MaxConcurrentWarmups
+	if n <= 0 {
+		n = 3
+	}
+	return n
+}
+
+// getHeartbeatInterval — интервал SSE heartbeat (default: 15s).
+func (p *Proxy) getHeartbeatInterval() time.Duration {
+	sec := p.config.Balancing.AdvancedTiming.HeartbeatIntervalSec
+	if sec <= 0 {
+		sec = 15
+	}
+	return time.Duration(sec) * time.Second
+}
+
+// getWarmupSemaphoreTimeout — таймаут ожидания семафора warmup (default: 30s).
+func (p *Proxy) getWarmupSemaphoreTimeout() time.Duration {
+	sec := p.config.Balancing.AdvancedTiming.WarmupSemaphoreTimeoutSec
+	if sec <= 0 {
+		sec = 30
+	}
+	return time.Duration(sec) * time.Second
 }
 
 // SetQueueManagerProxy - установка proxy для QueueManager (вызывается после создания)
@@ -161,8 +259,89 @@ func (p *Proxy) SetQueueManagerProxy() {
 	p.queueMgr.proxy = p
 }
 
+// Shutdown — graceful shutdown с завершением активных SSE-сессий и сохранением состояния.
+// Порядок остановки:
+//  1. Запрет новых запросов (возврат 503)
+//  2. Остановка приёма очереди
+//  3. Остановка background контроллеров
+//  4. Завершение активных SSE-сессий с done:true
+//  5. Сохранение состояния
+func (p *Proxy) Shutdown(ctx context.Context) error {
+	logger.Get().Infow("shutdown initiated, stopping new requests")
+
+	// 1. Запрещаем приём новых запросов
+	p.shuttingDown.Store(true)
+
+	// 2. Останавливаем QueueManager (workers завершат текущие задачи, новые не принимаются)
+	if p.queueMgr != nil {
+		logger.Get().Infow("stopping queue manager...")
+		p.queueMgr.Stop()
+	}
+
+	// 3. Останавливаем background controllers
+	if p.unloadScheduler != nil {
+		logger.Get().Infow("stopping unload scheduler...")
+		p.unloadScheduler.Stop()
+	}
+	if p.weightTuner != nil {
+		logger.Get().Infow("stopping weight tuner...")
+		p.weightTuner.Stop()
+	}
+	if p.agentChecker != nil {
+		logger.Get().Infow("stopping agent timeout checker...")
+		p.StopAgentTimeoutChecker()
+	}
+	if p.sessionMgr != nil {
+		logger.Get().Infow("stopping session manager...")
+		p.sessionMgr.Stop()
+	}
+
+	// 4. Ожидаем завершения активных SSE-сессий с таймаутом
+	logger.Get().Infow("waiting for active streams to finish...")
+	streamsDone := make(chan struct{})
+	go func() {
+		p.activeStreams.Wait()
+		close(streamsDone)
+	}()
+
+	select {
+	case <-streamsDone:
+		logger.Get().Infow("all active streams completed")
+	case <-ctx.Done():
+		logger.Get().Warnw("shutdown deadline exceeded, forcing exit",
+			"active_streams_remaining", "unknown")
+		// Принудительно не обрываем — Go закроет соединения при выходе процесса
+	}
+
+	// 5. Сохраняем состояние
+	if err := p.FlushState(); err != nil {
+		logger.Get().Errorw("failed to save state during shutdown", "error", err)
+		return fmt.Errorf("failed to save state: %w", err)
+	}
+
+	logger.Get().Infow("shutdown completed successfully")
+	return nil
+}
+
 // ServeHTTP - обработка HTTP запросов
 func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	startTime := time.Now()
+
+	// Единый разбор тела запроса (избегаем тройного чтения в recordRecentClient + extractModel + proxyRequest)
+	parsed := p.parseRequestBody(r)
+	model := parsed.Model
+	isStream := parsed.Stream
+
+	// Трекинг всех клиентов для монитора (использует уже распарсенные данные)
+	p.recordRecentClientParsed(r, parsed)
+
+	// Очистка зомби-сессий перед обработкой запроса.
+	// Предотвращает ситуацию "все бэкенды заняты" из-за старых оборванных сессий.
+	p.cleanupZombieSessions()
+
+	path := r.URL.Path
+	clientName := p.getClientName(r)
+
 	if r.URL.Path == "/health" {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
@@ -170,24 +349,50 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	path := r.URL.Path
-	isChatOrGenerate := (path == "/api/generate" || path == "/api/chat")
-	clientName := p.getClientName(r)
+	// Оборачиваем ResponseWriter для захвата статус-кода
+	sr := &statusRecorder{ResponseWriter: w, statusCode: http.StatusOK}
+	w = sr
 
-	model, isStream := p.extractModel(r)
+	isChatOrGenerate := (path == "/api/generate" || path == "/api/chat")
+
+	// Объявляем переменные до defer, чтобы замыкание захватило их финальные значения
+	var targetBackend string
+	var sessionID string
+
+	// Defer-логирование результата запроса
+	defer func() {
+		if p.proxyLogger == nil {
+			return
+		}
+		durationMs := time.Since(startTime).Milliseconds()
+		p.proxyLogger.Append(ProxyLogEntry{
+			Timestamp:  startTime,
+			Method:     r.Method,
+			Path:       path,
+			Model:      model,
+			ClientIP:   p.getClientRealIP(r),
+			UserAgent:  r.UserAgent(),
+			ClientName: clientName,
+			BackendID:  targetBackend,
+			SessionID:  sessionID,
+			StatusCode: sr.statusCode,
+			DurationMs: durationMs,
+			Stream:     isStream,
+		})
+	}()
+
 	ctx := context.WithValue(r.Context(), modelContextKey, model)
 	ctx = context.WithValue(ctx, streamContextKey, isStream)
 	r = r.WithContext(ctx)
 
-	sessionID := p.getSessionIDWithModel(r, clientName, model)
+	sessionID = p.getSessionIDWithModel(r, clientName, model)
 	if !isChatOrGenerate && p.ollamaRouter != nil && p.ollamaRouter.Route(w, r) {
 		return
 	}
 
-	var targetBackend string
-
-	isEmbed := path == "/api/embeddings"
-	if sessionID != "" && p.config.Balancing.SessionStickiness && !isEmbed {
+	if sessionID != "" && p.config.Balancing.SessionStickiness && !isEmbeddingsRequest(path) {
+		// Для всех клиентских запросов (chat, generate) используем session stickiness
+		// Embeddings (/api/embed, /api/embeddings) исключаются — они не требуют привязки к сессии
 		if session := p.sessionMgr.Get(sessionID); session != nil {
 			targetBackend = session.BackendID
 
@@ -246,20 +451,34 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	if targetBackend == "" {
 		targetBackend = p.selectBackend(model)
-		if targetBackend != "" && p.config.Balancing.SessionStickiness {
+		if targetBackend != "" && p.config.Balancing.SessionStickiness && !isEmbeddingsRequest(path) {
 			sessionID = p.getSessionIDWithModel(r, clientName, model)
 			p.sessionMgr.Set(sessionID, targetBackend, model, clientName, p.getClientRealIP(r), r.UserAgent())
 		}
 	}
 
+	// Переменная для отслеживания захваченного бэкенда.
+	// Используем указатель на строку чтобы корректно обрабатывать
+	// освобождение слота в defer без двойного освобождения.
+	var acquiredBackend string
+	releaseAcquired := func() {
+		if acquiredBackend != "" {
+			p.releaseSlot(acquiredBackend)
+			acquiredBackend = ""
+		}
+	}
+	// Гарантированное освобождение слота при любом выходе из ServeHTTP
+	defer releaseAcquired()
+
 	// Атомарный захват слота с retry при неудаче
-	acquired := false
 	if targetBackend != "" {
-		acquired = p.tryAcquireSlot(targetBackend)
+		if p.tryAcquireSlot(targetBackend) {
+			acquiredBackend = targetBackend
+		}
 	}
 
 	// Если не удалось захватить слот на выбранном бэкенде — пробуем другие
-	if targetBackend != "" && !acquired {
+	if targetBackend != "" && acquiredBackend == "" {
 		attemptedBackends := map[string]bool{targetBackend: true}
 		const maxRetries = 10
 		for retry := 0; retry < maxRetries; retry++ {
@@ -268,9 +487,9 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				break
 			}
 			if p.tryAcquireSlot(altBackend) {
+				acquiredBackend = altBackend
 				targetBackend = altBackend
-				acquired = true
-				if sessionID != "" && p.config.Balancing.SessionStickiness {
+				if sessionID != "" && p.config.Balancing.SessionStickiness && !isEmbeddingsRequest(path) {
 					p.sessionMgr.Set(sessionID, targetBackend, model, clientName, p.getClientRealIP(r), r.UserAgent())
 				}
 				logger.Get().Infow("acquired slot on alternate backend",
@@ -281,19 +500,51 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	if !acquired {
+	if acquiredBackend == "" {
 		if !p.queueRequest(w, r, model) {
 			http.Error(w, "Service unavailable - all backends busy", http.StatusServiceUnavailable)
 		}
 		return
 	}
 
-	// Слот захвачен — гарантируем освобождение после ответа
-	defer p.releaseSlot(targetBackend)
-
 	// Выполняем запрос
-	err := p.proxyRequest(w, r, targetBackend)
+	err := p.proxyRequest(w, r, acquiredBackend)
 	if err == nil {
+		return
+	}
+
+	// Проверяем, не является ли ошибка "backend busy" (503) — пробуем другой бэкенд
+	var backendBusy *BackendBusyError
+	if errors.As(err, &backendBusy) {
+		logger.Get().Warnw("backend busy (503), retrying on alternate backend",
+			"failed_backend", acquiredBackend, "model", model)
+		// Освобождаем слот на текущем бэкенде и пробуем другие
+		releaseAcquired()
+		attemptedBackends := map[string]bool{targetBackend: true}
+		for attempt := 1; attempt < 3; attempt++ {
+			altBackend := p.selectBackendExcluding(model, attemptedBackends)
+			if altBackend == "" {
+				break
+			}
+			if !p.tryAcquireSlot(altBackend) {
+				attemptedBackends[altBackend] = true
+				continue
+			}
+			acquiredBackend = altBackend
+			if sessionID != "" && p.config.Balancing.SessionStickiness {
+				p.sessionMgr.Set(sessionID, altBackend, model, clientName, p.getClientRealIP(r), r.UserAgent())
+			}
+			attemptedBackends[altBackend] = true
+
+			err := p.proxyRequest(w, r, altBackend)
+			if err == nil {
+				return
+			}
+			logger.Get().Errorw("alternate backend also failed",
+				"backend", altBackend, "attempt", attempt, "error", err, "model", model)
+			releaseAcquired()
+		}
+		http.Error(w, "Service unavailable - all backends busy", http.StatusServiceUnavailable)
 		return
 	}
 
@@ -301,7 +552,7 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	var modelNotFound *ModelNotFoundError
 	if errors.As(err, &modelNotFound) && p.AutoPull != nil && model != "" {
 		logger.Get().Warnw("model not found on backend, triggering auto-pull",
-			"backend", targetBackend, "model", model,
+			"backend", acquiredBackend, "model", model,
 			"ollama_error", string(modelNotFound.Body))
 
 		// AutoPull.EnsureModel уже проверяет: есть ли модель на каком-то бэкенде,
@@ -316,9 +567,10 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				p.sessionMgr.Set(sessionID, newBackendID, model, clientName, p.getClientRealIP(r), r.UserAgent())
 			}
 
-			// Захватываем слот на новом бэкенде и выполняем повторный запрос
+			// Освобождаем старый слот и захватываем новый
+			releaseAcquired()
 			if p.tryAcquireSlot(newBackendID) {
-				defer p.releaseSlot(newBackendID)
+				acquiredBackend = newBackendID
 				err = p.proxyRequest(w, r, newBackendID)
 				if err == nil {
 					return
@@ -342,11 +594,12 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	// Обычная обработка ошибки (не model-not-found или auto-pull выключен/недоступен)
 	logger.Get().Errorw("backend request failed",
-		"backend", targetBackend, "error", err, "model", model)
-	p.UpdateBackendStatus(targetBackend, types.StatusUnhealthy)
-	p.scheduleRecoveryCheck(targetBackend)
+		"backend", acquiredBackend, "error", err, "model", model)
+	p.UpdateBackendStatus(acquiredBackend, types.StatusUnhealthy)
+	p.scheduleRecoveryCheck(acquiredBackend)
 
-	// При ошибке пробуем другие бэкенды
+	// Освобождаем проблемный бэкенд и пробуем другие
+	releaseAcquired()
 	attemptedBackends := map[string]bool{targetBackend: true}
 	for attempt := 1; attempt < 3; attempt++ {
 		altBackend := p.selectBackendExcluding(model, attemptedBackends)
@@ -357,13 +610,11 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			attemptedBackends[altBackend] = true
 			continue
 		}
+		acquiredBackend = altBackend
 		if sessionID != "" && p.config.Balancing.SessionStickiness {
 			p.sessionMgr.Set(sessionID, altBackend, model, clientName, p.getClientRealIP(r), r.UserAgent())
 		}
-
 		attemptedBackends[altBackend] = true
-		// Слот altBackend захвачен — гарантируем освобождение
-		defer p.releaseSlot(altBackend)
 
 		err := p.proxyRequest(w, r, altBackend)
 		if err == nil {
@@ -371,6 +622,7 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 		logger.Get().Errorw("backend request failed",
 			"backend", altBackend, "attempt", attempt, "error", err, "model", model)
+		releaseAcquired()
 	}
 
 	http.Error(w, "Service unavailable - all backends failed", http.StatusServiceUnavailable)
@@ -435,184 +687,265 @@ func (p *Proxy) UpdateMetrics(backendID string, metrics *types.BackendMetrics) {
 	p.metricsMgr.mu.Unlock()
 }
 
-// initRpcModules - инициализация RPC Model Distribution модулей по enabled флагам
-func (p *Proxy) initRpcModules() {
-	cfg := &p.config.Balancing
+// recordRecentClient — трекинг клиента для монитора (TTL 60 секунд)
+func (p *Proxy) recordRecentClient(r *http.Request) {
+	clientIP := p.getClientRealIP(r)
+	clientName := p.getClientName(r)
+	userAgent := r.UserAgent()
+	key := clientIP + "::" + clientName
 
-	// Вариант A: Model Replication Manager
-	if cfg.ModelReplication.Enabled {
-		p.modelReplication = modelreplication.NewModelGroupManager()
-		p.modelReplication.SetEnabled(true)
-
-		// Настраиваем callbacks для интеграции с Balancer
-		p.modelReplication.SetBackendLoadFn(func(backendID string) float64 {
-			p.mu.RLock()
-			state, exists := p.backends[backendID]
-			p.mu.RUnlock()
-			if !exists {
-				return 1.0
-			}
-			state.mu.Lock()
-			active := state.ActiveReqs
-			maxReqs := state.Backend.MaxConcurrentReqs
-			state.mu.Unlock()
-			if maxReqs <= 0 {
-				return 0.0
-			}
-			return float64(active) / float64(maxReqs)
-		})
-
-		p.modelReplication.SetFreeBackendFn(func(modelName string, targets []string) []string {
-			p.mu.RLock()
-			defer p.mu.RUnlock()
-			var free []string
-			for id, state := range p.backends {
-				if state.Backend.Status != types.StatusHealthy {
-					continue
+	// Определяем модель из запроса (если доступно)
+	model := ""
+	if r.Method == http.MethodPost {
+		body, err := io.ReadAll(r.Body)
+		if err == nil {
+			r.Body = io.NopCloser(bytes.NewBuffer(body))
+			var req map[string]interface{}
+			if err := json.Unmarshal(body, &req); err == nil {
+				if m, ok := req["model"].(string); ok {
+					model = m
 				}
-				if len(targets) > 0 {
-					found := false
-					for _, t := range targets {
-						if id == t {
-							found = true
-							break
-						}
-					}
-					if !found {
-						continue
-					}
-				}
-				state.mu.Lock()
-				active := state.ActiveReqs
-				state.mu.Unlock()
-				if active == 0 {
-					free = append(free, id)
-				}
-			}
-			return free
-		})
-
-		p.modelReplication.SetWarmupFn(func(backendID, modelName string) error {
-			p.mu.RLock()
-			state, exists := p.backends[backendID]
-			p.mu.RUnlock()
-			if !exists {
-				return fmt.Errorf("backend %s not found", backendID)
-			}
-			p.warmupModel(backendID, state.Backend.Host, state.Backend.OllamaPort, modelName)
-			return nil
-		})
-
-		// Создаём селектор и контроллер
-		p.replicationSelector = modelreplication.NewGroupAwareSelector(p.modelReplication)
-		p.replicationCtrl = modelreplication.NewGroupController(p.modelReplication)
-		if err := p.replicationCtrl.Start(); err != nil {
-			logger.Get().Warnw("failed to start group controller", "error", err)
-		}
-
-		// Загружаем группы из конфига
-		for _, groupCfg := range cfg.ModelReplication.Groups {
-			if err := p.modelReplication.CreateGroup(groupCfg); err != nil {
-				logger.Get().Warnw("failed to create model group from config",
-					"model", groupCfg.ModelName, "error", err)
 			}
 		}
-
-		logger.Get().Infow("model replication manager initialized",
-			"defaultMinInstances", cfg.ModelReplication.DefaultMinInstances,
-			"defaultMaxInstances", cfg.ModelReplication.DefaultMaxInstances,
-			"idleUnloadAfter", cfg.ModelReplication.IdleUnloadAfter,
-			"groups", len(cfg.ModelReplication.Groups))
 	}
 
-	// Вариант B: External RPC Coordinator
-	if cfg.RpcCoordinator.Enabled {
-		p.rpcCoordinator = rpccoordinator.NewCoordinator()
-		p.rpcCoordinator.SetEnabled(true)
-		p.rpcCoordinator.SetConfig(
-			cfg.RpcCoordinator.CoordinatorURL,
-			cfg.RpcCoordinator.WorkerPort,
-			cfg.RpcCoordinator.Protocol,
+	p.recentClientsMu.Lock()
+	defer p.recentClientsMu.Unlock()
+
+	now := time.Now()
+	if existing, ok := p.recentClients[key]; ok {
+		existing.LastRequestAt = now
+		existing.RequestCount++
+		existing.UserAgent = userAgent
+		if model != "" {
+			existing.Model = model
+		}
+		p.recentClients[key] = existing
+	} else {
+		p.recentClients[key] = &types.RecentClient{
+			ClientName:    clientName,
+			ClientIP:      clientIP,
+			UserAgent:     userAgent,
+			LastRequestAt: now,
+			RequestCount:  1,
+			Model:          model,
+		}
+	}
+
+	// Очистка старых записей (> 60 секунд)
+	cutoff := now.Add(-60 * time.Second)
+	for k, rc := range p.recentClients {
+		if rc.LastRequestAt.Before(cutoff) && !rc.IsStreamActive {
+			delete(p.recentClients, k)
+		}
+	}
+}
+
+// recordRecentClientParsed — трекинг клиента для монитора с использованием уже распарсенного тела.
+// Вызывается из ServeHTTP после parseRequestBody чтобы избежать повторного чтения.
+func (p *Proxy) recordRecentClientParsed(r *http.Request, parsed *parsedRequest) {
+	clientIP := p.getClientRealIP(r)
+	clientName := p.getClientName(r)
+	userAgent := r.UserAgent()
+	key := clientIP + "::" + clientName
+
+	p.recentClientsMu.Lock()
+	defer p.recentClientsMu.Unlock()
+
+	now := time.Now()
+	if existing, ok := p.recentClients[key]; ok {
+		existing.LastRequestAt = now
+		existing.RequestCount++
+		existing.UserAgent = userAgent
+		if parsed.Model != "" {
+			existing.Model = parsed.Model
+		}
+		p.recentClients[key] = existing
+	} else {
+		p.recentClients[key] = &types.RecentClient{
+			ClientName:    clientName,
+			ClientIP:      clientIP,
+			UserAgent:     userAgent,
+			LastRequestAt: now,
+			RequestCount:  1,
+			Model:          parsed.Model,
+		}
+	}
+
+	// Очистка старых записей (> 60 секунд)
+	cutoff := now.Add(-60 * time.Second)
+	for k, rc := range p.recentClients {
+		if rc.LastRequestAt.Before(cutoff) && !rc.IsStreamActive {
+			delete(p.recentClients, k)
+		}
+	}
+}
+
+// markRecentClientStreamActive — помечает клиента как имеющего активный стриминг
+func (p *Proxy) markRecentClientStreamActive(r *http.Request, active bool) {
+	clientIP := p.getClientRealIP(r)
+	clientName := p.getClientName(r)
+	key := clientIP + "::" + clientName
+
+	p.recentClientsMu.Lock()
+	defer p.recentClientsMu.Unlock()
+
+	if existing, ok := p.recentClients[key]; ok {
+		existing.IsStreamActive = active
+		existing.LastRequestAt = time.Now()
+		p.recentClients[key] = existing
+	}
+}
+
+// cleanupZombieSessions — проверяет и очищает зомби-сессии, освобождая бэкенды.
+// Вызывается при старте ServeHTTP чтобы предотвратить "все бэкенды заняты"
+// из-за старых оборванных сессий.
+func (p *Proxy) cleanupZombieSessions() {
+	zombies := p.sessionMgr.DetectZombieSessions(p.getZombieSessionThreshold())
+	if len(zombies) == 0 {
+		return
+	}
+
+	logger.Get().Warnw("detected zombie sessions, cleaning up",
+		"zombie_count", len(zombies))
+
+	for _, zombie := range zombies {
+		logger.Get().Warnw("removing zombie session and releasing backend",
+			"session_id", zombie.ID,
+			"backend_id", zombie.BackendID,
+			"model", zombie.Model,
+			"last_request_at", zombie.LastRequestAt,
+			"has_active_stream", zombie.HasActiveStream,
 		)
-		logger.Get().Infow("rpc coordinator initialized",
-			"url", cfg.RpcCoordinator.CoordinatorURL,
-			"port", cfg.RpcCoordinator.WorkerPort,
-			"protocol", cfg.RpcCoordinator.Protocol)
-	}
 
-	// Вариант C: Virtual Model Router
-	if cfg.VirtualModels.Enabled {
-		p.virtualModels = virtualmodel.NewRegistry()
-		p.virtualModels.SetEnabled(true)
-		// Регистрируем виртуальные модели из конфига
-		for _, vmCfg := range cfg.VirtualModels.Models {
-			if err := p.virtualModels.Register(vmCfg); err != nil {
-				logger.Get().Warnw("failed to register virtual model", "name", vmCfg.Name, "error", err)
-			} else {
-				logger.Get().Infow("virtual model registered", "name", vmCfg.Name,
-					"slices", len(vmCfg.Slices))
-			}
+		// Освобождаем бэкенд
+		if zombie.BackendID != "" {
+			p.releaseSlot(zombie.BackendID)
 		}
-		// Создаём Router для маршрутизации через VirtualModel pipeline
-		p.virtualModelRouter = virtualmodel.NewRouter(p.virtualModels)
-		logger.Get().Infow("virtual model router initialized",
-			"enabled", true, "count", len(cfg.VirtualModels.Models))
-	}
 
-	// Вариант D: Distributed Inference (Custom Backend)
-	if cfg.DistInference.Enabled {
-		p.distInference = distinference.NewEngine()
-		p.distInference.SetEnabled(true)
-		// Регистрируем worker'ов из конфига
-		for _, wCfg := range cfg.DistInference.Workers {
-			worker := distinference.NewWorker(
-				wCfg.WorkerID,
-				wCfg.Host,
-				wCfg.GrpcPort,
-				wCfg.LayerRange,
-				wCfg.GPUMode,
-			)
-			p.distInference.RegisterWorker(worker)
-			logger.Get().Infow("dist-inference worker registered",
-				"id", wCfg.WorkerID, "host", wCfg.Host, "port", wCfg.GrpcPort)
+		// Удаляем сессию
+		p.sessionMgr.ForceRemove(zombie.ID)
+	}
+}
+
+// getRecentClients — получение списка активных клиентов для монитора
+func (p *Proxy) getRecentClients() []types.RecentClient {
+	p.recentClientsMu.RLock()
+	defer p.recentClientsMu.RUnlock()
+
+	now := time.Now()
+	cutoff := now.Add(-60 * time.Second)
+	result := make([]types.RecentClient, 0, len(p.recentClients))
+
+	for _, rc := range p.recentClients {
+		if rc.LastRequestAt.After(cutoff) {
+			result = append(result, *rc)
 		}
-		logger.Get().Infow("distributed inference engine initialized",
-			"workers", len(cfg.DistInference.Workers))
 	}
+
+	// Сортируем по времени последнего запроса (новые — первые)
+	sort.Slice(result, func(i, j int) bool {
+		return result[i].LastRequestAt.After(result[j].LastRequestAt)
+	})
+
+	return result
 }
 
-// GetModelReplicationManager возвращает ModelGroupManager (для API).
-func (p *Proxy) GetModelReplicationManager() *modelreplication.ModelGroupManager {
-	return p.modelReplication
+// parsedRequest — результат однократного разбора тела запроса.
+// Используется чтобы избежать тройного чтения тела (recordRecentClient + extractModel + proxyRequest).
+type parsedRequest struct {
+	Model   string
+	Stream  bool
+	RawBody []byte
 }
 
-// GetReplicationSelector возвращает GroupAwareSelector (для API).
-func (p *Proxy) GetReplicationSelector() *modelreplication.GroupAwareSelector {
-	return p.replicationSelector
+// parseRequestBody — читает и разбирает тело запроса ровно один раз.
+// Возвращает parsedRequest с извлечёнными model/stream и сырым телом для последующего проксирования.
+// Восстанавливает r.Body через NopCloser для повторного чтения в proxyRequest.
+func (p *Proxy) parseRequestBody(r *http.Request) *parsedRequest {
+	result := &parsedRequest{Stream: true} // default stream=true (Ollama behaviour)
+
+	if r.Method != http.MethodPost || r.Body == nil {
+		return result
+	}
+
+	body, err := io.ReadAll(r.Body)
+	if err != nil {
+		return result
+	}
+	r.Body = io.NopCloser(bytes.NewBuffer(body))
+	result.RawBody = body
+
+	var req map[string]interface{}
+	if err := json.Unmarshal(body, &req); err != nil {
+		return result
+	}
+
+	if m, ok := req["model"].(string); ok {
+		result.Model = m
+	}
+	if stream, ok := req["stream"].(bool); ok {
+		result.Stream = stream
+	}
+
+	return result
 }
 
-// GetReplicationController возвращает GroupController (для API).
-func (p *Proxy) GetReplicationController() *modelreplication.GroupController {
-	return p.replicationCtrl
+// statusRecorder — обёртка http.ResponseWriter для захвата HTTP статус-кода.
+type statusRecorder struct {
+	http.ResponseWriter
+	statusCode  int
+	wroteHeader bool
 }
 
-// GetVirtualModelRouter возвращает VirtualModel Router (для API).
-func (p *Proxy) GetVirtualModelRouter() *virtualmodel.Router {
-	return p.virtualModelRouter
+func (r *statusRecorder) WriteHeader(code int) {
+	if r.wroteHeader {
+		// Заголовки уже отправлены — повторный вызов WriteHeader
+		// вызывает "superfluous response.WriteHeader call" в логах.
+		// Просто игнорируем.
+		return
+	}
+	r.statusCode = code
+	r.wroteHeader = true
+	r.ResponseWriter.WriteHeader(code)
+}
+
+func (r *statusRecorder) Write(b []byte) (int, error) {
+	if !r.wroteHeader {
+		r.wroteHeader = true
+		r.statusCode = http.StatusOK
+		r.ResponseWriter.WriteHeader(http.StatusOK)
+	}
+	return r.ResponseWriter.Write(b)
 }
 
 // queueRequest - постановка запроса в очередь
 func (p *Proxy) queueRequest(w http.ResponseWriter, r *http.Request, model string) bool {
 
 	// Backpressure: проверяем fill rate очереди
-	queueFillPct := float64(len(p.queueMgr.queue)) / float64(p.queueMgr.maxSize)
+	queueLen := len(p.queueMgr.queue)
+	maxSize := p.queueMgr.maxSize
+	queueFillPct := float64(queueLen) / float64(maxSize)
 	if queueFillPct > 0.90 {
 		logger.Get().Warnw("queue overflow, rejecting request with 503",
-			"model", model, "queue_fill_pct", queueFillPct, "queue_size", len(p.queueMgr.queue))
+			"model", model, "queue_fill_pct", queueFillPct, "queue_size", queueLen)
 		w.Header().Set("Retry-After", "5")
 		http.Error(w, "Service overloaded", http.StatusServiceUnavailable)
 		return false
 	}
+
+	// Информируем клиента о позиции в очереди и ожидаемом времени
+	// Заголовки будут доступны клиенту вместе с финальным ответом
+	w.Header().Set("X-Queue-Position", fmt.Sprintf("%d", queueLen))
+	estimatedWaitSec := queueLen * 2 // грубая оценка: ~2 сек на запрос
+	if estimatedWaitSec < 1 {
+		estimatedWaitSec = 1
+	}
+	queueTimeoutSec := p.config.Balancing.QueueTimeout
+	if queueTimeoutSec > 0 && estimatedWaitSec > queueTimeoutSec {
+		estimatedWaitSec = queueTimeoutSec
+	}
+	w.Header().Set("Retry-After", fmt.Sprintf("%d", estimatedWaitSec))
 
 	done := make(chan bool, 1)
 	queuedReq := &QueuedRequest{

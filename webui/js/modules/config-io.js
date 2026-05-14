@@ -65,8 +65,32 @@
             cpuMaxUsage: parseIntField('cpuMaxUsage', 80),
             ramMaxUsage: parseIntField('ramMaxUsage', 85),
             minFreeDisk: parseIntField('minFreeDisk', 10240),
-            apiToken: getFieldValue('apiToken', '')
+            apiToken: getFieldValue('apiToken', ''),
+            agent: {
+                collectInterval: parseIntField('agentCollectInterval', 15),
+                heartbeatInterval: parseIntField('agentHeartbeatInterval', 30),
+                maxConcurrentRequests: parseIntField('agentMaxConcurrent', 10),
+                maxModels: parseIntField('agentMaxModels', 5),
+                timeout: parseIntField('agentTimeout', 10)
+            },
+            backendLimits: collectBackendLimitsFromTable()
         };
+    }
+
+    function collectBackendLimitsFromTable() {
+        var inputs = document.querySelectorAll('.backend-limit-input');
+        var limits = {};
+        inputs.forEach(function(input) {
+            var backendId = input.dataset.backendId;
+            var limitType = input.dataset.limitType;
+            if (!limits[backendId]) limits[backendId] = {};
+            limits[backendId][limitType] = parseInt(input.value) || 0;
+        });
+        var result = {};
+        Object.keys(limits).forEach(function(id) {
+            result[id] = { maxConcurrentRequests: limits[id].maxConcurrent || 10, maxModels: limits[id].maxModels || 0 };
+        });
+        return result;
     }
 
     function getFieldValue(id, fallback) {
@@ -326,6 +350,27 @@
             setFieldValue('ramMaxUsage', s.ramMaxUsage);
             setFieldValue('minFreeDisk', s.minFreeDisk);
             setFieldValue('apiToken', s.apiToken);
+
+            // Agent settings
+            if (s.agent) {
+                setFieldValue('agentCollectInterval', s.agent.collectInterval);
+                setFieldValue('agentHeartbeatInterval', s.agent.heartbeatInterval);
+                setFieldValue('agentMaxConcurrent', s.agent.maxConcurrentRequests);
+                setFieldValue('agentMaxModels', s.agent.maxModels);
+                setFieldValue('agentTimeout', s.agent.timeout);
+            }
+
+            // Apply backend limits
+            if (s.backendLimits) {
+                Object.keys(s.backendLimits).forEach(function(backendId) {
+                    var bl = s.backendLimits[backendId];
+                    if (bl) {
+                        Api.updateBackendLimitsFull(backendId, bl.maxConcurrentRequests || 10, bl.maxModels || 0).catch(function(err) {
+                            console.error('Failed to update limits for ' + backendId, err);
+                        });
+                    }
+                });
+            }
         }
 
         // Apply mode config

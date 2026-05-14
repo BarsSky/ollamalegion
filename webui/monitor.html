@@ -24,13 +24,13 @@
     <img src="logo.svg" alt="OllamaLegion" style="height:28px;width:auto;vertical-align:middle;margin-right:4px">
     <span id="statusDot" class="dot"></span>
     <span data-i18n="header.monitor">Monitor</span>
-    <span id="demoIndicator" style="display:none;background:var(--danger);color:#fff;font-size:10px;font-weight:700;padding:2px 8px;border-radius:4px;margin-left:8px;text-transform:uppercase;letter-spacing:0.5px" data-i18n="monitor.header.demoIndicator">ДЕМО</span>
+    <span id="demoIndicator" style="display:none;background:var(--danger);color:#fff;font-size:10px;font-weight:700;padding:2px 8px;border-radius:4px;margin-left:8px;text-transform:uppercase;letter-spacing:0.5px" data-i18n="monitor.header.demoIndicator">DEMO</span>
   </h1>
   <div class="header-right">
     <div class="monitor-legend">
-      <span class="legend-dot green"></span><span class="legend-text" data-i18n="monitor.status.idle">🟢 Свободен</span>
-      <span class="legend-dot yellow"></span><span class="legend-text" data-i18n="monitor.status.live">🟡 Загружен</span>
-      <span class="legend-dot red"></span><span class="legend-text" data-i18n="monitor.status.offline">🔴 Перегружен</span>
+      <span class="legend-dot green"></span><span>🟢</span><span class="legend-text" data-i18n="monitor.status.idle">Idle</span>
+      <span class="legend-dot yellow"></span><span>🟡</span><span class="legend-text" data-i18n="monitor.status.live">Live</span>
+      <span class="legend-dot red"></span><span>🔴</span><span class="legend-text" data-i18n="monitor.status.offline">Offline</span>
     </div>
     <select id="intervalSelect">
       <option value="250">250 ms</option>
@@ -38,45 +38,46 @@
       <option value="1000">1 s</option>
       <option value="2000" selected>2 s</option>
     </select>
-    <button id="pauseBtn" onclick="togglePause()" data-i18n="monitor.header.pause">⏸ Пауза</button>
-    <button id="demoBtn" onclick="enterDemoMode()" style="display:none" data-i18n="monitor.header.demo">▶ Демо</button>
-    <span id="connBadge" class="badge badge-yellow" data-i18n="monitor.header.connecting">Подключение…</span>
-    <button id="helpBtn" onclick="toggleHelp()" title="Справка" style="font-weight:bold;font-size:14px;padding:2px 10px;border-radius:50%;width:30px;height:30px;line-height:1">?</button>
+    <button id="pauseBtn" onclick="togglePause()" data-i18n="monitor.header.pause">⏸ Pause</button>
+    <button id="demoBtn" onclick="enterDemoMode()" style="display:none" data-i18n="monitor.header.demo">▶ Demo</button>
+    <span id="connBadge" class="badge badge-yellow" data-i18n="monitor.header.connecting">Connecting…</span>
+    <button id="resetZoomBtn" onclick="MonitorApp.resetViewport()" title="Reset Zoom" style="font-size:12px;padding:2px 8px;border-radius:4px;cursor:pointer;background:var(--bg-secondary);color:var(--text-primary);border:1px solid var(--border-color);margin-left:2px">🔍 1:1</button>
+    <button id="helpBtn" onclick="event.stopPropagation(); toggleHelp();" title="Help" style="font-weight:bold;font-size:14px;padding:2px 10px;border-radius:50%;width:30px;height:30px;line-height:1;cursor:pointer">?</button>
   </div>
   <!-- Help Modal -->
   <div id="helpModal" style="display:none;position:fixed;inset:0;z-index:2000;background:rgba(0,0,0,0.6);backdrop-filter:blur(6px);-webkit-backdrop-filter:blur(6px);align-items:center;justify-content:center" onclick="toggleHelp()">
     <div style="background:var(--glass-bg);border:1px solid var(--glass-border);border-radius:14px;padding:24px 28px;max-width:560px;width:90%;max-height:80vh;overflow-y:auto;box-shadow:var(--glass-shadow);color:var(--text-primary);font-size:13px;line-height:1.7;position:relative" onclick="event.stopPropagation()">
       <button onclick="toggleHelp()" style="position:absolute;top:12px;right:14px;background:none;border:none;font-size:18px;cursor:pointer;color:var(--text-secondary)">✕</button>
-      <h3 data-i18n="monitor.help.title" style="margin-bottom:14px;font-size:16px">📖 Справка по режимам балансировки</h3>
-      <p data-i18n="monitor.help.p1"><strong>P1 — Model Affinity (LOADED)</strong><br>Бэкенд с уже загруженной моделью в VRAM. Наивысший приоритет — мгновенный отклик.</p>
-      <p data-i18n="monitor.help.p2" style="margin-top:8px"><strong>P2 — Model Warming (WARMING_UP)</strong><br>Бэкенд в процессе загрузки модели. Балансер ожидает готовности до таймаута.</p>
-      <p data-i18n="monitor.help.p3" style="margin-top:8px"><strong>P3 — Free Backend (FREE)</strong><br>Свободный healthy бэкенд со слотами. Модель загружается синхронно (если <code>syncModelLoad.enabled</code>).</p>
-      <p data-i18n="monitor.help.p4" style="margin-top:8px"><strong>P4 — Fallback (FALLBACK)</strong><br>Все healthy бэкенды проходят ресурсный скоринг (GPU/VRAM/CPU/RAM). Выбирается лучший по score.</p>
+      <h3 data-i18n="monitor.help.title" style="margin-bottom:14px;font-size:16px">📖 Routing Modes Help</h3>
+      <p data-i18n="monitor.help.p1"><strong>P1 — Model Affinity (LOADED)</strong><br>Backend with model already in VRAM. Highest priority — instant response.</p>
+      <p data-i18n="monitor.help.p2" style="margin-top:8px"><strong>P2 — Model Warming (WARMING_UP)</strong><br>Backend loading model. Balancer waits for readiness until timeout.</p>
+      <p data-i18n="monitor.help.p3" style="margin-top:8px"><strong>P3 — Free Backend (FREE)</strong><br>Free healthy backend with slots. Model loads synchronously (if <code>syncModelLoad.enabled</code>).</p>
+      <p data-i18n="monitor.help.p4" style="margin-top:8px"><strong>P4 — Fallback (FALLBACK)</strong><br>All healthy backends undergo resource scoring (GPU/VRAM/CPU/RAM). Best score wins.</p>
       <hr style="margin:14px 0;border-color:var(--border-color)">
-      <p data-i18n="monitor.help.legendTitle"><strong>🎨 Легенда цветов в канвасе:</strong></p>
-      <p data-i18n="monitor.help.legendColors">🟢 <span style="color:var(--success)">Зелёный</span> — свободен (Idle) | 🟡 <span style="color:var(--warning)">Жёлтый</span> — загружен (Active) | 🔴 <span style="color:var(--danger)">Красный</span> — перегружен (Full/Error)</p>
-      <p data-i18n="monitor.help.conveyor" style="margin-top:8px"><strong>📊 Conveyor-лента:</strong> Анимированные частицы показывают поток запросов: синие — в пути, жёлтые — ожидают в очереди у балансера, фиолетовые — обрабатываются, зелёные — завершены.</p>
+      <p data-i18n="monitor.help.legendTitle"><strong>🎨 Canvas Color Legend:</strong></p>
+      <p data-i18n="monitor.help.legendColors">🟢 <span style="color:var(--success)">Green</span> — Idle | 🟡 <span style="color:var(--warning)">Yellow</span> — Active | 🔴 <span style="color:var(--danger)">Red</span> — Full/Error</p>
+      <p data-i18n="monitor.help.conveyor" style="margin-top:8px"><strong>📊 Conveyor Belt:</strong> Animated particles show request flow: blue — in transit, yellow — queued, purple — processing, green — completed.</p>
     </div>
   </div>
 </header>
 <div id="topoTooltip" style="display:none;position:fixed;pointer-events:none;z-index:1000;background:var(--glass-bg);backdrop-filter:blur(12px);-webkit-backdrop-filter:blur(12px);border:1px solid var(--glass-border);border-radius:10px;padding:10px 14px;font-size:12px;line-height:1.6;max-width:300px;box-shadow:var(--glass-shadow);color:var(--text-primary);white-space:nowrap"></div>
 <main>
   <div class="topo-section">
-    <canvas id="conveyorCanvas" style="position:absolute;top:0;left:0;width:100%;height:100px;z-index:3;pointer-events:none;opacity:0.75"></canvas>
+    <canvas id="conveyorCanvas" style="position:absolute;top:0;left:0;right:0;bottom:52px;z-index:3;pointer-events:none;opacity:0.75"></canvas>
     <canvas id="vizCanvas"></canvas>
     <div id="loadingOverlay" class="overlay">
       <div class="spinner"></div>
-      <h2 data-i18n="monitor.overlay.connecting">Подключение к API…</h2>
-      <p data-i18n="monitor.overlay.waitingDesc">Ожидание ответа от балансировщика. Если вы запускаете под Docker, убедитесь, что сервис <code>loadbalancer</code> поднят.</p>
+      <h2 data-i18n="monitor.overlay.connecting">Connecting to API…</h2>
+      <p data-i18n="monitor.overlay.waitingDesc">Waiting for balancer response. If running under Docker, ensure the <code>loadbalancer</code> service is up.</p>
       <p style="font-size:11px;color:var(--text-secondary);margin-top:4px"><span data-i18n="monitor.common.apiBase">API Base:</span> <code id="apiBaseDisplay">—</code></p>
     </div>
     <div id="errorOverlay" class="overlay hidden">
-      <h2 data-i18n="monitor.overlay.noConnection">⚠ Нет подключения к балансировщику</h2>
-      <p id="errorText" data-i18n="monitor.overlay.checkConnection">Не удалось получить данные. Проверьте, что API доступен и CORS настроен корректно.</p>
+      <h2 data-i18n="monitor.overlay.noConnection">⚠ No connection to balancer</h2>
+      <p id="errorText" data-i18n="monitor.overlay.checkConnection">Failed to fetch data. Check that the API is available and CORS is configured correctly.</p>
       <div id="errorDetails" style="font-size:11px;color:var(--text-secondary);max-width:480px;text-align:left;background:rgba(255,255,255,0.03);padding:8px 12px;border-radius:6px;margin-top:4px;line-height:1.6"></div>
       <div style="margin-top:8px">
-        <button onclick="retryNow()" data-i18n="monitor.overlay.retry">🔄 Повторить</button>
-        <button onclick="enterDemoMode()" style="margin-left:8px" data-i18n="monitor.overlay.demoMode">▶ Демо-режим</button>
+        <button onclick="retryNow()" data-i18n="monitor.overlay.retry">🔄 Retry</button>
+        <button onclick="enterDemoMode()" style="margin-left:8px" data-i18n="monitor.overlay.demoMode">▶ Demo Mode</button>
       </div>
     </div>
     <div class="stats-bar">
@@ -95,29 +96,30 @@
   <div class="tables-area">
     <div class="panel open" id="panelCluster">
       <div class="panel-header" onclick="togglePanel('panelCluster')">
-        <span data-i18n="monitor.panel.clusterResources">📊 Ресурсы кластера</span><span class="chevron">▼</span>
+        <span data-i18n="monitor.panel.clusterResources">📊 Cluster Resources</span><span class="chevron">▼</span>
       </div>
       <div class="panel-body"><div class="capacity-grid" id="capacityGrid"></div></div>
     </div>
     <div class="panel" id="panelModels">
       <div class="panel-header" onclick="togglePanel('panelModels')">
-        <span data-i18n="monitor.panel.modelsInMemory">🧠 Модели в памяти</span> (<span id="modelsCount">0</span>)<span class="chevron">▼</span>
+        <span data-i18n="monitor.panel.modelsInMemory">🧠 Models in Memory</span> <span class="panel-badge" id="modelsCount">0</span><span class="chevron">▼</span>
       </div>
       <div class="panel-body">
         <div style="overflow-x:auto">
           <table id="modelsTable">
             <thead>
               <tr>
-                <th data-i18n="monitor.table.model">Модель</th>
-                <th data-i18n="monitor.table.backends">Бэкенды</th>
-                <th class="col-right" data-i18n="monitor.table.sessionsCount">Сессий</th>
+                <th data-i18n="monitor.table.model">Model</th>
+                <th data-i18n="monitor.table.backends">Backends</th>
+                <th class="col-right" data-i18n="monitor.table.sessionsCount">Sessions</th>
                 <th class="col-right" data-i18n="monitor.table.vram">VRAM</th>
-                <th class="col-right" data-i18n="monitor.table.load">Загрузка</th>
+                <th class="col-right" data-i18n="monitor.table.load">Load</th>
+                <th class="col-right" style="font-size:11px" data-i18n="renderers.expires">Expires</th>
               </tr>
             </thead>
             <tbody>
               <tr>
-                <td colspan="5" style="color:var(--text-secondary);text-align:center;padding:16px" data-i18n="monitor.common.noData">Нет данных</td>
+                <td colspan="6" style="color:var(--text-secondary);text-align:center;padding:16px" data-i18n="monitor.common.noData">No data</td>
               </tr>
             </tbody>
           </table>
@@ -126,18 +128,18 @@
     </div>
     <div class="panel open" id="panelBackends">
       <div class="panel-header" onclick="togglePanel('panelBackends')">
-        <span data-i18n="monitor.panel.backends">🖥️ Backends</span> (<span id="backendCount">0</span>)<span class="chevron">▼</span>
+        <span data-i18n="monitor.panel.backends">🖥️ Backends</span> <span class="panel-badge" id="backendCount">0</span><span class="chevron">▼</span>
       </div>
       <div class="panel-body">
         <div class="backend-filter">
-          <input type="text" id="backendFilter" data-i18n-placeholder="monitor.backendFilter.placeholder" placeholder="🔍 Фильтр по ID, статусу или модели..." />
+          <input type="text" id="backendFilter" data-i18n-placeholder="monitor.backendFilter.placeholder" placeholder="🔍 Filter by ID, status, or model…" />
         </div>
         <div style="overflow-x:auto">
           <table id="backendsTable">
             <thead>
               <tr>
                 <th data-sort="id" data-i18n="monitor.table.id">ID</th>
-                <th data-sort="status" data-i18n="monitor.table.status">Статус</th>
+                <th data-sort="status" data-i18n="monitor.table.status">Status</th>
                 <th data-sort="gpu" data-i18n="monitor.table.gpu">GPU</th>
                 <th data-sort="vram" data-i18n="monitor.table.vram">VRAM</th>
                 <th data-sort="cpu" data-i18n="monitor.table.cpu">CPU</th>
@@ -147,13 +149,14 @@
                 <th class="col-right" data-sort="avgRT" data-i18n="monitor.table.avgRt">Avg RT</th>
                 <th class="col-right" data-sort="capacity" data-i18n="monitor.table.capacity">Capacity</th>
                 <th class="col-right" data-sort="score" data-i18n="monitor.table.score">Score</th>
-                <th data-i18n="monitor.table.models">Модели</th>
+                <th data-i18n="monitor.table.loading">Loading</th>
+                <th data-i18n="monitor.table.models">Models</th>
                 <th class="col-right" data-sort="uptime" data-i18n="monitor.table.uptime">Uptime</th>
               </tr>
             </thead>
             <tbody>
               <tr>
-                <td colspan="13" style="color:var(--text-secondary);text-align:center;padding:16px" data-i18n="monitor.common.noData">Нет данных</td>
+                <td colspan="14" style="color:var(--text-secondary);text-align:center;padding:16px" data-i18n="monitor.common.noData">No data</td>
               </tr>
             </tbody>
           </table>
@@ -163,7 +166,7 @@
 
     <div class="panel" id="panelQueue">
       <div class="panel-header" onclick="togglePanel('panelQueue')">
-        <span data-i18n="monitor.panel.queue">📋 Queue</span> (<span id="queueCount">0</span>)<span class="chevron">▼</span>
+        <span data-i18n="monitor.panel.queue">📋 Queue</span> <span class="panel-badge" id="queueCount">0</span><span class="chevron">▼</span>
       </div>
       <div class="panel-body">
         <div style="overflow-x:auto">
@@ -171,16 +174,42 @@
             <thead>
               <tr>
                 <th data-i18n="monitor.table.rowNum">#</th>
-                <th data-i18n="monitor.table.model">Модель</th>
+                <th data-i18n="monitor.table.model">Model</th>
                 <th data-i18n="monitor.table.target">Target</th>
-                <th data-i18n="monitor.table.status">Статус</th>
-                <th class="col-right" data-i18n="monitor.table.wait">Ожидание</th>
-                <th data-i18n="monitor.table.session">Сессия</th>
+                <th data-i18n="monitor.table.status">Status</th>
+                <th class="col-right" data-i18n="monitor.table.wait">Wait</th>
+                <th data-i18n="monitor.table.session">Session</th>
               </tr>
             </thead>
             <tbody>
               <tr>
-                <td colspan="7" style="color:var(--text-secondary);text-align:center;padding:16px" data-i18n="monitor.common.noData">Нет данных</td>
+                <td colspan="7" style="color:var(--text-secondary);text-align:center;padding:16px" data-i18n="monitor.common.noData">No data</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+    <div class="panel" id="panelModelOps">
+      <div class="panel-header" onclick="togglePanel('panelModelOps')">
+        <span data-i18n="monitor.panel.modelOps">🔧 Model Operations</span> <span class="panel-badge" id="modelOpsCount">0</span><span class="chevron">▼</span>
+      </div>
+      <div class="panel-body">
+        <div style="overflow-x:auto">
+          <table id="modelOpsTable">
+            <thead>
+              <tr>
+                <th data-i18n="monitor.table.operation">Operation</th>
+                <th data-i18n="monitor.table.model">Model</th>
+                <th data-i18n="monitor.table.backend">Backend</th>
+                <th class="col-right" data-i18n="monitor.table.started">Started</th>
+                <th class="col-right" data-i18n="monitor.table.duration">Duration</th>
+                <th data-i18n="monitor.table.status">Status</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td colspan="6" style="color:var(--text-secondary);text-align:center;padding:16px" data-i18n="monitor.common.noData">No data</td>
               </tr>
             </tbody>
           </table>
@@ -211,15 +240,47 @@
           <div class="dispatch-card" style="flex:1;min-width:160px;background:var(--bg-secondary);border:1px solid var(--border-color);border-radius:8px;padding:12px 16px">
             <div data-i18n="monitor.dispatch.processedTotal" style="font-size:11px;color:var(--text-secondary);text-transform:uppercase;letter-spacing:0.5px">Processed Total</div>
             <div id="dispatchTotal" style="font-size:22px;font-weight:700;color:var(--purple-accent);margin-top:4px">—</div>
-            <div data-i18n="monitor.dispatch.total" style="font-size:11px;color:var(--text-secondary);margin-top:2px">Всего обработано</div>
+            <div data-i18n="monitor.dispatch.total" style="font-size:11px;color:var(--text-secondary);margin-top:2px">Total processed</div>
           </div>
         </div>
         <div style="padding:8px 4px;font-size:11px;color:var(--text-secondary);line-height:1.6">
-          <strong data-i18n="monitor.dispatch.howItWorks">💡 Как работает dispatch:</strong><br>
-          ① <strong>Model Affinity</strong> — <span data-i18n="monitor.dispatch.affinityDesc">модель уже загружена на бэкенде (P1–P3)</span><br>
-          ② <strong>Resource-Aware</strong> — <span data-i18n="monitor.dispatch.loadDesc">выбор по свободным ресурсам + prediction bonus (P4)</span><br>
-          ③ <strong>Weight/Config</strong> — <span data-i18n="monitor.dispatch.configDesc">fallback по весам бэкенда (UseEnhancedScoring=false)</span>
+          <strong data-i18n="monitor.dispatch.howItWorks">💡 How dispatch works:</strong><br>
+          ① <strong>Model Affinity</strong> — <span data-i18n="monitor.dispatch.affinityDesc">model already loaded on backend (P1–P3)</span><br>
+          ② <strong>Resource-Aware</strong> — <span data-i18n="monitor.dispatch.loadDesc">choose by free resources + prediction bonus (P4)</span><br>
+          ③ <strong>Weight/Config</strong> — <span data-i18n="monitor.dispatch.configDesc">fallback by backend weights (UseEnhancedScoring=false)</span>
         </div>
+      </div>
+    </div>
+    <div class="panel" id="panelCandidates">
+      <div class="panel-header" onclick="togglePanel('panelCandidates')">
+        <span data-i18n="monitor.panel.candidates">🎯 Candidate Backends</span> <span class="panel-badge" id="candidatesCount">0</span><span class="chevron">▼</span>
+      </div>
+      <div class="panel-body">
+        <div style="overflow-x:auto">
+          <table id="candidatesTable">
+            <thead>
+              <tr>
+                <th data-i18n="monitor.table.model">Model</th>
+                <th data-i18n="monitor.table.status">Status</th>
+                <th class="col-right" data-i18n="monitor.candidates.totalBackends">Total Backends</th>
+                <th data-i18n="monitor.candidates.groups">Candidate Groups</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td colspan="4" style="color:var(--text-secondary);text-align:center;padding:16px" data-i18n="monitor.common.noData">No data</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+    <div class="panel" id="panelFeasibility">
+      <div class="panel-header" onclick="togglePanel('panelFeasibility')">
+        <span data-i18n="monitor.panel.feasibility">📊 Load Feasibility</span><span class="chevron">▼</span>
+      </div>
+      <div class="panel-body" id="feasibilityBody">
+        <div style="color:var(--text-secondary);text-align:center;padding:16px" data-i18n="monitor.common.noData">No data</div>
       </div>
     </div>
     <div class="panel" id="panelAutoPull">
@@ -236,7 +297,7 @@
                   <input type="checkbox" id="autoPullEnabled">
                   <span class="slider round"></span>
                 </label>
-                <span id="autoPullEnabledLabel" style="font-size:12px;color:var(--text-secondary);font-weight:500" data-i18n="monitor.autoPull.off">Выкл</span>
+                <span id="autoPullEnabledLabel" style="font-size:12px;color:var(--text-secondary);font-weight:500" data-i18n="monitor.autoPull.off">Off</span>
               </div>
               <div id="autoPullSettings" style="display:flex;flex-wrap:wrap;gap:8px 14px;padding:6px 0 8px 0;border-top:1px solid var(--border-color);margin-bottom:6px">
                 <div style="display:flex;align-items:center;gap:6px">
@@ -285,44 +346,44 @@
     </div>
     <div class="panel" id="panelVirtualModels">
       <div class="panel-header" onclick="togglePanel('panelVirtualModels')">
-        <span data-i18n="vm.title">🧩 Виртуальные модели</span> (<span id="vmCount">0</span>)<span class="chevron">▼</span>
+        <span data-i18n="vm.title">🧩 Virtual Models</span> <span class="panel-badge" id="vmCount">0</span><span class="chevron">▼</span>
       </div>
       <div class="panel-body">
         <div style="overflow-x:auto">
           <table id="vmTable">
             <thead>
               <tr>
-                <th data-i18n="vm.name">Имя</th>
-                <th data-i18n="vm.slices">Срезы</th>
-                <th data-i18n="vm.mode">Режим</th>
-                <th class="col-right" data-i18n="vm.activeJobs">Активных задач</th>
-                <th class="col-right" data-i18n="vm.timeout">Таймаут</th>
-                <th data-i18n="vm.status">Статус</th>
+                <th data-i18n="vm.name">Name</th>
+                <th data-i18n="vm.slices">Slices</th>
+                <th data-i18n="vm.mode">Mode</th>
+                <th class="col-right" data-i18n="vm.activeJobs">Active Jobs</th>
+                <th class="col-right" data-i18n="vm.timeout">Timeout</th>
+                <th data-i18n="vm.status">Status</th>
               </tr>
             </thead>
             <tbody>
               <tr>
-                <td colspan="6" style="color:var(--text-secondary);text-align:center;padding:16px" data-i18n="vm.noModels">Нет виртуальных моделей</td>
+                <td colspan="6" style="color:var(--text-secondary);text-align:center;padding:16px" data-i18n="vm.noModels">No virtual models</td>
               </tr>
             </tbody>
           </table>
         </div>
-        <!-- Детали активных задач VirtualModel -->
+        <!-- Active VirtualModel jobs -->
         <div id="vmJobDetails" style="margin-top:8px;display:none">
-          <div style="font-size:12px;font-weight:600;margin-bottom:6px;color:var(--text-secondary)" data-i18n="vm.activeJobs">Активных pipeline задач</div>
+          <div style="font-size:12px;font-weight:600;margin-bottom:6px;color:var(--text-secondary)" data-i18n="vm.activeJobs">Active Pipeline Jobs</div>
           <div style="overflow-x:auto">
             <table id="vmJobsTable" style="font-size:11px">
               <thead>
                 <tr>
-                  <th data-i18n="vm.name">Модель</th>
-                  <th data-i18n="vm.jobId">ID задачи</th>
-                  <th data-i18n="vm.jobSlice">Текущий срез</th>
-                  <th class="col-right" data-i18n="vm.timeout">Статус</th>
+                  <th data-i18n="vm.name">Model</th>
+                  <th data-i18n="vm.jobId">Job ID</th>
+                  <th data-i18n="vm.jobSlice">Current Slice</th>
+                  <th class="col-right" data-i18n="vm.timeout">Status</th>
                 </tr>
               </thead>
               <tbody>
                 <tr>
-                  <td colspan="4" style="color:var(--text-secondary);text-align:center;padding:12px" data-i18n="common.noData">Нет данных</td>
+                  <td colspan="4" style="color:var(--text-secondary);text-align:center;padding:12px" data-i18n="common.noData">No data</td>
                 </tr>
               </tbody>
             </table>
@@ -332,7 +393,7 @@
     </div>
     <div class="panel" id="panelSessions">
       <div class="panel-header" onclick="togglePanel('panelSessions')">
-        <span data-i18n="monitor.panel.sessions">👤 Sessions</span> (<span id="sessionCount">0</span>)<span class="chevron">▼</span>
+        <span data-i18n="monitor.panel.sessions">👤 Sessions</span> <span class="panel-badge" id="sessionCount">0</span><span class="chevron">▼</span>
       </div>
       <div class="panel-body">
         <div style="overflow-x:auto">
@@ -341,20 +402,28 @@
               <tr>
                 <th data-i18n="monitor.table.sessionId">ID</th>
                 <th data-i18n="monitor.table.backend">Backend</th>
-                <th data-i18n="monitor.table.model">Модель</th>
-                <th class="col-right" data-i18n="monitor.table.requests">Запросов</th>
+                <th data-i18n="monitor.table.model">Model</th>
+                <th class="col-right" data-i18n="monitor.table.requests">Requests</th>
                 <th class="col-right" data-i18n="monitor.table.idle">Idle</th>
                 <th data-i18n="monitor.table.ip">IP</th>
-                <th data-i18n="monitor.table.client">Клиент</th>
+                <th data-i18n="monitor.table.client">Client</th>
               </tr>
             </thead>
             <tbody>
               <tr>
-                <td colspan="7" style="color:var(--text-secondary);text-align:center;padding:16px" data-i18n="monitor.common.noData">Нет данных</td>
+                <td colspan="7" style="color:var(--text-secondary);text-align:center;padding:16px" data-i18n="monitor.common.noData">No data</td>
               </tr>
             </tbody>
           </table>
         </div>
+      </div>
+    </div>
+    <div class="panel" id="panelDiskNetwork">
+      <div class="panel-header" onclick="togglePanel('panelDiskNetwork')">
+        <span data-i18n="monitor.panel.diskNetwork">💾 Disk / 🌐 Network</span><span class="chevron">▼</span>
+      </div>
+      <div class="panel-body" id="diskNetworkBody">
+        <div style="color:var(--text-secondary);text-align:center;padding:16px" data-i18n="monitor.common.noData">No data</div>
       </div>
     </div>
   </div>

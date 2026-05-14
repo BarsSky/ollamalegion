@@ -24,3 +24,17 @@ deployments/data/
 data/
 
 *.txt
+
+task_progress.json
+
+coverage
+
+c
+
+test_results/
+
+test_embed.json
+
+test_generate.json
+
+.cocoindex_code/

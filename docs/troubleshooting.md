@@ -546,6 +546,89 @@ curl -s http://localhost:11434/api/tags | jq
 
 ---
 
+### TransferEncodingError / UND_ERR_SOCKET в OpenWebUI
+
+**Симптомы:**
+- OpenWebU показывает ошибку `Response payload is not completed: <TransferEncodingError: 400, message='Not enough data to satisfy transfer length header.'>`
+- В логах OpenWebUI также `UND_ERR_SOCKET`
+- Ошибка возникает при streaming-запросах (/api/generate, /api/chat) при общении через прокси-порт балансера
+
+**Причина:**
+Streaming-ответ (SSE/chunked) был оборван до получения завершающего чанка (`done: true` или chunked terminator `0\r\n\r\n`). Это происходит когда:
+1. Бэкенд Ollama аварийно завершился во время генерации токенов
+2. Сетевое соединение между балансером и бэкендом Ollama разорвано
+3. Таймаут streaming-контекста истёк (по умолчанию 10 минут)
+
+**Диагностика:**
+
+```bash
+# 1. Включите debug-логирование балансера
+docker exec -e LB_LOG_LEVEL=debug ollama-legion-balancer kill -HUP 1
+# Или перезапустите с debug уровнем в config.json:
+# "logging": {"level": "debug"}
+
+# 2. Отслеживайте логи балансера при возникновении ошибки
+docker logs -f ollama-legion-balancer | grep -E "STREAMING_BACKEND_READ_ERROR|PROXY_BACKEND_REQUEST_FAILED|STREAMING_SENDING_SSE_ERROR"
+
+# 3. Проверьте состояние бэкендов
+curl -s http://localhost:18081/api/v1/cluster | jq '.backends[] | {id: .id, status: .status, activeReqs: .ollama.activeRequests}'
+
+# 4. Проверьте логи Ollama на бэкенде
+ssh <gpu-server> 'docker logs ollama --tail 50'
+```
+
+**Ключевые записи в логах балансера:**
+
+При возникновении ошибки ищите следующие префиксы:
+
+| Префикс лога | Значение |
+|-------------|----------|
+| `PROXY_BACKEND_REQUEST_FAILED` | Ошибка при отправке запроса к Ollama. `error_type` указывает тип: `connection_refused`, `connection_reset_by_peer`, `context_deadline_exceeded`, `timeout`, `broken_pipe`, `unexpected_eof` |
+| `STREAMING_BACKEND_READ_ERROR` | Ошибка чтения streaming-ответа от бэкенда. Содержит `read_error`, `bytes_streamed`, `chunk_count`, `elapsed_ms`, `idle_ms` |
+| `STREAMING_SENDING_SSE_ERROR` | Балансер пытается отправить клиенту SSE-ошибку с `done:true` для корректного завершения потока |
+
+**Пример логов при обрыве соединения с бэкендом:**
+```json
+{"level":"error","msg":"STREAMING_BACKEND_READ_ERROR","backend":"gpu-1","model":"qwen3:0.6b","read_error":"read tcp 10.0.1.5:11434->10.0.1.100:48372: connection reset by peer","read_error_type":"*net.OpError","bytes_streamed":1234,"chunk_count":12,"elapsed_ms":4500,"idle_ms":0,"client_disconnected":false,"context_error":"","is_sse":true}
+{"level":"warn","msg":"STREAMING_SENDING_SSE_ERROR","backend":"gpu-1","model":"qwen3:0.6b","code":"backend_read_error","bytes_streamed":1234,"chunk_count":12}
+```
+
+**Решение:**
+
+1. **Проверка стабильности бэкенда:**
+   ```bash
+   # Проверьте, не перезагружается ли Ollama
+   ssh <gpu-server> 'docker ps -a --filter name=ollama'
+   ssh <gpu-server> 'docker logs ollama --tail 100 | grep -i "error\|fatal\|panic"'
+   
+   # Проверьте использование VRAM — возможно OOM killer убивает процесс
+   ssh <gpu-server> 'nvidia-smi'
+   ```
+
+2. **Увеличьте таймауты (если проблема в длинных генерациях):**
+   ```json
+   {
+     "balancing": {
+       "streamTimeout": 900,
+       "requestTimeout": 300
+     }
+   }
+   ```
+
+3. **Проверьте сетевую связность:**
+   ```bash
+   # С балансера проверьте доступность Ollama
+   docker exec ollama-legion-balancer curl -v http://<gpu-ip>:11434/api/tags
+   ```
+
+4. **При множественных ошибках — настройте мониторинг:**
+   ```bash
+   # Логи балансера с фильтрацией ошибок streaming
+   docker logs -f ollama-legion-balancer 2>&1 | grep --line-buffered -E "STREAMING_BACKEND_READ_ERROR|PROXY_BACKEND_REQUEST_FAILED"
+   ```
+
+---
+
 ## Дополнительные ресурсы
 
 - [Конфигурация](configuration.md) — Настройка всех компонентов

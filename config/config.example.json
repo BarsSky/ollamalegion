@@ -48,6 +48,30 @@
       "defaultMaxInstances": 3,
       "idleUnloadAfter": "10m"
     },
+    "modelReplication": {
+      "enabled": false,
+      "defaultMinInstances": 1,
+      "defaultMaxInstances": 3,
+      "idleUnloadAfter": "10m",
+      "groups": []
+    },
+    "virtualModels": {
+      "enabled": false,
+      "models": []
+    },
+    "rpcCoordinator": {
+      "enabled": false,
+      "coordinatorURL": "http://localhost:18090",
+      "workerPort": 18080,
+      "timeout": "30s",
+      "protocol": "http",
+      "maxRetries": 3
+    },
+    "distInference": {
+      "enabled": false,
+      "grpcPort": 50051,
+      "workers": []
+    },
     "scoring": {
       "modelAlreadyLoaded": 0.15,
       "modelLoadingCost": 0.10,

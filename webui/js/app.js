@@ -3,7 +3,7 @@
  * Imports: Utils, Api, WebSocketManager, Renderers (loaded before this file)
  */
 const ui = (function () {
-    const { dashboard, backendsPage, modelsPage, sessionsPage, queuePage, logs: renderLogs, predictionAlerts } = Renderers;
+    const { dashboard, backendsPage, modelsPage, sessionsPage, queuePage, logs: renderLogs, predictionAlerts, proxyLogs: renderProxyLogs, copyProxyLogs: renderCopyProxyLogs, agentsPage: renderAgentsPage, renderAgentDetails } = Renderers;
 
     // State
     const data = {
@@ -13,7 +13,9 @@ const ui = (function () {
         queueTasks: [],
         queueHistory: [],
         logs: [],
-        models: []
+        models: [],
+        proxyLogs: [],
+        agents: null
     };
     let currentPage = 'dashboard';
     let refreshTimer = null;
@@ -39,6 +41,9 @@ const ui = (function () {
             fetchSessions();
         });
 
+        // Load agents on startup
+        fetchAgents();
+
         // Periodic refresh
         startPeriodicRefresh();
 
@@ -49,10 +54,22 @@ const ui = (function () {
             SettingsUI.setupModeSelector();
         }
 
-        // Check if setup wizard should be shown
-        if (window.SetupWizard && !SetupWizard.isInitialized()) {
-            SetupWizard.start();
+        // Check if setup wizard should be shown — проверяем сервер, а не localStorage
+        if (window.SetupWizard && window.SetupWizard.isInitialized) {
+            window.SetupWizard.isInitialized().then(function (initialized) {
+                if (!initialized) {
+                    window.SetupWizard.start();
+                }
+            }).catch(function () {
+                // При ошибке подключения не показываем wizard — сервер может быть недоступен
+                console.warn('Failed to check initialization status from server');
+            });
         }
+
+        // Setup logs tab navigation (System / Proxy sub-tabs)
+        setupLogsTabNavigation();
+        // Load proxy logs from REST API on startup
+        fetchProxyLogs();
 
         addLog(window.I18N ? I18N.t('app.webui_initialized') : 'WebUI initialized', 'info');
     }
@@ -80,8 +97,8 @@ const ui = (function () {
         if (btn) {
             btn.innerHTML = theme === 'dark' ? '☀️' : '🌙';
             btn.title = theme === 'dark'
-                ? (window.I18N ? I18N.t('settings.theme_light') : 'Светлая тема')
-                : (window.I18N ? I18N.t('settings.theme_dark') : 'Темная тема');
+                ? (window.I18N ? I18N.t('settings.theme_light') : 'Light theme')
+                : (window.I18N ? I18N.t('settings.theme_dark') : 'Dark theme');
         }
     }
 
@@ -162,14 +179,14 @@ const ui = (function () {
                 hideRestartModal();
                 if (indicator) {
                     indicator.style.display = 'block';
-                    indicator.innerHTML = '<div class="restart-indicator"><div class="restart-spinner"></div><span>' + (window.I18N ? I18N.t('settings.restarting') : 'Перезапуск балансера...') + '</span></div>';
+                    indicator.innerHTML = '<div class="restart-indicator"><div class="restart-spinner"></div><span>' + (window.I18N ? I18N.t('settings.restarting') : 'Restarting balancer...') + '</span></div>';
                 }
                 Api.post('/api/v1/admin/restart').then(function () {
-                    if (indicator) indicator.innerHTML = '<div style="color: var(--success); padding: 8px;">' + (window.I18N ? I18N.t('settings.restarted') : 'Балансер успешно перезапущен') + '</div>';
-                    showToast(window.I18N ? I18N.t('settings.restarted') : 'Балансер успешно перезапущен', 'success');
+                    if (indicator) indicator.innerHTML = '<div style="color: var(--success); padding: 8px;">' + (window.I18N ? I18N.t('settings.restarted') : 'Balancer restarted successfully') + '</div>';
+                    showToast(window.I18N ? I18N.t('settings.restarted') : 'Balancer restarted successfully', 'success');
                 }).catch(function (err) {
-                    if (indicator) indicator.innerHTML = '<div style="color: var(--danger); padding: 8px;">' + (window.I18N ? I18N.t('settings.restart_error') : 'Ошибка перезапуска') + '</div>';
-                    showToast((window.I18N ? I18N.t('settings.restart_error') : 'Ошибка') + ': ' + (err.message || err), 'error');
+                    if (indicator) indicator.innerHTML = '<div style="color: var(--danger); padding: 8px;">' + (window.I18N ? I18N.t('settings.restart_error') : 'Balancer restart failed') + '</div>';
+                    showToast((window.I18N ? I18N.t('common.error') : 'Error') + ': ' + (err.message || err), 'error');
                 });
             });
         }
@@ -219,7 +236,8 @@ const ui = (function () {
             sessions: 'Sessions',
             queue: 'Queue',
             logs: 'System Logs',
-            settings: 'Settings'
+            settings: 'Settings',
+            agents: 'Agents'
         };
         return titles[page] || 'Dashboard';
     }
@@ -247,9 +265,18 @@ const ui = (function () {
                 break;
             case 'logs':
                 renderLogs(data.logs);
+                // Also render proxy logs when switching to logs page (only if proxy tab is active)
+                var proxyTab = document.getElementById('logsTabProxy');
+                if (proxyTab && proxyTab.classList.contains('active')) {
+                    renderProxyLogs(data.proxyLogs);
+                }
+                break;
+            case 'agents':
+                if (data.agents) renderAgentsPage(data.agents);
                 break;
             case 'settings':
                 loadSettings();
+                setTimeout(function() { loadBackendLimits(); }, 100);
                 break;
         }
     }
@@ -276,7 +303,7 @@ const ui = (function () {
     function setupEventListeners() {
         document.getElementById('refreshBtn').addEventListener('click', () => {
             refreshCurrentPage();
-            showToast(window.I18N ? I18N.t('common.success') : 'Данные обновлены', 'success');
+            showToast(window.I18N ? I18N.t('common.success') : 'Data updated', 'success');
         });
 
         document.getElementById('addBackendBtn').addEventListener('click', () => openBackendModal());
@@ -342,7 +369,7 @@ const ui = (function () {
         });
 
         // Auto-save on settings form changes
-        var settingsFields = ['balancingAlgorithm', 'useEnhancedScoring', 'modelAffinity', 'sessionStickiness', 'predictionFiltering', 'gpuMaxUsage', 'vramMaxUsage', 'cpuMaxUsage', 'ramMaxUsage', 'minFreeDisk', 'modelReplicationMinInstances', 'modelReplicationMaxInstances', 'modelReplicationIdleUnload', 'rpcCoordinatorURL', 'rpcCoordinatorWorkerPort', 'rpcCoordinatorProtocol', 'rpcCoordinatorTimeout', 'virtualModelsCoordMode', 'virtualModelsTimeout', 'distInferenceGrpcPort'];
+        var settingsFields = ['balancingAlgorithm', 'useEnhancedScoring', 'modelAffinity', 'sessionStickiness', 'predictionFiltering', 'gpuMaxUsage', 'vramMaxUsage', 'cpuMaxUsage', 'ramMaxUsage', 'minFreeDisk', 'modelReplicationMinInstances', 'modelReplicationMaxInstances', 'modelReplicationIdleUnload', 'rpcCoordinatorURL', 'rpcCoordinatorWorkerPort', 'rpcCoordinatorProtocol', 'rpcCoordinatorTimeout', 'virtualModelsCoordMode', 'virtualModelsTimeout', 'distInferenceGrpcPort', 'agentCollectInterval', 'agentHeartbeatInterval', 'agentMaxConcurrent', 'agentMaxModels', 'agentTimeout'];
         settingsFields.forEach(function (id) {
             var el = document.getElementById(id);
             if (el) {
@@ -356,6 +383,116 @@ const ui = (function () {
         document.getElementById('backendModal').addEventListener('click', (e) => {
             if (e.target.id === 'backendModal') closeModal();
         });
+
+        // Agents page buttons
+        var refreshAgentsBtn = document.getElementById('refreshAgentsBtn');
+        if (refreshAgentsBtn) {
+            refreshAgentsBtn.addEventListener('click', function() {
+                fetchAgents();
+            });
+        }
+        var closeAgentDetailsBtn = document.getElementById('closeAgentDetails');
+        if (closeAgentDetailsBtn) {
+            closeAgentDetailsBtn.addEventListener('click', function() {
+                var card = document.getElementById('agentDetailsCard');
+                if (card) card.style.display = 'none';
+            });
+        }
+
+        // Models Manage button on Models page
+        var modelsManageBtn = document.getElementById('modelsManageBtn');
+        if (modelsManageBtn) {
+            modelsManageBtn.addEventListener('click', function() {
+                if (data.backends && data.backends.length > 0) {
+                    openModelManageModal(data.backends[0].id);
+                } else {
+                    showToast(window.I18N ? I18N.t('models.no_backends') : 'No backends available', 'error');
+                }
+            });
+        }
+
+        // Models search/filter
+        var modelsSearch = document.getElementById('modelsSearch');
+        if (modelsSearch) {
+            modelsSearch.addEventListener('input', Utils.debounce(function(e) {
+                filterModels(e.target.value);
+            }, 150));
+        }
+
+        // Models refresh button
+        var refreshModelsBtn = document.getElementById('refreshModelsBtn');
+        if (refreshModelsBtn) {
+            refreshModelsBtn.addEventListener('click', function() {
+                fetchClusterState().then(function() {
+                    modelsPage(data.backends);
+                    showToast(window.I18N ? I18N.t('common.success') : 'Models refreshed', 'success');
+                });
+            });
+        }
+
+        // Model Management Modal buttons
+        var modelManageCloseBtn = document.getElementById('modelManageClose');
+        if (modelManageCloseBtn) {
+            modelManageCloseBtn.addEventListener('click', closeModelManageModal);
+        }
+        var modelManageCancelBtn = document.getElementById('modelManageCancel');
+        if (modelManageCancelBtn) {
+            modelManageCancelBtn.addEventListener('click', closeModelManageModal);
+        }
+        var modelManageModal = document.getElementById('modelManageModal');
+        if (modelManageModal) {
+            modelManageModal.addEventListener('click', function(e) {
+                if (e.target.id === 'modelManageModal') closeModelManageModal();
+            });
+        }
+        var modelPullBtn = document.getElementById('modelPullBtn');
+        if (modelPullBtn) {
+            modelPullBtn.addEventListener('click', function() {
+                var backendId = modelManageModal ? modelManageModal.dataset.backendId : null;
+                if (!backendId) {
+                    showToast('Backend ID not found', 'error');
+                    return;
+                }
+                var modelName = document.getElementById('modelPullName') ? document.getElementById('modelPullName').value.trim() : '';
+                if (!modelName) {
+                    showToast(window.I18N ? I18N.t('models.model_name_placeholder') : 'Enter model name', 'error');
+                    return;
+                }
+                var insecure = document.getElementById('modelPullInsecure') ? document.getElementById('modelPullInsecure').checked : false;
+                var options = {};
+                if (insecure) options.insecure = true;
+                executeModelOperation(backendId, 'pull', modelName, options);
+            });
+        }
+
+        // Proxy logs buttons
+        var clearProxyLogsBtn = document.getElementById('clearProxyLogs');
+        if (clearProxyLogsBtn) {
+            clearProxyLogsBtn.addEventListener('click', function() {
+                data.proxyLogs = [];
+                renderProxyLogs(data.proxyLogs);
+            });
+        }
+        var refreshProxyLogsBtn = document.getElementById('refreshProxyLogs');
+        if (refreshProxyLogsBtn) {
+            refreshProxyLogsBtn.addEventListener('click', function() {
+                fetchProxyLogs();
+            });
+        }
+        var copyProxyLogsBtn = document.getElementById('copyProxyLogs');
+        if (copyProxyLogsBtn) {
+            copyProxyLogsBtn.addEventListener('click', function() {
+                renderCopyProxyLogs();
+            });
+        }
+
+        // Backend Limits button
+        var saveBackendLimitsBtn = document.getElementById('saveBackendLimitsBtn');
+        if (saveBackendLimitsBtn) {
+            saveBackendLimitsBtn.addEventListener('click', function() {
+                saveBackendLimits();
+            });
+        }
     }
 
     // ---- WebSocket Events ----
@@ -407,12 +544,17 @@ const ui = (function () {
                 fetchClusterState();
                 break;
             case 'statusChange':
-                addLog(window.I18N ? I18N.t('app.status_changed', { id: payload.backendId, old: payload.data?.oldStatus, new: payload.data?.newStatus }) : `Status ${payload.backendId}: ${payload.data?.oldStatus} → ${payload.data?.newStatus}`, 'warning');
+                addLog(window.I18N ? I18N.t('app.status_changed', { id: payload.backendId, old: payload.data?.oldStatus, new: payload.data?.newStatus }) : `Status ${payload.backendId}: ${payload.data?.oldStatus} \u2192 ${payload.data?.newStatus}`, 'warning');
                 applyStatusChange(payload.backendId, payload.data?.newStatus);
                 break;
             case 'limitsChange':
                 addLog(window.I18N ? I18N.t('app.limits_changed', { id: payload.backendId }) : `Limits ${payload.backendId} updated`, 'info');
                 fetchClusterState();
+                break;
+            case 'proxy_log':
+                if (payload.data?.entry) {
+                    addProxyLog(payload.data.entry);
+                }
                 break;
             case 'ping':
                 break;
@@ -550,99 +692,153 @@ const ui = (function () {
     }
 
     function loadSettings() {
-        var saved = localStorage.getItem('ollamalegion_config');
-        var config = saved ? JSON.parse(saved) : null;
+        // --- SERVER-FIRST RULE: сервер = источник истины ---
+        // Сначала пытаемся загрузить с сервера. Если не получилось — fallback в localStorage.
+        Api.config().then(function (serverConfig) {
+            applyServerConfig(serverConfig);
+            // Запоминаем время последней синхронизации
+            localStorage.setItem('ollamalegion_last_sync', Date.now().toString());
+        }).catch(function (err) {
+            console.warn('Server config unavailable, falling back to localStorage', err);
+            // Fallback: загружаем из localStorage
+            var saved = localStorage.getItem('ollamalegion_config');
+            if (saved) {
+                try {
+                    var config = JSON.parse(saved);
+                    applyLocalConfig(config);
+                } catch (e) {
+                    console.error('Failed to parse localStorage config', e);
+                }
+            }
+        });
+    }
 
-        if (config) {
-            var algEl = document.getElementById('balancingAlgorithm');
-            if (algEl && config.algorithm) algEl.value = config.algorithm;
-            var maEl = document.getElementById('modelAffinity');
-            if (maEl) maEl.checked = config.modelAffinity !== false;
-            var ssEl = document.getElementById('sessionStickiness');
-            if (ssEl) ssEl.checked = config.sessionStickiness !== false;
-            var pfEl = document.getElementById('predictionFiltering');
-            if (pfEl) pfEl.checked = config.predictionFiltering !== false;
-            var gpuEl = document.getElementById('gpuMaxUsage');
-            if (gpuEl && config.gpuMaxUsage) gpuEl.value = config.gpuMaxUsage;
-            var vramEl = document.getElementById('vramMaxUsage');
-            if (vramEl && config.vramMaxUsage) vramEl.value = config.vramMaxUsage;
-            var cpuEl = document.getElementById('cpuMaxUsage');
-            if (cpuEl && config.cpuMaxUsage) cpuEl.value = config.cpuMaxUsage;
-            var ramEl = document.getElementById('ramMaxUsage');
-            if (ramEl && config.ramMaxUsage) ramEl.value = config.ramMaxUsage;
-            var diskEl = document.getElementById('minFreeDisk');
-            if (diskEl && config.minFreeDisk) diskEl.value = config.minFreeDisk;
-            var tokenEl = document.getElementById('apiToken');
-            if (tokenEl && config.apiToken) tokenEl.value = config.apiToken;
+    function applyServerConfig(serverConfig) {
+        if (!serverConfig) return;
+
+        var algEl = document.getElementById('balancingAlgorithm');
+        if (algEl && serverConfig.algorithm) algEl.value = serverConfig.algorithm;
+        var maEl = document.getElementById('modelAffinity');
+        if (maEl) maEl.checked = serverConfig.modelAffinity !== false;
+        var ssEl = document.getElementById('sessionStickiness');
+        if (ssEl) ssEl.checked = serverConfig.sessionStickiness !== false;
+
+        var useESEl = document.getElementById('useEnhancedScoring');
+        if (useESEl) useESEl.checked = serverConfig.useEnhancedScoring !== false;
+
+        var pfEl = document.getElementById('predictionFiltering');
+        if (pfEl) pfEl.checked = serverConfig.predictionFiltering !== false;
+
+        var gpuEl = document.getElementById('gpuMaxUsage');
+        if (gpuEl && serverConfig.gpuMaxUsage) gpuEl.value = serverConfig.gpuMaxUsage;
+        var vramEl = document.getElementById('vramMaxUsage');
+        if (vramEl && serverConfig.vramMaxUsage) vramEl.value = serverConfig.vramMaxUsage;
+        var cpuEl = document.getElementById('cpuMaxUsage');
+        if (cpuEl && serverConfig.cpuMaxUsage) cpuEl.value = serverConfig.cpuMaxUsage;
+        var ramEl = document.getElementById('ramMaxUsage');
+        if (ramEl && serverConfig.ramMaxUsage) ramEl.value = serverConfig.ramMaxUsage;
+        var diskEl = document.getElementById('minFreeDisk');
+        if (diskEl && serverConfig.minFreeDisk) diskEl.value = serverConfig.minFreeDisk;
+        var tokenEl = document.getElementById('apiToken');
+        if (tokenEl && serverConfig.apiToken) tokenEl.value = serverConfig.apiToken;
+
+        // Operating Mode — критически важно для корректного отображения UI.
+        // Сервер = единственный источник истины. Перезаписываем UI жёстко.
+        if (serverConfig.operatingMode) {
+            if (window.SettingsUI && SettingsUI.syncModeFromServer) {
+                SettingsUI.syncModeFromServer(serverConfig.operatingMode);
+            } else {
+                // Fallback (устаревший путь)
+                var radio = document.querySelector('input[name="operatingMode"][value="' + serverConfig.operatingMode + '"]');
+                if (radio) radio.checked = true;
+            }
         }
 
-        // Также загружаем с сервера — серверные значения имеют приоритет
-        Api.config().then(function (serverConfig) {
-            var algEl = document.getElementById('balancingAlgorithm');
-            if (algEl && serverConfig.algorithm) algEl.value = serverConfig.algorithm;
-            var maEl = document.getElementById('modelAffinity');
-            if (maEl) maEl.checked = serverConfig.modelAffinity !== false;
-            var ssEl = document.getElementById('sessionStickiness');
-            if (ssEl) ssEl.checked = serverConfig.sessionStickiness !== false;
+        // RPC Settings — Model Replication (Вариант A)
+        var mrEnabledEl = document.getElementById('modelReplicationEnabled');
+        if (mrEnabledEl && serverConfig.modelReplication) mrEnabledEl.checked = serverConfig.modelReplication.enabled === true;
+        var mrMinEl = document.getElementById('modelReplicationMinInstances');
+        if (mrMinEl && serverConfig.modelReplication && serverConfig.modelReplication.defaultMinInstances) mrMinEl.value = serverConfig.modelReplication.defaultMinInstances;
+        var mrMaxEl = document.getElementById('modelReplicationMaxInstances');
+        if (mrMaxEl && serverConfig.modelReplication && serverConfig.modelReplication.defaultMaxInstances) mrMaxEl.value = serverConfig.modelReplication.defaultMaxInstances;
+        var mrIdleEl = document.getElementById('modelReplicationIdleUnload');
+        if (mrIdleEl && serverConfig.modelReplication && serverConfig.modelReplication.idleUnloadAfter) mrIdleEl.value = serverConfig.modelReplication.idleUnloadAfter;
 
-            // Новые поля из расширенного конфига
-            var useESEl = document.getElementById('useEnhancedScoring');
-            if (useESEl) useESEl.checked = serverConfig.useEnhancedScoring !== false;
+        // RPC Settings — RPC Coordinator (Вариант B)
+        var rcEnabledEl = document.getElementById('rpcCoordinatorEnabled');
+        if (rcEnabledEl && serverConfig.rpcCoordinator) rcEnabledEl.checked = serverConfig.rpcCoordinator.enabled === true;
+        var rcUrlEl = document.getElementById('rpcCoordinatorURL');
+        if (rcUrlEl && serverConfig.rpcCoordinator && serverConfig.rpcCoordinator.coordinatorURL) rcUrlEl.value = serverConfig.rpcCoordinator.coordinatorURL;
+        var rcPortEl = document.getElementById('rpcCoordinatorWorkerPort');
+        if (rcPortEl && serverConfig.rpcCoordinator && serverConfig.rpcCoordinator.workerPort) rcPortEl.value = serverConfig.rpcCoordinator.workerPort;
+        var rcProtoEl = document.getElementById('rpcCoordinatorProtocol');
+        if (rcProtoEl && serverConfig.rpcCoordinator && serverConfig.rpcCoordinator.protocol) rcProtoEl.value = serverConfig.rpcCoordinator.protocol;
+        var rcTimeoutEl = document.getElementById('rpcCoordinatorTimeout');
+        if (rcTimeoutEl && serverConfig.rpcCoordinator && serverConfig.rpcCoordinator.timeout) rcTimeoutEl.value = serverConfig.rpcCoordinator.timeout;
 
-            var pfEl = document.getElementById('predictionFiltering');
-            if (pfEl) pfEl.checked = serverConfig.predictionFiltering !== false;
+        // RPC Settings — Virtual Models (Вариант C)
+        var vmEnabledEl = document.getElementById('virtualModelsEnabled');
+        if (vmEnabledEl && serverConfig.virtualModels) vmEnabledEl.checked = serverConfig.virtualModels.enabled === true;
+        var vmModeEl = document.getElementById('virtualModelsCoordMode');
+        if (vmModeEl && serverConfig.virtualModels && serverConfig.virtualModels.coordMode) vmModeEl.value = serverConfig.virtualModels.coordMode;
+        var vmTimeoutEl = document.getElementById('virtualModelsTimeout');
+        if (vmTimeoutEl && serverConfig.virtualModels && serverConfig.virtualModels.timeout) vmTimeoutEl.value = serverConfig.virtualModels.timeout;
 
-            var gpuEl = document.getElementById('gpuMaxUsage');
-            if (gpuEl && serverConfig.gpuMaxUsage) gpuEl.value = serverConfig.gpuMaxUsage;
+        // RPC Settings — Distributed Inference (Вариант D)
+        var diEnabledEl = document.getElementById('distInferenceEnabled');
+        if (diEnabledEl && serverConfig.distInference) diEnabledEl.checked = serverConfig.distInference.enabled === true;
+        var diPortEl = document.getElementById('distInferenceGrpcPort');
+        if (diPortEl && serverConfig.distInference && serverConfig.distInference.grpcPort) diPortEl.value = serverConfig.distInference.grpcPort;
+    }
 
-            var vramEl = document.getElementById('vramMaxUsage');
-            if (vramEl && serverConfig.vramMaxUsage) vramEl.value = serverConfig.vramMaxUsage;
+    function applyLocalConfig(config) {
+        if (!config) return;
+        var algEl = document.getElementById('balancingAlgorithm');
+        if (algEl && config.algorithm) algEl.value = config.algorithm;
+        var maEl = document.getElementById('modelAffinity');
+        if (maEl) maEl.checked = config.modelAffinity !== false;
+        var ssEl = document.getElementById('sessionStickiness');
+        if (ssEl) ssEl.checked = config.sessionStickiness !== false;
+        var pfEl = document.getElementById('predictionFiltering');
+        if (pfEl) pfEl.checked = config.predictionFiltering !== false;
+        var gpuEl = document.getElementById('gpuMaxUsage');
+        if (gpuEl && config.gpuMaxUsage) gpuEl.value = config.gpuMaxUsage;
+        var vramEl = document.getElementById('vramMaxUsage');
+        if (vramEl && config.vramMaxUsage) vramEl.value = config.vramMaxUsage;
+        var cpuEl = document.getElementById('cpuMaxUsage');
+        if (cpuEl && config.cpuMaxUsage) cpuEl.value = config.cpuMaxUsage;
+        var ramEl = document.getElementById('ramMaxUsage');
+        if (ramEl && config.ramMaxUsage) ramEl.value = config.ramMaxUsage;
+        var diskEl = document.getElementById('minFreeDisk');
+        if (diskEl && config.minFreeDisk) diskEl.value = config.minFreeDisk;
+        var tokenEl = document.getElementById('apiToken');
+        if (tokenEl && config.apiToken) tokenEl.value = config.apiToken;
 
-            var cpuEl = document.getElementById('cpuMaxUsage');
-            if (cpuEl && serverConfig.cpuMaxUsage) cpuEl.value = serverConfig.cpuMaxUsage;
+        // Operating Mode
+        if (config.operatingMode) {
+            var radio = document.querySelector('input[name="operatingMode"][value="' + config.operatingMode + '"]');
+            if (radio) {
+                radio.checked = true;
+                if (window.SettingsUI) {
+                    SettingsUI.updateModeCards(config.operatingMode);
+                    SettingsUI.showModeFields(config.operatingMode);
+                }
+            }
+        }
 
-            var ramEl = document.getElementById('ramMaxUsage');
-            if (ramEl && serverConfig.ramMaxUsage) ramEl.value = serverConfig.ramMaxUsage;
-
-            var diskEl = document.getElementById('minFreeDisk');
-            if (diskEl && serverConfig.minFreeDisk) diskEl.value = serverConfig.minFreeDisk;
-
-            // RPC Settings — Model Replication (Вариант A)
-            var mrEnabledEl = document.getElementById('modelReplicationEnabled');
-            if (mrEnabledEl && serverConfig.modelReplication) mrEnabledEl.checked = serverConfig.modelReplication.enabled === true;
-            var mrMinEl = document.getElementById('modelReplicationMinInstances');
-            if (mrMinEl && serverConfig.modelReplication && serverConfig.modelReplication.defaultMinInstances) mrMinEl.value = serverConfig.modelReplication.defaultMinInstances;
-            var mrMaxEl = document.getElementById('modelReplicationMaxInstances');
-            if (mrMaxEl && serverConfig.modelReplication && serverConfig.modelReplication.defaultMaxInstances) mrMaxEl.value = serverConfig.modelReplication.defaultMaxInstances;
-            var mrIdleEl = document.getElementById('modelReplicationIdleUnload');
-            if (mrIdleEl && serverConfig.modelReplication && serverConfig.modelReplication.idleUnloadAfter) mrIdleEl.value = serverConfig.modelReplication.idleUnloadAfter;
-
-            // RPC Settings — RPC Coordinator (Вариант B)
-            var rcEnabledEl = document.getElementById('rpcCoordinatorEnabled');
-            if (rcEnabledEl && serverConfig.rpcCoordinator) rcEnabledEl.checked = serverConfig.rpcCoordinator.enabled === true;
-            var rcUrlEl = document.getElementById('rpcCoordinatorURL');
-            if (rcUrlEl && serverConfig.rpcCoordinator && serverConfig.rpcCoordinator.coordinatorURL) rcUrlEl.value = serverConfig.rpcCoordinator.coordinatorURL;
-            var rcPortEl = document.getElementById('rpcCoordinatorWorkerPort');
-            if (rcPortEl && serverConfig.rpcCoordinator && serverConfig.rpcCoordinator.workerPort) rcPortEl.value = serverConfig.rpcCoordinator.workerPort;
-            var rcProtoEl = document.getElementById('rpcCoordinatorProtocol');
-            if (rcProtoEl && serverConfig.rpcCoordinator && serverConfig.rpcCoordinator.protocol) rcProtoEl.value = serverConfig.rpcCoordinator.protocol;
-            var rcTimeoutEl = document.getElementById('rpcCoordinatorTimeout');
-            if (rcTimeoutEl && serverConfig.rpcCoordinator && serverConfig.rpcCoordinator.timeout) rcTimeoutEl.value = serverConfig.rpcCoordinator.timeout;
-
-            // RPC Settings — Virtual Models (Вариант C)
-            var vmEnabledEl = document.getElementById('virtualModelsEnabled');
-            if (vmEnabledEl && serverConfig.virtualModels) vmEnabledEl.checked = serverConfig.virtualModels.enabled === true;
-            var vmModeEl = document.getElementById('virtualModelsCoordMode');
-            if (vmModeEl && serverConfig.virtualModels && serverConfig.virtualModels.coordMode) vmModeEl.value = serverConfig.virtualModels.coordMode;
-            var vmTimeoutEl = document.getElementById('virtualModelsTimeout');
-            if (vmTimeoutEl && serverConfig.virtualModels && serverConfig.virtualModels.timeout) vmTimeoutEl.value = serverConfig.virtualModels.timeout;
-
-            // RPC Settings — Distributed Inference (Вариант D)
-            var diEnabledEl = document.getElementById('distInferenceEnabled');
-            if (diEnabledEl && serverConfig.distInference) diEnabledEl.checked = serverConfig.distInference.enabled === true;
-            var diPortEl = document.getElementById('distInferenceGrpcPort');
-            if (diPortEl && serverConfig.distInference && serverConfig.distInference.grpcPort) diPortEl.value = serverConfig.distInference.grpcPort;
-        }).catch(function () {});
+        if (config.agent) {
+            var ag = config.agent;
+            var agentCollEl = document.getElementById('agentCollectInterval');
+            if (agentCollEl && ag.collectInterval) agentCollEl.value = ag.collectInterval;
+            var agentHbEl = document.getElementById('agentHeartbeatInterval');
+            if (agentHbEl && ag.heartbeatInterval) agentHbEl.value = ag.heartbeatInterval;
+            var agentMcEl = document.getElementById('agentMaxConcurrent');
+            if (agentMcEl && ag.maxConcurrentRequests) agentMcEl.value = ag.maxConcurrentRequests;
+            var agentMmEl = document.getElementById('agentMaxModels');
+            if (agentMmEl && ag.maxModels) agentMmEl.value = ag.maxModels;
+            var agentToEl = document.getElementById('agentTimeout');
+            if (agentToEl && ag.timeout) agentToEl.value = ag.timeout;
+        }
     }
 
     function saveSettings(silent) {
@@ -677,7 +873,21 @@ const ui = (function () {
         var distInferenceEnabled = document.getElementById('distInferenceEnabled') ? document.getElementById('distInferenceEnabled').checked : false;
         var distInferenceGrpcPort = parseInt((document.getElementById('distInferenceGrpcPort') && document.getElementById('distInferenceGrpcPort').value)) || 19000;
 
+        // Agent settings
+        var agentCollectInterval = parseInt((document.getElementById('agentCollectInterval') && document.getElementById('agentCollectInterval').value)) || 15;
+        var agentHeartbeatInterval = parseInt((document.getElementById('agentHeartbeatInterval') && document.getElementById('agentHeartbeatInterval').value)) || 30;
+        var agentMaxConcurrent = parseInt((document.getElementById('agentMaxConcurrent') && document.getElementById('agentMaxConcurrent').value)) || 10;
+        var agentMaxModels = parseInt((document.getElementById('agentMaxModels') && document.getElementById('agentMaxModels').value)) || 5;
+        var agentTimeout = parseInt((document.getElementById('agentTimeout') && document.getElementById('agentTimeout').value)) || 10;
+
         var config = {
+            agent: {
+                collectInterval: agentCollectInterval,
+                heartbeatInterval: agentHeartbeatInterval,
+                maxConcurrentRequests: agentMaxConcurrent,
+                maxModels: agentMaxModels,
+                timeout: agentTimeout
+            },
             algorithm: algorithm,
             useEnhancedScoring: useEnhancedScoring,
             modelAffinity: modelAffinity,
@@ -713,12 +923,42 @@ const ui = (function () {
             }
         };
 
-        localStorage.setItem('ollamalegion_config', JSON.stringify(config));
-
+        // Конфигурация хранится на сервере, localStorage больше не используется для настроек
+        // (только theme и language остаются в localStorage)
         Api.updateConfig(config).then(function () {
-            if (!silent) showToast(window.I18N ? I18N.t('settings.saved') : 'Настройки сохранены', 'success');
+            return verifySync(config);
+        }).then(function () {
+            if (!silent) showToast(window.I18N ? I18N.t('settings.saved') : 'Settings saved', 'success');
         }).catch(function (err) {
-            if (!silent) showToast((window.I18N ? I18N.t('common.error') : 'Ошибка') + ': ' + (err.message || err), 'error');
+            if (!silent) showToast((window.I18N ? I18N.t('common.error') : 'Error') + ': ' + (err.message || err), 'error');
+        });
+    }
+
+    /**
+     * SERVER-FIRST verify: после PUT делаем GET и сравниваем критические поля.
+     * При расхождении перезагружаем UI из сервера (источник истины).
+     */
+    function verifySync(expectedConfig) {
+        return Api.config().then(function (serverConfig) {
+            // Всегда перезагружаем UI из сервера для гарантии синхронности
+            applyServerConfig(serverConfig);
+
+            var mismatches = [];
+            if (expectedConfig.algorithm && serverConfig.algorithm !== expectedConfig.algorithm) {
+                mismatches.push('algorithm: expected ' + expectedConfig.algorithm + ', got ' + serverConfig.algorithm);
+            }
+            if (expectedConfig.operatingMode && serverConfig.operatingMode !== expectedConfig.operatingMode) {
+                mismatches.push('operatingMode: expected ' + expectedConfig.operatingMode + ', got ' + serverConfig.operatingMode);
+            }
+            if (expectedConfig.useEnhancedScoring !== undefined && serverConfig.useEnhancedScoring !== expectedConfig.useEnhancedScoring) {
+                mismatches.push('useEnhancedScoring: expected ' + expectedConfig.useEnhancedScoring + ', got ' + serverConfig.useEnhancedScoring);
+            }
+
+            if (mismatches.length > 0) {
+                console.warn('[verifySync] Config mismatch detected:', mismatches);
+                var msg = (window.I18N ? I18N.t('wizard.error') : 'Config sync failed');
+                return Promise.reject(new Error(msg + ': ' + mismatches.join('; ')));
+            }
         });
     }
 
@@ -752,7 +992,7 @@ const ui = (function () {
             // Берём метрики для отображения (есть gpu, prediction)
             const backend = data.backends.find(b => b.id === backendId);
             if (!backend) return;
-            title.textContent = window.I18N ? I18N.t('backends.edit') : 'Редактировать бэкенд';
+            title.textContent = window.I18N ? I18N.t('backends.edit') : 'Edit Backend';
             deleteBtn.style.display = 'inline-block';
             // Сначала показываем форму с данными из кластера
             fillForm(backend, true);
@@ -786,7 +1026,7 @@ const ui = (function () {
                 // Не фатально — данные уже загружены из кластера
             });
         } else {
-            title.textContent = window.I18N ? I18N.t('backends.add') : 'Добавить бэкенд';
+            title.textContent = window.I18N ? I18N.t('backends.add') : 'Add Backend';
             deleteBtn.style.display = 'none';
             fillForm(null, false);
         }
@@ -834,7 +1074,7 @@ const ui = (function () {
         const labels = document.getElementById('formBackendLabels').value.split(',').map(l => l.trim()).filter(Boolean);
 
         if (!id || !host) {
-            showToast(window.I18N ? I18N.t('common.error') : 'ID и хост обязательны', 'error');
+            showToast(window.I18N ? I18N.t('common.error') : 'ID and host are required', 'error');
             return;
         }
 
@@ -867,7 +1107,7 @@ const ui = (function () {
 
     async function deleteBackend() {
         const id = document.getElementById('formBackendId').value;
-        if (!confirm(window.I18N ? I18N.t('backends.confirm_delete', { name: id }) : `Удалить бэкенд ${id}?`)) return;
+        if (!confirm(window.I18N ? I18N.t('backends.confirm_delete', { name: id }) : `Delete backend ${id}?`)) return;
 
         try {
             await Api.deleteBackend(id);
@@ -906,6 +1146,14 @@ const ui = (function () {
         });
     }
 
+    function filterModels(query) {
+        const cards = document.querySelectorAll('#modelsGrid .model-card');
+        const lower = query.toLowerCase();
+        cards.forEach(card => {
+            card.style.display = card.textContent.toLowerCase().includes(lower) ? '' : 'none';
+        });
+    }
+
     // ---- UI Utilities ----
 
     function updateConnectionStatus(connected) {
@@ -918,11 +1166,11 @@ const ui = (function () {
         if (connected) {
             dot.classList.remove('disconnected');
             dot.classList.add('connected');
-            text.textContent = window.I18N ? I18N.t('common.connected') : 'Подключено';
+            text.textContent = window.I18N ? I18N.t('common.connected') : 'Connected';
         } else {
             dot.classList.remove('connected');
             dot.classList.add('disconnected');
-            text.textContent = window.I18N ? I18N.t('common.disconnected') : 'Отключено';
+            text.textContent = window.I18N ? I18N.t('common.disconnected') : 'Disconnected';
         }
     }
 
@@ -965,13 +1213,313 @@ const ui = (function () {
         Utils.downloadFile(content, 'ollamalegion-backends.json', 'application/json');
     }
 
+    // ---- Proxy Logs ----
+
+    function addProxyLog(entry) {
+        if (!entry) return;
+        var locale = (window.I18N && I18N.getLang() === 'ru') ? 'ru' : 'en';
+        if (entry.timestamp) {
+            entry._time = new Date(entry.timestamp).toLocaleTimeString(locale);
+        } else {
+            entry._time = new Date().toLocaleTimeString(locale);
+        }
+        data.proxyLogs.unshift(entry);
+        if (data.proxyLogs.length > 500) data.proxyLogs = data.proxyLogs.slice(0, 500);
+        if (currentPage === 'logs') {
+            var proxyTab = document.getElementById('logsTabProxy');
+            if (proxyTab && proxyTab.classList.contains('active')) {
+                renderProxyLogs(data.proxyLogs);
+            }
+        }
+    }
+
+    // ---- Agents ----
+
+    async function fetchAgents() {
+        try {
+            data.agents = await Api.agentsStats();
+            if (currentPage === 'agents') renderAgentsPage(data.agents);
+        } catch (e) {
+            Api.handleError(e, window.I18N ? I18N.t('app.error_loading_agents') : 'Error loading agents');
+        }
+    }
+
+    async function showAgentDetails(agentId) {
+        var card = document.getElementById('agentDetailsCard');
+        var content = document.getElementById('agentDetailsContent');
+        if (!card || !content) return;
+        content.innerHTML = '<div class="loading">' + (window.I18N ? I18N.t('common.loading') : 'Loading...') + '</div>';
+        card.style.display = 'block';
+        try {
+            var info = await Api.agentInfo(agentId);
+            renderAgentDetails(info);
+        } catch (e) {
+            content.innerHTML = '<div class="error">' + (window.I18N ? I18N.t('common.error') : 'Error') + ': ' + (e.message || e) + '</div>';
+        }
+    }
+
+    function restartAgent(backendId) {
+        if (!confirm((window.I18N ? I18N.t('agents.confirm_restart') : 'Restart agent on backend') + ' ' + backendId + '?')) return;
+        showToast((window.I18N ? I18N.t('agents.restarting') : 'Restarting agent...'), 'info');
+        Api.restartAgent(backendId).then(function(result) {
+            showToast((window.I18N ? I18N.t('agents.restarted') : 'Agent restarted'), 'success');
+            addLog('Agent restarted on ' + backendId, 'info');
+        }).catch(function(err) {
+            showToast((window.I18N ? I18N.t('agents.restart_error') : 'Restart error') + ': ' + (err.message || err), 'error');
+        });
+    }
+
+    function viewAgentLogs(backendId) {
+        showToast((window.I18N ? I18N.t('agents.loading_logs') : 'Loading logs...'), 'info');
+        Api.agentLogs(backendId, 200).then(function(data) {
+            var logs = data.logs || data.entries || [];
+            var content = logs.length ? logs.map(function(l) {
+                var time = l.time || l.timestamp || '';
+                var level = l.level || 'INFO';
+                var msg = l.message || l.msg || '';
+                var levelClass = level.toLowerCase();
+                return '<div class="log-entry ' + levelClass + '"><span class="log-time">' + Utils.escapeHtml(time) + '</span> <span class="log-level log-level-' + levelClass + '">' + Utils.escapeHtml(level) + '</span> ' + Utils.escapeHtml(msg) + '</div>';
+            }).join('') : '<div style="text-align:center;color:var(--text-muted);padding:20px;">' + (window.I18N ? I18N.t('agents.no_logs') : 'No logs available') + '</div>';
+
+            var modalHtml = '<div id="agentLogsModal" class="modal active" style="z-index:2000;"><div class="modal-content" style="max-width:800px;">' +
+                '<div class="modal-header"><h3>' + (window.I18N ? I18N.t('agents.logs_title') : 'Agent Logs') + ' — ' + Utils.escapeHtml(backendId) + '</h3><button class="modal-close" onclick="document.getElementById(\'agentLogsModal\').remove()">×</button></div>' +
+                '<div class="modal-body"><div class="agent-logs-content">' + content + '</div></div>' +
+                '<div class="modal-footer"><button class="btn btn-secondary" onclick="document.getElementById(\'agentLogsModal\').remove()">' + (window.I18N ? I18N.t('common.close') : 'Закрыть') + '</button></div>' +
+                '</div></div>';
+
+            var existing = document.getElementById('agentLogsModal');
+            if (existing) existing.remove();
+            document.body.insertAdjacentHTML('beforeend', modalHtml);
+        }).catch(function(err) {
+            showToast((window.I18N ? I18N.t('agents.logs_error') : 'Failed to load logs') + ': ' + (err.message || err), 'error');
+        });
+    }
+
+    function fetchProxyLogs() {
+        Api.proxyLogs(100).then(function(res) {
+            data.proxyLogs = res.entries || [];
+            if (currentPage === 'logs') {
+                renderLogs(data.logs);
+                var proxyTab = document.getElementById('logsTabProxy');
+                if (proxyTab && proxyTab.classList.contains('active')) {
+                    renderProxyLogs(data.proxyLogs);
+                }
+            }
+        }).catch(function(err) {
+            console.error('Failed to fetch proxy logs:', err);
+        });
+    }
+
+    function loadBackendLimits() {
+        var tbody = document.getElementById('backendLimitsBody');
+        if (!tbody) return;
+        var backends = data.backends || [];
+        if (backends.length === 0) {
+            tbody.innerHTML = '<tr><td colspan="6" class="loading-cell">' + (window.I18N ? I18N.t('common.loading') : 'Loading...') + '</td></tr>';
+            return;
+        }
+        tbody.innerHTML = backends.map(function(b) {
+            var maxConcurrent = b.maxConcurrentRequests || b.activeRequests || 10;
+            var maxModels = b.maxModels || 0;
+            var statusClass = b.status === 'healthy' ? 'badge-success' : (b.status === 'warning' ? 'badge-warning' : 'badge-error');
+            var statusText = b.status || (window.I18N ? I18N.t('common.unknown') : 'Unknown');
+            return '<tr>' +
+                '<td><strong>' + Utils.escapeHtml(b.id || '-') + '</strong></td>' +
+                '<td>' + Utils.escapeHtml(b.host || '-') + '</td>' +
+                '<td>' + (b.agentPort || '-') + '</td>' +
+                '<td><input type="number" class="form-control backend-limit-input" data-backend-id="' + Utils.escapeHtml(b.id) + '" data-limit-type="maxConcurrent" value="' + maxConcurrent + '" min="1" style="width:100px;"></td>' +
+                '<td><input type="number" class="form-control backend-limit-input" data-backend-id="' + Utils.escapeHtml(b.id) + '" data-limit-type="maxModels" value="' + maxModels + '" min="0" style="width:100px;"></td>' +
+                '<td><span class="badge ' + statusClass + '">' + statusText + '</span></td>' +
+            '</tr>';
+        }).join('');
+    }
+
+    function saveBackendLimits() {
+        var inputs = document.querySelectorAll('.backend-limit-input');
+        var limits = {};
+        inputs.forEach(function(input) {
+            var backendId = input.dataset.backendId;
+            var limitType = input.dataset.limitType;
+            if (!limits[backendId]) limits[backendId] = {};
+            limits[backendId][limitType] = parseInt(input.value) || 0;
+        });
+        var promises = Object.keys(limits).map(function(backendId) {
+            var l = limits[backendId];
+            return Api.updateBackendLimitsFull(backendId, l.maxConcurrent || 10, l.maxModels || 0);
+        });
+        Promise.all(promises).then(function() {
+            showToast(window.I18N ? I18N.t('settings.saved') : 'Backend limits saved', 'success');
+            fetchClusterState();
+        }).catch(function(err) {
+            showToast((window.I18N ? I18N.t('common.error') : 'Error') + ': ' + (err.message || err), 'error');
+        });
+    }
+
+    function setupLogsTabNavigation() {
+        document.querySelectorAll('.logs-tab').forEach(function(tab) {
+            tab.addEventListener('click', function() {
+                document.querySelectorAll('.logs-tab').forEach(function(t) { t.classList.remove('active'); });
+                document.querySelectorAll('.logs-panel').forEach(function(p) { p.classList.remove('active'); });
+                this.classList.add('active');
+                var tabName = this.dataset.logsTab;
+                var panelName = 'logsPanel' + tabName.charAt(0).toUpperCase() + tabName.slice(1);
+                var panel = document.getElementById(panelName);
+                if (panel) panel.classList.add('active');
+                if (tabName === 'proxy') {
+                    renderProxyLogs(data.proxyLogs);
+                }
+            });
+        });
+    }
+
+    // ---- Model Management ----
+
+    function openModelManageModal(backendId) {
+        const backend = data.backends.find(b => b.id === backendId);
+        if (!backend) {
+            showToast('Backend not found', 'error');
+            return;
+        }
+
+        const modal = document.getElementById('modelManageModal');
+        if (!modal) return;
+
+        // Store backendId in dataset for pull button
+        modal.dataset.backendId = backendId;
+
+        // Set title
+        const title = modal.querySelector('.modal-header h3');
+        if (title) title.textContent = (window.I18N ? I18N.t('models.manage_title') : 'Model Management') + ' — ' + backendId;
+
+        // Show operations list with loading
+        const modelsBody = document.getElementById('modelManageModelsBody');
+        if (modelsBody) {
+            modelsBody.innerHTML = '<tr><td colspan="7" class="loading-cell">' + (window.I18N ? I18N.t('common.loading') : 'Loading...') + '</td></tr>';
+        }
+
+        // Show active operations
+        refreshModelOpsStatus();
+
+        modal.classList.add('active');
+
+        // Load models from backend
+        loadBackendModels(backendId);
+    }
+
+    function loadBackendModels(backendId) {
+        const modelsBody = document.getElementById('modelManageModelsBody');
+        if (!modelsBody) return;
+
+        Api.backendModels(backendId).then(function(data) {
+            const models = data.models || [];
+            if (models.length === 0) {
+                modelsBody.innerHTML = '<tr><td colspan="7" class="loading-cell">' + (window.I18N ? I18N.t('models.no_models_backend') : 'No models') + '</td></tr>';
+                return;
+            }
+            modelsBody.innerHTML = models.map(function(m) {
+                const sizeStr = m.size ? (m.size / 1024 / 1024 / 1024).toFixed(2) + ' GB' : '-';
+                const modified = m.modifiedAt ? new Date(m.modifiedAt).toLocaleString(Utils._locale()) : '-';
+                const loadedBadge = m.loaded
+                    ? '<span class="badge badge-success">' + (window.I18N ? I18N.t('models.loaded_status') : 'Loaded') + '</span>'
+                    : '<span class="badge badge-secondary">' + (window.I18N ? I18N.t('models.unloaded_status') : 'Not loaded') + '</span>';
+                return '<tr>' +
+                    '<td><strong>' + Utils.escapeHtml(m.name) + '</strong></td>' +
+                    '<td>' + (m.digest ? m.digest.substring(0, 16) + '...' : '-') + '</td>' +
+                    '<td>' + sizeStr + '</td>' +
+                    '<td>' + modified + '</td>' +
+                    '<td>' + loadedBadge + '</td>' +
+                    '<td>' +
+                        '<button class="action-btn edit" onclick="ui.executeModelOperation(\'' + Utils.escapeHtml(backendId) + '\', \'load\', \'' + Utils.escapeHtml(m.name) + '\')" title="' + (window.I18N ? I18N.t('models.load_hint') : 'Load') + '">' + (window.I18N ? I18N.t('models.load') : 'Load') + '</button>' +
+                        '<button class="action-btn delete" onclick="ui.executeModelOperation(\'' + Utils.escapeHtml(backendId) + '\', \'unload\', \'' + Utils.escapeHtml(m.name) + '\')" title="' + (window.I18N ? I18N.t('models.unload_hint') : 'Unload') + '">' + (window.I18N ? I18N.t('models.unload') : 'Unload') + '</button>' +
+                    '</td>' +
+                '</tr>';
+            }).join('');
+        }).catch(function(err) {
+            modelsBody.innerHTML = '<tr><td colspan="7" class="loading-cell">' + (window.I18N ? I18N.t('models.operation_error') : 'Error') + ': ' + (err.message || err) + '</td></tr>';
+        });
+    }
+
+    function executeModelOperation(backendId, operation, modelName, options = {}) {
+        showToast((window.I18N ? I18N.t('models.operation_running') : 'Operation in progress...') + ' ' + operation + ' ' + modelName, 'info');
+
+        Api.backendModelOperation(backendId, operation, modelName, options).then(function(result) {
+            if (result && result.success) {
+                showToast((window.I18N ? I18N.t('models.operation_success') : 'Success') + ': ' + operation + ' ' + modelName, 'success');
+                addLog('Model op success: ' + operation + ' ' + modelName + ' on ' + backendId, 'info');
+                // Reload models after a short delay
+                setTimeout(function() {
+                    loadBackendModels(backendId);
+                    refreshModelOpsStatus();
+                }, 1500);
+            } else {
+                var errMsg = (result && result.error) || (window.I18N ? I18N.t('models.operation_error') : 'Operation failed');
+                showToast(errMsg, 'error');
+                addLog('Model op error: ' + operation + ' ' + modelName + ' on ' + backendId + ': ' + errMsg, 'error');
+            }
+        }).catch(function(err) {
+            showToast((window.I18N ? I18N.t('models.operation_error') : 'Error') + ': ' + (err.message || err), 'error');
+            addLog('Model op error: ' + operation + ' ' + modelName + ' on ' + backendId + ': ' + (err.message || err), 'error');
+        });
+    }
+
+    function refreshModelOpsStatus() {
+        Api.modelOperationsStatus().then(function(data) {
+            const ops = data.operations || [];
+            const opsBody = document.getElementById('modelOpsBody');
+            if (!opsBody) return;
+
+            if (ops.length === 0) {
+                opsBody.innerHTML = '<tr><td colspan="5" class="loading-cell">' + (window.I18N ? I18N.t('models.no_active_ops') : 'No active operations') + '</td></tr>';
+                return;
+            }
+
+            opsBody.innerHTML = ops.map(function(op) {
+                return '<tr>' +
+                    '<td>' + Utils.escapeHtml(op.operation || '-') + '</td>' +
+                    '<td>' + Utils.escapeHtml(op.modelName || '-') + '</td>' +
+                    '<td>' + Utils.escapeHtml(op.backendId || '-') + '</td>' +
+                    '<td>' + (op.startedAt ? new Date(op.startedAt).toLocaleString(Utils._locale()) : '-') + '</td>' +
+                    '<td><span class="badge badge-info">' + Utils.escapeHtml(op.status || 'running') + '</span></td>' +
+                '</tr>';
+            }).join('');
+        }).catch(function(err) {
+            // Silently ignore — this is a background refresh
+            console.error('Failed to refresh model ops status:', err);
+        });
+    }
+
+    function closeModelManageModal() {
+        const modal = document.getElementById('modelManageModal');
+        if (modal) modal.classList.remove('active');
+    }
+
     // ---- Public API ----
     return {
         init,
         editBackend,
-        confirmDeleteBackend
+        confirmDeleteBackend,
+        openModelManageModal,
+        executeModelOperation,
+        loadBackendModels,
+        refreshModelOpsStatus,
+        closeModelManageModal,
+        showAgentDetails,
+        fetchAgents,
+        restartAgent,
+        viewAgentLogs
     };
+
 })();
+
 
 // Auto-init when DOM ready
 document.addEventListener('DOMContentLoaded', () => ui.init());
+
+// ---- Global helpers for model card actions (used by renderers.js modelsGrid) ----
+window.modelCardAction = function(operation, backendId, modelName) {
+    if (!backendId || !modelName) return;
+    if (operation === 'delete') {
+        if (!confirm((window.I18N ? I18N.t('models.confirm_delete') : 'Delete model') + ' ' + modelName + '?')) return;
+    }
+    ui.executeModelOperation(backendId, operation, modelName);
+};

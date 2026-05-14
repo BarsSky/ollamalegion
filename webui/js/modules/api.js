@@ -146,7 +146,51 @@ const Api = (function () {
             return ct.includes('application/json') ? response.json() : response.text();
         },
 
+        // Proxy logs
+        async proxyLogs(limit = 50) {
+            return getJson(`/api/v1/proxy/logs?limit=${limit}`);
+        },
+
+        // Model Management API
+        async backendModels(id) {
+            return getJson(`/api/v1/backends/${id}/models`);
+        },
+
+        async backendModelOperation(id, operation, modelName, options = {}) {
+            const payload = { operation, modelName, ...options };
+            const response = await request(`${API_BASE}/api/v1/backends/${id}/models`, {
+                method: 'POST',
+                body: JSON.stringify(payload)
+            });
+            return response.json();
+        },
+
+        async modelOperationsStatus() {
+            return getJson('/api/v1/models/operations');
+        },
+
+        // Agents API
+        async agentsStats() {
+            return getJson('/api/v1/agents/stats');
+        },
+
+        async agentInfo(id) {
+            return getJson('/api/v1/agents/' + encodeURIComponent(id));
+        },
+
+        async restartAgent(backendId) {
+            const response = await request(`${API_BASE}/api/v1/backends/${encodeURIComponent(backendId)}/restart`, {
+                method: 'POST'
+            });
+            return response.json();
+        },
+
+        async agentLogs(backendId, limit = 100) {
+            return getJson(`/api/v1/backends/${encodeURIComponent(backendId)}/logs?limit=${limit}`);
+        },
+
         // Generic error handler for UI
+
         handleError(err, fallbackMessage = 'Ошибка API') {
             console.error(err);
             const msg = err?.message || fallbackMessage;

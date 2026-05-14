@@ -56,6 +56,124 @@ func (p *Proxy) AddBackend(backend types.Backend) error {
 	return nil
 }
 
+// EvacuateBackend — плавная эвакуация бэкенда: переключает все активные сессии
+// на другие healthy бэкенды без обрыва соединений. Возвращает количество
+// перемещённых сессий.
+func (p *Proxy) EvacuateBackend(backendID string) (int, error) {
+	p.mu.RLock()
+	state, exists := p.backends[backendID]
+	p.mu.RUnlock()
+	if !exists {
+		return 0, fmt.Errorf("backend with ID %s not found", backendID)
+	}
+
+	// Помечаем как Draining — новые запросы не будут направляться
+	oldStatus := state.Backend.Status
+	state.Backend.Status = types.StatusDraining
+
+	if oldStatus != types.StatusDraining {
+		p.PublishEvent(types.Event{
+			Type:      types.EventStatusChange,
+			Timestamp: time.Now().UTC(),
+			BackendID: backendID,
+			Data: map[string]interface{}{
+				"oldStatus": string(oldStatus),
+				"newStatus": string(types.StatusDraining),
+			},
+		})
+	}
+
+	// Находим все сессии, привязанные к этому бэкенду
+	allSessions := p.sessionMgr.GetAll()
+	var evacuatedCount int
+
+	for _, session := range allSessions {
+		if session.BackendID != backendID {
+			continue
+		}
+
+		// Ищем альтернативный healthy бэкенд для модели сессии
+		altBackend := p.findHealthyBackendForModel(session.Model, backendID)
+		if altBackend == "" {
+			logger.Get().Warnw("evacuation: no alternative backend for session",
+				"session_id", session.ID,
+				"model", session.Model,
+				"backend", backendID,
+			)
+			continue
+		}
+
+		// Обновляем привязку сессии
+		p.sessionMgr.Set(session.ID, altBackend, session.Model, session.ClientName, session.ClientIP, session.UserAgent)
+		evacuatedCount++
+
+		logger.Get().Infow("evacuation: session reassigned",
+			"session_id", session.ID,
+			"from", backendID,
+			"to", altBackend,
+			"model", session.Model,
+		)
+	}
+
+	// Принудительно сохраняем state
+	if err := p.FlushState(); err != nil {
+		logger.Get().Errorw("failed to flush state after evacuation", "backend", backendID, "error", err)
+	}
+
+	logger.Get().Infow("backend evacuation completed",
+		"backend", backendID,
+		"evacuated_sessions", evacuatedCount,
+		"total_sessions", len(allSessions),
+	)
+	return evacuatedCount, nil
+}
+
+// findHealthyBackendForModel — находит healthy бэкенд с моделью, исключая указанный.
+func (p *Proxy) findHealthyBackendForModel(model, excludeID string) string {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+
+	var best string
+	var bestLoad float64 = 2.0 // >1.0 значит не найден
+
+	for id, state := range p.backends {
+		if id == excludeID || state.Backend.Status != types.StatusHealthy {
+			continue
+		}
+
+		// Проверяем, есть ли модель на бэкенде
+		metrics, hasMetrics := p.metricsMgr.metrics[id]
+		if hasMetrics {
+			found := false
+			for _, rm := range metrics.Ollama.RunningModels {
+				if rm.Name == model {
+					found = true
+					break
+				}
+			}
+			if !found {
+				continue
+			}
+		}
+
+		maxReqs := state.Backend.MaxConcurrentReqs
+		if state.Backend.RuntimeMaxConcurrentRequests > 0 {
+			maxReqs = state.Backend.RuntimeMaxConcurrentRequests
+		}
+		if maxReqs <= 0 {
+			continue
+		}
+
+		load := float64(state.ActiveReqs) / float64(maxReqs)
+		if load < bestLoad {
+			bestLoad = load
+			best = id
+		}
+	}
+
+	return best
+}
+
 // RemoveBackend - удаление бэкенда с graceful drain активных запросов.
 // Помечает бэкенд как Draining, ждёт завершения активных запросов (с таймаутом 30с),
 // затем удаляет из backends, metrics и принудительно сохраняет state.json.
@@ -84,8 +202,14 @@ func (p *Proxy) RemoveBackend(backendID string) error {
 		})
 	}
 
-	// Ждём завершения активных запросов с таймаутом 30 секунд
-	drainTimeout := time.After(30 * time.Second)
+	// Ждём завершения активных запросов с таймаутом.
+	// Базовый таймаут 30 сек, но если StreamTimeout больше — используем его
+	// чтобы не обрывать длительные streaming-соединения.
+	drainTimeoutSec := 30
+	if p.config.Balancing.StreamTimeout > drainTimeoutSec {
+		drainTimeoutSec = p.config.Balancing.StreamTimeout
+	}
+	drainTimeout := time.After(time.Duration(drainTimeoutSec) * time.Second)
 	drainTicker := time.NewTicker(200 * time.Millisecond)
 	defer drainTicker.Stop()
 
@@ -93,8 +217,14 @@ drainLoop:
 	for {
 		select {
 		case <-drainTimeout:
+			state.mu.Lock()
+			remaining := state.ActiveReqs
+			state.mu.Unlock()
 			logger.Get().Warnw("drain timeout reached, force-removing backend",
-				"backend", backendID)
+				"backend", backendID,
+				"timeout_sec", drainTimeoutSec,
+				"remaining_active_reqs", remaining,
+			)
 			break drainLoop
 		case <-drainTicker.C:
 			state.mu.Lock()

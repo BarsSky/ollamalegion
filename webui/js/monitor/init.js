@@ -31,7 +31,7 @@
       }).catch(function(e) {
         console.error('[monitor] save autopull config failed:', e);
         if (statusEl) {
-          statusEl.textContent = '✗ Error: ' + (e.message || 'Unknown');
+          statusEl.textContent = '✗ ' + MA.T('monitor.common.error') + ': ' + (e.message || 'Unknown');
           statusEl.style.color = 'var(--danger)';
           statusEl.style.display = 'inline';
           setTimeout(function() { if (statusEl) { statusEl.style.display = 'none'; statusEl.style.color = 'var(--success)'; } }, 5000);

@@ -102,6 +102,8 @@ window.I18N_EN = {
   "backends.test_success": "Backend {name} is available",
   "backends.test_fail": "Backend {name} is not responding",
   "backends.testing": "Testing {name}...",
+  "backends.host": "Host",
+  "backends.agent_port": "Agent Port",
 
   // Models
 
@@ -116,6 +118,7 @@ window.I18N_EN = {
   "models.on_backends": "On Backends",
   "models.no_models": "No models loaded",
   "models.memory_title": "Memory Usage",
+  "models.search_placeholder": "Search model...",
 
   // Sessions
   "sessions.title": "Sessions",
@@ -161,6 +164,19 @@ window.I18N_EN = {
   "logs.level_info": "INFO",
   "logs.level_warn": "WARN",
   "logs.level_error": "ERROR",
+  "logs.system": "System",
+  "logs.proxy": "Proxy",
+  "logs.proxy_title": "Proxy Requests",
+  "logs.method": "Method",
+  "logs.path": "Path",
+  "logs.model": "Model",
+  "logs.client": "Client",
+  "logs.status": "Status",
+  "logs.duration": "Duration",
+  "logs.backend": "Backend",
+  "logs.proxy_waiting": "Waiting for data...",
+  "logs.copy_proxy": "📋 Copy",
+
 
   // Settings
   "settings.title": "Settings",
@@ -241,6 +257,7 @@ window.I18N_EN = {
   "settings.rpc_coordinator_port": "Worker Port",
   "settings.rpc_coordinator_protocol": "Protocol",
   "settings.rpc_coordinator_timeout": "Timeout",
+  "settings.rpc_coordinator_retries": "Max Retries",
   "settings.virtual_models_title": "Virtual Model Router (Variant C)",
   "settings.virtual_models_desc": "Pipeline parallelism via model slices. Virtual models with sequential/parallel slice coordination.",
   "settings.virtual_models_coord_mode": "Coordination Mode",
@@ -302,6 +319,7 @@ window.I18N_EN = {
   "monitor.panel.backends": "🖥️ Backends",
   "monitor.panel.queue": "📋 Queue",
   "monitor.panel.dispatch": "⚡ Dispatch Stats",
+  "monitor.panel.modelOps": "🔧 Model Operations",
   "monitor.panel.autoPull": "⚡ Auto-Pull (Pull-on-Demand)",
 
   "monitor.autoPull.enabled": "🔌 Auto-Pull",
@@ -323,6 +341,9 @@ window.I18N_EN = {
   "monitor.autoPull.table.error": "Error",
 
   "monitor.panel.sessions": "👤 Sessions",
+  "monitor.panel.candidates": "🎯 Candidate Backends",
+  "monitor.panel.feasibility": "📊 Load Feasibility",
+  "monitor.panel.diskNetwork": "💾 Disk / 🌐 Network",
 
   "monitor.dispatch.title": "⚡ Dispatch Stats",
   "monitor.dispatch.modelAffinity": "Model Affinity",
@@ -335,6 +356,8 @@ window.I18N_EN = {
   "monitor.dispatch.loadDesc": "selection by free resources + prediction bonus (P4)",
   "monitor.dispatch.configDesc": "fallback by backend weights (UseEnhancedScoring=false)",
 
+  "monitor.table.loading": "Loading",
+  "monitor.table.operation": "Operation",
   "monitor.table.model": "Model",
   "monitor.table.backends": "Backends",
   "monitor.table.sessionsCount": "Sessions",
@@ -385,7 +408,7 @@ window.I18N_EN = {
   "monitor.help.p4": "<strong>P4 — Fallback (FALLBACK)</strong><br>All healthy backends go through resource scoring (GPU/VRAM/CPU/RAM). Best score wins.",
   "monitor.help.legendTitle": "<strong>🎨 Canvas color legend:</strong>",
   "monitor.help.legendColors": "🟢 <span style=\"color:var(--success)\">Green</span> — idle | 🟡 <span style=\"color:var(--warning)\">Yellow</span> — active | 🔴 <span style=\"color:var(--danger)\">Red</span> — full/error",
-  "monitor.help.conveyor": "<strong>📊 Conveyor belt:</strong> Animated particles show request flow: blue — in transit, yellow — waiting in balancer queue, purple — processing, green — completed.",
+  "monitor.help.conveyor": "<strong>📊 Conveyor belt:</strong> Animated particles show request flow: blue — in transit, yellow — waiting in balancer queue, purple — processing, green — completed, cyan — discovery requests, orange — model warming.",
 
   // Saved indicator
   "monitor.autoPull.saved": "✓ Saved",
@@ -413,6 +436,8 @@ window.I18N_EN = {
   "monitor.canvas.clients": "Clients",
   "monitor.canvas.backends": "Backends",
   "monitor.canvas.rpsLabel": "RPS: {rps} | Active: {active}/{max}",
+  "monitor.canvas.warming": "warming",
+  "monitor.canvas.warmingModels": "models warming",
 
   // App strings (NEW)
   "app.processed": "processed",
@@ -441,6 +466,8 @@ window.I18N_EN = {
   "app.error_loading_queue_history": "Error loading queue history",
   "app.error_loading_sessions": "Error loading sessions",
 
+  "app.error_loading_agents": "Error loading agents",
+
   // Theme toggle title
   "theme.toggle_dark": "Dark theme",
   "theme.toggle_light": "Light theme",
@@ -448,6 +475,42 @@ window.I18N_EN = {
   // Backend search placeholder
   "backends.search_placeholder": "Search...",
   "backends.session_placeholder": "Search session...",
+
+  // ===== Model Management (NEW) =====
+  "models.manage_title": "Model Management",
+  "models.manage_action": "Models",
+  "models.pull": "Pull",
+  "models.push": "Push",
+  "models.delete_op": "Delete",
+  "models.load": "Load",
+  "models.unload": "Unload",
+  "models.operation_running": "Operation in progress...",
+  "models.operation_success": "Operation completed successfully",
+  "models.operation_error": "Operation error",
+  "models.operation_queued": "Operation queued",
+  "models.model_name": "Model Name",
+  "models.model_name_placeholder": "llama3.2:latest",
+  "models.loaded_status": "Loaded",
+  "models.unloaded_status": "Not loaded",
+  "models.pull_hint": "Download model from registry",
+  "models.push_hint": "Upload model to registry",
+  "models.delete_hint": "Delete model from backend",
+  "models.confirm_delete": "Delete model",
+  "models.load_hint": "Load model into memory",
+  "models.unload_hint": "Unload model from memory",
+  "models.no_models_backend": "No models on this backend",
+  "models.no_backends": "No backends available",
+  "models.operations_active": "Active Operations",
+  "models.operation": "Operation",
+  "models.backend": "Backend",
+  "models.started": "Started",
+  "models.status": "Status",
+  "models.no_active_ops": "No active operations",
+  "models.insecure": "Insecure",
+  "models.model_size": "Size",
+  "models.model_digest": "Digest",
+  "models.model_modified": "Modified",
+  "models.close": "Close",
 
   // ===== Renderers keys =====
 
@@ -510,8 +573,76 @@ window.I18N_EN = {
   // predictionAlerts
   "renderers.no_active_alerts": "No active alerts",
 
+  // ===== Agents (NEW) =====
+  "nav.agents": "Agents",
+  "header.agents": "Agent Monitoring",
+  "agents.title": "Agents",
+  "agents.total": "Total Agents",
+  "agents.healthy": "Healthy Agents",
+  "agents.offline": "Offline",
+  "agents.id": "ID",
+  "agents.host": "Host",
+  "agents.port": "Port",
+  "agents.status": "Status",
+  "agents.platform": "Platform",
+  "agents.uptime": "Uptime",
+  "agents.last_heartbeat": "Last Heartbeat",
+  "agents.has_agent": "Agent",
+  "agents.no_agents": "No connected agents",
+  "agents.details": "Agent Details",
+  "agents.ollama_version": "Ollama Version",
+  "agents.runtime_flags": "Runtime Flags",
+  "agents.disk_title": "💾 Disk",
+  "agents.disk_total": "Total",
+  "agents.disk_used": "Used",
+  "agents.disk_free": "Free",
+  "agents.network_title": "🌐 Network",
+  "agents.network_rx": "RX",
+  "agents.network_tx": "TX",
+  "agents.collect_interval": "Collect Interval (sec)",
+  "agents.heartbeat_interval": "Heartbeat Interval (sec)",
+  "agents.max_concurrent": "Max Concurrent Requests",
+  "agents.max_models": "Max Models",
+  "agents.settings_title": "Agent Settings",
+  "agents.config_saved": "Agent settings saved",
+  "agents.config_error": "Error saving agent settings",
+  "agents.refresh": "Refresh Agents",
+  "agents.manage_models": "Manage Models",
+  "agents.restart": "Restart",
+  "agents.restart_hint": "Restart agent",
+  "agents.view_logs": "Logs",
+  "agents.view_logs_hint": "View agent logs",
+  "agents.config": "Config",
+  "agents.config_hint": "View agent configuration",
+  "agents.confirm_restart": "Restart agent on backend",
+  "agents.restarting": "Restarting agent...",
+  "agents.restarted": "Agent restarted",
+  "agents.restart_error": "Restart error",
+  "agents.loading_logs": "Loading logs...",
+  "agents.logs_title": "Agent Logs",
+  "agents.logs_error": "Failed to load logs",
+  "agents.no_logs": "No logs available",
+
+  // ===== Disk/Network details (NEW) =====
+  "renderers.section_disk_network": "💾 Disk / 🌐 Network",
+  "renderers.disk_total": "Total Disk",
+  "renderers.disk_used": "Disk Used",
+  "renderers.disk_free": "Disk Free",
+  "renderers.network_rx": "Network RX",
+  "renderers.network_tx": "Network TX",
+
+  "renderers.section_gpu": "GPU Metrics",
+  "renderers.section_system": "System Metrics",
+  "renderers.common_in": "in",
+
+  // ===== Model details in grid (NEW) =====
+  "models.format": "Format",
+  "models.parameter_size": "Parameters",
+  "models.digest": "Digest",
+
   // Virtual Models
   "vm.title": "🧩 Virtual Models",
+
   "vm.name": "Name",
   "vm.description": "Description",
   "vm.slices": "Slices",
@@ -575,6 +706,19 @@ window.I18N_EN = {
   "wizard.success": "Configuration complete!",
   "wizard.retake": "Re-run Setup",
   "wizard.retake_confirm": "All current settings will be reset. Continue?",
+  "wizard.examples_title": "Configuration examples",
+  "wizard.preview_title": "Change preview",
+  "wizard.params_title": "Mode parameters",
+  "wizard.apply": "Apply and save",
+  "wizard.applying": "Applying...",
+  "wizard.error": "Mode application error",
+  "wizard.mode_applied": "Mode applied successfully",
+  "wizard.param_docs_title": "Parameter reference",
+  "wizard.param_name": "Parameter",
+  "wizard.param_desc": "Description",
+  "wizard.param_values": "Possible values",
+  "wizard.json_example_title": "Configuration example (JSON)",
+  "wizard.validation_error": "Validation error",
 
   // ===== Config Import/Export (NEW) =====
   "config.export": "Export Configuration",
@@ -591,9 +735,82 @@ window.I18N_EN = {
   // ===== Settings Sections (NEW) =====
   "settings.section.general": "General Settings",
   "settings.section.limits": "Resource Limits",
+  "settings.section.agent": "Agent Settings",
   "settings.section.security": "Security",
   "settings.section.mode": "Operating Mode",
   "settings.section.io": "Import / Export",
   "settings.section.danger": "Danger Zone",
-  "settings.section.help": "Help"
+  "settings.section.help": "Help",
+  "settings.section.backend_limits": "Backend Limits",
+
+  // Backend Limits Settings
+  "settings.backend_limits_desc": "Configure Max Concurrent Requests and Max Models limits for each backend. For backends without an agent, limits apply only at the balancer level.",
+  "settings.backend_limits_max_concurrent": "Max Concurrent",
+  "settings.backend_limits_max_models": "Max Models",
+  "settings.save_backend_limits": "Save Backend Limits",
+
+  // Agent Settings
+  "settings.agent.collect_interval": "Collect Interval (sec)",
+  "settings.agent.heartbeat_interval": "Heartbeat Interval (sec)",
+  "settings.agent.max_concurrent": "Max Concurrent Requests",
+  "settings.agent.max_models": "Max Models",
+  "settings.agent.timeout": "Agent Timeout (sec)",
+
+  // ===== Renderers (additions for P3) =====
+  "renderers.digest": "Digest",
+  "renderers.expires": "Expires",
+  "renderers.expired": "Expired",
+  "renderers.no_candidate_data": "No candidate data",
+
+  // ===== Localization Audit Fixes (2026-05-12) =====
+  "monitor.feasibility.canLoad": "Can load:",
+  "monitor.feasibility.cannotLoad": "Not enough VRAM:",
+  "monitor.feasibility.modeCpu": "CPU",
+  "monitor.feasibility.modeGpu": "GPU",
+  "monitor.feasibility.noCapacity": "No capacity data",
+  "monitor.feasibility.vramShort": "VRAM",
+  "monitor.feasibility.vram": "VRAM",
+  "monitor.feasibility.freeVram": "Free VRAM",
+  "monitor.feasibility.loadable": "Loadable",
+  "monitor.feasibility.available": "Available",
+
+  "monitor.models.expired": "Expired",
+  "monitor.models.cloudNA": "N/A",
+
+  "monitor.autoPull.statusDone": "Done",
+  "monitor.autoPull.statusError": "Error",
+  "monitor.autoPull.statusPulling": "Pulling...",
+
+  "monitor.candidates.ready": "Ready",
+  "monitor.candidates.warming": "Warming",
+  "monitor.candidates.p1Loaded": "LOADED",
+  "monitor.candidates.p2Warming": "WARMING",
+  "monitor.candidates.p3Free": "FREE",
+  "monitor.candidates.p4Fallback": "FALLBACK",
+
+  "monitor.common.error": "Error",
+
+  "monitor.diskNetwork.disk": "Disk",
+  "monitor.diskNetwork.network": "Network",
+  "monitor.diskNetwork.used": "Used",
+  "monitor.diskNetwork.free": "Free",
+  "monitor.diskNetwork.rx": "RX",
+  "monitor.diskNetwork.tx": "TX",
+
+  "vm.jobRunning": "Running",
+
+  "renderers.cpuMode": "CPU",
+  "renderers.gpuMode": "GPU",
+  "renderers.throttledYes": "⚠️ YES",
+  "renderers.throttledOk": "OK",
+  "renderers.cloud": "cloud",
+  "renderers.active": "Active",
+  "renderers.minutes": "m",
+
+  "common.ok": "OK",
+  "common.edit": "Edit",
+  "common.delete": "Delete",
+  "common.load": "Load",
+  "common.loaded": "Loaded",
+  "common.notLoaded": "Not loaded"
 };

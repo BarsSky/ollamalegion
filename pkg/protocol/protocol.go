@@ -20,6 +20,14 @@ const (
 	MsgTypeHealthResponse MessageType = "health_response"
 	MsgTypeError         MessageType = "error"
 	MsgTypeAck           MessageType = "ack"
+
+	// Model management message types
+	MsgTypeModelPull   MessageType = "model_pull"
+	MsgTypeModelPush   MessageType = "model_push"
+	MsgTypeModelDelete MessageType = "model_delete"
+	MsgTypeModelList   MessageType = "model_list"
+	MsgTypeModelLoad   MessageType = "model_load"
+	MsgTypeModelUnload MessageType = "model_unload"
 )
 
 // Message - базовое сообщение протокола
@@ -110,6 +118,64 @@ type AckMessage struct {
 	Timestamp time.Time `json:"timestamp"`
 	Success   bool      `json:"success"`
 	Error     string    `json:"error,omitempty"`
+}
+
+// ===== Model Management Messages =====
+
+// ModelOperationType - тип операции с моделью
+type ModelOperationType string
+
+const (
+	ModelOpPull   ModelOperationType = "pull"
+	ModelOpPush   ModelOperationType = "push"
+	ModelOpDelete ModelOperationType = "delete"
+	ModelOpLoad   ModelOperationType = "load"
+	ModelOpUnload ModelOperationType = "unload"
+)
+
+// ModelOperationRequest - запрос на выполнение операции с моделью
+type ModelOperationRequest struct {
+	Operation ModelOperationType `json:"operation"`
+	ModelName string             `json:"modelName"`
+	AgentID   string             `json:"agentId"`
+	BackendID string             `json:"backendId"` // целевой бэкенд
+	Insecure  bool               `json:"insecure,omitempty"` // для push
+	Stream    bool               `json:"stream,omitempty"`
+}
+
+// ModelOperationResponse - ответ на операцию с моделью
+type ModelOperationResponse struct {
+	Success   bool      `json:"success"`
+	Operation ModelOperationType `json:"operation"`
+	ModelName string             `json:"modelName"`
+	AgentID   string             `json:"agentId"`
+	Message   string             `json:"message,omitempty"`
+	Error     string             `json:"error,omitempty"`
+	Timestamp time.Time          `json:"timestamp"`
+}
+
+// ModelListRequest - запрос списка моделей на бэкенде
+type ModelListRequest struct {
+	AgentID   string `json:"agentId"`
+	BackendID string `json:"backendId"`
+}
+
+// ModelListResponse - ответ со списком моделей
+type ModelListResponse struct {
+	AgentID   string                `json:"agentId"`
+	BackendID string                `json:"backendId"`
+	Models    []ModelListEntry      `json:"models"`
+	Timestamp time.Time             `json:"timestamp"`
+}
+
+// ModelListEntry - запись о модели в списке
+type ModelListEntry struct {
+	Name       string `json:"name"`
+	Model      string `json:"model,omitempty"`
+	Size       int64  `json:"size"`
+	Digest     string `json:"digest"`
+	ModifiedAt string `json:"modifiedAt,omitempty"`
+	Loaded     bool   `json:"loaded"` // загружена ли в память (из /api/ps)
 }
 
 // NewMessage - создание нового сообщения

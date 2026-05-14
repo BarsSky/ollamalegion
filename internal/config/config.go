@@ -34,6 +34,9 @@ func Load(path string) (*Config, error) {
 		return nil, fmt.Errorf("failed to parse config file: %w", err)
 	}
 
+	// Флаг Initialized берётся из файла как есть — сервер не вмешивается.
+	// Если файл существует, но Initialized == false — значит wizard ещё не пройден.
+
 	// Установка значений по умолчанию
 	setDefaults(&config)
 
@@ -129,6 +132,12 @@ func LoadFromEnv() (*Config, error) {
 	// Вариант D: Distributed Inference
 	config.Balancing.DistInference.Enabled = env.GetBool("LB_DIST_INFERENCE_ENABLED", false)
 	config.Balancing.DistInference.GrpcPort = env.GetInt("LB_DIST_INFERENCE_GRPC_PORT", 19000)
+
+	// Operating Mode — явное указание или автоопределение из enabled-флагов
+	config.Balancing.OperatingMode = env.Get("LB_OPERATING_MODE", "")
+
+	// Initialized — при загрузке из env считаем false (требуется первичная настройка через WebUI)
+	config.Initialized = env.GetBool("LB_INITIALIZED", false)
 
 	// Backends из переменных окружения
 
@@ -367,6 +376,28 @@ func setDefaults(config *types.LoadBalancerConfig) {
 			}
 		config.Backends[i].Status = types.StatusStarting
 	}
+
+	// OperatingMode — определяем из enabled-флагов или ставим дефолт
+	if config.Balancing.OperatingMode == "" {
+		config.Balancing.OperatingMode = deriveOperatingMode(config)
+	}
+}
+
+// deriveOperatingMode определяет текущий режим из включённых конфигураций
+func deriveOperatingMode(config *types.LoadBalancerConfig) string {
+	if config.Balancing.DistInference.Enabled {
+		return "distributed_inference"
+	}
+	if config.Balancing.VirtualModels.Enabled {
+		return "virtual_router"
+	}
+	if config.Balancing.RpcCoordinator.Enabled {
+		return "rpc_coordinator"
+	}
+	if config.Balancing.ModelReplication.Enabled {
+		return "replication"
+	}
+	return "standard"
 }
 
 // parseBackendsFromEnv - парсинг бэкендов из переменных окружения

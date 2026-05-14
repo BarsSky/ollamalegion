@@ -109,6 +109,20 @@
       var tx = el.textContent.trim();
       if (cm[tx]) el.textContent = cm[tx];
     });
+    // Legend texts
+    var lm = {
+      'Свободен': t('monitor.status.idle'),
+      'Загружен': t('monitor.status.live'),
+      'Перегружен': t('monitor.status.offline'),
+      'Idle': t('monitor.status.idle'),
+      'Live': t('monitor.status.live'),
+      'Offline': t('monitor.status.offline')
+    };
+    document.querySelectorAll('.monitor-legend .legend-text').forEach(function(el) {
+      var tx = el.textContent.trim();
+      if (lm[tx]) el.textContent = lm[tx];
+    });
+
     // Help modal — use innerHTML because translations contain HTML tags (<strong>, <br>, <code>, <span>)
     document.querySelectorAll('#helpModal [data-i18n]').forEach(function(el) {
       var key = el.getAttribute('data-i18n');

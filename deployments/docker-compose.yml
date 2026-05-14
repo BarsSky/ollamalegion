@@ -73,6 +73,10 @@ services:
       - LB_MEMORY_MAX_USAGE=${LB_MEMORY_MAX_USAGE:-85}
       - LB_DISK_MIN_FREE_MB=${LB_DISK_MIN_FREE_MB:-10240}
       
+      # Operating Mode: standard, replication, rpc_coordinator, virtual_router, distributed_inference
+      # Если не указан — автоопределяется из enabled-флагов (D > C > B > A > standard)
+      - LB_OPERATING_MODE=${LB_OPERATING_MODE:-}
+      
       # --- RPC Model Distribution Modules ---
       # Вариант A: Model Replication Manager
       - LB_MODEL_REPLICATION_ENABLED=${LB_MODEL_REPLICATION_ENABLED:-false}

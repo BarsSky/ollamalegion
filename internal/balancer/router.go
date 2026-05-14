@@ -29,7 +29,7 @@ func (p *Proxy) routeRequest(w http.ResponseWriter, r *http.Request) bool {
 
 // isEmbeddingsRequest — проверяет, является ли запрос embeddings (skip stickiness)
 func isEmbeddingsRequest(path string) bool {
-	return path == "/api/embeddings"
+	return path == "/api/embeddings" || path == "/api/embed"
 }
 
 // isChatOrGenerateRequest — проверяет, является ли запрос основным LLM-вызовом

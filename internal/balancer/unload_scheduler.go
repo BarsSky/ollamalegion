@@ -11,7 +11,7 @@ import (
 // UnloadScheduler — LRU выгрузка неиспользуемых моделей для освобождения VRAM
 type UnloadScheduler struct {
 	proxy          *Proxy
-	mu             sync.Mutex
+	mu             sync.RWMutex
 	lastUsed       map[string]time.Time // key: "modelName@backendID" → lastRequest
 	checkInterval  time.Duration
 	idleTimeout    time.Duration
@@ -61,12 +61,16 @@ func (us *UnloadScheduler) Start() {
 
 // Stop — остановка планировщика
 func (us *UnloadScheduler) Stop() {
+	us.mu.Lock()
+	defer us.mu.Unlock()
+
 	if us.stopCh != nil {
 		select {
 		case <-us.stopCh:
 		default:
 			close(us.stopCh)
 		}
+		us.stopCh = nil
 	}
 }
 
@@ -81,20 +85,32 @@ func (us *UnloadScheduler) SetEnabled(enabled bool) {
 		go us.loop()
 	} else if !enabled && us.enabled {
 		us.enabled = false
-		close(us.stopCh)
+		if us.stopCh != nil {
+			select {
+			case <-us.stopCh:
+			default:
+				close(us.stopCh)
+			}
+			us.stopCh = nil
+		}
 	}
 }
 
-// loop — основной цикл проверки idle моделей
+// loop — основной цикл проверки idle моделей.
+// stopCh копируется под RLock чтобы избежать data race с Stop/SetEnabled.
 func (us *UnloadScheduler) loop() {
 	ticker := time.NewTicker(us.checkInterval)
 	defer ticker.Stop()
+
+	us.mu.RLock()
+	stopCh := us.stopCh
+	us.mu.RUnlock()
 
 	for {
 		select {
 		case <-ticker.C:
 			us.checkAndUnload()
-		case <-us.stopCh:
+		case <-stopCh:
 			return
 		}
 	}

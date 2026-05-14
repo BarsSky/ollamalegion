@@ -24,6 +24,9 @@ func Get() *zap.SugaredLogger {
 func Init(level string) {
 	var cfg zap.Config
 	cfg = zap.NewProductionConfig()
+	// Явно направляем логи в stdout (Docker ожидает логи в stdout, а не stderr)
+	cfg.OutputPaths = []string{"stdout"}
+	cfg.ErrorOutputPaths = []string{"stdout"}
 	cfg.DisableStacktrace = true
 	cfg.EncoderConfig.TimeKey = "time"
 	cfg.EncoderConfig.LevelKey = "level"

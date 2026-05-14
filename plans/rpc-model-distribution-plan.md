@@ -1,534 +1,505 @@
-# План: Распределение одной модели по нескольким машинам (RPC)
+# План распределения моделей по нескольким машинам (RPC)
 
-## Дата: 2026-05-08
-## Статус: Черновик для обсуждения
-
----
-
-## 1. Контекст и мотивация
-
-Текущая архитектура OllamaLegion предполагает, что **каждая модель целиком загружается на один бэкенд**. Балансировщик выбирает бэкенд, на котором модель уже загружена (Model Affinity) или может быть загружена (Warmup/Sync Load).
-
-**Проблемы текущего подхода:**
-- Большие модели (70B+, 405B) не помещаются на одну GPU
-- Утилизация кластера неравномерна: одни GPU простаивают, другие перегружены
-- Невозможно использовать совокупную VRAM нескольких машин для одной модели
-- Выход из строя одной машины с уникальной моделью делает модель недоступной
-
-**Цель:** Реализовать механизм, позволяющий распределять _одну_ модель по _нескольким_ машинам, используя RPC-коммуникацию между узлами.
+## Дата: 2026-05-13
+## Статус: Активный план
 
 ---
 
-## 2. Анализ архитектурных ограничений
+# ЧАСТЬ 1: Вариант C — Virtual Model Router
 
-| Ограничение | Описание |
-|-------------|----------|
-| **Ollama не поддерживает model parallelism** | Ollama загружает модель целиком на одну машину. Нет нативного API для шардирования. |
-| **HTTP-based транспорт** | Взаимодействие между компонентами — HTTP/REST. Нет gRPC. |
-| **Текущий proxy — агрегатор, не координатор** | Прокси передаёт запрос одному бэкенду. Нет логики split/merge. |
-| **Отсутствие общего состояния между бэкендами** | KV cache, скрытые состояния (hidden states) не синхронизируются. |
+## 1.1 Обзор
 
----
-
-## 3. Варианты реализации
-
-### Вариант A: Model Replication Manager (Эволюционный)
-
-**Описание:** Не true RPC-шардирование, а интеллектуальная репликация модели на multiple backends с единым управлением. Модель загружается на N машин, балансировщик распределяет запросы между ними.
-
-```
-Client → Balancer (select least-loaded replica) → Backend-1 (model loaded)
-                                                → Backend-2 (model loaded)
-                                                → Backend-N (model loaded)
-```
-
-**Что нужно сделать:**
-- [ ] Добавить понятие **ModelInstanceGroup** — группа бэкендов, на которых должна быть загружена одна и та же модель
-- [ ] Расширить Prewarm Controller: при загрузке модели на один бэкенд, инициировать загрузку на все бэкенды группы
-- [ ] `minInstances`/`maxInstances` для модели — минимальное/максимальное количество реплик
-- [ ] `ModelInstanceController` (частично реализован): поддерживать актуальное количество реплик
-- [ ] `DispatchGroupAwareSelector`: при выборе бэкенда учитывать не только loadRatio, но и принадлежность к группе
-
-**Конфигурация:**
-```json
-{
-  "modelGroups": {
-    "llama3.1:70b": {
-      "minInstances": 2,
-      "maxInstances": 4,
-      "targetBackends": ["gpu-1", "gpu-2", "gpu-3"],
-      "idleUnloadAfter": "15m"
-    }
-  }
-}
-```
-
-**Плюсы:**
-- ✅ Минимальные изменения в архитектуре
-- ✅ Использует существующие механизмы (warmup, scoring, queue dispatch)
-- ✅ Отказоустойчивость: при падении одной реплики — запросы идут к другой
-- ✅ Постепенное внедрение, не ломает обратную совместимость
-
-**Минусы:**
-- ❌ Не решает проблему моделей, не помещающихся на одну GPU
-- ❌ Требует больше VRAM суммарно (каждая реплика — полная копия)
-- ❌ Нет синхронизации KV cache между репликами (сессии не переносятся)
-
-**Оценка сложности:** 5–7 дней  
-**Затраты:** Средние  
-**Наибольший эффект:** Для кластеров с несколькими GPU одного типоразмера
-
----
-
-### Вариант B: External RPC Coordinator (Интеграционный)
-
-**Описание:** Создать отдельный микросервис **ModelCoordinator**, который управляет распределённым выполнением инференса. Каждый бэкенд запускает **ModelWorker** — легковесный процесс, который управляет "срезом" модели. Координатор принимает запросы от балансировщика, разбивает их на подзапросы (split), отправляет worker'ам, агрегирует ответы (merge).
-
-```
-Client → Balancer → ModelCoordinator → Worker-1 (слой 1-40)
-                                       → Worker-2 (слой 41-80)
-                                       → Worker-N (слой N-M)
-                   Balancer ← ModelCoordinator (aggregated response)
-```
-
-**Компоненты:**
-- **ModelCoordinator** (новый микросервис, Go или Python):
-  - REST/gRPC API для приёма запросов от балансировщика
-  - Split логика: разбивает prompt/tokens на сегменты
-  - Pipeline management: последовательный/параллельный вызов worker'ов
-  - Merge логика: собирает output token'ов со всех worker'ов
-  - KV cache management: координирует распределённую KV cache
-
-- **ModelWorker** (новый компонент, запускается рядом с Ollama):
-  - Управляет конкретным срезом модели (слои X-Y)
-  - HTTP API для получения запросов от координатора
-  - Использует Ollama API для инференса своего среза
-  - Отправляет partial результаты координатору
-
-- **Balancer integration**:
-  - Новый тип бэкенда "distributed" с ссылкой на координатор
-  - `selectDistributedBackend()` в `selectBackend()`
-  - Мониторинг состояния координатора
-
-**Плюсы:**
-- ✅ Решает проблему моделей, не помещающихся на одну GPU
-- ✅ Масштабируемость: можно добавлять worker'ы горизонтально
-- ✅ Гибкость: координатор можно реализовать на любом стеке
-- ✅ Независимость от Ollama version
-
-**Минусы:**
-- ❌ Чрезвычайно сложная реализация (split/merge трансформеров — нетривиальная задача)
-- ❌ Латенси: сетевое взаимодействие между worker'ами добавляет задержки
-- ❌ Ollama не поддерживает частичную загрузку модели → нужен кастомный бэкенд
-- ❌ Фактически требуется написать распределённый inference engine
-- ❌ Нужна синхронизация: каждый слой зависит от выхода предыдущего
-
-**Оценка сложности:** 3–6 месяцев  
-**Затраты:** Очень высокие  
-**Наибольший эффект:** Для giant-моделей (70B+, 405B) на кластере маломощных GPU
-
----
-
-### Вариант C: Virtual Model Router с Model Slice Mapping (Гибридный)
-
-**Описание:** Не шардировать модель "по-настоящему", а создать абстракцию **VirtualModel**, которая маппится на несколько физических моделей на разных бэкендах. Каждая физическая модель — это "срез" или адаптированная версия (например, LoRA-адаптер, quantized split).
+Virtual Model Router создаёт абстракцию VirtualModel, которая маппится на несколько физических моделей (срезов/слайсов) на разных бэкендах. Каждый срез — это полная Ollama-модель, специализированная на определённом этапе обработки.
 
 ```
 Client → Balancer
-         ├─ VirtualModel: "llama-mega"
-         │   ├─ Slice 1: "llama-mega-embed" → Backend-1 (Ollama)
-         │   ├─ Slice 2: "llama-mega-layers" → Backend-2 (Ollama)
-         │   └─ Slice 3: "llama-mega-output" → Backend-3 (Ollama)
-         │
-         └─ Selects best slice → proxy to that backend
+          ├─ VirtualModel: "llama-mega"
+          │   ├─ Slice 0 (embed) → Backend-1 (Ollama)
+          │   ├─ Slice 1 (middle) → Backend-2 (Ollama)
+          │   └─ Slice 2 (output) → Backend-3 (Ollama)
+          └─ Selects best slice → proxy to backend
 ```
 
-**Конфигурация:**
-```json
-{
-  "virtualModels": {
-    "llama-mega": {
-      "description": "Llama 3.1 405B distributed across 3 GPUs",
-      "slices": [
-        {
-          "id": "embed",
-          "modelName": "llama3.1:405b-layers-1-40",
-          "targetBackends": ["gpu-1", "gpu-2"],
-          "ordinal": 0
-        },
-        {
-          "id": "middle",
-          "modelName": "llama3.1:405b-layers-41-80",
-          "targetBackends": ["gpu-3", "gpu-4"],
-          "ordinal": 1
-        },
-        {
-          "id": "output",
-          "modelName": "llama3.1:405b-layers-81-120",
-          "targetBackends": ["gpu-5", "gpu-6"],
-          "ordinal": 2
-        }
-      ],
-      "coordination": {
-        "mode": "sequential",
-        "timeoutMs": 30000,
-        "syncStrategy": "http-callback"
-      }
-    }
-  }
-}
-```
+## 1.2 Текущее состояние реализации
 
-**Архитектура:**
-```
-internal/balancer/
-├── virtual_model.go          # VirtualModel definition, state
-├── virtual_model_registry.go # Registry of virtual models
-├── virtual_model_router.go   # Route requests through slices
-├── slice_coordinator.go      # Coordinate slice execution
-├── slice_aggregator.go       # Merge responses from slices
-└── rpc_client.go             # HTTP client for slice-to-slice communication
-```
+### Реализовано
 
-**Механизм работы:**
-1. Запрос приходит к балансировщику на модель `llama-mega`
-2. `VirtualModelRouter` определяет, что это VirtualModel
-3. Создаётся `SliceExecutionContext` с ID запроса
-4. Запрос проходит по slices последовательно (pipeline):
-   - Slice 0 (embedding) → ответ → передаётся в Slice 1
-   - Slice 1 (middle layers) → ответ → передаётся в Slice 2
-   - Slice 2 (output) → финальный ответ → клиенту
-5. `SliceAggregator` собирает результаты
-6. При ошибке одного slice — retry на другой бэкенд из `targetBackends`
+| Файл | Компонент | Статус |
+|------|-----------|--------|
+| `internal/virtualmodel/virtual_model.go` | VirtualModel, SliceExecutionContext, ExecutePipeline | ✅ Sequential pipeline |
+| `internal/virtualmodel/registry.go` | Registry (CRUD виртуальных моделей) | ✅ |
+| `internal/virtualmodel/router.go` | Router (маршрутизация запросов) | ✅ Basic |
+| `internal/virtualmodel/virtualmodel_test.go` | 31 тест (1009 строк) | ✅ ALL PASS |
 
-**Плюсы:**
-- ✅ Решает проблему больших моделей
-- ✅ Использует стандартный Ollama на каждом узле
-- ✅ Pipeline parallelism естественно вписывается в HTTP модель
-- ✅ Отказоустойчивость: несколько бэкендов на slice
-- ✅ Можно делать различные топологии (sequential, parallel, tree)
+### Архитектура выполнения (sequential)
 
-**Минусы:**
-- ❌ Требуется "разрезать" модель на отдельные Ollama-модули (кастомный скрипт)
-- ❌ Латенси: последовательный pipeline (O(N) сетевых вызовов)
-- ❌ Сложность: нужно реализовать split/merge для разных типов запросов (generate, chat, embeddings)
-- ❌ Синхронизация состояния между slices для streaming-запросов
+1. Запрос приходит на VirtualModel
+2. Срезы сортируются по `Ordinal`
+3. Каждый срез выполняет HTTP POST `/api/generate` на свой backend
+4. Output среза N-1 передаётся как input срезу N
+5. Финальный ответ возвращается клиенту
 
-**Оценка сложности:** 4–8 недель  
-**Затраты:** Высокие  
-**Наибольший эффект:** Для кластеров с сегментированными GPU (разные типы/объёмы VRAM)
+### Типы конфигурации (`pkg/types/types.go:617-639`)
 
----
-
-### Вариант D: Distributed Inference через Custom Backend (Go-native workers)
-
-**Описание:** Полностью кастомная реализация распределённого инференса на Go. Вместо использования Ollama как чёрного ящика, создаётся легковесный CGo-модуль (LLama.cpp binding), который работает как ModelSlice и может общаться с другими slice'ами по RPC (gRPC).
-
-**Архитектура:**
-```
-                    ┌──────────────────────┐
-                    │   Balancer            │
-                    │   ┌────────────────┐  │
-                    │   │ DistInference   │  │
-                    │   │ Engine          │  │
-                    │   └────┬─────┬──────┘  │
-                    └────────┼─────┼─────────┘
-                             │     │
-              ┌──────────────┘     └──────────────┐
-              ▼                                     ▼
-    ┌──────────────────┐                 ┌──────────────────┐
-    │ Worker-1 (Go)     │                 │ Worker-N (Go)     │
-    │ + LLama.cpp       │◄─── gRPC ─────►│ + LLama.cpp       │
-    │ Слои 1-40         │                 │ Слои 41-80        │
-    │ KV cache shard    │                 │ KV cache shard    │
-    └──────────────────┘                 └──────────────────┘
-```
-
-**Плюсы:**
-- ✅ Максимальная производительность (Go + CGo + gRPC)
-- ✅ Полный контроль над распределением слоёв
-- ✅ Эффективная синхронизация KV cache
-- ✅ Можно реализовать Tensor Parallelism (разделение матриц)
-
-**Минусы:**
-- ❌ Чрезвычайно сложно и рискованно
-- ❌ LLama.cpp CGo binding — отдельная большая задача
-- ❌ Ломает "прозрачность" Ollama
-- ❌ Требует глубокого понимания архитектуры трансформеров
-- ❌ Должен поддерживаться параллельно с основным Ollama-прокси
-
-**Оценка сложности:** 6+ месяцев  
-**Затраты:** Экстремально высокие  
-**Наибольший эффект:** Продуктовое решение для high-load distributed inference
-
----
-
-## 4. Рекомендуемый подход
-
-### Short-term (1–2 недели): Вариант A — Model Replication Manager
-
-Наиболее прагматичный вариант для текущей архитектуры. Реализует отказоустойчивую репликацию модели по нескольким бэкендам без изменения модели инференса.
-
-### Medium-term (4–8 недель): Вариант C — Virtual Model Router
-
-После стабилизации репликации, реализовать VirtualModel с pipeline parallelism. Это даст возможность распределять одну модель по машинам в cases, когда она не помещается на одну GPU.
-
-### Long-term (6+ месяцев): Вариант D — Custom Distributed Backend
-
-Только если проект перерастёт в полноценный distributed inference engine.
-
----
-
-## 5. Детальный план реализации (Short-term: Вариант A)
-
-### Фаза A1: ModelInstanceGroup (2 дня)
-
-**Файлы:**
-- `internal/balancer/model_instance_group.go` — новая структура
-- `internal/balancer/proxy.go` — интеграция
-- `pkg/types/types.go` — новые типы
-
-**Что делаем:**
 ```go
-// model_instance_group.go
-type ModelInstanceGroup struct {
-    ModelName      string   `json:"modelName"`
-    MinInstances   int      `json:"minInstances"`
-    MaxInstances   int      `json:"maxInstances"`
-    TargetBackends []string `json:"targetBackends"` // если пусто — все healthy
-    IdleUnloadAfter Duration `json:"idleUnloadAfter"`
-    
-    // Runtime state
-    mu         sync.RWMutex
-    instances  map[string]*InstanceState // backendID → state
+type VirtualModelConfig struct {
+    Name         string
+    Description  string
+    Slices       []ModelSliceConfig
+    Coordination CoordinationConfig
 }
 
-type InstanceState struct {
-    BackendID  string
-    Status     ModelLoadStatus  // loading, loaded, unloading, idle
-    LoadedAt   time.Time
-    LastUsedAt time.Time
-    UseCount   int64
-}
-```
-
-**API:**
-- `GET /api/v1/models/groups` — список групп
-- `POST /api/v1/models/groups` — создать/обновить группу
-- `DELETE /api/v1/models/groups/:name` — удалить группу
-
-### Фаза A2: InstanceController (2 дня)
-
-**Файлы:**
-- `internal/balancer/model_instance_controller.go` — доработка существующего
-
-**Логика:**
-- Фоновый цикл (ticker 10s):
-  1. Для каждой ModelInstanceGroup проверяем количество loaded instances
-  2. Если loaded < minInstances → запускаем warmup на свободных бэкендах
-  3. Если loaded > maxInstances → ищем кандидатов на unload (LRU)
-  4. Обновляем `InstanceState` метрики
-
-- Приоритет: сначала на бэкендах с уже загруженной моделью (reuse), потом на свободных
-- Учёт VRAM: не загружать если не хватает памяти
-
-### Фаза A3: Dispatch с учётом групп (1 день)
-
-**Файлы:**
-- `internal/balancer/backend_selector.go` — доработка `selectBackend()`
-- `internal/balancer/candidate.go` — расширение `expandCandidates()`
-
-**Логика:**
-- При выборе бэкенда для модели, которая принадлежит группе:
-  1. Сначала пытаемся найти нагруженный бэкенд из группы (loadRatio < threshold)
-  2. Если все перегружены → запускаем warmup на новом бэкенде из группы
-  3. Если группа заполнена (maxInstances) → выбираем наименее загруженный из группы
-  4. Fallback: любой healthy бэкенд
-
-### Фаза A4: Конфигурация и API (1 день)
-
-**Конфигурация:**
-```json
-{
-  "modelGroups": {
-    "llama3.1:70b": {
-      "minInstances": 2,
-      "maxInstances": 4,
-      "idleUnloadAfter": "15m",
-      "targetBackends": ["gpu-1", "gpu-2", "gpu-3"]
-    }
-  }
-}
-```
-
-**API endpoints:**
-- `GET /api/v1/models/groups/:name` — статус группы
-- `POST /api/v1/models/groups/:name/scale` — ручное масштабирование
-- `GET /api/v1/models/groups/:name/instances` — список инстансов
-
-### Фаза A5: Тестирование (1–2 дня)
-
-- Unit-тесты для `ModelInstanceGroup`, `InstanceController`
-- Интеграционный тест: 3 бэкенда, модель с minInstances=2
-- Edge cases: падение бэкенда, добавление нового бэкенда, переполнение VRAM
-- Load test: 2 модели, 5 бэкендов, min/max instances
-
----
-
-## 6. Детальный план Medium-term (Вариант C — Virtual Model Router)
-
-### Фаза C1: VirtualModel (1 неделя)
-
-**Новые файлы:**
-- `internal/balancer/virtual_model.go`
-- `internal/balancer/virtual_model_registry.go`
-- `internal/balancer/virtual_model_router.go`
-- `internal/balancer/slice_coordinator.go`
-- `internal/balancer/slice_aggregator.go`
-- `internal/balancer/rpc_client.go`
-
-**Типы:**
-```go
-// virtual_model.go
-type VirtualModel struct {
-    Name          string
-    Slices        []ModelSlice
-    Coordination  CoordinationConfig
-    mu            sync.RWMutex
-    activeJobs    map[string]*SliceExecutionContext
-}
-
-type ModelSlice struct {
+type ModelSliceConfig struct {
     ID             string
-    ModelName      string           // Ollama model name
-    Ordinal        int              // Порядок в pipeline
-    TargetBackends []string         // Куда можно направить
-    FallbackMode   string           // retry | skip | abort
+    ModelName      string   // Ollama model name
+    Ordinal        int
+    TargetBackends []string
+    FallbackMode   string   // "retry" | "skip" | "abort"
 }
 
 type CoordinationConfig struct {
-    Mode          string   // "sequential" | "parallel" | "tree"
-    TimeoutMs     int
-    SyncStrategy  string   // "http-callback" | "direct-response"
-}
-
-type SliceExecutionContext struct {
-    RequestID    string
-    VirtualModel string
-    CurrentSlice int
-    InputData    []byte
-    OutputQueue  chan SliceResult
-    Error        error
-    StartedAt    time.Time
-    ctx          context.Context
-    cancel       context.CancelFunc
+    Mode         string // "sequential" | "parallel" | "tree"
+    TimeoutMs    int
+    SyncStrategy string // "http-callback" | "direct-response"
 }
 ```
 
-### Фаза C2: Pipeline execution (1 неделя)
+## 1.3 Что требуется для полной реализации
 
-**Sequential pipeline:**
-1. Balancer получает запрос на VirtualModel
-2. Создаёт `SliceExecutionContext`
-3. Последовательно вызывает slice'ы:
-   - Slice 0: отправляет входные данные на Backend-1 → получает промежуточный результат
-   - Slice 1: передаёт результат Slice 0 на Backend-2 → получает output
-   - ... и т.д.
-4. Финальный возвращается клиенту
+### Фаза C1: Parallel Pipeline Mode (P1)
+**Цель:** Реализовать parallel и tree режимы координации (сейчас только sequential).
 
-**Поддержка streaming:**
-- Каждый slice может быть streaming
-- Use chunked transfer между slice'ами
-- Heartbeat для длинных операций
+**Файл:** `internal/virtualmodel/pipeline_parallel.go`
 
-### Фаза C3: Отказоустойчивость (3 дня)
+**Механизм:**
+- **Parallel:** Все срезы одного уровня выполняются одновременно (горутины + WaitGroup)
+- **Tree:** Иерархическое разбиение: embedding параллельно с нескольких бэкендов, затем merge, затем middle layers
 
-- Retry логика: при ошибке slice → пробуем другой бэкенд из `TargetBackends`
-- Timeout: если slice не отвечает → abort с ошибкой
-- Fallback: если VirtualModel недоступен → return 503 с предложением single-node fallback
-- Graceful degradation: если один slice упал, остальные продолжают
-
-### Фаза C4: Мониторинг (2 дня)
-
-- Метрики по slice-ам: latency, throughput, error rate
-- WebUI: визуализация pipeline с этапами
-- Dashboard: статус VirtualModel, количество активных execution context'ов
-
----
-
-## 7. Сводная таблица
-
-| Вариант | Сложность | Время | Решает проблему | Отказоуст. | Streaming | Совместимость |
-|---------|-----------|-------|-----------------|-------------|-----------|---------------|
-| **A** Model Replication | 🟢 Средняя | 1–2 нед | ❌ (не помещается) | ✅ Да | ✅ Да | ✅ Полная |
-| **B** External Coordinator | 🔴 Очень высокая | 3–6 мес | ✅ Полностью | ✅ Да | ❌ Сложно | ❌ Новый сервис |
-| **C** Virtual Model Router | 🟡 Высокая | 4–8 нед | ✅ Частично | ✅ Да | 🟡 Частично | 🟡 Гибрид |
-| **D** Custom Backend | 🔴 Экстремальная | 6+ мес | ✅ Полностью | ✅ Да | ✅ Да | ❌ Ломает |
-
----
-
-## 8. Рекомендация
-
-**Начать с Варианта A (Model Replication Manager)** как наиболее прагматичного:
-
-1. Даёт немедленную ценность: отказоустойчивость, равномерная загрузка
-2. Использует существующую архитектуру на 90%
-3. Не ломает обратную совместимость
-4. Создаёт фундамент для VirtualModel (концепция групп/инстансов)
-
-**После завершения A — перейти к Варианту C (Virtual Model Router)**:
-1. Решает проблему больших моделей
-2. Pipeline parallelism — естественное расширение ModelInstanceGroup
-3. Можно тестировать в изоляции, не затрагивая обычные модели
-4. Streaming support критичен для UX
-
-**Варианты B и D** рекомендую отложить, так как они требуют глубоких изменений в инфраструктуре инференса и выходят за рамки "балансировщика нагрузки".
-
----
-
-## 9. Риски и их mitigation
-
-| Риск | Вероятность | Влияние | Mitigation |
-|------|-------------|---------|------------|
-| Ollama изменит API | Низкая | Среднее | Инкапсулировать вызовы в adapter |
-| VRAM не хватает для реплик | Средняя | Высокое | Предварительная проверка capacity |
-| Network latency между slice'ами | Высокая | Среднее | Для long-running задач latency менее критична |
-| Сложность отладки pipeline | Средняя | Высокое | Детальное логирование каждого slice |
-| Несовместимость streaming с pipeline | Высокая | Высокое | Для streaming пока использовать single-node |
-
----
-
-## 10. Приложение: Требования к ModelCoordinator API (для Варианта B)
-
-Если в будущем будет принято решение реализовать Вариант B:
-
-```protobuf
-service ModelCoordinator {
-    rpc Infer (InferRequest) returns (InferResponse);
-    rpc InferStream (InferRequest) returns (stream Chunk);
-    rpc GetStatus (StatusRequest) returns (StatusResponse);
-    rpc LoadModel (LoadRequest) returns (LoadResponse);
-    rpc UnloadModel (UnloadRequest) returns (UnloadResponse);
+```go
+type PipelineExecutor interface {
+    Execute(ctx context.Context, vm *VirtualModel, input []byte) ([]byte, error)
 }
 
-message InferRequest {
-    string virtual_model = 1;
-    bytes prompt = 2;
-    map<string, string> params = 3;
-    string session_id = 4;
-}
+type SequentialExecutor struct{}
+type ParallelExecutor struct{}
+type TreeExecutor struct{}
+```
 
-message InferResponse {
-    string request_id = 1;
-    bytes output = 2;
-    repeated SliceStats slice_stats = 3;
-    int64 total_ms = 4;
-}
+**Критерии приёмки:**
+- [ ] Parallel: 3 среза выполняются одновременно, результат merge'ится
+- [ ] Tree: embedding на 2 backend'ах параллельно → merge → middle layers
+- [ ] Тест: `TestExecutePipeline_Parallel`, `TestExecutePipeline_Tree`
 
-message SliceStats {
-    string slice_id = 1;
-    string backend_id = 2;
-    int64 latency_ms = 3;
-    bool success = 4;
+**Оценка:** 3–4 дня
+
+---
+
+### Фаза C2: Streaming через Pipeline (P1)
+**Цель:** Поддержка streaming-запросов (`"stream": true`).
+
+**Файл:** `internal/virtualmodel/streaming_pipeline.go`
+
+**Проблема:** Сейчас `callSliceBackend` использует `io.ReadAll`, блокируя streaming.
+
+**Решение:**
+1. Первый срез отправляет запрос с `stream: true`
+2. Получает SSE-поток от Ollama
+3. Каждый chunk перенаправляется следующему срезу как input
+4. Финальный срез передаёт chunks клиенту через SSE
+
+```go
+func (vm *VirtualModel) ExecutePipelineStreaming(
+    w http.ResponseWriter,
+    input []byte,
+    params map[string]string,
+) error
+```
+
+**Критерии приёмки:**
+- [ ] Streaming-запрос через 2 среза возвращает токены клиенту
+- [ ] Задержка между токенами < 200ms
+- [ ] При ошибке одного среза — graceful shutdown SSE с error chunk
+- [ ] Тест: `TestExecutePipelineStreaming_TwoSlices`
+
+**Оценка:** 4–5 дней  
+**Зависит от:** Фазы C1 (parallel mode для parallel streaming)
+
+---
+
+### Фаза C3: Retry & Fallback (P1)
+**Цель:** Улучшенная отказоустойчивость при ошибках срезов.
+
+**Файл:** `internal/virtualmodel/resilience.go`
+
+**Механизмы:**
+- **Retry с backoff:** при ошибке HTTP запроса — повтор на том же backend'е
+- **Backend failover:** при недоступности backend'а — retry на другом из `TargetBackends`
+- **Skip mode:** если `FallbackMode = "skip"` и срез упал — пропустить, передать input следующему
+- **Abort mode:** если `FallbackMode = "abort"` — вернуть ошибку клиенту
+
+```go
+type ResilienceConfig struct {
+    MaxRetries      int
+    RetryBackoff    time.Duration
+    FailoverEnabled bool
+    CircuitBreaker  CircuitBreakerConfig
 }
 ```
+
+**Критерии приёмки:**
+- [ ] Backend падает → автоматический failover на другой backend из TargetBackends
+- [ ] 3 retry с exponential backoff при 500-ошибке
+- [ ] Circuit breaker: после 5 ошибок backend исключается на 30 секунд
+- [ ] Тест: `TestResilience_Failover`, `TestResilience_CircuitBreaker`
+
+**Оценка:** 3–4 дня
+
+---
+
+### Фаза C4: Balancer Integration (P2)
+**Цель:** Глубокая интеграция VirtualModel Router в основной proxy flow.
+
+**Файл:** `internal/balancer/proxy.go` — доработка ServeHTTP
+
+**Текущее состояние:** Router вызывается отдельно, но не интегрирован в `ServeHTTP`.
+
+**Нужно:**
+```go
+// В ServeHTTP, после определения modelName:
+if p.virtualModelRouter != nil {
+    result, handled, err := p.virtualModelRouter.Route(modelName, body, params)
+    if handled && err == nil {
+        // Отправляем result клиенту
+        w.Header().Set("Content-Type", "application/json")
+        w.Write(result)
+        return
+    }
+    // Если handled && err != nil — вернуть ошибку
+    // Если !handled — продолжаем обычный flow
+}
+```
+
+**Критерии приёмки:**
+- [ ] Запрос на VirtualModel обрабатывается через pipeline, а не как обычная модель
+- [ ] Метрики VirtualModel отображаются в мониторе
+- [ ] Session stickiness работает с VirtualModel (requestID через pipeline)
+
+**Оценка:** 2–3 дня
+
+---
+
+### Фаза C5: WebUI & Monitoring (P2)
+**Цель:** Визуализация VirtualModel pipeline в мониторе.
+
+**Файлы:** `webui/js/modules/virtual-model.js`, `webui/virtual-models.html`
+
+**Функционал:**
+- Список виртуальных моделей с срезами
+- Pipeline визуализация: клиент → slice 1 → slice 2 → slice 3
+- Цветовая индикация статуса каждого среза
+- Задержка (latency) по каждому срезу
+- Активные запросы в pipeline
+
+**Критерии приёмки:**
+- [ ] WebUI отображает все VirtualModels из Registry
+- [ ] Pipeline показывает текущий активный запрос
+- [ ] При ошибке среза — красный индикатор с деталями
+
+**Оценка:** 3–5 дней
+
+---
+
+### Фаза C6: Configuration & API (P2)
+**Цель:** REST API для управления VirtualModels.
+
+**Файлы:** `internal/api/handlers_virtual.go`
+
+| Endpoint | Метод | Описание |
+|----------|-------|----------|
+| `/api/v1/virtual-models` | GET | Список |
+| `/api/v1/virtual-models` | POST | Создать |
+| `/api/v1/virtual-models/:name` | GET | Статус |
+| `/api/v1/virtual-models/:name` | DELETE | Удалить |
+| `/api/v1/virtual-models/:name/infer` | POST | Inference |
+
+**Оценка:** 2–3 дня
+
+---
+
+### Фаза C7: Тесты E2E (P3)
+**Цель:** End-to-end тесты для полного pipeline.
+
+**Файлы:** `tests/virtual_model_e2e_test.go`
+
+**Сценарии:**
+1. Создать VirtualModel с 2 срезами → inference → проверить результат
+2. Упасть backend slice 1 → failover на slice 1 backup → inference успешен
+3. Streaming через 3 среза → проверить chunks
+4. Concurrent requests (10 parallel) → все успешны
+5. Memory leak test: 1000 запросов → нет утечек
+
+**Оценка:** 3–4 дня
+
+---
+
+## 1.4 Сводная таблица Варианта C
+
+| Фаза | Задача | Приоритет | Срок | Зависимости | Статус |
+|------|--------|-----------|------|-------------|--------|
+| C1 | Parallel Pipeline Mode | P1 | 3–4 дня | — | ⬜ |
+| C2 | Streaming через Pipeline | P1 | 4–5 дней | C1 | ⬜ |
+| C3 | Retry & Fallback | P1 | 3–4 дня | — | ⬜ |
+| C4 | Balancer Integration | P2 | 2–3 дня | — | ⬜ |
+| C5 | WebUI & Monitoring | P2 | 3–5 дней | C4 | ⬜ |
+| C6 | Configuration & API | P2 | 2–3 дня | — | ⬜ |
+| C7 | E2E Tests | P3 | 3–4 дня | C1–C3 | ⬜ |
+
+**Итого Вариант C:** 20–28 дней (~4–5 недель)
+
+---
+
+---
+
+# ЧАСТЬ 2: Вариант B — External RPC Coordinator
+
+## 2.1 Обзор
+
+External RPC Coordinator — распределённый inference engine. Каждый worker обслуживает срез модели (набор слоёв трансформера). Координатор управляет pipeline, split/merge, KV cache.
+
+```
+Client → Balancer → ModelCoordinator
+                      ├── Split Logic
+                      ├── Pipeline Manager
+                      ├── Merge Logic
+                      └── KV Cache Manager
+                            ↓
+              Worker-1 (слои 1-40) ←→ Worker-2 (слои 41-80)
+```
+
+## 2.2 Текущее состояние реализации
+
+### Реализовано (Skeleton)
+
+| Файл | Компонент | Строки | Тесты | Статус |
+|------|-----------|--------|-------|--------|
+| `internal/rpccoordinator/coordinator.go` | ModelCoordinator, DistributedModel, LayerSlice, InferenceJob, pipeline execution | 560 | 25 | ✅ |
+| `internal/rpccoordinator/worker_client.go` | WorkerClient (HTTP): health, load, unload, infer, metrics | 200 | — | ✅ |
+| `internal/rpccoordinator/splitmerge.go` | Splitter, Merger, ParallelMergeContext | 250 | 20 | ✅ |
+| `internal/rpccoordinator/kv_cache.go` | DistributedKVCache, KVCacheShard, LRU, TTL | 290 | 19 | ✅ |
+| `internal/balancer/rpc_modules.go` | Интеграция: initRpcModules(), GetRpcCoordinator(), InferDistributed() | 150 | — | ✅ |
+| `*_test.go` (3 файла) | 66 тестов, ALL PASS | 870 | 66 | ✅ |
+
+### Интеграция в Balancer
+
+```go
+// internal/balancer/proxy.go
+rpcCoordinator *rpccoordinator.ModelCoordinator
+
+// internal/balancer/rpc_modules.go
+if cfg.RpcCoordinator.Enabled {
+    p.rpcCoordinator = rpccoordinator.NewModelCoordinator(cfg.RpcCoordinator)
+}
+```
+
+### Конфигурация (`config/config.example.json`)
+
+```json
+"rpcCoordinator": {
+  "enabled": false,
+  "coordinatorURL": "http://localhost:18090",
+  "workerPort": 18080,
+  "timeout": "30s",
+  "protocol": "http",
+  "maxRetries": 3
+}
+```
+
+## 2.3 Что требуется для полной реализации
+
+### Фаза B1: Worker HTTP Server (P0) — Критический путь
+**Цель:** Минимальный viable product для pipeline inference.
+
+**Новые файлы:**
+- `cmd/rpcworker/main.go` — точка входа
+- `internal/rpcworker/server.go` — HTTP сервер
+- `internal/rpcworker/inference.go` — логика inference среза
+- `internal/rpcworker/model_manager.go` — загрузка/выгрузка
+
+**API Worker'а:**
+```
+POST /rpc/infer       ← SliceInferRequest → SliceInferResponse
+POST /rpc/load        ← {model_name, layers} → {status}
+POST /rpc/unload      ← {model_name} → {status}
+GET  /rpc/health      → {status, loaded_slices, gpu_info}
+POST /rpc/kv_sync     ← KVCacheShard → {status}
+GET  /rpc/kv_fetch    → {seq_len, key_tensor, value_tensor}
+GET  /rpc/metrics     → {gpu_usage, vram_usage, active_requests}
+```
+
+**Проблема:** Ollama не поддерживает частичную загрузку модели.
+**Решение (interim):** Использовать `OLLAMA_NUM_GPU_LAYERS` для ограничения слоёв. Каждый worker запускает полную модель, но с разным количеством слоёв в VRAM.
+
+**Критерии приёмки:**
+- [ ] Worker отвечает на `/rpc/health` за < 100ms
+- [ ] `/rpc/load` загружает модель за < 30 секунд
+- [ ] `/rpc/infer` обрабатывает запрос, возвращает валидный JSON
+- [ ] Pipeline из 2 worker'ов проходит end-to-end тест
+- [ ] При падении worker'а — pipeline возвращает ошибку после 3 retry
+
+**Оценка:** 10–14 дней  
+**Блокирует:** Фазы B2–B7
+
+---
+
+### Фаза B2: Management API (P1)
+**Цель:** REST API для управления distributed моделями.
+
+**Файлы:** `internal/api/handlers_rpc.go`
+
+| Endpoint | Метод | Описание |
+|----------|-------|----------|
+| `/api/v1/rpc/workers` | GET/POST | Список / регистрация |
+| `/api/v1/rpc/workers/:id` | DELETE | Удаление |
+| `/api/v1/rpc/models` | GET/POST | Список / создание |
+| `/api/v1/rpc/models/:name/load` | POST | Загрузка на worker'ы |
+| `/api/v1/rpc/models/:name/infer` | POST | Inference |
+| `/api/v1/rpc/jobs/:id` | GET/CANCEL | Статус / отмена |
+
+**Оценка:** 3–5 дней  
+**Зависит от:** B1
+
+---
+
+### Фаза B3: Worker Heartbeat & Auto-Discovery (P1)
+**Цель:** Автоматическое обнаружение и мониторинг worker'ов.
+
+**Файлы:** `internal/rpccoordinator/worker_registry.go`, `internal/rpcworker/heartbeat.go`
+
+- Heartbeat каждые 30 секунд
+- `lastSeen` трекинг, исключение при > 90 секунд
+- Auto-discovery через UDP multicast (опционально)
+
+**Оценка:** 2–3 дня  
+**Зависит от:** B1, B2
+
+---
+
+### Фаза B4: Streaming Pipeline (P2)
+**Цель:** Streaming-ответы через pipeline срезов.
+
+**Файл:** `internal/rpccoordinator/streaming.go`
+
+- Chunked transfer между срезами
+- SSE от финального среза к клиенту
+
+**Оценка:** 5–7 дней  
+**Зависит от:** B1
+
+---
+
+### Фаза B5: gRPC Protocol (P2)
+**Цель:** Binary protobuf вместо HTTP JSON.
+
+**Файлы:** `pkg/protocol/rpc.proto`, `grpc_client.go`, `grpc_server.go`
+
+- Bidirectional streaming для KV cache sync
+- HTTP/2 multiplexing
+
+**Оценка:** 5–7 дней  
+**Зависит от:** B1
+
+---
+
+### Фаза B6: Load Balancing между срезами (P2)
+**Цель:** Выбор наименее загруженного worker'а для среза.
+
+**Файл:** `internal/rpccoordinator/selector.go`
+
+- При нескольких TargetBackends — выбор по load ratio
+- Failover на secondary при отказе primary
+
+**Оценка:** 1–2 дня  
+**Зависит от:** B1, B3
+
+---
+
+### Фаза B7: Prometheus Metrics + WebUI (P3)
+**Цель:** Наблюдаемость за distributed inference.
+
+**Метрики:**
+```
+rpc_inference_duration_ms — histogram
+rpc_slice_latency_ms — histogram по worker'ам
+rpc_worker_health — gauge
+rpc_kv_cache_size_bytes — gauge
+rpc_active_jobs — gauge
+```
+
+**WebUI:** Pipeline визуализация, цветовая индикация, timeline.
+
+**Оценка:** 3–5 дней  
+**Зависит от:** B1, B4
+
+---
+
+### Фаза B8: Tensor Parallelism (P3)
+**Цель:** Разбиение матриц внутри слоя между worker'ами (vs pipeline).
+
+**Разница:**
+- **Pipeline** (сейчас): каждый worker свои слои, latency O(N)
+- **Tensor parallelism**: матрицы разбиваются, все работают параллельно, latency O(1)
+
+**Требует:** Custom inference engine (llama.cpp bindings)
+
+**Оценка:** 20–30 дней  
+**Зависит от:** Custom backend
+
+---
+
+## 2.4 Сводная таблица Варианта B
+
+| Фаза | Задача | Приоритет | Срок | Зависимости | Статус |
+|------|--------|-----------|------|-------------|--------|
+| B1 | Worker HTTP Server | **P0** | 10–14 дней | — | ⬜ |
+| B2 | Management API | **P1** | 3–5 дней | B1 | ⬜ |
+| B3 | Heartbeat & Discovery | **P1** | 2–3 дня | B1, B2 | ⬜ |
+| B4 | Streaming Pipeline | **P2** | 5–7 дней | B1 | ⬜ |
+| B5 | gRPC Protocol | **P2** | 5–7 дней | B1 | ⬜ |
+| B6 | Load Balancing срезов | **P2** | 1–2 дня | B1, B3 | ⬜ |
+| B7 | Metrics + WebUI | **P3** | 3–5 дней | B1, B4 | ⬜ |
+| B8 | Tensor Parallelism | **P3** | 20–30 дней | Custom backend | ⬜ |
+
+**Итого Вариант B:** 49–63 дня (~10–12 недель)
+
+---
+
+# ЧАСТЬ 3: Сравнение и рекомендации
+
+## Сводная таблица
+
+| Критерий | Вариант C (Virtual Model) | Вариант B (RPC Coordinator) |
+|----------|---------------------------|----------------------------|
+| **Сложность** | 🟡 Средняя | 🔴 Высокая |
+| **Время** | 4–5 недель | 10–12 недель |
+| **Требует custom backend** | ❌ Нет (использует Ollama) | ⚠️ Частично |
+| **Streaming** | 🟡 Medium | 🔴 Сложно |
+| **Отказоустойчивость** | ✅ Retry + failover | ✅ Retry + failover |
+| **Масштабируемость** | 🟡 До ~5 срезов | ✅ До N worker'ов |
+| **Память** | Каждый срез = полная модель | Каждый worker = часть модели |
+| **Latency** | O(N) сетевых вызовов | O(N) + overhead KV sync |
+
+## Рекомендация
+
+**Short-term (1–2 месяца):** Вариант C — Virtual Model Router
+- Быстрее реализуется, использует стандартный Ollama
+- Pipeline parallelism естественно вписывается в HTTP
+- Можно тестировать в изоляции
+
+**Medium-term (3–6 месяцев):** Вариант B — External RPC Coordinator
+- Требуется worker backend (P0 — критический)
+- После стабилизации worker'а — добавить streaming, gRPC
+- Tensor parallelism — только при наличии ресурсов
+
+**Long-term (6+ месяцев):** Tensor Parallelism
+- Требует custom inference engine
+- Максимальная производительность для giant-моделей

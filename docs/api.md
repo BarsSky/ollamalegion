@@ -590,6 +590,129 @@ const ws = new WebSocket('ws://...'); // new WebSocket(url, protocols) не по
 |----------|-----|----------|
 | `backend_id` | path | ID бэкенда |
 
+#### PUT /api/v1/backends/{backend_id}
+
+Обновление параметров бэкенда.
+
+**Параметры:**
+
+| Параметр | Тип | Описание |
+|----------|-----|----------|
+| `backend_id` | path | ID бэкенда |
+
+**Тело запроса:**
+
+```json
+{
+  "name": "GPU Server 1 (Updated)",
+  "weight": 2,
+  "maxConcurrentRequests": 20,
+  "labels": ["nvidia", "rtx4090"]
+}
+```
+
+**Ответ:**
+
+```json
+{
+  "success": true,
+  "backend": {...},
+  "message": "Backend updated successfully"
+}
+```
+
+#### POST /api/v1/backends/{backend_id}/reconfigure
+
+Переформирование бэкенда с новыми переменными окружения (envVars). Требует `force: true` для подтверждения.
+
+**Параметры:**
+
+| Параметр | Тип | Описание |
+|----------|-----|----------|
+| `backend_id` | path | ID бэкенда |
+
+**Тело запроса:**
+
+```json
+{
+  "envVars": {
+    "OLLAMA_NUM_PARALLEL": "4",
+    "OLLAMA_MAX_LOADED_MODELS": "2"
+  },
+  "force": true
+}
+```
+
+**Ответ:**
+
+```json
+{
+  "success": true,
+  "message": "Reconfiguration initiated"
+}
+```
+
+#### GET /api/v1/backends/{backend_id}/launch-config
+
+Получение конфигурации запуска Ollama для бэкенда (runtime flags, env vars).
+
+**Параметры:**
+
+| Параметр | Тип | Описание |
+|----------|-----|----------|
+| `backend_id` | path | ID бэкенда |
+
+**Ответ:**
+
+```json
+{
+  "backend_id": "gpu-1",
+  "launch_config": {
+    "numGpuLayers": -1,
+    "contextLength": 4096,
+    "numParallel": 4,
+    "numThreads": 8,
+    "batchSize": 512,
+    "cpuOnly": false,
+    "flashAttention": false,
+    "kvSize": 512,
+    "tensorSplit": null,
+    "mainGpu": 0
+  },
+  "env_vars": {
+    "OLLAMA_NUM_PARALLEL": "4",
+    "OLLAMA_MAX_LOADED_MODELS": "2"
+  }
+}
+```
+
+#### GET /api/v1/backends/{backend_id}/models
+
+Получение списка моделей на конкретном бэкенде (RunningModels).
+
+**Параметры:**
+
+| Параметр | Тип | Описание |
+|----------|-----|----------|
+| `backend_id` | path | ID бэкенда |
+
+**Ответ:**
+
+```json
+{
+  "backend_id": "gpu-1",
+  "models": [
+    {
+      "name": "llama3.1:8b",
+      "digest": "sha256:abc123...",
+      "size": 4928300000,
+      "vram_usage": 6000000000,
+      "expires_at": "2024-06-15T11:00:00Z"
+    }
+  ]
+}
+```
+
 #### DELETE /api/v1/backends/{backend_id}
 
 Удаление бэкенда.
@@ -668,6 +791,87 @@ const ws = new WebSocket('ws://...'); // new WebSocket(url, protocols) не по
   }
 }
 ```
+
+#### GET /api/v1/models/operations
+
+Получение статуса активных операций с моделями (pull, create, delete).
+
+**Ответ:**
+
+```json
+{
+  "operations": [
+    {
+      "id": "pull-llama3.1-8b",
+      "type": "pull",
+      "model": "llama3.1:8b",
+      "backend_id": "gpu-1",
+      "status": "in_progress",
+      "progress": 65,
+      "started_at": "2024-01-15T10:30:00Z"
+    }
+  ],
+  "total_active": 1
+}
+```
+
+---
+
+### Proxy Logs
+
+#### GET /api/v1/proxy/logs
+
+Получение логов проксированных запросов (HTTP access log).
+
+**Ответ:**
+
+```json
+{
+  "logs": [
+    {
+      "timestamp": "2024-01-15T10:30:00Z",
+      "method": "POST",
+      "path": "/api/generate",
+      "model": "llama3.1:8b",
+      "backend_id": "gpu-1",
+      "status_code": 200,
+      "duration_ms": 250,
+      "client_ip": "192.168.1.100"
+    }
+  ],
+  "total": 1500
+}
+```
+
+---
+
+### Candidates
+
+#### GET /api/v1/candidates
+
+Получение групп бэкендов-кандидатов по приоритетам для всех моделей. Используется в мониторе для отображения секции "Candidate Backends".
+
+**Ответ:**
+
+```json
+{
+  "models": {
+    "llama3.1:8b": {
+      "P1_loaded": ["gpu-1", "gpu-2"],
+      "P2_warming": [],
+      "P3_free": ["gpu-3"],
+      "P4_fallback": ["gpu-4"]
+    }
+  }
+}
+```
+
+| Приоритет | Описание |
+|-----------|----------|
+| `P1_loaded` | Бэкенды с уже загруженной моделью |
+| `P2_warming` | Бэкенды, где модель подгружается |
+| `P3_free` | Бэкенды со свободными ресурсами (можно загрузить) |
+| `P4_fallback` | Все healthy бэкенды (resource-based scoring) |
 
 ---
 
@@ -1040,6 +1244,225 @@ curl -X POST http://localhost:18081/api/v1/agents/heartbeat \
 
 ---
 
+### Replication (Model Replication Groups API)
+
+Управление группами репликации моделей (Variant A). Позволяет настроить автоматическое масштабирование реплик моделей на бэкендах.
+
+#### GET /api/v1/replication/groups
+
+Получение списка всех групп репликации.
+
+**Аутентификация:** Требуется (API Token)
+
+**Ответ:**
+```json
+{
+  "groups": [
+    {
+      "modelName": "llama3.1:70b",
+      "minReplicas": 2,
+      "maxReplicas": 4,
+      "targetBackends": ["gpu-1", "gpu-2"]
+    }
+  ]
+}
+```
+
+#### POST /api/v1/replication/groups
+
+Создание новой группы репликации.
+
+**Тело запроса:**
+```json
+{
+  "modelName": "llama3.1:70b",
+  "minReplicas": 2,
+  "maxReplicas": 4,
+  "targetBackends": ["gpu-1", "gpu-2"]
+}
+```
+
+**Ответ:** 201 Created
+```json
+{
+  "message": "group created",
+  "group": { "...config..." }
+}
+```
+
+#### GET /api/v1/replication/groups/{modelName}
+
+Получение детальной информации о группе репликации для указанной модели.
+
+**Ответ:**
+```json
+{
+  "config": { "...group config..." },
+  "states": [ "...instance states..." ],
+  "stats": { "...group statistics..." }
+}
+```
+
+#### PUT /api/v1/replication/groups/{modelName}
+
+Обновление конфигурации группы репликации.
+
+#### DELETE /api/v1/replication/groups/{modelName}
+
+Удаление группы репликации.
+
+**Ответ:**
+```json
+{
+  "message": "group 'llama3.1:70b' deleted"
+}
+```
+
+#### GET /api/v1/replication/stats
+
+Получение расширенной статистики репликации.
+
+**Ответ:**
+```json
+{
+  "enabled": true,
+  "groupCount": 2,
+  "stats": [ "...group stats..." ],
+  "autoReconcile": true
+}
+```
+
+#### POST /api/v1/replication/reconcile
+
+Принудительный запуск reconcile для всех групп репликации.
+
+**Ответ:**
+```json
+{
+  "message": "reconciliation triggered"
+}
+```
+
+---
+
+### Virtual Models (Virtual Model API)
+
+Управление виртуальными моделями (Variant C) — разбиение модели на срезы (slices) и распределённый инференс.
+
+#### GET /api/v1/virtualmodels
+
+Получение списка всех виртуальных моделей.
+
+**Аутентификация:** Требуется (API Token)
+
+**Ответ:**
+```json
+{
+  "enabled": true,
+  "count": 2,
+  "models": [ "...virtual model objects..." ]
+}
+```
+
+#### GET /api/v1/virtualmodels/{name}
+
+Получение статуса конкретной виртуальной модели.
+
+**Ответ:**
+```json
+{
+  "name": "gpt-large",
+  "enabled": true,
+  "slices": [...],
+  "activeJobs": 3,
+  "throughputPerSlice": 12.5
+}
+```
+
+---
+
+### Autopull (Automatic Model Pull)
+
+Управление автоматической загрузкой моделей на бэкенды.
+
+#### GET /api/v1/autopull
+
+Получение конфигурации и статуса автопулла.
+
+**Аутентификация:** Требуется (API Token)
+
+**Ответ:**
+```json
+{
+  "enabled": true,
+  "maxConcurrent": 2,
+  "pullTimeout": "10m",
+  "retryCount": 3,
+  "activePulls": [...]
+}
+```
+
+#### PUT /api/v1/autopull
+
+Обновление конфигурации автопулла.
+
+**Тело запроса:**
+```json
+{
+  "enabled": true,
+  "maxConcurrent": 2,
+  "pullTimeout": "10m",
+  "retryCount": 3
+}
+```
+
+**Ответ:**
+```json
+{
+  "success": true,
+  "config": {},
+  "message": "Auto-pull configuration updated successfully"
+}
+```
+
+#### GET /api/v1/autopull/status
+
+Получение статуса активных и завершённых загрузок моделей.
+
+**Ответ:**
+```json
+{
+  "enabled": true,
+  "activePulls": [],
+  "totalActive": 0
+}
+```
+
+---
+
+### CORS (Cross-Origin Resource Sharing)
+
+API поддерживает CORS для всех origin'ов. Дополнительно, WebSocket использует whitelist допустимых origin'ов:
+
+| Origin | Разрешён |
+|--------|----------|
+| `http://localhost:3000` | ✅ |
+| `http://localhost:8080` | ✅ |
+| `http://localhost:18030` | ✅ |
+| `http://localhost:18081` | ✅ |
+| `http://127.0.0.1:18030` | ✅ |
+| `http://127.0.0.1:18081` | ✅ |
+| `same-origin` | ✅ |
+
+**WebSocket `CheckOrigin`:** При подключении через браузер, origin проверяется по whitelist. Если origin не в whitelist'е — соединение отклоняется.
+
+**HTTP CORS-заголовки (от `ServeHTTP`):**
+```
+Access-Control-Allow-Origin: *
+Access-Control-Allow-Methods: GET, POST, PUT, DELETE, OPTIONS
+Access-Control-Allow-Headers: Content-Type, Authorization, X-Agent-ID, X-API-Token
+```
+
 ### Rate Limit
 
 #### GET /api/v1/ratelimit/status
@@ -1344,11 +1767,16 @@ docker run -d -p 8080:8080 -e SWAGGER_JSON=/api/swagger.json \
 | `GET` | `/api/v1/backends` | Список бэкендов | ✅ |
 | `POST` | `/api/v1/backends` | Добавить бэкенд | ✅ |
 | `GET` | `/api/v1/backends/{id}` | Информация о бэкенде | ✅ |
+| `PUT` | `/api/v1/backends/{id}` | Обновить бэкенд | ✅ |
+| `POST` | `/api/v1/backends/{id}/reconfigure` | Переформировать бэкенд | ✅ |
+| `GET` | `/api/v1/backends/{id}/launch-config` | Конфиг запуска бэкенда | ✅ |
+| `GET` | `/api/v1/backends/{id}/models` | Модели на бэкенде | ✅ |
 | `DELETE` | `/api/v1/backends/{id}` | Удалить бэкенд | ✅ |
 | `GET` | `/api/v1/sessions` | Список сессий | ✅ |
 | `DELETE` | `/api/v1/sessions` | Очистить сессии | ✅ |
 | `DELETE` | `/api/v1/sessions/{id}` | Удалить сессию | ✅ |
 | `GET` | `/api/v1/models` | Запущенные модели | ✅ |
+| `GET` | `/api/v1/models/operations` | Активные операции с моделями | ✅ |
 | `POST` | `/api/v1/agents/register` | Регистрация агента | ✅ |
 | `POST` | `/api/v1/agents/metrics` | Отправка метрик от агента | ✅ |
 | `POST` | `/api/v1/agents/heartbeat` | Heartbeat сигнал агента | ✅ |
@@ -1368,8 +1796,22 @@ docker run -d -p 8080:8080 -e SWAGGER_JSON=/api/swagger.json \
 | `GET` | `/api/v1/cluster/config` | Текущая конфигурация кластера | ✅ |
 | `PUT` | `/api/v1/cluster/config` | Сменить алгоритм/настройки кластера | ✅ |
 | `POST` | `/api/v1/admin/restart` | Перезапуск балансировщика | ✅ |
+| `GET` | `/api/v1/proxy/logs` | Логи проксированных запросов | ✅ |
+| `GET` | `/api/v1/candidates` | Группы кандидатов по моделям | ✅ |
 | `GET` | `/monitor` | HTML-страница монитора | ✅ |
 | `GET` | `/api/v1/ratelimit/status` | Статус rate limiter | ❌ |
+| `GET` | `/api/v1/replication/groups` | Список групп репликации | ✅ |
+| `POST` | `/api/v1/replication/groups` | Создать группу репликации | ✅ |
+| `GET` | `/api/v1/replication/groups/{modelName}` | Детали группы репликации | ✅ |
+| `PUT` | `/api/v1/replication/groups/{modelName}` | Обновить группу репликации | ✅ |
+| `DELETE` | `/api/v1/replication/groups/{modelName}` | Удалить группу репликации | ✅ |
+| `GET` | `/api/v1/replication/stats` | Статистика репликации | ✅ |
+| `POST` | `/api/v1/replication/reconcile` | Принудительный reconcile | ✅ |
+| `GET` | `/api/v1/virtualmodels` | Список виртуальных моделей | ✅ |
+| `GET` | `/api/v1/virtualmodels/{name}` | Статус виртуальной модели | ✅ |
+| `GET` | `/api/v1/autopull` | Конфигурация автопулла | ✅ |
+| `PUT` | `/api/v1/autopull` | Обновить конфигурацию автопулла | ✅ |
+| `GET` | `/api/v1/autopull/status` | Статус загрузок автопулла | ✅ |
 | `GET` | `/ws/metrics?token=xxx` | WebSocket метрики | ✅ (token в query) |
 
 ---

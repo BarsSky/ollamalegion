@@ -255,73 +255,37 @@ func main() {
 			log.Fatalf("API TLS server failed: %v", err)
 		}
 	case sig := <-quit:
-		fmt.Printf("\nReceived signal %v, shutting down...\n", sig)
-	}
-	
-	// === Phase 1: Stop health checker (first, to prevent status changes during shutdown) ===
-	fmt.Println("[Health] Stopping health checker...")
-	healthChecker.Stop()
-
-	// === Phase 2: Stop accepting new requests ===
-	// Drain pending queue (give workers time to finish)
-	fmt.Println("[Queue]  Draining queue...")
-	time.Sleep(2 * time.Second)
-	proxy.StopQueue()
-
-	// === Phase 3: Stop background goroutines ===
-	fmt.Println("[API]    Stopping metrics publish loop...")
-	apiServer.StopMetricsLoop()
-
-	fmt.Println("[Sess]   Stopping session manager...")
-	proxy.StopSessionManager()
-
-	fmt.Println("[Agent]  Stopping agent timeout checker...")
-	proxy.StopAgentTimeoutChecker()
-
-	fmt.Println("[Prewarm] Stopping prewarm controller...")
-	prewarmCtrl.Stop()
-
-	fmt.Println("[ModelCtrl] Stopping model instance controller...")
-	modelInstanceCtrl.Stop()
-
-	fmt.Println("[Unload] Stopping unload scheduler...")
-	unloadScheduler.Stop()
-
-	fmt.Println("[Weight] Stopping adaptive weight tuner...")
-	weightTuner.Stop()
-
-	// === Phase 4: Graceful HTTP shutdown ===
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
-
-	fmt.Println("[Proxy]  Shutting down proxy server...")
-	if err := proxyServer.Shutdown(ctx); err != nil {
-		log.Printf("Proxy server shutdown error: %v", err)
+		fmt.Printf("\nReceived signal %v, shutting down gracefully...\n", sig)
 	}
 
-	fmt.Println("[API]    Shutting down API server...")
-	if err := apiHTTPServer.Shutdown(ctx); err != nil {
-		log.Printf("API server shutdown error: %v", err)
+	// Graceful shutdown sequence:
+	// 1. Proxy.Shutdown (запрет новых запросов, завершение активных SSE, сохранение state)
+	// 2. HTTP-серверы (Shutdown с таймаутом для активных keep-alive соединений)
+
+	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer shutdownCancel()
+
+	fmt.Println("[Shutdown] Stopping proxy (waiting for active streams)...")
+	if err := proxy.Shutdown(shutdownCtx); err != nil {
+		log.Printf("[Shutdown] Proxy shutdown error: %v", err)
 	}
 
-	// Shutdown HTTPS servers
-	if conf.TLS.Enabled {
-		fmt.Println("[Proxy]  Shutting down HTTPS proxy server...")
-		if err := proxyTLSServer.Shutdown(ctx); err != nil {
-			log.Printf("HTTPS proxy server shutdown error: %v", err)
-		}
-
-		fmt.Println("[API]    Shutting down HTTPS API server...")
-		if err := apiTLSServer.Shutdown(ctx); err != nil {
-			log.Printf("HTTPS API server shutdown error: %v", err)
+	fmt.Println("[Shutdown] Stopping HTTP servers...")
+	if err := proxyServer.Shutdown(shutdownCtx); err != nil {
+		log.Printf("[Shutdown] Proxy server shutdown error: %v", err)
+	}
+	if err := apiHTTPServer.Shutdown(shutdownCtx); err != nil {
+		log.Printf("[Shutdown] API server shutdown error: %v", err)
+	}
+	if proxyTLSServer != nil {
+		if err := proxyTLSServer.Shutdown(shutdownCtx); err != nil {
+			log.Printf("[Shutdown] Proxy TLS server shutdown error: %v", err)
 		}
 	}
-
-	// === Phase 5: Save state LAST ===
-	fmt.Println("[State]  Saving state...")
-	if err := proxy.FlushState(); err != nil {
-		log.Printf("State flush error: %v", err)
+	if apiTLSServer != nil {
+		if err := apiTLSServer.Shutdown(shutdownCtx); err != nil {
+			log.Printf("[Shutdown] API TLS server shutdown error: %v", err)
+		}
 	}
-
-	fmt.Println("Ollama Load Balancer stopped.")
+	fmt.Println("[Shutdown] Completed. Goodbye!")
 }

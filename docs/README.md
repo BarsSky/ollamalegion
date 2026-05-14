@@ -195,7 +195,8 @@ flowchart TD
 | **18030** | Web UI | Dashboard (nginx) |
 | **18032** | Agent | Локальные метрики агента |
 | **11434** | Ollama | Ollama API (на бэкендах) |
-| **8443** | Load Balancer | HTTPS порт (опционально) |
+| **8443** | Load Balancer | HTTPS Proxy (TLS) |
+| **8444** | Load Balancer | HTTPS Management API (TLSPort+1) |
 
 ---
 
@@ -222,16 +223,29 @@ ollama-loadbalancer/
 │   │   ├── client.go            # Client fingerprint, session ID, real IP
 │   │   └── state.go             # Сохранение/загрузка state.json
 │   ├── api/               # REST API handlers
-│   │   ├── handlers.go    # API endpoints
-│   │   ├── routes.go      # Регистрация HTTP маршрутов
-│   │   ├── auth.go        # Аутентификация
-│   │   └── metrics_broker.go # WebSocket pub/sub
+│   │   ├── handlers.go           # Server struct, NewServer, WebSocket, CORS
+│   │   ├── handlers_backends.go  # Backends CRUD, limits, capacity
+│   │   ├── handlers_agents.go    # Agent register, metrics, heartbeat
+│   │   ├── handlers_cluster.go   # Cluster state, runtime config switching
+│   │   ├── handlers_queue.go     # Queue stats, details, history
+│   │   ├── handlers_sessions.go  # Sessions CRUD, models list
+│   │   ├── handlers_metrics.go   # Cluster/backend metrics, predictions
+│   │   ├── handlers_replication.go # Model replication groups
+│   │   ├── handlers_virtual.go   # Virtual models, candidates
+│   │   ├── handlers_core.go      # Health, restart, static files, autoPull
+│   │   ├── routes.go             # Регистрация HTTP маршрутов
+│   │   ├── auth.go               # Аутентификация
+│   │   └── metrics_broker.go    # WebSocket pub/sub
 │   ├── agent/             # Логика агента
 │   │   ├── collector.go   # Сбор метрик
 │   │   ├── nvml_unix.go   # NVML integration (Linux)
 │   │   ├── nvml_windows.go# NVML integration (Windows)
 │   │   └── system.go      # Системные метрики
-│   └── config/            # Конфигурация
+│   ├── config/            # Конфигурация
+│   ├── modelreplication/  # Репликация моделей (Variant A)
+│   ├── rpccoordinator/    # RPC координатор (Variant B)
+│   ├── virtualmodel/      # Виртуальные модели (Variant C)
+│   └── distinference/     # Распределённый инференс (Variant D)
 ├── pkg/
 │   ├── logger/            # Библиотека логирования
 │   ├── protocol/          # Протокол агент↔балансер

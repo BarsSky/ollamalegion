@@ -109,7 +109,8 @@ func (qm *QueueManager) worker(id int) {
 
 // processRequest - обработка одного запроса из очереди через централизованный dispatch
 func (qm *QueueManager) processRequest(req *QueuedRequest, workerID int) {
-	// Защита от паники: гарантируем освобождение processing и уведомление клиента
+	var targetBackend string
+	// Защита от паники: гарантируем освобождение слота, processing и уведомление клиента
 	defer func() {
 		if r := recover(); r != nil {
 			logger.Get().Errorw("panic in processRequest, recovered",
@@ -117,6 +118,10 @@ func (qm *QueueManager) processRequest(req *QueuedRequest, workerID int) {
 				"model", req.Model,
 				"panic", r,
 			)
+			// Освобождаем захваченный слот чтобы избежать перманентной утечки
+			if targetBackend != "" {
+				qm.proxy.releaseSlot(targetBackend)
+			}
 			select {
 			case req.Done <- false:
 			default:
@@ -130,7 +135,6 @@ func (qm *QueueManager) processRequest(req *QueuedRequest, workerID int) {
 		"requeue_count", req.RequeueCount,
 	)
 
-	var targetBackend string
 	var dispatchType string
 
 	// Если запрос requeue'ится более 3 раз — принудительно выбираем любой
@@ -144,7 +148,10 @@ func (qm *QueueManager) processRequest(req *QueuedRequest, workerID int) {
 		)
 		targetBackend = qm.proxy.selectFreeBackendAny()
 		if targetBackend != "" {
-			if !qm.proxy.tryAcquireSlot(targetBackend) {
+			// Защита от гонки: проверяем что бэкенд всё ещё существует
+			if _, exists := qm.proxy.backends[targetBackend]; !exists {
+				targetBackend = ""
+			} else if !qm.proxy.tryAcquireSlot(targetBackend) {
 				targetBackend = ""
 			} else {
 				dispatchType = "force_rebalance"
@@ -159,9 +166,54 @@ func (qm *QueueManager) processRequest(req *QueuedRequest, workerID int) {
 
 	// Централизованный dispatch через новую логику
 	if targetBackend == "" {
+		// Проверяем дедлайн: если запрос ждёт дольше queue timeout — отдаём 503
+		queueTimeout := qm.timeout
+		if isStream, _ := req.Request.Context().Value(streamContextKey).(bool); isStream {
+			// Для streaming запросов уменьшаем timeout вдвое
+			streamTimeout := qm.proxy.config.Balancing.QueueTimeout / 2
+			if streamTimeout < 5 {
+				streamTimeout = 5 // минимум 5 секунд
+			}
+			if streamTimeout > 0 {
+				queueTimeout = time.Duration(streamTimeout) * time.Second
+			}
+		}
+		if time.Since(req.Enqueued) > queueTimeout {
+			logger.Get().Warnw("request exceeded queue timeout, returning 503",
+				"worker_id", workerID,
+				"model", req.Model,
+				"wait_sec", time.Since(req.Enqueued).Seconds(),
+				"requeue_count", req.RequeueCount,
+			)
+			req.Writer.WriteHeader(http.StatusServiceUnavailable)
+			req.Writer.Write([]byte(`{"error":"queue timeout exceeded"}`))
+			select {
+			case req.Done <- false:
+			default:
+			}
+			return
+		}
+
 		result := qm.proxy.dispatchRequest(req)
 		if result.Error != nil {
 			req.RequeueCount++
+			// После N ретраев принудительно отдаём 503 вместо бесконечного re-queue
+			const maxRequeueAttempts = 10
+			if req.RequeueCount >= maxRequeueAttempts {
+				logger.Get().Errorw("max requeue attempts exceeded, returning 503",
+					"worker_id", workerID,
+					"requeue_count", req.RequeueCount,
+					"model", req.Model,
+					"error", result.Error,
+				)
+				req.Writer.WriteHeader(http.StatusServiceUnavailable)
+				req.Writer.Write([]byte(`{"error":"all backends busy, max retries exceeded"}`))
+				select {
+				case req.Done <- false:
+				default:
+				}
+				return
+			}
 			logger.Get().Warnw("dispatch failed, re-queueing request",
 				"worker_id", workerID,
 				"requeue_count", req.RequeueCount,
@@ -183,9 +235,16 @@ func (qm *QueueManager) processRequest(req *QueuedRequest, workerID int) {
 		dispatchType = result.DispatchType
 	}
 
-	// На этом этапе слот уже захвачен внутри dispatchRequest (или force_rebalance)
-	// Гарантируем освобождение
-	defer qm.proxy.releaseSlot(targetBackend)
+	// На этом этапе слот уже захвачен внутри dispatchRequest (или force_rebalance).
+	// Гарантируем освобождение слота при любом выходе (включая panic — см. defer выше).
+	// Двойное освобождение предотвращается проверкой targetBackend != "" в panic-recover и
+	// atomic захватом/освобождением в releaseSlot.
+	defer func() {
+		if targetBackend != "" {
+			qm.proxy.releaseSlot(targetBackend)
+			targetBackend = ""
+		}
+	}()
 
 	req.Target = targetBackend
 	logger.Get().Debugw("proxying queued request to backend",
@@ -194,40 +253,87 @@ func (qm *QueueManager) processRequest(req *QueuedRequest, workerID int) {
 		"dispatch_type", dispatchType,
 	)
 
-	qm.proxy.proxyRequest(req.Writer, req.Request, targetBackend)
+	// Проксируем запрос — с обработкой ошибок и fallback на другие бэкенды
+	err := qm.proxy.proxyRequest(req.Writer, req.Request, targetBackend)
+	if err == nil {
+		select {
+		case req.Done <- true:
+		default:
+		}
+		qm.recordCompleted(req, dispatchType, workerID)
+		return
+	}
 
+	// Ошибка на целевом бэкенде — освобождаем слот и пробуем fallback
+	logger.Get().Warnw("queue request failed on target backend, trying fallback",
+		"worker_id", workerID, "backend", targetBackend, "error", err)
+	failedBackend := targetBackend
+	qm.proxy.releaseSlot(failedBackend)
+	targetBackend = "" // предотвращаем повторное освобождение через defer
+
+	attemptedBackends := map[string]bool{failedBackend: true}
+	const maxFallbackAttempts = 3
+	for attempt := 0; attempt < maxFallbackAttempts; attempt++ {
+		altBackend := qm.proxy.selectBackendExcluding(req.Model, attemptedBackends)
+		if altBackend == "" {
+			break
+		}
+		if !qm.proxy.tryAcquireSlot(altBackend) {
+			attemptedBackends[altBackend] = true
+			continue
+		}
+
+		req.Target = altBackend
+		err = qm.proxy.proxyRequest(req.Writer, req.Request, altBackend)
+		if err == nil {
+			qm.proxy.releaseSlot(altBackend)
+			select {
+			case req.Done <- true:
+			default:
+			}
+			qm.recordCompleted(req, "fallback_"+dispatchType, workerID)
+			return
+		}
+
+		logger.Get().Warnw("fallback backend also failed",
+			"worker_id", workerID, "backend", altBackend, "attempt", attempt+1, "error", err)
+		qm.proxy.releaseSlot(altBackend)
+		attemptedBackends[altBackend] = true
+	}
+
+	// Все бэкенды не сработали — пробуем requeue или отдаём 503
+	const maxRequeueAttempts = 10
+	if req.RequeueCount < maxRequeueAttempts {
+		req.RequeueCount++
+		logger.Get().Warnw("all fallbacks exhausted, re-queueing request",
+			"worker_id", workerID,
+			"requeue_count", req.RequeueCount,
+			"model", req.Model,
+		)
+		time.AfterFunc(100*time.Millisecond, func() {
+			select {
+			case qm.queue <- req:
+			case <-qm.ctx.Done():
+				select {
+				case req.Done <- false:
+				default:
+				}
+			}
+		})
+		return
+	}
+
+	logger.Get().Errorw("max requeue attempts exceeded after fallback, returning 503",
+		"worker_id", workerID,
+		"requeue_count", req.RequeueCount,
+		"model", req.Model,
+	)
+	req.Writer.WriteHeader(http.StatusServiceUnavailable)
+	req.Writer.Write([]byte(`{"error":"all backends failed, max retries exceeded"}`))
 	select {
-	case req.Done <- true:
+	case req.Done <- false:
 	default:
 	}
-
-	now := time.Now()
-	waitTimeMs := now.Sub(req.Enqueued).Milliseconds()
-	qm.mu.Lock()
-	qm.processed++
-	processed := qm.processed
-	qm.mu.Unlock()
-
-	qm.historyMu.Lock()
-	qm.completedHistory = append(qm.completedHistory, &CompletedRequest{
-		Model:       req.Model,
-		Target:      req.Target,
-		Enqueued:    req.Enqueued,
-		CompletedAt: now,
-		WaitTimeMs:  waitTimeMs,
-	})
-	const maxHistory = 100
-	if len(qm.completedHistory) > maxHistory {
-		qm.completedHistory = qm.completedHistory[len(qm.completedHistory)-maxHistory:]
-	}
-	qm.historyMu.Unlock()
-
-	logger.Get().Debugw("queued request completed",
-		"worker_id", workerID,
-		"processed_total", processed,
-		"wait_time_ms", waitTimeMs,
-		"dispatch_type", dispatchType,
-	)
 }
 
 // Stop - остановка всех workers
@@ -279,6 +385,37 @@ func (qm *QueueManager) removeProcessing(req *QueuedRequest) {
 		}
 	}
 	qm.processingMu.Unlock()
+}
+
+// recordCompleted - запись завершённого запроса в историю и обновление счётчиков
+func (qm *QueueManager) recordCompleted(req *QueuedRequest, dispatchType string, workerID int) {
+	now := time.Now()
+	waitTimeMs := now.Sub(req.Enqueued).Milliseconds()
+	qm.mu.Lock()
+	qm.processed++
+	processed := qm.processed
+	qm.mu.Unlock()
+
+	qm.historyMu.Lock()
+	qm.completedHistory = append(qm.completedHistory, &CompletedRequest{
+		Model:       req.Model,
+		Target:      req.Target,
+		Enqueued:    req.Enqueued,
+		CompletedAt: now,
+		WaitTimeMs:  waitTimeMs,
+	})
+	const maxHistory = 100
+	if len(qm.completedHistory) > maxHistory {
+		qm.completedHistory = qm.completedHistory[len(qm.completedHistory)-maxHistory:]
+	}
+	qm.historyMu.Unlock()
+
+	logger.Get().Debugw("queued request completed",
+		"worker_id", workerID,
+		"processed_total", processed,
+		"wait_time_ms", waitTimeMs,
+		"dispatch_type", dispatchType,
+	)
 }
 
 // getProcessingDTOs - получение DTO processing запросов для API

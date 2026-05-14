@@ -64,6 +64,12 @@ tags:
     description: WebSocket endpoints for real-time data
   - name: Ollama
     description: Проксирование и агрегация Ollama API endpoints
+  - name: Replication
+    description: Model replication group management
+  - name: Virtual Models
+    description: Virtual model management (distributed inference)
+  - name: Autopull
+    description: Automatic model pull configuration and status
 
 security:
   - ApiKeyAuth: []
@@ -1179,6 +1185,692 @@ paths:
               schema:
                 type: string
 
+  # Model Replication API endpoints (Variant A)
+  /api/v1/replication/groups:
+    get:
+      tags:
+        - Replication
+      summary: List replication groups
+      description: Получение списка всех групп репликации моделей
+      operationId: listReplicationGroups
+      responses:
+        '200':
+          description: Список групп репликации
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  groups:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/ModelGroupConfig'
+        '401':
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+    post:
+      tags:
+        - Replication
+      summary: Create replication group
+      description: Создание новой группы репликации модели
+      operationId: createReplicationGroup
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ModelGroupConfig'
+      responses:
+        '201':
+          description: Группа создана
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message:
+                    type: string
+                    example: group created
+                  group:
+                    $ref: '#/components/schemas/ModelGroupConfig'
+        '400':
+          description: Invalid request
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '401':
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /api/v1/replication/groups/{modelName}:
+    get:
+      tags:
+        - Replication
+      summary: Get replication group
+      description: Получение информации о группе репликации для указанной модели
+      operationId: getReplicationGroup
+      parameters:
+        - name: modelName
+          in: path
+          required: true
+          schema:
+            type: string
+          description: Имя модели
+      responses:
+        '200':
+          description: Детали группы репликации
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  config:
+                    $ref: '#/components/schemas/ModelGroupConfig'
+                  states:
+                    type: array
+                    items:
+                      type: object
+                  stats:
+                    type: object
+        '401':
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '404':
+          description: Group not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+    put:
+      tags:
+        - Replication
+      summary: Update replication group
+      description: Обновление конфигурации группы репликации
+      operationId: updateReplicationGroup
+      parameters:
+        - name: modelName
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Group updated
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message:
+                    type: string
+                  group:
+                    $ref: '#/components/schemas/ModelGroupConfig'
+        '400':
+          description: Invalid request
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '401':
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+    delete:
+      tags:
+        - Replication
+      summary: Delete replication group
+      description: Удаление группы репликации
+      operationId: deleteReplicationGroup
+      parameters:
+        - name: modelName
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Group deleted
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message:
+                    type: string
+                    example: "group 'llama3.1:70b' deleted"
+        '401':
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '404':
+          description: Group not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /api/v1/replication/stats:
+    get:
+      tags:
+        - Replication
+      summary: Get replication stats
+      description: Получение расширенной статистики репликации
+      operationId: getReplicationStats
+      responses:
+        '200':
+          description: Статистика репликации
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  enabled:
+                    type: boolean
+                  groupCount:
+                    type: integer
+                  stats:
+                    type: array
+                    items:
+                      type: object
+                  autoReconcile:
+                    type: boolean
+        '401':
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /api/v1/replication/reconcile:
+    post:
+      tags:
+        - Replication
+      summary: Trigger reconciliation
+      description: Принудительный запуск reconcile для всех групп репликации
+      operationId: triggerReconcile
+      responses:
+        '200':
+          description: Reconciliation triggered
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message:
+                    type: string
+                    example: reconciliation triggered
+        '401':
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  # Virtual Model API endpoints (Variant C)
+  /api/v1/virtualmodels:
+    get:
+      tags:
+        - Virtual Models
+      summary: List virtual models
+      description: Получение списка всех виртуальных моделей
+      operationId: listVirtualModels
+      responses:
+        '200':
+          description: Список виртуальных моделей
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  enabled:
+                    type: boolean
+                  count:
+                    type: integer
+                  models:
+                    type: array
+                    items:
+                      type: object
+        '401':
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /api/v1/virtualmodels/{name}:
+    get:
+      tags:
+        - Virtual Models
+      summary: Get virtual model status
+      description: Получение статуса конкретной виртуальной модели
+      operationId: getVirtualModelStatus
+      parameters:
+        - name: name
+          in: path
+          required: true
+          schema:
+            type: string
+          description: Имя виртуальной модели
+      responses:
+        '200':
+          description: Статус виртуальной модели
+          content:
+            application/json:
+              schema:
+                type: object
+        '401':
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '404':
+          description: Virtual model not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  # Autopull API endpoints
+  /api/v1/autopull:
+    get:
+      tags:
+        - Autopull
+      summary: Get autopull configuration
+      description: Получение конфигурации и статуса автоматической загрузки моделей
+      operationId: getAutopull
+      responses:
+        '200':
+          description: Конфигурация автопулла
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  enabled:
+                    type: boolean
+                  maxConcurrent:
+                    type: integer
+                  pullTimeout:
+                    type: string
+                  retryCount:
+                    type: integer
+                  activePulls:
+                    type: array
+                    items:
+                      type: object
+        '401':
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+    put:
+      tags:
+        - Autopull
+      summary: Update autopull configuration
+      description: Обновление конфигурации автопулла
+      operationId: updateAutopull
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                enabled:
+                  type: boolean
+                maxConcurrent:
+                  type: integer
+                pullTimeout:
+                  type: string
+                retryCount:
+                  type: integer
+      responses:
+        '200':
+          description: Конфигурация обновлена
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                  config:
+                    type: object
+                  message:
+                    type: string
+        '400':
+          description: Invalid request
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '401':
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /api/v1/autopull/status:
+    get:
+      tags:
+        - Autopull
+      summary: Get autopull status
+      description: Получение статуса активных и завершённых загрузок моделей
+      operationId: getAutopullStatus
+      responses:
+        '200':
+          description: Статус автопулла
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  enabled:
+                    type: boolean
+                  activePulls:
+                    type: array
+                    items:
+                      type: object
+                  totalActive:
+                    type: integer
+        '401':
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /api/v1/backends/{backend_id}:
+    put:
+      tags:
+        - Backends
+      summary: Update backend
+      description: Обновление существующего бэкенда (вес, лимиты, метки, конфигурация)
+      operationId: updateBackend
+      parameters:
+        - name: backend_id
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateBackendRequest'
+      responses:
+        '200':
+          description: Backend updated successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BackendInfo'
+        '400':
+          description: Invalid request data
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '404':
+          description: Backend not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '401':
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /api/v1/backends/{backend_id}/reconfigure:
+    post:
+      tags:
+        - Backends
+      summary: Reconfigure backend
+      description: Переконфигурация бэкенда (применение новых настроек без пересоздания)
+      operationId: reconfigureBackend
+      parameters:
+        - name: backend_id
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateBackendRequest'
+      responses:
+        '200':
+          description: Backend reconfigured successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BackendInfo'
+        '404':
+          description: Backend not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '401':
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /api/v1/backends/{backend_id}/launch-config:
+    get:
+      tags:
+        - Backends
+      summary: Get backend launch config
+      description: Получение конфигурации запуска Ollama для бэкенда (runtime flags)
+      operationId: getBackendLaunchConfig
+      parameters:
+        - name: backend_id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Launch config
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  runtimeFlags:
+                    type: object
+                    description: Ollama runtime flags
+        '404':
+          description: Backend not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '401':
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /api/v1/backends/{backend_id}/models:
+    get:
+      tags:
+        - Backends
+      summary: Get backend models
+      description: Получение списка моделей, доступных на конкретном бэкенде
+      operationId: getBackendModels
+      parameters:
+        - name: backend_id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: List of models on backend
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/RunningModel'
+        '404':
+          description: Backend not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '401':
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /api/v1/models/operations:
+    get:
+      tags:
+        - Models
+      summary: Get model operations
+      description: Получение истории операций с моделями (pull, load, unload) для всех бэкендов
+      operationId: getModelOperations
+      responses:
+        '200':
+          description: Model operations history
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  operations:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        model:
+                          type: string
+                        operation:
+                          type: string
+                        backendId:
+                          type: string
+                        timestamp:
+                          type: string
+                          format: date-time
+        '401':
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /api/v1/proxy/logs:
+    get:
+      tags:
+        - Ollama
+      summary: Get proxy logs
+      description: Получение журнала проксированных запросов и ошибок
+      operationId: getProxyLogs
+      responses:
+        '200':
+          description: Proxy logs
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  logs:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        timestamp:
+                          type: string
+                          format: date-time
+                        method:
+                          type: string
+                        path:
+                          type: string
+                        backendId:
+                          type: string
+                        status:
+                          type: integer
+                        duration:
+                          type: integer
+        '401':
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /api/v1/candidates:
+    get:
+      tags:
+        - Backends
+      summary: Get backend candidates
+      description: Получение списка кандидатов (expandCandidates) — бэкенды сгруппированы по приоритетам P1-P4
+      operationId: getCandidates
+      parameters:
+        - name: model
+          in: query
+          required: false
+          schema:
+            type: string
+          description: Название модели для фильтрации кандидатов
+      responses:
+        '200':
+          description: Candidate groups
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  groups:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        priority:
+                          type: integer
+                        name:
+                          type: string
+                        backendIds:
+                          type: array
+                          items:
+                            type: string
+        '401':
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
 components:
   securitySchemes:
     ApiKeyAuth:
@@ -1894,3 +2586,28 @@ components:
           type: integer
           format: int64
           example: 6000000000
+
+    ModelGroupConfig:
+      type: object
+      description: Конфигурация группы репликации модели
+      properties:
+        modelName:
+          type: string
+          description: Имя модели
+          example: llama3.1:70b
+        minReplicas:
+          type: integer
+          description: Минимальное количество реплик
+          example: 2
+        maxReplicas:
+          type: integer
+          description: Максимальное количество реплик
+          example: 4
+        targetBackends:
+          type: array
+          description: Целевые бэкенды (если пусто — выбираются автоматически)
+          items:
+            type: string
+          example:
+            - gpu-1
+            - gpu-2

@@ -426,6 +426,33 @@ const Renderers = (function () {
             const activeReq = b.activeRequests || 0;
             const maxReq = b.maxConcurrentRequests || 10;
             const models = oll.runningModels?.length || 0;
+            // Model details tooltip for the Models column
+            // Format expiresAt for display
+            function fmtExpires(exp) {
+                if (!exp) return '';
+                var d = new Date(exp);
+                if (isNaN(d.getTime())) return '';
+                var now = Date.now();
+                var diff = d.getTime() - now;
+                if (diff < 0) return ' ⌛Expired';
+                if (diff < 60000) return ' ⌛' + Math.round(diff/1000) + 's';
+                if (diff < 3600000) return ' ⌛' + Math.round(diff/60000) + 'm';
+                return ' ⌛' + Math.round(diff/3600000) + 'h';
+            }
+            const modelDetailsHtml = (oll.runningModels || []).map(function(m) {
+                var expStr = fmtExpires(m.expiresAt || m.ExpiresAt);
+                return '<div class="model-tooltip-row">' + Utils.escapeHtml(m.name) + ' — ' +
+                    Utils.escapeHtml(m.family || '-') + ' | ' +
+                    Utils.escapeHtml(m.parameterSize || '-') + ' | ' +
+                    Utils.escapeHtml(m.quantization || '-') +
+                    (expStr ? ' ' + expStr : '') +
+                    '</div>';
+            }).join('');
+            const modelDetailsTitle = (oll.runningModels || []).map(function(m) {
+                var expStr = fmtExpires(m.expiresAt || m.ExpiresAt);
+                return (m.name || '-') + ' — ' + (m.family || '-') + ' | ' + (m.parameterSize || '-') + ' | ' + (m.quantization || '-') + (expStr ? ' ' + expStr : '');
+            }).join('\n');
+
             const rps = oll.requestsPerSecond || 0;
             const avgRT = oll.avgResponseTime !== undefined && oll.avgResponseTime > 0 ? oll.avgResponseTime.toFixed(0) + 'ms' : '-';
             const reqCap = pred.requestCapacity !== undefined ? pred.requestCapacity.toFixed(0) + '%' : '-';
@@ -462,14 +489,14 @@ const Renderers = (function () {
                     <td>${escapeHtml(cpuUsage)}</td>
                     <td>${escapeHtml(ramPercent)}</td>
                     <td class="col-right">${activeReq}/${maxReq}</td>
-                    <td class="col-right">${models}</td>
+                    <td class="col-right" title="${modelDetailsTitle ? Utils.escapeHtml(modelDetailsTitle) : ''}">${models}</td>
                     <td class="col-right">${rps.toFixed(1)}</td>
                     <td class="col-right">${avgRT}</td>
                     <td class="col-right">${reqCap}</td>
                     <td>${badge(predText, predClass)}</td>
                     <td>
-                        <button class="action-btn edit" onclick="ui.editBackend('${escapeHtml(b.id)}')">Edit</button>
-                        <button class="action-btn delete" onclick="ui.confirmDeleteBackend('${escapeHtml(b.id)}')">Del</button>
+                        <button class="action-btn edit" onclick="ui.editBackend('${escapeHtml(b.id)}')">${_t('common.edit')}</button>
+                        <button class="action-btn delete" onclick="ui.confirmDeleteBackend('${escapeHtml(b.id)}')">${_t('common.delete')}</button>
                     </td>
                 </tr>
             `;
@@ -583,15 +610,37 @@ const Renderers = (function () {
             modelsHtml = `<div class="be-detail-section"><div class="be-detail-title">${_t('renderers.section_loaded_models')}</div><div class="be-params-grid">`;
             runningModels.forEach(m => {
                 const sizeGB = (m.size || 0) / 1024 / 1024 / 1024;
+                const ramGB = (m.ramUsage || 0) / 1024 / 1024 / 1024;
+                var digestShort = (m.digest || m.Digest || '').substring(0, 12);
+                var expDate = m.expiresAt || m.ExpiresAt || '';
                 modelsHtml += `<div class="be-param-item" style="grid-column: 1/-1;">
                     <span class="be-param-label">${escapeHtml(m.name)}</span>
-                    <span class="be-param-value">${sizeGB.toFixed(1)} GB | ${escapeHtml(m.family || '-')} | ${escapeHtml(m.parameterSize || '-')} | ${escapeHtml(m.quantization || '-')}</span>
-                </div>`;
+                    <span class="be-param-value">${sizeGB.toFixed(1)} GB | ${escapeHtml(m.family || '-')} | ${escapeHtml(m.parameterSize || '-')} | ${escapeHtml(m.quantization || '-')}` +
+                    (digestShort ? ` <code title="${_t('renderers.digest')}: ${escapeHtml(digestShort)}">${escapeHtml(digestShort)}</code>` : '') +
+                    (expDate ? ` <span title="${_t('renderers.expires')}: ${escapeHtml(expDate)}" style="font-size:10px;color:var(--warning)">⌛${escapeHtml(expDate.substring(0, 10))}</span>` : '') +
+                    (ramGB > 0.5 ? ` <span style="font-size:10px;color:var(--text-secondary)">RAM: ${ramGB.toFixed(2)} GB</span>` : '') +
+                `</div>`;
             });
             modelsHtml += '</div></div>';
         }
 
-        return flagsHtml + capHtml + ctxHtml + modelsHtml;
+
+        // Section: Disk / Network
+        const sys = backend.system || {};
+        let diskNetHtml = '';
+        if (sys.diskTotal !== undefined || sys.diskUsed !== undefined || sys.diskFree !== undefined || sys.networkRX !== undefined || sys.networkTX !== undefined) {
+            diskNetHtml = `<div class="be-detail-section"><div class="be-detail-title">${_t('renderers.section_disk_network')}</div><div class="be-params-grid">`;
+            if (sys.diskTotal !== undefined || sys.diskUsed !== undefined || sys.diskFree !== undefined) {
+                if (sys.diskTotal !== undefined) diskNetHtml += `<div class="be-param-item"><span class="be-param-label">${_t('renderers.disk_total')}</span><span class="be-param-value">${formatMB(sys.diskTotal)}</span></div>`;
+                if (sys.diskUsed !== undefined) diskNetHtml += `<div class="be-param-item"><span class="be-param-label">${_t('renderers.disk_used')}</span><span class="be-param-value">${formatMB(sys.diskUsed)}</span></div>`;
+                if (sys.diskFree !== undefined) diskNetHtml += `<div class="be-param-item"><span class="be-param-label">${_t('renderers.disk_free')}</span><span class="be-param-value">${formatMB(sys.diskFree)}</span></div>`;
+            }
+            if (sys.networkRX !== undefined) diskNetHtml += `<div class="be-param-item"><span class="be-param-label">${_t('renderers.network_rx')}</span><span class="be-param-value">${formatMB(sys.networkRX)}</span></div>`;
+            if (sys.networkTX !== undefined) diskNetHtml += `<div class="be-param-item"><span class="be-param-label">${_t('renderers.network_tx')}</span><span class="be-param-value">${formatMB(sys.networkTX)}</span></div>`;
+            diskNetHtml += '</div></div>';
+        }
+
+        return flagsHtml + capHtml + ctxHtml + modelsHtml + diskNetHtml;
     }
 
     function backendsPage(backends) {
@@ -608,6 +657,15 @@ const Renderers = (function () {
             const maxModels = b.runtimeMaxModels || b.maxModels || b.ollama?.maxModels || '-';
             const detailsHtml = renderOllamaParams(b);
             const rowId = 'be-row-' + idx;
+            const safeId = escapeHtml(b.id);
+
+            const agentActionsHtml = b.hasAgent ? `
+                <div class="agent-actions">
+                    <button class="btn btn-restart" onclick="ui.restartAgent('${safeId}')" title="${_t('agents.restart_hint')}">${_t('agents.restart')}</button>
+                    <button class="btn btn-logs" onclick="ui.viewAgentLogs('${safeId}')" title="${_t('agents.view_logs_hint')}">${_t('agents.view_logs')}</button>
+                    <button class="btn btn-config" onclick="ui.showAgentDetails('${safeId}')" title="${_t('agents.config_hint')}">${_t('agents.config')}</button>
+                </div>
+            ` : '';
 
             return `
                 <tr class="be-main-row" data-expand="${rowId}" style="cursor:pointer;">
@@ -624,14 +682,16 @@ const Renderers = (function () {
                     <td>${escapeHtml(lastContact)}</td>
                     <td>${badge(b.status, b.status === 'healthy' ? 'success' : 'danger')}</td>
                     <td>
-                        <button class="action-btn edit" onclick="event.stopPropagation(); ui.editBackend('${escapeHtml(b.id)}')">Edit</button>
-                        <button class="action-btn delete" onclick="event.stopPropagation(); ui.confirmDeleteBackend('${escapeHtml(b.id)}')">Del</button>
+                        <button class="action-btn edit" onclick="event.stopPropagation(); ui.editBackend('${safeId}')">${_t('common.edit')}</button>
+                        <button class="action-btn delete" onclick="event.stopPropagation(); ui.confirmDeleteBackend('${safeId}')">${_t('common.delete')}</button>
+                        <button class="action-btn model" onclick="event.stopPropagation(); ui.openModelManageModal('${safeId}')" title="${_t('models.manage_title')}">${_t('models.manage_action')}</button>
                     </td>
                 </tr>
                 <tr class="be-detail-row" id="${rowId}" style="display:none;">
                     <td colspan="13">
                         <div class="be-detail-content">
                             ${detailsHtml}
+                            ${agentActionsHtml}
                         </div>
                     </td>
                 </tr>
@@ -716,7 +776,7 @@ const Renderers = (function () {
                     </div>
                     <div class="backend-load-stats">
                         <span class="backend-load-stat">${_t('renderers.models_label')} <strong>${models.length}</strong></span>
-                        <span class="backend-load-stat">Active: <strong>${activeReq}/${maxReq}</strong></span>
+                        <span class="backend-load-stat">${_t('renderers.active')}: <strong>${activeReq}/${maxReq}</strong></span>
                         <span class="backend-load-stat">${_t('renderers.free_label')} <strong>${freeSlots}</strong></span>
                     </div>
                     ${vramBar}
@@ -730,6 +790,20 @@ const Renderers = (function () {
         }).join('');
     }
 
+    function fmtExpiresShort(exp) {
+        if (!exp) return '';
+        var expDate = new Date(exp);
+        if (isNaN(expDate.getTime())) return '';
+        var now = Date.now();
+        var diff = expDate.getTime() - now;
+        if (diff < 0) return '⌛' + _t('renderers.expired');
+        var sec = Math.floor(diff / 1000);
+        if (sec < 60) return '⌛' + sec + 's';
+        if (sec < 3600) return '⌛' + Math.floor(sec / 60) + 'm';
+        if (sec < 86400) return '⌛' + Math.floor(sec / 3600) + 'h';
+        return '⌛' + exp.substring(0, 10);
+    }
+
     function modelsGrid(allModels, backendMap) {
         if (!allModels.length) return loading(_t('models.no_models'));
 
@@ -737,6 +811,10 @@ const Renderers = (function () {
             const vramMB = (m.vramUsage || 0) / 1024 / 1024;
             const ramMB = (m.ramUsage || 0) / 1024 / 1024;
             const sizeGB = (m.size || 0) / 1024 / 1024 / 1024;
+            const ramGB = (m.ramUsage || 0) / 1024 / 1024 / 1024;
+            var digestShort = (m.digest || m.Digest || '').substring(0, 12);
+            var expDate = m.expiresAt || m.ExpiresAt || '';
+            var expShort = fmtExpiresShort(expDate);
 
             const backend = backendMap[m.backend] || {};
             const mode = getBackendMode(backend);
@@ -750,8 +828,11 @@ const Renderers = (function () {
             const ramPercent = totalRAM > 0 ? Math.min(percent(ramMB, totalRAM), 100) : 0;
             const showVRAM = isGPU && totalVRAM > 0;
 
+            const safeBackend = escapeHtml(m.backend);
+            const safeName = escapeHtml(m.name).replace(/'/g, "\\'");
+            
             return `
-                <div class="model-card">
+                <div class="model-card" data-backend="${safeBackend}" data-model="${safeName}">
                     <div class="model-card-header">
                         <span class="model-name">${escapeHtml(m.name)}</span>
                         ${badge(m.backend, m.backendStatus === 'healthy' ? 'success' : 'danger')}
@@ -761,11 +842,22 @@ const Renderers = (function () {
                         ${modelDetail('VRAM', `${vramMB.toFixed(0)} MB`)}
                         ${modelDetail('RAM', `${ramMB.toFixed(0)} MB`)}
                         ${modelDetail('Family', m.family || '-')}
+                        ${modelDetail('Format', m.format || '-')}
+                        ${modelDetail('Params', m.parameterSize || '-')}
+                        ${modelDetail('Quant', m.quantization || '-')}
+                        ${digestShort ? '<div class="model-detail"><div class="model-detail-label">' + _t('renderers.digest') + '</div><div class="model-detail-value"><code style="font-size:10px;background:var(--bg-secondary);padding:1px 4px;border-radius:3px">' + escapeHtml(digestShort) + '</code></div></div>' : ''}
+                        ${expShort ? '<div class="model-detail"><div class="model-detail-label">' + _t('renderers.expires') + '</div><div class="model-detail-value" title="' + escapeHtml(expDate) + '" style="color:var(--warning);font-size:11px">' + expShort + '</div></div>' : ''}
+                        ${ramGB > 0.5 ? '<div class="model-detail"><div class="model-detail-label">RAM</div><div class="model-detail-value" style="font-size:11px;color:var(--text-secondary)">' + ramGB.toFixed(2) + ' GB</div></div>' : ''}
                     </div>
                     <div class="model-memory-section">
                         <div class="model-memory-title">${_t('models.memory_title')}</div>
                         ${showVRAM ? memoryBar('VRAM', vramMB, totalVRAM, vramPercent, 'vram') : ''}
                         ${memoryBar('RAM', ramMB, totalRAM, ramPercent, 'ram')}
+                    </div>
+                    <div class="model-card-actions">
+                        <button class="btn btn-load" onclick="window.modelCardAction('load', '${safeBackend}', '${safeName}')" ${m.backendStatus !== 'healthy' ? 'disabled' : ''}>${_t('models.load')}</button>
+                        <button class="btn btn-unload" onclick="window.modelCardAction('unload', '${safeBackend}', '${safeName}')" ${m.backendStatus !== 'healthy' ? 'disabled' : ''}>${_t('models.unload')}</button>
+                        <button class="btn btn-delete" onclick="window.modelCardAction('delete', '${safeBackend}', '${safeName}')" ${m.backendStatus !== 'healthy' ? 'disabled' : ''}>${_t('models.delete')}</button>
                     </div>
                 </div>
             `;
@@ -946,9 +1038,240 @@ const Renderers = (function () {
         container.innerHTML = alerts.map(a => `
             <div class="alert alert-${a.level}">
                 <svg class="alert-icon-svg" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10" fill="currentColor"/></svg>
-                <span><strong>${escapeHtml(a.backend)}</strong>: ${escapeHtml(a.reason)} ${_t('common.in')} ${a.seconds}с</span>
+                <span><strong>${escapeHtml(a.backend)}</strong>: ${escapeHtml(a.reason)} ${_t('common.in')} ${a.seconds}${_t('renderers.seconds')}</span>
             </div>
         `).join('');
+    }
+
+    // ---- Proxy Logs ----
+
+    function copyProxyLogs() {
+        const container = document.getElementById('proxyLogsContainer');
+        const table = container && container.querySelector('table.data-table');
+        if (!table) return;
+        const rows = table.querySelectorAll('tr');
+        let csv = '';
+        rows.forEach(function(row) {
+            const cells = row.querySelectorAll('th, td');
+            const rowData = Array.from(cells).map(function(cell) {
+                return '"' + cell.textContent.trim().replace(/"/g, '""') + '"';
+            }).join('\t');
+            csv += rowData + '\n';
+        });
+        navigator.clipboard.writeText(csv).then(function() {
+            const btn = document.getElementById('copyProxyLogs');
+            if (btn) {
+                const orig = btn.textContent;
+                btn.textContent = '✓ ' + (window.I18N ? I18N.t('common.success') : 'Copied');
+                setTimeout(function() { btn.textContent = orig; }, 2000);
+            }
+        }).catch(function() {});
+    }
+
+    function proxyLogs(entries) {
+        const container = document.getElementById('proxyLogsContainer');
+        if (!container) return;
+        if (!entries.length) {
+            container.innerHTML = `<div class="proxy-log-placeholder">${_t('logs.proxy_waiting')}</div>`;
+            return;
+        }
+        const locale = (window.I18N && I18N.getLang() === 'ru') ? 'ru' : 'en';
+        var html = '<table class="data-table proxy-logs-table"><thead><tr>' +
+            '<th>' + _t('logs.time') + '</th>' +
+            '<th>' + _t('logs.method') + '</th>' +
+            '<th>' + _t('logs.path') + '</th>' +
+            '<th>' + _t('logs.model') + '</th>' +
+            '<th>' + _t('logs.client') + '</th>' +
+            '<th>' + _t('logs.status') + '</th>' +
+            '<th>' + _t('logs.duration') + '</th>' +
+            '<th>' + _t('logs.backend') + '</th>' +
+            '</tr></thead><tbody>';
+        entries.slice(0, 500).forEach(function(e) {
+            var time = e._time || (e.timestamp ? new Date(e.timestamp).toLocaleTimeString(locale) : '-');
+            var method = e.method || 'GET';
+            var path = e.path || '-';
+            var model = e.model || '-';
+            var client = '';
+            if (e.clientName) {
+                client = escapeHtml(e.clientName);
+            } else if (e.clientIP) {
+                client = escapeHtml(e.clientIP);
+            } else {
+                client = '-';
+            }
+            var status = e.statusCode ? String(e.statusCode) : '-';
+            var duration = e.durationMs ? e.durationMs + 'ms' : '-';
+            var backend = e.backendID || '-';
+            var statusClass = 'log-status-ok';
+            if (status !== '-' && parseInt(status) >= 400) statusClass = 'log-status-err';
+            html += '<tr>' +
+                '<td class="log-time-cell">' + escapeHtml(time) + '</td>' +
+                '<td><span class="log-method-badge log-method-' + method.toLowerCase() + '">' + escapeHtml(method) + '</span></td>' +
+                '<td class="log-path-cell" title="' + escapeHtml(path) + '">' + escapeHtml(path.length > 60 ? path.substring(0, 60) + '...' : path) + '</td>' +
+                '<td>' + escapeHtml(model) + '</td>' +
+                '<td>' + client + '</td>' +
+                '<td><span class="' + statusClass + '">' + escapeHtml(status) + '</span></td>' +
+                '<td>' + escapeHtml(duration) + '</td>' +
+                '<td>' + escapeHtml(backend) + '</td>' +
+                '</tr>';
+        });
+        html += '</tbody></table>';
+        container.innerHTML = html;
+    }
+
+    // ---- Agents Page ----
+
+    function agentsPage(agentsData) {
+        const tbody = document.getElementById('agentsTableBody');
+        if (!tbody) return;
+        if (!agentsData || !agentsData.agents || !agentsData.agents.length) {
+            tbody.innerHTML = emptyRow(9, _t('agents.no_agents'));
+            return;
+        }
+
+        Utils.setText('agentsTotal', agentsData.totalAgents || 0);
+        Utils.setText('agentsHealthy', agentsData.healthyAgents || 0);
+        Utils.setText('agentsOffline', (agentsData.totalAgents || 0) - (agentsData.healthyAgents || 0));
+
+        tbody.innerHTML = agentsData.agents.map(function(a) {
+            const status = a.status || 'unknown';
+            const statusClass = status === 'healthy' ? 'success' : (status === 'unhealthy' ? 'danger' : 'warning');
+            const uptime = a.uptime ? formatUptime(a.uptime) : '-';
+            const lastHb = a.lastHeartbeat ? new Date(a.lastHeartbeat).toLocaleString(Utils._locale()) : (a.lastAgentContact ? new Date(a.lastAgentContact).toLocaleString(Utils._locale()) : '-');
+            return '<tr>' +
+                '<td><strong>' + escapeHtml(a.id || '-') + '</strong></td>' +
+                '<td>' + escapeHtml(a.host || '-') + '</td>' +
+                '<td>' + escapeHtml(String(a.agentPort || a.port || '-')) + '</td>' +
+                '<td>' + badge(status, statusClass) + '</td>' +
+                '<td>' + escapeHtml(a.platform || '-') + '</td>' +
+                '<td>' + escapeHtml(uptime) + '</td>' +
+                '<td>' + escapeHtml(lastHb) + '</td>' +
+                '<td>' + escapeHtml(a.ollamaVersion || a.ollama_version || '-') + '</td>' +
+                '<td>' +
+                    '<button class="action-btn view" onclick="ui.showAgentDetails(\'' + escapeHtml(a.id) + '\')" title="' + _t('agents.details') + '">' + _t('agents.details') + '</button>' +
+                '</td>' +
+            '</tr>';
+        }).join('');
+    }
+
+    function formatUptime(seconds) {
+        if (!seconds || seconds <= 0) return '-';
+        const d = Math.floor(seconds / 86400);
+        const h = Math.floor((seconds % 86400) / 3600);
+        const m = Math.floor((seconds % 3600) / 60);
+        const s = seconds % 60;
+        let parts = [];
+        if (d > 0) parts.push(d + 'd');
+        if (h > 0) parts.push(h + 'h');
+        if (m > 0) parts.push(m + 'm');
+        if (s > 0 || parts.length === 0) parts.push(s + 's');
+        return parts.join(' ');
+    }
+
+    function renderAgentDetails(agentInfo) {
+        const container = document.getElementById('agentDetailsContent');
+        if (!container) return;
+        if (!agentInfo) {
+            container.innerHTML = '<div class="loading">' + _t('renderers.no_data') + '</div>';
+            return;
+        }
+
+        const gpu = agentInfo.gpu || agentInfo.metrics?.gpu || {};
+        const sys = agentInfo.system || agentInfo.metrics?.system || {};
+        const oll = agentInfo.ollama || agentInfo.metrics?.ollama || {};
+        const cap = oll.backendCapacity || {};
+        const runningModels = oll.runningModels || [];
+        const flags = oll.runtimeFlags || {};
+
+        let html = '<div class="be-detail-content">';
+
+        // Section: Basic Info
+        html += '<div class="be-detail-section"><div class="be-detail-title">' + _t('agents.settings_title') + '</div><div class="be-params-grid">';
+        html += '<div class="be-param-item"><span class="be-param-label">' + _t('agents.id') + '</span><span class="be-param-value">' + escapeHtml(agentInfo.id || '-') + '</span></div>';
+        html += '<div class="be-param-item"><span class="be-param-label">' + _t('backends.host') + '</span><span class="be-param-value">' + escapeHtml(agentInfo.host || '-') + '</span></div>';
+        html += '<div class="be-param-item"><span class="be-param-label">' + _t('backends.agent_port') + '</span><span class="be-param-value">' + escapeHtml(String(agentInfo.agentPort || agentInfo.port || '-')) + '</span></div>';
+        html += '<div class="be-param-item"><span class="be-param-label">' + _t('agents.platform') + '</span><span class="be-param-value">' + escapeHtml(agentInfo.platform || '-') + '</span></div>';
+        html += '<div class="be-param-item"><span class="be-param-label">' + _t('agents.uptime') + '</span><span class="be-param-value">' + escapeHtml(formatUptime(agentInfo.uptime)) + '</span></div>';
+        html += '<div class="be-param-item"><span class="be-param-label">' + _t('agents.last_heartbeat') + '</span><span class="be-param-value">' + (agentInfo.lastHeartbeat ? escapeHtml(new Date(agentInfo.lastHeartbeat).toLocaleString(Utils._locale())) : (agentInfo.lastAgentContact ? escapeHtml(new Date(agentInfo.lastAgentContact).toLocaleString(Utils._locale())) : '-')) + '</span></div>';
+        html += '<div class="be-param-item"><span class="be-param-label">' + _t('agents.ollama_version') + '</span><span class="be-param-value">' + escapeHtml(agentInfo.ollamaVersion || agentInfo.ollama_version || '-') + '</span></div>';
+
+        // Runtime flags
+        if (agentInfo.runtimeFlags || Object.keys(flags).length > 0) {
+            const rf = agentInfo.runtimeFlags || flags;
+            const flagKeys = Object.keys(rf).filter(k => rf[k] !== undefined && rf[k] !== null && rf[k] !== '');
+            flagKeys.forEach(function(k) {
+                html += '<div class="be-param-item"><span class="be-param-label">' + escapeHtml(k) + '</span><span class="be-param-value">' + escapeHtml(String(rf[k])) + '</span></div>';
+            });
+        }
+
+        html += '</div></div>';
+
+        // Section: GPU Metrics
+        if (gpu.usagePercent !== undefined || gpu.memoryUsed !== undefined) {
+            html += '<div class="be-detail-section"><div class="be-detail-title">' + _t('renderers.section_gpu') + '</div><div class="be-params-grid">';
+            if (gpu.usagePercent !== undefined) html += '<div class="be-param-item"><span class="be-param-label">' + _t('metrics.gpu_usage') + '</span><span class="be-param-value">' + gpu.usagePercent.toFixed(1) + '%</span></div>';
+            if (gpu.memoryUsed !== undefined && gpu.memoryTotal !== undefined) {
+                html += '<div class="be-param-item"><span class="be-param-label">' + _t('metrics.vram_usage') + '</span><span class="be-param-value">' + formatMB(gpu.memoryUsed) + ' / ' + formatMB(gpu.memoryTotal) + ' (' + percent(gpu.memoryUsed, gpu.memoryTotal).toFixed(1) + '%)</span></div>';
+            }
+            if (gpu.temperature !== undefined) html += '<div class="be-param-item"><span class="be-param-label">' + _t('metrics.gpu_temp') + '</span><span class="be-param-value">' + gpu.temperature + '°C</span></div>';
+            html += '</div></div>';
+        }
+
+        // Section: System Metrics
+        if (sys.cpuUsagePercent !== undefined || sys.memoryUsed !== undefined) {
+            html += '<div class="be-detail-section"><div class="be-detail-title">' + _t('renderers.section_system') + '</div><div class="be-params-grid">';
+            if (sys.cpuUsagePercent !== undefined) html += '<div class="be-param-item"><span class="be-param-label">' + _t('metrics.cpu_usage') + '</span><span class="be-param-value">' + sys.cpuUsagePercent.toFixed(1) + '%</span></div>';
+            if (sys.memoryUsed !== undefined && sys.memoryTotal !== undefined) {
+                html += '<div class="be-param-item"><span class="be-param-label">' + _t('metrics.ram_usage') + '</span><span class="be-param-value">' + formatMB(sys.memoryUsed) + ' / ' + formatMB(sys.memoryTotal) + ' (' + percent(sys.memoryUsed, sys.memoryTotal).toFixed(1) + '%)</span></div>';
+            }
+            if (sys.cpuTemperature !== undefined) html += '<div class="be-param-item"><span class="be-param-label">' + _t('metrics.cpu_temp') + '</span><span class="be-param-value">' + sys.cpuTemperature + '°C</span></div>';
+            html += '</div></div>';
+        }
+
+        // Section: Capacity
+        if (cap.freeVram !== undefined) {
+            html += '<div class="be-detail-section"><div class="be-detail-title">' + _t('renderers.section_backend_capacity') + '</div><div class="be-params-grid">';
+            if (cap.freeVram !== undefined) html += '<div class="be-param-item"><span class="be-param-label">' + _t('renderers.free_vram') + '</span><span class="be-param-value">' + formatMB(cap.freeVram) + '</span></div>';
+            if (cap.loadedModelVram !== undefined) html += '<div class="be-param-item"><span class="be-param-label">' + _t('renderers.models_vram') + '</span><span class="be-param-value">' + formatMB(cap.loadedModelVram) + '</span></div>';
+            html += '</div></div>';
+        }
+
+        // Section: Disk / Network
+        if (sys.diskTotal !== undefined || sys.diskUsed !== undefined || sys.diskFree !== undefined || sys.networkRX !== undefined || sys.networkTX !== undefined) {
+            html += '<div class="be-detail-section"><div class="be-detail-title">' + _t('renderers.section_disk_network') + '</div><div class="be-params-grid">';
+            if (sys.diskTotal !== undefined || sys.diskUsed !== undefined || sys.diskFree !== undefined) {
+                if (sys.diskTotal !== undefined) html += '<div class="be-param-item"><span class="be-param-label">' + _t('renderers.disk_total') + '</span><span class="be-param-value">' + formatMB(sys.diskTotal) + '</span></div>';
+                if (sys.diskUsed !== undefined) html += '<div class="be-param-item"><span class="be-param-label">' + _t('renderers.disk_used') + '</span><span class="be-param-value">' + formatMB(sys.diskUsed) + '</span></div>';
+                if (sys.diskFree !== undefined) html += '<div class="be-param-item"><span class="be-param-label">' + _t('renderers.disk_free') + '</span><span class="be-param-value">' + formatMB(sys.diskFree) + '</span></div>';
+            }
+            if (sys.networkRX !== undefined) html += '<div class="be-param-item"><span class="be-param-label">' + _t('renderers.network_rx') + '</span><span class="be-param-value">' + formatMB(sys.networkRX) + '</span></div>';
+            if (sys.networkTX !== undefined) html += '<div class="be-param-item"><span class="be-param-label">' + _t('renderers.network_tx') + '</span><span class="be-param-value">' + formatMB(sys.networkTX) + '</span></div>';
+            html += '</div></div>';
+        }
+
+        // Section: Running Models
+        if (runningModels.length > 0) {
+            html += '<div class="be-detail-section"><div class="be-detail-title">' + _t('renderers.section_loaded_models') + '</div><div class="be-params-grid">';
+            runningModels.forEach(function(m) {
+                const sizeGB = (m.size || 0) / 1024 / 1024 / 1024;
+                const ramGB = (m.ramUsage || 0) / 1024 / 1024 / 1024;
+                var digestShort = (m.digest || m.Digest || '').substring(0, 12);
+                var expDate = m.expiresAt || m.ExpiresAt || '';
+                html += '<div class="be-param-item" style="grid-column: 1/-1;">' +
+                    '<span class="be-param-label">' + escapeHtml(m.name) + '</span>' +
+                    '<span class="be-param-value">' + sizeGB.toFixed(1) + ' GB | ' + escapeHtml(m.family || '-') + ' | ' + escapeHtml(m.parameterSize || '-') + ' | ' + escapeHtml(m.quantization || '-') +
+                    (digestShort ? ' <code title="' + _t('renderers.digest') + ': ' + escapeHtml(digestShort) + '">' + escapeHtml(digestShort) + '</code>' : '') +
+                    (expDate ? ' <span title="' + _t('renderers.expires') + ': ' + escapeHtml(expDate) + '" style="font-size:10px;color:var(--warning)">⌛' + escapeHtml(expDate.substring(0, 10)) + '</span>' : '') +
+                    (ramGB > 0.5 ? ' <span style="font-size:10px;color:var(--text-secondary)">RAM: ' + ramGB.toFixed(2) + ' GB</span>' : '') +
+                    '</span>' +
+                '</div>';
+            });
+            html += '</div></div>';
+        }
+
+
+        html += '</div>';
+        container.innerHTML = html;
     }
 
     // ---- Public API ----
@@ -959,6 +1282,10 @@ const Renderers = (function () {
         sessionsPage,
         queuePage,
         logs,
-        predictionAlerts
+        predictionAlerts,
+        proxyLogs,
+        copyProxyLogs,
+        agentsPage,
+        renderAgentDetails
     };
 })();

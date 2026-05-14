@@ -8,8 +8,11 @@ Welcome to the documentation for **OllamaLegion** — a high-performance load ba
 |----------|-------------|
 | [Installation](installation.md) | Step-by-step installation guide |
 | [Configuration](configuration.md) | All configuration parameters for balancer and agents |
+| [Deployment](deployment.md) | Docker Compose and production deployment |
+| [Agent Deployment](agent-deployment.md) | Agent deployment in CPU/GPU modes |
 | [Balancing Modes](balancing-guide.md) | Description of balancing strategies: round-robin, resource-aware, model-affinity, session-stickiness |
 | [API Reference](api.md) | Full REST API description for the balancer |
+| [Metrics Reference](ollamalegion-metrics.md) | Complete metrics guide and algorithms |
 | [Troubleshooting](troubleshooting.md) | Common issues and solutions |
 | [Main Docs (RU)](../) | Root documentation (Russian) |
 

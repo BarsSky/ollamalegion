@@ -211,7 +211,10 @@ func (apm *AutoPullManager) executePull(state *PullState) {
 
 	backend := apm.getBackend(state.BackendID)
 	if backend == nil {
-		state.Error = fmt.Errorf("backend %s not found", state.BackendID)
+		err := fmt.Errorf("backend %s not found", state.BackendID)
+		state.Error = err
+		logger.Get().Errorw("auto-pull: backend not found",
+			"model", state.Model, "backend", state.BackendID, "error", err)
 		return
 	}
 
@@ -222,30 +225,45 @@ func (apm *AutoPullManager) executePull(state *PullState) {
 	// Используем stream:false чтобы получить полный ответ по завершении
 	body := fmt.Sprintf(`{"name":"%s","stream":false}`, state.Model)
 	logger.Get().Infow("auto-pull: starting model download",
-		"model", state.Model, "backend", state.BackendID, "url", url, "size_hint", "unknown")
+		"model", state.Model, "backend", state.BackendID, "url", url)
 
 	req, err := http.NewRequest("POST", url, strings.NewReader(body))
 	if err != nil {
-		state.Error = fmt.Errorf("failed to create pull request: %w", err)
+		err = fmt.Errorf("failed to create pull request: %w", err)
+		state.Error = err
+		logger.Get().Errorw("auto-pull: request creation failed",
+			"model", state.Model, "backend", state.BackendID, "error", err)
 		return
 	}
 	req.Header.Set("Content-Type", "application/json")
 
+	logger.Get().Debugw("auto-pull: sending pull request",
+		"model", state.Model, "backend", state.BackendID,
+		"url", url, "timeout", apm.httpClient.Timeout)
+
 	resp, err := apm.httpClient.Do(req)
 	if err != nil {
-		state.Error = fmt.Errorf("pull request failed: %w", err)
+		err = fmt.Errorf("pull request failed: %w", err)
+		state.Error = err
 		logger.Get().Errorw("auto-pull: HTTP request failed",
-			"model", state.Model, "backend", state.BackendID, "error", err)
+			"model", state.Model, "backend", state.BackendID, "error", err,
+			"elapsed_sec", int(time.Since(state.StartedAt).Seconds()))
 		return
 	}
 	defer resp.Body.Close()
 
 	state.HTTPStatus = resp.StatusCode
+	logger.Get().Debugw("auto-pull: backend responded",
+		"model", state.Model, "backend", state.BackendID,
+		"status", resp.StatusCode, "elapsed_sec", int(time.Since(state.StartedAt).Seconds()))
 
 	// Читаем полный ответ (stream:false)
 	respBody, err := io.ReadAll(resp.Body)
 	if err != nil {
-		state.Error = fmt.Errorf("failed to read pull response: %w", err)
+		err = fmt.Errorf("failed to read pull response: %w", err)
+		state.Error = err
+		logger.Get().Errorw("auto-pull: failed to read response",
+			"model", state.Model, "backend", state.BackendID, "error", err)
 		return
 	}
 

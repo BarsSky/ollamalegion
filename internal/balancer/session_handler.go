@@ -10,7 +10,7 @@ import (
 // resolveSessionBackend — определяет целевой бэкенд с учётом session stickiness и rebalance.
 // Если сессия не привязана или stickiness отключён — возвращает пустую строку (выбор через selectBackend).
 func (p *Proxy) resolveSessionBackend(r *http.Request, model, sessionID, clientName string) string {
-	if sessionID == "" || !p.config.Balancing.SessionStickiness || isEmbeddingsRequest(r.URL.Path) {
+	if sessionID == "" || !p.config.Balancing.SessionStickiness {
 		return ""
 	}
 
@@ -69,10 +69,11 @@ func (p *Proxy) rebalanceIfNeeded(model, targetBackend, sessionID, clientName st
 			return altBackend
 		}
 
-		// Затем ищем любой менее загруженный
+		// Затем ищем любой менее загруженный (даже без модели — Ollama загрузит при первом запросе).
+		// Это холодный старт, но лучше чем 503 на перегруженном бэкенде.
 		altBackend = p.findLessLoadedBackendAny(model, targetBackend)
 		if altBackend != "" {
-			logger.Get().Infow("rebalancing session to less loaded backend (any)",
+			logger.Get().Infow("rebalancing session to less loaded backend (any, may cold-start)",
 				"session", sessionID, "from", targetBackend, "to", altBackend,
 				"load_ratio", loadRatio, "force", forceRebalance)
 			return altBackend

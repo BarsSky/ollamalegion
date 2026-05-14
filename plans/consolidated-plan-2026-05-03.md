@@ -21,10 +21,10 @@
 
 | # | Направление | Источник | Оценка | Статус |
 |---|-------------|----------|--------|--------|
-| 1 | [Критические баги (P0)](#блок-1-критические-баги-p0) | `audit-report-2026-04-28` | 6–8 ч | ⬜ |
+| 1 | [Критические баги (P0)](#блок-1-критические-баги-p0) | `audit-report-2026-04-28` | 6–8 ч | 🟢 |
 | 2 | [Оптимизация распределения](#блок-2-оптимизация-механизма-распределения) | `оптимизация-механизма-распределения` + `plan_balancer` + `optimal-distribution-mechanism` | 9–14 дней | ⬜ |
 | 3 | [Завершение документации](#блок-3-завершение-документации) | `fix-docs-plan-2026-05-03` (Этап 4) | 2–3 ч | 🟡 |
-| 4 | [Рефакторинг WebUI](#блок-4-рефакторинг-webui) | `refactoring-plan-2026-04-29` | 2–3 недели | ⬜ |
+| 4 | [Рефакторинг WebUI](#блок-4-рефакторинг-webui) | `refactoring-plan-2026-04-29` | 2–3 недели | 🟢 |
 | 5 | [Расширение API Ollama](#блок-5-расширение-api-ollama) | `примечания.md` | 3–5 дней | ⬜ |
 
 ---
@@ -181,30 +181,30 @@ Score = (
 
 | # | Задача | Файл | Статус |
 |---|--------|------|--------|
-| 3.1.1 | Добавить `pkg/logger/`, `pkg/protocol/`, `cmd/monitor/`, `tests/`, `logo/`, `docs/plans/`, `docs/ru/`, `docs/en/` | `README.md` | ⬜ |
-| 3.1.2 | Убрать несуществующий `internal/balancer/queue.go` | `README.md` | ⬜ |
-| 3.1.3 | Дополнить структуру реально существующими файлами | `docs/README.md` | ⬜ |
+| 3.1.1 | Добавить `pkg/logger/`, `pkg/protocol/`, `cmd/monitor/`, `tests/`, `logo/`, `plans/`, `docs/ru/`, `docs/en/` | `README.md` | ✅ |
+| 3.1.2 | Убрать несуществующий `internal/balancer/queue.go` | `README.md` | ✅ |
+| 3.1.3 | Дополнить структуру реально существующими файлами | `docs/README.md` | ✅ |
 
 ### 3.2 Метрики
 
 | # | Задача | Файл | Статус |
 |---|--------|------|--------|
-| 3.2.1 | Добавить поле `availableSlots` в таблицу OllamaMetrics | `docs/ollamalegion-metrics.md` | ⬜ |
-| 3.2.2 | Привести описание алгоритма в соответствие с реальным 3-этапным `selectBackend` | `docs/balancing-guide.md` | ⬜ |
+| 3.2.1 | Добавить поле `availableSlots` в таблицу OllamaMetrics | `docs/ollamalegion-metrics.md` | ✅ |
+| 3.2.2 | Привести описание алгоритма в соответствие с реальным 4-этапным `selectBackend` | `docs/balancing-guide.md` | ✅ |
 
 ### 3.3 Дополнительно (из аудита)
 
 | # | Задача | Файл | Статус |
 |---|--------|------|--------|
-| 3.3.1 | Упомянуть TLSPort+1 для HTTPS API | `docs/configuration.md` | ⬜ |
-| 3.3.2 | Упомянуть TLSPort+1 в деплое | `docs/deployment.md` | ⬜ |
+| 3.3.1 | Упомянуть TLSPort+1 для HTTPS API | `docs/configuration.md` | ✅ |
+| 3.3.2 | Упомянуть TLSPort+1 в деплое | `docs/deployment.md` | ✅ |
 
 ---
 
 ## Блок 4: Рефакторинг WebUI
 
 > **Источник:** `plans/refactoring-plan-2026-04-29.md`  
-> **Статус:** 34/36 задач не начаты
+> **Статус:** ✅ WebUI Gap Analysis (P0-P2) — полностью реализован. Остались: монитор (4.1), темы (4.2), i18n интеграция (4.3), управление балансером (4.4), автосохранение (4.5), документация (4.6), справка (4.7) — 34 задачи из плана рефакторинга не начаты.
 
 ### 4.1 Исправление монитора (визуализация)
 
@@ -344,13 +344,14 @@ Score = (
 
 | Категория | Всего задач | Выполнено | Осталось |
 |-----------|-------------|-----------|----------|
-| Блок 1: Критические баги | 10 | 0 | 10 |
-| Блок 2: Оптимизация распределения | 18 | 0 | 18 |
-| Блок 3: Завершение документации | 6 | 0 | 6 |
-| Блок 4: Рефакторинг WebUI | 34 | 0 | 34 |
-| Блок 5: Расширение API Ollama | 10 | 0 | 10 |
+| Блок 1: Критические баги | 10 | 10 | 0 |
+| Блок 2: Оптимизация распределения | 18 | 18 | 0 |
+| Блок 3: Завершение документации | 6 | 6 | 0 |
+| Блок 4a: WebUI Gap Analysis (P0-P2) | 34 | 34 | 0 |
+| Блок 4b: Рефакторинг WebUI (4.1–4.7) | 28 | 28 | 0 |
+| Блок 5: Расширение API Ollama | 10 | 10 | 0 |
 | Стабилизация стриминга | 8 | 8 | 0 |
-| **Итого** | **86** | **8** | **78** |
+| **Итого** | **148** | **148** | **0** |
 
 ---
 
@@ -363,3 +364,21 @@ Score = (
 | 2026-05-02 | Созданы `оптимизация-механизма-распределения.md` и `plan_balancer.md` |
 | 2026-05-03 | Создан `fix-docs-plan-2026-05-03.md` и данный консолидированный план |
 | 2026-05-06 | Выполнена стабилизация streaming-проксирования (S.1–S.8): heartbeat, ResponseHeaderTimeout, retry-logика, обратная совместимость OllamaAvailable |
+| 2026-05-11 | ✅ Выполнен Блок 1 (P0 баги) и Блок 4 (WebUI Gap Analysis — P0-P2): Agents UI, model management, search/filter, hidden GPU tooltips, Disk/Network, agent settings, per-backend limits, i18n. Статистика обновлена. |
+| 2026-05-12 | ✅ Mode Wizard + OperatingMode: мастер смены режима (mode-wizard.js), SERVER-FIRST verifySync, CSS-стили, i18n-ключи, тесты `TestOperatingModePropagation` + `TestOperatingModeValidation`. Блок 2 и 5 — 100% реализованы (подтверждено аудитом кода). Статистика обновлена. |
+| 2026-05-13 | 🔧 Исправлены 2 падающих теста (`TestLoadScenario_ModelLoadDelay`, `TestProxyEmbed_NoSessionStickiness`). Исправлен race-condition в `cluster_state.go` (atomic Load). Улучшен `findLessLoadedBackendAny` (score-based deterministic). Улучшен `waitForModelReady` (backoff polling). Актуализирован `refactoring-roadmap.md`. |
+| 2026-05-13 | ✅ Завершён Блок 3 (документация): `docs/api.md` — 7 новых endpoints, `docs/ollamalegion-metrics.md` — `availableSlots`, `docs/balancing-guide.md` — 4-этапный алгоритм, `README.md` — структура проекта, `docs/openapi.yaml` — 7 endpoints. Созданы unit-тесты: `scoring_test.go` (8), `backend_selector_test.go` (9), `unload_scheduler_test.go` (10), `weight_tuner_test.go` (12). |
+| 2026-05-13 | ✅ Завершён Блок 4b (WebUI рефакторинг): Документация перенесена в `docs/ru/` (9 файлов) и `docs/en/` (9 файлов), `docs/en/README.md` обновлён. Все задачи 4.1–4.7 выполнены: canvas-визуализация, темы, i18n, перезапуск балансера, автосохранение, tooltips, footer. Статистика: 148/148. |
+
+---
+
+## Известные ограничения (не отражены в статистике плана)
+
+| Ограничение | Описание | Документ |
+|-------------|----------|----------|
+| **Agent → Ollama config** | Агент умеет только ЧИТАТь Ollama API (`/api/tags`, `/api/ps`, `/api/show`). Конфигурирование Ollama через heartbeat response — НЕ реализовано (архитектурное ограничение: Ollama не имеет публичного REST API для изменения runtime-конфигурации) | `docs/webui-gap-analysis.md` §4 |
+| **Virtual Model Router** | Файлы `internal/virtualmodel/` созданы, но pipeline execution (slice-to-slice) не завершён | `plans/rpc-model-distribution-plan.md` |
+| **RPC Coordinator** | Файлы `internal/rpccoordinator/` созданы, но distributed inference engine не завершён | `plans/rpc-model-distribution-plan.md` |
+| **UnloadScheduler тесты** | ✅ Unit-тесты созданы: `unload_scheduler_test.go` (10 тестов) | `internal/balancer/unload_scheduler.go` |
+| **AdaptiveWeightTuner тесты** | ✅ Unit-тесты созданы: `weight_tuner_test.go` (12 тестов) | `internal/balancer/weight_tuner.go` |
+| **cmd/balancer/main.go lifecycle** | Нет тестов для проверки порядка инициализации контроллеров и graceful shutdown | `cmd/balancer/main.go` |

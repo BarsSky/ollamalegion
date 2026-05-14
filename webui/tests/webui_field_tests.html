@@ -850,7 +850,35 @@ function runTests() {
     // Restore default
     modeRadios[0].checked = true;
 
-    // 5. Each mode section has correct fields
+    // 5. Mode sync from server: simulate server mode change and verify UI updates
+    details.push('<div class="tse">🔄 Operating Mode — Синхронизация с сервером</div>');
+    // Simulate app.js behavior: SettingsUI.syncModeFromServer or direct radio update
+    function simulateServerModeSync(targetMode) {
+        // This mimics what app.js does when receiving config from server
+        var radio = document.querySelector('input[name="operatingMode"][value="' + targetMode + '"]');
+        if (radio) {
+            radio.checked = true;
+            // Trigger change event to update mode fields
+            var event = new Event('change', { bubbles: true });
+            radio.dispatchEvent(event);
+        }
+    }
+    // Test sync for each mode
+    for (let i = 0; i < modeNames.length; i++) {
+        const targetMode = modeNames[i];
+        simulateServerModeSync(targetMode);
+        const activeRadio = document.querySelector('.mode-card input[type="radio"]:checked');
+        const activeFields = document.querySelector('.mode-fields.active');
+        if (activeRadio && activeRadio.value === targetMode && activeFields && activeFields.id === 'modeFields-' + targetMode) {
+            passCount++; details.push('<div class="tr2 tp">✅ Server sync: UI updated to "' + targetMode + '" correctly</div>');
+        } else {
+            failCount++; details.push('<div class="tr2 tf">❌ Server sync FAILED for "' + targetMode + '": radio=' + (activeRadio ? activeRadio.value : 'none') + ', fields=' + (activeFields ? activeFields.id : 'none') + '</div>');
+        }
+    }
+    // Restore default
+    simulateServerModeSync('standard');
+
+    // 6. Each mode section has correct fields
     details.push('<div class="tr" style="color:var(--muted);font-size:.8rem;padding-left:1rem;">— Standard: no extra fields</div>');
     const stdField = document.getElementById('modeFields-standard');
     if (stdField) { passCount++; details.push('<div class="tr2 tp">✅ #modeFields-standard exists</div>'); }

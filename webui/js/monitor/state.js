@@ -73,9 +73,62 @@
   };
 
   // Canvas state
-  MonitorApp.topo = { backends: [], sessions: [], queue: {}, w: 0, h: 0 };
+  MonitorApp.topo = { backends: [], sessions: [], queue: {}, w: 0, h: 0, recentClients: [], warmingUpModels: [] };
   MonitorApp.particles = [];
   MonitorApp.convQueue = [];
+
+  // Viewport transform for pan & zoom
+  MonitorApp.viewport = {
+    offsetX: 0,
+    offsetY: 0,
+    scale: 1,
+    minScale: 0.1,
+    maxScale: 3.0
+  };
+  MonitorApp.toWorld = function(screenX, screenY) {
+    return {
+      x: (screenX - MonitorApp.viewport.offsetX) / MonitorApp.viewport.scale,
+      y: (screenY - MonitorApp.viewport.offsetY) / MonitorApp.viewport.scale
+    };
+  };
+  MonitorApp.toScreen = function(worldX, worldY) {
+    return {
+      x: worldX * MonitorApp.viewport.scale + MonitorApp.viewport.offsetX,
+      y: worldY * MonitorApp.viewport.scale + MonitorApp.viewport.offsetY
+    };
+  };
+  MonitorApp.resetViewport = function() {
+    MonitorApp.viewport.offsetX = 0;
+    MonitorApp.viewport.offsetY = 0;
+    MonitorApp.viewport.scale = 1;
+  };
+
+  // Common geometry constants shared between topology and conveyor
+  MonitorApp.GEOM = {
+    bw: 180,          // balancer width
+    bh: 100,          // balancer height
+    clientX: 140,     // client connector x
+    backendMargin: 140, // backend right margin
+    minSpacing: 30,   // min vertical spacing between nodes
+    marginY: 80       // top/bottom margin for node placement
+  };
+  MonitorApp.GEOM.backendX = function(w) { return w - MonitorApp.GEOM.backendMargin; };
+  MonitorApp.GEOM.balInX = function(w) { return w / 2 - MonitorApp.GEOM.bw / 2; };
+  MonitorApp.GEOM.balOutX = function(w) { return w / 2 + MonitorApp.GEOM.bw / 2; };
+  MonitorApp.GEOM.balCenterX = function(w) { return w / 2; };
+  MonitorApp.GEOM.balCenterY = function(h) { return h / 2; };
+
+  // Vertical node placement (sessions on left, backends on right)
+  MonitorApp.nY = function(type, i) {
+    var cnt = type === 'session'
+      ? Math.max(1, MonitorApp.topo.sessions.length)
+      : Math.max(1, MonitorApp.topo.backends.length);
+    var av = MonitorApp.topo.h - MonitorApp.GEOM.marginY * 2;
+    var st = Math.max(MonitorApp.GEOM.minSpacing, av / Math.max(1, cnt - 1));
+    var totalHeight = (cnt - 1) * st;
+    var offset = Math.max(0, (av - totalHeight) / 2);
+    return MonitorApp.GEOM.marginY + offset + i * st;
+  };
 
   // Common utilities
   MonitorApp.esc = function(s) {

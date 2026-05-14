@@ -114,7 +114,8 @@
 | `port` | int | `18080` | Порт для проксирования Ollama API |
 | `apiPort` | int | `18081` | Порт Management API |
 | `tlsHost` | string | `""` | Хост для HTTPS (опционально) |
-| `tlsPort` | int | `8443` | Порт для HTTPS запросов |
+| `tlsPort` | int | `8443` | Порт для HTTPS прокси |
+| `tlsApiPort` | int | `tlsPort+1` | Порт для HTTPS Management API (вычисляется как `tlsPort + 1`) |
 
 #### Backend settings
 

@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "updated": "2026-05-07T12:56:29.3945109Z",
+  "updated": "2026-05-14T14:16:46.7360946Z",
   "backends": [
     {
       "id": "test-agent-1",
@@ -18,6 +18,7 @@
       "activeRequests": 0,
       "hasAgent": true,
       "lastAgentContact": "0001-01-01T00:00:00Z",
+      "gpuMode": "",
       "runtimeMaxModels": 4,
       "runtimeMaxConcurrentRequests": 6
     }

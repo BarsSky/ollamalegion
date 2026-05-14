@@ -259,6 +259,97 @@ func TestProxySelectBackend(t *testing.T) {
 	assert.NotEmpty(t, backend)
 }
 
+// TestSelectBackend_WithReplicationGroup - проверка выбора бэкенда через replication selector
+func TestSelectBackend_WithReplicationGroup(t *testing.T) {
+	t.Parallel()
+
+	config := createTestConfig()
+	// Включаем model replication в конфиге
+	config.Balancing.ModelReplication.Enabled = true
+	config.Balancing.ModelReplication.Groups = []types.ModelGroupConfig{
+		{
+			ModelName:    "llama3",
+			MinInstances: 1,
+			MaxInstances: 2,
+			TargetBackends: []string{"backend-1", "backend-2"},
+		},
+	}
+
+	proxy := NewProxy(config)
+	proxy.SetQueueManagerProxy()
+	defer proxy.queueMgr.Stop()
+
+	// Убеждаемся, что replicationSelector создан и callback'и настроены
+	assert.NotNil(t, proxy.replicationSelector)
+	assert.NotNil(t, proxy.modelReplication)
+
+	// Создаём группу репликации вручную (initRpcModules уже создал из конфига)
+	// Проверяем что группа создана
+	group := proxy.modelReplication.GetGroup("llama3")
+	assert.NotNil(t, group)
+	assert.Equal(t, "llama3", group.ModelName)
+
+	// Устанавливаем метрики: backend-1 загружен, backend-2 свободен
+	proxy.UpdateMetrics("backend-1", &types.BackendMetrics{
+		ID: "backend-1",
+		Ollama: types.OllamaMetrics{
+			RunningModels: []types.RunningModel{{Name: "llama3"}},
+		},
+		GPU: types.GPUMetrics{
+			UsagePercent: 10,
+			MemoryTotal:  16384,
+			MemoryFree:   14000,
+		},
+		System: types.SystemMetrics{
+			CPUUsagePercent: 20,
+			MemoryTotal:     32768,
+			MemoryFree:      28000,
+			DiskFree:        5000,
+		},
+	})
+
+	proxy.UpdateMetrics("backend-2", &types.BackendMetrics{
+		ID: "backend-2",
+		Ollama: types.OllamaMetrics{
+			RunningModels: []types.RunningModel{{Name: "llama3"}},
+		},
+		GPU: types.GPUMetrics{
+			UsagePercent: 5,
+			MemoryTotal:  16384,
+			MemoryFree:   15000,
+		},
+		System: types.SystemMetrics{
+			CPUUsagePercent: 10,
+			MemoryTotal:     32768,
+			MemoryFree:      30000,
+			DiskFree:        5000,
+		},
+	})
+
+	// Проверяем что модель распознаётся как групповая
+	assert.True(t, proxy.replicationSelector.IsGroupModel("llama3"))
+	assert.False(t, proxy.replicationSelector.IsGroupModel("nonexistent"))
+
+	// Добавляем инстансы вручную для проверки selectInstance
+	proxy.modelReplication.CreateGroup(types.ModelGroupConfig{
+		ModelName:    "llama3-test",
+		MinInstances: 1,
+		MaxInstances: 2,
+		TargetBackends: []string{"backend-1", "backend-2"},
+	})
+	// Удаляем старую группу и создаём новую с корректными instances
+	// (в реальности instances добавляются через warmup callback)
+	// Проверяем что GetGroupCandidates возвращает пустой список без instances
+	candidates := proxy.replicationSelector.GetGroupCandidates("llama3")
+	assert.Empty(t, candidates, "Без loaded instances кандидаты пустые")
+
+	// Проверяем GetGroupStats
+	stats := proxy.replicationSelector.GetGroupStats("llama3")
+	assert.NotNil(t, stats)
+	assert.Equal(t, "llama3", stats["modelName"])
+	assert.Equal(t, 0, stats["loaded"])
+}
+
 // TestProxyGetClusterState - проверка получения состояния кластера
 func TestProxyGetClusterState(t *testing.T) {
 	t.Parallel()

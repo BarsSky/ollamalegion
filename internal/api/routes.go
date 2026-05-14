@@ -19,6 +19,9 @@ func (s *Server) setupRoutes() {
 	// Models capacity (global)
 	s.mux.Handle("/api/v1/models/capacity", AuthMiddleware(RateLimitMiddleware(s.modelsCapacityHandler, s.rateLimiter), s.authenticator))
 
+	// Model operations status endpoint
+	s.mux.Handle("/api/v1/models/operations", AuthMiddleware(RateLimitMiddleware(s.modelOpsStatusHandler, s.rateLimiter), s.authenticator))
+
 	// Metrics (с аутентификацией и rate limiting)
 	s.mux.Handle("/api/v1/metrics", AuthMiddleware(RateLimitMiddleware(s.metricsHandler, s.rateLimiter), s.authenticator))
 	s.mux.Handle("/api/v1/metrics/", AuthMiddleware(RateLimitMiddleware(s.metricHandler, s.rateLimiter), s.authenticator))
@@ -74,6 +77,13 @@ func (s *Server) setupRoutes() {
 	// Virtual Model endpoints (Variant C) — с аутентификацией и rate limiting
 	s.mux.Handle("/api/v1/virtualmodels", AuthMiddleware(RateLimitMiddleware(s.virtualModelsListHandler, s.rateLimiter), s.authenticator))
 	s.mux.Handle("/api/v1/virtualmodels/", AuthMiddleware(RateLimitMiddleware(s.virtualModelsStatusHandler, s.rateLimiter), s.authenticator))
+
+	// Proxy Logs endpoint (с аутентификацией и rate limiting)
+	s.mux.Handle("/api/v1/proxy/logs", AuthMiddleware(RateLimitMiddleware(s.proxyLogsHandler, s.rateLimiter), s.authenticator))
+
+	// Candidate Backends endpoint (с аутентификацией и rate limiting)
+	// Возвращает группы бэкендов-кандидатов по приоритетам для всех моделей
+	s.mux.Handle("/api/v1/candidates", AuthMiddleware(RateLimitMiddleware(s.candidatesHandler, s.rateLimiter), s.authenticator))
 
 	// Favicon и статические ресурсы (без аутентификации, для браузеров)
 	s.mux.HandleFunc("/favicon.ico", s.staticFileHandler)

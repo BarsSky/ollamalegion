@@ -32,9 +32,27 @@
 - **Фаза 3:** ~650 строк (после выноса backend_selector, slot_manager, proxy_request)
 - **Фаза 4:** ~280 строк (после выноса cluster_state, agent_manager)
 - **Фаза 5:** ~195 строк (после выноса router, session_handler, slot_handler, backend_state)
-- **Реальная логика:** ~120 строк кода
+- **Фактически (2026-05-13):** ~720 строк (после добавления RPC модулей, initRpcModules, background controllers)
 
-> Примечание: 195 строк включают struct, NewProxy, ServeHTTP-оркестратор, extractModel, UpdateMetrics, queueRequest.
+> Примечание: proxy.go содержит struct, NewProxy, ServeHTTP-оркестратор, extractModel, UpdateMetrics, queueRequest, initRpcModules, RPC Model Distribution модули.
+
+### Размер collector.go (agent)
+
+- **Было:** ~1264 строк (до 2026-05-13)
+- **Фактически (2026-05-13):** ~280 строк (ядро агента)
+- Вынесено в: `collector_network.go`, `collector_register.go`, `collector_gpu.go`, `collector_health.go`, `collector_ollama.go`, `collector_system.go`
+
+### Размер ollama_router.go (balancer)
+
+- **Было:** ~608 строк (до 2026-05-13)
+- **Фактически (2026-05-13):** ~224 строк (ядро маршрутизатора)
+- Вынесено в: `ollama_router_tags.go` (агрегация tags/ps/version), `ollama_router_admin.go` (CRUD: show/create/pull/delete/copy/push)
+
+### Размер тестовых файлов
+
+- **proxy_ollama_test.go:** 1375 → ~680 строк (мок вынесен в `proxy_mock_test.go`)
+- **proxy_reliability_test.go:** 1186 строк — уже использует общий мок
+- **load_scenarios_test.go:** 1299 строк — использует ExpandedMockServer
 
 ---
 
@@ -262,6 +280,7 @@
 | 2026-05-06 | Фаза 3: выделены `backend_selector.go`, `slot_manager.go`, `proxy_request.go`, `backend_registry.go`, `proxy_test_helpers.go`. proxy.go сокращён с 1994 до ~650 строк |
 | 2026-05-07 | Фаза 4: созданы `cluster_state.go` (~350 строк) и `agent_manager.go` (~55 строк). Удалены дубли из proxy.go. proxy.go сокращён с ~650 до ~280 строк. Все тесты проходят |
 | 2026-05-07 | **Фаза 5**: выделены `backend_state.go`, `router.go`, `session_handler.go`, `slot_handler.go`. proxy.go сокращён с ~280 до ~195 строк. ServeHTTP — тонкий оркестратор. `go build ./...` и `go test ./...` — все PASS |
+| 2026-05-13 | **Фаза 6**: разбит `collector.go` (1264→280 строк) на 6 модулей. Разбит `ollama_router.go` (608→224 строк) на 3 модуля. Разбит `proxy_ollama_test.go` (1375→680 строк) — мок вынесен в `proxy_mock_test.go`. Созданы тесты для `UnloadScheduler` (6) и `AdaptiveWeightTuner` (12). Исправлены баги: race condition в `cluster_state.go`, паника при двойном close канала в `unload_scheduler.go`/`weight_tuner.go`. Все тесты проходят |
 
 ---
 
@@ -269,7 +288,8 @@
 
 | Файл | Размер | Содержимое |
 |------|--------|------------|
-| `proxy.go` | ~195 строк | Struct, NewProxy, ServeHTTP-оркестратор, extractModel, UpdateMetrics, queueRequest |
+| `proxy.go` | ~720 строк | Struct, NewProxy, ServeHTTP-оркестратор, extractModel, UpdateMetrics, queueRequest, initRpcModules, RPC модули |
+| `queue_dispatch.go` | ~234 строк | Dispatch с 4 приоритетами + waitForModelReady + canAcceptRequest |
 | `backend_state.go` | ~25 строк | BackendState struct, contextKey константы |
 | `router.go` | ~50 строк | HTTP routing (health, Ollama API) |
 | `session_handler.go` | ~100 строк | Session stickiness + rebalance logic |
@@ -281,6 +301,25 @@
 | `cluster_state.go` | ~350 строк | Cluster state + обёртки |
 | `agent_manager.go` | ~55 строк | Agent timeout checker |
 | `proxy_test_helpers.go` | ~90 строк | Test helpers |
+| `ollama_router_tags.go` | ~280 строк | Агрегация /api/tags, /api/ps, /api/version |
+| `ollama_router_admin.go` | ~180 строк | Targeted routing: show, create, pull, delete, copy, push |
+
+### Итоговая структура internal/agent/
+
+| Файл | Размер | Содержимое |
+|------|--------|------------|
+| `collector.go` | ~280 строк | Ядро агента: NewAgent, Start, Stop, collectLoop, sendHeartbeat |
+| `collector_network.go` | ~60 строк | getPublicHost, getOutboundIP, extractOllamaPort, getOllamaBaseURL |
+| `collector_register.go` | ~90 строк | register, healthCheckOllama |
+| `collector_gpu.go` | ~50 строк | collectGPUInfo, collectGPUMetrics |
+| `collector_health.go` | ~80 строк | startHealthServer, appendLog |
+| `collector_ollama.go` | ~340 строк | collectOllamaMetrics, fetchOllamaTags, getRunningModels, getOllamaVersion, getOllamaStats |
+| `collector_system.go` | ~30 строк | collectSystemMetrics (делегат к platform-specific) |
+| `gpu_common.go` | ~112 строк | executeNvidiaSmi, parseNvidiaSmiOutput |
+| `ollama_config.go` | ~117 строк | applyOllamaConfig, restartOllamaServer |
+| `ollama_context.go` | ~568 строк | collectOllamaRuntimeFlags, getModelContext, calculateContextMemory, calculateBackendCapacity |
+| `system.go` | ~395 строк | Platform-specific system metrics (Linux/Darwin) |
+| `system_windows.go` | ~155 строк | Platform-specific system metrics (Windows) |
 
 ---
 
@@ -293,6 +332,11 @@
 - [x] **ServeHTTP** превращён в тонкий оркестратор (~25 строк)
 - [x] **Все тесты** проходят: `go test ./internal/balancer`, `go test ./tests`
 - [x] **Сборка** без ошибок: `go build ./...`
+- [x] **Agent collector** разбит на 6 модулей
+- [x] **OllamaRouter** разбит на 3 модуля
+- [x] **Тесты UnloadScheduler** — 6 тестов
+- [x] **Тесты AdaptiveWeightTuner** — 12 тестов
+- [x] **proxy_mock_test.go** — общий мок для тестов
 
 ---
 

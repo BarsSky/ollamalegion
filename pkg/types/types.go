@@ -68,6 +68,9 @@ type Backend struct {
 	// Runtime-лимиты (меняются через API без перезапуска)
 	RuntimeMaxModels             int `json:"runtimeMaxModels"`
 	RuntimeMaxConcurrentRequests int `json:"runtimeMaxConcurrentRequests"`
+
+	// OllamaConfig — желаемые runtime-флаги Ollama, передаваемые агенту
+	OllamaConfig *OllamaDesiredConfig `json:"ollamaConfig,omitempty"`
 }
 
 // BackendMetrics - метрики бэкенда в реальном времени
@@ -101,6 +104,7 @@ type BackendMetrics struct {
 	VRAMTotalGB           float64  `json:"vramTotalGB"`           // Total VRAM in GB
 	VRAMUsedGB            float64  `json:"vramUsedGB"`            // Used VRAM in GB
 	MemoryUsagePercent    float64  `json:"memoryUsagePercent"`    // RAM usage %
+	WarmingUpModels       []string `json:"warmingUpModels"`       // Модели в превентивной загрузке
 }
 
 // PlatformMode - режим работы платформы
@@ -193,6 +197,7 @@ type OllamaRuntimeFlags struct {
 	F16KV          bool   `json:"f16kv"`          // FP16 для KV cache (--no-kv-offload отключает)
 	KVCacheQuant   string `json:"kvCacheQuant"`   // Квантование KV cache (--cache-type-k)
 	FlashAttention bool   `json:"flashAttention"` // Flash Attention (--flash-attn)
+	MaxLoadedModels int    `json:"maxLoadedModels"` // Максимум загруженных моделей
 	Source         string `json:"source"`         // Источник: process-args / env / default
 }
 
@@ -223,6 +228,19 @@ type AvailableModel struct {
 	Family         string `json:"family"`         // Семейство
 	ParameterSize  string `json:"parameterSize"`  // Размер параметров
 	Quantization   string `json:"quantization"`   // Квантование
+}
+
+// OllamaDesiredConfig — желаемая конфигурация Ollama, передаваемая агенту через heartbeat
+type OllamaDesiredConfig struct {
+	NumGPULayers   int    `json:"numGpuLayers"`   // Количество слоёв на GPU (-1 = не менять)
+	ContextLength  int    `json:"contextLength"`  // Размер контекста (-1 = не менять)
+	NumParallel    int    `json:"numParallel"`    // Параллельных запросов (-1 = не менять)
+	NumThreads     int    `json:"numThreads"`     // Потоков CPU (-1 = не менять)
+	BatchSize      int    `json:"batchSize"`      // Размер батча (-1 = не менять)
+	MaxLoadedModels int   `json:"maxLoadedModels"` // Макс. загруженных моделей (-1 = не менять)
+	FlashAttention *bool  `json:"flashAttention"`  // Flash Attention (nil = не менять)
+	KVCacheQuant   string `json:"kvCacheQuant"`    // Квантование KV cache ("" = не менять)
+	Source         string `json:"source"`           // Источник: balancer
 }
 
 // BackendCapacity - оценка ёмкости бэкенда
@@ -315,6 +333,7 @@ type LoadBalancerConfig struct {
 	API          APISettings          `json:"api"`
 	TLS          TLSConfig            `json:"tls"`
 	Auth         AuthConfig           `json:"auth"`
+	Initialized  bool                 `json:"initialized"` // true = первичная настройка выполнена
 }
 
 // APISettings - настройки API
@@ -333,6 +352,10 @@ type LoadBalancerSettings struct {
 	StatePath       string   `json:"statePath"`       // путь к файлу сохранения состояния (по умолчанию "data/state.json")
 	TrustedProxies  []string `json:"trustedProxies"`  // CIDR или IP доверенных прокси (по умолч. Docker/локальные сети)
 	ClientIPHeaders []string `json:"clientIPHeaders"` // Приоритет заголовков для определения IP клиента
+	// AlwaysTrustProxyHeaders — всегда доверять X-Forwarded-For и другим proxy-заголовкам
+	// независимо от RemoteAddr. Используется когда балансер всегда находится за reverse proxy
+	// (nginx, traefik) и RemoteAddr всегда от доверенного прокси.
+	AlwaysTrustProxyHeaders bool `json:"alwaysTrustProxyHeaders"`
 }
 
 // PrewarmConfig - конфигурация превентивной загрузки
@@ -381,10 +404,12 @@ type BalancingSettings struct {
 	RequestTimeout       int                     `json:"requestTimeout"`       // секунды
 	FirstByteTimeout     int                     `json:"firstByteTimeout"`     // таймаут первого байта streaming (сек, 0=дефолт 30)
 	StreamingIdleTimeout int                     `json:"streamingIdleTimeout"` // таймаут простоя между чанками streaming (сек, 0=дефолт 120)
+	StreamTimeout        int                     `json:"streamTimeout"`        // общий таймаут streaming запроса (сек, 0=дефолт 600)
 	QueueTimeout         int                     `json:"queueTimeout"`         // секунды
 	QueueMaxSize         int                     `json:"queueMaxSize"`         // макс. размер очереди
 	QueueWorkers         int                     `json:"queueWorkers"`         // количество workers очереди
 	SessionTTL           int                     `json:"sessionTTL"`           // секунды (0 = дефолт 900)
+	SessionIdleTTL       int                     `json:"sessionIdleTTL"`       // секунды простоя до удаления сессии (0 = дефолт 300 / 5 мин)
 
 	// Новые поля оптимизации балансировки
 	Prewarm             PrewarmConfig            `json:"prewarm"`
@@ -414,6 +439,13 @@ type BalancingSettings struct {
 
 	// DistInference (Вариант D) - распределённый inference через кастомный бэкенд
 	DistInference DistInferenceConfig `json:"distInference"`
+
+	// AdvancedTiming — тонкая настройка таймаутов и интервалов.
+	// Заменяет хардкодные значения в proxy, streaming, session_manager.
+	AdvancedTiming AdvancedTimingConfig `json:"advancedTiming"`
+
+	// OperatingMode — текущий вариант работы балансера для метрик и UI
+	OperatingMode string `json:"operatingMode"` // "standard"|"replication"|"rpc_coordinator"|"virtual_router"|"distributed_inference"
 }
 
 // AutoPullConfig - конфигурация автоматической загрузки модели по запросу
@@ -422,6 +454,16 @@ type AutoPullConfig struct {
 	MaxConcurrent int    `json:"maxConcurrent"` // Макс. одновременных загрузок (0 = без лимита)
 	PullTimeout   string `json:"pullTimeout"`   // Таймаут на загрузку модели ("5m", "10m")
 	RetryCount    int    `json:"retryCount"`    // Сколько раз повторить запрос после загрузки
+}
+
+// AdvancedTimingConfig — конфигурируемые таймауты (замена хардкодных магических чисел).
+// Все значения имеют дефолты, идентичные текущему хардкодному поведению.
+type AdvancedTimingConfig struct {
+	ZombieSessionThresholdSec int `json:"zombieSessionThresholdSec"` // порог зомби-сессий, сек (default: 120)
+	StreamingRetryDelayMs     int `json:"streamingRetryDelayMs"`     // задержка перед retry streaming, мс (default: 500)
+	MaxConcurrentWarmups      int `json:"maxConcurrentWarmups"`      // макс. одновременных warmup (default: 3)
+	HeartbeatIntervalSec      int `json:"heartbeatIntervalSec"`      // интервал SSE heartbeat, сек (default: 15)
+	WarmupSemaphoreTimeoutSec int `json:"warmupSemaphoreTimeoutSec"` // таймаут ожидания семафора warmup, сек (default: 30)
 }
 
 // LoggingSettings - настройки логирования
@@ -457,19 +499,20 @@ type QueuedRequest struct {
 
 // Session - активная сессия
 type Session struct {
-	ID               string    `json:"id"`
-	BackendID        string    `json:"backendId"`
-	Model            string    `json:"model"`
-	ClientName       string    `json:"clientName"`       // Имя клиента (Cline, OpenWebUI, etc.)
-	ClientIP         string    `json:"clientIp"`         // IP клиента (без порта)
-	UserAgent        string    `json:"userAgent"`        // Полный User-Agent для отладки
-	ClientFingerprint string   `json:"clientFingerprint"` // Хеш для различения клиентов за одним IP
-	CreatedAt        time.Time `json:"createdAt"`
-	LastRequestAt    time.Time `json:"lastRequestAt"`
-	RequestCount     int       `json:"requestCount"`
-	TotalTokens      int64     `json:"totalTokens"`      // Оценочное количество токенов
-	NumCtx           int       `json:"numCtx"`           // Размер контекста запроса (токенов)
-	SessionWeight    float64   `json:"sessionWeight"`    // Вес сессии для адаптивного переключения
+	ID                string    `json:"id"`
+	BackendID         string    `json:"backendId"`
+	Model             string    `json:"model"`
+	ClientName        string    `json:"clientName"`        // Имя клиента (Cline, OpenWebUI, etc.)
+	ClientIP          string    `json:"clientIp"`          // IP клиента (без порта)
+	UserAgent         string    `json:"userAgent"`         // Полный User-Agent для отладки
+	ClientFingerprint string    `json:"clientFingerprint"` // Хеш для различения клиентов за одним IP
+	CreatedAt         time.Time `json:"createdAt"`
+	LastRequestAt     time.Time `json:"lastRequestAt"`
+	RequestCount      int       `json:"requestCount"`
+	TotalTokens       int64     `json:"totalTokens"`      // Оценочное количество токенов
+	NumCtx            int       `json:"numCtx"`           // Размер контекста запроса (токенов)
+	SessionWeight     float64   `json:"sessionWeight"`    // Вес сессии для адаптивного переключения
+	HasActiveStream   bool      `json:"hasActiveStream"`  // Активен ли streaming-запрос (не удалять)
 }
 
 // HealthCheckResult - результат проверки здоровья
@@ -514,7 +557,20 @@ type ClusterState struct {
 	QueuedRequests  int              `json:"queuedRequests"`
 	RPS             float64          `json:"rps"`
 	TotalGPUUsage   float64          `json:"totalGpuUsage"`
+	OperatingMode   string           `json:"operatingMode"` // Текущий вариант работы балансера
+	RecentClients   []RecentClient   `json:"recentClients,omitempty"` // Последние HTTP-клиенты (включая /api/tags)
 	Backends        []BackendMetrics `json:"backends"`
+}
+
+// RecentClient — клиент, обратившийся к балансеру за последние N секунд
+type RecentClient struct {
+	ClientName     string    `json:"clientName"`
+	ClientIP       string    `json:"clientIP"`
+	UserAgent      string    `json:"userAgent"`
+	LastRequestAt  time.Time `json:"lastRequestAt"`
+	RequestCount   int       `json:"requestCount"`
+	IsStreamActive bool      `json:"isStreamActive"` // Активен ли streaming-запрос сейчас
+	Model          string    `json:"model,omitempty"` // Текущая модель (если известна)
 }
 
 // ============================================================

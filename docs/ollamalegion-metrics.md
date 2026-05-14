@@ -79,8 +79,8 @@
 | `requestsPerSecond` | float64 | RPS | **Proxy** | ✅ | Запросов в секунду |
 | `maxModels` | int | шт | — | ❌ | Лимит моделей |
 | `maxConcurrentRequests` | int | шт | — | ❌ | Лимит запросов |
-| `freeSlots` | int | шт | **Proxy** | ✅ | Свободные слоты |
-| `availableSlots` | int | шт | **Proxy** | ✅ | Доступные слоты (с учётом headroom) |
+| `freeSlots` | int | шт | **Proxy** | ✅ | Свободные слоты (`MaxConcurrent - ActiveRequests`) |
+| `availableSlots` | int | шт | **Proxy** | ❌ | Доступные слоты с учётом headroom (зарезервировано для будущего расширения) |
 
 > **⚠️ Критически важно:** `activeRequests`, `totalRequests`, `requestsPerSecond`, `freeSlots` — вычисляются **балансером** (proxy-calculated), а не агентом. Агент отправляет `0` для этих полей, балансер переопределяет их точными значениями.
 
@@ -91,9 +91,9 @@
 | `name` | string | — | Ollama API | ✅ | Название модели |
 | `size` | uint64 | bytes | Ollama API | ❌ | Размер модели |
 | `vramUsage` | uint64 | MB | эвристика | ✅ | Оценка VRAM |
-| `ramUsage` | uint64 | MB | эвристика | ❌ | Оценка RAM (CPU) |
-| `expiresAt` | time.Time | — | Ollama API | ❌ | Время выгрузки |
-| `digest` | string | — | Ollama API | ❌ | Хеш модели |
+| `ramUsage` | uint64 | MB | эвристика | ✅ | Оценка RAM (CPU) |
+| `expiresAt` | time.Time | — | Ollama API | ✅ | Время выгрузки |
+| `digest` | string | — | Ollama API | ✅ | Хеш модели |
 | `loadCount` | int | шт | — | ❌ | Количество загрузок |
 | `family` | string | — | Ollama API | ❌ | Семейство (llama, mistral...) |
 | `format` | string | — | Ollama API | ❌ | Формат (gguf...) |
@@ -111,8 +111,8 @@
 | `CalculatedRPS` | float64 | RPS | `len(RequestHistory) / 60.0` | Скользящее окно 60 секунд |
 | `ActiveRequests` | int | шт | `ActiveReqs++ / --` | Точный HTTP счётчик |
 | `FreeSlots` | int | шт | `MaxConcurrent - ActiveRequests` | Свободные слоты |
-
-
+| `AvailableSlots` | int | шт | `FreeSlots - headroom` | Доступные слоты с учётом резерва (headroom) |
+ 
 | `QueueStats.current_size` | int | шт | `len(queue)` | Текущая очередь |
 | `QueueStats.processed_total` | int64 | шт | счётчик | Всего обработано |
 | `QueueStats.dispatch_by_affinity` | int64 | шт | `atomic.AddInt64` | Запросов через Model Affinity |
@@ -126,6 +126,21 @@
 > 2. **Resource-Aware** — выбор по свободным ресурсам (GPU, VRAM, CPU) + prediction bonus
 > 3. **Config/Weight** — fallback-выбор по весам бэкенда (когда `UseEnhancedScoring=false`)
 
+### 4.1 Dispatch-by-Group Metrics (Model Replication)
+
+Дополнительные метрики, которые появляются при включённой репликации моделей (Variant A):
+
+| Поле | Тип | Единица | Описание |
+|------|-----|---------|----------|
+| `dispatch_by_group` | int64 | шт | Запросов, направленных через group-based dispatch |
+| `replication_group_count` | int | шт | Количество активных групп репликации |
+| `replicas_actual` | int | шт | Фактическое количество реплик |
+| `replicas_target` | int | шт | Целевое количество реплик (min/max) |
+| `replication_reconcile_count` | int64 | шт | Количество выполненных reconcile-циклов |
+
+Group-based dispatch работает поверх основных механизмов (Model Affinity, Resource-Aware). Если модель входит в группу репликации, балансировщик учитывает min/max реплики при выборе бэкенда.
+
+---
 
 ## 5. Prediction Metrics (Балансер)
 
@@ -252,17 +267,31 @@
 ### 9.1 Выбор бэкенда (`selectBackend`)
 
 ```
-1. Session Stickiness → тот же бэкенд, если здоров
-2. Model Affinity → бэкенд с загруженной моделью
-3. Resource-Aware scoring:
-   - GPU free * 0.35
-   - VRAM free * 0.25  
-   - CPU free * 0.20
+Pre-step: Model Replication — если модель в группе репликации, выбор из реплик
+
+1. Model Affinity (P1 — LOADED)
+   → expandCandidates → бэкенд с моделью в памяти
+   → loadRatio < triggerLoadThreshold (default 80%)
+
+2. Model Warming (P2 — WARMING)
+   → expandCandidates → бэкенд в процессе загрузки
+   → Ожидание готовности (polling) с таймаутом ModelLoadTimeout
+
+3. Sync Model Load (P3 — FREE)
+   → Если SyncModelLoad.Enabled
+   → Запуск warmupModel() на free бэкенде
+   → Ожидание готовности с таймаутом
+
+4. Resource-Aware scoring (P4 — FALLBACK)
+   → selectByResources()
+   - GPU free * 0.30
+   - VRAM free * 0.20
+   - CPU free * 0.15
+   - modelLoadedBonus, predictionBonus
    - Request penalty (active/max)
-   - Model capacity score
-   - Prediction bonus/penalty (5.2)
-4. Weight multiplier
-5. Prediction-based filtering (5.1): бэкенды с secondsToCritical < 300 исключаются
+   - queueDepthPenalty, errorRatePenalty
+   - Weight multiplier
+   - Prediction-based filtering: secondsToCritical < 300 → исключаются
 ```
 
 ### 9.2 Лимиты ресурсов (`checkResourceLimits`)

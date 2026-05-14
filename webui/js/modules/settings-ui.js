@@ -84,30 +84,27 @@
     // ---- Mode Selector ----
 
     function setupModeSelector() {
-        var radios = document.querySelectorAll('input[name="operatingMode"]');
-        radios.forEach(function (radio) {
-            radio.addEventListener('change', function () {
-                if (this.checked) {
-                    var newMode = this.value;
-                    var oldMode = getCurrentMode();
-                    if (oldMode && oldMode !== newMode) {
-                        if (!confirmModeChange(newMode)) {
-                            // Restore old selection
-                            document.querySelector('input[name="operatingMode"][value="' + oldMode + '"]').checked = true;
-                            return;
-                        }
-                    }
-                    updateModeCards(newMode);
-                    showModeFields(newMode);
-                }
-            });
-        });
-
-        // Update cards on initial load
+        // NOTE: Смена режима теперь полностью контролируется mode-wizard.js.
+        // Этот метод только инициализирует визуальное состояние без обработчиков change,
+        // чтобы избежать конфликта с мастером переформирования.
         var current = getCurrentMode();
         if (current) {
             updateModeCards(current);
             showModeFields(current);
+        }
+    }
+
+    /**
+     * Принудительная синхронизация UI с серверным operatingMode.
+     * Вызывается из app.js при загрузке настроек и после применения мастера.
+     */
+    function syncModeFromServer(serverMode) {
+        if (!serverMode) return;
+        var radio = document.querySelector('input[name="operatingMode"][value="' + serverMode + '"]');
+        if (radio) {
+            radio.checked = true;
+            updateModeCards(serverMode);
+            showModeFields(serverMode);
         }
     }
 
@@ -138,6 +135,67 @@
             activeFields.classList.add('active');
             activeFields.style.display = 'block';
         }
+
+        // --- Adaptive UI: hide/show variant-related sections ---
+        updateVariantSections(mode);
+    }
+
+    function updateVariantSections(mode) {
+        // Map mode to variant class
+        var variantMap = {
+            standard: '',
+            replication: 'variant-a',
+            rpc_coordinator: 'variant-b',
+            virtual_router: 'variant-c',
+            distributed_inference: 'variant-d'
+        };
+
+        // Show/hide variant sections across the whole page
+        document.querySelectorAll('.variant-section').forEach(function (sec) {
+            var classes = sec.className.split(' ');
+            var hasVariant = false;
+            var isMatch = false;
+            classes.forEach(function (cls) {
+                if (cls.indexOf('variant-') === 0) {
+                    hasVariant = true;
+                    if (cls === variantMap[mode]) {
+                        isMatch = true;
+                    }
+                }
+            });
+            if (!hasVariant) return; // not a variant section
+            if (isMatch || mode === 'standard' && hasVariant) {
+                // For standard mode, we still show variant sections that are
+                // explicitly marked as "always-show" (if any). Otherwise hide all.
+                if (mode === 'standard') {
+                    sec.style.display = 'none';
+                } else {
+                    sec.style.display = '';
+                }
+            } else {
+                sec.style.display = 'none';
+            }
+        });
+
+        // Hide/show sidebar nav items for variant-specific pages
+        // NOTE: monitor и agents всегда видны, независимо от режима
+        var navMap = {
+            standard: { show: ['dashboard', 'monitor', 'backends', 'models', 'sessions', 'queue', 'agents', 'logs', 'settings'] },
+            replication: { show: ['dashboard', 'monitor', 'backends', 'models', 'sessions', 'queue', 'agents', 'logs', 'settings'] },
+            rpc_coordinator: { show: ['dashboard', 'monitor', 'backends', 'models', 'sessions', 'queue', 'agents', 'logs', 'settings'] },
+            virtual_router: { show: ['dashboard', 'monitor', 'backends', 'models', 'sessions', 'queue', 'agents', 'logs', 'settings'] },
+            distributed_inference: { show: ['dashboard', 'monitor', 'backends', 'models', 'sessions', 'queue', 'agents', 'logs', 'settings'] }
+        };
+
+        var allowed = navMap[mode] ? navMap[mode].show : navMap.standard.show;
+        document.querySelectorAll('.nav-item[data-page]').forEach(function (item) {
+            var page = item.dataset.page;
+            if (allowed.indexOf(page) >= 0) {
+                item.style.display = '';
+            } else {
+                item.style.display = 'none';
+            }
+        });
     }
 
     function confirmModeChange(newMode) {
@@ -293,6 +351,7 @@
         setupModeSelector: setupModeSelector,
         getCurrentMode: getCurrentMode,
         showModeFields: showModeFields,
+        syncModeFromServer: syncModeFromServer,
         collectModeConfig: collectModeConfig,
         applyModeConfig: applyModeConfig,
         validateModeFields: validateModeFields,

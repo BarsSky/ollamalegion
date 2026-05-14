@@ -48,6 +48,9 @@
                 <a href="#queue" class="nav-item" data-page="queue">
                     <span class="nav-icon-wrap"><i class="fas fa-layer-group fa-fw"></i></span> <span data-i18n="nav.queue">Очередь</span>
                 </a>
+                <a href="#agents" class="nav-item" data-page="agents">
+                    <span class="nav-icon-wrap"><i class="fas fa-robot fa-fw"></i></span> <span data-i18n="nav.agents">Агенты</span>
+                </a>
                 <a href="#logs" class="nav-item" data-page="logs">
                     <span class="nav-icon-wrap"><i class="fas fa-file-lines fa-fw"></i></span> <span data-i18n="nav.logs">Логи</span>
                 </a>
@@ -275,6 +278,11 @@
                 <div class="card">
                     <div class="card-header">
                         <h3><i class="fas fa-brain section-icon-i"></i> <span data-i18n="models.loaded">Загруженные модели</span></h3>
+                        <div class="card-actions">
+                            <input type="text" class="search-input" id="modelsSearch" placeholder="Поиск модели..." data-i18n-placeholder="models.search_placeholder">
+                            <button class="btn btn-secondary" id="refreshModelsBtn" data-i18n="common.retry">Обновить</button>
+                            <button class="btn btn-primary" id="modelsManageBtn" data-i18n="models.manage_title">Управление моделями</button>
+                        </div>
                     </div>
                     <div class="models-grid" id="modelsGrid">
                         <div class="loading" data-i18n="common.loading">Загрузка...</div>
@@ -309,6 +317,71 @@
                                 <tr><td colspan="8" class="loading-cell" data-i18n="common.loading">Загрузка...</td></tr>
                             </tbody>
                         </table>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Agents Page -->
+            <div class="page" id="agents-page">
+                <div class="metrics-grid">
+                        <div class="metric-card">
+                        <div class="metric-header">
+                            <i class="fas fa-robot metric-icon-i"></i>
+                            <span class="metric-label" data-i18n="agents.total">Всего агентов</span>
+                        </div>
+                        <div class="metric-value" id="agentsTotal">-</div>
+                    </div>
+                    <div class="metric-card">
+                        <div class="metric-header">
+                            <i class="fas fa-circle-check metric-icon-i"></i>
+                            <span class="metric-label" data-i18n="agents.healthy">Здоровые агенты</span>
+                        </div>
+                        <div class="metric-value" id="agentsHealthy">-</div>
+                    </div>
+                    <div class="metric-card">
+                        <div class="metric-header">
+                            <i class="fas fa-circle-xmark metric-icon-i"></i>
+                            <span class="metric-label" data-i18n="agents.offline">Офлайн</span>
+                        </div>
+                        <div class="metric-value" id="agentsOffline">-</div>
+                    </div>
+                </div>
+                <div class="card">
+                    <div class="card-header">
+                        <h3><i class="fas fa-table section-icon-i"></i> <span data-i18n="agents.title">Агенты</span></h3>
+                        <div class="card-actions">
+                            <button class="btn btn-secondary" id="refreshAgentsBtn" data-i18n="common.retry">Обновить</button>
+                        </div>
+                    </div>
+                    <div class="table-responsive">
+                        <table class="data-table" id="agentsTable">
+                            <thead>
+                                <tr>
+                                    <th data-i18n="agents.id">ID</th>
+                                    <th data-i18n="backends.host">Хост</th>
+                                    <th data-i18n="backends.agent_port">Порт</th>
+                                    <th data-i18n="metrics.status">Статус</th>
+                                    <th data-i18n="agents.platform">Платформа</th>
+                                    <th data-i18n="agents.uptime">Аптайм</th>
+                                    <th data-i18n="agents.last_heartbeat">Последний heartbeat</th>
+                                    <th data-i18n="agents.ollama_version">Версия Ollama</th>
+                                    <th data-i18n="backends.actions">Действия</th>
+                                </tr>
+                            </thead>
+                            <tbody id="agentsTableBody">
+                                <tr><td colspan="9" class="loading-cell" data-i18n="common.loading">Загрузка...</td></tr>
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+                <!-- Agent Details Card (hidden until an agent is expanded) -->
+                <div class="card" id="agentDetailsCard" style="display:none;">
+                    <div class="card-header">
+                        <h3><i class="fas fa-info-circle section-icon-i"></i> <span data-i18n="agents.details">Детали агента</span></h3>
+                        <button class="btn btn-secondary" id="closeAgentDetails" data-i18n="models.close">Закрыть</button>
+                    </div>
+                    <div class="agent-details-content" id="agentDetailsContent">
+                        <div class="loading" data-i18n="common.loading">Загрузка...</div>
                     </div>
                 </div>
             </div>
@@ -399,9 +472,20 @@
 
             <!-- Logs Page -->
             <div class="page" id="logs-page">
-                <div class="card">
+                <!-- Под-вкладки: Системные / Прокси -->
+                <div class="logs-tabs">
+                    <button class="logs-tab active" data-logs-tab="system" id="logsTabSystem">
+                        <i class="fas fa-file-lines"></i> <span data-i18n="logs.system">Системные</span>
+                    </button>
+                    <button class="logs-tab" data-logs-tab="proxy" id="logsTabProxy">
+                        <i class="fas fa-arrow-right-arrow-left"></i> <span data-i18n="logs.proxy">Прокси</span>
+                    </button>
+                </div>
+
+                <!-- Системные логи -->
+                <div class="card logs-panel active" id="logsPanelSystem">
                     <div class="card-header">
-                        <h3><i class="fas fa-file-lines section-icon-i"></i> <span data-i18n="logs.title">События и логи</span></h3>
+                        <h3><i class="fas fa-file-lines section-icon-i"></i> <span data-i18n="logs.title">Системные логи</span></h3>
                         <div class="card-actions">
                             <button class="btn btn-secondary" id="clearLogs" data-i18n="logs.clear">Очистить</button>
                             <button class="btn btn-secondary" id="exportLogs">Экспорт</button>
@@ -413,6 +497,21 @@
                             <span class="log-level" data-i18n="logs.level_info">INFO</span>
                             <span class="log-message">WebUI инициализирован. Ожидание подключения...</span>
                         </div>
+                    </div>
+                </div>
+
+                <!-- Прокси логи -->
+                <div class="card logs-panel" id="logsPanelProxy">
+                    <div class="card-header">
+                        <h3><i class="fas fa-arrow-right-arrow-left section-icon-i"></i> <span data-i18n="logs.proxy_title">Прокси-запросы</span></h3>
+                        <div class="card-actions">
+                            <button class="btn btn-secondary" id="clearProxyLogs" data-i18n="logs.clear">Очистить</button>
+                            <button class="btn btn-secondary" id="refreshProxyLogs">Обновить</button>
+                            <button class="btn btn-secondary" id="copyProxyLogs" data-i18n="logs.copy_proxy">📋 Копировать</button>
+                        </div>
+                    </div>
+                    <div class="proxy-logs-container" id="proxyLogsContainer">
+                        <div class="proxy-log-placeholder" data-i18n="logs.proxy_waiting">Ожидание данных...</div>
                     </div>
                 </div>
             </div>
@@ -633,6 +732,75 @@
                             </div>
                         </div>
 
+                        <!-- ==================== Section: Agent Settings ==================== -->
+                        <div class="settings-section" id="section-agent">
+                            <div class="settings-section-header" data-section="agent">
+                                <span class="section-toggle">▼</span>
+                                <i class="fas fa-robot"></i>
+                                <span data-i18n="settings.section.agent">Настройки агентов</span>
+                            </div>
+                            <div class="settings-section-body open">
+                                <div class="form-row">
+                                    <div class="form-group">
+                                        <label data-i18n="settings.agent.collect_interval">Collect Interval (сек)</label>
+                                        <input type="number" id="agentCollectInterval" class="form-control" value="15" min="1" max="300">
+                                    </div>
+                                    <div class="form-group">
+                                        <label data-i18n="settings.agent.heartbeat_interval">Heartbeat Interval (сек)</label>
+                                        <input type="number" id="agentHeartbeatInterval" class="form-control" value="30" min="5" max="600">
+                                    </div>
+                                </div>
+                                <div class="form-row">
+                                    <div class="form-group">
+                                        <label data-i18n="settings.agent.max_concurrent">Max Concurrent Requests</label>
+                                        <input type="number" id="agentMaxConcurrent" class="form-control" value="10" min="1" max="100">
+                                    </div>
+                                    <div class="form-group">
+                                        <label data-i18n="settings.agent.max_models">Max Models</label>
+                                        <input type="number" id="agentMaxModels" class="form-control" value="5" min="1" max="50">
+                                    </div>
+                                </div>
+                                <div class="form-group" style="margin-top:8px;">
+                                    <label data-i18n="settings.agent.timeout">Agent Timeout (сек)</label>
+                                    <input type="number" id="agentTimeout" class="form-control" value="10" min="1" max="120" style="max-width:200px;">
+                                </div>
+                            </div>
+                        </div>
+
+                        <!-- ==================== Section: Backend Limits ==================== -->
+                        <div class="settings-section" id="section-backend-limits">
+                            <div class="settings-section-header" data-section="backend-limits">
+                                <span class="section-toggle">▼</span>
+                                <i class="fas fa-sliders-h"></i>
+                                <span data-i18n="settings.section.backend_limits">Лимиты бэкендов</span>
+                            </div>
+                            <div class="settings-section-body open">
+                                <p style="color:var(--text-muted);margin-bottom:12px;font-size:13px;" data-i18n="settings.backend_limits_desc">
+                                    Настройте лимиты Max Concurrent Requests и Max Models для каждого бэкенда. Для бэкендов без агента лимиты применяются только на уровне балансировщика.
+                                </p>
+                                <div class="table-responsive">
+                                    <table class="data-table" id="backendLimitsTable">
+                                        <thead>
+                                            <tr>
+                                                <th>ID</th>
+                                                <th data-i18n="backends.host">Хост</th>
+                                                <th data-i18n="backends.agent_port">Порт агента</th>
+                                                <th data-i18n="settings.backend_limits_max_concurrent">Max Concurrent</th>
+                                                <th data-i18n="settings.backend_limits_max_models">Max Models</th>
+                                                <th data-i18n="metrics.status">Статус</th>
+                                            </tr>
+                                        </thead>
+                                        <tbody id="backendLimitsBody">
+                                            <tr><td colspan="6" class="loading-cell" data-i18n="common.loading">Загрузка...</td></tr>
+                                        </tbody>
+                                    </table>
+                                </div>
+                                <div class="form-actions" style="margin-top:12px;">
+                                    <button class="btn btn-primary" id="saveBackendLimitsBtn" data-i18n="settings.save_backend_limits">Сохранить лимиты бэкендов</button>
+                                </div>
+                            </div>
+                        </div>
+
                         <!-- ==================== Section: Security ==================== -->
                         <div class="settings-section" id="section-security">
                             <div class="settings-section-header" data-section="security">
@@ -836,6 +1004,87 @@
         </div>
     </div>
 
+    <!-- Modal: Model Management -->
+    <div class="modal" id="modelManageModal">
+        <div class="modal-content model-manage-content">
+            <div class="modal-header">
+                <h3 id="modelManageTitle" data-i18n="models.manage_title">Управление моделями</h3>
+                <button class="modal-close" id="modelManageClose">&times;</button>
+            </div>
+            <div class="modal-body">
+                <!-- Pull Model Section -->
+                <div class="model-manage-section">
+                    <div class="model-manage-section-title">
+                        <i class="fas fa-download"></i>
+                        <span data-i18n="models.pull">Pull</span>
+                    </div>
+                    <div class="model-pull-row">
+                        <input type="text" id="modelPullName" class="form-control" placeholder="llama3.2:latest" data-i18n-placeholder="models.model_name_placeholder">
+                        <div class="model-pull-options">
+                            <label class="model-pull-checkbox">
+                                <input type="checkbox" id="modelPullInsecure">
+                                <span data-i18n="models.insecure">Insecure</span>
+                            </label>
+                        </div>
+                        <button class="btn btn-primary" id="modelPullBtn" data-i18n="models.pull">Pull</button>
+                    </div>
+                </div>
+
+                <!-- Models List Section -->
+                <div class="model-manage-section">
+                    <div class="model-manage-section-title">
+                        <i class="fas fa-list"></i>
+                        <span data-i18n="models.title">Модели</span>
+                    </div>
+                    <div class="table-responsive">
+                        <table class="data-table" id="modelManageModelsTable">
+                            <thead>
+                                <tr>
+                                    <th data-i18n="models.model_name">Имя модели</th>
+                                    <th data-i18n="models.model_digest">Digest</th>
+                                    <th data-i18n="models.model_size">Размер</th>
+                                    <th data-i18n="models.model_modified">Изменена</th>
+                                    <th data-i18n="metrics.status">Статус</th>
+                                    <th data-i18n="backends.actions">Действия</th>
+                                </tr>
+                            </thead>
+                            <tbody id="modelManageModelsBody">
+                                <tr><td colspan="6" class="loading-cell" data-i18n="common.loading">Загрузка...</td></tr>
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+
+                <!-- Active Operations Section -->
+                <div class="model-manage-section">
+                    <div class="model-manage-section-title">
+                        <i class="fas fa-spinner"></i>
+                        <span data-i18n="models.operations_active">Активные операции</span>
+                    </div>
+                    <div class="table-responsive">
+                        <table class="data-table" id="modelOpsTable">
+                            <thead>
+                                <tr>
+                                    <th data-i18n="models.operation">Операция</th>
+                                    <th data-i18n="models.model_name">Модель</th>
+                                    <th data-i18n="models.backend">Бэкенд</th>
+                                    <th data-i18n="models.started">Начало</th>
+                                    <th data-i18n="models.status">Статус</th>
+                                </tr>
+                            </thead>
+                            <tbody id="modelOpsBody">
+                                <tr><td colspan="5" class="loading-cell" data-i18n="models.no_active_ops">Нет активных операций</td></tr>
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button class="btn btn-secondary" id="modelManageCancel" data-i18n="models.close">Закрыть</button>
+            </div>
+        </div>
+    </div>
+
     <!-- Toast Container -->
     <div class="toast-container" id="toastContainer"></div>
 
@@ -854,6 +1103,7 @@
     <script src="js/modules/renderers.js?v=10"></script>
     <script src="js/modules/settings-ui.js?v=10"></script>
     <script src="js/modules/config-io.js?v=10"></script>
+    <script src="js/modules/mode-wizard.js?v=10"></script>
     <script src="js/modules/setup-wizard.js?v=10"></script>
     <script src="js/app.js?v=10"></script>
 </body>

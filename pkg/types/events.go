@@ -12,7 +12,9 @@ const (
 	EventStatusChange  EventType = "status_change"  // изменение статуса бэкенда
 	EventLimitsChange  EventType = "limits_change"  // изменение runtime-лимитов
 	EventReconfigure   EventType = "reconfigure_request"  // запрос на переформирование бэкенда
+	EventProxyLog      EventType = "proxy_log"      // запись лога прокси-запроса
 )
+
 
 // Event — событие для WebSocket/внутренней шины
 type Event struct {

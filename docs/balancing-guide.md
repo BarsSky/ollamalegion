@@ -73,10 +73,10 @@
 
 ## 2. Алгоритм выбора бэкенда (v2)
 
-### 2.1 Многоэтапный выбор (5 этапов)
+### 2.1 Многоэтапный выбор (4 этапа + pre-step)
 
-Метод `selectBackend()` в `internal/balancer/proxy.go` реализует 5-этапную логику поверх `expandCandidates()`.  
-Этапы 2–4 опциональны и зависят от конфигурации (`SyncModelLoad.Enabled`, `Prewarm`, etc.).
+Метод `selectBackend()` в `internal/balancer/backend_selector.go` реализует 4-этапную логику поверх `expandCandidates()` (плюс pre-step для Model Replication).  
+Этапы 2–4 опционны и зависят от конфигурации (`SyncModelLoad.Enabled`, `Prewarm`, etc.).
 
 #### 2.1.1 `expandCandidates(modelName)` — группировка бэкендов по приоритетам
 
@@ -104,32 +104,31 @@
     └──────────────────┬────────────────────┘
                        ▼
     ┌───────────────────────────────────────┐
-    │           selectBackend(model)         │
-    │                                        │
-     │  Этап 1: Session Stickiness             │
-     │    ├─ Есть сессия с backend affinity?  │
-     │    ├─ Бэкенд healthy и loadRatio < 80%? │
-     │    └─ Да → вернуть тот же бэкенд       │
+     │           selectBackend(model)         │
      │                                        │
-     │  Этап 2: Model Affinity (P1 — LOADED) │
-     │    ├─ Первый бэкенд из P1             │
-     │    ├─ Проверить loadRatio < threshold │  (default 80%)
-     │    └─ Если ок → вернуть бэкенд        │
-     │                                        │
-     │  Этап 3: Model Warming (P2)           │
-     │    ├─ Найти бэкенд в процессе загрузки │
-     │    ├─ Проверить ETA < syncTimeout     │  (default 30s)
-     │    └─ Ожидать готовности (polling)    │
-     │                                        │
-     │  Этап 4: Sync Model Load (P3 — FREE)  │
-     │    ├─ Если SyncModelLoad.Enabled       │
-     │    ├─ Запустить загрузку на free      │
-     │    └─ Ожидать готовности (с таймаутом) │
-     │                                        │
-     │  Этап 5: Resource-Aware Scoring (P4)  │
-     │    └─ selectByResources() →             │
-     │       calculateScore() /              │
-     │       calculateScoreSimple()           │
+      │  Pre-step: Model Replication            │
+      │    ├─ Модель в группе репликации?      │
+      │    └─ Да → выбор из реплик             │
+      │                                        │
+      │  Этап 1: Model Affinity (P1 — LOADED) │
+      │    ├─ Лучший бэкенд из P1 по score    │
+      │    ├─ Проверить loadRatio < threshold │  (default 80%)
+      │    └─ Если ок → вернуть бэкенд        │
+      │                                        │
+      │  Этап 2: Model Warming (P2)           │
+      │    ├─ Найти бэкенд в процессе загрузки │
+      │    ├─ Проверить ETA < syncTimeout     │  (default 120s)
+      │    └─ Ожидать готовности (polling)    │
+      │                                        │
+      │  Этап 3: Sync Model Load (P3 — FREE)  │
+      │    ├─ Если SyncModelLoad.Enabled       │
+      │    ├─ Запустить загрузку на free      │
+      │    └─ Ожидать готовности (с таймаутом) │
+      │                                        │
+      │  Этап 4: Resource-Aware Scoring (P4)  │
+      │    └─ selectByResources() →             │
+      │       calculateScore() /              │
+      │       calculateScoreSimple()           │
     └──────────────────┬────────────────────┘
                        ▼
     ┌───────────────────────────────────────┐
@@ -157,8 +156,8 @@
 
 Поведение скоринга контролируется флагом **`useEnhancedScoring`** в `balancing`:
 
-- **`useEnhancedScoring: true`** — полная формула v2 с учётом модели, очереди и ошибок
-- **`useEnhancedScoring: false`** (default) — упрощённая формула (обратная совместимость)
+- **`useEnhancedScoring: true`** (default) — полная формула v2 с учётом модели, очереди и ошибок
+- **`useEnhancedScoring: false`** (legacy) — упрощённая формула (обратная совместимость)
 
 #### Упрощённая формула (`calculateScoreSimple`, default)
 
@@ -213,18 +212,8 @@ Score = (
 
 Конфигурация: `balancing.resource_reservation.gpu_headroom_percent: 15`.
 
-### 2.4 Feature Flag: useEnhancedScoring
+### 2.5 Фильтры здоровья (дополненные)
 
-Параметр `balancing.useEnhancedScoring` включает расширенную формулу скоринга:
-
-| Значение | Поведение |
-|----------|-----------|
-| `false` (default) | Упрощённый скоринг: только GPU/VRAM/CPU + weight |
-| `true` | Полная формула v2: + model affinity, queue depth, error rate, prediction |
-
-Рекомендуется включать в продакшене после калибровки весов (`balancing.scoring`).
-
-### 2.4 Фильтры здоровья (дополненные)
 
 Бэкенд считается healthy, если:
 - Последний heartbeat не старше таймаута
@@ -761,7 +750,47 @@ Priority = enqueueTime + (modelSize * weight) + (sessionAge * factor)
 
 ---
 
-## 9. Глоссарий
+## 9. Алгоритм принятия решения балансером
+
+### 9.1 Полный поток запроса (`proxyRequest`)
+
+```
+0. Session Stickiness (resolveSessionBackend, ДО selectBackend)
+   → Проверка существующей сессии в sessionMgr
+   → Если бэкенд healthy и load не критичен → возврат напрямую
+   → Если loadRatio > threshold → rebalance (findLessLoadedBackendWithModel/Any)
+   → selectBackend НЕ вызывается при успешном stickiness
+
+1. selectBackend(model) — вызывается если stickiness не сработал или нет сессии
+   └── Pre-step: Model Replication
+       → Если модель в группе репликации → выбор через replicationSelector
+
+   └── Этап 1: Model Affinity (P1 — LOADED)
+       → expandCandidates → P1 группа
+       → Проверка loadRatio < triggerLoadThreshold (default 80%)
+       → Выбор ЛУЧШЕГО бэкенда по score (не первого попавшегося)
+
+   └── Этап 2: Model Warming (P2 — WARMING)
+       → expandCandidates → P2 группа
+       → Проверка ETA < syncTimeout (default 120s)
+       → Ожидание готовности через polling (500ms interval)
+
+   └── Этап 3: Sync Model Load (P3 — FREE)
+       → Если SyncModelLoad.Enabled
+       → Запуск warmupModel() на free бэкенде
+       → Ожидание готовности с таймаутом (polling 500ms)
+
+   └── Этап 4: Resource-Aware Scoring (P4 — FALLBACK)
+       → selectByResources() — включает:
+         - Фильтрацию по лимитам (checkResourceLimits)
+         - Prediction-based filtering (secondsToCritical < 300 → исключаются)
+         - calculateScore() / calculateScoreSimple()
+         - Weight multiplier
+```
+
+---
+
+## 10. Глоссарий
 
 | Термин | Определение |
 |--------|-------------|
@@ -777,4 +806,4 @@ Priority = enqueueTime + (modelSize * weight) + (sessionAge * factor)
 
 ---
 
-*Документ версия 1.1 | OllamaLegion Load Balancer | Скорректирован 2026-05-06*
+*Документ версия 1.3 | OllamaLegion Load Balancer | Скорректирован 2026-05-13*

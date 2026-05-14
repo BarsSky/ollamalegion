@@ -49,6 +49,9 @@ services:
     ports:
       - "${LB_PORT:-18080}:18080"
       - "${LB_API_PORT:-18081}:18081"
+      # При включённом TLS раскомментируйте порты:
+      # - "${LB_TLS_PORT:-8443}:8443"
+      # - "${LB_TLS_API_PORT:-8444}:8444"
     
     volumes:
       - ../config/config.example.json:/app/config.json:ro
@@ -125,6 +128,9 @@ networks:
 LB_HOST=0.0.0.0
 LB_PORT=18080
 LB_API_PORT=18081
+# При включённом TLS добавьте:
+# LB_TLS_PORT=8443
+# LB_TLS_API_PORT=8444
 
 # Algorithm settings
 LB_ALGORITHM=resource-aware
@@ -453,13 +459,16 @@ journalctl -u ollama-agent -f
 version: '3.8'
 
 services:
-  loadbalancer-1:
-    image: ollama-legion/balancer:latest
-    container_name: ollama-legion-1
-    restart: unless-stopped
-    ports:
-      - "18080:18080"
-      - "18081:18081"
+   loadbalancer-1:
+     image: ollama-legion/balancer:latest
+     container_name: ollama-legion-1
+     restart: unless-stopped
+     ports:
+       - "18080:18080"
+       - "18081:18081"
+       # При включённом TLS:
+       # - "8443:8443"
+       # - "8444:8444"
     volumes:
       - ./config.json:/app/config.json:ro
     environment:
@@ -474,13 +483,16 @@ services:
       timeout: 5s
       retries: 3
 
-  loadbalancer-2:
-    image: ollama-legion/balancer:latest
-    container_name: ollama-legion-2
-    restart: unless-stopped
-    ports:
-      - "18082:18080"
-      - "18083:18081"
+   loadbalancer-2:
+     image: ollama-legion/balancer:latest
+     container_name: ollama-legion-2
+     restart: unless-stopped
+     ports:
+       - "18082:18080"
+       - "18083:18081"
+       # При включённом TLS:
+       # - "8445:8443"
+       # - "8446:8444"
     volumes:
       - ./config.json:/app/config.json:ro
     environment:
@@ -495,13 +507,16 @@ services:
       timeout: 5s
       retries: 3
 
-  nginx-lb:
-    image: nginx:alpine
-    container_name: nginx-lb
-    restart: unless-stopped
-    ports:
-      - "80:80"
-      - "443:443"
+   nginx-lb:
+     image: nginx:alpine
+     container_name: nginx-lb
+     restart: unless-stopped
+     ports:
+       - "80:80"
+       - "443:443"
+       # При включённом TLS:
+       # - "8443:8443"
+       # - "8444:8444"
     volumes:
       - ./nginx-lb.conf:/etc/nginx/nginx.conf:ro
       - ./certs:/etc/nginx/certs:ro

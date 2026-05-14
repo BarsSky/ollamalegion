@@ -32,7 +32,7 @@ type TuningSample struct {
 // AdaptiveWeightTuner — автоматическая корректировка весов на основе метрик
 type AdaptiveWeightTuner struct {
 	proxy          *Proxy
-	mu             sync.Mutex
+	mu             sync.RWMutex
 	weights        TuningWeights
 	baseline       TuningWeights
 	history        []TuningSample
@@ -102,12 +102,16 @@ func (awt *AdaptiveWeightTuner) Start() {
 
 // Stop — остановка тюнера
 func (awt *AdaptiveWeightTuner) Stop() {
+	awt.mu.Lock()
+	defer awt.mu.Unlock()
+
 	if awt.stopCh != nil {
 		select {
 		case <-awt.stopCh:
 		default:
 			close(awt.stopCh)
 		}
+		awt.stopCh = nil
 	}
 }
 
@@ -122,20 +126,32 @@ func (awt *AdaptiveWeightTuner) SetEnabled(enabled bool) {
 		go awt.loop()
 	} else if !enabled && awt.enabled {
 		awt.enabled = false
-		close(awt.stopCh)
+		if awt.stopCh != nil {
+			select {
+			case <-awt.stopCh:
+			default:
+				close(awt.stopCh)
+			}
+			awt.stopCh = nil
+		}
 	}
 }
 
-// loop — основной цикл тюнинга
+// loop — основной цикл тюнинга.
+// stopCh копируется под RLock чтобы избежать data race с Stop/SetEnabled.
 func (awt *AdaptiveWeightTuner) loop() {
 	ticker := time.NewTicker(awt.adjustInterval)
 	defer ticker.Stop()
+
+	awt.mu.RLock()
+	stopCh := awt.stopCh
+	awt.mu.RUnlock()
 
 	for {
 		select {
 		case <-ticker.C:
 			awt.tune()
-		case <-awt.stopCh:
+		case <-stopCh:
 			return
 		}
 	}

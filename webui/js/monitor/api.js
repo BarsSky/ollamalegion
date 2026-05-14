@@ -68,9 +68,9 @@
     return {
       cluster: {
         backends: [
-          { id: 'ollama-1', status: 'active', activeRequests: 2, maxConcurrentRequests: 8, gpu: { usagePercent: 45 }, vram: { usagePercent: 62, totalGB: 24, usedGB: 14.88 }, system: { cpuUsagePercent: 30, memoryUsagePercent: 55 }, score: 0.95, models: ['llama3.1', 'gemma2'], lastSeen: n, ollama: { requestsPerSecond: 1.2 } },
-          { id: 'ollama-2', status: 'active', activeRequests: 1, maxConcurrentRequests: 8, gpu: { usagePercent: 12 }, vram: { usagePercent: 28, totalGB: 24, usedGB: 6.72 }, system: { cpuUsagePercent: 18, memoryUsagePercent: 40 }, score: 0.88, models: ['llama3.1'], lastSeen: n, ollama: { requestsPerSecond: 0.5 } },
-          { id: 'ollama-3', status: 'error', activeRequests: 0, maxConcurrentRequests: 8, gpu: { usagePercent: 0 }, vram: { usagePercent: 0, totalGB: 24, usedGB: 0 }, system: { cpuUsagePercent: 5, memoryUsagePercent: 20 }, score: 0.0, models: [], lastSeen: n, ollama: { requestsPerSecond: 0 } }
+          { id: 'ollama-1', status: 'active', activeRequests: 2, maxConcurrentRequests: 8, gpu: { usagePercent: 45 }, vram: { usagePercent: 62, totalGB: 24, usedGB: 14.88 }, system: { cpuUsagePercent: 30, memoryUsagePercent: 55, diskTotal: 500472979456, diskUsed: 209089773568, diskFree: 291383205888, networkRX: 1842176, networkTX: 1024512 }, score: 0.95, models: ['llama3.1', 'gemma2'], lastSeen: n, ollama: { requestsPerSecond: 1.2, backendCapacity: { freeVram: 8192, loadableModelCount: 3, guaranteedVram: 2048, mode: 'gpu', availableModels: [{ name: 'mistral:7b', canLoad: true, estimatedVram: 4096 }, { name: 'phi3:mini', canLoad: true, estimatedVram: 2048 }, { name: 'qwen2:7b', canLoad: true, estimatedVram: 4096 }, { name: 'codellama:13b', canLoad: false, estimatedVram: 10240 }, { name: 'mixtral:8x7b', canLoad: false, estimatedVram: 28672 }] } } },
+          { id: 'ollama-2', status: 'active', activeRequests: 1, maxConcurrentRequests: 8, gpu: { usagePercent: 12 }, vram: { usagePercent: 28, totalGB: 24, usedGB: 6.72 }, system: { cpuUsagePercent: 18, memoryUsagePercent: 40, diskTotal: 1000965890048, diskUsed: 322122547200, diskFree: 678843342848, networkRX: 5242880, networkTX: 3145728 }, score: 0.88, models: ['llama3.1'], lastSeen: n, ollama: { requestsPerSecond: 0.5, backendCapacity: { freeVram: 16384, loadableModelCount: 5, guaranteedVram: 2048, mode: 'gpu', availableModels: [{ name: 'gemma2:9b', canLoad: true, estimatedVram: 5120 }, { name: 'llama3.1:70b', canLoad: true, estimatedVram: 40960 }, { name: 'deepseek-r1:7b', canLoad: true, estimatedVram: 4096 }, { name: 'phi3:mini', canLoad: true, estimatedVram: 2048 }, { name: 'mistral:7b', canLoad: true, estimatedVram: 4096 }, { name: 'codellama:34b', canLoad: false, estimatedVram: 22528 }] } } },
+          { id: 'ollama-3', status: 'error', activeRequests: 0, maxConcurrentRequests: 8, gpu: { usagePercent: 0 }, vram: { usagePercent: 0, totalGB: 24, usedGB: 0 }, system: { cpuUsagePercent: 5, memoryUsagePercent: 20, diskTotal: 250225098752, diskUsed: 131941395333, diskFree: 118283703419 }, score: 0.0, models: [], lastSeen: n, ollama: { requestsPerSecond: 0, backendCapacity: { freeVram: 24576, loadableModelCount: 0, guaranteedVram: 0, mode: 'gpu', availableModels: [] } } }
         ],
         rps: 1.7,
         queue: { max_size: 100 }
@@ -121,6 +121,38 @@
           }
         ]
       },
+      candidates: [
+        {
+          model: "llama3.1:8b",
+          groups: [
+            { priority: 1, label: "LOADED", backend_ids: ["ollama-1", "ollama-2"] },
+            { priority: 3, label: "FREE", backend_ids: ["ollama-3"] },
+            { priority: 4, label: "FALLBACK", backend_ids: ["ollama-1", "ollama-2", "ollama-3"] }
+          ],
+          total: 6,
+          has_ready: true
+        },
+        {
+          model: "gemma2:9b",
+          groups: [
+            { priority: 1, label: "LOADED", backend_ids: ["ollama-1"] },
+            { priority: 3, label: "FREE", backend_ids: ["ollama-3"] },
+            { priority: 4, label: "FALLBACK", backend_ids: ["ollama-1", "ollama-2", "ollama-3"] }
+          ],
+          total: 5,
+          has_ready: true
+        },
+        {
+          model: "deepseek-r1:7b",
+          groups: [
+            { priority: 2, label: "WARMING", backend_ids: ["ollama-2"] },
+            { priority: 3, label: "FREE", backend_ids: ["ollama-3"] },
+            { priority: 4, label: "FALLBACK", backend_ids: ["ollama-1", "ollama-2", "ollama-3"] }
+          ],
+          total: 5,
+          has_ready: false
+        }
+      ],
       queueStats: {
         current_size: 5,
         max_size: 100,
@@ -139,6 +171,12 @@
           { id: '192.168.1.100::OpenWebUI::gemma2', backendId: 'ollama-2', model: 'gemma2', clientIP: '192.168.1.100', clientName: 'OpenWebUI', requestCount: 5, lastRequestAt: new Date(Date.now() - 8000).toISOString() },
           { id: '192.168.1.100::python-requests::llama3.1', backendId: 'ollama-1', model: 'llama3.1', clientIP: '192.168.1.100', clientName: 'python-requests/2.31.0', requestCount: 3, lastRequestAt: new Date(Date.now() - 1200).toISOString() },
           { id: '10.0.0.50::Cline::deepseek-r1', backendId: 'ollama-1', model: 'deepseek-r1', clientIP: '10.0.0.50', clientName: 'Cline', requestCount: 8, lastRequestAt: new Date(Date.now() - 4000).toISOString() }
+        ]
+      },
+      modelOps: {
+        operations: [
+          { operation: 'load', modelName: 'llama3.1:8b', backendId: 'ollama-1', startedAt: new Date(Date.now() - 5000).toISOString(), duration: '5s', status: 'running' },
+          { operation: 'pull', modelName: 'deepseek-r1:7b', backendId: 'ollama-2', startedAt: new Date(Date.now() - 12000).toISOString(), duration: '12s', status: 'running' }
         ]
       }
     };
@@ -185,17 +223,20 @@
       api('/api/v1/sessions').catch(function(e) { if (!isAbortError(e)) console.warn('[monitor] sessions:', e.message); return null; }),
       api('/api/v1/autopull').catch(function(e) { if (!isAbortError(e)) console.warn('[monitor] autopull config:', e.message); return null; }),
       api('/api/v1/autopull/status').catch(function(e) { if (!isAbortError(e)) console.warn('[monitor] autopull status:', e.message); return null; }),
-      api('/api/v1/virtualmodels').catch(function(e) { if (!isAbortError(e)) console.warn('[monitor] virtualmodels:', e.message); return null; })
+      api('/api/v1/virtualmodels').catch(function(e) { if (!isAbortError(e)) console.debug('[monitor] virtualmodels:', e.message); return null; }),
+      api('/api/v1/candidates').catch(function(e) { if (!isAbortError(e)) console.warn('[monitor] candidates:', e.message); return null; }),
+      api('/api/v1/models/operations').catch(function(e) { if (!isAbortError(e)) console.warn('[monitor] model ops:', e.message); return null; })
     ]).then(function(r) {
-      var cluster = r[0], qd = r[1], qs = r[2], sess = r[3], apCfg = r[4], apStatus = r[5], vm = r[6];
+      var cluster = r[0], qd = r[1], qs = r[2], sess = r[3], apCfg = r[4], apStatus = r[5], vm = r[6], cand = r[7], modelOps = r[8];
       var data;
       if (cluster && (!cluster.backends || cluster.backends.length === 0)) {
         MA.lastData = null;
         data = null;
       } else {
-        data = { cluster: cluster, queueDetails: qd, queueStats: qs, sessions: sess, autoPullConfig: apCfg, autoPullStatus: apStatus, virtualModels: vm };
+        data = { cluster: cluster, queueDetails: qd, queueStats: qs, sessions: sess, autoPullConfig: apCfg, autoPullStatus: apStatus, virtualModels: vm, candidates: cand, modelOps: modelOps };
         MA.lastData = data;
       }
+
       MA.fetchAttempt = 0;
       MA.corsErrorDetected = false;
       hideOverlays();

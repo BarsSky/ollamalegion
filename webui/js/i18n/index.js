@@ -3,6 +3,12 @@
 (function () {
   'use strict';
 
+  // Guard against duplicate initialization (e.g. when monitor.html is loaded inside an iframe)
+  if (window.__i18nInitialized) {
+    return;
+  }
+  window.__i18nInitialized = true;
+
   const STORAGE_KEY = 'ollamalegion_lang';
   const DEFAULT_LANG = 'en';
 

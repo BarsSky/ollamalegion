@@ -19,6 +19,7 @@
 .vscode/
 
 bin/
+build/
 deployments/.env
 deployments/data/
 data/
@@ -27,7 +28,7 @@ data/
 
 task_progress.json
 
-coverage
+coverage/
 
 c
 
@@ -38,3 +39,12 @@ test_embed.json
 test_generate.json
 
 .cocoindex_code/
+
+# Temp artifacts
+utputFormat
+final_run.txt
+final_tests.txt
+test_output.txt
+test_result.txt
+test_result2.txt
+test_results_final.txt

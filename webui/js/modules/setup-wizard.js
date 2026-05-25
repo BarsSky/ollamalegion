@@ -1,24 +1,43 @@
 /**
- * setup-wizard.js — Initial Server Setup Wizard (5 steps + import)
+ * setup-wizard.js — Initial Server Setup Wizard (6 steps + import)
  * OllamaLegion WebUI
  *
+ * === ARCHITECTURE ===
+ * wizardState — изолированное состояние, накапливающее выборы пользователя.
+ * НИКАКИЕ изменения не отправляются на сервер до финального шага (Finish).
+ * finishWizard() собирает wizardState + поля форм → один PUT на сервер.
+ *
  * Флаг initialized хранится на сервере (config/config.json), а не в localStorage.
- * Wizard загружает текущие настройки с сервера перед отображением шагов.
  */
 (function () {
     'use strict';
 
     var currentStep = 1;
-    var totalSteps = 5;
-    var currentServerConfig = null; // Кэш конфигурации с сервера
+    var totalSteps = 6;
+    var currentServerConfig = null;
+
+    // === ИЗОЛИРОВАННОЕ СОСТОЯНИЕ WIZARD ===
+    // Накапливает выборы пользователя. Применяется только при finishWizard().
+    var wizardState = {
+        backendType: 'ollama',        // 'ollama' | 'llama_cpp'
+        operatingMode: 'standard',    // режим работы балансера
+        // настройки общего характера (шаг 5)
+        algorithm: 'resource-aware',
+        gpuMaxUsage: 90,
+        vramMaxUsage: 85,
+        cpuMaxUsage: 80,
+        ramMaxUsage: 85,
+        // mode-specific params (шаг 4)
+        replication: null,
+        rpcCoordinator: null,
+        virtualModels: null,
+        distInference: null
+    };
 
     /**
      * Проверяет, выполнена ли первичная настройка (обращение к серверу)
-     * + клиентский кэш: если сервер не доступен, но localStorage говорит
-     *   что wizard завершён — считаем инициализированным.
      */
     function isInitialized() {
-        // Сервер — единственный источник истины. Возвращаем Promise.
         if (!window.Api || !window.Api.config) {
             return Promise.resolve(!!localStorage.getItem('ollamalegion_wizard_done'));
         }
@@ -30,14 +49,10 @@
             }
             return srvInit;
         }).catch(function () {
-            // Сервер недоступен — fallback на клиентский кэш wizard
             return !!localStorage.getItem('ollamalegion_wizard_done');
         });
     }
 
-    /**
-     * Отметить инициализацию на сервере
-     */
     function markInitialized() {
         if (window.Api && window.Api.updateConfig) {
             return window.Api.updateConfig({ initialized: true });
@@ -45,9 +60,6 @@
         return Promise.reject(new Error('API not available'));
     }
 
-    /**
-     * Сброс флага инициализации (требует повторной настройки)
-     */
     function reset() {
         if (window.Api && window.Api.updateConfig) {
             return window.Api.updateConfig({ initialized: false });
@@ -55,9 +67,6 @@
         return Promise.reject(new Error('API not available'));
     }
 
-    /**
-     * Загрузить текущую конфигурацию с сервера
-     */
     function fetchServerConfig() {
         if (window.Api && window.Api.config) {
             return window.Api.config().then(function (cfg) {
@@ -68,16 +77,48 @@
         return Promise.resolve({});
     }
 
-    /**
-     * Show the setup wizard modal
-     */
+    // ================================================================
+    // WIZARD LIFECYCLE
+    // ================================================================
+
     function start() {
+        // Инициализируем wizardState. Приоритет: localStorage > серверный конфиг > ollama.
+        var savedType = localStorage.getItem('ollamalegion_backend_type');
+        var initialType = (savedType === 'llama_cpp' || savedType === 'ollama') ? savedType : 'ollama';
+
+        wizardState = {
+            backendType: initialType,
+            operatingMode: 'standard',
+            algorithm: 'resource-aware',
+            gpuMaxUsage: 90,
+            vramMaxUsage: 85,
+            cpuMaxUsage: 80,
+            ramMaxUsage: 85,
+            replication: null,
+            rpcCoordinator: null,
+            virtualModels: null,
+            distInference: null
+        };
+
         currentStep = 1;
         var existing = document.getElementById('setupWizardModal');
         if (existing) existing.remove();
 
-        // Сначала загружаем текущие настройки с сервера
         fetchServerConfig().then(function () {
+            // Подгружаем дефолты из серверного конфига если есть.
+            // ВАЖНО: backendType НЕ перезаписываем из сервера —
+            // доверяем localStorage (initialType), установленному выше.
+            if (currentServerConfig) {
+                if (currentServerConfig.operatingMode) {
+                    wizardState.operatingMode = currentServerConfig.operatingMode;
+                }
+                if (currentServerConfig.algorithm) wizardState.algorithm = currentServerConfig.algorithm;
+                if (currentServerConfig.gpuMaxUsage) wizardState.gpuMaxUsage = currentServerConfig.gpuMaxUsage;
+                if (currentServerConfig.vramMaxUsage) wizardState.vramMaxUsage = currentServerConfig.vramMaxUsage;
+                if (currentServerConfig.cpuMaxUsage) wizardState.cpuMaxUsage = currentServerConfig.cpuMaxUsage;
+                if (currentServerConfig.ramMaxUsage) wizardState.ramMaxUsage = currentServerConfig.ramMaxUsage;
+            }
+
             var modal = document.createElement('div');
             modal.className = 'modal active';
             modal.id = 'setupWizardModal';
@@ -89,6 +130,16 @@
             bindWizardEvents(modal);
         });
     }
+
+    function closeWizard() {
+        var modal = document.getElementById('setupWizardModal');
+        if (modal) modal.remove();
+        wizardState = null;
+    }
+
+    // ================================================================
+    // RENDERING
+    // ================================================================
 
     function buildWizardHTML() {
         return '<div class="wizard-modal">' +
@@ -114,12 +165,14 @@
         var container = document.getElementById('wizardSteps');
         if (!container) return;
 
+        var t = window.I18N ? I18N.t.bind(I18N) : function(k) { return k; };
         var steps = [
-            window.I18N ? I18N.t('wizard.step1') : 'Welcome',
-            window.I18N ? I18N.t('wizard.step2') : 'Mode',
-            window.I18N ? I18N.t('wizard.step3') : 'Settings',
-            window.I18N ? I18N.t('wizard.step4') : 'General',
-            window.I18N ? I18N.t('wizard.step5') : 'Summary'
+            t('wizard.step1'),
+            t('wizard.step_backend_type') || 'Backend Type',
+            t('wizard.step2'),
+            t('wizard.step3'),
+            t('wizard.step4'),
+            t('wizard.step5')
         ];
 
         var html = '';
@@ -142,38 +195,26 @@
 
         var html = '';
         switch (step) {
-            case 1:
-                html = renderWelcomeStep();
-                break;
-            case 2:
-                html = renderModeSelectionStep();
-                break;
-            case 3:
-                html = renderModeParamsStep();
-                break;
-            case 4:
-                html = renderGeneralSettingsStep();
-                break;
-            case 5:
-                html = renderSummaryStep();
-                break;
+            case 1: html = renderWelcomeStep(); break;
+            case 2: html = renderBackendTypeStep(); break;
+            case 3: html = renderModeSelectionStep(); break;
+            case 4: html = renderModeParamsStep(); break;
+            case 5: html = renderGeneralSettingsStep(); break;
+            case 6: html = renderSummaryStep(); break;
         }
         body.innerHTML = html;
 
-        // Initialize dynamic components
-        if (step === 2 && window.SettingsUI) {
+        if (step === 3 && window.SettingsUI) {
             window.SettingsUI.setupModeSelector();
         }
-        if (step === 3) {
-            var mode = getWizardMode();
-            if (window.SettingsUI) {
-                window.SettingsUI.showModeFields(mode);
-            }
-            // Применяем текущие значения с сервера к полям мастера
-            applyServerValuesToWizard();
-        }
         if (step === 4) {
-            applyServerValuesToGeneral();
+            if (window.SettingsUI) {
+                window.SettingsUI.showModeFields(wizardState.operatingMode);
+            }
+            applyWizardStateToModeFields();
+        }
+        if (step === 5) {
+            applyWizardStateToGeneralFields();
         }
     }
 
@@ -182,8 +223,6 @@
         if (!footer) return;
 
         var html = '<div class="wizard-nav">';
-
-        // Import button only on step 1
         if (step === 1) {
             html += '<button class="btn btn-secondary" id="wizardImportBtn">' +
                 (window.I18N ? I18N.t('wizard.import') : '📂 Import Config') + '</button>';
@@ -202,50 +241,88 @@
                     (window.I18N ? I18N.t('wizard.finish') : '🚀 Start!') + '</button>';
             }
         }
-
         html += '</div>';
         footer.innerHTML = html;
     }
 
-    // ---- Apply server values to wizard fields ----
+    // ================================================================
+    // APPLY WIZARDSTATE TO FORM FIELDS
+    // ================================================================
 
-    function applyServerValuesToWizard() {
-        if (!currentServerConfig) return;
-        var mode = getWizardMode();
-        var sc = currentServerConfig;
-
-        if (mode === 'replication' && sc.modelReplication) {
-            setFieldValue('modelReplicationMinInstances', sc.modelReplication.defaultMinInstances);
-            setFieldValue('modelReplicationMaxInstances', sc.modelReplication.defaultMaxInstances);
-            setFieldValue('modelReplicationIdleUnload', sc.modelReplication.idleUnloadAfter);
+    function applyWizardStateToModeFields() {
+        var mode = wizardState.operatingMode;
+        if (mode === 'replication' && wizardState.replication) {
+            setFieldValue('modelReplicationMinInstances', wizardState.replication.defaultMinInstances);
+            setFieldValue('modelReplicationMaxInstances', wizardState.replication.defaultMaxInstances);
+            setFieldValue('modelReplicationIdleUnload', wizardState.replication.idleUnloadAfter);
         }
-        if (mode === 'rpc_coordinator' && sc.rpcCoordinator) {
-            setFieldValue('rpcCoordinatorURL', sc.rpcCoordinator.coordinatorURL);
-            setFieldValue('rpcCoordinatorWorkerPort', sc.rpcCoordinator.workerPort);
-            setFieldValue('rpcCoordinatorProtocol', sc.rpcCoordinator.protocol);
-            setFieldValue('rpcCoordinatorTimeout', sc.rpcCoordinator.timeout);
-            setFieldValue('rpcCoordinatorMaxRetries', sc.rpcCoordinator.maxRetries);
+        if (mode === 'rpc_coordinator' && wizardState.rpcCoordinator) {
+            setFieldValue('rpcCoordinatorURL', wizardState.rpcCoordinator.coordinatorURL);
+            setFieldValue('rpcCoordinatorWorkerPort', wizardState.rpcCoordinator.workerPort);
+            setFieldValue('rpcCoordinatorProtocol', wizardState.rpcCoordinator.protocol);
+            setFieldValue('rpcCoordinatorTimeout', wizardState.rpcCoordinator.timeout);
+            setFieldValue('rpcCoordinatorMaxRetries', wizardState.rpcCoordinator.maxRetries);
         }
-        if (mode === 'virtual_router' && sc.virtualModels) {
-            setFieldValue('virtualModelsCoordMode', sc.virtualModels.coordMode || sc.virtualModels.models?.[0]?.coordination?.mode);
-            setFieldValue('virtualModelsTimeout', sc.virtualModels.timeout || sc.virtualModels.models?.[0]?.coordination?.timeoutMs);
+        if (mode === 'virtual_router' && wizardState.virtualModels) {
+            setFieldValue('virtualModelsCoordMode', wizardState.virtualModels.coordMode);
+            setFieldValue('virtualModelsTimeout', wizardState.virtualModels.timeout);
         }
-        if (mode === 'distributed_inference' && sc.distInference) {
-            setFieldValue('distInferenceGrpcPort', sc.distInference.grpcPort);
+        if (mode === 'distributed_inference' && wizardState.distInference) {
+            setFieldValue('distInferenceGrpcPort', wizardState.distInference.grpcPort);
         }
     }
 
-    function applyServerValuesToGeneral() {
-        if (!currentServerConfig) return;
-        var sc = currentServerConfig;
-        setFieldValue('balancingAlgorithm', sc.algorithm);
-        setFieldValue('gpuMaxUsage', sc.gpuMaxUsage);
-        setFieldValue('vramMaxUsage', sc.vramMaxUsage);
-        setFieldValue('cpuMaxUsage', sc.cpuMaxUsage);
-        setFieldValue('ramMaxUsage', sc.ramMaxUsage);
+    function applyWizardStateToGeneralFields() {
+        setFieldValue('balancingAlgorithm', wizardState.algorithm);
+        setFieldValue('gpuMaxUsage', wizardState.gpuMaxUsage);
+        setFieldValue('vramMaxUsage', wizardState.vramMaxUsage);
+        setFieldValue('cpuMaxUsage', wizardState.cpuMaxUsage);
+        setFieldValue('ramMaxUsage', wizardState.ramMaxUsage);
     }
 
-    // ---- Step 1: Welcome ----
+    function readModeParamsIntoState() {
+        var mode = wizardState.operatingMode;
+        if (mode === 'replication') {
+            wizardState.replication = {
+                enabled: true,
+                defaultMinInstances: parseInt(getFieldValue('modelReplicationMinInstances', 1)),
+                defaultMaxInstances: parseInt(getFieldValue('modelReplicationMaxInstances', 3)),
+                idleUnloadAfter: getFieldValue('modelReplicationIdleUnload', '10m')
+            };
+        } else if (mode === 'rpc_coordinator') {
+            wizardState.rpcCoordinator = {
+                enabled: true,
+                coordinatorURL: getFieldValue('rpcCoordinatorURL', ''),
+                workerPort: parseInt(getFieldValue('rpcCoordinatorWorkerPort', 18050)),
+                protocol: getFieldValue('rpcCoordinatorProtocol', 'http'),
+                timeout: getFieldValue('rpcCoordinatorTimeout', '30s'),
+                maxRetries: parseInt(getFieldValue('rpcCoordinatorMaxRetries', 3))
+            };
+        } else if (mode === 'virtual_router') {
+            wizardState.virtualModels = {
+                enabled: true,
+                coordMode: getFieldValue('virtualModelsCoordMode', 'sequential'),
+                timeout: parseInt(getFieldValue('virtualModelsTimeout', 30000))
+            };
+        } else if (mode === 'distributed_inference') {
+            wizardState.distInference = {
+                enabled: true,
+                grpcPort: parseInt(getFieldValue('distInferenceGrpcPort', 19000))
+            };
+        }
+    }
+
+    function readGeneralFieldsIntoState() {
+        wizardState.algorithm = getFieldValue('balancingAlgorithm', 'resource-aware');
+        wizardState.gpuMaxUsage = parseFloat(getFieldValue('gpuMaxUsage', 90));
+        wizardState.vramMaxUsage = parseFloat(getFieldValue('vramMaxUsage', 85));
+        wizardState.cpuMaxUsage = parseFloat(getFieldValue('cpuMaxUsage', 80));
+        wizardState.ramMaxUsage = parseFloat(getFieldValue('ramMaxUsage', 85));
+    }
+
+    // ================================================================
+    // STEP RENDERERS
+    // ================================================================
 
     function renderWelcomeStep() {
         return '<div class="wizard-step-content welcome-step">' +
@@ -260,202 +337,189 @@
             '</div>';
     }
 
-    // ---- Step 2: Mode Selection ----
+    function renderBackendTypeStep() {
+        var bt = wizardState.backendType;
+        var t = window.I18N ? I18N.t.bind(I18N) : function(k) { return k; };
 
-    function renderModeSelectionStep() {
-        // Определяем текущий режим из серверного конфига
-        var currentMode = currentServerConfig && currentServerConfig.operatingMode ? currentServerConfig.operatingMode : 'standard';
-        return '<div class="wizard-step-content mode-step">' +
-            '<h3>' + (window.I18N ? I18N.t('wizard.step2') : 'Select Operating Mode') + '</h3>' +
-            '<div class="mode-selector">' +
+        return '<div class="wizard-step-content backend-type-step">' +
+            '<h3>' + (t('wizard.step_backend_type') || 'Backend Type') + '</h3>' +
+            '<p style="color:var(--text-muted);font-size:13px;margin-bottom:16px;">' +
+                (t('wizard.backend_type_desc') || 'Select which inference engine your backends will use.') +
+            '</p>' +
             '<div class="mode-cards">' +
-            renderModeCard('standard', '⚙️',
-                window.I18N ? I18N.t('settings.mode.standard') : 'Standard Balancer',
-                window.I18N ? I18N.t('settings.mode.standard_desc') : 'Basic load balancing without RPC',
-                currentMode === 'standard') +
-            renderModeCard('replication', '📋',
-                window.I18N ? I18N.t('settings.mode.replication') : 'Model Replication (A)',
-                window.I18N ? I18N.t('settings.mode.replication_desc') : 'Replicate models across backends',
-                currentMode === 'replication') +
-            renderModeCard('rpc_coordinator', '🌐',
-                window.I18N ? I18N.t('settings.mode.rpc_coordinator') : 'External RPC Coordinator (B)',
-                window.I18N ? I18N.t('settings.mode.rpc_coordinator_desc') : 'External RPC coordinator',
-                currentMode === 'rpc_coordinator') +
-            renderModeCard('virtual_router', '🧩',
-                window.I18N ? I18N.t('settings.mode.virtual_router') : 'Virtual Model Router (C)',
-                window.I18N ? I18N.t('settings.mode.virtual_router_desc') : 'Pipeline parallelism via slices',
-                currentMode === 'virtual_router') +
-            renderModeCard('distributed_inference', '🔬',
-                window.I18N ? I18N.t('settings.mode.distributed') : 'Distributed Inference (D)',
-                window.I18N ? I18N.t('settings.mode.distributed_desc') : 'Custom gRPC distributed inference',
-                currentMode === 'distributed_inference') +
-            '</div>' +
+            '<label class="mode-card' + (bt === 'ollama' ? ' active' : '') + '" data-type="ollama" data-backend-type="ollama">' +
+                '<input type="radio" name="backendType" value="ollama" ' + (bt === 'ollama' ? 'checked' : '') + '>' +
+                '<div class="mode-card-icon">🦙</div>' +
+                '<div class="mode-card-title">Ollama</div>' +
+                '<div class="mode-card-desc">' + (t('wizard.backend_type_ollama_desc') || 'Standard Ollama API.') + '</div>' +
+            '</label>' +
+            '<label class="mode-card' + (bt === 'llama_cpp' ? ' active' : '') + '" data-type="llama_cpp" data-backend-type="llama_cpp">' +
+                '<input type="radio" name="backendType" value="llama_cpp" ' + (bt === 'llama_cpp' ? 'checked' : '') + '>' +
+                '<div class="mode-card-icon">🦒</div>' +
+                '<div class="mode-card-title">llama.cpp</div>' +
+                '<div class="mode-card-desc">' + (t('wizard.backend_type_llama_desc') || 'llama.cpp via CppWorker.') + '</div>' +
+            '</label>' +
             '</div>' +
             '</div>';
     }
 
-    function renderModeCard(mode, icon, title, desc, checked) {
-        return '<label class="mode-card' + (checked ? ' active' : '') + '" data-mode="' + mode + '">' +
-            '<input type="radio" name="operatingMode" value="' + mode + '" ' + (checked ? 'checked' : '') + '>' +
-            '<div class="mode-card-icon">' + icon + '</div>' +
-            '<div class="mode-card-title">' + title + '</div>' +
-            '<div class="mode-card-desc">' + desc + '</div>' +
-            '</label>';
+    function getAvailableModesForType(type) {
+        if (type === 'llama_cpp') return ['standard', 'virtual_router', 'distributed_inference'];
+        return ['standard', 'replication', 'rpc_coordinator'];
     }
 
-    function getWizardMode() {
-        var checked = document.querySelector('input[name="operatingMode"]:checked');
-        return checked ? checked.value : 'standard';
-    }
+    function renderModeSelectionStep() {
+        var availableModes = getAvailableModesForType(wizardState.backendType);
+        // Если текущий выбранный режим недоступен для типа — сбрасываем на standard
+        if (availableModes.indexOf(wizardState.operatingMode) < 0) {
+            wizardState.operatingMode = 'standard';
+        }
 
-    // ---- Step 3: Mode Parameters ----
+        var allModeCards = {
+            standard: { icon: '⚙️', title: window.I18N ? I18N.t('settings.mode.standard') : 'Standard Balancer', desc: window.I18N ? I18N.t('settings.mode.standard_desc') : 'Basic load balancing' },
+            replication: { icon: '📋', title: window.I18N ? I18N.t('settings.mode.replication') : 'Model Replication (A)', desc: window.I18N ? I18N.t('settings.mode.replication_desc') : 'Replicate models across backends' },
+            rpc_coordinator: { icon: '🌐', title: window.I18N ? I18N.t('settings.mode.rpc_coordinator') : 'RPC Coordinator (B)', desc: window.I18N ? I18N.t('settings.mode.rpc_coordinator_desc') : 'External RPC coordinator' },
+            virtual_router: { icon: '🧩', title: window.I18N ? I18N.t('settings.mode.virtual_router') : 'Virtual Model Router (C)', desc: window.I18N ? I18N.t('settings.mode.virtual_router_desc') : 'Pipeline parallelism via slices' },
+            distributed_inference: { icon: '🔬', title: window.I18N ? I18N.t('settings.mode.distributed') : 'Distributed Inference (D)', desc: window.I18N ? I18N.t('settings.mode.distributed_desc') : 'Custom gRPC distributed inference' }
+        };
+
+        var cardsHtml = '';
+        availableModes.forEach(function (mode) {
+            var mc = allModeCards[mode];
+            if (mc) {
+                cardsHtml += '<label class="mode-card' + (wizardState.operatingMode === mode ? ' active' : '') + '" data-mode="' + mode + '">' +
+                    '<input type="radio" name="operatingMode" value="' + mode + '" ' + (wizardState.operatingMode === mode ? 'checked' : '') + '>' +
+                    '<div class="mode-card-icon">' + mc.icon + '</div>' +
+                    '<div class="mode-card-title">' + mc.title + '</div>' +
+                    '<div class="mode-card-desc">' + mc.desc + '</div>' +
+                    '</label>';
+            }
+        });
+
+        if (!cardsHtml) {
+            cardsHtml = '<p style="color:var(--text-muted);">' +
+                (window.I18N ? I18N.t('wizard.summary_empty') : 'No modes available for this backend type') + '</p>';
+        }
+
+        var t = window.I18N ? I18N.t.bind(I18N) : function(k) { return k; };
+        return '<div class="wizard-step-content mode-step">' +
+            '<h3>' + (t('wizard.step2') || 'Select Operating Mode') + '</h3>' +
+            '<p style="color:var(--text-muted);font-size:13px;margin-bottom:16px;">' +
+                (t('wizard.mode_selection_desc') || 'Choose the operating mode.') + '</p>' +
+            '<div class="mode-selector"><div class="mode-cards">' + cardsHtml + '</div></div>' +
+            '</div>';
+    }
 
     function renderModeParamsStep() {
-        var mode = getWizardMode();
-        var sc = currentServerConfig || {};
+        var mode = wizardState.operatingMode;
+        var sc = wizardState;
+
         return '<div class="wizard-step-content params-step">' +
             '<h3>' + (window.I18N ? I18N.t('wizard.step3') : 'Mode Parameters') + '</h3>' +
-            '<div class="wizard-mode-description" id="wizardModeDesc"></div>' +
-            '<!-- Standard fields (always visible) -->' +
             '<div id="modeFields-standard" class="mode-fields">' +
             '<p style="color:var(--text-muted);">' + (window.I18N ? I18N.t('wizard.summary_empty') : 'Standard mode — no additional parameters required') + '</p>' +
             '</div>' +
-            '<!-- Mode A: Replication -->' +
             '<div id="modeFields-replication" class="mode-fields" style="display:none;">' +
             '<div class="form-row">' +
             '<div class="form-group"><label>' + (window.I18N ? I18N.t('settings.model_replication_min') : 'Min Instances') + '</label>' +
-            '<input type="number" id="modelReplicationMinInstances" class="form-control" value="' + (sc.modelReplication?.defaultMinInstances || 1) + '" min="0" max="10"></div>' +
+            '<input type="number" id="modelReplicationMinInstances" class="form-control" value="' + ((sc.replication && sc.replication.defaultMinInstances) || 1) + '" min="0" max="10"></div>' +
             '<div class="form-group"><label>' + (window.I18N ? I18N.t('settings.model_replication_max') : 'Max Instances') + '</label>' +
-            '<input type="number" id="modelReplicationMaxInstances" class="form-control" value="' + (sc.modelReplication?.defaultMaxInstances || 3) + '" min="0" max="20"></div>' +
+            '<input type="number" id="modelReplicationMaxInstances" class="form-control" value="' + ((sc.replication && sc.replication.defaultMaxInstances) || 3) + '" min="0" max="20"></div>' +
             '</div>' +
             '<div class="form-group"><label>' + (window.I18N ? I18N.t('settings.model_replication_idle_unload') : 'Idle Unload After') + '</label>' +
-            '<input type="text" id="modelReplicationIdleUnload" class="form-control" value="' + (sc.modelReplication?.idleUnloadAfter || '10m') + '" placeholder="10m, 30m, 1h"></div>' +
+            '<input type="text" id="modelReplicationIdleUnload" class="form-control" value="' + ((sc.replication && sc.replication.idleUnloadAfter) || '10m') + '" placeholder="10m, 30m, 1h"></div>' +
             '</div>' +
-            '<!-- Mode B: RPC Coordinator -->' +
             '<div id="modeFields-rpc_coordinator" class="mode-fields" style="display:none;">' +
             '<div class="form-group"><label>' + (window.I18N ? I18N.t('settings.rpc_coordinator_url') : 'Coordinator URL') + '</label>' +
-            '<input type="text" id="rpcCoordinatorURL" class="form-control" value="' + (sc.rpcCoordinator?.coordinatorURL || '') + '" placeholder="http://coordinator:8080"></div>' +
+            '<input type="text" id="rpcCoordinatorURL" class="form-control" value="' + ((sc.rpcCoordinator && sc.rpcCoordinator.coordinatorURL) || '') + '" placeholder="http://coordinator:8080"></div>' +
             '<div class="form-row">' +
             '<div class="form-group"><label>' + (window.I18N ? I18N.t('settings.rpc_coordinator_port') : 'Worker Port') + '</label>' +
-            '<input type="number" id="rpcCoordinatorWorkerPort" class="form-control" value="' + (sc.rpcCoordinator?.workerPort || 18050) + '"></div>' +
+            '<input type="number" id="rpcCoordinatorWorkerPort" class="form-control" value="' + ((sc.rpcCoordinator && sc.rpcCoordinator.workerPort) || 18050) + '"></div>' +
             '<div class="form-group"><label>' + (window.I18N ? I18N.t('settings.rpc_coordinator_protocol') : 'Protocol') + '</label>' +
-            '<select id="rpcCoordinatorProtocol" class="form-control"><option value="http"' + (sc.rpcCoordinator?.protocol === 'http' ? ' selected' : '') + '>HTTP</option><option value="grpc"' + (sc.rpcCoordinator?.protocol === 'grpc' ? ' selected' : '') + '>gRPC</option></select></div>' +
+            '<select id="rpcCoordinatorProtocol" class="form-control"><option value="http">HTTP</option><option value="grpc">gRPC</option></select></div>' +
             '</div>' +
             '<div class="form-row">' +
             '<div class="form-group"><label>' + (window.I18N ? I18N.t('settings.rpc_coordinator_timeout') : 'Timeout') + '</label>' +
-            '<input type="text" id="rpcCoordinatorTimeout" class="form-control" value="' + (sc.rpcCoordinator?.timeout || '30s') + '" placeholder="30s, 60s"></div>' +
+            '<input type="text" id="rpcCoordinatorTimeout" class="form-control" value="' + ((sc.rpcCoordinator && sc.rpcCoordinator.timeout) || '30s') + '" placeholder="30s, 60s"></div>' +
             '<div class="form-group"><label>' + (window.I18N ? I18N.t('settings.rpc_coordinator_retries') : 'Max Retries') + '</label>' +
-            '<input type="number" id="rpcCoordinatorMaxRetries" class="form-control" value="' + (sc.rpcCoordinator?.maxRetries || 3) + '" min="0" max="10"></div>' +
+            '<input type="number" id="rpcCoordinatorMaxRetries" class="form-control" value="' + ((sc.rpcCoordinator && sc.rpcCoordinator.maxRetries) || 3) + '" min="0" max="10"></div>' +
             '</div>' +
             '</div>' +
-            '<!-- Mode C: Virtual Router -->' +
             '<div id="modeFields-virtual_router" class="mode-fields" style="display:none;">' +
             '<div class="form-group"><label>' + (window.I18N ? I18N.t('settings.virtual_models_coord_mode') : 'Coordination Mode') + '</label>' +
             '<select id="virtualModelsCoordMode" class="form-control">' +
-            '<option value="sequential"' + ((sc.virtualModels?.coordMode || sc.virtualModels?.models?.[0]?.coordination?.mode) === 'sequential' ? ' selected' : '') + '>' + (window.I18N ? I18N.t('settings.virtual_models_mode_sequential') : 'Sequential') + '</option>' +
-            '<option value="parallel"' + ((sc.virtualModels?.coordMode || sc.virtualModels?.models?.[0]?.coordination?.mode) === 'parallel' ? ' selected' : '') + '>' + (window.I18N ? I18N.t('settings.virtual_models_mode_parallel') : 'Parallel') + '</option>' +
-            '<option value="tree"' + ((sc.virtualModels?.coordMode || sc.virtualModels?.models?.[0]?.coordination?.mode) === 'tree' ? ' selected' : '') + '>' + (window.I18N ? I18N.t('settings.virtual_models_mode_tree') : 'Tree') + '</option>' +
+            '<option value="sequential">Sequential</option>' +
+            '<option value="parallel">Parallel</option>' +
+            '<option value="tree">Tree</option>' +
             '</select></div>' +
             '<div class="form-group"><label>' + (window.I18N ? I18N.t('settings.virtual_models_timeout') : 'Timeout (ms)') + '</label>' +
-            '<input type="number" id="virtualModelsTimeout" class="form-control" value="' + (sc.virtualModels?.timeout || sc.virtualModels?.models?.[0]?.coordination?.timeoutMs || 30000) + '" min="1000"></div>' +
+            '<input type="number" id="virtualModelsTimeout" class="form-control" value="' + ((sc.virtualModels && sc.virtualModels.timeout) || 30000) + '" min="1000"></div>' +
             '</div>' +
-            '<!-- Mode D: Distributed Inference -->' +
             '<div id="modeFields-distributed_inference" class="mode-fields" style="display:none;">' +
             '<div class="form-group"><label>' + (window.I18N ? I18N.t('settings.dist_inference_grpc_port') : 'gRPC Port') + '</label>' +
-            '<input type="number" id="distInferenceGrpcPort" class="form-control" value="' + (sc.distInference?.grpcPort || 19000) + '" min="1024" max="65535"></div>' +
+            '<input type="number" id="distInferenceGrpcPort" class="form-control" value="' + ((sc.distInference && sc.distInference.grpcPort) || 19000) + '" min="1024" max="65535"></div>' +
             '</div>' +
             '</div>';
     }
 
-    // ---- Step 4: General Settings ----
-
     function renderGeneralSettingsStep() {
-        var sc = currentServerConfig || {};
+        var sc = wizardState;
         return '<div class="wizard-step-content general-step">' +
             '<h3>' + (window.I18N ? I18N.t('wizard.step4') : 'General Settings') + '</h3>' +
             '<div class="form-group">' +
             '<label>' + (window.I18N ? I18N.t('settings.balancing_mode') : 'Balancing Algorithm') + '</label>' +
             '<select id="balancingAlgorithm" class="form-control">' +
-            '<option value="resource-aware"' + (sc.algorithm === 'resource-aware' ? ' selected' : '') + '>' + (window.I18N ? I18N.t('settings.balancing_resource_aware') : 'Resource-Aware') + '</option>' +
-            '<option value="least-connections"' + (sc.algorithm === 'least-connections' ? ' selected' : '') + '>' + (window.I18N ? I18N.t('settings.balancing_least_conn') : 'Least Connections') + '</option>' +
-            '<option value="round-robin"' + (sc.algorithm === 'round-robin' ? ' selected' : '') + '>' + (window.I18N ? I18N.t('settings.balancing_round_robin') : 'Round Robin') + '</option>' +
-            '<option value="weighted"' + (sc.algorithm === 'weighted' ? ' selected' : '') + '>' + (window.I18N ? I18N.t('settings.balancing_weighted') : 'Weighted') + '</option>' +
-            '<option value="model-affinity"' + (sc.algorithm === 'model-affinity' ? ' selected' : '') + '>' + (window.I18N ? I18N.t('settings.balancing_model_affinity') : 'Model Affinity') + '</option>' +
+            '<option value="resource-aware"' + (sc.algorithm === 'resource-aware' ? ' selected' : '') + '>Resource-Aware</option>' +
+            '<option value="least-connections"' + (sc.algorithm === 'least-connections' ? ' selected' : '') + '>Least Connections</option>' +
+            '<option value="round-robin"' + (sc.algorithm === 'round-robin' ? ' selected' : '') + '>Round Robin</option>' +
+            '<option value="weighted"' + (sc.algorithm === 'weighted' ? ' selected' : '') + '>Weighted</option>' +
+            '<option value="model-affinity"' + (sc.algorithm === 'model-affinity' ? ' selected' : '') + '>Model Affinity</option>' +
             '</select></div>' +
             '<div class="form-row">' +
-            '<div class="form-group"><label>' + (window.I18N ? 'GPU Max %' : 'GPU Max %') + '</label>' +
-            '<input type="number" id="gpuMaxUsage" class="form-control" value="' + (sc.gpuMaxUsage || 90) + '" min="50" max="100"></div>' +
-            '<div class="form-group"><label>' + (window.I18N ? 'VRAM Max %' : 'VRAM Max %') + '</label>' +
-            '<input type="number" id="vramMaxUsage" class="form-control" value="' + (sc.vramMaxUsage || 85) + '" min="50" max="100"></div>' +
+            '<div class="form-group"><label>GPU Max %</label>' +
+            '<input type="number" id="gpuMaxUsage" class="form-control" value="' + sc.gpuMaxUsage + '" min="50" max="100"></div>' +
+            '<div class="form-group"><label>VRAM Max %</label>' +
+            '<input type="number" id="vramMaxUsage" class="form-control" value="' + sc.vramMaxUsage + '" min="50" max="100"></div>' +
             '</div>' +
             '<div class="form-row">' +
-            '<div class="form-group"><label>' + (window.I18N ? 'CPU Max %' : 'CPU Max %') + '</label>' +
-            '<input type="number" id="cpuMaxUsage" class="form-control" value="' + (sc.cpuMaxUsage || 80) + '" min="50" max="100"></div>' +
-            '<div class="form-group"><label>' + (window.I18N ? 'RAM Max %' : 'RAM Max %') + '</label>' +
-            '<input type="number" id="ramMaxUsage" class="form-control" value="' + (sc.ramMaxUsage || 85) + '" min="50" max="100"></div>' +
+            '<div class="form-group"><label>CPU Max %</label>' +
+            '<input type="number" id="cpuMaxUsage" class="form-control" value="' + sc.cpuMaxUsage + '" min="50" max="100"></div>' +
+            '<div class="form-group"><label>RAM Max %</label>' +
+            '<input type="number" id="ramMaxUsage" class="form-control" value="' + sc.ramMaxUsage + '" min="50" max="100"></div>' +
             '</div>' +
-            '<div class="form-group"><label>' + (window.I18N ? I18N.t('settings.api_token') : 'API Token') + '</label>' +
-            '<input type="password" id="apiToken" class="form-control" placeholder="' + (window.I18N ? I18N.t('settings.api_token') : 'API Token') + '"></div>' +
+            '<div class="form-group"><label>API Token</label>' +
+            '<input type="password" id="apiToken" class="form-control" placeholder="API Token"></div>' +
             '</div>';
     }
 
-    // ---- Step 5: Summary ----
-
     function renderSummaryStep() {
-        var mode = getWizardMode();
-        var modeNames = {
-            standard: window.I18N ? I18N.t('settings.mode.standard') : 'Standard Balancer',
-            replication: window.I18N ? I18N.t('settings.mode.replication') : 'Model Replication (A)',
-            rpc_coordinator: window.I18N ? I18N.t('settings.mode.rpc_coordinator') : 'External RPC Coordinator (B)',
-            virtual_router: window.I18N ? I18N.t('settings.mode.virtual_router') : 'Virtual Model Router (C)',
-            distributed_inference: window.I18N ? I18N.t('settings.mode.distributed') : 'Distributed Inference (D)'
-        };
         var modeIcons = { standard: '⚙️', replication: '📋', rpc_coordinator: '🌐', virtual_router: '🧩', distributed_inference: '🔬' };
+        var modeNames = { standard: 'Standard', replication: 'Model Replication', rpc_coordinator: 'RPC Coordinator', virtual_router: 'Virtual Model Router', distributed_inference: 'Distributed Inference' };
 
         var html = '<div class="wizard-step-content summary-step">' +
             '<h3>' + (window.I18N ? I18N.t('wizard.step5') : 'Summary') + '</h3>' +
             '<div class="wizard-summary-card">' +
-            '<div class="wizard-summary-row"><span class="wizard-summary-label">' + (window.I18N ? I18N.t('settings.mode.standard') : 'Mode') + ':</span>' +
-            '<span class="wizard-summary-value">' + (modeIcons[mode] || '') + ' ' + (modeNames[mode] || mode) + '</span></div>';
+            '<div class="wizard-summary-row"><span class="wizard-summary-label">Backend Type:</span>' +
+            '<span class="wizard-summary-value">' + (wizardState.backendType === 'llama_cpp' ? '🦒 llama.cpp' : '🦙 Ollama') + '</span></div>' +
+            '<div class="wizard-summary-row"><span class="wizard-summary-label">Mode:</span>' +
+            '<span class="wizard-summary-value">' + (modeIcons[wizardState.operatingMode] || '') + ' ' + (modeNames[wizardState.operatingMode] || wizardState.operatingMode) + '</span></div>';
 
-        // Mode-specific params
-        if (mode === 'replication') {
-            html += '<div class="wizard-summary-row"><span class="wizard-summary-label">Min Instances:</span>' +
-                '<span class="wizard-summary-value">' + getFieldValue('modelReplicationMinInstances', 1) + '</span></div>';
-            html += '<div class="wizard-summary-row"><span class="wizard-summary-label">Max Instances:</span>' +
-                '<span class="wizard-summary-value">' + getFieldValue('modelReplicationMaxInstances', 3) + '</span></div>';
-            html += '<div class="wizard-summary-row"><span class="wizard-summary-label">Idle Unload:</span>' +
-                '<span class="wizard-summary-value">' + getFieldValue('modelReplicationIdleUnload', '10m') + '</span></div>';
-        } else if (mode === 'rpc_coordinator') {
-            html += '<div class="wizard-summary-row"><span class="wizard-summary-label">Coordinator URL:</span>' +
-                '<span class="wizard-summary-value">' + getFieldValue('rpcCoordinatorURL', '-') + '</span></div>';
-            html += '<div class="wizard-summary-row"><span class="wizard-summary-label">Worker Port:</span>' +
-                '<span class="wizard-summary-value">' + getFieldValue('rpcCoordinatorWorkerPort', 18050) + '</span></div>';
-            html += '<div class="wizard-summary-row"><span class="wizard-summary-label">Protocol:</span>' +
-                '<span class="wizard-summary-value">' + getFieldValue('rpcCoordinatorProtocol', 'http') + '</span></div>';
-            html += '<div class="wizard-summary-row"><span class="wizard-summary-label">Timeout:</span>' +
-                '<span class="wizard-summary-value">' + getFieldValue('rpcCoordinatorTimeout', '30s') + '</span></div>';
-            html += '<div class="wizard-summary-row"><span class="wizard-summary-label">Max Retries:</span>' +
-                '<span class="wizard-summary-value">' + getFieldValue('rpcCoordinatorMaxRetries', 3) + '</span></div>';
-        } else if (mode === 'virtual_router') {
-            html += '<div class="wizard-summary-row"><span class="wizard-summary-label">Coord Mode:</span>' +
-                '<span class="wizard-summary-value">' + getFieldValue('virtualModelsCoordMode', 'sequential') + '</span></div>';
-            html += '<div class="wizard-summary-row"><span class="wizard-summary-label">Timeout:</span>' +
-                '<span class="wizard-summary-value">' + getFieldValue('virtualModelsTimeout', 30000) + 'ms</span></div>';
-        } else if (mode === 'distributed_inference') {
-            html += '<div class="wizard-summary-row"><span class="wizard-summary-label">gRPC Port:</span>' +
-                '<span class="wizard-summary-value">' + getFieldValue('distInferenceGrpcPort', 19000) + '</span></div>';
+        var mode = wizardState.operatingMode;
+        if (mode === 'replication' && wizardState.replication) {
+            html += '<div class="wizard-summary-row"><span class="wizard-summary-label">Min Instances:</span><span class="wizard-summary-value">' + wizardState.replication.defaultMinInstances + '</span></div>';
+            html += '<div class="wizard-summary-row"><span class="wizard-summary-label">Max Instances:</span><span class="wizard-summary-value">' + wizardState.replication.defaultMaxInstances + '</span></div>';
+        } else if (mode === 'rpc_coordinator' && wizardState.rpcCoordinator) {
+            html += '<div class="wizard-summary-row"><span class="wizard-summary-label">URL:</span><span class="wizard-summary-value">' + wizardState.rpcCoordinator.coordinatorURL + '</span></div>';
+        } else if (mode === 'virtual_router' && wizardState.virtualModels) {
+            html += '<div class="wizard-summary-row"><span class="wizard-summary-label">Coord Mode:</span><span class="wizard-summary-value">' + wizardState.virtualModels.coordMode + '</span></div>';
+        } else if (mode === 'distributed_inference' && wizardState.distInference) {
+            html += '<div class="wizard-summary-row"><span class="wizard-summary-label">gRPC Port:</span><span class="wizard-summary-value">' + wizardState.distInference.grpcPort + '</span></div>';
         }
 
-        // Common settings
         html += '<div class="wizard-summary-divider"></div>';
-        html += '<div class="wizard-summary-row"><span class="wizard-summary-label">Algorithm:</span>' +
-            '<span class="wizard-summary-value">' + getFieldValue('balancingAlgorithm', 'resource-aware') + '</span></div>';
-        html += '<div class="wizard-summary-row"><span class="wizard-summary-label">GPU Max:</span>' +
-            '<span class="wizard-summary-value">' + getFieldValue('gpuMaxUsage', 90) + '%</span></div>';
-        html += '<div class="wizard-summary-row"><span class="wizard-summary-label">VRAM Max:</span>' +
-            '<span class="wizard-summary-value">' + getFieldValue('vramMaxUsage', 85) + '%</span></div>';
-
+        html += '<div class="wizard-summary-row"><span class="wizard-summary-label">Algorithm:</span><span class="wizard-summary-value">' + wizardState.algorithm + '</span></div>';
+        html += '<div class="wizard-summary-row"><span class="wizard-summary-label">GPU Max:</span><span class="wizard-summary-value">' + wizardState.gpuMaxUsage + '%</span></div>';
+        html += '<div class="wizard-summary-row"><span class="wizard-summary-label">VRAM Max:</span><span class="wizard-summary-value">' + wizardState.vramMaxUsage + '%</span></div>';
         html += '</div></div>';
         return html;
     }
@@ -465,68 +529,84 @@
         return el ? (el.value || fallback) : fallback;
     }
 
-    // ---- Event Binding ----
+    function setFieldValue(id, value) {
+        var el = document.getElementById(id);
+        if (el && value !== undefined && value !== null) {
+            el.value = value;
+        }
+    }
+
+    // ================================================================
+    // EVENTS
+    // ================================================================
 
     function bindWizardEvents(modal) {
-        // Delegate events
         modal.addEventListener('click', function (e) {
             var target = e.target;
 
-            // Prev button
             if (target.id === 'wizardPrevBtn' || target.closest('#wizardPrevBtn')) {
-                if (currentStep > 1) {
-                    currentStep--;
-                    renderStep(currentStep);
-                }
+                if (currentStep === 4) readModeParamsIntoState();
+                if (currentStep === 5) readGeneralFieldsIntoState();
+                if (currentStep > 1) { currentStep--; renderStep(currentStep); }
                 return;
             }
 
-            // Next button
             if (target.id === 'wizardNextBtn' || target.closest('#wizardNextBtn')) {
-                if (currentStep < totalSteps) {
-                    // Validate before proceeding
-                    if (currentStep === 3) {
-                        var errors = validateWizardStep3();
-                        if (errors.length > 0) {
-                            showWizardError(errors.join('<br>'));
-                            return;
-                        }
-                    }
-                    currentStep++;
-                    renderStep(currentStep);
+                if (currentStep === 4) {
+                    var errors = validateWizardModeParams();
+                    if (errors.length > 0) { showWizardError(errors.join('<br>')); return; }
+                    readModeParamsIntoState();
                 }
+                if (currentStep === 5) readGeneralFieldsIntoState();
+                if (currentStep < totalSteps) { currentStep++; renderStep(currentStep); }
                 return;
             }
 
-            // Finish button
             if (target.id === 'wizardFinishBtn' || target.closest('#wizardFinishBtn')) {
                 finishWizard();
                 return;
             }
 
-            // Import buttons
             if (target.id === 'wizardImportBtn' || target.id === 'wizardImportBtn2' || target.closest('#wizardImportBtn') || target.closest('#wizardImportBtn2')) {
                 handleWizardImport();
                 return;
             }
 
-            // Step dots navigation (only to completed steps)
             var dot = target.closest('.wizard-step-dot');
             if (dot) {
                 var step = parseInt(dot.dataset.step);
-                if (step < currentStep) {
-                    currentStep = step;
-                    renderStep(currentStep);
-                }
+                if (step < currentStep) { currentStep = step; renderStep(currentStep); }
             }
 
-            // Mode card selection in wizard
-            var card = target.closest('.mode-card');
+            // Backend type card selection (step 2) — ТОЛЬКО в wizardState, не трогаем BackendTypeFilter
+            var btCard = target.closest('.mode-card[data-backend-type]');
+            if (btCard) {
+                var btRadio = btCard.querySelector('input[name="backendType"]');
+                if (btRadio) {
+                    btRadio.checked = true;
+                    var newType = btRadio.value;
+                    if (newType !== wizardState.backendType) {
+                        wizardState.backendType = newType;
+                        // Если текущий режим недоступен для нового типа — сбрасываем
+                        var availableModes = getAvailableModesForType(newType);
+                        if (availableModes.indexOf(wizardState.operatingMode) < 0) {
+                            wizardState.operatingMode = 'standard';
+                        }
+                    }
+                    document.querySelectorAll('.mode-card[data-backend-type]').forEach(function (c) {
+                        c.classList.toggle('active', c === btCard);
+                    });
+                }
+                return;
+            }
+
+            // Mode card selection — ТОЛЬКО в wizardState
+            var card = target.closest('.mode-card[data-mode]');
             if (card) {
                 var radio = card.querySelector('input[type="radio"]');
                 if (radio) {
                     radio.checked = true;
-                    radio.dispatchEvent(new Event('change'));
+                    wizardState.operatingMode = card.getAttribute('data-mode');
                     document.querySelectorAll('.mode-card').forEach(function (c) {
                         c.classList.toggle('active', c === card);
                     });
@@ -535,20 +615,18 @@
         });
     }
 
-    function validateWizardStep3() {
+    function validateWizardModeParams() {
         var errors = [];
-        var mode = getWizardMode();
-
+        var mode = wizardState.operatingMode;
         if (mode === 'rpc_coordinator') {
             var url = getFieldValue('rpcCoordinatorURL', '');
-            if (!url) errors.push(window.I18N ? 'Coordinator URL is required' : 'Coordinator URL обязателен');
+            if (!url) errors.push('Coordinator URL is required');
         }
         if (mode === 'replication') {
             var min = parseInt(getFieldValue('modelReplicationMinInstances', 0));
             var max = parseInt(getFieldValue('modelReplicationMaxInstances', 0));
-            if (max < min) errors.push(window.I18N ? 'Max must be >= Min' : 'Max должно быть >= Min');
+            if (max < min) errors.push('Max must be >= Min');
         }
-
         return errors;
     }
 
@@ -571,96 +649,80 @@
         }, 5000);
     }
 
-    // ---- Import in Wizard ----
+    // ================================================================
+    // IMPORT
+    // ================================================================
 
     function handleWizardImport() {
         if (!window.ConfigIO) return;
-
-        window.ConfigIO.importConfigFromFile()
-            .then(function (data) {
-                // Show preview first
-                return window.ConfigIO.showImportPreview(data).then(function (confirmed) {
-                    if (confirmed) {
-                        applyWizardConfig(data);
-                        // Jump to step 5 (summary) after import
-                        currentStep = 5;
-                        renderStep(currentStep);
-                    }
-                });
-            })
-            .catch(function (err) {
-                showWizardError(err.message || 'Import failed');
+        window.ConfigIO.importConfigFromFile().then(function (data) {
+            return window.ConfigIO.showImportPreview(data).then(function (confirmed) {
+                if (confirmed) {
+                    applyWizardConfig(data);
+                    currentStep = 6;
+                    renderStep(currentStep);
+                }
             });
+        }).catch(function (err) {
+            showWizardError(err.message || 'Import failed');
+        });
     }
 
     function applyWizardConfig(data) {
         if (!data) return;
-
-        // Apply mode
-        if (data.operating_mode) {
-            var radio = document.querySelector('input[name="operatingMode"][value="' + data.operating_mode + '"]');
-            if (radio) radio.checked = true;
-        }
-
-        // Apply settings
+        if (data.operating_mode) wizardState.operatingMode = data.operating_mode;
         if (data.settings) {
             var s = data.settings;
-            setFieldValue('balancingAlgorithm', s.algorithm);
-            setFieldValue('gpuMaxUsage', s.gpuMaxUsage);
-            setFieldValue('vramMaxUsage', s.vramMaxUsage);
-            setFieldValue('cpuMaxUsage', s.cpuMaxUsage);
-            setFieldValue('ramMaxUsage', s.ramMaxUsage);
-            setFieldValue('minFreeDisk', s.minFreeDisk);
-            setFieldValue('apiToken', s.apiToken);
+            if (s.algorithm) wizardState.algorithm = s.algorithm;
+            if (s.gpuMaxUsage) wizardState.gpuMaxUsage = s.gpuMaxUsage;
+            if (s.vramMaxUsage) wizardState.vramMaxUsage = s.vramMaxUsage;
+            if (s.cpuMaxUsage) wizardState.cpuMaxUsage = s.cpuMaxUsage;
+            if (s.ramMaxUsage) wizardState.ramMaxUsage = s.ramMaxUsage;
         }
-
-        // Apply mode config
         if (data.mode_config) {
             var mc = data.mode_config;
-            if (mc.modelReplication) {
-                setFieldValue('modelReplicationMinInstances', mc.modelReplication.defaultMinInstances);
-                setFieldValue('modelReplicationMaxInstances', mc.modelReplication.defaultMaxInstances);
-                setFieldValue('modelReplicationIdleUnload', mc.modelReplication.idleUnloadAfter);
-            }
-            if (mc.rpcCoordinator) {
-                setFieldValue('rpcCoordinatorURL', mc.rpcCoordinator.coordinatorURL);
-                setFieldValue('rpcCoordinatorWorkerPort', mc.rpcCoordinator.workerPort);
-                setFieldValue('rpcCoordinatorProtocol', mc.rpcCoordinator.protocol);
-                setFieldValue('rpcCoordinatorTimeout', mc.rpcCoordinator.timeout);
-                setFieldValue('rpcCoordinatorMaxRetries', mc.rpcCoordinator.maxRetries);
-            }
-            if (mc.virtualModels) {
-                setFieldValue('virtualModelsCoordMode', mc.virtualModels.coordMode);
-                setFieldValue('virtualModelsTimeout', mc.virtualModels.timeout);
-            }
-            if (mc.distInference) {
-                setFieldValue('distInferenceGrpcPort', mc.distInference.grpcPort);
-            }
+            if (mc.modelReplication) wizardState.replication = mc.modelReplication;
+            if (mc.rpcCoordinator) wizardState.rpcCoordinator = mc.rpcCoordinator;
+            if (mc.virtualModels) wizardState.virtualModels = mc.virtualModels;
+            if (mc.distInference) wizardState.distInference = mc.distInference;
         }
     }
 
-    function setFieldValue(id, value) {
-        var el = document.getElementById(id);
-        if (el && value !== undefined && value !== null) {
-            el.value = value;
-        }
-    }
-
-    // ---- Finish Wizard ----
+    // ================================================================
+    // FINISH — ПРИМЕНИТЬ ВСЁ ОДНИМ PUT
+    // ================================================================
 
     function finishWizard() {
-        // Собираем все настройки из wizard
+        // Считываем параметры с текущих форм если нужно
+        if (currentStep === 4) readModeParamsIntoState();
+        if (currentStep === 5) readGeneralFieldsIntoState();
+
         var payload = buildWizardPayload();
-        // Отправляем на сервер с флагом initialized
         payload.initialized = true;
+
+        // ВСЕГДА сохраняем тип бэкенда в localStorage ДО API-запроса.
+        // Даже если API недоступен — тип не потеряется после перезагрузки.
+        localStorage.setItem('ollamalegion_backend_type', wizardState.backendType);
+        localStorage.setItem('ollamalegion_wizard_done', '1');
+        console.log('[SetupWizard] finishWizard. backendType:', wizardState.backendType, 'payload:', JSON.stringify(payload));
+
+        // Устанавливаем флаг защиты от гонки: пока идёт сохранение на сервер,
+        // syncFromClusterState не должен перезаписывать localStorage серверными данными.
+        if (window.BackendTypeFilter) {
+            BackendTypeFilter._savingInProgress = true;
+            BackendTypeFilter._lastSavedType = wizardState.backendType;
+        }
 
         if (window.Api && window.Api.updateConfig) {
             window.Api.updateConfig(payload).then(function () {
-                // Клиентский кэш: помечаем wizard как пройденный ДО reload
-                localStorage.setItem('ollamalegion_wizard_done', '1');
-                // Проверяем, что сервер реально сохранил флаг
+                // Снимаем флаг после успешного сохранения
+                if (window.BackendTypeFilter) {
+                    BackendTypeFilter._savingInProgress = false;
+                }
+                console.log('[SetupWizard] Server saved OK. backendType:', wizardState.backendType);
                 return window.Api.config();
             }).then(function (cfg) {
+                console.log('[SetupWizard] Server config after save:', JSON.stringify(cfg));
                 if (cfg && cfg.initialized === true) {
                     closeWizard();
                     if (typeof startNormalInit === 'function') {
@@ -669,17 +731,18 @@
                         location.reload();
                     }
                 } else {
-                    showWizardError('Сервер не подтвердил инициализацию. Попробуйте ещё раз.');
+                    showWizardError('\u0421\u0435\u0440\u0432\u0435\u0440 \u043d\u0435 \u043f\u043e\u0434\u0442\u0432\u0435\u0440\u0434\u0438\u043b \u0438\u043d\u0438\u0446\u0438\u0430\u043b\u0438\u0437\u0430\u0446\u0438\u044e. \u041f\u043e\u043f\u0440\u043e\u0431\u0443\u0439\u0442\u0435 \u0435\u0449\u0451 \u0440\u0430\u0437.');
                 }
             }).catch(function (err) {
+                // Снимаем флаг при ошибке сохранения
+                if (window.BackendTypeFilter) {
+                    BackendTypeFilter._savingInProgress = false;
+                }
+                console.error('[SetupWizard] API error:', err.message || err);
                 showWizardError((err.message || err) || 'Failed to save configuration');
             });
         } else {
-            // Fallback: если API недоступен — вызываем глобальный saveSettings с флагом silent
-            if (typeof saveSettings === 'function') {
-                saveSettings(true);
-            }
-            localStorage.setItem('ollamalegion_wizard_done', '1');
+            console.log('[SetupWizard] API not available — skipping server save.');
             closeWizard();
             if (typeof startNormalInit === 'function') {
                 startNormalInit();
@@ -689,58 +752,28 @@
         }
     }
 
-    /**
-     * Собирает полный payload настроек из полей wizard
-     */
     function buildWizardPayload() {
-        var mode = getWizardMode();
         var payload = {
-            operatingMode: mode,
-            algorithm: getFieldValue('balancingAlgorithm', 'resource-aware'),
-            gpuMaxUsage: parseFloat(getFieldValue('gpuMaxUsage', 90)),
-            vramMaxUsage: parseFloat(getFieldValue('vramMaxUsage', 85)),
-            cpuMaxUsage: parseFloat(getFieldValue('cpuMaxUsage', 80)),
-            ramMaxUsage: parseFloat(getFieldValue('ramMaxUsage', 85)),
+            operatingMode: wizardState.operatingMode,
+            backendEngine: wizardState.backendType === 'llama_cpp' ? 'llama_cpp' : 'ollama_api',
+            algorithm: wizardState.algorithm,
+            gpuMaxUsage: wizardState.gpuMaxUsage,
+            vramMaxUsage: wizardState.vramMaxUsage,
+            cpuMaxUsage: wizardState.cpuMaxUsage,
+            ramMaxUsage: wizardState.ramMaxUsage
         };
 
-        if (mode === 'replication') {
-            payload.modelReplication = {
-                enabled: true,
-                defaultMinInstances: parseInt(getFieldValue('modelReplicationMinInstances', 1)),
-                defaultMaxInstances: parseInt(getFieldValue('modelReplicationMaxInstances', 3)),
-                idleUnloadAfter: getFieldValue('modelReplicationIdleUnload', '10m')
-            };
-        } else if (mode === 'rpc_coordinator') {
-            payload.rpcCoordinator = {
-                enabled: true,
-                coordinatorURL: getFieldValue('rpcCoordinatorURL', ''),
-                workerPort: parseInt(getFieldValue('rpcCoordinatorWorkerPort', 18050)),
-                protocol: getFieldValue('rpcCoordinatorProtocol', 'http'),
-                timeout: getFieldValue('rpcCoordinatorTimeout', '30s'),
-                maxRetries: parseInt(getFieldValue('rpcCoordinatorMaxRetries', 3))
-            };
-        } else if (mode === 'virtual_router') {
-            payload.virtualModels = {
-                enabled: true,
-                coordMode: getFieldValue('virtualModelsCoordMode', 'sequential'),
-                timeout: parseInt(getFieldValue('virtualModelsTimeout', 30000))
-            };
-        } else if (mode === 'distributed_inference') {
-            payload.distInference = {
-                enabled: true,
-                grpcPort: parseInt(getFieldValue('distInferenceGrpcPort', 19000))
-            };
-        }
+        if (wizardState.replication) payload.modelReplication = wizardState.replication;
+        if (wizardState.rpcCoordinator) payload.rpcCoordinator = wizardState.rpcCoordinator;
+        if (wizardState.virtualModels) payload.virtualModels = wizardState.virtualModels;
+        if (wizardState.distInference) payload.distInference = wizardState.distInference;
 
         return payload;
     }
 
-    function closeWizard() {
-        var modal = document.getElementById('setupWizardModal');
-        if (modal) modal.remove();
-    }
-
-    // ---- Public API ----
+    // ================================================================
+    // PUBLIC API
+    // ================================================================
 
     window.SetupWizard = {
         isInitialized: isInitialized,

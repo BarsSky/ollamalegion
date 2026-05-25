@@ -132,6 +132,18 @@
 .badge-danger  { background: rgba(248, 113, 113, 0.15); color: var(--danger); }
 .badge-info    { background: rgba(96, 165, 250, 0.15); color: var(--info); }
 
+/* Backend type badges */
+.badge.backend-type-ollama {
+    background: rgba(59, 130, 246, 0.15);
+    color: #3b82f6;
+    border: 1px solid rgba(59, 130, 246, 0.2);
+}
+.badge.backend-type-llama_cpp {
+    background: rgba(245, 158, 11, 0.15);
+    color: #f59e0b;
+    border: 1px solid rgba(245, 158, 11, 0.2);
+}
+
 /* Queue task status badges */
 .queue-task-status {
     display: inline-flex;
@@ -909,4 +921,44 @@
     background: var(--accent);
     color: white;
     margin-bottom: 8px;
+}
+
+/* ===== Backend Type Filter Buttons ===== */
+.type-filter-group {
+    display: inline-flex;
+    gap: 4px;
+    align-items: center;
+}
+
+.type-filter-btn {
+    padding: 5px 12px;
+    border-radius: 6px;
+    border: 1px solid var(--glass-border);
+    background: var(--glass-bg);
+    color: var(--text-secondary);
+    font-size: 12px;
+    font-weight: 500;
+    cursor: pointer;
+    transition: var(--transition);
+    white-space: nowrap;
+    user-select: none;
+}
+.type-filter-btn:hover {
+    background: var(--hover-bg);
+    color: var(--text-primary);
+    border-color: var(--accent);
+}
+.type-filter-btn.active {
+    background: var(--accent);
+    color: white;
+    border-color: var(--accent);
+    font-weight: 600;
+}
+.type-filter-btn.active[data-type="ollama"] {
+    background: rgba(59, 130, 246, 0.85);
+    border-color: rgba(59, 130, 246, 0.9);
+}
+.type-filter-btn.active[data-type="llama_cpp"] {
+    background: rgba(245, 158, 11, 0.85);
+    border-color: rgba(245, 158, 11, 0.9);
 }

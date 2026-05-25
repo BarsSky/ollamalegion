@@ -343,6 +343,178 @@
         return errors;
     }
 
+    // ---- Backend Engine Switch ----
+
+    function setupBackendEngineSwitch() {
+        var cards = document.querySelectorAll('#backendEngineCards .mode-card[data-backend-engine-type]');
+        cards.forEach(function (card) {
+            card.addEventListener('click', function (e) {
+                var radio = card.querySelector('input[name="settingsBackendEngine"]');
+                if (!radio) return;
+
+                var newType = radio.value;
+                var currentType = window.BackendTypeFilter
+                    ? BackendTypeFilter.getCurrentType()
+                    : (localStorage.getItem('ollamalegion_backend_type') || 'ollama');
+
+                // Проверяем, что тип действительно меняется
+                if (newType === currentType) return;
+                
+                // Принудительно переключаем визуально (браузер уже сделал это,
+                // но гарантируем синхронизацию с нашим состоянием)
+                syncBackendEngineCards(newType);
+
+                // Проверяем совместимость режима с новым типом
+                var currentMode = getCurrentMode();
+                var availableModes = window.BackendTypeFilter
+                    ? BackendTypeFilter.getAvailableModes(newType)
+                    : (newType === 'llama_cpp' ? ['standard', 'virtual_router', 'distributed_inference'] : ['standard', 'replication', 'rpc_coordinator']);
+
+                var modeNeedsReset = availableModes.indexOf(currentMode) < 0;
+
+                var msg = window.I18N
+                    ? I18N.t('wizard.backend_type_confirm_change')
+                    : '\u0412\u044B \u0443\u0432\u0435\u0440\u0435\u043D\u044B, \u0447\u0442\u043E \u0445\u043E\u0442\u0438\u0442\u0435 \u0441\u043C\u0435\u043D\u0438\u0442\u044C \u0442\u0438\u043F \u0434\u0432\u0438\u0436\u043A\u0430 \u043D\u0430 \u00AB' + (newType === 'llama_cpp' ? 'llama.cpp' : 'Ollama API') + '\u00BB?';
+
+                if (modeNeedsReset) {
+                    msg += '\n\n' + (window.I18N
+                        ? I18N.t('wizard.backend_type_mode_reset')
+                        : '\u0422\u0435\u043A\u0443\u0449\u0438\u0439 \u0440\u0435\u0436\u0438\u043C \u0431\u0443\u0434\u0435\u0442 \u0441\u0431\u0440\u043E\u0448\u0435\u043D \u043D\u0430 \u00ABStandard\u00BB.');
+                }
+
+                if (!confirm(msg)) return;
+
+                // Сохраняем на сервер
+                var payload = {
+                    backendEngine: newType === 'llama_cpp' ? 'llama_cpp' : 'ollama_api'
+                };
+
+                // Если режим нужно сбросить — включаем standard
+                if (modeNeedsReset) {
+                    payload.operatingMode = 'standard';
+                }
+
+                var statusMsg = document.getElementById('backendEngineStatusMsg');
+                if (statusMsg) {
+                    statusMsg.style.display = 'block';
+                    statusMsg.textContent = window.I18N ? I18N.t('wizard.applying') : '\u041F\u0440\u0438\u043C\u0435\u043D\u0435\u043D\u0438\u0435...';
+                    statusMsg.style.color = 'var(--text-muted)';
+                }
+
+                // Устанавливаем флаг защиты от гонки перед сохранением
+                if (window.BackendTypeFilter) {
+                    BackendTypeFilter._savingInProgress = true;
+                    BackendTypeFilter._lastSavedType = newType;
+                }
+
+                if (window.Api && window.Api.updateConfig) {
+                    window.Api.updateConfig(payload).then(function () {
+                        // Снимаем флаг с задержкой — даём серверу время обновить cluster state
+                        setTimeout(function () {
+                            if (window.BackendTypeFilter) {
+                                BackendTypeFilter._savingInProgress = false;
+                            }
+                        }, 2500);
+
+                        // Обновляем кэш
+                        if (window.__lastServerConfig) {
+                            window.__lastServerConfig.backendEngine = newType === 'llama_cpp' ? 'llama_cpp' : 'ollama_api';
+                            if (modeNeedsReset) {
+                                window.__lastServerConfig.operatingMode = 'standard';
+                            }
+                        }
+
+                        // Обновляем UI
+                        if (window.BackendTypeFilter) {
+                            BackendTypeFilter.setCurrentType(newType);
+                            localStorage.setItem('ollamalegion_backend_type', newType);
+                        }
+
+                        // Синхронизируем карточки режимов
+                        syncBackendEngineCards(newType);
+
+                        if (modeNeedsReset && window.SettingsUI) {
+                            SettingsUI.syncModeFromServer('standard');
+                        }
+
+                        if (statusMsg) {
+                            statusMsg.textContent = newType === 'llama_cpp'
+                                ? '\u2705 \u041F\u0435\u0440\u0435\u043A\u043B\u044E\u0447\u0435\u043D\u043E \u043D\u0430 llama.cpp'
+                                : '\u2705 \u041F\u0435\u0440\u0435\u043A\u043B\u044E\u0447\u0435\u043D\u043E \u043D\u0430 Ollama API';
+                            statusMsg.style.color = 'var(--success)';
+                            setTimeout(function () {
+                                if (statusMsg) statusMsg.style.display = 'none';
+                            }, 3000);
+                        }
+
+                        if (typeof showToast === 'function') {
+                            showToast(
+                                newType === 'llama_cpp'
+                                    ? (window.I18N ? I18N.t('wizard.backend_type_switched_llama') : '\u041F\u0435\u0440\u0435\u043A\u043B\u044E\u0447\u0435\u043D\u043E \u043D\u0430 llama.cpp')
+                                    : (window.I18N ? I18N.t('wizard.backend_type_switched_ollama') : '\u041F\u0435\u0440\u0435\u043A\u043B\u044E\u0447\u0435\u043D\u043E \u043D\u0430 Ollama API'),
+                                'success'
+                            );
+                        }
+                    }).catch(function (err) {
+                        // Снимаем флаг при ошибке сохранения
+                        if (window.BackendTypeFilter) {
+                            BackendTypeFilter._savingInProgress = false;
+                        }
+                        if (statusMsg) {
+                            statusMsg.textContent = (window.I18N ? I18N.t('wizard.error') : '\u041E\u0448\u0438\u0431\u043A\u0430') + ': ' + (err.message || err);
+                            statusMsg.style.color = 'var(--danger)';
+                        }
+                        console.error('[SettingsUI] Failed to switch backend engine:', err);
+                    });
+                } else {
+                    // Fallback: только локально
+                    // Снимаем флаг — сохранения на сервер не будет
+                    if (window.BackendTypeFilter) {
+                        BackendTypeFilter._savingInProgress = false;
+                    }
+                    if (window.BackendTypeFilter) {
+                        BackendTypeFilter.setCurrentType(newType);
+                    }
+                    localStorage.setItem('ollamalegion_backend_type', newType);
+                    syncBackendEngineCards(newType);
+                    if (modeNeedsReset && window.SettingsUI) {
+                        SettingsUI.syncModeFromServer('standard');
+                    }
+                    if (statusMsg) {
+                        statusMsg.textContent = '\u26A0\uFE0F \u0421\u043E\u0445\u0440\u0430\u043D\u0435\u043D\u043E \u043B\u043E\u043A\u0430\u043B\u044C\u043D\u043E (\u0441\u0435\u0440\u0432\u0435\u0440 \u043D\u0435\u0434\u043E\u0441\u0442\u0443\u043F\u0435\u043D)';
+                        statusMsg.style.color = 'var(--warning)';
+                    }
+                }
+            });
+        });
+    }
+
+    /**
+     * Синхронизировать карточки выбора backend engine с текущим типом.
+     */
+    function syncBackendEngineCards(type) {
+        document.querySelectorAll('#backendEngineCards .mode-card[data-backend-engine-type]').forEach(function (card) {
+            var radio = card.querySelector('input[name="settingsBackendEngine"]');
+            if (radio && radio.value === type) {
+                radio.checked = true;
+                card.classList.add('active');
+            } else {
+                if (radio) radio.checked = false;
+                card.classList.remove('active');
+            }
+        });
+    }
+
+    /**
+     * Инициализировать отображение backend engine карточек из текущего состояния.
+     */
+    function initBackendEngineCards() {
+        var currentType = window.BackendTypeFilter
+            ? BackendTypeFilter.getCurrentType()
+            : (localStorage.getItem('ollamalegion_backend_type') || 'ollama');
+        syncBackendEngineCards(currentType);
+    }
+
     // ---- Public API ----
 
     window.SettingsUI = {
@@ -355,6 +527,9 @@
         collectModeConfig: collectModeConfig,
         applyModeConfig: applyModeConfig,
         validateModeFields: validateModeFields,
+        setupBackendEngineSwitch: setupBackendEngineSwitch,
+        initBackendEngineCards: initBackendEngineCards,
+        syncBackendEngineCards: syncBackendEngineCards,
         MODES: MODES
     };
 

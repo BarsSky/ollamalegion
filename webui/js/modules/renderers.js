@@ -2,7 +2,7 @@
  * UI Renderers — all HTML generation in one place
  */
 const Renderers = (function () {
-    const { formatNumber, formatMB, getBackendMode, getBackendModeBadge, getGPUStatus, getProgressClass, percent, escapeHtml } = Utils;
+    const { formatNumber, formatMB, getBackendMode, getBackendModeBadge, getBackendTypeBadge, getGPUStatus, getProgressClass, percent, escapeHtml } = Utils;
 
     // Cache for prediction hysteresis to prevent flickering between warning/success
     const _predCache = {};
@@ -482,7 +482,7 @@ const Renderers = (function () {
 
             return `
                 <tr>
-                    <td><strong>${escapeHtml(b.id)}</strong> ${getBackendModeBadge(b)}</td>
+                    <td><strong>${escapeHtml(b.id)}</strong> ${getBackendTypeBadge(b)} ${getBackendModeBadge(b)}</td>
                     <td>${badge(b.status, b.status === 'healthy' ? 'success' : 'danger')}</td>
                     <td>${escapeHtml(gpuUsage)}${gpuHidden}</td>
                     <td>${escapeHtml(vramPercent)}</td>
@@ -522,12 +522,55 @@ const Renderers = (function () {
     };
 
     function renderOllamaParams(backend) {
+        // Определяем тип бэкенда (используем унифицированную утилиту)
+        var bt = Utils.getBackendType(backend);
+        var isLlamaCpp = (bt === 'llama_cpp');
+
         const flags = backend.ollama?.runtimeFlags || {};
         const cap = backend.ollama?.backendCapacity || {};
         const contexts = backend.ollama?.modelContexts || [];
         const runningModels = backend.ollama?.runningModels || [];
 
-        // Section: Runtime Flags
+        // Для llama_cpp показываем упрощённые параметры вместо Ollama-специфичных флагов
+        if (isLlamaCpp) {
+            var cppParams = backend.llama_cpp || {};
+            var cppHtml = '<div class="be-detail-section"><div class="be-detail-title">🦒 ' + escapeHtml(_t('renderers.section_llama_cpp_params') || 'llama.cpp Parameters') + '</div><div class="be-params-grid">';
+            if (cppParams.modelPath) cppHtml += '<div class="be-param-item"><span class="be-param-label">' + escapeHtml(_t('renderers.model_path') || 'Model Path') + '</span><span class="be-param-value">' + escapeHtml(cppParams.modelPath) + '</span></div>';
+            if (cppParams.contextLength !== undefined) cppHtml += '<div class="be-param-item"><span class="be-param-label">' + escapeHtml(_t('renderers.context')) + '</span><span class="be-param-value">' + escapeHtml(String(cppParams.contextLength)) + '</span></div>';
+            if (cppParams.nGpuLayers !== undefined) cppHtml += '<div class="be-param-item"><span class="be-param-label">' + escapeHtml(_t('renderers.gpu_layers') || 'GPU Layers') + '</span><span class="be-param-value">' + escapeHtml(String(cppParams.nGpuLayers)) + '</span></div>';
+            if (cppParams.nThreads !== undefined) cppHtml += '<div class="be-param-item"><span class="be-param-label">' + escapeHtml(_t('renderers.threads') || 'Threads') + '</span><span class="be-param-value">' + escapeHtml(String(cppParams.nThreads)) + '</span></div>';
+            if (cppParams.batchSize !== undefined) cppHtml += '<div class="be-param-item"><span class="be-param-label">' + escapeHtml(_t('renderers.batch_size') || 'Batch Size') + '</span><span class="be-param-value">' + escapeHtml(String(cppParams.batchSize)) + '</span></div>';
+            if (cppParams.quantization) cppHtml += '<div class="be-param-item"><span class="be-param-label">' + escapeHtml(_t('renderers.quantization') || 'Quantization') + '</span><span class="be-param-value">' + escapeHtml(cppParams.quantization) + '</span></div>';
+            cppHtml += '</div></div>';
+
+            // Добавляем Disk/Network как обычно
+            const sys = backend.system || {};
+            if (sys.diskTotal !== undefined || sys.diskUsed !== undefined || sys.networkRX !== undefined) {
+                cppHtml += '<div class="be-detail-section"><div class="be-detail-title">' + escapeHtml(_t('renderers.section_disk_network')) + '</div><div class="be-params-grid">';
+                if (sys.diskTotal !== undefined) cppHtml += '<div class="be-param-item"><span class="be-param-label">' + escapeHtml(_t('renderers.disk_total')) + '</span><span class="be-param-value">' + formatMB(sys.diskTotal) + '</span></div>';
+                if (sys.diskUsed !== undefined) cppHtml += '<div class="be-param-item"><span class="be-param-label">' + escapeHtml(_t('renderers.disk_used')) + '</span><span class="be-param-value">' + formatMB(sys.diskUsed) + '</span></div>';
+                if (sys.diskFree !== undefined) cppHtml += '<div class="be-param-item"><span class="be-param-label">' + escapeHtml(_t('renderers.disk_free')) + '</span><span class="be-param-value">' + formatMB(sys.diskFree) + '</span></div>';
+                if (sys.networkRX !== undefined) cppHtml += '<div class="be-param-item"><span class="be-param-label">' + escapeHtml(_t('renderers.network_rx')) + '</span><span class="be-param-value">' + formatMB(sys.networkRX) + '</span></div>';
+                if (sys.networkTX !== undefined) cppHtml += '<div class="be-param-item"><span class="be-param-label">' + escapeHtml(_t('renderers.network_tx')) + '</span><span class="be-param-value">' + formatMB(sys.networkTX) + '</span></div>';
+                cppHtml += '</div></div>';
+            }
+
+            // Показываем loaded models если есть
+            if (runningModels.length > 0) {
+                cppHtml += '<div class="be-detail-section"><div class="be-detail-title">' + escapeHtml(_t('renderers.section_loaded_models')) + '</div><div class="be-params-grid">';
+                runningModels.forEach(function(m) {
+                    var sizeGB = (m.size || 0) / 1024 / 1024 / 1024;
+                    cppHtml += '<div class="be-param-item" style="grid-column: 1/-1;">' +
+                        '<span class="be-param-label">' + escapeHtml(m.name) + '</span>' +
+                        '<span class="be-param-value">' + sizeGB.toFixed(1) + ' GB</span>' +
+                    '</div>';
+                });
+                cppHtml += '</div></div>';
+            }
+            return cppHtml;
+        }
+
+        // Section: Runtime Flags (Ollama only)
         let flagsHtml = `<div class="be-detail-section"><div class="be-detail-title">${_t('renderers.section_runtime_flags')}</div><div class="be-params-grid">`;
 
         const mainFlags = ['numGpuLayers', 'contextLength', 'numParallel', 'numThreads', 'batchSize'];
@@ -669,10 +712,10 @@ const Renderers = (function () {
 
             return `
                 <tr class="be-main-row" data-expand="${rowId}" style="cursor:pointer;">
-                    <td><strong>${escapeHtml(b.id)}</strong> <span class="be-expand-icon">▶</span></td>
+                    <td><strong>${escapeHtml(b.id)}</strong> ${getBackendTypeBadge(b)} <span class="be-expand-icon">▶</span></td>
                     <td>${escapeHtml(b.name || b.id)}</td>
                     <td>${escapeHtml(b.host)}</td>
-                    <td>${b.ollamaPort || 11434}</td>
+                    <td>${(Utils.getBackendType(b) === 'llama_cpp' ? (b.cppWorkerPort || b.port || 8080) : (b.ollamaPort || 11434))}</td>
                     <td>${b.agentPort || 18032}</td>
                     <td>${b.weight || 1}</td>
                     <td>${b.maxConcurrentRequests || 10}</td>
@@ -835,16 +878,13 @@ const Renderers = (function () {
                 <div class="model-card" data-backend="${safeBackend}" data-model="${safeName}">
                     <div class="model-card-header">
                         <span class="model-name">${escapeHtml(m.name)}</span>
-                        ${badge(m.backend, m.backendStatus === 'healthy' ? 'success' : 'danger')}
+                        ${getBackendTypeBadge(backend)} ${badge(m.backend, m.backendStatus === 'healthy' ? 'success' : 'danger')}
                     </div>
                     <div class="model-size">${sizeGB.toFixed(1)} GB</div>
                     <div class="model-details">
                         ${modelDetail('VRAM', `${vramMB.toFixed(0)} MB`)}
                         ${modelDetail('RAM', `${ramMB.toFixed(0)} MB`)}
-                        ${modelDetail('Family', m.family || '-')}
-                        ${modelDetail('Format', m.format || '-')}
-                        ${modelDetail('Params', m.parameterSize || '-')}
-                        ${modelDetail('Quant', m.quantization || '-')}
+                        ${backendTypeDetails(m, backend)}
                         ${digestShort ? '<div class="model-detail"><div class="model-detail-label">' + _t('renderers.digest') + '</div><div class="model-detail-value"><code style="font-size:10px;background:var(--bg-secondary);padding:1px 4px;border-radius:3px">' + escapeHtml(digestShort) + '</code></div></div>' : ''}
                         ${expShort ? '<div class="model-detail"><div class="model-detail-label">' + _t('renderers.expires') + '</div><div class="model-detail-value" title="' + escapeHtml(expDate) + '" style="color:var(--warning);font-size:11px">' + expShort + '</div></div>' : ''}
                         ${ramGB > 0.5 ? '<div class="model-detail"><div class="model-detail-label">RAM</div><div class="model-detail-value" style="font-size:11px;color:var(--text-secondary)">' + ramGB.toFixed(2) + ' GB</div></div>' : ''}
@@ -862,6 +902,27 @@ const Renderers = (function () {
                 </div>
             `;
         }).join('');
+    }
+
+    /**
+     * Возвращает детали модели в зависимости от типа бэкенда (B-09, B-10).
+     * Ollama: Family/Format/Params/Quant
+     * llama_cpp: GGUF Path/Quantization
+     */
+    function backendTypeDetails(model, backend) {
+        var bt = Utils.getBackendType(backend);
+        if (bt === 'llama_cpp') {
+            // GGUF-специфичные поля
+            var ggufPath = model.ggufPath || model.path || '-';
+            var ggufQuant = model.quantization || model.ggufQuant || '-';
+            return modelDetail('GGUF Path', ggufPath) +
+                modelDetail('Quantization', ggufQuant);
+        }
+        // Ollama-специфичные поля
+        return modelDetail('Family', model.family || '-') +
+            modelDetail('Format', model.format || '-') +
+            modelDetail('Params', model.parameterSize || '-') +
+            modelDetail('Quant', model.quantization || '-');
     }
 
     function modelDetail(label, value) {

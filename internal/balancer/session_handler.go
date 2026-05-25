@@ -61,7 +61,7 @@ func (p *Proxy) rebalanceIfNeeded(model, targetBackend, sessionID, clientName st
 
 	if loadRatio > 0.50 || forceRebalance {
 		// Сначала ищем бэкенд с той же моделью
-		altBackend := p.findLessLoadedBackendWithModel(model, targetBackend)
+		altBackend := p.findLessLoadedBackendWithModel(model, targetBackend, nil)
 		if altBackend != "" {
 			logger.Get().Infow("rebalancing session to less loaded backend (same model)",
 				"session", sessionID, "from", targetBackend, "to", altBackend,
@@ -71,7 +71,7 @@ func (p *Proxy) rebalanceIfNeeded(model, targetBackend, sessionID, clientName st
 
 		// Затем ищем любой менее загруженный (даже без модели — Ollama загрузит при первом запросе).
 		// Это холодный старт, но лучше чем 503 на перегруженном бэкенде.
-		altBackend = p.findLessLoadedBackendAny(model, targetBackend)
+		altBackend = p.findLessLoadedBackendAny(model, targetBackend, nil)
 		if altBackend != "" {
 			logger.Get().Infow("rebalancing session to less loaded backend (any, may cold-start)",
 				"session", sessionID, "from", targetBackend, "to", altBackend,

@@ -1,0 +1,172 @@
+# ============================================================
+# OllamaLegion — Автономный llama.cpp узел (LAN / WAN)
+# ============================================================
+# Разворачивается ОТДЕЛЬНО от балансера на любой машине с GPU.
+# Содержит: CppWorker (llama.cpp инференс) + Агент (мониторинг).
+# Автоматически регистрируется на балансере при старте.
+#
+# Использование:
+#   1. Скопируйте .env.llama.example → .env и отредактируйте
+#   2. Запустите: docker compose -f docker-compose.llama.cpp.yml up -d
+#   3. Узел зарегистрируется на балансере (BALANCER_URL)
+#   4. Для остановки: docker compose -f docker-compose.llama.cpp.yml down
+#
+# Порты:
+#   18091 — CppWorker REST API (инференс)
+#   19000 — CppWorker gRPC (опционально)
+#   18032 — Агент (heartbeat + метрики)
+# ============================================================
+
+services:
+  # ============================================
+  # CppWorker — llama.cpp инференс-сервер
+  # ============================================
+  cppworker:
+    image: ollama-legion/cppworker:latest
+    # Для локальной сборки раскомментируйте:
+    # build:
+    #   context: ..
+    #   dockerfile: docker/cppworker/Dockerfile
+    container_name: ollama-legion-llama-worker
+    restart: unless-stopped
+
+    ports:
+      # REST API для инференса (балансер подключается сюда)
+      - "${LLAMA_HTTP_PORT:-18091}:18091"
+      # gRPC порт (опционально, для distributed inference)
+      - "${LLAMA_GRPC_PORT:-19000}:19000"
+
+    volumes:
+      # GGUF-модели (read-only)
+      - ${MODELS_DIR:-./models}:/models:ro
+      # Конфигурационный .env файл (read-only)
+      - ./config/cppworker.env:/app/.env:ro
+
+    environment:
+      # === Идентификация и сеть ===
+      - NODE_NAME=${NODE_NAME:-llama-node}
+      - BALANCER_URL=${BALANCER_URL}
+      - LLAMA_HTTP_PORT=${LLAMA_HTTP_PORT:-18091}
+      - LLAMA_GRPC_PORT=${LLAMA_GRPC_PORT:-19000}
+
+      # === Пути ===
+      - LLAMA_MODELS_DIR=/models
+
+      # === Параметры llama.cpp ===
+      - LLAMA_N_GPU_LAYERS=${LLAMA_N_GPU_LAYERS:--1}
+      - LLAMA_CTX_SIZE=${LLAMA_CTX_SIZE:-8192}
+      - LLAMA_BATCH_SIZE=${LLAMA_BATCH_SIZE:-512}
+      - LLAMA_FLASH_ATTN=${LLAMA_FLASH_ATTN:-true}
+      - LLAMA_NUMA=${LLAMA_NUMA:-false}
+      - LLAMA_MMAP=${LLAMA_MMAP:-true}
+      - LLAMA_MLOCK=${LLAMA_MLOCK:-false}
+      - LLAMA_TENSOR_SPLIT=${LLAMA_TENSOR_SPLIT:-0}
+      - LLAMA_MAIN_GPU=${LLAMA_MAIN_GPU:-0}
+      - LLAMA_THREADS=${LLAMA_THREADS:-0}
+      - LLAMA_ROPE_FREQ_BASE=${LLAMA_ROPE_FREQ_BASE:-0}
+      - LLAMA_ROPE_FREQ_SCALE=${LLAMA_ROPE_FREQ_SCALE:-0}
+      - LLAMA_CACHE_TYPE_K=${LLAMA_CACHE_TYPE_K:-f16}
+      - LLAMA_CACHE_TYPE_V=${LLAMA_CACHE_TYPE_V:-f16}
+      - LLAMA_RMS_NORM_EPS=${LLAMA_RMS_NORM_EPS:-0}
+      - LLAMA_IDLE_UNLOAD=${LLAMA_IDLE_UNLOAD:-30m}
+      - LLAMA_ENFORCE_REPLICATION=${LLAMA_ENFORCE_REPLICATION:-false}
+
+      # === Безопасность ===
+      - API_TOKEN=${API_TOKEN:-}
+
+      # === RPC Worker (опционально) ===
+      - RPC_COORDINATOR_URL=${RPC_COORDINATOR_URL:-}
+      - RPC_WORKER_PORT=${RPC_WORKER_PORT:-18050}
+
+      # === Метки узла ===
+      - NODE_LABELS=${NODE_LABELS:-zone=lan}
+
+    # GPU доступ (требуется nvidia-container-toolkit)
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: ${GPU_COUNT:-1}
+              capabilities: [gpu]
+
+    # Healthcheck для CppWorker
+    healthcheck:
+      test: ["CMD", "curl", "-f", "-s", "http://localhost:18091/api/v1/cppworker/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 15s
+
+    networks:
+      - llama-net
+
+    labels:
+      - "ollama-legion.role=cppworker"
+      - "ollama-legion.node=${NODE_NAME:-llama-node}"
+
+  # ============================================
+  # Агент — мониторинг llama.cpp узла
+  # ============================================
+  agent:
+    image: ollama-legion/agent:latest
+    # Для локальной сборки раскомментируйте:
+    # build:
+    #   context: ..
+    #   dockerfile: docker/agent/Dockerfile
+    container_name: ollama-legion-llama-agent
+    restart: unless-stopped
+
+    ports:
+      - "${AGENT_PORT:-18032}:18032"
+
+    environment:
+      # === Тип бэкенда ===
+      - BACKEND_TYPE=llama_cpp
+
+      # === Идентификация ===
+      - AGENT_ID=${NODE_NAME:-llama-node}
+
+      # === Подключения ===
+      - CPPWORKER_URL=http://cppworker:18091
+      - BALANCER_URL=${BALANCER_URL}
+
+      # === Порты ===
+      - AGENT_PORT=${AGENT_PORT:-18032}
+
+      # === Интервалы ===
+      - COLLECT_INTERVAL=${COLLECT_INTERVAL:-15}
+      - HEARTBEAT_INTERVAL=${HEARTBEAT_INTERVAL:-30}
+      - AGENT_TIMEOUT=10
+
+      # === Безопасность ===
+      - API_TOKEN=${API_TOKEN:-}
+
+      # === Метки ===
+      - NODE_LABELS=${NODE_LABELS:-zone=lan}
+
+    # GPU доступ для сбора метрик (nvidia-smi)
+    # Без этого агент видит только CPU и не может собрать GPU-метрики
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: ${GPU_COUNT:-1}
+              capabilities: [gpu]
+
+    depends_on:
+      cppworker:
+        condition: service_healthy
+
+    networks:
+      - llama-net
+
+    labels:
+      - "ollama-legion.role=agent"
+      - "ollama-legion.node=${NODE_NAME:-llama-node}"
+
+networks:
+  llama-net:
+    driver: bridge
+    name: ollama-legion-llama-net

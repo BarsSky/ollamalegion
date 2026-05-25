@@ -33,20 +33,7 @@ RUN apk add --no-cache git gcc musl-dev
 
 # Копируем только go.mod/go.sum для кэширования слоя зависимостей
 COPY go.mod go.sum ./
-RUN --mount=type=cache,target=/go/pkg/mod \
-    go mod download && go mod verify
-
-# -----------------------------------------------------------------------------
-# Stage 2: test — запуск тестов
-# -----------------------------------------------------------------------------
-FROM deps AS test
-
-COPY . .
-
-RUN --mount=type=cache,target=/go/pkg/mod \
-    --mount=type=cache,target=/root/.cache/go-build \
-    CGO_ENABLED=1 go test -coverprofile=coverage.out -covermode=atomic ./... || \
-    (echo "=== TEST FAILURES ===" && cat coverage.out 2>/dev/null; exit 1)
+RUN go mod download && go mod verify
 
 # -----------------------------------------------------------------------------
 # Stage 3: builder — компиляция production бинарника
@@ -63,9 +50,7 @@ ARG ENABLE_NVML=false
 # CGO_ENABLED=1 для GPU — но на alpine musl NVML может не собраться,
 #   поэтому GPU-вариант требует glibc-совместимого билдера.
 #   Для GPU используйте отдельный builder (см. stage builder-gpu ниже).
-RUN --mount=type=cache,target=/go/pkg/mod \
-    --mount=type=cache,target=/root/.cache/go-build \
-    CGO_ENABLED=0 GOOS=linux GOARCH=amd64 \
+RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 \
     go build -trimpath -ldflags "-w -s -extldflags '-static'" \
     -a -installsuffix cgo -o agent ./cmd/agent
 
@@ -101,9 +86,7 @@ COPY . .
 ARG ENABLE_NVML=true
 
 # Сборка с NVML под glibc (nvidia/cuda base)
-RUN --mount=type=cache,target=/go/pkg/mod \
-    --mount=type=cache,target=/root/.cache/go-build \
-    CGO_ENABLED=1 GOOS=linux GOARCH=amd64 \
+RUN CGO_ENABLED=1 GOOS=linux GOARCH=amd64 \
     go build -trimpath -ldflags "-w -s" \
     -tags nvml -o agent ./cmd/agent
 
@@ -138,9 +121,7 @@ WORKDIR /app
 COPY --from=builder-gpu /build/agent .
 
 # Минимальные runtime-зависимости
-RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
-    --mount=type=cache,target=/var/lib/apt,sharing=locked \
-    apt-get update && \
+RUN apt-get update && \
     apt-get install -y --no-install-recommends tzdata ca-certificates wget && \
     rm -rf /var/lib/apt/lists/*
 

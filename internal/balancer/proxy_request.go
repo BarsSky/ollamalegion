@@ -76,10 +76,19 @@ func (p *Proxy) proxyRequest(w http.ResponseWriter, r *http.Request, backendID s
 		return err
 	}
 
+	// Проверка совместимости типа бэкенда с текущим OperatingMode
+	if !types.IsModeCompatibleWithBackendType(p.config.Balancing.OperatingMode, state.Backend.Type) {
+		bt := normalizeBackendType(state.Backend.Type)
+		err := fmt.Errorf("backend type %s not compatible with operating mode %s", bt, p.config.Balancing.OperatingMode)
+		logger.Get().Errorw("proxyRequest: backend type incompatible with operating mode",
+			"backend", backendID, "backend_type", bt, "operating_mode", p.config.Balancing.OperatingMode)
+		return err
+	}
+
 	p.recordRequest(backendID)
 	startTime := time.Now()
 
-	targetURL := fmt.Sprintf("http://%s:%d", state.Backend.Host, state.Backend.OllamaPort)
+	targetURL := p.getBackendBaseURL(state.Backend)
 
 	target, err := url.Parse(targetURL)
 	if err != nil {
@@ -98,6 +107,11 @@ func (p *Proxy) proxyRequest(w http.ResponseWriter, r *http.Request, backendID s
 		"backend", backendID, "method", r.Method, "path", r.URL.Path,
 		"model", modelFromCtx, "is_streaming", isStreamingRequest)
 
+	// Вычисляем эффективный таймаут для этого бэкенда (адаптивный / per-backend / глобальный)
+	effectiveTimeout := getEffectiveTimeout(state, p.config.Balancing.RequestTimeout)
+	logger.Get().Debugw("proxyRequest: effective timeout",
+		"backend", backendID, "timeout_sec", effectiveTimeout, "model", modelFromCtx)
+
 	client := p.client
 	if isStreamingRequest {
 		client = p.streamingClient
@@ -107,29 +121,25 @@ func (p *Proxy) proxyRequest(w http.ResponseWriter, r *http.Request, backendID s
 
 	// Читаем тело запроса в буфер, чтобы можно было восстановить r.Body
 	// если потребуется повторный запрос (например, при auto-pull retry).
-	// Go http.Client.Do() читает и закрывает r.Body, что делает его непригодным
-	// для повторного использования.
 	var bodyBuf []byte
 	if r.Body != nil {
 		bodyBuf, err = io.ReadAll(r.Body)
 		if err != nil {
 			logger.Get().Errorw("proxyRequest: failed to read request body",
 				"backend", backendID, "error", err)
-			// Если не удалось прочитать тело — используем оригинальное поведение
 			r.Body = io.NopCloser(bytes.NewBuffer(bodyBuf))
 		}
 		r.Body = io.NopCloser(bytes.NewBuffer(bodyBuf))
 	}
 
-	// Для streaming запросов создаём контекст с таймаутом, чтобы предотвратить
-	// бесконечное зависание если Ollama на бэкенде перестала генерировать токены.
+	// Создаём контекст с адаптивным таймаутом.
+	// Для non-streaming: используем effectiveTimeout (замена глобальному client.Timeout).
+	// Для streaming: используем StreamTimeout (если задан) как максимум.
 	reqCtx := r.Context()
 	if isStreamingRequest {
 		streamTimeout := time.Duration(p.config.Balancing.StreamTimeout) * time.Second
 		if streamTimeout <= 0 {
 			// Без таймаута: полагаемся на heartbeat + proxy_read_timeout nginx.
-			// Жёсткий таймаут (ранее 10 минут) обрывал длинные генерации и вызывал
-			// TransferEncodingError у OpenWebUI.
 			streamTimeout = 0
 		}
 		if streamTimeout > 0 {
@@ -137,7 +147,13 @@ func (p *Proxy) proxyRequest(w http.ResponseWriter, r *http.Request, backendID s
 			reqCtx, streamCancel = context.WithTimeout(r.Context(), streamTimeout)
 			defer streamCancel()
 		}
+	} else if effectiveTimeout > 0 {
+		// Non-streaming: контекст с адаптивным таймаутом
+		var cancel context.CancelFunc
+		reqCtx, cancel = context.WithTimeout(r.Context(), time.Duration(effectiveTimeout)*time.Second)
+		defer cancel()
 	}
+
 	req, err := http.NewRequestWithContext(reqCtx, r.Method, targetURL+r.URL.String(), r.Body)
 	if err != nil {
 		err = fmt.Errorf("failed to create request: %v", err)
@@ -185,8 +201,6 @@ func (p *Proxy) proxyRequest(w http.ResponseWriter, r *http.Request, backendID s
 		)
 
 		// STRATEGIC RETRY для streaming-запросов: одна повторная попытка к тому же бэкенду.
-		// Ollama может кратковременно перезагружаться (OOM killer → restart за ~500ms),
-		// и retry предотвращает UND_ERR_SOCKET/TransferEncodingError у OpenWebUI.
 		if isStreamingRequest && errType != "context_deadline_exceeded" && errType != "context_canceled" {
 			logger.Get().Warnw("PROXY_STREAMING_RETRY_SAME_BACKEND",
 				"backend", backendID,
@@ -196,11 +210,9 @@ func (p *Proxy) proxyRequest(w http.ResponseWriter, r *http.Request, backendID s
 			)
 			time.Sleep(p.getStreamingRetryDelay())
 
-			// Восстанавливаем тело запроса
 			if len(bodyBuf) > 0 {
 				r.Body = io.NopCloser(bytes.NewBuffer(bodyBuf))
 			}
-			// Создаём новый контекст с увеличенным таймаутом для retry
 			retryCtx, retryCancel := context.WithTimeout(r.Context(), 5*time.Minute)
 			defer retryCancel()
 			retryReq, retryErr := http.NewRequestWithContext(retryCtx, r.Method, targetURL+r.URL.String(), r.Body)
@@ -226,17 +238,12 @@ func (p *Proxy) proxyRequest(w http.ResponseWriter, r *http.Request, backendID s
 		}
 
 		p.logStreamingError(backendID, err)
-		// Восстанавливаем тело r.Body перед возвратом, чтобы вызывающий код
-		// мог повторить запрос (например, при auto-pull retry)
 		if len(bodyBuf) > 0 {
 			r.Body = io.NopCloser(bytes.NewBuffer(bodyBuf))
 		}
 		return fmt.Errorf("backend error [%s]: %v", errType, err)
 	}
 retrySucceeded:
-	// НЕ делаем defer resp.Body.Close() здесь, т.к. handleStreamingResponse
-	// сама управляет закрытием resp.Body для корректного drain.
-	// Non-streaming пути закрывают body явно.
 
 	logger.Get().Debugw("proxyRequest: backend responded",
 		"backend", backendID, "status", resp.StatusCode,
@@ -246,11 +253,25 @@ retrySucceeded:
 	atomic.AddInt64(&p.totalRequests, 1)
 	atomic.AddInt64(&state.TotalRequests, 1)
 
-	// Копируем заголовки ответа бэкенда, НО исключаем Transfer-Encoding и Content-Length,
-	// так как Go's http.ResponseWriter управляет этими заголовками автоматически.
+	// Копируем заголовки ответа бэкенда, исключаем:
+	// - Transfer-Encoding, Content-Length, Connection (управляются Go/http)
+	// - CORS-заголовки (уже установлены в ServeHTTP, дублирование ломает браузеры)
+	// - Vary: Origin (связан с CORS, тоже исключаем)
 	for key, values := range resp.Header {
 		keyLower := strings.ToLower(key)
-		if keyLower == "transfer-encoding" || keyLower == "content-length" {
+		if keyLower == "transfer-encoding" || keyLower == "content-length" || keyLower == "connection" {
+			continue
+		}
+		if strings.HasPrefix(keyLower, "access-control-") {
+			continue
+		}
+		if keyLower == "vary" {
+			for _, value := range values {
+				if strings.ToLower(strings.TrimSpace(value)) == "origin" {
+					continue
+				}
+				w.Header().Add(key, value)
+			}
 			continue
 		}
 		for _, value := range values {
@@ -259,7 +280,6 @@ retrySucceeded:
 	}
 
 	// Сессии создаются только для реальных клиентских запросов chat/generate.
-	// Embeddings (/api/embed, /api/embeddings) исключаются из session stickiness.
 	path := r.URL.Path
 	isClientRequest := (path == "/api/generate" || path == "/api/chat")
 	if isClientRequest {
@@ -273,11 +293,12 @@ retrySucceeded:
 			p.sessionMgr.Set(sessionID, backendID, modelFromCtx, clientNameForSession, p.getClientRealIP(r), r.UserAgent())
 			w.Header().Set("X-Session-ID", sessionID)
 		}
+		w.Header().Set("X-Backend-ID", backendID)
 	}
 
 	isStreaming := p.isStreamingResponse(resp)
 
-	// ##### НОВОЕ: Обработка ошибки "model not found" #####
+	// Обработка ошибки "model not found"
 	if !isStreaming && (resp.StatusCode == http.StatusNotFound || resp.StatusCode == http.StatusBadRequest) {
 		bodyBytes, readErr := io.ReadAll(resp.Body)
 		if readErr == nil && isModelNotFoundError(bodyBytes) {
@@ -306,10 +327,7 @@ retrySucceeded:
 		return p.proxyNonStreamingResponse(w, r, resp, backendID)
 	}
 
-	// ##### Обработка 503 Service Unavailable от Ollama #####
-	// Ollama может вернуть 503 когда перегружена или модель ещё загружается.
-	// Для streaming-запросов: сигнализируем ошибку вызывающему коду для retry на другом бэкенде.
-	// Для non-streaming: возвращаем 503 клиенту с Retry-After заголовком.
+	// Обработка 503 Service Unavailable от Ollama
 	if resp.StatusCode == http.StatusServiceUnavailable {
 		modelFromCtx := ""
 		if m, ok := r.Context().Value(modelContextKey).(string); ok {
@@ -318,16 +336,13 @@ retrySucceeded:
 		if isStreaming {
 			logger.Get().Warnw("backend returned 503 for streaming request, will retry on alternate backend",
 				"backend", backendID, "model", modelFromCtx)
-			// Drain body и закрываем
 			io.Copy(io.Discard, resp.Body)
 			resp.Body.Close()
-			// Возвращаем ошибку — ServeHTTP попробует другой бэкенд через retry-loop
 			return &BackendBusyError{
 				BackendID: backendID,
 				Model:     modelFromCtx,
 			}
 		}
-		// Non-streaming: читаем тело ошибки и отправляем клиенту
 		bodyBytes, _ := io.ReadAll(resp.Body)
 		resp.Body.Close()
 		w.Header().Set("Retry-After", "3")
@@ -340,19 +355,14 @@ retrySucceeded:
 		return nil
 	}
 
-	// ##### КОНЕЦ НОВОГО #####
-
 	if isStreaming {
 		p.handleStreamingResponse(w, r, resp, backendID)
 	} else {
-		// Non-streaming: читаем всё тело и устанавливаем Content-Length,
-		// чтобы предотвратить chunked encoding при передаче клиенту
 		body, readErr := io.ReadAll(resp.Body)
 		resp.Body.Close()
 		if readErr != nil {
 			logger.Get().Errorw("proxyRequest: failed to read non-streaming body",
 				"backend", backendID, "error", readErr)
-			// Даже при ошибке чтения пытаемся отправить то, что получили
 			if len(body) > 0 {
 				w.Header().Set("Content-Length", fmt.Sprintf("%d", len(body)))
 				w.WriteHeader(resp.StatusCode)
@@ -382,19 +392,19 @@ retrySucceeded:
 		p.weightTuner.RecordOutcome(backendID, modelFromCtx, latencyMs, success)
 	}
 
+	// Записываем latency для адаптивного таймаута
+	recordLatency(state, latencyMs, modelFromCtx, success)
+
 	return nil
 }
 
 // proxyNonStreamingResponse — проксирует тело ответа как есть (без streaming).
-// Важно: устанавливает Content-Length явно, чтобы избежать chunked encoding
-// и связанных с ним ошибок TransferEncodingError.
 func (p *Proxy) proxyNonStreamingResponse(w http.ResponseWriter, r *http.Request, resp *http.Response, backendID string) error {
 	defer resp.Body.Close()
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
 		return fmt.Errorf("failed to read response body: %w", err)
 	}
-	// Устанавливаем Content-Length, чтобы Go использовал identity encoding вместо chunked
 	w.Header().Set("Content-Length", fmt.Sprintf("%d", len(body)))
 	w.WriteHeader(resp.StatusCode)
 	w.Write(body)
@@ -415,7 +425,6 @@ func (e *ModelNotFoundError) Error() string {
 }
 
 // BackendBusyError — кастомная ошибка, сигнализирующая что бэкенд перегружен (503)
-// и нужно попробовать другой бэкенд.
 type BackendBusyError struct {
 	BackendID string
 	Model     string
@@ -458,14 +467,28 @@ func (p *Proxy) isStreamingRequest(r *http.Request) bool {
 	return true
 }
 
-// isStreamingResponse - проверка на streaming ответ (SSE или chunked)
+// isStreamingResponse - проверка на streaming ответ (SSE, NDJSON или chunked)
 func (p *Proxy) isStreamingResponse(resp *http.Response) bool {
 	contentType := resp.Header.Get("Content-Type")
 	if strings.Contains(contentType, "text/event-stream") {
 		return true
 	}
 
+	// Ollama возвращает Content-Type: application/x-ndjson для streaming
+	// /api/generate и /api/chat. Если не распознать это как стриминг,
+	// балансер прочитает всё тело через ReadAll и установит Content-Length,
+	// что сломает длинные стриминговые ответы.
+	if strings.Contains(contentType, "application/x-ndjson") {
+		return true
+	}
+
 	if resp.Header.Get("Transfer-Encoding") == "chunked" {
+		return true
+	}
+
+	// Go's http.Response.TransferEncoding — это распарсенный массив из Transfer-Encoding header.
+	// Если бэкенд вернул "Transfer-Encoding: chunked", Go помещает его сюда.
+	if len(resp.TransferEncoding) > 0 && resp.TransferEncoding[0] == "chunked" {
 		return true
 	}
 
@@ -507,23 +530,38 @@ func (p *Proxy) recordRequest(backendID string) {
 	state.mu.Unlock()
 }
 
-// warmupModel — загрузка модели в VRAM на Ollama через POST /api/generate с пустым промптом.
-// Использует /api/generate вместо /api/pull, т.к. /api/pull скачивает модель с интернета/кеша
-// (может занять минуты), а /api/generate с пустым промптом загружает модель в VRAM за секунды.
-// Если модель не скачана на бэкенде — возвращает ошибку, и запрос должен быть обработан
-// через fallback (Ollama загрузит модель сама при обработке запроса).
+// warmupModel — загрузка модели в VRAM:
+// для Ollama: POST /api/generate с пустым промптом,
+// для llama.cpp: POST /load или аналогичный warmup вызов.
 func (p *Proxy) warmupModel(backendID, host string, port int, model string) {
 	if p.client == nil {
 		logger.Get().Warnw("warmupModel: no HTTP client configured", "backend", backendID, "model", model)
 		return
 	}
 
-	// Быстрая проверка: модель скачана на бэкенде? Делаем HEAD-подобный запрос к /api/tags.
-	// Если модели нет — не пытаемся /api/generate, т.к. Ollama вернёт 404.
+	backend := p.GetBackend(backendID)
+	if backend == nil {
+		logger.Get().Warnw("warmupModel: backend not found", "backend", backendID, "model", model)
+		return
+	}
+
+	engine := types.ResolveEngine(backend.Engine, backend.Type)
+
+	// Шаг 1: проверяем наличие модели на бэкенде
+	switch engine {
+	case types.EngineLlamaCPP:
+		p.warmupLlamaCppModel(backendID, host, port, model)
+	default:
+		p.warmupOllamaModel(backendID, host, port, model)
+	}
+}
+
+// warmupOllamaModel — загрузка модели через Ollama API.
+func (p *Proxy) warmupOllamaModel(backendID, host string, port int, model string) {
 	tagsURL := fmt.Sprintf("http://%s:%d/api/tags", host, port)
 	tagsResp, err := p.client.Get(tagsURL)
 	if err != nil {
-		logger.Get().Warnw("warmupModel: cannot reach backend tags endpoint, skipping warmup",
+		logger.Get().Warnw("warmupOllamaModel: cannot reach backend tags endpoint, skipping warmup",
 			"backend", backendID, "model", model, "error", err)
 		return
 	}
@@ -534,7 +572,7 @@ func (p *Proxy) warmupModel(backendID, host string, port int, model string) {
 	}
 	if err := json.NewDecoder(tagsResp.Body).Decode(&tagsData); err != nil {
 		tagsResp.Body.Close()
-		logger.Get().Warnw("warmupModel: failed to decode tags, skipping warmup",
+		logger.Get().Warnw("warmupOllamaModel: failed to decode tags, skipping warmup",
 			"backend", backendID, "model", model, "error", err)
 		return
 	}
@@ -548,48 +586,111 @@ func (p *Proxy) warmupModel(backendID, host string, port int, model string) {
 		}
 	}
 	if !modelExists {
-		logger.Get().Warnw("warmupModel: model not found in backend tags, skipping warmup (Ollama will pull on first request)",
+		logger.Get().Warnw("warmupOllamaModel: model not found in backend tags, skipping warmup (Ollama will pull on first request)",
 			"backend", backendID, "model", model)
 		return
 	}
 
-	// Модель скачана — загружаем в VRAM через /api/generate с пустым промптом
 	genURL := fmt.Sprintf("http://%s:%d/api/generate", host, port)
 	body := fmt.Sprintf(`{"model":"%s","prompt":"","stream":false,"keep_alive":"5m"}`, model)
 
 	go func() {
-		// Семафор: ограничиваем число одновременных warmup
-		// (каждый warmup делает POST /api/generate, блокирующий слот Ollama)
 		select {
 		case p.warmupSem <- struct{}{}:
 			defer func() { <-p.warmupSem }()
 		case <-time.After(p.getWarmupSemaphoreTimeout()):
-			// Семафор занят > таймаут — другой warmup завис, пропускаем
-			logger.Get().Warnw("warmupModel: semaphore timeout, skipping warmup",
+			logger.Get().Warnw("warmupOllamaModel: semaphore timeout, skipping warmup",
 				"backend", backendID, "model", model)
 			return
 		}
 
 		req, err := http.NewRequest("POST", genURL, strings.NewReader(body))
 		if err != nil {
-			logger.Get().Errorw("warmupModel: request creation failed", "backend", backendID, "model", model, "error", err)
+			logger.Get().Errorw("warmupOllamaModel: request creation failed", "backend", backendID, "model", model, "error", err)
 			return
 		}
 		req.Header.Set("Content-Type", "application/json")
 		resp, err := p.client.Do(req)
 		if err != nil {
-			logger.Get().Errorw("warmupModel: request failed", "backend", backendID, "model", model, "error", err)
+			logger.Get().Errorw("warmupOllamaModel: request failed", "backend", backendID, "model", model, "error", err)
 			return
 		}
 		resp.Body.Close()
 
 		if resp.StatusCode >= 200 && resp.StatusCode < 300 {
-			logger.Get().Infow("warmupModel: model loaded into VRAM",
+			logger.Get().Infow("warmupOllamaModel: model loaded into VRAM",
 				"backend", backendID, "model", model, "status", resp.StatusCode)
-			// Сразу обновляем локальные метрики, чтобы checkModelReadyUnsafe увидел модель
 			p.updateRunningModelInMetrics(backendID, model)
 		} else {
-			logger.Get().Warnw("warmupModel: model load returned non-2xx",
+			logger.Get().Warnw("warmupOllamaModel: model load returned non-2xx",
+				"backend", backendID, "model", model, "status", resp.StatusCode)
+		}
+	}()
+}
+
+// warmupLlamaCppModel — загрузка модели через llama.cpp backend.
+func (p *Proxy) warmupLlamaCppModel(backendID, host string, port int, model string) {
+	// Для llama.cpp используем CppWorkerPort из конфигурации бэкенда,
+	// а не переданный port (который может быть OllamaPort=0).
+	backend := p.GetBackend(backendID)
+	if backend == nil {
+		logger.Get().Warnw("warmupLlamaCppModel: backend not found", "backend", backendID, "model", model)
+		return
+	}
+	actualPort := p.getBackendPort(backend)
+	baseURL := fmt.Sprintf("http://%s:%d", host, actualPort)
+
+	// Проверяем доступность бэкенда через health endpoint
+	healthURL := baseURL + "/health"
+	healthResp, err := p.client.Get(healthURL)
+	if err != nil {
+		logger.Get().Warnw("warmupLlamaCppModel: cannot reach backend health endpoint, skipping warmup",
+			"backend", backendID, "model", model, "error", err)
+		return
+	}
+	healthResp.Body.Close()
+	if healthResp.StatusCode != http.StatusOK {
+		logger.Get().Warnw("warmupLlamaCppModel: backend not healthy, skipping warmup",
+			"backend", backendID, "model", model, "status", healthResp.StatusCode)
+		return
+	}
+
+	// Загружаем модель через /load endpoint cppworker
+	loadURL := baseURL + "/load"
+	loadBody := map[string]interface{}{
+		"name": model,
+	}
+	loadBodyBytes, _ := json.Marshal(loadBody)
+
+	go func() {
+		select {
+		case p.warmupSem <- struct{}{}:
+			defer func() { <-p.warmupSem }()
+		case <-time.After(p.getWarmupSemaphoreTimeout()):
+			logger.Get().Warnw("warmupLlamaCppModel: semaphore timeout, skipping warmup",
+				"backend", backendID, "model", model)
+			return
+		}
+
+		req, err := http.NewRequest("POST", loadURL, bytes.NewReader(loadBodyBytes))
+		if err != nil {
+			logger.Get().Errorw("warmupLlamaCppModel: request creation failed", "backend", backendID, "model", model, "error", err)
+			return
+		}
+		req.Header.Set("Content-Type", "application/json")
+		resp, err := p.client.Do(req)
+		if err != nil {
+			logger.Get().Errorw("warmupLlamaCppModel: load request failed", "backend", backendID, "model", model, "error", err)
+			return
+		}
+		resp.Body.Close()
+
+		if resp.StatusCode >= 200 && resp.StatusCode < 300 {
+			logger.Get().Infow("warmupLlamaCppModel: model loaded into VRAM",
+				"backend", backendID, "model", model, "status", resp.StatusCode)
+			p.updateLlamaCppRunningModelInMetrics(backendID, model)
+		} else {
+			logger.Get().Warnw("warmupLlamaCppModel: model load returned non-2xx",
 				"backend", backendID, "model", model, "status", resp.StatusCode)
 		}
 	}()
@@ -612,7 +713,6 @@ func (p *Proxy) updateRunningModelInMetrics(backendID, model string) {
 		p.metricsMgr.metrics[backendID] = metrics
 	}
 
-	// Проверяем, нет ли уже такой модели
 	for _, m := range metrics.Ollama.RunningModels {
 		if m.Name == model {
 			return
@@ -623,5 +723,32 @@ func (p *Proxy) updateRunningModelInMetrics(backendID, model string) {
 		Name: model,
 	})
 	logger.Get().Debugw("updateRunningModelInMetrics: added model to running models",
+		"backend", backendID, "model", model)
+}
+
+// updateLlamaCppRunningModelInMetrics — обновляет LlamaCppMetrics после успешного warmup.
+func (p *Proxy) updateLlamaCppRunningModelInMetrics(backendID, model string) {
+	p.metricsMgr.mu.Lock()
+	defer p.metricsMgr.mu.Unlock()
+
+	lm, ok := p.metricsMgr.llamaMetrics[backendID]
+	if !ok {
+		lm = &types.LlamaCppMetrics{
+			LoadedModels: []types.LlamaCppModel{},
+		}
+		p.metricsMgr.llamaMetrics[backendID] = lm
+	}
+
+	for _, m := range lm.LoadedModels {
+		if m.Name == model {
+			return
+		}
+	}
+
+	lm.LoadedModels = append(lm.LoadedModels, types.LlamaCppModel{
+		Name:  model,
+		State: "loaded",
+	})
+	logger.Get().Debugw("updateLlamaCppRunningModelInMetrics: added model to llama.cpp metrics",
 		"backend", backendID, "model", model)
 }

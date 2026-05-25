@@ -1,11 +1,55 @@
 package balancer
 
 import (
+	"sync"
 	"time"
 
 	"ollama-loadbalancer/pkg/logger"
 	"ollama-loadbalancer/pkg/types"
 )
+
+// histogramCollector — простой in-process сборщик гистограммных метрик
+// для экспорта через /api/metrics. Используется вместо внешнего Prometheus SDK.
+type histogramCollector struct {
+	mu     sync.Mutex
+	buckets []float64
+	values []float64
+	count  int64
+	sum    float64
+}
+
+func newHistogramCollector(buckets ...float64) *histogramCollector {
+	if len(buckets) == 0 {
+		buckets = []float64{0.1, 0.5, 1, 2, 5, 10, 30, 60, 120, 300}
+	}
+	return &histogramCollector{
+		buckets: buckets,
+		values:  make([]float64, len(buckets)),
+	}
+}
+
+func (h *histogramCollector) Observe(v float64) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.count++
+	h.sum += v
+	for i, b := range h.buckets {
+		if v <= b {
+			h.values[i]++
+		}
+	}
+}
+
+func (h *histogramCollector) Snapshot() map[string]interface{} {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return map[string]interface{}{
+		"count":   h.count,
+		"sum_sec": h.sum,
+		"buckets": h.buckets,
+		"values":  h.values,
+	}
+}
 
 // BalancerMetrics — бизнес-метрики балансера (для последующей регистрации в Prometheus)
 // Используется для экспозиции через /api/metrics
@@ -77,8 +121,16 @@ func (bm *BalancerMetrics) GetMetrics() map[string]interface{} {
 		"prewarm_in_progress":         prewarmCount,
 		"model_instance_count":        modelInstanceCounts,
 		"total_proxy_requests":        bm.proxy.totalRequests,
+		"model_load_time_histogram":   modelLoadTimeHistogram.Snapshot(),
+		"queue_wait_time_histogram":   queueWaitTimeHistogram.Snapshot(),
 	}
 }
+
+// modelLoadTimeHistogram — гистограмма времени загрузки модели (секунды)
+var modelLoadTimeHistogram = newHistogramCollector(0.5, 1, 2, 5, 10, 30, 60, 120, 300, 600)
+
+// queueWaitTimeHistogram — гистограмма времени ожидания в очереди (секунды)
+var queueWaitTimeHistogram = newHistogramCollector(0.001, 0.01, 0.1, 0.5, 1, 2, 5, 10, 30, 60)
 
 // RecordModelLoadTime — запись времени загрузки модели (вызывается из warmupModel)
 func (p *Proxy) RecordModelLoadTime(backendID, model string, duration time.Duration) {
@@ -87,8 +139,7 @@ func (p *Proxy) RecordModelLoadTime(backendID, model string, duration time.Durat
 		"model", model,
 		"load_time_sec", duration.Seconds(),
 	)
-	// TODO: register in Prometheus counter
-	// modelLoadTimeHistogram.WithLabelValues(backendID, model).Observe(duration.Seconds())
+	modelLoadTimeHistogram.Observe(duration.Seconds())
 }
 
 // RecordQueueWaitTime — запись времени ожидания в очереди (вызывается из QueueManager.worker)
@@ -97,6 +148,13 @@ func (qm *QueueManager) RecordQueueWaitTime(model string, waitTimeMs int64) {
 		"model", model,
 		"wait_time_ms", waitTimeMs,
 	)
-	// TODO: register in Prometheus histogram
-	// queueWaitTimeHistogram.WithLabelValues(model).Observe(float64(waitTimeMs) / 1000)
+	queueWaitTimeHistogram.Observe(float64(waitTimeMs) / 1000)
+}
+
+// GetHistogramMetrics возвращает снапшоты гистограмм для /api/metrics
+func GetHistogramMetrics() map[string]interface{} {
+	return map[string]interface{}{
+		"model_load_time_histogram": modelLoadTimeHistogram.Snapshot(),
+		"queue_wait_time_histogram": queueWaitTimeHistogram.Snapshot(),
+	}
 }

@@ -123,7 +123,7 @@ services:
   # Агент GPU — NVIDIA CUDA runtime (~150 MB)
   # ===========================================================================
   agent-gpu:
-    image: ollama-legion/agent:latest-gpu
+    image: ollama-legion/agent:latest
     container_name: ollama-legion-agent-gpu
     restart: unless-stopped
 

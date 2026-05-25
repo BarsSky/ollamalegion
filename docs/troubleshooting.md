@@ -3,7 +3,7 @@
 Руководство по решению常见 проблем и отладке системы.
 
 ## Содержание
-
+  
 1. [Частые ошибки](#частые-ошибки)
 2. [Логирование](#логирование)
 3. [Отладка NVML](#отладка-nvml)
@@ -546,6 +546,97 @@ curl -s http://localhost:11434/api/tags | jq
 
 ---
 
+### Модели cppworker не отображаются в OpenWebUI
+
+**Симптомы:**
+- OpenWebUI подключён к балансеру, но список моделей пуст
+- В логах балансера нет ошибок при `GET /api/tags`
+- CppWorker запущен и отвечает на `curl http://localhost:18091/health`
+
+**Причина:**
+Цепочка `OpenWebUI → Balancer /api/tags → CppWorker /api/tags` имеет несколько точек отказа:
+1. **Неверный host в конфигурации бэкенда** — в `data/state.json` указан `localhost`, но балансер в Docker-контейнере не может достучаться до cppworker по `localhost`
+2. **CppWorker не зарегистрирован в балансере** — при запуске `docker-compose.full.yml` нет автоматической регистрации бэкенда
+3. **Модель не загружена в память cppworker** — `/api/tags` возвращает только **активно загруженные** модели
+
+**Диагностика:**
+
+```bash
+# 1. Проверьте, что cppworker отвечает на health-check
+curl http://localhost:18091/health
+
+# 2. Проверьте список загруженных моделей в cppworker
+curl http://localhost:18091/api/tags
+# Если ответ {"models":[]} — модели не загружены
+
+# 3. Проверьте список файлов .gguf в директории моделей
+curl http://localhost:18091/models-dir
+
+# 4. Проверьте, зарегистрирован ли бэкенд в балансере
+curl http://localhost:18081/api/v1/backends | jq '.[] | select(.type=="llama_cpp")'
+
+# 5. Проверьте health-check бэкенда через балансер
+curl http://localhost:18081/api/v1/cluster | jq '.backends[] | {id, status, backendType, host}'
+```
+
+**Решение:**
+
+1. **Загрузите модель в cppworker:**
+   ```bash
+   curl -X POST http://localhost:18091/load \
+     -H "Content-Type: application/json" \
+     -d '{"name": "your-model"}'
+   ```
+
+2. **Зарегистрируйте бэкенд вручную (если авто-регистрация не сработала):**
+   ```bash
+   curl -X POST http://localhost:18081/api/v1/backends \
+     -H "Content-Type: application/json" \
+     -d '{
+       "id": "cppworker-gpu",
+       "name": "CppWorker",
+       "host": "cppworker",
+       "ollamaPort": 0,
+       "agentPort": 0,
+       "cppWorkerPort": 18091,
+       "weight": 10,
+       "maxConcurrentRequests": 4,
+       "maxModels": 3,
+       "backendType": "llama_cpp",
+       "backendEngine": "llama_cpp",
+       "gpuMode": "auto"
+     }'
+   ```
+   Важно: `"host"` должен быть именем Docker-сервиса (`cppworker`) или IP, доступным из контейнера балансера.
+
+3. **Проверьте `data/state.json`:**
+   ```bash
+   docker exec ollama-legion-balancer cat /app/data/state.json | jq '.backends[] | select(.type=="llama_cpp")'
+   ```
+   Убедитесь, что:
+   - `"type": "llama_cpp"` (не `"ollama"`)
+   - `"cppWorkerPort": 18091` (не 0)
+   - `"host"` содержит правильный адрес cppworker (не `localhost`)
+
+4. **Проверьте агрегацию на балансере:**
+   ```bash
+   curl http://localhost:18080/api/tags
+   ```
+   Этот запрос через прокси-порт должен вернуть объединённый список моделей со всех бэкендов.
+
+**Авто-регистрация (docker-compose.full.yml):**
+
+При запуске через `docker-compose.full.yml` cppworker автоматически регистрируется в балансере. Для этого должны быть установлены переменные:
+- `BALANCER_URL=http://loadbalancer:18081` (уже задано в compose-файле)
+- `CPPWORKER_HOST=cppworker` (имя Docker-сервиса)
+
+Если авто-регистрация не сработала, проверьте логи:
+```bash
+docker logs ollama-legion-cppworker | grep "\[register\]"
+```
+
+---
+
 ### TransferEncodingError / UND_ERR_SOCKET в OpenWebUI
 
 **Симптомы:**
@@ -626,6 +717,32 @@ ssh <gpu-server> 'docker logs ollama --tail 50'
    # Логи балансера с фильтрацией ошибок streaming
    docker logs -f ollama-legion-balancer 2>&1 | grep --line-buffered -E "STREAMING_BACKEND_READ_ERROR|PROXY_BACKEND_REQUEST_FAILED"
    ```
+
+
+### go vet: could not determine what C.* refers to
+
+**Симптомы:**
+- `go vet` выдаёт ошибку `could not determine what C.<functionName> refers to` в CGo-файлах
+- Ошибка возникает при проверке пакетов, использующих CGo (например, `./internal/cppbackend/...`)
+
+**Причина:**
+`go vet` имеет ограниченную поддержку CGo и не может полностью разрешить C-идентификаторы, экспортированные из Go через `//export`. Это известное ограничение, особенно на Windows.
+
+**Решение:**
+Исключите CGo-пакеты из `go vet`. Проверяйте только чистые Go-пакеты:
+
+```bash
+# Правильно — только не-CGo пакеты:
+go vet ./internal/balancer/... ./pkg/types/... ./internal/api/... ./internal/config/...
+
+# Не включайте CGo-пакеты:
+# go vet ./internal/cppbackend/...   # ← этот пакет импортирует c/bridge (CGo)
+```
+
+Для проверки CGo-кода используйте `go build`:
+```bash
+go build ./internal/cppbackend/...
+```
 
 ---
 

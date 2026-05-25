@@ -10,6 +10,7 @@ import (
 	"net"
 	"net/http"
 	"sort"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -133,8 +134,11 @@ func NewProxy(config *types.LoadBalancerConfig) *Proxy {
 		trustedNets:   parseTrustedProxyCIDRs(config.LoadBalancer.TrustedProxies),
 		warmupSem:     make(chan struct{}, maxConcurrentWarmups(config)),
 
+		// Клиент для обычных запросов: Timeout=0 (без глобального), т.к. таймаут
+		// задаётся per-request через context.WithTimeout в proxyRequest
+		// на основе getEffectiveTimeout().
 		client: &http.Client{
-			Timeout:   time.Duration(config.Balancing.RequestTimeout) * time.Second,
+			Timeout:   0, // Таймаут управляется через контекст запроса
 			Transport: regularTransport,
 		},
 		// Streaming клиент без общего таймаута для long-running запросов
@@ -142,6 +146,7 @@ func NewProxy(config *types.LoadBalancerConfig) *Proxy {
 			Timeout:   0, // Нет таймаута для streaming
 			Transport: streamingTransport,
 		},
+
 	}
 
 	// QueueManager создаём после инициализации p, чтобы передать корректный proxy
@@ -254,6 +259,21 @@ func (p *Proxy) getWarmupSemaphoreTimeout() time.Duration {
 	return time.Duration(sec) * time.Second
 }
 
+// determineRequestBackendType определяет тип бэкенда на основе пути входящего запроса.
+// - Ollama API endpoints (/api/generate, /api/chat, /api/tags, ...) → BackendTypeOllama
+// - llama.cpp / OpenAI-compatible endpoints (/v1/chat/completions, /v1/completions, ...) → BackendTypeLlamaCpp
+// - Прочие пути → "" (будет определено из OperatingMode через getDefaultAllowedTypes)
+func (p *Proxy) determineRequestBackendType(r *http.Request) types.BackendType {
+	path := r.URL.Path
+	if strings.HasPrefix(path, "/api/") {
+		return types.BackendTypeOllama
+	}
+	if strings.HasPrefix(path, "/v1/") {
+		return types.BackendTypeLlamaCpp
+	}
+	return ""
+}
+
 // SetQueueManagerProxy - установка proxy для QueueManager (вызывается после создания)
 func (p *Proxy) SetQueueManagerProxy() {
 	p.queueMgr.proxy = p
@@ -327,10 +347,31 @@ func (p *Proxy) Shutdown(ctx context.Context) error {
 func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	startTime := time.Now()
 
+	// CORS headers для всех ответов (нужно для OpenWebUI и других браузерных клиентов)
+	origin := r.Header.Get("Origin")
+	if origin != "" {
+		w.Header().Set("Access-Control-Allow-Origin", origin)
+		w.Header().Set("Access-Control-Allow-Credentials", "true")
+		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
+		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Requested-With, Accept, Origin")
+		w.Header().Set("Access-Control-Expose-Headers", "Content-Length, Content-Type")
+		w.Header().Set("Access-Control-Max-Age", "86400")
+	}
+
+	// Обработка CORS preflight (OPTIONS) запросов
+	if r.Method == "OPTIONS" {
+		w.WriteHeader(http.StatusNoContent)
+		return
+	}
+
 	// Единый разбор тела запроса (избегаем тройного чтения в recordRecentClient + extractModel + proxyRequest)
 	parsed := p.parseRequestBody(r)
 	model := parsed.Model
 	isStream := parsed.Stream
+
+	// Определяем требуемый тип бэкенда из URL запроса
+	bt := p.determineRequestBackendType(r)
+	allowedTypes := p.getAllowedTypesList(bt)
 
 	// Трекинг всех клиентов для монитора (использует уже распарсенные данные)
 	p.recordRecentClientParsed(r, parsed)
@@ -419,14 +460,14 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 						forceRebalance = true
 					}
 					if loadRatio > 0.50 || forceRebalance {
-						altBackend := p.findLessLoadedBackendWithModel(model, targetBackend)
+						altBackend := p.findLessLoadedBackendWithModel(model, targetBackend, allowedTypes)
 						if altBackend != "" {
 							logger.Get().Infow("rebalancing session to less loaded backend (same model)",
 								"session", sessionID, "from", targetBackend, "to", altBackend,
 								"load_ratio", loadRatio, "force", forceRebalance)
 							targetBackend = altBackend
 						} else {
-							altBackend = p.findLessLoadedBackendAny(model, targetBackend)
+							altBackend = p.findLessLoadedBackendAny(model, targetBackend, allowedTypes)
 							if altBackend != "" {
 								logger.Get().Infow("rebalancing session to less loaded backend (any)",
 									"session", sessionID, "from", targetBackend, "to", altBackend,
@@ -450,7 +491,7 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if targetBackend == "" {
-		targetBackend = p.selectBackend(model)
+		targetBackend = p.selectBackend(model, bt)
 		if targetBackend != "" && p.config.Balancing.SessionStickiness && !isEmbeddingsRequest(path) {
 			sessionID = p.getSessionIDWithModel(r, clientName, model)
 			p.sessionMgr.Set(sessionID, targetBackend, model, clientName, p.getClientRealIP(r), r.UserAgent())
@@ -482,7 +523,7 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		attemptedBackends := map[string]bool{targetBackend: true}
 		const maxRetries = 10
 		for retry := 0; retry < maxRetries; retry++ {
-			altBackend := p.selectBackendExcluding(model, attemptedBackends)
+			altBackend := p.selectBackendExcluding(model, attemptedBackends, bt)
 			if altBackend == "" {
 				break
 			}
@@ -522,7 +563,7 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		releaseAcquired()
 		attemptedBackends := map[string]bool{targetBackend: true}
 		for attempt := 1; attempt < 3; attempt++ {
-			altBackend := p.selectBackendExcluding(model, attemptedBackends)
+			altBackend := p.selectBackendExcluding(model, attemptedBackends, bt)
 			if altBackend == "" {
 				break
 			}
@@ -602,7 +643,7 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	releaseAcquired()
 	attemptedBackends := map[string]bool{targetBackend: true}
 	for attempt := 1; attempt < 3; attempt++ {
-		altBackend := p.selectBackendExcluding(model, attemptedBackends)
+		altBackend := p.selectBackendExcluding(model, attemptedBackends, bt)
 		if altBackend == "" {
 			break
 		}

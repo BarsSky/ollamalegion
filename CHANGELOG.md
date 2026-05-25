@@ -83,13 +83,50 @@
 - Скрипты нагрузочного тестирования (Python)
 - GitHub Actions ready
 
+#### RPC Model Distribution (три варианта распределения моделей)
+
+**Вариант A — Model Replication:**
+- Автоматическая репликация моделей на несколько бэкендов
+- Scale-up/scale-down по min/max instances
+- Idle Unload — выгрузка простаивающих реплик
+- LRU eviction при превышении max instances
+- Target backends — явное указание бэкендов для реплик
+- Фоновый контроллер (`GroupController`) с интервалом 10s
+- Групповой селектор (`GroupAwareSelector`) для балансировки внутри группы
+
+**Вариант B — RPC Coordinator:**
+- Распределённый inference через внешних RPC-воркеров
+- KV-кэш для оптимизации повторных запросов
+- Split/Merge — разбиение длинных промптов на чанки
+- Worker client с keep-alive пулом соединений
+- Автоматическое определение владельца модели (`HasDistributedModel`)
+
+**Вариант C — Virtual Model Router:**
+- Виртуальные модели как pipeline из нескольких физических моделей
+- Регистрация виртуальных моделей с цепочками трансформаций
+- Роутинг запросов через конвейер обработки
+
+#### Декомпозиция кодовой базы
+- `proxy.go` разбит: core логика (1000 строк), `session_manager.go`, `slot_manager.go`, `eventbus.go`, `proxy_logger.go`, `proxy_request.go`, `streaming.go`, `model_management.go`
+- `handlers.go` разбит на модули: `handlers_agents.go`, `handlers_backends.go`, `handlers_cluster.go`, `handlers_core.go`, `handlers_metrics.go`, `handlers_model_management.go`, `handlers_queue.go`, `handlers_replication.go`, `handlers_sessions.go`, `handlers_virtual.go`, `proxy_logs_handler.go`
+- `collector.go` разбит на модули: `collector_gpu.go`, `collector_health.go`, `collector_network.go`, `collector_ollama.go`, `collector_register.go`, `collector_system.go`
+- Выделены пакеты: `internal/modelreplication/`, `internal/rpccoordinator/`, `internal/virtualmodel/`, `internal/config/`, `internal/huggingface/`
+
 #### Тестирование
-- 170+ интеграционных тестов
+- 200+ интеграционных и unit-тестов
 - Тесты агента: сбор метрик, регистрация, heartbeat (28 тестов)
 - Тесты аутентификации: TokenAuthenticator, middleware (24 теста)
 - Тесты MetricsBroker: pub/sub, множественные клиенты (17 тестов)
 - Тесты Rate Limiting: token bucket (11 тестов)
 - Тесты Proxy/Queue: очередь, выбор бэкенда, session manager (20 тестов)
+- Тесты репликации: groups, scale-up/down, controller, dispatch (40+ тестов)
+- Тесты RPC Coordinator: KV-кэш, split/merge, worker client (30+ тестов)
+- Тесты виртуальных моделей: registry, router, pipeline (25+ тестов)
+- Тесты режимов работы: operating modes, dispatch, webui mode (25+ тестов)
+- Тесты стриминга: cancel, errors, SSE (30+ тестов)
+- Тесты проксирования: mock, model load, reliability (40+ тестов)
+- Тесты бэкенд-селектора: scoring, weight tuning (20+ тестов)
+- Тесты балансировщика: config sync, load scenarios, no-agent (50+ тестов)
 - Сценарии: failover, stickiness, concurrent, prewarm, backpressure (70 тестов)
 - E2E тесты: full workflow, cluster state, error handling
 
@@ -104,3 +141,9 @@
 - Утечка памяти при отключении WebSocket клиентов
 - Race condition в SessionManager при очистке сессий
 - Пустая очередь — добавлен endpoint `/api/v1/queue/details`
+- Таймаут балансировщика при ожидании ответа от модели — добавлен контекст с дедлайном
+- Локализация WebUI — исправлены отсутствующие ключи для новых страниц
+- Проксирование запросов при недоступности бэкенда — улучшен failover с повторной попыткой на другом бэкенде
+- Разбор JSON-полей конфигурации (`target_backends`, `labels`) — унифицирован тип `[]string`
+- Состояние кластера при отключении бэкенда — корректная очистка моделей и сессий
+- AutoPull моделей — исправлена гонка при одновременной загрузке одной модели несколькими запросами

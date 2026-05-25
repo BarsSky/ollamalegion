@@ -4,9 +4,10 @@
 Поддерживает: non-streaming, SSE streaming, симуляцию GPU-hang.
 
 Переменные окружения:
-  BACKEND_NAME  — имя бэкенда (для логов)
+  BACKEND_NAME   — имя бэкенда (для логов)
   BACKEND_MODELS — JSON-список моделей, например '["llama3.2:3b","qwen2.5:14b"]'
-  HUNG_MODE     — если "true", ВСЕ streaming-запросы зависают (для S3)
+  HUNG_MODE      — если "true", ВСЕ streaming-запросы зависают (для S3)
+  SLOW_MODE      — если "true", non-streaming ответы 0.5–1.5с (для теста очереди)
 """
 
 import http.server
@@ -24,6 +25,7 @@ try:
 except json.JSONDecodeError:
     MODELS = ["llama3.2:3b"]
 HUNG_MODE = os.environ.get("HUNG_MODE", "false").lower() == "true"
+SLOW_MODE = os.environ.get("SLOW_MODE", "false").lower() == "true"
 _hung_lock = threading.Lock()
 
 request_count = 0
@@ -74,7 +76,7 @@ class MockHandler(http.server.BaseHTTPRequestHandler):
 
         model = req.get("model", "unknown")
         is_stream = req.get("stream", False)
-        is_hung = req.get("hung", False)  # Специальный параметр для симуляции зависания
+        is_hung = req.get("hung", False)
 
         if self.path in ("/api/generate", "/api/chat"):
             with lock:
@@ -89,7 +91,10 @@ class MockHandler(http.server.BaseHTTPRequestHandler):
             self.send_error(404)
 
     def _handle_non_streaming(self, model, req, cnt):
-        delay = random.uniform(0.02, 0.08)
+        if SLOW_MODE:
+            delay = random.uniform(0.5, 1.5)  # Медленный режим для создания очереди
+        else:
+            delay = random.uniform(0.02, 0.08)  # Быстрый режим (по умолчанию)
         time.sleep(delay)
         resp = {
             "model": model,
@@ -106,7 +111,6 @@ class MockHandler(http.server.BaseHTTPRequestHandler):
         self._send_json(resp)
 
     def _handle_streaming(self, model, req, is_hung, cnt):
-        # Если HUNG_MODE глобален или запрос специально просит hung — зависаем
         should_hang = HUNG_MODE or is_hung
         if should_hang:
             print(f"[{BACKEND_NAME}] *** GPU HANG SIMULATION: streaming request #{cnt} will hang ***", flush=True)
@@ -119,13 +123,11 @@ class MockHandler(http.server.BaseHTTPRequestHandler):
 
         try:
             if should_hang:
-                # Отправляем пустой chunk (чтобы first-byte прошёл) и зависаем на 60 секунд
                 self.wfile.write(b": ping\n\n")
                 self.wfile.flush()
-                time.sleep(60)  # Висим — клиентский first-byte timeout должен сработать
+                time.sleep(60)
                 return
             else:
-                # Нормальный streaming: 5 токенов с задержкой
                 for i in range(5):
                     token = f"[{BACKEND_NAME}] token {i+1} for {model} (req #{cnt})"
                     chunk = json.dumps({
@@ -138,7 +140,6 @@ class MockHandler(http.server.BaseHTTPRequestHandler):
                     self.wfile.flush()
                     time.sleep(random.uniform(0.05, 0.15))
 
-                # Финальный done
                 final = json.dumps({
                     "model": model,
                     "created_at": "2026-04-29T00:00:00Z",
@@ -164,7 +165,7 @@ class MockHandler(http.server.BaseHTTPRequestHandler):
 if __name__ == "__main__":
     port = int(sys.argv[1]) if len(sys.argv) > 1 else 11434
     server = http.server.ThreadingHTTPServer(("0.0.0.0", port), MockHandler)
-    print(f"[{BACKEND_NAME}] Listening on 0.0.0.0:{port}, models={MODELS}, hung_mode={HUNG_MODE}", flush=True)
+    print(f"[{BACKEND_NAME}] Listening on 0.0.0.0:{port}, models={MODELS}, hung_mode={HUNG_MODE}, slow_mode={SLOW_MODE}", flush=True)
     try:
         server.serve_forever()
     except KeyboardInterrupt:

@@ -10,13 +10,14 @@
   <link rel="icon" type="image/png" sizes="32x32" href="favicon-32x32.png">
   <link rel="icon" type="image/png" sizes="16x16" href="favicon-16x16.png">
   <link rel="shortcut icon" href="favicon.ico">
-  <link rel="stylesheet" href="css/themes.css?v=10">
-  <link rel="stylesheet" href="css/base.css?v=10">
-  <link rel="stylesheet" href="css/monitor-app.css?v=10">
-  <link rel="stylesheet" href="css/monitor.css?v=10">
-  <script src="js/i18n/ru.js?v=10"></script>
-  <script src="js/i18n/en.js?v=10"></script>
-  <script src="js/i18n/index.js?v=10"></script>
+  <link rel="stylesheet" href="css/themes.css?v=11">
+  <link rel="stylesheet" href="css/base.css?v=11">
+  <link rel="stylesheet" href="css/monitor-app.css?v=11">
+  <link rel="stylesheet" href="css/monitor.css?v=11">
+  <script src="js/i18n/ru.js?v=11"></script>
+  <script src="js/i18n/en.js?v=11"></script>
+  <script src="js/i18n/index.js?v=11"></script>
+  <script src="js/monitor/backend-type-badges.js?v=11"></script>
 </head>
 <body>
 <header>
@@ -25,6 +26,7 @@
     <span id="statusDot" class="dot"></span>
     <span data-i18n="header.monitor">Monitor</span>
     <span id="demoIndicator" style="display:none;background:var(--danger);color:#fff;font-size:10px;font-weight:700;padding:2px 8px;border-radius:4px;margin-left:8px;text-transform:uppercase;letter-spacing:0.5px" data-i18n="monitor.header.demoIndicator">DEMO</span>
+    <span id="monitorBackendTypeSwitcher" style="margin-left:12px"></span>
   </h1>
   <div class="header-right">
     <div class="monitor-legend">
@@ -96,14 +98,23 @@
   <div class="tables-area">
     <div class="panel open" id="panelCluster">
       <div class="panel-header" onclick="togglePanel('panelCluster')">
-        <span data-i18n="monitor.panel.clusterResources">📊 Cluster Resources</span><span class="chevron">▼</span>
+        <span class="panel-title-group">
+          <span data-i18n="monitor.panel.clusterResources">📊 Cluster Resources</span>
+        </span>
+        <span class="chevron">▼</span>
       </div>
+
       <div class="panel-body"><div class="capacity-grid" id="capacityGrid"></div></div>
     </div>
     <div class="panel" id="panelModels">
       <div class="panel-header" onclick="togglePanel('panelModels')">
-        <span data-i18n="monitor.panel.modelsInMemory">🧠 Models in Memory</span> <span class="panel-badge" id="modelsCount">0</span><span class="chevron">▼</span>
+        <span class="panel-title-group">
+          <span data-i18n="monitor.panel.modelsInMemory">🧠 Models in Memory</span>
+          <span class="panel-badge" id="modelsCount">0</span>
+        </span>
+        <span class="chevron">▼</span>
       </div>
+
       <div class="panel-body">
         <div style="overflow-x:auto">
           <table id="modelsTable">
@@ -128,7 +139,11 @@
     </div>
     <div class="panel open" id="panelBackends">
       <div class="panel-header" onclick="togglePanel('panelBackends')">
-        <span data-i18n="monitor.panel.backends">🖥️ Backends</span> <span class="panel-badge" id="backendCount">0</span><span class="chevron">▼</span>
+        <span class="panel-title-group">
+          <span data-i18n="monitor.panel.backends">🖥️ Backends</span>
+          <span class="panel-badge" id="backendCount">0</span>
+        </span>
+        <span class="chevron">▼</span>
       </div>
       <div class="panel-body">
         <div class="backend-filter">
@@ -166,7 +181,11 @@
 
     <div class="panel" id="panelQueue">
       <div class="panel-header" onclick="togglePanel('panelQueue')">
-        <span data-i18n="monitor.panel.queue">📋 Queue</span> <span class="panel-badge" id="queueCount">0</span><span class="chevron">▼</span>
+        <span class="panel-title-group">
+          <span data-i18n="monitor.panel.queue">📋 Queue</span>
+          <span class="panel-badge" id="queueCount">0</span>
+        </span>
+        <span class="chevron">▼</span>
       </div>
       <div class="panel-body">
         <div style="overflow-x:auto">
@@ -192,7 +211,11 @@
     </div>
     <div class="panel" id="panelModelOps">
       <div class="panel-header" onclick="togglePanel('panelModelOps')">
-        <span data-i18n="monitor.panel.modelOps">🔧 Model Operations</span> <span class="panel-badge" id="modelOpsCount">0</span><span class="chevron">▼</span>
+        <span class="panel-title-group">
+          <span data-i18n="monitor.panel.modelOps">🔧 Model Operations</span>
+          <span class="panel-badge" id="modelOpsCount">0</span>
+        </span>
+        <span class="chevron">▼</span>
       </div>
       <div class="panel-body">
         <div style="overflow-x:auto">
@@ -253,7 +276,11 @@
     </div>
     <div class="panel" id="panelCandidates">
       <div class="panel-header" onclick="togglePanel('panelCandidates')">
-        <span data-i18n="monitor.panel.candidates">🎯 Candidate Backends</span> <span class="panel-badge" id="candidatesCount">0</span><span class="chevron">▼</span>
+        <span class="panel-title-group">
+          <span data-i18n="monitor.panel.candidates">🎯 Candidate Backends</span>
+          <span class="panel-badge" id="candidatesCount">0</span>
+        </span>
+        <span class="chevron">▼</span>
       </div>
       <div class="panel-body">
         <div style="overflow-x:auto">
@@ -346,7 +373,11 @@
     </div>
     <div class="panel" id="panelVirtualModels">
       <div class="panel-header" onclick="togglePanel('panelVirtualModels')">
-        <span data-i18n="vm.title">🧩 Virtual Models</span> <span class="panel-badge" id="vmCount">0</span><span class="chevron">▼</span>
+        <span class="panel-title-group">
+          <span data-i18n="vm.title">🧩 Virtual Models</span>
+          <span class="panel-badge" id="vmCount">0</span>
+        </span>
+        <span class="chevron">▼</span>
       </div>
       <div class="panel-body">
         <div style="overflow-x:auto">
@@ -393,7 +424,11 @@
     </div>
     <div class="panel" id="panelSessions">
       <div class="panel-header" onclick="togglePanel('panelSessions')">
-        <span data-i18n="monitor.panel.sessions">👤 Sessions</span> <span class="panel-badge" id="sessionCount">0</span><span class="chevron">▼</span>
+        <span class="panel-title-group">
+          <span data-i18n="monitor.panel.sessions">👤 Sessions</span>
+          <span class="panel-badge" id="sessionCount">0</span>
+        </span>
+        <span class="chevron">▼</span>
       </div>
       <div class="panel-body">
         <div style="overflow-x:auto">

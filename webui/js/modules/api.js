@@ -189,6 +189,14 @@ const Api = (function () {
             return getJson(`/api/v1/backends/${encodeURIComponent(backendId)}/logs?limit=${limit}`);
         },
 
+        // Config reset to defaults
+        async resetConfig() {
+            const response = await request(`${API_BASE}/api/v1/config/reset`, {
+                method: 'POST'
+            });
+            return response.json();
+        },
+
         // Generic error handler for UI
 
         handleError(err, fallbackMessage = 'Ошибка API') {

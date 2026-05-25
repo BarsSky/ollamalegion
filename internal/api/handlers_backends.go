@@ -146,6 +146,8 @@ func (s *Server) listBackends(w http.ResponseWriter, r *http.Request) {
 			"runtimeMaxConcurrentRequests":   backend.RuntimeMaxConcurrentRequests,
 			"labels":                         backend.Labels,
 			"status":                         backend.Status,
+			"type":                           backend.Type,
+			"engine":                         backend.Engine,
 		}
 
 		// Добавление метрик если они доступны
@@ -217,11 +219,14 @@ func (s *Server) addBackend(w http.ResponseWriter, r *http.Request) {
 		Host              string   `json:"host"`
 		OllamaPort        int      `json:"ollamaPort"`
 		AgentPort         int      `json:"agentPort"`
+		CppWorkerPort     int      `json:"cppWorkerPort"`
 		Weight            int      `json:"weight"`
 		MaxConcurrentReqs int      `json:"maxConcurrentRequests"`
 		MaxModels         int      `json:"maxModels"`
 		GPUMode           string   `json:"gpuMode"`
 		Labels            []string `json:"labels"`
+		BackendType       string   `json:"backendType"`
+		BackendEngine     string   `json:"backendEngine"`
 	}
 
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -257,6 +262,39 @@ func (s *Server) addBackend(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Нормализация типа бэкенда (пустой → ollama для обратной совместимости)
+	backendType := types.BackendType(req.BackendType)
+	if backendType == "" {
+		backendType = types.BackendTypeOllama
+	}
+
+	// Валидация типа бэкенда
+	if backendType != types.BackendTypeOllama && backendType != types.BackendTypeLlamaCpp {
+		s.writeJSON(w, http.StatusBadRequest, map[string]interface{}{
+			"success": false,
+			"error":   fmt.Sprintf("Invalid backend type: %s. Allowed: ollama, llama_cpp", req.BackendType),
+		})
+		return
+	}
+
+	// Проверка совместимости типа бэкенда с OperatingMode
+	opMode := s.config.Balancing.OperatingMode
+	if !types.IsModeCompatibleWithBackendType(opMode, backendType) {
+		allowedTypes := types.ModeBackendTypes[opMode]
+		allowedStr := ""
+		for i, t := range allowedTypes {
+			if i > 0 {
+				allowedStr += ", "
+			}
+			allowedStr += string(t)
+		}
+		s.writeJSON(w, http.StatusBadRequest, map[string]interface{}{
+			"success": false,
+			"error":   fmt.Sprintf("Backend type '%s' is not allowed in operating mode '%s'. Allowed types: [%s]", backendType, opMode, allowedStr),
+		})
+		return
+	}
+
 	// Парсинг GPU mode
 	gpuMode := types.ModeAuto
 	switch req.GPUMode {
@@ -266,18 +304,27 @@ func (s *Server) addBackend(w http.ResponseWriter, r *http.Request) {
 		gpuMode = types.ModeCPU
 	}
 
+	// Если CppWorkerPort не задан явно, используем дефолтный
+	cppWorkerPort := req.CppWorkerPort
+	if cppWorkerPort == 0 && backendType == types.BackendTypeLlamaCpp {
+		cppWorkerPort = 18091
+	}
+
 	backend := types.Backend{
 		ID:                req.ID,
 		Name:              req.Name,
 		Host:              req.Host,
 		OllamaPort:        req.OllamaPort,
 		AgentPort:         req.AgentPort,
+		CppWorkerPort:     cppWorkerPort,
 		Weight:            req.Weight,
 		MaxConcurrentReqs: req.MaxConcurrentReqs,
 		MaxModels:         req.MaxModels,
 		Labels:            req.Labels,
 		Status:            types.StatusStarting,
 		GPUMode:           gpuMode,
+		Type:              backendType,
+		Engine:            types.ResolveEngine(types.BackendEngine(req.BackendEngine), backendType),
 	}
 
 	// Добавление бэкенда в прокси
@@ -292,20 +339,24 @@ func (s *Server) addBackend(w http.ResponseWriter, r *http.Request) {
 	// Запуск health check для нового бэкенда
 	go func() {
 		time.Sleep(1 * time.Second)
-		// Проверяем доступность бэкенда через Ollama API
 		backend := s.proxy.GetBackend(req.ID)
 		if backend != nil {
-			url := fmt.Sprintf("http://%s:%d/api/tags", backend.Host, backend.OllamaPort)
+			var healthURL string
+			if backendType == types.BackendTypeLlamaCpp {
+				healthURL = fmt.Sprintf("http://%s:%d/health", backend.Host, cppWorkerPort)
+			} else {
+				healthURL = fmt.Sprintf("http://%s:%d/api/tags", backend.Host, backend.OllamaPort)
+			}
 			client := &http.Client{Timeout: 5 * time.Second}
-			resp, err := client.Get(url)
+			resp, err := client.Get(healthURL)
 			if err == nil && resp.StatusCode == http.StatusOK {
 				s.proxy.UpdateBackendStatus(req.ID, types.StatusHealthy)
 				resp.Body.Close()
 			} else {
-				// Бэкенд недоступен - оставляем статус unhealthy
 				if err != nil {
 					logger.Get().Errorw("backend health check unreachable",
 						"backend", req.ID,
+						"url", healthURL,
 						"error", err,
 					)
 				}
@@ -333,6 +384,7 @@ func (s *Server) updateBackend(w http.ResponseWriter, r *http.Request, backendID
 		MaxModels         int      `json:"maxModels"`
 		GPUMode           string   `json:"gpuMode"`
 		Labels            []string `json:"labels"`
+		BackendType       string   `json:"backendType"`
 	}
 
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -364,6 +416,44 @@ func (s *Server) updateBackend(w http.ResponseWriter, r *http.Request, backendID
 		gpuMode = types.ModeAuto
 	}
 
+	// Нормализация типа бэкенда
+	backendType := existing.Type
+	if req.BackendType != "" {
+		newType := types.BackendType(req.BackendType)
+		if newType != existing.Type {
+			// Проверка совместимости с OperatingMode
+			if !types.IsModeCompatibleWithBackendType(s.config.Balancing.OperatingMode, newType) {
+				allowedTypes := types.ModeBackendTypes[s.config.Balancing.OperatingMode]
+				allowedStr := ""
+				for i, t := range allowedTypes {
+					if i > 0 {
+						allowedStr += ", "
+					}
+					allowedStr += string(t)
+				}
+				s.writeJSON(w, http.StatusBadRequest, map[string]interface{}{
+					"success": false,
+					"error":   fmt.Sprintf("Backend type '%s' is not allowed in operating mode '%s'. Allowed types: [%s]", newType, s.config.Balancing.OperatingMode, allowedStr),
+				})
+				return
+			}
+			// Запрет смены типа при активных запросах
+			if existing.ActiveRequests > 0 {
+				s.writeJSON(w, http.StatusConflict, map[string]interface{}{
+					"success": false,
+					"error":   fmt.Sprintf("Cannot change backend type from '%s' to '%s': backend has %d active requests. Wait for requests to complete or drain the backend first.", existing.Type, newType, existing.ActiveRequests),
+				})
+				return
+			}
+			logger.Get().Warnw("backend type changed via API",
+				"backend", backendID,
+				"oldType", existing.Type,
+				"newType", newType,
+			)
+		}
+		backendType = newType
+	}
+
 	updated := types.Backend{
 		ID:                            backendID,
 		Name:                          req.Name,
@@ -383,6 +473,7 @@ func (s *Server) updateBackend(w http.ResponseWriter, r *http.Request, backendID
 		RuntimeMaxModels:              existing.RuntimeMaxModels,
 		RuntimeMaxConcurrentRequests:  existing.RuntimeMaxConcurrentRequests,
 		GPUMode:                       gpuMode,
+		Type:                          backendType,
 	}
 
 	// Обновление бэкенда в прокси

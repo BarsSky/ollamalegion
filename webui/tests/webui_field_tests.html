@@ -1055,6 +1055,73 @@ function runTests() {
     // Restore data
     initAllPages();
 
+    // === RESET BUTTON ===
+    details.push('<div class="tse">🔄 Settings — Reset Button</div>');
+    const resetBtn = document.getElementById('resetSettings');
+    if (resetBtn) {
+        passCount++; details.push('<div class="tr2 tp">✅ #resetSettings button exists</div>');
+
+        // Проверяем видимость
+        if (resetBtn.offsetParent !== null) {
+            passCount++; details.push('<div class="tr2 tp">✅ #resetSettings is visible</div>');
+        } else {
+            warnCount++; details.push('<div class="tr2 tw">⚠️ #resetSettings is hidden</div>');
+        }
+
+        // Проверяем текст (i18n или fallback)
+        var btnText = resetBtn.textContent.trim();
+        if (btnText === 'Сбросить' || btnText === 'Reset' || btnText.length > 0) {
+            passCount++; details.push('<div class="tr2 tp">✅ #resetSettings text = "' + btnText + '"</div>');
+        } else {
+            failCount++; details.push('<div class="tr2 tf">❌ #resetSettings text is empty</div>');
+        }
+
+        // Проверяем, что у кнопки есть обработчик (косвенно — через наличие onclick или addEventListener)
+        // В тестовом окружении мы не можем проверить addEventListener напрямую, но можем:
+        // 1. Мокировать Api.resetConfig и confirm
+        // 2. Кликнуть кнопку
+        // 3. Проверить, что confirm был вызван
+        var confirmCalled = false;
+        var originalConfirm = window.confirm;
+        window.confirm = function(msg) {
+            confirmCalled = true;
+            // Возвращаем true только если сообщение о сбросе
+            return msg.indexOf('Сбросить') >= 0 || msg.indexOf('Reset') >= 0;
+        };
+
+        var apiResetCalled = false;
+        if (window.Api && window.Api.resetConfig) {
+            var originalReset = window.Api.resetConfig;
+            window.Api.resetConfig = function() {
+                apiResetCalled = true;
+                return Promise.resolve({ success: true });
+            };
+        }
+
+        // Симулируем клик
+        resetBtn.click();
+
+        if (confirmCalled) {
+            passCount++; details.push('<div class="tr2 tp">✅ Reset click triggers confirmation dialog</div>');
+        } else {
+            warnCount++; details.push('<div class="tr2 tw">⚠️ Reset click did not trigger confirm (handler may not be bound)</div>');
+        }
+
+        if (apiResetCalled) {
+            passCount++; details.push('<div class="tr2 tp">✅ Reset confirmation calls Api.resetConfig()</div>');
+        } else if (confirmCalled) {
+            warnCount++; details.push('<div class="tr2 tw">⚠️ Confirm shown but Api.resetConfig() was not called</div>');
+        }
+
+        // Восстанавливаем оригиналы
+        window.confirm = originalConfirm;
+        if (window.Api && originalReset) {
+            window.Api.resetConfig = originalReset;
+        }
+    } else {
+        failCount++; details.push('<div class="tr2 tf">❌ #resetSettings button NOT found</div>');
+    }
+
     // === SUMMARY ===
     const total = passCount + failCount + warnCount;
     const summaryEl = document.getElementById('ts');

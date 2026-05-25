@@ -26,15 +26,17 @@ func (s *Server) agentRegisterHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var req struct {
-		AgentID    string   `json:"agentId"`
-		Hostname   string   `json:"hostname"`
-		Host       string   `json:"host"`
-		OllamaPort int      `json:"ollamaPort"`
-		AgentPort  int      `json:"agentPort"`
-		GPUCount   int      `json:"gpuCount"`
-		Name       string   `json:"name"`
-		Labels     []string `json:"labels"`
-		Weight     int      `json:"weight"`
+		AgentID       string   `json:"agentId"`
+		Hostname      string   `json:"hostname"`
+		Host          string   `json:"host"`
+		OllamaPort    int      `json:"ollamaPort"`
+		AgentPort     int      `json:"agentPort"`
+		CppWorkerPort int      `json:"cppWorkerPort"`
+		GPUCount      int      `json:"gpuCount"`
+		Name          string   `json:"name"`
+		Labels        []string `json:"labels"`
+		Weight        int      `json:"weight"`
+		BackendType   string   `json:"backendType"`
 	}
 
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -84,6 +86,17 @@ func (s *Server) agentRegisterHandler(w http.ResponseWriter, r *http.Request) {
 		weight = 1
 	}
 
+	// Нормализация типа бэкенда с эвристикой
+	// Если тип не задан, но указан CppWorkerPort > 0 — считаем llama.cpp
+	backendType := types.BackendType(req.BackendType)
+	if backendType == "" {
+		if req.CppWorkerPort > 0 {
+			backendType = types.BackendTypeLlamaCpp
+		} else {
+			backendType = types.BackendTypeOllama
+		}
+	}
+
 	// Проверка, существует ли уже бэкенд
 	if s.proxy.BackendExists(req.AgentID) {
 		// Обновляем существующий
@@ -94,10 +107,12 @@ func (s *Server) agentRegisterHandler(w http.ResponseWriter, r *http.Request) {
 			Host:              host,
 			OllamaPort:        ollamaPort,
 			AgentPort:         agentPort,
+			CppWorkerPort:     req.CppWorkerPort,
 			Weight:            weight,
 			MaxConcurrentReqs: existing.MaxConcurrentReqs,
 			Labels:            req.Labels,
 			Status:            types.StatusHealthy,
+			Type:              backendType,
 		}
 		s.proxy.UpdateBackend(req.AgentID, updated)
 
@@ -117,10 +132,12 @@ func (s *Server) agentRegisterHandler(w http.ResponseWriter, r *http.Request) {
 		Host:              host,
 		OllamaPort:        ollamaPort,
 		AgentPort:         agentPort,
+		CppWorkerPort:     req.CppWorkerPort,
 		Weight:            weight,
 		MaxConcurrentReqs: 10,
 		Labels:            req.Labels,
 		Status:            types.StatusStarting,
+		Type:              backendType,
 	}
 
 	// Добавление бэкенда в прокси
@@ -281,6 +298,12 @@ func (s *Server) agentHeartbeatHandler(w http.ResponseWriter, r *http.Request) {
 			config["maxConcurrentRequests"] = backend.RuntimeMaxConcurrentRequests
 		} else if backend.MaxConcurrentReqs != 0 {
 			config["maxConcurrentRequests"] = backend.MaxConcurrentReqs
+		}
+		// RequestTimeout: приоритет — runtime-значение (адаптивный), затем статический
+		if backend.RuntimeRequestTimeout != 0 {
+			config["requestTimeout"] = backend.RuntimeRequestTimeout
+		} else if backend.RequestTimeout != 0 {
+			config["requestTimeout"] = backend.RequestTimeout
 		}
 	}
 

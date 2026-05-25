@@ -1,3 +1,7 @@
+# Модели (большие файлы, не нужны в build context)
+models/
+data/
+
 # Git и CI/CD
 .git/
 .gitignore
@@ -33,6 +37,7 @@ coverage.out
 bin/
 dist/
 build/
+balancer_linux
 
 # Локальные конфигурации и данные
 *.env
@@ -61,11 +66,6 @@ deployments/
 Dockerfile*
 docker-compose*.yml
 
-# Исключаем docker файлы, кроме webui
-docker/agent/
-docker/balancer/
-docker/cocoindex/
-
 # Логи
 *.log
 logs/
@@ -75,3 +75,32 @@ tmp/
 temp/
 .DS_Store
 Thumbs.db
+
+# c/ нужен для сборки llama.cpp с CUDA (cppworker-gpu)
+# но исключаем временные артефакты сборки и модели
+# ВАЖНО: c/llama.cpp/scripts/ НЕ исключаем — нужен для Makefile (get-flags.mk)
+c/llama.cpp/build/
+c/llama.cpp/models/
+c/llama.cpp/examples/
+c/llama.cpp/tests/
+c/llama.cpp/docs/
+c/llama.cpp/grammars/
+c/llama.cpp/pocs/
+c/llama.cpp/ci/
+c/llama.cpp/cmake/
+c/llama.cpp/requirements/
+c/llama.cpp/media/
+c/llama.cpp/licenses/
+c/**/.git/
+c/**/*.o
+c/**/*.a
+c/**/*.gguf
+c/**/*.py
+c/**/*.ipynb
+
+# Странные директории в корне (мусор)
+вавы/
+вайува/
+йывй/
+х/
+8/

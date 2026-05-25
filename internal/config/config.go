@@ -360,21 +360,65 @@ func setDefaults(config *types.LoadBalancerConfig) {
 		di.GrpcPort = 19000
 	}
 
+	// llama.cpp / GGUF defaults
+	if config.LlamaCpp.ContextLength == 0 {
+		defaults := types.DefaultLlamaCppConfig()
+		if config.LlamaCpp.NumGPULayers == 0 && config.LlamaCpp.ContextLength == 0 && config.LlamaCpp.BatchSize == 0 && config.LlamaCpp.Strategy == "" {
+			config.LlamaCpp = *defaults
+		} else {
+			// Частичное заполнение — применяем только недостающие поля
+			if config.LlamaCpp.ContextLength == 0 {
+				config.LlamaCpp.ContextLength = defaults.ContextLength
+			}
+			if config.LlamaCpp.BatchSize == 0 {
+				config.LlamaCpp.BatchSize = defaults.BatchSize
+			}
+			if config.LlamaCpp.Strategy == "" {
+				config.LlamaCpp.Strategy = defaults.Strategy
+			}
+		}
+	}
+
 	// Backend defaults
 	for i := range config.Backends {
-		if config.Backends[i].Weight == 0 {
-			config.Backends[i].Weight = 1
+		if config.Backends[i].Type == "" {
+			if config.Backends[i].CppWorkerPort > 0 {
+				config.Backends[i].Type = types.BackendTypeLlamaCpp
+			} else {
+				config.Backends[i].Type = types.BackendTypeOllama
+			}
 		}
 		if config.Backends[i].MaxConcurrentReqs == 0 {
 			config.Backends[i].MaxConcurrentReqs = 10
 		}
-		if config.Backends[i].OllamaPort == 0 {
-			config.Backends[i].OllamaPort = 11434
-		}
-		if config.Backends[i].AgentPort == 0 {
+		// Ollama-специфичные дефолты
+		if config.Backends[i].Type == types.BackendTypeOllama {
+			if config.Backends[i].OllamaPort == 0 {
+				config.Backends[i].OllamaPort = 11434
+			}
+			if config.Backends[i].AgentPort == 0 {
 				config.Backends[i].AgentPort = 18032
 			}
+		}
+		// llama.cpp-специфичные дефолты
+		if config.Backends[i].Type == types.BackendTypeLlamaCpp {
+			if config.Backends[i].CppWorkerPort == 0 {
+				config.Backends[i].CppWorkerPort = 18091
+			}
+			if config.Backends[i].CppWorkerConfig == nil {
+				config.Backends[i].CppWorkerConfig = types.DefaultLlamaCppConfig()
+			}
+		}
 		config.Backends[i].Status = types.StatusStarting
+	}
+
+	// BackendEngine defaults
+	if config.BackendEngine == "" {
+		if types.IsModeLlamaCpp(config.Balancing.OperatingMode) {
+			config.BackendEngine = types.EngineLlamaCPP
+		} else {
+			config.BackendEngine = types.EngineOllamaAPI
+		}
 	}
 
 	// OperatingMode — определяем из enabled-флагов или ставим дефолт
@@ -420,6 +464,7 @@ func parseBackendsFromEnv() []types.Backend {
 		agentPort := env.GetInt(fmt.Sprintf("BACKEND_%d_AGENT_PORT", i), 18032)
 		weight := env.GetInt(fmt.Sprintf("BACKEND_%d_WEIGHT", i), 1)
 		maxReqs := env.GetInt(fmt.Sprintf("BACKEND_%d_MAX_REQS", i), 10)
+		requestTimeout := env.GetInt(fmt.Sprintf("BACKEND_%d_REQUEST_TIMEOUT", i), 0)
 		
 		name := os.Getenv(fmt.Sprintf("BACKEND_%d_NAME", i))
 		if name == "" {
@@ -434,6 +479,7 @@ func parseBackendsFromEnv() []types.Backend {
 			AgentPort:         agentPort,
 			Weight:            weight,
 			MaxConcurrentReqs: maxReqs,
+			RequestTimeout:    requestTimeout,
 			Status:            types.StatusStarting,
 		})
 	}

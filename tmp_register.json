@@ -1,0 +1,1 @@
+{"agentId": "llama-gpu-node-1", "host": "172.28.0.5", "ollamaPort": 11434, "agentPort": 18032, "backendType": "llama_cpp", "weight": 1}

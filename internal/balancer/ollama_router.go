@@ -71,10 +71,13 @@ func (or *OllamaRouter) getHealthyBackends() []backendInfo {
 	result := make([]backendInfo, 0, len(backends))
 	for _, b := range backends {
 		if b.Status == "healthy" || b.Status == "degraded" {
+			// Используем getBackendPort для правильного разрешения порта
+			// (CppWorkerPort для llama_cpp, OllamaPort для ollama)
+			port := or.proxy.getBackendPort(&b)
 			result = append(result, backendInfo{
 				id:   b.ID,
 				host: b.Host,
-				port: b.OllamaPort,
+				port: port,
 			})
 		}
 	}
@@ -143,7 +146,7 @@ func (or *OllamaRouter) selectAnyHealthy() string {
 
 func (or *OllamaRouter) selectBackendByResources(r *http.Request) string {
 	model := or.extractModelFromBody(r)
-	return or.proxy.selectBackend(model)
+	return or.proxy.selectBackend(model, types.BackendTypeOllama)
 }
 
 func (or *OllamaRouter) extractModelFromBody(r *http.Request) string {
@@ -190,7 +193,8 @@ func (or *OllamaRouter) proxyHTTP(r *http.Request, backendID string) (*http.Resp
 		return nil, fmt.Errorf("backend not found")
 	}
 
-	url := fmt.Sprintf("http://%s:%d%s", backend.Host, backend.OllamaPort, r.URL.String())
+	port := or.proxy.getBackendPort(backend)
+	url := fmt.Sprintf("http://%s:%d%s", backend.Host, port, r.URL.String())
 	client := &http.Client{Timeout: 30 * time.Second}
 
 	req, err := http.NewRequestWithContext(r.Context(), r.Method, url, r.Body)

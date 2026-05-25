@@ -32,6 +32,26 @@ func (s *Server) SetConfigSaver(saver func() error) {
 	s.configSaver = saver
 }
 
+// GetConfig — возвращает текущую конфигурацию (для тестов и отладки)
+func (s *Server) GetConfig() *types.LoadBalancerConfig {
+	return s.config
+}
+
+// GetResetHandler возвращает обработчик сброса конфигурации (для тестов)
+func (s *Server) GetResetHandler() http.HandlerFunc {
+	return s.configResetHandler
+}
+
+// GetExportHandler возвращает обработчик экспорта конфигурации (для тестов)
+func (s *Server) GetExportHandler() http.HandlerFunc {
+	return s.configExportHandler
+}
+
+// GetImportHandler возвращает обработчик импорта конфигурации (для тестов)
+func (s *Server) GetImportHandler() http.HandlerFunc {
+	return s.configImportHandler
+}
+
 // upgrader - апгрейдер HTTP до WebSocket с CORS whitelist
 var upgrader = websocket.Upgrader{
 	ReadBufferSize:  1024,

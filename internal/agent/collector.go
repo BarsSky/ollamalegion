@@ -45,6 +45,9 @@ type Agent struct {
 	cachedVersionAt time.Time
 	versionCacheTTL time.Duration
 
+	// Llama-коллектор (для llama.cpp бэкендов)
+	llamaCollector *LlamaCollector
+
 	// Health HTTP-сервер (для Docker HEALTHCHECK)
 	healthServer *http.Server
 
@@ -62,7 +65,7 @@ type requestRecord struct {
 
 // NewAgent - создание нового агента
 func NewAgent(config *types.AgentConfig) *Agent {
-	return &Agent{
+	a := &Agent{
 		config: config,
 		httpClient: &http.Client{
 			Timeout: 30 * time.Second,
@@ -75,6 +78,16 @@ func NewAgent(config *types.AgentConfig) *Agent {
 		logBuffer:       make([]string, 0, 1000),
 		maxLogLines:     1000,
 	}
+	// Инициализация llama-коллектора для llama.cpp бэкендов
+	if config.BackendType == types.BackendTypeLlamaCpp {
+		cppURL := config.CppWorkerURL
+		if cppURL == "" {
+			cppURL = "http://localhost:18091"
+		}
+		a.llamaCollector = NewLlamaCollector(cppURL)
+		fmt.Printf("[%s] LlamaCollector initialized for %s\n", time.Now().Format(time.RFC3339), cppURL)
+	}
+	return a
 }
 
 // Start - запуск агента
@@ -326,6 +339,8 @@ func (a *Agent) sendHeartbeat() {
 		"weight":                a.config.Weight,
 		"maxConcurrentRequests": a.config.MaxConcurrentRequests,
 		"maxModels":             a.config.MaxModels,
+		"backendType":           string(a.config.BackendType),
+		"nodeLabels":            a.config.NodeLabels,
 	}
 
 	data, err := json.Marshal(wrapper)
@@ -444,6 +459,11 @@ func (a *Agent) collectMetrics() *types.BackendMetrics {
 		Timestamp: now,
 	}
 
+	// Для llama.cpp бэкендов используем LlamaCollector вместо Ollama
+	if a.config.BackendType == types.BackendTypeLlamaCpp && a.llamaCollector != nil {
+		return a.collectLlamaMetrics(metrics)
+	}
+
 	// Сбор GPU метрик (только для GPU нод)
 	if a.platformMode == types.ModeGPU {
 		metrics.GPU = a.collectGPUMetrics()
@@ -458,4 +478,82 @@ func (a *Agent) collectMetrics() *types.BackendMetrics {
 	metrics.Ollama = a.collectOllamaMetrics()
 
 	return metrics
+}
+
+// collectLlamaMetrics — сбор метрик через LlamaCollector для llama.cpp бэкендов
+func (a *Agent) collectLlamaMetrics(base *types.BackendMetrics) *types.BackendMetrics {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	llamaMetrics, err := a.llamaCollector.Collect(ctx)
+	if err != nil {
+		fmt.Printf("[%s] LlamaCollector failed: %v, falling back to system metrics\n",
+			time.Now().Format(time.RFC3339), err)
+		// Fallback: системные метрики
+		base.System = a.collectSystemMetrics()
+		base.Ollama = types.OllamaMetrics{RunningModels: []types.RunningModel{}}
+		return base
+	}
+
+	// Маппим LlamaMetrics → BackendMetrics
+	// GPU: приоритет — данные от CppWorker (llamaMetrics.GPUMetrics имеет актуальную информацию),
+	// затем nvidia-smi/NVML (collectGPUMetrics), только если platformMode == GPU.
+	if len(llamaMetrics.GPUMetrics) > 0 {
+		base.GPU = mapLlamaGPUMetrics(llamaMetrics.GPUMetrics)
+	} else if a.platformMode == types.ModeGPU {
+		base.GPU = a.collectGPUMetrics()
+	}
+	base.System = a.collectSystemMetrics()
+
+	// Конвертируем Llama-модели в RunningModel
+	var runningModels []types.RunningModel
+	for _, m := range llamaMetrics.Models {
+		runningModels = append(runningModels, types.RunningModel{
+			Name:   m.Name,
+			Size:   uint64(m.SizeBytes),
+			Format: "gguf",
+		})
+	}
+
+	// Заполняем Ollama-метрики из llama.cpp данных
+	base.Ollama = types.OllamaMetrics{
+		RunningModels:     runningModels,
+		RequestsPerSecond: llamaMetrics.RequestsRPS,
+	}
+
+	// Устанавливаем BackendType в метрики для корректной фильтрации
+	base.BackendType = types.BackendTypeLlamaCpp
+	base.Engine = types.EngineLlamaCPP
+
+	return base
+}
+
+// mapLlamaGPUMetrics конвертирует Llama LlamaGPUInfo → types.GPUMetrics
+func mapLlamaGPUMetrics(gpus []LlamaGPUInfo) types.GPUMetrics {
+	if len(gpus) == 0 {
+		return types.GPUMetrics{}
+	}
+	var totalVRAM uint64
+	for _, g := range gpus {
+		totalVRAM += uint64(g.VRAMTotalMB)
+	}
+	var usedVRAM uint64
+	for _, g := range gpus {
+		free := g.VRAMFreeMB
+		if free > g.VRAMTotalMB {
+			free = g.VRAMTotalMB
+		}
+		usedVRAM += uint64(g.VRAMTotalMB - free)
+	}
+	return types.GPUMetrics{
+		UsagePercent: 0, // llama.cpp не даёт процент загрузки GPU
+		MemoryTotal:  totalVRAM,
+		MemoryUsed:   usedVRAM,
+		MemoryFree:   totalVRAM - usedVRAM,
+		Temperature:  0,
+		PowerUsage:   0,
+		PowerLimit:   0,
+		GPUClock:     0,
+		MemClock:     0,
+	}
 }

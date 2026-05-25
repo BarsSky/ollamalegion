@@ -146,7 +146,7 @@ func (qm *QueueManager) processRequest(req *QueuedRequest, workerID int) {
 			"requeue_count", req.RequeueCount,
 			"model", req.Model,
 		)
-		targetBackend = qm.proxy.selectFreeBackendAny()
+		targetBackend = qm.proxy.selectFreeBackendAny(nil)
 		if targetBackend != "" {
 			// Защита от гонки: проверяем что бэкенд всё ещё существует
 			if _, exists := qm.proxy.backends[targetBackend]; !exists {
@@ -198,7 +198,7 @@ func (qm *QueueManager) processRequest(req *QueuedRequest, workerID int) {
 		if result.Error != nil {
 			req.RequeueCount++
 			// После N ретраев принудительно отдаём 503 вместо бесконечного re-queue
-			const maxRequeueAttempts = 10
+			const maxRequeueAttempts = 500
 			if req.RequeueCount >= maxRequeueAttempts {
 				logger.Get().Errorw("max requeue attempts exceeded, returning 503",
 					"worker_id", workerID,
@@ -274,7 +274,7 @@ func (qm *QueueManager) processRequest(req *QueuedRequest, workerID int) {
 	attemptedBackends := map[string]bool{failedBackend: true}
 	const maxFallbackAttempts = 3
 	for attempt := 0; attempt < maxFallbackAttempts; attempt++ {
-		altBackend := qm.proxy.selectBackendExcluding(req.Model, attemptedBackends)
+		altBackend := qm.proxy.selectBackendExcluding(req.Model, attemptedBackends, qm.proxy.determineRequestBackendType(req.Request))
 		if altBackend == "" {
 			break
 		}
@@ -302,7 +302,7 @@ func (qm *QueueManager) processRequest(req *QueuedRequest, workerID int) {
 	}
 
 	// Все бэкенды не сработали — пробуем requeue или отдаём 503
-	const maxRequeueAttempts = 10
+	const maxRequeueAttempts = 500
 	if req.RequeueCount < maxRequeueAttempts {
 		req.RequeueCount++
 		logger.Get().Warnw("all fallbacks exhausted, re-queueing request",

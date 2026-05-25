@@ -58,9 +58,26 @@ func getDiskInfo() (total, used, free uint64) {
 	return
 }
 
-// getNetworkIO - получение статистики сетевого трафика (Windows stub)
+// getNetworkIO - получение статистики сетевого трафика (Windows)
+// Использует netstat -e для получения кумулятивных байт
 func getNetworkIO() (rx, tx uint64) {
-	// Не реализовано для Windows
+	cmd := exec.Command("netstat", "-e")
+	output, err := cmd.Output()
+	if err != nil {
+		return 0, 0
+	}
+	lines := strings.Split(string(output), "\n")
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
+		if strings.HasPrefix(line, "Bytes") {
+			parts := strings.Fields(line)
+			if len(parts) >= 3 {
+				rx, _ = strconv.ParseUint(parts[1], 10, 64)
+				tx, _ = strconv.ParseUint(parts[2], 10, 64)
+			}
+			return
+		}
+	}
 	return 0, 0
 }
 

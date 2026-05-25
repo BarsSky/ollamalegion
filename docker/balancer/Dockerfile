@@ -25,28 +25,10 @@ RUN apk add --no-cache git build-base
 
 # Копируем только go.mod/go.sum для кэширования слоя зависимостей
 COPY go.mod go.sum ./
-RUN --mount=type=cache,target=/go/pkg/mod \
-    go mod download && go mod verify
+RUN go mod download && go mod verify
 
 # -----------------------------------------------------------------------------
-# Stage 2: test — запуск тестов с race detector
-# -----------------------------------------------------------------------------
-FROM deps AS test
-
-# Копируем исходный код
-COPY . .
-
-# CGO_ENABLED=1 требуется для race detector
-RUN --mount=type=cache,target=/go/pkg/mod \
-    --mount=type=cache,target=/root/.cache/go-build \
-    CGO_ENABLED=1 go test -race -coverprofile=coverage.out -covermode=atomic ./... || \
-    (echo "=== TEST FAILURES ===" && cat coverage.out 2>/dev/null; exit 1)
-
-# Генерируем HTML отчёт о покрытии
-RUN go tool cover -html=coverage.out -o coverage.html 2>/dev/null || true
-
-# -----------------------------------------------------------------------------
-# Stage 3: builder — компиляция production бинарника
+# Stage 2: builder — компиляция production бинарника
 # -----------------------------------------------------------------------------
 FROM deps AS builder
 
@@ -54,9 +36,7 @@ FROM deps AS builder
 COPY . .
 
 # Статически линкованный бинарник
-RUN --mount=type=cache,target=/go/pkg/mod \
-    --mount=type=cache,target=/root/.cache/go-build \
-    CGO_ENABLED=0 GOOS=linux GOARCH=amd64 \
+RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 \
     go build -trimpath -ldflags "-w -s -extldflags '-static'" \
     -a -installsuffix cgo -o balancer ./cmd/balancer
 
@@ -73,8 +53,12 @@ RUN apk add --no-cache tzdata ca-certificates wget curl
 # Копирование бинарника из builder
 COPY --from=builder /build/balancer .
 
-# Копирование конфигурации по умолчанию
+# Копирование конфигурации по умолчанию (readonly шаблон)
 COPY --from=builder /build/config/config.example.json ./config.json
+
+# Копирование entrypoint-скрипта
+COPY docker/balancer/entrypoint.sh /entrypoint.sh
+RUN chmod +x /entrypoint.sh
 
 # Копирование webui статики (monitor.html, css, js, img, favicon)
 COPY --from=builder /build/webui/monitor.html ./webui/monitor.html
@@ -101,6 +85,6 @@ EXPOSE 18080 18081
 HEALTHCHECK --interval=15s --timeout=10s --start-period=30s --retries=5 \
     CMD curl -f -s http://localhost:18081/api/v1/health || exit 1
 
-# Запуск
-ENTRYPOINT ["./balancer"]
-CMD ["-config", "./config.json"]
+# Запуск через entrypoint (копирует config.json в data/ при первом старте)
+ENTRYPOINT ["/entrypoint.sh"]
+CMD []

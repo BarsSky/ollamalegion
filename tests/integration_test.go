@@ -4,8 +4,10 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -674,8 +676,109 @@ func TestE2E_ClusterStateAggregation(t *testing.T) {
 	assert.Equal(t, 2, state.TotalBackends)
 }
 
-// TestE2E_ProxyStreamNotTested - помечаем, что проксирование streaming запросов
-// требует реального Ollama бэкенда и не тестируется в E2E
-func TestE2E_ProxyStreamNotTested(t *testing.T) {
-	t.Skip("Proxy streaming requires real Ollama backend - tested in unit tests")
+// TestE2E_ProxyStreaming — проверка проксирования streaming запросов
+// через httptest.Server вместо реального Ollama бэкенда
+func TestE2E_ProxyStreaming(t *testing.T) {
+	// Мок-сервер, эмулирующий Ollama streaming endpoint
+	mockOllama := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.Contains(r.URL.Path, "/api/chat") || strings.Contains(r.URL.Path, "/api/generate") {
+			w.Header().Set("Content-Type", "text/event-stream")
+			w.Header().Set("Transfer-Encoding", "chunked")
+			w.WriteHeader(http.StatusOK)
+			flusher, ok := w.(http.Flusher)
+			for i := 0; i < 5; i++ {
+				fmt.Fprintf(w, "data: {\"token\":\"tok_%d\",\"index\":%d}\n\n", i, i)
+				if ok {
+					flusher.Flush()
+				}
+				time.Sleep(5 * time.Millisecond)
+			}
+			fmt.Fprintf(w, "data: [DONE]\n\n")
+			if ok {
+				flusher.Flush()
+			}
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer mockOllama.Close()
+
+	hostParts := strings.Split(strings.TrimPrefix(mockOllama.URL, "http://"), ":")
+	if len(hostParts) < 2 {
+		t.Skip("Cannot parse mock server URL")
+	}
+
+	cfg := &types.LoadBalancerConfig{
+		Backends: []types.Backend{
+			{ID: "ollama-1", Host: hostParts[0], OllamaPort: mustParsePortStr(hostParts[1]), Weight: 1, MaxConcurrentReqs: 10, Status: types.StatusHealthy},
+		},
+		Balancing: types.BalancingSettings{
+			Algorithm:           "resource-aware",
+			FirstByteTimeout:    30,
+			RequestTimeout:      30,
+			StreamingIdleTimeout: 60,
+			QueueMaxSize:        50,
+			QueueWorkers:        4,
+			QueueTimeout:        60,
+		},
+	}
+
+	proxy := balancer.NewProxy(cfg)
+	proxy.UpdateMetrics("ollama-1", &types.BackendMetrics{
+		GPU:    types.GPUMetrics{UsagePercent: 10, MemoryTotal: 24576, MemoryUsed: 4096, MemoryFree: 20480},
+		System: types.SystemMetrics{CPUUsagePercent: 5, MemoryTotal: 65536, MemoryUsed: 8192, MemoryFree: 57344},
+		Ollama: types.OllamaMetrics{RunningModels: []types.RunningModel{{Name: "llama3.2", VRAMUsage: 4096}}, MaxModels: 10, MaxConcurrentRequests: 10},
+	})
+
+	lb := httptest.NewServer(proxy)
+	defer lb.Close()
+
+	req, _ := http.NewRequest("POST", lb.URL+"/api/chat",
+		strings.NewReader(`{"model":"llama3.2","messages":[{"role":"user","content":"Hi"}],"stream":true}`))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-Client-Name", "test-client")
+
+	client := &http.Client{Timeout: 10 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		t.Fatalf("Streaming request failed: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("Expected 200, got %d", resp.StatusCode)
+	}
+
+	// Читаем стрим-ответ
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("Failed to read streaming body: %v", err)
+	}
+
+	bodyStr := string(body)
+	if !strings.Contains(bodyStr, "tok_") {
+		t.Errorf("Streaming response missing tokens: %s", bodyStr[:min(len(bodyStr), 200)])
+	}
+	if !strings.Contains(bodyStr, "[DONE]") {
+		t.Errorf("Streaming response missing [DONE]: %s", bodyStr[:min(len(bodyStr), 200)])
+	}
+
+	// Проверяем заголовок content-type
+	ct := resp.Header.Get("Content-Type")
+	if !strings.Contains(ct, "text/event-stream") {
+		t.Errorf("Expected Content-Type text/event-stream, got %s", ct)
+	}
+}
+
+func min(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
+}
+
+func mustParsePortStr(portStr string) int {
+	var port int
+	fmt.Sscanf(portStr, "%d", &port)
+	return port
 }

@@ -9,6 +9,10 @@
 3. [Конфигурация Web UI](#конфигурация-web-ui)
 4. [TLS/SSL настройка](#tlsssl-настройка)
 5. [Аутентификация и Rate Limiting](#аутентификация-и-rate-limiting)
+6. [Режимы работы (Operating Modes)](#режимы-работы-operating-modes)
+7. [Model Replication (Вариант A)](#model-replication-вариант-a)
+8. [RPC Coordinator (Вариант B)](#rpc-coordinator-вариант-b)
+9. [Virtual Model Router (Вариант C)](#virtual-model-router-вариант-c)
 
 ---
 
@@ -732,6 +736,74 @@ GET /api/v1/ratelimit/status
   }
 }
 ```
+
+---
+
+## Режимы работы (Operating Modes)
+
+Балансировщик поддерживает несколько режимов работы, переключаемых через `PUT /api/v1/config/mode` или через WebUI Setup Wizard.
+
+### Параметры конфигурации
+
+| Поле | Тип | По умолчанию | Описание |
+|------|-----|-------------|----------|
+| `balancing.operating_mode` | string | `"auto"` | Режим работы: `auto`, `single_node`, `cluster_balancing` |
+| `balancing.auto_detect_mode` | bool | `true` | Автоопределение режима при старте |
+
+### Режимы
+
+| Режим | Описание |
+|-------|----------|
+| **`auto` (по умолчанию)** | Автоматически определяет режим: если ≥2 healthy бэкендов — `cluster_balancing`, иначе `single_node` |
+| **`single_node`** | Прямое проксирование с отключённой балансировкой |
+| **`cluster_balancing`** | Полноценная балансировка с выбором бэкенда, очередью и session stickiness |
+
+### Environment override
+
+```env
+LB_OPERATING_MODE=cluster_balancing
+LB_AUTO_DETECT_MODE=true
+```
+
+### Сброс конфигурации к заводским настройкам
+
+`POST /api/v1/config/reset` сбрасывает конфигурацию к значениям по умолчанию.
+
+---
+
+## Model Replication (Вариант A)
+
+Автоматическая репликация моделей на несколько бэкендов.
+
+| Поле | Тип | По умолчанию | Env-переменная | Описание |
+|------|-----|-------------|----------------|----------|
+| `balancing.model_replication.enabled` | bool | `false` | `LB_MODEL_REPLICATION_ENABLED` | Включение репликации |
+| `balancing.model_replication.default_min_instances` | int | `1` | `LB_MODEL_REPLICATION_MIN_INSTANCES` | Мин. реплик |
+| `balancing.model_replication.default_max_instances` | int | `3` | `LB_MODEL_REPLICATION_MAX_INSTANCES` | Макс. реплик |
+| `balancing.model_replication.idle_unload_after` | duration | `"15m"` | `LB_MODEL_REPLICATION_IDLE_UNLOAD` | Время простоя до выгрузки |
+
+---
+
+## RPC Coordinator (Вариант B)
+
+Распределённый inference через внешних RPC-воркеров.
+
+| Поле | Тип | По умолчанию | Env-переменная | Описание |
+|------|-----|-------------|----------------|----------|
+| `balancing.rpc_coordinator.enabled` | bool | `false` | `LB_RPC_COORDINATOR_ENABLED` | Включение RPC-координации |
+| `balancing.rpc_coordinator.coordinator_url` | string | `""` | `LB_RPC_COORDINATOR_URL` | URL координатора |
+| `balancing.rpc_coordinator.worker_port` | int | `18050` | `LB_RPC_COORDINATOR_PORT` | Порт RPC-воркера |
+| `balancing.rpc_coordinator.protocol` | string | `"http"` | `LB_RPC_COORDINATOR_PROTOCOL` | Протокол |
+
+---
+
+## Virtual Model Router (Вариант C)
+
+Виртуальные модели как pipeline из нескольких физических моделей.
+
+| Поле | Тип | По умолчанию | Env-переменная | Описание |
+|------|-----|-------------|----------------|----------|
+| `balancing.virtual_models.enabled` | bool | `false` | `LB_VIRTUAL_MODELS_ENABLED` | Включение виртуальных моделей |
 
 ---
 

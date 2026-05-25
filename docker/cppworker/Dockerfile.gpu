@@ -1,0 +1,96 @@
+# =============================================================================
+# CppBackend Worker GPU — реальный llama.cpp + CUDA + multi-GPU
+# =============================================================================
+# Сборка:
+#   docker build -t ollama-legion/cppworker:gpu --target runtime -f docker/cppworker/Dockerfile.gpu .
+# Запуск через docker-compose:
+#   docker compose -f deployments/docker-compose.full.yml --profile gpu up -d
+# =============================================================================
+
+FROM nvidia/cuda:12.2.0-devel-ubuntu22.04 AS cuda-builder
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    gcc g++ make git cmake && \
+    rm -rf /var/lib/apt/lists/*
+
+WORKDIR /build/llama.cpp
+COPY c/llama.cpp .
+
+ENV LLAMA_MAKEFILE=1
+ENV GGML_CUDA=1
+RUN make libllama.a -j$(nproc) || \
+    (mkdir -p build && cd build && \
+     cmake .. -DGGML_CUDA=ON -DCMAKE_CUDA_ARCHITECTURES="all" && \
+     cmake --build . --config Release -j$(nproc) --target llama && \
+     cp src/libllama.a ../)
+
+FROM nvidia/cuda:12.2.0-devel-ubuntu22.04 AS go-builder
+
+ARG GO_VERSION=1.24.3
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    wget ca-certificates gcc g++ make libc6-dev && \
+    wget -q "https://go.dev/dl/go${GO_VERSION}.linux-amd64.tar.gz" -O /tmp/go.tar.gz && \
+    tar -C /usr/local -xzf /tmp/go.tar.gz && \
+    rm /tmp/go.tar.gz && \
+    rm -rf /var/lib/apt/lists/*
+
+ENV PATH="/usr/local/go/bin:${PATH}"
+ENV GOPATH="/go"
+ENV GOMODCACHE="/go/pkg/mod"
+
+WORKDIR /build
+
+COPY go.mod go.sum ./
+RUN go mod download && go mod verify
+
+COPY . .
+
+COPY --from=cuda-builder /build/llama.cpp/libllama.a c/llama.cpp/
+
+ENV CGO_CFLAGS="-DGGML_USE_CUDA -I/usr/local/cuda/include -I/usr/local/cuda/targets/x86_64-linux/include"
+ENV CGO_LDFLAGS="-L/usr/local/cuda/lib64 -L/usr/local/cuda/lib64/stubs -lcuda -lcudart"
+RUN CGO_ENABLED=1 GOOS=linux GOARCH=amd64 \
+    go build -trimpath -ldflags "-w -s" \
+    -o cppworker ./cmd/cppworker
+
+FROM nvidia/cuda:12.2.0-runtime-ubuntu22.04 AS runtime
+
+WORKDIR /app
+
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends ca-certificates curl python3 python3-pip && \
+    pip3 install --no-cache-dir huggingface_hub && \
+    rm -rf /var/lib/apt/lists/*
+
+COPY docker/cppworker/entrypoint.sh /entrypoint.sh
+COPY docker/cppworker/register-with-balancer.sh /register-with-balancer.sh
+RUN chmod +x /entrypoint.sh /register-with-balancer.sh
+COPY --from=go-builder /build/cppworker .
+
+RUN mkdir -p /app/models && \
+    groupadd -g 1000 appgroup && \
+    useradd -u 1000 -g appgroup -m -s /bin/sh appuser && \
+    chown -R appuser:appgroup /app
+
+USER appuser
+
+EXPOSE 18092
+
+HEALTHCHECK --interval=30s --timeout=10s --start-period=30s --retries=5 \
+    CMD curl -f -s http://localhost:18092/health || exit 1
+
+ENV HF_HOME=/app/.cache/huggingface
+ENV HF_TOKEN=""
+ENV HF_AUTO_DOWNLOAD_REPO=""
+ENV HF_AUTO_DOWNLOAD_FILE=""
+ENV HF_AUTO_DOWNLOAD_QUANT="Q4_K_M"
+ENV HF_MIRROR=""
+
+ENTRYPOINT ["/entrypoint.sh"]
+
+LABEL org.opencontainers.image.title="Ollama Legion CppBackend Worker (GPU)"
+LABEL org.opencontainers.image.description="GGUF model inference server with real llama.cpp and CUDA multi-GPU"
+LABEL org.opencontainers.image.vendor="OllamaLegion"
+LABEL org.opencontainers.image.version="0.1.0"
+LABEL org.opencontainers.image.source="https://github.com/BarsSky/ollamalegion"

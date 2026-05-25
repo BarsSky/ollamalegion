@@ -6,6 +6,8 @@ import (
 	"os"
 	"strconv"
 	"strings"
+
+	"ollama-loadbalancer/pkg/types"
 )
 
 // getPublicHost - определение публичного хоста для регистрации
@@ -70,4 +72,20 @@ func (a *Agent) getOllamaBaseURL() string {
 		return a.config.OllamaURL
 	}
 	return "http://localhost:11434"
+}
+
+// extractCppWorkerPort - извлечение порта cppworker из CppWorkerURL
+func (a *Agent) extractCppWorkerPort() int {
+	if a.config.CppWorkerURL != "" {
+		if u, err := url.Parse(a.config.CppWorkerURL); err == nil && u.Port() != "" {
+			if port, err := strconv.Atoi(u.Port()); err == nil {
+				return port
+			}
+		}
+	}
+	// Если тип llama_cpp — дефолтный порт 18091
+	if a.config.BackendType == types.BackendTypeLlamaCpp {
+		return 18091
+	}
+	return 0
 }

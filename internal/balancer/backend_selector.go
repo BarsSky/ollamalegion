@@ -9,8 +9,43 @@ import (
 	"ollama-loadbalancer/pkg/types"
 )
 
-// selectBackend - выбор бэкенда для запроса (5-этапный алгоритм)
-func (p *Proxy) selectBackend(model string) string {
+// getAllowedTypesList преобразует одиночный BackendType в список.
+// Если bt пустой — возвращает типы из OperatingMode (обратная совместимость).
+func (p *Proxy) getAllowedTypesList(bt types.BackendType) []types.BackendType {
+	if bt != "" {
+		return []types.BackendType{bt}
+	}
+	return p.getDefaultAllowedTypes()
+}
+
+// getDefaultAllowedTypes возвращает допустимые типы бэкендов на основе OperatingMode.
+// Используется когда явный BackendType не передан (обратная совместимость).
+func (p *Proxy) getDefaultAllowedTypes() []types.BackendType {
+	allowed, ok := types.ModeBackendTypes[p.config.Balancing.OperatingMode]
+	if !ok || len(allowed) == 0 {
+		// Неизвестный режим — разрешаем оба типа для обратной совместимости
+		return []types.BackendType{types.BackendTypeOllama, types.BackendTypeLlamaCpp}
+	}
+	return allowed
+}
+
+// isBackendTypeAllowed проверяет, разрешён ли тип бэкенда в списке allowedTypes.
+// Если allowedTypes пустой — разрешены все типы (обратная совместимость).
+func isBackendTypeAllowed(bt types.BackendType, allowedTypes []types.BackendType) bool {
+	if len(allowedTypes) == 0 {
+		return true
+	}
+	for _, at := range allowedTypes {
+		if bt == at {
+			return true
+		}
+	}
+	return false
+}
+
+// selectBackend - выбор бэкенда для запроса (pre-step + 4 этапа = 5 шагов)
+// bt — требуемый тип бэкенда (если пустой — определяется из OperatingMode)
+func (p *Proxy) selectBackend(model string, bt types.BackendType) string {
 	// RPC Module: Model Replication — если модель в группе репликации, выбираем из реплик
 	if p.replicationSelector != nil {
 		if selected := p.replicationSelector.Select(model); selected != "" {
@@ -20,7 +55,9 @@ func (p *Proxy) selectBackend(model string) string {
 		}
 	}
 
-	candidates := p.expandCandidates(model)
+	allowedTypes := p.getAllowedTypesList(bt)
+
+	candidates := p.expandCandidates(model, allowedTypes)
 
 	// 1. Model Affinity (LOADED) — P1
 	// Выбираем лучший бэкенд по score среди loaded-кандидатов с loadRatio < threshold
@@ -121,22 +158,24 @@ func (p *Proxy) selectBackend(model string) string {
 	}
 
 	// 4. selectByResources (scoring v2) — P4 (FALLBACK)
-	return p.selectByResources()
+	return p.selectByResources(allowedTypes)
 }
 
 // selectBackendExcluding - выбор бэкенда, исключая указанные
-func (p *Proxy) selectBackendExcluding(model string, exclude map[string]bool) string {
+func (p *Proxy) selectBackendExcluding(model string, exclude map[string]bool, bt types.BackendType) string {
+	allowedTypes := p.getAllowedTypesList(bt)
+
 	p.mu.RLock()
 
 	if p.config.Balancing.ModelAffinity && model != "" {
-		if backend := p.findBackendWithModelExcluding(model, exclude); backend != "" {
+		if backend := p.findBackendWithModelExcluding(model, exclude, allowedTypes); backend != "" {
 			p.mu.RUnlock()
 			return backend
 		}
 	}
 	p.mu.RUnlock()
 
-	backend := p.selectByResourcesExcluding(exclude)
+	backend := p.selectByResourcesExcluding(exclude, allowedTypes)
 	if backend == "" {
 		logger.Get().Warnw("no available backends with exclusions")
 	}
@@ -144,7 +183,7 @@ func (p *Proxy) selectBackendExcluding(model string, exclude map[string]bool) st
 }
 
 // findBackendWithModelExcluding - поиск бэкенда с моделью, исключая указанные
-func (p *Proxy) findBackendWithModelExcluding(modelName string, exclude map[string]bool) string {
+func (p *Proxy) findBackendWithModelExcluding(modelName string, exclude map[string]bool, allowedTypes []types.BackendType) string {
 	p.mu.RLock()
 	defer p.mu.RUnlock()
 
@@ -153,6 +192,9 @@ func (p *Proxy) findBackendWithModelExcluding(modelName string, exclude map[stri
 
 	for id, state := range p.backends {
 		if exclude[id] {
+			continue
+		}
+		if !isBackendTypeAllowed(normalizeBackendType(state.Backend.Type), allowedTypes) {
 			continue
 		}
 		if state.Backend.Status != types.StatusHealthy {
@@ -189,14 +231,7 @@ func (p *Proxy) findBackendWithModelExcluding(modelName string, exclude map[stri
 			continue
 		}
 
-		hasModel := false
-		for _, m := range metrics.Ollama.RunningModels {
-			if m.Name == modelName || strings.Contains(m.Name, modelName) {
-				hasModel = true
-				break
-			}
-		}
-		if !hasModel {
+		if !p.backendHasModel(metrics, modelName) {
 			continue
 		}
 
@@ -221,16 +256,11 @@ func (p *Proxy) modelIsRunningOnBackendUnsafe(backendID, modelName string) bool 
 	if !ok {
 		return false
 	}
-	for _, m := range metrics.Ollama.RunningModels {
-		if m.Name == modelName || strings.Contains(m.Name, modelName) {
-			return true
-		}
-	}
-	return false
+	return p.backendHasModel(metrics, modelName)
 }
 
 // selectByResourcesExcluding - выбор по ресурсам с исключением бэкендов
-func (p *Proxy) selectByResourcesExcluding(exclude map[string]bool) string {
+func (p *Proxy) selectByResourcesExcluding(exclude map[string]bool, allowedTypes []types.BackendType) string {
 	p.mu.RLock()
 	defer p.mu.RUnlock()
 
@@ -239,6 +269,9 @@ func (p *Proxy) selectByResourcesExcluding(exclude map[string]bool) string {
 
 	for id, state := range p.backends {
 		if exclude[id] {
+			continue
+		}
+		if !isBackendTypeAllowed(normalizeBackendType(state.Backend.Type), allowedTypes) {
 			continue
 		}
 		if state.Backend.Status != types.StatusHealthy {
@@ -275,7 +308,7 @@ func (p *Proxy) selectByResourcesExcluding(exclude map[string]bool) string {
 }
 
 // findLessLoadedBackendWithModel — поиск менее загруженного бэкенда с той же моделью
-func (p *Proxy) findLessLoadedBackendWithModel(modelName, excludeBackendID string) string {
+func (p *Proxy) findLessLoadedBackendWithModel(modelName, excludeBackendID string, allowedTypes []types.BackendType) string {
 	p.mu.RLock()
 	defer p.mu.RUnlock()
 
@@ -284,6 +317,9 @@ func (p *Proxy) findLessLoadedBackendWithModel(modelName, excludeBackendID strin
 
 	for id, state := range p.backends {
 		if id == excludeBackendID {
+			continue
+		}
+		if !isBackendTypeAllowed(normalizeBackendType(state.Backend.Type), allowedTypes) {
 			continue
 		}
 		if state.Backend.Status != types.StatusHealthy {
@@ -309,14 +345,7 @@ func (p *Proxy) findLessLoadedBackendWithModel(modelName, excludeBackendID strin
 			continue
 		}
 
-		hasModel := false
-		for _, m := range metrics.Ollama.RunningModels {
-			if m.Name == modelName || strings.Contains(m.Name, modelName) {
-				hasModel = true
-				break
-			}
-		}
-		if !hasModel {
+		if !p.backendHasModel(metrics, modelName) {
 			continue
 		}
 
@@ -333,7 +362,7 @@ func (p *Proxy) findLessLoadedBackendWithModel(modelName, excludeBackendID strin
 // findLessLoadedBackendAny — поиск любого менее загруженного healthy бэкенда.
 // При равном loadRatio выбирает бэкенд с лучшим score (deterministic).
 // Если модель не загружена на выбранном бэкенде — запускает асинхронный warmup.
-func (p *Proxy) findLessLoadedBackendAny(modelName, excludeBackendID string) string {
+func (p *Proxy) findLessLoadedBackendAny(modelName, excludeBackendID string, allowedTypes []types.BackendType) string {
 	p.mu.RLock()
 	defer p.mu.RUnlock()
 
@@ -343,6 +372,9 @@ func (p *Proxy) findLessLoadedBackendAny(modelName, excludeBackendID string) str
 
 	for id, state := range p.backends {
 		if id == excludeBackendID {
+			continue
+		}
+		if !isBackendTypeAllowed(normalizeBackendType(state.Backend.Type), allowedTypes) {
 			continue
 		}
 		if state.Backend.Status != types.StatusHealthy {
@@ -379,19 +411,12 @@ func (p *Proxy) findLessLoadedBackendAny(modelName, excludeBackendID string) str
 
 	// Если нашли бэкенд без модели — запускаем warmup асинхронно
 	if bestBackendID != "" && modelName != "" {
-		p.metricsMgr.mu.RLock()
-		metrics, hasMetrics := p.metricsMgr.metrics[bestBackendID]
-		p.metricsMgr.mu.RUnlock()
-		if hasMetrics {
-			hasModel := false
-			for _, m := range metrics.Ollama.RunningModels {
-				if m.Name == modelName || strings.Contains(m.Name, modelName) {
-					hasModel = true
-					break
-				}
-			}
-			if !hasModel {
-				state := p.backends[bestBackendID]
+		state := p.backends[bestBackendID]
+		if state != nil {
+			p.metricsMgr.mu.RLock()
+			metrics, hasMetrics := p.metricsMgr.metrics[bestBackendID]
+			p.metricsMgr.mu.RUnlock()
+			if hasMetrics && !p.backendHasModel(metrics, modelName) {
 				p.warmupModel(bestBackendID, state.Backend.Host, state.Backend.OllamaPort, modelName)
 				logger.Get().Infow("rebalance: triggering model warmup on new backend",
 					"backend", bestBackendID, "model", modelName)
@@ -402,8 +427,40 @@ func (p *Proxy) findLessLoadedBackendAny(modelName, excludeBackendID string) str
 	return bestBackendID
 }
 
+// backendHasModel проверяет, загружена ли модель на бэкенде (Ollama или llama.cpp)
+func (p *Proxy) backendHasModel(metrics *types.BackendMetrics, modelName string) bool {
+	// Проверяем Ollama модели
+	for _, m := range metrics.Ollama.RunningModels {
+		if m.Name == modelName || strings.Contains(m.Name, modelName) {
+			return true
+		}
+	}
+	// Проверяем llama.cpp модели
+	for _, m := range metrics.LlamaCpp.LoadedModels {
+		if m.Name == modelName || strings.Contains(m.Name, modelName) {
+			return true
+		}
+	}
+	return false
+}
+
+// backendHasModelStrict — строгая проверка (без Contains), для prewarm
+func (p *Proxy) backendHasModelStrict(metrics *types.BackendMetrics, modelName string) bool {
+	for _, m := range metrics.Ollama.RunningModels {
+		if m.Name == modelName {
+			return true
+		}
+	}
+	for _, m := range metrics.LlamaCpp.LoadedModels {
+		if m.Name == modelName {
+			return true
+		}
+	}
+	return false
+}
+
 // findBackendWithModel - поиск бэкенда с загруженной моделью
-func (p *Proxy) findBackendWithModel(modelName string) string {
+func (p *Proxy) findBackendWithModel(modelName string, allowedTypes []types.BackendType) string {
 	p.mu.RLock()
 	defer p.mu.RUnlock()
 
@@ -411,6 +468,9 @@ func (p *Proxy) findBackendWithModel(modelName string) string {
 	var bestScore float64 = -1
 
 	for id, state := range p.backends {
+		if !isBackendTypeAllowed(normalizeBackendType(state.Backend.Type), allowedTypes) {
+			continue
+		}
 		if state.Backend.Status != types.StatusHealthy {
 			continue
 		}
@@ -446,14 +506,7 @@ func (p *Proxy) findBackendWithModel(modelName string) string {
 			continue
 		}
 
-		hasModel := false
-		for _, m := range metrics.Ollama.RunningModels {
-			if m.Name == modelName || strings.Contains(m.Name, modelName) {
-				hasModel = true
-				break
-			}
-		}
-		if !hasModel {
+		if !p.backendHasModel(metrics, modelName) {
 			continue
 		}
 
@@ -484,10 +537,13 @@ func (p *Proxy) findWarmingBackendForModelUnsafe(model string) string {
 }
 
 // findFreeBackendForModelUnsafe — свободный бэкенд с достаточным VRAM (без блокировки)
-func (p *Proxy) findFreeBackendForModelUnsafe(model string) string {
+func (p *Proxy) findFreeBackendForModelUnsafe(model string, allowedTypes []types.BackendType) string {
 	var best string
 	var maxFree uint64
 	for id, state := range p.backends {
+		if !isBackendTypeAllowed(normalizeBackendType(state.Backend.Type), allowedTypes) {
+			continue
+		}
 		if state.Backend.Status != types.StatusHealthy {
 			continue
 		}
@@ -510,14 +566,7 @@ func (p *Proxy) findFreeBackendForModelUnsafe(model string) string {
 		if freeVRAM <= needed {
 			continue
 		}
-		hasModel := false
-		for _, m := range metrics.Ollama.RunningModels {
-			if m.Name == model || strings.Contains(m.Name, model) {
-				hasModel = true
-				break
-			}
-		}
-		if !hasModel && freeVRAM > maxFree {
+		if !p.backendHasModel(metrics, model) && freeVRAM > maxFree {
 			maxFree = freeVRAM
 			best = id
 		}
@@ -531,16 +580,11 @@ func (p *Proxy) checkModelReadyUnsafe(backendID, model string) bool {
 	if !ok {
 		return false
 	}
-	for _, m := range metrics.Ollama.RunningModels {
-		if m.Name == model || strings.Contains(m.Name, model) {
-			return true
-		}
-	}
-	return false
+	return p.backendHasModel(metrics, model)
 }
 
 // selectFreeBackendAny — выбор любого свободного healthy бэкенда с наименьшей загрузкой
-func (p *Proxy) selectFreeBackendAny() string {
+func (p *Proxy) selectFreeBackendAny(allowedTypes []types.BackendType) string {
 	p.mu.RLock()
 	defer p.mu.RUnlock()
 
@@ -548,6 +592,9 @@ func (p *Proxy) selectFreeBackendAny() string {
 	var bestLoadRatio float64 = 2.0
 
 	for id, state := range p.backends {
+		if !isBackendTypeAllowed(normalizeBackendType(state.Backend.Type), allowedTypes) {
+			continue
+		}
 		if state.Backend.Status != types.StatusHealthy {
 			continue
 		}
@@ -583,7 +630,7 @@ func (p *Proxy) selectFreeBackendAny() string {
 }
 
 // selectByResources - выбор бэкенда по ресурсам
-func (p *Proxy) selectByResources() string {
+func (p *Proxy) selectByResources(allowedTypes []types.BackendType) string {
 	p.mu.RLock()
 	defer p.mu.RUnlock()
 
@@ -593,6 +640,9 @@ func (p *Proxy) selectByResources() string {
 	var bestLastUsed time.Time
 
 	for id, state := range p.backends {
+		if !isBackendTypeAllowed(normalizeBackendType(state.Backend.Type), allowedTypes) {
+			continue
+		}
 		if state.Backend.Status != types.StatusHealthy {
 			continue
 		}
@@ -607,10 +657,9 @@ func (p *Proxy) selectByResources() string {
 		lastUsed := state.LastUsed
 		state.mu.Unlock()
 
-		if maxReqs >= 0 && active >= maxReqs {
-			continue
-		}
-
+		// Не отсеиваем бэкенд если слоты заняты — пусть tryAcquireSlot в dispatchRequest
+		// решает можно ли захватить. Если слот занят — dispatch вернёт ErrNoBackendAvailable
+		// и queue requeue'ит запрос, дожидаясь освобождения.
 		pred := state.Prediction
 		if pred.SecondsToCritical > 0 && pred.SecondsToCritical < 300 {
 			continue

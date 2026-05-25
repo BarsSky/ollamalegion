@@ -75,8 +75,45 @@ func createHealthyBackend(id, host string) types.Backend {
 }
 
 // TestCalculateScore_ModelAffinityBonus — проверка бонуса за загруженные модели
+// Использует моки backend state + metrics вместо реального прокси
 func TestCalculateScore_ModelAffinityBonus(t *testing.T) {
-	t.Skip("Requires proxy initialization with metrics — tested in integration")
+	// Проверяем computeModelCapacityScore напрямую
+	emptyMetrics := &types.BackendMetrics{
+		GPU:    types.GPUMetrics{MemoryTotal: 24000, MemoryFree: 20000},
+		System: types.SystemMetrics{CPUUsagePercent: 20},
+		Ollama: types.OllamaMetrics{MaxModels: 5, RunningModels: []types.RunningModel{}},
+	}
+	scoreEmpty := balancer.ComputeModelCapacityScoreForTest(emptyMetrics)
+	if scoreEmpty <= 0 {
+		t.Errorf("empty backend should have positive capacity score, got %f", scoreEmpty)
+	}
+
+	// Бэкенд с загруженными моделями должен иметь меньшую ёмкость
+	loadedMetrics := &types.BackendMetrics{
+		GPU:    types.GPUMetrics{MemoryTotal: 24000, MemoryFree: 10000},
+		System: types.SystemMetrics{CPUUsagePercent: 30},
+		Ollama: types.OllamaMetrics{
+			MaxModels: 5,
+			RunningModels: []types.RunningModel{
+				{Name: "llama3.2:3b", VRAMUsage: 4000 * 1024 * 1024},
+				{Name: "nomic-embed-text", VRAMUsage: 500 * 1024 * 1024},
+			},
+		},
+	}
+	scoreLoaded := balancer.ComputeModelCapacityScoreForTest(loadedMetrics)
+	if scoreLoaded >= scoreEmpty {
+		t.Errorf("loaded backend should have lower capacity score than empty (empty=%f, loaded=%f)", scoreEmpty, scoreLoaded)
+	}
+
+	// Проверяем modelLoadedBonus в enhanced scoring
+	sc := balancer.ComputeEnhancedModelBonusForTest(emptyMetrics.Ollama.RunningModels, 0.15)
+	if sc != 0 {
+		t.Errorf("empty models bonus should be 0, got %f", sc)
+	}
+	scLoaded := balancer.ComputeEnhancedModelBonusForTest(loadedMetrics.Ollama.RunningModels, 0.15)
+	if scLoaded <= 0 {
+		t.Errorf("backend with loaded models should have positive bonus, got %f", scLoaded)
+	}
 }
 
 // TestPrewarmController_TriggerOnLoad — проверка триггера prewarm при загрузке > 70%

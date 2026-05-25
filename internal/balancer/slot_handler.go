@@ -23,7 +23,7 @@ func (p *Proxy) acquireSlotWithRetry(model, targetBackend, sessionID, clientName
 	attemptedBackends := map[string]bool{targetBackend: true}
 	const maxRetries = 10
 	for retry := 0; retry < maxRetries; retry++ {
-		altBackend := p.selectBackendExcluding(model, attemptedBackends)
+		altBackend := p.selectBackendExcluding(model, attemptedBackends, p.determineRequestBackendType(r))
 		if altBackend == "" {
 			break
 		}
@@ -55,7 +55,7 @@ func (p *Proxy) executeWithFallback(w http.ResponseWriter, r *http.Request, back
 	// Fallback на другие бэкенды (макс. 2 попытки)
 	attemptedBackends := map[string]bool{backendID: true}
 	for attempt := 1; attempt < 3; attempt++ {
-		altBackend := p.selectBackendExcluding(model, attemptedBackends)
+		altBackend := p.selectBackendExcluding(model, attemptedBackends, p.determineRequestBackendType(r))
 		if altBackend == "" {
 			break
 		}

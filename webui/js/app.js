@@ -52,6 +52,8 @@ const ui = (function () {
             SettingsUI.setupAccordion();
             SettingsUI.restoreAccordionState();
             SettingsUI.setupModeSelector();
+            SettingsUI.setupBackendEngineSwitch();
+            SettingsUI.initBackendEngineCards();
         }
 
         // Check if setup wizard should be shown — проверяем сервер, а не localStorage
@@ -235,6 +237,7 @@ const ui = (function () {
             models: 'Models',
             sessions: 'Sessions',
             queue: 'Queue',
+            gguf: 'GGUF Models',
             logs: 'System Logs',
             settings: 'Settings',
             agents: 'Agents'
@@ -242,20 +245,33 @@ const ui = (function () {
         return titles[page] || 'Dashboard';
     }
 
+    /**
+     * Фильтрует бэкенды по текущему типу (ollama / llama_cpp).
+     * Использует BackendTypeFilter как клиентский fallback.
+     * Если сервер уже отфильтровал — фильтр пройдёт без изменений.
+     */
+    function filterBackendsForUI(backends) {
+        if (!window.BackendTypeFilter) return backends;
+        var type = BackendTypeFilter.getCurrentType();
+        return BackendTypeFilter.filterBackends(backends, type);
+    }
+
     function refreshPage(page) {
         switch (page) {
             case 'dashboard':
-                dashboard(data.backends, data.sessions, data.queue);
-                predictionAlerts(data.backends);
+                var filteredBackends = filterBackendsForUI(data.backends);
+                dashboard(filteredBackends, data.sessions, data.queue);
+                predictionAlerts(filteredBackends);
                 break;
             case 'monitor':
                 sendMonitorConfig();
                 break;
             case 'backends':
-                backendsPage([...data.backends].sort((a, b) => (a.id || '').localeCompare(b.id || '')));
+                var filteredBackendsB = filterBackendsForUI(data.backends);
+                backendsPage([...filteredBackendsB].sort(function(a, b) { return (a.id || '').localeCompare(b.id || ''); }));
                 break;
             case 'models':
-                modelsPage(data.backends);
+                modelsPage(filterBackendsForUI(data.backends));
                 break;
             case 'sessions':
                 sessionsPage(data.sessions);
@@ -273,6 +289,12 @@ const ui = (function () {
                 break;
             case 'agents':
                 if (data.agents) renderAgentsPage(data.agents);
+                break;
+            case 'gguf':
+                if (window.GgufRenderer) {
+                    var container = document.getElementById('ggufContainer');
+                    if (container) GgufRenderer.render(container);
+                }
                 break;
             case 'settings':
                 loadSettings();
@@ -331,7 +353,7 @@ const ui = (function () {
         if (exportBackendsBtn) exportBackendsBtn.addEventListener('click', exportBackends);
 
         document.getElementById('saveSettings').addEventListener('click', function () { saveSettings(false); });
-        document.getElementById('resetSettings').addEventListener('click', loadSettings);
+        document.getElementById('resetSettings').addEventListener('click', resetSettings);
 
         // Export / Import Config buttons
         var exportBtn = document.getElementById('exportSettingsBtn');
@@ -369,7 +391,7 @@ const ui = (function () {
         });
 
         // Auto-save on settings form changes
-        var settingsFields = ['balancingAlgorithm', 'useEnhancedScoring', 'modelAffinity', 'sessionStickiness', 'predictionFiltering', 'gpuMaxUsage', 'vramMaxUsage', 'cpuMaxUsage', 'ramMaxUsage', 'minFreeDisk', 'modelReplicationMinInstances', 'modelReplicationMaxInstances', 'modelReplicationIdleUnload', 'rpcCoordinatorURL', 'rpcCoordinatorWorkerPort', 'rpcCoordinatorProtocol', 'rpcCoordinatorTimeout', 'virtualModelsCoordMode', 'virtualModelsTimeout', 'distInferenceGrpcPort', 'agentCollectInterval', 'agentHeartbeatInterval', 'agentMaxConcurrent', 'agentMaxModels', 'agentTimeout'];
+        var settingsFields = ['balancingAlgorithm', 'useEnhancedScoring', 'modelAffinity', 'sessionStickiness', 'predictionFiltering', 'gpuMaxUsage', 'vramMaxUsage', 'cpuMaxUsage', 'ramMaxUsage', 'minFreeDisk', 'modelReplicationMinInstances', 'modelReplicationMaxInstances', 'modelReplicationIdleUnload', 'rpcCoordinatorURL', 'rpcCoordinatorWorkerPort', 'rpcCoordinatorProtocol', 'rpcCoordinatorTimeout', 'virtualModelsCoordMode', 'virtualModelsTimeout', 'distInferenceGrpcPort', 'agentCollectInterval', 'agentHeartbeatInterval', 'agentMaxConcurrent', 'agentMaxModels', 'agentTimeout', 'gpuLayers', 'ctxSize', 'batchSize', 'gpuStrategy', 'tensorSplit', 'autoGpuDistribution', 'flashAttn', 'numa', 'useMmap'];
         settingsFields.forEach(function (id) {
             var el = document.getElementById(id);
             if (el) {
@@ -382,6 +404,35 @@ const ui = (function () {
 
         document.getElementById('backendModal').addEventListener('click', (e) => {
             if (e.target.id === 'backendModal') closeModal();
+        });
+
+        // Backend type selector in add-backend form — sync with BackendTypeFilter
+        var formBackendType = document.getElementById('formBackendType');
+        if (formBackendType) {
+            formBackendType.addEventListener('change', function () {
+                var newType = this.value;
+                if (window.BackendTypeFilter) {
+                    BackendTypeFilter.setCurrentType(newType);
+                }
+            });
+        }
+
+        // Type filter buttons (Все / Ollama / llama.cpp) на Dashboard и Backends page
+        document.querySelectorAll('.type-filter-group').forEach(function(group) {
+            group.querySelectorAll('.type-filter-btn').forEach(function(btn) {
+                btn.addEventListener('click', function() {
+                    // Снять active со всех кнопок в этой группе
+                    group.querySelectorAll('.type-filter-btn').forEach(function(b) { b.classList.remove('active'); });
+                    this.classList.add('active');
+                    // Применить фильтр через BackendTypeFilter
+                    var filterType = this.dataset.type;
+                    if (window.BackendTypeFilter) {
+                        BackendTypeFilter.setCurrentType(filterType);
+                    }
+                    // Обновить текущую страницу
+                    refreshCurrentPage();
+                });
+            });
         });
 
         // Agents page buttons
@@ -491,6 +542,38 @@ const ui = (function () {
         if (saveBackendLimitsBtn) {
             saveBackendLimitsBtn.addEventListener('click', function() {
                 saveBackendLimits();
+            });
+        }
+
+        // Retake Setup Wizard button (Danger Zone)
+        var retakeBtn = document.getElementById('retakeSetupWizardBtn');
+        if (retakeBtn) {
+            retakeBtn.addEventListener('click', function() {
+                var confirmed = confirm(
+                    (window.I18N ? I18N.t('wizard.retake_confirm') : 'Все текущие настройки будут сброшены. Продолжить?')
+                );
+                if (!confirmed) return;
+
+                // Сбрасываем initialized на сервере
+                if (window.Api && window.Api.updateConfig) {
+                    window.Api.updateConfig({ initialized: false }).then(function () {
+                        localStorage.removeItem('ollamalegion_wizard_done');
+                        localStorage.removeItem('ollamalegion_backend_type');
+                        if (window.SetupWizard) {
+                            window.SetupWizard.start();
+                        }
+                    }).catch(function (err) {
+                        showToast(
+                            (window.I18N ? I18N.t('common.error') : 'Ошибка') + ': ' + (err.message || err),
+                            'error'
+                        );
+                    });
+                } else {
+                    localStorage.removeItem('ollamalegion_wizard_done');
+                    if (window.SetupWizard) {
+                        window.SetupWizard.start();
+                    }
+                }
             });
         }
     }
@@ -629,6 +712,11 @@ const ui = (function () {
             updateBackends(state.backends || []);
             // Successful REST request — balancer is reachable
             updateConnectionStatus(true);
+            // Синхронизация типа бэкенда (Ollama vs llama.cpp) — скрывает/показывает вкладку GGUF и режимы
+            if (window.BackendTypeFilter) {
+                BackendTypeFilter.syncFromClusterState(state);
+            }
+            // Бейдж уже обновлён внутри BackendTypeFilter.syncFromClusterState → updateUI → updateEngineBadge
         } catch (e) {
             Api.handleError(e, window.I18N ? I18N.t('app.error_loading_cluster') : 'Error loading cluster state');
         }
@@ -691,6 +779,37 @@ const ui = (function () {
         }
     }
 
+    /**
+     * Сброс настроек к заводским значениям с сохранением типа бэкенда (Ollama / llama.cpp).
+     * Показывает модальное окно подтверждения, при успехе перезагружает страницу.
+     */
+    function resetSettings() {
+        // Показываем модальное окно подтверждения
+        var confirmed = confirm(
+            (window.I18N ? I18N.t('settings.reset_confirm') : 'Сбросить все настройки к заводским значениям? Это действие нельзя отменить.')
+        );
+        if (!confirmed) return;
+
+        Api.resetConfig().then(function (result) {
+            showToast(
+                (window.I18N ? I18N.t('settings.reset_success') : 'Настройки сброшены. Страница будет перезагружена.'),
+                'success'
+            );
+            // Сбрасываем локальные ключи, связанные с типом бэкенда и wizard
+            localStorage.removeItem('ollamalegion_backend_type');
+            localStorage.removeItem('ollamalegion_wizard_done');
+            // Перезагрузка через небольшую задержку, чтобы пользователь увидел toast
+            setTimeout(function () {
+                location.reload();
+            }, 1500);
+        }).catch(function (err) {
+            showToast(
+                (window.I18N ? I18N.t('settings.reset_error') : 'Ошибка сброса: ') + (err.message || err),
+                'error'
+            );
+        });
+    }
+
     function loadSettings() {
         // --- SERVER-FIRST RULE: сервер = источник истины ---
         // Сначала пытаемся загрузить с сервера. Если не получилось — fallback в localStorage.
@@ -715,6 +834,9 @@ const ui = (function () {
 
     function applyServerConfig(serverConfig) {
         if (!serverConfig) return;
+
+        // ЗАЩИТА: не перезаписываем UI если wizard активен
+        if (document.getElementById('setupWizardModal')) return;
 
         var algEl = document.getElementById('balancingAlgorithm');
         if (algEl && serverConfig.algorithm) algEl.value = serverConfig.algorithm;
@@ -741,6 +863,37 @@ const ui = (function () {
         if (diskEl && serverConfig.minFreeDisk) diskEl.value = serverConfig.minFreeDisk;
         var tokenEl = document.getElementById('apiToken');
         if (tokenEl && serverConfig.apiToken) tokenEl.value = serverConfig.apiToken;
+
+        // Backend Engine — серверный конфиг как fallback.
+        // Приоритет: localStorage (выбор пользователя) > серверный config.
+        if (serverConfig.backendEngine) {
+            var engineType = (serverConfig.backendEngine === 'llama_cpp') ? 'llama_cpp' : 'ollama';
+            var currentType = window.BackendTypeFilter ? BackendTypeFilter.getCurrentType() : null;
+            // Если пользователь уже выбрал тип — не перезаписываем UI из сервера
+            if (currentType !== 'llama_cpp' && currentType !== 'ollama') {
+                if (window.BackendTypeFilter) {
+                    BackendTypeFilter.updateUI(engineType);
+                }
+            }
+            var formBackendTypeEl = document.getElementById('formBackendType');
+            if (formBackendTypeEl) {
+                formBackendTypeEl.value = engineType;
+            }
+            // Обновляем маркер типа движка в сайдбаре (текст + иконка)
+            var badge = document.getElementById('backendEngineBadge');
+            var label = document.getElementById('backendEngineLabel');
+            var iconEl = badge ? badge.querySelector('.engine-icon') : null;
+            if (badge) {
+                badge.classList.remove('engine-ollama', 'engine-llama_cpp', 'engine-auto');
+                badge.classList.add('engine-' + engineType);
+            }
+            if (label) {
+                label.textContent = engineType === 'llama_cpp' ? '🦒 llama.cpp' : '🦙 Ollama API';
+            }
+            if (iconEl) {
+                iconEl.textContent = engineType === 'llama_cpp' ? '🦒' : '🦙';
+            }
+        }
 
         // Operating Mode — критически важно для корректного отображения UI.
         // Сервер = единственный источник истины. Перезаписываем UI жёстко.
@@ -789,6 +942,28 @@ const ui = (function () {
         if (diEnabledEl && serverConfig.distInference) diEnabledEl.checked = serverConfig.distInference.enabled === true;
         var diPortEl = document.getElementById('distInferenceGrpcPort');
         if (diPortEl && serverConfig.distInference && serverConfig.distInference.grpcPort) diPortEl.value = serverConfig.distInference.grpcPort;
+
+        // llama.cpp / GGUF Settings
+        var llamaCpp = serverConfig.llamaCpp || {};
+        var gpuLayersEl = document.getElementById('gpuLayers');
+        if (gpuLayersEl && llamaCpp.numGpuLayers !== undefined) gpuLayersEl.value = llamaCpp.numGpuLayers;
+        var ctxSizeEl = document.getElementById('ctxSize');
+        if (ctxSizeEl && llamaCpp.contextLength) ctxSizeEl.value = llamaCpp.contextLength;
+        var batchSizeEl = document.getElementById('batchSize');
+        if (batchSizeEl && llamaCpp.batchSize) batchSizeEl.value = llamaCpp.batchSize;
+        var gpuStrategyEl = document.getElementById('gpuStrategy');
+        if (gpuStrategyEl && llamaCpp.strategy) gpuStrategyEl.value = llamaCpp.strategy;
+        var tensorSplitEl = document.getElementById('tensorSplit');
+        if (tensorSplitEl && llamaCpp.tensorSplitStr) tensorSplitEl.value = llamaCpp.tensorSplitStr;
+        else if (tensorSplitEl && llamaCpp.tensorSplit && Array.isArray(llamaCpp.tensorSplit)) tensorSplitEl.value = llamaCpp.tensorSplit.join(',');
+        var autoGpuEl = document.getElementById('autoGpuDistribution');
+        if (autoGpuEl) autoGpuEl.checked = llamaCpp.autoGpuDistribution !== false;
+        var flashAttnEl = document.getElementById('flashAttn');
+        if (flashAttnEl && llamaCpp.flashAttention !== undefined) flashAttnEl.checked = !!llamaCpp.flashAttention;
+        var numaEl = document.getElementById('numa');
+        if (numaEl && llamaCpp.numa !== undefined) numaEl.checked = !!llamaCpp.numa;
+        var useMmapEl = document.getElementById('useMmap');
+        if (useMmapEl) useMmapEl.checked = llamaCpp.useMmap !== false;
     }
 
     function applyLocalConfig(config) {
@@ -880,7 +1055,36 @@ const ui = (function () {
         var agentMaxModels = parseInt((document.getElementById('agentMaxModels') && document.getElementById('agentMaxModels').value)) || 5;
         var agentTimeout = parseInt((document.getElementById('agentTimeout') && document.getElementById('agentTimeout').value)) || 10;
 
+        // llama.cpp / GGUF settings (имена полей соответствуют Go-структуре LlamaCppConfig)
+        var llamaCppGpuLayers = parseInt((document.getElementById('gpuLayers') && document.getElementById('gpuLayers').value)) || -1;
+        var llamaCppCtxSize = parseInt((document.getElementById('ctxSize') && document.getElementById('ctxSize').value)) || 2048;
+        var llamaCppBatchSize = parseInt((document.getElementById('batchSize') && document.getElementById('batchSize').value)) || 512;
+        var llamaCppStrategy = (document.getElementById('gpuStrategy') && document.getElementById('gpuStrategy').value) || 'vram-ratio';
+        var llamaCppTensorSplitStr = (document.getElementById('tensorSplit') && document.getElementById('tensorSplit').value) || '';
+        var llamaCppAutoGpu = (document.getElementById('autoGpuDistribution') && document.getElementById('autoGpuDistribution').checked) !== false;
+        var llamaCppFlashAttn = (document.getElementById('flashAttn') && document.getElementById('flashAttn').checked) === true;
+        var llamaCppNuma = (document.getElementById('numa') && document.getElementById('numa').checked) === true;
+        var llamaCppUseMmap = (document.getElementById('useMmap') && document.getElementById('useMmap').checked) !== false;
+
+        // Определяем текущий operatingMode из radio-кнопок на странице
+        var operatingModeRadio = document.querySelector('input[name="operatingMode"]:checked');
+        var operatingMode = operatingModeRadio ? operatingModeRadio.value : 'standard';
+
+        // Определяем текущий backendEngine из BackendTypeFilter (источник истины после мастера)
+        var backendEngine = null;
+        if (window.BackendTypeFilter) {
+            var currentType = BackendTypeFilter.getCurrentType();
+            if (currentType === 'llama_cpp') {
+                backendEngine = 'llama_cpp';
+            } else if (currentType === 'ollama') {
+                backendEngine = 'ollama_api';
+            }
+            // если тип не определён (null/undefined) — не включаем backendEngine в payload,
+            // чтобы не перезаписать существующее значение на сервере
+        }
+
         var config = {
+            operatingMode: operatingMode,
             agent: {
                 collectInterval: agentCollectInterval,
                 heartbeatInterval: agentHeartbeatInterval,
@@ -920,8 +1124,24 @@ const ui = (function () {
             distInference: {
                 enabled: distInferenceEnabled,
                 grpcPort: distInferenceGrpcPort
+            },
+            llamaCpp: {
+                numGpuLayers: llamaCppGpuLayers,
+                contextLength: llamaCppCtxSize,
+                batchSize: llamaCppBatchSize,
+                strategy: llamaCppStrategy,
+                tensorSplitStr: llamaCppTensorSplitStr,
+                autoGpuDistribution: llamaCppAutoGpu,
+                flashAttention: llamaCppFlashAttn,
+                numa: llamaCppNuma,
+                useMmap: llamaCppUseMmap
             }
         };
+
+        // Добавляем backendEngine только если он определён
+        if (backendEngine) {
+            config.backendEngine = backendEngine;
+        }
 
         // Конфигурация хранится на сервере, localStorage больше не используется для настроек
         // (только theme и language остаются в localStorage)
@@ -952,6 +1172,9 @@ const ui = (function () {
             }
             if (expectedConfig.useEnhancedScoring !== undefined && serverConfig.useEnhancedScoring !== expectedConfig.useEnhancedScoring) {
                 mismatches.push('useEnhancedScoring: expected ' + expectedConfig.useEnhancedScoring + ', got ' + serverConfig.useEnhancedScoring);
+            }
+            if (expectedConfig.backendEngine && serverConfig.backendEngine !== expectedConfig.backendEngine) {
+                mismatches.push('backendEngine: expected ' + expectedConfig.backendEngine + ', got ' + serverConfig.backendEngine);
             }
 
             if (mismatches.length > 0) {
@@ -1046,6 +1269,23 @@ const ui = (function () {
         document.getElementById('formBackendMaxModels').value = backend?.maxModels || backend?.runtimeMaxModels || 0;
         document.getElementById('formBackendLabels').value = (backend?.labels || []).join(',');
 
+        // Синхронизируем селектор типа бэкенда с BackendTypeFilter
+        var formBackendType = document.getElementById('formBackendType');
+        if (formBackendType) {
+            var currentType = 'ollama';
+            if (window.BackendTypeFilter) {
+                currentType = BackendTypeFilter.getCurrentType();
+            }
+            if (backend && backend.type) {
+                currentType = backend.type === 'llama_cpp' ? 'llama_cpp' : 'ollama';
+            }
+            formBackendType.value = currentType;
+            // Применяем фильтрацию полей
+            if (window.BackendTypeFilter) {
+                BackendTypeFilter.toggleBackendFormFields(currentType);
+            }
+        }
+
         // GPU Mode — из capacity.mode или platformMode
         var gpuMode = backend?.gpuMode || backend?.platformMode || 'auto';
         if (backend?.ollama?.backendCapacity?.mode) {
@@ -1078,7 +1318,15 @@ const ui = (function () {
             return;
         }
 
-        const payload = { id, name: name || id, host, ollamaPort, agentPort, weight, maxConcurrentRequests: maxConcurrent, maxModels, gpuMode, labels };
+        var backendType = (document.getElementById('formBackendType') && document.getElementById('formBackendType').value) || 'ollama';
+        var cppWorkerPort = parseInt((document.getElementById('formBackendCppWorkerPort') && document.getElementById('formBackendCppWorkerPort').value)) || 18090;
+        var cppGrpcPort = parseInt((document.getElementById('formBackendCppGrpcPort') && document.getElementById('formBackendCppGrpcPort').value)) || 19000;
+
+        var payload = { id, name: name || id, host, ollamaPort, agentPort, weight, maxConcurrentRequests: maxConcurrent, maxModels, gpuMode, labels, type: backendType };
+        if (backendType === 'llama_cpp') {
+            payload.cppWorkerPort = cppWorkerPort;
+            payload.grpcPort = cppGrpcPort;
+        }
         const isEdit = document.getElementById('formBackendId').disabled;
 
         try {
@@ -1155,6 +1403,80 @@ const ui = (function () {
     }
 
     // ---- UI Utilities ----
+
+    /**
+     * Обновление маркера типа движка инференса в сайдбаре.
+     * Принимает clusterState (или любой объект с полями backendEngine, backendTypeCounts, operatingMode).
+     * Отображает: 🦙 Ollama API, 🦒 llama.cpp, или 🔌 Автоопределение...
+     */
+    function updateBackendEngineBadge(state) {
+        var badge = document.getElementById('backendEngineBadge');
+        var label = document.getElementById('backendEngineLabel');
+        if (!badge || !label) return;
+
+        // Приоритет: выбор пользователя (localStorage через BackendTypeFilter) > cluster state
+        var userType = window.BackendTypeFilter ? BackendTypeFilter.getCurrentType() : null;
+        var effectiveType = (state && state.effectiveBackendType) || '';
+        var engine = (state && state.backendEngine) || '';
+        var counts = (state && state.backendTypeCounts) || {};
+
+        // Remove old colour classes
+        badge.classList.remove('engine-ollama', 'engine-llama_cpp', 'engine-auto');
+
+        var icon = '🔌';
+        var text = (window.I18N ? I18N.t('dashboard.engine_auto') : 'Автоопределение...');
+        var cssClass = 'engine-auto';
+        var title = (window.I18N ? I18N.t('dashboard.engine_hint_auto') : 'Тип движка: автоопределение');
+
+        // Приоритет 1: выбор пользователя (localStorage)
+        if (userType === 'llama_cpp') {
+            icon = '🦒';
+            text = 'llama.cpp';
+            cssClass = 'engine-llama_cpp';
+            title = (window.I18N ? I18N.t('dashboard.engine_hint_llama_cpp') : 'Движок: llama.cpp');
+        } else if (userType === 'ollama') {
+            icon = '🦙';
+            text = 'Ollama API';
+            cssClass = 'engine-ollama';
+            title = (window.I18N ? I18N.t('dashboard.engine_hint_ollama') : 'Движок: Ollama API');
+        } else if (effectiveType === 'llama_cpp') {
+            icon = '🦒';
+            text = 'llama.cpp';
+            cssClass = 'engine-llama_cpp';
+            title = (window.I18N ? I18N.t('dashboard.engine_hint_llama_cpp') : 'Движок: llama.cpp');
+        } else if (effectiveType === 'ollama') {
+            icon = '🦙';
+            text = 'Ollama API';
+            cssClass = 'engine-ollama';
+            title = (window.I18N ? I18N.t('dashboard.engine_hint_ollama') : 'Движок: Ollama API');
+        } else if (engine === 'llama_cpp') {
+            icon = '🦒';
+            text = 'llama.cpp';
+            cssClass = 'engine-llama_cpp';
+            title = (window.I18N ? I18N.t('dashboard.engine_hint_llama_cpp') : 'Движок: llama.cpp');
+        } else if (engine === 'ollama_api') {
+            icon = '🦙';
+            text = 'Ollama API';
+            cssClass = 'engine-ollama';
+            title = (window.I18N ? I18N.t('dashboard.engine_hint_ollama') : 'Движок: Ollama API');
+        }
+
+        // Append per-type counts to title if available
+        if (counts && Object.keys(counts).length > 0) {
+            var parts = [];
+            if (counts.ollama) parts.push('🦙 Ollama: ' + counts.ollama);
+            if (counts.llama_cpp) parts.push('🦒 llama.cpp: ' + counts.llama_cpp);
+            if (parts.length > 0) {
+                title += ' | ' + parts.join(', ');
+            }
+        }
+
+        var iconEl = badge.querySelector('.engine-icon');
+        if (iconEl) iconEl.textContent = icon;
+        label.textContent = text;
+        badge.classList.add(cssClass);
+        badge.title = title;
+    }
 
     function updateConnectionStatus(connected) {
         const status = document.getElementById('connectionStatus');
@@ -1390,6 +1712,13 @@ const ui = (function () {
         // Set title
         const title = modal.querySelector('.modal-header h3');
         if (title) title.textContent = (window.I18N ? I18N.t('models.manage_title') : 'Model Management') + ' — ' + backendId;
+
+        // B-08: Скрываем Pull Model секцию для llama_cpp бэкендов
+        var bt = backend.backend_type || backend.BackendType || 'ollama';
+        var pullSection = modal.querySelector('.model-manage-section');
+        if (pullSection) {
+            pullSection.style.display = (bt === 'llama_cpp') ? 'none' : '';
+        }
 
         // Show operations list with loading
         const modelsBody = document.getElementById('modelManageModelsBody');

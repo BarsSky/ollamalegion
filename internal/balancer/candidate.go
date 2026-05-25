@@ -31,7 +31,8 @@ func isBackendAvailableForRequests(status types.BackendStatus) bool {
 // P3 (FREE): healthy бэкенды со свободными слотами, без модели
 // P4 (FALLBACK): все healthy бэкенды для resource-based scoring
 // Исключены: offline, unhealthy, draining, ollama_unavailable (агент жив, но ollama не отвечает)
-func (p *Proxy) expandCandidates(modelName string) CandidateGroups {
+// allowedTypes — допустимые типы бэкендов (если nil/пустой — без фильтрации для обратной совместимости)
+func (p *Proxy) expandCandidates(modelName string, allowedTypes []types.BackendType) CandidateGroups {
 	p.mu.RLock()
 	defer p.mu.RUnlock()
 
@@ -43,6 +44,21 @@ func (p *Proxy) expandCandidates(modelName string) CandidateGroups {
 	var loaded, warming, free, fallback []string
 
 	for id, state := range p.backends {
+		// Фильтрация по типу бэкенда
+		if len(allowedTypes) > 0 {
+			bt := normalizeBackendType(state.Backend.Type)
+			allowed := false
+			for _, at := range allowedTypes {
+				if bt == at {
+					allowed = true
+					break
+				}
+			}
+			if !allowed {
+				continue
+			}
+		}
+
 		// Бэкенд должен быть healthy для routing через expandCandidates.
 		// StatusOllamaUnavailable исключается — агент жив, но ollama не отвечает.
 		if state.Backend.Status != types.StatusHealthy {
@@ -116,7 +132,7 @@ func (p *Proxy) expandCandidates(modelName string) CandidateGroups {
 // dispatchWithModelLoad — инициирует загрузку модели на free бэкенде
 // Возвращает backendID и deadline для ожидания загрузки. Если модель уже загружена — возвращает "".
 func (p *Proxy) dispatchWithModelLoad(model string) (string, time.Time) {
-	candidates := p.expandCandidates(model)
+	candidates := p.expandCandidates(model, nil)
 
 	// Ищем лучший free backend (P3) с максимальным свободным VRAM
 	var bestBackend string

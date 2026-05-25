@@ -28,6 +28,8 @@ func (p *Proxy) GetClusterState() *types.ClusterState {
 		TotalBackends:   len(backendsCopy),
 		HealthyBackends: 0,
 		OperatingMode:   p.config.Balancing.OperatingMode,
+		BackendEngine:   p.getBackendEngine(),
+		BackendTypeCounts: p.countBackendsByType(),
 		Backends:        make([]types.BackendMetrics, 0, len(backendsCopy)),
 	}
 
@@ -51,6 +53,10 @@ func (p *Proxy) GetClusterState() *types.ClusterState {
 		if backendConfig.RuntimeMaxConcurrentRequests > 0 {
 			maxConcurrent = backendConfig.RuntimeMaxConcurrentRequests
 		}
+		// Адаптивный таймаут
+		effectiveTimeout := getEffectiveTimeout(backendState, p.config.Balancing.RequestTimeout)
+		runtimeTimeout := getRuntimeRequestTimeout(backendState)
+
 		metrics := types.BackendMetrics{
 			ID:        id,
 			Timestamp: time.Now().UTC(),
@@ -58,10 +64,14 @@ func (p *Proxy) GetClusterState() *types.ClusterState {
 			HasAgent:  hasAgent,
 			Host:      backendConfig.Host,
 			OllamaPort: backendConfig.OllamaPort,
+			BackendType: backendConfig.Type,
 			GPU:       types.GPUMetrics{},
 			System:    types.SystemMetrics{},
 			Ollama:    types.OllamaMetrics{RunningModels: []types.RunningModel{}},
 			MaxConcurrentRequests: maxConcurrent,
+			RequestTimeout:        backendConfig.RequestTimeout,
+			RuntimeRequestTimeout: runtimeTimeout,
+			EffectiveTimeout:      effectiveTimeout,
 		}
 
 		if agentMetrics, ok := p.metricsMgr.metrics[id]; ok {
@@ -79,6 +89,19 @@ func (p *Proxy) GetClusterState() *types.ClusterState {
 			metrics.Status = status
 			metrics.HasAgent = hasAgent
 			metrics.Prediction = prediction
+		// Сохраняем BackendType из конфигурации бэкенда (источник истины)
+		// Агент может не иметь доступа к GPU в контейнере, но конфиг знает тип
+		if backendConfig.Type != "" {
+			metrics.BackendType = backendConfig.Type
+		} else if metrics.BackendType == "" {
+			// Обратная совместимость: определяем тип по эвристике
+			// llama.cpp-бэкенды имеют CppWorkerPort > 0
+			if backendConfig.CppWorkerPort > 0 {
+				metrics.BackendType = types.BackendTypeLlamaCpp
+			} else {
+				metrics.BackendType = types.BackendTypeOllama
+			}
+		}
 			metrics.Models = make([]string, 0, len(metrics.Ollama.RunningModels))
 			for _, m := range metrics.Ollama.RunningModels {
 				metrics.Models = append(metrics.Models, m.Name)
@@ -121,6 +144,13 @@ func (p *Proxy) GetClusterState() *types.ClusterState {
 
 		state.Backends = append(state.Backends, metrics)
 	}
+
+	// Фильтрация бэкендов по эффективному типу для WebUI/монитора
+	// При чистом кластере (все бэкенды одного типа) — возвращаем только их
+	// При смешанном — возвращаем все
+	effectiveType := p.getEffectiveBackendType()
+	state.Backends = filterBackendsByEffectiveType(state.Backends, effectiveType)
+	state.EffectiveBackendType = effectiveType
 
 	// --- RecentClients для монитора ---
 	state.RecentClients = p.getRecentClients()
@@ -373,7 +403,7 @@ func (p *Proxy) GetCandidates() []ModelCandidatesDTO {
 
 	result := make([]ModelCandidatesDTO, 0, len(modelSet))
 	for model := range modelSet {
-		groups := p.expandCandidates(model)
+		groups := p.expandCandidates(model, nil)
 		dto := ModelCandidatesDTO{
 			Model:  model,
 			Groups: make([]CandidateGroupDTO, 0, len(groups)),

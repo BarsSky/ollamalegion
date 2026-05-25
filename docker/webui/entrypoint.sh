@@ -14,6 +14,8 @@ NGINX_CONF="/etc/nginx/conf.d/default.conf"
 : "${API_HOST:=loadbalancer}"
 : "${API_PORT:=18081}"
 : "${LB_PORT:=18080}"
+: "${CPPWORKER_HOST:=cppworker-cpu}"
+: "${CPPWORKER_PORT:=18091}"
 : "${API_TOKEN:=}"
 : "${REFRESH_INTERVAL:=5000}"
 : "${MAX_RECONNECT_ATTEMPTS:=10}"
@@ -26,6 +28,8 @@ awk '{
     gsub(/\$\{API_HOST\}/, "'"$API_HOST"'");
     gsub(/\$\{API_PORT\}/, "'"$API_PORT"'");
     gsub(/\$\{LB_PORT\}/, "'"$LB_PORT"'");
+    gsub(/\$\{CPPWORKER_HOST\}/, "'"$CPPWORKER_HOST"'");
+    gsub(/\$\{CPPWORKER_PORT\}/, "'"$CPPWORKER_PORT"'");
     print
 }' "$NGINX_TEMPLATE" > "$NGINX_CONF"
 
@@ -44,6 +48,8 @@ Object.assign(window.WEBUI_CONFIG, {
     WS_URL: null,
     // API токен для аутентификации
     API_TOKEN: '${API_TOKEN}',
+    // cppworker URL (через nginx proxy)
+    CPPWORKER_URL: '/api/worker',
     // Интервал обновления данных (мс)
     REFRESH_INTERVAL: ${REFRESH_INTERVAL},
     // WebSocket reconnect
@@ -56,6 +62,8 @@ echo "[entrypoint] Config generated:"
 echo "  NGINX_PORT=$NGINX_PORT"
 echo "  API_HOST=$API_HOST"
 echo "  API_PORT=$API_PORT"
+echo "  CPPWORKER_HOST=$CPPWORKER_HOST"
+echo "  CPPWORKER_PORT=$CPPWORKER_PORT"
 echo "  API_TOKEN=${API_TOKEN:+(set)}"
 echo "  REFRESH_INTERVAL=$REFRESH_INTERVAL"
 

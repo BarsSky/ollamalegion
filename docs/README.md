@@ -15,6 +15,8 @@
 | [Развертывание](deployment.md) | Docker Compose и production развертывание |
 | [Развертывание агента](agent-deployment.md) | Развертывание агента в режимах CPU/GPU |
 | [API](api.md) | REST API и WebSocket документация |
+| [Балансировка](balancing-guide.md) | Алгоритмы балансировки, RPC-варианты (A/B/C) |
+| [RPC Coordinator](rpc-coordinator.md) | Распределённый inference через RPC-воркеров |
 | [Метрики](ollamalegion-metrics.md) | Полный справочник всех метрик и алгоритмов |
 | [Troubleshooting](troubleshooting.md) | Решение проблем и отладка |
 
@@ -35,6 +37,10 @@ Ollama Load Balancer — это распределенная система ба
 - 🐳 **Docker Ready** — готовые Dockerfile и docker-compose конфигурации
 - 📈 **Ollama API Integration** — активные запросы, RPS, запущенные модели
 - 🎮 **NVML Support** — точные метрики GPU через NVIDIA Management Library
+- 📋 **Три режима работы** — auto, single_node, cluster_balancing с автоопределением
+- 🔁 **Model Replication** — автоматическая репликация моделей (scale-up/down, idle unload)
+- 🌐 **RPC Coordinator** — распределённый inference с KV-кэшем и split/merge (Вариант B)
+- 🔗 **Virtual Model Router** — pipeline виртуальных моделей (Вариант C)
 
 ### Компоненты системы
 
@@ -48,6 +54,10 @@ Ollama Load Balancer — это распределенная система ба
 | **Agent (Linux/Windows)** | Сбор метрик GPU/CPU/RAM/Disk | 18032 |
 | **NVML Integration** | NVIDIA Management Library для GPU метрик | - |
 | **Ollama API** | Интеграция с Ollama API для статистики | 11434 |
+| **Model Replication** | Автоматическая репликация моделей (Вариант A) | — |
+| **RPC Coordinator** | Распределённый inference через воркеров (Вариант B) | 18050 |
+| **Virtual Model Router** | Pipeline виртуальных моделей (Вариант C) | — |
+| **Operating Modes** | auto, single_node, cluster_balancing | — |
 | **Health Checker** | Автоматическая проверка здоровья бэкендов | - |
 | **Session Manager** | Управление сессиями клиентов | - |
 | **Web UI** | Dashboard для мониторинга | 18030 |
@@ -184,6 +194,13 @@ flowchart TD
 - Таймаут ожидания: 300 секунд
 - Обработка в порядке поступления (FIFO)
 
+### RPC Model Distribution
+
+Три варианта распределения моделей (подробнее в [balancing-guide.md](balancing-guide.md)):
+- **Вариант A — Model Replication** — автоматическая репликация моделей с scale-up/down
+- **Вариант B — RPC Coordinator** — распределённый inference через внешних воркеров
+- **Вариант C — Virtual Model Router** — pipeline виртуальных моделей
+
 ---
 
 ## Таблица портов
@@ -194,6 +211,7 @@ flowchart TD
 | **18081** | Load Balancer | Management API + WebSocket |
 | **18030** | Web UI | Dashboard (nginx) |
 | **18032** | Agent | Локальные метрики агента |
+| **18050** | RPC Coordinator | RPC-воркер (Вариант B) |
 | **11434** | Ollama | Ollama API (на бэкендах) |
 | **8443** | Load Balancer | HTTPS Proxy (TLS) |
 | **8444** | Load Balancer | HTTPS Management API (TLSPort+1) |

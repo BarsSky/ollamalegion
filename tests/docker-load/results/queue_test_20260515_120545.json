@@ -1,0 +1,248 @@
+{
+  "timestamp": "20260515_120545",
+  "model": "llama3.2:3b",
+  "total": 20,
+  "successful": 20,
+  "failed": 0,
+  "total_time_s": 0.2,
+  "unique_sessions": 5,
+  "queue_processed_diff": 0,
+  "backend_distribution": {
+    "unknown": 20
+  },
+  "cluster_before": {
+    "queuedRequests": 0,
+    "activeRequests": 0
+  },
+  "cluster_after": {
+    "queuedRequests": 0,
+    "activeRequests": 0
+  },
+  "queue_after": {
+    "current_size": 0,
+    "max_size": 10,
+    "processed_total": 0,
+    "avg_wait_time_ms": 0,
+    "workers": 4,
+    "timeout_sec": 30,
+    "dispatch_by_affinity": 0,
+    "dispatch_by_load": 0,
+    "dispatch_by_config": 6
+  },
+  "sessions_after": {
+    "total": 5,
+    "session_ids": [
+      "fp:ce9e5f85f9ee2fbd::Alice::llama3.2:3b::gen",
+      "fp:e39fd9f28779ef7f::Bob::llama3.2:3b::gen",
+      "fp:556802e8c8996bae::Charlie::llama3.2:3b::gen",
+      "fp:a77216cfc70c6044::Diana::llama3.2:3b::gen",
+      "fp:77b1476828ee5281::Eve::llama3.2:3b::gen"
+    ]
+  },
+  "checks": {
+    "passed": 5,
+    "total": 6
+  },
+  "results": [
+    {
+      "id": 1,
+      "client": "Alice",
+      "status": 200,
+      "elapsed_ms": 196.6,
+      "success": true,
+      "backend": "",
+      "session_id": "fp:ce9e5f85f9ee2fbd::Alice::llama3.2:3b::gen",
+      "error": null
+    },
+    {
+      "id": 2,
+      "client": "Bob",
+      "status": 200,
+      "elapsed_ms": 99.6,
+      "success": true,
+      "backend": "",
+      "session_id": "fp:e39fd9f28779ef7f::Bob::llama3.2:3b::gen",
+      "error": null
+    },
+    {
+      "id": 3,
+      "client": "Charlie",
+      "status": 200,
+      "elapsed_ms": 129.9,
+      "success": true,
+      "backend": "",
+      "session_id": "fp:556802e8c8996bae::Charlie::llama3.2:3b::gen",
+      "error": null
+    },
+    {
+      "id": 4,
+      "client": "Diana",
+      "status": 200,
+      "elapsed_ms": 135.1,
+      "success": true,
+      "backend": "",
+      "session_id": "fp:a77216cfc70c6044::Diana::llama3.2:3b::gen",
+      "error": null
+    },
+    {
+      "id": 5,
+      "client": "Eve",
+      "status": 200,
+      "elapsed_ms": 139.3,
+      "success": true,
+      "backend": "",
+      "session_id": "fp:77b1476828ee5281::Eve::llama3.2:3b::gen",
+      "error": null
+    },
+    {
+      "id": 6,
+      "client": "Alice",
+      "status": 200,
+      "elapsed_ms": 81.0,
+      "success": true,
+      "backend": "",
+      "session_id": "fp:ce9e5f85f9ee2fbd::Alice::llama3.2:3b::gen",
+      "error": null
+    },
+    {
+      "id": 7,
+      "client": "Bob",
+      "status": 200,
+      "elapsed_ms": 129.6,
+      "success": true,
+      "backend": "",
+      "session_id": "fp:e39fd9f28779ef7f::Bob::llama3.2:3b::gen",
+      "error": null
+    },
+    {
+      "id": 8,
+      "client": "Charlie",
+      "status": 200,
+      "elapsed_ms": 97.4,
+      "success": true,
+      "backend": "",
+      "session_id": "fp:556802e8c8996bae::Charlie::llama3.2:3b::gen",
+      "error": null
+    },
+    {
+      "id": 9,
+      "client": "Diana",
+      "status": 200,
+      "elapsed_ms": 77.7,
+      "success": true,
+      "backend": "",
+      "session_id": "fp:a77216cfc70c6044::Diana::llama3.2:3b::gen",
+      "error": null
+    },
+    {
+      "id": 10,
+      "client": "Eve",
+      "status": 200,
+      "elapsed_ms": 141.2,
+      "success": true,
+      "backend": "",
+      "session_id": "fp:77b1476828ee5281::Eve::llama3.2:3b::gen",
+      "error": null
+    },
+    {
+      "id": 11,
+      "client": "Alice",
+      "status": 200,
+      "elapsed_ms": 96.5,
+      "success": true,
+      "backend": "",
+      "session_id": "fp:ce9e5f85f9ee2fbd::Alice::llama3.2:3b::gen",
+      "error": null
+    },
+    {
+      "id": 12,
+      "client": "Bob",
+      "status": 200,
+      "elapsed_ms": 133.7,
+      "success": true,
+      "backend": "",
+      "session_id": "fp:e39fd9f28779ef7f::Bob::llama3.2:3b::gen",
+      "error": null
+    },
+    {
+      "id": 13,
+      "client": "Charlie",
+      "status": 200,
+      "elapsed_ms": 75.0,
+      "success": true,
+      "backend": "",
+      "session_id": "fp:556802e8c8996bae::Charlie::llama3.2:3b::gen",
+      "error": null
+    },
+    {
+      "id": 14,
+      "client": "Diana",
+      "status": 200,
+      "elapsed_ms": 189.9,
+      "success": true,
+      "backend": "",
+      "session_id": "fp:a77216cfc70c6044::Diana::llama3.2:3b::gen",
+      "error": null
+    },
+    {
+      "id": 15,
+      "client": "Eve",
+      "status": 200,
+      "elapsed_ms": 102.6,
+      "success": true,
+      "backend": "",
+      "session_id": "fp:77b1476828ee5281::Eve::llama3.2:3b::gen",
+      "error": null
+    },
+    {
+      "id": 16,
+      "client": "Alice",
+      "status": 200,
+      "elapsed_ms": 83.2,
+      "success": true,
+      "backend": "",
+      "session_id": "fp:ce9e5f85f9ee2fbd::Alice::llama3.2:3b::gen",
+      "error": null
+    },
+    {
+      "id": 17,
+      "client": "Bob",
+      "status": 200,
+      "elapsed_ms": 150.5,
+      "success": true,
+      "backend": "",
+      "session_id": "fp:e39fd9f28779ef7f::Bob::llama3.2:3b::gen",
+      "error": null
+    },
+    {
+      "id": 18,
+      "client": "Charlie",
+      "status": 200,
+      "elapsed_ms": 80.3,
+      "success": true,
+      "backend": "",
+      "session_id": "fp:556802e8c8996bae::Charlie::llama3.2:3b::gen",
+      "error": null
+    },
+    {
+      "id": 19,
+      "client": "Diana",
+      "status": 200,
+      "elapsed_ms": 126.8,
+      "success": true,
+      "backend": "",
+      "session_id": "fp:a77216cfc70c6044::Diana::llama3.2:3b::gen",
+      "error": null
+    },
+    {
+      "id": 20,
+      "client": "Eve",
+      "status": 200,
+      "elapsed_ms": 80.0,
+      "success": true,
+      "backend": "",
+      "session_id": "fp:77b1476828ee5281::Eve::llama3.2:3b::gen",
+      "error": null
+    }
+  ]
+}

@@ -47,7 +47,7 @@ func TestExpandCandidates(t *testing.T) {
 	}
 	p.metricsMgr.mu.Unlock()
 
-	candidates := p.expandCandidates("llama3.1:8b")
+	candidates := p.expandCandidates("llama3.1:8b", nil)
 	if len(candidates) < 2 {
 		t.Fatalf("expected at least 2 candidate groups, got %d", len(candidates))
 	}
@@ -114,13 +114,13 @@ func TestFindBackendWithModelSelector(t *testing.T) {
 	}
 	p.metricsMgr.mu.Unlock()
 
-	got := p.findBackendWithModel("llama3.1:8b")
+	got := p.findBackendWithModel("llama3.1:8b", nil)
 	if got != "b1" && got != "b2" {
 		t.Errorf("findBackendWithModel() = %s, want b1 or b2", got)
 	}
 
 	// Model not present
-	got2 := p.findBackendWithModel("nonexistent")
+	got2 := p.findBackendWithModel("nonexistent", nil)
 	if got2 != "" {
 		t.Errorf("findBackendWithModel(nonexistent) = %s, want empty", got2)
 	}
@@ -159,7 +159,7 @@ func TestSelectByResources(t *testing.T) {
 	}
 	p.metricsMgr.mu.Unlock()
 
-	got := p.selectByResources()
+	got := p.selectByResources(nil)
 	if got != "b1" {
 		t.Errorf("selectByResources() = %s, want b1 (less loaded)", got)
 	}
@@ -172,7 +172,7 @@ func TestSelectByResources(t *testing.T) {
 	p.backends["b2"].ActiveReqs = 10
 	p.backends["b2"].mu.Unlock()
 
-	got2 := p.selectByResources()
+	got2 := p.selectByResources(nil)
 	if got2 != "" {
 		t.Errorf("selectByResources() with full load = %s, want empty", got2)
 	}
@@ -210,13 +210,13 @@ func TestFindLessLoadedBackendWithModel(t *testing.T) {
 	p.backends["b2"].ActiveReqs = 2
 	p.backends["b2"].mu.Unlock()
 
-	got := p.findLessLoadedBackendWithModel("llama3.1:8b", "")
+	got := p.findLessLoadedBackendWithModel("llama3.1:8b", "", nil)
 	if got != "b2" {
 		t.Errorf("findLessLoadedBackendWithModel() = %s, want b2", got)
 	}
 
 	// Exclude b2
-	got2 := p.findLessLoadedBackendWithModel("llama3.1:8b", "b2")
+	got2 := p.findLessLoadedBackendWithModel("llama3.1:8b", "b2", nil)
 	if got2 != "b1" {
 		t.Errorf("findLessLoadedBackendWithModel(exclude b2) = %s, want b1", got2)
 	}
@@ -260,7 +260,7 @@ func TestFindLessLoadedBackendAny(t *testing.T) {
 	p.backends["b2"].ActiveReqs = 2
 	p.backends["b2"].mu.Unlock()
 
-	got := p.findLessLoadedBackendAny("new-model", "")
+	got := p.findLessLoadedBackendAny("new-model", "", nil)
 	if got != "b2" {
 		t.Errorf("findLessLoadedBackendAny() = %s, want b2", got)
 	}
@@ -270,7 +270,7 @@ func TestFindLessLoadedBackendAny(t *testing.T) {
 	p.backends["b1"].ActiveReqs = 2
 	p.backends["b1"].mu.Unlock()
 
-	got2 := p.findLessLoadedBackendAny("new-model", "")
+	got2 := p.findLessLoadedBackendAny("new-model", "", nil)
 	if got2 == "" {
 		t.Errorf("findLessLoadedBackendAny() with tie = empty, want non-empty")
 	}
@@ -361,13 +361,13 @@ func TestSelectBackendExcluding(t *testing.T) {
 	p.metricsMgr.mu.Unlock()
 
 	// Both backends excluded
-	got := p.selectBackendExcluding("llama3.1:8b", map[string]bool{"b1": true, "b2": true})
+	got := p.selectBackendExcluding("llama3.1:8b", map[string]bool{"b1": true, "b2": true}, "")
 	if got != "" {
 		t.Errorf("selectBackendExcluding(all excluded) = %s, want empty", got)
 	}
 
 	// b1 excluded — should pick b2
-	got2 := p.selectBackendExcluding("llama3.1:8b", map[string]bool{"b1": true})
+	got2 := p.selectBackendExcluding("llama3.1:8b", map[string]bool{"b1": true}, "")
 	if got2 != "b2" {
 		t.Errorf("selectBackendExcluding(exclude b1) = %s, want b2", got2)
 	}
@@ -395,7 +395,7 @@ func TestSelectFreeBackendAny(t *testing.T) {
 	p.backends["b2"].ActiveReqs = 2
 	p.backends["b2"].mu.Unlock()
 
-	got := p.selectFreeBackendAny()
+	got := p.selectFreeBackendAny(nil)
 	if got != "b2" {
 		t.Errorf("selectFreeBackendAny() = %s, want b2", got)
 	}
@@ -408,7 +408,7 @@ func TestSelectFreeBackendAny(t *testing.T) {
 	p.backends["b2"].ActiveReqs = 10
 	p.backends["b2"].mu.Unlock()
 
-	got2 := p.selectFreeBackendAny()
+	got2 := p.selectFreeBackendAny(nil)
 	if got2 != "" {
 		t.Errorf("selectFreeBackendAny(saturated) = %s, want empty", got2)
 	}

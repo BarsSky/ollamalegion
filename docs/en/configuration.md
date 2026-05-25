@@ -9,6 +9,10 @@
 3. [Конфигурация Web UI](#конфигурация-web-ui)
 4. [TLS/SSL настройка](#tlsssl-настройка)
 5. [Аутентификация и Rate Limiting](#аутентификация-и-rate-limiting)
+6. [Operating Modes](#operating-modes)
+7. [Model Replication (Variant A)](#model-replication-variant-a)
+8. [RPC Coordinator (Variant B)](#rpc-coordinator-variant-b)
+9. [Virtual Model Router (Variant C)](#virtual-model-router-variant-c)
 
 ---
 
@@ -732,6 +736,66 @@ GET /api/v1/ratelimit/status
   }
 }
 ```
+
+---
+
+## Operating Modes
+
+The balancer supports multiple operating modes, switchable via `PUT /api/v1/config/mode` or WebUI Setup Wizard.
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `balancing.operating_mode` | string | `"auto"` | Mode: `auto`, `single_node`, `cluster_balancing` |
+| `balancing.auto_detect_mode` | bool | `true` | Auto-detect mode on startup |
+
+**Modes:**
+
+| Mode | Description |
+|------|-------------|
+| **`auto`** (default) | Auto-detects: if ≥2 healthy backends → `cluster_balancing`, otherwise `single_node` |
+| **`single_node`** | Direct proxying with disabled balancing |
+| **`cluster_balancing`** | Full balancing with backend selection, queue, and session stickiness |
+
+**Environment override:** `LB_OPERATING_MODE=cluster_balancing`
+**Config reset:** `POST /api/v1/config/reset` resets config to factory defaults.
+
+---
+
+## Model Replication (Variant A)
+
+Automatic model replication across multiple backends for throughput and fault tolerance.
+
+| Field | Type | Default | Env variable |
+|-------|------|---------|-------------|
+| `balancing.model_replication.enabled` | bool | `false` | `LB_MODEL_REPLICATION_ENABLED` |
+| `balancing.model_replication.default_min_instances` | int | `1` | `LB_MODEL_REPLICATION_MIN_INSTANCES` |
+| `balancing.model_replication.default_max_instances` | int | `3` | `LB_MODEL_REPLICATION_MAX_INSTANCES` |
+| `balancing.model_replication.idle_unload_after` | duration | `"15m"` | `LB_MODEL_REPLICATION_IDLE_UNLOAD` |
+
+**Mechanics:** Scale-up when < min_instances, scale-down when > max_instances (LRU eviction), idle unload after `idle_unload_after`.
+
+---
+
+## RPC Coordinator (Variant B)
+
+Distributed inference via external RPC workers with KV cache and Split/Merge.
+
+| Field | Type | Default | Env variable |
+|-------|------|---------|-------------|
+| `balancing.rpc_coordinator.enabled` | bool | `false` | `LB_RPC_COORDINATOR_ENABLED` |
+| `balancing.rpc_coordinator.coordinator_url` | string | `""` | `LB_RPC_COORDINATOR_URL` |
+| `balancing.rpc_coordinator.worker_port` | int | `18050` | `LB_RPC_COORDINATOR_PORT` |
+| `balancing.rpc_coordinator.protocol` | string | `"http"` | `LB_RPC_COORDINATOR_PROTOCOL` |
+
+---
+
+## Virtual Model Router (Variant C)
+
+Virtual models as pipelines from multiple physical models.
+
+| Field | Type | Default | Env variable |
+|-------|------|---------|-------------|
+| `balancing.virtual_models.enabled` | bool | `false` | `LB_VIRTUAL_MODELS_ENABLED` |
 
 ---
 

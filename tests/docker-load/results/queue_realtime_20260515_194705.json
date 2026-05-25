@@ -1,0 +1,586 @@
+{
+  "timestamp": "20260515_194705",
+  "total": 20,
+  "successful": 13,
+  "failed": 7,
+  "total_time_s": 2.4,
+  "unique_sessions": 5,
+  "max_queue_size": 0,
+  "max_queue_cluster": 0,
+  "processed_diff": 3,
+  "avg_wait_time_ms": 1719,
+  "max_session_count": 6,
+  "webui_snapshots_count": 3,
+  "webui_sessions_found": 3,
+  "webui_queue_found": 0,
+  "webui_has_data_html": true,
+  "queue_snapshots": [
+    {
+      "t": 0,
+      "current_size": 0,
+      "processed_total": 3,
+      "queued_in_cluster": 0,
+      "active_requests": 0
+    },
+    {
+      "t": 1,
+      "current_size": 0,
+      "processed_total": 3,
+      "queued_in_cluster": 0,
+      "active_requests": 0
+    },
+    {
+      "t": 2,
+      "current_size": 0,
+      "processed_total": 3,
+      "queued_in_cluster": 0,
+      "active_requests": 0
+    },
+    {
+      "t": 3,
+      "current_size": 0,
+      "processed_total": 3,
+      "queued_in_cluster": 0,
+      "active_requests": 0
+    },
+    {
+      "t": 4,
+      "current_size": 0,
+      "processed_total": 3,
+      "queued_in_cluster": 0,
+      "active_requests": 0
+    },
+    {
+      "t": 5,
+      "current_size": 0,
+      "processed_total": 4,
+      "queued_in_cluster": 0,
+      "active_requests": 0
+    },
+    {
+      "t": 6,
+      "current_size": 0,
+      "processed_total": 5,
+      "queued_in_cluster": 0,
+      "active_requests": 0
+    },
+    {
+      "t": 7,
+      "current_size": 0,
+      "processed_total": 5,
+      "queued_in_cluster": 0,
+      "active_requests": 0
+    }
+  ],
+  "webui_snapshots": [
+    {
+      "t": 0,
+      "time": 1778863623.165352,
+      "sessions_html_len": 71538,
+      "sessions_status": 200,
+      "queue": {
+        "current_size": 0,
+        "max_size": 30,
+        "processed_total": 3,
+        "avg_wait_time_ms": 1567,
+        "workers": 4,
+        "timeout_sec": 30,
+        "dispatch_by_affinity": 0,
+        "dispatch_by_load": 4,
+        "dispatch_by_config": 11
+      },
+      "sessions": {
+        "sessions": [
+          {
+            "id": "fp:132e30177e335230::warmup::llama3.2:3b::gen",
+            "clientName": "warmup",
+            "clientIP": "172.20.0.1",
+            "backendId": "mock-a",
+            "backendName": "Mock Backend A",
+            "model": "llama3.2:3b",
+            "createdAt": "2026-05-15T16:46:59.347390706Z",
+            "lastRequestAt": "2026-05-15T16:47:00.132705085Z",
+            "requestCount": 2,
+            "idleSeconds": 3
+          },
+          {
+            "id": "fp:132e30177e335230::Charlie::llama3.2:3b::gen",
+            "clientName": "Charlie",
+            "clientIP": "172.20.0.1",
+            "backendId": "mock-a",
+            "backendName": "Mock Backend A",
+            "model": "llama3.2:3b",
+            "createdAt": "2026-05-15T16:47:03.193126126Z",
+            "lastRequestAt": "2026-05-15T16:47:03.198006781Z",
+            "requestCount": 4,
+            "idleSeconds": 0
+          },
+          {
+            "id": "fp:132e30177e335230::Bob::llama3.2:3b::gen",
+            "clientName": "Bob",
+            "clientIP": "172.20.0.1",
+            "backendId": "mock-a",
+            "backendName": "Mock Backend A",
+            "model": "llama3.2:3b",
+            "createdAt": "2026-05-15T16:47:03.194404672Z",
+            "lastRequestAt": "2026-05-15T16:47:03.194404672Z",
+            "requestCount": 1,
+            "idleSeconds": 0
+          },
+          {
+            "id": "fp:132e30177e335230::Diana::llama3.2:3b::gen",
+            "clientName": "Diana",
+            "clientIP": "172.20.0.1",
+            "backendId": "mock-a",
+            "backendName": "Mock Backend A",
+            "model": "llama3.2:3b",
+            "createdAt": "2026-05-15T16:47:03.194541087Z",
+            "lastRequestAt": "2026-05-15T16:47:03.196429202Z",
+            "requestCount": 2,
+            "idleSeconds": 0
+          },
+          {
+            "id": "fp:132e30177e335230::Eve::llama3.2:3b::gen",
+            "clientName": "Eve",
+            "clientIP": "172.20.0.1",
+            "backendId": "mock-a",
+            "backendName": "Mock Backend A",
+            "model": "llama3.2:3b",
+            "createdAt": "2026-05-15T16:47:03.19667793Z",
+            "lastRequestAt": "2026-05-15T16:47:03.198477734Z",
+            "requestCount": 2,
+            "idleSeconds": 0
+          },
+          {
+            "id": "fp:132e30177e335230::Alice::llama3.2:3b::gen",
+            "clientName": "Alice",
+            "clientIP": "172.20.0.1",
+            "backendId": "mock-a",
+            "backendName": "Mock Backend A",
+            "model": "llama3.2:3b",
+            "createdAt": "2026-05-15T16:47:03.198309915Z",
+            "lastRequestAt": "2026-05-15T16:47:03.198309915Z",
+            "requestCount": 1,
+            "idleSeconds": 0
+          }
+        ],
+        "total": 6
+      },
+      "webui_findings": {
+        "has_session_elements": false,
+        "has_queue_elements": true,
+        "has_monitor_data": true,
+        "numbers_found": [],
+        "json_blocks_with_queue": 0
+      }
+    },
+    {
+      "t": 1,
+      "time": 1778863624.2569423,
+      "sessions_html_len": 71538,
+      "sessions_status": 200,
+      "queue": {
+        "current_size": 0,
+        "max_size": 30,
+        "processed_total": 3,
+        "avg_wait_time_ms": 1567,
+        "workers": 4,
+        "timeout_sec": 30,
+        "dispatch_by_affinity": 0,
+        "dispatch_by_load": 7,
+        "dispatch_by_config": 11
+      },
+      "sessions": {
+        "sessions": [
+          {
+            "id": "fp:132e30177e335230::warmup::llama3.2:3b::gen",
+            "clientName": "warmup",
+            "clientIP": "172.20.0.1",
+            "backendId": "mock-a",
+            "backendName": "Mock Backend A",
+            "model": "llama3.2:3b",
+            "createdAt": "2026-05-15T16:46:59.347390706Z",
+            "lastRequestAt": "2026-05-15T16:47:00.132705085Z",
+            "requestCount": 2,
+            "idleSeconds": 4
+          },
+          {
+            "id": "fp:132e30177e335230::Charlie::llama3.2:3b::gen",
+            "clientName": "Charlie",
+            "clientIP": "172.20.0.1",
+            "backendId": "mock-a",
+            "backendName": "Mock Backend A",
+            "model": "llama3.2:3b",
+            "createdAt": "2026-05-15T16:47:03.193126126Z",
+            "lastRequestAt": "2026-05-15T16:47:04.255996388Z",
+            "requestCount": 7,
+            "idleSeconds": 0
+          },
+          {
+            "id": "fp:132e30177e335230::Bob::llama3.2:3b::gen",
+            "clientName": "Bob",
+            "clientIP": "172.20.0.1",
+            "backendId": "mock-a",
+            "backendName": "Mock Backend A",
+            "model": "llama3.2:3b",
+            "createdAt": "2026-05-15T16:47:03.194404672Z",
+            "lastRequestAt": "2026-05-15T16:47:03.194404672Z",
+            "requestCount": 1,
+            "idleSeconds": 1
+          },
+          {
+            "id": "fp:132e30177e335230::Diana::llama3.2:3b::gen",
+            "clientName": "Diana",
+            "clientIP": "172.20.0.1",
+            "backendId": "mock-a",
+            "backendName": "Mock Backend A",
+            "model": "llama3.2:3b",
+            "createdAt": "2026-05-15T16:47:03.194541087Z",
+            "lastRequestAt": "2026-05-15T16:47:04.12117647Z",
+            "requestCount": 3,
+            "idleSeconds": 0
+          },
+          {
+            "id": "fp:132e30177e335230::Eve::llama3.2:3b::gen",
+            "clientName": "Eve",
+            "clientIP": "172.20.0.1",
+            "backendId": "mock-a",
+            "backendName": "Mock Backend A",
+            "model": "llama3.2:3b",
+            "createdAt": "2026-05-15T16:47:03.19667793Z",
+            "lastRequestAt": "2026-05-15T16:47:03.795641483Z",
+            "requestCount": 3,
+            "idleSeconds": 0
+          },
+          {
+            "id": "fp:132e30177e335230::Alice::llama3.2:3b::gen",
+            "clientName": "Alice",
+            "clientIP": "172.20.0.1",
+            "backendId": "mock-a",
+            "backendName": "Mock Backend A",
+            "model": "llama3.2:3b",
+            "createdAt": "2026-05-15T16:47:03.198309915Z",
+            "lastRequestAt": "2026-05-15T16:47:03.73303217Z",
+            "requestCount": 2,
+            "idleSeconds": 0
+          }
+        ],
+        "total": 6
+      },
+      "webui_findings": {
+        "has_session_elements": false,
+        "has_queue_elements": true,
+        "has_monitor_data": true,
+        "numbers_found": [],
+        "json_blocks_with_queue": 0
+      }
+    },
+    {
+      "t": 2,
+      "time": 1778863625.300672,
+      "sessions_html_len": 71538,
+      "sessions_status": 200,
+      "queue": {
+        "current_size": 0,
+        "max_size": 30,
+        "processed_total": 5,
+        "avg_wait_time_ms": 1595,
+        "workers": 4,
+        "timeout_sec": 30,
+        "dispatch_by_affinity": 0,
+        "dispatch_by_load": 7,
+        "dispatch_by_config": 11
+      },
+      "sessions": {
+        "sessions": [
+          {
+            "id": "fp:132e30177e335230::warmup::llama3.2:3b::gen",
+            "clientName": "warmup",
+            "clientIP": "172.20.0.1",
+            "backendId": "mock-a",
+            "backendName": "Mock Backend A",
+            "model": "llama3.2:3b",
+            "createdAt": "2026-05-15T16:46:59.347390706Z",
+            "lastRequestAt": "2026-05-15T16:47:00.132705085Z",
+            "requestCount": 2,
+            "idleSeconds": 5
+          },
+          {
+            "id": "fp:132e30177e335230::Charlie::llama3.2:3b::gen",
+            "clientName": "Charlie",
+            "clientIP": "172.20.0.1",
+            "backendId": "mock-a",
+            "backendName": "Mock Backend A",
+            "model": "llama3.2:3b",
+            "createdAt": "2026-05-15T16:47:03.193126126Z",
+            "lastRequestAt": "2026-05-15T16:47:04.416925573Z",
+            "requestCount": 8,
+            "idleSeconds": 0
+          },
+          {
+            "id": "fp:132e30177e335230::Bob::llama3.2:3b::gen",
+            "clientName": "Bob",
+            "clientIP": "172.20.0.1",
+            "backendId": "mock-a",
+            "backendName": "Mock Backend A",
+            "model": "llama3.2:3b",
+            "createdAt": "2026-05-15T16:47:03.194404672Z",
+            "lastRequestAt": "2026-05-15T16:47:04.955298142Z",
+            "requestCount": 4,
+            "idleSeconds": 0
+          },
+          {
+            "id": "fp:132e30177e335230::Diana::llama3.2:3b::gen",
+            "clientName": "Diana",
+            "clientIP": "172.20.0.1",
+            "backendId": "mock-a",
+            "backendName": "Mock Backend A",
+            "model": "llama3.2:3b",
+            "createdAt": "2026-05-15T16:47:03.194541087Z",
+            "lastRequestAt": "2026-05-15T16:47:04.580393646Z",
+            "requestCount": 4,
+            "idleSeconds": 0
+          },
+          {
+            "id": "fp:132e30177e335230::Eve::llama3.2:3b::gen",
+            "clientName": "Eve",
+            "clientIP": "172.20.0.1",
+            "backendId": "mock-a",
+            "backendName": "Mock Backend A",
+            "model": "llama3.2:3b",
+            "createdAt": "2026-05-15T16:47:03.19667793Z",
+            "lastRequestAt": "2026-05-15T16:47:04.294794196Z",
+            "requestCount": 4,
+            "idleSeconds": 1
+          },
+          {
+            "id": "fp:132e30177e335230::Alice::llama3.2:3b::gen",
+            "clientName": "Alice",
+            "clientIP": "172.20.0.1",
+            "backendId": "mock-a",
+            "backendName": "Mock Backend A",
+            "model": "llama3.2:3b",
+            "createdAt": "2026-05-15T16:47:03.198309915Z",
+            "lastRequestAt": "2026-05-15T16:47:03.73303217Z",
+            "requestCount": 2,
+            "idleSeconds": 1
+          }
+        ],
+        "total": 6
+      },
+      "webui_findings": {
+        "has_session_elements": false,
+        "has_queue_elements": true,
+        "has_monitor_data": true,
+        "numbers_found": [],
+        "json_blocks_with_queue": 0
+      }
+    }
+  ],
+  "checks": {
+    "passed": 4,
+    "total": 7
+  },
+  "results": [
+    {
+      "id": 1,
+      "client": "Alice",
+      "status": 503,
+      "elapsed_ms": 977.2,
+      "success": false,
+      "backend": "",
+      "session_id": "",
+      "error": "{\"error\":\"all backends busy, max retries exceeded\"}Service unavailable - all backends busy\n"
+    },
+    {
+      "id": 2,
+      "client": "Bob",
+      "status": 503,
+      "elapsed_ms": 962.8,
+      "success": false,
+      "backend": "",
+      "session_id": "",
+      "error": "{\"error\":\"all backends busy, max retries exceeded\"}Service unavailable - all backends busy\n"
+    },
+    {
+      "id": 3,
+      "client": "Charlie",
+      "status": 200,
+      "elapsed_ms": 1050.4,
+      "success": true,
+      "backend": "",
+      "session_id": "fp:132e30177e335230::Charlie::llama3.2:3b::gen",
+      "error": null
+    },
+    {
+      "id": 4,
+      "client": "Diana",
+      "status": 200,
+      "elapsed_ms": 1416.7,
+      "success": true,
+      "backend": "",
+      "session_id": "fp:132e30177e335230::Diana::llama3.2:3b::gen",
+      "error": null
+    },
+    {
+      "id": 5,
+      "client": "Eve",
+      "status": 503,
+      "elapsed_ms": 967.0,
+      "success": false,
+      "backend": "",
+      "session_id": "",
+      "error": "{\"error\":\"all backends busy, max retries exceeded\"}Service unavailable - all backends busy\n"
+    },
+    {
+      "id": 6,
+      "client": "Alice",
+      "status": 503,
+      "elapsed_ms": 957.8,
+      "success": false,
+      "backend": "",
+      "session_id": "",
+      "error": "{\"error\":\"all backends busy, max retries exceeded\"}Service unavailable - all backends busy\n"
+    },
+    {
+      "id": 7,
+      "client": "Bob",
+      "status": 200,
+      "elapsed_ms": 1356.6,
+      "success": true,
+      "backend": "",
+      "session_id": "fp:132e30177e335230::Bob::llama3.2:3b::gen",
+      "error": null
+    },
+    {
+      "id": 8,
+      "client": "Charlie",
+      "status": 200,
+      "elapsed_ms": 987.6,
+      "success": true,
+      "backend": "",
+      "session_id": "fp:132e30177e335230::Charlie::llama3.2:3b::gen",
+      "error": null
+    },
+    {
+      "id": 9,
+      "client": "Diana",
+      "status": 503,
+      "elapsed_ms": 966.8,
+      "success": false,
+      "backend": "",
+      "session_id": "",
+      "error": "{\"error\":\"all backends busy, max retries exceeded\"}Service unavailable - all backends busy\n"
+    },
+    {
+      "id": 10,
+      "client": "Eve",
+      "status": 200,
+      "elapsed_ms": 631.7,
+      "success": true,
+      "backend": "",
+      "session_id": "fp:132e30177e335230::Eve::llama3.2:3b::gen",
+      "error": null
+    },
+    {
+      "id": 11,
+      "client": "Alice",
+      "status": 503,
+      "elapsed_ms": 951.7,
+      "success": false,
+      "backend": "",
+      "session_id": "",
+      "error": "{\"error\":\"all backends busy, max retries exceeded\"}Service unavailable - all backends busy\n"
+    },
+    {
+      "id": 12,
+      "client": "Bob",
+      "status": 200,
+      "elapsed_ms": 1791.1,
+      "success": true,
+      "backend": "",
+      "session_id": "fp:132e30177e335230::Bob::llama3.2:3b::gen",
+      "error": null
+    },
+    {
+      "id": 13,
+      "client": "Charlie",
+      "status": 200,
+      "elapsed_ms": 1091.7,
+      "success": true,
+      "backend": "",
+      "session_id": "fp:132e30177e335230::Charlie::llama3.2:3b::gen",
+      "error": null
+    },
+    {
+      "id": 14,
+      "client": "Diana",
+      "status": 200,
+      "elapsed_ms": 957.2,
+      "success": true,
+      "backend": "",
+      "session_id": "fp:132e30177e335230::Diana::llama3.2:3b::gen",
+      "error": null
+    },
+    {
+      "id": 15,
+      "client": "Eve",
+      "status": 503,
+      "elapsed_ms": 951.5,
+      "success": false,
+      "backend": "",
+      "session_id": "",
+      "error": "{\"error\":\"all backends busy, max retries exceeded\"}Service unavailable - all backends busy\n"
+    },
+    {
+      "id": 16,
+      "client": "Alice",
+      "status": 200,
+      "elapsed_ms": 568.4,
+      "success": true,
+      "backend": "",
+      "session_id": "fp:132e30177e335230::Alice::llama3.2:3b::gen",
+      "error": null
+    },
+    {
+      "id": 17,
+      "client": "Bob",
+      "status": 200,
+      "elapsed_ms": 1582.8,
+      "success": true,
+      "backend": "",
+      "session_id": "fp:132e30177e335230::Bob::llama3.2:3b::gen",
+      "error": null
+    },
+    {
+      "id": 18,
+      "client": "Charlie",
+      "status": 200,
+      "elapsed_ms": 1252.1,
+      "success": true,
+      "backend": "",
+      "session_id": "fp:132e30177e335230::Charlie::llama3.2:3b::gen",
+      "error": null
+    },
+    {
+      "id": 19,
+      "client": "Diana",
+      "status": 200,
+      "elapsed_ms": 2397.1,
+      "success": true,
+      "backend": "",
+      "session_id": "fp:132e30177e335230::Diana::llama3.2:3b::gen",
+      "error": null
+    },
+    {
+      "id": 20,
+      "client": "Eve",
+      "status": 200,
+      "elapsed_ms": 1129.5,
+      "success": true,
+      "backend": "",
+      "session_id": "fp:132e30177e335230::Eve::llama3.2:3b::gen",
+      "error": null
+    }
+  ]
+}

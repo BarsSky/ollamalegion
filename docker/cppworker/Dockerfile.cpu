@@ -1,0 +1,98 @@
+# =============================================================================
+# CppBackend Worker CPU — реальный llama.cpp без CUDA (CPU-only инференс)
+# =============================================================================
+# Multi-stage build:
+#   1. llama-builder — сборка статической libllama.a (CPU-only, без GGML_CUDA)
+#   2. builder       — сборка Go-бинари с CGO_ENABLED=1 (без тегов = реальный llama.cpp)
+#   3. runtime       — Alpine с собранным бинарником
+# =============================================================================
+# Сборка:
+#   docker build -t ollama-legion/cppworker:cpu --target runtime -f docker/cppworker/Dockerfile.cpu .
+#
+# Запуск через docker-compose:
+#   docker compose -f deployments/docker-compose.full.yml up -d                    # default профиль
+#   docker compose -f deployments/docker-compose.full.yml --profile cpu up -d      # явно CPU
+# =============================================================================
+
+# -----------------------------------------------------------------------------
+# Stage 1: llama-builder — сборка libllama.a (CPU-only, без CUDA)
+# -----------------------------------------------------------------------------
+FROM alpine:latest AS llama-builder
+
+RUN apk add --no-cache git build-base cmake
+
+WORKDIR /build/llama.cpp
+COPY c/llama.cpp .
+
+# CPU-only сборка (без GGML_CUDA=1)
+RUN make libllama.a -j$(nproc) || \
+    (echo "WARNING: Makefile failed, trying cmake fallback..." && \
+     mkdir -p build && cd build && \
+     cmake .. -DLLAMA_CUDA=OFF -DLLAMA_METAL=OFF -DLLAMA_VULKAN=OFF && \
+     cmake --build . --config Release -j$(nproc) --target llama && \
+     cp src/libllama.a ../)
+
+# -----------------------------------------------------------------------------
+# Stage 2: builder — Go сборка с CGO (реальный llama.cpp)
+# -----------------------------------------------------------------------------
+FROM golang:1.24-alpine AS builder
+
+ARG GOPROXY=https://proxy.golang.org,direct
+ENV GOPROXY=${GOPROXY}
+
+RUN apk add --no-cache git build-base
+
+WORKDIR /build
+
+COPY go.mod go.sum ./
+RUN go mod download && go mod verify
+
+COPY . .
+
+COPY --from=llama-builder /build/llama.cpp/libllama.a c/llama.cpp/
+
+RUN CGO_ENABLED=1 GOOS=linux GOARCH=amd64 \
+    go build -trimpath -ldflags "-w -s" \
+    -o cppworker ./cmd/cppworker
+
+# -----------------------------------------------------------------------------
+# Stage 3: runtime — минимальный Alpine образ
+# -----------------------------------------------------------------------------
+FROM alpine:latest AS runtime
+
+WORKDIR /app
+
+RUN apk add --no-cache tzdata ca-certificates wget curl python3 py3-pip && \
+    pip3 install --no-cache-dir --break-system-packages huggingface_hub
+
+COPY docker/cppworker/entrypoint.sh /entrypoint.sh
+COPY docker/cppworker/register-with-balancer.sh /register-with-balancer.sh
+RUN chmod +x /entrypoint.sh /register-with-balancer.sh
+COPY --from=builder /build/cppworker .
+
+RUN mkdir -p /app/models && \
+    addgroup -g 1000 appgroup && \
+    adduser -u 1000 -G appgroup -D -s /bin/sh appuser && \
+    chown -R appuser:appgroup /app
+
+USER appuser
+
+EXPOSE 18091
+
+HEALTHCHECK --interval=30s --timeout=10s --start-period=15s --retries=3 \
+    CMD curl -f -s http://localhost:18091/health || exit 1
+
+ENV HF_HOME=/app/.cache/huggingface
+ENV HF_TOKEN=""
+ENV HF_AUTO_DOWNLOAD_REPO=""
+ENV HF_AUTO_DOWNLOAD_FILE=""
+ENV HF_AUTO_DOWNLOAD_QUANT="Q4_K_M"
+ENV HF_MIRROR=""
+
+ENTRYPOINT ["/entrypoint.sh"]
+
+LABEL org.opencontainers.image.title="Ollama Legion CppBackend Worker (CPU)"
+LABEL org.opencontainers.image.description="GGUF model inference server with real llama.cpp (CPU-only, no GPU)"
+LABEL org.opencontainers.image.vendor="OllamaLegion"
+LABEL org.opencontainers.image.version="0.1.0"
+LABEL org.opencontainers.image.source="https://github.com/BarsSky/ollamalegion"

@@ -81,6 +81,7 @@ func (p *Proxy) LoadState() error {
 			p.config.Backends[i].ActiveRequests = saved.ActiveRequests
 			p.config.Backends[i].HasAgent = saved.HasAgent
 			p.config.Backends[i].LastAgentContact = saved.LastAgentContact
+			p.config.Backends[i].RuntimeRequestTimeout = saved.RuntimeRequestTimeout
 
 			if bs, exists := p.backends[p.config.Backends[i].ID]; exists {
 				bs.Backend = &p.config.Backends[i]

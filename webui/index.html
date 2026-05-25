@@ -29,6 +29,10 @@
                 <img src="img/dark_logo.svg" alt="OllamaLegion" class="logo-img-svg">
                 <span>OllamaLegion</span>
             </div>
+            <div class="backend-engine-badge" id="backendEngineBadge" title="Тип движка инференса">
+                <span class="engine-icon">🔌</span>
+                <span class="engine-label" id="backendEngineLabel" data-i18n="dashboard.engine_auto">Автоопределение...</span>
+            </div>
             <nav class="nav">
                 <a href="#dashboard" class="nav-item active" data-page="dashboard">
                     <span class="nav-icon-wrap"><i class="fas fa-gauge-high fa-fw"></i></span> <span data-i18n="nav.dashboard">Дашборд</span>
@@ -47,6 +51,9 @@
                 </a>
                 <a href="#queue" class="nav-item" data-page="queue">
                     <span class="nav-icon-wrap"><i class="fas fa-layer-group fa-fw"></i></span> <span data-i18n="nav.queue">Очередь</span>
+                </a>
+                <a href="#gguf" class="nav-item" data-page="gguf">
+                    <span class="nav-icon-wrap"><i class="fas fa-cube fa-fw"></i></span> <span data-i18n="nav.gguf">GGUF</span>
                 </a>
                 <a href="#agents" class="nav-item" data-page="agents">
                     <span class="nav-icon-wrap"><i class="fas fa-robot fa-fw"></i></span> <span data-i18n="nav.agents">Агенты</span>
@@ -170,7 +177,12 @@
                 <div class="card">
                     <div class="card-header">
                         <h3><i class="fas fa-server section-icon-i"></i> <span data-i18n="nav.backends">Бэкенды</span></h3>
-                        <div class="card-actions">
+                        <div class="card-actions" style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
+                            <div class="type-filter-group" id="dashboardBackendTypeFilter">
+                                <button class="type-filter-btn active" data-type="all">Все</button>
+                                <button class="type-filter-btn" data-type="ollama">🦙 Ollama</button>
+                                <button class="type-filter-btn" data-type="llama_cpp">🦒 llama.cpp</button>
+                            </div>
                             <input type="text" class="search-input" placeholder="Поиск..." id="backendSearch" data-i18n-placeholder="backends.search">
                         </div>
                     </div>
@@ -216,7 +228,12 @@
                 <div class="card">
                     <div class="card-header">
                         <h3 data-i18n="backends.title">Управление бэкендами</h3>
-                        <div class="card-actions">
+                        <div class="card-actions" style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
+                            <div class="type-filter-group" id="manageBackendTypeFilter">
+                                <button class="type-filter-btn active" data-type="all">Все</button>
+                                <button class="type-filter-btn" data-type="ollama">🦙 Ollama</button>
+                                <button class="type-filter-btn" data-type="llama_cpp">🦒 llama.cpp</button>
+                            </div>
                             <button class="btn btn-secondary" id="exportBackends" data-i18n="backends.export">Экспорт</button>
                             <button class="btn btn-primary" id="addBackendBtn2" data-i18n="backends.add">Добавить</button>
                         </div>
@@ -465,9 +482,16 @@
                 </div>
             </div>
 
+            <!-- GGUF Page -->
+            <div class="page" id="gguf-page">
+                <div class="gguf-container" id="ggufContainer">
+                    <div class="loading" data-i18n="common.loading">Загрузка...</div>
+                </div>
+            </div>
+
             <!-- Monitor Page -->
             <div class="page" id="monitor-page">
-                <iframe id="monitorFrame" src="monitor.html?v=10" class="monitor-iframe"></iframe>
+                <iframe id="monitorFrame" src="monitor.html?v=13" class="monitor-iframe"></iframe>
             </div>
 
             <!-- Logs Page -->
@@ -528,17 +552,36 @@
                     </div>
                     <div class="settings-form" id="settingsForm">
 
-                        <!-- ==================== Section: Operating Mode ==================== -->
-                        <div class="settings-section" id="section-mode">
-                            <div class="settings-section-header" data-section="mode">
-                                <span class="section-toggle">▼</span>
-                                <i class="fas fa-project-diagram"></i>
-                                <span data-i18n="settings.section.mode">Режим работы</span>
-                            </div>
-                            <div class="settings-section-body open">
-                                <p style="color:var(--text-muted);margin-bottom:16px;font-size:13px;" data-i18n="settings.rpc_distribution_title">Выберите режим работы балансировщика</p>
-                                <!-- Mode cards (radio-based) -->
-                                <div class="mode-cards">
+                         <!-- ==================== Section: Operating Mode ==================== -->
+                         <div class="settings-section" id="section-mode">
+                             <div class="settings-section-header" data-section="mode">
+                                 <span class="section-toggle">▼</span>
+                                 <i class="fas fa-project-diagram"></i>
+                                 <span data-i18n="settings.section.mode">Режим работы</span>
+                             </div>
+                             <div class="settings-section-body open">
+                                 <!-- Backend Engine Switch -->
+                                 <div class="backend-engine-switch" style="margin-bottom: 20px;">
+                                     <label style="font-weight: 600; display: block; margin-bottom: 8px;" data-i18n="wizard.step_backend_type">Тип инференс-движка</label>
+                                     <div class="mode-cards" id="backendEngineCards">
+                                         <label class="mode-card" data-backend-engine-type="ollama">
+                                             <input type="radio" name="settingsBackendEngine" value="ollama">
+                                             <div class="mode-card-icon">🦙</div>
+                                             <div class="mode-card-title">Ollama API</div>
+                                             <div class="mode-card-desc" data-i18n="wizard.backend_type_ollama_desc">Стандартное Ollama API</div>
+                                         </label>
+                                         <label class="mode-card" data-backend-engine-type="llama_cpp">
+                                             <input type="radio" name="settingsBackendEngine" value="llama_cpp">
+                                             <div class="mode-card-icon">🦒</div>
+                                             <div class="mode-card-title">llama.cpp</div>
+                                             <div class="mode-card-desc" data-i18n="wizard.backend_type_llama_desc">llama.cpp через CppWorker</div>
+                                         </label>
+                                     </div>
+                                     <div id="backendEngineStatusMsg" style="margin-top: 8px; font-size: 12px; color: var(--text-muted); display: none;"></div>
+                                 </div>
+                                 <p style="color:var(--text-muted);margin-bottom:16px;font-size:13px;" data-i18n="settings.rpc_distribution_title">Выберите режим работы балансировщика</p>
+                                 <!-- Mode cards (radio-based) -->
+                                 <div class="mode-cards">
                                     <label class="mode-card" data-mode="standard">
                                         <input type="radio" name="operatingMode" value="standard" checked>
                                         <div class="mode-card-icon">⚙️</div>
@@ -801,6 +844,92 @@
                             </div>
                         </div>
 
+                        <!-- ==================== Section: llama.cpp / GGUF Settings ==================== -->
+                        <div class="settings-section settings-section-llama" id="section-llama-cpp" style="display:none;">
+                            <div class="settings-section-header" data-section="llama-cpp">
+                                <span class="section-toggle">▼</span>
+                                <i class="fas fa-cube"></i>
+                                <span data-i18n="settings.section.llama_cpp">Настройки llama.cpp / GGUF</span>
+                            </div>
+                            <div class="settings-section-body open">
+                                <p style="color:var(--text-muted);margin-bottom:16px;font-size:13px;" data-i18n="settings.llama_cpp_desc">
+                                    Глобальные параметры загрузки GGUF-моделей. Применяются ко всем llama.cpp бэкендам. Могут быть переопределены на странице GGUF для конкретной модели.
+                                </p>
+                                <div class="form-row">
+                                    <div class="form-group">
+                                        <label data-i18n="gguf.gpu_layers">GPU Layers</label>
+                                        <span class="tooltip-trigger">?<span class="tooltip-content" data-i18n="gguf.gpu_layers_desc">
+Число слоёв модели для выгрузки на GPU. -1 = все слои (максимальное ускорение), 0 = только CPU.
+                                        </span></span>
+                                        <input type="number" id="gpuLayers" class="form-control" value="-1" min="-1" max="200">
+                                    </div>
+                                    <div class="form-group">
+                                        <label data-i18n="gguf.ctx_size">Context Size</label>
+                                        <span class="tooltip-trigger">?<span class="tooltip-content" data-i18n="gguf.ctx_size_desc">
+Размер контекстного окна в токенах. Больше = длиннее диалоги, но больше потребление VRAM/RAM.
+                                        </span></span>
+                                        <input type="number" id="ctxSize" class="form-control" value="2048" min="512" max="32768" step="512">
+                                    </div>
+                                </div>
+                                <div class="form-row">
+                                    <div class="form-group">
+                                        <label data-i18n="gguf.batch_size">Batch Size</label>
+                                        <span class="tooltip-trigger">?<span class="tooltip-content" data-i18n="gguf.batch_size_desc">
+Размер батча для инференса. Больше = быстрее на GPU, но больше потребление памяти.
+                                        </span></span>
+                                        <input type="number" id="batchSize" class="form-control" value="512" min="1" max="4096">
+                                    </div>
+                                    <div class="form-group">
+                                        <label data-i18n="gguf.strategy">Стратегия распределения GPU</label>
+                                        <select id="gpuStrategy" class="form-control">
+                                            <option value="vram-ratio" data-i18n="gguf.strategy_vram_ratio">VRAM Ratio (пропорционально памяти)</option>
+                                            <option value="manual" data-i18n="gguf.strategy_manual">Manual (ручной tensor split)</option>
+                                            <option value="round-robin" data-i18n="gguf.strategy_round_robin">Round Robin (поочерёдно)</option>
+                                        </select>
+                                    </div>
+                                </div>
+                                <div class="form-row">
+                                    <div class="form-group">
+                                        <label data-i18n="gguf.tensor_split">Tensor Split</label>
+                                        <span class="tooltip-trigger">?<span class="tooltip-content" data-i18n="gguf.tensor_split_desc">
+Доли тензоров для каждого GPU через запятую (например: 0.5,0.5). Сумма должна быть 1.0. Используется только при стратегии Manual.
+                                        </span></span>
+                                        <input type="text" id="tensorSplit" class="form-control" placeholder="0.5,0.5" data-i18n-placeholder="gguf.tensor_split_placeholder">
+                                    </div>
+                                    <div class="form-group">
+                                        <label data-i18n="gguf.auto_gpu_distribution">Auto GPU Distribution</label>
+                                        <label class="toggle">
+                                            <input type="checkbox" id="autoGpuDistribution" checked>
+                                            <span class="toggle-slider"></span>
+                                        </label>
+                                    </div>
+                                </div>
+                                <div class="form-row">
+                                    <div class="form-group">
+                                        <label data-i18n="gguf.flash_attn">Flash Attention</label>
+                                        <label class="toggle">
+                                            <input type="checkbox" id="flashAttn">
+                                            <span class="toggle-slider"></span>
+                                        </label>
+                                    </div>
+                                    <div class="form-group">
+                                        <label data-i18n="gguf.numa">NUMA</label>
+                                        <label class="toggle">
+                                            <input type="checkbox" id="numa">
+                                            <span class="toggle-slider"></span>
+                                        </label>
+                                    </div>
+                                    <div class="form-group">
+                                        <label data-i18n="gguf.use_mmap">Use MMAP</label>
+                                        <label class="toggle">
+                                            <input type="checkbox" id="useMmap" checked>
+                                            <span class="toggle-slider"></span>
+                                        </label>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+
                         <!-- ==================== Section: Security ==================== -->
                         <div class="settings-section" id="section-security">
                             <div class="settings-section-header" data-section="security">
@@ -846,6 +975,10 @@
                                     <label style="color: var(--danger);" data-i18n="settings.restart_balancer">Перезапустить балансер</label>
                                     <button class="btn btn-danger" id="restartBalancerBtn" style="margin-top: 8px;" data-i18n="settings.restart_balancer">Перезапустить балансер</button>
                                     <div id="restartIndicator" style="display:none; margin-top: 12px;"></div>
+                                </div>
+                                <div class="form-group" style="margin-top:12px;">
+                                    <label data-i18n="wizard.retake">Пройти настройку заново</label>
+                                    <button class="btn btn-secondary" id="retakeSetupWizardBtn" style="margin-top: 8px;" data-i18n="wizard.retake">Пройти настройку заново</button>
                                 </div>
                                 <div class="form-group" style="margin-top:12px;">
                                     <label>Сбросить настройки</label>
@@ -937,7 +1070,17 @@
                         <label>Хост *</label>
                         <input type="text" id="formBackendHost" class="form-control" placeholder="192.168.1.100" required>
                     </div>
-                    <div class="form-row">
+                    <!-- Backend Type Selector -->
+                    <div class="form-group">
+                        <label>Тип бэкенда</label>
+                        <select id="formBackendType" class="form-control">
+                            <option value="ollama">🦙 Ollama</option>
+                            <option value="llama_cpp">🦒 llama.cpp</option>
+                        </select>
+                        <small style="color: var(--text-muted); font-size: 11px;">Выберите тип инференс-движка</small>
+                    </div>
+                    <!-- Ollama-specific fields -->
+                    <div class="form-row backend-field-ollama">
                         <div class="form-group">
                             <label>Порт Ollama</label>
                             <input type="number" id="formBackendOllamaPort" class="form-control" value="11434">
@@ -945,6 +1088,17 @@
                         <div class="form-group">
                             <label>Порт агента</label>
                             <input type="number" id="formBackendAgentPort" class="form-control" value="18032">
+                        </div>
+                    </div>
+                    <!-- llama.cpp-specific fields -->
+                    <div class="form-row backend-field-llama" style="display:none;">
+                        <div class="form-group">
+                            <label>Порт CppWorker</label>
+                            <input type="number" id="formBackendCppWorkerPort" class="form-control" value="18091">
+                        </div>
+                        <div class="form-group">
+                            <label>gRPC порт</label>
+                            <input type="number" id="formBackendCppGrpcPort" class="form-control" value="19000">
                         </div>
                     </div>
                     <div class="form-row">
@@ -1089,22 +1243,25 @@
     <div class="toast-container" id="toastContainer"></div>
 
     <!-- i18n Language Packs -->
-    <script src="js/i18n/ru.js?v=10"></script>
-    <script src="js/i18n/en.js?v=10"></script>
-    <script src="js/i18n/index.js?v=10"></script>
+    <script src="js/i18n/ru.js?v=13"></script>
+    <script src="js/i18n/en.js?v=13"></script>
+    <script src="js/i18n/index.js?v=13"></script>
+    <script src="js/modules/backend-type-filter.js?v=13"></script>
 
     <!-- Runtime config injected by entrypoint for Docker / local nginx -->
     <script>window.WEBUI_CONFIG = window.WEBUI_CONFIG || {};</script>
     <!-- Modules -->
-    <script src="js/modules/config.js?v=10"></script>
-    <script src="js/modules/utils.js?v=10"></script>
-    <script src="js/modules/api.js?v=10"></script>
-    <script src="js/modules/websocket.js?v=10"></script>
-    <script src="js/modules/renderers.js?v=10"></script>
-    <script src="js/modules/settings-ui.js?v=10"></script>
-    <script src="js/modules/config-io.js?v=10"></script>
-    <script src="js/modules/mode-wizard.js?v=10"></script>
-    <script src="js/modules/setup-wizard.js?v=10"></script>
-    <script src="js/app.js?v=10"></script>
+    <script src="js/modules/config.js?v=13"></script>
+    <script src="js/modules/utils.js?v=13"></script>
+    <script src="js/modules/api.js?v=13"></script>
+    <script src="js/modules/gguf-api.js?v=13"></script>
+    <script src="js/modules/websocket.js?v=13"></script>
+    <script src="js/modules/renderers.js?v=13"></script>
+    <script src="js/modules/gguf-renderer.js?v=14"></script>
+    <script src="js/modules/settings-ui.js?v=13"></script>
+    <script src="js/modules/config-io.js?v=13"></script>
+    <script src="js/modules/mode-wizard.js?v=13"></script>
+    <script src="js/modules/setup-wizard.js?v=13"></script>
+    <script src="js/app.js?v=13"></script>
 </body>
 </html>

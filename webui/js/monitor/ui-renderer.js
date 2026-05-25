@@ -6,6 +6,40 @@
   var MA = window.MonitorApp;
   var T = MA.T;
 
+  /**
+   * B-12: Добавляет переключатель backend-типа в заголовок Monitor.
+   * Ollama ↔ llama.cpp — синхронизируется с BackendTypeFilter и localStorage.
+   */
+  function renderBackendTypeSwitcher() {
+    var container = document.getElementById('monitorBackendTypeSwitcher');
+    if (!container) return;
+
+    var currentType = 'ollama';
+    if (window.BackendTypeFilter) {
+      currentType = window.BackendTypeFilter.getCurrentType();
+    }
+
+    container.innerHTML =
+      '<div class="monitor-type-switcher" style="display:flex;align-items:center;gap:6px">' +
+        '<span style="font-size:11px;color:var(--text-secondary);font-weight:600">' + T('monitor.common.backendType') + '</span>' +
+        '<select id="monitorBackendType" style="background:var(--bg-secondary);border:1px solid var(--border-color);border-radius:4px;color:var(--text-primary);padding:4px 8px;font-size:12px;font-family:inherit" onchange="window.MonitorApp.switchBackendType(this.value)">' +
+          '<option value="ollama"' + (currentType === 'ollama' ? ' selected' : '') + '>🦙 Ollama API</option>' +
+          '<option value="llama_cpp"' + (currentType === 'llama_cpp' ? ' selected' : '') + '>🦒 llama.cpp</option>' +
+        '</select>' +
+      '</div>';
+  }
+
+  function switchBackendType(type) {
+    if (window.BackendTypeFilter) {
+      window.BackendTypeFilter.setCurrentType(type);
+    }
+    localStorage.setItem('ollamalegion_backend_type', type);
+    // Trigger data refresh with new filter
+    if (window.MonitorApp && window.MonitorApp.fetchData) {
+      window.MonitorApp.fetchData();
+    }
+  }
+
   function renderLoadFeasibility(bk) {
     var body = document.getElementById('feasibilityBody');
     if (!body) return;
@@ -118,6 +152,7 @@
         activeRequests: b.activeRequests !== undefined ? b.activeRequests : (o.activeRequests || o.ActiveRequests || 0),
         maxConcurrentRequests: b.maxConcurrentRequests !== undefined ? b.maxConcurrentRequests : (o.maxConcurrentRequests || o.MaxConcurrentRequests || 10),
         models: b.models || ((o.runningModels || o.RunningModels || []).map(function(m) { return m.name || m.Name; })),
+        backendType: b.backendType || b.BackendType || b.type || b.Type || '',
         vram: b.vram || {
           totalGB: (g.memoryTotal || g.MemoryTotal || 0) / 1024,
           usedGB: (g.memoryUsed || g.MemoryUsed || 0) / 1024,
@@ -135,6 +170,27 @@
     if (data.cluster && data.cluster.backendMetrics) data.cluster.backendMetrics = data.cluster.backendMetrics.map(adapt);
 
     var bk = MA.stableBackendOrder(data.cluster.backends || []);
+
+    // Фильтрация бэкендов по effectiveBackendType (клиентский fallback)
+    // Если effectiveBackendType задан — оставляем только бэкенды этого типа
+    var effType = data.cluster.effectiveBackendType || '';
+    // Также учитываем выбор пользователя из localStorage (синхронизация с BackendTypeFilter)
+    var userType = localStorage.getItem('ollamalegion_backend_type') || '';
+    if (userType && (userType === 'llama_cpp' || userType === 'ollama')) {
+      effType = userType;
+    }
+    if (effType) {
+      bk = bk.filter(function(b) {
+        var bt = b.backendType || b.BackendType || b.backend_type || b.type || '';
+        if (effType === 'llama_cpp') return bt === 'llama_cpp';
+        if (effType === 'ollama') return bt === 'ollama' || bt === '' || bt === 'ollama_api';
+        return true;
+      });
+    }
+
+    // Сохраняем backendEngine глобально для использования в бейджах и топологии
+    MA.backendEngine = data.cluster.backendEngine || 'ollama_api';
+    MA.effectiveBackendType = data.cluster.effectiveBackendType || '';
     var q = data.queueDetails || {};
     var rawSs = (data.sessions && data.sessions.sessions) || [];
     var recentClients = data.cluster.recentClients || [];
@@ -215,7 +271,13 @@
     renderClusterResources(bk);
     renderModelsInMemory(bk, ss);
     renderBackends(bk, data.modelOps || null);
+    // Добавляем бейджи типа бэкенда после рендера таблиц
+    if (window.BackendTypeBadges) {
+        BackendTypeBadges.enhanceBackendsTable();
+    }
     renderDiskNetwork(bk);
+    // B-12: Render backend type switcher on first load
+    renderBackendTypeSwitcher();
     renderLoadFeasibility(bk);
     renderQueue(q);
     renderSessions(ss);
@@ -416,7 +478,15 @@
       } else {
         loadingCell = '<span style="font-size:11px;color:var(--text-secondary)">—</span>';
       }
-      return '<tr><td><strong>' + MA.esc(b.id) + '</strong></td><td><span class="badge ' + scs + '">' + b.status + '</span></td><td>' + MA.bar(gu) + ' ' + gu.toFixed(0) + '%' + gpuHidden + '</td><td>' + MA.bar(vu) + ' ' + vu.toFixed(0) + '%</td><td title="' + cpuHint + '">' + MA.bar(cu) + ' ' + cu.toFixed(0) + '%</td><td>' + MA.bar(ru) + ' ' + ru.toFixed(0) + '%</td><td class="col-right">' + a + '/' + mr + '</td><td class="col-right">' + (rps > 0 ? rps.toFixed(1) : '-') + '</td><td class="col-right">' + avgRT + '</td><td class="col-right">' + reqCap + '</td><td class="col-right">' + sc + '</td><td style="font-size:11px">' + loadingCell + '</td><td>' + (b.models || []).slice(0, 3).map(function(m) { return '<span class="badge" style="background:rgba(168,85,247,0.12);color:var(--purple-accent);border-color:rgba(168,85,247,0.2)">' + MA.esc(m) + '</span>'; }).join(' ') + '</td><td class="col-right">' + up + '</td></tr>';
+      // Per-backend type badge (🦙 Ollama / 🦒 llama.cpp)
+      var btType = b.backendType || '';
+      var typeBadge = '';
+      if (btType === 'llama_cpp') {
+        typeBadge = ' <span class="badge" style="background:#ff6d0020;border:1px solid #ff6d00;color:#ff6d00;font-size:10px;padding:0 4px;border-radius:3px">🦒 llama.cpp</span>';
+      } else if (btType === 'ollama' || !btType) {
+        typeBadge = ' <span class="badge" style="background:#1a73e820;border:1px solid #1a73e8;color:#1a73e8;font-size:10px;padding:0 4px;border-radius:3px">🦙 Ollama</span>';
+      }
+      return '<tr data-backend-type="' + MA.esc(btType) + '"><td><strong>' + MA.esc(b.id) + '</strong>' + typeBadge + '</td><td><span class="badge ' + scs + '">' + b.status + '</span></td><td>' + MA.bar(gu) + ' ' + gu.toFixed(0) + '%' + gpuHidden + '</td><td>' + MA.bar(vu) + ' ' + vu.toFixed(0) + '%</td><td title="' + cpuHint + '">' + MA.bar(cu) + ' ' + cu.toFixed(0) + '%</td><td>' + MA.bar(ru) + ' ' + ru.toFixed(0) + '%</td><td class="col-right">' + a + '/' + mr + '</td><td class="col-right">' + (rps > 0 ? rps.toFixed(1) : '-') + '</td><td class="col-right">' + avgRT + '</td><td class="col-right">' + reqCap + '</td><td class="col-right">' + sc + '</td><td style="font-size:11px">' + loadingCell + '</td><td>' + (b.models || []).slice(0, 3).map(function(m) { return '<span class="badge" style="background:rgba(168,85,247,0.12);color:var(--purple-accent);border-color:rgba(168,85,247,0.2)">' + MA.esc(m) + '</span>'; }).join(' ') + '</td><td class="col-right">' + up + '</td></tr>';
     }).join('');
   }
 
@@ -744,4 +814,6 @@
   }
 
   window.updateUI = updateUI;
+  window.switchBackendType = switchBackendType;
+  window.renderBackendTypeSwitcher = renderBackendTypeSwitcher;
 })();

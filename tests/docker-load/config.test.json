@@ -13,30 +13,11 @@
       "ollamaPort": 11434,
       "agentPort": 18032,
       "weight": 1,
-      "maxConcurrentReqs": 2,
-      "status": "healthy"
-    },
-    {
-      "id": "mock-b",
-      "name": "Mock Backend B",
-      "host": "mock-b",
-      "ollamaPort": 11434,
-      "agentPort": 18032,
-      "weight": 1,
-      "maxConcurrentReqs": 2,
-      "status": "healthy"
-    },
-    {
-      "id": "mock-c",
-      "name": "Mock Backend C",
-      "host": "mock-c",
-      "ollamaPort": 11434,
-      "agentPort": 18032,
-      "weight": 2,
-      "maxConcurrentReqs": 4,
+      "maxConcurrentReqs": 1,
       "status": "healthy"
     }
   ],
+
   "balancing": {
     "algorithm": "resource-aware",
     "modelAffinity": true,
@@ -47,9 +28,9 @@
     "firstByteTimeout": 5,
     "streamingIdleTimeout": 10,
     "queueTimeout": 30,
-    "queueMaxSize": 10,
+    "queueMaxSize": 30,
     "queueWorkers": 4,
-    "sessionTTL": 60,
+    "sessionTTL": 120,
     "prewarm": {
       "enabled": true,
       "checkIntervalSec": 8,

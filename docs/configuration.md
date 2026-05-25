@@ -9,6 +9,10 @@
 3. [Конфигурация Web UI](#конфигурация-web-ui)
 4. [TLS/SSL настройка](#tlsssl-настройка)
 5. [Аутентификация и Rate Limiting](#аутентификация-и-rate-limiting)
+6. [Режимы работы (Operating Modes)](#режимы-работы-operating-modes)
+7. [Model Replication (Вариант A)](#model-replication-вариант-a)
+8. [RPC Coordinator (Вариант B)](#rpc-coordinator-вариант-b)
+9. [Virtual Model Router (Вариант C)](#virtual-model-router-вариант-c)
 
 ---
 
@@ -732,6 +736,178 @@ GET /api/v1/ratelimit/status
   }
 }
 ```
+
+---
+
+## Режимы работы (Operating Modes)
+
+Балансировщик поддерживает несколько режимов работы, переключаемых через `PUT /api/v1/config/mode` или через WebUI Setup Wizard.
+
+### Параметры конфигурации
+
+| Поле | Тип | По умолчанию | Описание |
+|------|-----|-------------|----------|
+| `balancing.operating_mode` | string | `"auto"` | Режим работы: `auto`, `single_node`, `cluster_balancing` |
+| `balancing.auto_detect_mode` | bool | `true` | Автоопределение режима при старте |
+
+### Режимы
+
+| Режим | Описание |
+|-------|----------|
+| **`auto` (по умолчанию)** | Автоматически определяет режим: если ≥2 healthy бэкендов — `cluster_balancing`, иначе `single_node` |
+| **`single_node`** | Прямое проксирование с отключённой балансировкой. Используется когда есть только один Ollama-сервер |
+| **`cluster_balancing`** | Полноценная балансировка с выбором бэкенда, очередью и session stickiness |
+
+### Environment override
+
+```env
+LB_OPERATING_MODE=cluster_balancing
+LB_AUTO_DETECT_MODE=true
+```
+
+### Пример запроса переключения режима
+
+```bash
+curl -X PUT http://localhost:18081/api/v1/config/mode \
+  -H "Content-Type: application/json" \
+  -H "X-API-Token: your-token" \
+  -d '{"mode": "cluster_balancing"}'
+```
+
+### Сброс конфигурации к заводским настройкам
+
+Эндпоинт `POST /api/v1/config/reset` сбрасывает конфигурацию к значениям по умолчанию, сохраняя текущий тип бэкенд-движка (Ollama / llama.cpp).
+
+```bash
+curl -X POST http://localhost:18081/api/v1/config/reset \
+  -H "X-API-Token: your-token"
+```
+
+---
+
+## Model Replication (Вариант A)
+
+Автоматическая репликация моделей на несколько бэкендов для повышения пропускной способности и отказоустойчивости.
+
+### Параметры конфигурации
+
+| Поле | Тип | По умолчанию | Env-переменная | Описание |
+|------|-----|-------------|----------------|----------|
+| `balancing.model_replication.enabled` | bool | `false` | `LB_MODEL_REPLICATION_ENABLED` | Включение репликации моделей |
+| `balancing.model_replication.default_min_instances` | int | `1` | `LB_MODEL_REPLICATION_MIN_INSTANCES` | Минимальное количество реплик по умолчанию |
+| `balancing.model_replication.default_max_instances` | int | `3` | `LB_MODEL_REPLICATION_MAX_INSTANCES` | Максимальное количество реплик по умолчанию |
+| `balancing.model_replication.idle_unload_after` | duration | `"15m"` | `LB_MODEL_REPLICATION_IDLE_UNLOAD` | Время простоя перед автоматической выгрузкой реплики |
+| `balancing.model_replication.reconcile_interval` | duration | `"10s"` | — | Интервал фонового reconcile |
+
+### Пример конфигурации
+
+```json
+{
+  "balancing": {
+    "model_replication": {
+      "enabled": true,
+      "default_min_instances": 2,
+      "default_max_instances": 4,
+      "idle_unload_after": "10m",
+      "groups": [
+        {
+          "model_name": "llama3.1:70b",
+          "min_instances": 2,
+          "max_instances": 4,
+          "target_backends": ["gpu-1", "gpu-2", "gpu-3"]
+        }
+      ]
+    }
+  }
+}
+```
+
+### Механика работы
+
+- **Scale-up**: если загруженных инстансов < `min_instances` — находит свободные бэкенды и запускает warmup модели
+- **Scale-down**: если загруженных инстансов > `max_instances` — выгружает наименее используемые (LRU)
+- **Idle Unload**: если инстанс простаивает дольше `idle_unload_after` и общее количество > `min_instances` — помечается на выгрузку
+- `GroupAwareSelector` балансирует запросы внутри группы реплик
+
+---
+
+## RPC Coordinator (Вариант B)
+
+Распределённый inference через внешних RPC-воркеров с поддержкой KV-кэша и разбиением длинных промптов (Split/Merge).
+
+### Параметры конфигурации
+
+| Поле | Тип | По умолчанию | Env-переменная | Описание |
+|------|-----|-------------|----------------|----------|
+| `balancing.rpc_coordinator.enabled` | bool | `false` | `LB_RPC_COORDINATOR_ENABLED` | Включение RPC-координации |
+| `balancing.rpc_coordinator.coordinator_url` | string | `""` | `LB_RPC_COORDINATOR_URL` | URL координатора |
+| `balancing.rpc_coordinator.worker_port` | int | `18050` | `LB_RPC_COORDINATOR_PORT` | Порт RPC-воркера |
+| `balancing.rpc_coordinator.protocol` | string | `"http"` | `LB_RPC_COORDINATOR_PROTOCOL` | Протокол: `http` или `grpc` |
+| `balancing.rpc_coordinator.max_chunk_size` | int | `4096` | — | Максимальный размер чанка для split/merge |
+| `balancing.rpc_coordinator.kv_cache_size` | int | `1000` | — | Размер KV-кэша (количество записей) |
+
+### Пример конфигурации
+
+```json
+{
+  "balancing": {
+    "rpc_coordinator": {
+      "enabled": true,
+      "coordinator_url": "http://coordinator:18050",
+      "worker_port": 18050,
+      "protocol": "http",
+      "max_chunk_size": 4096,
+      "kv_cache_size": 1000
+    }
+  }
+}
+```
+
+### Механика работы
+
+- **HasDistributedModel(modelName)** — определяет, какой воркер владеет моделью
+- **InferDistributed(ctx, modelName, prompt, params)** — выполняет распределённый inference через RPC
+- **KV-кэш** — ускоряет повторные запросы с одинаковыми префиксами промптов
+- **Split/Merge** — разбивает длинные промпты на чанки и объединяет результаты
+
+---
+
+## Virtual Model Router (Вариант C)
+
+Виртуальные модели как pipeline из нескольких физических моделей.
+
+### Параметры конфигурации
+
+| Поле | Тип | По умолчанию | Env-переменная | Описание |
+|------|-----|-------------|----------------|----------|
+| `balancing.virtual_models.enabled` | bool | `false` | `LB_VIRTUAL_MODELS_ENABLED` | Включение виртуальных моделей |
+
+### Пример конфигурации
+
+```json
+{
+  "balancing": {
+    "virtual_models": {
+      "enabled": true,
+      "models": [
+        {
+          "name": "gpt-large-distributed",
+          "slices": [
+            {"model": "gpt2-xl-slice-0", "backend": "gpu-1"},
+            {"model": "gpt2-xl-slice-1", "backend": "gpu-2"}
+          ]
+        }
+      ]
+    }
+  }
+}
+```
+
+### Механика работы
+
+- **Регистрация** виртуальных моделей с цепочками трансформаций
+- **Роутинг** запросов через конвейер обработки (pipeline)
+- **Срезы (slices)** — модель разбивается на части, каждая на своём бэкенде
 
 ---
 

@@ -1,9 +1,11 @@
 package balancer
 
 import (
+	"fmt"
 	"sync"
 	"time"
 
+	"ollama-loadbalancer/pkg/logger"
 	"ollama-loadbalancer/pkg/types"
 )
 
@@ -12,6 +14,14 @@ type contextKey string
 
 const modelContextKey contextKey = "model"
 const streamContextKey contextKey = "stream"
+
+// LatencyRecord — запись о времени ответа бэкенда для адаптивного расчёта таймаута.
+type LatencyRecord struct {
+	Timestamp time.Time `json:"timestamp"`
+	LatencyMs int64     `json:"latencyMs"`
+	Model     string    `json:"model"`
+	Success   bool      `json:"success"`
+}
 
 // BackendState - состояние бэкенда
 type BackendState struct {
@@ -26,5 +36,41 @@ type BackendState struct {
 	WarmingUpModels map[string]*types.WarmupState // Модели в превентивной загрузке
 	ErrorCount      int                     // Счётчик ошибок
 	TotalAttempts   int                     // Всего попыток
-	mu              sync.Mutex
+
+	// Адаптивный таймаут
+	LatencyHistory  []LatencyRecord `json:"latencyHistory"`  // История задержек (до 100 записей)
+	AdaptiveTimeout int             `json:"adaptiveTimeout"` // Текущий адаптивный таймаут (сек), 0 = использовать глобальный
+
+	mu sync.Mutex
+}
+
+// resolveBackendEngine — определяет эффективный движок конкретного бэкенда (ollama_api / llama_cpp).
+func (p *Proxy) resolveBackendEngine(backend *types.Backend) types.BackendEngine {
+	return types.ResolveEngine(backend.Engine, backend.Type)
+}
+
+// getBackendPort — возвращает порт инференса в зависимости от движка бэкенда.
+func (p *Proxy) getBackendPort(backend *types.Backend) int {
+	engine := p.resolveBackendEngine(backend)
+	switch engine {
+	case types.EngineLlamaCPP:
+		if backend.CppWorkerPort > 0 {
+			return backend.CppWorkerPort
+		}
+		logger.Get().Warnw("llama.cpp backend has no CppWorkerPort, using default",
+			"backend", backend.ID, "default_port", 18091)
+		return 18091 // default cppworker port
+	default:
+		return backend.OllamaPort
+	}
+}
+
+// getBackendBaseURL — возвращает базовый URL бэкенда для инференса.
+func (p *Proxy) getBackendBaseURL(backend *types.Backend) string {
+	return fmt.Sprintf("http://%s:%d", backend.Host, p.getBackendPort(backend))
+}
+
+// isLlamaCppBackend — проверяет, является ли конкретный бэкенд llama.cpp.
+func (p *Proxy) isLlamaCppBackend(backend *types.Backend) bool {
+	return p.resolveBackendEngine(backend) == types.EngineLlamaCPP
 }

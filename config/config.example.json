@@ -14,7 +14,66 @@
     ],
     "clientIPHeaders": ["X-Forwarded-For", "X-Real-IP", "CF-Connecting-IP"]
   },
-  "backends": [],
+  "backends": [
+    {
+      "id": "ollama-gpu-1",
+      "name": "Ollama GPU Server 1",
+      "host": "192.168.1.10",
+      "ollamaPort": 11434,
+      "agentPort": 18090,
+      "weight": 10,
+      "maxConcurrentRequests": 4,
+      "maxModels": 8,
+      "labels": ["gpu", "production"],
+      "type": "ollama",
+      "engine": "auto",
+      "gpuMode": "gpu",
+      "requestTimeout": 0
+    },
+    {
+      "id": "llamacpp-gpu-1",
+      "name": "llama.cpp GPU Server 1",
+      "host": "192.168.1.20",
+      "ollamaPort": 0,
+      "agentPort": 18090,
+      "weight": 10,
+      "maxConcurrentRequests": 4,
+      "maxModels": 4,
+      "labels": ["gpu", "llamacpp"],
+      "type": "llama_cpp",
+      "engine": "auto",
+      "gpuMode": "gpu",
+      "cppWorkerPort": 18091,
+      "cppWorkerConfig": {
+        "grpcPort": 19000,
+        "numGpuLayers": -1,
+        "contextLength": 4096,
+        "batchSize": 512,
+        "flashAttention": true,
+        "numa": false,
+        "useMmap": true,
+        "useMlock": false,
+        "mainGpu": 0,
+        "maxConcurrentReqs": 10,
+        "strategy": "vram-ratio",
+        "nThreads": 0,
+        "ropeFreqBase": 10000.0,
+        "ropeFreqScale": 1.0,
+        "noKvOffload": false,
+        "kvCacheType": "f16",
+        "rmsNormEps": 0.00001,
+        "ropeScalingType": "none",
+        "ropeScalingFactor": 1.0,
+        "yarnExtFactor": 1.0,
+        "yarnAttnFactor": 1.0,
+        "yarnBetaFast": 32.0,
+        "yarnBetaSlow": 1.0,
+        "noMemoryMap": false,
+        "rpcBackend": "cuda"
+      },
+      "requestTimeout": 0
+    }
+  ],
   "balancing": {
     "algorithm": "resource-aware",
     "modelAffinity": true,
@@ -125,5 +184,7 @@
       "your-master-token-here-change-in-production"
     ],
     "headerName": "X-API-Token"
-  }
+  },
+  "initialized": false,
+  "backendEngine": "ollama_api"
 }

@@ -1,0 +1,82 @@
+# =============================================================================
+# CppBackend Worker STUB — заглушка для CI/тестов (без llama.cpp)
+# =============================================================================
+# Сборка:
+#   docker build -t ollama-legion/cppworker:stub --target runtime -f docker/cppworker/Dockerfile.stub .
+#
+# Запуск через docker-compose:
+#   docker compose -f deployments/docker-compose.full.yml --profile stub up -d
+# =============================================================================
+# Multi-stage build:
+#   1. builder — сборка Go-бинарника с тегом llama_stub (CGO_ENABLED=0)
+#   2. runtime — минимальный Alpine образ
+# =============================================================================
+
+# -----------------------------------------------------------------------------
+# Stage 1: builder — Go сборка со stub (CGO_ENABLED=0, тег llama_stub)
+# -----------------------------------------------------------------------------
+FROM golang:1.24-alpine AS builder
+
+ARG GOPROXY=https://proxy.golang.org,direct
+ENV GOPROXY=${GOPROXY}
+
+RUN apk add --no-cache git build-base
+
+WORKDIR /build
+
+# Скачиваем Go-зависимости
+COPY go.mod go.sum ./
+RUN go mod download && go mod verify
+
+# Копируем исходный код
+COPY . .
+
+# Сборка со stub llama.cpp (тег llama_stub, не требует C-библиотеки)
+# CGO_ENABLED=0 — статический бинарник, нет зависимостей от C
+RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 \
+    go build -trimpath -ldflags "-w -s -extldflags '-static'" \
+    -tags llama_stub \
+    -a -installsuffix cgo -o cppworker ./cmd/cppworker
+
+# -----------------------------------------------------------------------------
+# Stage 2: runtime — минимальный Alpine образ
+# -----------------------------------------------------------------------------
+FROM alpine:latest AS runtime
+
+WORKDIR /app
+
+RUN apk add --no-cache tzdata ca-certificates wget curl python3 py3-pip && \
+    pip3 install --no-cache-dir --break-system-packages huggingface_hub
+
+COPY docker/cppworker/entrypoint.sh /entrypoint.sh
+COPY docker/cppworker/register-with-balancer.sh /register-with-balancer.sh
+RUN chmod +x /entrypoint.sh /register-with-balancer.sh
+COPY --from=builder /build/cppworker .
+
+# Директория для GGUF моделей (можно смонтировать volume)
+RUN mkdir -p /app/models && \
+    addgroup -g 1000 appgroup && \
+    adduser -u 1000 -G appgroup -D -s /bin/sh appuser && \
+    chown -R appuser:appgroup /app
+
+USER appuser
+
+EXPOSE 18093
+
+HEALTHCHECK --interval=30s --timeout=10s --start-period=15s --retries=3 \
+    CMD curl -f -s http://localhost:18093/health || exit 1
+
+ENV HF_HOME=/app/.cache/huggingface
+ENV HF_TOKEN=""
+ENV HF_AUTO_DOWNLOAD_REPO=""
+ENV HF_AUTO_DOWNLOAD_FILE=""
+ENV HF_AUTO_DOWNLOAD_QUANT="Q4_K_M"
+ENV HF_MIRROR=""
+
+ENTRYPOINT ["/entrypoint.sh"]
+
+LABEL org.opencontainers.image.title="Ollama Legion CppBackend Worker (STUB)"
+LABEL org.opencontainers.image.description="GGUF model inference server with llama.cpp STUB (CI/tests only, no real inference)"
+LABEL org.opencontainers.image.vendor="OllamaLegion"
+LABEL org.opencontainers.image.version="0.1.0"
+LABEL org.opencontainers.image.source="https://github.com/BarsSky/ollamalegion"

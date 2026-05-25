@@ -113,6 +113,13 @@ tbody tr:hover { background: rgba(255,255,255,0.04); }
 .bar-track { display: inline-block; width: 48px; height: 6px; background: rgba(255,255,255,0.08); border-radius: 3px; overflow: hidden; vertical-align: middle; margin-right: 6px; }
 .bar-fill { display: block; height: 100%; border-radius: 3px; }
 
+/* Panel title group (title + badge wrapper) */
+.panel-title-group {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
 /* Panel count badge */
 .panel-badge {
   display: inline-flex;

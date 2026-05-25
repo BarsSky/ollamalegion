@@ -1,0 +1,104 @@
+#!/bin/sh
+# =============================================================================
+# CppWorker Entrypoint — HuggingFace Hub Integration
+# =============================================================================
+# Поддерживает авто-загрузку GGUF моделей при старте контейнера.
+#
+# Переменные окружения:
+#   HF_TOKEN              — токен HuggingFace (для gated моделей)
+#   HF_AUTO_DOWNLOAD_REPO — репозиторий для авто-загрузки (напр. "bartowski/gemma-4-4b-it-GGUF")
+#   HF_AUTO_DOWNLOAD_FILE — конкретный файл (напр. "gemma-4-4b-it-Q4_K_M.gguf")
+#   HF_AUTO_DOWNLOAD_QUANT — фильтр квантизации при авто-выборе (по умолчанию "Q4_K_M")
+#   HF_MIRROR             — зеркало HuggingFace (напр. "https://hf-mirror.com")
+#   HF_HOME               — кэш HuggingFace (по умолчанию /app/.cache/huggingface)
+#
+# Пример docker run (GPU):
+#   docker run --gpus all \
+#     -e HF_TOKEN=hf_xxx \
+#     -e HF_AUTO_DOWNLOAD_REPO=bartowski/gemma-4-4b-it-GGUF \
+#     -e HF_AUTO_DOWNLOAD_FILE=gemma-4-4b-it-Q4_K_M.gguf \
+#     -v ./models:/app/models \
+#     ollama-legion/cppworker:gpu
+#
+# Пример docker run (CPU):
+#   docker run \
+#     -e HF_TOKEN=hf_xxx \
+#     -e HF_AUTO_DOWNLOAD_REPO=bartowski/gemma-4-4b-it-GGUF \
+#     -e HF_AUTO_DOWNLOAD_FILE=gemma-4-4b-it-Q4_K_M.gguf \
+#     -v ./models:/app/models \
+#     ollama-legion/cppworker:cpu
+# =============================================================================
+
+set -e
+
+echo "=== CppWorker Entrypoint ==="
+echo "HF_AUTO_DOWNLOAD_REPO=${HF_AUTO_DOWNLOAD_REPO:-<not set>}"
+echo "HF_AUTO_DOWNLOAD_FILE=${HF_AUTO_DOWNLOAD_FILE:-<not set>}"
+echo "HF_AUTO_DOWNLOAD_QUANT=${HF_AUTO_DOWNLOAD_QUANT:-Q4_K_M}"
+echo "HF_MIRROR=${HF_MIRROR:-<not set>}"
+echo "Models dir: ./models"
+
+# ---- Auto-download model from HuggingFace Hub ----
+if [ -n "${HF_AUTO_DOWNLOAD_REPO}" ]; then
+    echo ""
+    echo ">>> HuggingFace auto-download enabled <<<"
+
+    # Login if token is provided
+    if [ -n "${HF_TOKEN}" ]; then
+        echo "Logging in to HuggingFace Hub..."
+        python3 -c "from huggingface_hub import login; login(token='${HF_TOKEN}')" || true
+    fi
+
+    # Build download command
+    DOWNLOAD_CMD="from huggingface_hub import hf_hub_download; import os"
+
+    # Set mirror if configured
+    if [ -n "${HF_MIRROR}" ]; then
+        DOWNLOAD_CMD="${DOWNLOAD_CMD}; os.environ['HF_ENDPOINT']='${HF_MIRROR}'"
+    fi
+
+    if [ -n "${HF_AUTO_DOWNLOAD_FILE}" ]; then
+        # Download specific file
+        TARGET_FILE="${HF_AUTO_DOWNLOAD_FILE}"
+        echo "Downloading specific file: ${TARGET_FILE} from ${HF_AUTO_DOWNLOAD_REPO}"
+        DOWNLOAD_CMD="${DOWNLOAD_CMD}; path = hf_hub_download(repo_id='${HF_AUTO_DOWNLOAD_REPO}', filename='${TARGET_FILE}', local_dir='/app/models', local_dir_use_symlinks=False); print(f'Downloaded: {path}')"
+    else
+        # Auto-select: list files, filter by quant, pick smallest
+        echo "Auto-selecting file with quantization ${HF_AUTO_DOWNLOAD_QUANT}..."
+        QUANT="${HF_AUTO_DOWNLOAD_QUANT}"
+        DOWNLOAD_CMD="${DOWNLOAD_CMD}
+from huggingface_hub import list_repo_files
+files = list_repo_files('${HF_AUTO_DOWNLOAD_REPO}')
+gguf_files = [f for f in files if f.endswith('.gguf')]
+quant_files = [f for f in gguf_files if '${QUANT}'.upper() in f.upper() or '${QUANT}'.lower() in f.lower()]
+target = quant_files[0] if quant_files else (gguf_files[0] if gguf_files else None)
+if target is None:
+    raise RuntimeError('No .gguf files found in ${HF_AUTO_DOWNLOAD_REPO}')
+print(f'Auto-selected: {target}')
+path = hf_hub_download(repo_id='${HF_AUTO_DOWNLOAD_REPO}', filename=target, local_dir='/app/models', local_dir_use_symlinks=False)
+print(f'Downloaded: {path}')"
+    fi
+
+    python3 -c "${DOWNLOAD_CMD}"
+
+    echo ">>> Download complete. Listing /app/models/:"
+    ls -lh /app/models/
+    echo ""
+fi
+
+# ---- Launch CppWorker in background for auto-registration ----
+echo "Starting CppWorker with args: $@"
+./cppworker "$@" &
+CPPWORKER_PID=$!
+
+# ---- Auto-register with balancer (if BALANCER_URL is set) ----
+if [ -n "${BALANCER_URL}" ]; then
+    echo ""
+    echo ">>> Auto-registration with balancer enabled <<<"
+    echo "BALANCER_URL=${BALANCER_URL}"
+    # Run registration in background — it will wait for both services to be ready
+    /register-with-balancer.sh &
+fi
+
+# ---- Wait for cppworker to finish ----
+wait ${CPPWORKER_PID}

@@ -103,7 +103,7 @@ func TestBalancerScenario(t *testing.T) {
 	proxy := setupBalancerScenario(t)
 
 	t.Run("Scenario 1: Single user requests a model", func(t *testing.T) {
-		backendID := proxy.selectBackend("llama3.1")
+		backendID := proxy.selectBackend("llama3.1", "")
 		require.NotEmpty(t, backendID, "backend should be selected")
 		t.Logf("✓ User A → llama3.1 → %s", backendID)
 
@@ -114,7 +114,7 @@ func TestBalancerScenario(t *testing.T) {
 	})
 
 	t.Run("Scenario 2: Second user requests same model (model affinity)", func(t *testing.T) {
-		backendID := proxy.selectBackend("llama3.1")
+		backendID := proxy.selectBackend("llama3.1", "")
 		require.NotEmpty(t, backendID)
 
 		t.Logf("✓ User B → llama3.1 → %s (model affinity)", backendID)
@@ -131,7 +131,7 @@ func TestBalancerScenario(t *testing.T) {
 			{Name: "llama3.1", VRAMUsage: 8192},
 		}, 2)
 
-		backendID := proxy.selectBackend("llama3.1")
+		backendID := proxy.selectBackend("llama3.1", "")
 		// Если оба заполнены, может вернуть пустую строку (нет доступных)
 		if backendID == "" {
 			t.Logf("✓ User C → llama3.1 → no backend available (capacity full)")
@@ -146,7 +146,7 @@ func TestBalancerScenario(t *testing.T) {
 			{Name: "llama3.1", VRAMUsage: 8192},
 		}, 0)
 
-		backendID := proxy.selectBackend("gemma2")
+		backendID := proxy.selectBackend("gemma2", "")
 		require.NotEmpty(t, backendID, "backend should be selected for different model")
 
 		// Симулируем загрузку gemma2
@@ -201,7 +201,7 @@ func TestBalancerResourceAware(t *testing.T) {
 	updateMetricsInternal(t, proxy, "ollama-2", []types.RunningModel{}, 0)
 
 	// Запрос новой модели — должен пойти на ollama-2 (более свободный)
-	backendID := proxy.selectBackend("mistral")
+	backendID := proxy.selectBackend("mistral", "")
 	require.NotEmpty(t, backendID)
 	assert.Equal(t, "ollama-2", backendID, "resource-aware should pick less loaded backend")
 	t.Logf("✓ Resource-aware selected %s for mistral (expected ollama-2)", backendID)
@@ -216,11 +216,11 @@ func TestBalancerSessionStickiness(t *testing.T) {
 		{Name: "llama3.1", VRAMUsage: 8192},
 	}, 1)
 
-	backend1 := proxy.selectBackend("llama3.1")
+	backend1 := proxy.selectBackend("llama3.1", "")
 	require.NotEmpty(t, backend1)
 
 	// Второй запрос с той же моделью — должен пойти туда же (model affinity)
-	backend2 := proxy.selectBackend("llama3.1")
+	backend2 := proxy.selectBackend("llama3.1", "")
 	require.NotEmpty(t, backend2)
 
 	assert.Equal(t, backend1, backend2, "same model should select same backend (affinity)")

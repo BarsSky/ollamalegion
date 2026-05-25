@@ -235,3 +235,61 @@ After `maxConsecutiveFailures` (default 3), backend is marked unhealthy. After 3
 4. **Monitor queue depth:** Alert when `current_size > max_size * 0.8`
 5. **Use agents on all backends:** Provides accurate real-time metrics for optimal routing
 6. **Session timeout tuning:** Shorter for API usage, longer for interactive chat
+
+---
+
+## RPC Model Distribution (Three Variants)
+
+The balancer supports three model distribution variants for increased throughput and fault tolerance.
+
+| Variant | Name | Description | Best For |
+|---------|------|-------------|----------|
+| **A** | Model Replication | Auto scale-up/down replicas across backends | High-throughput models, fault tolerance |
+| **B** | RPC Coordinator | Distributed inference via external workers with KV cache + Split/Merge | Models too large for single GPU, heterogeneous clusters |
+| **C** | Virtual Model Router | Pipeline composition of multiple physical models | Pipeline parallelism, complex processing chains |
+
+### Variant A — Model Replication
+
+```bash
+# Create replication group
+curl -X POST http://localhost:18081/api/v1/replication/groups \
+  -H "Content-Type: application/json" \
+  -H "X-API-Token: your-token" \
+  -d '{"modelName": "llama3.1:70b", "minReplicas": 2, "maxReplicas": 4}'
+```
+
+Configuration: `balancing.model_replication.enabled`, `idle_unload_after`, `min/max_instances`.
+
+### Variant B — RPC Coordinator
+
+```bash
+# Check distributed model availability via API
+# Balancer uses HasDistributedModel() internally
+# Workers auto-register on the coordinator port (default 18050)
+```
+
+Configuration: `balancing.rpc_coordinator.enabled`, `coordinator_url`, `worker_port`, `protocol`.
+
+### Variant C — Virtual Model Router
+
+```bash
+# List virtual models
+curl http://localhost:18081/api/v1/virtualmodels \
+  -H "X-API-Token: your-token"
+```
+
+Configuration: `balancing.virtual_models.enabled`.
+
+---
+
+## Operating Modes
+
+The balancer supports three operating modes (switchable via `PUT /api/v1/config/mode`):
+
+| Mode | Description |
+|------|-------------|
+| **auto** (default) | Auto-detects: cluster_balancing if ≥2 healthy backends, otherwise single_node |
+| **single_node** | Direct proxying, no balancing logic |
+| **cluster_balancing** | Full balancing with backend selection, queue, session stickiness |
+
+**Config reset:** `POST /api/v1/config/reset` restores factory defaults.

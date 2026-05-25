@@ -34,9 +34,8 @@ services:
       - "${LB_API_PORT:-18081}:18081"
     
     volumes:
-      # Конфигурация
-      - ../config/config.json:/app/config.json:ro
-      # Сохранение состояния между перезапусками контейнера
+      # Сохранение состояния (конфигурация + данные) между перезапусками
+      # Начальный config.json встроен в образ и копируется в data/ при первом запуске
       - ollama-legion-state:/app/data:rw
     
     environment:
@@ -217,12 +216,6 @@ services:
   #     - BALANCER_URL=http://loadbalancer:18081
   #     - COLLECT_INTERVAL=5
   #     - HEARTBEAT_INTERVAL=3
-  #   # Для работы с GPU требуется NVIDIA Container Toolkit
-  #   # volumes:
-  #   #   - /usr/bin/nvidia-smi:/usr/bin/nvidia-smi:ro
-  #   #   - /proc:/host/proc:ro
-  #   #   - /sys:/host/sys:ro
-  #   # network_mode: "host"
   #   labels:
   #     - "ollama-legion.role=agent"
 

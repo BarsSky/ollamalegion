@@ -31,6 +31,135 @@ docker-compose ps
 docker-compose logs -f loadbalancer
 ```
 
+### Сборка Docker образов
+
+> 💡 **На Windows обязателен Legacy builder:** `$env:DOCKER_BUILDKIT=0`  
+> BuildKit может обрывать контекст сборки (`context canceled`).  
+> 📘 **Подробная инструкция:** [Сборка Docker-образов](docs/ru/docker-compose-guide.md#1-сборка-docker-образов) (на русском)  
+> 🔧 **Анализ проблем:** [Анализ сборок Docker](docs/docker-build-analysis.md)
+
+```powershell
+# Отключаем BuildKit (обязательно на Windows 11 + Docker Desktop)
+$env:DOCKER_BUILDKIT=0
+
+# CppWorker CPU (реальный llama.cpp, без CUDA — для продакшена и разработки)
+docker build -t ollama-legion/cppworker:cpu --target runtime -f docker/cppworker/Dockerfile.cpu .
+
+# CppWorker GPU (CUDA 12.2, реальный llama.cpp — 3.2 GB, для production инференса)
+docker build -t ollama-legion/cppworker:gpu --target runtime -f docker/cppworker/Dockerfile.gpu .
+
+# CppWorker STUB (заглушка, без llama.cpp — только для CI/тестов)
+docker build -t ollama-legion/cppworker:stub --target runtime -f docker/cppworker/Dockerfile.stub .
+
+# Balancer (основной сервис — 54 MB)
+docker build -t ollama-legion/balancer:latest --target production -f docker/balancer/Dockerfile .
+
+# Agent CPU (15.9 MB)
+docker build -t ollama-legion/agent:cpu --target agent-cpu -f docker/agent/Dockerfile .
+
+# Agent GPU (395 MB, с NVML)
+docker build -t ollama-legion/agent:gpu --target agent-gpu -f docker/agent/Dockerfile .
+
+# WebUI (Nginx + статика — 101 MB)
+docker build -t ollama-legion/webui:latest -f docker/webui/Dockerfile .
+```
+
+| Образ | CPU/GPU | Размер | Время сборки | Когда использовать |
+|-------|---------|--------|-------------|--------------------|
+| `cppworker:cpu` | CPU (реальный llama.cpp) | ~150 MB | ~10 мин | Production и разработка CPU-инференса |
+| `cppworker:gpu` | GPU (CUDA) | 3.2 GB | ~17 мин | Production инференс GGUF с CUDA |
+| `cppworker:stub` | CPU (заглушка) | ~100 MB | ~4 мин | CI/тесты, без реального llama.cpp |
+| `balancer:latest` | — | 54 MB | ~4 мин | Основной сервис балансировки |
+
+### Запуск CppWorker (llama.cpp инференс)
+
+CppWorker — сервис инференса GGUF-моделей через llama.cpp. Может работать в двух режимах: CPU (без GPU) и GPU (с NVIDIA CUDA).
+
+#### CPU-режим (Alpine, легковесный)
+
+```powershell
+# Базовый запуск с томом для моделей
+docker run -d --name cppworker-cpu `
+  -p 18091:18091 `
+  -v ${PWD}\models:/app/models `
+  ollama-legion/cppworker:cpu `
+  --port 18091 --models-dir ./models
+```
+
+```bash
+# Linux/macOS
+docker run -d --name cppworker-cpu \
+  -p 18091:18091 \
+  -v $(pwd)/models:/app/models \
+  ollama-legion/cppworker:cpu \
+  --port 18091 --models-dir ./models
+```
+
+#### GPU-режим (CUDA 12.2, реальный llama.cpp)
+
+**Требования:** NVIDIA Driver 470+, [NVIDIA Container Toolkit](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/latest/install-guide.html)
+
+```powershell
+# Запуск с GPU-ускорением
+docker run -d --name cppworker-gpu `
+  --gpus all `
+  -p 18091:18091 `
+  -v ${PWD}\models:/app/models `
+  ollama-legion/cppworker:gpu `
+  --port 18091 --models-dir ./models --gpu-layers -1 --flash-attn
+```
+
+```bash
+# Linux/macOS
+docker run -d --name cppworker-gpu \
+  --gpus all \
+  -p 18091:18091 \
+  -v $(pwd)/models:/app/models \
+  ollama-legion/cppworker:gpu \
+  --port 18091 --models-dir ./models --gpu-layers -1 --flash-attn
+```
+
+#### Флаги командной строки
+
+| Флаг | По умолчанию | Описание |
+|------|-------------|----------|
+| `--port` | `18091` | HTTP API порт |
+| `--models-dir` | `./models` | Директория с GGUF моделями |
+| `--gpu-layers` | `-1` | Количество слоёв на GPU (`-1` = все, только GPU-режим) |
+| `--flash-attn` | `false` | Flash Attention (только GPU-режим) |
+| `--context-length` | `2048` | Размер контекста |
+| `--threads` | `12` | Количество потоков CPU |
+| `--batch-size` | `512` | Размер батча |
+
+#### Проверка работоспособности
+
+```bash
+# Health check
+curl http://localhost:18091/health
+# → {"status":"ok"}
+
+# Список доступных моделей
+curl http://localhost:18091/api/tags
+
+# Тестовый инференс
+curl -X POST http://localhost:18091/api/chat \
+  -H "Content-Type: application/json" \
+  -d '{"model":"test-model","messages":[{"role":"user","content":"Hello!"}],"stream":false}'
+```
+
+#### Устранение неполадок GPU
+
+```bash
+# Проверка видимости GPU из контейнера
+docker run --rm --gpus all nvidia/cuda:12.2.0-runtime-ubuntu22.04 nvidia-smi
+
+# Проверка логов cppworker
+docker logs cppworker-gpu
+
+# Если GPU не виден — установить NVIDIA Container Toolkit
+# https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/latest/install-guide.html
+```
+
 ### Развертывание агента
 
 Агент запускается **на каждом сервере с Ollama** и собирает метрики для балансировщика. Поддерживаются режимы **GPU** (с NVIDIA GPU и NVML) и **CPU** (без GPU).
@@ -111,6 +240,7 @@ curl http://localhost:18081/api/v1/health
 | [docs/deployment.md](docs/deployment.md) | 🚀 Развертывание всех компонентов |
 | [docs/agent-deployment.md](docs/agent-deployment.md) | 🤖 Развертывание агента (CPU/GPU) |
 | [docs/api.md](docs/api.md) | 📡 API документация |
+| [docs/rpc-coordinator.md](docs/rpc-coordinator.md) | 🌐 RPC Model Distribution |
 | [docs/troubleshooting.md](docs/troubleshooting.md) | 🔧 Решение проблем |
 | [docs/openapi.yaml](docs/openapi.yaml) | 📋 OpenAPI спецификация |
 

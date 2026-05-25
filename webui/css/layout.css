@@ -43,6 +43,47 @@
     color: var(--accent);
 }
 
+/* ===== Backend Engine Badge (sidebar) ===== */
+.backend-engine-badge {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 8px 20px;
+    font-size: 12px;
+    font-weight: 500;
+    color: var(--text-secondary);
+    border-bottom: 1px solid var(--border);
+    background: var(--bg-tertiary);
+    transition: var(--transition);
+}
+
+.backend-engine-badge .engine-icon {
+    font-size: 14px;
+    flex-shrink: 0;
+}
+
+.backend-engine-badge .engine-label {
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+/* Engine type colours — dynamic class applied via JS */
+.backend-engine-badge.engine-ollama {
+    color: var(--accent);
+    border-left: 3px solid var(--accent);
+}
+
+.backend-engine-badge.engine-llama_cpp {
+    color: #f59e0b;
+    border-left: 3px solid #f59e0b;
+}
+
+.backend-engine-badge.engine-auto {
+    color: var(--text-muted);
+    border-left: 3px solid var(--text-muted);
+}
+
 .nav {
     flex: 1;
     padding: 16px 12px;

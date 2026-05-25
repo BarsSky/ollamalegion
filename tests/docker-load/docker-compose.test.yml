@@ -18,8 +18,8 @@ services:
       dockerfile: docker/balancer/Dockerfile
     container_name: ollama-legion-test-balancer
     ports:
-      - "18090:18080"
-      - "18091:18081"
+      - "18080:18080"
+      - "18081:18081"
     volumes:
       - ./config.test.json:/app/config.json:ro
     networks:
@@ -44,6 +44,7 @@ services:
       BACKEND_NAME: "mock-a"
       BACKEND_MODELS: '["llama3.2:3b","deepseek-r1:32b"]'
       HUNG_MODE: "false"
+      SLOW_MODE: "true"
     networks:
       test-net:
         aliases:
@@ -84,6 +85,23 @@ services:
       test-net:
         aliases:
           - mock-c
+
+  # ============================================
+  # Web UI — используем основной порт 18030
+  # ============================================
+  webui:
+    image: ollama-legion/webui:latest
+    container_name: ollama-legion-test-webui
+    ports:
+      - "18030:80"
+    networks:
+      - test-net
+    depends_on:
+      - balancer
+    environment:
+      - API_HOST=balancer
+      - API_PORT=18081
+      - REFRESH_INTERVAL=2000
 
 networks:
   test-net:

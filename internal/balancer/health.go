@@ -183,9 +183,19 @@ func (hc *HealthChecker) performCheck(backend *types.Backend) *HealthCheckResult
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	
-	// Проверка через Ollama API endpoint (используем /api/tags для кэширования)
-	// Кэшируем версию чтобы не опрашивать слишком часто
-	url := fmt.Sprintf("http://%s:%d/api/tags", backend.Host, backend.OllamaPort)
+	// Определяем движок и endpoint для health-check
+	engine := types.ResolveEngine(backend.Engine, backend.Type)
+	var url string
+	switch engine {
+	case types.EngineLlamaCPP:
+		port := backend.CppWorkerPort
+		if port <= 0 {
+			port = 18091
+		}
+		url = fmt.Sprintf("http://%s:%d/health", backend.Host, port)
+	default:
+		url = fmt.Sprintf("http://%s:%d/api/tags", backend.Host, backend.OllamaPort)
+	}
 	
 	start := time.Now()
 	

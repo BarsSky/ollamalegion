@@ -46,6 +46,7 @@ func main() {
 		AgentID:           env.Get("AGENT_ID", *agentID),
 		BalancerURL:       env.Get("BALANCER_URL", *balancerURL),
 		OllamaURL:         env.Get("OLLAMA_URL", "http://localhost:11434"),
+		CppWorkerURL:      env.Get("CPPWORKER_URL", "http://localhost:18091"),
 		MetricsPort:       env.GetInt("AGENT_PORT", *metricsPort),
 		CollectInterval:   resolveInterval(env.GetInt("METRICS_INTERVAL", -1), env.GetInt("COLLECT_INTERVAL", -1), *collectInterval, *metricsInterval, 5),
 		HeartbeatInterval: env.GetInt("HEARTBEAT_INTERVAL", *heartbeatInterval),
@@ -55,6 +56,8 @@ func main() {
 		MaxModels:             env.GetInt("AGENT_MAX_MODELS", *maxModels),
 		MaxConcurrentRequests: env.GetInt("AGENT_MAX_CONCURRENT_REQUESTS", *maxConcurrentRequests),
 		Weight:                env.GetInt("AGENT_WEIGHT", *weight),
+		BackendType:           types.BackendType(env.Get("BACKEND_TYPE", "ollama")),
+		NodeLabels:            env.Get("NODE_LABELS", ""),
 	}
 
 	// Если передан файл конфигурации — загружаем из него
@@ -83,6 +86,7 @@ func main() {
 	fmt.Printf("║         Ollama Load Balancer - Agent                      ║\n")
 	fmt.Printf("╠═══════════════════════════════════════════════════════════╣\n")
 	fmt.Printf("║ Agent ID:    %-46s║\n", cfg.AgentID)
+	fmt.Printf("║ Backend:     %-46s║\n", cfg.BackendType.Label())
 	fmt.Printf("║ Balancer:    %-46s║\n", cfg.BalancerURL)
 	fmt.Printf("║ Public Host:  %-46s║\n", cfg.PublicHost)
 	fmt.Printf("║ Mode:        %-46s║\n", string(cfg.GPUMode))

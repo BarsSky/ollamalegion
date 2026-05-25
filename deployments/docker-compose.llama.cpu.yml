@@ -1,0 +1,102 @@
+# ============================================================
+# OllamaLegion — Автономный llama.cpp узел (CPU-only)
+# ============================================================
+# Для машин БЕЗ GPU. Инференс полностью на CPU.
+# Всё остальное — идентично docker-compose.llama.cpp.yml.
+#
+# Использование:
+#   1. Скопируйте .env.llama.example → .env и отредактируйте
+#      (установите LLAMA_N_GPU_LAYERS=0)
+#   2. Запустите: docker compose -f docker-compose.llama.cpu.yml up -d
+#   3. Для остановки: docker compose -f docker-compose.llama.cpu.yml down
+# ============================================================
+
+services:
+  cppworker:
+    image: ollama-legion/cppworker:latest-cpu
+    # Для локальной сборки:
+    # build:
+    #   context: ..
+    #   dockerfile: docker/cppworker/Dockerfile.cpu
+    container_name: ollama-legion-llama-worker-cpu
+    restart: unless-stopped
+
+    ports:
+      - "${LLAMA_HTTP_PORT:-18091}:18091"
+      - "${LLAMA_GRPC_PORT:-19000}:19000"
+
+    volumes:
+      - ${MODELS_DIR:-./models}:/models:ro
+      - ./config/cppworker.env:/app/.env:ro
+
+    environment:
+      - NODE_NAME=${NODE_NAME:-llama-cpu-node}
+      - BALANCER_URL=${BALANCER_URL}
+      - LLAMA_HTTP_PORT=${LLAMA_HTTP_PORT:-18091}
+      - LLAMA_GRPC_PORT=${LLAMA_GRPC_PORT:-19000}
+      - LLAMA_MODELS_DIR=/models
+      # Принудительно CPU-only
+      - LLAMA_N_GPU_LAYERS=0
+      - LLAMA_CTX_SIZE=${LLAMA_CTX_SIZE:-4096}
+      - LLAMA_BATCH_SIZE=${LLAMA_BATCH_SIZE:-256}
+      - LLAMA_FLASH_ATTN=false
+      - LLAMA_NUMA=${LLAMA_NUMA:-false}
+      - LLAMA_MMAP=${LLAMA_MMAP:-true}
+      - LLAMA_MLOCK=${LLAMA_MLOCK:-false}
+      - LLAMA_THREADS=${LLAMA_THREADS:-0}
+      - LLAMA_IDLE_UNLOAD=${LLAMA_IDLE_UNLOAD:-30m}
+      - LLAMA_ENFORCE_REPLICATION=false
+      - API_TOKEN=${API_TOKEN:-}
+      - RPC_COORDINATOR_URL=${RPC_COORDINATOR_URL:-}
+      - RPC_WORKER_PORT=${RPC_WORKER_PORT:-18050}
+      - NODE_LABELS=${NODE_LABELS:-zone=lan,cpu_only=true}
+
+    healthcheck:
+      test: ["CMD", "curl", "-f", "-s", "http://localhost:18091/api/v1/cppworker/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 15s
+
+    networks:
+      - llama-net
+
+    labels:
+      - "ollama-legion.role=cppworker"
+      - "ollama-legion.node=${NODE_NAME:-llama-cpu-node}"
+
+  agent:
+    image: ollama-legion/agent:latest
+    container_name: ollama-legion-llama-agent-cpu
+    restart: unless-stopped
+
+    ports:
+      - "${AGENT_PORT:-18032}:18032"
+
+    environment:
+      - BACKEND_TYPE=llama_cpp
+      - AGENT_ID=${NODE_NAME:-llama-cpu-node}
+      - CPPWORKER_URL=http://cppworker:18091
+      - BALANCER_URL=${BALANCER_URL}
+      - AGENT_PORT=${AGENT_PORT:-18032}
+      - COLLECT_INTERVAL=${COLLECT_INTERVAL:-15}
+      - HEARTBEAT_INTERVAL=${HEARTBEAT_INTERVAL:-30}
+      - AGENT_TIMEOUT=10
+      - API_TOKEN=${API_TOKEN:-}
+      - NODE_LABELS=${NODE_LABELS:-zone=lan,cpu_only=true}
+
+    depends_on:
+      cppworker:
+        condition: service_healthy
+
+    networks:
+      - llama-net
+
+    labels:
+      - "ollama-legion.role=agent"
+      - "ollama-legion.node=${NODE_NAME:-llama-cpu-node}"
+
+networks:
+  llama-net:
+    driver: bridge
+    name: ollama-legion-llama-cpu-net

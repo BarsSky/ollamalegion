@@ -162,7 +162,7 @@ func TestQueueManagerProcess(t *testing.T) {
 	})
 
 	// Проверяем что selectBackend работает
-	backend := proxy.selectBackend("")
+	backend := proxy.selectBackend("", "")
 	assert.NotEmpty(t, backend, "Должен быть выбран бэкенд")
 }
 
@@ -255,7 +255,7 @@ func TestProxySelectBackend(t *testing.T) {
 	})
 
 	// Выбираем бэкенд
-	backend := proxy.selectBackend("")
+	backend := proxy.selectBackend("", "")
 	assert.NotEmpty(t, backend)
 }
 
@@ -758,7 +758,7 @@ func TestFindBackendWithModel(t *testing.T) {
 	})
 
 	// Ищем бэкенд с моделью
-	backend := proxy.findBackendWithModel("llama2:7b")
+	backend := proxy.findBackendWithModel("llama2:7b", nil)
 	assert.Equal(t, "backend-1", backend)
 }
 
@@ -807,7 +807,7 @@ func TestSelectByResourcesWithLimits(t *testing.T) {
 	})
 
 	// Выбираем бэкенд — должен выбрать backend-2 (меньше загрузка)
-	backend := proxy.selectByResources()
+	backend := proxy.selectByResources(nil)
 	assert.Equal(t, "backend-2", backend)
 }
 
@@ -828,7 +828,7 @@ func TestSelectBackendAllBusy(t *testing.T) {
 	proxy.mu.Unlock()
 
 	// Выбираем бэкенд — должен вернуть пустую строку
-	backend := proxy.selectBackend("")
+	backend := proxy.selectBackend("", "")
 	assert.Empty(t, backend)
 }
 

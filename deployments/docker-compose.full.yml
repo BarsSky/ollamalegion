@@ -1,0 +1,373 @@
+# =============================================================================
+# Ollama Legion — Полный стек (CPU / GPU / STUB) с профилями
+# =============================================================================
+# Балансировщик + WebUI + Agent (GPU) + CppWorker в единой сети
+#
+# Запуск:
+#   CPU (по умолчанию): docker compose -f deployments/docker-compose.full.yml up -d
+#   GPU:                docker compose -f deployments/docker-compose.full.yml --profile gpu up -d
+#   STUB (CI/тесты):    docker compose -f deployments/docker-compose.full.yml --profile stub up -d
+#   GPU + Agent:        docker compose -f deployments/docker-compose.full.yml --profile gpu --profile agent-gpu up -d
+#
+# Просмотр логов:
+#   docker compose -f deployments/docker-compose.full.yml logs -f
+#
+# Остановка:
+#   docker compose -f deployments/docker-compose.full.yml down
+#
+# Требования для GPU:
+#   - NVIDIA Container Toolkit
+#   - NVIDIA GPU с драйверами
+#
+# Переменные окружения (.env или перед командой):
+#   HF_TOKEN=hf_xxx              — токен HuggingFace
+#   HF_AUTO_DOWNLOAD_REPO=...    — репозиторий для авто-загрузки
+#   HF_AUTO_DOWNLOAD_FILE=...    — конкретный файл (опционально)
+#   LB_PORT=18080                — порт балансировщика
+#   LB_API_PORT=18081            — порт API балансировщика
+#   WEBUI_PORT=18030             — порт WebUI
+#   CPPWORKER_CPU_PORT=18091     — порт CppWorker CPU
+#   CPPWORKER_GPU_PORT=18092     — порт CppWorker GPU
+#   CPPWORKER_STUB_PORT=18093    — порт CppWorker STUB
+#   AGENT_PORT=18032             — порт Agent
+# =============================================================================
+
+services:
+  # ============================================
+  # 1. CppBackend Worker CPU — инференс GGUF (реальный llama.cpp, без GPU)
+  #    Профили: default, cpu
+  # ============================================
+  cppworker-cpu:
+    image: ollama-legion/cppworker:cpu
+    build:
+      context: ..
+      dockerfile: docker/cppworker/Dockerfile.cpu
+      target: runtime
+    container_name: ollama-legion-cppworker-cpu
+    restart: unless-stopped
+    profiles: ["default", "cpu"]
+
+    ports:
+      - "${CPPWORKER_CPU_PORT:-18091}:18091"
+
+    volumes:
+      - ../models:/app/models:rw
+      - hf-cache-cpu:/app/.cache/huggingface
+
+    environment:
+      - CPPWORKER_PORT=18091
+      - CPPWORKER_MODELS_DIR=./models
+      - CPPWORKER_CTX_SIZE=${CPPWORKER_CTX_SIZE:-4096}
+      - CPPWORKER_BATCH_SIZE=${CPPWORKER_BATCH_SIZE:-512}
+      - CPPWORKER_GPU_LAYERS=0
+      # Auto-registration with balancer
+      - BALANCER_URL=http://loadbalancer:18081
+      - CPPWORKER_ADVERTISED_HOST=cppworker-cpu
+      - CPPWORKER_BACKEND_ID=${CPPWORKER_CPU_BACKEND_ID:-cppworker-cpu}
+      - CPPWORKER_NAME=${CPPWORKER_CPU_NAME:-CppWorker-CPU}
+      - CPPWORKER_GPU_MODE=cpu
+      - CPPWORKER_MAX_CONCURRENT=${CPPWORKER_MAX_CONCURRENT:-4}
+      - CPPWORKER_MAX_MODELS=${CPPWORKER_MAX_MODELS:-3}
+      - BALANCER_API_TOKEN=${API_TOKEN:-}
+      # HuggingFace Hub auto-download
+      - HF_TOKEN=${HF_TOKEN:-}
+      - HF_AUTO_DOWNLOAD_REPO=${HF_AUTO_DOWNLOAD_REPO:-}
+      - HF_AUTO_DOWNLOAD_FILE=${HF_AUTO_DOWNLOAD_FILE:-}
+      - HF_AUTO_DOWNLOAD_QUANT=${HF_AUTO_DOWNLOAD_QUANT:-Q4_K_M}
+      - HF_MIRROR=${HF_MIRROR:-}
+
+    networks:
+      - ollama-legion-net
+
+    healthcheck:
+      test: ["CMD", "curl", "-f", "-s", "http://localhost:18091/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 15s
+
+    labels:
+      - "ollama-legion.role=cppworker-cpu"
+
+  # ============================================
+  # 2. CppBackend Worker GPU — инференс GGUF + CUDA
+  #    Профиль: gpu
+  # ============================================
+  cppworker-gpu:
+    image: ollama-legion/cppworker:gpu
+    build:
+      context: ..
+      dockerfile: docker/cppworker/Dockerfile.gpu
+      target: runtime
+    container_name: ollama-legion-cppworker-gpu
+    restart: unless-stopped
+    profiles: ["gpu"]
+
+    ports:
+      - "${CPPWORKER_GPU_PORT:-18092}:18092"
+
+    volumes:
+      - ../models:/app/models:rw
+      - hf-cache-gpu:/app/.cache/huggingface
+
+    environment:
+      - CPPWORKER_PORT=18092
+      - CPPWORKER_MODELS_DIR=./models
+      - CPPWORKER_CTX_SIZE=${CPPWORKER_CTX_SIZE:-4096}
+      - CPPWORKER_BATCH_SIZE=${CPPWORKER_BATCH_SIZE:-512}
+      - CPPWORKER_GPU_LAYERS=${CPPWORKER_GPU_LAYERS:--1}
+      - CPPWORKER_FLASH_ATTN=${CPPWORKER_FLASH_ATTN:-true}
+      # Auto-registration with balancer
+      - BALANCER_URL=http://loadbalancer:18081
+      - CPPWORKER_ADVERTISED_HOST=cppworker-gpu
+      - CPPWORKER_BACKEND_ID=${CPPWORKER_GPU_BACKEND_ID:-cppworker-gpu}
+      - CPPWORKER_NAME=${CPPWORKER_GPU_NAME:-CppWorker-GPU}
+      - CPPWORKER_GPU_MODE=cuda
+      - CPPWORKER_MAX_CONCURRENT=${CPPWORKER_MAX_CONCURRENT:-4}
+      - CPPWORKER_MAX_MODELS=${CPPWORKER_MAX_MODELS:-3}
+      - BALANCER_API_TOKEN=${API_TOKEN:-}
+      - NVIDIA_VISIBLE_DEVICES=all
+      # HuggingFace Hub auto-download
+      - HF_TOKEN=${HF_TOKEN:-}
+      - HF_AUTO_DOWNLOAD_REPO=${HF_AUTO_DOWNLOAD_REPO:-}
+      - HF_AUTO_DOWNLOAD_FILE=${HF_AUTO_DOWNLOAD_FILE:-}
+      - HF_AUTO_DOWNLOAD_QUANT=${HF_AUTO_DOWNLOAD_QUANT:-Q4_K_M}
+      - HF_MIRROR=${HF_MIRROR:-}
+
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+
+    networks:
+      - ollama-legion-net
+
+    healthcheck:
+      test: ["CMD", "curl", "-f", "-s", "http://localhost:18092/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+
+    labels:
+      - "ollama-legion.role=cppworker-gpu"
+
+  # ============================================
+  # 3. CppBackend Worker STUB — заглушка для CI/тестов
+  #    Профиль: stub
+  # ============================================
+  cppworker-stub:
+    image: ollama-legion/cppworker:stub
+    build:
+      context: ..
+      dockerfile: docker/cppworker/Dockerfile.stub
+      target: runtime
+    container_name: ollama-legion-cppworker-stub
+    restart: unless-stopped
+    profiles: ["stub"]
+
+    ports:
+      - "${CPPWORKER_STUB_PORT:-18093}:18093"
+
+    volumes:
+      - ../models:/app/models:rw
+      - hf-cache-stub:/app/.cache/huggingface
+
+    environment:
+      - CPPWORKER_PORT=18093
+      - CPPWORKER_MODELS_DIR=./models
+      - CPPWORKER_CTX_SIZE=${CPPWORKER_CTX_SIZE:-4096}
+      - CPPWORKER_BATCH_SIZE=${CPPWORKER_BATCH_SIZE:-512}
+      # HuggingFace Hub auto-download
+      - HF_TOKEN=${HF_TOKEN:-}
+      - HF_AUTO_DOWNLOAD_REPO=${HF_AUTO_DOWNLOAD_REPO:-}
+      - HF_AUTO_DOWNLOAD_FILE=${HF_AUTO_DOWNLOAD_FILE:-}
+      - HF_AUTO_DOWNLOAD_QUANT=${HF_AUTO_DOWNLOAD_QUANT:-Q4_K_M}
+      - HF_MIRROR=${HF_MIRROR:-}
+
+    networks:
+      - ollama-legion-net
+
+    healthcheck:
+      test: ["CMD", "curl", "-f", "-s", "http://localhost:18093/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 15s
+
+    labels:
+      - "ollama-legion.role=cppworker-stub"
+
+  # ============================================
+  # 4. Agent GPU — мониторинг GPU и метрики
+  #    Профиль: agent-gpu
+  # ============================================
+  agent-gpu:
+    image: ollama-legion/agent:latest-gpu
+    container_name: ollama-legion-agent
+    restart: unless-stopped
+    profiles: ["agent-gpu"]
+
+    ports:
+      - "${AGENT_PORT:-18032}:18032"
+
+    environment:
+      - AGENT_PORT=18032
+      - AGENT_MODE=gpu
+      - BALANCER_URL=http://loadbalancer:18081
+      - LOG_LEVEL=${LOG_LEVEL:-warn}
+      - METRICS_INTERVAL=${METRICS_INTERVAL:-10}
+      - COLLECT_INTERVAL=${COLLECT_INTERVAL:-10}
+
+    networks:
+      - ollama-legion-net
+
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+
+    healthcheck:
+      test: ["CMD", "curl", "-f", "-s", "http://localhost:18032/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 15s
+
+    labels:
+      - "ollama-legion.role=agent-gpu"
+
+  # ============================================
+  # 5. Балансировщик (Load Balancer)
+  # ============================================
+  loadbalancer:
+    image: ollama-legion/balancer:latest
+    build:
+      context: ..
+      dockerfile: docker/balancer/Dockerfile
+    container_name: ollama-legion-balancer
+    restart: unless-stopped
+
+    ports:
+      - "${LB_PORT:-18080}:18080"
+      - "${LB_API_PORT:-18081}:18081"
+
+    volumes:
+      - ollama-legion-state:/app/data:rw
+
+    environment:
+      - LB_HOST=0.0.0.0
+      - LB_PORT=18080
+      - LB_API_PORT=18081
+      - LB_TRUSTED_PROXIES=172.17.0.0/16,172.18.0.0/16,172.28.0.0/16,10.0.0.0/8,192.168.0.0/16,127.0.0.1/8
+      - LB_ALGORITHM=resource-aware
+      - LB_MODEL_AFFINITY=true
+      - LB_SESSION_STICKINESS=true
+      - LB_HEALTH_CHECK_INTERVAL=10
+      - LB_METRICS_INTERVAL=5
+      - LB_REQUEST_TIMEOUT=120
+      - LB_QUEUE_TIMEOUT=300
+      - LB_QUEUE_MAX_SIZE=100
+      - LB_GPU_MAX_USAGE=90
+      - LB_GPU_MAX_VRAM=85
+      - LB_GPU_MAX_TEMP=85
+      - LB_CPU_MAX_USAGE=80
+      - LB_MEMORY_MAX_USAGE=85
+      - LB_DISK_MIN_FREE_MB=10240
+      - LB_LOG_LEVEL=info
+      - LB_LOG_FORMAT=json
+
+    networks:
+      - ollama-legion-net
+
+    depends_on:
+      cppworker-cpu:
+        condition: service_healthy
+        required: false
+      cppworker-gpu:
+        condition: service_healthy
+        required: false
+      cppworker-stub:
+        condition: service_healthy
+        required: false
+
+    healthcheck:
+      test: ["CMD", "curl", "-f", "-s", "http://localhost:18081/api/v1/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+
+    labels:
+      - "ollama-legion.role=balancer"
+
+  # ============================================
+  # 6. Web UI (Dashboard)
+  # ============================================
+  webui:
+    image: ollama-legion/webui:latest
+    build:
+      context: ..
+      dockerfile: docker/webui/Dockerfile
+    container_name: ollama-legion-webui
+    restart: unless-stopped
+
+    ports:
+      - "${WEBUI_PORT:-18030}:80"
+
+    networks:
+      - ollama-legion-net
+
+    depends_on:
+      - loadbalancer
+
+    environment:
+      - API_HOST=loadbalancer
+      - API_PORT=18081
+      - CPPWORKER_HOST=${CPPWORKER_HOST:-cppworker-cpu}
+      - CPPWORKER_PORT=${CPPWORKER_PORT:-18091}
+      - LB_PORT=${LB_PORT:-18080}
+      - NGINX_PORT=80
+      - API_TOKEN=${API_TOKEN:-}
+      - REFRESH_INTERVAL=5000
+      - MAX_RECONNECT_ATTEMPTS=10
+      - RECONNECT_INTERVAL_BASE=3000
+
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://127.0.0.1:80/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+
+    labels:
+      - "ollama-legion.role=webui"
+
+# ============================================
+# Сети
+# ============================================
+networks:
+  ollama-legion-net:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.28.0.0/16
+
+# ============================================
+# Volumes
+# ============================================
+volumes:
+  ollama-legion-state:
+    name: ollama-legion-state
+  hf-cache-cpu:
+    name: ollama-legion-hf-cache-cpu
+  hf-cache-gpu:
+    name: ollama-legion-hf-cache-gpu
+  hf-cache-stub:
+    name: ollama-legion-hf-cache-stub

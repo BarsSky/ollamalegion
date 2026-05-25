@@ -1,5 +1,7 @@
 package api
 
+import "net/http"
+
 // setupRoutes - настройка маршрутов API сервера
 func (s *Server) setupRoutes() {
 	// Health check (без аутентификации и rate limiting)
@@ -15,6 +17,19 @@ func (s *Server) setupRoutes() {
 	// Backends (с аутентификацией и rate limiting)
 	s.mux.Handle("/api/v1/backends", AuthMiddleware(RateLimitMiddleware(s.backendsHandler, s.rateLimiter), s.authenticator))
 	s.mux.Handle("/api/v1/backends/", AuthMiddleware(RateLimitMiddleware(s.backendHandler, s.rateLimiter), s.authenticator))
+
+	// Backend types info (публичный, без аутентификации)
+	s.mux.HandleFunc("/api/v1/backends/types", s.handleBackendTypeInfo)
+
+	// Operating Mode switch (с аутентификацией и rate limiting)
+	s.mux.Handle("/api/v1/config/mode", AuthMiddleware(RateLimitMiddleware(http.HandlerFunc(s.handleModeSwitch), s.rateLimiter), s.authenticator))
+
+	// Config reset to defaults (с аутентификацией и rate limiting)
+	s.mux.Handle("/api/v1/config/reset", AuthMiddleware(RateLimitMiddleware(http.HandlerFunc(s.configResetHandler), s.rateLimiter), s.authenticator))
+
+	// Config export/import (с аутентификацией и rate limiting)
+	s.mux.Handle("/api/v1/config/export", AuthMiddleware(RateLimitMiddleware(http.HandlerFunc(s.configExportHandler), s.rateLimiter), s.authenticator))
+	s.mux.Handle("/api/v1/config/import", AuthMiddleware(RateLimitMiddleware(http.HandlerFunc(s.configImportHandler), s.rateLimiter), s.authenticator))
 
 	// Models capacity (global)
 	s.mux.Handle("/api/v1/models/capacity", AuthMiddleware(RateLimitMiddleware(s.modelsCapacityHandler, s.rateLimiter), s.authenticator))

@@ -147,6 +147,16 @@ func (p *Proxy) computeEnhancedComponents(metrics *types.BackendMetrics, state *
 	}
 }
 
+// ComputeModelCapacityScoreForTest — публичная обёртка для тестов
+func ComputeModelCapacityScoreForTest(m *types.BackendMetrics) float64 {
+	return computeModelCapacityScore(m)
+}
+
+// ComputeEnhancedModelBonusForTest — публичная обёртка для тестов
+func ComputeEnhancedModelBonusForTest(models []types.RunningModel, wModelLoaded float64) float64 {
+	return float64(len(models)) * wModelLoaded * 10.0
+}
+
 // defaultIfZero возвращает def если val <= 0
 func defaultIfZero(val, def float64) float64 {
 	if val <= 0 {

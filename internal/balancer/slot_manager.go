@@ -144,7 +144,7 @@ func (p *Proxy) checkResourceLimits(backendID string) bool {
 		}
 	}
 
-	if metrics.System.DiskFree < limits.Disk.MinFreeMB {
+	if metrics.System.DiskTotal > 0 && metrics.System.DiskFree < limits.Disk.MinFreeMB {
 		logger.Get().Warnw("backend disk space critical, blocking", "backend", backendID,
 			"disk_free_mb", metrics.System.DiskFree, "min_required_mb", limits.Disk.MinFreeMB)
 		return false

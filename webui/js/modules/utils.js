@@ -60,6 +60,48 @@ const Utils = {
     },
 
     /**
+     * Normalize backend type string to canonical form (ollama | llama_cpp).
+     * Maps aliases like 'ollama_api' → 'ollama'.
+     */
+    normalizeBackendType(raw) {
+        if (!raw) return '';
+        const t = String(raw).toLowerCase();
+        if (t === 'llama_cpp' || t === 'llamacpp' || t === 'llama.cpp') return 'llama_cpp';
+        if (t === 'ollama' || t === 'ollama_api' || t === 'ollamaapi') return 'ollama';
+        return t;
+    },
+
+    /**
+     * Get backend type (ollama / llama_cpp) from backend data.
+     * Priority: backendType > type > backend_type > BackendType (agent metrics) > default ollama
+     */
+    getBackendType(backend) {
+        // Config-level type (camelCase from server JSON)
+        if (backend.backendType) return Utils.normalizeBackendType(backend.backendType);
+        if (backend.type) return Utils.normalizeBackendType(backend.type);
+        // Legacy snake_case field (some code paths use this)
+        if (backend.backend_type) return Utils.normalizeBackendType(backend.backend_type);
+        // Agent metrics-level type (PascalCase)
+        if (backend.BackendType) return Utils.normalizeBackendType(backend.BackendType);
+        // Default fallback
+        return 'ollama';
+    },
+
+    /**
+     * Get HTML badge for backend type (🦙 Ollama / 🦒 llama.cpp)
+     */
+    getBackendTypeBadge(backend) {
+        const bt = Utils.getBackendType(backend);
+        if (bt === 'llama_cpp') {
+            return '<span class="badge backend-type-llama_cpp">🦒 llama.cpp</span>';
+        }
+        if (bt === 'ollama') {
+            return '<span class="badge backend-type-ollama">🦙 Ollama</span>';
+        }
+        return '';
+    },
+
+    /**
      * Get GPU status class based on metrics
      */
     getGPUStatus(gpuUsage, vramPercent, temp) {

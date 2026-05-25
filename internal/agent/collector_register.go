@@ -30,15 +30,18 @@ func (a *Agent) register() error {
 
 	// Отправляем регистрацию напрямую в формате, который ожидает балансировщик
 	reqBody := map[string]interface{}{
-		"agentId":    a.config.AgentID,
-		"hostname":   hostname,
-		"host":       publicHost,
-		"ollamaPort": ollamaPort,
-		"agentPort":  a.config.MetricsPort,
-		"gpuCount":   gpuInfo.Count,
-		"name":       a.config.AgentID,
-		"labels":     []string{osName, "amd64", string(a.platformMode)},
-		"weight":     a.config.Weight,
+		"agentId":     a.config.AgentID,
+		"hostname":    hostname,
+		"host":        publicHost,
+		"ollamaPort":  ollamaPort,
+		"agentPort":   a.config.MetricsPort,
+		"gpuCount":    gpuInfo.Count,
+		"name":        a.config.AgentID,
+		"labels":      []string{osName, "amd64", string(a.platformMode)},
+		"weight":        a.config.Weight,
+		"backendType":   string(a.config.BackendType),
+		"cppWorkerPort": a.extractCppWorkerPort(),
+		"nodeLabels":    a.config.NodeLabels,
 	}
 
 	data, err := json.Marshal(reqBody)

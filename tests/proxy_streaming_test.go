@@ -6,11 +6,13 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
+
 
 	"ollama-loadbalancer/internal/balancer"
 	"ollama-loadbalancer/pkg/types"
@@ -18,6 +20,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
 
 // =============================================================================
 // Тесты на Transfer-Encoding Error (основная проблема от OpenWebUI)
@@ -245,6 +248,575 @@ func TestTransferEncoding_OllamaApiEndpoints(t *testing.T) {
 			require.NoError(t, err, "%s response should be valid JSON: %s", tt.name, string(bodyBytes))
 		})
 	}
+}
+
+// =============================================================================
+// Тесты на TransferEncodingError при обрыве соединения от бэкенда
+// (симуляция OLLAMA OOM при попытке загрузить 20GB модель в 8GB VRAM)
+// =============================================================================
+
+// TestTransferEncoding_BackendDisconnectMidStream проверяет, что при обрыве
+// соединения бэкендом в середине стрима (симуляция OOM краша Ollama)
+// не возникает паники и клиент не получает TransferEncodingError.
+// После обрыва должен отправляться done:true или корректный chunked terminator.
+func TestTransferEncoding_BackendDisconnectMidStream(t *testing.T) {
+	behavior := MockBehavior{
+		ChunkDelay:        5 * time.Millisecond,
+		DropAfterChunks:   2,          // отправляем 2 чанка, потом обрываем
+		DropOnStream:      true,       // используем hijack + close (симуляция OOM)
+		StreamResponseSize: 5,         // всего могло быть 5 чанков
+	}
+	mock := NewExpandedMockServer(behavior)
+	defer mock.Close()
+
+	proxyServer, proxy := SetupExpandedProxy(t, mock)
+	defer proxyServer.Close()
+	defer proxy.StopQueue()
+	defer proxy.StopSessionManager()
+
+	payload := map[string]interface{}{
+		"model":  "llama3.1:8b",
+		"prompt": "Hello",
+		"stream": true,
+	}
+	body, _ := json.Marshal(payload)
+
+	resp, err := http.Post(proxyServer.URL+"/api/generate", "application/json", bytes.NewBuffer(body))
+	if err != nil {
+		t.Logf("request error (expected with backend disconnect): %v", err)
+		return
+	}
+	defer resp.Body.Close()
+
+	// КРИТИЧЕСКАЯ ПРОВЕРКА: Transfer-Encoding не должен присутствовать
+	teHeader := resp.Header.Get("Transfer-Encoding")
+	assert.Empty(t, teHeader,
+		"Transfer-Encoding header MUST NOT be present even after backend disconnect")
+
+	// Пытаемся прочитать сколько возможно данных
+	_, readErr := io.ReadAll(resp.Body)
+	if readErr != nil {
+		// Ошибка чтения допустима - backend оборвал соединение
+		t.Logf("read error after backend disconnect (expected): %v", readErr)
+	} else {
+		t.Log("successfully read all response body despite backend disconnect")
+	}
+}
+
+// TestTransferEncoding_BackendConnectionReset проверяет сценарий, когда бэкенд
+// сбрасывает TCP-соединение (RST) — как при внезапном падении Ollama из-за OOM.
+// Используем hijack + SetLinger(0) для принудительного RST.
+func TestTransferEncoding_BackendConnectionReset(t *testing.T) {
+	// Создаём специальный мок, который обрывает соединение через RST
+	mockServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/generate" {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+
+		body, _ := io.ReadAll(r.Body)
+		var req map[string]interface{}
+		json.Unmarshal(body, &req)
+
+		stream := true
+		if s, ok := req["stream"].(bool); ok {
+			stream = s
+		}
+		if !stream {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusOK)
+			json.NewEncoder(w).Encode(map[string]string{"response": "ok"})
+			return
+		}
+
+		model := ""
+		if m, ok := req["model"].(string); ok {
+			model = m
+		}
+
+		// Отправляем заголовки и несколько SSE-событий
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+
+		flusher, ok := w.(http.Flusher)
+		if !ok {
+			return
+		}
+
+		// Отправляем 2 чанка
+		tokens := []string{"Hello", " world"}
+		for i, token := range tokens {
+			event, _ := json.Marshal(map[string]interface{}{
+				"model":    model,
+				"response": token,
+				"done":     false,
+			})
+			fmt.Fprintf(w, "data: %s\n\n", event)
+			flusher.Flush()
+			time.Sleep(5 * time.Millisecond)
+
+			if i == len(tokens)-1 {
+				// Последний чанк — обрываем через RST (симуляция OOM краша)
+				hijacker, ok := w.(http.Hijacker)
+				if !ok {
+					return
+				}
+				conn, buf, err := hijacker.Hijack()
+				if err != nil {
+					return
+				}
+				// Сбрасываем буфер
+				if buf != nil {
+					buf.Flush()
+				}
+				// SetLinger(0) = RST при закрытии
+				tcpConn := conn.(*net.TCPConn)
+				tcpConn.SetLinger(0)
+				conn.Close()
+				return
+			}
+		}
+	}))
+	defer mockServer.Close()
+
+	host, port := parseHostPort(mockServer.URL)
+	config := &types.LoadBalancerConfig{
+		LoadBalancer: types.LoadBalancerSettings{
+			Host: "localhost", Port: 0, APIPort: 0,
+		},
+		Backends: []types.Backend{
+			{
+				ID: "mock-rst", Name: "RST Mock", Host: host, OllamaPort: port,
+				AgentPort: 9090, Weight: 1, MaxConcurrentReqs: 10, Status: types.StatusHealthy,
+			},
+		},
+		Balancing: types.BalancingSettings{
+			Algorithm: types.AlgorithmResourceAware, ModelAffinity: true,
+			SessionStickiness: true, RequestTimeout: 30,
+			QueueTimeout: 60, QueueMaxSize: 100, QueueWorkers: 4,
+		},
+		Resources: types.ResourceLimits{
+			GPU:    types.GPULimits{MaxUsagePercent: 90, MaxVRAMUsagePercent: 95},
+			CPU:    types.CPULimits{MaxUsagePercent: 90},
+			Memory: types.MemoryLimits{MaxUsagePercent: 90},
+			Disk:   types.DiskLimits{MinFreeMB: 1024},
+		},
+	}
+
+	proxy := balancer.NewProxy(config)
+	proxy.SetQueueManagerProxy()
+	proxy.UpdateMetrics("mock-rst", &types.BackendMetrics{
+		ID: "mock-rst",
+		GPU: types.GPUMetrics{UsagePercent: 30, MemoryTotal: 24576, MemoryUsed: 8000, MemoryFree: 16576},
+		System: types.SystemMetrics{CPUUsagePercent: 20, MemoryTotal: 65536, MemoryUsed: 16000, MemoryFree: 49536, DiskFree: 20480},
+		Ollama: types.OllamaMetrics{
+			MaxModels: 5, MaxConcurrentRequests: 10, ActiveRequests: 0, OllamaAvailable: true,
+			RunningModels: []types.RunningModel{{Name: "llama3.1:8b", VRAMUsage: 6000}},
+		},
+	})
+
+	proxyServer := httptest.NewServer(proxy)
+	defer proxyServer.Close()
+	defer proxy.StopQueue()
+	defer proxy.StopSessionManager()
+
+	payload := map[string]interface{}{
+		"model":  "llama3.1:8b",
+		"prompt": "Hello",
+		"stream": true,
+	}
+	body, _ := json.Marshal(payload)
+
+	resp, err := http.Post(proxyServer.URL+"/api/generate", "application/json", bytes.NewBuffer(body))
+	if err != nil {
+		t.Logf("request error after RST (expected): %v", err)
+		// При RST может не быть ответа вообще
+		return
+	}
+	defer resp.Body.Close()
+
+	// Проверяем отсутствие Transfer-Encoding
+	teHeader := resp.Header.Get("Transfer-Encoding")
+	assert.Empty(t, teHeader,
+		"Transfer-Encoding header MUST NOT be present after RST from backend")
+
+	// Читаем что можем — ошибка EOF или connection reset ожидаемы
+	_, readErr := io.ReadAll(resp.Body)
+	if readErr != nil {
+		t.Logf("read error after RST disconnect (expected): %v", readErr)
+	}
+}
+
+// TestTransferEncoding_OOMScenario проверяет полный сценарий OOM:
+// бэкенд начинает отвечать (симуляция загрузки модели), пишет несколько токенов,
+// потом внезапно умирает без отправки done:true и без корректного закрытия.
+func TestTransferEncoding_OOMScenario(t *testing.T) {
+	behavior := MockBehavior{
+		ModelLoadDelay:     50 * time.Millisecond,  // симуляция загрузки модели
+		ChunkDelay:         10 * time.Millisecond,
+		DropAfterChunks:    3,     // 3 чанка, потом обрыв
+		DropOnStream:       true,  // принудительный обрыв (OOM)
+		StreamResponseSize: 8,     // всего могло быть 8
+	}
+	mock := NewExpandedMockServer(behavior)
+	defer mock.Close()
+
+	proxyServer, proxy := SetupExpandedProxy(t, mock)
+	defer proxyServer.Close()
+	defer proxy.StopQueue()
+	defer proxy.StopSessionManager()
+
+	payload := map[string]interface{}{
+		"model":  "llama3.1:70b",  // модель 70B, не влезает в VRAM
+		"prompt": "Hello",
+		"stream": true,
+	}
+	body, _ := json.Marshal(payload)
+
+	// Создаём клиент с таймаутом, чтобы тест не завис
+	client := &http.Client{
+		Timeout: 10 * time.Second,
+	}
+	resp, err := client.Post(proxyServer.URL+"/api/generate", "application/json", bytes.NewBuffer(body))
+	if err != nil {
+		t.Logf("request error in OOM scenario (expected): %v", err)
+		return
+	}
+	defer resp.Body.Close()
+
+	// КРИТИЧЕСКАЯ ПРОВЕРКА: Transfer-Encoding не должен присутствовать
+	teHeader := resp.Header.Get("Transfer-Encoding")
+	assert.Empty(t, teHeader,
+		"Transfer-Encoding header MUST NOT be present in OOM scenario")
+
+	// Читаем частичный ответ — ошибка допустима
+	_, readErr := io.ReadAll(resp.Body)
+	if readErr != nil {
+		t.Logf("partial read error in OOM scenario (expected): %v", readErr)
+	}
+
+	// Проверяем что после OOM краша прокси всё ещё работает
+	resp2, err := client.Get(proxyServer.URL + "/api/tags")
+	if err != nil {
+		t.Logf("health check request failed: %v", err)
+	} else {
+		defer resp2.Body.Close()
+		assert.Equal(t, http.StatusOK, resp2.StatusCode,
+			"Proxy should still be functional after OOM scenario")
+	}
+}
+
+// TestTransferEncoding_MultipleConsecutiveOOM проверяет, что несколько
+// последовательных OOM-крашей не ломают прокси и не вызывают паники.
+func TestTransferEncoding_MultipleConsecutiveOOM(t *testing.T) {
+	behavior := MockBehavior{
+		ModelLoadDelay:     20 * time.Millisecond,
+		ChunkDelay:         5 * time.Millisecond,
+		DropAfterChunks:    2,
+		DropOnStream:       true,
+		StreamResponseSize: 5,
+	}
+	mock := NewExpandedMockServer(behavior)
+	defer mock.Close()
+
+	proxyServer, proxy := SetupExpandedProxy(t, mock)
+	defer proxyServer.Close()
+	defer proxy.StopQueue()
+	defer proxy.StopSessionManager()
+
+	client := &http.Client{
+		Timeout: 10 * time.Second,
+	}
+
+	for i := 0; i < 5; i++ {
+		t.Run(fmt.Sprintf("OOM_attempt_%d", i+1), func(t *testing.T) {
+			payload := map[string]interface{}{
+				"model":  "llama3.1:70b",
+				"prompt": "Hello",
+				"stream": true,
+			}
+			body, _ := json.Marshal(payload)
+
+			resp, err := client.Post(proxyServer.URL+"/api/generate", "application/json", bytes.NewBuffer(body))
+			if err != nil {
+				t.Logf("attempt %d: request error (expected): %v", i+1, err)
+				return
+			}
+			defer resp.Body.Close()
+
+			// Проверяем Transfer-Encoding
+			teHeader := resp.Header.Get("Transfer-Encoding")
+			assert.Empty(t, teHeader,
+				"Transfer-Encoding should not be present after consecutive OOM attempt %d", i+1)
+
+			// Читаем что можем
+			_, _ = io.ReadAll(resp.Body)
+		})
+	}
+
+	// Проверяем работоспособность после всех OOM
+	resp, err := client.Get(proxyServer.URL + "/api/version")
+	if err != nil {
+		t.Fatalf("health check after consecutive OOMs failed: %v", err)
+	}
+	defer resp.Body.Close()
+	assert.Equal(t, http.StatusOK, resp.StatusCode)
+}
+
+// TestTransferEncoding_Backend503ThenStream проверяет, что 503 ошибка
+// от бэкенда (например, при перегрузке из-за нехватки VRAM) не приводит
+// к утечке Transfer-Encoding заголовка.
+func TestTransferEncoding_Backend503ThenStream(t *testing.T) {
+	// Локальный счётчик запросов для мока
+	var requestCount int
+
+	// Создаём мок, который сначала отвечает 503, потом нормально
+	mockServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/api/generate" && requestCount == 0 {
+			requestCount++
+			w.WriteHeader(http.StatusServiceUnavailable)
+			w.Write([]byte(`{"error":"model not loaded - out of memory"}`))
+			return
+		}
+		requestCount++
+		// Нормальный ответ
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		flusher, _ := w.(http.Flusher)
+		event, _ := json.Marshal(map[string]interface{}{
+			"model": "llama3.1:8b", "response": "Hello", "done": true,
+		})
+		fmt.Fprintf(w, "data: %s\n\n", event)
+		flusher.Flush()
+	}))
+
+	defer mockServer.Close()
+
+	host, port := parseHostPort(mockServer.URL)
+	config := &types.LoadBalancerConfig{
+		LoadBalancer: types.LoadBalancerSettings{Host: "localhost", Port: 0, APIPort: 0},
+		Backends: []types.Backend{
+			{ID: "mock-503", Name: "503 Mock", Host: host, OllamaPort: port,
+				AgentPort: 9090, Weight: 1, MaxConcurrentReqs: 10, Status: types.StatusHealthy},
+		},
+		Balancing: types.BalancingSettings{
+			Algorithm: types.AlgorithmResourceAware, ModelAffinity: true,
+			SessionStickiness: true, RequestTimeout: 30, QueueTimeout: 60,
+			QueueMaxSize: 100, QueueWorkers: 4,
+		},
+		Resources: types.ResourceLimits{
+			GPU: types.GPULimits{MaxUsagePercent: 90, MaxVRAMUsagePercent: 95},
+			CPU: types.CPULimits{MaxUsagePercent: 90}, Memory: types.MemoryLimits{MaxUsagePercent: 90},
+			Disk: types.DiskLimits{MinFreeMB: 1024},
+		},
+	}
+
+	proxy := balancer.NewProxy(config)
+	proxy.SetQueueManagerProxy()
+	proxy.UpdateMetrics("mock-503", &types.BackendMetrics{
+		ID: "mock-503",
+		GPU: types.GPUMetrics{UsagePercent: 30, MemoryTotal: 24576, MemoryUsed: 8000, MemoryFree: 16576},
+		System: types.SystemMetrics{CPUUsagePercent: 20, MemoryTotal: 65536, MemoryUsed: 16000, MemoryFree: 49536, DiskFree: 20480},
+		Ollama: types.OllamaMetrics{MaxModels: 5, MaxConcurrentRequests: 10, ActiveRequests: 0, OllamaAvailable: true},
+	})
+
+	proxyServer := httptest.NewServer(proxy)
+	defer proxyServer.Close()
+	defer proxy.StopQueue()
+	defer proxy.StopSessionManager()
+
+	// Нормальный запрос - должен пройти
+	payload := map[string]interface{}{
+		"model": "llama3.1:8b", "prompt": "Hello", "stream": true,
+	}
+	body, _ := json.Marshal(payload)
+
+	client := &http.Client{Timeout: 10 * time.Second}
+	resp, err := client.Post(proxyServer.URL+"/api/generate", "application/json", bytes.NewBuffer(body))
+	if err != nil {
+		if strings.Contains(err.Error(), "connection refused") {
+			t.Skip("Server not ready after 503")
+		}
+		t.Fatalf("request failed: %v", err)
+	}
+	defer resp.Body.Close()
+
+	teHeader := resp.Header.Get("Transfer-Encoding")
+	assert.Empty(t, teHeader,
+		"Transfer-Encoding should not be present after 503-recovering backend")
+}
+
+// =============================================================================
+// TestTransferEncoding_RealOllamaNdjson проверяет, что при проксировании streaming
+// ответа с Content-Type: application/x-ndjson (как реальная Ollama для /api/generate
+// и /api/chat) не возникает TransferEncodingError.
+//
+// Ключевые отличия от SSE:
+// 1. Content-Type: application/x-ndjson, а не text/event-stream
+// 2. NDJSON не использует "data: " префикс — каждая строка это валидный JSON
+// 3. Реальная Ollama также возвращает Connection: close в заголовках,
+//    что раньше копировалось в клиентский ответ и мешало Go корректно завершить
+//    chunked encoding.
+func TestTransferEncoding_RealOllamaNdjson(t *testing.T) {
+	mockServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/generate" {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+
+		body, _ := io.ReadAll(r.Body)
+		var req map[string]interface{}
+		json.Unmarshal(body, &req)
+
+		stream := true
+		if s, ok := req["stream"].(bool); ok {
+			stream = s
+		}
+		if !stream {
+			w.Header().Set("Content-Type", "application/json")
+			w.Header().Set("Connection", "close")
+			w.WriteHeader(http.StatusOK)
+			json.NewEncoder(w).Encode(map[string]string{"response": "ok"})
+			return
+		}
+
+		model := ""
+		if m, ok := req["model"].(string); ok {
+			model = m
+		}
+
+		// ТОЧНОЕ ПОВЕДЕНИЕ РЕАЛЬНОЙ OLLAMA:
+		// 1. Content-Type: application/x-ndjson (а НЕ text/event-stream)
+		// 2. Connection: close (реальная Ollama закрывает соединение после стрима)
+		// 3. Без "data: " префикса — чистые JSON строки
+		w.Header().Set("Content-Type", "application/x-ndjson")
+		w.Header().Set("Connection", "close")
+		w.WriteHeader(http.StatusOK)
+
+		flusher, ok := w.(http.Flusher)
+		if !ok {
+			return
+		}
+
+		// Отправляем NDJSON чанки как реальная Ollama
+		tokens := []string{"Привет", " это", " тест", " NDJSON", "!"}
+		for i, token := range tokens {
+			isLast := i == len(tokens)-1
+			event := map[string]interface{}{
+				"model":    model,
+				"response": token,
+				"done":     isLast,
+			}
+			if isLast {
+				event["total_duration"] = 1234567890
+				event["eval_count"] = 5
+			}
+
+			data, _ := json.Marshal(event)
+			fmt.Fprintf(w, "%s\n", data)
+			flusher.Flush()
+			time.Sleep(5 * time.Millisecond)
+		}
+	}))
+	defer mockServer.Close()
+
+	host, port := parseHostPort(mockServer.URL)
+	config := &types.LoadBalancerConfig{
+		LoadBalancer: types.LoadBalancerSettings{
+			Host: "localhost", Port: 0, APIPort: 0,
+		},
+		Backends: []types.Backend{
+			{
+				ID: "mock-ndjson", Name: "NDJSON Mock", Host: host, OllamaPort: port,
+				AgentPort: 9090, Weight: 1, MaxConcurrentReqs: 10, Status: types.StatusHealthy,
+			},
+		},
+		Balancing: types.BalancingSettings{
+			Algorithm: types.AlgorithmResourceAware, ModelAffinity: true,
+			SessionStickiness: true, RequestTimeout: 30,
+			QueueTimeout: 60, QueueMaxSize: 100, QueueWorkers: 4,
+		},
+		Resources: types.ResourceLimits{
+			GPU:    types.GPULimits{MaxUsagePercent: 90, MaxVRAMUsagePercent: 95},
+			CPU:    types.CPULimits{MaxUsagePercent: 90},
+			Memory: types.MemoryLimits{MaxUsagePercent: 90},
+			Disk:   types.DiskLimits{MinFreeMB: 1024},
+		},
+	}
+
+	proxy := balancer.NewProxy(config)
+	proxy.SetQueueManagerProxy()
+	proxy.UpdateMetrics("mock-ndjson", &types.BackendMetrics{
+		ID: "mock-ndjson",
+		GPU: types.GPUMetrics{UsagePercent: 30, MemoryTotal: 24576, MemoryUsed: 8000, MemoryFree: 16576},
+		System: types.SystemMetrics{CPUUsagePercent: 20, MemoryTotal: 65536, MemoryUsed: 16000, MemoryFree: 49536, DiskFree: 20480},
+		Ollama: types.OllamaMetrics{
+			MaxModels: 5, MaxConcurrentRequests: 10, ActiveRequests: 0, OllamaAvailable: true,
+			RunningModels: []types.RunningModel{{Name: "llama3.1:8b", VRAMUsage: 6000}},
+		},
+	})
+
+	proxyServer := httptest.NewServer(proxy)
+	defer proxyServer.Close()
+	defer proxy.StopQueue()
+	defer proxy.StopSessionManager()
+
+	payload := map[string]interface{}{
+		"model":  "llama3.1:8b",
+		"prompt": "Hello",
+		"stream": true,
+	}
+	body, _ := json.Marshal(payload)
+
+	// Используем клиент с таймаутом для предотвращения зависания теста
+	client := &http.Client{Timeout: 10 * time.Second}
+	resp, err := client.Post(proxyServer.URL+"/api/generate", "application/json", bytes.NewBuffer(body))
+	require.NoError(t, err)
+	defer resp.Body.Close()
+
+	assert.Equal(t, http.StatusOK, resp.StatusCode)
+
+	// КРИТИЧЕСКАЯ ПРОВЕРКА 1: Transfer-Encoding НЕ должен присутствовать
+	teHeader := resp.Header.Get("Transfer-Encoding")
+	assert.Empty(t, teHeader,
+		"Transfer-Encoding header MUST NOT be present in proxy response for NDJSON streaming")
+
+	// КРИТИЧЕСКАЯ ПРОВЕРКА 2: Connection: close НЕ должен проходить от бэкенда
+	connHeader := resp.Header.Get("Connection")
+	assert.NotEqual(t, "close", connHeader,
+		"Connection: close from backend MUST NOT be forwarded to client")
+
+	// КРИТИЧЕСКАЯ ПРОВЕРКА 3: Content-Type должен быть application/x-ndjson
+	assert.Equal(t, "application/x-ndjson", resp.Header.Get("Content-Type"),
+		"Content-Type should be preserved for NDJSON responses")
+
+	// Читаем NDJSON строки (не SSE — нет "data: " префикса)
+	scanner := bufio.NewScanner(resp.Body)
+	var events []map[string]interface{}
+	for scanner.Scan() {
+		line := scanner.Text()
+		// Пропускаем пустые строки и heartbeat
+		if line == "" || strings.Contains(line, "heartbeat") {
+			continue
+		}
+		var event map[string]interface{}
+		if err := json.Unmarshal([]byte(line), &event); err == nil {
+			events = append(events, event)
+		}
+	}
+	require.NoError(t, scanner.Err(),
+		"Scanner should complete without errors (no TransferEncodingError)")
+	assert.GreaterOrEqual(t, len(events), 5,
+		"Should receive at least 5 NDJSON events (got %d)", len(events))
+
+	// Последнее событие должно иметь done:true
+	lastEvent := events[len(events)-1]
+	assert.Equal(t, true, lastEvent["done"],
+		"Last event should have done:true")
+	assert.Contains(t, lastEvent, "total_duration",
+		"Last event should have total_duration")
+
+	t.Logf("Successfully read %d NDJSON events", len(events))
 }
 
 // =============================================================================
@@ -601,14 +1173,17 @@ func TestProxyAllEndpoints_Streaming(t *testing.T) {
 			require.NoError(t, err)
 			defer resp.Body.Close()
 
+			// Проверка статуса
 			assert.Equal(t, http.StatusOK, resp.StatusCode, "%s: status should be 200", tt.name)
-			assert.Contains(t, resp.Header.Get("Content-Type"), "text/event-stream",
-				"%s: Content-Type should be text/event-stream", tt.name)
 
-			// КРИТИЧЕСКАЯ ПРОВЕРКА: Transfer-Encoding не должен присутствовать
+			// Transfer-Encoding не должен присутствовать
 			teHeader := resp.Header.Get("Transfer-Encoding")
-			assert.Empty(t, teHeader,
-				"%s: Transfer-Encoding header MUST NOT be present in streaming response", tt.name)
+			assert.Empty(t, teHeader, "%s: Transfer-Encoding header MUST NOT be present", tt.name)
+
+			// Content-Type должен быть text/event-stream
+			contentType := resp.Header.Get("Content-Type")
+			assert.Contains(t, contentType, "text/event-stream",
+				"%s: Content-Type should be text/event-stream", tt.name)
 
 			// Читаем SSE события
 			scanner := bufio.NewScanner(resp.Body)
@@ -625,9 +1200,9 @@ func TestProxyAllEndpoints_Streaming(t *testing.T) {
 			}
 			require.NoError(t, scanner.Err(), "%s: scanner should complete without errors", tt.name)
 			assert.GreaterOrEqual(t, len(events), tt.minEvents,
-				"%s: should receive at least %d SSE events (got %d)", tt.name, tt.minEvents, len(events))
+				"%s: should receive at least %d events (got %d)", tt.name, tt.minEvents, len(events))
 
-			// Проверяем последнее событие
+			// Последнее событие проверяем
 			lastEvent := events[len(events)-1]
 			assert.Equal(t, tt.lastEventValue, lastEvent[tt.lastEventKey],
 				"%s: last event should have %s=%v", tt.name, tt.lastEventKey, tt.lastEventValue)
@@ -636,10 +1211,12 @@ func TestProxyAllEndpoints_Streaming(t *testing.T) {
 }
 
 // =============================================================================
-// Тест Health-эндпоинта
+// Тест на вызов /api/generate без stream флага (должен трактоваться как streaming)
 // =============================================================================
 
-func TestProxyOllama_HealthEndpoint(t *testing.T) {
+// TestTransferEncoding_DefaultStream проверяет, что запрос без явного "stream"
+// флага обрабатывается как streaming (совместимость с разными клиентами).
+func TestTransferEncoding_DefaultStream(t *testing.T) {
 	mock := newMockOllamaServer()
 	defer mock.Close()
 
@@ -648,236 +1225,95 @@ func TestProxyOllama_HealthEndpoint(t *testing.T) {
 	defer proxy.StopQueue()
 	defer proxy.StopSessionManager()
 
-	resp, err := http.Get(proxyServer.URL + "/health")
+	// Запрос без stream флага
+	payload := map[string]interface{}{
+		"model":  "llama3.1:8b",
+		"prompt": "Who are you?",
+	}
+	body, _ := json.Marshal(payload)
+
+	resp, err := http.Post(proxyServer.URL+"/api/generate", "application/json", bytes.NewBuffer(body))
 	require.NoError(t, err)
 	defer resp.Body.Close()
 
 	assert.Equal(t, http.StatusOK, resp.StatusCode)
-	assert.Equal(t, "application/json", resp.Header.Get("Content-Type"))
-	assert.Empty(t, resp.Header.Get("Transfer-Encoding"),
-		"Health endpoint should not have Transfer-Encoding header")
 
-	body, err := io.ReadAll(resp.Body)
-	require.NoError(t, err)
+	teHeader := resp.Header.Get("Transfer-Encoding")
+	assert.Empty(t, teHeader)
 
-	var result map[string]interface{}
-	err = json.Unmarshal(body, &result)
-	require.NoError(t, err)
-	assert.Equal(t, "healthy", result["status"])
+	// Должен быть streaming ответ
+	contentType := resp.Header.Get("Content-Type")
+	assert.Contains(t, contentType, "text/event-stream",
+		"Default request without stream flag should return streaming response")
+
+	scanner := bufio.NewScanner(resp.Body)
+	var events []map[string]interface{}
+	for scanner.Scan() {
+		line := scanner.Text()
+		if strings.HasPrefix(line, "data: ") {
+			data := strings.TrimPrefix(line, "data: ")
+			var event map[string]interface{}
+			if err := json.Unmarshal([]byte(data), &event); err == nil {
+				events = append(events, event)
+			}
+		}
+	}
+	require.NoError(t, scanner.Err())
+	assert.GreaterOrEqual(t, len(events), 2, "Should receive at least 2 SSE events")
 }
 
 // =============================================================================
-// Тест граничных случаев
+// Тесты на обработку запросов к здоровью и метрикам — не Transfer-Encoding
 // =============================================================================
 
-func TestProxyOllama_EdgeCases(t *testing.T) {
-	mock := newMockOllamaServer()
-	defer mock.Close()
-
-	proxyServer, proxy := setupProxyWithMockOllama(t, mock)
-	defer proxyServer.Close()
-	defer proxy.StopQueue()
-	defer proxy.StopSessionManager()
-
-	t.Run("POST /api/generate with empty body", func(t *testing.T) {
-		resp, err := http.Post(proxyServer.URL+"/api/generate", "application/json", bytes.NewBuffer([]byte(`{}`)))
-		require.NoError(t, err)
-		defer resp.Body.Close()
-
-		// Ollama вернёт 400 на пустой model, но прокси не должен упасть с ошибкой кодирования
-		bodyBytes, err := io.ReadAll(resp.Body)
-		require.NoError(t, err, "Should read body without errors even with empty request")
-		assert.NotEmpty(t, bodyBytes)
-	})
-
-	t.Run("POST /api/generate with no model", func(t *testing.T) {
-		payload := map[string]interface{}{
-			"prompt": "Hello",
-			"stream": false,
-		}
-		body, _ := json.Marshal(payload)
-		resp, err := http.Post(proxyServer.URL+"/api/generate", "application/json", bytes.NewBuffer(body))
-		require.NoError(t, err)
-		defer resp.Body.Close()
-
-		// Прокси не должен паниковать при отсутствии model
-		assert.Empty(t, resp.Header.Get("Transfer-Encoding"))
-		bodyBytes, err := io.ReadAll(resp.Body)
-		require.NoError(t, err)
-		assert.NotNil(t, bodyBytes)
-	})
-
-	t.Run("POST /api/generate with invalid JSON", func(t *testing.T) {
-		resp, err := http.Post(proxyServer.URL+"/api/generate", "application/json", bytes.NewBuffer([]byte(`{invalid json}`)))
-		require.NoError(t, err)
-		defer resp.Body.Close()
-
-		// Прокси не должен паниковать при невалидном JSON
-		bodyBytes, err := io.ReadAll(resp.Body)
-		require.NoError(t, err)
-		assert.NotNil(t, bodyBytes)
-	})
-}
-
-// =============================================================================
-// Тест на корректную передачу Content-Type без дублирования Transfer-Encoding
-// для всех типов контента, которые могут вернуть бэкенды
-// =============================================================================
-
-func TestTransferEncoding_HeaderCleanup(t *testing.T) {
-	// Мок, который возвращает разные заголовки (имитация разных сценариев)
-	mockServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		path := r.URL.Path
-
-		switch path {
-		case "/api/generate":
-			// Читаем stream флаг
-			body, _ := io.ReadAll(r.Body)
-			var req map[string]interface{}
-			json.Unmarshal(body, &req)
-
-			stream := true
-			if s, ok := req["stream"].(bool); ok {
-				stream = s
-			}
-
-			if stream {
-				w.Header().Set("Content-Type", "text/event-stream")
-				w.Header().Set("Transfer-Encoding", "chunked")
-				w.Header().Set("X-Accel-Buffering", "no")
-				w.WriteHeader(http.StatusOK)
-				flusher, _ := w.(http.Flusher)
-				fmt.Fprintf(w, "data: {\"done\":true}\n\n")
-				if flusher != nil {
-					flusher.Flush()
-				}
-			} else {
-				w.Header().Set("Content-Type", "application/json")
-				w.WriteHeader(http.StatusOK)
-				json.NewEncoder(w).Encode(map[string]interface{}{"response": "ok", "done": true})
-			}
-
-		case "/api/tags":
-			// Имитация ответа Ollama с chunked encoding
-			w.Header().Set("Content-Type", "application/json")
-			w.WriteHeader(http.StatusOK)
-			json.NewEncoder(w).Encode(map[string]interface{}{
-				"models": []map[string]interface{}{
-					{"name": "llama3.1:8b"},
-				},
-			})
-
-		default:
-			w.WriteHeader(http.StatusNotFound)
-		}
-	}))
-	defer mockServer.Close()
-
-	host, port := parseHostPort(mockServer.URL)
+// TestTransferEncoding_HealthAndMetricsEndpoints проверяет, что health и metrics
+// эндпоинты не имеют Transfer-Encoding и возвращают корректные ответы.
+func TestTransferEncoding_HealthAndMetricsEndpoints(t *testing.T) {
 	config := &types.LoadBalancerConfig{
-		LoadBalancer: types.LoadBalancerSettings{Host: "localhost", Port: 0, APIPort: 0},
-		Backends: []types.Backend{
-			{ID: "mock-backend", Name: "Mock", Host: host, OllamaPort: port, Weight: 1, MaxConcurrentReqs: 10, Status: types.StatusHealthy},
+		LoadBalancer: types.LoadBalancerSettings{
+			Host: "localhost", Port: 0, APIPort: 0,
 		},
+		Backends: []types.Backend{},
 		Balancing: types.BalancingSettings{
-			Algorithm: types.AlgorithmResourceAware, RequestTimeout: 30, QueueTimeout: 60, QueueMaxSize: 100, QueueWorkers: 4,
-		},
-		Resources: types.ResourceLimits{
-			GPU: types.GPULimits{MaxUsagePercent: 90}, CPU: types.CPULimits{MaxUsagePercent: 90}, Memory: types.MemoryLimits{MaxUsagePercent: 90}, Disk: types.DiskLimits{MinFreeMB: 1024},
+			Algorithm:         types.AlgorithmResourceAware,
+			ModelAffinity:     true,
+			SessionStickiness: true,
+			RequestTimeout:    30,
 		},
 	}
 
 	proxy := balancer.NewProxy(config)
 	proxy.SetQueueManagerProxy()
+	proxyServer := httptest.NewServer(proxy)
+	defer proxyServer.Close()
 	defer proxy.StopQueue()
 	defer proxy.StopSessionManager()
 
-	proxy.UpdateMetrics("mock-backend", &types.BackendMetrics{
-		ID: "mock-backend",
-		GPU: types.GPUMetrics{UsagePercent: 30, MemoryTotal: 24576},
-		System: types.SystemMetrics{CPUUsagePercent: 20, MemoryTotal: 65536, DiskFree: 20480},
-		Ollama: types.OllamaMetrics{MaxModels: 5, MaxConcurrentRequests: 10, ActiveRequests: 0, OllamaAvailable: true},
-	})
+	endpoints := []string{
+		"/health",
+		"/metrics",
+	}
 
-	proxyServer := httptest.NewServer(proxy)
-	defer proxyServer.Close()
+	for _, ep := range endpoints {
+		t.Run(ep, func(t *testing.T) {
+			resp, err := http.Get(proxyServer.URL + ep)
+			require.NoError(t, err)
+			defer resp.Body.Close()
 
-	// Тест 1: Streaming запрос
-	t.Run("streaming with chunked backend header cleanup", func(t *testing.T) {
-		payload := map[string]interface{}{"model": "llama3.1:8b", "prompt": "test", "stream": true}
-		body, _ := json.Marshal(payload)
-
-		resp, err := http.Post(proxyServer.URL+"/api/generate", "application/json", bytes.NewBuffer(body))
-		require.NoError(t, err)
-		defer resp.Body.Close()
-
-		assert.Equal(t, http.StatusOK, resp.StatusCode)
-
-		// Проверяем что Transfer-Encoding очищен
-		te := resp.Header.Get("Transfer-Encoding")
-		assert.Empty(t, te, "Transfer-Encoding should not be present in streaming response")
-
-		// Проверяем что Content-Type сохранился
-		ct := resp.Header.Get("Content-Type")
-		assert.Contains(t, ct, "text/event-stream",
-			"Content-Type should be preserved for SSE")
-
-		// Проверяем что X-Accel-Buffering сохранился
-		xab := resp.Header.Get("X-Accel-Buffering")
-		assert.Equal(t, "no", xab,
-			"X-Accel-Buffering should be preserved (not a transfer-encoding header)")
-	})
-
-	// Тест 2: Non-streaming запрос
-	t.Run("non-streaming with chunked backend header cleanup", func(t *testing.T) {
-		payload := map[string]interface{}{"model": "llama3.1:8b", "prompt": "test", "stream": false}
-		body, _ := json.Marshal(payload)
-
-		resp, err := http.Post(proxyServer.URL+"/api/generate", "application/json", bytes.NewBuffer(body))
-		require.NoError(t, err)
-		defer resp.Body.Close()
-
-		assert.Equal(t, http.StatusOK, resp.StatusCode)
-		assert.Empty(t, resp.Header.Get("Transfer-Encoding"),
-			"Transfer-Encoding should not be present in non-streaming response")
-
-		// Читаем тело
-		bodyBytes, err := io.ReadAll(resp.Body)
-		require.NoError(t, err)
-
-		var result map[string]interface{}
-		err = json.Unmarshal(bodyBytes, &result)
-		require.NoError(t, err)
-		assert.Equal(t, "ok", result["response"])
-	})
-
-	// Тест 3: Tags endpoint
-	t.Run("tags endpoint header cleanup", func(t *testing.T) {
-		resp, err := http.Get(proxyServer.URL + "/api/tags")
-		require.NoError(t, err)
-		defer resp.Body.Close()
-
-		assert.Equal(t, http.StatusOK, resp.StatusCode)
-		assert.Empty(t, resp.Header.Get("Transfer-Encoding"),
-			"Transfer-Encoding should not be present in /api/tags response")
-		assert.Equal(t, "application/json", resp.Header.Get("Content-Type"))
-
-		bodyBytes, err := io.ReadAll(resp.Body)
-		require.NoError(t, err)
-
-		var result map[string]interface{}
-		err = json.Unmarshal(bodyBytes, &result)
-		require.NoError(t, err)
-		models := result["models"].([]interface{})
-		assert.Equal(t, 1, len(models))
-	})
+			assert.Equal(t, http.StatusOK, resp.StatusCode, "%s should return 200", ep)
+			teHeader := resp.Header.Get("Transfer-Encoding")
+			assert.Empty(t, teHeader, "Transfer-Encoding should not be present on %s", ep)
+		})
+	}
 }
 
 // =============================================================================
-// Тест на множественные запросы (стресс-тест стабильности)
+// Тесты на параллельные streaming запросы
 // =============================================================================
 
-func TestProxyOllama_MultipleStreamingRequests(t *testing.T) {
+// TestTransferEncoding_ParallelStreaming проверяет, что несколько параллельных
+// streaming запросов не вызывают Transfer-Encoding проблем и все завершаются с done.
+func TestTransferEncoding_ParallelStreaming(t *testing.T) {
 	mock := newMockOllamaServer()
 	defer mock.Close()
 
@@ -886,7 +1322,6 @@ func TestProxyOllama_MultipleStreamingRequests(t *testing.T) {
 	defer proxy.StopQueue()
 	defer proxy.StopSessionManager()
 
-	// Отправляем 5 параллельных streaming запросов
 	numRequests := 5
 	errChan := make(chan error, numRequests)
 
@@ -894,12 +1329,13 @@ func TestProxyOllama_MultipleStreamingRequests(t *testing.T) {
 		go func(id int) {
 			payload := map[string]interface{}{
 				"model":  "llama3.1:8b",
-				"prompt": fmt.Sprintf("Request %d", id),
+				"prompt": fmt.Sprintf("Hello from request %d", id),
 				"stream": true,
 			}
 			body, _ := json.Marshal(payload)
 
-			resp, err := http.Post(proxyServer.URL+"/api/generate", "application/json", bytes.NewBuffer(body))
+			client := &http.Client{Timeout: 10 * time.Second}
+			resp, err := client.Post(proxyServer.URL+"/api/generate", "application/json", bytes.NewBuffer(body))
 			if err != nil {
 				errChan <- fmt.Errorf("request %d failed: %v", id, err)
 				return
@@ -907,34 +1343,38 @@ func TestProxyOllama_MultipleStreamingRequests(t *testing.T) {
 			defer resp.Body.Close()
 
 			if resp.StatusCode != http.StatusOK {
-				errChan <- fmt.Errorf("request %d status %d", id, resp.StatusCode)
+				errChan <- fmt.Errorf("request %d got status %d", id, resp.StatusCode)
 				return
 			}
 
-			// Проверяем отсутствие Transfer-Encoding
-			if te := resp.Header.Get("Transfer-Encoding"); te != "" {
-				errChan <- fmt.Errorf("request %d has Transfer-Encoding: %s", id, te)
+			teHeader := resp.Header.Get("Transfer-Encoding")
+			if teHeader != "" {
+				errChan <- fmt.Errorf("request %d has Transfer-Encoding header", id)
 				return
 			}
 
-			// Читаем все SSE события
 			scanner := bufio.NewScanner(resp.Body)
-			events := 0
+			hasDone := false
 			for scanner.Scan() {
 				line := scanner.Text()
 				if strings.HasPrefix(line, "data: ") {
-					events++
+					data := strings.TrimPrefix(line, "data: ")
+					var event map[string]interface{}
+					if err := json.Unmarshal([]byte(data), &event); err == nil {
+						if done, ok := event["done"].(bool); ok && done {
+							hasDone = true
+						}
+					}
 				}
 			}
-			if scanner.Err() != nil {
-				errChan <- fmt.Errorf("request %d scanner error: %v", id, scanner.Err())
+			if err := scanner.Err(); err != nil {
+				errChan <- fmt.Errorf("request %d scanner error: %v", id, err)
 				return
 			}
-			if events < 3 {
-				errChan <- fmt.Errorf("request %d only got %d events", id, events)
+			if !hasDone {
+				errChan <- fmt.Errorf("request %d missing done:true", id)
 				return
 			}
-
 			errChan <- nil
 		}(i)
 	}

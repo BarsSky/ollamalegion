@@ -29,7 +29,7 @@ func (p *Proxy) dispatchRequest(req *QueuedRequest) DispatchResult {
 
 
 	// Получаем кандидатов с 4 приоритетами
-	candidates := p.expandCandidates(model)
+	candidates := p.expandCandidates(model, nil)
 
 	// === Stage 1: Model Affinity (LOADED) - P1 ===
 	for _, group := range candidates {
@@ -122,7 +122,7 @@ func (p *Proxy) dispatchRequest(req *QueuedRequest) DispatchResult {
 	}
 
 	// === Stage 4: Fallback по ресурсам (P4) ===
-	backendID := p.selectByResources()
+	backendID := p.selectByResources(nil)
 	if backendID != "" {
 		if p.tryAcquireSlot(backendID) {
 			dispatchType := "fallback_load"

@@ -14,6 +14,7 @@ import (
 )
 
 // handleStreamingResponse - обработка streaming ответа с использованием Flusher.
+// Поддерживает оба движка: Ollama (SSE/NDJSON) и llama.cpp (SSE/chunked).
 // Включает heartbeat для поддержания соединения и улучшенную обработку ошибок.
 // Go's net/http автоматически управляет chunked transfer encoding.
 // Ручная запись chunked terminator запрещена — это приводит к двойному chunking'у

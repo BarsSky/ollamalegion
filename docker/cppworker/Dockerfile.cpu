@@ -1,17 +1,8 @@
 # =============================================================================
 # CppBackend Worker CPU — реальный llama.cpp без CUDA (CPU-only инференс)
 # =============================================================================
-# Multi-stage build:
-#   1. llama-builder — сборка статической libllama.a (CPU-only, без GGML_CUDA)
-#   2. builder       — сборка Go-бинари с CGO_ENABLED=1 (без тегов = реальный llama.cpp)
-#   3. runtime       — Alpine с собранным бинарником
-# =============================================================================
 # Сборка:
 #   docker build -t ollama-legion/cppworker:cpu --target runtime -f docker/cppworker/Dockerfile.cpu .
-#
-# Запуск через docker-compose:
-#   docker compose -f deployments/docker-compose.full.yml up -d                    # default профиль
-#   docker compose -f deployments/docker-compose.full.yml --profile cpu up -d      # явно CPU
 # =============================================================================
 
 # -----------------------------------------------------------------------------
@@ -19,18 +10,25 @@
 # -----------------------------------------------------------------------------
 FROM alpine:latest AS llama-builder
 
-RUN apk add --no-cache git build-base cmake
+RUN apk add --no-cache git build-base cmake linux-headers
 
 WORKDIR /build/llama.cpp
 COPY c/llama.cpp .
 
-# CPU-only сборка (без GGML_CUDA=1)
-RUN make libllama.a -j$(nproc) || \
-    (echo "WARNING: Makefile failed, trying cmake fallback..." && \
-     mkdir -p build && cd build && \
-     cmake .. -DLLAMA_CUDA=OFF -DLLAMA_METAL=OFF -DLLAMA_VULKAN=OFF && \
-     cmake --build . --config Release -j$(nproc) --target llama && \
-     cp src/libllama.a ../)
+# Инициализируем git-репозиторий (CMake требует git для генерации build-info)
+RUN git init && git add -A && git -c user.name=docker -c user.email=docker@build commit -m "llama.cpp"
+
+# CMake сборка CPU-only (без CUDA, Metal, Vulkan)
+RUN mkdir -p build && cd build && \
+    cmake .. \
+      -DGGML_CUDA=OFF \
+      -DLLAMA_METAL=OFF \
+      -DLLAMA_VULKAN=OFF \
+      -DGGML_BLAS=OFF \
+      -DGGML_CCACHE=OFF \
+      -DBUILD_SHARED_LIBS=OFF && \
+    cmake --build . --config Release -j$(nproc) --target llama && \
+    cp src/libllama.a ../
 
 # -----------------------------------------------------------------------------
 # Stage 2: builder — Go сборка с CGO (реальный llama.cpp)

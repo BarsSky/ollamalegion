@@ -23,8 +23,11 @@ RUN git init && git add -A && git -c user.name=docker -c user.email=docker@build
 RUN mkdir -p build && cd build && \
     cmake .. \
       -DGGML_CUDA=ON \
-      -DCMAKE_CUDA_ARCHITECTURES="native" \
+      -DCMAKE_CUDA_ARCHITECTURES="70;75;80;86;89;90" \
       -DGGML_CCACHE=OFF \
+      -DLLAMA_CURL=OFF \
+      -DLLAMA_BUILD_TESTS=OFF \
+      -DLLAMA_BUILD_EXAMPLES=OFF \
       -DBUILD_SHARED_LIBS=OFF && \
     cmake --build . --config Release -j$(nproc) --target llama && \
     cp src/libllama.a ../

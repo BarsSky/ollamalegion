@@ -186,5 +186,5 @@
     "headerName": "X-API-Token"
   },
   "initialized": false,
-  "backendEngine": "ollama_api"
+  "backendEngine": "llama_cpp"
 }

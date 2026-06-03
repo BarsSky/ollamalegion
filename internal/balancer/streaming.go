@@ -72,10 +72,27 @@ func (p *Proxy) handleStreamingResponse(w http.ResponseWriter, r *http.Request, 
 	lastActivity := time.Now()
 	var clientDisconnected atomic.Bool
 
+	// Устанавливаем read-deadline на backend-соединение, чтобы зависший стрим
+	// (SIGSEGV в llama.cpp / timeout между чанками) корректно детектировался
+	// как ошибка чтения, а не молчаливо "успешно завершался" по EOF.
+	// Дедлайн продлевается на каждом успешном чанке.
+	idleTimeout := p.getStreamingIdleTimeout()
+	if idleTimeout > 0 {
+		if rc, ok := resp.Body.(interface {
+			SetReadDeadline(time.Time) error
+		}); ok {
+			if err := rc.SetReadDeadline(time.Now().Add(idleTimeout)); err != nil {
+				logger.Get().Warnw("failed to set initial read deadline on backend body",
+					"backend", backendID, "model", modelFromCtx, "error", err)
+			}
+		}
+	}
+
 	// Heartbeat goroutine для SSE и NDJSON — предотвращает разрыв соединения nginx/браузером
 	// при длительных паузах между токенами.
 	// Для SSE: отправляется ":heartbeat\n\n" (SSE-комментарий, игнорируется клиентами).
-	// Для NDJSON: отправляется "{\"heartbeat\":true}\n" (валидная NDJSON-строка, не ломает парсер).
+	// Для NDJSON: отправляется "\n" (пустая строка — валидный NDJSON, игнорируется парсерами,
+	// не содержит полей, которые могут сломать OpenWebUI).
 	var heartbeatStop chan struct{}
 	var heartbeatWG sync.WaitGroup
 	if isSSE || isNDJSON {
@@ -99,12 +116,24 @@ func (p *Proxy) handleStreamingResponse(w http.ResponseWriter, r *http.Request, 
 					if sessionID != "" && p.config.Balancing.SessionStickiness {
 						p.sessionMgr.HeartbeatStream(sessionID)
 					}
-					var heartbeatBytes []byte
-					if isSSE {
-						heartbeatBytes = []byte(":heartbeat\n\n")
-					} else {
-						heartbeatBytes = []byte("{\"heartbeat\":true}\n")
+				var heartbeatBytes []byte
+				if isSSE {
+					heartbeatBytes = []byte(":heartbeat\n\n")
+				} else {
+					// NDJSON-heartbeat с явным model+done:false+пустым message —
+					// именно этот формат OpenWebUI гарантированно игнорирует
+					// как «пустой чанк», но не считает «новым сообщением» и не сбрасывает
+					// ассемблирование контента. Раньше здесь был «{}\n», из-за чего
+					// при коротких паузах между токенами UI обрывал склейку
+					// и второе сообщение в чате рендерилось пустым.
+					hb := map[string]interface{}{
+						"model":   modelFromCtx,
+						"done":    false,
+						"message": map[string]interface{}{"role": "assistant", "content": ""},
 					}
+					hbJSON, _ := json.Marshal(hb)
+					heartbeatBytes = append(hbJSON, '\n')
+				}
 					_, err := w.Write(heartbeatBytes)
 					if err != nil {
 						logger.Get().Warnw("streaming heartbeat write failed, stopping heartbeat",
@@ -200,6 +229,14 @@ func (p *Proxy) handleStreamingResponse(w http.ResponseWriter, r *http.Request, 
 			chunkCount++
 			lastActivity = time.Now()
 			flusher.Flush()
+			// Продлеваем read-deadline — пока идут данные, бэкенд жив.
+			if idleTimeout > 0 {
+				if rc, ok := resp.Body.(interface {
+					SetReadDeadline(time.Time) error
+				}); ok {
+					_ = rc.SetReadDeadline(time.Now().Add(idleTimeout))
+				}
+			}
 		}
 		if err != nil {
 			if err == io.EOF {

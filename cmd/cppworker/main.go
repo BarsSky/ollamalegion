@@ -37,7 +37,7 @@ var (
 	ctxSize       = flag.Int("ctx-size", 4096, "Default context size")
 	batchSize     = flag.Int("batch-size", 512, "Default batch size")
 	gpuLayers     = flag.Int("gpu-layers", -1, "GPU layers (-1=all, 0=CPU)")
-	flashAttn     = flag.Bool("flash-attn", true, "Enable Flash Attention")
+	flashAttn     = flag.Int("flash-attn", -1, "Flash Attention type: -1=auto, 0=disabled, 1=enabled")
 	numa          = flag.Bool("numa", false, "Enable NUMA optimization")
 	noMmap        = flag.Bool("no-mmap", false, "Disable mmap")
 	verbose       = flag.Bool("verbose", false, "Verbose logging")
@@ -145,9 +145,13 @@ func writeError(w http.ResponseWriter, status int, msg string) {
 // ============================================================
 
 func handleHealth(w http.ResponseWriter, r *http.Request) {
+	version := "initializing"
+	if backend != nil {
+		version = backend.Version()
+	}
 	writeJSON(w, http.StatusOK, map[string]string{
 		"status":  "ok",
-		"version": backend.Version(),
+		"version": version,
 	})
 }
 
@@ -190,7 +194,7 @@ type loadModelRequest struct {
 	ContextSize *int      `json:"contextSize,omitempty"`
 	BatchSize   *int      `json:"batchSize,omitempty"`
 	TensorSplit []float32 `json:"tensorSplit,omitempty"`
-	FlashAttn   *bool     `json:"flashAttn,omitempty"`
+	FlashAttnType *int     `json:"flashAttn,omitempty"`
 	NUMA        *bool     `json:"numa,omitempty"`
 	UseMmap     *bool     `json:"useMmap,omitempty"`
 }
@@ -207,6 +211,38 @@ func defaultIntPtr(v *int, def int) int {
 		return def
 	}
 	return *v
+}
+
+// isMemorySlotError — определяет, является ли ошибка llama.cpp "memory slot" leak.
+// После такой ошибки контекст модели остаётся в неконсистентном состоянии
+// и последующие decode-вызовы также будут падать. Единственный надёжный путь —
+// перезапустить процесс, чтобы docker-compose поднял контейнер заново с чистым VRAM.
+func isMemorySlotError(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := err.Error()
+	return strings.Contains(msg, "failed to find a memory slot") ||
+		strings.Contains(msg, "memory slot") ||
+		strings.Contains(msg, "no slot")
+}
+
+// maybeRestartOnMemorySlotError — если err связан с memory slot leak,
+// логируем критическую ситуацию и завершаем процесс. Docker restart policy
+// (например, `restart: unless-stopped` или `restart: on-failure`) перезапустит
+// контейнер с чистым состоянием. Это устраняет долгосрочный context-slot leak
+// в llama.cpp, который не освобождается при decode-исключениях.
+func maybeRestartOnMemorySlotError(err error, modelName string) {
+	if !isMemorySlotError(err) {
+		return
+	}
+	logger.Get().Errorw("CRITICAL: memory slot leak detected in llama.cpp; restarting process to recover",
+		"model", modelName, "error", err.Error())
+	// Даём немного времени, чтобы HTTP-ответ клиенту завершился (если стрим уже частично отправлен).
+	// Но в случае streaming — клиент уже получил done:error и disconnect'нулся,
+	// так что задержка не критична.
+	time.Sleep(200 * time.Millisecond)
+	os.Exit(1)
 }
 
 func handleLoadModel(w http.ResponseWriter, r *http.Request) {
@@ -271,7 +307,7 @@ func handleLoadModel(w http.ResponseWriter, r *http.Request) {
 		GPULayers:   defaultIntPtr(req.GPULayers, -1),
 		ContextSize: defaultIntPtr(req.ContextSize, *ctxSize),
 		BatchSize:   defaultIntPtr(req.BatchSize, *batchSize),
-		FlashAttn:   defaultBoolPtr(req.FlashAttn, *flashAttn),
+		FlashAttnType: defaultIntPtr(req.FlashAttnType, *flashAttn),
 		NUMA:        defaultBoolPtr(req.NUMA, *numa),
 		UseMmap:     defaultBoolPtr(req.UseMmap, !*noMmap),
 		TensorSplit: req.TensorSplit,
@@ -283,7 +319,7 @@ func handleLoadModel(w http.ResponseWriter, r *http.Request) {
 		"gpuLayers", opts.GPULayers,
 		"ctxSize", opts.ContextSize,
 		"batchSize", opts.BatchSize,
-		"flashAttn", opts.FlashAttn,
+		"flashAttnType", opts.FlashAttnType,
 		"numa", opts.NUMA,
 		"tensorSplit", opts.TensorSplit)
 
@@ -451,13 +487,16 @@ func handleGenerate(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, resp)
 }
 
+// writeStreamResponse — streaming ответ в формате NDJSON (application/x-ndjson),
+// как реальная Ollama для /api/generate и /api/chat.
+// Каждая строка — валидный JSON объект с полями model, response, done.
 func writeStreamResponse(w http.ResponseWriter, r *http.Request, modelName, prompt string, params bridge.GenerationParams) {
 	flusher, ok := w.(http.Flusher)
 	if !ok {
 		writeError(w, http.StatusInternalServerError, "streaming not supported")
 		return
 	}
-	w.Header().Set("Content-Type", "text/event-stream")
+	w.Header().Set("Content-Type", "application/x-ndjson")
 	w.Header().Set("Cache-Control", "no-cache")
 	w.Header().Set("Connection", "keep-alive")
 	ctx := r.Context()
@@ -469,32 +508,49 @@ func writeStreamResponse(w http.ResponseWriter, r *http.Request, modelName, prom
 			return false
 		default:
 		}
-		data := streamChunk{Model: modelName, Token: token, Done: false}
-		jsonData, _ := json.Marshal(data)
-		fmt.Fprintf(w, "data: %s\n\n", jsonData)
+		chunk := map[string]interface{}{
+			"model":    modelName,
+			"response": token,
+			"done":     false,
+		}
+		jsonData, _ := json.Marshal(chunk)
+		fmt.Fprintf(w, "%s\n", jsonData)
 		flusher.Flush()
 		tokens++
 		return true
 	}
 	if err := backend.GenerateStream(modelName, prompt, params, callback); err != nil {
-		errJSON, _ := json.Marshal(streamChunk{Model: modelName, Done: true})
-		fmt.Fprintf(w, "data: %s\n\n", errJSON)
+		// ВАЖНО: при memory slot leak контекст модели в llama.cpp не освобождается
+		// и все последующие decode будут падать. Перезапускаем процесс — docker-compose
+		// поднимет контейнер заново с чистым VRAM (это безопаснее, чем пытаться
+		// очистить KV-кэш вручную в bridge.c).
+		maybeRestartOnMemorySlotError(err, modelName)
+		errChunk := map[string]interface{}{
+			"model": modelName,
+			"done":  true,
+			"error": err.Error(),
+		}
+		errJSON, _ := json.Marshal(errChunk)
+		fmt.Fprintf(w, "%s\n", errJSON)
 		flusher.Flush()
 		return
 	}
 	duration := time.Since(start)
-	finalJSON, _ := json.Marshal(streamChunk{Model: modelName, Done: true})
-	fmt.Fprintf(w, "data: %s\n\n", finalJSON)
 	tps := float64(0)
 	if duration.Seconds() > 0 {
 		tps = float64(tokens) / duration.Seconds()
 	}
-	metricsData := map[string]interface{}{
-		"model": modelName, "tokens": tokens,
-		"durationMs": duration.Milliseconds(), "tokensPerSec": tps,
+	// Финальный done-чанк с полной статистикой (как в Ollama)
+	doneChunk := map[string]interface{}{
+		"model":              modelName,
+		"done":               true,
+		"total_duration":     duration.Microseconds() * 1000,
+		"eval_count":         tokens,
+		"eval_duration":      duration.Microseconds() * 1000,
+		"tokens_per_second":  tps,
 	}
-	metricsJSON, _ := json.Marshal(metricsData)
-	fmt.Fprintf(w, "event: metrics\ndata: %s\n\n", metricsJSON)
+	doneJSON, _ := json.Marshal(doneChunk)
+	fmt.Fprintf(w, "%s\n", doneJSON)
 	flusher.Flush()
 }
 
@@ -623,6 +679,7 @@ func writeOllamaStream(w http.ResponseWriter, r *http.Request, modelName, prompt
 		return true
 	}
 	if err := backend.GenerateStream(modelName, prompt, params, callback); err != nil {
+		maybeRestartOnMemorySlotError(err, modelName)
 		errJSON, _ := json.Marshal(map[string]interface{}{"model": modelName, "done": true, "error": err.Error()})
 		fmt.Fprintf(w, "%s\n", errJSON)
 		flusher.Flush()
@@ -927,6 +984,590 @@ func handleCppWorkerVersion(w http.ResponseWriter, r *http.Request) {
 }
 
 // ============================================================
+// OpenAI-compatible /v1/ handlers
+// ============================================================
+
+// openAICompletionRequest — структура запроса OpenAI /v1/completions
+type openAICompletionRequest struct {
+	Model            string   `json:"model"`
+	Prompt           string   `json:"prompt"`
+	Suffix           string   `json:"suffix,omitempty"`
+	MaxTokens        int      `json:"max_tokens,omitempty"`
+	Temperature      float64  `json:"temperature,omitempty"`
+	TopP             float64  `json:"top_p,omitempty"`
+	N                int      `json:"n,omitempty"`
+	Stream           bool     `json:"stream,omitempty"`
+	Echo             bool     `json:"echo,omitempty"`
+	Stop             []string `json:"stop,omitempty"`
+	PresencePenalty  float64  `json:"presence_penalty,omitempty"`
+	FrequencyPenalty float64  `json:"frequency_penalty,omitempty"`
+	Seed             int      `json:"seed,omitempty"`
+}
+
+// openAIChatCompletionRequest — структура запроса OpenAI /v1/chat/completions
+type openAIChatCompletionRequest struct {
+	Model       string                         `json:"model"`
+	Messages    []openAIChatMessage            `json:"messages"`
+	MaxTokens   int                            `json:"max_tokens,omitempty"`
+	Temperature float64                        `json:"temperature,omitempty"`
+	TopP        float64                        `json:"top_p,omitempty"`
+	N           int                            `json:"n,omitempty"`
+	Stream      bool                           `json:"stream,omitempty"`
+	Stop        []string                       `json:"stop,omitempty"`
+	Seed        int                            `json:"seed,omitempty"`
+}
+
+type openAIChatMessage struct {
+	Role    string `json:"role"`
+	Content string `json:"content"`
+}
+
+// buildChatPrompt builds a prompt from chat messages using the GGUF
+// chat template embedded in the model. If the model has no template
+// (e.g. base/non-instruction model), it returns bridge.ErrNoChatTemplate
+// and the caller should fall back to a naive prompt.
+func buildChatPrompt(modelName string, msgs []openAIChatMessage) (string, error) {
+	var chatMsgs []bridge.ChatMessage
+	var systemContent string
+	for _, m := range msgs {
+		switch m.Role {
+		case "system":
+			systemContent = m.Content
+		default:
+			chatMsgs = append(chatMsgs, bridge.ChatMessage{Role: m.Role, Content: m.Content})
+		}
+	}
+	if len(chatMsgs) == 0 {
+		return "", fmt.Errorf("no user/assistant messages")
+	}
+	return backend.ApplyChatTemplate(modelName, systemContent, chatMsgs, true)
+}
+
+// defaultAntipromptsForModel — возвращает дефолтный набор стоп-последовательностей
+// для указанной модели, чтобы модель корректно останавливалась в конце своего хода.
+// Для gemma: "<end_of_turn>" (нормальный EOS) + "<start_of_turn>user" (защита от
+// ситуации, когда модель генерирует открывающий токен следующего хода вместо EOS).
+// Для прочих: "<|end|>" + "<|user|>" + "<|assistant|>".
+func defaultAntipromptsForModel(modelName string) []string {
+	ml := strings.ToLower(modelName)
+	if strings.Contains(ml, "gemma") {
+		return []string{"<end_of_turn>", "<start_of_turn>user", "<start_of_turn>model"}
+	}
+	return []string{"<|end|>", "<|user|>", "<|assistant|>"}
+}
+
+// isGemmaModel — true, если имя модели содержит "gemma" (gemma, gemma-2, gemma-4, и т.п.).
+func isGemmaModel(modelName string) bool {
+	return strings.Contains(strings.ToLower(modelName), "gemma")
+}
+
+// buildNaiveChatPrompt — fallback when GGUF has no chat template (or bridge_apply_chat_template fails).
+// Строит простой chat-формат, совместимый с gemma-style instruction-tuned моделями.
+// Если в имени модели встречается "gemma" — используется формат <start_of_turn>user/model<end_of_turn>,
+// иначе — формат <|user|>...<|assistant|>, оба совместимы с большинством chat-моделей llama.cpp.
+func buildNaiveChatPrompt(msgs []openAIChatMessage, modelName string) string {
+	isGemma := strings.Contains(strings.ToLower(modelName), "gemma")
+	var sb strings.Builder
+	for _, m := range msgs {
+		switch m.Role {
+		case "system":
+			if isGemma {
+				fmt.Fprintf(&sb, "<start_of_turn>system\n%s<end_of_turn>\n", m.Content)
+			} else {
+				fmt.Fprintf(&sb, "<|system|>\n%s<|end|>\n", m.Content)
+			}
+		case "user":
+			if isGemma {
+				fmt.Fprintf(&sb, "<start_of_turn>user\n%s<end_of_turn>\n", m.Content)
+			} else {
+				fmt.Fprintf(&sb, "<|user|>\n%s<|end|>\n", m.Content)
+			}
+		case "assistant":
+			if isGemma {
+				fmt.Fprintf(&sb, "<start_of_turn>model\n%s<end_of_turn>\n", m.Content)
+			} else {
+				fmt.Fprintf(&sb, "<|assistant|>\n%s<|end|>\n", m.Content)
+			}
+		}
+	}
+	if isGemma {
+		sb.WriteString("<start_of_turn>model\n")
+	} else {
+		sb.WriteString("<|assistant|>\n")
+	}
+	return sb.String()
+}
+
+// handleV1ChatCompletions — OpenAI-совместимый /v1/chat/completions endpoint.
+// Поддерживает как streaming (SSE: text/event-stream), так и non-streaming ответы.
+func handleV1ChatCompletions(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeError(w, http.StatusMethodNotAllowed, "use POST")
+		return
+	}
+	var req openAIChatCompletionRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid JSON: "+err.Error())
+		return
+	}
+	if req.Model == "" {
+		writeError(w, http.StatusBadRequest, "model is required")
+		return
+	}
+	if len(req.Messages) == 0 {
+		writeError(w, http.StatusBadRequest, "messages array is required")
+		return
+	}
+
+	if err := ensureModelLoaded(req.Model); err != nil {
+		writeError(w, http.StatusInternalServerError, "model load failed: "+err.Error())
+		return
+	}
+
+	// Собираем промпт из сообщений с применением chat template из GGUF (для instruction-tuned моделей).
+	// Если template не найден в GGUF — fallback на простую конкатенацию.
+	// Также fallback на простую конкатенацию при любой ошибке bridge_apply_chat_template (например,
+	// ret=-1 для архитектур, которые llama.cpp ещё не поддерживает в chat template бридже, но
+	// нормально работают через нативный путь /api/generate).
+	prompt, err := buildChatPrompt(req.Model, req.Messages)
+	var usedNaive bool
+	if err != nil {
+		logger.Get().Warnw("chat template bridge failed, falling back to naive prompt",
+			"model", req.Model, "error", err)
+		prompt = buildNaiveChatPrompt(req.Messages, req.Model)
+		if prompt == "" {
+			writeError(w, http.StatusInternalServerError, "build prompt failed: "+err.Error())
+			return
+		}
+		usedNaive = true
+	}
+
+	params := bridge.DefaultGenerationParams()
+	if req.Temperature > 0 {
+		params.Temperature = float32(req.Temperature)
+	}
+	if req.TopP > 0 {
+		params.TopP = float32(req.TopP)
+	}
+	if req.MaxTokens > 0 {
+		params.NPredict = req.MaxTokens
+	}
+	if req.Seed != 0 {
+		params.Seed = req.Seed
+	}
+
+	// Antiprompts: берём дефолтные для формата промпта (gemma/non-gemma) и
+	// мерджим с пользовательскими req.Stop (если заданы). Это нужно, чтобы
+	// модель останавливалась в конце своего хода даже когда llama_vocab_is_eog
+	// не срабатывает (например, после long-form ответа в naive gemma-prompt).
+	defaultAP := defaultAntipromptsForModel(req.Model)
+	if len(defaultAP) > 0 {
+		params.Antiprompts = append(params.Antiprompts, defaultAP...)
+	}
+	if !usedNaive {
+		// Если шаблон GGUF сработал, всё равно добавим <end_of_turn>-like маркеры
+		// для gemma, на случай если модель генерирует дополнительные ходы.
+		if isGemmaModel(req.Model) {
+			params.Antiprompts = append(params.Antiprompts, []string{"<end_of_turn>", "<start_of_turn>user"}...)
+		}
+	}
+	for _, s := range req.Stop {
+		if s != "" {
+			params.Antiprompts = append(params.Antiprompts, s)
+		}
+	}
+	logger.Get().Debugw("handleV1ChatCompletions: antiprompts",
+		"model", req.Model, "used_naive", usedNaive,
+		"antiprompts_count", len(params.Antiprompts),
+		"antiprompts", params.Antiprompts)
+
+	if req.Stream {
+		writeOpenAIChatStream(w, r, req.Model, prompt, params)
+		return
+	}
+
+	// Non-streaming
+	start := time.Now()
+	result, err := backend.Generate(req.Model, prompt, params)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "chat completions failed: "+err.Error())
+		return
+	}
+	durationMs := time.Since(start).Milliseconds()
+
+	// Формат ответа OpenAI
+	writeJSON(w, http.StatusOK, map[string]interface{}{
+		"id":      fmt.Sprintf("chatcmpl-%d", time.Now().UnixNano()),
+		"object":  "chat.completion",
+		"created": time.Now().Unix(),
+		"model":   req.Model,
+		"choices": []map[string]interface{}{
+			{
+				"index": 0,
+				"message": map[string]string{
+					"role":    "assistant",
+					"content": result.Output,
+				},
+				"finish_reason": "stop",
+			},
+		},
+		"usage": map[string]interface{}{
+			"prompt_tokens":     0,
+			"completion_tokens": 0,
+			"total_tokens":      0,
+		},
+		"duration_ms": durationMs,
+	})
+}
+
+// writeOpenAIChatStream — streaming ответ в формате SSE для /v1/chat/completions.
+// Отправляет типизированные SSE-события с полями choices, как OpenAI API.
+func writeOpenAIChatStream(w http.ResponseWriter, r *http.Request, modelName, prompt string, params bridge.GenerationParams) {
+	flusher, ok := w.(http.Flusher)
+	if !ok {
+		writeError(w, http.StatusInternalServerError, "streaming not supported")
+		return
+	}
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("Connection", "keep-alive")
+
+	ctx := r.Context()
+	chatID := fmt.Sprintf("chatcmpl-%d", time.Now().UnixNano())
+	created := time.Now().Unix()
+
+	callback := func(token string) bool {
+		select {
+		case <-ctx.Done():
+			return false
+		default:
+		}
+		chunk := map[string]interface{}{
+			"id":      chatID,
+			"object":  "chat.completion.chunk",
+			"created": created,
+			"model":   modelName,
+			"choices": []map[string]interface{}{
+				{
+					"index": 0,
+					"delta": map[string]string{
+						"role":    "assistant",
+						"content": token,
+					},
+					"finish_reason": nil,
+				},
+			},
+		}
+		jsonData, _ := json.Marshal(chunk)
+		fmt.Fprintf(w, "data: %s\n\n", jsonData)
+		flusher.Flush()
+		return true
+	}
+	if err := backend.GenerateStream(modelName, prompt, params, callback); err != nil {
+		// При memory slot leak контекст модели в llama.cpp не освобождается.
+		// Перезапускаем процесс — docker-compose поднимет контейнер заново с чистым VRAM.
+		maybeRestartOnMemorySlotError(err, modelName)
+		errChunk := map[string]interface{}{
+			"id":      chatID,
+			"object":  "chat.completion.chunk",
+			"created": created,
+			"model":   modelName,
+			"choices": []map[string]interface{}{
+				{
+					"index":         0,
+					"delta":         map[string]string{},
+					"finish_reason": "error",
+				},
+			},
+			"error": err.Error(),
+		}
+		errJSON, _ := json.Marshal(errChunk)
+		fmt.Fprintf(w, "data: %s\n\n", errJSON)
+		fmt.Fprintf(w, "data: [DONE]\n\n")
+		flusher.Flush()
+		return
+	}
+
+	// Финальный stop-чанк
+	stopChunk := map[string]interface{}{
+		"id":      chatID,
+		"object":  "chat.completion.chunk",
+		"created": created,
+		"model":   modelName,
+		"choices": []map[string]interface{}{
+			{
+				"index": 0,
+				"delta": map[string]string{},
+				"finish_reason": "stop",
+			},
+		},
+	}
+	stopJSON, _ := json.Marshal(stopChunk)
+	fmt.Fprintf(w, "data: %s\n\n", stopJSON)
+	// OpenAI завершающий маркер [DONE]
+	fmt.Fprintf(w, "data: [DONE]\n\n")
+	flusher.Flush()
+}
+
+// handleV1Completions — OpenAI-совместимый /v1/completions endpoint.
+func handleV1Completions(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeError(w, http.StatusMethodNotAllowed, "use POST")
+		return
+	}
+	var req openAICompletionRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid JSON: "+err.Error())
+		return
+	}
+	if req.Model == "" {
+		writeError(w, http.StatusBadRequest, "model is required")
+		return
+	}
+	if req.Prompt == "" {
+		writeError(w, http.StatusBadRequest, "prompt is required")
+		return
+	}
+
+	if err := ensureModelLoaded(req.Model); err != nil {
+		writeError(w, http.StatusInternalServerError, "model load failed: "+err.Error())
+		return
+	}
+
+	params := bridge.DefaultGenerationParams()
+	if req.Temperature > 0 {
+		params.Temperature = float32(req.Temperature)
+	}
+	if req.TopP > 0 {
+		params.TopP = float32(req.TopP)
+	}
+	if req.MaxTokens > 0 {
+		params.NPredict = req.MaxTokens
+	}
+	if req.PresencePenalty > 0 {
+		params.PresencePenalty = float32(req.PresencePenalty)
+	}
+	if req.FrequencyPenalty > 0 {
+		params.FrequencyPenalty = float32(req.FrequencyPenalty)
+	}
+	if req.Seed != 0 {
+		params.Seed = req.Seed
+	}
+
+	if req.Stream {
+		writeOpenAICompletionStream(w, r, req.Model, req.Prompt, params)
+		return
+	}
+
+	start := time.Now()
+	result, err := backend.Generate(req.Model, req.Prompt, params)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "completions failed: "+err.Error())
+		return
+	}
+	durationMs := time.Since(start).Milliseconds()
+
+	writeJSON(w, http.StatusOK, map[string]interface{}{
+		"id":      fmt.Sprintf("cmpl-%d", time.Now().UnixNano()),
+		"object":  "text_completion",
+		"created": time.Now().Unix(),
+		"model":   req.Model,
+		"choices": []map[string]interface{}{
+			{
+				"text":          result.Output,
+				"index":         0,
+				"finish_reason": "stop",
+			},
+		},
+		"usage": map[string]interface{}{
+			"prompt_tokens":     0,
+			"completion_tokens": 0,
+			"total_tokens":      0,
+		},
+		"duration_ms": durationMs,
+	})
+}
+
+// writeOpenAICompletionStream — streaming ответ в формате SSE для /v1/completions.
+func writeOpenAICompletionStream(w http.ResponseWriter, r *http.Request, modelName, prompt string, params bridge.GenerationParams) {
+	flusher, ok := w.(http.Flusher)
+	if !ok {
+		writeError(w, http.StatusInternalServerError, "streaming not supported")
+		return
+	}
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("Connection", "keep-alive")
+
+	ctx := r.Context()
+	completionID := fmt.Sprintf("cmpl-%d", time.Now().UnixNano())
+	created := time.Now().Unix()
+
+	callback := func(token string) bool {
+		select {
+		case <-ctx.Done():
+			return false
+		default:
+		}
+		chunk := map[string]interface{}{
+			"id":      completionID,
+			"object":  "text_completion",
+			"created": created,
+			"model":   modelName,
+			"choices": []map[string]interface{}{
+				{
+					"text":  token,
+					"index": 0,
+					"finish_reason": nil,
+				},
+			},
+		}
+		jsonData, _ := json.Marshal(chunk)
+		fmt.Fprintf(w, "data: %s\n\n", jsonData)
+		flusher.Flush()
+		return true
+	}
+	if err := backend.GenerateStream(modelName, prompt, params, callback); err != nil {
+		// При memory slot leak контекст модели в llama.cpp не освобождается.
+		// Перезапускаем процесс — docker-compose поднимет контейнер заново с чистым VRAM.
+		maybeRestartOnMemorySlotError(err, modelName)
+		errChunk := map[string]interface{}{
+			"id":      completionID,
+			"object":  "text_completion",
+			"created": created,
+			"model":   modelName,
+			"choices": []map[string]interface{}{
+				{
+					"text":          "",
+					"index":         0,
+					"finish_reason": "error",
+				},
+			},
+			"error": err.Error(),
+		}
+		errJSON, _ := json.Marshal(errChunk)
+		fmt.Fprintf(w, "data: %s\n\n", errJSON)
+		fmt.Fprintf(w, "data: [DONE]\n\n")
+		flusher.Flush()
+		return
+	}
+
+	stopChunk := map[string]interface{}{
+		"id":      completionID,
+		"object":  "text_completion",
+		"created": created,
+		"model":   modelName,
+		"choices": []map[string]interface{}{
+			{
+				"text":  "",
+				"index": 0,
+				"finish_reason": "stop",
+			},
+		},
+	}
+	stopJSON, _ := json.Marshal(stopChunk)
+	fmt.Fprintf(w, "data: %s\n\n", stopJSON)
+	fmt.Fprintf(w, "data: [DONE]\n\n")
+	flusher.Flush()
+}
+
+// handleV1Embeddings — OpenAI-совместимый /v1/embeddings endpoint.
+func handleV1Embeddings(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeError(w, http.StatusMethodNotAllowed, "use POST")
+		return
+	}
+	var req struct {
+		Model string `json:"model"`
+		Input string `json:"input"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid JSON: "+err.Error())
+		return
+	}
+	if req.Model == "" || req.Input == "" {
+		writeError(w, http.StatusBadRequest, "model and input are required")
+		return
+	}
+	embeddings, err := backend.GetEmbeddings(req.Model, req.Input)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "embeddings failed: "+err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]interface{}{
+		"object": "list",
+		"data": []map[string]interface{}{
+			{
+				"object":    "embedding",
+				"index":     0,
+				"embedding": embeddings,
+			},
+		},
+		"model": req.Model,
+		"usage": map[string]interface{}{
+			"prompt_tokens": 0,
+			"total_tokens":  0,
+		},
+	})
+}
+
+// handleOllamaEmbeddings — Ollama-совместимый /api/embeddings endpoint.
+// Принимает поле "prompt" (стандарт Ollama), маппит на "input" для backend.GetEmbeddings.
+func handleOllamaEmbeddings(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeError(w, http.StatusMethodNotAllowed, "use POST")
+		return
+	}
+	var req struct {
+		Model  string `json:"model"`
+		Input  string `json:"input"`
+		Prompt string `json:"prompt"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid JSON: "+err.Error())
+		return
+	}
+	if req.Model == "" {
+		writeError(w, http.StatusBadRequest, "model is required")
+		return
+	}
+	text := req.Input
+	if text == "" {
+		text = req.Prompt
+	}
+	if text == "" {
+		writeError(w, http.StatusBadRequest, "input or prompt is required")
+		return
+	}
+	embeddings, err := backend.GetEmbeddings(req.Model, text)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "embeddings failed: "+err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]interface{}{
+		"embedding": embeddings,
+	})
+}
+
+// handleV1Models — OpenAI-совместимый /v1/models endpoint.
+func handleV1Models(w http.ResponseWriter, r *http.Request) {
+	models := backend.ListModels()
+	openaiModels := make([]map[string]interface{}, 0, len(models))
+	for _, m := range models {
+		openaiModels = append(openaiModels, map[string]interface{}{
+			"id":       m.Name,
+			"object":   "model",
+			"created":  m.LoadedAt.Unix(),
+			"owned_by": "ollamalegion",
+		})
+	}
+	writeJSON(w, http.StatusOK, map[string]interface{}{
+		"object": "list",
+		"data":   openaiModels,
+	})
+}
+
+// ============================================================
 // CppWorker Config handlers
 // ============================================================
 
@@ -979,10 +1620,10 @@ func handleCppWorkerUpdateConfig(w http.ResponseWriter, r *http.Request) {
 			applied = append(applied, "defaultGpuLayers")
 		}
 	}
-	if v, ok := updates["defaultFlashAttn"]; ok {
-		if fa, ok := v.(bool); ok {
-			currentConfig.DefaultFlashAttn = fa
-			applied = append(applied, "defaultFlashAttn")
+	if v, ok := updates["defaultFlashAttnType"]; ok {
+		if fa, ok := v.(float64); ok {
+			currentConfig.DefaultFlashAttnType = int(fa)
+			applied = append(applied, "defaultFlashAttnType")
 		}
 	}
 	if v, ok := updates["defaultNuma"]; ok {
@@ -1038,7 +1679,7 @@ func handleCppWorkerReloadConfig(w http.ResponseWriter, r *http.Request) {
 		case "gpu-layers":
 			newCfg.DefaultGPULayers = *gpuLayers
 		case "flash-attn":
-			newCfg.DefaultFlashAttn = *flashAttn
+			newCfg.DefaultFlashAttnType = *flashAttn
 		case "numa":
 			newCfg.DefaultNUMA = *numa
 		case "no-mmap":
@@ -1080,7 +1721,7 @@ func setupRouter() http.Handler {
 	mux.HandleFunc("/api/models/files", handleListModelsDir)
 	mux.HandleFunc("/api/generate", handleGenerate)
 	mux.HandleFunc("/api/chat", handleChat)
-	mux.HandleFunc("/api/embeddings", handleEmbeddings)
+	mux.HandleFunc("/api/embeddings", handleOllamaEmbeddings)
 	mux.HandleFunc("/api/ollama/generate", handleOllamaGenerate)
 	mux.HandleFunc("/api/ollama/tags", handleOllamaTags)
 	mux.HandleFunc("/api/tags", handleOllamaTags)
@@ -1096,6 +1737,11 @@ func setupRouter() http.Handler {
 	mux.HandleFunc("/api/v1/cppworker/config/reload", authMiddleware(handleCppWorkerReloadConfig))
 	mux.HandleFunc("/api/v1/cppworker/health", handleHealth)
 	mux.HandleFunc("/api/v1/cppworker/metrics", handleInfo)
+	// OpenAI-совместимые /v1/ endpoints
+	mux.HandleFunc("/v1/chat/completions", handleV1ChatCompletions)
+	mux.HandleFunc("/v1/completions", handleV1Completions)
+	mux.HandleFunc("/v1/embeddings", handleV1Embeddings)
+	mux.HandleFunc("/v1/models", handleV1Models)
 	return corsMiddleware(loggingMiddleware(mux))
 }
 
@@ -1144,7 +1790,7 @@ func main() {
 		case "gpu-layers":
 			cfg.DefaultGPULayers = *gpuLayers
 		case "flash-attn":
-			cfg.DefaultFlashAttn = *flashAttn
+			cfg.DefaultFlashAttnType = *flashAttn
 		case "numa":
 			cfg.DefaultNUMA = *numa
 		case "no-mmap":
@@ -1158,7 +1804,7 @@ func main() {
 
 	log.Infow("CppBackend Worker starting",
 		"port", cfg.Port, "host", cfg.Host, "modelsDir", cfg.ModelsDir,
-		"gpuLayers", cfg.DefaultGPULayers, "flashAttn", cfg.DefaultFlashAttn,
+		"gpuLayers", cfg.DefaultGPULayers, "flashAttn", cfg.DefaultFlashAttnType,
 		"numa", cfg.DefaultNUMA)
 
 	if err := os.MkdirAll(cfg.ModelsDir, 0755); err != nil {
@@ -1212,6 +1858,24 @@ func main() {
 	log.Infow("CppBackend Worker stopped")
 }
 
+// convertFlashAttn converts flash-attn flag value to FlashAttnType.
+// If the flag wasn't set (value == -2), returns the config default.
+func convertFlashAttn(flagVal int) int {
+	if flagVal == -2 {
+		if currentConfig != nil {
+			return currentConfig.DefaultFlashAttnType
+		}
+		return -1
+	}
+	if flagVal < -1 {
+		return -1
+	}
+	if flagVal > 1 {
+		return 1
+	}
+	return flagVal
+}
+
 func countTokens(text string) int {
 	if text == "" {
 		return 0
@@ -1251,7 +1915,7 @@ func ensureModelLoaded(modelName string) error {
 			GPULayers:   *gpuLayers,
 			ContextSize: *ctxSize,
 			BatchSize:   *batchSize,
-			FlashAttn:   *flashAttn,
+			FlashAttnType: convertFlashAttn(*flashAttn),
 			NUMA:        *numa,
 			UseMmap:     !*noMmap,
 		}
@@ -1295,7 +1959,7 @@ func autoLoadModels(cfg cppbackend.Config) {
 			GPULayers:   cfg.DefaultGPULayers,
 			ContextSize: cfg.DefaultCtxSize,
 			BatchSize:   cfg.DefaultBatchSize,
-			FlashAttn:   cfg.DefaultFlashAttn,
+			FlashAttnType: cfg.DefaultFlashAttnType,
 			NUMA:        cfg.DefaultNUMA,
 			UseMmap:     cfg.DefaultUseMmap,
 		}
@@ -1371,15 +2035,65 @@ func handleChat(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Собираем prompt из messages (берём последнее сообщение пользователя)
-	prompt := ""
+	// Собираем prompt из messages с корректным форматированием для chat-моделей.
+	// Для gemma используем формат <start_of_turn>user/model<end_of_turn>, для
+	// прочих — общий <|user|>...<|assistant|> формат.
+	var promptBuilder strings.Builder
+	isGemma := isGemmaModel(req.Model)
 	for _, msg := range req.Messages {
-		if msg.Role == "system" {
-			prompt += "[SYSTEM] " + msg.Content + "\n"
-		} else if msg.Role == "user" {
-			prompt += msg.Content
+		switch msg.Role {
+		case "system":
+			if isGemma {
+				promptBuilder.WriteString("<start_of_turn>system\n")
+			} else {
+				promptBuilder.WriteString("<|system|>\n")
+			}
+			promptBuilder.WriteString(msg.Content)
+			if isGemma {
+				promptBuilder.WriteString("<end_of_turn>\n")
+			} else {
+				promptBuilder.WriteString("<|end|>\n")
+			}
+		case "user":
+			if isGemma {
+				promptBuilder.WriteString("<start_of_turn>user\n")
+			} else {
+				promptBuilder.WriteString("<|user|>\n")
+			}
+			promptBuilder.WriteString(msg.Content)
+			if isGemma {
+				promptBuilder.WriteString("<end_of_turn>\n")
+			} else {
+				promptBuilder.WriteString("<|end|>\n")
+			}
+		case "assistant":
+			if isGemma {
+				promptBuilder.WriteString("<start_of_turn>model\n")
+			} else {
+				promptBuilder.WriteString("<|assistant|>\n")
+			}
+			promptBuilder.WriteString(msg.Content)
+			if isGemma {
+				promptBuilder.WriteString("<end_of_turn>\n")
+			} else {
+				promptBuilder.WriteString("<|end|>\n")
+			}
 		}
 	}
+	// Добавляем маркер для ответа ассистента
+	if isGemma {
+		promptBuilder.WriteString("<start_of_turn>model\n")
+	} else {
+		promptBuilder.WriteString("<|assistant|>\n")
+	}
+	prompt := promptBuilder.String()
+
+	logger.Get().Debugw("handleChat: assembled prompt",
+		"model", req.Model,
+		"messages_count", len(req.Messages),
+		"prompt_len", len(prompt),
+		"is_gemma", isGemma,
+		"stream", req.Stream)
 
 	genReq := generateRequest{
 		Model:  req.Model,
@@ -1394,6 +2108,20 @@ func handleChat(w http.ResponseWriter, r *http.Request) {
 	}
 
 	params := buildGenerationParams(genReq)
+	// Antiprompts для gemma/non-gemma, чтобы модель останавливалась в конце хода
+	// и не генерировала <start_of_turn>user в выдачу.
+	params.Antiprompts = append(params.Antiprompts, defaultAntipromptsForModel(req.Model)...)
+	logger.Get().Debugw("handleChat: antiprompts",
+		"model", req.Model, "count", len(params.Antiprompts),
+		"antiprompts", params.Antiprompts)
+
+	// Streaming chat — возвращает NDJSON с полями model, message (как Ollama /api/chat)
+	if req.Stream {
+		writeChatStreamResponse(w, r, req.Model, prompt, params)
+		return
+	}
+
+	// Non-streaming chat
 	start := time.Now()
 	result, err := backend.Generate(req.Model, prompt, params)
 	if err != nil {
@@ -1413,4 +2141,77 @@ func handleChat(w http.ResponseWriter, r *http.Request) {
 		TotalDuration: duration.Nanoseconds(),
 	}
 	writeJSON(w, http.StatusOK, resp)
+}
+
+// writeChatStreamResponse — streaming ответ в формате NDJSON для /api/chat.
+// Каждая строка — JSON объект с полями model, message (как Ollama chat API).
+func writeChatStreamResponse(w http.ResponseWriter, r *http.Request, modelName, prompt string, params bridge.GenerationParams) {
+	flusher, ok := w.(http.Flusher)
+	if !ok {
+		writeError(w, http.StatusInternalServerError, "streaming not supported")
+		return
+	}
+	w.Header().Set("Content-Type", "application/x-ndjson")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("Connection", "keep-alive")
+	ctx := r.Context()
+	start := time.Now()
+	createdAt := time.Now().UTC().Format(time.RFC3339)
+
+	callback := func(token string) bool {
+		select {
+		case <-ctx.Done():
+			return false
+		default:
+		}
+		chunk := map[string]interface{}{
+			"model":      modelName,
+			"created_at": createdAt,
+			"message": map[string]string{
+				"role":    "assistant",
+				"content": token,
+			},
+			"done": false,
+		}
+		jsonData, _ := json.Marshal(chunk)
+		fmt.Fprintf(w, "%s\n", jsonData)
+		flusher.Flush()
+		return true
+	}
+	if err := backend.GenerateStream(modelName, prompt, params, callback); err != nil {
+		// При memory slot leak контекст модели в llama.cpp не освобождается.
+		// Перезапускаем процесс — docker-compose поднимет контейнер заново с чистым VRAM.
+		maybeRestartOnMemorySlotError(err, modelName)
+		errChunk := map[string]interface{}{
+			"model":      modelName,
+			"created_at": createdAt,
+			"message": map[string]string{
+				"role":    "assistant",
+				"content": "",
+			},
+			"done":  true,
+			"error": err.Error(),
+		}
+		errJSON, _ := json.Marshal(errChunk)
+		fmt.Fprintf(w, "%s\n", errJSON)
+		flusher.Flush()
+		return
+	}
+
+	duration := time.Since(start)
+	doneChunk := map[string]interface{}{
+		"model":      modelName,
+		"created_at": createdAt,
+		"message": map[string]string{
+			"role":    "assistant",
+			"content": "",
+		},
+		"done":              true,
+		"total_duration":    duration.Nanoseconds(),
+		"eval_count":        0,
+		"eval_duration":     duration.Nanoseconds(),
+	}
+	doneJSON, _ := json.Marshal(doneChunk)
+	fmt.Fprintf(w, "%s\n", doneJSON)
+	flusher.Flush()
 }

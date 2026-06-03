@@ -197,6 +197,11 @@ const Api = (function () {
             return response.json();
         },
 
+        // GGUF backends info
+        async fetchGgufBackends() {
+            return getJson('/api/v1/gguf/backends');
+        },
+
         // Generic error handler for UI
 
         handleError(err, fallbackMessage = 'Ошибка API') {

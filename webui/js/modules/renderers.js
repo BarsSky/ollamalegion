@@ -1335,6 +1335,85 @@ const Renderers = (function () {
         container.innerHTML = html;
     }
 
+    // ---- GGUF Models Page ----
+
+    function ggufPage(data) {
+        var container = document.getElementById('ggufContainer');
+        if (!container) return;
+        if (!data || !data.backends || !data.backends.length) {
+            container.innerHTML = loading(_t('gguf.no_backends'));
+            return;
+        }
+
+        Utils.setText('ggufTotalBackends', data.backends.length);
+
+        // Build backend selector
+        var selectorHtml = '<div class="gguf-backend-selector"><label>' + _t('gguf.select_backend') + ': </label><select id="ggufBackendSelect" onchange="Renderers.ggufFilterBackend()" style="margin-left:0.5rem;padding:0.3rem 0.5rem;border-radius:4px;border:1px solid var(--border);background:var(--bg);color:var(--text);">';
+        selectorHtml += '<option value="">' + _t('gguf.all_backends') + '</option>';
+        data.backends.forEach(function(b) {
+            var selected = (window._ggufSelectedBackend === b.id) ? ' selected' : '';
+            selectorHtml += '<option value="' + escapeHtml(b.id) + '"' + selected + '>' + escapeHtml(b.id) + ' (' + escapeHtml(b.status) + ')</option>';
+        });
+        selectorHtml += '</select></div>';
+
+        container.innerHTML = selectorHtml + '<div id="ggufBackendCards" style="display:grid;gap:1rem;grid-template-columns:repeat(auto-fill,minmax(320px,1fr));"></div>';
+        renderGgufCardsInto(data.backends);
+    }
+
+    function ggufFilterBackend() {
+        var sel = document.getElementById('ggufBackendSelect');
+        var selected = sel ? sel.value : '';
+        window._ggufSelectedBackend = selected;
+        // Re-fetch data and re-render
+        if (window.API && window.API.fetchGgufBackends) {
+            window.API.fetchGgufBackends().then(function(data) {
+                if (data && data.backends) {
+                    var filtered = selected
+                        ? data.backends.filter(function(b) { return b.id === selected; })
+                        : data.backends;
+                    renderGgufCardsInto(filtered);
+                }
+            }).catch(function() {});
+        }
+    }
+
+    function renderGgufCardsInto(backends) {
+        var container = document.getElementById('ggufBackendCards');
+        if (!container) return;
+        if (!backends || !backends.length) {
+            container.innerHTML = '<div class="gguf-no-backends">' + _t('gguf.no_backends') + '</div>';
+            return;
+        }
+        container.innerHTML = backends.map(function(b) {
+            var modelsHtml = (b.models || []).map(function(m) {
+                return '<div class="gguf-model-item" style="display:flex;justify-content:space-between;padding:0.3rem 0;border-bottom:1px solid var(--border-light);"><span class="gguf-model-name" style="font-weight:500;">' + escapeHtml(m.name) + '</span><span class="gguf-model-status ' + m.status + '">' + escapeHtml(m.status) + '</span>' + (m.contextSize ? '<span class="gguf-model-ctx" style="font-size:0.8rem;color:var(--text-muted);">ctx: ' + m.contextSize + '</span>' : '') + '</div>';
+            }).join('') || '<div class="gguf-no-models" style="padding:0.5rem;color:var(--text-muted);">' + _t('gguf.no_models') + '</div>';
+
+            var vramPct = b.vramUsagePercent || 0;
+            var gpuMem = b.gpuMemory || {};
+            var backendType = b.type || 'llama_cpp';
+            var typeBadge = (backendType === 'llama_cpp') ? badge('llama.cpp', 'info') : badge(backendType, 'info');
+
+            return '<div class="gguf-backend-card" style="background:var(--bg-card);border:1px solid var(--border);border-radius:8px;padding:1rem;">' +
+                '<div class="gguf-backend-header" style="display:flex;align-items:center;gap:0.5rem;margin-bottom:0.5rem;">' +
+                    '<span class="gguf-backend-name" style="font-weight:600;font-size:1.1rem;">' + escapeHtml(b.id) + '</span>' +
+                    badge(b.status, b.status === 'healthy' ? 'success' : 'danger') +
+                    typeBadge +
+                '</div>' +
+                '<div class="gguf-backend-url" style="font-size:0.85rem;color:var(--text-muted);margin-bottom:0.5rem;">' + escapeHtml(b.url || (b.host + ':' + (b.cppWorkerPort || b.ollamaPort))) + '</div>' +
+                '<div class="gguf-backend-metrics" style="display:flex;justify-content:space-between;font-size:0.85rem;margin-bottom:0.3rem;">' +
+                    '<span>' + _t('gguf.vram') + ': ' + formatMB(gpuMem.usedMB || 0) + ' / ' + formatMB(gpuMem.totalMB || 0) + '</span>' +
+                    '<span style="font-weight:600;">' + vramPct.toFixed(1) + '%</span>' +
+                '</div>' +
+                '<div class="gguf-backend-bar" style="height:6px;background:var(--bg-secondary);border-radius:3px;margin-bottom:0.5rem;"><div class="gguf-backend-fill" style="height:100%;width:' + vramPct + '%;background:var(--accent);border-radius:3px;"></div></div>' +
+                '<div class="gguf-backend-models" style="margin-top:0.5rem;">' +
+                    '<div class="gguf-backend-section-title" style="font-weight:600;margin-bottom:0.3rem;">' + _t('gguf.models') + ' (' + (b.models ? b.models.length : 0) + ')</div>' +
+                    modelsHtml +
+                '</div>' +
+            '</div>';
+        }).join('');
+    }
+
     // ---- Public API ----
     return {
         dashboard,
@@ -1347,6 +1426,9 @@ const Renderers = (function () {
         proxyLogs,
         copyProxyLogs,
         agentsPage,
-        renderAgentDetails
+        renderAgentDetails,
+        ggufPage,
+        ggufFilterBackend,
+        renderGgufCardsInto
     };
 })();

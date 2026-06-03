@@ -139,6 +139,7 @@ func (s *Server) listBackends(w http.ResponseWriter, r *http.Request) {
 			"host":                           backend.Host,
 			"ollamaPort":                     backend.OllamaPort,
 			"agentPort":                      backend.AgentPort,
+			"cppWorkerPort":                  backend.CppWorkerPort,
 			"weight":                         backend.Weight,
 			"maxConcurrentRequests":          maxConcurrent,
 			"maxModels":                      maxModels,
@@ -262,10 +263,22 @@ func (s *Server) addBackend(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Нормализация типа бэкенда (пустой → ollama для обратной совместимости)
+	// Нормализация типа бэкенда.
+	// Приоритет: req.BackendType > req.BackendEngine > s.config.BackendEngine > ollama
 	backendType := types.BackendType(req.BackendType)
 	if backendType == "" {
-		backendType = types.BackendTypeOllama
+		// Пытаемся определить из BackendEngine в запросе (клиент мог прислать)
+		if req.BackendEngine != "" {
+			backendType = types.BackendEngine(req.BackendEngine).ToBackendType()
+		}
+		// Если клиент не прислал — берём из глобального конфига сервера
+		if backendType == "" && s.config.BackendEngine != "" {
+			backendType = s.config.BackendEngine.ToBackendType()
+		}
+		// Последний fallback — ollama (обратная совместимость)
+		if backendType == "" {
+			backendType = types.BackendTypeOllama
+		}
 	}
 
 	// Валидация типа бэкенда
@@ -379,12 +392,14 @@ func (s *Server) updateBackend(w http.ResponseWriter, r *http.Request, backendID
 		Host              string   `json:"host"`
 		OllamaPort        int      `json:"ollamaPort"`
 		AgentPort         int      `json:"agentPort"`
+		CppWorkerPort     int      `json:"cppWorkerPort"`
 		Weight            int      `json:"weight"`
 		MaxConcurrentReqs int      `json:"maxConcurrentRequests"`
 		MaxModels         int      `json:"maxModels"`
 		GPUMode           string   `json:"gpuMode"`
 		Labels            []string `json:"labels"`
 		BackendType       string   `json:"backendType"`
+		BackendEngine     string   `json:"backendEngine"`
 	}
 
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -454,12 +469,19 @@ func (s *Server) updateBackend(w http.ResponseWriter, r *http.Request, backendID
 		backendType = newType
 	}
 
+	// Применяем CppWorkerPort если передан, иначе сохраняем существующий
+	cppWorkerPort := existing.CppWorkerPort
+	if req.CppWorkerPort > 0 {
+		cppWorkerPort = req.CppWorkerPort
+	}
+
 	updated := types.Backend{
 		ID:                            backendID,
 		Name:                          req.Name,
 		Host:                          req.Host,
 		OllamaPort:                    req.OllamaPort,
 		AgentPort:                     req.AgentPort,
+		CppWorkerPort:                 cppWorkerPort,
 		Weight:                        req.Weight,
 		MaxConcurrentReqs:             req.MaxConcurrentReqs,
 		MaxModels:                     req.MaxModels,

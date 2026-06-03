@@ -18,24 +18,10 @@
 # Требования для GPU:
 #   - NVIDIA Container Toolkit
 #   - NVIDIA GPU с драйверами
-#
-# Переменные окружения (.env или перед командой):
-#   HF_TOKEN=hf_xxx              — токен HuggingFace
-#   HF_AUTO_DOWNLOAD_REPO=...    — репозиторий для авто-загрузки
-#   HF_AUTO_DOWNLOAD_FILE=...    — конкретный файл (опционально)
-#   LB_PORT=18080                — порт балансировщика
-#   LB_API_PORT=18081            — порт API балансировщика
-#   WEBUI_PORT=18030             — порт WebUI
-#   CPPWORKER_CPU_PORT=18091     — порт CppWorker CPU
-#   CPPWORKER_GPU_PORT=18092     — порт CppWorker GPU
-#   CPPWORKER_STUB_PORT=18093    — порт CppWorker STUB
-#   AGENT_PORT=18032             — порт Agent
-# =============================================================================
 
 services:
   # ============================================
-  # 1. CppBackend Worker CPU — инференс GGUF (реальный llama.cpp, без GPU)
-  #    Профили: default, cpu
+  # 1. CppBackend Worker CPU
   # ============================================
   cppworker-cpu:
     image: ollama-legion/cppworker:cpu
@@ -60,16 +46,15 @@ services:
       - CPPWORKER_CTX_SIZE=${CPPWORKER_CTX_SIZE:-4096}
       - CPPWORKER_BATCH_SIZE=${CPPWORKER_BATCH_SIZE:-512}
       - CPPWORKER_GPU_LAYERS=0
-      # Auto-registration with balancer
       - BALANCER_URL=http://loadbalancer:18081
       - CPPWORKER_ADVERTISED_HOST=cppworker-cpu
+      - CPPWORKER_HOST=cppworker-cpu
       - CPPWORKER_BACKEND_ID=${CPPWORKER_CPU_BACKEND_ID:-cppworker-cpu}
       - CPPWORKER_NAME=${CPPWORKER_CPU_NAME:-CppWorker-CPU}
       - CPPWORKER_GPU_MODE=cpu
       - CPPWORKER_MAX_CONCURRENT=${CPPWORKER_MAX_CONCURRENT:-4}
       - CPPWORKER_MAX_MODELS=${CPPWORKER_MAX_MODELS:-3}
       - BALANCER_API_TOKEN=${API_TOKEN:-}
-      # HuggingFace Hub auto-download
       - HF_TOKEN=${HF_TOKEN:-}
       - HF_AUTO_DOWNLOAD_REPO=${HF_AUTO_DOWNLOAD_REPO:-}
       - HF_AUTO_DOWNLOAD_FILE=${HF_AUTO_DOWNLOAD_FILE:-}
@@ -90,8 +75,7 @@ services:
       - "ollama-legion.role=cppworker-cpu"
 
   # ============================================
-  # 2. CppBackend Worker GPU — инференс GGUF + CUDA
-  #    Профиль: gpu
+  # 2. CppBackend Worker GPU
   # ============================================
   cppworker-gpu:
     image: ollama-legion/cppworker:gpu
@@ -104,22 +88,23 @@ services:
     profiles: ["gpu"]
 
     ports:
-      - "${CPPWORKER_GPU_PORT:-18092}:18092"
+      - "${CPPWORKER_GPU_PORT:-18092}:18091"
 
     volumes:
       - ../models:/app/models:rw
       - hf-cache-gpu:/app/.cache/huggingface
 
     environment:
-      - CPPWORKER_PORT=18092
+      - CPPWORKER_PORT=18091
+      - CPPWORKER_ADVERTISED_PORT=${CPPWORKER_GPU_PORT:-18092}
       - CPPWORKER_MODELS_DIR=./models
       - CPPWORKER_CTX_SIZE=${CPPWORKER_CTX_SIZE:-4096}
       - CPPWORKER_BATCH_SIZE=${CPPWORKER_BATCH_SIZE:-512}
       - CPPWORKER_GPU_LAYERS=${CPPWORKER_GPU_LAYERS:--1}
       - CPPWORKER_FLASH_ATTN=${CPPWORKER_FLASH_ATTN:-true}
-      # Auto-registration with balancer
       - BALANCER_URL=http://loadbalancer:18081
       - CPPWORKER_ADVERTISED_HOST=cppworker-gpu
+      - CPPWORKER_HOST=cppworker-gpu
       - CPPWORKER_BACKEND_ID=${CPPWORKER_GPU_BACKEND_ID:-cppworker-gpu}
       - CPPWORKER_NAME=${CPPWORKER_GPU_NAME:-CppWorker-GPU}
       - CPPWORKER_GPU_MODE=cuda
@@ -127,7 +112,6 @@ services:
       - CPPWORKER_MAX_MODELS=${CPPWORKER_MAX_MODELS:-3}
       - BALANCER_API_TOKEN=${API_TOKEN:-}
       - NVIDIA_VISIBLE_DEVICES=all
-      # HuggingFace Hub auto-download
       - HF_TOKEN=${HF_TOKEN:-}
       - HF_AUTO_DOWNLOAD_REPO=${HF_AUTO_DOWNLOAD_REPO:-}
       - HF_AUTO_DOWNLOAD_FILE=${HF_AUTO_DOWNLOAD_FILE:-}
@@ -146,18 +130,17 @@ services:
       - ollama-legion-net
 
     healthcheck:
-      test: ["CMD", "curl", "-f", "-s", "http://localhost:18092/health"]
+      test: ["CMD-SHELL", "wget -q -O- http://127.0.0.1:18091/health || exit 1"]
       interval: 30s
       timeout: 10s
-      retries: 5
-      start_period: 30s
+      retries: 10
+      start_period: 300s
 
     labels:
       - "ollama-legion.role=cppworker-gpu"
 
   # ============================================
-  # 3. CppBackend Worker STUB — заглушка для CI/тестов
-  #    Профиль: stub
+  # 3. CppBackend Worker STUB
   # ============================================
   cppworker-stub:
     image: ollama-legion/cppworker:stub
@@ -181,7 +164,6 @@ services:
       - CPPWORKER_MODELS_DIR=./models
       - CPPWORKER_CTX_SIZE=${CPPWORKER_CTX_SIZE:-4096}
       - CPPWORKER_BATCH_SIZE=${CPPWORKER_BATCH_SIZE:-512}
-      # HuggingFace Hub auto-download
       - HF_TOKEN=${HF_TOKEN:-}
       - HF_AUTO_DOWNLOAD_REPO=${HF_AUTO_DOWNLOAD_REPO:-}
       - HF_AUTO_DOWNLOAD_FILE=${HF_AUTO_DOWNLOAD_FILE:-}
@@ -202,8 +184,7 @@ services:
       - "ollama-legion.role=cppworker-stub"
 
   # ============================================
-  # 4. Agent GPU — мониторинг GPU и метрики
-  #    Профиль: agent-gpu
+  # 4. Agent GPU
   # ============================================
   agent-gpu:
     image: ollama-legion/agent:latest-gpu
@@ -244,7 +225,7 @@ services:
       - "ollama-legion.role=agent-gpu"
 
   # ============================================
-  # 5. Балансировщик (Load Balancer)
+  # 5. Балансировщик
   # ============================================
   loadbalancer:
     image: ollama-legion/balancer:latest
@@ -308,7 +289,7 @@ services:
       - "ollama-legion.role=balancer"
 
   # ============================================
-  # 6. Web UI (Dashboard)
+  # 6. Web UI
   # ============================================
   webui:
     image: ollama-legion/webui:latest
@@ -331,9 +312,8 @@ services:
     environment:
       - API_HOST=loadbalancer
       - API_PORT=18081
-      - CPPWORKER_HOST=${CPPWORKER_HOST:-cppworker-cpu}
-      - CPPWORKER_HOST_GPU=${CPPWORKER_HOST_GPU:-cppworker-gpu}
-      - CPPWORKER_PORT=${CPPWORKER_PORT:-18091}
+      - CPPWORKER_HOST=${CPPWORKER_HOST:-cppworker-gpu}
+      - CPPWORKER_PORT=${CPPWORKER_PORT:-18092}
       - CPPWORKER_GPU_PORT=${CPPWORKER_GPU_PORT:-18092}
       - LB_PORT=${LB_PORT:-18080}
       - NGINX_PORT=80

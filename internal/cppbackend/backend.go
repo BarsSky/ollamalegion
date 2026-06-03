@@ -74,15 +74,14 @@ type Backend struct {
 
 // LoadModelOpts — опции загрузки модели, передаваемые из WebUI/API
 type LoadModelOpts struct {
-	GPULayers   int
-	ContextSize int
-	BatchSize   int
-	FlashAttn   bool
-	NUMA        bool
-	UseMmap     bool
-	TensorSplit []float32
+	GPULayers     int
+	ContextSize   int
+	BatchSize     int
+	FlashAttnType int
+	NUMA          bool
+	UseMmap       bool
+	TensorSplit   []float32
 }
-
 
 // modelInstance — экземпляр загруженной модели
 type modelInstance struct {
@@ -173,7 +172,6 @@ func (b *Backend) Init() error {
 			b.gpuManager.InitGPU(b.gpuDevices)
 		}
 
-
 		// Сканируем директорию моделей
 		if b.modelManager != nil {
 			if _, err := b.modelManager.ScanModels(); err != nil {
@@ -227,12 +225,12 @@ func (b *Backend) HFDownloader() *HuggingFaceDownloader {
 // LoadModel загружает GGUF модель с параметрами по умолчанию
 func (b *Backend) LoadModel(name string, path string) error {
 	return b.LoadModelWithOpts(name, path, LoadModelOpts{
-		GPULayers:   b.cfg.DefaultGPULayers,
-		ContextSize: b.cfg.DefaultCtxSize,
-		BatchSize:   b.cfg.DefaultBatchSize,
-		FlashAttn:   b.cfg.DefaultFlashAttn,
-		NUMA:        b.cfg.DefaultNUMA,
-		UseMmap:     b.cfg.DefaultUseMmap,
+		GPULayers:     b.cfg.DefaultGPULayers,
+		ContextSize:   b.cfg.DefaultCtxSize,
+		BatchSize:     b.cfg.DefaultBatchSize,
+		FlashAttnType: b.cfg.DefaultFlashAttnType,
+		NUMA:          b.cfg.DefaultNUMA,
+		UseMmap:       b.cfg.DefaultUseMmap,
 	})
 }
 
@@ -270,7 +268,7 @@ func (b *Backend) LoadModelWithOpts(name string, path string, opts LoadModelOpts
 	cfg.NContext = ctxSize
 	cfg.NBatch = batchSize
 	cfg.NGPULayers = gpuLayers
-	cfg.FlashAttn = opts.FlashAttn
+	cfg.FlashAttnType = opts.FlashAttnType
 	cfg.NUMA = opts.NUMA
 	cfg.UseMmap = opts.UseMmap
 	cfg.UseMlock = b.cfg.DefaultUseMlock
@@ -330,7 +328,7 @@ func (b *Backend) LoadModelWithOpts(name string, path string, opts LoadModelOpts
 	handle, err := bridge.LoadModel(cfg)
 	if err != nil {
 		b.mu.Lock()
-		inst.info.State = StateError
+		delete(b.models, name)
 		b.mu.Unlock()
 		if b.metrics != nil {
 			b.metrics.RecordRequest(name, 0, 0, false)
@@ -376,7 +374,7 @@ func (b *Backend) LoadModelWithOpts(name string, path string, opts LoadModelOpts
 		"gpuLayers", gpuLayers,
 		"ctxSize", ctxSize,
 		"batchSize", batchSize,
-		"flashAttn", opts.FlashAttn,
+		"flashAttnType", opts.FlashAttnType,
 		"gpuCount", b.gpuCount)
 
 	return nil
@@ -548,6 +546,32 @@ func (b *Backend) GetEmbeddings(modelName string, text string) ([]float32, error
 	}
 
 	return inst.handle.GetEmbeddings(text)
+}
+
+// ApplyChatTemplate applies GGUF chat template to messages for a model.
+// If no template is embedded in GGUF — returns bridge.ErrNoChatTemplate
+// (caller can fallback to raw completion).
+func (b *Backend) ApplyChatTemplate(modelName, system string, messages []bridge.ChatMessage, addAss bool) (string, error) {
+	inst, err := b.getModelInstance(modelName)
+	if err != nil {
+		return "", err
+	}
+	if inst.handle == nil {
+		return "", fmt.Errorf("model %s has no loaded handle", modelName)
+	}
+	return inst.handle.ApplyChatTemplate(system, messages, addAss)
+}
+
+// GetChatTemplate returns raw chat template from GGUF of a model.
+func (b *Backend) GetChatTemplate(modelName string) (string, error) {
+	inst, err := b.getModelInstance(modelName)
+	if err != nil {
+		return "", err
+	}
+	if inst.handle == nil {
+		return "", fmt.Errorf("model %s has no loaded handle", modelName)
+	}
+	return inst.handle.GetChatTemplate()
 }
 
 // ============================================================

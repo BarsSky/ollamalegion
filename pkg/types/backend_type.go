@@ -64,6 +64,20 @@ type LlamaCppConfig struct {
 	ChatTemplate   string `json:"chatTemplate"`   // шаблон чата
 }
 
+// ToBackendType преобразует BackendEngine в BackendType.
+// EngineOllamaAPI → BackendTypeOllama, EngineLlamaCPP → BackendTypeLlamaCpp,
+// остальные (Auto, пустой) → пустая строка (требует явного fallback).
+func (e BackendEngine) ToBackendType() BackendType {
+	switch e {
+	case EngineOllamaAPI:
+		return BackendTypeOllama
+	case EngineLlamaCPP:
+		return BackendTypeLlamaCpp
+	default:
+		return ""
+	}
+}
+
 // DefaultLlamaCppConfig возвращает конфигурацию llama.cpp по умолчанию
 func DefaultLlamaCppConfig() *LlamaCppConfig {
 	return &LlamaCppConfig{

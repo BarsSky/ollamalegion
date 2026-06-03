@@ -23,6 +23,10 @@ const GgufRenderer = (window.GgufRenderer = (function () {
         searchLimit: 10,
         selectedModel: null,
         modelFiles: [],
+        // Balancer-provided llama.cpp backends info
+        registeredBackends: [],
+        selectedBackendId: '', // '' = all backends
+        backendDataLoaded: false,
         loadOptions: {
             gpuLayers: -1,
             ctxSize: 2048,
@@ -50,10 +54,12 @@ const GgufRenderer = (window.GgufRenderer = (function () {
         if (hfTokenInput) {
             hfTokenInput.value = GgufApi.getHFToken() || '';
         }
-        // Автоматически пробуем подключиться к cppworker при первой загрузке страницы
-        if (!state.connected) {
-            autoConnect();
-        } else {
+        // Не подключаемся автоматически к cppworker (требует профиля GPU).
+        // Вместо этого сразу загружаем данные о бэкендах из балансера
+        // и показываем их в секции "Registered Backends".
+        refreshBackends();
+        // Если уже подключены — обновляем данные
+        if (state.connected) {
             refreshData();
         }
     }
@@ -90,22 +96,35 @@ const GgufRenderer = (window.GgufRenderer = (function () {
     function showConnectionHelp() {
         var container = document.getElementById('ggufContainer');
         if (!container) return;
-        // Добавляем help-блок после connection bar, если его ещё нет
         var existing = document.getElementById('ggufConnectionHelp');
         if (existing) return;
         var helpHtml = '<div id="ggufConnectionHelp" class="gguf-connection-help" style="padding:16px;margin:8px 0;background:var(--bg-secondary);border-radius:8px;border:1px solid var(--border);">' +
             '<div style="font-size:14px;margin-bottom:8px;">⚠️ ' + _('gguf.cppworker_unavailable') + '</div>' +
-            '<div style="font-size:12px;color:var(--text-secondary);">' +
+            '<div style="font-size:12px;color:var(--text-secondary);margin-bottom:12px;">' +
                 _('gguf.cppworker_unavailable_desc') +
             '</div>' +
-            '<div style="margin-top:12px;font-size:12px;color:var(--text-secondary);">' +
-                '📌 ' + _('gguf.check_worker_url') + ': <code style="background:var(--bg-primary);padding:2px 6px;border-radius:3px;">' + GgufApi.getUrl() + '</code>' +
+            '<div style="font-size:12px;color:var(--text-secondary);margin-bottom:12px;">' +
+                '📌 ' + _('gguf.check_worker_url') + ' <code style="background:var(--bg-primary);padding:2px 6px;border-radius:3px;">' + Utils.escapeHtml(GgufApi.getUrl()) + '</code>' +
             '</div>' +
+            '<button class="btn btn-primary" id="ggufRetryConnectionBtn" style="font-size:13px;">' +
+                '<i class="fas fa-sync"></i> ' + _('gguf.retry_connection') +
+            '</button>' +
         '</div>';
         var connectionBar = document.getElementById('ggufConnectionBar');
         if (connectionBar && connectionBar.parentNode) {
             connectionBar.insertAdjacentHTML('afterend', helpHtml);
         }
+        // Bind retry button
+        setTimeout(function () {
+            var retryBtn = document.getElementById('ggufRetryConnectionBtn');
+            if (retryBtn) {
+                retryBtn.addEventListener('click', function () {
+                    hideConnectionHelp();
+                    state.connectionAttempted = false;
+                    autoConnect();
+                });
+            }
+        }, 0);
     }
 
     /**
@@ -171,6 +190,24 @@ const GgufRenderer = (window.GgufRenderer = (function () {
                 renderSearchTab() +
                 renderLocalTab() +
                 renderSettingsTab() +
+            '</div>' +
+
+            // Registered llama.cpp Backends Section
+            '<div class="gguf-section gguf-backends-section" id="ggufBackendsSection">' +
+                '<div class="gguf-section-header">' +
+                    '<h3><i class="fas fa-network-wired"></i> ' + _('gguf.registered_backends') + ' 🦒</h3>' +
+                    '<span class="badge badge-info" id="ggufBackendCount">' + state.registeredBackends.length + '</span>' +
+                    '<select id="ggufBackendFilter" class="form-control" style="width:auto;margin-left:auto;">' +
+                        '<option value="">' + _('gguf.all_backends') + '</option>' +
+                        state.registeredBackends.map(function(b) {
+                            const sel = state.selectedBackendId === b.id ? ' selected' : '';
+                            return '<option value="' + Utils.escapeHtml(b.id) + '"' + sel + '>' + Utils.escapeHtml(b.id) + '</option>';
+                        }).join('') +
+                    '</select>' +
+                '</div>' +
+                '<div class="gguf-backends-list" id="ggufBackendsList">' +
+                    renderBackendsList() +
+                '</div>' +
             '</div>' +
 
             // Loaded Models Section (always visible at bottom)
@@ -656,6 +693,15 @@ const GgufRenderer = (window.GgufRenderer = (function () {
             });
         }
 
+        // Backend filter dropdown
+        const backendFilter = container.querySelector('#ggufBackendFilter');
+        if (backendFilter) {
+            backendFilter.addEventListener('change', function () {
+                state.selectedBackendId = this.value;
+                updateBackendsSection();
+            });
+        }
+
         // HuggingFace Token buttons
         var saveHfTokenBtn = container.querySelector('#ggufSaveHfToken');
         if (saveHfTokenBtn) {
@@ -732,7 +778,8 @@ const GgufRenderer = (window.GgufRenderer = (function () {
         state.modelFiles = [];
         refreshUi();
         GgufApi.searchModels(query, state.searchLimit).then(function (data) {
-            state.searchResults = (data && data.models) || data || [];
+            var raw = (data && data.results) || data || [];
+            state.searchResults = Array.isArray(raw) ? raw : [];
             refreshUi();
         }).catch(function (err) {
             showToast(_('gguf.search_error') + ': ' + err.message, 'error');
@@ -745,7 +792,8 @@ const GgufRenderer = (window.GgufRenderer = (function () {
         refreshUi();
         const modelId = model.id || model.modelId || '';
         GgufApi.listModelFiles(modelId).then(function (data) {
-            state.modelFiles = (data && data.files) || data || [];
+            var rawFiles = (data && data.files) || data || [];
+            state.modelFiles = Array.isArray(rawFiles) ? rawFiles : [];
             refreshUi();
         }).catch(function (err) {
             showToast('Error loading files: ' + err.message, 'error');
@@ -908,6 +956,110 @@ const GgufRenderer = (window.GgufRenderer = (function () {
             state.loadedModels = [];
             updateLoadedModelsSection();
         });
+    }
+
+    /**
+     * Fetch registered llama.cpp backends from balancer API.
+     */
+    function refreshBackends() {
+        GgufApi.getLlamaCppBackends().then(function (data) {
+            state.registeredBackends = (data && data.backends) || [];
+            state.backendDataLoaded = true;
+            updateBackendsSection();
+        }).catch(function (err) {
+            console.error('[GGUF] Backends fetch failed:', err && err.message || err);
+            state.registeredBackends = [];
+            state.backendDataLoaded = false;
+            updateBackendsSection();
+        });
+    }
+
+    function updateBackendsSection() {
+        var section = document.getElementById('ggufBackendsSection');
+        if (!section) return;
+        // Update the count badge
+        var countEl = document.getElementById('ggufBackendCount');
+        if (countEl) countEl.textContent = state.registeredBackends.length;
+        // Update the backend filter dropdown
+        var filterEl = document.getElementById('ggufBackendFilter');
+        if (filterEl) {
+            var currentVal = filterEl.value || state.selectedBackendId;
+            filterEl.innerHTML = '<option value="">' + _('gguf.all_backends') + '</option>' +
+                state.registeredBackends.map(function(b) {
+                    var sel = (currentVal && currentVal === b.id) ? ' selected' : '';
+                    return '<option value="' + Utils.escapeHtml(b.id) + '"' + sel + '>' + Utils.escapeHtml(b.id) + '</option>';
+                }).join('');
+        }
+        // Update the backends list
+        var list = document.getElementById('ggufBackendsList');
+        if (list) {
+            list.innerHTML = renderBackendsList();
+        }
+    }
+
+    /**
+     * Render the registered backends list.
+     */
+    function renderBackendsList() {
+        var backends = state.registeredBackends;
+        // Filter by selected backend if any
+        if (state.selectedBackendId) {
+            backends = backends.filter(function (b) { return b.id === state.selectedBackendId; });
+        }
+        if (!backends || backends.length === 0) {
+            return '<div class="gguf-empty-state">' +
+                (state.backendDataLoaded ? _('gguf.no_registered_backends') : _('gguf.loading_backends')) +
+            '</div>';
+        }
+        return backends.map(function (b) {
+            var statusClass = b.status === 'healthy' ? 'healthy' : (b.status === 'offline' ? 'offline' : 'warn');
+            var statusLabel = b.status === 'healthy' ? _('common.online') :
+                (b.status === 'offline' ? _('common.offline') : b.status);
+            var modelCount = (b.models && b.models.length) || 0;
+            var vramInfo = '';
+            if (b.gpuMemory && b.gpuMemory.totalMB > 0) {
+                vramInfo = '<span style="margin-right:12px;"><i class="fas fa-microchip"></i> VRAM: ' +
+                    formatFileSize(b.gpuMemory.usedMB || 0) + ' / ' + formatFileSize(b.gpuMemory.totalMB) +
+                    '</span>';
+            }
+            var modelsHtml = '';
+            if (b.models && b.models.length > 0) {
+                modelsHtml = '<div class="gguf-backend-models">' +
+                    b.models.map(function (m) {
+                        var statusBadge = m.status === 'loaded' ?
+                            '<span class="badge badge-success" title="' + _('gguf.model_loaded') + '">✓</span>' :
+                            '<span class="badge badge-warning" title="' + _('gguf.loading') + '">⟳</span>';
+                        return '<div class="gguf-backend-model-item">' +
+                            statusBadge +
+                            '<span class="gguf-model-name">' + Utils.escapeHtml(m.name) + '</span>' +
+                            (m.contextSize ? '<span class="gguf-model-ctx">ctx: ' + m.contextSize + '</span>' : '') +
+                        '</div>';
+                    }).join('') +
+                '</div>';
+            }
+            return '' +
+                '<div class="gguf-backend-card">' +
+                    '<div class="gguf-backend-card-header">' +
+                        '<span class="gguf-status-dot ' + statusClass + '"></span>' +
+                        '<span class="gguf-backend-id">🦒 ' + Utils.escapeHtml(b.id) + '</span>' +
+                        '<span class="badge" style="background:var(--llamacpp-badge);margin-left:8px;">llama.cpp</span>' +
+                        '<span class="gguf-backend-status">' + statusLabel + '</span>' +
+                    '</div>' +
+                    '<div class="gguf-backend-card-body">' +
+                        '<div class="gguf-backend-details">' +
+                            '<span style="margin-right:12px;"><i class="fas fa-link"></i> ' + Utils.escapeHtml(b.url || b.host) + '</span>' +
+                            vramInfo +
+                            '<span><i class="fas fa-cube"></i> ' + _('gguf.models') + ': ' + modelCount + '</span>' +
+                        '</div>' +
+                        modelsHtml +
+                        '<div class="gguf-backend-meta" style="margin-top:8px;font-size:11px;color:var(--text-secondary);">' +
+                            '<span>' + _('gguf.active_reqs') + ': ' + (b.activeRequests || 0) + '</span>' +
+                            '<span style="margin-left:12px;">' + _('gguf.max_reqs') + ': ' + (b.maxConcurrentReqs || 0) + '</span>' +
+                            (b.vramUsagePercent ? '<span style="margin-left:12px;">VRAM: ' + Math.round(b.vramUsagePercent) + '%</span>' : '') +
+                        '</div>' +
+                    '</div>' +
+                '</div>';
+        }).join('');
     }
 
     /**

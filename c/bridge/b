@@ -1,0 +1,429 @@
+// Package bridge — CGo-обёртка для вызова C-функций llama.cpp
+//
+// Этот файл содержит Go-интерфейс к C bridge (bridge.h/bridge.c).
+// CGo используется для прямого вызова C-кода без промежуточных процессов.
+//
+// Сборка с реальным llama.cpp (по умолчанию, без тега llama_stub):
+//   Требуется предварительная сборка llama.cpp и bridge через CMake:
+//     mkdir -p c/llama.cpp/build && cd c/llama.cpp/build
+//     cmake .. -DGGML_CUDA=ON -DCMAKE_BUILD_TYPE=Release
+//     cmake --build . --config Release -j$(nproc)
+//     mkdir -p c/bridge/build && cd c/bridge/build
+//     cmake .. -DCMAKE_BUILD_TYPE=Release
+//     cmake --build . --config Release
+//     go build -o cppworker ./cmd/cppworker
+//
+// Для сборки без реального llama.cpp (stub режим):
+//   go build -tags llama_stub -o cppworker ./cmd/cppworker
+
+//go:build !llama_stub
+
+package bridge
+
+/*
+#cgo CFLAGS: -I${SRCDIR} -I${SRCDIR}/../llama.cpp/include -I${SRCDIR}/../llama.cpp/ggml/include -I${SRCDIR}/../llama.cpp/common
+#cgo LDFLAGS: -L${SRCDIR}/build -L${SRCDIR}/../llama.cpp/build -L${SRCDIR}/../llama.cpp/build/src -L${SRCDIR}/../llama.cpp/build/ggml/src -lollamalegion_bridge -lllama -lggml -lggml-cpu -lggml-base -lm -lpthread -lstdc++
+#cgo linux LDFLAGS: -lrt -ldl
+#cgo windows LDFLAGS: -lws2_32
+
+#include <stdlib.h>
+#include "bridge.h"
+
+// extern-прототип для Go-функции, экспортируемой в C через //export
+extern int streamCallbackGo(char* token, int token_len, void* user_data);
+*/
+import "C"
+import (
+	"encoding/json"
+	"fmt"
+	"runtime"
+	"sync"
+	"unsafe"
+)
+
+// ModelHandle — Go-представление C ModelHandle
+type ModelHandle struct {
+	ptr  C.ModelHandle
+	path string
+}
+
+// GPUDevice — информация о GPU
+type GPUDevice struct {
+	Index           int
+	VRAMTotalMB     uint64
+	VRAMFreeMB      uint64
+	Name            string
+	ComputeCapMajor int
+	ComputeCapMinor int
+}
+
+// GenerationParams — параметры генерации
+type GenerationParams struct {
+	NPredict         int
+	NKeep            int
+	NBatch           int
+	Temperature      float32
+	TopP             float32
+	TopK             float32
+	RepeatPenalty    float32
+	FrequencyPenalty float32
+	PresencePenalty  float32
+	Seed             int // -1 = random
+}
+
+// DefaultGenerationParams возвращает параметры по умолчанию
+func DefaultGenerationParams() GenerationParams {
+	return GenerationParams{
+		NPredict:         512,
+		NKeep:            0,
+		NBatch:           512,
+		Temperature:      0.7,
+		TopP:             0.9,
+		TopK:             40.0,
+		RepeatPenalty:    1.1,
+		FrequencyPenalty: 0.0,
+		PresencePenalty:  0.0,
+		Seed:             -1,
+	}
+}
+
+// ModelConfig — конфигурация загрузки модели
+type ModelConfig struct {
+	ModelPath         string    // путь к GGUF файлу
+	NContext          int       // размер контекста (4096)
+	NBatch            int       // размер батча (512)
+	NThreads          int       // потоков CPU (0 = auto)
+	NThreadsBatch     int       // потоков для батча (0 = auto)
+	NGPULayers        int       // слоёв на GPU (-1 = все, 0 = CPU)
+	MainGPU           int       // индекс главного GPU
+	FlashAttn         bool      // Flash Attention
+	NUMA              bool      // NUMA оптимизация
+	TensorSplit       []float32 // пропорции multi-GPU
+	UseMmap           bool      // mmap (true)
+	UseMlock          bool      // mlock
+	// RoPE параметры контекста
+	RopeFreqBase      float32
+	RopeFreqScale     float32
+	RopeScalingType   string
+	RopeScalingFactor float32
+	// YaRN параметры
+	YarnExtFactor     float32
+	YarnAttnFactor    float32
+	YarnBetaFast      float32
+	YarnBetaSlow      float32
+	// KV Cache
+	NoKVOffload bool
+	KVCacheType string
+	// Нормализация
+	RMSNormEps float32
+	// Прочее
+	NoMemoryMap bool
+	RPCBackend  string
+}
+
+// DefaultModelConfig возвращает конфигурацию по умолчанию
+func DefaultModelConfig(path string) ModelConfig {
+	return ModelConfig{
+		ModelPath:  path,
+		NContext:   4096,
+		NBatch:     512,
+		NThreads:   0,
+		NGPULayers: -1, // все слои на GPU
+		MainGPU:    0,
+		FlashAttn:  true,
+		UseMmap:    true,
+	}
+}
+
+// InferenceResult — результат инференса
+type InferenceResult struct {
+	Output   string
+	Status   int // 0 = success
+	ErrorMsg string
+}
+
+// ModelMetadata — метаданные модели
+type ModelMetadata struct {
+	Description    string
+	Architecture   string
+	ContextLength  int
+	NLayers        int
+	NHeads         int
+	NEmbd          int
+	NVocab         int
+	SizeTotalBytes uint64
+}
+
+// StreamCallback — функция обратного вызова для стриминга
+// Возвращает true для продолжения, false для остановки
+type StreamCallback func(token string) bool
+
+// ============================================================
+// Bridge — синглтон для доступа к C-функциям
+// ============================================================
+
+var (
+	mu       sync.Mutex
+	initDone bool
+)
+
+// Init инициализирует bridge (вызывается один раз)
+func Init() error {
+	mu.Lock()
+	defer mu.Unlock()
+	if initDone {
+		return nil
+	}
+	C.bridge_init()
+	initDone = true
+	return nil
+}
+
+// Version возвращает версию bridge
+func Version() string {
+	cstr := C.bridge_version()
+	return C.GoString(cstr)
+}
+
+// GetGPUCount возвращает количество доступных GPU
+func GetGPUCount() int {
+	return int(C.bridge_get_gpu_count())
+}
+
+// GetGPUInfo возвращает информацию о GPU
+func GetGPUInfo(index int) (*GPUDevice, error) {
+	var info C.GPUDeviceInfo
+	ret := C.bridge_get_gpu_info(C.int(index), &info)
+	if ret != 0 {
+		return nil, fmt.Errorf("bridge_get_gpu_info: %s", C.GoString(C.bridge_last_error()))
+	}
+	return &GPUDevice{
+		Index:           int(info.index),
+		VRAMTotalMB:     uint64(info.vram_total_mb),
+		VRAMFreeMB:      uint64(info.vram_free_mb),
+		Name:            C.GoString(&info.name[0]),
+		ComputeCapMajor: int(info.compute_capability_major),
+		ComputeCapMinor: int(info.compute_capability_minor),
+	}, nil
+}
+
+// LoadModel загружает GGUF модель
+func LoadModel(cfg ModelConfig) (*ModelHandle, error) {
+	cCfg := C.ModelConfig{}
+
+	modelPathC := C.CString(cfg.ModelPath)
+	defer C.free(unsafe.Pointer(modelPathC))
+	cCfg.model_path = modelPathC
+
+	cCfg.n_ctx = C.int(cfg.NContext)
+	cCfg.n_batch = C.int(cfg.NBatch)
+	cCfg.n_threads = C.int(cfg.NThreads)
+	cCfg.n_threads_batch = C.int(cfg.NThreadsBatch)
+	cCfg.n_gpu_layers = C.int(cfg.NGPULayers)
+	cCfg.main_gpu = C.int(cfg.MainGPU)
+
+	if cfg.FlashAttn {
+		cCfg.flash_attn = 1
+	}
+	if cfg.NUMA {
+		cCfg.numa = 1
+	}
+	if cCfg.n_threads <= 0 {
+		cCfg.n_threads = C.int(runtime.NumCPU())
+	}
+
+	// Tensor split
+	if len(cfg.TensorSplit) > 0 {
+		ts := make([]C.float, len(cfg.TensorSplit))
+		for i, v := range cfg.TensorSplit {
+			ts[i] = C.float(v)
+		}
+		cCfg.tensor_split = &ts[0]
+		cCfg.tensor_split_len = C.int(len(cfg.TensorSplit))
+	}
+
+	if cfg.UseMmap {
+		cCfg.use_mmap = 1
+	}
+	if cfg.UseMlock {
+		cCfg.use_mlock = 1
+	}
+
+	// RoPE параметры
+	cCfg.rope_freq_base = C.float(cfg.RopeFreqBase)
+	cCfg.rope_freq_scale = C.float(cfg.RopeFreqScale)
+
+	var errMsg *C.char
+	handle := C.bridge_load_model(&cCfg, &errMsg)
+	if handle == nil {
+		errStr := ""
+		if errMsg != nil {
+			errStr = C.GoString(errMsg)
+			C.bridge_free_string(errMsg)
+		}
+		return nil, fmt.Errorf("load model failed: %s", errStr)
+	}
+
+	return &ModelHandle{ptr: handle, path: cfg.ModelPath}, nil
+}
+
+// FreeModel выгружает модель
+func (m *ModelHandle) FreeModel() {
+	if m == nil || m.ptr == nil {
+		return
+	}
+	C.bridge_free_model(m.ptr)
+	m.ptr = nil
+}
+
+// Infer выполняет синхронный инференс
+func (m *ModelHandle) Infer(prompt string, params GenerationParams) (*InferenceResult, error) {
+	if m == nil || m.ptr == nil {
+		return nil, fmt.Errorf("model not loaded")
+	}
+
+	cPrompt := C.CString(prompt)
+	defer C.free(unsafe.Pointer(cPrompt))
+
+	cParams := C.GenerationParams{
+		n_predict:         C.int(params.NPredict),
+		n_keep:            C.int(params.NKeep),
+		n_batch:           C.int(params.NBatch),
+		temperature:       C.float(params.Temperature),
+		top_p:             C.float(params.TopP),
+		top_k:             C.float(params.TopK),
+		repeat_penalty:    C.float(params.RepeatPenalty),
+		frequency_penalty: C.float(params.FrequencyPenalty),
+		presence_penalty:  C.float(params.PresencePenalty),
+		seed:              C.int(params.Seed),
+	}
+
+	result := C.bridge_infer(m.ptr, cPrompt, &cParams)
+	defer C.bridge_free_inference_result(&result)
+
+	if result.status != 0 {
+		errMsg := ""
+		if result.error_msg != nil {
+			errMsg = C.GoString(result.error_msg)
+		}
+		return nil, fmt.Errorf("inference failed: %s", errMsg)
+	}
+
+	return &InferenceResult{
+		Output:   C.GoStringN(result.output, result.output_len),
+		Status:   int(result.status),
+		ErrorMsg: "",
+	}, nil
+}
+
+// InferStream выполняет стриминг-инференс
+func (m *ModelHandle) InferStream(prompt string, params GenerationParams, callback StreamCallback) error {
+	if m == nil || m.ptr == nil {
+		return fmt.Errorf("model not loaded")
+	}
+
+	cPrompt := C.CString(prompt)
+	defer C.free(unsafe.Pointer(cPrompt))
+
+	cParams := C.GenerationParams{
+		n_predict:         C.int(params.NPredict),
+		n_keep:            C.int(params.NKeep),
+		n_batch:           C.int(params.NBatch),
+		temperature:       C.float(params.Temperature),
+		top_p:             C.float(params.TopP),
+		top_k:             C.float(params.TopK),
+		repeat_penalty:    C.float(params.RepeatPenalty),
+		frequency_penalty: C.float(params.FrequencyPenalty),
+		presence_penalty:  C.float(params.PresencePenalty),
+		seed:              C.int(params.Seed),
+	}
+
+	// C callback — выделяем контекст для Go callback
+	cbData := &streamCallbackData{fn: callback}
+
+	ret := C.bridge_infer_stream(
+		m.ptr, cPrompt, &cParams,
+		C.StreamCallback(C.streamCallbackGo),
+		unsafe.Pointer(cbData),
+	)
+
+	if ret != 0 {
+		return fmt.Errorf("stream inference failed with code %d", ret)
+	}
+	return nil
+}
+
+// GetEmbeddings получает эмбеддинги текста
+func (m *ModelHandle) GetEmbeddings(text string) ([]float32, error) {
+	if m == nil || m.ptr == nil {
+		return nil, fmt.Errorf("model not loaded")
+	}
+
+	cText := C.CString(text)
+	defer C.free(unsafe.Pointer(cText))
+
+	result := C.bridge_get_embeddings(m.ptr, cText)
+	defer C.bridge_free_inference_result(&result)
+
+	if result.status != 0 {
+		errMsg := ""
+		if result.error_msg != nil {
+			errMsg = C.GoString(result.error_msg)
+		}
+		return nil, fmt.Errorf("embeddings failed: %s", errMsg)
+	}
+
+	outputStr := C.GoStringN(result.output, result.output_len)
+	if len(outputStr) == 0 {
+		return []float32{}, nil
+	}
+
+	var embeddings []float32
+	if err := json.Unmarshal([]byte(outputStr), &embeddings); err != nil {
+		return nil, fmt.Errorf("embeddings parse error: %w (raw: %s)", err, outputStr)
+	}
+	return embeddings, nil
+}
+
+// GetMetadata возвращает метаданные модели
+func (m *ModelHandle) GetMetadata() (*ModelMetadata, error) {
+	if m == nil || m.ptr == nil {
+		return nil, fmt.Errorf("model not loaded")
+	}
+
+	cMeta := C.bridge_get_model_metadata(m.ptr)
+	defer C.bridge_free_model_metadata(&cMeta)
+
+	return &ModelMetadata{
+		Description:    C.GoString(cMeta.description),
+		Architecture:   C.GoString(cMeta.architecture),
+		ContextLength:  int(cMeta.context_length),
+		NLayers:        int(cMeta.n_layers),
+		NHeads:         int(cMeta.n_heads),
+		NEmbd:          int(cMeta.n_embd),
+		NVocab:         int(cMeta.n_vocab),
+		SizeTotalBytes: uint64(cMeta.size_total),
+	}, nil
+}
+
+// ============================================================
+// Утилиты
+// ============================================================
+
+// streamCallbackData — контекст для Go callback из C
+type streamCallbackData struct {
+	fn StreamCallback
+}
+
+//export streamCallbackGo
+func streamCallbackGo(token *C.char, tokenLen C.int, userData unsafe.Pointer) C.int {
+	cbData := (*streamCallbackData)(userData)
+	if cbData == nil || cbData.fn == nil {
+		return 0
+	}
+	tok := C.GoStringN(token, tokenLen)
+	if cbData.fn(tok) {
+		return 1 // continue
+	}
+	return 0 // stop
+}

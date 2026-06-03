@@ -93,6 +93,9 @@ func (s *Server) setupRoutes() {
 	s.mux.Handle("/api/v1/virtualmodels", AuthMiddleware(RateLimitMiddleware(s.virtualModelsListHandler, s.rateLimiter), s.authenticator))
 	s.mux.Handle("/api/v1/virtualmodels/", AuthMiddleware(RateLimitMiddleware(s.virtualModelsStatusHandler, s.rateLimiter), s.authenticator))
 
+	// GGUF backends info for WebUI (публичный, без аутентификации — используется страницей GGUF)
+	s.mux.HandleFunc("/api/v1/gguf/backends", s.handleGgufBackends)
+
 	// Proxy Logs endpoint (с аутентификацией и rate limiting)
 	s.mux.Handle("/api/v1/proxy/logs", AuthMiddleware(RateLimitMiddleware(s.proxyLogsHandler, s.rateLimiter), s.authenticator))
 

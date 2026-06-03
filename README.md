@@ -89,11 +89,11 @@ docker run -d --name cppworker-cpu `
 ```bash
 # Linux/macOS
 docker run -d --name cppworker-cpu \
-  -p 18091:18091 \
-  -v $(pwd)/models:/app/models \
+  -p 18091:18091 \  -v $(pwd)/models:/app/models \
   ollama-legion/cppworker:cpu \
   --port 18091 --models-dir ./models
 ```
+
 
 #### GPU-режим (CUDA 12.2, реальный llama.cpp)
 

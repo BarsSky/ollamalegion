@@ -913,6 +913,29 @@ window.I18N_EN = {
   "wizard.backend_type_confirm_change": "Are you sure you want to switch the engine type to \"{0}\"?",
   "wizard.backend_type_mode_reset": "The current mode will be reset to \"Standard\".",
   "wizard.backend_type_switched_llama": "Switched to llama.cpp",
-  "wizard.backend_type_switched_ollama": "Switched to Ollama API"
+  "wizard.backend_type_switched_ollama": "Switched to Ollama API",
+
+  // llama.cpp params in backend renderer
+  "renderers.section_llama_cpp_params": "🦙 llama.cpp Parameters",
+
+  // GGUF worker unavailable
+  "gguf.cppworker_unavailable": "CppWorker not registered",
+  "gguf.cppworker_unavailable_desc": "The GGUF page requires a running CppWorker (llama.cpp). Wait for the first llama.cpp backend to register via the load balancer, or start the cppworker container manually.",
+  "gguf.check_worker_url": "CppWorker URL (from config):",
+  "gguf.retry_connection": "Retry connection",
+
+  // ===== GGUF Backends (from Balancer API) =====
+  "gguf.registered_backends": "Registered llama.cpp Backends",
+  "gguf.all_backends": "All Backends",
+  "gguf.no_registered_backends": "No registered llama.cpp backends",
+  "gguf.loading_backends": "Loading backends list...",
+  "gguf.models": "Models",
+  "gguf.active_reqs": "Active",
+  "gguf.max_reqs": "Max Requests",
+  "gguf.loading": "Loading",
+
+  // ===== Common Status =====
+  "common.online": "Online",
+  "common.offline": "Offline"
 };
 

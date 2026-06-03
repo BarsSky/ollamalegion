@@ -164,6 +164,111 @@ const GgufApi = (function () {
             });
         },
 
+        // ---- Model Management via Balancer ----
+
+        /**
+         * Manage model on a registered backend via the balancer API.
+         * @param {string} backendId — backend ID (e.g., 'llama_gpu')
+         * @param {string} operation — 'load' or 'unload'
+         * @param {string} modelName — model name/path
+         * @param {object} [options] — load options (gpuLayers, ctxSize, etc.)
+         */
+        async manageModel(backendId, operation, modelName, options = {}) {
+            var balancerUrl = (window.WEBUI_CONFIG && window.WEBUI_CONFIG.API_BASE_URL) ||
+                (typeof window !== 'undefined' && window.location && window.location.origin) ||
+                '/';
+            const url = balancerUrl.replace(/\/+$/, '') + '/api/v1/backends/' + encodeURIComponent(backendId) + '/models';
+            const body = {
+                operation: operation,
+                modelName: modelName,
+                ...options
+            };
+            const controller = new AbortController();
+            const timer = setTimeout(function () { controller.abort(); }, 30000);
+            try {
+                const response = await fetch(url, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(body),
+                    signal: controller.signal
+                });
+                clearTimeout(timer);
+                const data = await response.json();
+                if (!response.ok) {
+                    return { success: false, error: data.error || 'HTTP ' + response.status };
+                }
+                return data;
+            } catch (err) {
+                clearTimeout(timer);
+                return { success: false, error: err.message };
+            }
+        },
+
+        /**
+         * Get models list for a specific backend via balancer API.
+         * GET /api/v1/backends/{backendId}/models
+         */
+        async getBackendModels(backendId) {
+            var balancerUrl = (window.WEBUI_CONFIG && window.WEBUI_CONFIG.API_BASE_URL) ||
+                (typeof window !== 'undefined' && window.location && window.location.origin) ||
+                '/';
+            const url = balancerUrl.replace(/\/+$/, '') + '/api/v1/backends/' + encodeURIComponent(backendId) + '/models';
+            const controller = new AbortController();
+            const timer = setTimeout(function () { controller.abort(); }, REQUEST_TIMEOUT_MS);
+            try {
+                const response = await fetch(url, {
+                    headers: { 'Content-Type': 'application/json' },
+                    signal: controller.signal
+                });
+                clearTimeout(timer);
+                if (!response.ok) {
+                    const text = await response.text().catch(function () { return ''; });
+                    throw new Error('HTTP ' + response.status + ': ' + (text || response.statusText));
+                }
+                return response.json();
+            } catch (err) {
+                clearTimeout(timer);
+                throw err;
+            }
+        },
+
+        // ---- Balancer Backends Info ----
+
+        /**
+         * Get registered llama.cpp backends info from balancer API.
+         * This replaces the need to connect directly to individual cppworkers.
+         * Returns: { backends: [...], total: N, backendType: "llama_cpp", operatingMode: "..." }
+         */
+        async getLlamaCppBackends() {
+            // Use the balancer's API server URL instead of cppworker.
+            // Priority: 1) WEBUI_CONFIG.API_BASE_URL, 2) current origin (Docker/nginx), 3) relative path
+            var balancerUrl = (window.WEBUI_CONFIG && window.WEBUI_CONFIG.API_BASE_URL) ||
+                (typeof window !== 'undefined' && window.location && window.location.origin) ||
+                '/';
+            const url = balancerUrl.replace(/\/+$/, '') + '/api/v1/gguf/backends';
+            console.log('[GGUF] Fetching backends from:', url);
+            const controller = new AbortController();
+            const timer = setTimeout(function () { controller.abort(); }, REQUEST_TIMEOUT_MS);
+            try {
+                const response = await fetch(url, {
+                    headers: { 'Content-Type': 'application/json' },
+                    signal: controller.signal
+                });
+                clearTimeout(timer);
+                if (!response.ok) {
+                    const text = await response.text().catch(function () { return ''; });
+                    throw new Error('HTTP ' + response.status + ': ' + (text || response.statusText));
+                }
+                return response.json();
+            } catch (err) {
+                clearTimeout(timer);
+                if (err.name === 'AbortError') {
+                    throw new Error('Request timeout — balancer API unreachable');
+                }
+                throw err;
+            }
+        },
+
         // ---- Local Model Management ----
 
         /** List local GGUF files */

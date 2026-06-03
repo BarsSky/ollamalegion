@@ -1322,7 +1322,7 @@ const ui = (function () {
         var cppWorkerPort = parseInt((document.getElementById('formBackendCppWorkerPort') && document.getElementById('formBackendCppWorkerPort').value)) || 18090;
         var cppGrpcPort = parseInt((document.getElementById('formBackendCppGrpcPort') && document.getElementById('formBackendCppGrpcPort').value)) || 19000;
 
-        var payload = { id, name: name || id, host, ollamaPort, agentPort, weight, maxConcurrentRequests: maxConcurrent, maxModels, gpuMode, labels, type: backendType };
+        var payload = { id, name: name || id, host, ollamaPort, agentPort, weight, maxConcurrentRequests: maxConcurrent, maxModels, gpuMode, labels, backendType: backendType };
         if (backendType === 'llama_cpp') {
             payload.cppWorkerPort = cppWorkerPort;
             payload.grpcPort = cppGrpcPort;

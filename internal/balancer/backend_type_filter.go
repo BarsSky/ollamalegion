@@ -111,7 +111,7 @@ func (p *Proxy) getBackendEngine() types.BackendEngine {
 		// Смешанный кластер или нет бэкендов — возвращаем auto
 		return types.EngineAuto
 	}
-	return types.EngineOllamaAPI
+	return types.EngineLlamaCPP
 }
 
 // getEffectiveBackendType возвращает доминирующий тип бэкенда в кластере.

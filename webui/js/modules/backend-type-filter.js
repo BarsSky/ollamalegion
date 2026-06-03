@@ -26,6 +26,12 @@
          * Приоритет: localStorage > cluster state > API config > fallback (ollama).
          * ВАЖНО: fallback на ollama — только если API config недоступен.
          */
+        /**
+         * Флаг: была ли уже попытка синхронной загрузки конфига.
+         * Защита от множественных синхронных XHR при повторных вызовах.
+         */
+        _syncAttempted: false,
+
         getCurrentType: function () {
             // 1. Проверяем кэш localStorage
             var cached = localStorage.getItem(STORAGE_KEY);
@@ -33,20 +39,51 @@
                 return cached;
             }
 
-            // 2. Пытаемся получить из API config синхронно (через кэш)
+            // 2. Пытаемся получить из API config через кэш (серверный конфиг)
             try {
                 var cachedConfig = window.__lastServerConfig;
                 if (cachedConfig && cachedConfig.backendEngine) {
                     var bt2 = this._engineToType(cachedConfig.backendEngine);
+                    // Сохраняем в localStorage для будущих вызовов
+                    localStorage.setItem(STORAGE_KEY, bt2);
                     return bt2;
                 }
             } catch (e) { /* ignore */ }
 
-            // 4. Начинаем асинхронную загрузку из API config для будущих вызовов
-            //    НО для текущего вызова возвращаем ollama (последний fallback)
+            // 3. ОДИН синхронный запрос к серверу при первой загрузке
+            //    (до того как clusterState / async config успели загрузиться)
+            if (!this._syncAttempted && window.Api && window.Api.config) {
+                this._syncAttempted = true;
+                try {
+                    var xhr = new XMLHttpRequest();
+                    xhr.open('GET', (window.WEBUI_CONFIG && window.WEBUI_CONFIG.API_BASE || '') + '/api/v1/config', false);
+                    xhr.timeout = 3000;
+                    xhr.send();
+                    if (xhr.status >= 200 && xhr.status < 300) {
+                        var serverConfig = JSON.parse(xhr.responseText);
+                        window.__lastServerConfig = serverConfig;
+                        if (serverConfig && serverConfig.backendEngine) {
+                            var type = this._engineToType(serverConfig.backendEngine);
+                            localStorage.setItem(STORAGE_KEY, type);
+                            this.updateUI(type);
+                            return type;
+                        }
+                    }
+                } catch (e) {
+                    console.warn('[BackendTypeFilter] Sync config fetch failed:', e);
+                }
+            } else {
+                // Помечаем что попытка была (даже если API недоступен)
+                this._syncAttempted = true;
+            }
+
+            // 4. Запускаем асинхронную загрузку для будущих вызовов
             this._fetchConfigAsync();
 
-            return 'ollama';
+            // 5. Возвращаем null — UI покажет нейтральное состояние (Автоопределение...)
+            //    вместо хардкода 'ollama'. Когда конфиг загрузится асинхронно —
+            //    updateUI обновит badge и фильтры.
+            return null;
         },
 
         /**
@@ -187,15 +224,18 @@
 			window.__lastClusterState = state;
 
 			if (targetType) {
-				// Если пользователь явно выбрал тип (localStorage установлен) —
-				// доверяем localStorage, НЕ обновляем UI из cluster state
-				if (localStorageType === 'llama_cpp' || localStorageType === 'ollama') {
-					console.log('[BackendTypeFilter] User preference in localStorage (' + localStorageType + ') overrides server (' + targetType + '). Keeping user choice.');
-					this.updateUI(localStorageType);
-					return localStorageType;
+				// Сервер — источник истины для backendEngine.
+				// ВСЕГДА синхронизируем localStorage и UI из серверных данных.
+				// Исключение: если пользовательское значение совпадает с серверным —
+				// просто обновляем UI без перезаписи localStorage (избегаем лишних записей).
+				if (localStorageType === targetType) {
+					console.log('[BackendTypeFilter] localStorage already matches server (' + targetType + '). Updating UI only.');
+					this.updateUI(targetType);
+					return targetType;
 				}
-				// Если localStorage не установлен — синхронизируем из сервера
-				console.log('[BackendTypeFilter] No user preference. Syncing UI from server:', targetType);
+				// Серверное значение отличается от localStorage (или localStorage пуст) —
+				// перезаписываем localStorage из сервера
+				console.log('[BackendTypeFilter] Server is source of truth. Syncing localStorage from ' + (localStorageType || 'null') + ' to ' + targetType);
 				localStorage.setItem(STORAGE_KEY, targetType);
 				this.updateUI(targetType);
 				return targetType;

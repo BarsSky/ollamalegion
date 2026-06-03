@@ -79,6 +79,7 @@ func (p *Proxy) GetClusterState() *types.ClusterState {
 			savedHost := metrics.Host
 			savedOllamaPort := metrics.OllamaPort
 			savedMaxConcurrent := metrics.MaxConcurrentRequests
+			savedCppWorkerPort := backendConfig.CppWorkerPort
 
 			metrics = *agentMetrics
 
@@ -86,6 +87,7 @@ func (p *Proxy) GetClusterState() *types.ClusterState {
 			metrics.Host = savedHost
 			metrics.OllamaPort = savedOllamaPort
 			metrics.MaxConcurrentRequests = savedMaxConcurrent
+			metrics.CppWorkerPort = savedCppWorkerPort
 			metrics.Status = status
 			metrics.HasAgent = hasAgent
 			metrics.Prediction = prediction

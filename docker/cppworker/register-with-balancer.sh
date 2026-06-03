@@ -4,25 +4,14 @@
 # =============================================================================
 # Регистрирует cppworker в балансере после его запуска.
 # Вызывается из entrypoint.sh после старта cppworker.
-#
-# Переменные окружения:
-#   BALANCER_URL          — URL API балансера (напр. http://loadbalancer:18081)
-#   CPPWORKER_HOST        — хост, по которому балансер может достучаться до cppworker
-#   CPPWORKER_PORT        — порт cppworker (по умолчанию 18091)
-#   CPPWORKER_NAME        — имя бэкенда (по умолчанию "cppworker")
-#   CPPWORKER_BACKEND_ID  — ID бэкенда (по умолчанию "cppworker-gpu")
-#   CPPWORKER_MAX_CONCURRENT — макс. одновременных запросов (по умолчанию 4)
-#   CPPWORKER_MAX_MODELS  — макс. моделей (по умолчанию 3)
-#   CPPWORKER_GPU_MODE    — режим GPU: auto/cpu/cuda (по умолчанию "auto")
-#   CPPWORKER_LABELS      — метки через запятую (по умолчанию "linux,amd64,llamacpp")
-#   BALANCER_API_TOKEN    — токен API балансера (если требуется)
-# =============================================================================
+# При already exists — обновляет бэкенд через PUT.
 
 set -e
 
 BALANCER_URL="${BALANCER_URL:-}"
 CPPWORKER_HOST="${CPPWORKER_HOST:-cppworker}"
 CPPWORKER_PORT="${CPPWORKER_PORT:-18091}"
+CPPWORKER_ADVERTISED_PORT="${CPPWORKER_ADVERTISED_PORT:-${CPPWORKER_PORT}}"
 CPPWORKER_NAME="${CPPWORKER_NAME:-CppWorker}"
 CPPWORKER_BACKEND_ID="${CPPWORKER_BACKEND_ID:-cppworker-gpu}"
 CPPWORKER_MAX_CONCURRENT="${CPPWORKER_MAX_CONCURRENT:-4}"
@@ -30,7 +19,7 @@ CPPWORKER_MAX_MODELS="${CPPWORKER_MAX_MODELS:-3}"
 CPPWORKER_GPU_MODE="${CPPWORKER_GPU_MODE:-auto}"
 CPPWORKER_LABELS="${CPPWORKER_LABELS:-linux,amd64,llamacpp}"
 BALANCER_API_TOKEN="${BALANCER_API_TOKEN:-}"
-MAX_RETRIES=30
+MAX_RETRIES=150
 RETRY_DELAY=2
 
 CPPWORKER_ADVERTISED_HOST="${CPPWORKER_ADVERTISED_HOST:-${CPPWORKER_HOST:-cppworker}}"
@@ -42,7 +31,7 @@ fi
 
 echo "[register] Waiting for cppworker to be ready..."
 for i in $(seq 1 ${MAX_RETRIES}); do
-    if curl -s -f "http://127.0.0.1:${CPPWORKER_PORT}/health" > /dev/null 2>&1; then
+    if curl -sf "http://127.0.0.1:${CPPWORKER_PORT}/health" > /dev/null 2>&1; then
         echo "[register] CppWorker is ready (port ${CPPWORKER_PORT})"
         break
     fi
@@ -50,30 +39,29 @@ for i in $(seq 1 ${MAX_RETRIES}); do
         echo "[register] ERROR: CppWorker did not become ready within $((MAX_RETRIES * RETRY_DELAY))s"
         exit 1
     fi
-    echo "[register]   attempt ${i}/${MAX_RETRIES} — waiting ${RETRY_DELAY}s..."
+    echo "[register]   attempt ${i}/${MAX_RETRIES} - waiting ${RETRY_DELAY}s..."
     sleep ${RETRY_DELAY}
 done
 
 echo "[register] Waiting for balancer API to be ready..."
 for i in $(seq 1 ${MAX_RETRIES}); do
-    if curl -s -f "${BALANCER_URL}/api/v1/health" > /dev/null 2>&1; then
+    if curl -sf "${BALANCER_URL}/api/v1/health" > /dev/null 2>&1; then
         echo "[register] Balancer API is ready (${BALANCER_URL})"
         break
     fi
     if [ $i -eq ${MAX_RETRIES} ]; then
         echo "[register] WARNING: Balancer API not reachable after $((MAX_RETRIES * RETRY_DELAY))s, will retry registration"
     fi
-    echo "[register]   attempt ${i}/${MAX_RETRIES} — waiting ${RETRY_DELAY}s..."
+    echo "[register]   attempt ${i}/${MAX_RETRIES} - waiting ${RETRY_DELAY}s..."
     sleep ${RETRY_DELAY}
 done
 
-# Конвертируем метки из строки с запятыми в JSON-массив
+# Convert labels string to JSON array
 LABELS_JSON="["
 FIRST=true
 OLD_IFS="${IFS}"
 IFS=","
 for label in ${CPPWORKER_LABELS}; do
-    # trim whitespace
     label=$(echo "$label" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
     if [ -n "$label" ]; then
         if [ "$FIRST" = true ]; then
@@ -87,7 +75,10 @@ done
 IFS="${OLD_IFS}"
 LABELS_JSON="${LABELS_JSON}]"
 
-# Формируем JSON для регистрации
+# Use advertised port for registration (external port visible to balancer)
+REGISTER_CPP_PORT="${CPPWORKER_ADVERTISED_PORT}"
+echo "[register] Using cppWorkerPort=${REGISTER_CPP_PORT} (advertised=${CPPWORKER_ADVERTISED_PORT}, internal=${CPPWORKER_PORT})"
+
 REGISTER_JSON=$(cat <<EOF
 {
   "id": "${CPPWORKER_BACKEND_ID}",
@@ -95,7 +86,7 @@ REGISTER_JSON=$(cat <<EOF
   "host": "${CPPWORKER_HOST}",
   "ollamaPort": 0,
   "agentPort": 0,
-  "cppWorkerPort": ${CPPWORKER_PORT},
+  "cppWorkerPort": ${REGISTER_CPP_PORT},
   "weight": 10,
   "maxConcurrentRequests": ${CPPWORKER_MAX_CONCURRENT},
   "maxModels": ${CPPWORKER_MAX_MODELS},
@@ -107,37 +98,84 @@ REGISTER_JSON=$(cat <<EOF
 EOF
 )
 
+# Helper: build auth header
+build_auth_header() {
+    if [ -n "${BALANCER_API_TOKEN}" ]; then
+        printf '%s' "X-API-Token: ${BALANCER_API_TOKEN}"
+    fi
+}
+
+# Helper: perform registration POST
+do_register() {
+    AUTH_HDR=$(build_auth_header)
+    if [ -n "${AUTH_HDR}" ]; then
+        curl -s -w "%{http_code}" \
+            -H "Content-Type: application/json" \
+            -H "${AUTH_HDR}" \
+            -d "${REGISTER_JSON}" \
+            -o /tmp/register_response.txt \
+            "${BALANCER_URL}/api/v1/backends"
+    else
+        curl -s -w "%{http_code}" \
+            -H "Content-Type: application/json" \
+            -d "${REGISTER_JSON}" \
+            -o /tmp/register_response.txt \
+            "${BALANCER_URL}/api/v1/backends"
+    fi
+}
+
+# Helper: perform update PUT
+do_update() {
+    AUTH_HDR=$(build_auth_header)
+    if [ -n "${AUTH_HDR}" ]; then
+        curl -s -w "%{http_code}" \
+            -X PUT \
+            -H "Content-Type: application/json" \
+            -H "${AUTH_HDR}" \
+            -d "${REGISTER_JSON}" \
+            -o /tmp/update_response.txt \
+            "${BALANCER_URL}/api/v1/backends/${CPPWORKER_BACKEND_ID}"
+    else
+        curl -s -w "%{http_code}" \
+            -X PUT \
+            -H "Content-Type: application/json" \
+            -d "${REGISTER_JSON}" \
+            -o /tmp/update_response.txt \
+            "${BALANCER_URL}/api/v1/backends/${CPPWORKER_BACKEND_ID}"
+    fi
+}
+
 echo "[register] Registering cppworker in balancer..."
 echo "[register]   URL:  ${BALANCER_URL}/api/v1/backends"
 echo "[register]   JSON: ${REGISTER_JSON}"
 
-AUTH_HEADER=""
-if [ -n "${BALANCER_API_TOKEN}" ]; then
-    AUTH_HEADER="-H 'X-API-Token: ${BALANCER_API_TOKEN}'"
-fi
-
-# Отправляем запрос на регистрацию
-HTTP_CODE=$(curl -s -o /tmp/register_response.txt -w "%{http_code}" \
-    -X POST \
-    -H "Content-Type: application/json" \
-    ${AUTH_HEADER:+-H "X-API-Token: ${BALANCER_API_TOKEN}"} \
-    -d "${REGISTER_JSON}" \
-    "${BALANCER_URL}/api/v1/backends" 2>&1)
-
-RESPONSE=$(cat /tmp/register_response.txt)
+HTTP_CODE=$(do_register)
+RESPONSE=$(cat /tmp/register_response.txt 2>/dev/null || echo "")
 echo "[register] Response: HTTP ${HTTP_CODE}"
 echo "[register] Body: ${RESPONSE}"
 
 if [ "${HTTP_CODE}" -ge 200 ] && [ "${HTTP_CODE}" -lt 300 ]; then
-    echo "[register] ✅ CppWorker registered successfully in balancer"
-else
-    # Проверяем, может бэкенд уже существует (409 Conflict / 200 с ошибкой)
-    if echo "${RESPONSE}" | grep -qi "already exists"; then
-        echo "[register] ⚠️  Backend already exists, this is OK"
+    echo "[register] OK CppWorker registered successfully in balancer"
+elif [ "${HTTP_CODE}" -eq 409 ] || echo "${RESPONSE}" | grep -qi "already exists"; then
+    echo "[register] Backend already exists, updating via PUT..."
+    HTTP_CODE2=$(do_update)
+    RESPONSE2=$(cat /tmp/update_response.txt 2>/dev/null || echo "")
+    echo "[register] Update response: HTTP ${HTTP_CODE2}"
+    echo "[register] Update body: ${RESPONSE2}"
+    if [ "${HTTP_CODE2}" -ge 200 ] && [ "${HTTP_CODE2}" -lt 300 ]; then
+        echo "[register] OK CppWorker updated successfully in balancer"
     else
-        echo "[register] ❌ Registration failed with HTTP ${HTTP_CODE}"
-        echo "[register]    Response: ${RESPONSE}"
+        echo "[register] FAILED Update failed with HTTP ${HTTP_CODE2}"
+        echo "[register]    Response: ${RESPONSE2}"
+        rm -f /tmp/register_response.txt /tmp/update_response.txt
+        exit 1
     fi
+    rm -f /tmp/update_response.txt
+else
+    echo "[register] FAILED Registration failed with HTTP ${HTTP_CODE}"
+    echo "[register]    Response: ${RESPONSE}"
+    rm -f /tmp/register_response.txt
+    exit 1
 fi
 
 rm -f /tmp/register_response.txt

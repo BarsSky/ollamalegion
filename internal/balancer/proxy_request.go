@@ -90,6 +90,28 @@ func (p *Proxy) proxyRequest(w http.ResponseWriter, r *http.Request, backendID s
 
 	targetURL := p.getBackendBaseURL(state.Backend)
 
+	// Для llama.cpp бэкендов — используем отдельный прокси с трансляцией форматов
+	logger.Get().Infow("proxyRequest: checking backend type for llamacpp routing",
+		"backend_id", backendID,
+		"backend_type", state.Backend.Type,
+		"normalized_type", normalizeBackendType(state.Backend.Type),
+		"is_llamacpp", p.isLlamaCppBackend(state.Backend),
+	)
+	if p.isLlamaCppBackend(state.Backend) {
+		// Читаем тело запроса для трансляции
+		var bodyBuf []byte
+		if r.Body != nil {
+			var readErr error
+			bodyBuf, readErr = io.ReadAll(r.Body)
+			r.Body = io.NopCloser(bytes.NewBuffer(bodyBuf))
+			if readErr != nil {
+				logger.Get().Errorw("proxyRequest: failed to read body for llamacpp translation",
+					"backend", backendID, "error", readErr)
+			}
+		}
+		return p.proxyRequestLlamaCpp(w, r, backendID, bodyBuf)
+	}
+
 	target, err := url.Parse(targetURL)
 	if err != nil {
 		err = fmt.Errorf("invalid backend URL: %v", err)

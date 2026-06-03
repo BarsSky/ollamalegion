@@ -1,3 +1,6 @@
+# ============================================================
+# Build artifacts
+# ============================================================
 # Binaries for programs and plugins
 *.exe
 *.exe~
@@ -14,37 +17,109 @@
 # Dependency directories (remove the comment below to include it)
 # vendor/
 
-*.log
-
-.vscode/
-
+# Build / coverage / generated dirs
 bin/
 build/
+coverage/
+out/
+
+# ============================================================
+# IDE / OS / misc
+# ============================================================
+.vscode/
+.idea/
+
+# ============================================================
+# Logs and large outputs
+# ============================================================
+*.log
+
+# ============================================================
+# Environment / data
+# ============================================================
 deployments/.env
 deployments/data/
 data/
 
-*.txt
-
+# ============================================================
+# Local task tracker (used by Cline internally)
+# ============================================================
 task_progress.json
+task_progress.md
 
-coverage/
+# ============================================================
+# Python caches
+# ============================================================
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
 
-c
+# ============================================================
+# CGo bridge + llama.cpp source (vendored in c/)
+# These are not temporary — they're real project files.
+# Uncomment the next line only if c/ is treated as disposable.
+# /c/
+# ============================================================
 
+# ============================================================
+# Test results / coverage dumps
+# ============================================================
 test_results/
 
-test_embed.json
-
-test_generate.json
-
+# ============================================================
+# CocoIndex cache
+# ============================================================
 .cocoindex_code/
 
-# Temp artifacts
-utputFormat
-final_run.txt
-final_tests.txt
-test_output.txt
-test_result.txt
-test_result2.txt
-test_results_final.txt
+# ============================================================
+# Anti-clutter: temporary debug / one-off artifacts in repo ROOT
+# (real loads tests / debug scripts live in scripts/ instead)
+# ============================================================
+
+# One-off debug logs / result dumps in root
+/test_output.txt
+/test_result.txt
+/test_result2.txt
+/test_result*.txt
+/test_results_final.txt
+/final_run.txt
+/final_tests.txt
+/tmp_response.txt
+/tmp_restart.log
+/tmp_cppworker.log
+/tmp_build.log
+/build_gpu.log
+
+# Typo'd scratch files
+/utputFormat
+
+# Throwaway python one-offs in repo root (real e2e tests live in scripts/)
+/test_*.py
+/apply_chat_template_fix.py
+/check_compile.py
+/fix_main.py
+/register_backend.py
+/run_template_test.py
+/update_config.py
+
+# Throwaway powershell one-offs in repo root
+/test_*.ps1
+/diagnose.ps1
+/restart_stack.ps1
+/check_cluster.ps1
+/check_disk.ps1
+/check_wsl_disk.ps1
+
+# Throwaway tmp_* scratch files in repo root
+/tmp_*.py
+/tmp_*.ps1
+/tmp_*.json
+/tmp_*.err
+/tmp_*.log
+/tmp_*.txt
+/tmp_*
+
+# Throwaway cluster/backend JSON snapshots
+/cluster*.json
+/add_*.json

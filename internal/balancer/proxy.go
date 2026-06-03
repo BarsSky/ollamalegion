@@ -39,6 +39,7 @@ type Proxy struct {
 	saveMu          sync.Mutex        // Мьютекс для защиты saveTimer
 	totalRequests   int64             // Atomic: всего запросов через прокси
 	ollamaRouter    *OllamaRouter     // Маршрутизатор Ollama API endpoint'ов
+	llamaCppRouter  *LlamaCppRouter   // Маршрутизатор llama.cpp API endpoint'ов
 
 	// EventBus (вынесен в eventbus.go)
 	eventBus *EventBus
@@ -177,6 +178,9 @@ func NewProxy(config *types.LoadBalancerConfig) *Proxy {
 	// Инициализация OllamaRouter для агрегации и целевой маршрутизации API
 	p.ollamaRouter = NewOllamaRouter(p)
 
+	// Инициализация LlamaCppRouter для llama.cpp бэкендов
+	p.llamaCppRouter = NewLlamaCppRouter(p)
+
 	// Инициализация AutoPullManager (Pull-on-Demand)
 	if config.Balancing.AutoPull.Enabled {
 		p.AutoPull = NewAutoPullManager(p, config.Balancing.AutoPull)
@@ -245,7 +249,20 @@ func (p *Proxy) getMaxConcurrentWarmups() int {
 func (p *Proxy) getHeartbeatInterval() time.Duration {
 	sec := p.config.Balancing.AdvancedTiming.HeartbeatIntervalSec
 	if sec <= 0 {
-		sec = 15
+		return 15 * time.Second
+	}
+	return time.Duration(sec) * time.Second
+}
+
+// getStreamingIdleTimeout — read-deadline для backend-стрима.
+// Если в течение этого времени из бэкенда не приходит ни одного чанка, прокси
+// считает, что бэкенд завис/SIGSEGV, и явно завершает стрим с ошибкой
+// (вместо того, чтобы молча "завершать" по EOF).
+// default: 120s, настройка — Balancing.StreamingIdleTimeout.
+func (p *Proxy) getStreamingIdleTimeout() time.Duration {
+	sec := p.config.Balancing.StreamingIdleTimeout
+	if sec <= 0 {
+		return 120 * time.Second
 	}
 	return time.Duration(sec) * time.Second
 }
@@ -260,12 +277,27 @@ func (p *Proxy) getWarmupSemaphoreTimeout() time.Duration {
 }
 
 // determineRequestBackendType определяет тип бэкенда на основе пути входящего запроса.
-// - Ollama API endpoints (/api/generate, /api/chat, /api/tags, ...) → BackendTypeOllama
+// - Ollama API endpoints (/api/generate, /api/chat, /api/tags, ...) →
+//   если OperatingMode разрешает оба типа (standard/replication/rpc_coordinator) — возвращает "",
+//   позволяя selectBackend выбрать бэкенд любого типа где загружена модель.
+//   Если mode жёстко привязан к одному типу — возвращает этот тип.
 // - llama.cpp / OpenAI-compatible endpoints (/v1/chat/completions, /v1/completions, ...) → BackendTypeLlamaCpp
 // - Прочие пути → "" (будет определено из OperatingMode через getDefaultAllowedTypes)
 func (p *Proxy) determineRequestBackendType(r *http.Request) types.BackendType {
 	path := r.URL.Path
 	if strings.HasPrefix(path, "/api/") {
+		// Проверяем, какие типы бэкендов разрешены текущим OperatingMode
+		allowed := p.getDefaultAllowedTypes()
+		if len(allowed) > 1 {
+			// Режим разрешает оба типа (standard/replication/rpc_coordinator) —
+			// возвращаем "", чтобы selectBackend мог выбрать бэкенд любого типа
+			// на основе того, где модель фактически загружена.
+			return ""
+		}
+		if len(allowed) == 1 {
+			return allowed[0]
+		}
+		// Фолбэк: неизвестный режим — только Ollama для обратной совместимости
 		return types.BackendTypeOllama
 	}
 	if strings.HasPrefix(path, "/v1/") {
@@ -395,6 +427,7 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	w = sr
 
 	isChatOrGenerate := (path == "/api/generate" || path == "/api/chat")
+	_ = isChatOrGenerate // используется для логирования/defer ниже
 
 	// Объявляем переменные до defer, чтобы замыкание захватило их финальные значения
 	var targetBackend string
@@ -427,7 +460,7 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	r = r.WithContext(ctx)
 
 	sessionID = p.getSessionIDWithModel(r, clientName, model)
-	if !isChatOrGenerate && p.ollamaRouter != nil && p.ollamaRouter.Route(w, r) {
+	if p.routeRequest(w, r) {
 		return
 	}
 

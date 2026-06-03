@@ -22,7 +22,7 @@ else
     if [ "$NEEDS_FIX" -eq 1 ]; then
         # Вставляем недостающие поля перед последней }
         INSERT='  ,"initialized": false\
-  ,"backendEngine": "ollama_api"'
+  ,"backendEngine": "llama_cpp"'
         sed -i '/^}$/i\'"$INSERT" "$CONFIG_WRITABLE"
     fi
 fi

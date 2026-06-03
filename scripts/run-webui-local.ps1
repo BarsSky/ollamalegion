@@ -14,7 +14,8 @@
 param(
     [string]$ApiHost = "localhost",
     [int]$ApiPort = 18081,
-    [int]$NginxPort = 18030
+    [int]$NginxPort = 18030,
+    [int]$CppWorkerPort = 18091
 )
 
 $ErrorActionPreference = "Stop"
@@ -57,6 +58,22 @@ server {
         proxy_read_timeout 30s;
     }
 
+    location /api/worker/ {
+        rewrite ^/api/worker/(.*)$ /`$1 break;
+        proxy_pass http://$ApiHost`:$CppWorkerPort;
+        proxy_http_version 1.1;
+        proxy_set_header Host `$host;
+        proxy_set_header X-Real-IP `$remote_addr;
+        proxy_set_header X-Forwarded-For `$proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto `$scheme;
+        proxy_connect_timeout 30s;
+        proxy_send_timeout 30s;
+        proxy_read_timeout 300s;
+        proxy_buffering off;
+        proxy_next_upstream error timeout invalid_header http_502 http_503 http_504;
+        proxy_next_upstream_tries 2;
+    }
+
     location /ws/ {
         proxy_pass http://$ApiHost`:$ApiPort/ws/;
         proxy_http_version 1.1;
@@ -91,6 +108,7 @@ Object.assign(window.WEBUI_CONFIG, {
     API_BASE: '',
     WS_URL: null,
     API_TOKEN: '',
+    CPPWORKER_URL: '/api/worker',
     REFRESH_INTERVAL: 5000,
     MAX_RECONNECT_ATTEMPTS: 10,
     RECONNECT_INTERVAL_BASE: 3000

@@ -44,9 +44,13 @@ try {
     }
 
     if ($CppWorker) {
-        Write-Host "=== Building ollama-legion/cppworker ===" -ForegroundColor Cyan
-        docker build -t ollama-legion/cppworker:latest -f docker/cppworker/Dockerfile .
-        if ($LASTEXITCODE -ne 0) { throw "CppWorker build failed" }
+        Write-Host "=== Building ollama-legion/cppworker:gpu (CUDA) ===" -ForegroundColor Cyan
+        docker build -t ollama-legion/cppworker:gpu -f docker/cppworker/Dockerfile.gpu --target runtime .
+        if ($LASTEXITCODE -ne 0) { throw "CppWorker GPU build failed" }
+
+        Write-Host "=== Building ollama-legion/cppworker:cpu ===" -ForegroundColor Cyan
+        docker build -t ollama-legion/cppworker:cpu -f docker/cppworker/Dockerfile.cpu --target runtime .
+        if ($LASTEXITCODE -ne 0) { throw "CppWorker CPU build failed" }
     }
 
     Write-Host "`n=== All builds completed ===" -ForegroundColor Green

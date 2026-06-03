@@ -4,10 +4,11 @@ import (
 	"net/http"
 
 	"ollama-loadbalancer/pkg/logger"
+	"ollama-loadbalancer/pkg/types"
 )
 
 // routeRequest — маршрутизация входящего HTTP запроса.
-// Возвращает true если запрос обработан (health или Ollama API), false для основного flow.
+// Возвращает true если запрос обработан (health или Ollama/llama.cpp API), false для основного flow.
 func (p *Proxy) routeRequest(w http.ResponseWriter, r *http.Request) bool {
 	// Health check
 	if r.URL.Path == "/health" {
@@ -17,11 +18,21 @@ func (p *Proxy) routeRequest(w http.ResponseWriter, r *http.Request) bool {
 		return true
 	}
 
-	// Ollama API routing (не /api/generate и не /api/chat)
-	path := r.URL.Path
-	isChatOrGenerate := (path == "/api/generate" || path == "/api/chat")
-	if !isChatOrGenerate && p.ollamaRouter != nil && p.ollamaRouter.Route(w, r) {
-		return true
+	// Ollama/llama.cpp API routing — все пути включая /api/chat и /api/generate
+	bt := p.determineRequestBackendType(r)
+
+	// Пробуем llama.cpp роутер если тип LlamaCpp или не указан (смешанный кластер)
+	if (bt == "" || bt == types.BackendTypeLlamaCpp) && p.llamaCppRouter != nil {
+		if p.llamaCppRouter.Route(w, r) {
+			return true
+		}
+	}
+
+	// Пробуем Ollama роутер если тип Ollama или не указан
+	if (bt == "" || bt == types.BackendTypeOllama) && p.ollamaRouter != nil {
+		if p.ollamaRouter.Route(w, r) {
+			return true
+		}
 	}
 
 	return false

@@ -14,24 +14,18 @@ NGINX_CONF="/etc/nginx/conf.d/default.conf"
 : "${API_HOST:=loadbalancer}"
 : "${API_PORT:=18081}"
 : "${LB_PORT:=18080}"
-: "${CPPWORKER_HOST:=cppworker-cpu}"
-: "${CPPWORKER_PORT:=18091}"
+: "${CPPWORKER_HOST:=cppworker-gpu}"
+: "${CPPWORKER_PORT:=18092}"
 : "${API_TOKEN:=}"
 : "${REFRESH_INTERVAL:=5000}"
 : "${MAX_RECONNECT_ATTEMPTS:=10}"
 : "${RECONNECT_INTERVAL_BASE:=3000}"
 
-# 1. Генерация nginx.conf
+# 1. Генерация nginx.conf через envsubst (надёжнее, чем awk)
 echo "[entrypoint] Generating nginx config..."
-awk '{
-    gsub(/\$\{NGINX_PORT\}/, "'"$NGINX_PORT"'");
-    gsub(/\$\{API_HOST\}/, "'"$API_HOST"'");
-    gsub(/\$\{API_PORT\}/, "'"$API_PORT"'");
-    gsub(/\$\{LB_PORT\}/, "'"$LB_PORT"'");
-    gsub(/\$\{CPPWORKER_HOST\}/, "'"$CPPWORKER_HOST"'");
-    gsub(/\$\{CPPWORKER_PORT\}/, "'"$CPPWORKER_PORT"'");
-    print
-}' "$NGINX_TEMPLATE" > "$NGINX_CONF"
+export NGINX_PORT API_HOST API_PORT LB_PORT CPPWORKER_HOST CPPWORKER_PORT
+envsubst '${NGINX_PORT} ${API_HOST} ${API_PORT} ${LB_PORT} ${CPPWORKER_HOST} ${CPPWORKER_PORT}' \
+    < "$NGINX_TEMPLATE" > "$NGINX_CONF"
 
 # 2. Генерация config.js для рантайм параметров
 CONFIG_JS="/usr/share/nginx/html/js/modules/config.js"

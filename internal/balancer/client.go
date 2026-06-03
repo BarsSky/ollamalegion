@@ -3,12 +3,54 @@ package balancer
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
+	"io"
 	"net"
 	"net/http"
 	"strings"
 
 	"ollama-loadbalancer/pkg/logger"
 )
+
+// extractChatIDFromBody — пытается извлечь идентификатор чата из запроса.
+// Используется в первую очередь для OpenWebUI, который может передавать
+// chat_id в заголовке (X-Chat-Id / X-Conversation-Id) или в теле запроса
+// (chat_id / conversation_id). Это позволяет балансеру различать разные
+// чаты одного пользователя, которые иначе имели бы одинаковый sessionID.
+//
+// Функция читает тело через io.ReadAll и ВОССТАНАВЛИВАЕТ r.Body
+// через io.NopCloser — вызывающий код может перечитать тело без проблем.
+// Возвращает "", если ничего не нашли.
+func extractChatIDFromBody(r *http.Request) string {
+	if r == nil || r.Body == nil || r.Method != http.MethodPost {
+		return ""
+	}
+	// Сначала пробуем заголовки (быстрее, без чтения тела).
+	for _, h := range []string{"X-Chat-Id", "X-Chat-ID", "X-Conversation-Id", "X-Conversation-ID"} {
+		if v := r.Header.Get(h); v != "" {
+			return v
+		}
+	}
+	// Затем — тело (если оно не слишком большое).
+	body, err := io.ReadAll(r.Body)
+	if err != nil {
+		return ""
+	}
+	r.Body = io.NopCloser(strings.NewReader(string(body)))
+	if len(body) == 0 || len(body) > 1<<20 { // 1 MiB — выше не имеет смысла
+		return ""
+	}
+	var req map[string]interface{}
+	if err := json.Unmarshal(body, &req); err != nil {
+		return ""
+	}
+	for _, key := range []string{"chat_id", "conversation_id", "chatId", "conversationId"} {
+		if v, ok := req[key].(string); ok && v != "" {
+			return v
+		}
+	}
+	return ""
+}
 
 // defaultTrustedProxies — стандартные доверенные сети: loopback, Docker bridge, RFC1918
 var defaultTrustedProxies = []string{
@@ -194,8 +236,8 @@ func (p *Proxy) getSessionID(r *http.Request, clientName string) string {
 // getSessionIDWithModel - версия с учётом модели (используется при создании сессии)
 // ВАЖНО: X-Client-ID комбинируется с IP и моделью, т.к. разные Cline-клиенты
 // отправляют одинаковый X-Client-ID, что приводило к слипанию сессий.
-// Также учитываются X-Tab-ID, X-Request-ID и тип Ollama-эндпоинта для
-// различения параллельных запросов от одного клиента (разные вкладки/чаты).
+// Также учитываются X-Tab-ID, X-Request-ID, chat_id и тип Ollama-эндпоинта
+// для различения параллельных запросов от одного клиента (разные вкладки/чаты).
 func (p *Proxy) getSessionIDWithModel(r *http.Request, clientName, model string) string {
 	realIP := p.getClientRealIP(r)
 
@@ -221,6 +263,15 @@ func (p *Proxy) getSessionIDWithModel(r *http.Request, clientName, model string)
 	}
 	if cookie, err := r.Cookie("session_id"); err == nil {
 		return cookie.Value + "::" + model + "::" + endpointType
+	}
+
+	// Приоритет 3: chat_id из заголовка или тела запроса (OpenWebUI / LiteLLM).
+	// Без этого все чаты одного пользователя OpenWebUI мапились бы в одну
+	// сессию (fp + clientName совпадают), что приводило к попаданию в чужую
+	// привязку backendID и «пустым» ответам при смене чата.
+	if chatID := extractChatIDFromBody(r); chatID != "" {
+		h := sha256.Sum256([]byte("chat::" + chatID + "::" + realIP + "::" + endpointType))
+		return "chat:" + hex.EncodeToString(h[:16]) + "::" + model
 	}
 
 	fp := p.getClientFingerprint(r)

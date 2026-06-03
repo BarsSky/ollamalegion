@@ -1,4 +1,5 @@
 {
+  "backendEngine": "llama_cpp",
   "loadBalancer": {
     "host": "0.0.0.0",
     "port": 18080,

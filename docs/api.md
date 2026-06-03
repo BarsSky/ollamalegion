@@ -27,6 +27,31 @@ http://localhost:18081
 https://localhost:8443
 ```
 
+### CppWorker (llama.cpp) API
+
+CppWorker предоставляет следующие API помимо проксируемых Ollama эндпоинтов:
+
+| Endpoint | Метод | Описание | Совместимость |
+|----------|-------|----------|---------------|
+| `/api/generate` | `POST` | Генерация текста (NDJSON) | Ollama-совместимый |
+| `/api/chat` | `POST` | Чат (NDJSON, streaming) | Ollama-совместимый |
+| `/api/embeddings` | `POST` | Эмбеддинги | Ollama-совместимый |
+| `/api/tags` | `GET` | Список моделей (GGUF) | Ollama-совместимый |
+| `/api/ollama/generate` | `POST` | Генерация с options | Ollama-совместимый |
+| `/api/ollama/tags` | `GET` | Список моделей | Ollama-совместимый |
+| `/v1/chat/completions` | `POST` | Chat completions (SSE) | **OpenAI-совместимый** |
+| `/v1/completions` | `POST` | Text completions (SSE) | **OpenAI-совместимый** |
+| `/v1/embeddings` | `POST` | Embeddings | **OpenAI-совместимый** |
+| `/v1/models` | `GET` | Список моделей | **OpenAI-совместимый** |
+| `/health` | `GET` | Health check | |
+| `/api/models/load` | `POST` | Загрузка GGUF | |
+| `/api/models/unload` | `POST` | Выгрузка модели | |
+| `/api/hf/*` | `GET/POST` | HuggingFace интеграция | |
+
+> **Форматы стриминга:**
+> - `/api/generate`, `/api/chat`, `/api/ollama/generate` → **NDJSON** (`application/x-ndjson`)
+> - `/v1/chat/completions`, `/v1/completions` → **SSE** (`text/event-stream`) с финальным `[DONE]`
+
 ### Проксирование Ollama API
 
 Балансировщик проксирует стандартные Ollama API endpoint'ы на порту `18080`. Все запросы к Ollama проходят через балансировщик с session stickiness, model affinity, queue management и retry/failover.

@@ -810,5 +810,28 @@ window.I18N_RU = {
   "wizard.backend_type_confirm_change": "Вы уверены, что хотите сменить тип движка на «{0}»?",
   "wizard.backend_type_mode_reset": "Текущий режим будет сброшен на «Standard».",
   "wizard.backend_type_switched_llama": "Переключено на llama.cpp",
-  "wizard.backend_type_switched_ollama": "Переключено на Ollama API"
+  "wizard.backend_type_switched_ollama": "Переключено на Ollama API",
+
+  // llama.cpp параметры в рендерере бэкендов
+  "renderers.section_llama_cpp_params": "🦙 llama.cpp Параметры",
+
+  // GGUF worker недоступен
+  "gguf.cppworker_unavailable": "CppWorker не зарегистрирован",
+  "gguf.cppworker_unavailable_desc": "Страница GGUF требует запущенный CppWorker (llama.cpp). Дождитесь регистрации первого llama.cpp бэкенда через балансировщик, или запустите cppworker контейнер вручную.",
+  "gguf.check_worker_url": "URL CppWorker (из конфигурации):",
+  "gguf.retry_connection": "Проверить снова",
+
+  // ===== GGUF Backends (from Balancer API) =====
+  "gguf.registered_backends": "Зарегистрированные llama.cpp бэкенды",
+  "gguf.all_backends": "Все бэкенды",
+  "gguf.no_registered_backends": "Нет зарегистрированных llama.cpp бэкендов",
+  "gguf.loading_backends": "Загрузка списка бэкендов...",
+  "gguf.models": "Моделей",
+  "gguf.active_reqs": "Активных",
+  "gguf.max_reqs": "Макс. запросов",
+  "gguf.loading": "Загружается",
+
+  // ===== Common Status =====
+  "common.online": "Онлайн",
+  "common.offline": "Офлайн"
 };

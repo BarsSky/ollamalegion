@@ -7,6 +7,7 @@ Object.assign(window.WEBUI_CONFIG, {
     API_BASE: '',
     WS_URL: null,
     API_TOKEN: '',
+    CPPWORKER_URL: 'http://localhost:18092',
     REFRESH_INTERVAL: 5000,
     MAX_RECONNECT_ATTEMPTS: 10,
     RECONNECT_INTERVAL_BASE: 3000

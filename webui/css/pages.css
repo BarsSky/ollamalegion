@@ -761,6 +761,93 @@
     max-width: 600px;
 }
 
+/* ===== Registered Backends Section ===== */
+.gguf-backends-section {
+    margin-top: 20px;
+    margin-bottom: 20px;
+}
+.gguf-backends-list {
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+}
+.gguf-backend-card {
+    background: var(--bg-secondary);
+    border-radius: 8px;
+    border: 1px solid var(--border);
+    overflow: hidden;
+    transition: border-color 0.2s;
+}
+.gguf-backend-card:hover {
+    border-color: var(--accent);
+}
+.gguf-backend-card-header {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 10px 14px;
+    background: var(--bg-primary);
+    border-bottom: 1px solid var(--border);
+}
+.gguf-backend-id {
+    font-weight: 600;
+    font-size: 13px;
+    color: var(--text-primary);
+}
+.gguf-backend-status {
+    margin-left: auto;
+    font-size: 12px;
+    font-weight: 500;
+}
+.gguf-backend-card-body {
+    padding: 12px 14px;
+}
+.gguf-backend-details {
+    font-size: 12px;
+    color: var(--text-secondary);
+    margin-bottom: 10px;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px;
+}
+.gguf-backend-models {
+    margin-top: 8px;
+    padding: 8px;
+    background: var(--bg-primary);
+    border-radius: 6px;
+}
+.gguf-backend-model-item {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 4px 0;
+    font-size: 13px;
+}
+.gguf-backend-model-item:not(:last-child) {
+    border-bottom: 1px solid var(--border);
+}
+.gguf-model-name {
+    font-weight: 500;
+    color: var(--text-primary);
+    flex: 1;
+}
+.gguf-model-ctx {
+    font-size: 11px;
+    color: var(--text-muted);
+    margin-left: auto;
+}
+.gguf-backend-meta {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+}
+.gguf-empty-state {
+    text-align: center;
+    color: var(--text-muted);
+    padding: 24px;
+    font-size: 13px;
+}
+
 /* Loaded Models Section */
 .gguf-section-title {
     font-size: 15px;

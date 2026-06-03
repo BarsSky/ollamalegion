@@ -1,0 +1,494 @@
+/**
+ * GGUF Renderer — переработанная версия.
+ * Больше нет прямого подключения к cppworker.
+ * Вся информация о бэкендах — через /api/v1/gguf/backends от балансера.
+ * Управление моделями — через /api/v1/backends/{id}/models.
+ */
+const GgufRenderer = (window.GgufRenderer = (function () {
+    const _ = function (key, vars) {
+        return window.I18N ? I18N.t(key, vars) : key;
+    };
+
+    let state = {
+        activeTab: 'backends', // 'backends' | 'search' | 'local' | 'settings'
+        registeredBackends: [],
+        selectedBackendId: '',
+        backendDataLoaded: false,
+        searchResults: [],
+        localModels: [],
+        activeDownloads: [],
+        downloadProgress: {},
+        searchQuery: '',
+        searchLimit: 10,
+        selectedModel: null,
+        modelFiles: [],
+        loadOptions: {
+            gpuLayers: -1,
+            ctxSize: 2048,
+            batchSize: 512,
+            flashAttn: false,
+            numa: false,
+            useMmap: true,
+            tensorSplit: null,
+            autoGpuDistribution: true,
+            strategy: 'vram-ratio'
+        }
+    };
+
+    // ---- Main render ----
+
+    function render(container) {
+        if (!container) return;
+        container.innerHTML = buildPageHtml();
+        bindEvents(container);
+        var hfTokenInput = document.getElementById('ggufHfToken');
+        if (hfTokenInput) hfTokenInput.value = GgufApi.getHFToken() || '';
+        refreshBackends();
+    }
+
+    // ---- Page HTML (упрощённый) ----
+
+    function buildPageHtml() {
+        return '' +
+            // Backend-type badge bar
+            '<div class="gguf-connection-bar" id="ggufConnectionBar" style="padding:8px 16px;">' +
+                '<span class="badge" style="background:var(--llamacpp-badge);font-size:13px;">🦒 llama.cpp</span>' +
+                '<span style="margin-left:8px;font-size:13px;color:var(--text-secondary);">' +
+                    _('gguf.registered_backends') + ': <strong id="ggufBackendCount">' + state.registeredBackends.length + '</strong>' +
+                '</span>' +
+                '<button class="btn btn-sm btn-secondary" id="ggufRefreshBackends" style="margin-left:auto;font-size:12px;" title="' + _('gguf.refresh') + '">' +
+                    '<i class="fas fa-sync"></i> ' + _('gguf.refresh') +
+                '</button>' +
+            '</div>' +
+
+            // Tab Bar
+            '<div class="gguf-tabs">' +
+                '<button class="gguf-tab ' + (state.activeTab === 'backends' ? 'active' : '') + '" data-gguf-tab="backends">' +
+                    '<i class="fas fa-network-wired"></i> ' + _('gguf.registered_backends') +
+                '</button>' +
+                '<button class="gguf-tab ' + (state.activeTab === 'search' ? 'active' : '') + '" data-gguf-tab="search">' +
+                    '<i class="fas fa-search"></i> ' + _('gguf.search') +
+                '</button>' +
+                '<button class="gguf-tab ' + (state.activeTab === 'local' ? 'active' : '') + '" data-gguf-tab="local">' +
+                    '<i class="fas fa-folder-open"></i> ' + _('gguf.local_models') +
+                '</button>' +
+                '<button class="gguf-tab ' + (state.activeTab === 'settings' ? 'active' : '') + '" data-gguf-tab="settings">' +
+                    '<i class="fas fa-cog"></i> ' + _('gguf.strategy') +
+                '</button>' +
+            '</div>' +
+
+            // Tab Content
+            '<div class="gguf-content">' +
+                renderBackendsTab() +
+                renderSearchTab() +
+                renderLocalTab() +
+                renderSettingsTab() +
+            '</div>';
+    }
+
+    // ---- Backends Tab (главная) ----
+
+    function renderBackendsTab() {
+        var active = state.activeTab === 'backends';
+        return '' +
+            '<div class="gguf-tab-content' + (active ? ' active' : '') + '" id="ggufBackendsTab" style="' + (active ? '' : 'display:none;') + '">' +
+                // Filter and controls
+                '<div style="display:flex;align-items:center;gap:8px;margin-bottom:12px;">' +
+                    '<label style="font-size:13px;">' + _('gguf.select_backend') + ':</label>' +
+                    '<select id="ggufBackendFilter" class="form-control" style="width:auto;flex:1;max-width:300px;">' +
+                        '<option value="">' + _('gguf.all_backends') + '</option>' +
+                        state.registeredBackends.map(function(b) {
+                            var sel = state.selectedBackendId === b.id ? ' selected' : '';
+                            return '<option value="' + Utils.escapeHtml(b.id) + '"' + sel + '>' + Utils.escapeHtml(b.id) + ' (' + (b.status || '?') + ')</option>';
+                        }).join('') +
+                    '</select>' +
+                '</div>' +
+                '<div id="ggufBackendsList">' + renderBackendsList() + '</div>' +
+            '</div>';
+    }
+
+    function renderBackendsList() {
+        var backends = state.registeredBackends;
+        if (state.selectedBackendId) {
+            backends = backends.filter(function (b) { return b.id === state.selectedBackendId; });
+        }
+        if (!backends || backends.length === 0) {
+            return '<div class="gguf-empty-state" style="padding:40px;text-align:center;">' +
+                '<i class="fas fa-network-wired" style="font-size:40px;color:var(--text-muted);margin-bottom:16px;display:block;"></i>' +
+                '<p>' + (state.backendDataLoaded ? _('gguf.no_registered_backends') : _('gguf.loading_backends') + '...') + '</p>' +
+                '</div>';
+        }
+
+        return backends.map(function (b) { return renderBackendCard(b); }).join('');
+    }
+
+    function renderBackendCard(b) {
+        var statusClass = b.status === 'healthy' ? 'healthy' : (b.status === 'offline' ? 'offline' : 'warn');
+        var statusLabel = b.status === 'healthy' ? '🟢 Online' : (b.status === 'offline' ? '🔴 Offline' : '🟡 ' + (b.status || 'unknown'));
+        var modelCount = (b.models && b.models.length) || 0;
+        var vramTotal = b.gpuMemory ? b.gpuMemory.totalMB : 0;
+        var vramUsed = b.gpuMemory ? b.gpuMemory.usedMB : 0;
+        var vramPct = vramTotal > 0 ? Math.round(vramUsed / vramTotal * 100) : 0;
+
+        var modelsHtml = '';
+        if (b.models && b.models.length > 0) {
+            modelsHtml = '<div class="gguf-backend-models" style="margin-top:8px;">' +
+                '<div style="font-size:12px;color:var(--text-secondary);margin-bottom:4px;">📦 ' + _('gguf.loaded_models_header') + ':</div>' +
+                b.models.map(function (m) {
+                    return '<div class="gguf-backend-model-item" style="display:flex;align-items:center;gap:8px;padding:4px 8px;background:var(--bg-primary);border-radius:4px;margin-bottom:2px;">' +
+                        '<span class="badge ' + (m.status === 'loaded' ? 'badge-success' : 'badge-warning') + '" style="font-size:10px;">' +
+                            (m.status === 'loaded' ? '✓' : '⟳') +
+                        '</span>' +
+                        '<span style="flex:1;font-size:13px;">' + Utils.escapeHtml(m.name) + '</span>' +
+                        (m.contextSize ? '<span style="font-size:11px;color:var(--text-secondary);">ctx:' + m.contextSize + '</span>' : '') +
+                        '<button class="btn btn-sm btn-danger gguf-unload-backend-btn" data-backend="' + Utils.escapeHtml(b.id) + '" data-model="' + Utils.escapeHtml(m.name) + '" style="font-size:10px;padding:2px 6px;" title="' + _('gguf.unload_model') + '">✕</button>' +
+                    '</div>';
+                }).join('') +
+            '</div>';
+        }
+
+        return '' +
+            '<div class="gguf-backend-card" style="border:1px solid var(--border);border-radius:8px;padding:16px;margin-bottom:12px;background:var(--bg-secondary);">' +
+                // Header
+                '<div style="display:flex;align-items:center;gap:8px;margin-bottom:8px;">' +
+                    '<span class="gguf-status-dot ' + statusClass + '"></span>' +
+                    '<strong style="font-size:15px;">🦒 ' + Utils.escapeHtml(b.id) + '</strong>' +
+                    '<span class="badge" style="background:var(--llamacpp-badge);font-size:11px;">llama.cpp</span>' +
+                    '<span style="font-size:12px;margin-left:auto;">' + statusLabel + '</span>' +
+                '</div>' +
+                // Info
+                '<div style="font-size:12px;color:var(--text-secondary);margin-bottom:8px;display:flex;gap:16px;flex-wrap:wrap;">' +
+                    '<span><i class="fas fa-link"></i> ' + Utils.escapeHtml(b.url || b.host) + '</span>' +
+                    (vramTotal > 0 ? '<span><i class="fas fa-microchip"></i> VRAM: ' + formatFileSize(vramUsed) + ' / ' + formatFileSize(vramTotal) + ' (' + vramPct + '%)</span>' : '') +
+                    '<span><i class="fas fa-cube"></i> ' + _('gguf.models') + ': ' + modelCount + '</span>' +
+                    '<span>' + _('gguf.active_reqs') + ': ' + (b.activeRequests || 0) + ' / ' + (b.maxConcurrentReqs || 0) + '</span>' +
+                '</div>' +
+                // VRAM bar
+                (vramTotal > 0 ? '<div style="height:6px;background:var(--bg-primary);border-radius:3px;margin-bottom:8px;overflow:hidden;">' +
+                    '<div style="height:100%;width:' + vramPct + '%;background:' + (vramPct > 80 ? 'var(--danger)' : 'var(--primary)') + ';border-radius:3px;transition:width 0.5s;"></div>' +
+                '</div>' : '') +
+                // Models
+                modelsHtml +
+                // Empty state
+                (modelCount === 0 && b.status === 'healthy' ? '<div style="font-size:12px;color:var(--text-muted);padding:8px 0;">' + _('gguf.no_loaded_models') + '</div>' : '') +
+            '</div>';
+    }
+
+    // ---- Search Tab ----
+
+    function renderSearchTab() {
+        var active = state.activeTab === 'search';
+        return '' +
+            '<div class="gguf-tab-content' + (active ? ' active' : '') + '" id="ggufSearchTab" style="' + (active ? '' : 'display:none;') + '">' +
+                '<div class="gguf-search-form" style="display:flex;gap:8px;margin-bottom:12px;">' +
+                    '<input type="text" id="ggufSearchInput" class="form-control" style="flex:1;" value="' + Utils.escapeHtml(state.searchQuery) + '" placeholder="' + _('gguf.search_placeholder') + '">' +
+                    '<select id="ggufSearchLimit" class="form-control" style="width:80px;">' +
+                        '<option value="5" ' + (state.searchLimit === 5 ? 'selected' : '') + '>5</option>' +
+                        '<option value="10" ' + (state.searchLimit === 10 ? 'selected' : '') + '>10</option>' +
+                        '<option value="20" ' + (state.searchLimit === 20 ? 'selected' : '') + '>20</option>' +
+                    '</select>' +
+                    '<button class="btn btn-primary" id="ggufSearchBtn"><i class="fas fa-search"></i> ' + _('gguf.search_btn') + '</button>' +
+                '</div>' +
+                '<div id="ggufSearchResults">' + renderSearchResults() + '</div>' +
+            '</div>';
+    }
+
+    function renderSearchResults() {
+        if (!state.searchResults || state.searchResults.length === 0) {
+            return '<div class="gguf-empty-state" style="text-align:center;padding:40px;">' +
+                '<i class="fas fa-search" style="font-size:40px;color:var(--text-muted);margin-bottom:16px;display:block;"></i>' +
+                '<p>' + _('gguf.no_results') + '</p></div>';
+        }
+        return '<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:8px;">' +
+            state.searchResults.map(function (model, idx) {
+                return '' +
+                    '<div class="gguf-result-card" style="border:1px solid var(--border);border-radius:6px;padding:12px;background:var(--bg-secondary);">' +
+                        '<div style="font-weight:600;font-size:14px;margin-bottom:4px;">' + Utils.escapeHtml(model.id || model.modelId || '') + '</div>' +
+                        '<div style="font-size:12px;color:var(--text-secondary);">' + _('gguf.author') + ': ' + Utils.escapeHtml(model.author || '-') + '</div>' +
+                        '<div style="margin-top:8px;">' +
+                            '<button class="btn btn-sm btn-secondary gguf-view-files-btn" data-model-idx="' + idx + '">' +
+                                '<i class="fas fa-list"></i> ' + _('gguf.view_files') +
+                            '</button>' +
+                        '</div>' +
+                    '</div>';
+            }).join('') +
+        '</div>';
+    }
+
+    // ---- Local Tab ----
+
+    function renderLocalTab() {
+        var active = state.activeTab === 'local';
+        return '' +
+            '<div class="gguf-tab-content' + (active ? ' active' : '') + '" id="ggufLocalTab" style="' + (active ? '' : 'display:none;') + '">' +
+                '<div style="display:flex;align-items:center;margin-bottom:8px;">' +
+                    '<h4 style="margin:0;"><i class="fas fa-folder-open"></i> ' + _('gguf.local_models') + '</h4>' +
+                    '<button class="btn btn-sm btn-secondary" id="ggufRefreshLocal" style="margin-left:auto;"><i class="fas fa-sync"></i></button>' +
+                '</div>' +
+                '<div id="ggufLocalGrid">' + renderLocalModelsGrid() + '</div>' +
+                '<div style="margin-top:16px;">' +
+                    '<h5 style="margin-bottom:4px;"><i class="fas fa-download"></i> ' + _('gguf.active_downloads') + '</h5>' +
+                    '<div id="ggufDownloadsList">' + renderActiveDownloads() + '</div>' +
+                '</div>' +
+            '</div>';
+    }
+
+    function renderLocalModelsGrid() {
+        // Local models теперь из registered backends моделей
+        var allModels = [];
+        state.registeredBackends.forEach(function (b) {
+            if (b.models) {
+                b.models.forEach(function (m) {
+                    allModels.push({ name: m.name, status: m.status, backendId: b.id });
+                });
+            }
+        });
+        if (allModels.length === 0) {
+            return '<div class="gguf-empty-state" style="text-align:center;padding:20px;">' + _('gguf.no_local_models') + '</div>';
+        }
+        return allModels.map(function (m) {
+            return '' +
+                '<div style="display:flex;align-items:center;gap:8px;padding:8px 12px;border:1px solid var(--border);border-radius:6px;margin-bottom:4px;background:var(--bg-secondary);">' +
+                    '<span class="badge ' + (m.status === 'loaded' ? 'badge-success' : 'badge-warning') + '">' + (m.status === 'loaded' ? '✓' : '⟳') + '</span>' +
+                    '<span style="flex:1;font-size:13px;">' + Utils.escapeHtml(m.name) + '</span>' +
+                    '<span style="font-size:11px;color:var(--text-secondary);">' + Utils.escapeHtml(m.backendId) + '</span>' +
+                '</div>';
+        }).join('');
+    }
+
+    function renderActiveDownloads() {
+        if (!state.activeDownloads || state.activeDownloads.length === 0) {
+            return '<div style="font-size:12px;color:var(--text-muted);">' + _('gguf.no_active_downloads') + '</div>';
+        }
+        return state.activeDownloads.map(function (dl) {
+            var pct = (state.downloadProgress[dl.modelId + '/' + dl.filename] || {}).percent || 0;
+            return '' +
+                '<div style="margin-bottom:4px;">' +
+                    '<div style="font-size:12px;">' + Utils.escapeHtml(dl.modelId) + ' / ' + Utils.escapeHtml(dl.filename) + '</div>' +
+                    '<div style="height:4px;background:var(--bg-primary);border-radius:2px;margin:2px 0;">' +
+                        '<div style="height:100%;width:' + pct + '%;background:var(--primary);border-radius:2px;"></div>' +
+                    '</div>' +
+                    '<div style="font-size:11px;color:var(--text-secondary);">' + Math.round(pct) + '%</div>' +
+                '</div>';
+        }).join('');
+    }
+
+    // ---- Settings Tab ----
+
+    function renderSettingsTab() {
+        var active = state.activeTab === 'settings';
+        return '' +
+            '<div class="gguf-tab-content' + (active ? ' active' : '') + '" id="ggufSettingsTab" style="' + (active ? '' : 'display:none;') + '">' +
+                '<div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;">' +
+                    '<div class="form-group"><label><input type="checkbox" id="ggufAutoGpu" ' + (state.loadOptions.autoGpuDistribution ? 'checked' : '') + '> ' + _('gguf.auto_gpu_distribution') + '</label></div>' +
+                    '<div class="form-group"><label>' + _('gguf.strategy') + '</label><select id="ggufStrategy" class="form-control"><option value="vram-ratio" ' + (state.loadOptions.strategy === 'vram-ratio' ? 'selected' : '') + '>VRAM Ratio</option><option value="manual">Manual</option></select></div>' +
+                    '<div class="form-group"><label>' + _('gguf.gpu_layers') + '</label><input type="number" id="ggufGpuLayers" class="form-control" value="' + state.loadOptions.gpuLayers + '"></div>' +
+                    '<div class="form-group"><label>' + _('gguf.ctx_size') + '</label><input type="number" id="ggufCtxSize" class="form-control" value="' + state.loadOptions.ctxSize + '"></div>' +
+                    '<div class="form-group"><label>' + _('gguf.batch_size') + '</label><input type="number" id="ggufBatchSize" class="form-control" value="' + state.loadOptions.batchSize + '"></div>' +
+                    '<div class="form-group"><label><input type="checkbox" id="ggufFlashAttn" ' + (state.loadOptions.flashAttn ? 'checked' : '') + '> ' + _('gguf.flash_attn') + '</label></div>' +
+                '</div>' +
+            '</div>';
+    }
+
+    // ---- Events ----
+
+    function bindEvents(container) {
+        // Tab switching
+        container.querySelectorAll('.gguf-tab').forEach(function (tab) {
+            tab.addEventListener('click', function () {
+                state.activeTab = this.dataset.ggufTab;
+                refreshUi();
+            });
+        });
+
+        // Backend filter
+        var backendFilter = container.querySelector('#ggufBackendFilter');
+        if (backendFilter) {
+            backendFilter.addEventListener('change', function () {
+                state.selectedBackendId = this.value;
+                updateBackendsList();
+            });
+        }
+
+        // Refresh backends button
+        var refreshBtn = container.querySelector('#ggufRefreshBackends');
+        if (refreshBtn) {
+            refreshBtn.addEventListener('click', function () { refreshBackends(); });
+        }
+
+        // Search
+        var searchBtn = container.querySelector('#ggufSearchBtn');
+        if (searchBtn) searchBtn.addEventListener('click', function () { doSearch(); });
+        var searchInput = container.querySelector('#ggufSearchInput');
+        if (searchInput) searchInput.addEventListener('keydown', function (e) { if (e.key === 'Enter') doSearch(); });
+        var searchLimit = container.querySelector('#ggufSearchLimit');
+        if (searchLimit) searchLimit.addEventListener('change', function () { state.searchLimit = parseInt(this.value) || 10; });
+
+        // Settings
+        ['ggufAutoGpu','ggufStrategy','ggufGpuLayers','ggufCtxSize','ggufBatchSize','ggufFlashAttn'].forEach(function (id) {
+            var el = container.querySelector('#' + id);
+            if (!el) return;
+            el.addEventListener('change', function () {
+                if (id === 'ggufAutoGpu') state.loadOptions.autoGpuDistribution = el.checked;
+                if (id === 'ggufStrategy') state.loadOptions.strategy = el.value;
+                if (id === 'ggufGpuLayers') state.loadOptions.gpuLayers = parseInt(el.value) || -1;
+                if (id === 'ggufCtxSize') state.loadOptions.ctxSize = parseInt(el.value) || 2048;
+                if (id === 'ggufBatchSize') state.loadOptions.batchSize = parseInt(el.value) || 512;
+                if (id === 'ggufFlashAttn') state.loadOptions.flashAttn = el.checked;
+            });
+        });
+
+        // Delegate: unload model from backend
+        container.addEventListener('click', function (e) {
+            var unloadBtn = e.target.closest('.gguf-unload-backend-btn');
+            if (unloadBtn) {
+                var backendId = unloadBtn.dataset.backend;
+                var modelName = unloadBtn.dataset.model;
+                if (backendId && modelName) {
+                    unloadModelFromBackend(backendId, modelName);
+                }
+                return;
+            }
+
+            var viewFilesBtn = e.target.closest('.gguf-view-files-btn');
+            if (viewFilesBtn) {
+                var idx = parseInt(viewFilesBtn.dataset.modelIdx);
+                if (!isNaN(idx) && state.searchResults[idx]) {
+                    viewModelFiles(state.searchResults[idx]);
+                }
+                return;
+            }
+
+            var downloadBtn = e.target.closest('.gguf-download-btn');
+            if (downloadBtn) {
+                startDownloadModel(downloadBtn.dataset.modelId, downloadBtn.dataset.filename);
+                return;
+            }
+
+            var cancelBtn = e.target.closest('.gguf-cancel-dl-btn');
+            if (cancelBtn) {
+                cancelDownload(cancelBtn.dataset.modelId, cancelBtn.dataset.filename);
+                return;
+            }
+
+            var loadBtn = e.target.closest('.gguf-load-btn');
+            if (loadBtn) {
+                var mIdx = parseInt(loadBtn.dataset.modelIdx);
+                if (!isNaN(mIdx) && state.localModels[mIdx]) {
+                    loadLocalModel(state.localModels[mIdx]);
+                }
+                return;
+            }
+        });
+
+        // Refresh local
+        var refreshLocal = container.querySelector('#ggufRefreshLocal');
+        if (refreshLocal) refreshLocal.addEventListener('click', function () { refreshBackends(); });
+
+        // HF Token
+        var saveBtn = container.querySelector('#ggufSaveHfToken');
+        if (saveBtn) saveBtn.addEventListener('click', function () {
+            var inp = document.getElementById('ggufHfToken');
+            if (inp) { GgufApi.setHFToken(inp.value.trim()); showToast('HF Token saved', 'success'); }
+        });
+    }
+
+    // ---- Actions ----
+
+    function unloadModelFromBackend(backendId, modelName) {
+        showToast('Unloading ' + modelName + ' from ' + backendId + '...', 'info');
+        GgufApi.manageModel(backendId, 'unload', modelName).then(function (result) {
+            if (result.success) {
+                showToast('Model unloaded: ' + modelName, 'success');
+                refreshBackends();
+            } else {
+                showToast('Unload failed: ' + (result.error || 'unknown'), 'error');
+            }
+        }).catch(function (err) {
+            showToast('Unload error: ' + err.message, 'error');
+        });
+    }
+
+    function doSearch() {
+        var input = document.getElementById('ggufSearchInput');
+        if (!input) return;
+        var query = input.value.trim();
+        if (!query) return;
+        state.searchQuery = query;
+        state.searchResults = [];
+        updateSearchResults();
+        GgufApi.searchModels(query, state.searchLimit).then(function (data) {
+            state.searchResults = (data && data.results) || (Array.isArray(data) ? data : []);
+            updateSearchResults();
+        }).catch(function (err) { showToast('Search error: ' + err.message, 'error'); });
+    }
+
+    function viewModelFiles(model) {
+        state.selectedModel = model;
+        state.modelFiles = [];
+        var modelId = model.id || model.modelId || '';
+        GgufApi.listModelFiles(modelId).then(function (data) {
+            state.modelFiles = (data && data.files) || (Array.isArray(data) ? data : []);
+            refreshUi();
+        }).catch(function (err) { showToast('Error: ' + err.message, 'error'); });
+    }
+
+    function startDownloadModel(modelId, filename) { /* сохраняем для HF */ }
+    function cancelDownload(modelId, filename) { /* сохраняем для HF */ }
+    function loadLocalModel(model) { /* сохраняем для HF */ }
+
+    // ---- Backend data ----
+
+    function refreshBackends() {
+        GgufApi.getLlamaCppBackends().then(function (data) {
+            state.registeredBackends = (data && data.backends) || [];
+            state.backendDataLoaded = true;
+            updateBackendsList();
+            updateBackendCount();
+        }).catch(function () {
+            state.backendDataLoaded = false;
+            updateBackendsList();
+        });
+    }
+
+    function updateBackendCount() {
+        var el = document.getElementById('ggufBackendCount');
+        if (el) el.textContent = state.registeredBackends.length;
+    }
+
+    function updateBackendsList() {
+        var list = document.getElementById('ggufBackendsList');
+        if (list) list.innerHTML = renderBackendsList();
+        updateBackendCount();
+    }
+
+    function updateSearchResults() {
+        var el = document.getElementById('ggufSearchResults');
+        if (el) el.innerHTML = renderSearchResults();
+    }
+
+    // ---- UI helpers ----
+
+    function refreshUi() {
+        var container = document.getElementById('gguf-page');
+        if (!container) return;
+        render(container);
+    }
+
+    function formatFileSize(bytes) {
+        if (!bytes || bytes === 0) return '0 MB';
+        var mb = bytes / (1024 * 1024);
+        return mb >= 1024 ? (mb / 1024).toFixed(1) + ' GB' : mb.toFixed(0) + ' MB';
+    }
+
+    function showToast(message, type) {
+        if (window.showToast) { window.showToast(message, type); }
+        else { console.log('[' + type + '] ' + message); }
+    }
+
+    return {
+        render: render,
+        refreshBackends: refreshBackends,
+        getState: function () { return state; }
+    };
+})());

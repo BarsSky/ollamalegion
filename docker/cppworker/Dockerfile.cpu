@@ -6,10 +6,11 @@
 # =============================================================================
 
 # -----------------------------------------------------------------------------
-# Stage 1: llama-builder — сборка libllama.a (CPU-only, без CUDA)
+# Stage 1: llama-builder — сборка libllama.a + libggml*.a (CPU-only)
 # -----------------------------------------------------------------------------
 FROM alpine:latest AS llama-builder
 
+# Замена репозиториев Alpine на российское зеркало (mirror.yandex.ru)
 RUN apk add --no-cache git build-base cmake linux-headers
 
 WORKDIR /build/llama.cpp
@@ -18,7 +19,7 @@ COPY c/llama.cpp .
 # Инициализируем git-репозиторий (CMake требует git для генерации build-info)
 RUN git init && git add -A && git -c user.name=docker -c user.email=docker@build commit -m "llama.cpp"
 
-# CMake сборка CPU-only (без CUDA, Metal, Vulkan)
+# CMake сборка CPU-only (без CUDA, Metal, Vulkan) — собираем всё
 RUN mkdir -p build && cd build && \
     cmake .. \
       -DGGML_CUDA=OFF \
@@ -27,11 +28,29 @@ RUN mkdir -p build && cd build && \
       -DGGML_BLAS=OFF \
       -DGGML_CCACHE=OFF \
       -DBUILD_SHARED_LIBS=OFF && \
-    cmake --build . --config Release -j$(nproc) --target llama && \
-    cp src/libllama.a ../
+    cmake --build . --config Release -j$(nproc)
 
 # -----------------------------------------------------------------------------
-# Stage 2: builder — Go сборка с CGO (реальный llama.cpp)
+# Stage 2: bridge-builder — сборка libollamalegion_bridge.a (наша C-обёртка)
+# -----------------------------------------------------------------------------
+FROM alpine:latest AS bridge-builder
+
+RUN apk add --no-cache build-base cmake
+
+WORKDIR /build/bridge
+COPY c/bridge/bridge.h c/bridge/bridge.c c/bridge/CMakeLists.txt ./
+
+# Копируем собранный llama.cpp из предыдущего stage
+COPY --from=llama-builder /build/llama.cpp /build/llama.cpp
+
+# Собираем bridge (линкуется с llama + ggml)
+RUN mkdir -p build && cd build && \
+    cmake .. \
+      -DCMAKE_BUILD_TYPE=Release && \
+    cmake --build . --config Release
+
+# -----------------------------------------------------------------------------
+# Stage 3: builder — Go сборка с CGO (реальный llama.cpp)
 # -----------------------------------------------------------------------------
 FROM golang:1.24-alpine AS builder
 
@@ -47,8 +66,11 @@ RUN go mod download && go mod verify
 
 COPY . .
 
-COPY --from=llama-builder /build/llama.cpp/libllama.a c/llama.cpp/
+# Копируем все собранные C-библиотеки
+COPY --from=llama-builder /build/llama.cpp/build /build/c/llama.cpp/build
+COPY --from=bridge-builder /build/bridge/build /build/c/bridge/build
 
+# Собираем Go-бинарник с CGo (реальный bridge.c, без тега llama_stub)
 RUN CGO_ENABLED=1 GOOS=linux GOARCH=amd64 \
     go build -trimpath -ldflags "-w -s" \
     -o cppworker ./cmd/cppworker

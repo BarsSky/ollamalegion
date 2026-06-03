@@ -25,8 +25,8 @@ type Config struct {
 	DefaultCtxSize    int  `json:"defaultCtxSize"`
 	DefaultBatchSize  int  `json:"defaultBatchSize"`
 	DefaultGPULayers  int  `json:"defaultGpuLayers"`
-	DefaultFlashAttn  bool `json:"defaultFlashAttn"`
-	DefaultNUMA       bool `json:"defaultNuma"`
+	DefaultFlashAttnType int  `json:"defaultFlashAttnType"`
+	DefaultNUMA          bool `json:"defaultNuma"`
 	DefaultUseMmap    bool `json:"defaultUseMmap"`
 	DefaultUseMlock   bool `json:"defaultUseMlock"`
 
@@ -83,8 +83,8 @@ func DefaultConfig() Config {
 		DefaultCtxSize:    4096,
 		DefaultBatchSize:  512,
 		DefaultGPULayers:  -1, // все слои на GPU
-		DefaultFlashAttn:  true,
-		DefaultNUMA:       false,
+		DefaultFlashAttnType:  -1,
+		DefaultNUMA:         false,
 		DefaultUseMmap:    true,
 		DefaultUseMlock:   false,
 
@@ -145,8 +145,8 @@ func LoadConfigFromEnv() Config {
 	if v := os.Getenv("CPPWORKER_GPU_LAYERS"); v != "" {
 		cfg.DefaultGPULayers = parseInt(v, cfg.DefaultGPULayers)
 	}
-	if v := os.Getenv("CPPWORKER_FLASH_ATTN"); v != "" {
-		cfg.DefaultFlashAttn = v == "1" || strings.ToLower(v) == "true"
+	if v := os.Getenv("CPPWORKER_FLASH_ATTN_TYPE"); v != "" {
+		cfg.DefaultFlashAttnType = parseInt(v, cfg.DefaultFlashAttnType)
 	}
 	if v := os.Getenv("CPPWORKER_NUMA"); v != "" {
 		cfg.DefaultNUMA = v == "1" || strings.ToLower(v) == "true"
@@ -351,7 +351,7 @@ func (c Config) SaveConfigToDotEnv(path string) error {
 	sb.WriteString(fmt.Sprintf("LLAMA_CTX_SIZE=%d\n", c.DefaultCtxSize))
 	sb.WriteString(fmt.Sprintf("LLAMA_BATCH_SIZE=%d\n", c.DefaultBatchSize))
 	sb.WriteString(fmt.Sprintf("LLAMA_N_GPU_LAYERS=%d\n", c.DefaultGPULayers))
-	sb.WriteString(fmt.Sprintf("LLAMA_FLASH_ATTN=%v\n", c.DefaultFlashAttn))
+	sb.WriteString(fmt.Sprintf("LLAMA_FLASH_ATTN_TYPE=%d\n", c.DefaultFlashAttnType))
 	sb.WriteString(fmt.Sprintf("LLAMA_NUMA=%v\n", c.DefaultNUMA))
 	sb.WriteString(fmt.Sprintf("LLAMA_MMAP=%v\n", c.DefaultUseMmap))
 	sb.WriteString(fmt.Sprintf("LLAMA_MLOCK=%v\n", c.DefaultUseMlock))

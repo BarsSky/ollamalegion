@@ -71,6 +71,8 @@ func (p *Proxy) getBackendBaseURL(backend *types.Backend) string {
 }
 
 // isLlamaCppBackend — проверяет, является ли конкретный бэкенд llama.cpp.
+// Проверяем по BackendType (не по Engine), чтобы бэкенды с EngineAuto тоже корректно
+// обрабатывались через proxyRequestLlamaCpp с трансляцией форматов.
 func (p *Proxy) isLlamaCppBackend(backend *types.Backend) bool {
-	return p.resolveBackendEngine(backend) == types.EngineLlamaCPP
+	return normalizeBackendType(backend.Type) == types.BackendTypeLlamaCpp
 }

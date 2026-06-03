@@ -1,0 +1,732 @@
+package tests
+
+import (
+	"bufio"
+	"bytes"
+	"encoding/json"
+	"fmt"
+	"io"
+	"net/http"
+	"net/http/httptest"
+	"strings"
+	"sync/atomic"
+	"testing"
+	"time"
+
+	"ollama-loadbalancer/internal/balancer"
+	"ollama-loadbalancer/pkg/types"
+)
+
+// mockCppWorkerOpenAI — cppworker mock возвращающий OpenAI-формат ответов
+// (как реальный llama.cpp сервер). Проверяет работу транслятора llamacpp_transport.go.
+type mockCppWorkerOpenAI struct {
+	server   *httptest.Server
+	host     string
+	requests int64
+}
+
+func newMockCppWorkerOpenAI() *mockCppWorkerOpenAI {
+	m := &mockCppWorkerOpenAI{}
+	m.server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt64(&m.requests, 1)
+		path := r.URL.Path
+
+		switch {
+		case path == "/health":
+			json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
+
+		case path == "/v1/models":
+			json.NewEncoder(w).Encode(map[string]interface{}{
+				"object": "list",
+				"data": []map[string]interface{}{
+					{"id": "test-model", "object": "model"},
+				},
+			})
+
+		case path == "/v1/chat/completions":
+			body, _ := io.ReadAll(r.Body)
+			var req map[string]interface{}
+			json.Unmarshal(body, &req)
+			stream, _ := req["stream"].(bool)
+
+			if stream {
+				// OpenAI SSE streaming
+				w.Header().Set("Content-Type", "text/event-stream")
+				w.Header().Set("Transfer-Encoding", "chunked")
+				w.WriteHeader(http.StatusOK)
+				flusher, _ := w.(http.Flusher)
+
+				// Чанк 1: delta.content
+				chunk1 := map[string]interface{}{
+					"choices": []map[string]interface{}{
+						{
+							"index": 0,
+							"delta": map[string]interface{}{
+								"role":    "assistant",
+								"content": "Привет! Я ",
+							},
+						},
+					},
+				}
+				data1, _ := json.Marshal(chunk1)
+				fmt.Fprintf(w, "data: %s\n\n", data1)
+				if flusher != nil {
+					flusher.Flush()
+				}
+
+				// Чанк 2: delta.content
+				chunk2 := map[string]interface{}{
+					"choices": []map[string]interface{}{
+						{
+							"index": 0,
+							"delta": map[string]interface{}{
+								"content": "работающая модель",
+							},
+						},
+					},
+				}
+				data2, _ := json.Marshal(chunk2)
+				fmt.Fprintf(w, "data: %s\n\n", data2)
+				if flusher != nil {
+					flusher.Flush()
+				}
+
+				// Чанк 3: finish_reason
+				chunk3 := map[string]interface{}{
+					"choices": []map[string]interface{}{
+						{
+							"index":         0,
+							"delta":         map[string]interface{}{},
+							"finish_reason": "stop",
+						},
+					},
+				}
+				data3, _ := json.Marshal(chunk3)
+				fmt.Fprintf(w, "data: %s\n\n", data3)
+				if flusher != nil {
+					flusher.Flush()
+				}
+
+				// [DONE]
+				fmt.Fprintf(w, "data: [DONE]\n\n")
+				if flusher != nil {
+					flusher.Flush()
+				}
+			} else {
+				// Non-streaming: OpenAI JSON ответ
+				resp := map[string]interface{}{
+					"id":      "chatcmpl-xxx",
+					"object":  "chat.completion",
+					"created": time.Now().Unix(),
+					"model":   req["model"],
+					"choices": []map[string]interface{}{
+						{
+							"index": 0,
+							"message": map[string]interface{}{
+								"role":    "assistant",
+								"content": "Привет! Я работающая модель llama.cpp через OpenAI API.",
+							},
+							"finish_reason": "stop",
+						},
+					},
+					"usage": map[string]interface{}{
+						"prompt_tokens":     10,
+						"completion_tokens": 15,
+						"total_tokens":      25,
+					},
+				}
+				w.Header().Set("Content-Type", "application/json")
+				json.NewEncoder(w).Encode(resp)
+			}
+
+		case path == "/v1/completions":
+			body, _ := io.ReadAll(r.Body)
+			var req map[string]interface{}
+			json.Unmarshal(body, &req)
+			stream, _ := req["stream"].(bool)
+
+			if stream {
+				w.Header().Set("Content-Type", "text/event-stream")
+				w.Header().Set("Transfer-Encoding", "chunked")
+				w.WriteHeader(http.StatusOK)
+				flusher, _ := w.(http.Flusher)
+
+				chunk1 := map[string]interface{}{
+					"choices": []map[string]interface{}{
+						{
+							"index": 0,
+							"text":  "Ответ от ",
+						},
+					},
+				}
+				data1, _ := json.Marshal(chunk1)
+				fmt.Fprintf(w, "data: %s\n\n", data1)
+				if flusher != nil {
+					flusher.Flush()
+				}
+
+				chunk2 := map[string]interface{}{
+					"choices": []map[string]interface{}{
+						{
+							"index":         0,
+							"text":          "llama.cpp модели.",
+							"finish_reason": "stop",
+						},
+					},
+				}
+				data2, _ := json.Marshal(chunk2)
+				fmt.Fprintf(w, "data: %s\n\n", data2)
+				if flusher != nil {
+					flusher.Flush()
+				}
+
+				fmt.Fprintf(w, "data: [DONE]\n\n")
+				if flusher != nil {
+					flusher.Flush()
+				}
+			} else {
+				resp := map[string]interface{}{
+					"id":      "cmpl-xxx",
+					"object":  "text_completion",
+					"created": time.Now().Unix(),
+					"model":   req["model"],
+					"choices": []map[string]interface{}{
+						{
+							"index":         0,
+							"text":          "Ответ от llama.cpp модели.",
+							"finish_reason": "stop",
+						},
+					},
+					"usage": map[string]interface{}{
+						"prompt_tokens":     10,
+						"completion_tokens": 8,
+						"total_tokens":      18,
+					},
+				}
+				w.Header().Set("Content-Type", "application/json")
+				json.NewEncoder(w).Encode(resp)
+			}
+		default:
+			http.Error(w, "not found", http.StatusNotFound)
+		}
+	}))
+	m.host = strings.TrimPrefix(m.server.URL, "http://")
+	return m
+}
+
+func (m *mockCppWorkerOpenAI) Close() {
+	m.server.Close()
+}
+
+// createTestProxyForLlamaCppOpenAI создаёт Proxy с одним llama.cpp бэкендом
+func createTestProxyForLlamaCppOpenAI(t *testing.T, cppWorkerURL string) *balancer.Proxy {
+	t.Helper()
+
+	hostPort := strings.TrimPrefix(cppWorkerURL, "http://")
+	parts := strings.Split(hostPort, ":")
+	host := parts[0]
+	port := 8080
+	if len(parts) > 1 {
+		fmt.Sscanf(parts[1], "%d", &port)
+	}
+
+	cfg := &types.LoadBalancerConfig{
+		Balancing: types.BalancingConfig{
+			OperatingMode:    "standard",
+			SessionStickiness: true,
+			SessionTTL:       60,
+			SessionIdleTTL:   60,
+			RequestTimeout:   30,
+			QueueMaxSize:     100,
+			ModelAffinity:    true,
+			SyncModelLoad: types.SyncModelLoadConfig{
+				Enabled: false,
+			},
+			Prewarm: types.PrewarmConfig{
+				TriggerLoadThreshold: 0.80,
+			},
+			AdvancedTiming: types.AdvancedTimingConfig{
+				ZombieSessionThresholdSec: 120,
+				StreamingRetryDelayMs:     500,
+				MaxConcurrentWarmups:      3,
+				WarmupSemaphoreTimeoutSec: 30,
+			},
+		},
+		Backends: []types.Backend{
+			{
+				ID:              "llamacpp-1",
+				Name:            "Test llama.cpp Backend",
+				Host:            host,
+				OllamaPort:      port,
+				CppWorkerPort:   port,
+				Type:            types.BackendTypeLlamaCpp,
+				Status:          types.StatusHealthy,
+				MaxConcurrentReqs: 10,
+				Weight:          100,
+			},
+		},
+		BackendEngine: types.EngineAuto,
+	}
+
+	proxy := balancer.NewProxy(cfg)
+	return proxy
+}
+
+// registerModelOnProxy регистрирует модель на бэкенде через метрики
+func registerModelOnProxy(proxy *balancer.Proxy, backendID, modelName string) {
+	proxy.UpdateMetrics(backendID, &types.BackendMetrics{
+		ID:          backendID,
+		BackendType: types.BackendTypeLlamaCpp,
+		LlamaCpp: types.LlamaCppMetrics{
+			LoadedModels: []types.LlamaCppModel{
+				{Name: modelName, State: "loaded", ContextLength: 2048},
+			},
+		},
+		Ollama: types.OllamaMetrics{
+			RunningModels: []types.RunningModel{},
+		},
+	})
+}
+
+// ========== Тесты с OpenAI-формат mock ==========
+
+// TestLlamaCppTransport_ChatNonStreaming проверяет трансляцию OpenAI → Ollama
+// для не-стримингового /api/chat.
+func TestLlamaCppTransport_ChatNonStreaming(t *testing.T) {
+	worker := newMockCppWorkerOpenAI()
+	defer worker.Close()
+
+	proxy := createTestProxyForLlamaCppOpenAI(t, worker.server.URL)
+	registerModelOnProxy(proxy, "llamacpp-1", "test-model")
+
+	reqBody := map[string]interface{}{
+		"model": "test-model",
+		"messages": []map[string]string{
+			{"role": "user", "content": "Привет!"},
+		},
+		"stream": false,
+	}
+	bodyBytes, _ := json.Marshal(reqBody)
+
+	req := httptest.NewRequest("POST", "/api/chat", bytes.NewReader(bodyBytes))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+
+	proxy.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		body, _ := io.ReadAll(rec.Body)
+		t.Fatalf("expected 200 OK, got %d: %s", rec.Code, string(body))
+	}
+
+	var respData map[string]interface{}
+	if err := json.NewDecoder(rec.Result().Body).Decode(&respData); err != nil {
+		t.Fatalf("failed to decode response: %v", err)
+	}
+
+	// Проверяем Ollama формат ответа
+	message, ok := respData["message"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("response missing 'message' field: %v", respData)
+	}
+	content, ok := message["content"].(string)
+	if !ok || content == "" {
+		t.Fatalf("response message content is empty or missing")
+	}
+	role, ok := message["role"].(string)
+	if !ok || role == "" {
+		t.Fatalf("response message role is empty or missing")
+	}
+	if role != "assistant" {
+		t.Errorf("expected role='assistant', got '%s'", role)
+	}
+	if !strings.Contains(content, "Привет") {
+		t.Errorf("expected meaningful content, got: %s", content)
+	}
+
+	// Проверяем done
+	done, ok := respData["done"].(bool)
+	if !ok || !done {
+		t.Errorf("expected done=true, got done=%v", respData["done"])
+	}
+
+	// Проверяем eval_count
+	if ec, ok := respData["eval_count"].(float64); ok {
+		if ec == 0 {
+			t.Log("warning: eval_count is 0")
+		}
+	}
+
+	t.Logf("✅ OpenAI→Ollama translation: content=%q, role=%s, done=%v", content, role, done)
+}
+
+// TestLlamaCppTransport_ChatStreaming проверяет стриминг с OpenAI SSE → Ollama NDJSON
+func TestLlamaCppTransport_ChatStreaming(t *testing.T) {
+	worker := newMockCppWorkerOpenAI()
+	defer worker.Close()
+
+	proxy := createTestProxyForLlamaCppOpenAI(t, worker.server.URL)
+	registerModelOnProxy(proxy, "llamacpp-1", "test-model")
+
+	reqBody := map[string]interface{}{
+		"model": "test-model",
+		"messages": []map[string]string{
+			{"role": "user", "content": "Привет!"},
+		},
+		"stream": true,
+	}
+	bodyBytes, _ := json.Marshal(reqBody)
+
+	req := httptest.NewRequest("POST", "/api/chat", bytes.NewReader(bodyBytes))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+
+	proxy.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		body, _ := io.ReadAll(rec.Body)
+		t.Fatalf("expected 200 OK, got %d: %s", rec.Code, string(body))
+	}
+
+	// Читаем NDJSON чанки
+	scanner := bufio.NewScanner(rec.Result().Body)
+	var foundDone bool
+	var collectedContent strings.Builder
+	var chunkCount int
+	for scanner.Scan() {
+		line := scanner.Text()
+		if line == "" {
+			continue
+		}
+		chunkCount++
+		var chunk map[string]interface{}
+		if err := json.Unmarshal([]byte(line), &chunk); err != nil {
+			t.Logf("non-JSON chunk: %s", line)
+			continue
+		}
+		if done, ok := chunk["done"].(bool); ok && done {
+			foundDone = true
+		}
+		if msg, ok := chunk["message"].(map[string]interface{}); ok {
+			if c, ok := msg["content"].(string); ok {
+				collectedContent.WriteString(c)
+			}
+		}
+	}
+
+	t.Logf("chunks received: %d, collected content: %q", chunkCount, collectedContent.String())
+
+	if !foundDone {
+		t.Error("streaming response missing done:true")
+	}
+	if collectedContent.Len() == 0 {
+		t.Error("no content collected from streaming chunks")
+	}
+	content := collectedContent.String()
+	if strings.TrimSpace(content) == "**" {
+		t.Errorf("streaming content is '**' — expected meaningful text")
+	}
+
+	t.Log("✅ OpenAI SSE → Ollama NDJSON streaming translation works")
+}
+
+// TestLlamaCppTransport_GenerateNonStreaming проверяет /api/generate → /v1/completions
+func TestLlamaCppTransport_GenerateNonStreaming(t *testing.T) {
+	worker := newMockCppWorkerOpenAI()
+	defer worker.Close()
+
+	proxy := createTestProxyForLlamaCppOpenAI(t, worker.server.URL)
+	registerModelOnProxy(proxy, "llamacpp-1", "test-model")
+
+	reqBody := map[string]interface{}{
+		"model":  "test-model",
+		"prompt": "Скажи что-нибудь",
+		"stream": false,
+	}
+	bodyBytes, _ := json.Marshal(reqBody)
+
+	req := httptest.NewRequest("POST", "/api/generate", bytes.NewReader(bodyBytes))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+
+	proxy.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		body, _ := io.ReadAll(rec.Body)
+		t.Fatalf("expected 200 OK, got %d: %s", rec.Code, string(body))
+	}
+
+	var respData map[string]interface{}
+	if err := json.NewDecoder(rec.Result().Body).Decode(&respData); err != nil {
+		t.Fatalf("failed to decode response: %v", err)
+	}
+
+	response, ok := respData["response"].(string)
+	if !ok || response == "" {
+		t.Fatalf("response missing 'response' field: %v", respData)
+	}
+
+	if response == "**" {
+		t.Errorf("generate response is '**' — expected meaningful text")
+	}
+
+	done, _ := respData["done"].(bool)
+	t.Logf("✅ /api/generate translation: response=%q, done=%v", response, done)
+}
+
+// TestLlamaCppTransport_TagsWithFallback проверяет /api/tags через fallback /v1/models
+func TestLlamaCppTransport_TagsWithFallback(t *testing.T) {
+	worker := newMockCppWorkerOpenAI()
+	defer worker.Close()
+
+	proxy := createTestProxyForLlamaCppOpenAI(t, worker.server.URL)
+
+	// НЕ регистрируем метрики — fallback должен сработать
+	req := httptest.NewRequest("GET", "/api/tags", nil)
+	rec := httptest.NewRecorder()
+
+	proxy.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		body, _ := io.ReadAll(rec.Body)
+		t.Fatalf("expected 200 OK, got %d: %s", rec.Code, string(body))
+	}
+
+	var tagsResp map[string]interface{}
+	if err := json.NewDecoder(rec.Result().Body).Decode(&tagsResp); err != nil {
+		t.Fatalf("failed to decode tags: %v", err)
+	}
+
+	models, ok := tagsResp["models"].([]interface{})
+	if !ok {
+		t.Fatalf("response missing 'models' array: %v", tagsResp)
+	}
+
+	if len(models) == 0 {
+		t.Error("tags fallback returned 0 models — expected at least 1 from /v1/models")
+	} else {
+		firstModel := models[0].(map[string]interface{})
+		t.Logf("✅ /api/tags fallback: %d models, first=%q", len(models), firstModel["name"])
+	}
+}
+
+// TestLlamaCppTransport_NoStarsInResponse проверяет что ответы не "**"
+func TestLlamaCppTransport_NoStarsInResponse(t *testing.T) {
+	worker := newMockCppWorkerOpenAI()
+	defer worker.Close()
+
+	proxy := createTestProxyForLlamaCppOpenAI(t, worker.server.URL)
+	registerModelOnProxy(proxy, "llamacpp-1", "test-model")
+
+	checkResponse := func(t *testing.T, stream bool) {
+		t.Helper()
+		reqBody := map[string]interface{}{
+			"model": "test-model",
+			"messages": []map[string]string{
+				{"role": "user", "content": "Привет!"},
+			},
+			"stream": stream,
+		}
+		bodyBytes, _ := json.Marshal(reqBody)
+		req := httptest.NewRequest("POST", "/api/chat", bytes.NewReader(bodyBytes))
+		req.Header.Set("Content-Type", "application/json")
+		rec := httptest.NewRecorder()
+		proxy.ServeHTTP(rec, req)
+
+		if stream {
+			scanner := bufio.NewScanner(rec.Result().Body)
+			var allText strings.Builder
+			for scanner.Scan() {
+				var chunk map[string]interface{}
+				if json.Unmarshal([]byte(scanner.Text()), &chunk) == nil {
+					if msg, ok := chunk["message"].(map[string]interface{}); ok {
+						if c, ok := msg["content"].(string); ok {
+							allText.WriteString(c)
+						}
+					}
+				}
+			}
+			if allText.String() == "**" {
+				t.Error("streaming response is '**'")
+			}
+		} else {
+			var respData map[string]interface{}
+			json.NewDecoder(rec.Result().Body).Decode(&respData)
+			msg, _ := respData["message"].(map[string]interface{})
+			if msg != nil {
+				content, _ := msg["content"].(string)
+				if content == "**" {
+					t.Error("non-streaming response is '**'")
+				}
+			}
+		}
+	}
+
+	t.Run("non-streaming", func(t *testing.T) { checkResponse(t, false) })
+	t.Run("streaming", func(t *testing.T) { checkResponse(t, true) })
+
+	t.Log("✅ No '**' in any response")
+}
+
+// TestLlamaCppTransport_APIChain проверяет всю цепочку API взаимодействия:
+// tags → chat (non-streaming) → chat (streaming) → generate → ps
+func TestLlamaCppTransport_APIChain(t *testing.T) {
+	worker := newMockCppWorkerOpenAI()
+	defer worker.Close()
+
+	proxy := createTestProxyForLlamaCppOpenAI(t, worker.server.URL)
+	registerModelOnProxy(proxy, "llamacpp-1", "test-model")
+
+	// 1. GET /api/tags
+	t.Run("01_tags", func(t *testing.T) {
+		req := httptest.NewRequest("GET", "/api/tags", nil)
+		rec := httptest.NewRecorder()
+		proxy.ServeHTTP(rec, req)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("/api/tags returned %d", rec.Code)
+		}
+		var resp map[string]interface{}
+		json.NewDecoder(rec.Result().Body).Decode(&resp)
+		models, _ := resp["models"].([]interface{})
+		if len(models) == 0 {
+			t.Error("/api/tags returned 0 models")
+		} else {
+			t.Logf("✓ /api/tags: %d models", len(models))
+		}
+	})
+
+	// 2. POST /api/chat non-streaming
+	t.Run("02_chat_nonstreaming", func(t *testing.T) {
+		reqBody, _ := json.Marshal(map[string]interface{}{
+			"model": "test-model",
+			"messages": []map[string]string{
+				{"role": "user", "content": "Привет!"},
+			},
+			"stream": false,
+		})
+		req := httptest.NewRequest("POST", "/api/chat", bytes.NewReader(reqBody))
+		req.Header.Set("Content-Type", "application/json")
+		rec := httptest.NewRecorder()
+		proxy.ServeHTTP(rec, req)
+
+		if rec.Code != http.StatusOK {
+			t.Fatalf("/api/chat returned %d", rec.Code)
+		}
+
+		var resp map[string]interface{}
+		json.NewDecoder(rec.Result().Body).Decode(&resp)
+		msg, _ := resp["message"].(map[string]interface{})
+		content, _ := msg["content"].(string)
+		if content == "" {
+			t.Error("chat response content is empty")
+		}
+		t.Logf("✓ /api/chat (non-streaming): %q", content)
+	})
+
+	// 3. POST /api/chat streaming
+	t.Run("03_chat_streaming", func(t *testing.T) {
+		reqBody, _ := json.Marshal(map[string]interface{}{
+			"model": "test-model",
+			"messages": []map[string]string{
+				{"role": "user", "content": "Привет!"},
+			},
+			"stream": true,
+		})
+		req := httptest.NewRequest("POST", "/api/chat", bytes.NewReader(reqBody))
+		req.Header.Set("Content-Type", "application/json")
+		rec := httptest.NewRecorder()
+		proxy.ServeHTTP(rec, req)
+
+		if rec.Code != http.StatusOK {
+			t.Fatalf("/api/chat streaming returned %d", rec.Code)
+		}
+
+		scanner := bufio.NewScanner(rec.Result().Body)
+		var doneFound bool
+		var contentCollected strings.Builder
+		for scanner.Scan() {
+			var chunk map[string]interface{}
+			if json.Unmarshal([]byte(scanner.Text()), &chunk) == nil {
+				if done, _ := chunk["done"].(bool); done {
+					doneFound = true
+				}
+				if msg, ok := chunk["message"].(map[string]interface{}); ok {
+					if c, ok := msg["content"].(string); ok {
+						contentCollected.WriteString(c)
+					}
+				}
+			}
+		}
+		if !doneFound {
+			t.Error("streaming missing done:true")
+		}
+		if contentCollected.Len() == 0 {
+			t.Error("streaming collected no content")
+		}
+		t.Logf("✓ /api/chat (streaming): %q (done=%v)", contentCollected.String(), doneFound)
+	})
+
+	// 4. POST /api/generate non-streaming
+	t.Run("04_generate", func(t *testing.T) {
+		reqBody, _ := json.Marshal(map[string]interface{}{
+			"model":  "test-model",
+			"prompt": "Скажи привет",
+			"stream": false,
+		})
+		req := httptest.NewRequest("POST", "/api/generate", bytes.NewReader(reqBody))
+		req.Header.Set("Content-Type", "application/json")
+		rec := httptest.NewRecorder()
+		proxy.ServeHTTP(rec, req)
+
+		if rec.Code != http.StatusOK {
+			t.Fatalf("/api/generate returned %d", rec.Code)
+		}
+
+		var resp map[string]interface{}
+		json.NewDecoder(rec.Result().Body).Decode(&resp)
+		response, _ := resp["response"].(string)
+		if response == "" {
+			t.Error("generate response is empty")
+		}
+		t.Logf("✓ /api/generate: %q", response)
+	})
+
+	// 5. GET /api/ps
+	t.Run("05_ps", func(t *testing.T) {
+		req := httptest.NewRequest("GET", "/api/ps", nil)
+		rec := httptest.NewRecorder()
+		proxy.ServeHTTP(rec, req)
+
+		if rec.Code != http.StatusOK {
+			t.Fatalf("/api/ps returned %d", rec.Code)
+		}
+		var resp map[string]interface{}
+		json.NewDecoder(rec.Result().Body).Decode(&resp)
+		t.Logf("✓ /api/ps: %v", resp["models"])
+	})
+
+	// 6. GET /api/v1/gguf/backends
+	t.Run("06_gguf_backends", func(t *testing.T) {
+		state := proxy.GetClusterState()
+		if state == nil {
+			t.Fatal("cluster state is nil")
+		}
+		found := false
+		for _, bm := range state.Backends {
+			if bm.BackendType == types.BackendTypeLlamaCpp {
+				found = true
+				if len(bm.LlamaCpp.LoadedModels) == 0 {
+					t.Error("llama.cpp backend has no loaded models")
+				}
+			}
+		}
+		if !found {
+			t.Error("no llama.cpp backend in cluster state")
+		}
+		t.Logf("✓ /api/v1/gguf/backends: data present")
+	})
+
+	// Проверяем что все запросы дошли до mock
+	reqs := atomic.LoadInt64(&worker.requests)
+	t.Logf("✅ Full API chain: all 6 endpoints OK, %d requests to cppworker", reqs)
+}

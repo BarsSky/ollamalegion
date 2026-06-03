@@ -100,7 +100,14 @@ func (or *OllamaRouter) findBackendWithModel(model string) string {
 		if !ok || (state.Backend.Status != types.StatusHealthy && string(state.Backend.Status) != "degraded") {
 			continue
 		}
+		// Ищем в Ollama running models
 		for _, m := range metrics.Ollama.RunningModels {
+			if m.Name == model {
+				return id
+			}
+		}
+		// Также ищем в llama.cpp loaded models (для смешанных кластеров)
+		for _, m := range metrics.LlamaCpp.LoadedModels {
 			if m.Name == model {
 				return id
 			}

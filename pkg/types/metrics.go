@@ -14,8 +14,9 @@ type BackendMetrics struct {
 	Engine      BackendEngine  `json:"engine"`
 
 	// Конфигурация бэкенда (атомарно копируется из Backend)
-	Host       string `json:"host"`
-	OllamaPort int    `json:"ollamaPort"`
+	Host          string `json:"host"`
+	OllamaPort    int    `json:"ollamaPort"`
+	CppWorkerPort int    `json:"cppWorkerPort,omitempty"` // Порт cppworker для llama.cpp-бэкендов
 
 	// GPU метрики
 	GPU GPUMetrics `json:"gpu"`

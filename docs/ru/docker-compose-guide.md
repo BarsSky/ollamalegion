@@ -61,8 +61,16 @@ docker build -t ollama-legion/balancer:latest -f docker/balancer/Dockerfile .
 # CPU — реальный llama.cpp, без CUDA (реальный инференс):
 docker build -t ollama-legion/cppworker:cpu --target runtime -f docker/cppworker/Dockerfile.cpu .
 
-# GPU — реальный llama.cpp + CUDA (multi-GPU инференс):
+# GPU — реальный llama.cpp + CUDA (multi-GPU инференс, ~10-15 минут):
 docker build -t ollama-legion/cppworker:gpu --target runtime -f docker/cppworker/Dockerfile.gpu .
+
+# GPU — ускоренная сборка только для вашего GPU (в 3-4 раза быстрее):
+# RTX 4060/4070/4080/4090 (Ada Lovelace):
+docker build --build-arg CUDA_ARCH="89" -t ollama-legion/cppworker:gpu --target runtime -f docker/cppworker/Dockerfile.gpu .
+# RTX 3060/3070/3080/3090 (Ampere):
+docker build --build-arg CUDA_ARCH="86" -t ollama-legion/cppworker:gpu --target runtime -f docker/cppworker/Dockerfile.gpu .
+# GTX 1660/RTX 2060 (Turing):
+docker build --build-arg CUDA_ARCH="75" -t ollama-legion/cppworker:gpu --target runtime -f docker/cppworker/Dockerfile.gpu .
 
 # STUB — заглушка без llama.cpp (только для CI/тестов):
 docker build -t ollama-legion/cppworker:stub --target runtime -f docker/cppworker/Dockerfile.stub .

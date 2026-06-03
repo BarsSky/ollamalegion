@@ -96,8 +96,47 @@ if [ -n "${BALANCER_URL}" ]; then
     echo ""
     echo ">>> Auto-registration with balancer enabled <<<"
     echo "BALANCER_URL=${BALANCER_URL}"
-    # Run registration in background — it will wait for both services to be ready
-    /register-with-balancer.sh &
+    echo "CPPWORKER_PORT=${CPPWORKER_PORT:-18091}"
+
+    # Wait for CppWorker to become ready BEFORE running registration
+    echo "[entrypoint] Waiting for CppWorker to be ready (up to 900s)..."
+    ATTEMPT=0
+    MAX_ATTEMPTS=900
+    while [ ${ATTEMPT} -lt ${MAX_ATTEMPTS} ]; do
+        if curl -sf "http://127.0.0.1:${CPPWORKER_PORT:-18091}/health" >/dev/null 2>&1; then
+            echo "[entrypoint] CppWorker is ready after ${ATTEMPT}s"
+            break
+        fi
+        sleep 1
+        ATTEMPT=$((ATTEMPT + 1))
+        if [ $((ATTEMPT % 30)) -eq 0 ]; then
+            echo "[entrypoint]   still waiting (${ATTEMPT}s/${MAX_ATTEMPTS}s)..."
+        fi
+    done
+
+    if [ ${ATTEMPT} -ge ${MAX_ATTEMPTS} ]; then
+        echo "[entrypoint] WARNING: CppWorker did not become ready within ${MAX_ATTEMPTS}s, attempting registration anyway..."
+    fi
+
+    # Run registration in background with retry loop (up to 5 attempts)
+    # If registration fails, retry after 15 seconds
+    (
+        MAX_REG_RETRIES=5
+        REG_RETRY_DELAY=15
+        for reg_attempt in $(seq 1 ${MAX_REG_RETRIES}); do
+            echo "[entrypoint] Registration attempt ${reg_attempt}/${MAX_REG_RETRIES}..."
+            if /register-with-balancer.sh; then
+                echo "[entrypoint] Registration succeeded on attempt ${reg_attempt}"
+                break
+            fi
+            if [ ${reg_attempt} -lt ${MAX_REG_RETRIES} ]; then
+                echo "[entrypoint] Registration failed, retrying in ${REG_RETRY_DELAY}s..."
+                sleep ${REG_RETRY_DELAY}
+            else
+                echo "[entrypoint] WARNING: All ${MAX_REG_RETRIES} registration attempts failed"
+            fi
+        done
+    ) &
 fi
 
 # ---- Wait for cppworker to finish ----

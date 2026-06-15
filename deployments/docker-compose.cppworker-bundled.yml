@@ -1,0 +1,152 @@
+# Ollama Legion — bundled compose для cppworker-gpu + balancer + webui
+#
+# Только 3 сервиса: balancer, cppworker-gpu, webui. Без cpu/stub, без agent.
+# Клиенты (Cline/OpenWebUI и т.п.) подключаются ТОЛЬКО к балансировщику
+# на порту 18080 (OpenAI-совместимый API).
+#
+# CppWorker автоматически регистрируется в балансировщике через
+# POST /api/v1/backends (если CPPWORKER_BALANCER_URL задан). Если
+# балансировщик недоступен на старте cppworker — он продолжает работать
+# в standalone-режиме и принимает запросы напрямую на порту 18092.
+#
+# Запуск:
+#   cd deployments
+#   cp .env.bundled.example .env.bundled
+#   docker compose -f docker-compose.cppworker-bundled.yml --env-file .env.bundled up -d --build
+#
+# Или используйте готовый скрипт:
+#   ../scripts/start-bundled.sh   (Linux/Mac/WSL)
+#   ..\scripts\start-bundled.ps1  (Windows PowerShell)
+
+name: ollama-legion-cppworker-bundled
+
+services:
+  loadbalancer:
+    build:
+      context: ..
+      dockerfile: docker/balancer/Dockerfile
+    image: ollama-legion/balancer:cppworker-bundled
+    container_name: ol-bundled-balancer
+    restart: unless-stopped
+    ports:
+      # OpenAI-совместимый API для клиентов (Cline/OpenWebUI/anything-llm)
+      - "${LB_PORT:-18080}:18080"
+      # admin API (требует X-API-Token)
+      - "${LB_ADMIN_PORT:-18081}:18081"
+    environment:
+      - GIN_MODE=release
+      - LOG_LEVEL=${LB_LOG_LEVEL:-info}
+      - LB_CONFIG_PATH=/app/config/config.json
+      - LB_API_TOKEN=${CPPWORKER_API_TOKEN:-changeme-bundled-token}
+    volumes:
+      - ../config:/app/config:ro
+      - balancer_data:/app/data
+    networks:
+      - ol-bundled-net
+    healthcheck:
+      # Liveness probe — всегда 200 OK, пока HTTP-сервер балансировщика жив.
+      # Не зависит от состояния бэкендов, поэтому не уходит в restart loop,
+      # когда cppworker ещё не успел зарегистрироваться. Глубокая проверка
+      # доступна через /api/v1/health (возвращает 503 в degraded).
+      test: ["CMD", "curl", "-fsS", "http://localhost:18081/api/v1/ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 15s
+
+  cppworker-gpu:
+    build:
+      context: ..
+      dockerfile: docker/cppworker/Dockerfile.gpu
+      args:
+        CUDA_ARCH: ${CUDA_ARCH:-all}
+    # Тэг образа зависит от CUDA_ARCH:
+    #   "all"       -> ollama-legion/cppworker:gpu-arch_all
+    #   "86"        -> ollama-legion/cppworker:gpu-86
+    #   "75;86;89"  -> ollama-legion/cppworker:gpu-75-86-89
+    image: ollama-legion/cppworker:gpu-${CPPWORKER_GPU_TAG:-arch_all}
+    container_name: ol-bundled-cppworker-gpu
+    restart: unless-stopped
+    runtime: nvidia
+    environment:
+      - NVIDIA_VISIBLE_DEVICES=${NVIDIA_VISIBLE_DEVICES:-all}
+      # core HTTP
+      - CPPWORKER_HOST=0.0.0.0
+      - CPPWORKER_PORT=18092
+      - CPPWORKER_MODELS_DIR=/app/models
+      # defaults for model load
+      # Жёстко зафиксировано на 4096: 8GB VRAM (RTX 3070) не хватает для
+      # n_ctx=8192 + gemma4 42 слоя + embedding 1.34GB. Если больше VRAM
+      # (RTX 4090 24GB и т.п.) — поменять на 8192 вручную.
+      - CPPWORKER_CTX_SIZE=4096
+      - CPPWORKER_BATCH_SIZE=${DEFAULT_BATCH_SIZE:-512}
+      # 30 = partial offload (рекомендуется для 8GB). 42 = all GPU
+      # (требует >10GB VRAM). 0 = CPU only.
+      - CPPWORKER_GPU_LAYERS=30
+      - CPPWORKER_FLASH_ATTN_TYPE=${DEFAULT_FLASH_ATTN_TYPE:--1}
+      - CPPWORKER_N_THREADS=${DEFAULT_N_THREADS:-0}
+      - CPPWORKER_NUMA=${DEFAULT_NUMA:-false}
+      - CPPWORKER_USE_MMAP=${DEFAULT_USE_MMAP:-true}
+      # auth
+      - API_TOKEN=${CPPWORKER_API_TOKEN:-changeme-bundled-token}
+      # auto-registration в балансировщике
+      # По умолчанию используем DNS-имя loadbalancer внутри compose-сети.
+      # Для регистрации по IP задайте в .env.bundled: BALANCER_URL=http://<IP>:18081
+      - CPPWORKER_BALANCER_URL=${BALANCER_URL:-http://loadbalancer:18081}
+      - CPPWORKER_BALANCER_TOKEN=${CPPWORKER_API_TOKEN:-changeme-bundled-token}
+      # Рекламируемый host: по умолчанию DNS-имя cppworker-gpu внутри compose-сети.
+      # Для IP-режима задайте CPPWORKER_ADVERTISE_IP или оставьте DNS-имя.
+      - CPPWORKER_ADVERTISE_HOST=${CPPWORKER_ADVERTISE_HOST:-cppworker-gpu}
+      - CPPWORKER_ADVERTISE_PORT=18092
+      - CPPWORKER_REGISTER_NAME=cppworker-gpu-bundled
+      - CPPWORKER_REGISTER_RETRY_INTERVAL=15s
+      - CPPWORKER_REGISTER_HEARTBEAT=60s
+      - CPPWORKER_REGISTER_GPU_MODE=gpu
+      # HF auto-download ОТКЛЮЧЁН — пользователь сам управляет моделями
+      - HF_AUTO_DOWNLOAD_REPO=
+      - HF_AUTO_DOWNLOAD_FILE=
+    volumes:
+      - ../models:/app/models:rw
+      - cppworker_cache:/app/.cache
+    ports:
+      # Прямой доступ к cppworker (для отладки и обхода балансировщика)
+      - "${CPPWORKER_GPU_PORT:-18092}:18092"
+    networks:
+      - ol-bundled-net
+    healthcheck:
+      test: ["CMD", "/app/cppworker", "-healthcheck"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+    depends_on:
+      loadbalancer:
+        condition: service_healthy
+
+  webui:
+    build:
+      context: ..
+      dockerfile: docker/webui/Dockerfile
+    image: ollama-legion/webui:cppworker-bundled
+    container_name: ol-bundled-webui
+    restart: unless-stopped
+    ports:
+      - "${WEBUI_PORT:-18083}:80"
+    environment:
+      - LB_API_URL=http://loadbalancer:18081
+      - LB_OLLAMA_URL=http://loadbalancer:18080
+      - WEBUI_PORT=80
+    networks:
+      - ol-bundled-net
+    depends_on:
+      loadbalancer:
+        condition: service_healthy
+
+networks:
+  ol-bundled-net:
+    driver: bridge
+    name: ollama-legion-bundled-net
+
+volumes:
+  balancer_data:
+  cppworker_cache:

@@ -1,0 +1,483 @@
+# OllamaLegion — правила работы с кодовой базой
+
+## 1. Архитектура проекта
+
+```
+cmd/                      # точки входа
+  balancer/               # балансировщик (main.go + регистрация бэкендов)
+  cppworker/              # сервер инференса llama.cpp (основной файл main.go)
+  agent/                  # агент сбора метрик
+  monitor/                # monitoring CLI
+
+internal/                 # бизнес-логика Go
+  balancer/               # прокси, роутинг, affinity, sessions, auto-pull
+  cppbackend/             # загрузка моделей, GPU, HuggingFace, метрики
+  api/                    # внутренние API-утилиты и WebSocket
+  config/                 # конфигурация
+  rpccoordinator/         # RPC-координатор
+  modelreplication/       # репликация моделей
+  virtualmodel/           # виртуальные модели
+
+c/                        # C/CGo часть
+  bridge/                 # C-обёртка поверх llama.cpp (bridge.h / bridge.c)
+  llama.cpp/              # upstream llama.cpp (subtree)
+
+pkg/                      # переиспользуемые пакеты
+  logger/                 # zap-логгер
+  protocol/               # сетевые протоколы
+  types/                  # общие типы
+
+docker/                   # Dockerfile'ы
+  cppworker/              # Dockerfile.cpu, .gpu, .gpu.fixed, .stub
+  balancer/
+  agent/
+  webui/
+
+deployments/              # docker-compose файлы
+config/                   # примеры конфигураций
+docs/                     # документация (русский + английский)
+tests/                    # Go-тесты
+scripts/                  # вспомогательные скрипты
+webui/                    # фронтенд
+```
+
+## 2. Язык и стиль
+
+- Код (имена переменных, функций, структур) — **английский**.
+- Комментарии в коде и документация — преимущественно **русский**, с техническими терминами на английском (`backend`, `healthcheck`, `streaming`).
+- Отступы — **табуляция** в Go-файлах (стандарт `gofmt`). Не переопределять.
+- Имена публичных типов/функций — PascalCase; неэкспортируемые — camelCase.
+- Константы — UPPER_SNAKE_CASE внутри `const (...)`.
+
+## 3. Как добавлять endpoint'ы
+
+### CppWorker (`cmd/cppworker/main.go`)
+
+1. Зарегистрируй путь в `setupRouter()`:
+   ```go
+   mux.HandleFunc("/api/xxx", handleXxx)
+   ```
+   Текущий Ollama-совместимый набор: `/api/generate`, `/api/ollama/generate`, `/api/chat`, `/api/embeddings`, `/api/tags`, `/api/show`, `/api/copy`, `/api/create`, `/api/push`, `/api/delete`.
+2. Реализуй `handleXxx(w http.ResponseWriter, r *http.Request)`.
+3. Для ошибок используй `writeError(w, status, msg)` или, если ошибка пришла из C-bridge, `writeCppWorkerErrorWithBridgeInfo(...)`.
+4. Если endpoint требует модель — используй `ensureModelLoaded(modelName)` (lazy-load применяется для `/api/show`, `/api/embeddings`, `/api/chat`, `/api/generate`).
+5. Для инференса строй `bridge.GenerationParams` через `buildGenerationParams(...)`, затем применяй `applyCppCtxHeader(r, &params)` (3-tier resolver для n_ctx).
+6. При успешном инференсе с пустым `result.Output` не возвращай пустой `response`; возвращай HTTP 500 с понятным `error`.
+
+#### Специфика новых Ollama-эндпоинтов
+
+- `/api/show` (`handleOllamaShow`): POST, принимает `name`/`model`. Если модель не загружена — вызывает `ensureModelLoaded` (ленивая загрузка). Возвращает метаданные из `backend.GetModel` для загруженной модели или базовые метаданные файла из `modelsDir`.
+- `/api/copy` (`handleOllamaCopy`): POST, копирует `.gguf` файл внутри `modelsDir` (`source` → `destination`), автоматически добавляет `.gguf` при отсутствии расширения, затем `ScanModels()`.
+- `/api/create` (`handleOllamaCreate`): POST, создаёт alias-файл `<name>.gguf.json` рядом с исходной моделью. Источник берётся из `from` или строки `FROM ...` в `modelfile`. Не создаёт новый GGUF — это лёгкий alias без Ollama-реестра.
+- `/api/push` (`handleOllamaPush`): POST, всегда возвращает HTTP 501 — Ollama-реестр для llama.cpp-бэкендов не поддерживается.
+- `/api/embeddings` (`handleOllamaEmbeddings`): POST, принимает `model` и `prompt`/`input`. Маппит `prompt` → `input` для `backend.GetEmbeddings`. Ленивая загрузка модели включена.
+
+### Балансировщик (`internal/balancer/*_router.go`)
+
+- Ollama-эндпоинты — `ollama_router.go`.
+- llama.cpp / CppWorker-эндпоинты — `llamacpp_router.go`.
+- Проксирующие хендлеры используют `lr.proxyHTTP(r, backendID)` или специализированные `proxyRequestLlamaCpp*`.
+- Для новых путей обнови `Route()` в соответствующем роутере.
+
+## 4. Инференс и C-bridge
+
+- Всегда используй `backend.Generate(...)` / `backend.GenerateStream(...)`.
+- Не передавай нулевые/пустые параметры, если они должны быть дефолтными — используй `bridge.DefaultGenerationParams()`.
+- Коды ошибок C-bridge (см. `c/bridge/bridge.go`):
+  - `0` — OK
+  - `2` — `ErrNCtxNeedsReload` → можно попробовать перезагрузить модель с большим n_ctx.
+  - `3` — `ErrPromptTooLong` → жёсткая ошибка, уменьшить prompt.
+  - `4` — GPU OOM.
+  - `5` — bad request.
+- Для получения деталей после ошибки вызывай `bridge.GetLastErrorInfo()`.
+
+## 5. Ollama-совместимость CppWorker
+
+### Поддерживаемые поля `/api/generate` и `/api/ollama/generate`
+
+- `model`, `prompt`, `system`, `template`, `raw`, `stream`, `format`, `keep_alive`, `context`
+- `options.temperature`, `options.top_p`, `options.top_k`, `options.min_p`, `options.typical_p`, `options.tfs_z`
+- `options.num_predict` (маппится на `MaxTokens`)
+- `options.num_ctx` (маппится на `NumCtx`)
+- `options.repeat_penalty`, `options.frequency_penalty`, `options.presence_penalty`
+- `options.repeat_last_n`, `options.mirostat`, `options.mirostat_tau`, `options.mirostat_eta`
+- `options.seed` (0 — валидное значение)
+- `options.stop` (string или []string, маппится на `Antiprompts`)
+
+### Статистика `/api/generate`
+
+- `load_duration` — время с момента загрузки модели до начала генерации (μs).
+- `prompt_eval_count` — реальное число токенов prompt через `backend.CountTokens`.
+- `eval_count` — число токенов в ответе.
+- Не возвращаем пустой `response: ""`; вместо этого HTTP 500 с `error`.
+
+### `/api/chat`
+
+- Поддерживает `messages` с ролями `system`/`user`/`assistant`.
+- Использует chat template из GGUF через `backend.ApplyChatTemplate` (fallback на naive формат).
+- `options`, `stream`, `temperature`, `max_tokens`, `num_ctx`, `stop`.
+- Возвращает `message.role="assistant"`.
+
+### Повторная загрузка / выгрузка
+
+- `handleLoadModel` проверяет `backend.GetModel` перед загрузкой.
+- Если модель уже загружена с тем же путём и параметрами — возвращает `status: "already_loaded"`.
+- Если путь/параметры изменились — сначала `UnloadModel`, затем `LoadModelWithOpts`.
+- `ensureModelLoaded` проверяет `Path`/`SizeBytes`/`ModTime` при необходимости через `backend.GetModel`.
+
+## 6. Изоляция типов бэкендов
+
+### Поддерживаемые эндпоинты и параметры
+
+- `/api/generate` и `/api/ollama/generate` должны поддерживать:
+  - `system`, `template`, `raw`
+  - `options.temperature`, `options.top_p`, `options.top_k`
+  - `options.num_predict` (маппится на `MaxTokens`)
+  - `options.num_ctx` (маппится на `NumCtx`)
+  - `options.repeat_penalty`, `options.seed`
+- Если `system` задан и `raw != true`, подставляй system перед prompt (cppworker не имеет Modelfile-шаблонов).
+- Пустой успешный ответ (`response: ""`) трактуй как ошибку инференса.
+- `/api/chat` маппится на OpenAI `/v1/chat/completions` на стороне балансировщика.
+- `/api/embeddings` маппится на OpenAI `/v1/embeddings`. Балансировщик транслирует Ollama-поле `prompt` (и `input`) в OpenAI-поле `input`, а в ответе извлекает `data[0].embedding` и возвращает `{"embedding": [...]}`.
+- `/api/show`, `/api/copy`, `/api/create`, `/api/push` реализованы в CppWorker. `/api/push` всегда возвращает HTTP 501 (нет Ollama-реестра для llama.cpp backend).
+
+### Ограничения
+
+- Modelfile-шаблоны Ollama (`template`, `system` в `.gguf.json`) не применяются — cppworker использует chat template из GGUF или naive fallback.
+- Ollama registry (`ollama pull llama3`) не поддерживается; для загрузки моделей используй `hf:<repo>/<file.gguf>` через `/api/pull` или `/api/hf/download`.
+
+## 6. Изоляция типов бэкендов (backend type isolation)
+
+### Режимы и допустимые типы
+
+| OperatingMode | Допустимые BackendType |
+|---|---|
+| `standard` | `ollama`, `llama_cpp` |
+| `replication` | `ollama`, `llama_cpp` |
+| `rpc_coordinator` | `ollama`, `llama_cpp` |
+| `virtual_router` | `llama_cpp` |
+| `distributed_inference` | `llama_cpp` |
+
+- Режимы и типы определены в `pkg/types/backend_type.go`: `ModeBackendTypes`, `ModeEngines`.
+- Пустой `Backend.Type` (legacy) нормализуется в `ollama` через `internal/balancer.normalizeBackendType`.
+
+### Маршрутизация по пути
+
+- `/v1/*` (OpenAI-совместимые) → всегда `llama_cpp` (`determineRequestBackendType`).
+- `/api/*` в смешанных режимах (`standard`/`replication`/`rpc_coordinator`) → пустой `BackendType`, `selectBackend` решает по модели/ресурсам.
+- `/api/*` в `virtual_router`/`distributed_inference` → всегда `llama_cpp`.
+- `/api/chat` и `/api/generate` в смешанных режимах должны проходить через основной flow `ServeHTTP` / `selectBackend`, а не перехватываться специализированными роутерами (`router.go`).
+
+### Совместимость и fallback
+
+- `proxyRequest` проверяет совместимость через `types.IsModeCompatibleWithBackendType(normalizeBackendType(state.Backend.Type), mode)`.
+- `selectBackend` и `expandCandidates` фильтруют кандидатов через `allowedTypes` (`getAllowedTypesList` → `getDefaultAllowedTypes`).
+- CRUD backend'ов (`internal/api/handlers_backends.go`) валидирует `BackendType` против `OperatingMode`.
+
+### Тесты
+
+- Ключевые тесты изоляции: `tests/backend_type_isolation_test.go`, `tests/operating_mode_dispatch_test.go`.
+- Полный HTTP flow проверяется в `TestServeHTTP_OllamaRequest_RoutedToOllamaBackend` и `TestServeHTTP_LlamaCppRequest_RoutedToLlamaCppBackend`.
+
+## 7. HuggingFace / pull моделей
+
+- CppWorker предоставляет `/api/hf/download` и `/api/pull`.
+- `/api/pull` принимает имена вида `hf:<repo>/<filename.gguf>` или `<repo>/<filename.gguf>`.
+- Ollama-реестр (`llama3`, `qwen2.5` и т.п.) не поддерживается для llama.cpp-бэкендов — возвращай HTTP 501.
+- Используй `backend.HFDownloader().StartDownload(req)` для старта загрузки и `GetLocalPath()` для проверки наличия файла.
+
+## 8. Healthcheck
+
+- В образах CppWorker используй **встроенную команду бинарника** вместо `curl`/`wget`:
+  ```dockerfile
+  HEALTHCHECK CMD /app/cppworker -healthcheck || exit 1
+  ```
+  и в compose:
+  ```yaml
+  healthcheck:
+    test: ["CMD", "/app/cppworker", "-healthcheck"]
+  ```
+- Бинарник сам делает `GET /health` на `localhost:<CPPWORKER_PORT>` (читает env/flag) и выходит с `0`/`1`. Внутри контейнера порт обычно `18091` (не путать с host-портом `18092` для GPU-сервиса).
+- В WebUI/Nginx healthcheck используй `curl` (`wget` не гарантирован в образе).
+
+## 9. Docker-соглашения
+
+- CppWorker: multi-stage build (builder → runtime). В runtime не добавляй лишние утилиты.
+- GPU-образы: `nvidia/cuda:12.2.0-runtime-ubuntu22.04` runtime, `*-devel` для сборки.
+- CPU/STUB: Alpine runtime.
+- На Windows используй Legacy builder: `$env:DOCKER_BUILDKIT=0`.
+- Для специфической архитектуры GPU используй `docker/cppworker/Dockerfile.gpu.86` (CUDA arch=86, например RTX 3070). Аргумент `CUDA_ARCH` в `docker-compose.cppworker.yml` управляет тэгом образа `:gpu-<arch>`.
+- CppWorker-GPU в `deployments/docker-compose.cppworker.yml` должен быть подключён к внешней сети балансировщика:
+  ```yaml
+  networks:
+    - cppworker-net
+    - ollama-legion-net
+  networks:
+    ollama-legion-net:
+      name: deployments_ollama-legion-net
+      external: true
+  ```
+  Это позволяет балансировщику достучаться до `CPPWORKER_ADVERTISE_HOST=cppworker-gpu` по внутреннему имени.
+
+### CppWorker auto-registration (env)
+
+- `CPPWORKER_PORT` — порт внутри контейнера, на котором слушает бинарник (рекомендуется `18091` для CPU/GPU, `18093` для stub).
+- `CPPWORKER_ADVERTISE_HOST` — имя хоста/контейнера, которое балансировщик использует для обратных вызовов к CppWorker (`cppworker-gpu`, `cppworker-cpu`).
+- `CPPWORKER_ADVERTISED_PORT` — порт, который балансировщик использует для достижения CppWorker (обычно `18091`, тот же, что и `CPPWORKER_PORT`).
+- `CPPWORKER_BACKEND_ID` — идентификатор бэкенда в балансировщике (`cppworker-gpu`, `cppworker-cpu`).
+- `CPPWORKER_BALANCER_URL` / `BALANCER_URL` — URL балансировщика для auto-registration (`http://loadbalancer:18081`).
+- `CPPWORKER_BALANCER_TOKEN` / `BALANCER_API_TOKEN` — API-токен для защищённых endpoint'ов балансировщика.
+
+## 10. Тестирование
+
+- Go-тесты в `tests/`.
+- Для CppWorker без реального llama.cpp используй stub-сборку: `go build -tags llama_stub ./cmd/cppworker`.
+- Для e2e маршрутизации используй `deployments/docker-compose.test-stub.yml`.
+- Любой багфикс должен сопровождаться тестом, воспроизводящим проблему.
+
+## 11. Windows GPU метрики
+
+- Агент на Windows (`internal/agent/system_windows.go`) собирает GPU-инфо через:
+  1. `nvidia-smi` (если установлен);
+  2. fallback на `wmic path Win32_VideoController get Name,AdapterRAM`.
+- Метрики GPU (usage, VRAM, temperature, power, clocks) получаются через `nvidia-smi` в `getGPUMetrics()`.
+- `nvml_windows.go` (build tag `nvml && windows`) не использует go-nvml (недоступен на Windows), а проксирует вызовы в `getGPUInfo()` / `getGPUMetrics()`.
+- Сетевой трафик на Windows (`getNetworkIO`) собирается через `netstat -e`.
+
+## 12. Полезные команды
+
+### Локальная разработка (stub / native)
+
+```bash
+# Сборка stub-бинарника (быстро, без CUDA)
+go build -tags llama_stub -o cppworker-stub ./cmd/cppworker
+
+# Сборка балансировщика
+go build -o balancer ./cmd/balancer
+
+# Проверка healthcheck
+./cppworker-stub --port 18091 --models-dir ./models &
+./cppworker-stub -healthcheck
+
+# Запуск тестового стека
+(cd deployments && docker compose -f docker-compose.test-stub.yml up -d --build)
+
+# Запуск одного теста
+go test ./tests/... -run TestCppWorkerGenerate -tags llama_stub
+```
+
+### Docker: сборка и запуск контейнеров
+
+#### Linux/macOS/WSL
+
+```bash
+# Сборка всех образов (balancer + webui + agent + cppworker)
+./scripts/build-containers.sh
+
+# Без кэша
+./scripts/build-containers.sh --no-cache
+
+# Сборка только cppworker (CPU)
+./scripts/build-containers.sh cppworker
+
+# Сборка только балансировщика
+./scripts/build-containers.sh loadbalancer
+
+# Сборка только webui
+./scripts/build-containers.sh webui
+
+# Сборка агентов
+./scripts/build-containers.sh all-agent
+
+# Запуск bundled стека: cppworker-gpu + balancer + webui
+./scripts/start-bundled.sh
+
+# Пересобрать и запустить bundled
+./scripts/start-bundled.sh rebuild
+
+# Остановить bundled
+./scripts/start-bundled.sh down
+
+# Логи bundled
+./scripts/start-bundled.sh logs
+
+# Запуск cppworker-gpu отдельно (авто-регистрация в балансер)
+cd deployments
+cp .env.bundled.example .env.bundled
+# отредактируй .env.bundled: CPPWORKER_API_TOKEN, CUDA_ARCH, CPPWORKER_GPU_LAYERS
+docker compose -f docker-compose.cppworker-bundled.yml --env-file .env.bundled up -d --build
+
+# Проверить регистрацию cppworker в балансировщике
+curl -H 'X-API-Token: <token>' http://localhost:18081/api/v1/backends
+```
+
+#### Windows PowerShell
+
+```powershell
+# Обязательно Legacy builder
+$env:DOCKER_BUILDKIT = "0"
+
+# Сборка всех образов
+.\scripts\build-containers.ps1
+
+# Сборка cppworker-gpu для конкретной архитектуры (например RTX 3070 = arch 86)
+.\scripts\build-containers.ps1 -CppWorker -CudaArch "86"
+
+# Сборка cppworker-gpu для всех архитектур
+.\scripts\build-containers.ps1 -CppWorker -CudaArch "all"
+
+# Запуск bundled стека
+.\scripts\start-bundled.ps1
+
+# Пересобрать и запустить
+.\scripts\start-bundled.ps1 -Rebuild
+
+# Остановить
+.\scripts\start-bundled.ps1 -Down
+
+# Логи
+.\scripts\start-bundled.ps1 -Logs
+
+# Локальный WebUI через nginx (если не хочется запускать в Docker)
+.\scripts\run-webui-local.ps1 -ApiPort 18081 -NginxPort 18030
+```
+
+#### Частые команды compose
+
+```bash
+# Остановить cppworker стек
+cd deployments && docker compose -f docker-compose.cppworker.yml down
+
+# Запуск GPU cppworker с профилем gpu
+cd deployments && docker compose -f docker-compose.cppworker.yml --profile gpu up -d --build
+
+# Запуск CPU cppworker
+cd deployments && docker compose -f docker-compose.cppworker.yml --profile cpu up -d --build
+
+# Запуск stub cppworker для тестов
+cd deployments && docker compose -f docker-compose.cppworker.yml --profile stub up -d --build
+
+# Запуск балансировщика + webui
+cd deployments && docker compose up -d --build
+
+# Логи по сервису
+cd deployments && docker compose -f docker-compose.cppworker-bundled.yml logs -f cppworker-gpu
+```
+
+#### Проверка после запуска
+
+```bash
+# Health балансировщика
+curl http://localhost:18081/api/v1/health
+
+# Health cppworker напрямую
+curl http://localhost:18092/health
+
+# Версия через балансер (Ollama-совместимый путь)
+curl -H 'X-API-Token: <token>' http://localhost:18081/api/v1/backends
+
+# Прямая генерация через cppworker
+curl -X POST http://localhost:18092/api/generate \
+  -H 'Content-Type: application/json' \
+  -d '{"model":"model.gguf","prompt":"hello"}'
+```
+
+#### Windows + stub: нюанс запуска тестов
+
+На Windows `go test ./cmd/cppworker -tags llama_stub` может не сработать, потому что C-исходник `c/bridge/bridge.c` не фильтруется build tag'ом. Собирай тестовый бинарник отдельно:
+
+```powershell
+go test -c ./cmd/cppworker -tags llama_stub -o cppworker_test.exe
+.\cppworker_test.exe
+```
+
+Или используй готовый скрипт:
+
+```powershell
+.\scripts\test-cppworker-stub.ps1
+```
+
+## 13. WebUI: управление моделями и агентами
+
+### Модели (`webui/js/modules/renderers.js`, `webui/js/app.js`)
+
+- Вкладка **Models** содержит grid с кнопками `Load`/`Unload`/`Delete` для каждой модели (`window.modelCardAction` → `ui.executeModelOperation`).
+- Кнопка **Manage Models** открывает модальное окно управления моделями (`openModelManageModal`) для первого доступного бэкенда.
+- Операции моделей ходят в `POST /api/v1/backends/{id}/models` (`internal/api/handlers_model_management.go`).
+- Pull Model скрывается для `llama_cpp` бэкендов (`backend_type === 'llama_cpp'`).
+
+### Агенты (`webui/js/modules/api.js`, `internal/api/handlers_agents.go`)
+
+- Вкладка **Agents** рендерит таблицу из `GET /api/v1/agents/stats`.
+- Детали агента — `GET /api/v1/agents/{id}`.
+- **Restart** и **Logs** для агента проксируются через:
+  - `POST /api/v1/agents/{id}/restart`
+  - `GET /api/v1/agents/{id}/logs`
+- WebUI-обёртки: `Api.restartAgent(backendId)` и `Api.agentLogs(backendId, limit)`.
+- Кнопки агентских действий показываются только если `b.hasAgent === true`.
+
+## 14. Частые ловушки
+
+- `cmd/cppworker/main.go` — файл большой; избегай дублирования: генерация `/api/generate` и `/api/ollama/generate` используют общий `runGenerateCore`.
+- `bridge.DefaultGenerationParams()` возвращает `NPredict=2048`; значение `0` в `options.num_predict` не означает "бесконечность".
+- `applyCppCtxHeader` работает как **upper limit**: если body задал `num_ctx` меньше header — header не понижает; если больше — клампит.
+- После `io.ReadAll(r.Body)` обязательно восстанавливай `r.Body = io.NopCloser(bytes.NewReader(buf))` перед проксированием.
+- `/api/embeddings` через балансировщик: Ollama клиенты шлют поле `prompt`, но OpenAI `/v1/embeddings` требует `input`. Если видишь `{"error":"model and input are required"}` — проверь, что `translateOllamaEmbeddingsToOpenAI` корректно маппит `prompt`/`input` → `input`.
+- CppWorker в Docker должен "рекламировать" себя балансировщику через `CPPWORKER_ADVERTISE_HOST`, а не через `CPPWORKER_HOST`. `CPPWORKER_HOST=0.0.0.0` используется для прослушивания, но балансировщик не может обратиться по `0.0.0.0`.
+- GPU-сервис CppWorker и балансировщик должны быть в одной Docker-сети (`ollama-legion-net` external), иначе балансировщик получит регистрацию, но не сможет проксировать запросы.
+- На Windows при сборке Linux-бинарников в PowerShell задавай переменные окружения через `$env:GOOS="linux"`, иначе Go может собрать Windows PE бинарник несмотря на явный `--`.
+
+## 15. Docker bundle build (cppworker-gpu + balancer + webui)
+
+### Файлы
+- `deployments/docker-compose.cppworker-bundled.yml` — compose-стек из 3 сервисов.
+- `deployments/.env.bundled` — конфигурация портов, токена, CUDA архитектуры, авторегистрации.
+- `docker/balancer/Dockerfile`, `docker/webui/Dockerfile`, `docker/cppworker/Dockerfile.gpu`.
+
+### Сборка (Windows PowerShell, Legacy builder)
+```powershell
+$env:DOCKER_BUILDKIT = "0"
+Set-Location -Path 'c:\Ollama\ollamalegion\deployments'
+docker compose -f docker-compose.cppworker-bundled.yml --env-file .env.bundled up -d --build
+```
+
+### Порты по умолчанию
+- Балансер: `18080` (OpenAI API), `18081` (admin API).
+- WebUI: `18083`.
+- CppWorker GPU: `18092` (внутри и снаружи контейнера).
+
+### Оптимизация `docker/cppworker/Dockerfile.gpu`
+- В stage `bridge-builder` не копируй весь `/build/llama.cpp`. Достаточно:
+  - `include/`, `ggml/include/`, `ggml/src/ggml-cpu/`
+  - `build/src/`, `build/ggml/src/`.
+- Это исключает зависание на `COPY --from=llama-builder /build/llama.cpp`.
+
+### Авторегистрация cppworker в балансере
+- По умолчанию cppworker регистрируется через DNS-имя `loadbalancer` внутри compose-сети:
+  ```yaml
+  CPPWORKER_BALANCER_URL: ${BALANCER_URL:-http://loadbalancer:18081}
+  ```
+- Для регистрации **по IP** задай в `.env.bundled`:
+  ```env
+  BALANCER_URL=http://<IP_хоста>:18081
+  ```
+- Рекламируемый host по умолчанию — `cppworker-gpu` (DNS внутри compose). Для IP-режима можно задать:
+  ```env
+  CPPWORKER_ADVERTISE_HOST=<IP_или_имя_хоста>
+  ```
+- Если `BALANCER_URL` не задан, cppworker работает в standalone и ждёт либо прямых запросов, либо ручной регистрации из балансера.
+
+### Проверка после запуска
+```bash
+# health балансера
+curl http://localhost:18081/api/v1/ping
+
+# список бэкендов — должен содержать cppworker-gpu-bundled
+curl -H 'X-API-Token: <CPPWORKER_API_TOKEN>' http://localhost:18081/api/v1/backends
+```
+
+### Важно
+- `CPPWORKER_HOST=0.0.0.0` — только для прослушивания внутри контейнера.
+- `CPPWORKER_ADVERTISE_HOST` — то, что балансер использует для обратных вызовов.
+- Healthcheck cppworker использует встроенную команду `/app/cppworker -healthcheck`, которая сама читает `CPPWORKER_PORT`.
+- Балансер healthcheck проверяет `/api/v1/ping` (всегда 200), а не `/api/v1/health`, чтобы не уходить в restart loop до регистрации cppworker.

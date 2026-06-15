@@ -138,6 +138,22 @@ docker build -t ollama-legion/cppworker:latest-gpu --target cppworker-gpu -f doc
 - Финальный образ: `nvidia/cuda:12.2.0-runtime-ubuntu22.04` (~3.2 GB)
 - Время сборки GPU-образа: ~17 минут (первая сборка), ~2 минуты (с кэшем)
 
+**Оптимизация `bridge-builder` stage:**
+Ранее stage `bridge-builder` копировал весь каталог `/build/llama.cpp` из `llama-builder`:
+```dockerfile
+COPY --from=llama-builder /build/llama.cpp /build/llama.cpp
+```
+Это приводило к передаче огромного объёма (весь исходный код + все артефакты сборки)
+между stages и могло зависать на медленных хранилищах. Теперь копируются только
+необходимые headers и собранные библиотеки:
+```dockerfile
+COPY --from=llama-builder /build/llama.cpp/include /build/llama.cpp/include
+COPY --from=llama-builder /build/llama.cpp/ggml/include /build/llama.cpp/ggml/include
+COPY --from=llama-builder /build/llama.cpp/ggml/src/ggml-cpu /build/llama.cpp/ggml/src/ggml-cpu
+COPY --from=llama-builder /build/llama.cpp/build/src /build/llama.cpp/build/src
+COPY --from=llama-builder /build/llama.cpp/build/ggml/src /build/llama.cpp/build/ggml/src
+```
+
 **Особенности CPU-сборки:**
 - Stage `builder-cpu` использует `golang:1.24-alpine`, `CGO_ENABLED=0`, тег `llama_stub`
 - Не требует CUDA toolkit, собирается на любой машине

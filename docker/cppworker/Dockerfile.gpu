@@ -1,18 +1,30 @@
 # =============================================================================
-# CppBackend Worker GPU — реальный llama.cpp + CUDA (sm_86 only)
+# CppBackend Worker GPU — реальный llama.cpp + CUDA
 # =============================================================================
-# Сборка (быстрая, только под текущую архитектуру GPU):
-#   docker build -t ollama-legion/cppworker:gpu -f docker/cppworker/Dockerfile.gpu --target runtime .
-# Запуск через docker-compose:
-#   docker compose -f deployments/docker-compose.cppworker.yml --profile gpu up -d
+# Сборка:
+#   Под все архитектуры (по умолчанию, multi-arch образ, тэг :gpu-arch_all):
+#     docker build -t ollama-legion/cppworker:gpu-arch_all -f docker/cppworker/Dockerfile.gpu --target runtime .
+#   Под конкретную архитектуру, например sm_86 (RTX 30xx / A100, тэг :gpu-86):
+#     docker build --build-arg CUDA_ARCH=86 \
+#       -t ollama-legion/cppworker:gpu-86 -f docker/cppworker/Dockerfile.gpu --target runtime .
+#   Через docker-compose (берёт CUDA_ARCH из env/compose):
+#     docker compose -f deployments/docker-compose.cppworker.yml --profile gpu up -d
 # =============================================================================
 
 # -----------------------------------------------------------------------------
 # Stage 1: llama-builder — сборка libllama.a + libggml*.a с CUDA
 # -----------------------------------------------------------------------------
-FROM nvidia/cuda:12.2.0-devel-ubuntu22.04 AS llama-builder
+FROM dockerhub.timeweb.cloud/nvidia/cuda:12.2.0-devel-ubuntu22.04 AS llama-builder
 
-ARG CUDA_ARCH="86"
+# CUDA_ARCH:
+#   "all"  — собрать под широкий список архитектур (61;70;75;80;86;89;90;120)
+#            используется llama.cpp в CI как fallback, увеличивает размер бинаря
+#            и время сборки, но подходит для любых GPU (default)
+#   "86"   — только sm_86 (RTX 30xx / A100)
+#   "75"   — только sm_75 (Turing)
+#   "89"   — только sm_89 (Ada Lovelace)
+#   "75;86;89" — список через ";" для нескольких архитектур
+ARG CUDA_ARCH="all"
 
 ENV DEBIAN_FRONTEND=noninteractive
 
@@ -25,11 +37,21 @@ COPY c/llama.cpp .
 
 RUN git init && git add -A && git -c user.name=docker -c user.email=docker@build commit -m "llama.cpp"
 
+# При CUDA_ARCH=all (или пусто) собираем под широкий список архитектур.
+# Иначе пробрасываем значение как есть (например "86", "89" или "75;86;89").
 RUN mkdir -p build && cd build && \
+    if [ -z "${CUDA_ARCH}" ] || [ "${CUDA_ARCH}" = "all" ]; then \
+        # CUDA 12.2 поддерживает sm_50..sm_90. Blackwell (sm_120) — только в CUDA 12.8+.
+        GGML_CUDA_ARCH_LIST="50;61;70;75;80;86;89;90" && \
+        echo "[llama.cpp] CUDA_ARCH=all -> GGML_CUDA_ARCH_LIST=${GGML_CUDA_ARCH_LIST}"; \
+    else \
+        GGML_CUDA_ARCH_LIST="${CUDA_ARCH}" && \
+        echo "[llama.cpp] CUDA_ARCH=${CUDA_ARCH} -> GGML_CUDA_ARCH_LIST=${GGML_CUDA_ARCH_LIST}"; \
+    fi && \
     cmake .. \
       -DGGML_CUDA=ON \
       -DGGML_CUDA_NCCL=OFF \
-      -DCMAKE_CUDA_ARCHITECTURES="${CUDA_ARCH}" \
+      -DCMAKE_CUDA_ARCHITECTURES="${GGML_CUDA_ARCH_LIST}" \
       -DGGML_CCACHE=OFF \
       -DLLAMA_CURL=OFF \
       -DLLAMA_BUILD_TESTS=OFF \
@@ -40,7 +62,7 @@ RUN mkdir -p build && cd build && \
 # -----------------------------------------------------------------------------
 # Stage 2: bridge-builder — сборка libollamalegion_bridge.a
 # -----------------------------------------------------------------------------
-FROM nvidia/cuda:12.2.0-devel-ubuntu22.04 AS bridge-builder
+FROM dockerhub.timeweb.cloud/nvidia/cuda:12.2.0-devel-ubuntu22.04 AS bridge-builder
 
 RUN apt-get update && apt-get install -y --no-install-recommends cmake && \
     rm -rf /var/lib/apt/lists/*
@@ -48,7 +70,11 @@ RUN apt-get update && apt-get install -y --no-install-recommends cmake && \
 WORKDIR /build/bridge
 COPY c/bridge/bridge.h c/bridge/bridge.c c/bridge/CMakeLists.txt ./
 
-COPY --from=llama-builder /build/llama.cpp /build/llama.cpp
+COPY --from=llama-builder /build/llama.cpp/include /build/llama.cpp/include
+COPY --from=llama-builder /build/llama.cpp/ggml/include /build/llama.cpp/ggml/include
+COPY --from=llama-builder /build/llama.cpp/ggml/src/ggml-cpu /build/llama.cpp/ggml/src/ggml-cpu
+COPY --from=llama-builder /build/llama.cpp/build/src /build/llama.cpp/build/src
+COPY --from=llama-builder /build/llama.cpp/build/ggml/src /build/llama.cpp/build/ggml/src
 
 RUN mkdir -p build && cd build && \
     cmake .. \
@@ -58,7 +84,7 @@ RUN mkdir -p build && cd build && \
 # -----------------------------------------------------------------------------
 # Stage 3: go-builder — Go сборка с CGo
 # -----------------------------------------------------------------------------
-FROM nvidia/cuda:12.2.0-devel-ubuntu22.04 AS go-builder
+FROM dockerhub.timeweb.cloud/nvidia/cuda:12.2.0-devel-ubuntu22.04 AS go-builder
 
 ARG GO_VERSION=1.24.3
 
@@ -75,8 +101,13 @@ ENV GOMODCACHE="/go/pkg/mod"
 
 WORKDIR /build
 
+# BuildKit cache mounts: значительно ускоряют повторные сборки за счёт
+# кэширования go mod download и go build артефактов (см. п.4.4 в
+# docs/cppworker-routing-fixes-2026-06-07.md).
 COPY go.mod go.sum ./
-RUN go mod download && go mod verify
+RUN --mount=type=cache,target=/go/pkg/mod \
+    --mount=type=cache,target=/root/.cache/go-build \
+    go mod download && go mod verify
 
 COPY . .
 
@@ -90,14 +121,16 @@ ENV CGO_ENABLED=1
 ENV CGO_CFLAGS="-DGGML_USE_CUDA -I/build/c/llama.cpp/include -I/build/c/llama.cpp/ggml/include -I/build/c/llama.cpp/ggml/src/ggml-cpu -I/build/c/bridge -I/usr/local/cuda/include -I/usr/local/cuda/targets/x86_64-linux/include -fopenmp"
 ENV CGO_LDFLAGS="-L/build/c/llama.cpp/build/src -L/build/c/llama.cpp/build/ggml/src -L/build/c/llama.cpp/build/ggml/src/ggml-cuda -L/build/c/bridge/build -L/usr/local/cuda/lib64 -L/usr/local/cuda/lib64/stubs -lllama -lggml -lggml-cpu -lggml-base -lggml-cuda -lollamalegion_bridge -lcublas -lcublasLt -lcudart -lcuda -lstdc++ -lm -lpthread -fopenmp"
 
-RUN CGO_ENABLED=1 GOOS=linux GOARCH=amd64 \
+RUN --mount=type=cache,target=/go/pkg/mod \
+    --mount=type=cache,target=/root/.cache/go-build \
+    CGO_ENABLED=1 GOOS=linux GOARCH=amd64 \
     go build -trimpath -ldflags "-w -s" \
     -o cppworker ./cmd/cppworker
 
 # -----------------------------------------------------------------------------
 # Stage 4: runtime
 # -----------------------------------------------------------------------------
-FROM nvidia/cuda:12.2.0-runtime-ubuntu22.04 AS runtime
+FROM dockerhub.timeweb.cloud/nvidia/cuda:12.2.0-runtime-ubuntu22.04 AS runtime
 
 WORKDIR /app
 
@@ -121,7 +154,21 @@ USER appuser
 EXPOSE 18092
 
 HEALTHCHECK --interval=30s --timeout=10s --start-period=30s --retries=5 \
-    CMD curl -f -s http://localhost:18092/health || exit 1
+    CMD /app/cppworker -healthcheck || exit 1
+
+# === Runtime defaults (override via compose/env) ===
+# CPPWORKER_PORT:        18092 for GPU, 18091 for CPU (legacy), 18093 for stub.
+# CPPWORKER_HOST:        bind address (0.0.0.0 = accept from any interface).
+# CPPWORKER_BALANCER_URL/CPPWORKER_BALANCER_TOKEN: enable Go auto-registration.
+# If only BALANCER_URL is set, entrypoint.sh copies it into CPPWORKER_BALANCER_URL.
+ENV CPPWORKER_PORT=18092 \
+    CPPWORKER_HOST=0.0.0.0 \
+    CPPWORKER_BALANCER_URL="" \
+    CPPWORKER_BALANCER_TOKEN="" \
+    CPPWORKER_ADVERTISE_HOST="" \
+    CPPWORKER_ADVERTISE_PORT=18092 \
+    CPPWORKER_REGISTER_RETRY_INTERVAL=30s \
+    CPPWORKER_REGISTER_HEARTBEAT=60s
 
 ENV HF_HOME=/app/.cache/huggingface
 ENV HF_TOKEN=""

@@ -719,6 +719,116 @@ ssh <gpu-server> 'docker logs ollama --tail 50'
    ```
 
 
+### Cline через Ollama API не разбирает ответ (`Invalid API Response`)
+
+**Симптомы:**
+- Cline (расширение VS Code, использующее `ollama-js` 0.5.x) отправляет `POST /api/chat` на балансер
+- В логах балансера: `200 1931ms` (т.е. запрос успешно дошёл до cppworker)
+- Cline показывает "Invalid API Response: The provider returned an empty or unparsable response"
+- При этом прямой запрос к cppworker (`curl http://<cppworker>:18091/v1/chat/completions`) возвращает нормальный ответ
+
+**Корневые причины и решения:**
+
+#### 1. Модель `gemma-*-it-Q4_K_M` без chat template
+
+Gemma требует специфического chat template (`<start_of_turn>user\n...<end_of_turn>\n<start_of_turn>model\n...`).
+Без него модель эмитит служебные токены как обычный текст, который ломает парсер Cline.
+
+**Проверка:**
+```bash
+strings /models/gemma-*.gguf | grep -A 30 "chat_template"
+# Должна быть секция с Jinja-шаблоном
+```
+
+**Решение:** запустите cppworker с флагом `--jinja`, чтобы использовать chat template из GGUF:
+```bash
+./llama-server \
+  -m /models/gemma-*-it-Q4_K_M.gguf \
+  --jinja \
+  --flash-attn \
+  -ngl -1 \
+  -c 8192
+```
+
+#### 2. Служебные токены в streaming-ответе
+
+Если chat template всё-таки настроен, но модель изредка эмитит `<end_of_turn>` отдельным content-чанком,
+балансер фильтрует такие токены через `shouldFilterLlamaCppContent` (см. `internal/balancer/llamacpp_transport.go`).
+Убедитесь, что используется последняя версия кода — фильтр добавлен в `translateSSEChatToOllama` для покрытия
+Ollama NDJSON-пути (ранее работал только для OpenAI SSE).
+
+#### 3. Неверный формат `created_at`
+
+OpenAI-совместимый ответ от cppworker возвращает `created` как Unix timestamp (число),
+а Ollama ожидает ISO-8601 / RFC3339 строку. Если балансер пробрасывал число «как есть»,
+ollama-js (Cline) мог падать с ошибкой парсинга.
+
+**Решение:** в балансере добавлен helper `convertCreatedToRFC3339`, который нормализует значение в `time.RFC3339`.
+
+#### 4. Диагностика "сырого" ответа от cppworker
+
+Включите debug-логирование балансера:
+```json
+{"logging": {"level": "debug"}}
+```
+
+```bash
+docker logs -f ollama-legion-balancer 2>&1 | grep "proxyRequestLlamaCpp"
+```
+
+Ищите записи `proxyRequestLlamaCpp: non-stream body preview` (для non-stream) или 
+`translateSSEChatToOllama: filtered service token` (для stream) — они покажут, 
+что ИМЕННО отдаёт upstream до трансляции в Ollama-формат.
+
+#### 5. Рекомендуемая конфигурация cppworker для Cline + instruct-моделей
+
+```bash
+# config/cppworker.env
+LLAMA_CTX_SIZE=8192           # Cline шлёт длинный system prompt + tools
+LLAMA_BATCH_SIZE=512
+LLAMA_N_GPU_LAYERS=-1         # все слои на GPU
+LLAMA_FLASH_ATTN=true
+LLAMA_MMAP=true
+LLAMA_IDLE_UNLOAD=30m
+```
+
+Команда запуска `llama-server` (если настраиваете вручную):
+```bash
+./llama-server \
+  -m /models/gemma-3-4b-it-Q4_K_M.gguf \
+  --jinja \
+  --flash-attn \
+  -ngl -1 \
+  -c 8192 \
+  --special \
+  --port 18091
+```
+
+**Примечание:** Gemma 3 имеет ограниченную поддержку function calling / tool use.
+Если Cline активно использует tools, лучше переключиться на модель с полной поддержкой
+(`qwen2.5-coder`, `llama3.1`, `mistral-nemo`).
+
+#### 6. Быстрая диагностика через прямое сравнение
+
+```bash
+# A. Прямой запрос к cppworker (минуя балансер)
+curl -X POST http://<cppworker>:18091/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -d '{"model":"gemma-*-it-Q4_K_M","messages":[{"role":"user","content":"Say OK"}],"stream":false,"max_tokens":50}'
+
+# B. Запрос через балансер
+curl -X POST http://localhost:18081/api/chat \
+  -H "Content-Type: application/json" \
+  -d '{"model":"gemma-*-it-Q4_K_M","messages":[{"role":"user","content":"Say OK"}],"stream":false,"max_tokens":50}'
+```
+
+Если A возвращает нормальный JSON с `content`, а B — `Invalid API Response` или мусор,
+проблема в трансляции (проверьте логи `proxyRequestLlamaCpp: non-stream body preview`).
+
+Если ОБА возвращают мусор (например, `<end_of_turn>Ok<end_of_turn>`), проблема в chat template модели.
+
+---
+
 ### go vet: could not determine what C.* refers to
 
 **Симптомы:**
@@ -751,6 +861,7 @@ go build ./internal/cppbackend/...
 - [Конфигурация](configuration.md) — Настройка всех компонентов
 - [API документация](api.md) — REST API и WebSocket
 - [Развертывание](deployment.md) — Production deployment
+- [Cline troubleshooting](cline-troubleshooting.md) — Диагностика Cline (VS Code) через балансер + cppworker
 
 ---
 

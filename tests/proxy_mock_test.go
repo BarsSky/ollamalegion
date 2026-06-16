@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -570,16 +571,18 @@ func setupProxyWithMockOllama(t *testing.T, mock *mockOllamaServer) (*httptest.S
 	return proxyServer, proxy
 }
 
-// parseHostPort - парсинг URL в хост:порт
+// parseHostPort - парсинг URL в хост:порт.
+// Использует net.SplitHostPort, чтобы корректно обрабатывать IPv6-адреса
+// (httptest может слушать на [::1]:port).
 func parseHostPort(urlStr string) (string, int) {
 	urlStr = strings.TrimPrefix(urlStr, "http://")
-	parts := strings.Split(urlStr, ":")
-	if len(parts) != 2 {
+	host, portStr, err := net.SplitHostPort(urlStr)
+	if err != nil {
 		return "localhost", 11434
 	}
 	port := 0
-	fmt.Sscanf(parts[1], "%d", &port)
-	return parts[0], port
+	fmt.Sscanf(portStr, "%d", &port)
+	return host, port
 }
 
 // setupProxyWithMock - вариант setupProxyWithMockOllama для удобства

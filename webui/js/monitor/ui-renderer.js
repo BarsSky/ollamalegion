@@ -658,9 +658,22 @@
     if (!body) return;
     if (!bk.length) { body.innerHTML = '<div style="color:var(--text-secondary);text-align:center;padding:16px">' + T('monitor.common.noData') + '</div>'; return; }
 
+    // Filter backends that actually have agent system metrics
+    var hasSystemMetrics = function(b) {
+      var s = b.system || {};
+      return (s.diskTotal || s.diskUsed || s.diskFree || s.networkRX || s.networkTX) > 0;
+    };
+    var validBk = bk.filter(hasSystemMetrics);
+    if (!validBk.length) {
+      body.innerHTML = '<div style="color:var(--text-secondary);text-align:center;padding:16px">' +
+        (T('monitor.diskNetwork.noAgentData') || 'Нет данных агента (disk/network)') +
+        '</div>';
+      return;
+    }
+
     // Disk and Network cards per backend
     body.innerHTML = '<div style="display:flex;flex-wrap:wrap;gap:10px">' +
-      bk.map(function(b) {
+      validBk.map(function(b) {
         var s = b.system || {};
         var dTotal = s.diskTotal || 0;
         var dUsed = s.diskUsed || 0;

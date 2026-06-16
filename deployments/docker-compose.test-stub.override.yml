@@ -1,0 +1,11 @@
+services:
+  cppworker-stub:
+    environment:
+      - CPPWORKER_BALANCER_URL=http://loadbalancer:18081
+      - CPPWORKER_BALANCER_TOKEN=${CPPWORKER_API_TOKEN:-test-stub-token}
+      - CPPWORKER_ADVERTISE_HOST=cppworker-stub
+      - CPPWORKER_ADVERTISE_PORT=18093
+      - CPPWORKER_REGISTER_NAME=cppworker-stub-test
+      - CPPWORKER_REGISTER_RETRY_INTERVAL=15s
+      - CPPWORKER_REGISTER_HEARTBEAT=60s
+      - CPPWORKER_REGISTER_GPU_MODE=cpu

@@ -12,6 +12,13 @@ import (
 	"ollama-loadbalancer/internal/cppbackend"
 )
 
+// flashAttnEnabled — helper для проверки flash attention.
+// В новой Config поле DefaultFlashAttnType (int): -1=auto/enabled, 0=disabled, 1=enabled.
+// В старом API было bool DefaultFlashAttn. Здесь мы маппим int → bool:
+//   -1 (auto) и 1 (enabled) считаются «включённым» режимом
+//   0 — «выключенным»
+func flashAttnEnabled(t int) bool { return t != 0 }
+
 // ============================================================
 // Config tests
 // ============================================================
@@ -37,7 +44,7 @@ func TestDefaultConfig(t *testing.T) {
 	if cfg.DefaultGPULayers != -1 {
 		t.Errorf("expected gpu layers -1, got %d", cfg.DefaultGPULayers)
 	}
-	if !cfg.DefaultFlashAttn {
+	if !flashAttnEnabled(cfg.DefaultFlashAttnType) {
 		t.Error("expected flash attention enabled")
 	}
 	if !cfg.AutoGPUDistribution {
@@ -140,7 +147,7 @@ func TestLoadConfigFromEnv(t *testing.T) {
 	if cfg.DefaultGPULayers != 24 {
 		t.Errorf("expected gpu layers 24, got %d", cfg.DefaultGPULayers)
 	}
-	if cfg.DefaultFlashAttn {
+	if flashAttnEnabled(cfg.DefaultFlashAttnType) {
 		t.Error("expected flash attention disabled")
 	}
 	if !cfg.DefaultNUMA {

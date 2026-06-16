@@ -116,7 +116,7 @@ USER appuser
 EXPOSE 18092
 
 HEALTHCHECK --interval=30s --timeout=10s --start-period=30s --retries=5 \
-    CMD curl -f -s http://localhost:18092/health || exit 1
+    CMD /app/cppworker -healthcheck || exit 1
 
 ENV HF_HOME=/app/.cache/huggingface
 ENV HF_TOKEN=""

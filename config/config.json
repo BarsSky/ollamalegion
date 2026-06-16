@@ -130,6 +130,14 @@
       "your-master-token-here-change-in-production"
     ],
     "headerName": "X-API-Token"
+  },
+  "defaultModelProfile": {
+    "_note": "Phase D.3-fix fallback for clamping when per-model profile missing.",
+    "contextLength": 4096,
+    "batchSize": 512,
+    "numGpuLayers": 30,
+    "flashAttention": true,
+    "useMmap": true
   }
 }
 

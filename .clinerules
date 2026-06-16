@@ -90,6 +90,7 @@ webui/                    # фронтенд
   - `4` — GPU OOM.
   - `5` — bad request.
 - Для получения деталей после ошибки вызывай `bridge.GetLastErrorInfo()`.
+- RAM fallback для `n_ctx`: если включён флаг `--ram-fallback-n-ctx` / env `CPPWORKER_RAM_FALLBACK_N_CTX=true`, при `ErrNCtxNeedsReload` cppworker автоматически выгружает модель и перезагружает её с запрошенным `n_ctx`, форсируя `use_mmap=true`. Опционально можно понизить `gpu_layers` через `CPPWORKER_RAM_FALLBACK_GPU_LAYERS` (0 = CPU-only fallback) и задать потолок через `CPPWORKER_RAM_FALLBACK_MAX_N_CTX`. Fallback применяется в `generateWithRamFallback` / `generateStreamWithRamFallback`.
 
 ## 5. Ollama-совместимость CppWorker
 

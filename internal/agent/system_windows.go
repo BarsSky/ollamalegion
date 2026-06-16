@@ -81,6 +81,55 @@ func getNetworkIO() (rx, tx uint64) {
 	return 0, 0
 }
 
+// getGPUInfo - получение информации о GPU через WMI (Windows fallback)
+// Используется, когда nvidia-smi недоступен или NVML не собран.
+func getGPUInfo() GPUInfo {
+	info := GPUInfo{}
+
+	// Первый fallback: nvidia-smi (если установлен)
+	output, err := executeNvidiaSmi()
+	if err == nil {
+		info.Count = countGPUs(output)
+		info.Models = parseGPUMModels(output)
+		return info
+	}
+
+	// Второй fallback: WMI Win32_VideoController
+	cmd := exec.Command("wmic", "path", "Win32_VideoController", "get", "Name,AdapterRAM", "/format:csv")
+	wmiOutput, err := cmd.Output()
+	if err != nil {
+		return info
+	}
+
+	lines := strings.Split(string(wmiOutput), "\n")
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
+		if line == "" || strings.HasPrefix(line, "Node") {
+			continue
+		}
+		parts := strings.Split(line, ",")
+		if len(parts) >= 3 {
+			name := strings.TrimSpace(parts[2])
+			if name != "" && !strings.Contains(strings.ToLower(name), "basic display") {
+				info.Count++
+				info.Models = append(info.Models, name)
+			}
+		}
+	}
+
+	return info
+}
+
+// getGPUMetrics - получение метрик GPU на Windows.
+// Основной источник — nvidia-smi; при недоступности возвращает пустые метрики.
+func getGPUMetrics() types.GPUMetrics {
+	output, err := executeNvidiaSmi()
+	if err != nil {
+		return types.GPUMetrics{}
+	}
+	return parseNvidiaSmiOutput(output)
+}
+
 // parseWMICValueFloat - парсинг float из WMIC вывода
 func parseWMICValueFloat(output, key string) float64 {
 	lines := strings.Split(output, "\n")

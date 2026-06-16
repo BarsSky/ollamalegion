@@ -32,23 +32,35 @@ type Proxy struct {
 	metricsMgr      *MetricsManager
 	queueMgr        *QueueManager
 	predictor       *Predictor
-	client          *http.Client      // Клиент для обычных запросов
-	streamingClient *http.Client      // Клиент для streaming/SSE запросов (без таймаута)
-	statePath       string            // Путь к state файлу
-	saveTimer       *time.Timer       // Таймер для debounced autosave
-	saveMu          sync.Mutex        // Мьютекс для защиты saveTimer
-	totalRequests   int64             // Atomic: всего запросов через прокси
-	ollamaRouter    *OllamaRouter     // Маршрутизатор Ollama API endpoint'ов
-	llamaCppRouter  *LlamaCppRouter   // Маршрутизатор llama.cpp API endpoint'ов
+	client          *http.Client    // Клиент для обычных запросов
+	streamingClient *http.Client    // Клиент для streaming/SSE запросов (без таймаута)
+	statePath       string          // Путь к state файлу
+	saveTimer       *time.Timer     // Таймер для debounced autosave
+	saveMu          sync.Mutex      // Мьютекс для защиты saveTimer
+	totalRequests   int64           // Atomic: всего запросов через прокси
+	ollamaRouter    *OllamaRouter   // Маршрутизатор Ollama API endpoint'ов
+	llamaCppRouter  *LlamaCppRouter // Маршрутизатор llama.cpp API endpoint'ов
+
+	// llamaCppMetricsPoller синхронизирует metricsMgr.llamaMetrics[].LoadedModels
+	// с фактическим состоянием cppworker через периодический poll /api/models.
+	// Нужен для отображения загруженных моделей в WebUI (страница GGUF) и
+	// API /api/v1/gguf/backends, когда модели загружены в обход балансера.
+	llamaCppMetricsPoller *llamaCppMetricsPoller
+
+	// nctxReload — координатор adaptive n_ctx auto-reload (Stage 3, 5).
+	// Решает, можно ли перезагрузить модель с большим n_ctx (если VRAM
+	// позволяет), или вернуть клиенту 413. Вызывается из llamacpp_transport.go
+	// когда upstream (cppworker) возвращает ErrNCtxNeedsReload.
+	nctxReload *NCtxReloadCoordinator
 
 	// EventBus (вынесен в eventbus.go)
 	eventBus *EventBus
 
 	// Background controllers
-		AutoPull        *AutoPullManager       // Менеджер автоматической загрузки моделей (Pull-on-Demand)
-	unloadScheduler *UnloadScheduler       // Планировщик выгрузки моделей
-	weightTuner     *AdaptiveWeightTuner   // Адаптивный тюнер весов
-	agentChecker    *agentTimeoutChecker   // Проверка таймаута агентов
+	AutoPull        *AutoPullManager     // Менеджер автоматической загрузки моделей (Pull-on-Demand)
+	unloadScheduler *UnloadScheduler     // Планировщик выгрузки моделей
+	weightTuner     *AdaptiveWeightTuner // Адаптивный тюнер весов
+	agentChecker    *agentTimeoutChecker // Проверка таймаута агентов
 
 	// RPC model distribution modules
 	modelReplication    *modelreplication.ModelGroupManager
@@ -81,8 +93,6 @@ type Proxy struct {
 	warmupSem chan struct{}
 }
 
-
-
 // NewProxy - создание нового прокси
 func NewProxy(config *types.LoadBalancerConfig) *Proxy {
 	// Транспорт для обычных запросов
@@ -109,7 +119,7 @@ func NewProxy(config *types.LoadBalancerConfig) *Proxy {
 		MaxIdleConns:          100,
 		MaxIdleConnsPerHost:   10,
 		IdleConnTimeout:       90 * time.Second,
-		DisableCompression:    true, // Важно для SSE
+		DisableCompression:    true,             // Важно для SSE
 		ResponseHeaderTimeout: 45 * time.Second, // Макс. ожидание заголовков от Ollama (меньше чем undici headersTimeout ~60s)
 	}
 
@@ -147,7 +157,6 @@ func NewProxy(config *types.LoadBalancerConfig) *Proxy {
 			Timeout:   0, // Нет таймаута для streaming
 			Transport: streamingTransport,
 		},
-
 	}
 
 	// QueueManager создаём после инициализации p, чтобы передать корректный proxy
@@ -181,6 +190,12 @@ func NewProxy(config *types.LoadBalancerConfig) *Proxy {
 	// Инициализация LlamaCppRouter для llama.cpp бэкендов
 	p.llamaCppRouter = NewLlamaCppRouter(p)
 
+	// Запуск фонового poll llama.cpp бэкендов для синхронизации LoadedModels
+	// с фактическим состоянием cppworker. Нужен для корректного отображения
+	// загруженных моделей в WebUI (страница GGUF) и API /api/v1/gguf/backends.
+	p.llamaCppMetricsPoller = newLlamaCppMetricsPoller(p)
+	p.llamaCppMetricsPoller.Start()
+
 	// Инициализация AutoPullManager (Pull-on-Demand)
 	if config.Balancing.AutoPull.Enabled {
 		p.AutoPull = NewAutoPullManager(p, config.Balancing.AutoPull)
@@ -195,6 +210,13 @@ func NewProxy(config *types.LoadBalancerConfig) *Proxy {
 	p.unloadScheduler.Start()
 	p.weightTuner = NewAdaptiveWeightTuner(p)
 	p.weightTuner.Start()
+
+	// Инициализация nctxReload координатора (Stage 3, 5).
+	// Загружает конфиг из BalancingSettings.NCtxReload (см. internal/config).
+	// Если конфиг не задан — использует безопасные defaults (AutoReloadNCtx=false).
+	p.nctxReload = NewNCtxReloadCoordinator(loadNCtxReloadConfig(p.config))
+	logger.Get().Infow("nctx reload coordinator initialized",
+		"auto_reload", p.nctxReload.Config().AutoReloadNCtx)
 
 	// Инициализация RPC Model Distribution модулей
 	p.initRpcModules()
@@ -277,20 +299,31 @@ func (p *Proxy) getWarmupSemaphoreTimeout() time.Duration {
 }
 
 // determineRequestBackendType определяет тип бэкенда на основе пути входящего запроса.
-// - Ollama API endpoints (/api/generate, /api/chat, /api/tags, ...) →
-//   если OperatingMode разрешает оба типа (standard/replication/rpc_coordinator) — возвращает "",
-//   позволяя selectBackend выбрать бэкенд любого типа где загружена модель.
-//   Если mode жёстко привязан к одному типу — возвращает этот тип.
-// - llama.cpp / OpenAI-compatible endpoints (/v1/chat/completions, /v1/completions, ...) → BackendTypeLlamaCpp
-// - Прочие пути → "" (будет определено из OperatingMode через getDefaultAllowedTypes)
+//   - Ollama API endpoints (/api/generate, /api/chat, /api/tags, ...) →
+//     если OperatingMode разрешает оба типа (standard/replication/rpc_coordinator) — возвращает "",
+//     позволяя selectBackend выбрать бэкенд любого типа где загружена модель.
+//     Если mode жёстко привязан к одному типу — возвращает этот тип.
+//   - llama.cpp / OpenAI-compatible endpoints (/v1/chat/completions, /v1/completions, ...) → BackendTypeLlamaCpp
+//   - Прочие пути → "" (будет определено из OperatingMode через getDefaultAllowedTypes)
 func (p *Proxy) determineRequestBackendType(r *http.Request) types.BackendType {
 	path := r.URL.Path
 	if strings.HasPrefix(path, "/api/") {
 		// Проверяем, какие типы бэкендов разрешены текущим OperatingMode
 		allowed := p.getDefaultAllowedTypes()
 		if len(allowed) > 1 {
-			// Режим разрешает оба типа (standard/replication/rpc_coordinator) —
-			// возвращаем "", чтобы selectBackend мог выбрать бэкенд любого типа
+			// Режим разрешает оба типа (standard/replication/rpc_coordinator).
+			// Если явно задан BackendEngine (не auto), используем его для
+			// обратной совместимости с legacy-конфигурациями, где operatingMode
+			// не выставлен, а backendEngine = llama_cpp.
+			if p.config.BackendEngine != "" && p.config.BackendEngine != types.EngineAuto {
+				switch p.config.BackendEngine {
+				case types.EngineLlamaCPP:
+					return types.BackendTypeLlamaCpp
+				case types.EngineOllamaAPI:
+					return types.BackendTypeOllama
+				}
+			}
+			// Возвращаем "", чтобы selectBackend мог выбрать бэкенд любого типа
 			// на основе того, где модель фактически загружена.
 			return ""
 		}
@@ -347,6 +380,10 @@ func (p *Proxy) Shutdown(ctx context.Context) error {
 		logger.Get().Infow("stopping session manager...")
 		p.sessionMgr.Stop()
 	}
+	if p.llamaCppMetricsPoller != nil {
+		logger.Get().Infow("stopping llama.cpp metrics poller...")
+		p.llamaCppMetricsPoller.Stop()
+	}
 
 	// 4. Ожидаем завершения активных SSE-сессий с таймаутом
 	logger.Get().Infow("waiting for active streams to finish...")
@@ -378,6 +415,23 @@ func (p *Proxy) Shutdown(ctx context.Context) error {
 // ServeHTTP - обработка HTTP запросов
 func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	startTime := time.Now()
+
+	// ==== Correlation ID ====
+	// Генерируем (или берём из заголовка X-Request-ID) уникальный id для этого
+	// запроса и кладём его в контекст. Все downstream-логи (handleOpenAIChat
+	// Completions, ensureModelLoadedOnBackend, queryCppWorkerModels, ModelManager
+	// .ExecuteOperation, etc.) подхватывают его через RequestIDFromContext()
+	// и автоматически добавляют в log-запись как поле request_id. Это позволяет
+	// проследить всю цепочку Cline → balancer → cppworker по одному grep'у.
+	rid, ctxWithRID := getOrGenerateRequestID(r)
+	r = r.WithContext(ctxWithRID)
+	w.Header().Set(requestIDHeader, rid) // echo в response для удобства curl-проверки
+	logger.Get().Debugw("ServeHTTP: request received",
+		"request_id", rid,
+		"method", r.Method,
+		"path", r.URL.Path,
+		"remote", r.RemoteAddr,
+	)
 
 	// CORS headers для всех ответов (нужно для OpenWebUI и других браузерных клиентов)
 	origin := r.Header.Get("Origin")
@@ -419,6 +473,14 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
 		w.Write([]byte("{\"status\":\"healthy\"}"))
+		return
+	}
+
+	if r.URL.Path == "/metrics" {
+		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+		w.WriteHeader(http.StatusOK)
+		fmt.Fprintf(w, "# OllamaLegion balancer metrics\n")
+		fmt.Fprintf(w, "healthy 1\n")
 		return
 	}
 
@@ -758,6 +820,11 @@ func (p *Proxy) UpdateMetrics(backendID string, metrics *types.BackendMetrics) {
 
 	p.metricsMgr.mu.Lock()
 	p.metricsMgr.metrics[backendID] = metrics
+	// Синхронизируем llamaMetrics, чтобы GetClusterState корректно отображал
+	// загруженные модели llama.cpp бэкендов, установленные через UpdateMetrics.
+	if metrics != nil && len(metrics.LlamaCpp.LoadedModels) > 0 {
+		p.metricsMgr.llamaMetrics[backendID] = &metrics.LlamaCpp
+	}
 	p.metricsMgr.mu.Unlock()
 }
 
@@ -802,7 +869,7 @@ func (p *Proxy) recordRecentClient(r *http.Request) {
 			UserAgent:     userAgent,
 			LastRequestAt: now,
 			RequestCount:  1,
-			Model:          model,
+			Model:         model,
 		}
 	}
 
@@ -842,7 +909,7 @@ func (p *Proxy) recordRecentClientParsed(r *http.Request, parsed *parsedRequest)
 			UserAgent:     userAgent,
 			LastRequestAt: now,
 			RequestCount:  1,
-			Model:          parsed.Model,
+			Model:         parsed.Model,
 		}
 	}
 

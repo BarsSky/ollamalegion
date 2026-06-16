@@ -45,7 +45,7 @@ FROM alpine:latest AS runtime
 
 WORKDIR /app
 
-RUN apk add --no-cache tzdata ca-certificates wget curl python3 py3-pip && \
+RUN apk add --no-cache tzdata ca-certificates curl python3 py3-pip && \
     pip3 install --no-cache-dir --break-system-packages huggingface_hub
 
 COPY docker/cppworker/entrypoint.sh /entrypoint.sh
@@ -64,7 +64,7 @@ USER appuser
 EXPOSE 18093
 
 HEALTHCHECK --interval=30s --timeout=10s --start-period=15s --retries=3 \
-    CMD curl -f -s http://localhost:18093/health || exit 1
+    CMD /app/cppworker -healthcheck || exit 1
 
 ENV HF_HOME=/app/.cache/huggingface
 ENV HF_TOKEN=""

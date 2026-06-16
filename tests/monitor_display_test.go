@@ -214,3 +214,57 @@ func TestMonitorHTMLHasErrorHandling(t *testing.T) {
 		}
 	}
 }
+
+// TestMonitorHandler_WEBUIConfig проверяет, что /monitor встраивает
+// WEBUI_CONFIG, совместимый с webui/js/modules/config.js и monitor/state.js.
+func TestMonitorHandler_WEBUIConfig(t *testing.T) {
+	cfg := &types.LoadBalancerConfig{
+		LoadBalancer: types.LoadBalancerSettings{
+			Port:    8080,
+			APIPort: 8081,
+			Host:    "localhost",
+		},
+		Balancing: types.BalancingSettings{
+			Algorithm:           "roundrobin",
+			HealthCheckInterval: 30,
+			RequestTimeout:      300,
+		},
+		API: types.APISettings{
+			RateLimit: 100,
+			RateBurst: 10,
+		},
+		Auth: types.AuthConfig{
+			Enabled: false,
+		},
+		Logging: types.LoggingSettings{
+			Level: "info",
+		},
+	}
+
+	proxy := balancer.NewProxy(cfg)
+	healthChecker := balancer.NewHealthChecker(proxy, 30, 3)
+	apiServer := api.NewServer(proxy, cfg, healthChecker)
+
+	req := httptest.NewRequest(http.MethodGet, "/monitor", nil)
+	req.Header.Set("X-Forwarded-Prefix", "/legion")
+	w := httptest.NewRecorder()
+
+	apiServer.ServeHTTP(w, req)
+
+	body := w.Body.String()
+
+	// WEBUI_CONFIG должен содержать поля, используемые webui/js/modules/config.js
+	// и monitor.html/state.js.
+	requiredConfigFields := []string{
+		`apiBase:"/legion"`,      // monitor.html/state.js
+		`API_BASE:"/legion"`,     // webui/js/modules/api.js, gguf-api.js
+		`API_BASE_URL:"/legion"`, // webui/js/modules/gguf-api.js
+		`CPPWORKER_URL:`,         // gguf-api.js
+		`REFRESH_INTERVAL:`,      // app.js
+	}
+	for _, field := range requiredConfigFields {
+		if !strings.Contains(body, field) {
+			t.Errorf("Monitor HTML missing WEBUI_CONFIG field: %s", field)
+		}
+	}
+}

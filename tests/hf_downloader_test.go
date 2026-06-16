@@ -217,6 +217,18 @@ func TestHFDownloaderSearchModels(t *testing.T) {
 		if !strings.Contains(r.URL.Path, "/models") {
 			t.Errorf("expected /models in path, got %s", r.URL.Path)
 		}
+
+		// Эмулируем tree-endpoint для каждого репозитория: возвращаем .gguf файлы
+		if strings.Contains(r.URL.Path, "/tree/") {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusOK)
+			json.NewEncoder(w).Encode([]map[string]interface{}{
+				{"path": "model-q4_k_m.gguf", "size": 4430000000, "type": "file"},
+			})
+			return
+		}
+
+		// Search endpoint: требуем параметр search
 		if r.URL.Query().Get("search") != "llama" {
 			t.Errorf("expected search=llama, got %s", r.URL.Query().Get("search"))
 		}
@@ -590,6 +602,10 @@ func TestHFDownloaderStartDownloadAndCancel(t *testing.T) {
 	d.Close()
 }
 
+// TestHFDownloaderStartDownloadDuplicate проверяет идемпотентное поведение:
+// повторный вызов StartDownload для уже загружающейся модели возвращает
+// текущий прогресс (а не ошибку), что позволяет WebUI безопасно обрабатывать
+// множественные клики по «Download».
 func TestHFDownloaderStartDownloadDuplicate(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/octet-stream")
@@ -602,21 +618,45 @@ func TestHFDownloaderStartDownloadDuplicate(t *testing.T) {
 	d := cppbackend.NewHuggingFaceDownloader("", server.URL, t.TempDir(), t.TempDir())
 
 	// Первый запуск
-	_, err := d.StartDownload(cppbackend.HFDownloadRequest{
+	first, err := d.StartDownload(cppbackend.HFDownloadRequest{
 		ModelID:  "test/model",
 		Filename: "dup-test.gguf",
 	})
 	if err != nil {
 		t.Fatalf("StartDownload failed: %v", err)
 	}
+	if first == nil {
+		t.Fatal("first StartDownload returned nil progress")
+	}
 
-	// Второй запуск (дубликат)
-	_, err = d.StartDownload(cppbackend.HFDownloadRequest{
+	// Второй запуск (дубликат) — должен вернуть прогресс той же загрузки
+	second, err := d.StartDownload(cppbackend.HFDownloadRequest{
 		ModelID:  "test/model",
 		Filename: "dup-test.gguf",
 	})
-	if err == nil {
-		t.Error("expected error for duplicate download")
+	if err != nil {
+		t.Fatalf("duplicate StartDownload should be idempotent, got error: %v", err)
+	}
+	if second == nil {
+		t.Fatal("duplicate StartDownload returned nil progress (expected snapshot of existing download)")
+	}
+	if second.ModelID != "test/model" || second.Filename != "dup-test.gguf" {
+		t.Errorf("duplicate progress has wrong identity: %+v", second)
+	}
+	if second.Status == "" {
+		t.Error("duplicate progress has empty status")
+	}
+
+	// Должен существовать ровно один активный download
+	active := d.ListActiveDownloads()
+	count := 0
+	for _, p := range active {
+		if p.ModelID == "test/model" && p.Filename == "dup-test.gguf" {
+			count++
+		}
+	}
+	if count != 1 {
+		t.Errorf("expected exactly 1 active download, got %d (active=%+v)", count, active)
 	}
 
 	// Ждём завершения первой загрузки

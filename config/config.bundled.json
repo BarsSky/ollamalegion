@@ -1,0 +1,113 @@
+{
+    "_comment":  "Ollama Legion — bundled config для стека cppworker-gpu + balancer + webui",
+    "_note":  "backends: [] — cppworker-gpu зарегистрирует себя сам через POST /api/v1/backends при старте. Если этого не произошло — проверьте ENV CPPWORKER_BALANCER_URL в docker-compose.cppworker-bundled.yml.",
+    "loadBalancer":  {
+                         "host":  "0.0.0.0",
+                         "port":  18080,
+                         "apiPort":  18081,
+                         "statePath":  "data/state.json",
+                         "trustedProxies":  [
+                                                "127.0.0.1/8",
+                                                "172.17.0.0/16",
+                                                "172.18.0.0/16",
+                                                "172.28.0.0/16",
+                                                "10.0.0.0/8",
+                                                "192.168.0.0/16"
+                                            ],
+                         "clientIPHeaders":  [
+                                                 "X-Forwarded-For",
+                                                 "X-Real-IP",
+                                                 "CF-Connecting-IP"
+                                             ]
+                     },
+    "backends":  [
+
+                 ],
+    "balancing":  {
+                      "algorithm":  "resource-aware",
+                      "modelAffinity":  true,
+                      "sessionStickiness":  true,
+                      "healthCheckInterval":  10,
+                      "metricsInterval":  5,
+                      "requestTimeout":  120,
+                      "firstByteTimeout":  30,
+                      "streamingIdleTimeout":  120,
+                      "queueTimeout":  300,
+                      "queueMaxSize":  100,
+                      "queueWorkers":  4,
+                      "sessionTTL":  900,
+                      "useEnhancedScoring":  true,
+                      "modelLoadTimeout":  300,
+                      "streamingMaxDuration":  0,
+                      "autoPull":  {
+                                       "enabled":  false,
+                                       "maxConcurrent":  1,
+                                       "pullTimeout":  "5m",
+                                       "retryCount":  1
+                                   },
+                      "prewarm":  {
+                                      "enabled":  false,
+                                      "interval":  "10m",
+                                      "minIdleMinutes":  5
+                                  },
+                      "unload":  {
+                                     "enabled":  false,
+                                     "idleMinutes":  30
+                                 },
+                      "backpressure":  {
+                                           "enabled":  true,
+                                           "highWatermark":  0.85,
+                                           "lowWatermark":  0.6
+                                       },
+                      "operatingMode":  "llama_cpp"
+                  },
+    "rateLimit":  {
+                      "enabled":  false,
+                      "requestsPerMinute":  600,
+                      "burstSize":  100,
+                      "trustForwardedFor":  false
+                  },
+    "auth":  {
+                 "enabled":  true,
+                 "tokens":  [
+                                {
+                                    "name":  "bundled-default",
+                                    "_note":  "Должен совпадать с CPPWORKER_API_TOKEN в .env.bundled. В проде замените!"
+                                }
+                            ]
+             },
+    "logging":  {
+                    "level":  "debug",
+                    "format":  "json",
+                    "output":  "stdout"
+                },
+    "defaultModelProfile":  {
+                                 "_note":  "Phase D.3-fix fallback for clamping when per-model profile missing.",
+                                 "contextLength":  4096,
+                                 "batchSize":  512,
+                                 "numGpuLayers":  30,
+                                 "flashAttention":  true,
+                                 "useMmap":  true
+                             },
+    "modelManagement":  {
+                            "_comment":  "Per-model profiles для cppworker-gpu (Шаг 5 из cppworker-preflight-nctx плана).",
+                            "_note":  "Эти профили применяются балансировщиком при роутинге запросов к cppworker. num_ctx побеждает defaults из ENV.",
+                            "defaultProfile":  {
+                                                   "numCtx":  4096,
+                                                   "batchSize":  512,
+                                                   "numGpuLayers":  30,
+                                                   "flashAttention":  true,
+                                                   "useMmap":  true
+                                               },
+                            "profiles":  {
+                                             "gemma-4":  {
+                                                             "_note":  "Профиль для gemma-4 (4-5GB Q4_K_M). Partial GPU offload 30/43 слоёв. numCtx=8192 покрывает prompt_tokens (~30-200) + max_tokens (4096) + reserve. OpenWebUI по умолчанию отправляет n_predict=4096, поэтому старый numCtx=4096 вызывал \u0027prompt too long for n_ctx\u0027 при любом запросе.",
+                                                             "numCtx":  4096,
+                                                             "batchSize":  256,
+                                                             "numGpuLayers":  30,
+                                                             "flashAttention":  true,
+                                                             "useMmap":  true
+                                                         }
+                                         }
+                        }
+}

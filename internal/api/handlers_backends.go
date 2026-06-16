@@ -103,6 +103,16 @@ func (s *Server) backendHandler(w http.ResponseWriter, r *http.Request) {
 func (s *Server) listBackends(w http.ResponseWriter, r *http.Request) {
 	backends := make([]map[string]interface{}, 0)
 
+	// По умолчанию скрываем нерабочие бэкенды, чтобы в WebUI не отображались
+	// заглушки/недоступные ноды. Параметр includeUnhealthy=true возвращает всё.
+	includeUnhealthy := r.URL.Query().Get("includeUnhealthy") == "true"
+	unhealthyStatuses := map[types.BackendStatus]bool{
+		types.StatusUnhealthy:         true,
+		types.StatusOffline:           true,
+		types.StatusDraining:          true,
+		types.StatusOllamaUnavailable: true,
+	}
+
 	// Получение всех бэкендов из прокси
 	allBackends := s.proxy.GetAllBackends()
 
@@ -122,6 +132,10 @@ func (s *Server) listBackends(w http.ResponseWriter, r *http.Request) {
 
 	// Формирование ответа для каждого бэкенда
 	for _, backend := range allBackends {
+		// Фильтруем нерабочие бэкенды, если не запрошено явное включение.
+		if !includeUnhealthy && unhealthyStatuses[backend.Status] {
+			continue
+		}
 		// Приоритет: RuntimeMaxConcurrentRequests > MaxConcurrentReqs
 		maxConcurrent := backend.MaxConcurrentReqs
 		if backend.RuntimeMaxConcurrentRequests > 0 {
@@ -134,21 +148,21 @@ func (s *Server) listBackends(w http.ResponseWriter, r *http.Request) {
 		}
 
 		backendData := map[string]interface{}{
-			"id":                             backend.ID,
-			"name":                           backend.Name,
-			"host":                           backend.Host,
-			"ollamaPort":                     backend.OllamaPort,
-			"agentPort":                      backend.AgentPort,
-			"cppWorkerPort":                  backend.CppWorkerPort,
-			"weight":                         backend.Weight,
-			"maxConcurrentRequests":          maxConcurrent,
-			"maxModels":                      maxModels,
-			"runtimeMaxModels":               backend.RuntimeMaxModels,
-			"runtimeMaxConcurrentRequests":   backend.RuntimeMaxConcurrentRequests,
-			"labels":                         backend.Labels,
-			"status":                         backend.Status,
-			"type":                           backend.Type,
-			"engine":                         backend.Engine,
+			"id":                           backend.ID,
+			"name":                         backend.Name,
+			"host":                         backend.Host,
+			"ollamaPort":                   backend.OllamaPort,
+			"agentPort":                    backend.AgentPort,
+			"cppWorkerPort":                backend.CppWorkerPort,
+			"weight":                       backend.Weight,
+			"maxConcurrentRequests":        maxConcurrent,
+			"maxModels":                    maxModels,
+			"runtimeMaxModels":             backend.RuntimeMaxModels,
+			"runtimeMaxConcurrentRequests": backend.RuntimeMaxConcurrentRequests,
+			"labels":                       backend.Labels,
+			"status":                       backend.Status,
+			"type":                         backend.Type,
+			"engine":                       backend.Engine,
 		}
 
 		// Добавление метрик если они доступны
@@ -157,6 +171,23 @@ func (s *Server) listBackends(w http.ResponseWriter, r *http.Request) {
 			backendData["gpu"] = metrics.GPU
 			backendData["system"] = metrics.System
 			backendData["prediction"] = metrics.Prediction
+
+			// === Шаг «отображение загрузки в мониторе и вкладке бэкендов» ===
+			// Если бэкенд — llama_cpp, передаём loadingModels напрямую из LlamaCppMetrics
+			// (UI использует это для отображения спиннера и elapsed-времени).
+			if backend.Type == types.BackendTypeLlamaCpp {
+				if lm := s.proxy.GetMetricsManager().GetLlamaCppMetrics(backend.ID); lm != nil {
+					loading := lm.LoadingModels
+					if loading == nil {
+						loading = []types.LlamaCppModel{}
+					}
+					backendData["loadingModels"] = loading
+					backendData["loadingModelCount"] = len(loading)
+				} else {
+					backendData["loadingModels"] = []types.LlamaCppModel{}
+					backendData["loadingModelCount"] = 0
+				}
+			}
 
 			ollamaMetrics := metrics.Ollama
 
@@ -317,10 +348,11 @@ func (s *Server) addBackend(w http.ResponseWriter, r *http.Request) {
 		gpuMode = types.ModeCPU
 	}
 
-	// Если CppWorkerPort не задан явно, используем дефолтный
+	// Если CppWorkerPort не задан явно, используем актуальный default 18092
+	// (18091 — legacy; современные llama.cpp CppWorker слушают на 18092).
 	cppWorkerPort := req.CppWorkerPort
 	if cppWorkerPort == 0 && backendType == types.BackendTypeLlamaCpp {
-		cppWorkerPort = 18091
+		cppWorkerPort = 18092
 	}
 
 	backend := types.Backend{
@@ -476,26 +508,26 @@ func (s *Server) updateBackend(w http.ResponseWriter, r *http.Request, backendID
 	}
 
 	updated := types.Backend{
-		ID:                            backendID,
-		Name:                          req.Name,
-		Host:                          req.Host,
-		OllamaPort:                    req.OllamaPort,
-		AgentPort:                     req.AgentPort,
-		CppWorkerPort:                 cppWorkerPort,
-		Weight:                        req.Weight,
-		MaxConcurrentReqs:             req.MaxConcurrentReqs,
-		MaxModels:                     req.MaxModels,
-		Labels:                        req.Labels,
-		Status:                        existing.Status,
-		HasAgent:                      existing.HasAgent,
-		LastAgentContact:              existing.LastAgentContact,
-		LastHealthCheck:               existing.LastHealthCheck,
-		ConsecutiveFailures:           existing.ConsecutiveFailures,
-		ActiveRequests:                existing.ActiveRequests,
-		RuntimeMaxModels:              existing.RuntimeMaxModels,
-		RuntimeMaxConcurrentRequests:  existing.RuntimeMaxConcurrentRequests,
-		GPUMode:                       gpuMode,
-		Type:                          backendType,
+		ID:                           backendID,
+		Name:                         req.Name,
+		Host:                         req.Host,
+		OllamaPort:                   req.OllamaPort,
+		AgentPort:                    req.AgentPort,
+		CppWorkerPort:                cppWorkerPort,
+		Weight:                       req.Weight,
+		MaxConcurrentReqs:            req.MaxConcurrentReqs,
+		MaxModels:                    req.MaxModels,
+		Labels:                       req.Labels,
+		Status:                       existing.Status,
+		HasAgent:                     existing.HasAgent,
+		LastAgentContact:             existing.LastAgentContact,
+		LastHealthCheck:              existing.LastHealthCheck,
+		ConsecutiveFailures:          existing.ConsecutiveFailures,
+		ActiveRequests:               existing.ActiveRequests,
+		RuntimeMaxModels:             existing.RuntimeMaxModels,
+		RuntimeMaxConcurrentRequests: existing.RuntimeMaxConcurrentRequests,
+		GPUMode:                      gpuMode,
+		Type:                         backendType,
 	}
 
 	// Обновление бэкенда в прокси

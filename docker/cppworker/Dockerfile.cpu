@@ -20,6 +20,9 @@ COPY c/llama.cpp .
 RUN git init && git add -A && git -c user.name=docker -c user.email=docker@build commit -m "llama.cpp"
 
 # CMake сборка CPU-only (без CUDA, Metal, Vulkan) — собираем всё
+# LLAMA_BUILD_TESTS=OFF / LLAMA_BUILD_EXAMPLES=OFF / LLAMA_CURL=OFF обязательны,
+# т.к. в build context нет директорий tests/ examples/ pocs/ (они вырезаны
+# .dockerignore для ускорения сборки).
 RUN mkdir -p build && cd build && \
     cmake .. \
       -DGGML_CUDA=OFF \
@@ -27,6 +30,9 @@ RUN mkdir -p build && cd build && \
       -DLLAMA_VULKAN=OFF \
       -DGGML_BLAS=OFF \
       -DGGML_CCACHE=OFF \
+      -DLLAMA_CURL=OFF \
+      -DLLAMA_BUILD_TESTS=OFF \
+      -DLLAMA_BUILD_EXAMPLES=OFF \
       -DBUILD_SHARED_LIBS=OFF && \
     cmake --build . --config Release -j$(nproc)
 
@@ -66,9 +72,16 @@ RUN go mod download && go mod verify
 
 COPY . .
 
-# Копируем все собранные C-библиотеки
+# Копируем все собранные C-библиотеки и заголовки llama.cpp
 COPY --from=llama-builder /build/llama.cpp/build /build/c/llama.cpp/build
+COPY --from=llama-builder /build/llama.cpp/include /build/c/llama.cpp/include
+COPY --from=llama-builder /build/llama.cpp/ggml/include /build/c/llama.cpp/ggml/include
+COPY --from=llama-builder /build/llama.cpp/ggml/src/ggml-cpu /build/c/llama.cpp/ggml/src/ggml-cpu
 COPY --from=bridge-builder /build/bridge/build /build/c/bridge/build
+
+ENV CGO_ENABLED=1
+ENV CGO_CFLAGS="-DGGML_USE_CPU -I/build/c/llama.cpp/include -I/build/c/llama.cpp/ggml/include -I/build/c/llama.cpp/ggml/src/ggml-cpu -I/build/c/bridge -fopenmp"
+ENV CGO_LDFLAGS="-L/build/c/llama.cpp/build/src -L/build/c/llama.cpp/build/ggml/src -L/build/c/llama.cpp/build/ggml/src/ggml-cpu -L/build/c/bridge/build -lllama -lggml -lggml-cpu -lggml-base -lollamalegion_bridge -lstdc++ -lm -lpthread -fopenmp"
 
 # Собираем Go-бинарник с CGo (реальный bridge.c, без тега llama_stub)
 RUN CGO_ENABLED=1 GOOS=linux GOARCH=amd64 \
@@ -82,7 +95,7 @@ FROM alpine:latest AS runtime
 
 WORKDIR /app
 
-RUN apk add --no-cache tzdata ca-certificates wget curl python3 py3-pip && \
+RUN apk add --no-cache tzdata ca-certificates curl python3 py3-pip && \
     pip3 install --no-cache-dir --break-system-packages huggingface_hub
 
 COPY docker/cppworker/entrypoint.sh /entrypoint.sh
@@ -100,7 +113,7 @@ USER appuser
 EXPOSE 18091
 
 HEALTHCHECK --interval=30s --timeout=10s --start-period=15s --retries=3 \
-    CMD curl -f -s http://localhost:18091/health || exit 1
+    CMD /app/cppworker -healthcheck || exit 1
 
 ENV HF_HOME=/app/.cache/huggingface
 ENV HF_TOKEN=""

@@ -632,11 +632,23 @@ func TestTransferEncoding_Backend503ThenStream(t *testing.T) {
 	body, _ := json.Marshal(payload)
 
 	client := &http.Client{Timeout: 10 * time.Second}
-	resp, err := client.Post(proxyServer.URL+"/api/generate", "application/json", bytes.NewBuffer(body))
-	if err != nil {
-		if strings.Contains(err.Error(), "connection refused") {
-			t.Skip("Server not ready after 503")
+
+	// Retry loop: бэкенд может вернуть 503 на первый запрос, балансировщик должен
+	// либо повторить на том же бэкенде, либо вернуть ошибку. Ждём готовности
+	// прокси и делаем до 3 попыток с короткой паузой.
+	var resp *http.Response
+	var err error
+	for i := 0; i < 3; i++ {
+		resp, err = client.Post(proxyServer.URL+"/api/generate", "application/json", bytes.NewBuffer(body))
+		if err == nil && resp.StatusCode != http.StatusServiceUnavailable {
+			break
 		}
+		if resp != nil {
+			resp.Body.Close()
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	if err != nil {
 		t.Fatalf("request failed: %v", err)
 	}
 	defer resp.Body.Close()

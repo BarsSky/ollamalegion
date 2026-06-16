@@ -110,7 +110,11 @@ RUN go mod download && go mod verify
 
 COPY . .
 
-COPY --from=llama-builder /build/llama.cpp/build /build/c/llama.cpp/build
+# Optimized copy: avoid copying the entire /build/llama.cpp/build tree
+# (which can be several GB and hangs the Legacy builder). Copy only the
+# static library directories needed for linking.
+COPY --from=llama-builder /build/llama.cpp/build/src /build/c/llama.cpp/build/src
+COPY --from=llama-builder /build/llama.cpp/build/ggml/src /build/c/llama.cpp/build/ggml/src
 COPY --from=llama-builder /build/llama.cpp/include /build/c/llama.cpp/include
 COPY --from=llama-builder /build/llama.cpp/ggml/include /build/c/llama.cpp/ggml/include
 COPY --from=llama-builder /build/llama.cpp/ggml/src/ggml-cpu /build/c/llama.cpp/ggml/src/ggml-cpu
@@ -120,7 +124,9 @@ ENV CGO_ENABLED=1
 ENV CGO_CFLAGS="-DGGML_USE_CUDA -I/build/c/llama.cpp/include -I/build/c/llama.cpp/ggml/include -I/build/c/llama.cpp/ggml/src/ggml-cpu -I/build/c/bridge -I/usr/local/cuda/include -I/usr/local/cuda/targets/x86_64-linux/include -fopenmp"
 ENV CGO_LDFLAGS="-L/build/c/llama.cpp/build/src -L/build/c/llama.cpp/build/ggml/src -L/build/c/llama.cpp/build/ggml/src/ggml-cuda -L/build/c/bridge/build -L/usr/local/cuda/lib64 -L/usr/local/cuda/lib64/stubs -lllama -lggml -lggml-cpu -lggml-base -lggml-cuda -lollamalegion_bridge -lcublas -lcublasLt -lcudart -lcuda -lstdc++ -lm -lpthread -fopenmp"
 
-RUN CGO_ENABLED=1 GOOS=linux GOARCH=amd64 \
+# GOMAXPROCS=2 ограничивает параллелизм компиляции Go,
+# чтобы уложиться в доступную RAM при сборке в Docker Desktop / WSL2.
+RUN CGO_ENABLED=1 GOOS=linux GOARCH=amd64 GOMAXPROCS=2 \
     go build -trimpath -ldflags "-w -s" \
     -o cppworker ./cmd/cppworker
 

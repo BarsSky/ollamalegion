@@ -1,0 +1,116 @@
+# =============================================================================
+# CppBackend Worker GPU — реальный llama.cpp + CUDA 86 only (RTX 3070)
+# =============================================================================
+
+FROM nvidia/cuda:12.2.0-devel-ubuntu22.04 AS llama-builder
+
+ENV DEBIAN_FRONTEND=noninteractive
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    gcc g++ make git cmake ca-certificates && \
+    rm -rf /var/lib/apt/lists/*
+
+WORKDIR /build/llama.cpp
+COPY c/llama.cpp .
+
+RUN git init && git add -A && git -c user.name=docker -c user.email=docker@build commit -m "llama.cpp"
+
+RUN mkdir -p build && cd build && \
+    cmake .. \
+      -DGGML_CUDA=ON \
+      -DCMAKE_CUDA_ARCHITECTURES="86" \
+      -DGGML_CCACHE=OFF \
+      -DLLAMA_CURL=OFF \
+      -DLLAMA_BUILD_TESTS=OFF \
+      -DLLAMA_BUILD_EXAMPLES=OFF \
+      -DBUILD_SHARED_LIBS=OFF && \
+    cmake --build . --config Release -j$(nproc)
+
+FROM nvidia/cuda:12.2.0-devel-ubuntu22.04 AS bridge-builder
+
+RUN apt-get update && apt-get install -y --no-install-recommends cmake && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /build/bridge
+COPY c/bridge/bridge.h c/bridge/bridge.c c/bridge/CMakeLists.txt ./
+
+COPY --from=llama-builder /build/llama.cpp /build/llama.cpp
+
+RUN mkdir -p build && cd build && \
+    cmake .. -DCMAKE_BUILD_TYPE=Release && \
+    cmake --build . --config Release
+
+FROM nvidia/cuda:12.2.0-devel-ubuntu22.04 AS go-builder
+
+ARG GO_VERSION=1.24.3
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    wget ca-certificates gcc g++ make libc6-dev && \
+    wget -q --retry-connrefused --waitretry=5 --tries=5 --timeout=30 "https://go.dev/dl/go${GO_VERSION}.linux-amd64.tar.gz" -O /tmp/go.tar.gz && \
+    tar -C /usr/local -xzf /tmp/go.tar.gz && \
+    rm /tmp/go.tar.gz && \
+    rm -rf /var/lib/apt/lists/*
+
+ENV PATH="/usr/local/go/bin:${PATH}"
+ENV GOPATH="/go"
+ENV GOMODCACHE="/go/pkg/mod"
+
+WORKDIR /build
+
+COPY go.mod go.sum ./
+RUN go mod download && go mod verify
+
+COPY . .
+
+COPY --from=llama-builder /build/llama.cpp/build /build/c/llama.cpp/build
+COPY --from=llama-builder /build/llama.cpp/include /build/c/llama.cpp/include
+COPY --from=llama-builder /build/llama.cpp/ggml/include /build/c/llama.cpp/ggml/include
+COPY --from=llama-builder /build/llama.cpp/ggml/src/ggml-cpu /build/c/llama.cpp/ggml/src/ggml-cpu
+COPY --from=bridge-builder /build/bridge/build /build/c/bridge/build
+
+ENV CGO_ENABLED=1
+ENV CGO_CFLAGS="-DGGML_USE_CUDA -I/build/c/llama.cpp/include -I/build/c/llama.cpp/ggml/include -I/build/c/llama.cpp/ggml/src/ggml-cpu -I/build/c/bridge -I/usr/local/cuda/include -I/usr/local/cuda/targets/x86_64-linux/include -fopenmp"
+ENV CGO_LDFLAGS="-L/build/c/llama.cpp/build/src -L/build/c/llama.cpp/build/ggml/src -L/build/c/llama.cpp/build/ggml/src/ggml-cuda -L/build/c/bridge/build -L/usr/local/cuda/lib64 -L/usr/local/cuda/lib64/stubs -lllama -lggml -lggml-cpu -lggml-base -lggml-cuda -lollamalegion_bridge -lcublas -lcublasLt -lcudart -lcuda -lstdc++ -lm -lpthread -fopenmp"
+
+RUN CGO_ENABLED=1 GOOS=linux GOARCH=amd64 \
+    go build -trimpath -ldflags "-w -s" \
+    -o cppworker ./cmd/cppworker
+
+FROM nvidia/cuda:12.2.0-runtime-ubuntu22.04 AS runtime
+
+WORKDIR /app
+
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends ca-certificates curl python3 python3-pip libgomp1 && \
+    pip3 install --no-cache-dir huggingface_hub && \
+    rm -rf /var/lib/apt/lists/*
+
+COPY docker/cppworker/entrypoint.sh /entrypoint.sh
+COPY docker/cppworker/register-with-balancer.sh /register-with-balancer.sh
+RUN chmod +x /entrypoint.sh /register-with-balancer.sh
+COPY --from=go-builder /build/cppworker .
+
+RUN mkdir -p /app/models && \
+    groupadd -g 1000 appgroup && \
+    useradd -u 1000 -g appgroup -m -s /bin/sh appuser && \
+    chown -R appuser:appgroup /app
+
+USER appuser
+
+EXPOSE 18092
+
+HEALTHCHECK --interval=30s --timeout=10s --start-period=30s --retries=5 \
+    CMD /app/cppworker -healthcheck || exit 1
+
+ENV HF_HOME=/app/.cache/huggingface
+ENV HF_TOKEN=""
+ENV HF_AUTO_DOWNLOAD_REPO=""
+ENV HF_AUTO_DOWNLOAD_FILE=""
+ENV HF_AUTO_DOWNLOAD_QUANT="Q4_K_M"
+ENV HF_MIRROR=""
+
+ENTRYPOINT ["/entrypoint.sh"]
+
+LABEL org.opencontainers.image.title="Ollama Legion CppBackend Worker (GPU-86)"
+LABEL org.opencontainers.image.description="GGUF model inference server with real llama.cpp and CUDA arch 86"
+LABEL org.opencontainers.image.vendor="OllamaLegion"
+LABEL org.opencontainers.image.version="0.1.0"

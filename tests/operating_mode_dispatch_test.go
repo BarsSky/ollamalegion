@@ -87,7 +87,7 @@ func TestOperatingMode_Dispatch_VirtualRouter(t *testing.T) {
 	defer be.Close()
 
 	cfg := newTestConfig([]types.Backend{
-		{ID: "gpu-1", Name: "G1", Host: "127.0.0.1", OllamaPort: mustParsePort(be.URL), Weight: 1, MaxConcurrentReqs: 10, Status: types.StatusHealthy},
+		{ID: "gpu-1", Name: "G1", Host: "127.0.0.1", Type: types.BackendTypeLlamaCpp, CppWorkerPort: mustParsePort(be.URL), Weight: 1, MaxConcurrentReqs: 10, Status: types.StatusHealthy},
 	})
 	cfg.Balancing.OperatingMode = "virtual_router"
 	cfg.Balancing.VirtualModels = types.VirtualModelsConfig{
@@ -153,7 +153,7 @@ func TestOperatingMode_Dispatch_DistributedInference(t *testing.T) {
 	defer be.Close()
 
 	cfg := newTestConfig([]types.Backend{
-		{ID: "gpu-1", Name: "G1", Host: "127.0.0.1", OllamaPort: mustParsePort(be.URL), Weight: 1, MaxConcurrentReqs: 10, Status: types.StatusHealthy},
+		{ID: "gpu-1", Name: "G1", Host: "127.0.0.1", Type: types.BackendTypeLlamaCpp, CppWorkerPort: mustParsePort(be.URL), Weight: 1, MaxConcurrentReqs: 10, Status: types.StatusHealthy},
 	})
 	cfg.Balancing.OperatingMode = "distributed_inference"
 	cfg.Balancing.DistInference = types.DistInferenceConfig{
@@ -300,7 +300,7 @@ func TestOperatingMode_Dispatch_AllModes_SelectBackendNotEmpty(t *testing.T) {
 			mode: "virtual_router",
 			config: func() *types.LoadBalancerConfig {
 				c := newTestConfig([]types.Backend{
-					{ID: "gpu-1", Name: "G1", Host: "127.0.0.1", OllamaPort: mustParsePort(be.URL), Weight: 1, MaxConcurrentReqs: 10, Status: types.StatusHealthy},
+					{ID: "gpu-1", Name: "G1", Host: "127.0.0.1", Type: types.BackendTypeLlamaCpp, CppWorkerPort: mustParsePort(be.URL), Weight: 1, MaxConcurrentReqs: 10, Status: types.StatusHealthy},
 				})
 				c.Balancing.OperatingMode = "virtual_router"
 				c.Balancing.VirtualModels = types.VirtualModelsConfig{Enabled: true}
@@ -311,7 +311,7 @@ func TestOperatingMode_Dispatch_AllModes_SelectBackendNotEmpty(t *testing.T) {
 			mode: "distributed_inference",
 			config: func() *types.LoadBalancerConfig {
 				c := newTestConfig([]types.Backend{
-					{ID: "gpu-1", Name: "G1", Host: "127.0.0.1", OllamaPort: mustParsePort(be.URL), Weight: 1, MaxConcurrentReqs: 10, Status: types.StatusHealthy},
+					{ID: "gpu-1", Name: "G1", Host: "127.0.0.1", Type: types.BackendTypeLlamaCpp, CppWorkerPort: mustParsePort(be.URL), Weight: 1, MaxConcurrentReqs: 10, Status: types.StatusHealthy},
 				})
 				c.Balancing.OperatingMode = "distributed_inference"
 				c.Balancing.DistInference = types.DistInferenceConfig{Enabled: true, GrpcPort: 19000}

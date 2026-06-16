@@ -5,14 +5,142 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
+	"ollama-loadbalancer/c/bridge"
 	"ollama-loadbalancer/pkg/logger"
 )
+
+// shouldFilterLlamaCppContent — определяет, нужно ли отфильтровать строку
+// content из streaming-ответа llama.cpp/cppworker как служебный токен
+// (например Gemma `<end_of_turn>`, Llama3 `<|eot_id|>`, ChatML `<|im_end|>`).
+//
+// Зачем: cppworker иногда отдаёт служебные токены модели как обычный content
+// (из-за неполного chat template или его отсутствия). OpenAI-клиенты типа
+// Cline интерпретируют такие токены как невалидный tool-call-like вывод
+// и выдают "Invalid API Response: The provider returned an empty or
+// unparsable response". Фильтрация на стороне балансировщика покрывает
+// любые модели с подобными артефактами.
+//
+// Возвращает true, если строка содержит служебный токен в любом месте
+// (как самостоятельная строка, как префикс, в середине или как суффикс).
+// Это критично для моделей вроде Gemma, которые из-за неполного chat template
+// эмитят служебные токены не только отдельным чанком, но и вкраплениями
+// в обычный текст: "hello<end_of_turn>world", "<|eot_id|>ok" и т.д.
+func shouldFilterLlamaCppContent(content string) bool {
+	trimmed := strings.TrimSpace(content)
+	if trimmed == "" {
+		return false
+	}
+	lower := strings.ToLower(trimmed)
+	// Список известных служебных токенов для разных моделей.
+	filteredTokens := []string{
+		"<end_of_turn>",       // Gemma
+		"<start_of_turn>",     // Gemma
+		"<bos>",               // Llama, общий
+		"<eos>",               // Llama, общий
+		"<endoftext>",         // GPT-2 / некоторые GGUF
+		"<|endoftext|>",       // Llama2/3 (старый формат)
+		"<|eot_id|>",          // Llama3 instruct
+		"<|eot|>",             // некоторые варианты
+		"<|im_start|>",        // ChatML
+		"<|im_end|>",          // ChatML
+		"<|start_header_id|>", // Llama3 header
+		"<|end_header_id|>",   // Llama3 header
+		"<|begin_of_text|>",   // Llama3 begin
+		"<|end_of_text|>",     // Llama3 end
+		"<sep>",               // BERT, некоторые GGUF
+		"<pad>",               // служебные токены
+		"<unk>",               // unknown token
+	}
+	// Служебные токены могут появляться в любом месте стрима: как самостоятельная
+	// строка ("<end_of_turn>"), как префикс ("<end_of_turn>hello"), в середине
+	// ("hello<|eot_id|>world") или как суффикс. Используем Contains вместо
+	// == / HasPrefix, чтобы ловить их все.
+	for _, tok := range filteredTokens {
+		if strings.Contains(lower, tok) {
+			return true
+		}
+	}
+	return false
+}
+
+// filterOpenAIStreamingLine — фильтрует SSE-строку с OpenAI chunk, удаляя
+// content-токены, которые являются служебными (см. shouldFilterLlamaCppContent).
+//
+// Возвращает (filtered, wasFiltered):
+//   - filtered: новая строка для записи клиенту (или nil, если нужно пропустить чанк)
+//   - wasFiltered: true, если хотя бы один content-чанк был отфильтрован
+//
+// Работает на строке формата `data: {...}\n\n` или `data:{...}\n\n`.
+func filterOpenAIStreamingLine(line []byte) ([]byte, bool) {
+	trimmed := bytes.TrimSpace(line)
+	if len(trimmed) == 0 {
+		return line, false
+	}
+	// Не data-строка — пропускаем как есть (": comment", "[DONE]", etc.)
+	if !bytes.HasPrefix(trimmed, []byte("data:")) {
+		return line, false
+	}
+	// Извлекаем JSON-часть после "data: "
+	jsonData := bytes.TrimPrefix(trimmed, []byte("data:"))
+	jsonData = bytes.TrimSpace(jsonData)
+	// [DONE] маркер — не трогаем
+	if bytes.Equal(jsonData, []byte("[DONE]")) {
+		return line, false
+	}
+	// Парсим JSON, чтобы достать content из choices[0].delta.content
+	var chunk struct {
+		Choices []struct {
+			Delta struct {
+				Content string `json:"content"`
+			} `json:"delta"`
+		} `json:"choices"`
+	}
+	if err := json.Unmarshal(jsonData, &chunk); err != nil {
+		// Невалидный JSON — отдаём как есть (пусть клиент сам решает).
+		return line, false
+	}
+	if len(chunk.Choices) == 0 {
+		return line, false
+	}
+	content := chunk.Choices[0].Delta.Content
+	if !shouldFilterLlamaCppContent(content) {
+		return line, false
+	}
+	// content — служебный токен. Заменяем на пустую delta, чтобы чанк
+	// пришёл клиенту, но с пустым content (это валидный OpenAI chunk).
+	filteredChunk := map[string]interface{}{
+		"choices": []map[string]interface{}{
+			{
+				"index": 0,
+				"delta": map[string]interface{}{},
+			},
+		},
+	}
+	// Сохраняем остальные поля (id, model, created, object) из оригинала.
+	var orig map[string]interface{}
+	if err := json.Unmarshal(jsonData, &orig); err == nil {
+		for k, v := range orig {
+			if k == "choices" {
+				continue
+			}
+			filteredChunk[k] = v
+		}
+	}
+	out, err := json.Marshal(filteredChunk)
+	if err != nil {
+		return line, false
+	}
+	// Возвращаем как `data: {...}\n\n` (с финальным \n для совместимости с SSE-форматом).
+	return append([]byte("data: "+string(out)+"\n\n"), '\n'), true
+}
 
 // translatePathForLlamaCpp — преобразует Ollama API путь в llama.cpp (OpenAI-совместимый)
 func translatePathForLlamaCpp(ollamaPath string) string {
@@ -37,6 +165,8 @@ func translateOllamaBodyToOpenAI(ollamaPath string, body []byte) ([]byte, error)
 		return translateOllamaChatToOpenAI(body)
 	case "/api/generate":
 		return translateOllamaGenerateToOpenAI(body)
+	case "/api/embeddings":
+		return translateOllamaEmbeddingsToOpenAI(body)
 	default:
 		return body, nil
 	}
@@ -113,6 +243,74 @@ func translateOllamaGenerateToOpenAI(body []byte) ([]byte, error) {
 	return json.Marshal(openaiReq)
 }
 
+// translateOllamaEmbeddingsToOpenAI — маппит Ollama /api/embeddings на OpenAI /v1/embeddings.
+// Ollama использует "prompt" (и иногда "input"), OpenAI — "input".
+func translateOllamaEmbeddingsToOpenAI(body []byte) ([]byte, error) {
+	var ollamaReq map[string]interface{}
+	if err := json.Unmarshal(body, &ollamaReq); err != nil {
+		return body, nil
+	}
+	openaiReq := map[string]interface{}{
+		"model": ollamaReq["model"],
+	}
+	if input, ok := ollamaReq["input"].(string); ok && input != "" {
+		openaiReq["input"] = input
+	} else if prompt, ok := ollamaReq["prompt"].(string); ok && prompt != "" {
+		openaiReq["input"] = prompt
+	}
+	return json.Marshal(openaiReq)
+}
+
+// convertCreatedToRFC3339 — нормализует поле created (Unix timestamp в секундах)
+// из OpenAI-ответа в RFC3339-строку, которую ожидает Ollama API.
+//
+// Проблема: OpenAI возвращает `created` как целое число (Unix timestamp в секундах),
+// а Ollama требует ISO-8601 / RFC3339 строку. Если балансер пробрасывает
+// число «как есть», ollama-js (используется в Cline) может не разобрать
+// created_at, что приводит к ошибке "Invalid API Response".
+//
+// Поддерживаемые входные форматы:
+//   - float64 / int (Unix seconds, опционально .fractional)
+//   - string (числовая или RFC3339; для RFC3339 — возвращается как есть)
+//   - nil — возвращает текущее время
+func convertCreatedToRFC3339(v interface{}) string {
+	if v == nil {
+		return time.Now().UTC().Format(time.RFC3339)
+	}
+	switch val := v.(type) {
+	case string:
+		if val == "" {
+			return time.Now().UTC().Format(time.RFC3339)
+		}
+		// Если строка уже похожа на RFC3339 — возвращаем как есть
+		if _, err := time.Parse(time.RFC3339, val); err == nil {
+			return val
+		}
+		// Если строка — числовая, пробуем распарсить как Unix
+		if f, err := strconv.ParseFloat(val, 64); err == nil {
+			return time.Unix(int64(f), 0).UTC().Format(time.RFC3339)
+		}
+		return time.Now().UTC().Format(time.RFC3339)
+	case float64:
+		sec := int64(val)
+		nsec := int64((val - float64(sec)) * 1e9)
+		return time.Unix(sec, nsec).UTC().Format(time.RFC3339)
+	case int:
+		return time.Unix(int64(val), 0).UTC().Format(time.RFC3339)
+	case int64:
+		return time.Unix(val, 0).UTC().Format(time.RFC3339)
+	case json.Number:
+		if f, err := val.Float64(); err == nil {
+			sec := int64(f)
+			nsec := int64((f - float64(sec)) * 1e9)
+			return time.Unix(sec, nsec).UTC().Format(time.RFC3339)
+		}
+		return time.Now().UTC().Format(time.RFC3339)
+	default:
+		return time.Now().UTC().Format(time.RFC3339)
+	}
+}
+
 func translateOpenAIResponseToOllama(ollamaPath string, openaiBody []byte, modelName string) ([]byte, error) {
 	if len(openaiBody) == 0 {
 		return openaiBody, nil
@@ -122,6 +320,8 @@ func translateOpenAIResponseToOllama(ollamaPath string, openaiBody []byte, model
 		return translateOpenAIChatToOllama(openaiBody, modelName)
 	case "/api/generate":
 		return translateOpenAICompletionToOllama(openaiBody, modelName)
+	case "/api/embeddings":
+		return translateOpenAIEmbeddingsToOllama(openaiBody, modelName)
 	default:
 		return openaiBody, nil
 	}
@@ -134,7 +334,7 @@ func translateOpenAIChatToOllama(body []byte, modelName string) ([]byte, error) 
 	}
 	ollamaResp := map[string]interface{}{
 		"model":      modelName,
-		"created_at": openaiResp["created"],
+		"created_at": convertCreatedToRFC3339(openaiResp["created"]),
 		"done":       true,
 	}
 	// ВАЖНО: если бэкенд вернул ошибку (нет поля choices, но есть error),
@@ -204,7 +404,7 @@ func translateOpenAICompletionToOllama(body []byte, modelName string) ([]byte, e
 	}
 	ollamaResp := map[string]interface{}{
 		"model":      modelName,
-		"created_at": openaiResp["created"],
+		"created_at": convertCreatedToRFC3339(openaiResp["created"]),
 		"done":       true,
 	}
 	if choices, ok := openaiResp["choices"].([]interface{}); ok && len(choices) > 0 {
@@ -226,6 +426,28 @@ func translateOpenAICompletionToOllama(body []byte, modelName string) ([]byte, e
 		}
 	}
 	return json.Marshal(ollamaResp)
+}
+
+func translateOpenAIEmbeddingsToOllama(body []byte, modelName string) ([]byte, error) {
+	var openaiResp map[string]interface{}
+	if err := json.Unmarshal(body, &openaiResp); err != nil {
+		return body, nil
+	}
+	if data, ok := openaiResp["data"].([]interface{}); ok && len(data) > 0 {
+		if item, ok := data[0].(map[string]interface{}); ok {
+			if embedding, ok := item["embedding"].([]interface{}); ok {
+				return json.Marshal(map[string]interface{}{
+					"embedding": embedding,
+				})
+			}
+		}
+	}
+	if errStr, ok := openaiResp["error"].(string); ok && errStr != "" {
+		return json.Marshal(map[string]interface{}{
+			"error": errStr,
+		})
+	}
+	return body, nil
 }
 
 func translateOpenAISSEDataToOllama(ollamaPath string, sseData []byte, modelName string) []byte {
@@ -252,16 +474,26 @@ func translateOpenAISSEDataToOllama(ollamaPath string, sseData []byte, modelName
 // translateSSEChatToOllama — переводит OpenAI streaming чанк в Ollama NDJSON.
 //
 // OpenAI streaming может присылать:
-//   1. {"delta": {"role": "assistant"}}               — первый чанк, без контента
-//   2. {"delta": {"content": "token"}}                — обычный токен
-//   3. {"delta": {"content": "tok", "role": "..."}}   — токен с ролью
-//   4. {"delta": {}, "finish_reason": "stop"}         — финальный
+//  1. {"delta": {"role": "assistant"}}               — первый чанк, без контента
+//  2. {"delta": {"content": "token"}}                — обычный токен
+//  3. {"delta": {"content": "tok", "role": "..."}}   — токен с ролью
+//  4. {"delta": {}, "finish_reason": "stop"}         — финальный
+//  5. {"error": "...", "choices":[{"delta":{},"finish_reason":"error"}]} — ошибка от upstream
 //
 // Ollama-стрим ожидает валидный JSON-чанк с {"message": {"content": "..."}}.
 // Role-only чанк (1) транслируется как {"message":{"role":"assistant","content":""}}
 // — OpenWebUI использует его как маркер начала потока и игнорирует content.
 // Content-чанки (2, 3) и финальный (4) эмитятся штатно. Невалидный/пустой
-// чанк → nil (пропускается).
+// чанк → nil (пропускается). Ошибочный чанк (5) — пробрасывает поле `error`
+// в Ollama-чанк с done:true, done_reason:"error", иначе OpenWebUI получает
+// «пустое сообщение ассистента» и не показывает диагностику.
+//
+// Фильтрация служебных токенов модели (Gemma `<end_of_turn>`, Llama3
+// `<|eot_id|>` и т.д.) применяется через shouldFilterLlamaCppContent.
+// Без этого Ollama-клиенты (Cline через ollama-js) получают «мусорный»
+// content в message.content и падают с ошибкой парсинга JSON
+// ("Invalid API Response"). Чанки со служебными токенами заменяются
+// на чанк с пустым content (валидный OpenAI/Ollama-чанк).
 func translateSSEChatToOllama(chunk map[string]interface{}, modelName string) []byte {
 	ollamaChunk := map[string]interface{}{
 		"model": modelName,
@@ -271,6 +503,24 @@ func translateSSEChatToOllama(chunk map[string]interface{}, modelName string) []
 	var hasRoleOnly bool
 	var roleStr string
 	var contentStr string
+
+	// cppworker при ошибке шлёт OpenAI чанк с полем `error` и пустым `choices[0].delta`
+	// (см. Phase 9 фикс: translateSSEChatToOllama не теряет error). Если поле error есть —
+	// пробрасываем его в Ollama-чанк с done:true, done_reason:"error", иначе OpenWebUI
+	// получает "пустое сообщение ассистента" и не показывает диагностику.
+	if errStr, ok := chunk["error"].(string); ok && errStr != "" {
+		logger.Get().Errorw("translateSSEChatToOllama: upstream SSE chunk with error",
+			"model", modelName, "error", errStr)
+		ollamaChunk["done"] = true
+		ollamaChunk["done_reason"] = "error"
+		ollamaChunk["error"] = errStr
+		ollamaChunk["message"] = map[string]interface{}{
+			"role":    "assistant",
+			"content": "",
+		}
+		result, _ := json.Marshal(ollamaChunk)
+		return append(result, '\n')
+	}
 
 	if choices, ok := chunk["choices"].([]interface{}); ok && len(choices) > 0 {
 		choice := choices[0].(map[string]interface{})
@@ -292,8 +542,25 @@ func translateSSEChatToOllama(chunk map[string]interface{}, modelName string) []
 		}
 	}
 
-	// Если есть контент — формируем полный чанк
+	// Если есть контент — фильтруем служебные токены (Gemma `<end_of_turn>` и т.д.)
+	// и формируем полный чанк. Если контент ПОЛНОСТЬЮ состоит из служебного токена —
+	// эмитим чанк с пустым content (валидный Ollama NDJSON), чтобы клиент (Cline/ollama-js)
+	// не упал с "Invalid API Response".
 	if hasContent {
+		if shouldFilterLlamaCppContent(contentStr) {
+			// Служебный токен: заменяем на пустой content, но чанк остаётся валидным
+			logger.Get().Debugw("translateSSEChatToOllama: filtered service token from content",
+				"model", modelName, "filtered_content_len", len(contentStr))
+			msg := map[string]interface{}{"content": ""}
+			if roleStr != "" {
+				msg["role"] = roleStr
+			} else {
+				msg["role"] = "assistant"
+			}
+			ollamaChunk["message"] = msg
+			result, _ := json.Marshal(ollamaChunk)
+			return append(result, '\n')
+		}
 		msg := map[string]interface{}{"content": contentStr}
 		if roleStr != "" {
 			msg["role"] = roleStr
@@ -337,11 +604,29 @@ func translateSSEChatToOllama(chunk map[string]interface{}, modelName string) []
 // в Ollama NDJSON. Аналогично chat-варианту: текст → "response",
 // финальный чанк с finish_reason → done:true (НЕ nil),
 // пустой/невалидный чанк → nil.
+//
+// Если в чанке есть поле `error` (cppworker при ошибке шлёт его вместе с
+// пустым choices[0].text и finish_reason:"error"), пробрасываем его в Ollama
+// с done:true, done_reason:"error", иначе OpenWebUI рендерит пустое сообщение
+// ассистента без диагностики.
 func translateSSEGenerateToOllama(chunk map[string]interface{}, modelName string) []byte {
 	ollamaChunk := map[string]interface{}{
 		"model": modelName,
 		"done":  false,
 	}
+
+	// Проброс ошибки от upstream (см. Phase 9 фикс: translateSSEGenerateToOllama не теряет error).
+	if errStr, ok := chunk["error"].(string); ok && errStr != "" {
+		logger.Get().Errorw("translateSSEGenerateToOllama: upstream SSE chunk with error",
+			"model", modelName, "error", errStr)
+		ollamaChunk["done"] = true
+		ollamaChunk["done_reason"] = "error"
+		ollamaChunk["error"] = errStr
+		ollamaChunk["response"] = ""
+		result, _ := json.Marshal(ollamaChunk)
+		return append(result, '\n')
+	}
+
 	hasContent := false
 	if choices, ok := chunk["choices"].([]interface{}); ok && len(choices) > 0 {
 		choice := choices[0].(map[string]interface{})
@@ -415,12 +700,18 @@ func (p *Proxy) proxyRequestLlamaCpp(w http.ResponseWriter, r *http.Request, bac
 
 	reqCtx := r.Context()
 	if isStreaming {
+		// Минимальный таймаут для streaming inference — 10 минут.
+		// LLM может генерировать длинный ответ (несколько тысяч токенов) и
+		// не должен отваливаться по таймауту. По умолчанию StreamTimeout в
+		// конфиге = 30 секунд, что слишком мало для реальной генерации.
 		streamTimeout := time.Duration(p.config.Balancing.StreamTimeout) * time.Second
-		if streamTimeout > 0 {
-			var cancel context.CancelFunc
-			reqCtx, cancel = context.WithTimeout(r.Context(), streamTimeout)
-			defer cancel()
+		const minStreamingTimeout = 10 * time.Minute
+		if streamTimeout <= 0 || streamTimeout < minStreamingTimeout {
+			streamTimeout = minStreamingTimeout
 		}
+		var cancel context.CancelFunc
+		reqCtx, cancel = context.WithTimeout(r.Context(), streamTimeout)
+		defer cancel()
 	}
 
 	req, err := http.NewRequestWithContext(reqCtx, r.Method, fullURL, bytes.NewReader(translatedBody))
@@ -458,11 +749,99 @@ func (p *Proxy) proxyRequestLlamaCpp(w http.ResponseWriter, r *http.Request, bac
 		"backend", backendID, "status", resp.StatusCode,
 		"content_type", resp.Header.Get("Content-Type"))
 
+	// ==== n_ctx auto-reload: перехват структурированной ошибки от cppworker ====
+	// cppworker при n_ctx overflow отвечает HTTP 400 (Bad Request) с JSON
+	// {error, code: 2 (N_CTX_NEEDS_RELOAD), bridge_info: {...}}. Если
+	// auto-reload включён в конфиге — перезагружаем модель с большим n_ctx
+	// и повторяем запрос. Если выключен — пробрасываем оригинальную ошибку
+	// клиенту (или возвращаем 413/503, см. handleNCtxReload).
+	//
+	// ВАЖНО: мы ДОЛЖНЫ проверить nctx-ошибку ДО fast-path 503 loading,
+	// потому что reload и loading — это разные вещи (reload = модель нужно
+	// перезагрузить с другим n_ctx, loading = модель в процессе загрузки в VRAM).
+	if resp.StatusCode >= 400 && !isStreaming {
+		// Для streaming (SSE) reload-логика работает иначе — см. handleNCtxReload
+		// и отдельный fast-path в streaming-блоке ниже.
+		if peekBody, peekErr := io.ReadAll(resp.Body); peekErr == nil {
+			if nctxErr := ParseCppWorkerError(peekBody, resp.StatusCode, backendID); nctxErr != nil {
+				if errors.Is(nctxErr, bridge.ErrNCtxNeedsReload) || errors.Is(nctxErr, bridge.ErrPromptTooLong) {
+					logger.Get().Infow("proxyRequestLlamaCpp: detected n_ctx error from cppworker, invoking auto-reload",
+						"backend", backendID, "model", modelFromCtx,
+						"status", resp.StatusCode, "decision_errors_is",
+						"is_n_ctx", errors.Is(nctxErr, bridge.ErrNCtxNeedsReload),
+						"is_prompt_too_long", errors.Is(nctxErr, bridge.ErrPromptTooLong))
+					p.handleNCtxReload(r.Context(), w, r, backendID, modelFromCtx, nctxErr, bodyBuf)
+					return nil
+				}
+			}
+			// Не nctx-ошибка — восстанавливаем body для дальнейшей обработки.
+			resp.Body = io.NopCloser(bytes.NewReader(peekBody))
+		}
+	}
+
+	// ==== Fast-path: upstream вернул 503 "model is loading" ====
+	// cppworker при CGo-блокировке LoadModel() отвечает 503 + JSON
+	// {error, loading:true, model, elapsedMs, retryAfterMs: 3000} + Retry-After: 3.
+	// Прокси должен передать этот ответ ВЕРБАТИМ клиенту как JSON (а не как NDJSON
+	// с пустым телом) — иначе OpenWebUI получает пустой ответ и «Ollama: Server disconnected»,
+	// а Ollama-совместимые клиенты не понимают, что делать retry.
+	//
+	// Детектим по комбинации:
+	//   - статус 503
+	//   - Content-Type = application/json (т.е. не streaming SSE)
+	//   - в первых ~512 байт тела есть ключ "loading":true
+	if resp.StatusCode == http.StatusServiceUnavailable &&
+		strings.HasPrefix(strings.ToLower(resp.Header.Get("Content-Type")), "application/json") {
+		previewBuf := make([]byte, 512)
+		n, _ := io.ReadFull(resp.Body, previewBuf)
+		preview := previewBuf[:n]
+		// Восстановим body, объединив preview + остаток
+		rest, _ := io.ReadAll(resp.Body)
+		fullBody := append(preview, rest...)
+		if bytes.Contains(fullBody, []byte(`"loading":true`)) {
+			// Передаём JSON-ответ клиенту как есть. Сохраняем заголовки Retry-After
+			// (cppworker их выставляет) и Content-Type.
+			for key, values := range resp.Header {
+				if key == "Content-Length" {
+					continue
+				}
+				for _, value := range values {
+					w.Header().Add(key, value)
+				}
+			}
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusServiceUnavailable)
+			w.Write(fullBody)
+			logger.Get().Infow("proxyRequestLlamaCpp: passed through 503 loading fast-path",
+				"backend", backendID, "model", modelFromCtx,
+				"body_len", len(fullBody))
+			return nil
+		}
+		// Не нашли "loading":true — это обычный 503 (не loading), продолжаем обычный путь.
+		// Восстановим resp.Body из прочитанных данных.
+		resp.Body = io.NopCloser(bytes.NewReader(fullBody))
+	}
+
 	if !isStreaming {
 		respBody, err := io.ReadAll(resp.Body)
 		if err != nil {
 			return fmt.Errorf("failed to read response: %v", err)
 		}
+		// ДИАГНОСТИКА: логируем первые 500 байт тела ответа от cppworker.
+		// Помогает при диагностике проблем вроде «Cline получает мусор» или
+		// «некорректный created_at» — позволяет увидеть, ЧТО ИМЕННО отдал
+		// upstream до того, как мы транслируем это в Ollama-формат.
+		// Содержимое чувствительно (промпт пользователя), но мы логируем
+		// только ассистентский ответ, который обычно не PII.
+		bodyPreviewLen := len(respBody)
+		if bodyPreviewLen > 500 {
+			bodyPreviewLen = 500
+		}
+		logger.Get().Debugw("proxyRequestLlamaCpp: non-stream body preview",
+			"backend", backendID,
+			"model", modelFromCtx,
+			"body_len", len(respBody),
+			"body_preview", string(respBody)[:bodyPreviewLen])
 		translatedResp, err := translateOpenAIResponseToOllama(originalPath, respBody, modelFromCtx)
 		if err != nil {
 			translatedResp = respBody
@@ -570,11 +949,11 @@ func (p *Proxy) proxyRequestLlamaCpp(w http.ResponseWriter, r *http.Request, bac
 			logger.Get().Warnw("proxyRequestLlamaCpp: backend returned no content chunks, sending empty-response error",
 				"backend", backendID, "model", modelFromCtx)
 			emptyPayload, _ := json.Marshal(map[string]interface{}{
-				"model":      modelFromCtx,
-				"created_at": time.Now().UTC().Format(time.RFC3339),
-				"done":       true,
+				"model":       modelFromCtx,
+				"created_at":  time.Now().UTC().Format(time.RFC3339),
+				"done":        true,
 				"done_reason": "empty_response",
-				"error":      "backend returned no content",
+				"error":       "backend returned no content",
 				"message": map[string]interface{}{
 					"role":    "assistant",
 					"content": "",
@@ -586,9 +965,9 @@ func (p *Proxy) proxyRequestLlamaCpp(w http.ResponseWriter, r *http.Request, bac
 			}
 		} else {
 			donePayload, _ := json.Marshal(map[string]interface{}{
-				"model":      modelFromCtx,
-				"created_at": time.Now().UTC().Format(time.RFC3339),
-				"done":       true,
+				"model":       modelFromCtx,
+				"created_at":  time.Now().UTC().Format(time.RFC3339),
+				"done":        true,
 				"done_reason": "stop",
 				"message": map[string]interface{}{
 					"role":    "assistant",
@@ -665,6 +1044,71 @@ func (p *Proxy) proxyRequestLlamaCppNonStream(w http.ResponseWriter, r *http.Req
 		"backend", backendID, "status", resp.StatusCode,
 		"body_len", len(respBody),
 		"body", string(respBody)[:min(500, len(respBody))])
+
+	// ==== n_ctx auto-reload: перехват структурированной ошибки от cppworker ====
+	// cppworker при n_ctx overflow отвечает HTTP 400 (Bad Request) с JSON
+	// {error, code: 2 (N_CTX_NEEDS_RELOAD), bridge_info: {...}}. Если
+	// auto-reload включён — перезагружаем модель с большим n_ctx и повторяем.
+	if resp.StatusCode >= 400 {
+		if nctxErr := ParseCppWorkerError(respBody, resp.StatusCode, backendID); nctxErr != nil {
+			if errors.Is(nctxErr, bridge.ErrNCtxNeedsReload) || errors.Is(nctxErr, bridge.ErrPromptTooLong) {
+				logger.Get().Infow("proxyRequestLlamaCppNonStream: detected n_ctx error from cppworker, invoking auto-reload",
+					"backend", backendID, "model", modelFromCtx,
+					"status", resp.StatusCode,
+					"is_n_ctx", errors.Is(nctxErr, bridge.ErrNCtxNeedsReload),
+					"is_prompt_too_long", errors.Is(nctxErr, bridge.ErrPromptTooLong))
+				p.handleNCtxReload(r.Context(), w, r, backendID, modelFromCtx, nctxErr, bodyBuf)
+				return nil
+			}
+		}
+	}
+
+	// Если upstream вернул НЕ-200 — пробрасываем как Ollama-ошибку с done:true.
+	// Без этого OpenWebUI получает "пустой ответ" с done:true и рендерит пустое
+	// сообщение ассистента. С этой правкой клиент видит error в NDJSON-чанке
+	// и может корректно показать диагностику.
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadGateway)
+		errBody, _ := json.Marshal(map[string]interface{}{
+			"model":       modelFromCtx,
+			"created_at":  time.Now().UTC().Format(time.RFC3339),
+			"done":        true,
+			"done_reason": "error",
+			"error":       fmt.Sprintf("upstream returned HTTP %d: %s", resp.StatusCode, string(respBody)),
+			"message": map[string]interface{}{
+				"role":    "assistant",
+				"content": "",
+			},
+		})
+		w.Write(errBody)
+		w.Write([]byte("\n"))
+		return nil
+	}
+
+	// Если body пустой и статус 200 — это обычно означает, что cppworker ещё
+	// загружает модель (или вернул мусор). Возвращаем 502 с явной диагностикой,
+	// чтобы OpenWebUI не рендерил "пустое сообщение ассистента".
+	if len(respBody) == 0 {
+		logger.Get().Warnw("proxyRequestLlamaCppNonStream: empty body from upstream",
+			"backend", backendID, "model", modelFromCtx)
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadGateway)
+		errBody, _ := json.Marshal(map[string]interface{}{
+			"model":       modelFromCtx,
+			"created_at":  time.Now().UTC().Format(time.RFC3339),
+			"done":        true,
+			"done_reason": "error",
+			"error":       "upstream returned empty response (model may still be loading)",
+			"message": map[string]interface{}{
+				"role":    "assistant",
+				"content": "",
+			},
+		})
+		w.Write(errBody)
+		w.Write([]byte("\n"))
+		return nil
+	}
 
 	// Если пришёл SSE (вдруг), собираем
 	contentType := resp.Header.Get("Content-Type")

@@ -726,14 +726,133 @@ func TestServeHTTP_MixedCluster_RoutingByURLPath(t *testing.T) {
 	proxy.ServeHTTP(w2, req2)
 	t.Logf("/v1/chat/completions response: status=%d", w2.Code)
 
-	// Проверяем что determineRequestBackendType работает корректно
-	// /api/ → ollama, /v1/ → llama_cpp
+	// Проверяем что determineRequestBackendType работает корректно:
+	// в standard mode /api/ допускает любой тип (пустая строка),
+	// /v1/ всегда → llama_cpp, в virtual_router /api/ → llama_cpp.
 	bt1 := proxy.DetermineRequestBackendTypeForTest("/api/generate")
-	assert.Equal(t, types.BackendTypeOllama, bt1)
+	assert.Equal(t, types.BackendType(""), bt1, "standard mode /api/ should allow any backend type")
 
 	bt2 := proxy.DetermineRequestBackendTypeForTest("/v1/chat/completions")
 	assert.Equal(t, types.BackendTypeLlamaCpp, bt2)
 
 	bt3 := proxy.DetermineRequestBackendTypeForTest("/v1/completions")
 	assert.Equal(t, types.BackendTypeLlamaCpp, bt3)
+
+	// В virtual_router mode /api/ жёстко привязан к llama.cpp
+	cfg.Balancing.OperatingMode = "virtual_router"
+	bt4 := proxy.DetermineRequestBackendTypeForTest("/api/generate")
+	assert.Equal(t, types.BackendTypeLlamaCpp, bt4, "virtual_router mode /api/ should be llama.cpp")
+}
+
+// ============================================================
+// Test: full HTTP flow — Ollama-запрос маршрутизируется на Ollama-бэкенд
+// ============================================================
+func TestServeHTTP_OllamaRequest_RoutedToOllamaBackend(t *testing.T) {
+	var targetSeen bool
+	be := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/api/generate" {
+			targetSeen = true
+			w.Header().Set("X-Backend-ID", "ollama-live")
+		}
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte(`{"model":"llama3:8b","response":"ok"}`))
+	}))
+	defer be.Close()
+
+	cfg := newTestConfig([]types.Backend{
+		{ID: "ollama-live", Name: "OL", Host: "127.0.0.1", Type: types.BackendTypeOllama, OllamaPort: mustParsePort(be.URL), Weight: 1, MaxConcurrentReqs: 10, Status: types.StatusHealthy},
+		{ID: "llamacpp-live", Name: "LL", Host: "127.0.0.1", Type: types.BackendTypeLlamaCpp, CppWorkerPort: mustParsePort(be.URL), Weight: 1, MaxConcurrentReqs: 10, Status: types.StatusHealthy},
+	})
+	cfg.Balancing.OperatingMode = "standard"
+
+	proxy := balancer.NewProxy(cfg)
+	proxy.SetQueueManagerProxy()
+	proxy.UpdateMetrics("ollama-live", &types.BackendMetrics{
+		GPU:    types.GPUMetrics{UsagePercent: 10, MemoryTotal: 24576, MemoryUsed: 4096, MemoryFree: 20480},
+		System: types.SystemMetrics{CPUUsagePercent: 5, MemoryTotal: 65536, MemoryUsed: 8192, MemoryFree: 57344},
+		Ollama: types.OllamaMetrics{RunningModels: []types.RunningModel{{Name: "llama3:8b", VRAMUsage: 4096}}, MaxModels: 10, MaxConcurrentRequests: 10},
+	})
+	proxy.UpdateMetrics("llamacpp-live", &types.BackendMetrics{
+		GPU:    types.GPUMetrics{UsagePercent: 10, MemoryTotal: 24576, MemoryUsed: 4096, MemoryFree: 20480},
+		System: types.SystemMetrics{CPUUsagePercent: 5, MemoryTotal: 65536, MemoryUsed: 8192, MemoryFree: 57344},
+		Ollama: types.OllamaMetrics{RunningModels: []types.RunningModel{}, MaxModels: 10, MaxConcurrentRequests: 10},
+	})
+
+	lb := httptest.NewServer(proxy)
+	defer lb.Close()
+
+	req, _ := http.NewRequest("POST", lb.URL+"/api/generate",
+		strings.NewReader(`{"model":"llama3:8b","prompt":"Hi","stream":false}`))
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := http.DefaultClient.Do(req)
+	require.NoError(t, err)
+	defer resp.Body.Close()
+
+	assert.True(t, targetSeen, "Ollama backend should receive /api/generate")
+	assert.Equal(t, http.StatusOK, resp.StatusCode, "Ollama /api/generate should reach Ollama backend")
+	assert.Equal(t, "ollama-live", resp.Header.Get("X-Backend-ID"), "request should be routed to Ollama backend")
+}
+
+// ============================================================
+// Test: full HTTP flow — OpenAI/llama.cpp-запрос маршрутизируется на llama.cpp-бэкенд
+// ============================================================
+func TestServeHTTP_LlamaCppRequest_RoutedToLlamaCppBackend(t *testing.T) {
+	var targetSeen bool
+	be := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/models":
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusOK)
+			w.Write([]byte(`{"count":1,"models":[{"name":"llama3:8b","path":"llama3:8b.gguf","state":"loaded"}]}`))
+			return
+		case "/v1/chat/completions":
+			targetSeen = true
+			w.Header().Set("X-Backend-ID", "llamacpp-live")
+			w.WriteHeader(http.StatusOK)
+			w.Write([]byte(`{"choices":[{"message":{"content":"ok"}}]}`))
+			return
+		default:
+			w.WriteHeader(http.StatusOK)
+			w.Write([]byte(`{}`))
+		}
+	}))
+	defer be.Close()
+
+	cfg := newTestConfig([]types.Backend{
+		{ID: "ollama-live", Name: "OL", Host: "127.0.0.1", Type: types.BackendTypeOllama, OllamaPort: mustParsePort(be.URL), Weight: 1, MaxConcurrentReqs: 10, Status: types.StatusHealthy},
+		{ID: "llamacpp-live", Name: "LL", Host: "127.0.0.1", Type: types.BackendTypeLlamaCpp, CppWorkerPort: mustParsePort(be.URL), Weight: 1, MaxConcurrentReqs: 10, Status: types.StatusHealthy},
+	})
+	cfg.Balancing.OperatingMode = "standard"
+
+	proxy := balancer.NewProxy(cfg)
+	proxy.SetQueueManagerProxy()
+	proxy.UpdateMetrics("ollama-live", &types.BackendMetrics{
+		GPU:    types.GPUMetrics{UsagePercent: 10, MemoryTotal: 24576, MemoryUsed: 4096, MemoryFree: 20480},
+		System: types.SystemMetrics{CPUUsagePercent: 5, MemoryTotal: 65536, MemoryUsed: 8192, MemoryFree: 57344},
+		Ollama: types.OllamaMetrics{RunningModels: []types.RunningModel{{Name: "llama3:8b", VRAMUsage: 4096}}, MaxModels: 10, MaxConcurrentRequests: 10},
+	})
+	proxy.UpdateMetrics("llamacpp-live", &types.BackendMetrics{
+		GPU:    types.GPUMetrics{UsagePercent: 10, MemoryTotal: 24576, MemoryUsed: 4096, MemoryFree: 20480},
+		System: types.SystemMetrics{CPUUsagePercent: 5, MemoryTotal: 65536, MemoryUsed: 8192, MemoryFree: 57344},
+		Ollama: types.OllamaMetrics{RunningModels: []types.RunningModel{}, MaxModels: 10, MaxConcurrentRequests: 10},
+		LlamaCpp: types.LlamaCppMetrics{
+			LoadedModels: []types.LlamaCppModel{{Name: "llama3:8b", State: "loaded"}},
+		},
+	})
+
+	lb := httptest.NewServer(proxy)
+	defer lb.Close()
+
+	req, _ := http.NewRequest("POST", lb.URL+"/v1/chat/completions",
+		strings.NewReader(`{"model":"llama3:8b","messages":[{"role":"user","content":"Hi"}],"stream":false}`))
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := http.DefaultClient.Do(req)
+	require.NoError(t, err)
+	defer resp.Body.Close()
+
+	assert.True(t, targetSeen, "llama.cpp backend should receive /v1/chat/completions")
+	assert.Equal(t, http.StatusOK, resp.StatusCode, "OpenAI /v1/chat/completions should reach llama.cpp backend")
+	assert.Equal(t, "llamacpp-live", resp.Header.Get("X-Backend-ID"), "request should be routed to llama.cpp backend")
 }

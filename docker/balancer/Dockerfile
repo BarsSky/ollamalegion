@@ -16,12 +16,14 @@
 # -----------------------------------------------------------------------------
 # Stage 1: deps — загрузка зависимостей (golang:1.24-alpine, локальный)
 # -----------------------------------------------------------------------------
-FROM golang:1.24-alpine AS deps
+FROM dockerhub.timeweb.cloud/library/golang:1.24-alpine AS deps
 
 WORKDIR /build
 
 # Установка git для приватных репозиториев и build-base (gcc/musl) для CGO/race detector
-RUN apk add --no-cache git build-base
+# Разбито на отдельные RUN для устойчивости к частичным I/O ошибкам overlay FS (Docker Desktop / WSL2)
+RUN apk add --no-cache git
+RUN apk add --no-cache build-base && rm -rf /var/cache/apk/*
 
 # Копируем только go.mod/go.sum для кэширования слоя зависимостей
 COPY go.mod go.sum ./
@@ -35,15 +37,24 @@ FROM deps AS builder
 # Копируем исходный код (повторно используем кэш deps)
 COPY . .
 
-# Статически линкованный бинарник
-RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 \
-    go build -trimpath -ldflags "-w -s -extldflags '-static'" \
-    -a -installsuffix cgo -o balancer ./cmd/balancer
+# Статически линкованный бинарник.
+# Собираем с -tags llama_stub, потому что балансер — это чистый HTTP-прокси,
+# ему не нужна реальная llama.cpp. Пакет c/bridge содержит build-tag stub
+# (c/bridge/bridge_stub.go), который активирует cgo с CFLAGS=-DGO_BRIDGE_LLAMA_STUB.
+# Это вырезает всё тело c/bridge/bridge.c через #ifndef, и cgo компилирует
+# пустой translation unit без зависимости от libllama.a.
+#
+# ВАЖНО: НЕ отключаем CGO_ENABLED=0, иначе cgo-директивы в bridge_stub.go
+# не парсятся и Go выдаёт "build constraints exclude all Go files in c/bridge".
+# alpine содержит gcc/musl (build-base), так что cgo работает.
+RUN CGO_ENABLED=1 GOOS=linux GOARCH=amd64 \
+    go build -tags llama_stub -trimpath -ldflags "-w -s -extldflags '-static'" \
+    -a -o balancer ./cmd/balancer
 
 # -----------------------------------------------------------------------------
 # Stage 4: production — минимальный alpine (локальный alpine:latest)
 # -----------------------------------------------------------------------------
-FROM alpine:latest AS production
+FROM dockerhub.timeweb.cloud/library/alpine:latest AS production
 
 WORKDIR /app
 
@@ -81,9 +92,12 @@ USER appuser
 # Порты: 18080 (Ollama API proxy), 18081 (Management API + WebSocket)
 EXPOSE 18080 18081
 
-# Healthcheck через wget (alpine имеет shell + wget)
+# Liveness probe — /api/v1/ping всегда 200 OK, пока HTTP-сервер жив.
+# НЕ используем /api/v1/health: он возвращает 503 в degraded (когда 0
+# healthy бэкендов), что уводит контейнер в restart loop до того, как
+# cppworker успел зарегистрироваться.
 HEALTHCHECK --interval=15s --timeout=10s --start-period=30s --retries=5 \
-    CMD curl -f -s http://localhost:18081/api/v1/health || exit 1
+    CMD curl -fsS http://localhost:18081/api/v1/ping || exit 1
 
 # Запуск через entrypoint (копирует config.json в data/ при первом старте)
 ENTRYPOINT ["/entrypoint.sh"]

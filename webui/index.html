@@ -254,11 +254,12 @@
                                     <th>Метки</th>
                                     <th data-i18n="metrics.last_seen">Последняя активность</th>
                                     <th data-i18n="metrics.status">Статус</th>
+                                    <th data-i18n="gguf.col_loading">Загрузка</th>
                                     <th data-i18n="backends.actions">Действия</th>
                                 </tr>
                             </thead>
                             <tbody id="backendsManageBody">
-                                <tr><td colspan="13" class="loading-cell" data-i18n="common.loading">Загрузка...</td></tr>
+                                <tr><td colspan="14" class="loading-cell" data-i18n="common.loading">Загрузка...</td></tr>
                             </tbody>
                         </table>
                     </div>
@@ -927,6 +928,27 @@
                                         </label>
                                     </div>
                                 </div>
+
+                                <!-- ==================== Sub-section: Per-Model Profiles (Шаг 5) ==================== -->
+                                <div class="settings-subsection" id="section-llama-cpp-profiles" style="margin-top:24px; padding-top:16px; border-top:1px solid var(--border-color, #2a3441);">
+                                    <h4 style="margin:0 0 8px 0; font-size:14px; color:var(--text-primary); display:flex; align-items:center; gap:8px;">
+                                        <i class="fas fa-layer-group"></i>
+                                        <span data-i18n="settings.profiles.title">Per-Model Profiles (n_ctx override)</span>
+                                    </h4>
+                                    <p style="color:var(--text-muted);margin:0 0 12px 0;font-size:12px;" data-i18n="settings.profiles.desc">
+                                        Per-model profile переопределяет contextLength для конкретной GGUF-модели. Применяется в 3-tier резолвере между body и per-backend default. Используйте это для моделей с большим окном (gemma-4 — до 256K) или для ускорения малых моделей коротким окном.
+                                    </p>
+
+                                    <div id="cppProfilesList" style="margin-bottom:12px;">
+                                        <!-- Список профилей рендерится JS (cppworker-params.js) -->
+                                        <div class="cpp-profiles-empty" data-i18n="settings.profiles.empty">Нет настроенных профилей. Создайте первый, чтобы переопределить n_ctx для конкретной модели.</div>
+                                    </div>
+
+                                    <button class="btn btn-primary" id="cppProfileAddBtn">
+                                        <i class="fas fa-plus"></i>
+                                        <span data-i18n="settings.profiles.add">Добавить профиль…</span>
+                                    </button>
+                                </div>
                             </div>
                         </div>
 
@@ -1094,7 +1116,11 @@
                     <div class="form-row backend-field-llama" style="display:none;">
                         <div class="form-group">
                             <label>Порт CppWorker</label>
-                            <input type="number" id="formBackendCppWorkerPort" class="form-control" value="18091">
+                            <div style="display:flex; gap:6px; align-items:center;">
+                                <input type="number" id="formBackendCppWorkerPort" class="form-control" value="18092" style="flex:1;">
+                                <button type="button" id="formBackendCppWorkerPortDetect" class="btn btn-secondary" style="white-space:nowrap;" title="Автоматически определить порт CppWorker (probe 18092/18091/18093/18090 на /info)">🔍 Auto-detect</button>
+                            </div>
+                            <small style="color: var(--text-muted); font-size: 11px;">Дефолт: 18092. Если пусто — auto-detect при сохранении.</small>
                         </div>
                         <div class="form-group">
                             <label>gRPC порт</label>
@@ -1257,11 +1283,13 @@
     <script src="js/modules/gguf-api.js?v=13"></script>
     <script src="js/modules/websocket.js?v=13"></script>
     <script src="js/modules/renderers.js?v=13"></script>
-    <script src="js/modules/gguf-renderer.js?v=14"></script>
+    <script src="js/modules/gguf-load-progress.js?v=1"></script>
+    <script src="js/modules/gguf-renderer.js?v=15"></script>
     <script src="js/modules/settings-ui.js?v=13"></script>
     <script src="js/modules/config-io.js?v=13"></script>
     <script src="js/modules/mode-wizard.js?v=13"></script>
     <script src="js/modules/setup-wizard.js?v=13"></script>
+    <script src="js/modules/cppworker-params.js?v=15"></script>
     <script src="js/app.js?v=13"></script>
 </body>
 </html>

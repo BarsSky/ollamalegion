@@ -119,8 +119,10 @@ func (or *OllamaRouter) findBackendWithModel(model string) string {
 func (or *OllamaRouter) findBackendsWithModel(model string) []string {
 	or.proxy.metricsMgr.mu.RLock()
 	runningModelsMap := make(map[string][]types.RunningModel)
+	loadedModelsMap := make(map[string][]types.LlamaCppModel)
 	for id, metrics := range or.proxy.metricsMgr.metrics {
 		runningModelsMap[id] = metrics.Ollama.RunningModels
+		loadedModelsMap[id] = metrics.LlamaCpp.LoadedModels
 	}
 	or.proxy.metricsMgr.mu.RUnlock()
 
@@ -133,6 +135,24 @@ func (or *OllamaRouter) findBackendsWithModel(model string) []string {
 			for _, m := range models {
 				if m.Name == model {
 					result = append(result, b.ID)
+					break
+				}
+			}
+		}
+		if models, ok := loadedModelsMap[b.ID]; ok {
+			for _, m := range models {
+				if m.Name == model {
+					// avoid duplicates
+					found := false
+					for _, existing := range result {
+						if existing == b.ID {
+							found = true
+							break
+						}
+					}
+					if !found {
+						result = append(result, b.ID)
+					}
 					break
 				}
 			}
@@ -151,8 +171,18 @@ func (or *OllamaRouter) selectAnyHealthy() string {
 	return ""
 }
 
+// selectBackendByResources выбирает healthy бэкенд для Ollama-админ endpoint'ов.
+// Для смешанных кластеров сначала пытаемся найти llama_cpp бэкенд,
+// т.к. cppworker реализует Ollama-совместимое API для llama.cpp.
+// Если llama_cpp недоступен — fallback на ollama.
 func (or *OllamaRouter) selectBackendByResources(r *http.Request) string {
 	model := or.extractModelFromBody(r)
+
+	// Сначала пробуем llama_cpp backend
+	if backend := or.proxy.selectBackend(model, types.BackendTypeLlamaCpp); backend != "" {
+		return backend
+	}
+	// Fallback на ollama backend для обратной совместимости
 	return or.proxy.selectBackend(model, types.BackendTypeOllama)
 }
 

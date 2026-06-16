@@ -118,6 +118,12 @@ func TestTwoClientsSameIP_DifferentSessions(t *testing.T) {
 	proxy := NewProxy(cfg)
 	defer proxy.queueMgr.Stop()
 	proxy.UpdateMetrics("a", mkMetrics("a"))
+	// Тест проверяет Ollama-flow (SessionStickiness, два клиента с одним IP).
+	// При OperatingMode="" routeRequest сначала пробует LlamaCppRouter,
+	// который возвращает 503 "no llama.cpp backend available" — backend 'a'
+	// не имеет Type=llama_cpp. Отключаем llama.cpp роутер в тесте, чтобы
+	// flow шёл через основной Ollama-путь, как и задумывал автор теста.
+	proxy.llamaCppRouter = nil
 
 	b, _ := json.Marshal(map[string]interface{}{"model": "llama3.2:3b", "stream": true})
 
@@ -183,6 +189,12 @@ func TestLoadBalancing_MultipleClients(t *testing.T) {
 	defer proxy.queueMgr.Stop()
 	proxy.UpdateMetrics("a", mkMetrics("a"))
 	proxy.UpdateMetrics("b", mkMetrics("b"))
+	// Тест нагрузочный (12 клиентов / 2 бэкенда), проверяет Ollama-flow.
+	// При OperatingMode="" routeRequest сначала пробует LlamaCppRouter,
+	// который вернёт 503 "no llama.cpp backend available" — backend'ы 'a','b'
+	// не имеют Type=llama_cpp. Отключаем llama.cpp роутер, чтобы flow шёл
+	// через основной Ollama-путь, как и задумывал автор теста.
+	proxy.llamaCppRouter = nil
 
 	n := 12
 	var wg sync.WaitGroup

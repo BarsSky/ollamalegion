@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"bytes"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -214,8 +215,10 @@ func TestProxyOllama_Tags(t *testing.T) {
 
 	assert.Equal(t, http.StatusOK, resp.StatusCode)
 
+	body, _ := io.ReadAll(resp.Body)
+
 	var result map[string]interface{}
-	err = json.NewDecoder(resp.Body).Decode(&result)
+	err = json.Unmarshal(body, &result)
 	require.NoError(t, err)
 
 	models, ok := result["models"].([]interface{})
@@ -535,9 +538,6 @@ func TestProxyOllama_SessionStickiness(t *testing.T) {
 			assert.Equal(t, "llama3.1:8b", s.Model)
 			break
 		}
-	}
-	if !found {
-		t.Logf("Available sessions: %+v", session)
 	}
 	assert.True(t, found, "Session should be created with ID %s", expectedSessionID)
 

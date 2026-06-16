@@ -11,11 +11,11 @@ import (
 // histogramCollector — простой in-process сборщик гистограммных метрик
 // для экспорта через /api/metrics. Используется вместо внешнего Prometheus SDK.
 type histogramCollector struct {
-	mu     sync.Mutex
+	mu      sync.Mutex
 	buckets []float64
-	values []float64
-	count  int64
-	sum    float64
+	values  []float64
+	count   int64
+	sum     float64
 }
 
 func newHistogramCollector(buckets ...float64) *histogramCollector {
@@ -111,19 +111,50 @@ func (bm *BalancerMetrics) GetMetrics() map[string]interface{} {
 	}
 	bm.proxy.mu.RUnlock()
 
-	return map[string]interface{}{
-		"timestamp":                   time.Now().UTC().Format(time.RFC3339),
-		"total_backends":              totalBackends,
-		"healthy_backends":            healthyCount,
-		"request_queue_depth":         queueDepth,
-		"request_queue_max":           queueMax,
-		"request_queue_fill_percent":  queueFillPct,
-		"prewarm_in_progress":         prewarmCount,
-		"model_instance_count":        modelInstanceCounts,
-		"total_proxy_requests":        bm.proxy.totalRequests,
-		"model_load_time_histogram":   modelLoadTimeHistogram.Snapshot(),
-		"queue_wait_time_histogram":   queueWaitTimeHistogram.Snapshot(),
+	result := map[string]interface{}{
+		"timestamp":                  time.Now().UTC().Format(time.RFC3339),
+		"total_backends":             totalBackends,
+		"healthy_backends":           healthyCount,
+		"request_queue_depth":        queueDepth,
+		"request_queue_max":          queueMax,
+		"request_queue_fill_percent": queueFillPct,
+		"prewarm_in_progress":        prewarmCount,
+		"model_instance_count":       modelInstanceCounts,
+		"total_proxy_requests":       bm.proxy.totalRequests,
+		"model_load_time_histogram":  modelLoadTimeHistogram.Snapshot(),
+		"queue_wait_time_histogram":  queueWaitTimeHistogram.Snapshot(),
 	}
+
+	// ==== n_ctx auto-reload метрики (Stage 5) ====
+	// nctxReload.Snapshot() возвращает:
+	//   nctx_reloads_total, nctx_rejects_total, nctx_errors_total,
+	//   nctx_reload_duration_ms_avg/sum/count, nctx_per_backend
+	// Если координатор не инициализирован (p.nctxReload == nil) — Snapshot()
+	// возвращает map с дефолтными нулями (см. nctx_reload.go).
+	if bm.proxy.nctxReload != nil {
+		nctxSnap := bm.proxy.nctxReload.Snapshot()
+		// Копируем поля в плоский top-level (для совместимости с Prometheus exporters
+		// которые сканият map через рефлексию; вложенные map тоже работают но плоский
+		// формат удобнее для отладки).
+		for _, key := range []string{
+			"nctx_reloads_total",
+			"nctx_rejects_total",
+			"nctx_errors_total",
+			"nctx_reload_duration_ms_avg",
+			"nctx_reload_duration_ms_sum",
+			"nctx_reload_duration_count",
+		} {
+			if v, ok := nctxSnap[key]; ok {
+				result[key] = v
+			}
+		}
+		// per-backend оставляем вложенным (может содержать много бэкендов)
+		if pb, ok := nctxSnap["nctx_per_backend"]; ok {
+			result["nctx_per_backend"] = pb
+		}
+	}
+
+	return result
 }
 
 // modelLoadTimeHistogram — гистограмма времени загрузки модели (секунды)

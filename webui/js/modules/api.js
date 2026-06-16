@@ -179,14 +179,14 @@ const Api = (function () {
         },
 
         async restartAgent(backendId) {
-            const response = await request(`${API_BASE}/api/v1/backends/${encodeURIComponent(backendId)}/restart`, {
+            const response = await request(`${API_BASE}/api/v1/agents/${encodeURIComponent(backendId)}/restart`, {
                 method: 'POST'
             });
             return response.json();
         },
 
         async agentLogs(backendId, limit = 100) {
-            return getJson(`/api/v1/backends/${encodeURIComponent(backendId)}/logs?limit=${limit}`);
+            return getJson(`/api/v1/agents/${encodeURIComponent(backendId)}/logs?limit=${limit}`);
         },
 
         // Config reset to defaults

@@ -8,8 +8,6 @@
 // Использование:
 //   go build -tags llama_stub -o cppworker ./cmd/cppworker
 //
-// [!]buildtag llama_stub
-//
 //go:build llama_stub
 // +build llama_stub
 
@@ -43,25 +41,44 @@ type GenerationParams struct {
 	Temperature      float32
 	TopP             float32
 	TopK             float32
+	MinP             float32
+	TypicalP         float32
+	TfsZ             float32
 	RepeatPenalty    float32
 	FrequencyPenalty float32
 	PresencePenalty  float32
+	RepeatLastN      int
+	Mirostat         int
+	MirostatTau      float32
+	MirostatEta      float32
 	Seed             int
 	Antiprompts      []string // стоп-последовательности (в stub-режиме игнорируются)
+	StopSequences    []string // алиас Ollama для stop-последовательностей
+	// NCtxOverride — per-request переопределение n_ctx (см. real bridge.go).
+	// В stub-режиме не используется, но должен присутствовать для совместимости
+	// типов между bridge.go (build tag !llama_stub) и bridge_stub.go (build tag llama_stub).
+	NCtxOverride int
 }
 
 // DefaultGenerationParams возвращает параметры по умолчанию
 func DefaultGenerationParams() GenerationParams {
 	return GenerationParams{
-		NPredict:         4096,
+		NPredict:         2048, // уменьшен с 4096 (Phase D.6): см. c/bridge/bridge.go
 		NKeep:            0,
 		NBatch:           512,
 		Temperature:      0.7,
 		TopP:             0.9,
 		TopK:             40.0,
+		MinP:             0.0,
+		TypicalP:         1.0,
+		TfsZ:             1.0,
 		RepeatPenalty:    1.1,
 		FrequencyPenalty: 0.0,
 		PresencePenalty:  0.0,
+		RepeatLastN:      64,
+		Mirostat:         0,
+		MirostatTau:      5.0,
+		MirostatEta:      0.1,
 		Seed:             -1,
 	}
 }
@@ -140,6 +157,47 @@ type ChatMessage struct {
 
 // ErrNoChatTemplate — в stub режиме template недоступен
 var ErrNoChatTemplate = fmt.Errorf("chat template not available in stub mode")
+
+// ============================================================
+// Структурированный error-info API (заглушка)
+// ============================================================
+// Эти определения должны присутствовать в обоих файлах (bridge.go и
+// bridge_stub.go), чтобы balancer и cppworker собирались с любым build tag.
+
+// ErrCode — коды структурированных ошибок (см. bridge.go). В stub-режиме
+// C-bridge недоступен, но коды должны существовать для совместимости.
+const (
+	ErrCodeOK              = 0
+	ErrCodeGeneric         = 1
+	ErrCodeNCtxNeedsReload = 2
+	ErrCodePromptTooLong   = 3
+	ErrCodeGPUOOM          = 4
+	ErrCodeBadRequest      = 5
+)
+
+// BridgeErrorInfo — заглушка. В stub-режиме всегда возвращается OK.
+type BridgeErrorInfo struct {
+	Code         int
+	CurrentNCtx  int
+	RequiredNCtx int
+	ActualTokens int
+	NPredict     int
+	NCtxOverride int
+	MaxVRAMNCtx  int
+	Message      string
+}
+
+// GetLastErrorInfo — stub-реализация. Всегда возвращает OK (stub не падает).
+func GetLastErrorInfo() *BridgeErrorInfo {
+	return &BridgeErrorInfo{Code: ErrCodeOK}
+}
+
+// ErrNCtxNeedsReload — stub-sentinel. В stub-режиме не выбрасывается,
+// но должен существовать для совместимости типов.
+var ErrNCtxNeedsReload = fmt.Errorf("n_ctx exceeds loaded model; auto-reload may be possible (stub)")
+
+// ErrPromptTooLong — stub-sentinel.
+var ErrPromptTooLong = fmt.Errorf("prompt + n_predict exceeds n_ctx (stub)")
 
 // ApplyChatTemplate — stub-реализация
 func (m *ModelHandle) ApplyChatTemplate(system string, messages []ChatMessage, addAss bool) (string, error) {
@@ -235,6 +293,14 @@ func (m *ModelHandle) InferStream(prompt string, params GenerationParams, callba
 func (m *ModelHandle) GetEmbeddings(text string) ([]float32, error) {
 	// Возвращаем пустой эмбеддинг размером 128
 	return make([]float32, 128), nil
+}
+
+// CountTokens возвращает грубую оценку числа токенов в stub-режиме.
+func (m *ModelHandle) CountTokens(text string) int {
+	if text == "" {
+		return 0
+	}
+	return len([]rune(text)) / 4
 }
 
 // GetMetadata возвращает метаданные модели (stub)

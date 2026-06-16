@@ -1,0 +1,80 @@
+# Ollama Legion — тестовый compose: balancer + cppworker (STUB)
+#
+# Использует STUB-образ cppworker (без llama.cpp, без CUDA), собранный с тегом
+# `llama_stub`. Подходит для CI и e2e-тестов маршрутизации балансировщика.
+#
+# Запуск:
+#   cd deployments
+#   docker compose -f docker-compose.test-stub.yml up -d --build
+#
+# Остановка:
+#   docker compose -f docker-compose.test-stub.yml down
+#
+# Проверка:
+#   curl http://localhost:18080/api/tags
+#   curl http://localhost:18093/api/tags
+#   curl http://localhost:18081/api/v1/health
+name: ollama-legion-test-stub
+
+services:
+  loadbalancer:
+    build:
+      context: ..
+      dockerfile: docker/balancer/Dockerfile
+    image: ollama-legion/balancer:test-stub
+    container_name: ol-test-balancer
+    restart: unless-stopped
+    ports:
+      - "${LB_PORT:-18080}:18080"
+      - "${LB_ADMIN_PORT:-18081}:18081"
+    environment:
+      - GIN_MODE=release
+      - LOG_LEVEL=${LB_LOG_LEVEL:-info}
+      - LB_CONFIG_PATH=/app/config/config.json
+      - LB_API_TOKEN=${CPPWORKER_API_TOKEN:-test-stub-token}
+    volumes:
+      - ../config:/app/config:ro
+      - balancer_data:/app/data
+    networks:
+      - ol-test-stub-net
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:18081/api/v1/ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+
+  cppworker-stub:
+    image: ollama-legion/cppworker:stub
+    container_name: ol-test-cppworker-stub
+    restart: unless-stopped
+    environment:
+      - CPPWORKER_HOST=0.0.0.0
+      - CPPWORKER_PORT=18093
+      - CPPWORKER_MODELS_DIR=/app/models
+      - CPPWORKER_CTX_SIZE=4096
+      - CPPWORKER_BATCH_SIZE=512
+      - CPPWORKER_GPU_LAYERS=0
+      - API_TOKEN=${CPPWORKER_API_TOKEN:-test-stub-token}
+      # Auto-registration в балансере (отключаем для теста, чтобы регистрировать вручную через backends.json)
+      - CPPWORKER_BALANCER_URL=
+      - CPPWORKER_BALANCER_TOKEN=
+    volumes:
+      - ../models:/app/models:rw
+    ports:
+      - "${CPPWORKER_STUB_PORT:-18093}:18093"
+    networks:
+      - ol-test-stub-net
+    healthcheck:
+      test: ["CMD", "/app/cppworker", "-healthcheck"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+
+networks:
+  ol-test-stub-net:
+    driver: bridge
+
+volumes:
+  balancer_data:

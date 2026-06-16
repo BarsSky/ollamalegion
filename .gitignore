@@ -63,6 +63,25 @@ __pycache__/
 # ============================================================
 
 # ============================================================
+# Local build artifacts / scratch
+# ============================================================
+CMakeCache.txt
+CMakeFiles/
+*.err
+balancer-linux
+cppworker-stub
+.docker_info.txt
+configure-cuda.bat
+build-llama-cuda.ps1
+
+# ============================================================
+# Temporary / diagnostic test directories
+# ============================================================
+stub-test-models/
+tests/diag/
+tests/multiclient/
+
+# ============================================================
 # Test results / coverage dumps
 # ============================================================
 test_results/

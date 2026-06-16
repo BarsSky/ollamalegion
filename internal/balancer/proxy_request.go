@@ -1,6 +1,7 @@
 package balancer
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -77,8 +78,8 @@ func (p *Proxy) proxyRequest(w http.ResponseWriter, r *http.Request, backendID s
 	}
 
 	// Проверка совместимости типа бэкенда с текущим OperatingMode
-	if !types.IsModeCompatibleWithBackendType(p.config.Balancing.OperatingMode, state.Backend.Type) {
-		bt := normalizeBackendType(state.Backend.Type)
+	bt := normalizeBackendType(state.Backend.Type)
+	if !types.IsModeCompatibleWithBackendType(p.config.Balancing.OperatingMode, bt) {
 		err := fmt.Errorf("backend type %s not compatible with operating mode %s", bt, p.config.Balancing.OperatingMode)
 		logger.Get().Errorw("proxyRequest: backend type incompatible with operating mode",
 			"backend", backendID, "backend_type", bt, "operating_mode", p.config.Balancing.OperatingMode)
@@ -417,6 +418,169 @@ retrySucceeded:
 	// Записываем latency для адаптивного таймаута
 	recordLatency(state, latencyMs, modelFromCtx, success)
 
+	return nil
+}
+
+// proxyRequestOpenAIStreaming — проксирует OpenAI-совместимый streaming-ответ (SSE)
+// от llama.cpp/cppworker к клиенту БЕЗ трансляции форматов.
+//
+// Зачем нужен отдельный метод:
+//   - proxyRequestLlamaCpp транслирует SSE→Ollama NDJSON (нужно для OpenWebUI,
+//     который шлёт Ollama-формат на /api/chat).
+//   - Roo Code, Cline и прочие OpenAI-клиенты шлют запросы напрямую на
+//     /v1/chat/completions и ожидают SSE-ответ в OpenAI-формате (data: {...}\n\n
+//     с choices[].delta.content). Транслировать его в NDJSON нельзя — клиент
+//     не поймёт.
+//
+// Особенности:
+//   - SSE-heartbeat каждые p.getHeartbeatInterval() секунд (default 15s).
+//     Это критично: cppworker может генерировать токены порциями, и между
+//     первым и вторым чанком может пройти 30+ секунд (особенно на cold start).
+//     Без heartbeat клиенты типа Roo Code/Cline закрывают соединение по
+//     таймауту (~60s) и переключаются на retry, что выглядит как «бесконечная
+//     загрузка».
+//   - Idle-timeout: p.getStreamingIdleTimeout() (default 120s). Если за это
+//     время от бэкенда не пришёл ни один байт — стрим закрывается явно.
+//   - Все headers бэкенда копируются, кроме Transfer-Encoding/Content-Length/
+//     Connection (управляются Go/http) и CORS (уже выставлены в ServeHTTP).
+//   - Если тело ответа не-SSE (Content-Type отличается) — проксируется как
+//     обычный JSON с заданным Content-Length, без heartbeat.
+func (p *Proxy) proxyRequestOpenAIStreaming(w http.ResponseWriter, r *http.Request, resp *http.Response, backendID string) error {
+	defer resp.Body.Close()
+
+	// 1. Копируем заголовки ответа бэкенда
+	for key, values := range resp.Header {
+		keyLower := strings.ToLower(key)
+		if keyLower == "transfer-encoding" || keyLower == "content-length" || keyLower == "connection" {
+			continue
+		}
+		if strings.HasPrefix(keyLower, "access-control-") {
+			continue
+		}
+		if keyLower == "vary" {
+			for _, value := range values {
+				if strings.ToLower(strings.TrimSpace(value)) == "origin" {
+					continue
+				}
+				w.Header().Add(key, value)
+			}
+			continue
+		}
+		for _, value := range values {
+			w.Header().Add(key, value)
+		}
+	}
+
+	// 2. Если бэкенд вернул НЕ-SSE (например, JSON-ошибку с content-type: application/json),
+	// проксируем тело как есть и завершаемся.
+	contentType := resp.Header.Get("Content-Type")
+	isSSEResponse := strings.Contains(contentType, "text/event-stream") ||
+		strings.Contains(contentType, "application/x-ndjson")
+	if !isSSEResponse {
+		body, err := io.ReadAll(resp.Body)
+		if err != nil {
+			return fmt.Errorf("failed to read non-streaming response: %w", err)
+		}
+		if w.Header().Get("Content-Type") == "" {
+			w.Header().Set("Content-Type", "application/json")
+		}
+		w.Header().Set("Content-Length", fmt.Sprintf("%d", len(body)))
+		w.WriteHeader(resp.StatusCode)
+		w.Write(body)
+		return nil
+	}
+
+	// 3. SSE-стрим. Сначала фиксируем headers, потом WriteHeader, потом стрим.
+	w.WriteHeader(resp.StatusCode)
+	flusher, canFlush := w.(http.Flusher)
+
+	heartbeatInterval := p.getHeartbeatInterval()
+
+	// Контекст клиента — если клиент отвалился, прерываем чтение из upstream
+	clientCtx := r.Context()
+
+	// Канал для пробуждения select при приходе данных от бэкенда.
+	// Если upstream закрыл соединение — reader.ReadBytes вернёт EOF, и горутина
+	// закроет dataCh. heartbeatTicker шлёт тики по расписанию.
+	type readResult struct {
+		line []byte
+		err  error
+	}
+	dataCh := make(chan readResult, 1)
+	go func() {
+		reader := bufio.NewReader(resp.Body)
+		for {
+			line, err := reader.ReadBytes('\n')
+			dataCh <- readResult{line: line, err: err}
+			if err != nil {
+				return
+			}
+		}
+	}()
+
+	done := false
+	heartbeatTicker := time.NewTicker(heartbeatInterval)
+	defer heartbeatTicker.Stop()
+	for !done {
+		select {
+		case <-clientCtx.Done():
+			// Клиент отвалился — закрываем upstream и выходим.
+			logger.Get().Infow("proxyRequestOpenAIStreaming: client disconnected, closing upstream",
+				"backend", backendID)
+			return nil
+
+		case <-heartbeatTicker.C:
+			// SSE-heartbeat: ": keepalive\n\n" — комментарий, который клиент
+			// игнорирует, но не закрывает соединение по idle-таймауту.
+			if _, werr := w.Write([]byte(": keepalive\n\n")); werr != nil {
+				logger.Get().Warnw("proxyRequestOpenAIStreaming: heartbeat write failed",
+					"backend", backendID, "error", werr)
+				return nil
+			}
+			if canFlush {
+				flusher.Flush()
+			}
+
+		case res := <-dataCh:
+			if res.err != nil {
+				if res.err == io.EOF {
+					// Бэкенд закрыл стрим штатно (после [DONE] или финального чанка).
+					done = true
+					break
+				}
+				logger.Get().Warnw("proxyRequestOpenAIStreaming: read from backend error",
+					"backend", backendID, "error", res.err)
+				// Отправляем клиенту финальный SSE done-маркер, чтобы клиент
+				// корректно завершил поток (иначе Roo/Cline зависнут).
+				_, _ = w.Write([]byte("data: {\"error\":\"upstream read error\"}\n\n"))
+				if canFlush {
+					flusher.Flush()
+				}
+				return nil
+			}
+
+			// Фильтрация служебных токенов модели (Gemma `<end_of_turn>`,
+			// Llama3 `<|eot_id|>`, ChatML `<|im_end|>` и т.д.). Без этого
+			// OpenAI-клиенты (Cline, Roo) видят "мусорный" content и
+			// интерпретируют его как tool-call-like вывод → "Invalid API Response".
+			// Функция возвращает либо отфильтрованную строку (с пустым delta),
+			// либо оригинал, если фильтрация не нужна.
+			lineToWrite, _ := filterOpenAIStreamingLine(res.line)
+			if _, werr := w.Write(lineToWrite); werr != nil {
+				logger.Get().Warnw("proxyRequestOpenAIStreaming: write to client failed",
+					"backend", backendID, "error", werr)
+				return nil
+			}
+			if canFlush {
+				flusher.Flush()
+			}
+		}
+	}
+
+	// Финальный flush на всякий случай.
+	if canFlush {
+		flusher.Flush()
+	}
 	return nil
 }
 

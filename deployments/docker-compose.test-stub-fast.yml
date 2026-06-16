@@ -1,0 +1,69 @@
+name: ollama-legion-test-stub-fast
+
+services:
+  loadbalancer:
+    image: ollama-legion/balancer:cppworker-bundled
+    container_name: ol-test-fast-balancer
+    restart: unless-stopped
+    ports:
+      - "${LB_PORT:-18080}:18080"
+      - "${LB_ADMIN_PORT:-18081}:18081"
+    environment:
+      - GIN_MODE=release
+      - LOG_LEVEL=${LB_LOG_LEVEL:-info}
+      - LB_CONFIG_PATH=/app/config/config.json
+      - LB_API_TOKEN=${CPPWORKER_API_TOKEN:-test-stub-token}
+    volumes:
+      - ../config:/app/config:ro
+      - balancer_data:/app/data
+    networks:
+      - ol-test-stub-fast-net
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:18081/api/v1/ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+
+  cppworker-stub:
+    image: ollama-legion/cppworker:stub
+    container_name: ol-test-fast-cppworker-stub
+    restart: unless-stopped
+    environment:
+      - CPPWORKER_HOST=0.0.0.0
+      - CPPWORKER_PORT=18093
+      - CPPWORKER_MODELS_DIR=/app/models
+      - CPPWORKER_CTX_SIZE=4096
+      - CPPWORKER_BATCH_SIZE=512
+      - CPPWORKER_GPU_LAYERS=0
+      - API_TOKEN=${CPPWORKER_API_TOKEN:-test-stub-token}
+      - CPPWORKER_BALANCER_URL=http://loadbalancer:18081
+      - CPPWORKER_BALANCER_TOKEN=${CPPWORKER_API_TOKEN:-test-stub-token}
+      - CPPWORKER_ADVERTISE_HOST=cppworker-stub
+      - CPPWORKER_ADVERTISE_PORT=18093
+      - CPPWORKER_REGISTER_NAME=cppworker-stub-fast
+      - CPPWORKER_REGISTER_RETRY_INTERVAL=15s
+      - CPPWORKER_REGISTER_HEARTBEAT=60s
+      - CPPWORKER_REGISTER_GPU_MODE=cpu
+    volumes:
+      - ../models:/app/models:rw
+    ports:
+      - "${CPPWORKER_STUB_PORT:-18093}:18093"
+    networks:
+      - ol-test-stub-fast-net
+    healthcheck:
+      test: ["CMD", "/app/cppworker", "-healthcheck"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+    depends_on:
+      loadbalancer:
+        condition: service_healthy
+
+networks:
+  ol-test-stub-fast-net:
+    driver: bridge
+
+volumes:
+  balancer_data:

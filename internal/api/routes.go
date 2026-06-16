@@ -7,6 +7,11 @@ func (s *Server) setupRoutes() {
 	// Health check (без аутентификации и rate limiting)
 	s.mux.HandleFunc("/api/v1/health", s.healthHandler)
 
+	// Liveness probe — всегда 200 OK, пока HTTP-сервер жив.
+	// Используется Docker healthcheck, чтобы не падать в restart loop,
+	// когда бэкенды ещё не зарегистрированы (healthHandler возвращает 503 в degraded).
+	s.mux.HandleFunc("/api/v1/ping", s.pingHandler)
+
 	// Auth endpoints (требуют токен, кроме health)
 	s.mux.Handle("/api/v1/auth/status", AuthMiddleware(RateLimitMiddleware(AuthStatusHandler(s.authenticator), s.rateLimiter), s.authenticator))
 	s.mux.Handle("/api/v1/auth/token", AuthMiddleware(RateLimitMiddleware(TokenManagementHandler(s.authenticator), s.rateLimiter), s.authenticator))
@@ -83,6 +88,11 @@ func (s *Server) setupRoutes() {
 	// Restart endpoint (c аутентификацией и rate limiting, только от webui)
 	s.mux.Handle("/api/v1/admin/restart", AuthMiddleware(RateLimitMiddleware(s.restartHandler, s.rateLimiter), s.authenticator))
 
+	// Internal callbacks от cppworker (Шаг «отображение загрузки в мониторе»).
+	// POST /api/v1/internal/llama-model-loaded — callback при успешной загрузке модели.
+	// Endpoint требует X-API-Token (если в config задан API_TOKEN). Не публичный.
+	s.mux.Handle("/api/v1/internal/llama-model-loaded", AuthMiddleware(RateLimitMiddleware(http.HandlerFunc(s.handleLlamaModelLoaded), s.rateLimiter), s.authenticator))
+
 	// Model Replication endpoints (Variant A) — с аутентификацией и rate limiting
 	s.mux.Handle("/api/v1/replication/groups", AuthMiddleware(RateLimitMiddleware(s.replicationGroupsHandler, s.rateLimiter), s.authenticator))
 	s.mux.Handle("/api/v1/replication/groups/", AuthMiddleware(RateLimitMiddleware(s.replicationGroupHandler, s.rateLimiter), s.authenticator))
@@ -96,8 +106,21 @@ func (s *Server) setupRoutes() {
 	// GGUF backends info for WebUI (публичный, без аутентификации — используется страницей GGUF)
 	s.mux.HandleFunc("/api/v1/gguf/backends", s.handleGgufBackends)
 
+	// GGUF backend proxy — проксирует запросы WebUI к CppWorker конкретного
+	// llama.cpp бэкенда. Используется страницей GGUF для скачивания моделей,
+	// списка файлов, прогресса загрузки, загрузки/выгрузки. Префикс /api/v1/gguf/
+	// уже отрезается стандартным mux (см. handleGgufBackendProxy для деталей).
+	s.mux.HandleFunc("/api/v1/gguf/backends/", s.handleGgufBackendProxy)
+
 	// Proxy Logs endpoint (с аутентификацией и rate limiting)
 	s.mux.Handle("/api/v1/proxy/logs", AuthMiddleware(RateLimitMiddleware(s.proxyLogsHandler, s.rateLimiter), s.authenticator))
+
+	// Per-model profiles для cppworker (Шаг 5 cppworker-preflight-nctx-session).
+	// GET    /api/v1/cppworker/model-profiles         — список всех профилей
+	// GET/PUT/DELETE /api/v1/cppworker/model-profiles/{name}
+	// POST   /api/v1/cppworker/model-profiles/{name}/apply — save + reload на бэкендах
+	s.mux.Handle("/api/v1/cppworker/model-profiles", AuthMiddleware(RateLimitMiddleware(http.HandlerFunc(s.handleListModelProfiles), s.rateLimiter), s.authenticator))
+	s.mux.Handle("/api/v1/cppworker/model-profiles/", AuthMiddleware(RateLimitMiddleware(http.HandlerFunc(s.handleModelProfile), s.rateLimiter), s.authenticator))
 
 	// Candidate Backends endpoint (с аутентификацией и rate limiting)
 	// Возвращает группы бэкендов-кандидатов по приоритетам для всех моделей

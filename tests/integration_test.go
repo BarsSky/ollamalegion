@@ -703,14 +703,11 @@ func TestE2E_ProxyStreaming(t *testing.T) {
 	}))
 	defer mockOllama.Close()
 
-	hostParts := strings.Split(strings.TrimPrefix(mockOllama.URL, "http://"), ":")
-	if len(hostParts) < 2 {
-		t.Skip("Cannot parse mock server URL")
-	}
+	host, port := parseHostPort(mockOllama.URL)
 
 	cfg := &types.LoadBalancerConfig{
 		Backends: []types.Backend{
-			{ID: "ollama-1", Host: hostParts[0], OllamaPort: mustParsePortStr(hostParts[1]), Weight: 1, MaxConcurrentReqs: 10, Status: types.StatusHealthy},
+			{ID: "ollama-1", Host: host, OllamaPort: port, Weight: 1, MaxConcurrentReqs: 10, Status: types.StatusHealthy},
 		},
 		Balancing: types.BalancingSettings{
 			Algorithm:           "resource-aware",

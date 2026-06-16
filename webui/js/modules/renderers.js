@@ -690,7 +690,7 @@ const Renderers = (function () {
         const tbody = document.getElementById('backendsManageBody');
         if (!tbody) return;
         if (!backends.length) {
-            tbody.innerHTML = emptyRow(13, _t('renderers.no_data'));
+            tbody.innerHTML = emptyRow(14, _t('renderers.no_data'));
             return;
         }
 
@@ -701,6 +701,44 @@ const Renderers = (function () {
             const detailsHtml = renderOllamaParams(b);
             const rowId = 'be-row-' + idx;
             const safeId = escapeHtml(b.id);
+
+            // ==== Loading column («вкладка бэкендов» — Issue: «отображение загрузки») ====
+            // Поддерживаются источники:
+            //   1) b.loadingModels: [{name, state, loadingStartedAt, loadingSizeBytes, error}] — массив
+            //   2) b.loadingModelCount: число (если API отдаёт только счётчик)
+            //   3) b.llamaCppMetrics.loadingModels: альтернативный путь (через metrics-broker)
+            const loadingArr = (b.loadingModels && Array.isArray(b.loadingModels) && b.loadingModels.length > 0)
+                ? b.loadingModels
+                : ((b.llamaCppMetrics && Array.isArray(b.llamaCppMetrics.loadingModels)) ? b.llamaCppMetrics.loadingModels : []);
+            const loadingCount = (b.loadingModelCount != null) ? b.loadingModelCount : loadingArr.length;
+            let loadingCell;
+            if (loadingCount > 0 && loadingArr.length === 0) {
+                // Только счётчик известен
+                loadingCell = '<span class="badge" style="background:rgba(74,158,255,0.12);color:#4a9eff;border-color:rgba(74,158,255,0.3)" title="' +
+                    _t('gguf.col_loading_count', { count: loadingCount }) + '"><i class="fas fa-spinner fa-spin"></i> ' + loadingCount + '</span>';
+            } else if (loadingArr.length > 0) {
+                const cells = loadingArr.slice(0, 2).map(function (lm) {
+                    const startedAt = lm.loadingStartedAt ? new Date(lm.loadingStartedAt).getTime() : Date.now();
+                    const elapsedMs = (lm.elapsedMs && lm.elapsedMs > 0) ? lm.elapsedMs : (Date.now() - startedAt);
+                    const elapsedSec = Math.max(0, Math.floor(elapsedMs / 1000));
+                    const elapsedLabel = elapsedSec < 60
+                        ? elapsedSec + 's'
+                        : Math.floor(elapsedSec / 60) + 'm ' + (elapsedSec % 60) + 's';
+                    if (lm.state === 'error') {
+                        return '<span class="badge badge-red" title="' + escapeHtml(lm.error || 'error') + '" style="margin-right:4px;">' +
+                            '<i class="fas fa-times-circle"></i> ' + escapeHtml(lm.name) +
+                        '</span>';
+                    }
+                    return '<span class="badge" style="background:rgba(74,158,255,0.12);color:#4a9eff;border-color:rgba(74,158,255,0.3);margin-right:4px;" title="' +
+                        _t('gguf.loading_indicator') + ': ' + escapeHtml(lm.name) + '">' +
+                        '<i class="fas fa-spinner fa-spin"></i> ' + escapeHtml(lm.name) + ' ' + elapsedLabel +
+                    '</span>';
+                }).join('');
+                const more = loadingArr.length > 2 ? (' +' + (loadingArr.length - 2)) : '';
+                loadingCell = cells + more;
+            } else {
+                loadingCell = '<span style="color:var(--text-secondary)">-</span>';
+            }
 
             const agentActionsHtml = b.hasAgent ? `
                 <div class="agent-actions">
@@ -724,6 +762,7 @@ const Renderers = (function () {
                     <td>${escapeHtml(labels)}</td>
                     <td>${escapeHtml(lastContact)}</td>
                     <td>${badge(b.status, b.status === 'healthy' ? 'success' : 'danger')}</td>
+                    <td class="col-right" style="min-width:140px;max-width:240px;">${loadingCell}</td>
                     <td>
                         <button class="action-btn edit" onclick="event.stopPropagation(); ui.editBackend('${safeId}')">${_t('common.edit')}</button>
                         <button class="action-btn delete" onclick="event.stopPropagation(); ui.confirmDeleteBackend('${safeId}')">${_t('common.delete')}</button>
@@ -731,7 +770,7 @@ const Renderers = (function () {
                     </td>
                 </tr>
                 <tr class="be-detail-row" id="${rowId}" style="display:none;">
-                    <td colspan="13">
+                    <td colspan="14">
                         <div class="be-detail-content">
                             ${detailsHtml}
                             ${agentActionsHtml}

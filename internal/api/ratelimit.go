@@ -14,13 +14,21 @@ type RateLimiter struct {
 	maxTokens  float64
 	refillRate float64 // токенов в секунду
 	lastRefill time.Time
+	disabled   bool
 	mu         sync.Mutex
 }
 
 // NewRateLimiter создает новый rate limiter с указанными параметрами
 // maxTokens - максимальное количество токенов (burst capacity)
 // refillRate - скорость пополнения токенов в секунду
+// Если maxTokens <= 0 или refillRate <= 0, rate limiting считается отключённым
+// и Allow() всегда возвращает true.
 func NewRateLimiter(maxTokens, refillRate float64) *RateLimiter {
+	if maxTokens <= 0 || refillRate <= 0 {
+		return &RateLimiter{
+			disabled: true,
+		}
+	}
 	return &RateLimiter{
 		tokens:     maxTokens, // начинаем с полным баком
 		maxTokens:  maxTokens,
@@ -51,14 +59,18 @@ func (rl *RateLimiter) refill() {
 func (rl *RateLimiter) Allow() bool {
 	rl.mu.Lock()
 	defer rl.mu.Unlock()
-	
+
+	if rl.disabled {
+		return true
+	}
+
 	rl.refill()
-	
+
 	if rl.tokens >= 1.0 {
 		rl.tokens -= 1.0
 		return true
 	}
-	
+
 	return false
 }
 
@@ -66,9 +78,13 @@ func (rl *RateLimiter) Allow() bool {
 func (rl *RateLimiter) GetStatus() (tokens float64, maxTokens float64) {
 	rl.mu.Lock()
 	defer rl.mu.Unlock()
-	
+
+	if rl.disabled {
+		return 0, 0
+	}
+
 	rl.refill()
-	
+
 	return rl.tokens, rl.maxTokens
 }
 
@@ -82,13 +98,17 @@ func (rl *RateLimiter) GetRefillRate() float64 {
 func (rl *RateLimiter) GetRetryAfter() float64 {
 	rl.mu.Lock()
 	defer rl.mu.Unlock()
-	
+
+	if rl.disabled {
+		return 0
+	}
+
 	rl.refill()
-	
+
 	if rl.tokens >= 1.0 {
 		return 0
 	}
-	
+
 	// Вычисляем время до получения одного токена
 	tokensNeeded := 1.0 - rl.tokens
 	return tokensNeeded / rl.refillRate

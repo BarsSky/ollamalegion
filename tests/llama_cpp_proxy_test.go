@@ -20,7 +20,8 @@ import (
 
 // TestLlamaCppProxy_Basic проверяет базовое проксирование запроса через балансер к llama.cpp бэкенду
 func TestLlamaCppProxy_Basic(t *testing.T) {
-	// Создаём mock CppWorker сервер
+	// Создаём mock CppWorker сервер с OpenAI-совместимыми эндпоинтами.
+	// Балансер транслирует Ollama /api/chat → /v1/chat/completions.
 	cppServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
 		case r.URL.Path == "/health" || r.URL.Path == "/api/health" || r.URL.Path == "/api/v1/cppworker/health":
@@ -35,14 +36,30 @@ func TestLlamaCppProxy_Basic(t *testing.T) {
 					{"name": "test-model:latest"},
 				},
 			})
-		case strings.Contains(r.URL.Path, "/api/chat") || strings.Contains(r.URL.Path, "/api/generate"):
-			// Симулируем ответ инференса
+		case strings.Contains(r.URL.Path, "/v1/chat/completions"):
+			// Симулируем ответ инференса в OpenAI формате
+			body, _ := io.ReadAll(r.Body)
+			var req map[string]interface{}
+			json.Unmarshal(body, &req)
+			model, _ := req["model"].(string)
+
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusOK)
 			json.NewEncoder(w).Encode(map[string]interface{}{
-				"model":    "test-model",
-				"response": "Hello from llama.cpp mock!",
-				"done":     true,
+				"id":      "chatcmpl-test",
+				"object":  "chat.completion",
+				"created": time.Now().Unix(),
+				"model":   model,
+				"choices": []map[string]interface{}{
+					{
+						"index": 0,
+						"message": map[string]string{
+							"role":    "assistant",
+							"content": "Hello from llama.cpp mock!",
+						},
+						"finish_reason": "stop",
+					},
+				},
 			})
 		default:
 			w.WriteHeader(http.StatusNotFound)
@@ -446,6 +463,16 @@ func TestLlamaCppProxy_OpenAICompatibleEndpoint(t *testing.T) {
 // TestLlamaCppProxy_StreamingResponse проверяет SSE-стриминг через балансер к llama.cpp
 func TestLlamaCppProxy_StreamingResponse(t *testing.T) {
 	cppServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		path := r.URL.Path
+
+		// Auto-load endpoint не реализован в mock — возвращаем 404,
+		// чтобы балансер применил graceful fallback к lazy-load.
+		if strings.Contains(path, "/api/models/load") {
+			w.WriteHeader(http.StatusNotFound)
+			json.NewEncoder(w).Encode(map[string]string{"error": "not found"})
+			return
+		}
+
 		// Проверяем stream флаг
 		body, _ := io.ReadAll(r.Body)
 		var req map[string]interface{}
@@ -453,7 +480,7 @@ func TestLlamaCppProxy_StreamingResponse(t *testing.T) {
 
 		stream, _ := req["stream"].(bool)
 
-		if stream {
+		if stream && strings.Contains(path, "/v1/chat/completions") {
 			w.Header().Set("Content-Type", "text/event-stream")
 			w.Header().Set("Transfer-Encoding", "chunked")
 			w.WriteHeader(http.StatusOK)
@@ -463,11 +490,44 @@ func TestLlamaCppProxy_StreamingResponse(t *testing.T) {
 				return
 			}
 
+			// OpenAI-совместимые SSE-чанки для /api/chat
 			chunks := []map[string]interface{}{
-				{"model": "test-model", "response": "Hello", "done": false},
-				{"model": "test-model", "response": " from", "done": false},
-				{"model": "test-model", "response": " llama.cpp!", "done": false},
-				{"model": "test-model", "response": "", "done": true, "total_duration": 1234567890},
+				{
+					"id":      "chatcmpl-test",
+					"object":  "chat.completion.chunk",
+					"created": time.Now().Unix(),
+					"model":   "test-model",
+					"choices": []map[string]interface{}{
+						{"index": 0, "delta": map[string]string{"role": "assistant"}, "finish_reason": nil},
+					},
+				},
+				{
+					"id":      "chatcmpl-test",
+					"object":  "chat.completion.chunk",
+					"created": time.Now().Unix(),
+					"model":   "test-model",
+					"choices": []map[string]interface{}{
+						{"index": 0, "delta": map[string]string{"content": "Hello"}, "finish_reason": nil},
+					},
+				},
+				{
+					"id":      "chatcmpl-test",
+					"object":  "chat.completion.chunk",
+					"created": time.Now().Unix(),
+					"model":   "test-model",
+					"choices": []map[string]interface{}{
+						{"index": 0, "delta": map[string]string{"content": " from"}, "finish_reason": nil},
+					},
+				},
+				{
+					"id":      "chatcmpl-test",
+					"object":  "chat.completion.chunk",
+					"created": time.Now().Unix(),
+					"model":   "test-model",
+					"choices": []map[string]interface{}{
+						{"index": 0, "delta": map[string]string{"content": " llama.cpp!"}, "finish_reason": "stop"},
+					},
+				},
 			}
 
 			for _, chunk := range chunks {
@@ -476,15 +536,75 @@ func TestLlamaCppProxy_StreamingResponse(t *testing.T) {
 				flusher.Flush()
 				time.Sleep(5 * time.Millisecond)
 			}
-		} else {
-			w.Header().Set("Content-Type", "application/json")
-			w.WriteHeader(http.StatusOK)
-			json.NewEncoder(w).Encode(map[string]interface{}{
-				"model":    "test-model",
-				"response": "Hello from llama.cpp!",
-				"done":     true,
-			})
+			return
 		}
+
+		if stream && strings.Contains(path, "/v1/completions") {
+			w.Header().Set("Content-Type", "text/event-stream")
+			w.Header().Set("Transfer-Encoding", "chunked")
+			w.WriteHeader(http.StatusOK)
+
+			flusher, ok := w.(http.Flusher)
+			if !ok {
+				return
+			}
+
+			// OpenAI-совместимые SSE-чанки для /api/generate
+			chunks := []map[string]interface{}{
+				{
+					"id":      "cmpl-test",
+					"object":  "text_completion.chunk",
+					"created": time.Now().Unix(),
+					"model":   "test-model",
+					"choices": []map[string]interface{}{
+						{"index": 0, "text": "Hello", "finish_reason": nil},
+					},
+				},
+				{
+					"id":      "cmpl-test",
+					"object":  "text_completion.chunk",
+					"created": time.Now().Unix(),
+					"model":   "test-model",
+					"choices": []map[string]interface{}{
+						{"index": 0, "text": " from", "finish_reason": nil},
+					},
+				},
+				{
+					"id":      "cmpl-test",
+					"object":  "text_completion.chunk",
+					"created": time.Now().Unix(),
+					"model":   "test-model",
+					"choices": []map[string]interface{}{
+						{"index": 0, "text": " llama.cpp!", "finish_reason": "stop"},
+					},
+				},
+			}
+
+			for _, chunk := range chunks {
+				data, _ := json.Marshal(chunk)
+				fmt.Fprintf(w, "data: %s\n\n", data)
+				flusher.Flush()
+				time.Sleep(5 * time.Millisecond)
+			}
+			return
+		}
+
+		// non-streaming fallback
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"id":      "cmpl-test",
+			"object":  "text_completion",
+			"created": time.Now().Unix(),
+			"model":   "test-model",
+			"choices": []map[string]interface{}{
+				{
+					"index": 0,
+					"text":  "Hello from llama.cpp!",
+					"finish_reason": "stop",
+				},
+			},
+		})
 	}))
 	defer cppServer.Close()
 
@@ -564,8 +684,9 @@ func TestLlamaCppProxy_StreamingResponse(t *testing.T) {
 	bodyStr := string(body)
 	t.Logf("Stream response length: %d bytes", len(bodyStr))
 
-	// Проверяем что получили SSE данные
-	assert.Contains(t, bodyStr, "data:", "Stream response should contain SSE data")
+	// Проверяем что получили NDJSON-чанки в Ollama-формате
+	assert.Contains(t, bodyStr, `"response":"Hello"`, "Stream response should contain first chunk")
+	assert.Contains(t, bodyStr, `"response":" llama.cpp!"`, "Stream response should contain last chunk")
 	assert.Contains(t, bodyStr, "llama.cpp", "Stream response should contain llama.cpp string")
 
 	// Проверяем наличие done:true

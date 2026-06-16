@@ -811,7 +811,14 @@ func TestSelectByResourcesWithLimits(t *testing.T) {
 	assert.Equal(t, "backend-2", backend)
 }
 
-// TestSelectBackendAllBusy - проверка когда все бэкенды заняты
+// TestSelectBackendAllBusy - проверка queueing-aware fallback при заполненных слотах.
+//
+// В текущей реализации selectByResources/score НЕ отсеивает backend при active >= maxReqs —
+// он просто выбирает backend с лучшим score даже при 100% загрузке. Это queueing-aware
+// поведение: запрос ставится в очередь, и tryAcquireSlot в dispatchRequest решает,
+// можно ли захватить слот; если нет — ErrNoBackendAvailable, queue requeue'ит.
+// Поэтому при MaxConcurrentReqs=0 selectByResources всё равно вернёт один из бэкендов
+// (с лучшим score), а не пустую строку. Проверяем именно это.
 func TestSelectBackendAllBusy(t *testing.T) {
 	t.Parallel()
 
@@ -820,16 +827,17 @@ func TestSelectBackendAllBusy(t *testing.T) {
 	proxy.SetQueueManagerProxy()
 	defer proxy.queueMgr.Stop()
 
-	// Устанавливаем max concurrent requests = 0 чтобы заблокировать
+	// Заполняем слоты (ActiveReqs == MaxConcurrentReqs == 0 → все «перегружены»).
 	proxy.mu.Lock()
 	for _, state := range proxy.backends {
 		state.Backend.MaxConcurrentReqs = 0
 	}
 	proxy.mu.Unlock()
 
-	// Выбираем бэкенд — должен вернуть пустую строку
+	// Queueing-aware fallback: должен вернуть один из backend'ов, а не empty.
 	backend := proxy.selectBackend("", "")
-	assert.Empty(t, backend)
+	assert.NotEmpty(t, backend, "queueing-aware: должен выбрать least-loaded backend для постановки в очередь")
+	assert.Contains(t, []string{"backend-1", "backend-2"}, backend)
 }
 
 // TestGetQueueStats - проверка получения статистики очереди

@@ -381,3 +381,104 @@ func TestTranslateSSEChatToOllama_FullSequenceDoneHasModel(t *testing.T) {
 		}
 	}
 }
+
+// TestTranslateSSEChatToOllama_FilterServiceTokens — регрессионный тест
+// для фильтрации служебных токенов модели (Gemma <end_of_turn>, Llama3
+// <|eot_id|>, ChatML <|im_end|> и т.д.) в Ollama NDJSON-пути.
+//
+// Без фильтрации ollama-js (используется в Cline) получает «мусорный»
+// content в message.content и падает с ошибкой "Invalid API Response".
+// Тест проверяет, что чанки со служебными токенами заменяются на
+// валидный Ollama NDJSON-чанк с пустым content.
+func TestTranslateSSEChatToOllama_FilterServiceTokens(t *testing.T) {
+	cases := []struct {
+		name    string
+		content string
+	}{
+		{"gemma_end_of_turn", "<end_of_turn>"},
+		{"gemma_end_of_turn_whitespace", "  <end_of_turn>  "},
+		{"gemma_start_of_turn", "<start_of_turn>"},
+		{"llama_eot_id", "<|eot_id|>"},
+		{"llama_im_end", "<|im_end|>"},
+		{"mixed_with_text", "hello<end_of_turn>world"},
+		{"gemma_prefix", "<end_of_turn>hello"},
+		{"gemma_suffix", "hello<end_of_turn>"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			chunk := map[string]interface{}{
+				"choices": []interface{}{
+					map[string]interface{}{
+						"delta": map[string]interface{}{
+							"content": tc.content,
+						},
+					},
+				},
+			}
+			got := translateSSEChatToOllama(chunk, "gemma-3-4b-it")
+			if got == nil {
+				t.Fatalf("expected non-nil result for filtered service token")
+			}
+			var obj map[string]interface{}
+			if err := json.Unmarshal(got[:len(got)-1], &obj); err != nil {
+				t.Fatalf("invalid JSON: %v: %s", err, got)
+			}
+			msg, ok := obj["message"].(map[string]interface{})
+			if !ok {
+				t.Fatalf("missing or invalid message field: %s", got)
+			}
+			content, _ := msg["content"].(string)
+			if content != "" {
+				t.Errorf("expected empty content for service token, got %q", content)
+			}
+			if obj["done"] != false {
+				t.Errorf("expected done=false for filtered content chunk, got %v", obj["done"])
+			}
+		})
+	}
+}
+
+// TestTranslateSSEChatToOllama_PreservesValidContent — контр-тест:
+// нормальный (не служебный) content должен проходить БЕЗ фильтрации.
+func TestTranslateSSEChatToOllama_PreservesValidContent(t *testing.T) {
+	cases := []struct {
+		name    string
+		content string
+	}{
+		{"plain_text", "Hello, world!"},
+		{"german", "Hallo Welt"},
+		{"russian", "Привет, мир"},
+		{"code_block", "```go\nfunc main() {}\n```"},
+		{"with_angle_bracket", "use <stdio.h> for C"},
+		{"eot_in_word", "footnote"}, // содержит "eot", но не "<|eot_id|>"
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			chunk := map[string]interface{}{
+				"choices": []interface{}{
+					map[string]interface{}{
+						"delta": map[string]interface{}{
+							"content": tc.content,
+						},
+					},
+				},
+			}
+			got := translateSSEChatToOllama(chunk, "gemma-3-4b-it")
+			if got == nil {
+				t.Fatalf("expected non-nil result for valid content")
+			}
+			var obj map[string]interface{}
+			if err := json.Unmarshal(got[:len(got)-1], &obj); err != nil {
+				t.Fatalf("invalid JSON: %v: %s", err, got)
+			}
+			msg, ok := obj["message"].(map[string]interface{})
+			if !ok {
+				t.Fatalf("missing or invalid message field")
+			}
+			content, _ := msg["content"].(string)
+			if content != tc.content {
+				t.Errorf("content was filtered/changed: want %q, got %q", tc.content, content)
+			}
+		})
+	}
+}

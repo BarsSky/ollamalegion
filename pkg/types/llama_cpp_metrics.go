@@ -2,16 +2,23 @@ package types
 
 // LlamaCppMetrics - метрики llama.cpp бэкенда
 type LlamaCppMetrics struct {
-	LoadedModels      []LlamaCppModel `json:"loadedModels"`
-	AvailableModels   []LlamaCppModel `json:"availableModels,omitempty"`
-	ActiveRequests    int             `json:"activeRequests"`
-	TotalRequests     int64           `json:"totalRequests"`
-	AvgResponseTime   float64         `json:"avgResponseTime"`   // ms
-	RequestsPerSecond float64         `json:"requestsPerSecond"`
-	FreeSlots         int             `json:"freeSlots"`
-	AvailableSlots    int             `json:"availableSlots"`
-	MaxModels         int             `json:"maxModels"`
-	MaxConcurrentReqs int             `json:"maxConcurrentReqs"`
+	LoadedModels []LlamaCppModel `json:"loadedModels"`
+	// LoadingModels — модели, которые сейчас в процессе загрузки (State="loading").
+	// Заполняется из cppworker /api/models/load/progress (либо из notifyModelLoaded callback).
+	// Используется UI (монитор, вкладка бэкендов, GGUF-таб) для отображения
+	// спиннера и elapsed-time «Загружается model-name 25s».
+	// При переходе State=loaded элемент перемещается в LoadedModels, при
+	// State=error — остаётся здесь до следующего poll с error-полем.
+	LoadingModels     []LlamaCppModel  `json:"loadingModels,omitempty"`
+	AvailableModels   []LlamaCppModel  `json:"availableModels,omitempty"`
+	ActiveRequests    int              `json:"activeRequests"`
+	TotalRequests     int64            `json:"totalRequests"`
+	AvgResponseTime   float64          `json:"avgResponseTime"` // ms
+	RequestsPerSecond float64          `json:"requestsPerSecond"`
+	FreeSlots         int              `json:"freeSlots"`
+	AvailableSlots    int              `json:"availableSlots"`
+	MaxModels         int              `json:"maxModels"`
+	MaxConcurrentReqs int              `json:"maxConcurrentReqs"`
 	GPUInfo           *LlamaCppGPUInfo `json:"gpuInfo,omitempty"`
 }
 
@@ -27,20 +34,26 @@ type LlamaCppModel struct {
 	NumGPULayers  int    `json:"numGpuLayers"`
 	Quantization  string `json:"quantization"`
 	State         string `json:"state"` // "loaded", "loading", "error"
+	// === Loading state (Шаг «отображение загрузки в мониторе и вкладке бэкендов») ===
+	// Заполняются только пока State == "loading" / "error". После успешной
+	// загрузки поля обнуляются (omitempty).
+	LoadingStartedAt *string `json:"loadingStartedAt,omitempty"` // RFC3339Nano
+	LoadingSizeBytes int64   `json:"loadingSizeBytes,omitempty"` // ожидаемый размер модели
+	LoadingError     string  `json:"loadingError,omitempty"`     // причина сбоя (если State="error")
 }
 
 // LlamaCppGPUInfo - информация о GPU для llama.cpp
 type LlamaCppGPUInfo struct {
-	Count       int               `json:"count"`
-	Devices     []LlamaCppGPUDevice `json:"devices"`
-	TotalVRAM   uint64            `json:"totalVram"`   // MB
-	FreeVRAM    uint64            `json:"freeVram"`    // MB
+	Count     int                 `json:"count"`
+	Devices   []LlamaCppGPUDevice `json:"devices"`
+	TotalVRAM uint64              `json:"totalVram"` // MB
+	FreeVRAM  uint64              `json:"freeVram"`  // MB
 }
 
 // LlamaCppGPUDevice - одно GPU-устройство
 type LlamaCppGPUDevice struct {
-	Name        string `json:"name"`
-	MemoryTotal uint64 `json:"memoryTotal"` // MB
-	MemoryFree  uint64 `json:"memoryFree"`  // MB
+	Name        string  `json:"name"`
+	MemoryTotal uint64  `json:"memoryTotal"` // MB
+	MemoryFree  uint64  `json:"memoryFree"`  // MB
 	Utilization float64 `json:"utilization"` // %
 }

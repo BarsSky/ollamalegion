@@ -1,6 +1,7 @@
 package balancer
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -656,6 +657,17 @@ func TestAutoPullFullScenario(t *testing.T) {
 	require.NotNil(t, proxy)
 	require.NotNil(t, proxy.AutoPull, "AutoPullManager should be initialized")
 
+	// Этот тест проверяет Ollama-flow: ServeHTTP → proxyRequest →
+	// ModelNotFoundError → AutoPull → executePull → retry → success.
+	// В текущей архитектуре ServeHTTP сначала вызывает routeRequest, который
+	// при OperatingMode="" (default в createTestConfig) допускает оба типа
+	// бэкендов и сначала пробует LlamaCppRouter. Тестовый backend-1 имеет
+	// пустой Type (Ollama по умолчанию), поэтому LlamaCppRouter.handleGenerate
+	// возвращает 503 "no llama.cpp backend available" ещё до того, как мы
+	// дошли до proxyRequest. Отключаем llama.cpp роутер в тесте, чтобы
+	// flow шёл по основной Ollama-ветке, для которой тест и писался.
+	proxy.llamaCppRouter = nil
+
 	// Добавляем метрики, чтобы backend прошёл checkResourceLimits.
 	// Модель НЕ указываем в RunningModels — пусть AutoPull сам её загрузит.
 	// selectBackend выберет backend-1 через P3 (free) или P4 (fallback).
@@ -671,6 +683,10 @@ func TestAutoPullFullScenario(t *testing.T) {
 	body := `{"model":"test-model:latest","prompt":"hello"}`
 	req := httptest.NewRequest(http.MethodPost, "/api/generate", strings.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
+	// В production ServeHTTP устанавливает modelContextKey после парсинга body.
+	// Тест шлёт запрос напрямую — ставим ключ вручную, чтобы isModelNotFoundError
+	// в proxyRequest нашёл modelFromCtx и EnsureModel получил имя модели.
+	req = req.WithContext(context.WithValue(req.Context(), modelContextKey, "test-model:latest"))
 	w := httptest.NewRecorder()
 
 	// Выполняем через ServeHTTP — полный цикл:

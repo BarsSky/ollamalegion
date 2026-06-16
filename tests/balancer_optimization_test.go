@@ -226,18 +226,8 @@ func TestSelectFreeBackendAny_Integration(t *testing.T) {
 	defer mockServer2.Close()
 
 	// Извлекаем host:port из mockServer
-	host1 := strings.TrimPrefix(mockServer1.URL, "http://")
-	host2 := strings.TrimPrefix(mockServer2.URL, "http://")
-
-	hostParts1 := strings.Split(host1, ":")
-	hostParts2 := strings.Split(host2, ":")
-
-	if len(hostParts1) < 2 || len(hostParts2) < 2 {
-		t.Skip("Cannot parse mock server URLs")
-	}
-
-	addr1 := hostParts1[0]
-	addr2 := hostParts2[0]
+	addr1, _ := parseHostPort(mockServer1.URL)
+	addr2, _ := parseHostPort(mockServer2.URL)
 
 	backends := []types.Backend{
 		createHealthyBackend("be1", addr1),

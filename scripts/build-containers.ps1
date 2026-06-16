@@ -7,12 +7,16 @@
 #   .\scripts\build-containers.ps1 -Balancer           # только balancer
 #   .\scripts\build-containers.ps1 -WebUI              # только webui
 #   .\scripts\build-containers.ps1 -Agent              # только agent cppworker
+#   .\scripts\build-containers.ps1 -CppWorker          # только cppworker
+#   .\scripts\build-containers.ps1 -CppWorker -CudaArch "86"   # только cppworker:gpu с тегом :gpu-86
+#   .\scripts\build-containers.ps1 -CudaArch "all"    # все поддерживаемые архитектуры (тэг :gpu-arch_all)
 # =============================================================================
 param(
     [switch]$Balancer,
     [switch]$WebUI,
     [switch]$Agent,
-    [switch]$CppWorker
+    [switch]$CppWorker,
+    [string]$CudaArch = $env:CUDA_ARCH
 )
 
 $ErrorActionPreference = "Stop"
@@ -44,12 +48,45 @@ try {
     }
 
     if ($CppWorker) {
-        Write-Host "=== Building ollama-legion/cppworker:gpu (CUDA) ===" -ForegroundColor Cyan
-        docker build -t ollama-legion/cppworker:gpu -f docker/cppworker/Dockerfile.gpu --target runtime .
+        # Определяем архитектуру CUDA. Пустая/не задана = "all" (по умолчанию в Dockerfile).
+        if ([string]::IsNullOrWhiteSpace($CudaArch)) {
+            $CudaArch = "all"
+        }
+
+        # Нормализуем значение для тега:
+        #   "all"        -> arch_all
+        #   "75;86;89"   -> arch_75-86-89
+        #   "86"         -> 86
+        #   "ALL"        -> arch_all
+        $tagArchSegment = ""
+        $lowerArch = $CudaArch.Trim().ToLower()
+        if ($lowerArch -in @("all", "*", "any", "native", "arch_all")) {
+            $tagArchSegment = "arch_all"
+        } else {
+            # заменяем разделители ; , пробел на дефис
+            $normalized = ($CudaArch -replace '[;,\s]+', '-').Trim('-')
+            if ([string]::IsNullOrEmpty($normalized)) {
+                $tagArchSegment = "arch_all"
+            } else {
+                $tagArchSegment = $normalized
+            }
+        }
+
+        $gpuImage = "ollama-legion/cppworker:gpu-$tagArchSegment"
+        $cpuImage = "ollama-legion/cppworker:cpu"
+
+        Write-Host "=== Building $gpuImage (CUDA_ARCH=$CudaArch) ===" -ForegroundColor Cyan
+        $gpuBuildArgs = @()
+        if ($lowerArch -ne "arch_all") {
+            # передаём --build-arg только если архитектура не "all" (иначе используем дефолт в Dockerfile)
+            $gpuBuildArgs += "--build-arg"
+            $gpuBuildArgs += "CUDA_ARCH=$CudaArch"
+        }
+        & docker build @gpuBuildArgs -t $gpuImage -f docker/cppworker/Dockerfile.gpu --target runtime .
         if ($LASTEXITCODE -ne 0) { throw "CppWorker GPU build failed" }
 
-        Write-Host "=== Building ollama-legion/cppworker:cpu ===" -ForegroundColor Cyan
-        docker build -t ollama-legion/cppworker:cpu -f docker/cppworker/Dockerfile.cpu --target runtime .
+        Write-Host "=== Building $cpuImage ===" -ForegroundColor Cyan
+        docker build -t $cpuImage -f docker/cppworker/Dockerfile.cpu --target runtime .
         if ($LASTEXITCODE -ne 0) { throw "CppWorker CPU build failed" }
     }
 

@@ -145,6 +145,13 @@
     "resourceReservation": {
       "gpuHeadroomPercent": 15,
       "ramHeadroomPercent": 10
+    },
+    "nctxReload": {
+      "_comment": "Adaptive n_ctx auto-reload for cppworker (Stage 6). Когда клиент присылает n_ctx > загруженного в VRAM, balancer может auto-reload'ить модель с большим n_ctx (если VRAM позволяет), или вернуть 413 клиенту. По умолчанию ВЫКЛЮЧЕНО (auto_reload_n_ctx: false) — для активации установите true.",
+      "auto_reload_n_ctx": false,
+      "auto_reload_max_n_ctx": 262144,
+      "auto_reload_vram_safety_factor": 0.85,
+      "auto_reload_timeout_sec": 90
     }
   },
   "resources": {
@@ -184,6 +191,15 @@
       "your-master-token-here-change-in-production"
     ],
     "headerName": "X-API-Token"
+  },
+  "llamaCppModelProfiles": {
+    "gemma-4-E4B-it-Q4_K_M": {
+      "contextLength": 16384,
+      "batchSize": 512,
+      "numGpuLayers": -1,
+      "flashAttn": true,
+      "notes": "Gemma 4 trained on 256K; Cline needs 8K+, OpenWebUI 16K+. Для 256K увеличьте до 262144."
+    }
   },
   "initialized": false,
   "backendEngine": "llama_cpp"

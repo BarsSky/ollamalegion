@@ -245,15 +245,24 @@ const ui = (function () {
         return titles[page] || 'Dashboard';
     }
 
+    // Статусы, которые считаем нерабочими и скрываем в UI по умолчанию.
+    var UNHEALTHY_STATUSES_UI = { unhealthy: true, offline: true, draining: true, ollama_unavailable: true };
+
     /**
-     * Фильтрует бэкенды по текущему типу (ollama / llama_cpp).
+     * Фильтрует бэкенды по текущему типу (ollama / llama_cpp) и по статусу.
+     * Нерабочие бэкенды (unhealthy/offline/draining/ollama_unavailable) скрываются,
+     * чтобы в WebUI не отображались заглушки/недоступные ноды.
      * Использует BackendTypeFilter как клиентский fallback.
      * Если сервер уже отфильтровал — фильтр пройдёт без изменений.
      */
     function filterBackendsForUI(backends) {
-        if (!window.BackendTypeFilter) return backends;
+        if (!Array.isArray(backends)) return backends;
+        var filtered = backends.filter(function (b) {
+            return !UNHEALTHY_STATUSES_UI[b.status];
+        });
+        if (!window.BackendTypeFilter) return filtered;
         var type = BackendTypeFilter.getCurrentType();
-        return BackendTypeFilter.filterBackends(backends, type);
+        return BackendTypeFilter.filterBackends(filtered, type);
     }
 
     function refreshPage(page) {
@@ -542,6 +551,37 @@ const ui = (function () {
         if (saveBackendLimitsBtn) {
             saveBackendLimitsBtn.addEventListener('click', function() {
                 saveBackendLimits();
+            });
+        }
+
+        // CppWorker port Auto-detect button (форма регистрации бэкенда)
+        var cppPortDetectBtn = document.getElementById('formBackendCppWorkerPortDetect');
+        if (cppPortDetectBtn) {
+            cppPortDetectBtn.addEventListener('click', function () {
+                var hostEl = document.getElementById('formBackendHost');
+                var portEl = document.getElementById('formBackendCppWorkerPort');
+                var host = hostEl ? hostEl.value.trim() : '';
+                if (!host) {
+                    showToast('Сначала укажите host', 'error');
+                    return;
+                }
+                cppPortDetectBtn.disabled = true;
+                var originalText = cppPortDetectBtn.innerHTML;
+                cppPortDetectBtn.innerHTML = '⏳ Detecting…';
+                autoDetectCppWorkerPort(host).then(function (detected) {
+                    cppPortDetectBtn.disabled = false;
+                    cppPortDetectBtn.innerHTML = originalText;
+                    if (detected) {
+                        if (portEl) portEl.value = detected;
+                        showToast('Обнаружен порт CppWorker: ' + detected, 'success');
+                    } else {
+                        showToast('CppWorker не найден на портах 18092/18091/18093/18090. Укажите вручную.', 'error');
+                    }
+                }).catch(function () {
+                    cppPortDetectBtn.disabled = false;
+                    cppPortDetectBtn.innerHTML = originalText;
+                    showToast('Ошибка auto-detect', 'error');
+                });
             });
         }
 
@@ -1319,13 +1359,42 @@ const ui = (function () {
         }
 
         var backendType = (document.getElementById('formBackendType') && document.getElementById('formBackendType').value) || 'ollama';
-        var cppWorkerPort = parseInt((document.getElementById('formBackendCppWorkerPort') && document.getElementById('formBackendCppWorkerPort').value)) || 18090;
+
+        // cppWorker port:
+        //   1. Берём значение из формы, если оно заполнено и > 0
+        //   2. Иначе пробуем auto-detect (probe 18092/18091/18093/18090 на /info)
+        //   3. Fallback: 18092 (актуальный default для современных llama.cpp-инсталляций).
+        // Старое значение 18090 было НЕВЕРНЫМ — это agentPort, а не cppworker port.
+        var cppWorkerPortInput = parseInt((document.getElementById('formBackendCppWorkerPort') && document.getElementById('formBackendCppWorkerPort').value)) || 0;
         var cppGrpcPort = parseInt((document.getElementById('formBackendCppGrpcPort') && document.getElementById('formBackendCppGrpcPort').value)) || 19000;
 
         var payload = { id, name: name || id, host, ollamaPort, agentPort, weight, maxConcurrentRequests: maxConcurrent, maxModels, gpuMode, labels, backendType: backendType };
+
+        // Для llama.cpp-бэкенда гарантируем корректный cppWorkerPort.
+        // Если поле пустое — пробуем auto-detect на лету (synchronously-parallel HTTP probes).
         if (backendType === 'llama_cpp') {
-            payload.cppWorkerPort = cppWorkerPort;
+            payload.cppWorkerPort = cppWorkerPortInput > 0 ? cppWorkerPortInput : 18092;
             payload.grpcPort = cppGrpcPort;
+
+            // Асинхронно проверяем реальный доступный порт и обновляем бэкенд,
+            // если поле было пустым и auto-detect нашёл что-то отличное от 18092.
+            if (cppWorkerPortInput <= 0) {
+                autoDetectCppWorkerPort(host).then(function (detected) {
+                    if (detected && detected !== payload.cppWorkerPort) {
+                        payload.cppWorkerPort = detected;
+                        // Обновляем бэкенд (PATCH) — чтобы в config зафиксировался правильный порт
+                        Api.updateBackend(id, { cppWorkerPort: detected }).then(function () {
+                            if (window.console && console.log) {
+                                console.log('[app.js] auto-detected cppworker port:', detected, 'for backend', id);
+                            }
+                        }).catch(function (err) {
+                            if (window.console && console.warn) {
+                                console.warn('[app.js] failed to update cppworker port:', err);
+                            }
+                        });
+                    }
+                }).catch(function () { /* ignore */ });
+            }
         }
         const isEdit = document.getElementById('formBackendId').disabled;
 
@@ -1820,6 +1889,46 @@ const ui = (function () {
     function closeModelManageModal() {
         const modal = document.getElementById('modelManageModal');
         if (modal) modal.classList.remove('active');
+    }
+
+    // ---- CppWorker port auto-detection ----
+    // Probes common cppworker ports on the given host and returns the first
+    // port that responds OK to /info (or /health). 18092 first (актуальный
+    // default для современных llama.cpp-инсталляций), затем 18091 (stub),
+    // 18093 (доп. профиль) и 18090 (legacy/agent).
+    async function autoDetectCppWorkerPort(host) {
+        if (!host) return null;
+        const candidates = [18092, 18091, 18093, 18090];
+        // Параллельные probe-запросы (AbortController + 1.5s timeout на каждый)
+        const probes = candidates.map(function (port) {
+            return new Promise(function (resolve) {
+                try {
+                    const ctrl = new AbortController();
+                    const timeoutId = setTimeout(function () { ctrl.abort(); }, 1500);
+                    fetch('http://' + host + ':' + port + '/info', {
+                        signal: ctrl.signal,
+                        mode: 'cors',
+                        cache: 'no-store',
+                        headers: { 'Accept': 'application/json' }
+                    }).then(function (resp) {
+                        clearTimeout(timeoutId);
+                        if (resp && resp.ok) resolve(port);
+                        else resolve(null);
+                    }).catch(function () {
+                        clearTimeout(timeoutId);
+                        resolve(null);
+                    });
+                } catch (e) {
+                    resolve(null);
+                }
+            });
+        });
+        const results = await Promise.all(probes);
+        // Возвращаем первый непустой результат
+        for (var i = 0; i < results.length; i++) {
+            if (results[i]) return results[i];
+        }
+        return null;
     }
 
     // ---- Public API ----

@@ -11,10 +11,12 @@ import (
 	"time"
 
 	"ollama-loadbalancer/pkg/logger"
+	"ollama-loadbalancer/pkg/types"
 )
 
 // ModelManager — менеджер операций с моделями на бэкендах.
-// Отправляет HTTP-запросы напрямую к Ollama API на указанном бэкенде.
+// Отправляет HTTP-запросы напрямую к Ollama API или к CppWorker (для llama.cpp),
+// в зависимости от типа бэкенда.
 type ModelManager struct {
 	proxy  *Proxy
 	client *http.Client
@@ -22,6 +24,11 @@ type ModelManager struct {
 	// Активные операции (modelName -> backendID -> startedAt)
 	activeOps map[string]map[string]time.Time
 }
+
+// modelOpTTL — таймаут жизни «залипших» операций (после которого запись автоматически
+// считается устаревшей и может быть перезаписана). Защищает от ситуации, когда
+// предыдущая операция упала по сети и оставила запись, блокирующую повторные попытки.
+const modelOpTTL = 10 * time.Minute
 
 // NewModelManager — создание менеджера моделей
 func NewModelManager(proxy *Proxy) *ModelManager {
@@ -67,6 +74,25 @@ type ModelInfo struct {
 	Loaded     bool   `json:"loaded"` // загружена ли в память
 }
 
+// resolveBackendPort — возвращает порт инференса в зависимости от движка бэкенда.
+// Для llama.cpp — CppWorkerPort (с fallback 18092), для ollama — OllamaPort.
+func (mm *ModelManager) resolveBackendPort(backend *types.Backend) int {
+	engine := types.ResolveEngine(backend.Engine, backend.Type)
+	if engine == types.EngineLlamaCPP {
+		if backend.CppWorkerPort > 0 {
+			return backend.CppWorkerPort
+		}
+		return 18092 // актуальный default для современных cppworker
+	}
+	return backend.OllamaPort
+}
+
+// isLlamaCppBackend — true, если бэкенд работает через cppworker, а не Ollama.
+func (mm *ModelManager) isLlamaCppBackend(backend *types.Backend) bool {
+	engine := types.ResolveEngine(backend.Engine, backend.Type)
+	return engine == types.EngineLlamaCPP
+}
+
 // ExecuteOperation — выполнение операции с моделью на указанном бэкенде
 func (mm *ModelManager) ExecuteOperation(backendID string, req ModelOpRequest) *ModelOpResult {
 	backend := mm.proxy.GetBackend(backendID)
@@ -81,7 +107,8 @@ func (mm *ModelManager) ExecuteOperation(backendID string, req ModelOpRequest) *
 	}
 
 	host := backend.Host
-	port := backend.OllamaPort
+	port := mm.resolveBackendPort(backend)
+	isLlamaCpp := mm.isLlamaCppBackend(backend)
 
 	// Проверяем, не выполняется ли уже такая операция
 	if !mm.tryAcquireOp(req.Operation, req.ModelName, backendID) {
@@ -95,25 +122,59 @@ func (mm *ModelManager) ExecuteOperation(backendID string, req ModelOpRequest) *
 	}
 	defer mm.releaseOp(req.Operation, req.ModelName, backendID)
 
+	// Доступ к request_id из глобального fallback-context (ensureModelLoadedOnBackend
+	// пока не прокидывает ctx сюда явно — TODO). Если ctx есть, используем
+	// ridLogWith() для автоматического добавления request_id в каждую log-запись.
+	logFn := logger.Get()
+	_ = logFn
+
 	logger.Get().Infow("executing model operation",
 		"operation", req.Operation,
 		"model", req.ModelName,
 		"backend", backendID,
+		"engine", string(types.ResolveEngine(backend.Engine, backend.Type)),
 		"host", host,
 		"port", port)
 
 	var result *ModelOpResult
-	switch strings.ToLower(req.Operation) {
+	op := strings.ToLower(req.Operation)
+
+	// pull/push — только для ollama-бэкендов
+	if op == "pull" || op == "push" {
+		if isLlamaCpp {
+			return &ModelOpResult{
+				Success:   false,
+				Operation: req.Operation,
+				ModelName: req.ModelName,
+				BackendID: backendID,
+				Error:     fmt.Sprintf("operation '%s' is not supported for llama.cpp backends; use HF download instead", req.Operation),
+			}
+		}
+	}
+
+	switch op {
 	case "pull":
 		result = mm.executePull(host, port, backendID, req)
 	case "push":
 		result = mm.executePush(host, port, backendID, req)
 	case "delete":
-		result = mm.executeDelete(host, port, backendID, req)
+		if isLlamaCpp {
+			result = mm.executeLlamaCppDelete(host, port, backendID, req)
+		} else {
+			result = mm.executeDelete(host, port, backendID, req)
+		}
 	case "load":
-		result = mm.executeLoad(host, port, backendID, req)
+		if isLlamaCpp {
+			result = mm.executeLlamaCppLoad(host, port, backendID, req)
+		} else {
+			result = mm.executeLoad(host, port, backendID, req)
+		}
 	case "unload":
-		result = mm.executeUnload(host, port, backendID, req)
+		if isLlamaCpp {
+			result = mm.executeLlamaCppUnload(host, port, backendID, req)
+		} else {
+			result = mm.executeUnload(host, port, backendID, req)
+		}
 	default:
 		result = &ModelOpResult{
 			Success:   false,
@@ -127,18 +188,28 @@ func (mm *ModelManager) ExecuteOperation(backendID string, req ModelOpRequest) *
 	return result
 }
 
-// ListModels — получение списка моделей на бэкенде (из /api/tags и /api/ps)
+// ListModels — получение списка моделей на бэкенде.
+// Для ollama-бэкендов: /api/tags + /api/ps. Для llama.cpp-бэкендов:
+// /api/models/files (список на диске) + /api/models/loaded (что в памяти).
 func (mm *ModelManager) ListModels(backendID string) ([]ModelInfo, error) {
 	backend := mm.proxy.GetBackend(backendID)
 	if backend == nil {
 		return nil, fmt.Errorf("backend '%s' not found", backendID)
 	}
 
-	// Получаем все модели из /api/tags
-	tagsURL := fmt.Sprintf("http://%s:%d/api/tags", backend.Host, backend.OllamaPort)
+	if mm.isLlamaCppBackend(backend) {
+		return mm.listLlamaCppModels(backend)
+	}
+	return mm.listOllamaModels(backend)
+}
+
+// listOllamaModels — список моделей Ollama-бэкенда через /api/tags + /api/ps.
+func (mm *ModelManager) listOllamaModels(backend *types.Backend) ([]ModelInfo, error) {
+	port := backend.OllamaPort
+	tagsURL := fmt.Sprintf("http://%s:%d/api/tags", backend.Host, port)
 	tagsResp, err := mm.client.Get(tagsURL)
 	if err != nil {
-		return nil, fmt.Errorf("failed to fetch tags from backend %s: %w", backendID, err)
+		return nil, fmt.Errorf("failed to fetch tags from backend %s: %w", backend.ID, err)
 	}
 	defer tagsResp.Body.Close()
 
@@ -152,13 +223,11 @@ func (mm *ModelManager) ListModels(backendID string) ([]ModelInfo, error) {
 		} `json:"models"`
 	}
 	if err := json.NewDecoder(tagsResp.Body).Decode(&tagsData); err != nil {
-		return nil, fmt.Errorf("failed to decode tags from backend %s: %w", backendID, err)
+		return nil, fmt.Errorf("failed to decode tags from backend %s: %w", backend.ID, err)
 	}
 
-	// Получаем загруженные модели из /api/ps
-	psURL := fmt.Sprintf("http://%s:%d/api/ps", backend.Host, backend.OllamaPort)
+	psURL := fmt.Sprintf("http://%s:%d/api/ps", backend.Host, port)
 	loadedModels := make(map[string]bool)
-
 	psResp, psErr := mm.client.Get(psURL)
 	if psErr == nil {
 		defer psResp.Body.Close()
@@ -174,7 +243,6 @@ func (mm *ModelManager) ListModels(backendID string) ([]ModelInfo, error) {
 		}
 	}
 
-	// Собираем результат
 	models := make([]ModelInfo, 0, len(tagsData.Models))
 	for _, t := range tagsData.Models {
 		models = append(models, ModelInfo{
@@ -186,8 +254,84 @@ func (mm *ModelManager) ListModels(backendID string) ([]ModelInfo, error) {
 			Loaded:     loadedModels[t.Name],
 		})
 	}
-
 	return models, nil
+}
+
+// listLlamaCppModels — список моделей cppworker-бэкенда: /api/models/files (на диске)
+// + /api/models/loaded (что в памяти). Метка Loaded выставляется по handle.
+func (mm *ModelManager) listLlamaCppModels(backend *types.Backend) ([]ModelInfo, error) {
+	port := mm.resolveBackendPort(backend)
+	base := fmt.Sprintf("http://%s:%d", backend.Host, port)
+
+	filesURL := base + "/api/models/files"
+	filesResp, err := mm.client.Get(filesURL)
+	if err != nil {
+		return nil, fmt.Errorf("failed to fetch models from cppworker %s: %w", backend.ID, err)
+	}
+	defer filesResp.Body.Close()
+
+	var filesData struct {
+		Files []struct {
+			Path         string `json:"path"`
+			SizeBytes    int64  `json:"sizeBytes"`
+			Quantization string `json:"quantization"`
+		} `json:"files"`
+	}
+	if err := json.NewDecoder(filesResp.Body).Decode(&filesData); err != nil {
+		return nil, fmt.Errorf("failed to decode models from cppworker %s: %w", backend.ID, err)
+	}
+
+	loadedSet := make(map[string]bool)
+	loadedURL := base + "/api/models/loaded"
+	if lr, lerr := mm.client.Get(loadedURL); lerr == nil {
+		defer lr.Body.Close()
+		var ld struct {
+			Models []struct {
+				Handle string `json:"handle"`
+				Name   string `json:"name,omitempty"`
+				Path   string `json:"path,omitempty"`
+			} `json:"models"`
+		}
+		if err := json.NewDecoder(lr.Body).Decode(&ld); err == nil {
+			for _, m := range ld.Models {
+				if m.Handle != "" {
+					loadedSet[m.Handle] = true
+				}
+				if m.Name != "" {
+					loadedSet[m.Name] = true
+				}
+				if m.Path != "" {
+					loadedSet[mm.basename(m.Path)] = true
+				}
+			}
+		}
+	}
+
+	models := make([]ModelInfo, 0, len(filesData.Files))
+	for _, f := range filesData.Files {
+		name := mm.basename(f.Path)
+		models = append(models, ModelInfo{
+			Name:   name,
+			Model:  name,
+			Size:   f.SizeBytes,
+			Loaded: loadedSet[name] || loadedSet[f.Path],
+		})
+	}
+	return models, nil
+}
+
+// basename — выделяет имя файла из пути (поддержка '/' и '\').
+func (mm *ModelManager) basename(p string) string {
+	if p == "" {
+		return ""
+	}
+	if i := strings.LastIndex(p, "/"); i >= 0 {
+		p = p[i+1:]
+	}
+	if i := strings.LastIndex(p, `\`); i >= 0 {
+		p = p[i+1:]
+	}
+	return p
 }
 
 // GetActiveOps — возвращает список активных операций
@@ -305,6 +449,118 @@ func (mm *ModelManager) executeLoad(host string, port int, backendID string, req
 	}
 }
 
+// executeLlamaCppLoad — загрузка модели в память на cppworker-бэкенде.
+// cppworker принимает POST /api/models/load с JSON {"name": "..."} (НЕ "model"!).
+func (mm *ModelManager) executeLlamaCppLoad(host string, port int, backendID string, req ModelOpRequest) *ModelOpResult {
+	url := fmt.Sprintf("http://%s:%d/api/models/load", host, port)
+	body := map[string]interface{}{
+		"name": req.ModelName,
+	}
+	return mm.sendCppWorkerRequest("POST", url, backendID, req, body)
+}
+
+// executeLlamaCppUnload — выгрузка модели из памяти на cppworker-бэкенде.
+// cppworker принимает POST /api/models/unload с ?name=... в query string.
+func (mm *ModelManager) executeLlamaCppUnload(host string, port int, backendID string, req ModelOpRequest) *ModelOpResult {
+	safeName := urlPathEscape(req.ModelName)
+	url := fmt.Sprintf("http://%s:%d/api/models/unload?name=%s", host, port, safeName)
+	resp, err := mm.sendRawRequest("POST", url, nil)
+	if err != nil {
+		return &ModelOpResult{
+			Success:   false,
+			Operation: req.Operation,
+			ModelName: req.ModelName,
+			BackendID: backendID,
+			Error:     fmt.Sprintf("failed to unload model: %v", err),
+		}
+	}
+	defer resp.Body.Close()
+	respBody, _ := io.ReadAll(resp.Body)
+
+	if resp.StatusCode >= 200 && resp.StatusCode < 300 {
+		return &ModelOpResult{
+			Success:   true,
+			Operation: req.Operation,
+			ModelName: req.ModelName,
+			BackendID: backendID,
+			Message:   fmt.Sprintf("Model '%s' unloaded from memory on backend '%s'", req.ModelName, backendID),
+		}
+	}
+	return &ModelOpResult{
+		Success:   false,
+		Operation: req.Operation,
+		ModelName: req.ModelName,
+		BackendID: backendID,
+		Error:     fmt.Sprintf("cppworker error (HTTP %d): %s", resp.StatusCode, string(respBody)),
+	}
+}
+
+// executeLlamaCppDelete — удаление модели с диска на cppworker-бэкенде.
+// cppworker принимает POST /api/models/delete (или DELETE) с JSON {"name": "..."} или ?name=...
+func (mm *ModelManager) executeLlamaCppDelete(host string, port int, backendID string, req ModelOpRequest) *ModelOpResult {
+	url := fmt.Sprintf("http://%s:%d/api/models/delete", host, port)
+	body := map[string]interface{}{
+		"name": req.ModelName,
+	}
+	return mm.sendCppWorkerRequest("POST", url, backendID, req, body)
+}
+
+// sendCppWorkerRequest — отправка запроса к cppworker (load/unload и пр.).
+func (mm *ModelManager) sendCppWorkerRequest(method, url, backendID string, req ModelOpRequest, body map[string]interface{}) *ModelOpResult {
+	resp, err := mm.sendRawRequest(method, url, body)
+	if err != nil {
+		return &ModelOpResult{
+			Success:   false,
+			Operation: req.Operation,
+			ModelName: req.ModelName,
+			BackendID: backendID,
+			Error:     fmt.Sprintf("request failed: %v", err),
+		}
+	}
+	defer resp.Body.Close()
+	respBody, _ := io.ReadAll(resp.Body)
+
+	if resp.StatusCode >= 200 && resp.StatusCode < 300 {
+		opName := operationDisplayName(req.Operation)
+		return &ModelOpResult{
+			Success:   true,
+			Operation: req.Operation,
+			ModelName: req.ModelName,
+			BackendID: backendID,
+			Message:   fmt.Sprintf("Model '%s' %s on backend '%s'", req.ModelName, opName, backendID),
+		}
+	}
+
+	errMsg := string(respBody)
+	var cwErr struct {
+		Error string `json:"error"`
+	}
+	if json.Unmarshal(respBody, &cwErr) == nil && cwErr.Error != "" {
+		errMsg = cwErr.Error
+	}
+	return &ModelOpResult{
+		Success:   false,
+		Operation: req.Operation,
+		ModelName: req.ModelName,
+		BackendID: backendID,
+		Error:     fmt.Sprintf("cppworker error (HTTP %d): %s", resp.StatusCode, errMsg),
+	}
+}
+
+// urlPathEscape — экранирование пути для подстановки в URL-сегмент (а не в query).
+func urlPathEscape(s string) string {
+	var b strings.Builder
+	for _, r := range s {
+		if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') ||
+			r == '-' || r == '_' || r == '.' || r == '~' {
+			b.WriteRune(r)
+		} else {
+			fmt.Fprintf(&b, "%%%02X", r)
+		}
+	}
+	return b.String()
+}
+
 // executeUnload — выгрузка модели из памяти (через /api/generate с keep_alive=0)
 func (mm *ModelManager) executeUnload(host string, port int, backendID string, req ModelOpRequest) *ModelOpResult {
 	url := fmt.Sprintf("http://%s:%d/api/generate", host, port)
@@ -394,7 +650,10 @@ func (mm *ModelManager) sendOllamaRequest(method, url, backendID string, req Mod
 	}
 }
 
-// sendRawRequest — отправка HTTP запроса к Ollama
+// sendRawRequest — отправка HTTP запроса к Ollama.
+// Дополнительно: пробрасывает X-Request-ID из контекста (если он был
+// установлен в ServeHTTP) — чтобы cppworker мог логировать тот же
+// request_id и можно было проследить всю цепочку по одному grep'у.
 func (mm *ModelManager) sendRawRequest(method, url string, body interface{}) (*http.Response, error) {
 	jsonBody, err := json.Marshal(body)
 	if err != nil {
@@ -407,23 +666,50 @@ func (mm *ModelManager) sendRawRequest(method, url string, body interface{}) (*h
 	}
 	req.Header.Set("Content-Type", "application/json")
 
-	return mm.client.Do(req)
+	// Пробрасываем request_id из ctx, если он есть.
+	if rid := RequestIDFromContext(req.Context()); rid != "" {
+		req.Header.Set(requestIDHeader, rid)
+	}
+
+	// Подробное логирование: до запроса и после, с duration и status.
+	start := time.Now()
+	resp, err := mm.client.Do(req)
+	durationMs := time.Since(start).Milliseconds()
+	if err != nil {
+		logger.Get().Debugw("sendRawRequest: HTTP error",
+			"method", method, "url", url,
+			"duration_ms", durationMs, "error", err)
+		return nil, err
+	}
+	logger.Get().Debugw("sendRawRequest: HTTP response",
+		"method", method, "url", url,
+		"status_code", resp.StatusCode,
+		"duration_ms", durationMs)
+	return resp, nil
 }
 
 // ===== Вспомогательные методы =====
 
+// tryAcquireOp — пытается зарегистрировать операцию. Возвращает false, если для той же
+// пары (op, modelName, backendID) уже есть активная запись младше modelOpTTL.
+// Записи старше modelOpTTL считаются «залипшими» и автоматически перезаписываются —
+// это защищает от блокировки при network-fail, когда releaseOp() не был вызван.
 func (mm *ModelManager) tryAcquireOp(operation, modelName, backendID string) bool {
 	mm.mu.Lock()
 	defer mm.mu.Unlock()
 
+	now := time.Now()
 	key := operation + ":" + modelName
 	if backends, exists := mm.activeOps[key]; exists {
-		if _, running := backends[backendID]; running {
-			return false
+		if startedAt, running := backends[backendID]; running {
+			if now.Sub(startedAt) < modelOpTTL {
+				return false
+			}
+			// Залипшая запись — перезаписываем.
 		}
-		backends[backendID] = time.Now()
+		backends[backendID] = now
 	} else {
-		mm.activeOps[key] = map[string]time.Time{backendID: time.Now()}
+		mm.activeOps[key] = map[string]time.Time{backendID: now}
 	}
 	return true
 }

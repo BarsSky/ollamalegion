@@ -147,6 +147,16 @@ func LoadConfigFromEnv() Config {
 	}
 	if v := os.Getenv("CPPWORKER_FLASH_ATTN_TYPE"); v != "" {
 		cfg.DefaultFlashAttnType = parseInt(v, cfg.DefaultFlashAttnType)
+	} else if v := os.Getenv("CPPWORKER_FLASH_ATTN"); v != "" {
+		// Legacy alias: CPPWORKER_FLASH_ATTN=0 → disabled, 1 → enabled (type 1)
+		switch strings.ToLower(v) {
+		case "0", "false", "no", "off":
+			cfg.DefaultFlashAttnType = 0
+		case "1", "true", "yes", "on":
+			cfg.DefaultFlashAttnType = 1
+		default:
+			cfg.DefaultFlashAttnType = parseInt(v, cfg.DefaultFlashAttnType)
+		}
 	}
 	if v := os.Getenv("CPPWORKER_NUMA"); v != "" {
 		cfg.DefaultNUMA = v == "1" || strings.ToLower(v) == "true"

@@ -53,13 +53,17 @@ const (
 
 // HFModelRepo — информация о репозитории модели на HuggingFace
 type HFModelRepo struct {
-	ID          string `json:"id"`          // e.g. "TheBloke/Llama-2-7B-GGUF"
-	Name        string `json:"name"`        // e.g. "Llama-2-7B-GGUF"
-	Author      string `json:"author"`      // e.g. "TheBloke"
-	LastUpdated string `json:"lastUpdated"` // ISO 8601
-	Downloads   int    `json:"downloads"`
-	Likes       int    `json:"likes"`
-	PipelineTag string `json:"pipelineTag"` // e.g. "text-generation"
+	ID          string       `json:"id"`              // e.g. "TheBloke/Llama-2-7B-GGUF"
+	Name        string       `json:"name"`            // e.g. "Llama-2-7B-GGUF"
+	Author      string       `json:"author"`          // e.g. "TheBloke"
+	LastUpdated string       `json:"lastUpdated"`     // ISO 8601
+	Downloads   int          `json:"downloads"`
+	Likes       int          `json:"likes"`
+	PipelineTag string       `json:"pipelineTag"`     // e.g. "text-generation"
+	Files       []HFFileInfo `json:"files,omitempty"` // Список .gguf файлов (заполняется в SearchModels)
+	TotalSize   int64        `json:"totalSize"`       // Суммарный размер всех .gguf
+	HasGGUF     bool         `json:"hasGguf"`         // true если в репо есть хотя бы один .gguf
+	Recommended string       `json:"recommended"`     // Path рекомендованного .gguf (Q4_K_M если есть)
 }
 
 // HFFileInfo — информация о GGUF файле в репозитории
@@ -204,8 +208,61 @@ func (d *HuggingFaceDownloader) SetToken(token string) {
 	d.token = token
 }
 
-// SearchModels выполняет поиск моделей на HuggingFace Hub
-// Возвращает список репозиториев, содержащих GGUF файлы
+// popularQuantPriority — приоритет квантизаций для рекомендации «лучшего» файла
+// и сортировки в UI. Меньшее значение = выше приоритет.
+var popularQuantPriority = []string{
+	"Q4_K_M", "Q5_K_M", "Q6_K", "Q8_0", "Q4_0", "Q4_K_S",
+	"Q3_K_M", "Q2_K", "Q5_0", "Q5_1", "Q4_1",
+	"Q3_K_S", "Q3_K_L", "Q2_K_S", "F16", "F32",
+	"FP16", "FP32", "BF16",
+}
+
+// quantPriority возвращает приоритет квантизации (0 = самый популярный).
+func quantPriority(quant string) int {
+	q := strings.ToUpper(strings.TrimSpace(quant))
+	for i, p := range popularQuantPriority {
+		if strings.Contains(q, p) {
+			return i
+		}
+	}
+	// При сравнении файлов: если квантизация «unknown» или пуста — ставим в конец.
+	return len(popularQuantPriority) + 1
+}
+
+// pickRecommended выбирает рекомендованный .gguf (Q4_K_M если есть, иначе по приоритету).
+func pickRecommended(files []HFFileInfo) string {
+	if len(files) == 0 {
+		return ""
+	}
+	best := files[0]
+	bestPrio := quantPriority(best.Quantization)
+	for _, f := range files[1:] {
+		prio := quantPriority(f.Quantization)
+		if prio < bestPrio {
+			best = f
+			bestPrio = prio
+		}
+	}
+	return best.Path
+}
+
+// sortFilesByPopularity сортирует .gguf файлы по популярности квантизации.
+// Сначала Q4_K_M, потом Q5_K_M и т.д. Файлы с одинаковой квантизацией
+// сортируются по размеру (сначала меньшие — обычно split-файлы одинаковой квантизации).
+func sortFilesByPopularity(files []HFFileInfo) {
+	sort.SliceStable(files, func(i, j int) bool {
+		pi := quantPriority(files[i].Quantization)
+		pj := quantPriority(files[j].Quantization)
+		if pi != pj {
+			return pi < pj
+		}
+		return files[i].SizeBytes < files[j].SizeBytes
+	})
+}
+
+// SearchModels выполняет поиск моделей на HuggingFace Hub.
+// Для каждого результата параллельно запрашивает список .gguf файлов,
+// фильтрует репозитории без GGUF и сортирует файлы по популярности.
 func (d *HuggingFaceDownloader) SearchModels(ctx context.Context, query string, limit int) ([]HFModelRepo, error) {
 	log := logger.Get()
 	log.Infow("searching HuggingFace models", "query", query, "limit", limit)
@@ -284,8 +341,94 @@ func (d *HuggingFaceDownloader) SearchModels(ctx context.Context, query string, 
 		result = append(result, repo)
 	}
 
-	log.Infow("search completed", "results", len(result))
-	return result, nil
+	// Параллельно подгружаем список .gguf файлов для каждого репозитория.
+	// Используем семафор на 4 одновременных запроса + 10s таймаут на каждый.
+	// Репозитории без GGUF исключаем из результата.
+	filtered, err := d.enrichWithFiles(ctx, result)
+	if err != nil {
+		log.Warnw("enrichWithFiles returned error, returning partial results", "error", err)
+		// Возвращаем что есть, даже если часть не обогатилась файлами
+	}
+
+	log.Infow("search completed", "results", len(filtered), "withFiles", countWithFiles(filtered))
+	return filtered, nil
+}
+
+// enrichWithFiles параллельно запрашивает ListModelFiles для каждого репо и
+// обогащает результат списком .gguf файлов. Возвращает только репо с GGUF.
+func (d *HuggingFaceDownloader) enrichWithFiles(ctx context.Context, repos []HFModelRepo) ([]HFModelRepo, error) {
+	log := logger.Get()
+
+	type enriched struct {
+		idx   int
+		repo  HFModelRepo
+		files []HFFileInfo
+		err   error
+	}
+
+	const maxConcurrent = 4
+	sem := make(chan struct{}, maxConcurrent)
+	results := make([]enriched, len(repos))
+
+	var wg sync.WaitGroup
+	for i, repo := range repos {
+		wg.Add(1)
+		go func(idx int, r HFModelRepo) {
+			defer wg.Done()
+			sem <- struct{}{}
+			defer func() { <-sem }()
+
+			// Индивидуальный таймаут для каждого запроса
+			fileCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+			defer cancel()
+
+			files, err := d.ListModelFiles(fileCtx, r.ID, "main")
+			results[idx] = enriched{idx: idx, repo: r, files: files, err: err}
+		}(i, repo)
+	}
+	wg.Wait()
+
+	// Собираем результаты, фильтруя репо без .gguf файлов
+	out := make([]HFModelRepo, 0, len(repos))
+	for _, e := range results {
+		if e.err != nil {
+			log.Debugw("failed to fetch files for repo", "repo", e.repo.ID, "error", e.err)
+			// Если не удалось получить файлы — пропускаем репо
+			// (нет GGUF ⇒ не показываем в UI)
+			continue
+		}
+		if len(e.files) == 0 {
+			log.Debugw("repo has no GGUF files, skipping", "repo", e.repo.ID)
+			continue
+		}
+
+		// Сортируем по популярности квантизации
+		sortFilesByPopularity(e.files)
+
+		// Суммарный размер
+		var total int64
+		for _, f := range e.files {
+			total += f.SizeBytes
+		}
+
+		e.repo.Files = e.files
+		e.repo.TotalSize = total
+		e.repo.HasGGUF = true
+		e.repo.Recommended = pickRecommended(e.files)
+		out = append(out, e.repo)
+	}
+
+	return out, nil
+}
+
+func countWithFiles(repos []HFModelRepo) int {
+	n := 0
+	for _, r := range repos {
+		if r.HasGGUF {
+			n++
+		}
+	}
+	return n
 }
 
 // ListModelFiles получает список GGUF файлов в репозитории
@@ -424,12 +567,22 @@ func (d *HuggingFaceDownloader) StartDownload(req HFDownloadRequest) (*HFDownloa
 	}
 
 	// Проверяем, не загружается ли уже эта модель
+	// Если уже идёт загрузка — возвращаем её текущий прогресс (HTTP 200/идемпотентно),
+	// а не ошибку. Это позволяет WebUI обрабатывать повторные клики по «Download»
+	// без ложных 500-х и сразу переключаться на вкладку Downloads.
 	downloadKey := d.makeDownloadKey(req.ModelID, req.Filename)
 	d.mu.RLock()
-	_, exists := d.activeDownloads[downloadKey]
+	existing, exists := d.activeDownloads[downloadKey]
 	d.mu.RUnlock()
 	if exists {
-		return nil, fmt.Errorf("download already in progress for %s", downloadKey)
+		// Возвращаем снимок текущего прогресса (без удержания блокировки)
+		d.mu.RLock()
+		snapshot := existing.progress
+		d.mu.RUnlock()
+		log.Infow("download already in progress, returning current progress",
+			"modelID", req.ModelID, "filename", req.Filename,
+			"status", snapshot.Status, "progressPct", snapshot.ProgressPct)
+		return &snapshot, nil
 	}
 
 	// Если файл не указан, авто-выбираем

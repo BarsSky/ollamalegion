@@ -24,13 +24,13 @@ func (p *Proxy) GetClusterState() *types.ClusterState {
 	defer p.metricsMgr.mu.RUnlock()
 
 	state := &types.ClusterState{
-		Timestamp:       time.Now().UTC(),
-		TotalBackends:   len(backendsCopy),
-		HealthyBackends: 0,
-		OperatingMode:   p.config.Balancing.OperatingMode,
-		BackendEngine:   p.getBackendEngine(),
+		Timestamp:         time.Now().UTC(),
+		TotalBackends:     len(backendsCopy),
+		HealthyBackends:   0,
+		OperatingMode:     p.config.Balancing.OperatingMode,
+		BackendEngine:     p.getBackendEngine(),
 		BackendTypeCounts: p.countBackendsByType(),
-		Backends:        make([]types.BackendMetrics, 0, len(backendsCopy)),
+		Backends:          make([]types.BackendMetrics, 0, len(backendsCopy)),
 	}
 
 	state.TotalRequests = atomic.LoadInt64(&p.totalRequests)
@@ -58,16 +58,17 @@ func (p *Proxy) GetClusterState() *types.ClusterState {
 		runtimeTimeout := getRuntimeRequestTimeout(backendState)
 
 		metrics := types.BackendMetrics{
-			ID:        id,
-			Timestamp: time.Now().UTC(),
-			Status:    status,
-			HasAgent:  hasAgent,
-			Host:      backendConfig.Host,
-			OllamaPort: backendConfig.OllamaPort,
-			BackendType: backendConfig.Type,
-			GPU:       types.GPUMetrics{},
-			System:    types.SystemMetrics{},
-			Ollama:    types.OllamaMetrics{RunningModels: []types.RunningModel{}},
+			ID:                    id,
+			Timestamp:             time.Now().UTC(),
+			Status:                status,
+			HasAgent:              hasAgent,
+			Host:                  backendConfig.Host,
+			OllamaPort:            backendConfig.OllamaPort,
+			CppWorkerPort:         backendConfig.CppWorkerPort,
+			BackendType:           backendConfig.Type,
+			GPU:                   types.GPUMetrics{},
+			System:                types.SystemMetrics{},
+			Ollama:                types.OllamaMetrics{RunningModels: []types.RunningModel{}},
 			MaxConcurrentRequests: maxConcurrent,
 			RequestTimeout:        backendConfig.RequestTimeout,
 			RuntimeRequestTimeout: runtimeTimeout,
@@ -80,6 +81,7 @@ func (p *Proxy) GetClusterState() *types.ClusterState {
 			savedOllamaPort := metrics.OllamaPort
 			savedMaxConcurrent := metrics.MaxConcurrentRequests
 			savedCppWorkerPort := backendConfig.CppWorkerPort
+			savedLlamaCpp := metrics.LlamaCpp
 
 			metrics = *agentMetrics
 
@@ -91,19 +93,30 @@ func (p *Proxy) GetClusterState() *types.ClusterState {
 			metrics.Status = status
 			metrics.HasAgent = hasAgent
 			metrics.Prediction = prediction
-		// Сохраняем BackendType из конфигурации бэкенда (источник истины)
-		// Агент может не иметь доступа к GPU в контейнере, но конфиг знает тип
-		if backendConfig.Type != "" {
-			metrics.BackendType = backendConfig.Type
-		} else if metrics.BackendType == "" {
-			// Обратная совместимость: определяем тип по эвристике
-			// llama.cpp-бэкенды имеют CppWorkerPort > 0
-			if backendConfig.CppWorkerPort > 0 {
-				metrics.BackendType = types.BackendTypeLlamaCpp
+
+			// Мерджим llama.cpp метрики из отдельного кэша metricsMgr.llamaMetrics[id].
+			// agentMetrics приходит от Ollama-agent и не содержит данных о
+			// llama.cpp бэкендах (его LoadedModels и т.д.). Без этого merge
+			// в WebUI и API /api/v1/gguf/backends список моделей llama.cpp
+			// бэкенда был бы пустым.
+			if lm, ok := p.metricsMgr.llamaMetrics[id]; ok && lm != nil {
+				metrics.LlamaCpp = *lm
 			} else {
-				metrics.BackendType = types.BackendTypeOllama
+				metrics.LlamaCpp = savedLlamaCpp
 			}
-		}
+			// Сохраняем BackendType из конфигурации бэкенда (источник истины)
+			// Агент может не иметь доступа к GPU в контейнере, но конфиг знает тип
+			if backendConfig.Type != "" {
+				metrics.BackendType = backendConfig.Type
+			} else if metrics.BackendType == "" {
+				// Обратная совместимость: определяем тип по эвристике
+				// llama.cpp-бэкенды имеют CppWorkerPort > 0
+				if backendConfig.CppWorkerPort > 0 {
+					metrics.BackendType = types.BackendTypeLlamaCpp
+				} else {
+					metrics.BackendType = types.BackendTypeOllama
+				}
+			}
 			metrics.Models = make([]string, 0, len(metrics.Ollama.RunningModels))
 			for _, m := range metrics.Ollama.RunningModels {
 				metrics.Models = append(metrics.Models, m.Name)
@@ -134,6 +147,19 @@ func (p *Proxy) GetClusterState() *types.ClusterState {
 			backendState.mu.Unlock()
 		}
 
+		// --- Мердж llama.cpp метрик из отдельного кэша metricsMgr.llamaMetrics[id] ---
+		// agentMetrics приходит от Ollama-agent и не содержит данных о
+		// llama.cpp бэкендах (его LoadedModels и т.д.). Без этого merge
+		// в WebUI и API /api/v1/gguf/backends список моделей llama.cpp
+		// бэкенда был бы пустым.
+		//
+		// Merge выполняется ВСЕГДА — и для бэкендов с Ollama-агентом, и без него
+		// (типичный случай: cppworker без агента, метрики приходят через
+		// llamaCppMetricsPoller, который пишет напрямую в metricsMgr.llamaMetrics).
+		if lm, ok := p.metricsMgr.llamaMetrics[id]; ok && lm != nil {
+			metrics.LlamaCpp = *lm
+		}
+
 		// --- WarmingUpModels для монитора ---
 		backendState.mu.Lock()
 		if len(backendState.WarmingUpModels) > 0 {
@@ -158,6 +184,18 @@ func (p *Proxy) GetClusterState() *types.ClusterState {
 	state.RecentClients = p.getRecentClients()
 
 	return state
+}
+
+// GetMetricsManager — возвращает менеджер метрик балансировщика (Шаг «отображение
+// загрузки в мониторе»). Используется:
+//   - internal API (handlers_internal.go) для callback'а /api/v1/internal/llama-model-loaded
+//   - llamaCppMetricsPoller для записи в llamaMetrics cache
+//   - cluster_state.go для мерджа llama.cpp метрик в GetClusterState.
+//
+// Потокобезопасно: сам MetricsManager имеет свой RWMutex, вызывающий код
+// может безопасно читать/писать.
+func (p *Proxy) GetMetricsManager() *MetricsManager {
+	return p.metricsMgr
 }
 
 // GetQueueStats - получение статистики очереди
@@ -310,7 +348,7 @@ func (p *Proxy) GetPrediction(backendID string) types.Prediction {
 	}
 	return types.Prediction{
 		SecondsToCritical: -1,
-		CriticalReason:      "none",
+		CriticalReason:    "none",
 	}
 }
 
@@ -360,7 +398,7 @@ type CandidateGroupDTO struct {
 type ModelCandidatesDTO struct {
 	Model    string              `json:"model"`
 	Groups   []CandidateGroupDTO `json:"groups"`
-	Total    int                 `json:"total"` // общее количество бэкендов-кандидатов
+	Total    int                 `json:"total"`     // общее количество бэкендов-кандидатов
 	HasReady bool                `json:"has_ready"` // есть ли P1 (LOADED)
 }
 

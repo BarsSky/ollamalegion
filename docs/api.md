@@ -44,9 +44,180 @@ CppWorker предоставляет следующие API помимо про�
 | `/v1/embeddings` | `POST` | Embeddings | **OpenAI-совместимый** |
 | `/v1/models` | `GET` | Список моделей | **OpenAI-совместимый** |
 | `/health` | `GET` | Health check | |
-| `/api/models/load` | `POST` | Загрузка GGUF | |
+| `/api/models/load` | `POST` | Загрузка GGUF (защита от двойной загрузки) | |
 | `/api/models/unload` | `POST` | Выгрузка модели | |
+| `/api/models/reload` | `POST` | Unload + load с новыми параметрами (n_ctx, batchSize, numGpuLayers) | |
 | `/api/hf/*` | `GET/POST` | HuggingFace интеграция | |
+
+### CppWorker: Ollama-совместимые поля `/api/generate` и `/api/ollama/generate`
+
+Полный маппинг `options.*` на параметры llama.cpp (через `bridge.GenerationParams`):
+
+| Поле запроса | Параметр llama.cpp | Примечание |
+|--------------|--------------------|------------|
+| `options.temperature` | `Temperature` | |
+| `options.top_p` | `TopP` | |
+| `options.top_k` | `TopK` | |
+| `options.min_p` | `MinP` | |
+| `options.typical_p` | `TypicalP` | |
+| `options.tfs_z` | `TfsZ` | |
+| `options.num_predict` | `NPredict` | |
+| `options.num_keep` | `NKeep` | |
+| `options.repeat_penalty` | `RepeatPenalty` | |
+| `options.frequency_penalty` | `FrequencyPenalty` | |
+| `options.presence_penalty` | `PresencePenalty` | |
+| `options.repeat_last_n` | `RepeatLastN` | |
+| `options.mirostat` | `Mirostat` | |
+| `options.mirostat_tau` | `MirostatTau` | |
+| `options.mirostat_eta` | `MirostatEta` | |
+| `options.seed` | `Seed` | `0` — валидное значение |
+| `options.num_ctx` | `NCtxOverride` | per-request n_ctx |
+| `options.stop` | `Antiprompts` | string или []string |
+
+Топ-уровневые алиасы: `temperature`, `topP`, `topK`, `minP`, `typicalP`, `tfsZ`, `maxTokens`, `repeatPenalty`, `frequencyPenalty`, `presencePenalty`, `seed`, `numCtx`.
+
+Дополнительные поля: `system` (подставляется перед prompt, если `raw != true`), `template`, `raw`, `format` (принимается для совместимости), `keep_alive` (принимается, unload-таймер не реализован), `context` (принимается, KV-cache follow-up не реализован), `images` (не поддерживается, принимается для совместимости).
+
+### CppWorker: статистика `/api/generate`
+
+Ответ содержит реальные метрики:
+
+- `load_duration` — время с момента загрузки модели до начала генерации (μs).
+- `prompt_eval_count` — число токенов prompt, подсчитанное через tokenizer модели (`bridge_count_tokens` / `Backend.CountTokens`).
+- `eval_count` — число токенов в ответе.
+- `total_duration`, `prompt_eval_duration`, `eval_duration` — длительность в μs.
+
+Если модель вернула пустой `response: ""`, CppWorker возвращает HTTP 500 с полем `error`.
+
+### CppWorker: `/api/chat`
+
+- Поддерживает `messages` с ролями `system`, `user`, `assistant`.
+- Для формирования prompt используется `backend.ApplyChatTemplate` (chat template из GGUF); при отсутствии template — fallback на naive формат (`<|user|>` / `<start_of_turn>user`).
+- Поддерживает `stream`, `temperature`, `max_tokens`, `num_ctx`, `options.stop`.
+- Возвращает `message.role="assistant"`, `done=true` в финальном чанке.
+
+### CppWorker: защита от повторной загрузки
+
+`POST /api/models/load` проверяет `backend.GetModel(name)` перед вызовом `LoadModelWithOpts`:
+
+- Если модель уже загружена с тем же путём и параметрами (`ContextSize`, `BatchSize`, `GPULayers`, `FlashAttnType`, `NUMA`, `UseMmap`, `TensorSplit`) — возвращает `status: "already_loaded"` и не трогает VRAM.
+- Если путь или параметры отличаются — сначала вызывается `UnloadModel`, затем `LoadModelWithOpts` (reload-in-place).
+- Две одновременные загрузки одной модели сериализуются через `IsModelLoading`: вторая получает 503 с `loading: true`.
+
+### CppWorker: per-model profiles (управление n_ctx)
+
+**Полная документация:** [cppworker-model-params.md](./cppworker-model-params.md).
+
+Эти endpoint'ы позволяют задать `n_ctx` и другие параметры инференса для конкретной модели на cppworker. Используется для решения проблемы `n_ctx overflow` в Cline/OpenWebUI.
+
+| Endpoint | Метод | Описание | Auth |
+|----------|-------|----------|------|
+| `/api/v1/cppworker/model-profiles` | `GET` | Список всех per-model профилей | ✅ |
+| `/api/v1/cppworker/model-profiles/{name}` | `GET` | Получить профиль для модели | ✅ |
+| `/api/v1/cppworker/model-profiles/{name}` | `PUT` | Создать/обновить профиль + save в config.json | ✅ |
+| `/api/v1/cppworker/model-profiles/{name}` | `DELETE` | Удалить профиль | ✅ |
+| `/api/v1/cppworker/model-profiles/{name}/apply` | `POST` | Save + reload модели на всех llama_cpp бэкендах | ✅ |
+
+**3-tier resolver (приоритет при прокидывании n_ctx в cppworker):**
+
+1. `body.options.num_ctx` (Ollama) / `body.num_ctx` (OpenAI) — **всегда побеждает** (Tier 1)
+2. `config.LlamaCppModelProfiles[modelName].ContextLength` — Tier 2
+3. `state.Backend.CppWorkerConfig.ContextLength` (per-backend default) — Tier 3
+
+Резолв передаётся в cppworker через HTTP-header `X-Cpp-Ctx: <value>`.
+
+**Пример (создать профиль с n_ctx=32768 для gemma-4):**
+
+```bash
+curl -X PUT http://localhost:18081/api/v1/cppworker/model-profiles/gemma-4-E4B-it-Q4_K_M \
+  -H "Content-Type: application/json" \
+  -H "X-API-Token: your-token" \
+  -d '{
+    "contextLength": 32768,
+    "batchSize": 1024,
+    "numGpuLayers": -1,
+    "flashAttn": true,
+    "notes": "Cline + long system prompt"
+  }'
+```
+
+**Пример (применить — save + reload на всех бэкендах):**
+
+```bash
+curl -X POST http://localhost:18081/api/v1/cppworker/model-profiles/gemma-4-E4B-it-Q4_K_M/apply \
+  -H "Content-Type: application/json" \
+  -H "X-API-Token: your-token" \
+  -d '{ "contextLength": 65536 }'
+```
+
+**Валидация профиля:** `contextLength` ∈ `[256, 262144]` (256K — нативный max для gemma-4), `batchSize >= 1`, `numGpuLayers >= -1` (`-1` = все слои).
+
+## GGUF Backend Proxy API (через балансер)
+
+Белансировщик предоставляет **универсальный proxy** для всех эндпоинтов CppWorker, чтобы WebUI и внешние клиенты могли общаться с CppWorker **через балансер**, не делая прямые HTTP-запросы (которые ломаются в Docker-окружении из-за CORS и недоступности `host.docker.internal` в браузере).
+
+**Формат URL:**
+
+```
+/api/v1/gguf/backends/{backendId}/proxy/<cppworker-path>
+```
+
+**Примеры:**
+
+| Запрос | Backend `llama_gpu` | CppWorker |
+|---|---|---|
+| `GET /api/v1/gguf/backends/llama_gpu/proxy/info` | llama_gpu | `GET /info` |
+| `GET /api/v1/gguf/backends/llama_gpu/proxy/api/gpu` | llama_gpu | `GET /api/gpu` |
+| `GET /api/v1/gguf/backends/llama_gpu/proxy/api/models` | llama_gpu | `GET /api/models` |
+| `GET /api/v1/gguf/backends/llama_gpu/proxy/api/models/files` | llama_gpu | `GET /api/models/files` |
+| `GET /api/v1/gguf/backends/llama_gpu/proxy/api/hf/search?query=...` | llama_gpu | `GET /api/hf/search?query=...` |
+| `GET /api/v1/gguf/backends/llama_gpu/proxy/api/hf/files?modelId=...` | llama_gpu | `GET /api/hf/files?modelId=...` |
+| `POST /api/v1/gguf/backends/llama_gpu/proxy/api/hf/download` | llama_gpu | `POST /api/hf/download` |
+| `GET /api/v1/gguf/backends/llama_gpu/proxy/api/hf/progress?modelId=...&filename=...` | llama_gpu | `GET /api/hf/progress?modelId=...&filename=...` |
+| `GET /api/v1/gguf/backends/llama_gpu/proxy/api/hf/downloads` | llama_gpu | `GET /api/hf/downloads` |
+| `POST /api/v1/gguf/backends/llama_gpu/proxy/api/hf/cancel` | llama_gpu | `POST /api/hf/cancel` |
+| `POST /api/v1/gguf/backends/llama_gpu/proxy/api/models/load` | llama_gpu | `POST /api/models/load` |
+| `POST /api/v1/gguf/backends/llama_gpu/proxy/api/models/unload` | llama_gpu | `POST /api/models/unload` |
+| `POST /api/v1/gguf/backends/llama_gpu/proxy/api/models/delete` | llama_gpu | `POST /api/models/delete` |
+
+### Особенности
+
+- **Проксирование прозрачно**: HTTP-метод, headers (включая `X-HF-Token`), query string и JSON body передаются в CppWorker без изменений.
+- **Хост автоматически резолвится**: если бэкенд зарегистрирован с `host=host.docker.internal`, прокси заменяет его на `localhost` (в браузере `host.docker.internal` не резолвится).
+- **Таймаут**: 90 секунд (HF search/download могут занимать до 60-90s, особенно search с параллельной загрузкой файлов).
+- **Понятные сообщения об ошибках**: при сетевых проблемах возвращается `502 Bad Gateway` / `504 Gateway Timeout` с указанием адреса CppWorker.
+
+### Примеры curl
+
+```bash
+# Получить версию CppWorker
+curl http://localhost:18081/api/v1/gguf/backends/llama_gpu/proxy/info
+
+# Скачать модель с HuggingFace (с HF token для gated репозиториев)
+curl -X POST http://localhost:18081/api/v1/gguf/backends/llama_gpu/proxy/api/hf/download \
+  -H 'Content-Type: application/json' \
+  -H 'X-HF-Token: hf_xxxxxxxxxxxx' \
+  -d '{"modelId":"TheBloke/Llama-2-7B-GGUF","filename":"llama-2-7b.Q4_K_M.gguf","revision":"main"}'
+
+# Получить список активных загрузок
+curl http://localhost:18081/api/v1/gguf/backends/llama_gpu/proxy/api/hf/downloads
+
+# Удалить модель
+curl -X POST http://localhost:18081/api/v1/gguf/backends/llama_gpu/proxy/api/models/delete \
+  -H 'Content-Type: application/json' \
+  -d '{"name":"llama-3-8b-q4_K_M.gguf"}'
+```
+
+### Коды ответов
+
+| Код | Причина |
+|---|---|
+| 200 / 202 | Успешный ответ от CppWorker (статус и тело копируются дословно) |
+| 400 | Невалидный URL (не указана секция `proxy/`) |
+| 404 | Бэкенд с указанным ID не найден или имеет тип не `llama_cpp` |
+| 502 | CppWorker недоступен (connection refused, host unresolvable) |
+| 504 | CppWorker не отвечает (timeout) |
+| Метод != GET/POST/DELETE/PUT | 405 Method Not Allowed |
 
 > **Форматы стриминга:**
 > - `/api/generate`, `/api/chat`, `/api/ollama/generate` → **NDJSON** (`application/x-ndjson`)

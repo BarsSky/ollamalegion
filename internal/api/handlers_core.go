@@ -18,6 +18,21 @@ import (
 // Core handlers (health, WebSocket, admin, static, autoPull)
 // ============================================================
 
+// pingHandler — liveness probe: всегда 200 OK, пока HTTP-сервер жив.
+// Не зависит от состояния бэкендов. Используется в Docker healthcheck
+// (`/api/v1/health` может вернуть 503 в режиме degraded, что вызывает
+// restart loop до того, как бэкенды успели зарегистрироваться).
+func (s *Server) pingHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet && r.Method != http.MethodHead {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Cache-Control", "no-store")
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write([]byte(`{"status":"ok"}`))
+}
+
 // healthHandler - глубокая проверка здоровья API (Docker healthcheck)
 func (s *Server) healthHandler(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
@@ -239,12 +254,30 @@ func (s *Server) monitorHandler(w http.ResponseWriter, r *http.Request) {
 
 	htmlStr := string(data)
 
-	// Встраиваем WEBUI_CONFIG и config.js inline
+	// Встраиваем WEBUI_CONFIG и config.js inline.
+	// WEBUI_CONFIG должен содержать те же поля, что и webui/js/modules/config.js:
+	// API_BASE, API_BASE_URL, API_TOKEN, CPPWORKER_URL, REFRESH_INTERVAL и т.д.
+	// Для обратной совместимости с monitor.html/state.js также сохраняем apiBase/dashboardUrl.
+	//
+	// apiBase вычисляем из текущего запроса: relative path ('') корректно работает
+	// как при прямом доступе, так и за nginx-прокси. Если явно задан X-Forwarded-Prefix,
+	// используем его.
+	apiBase := strings.TrimSuffix(r.Header.Get("X-Forwarded-Prefix"), "/")
+	if apiBase == "" {
+		// Для Docker/nginx relative path всегда безопасен.
+		apiBase = ""
+	}
+
+	configObj := fmt.Sprintf(
+		`window.WEBUI_CONFIG={apiBase:"%s",dashboardUrl:"/",API_BASE:"%s",API_BASE_URL:"%s",API_TOKEN:"",CPPWORKER_URL:"http://localhost:18092",REFRESH_INTERVAL:5000,MAX_RECONNECT_ATTEMPTS:10,RECONNECT_INTERVAL_BASE:3000,WS_URL:null};`,
+		apiBase, apiBase, apiBase,
+	)
+
 	configPath := filepath.Join(filepath.Dir(monitorPath), "config.js")
 	if configData, configErr := os.ReadFile(configPath); configErr == nil {
 		inline := fmt.Sprintf(
-			`<script>window.WEBUI_CONFIG={apiBase:"",dashboardUrl:"/"};</script>`+"\n"+
-				`<script>%s</script>`,
+			`<script>%s</script>`+"\n"+`<script>%s</script>`,
+			configObj,
 			string(configData),
 		)
 		// Заменяем <script src="config.js"></script> на inline-скрипты
@@ -256,7 +289,7 @@ func (s *Server) monitorHandler(w http.ResponseWriter, r *http.Request) {
 		}
 	} else {
 		// config.js не найден — встраиваем только WEBUI_CONFIG
-		inline := `<script>window.WEBUI_CONFIG={apiBase:"",dashboardUrl:"/"};</script>`
+		inline := `<script>` + configObj + `</script>`
 		if strings.Contains(htmlStr, `<script src="config.js"></script>`) {
 			htmlStr = strings.Replace(htmlStr, `<script src="config.js"></script>`, inline, 1)
 		} else {

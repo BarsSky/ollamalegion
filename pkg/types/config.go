@@ -13,6 +13,16 @@ type LoadBalancerConfig struct {
 	Initialized  bool                 `json:"initialized"` // true = первичная настройка выполнена
 	BackendEngine BackendEngine       `json:"backendEngine,omitempty"` // выбранный движок инференса
 	LlamaCpp      LlamaCppConfig      `json:"llamaCpp"`   // глобальные настройки llama.cpp / GGUF
+
+	// LlamaCppModelProfiles — per-model профили параметров загрузки (Шаг 5).
+	// Ключ — имя модели (как в запросе: e.g. "gemma-4-E4B-it-Q4_K_M").
+	// Применяется через 3-tier resolver в balancer для num_ctx override.
+	LlamaCppModelProfiles map[string]LlamaCppModelProfile `json:"llamaCppModelProfiles,omitempty"`
+
+	// DefaultModelProfile — профиль по умолчанию для моделей, не имеющих
+	// записи в LlamaCppModelProfiles. Используется как fallback-потолок при
+	// clamping per-request num_ctx (Phase D.3-fix).
+	DefaultModelProfile *LlamaCppModelProfile `json:"defaultModelProfile,omitempty"`
 }
 
 // LoadBalancerSettings - настройки балансировщика

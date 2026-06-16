@@ -1,0 +1,52 @@
+{
+  "balancer": "http://localhost:18080",
+  "cppworker": "http://localhost:18092",
+  "model": "gemma-4-E4B-it-Q4_K_M",
+  "clients": 3,
+  "rounds": 2,
+  "total_requests": 48,
+  "ok_requests": 12,
+  "proxy_ok_requests": 47,
+  "proxy_ok_rate": 0.9791666666666666,
+  "per_kind": {
+    "tags": {
+      "ok": 2,
+      "total": 2,
+      "ok_rate": 1.0
+    },
+    "chat": {
+      "ok": 0,
+      "total": 22,
+      "ok_rate": 0.0
+    },
+    "generate": {
+      "ok": 0,
+      "total": 7,
+      "ok_rate": 0.0
+    },
+    "v1_chat": {
+      "ok": 0,
+      "total": 7,
+      "ok_rate": 0.0
+    },
+    "v1_stream": {
+      "ok": 5,
+      "total": 5,
+      "ok_rate": 1.0
+    },
+    "gen_stream": {
+      "ok": 4,
+      "total": 4,
+      "ok_rate": 1.0
+    },
+    "health": {
+      "ok": 1,
+      "total": 1,
+      "ok_rate": 1.0
+    }
+  },
+  "p50_p95_ms": [
+    70.54289999359753,
+    178.41379999299534
+  ]
+}

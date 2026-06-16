@@ -80,13 +80,18 @@ services:
       # (RTX 4090 24GB и т.п.) — поменять на 8192 вручную.
       - CPPWORKER_CTX_SIZE=4096
       - CPPWORKER_BATCH_SIZE=${DEFAULT_BATCH_SIZE:-512}
-      # 30 = partial offload (рекомендуется для 8GB). 42 = all GPU
+      # 20 = partial offload (рекомендуется для 8GB). 42 = all GPU
       # (требует >10GB VRAM). 0 = CPU only.
-      - CPPWORKER_GPU_LAYERS=30
+      - CPPWORKER_GPU_LAYERS=${DEFAULT_GPU_LAYERS:-20}
       - CPPWORKER_FLASH_ATTN_TYPE=${DEFAULT_FLASH_ATTN_TYPE:--1}
       - CPPWORKER_N_THREADS=${DEFAULT_N_THREADS:-0}
       - CPPWORKER_NUMA=${DEFAULT_NUMA:-false}
       - CPPWORKER_USE_MMAP=${DEFAULT_USE_MMAP:-true}
+      # RAM fallback: auto-reload model with larger n_ctx via mmap/RAM
+      # when VRAM is insufficient (e.g. OpenWebUI requests num_ctx=16384).
+      - CPPWORKER_RAM_FALLBACK_N_CTX=${CPPWORKER_RAM_FALLBACK_N_CTX:-true}
+      - CPPWORKER_RAM_FALLBACK_GPU_LAYERS=${CPPWORKER_RAM_FALLBACK_GPU_LAYERS:-0}
+      - CPPWORKER_RAM_FALLBACK_MAX_N_CTX=${CPPWORKER_RAM_FALLBACK_MAX_N_CTX:-16384}
       # auth
       - API_TOKEN=${CPPWORKER_API_TOKEN:-changeme-bundled-token}
       # auto-registration в балансировщике

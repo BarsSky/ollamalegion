@@ -172,9 +172,13 @@ func TestSelectByResources(t *testing.T) {
 	p.backends["b2"].ActiveReqs = 10
 	p.backends["b2"].mu.Unlock()
 
+// Queueing-aware fallback: при полной загрузке selectByResources возвращает
+// least-loaded backend (для последующей постановки в очередь), а не empty.
+// Решение о реальной доступности слота принимает tryAcquireSlot в dispatchRequest:
+// если слот занят — ErrNoBackendAvailable, queue requeue'ит запрос.
 	got2 := p.selectByResources(nil)
-	if got2 != "" {
-		t.Errorf("selectByResources() with full load = %s, want empty", got2)
+	if got2 != "b1" && got2 != "b2" {
+		t.Errorf("selectByResources() with full load = %s, want b1 or b2 (queueing-aware fallback)", got2)
 	}
 }
 

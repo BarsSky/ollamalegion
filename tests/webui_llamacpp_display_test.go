@@ -98,7 +98,7 @@ func TestWebUI_ShowsBalancerEngineNotLocal(t *testing.T) {
 		require.NoError(t, err)
 
 		// Проверяем что backendEngine в ответе соответствует балансеру
-		assert.Equal(t, "llamacpp", cfg["backendEngine"],
+		assert.Equal(t, string(types.EngineLlamaCPP), cfg["backendEngine"],
 			"WebUI should display balancer's backendEngine, not a hardcoded default")
 
 		// Проверяем operatingMode
@@ -107,7 +107,7 @@ func TestWebUI_ShowsBalancerEngineNotLocal(t *testing.T) {
 
 		// Проверяем что ClusterState тоже отдаёт правильные значения
 		state := proxy.GetClusterState()
-		assert.Equal(t, "llamacpp", state.BackendEngine)
+		assert.Equal(t, types.EngineLlamaCPP, state.BackendEngine)
 		assert.Equal(t, "virtual_router", state.OperatingMode)
 	})
 
@@ -122,11 +122,11 @@ func TestWebUI_ShowsBalancerEngineNotLocal(t *testing.T) {
 		var cfg map[string]interface{}
 		json.NewDecoder(resp.Body).Decode(&cfg)
 
-		assert.Equal(t, "ollama_api", cfg["backendEngine"])
+		assert.Equal(t, string(types.EngineOllamaAPI), cfg["backendEngine"])
 		assert.Equal(t, "standard", cfg["operatingMode"])
 
 		state := proxy.GetClusterState()
-		assert.Equal(t, "ollama_api", state.BackendEngine)
+		assert.Equal(t, types.EngineOllamaAPI, state.BackendEngine)
 	})
 }
 
@@ -139,7 +139,7 @@ func TestWebUI_DoesNotOverrideBalancerConfig(t *testing.T) {
 	// 1. Проверяем исходное состояние
 	initialState := proxy.GetClusterState()
 	assert.Equal(t, "virtual_router", initialState.OperatingMode)
-	assert.Equal(t, "llamacpp", initialState.BackendEngine)
+	assert.Equal(t, types.EngineLlamaCPP, initialState.BackendEngine)
 
 	// 2. Имитируем PUT от WebUI с пустыми полями (частичное обновление)
 	// WebUI может отправить только изменившиеся поля
@@ -165,7 +165,7 @@ func TestWebUI_DoesNotOverrideBalancerConfig(t *testing.T) {
 
 	if config, ok := result["config"].(map[string]interface{}); ok {
 		if config["backendEngine"] != nil {
-			assert.Equal(t, "llamacpp", config["backendEngine"],
+			assert.Equal(t, string(types.EngineLlamaCPP), config["backendEngine"],
 				"backendEngine should NOT be overwritten by partial WebUI update")
 		}
 		if config["operatingMode"] != nil {
@@ -178,7 +178,7 @@ func TestWebUI_DoesNotOverrideBalancerConfig(t *testing.T) {
 	stateAfter := proxy.GetClusterState()
 	assert.Equal(t, "virtual_router", stateAfter.OperatingMode,
 		"OperatingMode should survive partial update")
-	assert.Equal(t, "llamacpp", stateAfter.BackendEngine,
+	assert.Equal(t, types.EngineLlamaCPP, stateAfter.BackendEngine,
 		"BackendEngine should survive partial update")
 }
 
@@ -200,7 +200,7 @@ func TestWebUI_LlamaCppFieldsVisible(t *testing.T) {
 	engine, hasEngine := cfg["backendEngine"]
 	assert.True(t, hasEngine, "Config response should include backendEngine field")
 	if hasEngine {
-		assert.Equal(t, "llamacpp", engine)
+		assert.Equal(t, string(types.EngineLlamaCPP), engine)
 	}
 
 	// Проверяем что llmaCpp конфиг присутствует (может быть null/пустым)
@@ -208,16 +208,18 @@ func TestWebUI_LlamaCppFieldsVisible(t *testing.T) {
 		t.Logf("llamaCpp config present: %v", llamaCpp)
 	}
 
-	// 2. Проверяем /api/v1/cluster/state
-	resp2, err := http.Get(ts.URL + "/api/v1/cluster/state")
+	// 2. Проверяем /api/v1/cluster
+	resp2, err := http.Get(ts.URL + "/api/v1/cluster")
 	require.NoError(t, err)
 	defer resp2.Body.Close()
+
+	assert.Equal(t, http.StatusOK, resp2.StatusCode, "cluster state endpoint should return 200")
 
 	var state map[string]interface{}
 	json.NewDecoder(resp2.Body).Decode(&state)
 
-	assert.Equal(t, "llamacpp", state["backendEngine"],
-		"ClusterState should expose backendEngine=llamacpp")
+	assert.Equal(t, string(types.EngineLlamaCPP), state["backendEngine"],
+		"ClusterState should expose backendEngine=llama_cpp")
 	assert.Equal(t, "virtual_router", state["operatingMode"],
 		"ClusterState should expose operatingMode=virtual_router")
 

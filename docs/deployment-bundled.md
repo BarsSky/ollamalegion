@@ -157,6 +157,9 @@ http://localhost:18083
 | `DEFAULT_N_THREADS` | 0 | CPU threads (0 = auto) |
 | `DEFAULT_USE_MMAP` | true | mmap для больших моделей |
 | `DEFAULT_NUMA` | false | NUMA optimization |
+| `CPPWORKER_RAM_FALLBACK_N_CTX` | true | Auto-reload модели с большим n_ctx через mmap/RAM при нехватке VRAM |
+| `CPPWORKER_RAM_FALLBACK_GPU_LAYERS` | 0 | GPU-слоёв при RAM fallback: -1=текущее, 0=CPU-only, N=явное число |
+| `CPPWORKER_RAM_FALLBACK_MAX_N_CTX` | 16384 | Максимальный n_ctx, до которого разрешён RAM fallback |
 | `NVIDIA_VISIBLE_DEVICES` | all | CUDA devices (all / 0 / 0,1) |
 | `LB_LOG_LEVEL` | info | Уровень логирования балансировщика |
 
@@ -289,6 +292,51 @@ CppWorker перезапустится, и через ~15s auto-registration п�
 | Регистрация | вручную через env `BACKENDS` или в config.json | автоматически при старте cppworker |
 | Когда использовать | продакшн-кластер, несколько нод, agent с GPU-метриками | single-GPU рабочая станция, dev/test, мини-стенд |
 | Размер compose | ~250 строк | ~150 строк |
+
+## RAM fallback для большого контекста (n_ctx)
+
+По умолчанию в bundled-стеке включён **RAM fallback** для запросов с большим `num_ctx`:
+
+- Модель загружается с `DEFAULT_CTX_SIZE=4096` (безопасно для 8GB VRAM).
+- Если клиент (OpenWebUI / Cline) отправляет запрос с `options.num_ctx=16384`,
+  C-bridge вернёт `ErrNCtxNeedsReload`.
+- CppWorker автоматически выгружает модель и перезагружает её с `n_ctx=16384`,
+  форсируя `use_mmap=true` и используя `CPPWORKER_RAM_FALLBACK_GPU_LAYERS`.
+- По умолчанию `CPPWORKER_RAM_FALLBACK_GPU_LAYERS=0`: модель полностью уходит
+  в RAM (CPU-only), освобождая всю VRAM под KV-cache. Это медленнее, чем GPU,
+  но позволяет обработать большой контекст, когда видеопамяти недостаточно.
+- После успешной перезагрузки запрос повторяется автоматически; клиент получает
+  обычный ответ.
+
+Настройка под ваше железо:
+
+```env
+# Включить fallback (по умолчанию true)
+CPPWORKER_RAM_FALLBACK_N_CTX=true
+
+# Оставить часть слоёв на GPU для скорости:
+#   -1 = использовать DEFAULT_GPU_LAYERS
+#    0 = CPU-only (медленно, но надёжно для 8GB VRAM)
+#   20 = частичный offload (если модель маленькая или VRAM > 8GB)
+CPPWORKER_RAM_FALLBACK_GPU_LAYERS=0
+
+# Потолок n_ctx (защита от запросов с num_ctx=1000000)
+CPPWORKER_RAM_FALLBACK_MAX_N_CTX=16384
+```
+
+Если fallback не срабатывает, проверьте логи:
+
+```bash
+docker logs ol-bundled-cppworker-gpu 2>&1 | grep -i "RAM fallback"
+```
+
+Ожидаемые строки:
+
+```text
+RAM fallback: reloading model with larger n_ctx ...
+RAM fallback: model unloaded ...
+RAM fallback: model reloaded successfully ...
+```
 
 ## FAQ
 

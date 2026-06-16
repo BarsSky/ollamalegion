@@ -152,7 +152,7 @@ func createTestProxyForLlamaCppOpenAI(t *testing.T, cppWorkerURL string) *balanc
 	if len(parts) > 1 { fmt.Sscanf(parts[1], "%d", &port) }
 
 	cfg := &types.LoadBalancerConfig{
-		Balancing: types.BalancingConfig{
+		Balancing: types.BalancingSettings{
 			OperatingMode: "standard", SessionStickiness: true, SessionTTL: 60, SessionIdleTTL: 60,
 			RequestTimeout: 30, QueueMaxSize: 100, ModelAffinity: true,
 			SyncModelLoad: types.SyncModelLoadConfig{Enabled: false},

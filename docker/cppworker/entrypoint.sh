@@ -86,24 +86,31 @@ print(f'Downloaded: {path}')"
     echo ""
 fi
 
+# ---- Cross-sync env vars so Go auto-registration picks up BALANCER_URL ----
+# Go-side (cmd/cppworker/balancer_register.go) reads CPPWORKER_BALANCER_URL;
+# the legacy shell-script reads BALANCER_URL. Accept both names and unify.
+export CPPWORKER_BALANCER_URL="${CPPWORKER_BALANCER_URL:-${BALANCER_URL:-}}"
+export CPPWORKER_BALANCER_TOKEN="${CPPWORKER_BALANCER_TOKEN:-${BALANCER_API_TOKEN:-}}"
+
 # ---- Launch CppWorker in background for auto-registration ----
 echo "Starting CppWorker with args: $@"
 ./cppworker "$@" &
 CPPWORKER_PID=$!
 
 # ---- Auto-register with balancer (if BALANCER_URL is set) ----
-if [ -n "${BALANCER_URL}" ]; then
+if [ -n "${BALANCER_URL}" ] || [ -n "${CPPWORKER_BALANCER_URL}" ]; then
     echo ""
     echo ">>> Auto-registration with balancer enabled <<<"
-    echo "BALANCER_URL=${BALANCER_URL}"
-    echo "CPPWORKER_PORT=${CPPWORKER_PORT:-18091}"
+    echo "BALANCER_URL=${BALANCER_URL:-<not set>}"
+    echo "CPPWORKER_BALANCER_URL=${CPPWORKER_BALANCER_URL:-<not set>}"
+    echo "CPPWORKER_PORT=${CPPWORKER_PORT:-18092}"
 
     # Wait for CppWorker to become ready BEFORE running registration
     echo "[entrypoint] Waiting for CppWorker to be ready (up to 900s)..."
     ATTEMPT=0
     MAX_ATTEMPTS=900
     while [ ${ATTEMPT} -lt ${MAX_ATTEMPTS} ]; do
-        if curl -sf "http://127.0.0.1:${CPPWORKER_PORT:-18091}/health" >/dev/null 2>&1; then
+        if curl -sf "http://127.0.0.1:${CPPWORKER_PORT:-18092}/health" >/dev/null 2>&1; then
             echo "[entrypoint] CppWorker is ready after ${ATTEMPT}s"
             break
         fi

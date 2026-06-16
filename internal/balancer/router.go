@@ -18,18 +18,61 @@ func (p *Proxy) routeRequest(w http.ResponseWriter, r *http.Request) bool {
 		return true
 	}
 
-	// Ollama/llama.cpp API routing — все пути включая /api/chat и /api/generate
+	// Ollama/llama.cpp API routing
 	bt := p.determineRequestBackendType(r)
 
-	// Пробуем llama.cpp роутер если тип LlamaCpp или не указан (смешанный кластер)
-	if (bt == "" || bt == types.BackendTypeLlamaCpp) && p.llamaCppRouter != nil {
+	// Инференс-запросы (/api/chat, /api/generate) в смешанных режимах
+	// (bt == "") должны идти через основной flow ServeHTTP, где selectBackend
+	// выбирает конкретный бэкенд по модели/ресурсам. Специализированные роутеры
+	// перехватывают эти пути только когда режим жёстко привязан к llama.cpp.
+	if bt == "" && isChatOrGenerateRequest(r.URL.Path) {
+		return false
+	}
+
+	// Смешанный режим (bt == ""): read-only/админ endpoint'ы /api/*.
+	// Выбираем порядок роутеров на основе фактических типов бэкендов:
+	// если Ollama-бэкендов нет, а llama.cpp есть — пробуем LlamaCppRouter
+	// первым, чтобы не получить пустой ответ от OllamaRouter.
+	if bt == "" {
+		counts := p.countBackendsByType()
+		hasOllama := counts[types.BackendTypeOllama] > 0
+		hasLlama := counts[types.BackendTypeLlamaCpp] > 0
+
+		if hasOllama {
+			if p.ollamaRouter != nil && p.ollamaRouter.Route(w, r) {
+				return true
+			}
+			if p.llamaCppRouter != nil && p.llamaCppRouter.Route(w, r) {
+				return true
+			}
+		} else if hasLlama {
+			if p.llamaCppRouter != nil && p.llamaCppRouter.Route(w, r) {
+				return true
+			}
+			if p.ollamaRouter != nil && p.ollamaRouter.Route(w, r) {
+				return true
+			}
+		} else {
+			// Нет бэкендов — стандартный fallback: OllamaRouter, затем llama.cpp
+			if p.ollamaRouter != nil && p.ollamaRouter.Route(w, r) {
+				return true
+			}
+			if p.llamaCppRouter != nil && p.llamaCppRouter.Route(w, r) {
+				return true
+			}
+		}
+		return false
+	}
+
+	// Режим жёстко привязан к llama.cpp
+	if bt == types.BackendTypeLlamaCpp && p.llamaCppRouter != nil {
 		if p.llamaCppRouter.Route(w, r) {
 			return true
 		}
 	}
 
-	// Пробуем Ollama роутер если тип Ollama или не указан
-	if (bt == "" || bt == types.BackendTypeOllama) && p.ollamaRouter != nil {
+	// Режим жёстко привязан к Ollama
+	if bt == types.BackendTypeOllama && p.ollamaRouter != nil {
 		if p.ollamaRouter.Route(w, r) {
 			return true
 		}

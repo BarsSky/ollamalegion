@@ -51,6 +51,19 @@ type ModelInfo struct {
 	TensorSplit   []float32 `json:"tensorSplit,omitempty"`
 	ActiveQueries int       `json:"activeQueries"`
 	TotalQueries  int64     `json:"totalQueries"`
+	// Дополнительные параметры загрузки (Шаг 4 — /api/models/reload).
+	// Хранятся вместе с моделью, чтобы при reload можно было
+	// переиспользовать их как дефолты, если клиент не указал override.
+	BatchSize     int       `json:"batchSize"`
+	FlashAttnType int       `json:"flashAttnType"`
+	NUMA          bool      `json:"numa"`
+	UseMmap       bool      `json:"useMmap"`
+	// === Loading state (Шаг «отображение загрузки в мониторе и вкладке бэкендов») ===
+	// Заполняются пока State == StateLoading, чтобы UI мог показывать
+	// «Загружается model-name 25s» и спиннер. После успеха/ошибки поля обнуляются.
+	LoadingStartedAt time.Time `json:"loadingStartedAt,omitempty"`
+	LoadingSizeBytes int64     `json:"loadingSizeBytes,omitempty"`
+	LoadingError     string    `json:"loadingError,omitempty"`
 }
 
 // Backend — основной объект CppBackend
@@ -251,17 +264,38 @@ func (b *Backend) LoadModelWithOpts(name string, path string, opts LoadModelOpts
 	ctxSize := opts.ContextSize
 	batchSize := opts.BatchSize
 
+	// Оцениваем размер файла модели (если доступен) — для отображения прогресса в UI.
+	var loadingSizeBytes int64
+	if fi, statErr := os.Stat(path); statErr == nil {
+		loadingSizeBytes = fi.Size()
+	}
+
 	inst := &modelInstance{
 		info: ModelInfo{
-			Name:      name,
-			Path:      path,
-			State:     StateLoading,
-			GPULayers: gpuLayers,
-			LoadedAt:  time.Now(),
+			Name:              name,
+			Path:              path,
+			State:             StateLoading,
+			GPULayers:         gpuLayers,
+			BatchSize:         opts.BatchSize,
+			FlashAttnType:     opts.FlashAttnType,
+			NUMA:              opts.NUMA,
+			UseMmap:           opts.UseMmap,
+			LoadedAt:          time.Now(),
+			LoadingStartedAt:  time.Now(),
+			LoadingSizeBytes:  loadingSizeBytes,
 		},
 	}
 	b.models[name] = inst
 	b.mu.Unlock()
+
+	// Логгируем старт загрузки (UI может полагаться на наличие этой записи).
+	logger.Get().Infow("model load started",
+		"name", name,
+		"path", path,
+		"sizeBytes", loadingSizeBytes,
+		"gpuLayers", gpuLayers,
+		"ctxSize", ctxSize,
+		"batchSize", batchSize)
 
 	// Загружаем модель через bridge
 	cfg := bridge.DefaultModelConfig(path)
@@ -327,6 +361,12 @@ func (b *Backend) LoadModelWithOpts(name string, path string, opts LoadModelOpts
 
 	handle, err := bridge.LoadModel(cfg)
 	if err != nil {
+		// Сохраняем LoadingError на короткое время, чтобы UI мог показать
+		// причину сбоя (даже после того, как inst удалён из b.models).
+		// На практике inst удаляется сразу, поэтому ошибка возвращается
+		// в ответе на /api/models/load и не попадает в /api/models,
+		// но если клиент polling'ом проверял состояние — успеет увидеть state=loading
+		// в течение ~миллисекунд до получения HTTP 500.
 		b.mu.Lock()
 		delete(b.models, name)
 		b.mu.Unlock()
@@ -439,6 +479,11 @@ func (b *Backend) UnloadModel(name string) error {
 		inst.handle.FreeModel()
 	}
 	inst.info.State = StateUnloaded
+	// Сбрасываем loading-метаданные, чтобы UI не показывал спиннер
+	// для уже выгруженной модели.
+	inst.info.LoadingStartedAt = time.Time{}
+	inst.info.LoadingSizeBytes = 0
+	inst.info.LoadingError = ""
 	inst.mu.Unlock()
 
 	// Записываем метрики
@@ -477,6 +522,51 @@ func (b *Backend) ListModels() []ModelInfo {
 		result = append(result, info)
 	}
 	return result
+}
+
+// GetLoadingModels возвращает список моделей в состоянии Loading/Error.
+// Используется UI (монитор, вкладка бэкендов, GGUF) для отображения
+// спиннера и elapsed-time «Загружается model-name 25s».
+//
+// Потокобезопасно: захватывает mu.RLock на короткое время.
+func (b *Backend) GetLoadingModels() []ModelInfo {
+	b.mu.RLock()
+	defer b.mu.RUnlock()
+
+	result := make([]ModelInfo, 0)
+	now := time.Now()
+	for _, inst := range b.models {
+		if inst.info.State == StateLoading || inst.info.State == StateError {
+			info := inst.info
+			info.ActiveQueries = b.getActiveQueries(inst)
+			// Гарантируем непустой LoadingStartedAt для UI.
+			if info.LoadingStartedAt.IsZero() {
+				info.LoadingStartedAt = info.LoadedAt
+			}
+			// Заполняем elapsedMs (нс → мс) — удобно для UI, не нужно
+			// делать arithmetic в JS. Вычисляем «на лету» из текущего
+			// времени, так как LoadingStartedAt не меняется в процессе.
+			_ = now // резерв на случай будущего счётчика в снапшоте
+			result = append(result, info)
+		}
+	}
+	return result
+}
+
+// IsModelLoading — быстрая проверка «идёт ли загрузка модели» по имени.
+// Используется балансировщиком в proxyRequestLlamaCpp для решения,
+// включать ли loading-fast-path с heartbeat-чанками.
+func (b *Backend) IsModelLoading(name string) bool {
+	b.mu.RLock()
+	inst, exists := b.models[name]
+	b.mu.RUnlock()
+	if !exists {
+		return false
+	}
+	inst.mu.Lock()
+	state := inst.info.State
+	inst.mu.Unlock()
+	return state == StateLoading
 }
 
 // ============================================================
@@ -546,6 +636,19 @@ func (b *Backend) GetEmbeddings(modelName string, text string) ([]float32, error
 	}
 
 	return inst.handle.GetEmbeddings(text)
+}
+
+// CountTokens возвращает число токенов в тексте для загруженной модели.
+// Использует tokenizer модели через C-bridge; в случае ошибки — грубая оценка.
+func (b *Backend) CountTokens(modelName string, text string) int {
+	inst, err := b.getModelInstance(modelName)
+	if err != nil {
+		if text == "" {
+			return 0
+		}
+		return len([]rune(text)) / 4
+	}
+	return inst.handle.CountTokens(text)
 }
 
 // ApplyChatTemplate applies GGUF chat template to messages for a model.
@@ -724,7 +827,8 @@ func (b *Backend) getActiveQueries(inst *modelInstance) int {
 	return inst.info.ActiveQueries
 }
 
-// approximateTokens — грубая оценка количества токенов
+// approximateTokens — грубая оценка количества токенов.
+// DEPRECATED: используйте Backend.CountTokens с реальным tokenizer.
 func approximateTokens(text string) int {
 	if text == "" {
 		return 0

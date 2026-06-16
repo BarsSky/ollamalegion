@@ -962,3 +962,158 @@
     background: rgba(245, 158, 11, 0.85);
     border-color: rgba(245, 158, 11, 0.9);
 }
+
+/* ============================================================ */
+/* Per-Model Profiles (Шаг 5 cppworker-preflight-nctx-session)  */
+/* ============================================================ */
+
+.cpp-profiles-empty {
+    color: var(--text-muted, #94a3b8);
+    font-size: 12px;
+    padding: 12px;
+    text-align: center;
+    background: var(--bg-secondary, #1a1f2e);
+    border: 1px dashed var(--border-color, #2a3441);
+    border-radius: 6px;
+}
+
+.cpp-profile-item {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 10px 12px;
+    margin-bottom: 8px;
+    background: var(--bg-secondary, #1a1f2e);
+    border: 1px solid var(--border-color, #2a3441);
+    border-radius: 6px;
+    transition: border-color 0.15s ease;
+}
+.cpp-profile-item:hover {
+    border-color: rgba(245, 158, 11, 0.4);
+}
+
+.cpp-profile-info {
+    flex: 1;
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+}
+.cpp-profile-name {
+    font-weight: 600;
+    font-size: 13px;
+    color: var(--text-primary, #e2e8f0);
+    display: flex;
+    align-items: center;
+    gap: 6px;
+}
+.cpp-profile-name .badge {
+    font-size: 10px;
+    padding: 1px 6px;
+    background: rgba(245, 158, 11, 0.2);
+    color: #f59e0b;
+    border-radius: 3px;
+    font-weight: 500;
+}
+.cpp-profile-meta {
+    font-size: 11px;
+    color: var(--text-muted, #94a3b8);
+    font-family: 'SF Mono', 'Consolas', monospace;
+}
+.cpp-profile-actions {
+    display: flex;
+    gap: 4px;
+}
+.cpp-profile-actions button {
+    padding: 4px 8px;
+    font-size: 11px;
+}
+
+/* Profile wizard (modal) */
+.cpp-profile-wizard .ctx-presets {
+    display: flex;
+    gap: 4px;
+    flex-wrap: wrap;
+    margin: 8px 0;
+}
+.cpp-profile-wizard .ctx-preset {
+    padding: 4px 10px;
+    font-size: 11px;
+    background: var(--bg-tertiary, #0f172a);
+    border: 1px solid var(--border-color, #2a3441);
+    color: var(--text-secondary, #cbd5e1);
+    border-radius: 4px;
+    cursor: pointer;
+    transition: all 0.15s ease;
+}
+.cpp-profile-wizard .ctx-preset:hover {
+    border-color: #f59e0b;
+    color: #f59e0b;
+}
+.cpp-profile-wizard .ctx-preset.active {
+    background: rgba(245, 158, 11, 0.2);
+    border-color: #f59e0b;
+    color: #f59e0b;
+}
+.cpp-profile-wizard .ctx-slider-row {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    margin: 12px 0;
+}
+.cpp-profile-wizard .ctx-slider-row input[type="range"] {
+    flex: 1;
+}
+.cpp-profile-wizard .ctx-slider-row .ctx-value {
+    min-width: 80px;
+    text-align: right;
+    font-family: 'SF Mono', 'Consolas', monospace;
+    font-weight: 600;
+    color: #f59e0b;
+    font-size: 13px;
+}
+.cpp-profile-wizard .ctx-help {
+    font-size: 11px;
+    color: var(--text-muted, #94a3b8);
+    margin-top: 4px;
+}
+
+/* Reload progress modal */
+.cpp-reload-progress {
+    padding: 16px 0;
+}
+.cpp-reload-progress .reload-step {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 6px 0;
+    font-size: 12px;
+}
+.cpp-reload-progress .reload-step-icon {
+    width: 16px;
+    text-align: center;
+    font-weight: 600;
+}
+.cpp-reload-progress .reload-step.pending .reload-step-icon { color: var(--text-muted, #94a3b8); }
+.cpp-reload-progress .reload-step.running .reload-step-icon { color: #f59e0b; animation: spin 1s linear infinite; }
+.cpp-reload-progress .reload-step.done .reload-step-icon { color: #10b981; }
+.cpp-reload-progress .reload-step.error .reload-step-icon { color: #ef4444; }
+.cpp-reload-progress .reload-step-text { color: var(--text-primary, #e2e8f0); }
+.cpp-reload-progress .reload-progress-bar {
+    width: 100%;
+    height: 4px;
+    background: var(--bg-tertiary, #0f172a);
+    border-radius: 2px;
+    overflow: hidden;
+    margin: 12px 0;
+}
+.cpp-reload-progress .reload-progress-fill {
+    height: 100%;
+    background: linear-gradient(90deg, #f59e0b, #fb923c);
+    width: 0%;
+    transition: width 0.3s ease;
+}
+@keyframes spin {
+    0% { transform: rotate(0deg); }
+    100% { transform: rotate(360deg); }
+}

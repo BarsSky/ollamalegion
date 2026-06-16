@@ -59,7 +59,9 @@ const MonitorBackends = (() => {
 
         if (!sorted.length) {
             var noDataText = (typeof window !== 'undefined' && window.I18N) ? window.I18N.t('monitor.common.noData') : 'Нет данных';
-            tbody.innerHTML = '<tr><td colspan="11" style="color:var(--text-secondary);text-align:center;padding:16px">' + noDataText + '</td></tr>';
+            // colspan = 13 (12 + новая колонка Loading). Если в таблице другой # столбцов,
+            // используем безопасное значение 13.
+            tbody.innerHTML = '<tr><td colspan="13" style="color:var(--text-secondary);text-align:center;padding:16px">' + noDataText + '</td></tr>';
             return;
         }
 
@@ -81,6 +83,48 @@ const MonitorBackends = (() => {
         const up = b.lastSeen ? MA.fmtDur ? MA.fmtDur(Date.now() - new Date(b.lastSeen).getTime()) : '-' : '-';
         const rps = (b.ollama && b.ollama.requestsPerSecond != null) ? b.ollama.requestsPerSecond : 0;
 
+        // ==== Loading column (Issue: «отображение загрузки в мониторе») ====
+        // Поддерживается два источника:
+        //   1) b.loadingModels: [{name, state, loadingStartedAt, loadingSizeBytes, error}] — массив объектов
+        //   2) b.loadingModelCount: число (если API отдаёт только счётчик)
+        //   3) b.llamaCppMetrics.loadingModels: альтернативный путь (через metrics-broker)
+        const loadingArr = (b.loadingModels && Array.isArray(b.loadingModels) && b.loadingModels.length > 0)
+            ? b.loadingModels
+            : ((b.llamaCppMetrics && Array.isArray(b.llamaCppMetrics.loadingModels)) ? b.llamaCppMetrics.loadingModels : []);
+        const loadingCount = (b.loadingModelCount != null)
+            ? b.loadingModelCount
+            : loadingArr.length;
+        let loadingCell;
+        if (loadingCount > 0 && loadingArr.length === 0) {
+            // Только счётчик известен
+            loadingCell = '<td class="col-right"><span class="badge" title="' +
+                (window.I18N ? I18N.t('gguf.col_loading_count', { count: loadingCount }) : ('Loading: ' + loadingCount)) +
+                '"><i class="fas fa-spinner fa-spin"></i> ' + loadingCount + '</span></td>';
+        } else if (loadingArr.length > 0) {
+            // Полный список с elapsed-таймером
+            const cells = loadingArr.slice(0, 3).map(function (lm) {
+                const startedAt = lm.loadingStartedAt ? new Date(lm.loadingStartedAt).getTime() : Date.now();
+                const elapsedMs = (lm.elapsedMs && lm.elapsedMs > 0) ? lm.elapsedMs : (Date.now() - startedAt);
+                const elapsedSec = Math.max(0, Math.floor(elapsedMs / 1000));
+                const elapsedLabel = elapsedSec < 60
+                    ? elapsedSec + 's'
+                    : Math.floor(elapsedSec / 60) + 'm ' + (elapsedSec % 60) + 's';
+                if (lm.state === 'error') {
+                    return '<span class="badge badge-red" title="' + MA.esc(lm.error || 'error') + '">' +
+                        '<i class="fas fa-times-circle"></i> ' + MA.esc(lm.name) +
+                    '</span>';
+                }
+                return '<span class="badge" style="background:rgba(74,158,255,0.12);color:#4a9eff;border-color:rgba(74,158,255,0.3)" title="' +
+                    (window.I18N ? I18N.t('gguf.loading_indicator') : 'Loading') + ': ' + MA.esc(lm.name) + '">' +
+                    '<i class="fas fa-spinner fa-spin"></i> ' + MA.esc(lm.name) + ' ' + elapsedLabel +
+                '</span>';
+            }).join(' ');
+            const more = loadingArr.length > 3 ? (' +' + (loadingArr.length - 3)) : '';
+            loadingCell = '<td class="col-right">' + cells + more + '</td>';
+        } else {
+            loadingCell = '<td class="col-right" style="color:var(--text-secondary)">-</td>';
+        }
+
         // Hidden metrics tooltip data
         const powerLimit = b.gpu && b.gpu.powerLimit ? `Power: ${b.gpu.powerLimit}W` : '';
         const gpuClock = b.gpu && b.gpu.clock ? `Clock: ${b.gpu.gpuClock || b.gpu.clock}MHz` : '';
@@ -101,6 +145,7 @@ const MonitorBackends = (() => {
             <td class="col-right">${sc}</td>
             <td>${(b.models || []).slice(0, 3).map(m => `<span class="badge" style="background:rgba(168,85,247,0.12);color:var(--purple-accent);border-color:rgba(168,85,247,0.2)">${MA.esc(m)}</span>`).join(' ')}</td>
             <td class="col-right">${up}</td>
+            ${loadingCell}
         </tr>`;
     }
 

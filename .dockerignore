@@ -38,6 +38,25 @@ bin/
 dist/
 build/
 balancer_linux
+balancer-linux
+cppworker-stub
+*.exe
+
+# CMake / build артефакты
+CMakeCache.txt
+CMakeFiles/
+cmake_install.cmake
+Makefile
+*.cmake
+*.o
+*.a
+*.so
+*.lo
+*.la
+*.lib
+*.pdb
+*.ilk
+*.exp
 
 # Локальные конфигурации и данные
 *.env

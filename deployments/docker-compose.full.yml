@@ -65,7 +65,7 @@ services:
       - ollama-legion-net
 
     healthcheck:
-      test: ["CMD", "curl", "-f", "-s", "http://localhost:18091/health"]
+      test: ["CMD", "/app/cppworker", "-healthcheck"]
       interval: 30s
       timeout: 10s
       retries: 3
@@ -76,12 +76,16 @@ services:
 
   # ============================================
   # 2. CppBackend Worker GPU
+  # Тэг образа зависит от CUDA_ARCH:
+  #   "all"       -> ollama-legion/cppworker:gpu-arch_all
+  #   "86"        -> ollama-legion/cppworker:gpu-86
+  #   "75;86;89"  -> ollama-legion/cppworker:gpu-75-86-89
   # ============================================
   cppworker-gpu:
-    image: ollama-legion/cppworker:gpu
+    image: ollama-legion/cppworker:gpu-${CPPWORKER_GPU_TAG:-arch_all}
     build:
       context: ..
-      dockerfile: docker/cppworker/Dockerfile.gpu
+      dockerfile: docker/cppworker/Dockerfile.gpu.fixed
       target: runtime
     container_name: ollama-legion-cppworker-gpu
     restart: unless-stopped
@@ -96,15 +100,17 @@ services:
 
     environment:
       - CPPWORKER_PORT=18091
-      - CPPWORKER_ADVERTISED_PORT=${CPPWORKER_GPU_PORT:-18092}
+      - CPPWORKER_HOST=0.0.0.0
+      - CPPWORKER_ADVERTISE_HOST=cppworker-gpu
+      - CPPWORKER_ADVERTISED_HOST=cppworker-gpu
+      - CPPWORKER_ADVERTISE_PORT=18091
+      - CPPWORKER_ADVERTISED_PORT=18091
       - CPPWORKER_MODELS_DIR=./models
       - CPPWORKER_CTX_SIZE=${CPPWORKER_CTX_SIZE:-4096}
       - CPPWORKER_BATCH_SIZE=${CPPWORKER_BATCH_SIZE:-512}
       - CPPWORKER_GPU_LAYERS=${CPPWORKER_GPU_LAYERS:--1}
       - CPPWORKER_FLASH_ATTN=${CPPWORKER_FLASH_ATTN:-true}
       - BALANCER_URL=http://loadbalancer:18081
-      - CPPWORKER_ADVERTISED_HOST=cppworker-gpu
-      - CPPWORKER_HOST=cppworker-gpu
       - CPPWORKER_BACKEND_ID=${CPPWORKER_GPU_BACKEND_ID:-cppworker-gpu}
       - CPPWORKER_NAME=${CPPWORKER_GPU_NAME:-CppWorker-GPU}
       - CPPWORKER_GPU_MODE=cuda
@@ -130,7 +136,7 @@ services:
       - ollama-legion-net
 
     healthcheck:
-      test: ["CMD-SHELL", "wget -q -O- http://127.0.0.1:18091/health || exit 1"]
+      test: ["CMD", "/app/cppworker", "-healthcheck"]
       interval: 30s
       timeout: 10s
       retries: 10
@@ -174,7 +180,7 @@ services:
       - ollama-legion-net
 
     healthcheck:
-      test: ["CMD", "curl", "-f", "-s", "http://localhost:18093/health"]
+      test: ["CMD", "/app/cppworker", "-healthcheck"]
       interval: 30s
       timeout: 10s
       retries: 3
@@ -323,7 +329,7 @@ services:
       - RECONNECT_INTERVAL_BASE=3000
 
     healthcheck:
-      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://127.0.0.1:80/health"]
+      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:80/health || exit 1"]
       interval: 30s
       timeout: 10s
       retries: 3

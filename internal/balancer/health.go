@@ -190,7 +190,8 @@ func (hc *HealthChecker) performCheck(backend *types.Backend) *HealthCheckResult
 	case types.EngineLlamaCPP:
 		port := backend.CppWorkerPort
 		if port <= 0 {
-			port = 18091
+			// Modern llama.cpp CppWorker default port (18091 is legacy).
+			port = 18092
 		}
 		url = fmt.Sprintf("http://%s:%d/health", backend.Host, port)
 	default:

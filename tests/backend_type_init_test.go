@@ -184,7 +184,7 @@ func TestBackendTypeSwitch(t *testing.T) {
 	json.NewDecoder(resp.Body).Decode(&result)
 
 	if config, ok := result["config"].(map[string]interface{}); ok {
-		assert.Equal(t, "llamacpp", config["backendEngine"])
+		assert.Equal(t, "llama_cpp", config["backendEngine"])
 		assert.Equal(t, "virtual_router", config["operatingMode"])
 	}
 }

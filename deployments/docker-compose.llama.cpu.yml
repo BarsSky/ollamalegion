@@ -52,7 +52,7 @@ services:
       - NODE_LABELS=${NODE_LABELS:-zone=lan,cpu_only=true}
 
     healthcheck:
-      test: ["CMD", "curl", "-f", "-s", "http://localhost:18091/api/v1/cppworker/health"]
+      test: ["CMD", "/app/cppworker", "-healthcheck"]
       interval: 30s
       timeout: 10s
       retries: 3

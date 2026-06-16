@@ -1,7 +1,18 @@
+//go:build !llama_stub
+
 // ============================================================
 // bridge.c — C-обёртка над llama.cpp для Go-вызова (CGo)
 // Версия: 0.2.0 — реальный инференс через llama.cpp
 // ============================================================
+
+// При сборке с тегом llama_stub (флаг -DGO_BRIDGE_LLAMA_STUB,
+// который выставляется cgo-директивой в c/bridge/bridge_stub.go) весь
+// c-код в этом файле вырезается. Это позволяет собирать cppworker (и
+// любой пакет, импортирующий ollama-loadbalancer/c/bridge) как stub
+// без реального llama.cpp и без CGO-блокера "C source files not
+// allowed when not using cgo or SWIG". Символы для Go предоставляет
+// c/bridge/bridge_stub.go (с тегом //go:build llama_stub).
+#ifndef GO_BRIDGE_LLAMA_STUB
 
 #include "bridge.h"
 #include "llama.h"
@@ -13,12 +24,18 @@
 // Внутренние структуры
 // ============================================================
 
-// InternalModel — внутреннее представление загруженной модели
+// InternalModel — внутреннее представление загруженной модели.
+// ctx_n_ctx хранит размер контекста, с которым модель фактически загружена.
+// Это нужно для pre-flight проверки ёмкости перед llama_decode, чтобы
+// вернуть внятную ошибку «prompt too long» вместо загадочного
+// «llama_decode failed for prompt batch».
 typedef struct {
     struct llama_model *model;
     struct llama_context *context;
     struct llama_sampler *sampler;
     struct llama_vocab *vocab;
+    uint32_t ctx_n_ctx;       // n_ctx, с которым создан context (из llama_context_params)
+    uint32_t ctx_n_batch;     // n_batch, с которым создан context
 } InternalModel;
 
 // ============================================================
@@ -42,18 +59,116 @@ static void set_error(const char* msg) {
 // запроса остаются в KV-cache, и через 1-2 запроса контекст переполняется
 // с ошибкой "failed to find a memory slot". Также сбрасываем сэмплер, чтобы
 // repetition_penalty / top_p / т.п. начинались с чистого состояния.
+//
+// Примечание: в актуальной llama.cpp (b4500+, коммит 4414c04b9) функция
+// llama_kv_self_clear УДАЛЕНА. Правильный путь: получить llama_memory_t
+// через llama_get_memory() и вызвать llama_memory_clear(mem, data=true).
+// Это эквивалентно «очистить все кэшированные KV» независимо от backend
+// (Recurrent / AttentionBased).
 static void reset_inference_state(InternalModel *im) {
     if (im == NULL) return;
     if (im->context != NULL) {
         llama_memory_t mem = llama_get_memory(im->context);
         if (mem != NULL) {
-            // data=true: очищаем и метаданные seq, и сами KV-буферы в VRAM
             llama_memory_clear(mem, true);
         }
     }
     if (im->sampler != NULL) {
         llama_sampler_reset(im->sampler);
     }
+}
+
+// ============================================================
+// Структурированная ошибка (last_error_info) + мьютекс
+// ============================================================
+//
+// last_error_info обновляется атомарно в каждой точке, где раньше просто
+// вызывался set_error(). В Go-стороне её можно забрать через
+// bridge_get_last_error_info() сразу после того, как bridge_infer/
+// bridge_infer_stream вернул ненулевой код. Мьютекс защищает и чтение,
+// и запись, потому что несколько goroutine могут одновременно дёргать
+// bridge (C-функции реентрантны только если это явно поддерживается
+// на уровне llama.cpp — мы исходим из сериализации).
+//
+// Кросс-платформенный мьютекс:
+//   - Windows  → CRITICAL_SECTION (из <windows.h>)
+//   - Linux/macOS/BSD → pthread_mutex_t
+// В Windows мы НЕ используем pthread (MinGW не имеет pthread.h из коробки),
+// в Linux/Docker — НЕ используем CRITICAL_SECTION (нет <windows.h>).
+#ifdef _WIN32
+#include <windows.h>
+static CRITICAL_SECTION g_err_mutex;
+static int g_err_mutex_initialized = 0;
+static void err_mutex_lock(void) {
+    if (!g_err_mutex_initialized) {
+        InitializeCriticalSection(&g_err_mutex);
+        g_err_mutex_initialized = 1;
+    }
+    EnterCriticalSection(&g_err_mutex);
+}
+static void err_mutex_unlock(void) {
+    LeaveCriticalSection(&g_err_mutex);
+}
+#else
+#include <pthread.h>
+static pthread_mutex_t g_err_mutex = PTHREAD_MUTEX_INITIALIZER;
+static void err_mutex_lock(void)   { pthread_mutex_lock(&g_err_mutex);   }
+static void err_mutex_unlock(void) { pthread_mutex_unlock(&g_err_mutex); }
+#endif
+static BridgeErrorInfo g_last_error_info = {
+    .code = BRIDGE_OK,
+    .message = ""
+};
+// Оценочный максимум n_ctx, доступный текущей VRAM. Заполняется из bridge_load_model,
+// читается bridge_check_ctx_capacity для поля max_vram_n_ctx. 0 = unknown.
+static int g_max_vram_n_ctx = 0;
+
+static void set_error_info(int code, const char* msg,
+                           int current_n_ctx, int required_n_ctx,
+                           int actual_tokens, int n_predict,
+                           int n_ctx_override, int max_vram_n_ctx) {
+    err_mutex_lock();
+    g_last_error_info.code = code;
+    g_last_error_info.current_n_ctx = current_n_ctx;
+    g_last_error_info.required_n_ctx = required_n_ctx;
+    g_last_error_info.actual_tokens = actual_tokens;
+    g_last_error_info.n_predict = n_predict;
+    g_last_error_info.n_ctx_override = n_ctx_override;
+    g_last_error_info.max_vram_n_ctx = max_vram_n_ctx;
+    if (msg != NULL) {
+        strncpy(g_last_error_info.message, msg, sizeof(g_last_error_info.message) - 1);
+        g_last_error_info.message[sizeof(g_last_error_info.message) - 1] = '\0';
+    } else {
+        g_last_error_info.message[0] = '\0';
+    }
+    // Параллельно обновляем legacy last_error, чтобы старый API работал
+    if (msg != NULL) {
+        strncpy(last_error, msg, sizeof(last_error) - 1);
+        last_error[sizeof(last_error) - 1] = '\0';
+    }
+    err_mutex_unlock();
+}
+
+static void set_error_info_generic(const char* msg) {
+    set_error_info(BRIDGE_ERR_GENERIC, msg, 0, 0, 0, 0, 0, g_max_vram_n_ctx);
+}
+
+static void clear_error_info(void) {
+    err_mutex_lock();
+    g_last_error_info.code = BRIDGE_OK;
+    g_last_error_info.current_n_ctx = 0;
+    g_last_error_info.required_n_ctx = 0;
+    g_last_error_info.actual_tokens = 0;
+    g_last_error_info.n_predict = 0;
+    g_last_error_info.n_ctx_override = 0;
+    g_last_error_info.max_vram_n_ctx = g_max_vram_n_ctx;
+    g_last_error_info.message[0] = '\0';
+    last_error[0] = '\0';
+    err_mutex_unlock();
+}
+
+const BridgeErrorInfo* bridge_get_last_error_info(void) {
+    return &g_last_error_info;
 }
 
 // check_antiprompts — проверяет накопленный output против списка antiprompts.
@@ -89,6 +204,59 @@ static size_t trim_antiprompt_suffix(char* output, size_t output_len, int ap_ind
     if (ap_len == 0 || ap_len > output_len) return output_len;
     output[output_len - ap_len] = '\0';
     return output_len - ap_len;
+}
+
+// bridge_check_ctx_capacity — pre-flight проверка, что prompt + n_predict
+// помещаются в загруженный контекст (im->ctx_n_ctx). Без неё клиент получал
+// загадочную ошибку «llama_decode failed for prompt batch» с неясным
+// диагнозом. Теперь возвращаем внятное сообщение с указанием лимита,
+// текущих значений и рекомендациями (reduce prompt, increase n_ctx, reduce
+// n_predict). Учитывает n_ctx_override из params (если > 0):
+//   - n_ctx_override <= im->ctx_n_ctx  → ёмкость = n_ctx_override
+//   - n_ctx_override >  im->ctx_n_ctx  → код BRIDGE_ERR_N_CTX_NEEDS_RELOAD
+//                                        (бэкенд может auto-reload с большим n_ctx)
+//   - prompt+n_predict > n_ctx_override → код BRIDGE_ERR_PROMPT_TOO_LONG (hard error)
+// Возвращает BRIDGE_OK (0) если ОК, иначе один из BRIDGE_ERR_* кодов.
+static int bridge_check_ctx_capacity(InternalModel *im, const GenerationParams* params, int actual_tokens, int n_predict) {
+    if (im == NULL || im->ctx_n_ctx == 0) return BRIDGE_OK;
+    uint32_t effective_n_ctx = im->ctx_n_ctx;
+    int n_ctx_override = (params != NULL ? params->n_ctx_override : 0);
+
+    if (n_ctx_override > 0) {
+        if ((uint32_t)n_ctx_override > im->ctx_n_ctx) {
+            // Клиент запрашивает контекст больше, чем загружено — нужен reload.
+            int required = n_ctx_override;
+            char buf[640];
+            snprintf(buf, sizeof(buf),
+                "requested n_ctx=%d exceeds model's effective n_ctx=%u. "
+                "Auto-reload may be possible if VRAM allows (max_vram_n_ctx=%d). "
+                "Otherwise save a model profile with n_ctx=%d and reload the model "
+                "(or send a smaller n_ctx in options.num_ctx)",
+                n_ctx_override, im->ctx_n_ctx, g_max_vram_n_ctx, n_ctx_override);
+            set_error_info(BRIDGE_ERR_N_CTX_NEEDS_RELOAD, buf,
+                           (int)im->ctx_n_ctx, required,
+                           actual_tokens, n_predict, n_ctx_override, g_max_vram_n_ctx);
+            return BRIDGE_ERR_N_CTX_NEEDS_RELOAD;
+        }
+        effective_n_ctx = (uint32_t)n_ctx_override;
+    }
+    int64_t total = (int64_t)actual_tokens + (int64_t)n_predict + 1;
+    if (total > (int64_t)effective_n_ctx) {
+        int required = actual_tokens + n_predict + 1;
+        char buf[640];
+        snprintf(buf, sizeof(buf),
+            "prompt too long for n_ctx: prompt_tokens=%d + n_predict=%d + 1 = %lld > n_ctx=%u "
+            "(model loaded with n_ctx=%u, request asked for n_ctx=%d). "
+            "Reduce prompt, set smaller max_tokens, or save a model profile with bigger n_ctx "
+            "and reload the model",
+            actual_tokens, n_predict, (long long)total, effective_n_ctx,
+            im->ctx_n_ctx, n_ctx_override);
+        set_error_info(BRIDGE_ERR_PROMPT_TOO_LONG, buf,
+                       (int)im->ctx_n_ctx, required,
+                       actual_tokens, n_predict, n_ctx_override, g_max_vram_n_ctx);
+        return BRIDGE_ERR_PROMPT_TOO_LONG;
+    }
+    return BRIDGE_OK;
 }
 
 // ============================================================
@@ -203,14 +371,24 @@ ModelHandle bridge_load_model(const ModelConfig* config, char** error_msg) {
     ctx_params.n_batch = config->n_batch > 0 ? (uint32_t)config->n_batch : 512;
     ctx_params.n_threads = config->n_threads > 0 ? config->n_threads : 0;
     ctx_params.n_threads_batch = config->n_threads_batch > 0 ? config->n_threads_batch : 0;
-    ctx_params.flash_attn_type = config->flash_attn_type >= 0 ? 
-        (config->flash_attn_type == 0 ? LLAMA_FLASH_ATTN_TYPE_DISABLED : LLAMA_FLASH_ATTN_TYPE_ENABLED) :
-        LLAMA_FLASH_ATTN_TYPE_AUTO;
+// В актуальной llama.cpp (коммит 4414c04b9) llama_context_params хранит
+// `flash_attn_type` (enum llama_flash_attn_type: AUTO=-1, DISABLED=0, ENABLED=1),
+// а не `flash_attn` (bool). Ранний «D.6 фикс» основывался на ещё более новой
+// версии, где bool появится, но в b4500+ enum сохраняется. Прямо пробрасываем
+// значение: config->flash_attn_type: -1=auto (default), 0=disabled, 1=enabled.
+// llama_context_default_params() уже инициализирует flash_attn_type в AUTO;
+// правим только если клиент задал явно (0 или 1).
+    if (config->flash_attn_type == 0) {
+        ctx_params.flash_attn_type = LLAMA_FLASH_ATTN_TYPE_DISABLED;
+    } else if (config->flash_attn_type > 0) {
+        ctx_params.flash_attn_type = LLAMA_FLASH_ATTN_TYPE_ENABLED;
+    } // else (== -1) — оставляем AUTO из default_params
     ctx_params.rope_freq_base = config->rope_freq_base > 0 ? config->rope_freq_base : 0.0f;
     ctx_params.rope_freq_scale = config->rope_freq_scale > 0 ? config->rope_freq_scale : 0.0f;
 
-    // Создаём контекст
-    struct llama_context *context = llama_new_context_with_model(model, ctx_params);
+    // Создаём контекст. В новой llama.cpp `llama_new_context_with_model` deprecated;
+    // используем `llama_init_from_model`.
+    struct llama_context *context = llama_init_from_model(model, ctx_params);
     if (context == NULL) {
         char buf[512];
         snprintf(buf, sizeof(buf), "failed to create context for %s", config->model_path);
@@ -221,7 +399,7 @@ ModelHandle bridge_load_model(const ModelConfig* config, char** error_msg) {
     }
 
     // Получаем vocabulary
-    struct llama_vocab *vocab = llama_model_get_vocab(model);
+    const struct llama_vocab *vocab = llama_model_get_vocab(model);
 
     // Создаём сэмплер (стандартная цепочка)
     struct llama_sampler *sampler = llama_sampler_chain_init(llama_sampler_chain_default_params());
@@ -241,9 +419,68 @@ ModelHandle bridge_load_model(const ModelConfig* config, char** error_msg) {
     im->model = model;
     im->context = context;
     im->sampler = sampler;
-    im->vocab = vocab;
+    im->vocab = (struct llama_vocab *)vocab;
+    // Сохраняем фактические параметры контекста — они нужны для pre-flight
+    // проверки ёмкости (prompt + n_predict <= n_ctx) перед llama_decode.
+    // Без этого клиент получал загадочную ошибку «llama_decode failed» без
+    // указания на реальную причину (переполнение контекста).
+    im->ctx_n_ctx = ctx_params.n_ctx;
+    im->ctx_n_batch = ctx_params.n_batch;
 
-    printf("[bridge] model loaded successfully: %s\n", config->model_path);
+    // ============================================================
+    // Оценка максимального n_ctx, доступного текущей VRAM
+    // ============================================================
+    // Нужна для поля max_vram_n_ctx в BridgeErrorInfo — Go-сторона
+    // использует её в decideNCtx() (см. internal/balancer/nctx_reload.go)
+    // чтобы понять, можно ли auto-reload с большим n_ctx.
+    //
+    // Формула: free_vram_after_model = free_vram - (model_size * n_gpu_layers / n_layers)
+    //   (грубо: занятая VRAM ≈ вес модели * доля GPU-слоёв)
+    // max_n_ctx = free_vram_after_model / kv_cache_per_token
+    //   (для f16 KV cache: 2 * n_layers * n_embd * 2 байт на токен = 4 * n_layers * n_embd)
+    // Если данных нет (CPU-only, не CUDA) — оставляем 0 (unknown).
+#ifdef GGML_USE_CUDA
+    {
+        size_t free_bytes = 0, total_bytes = 0;
+        CUresult cu_err = cuMemGetInfo(&free_bytes, &total_bytes);
+        if (cu_err == CUDA_SUCCESS) {
+            int n_layers = (int)llama_model_n_layer(model);
+            int n_embd = (int)llama_model_n_embd(model);
+            uint64_t model_size_bytes = llama_model_size(model);
+            int gpu_layers = config->n_gpu_layers; // -1 = все
+            if (gpu_layers < 0 || gpu_layers > n_layers) gpu_layers = n_layers;
+            // Грубая оценка: пропорционально доле GPU-слоёв
+            uint64_t gpu_model_bytes = (n_layers > 0)
+                ? (model_size_bytes * (uint64_t)gpu_layers / (uint64_t)n_layers)
+                : model_size_bytes;
+            int64_t free_for_kv = (int64_t)free_bytes - (int64_t)gpu_model_bytes;
+            if (free_for_kv < 0) free_for_kv = 0;
+            // f16 KV cache: 2 (K+V) * 2 (bytes) * n_layers * n_embd = 4 * n_layers * n_embd
+            // Плюс overhead на аллокацию (~10%), оставим safety в Go-стороне.
+            int64_t kv_per_token = (int64_t)4 * (int64_t)n_layers * (int64_t)n_embd;
+            int estimated_max = 0;
+            if (kv_per_token > 0) {
+                estimated_max = (int)(free_for_kv / kv_per_token);
+            }
+            // Clamp: не меньше загруженного n_ctx (бессмысленно ниже)
+            if (estimated_max < (int)ctx_params.n_ctx) estimated_max = (int)ctx_params.n_ctx;
+            // И ограничим сверху разумным пределом (8M токенов — предел архитектуры llama.cpp)
+            if (estimated_max > 8388608) estimated_max = 8388608;
+            err_mutex_lock();
+            g_max_vram_n_ctx = estimated_max;
+            g_last_error_info.max_vram_n_ctx = estimated_max;
+            err_mutex_unlock();
+            printf("[bridge] VRAM-estimated max n_ctx = %d (free=%lld MB, gpu_model=%llu MB, kv_per_token=%lld bytes)\n",
+                   estimated_max,
+                   (long long)(free_bytes / (1024 * 1024)),
+                   (unsigned long long)(gpu_model_bytes / (1024 * 1024)),
+                   (long long)kv_per_token);
+        }
+    }
+#endif
+
+    printf("[bridge] model loaded successfully: %s (effective n_ctx=%u, n_batch=%u)\n",
+           config->model_path, im->ctx_n_ctx, im->ctx_n_batch);
     return (ModelHandle)im;
 }
 
@@ -425,6 +662,22 @@ InferenceResult bridge_infer(
     int n_predict = params->n_predict > 0 ? params->n_predict : 512;
     int total_capacity = n_tokens + n_predict + 1;
 
+// Если в bridge_check_ctx_capacity проставлен структурированный код
+// (например, BRIDGE_ERR_N_CTX_NEEDS_RELOAD = 2 или BRIDGE_ERR_PROMPT_TOO_LONG = 3),
+// result.status мапится на этот код. Иначе status=1 (generic).
+// Это позволяет Go-стороне через bridge_get_last_error_info() и сам result.status
+// понять причину и решить: дёргать auto-reload на бэкенде, либо возвращать
+// клиенту 400/413 с понятным JSON-описанием.
+    if (bridge_check_ctx_capacity(im, params, actual_tokens, n_predict) != 0) {
+        free(tokens);
+        err_mutex_lock();
+        int code = g_last_error_info.code;
+        err_mutex_unlock();
+        result.status = (code != BRIDGE_OK) ? code : 1;
+        result.error_msg = strdup(last_error);
+        return result;
+    }
+
     // Подготавливаем output buffer
     size_t output_capacity = 8192 * 16; // 128 KB initial
     char *output = (char *)malloc(output_capacity);
@@ -536,6 +789,7 @@ int bridge_infer_stream(
     void* user_data
 ) {
     if (model == NULL || prompt == NULL || callback == NULL) {
+        set_error("invalid arguments to bridge_infer_stream (model/prompt/callback is NULL)");
         return 1;
     }
 
@@ -549,23 +803,39 @@ int bridge_infer_stream(
     // Токенизируем prompt
     int n_tokens = -llama_tokenize(im->vocab, prompt, (int)strlen(prompt), NULL, 0, true, true);
     if (n_tokens <= 0) {
+        set_error("llama_tokenize returned non-positive token count (prompt may be empty or contain only BOS/EOS)");
         return 1;
     }
 
     llama_token *tokens = (llama_token *)malloc((size_t)(n_tokens + 1) * sizeof(llama_token));
     if (tokens == NULL) {
+        set_error("out of memory: failed to allocate token buffer");
         return 1;
     }
 
     int actual_tokens = llama_tokenize(im->vocab, prompt, (int)strlen(prompt), tokens, n_tokens, true, true);
     if (actual_tokens < 0) {
         free(tokens);
+        set_error("llama_tokenize failed for prompt (invalid UTF-8 or unsupported characters)");
         return 1;
     }
 
     // Количество для генерации
     int n_predict = params->n_predict > 0 ? params->n_predict : 512;
     int n_batch = params->n_batch > 0 ? params->n_batch : 512;
+
+// bridge_infer_stream тоже пробрасывает структурированный код ошибки из
+// bridge_check_ctx_capacity. Раньше всегда возвращал 1, что не позволяло
+// Go-стороне отличить BRIDGE_ERR_N_CTX_NEEDS_RELOAD (=2) от generic
+// ошибки. Теперь возвращаем код напрямую; Go-маппер обработает и прокинет
+// 413/503 клиенту.
+    if (bridge_check_ctx_capacity(im, params, actual_tokens, n_predict) != 0) {
+        free(tokens);
+        err_mutex_lock();
+        int code = g_last_error_info.code;
+        err_mutex_unlock();
+        return (code != BRIDGE_OK) ? code : 1;
+    }
 
     // Процессим токены промпта
     int n_processed = 0;
@@ -579,6 +849,9 @@ int bridge_infer_stream(
 
         if (llama_decode(im->context, batch) != 0) {
             free(tokens);
+            // Самая частая причина: n_ctx переполнен (kv-cache overflow),
+            // либо n_batch > n_ctx, либо модель не помещается в VRAM.
+            set_error("llama_decode failed for prompt batch (likely n_ctx overflow, prompt too long, or n_batch > n_ctx)");
             return 1;
         }
 
@@ -649,6 +922,9 @@ int bridge_infer_stream(
         // Декодируем следующий шаг
         struct llama_batch gen_batch = llama_batch_get_one(&new_token, 1);
         if (llama_decode(im->context, gen_batch) != 0) {
+            // Обычно это переполнение KV-cache при длинной выдаче
+            // (n_predict > n_ctx - prompt_len), либо OOM на GPU.
+            set_error("llama_decode failed during generation step (likely KV-cache overflow: n_predict + prompt_len > n_ctx, or GPU OOM)");
             return 1;
         }
     }
@@ -820,6 +1096,23 @@ const char* bridge_last_error(void) {
     return last_error;
 }
 
+// ============================================================
+// Tokenization utilities — реальный подсчёт токенов
+// ============================================================
+
+int32_t bridge_count_tokens(ModelHandle model, const char* text) {
+    if (model == NULL || text == NULL) return -1;
+
+    InternalModel *im = (InternalModel *)model;
+    if (im->vocab == NULL) return -1;
+
+    int n_tokens = -llama_tokenize(im->vocab, text, (int)strlen(text), NULL, 0, true, true);
+    if (n_tokens < 0) return -1;
+    return n_tokens;
+}
+
 const char* bridge_version(void) {
     return "0.2.0 (real llama.cpp linked)";
 }
+
+#endif // GO_BRIDGE_LLAMA_STUB guard

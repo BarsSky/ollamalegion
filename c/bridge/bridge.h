@@ -33,7 +33,13 @@ typedef struct {
     char* error_msg;     // сообщение об ошибке (если status != 0)
 } InferenceResult;
 
-// GenerationParams — параметры генерации
+// GenerationParams — параметры генерации.
+//
+// ПРИМЕЧАНИЕ: n_ctx_override — это per-request переопределение n_ctx,
+// которое используется для pre-flight проверки. Реальный n_ctx контекста
+// устанавливается при LoadModel (immutable в llama.cpp). Если n_ctx_override
+// > текущего im->ctx_n_ctx, клиенту возвращается informative ошибка с
+// предложением перезагрузить модель с большим n_ctx.
 typedef struct {
     int n_predict;          // max tokens to generate (-1 = no limit)
     int n_keep;             // number of tokens to keep from initial prompt
@@ -54,6 +60,12 @@ typedef struct {
     // токены llama_vocab_is_eog могут не срабатывать при naive-prompt.
     const char** antiprompts;     // массив C-строк (NULL-оконченный)
     int n_antiprompts;            // количество элементов (>= 0; 0 = выключено)
+    // Per-request n_ctx override (0 = use effective n_ctx from loaded model).
+    // Если задан > 0 и меньше im->ctx_n_ctx, используется для расчёта
+    // доступной ёмкости (n_ctx_override - n_predict). Если > im->ctx_n_ctx
+    // — возвращается ошибка «effective n_ctx too small for request, reload
+    // model with larger n_ctx».
+    int n_ctx_override;
 } GenerationParams;
 
 // GpuSplitConfig — конфигурация распределения по GPU
@@ -150,11 +162,57 @@ void bridge_free_model_metadata(ModelMetadata* metadata);
 // Освобождение строки (для error_msg и т.д.)
 void bridge_free_string(char* str);
 
-// Получение последней ошибки
+// Получение последней ошибки (legacy: только текст, не различает причины)
 const char* bridge_last_error(void);
+
+// ============================================================
+// Коды ошибок (структурированный error-info API)
+// ============================================================
+// Возвращаются из bridge_infer / bridge_infer_stream и параллельно
+// доступны через bridge_get_last_error_info().
+#define BRIDGE_OK                       0
+#define BRIDGE_ERR_GENERIC              1  // неструктурированная ошибка (см. last_error)
+#define BRIDGE_ERR_N_CTX_NEEDS_RELOAD   2  // n_ctx_override > текущего n_ctx модели; возможен auto-reload бэкенда с большим n_ctx
+#define BRIDGE_ERR_PROMPT_TOO_LONG      3  // prompt_tokens + n_predict > n_ctx, и n_ctx_override не помогает (hard error)
+#define BRIDGE_ERR_GPU_OOM              4  // нехватка VRAM при попытке аллокации слоёв модели
+#define BRIDGE_ERR_BAD_REQUEST          5  // некорректные параметры (например, n_ctx <= 0 в override)
+
+// Структурированное описание последней ошибки. Заполняется C-кодом
+// при любом не-OK-возврате из bridge_infer / bridge_infer_stream.
+// Числовые поля (current_n_ctx, required_n_ctx, actual_tokens, n_predict,
+// n_ctx_override, max_vram_n_ctx) заполняются для кодов 2 и 3; для
+// остальных кодов они равны 0, а message содержит человекочитаемое описание.
+typedef struct {
+    int  code;                  // один из BRIDGE_ERR_* (см. выше)
+    int  current_n_ctx;         // фактический n_ctx загруженной модели
+    int  required_n_ctx;        // минимальный n_ctx, который нужен для запроса
+    int  actual_tokens;         // размер prompt в токенах
+    int  n_predict;             // запрошенное число генерируемых токенов
+    int  n_ctx_override;        // значение n_ctx_override из params (0 если не задан)
+    int  max_vram_n_ctx;        // оценочный максимум n_ctx для текущей VRAM (0 если неизвестно)
+    char message[768];          // человекочитаемое описание ошибки
+} BridgeErrorInfo;
+
+// Возвращает указатель на статический потокобезопасный BridgeErrorInfo.
+// Память не аллоцируется, копировать не нужно. Действительно до следующего
+// вызова bridge_infer / bridge_infer_stream / bridge_load_model.
+const BridgeErrorInfo* bridge_get_last_error_info(void);
 
 // Версия llama.cpp
 const char* bridge_version(void);
+
+// ============================================================
+// ============================================================
+// Tokenization utilities
+// ============================================================
+
+// bridge_count_tokens
+// Токенизирует строку с помощью загруженной модели и возвращает число токенов.
+// Если токенизация не удалась — возвращает -1.
+int32_t bridge_count_tokens(
+    ModelHandle model,
+    const char* text
+);
 
 // ============================================================
 // Chat template — применяет tokenizer.chat_template из GGUF

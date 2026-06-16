@@ -54,35 +54,61 @@ type GPUDevice struct {
 
 // GenerationParams — параметры генерации
 type GenerationParams struct {
-	NPredict        int     // max tokens (-1 = auto)
-	NKeep           int     // keep tokens from prompt
-	NBatch          int     // batch size
-	Temperature     float32
-	TopP            float32
-	TopK            float32
-	RepeatPenalty   float32
+	NPredict         int     // max tokens (-1 = auto)
+	NKeep            int     // keep tokens from prompt
+	NBatch           int     // batch size
+	Temperature      float32
+	TopP             float32
+	TopK             float32
+	MinP             float32
+	TypicalP         float32
+	TfsZ             float32
+	RepeatPenalty    float32
 	FrequencyPenalty float32
-	PresencePenalty float32
-	Seed            int     // -1 = random
+	PresencePenalty  float32
+	RepeatLastN      int
+	Mirostat         int
+	MirostatTau      float32
+	MirostatEta      float32
+	Seed             int // -1 = random
 	// Antiprompts — стоп-последовательности, при появлении которых в декодированной
 	// выдаче стрим завершается, и сами токены не отправляются клиенту.
 	// Для gemma-формата рекомендуется: ["<end_of_turn>", "<start_of_turn>user"].
 	Antiprompts []string
+	// StopSequences — альтернативное Ollama-название для стоп-последовательностей.
+	// В cppworker маппится на Antiprompts.
+	StopSequences []string
+	// NCtxOverride — per-request переопределение n_ctx (0 = use effective
+	// n_ctx модели, загруженной с диска). Используется для pre-flight
+	// проверки ёмкости: если NCtxOverride > эффективного n_ctx модели,
+	// C-bridge возвращает informative ошибку с предложением перезагрузить
+	// модель с большим n_ctx.
+	NCtxOverride int
 }
 
 // DefaultGenerationParams возвращает параметры по умолчанию
 func DefaultGenerationParams() GenerationParams {
 	return GenerationParams{
-		NPredict:        4096, // увеличенный лимит для длинных chat-ответов
-		NKeep:           0,
-		NBatch:          512,
-		Temperature:     0.7,
-		TopP:            0.9,
-		TopK:            40.0,
-		RepeatPenalty:   1.1,
+		NPredict:         2048, // уменьшен с 4096 (Phase D.6): иначе при n_ctx=4096 короткий prompt
+		// (типа 35 токенов OpenWebUI) + 4096 = 4131 > 4096 → code 3: prompt too long.
+		// С 2048: 35+2048+1=2084 << 4096 ✓. Если нужен длинный ответ, клиент должен
+		// явно задать max_tokens/num_predict в body — applyCppCtxHeader его не трогает.
+		NKeep:            0,
+		NBatch:           512,
+		Temperature:      0.7,
+		TopP:             0.9,
+		TopK:             40.0,
+		MinP:             0.0,
+		TypicalP:         1.0,
+		TfsZ:             1.0,
+		RepeatPenalty:    1.1,
 		FrequencyPenalty: 0.0,
-		PresencePenalty: 0.0,
-		Seed:            -1,
+		PresencePenalty:  0.0,
+		RepeatLastN:      64,
+		Mirostat:         0,
+		MirostatTau:      5.0,
+		MirostatEta:      0.1,
+		Seed:             -1,
 	}
 }
 
@@ -137,9 +163,69 @@ func DefaultModelConfig(path string) ModelConfig {
 // InferenceResult — результат инференса
 type InferenceResult struct {
 	Output   string
-	Status   int // 0 = success
+	Status   int // 0 = success; 2=BRIDGE_ERR_N_CTX_NEEDS_RELOAD, 3=BRIDGE_ERR_PROMPT_TOO_LONG, и т.д.
 	ErrorMsg string
 }
+
+// ErrCode — коды структурированных ошибок из C-моста. Эти значения
+// мапятся на одноимённые BRIDGE_ERR_* #define в c/bridge/bridge.h.
+// Используются для type switch в Go-стороне (см. internal/balancer/nctx_reload.go).
+const (
+	ErrCodeOK                 = 0
+	ErrCodeGeneric            = 1
+	ErrCodeNCtxNeedsReload    = 2 // n_ctx_override > загруженного n_ctx; возможен auto-reload
+	ErrCodePromptTooLong      = 3 // prompt+n_predict > n_ctx и override не помогает
+	ErrCodeGPUOOM             = 4 // нехватка VRAM при попытке аллокации
+	ErrCodeBadRequest         = 5 // некорректные параметры
+)
+
+// BridgeErrorInfo — Go-представление C BridgeErrorInfo (см. bridge.h).
+// Заполняется C-кодом при любом не-OK-возврате из bridge_infer/bridge_infer_stream.
+// Доступно через GetLastErrorInfo() сразу после такого возврата.
+type BridgeErrorInfo struct {
+	Code          int    // один из ErrCode* выше
+	CurrentNCtx   int    // фактический n_ctx загруженной модели
+	RequiredNCtx  int    // минимальный n_ctx, который нужен для запроса
+	ActualTokens  int    // размер prompt в токенах
+	NPredict      int    // запрошенное число генерируемых токенов
+	NCtxOverride  int    // значение n_ctx_override из params (0 если не задан)
+	MaxVRAMNCtx   int    // оценочный максимум n_ctx для текущей VRAM (0 если неизвестно)
+	Message       string // человекочитаемое описание ошибки
+}
+
+// GetLastErrorInfo возвращает структурированную информацию о последней ошибке
+// из C-bridge. Должна вызываться СРАЗУ после того, как Infer/InferStream вернул
+// ошибку. Действительна до следующего вызова C-bridge.
+//
+// Если ошибки не было (или прошло несколько успешных вызовов), возвращает
+// BridgeErrorInfo{Code: ErrCodeOK}.
+func GetLastErrorInfo() *BridgeErrorInfo {
+	cInfo := C.bridge_get_last_error_info()
+	if cInfo == nil {
+		return &BridgeErrorInfo{Code: ErrCodeOK}
+	}
+	return &BridgeErrorInfo{
+		Code:         int(cInfo.code),
+		CurrentNCtx:  int(cInfo.current_n_ctx),
+		RequiredNCtx: int(cInfo.required_n_ctx),
+		ActualTokens: int(cInfo.actual_tokens),
+		NPredict:     int(cInfo.n_predict),
+		NCtxOverride: int(cInfo.n_ctx_override),
+		MaxVRAMNCtx:  int(cInfo.max_vram_n_ctx),
+		Message:      C.GoString(&cInfo.message[0]),
+	}
+}
+
+// ErrNCtxNeedsReload — sentinel для errors.Is. Возвращается Go-обёрткой
+// Infer/InferStream, если C-мост сигнализировал ErrCodeNCtxNeedsReload.
+// Используется в balancer для решения: дёрнуть auto-reload на бэкенде
+// (если VRAM позволяет) или вернуть 413 клиенту.
+var ErrNCtxNeedsReload = fmt.Errorf("n_ctx exceeds loaded model; auto-reload may be possible")
+
+// ErrPromptTooLong — sentinel для errors.Is. C-bridge вернул ErrCodePromptTooLong.
+// Это hard error: даже с reload не получится, потому что prompt сам по себе
+// слишком длинный (либо n_predict > запрошенного n_ctx).
+var ErrPromptTooLong = fmt.Errorf("prompt + n_predict exceeds n_ctx")
 
 // ModelMetadata — метаданные модели
 type ModelMetadata struct {
@@ -332,17 +418,35 @@ func (m *ModelHandle) Infer(prompt string, params GenerationParams) (*InferenceR
 		seed:             C.int(params.Seed),
 		antiprompts:      cApArr,
 		n_antiprompts:    cApN,
+		n_ctx_override:   C.int(params.NCtxOverride),
 	}
 
 	result := C.bridge_infer(m.ptr, cPrompt, &cParams)
 	defer C.bridge_free_inference_result(&result)
 
 	if result.status != 0 {
-		errMsg := ""
-		if result.error_msg != nil {
-			errMsg = C.GoString(result.error_msg)
+		// C-bridge теперь заполняет структурированный BridgeErrorInfo.
+		// Используем GetLastErrorInfo() для классификации ошибки и проброса
+		// sentinel ErrNCtxNeedsReload / ErrPromptTooLong (см. InferStream).
+		info := GetLastErrorInfo()
+		detail := info.Message
+		if detail == "" {
+			if result.error_msg != nil {
+				detail = C.GoString(result.error_msg)
+			}
 		}
-		return nil, fmt.Errorf("inference failed: %s", errMsg)
+		if detail == "" {
+			detail = "(no detail from bridge)"
+		}
+		base := fmt.Errorf("inference failed: code=%d %s (current_n_ctx=%d, required_n_ctx=%d, max_vram_n_ctx=%d)",
+			result.status, detail, info.CurrentNCtx, info.RequiredNCtx, info.MaxVRAMNCtx)
+		switch info.Code {
+		case ErrCodeNCtxNeedsReload:
+			return nil, fmt.Errorf("%w: %w", base, ErrNCtxNeedsReload)
+		case ErrCodePromptTooLong:
+			return nil, fmt.Errorf("%w: %w", base, ErrPromptTooLong)
+		}
+		return nil, base
 	}
 
 	return &InferenceResult{
@@ -377,6 +481,7 @@ func (m *ModelHandle) InferStream(prompt string, params GenerationParams, callba
 		seed:             C.int(params.Seed),
 		antiprompts:      cApArr,
 		n_antiprompts:    cApN,
+		n_ctx_override:   C.int(params.NCtxOverride),
 	}
 
 	// Используем cgo.Handle для безопасной передачи Go-контекста в C.
@@ -394,7 +499,35 @@ func (m *ModelHandle) InferStream(prompt string, params GenerationParams, callba
 	)
 
 	if ret != 0 {
-		return fmt.Errorf("stream inference failed with code %d", ret)
+		// C-bridge возвращает структурированный код ошибки:
+		//   0 — OK
+		//   1 — generic
+		//   2 — BRIDGE_ERR_N_CTX_NEEDS_RELOAD (auto-reload возможен)
+		//   3 — BRIDGE_ERR_PROMPT_TOO_LONG (hard error)
+		//   4 — BRIDGE_ERR_GPU_OOM
+		//   5 — BRIDGE_ERR_BAD_REQUEST
+		// До правки ret всегда был 1 на любую ошибку, и balancer не мог
+		// отличить n_ctx-need-reload от других ошибок. Теперь
+		// GetLastErrorInfo() возвращает полную BridgeErrorInfo для
+		// диагностики, а sentinel ErrNCtxNeedsReload / ErrPromptTooLong
+		// позволяют использовать errors.Is().
+		info := GetLastErrorInfo()
+		detail := info.Message
+		if detail == "" {
+			detail = C.GoString(C.bridge_last_error())
+		}
+		if detail == "" {
+			detail = "(no detail from bridge)"
+		}
+		base := fmt.Errorf("stream inference failed with code %d: %s (current_n_ctx=%d, required_n_ctx=%d, max_vram_n_ctx=%d)",
+			ret, detail, info.CurrentNCtx, info.RequiredNCtx, info.MaxVRAMNCtx)
+		switch info.Code {
+		case ErrCodeNCtxNeedsReload:
+			return fmt.Errorf("%w: %w", base, ErrNCtxNeedsReload)
+		case ErrCodePromptTooLong:
+			return fmt.Errorf("%w: %w", base, ErrPromptTooLong)
+		}
+		return base
 	}
 	return nil
 }
@@ -544,6 +677,25 @@ func (m *ModelHandle) GetChatTemplate() (string, error) {
 
 // ErrNoChatTemplate — в GGUF нет tokenizer.chat_template.
 var ErrNoChatTemplate = fmt.Errorf("no chat template in GGUF metadata")
+
+// CountTokens возвращает число токенов в тексте для загруженной модели.
+// В fallback-режиме (ошибка токенизации или stub) возвращает грубую оценку
+// по 4 символа на токен.
+func (m *ModelHandle) CountTokens(text string) int {
+	if m == nil || m.ptr == nil {
+		return len([]rune(text)) / 4
+	}
+	cText := C.CString(text)
+	defer C.free(unsafe.Pointer(cText))
+	n := C.bridge_count_tokens(m.ptr, cText)
+	if n < 0 {
+		if text == "" {
+			return 0
+		}
+		return len([]rune(text)) / 4
+	}
+	return int(n)
+}
 
 // GetMetadata возвращает метаданные модели
 func (m *ModelHandle) GetMetadata() (*ModelMetadata, error) {

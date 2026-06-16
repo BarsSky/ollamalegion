@@ -17,7 +17,9 @@ import (
 	"ollama-loadbalancer/pkg/types"
 )
 
-// mockCppWorker — минимальный mock cppworker с поддержкой /api/chat и /api/generate
+// mockCppWorker — минимальный mock cppworker с поддержкой OpenAI-совместимых эндпоинтов.
+// Балансер транслирует Ollama /api/chat → /v1/chat/completions и
+// /api/generate → /v1/completions, поэтому mock отвечает именно на них.
 type mockCppWorker struct {
 	server   *httptest.Server
 	host     string
@@ -39,67 +41,79 @@ func newMockCppWorker() *mockCppWorker {
 					{"name": "test-model", "modified_at": time.Now().UTC().Format(time.RFC3339)},
 				},
 			})
-		case path == "/api/chat":
+		case path == "/v1/chat/completions":
 			body, _ := io.ReadAll(r.Body)
 			var req map[string]interface{}
 			json.Unmarshal(body, &req)
 			stream, _ := req["stream"].(bool)
 
-			w.Header().Set("Content-Type", "application/x-ndjson")
-			w.WriteHeader(http.StatusOK)
-
 			if stream {
-				// Streaming ответ
-				resp := map[string]interface{}{
-					"model":     req["model"],
-					"created_at": time.Now().UTC().Format(time.RFC3339),
-					"message": map[string]interface{}{
-						"role":    "assistant",
-						"content": "Привет! Я работающая модель llama.cpp.",
+				w.Header().Set("Content-Type", "text/event-stream")
+				w.WriteHeader(http.StatusOK)
+				flusher, _ := w.(http.Flusher)
+				chunk := map[string]interface{}{
+					"id":      "chatcmpl-test",
+					"object":  "chat.completion.chunk",
+					"created": time.Now().Unix(),
+					"model":   req["model"],
+					"choices": []map[string]interface{}{
+						{
+							"index": 0,
+							"delta": map[string]interface{}{
+								"role":    "assistant",
+								"content": "Привет! Я работающая модель llama.cpp.",
+							},
+							"finish_reason": "stop",
+						},
 					},
-					"done": true,
 				}
-				data, _ := json.Marshal(resp)
-				fmt.Fprintf(w, "%s\n", data)
+				data, _ := json.Marshal(chunk)
+				fmt.Fprintf(w, "data: %s\n\n", data)
+				if flusher != nil {
+					flusher.Flush()
+				}
 			} else {
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusOK)
 				resp := map[string]interface{}{
-					"model":     req["model"],
-					"created_at": time.Now().UTC().Format(time.RFC3339),
-					"message": map[string]interface{}{
-						"role":    "assistant",
-						"content": "Привет! Я работающая модель llama.cpp.",
+					"id":      "chatcmpl-test",
+					"object":  "chat.completion",
+					"created": time.Now().Unix(),
+					"model":   req["model"],
+					"choices": []map[string]interface{}{
+						{
+							"index": 0,
+							"message": map[string]interface{}{
+								"role":    "assistant",
+								"content": "Привет! Я работающая модель llama.cpp.",
+							},
+							"finish_reason": "stop",
+						},
 					},
-					"done": true,
 				}
 				json.NewEncoder(w).Encode(resp)
 			}
-		case path == "/api/generate":
+		case path == "/v1/completions":
 			body, _ := io.ReadAll(r.Body)
 			var req map[string]interface{}
 			json.Unmarshal(body, &req)
-			stream, _ := req["stream"].(bool)
 
-			w.Header().Set("Content-Type", "application/x-ndjson")
+			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusOK)
-
-			if stream {
-				resp := map[string]interface{}{
-					"model":     req["model"],
-					"created_at": time.Now().UTC().Format(time.RFC3339),
-					"response":  "Ответ от llama.cpp модели.",
-					"done":      true,
-				}
-				data, _ := json.Marshal(resp)
-				fmt.Fprintf(w, "%s\n", data)
-			} else {
-				resp := map[string]interface{}{
-					"model":     req["model"],
-					"created_at": time.Now().UTC().Format(time.RFC3339),
-					"response":  "Ответ от llama.cpp модели.",
-					"done":      true,
-				}
-				json.NewEncoder(w).Encode(resp)
+			resp := map[string]interface{}{
+				"id":      "cmpl-test",
+				"object":  "text_completion",
+				"created": time.Now().Unix(),
+				"model":   req["model"],
+				"choices": []map[string]interface{}{
+					{
+						"index": 0,
+						"text":  "Ответ от llama.cpp модели.",
+						"finish_reason": "stop",
+					},
+				},
 			}
+			json.NewEncoder(w).Encode(resp)
 		default:
 			http.Error(w, "not found", http.StatusNotFound)
 		}
@@ -126,7 +140,7 @@ func createTestProxyForLLamaCpp(t *testing.T, cppWorkerURL string) *balancer.Pro
 	}
 
 	cfg := &types.LoadBalancerConfig{
-		Balancing: types.BalancingConfig{
+		Balancing: types.BalancingSettings{
 			OperatingMode:    "standard",
 			SessionStickiness: true,
 			SessionTTL:       60,

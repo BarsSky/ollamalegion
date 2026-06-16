@@ -79,7 +79,7 @@ func TestInitialSetup_LlamaCppBackendEngine(t *testing.T) {
 	state := proxy.GetClusterState()
 	assert.Equal(t, "virtual_router", state.OperatingMode,
 		"llama.cpp engine should default to virtual_router operating mode")
-	assert.Equal(t, string(types.EngineLlamaCPP), state.BackendEngine,
+	assert.Equal(t, types.EngineLlamaCPP, state.BackendEngine,
 		"BackendEngine should be llama_cpp")
 
 	// 2. Проверка BackendType counts

@@ -386,6 +386,15 @@ Ollama НЕ ИМЕЕТ публичного REST API для изменения �
 | 2026-05-12 | 1.8 | ✅ **API endpoints для агента** — `Api.restartAgent(backendId)` и `Api.agentLogs(backendId, limit)` в api.js. |
 | 2026-05-12 | 1.8 | ✅ **Handler функции в app.js** — `restartAgent()` и `viewAgentLogs()` с модальным окном для логов. |
 | 2026-05-12 | 1.8 | ✅ **i18n ключи для agent actions** — `agents.restart/view_logs/config/confirm_restart/restarting/restarted/restart_error/loading_logs/logs_title/logs_error/no_logs` в en.js и ru.js. |
+| 2026-06-15 | 1.9 | ✅ **Исправлены URL agent restart/logs** — `Api.restartAgent` и `Api.agentLogs` теперь используют `/api/v1/agents/{id}/restart` и `/api/v1/agents/{id}/logs`, соответствующие реализованным эндпоинтам в `internal/api/handlers_agents.go`. Ранее UI звал `/api/v1/backends/{id}/restart|logs`, что возвращало 404. |
+
+### ✅ Этап 6 (P1 — Реализован 2026-06-05) — gguf Settings tab
+| Дата | Версия | Изменения |
+|------|--------|-----------|
+| 2026-06-05 | 1.9 | ✅ **Backend load options в gguf Settings tab** — `gguf-renderer.js renderSettingsPane()` переписан: вместо «мёртвой» формы `gguf-settings-form`, которая меняла только локальный `state.loadOptions`, рендерит (1) Backend load options, загружаемые через `GET /api/v1/cppworker/config` и сохраняемые через `PUT /api/v1/cppworker/config/update` для выбранного cppworker'а. Поля: `defaultCtxSize`, `defaultBatchSize`, `defaultGpuLayers`, `defaultFlashAttnType`, `defaultNuma`, `defaultUseMmap`, `defaultNThreads` + read-only `nodeName`/`balancerUrl`/`uptime`. |
+| 2026-06-05 | 1.9 | ✅ **Per-Model Profiles в gguf Settings tab** — в Settings tab gguf-страницы монтируется список Per-Model профилей n_ctx + кнопка «Добавить профиль» через переиспользование `window.CppWorkerParams.loadAndRender()` / `openWizard()` (cppworker-params.js). Для незарегистрированных бэкендов (alternate URL) показывается баннер-предупреждение. |
+| 2026-06-05 | 1.9 | ✅ **i18n ключи** — новые `gguf.backend_options_title/desc`, `gguf.save/reload_backend_options`, `gguf.backend_options_loaded/saved/load_error/save_error`, `gguf.flash_attn_type/desc`, `gguf.n_threads/desc`, `gguf.profiles_section_title/desc`, `gguf.profiles_only_registered`, `gguf.config_unavailable` в en.js (918 keys) и ru.js (824 keys). |
+| 2026-06-05 | 1.9 | ✅ **Синтаксис JS** — `node --check` на `gguf-renderer.js` и `cppworker-params.js` — OK. i18n en.js/ru.js — валидны (vm.runInNewContext). |
 
 ---
 

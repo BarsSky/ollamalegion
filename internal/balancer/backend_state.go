@@ -57,9 +57,11 @@ func (p *Proxy) getBackendPort(backend *types.Backend) int {
 		if backend.CppWorkerPort > 0 {
 			return backend.CppWorkerPort
 		}
+		// Modern llama.cpp CppWorker installations listen on 18092.
+		// 18091 is legacy; kept for backwards compatibility with old deployments.
 		logger.Get().Warnw("llama.cpp backend has no CppWorkerPort, using default",
-			"backend", backend.ID, "default_port", 18091)
-		return 18091 // default cppworker port
+			"backend", backend.ID, "default_port", 18092)
+		return 18092 // default cppworker port (modern)
 	default:
 		return backend.OllamaPort
 	}

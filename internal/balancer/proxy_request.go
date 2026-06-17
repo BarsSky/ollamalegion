@@ -716,10 +716,19 @@ func (p *Proxy) recordRequest(backendID string) {
 	state.mu.Unlock()
 }
 
+// warmupOptions — опциональные параметры для загрузки модели в VRAM.
+// Используется в warmupModel для передачи num_ctx и gpu_layers в llama.cpp бэкенд.
+type warmupOptions struct {
+	NumCtx    int // optional: override n_ctx (0 = not set, cppworker использует default)
+	GPULayers int // optional: override gpu_layers (0 = not set, cppworker использует default)
+}
+
 // warmupModel — загрузка модели в VRAM:
 // для Ollama: POST /api/generate с пустым промптом,
 // для llama.cpp: POST /load или аналогичный warmup вызов.
-func (p *Proxy) warmupModel(backendID, host string, port int, model string) {
+// numCtx и gpuLayers — опциональные параметры для llama.cpp загрузки (0 = не заданы).
+func (p *Proxy) warmupModel(backendID, host string, port int, model string, extraOpts ...warmupOptions) {
+
 	if p.client == nil {
 		logger.Get().Warnw("warmupModel: no HTTP client configured", "backend", backendID, "model", model)
 		return
@@ -731,16 +740,22 @@ func (p *Proxy) warmupModel(backendID, host string, port int, model string) {
 		return
 	}
 
+	var opts warmupOptions
+	if len(extraOpts) > 0 {
+		opts = extraOpts[0]
+	}
+
 	engine := types.ResolveEngine(backend.Engine, backend.Type)
 
 	// Шаг 1: проверяем наличие модели на бэкенде
 	switch engine {
 	case types.EngineLlamaCPP:
-		p.warmupLlamaCppModel(backendID, host, port, model)
+		p.warmupLlamaCppModel(backendID, host, port, model, opts)
 	default:
 		p.warmupOllamaModel(backendID, host, port, model)
 	}
 }
+
 
 // warmupOllamaModel — загрузка модели через Ollama API.
 func (p *Proxy) warmupOllamaModel(backendID, host string, port int, model string) {
@@ -815,7 +830,8 @@ func (p *Proxy) warmupOllamaModel(backendID, host string, port int, model string
 }
 
 // warmupLlamaCppModel — загрузка модели через llama.cpp backend.
-func (p *Proxy) warmupLlamaCppModel(backendID, host string, port int, model string) {
+// Принимает опциональные параметры num_ctx и gpu_layers для переопределения.
+func (p *Proxy) warmupLlamaCppModel(backendID, host string, port int, model string, opts warmupOptions) {
 	// Для llama.cpp используем CppWorkerPort из конфигурации бэкенда,
 	// а не переданный port (который может быть OllamaPort=0).
 	backend := p.GetBackend(backendID)
@@ -846,6 +862,14 @@ func (p *Proxy) warmupLlamaCppModel(backendID, host string, port int, model stri
 	loadBody := map[string]interface{}{
 		"name": model,
 	}
+	// Передаём contextSize (num_ctx) если задан
+	if opts.NumCtx > 0 {
+		loadBody["contextSize"] = opts.NumCtx
+	}
+	// Передаём gpuLayers если задан
+	if opts.GPULayers > 0 {
+		loadBody["gpuLayers"] = opts.GPULayers
+	}
 	loadBodyBytes, _ := json.Marshal(loadBody)
 
 	go func() {
@@ -873,14 +897,17 @@ func (p *Proxy) warmupLlamaCppModel(backendID, host string, port int, model stri
 
 		if resp.StatusCode >= 200 && resp.StatusCode < 300 {
 			logger.Get().Infow("warmupLlamaCppModel: model loaded into VRAM",
-				"backend", backendID, "model", model, "status", resp.StatusCode)
+				"backend", backendID, "model", model, "status", resp.StatusCode,
+				"numCtx", opts.NumCtx, "gpuLayers", opts.GPULayers)
 			p.updateLlamaCppRunningModelInMetrics(backendID, model)
 		} else {
 			logger.Get().Warnw("warmupLlamaCppModel: model load returned non-2xx",
-				"backend", backendID, "model", model, "status", resp.StatusCode)
+				"backend", backendID, "model", model, "status", resp.StatusCode,
+				"numCtx", opts.NumCtx, "gpuLayers", opts.GPULayers)
 		}
 	}()
 }
+
 
 // updateRunningModelInMetrics — обновляет RunningModels в метриках бэкенда
 // после успешного warmup, чтобы не ждать следующего heartbeat от агента.

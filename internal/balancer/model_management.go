@@ -48,10 +48,12 @@ func NewModelManager(proxy *Proxy) *ModelManager {
 
 // ModelOpRequest — запрос на выполнение операции с моделью
 type ModelOpRequest struct {
-	Operation string `json:"operation"` // pull, push, delete, load, unload
-	ModelName string `json:"modelName"`
-	Insecure  bool   `json:"insecure,omitempty"`
-	Stream    bool   `json:"stream,omitempty"`
+	Operation  string `json:"operation"` // pull, push, delete, load, unload
+	ModelName  string `json:"modelName"`
+	ContextSize *int  `json:"contextSize,omitempty"` // optional: override n_ctx для загрузки
+	GPULayers   *int  `json:"gpuLayers,omitempty"`   // optional: override gpu_layers для загрузки
+	Insecure   bool   `json:"insecure,omitempty"`
+	Stream     bool   `json:"stream,omitempty"`
 }
 
 // ModelOpResult — результат операции с моделью
@@ -450,11 +452,18 @@ func (mm *ModelManager) executeLoad(host string, port int, backendID string, req
 }
 
 // executeLlamaCppLoad — загрузка модели в память на cppworker-бэкенде.
-// cppworker принимает POST /api/models/load с JSON {"name": "..."} (НЕ "model"!).
+// cppworker принимает POST /api/models/load с JSON {"name": "...", ...}.
+// Если в req заданы ContextSize или GPULayers — передаёт их в теле.
 func (mm *ModelManager) executeLlamaCppLoad(host string, port int, backendID string, req ModelOpRequest) *ModelOpResult {
 	url := fmt.Sprintf("http://%s:%d/api/models/load", host, port)
 	body := map[string]interface{}{
 		"name": req.ModelName,
+	}
+	if req.ContextSize != nil {
+		body["contextSize"] = *req.ContextSize
+	}
+	if req.GPULayers != nil {
+		body["gpuLayers"] = *req.GPULayers
 	}
 	return mm.sendCppWorkerRequest("POST", url, backendID, req, body)
 }

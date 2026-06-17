@@ -349,10 +349,13 @@ func basenameOfPath(p string) string {
 // и только потом проксирует inference. OpenWebUI получает либо 503 (load упал), либо
 // нормальный ответ.
 //
+// extraOpts — опциональные параметры num_ctx и gpu_layers для загрузки.
+//
 // Возвращает:
 //   - loaded=true если модель уже загружена или успешно загружена
 //   - loaded=false + err != nil если не удалось загрузить (нужно вернуть клиенту 503)
-func (lr *LlamaCppRouter) ensureModelLoadedOnBackend(backendID, modelName string) (bool, error) {
+func (lr *LlamaCppRouter) ensureModelLoadedOnBackend(backendID, modelName string, extraOpts ...warmupOptions) (bool, error) {
+
 	ridLog(lr_recentCtx()).Debugw("ensureModelLoadedOnBackend: enter",
 		"backend", backendID, "model", modelName, "step", "enter")
 	if modelName == "" {
@@ -373,12 +376,29 @@ func (lr *LlamaCppRouter) ensureModelLoadedOnBackend(backendID, modelName string
 			"backend", backendID, "model", modelName)
 		return false, fmt.Errorf("model manager not available")
 	}
+	// Извлекаем опциональные параметры загрузки (num_ctx, gpu_layers)
+	var ctxSize *int
+	var gpuLayers *int
+	if len(extraOpts) > 0 {
+		opts := extraOpts[0]
+		if opts.NumCtx > 0 {
+			ctxSize = &opts.NumCtx
+		}
+		if opts.GPULayers > 0 {
+			gpuLayers = &opts.GPULayers
+		}
+	}
+
 	ridLog(lr_recentCtx()).Infow("ensureModelLoadedOnBackend: auto-loading model",
-		"backend", backendID, "model", modelName, "step", "execute_op=load")
+		"backend", backendID, "model", modelName, "step", "execute_op=load",
+		"numCtx", ctxSize, "gpuLayers", gpuLayers)
 	result := mm.ExecuteOperation(backendID, ModelOpRequest{
-		Operation: "load",
-		ModelName: modelName,
+		Operation:  "load",
+		ModelName:  modelName,
+		ContextSize: ctxSize,
+		GPULayers:  gpuLayers,
 	})
+
 	if !result.Success {
 		// Graceful fallback: если upstream не реализует /api/models/load (404/501),
 		// не прерываем запрос — пусть CppWorker выполнит lazy-load самостоятельно.
@@ -1009,8 +1029,13 @@ func (lr *LlamaCppRouter) handleOpenAIChatCompletions(w http.ResponseWriter, r *
 	// Auto-load: если модель выгружена из VRAM — синхронно грузим перед проксированием.
 	// Без этого cppworker блокирует чтение заголовков ответа на 10-30+ секунд,
 	// клиент (Roo/Cline) таймаутится на ~60s и показывает «бесконечную загрузку».
+	// Извлекаем num_ctx из тела запроса для context-aware загрузки модели.
 	if model != "" {
-		if _, loadErr := lr.ensureModelLoadedOnBackend(backendID, model); loadErr != nil {
+		loadOpts := warmupOptions{}
+		if nctx := ExtractNumCtxFromBody(bodyBuf); nctx > 0 {
+			loadOpts.NumCtx = nctx
+		}
+		if _, loadErr := lr.ensureModelLoadedOnBackend(backendID, model, loadOpts); loadErr != nil {
 			logger.Get().Errorw("handleOpenAIChatCompletions: auto-load failed",
 				"backend", backendID, "model", model, "error", loadErr)
 			writeJSON(w, http.StatusServiceUnavailable, map[string]string{
@@ -1275,7 +1300,12 @@ func (lr *LlamaCppRouter) handleChat(w http.ResponseWriter, r *http.Request) {
 	r.Body = io.NopCloser(bytes.NewReader(bodyBuf))
 
 	// Auto-load: если модель выгружена из VRAM — синхронно грузим перед проксированием.
-	if _, loadErr := lr.ensureModelLoadedOnBackend(backendID, model); loadErr != nil {
+	// Извлекаем num_ctx из тела запроса для context-aware загрузки модели.
+	loadOpts := warmupOptions{}
+	if nctx := ExtractNumCtxFromBody(bodyBuf); nctx > 0 {
+		loadOpts.NumCtx = nctx
+	}
+	if _, loadErr := lr.ensureModelLoadedOnBackend(backendID, model, loadOpts); loadErr != nil {
 		logger.Get().Errorw("handleChat: auto-load failed",
 			"backend", backendID, "model", model, "error", loadErr)
 		writeJSON(w, http.StatusServiceUnavailable, map[string]string{
@@ -1371,7 +1401,12 @@ func (lr *LlamaCppRouter) handleGenerate(w http.ResponseWriter, r *http.Request)
 	r.Body = io.NopCloser(bytes.NewReader(bodyBuf))
 
 	// Auto-load: если модель выгружена из VRAM — синхронно грузим перед проксированием.
-	if _, loadErr := lr.ensureModelLoadedOnBackend(backendID, model); loadErr != nil {
+	// Извлекаем num_ctx из тела запроса для context-aware загрузки модели.
+	loadOpts := warmupOptions{}
+	if nctx := ExtractNumCtxFromBody(bodyBuf); nctx > 0 {
+		loadOpts.NumCtx = nctx
+	}
+	if _, loadErr := lr.ensureModelLoadedOnBackend(backendID, model, loadOpts); loadErr != nil {
 		logger.Get().Errorw("handleGenerate: auto-load failed",
 			"backend", backendID, "model", model, "error", loadErr)
 		writeJSON(w, http.StatusServiceUnavailable, map[string]string{

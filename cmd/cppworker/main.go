@@ -3215,15 +3215,15 @@ func isGpuOomOrNCtxNeedsReload() bool {
 }
 
 // generateWithRamFallback пытается выполнить backend.Generate; если
-// получает ErrCodeNCtxNeedsReload и ram-fallback включён — перезагружает
-// модель с запрошенным n_ctx через mmap/RAM и повторяет генерацию.
+// получает ErrCodeNCtxNeedsReload или ErrCodeGPUOOM и ram-fallback включён — 
+// перезагружает модель с запрошенным n_ctx через mmap/RAM и повторяет генерацию.
 // Используется для non-streaming эндпоинтов.
 func generateWithRamFallback(modelName, prompt string, params bridge.GenerationParams) (*bridge.InferenceResult, error) {
 	result, err := backend.Generate(modelName, prompt, params)
 	if err == nil {
 		return result, nil
 	}
-	if !isNCtxNeedsReload() || params.NCtxOverride <= 0 {
+	if !isGpuOomOrNCtxNeedsReload() || params.NCtxOverride <= 0 {
 		return result, err
 	}
 	if ok, fbErr := tryRamFallbackReload(modelName, params.NCtxOverride); !ok {
@@ -3236,15 +3236,15 @@ func generateWithRamFallback(modelName, prompt string, params bridge.GenerationP
 }
 
 // generateStreamWithRamFallback — аналог generateWithRamFallback для streaming.
-// При ErrCodeNCtxNeedsReload на старте (pre-flight) перезагружает модель и
-// запускает стрим заново. Если стрим уже частично начался, fallback не
+// При ErrCodeNCtxNeedsReload или ErrCodeGPUOOM на старте (pre-flight) перезагружает
+// модель и запускает стрим заново. Если стрим уже частично начался, fallback не
 // применяется (вернётся текущая ошибка).
 func generateStreamWithRamFallback(modelName, prompt string, params bridge.GenerationParams, callback bridge.StreamCallback) error {
 	err := backend.GenerateStream(modelName, prompt, params, callback)
 	if err == nil {
 		return nil
 	}
-	if !isNCtxNeedsReload() || params.NCtxOverride <= 0 {
+	if !isGpuOomOrNCtxNeedsReload() || params.NCtxOverride <= 0 {
 		return err
 	}
 	if ok, fbErr := tryRamFallbackReload(modelName, params.NCtxOverride); !ok {

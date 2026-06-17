@@ -10,7 +10,10 @@ package cppbackend
 
 import (
 	"fmt"
+	"math"
 	"os"
+	"runtime"
+	"strings"
 	"sync"
 	"time"
 	"unsafe"
@@ -249,9 +252,10 @@ func (b *Backend) LoadModel(name string, path string) error {
 
 // LoadModelWithOpts загружает GGUF модель с указанными параметрами
 func (b *Backend) LoadModelWithOpts(name string, path string, opts LoadModelOpts) error {
-	// Валидация VRAM перед загрузкой
-	if vramErr := b.checkVRAMForModel(name, path, opts); vramErr != nil {
-		return vramErr
+	// Валидация VRAM перед загрузкой и авто-подбор оптимальных gpuLayers
+	var err error
+	if opts, err = b.checkVRAMForModel(name, path, opts); err != nil {
+		return err
 	}
 
 	b.mu.Lock()
@@ -420,47 +424,224 @@ func (b *Backend) LoadModelWithOpts(name string, path string, opts LoadModelOpts
 	return nil
 }
 
-// checkVRAMForModel проверяет, достаточно ли видеопамяти для загрузки модели
-func (b *Backend) checkVRAMForModel(name string, path string, opts LoadModelOpts) error {
-	// Получаем размер файла модели
-	fi, err := os.Stat(path)
-	if err != nil {
-		// Если файл не существует, пропускаем проверку (может быть ещё не скачан)
-		return nil
+// DiagnosticsInfo — детальная диагностика при невозможности загрузить модель
+type DiagnosticsInfo struct {
+	ModelSizeGB             float64 `json:"modelSizeGB"`
+	TotalLayers             int     `json:"totalLayers"`
+	VRAMAvailableMB         uint64  `json:"vramAvailableMB"`
+	VRAMRequiredForFullGPU  uint64  `json:"vramRequiredForFullGPU"`
+	OptimalGPULayers        int     `json:"optimalGPULayers"`
+	VRAMRequiredForOptimal  uint64  `json:"vramRequiredForOptimal"`
+	RAMAvailableMB          uint64  `json:"ramAvailableMB"`
+	RAMRequiredForRemaining uint64  `json:"ramRequiredForRemaining"`
+	Recomendation           string  `json:"recomendation"`
+}
+
+func (d *DiagnosticsInfo) Error() string {
+	return d.Recomendation
+}
+
+// CalculateOptimalGPULayers вычисляет оптимальное количество GPU-слоёв
+// на основе доступной VRAM и RAM.
+// Параметры:
+//   - modelSizeBytes: размер GGUF файла в байтах
+//   - totalLayers: общее количество слоёв модели (из GGUF metadata)
+//   - requestedGPULayers: запрошенное количество GPU-слоёв (-1 = все)
+//   - requestedCtxSize: запрошенный размер контекста
+//
+// Возвращает:
+//   - optimalGPULayers: оптимальное число GPU-слоёв
+//   - useMmap: true если требуется mmap (часть модели CPU-based)
+//   - diagnostics: детальная диагностика (nil если успешно, иначе с ошибкой)
+func (b *Backend) CalculateOptimalGPULayers(modelSizeBytes int64, totalLayers, requestedGPULayers, requestedCtxSize int) (optimalGPULayers int, useMmap bool, diagnostics *DiagnosticsInfo) {
+	if totalLayers <= 0 {
+		totalLayers = 40 // fallback: предполагаем ~40 слоёв если неизвестно
 	}
-	modelFileSizeMB := float64(fi.Size()) / 1024 / 1024
 
-	// Оцениваем VRAM под модель
-	estimatedVRAM := EstimateGPUMemoryForModel(fi.Size(), opts.GPULayers, 40) // предполагаем ~40 слоёв
-	// Добавляем контекст: ~1MB на 1K контекста * ctxSize
-	ctxOverheadMB := float64(opts.ContextSize) / 1024.0
-	estimatedVRAM += uint64(ctxOverheadMB)
+	modelSizeMB := float64(modelSizeBytes) / 1024 / 1024
+	ctxOverheadMB := float64(requestedCtxSize) / 1024.0 // ~1MB на 1K контекста
 
-	// Проверяем доступную VRAM на всех GPU
+	// Собираем доступную VRAM
 	b.mu.RLock()
-	defer b.mu.RUnlock()
-
 	var totalFreeVRAM uint64
 	for _, dev := range b.gpuDevices {
 		totalFreeVRAM += uint64(dev.VRAMFreeMB)
 	}
+	b.mu.RUnlock()
 
+	// Собираем доступную RAM (системная память)
+	// Используем оценку: 80% от общего размера модели можно разместить в RAM
+	// плюс KV cache. Точное значение зависит от ОС.
+	var totalRAM uint64
+	if runtime.GOOS != "windows" {
+		// На Linux/macOS используем /proc/meminfo
+		totalRAM = getSystemRAMGB() * 1024 // в MB
+	} else {
+		// fallback: предполагаем хотя бы 8GB RAM
+		totalRAM = 8192
+	}
+
+	diag := &DiagnosticsInfo{
+		ModelSizeGB:     math.Round(modelSizeMB/1024*100) / 100,
+		TotalLayers:     totalLayers,
+		VRAMAvailableMB: totalFreeVRAM,
+	}
+
+	// Если нет данных о VRAM — возвращаем запрошенные значения как есть
 	if totalFreeVRAM == 0 {
-		return nil // нет данных о VRAM — пропускаем проверку
+		if requestedGPULayers == -1 || requestedGPULayers > totalLayers {
+			return totalLayers, false, nil
+		}
+		return requestedGPULayers, false, nil
 	}
 
-	if estimatedVRAM > totalFreeVRAM {
-		return fmt.Errorf("insufficient VRAM: model needs ~%d MB (%d MB file + %.0f MB context), but only %d MB free. Reduce gpuLayers or ctxSize",
-			estimatedVRAM, int(modelFileSizeMB), ctxOverheadMB, totalFreeVRAM)
+	// Определяем желаемое количество GPU-слоёв
+	wantedGPULayers := requestedGPULayers
+	if wantedGPULayers == -1 || wantedGPULayers > totalLayers {
+		wantedGPULayers = totalLayers
 	}
 
-	logger.Get().Infow("VRAM check passed",
-		"model", name,
-		"estimatedVRAM_MB", estimatedVRAM,
-		"availableVRAM_MB", totalFreeVRAM,
-		"modelFileSize_MB", int(modelFileSizeMB))
+	// Оцениваем VRAM для полной загрузки всех слоёв на GPU
+	vramForFullGPU := EstimateGPUMemoryForModel(modelSizeBytes, totalLayers, totalLayers)
+	if requestedCtxSize > 0 {
+		vramForFullGPU += uint64(ctxOverheadMB)
+	}
+	diag.VRAMRequiredForFullGPU = vramForFullGPU
 
-	return nil
+	// Если желаемые GPU-слои влезают в VRAM — используем их как есть
+	vramForWanted := EstimateGPUMemoryForModel(modelSizeBytes, wantedGPULayers, totalLayers)
+	if requestedCtxSize > 0 {
+		vramForWanted += uint64(ctxOverheadMB)
+	}
+
+	if vramForWanted <= totalFreeVRAM {
+		diag.OptimalGPULayers = wantedGPULayers
+		diag.VRAMRequiredForOptimal = vramForWanted
+		diag.RAMAvailableMB = totalRAM
+		diag.RAMRequiredForRemaining = 0
+		logger.Get().Infow("VRAM sufficient for requested GPU layers",
+			"requestedGPULayers", wantedGPULayers,
+			"vramRequiredMB", vramForWanted,
+			"vramFreeMB", totalFreeVRAM)
+		return wantedGPULayers, false, nil
+	}
+
+	// Не хватает VRAM — бинарный поиск оптимального числа GPU-слоёв
+	lo, hi := 0, wantedGPULayers
+	bestLayers := 0
+	for lo <= hi {
+		mid := (lo + hi) / 2
+		needed := EstimateGPUMemoryForModel(modelSizeBytes, mid, totalLayers)
+		if requestedCtxSize > 0 {
+			needed += uint64(ctxOverheadMB)
+		}
+		if needed <= totalFreeVRAM {
+			bestLayers = mid
+			lo = mid + 1
+		} else {
+			hi = mid - 1
+		}
+	}
+
+	// Проверяем, влезает ли остаток в RAM
+	cpuLayers := totalLayers - bestLayers
+	cpuMemoryMB := uint64(modelSizeMB*0.7*float64(cpuLayers)/float64(totalLayers) + ctxOverheadMB)
+
+	diag.OptimalGPULayers = bestLayers
+	diag.VRAMRequiredForOptimal = EstimateGPUMemoryForModel(modelSizeBytes, bestLayers, totalLayers)
+	if requestedCtxSize > 0 {
+		diag.VRAMRequiredForOptimal += uint64(ctxOverheadMB)
+	}
+	diag.RAMAvailableMB = totalRAM
+	diag.RAMRequiredForRemaining = cpuMemoryMB
+
+	if cpuMemoryMB < totalRAM*8/10 { // используем до 80% RAM
+		logger.Get().Infow("optimal GPU layers found with RAM fallback",
+			"totalLayers", totalLayers,
+			"gpuLayers", bestLayers,
+			"cpuLayers", cpuLayers,
+			"cpuMemoryMB", cpuMemoryMB,
+			"ramAvailableMB", totalRAM)
+		return bestLayers, true, nil
+	}
+
+	// Даже CPU-only не влезает — диагностика
+	diag.Recomendation = fmt.Sprintf(
+		"cannot load model: model requires ~%d MB total memory "+
+			"(%.1f GB model + %.0f MB context), "+
+			"but VRAM=%d MB + RAM=%d MB insufficient. "+
+			"Best GPU layers=%d (CPU layers=%d, needs %d MB RAM). "+
+			"Reduce model size (try a smaller quant) or decrease context size.",
+		uint64(modelSizeMB)+uint64(ctxOverheadMB),
+		modelSizeMB/1024, ctxOverheadMB,
+		totalFreeVRAM, totalRAM,
+		bestLayers, cpuLayers, cpuMemoryMB)
+
+	return bestLayers, true, diag
+}
+
+// checkVRAMForModel проверяет, достаточно ли видеопамяти для загрузки модели
+// и автоматически подбирает оптимальное количество GPU-слоёв.
+// Возвращает (opts, error) — модифицированные опции с оптимальными GPU-слоями.
+func (b *Backend) checkVRAMForModel(name string, path string, opts LoadModelOpts) (LoadModelOpts, error) {
+	// Получаем размер файла модели
+	fi, err := os.Stat(path)
+	if err != nil {
+		// Если файл не существует, пропускаем проверку (может быть ещё не скачан)
+		return opts, nil
+	}
+
+	// Определяем общее количество слоёв (сначала пытаемся из метаданных уже загруженной модели,
+	// затем из GGUF файла, затем fallback на EstimateGPUMemoryForModel)
+	totalLayers := 0
+
+	// Если модель уже загружена — берём из её метаданных
+	if info, err := b.GetModel(name); err == nil && info.NLayers > 0 {
+		totalLayers = info.NLayers
+	}
+
+	// Если не удалось получить слои из загруженной модели — пробуем EstimateGPUMemoryForModel
+	// с инверсным расчётом: оцениваем через размер файла и типичную архитектуру
+	if totalLayers <= 0 {
+		// Пытаемся прочитать header GGUF для определения числа слоёв
+		totalLayers = estimateLayersFromFileSize(fi.Size())
+	}
+
+	optGPULayers, useMmap, diagnostics := b.CalculateOptimalGPULayers(fi.Size(), totalLayers, opts.GPULayers, opts.ContextSize)
+
+	if diagnostics != nil && diagnostics.Recomendation != "" {
+		logger.Get().Errorw("cannot load model - insufficient memory",
+			"model", name,
+			"path", path,
+			"diagnostics", diagnostics)
+		return opts, fmt.Errorf("cannot load model %s: %s", name, diagnostics.Recomendation)
+	}
+
+	// Если оптимальные GPU-слои отличаются от запрошенных — логируем и адаптируемся
+	if optGPULayers != opts.GPULayers {
+		logger.Get().Infow("auto-adapting GPU layers for model",
+			"model", name,
+			"requestedGPULayers", opts.GPULayers,
+			"optimalGPULayers", optGPULayers,
+			"useMmap", useMmap)
+
+		opts.GPULayers = optGPULayers
+		if useMmap {
+			opts.UseMmap = true
+		}
+
+		if diagnostics != nil {
+			logger.Get().Infow("optimal GPU layers calculation details",
+				"model", name,
+				"totalLayers", diagnostics.TotalLayers,
+				"vramAvailableMB", diagnostics.VRAMAvailableMB,
+				"vramRequiredForOptimal", diagnostics.VRAMRequiredForOptimal,
+				"ramAvailableMB", diagnostics.RAMAvailableMB,
+				"ramRequiredForRemaining", diagnostics.RAMRequiredForRemaining)
+		}
+	}
+
+	return opts, nil
 }
 
 // UnloadModel выгружает модель
@@ -840,4 +1021,58 @@ func approximateTokens(text string) int {
 func approxResultLen(inst *modelInstance, prompt string, params bridge.GenerationParams) string {
 	// В стубе возвращаем пустую строку, т.к. результат не известен до вызова
 	return ""
+}
+
+// ============================================================
+// Хелперы для расчёта памяти и слоёв
+// ============================================================
+
+// getSystemRAMGB возвращает общий объём системной RAM в GB.
+// На Linux читает /proc/meminfo; на других ОС возвращает fallback 16GB.
+func getSystemRAMGB() uint64 {
+	// Пытаемся прочитать /proc/meminfo (Linux)
+	data, err := os.ReadFile("/proc/meminfo")
+	if err != nil {
+		// macOS или другие — fallback
+		return 16
+	}
+
+	// Ищем строку MemTotal
+	content := string(data)
+	for _, line := range strings.Split(content, "\n") {
+		if strings.HasPrefix(line, "MemTotal:") {
+			// MemTotal:   16384000 kB  → число в kB
+			parts := strings.Fields(line)
+			if len(parts) >= 2 {
+				var kB uint64
+				if _, err := fmt.Sscanf(parts[1], "%d", &kB); err == nil {
+					return kB / 1024 / 1024 // kB → GB
+				}
+			}
+		}
+	}
+	return 16 // fallback
+}
+
+// estimateLayersFromFileSize оценивает общее число слоёв модели на основе размера GGUF файла.
+// Эвристика для типичных архитектур Llama/Mistral/Qwen при Q4_K_M квантизации:
+//   - < 5GB   → 7B модель (32 слоя)
+//   - 5-10GB  → 13B модель (40 слоёв)
+//   - 10-20GB → 30-33B модель (60 слоёв)
+//   - 20-40GB → 70B модель (80 слоёв)
+//   - > 40GB  → 120B+ модель (120 слоёв)
+func estimateLayersFromFileSize(sizeBytes int64) int {
+	sizeGB := float64(sizeBytes) / 1024 / 1024 / 1024
+	switch {
+	case sizeGB < 5:
+		return 32 // 7B params
+	case sizeGB < 10:
+		return 40 // 13B params
+	case sizeGB < 20:
+		return 60 // 30-33B params
+	case sizeGB < 40:
+		return 80 // 70B params
+	default:
+		return 120 // 120B+ params
+	}
 }

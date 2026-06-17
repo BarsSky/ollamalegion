@@ -1057,10 +1057,41 @@ func (lr *LlamaCppRouter) handleOpenAIChatCompletions(w http.ResponseWriter, r *
 
 	upstreamResp, err := lr.proxy.streamingClient.Do(upstreamReq)
 	if err != nil {
+		// Классифицируем ошибку. Для EOF / timeout awaiting response headers /
+		// connection reset — делаем одну повторную попытку к тому же бэкенду.
+		// Это безопасно, т.к. такие ошибки обычно случаются ДЕС получения
+		// HTTP-заголовков, т.е. до начала генерации (cppworker ещё не отправил
+		// первый токен). Модель уже загружена через ensureModelLoadedOnBackend выше.
+		errType := determineErrorType(err, r.Context())
 		logger.Get().Errorw("handleOpenAIChatCompletions: upstream request failed",
-			"backend", backendID, "error", err)
-		writeJSON(w, http.StatusBadGateway, map[string]string{"error": err.Error()})
-		return
+			"backend", backendID, "error", err, "error_type", errType)
+		if errType == "timeout" || errType == "unexpected_eof" || errType == "connection_reset_by_peer" || errType == "broken_pipe" {
+			logger.Get().Infow("handleOpenAIChatCompletions: retrying once after network/header error",
+				"backend", backendID, "model", model, "error_type", errType)
+			time.Sleep(lr.proxy.getStreamingRetryDelay())
+			// Восстанавливаем тело для retry
+			r.Body = io.NopCloser(bytes.NewReader(bodyBuf))
+			retryReq, retryErr := http.NewRequestWithContext(r.Context(), http.MethodPost, targetURL, bytes.NewReader(bodyBuf))
+			if retryErr == nil {
+				retryReq.Header.Set("Content-Type", "application/json")
+				retryReq.Header.Set("Accept", "application/json, text/event-stream")
+				if existingXFF := r.Header.Get("X-Forwarded-For"); existingXFF != "" {
+					retryReq.Header.Set("X-Forwarded-For", existingXFF)
+				} else {
+					retryReq.Header.Set("X-Forwarded-For", lr.proxy.getClientRealIP(r))
+				}
+				retryReq.Header.Set("X-Real-IP", lr.proxy.getClientRealIP(r))
+				upstreamResp, err = lr.proxy.streamingClient.Do(retryReq)
+				if err == nil {
+					logger.Get().Infow("handleOpenAIChatCompletions: retry succeeded",
+						"backend", backendID, "model", model)
+				}
+			}
+		}
+		if err != nil {
+			writeJSON(w, http.StatusBadGateway, map[string]string{"error": err.Error()})
+			return
+		}
 	}
 
 	// ==== n_ctx auto-reload: перехват структурированной ошибки от cppworker ====

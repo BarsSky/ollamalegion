@@ -109,8 +109,15 @@ func NewProxy(config *types.LoadBalancerConfig) *Proxy {
 
 	// Транспорт для streaming запросов - без сжатия и с увеличенными буферами.
 	// ResponseHeaderTimeout — ключевой параметр для предотвращения UND_ERR_HEADERS_TIMEOUT
-	// у клиента (OpenWebUI/undici): если Ollama не отдаёт заголовки ответа за это время,
-	// балансер сам обрывает соединение и уходит в retry, не заставляя клиента ждать.
+	// у клиента (OpenWebUI/undici): если upstream (cppworker/Ollama) не отдаёт заголовки
+	// ответа за это время, балансер сам обрывает соединение и уходит в retry.
+	// Значение берём из конфига FirstByteTimeout (секунды), default 120s.
+	// Это критично для моделей на partial GPU offload / RAM fallback, где первый
+	// токен может задерживаться на 60+ секунд.
+	responseHeaderTimeout := time.Duration(config.Balancing.FirstByteTimeout) * time.Second
+	if responseHeaderTimeout <= 0 {
+		responseHeaderTimeout = 120 * time.Second
+	}
 	streamingTransport := &http.Transport{
 		DialContext: (&net.Dialer{
 			Timeout:   30 * time.Second,
@@ -119,8 +126,8 @@ func NewProxy(config *types.LoadBalancerConfig) *Proxy {
 		MaxIdleConns:          100,
 		MaxIdleConnsPerHost:   10,
 		IdleConnTimeout:       90 * time.Second,
-		DisableCompression:    true,             // Важно для SSE
-		ResponseHeaderTimeout: 45 * time.Second, // Макс. ожидание заголовков от Ollama (меньше чем undici headersTimeout ~60s)
+		DisableCompression:    true,                  // Важно для SSE
+		ResponseHeaderTimeout: responseHeaderTimeout, // Конфигурируемый таймаут заголовков
 	}
 
 	// Определяем TTL сессий из конфигурации

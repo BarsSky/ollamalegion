@@ -22,6 +22,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -2135,9 +2136,55 @@ func writeOpenAIChatStream(w http.ResponseWriter, r *http.Request, modelName, pr
 	w.Header().Set("Cache-Control", "no-cache")
 	w.Header().Set("Connection", "keep-alive")
 
+	// Критично: немедленно отправляем HTTP-заголовки, иначе балансировщик/клиент
+	// ждёт первого токена и таймаутится (ResponseHeaderTimeout / idle-timeout).
+	w.WriteHeader(http.StatusOK)
+	flusher.Flush()
+
 	ctx := r.Context()
 	chatID := fmt.Sprintf("chatcmpl-%d", time.Now().UnixNano())
 	created := time.Now().Unix()
+
+	// Канал активности: закрывается после generateStreamWithRamFallback,
+	// чтобы keepalive-горутина завершилась.
+	tokenDone := make(chan struct{})
+	defer close(tokenDone)
+
+	// SSE keepalive: посылаем комментарий каждые 15 секунд, пока модель
+	// готовит первый токен или между редкими чанками. Это удерживает
+	// соединение для балансера и OpenAI-клиентов (Roo Code/Cline/undici).
+	keepaliveInterval := 15 * time.Second
+
+	// Мьютекс защищает w от одновременной записи callback'ом и keepalive-горутиной.
+	var writeMu sync.Mutex
+	safeFlush := func() {
+		writeMu.Lock()
+		defer writeMu.Unlock()
+		flusher.Flush()
+	}
+	safeFprintf := func(format string, a ...interface{}) {
+		writeMu.Lock()
+		defer writeMu.Unlock()
+		fmt.Fprintf(w, format, a...)
+	}
+
+	keepaliveDone := make(chan struct{})
+	go func() {
+		ticker := time.NewTicker(keepaliveInterval)
+		defer ticker.Stop()
+		defer close(keepaliveDone)
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-tokenDone:
+				return
+			case <-ticker.C:
+				safeFprintf(": keepalive\n\n")
+				safeFlush()
+			}
+		}
+	}()
 
 	callback := func(token string) bool {
 		select {
@@ -2162,8 +2209,8 @@ func writeOpenAIChatStream(w http.ResponseWriter, r *http.Request, modelName, pr
 			},
 		}
 		jsonData, _ := json.Marshal(chunk)
-		fmt.Fprintf(w, "data: %s\n\n", jsonData)
-		flusher.Flush()
+		safeFprintf("data: %s\n\n", jsonData)
+		safeFlush()
 		return true
 	}
 	if err := generateStreamWithRamFallback(modelName, prompt, params, callback); err != nil {
@@ -2185,9 +2232,9 @@ func writeOpenAIChatStream(w http.ResponseWriter, r *http.Request, modelName, pr
 			"error": err.Error(),
 		}
 		errJSON, _ := json.Marshal(errChunk)
-		fmt.Fprintf(w, "data: %s\n\n", errJSON)
-		fmt.Fprintf(w, "data: [DONE]\n\n")
-		flusher.Flush()
+		safeFprintf("data: %s\n\n", errJSON)
+		safeFprintf("data: [DONE]\n\n")
+		safeFlush()
 		return
 	}
 
@@ -2206,10 +2253,10 @@ func writeOpenAIChatStream(w http.ResponseWriter, r *http.Request, modelName, pr
 		},
 	}
 	stopJSON, _ := json.Marshal(stopChunk)
-	fmt.Fprintf(w, "data: %s\n\n", stopJSON)
+	safeFprintf("data: %s\n\n", stopJSON)
 	// OpenAI завершающий маркер [DONE]
-	fmt.Fprintf(w, "data: [DONE]\n\n")
-	flusher.Flush()
+	safeFprintf("data: [DONE]\n\n")
+	safeFlush()
 }
 
 // handleV1Completions — OpenAI-совместимый /v1/completions endpoint.

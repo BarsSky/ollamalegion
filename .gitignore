@@ -142,3 +142,4 @@ test_results/
 # Throwaway cluster/backend JSON snapshots
 /cluster*.json
 /add_*.json
+models/

@@ -927,6 +927,12 @@ func writeStreamResponse(w http.ResponseWriter, r *http.Request, modelName, prom
 	w.Header().Set("Content-Type", "application/x-ndjson")
 	w.Header().Set("Cache-Control", "no-cache")
 	w.Header().Set("Connection", "keep-alive")
+	// Немедленный flush заголовков: гарантирует, что клиент получит заголовки
+	// ДО того, как произойдёт ошибка инференса. Без этого flusher-а, если
+	// generateStreamWithRamFallback мгновенно вернёт ошибку (например,
+	// "prompt too long"), клиент (OpenWebUI reasoning) получит пустое тело
+	// и упадёт с json.JSONDecodeError.
+	flusher.Flush()
 	ctx := r.Context()
 	tokens := 0
 	start := time.Now()
@@ -3675,6 +3681,12 @@ func writeChatStreamResponse(w http.ResponseWriter, r *http.Request, modelName, 
 	w.Header().Set("Content-Type", "application/x-ndjson")
 	w.Header().Set("Cache-Control", "no-cache")
 	w.Header().Set("Connection", "keep-alive")
+	// Немедленный flush заголовков: гарантирует, что клиент получит заголовки
+	// ДО того, как произойдёт ошибка инференса. Без этого flusher-а, если
+	// generateStreamWithRamFallback мгновенно вернёт ошибку (например,
+	// "prompt too long"), клиент (OpenWebUI reasoning) получит пустое тело
+	// и упадёт с json.JSONDecodeError.
+	flusher.Flush()
 	ctx := r.Context()
 	start := time.Now()
 	createdAt := time.Now().UTC().Format(time.RFC3339)

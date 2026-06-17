@@ -905,7 +905,17 @@ func (p *Proxy) proxyRequestLlamaCpp(w http.ResponseWriter, r *http.Request, bac
 			data = bytes.TrimSpace(data)
 			translated = translateOpenAISSEDataToOllama(originalPath, data, modelFromCtx)
 		} else {
-			w.Write(line)
+			// Non-SSE данные в streaming-режиме: upstream cppworker мог
+			// прислать не-SSE контент (например, ошибку без префикса "data: ").
+			// Вместо сырой записи, которая сломает NDJSON-формат, оборачиваем
+			// как NDJSON error chunk. Это гарантирует, что клиент (OpenWebUI
+			// reasoning, Cline) не получит ломаный NDJSON и json.JSONDecodeError.
+			errJSON, _ := json.Marshal(map[string]interface{}{
+				"error":    "upstream non-sse data: " + string(line),
+				"done":     true,
+				"response": "",
+			})
+			w.Write(errJSON)
 			w.Write([]byte("\n"))
 			if canFlush {
 				flusher.Flush()

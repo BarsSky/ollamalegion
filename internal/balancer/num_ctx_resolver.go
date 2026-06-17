@@ -24,10 +24,11 @@ import (
 type NumCtxSource string
 
 const (
-	NumCtxSourceRequest NumCtxSource = "request" // из body (options.num_ctx или top-level num_ctx)
-	NumCtxSourceProfile NumCtxSource = "profile" // из per-model profile в config
-	NumCtxSourceBackend NumCtxSource = "backend" // из per-backend default CppWorkerConfig.ContextLength
-	NumCtxSourceNone    NumCtxSource = "none"    // ничего не найдено (cppworker использует свой defaultCtxSize)
+	NumCtxSourceRequest      NumCtxSource = "request"       // из body (options.num_ctx или top-level num_ctx)
+	NumCtxSourceProfile      NumCtxSource = "profile"       // из per-model profile в config
+	NumCtxSourceBackend      NumCtxSource = "backend"       // из per-backend default CppWorkerConfig.ContextLength
+	NumCtxSourceLoadedModel  NumCtxSource = "loaded_model"  // из реально загруженной модели на бэкенде (metrics)
+	NumCtxSourceNone         NumCtxSource = "none"          // ничего не найдено (cppworker использует свой defaultCtxSize)
 )
 
 // ResolvedNumCtx — результат resolver'а.
@@ -175,15 +176,71 @@ func (p *Proxy) GetBackendDefaultNumCtx(backendID string) int {
 // maxNumCtxForModel — эффективный потолок для модели:
 //  1. per-model profile из config.LlamaCppModelProfiles[modelName]
 //  2. fallback на config.DefaultModelProfile (Phase D.3-fix)
+//  3. fallback на реальный n_ctx загруженной модели на бэкенде (из metrics)
+//     — cppworker отдаёт contextSize через /api/models, poller сохраняет в
+//     LoadedModels[].ContextLength. Это динамический потолок, который
+//     обновляется при каждой загрузке модели.
 //
 // Возвращает 0 если ни один из источников не задан — в этом случае
 // clamping не производится и num_ctx из body пройдёт без ограничения
 // (cppworker сам отклонит, если превышает effective n_ctx модели).
-func (p *Proxy) maxNumCtxForModel(modelName string) int {
+func (p *Proxy) maxNumCtxForModel(modelName string, backendID string) int {
+	// Tier 1: per-model profile из config (явная ручная конфигурация)
 	if v := p.GetModelProfileNumCtx(modelName); v > 0 {
 		return v
 	}
-	return p.GetDefaultModelProfileNumCtx()
+
+	// Tier 2: default profile из config (Phase D.3-fix)
+	if v := p.GetDefaultModelProfileNumCtx(); v > 0 {
+		return v
+	}
+
+	// Tier 3: реальный n_ctx загруженной модели на бэкенде (из llamaMetrics).
+	// CppWorker каждые 30с отдаёт contextSize через /api/models →
+	// llamaMetrics[backendID].LoadedModels[].ContextLength.
+	// Это наиболее точный потолок, т.к. отражает фактическое состояние модели.
+	if backendID != "" {
+		if v := p.getModelLoadedCtxFromMetrics(backendID, modelName); v > 0 {
+			return v
+		}
+	}
+
+	return 0
+}
+
+// getModelLoadedCtxFromMetrics — извлекает реальный n_ctx загруженной модели
+// из метрик балансировщика (llamaMetrics[backendID].LoadedModels[].ContextLength).
+//
+// CppWorker опрашивается llamaCppMetricsPoller'ом каждые 30 секунд через
+// GET /api/models, который возвращает contextSize для каждой загруженной модели.
+// Это динамический источник, который отражает, с каким n_ctx модель реально
+// загружена на бэкенде в данный момент.
+//
+// Сравнение имени — case-insensitive substring match (как в IsLlamaCppModelLoaded).
+//
+// Thread-safe: использует RLock на metricsMgr.mu.
+// Возвращает 0 если модель не найдена или contextLength не задан.
+func (p *Proxy) getModelLoadedCtxFromMetrics(backendID, modelName string) int {
+	if p == nil || p.metricsMgr == nil || backendID == "" || modelName == "" {
+		return 0
+	}
+	p.metricsMgr.mu.RLock()
+	defer p.metricsMgr.mu.RUnlock()
+
+	lm, ok := p.metricsMgr.llamaMetrics[backendID]
+	if !ok || lm == nil {
+		return 0
+	}
+	for _, m := range lm.LoadedModels {
+		if m.Name == modelName || containsFold(m.Name, modelName) {
+			if m.ContextLength > 0 {
+				logger.Get().Debugw("maxNumCtxForModel: using loaded model context from metrics",
+					"model", modelName, "backend", backendID, "context_length", m.ContextLength)
+				return m.ContextLength
+			}
+		}
+	}
+	return 0
 }
 
 // ResolveNumCtx — основной 3-tier resolver.
@@ -212,7 +269,7 @@ func (p *Proxy) ResolveNumCtx(modelName string, body []byte, backendID string) R
 		// profile.ContextLength — это максимум, который поддерживает модель
 		// после partial GPU offload (зависит от VRAM).
 		// Fallback на config.DefaultModelProfile (Phase D.3-fix).
-		if maxCtx := p.maxNumCtxForModel(modelName); maxCtx > 0 && n > maxCtx {
+		if maxCtx := p.maxNumCtxForModel(modelName, backendID); maxCtx > 0 && n > maxCtx {
 			logger.Get().Warnw("ResolveNumCtx: clamping request num_ctx to profile max",
 				"model", modelName, "requested", n, "clamped_to", maxCtx, "source", NumCtxSourceRequest)
 			return ResolvedNumCtx{Value: maxCtx, Source: NumCtxSourceRequest}

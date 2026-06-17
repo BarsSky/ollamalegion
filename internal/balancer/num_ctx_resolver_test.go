@@ -256,6 +256,163 @@ func TestApplyCppCtxHeader_BodyWinsHeaders(t *testing.T) {
 }
 
 // ============================================================
+// getModelLoadedCtxFromMetrics — Tier 3
+// ============================================================
+
+func TestGetModelLoadedCtxFromMetrics_NoMetrics(t *testing.T) {
+	p := &Proxy{metricsMgr: &MetricsManager{}}
+	assert.Equal(t, 0, p.getModelLoadedCtxFromMetrics("llama-1", "gemma-4"))
+}
+
+func TestGetModelLoadedCtxFromMetrics_NoBackend(t *testing.T) {
+	p := &Proxy{
+		metricsMgr: &MetricsManager{
+			llamaMetrics: map[string]*types.LlamaCppMetrics{},
+		},
+	}
+	assert.Equal(t, 0, p.getModelLoadedCtxFromMetrics("llama-1", "gemma-4"))
+}
+
+func TestGetModelLoadedCtxFromMetrics_NilProxy(t *testing.T) {
+	var p *Proxy
+	assert.Equal(t, 0, p.getModelLoadedCtxFromMetrics("llama-1", "gemma-4"))
+}
+
+func TestGetModelLoadedCtxFromMetrics_ExactMatch(t *testing.T) {
+	p := &Proxy{
+		metricsMgr: &MetricsManager{
+			llamaMetrics: map[string]*types.LlamaCppMetrics{
+				"llama-1": {
+					LoadedModels: []types.LlamaCppModel{
+						{Name: "gemma-4-E4B-it-Q4_K_M", ContextLength: 16384},
+					},
+				},
+			},
+		},
+	}
+	assert.Equal(t, 16384, p.getModelLoadedCtxFromMetrics("llama-1", "gemma-4-E4B-it-Q4_K_M"))
+}
+
+func TestGetModelLoadedCtxFromMetrics_CaseInsensitiveSubstring(t *testing.T) {
+	p := &Proxy{
+		metricsMgr: &MetricsManager{
+			llamaMetrics: map[string]*types.LlamaCppMetrics{
+				"llama-1": {
+					LoadedModels: []types.LlamaCppModel{
+						{Name: "gemma-4-E4B-it-Q4_K_M.gguf", ContextLength: 32768},
+					},
+				},
+			},
+		},
+	}
+	// substring "gemma-4" должно находить "gemma-4-E4B-it-Q4_K_M.gguf" (case-insensitive)
+	assert.Equal(t, 32768, p.getModelLoadedCtxFromMetrics("llama-1", "gemma-4"))
+}
+
+func TestGetModelLoadedCtxFromMetrics_ContextLengthZero(t *testing.T) {
+	// Если ContextLength == 0 — возвращаем 0 (модель загружена, но n_ctx неизвестен)
+	p := &Proxy{
+		metricsMgr: &MetricsManager{
+			llamaMetrics: map[string]*types.LlamaCppMetrics{
+				"llama-1": {
+					LoadedModels: []types.LlamaCppModel{
+						{Name: "gemma-4", ContextLength: 0},
+					},
+				},
+			},
+		},
+	}
+	assert.Equal(t, 0, p.getModelLoadedCtxFromMetrics("llama-1", "gemma-4"))
+}
+
+func TestGetModelLoadedCtxFromMetrics_ModelNotLoaded(t *testing.T) {
+	p := &Proxy{
+		metricsMgr: &MetricsManager{
+			llamaMetrics: map[string]*types.LlamaCppMetrics{
+				"llama-1": {
+					LoadedModels: []types.LlamaCppModel{
+						{Name: "llama-3.1-8b", ContextLength: 8192},
+					},
+				},
+			},
+		},
+	}
+	assert.Equal(t, 0, p.getModelLoadedCtxFromMetrics("llama-1", "gemma-4"))
+}
+
+// ============================================================
+// ResolveNumCtx — Tier 3 (loaded model metrics)
+// ============================================================
+
+func TestResolveNumCtx_Tier3LoadedModelFromMetrics_NotUsedDirectly(t *testing.T) {
+	// Tier 3 (getModelLoadedCtxFromMetrics) используется ТОЛЬКО внутри maxNumCtxForModel
+	// для clamping body-значения. Если body, profile и backend default не заданы,
+	// ResolveNumCtx возвращает NumCtxSourceNone — Tier 3 не влияет на fallback.
+	p := &Proxy{
+		config: &types.LoadBalancerConfig{},
+		metricsMgr: &MetricsManager{
+			llamaMetrics: map[string]*types.LlamaCppMetrics{
+				"llama-1": {
+					LoadedModels: []types.LlamaCppModel{
+						{Name: "gemma-4-E4B-it-Q4_K_M", ContextLength: 32768},
+					},
+				},
+			},
+		},
+	}
+	r := p.ResolveNumCtx("gemma-4-E4B-it-Q4_K_M", nil, "llama-1")
+	// Tier 3 не используется в прямом flow — возвращаем 0 и none
+	assert.Equal(t, 0, r.Value)
+	assert.Equal(t, NumCtxSourceNone, r.Source)
+}
+
+func TestResolveNumCtx_ClampingUsesTier3AsCeiling(t *testing.T) {
+	// Body запрашивает num_ctx=128000, но модель загружена с ContextLength=16384.
+	// maxNumCtxForModel должен найти 16384 через Tier 3 и заклампить до 16384.
+	p := &Proxy{
+		config: &types.LoadBalancerConfig{},
+		metricsMgr: &MetricsManager{
+			llamaMetrics: map[string]*types.LlamaCppMetrics{
+				"llama-1": {
+					LoadedModels: []types.LlamaCppModel{
+						{Name: "gemma-4-E4B-it-Q4_K_M", ContextLength: 16384},
+					},
+				},
+			},
+		},
+	}
+	body := []byte(`{"options":{"num_ctx":128000}}`)
+	r := p.ResolveNumCtx("gemma-4-E4B-it-Q4_K_M", body, "llama-1")
+	// Должен заклампить к 16384 (реальный n_ctx загруженной модели)
+	assert.Equal(t, 16384, r.Value)
+	assert.Equal(t, NumCtxSourceRequest, r.Source)
+}
+
+func TestResolveNumCtx_Tier2DominatesTier3(t *testing.T) {
+	// Default profile задаёт 8192, но модель загружена с 32768.
+	// При clamping body, потолок берётся из Tier 2 (8192), а не Tier 3.
+	p := &Proxy{
+		config: &types.LoadBalancerConfig{
+			DefaultModelProfile: &types.LlamaCppModelProfile{ContextLength: 8192},
+		},
+		metricsMgr: &MetricsManager{
+			llamaMetrics: map[string]*types.LlamaCppMetrics{
+				"llama-1": {
+					LoadedModels: []types.LlamaCppModel{
+						{Name: "gemma-4-E4B-it-Q4_K_M", ContextLength: 32768},
+					},
+				},
+			},
+		},
+	}
+	body := []byte(`{"options":{"num_ctx":64000}}`)
+	r := p.ResolveNumCtx("gemma-4-E4B-it-Q4_K_M", body, "llama-1")
+	// Должен заклампить к 8192 (DefaultModelProfile — Tier 2)
+	assert.Equal(t, 8192, r.Value)
+	assert.Equal(t, NumCtxSourceRequest, r.Source)
+}
+
+// ============================================================
 // ValidateProfile
 // ============================================================
 

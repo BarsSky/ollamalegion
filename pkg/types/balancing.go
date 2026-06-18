@@ -145,10 +145,17 @@ type AutoPullConfig struct {
 // Позволяет задать contextLength/batchSize/gpuLayers/etc для конкретной модели,
 // переопределяя per-backend default (state.Backend.CppWorkerConfig.ContextLength).
 //
-// Приоритет (3-tier resolver):
+// Приоритет (3-tier resolver для n_ctx):
 //  1. Per-request (body num_ctx / X-Cpp-Ctx header)
 //  2. Per-model profile (этот struct)
 //  3. Per-backend default (cppworker CppWorkerConfig.ContextLength)
+//
+// Таймауты (поля StreamingTimeoutSec / StreamingIdleTimeoutSec / RequestTimeoutSec):
+//  - Если значение > 0 — используется для этой модели (override глобального).
+//  - Если 0 — используется глобальное значение из BalancingSettings.
+//  - autoAdjust=true: если таймауты не заданы (0), балансировщик вычисляет
+//    их автоматически на основе NumGPULayers, SizeBytes и истории генерации
+//    (через ModelLatencyTracker).
 type LlamaCppModelProfile struct {
 	ContextLength int    `json:"contextLength"`       // n_ctx ∈ [256, 262144]
 	BatchSize     int    `json:"batchSize"`           // n_batch ∈ [1, 2048]
@@ -157,6 +164,36 @@ type LlamaCppModelProfile struct {
 	NUMA          *bool  `json:"numa,omitempty"`      // nil = не менять
 	UseMmap       *bool  `json:"useMmap,omitempty"`   // nil = не менять
 	Notes         string `json:"notes,omitempty"`     // человеческое описание (для WebUI/API)
+
+	// Per-model таймауты. 0 = использовать глобальные значения из BalancingSettings.
+	// Позволяют задать бóльшие таймауты для тяжёлых моделей (CPU offload) и
+	// меньшие — для лёгких (GPU-only, fast).
+	//
+	// StreamingTimeoutSec — общий таймаут streaming-запроса (сек).
+	//   Если 0 — используется BalancingSettings.StreamTimeout (default 600).
+	//   Для CPU-моделей рекомендуется 1800+ (30 мин).
+	StreamingTimeoutSec int `json:"streamingTimeoutSec,omitempty"`
+
+	// StreamingIdleTimeoutSec — таймаут простоя между чанками streaming (сек).
+	//   Если 0 — используется BalancingSettings.StreamingIdleTimeout (default 120).
+	//   Для CPU-моделей с partial offload рекомендуется 300+.
+	StreamingIdleTimeoutSec int `json:"streamingIdleTimeoutSec,omitempty"`
+
+	// RequestTimeoutSec — таймаут non-streaming запроса (сек).
+	//   Если 0 — используется BalancingSettings.RequestTimeout (default 120).
+	//   Для CPU-моделей рекомендуется 300+.
+	RequestTimeoutSec int `json:"requestTimeoutSec,omitempty"`
+
+	// FirstByteTimeoutSec — таймаут ожидания первого байта ответа (сек).
+	//   Если 0 — используется BalancingSettings.FirstByteTimeout (default 120).
+	//   Для CPU-моделей с partial offload / RAM fallback рекомендуется 600+.
+	//   Учитывает время загрузки модели в VRAM + prompt processing.
+	FirstByteTimeoutSec int `json:"firstByteTimeoutSec,omitempty"`
+
+	// SizeBytes — размер файла модели в байтах (для автоматического расчёта
+	// таймаутов, если таймауты не заданы явно и autoAdjust=true).
+	// Заполняется автоматически при сканировании моделей.
+	SizeBytes int64 `json:"sizeBytes,omitempty"`
 }
 
 // AdvancedTimingConfig — конфигурируемые таймауты

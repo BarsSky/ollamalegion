@@ -99,6 +99,15 @@ func (p *Proxy) expandCandidates(modelName string, allowedTypes []types.BackendT
 				break
 			}
 		}
+		if !hasModel {
+			// Also check llama.cpp loaded models
+			for _, m := range metrics.LlamaCpp.LoadedModels {
+				if m.Name == modelName || strings.Contains(m.Name, modelName) {
+					hasModel = true
+					break
+				}
+			}
+		}
 
 		if hasModel && loadRatio < threshold {
 			loaded = append(loaded, id)

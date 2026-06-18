@@ -700,19 +700,21 @@ func (p *Proxy) proxyRequestLlamaCpp(w http.ResponseWriter, r *http.Request, bac
 
 	reqCtx := r.Context()
 	if isStreaming {
-		// Минимальный таймаут для streaming inference — 10 минут.
-		// LLM может генерировать длинный ответ (несколько тысяч токенов) и
-		// не должен отваливаться по таймауту. По умолчанию StreamTimeout в
-		// конфиге = 30 секунд, что слишком мало для реальной генерации.
-		streamTimeout := time.Duration(p.config.Balancing.StreamTimeout) * time.Second
-		const minStreamingTimeout = 10 * time.Minute
-		if streamTimeout <= 0 || streamTimeout < minStreamingTimeout {
-			streamTimeout = minStreamingTimeout
-		}
+		// Per-model адаптивный таймаут для streaming inference.
+		// Использует 3-tier resolver:
+		//   1. Per-model profile (config.LlamaCppModelProfiles[modelName].StreamingTimeoutSec)
+		//   2. ModelLatencyTracker (автоматический расчёт на основе истории генерации)
+		//   3. Глобальный конфиг StreamTimeout (дефолт 600s)
+		// Для CPU-моделей с partial offload автоматически вычисляет 1800+ секунд.
+		streamTimeout := p.getModelStreamTimeout(modelFromCtx)
 		var cancel context.CancelFunc
 		reqCtx, cancel = context.WithTimeout(r.Context(), streamTimeout)
 		defer cancel()
+		logger.Get().Debugw("proxyRequestLlamaCpp: using per-model stream timeout",
+			"backend", backendID, "model", modelFromCtx,
+			"stream_timeout_sec", streamTimeout.Seconds())
 	}
+
 
 	req, err := http.NewRequestWithContext(reqCtx, r.Method, fullURL, bytes.NewReader(translatedBody))
 	if err != nil {
@@ -853,6 +855,21 @@ func (p *Proxy) proxyRequestLlamaCpp(w http.ResponseWriter, r *http.Request, bac
 	}
 
 	// Streaming: транслируем SSE → Ollama NDJSON
+	// Проверяем Content-Type upstream: если это не SSE (например, JSON-ошибка от cppworker),
+	// не входим в streaming-цикл, а проксируем как обычный JSON-ответ.
+	// Это предотвращает TransferEncodingError, когда Go пытается chunk-кодировать
+	// не-SSE ответ (ошибку), а клиент ждёт NDJSON.
+	upstreamContentType := resp.Header.Get("Content-Type")
+	if !strings.Contains(upstreamContentType, "text/event-stream") {
+		// Upstream вернул не-SSE ответ (обычно JSON-ошибка: модель не загружена,
+		// контекст превышен, bridge code 2 и т.п.) — отдаём как есть.
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(resp.StatusCode)
+		errBody, _ := io.ReadAll(resp.Body)
+		w.Write(errBody)
+		return nil
+	}
+
 	for key, values := range resp.Header {
 		if key == "Content-Length" || key == "Content-Type" {
 			continue

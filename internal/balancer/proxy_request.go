@@ -157,25 +157,29 @@ func (p *Proxy) proxyRequest(w http.ResponseWriter, r *http.Request, backendID s
 
 	// Создаём контекст с адаптивным таймаутом.
 	// Для non-streaming: используем effectiveTimeout (замена глобальному client.Timeout).
-	// Для streaming: используем StreamTimeout (если задан) как максимум.
+	// Для streaming: используем per-model адаптивный таймаут (3-tier resolver).
 	reqCtx := r.Context()
 	if isStreamingRequest {
-		streamTimeout := time.Duration(p.config.Balancing.StreamTimeout) * time.Second
-		if streamTimeout <= 0 {
-			// Без таймаута: полагаемся на heartbeat + proxy_read_timeout nginx.
-			streamTimeout = 0
-		}
-		if streamTimeout > 0 {
-			var streamCancel context.CancelFunc
-			reqCtx, streamCancel = context.WithTimeout(r.Context(), streamTimeout)
-			defer streamCancel()
-		}
+		// Per-model адаптивный таймаут для streaming inference.
+		// Использует 3-tier resolver:
+		//   1. Per-model profile (config.LlamaCppModelProfiles[modelName].StreamingTimeoutSec)
+		//   2. ModelLatencyTracker (автоматический расчёт на основе истории генерации)
+		//   3. Глобальный конфиг StreamTimeout (дефолт 600s)
+		// Для CPU-моделей с partial offload автоматически вычисляет 1800+ секунд.
+		streamTimeout := p.getModelStreamTimeout(modelFromCtx)
+		var streamCancel context.CancelFunc
+		reqCtx, streamCancel = context.WithTimeout(r.Context(), streamTimeout)
+		defer streamCancel()
+		logger.Get().Debugw("proxyRequest: using per-model stream timeout",
+			"backend", backendID, "model", modelFromCtx,
+			"stream_timeout_sec", streamTimeout.Seconds())
 	} else if effectiveTimeout > 0 {
 		// Non-streaming: контекст с адаптивным таймаутом
 		var cancel context.CancelFunc
 		reqCtx, cancel = context.WithTimeout(r.Context(), time.Duration(effectiveTimeout)*time.Second)
 		defer cancel()
 	}
+
 
 	req, err := http.NewRequestWithContext(reqCtx, r.Method, targetURL+r.URL.String(), r.Body)
 	if err != nil {

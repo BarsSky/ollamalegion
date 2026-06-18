@@ -335,13 +335,47 @@ func (c *NCtxReloadCoordinator) DecideReloadBackend(
 			fmt.Sprintf("required n_ctx=%d exceeds configured max=%d", required, cfg.AutoReloadMaxNCtx))
 	}
 
-	// VRAM-оценка
+	// VRAM-оценка от C-bridge (bridge.c)
+	//
+	// Цепочка делегирования расчёта max_vram_n_ctx:
+	//   1. C-bridge (bridge.c) рассчитывает оценку на основе реального VRAM
+	//      и формул KV Cache с учётом GQA (Grouped Query Attention).
+	//      Формула (f16): 4 * n_layers * n_kv_heads * head_dim bytes/token.
+	//      head_dim = n_embd / n_heads.
+	//      Для MHA (n_kv_heads == n_heads): 4 * n_layers * n_embd.
+	//      Для GQA (n_kv_heads < n_heads): значительно меньше.
+	//   2. Если bridge не смог получить VRAM информацию (CPU-only, не CUDA,
+	//      или CUDA API ошибка) — max_vram_n_ctx = 0. В этом случае
+	//      Go-сторона не берёт на себя риск и reject'ит запрос.
+	//   3. Если bridge вернул max_vram_n_ctx = 0, но модель загружена с CUDA
+	//      (bridge_err.CurrentNCtx > 0), это означает, что модель не влезает
+	//      в VRAM полностью — свободной памяти нет даже для одного токена
+	//      KV-cache. В этом случае reject + совет уменьшить n_gpu_layers
+	//      (CPU-offload), чтобы освободить VRAM для контекста.
+	//   4. Go-сторона (internal/cppbackend/backend.go) имеет свой GGUF-парсер
+	//      readGGUFHeaderInfo() и estimateKVCacheMB() для автономного
+	//      расчёта KV Cache без загрузки модели в llama.cpp. Эти функции
+	//      используются для pre-load VRAM check (checkVRAMForModel),
+	//      а не для nctx_reload — reload требует уже загруженной модели
+	//      с известной архитектурой, о которой C-bridge знает из llama_model_*().
+	//
+	// "Грубую ошибку оставлять нельзя": исправленная GQA-формула в bridge.c
+	// корректно обрабатывает Llama 70B (n_kv_heads=8) и другие GQA-модели.
+	// Снят опасный clamp, который маскировал estimated_max=0 → max_vram_n_ctx=4096.
 	maxVRAMNCtx := bridgeErr.MaxVRAMNCtx
 	if maxVRAMNCtx <= 0 {
-		// Backend не сообщил (CPU-only? llama.cpp без CUDA?).
+		// Если CurrentNCtx > 0, модель загружена с CUDA, но VRAM не хватает
+		// на KV-cache. Предлагаем CPU-offload.
+		if maxVRAMNCtx == 0 && bridgeErr.CurrentNCtx > 0 {
+			return c.makeRejectPlan(backendID, bridgeErr, required,
+				"model fits in VRAM but no space remains for KV-cache (max_vram_n_ctx=0). "+
+					"Try reducing n_gpu_layers (CPU-offload) to free VRAM for context, "+
+					"or use a smaller model / increase physical VRAM")
+		}
+		// Backend не сообщил (CPU-only? llama.cpp без CUDA? CUDA API failed?).
 		// Безопасный fallback: reject, чтобы не вызвать OOM.
 		return c.makeRejectPlan(backendID, bridgeErr, required,
-			"backend did not report max_vram_n_ctx (CPU-only or unknown GPU); cannot safely auto-reload")
+			"backend did not report max_vram_n_ctx (CPU-only, unknown GPU, or CUDA-query failed); cannot safely auto-reload")
 	}
 	safety := cfg.effectiveSafetyFactor()
 	safeMax := int(float64(maxVRAMNCtx) * safety)

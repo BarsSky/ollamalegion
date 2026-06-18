@@ -91,9 +91,16 @@ type Proxy struct {
 	// Каждая загрузка делает POST /api/generate, который блокирует слот Ollama.
 	// Ограничение предотвращает исчерпание всех свободных слотов загрузками.
 	warmupSem chan struct{}
+
+	// modelLatencyTracker собирает per-model метрики генерации (tokens/sec,
+	// inter-token gap, first-byte latency) для адаптивного расчёта таймаутов.
+	// Используется в proxyRequestLlamaCpp, handleStreamingResponse и proxyRequest
+	// для замены глобальных таймаутов на per-model.
+	modelLatencyTracker *ModelLatencyTracker
 }
 
 // NewProxy - создание нового прокси
+
 func NewProxy(config *types.LoadBalancerConfig) *Proxy {
 	// Транспорт для обычных запросов
 	regularTransport := &http.Transport{
@@ -108,16 +115,19 @@ func NewProxy(config *types.LoadBalancerConfig) *Proxy {
 	}
 
 	// Транспорт для streaming запросов - без сжатия и с увеличенными буферами.
-	// ResponseHeaderTimeout — ключевой параметр для предотвращения UND_ERR_HEADERS_TIMEOUT
-	// у клиента (OpenWebUI/undici): если upstream (cppworker/Ollama) не отдаёт заголовки
-	// ответа за это время, балансер сам обрывает соединение и уходит в retry.
-	// Значение берём из конфига FirstByteTimeout (секунды), default 120s.
-	// Это критично для моделей на partial GPU offload / RAM fallback, где первый
-	// токен может задерживаться на 60+ секунд.
-	responseHeaderTimeout := time.Duration(config.Balancing.FirstByteTimeout) * time.Second
-	if responseHeaderTimeout <= 0 {
-		responseHeaderTimeout = 120 * time.Second
-	}
+	// ResponseHeaderTimeout=0 (disabled) — таймаут первого байта теперь управляется
+	// per-request контекстом (context.WithTimeout) на основе 3-tier адаптивных
+	// таймаутов (Profile > ModelLatencyTracker > config). Это критично для
+	// тяжёлых моделей (CPU/partial offload), где первый токен может задерживаться
+	// на 60+ секунд (загрузка в VRAM + prompt processing).
+	// Транспортный ResponseHeaderTimeout не может быть per-model динамическим,
+	// поэтому выносим FirstByteTimeout на уровень контекста в proxyRequest /
+	// proxyRequestLlamaCpp. Старый ResponseHeaderTimeout обрывал соединение ДО
+	// того, как адаптивный контекст вступал в силу, вызывая
+	// TransferEncodingError в OpenWebUI.
+	//
+	// Контекстный таймаут (FirstByteTimeout + StreamTimeout) покрывает весь
+	// lifecycle запроса: ожидание заголовков + стриминг + idle между чанками.
 	streamingTransport := &http.Transport{
 		DialContext: (&net.Dialer{
 			Timeout:   30 * time.Second,
@@ -126,8 +136,8 @@ func NewProxy(config *types.LoadBalancerConfig) *Proxy {
 		MaxIdleConns:          100,
 		MaxIdleConnsPerHost:   10,
 		IdleConnTimeout:       90 * time.Second,
-		DisableCompression:    true,                  // Важно для SSE
-		ResponseHeaderTimeout: responseHeaderTimeout, // Конфигурируемый таймаут заголовков
+		DisableCompression:    true, // Важно для SSE
+		ResponseHeaderTimeout: 0,   // Отключено — управляется per-request контекстом
 	}
 
 	// Определяем TTL сессий из конфигурации
@@ -232,9 +242,16 @@ func NewProxy(config *types.LoadBalancerConfig) *Proxy {
 	p.modelManager = NewModelManager(p)
 	logger.Get().Infow("model manager initialized")
 
+	// Инициализация ModelLatencyTracker для per-model адаптивных таймаутов.
+	// Собирает метрики генерации (tokens/sec, inter-token gap, first-byte latency)
+	// и автоматически вычисляет рекомендуемые таймауты для каждой модели.
+	p.modelLatencyTracker = NewModelLatencyTracker()
+	logger.Get().Infow("model latency tracker initialized")
+
 	return p
 
 }
+
 
 // maxConcurrentWarmups — пакетная функция для использования до создания Proxy.
 func maxConcurrentWarmups(config *types.LoadBalancerConfig) int {
@@ -294,6 +311,185 @@ func (p *Proxy) getStreamingIdleTimeout() time.Duration {
 		return 120 * time.Second
 	}
 	return time.Duration(sec) * time.Second
+}
+
+// --- Per-model adaptive timeout helpers (3-tier resolver) ---
+
+// getModelStreamTimeout возвращает per-model общий таймаут стриминга.
+// Приоритет:
+//  1. Per-model profile (config.LlamaCppModelProfiles[modelName].StreamingTimeoutSec)
+//  2. ModelLatencyTracker (автоматический расчёт на основе истории генерации)
+//  3. Эвристика по размеру GGUF файла (для моделей без истории)
+//  4. Глобальный config.Balancing.StreamTimeout
+//  5. Дефолт 600 секунд
+func (p *Proxy) getModelStreamTimeout(modelName string) time.Duration {
+	if modelName == "" || p.modelLatencyTracker == nil {
+		return p.getGlobalStreamTimeout()
+	}
+
+	// Tier 1: per-model profile
+	profile, ok := p.GetModelProfile(modelName)
+	if ok && profile.StreamingTimeoutSec > 0 {
+		return time.Duration(profile.StreamingTimeoutSec) * time.Second
+	}
+
+	// Tier 2-3: ModelLatencyTracker + GGUF size heuristic
+	globalTimeoutSec := p.config.Balancing.StreamTimeout
+	if globalTimeoutSec <= 0 {
+		globalTimeoutSec = 600
+	}
+	modelSize := p.getModelSizeBytes(modelName)
+	return p.modelLatencyTracker.GetOrComputeTimeout(modelName, 0, globalTimeoutSec, modelSize)
+}
+
+// getModelStreamingIdleTimeout возвращает per-model idle-таймаут стриминга.
+// Приоритет:
+//  1. Per-model profile (config.LlamaCppModelProfiles[modelName].StreamingIdleTimeoutSec)
+//  2. ModelLatencyTracker (автоматический расчёт)
+//  3. Глобальный config.Balancing.StreamingIdleTimeout
+//  4. Дефолт 120 секунд
+func (p *Proxy) getModelStreamingIdleTimeout(modelName string) time.Duration {
+	if modelName == "" || p.modelLatencyTracker == nil {
+		return p.getGlobalStreamingIdleTimeout()
+	}
+
+	// Tier 1: per-model profile
+	profile, ok := p.GetModelProfile(modelName)
+	if ok && profile.StreamingIdleTimeoutSec > 0 {
+		return time.Duration(profile.StreamingIdleTimeoutSec) * time.Second
+	}
+
+	// Tier 2: ModelLatencyTracker
+	globalIdleSec := p.config.Balancing.StreamingIdleTimeout
+	if globalIdleSec <= 0 {
+		globalIdleSec = 120
+	}
+	return p.modelLatencyTracker.GetOrComputeIdleTimeout(modelName, 0, globalIdleSec)
+}
+
+// getModelRequestTimeout возвращает per-model таймаут non-streaming запроса.
+// Приоритет:
+//  1. Per-model profile (config.LlamaCppModelProfiles[modelName].RequestTimeoutSec)
+//  2. ModelLatencyTracker (автоматический расчёт)
+//  3. Глобальный config.Balancing.RequestTimeout
+//  4. Дефолт 120 секунд
+func (p *Proxy) getModelRequestTimeout(modelName string) time.Duration {
+	if modelName == "" || p.modelLatencyTracker == nil {
+		return p.getGlobalRequestTimeout()
+	}
+
+	// Tier 1: per-model profile
+	profile, ok := p.GetModelProfile(modelName)
+	if ok && profile.RequestTimeoutSec > 0 {
+		return time.Duration(profile.RequestTimeoutSec) * time.Second
+	}
+
+	// Tier 2: ModelLatencyTracker
+	globalReqSec := p.config.Balancing.RequestTimeout
+	if globalReqSec <= 0 {
+		globalReqSec = 120
+	}
+	return p.modelLatencyTracker.GetOrComputeRequestTimeout(modelName, 0, globalReqSec)
+}
+
+// getModelFirstByteTimeout возвращает per-model таймаут ожидания первого байта.
+// Приоритет:
+//  1. Per-model profile (config.LlamaCppModelProfiles[modelName].FirstByteTimeoutSec)
+//  2. ModelLatencyTracker (автоматический расчёт на основе истории first-byte latency)
+//  3. Эвристика по размеру GGUF файла (для моделей без истории)
+//  4. Глобальный config.Balancing.FirstByteTimeout
+//  5. Дефолт 120 секунд
+func (p *Proxy) getModelFirstByteTimeout(modelName string) time.Duration {
+	if modelName == "" || p.modelLatencyTracker == nil {
+		return p.getGlobalFirstByteTimeout()
+	}
+
+	// Tier 1: per-model profile
+	profile, ok := p.GetModelProfile(modelName)
+	if ok && profile.FirstByteTimeoutSec > 0 {
+		return time.Duration(profile.FirstByteTimeoutSec) * time.Second
+	}
+
+	// Tier 2-3: ModelLatencyTracker + GGUF size heuristic
+	globalFbSec := p.config.Balancing.FirstByteTimeout
+	if globalFbSec <= 0 {
+		globalFbSec = 120
+	}
+	modelSize := p.getModelSizeBytes(modelName)
+	return p.modelLatencyTracker.GetOrComputeFirstByteTimeout(modelName, 0, globalFbSec, modelSize)
+}
+
+// getGlobalStreamTimeout — глобальный таймаут стриминга из конфига (или дефолт 600s).
+func (p *Proxy) getGlobalStreamTimeout() time.Duration {
+	sec := p.config.Balancing.StreamTimeout
+	if sec <= 0 {
+		return 600 * time.Second
+	}
+	return time.Duration(sec) * time.Second
+}
+
+// getGlobalStreamingIdleTimeout — глобальный idle-таймаут стриминга (или дефолт 120s).
+func (p *Proxy) getGlobalStreamingIdleTimeout() time.Duration {
+	sec := p.config.Balancing.StreamingIdleTimeout
+	if sec <= 0 {
+		return 120 * time.Second
+	}
+	return time.Duration(sec) * time.Second
+}
+
+// getGlobalRequestTimeout — глобальный таймаут non-streaming (или дефолт 120s).
+func (p *Proxy) getGlobalRequestTimeout() time.Duration {
+	sec := p.config.Balancing.RequestTimeout
+	if sec <= 0 {
+		return 120 * time.Second
+	}
+	return time.Duration(sec) * time.Second
+}
+
+// getGlobalFirstByteTimeout — глобальный таймаут первого байта (или дефолт 120s).
+func (p *Proxy) getGlobalFirstByteTimeout() time.Duration {
+	sec := p.config.Balancing.FirstByteTimeout
+	if sec <= 0 {
+		return 120 * time.Second
+	}
+	return time.Duration(sec) * time.Second
+}
+
+// getModelSizeBytes возвращает размер модели в байтах из per-model профиля
+// или из метрик загруженных моделей на бэкендах.
+// Приоритет:
+//  1. Per-model profile (config.LlamaCppModelProfiles[modelName].SizeBytes)
+//  2. LoadedModel size из llamaMetrics любого бэкенда (LlamaCppModel.Size)
+//  3. 0 — если размер неизвестен
+func (p *Proxy) getModelSizeBytes(modelName string) int64 {
+	if modelName == "" {
+		return 0
+	}
+
+	// Tier 1: per-model profile
+	profile, ok := p.GetModelProfile(modelName)
+	if ok && profile.SizeBytes > 0 {
+		return profile.SizeBytes
+	}
+
+	// Tier 2: loadedModel size из llamaMetrics на любом бэкенде
+	if p.metricsMgr != nil {
+		p.metricsMgr.mu.RLock()
+		for _, lm := range p.metricsMgr.llamaMetrics {
+			if lm == nil {
+				continue
+			}
+			for _, m := range lm.LoadedModels {
+				if m.Name == modelName && m.Size > 0 {
+					p.metricsMgr.mu.RUnlock()
+					return int64(m.Size)
+				}
+			}
+		}
+		p.metricsMgr.mu.RUnlock()
+	}
+
+	return 0
 }
 
 // getWarmupSemaphoreTimeout — таймаут ожидания семафора warmup (default: 30s).

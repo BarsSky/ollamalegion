@@ -416,44 +416,64 @@ func handleLoadModel(w http.ResponseWriter, r *http.Request) {
 		"numa", opts.NUMA,
 		"tensorSplit", opts.TensorSplit)
 
-	// Защита от двойной загрузки: если модель уже загружена с тем же путём
-	// и совпадающими параметрами — возвращаем already_loaded, не трогаем VRAM.
-	if info, err := backend.GetModel(modelName); err == nil {
-		if info.Path == modelPath && sameLoadOptions(*info, opts) {
-			logger.Get().Infow("model already loaded with same parameters", "name", modelName)
-			writeJSON(w, http.StatusOK, map[string]interface{}{
-				"status": "already_loaded",
-				"model":  info,
-			})
-			return
-		}
-		// Если путь/параметры отличаются — сначала выгружаем старую модель.
-		logger.Get().Infow("reloading model because parameters changed", "name", modelName,
-			"oldPath", info.Path, "newPath", modelPath)
-		if unloadErr := backend.UnloadModel(modelName); unloadErr != nil {
-			logger.Get().Errorw("failed to unload model before reload", "name", modelName, "error", unloadErr)
-			writeError(w, http.StatusInternalServerError, "unload before reload failed: "+unloadErr.Error())
-			return
+	// === Per-model blocking load ===
+	// Пытаемся зарезервировать эксклюзивное право на загрузку этой модели.
+	// Если другая горутина уже грузит её — ждём завершения (до 5 минут).
+	// Это устраняет race condition между handleLoadModel, ensureModelLoaded
+	// и handleReloadModel — scenario «два клиента одновременно грузят одну модель».
+	lockOk, lockErr := backend.TryLockLoad(modelName)
+	if lockErr != nil {
+		// Модель уже загружена — проверяем, совпадают ли параметры.
+		if info, getErr := backend.GetModel(modelName); getErr == nil {
+			if info.Path == modelPath && sameLoadOptions(*info, opts) {
+				logger.Get().Infow("model already loaded with same parameters", "name", modelName)
+				writeJSON(w, http.StatusOK, map[string]interface{}{
+					"status": "already_loaded",
+					"model":  info,
+				})
+				return
+			}
+			// Параметры отличаются — выгружаем и перезагружаем (reload-in-place).
+			logger.Get().Infow("reloading model because parameters changed", "name", modelName,
+				"oldPath", info.Path, "newPath", modelPath)
+			if unloadErr := backend.UnloadModel(modelName); unloadErr != nil {
+				logger.Get().Errorw("failed to unload model before reload", "name", modelName, "error", unloadErr)
+				writeError(w, http.StatusInternalServerError, "unload before reload failed: "+unloadErr.Error())
+				return
+			}
+			// Пере-захватываем блокировку после выгрузки для перезагрузки.
+			lockOk, lockErr = backend.TryLockLoad(modelName)
+			if lockErr != nil {
+				logger.Get().Errorw("race: model appeared after unload", "name", modelName)
+				writeError(w, http.StatusInternalServerError, "concurrent load race after unload")
+				return
+			}
+		} else {
+			// Модель числится загруженной по TryLockLoad, но GetModel не находит —
+			// редкая гонка. Продолжаем как новую загрузку.
+			lockOk = true
 		}
 	}
 
-	// Fast-path: если другая горутина уже грузит эту модель — не блокируемся
-	// 30+ секунд, а сразу отвечаем 503 + JSON со статусом loading. Клиент
-	// (наш WebUI, OpenWebUI, Ollama CLI) может опросить /api/models/load/progress
-	// и узнать, когда загрузка завершится. Это устраняет «Server disconnected»,
-	// когда два клиента одновременно запрашивают одну и ту же модель.
-	if backend.IsModelLoading(modelName) {
+	if !lockOk {
+		// Другая горутина уже грузит эту модель. Ждём завершения и отвечаем
+		// 503 с loading-статусом (клиент может polling'ом проверить /api/models/load/progress).
+		logger.Get().Infow("model is already being loaded by another request; waiting",
+			"name", modelName)
 		writeLoadingResponse(w, modelName, errModelIsLoading)
 		return
 	}
 
 	loadStart := time.Now()
-	if err := backend.LoadModelWithOpts(modelName, modelPath, opts); err != nil {
-		logger.Get().Errorw("failed to load model", "name", modelName, "error", err)
-		writeError(w, http.StatusInternalServerError, "load failed: "+err.Error())
+	loadErr := backend.LoadModelWithOpts(modelName, modelPath, opts)
+	backend.UnlockLoad(modelName) // освобождаем блокировку — другие горутины могут грузить ту же модель
+	if loadErr != nil {
+		logger.Get().Errorw("failed to load model", "name", modelName, "error", loadErr)
+		writeError(w, http.StatusInternalServerError, "load failed: "+loadErr.Error())
 		return
 	}
 	loadDuration := time.Since(loadStart)
+
 	model, err := backend.GetModel(modelName)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
@@ -2649,6 +2669,36 @@ func handleReloadModel(w http.ResponseWriter, r *http.Request) {
 		"old_batch", current.BatchSize, "new_batch", opts.BatchSize,
 		"old_gpu_layers", current.GPULayers, "new_gpu_layers", opts.GPULayers)
 
+	// === Per-model blocking reload ===
+	// Используем TryLockLoad для защиты от двойной загрузки той же модели.
+	lockOk, lockErr := backend.TryLockLoad(req.Name)
+	if lockErr != nil {
+		// Модель уже загружена кем-то ещё — это нормально для reload,
+		// но мы не можем эксклюзивно выгружать. Отвечаем 503.
+		logger.Get().Infow("reload: model is already being loaded by another request",
+			"name", req.Name)
+		writeLoadingResponse(w, req.Name, errModelIsLoading)
+		return
+	}
+	if !lockOk {
+		logger.Get().Infow("reload: another goroutine is already loading this model, waiting",
+			"name", req.Name)
+		if backend.WaitForLoad(req.Name) {
+			// Модель успешно загружена другой горутиной — reload не нужен.
+			model, getErr := backend.GetModel(req.Name)
+			if getErr == nil {
+				writeJSON(w, http.StatusOK, map[string]interface{}{
+					"status": "reloaded_by_other",
+					"model":  model,
+				})
+				return
+			}
+		}
+		writeLoadingResponse(w, req.Name, errModelIsLoading)
+		return
+	}
+	defer backend.UnlockLoad(req.Name)
+
 	// 1) Unload (синхронно).
 	unloadStart := time.Now()
 	if err := backend.UnloadModel(req.Name); err != nil {
@@ -3311,6 +3361,22 @@ func tryRamFallbackReload(modelName string, requestedNCtx int) (bool, error) {
 		TensorSplit:   current.TensorSplit,
 	}
 
+	lockOk, lockErr := backend.TryLockLoad(modelName)
+	if lockErr != nil {
+		// модель уже загружена — RAM fallback тривиально успешен
+		return true, nil
+	}
+	if !lockOk {
+		// другая горутина грузит эту модель — ждём
+		if backend.WaitForLoad(modelName) {
+			return true, nil
+		}
+		// не удалось дождаться — fallback не сработал, но ошибку оставим оригинальную
+		return false, fmt.Errorf("RAM fallback: model is being loaded by another request, but wait failed")
+	}
+	// lock acquired — мы отвечаем за загрузку
+	defer backend.UnlockLoad(modelName)
+
 	logger.Get().Infow("RAM fallback: reloading model with larger n_ctx",
 		"model", modelName,
 		"path", modelPath,
@@ -3353,6 +3419,7 @@ func tryRamFallbackReload(modelName string, requestedNCtx int) (bool, error) {
 		"gpu_layers", newGPULayers,
 		"load_ms", time.Since(loadStart).Milliseconds())
 
+
 	if balancerReg != nil {
 		if info, err := backend.GetModel(modelName); err == nil {
 			balancerReg.notifyModelLoaded(modelName, info.SizeBytes, info.ContextSize, info.GPULayers)
@@ -3374,11 +3441,26 @@ func ensureModelLoaded(modelName string) error {
 		return nil
 	}
 
-	// 1) Если модель сейчас в StateLoading (другая горутина держит CGo LoadModel) —
-	//    возвращаем errModelIsLoading. Хендлер ответит 503 + heartbeat.
-	if backend.IsModelLoading(modelName) {
+	// 1) Используем TryLockLoad для постановки в очередь загрузки.
+	//    Если другая горутина уже грузит — ждём и проверяем результат.
+	lockOk, lockErr := backend.TryLockLoad(modelName)
+	if lockErr != nil {
+		// Модель уже загружена (успели загрузить между нашей проверкой и TryLockLoad).
+		return nil
+	}
+	if !lockOk {
+		// Другая горутина уже грузит эту модель — ждём завершения.
+		if backend.WaitForLoad(modelName) {
+			return nil
+		}
+		// Если waitForLoad вернул false — загрузка провалилась.
+		// Пробуем сами загрузить (другой поток мог оставить модель в errored state).
+		// Просто возвращаем errModelIsLoading — клиент получит 503 и повторит.
 		return errModelIsLoading
 	}
+
+	// lockOk == true — мы отвечаем за загрузку.
+	defer backend.UnlockLoad(modelName)
 
 	log := logger.Get()
 	log.Infow("lazy-loading model from filesystem", "model", modelName)
@@ -3478,11 +3560,37 @@ func autoLoadModels(cfg cppbackend.Config) {
 			"path", modelPath,
 			"gpuLayers", opts.GPULayers)
 
+		// Используем TryLockLoad для защиты от двойной загрузки (если ensureModelLoaded
+		// запущен конкурентно). autoLoadModels выполняется на старте, но модель может
+		// также загружаться через handleLoadModel или ensureModelLoaded при первом
+		// запросе (race между autoLoadModels и первым /api/generate).
+		lockOk, lockErr := backend.TryLockLoad(modelName)
+		if lockErr != nil {
+			// Модель уже загружена — пропускаем (auto-load не нужен).
+			log.Infow("auto-load: model already loaded", "name", modelName)
+			loaded++
+			continue
+		}
+		if !lockOk {
+			// Другая горутина уже грузит эту модель — ждём завершения.
+			log.Infow("auto-load: another goroutine is loading this model, waiting",
+				"name", modelName)
+			if backend.WaitForLoad(modelName) {
+				loaded++
+				log.Infow("auto-load: model loaded by another goroutine", "name", modelName)
+			} else {
+				log.Warnw("auto-load: wait for model failed, skipping", "name", modelName)
+			}
+			continue
+		}
+
 		if err := backend.LoadModelWithOpts(modelName, modelPath, opts); err != nil {
+			backend.UnlockLoad(modelName)
 			log.Errorw("auto-load: failed to load model",
 				"name", modelName, "path", modelPath, "error", err)
 			continue
 		}
+		backend.UnlockLoad(modelName)
 		loaded++
 		log.Infow("auto-loaded model successfully", "name", modelName)
 	}

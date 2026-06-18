@@ -97,7 +97,9 @@ const Renderers = (function () {
         backends = stableBackendOrder(backends);
         if (!backends.length) return loading(_t('renderers.no_backend_data'));
         return backends.map(backend => {
-            const flags = backend.ollama?.runtimeFlags || {};
+            // B-02: показываем Ollama-флаги только для ollama бэкендов
+            const isOllama = Utils.getBackendType(backend) === 'ollama';
+            const flags = isOllama ? (backend.ollama?.runtimeFlags || {}) : {};
             const contexts = backend.ollama?.modelContexts || [];
 
             const flagBadges = [];

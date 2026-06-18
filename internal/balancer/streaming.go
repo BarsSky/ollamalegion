@@ -19,10 +19,9 @@ import (
 // Go's net/http автоматически управляет chunked transfer encoding.
 // Ручная запись chunked terminator запрещена — это приводит к двойному chunking'у
 // и вызывает TransferEncodingError в OpenWebUI.
+// Transfer-Encoding header не удаляем — Go управляет chunked encoding автоматически,
+// и удаление заголовка вызывает конфликт с собственным chunking'ом Go.
 func (p *Proxy) handleStreamingResponse(w http.ResponseWriter, r *http.Request, resp *http.Response, backendID string) {
-	// Удаляем Transfer-Encoding из проксируемых заголовков — Go управляет этим автоматически.
-	resp.Header.Del("Transfer-Encoding")
-
 	// НЕ устанавливаем Connection: close на старте — это мешает Go корректно завершить
 	// chunked encoding (0\r\n\r\n terminator) и вызывает TransferEncodingError у клиента.
 	// Go net/http автоматически управляет закрытием соединения при ошибках.
@@ -76,7 +75,9 @@ func (p *Proxy) handleStreamingResponse(w http.ResponseWriter, r *http.Request, 
 	// (SIGSEGV в llama.cpp / timeout между чанками) корректно детектировался
 	// как ошибка чтения, а не молчаливо "успешно завершался" по EOF.
 	// Дедлайн продлевается на каждом успешном чанке.
-	idleTimeout := p.getStreamingIdleTimeout()
+	// Per-model адаптивный idle timeout: используется getModelStreamingIdleTimeout,
+	// который применяет 3-tier resolver (profile → ModelLatencyTracker → global → default).
+	idleTimeout := p.getModelStreamingIdleTimeout(modelFromCtx)
 	if idleTimeout > 0 {
 		if rc, ok := resp.Body.(interface {
 			SetReadDeadline(time.Time) error
@@ -86,7 +87,11 @@ func (p *Proxy) handleStreamingResponse(w http.ResponseWriter, r *http.Request, 
 					"backend", backendID, "model", modelFromCtx, "error", err)
 			}
 		}
+		logger.Get().Debugw("handleStreamingResponse: using per-model idle timeout",
+			"backend", backendID, "model", modelFromCtx,
+			"idle_timeout_sec", idleTimeout.Seconds())
 	}
+
 
 	// Heartbeat goroutine для SSE и NDJSON — предотвращает разрыв соединения nginx/браузером
 	// при длительных паузах между токенами.

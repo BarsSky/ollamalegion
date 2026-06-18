@@ -412,9 +412,24 @@
       }
       var digHTML = digestShort ? ' <code style="font-size:9px;background:var(--bg-secondary);padding:1px 3px;border-radius:3px" title="' + MA.esc('Digest: ' + digestShort) + '">' + MA.esc(digestShort) + '</code>' : '';
       var nameCell = '<strong>' + MA.esc(m.name) + '</strong>' + digHTML + (m.info.cloud ? ' <span style="font-size:10px;color:var(--accent);background:rgba(59,130,246,0.12);padding:1px 5px;border-radius:4px">☁️ ' + T('renderers.cloud') + '</span>' : '');
+      // B-11: Добавляем бейдж backend-типа для каждого бэкенда
       var bkCell = m.info.cloud && m.info.bks.length === 0
         ? '<span class="badge badge-blue">☁️ cloud</span>'
-        : m.info.bks.map(function(bid) { return '<span class="badge badge-purple">' + MA.esc(bid) + '</span>'; }).join(' ');
+        : m.info.bks.map(function(bid) {
+            var fbBk = bk.find(function(x) { return x.id === bid; });
+            var btBadge = '';
+            if (fbBk && window.Utils && window.Utils.getBackendTypeBadge) {
+              btBadge = ' ' + window.Utils.getBackendTypeBadge(fbBk);
+            } else if (fbBk) {
+              var btType = fbBk.backendType || fbBk.type || '';
+              if (btType === 'llama_cpp') {
+                btBadge = ' <span class="badge" style="background:#ff6d0020;border:1px solid #ff6d00;color:#ff6d00;font-size:9px;padding:0 3px;border-radius:2px">🦒</span>';
+              } else if (btType === 'ollama' || !btType) {
+                btBadge = ' <span class="badge" style="background:#1a73e820;border:1px solid #1a73e8;color:#1a73e8;font-size:9px;padding:0 3px;border-radius:2px">🦙</span>';
+              }
+            }
+            return '<span class="badge badge-purple">' + MA.esc(bid) + btBadge + '</span>';
+          }).join(' ');
       return '<tr><td>' + nameCell + '</td><td>' + bkCell + '</td><td class="col-right">' + m.info.sc + '</td><td class="col-right">' + (m.info.cloud ? '☁️ N/A' : '~' + vg + ' GB') + '</td><td class="col-right">' + (m.info.sc > 0 ? (m.info.cloud ? '☁️ ' + m.info.sc : '🔥 ' + m.info.sc) : '—') + '</td><td class="col-right" style="font-size:11px">' + expHTML + '</td></tr>';
     }).join('');
     // Update colspan for no-data row (was 5, now 6 with expiresAt column)

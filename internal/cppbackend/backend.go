@@ -9,6 +9,7 @@
 package cppbackend
 
 import (
+	"encoding/binary"
 	"fmt"
 	"math"
 	"os"
@@ -44,6 +45,7 @@ type ModelInfo struct {
 	Architecture  string    `json:"architecture,omitempty"`
 	NLayers       int       `json:"nLayers"`
 	NHeads        int       `json:"nHeads"`
+	NKvHeads      int       `json:"nKvHeads"`
 	NEmbd         int       `json:"nEmbd"`
 	NVocab        int       `json:"nVocab"`
 	ContextSize   int       `json:"contextSize"`
@@ -86,6 +88,12 @@ type Backend struct {
 	metrics      *Metrics
 	idleUnloader *IdleUnloadManager
 	hfDownloader *HuggingFaceDownloader
+
+	// per-model load locking: prevents race conditions when two goroutines
+	// try to load the same model simultaneously.
+	// Key: model name, Value: chan struct{} (closed when loading completes).
+	loading map[string]chan struct{}
+	loadMu  sync.Mutex
 }
 
 // LoadModelOpts — опции загрузки модели, передаваемые из WebUI/API
@@ -130,6 +138,7 @@ func NewBackend(cfg Config) *Backend {
 		modelManager: modelManager,
 		metrics:      metrics,
 		gpuManager:   NewGPUManager(cfg.TensorSplitStrategy),
+		loading:      make(map[string]chan struct{}),
 	}
 
 	// Idle unload manager
@@ -446,6 +455,9 @@ func (d *DiagnosticsInfo) Error() string {
 // Параметры:
 //   - modelSizeBytes: размер GGUF файла в байтах
 //   - totalLayers: общее количество слоёв модели (из GGUF metadata)
+//   - nHeads: количество голов внимания (для KV Cache)
+//   - nKvHeads: количество KV-голов (для GQA, 0 = nHeads)
+//   - nEmbd: размер эмбеддингов (для head_dim)
 //   - requestedGPULayers: запрошенное количество GPU-слоёв (-1 = все)
 //   - requestedCtxSize: запрошенный размер контекста
 //
@@ -453,13 +465,13 @@ func (d *DiagnosticsInfo) Error() string {
 //   - optimalGPULayers: оптимальное число GPU-слоёв
 //   - useMmap: true если требуется mmap (часть модели CPU-based)
 //   - diagnostics: детальная диагностика (nil если успешно, иначе с ошибкой)
-func (b *Backend) CalculateOptimalGPULayers(modelSizeBytes int64, totalLayers, requestedGPULayers, requestedCtxSize int) (optimalGPULayers int, useMmap bool, diagnostics *DiagnosticsInfo) {
+func (b *Backend) CalculateOptimalGPULayers(modelSizeBytes int64, totalLayers, nHeads, nKvHeads, nEmbd, requestedGPULayers, requestedCtxSize int) (optimalGPULayers int, useMmap bool, diagnostics *DiagnosticsInfo) {
 	if totalLayers <= 0 {
 		totalLayers = 40 // fallback: предполагаем ~40 слоёв если неизвестно
 	}
 
 	modelSizeMB := float64(modelSizeBytes) / 1024 / 1024
-	ctxOverheadMB := float64(requestedCtxSize) / 1024.0 // ~1MB на 1K контекста
+	kvCacheMB := estimateKVCacheMB(totalLayers, nHeads, nKvHeads, nEmbd, requestedCtxSize)
 
 	// Собираем доступную VRAM
 	b.mu.RLock()
@@ -470,15 +482,11 @@ func (b *Backend) CalculateOptimalGPULayers(modelSizeBytes int64, totalLayers, r
 	b.mu.RUnlock()
 
 	// Собираем доступную RAM (системная память)
-	// Используем оценку: 80% от общего размера модели можно разместить в RAM
-	// плюс KV cache. Точное значение зависит от ОС.
 	var totalRAM uint64
 	if runtime.GOOS != "windows" {
-		// На Linux/macOS используем /proc/meminfo
 		totalRAM = getSystemRAMGB() * 1024 // в MB
 	} else {
-		// fallback: предполагаем хотя бы 8GB RAM
-		totalRAM = 8192
+		totalRAM = 8192 // fallback: предполагаем хотя бы 8GB RAM
 	}
 
 	diag := &DiagnosticsInfo{
@@ -501,28 +509,36 @@ func (b *Backend) CalculateOptimalGPULayers(modelSizeBytes int64, totalLayers, r
 		wantedGPULayers = totalLayers
 	}
 
+	// Создаём новый DiagnosticsInfo теперь с kvCacheMB
+	diag2 := &DiagnosticsInfo{
+		ModelSizeGB:             diag.ModelSizeGB,
+		TotalLayers:             diag.TotalLayers,
+		VRAMAvailableMB:         diag.VRAMAvailableMB,
+		VRAMRequiredForFullGPU:  0,
+		OptimalGPULayers:        0,
+		VRAMRequiredForOptimal:  0,
+		RAMAvailableMB:          totalRAM,
+		RAMRequiredForRemaining: 0,
+	}
+
 	// Оцениваем VRAM для полной загрузки всех слоёв на GPU
 	vramForFullGPU := EstimateGPUMemoryForModel(modelSizeBytes, totalLayers, totalLayers)
-	if requestedCtxSize > 0 {
-		vramForFullGPU += uint64(ctxOverheadMB)
-	}
-	diag.VRAMRequiredForFullGPU = vramForFullGPU
+	vramForFullGPU += kvCacheMB
+	diag2.VRAMRequiredForFullGPU = vramForFullGPU
 
 	// Если желаемые GPU-слои влезают в VRAM — используем их как есть
 	vramForWanted := EstimateGPUMemoryForModel(modelSizeBytes, wantedGPULayers, totalLayers)
-	if requestedCtxSize > 0 {
-		vramForWanted += uint64(ctxOverheadMB)
-	}
+	vramForWanted += kvCacheMB
 
 	if vramForWanted <= totalFreeVRAM {
-		diag.OptimalGPULayers = wantedGPULayers
-		diag.VRAMRequiredForOptimal = vramForWanted
-		diag.RAMAvailableMB = totalRAM
-		diag.RAMRequiredForRemaining = 0
+		diag2.OptimalGPULayers = wantedGPULayers
+		diag2.VRAMRequiredForOptimal = vramForWanted
+		diag2.RAMRequiredForRemaining = 0
 		logger.Get().Infow("VRAM sufficient for requested GPU layers",
 			"requestedGPULayers", wantedGPULayers,
 			"vramRequiredMB", vramForWanted,
-			"vramFreeMB", totalFreeVRAM)
+			"vramFreeMB", totalFreeVRAM,
+			"kvCacheMB", kvCacheMB)
 		return wantedGPULayers, false, nil
 	}
 
@@ -532,9 +548,7 @@ func (b *Backend) CalculateOptimalGPULayers(modelSizeBytes int64, totalLayers, r
 	for lo <= hi {
 		mid := (lo + hi) / 2
 		needed := EstimateGPUMemoryForModel(modelSizeBytes, mid, totalLayers)
-		if requestedCtxSize > 0 {
-			needed += uint64(ctxOverheadMB)
-		}
+		needed += kvCacheMB
 		if needed <= totalFreeVRAM {
 			bestLayers = mid
 			lo = mid + 1
@@ -545,15 +559,12 @@ func (b *Backend) CalculateOptimalGPULayers(modelSizeBytes int64, totalLayers, r
 
 	// Проверяем, влезает ли остаток в RAM
 	cpuLayers := totalLayers - bestLayers
-	cpuMemoryMB := uint64(modelSizeMB*0.7*float64(cpuLayers)/float64(totalLayers) + ctxOverheadMB)
+	// CPU-часть модели: слои на CPU + KV cache (KV cache всегда на GPU/CPU вместе с моделью)
+	cpuMemoryMB := uint64(modelSizeMB*0.7*float64(cpuLayers)/float64(totalLayers) + float64(kvCacheMB)*0.5)
 
-	diag.OptimalGPULayers = bestLayers
-	diag.VRAMRequiredForOptimal = EstimateGPUMemoryForModel(modelSizeBytes, bestLayers, totalLayers)
-	if requestedCtxSize > 0 {
-		diag.VRAMRequiredForOptimal += uint64(ctxOverheadMB)
-	}
-	diag.RAMAvailableMB = totalRAM
-	diag.RAMRequiredForRemaining = cpuMemoryMB
+	diag2.OptimalGPULayers = bestLayers
+	diag2.VRAMRequiredForOptimal = EstimateGPUMemoryForModel(modelSizeBytes, bestLayers, totalLayers) + kvCacheMB
+	diag2.RAMRequiredForRemaining = cpuMemoryMB
 
 	if cpuMemoryMB < totalRAM*8/10 { // используем до 80% RAM
 		logger.Get().Infow("optimal GPU layers found with RAM fallback",
@@ -561,23 +572,62 @@ func (b *Backend) CalculateOptimalGPULayers(modelSizeBytes int64, totalLayers, r
 			"gpuLayers", bestLayers,
 			"cpuLayers", cpuLayers,
 			"cpuMemoryMB", cpuMemoryMB,
-			"ramAvailableMB", totalRAM)
+			"ramAvailableMB", totalRAM,
+			"kvCacheMB", kvCacheMB)
 		return bestLayers, true, nil
 	}
 
 	// Даже CPU-only не влезает — диагностика
-	diag.Recomendation = fmt.Sprintf(
+	diag2.Recomendation = fmt.Sprintf(
 		"cannot load model: model requires ~%d MB total memory "+
-			"(%.1f GB model + %.0f MB context), "+
+			"(%.1f GB model + %d MB KV cache), "+
 			"but VRAM=%d MB + RAM=%d MB insufficient. "+
 			"Best GPU layers=%d (CPU layers=%d, needs %d MB RAM). "+
-			"Reduce model size (try a smaller quant) or decrease context size.",
-		uint64(modelSizeMB)+uint64(ctxOverheadMB),
-		modelSizeMB/1024, ctxOverheadMB,
+			"Reduce model size (try a smaller quant), decrease context size, "+
+			"or enable flash attention.",
+		uint64(modelSizeMB)+kvCacheMB,
+		modelSizeMB/1024, kvCacheMB,
 		totalFreeVRAM, totalRAM,
 		bestLayers, cpuLayers, cpuMemoryMB)
 
-	return bestLayers, true, diag
+	return bestLayers, true, diag2
+}
+
+// estimateKVCacheMB вычисляет размер KV Cache в MB для заданных параметров модели.
+// Формула:
+//
+//	KV Cache (bytes) = 2 × n_layers × n_ctx × n_kv_heads × head_dim × bytes_per_elem
+//
+// где head_dim = n_embd / n_heads, bytes_per_elem = 2 для fp16 (стандартный KV cache).
+// Для GQA моделей n_kv_heads < n_heads, для MHA n_kv_heads = n_heads.
+//
+// Добавляет 10% буфера безопасности для избежания граничных OOM.
+func estimateKVCacheMB(nLayers, nHeads, nKvHeads, nEmbd, nCtx int) uint64 {
+	if nLayers <= 0 || nHeads <= 0 || nEmbd <= 0 || nCtx <= 0 {
+		return 0
+	}
+
+	if nKvHeads <= 0 {
+		nKvHeads = nHeads // MHA (no GQA)
+	}
+
+	// head_dim = n_embd / n_heads (обычно 128 для большинства моделей)
+	headDim := nEmbd / nHeads
+	if headDim <= 0 {
+		headDim = 128 // fallback
+	}
+
+	// KV Cache = 2 (K+V) × n_layers × n_ctx × n_kv_heads × head_dim × bytes_per_elem
+	// Стандартный KV cache тип fp16 = 2 bytes per element
+	const bytesPerElem = 2
+
+	kvBytes := uint64(2) * uint64(nLayers) * uint64(nCtx) * uint64(nKvHeads) * uint64(headDim) * uint64(bytesPerElem)
+
+	// Конвертируем в MB и добавляем 10% безопасности
+	kvMB := kvBytes / (1024 * 1024)
+	kvMB = kvMB + kvMB/10 // +10% safety buffer
+
+	return kvMB
 }
 
 // checkVRAMForModel проверяет, достаточно ли видеопамяти для загрузки модели
@@ -591,23 +641,44 @@ func (b *Backend) checkVRAMForModel(name string, path string, opts LoadModelOpts
 		return opts, nil
 	}
 
-	// Определяем общее количество слоёв (сначала пытаемся из метаданных уже загруженной модели,
-	// затем из GGUF файла, затем fallback на EstimateGPUMemoryForModel)
+	// Извлекаем метаданные из GGUF header ДО загрузки модели.
+	// Сначала пытаемся получить из уже загруженной модели (если уже загружена).
+	var header *GGUFHeaderInfo
 	totalLayers := 0
+	nHeads := 0
+	nKvHeads := 0
+	nEmbd := 0
 
-	// Если модель уже загружена — берём из её метаданных
+	// Если модель уже загружена — берём метаданные из неё
 	if info, err := b.GetModel(name); err == nil && info.NLayers > 0 {
 		totalLayers = info.NLayers
+		nHeads = info.NHeads
+		nKvHeads = info.NKvHeads
+		nEmbd = info.NEmbd
 	}
 
-	// Если не удалось получить слои из загруженной модели — пробуем EstimateGPUMemoryForModel
-	// с инверсным расчётом: оцениваем через размер файла и типичную архитектуру
+	// Если модель не загружена — читаем GGUF header
 	if totalLayers <= 0 {
-		// Пытаемся прочитать header GGUF для определения числа слоёв
-		totalLayers = estimateLayersFromFileSize(fi.Size())
+		var readErr error
+		header, readErr = readGGUFHeaderInfo(path)
+		if readErr == nil && header != nil {
+			totalLayers = header.NLayers
+			nHeads = header.NHeads
+			nKvHeads = header.NKvHeads
+			nEmbd = header.NEmbd
+		}
 	}
 
-	optGPULayers, useMmap, diagnostics := b.CalculateOptimalGPULayers(fi.Size(), totalLayers, opts.GPULayers, opts.ContextSize)
+	// Если GGUF header не дал результатов — fallback на эвристику по размеру файла
+	if totalLayers <= 0 {
+		totalLayers = estimateLayersFromFileSize(fi.Size())
+		// nHeads и nEmbd остаются 0 — estimateKVCacheMB вернёт 0
+	}
+
+	optGPULayers, useMmap, diagnostics := b.CalculateOptimalGPULayers(
+		fi.Size(), totalLayers, nHeads, nKvHeads, nEmbd,
+		opts.GPULayers, opts.ContextSize,
+	)
 
 	if diagnostics != nil && diagnostics.Recomendation != "" {
 		logger.Get().Errorw("cannot load model - insufficient memory",
@@ -748,6 +819,67 @@ func (b *Backend) IsModelLoading(name string) bool {
 	state := inst.info.State
 	inst.mu.Unlock()
 	return state == StateLoading
+}
+
+// TryLockLoad пытается зарезервировать эксклюзивное право на загрузку модели name.
+// Возвращает:
+//   - (true, nil): блокировка получена, вызывающий может начинать загрузку.
+//   - (true, err): модель уже загружена (ошибка).
+//   - (false, nil): другая горутина уже грузит эту модель — жди.
+//   - (false, err): модель уже загружена или другая ошибка.
+//
+// Гарантирует, что для одной модели может быть только одна активная загрузка.
+// После завершения загрузки (успех/ошибка) вызывающий ОБЯЗАН вызвать UnlockLoad.
+func (b *Backend) TryLockLoad(name string) (bool, error) {
+	b.loadMu.Lock()
+	defer b.loadMu.Unlock()
+
+	// Проверяем, не загружена ли уже модель
+	b.mu.RLock()
+	_, exists := b.models[name]
+	b.mu.RUnlock()
+	if exists {
+		return true, fmt.Errorf("model %s already loaded", name)
+	}
+
+	// Проверяем, не грузит ли её другая горутина
+	if _, ok := b.loading[name]; ok {
+		// Модель уже в процессе загрузки — ждём
+		return false, nil
+	}
+
+	// Создаём канал, который будет закрыт после завершения загрузки
+	b.loading[name] = make(chan struct{})
+	return true, nil
+}
+
+// UnlockLoad освобождает блокировку загрузки для модели name.
+// Должен вызываться после TryLockLoad, когда загрузка завершена (успех или ошибка).
+func (b *Backend) UnlockLoad(name string) {
+	b.loadMu.Lock()
+	defer b.loadMu.Unlock()
+	if ch, ok := b.loading[name]; ok {
+		close(ch) // оповещаем всех ожидающих
+		delete(b.loading, name)
+	}
+}
+
+// waitForLoad блокируется до завершения загрузки модели другой горутиной.
+// Возвращает true если модель успешно загружена, false если произошла ошибка
+// или канал закрыт по другой причине.
+// Используется когда tryLockLoad вернул (false, nil) — другая горутина уже грузит.
+func (b *Backend) WaitForLoad(name string) bool {
+	b.loadMu.Lock()
+	ch, ok := b.loading[name]
+	b.loadMu.Unlock()
+	if !ok {
+		return false // загрузка уже завершена
+	}
+	<-ch // ждём завершения загрузки
+
+	// Проверяем результат
+	_, err := b.GetModel(name)
+	return err == nil
 }
 
 // ============================================================
@@ -1054,7 +1186,276 @@ func getSystemRAMGB() uint64 {
 	return 16 // fallback
 }
 
+// GGUFHeaderInfo — метаданные, извлекаемые из GGUF header ДО загрузки модели.
+type GGUFHeaderInfo struct {
+	Architecture string `json:"architecture"`
+	NLayers      int    `json:"nLayers"`
+	NHeads       int    `json:"nHeads"`
+	NKvHeads     int    `json:"nKvHeads"`
+	NEmbd        int    `json:"nEmbd"`
+	FileSize     int64  `json:"fileSize"`
+}
+
+// ggufFieldSuffixes — суффиксы ключей метаданных для параметров модели.
+// Каждый параметр имеет вид <architecture>.<suffix>.
+// Используется для генерации всех возможных ключей из ggufModelArchs.
+var ggufFieldSuffixes = []string{
+	".block_count",
+	".attention.head_count",
+	".attention.head_count_kv",
+	".embedding_length",
+}
+
+// ggufModelArchs — известные архитектуры GGUF.
+// Каждая архитектура может иметь префикс для ключей метаданных.
+var ggufModelArchs = []string{
+	"llama", "qwen2", "gemma2", "starcoder2", "gpt_bigcode",
+	"falcon", "mpt", "phi3", "bert", "nemotron",
+}
+
+// initGGUFKeyMap инициализирует реверсивный маппинг "gguf key → field index"
+// один раз при старте. Это позволяет O(1) определение поля по ключу.
+func initGGUFKeyMap() map[string]int {
+	m := make(map[string]int)
+	for _, arch := range ggufModelArchs {
+		for fi, suffix := range ggufFieldSuffixes {
+			key := arch + suffix
+			m[key] = fi
+		}
+	}
+	return m
+}
+
+// ggufKeyMap — глобальный map "gguf key → field index"
+// Field index: 0=NLayers, 1=NHeads, 2=NKvHeads, 3=NEmbd
+var ggufKeyMap = initGGUFKeyMap()
+
+// readGGUFHeaderInfo читает заголовок GGUF файла и извлекает ключевые метаданные.
+// Работает без загрузки модели в llama.cpp — читает только header (metadata KV).
+//
+// Формат GGUF v3:
+//   [4]byte magic = "GGUF"
+//   uint32 version = 3
+//   uint64 tensorCount
+//   uint64 metadataKvCount
+//   []MetadataKV — пары ключ-значение с архитектурой, параметрами и т.д.
+//
+// Поддерживаемые GGUF metadata keys (с маппингом по архитектуре):
+//   - general.architecture              (string)
+//   - <arch>.block_count                (uint32) — NLayers
+//   - <arch>.attention.head_count       (uint32) — NHeads
+//   - <arch>.attention.head_count_kv    (uint32) — NKvHeads
+//   - <arch>.embedding_length           (uint32) — NEmbd
+//
+// После чтения general.architecture переключается на соответствующий префикс.
+func readGGUFHeaderInfo(path string) (*GGUFHeaderInfo, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, fmt.Errorf("open gguf: %w", err)
+	}
+	defer f.Close()
+
+	// Определяем размер файла
+	fi, err := f.Stat()
+	if err != nil {
+		return nil, fmt.Errorf("stat gguf: %w", err)
+	}
+
+	// Читаем magic (4 байта)
+	var magic [4]byte
+	if _, err := f.Read(magic[:]); err != nil {
+		return nil, fmt.Errorf("read magic: %w", err)
+	}
+	if magic[0] != 'G' || magic[1] != 'G' || magic[2] != 'U' || magic[3] != 'F' {
+		return nil, fmt.Errorf("invalid GGUF magic: %q", string(magic[:]))
+	}
+
+	// Читаем версию (uint32)
+	var version uint32
+	if err := binary.Read(f, binary.LittleEndian, &version); err != nil {
+		return nil, fmt.Errorf("read version: %w", err)
+	}
+	if version < 1 || version > 3 {
+		return nil, fmt.Errorf("unsupported GGUF version: %d", version)
+	}
+
+	// Читаем tensor count (uint64)
+	var tensorCount uint64
+	if err := binary.Read(f, binary.LittleEndian, &tensorCount); err != nil {
+		return nil, fmt.Errorf("read tensor count: %w", err)
+	}
+	_ = tensorCount
+
+	// Читаем metadata KV count (uint64)
+	var kvCount uint64
+	if err := binary.Read(f, binary.LittleEndian, &kvCount); err != nil {
+		return nil, fmt.Errorf("read metadata KV count: %w", err)
+	}
+
+	info := &GGUFHeaderInfo{
+		FileSize: fi.Size(),
+	}
+
+	// Читаем KV пары
+	for i := uint64(0); i < kvCount; i++ {
+		// Читаем длину ключа
+		var keyLen uint64
+		if err := binary.Read(f, binary.LittleEndian, &keyLen); err != nil {
+			return nil, fmt.Errorf("read key[%d] length: %w", i, err)
+		}
+
+		// Читаем ключ
+		keyBuf := make([]byte, keyLen)
+		if _, err := f.Read(keyBuf); err != nil {
+			return nil, fmt.Errorf("read key[%d]: %w", i, err)
+		}
+		key := string(keyBuf)
+
+		// Читаем тип значения (uint32)
+		var valType uint32
+		if err := binary.Read(f, binary.LittleEndian, &valType); err != nil {
+			return nil, fmt.Errorf("read key[%q] value type: %w", key, err)
+		}
+
+		// Парсим значение в зависимости от типа
+		// Типы GGUF: 0=uint8, 1=int8, 2=uint16, 3=int16, 4=uint32, 5=int32,
+		//            6=float32, 7=bool, 8=string, 9=array, 10=uint64, 11=int64, 12=float64
+		//
+		// Нас интересуют: string(8), uint32(4), int32(5), uint64(10), float32(6), array(9)
+
+		switch valType {
+		case 8: // string
+			var strLen uint64
+			if err := binary.Read(f, binary.LittleEndian, &strLen); err != nil {
+				return nil, fmt.Errorf("read key[%q] string length: %w", key, err)
+			}
+			strBuf := make([]byte, strLen)
+			if _, err := f.Read(strBuf); err != nil {
+				return nil, fmt.Errorf("read key[%q] string value: %w", key, err)
+			}
+			strVal := string(strBuf)
+			switch key {
+			case "general.architecture":
+				info.Architecture = strVal
+			}
+
+		case 4: // uint32
+			var val uint32
+			if err := binary.Read(f, binary.LittleEndian, &val); err != nil {
+				return nil, fmt.Errorf("read key[%q] uint32: %w", key, err)
+			}
+			if fi, ok := ggufKeyMap[key]; ok {
+				ggufSetField(info, fi, int(val))
+			}
+
+		case 10: // uint64
+			var val uint64
+			if err := binary.Read(f, binary.LittleEndian, &val); err != nil {
+				return nil, fmt.Errorf("read key[%q] uint64: %w", key, err)
+			}
+			if fi, ok := ggufKeyMap[key]; ok {
+				ggufSetField(info, fi, int(val))
+			}
+
+		case 5: // int32
+			var val int32
+			if err := binary.Read(f, binary.LittleEndian, &val); err != nil {
+				return nil, fmt.Errorf("read key[%q] int32: %w", key, err)
+			}
+			if fi, ok := ggufKeyMap[key]; ok {
+				ggufSetField(info, fi, int(val))
+			}
+
+		case 11: // int64
+			var val int64
+			if err := binary.Read(f, binary.LittleEndian, &val); err != nil {
+				return nil, fmt.Errorf("read key[%q] int64: %w", key, err)
+			}
+			if fi, ok := ggufKeyMap[key]; ok {
+				ggufSetField(info, fi, int(val))
+			}
+
+		case 6: // float32
+			var val float32
+			if err := binary.Read(f, binary.LittleEndian, &val); err != nil {
+				return nil, fmt.Errorf("read key[%q] float32: %w", key, err)
+			}
+			_ = val // не используем, пропускаем
+
+		case 0: // uint8
+			var val uint8
+			if err := binary.Read(f, binary.LittleEndian, &val); err != nil {
+				return nil, fmt.Errorf("read key[%q] uint8: %w", key, err)
+			}
+			_ = val
+
+		case 7: // bool
+			var val uint8
+			if err := binary.Read(f, binary.LittleEndian, &val); err != nil {
+				return nil, fmt.Errorf("read key[%q] bool: %w", key, err)
+			}
+			_ = val
+
+		case 9: // array — пропускаем, зная тип элемента и количество
+			var elemType uint32
+			if err := binary.Read(f, binary.LittleEndian, &elemType); err != nil {
+				return nil, fmt.Errorf("read key[%q] array elem type: %w", key, err)
+			}
+			var arrLen uint64
+			if err := binary.Read(f, binary.LittleEndian, &arrLen); err != nil {
+				return nil, fmt.Errorf("read key[%q] array len: %w", key, err)
+			}
+			// Пропускаем элементы массива
+			elemSize := ggufTypeSize(elemType)
+			if elemSize > 0 {
+				skipBytes := int64(arrLen) * int64(elemSize)
+				if _, err := f.Seek(skipBytes, 1); err != nil {
+					return nil, fmt.Errorf("skip array key[%q]: %w", key, err)
+				}
+			}
+
+		default:
+			// Неизвестный тип — не можем пропустить, ошибка
+			return nil, fmt.Errorf("unsupported GGUF metadata type %d for key %q", valType, key)
+		}
+	}
+
+	return info, nil
+}
+
+// ggufSetField устанавливает поле GGUFHeaderInfo по field index (0-3).
+func ggufSetField(info *GGUFHeaderInfo, fieldIndex, value int) {
+	switch fieldIndex {
+	case 0:
+		info.NLayers = value
+	case 1:
+		info.NHeads = value
+	case 2:
+		info.NKvHeads = value
+	case 3:
+		info.NEmbd = value
+	}
+}
+
+// ggufTypeSize возвращает размер элемента GGUF metadata value по типу.
+// Для скалярных типов — их размер, для массивов — размер одного элемента.
+func ggufTypeSize(valType uint32) int64 {
+	switch valType {
+	case 0, 1, 7: // uint8, int8, bool
+		return 1
+	case 2, 3: // uint16, int16
+		return 2
+	case 4, 5, 6: // uint32, int32, float32
+		return 4
+	case 10, 11, 12: // uint64, int64, float64
+		return 8
+	default:
+		return 0 // variable length (string, array) — не используем
+	}
+}
+
 // estimateLayersFromFileSize оценивает общее число слоёв модели на основе размера GGUF файла.
+
 // Эвристика для типичных архитектур Llama/Mistral/Qwen при Q4_K_M квантизации:
 //   - < 5GB   → 7B модель (32 слоя)
 //   - 5-10GB  → 13B модель (40 слоёв)

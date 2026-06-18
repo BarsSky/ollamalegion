@@ -90,6 +90,13 @@
       "enabled": false,
       "grpcPort": 19000,
       "workers": []
+    },
+    "nctxReload": {
+      "_note": "Auto-reload n_ctx when model's context is too small for request. Relies on cppworker RAM fallback if VRAM insufficient.",
+      "autoReloadNCtx": true,
+      "autoReloadMaxNCtx": 131072,
+      "vramSafetyFactor": 0.85,
+      "reloadTimeoutSec": 120
     }
   },
 
@@ -132,8 +139,8 @@
     "headerName": "X-API-Token"
   },
   "defaultModelProfile": {
-    "_note": "Phase D.3-fix fallback for clamping when per-model profile missing.",
-    "contextLength": 4096,
+    "_note": "Phase D.3-fix fallback for clamping when per-model profile missing. contextLength=0 means no clamping — cppworker uses its own n_ctx or loaded model metrics.",
+    "contextLength": 0,
     "batchSize": 512,
     "numGpuLayers": 30,
     "flashAttention": true,

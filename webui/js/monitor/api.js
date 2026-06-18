@@ -68,13 +68,18 @@
     return {
       cluster: {
         backends: [
-          { id: 'ollama-1', status: 'active', activeRequests: 2, maxConcurrentRequests: 8, gpu: { usagePercent: 45 }, vram: { usagePercent: 62, totalGB: 24, usedGB: 14.88 }, system: { cpuUsagePercent: 30, memoryUsagePercent: 55, diskTotal: 500472979456, diskUsed: 209089773568, diskFree: 291383205888, networkRX: 1842176, networkTX: 1024512 }, score: 0.95, models: ['llama3.1', 'gemma2'], lastSeen: n, ollama: { requestsPerSecond: 1.2, backendCapacity: { freeVram: 8192, loadableModelCount: 3, guaranteedVram: 2048, mode: 'gpu', availableModels: [{ name: 'mistral:7b', canLoad: true, estimatedVram: 4096 }, { name: 'phi3:mini', canLoad: true, estimatedVram: 2048 }, { name: 'qwen2:7b', canLoad: true, estimatedVram: 4096 }, { name: 'codellama:13b', canLoad: false, estimatedVram: 10240 }, { name: 'mixtral:8x7b', canLoad: false, estimatedVram: 28672 }] } } },
-          { id: 'ollama-2', status: 'active', activeRequests: 1, maxConcurrentRequests: 8, gpu: { usagePercent: 12 }, vram: { usagePercent: 28, totalGB: 24, usedGB: 6.72 }, system: { cpuUsagePercent: 18, memoryUsagePercent: 40, diskTotal: 1000965890048, diskUsed: 322122547200, diskFree: 678843342848, networkRX: 5242880, networkTX: 3145728 }, score: 0.88, models: ['llama3.1'], lastSeen: n, ollama: { requestsPerSecond: 0.5, backendCapacity: { freeVram: 16384, loadableModelCount: 5, guaranteedVram: 2048, mode: 'gpu', availableModels: [{ name: 'gemma2:9b', canLoad: true, estimatedVram: 5120 }, { name: 'llama3.1:70b', canLoad: true, estimatedVram: 40960 }, { name: 'deepseek-r1:7b', canLoad: true, estimatedVram: 4096 }, { name: 'phi3:mini', canLoad: true, estimatedVram: 2048 }, { name: 'mistral:7b', canLoad: true, estimatedVram: 4096 }, { name: 'codellama:34b', canLoad: false, estimatedVram: 22528 }] } } },
-          { id: 'ollama-3', status: 'error', activeRequests: 0, maxConcurrentRequests: 8, gpu: { usagePercent: 0 }, vram: { usagePercent: 0, totalGB: 24, usedGB: 0 }, system: { cpuUsagePercent: 5, memoryUsagePercent: 20, diskTotal: 250225098752, diskUsed: 131941395333, diskFree: 118283703419 }, score: 0.0, models: [], lastSeen: n, ollama: { requestsPerSecond: 0, backendCapacity: { freeVram: 24576, loadableModelCount: 0, guaranteedVram: 0, mode: 'gpu', availableModels: [] } } }
+          { id: 'ollama-1', type: 'ollama', backendType: 'ollama', status: 'active', activeRequests: 2, maxConcurrentRequests: 8, gpu: { usagePercent: 45 }, vram: { usagePercent: 62, totalGB: 24, usedGB: 14.88 }, system: { cpuUsagePercent: 30, memoryUsagePercent: 55, diskTotal: 500472979456, diskUsed: 209089773568, diskFree: 291383205888, networkRX: 1842176, networkTX: 1024512 }, score: 0.95, models: ['llama3.1', 'gemma2'], lastSeen: n, ollama: { requestsPerSecond: 1.2, backendCapacity: { freeVram: 8192, loadableModelCount: 3, guaranteedVram: 2048, mode: 'gpu', availableModels: [{ name: 'mistral:7b', canLoad: true, estimatedVram: 4096 }, { name: 'phi3:mini', canLoad: true, estimatedVram: 2048 }, { name: 'qwen2:7b', canLoad: true, estimatedVram: 4096 }, { name: 'codellama:13b', canLoad: false, estimatedVram: 10240 }, { name: 'mixtral:8x7b', canLoad: false, estimatedVram: 28672 }] } } },
+          { id: 'ollama-2', type: 'ollama', backendType: 'ollama', status: 'active', activeRequests: 1, maxConcurrentRequests: 8, gpu: { usagePercent: 12 }, vram: { usagePercent: 28, totalGB: 24, usedGB: 6.72 }, system: { cpuUsagePercent: 18, memoryUsagePercent: 40, diskTotal: 1000965890048, diskUsed: 322122547200, diskFree: 678843342848, networkRX: 5242880, networkTX: 3145728 }, score: 0.88, models: ['llama3.1'], lastSeen: n, ollama: { requestsPerSecond: 0.5, backendCapacity: { freeVram: 16384, loadableModelCount: 5, guaranteedVram: 2048, mode: 'gpu', availableModels: [{ name: 'gemma2:9b', canLoad: true, estimatedVram: 5120 }, { name: 'llama3.1:70b', canLoad: true, estimatedVram: 40960 }, { name: 'deepseek-r1:7b', canLoad: true, estimatedVram: 4096 }, { name: 'phi3:mini', canLoad: true, estimatedVram: 2048 }, { name: 'mistral:7b', canLoad: true, estimatedVram: 4096 }, { name: 'codellama:34b', canLoad: false, estimatedVram: 22528 }] } } },
+          { id: 'ollama-3', type: 'ollama', backendType: 'ollama', status: 'error', activeRequests: 0, maxConcurrentRequests: 8, gpu: { usagePercent: 0 }, vram: { usagePercent: 0, totalGB: 24, usedGB: 0 }, system: { cpuUsagePercent: 5, memoryUsagePercent: 20, diskTotal: 250225098752, diskUsed: 131941395333, diskFree: 118283703419 }, score: 0.0, models: [], lastSeen: n, ollama: { requestsPerSecond: 0, backendCapacity: { freeVram: 24576, loadableModelCount: 0, guaranteedVram: 0, mode: 'gpu', availableModels: [] } } },
+          { id: 'llamacpp-1', type: 'llama_cpp', backendType: 'llama_cpp', status: 'active', activeRequests: 1, maxConcurrentRequests: 4, gpu: { usagePercent: 72 }, vram: { usagePercent: 78, totalGB: 8, usedGB: 6.24 }, system: { cpuUsagePercent: 45, memoryUsagePercent: 60, diskTotal: 500472979456, diskUsed: 209089773568, diskFree: 291383205888, networkRX: 1048576, networkTX: 524288 }, score: 0.82, models: ['qwen2.5:7b-q4_k_m', 'gemma-2:9b-q4_k_m'], lastSeen: n, ollama: { requestsPerSecond: 0.8, backendCapacity: { freeVram: 1536, loadableModelCount: 1, guaranteedVram: 1024, mode: 'gpu', availableModels: [{ name: 'qwen2.5:7b-q4_k_m', canLoad: true, estimatedVram: 5120 }, { name: 'gemma-2:9b-q4_k_m', canLoad: true, estimatedVram: 6144 }, { name: 'llama-3.2:3b-q4_k_m', canLoad: true, estimatedVram: 2048 }, { name: 'deepseek-r1:7b-q4_k_m', canLoad: false, estimatedVram: 11264 }] } } },
+          { id: 'llamacpp-2', type: 'llama_cpp', backendType: 'llama_cpp', status: 'healthy', activeRequests: 0, maxConcurrentRequests: 4, gpu: { usagePercent: 0 }, vram: { usagePercent: 15, totalGB: 8, usedGB: 1.2 }, system: { cpuUsagePercent: 12, memoryUsagePercent: 35, diskTotal: 1000965890048, diskUsed: 322122547200, diskFree: 678843342848, networkRX: 2097152, networkTX: 1048576 }, score: 0.75, models: ['phi-4:14b-q4_k_m'], lastSeen: n, ollama: { requestsPerSecond: 0, backendCapacity: { freeVram: 6912, loadableModelCount: 2, guaranteedVram: 2048, mode: 'gpu', availableModels: [{ name: 'phi-4:14b-q4_k_m', canLoad: true, estimatedVram: 9216 }, { name: 'qwen2.5:7b-q4_k_m', canLoad: true, estimatedVram: 5120 }] } } }
         ],
         rps: 1.7,
+        backendEngine: 'llama_cpp',
+        effectiveBackendType: '',
         queue: { max_size: 100 }
       },
+
       queueDetails: {
         pending_count: 3,
         processing_count: 2,
@@ -290,6 +295,16 @@
     setConnStatus(T('monitor.status.demo'), 'blue');
     document.getElementById('demoBtn').style.display = 'none';
     document.getElementById('demoIndicator').style.display = 'inline';
+    // P-5: Добавляем DEMO MODE баннер для визуальной индикации
+    var demoBanner = document.getElementById('demoModeBanner');
+    if (!demoBanner) {
+      demoBanner = document.createElement('div');
+      demoBanner.id = 'demoModeBanner';
+      demoBanner.style.cssText = 'position:fixed;top:0;left:0;right:0;z-index:9999;background:rgba(255,165,0,0.15);border-bottom:2px solid #ff8c00;text-align:center;padding:6px 12px;font-size:13px;font-weight:600;color:#ff8c00;backdrop-filter:blur(4px);pointer-events:none';
+      demoBanner.textContent = '🔶 DEMO MODE — отображаются тестовые данные. Подключитесь к балансировщику для реальных метрик.';
+      document.body.prepend(demoBanner);
+    }
+    demoBanner.style.display = '';
     if (typeof window.updateUI === 'function') window.updateUI(demoData());
     if (typeof window.updateMonitorTexts === 'function') window.updateMonitorTexts();
   }

@@ -39,6 +39,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strings"
 	"sync"
 	"time"
 
@@ -301,11 +302,86 @@ func (c *NCtxReloadCoordinator) DecideReloadBackend(
 		}
 	}
 
-	// Только для BRIDGE_ERR_N_CTX_NEEDS_RELOAD решаем что-то.
-	// BRIDGE_ERR_PROMPT_TOO_LONG — это hard error, не наш случай.
-	if bridgeErr == nil || bridgeErr.Code != NCtxErrCodeNCtxNeedsReload {
-		return &ReloadPlan{Decision: DecisionNoOp, Reason: "not a n_ctx-reload error"}
+	// ==== BRIDGE_ERR_PROMPT_TOO_LONG (code 3) — особый случай ====
+	// Эта ошибка возникает, когда клиент прислал num_ctx (n_ctx_override),
+	// который меньше, чем нужно для prompt + n_predict. Модель физически
+	// может вместить запрос (current_n_ctx часто >= required_n_ctx), но
+	// override ограничивает effective context.
+	//
+	// Пример из реальной эксплуатации:
+	//   current_n_ctx=32768, required_n_ctx=23816, n_ctx_override=16384
+	//   prompt=15623 + n_predict=8192 + 1 = 23816 > 16384 (override) → code 3
+	//
+	// Исправление: при code 3 мы игнорируем клиентский override и reload'им
+	// модель с required_n_ctx (или current_n_ctx). После reload клиент может
+	// слать любой num_ctx — он будет clamped к новому n_ctx модели (но это
+	// уже не вызовет code 3, потому что new_n_ctx >= required).
+	//
+	// Если current_n_ctx уже >= required_n_ctx — мы просто reload'им модель
+	// с тем же n_ctx (чтобы сбросить override и дать модели использовать
+	// полный контекст). Если current_n_ctx < required_n_ctx — reload'им
+	// с required_n_ctx (как для code 2).
+	if bridgeErr == nil {
+		return &ReloadPlan{Decision: DecisionNoOp, Reason: "nil bridge error"}
 	}
+
+	if bridgeErr.Code == NCtxErrCodePromptTooLong {
+		required := bridgeErr.RequiredNCtx
+		if required <= 0 {
+			required = requestedNCtxOverride
+		}
+		if required <= 0 {
+			return &ReloadPlan{Decision: DecisionNoOp,
+				Reason: "no required n_ctx in error info (bridge bug?)"}
+		}
+
+		// Цель: n_ctx, с которым reload'им модель.
+		targetNCtx := required
+		// Если модель уже загружена с достаточным n_ctx — reload'им с тем же,
+		// чтобы просто сбросить клиентский n_ctx_override.
+		if bridgeErr.CurrentNCtx >= required {
+			targetNCtx = bridgeErr.CurrentNCtx
+		}
+
+		// Проверка AutoReloadMaxNCtx
+		cfg := c.Config()
+		if cfg.AutoReloadMaxNCtx > 0 && targetNCtx > cfg.AutoReloadMaxNCtx {
+			targetNCtx = cfg.AutoReloadMaxNCtx
+		}
+
+		// VRAM safety check (только если target больше current)
+		if targetNCtx > bridgeErr.CurrentNCtx && bridgeErr.MaxVRAMNCtx > 0 {
+			safety := cfg.effectiveSafetyFactor()
+			safeMax := int(float64(bridgeErr.MaxVRAMNCtx) * safety)
+			if targetNCtx > safeMax {
+				return c.makeRejectPlan(backendID, bridgeErr, targetNCtx,
+					fmt.Sprintf("required n_ctx=%d exceeds safe VRAM limit=%d (max_vram_n_ctx=%d, safety=%.2f)",
+						targetNCtx, safeMax, bridgeErr.MaxVRAMNCtx, safety))
+			}
+		}
+
+		// Round up до степени 2
+		newNCtx := roundUpPow2(targetNCtx)
+		if newNCtx < targetNCtx {
+			newNCtx = targetNCtx
+		}
+
+		return &ReloadPlan{
+			Decision: DecisionReload,
+			NewNCtx:  newNCtx,
+			Reason: fmt.Sprintf("prompt_too_long: required=%d, current=%d, override=%d, target=%d",
+				required, bridgeErr.CurrentNCtx, bridgeErr.NCtxOverride, newNCtx),
+		}
+	}
+
+	// ==== BRIDGE_ERR_N_CTX_NEEDS_RELOAD (code 2) — стандартный случай ====
+	// Модель не может вместить запрос — текущий n_ctx меньше required_n_ctx.
+	// Нужно перезагрузить модель с большим n_ctx (если VRAM позволяет).
+	if bridgeErr.Code != NCtxErrCodeNCtxNeedsReload {
+		return &ReloadPlan{Decision: DecisionNoOp, Reason: "not a n_ctx-reload error"}
+		
+	}
+
 
 	required := bridgeErr.RequiredNCtx
 	if required <= 0 {
@@ -472,10 +548,15 @@ type NCtxReloadHTTPClient interface {
 // DefaultNCtxReloadHTTPClient — реальная реализация.
 type DefaultNCtxReloadHTTPClient struct {
 	HTTPClient *http.Client
+	// APIToken — токен для аутентификации на cppworker.
+	// Отправляется как Authorization: Bearer <token>.
+	// CppWorker читает API_TOKEN из env и проверяет этот заголовок.
+	APIToken string
 }
 
 // PostReload — POST на endpoint с payload, отдаёт *http.Response
-// (caller обязан закрыть body).
+// (caller обязан закрыть body). Если APIToken не пуст — добавляет
+// Authorization: Bearer <token> для аутентификации на cppworker.
 func (c *DefaultNCtxReloadHTTPClient) PostReload(ctx context.Context, endpoint string, payload []byte) (*http.Response, error) {
 	client := c.HTTPClient
 	if client == nil {
@@ -488,6 +569,9 @@ func (c *DefaultNCtxReloadHTTPClient) PostReload(ctx context.Context, endpoint s
 	req.Header.Set("Content-Type", "application/json")
 	req.Body = io.NopCloser(bytesReader(payload))
 	req.ContentLength = int64(len(payload))
+	if c.APIToken != "" {
+		req.Header.Set("Authorization", "Bearer "+c.APIToken)
+	}
 	return client.Do(req)
 }
 
@@ -521,6 +605,7 @@ func (c *NCtxReloadCoordinator) DoReload(
 	ctx context.Context,
 	backendID string,
 	backendAddr string,
+	modelName string,
 	plan *ReloadPlan,
 	loader NCtxReloadHTTPClient,
 ) error {
@@ -558,13 +643,13 @@ func (c *NCtxReloadCoordinator) DoReload(
 		close(cur.done)
 	}()
 
-	logger.Get().Infof("[nctx_reload] backend %s: reloading with n_ctx=%d (%s)",
-		backendID, plan.NewNCtx, plan.Reason)
+	logger.Get().Infof("[nctx_reload] backend %s: reloading with n_ctx=%d (model=%s, reason=%s)",
+		backendID, plan.NewNCtx, modelName, plan.Reason)
 
 	payload, _ := json.Marshal(map[string]interface{}{
-		"backend_id":   backendID,
-		"context_size": plan.NewNCtx,
-		"reason":       "auto-reload: client request exceeded current n_ctx",
+		"name":        modelName,
+		"contextSize": plan.NewNCtx,
+		"reason":      "auto-reload: client request exceeded current n_ctx",
 	})
 	endpoint := backendAddr + "/api/models/reload"
 	resp, err := loader.PostReload(rctx, endpoint, payload)
@@ -576,6 +661,33 @@ func (c *NCtxReloadCoordinator) DoReload(
 	defer resp.Body.Close()
 
 	body, _ := io.ReadAll(resp.Body)
+
+	// Если бэкенд ответил 503 "model is loading" — это значит,
+	// модель ещё не закончила загружаться (race condition между
+	// ensureModelLoaded и handleReloadModel). Делаем до 3 ретраев
+	// с паузой, чтобы дождаться завершения загрузки.
+	const maxRetries = 5
+	retryInterval := 5 * time.Second
+	for retry := 0; retry < maxRetries && resp.StatusCode == http.StatusServiceUnavailable &&
+		strings.Contains(string(body), "model is loading"); retry++ {
+		logger.Get().Infof("[nctx_reload] backend %s: model still loading, retrying in %v (attempt %d/%d)",
+			backendID, retryInterval, retry+1, maxRetries)
+		resp.Body.Close()
+		select {
+		case <-time.After(retryInterval):
+		case <-rctx.Done():
+			cur.err = fmt.Errorf("reload context cancelled while waiting for model load: %w", rctx.Err())
+			return cur.err
+		}
+		resp, err = loader.PostReload(rctx, endpoint, payload)
+		if err != nil {
+			cur.err = fmt.Errorf("reload HTTP request failed (retry %d): %w", retry+1, err)
+			logger.Get().Errorf("[nctx_reload] backend %s: %v", backendID, cur.err)
+			return cur.err
+		}
+		body, _ = io.ReadAll(resp.Body)
+	}
+
 	if resp.StatusCode != http.StatusOK {
 		cur.err = fmt.Errorf("reload returned HTTP %d: %s", resp.StatusCode, string(body))
 		logger.Get().Errorf("[nctx_reload] backend %s: %v", backendID, cur.err)

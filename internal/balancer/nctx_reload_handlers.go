@@ -128,7 +128,7 @@ func (p *Proxy) handleNCtxReloadActual(
 	// 2. Выполняем reload синхронно.
 	start := time.Now()
 	p.nctxReload.RecordDecision(backendID, "reload-start", plan.Reason)
-	reloadErr := p.nctxReload.DoReload(ctx, backendID, backendAddr, plan, p.newNCtxReloadHTTPClient())
+	reloadErr := p.nctxReload.DoReload(ctx, backendID, backendAddr, modelName, plan, p.newNCtxReloadHTTPClient())
 	duration := time.Since(start)
 	p.nctxReload.RecordReloadDuration(backendID, duration, reloadErr)
 	if reloadErr != nil {
@@ -167,29 +167,47 @@ func (p *Proxy) handleNCtxReloadActual(
 }
 
 // newNCtxReloadHTTPClient — factory для HTTP-клиента reload-а (используется в DoReload).
-// В будущем — позволит мокать для тестов.
+// Автоматически подхватывает API-токен из конфига балансировщика для аутентификации
+// на cppworker (Authorization: Bearer <token>).
+//
+// ВАЖНО: берём первый токен из Auth.Tokens даже если auth выключен (Auth.Enabled=false).
+// Токен нужен для internal-коммуникации с cppworker (reload модели), и это не связано
+// с тем, требует ли балансер аутентификации от внешних клиентов.
 func (p *Proxy) newNCtxReloadHTTPClient() NCtxReloadHTTPClient {
+	token := ""
+	if p.config != nil && len(p.config.Auth.Tokens) > 0 {
+		token = p.config.Auth.Tokens[0]
+	}
 	return &DefaultNCtxReloadHTTPClient{
 		HTTPClient: &http.Client{Timeout: 90 * time.Second},
+		APIToken:   token,
 	}
 }
 
 // getBackendPort определён в backend_state.go (учитывает engine + CppWorkerPort/OllamaPort).
 
 // writeNCtxJSONError — формирует JSON-ошибку с дополнительным заголовком.
+// ЯВНО устанавливает Content-Length, чтобы клиент (OpenWebUI/aiohttp) НЕ получал
+// chunked transfer encoding для plain JSON-ошибки. Без Content-Length Go может
+// автоматически включить chunked encoding, и aiohttp выдаст TransferEncodingError:
+// "Not enough data to satisfy transfer length header".
 func writeNCtxJSONError(w http.ResponseWriter, status int, msg, decision string) {
-	w.Header().Set("Content-Type", "application/json")
-	w.Header().Set("X-NCtx-Reload-Decision", decision)
-	w.WriteHeader(status)
-	_ = json.NewEncoder(w).Encode(map[string]interface{}{
+	body, _ := json.Marshal(map[string]interface{}{
 		"error":    msg,
 		"decision": decision,
 	})
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Content-Length", strconv.Itoa(len(body)))
+	w.Header().Set("X-NCtx-Reload-Decision", decision)
+	w.WriteHeader(status)
+	_, _ = w.Write(body)
 }
 
 // writeNCtxRejectResponse — формирует HTTP 413/503 ответ с RejectMsg JSON
 // (Stage 4). Выбирает 413 если есть max_vram_n_ctx (можно посчитать safe_max),
 // иначе 503 (CPU-only, no VRAM info).
+// ЯВНО устанавливает Content-Length, чтобы клиент НЕ получал chunked transfer
+// encoding (предотвращает TransferEncodingError в aiohttp/OpenWebUI).
 func writeNCtxRejectResponse(w http.ResponseWriter, plan *ReloadPlan, bridgeErr *NCtxBridgeError) {
 	// HTTP 413 Payload Too Large (числовая константа для совместимости с go 1.24+)
 	statusCode := 413
@@ -198,7 +216,21 @@ func writeNCtxRejectResponse(w http.ResponseWriter, plan *ReloadPlan, bridgeErr 
 		// потому что мы не можем даже посчитать safe_max.
 		statusCode = http.StatusServiceUnavailable
 	}
+
+	var body []byte
+	if plan != nil && plan.RejectMsg != "" {
+		body = []byte(plan.RejectMsg)
+	} else {
+		// Fallback (не должно случаться, но safety net).
+		body, _ = json.Marshal(map[string]interface{}{
+			"error":    "n_ctx_too_large_for_backend",
+			"decision": "reject",
+			"reason":   ifEmptyStr(plan, "n_ctx exceeds backend capability"),
+		})
+	}
+
 	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Content-Length", strconv.Itoa(len(body)))
 	w.Header().Set("X-NCtx-Reload-Decision", "reject")
 	if plan != nil && plan.NewNCtx > 0 {
 		w.Header().Set("X-NCtx-Required", strconv.Itoa(plan.NewNCtx))
@@ -207,16 +239,7 @@ func writeNCtxRejectResponse(w http.ResponseWriter, plan *ReloadPlan, bridgeErr 
 		w.Header().Set("X-NCtx-Current", strconv.Itoa(bridgeErr.CurrentNCtx))
 	}
 	w.WriteHeader(statusCode)
-	if plan != nil && plan.RejectMsg != "" {
-		_, _ = w.Write([]byte(plan.RejectMsg))
-	} else {
-		// Fallback (не должно случаться, но safety net).
-		_ = json.NewEncoder(w).Encode(map[string]interface{}{
-			"error":    "n_ctx_too_large_for_backend",
-			"decision": "reject",
-			"reason":   ifEmptyStr(plan, "n_ctx exceeds backend capability"),
-		})
-	}
+	_, _ = w.Write(body)
 }
 
 func ifEmptyStr(p *ReloadPlan, fallback string) string {

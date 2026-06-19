@@ -347,6 +347,7 @@ retrySucceeded:
 			}
 		}
 		if readErr == nil {
+			w.Header().Set("Content-Length", fmt.Sprintf("%d", len(bodyBytes)))
 			w.WriteHeader(resp.StatusCode)
 			w.Write(bodyBytes)
 			return nil
@@ -373,11 +374,15 @@ retrySucceeded:
 		bodyBytes, _ := io.ReadAll(resp.Body)
 		resp.Body.Close()
 		w.Header().Set("Retry-After", "3")
-		w.WriteHeader(http.StatusServiceUnavailable)
 		if len(bodyBytes) > 0 {
+			w.Header().Set("Content-Length", fmt.Sprintf("%d", len(bodyBytes)))
+			w.WriteHeader(http.StatusServiceUnavailable)
 			w.Write(bodyBytes)
 		} else {
-			w.Write([]byte(`{"error":"backend temporarily unavailable"}`))
+			errBody := []byte(`{"error":"backend temporarily unavailable"}`)
+			w.Header().Set("Content-Length", fmt.Sprintf("%d", len(errBody)))
+			w.WriteHeader(http.StatusServiceUnavailable)
+			w.Write(errBody)
 		}
 		return nil
 	}
@@ -395,8 +400,10 @@ retrySucceeded:
 				w.WriteHeader(resp.StatusCode)
 				w.Write(body)
 			} else {
+				errBody := []byte(`{"error":"backend response incomplete"}`)
+				w.Header().Set("Content-Length", fmt.Sprintf("%d", len(errBody)))
 				w.WriteHeader(http.StatusBadGateway)
-				w.Write([]byte(`{"error":"backend response incomplete"}`))
+				w.Write(errBody)
 			}
 			return fmt.Errorf("failed to read response body: %w", readErr)
 		}

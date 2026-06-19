@@ -178,10 +178,16 @@ func (lw *loggingResponseWriter) Flush() {
 // ============================================================
 
 func writeJSON(w http.ResponseWriter, status int, data interface{}) {
+	body, err := json.Marshal(data)
+	if err != nil {
+		logger.Get().Errorw("failed to marshal JSON response", "error", err)
+		body = []byte(`{"error":"internal marshal error"}`)
+	}
 	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Content-Length", strconv.Itoa(len(body)))
 	w.WriteHeader(status)
-	if err := json.NewEncoder(w).Encode(data); err != nil {
-		logger.Get().Errorw("failed to write JSON response", "error", err)
+	if _, writeErr := w.Write(body); writeErr != nil {
+		logger.Get().Errorw("failed to write JSON response", "error", writeErr)
 	}
 }
 
@@ -2669,17 +2675,38 @@ func handleReloadModel(w http.ResponseWriter, r *http.Request) {
 		"old_batch", current.BatchSize, "new_batch", opts.BatchSize,
 		"old_gpu_layers", current.GPULayers, "new_gpu_layers", opts.GPULayers)
 
-	// === Per-model blocking reload ===
-	// Используем TryLockLoad для защиты от двойной загрузки той же модели.
-	lockOk, lockErr := backend.TryLockLoad(req.Name)
-	if lockErr != nil {
-		// Модель уже загружена кем-то ещё — это нормально для reload,
-		// но мы не можем эксклюзивно выгружать. Отвечаем 503.
-		logger.Get().Infow("reload: model is already being loaded by another request",
-			"name", req.Name)
-		writeLoadingResponse(w, req.Name, errModelIsLoading)
+	// === Smart skip: если модель уже загружена с теми же или лучшими параметрами,
+	// не делаем reload (предотвращает дублирование модели по n_ctx,
+	// когда балансировщик шлёт reload для той же модели с меньшим n_ctx).
+	if opts.ContextSize <= current.ContextSize &&
+		opts.BatchSize <= current.BatchSize &&
+		opts.GPULayers <= current.GPULayers &&
+		opts.FlashAttnType == current.FlashAttnType &&
+		opts.NUMA == current.NUMA &&
+		opts.UseMmap == current.UseMmap {
+		logger.Get().Infow("reload: skipping — current params already sufficient",
+			"name", req.Name,
+			"current_ctx", current.ContextSize, "requested_ctx", opts.ContextSize,
+			"current_gpu_layers", current.GPULayers, "requested_gpu_layers", opts.GPULayers)
+		writeJSON(w, http.StatusOK, map[string]interface{}{
+			"status": "already_loaded",
+			"model":  current,
+		})
 		return
 	}
+
+	// === Per-model blocking reload ===
+	// Используем TryLockReload (а не TryLockLoad) для защиты от двойного reload'а
+	// той же модели. TryLockLoad возвращает error когда модель уже в b.models
+	// (loaded), что не подходит для reload — модель всегда loaded перед reload.
+	lockOk, lockErr := backend.TryLockReload(req.Name)
+	if lockErr != nil {
+		logger.Get().Errorw("reload: TryLockReload returned unexpected error",
+			"name", req.Name, "error", lockErr)
+		writeError(w, http.StatusInternalServerError, "reload lock error: "+lockErr.Error())
+		return
+	}
+
 	if !lockOk {
 		logger.Get().Infow("reload: another goroutine is already loading this model, waiting",
 			"name", req.Name)

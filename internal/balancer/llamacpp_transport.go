@@ -812,6 +812,7 @@ func (p *Proxy) proxyRequestLlamaCpp(w http.ResponseWriter, r *http.Request, bac
 				}
 			}
 			w.Header().Set("Content-Type", "application/json")
+			w.Header().Set("Content-Length", strconv.Itoa(len(fullBody)))
 			w.WriteHeader(http.StatusServiceUnavailable)
 			w.Write(fullBody)
 			logger.Get().Infow("proxyRequestLlamaCpp: passed through 503 loading fast-path",
@@ -849,26 +850,34 @@ func (p *Proxy) proxyRequestLlamaCpp(w http.ResponseWriter, r *http.Request, bac
 			translatedResp = respBody
 		}
 		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("Content-Length", strconv.Itoa(len(translatedResp)))
 		w.WriteHeader(resp.StatusCode)
 		w.Write(translatedResp)
 		return nil
 	}
 
-	// Streaming: транслируем SSE → Ollama NDJSON
-	// Проверяем Content-Type upstream: если это не SSE (например, JSON-ошибка от cppworker),
-	// не входим в streaming-цикл, а проксируем как обычный JSON-ответ.
+	// Streaming: транслируем SSE → Ollama NDJSON (или проксируем NDJSON как есть)
+	// Проверяем Content-Type upstream: если это не SSE и не NDJSON (например,
+	// JSON-ошибка от cppworker), не входим в streaming-цикл, а проксируем как
+	// обычный JSON-ответ с Content-Length.
 	// Это предотвращает TransferEncodingError, когда Go пытается chunk-кодировать
-	// не-SSE ответ (ошибку), а клиент ждёт NDJSON.
+	// не-SSE/не-NDJSON ответ (ошибку), а клиент ждёт NDJSON.
 	upstreamContentType := resp.Header.Get("Content-Type")
-	if !strings.Contains(upstreamContentType, "text/event-stream") {
-		// Upstream вернул не-SSE ответ (обычно JSON-ошибка: модель не загружена,
-		// контекст превышен, bridge code 2 и т.п.) — отдаём как есть.
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(resp.StatusCode)
+	if !strings.Contains(upstreamContentType, "text/event-stream") &&
+		!strings.Contains(upstreamContentType, "application/x-ndjson") {
+		// Upstream вернул не-SSE и не-NDJSON ответ (обычно JSON-ошибка: модель не загружена,
+		// контекст превышен, bridge code 2 и т.п.) — отдаём как есть с Content-Length.
+		// Читаем тело ДО установки заголовков, чтобы вычислить Content-Length.
+		// Без этого aiohttp/OpenWebUI может получить TransferEncodingError,
+		// если тело меньше ожидаемого chunked-encoding размера.
 		errBody, _ := io.ReadAll(resp.Body)
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("Content-Length", fmt.Sprintf("%d", len(errBody)))
+		w.WriteHeader(resp.StatusCode)
 		w.Write(errBody)
 		return nil
 	}
+
 
 	for key, values := range resp.Header {
 		if key == "Content-Length" || key == "Content-Type" {
@@ -905,8 +914,40 @@ func (p *Proxy) proxyRequestLlamaCpp(w http.ResponseWriter, r *http.Request, bac
 			if err == io.EOF {
 				break
 			}
-			logger.Get().Errorw("streaming read error", "error", err)
-			return fmt.Errorf("streaming read error: %v", err)
+			// КРИТИЧЕСКИ ВАЖНО: перед возвратом ошибки отправляем done-маркер,
+			// иначе клиент (aiohttp/OpenWebUI) получает оборванный chunked response
+			// и TransferEncodingError: "Not enough data to satisfy transfer length header".
+			// Заголовки уже отправлены (w.WriteHeader вызван выше), поэтому мы не можем
+			// изменить статус — только завершить стрим корректным NDJSON-чанком.
+			errPayload, _ := json.Marshal(map[string]interface{}{
+				"model":       modelFromCtx,
+				"created_at":  time.Now().UTC().Format(time.RFC3339),
+				"done":        true,
+				"done_reason": "error",
+				"error":       "upstream stream read error: " + err.Error(),
+				"message": map[string]interface{}{
+					"role":    "assistant",
+					"content": "",
+				},
+			})
+			w.Write(append(errPayload, '\n'))
+			if canFlush {
+				flusher.Flush()
+			}
+			logger.Get().Errorw("streaming read error after done marker", "error", err)
+			// КРИТИЧЕСКИ ВАЖНО: возвращаем nil, а НЕ error!
+			//
+			// Заголовки уже отправлены (w.WriteHeader вызван выше), и мы уже отправили
+			// done:true маркер с описанием ошибки. Если вернуть error, он всплывёт
+			// в ServeHTTP (proxy.go:934-967), который вызовет http.Error(w, ...) —
+			// это запишет ДОПОЛНИТЕЛЬНЫЕ данные ПОСЛЕ завершённого NDJSON-стрима.
+			// Go chunked encoding обернёт этот мусор как дополнительный chunk,
+			// и aiohttp (OpenWebUI) получит данные после done:true →
+			// TransferEncodingError "Not enough data to satisfy transfer length header".
+			//
+			// Правильное поведение: стрим уже завершён (с ошибкой в контенте),
+			// клиент получил диагностику — не пишем больше ничего в ResponseWriter.
+			return nil
 		}
 		line = bytes.TrimSpace(line)
 		if len(line) == 0 {
@@ -1094,9 +1135,9 @@ func (p *Proxy) proxyRequestLlamaCppNonStream(w http.ResponseWriter, r *http.Req
 	// Без этого OpenWebUI получает "пустой ответ" с done:true и рендерит пустое
 	// сообщение ассистента. С этой правкой клиент видит error в NDJSON-чанке
 	// и может корректно показать диагностику.
+	// ВАЖНО: устанавливаем Content-Length явно, чтобы aiohttp/OpenWebUI не получили
+	// chunked transfer encoding для plain JSON — иначе TransferEncodingError.
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusBadGateway)
 		errBody, _ := json.Marshal(map[string]interface{}{
 			"model":       modelFromCtx,
 			"created_at":  time.Now().UTC().Format(time.RFC3339),
@@ -1108,19 +1149,20 @@ func (p *Proxy) proxyRequestLlamaCppNonStream(w http.ResponseWriter, r *http.Req
 				"content": "",
 			},
 		})
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("Content-Length", strconv.Itoa(len(errBody)))
+		w.WriteHeader(http.StatusBadGateway)
 		w.Write(errBody)
-		w.Write([]byte("\n"))
 		return nil
 	}
 
 	// Если body пустой и статус 200 — это обычно означает, что cppworker ещё
 	// загружает модель (или вернул мусор). Возвращаем 502 с явной диагностикой,
 	// чтобы OpenWebUI не рендерил "пустое сообщение ассистента".
+	// ВАЖНО: устанавливаем Content-Length явно — предотвращает TransferEncodingError.
 	if len(respBody) == 0 {
 		logger.Get().Warnw("proxyRequestLlamaCppNonStream: empty body from upstream",
 			"backend", backendID, "model", modelFromCtx)
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusBadGateway)
 		errBody, _ := json.Marshal(map[string]interface{}{
 			"model":       modelFromCtx,
 			"created_at":  time.Now().UTC().Format(time.RFC3339),
@@ -1132,8 +1174,10 @@ func (p *Proxy) proxyRequestLlamaCppNonStream(w http.ResponseWriter, r *http.Req
 				"content": "",
 			},
 		})
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("Content-Length", strconv.Itoa(len(errBody)))
+		w.WriteHeader(http.StatusBadGateway)
 		w.Write(errBody)
-		w.Write([]byte("\n"))
 		return nil
 	}
 
@@ -1202,6 +1246,7 @@ func (p *Proxy) proxyRequestLlamaCppNonStream(w http.ResponseWriter, r *http.Req
 			ollamaBody, _ = json.Marshal(resp)
 		}
 		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("Content-Length", strconv.Itoa(len(ollamaBody)))
 		w.WriteHeader(resp.StatusCode)
 		w.Write(ollamaBody)
 		return nil
@@ -1212,6 +1257,7 @@ func (p *Proxy) proxyRequestLlamaCppNonStream(w http.ResponseWriter, r *http.Req
 		translatedResp = respBody
 	}
 	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Content-Length", strconv.Itoa(len(translatedResp)))
 	w.WriteHeader(resp.StatusCode)
 	w.Write(translatedResp)
 	return nil

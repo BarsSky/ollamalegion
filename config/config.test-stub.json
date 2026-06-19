@@ -1,0 +1,53 @@
+{
+  "backendEngine": "llama_cpp",
+  "loadBalancer": {
+    "host": "0.0.0.0",
+    "port": 18080,
+    "apiPort": 18081,
+    "statePath": "data/state.json",
+    "trustedProxies": ["127.0.0.1/8", "172.17.0.0/16"]
+  },
+  "backends": [
+    {
+      "id": "cppworker-stub",
+      "name": "CppWorker Stub",
+      "host": "cppworker-stub",
+      "ollamaPort": 0,
+      "agentPort": 0,
+      "weight": 10,
+      "maxConcurrentRequests": 4,
+      "maxModels": 4,
+      "labels": ["stub", "test"],
+      "type": "llama_cpp",
+      "engine": "auto",
+      "gpuMode": "cpu",
+      "cppWorkerPort": 18093
+    }
+  ],
+  "balancing": {
+    "algorithm": "least-loaded",
+    "modelAffinity": false,
+    "sessionStickiness": false,
+    "healthCheckInterval": 10,
+    "metricsInterval": 5,
+    "requestTimeout": 600,
+    "firstByteTimeout": 120,
+    "streamingIdleTimeout": 600,
+    "queueTimeout": 900,
+    "queueMaxSize": 100,
+    "queueWorkers": 4,
+    "sessionTTL": 900,
+    "useEnhancedScoring": false
+  },
+  "logging": {
+    "level": "debug",
+    "format": "text"
+  },
+  "api": {
+    "rateLimit": 100,
+    "rateBurst": 200
+  },
+  "auth": {
+    "enabled": false
+  }
+}

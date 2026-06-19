@@ -1335,8 +1335,26 @@ func (lr *LlamaCppRouter) handleChat(w http.ResponseWriter, r *http.Request) {
 	}
 	if err != nil {
 		logger.Get().Errorw("handleChat: proxy failed", "backend", backendID, "error", err)
-		writeJSON(w, http.StatusBadGateway, map[string]string{"error": err.Error()})
+		// Гвард: если proxyRequestLlamaCpp уже отправил заголовки (streaming mode),
+		// не пытаемся писать JSON-ответ — это вызовет "superfluous response.WriteHeader call"
+		// и может дописать тело после done-маркера, ломая chunked encoding.
+		if !isHeadersSent(w) {
+			writeJSON(w, http.StatusBadGateway, map[string]string{"error": err.Error()})
+		}
 	}
+}
+
+// isHeadersSent — проверяет, были ли уже отправлены HTTP-заголовки.
+// Используется для защиты от double write в обработчиках, где
+// proxyRequestLlamaCpp мог уже отправить заголовки и начать streaming,
+// а затем вернуть ошибку (например, при обрыве upstream-соединения).
+func isHeadersSent(w http.ResponseWriter) bool {
+	if flusher, ok := w.(http.Flusher); ok {
+		_ = flusher // just checking interface satisfaction
+	}
+	// Наивная проверка: если Content-Type уже установлен, значит
+	// заголовки скорее всего уже отправлены (WriteHeader вызван).
+	return w.Header().Get("Content-Type") != ""
 }
 
 // handleGenerate — проксирует /api/generate запросы к llama.cpp бэкендам с трансляцией форматов.
@@ -1434,7 +1452,9 @@ func (lr *LlamaCppRouter) handleGenerate(w http.ResponseWriter, r *http.Request)
 	}
 	if err != nil {
 		logger.Get().Errorw("handleGenerate: proxy failed", "backend", backendID, "error", err)
-		writeJSON(w, http.StatusBadGateway, map[string]string{"error": err.Error()})
+		if !isHeadersSent(w) {
+			writeJSON(w, http.StatusBadGateway, map[string]string{"error": err.Error()})
+		}
 	}
 }
 

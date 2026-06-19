@@ -93,10 +93,10 @@
     },
     "nctxReload": {
       "_note": "Auto-reload n_ctx when model's context is too small for request. Relies on cppworker RAM fallback if VRAM insufficient.",
-      "autoReloadNCtx": true,
-      "autoReloadMaxNCtx": 131072,
-      "vramSafetyFactor": 0.85,
-      "reloadTimeoutSec": 120
+      "auto_reload_n_ctx": true,
+      "auto_reload_max_n_ctx": 131072,
+      "auto_reload_vram_safety_factor": 0.85,
+      "auto_reload_timeout_sec": 120
     }
   },
 
@@ -134,7 +134,7 @@
   "auth": {
     "enabled": false,
     "tokens": [
-      "your-master-token-here-change-in-production"
+      "changeme-bundled-strong-token-please-change"
     ],
     "headerName": "X-API-Token"
   },

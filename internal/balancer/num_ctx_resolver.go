@@ -92,15 +92,30 @@ func asInt(v interface{}) (int, bool) {
 
 // GetModelProfileNumCtx — достаёт contextLength из per-model profile в config.
 // Возвращает 0 если профиля нет или contextLength не задан.
+//
+// Сравнение имени — case-insensitive substring match (как в containsFold),
+// чтобы profile "gemma-4" матчил модель "gemma-4-E4B-it-Q4_K_M".
+// Если найдено несколько совпадений — возвращается первое.
 func (p *Proxy) GetModelProfileNumCtx(modelName string) int {
 	if p == nil || p.config == nil || p.config.LlamaCppModelProfiles == nil {
 		return 0
 	}
-	profile, ok := p.config.LlamaCppModelProfiles[modelName]
-	if !ok {
-		return 0
+	// Точное совпадение (fast-path)
+	if profile, ok := p.config.LlamaCppModelProfiles[modelName]; ok {
+		if profile.ContextLength > 0 {
+			return profile.ContextLength
+		}
 	}
-	return profile.ContextLength
+	// Case-insensitive substring match (для профиля "gemma-4" → модель "gemma-4-E4B-it-Q4_K_M")
+	for name, profile := range p.config.LlamaCppModelProfiles {
+		if profile.ContextLength == 0 {
+			continue
+		}
+		if containsFold(name, modelName) || containsFold(modelName, name) {
+			return profile.ContextLength
+		}
+	}
+	return 0
 }
 
 // GetModelProfile — полный профиль (для API endpoints).

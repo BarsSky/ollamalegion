@@ -2,6 +2,7 @@ package balancer
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"sync"
 	"time"
@@ -185,8 +186,11 @@ func (qm *QueueManager) processRequest(req *QueuedRequest, workerID int) {
 				"wait_sec", time.Since(req.Enqueued).Seconds(),
 				"requeue_count", req.RequeueCount,
 			)
+			errBody := []byte(`{"error":"queue timeout exceeded"}`)
+			req.Writer.Header().Set("Content-Type", "application/json")
+			req.Writer.Header().Set("Content-Length", fmt.Sprintf("%d", len(errBody)))
 			req.Writer.WriteHeader(http.StatusServiceUnavailable)
-			req.Writer.Write([]byte(`{"error":"queue timeout exceeded"}`))
+			req.Writer.Write(errBody)
 			select {
 			case req.Done <- false:
 			default:
@@ -206,8 +210,11 @@ func (qm *QueueManager) processRequest(req *QueuedRequest, workerID int) {
 					"model", req.Model,
 					"error", result.Error,
 				)
+				errBody := []byte(`{"error":"all backends busy, max retries exceeded"}`)
+				req.Writer.Header().Set("Content-Type", "application/json")
+				req.Writer.Header().Set("Content-Length", fmt.Sprintf("%d", len(errBody)))
 				req.Writer.WriteHeader(http.StatusServiceUnavailable)
-				req.Writer.Write([]byte(`{"error":"all backends busy, max retries exceeded"}`))
+				req.Writer.Write(errBody)
 				select {
 				case req.Done <- false:
 				default:
@@ -328,8 +335,11 @@ func (qm *QueueManager) processRequest(req *QueuedRequest, workerID int) {
 		"requeue_count", req.RequeueCount,
 		"model", req.Model,
 	)
+	errBody := []byte(`{"error":"all backends failed, max retries exceeded"}`)
+	req.Writer.Header().Set("Content-Type", "application/json")
+	req.Writer.Header().Set("Content-Length", fmt.Sprintf("%d", len(errBody)))
 	req.Writer.WriteHeader(http.StatusServiceUnavailable)
-	req.Writer.Write([]byte(`{"error":"all backends failed, max retries exceeded"}`))
+	req.Writer.Write(errBody)
 	select {
 	case req.Done <- false:
 	default:

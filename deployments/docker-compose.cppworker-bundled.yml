@@ -38,6 +38,11 @@ services:
       - LOG_LEVEL=${LB_LOG_LEVEL:-info}
       - LB_CONFIG_PATH=/app/config/config.json
       - LB_API_TOKEN=${CPPWORKER_API_TOKEN:-changeme-bundled-token}
+      # n_ctx auto-reload (ENV overrides config.json)
+      - LB_NCTX_RELOAD_ENABLED=${LB_NCTX_RELOAD_ENABLED:-true}
+      - LB_NCTX_RELOAD_MAX_N_CTX=${LB_NCTX_RELOAD_MAX_N_CTX:-131072}
+      - LB_NCTX_RELOAD_VRAM_SAFETY_FACTOR=${LB_NCTX_RELOAD_VRAM_SAFETY_FACTOR:-0.85}
+      - LB_NCTX_RELOAD_TIMEOUT_SEC=${LB_NCTX_RELOAD_TIMEOUT_SEC:-120}
     volumes:
       - ../config:/app/config:ro
       - balancer_data:/app/data

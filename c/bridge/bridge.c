@@ -539,7 +539,7 @@ ModelHandle bridge_load_model(const ModelConfig* config, char** error_msg) {
                        "client should reduce n_gpu_layers or increase VRAM\n",
                        gpu_layers,
                        (long long)(free_bytes / (1024 * 1024)),
-                       (unsigned long long)(gpu_model_bytes / (1024 * 1024)));
+                       (unsigned long long)(model_size_bytes / (1024 * 1024)));
             }
 
             err_mutex_lock();
@@ -552,7 +552,7 @@ ModelHandle bridge_load_model(const ModelConfig* config, char** error_msg) {
                    "head_dim=%d kv_per_token=%lld bytes)\n",
                    estimated_max,
                    (long long)(free_bytes / (1024 * 1024)),
-                   (unsigned long long)(gpu_model_bytes / (1024 * 1024)),
+                   (unsigned long long)(model_size_bytes / (1024 * 1024)),
                    n_layers, n_embd, n_heads, n_kv_heads,
                    head_dim, (long long)kv_per_token);
         } else {

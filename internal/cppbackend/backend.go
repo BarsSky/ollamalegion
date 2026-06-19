@@ -633,7 +633,20 @@ func estimateKVCacheMB(nLayers, nHeads, nKvHeads, nEmbd, nCtx int) uint64 {
 // checkVRAMForModel проверяет, достаточно ли видеопамяти для загрузки модели
 // и автоматически подбирает оптимальное количество GPU-слоёв.
 // Возвращает (opts, error) — модифицированные опции с оптимальными GPU-слоями.
-func (b *Backend) checkVRAMForModel(name string, path string, opts LoadModelOpts) (LoadModelOpts, error) {
+func (b *Backend) checkVRAMForModel(name string, path string, opts LoadModelOpts) (retOpts LoadModelOpts, retErr error) {
+	// Panic recovery: readGGUFHeaderInfo может запаниковать если GGUF файл повреждён.
+	// В этом случае пропускаем VRAM-проверку и загружаем модель с оригинальными опциями.
+	defer func() {
+		if r := recover(); r != nil {
+			logger.Get().Errorw("panic in checkVRAMForModel (GGUF header read), skipping VRAM check",
+				"model", name,
+				"path", path,
+				"recover", r)
+			retOpts = opts // возвращаем оригинальные опции без изменений
+			retErr = nil   // не блокируем загрузку
+		}
+	}()
+
 	// Получаем размер файла модели
 	fi, err := os.Stat(path)
 	if err != nil {
@@ -830,6 +843,7 @@ func (b *Backend) IsModelLoading(name string) bool {
 //
 // Гарантирует, что для одной модели может быть только одна активная загрузка.
 // После завершения загрузки (успех/ошибка) вызывающий ОБЯЗАН вызвать UnlockLoad.
+// ИСПОЛЬЗУЕТСЯ ТОЛЬКО ДЛЯ ПЕРВИЧНОЙ ЗАГРУЗКИ. Для reload используйте TryLockReload.
 func (b *Backend) TryLockLoad(name string) (bool, error) {
 	b.loadMu.Lock()
 	defer b.loadMu.Unlock()
@@ -849,6 +863,26 @@ func (b *Backend) TryLockLoad(name string) (bool, error) {
 	}
 
 	// Создаём канал, который будет закрыт после завершения загрузки
+	b.loading[name] = make(chan struct{})
+	return true, nil
+}
+
+// TryLockReload — то же что TryLockLoad, но НЕ проверяет b.models.
+// Нужен для /api/models/reload, когда модель уже загружена в b.models
+// и мы хотим перезагрузить её с новыми параметрами.
+//
+// Гарантирует, что для одной модели может быть только один активный reload.
+// После завершения reload (успех/ошибка) вызывающий ОБЯЗАН вызвать UnlockLoad.
+func (b *Backend) TryLockReload(name string) (bool, error) {
+	b.loadMu.Lock()
+	defer b.loadMu.Unlock()
+
+	// Проверяем, не reload'ит ли её другая горутина
+	if _, ok := b.loading[name]; ok {
+		return false, nil
+	}
+
+	// Создаём канал, который будет закрыт после завершения reload
 	b.loading[name] = make(chan struct{})
 	return true, nil
 }
@@ -1304,8 +1338,14 @@ func readGGUFHeaderInfo(path string) (*GGUFHeaderInfo, error) {
 			return nil, fmt.Errorf("read key[%d] length: %w", i, err)
 		}
 
+		// Валидация: ключ не должен быть длиннее 8192 байт (защита от corrupted GGUF)
+		if keyLen > 8192 {
+			return nil, fmt.Errorf("key[%d] length %d exceeds maximum 8192 (likely corrupted GGUF)", i, keyLen)
+		}
+
 		// Читаем ключ
 		keyBuf := make([]byte, keyLen)
+
 		if _, err := f.Read(keyBuf); err != nil {
 			return nil, fmt.Errorf("read key[%d]: %w", i, err)
 		}

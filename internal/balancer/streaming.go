@@ -110,6 +110,17 @@ func (p *Proxy) handleStreamingResponse(w http.ResponseWriter, r *http.Request, 
 			for {
 				select {
 				case <-ticker.C:
+					// КРИТИЧЕСКИ ВАЖНО: проверяем doneSent флаг перед отправкой heartbeat.
+					// Если стрим уже завершился (done-чанк отправлен), но heartbeat
+					// goroutine ещё не получила сигнал через heartbeatStop — не пишем
+					// в ResponseWriter. Без этой проверки возможна гонка:
+					//   1. Стрим завершён, done-чанк отправлен, main loop вышел
+					//   2. Heartbeat тикает и пишет ещё один NDJSON с done:false
+					//   3. Go net/http уже начал закрывать chunked encoding
+					//   4. Дополнительные данные портят chunked terminator → TransferEncodingError
+					if clientDisconnected.Load() {
+						return
+					}
 					sinceLastActivity := time.Since(lastActivity)
 					logger.Get().Debugw("streaming heartbeat",
 						"backend", backendID, "model", modelFromCtx,

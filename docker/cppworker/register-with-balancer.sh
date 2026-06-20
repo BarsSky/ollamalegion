@@ -88,7 +88,7 @@ REGISTER_JSON=$(cat <<EOF
 {
   "id": "${CPPWORKER_BACKEND_ID}",
   "name": "${CPPWORKER_NAME}",
-  "host": "${CPPWORKER_HOST}",
+  "host": "${CPPWORKER_ADVERTISED_HOST}",
   "ollamaPort": 0,
   "agentPort": 0,
   "cppWorkerPort": ${REGISTER_CPP_PORT},

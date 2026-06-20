@@ -179,10 +179,14 @@ func (m *mockCppWorkerLazy) handleChatCompletion(w http.ResponseWriter, r *http.
 	_ = json.Unmarshal(body, &req)
 	stream, _ := req["stream"].(bool)
 
+	if stream {
+		w.Header().Set("Content-Type", "text/event-stream")
+	} else {
+		w.Header().Set("Content-Type", "application/json")
+	}
 	w.WriteHeader(http.StatusOK)
 
 	if stream {
-		w.Header().Set("Content-Type", "text/event-stream")
 		flusher, _ := w.(http.Flusher)
 
 		// Первая порция — роль ассистента
@@ -382,7 +386,7 @@ func createTestProxyForCppWorkerLazy(t *testing.T, cppWorkerURL string) *balance
 				Weight:            100,
 			},
 		},
-		BackendEngine: types.EngineAuto,
+		BackendEngine: types.EngineLlamaCPP,
 	}
 
 	proxy := balancer.NewProxy(cfg)

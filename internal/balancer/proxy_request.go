@@ -347,6 +347,7 @@ retrySucceeded:
 			}
 		}
 		if readErr == nil {
+			w.Header().Set("Content-Type", resp.Header.Get("Content-Type"))
 			w.Header().Set("Content-Length", fmt.Sprintf("%d", len(bodyBytes)))
 			w.WriteHeader(resp.StatusCode)
 			w.Write(bodyBytes)
@@ -375,6 +376,7 @@ retrySucceeded:
 		resp.Body.Close()
 		w.Header().Set("Retry-After", "3")
 		if len(bodyBytes) > 0 {
+			w.Header().Set("Content-Type", resp.Header.Get("Content-Type"))
 			w.Header().Set("Content-Length", fmt.Sprintf("%d", len(bodyBytes)))
 			w.WriteHeader(http.StatusServiceUnavailable)
 			w.Write(bodyBytes)

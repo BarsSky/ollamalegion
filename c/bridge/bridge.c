@@ -394,6 +394,11 @@ ModelHandle bridge_load_model(const ModelConfig* config, char** error_msg) {
     ctx_params.rope_freq_base = config->rope_freq_base > 0 ? config->rope_freq_base : 0.0f;
     ctx_params.rope_freq_scale = config->rope_freq_scale > 0 ? config->rope_freq_scale : 0.0f;
 
+    // Включаем поддержку эмбеддингов — без этого llama_get_embeddings() всегда
+    // возвращает NULL, и bridge_get_embeddings падает с ошибкой.
+    // Флаг embeddings включает запись логов в KV-cache для всех токенов prompt.
+    ctx_params.embeddings = true;
+
     // Создаём контекст. В новой llama.cpp `llama_new_context_with_model` deprecated;
     // используем `llama_init_from_model`.
     struct llama_context *context = llama_init_from_model(model, ctx_params);

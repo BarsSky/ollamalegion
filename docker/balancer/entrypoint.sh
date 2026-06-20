@@ -1,8 +1,22 @@
 #!/bin/sh
 set -e
 
-CONFIG_SOURCE="/app/config.json"
 CONFIG_WRITABLE="/app/data/config.json"
+
+# Приоритет источника конфига:
+#   1. LB_CONFIG_PATH env var (из docker-compose environment)
+#   2. /app/config/config.json (volume mount из host-директории ../config)
+#   3. /app/config.json (example-конфиг, встроенный в образ COPY)
+if [ -n "$LB_CONFIG_PATH" ]; then
+    CONFIG_SOURCE="$LB_CONFIG_PATH"
+    echo "[entrypoint] Using LB_CONFIG_PATH: $CONFIG_SOURCE"
+elif [ -f "/app/config/config.json" ]; then
+    CONFIG_SOURCE="/app/config/config.json"
+    echo "[entrypoint] Using mounted config: $CONFIG_SOURCE"
+else
+    CONFIG_SOURCE="/app/config.json"
+    echo "[entrypoint] Using built-in example config: $CONFIG_SOURCE"
+fi
 
 # Копируем конфиг в writable-директорию при первом запуске
 if [ ! -f "$CONFIG_WRITABLE" ]; then

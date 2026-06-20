@@ -42,10 +42,6 @@ func main() {
 	
 	conf := cfg.Get()
 	
-	// Инициализация structured logger
-	logger.Init(conf.Logging.Level)
-	defer logger.Sync()
-	
 	// Применение переопределений из командной строки
 	if *port > 0 {
 		conf.LoadBalancer.Port = *port
@@ -56,6 +52,18 @@ func main() {
 	if *logLevel != "" {
 		conf.Logging.Level = *logLevel
 	}
+	
+	// ==== Environment переменные (приоритет: flag > env > config) ====
+	// LOG_LEVEL — переопределение уровня логгирования.
+	// Позволяет включить debug через docker-compose environment без правки config.json.
+	if envLevel := os.Getenv("LOG_LEVEL"); envLevel != "" && *logLevel == "" {
+		conf.Logging.Level = envLevel
+		log.Printf("[ENV]  LOG_LEVEL=%s overrides config level", envLevel)
+	}
+	
+	// Инициализация structured logger (после всех переопределений)
+	logger.Init(conf.Logging.Level)
+	defer logger.Sync()
 
 	// Применение переопределений из environment (приоритет выше config.json)
 	if algo := os.Getenv("LB_ALGORITHM"); algo != "" {

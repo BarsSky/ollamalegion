@@ -11,8 +11,14 @@ var (
 	once sync.Once
 )
 
-// Get возвращает глобальный SugaredLogger, инициализируя его при первом вызове (lazy-init)
+// Get возвращает глобальный SugaredLogger.
+// Если Init() уже вызван — возвращает real logger.
+// Если Init() не вызывался — лениво инициализирует Nop-логгер (тесты/sync.Once).
 func Get() *zap.SugaredLogger {
+	if log != nil {
+		// Init() уже был вызван — real logger, не перезаписываем через once.Do
+		return log
+	}
 	once.Do(func() {
 		// fallback: Nop-логгер если Init не вызывался (тесты)
 		log = zap.NewNop().Sugar()

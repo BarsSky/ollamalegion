@@ -92,6 +92,11 @@ fi
 export CPPWORKER_BALANCER_URL="${CPPWORKER_BALANCER_URL:-${BALANCER_URL:-}}"
 export CPPWORKER_BALANCER_TOKEN="${CPPWORKER_BALANCER_TOKEN:-${BALANCER_API_TOKEN:-}}"
 
+# ---- Export advertise host for register-with-balancer.sh ----
+# register-with-balancer.sh читает CPPWORKER_ADVERTISED_HOST для поля "host" в JSON регистрации.
+# Если не задан, будет использовано имя контейнера (docker-compose задаёт по умолчанию).
+export CPPWORKER_ADVERTISED_HOST="${CPPWORKER_ADVERTISED_HOST:-cppworker-gpu}"
+
 # ---- Launch CppWorker in background for auto-registration ----
 echo "Starting CppWorker with args: $@"
 ./cppworker "$@" &

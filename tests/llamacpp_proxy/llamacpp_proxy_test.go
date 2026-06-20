@@ -17,7 +17,8 @@ import (
 	"ollama-loadbalancer/pkg/types"
 )
 
-// mockCppWorker — минимальный mock cppworker с поддержкой /api/chat и /api/generate
+// mockCppWorker — минимальный mock cppworker с поддержкой /api/chat, /api/generate,
+// а также /v1/chat/completions и /v1/completions (OpenAI-формат) для прокси-трансляции.
 type mockCppWorker struct {
 	server   *httptest.Server
 	requests int64
@@ -32,12 +33,14 @@ func newMockCppWorker() *mockCppWorker {
 		switch {
 		case path == "/health":
 			json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
+
 		case path == "/api/tags":
 			json.NewEncoder(w).Encode(map[string]interface{}{
 				"models": []map[string]interface{}{
 					{"name": "test-model", "modified_at": time.Now().UTC().Format(time.RFC3339)},
 				},
 			})
+
 		case path == "/api/chat":
 			body, _ := io.ReadAll(r.Body)
 			var req map[string]interface{}
@@ -71,6 +74,7 @@ func newMockCppWorker() *mockCppWorker {
 				}
 				json.NewEncoder(w).Encode(resp)
 			}
+
 		case path == "/api/generate":
 			body, _ := io.ReadAll(r.Body)
 			var req map[string]interface{}
@@ -98,6 +102,135 @@ func newMockCppWorker() *mockCppWorker {
 				}
 				json.NewEncoder(w).Encode(resp)
 			}
+
+		// OpenAI-совместимые эндпоинты — нужны, когда балансер транслирует
+		// /api/chat → /v1/chat/completions через proxyRequestLlamaCpp
+		// (когда routeRequest решает, что bt == "", и запрос идёт через
+		// основной flow → selectBackend → proxyRequest → proxyRequestLlamaCpp).
+		case path == "/v1/chat/completions":
+			body, _ := io.ReadAll(r.Body)
+			var req map[string]interface{}
+			json.Unmarshal(body, &req)
+			stream, _ := req["stream"].(bool)
+
+			modelName, _ := req["model"].(string)
+			now := time.Now().Unix()
+
+			if stream {
+				w.Header().Set("Content-Type", "text/event-stream")
+				w.WriteHeader(http.StatusOK)
+				flusher, _ := w.(http.Flusher)
+
+				chunk := map[string]interface{}{
+					"id":      "chatcmpl-mock",
+					"object":  "chat.completion.chunk",
+					"created": now,
+					"model":   modelName,
+					"choices": []map[string]interface{}{
+						{
+							"index": 0,
+							"delta": map[string]interface{}{
+								"role":    "assistant",
+								"content": "Привет! Я работающая модель llama.cpp.",
+							},
+						},
+					},
+				}
+				data, _ := json.Marshal(chunk)
+				fmt.Fprintf(w, "data: %s\n\n", data)
+				flusher.Flush()
+
+				done := map[string]interface{}{
+					"id":      "chatcmpl-mock",
+					"object":  "chat.completion.chunk",
+					"created": now,
+					"model":   modelName,
+					"choices": []map[string]interface{}{
+						{
+							"index":         0,
+							"delta":         map[string]interface{}{},
+							"finish_reason": "stop",
+						},
+					},
+				}
+				data2, _ := json.Marshal(done)
+				fmt.Fprintf(w, "data: %s\n\n", data2)
+				flusher.Flush()
+				fmt.Fprintf(w, "data: [DONE]\n\n")
+				flusher.Flush()
+			} else {
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusOK)
+				resp := map[string]interface{}{
+					"id":      "chatcmpl-mock",
+					"object":  "chat.completion",
+					"created": now,
+					"model":   modelName,
+					"choices": []map[string]interface{}{
+						{
+							"index": 0,
+							"message": map[string]interface{}{
+								"role":    "assistant",
+								"content": "Привет! Я работающая модель llama.cpp.",
+							},
+							"finish_reason": "stop",
+						},
+					},
+				}
+				json.NewEncoder(w).Encode(resp)
+			}
+
+		case path == "/v1/completions":
+			body, _ := io.ReadAll(r.Body)
+			var req map[string]interface{}
+			json.Unmarshal(body, &req)
+			stream, _ := req["stream"].(bool)
+
+			modelName, _ := req["model"].(string)
+			now := time.Now().Unix()
+
+			if stream {
+				w.Header().Set("Content-Type", "text/event-stream")
+				w.WriteHeader(http.StatusOK)
+				flusher, _ := w.(http.Flusher)
+
+				chunk := map[string]interface{}{
+					"id":      "cmpl-mock",
+					"object":  "text_completion",
+					"created": now,
+					"model":   modelName,
+					"choices": []map[string]interface{}{
+						{
+							"text":          "Ответ от llama.cpp модели.",
+							"index":         0,
+							"finish_reason": "stop",
+						},
+					},
+				}
+				data, _ := json.Marshal(chunk)
+				fmt.Fprintf(w, "data: %s\n\n", data)
+				flusher.Flush()
+				fmt.Fprintf(w, "data: [DONE]\n\n")
+				flusher.Flush()
+			} else {
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusOK)
+				resp := map[string]interface{}{
+					"id":      "cmpl-mock",
+					"object":  "text_completion",
+					"created": now,
+					"model":   modelName,
+					"choices": []map[string]interface{}{
+						{
+							"text":          "Ответ от llama.cpp модели.",
+							"index":         0,
+							"finish_reason": "stop",
+						},
+					},
+				}
+				json.NewEncoder(w).Encode(resp)
+			}
+
 		default:
 			http.Error(w, "not found", http.StatusNotFound)
 		}

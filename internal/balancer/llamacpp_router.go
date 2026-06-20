@@ -1389,7 +1389,7 @@ func (lr *LlamaCppRouter) handleGenerate(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	model, _ := reqMap["model"].(string)
-	logger.Get().Debugw("handleGenerate: parsed request",
+	logger.Get().Infow("handleGenerate: parsed request",
 		"model", model, "body_len", len(bodyBuf))
 
 	// Нормализуем multi-modal content[] (Cline/Roo/OpenWebUI могут слать массивный

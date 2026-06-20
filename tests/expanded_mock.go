@@ -272,6 +272,7 @@ func (m *ExpandedMockServer) handleGenerate(w http.ResponseWriter, r *http.Reque
 
 	// Ошибка, если задана
 	if b.ErrorStatusCode > 0 {
+		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(b.ErrorStatusCode)
 		json.NewEncoder(w).Encode(map[string]string{"error": "simulated backend error"})
 		return

@@ -20,12 +20,18 @@ func (p *Proxy) routeRequest(w http.ResponseWriter, r *http.Request) bool {
 
 	// Ollama/llama.cpp API routing
 	bt := p.determineRequestBackendType(r)
+	logger.Get().Infow("routeRequest: backend type resolved",
+		"path", r.URL.Path,
+		"backend_type", bt,
+		"method", r.Method)
 
 	// Инференс-запросы (/api/chat, /api/generate) в смешанных режимах
 	// (bt == "") должны идти через основной flow ServeHTTP, где selectBackend
 	// выбирает конкретный бэкенд по модели/ресурсам. Специализированные роутеры
 	// перехватывают эти пути только когда режим жёстко привязан к llama.cpp.
 	if bt == "" && isChatOrGenerateRequest(r.URL.Path) {
+		logger.Get().Infow("routeRequest: mixed mode, falling through to selectBackend",
+			"path", r.URL.Path)
 		return false
 	}
 

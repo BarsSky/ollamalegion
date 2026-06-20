@@ -81,24 +81,28 @@ func ApplyCppCtxHeader(r *http.Request, params *bridge.GenerationParams) {
 	// Шаг 2: фикс D.6 + D.8 — ограничиваем default NPredict, чтобы он
 	// гарантированно помещался в n_ctx ВМЕСТЕ с prompt любого разумного размера.
 	//
-	// Эвристика: NPredict = n_ctx / 2. Это даёт n_ctx/2 токенов на prompt, что
-	// покрывает любые OpenWebUI-сценарии (system + 10-20 туров диалога = обычно
-	// < 2-3K токенов). Если клиент явно задал NPredict в body (MaxTokens/NumPredict),
-	// то buildGenerationParams уже установил params.NPredict от body — оставляем его.
-	halfCtx := params.NCtxOverride / 2
-	if halfCtx < 64 {
-		halfCtx = 64
+	// Эвристика: NPredict = n_ctx - 1024. Резервируем 1024 токена на prompt
+	// (system + диалог в OpenWebUI), остальное — на генерацию вывода.
+	// Это значительно лучше старой эвристики n_ctx/2, при которой для
+	// n_ctx=2048 оставалось всего 1024 токена на ответ — катастрофически
+	// мало для длинных ответов на русском языке.
+	//
+	// Минимум: 2048 токенов на вывод (если n_ctx позволяет), иначе n_ctx-1024.
+	// Если клиент явно задал NPredict в body (MaxTokens/NumPredict),
+	// то buildGenerationParams уже установил params.NPredict отличным от
+	// reference default — оставляем его значение (условие >= referenceDefault
+	// будет false).
+	maxPredict := params.NCtxOverride - 1024
+	if maxPredict < 1024 {
+		maxPredict = 1024 // нижний предел: хотя бы 1024 токена на вывод
 	}
 	// D.8 fix: используем reference default из bridge вместо hardcoded 4096.
-	// Раньше hardcoded 4096 → после D.6 (NPredict=2048) условие всегда false.
-	// Теперь сравниваем с актуальным default — корректно работает при любом
-	// значении bridge.DefaultGenerationParams().NPredict.
 	referenceDefault := bridge.DefaultGenerationParams().NPredict
 	if params.NPredict >= referenceDefault {
-		logger.Get().Debugw("applyCppCtxHeader: replacing default n_predict with half-n_ctx",
-			"old_n_predict", params.NPredict, "new_n_predict", halfCtx, "n_ctx", params.NCtxOverride,
+		logger.Get().Debugw("applyCppCtxHeader: replacing default n_predict with n_ctx-1024",
+			"old_n_predict", params.NPredict, "new_n_predict", maxPredict, "n_ctx", params.NCtxOverride,
 			"reference_default", referenceDefault)
-		params.NPredict = halfCtx
+		params.NPredict = maxPredict
 	}
 }
 

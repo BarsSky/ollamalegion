@@ -315,6 +315,7 @@ func LoadDotEnvFile(path string) error {
 func mapLlamaToCppWorkerEnv(key string) string {
 	mapping := map[string]string{
 		"LLAMA_HTTP_PORT":        "CPPWORKER_PORT",
+		"LLAMA_WRITE_TIMEOUT":    "CPPWORKER_WRITE_TIMEOUT",
 		"LLAMA_GRPC_PORT":        "", // grpc порт отдельно
 		"LLAMA_MODELS_DIR":       "CPPWORKER_MODELS_DIR",
 		"LLAMA_CTX_SIZE":         "CPPWORKER_CTX_SIZE",

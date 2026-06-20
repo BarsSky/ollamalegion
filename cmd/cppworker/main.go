@@ -47,6 +47,7 @@ var (
 	allowedOrigin        = flag.String("cors-origin", "*", "CORS allowed origin")
 	envFile              = flag.String("env", "", "Path to .env configuration file (optional)")
 	preloadModels        = flag.Bool("preload-models", false, "Preload all .gguf models at startup (disabled by default — use with care, may exhaust VRAM)")
+	writeTimeout         = flag.Duration("write-timeout", 30*time.Minute, "HTTP WriteTimeout for streaming inference (use 0 for no timeout)")
 	healthCheck          = flag.Bool("healthcheck", false, "Run a one-shot health probe against /health and exit")
 )
 
@@ -151,6 +152,15 @@ func main() {
 			}
 		}
 	}
+	// WriteTimeout из env (если флаг не передан явно).
+	if !isFlagSet("write-timeout") {
+		if envVal := os.Getenv("CPPWORKER_WRITE_TIMEOUT"); envVal != "" {
+			if d, err := time.ParseDuration(envVal); err == nil && d >= 0 {
+				*writeTimeout = d
+				log.Infow("applied CPPWORKER_WRITE_TIMEOUT from env", "write_timeout", d.String())
+			}
+		}
+	}
 
 	flag.Visit(func(f *flag.Flag) {
 		switch f.Name {
@@ -183,7 +193,8 @@ func main() {
 		"numa", cfg.DefaultNUMA,
 		"ramFallbackNCtx", *ramFallbackNCtx,
 		"ramFallbackGpuLayers", *ramFallbackGpuLayers,
-		"ramFallbackMaxNCtx", *ramFallbackMaxNCtx)
+		"ramFallbackMaxNCtx", *ramFallbackMaxNCtx,
+		"writeTimeout", writeTimeout.String())
 
 	if err := os.MkdirAll(cfg.ModelsDir, 0755); err != nil {
 		log.Fatalw("failed to create models directory", "dir", cfg.ModelsDir, "error", err)
@@ -203,7 +214,7 @@ func main() {
 		Addr:         fmt.Sprintf("%s:%d", cfg.Host, cfg.Port),
 		Handler:      router,
 		ReadTimeout:  30 * time.Second,
-		WriteTimeout: 5 * time.Minute,
+		WriteTimeout: *writeTimeout,
 		IdleTimeout:  120 * time.Second,
 	}
 

@@ -100,4 +100,5 @@ type reloadModelRequest struct {
 	FlashAttn   *int   `json:"flashAttn,omitempty"`
 	NUMA        *bool  `json:"numa,omitempty"`
 	UseMmap     *bool  `json:"useMmap,omitempty"`
+	Force       *bool  `json:"force,omitempty"`
 }

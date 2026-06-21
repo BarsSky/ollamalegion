@@ -65,7 +65,7 @@ func (or *OllamaRouter) handleTags(w http.ResponseWriter, r *http.Request) {
 
 	for _, backend := range backends {
 		wg.Add(1)
-		go func(b backendInfo) {
+		go func(b ollamaBackendInfo) {
 			defer wg.Done()
 			tags, err := or.fetchTags(b.host, b.port)
 			if err != nil {
@@ -118,7 +118,7 @@ func (or *OllamaRouter) handlePS(w http.ResponseWriter, r *http.Request) {
 
 	for _, backend := range backends {
 		wg.Add(1)
-		go func(b backendInfo) {
+		go func(b ollamaBackendInfo) {
 			defer wg.Done()
 			procs, err := or.fetchPS(b.host, b.port)
 			if err != nil {
@@ -160,7 +160,7 @@ func (or *OllamaRouter) handleVersion(w http.ResponseWriter, r *http.Request) {
 
 		for _, backend := range backends {
 			wg.Add(1)
-			go func(b backendInfo) {
+			go func(b ollamaBackendInfo) {
 				defer wg.Done()
 				ver, err := or.fetchVersion(b.host, b.port)
 				if err != nil {

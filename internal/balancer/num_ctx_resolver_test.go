@@ -522,6 +522,74 @@ func TestIsLlamaCppModelLoaded_NilProxy(t *testing.T) {
 }
 
 // ============================================================
+// ============================================================
+// removeNumCtxFromBody
+// ============================================================
+
+func TestRemoveNumCtxFromBody_Empty(t *testing.T) {
+	assert.Equal(t, []byte(nil), removeNumCtxFromBody(nil))
+	assert.Equal(t, []byte(""), removeNumCtxFromBody([]byte("")))
+}
+
+func TestRemoveNumCtxFromBody_NoNumCtx(t *testing.T) {
+	// Если num_ctx нет — body не меняется
+	body := []byte(`{"model":"gemma-4","stream":true}`)
+	result := removeNumCtxFromBody(body)
+	assert.Equal(t, body, result)
+}
+
+func TestRemoveNumCtxFromBody_InvalidJSON(t *testing.T) {
+	body := []byte("not json")
+	result := removeNumCtxFromBody(body)
+	assert.Equal(t, body, result)
+}
+
+func TestRemoveNumCtxFromBody_RemovesOllamaNumCtx(t *testing.T) {
+	body := []byte(`{"model":"gemma-4","options":{"num_ctx":16384,"temperature":0.7}}`)
+	result := removeNumCtxFromBody(body)
+	// Должен удалить options.num_ctx, но оставить temperature
+	assert.Contains(t, string(result), "\"temperature\":0.7")
+	assert.NotContains(t, string(result), "\"num_ctx\"")
+	// options остаётся (там ещё temperature)
+	assert.Contains(t, string(result), "\"options\"")
+}
+
+func TestRemoveNumCtxFromBody_RemovesOpenAINumCtx(t *testing.T) {
+	body := []byte(`{"model":"gemma-4","num_ctx":8192,"stream":true}`)
+	result := removeNumCtxFromBody(body)
+	assert.NotContains(t, string(result), "\"num_ctx\"")
+	assert.Contains(t, string(result), "\"stream\":true")
+}
+
+func TestRemoveNumCtxFromBody_RemovesBothFormats(t *testing.T) {
+	body := []byte(`{"options":{"num_ctx":4096},"num_ctx":8192,"model":"gemma-4"}`)
+	result := removeNumCtxFromBody(body)
+	assert.NotContains(t, string(result), "\"num_ctx\"")
+	// options должен быть пустым после удаления num_ctx → удалён целиком
+	assert.NotContains(t, string(result), "\"options\"")
+	assert.Contains(t, string(result), "\"model\"")
+}
+
+func TestRemoveNumCtxFromBody_RemovesEmptyOptions(t *testing.T) {
+	body := []byte(`{"options":{"num_ctx":4096},"model":"gemma-4"}`)
+	result := removeNumCtxFromBody(body)
+	// После удаления num_ctx options пустой → удаляем и options
+	assert.NotContains(t, string(result), "\"options\"")
+	assert.Contains(t, string(result), "\"model\"")
+}
+
+func TestRemoveNumCtxFromBody_PreservesOtherFields(t *testing.T) {
+	body := []byte(`{"model":"gemma-4","options":{"num_ctx":16384,"temperature":0.8,"top_p":0.9},"stream":true}`)
+	result := removeNumCtxFromBody(body)
+	assert.NotContains(t, string(result), "\"num_ctx\"")
+	assert.Contains(t, string(result), "\"temperature\":0.8")
+	assert.Contains(t, string(result), "\"top_p\":0.9")
+	assert.Contains(t, string(result), "\"stream\":true")
+	// options остаётся (там ещё temperature и top_p)
+	assert.Contains(t, string(result), "\"options\"")
+}
+
+// ============================================================
 // containsFold helper
 // ============================================================
 

@@ -405,7 +405,14 @@ func handleReloadModel(w http.ResponseWriter, r *http.Request) {
 		"old_batch", current.BatchSize, "new_batch", opts.BatchSize,
 		"old_gpu_layers", current.GPULayers, "new_gpu_layers", opts.GPULayers)
 
-	if opts.ContextSize <= current.ContextSize &&
+	// Если force=true — пропускаем проверку "params already sufficient".
+	// Это нужно, когда C-bridge не может реально использовать запрошенный n_ctx
+	// (effective n_ctx < GGUF native context_length), и балансировщик шлёт force,
+	// чтобы принудительно перезагрузить модель с новыми параметрами.
+	forceReload := req.Force != nil && *req.Force
+
+	if !forceReload &&
+		opts.ContextSize <= current.ContextSize &&
 		opts.BatchSize <= current.BatchSize &&
 		opts.GPULayers <= current.GPULayers &&
 		opts.FlashAttnType == current.FlashAttnType &&

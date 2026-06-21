@@ -399,7 +399,41 @@ func (m *ExpandedMockServer) handleGenerateStreaming(w http.ResponseWriter, mode
 	}
 }
 
-// handleChat — обработка /api/chat
+// hasToolRoleMessages проверяет, есть ли сообщения с role="tool" в массиве messages.
+func hasToolRoleMessages(messages []interface{}) bool {
+	for _, msg := range messages {
+		if m, ok := msg.(map[string]interface{}); ok {
+			if role, ok := m["role"].(string); ok && role == "tool" {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// buildMockToolCalls создаёт фиктивные tool_calls для тестирования.
+func buildMockToolCalls() []map[string]interface{} {
+	return []map[string]interface{}{
+		{
+			"id":   "call_mock_search",
+			"type": "function",
+			"function": map[string]interface{}{
+				"name":      "search",
+				"arguments": `{"q":"test query"}`,
+			},
+		},
+		{
+			"id":   "call_mock_calculate",
+			"type": "function",
+			"function": map[string]interface{}{
+				"name":      "calculate",
+				"arguments": `{"expression":"2+2"}`,
+			},
+		},
+	}
+}
+
+// handleChat — обработка /api/chat с поддержкой tools/tool_calls
 func (m *ExpandedMockServer) handleChat(w http.ResponseWriter, r *http.Request) {
 	b := m.getBehavior()
 
@@ -426,8 +460,76 @@ func (m *ExpandedMockServer) handleChat(w http.ResponseWriter, r *http.Request) 
 		model = m
 	}
 
+	// Проверяем наличие tools в запросе
+	tools, hasTools := req["tools"].([]interface{})
+	// Проверяем наличие tool-сообщений (результаты вызова инструментов)
+	messages, _ := req["messages"].([]interface{})
+	hasToolResults := hasToolRoleMessages(messages)
+
 	m.applyResponseDelay()
 
+	// Если есть tools и нет tool-результатов — возвращаем tool_calls
+	if hasTools && len(tools) > 0 && !hasToolResults {
+		toolCalls := buildMockToolCalls()
+		if stream {
+			// Streaming with tools: буферизированный режим (как в реальном cppworker)
+			w.Header().Set("Content-Type", "application/x-ndjson")
+			w.WriteHeader(http.StatusOK)
+			flusher, ok := w.(http.Flusher)
+			if !ok {
+				return
+			}
+			// Один чанк с tool_calls
+			chunk := map[string]interface{}{
+				"model": model,
+				"message": map[string]interface{}{
+					"role":       "assistant",
+					"content":    "",
+					"tool_calls": toolCalls,
+				},
+				"done": true,
+			}
+			data, _ := json.Marshal(chunk)
+			fmt.Fprintf(w, "%s\n", data)
+			flusher.Flush()
+			return
+		}
+		// Non-streaming with tool_calls
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"model": model,
+			"message": map[string]interface{}{
+				"role":       "assistant",
+				"content":    "",
+				"tool_calls": toolCalls,
+			},
+			"done": true,
+		})
+		return
+	}
+
+	// Если есть tool-результаты — возвращаем итоговый текстовый ответ
+	if hasToolResults {
+		responseText := "Based on the search results, I can provide you with the following information."
+		if stream {
+			m.handleChatStreamingWithText(w, model, responseText)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"model": model,
+			"message": map[string]interface{}{
+				"role":    "assistant",
+				"content": responseText,
+			},
+			"done": true,
+		})
+		return
+	}
+
+	// Обычный чат без инструментов
 	if stream {
 		m.handleChatStreaming(w, model)
 	} else {
@@ -441,6 +543,68 @@ func (m *ExpandedMockServer) handleChat(w http.ResponseWriter, r *http.Request) 
 			},
 			"done": true,
 		})
+	}
+}
+
+// handleChatStreamingWithText — streaming chat ответ с заданным текстом
+func (m *ExpandedMockServer) handleChatStreamingWithText(w http.ResponseWriter, model string, text string) {
+	b := m.getBehavior()
+
+	w.Header().Set("Content-Type", "application/x-ndjson")
+	w.WriteHeader(http.StatusOK)
+
+	flusher, ok := w.(http.Flusher)
+	if !ok {
+		return
+	}
+
+	if b.ModelLoadDelay > 0 {
+		time.Sleep(b.ModelLoadDelay)
+	}
+
+	// Разбиваем текст на слова для имитации stream
+	words := strings.Fields(text)
+	if len(words) == 0 {
+		words = []string{text}
+	}
+
+	for i, word := range words {
+		if b.DropAfterChunks > 0 && i >= b.DropAfterChunks-1 {
+			if b.DropOnStream {
+				if hijacker, ok := w.(http.Hijacker); ok {
+					conn, _, _ := hijacker.Hijack()
+					conn.Close()
+					return
+				}
+			}
+			return
+		}
+
+		isLast := (i == len(words)-1)
+		// Добавляем пробел обратно, кроме последнего слова
+		content := word
+		if !isLast {
+			content = word + " "
+		}
+		chunk := map[string]interface{}{
+			"model": model,
+			"message": map[string]string{
+				"role":    "assistant",
+				"content": content,
+			},
+			"done": isLast && !b.DropOnStream,
+		}
+		if isLast && !b.DropOnStream {
+			chunk["total_duration"] = 1000000
+		}
+
+		data, _ := json.Marshal(chunk)
+		fmt.Fprintf(w, "%s\n", data)
+		flusher.Flush()
+
+		if b.ChunkDelay > 0 && i < len(words)-1 {
+			time.Sleep(b.ChunkDelay)
+		}
 	}
 }
 

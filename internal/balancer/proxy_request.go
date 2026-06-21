@@ -110,7 +110,14 @@ func (p *Proxy) proxyRequest(w http.ResponseWriter, r *http.Request, backendID s
 					"backend", backendID, "error", readErr)
 			}
 		}
-		return p.proxyRequestLlamaCpp(w, r, backendID, bodyBuf)
+
+		// Выбираем прокси по режиму streaming.
+		// Для streaming — proxyRequestLlamaCpp (SSE→NDJSON).
+		// Для non-streaming — proxyRequestLlamaCppNonStream (JSON→JSON с Content-Type: application/json).
+		if isStreamingFromBody(r.URL.Path, bodyBuf) {
+			return p.proxyRequestLlamaCpp(w, r, backendID, bodyBuf)
+		}
+		return p.proxyRequestLlamaCppNonStream(w, r, backendID, bodyBuf)
 	}
 
 	target, err := url.Parse(targetURL)
@@ -461,7 +468,45 @@ retrySucceeded:
 func (p *Proxy) proxyRequestOpenAIStreaming(w http.ResponseWriter, r *http.Request, resp *http.Response, backendID string) error {
 	defer resp.Body.Close()
 
+	// 0. Проверка статус-кода: если upstream вернул не-2xx, не начинаем SSE-стрим,
+	// а возвращаем структурированную ошибку. Без этой проверки клиент получает
+	// пустой SSE-поток (или не-SSE тело), и OpenWebUI/Cline падает с
+	// "Expecting value: line 2 column 1 (char 1)" при попытке распарсить ответ.
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		body, readErr := io.ReadAll(resp.Body)
+		if readErr != nil {
+			body = []byte(fmt.Sprintf(`{"error":"upstream read error: %v"}`, readErr))
+		}
+		// Восстанавливаем Body для повторного использования
+		resp.Body = io.NopCloser(bytes.NewReader(body))
+
+		contentType := resp.Header.Get("Content-Type")
+		if strings.Contains(contentType, "text/event-stream") {
+			// Upstream вернул ошибку с SSE Content-Type (крайне маловероятно, но страхуемся).
+			// Отдаём SSE с ошибкой, чтобы OpenAI-клиент не завис в ожидании.
+			w.Header().Set("X-Accel-Buffering", "no")
+			w.Header().Set("Cache-Control", "no-cache")
+			w.Header().Set("Content-Type", "text/event-stream")
+			w.Header().Set("Connection", "keep-alive")
+			w.WriteHeader(resp.StatusCode)
+			fmt.Fprintf(w, "data: {\"error\":\"upstream returned HTTP %d\",\"choices\":[{\"delta\":{},\"finish_reason\":\"error\"}]}\n\n", resp.StatusCode)
+			fmt.Fprintf(w, "data: [DONE]\n\n")
+			if flusher, ok := w.(http.Flusher); ok {
+				flusher.Flush()
+			}
+			return nil
+		}
+
+		// JSON-ошибка — проксируем как есть
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("Content-Length", fmt.Sprintf("%d", len(body)))
+		w.WriteHeader(resp.StatusCode)
+		w.Write(body)
+		return nil
+	}
+
 	// 1. Копируем заголовки ответа бэкенда
+
 	for key, values := range resp.Header {
 		keyLower := strings.ToLower(key)
 		if keyLower == "transfer-encoding" || keyLower == "content-length" || keyLower == "connection" {

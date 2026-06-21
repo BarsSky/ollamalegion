@@ -42,6 +42,7 @@ func translateOllamaBodyToOpenAI(ollamaPath string, body []byte) ([]byte, error)
 // translateOllamaChatToOpenAI — маппит Ollama /api/chat на OpenAI /v1/chat/completions.
 // Ollama использует более простой формат: model + messages + options.stop/temperature/top_p.
 // OpenAI — тот же формат, но без вложенного options блока.
+// Также пробрасывает tools и tool_choice для поддержки function calling.
 func translateOllamaChatToOpenAI(body []byte) ([]byte, error) {
 	var ollamaReq map[string]interface{}
 	if err := json.Unmarshal(body, &ollamaReq); err != nil {
@@ -59,6 +60,14 @@ func translateOllamaChatToOpenAI(body []byte) ([]byte, error) {
 		openaiReq["stream"] = stream
 	} else {
 		openaiReq["stream"] = true
+	}
+	// Пробрасываем tools и tool_choice для function calling (OpenAI-формат в Ollama
+	// /api/chat — это часть сообщения "options.tools" или прямой ключ "tools").
+	if tools, ok := ollamaReq["tools"].([]interface{}); ok {
+		openaiReq["tools"] = tools
+	}
+	if toolChoice, ok := ollamaReq["tool_choice"]; ok {
+		openaiReq["tool_choice"] = toolChoice
 	}
 	if options, ok := ollamaReq["options"].(map[string]interface{}); ok {
 		if temp, ok := options["temperature"]; ok {

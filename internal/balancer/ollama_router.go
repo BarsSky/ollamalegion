@@ -59,22 +59,22 @@ func (or *OllamaRouter) Route(w http.ResponseWriter, r *http.Request) bool {
 
 // ---------- Вспомогательные структуры и функции ----------
 
-type backendInfo struct {
+type ollamaBackendInfo struct {
 	id   string
 	host string
 	port int
 }
 
 // getHealthyBackends — возвращает все healthy и degraded бэкенды для агрегации.
-func (or *OllamaRouter) getHealthyBackends() []backendInfo {
+func (or *OllamaRouter) getHealthyBackends() []ollamaBackendInfo {
 	backends := or.proxy.GetAllBackends()
-	result := make([]backendInfo, 0, len(backends))
+	result := make([]ollamaBackendInfo, 0, len(backends))
 	for _, b := range backends {
 		if b.Status == "healthy" || b.Status == "degraded" {
 			// Используем getBackendPort для правильного разрешения порта
 			// (CppWorkerPort для llama_cpp, OllamaPort для ollama)
 			port := or.proxy.getBackendPort(&b)
-			result = append(result, backendInfo{
+			result = append(result, ollamaBackendInfo{
 				id:   b.ID,
 				host: b.Host,
 				port: port,

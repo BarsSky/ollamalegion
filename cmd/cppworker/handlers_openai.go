@@ -54,11 +54,18 @@ type openAIChatCompletionRequest struct {
 	// NumCtx — per-request переопределение n_ctx (OpenAI-совместимый).
 	// 0 = использовать n_ctx модели. > 0 → C-bridge pre-flight check.
 	NumCtx int `json:"num_ctx,omitempty"`
+	// Tools — определения инструментов для function calling (OpenAI / Ollama совместимый формат).
+	Tools []openAITool `json:"tools,omitempty"`
+	// ToolChoice — управление выбором инструмента ("auto", "none", "required", или {"type":"function","function":{"name":"..."}}).
+	ToolChoice json.RawMessage `json:"tool_choice,omitempty"`
 }
 
 type openAIChatMessage struct {
-	Role    string `json:"role"`
-	Content string `json:"content"`
+	Role       string          `json:"role"`
+	Content    string          `json:"content"`
+	ToolCalls  []openAIToolCall `json:"tool_calls,omitempty"`
+	ToolCallID string          `json:"tool_call_id,omitempty"`
+	Name       string          `json:"name,omitempty"`
 }
 
 // applyCppCtxHeader — backwards-compat алиас для ApplyCppCtxHeader из nctx_clamp.go.
@@ -69,10 +76,21 @@ func applyCppCtxHeader(r *http.Request, params *bridge.GenerationParams) {
 
 // openAIToChatMessage converts an openAIChatMessage slice to chatMessage slice
 // for use with the canonical buildChatPrompt from handlers_chat.go.
+// Сохраняет tool_calls, tool_call_id, name для поддержки function calling.
 func openAIToChatMessage(msgs []openAIChatMessage) []chatMessage {
 	result := make([]chatMessage, 0, len(msgs))
 	for _, m := range msgs {
-		result = append(result, chatMessage{Role: m.Role, Content: m.Content})
+		cm := chatMessage{
+			Role:       m.Role,
+			Content:    m.Content,
+			ToolCallID: m.ToolCallID,
+			Name:       m.Name,
+		}
+		if len(m.ToolCalls) > 0 {
+			cm.ToolCalls = make([]openAIToolCall, len(m.ToolCalls))
+			copy(cm.ToolCalls, m.ToolCalls)
+		}
+		result = append(result, cm)
 	}
 	return result
 }
@@ -81,6 +99,7 @@ func openAIToChatMessage(msgs []openAIChatMessage) []chatMessage {
 // Строит простой chat-формат, совместимый с gemma-style instruction-tuned моделями.
 // Если в имени модели встречается "gemma" — используется формат <start_of_turn>user/model<end_of_turn>,
 // иначе — формат <|user|>...<|assistant|>, оба совместимы с большинством chat-моделей llama.cpp.
+// Поддерживает tool-сообщения и assistant-сообщения с tool_calls.
 func buildNaiveChatPrompt(msgs []openAIChatMessage, modelName string) string {
 	isGemma := strings.Contains(strings.ToLower(modelName), "gemma")
 	var sb strings.Builder
@@ -99,10 +118,34 @@ func buildNaiveChatPrompt(msgs []openAIChatMessage, modelName string) string {
 				fmt.Fprintf(&sb, "<|user|>\n%s<|end|>\n", m.Content)
 			}
 		case "assistant":
+			content := m.Content
+			// Если есть tool_calls, сериализуем их в content
+			if len(m.ToolCalls) > 0 {
+				tcJSON, err := json.Marshal(m.ToolCalls)
+				if err == nil {
+					if content != "" {
+						content += "\n" + string(tcJSON)
+					} else {
+						content = string(tcJSON)
+					}
+				}
+			}
 			if isGemma {
-				fmt.Fprintf(&sb, "<start_of_turn>model\n%s<end_of_turn>\n", m.Content)
+				fmt.Fprintf(&sb, "<start_of_turn>model\n%s<end_of_turn>\n", content)
 			} else {
-				fmt.Fprintf(&sb, "<|assistant|>\n%s<|end|>\n", m.Content)
+				fmt.Fprintf(&sb, "<|assistant|>\n%s<|end|>\n", content)
+			}
+		case "tool":
+			content := m.Content
+			if m.Name != "" {
+				content = "tool_call_result(" + m.Name + "): " + content
+			} else if m.ToolCallID != "" {
+				content = "tool_call_result(" + m.ToolCallID + "): " + content
+			}
+			if isGemma {
+				fmt.Fprintf(&sb, "<start_of_turn>tool\n%s<end_of_turn>\n", content)
+			} else {
+				fmt.Fprintf(&sb, "<|tool|>\n%s<|end|>\n", content)
 			}
 		}
 	}
@@ -114,8 +157,37 @@ func buildNaiveChatPrompt(msgs []openAIChatMessage, modelName string) string {
 	return sb.String()
 }
 
+// augmentSystemWithTools injects tool definitions into the system message.
+// Если system-сообщения нет — создаёт новое.
+func augmentSystemWithTools(msgs []chatMessage, tools []openAITool) []chatMessage {
+	if len(tools) == 0 {
+		return msgs
+	}
+	toolsPrompt := buildToolsSystemPrompt(tools)
+	if toolsPrompt == "" {
+		return msgs
+	}
+	// Ищем существующее system-сообщение и дополняем его
+	for i := range msgs {
+		if msgs[i].Role == "system" {
+			msgs[i].Content = msgs[i].Content + "\n\n" + toolsPrompt
+			return msgs
+		}
+	}
+	// Нет system-сообщения — создаём новое в начале
+	result := make([]chatMessage, 0, len(msgs)+1)
+	result = append(result, chatMessage{Role: "system", Content: toolsPrompt})
+	result = append(result, msgs...)
+	return result
+}
+
 // handleV1ChatCompletions — OpenAI-совместимый /v1/chat/completions endpoint.
 // Поддерживает как streaming (SSE: text/event-stream), так и non-streaming ответы.
+// При наличии tools/function calling:
+//   - Инжектит definitions в system prompt
+//   - После генерации парсит tool_calls из plain text выхода модели
+//   - Если tool_calls найдены — возвращает finish_reason="tool_calls" + message.tool_calls
+//   - Для streaming с tools: буферизирует полный ответ, затем отдаёт SSE с tool_calls
 func handleV1ChatCompletions(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		writeError(w, http.StatusMethodNotAllowed, "use POST")
@@ -144,8 +216,14 @@ func handleV1ChatCompletions(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Конвертируем openAIChatMessage → chatMessage и инжектим определения tools
+	chatMsgs := openAIToChatMessage(req.Messages)
+	if len(req.Tools) > 0 {
+		chatMsgs = augmentSystemWithTools(chatMsgs, req.Tools)
+	}
+
 	// Собираем промпт из сообщений с применением chat template из GGUF.
-	prompt, err := buildChatPrompt(openAIToChatMessage(req.Messages), req.Model)
+	prompt, err := buildChatPrompt(chatMsgs, req.Model)
 	var usedNaive bool
 	if err != nil {
 		logger.Get().Warnw("chat template bridge failed, falling back to naive prompt",
@@ -196,12 +274,43 @@ func handleV1ChatCompletions(w http.ResponseWriter, r *http.Request) {
 		"antiprompts_count", len(params.Antiprompts),
 		"antiprompts", params.Antiprompts)
 
+	// ============================================================
+	// Streaming
+	// ============================================================
 	if req.Stream {
+		if len(req.Tools) > 0 {
+			// Если есть tools — буферизируем полный ответ, чтобы распарсить tool_calls
+			// перед отправкой SSE. Это trade-off: теряем real-time streaming,
+			// но получаем корректные tool_calls + finish_reason.
+			result, err := generateWithRamFallback(req.Model, prompt, params)
+			if err != nil {
+				statusCode := http.StatusInternalServerError
+				if info := bridge.GetLastErrorInfo(); info.Code == bridge.ErrCodeNCtxNeedsReload || info.Code == bridge.ErrCodePromptTooLong || info.Code == bridge.ErrCodeBadRequest {
+					statusCode = http.StatusBadRequest
+				}
+				writeCppWorkerErrorWithBridgeInfo(w, statusCode, "chat completions (tool) failed", err)
+				return
+			}
+			if calls := parseToolCallsFromOutput(result.Output); len(calls) > 0 {
+				writeToolCallsStream(w, req.Model, chatID(), time.Now().Unix(), calls)
+			} else {
+				// Нет tool_calls — стримим как обычный текст
+				writeStaticTextStream(w, req.Model, chatID(), time.Now().Unix(), result.Output)
+			}
+			return
+		}
+		// Без tools — обычный real-time streaming
 		writeOpenAIChatStream(w, r, req.Model, prompt, params)
 		return
 	}
 
+	// ============================================================
+	// Non-streaming
+	// ============================================================
 	start := time.Now()
+	chatID := fmt.Sprintf("chatcmpl-%d", time.Now().UnixNano())
+	created := time.Now().Unix()
+
 	result, err := generateWithRamFallback(req.Model, prompt, params)
 	if err != nil {
 		statusCode := http.StatusInternalServerError
@@ -213,19 +322,40 @@ func handleV1ChatCompletions(w http.ResponseWriter, r *http.Request) {
 	}
 	durationMs := time.Since(start).Milliseconds()
 
+	// Пытаемся распарсить tool_calls из выходного текста (если были tools)
+	var hasToolCalls bool
+	var toolCalls []openAIToolCall
+	if len(req.Tools) > 0 {
+		toolCalls = parseToolCallsFromOutput(result.Output)
+		hasToolCalls = len(toolCalls) > 0
+	}
+
+	// Строим message
+	message := map[string]interface{}{
+		"role": "assistant",
+	}
+	if hasToolCalls {
+		message["content"] = nil
+		message["tool_calls"] = toolCalls
+	} else {
+		message["content"] = result.Output
+	}
+
+	finishReason := "stop"
+	if hasToolCalls {
+		finishReason = "tool_calls"
+	}
+
 	writeJSON(w, http.StatusOK, map[string]interface{}{
-		"id":      fmt.Sprintf("chatcmpl-%d", time.Now().UnixNano()),
+		"id":      chatID,
 		"object":  "chat.completion",
-		"created": time.Now().Unix(),
+		"created": created,
 		"model":   req.Model,
 		"choices": []map[string]interface{}{
 			{
-				"index": 0,
-				"message": map[string]string{
-					"role":    "assistant",
-					"content": result.Output,
-				},
-				"finish_reason": "stop",
+				"index":         0,
+				"message":       message,
+				"finish_reason": finishReason,
 			},
 		},
 		"usage": map[string]interface{}{
@@ -235,6 +365,120 @@ func handleV1ChatCompletions(w http.ResponseWriter, r *http.Request) {
 		},
 		"duration_ms": durationMs,
 	})
+}
+
+// chatID генерирует уникальный ID чата.
+func chatID() string {
+	return fmt.Sprintf("chatcmpl-%d", time.Now().UnixNano())
+}
+
+// writeToolCallsStream отправляет SSE-поток с tool_calls (без content).
+// Формат: один chunk с delta.tool_calls, затем chunk с finish_reason="tool_calls".
+func writeToolCallsStream(w http.ResponseWriter, modelName, chatID string, created int64, calls []openAIToolCall) {
+	flusher, ok := w.(http.Flusher)
+	if !ok {
+		return
+	}
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("Connection", "keep-alive")
+	w.WriteHeader(http.StatusOK)
+	flusher.Flush()
+
+	// Chunk 1: роль ассистента (без content, с tool_calls)
+	firstChunk := map[string]interface{}{
+		"id":      chatID,
+		"object":  "chat.completion.chunk",
+		"created": created,
+		"model":   modelName,
+		"choices": []map[string]interface{}{
+			{
+				"index": 0,
+				"delta": map[string]interface{}{
+					"role":       "assistant",
+					"content":    nil,
+					"tool_calls": calls,
+				},
+				"finish_reason": nil,
+			},
+		},
+	}
+	jsonData, _ := json.Marshal(firstChunk)
+	fmt.Fprintf(w, "data: %s\n\n", jsonData)
+	flusher.Flush()
+
+	// Chunk 2: завершение с finish_reason="tool_calls"
+	stopChunk := map[string]interface{}{
+		"id":      chatID,
+		"object":  "chat.completion.chunk",
+		"created": created,
+		"model":   modelName,
+		"choices": []map[string]interface{}{
+			{
+				"index":         0,
+				"delta":         map[string]interface{}{},
+				"finish_reason": "tool_calls",
+			},
+		},
+	}
+	stopJSON, _ := json.Marshal(stopChunk)
+	fmt.Fprintf(w, "data: %s\n\n", stopJSON)
+	fmt.Fprintf(w, "data: [DONE]\n\n")
+	flusher.Flush()
+}
+
+// writeStaticTextStream отправляет SSE-поток с фиксированным текстом
+// (используется когда tools запросили буферизированный ответ).
+func writeStaticTextStream(w http.ResponseWriter, modelName, chatID string, created int64, content string) {
+	flusher, ok := w.(http.Flusher)
+	if !ok {
+		return
+	}
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("Connection", "keep-alive")
+	w.WriteHeader(http.StatusOK)
+	flusher.Flush()
+
+	// Отправляем весь контент одним chunk
+	chunk := map[string]interface{}{
+		"id":      chatID,
+		"object":  "chat.completion.chunk",
+		"created": created,
+		"model":   modelName,
+		"choices": []map[string]interface{}{
+			{
+				"index": 0,
+				"delta": map[string]string{
+					"role":    "assistant",
+					"content": content,
+				},
+				"finish_reason": nil,
+			},
+		},
+	}
+	jsonData, _ := json.Marshal(chunk)
+	fmt.Fprintf(w, "data: %s\n\n", jsonData)
+	flusher.Flush()
+
+	// Сигнал завершения
+	stopChunk := map[string]interface{}{
+		"id":      chatID,
+		"object":  "chat.completion.chunk",
+		"created": created,
+		"model":   modelName,
+		"choices": []map[string]interface{}{
+			{
+				"index":         0,
+				"delta":         map[string]interface{}{},
+				"finish_reason": "stop",
+			},
+		},
+	}
+	stopJSON, _ := json.Marshal(stopChunk)
+	fmt.Fprintf(w, "data: %s\n\n", stopJSON)
+	fmt.Fprintf(w, "data: [DONE]\n\n")
+	flusher.Flush()
 }
 
 // writeOpenAIChatStream — streaming ответ в формате SSE для /v1/chat/completions.

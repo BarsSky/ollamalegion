@@ -209,6 +209,17 @@ type backendReloadState struct {
 	// решения «нужен ли reload вообще» (если lastKnownNCtx уже >=
 	// required, можно просто повторить запрос без reload).
 	lastKnownNCtx int
+
+	// consecutiveCycleFailures — счётчик последовательных неудачных
+	// reload+retry циклов (когда reload формально успешен, но повторный
+	// запрос снова возвращает n_ctx ошибку). Сбрасывается при успешном
+	// инференсе без ошибки n_ctx.
+	consecutiveCycleFailures int
+
+	// lastCycleReset — время последнего сброса счётчика cycle failure.
+	// Используется для rate-limiting: если прошло больше N минут с
+	// последнего сброса — счётчик обнуляется.
+	lastCycleReset time.Time
 }
 
 type reloadInflight struct {
@@ -271,6 +282,49 @@ func (c *NCtxReloadCoordinator) LastKnownNCtx(backendID string) int {
 	s.inflightMu.Lock()
 	defer s.inflightMu.Unlock()
 	return s.lastKnownNCtx
+}
+
+// RecordCycleAttempt увеличивает счётчик последовательных неудачных
+// reload+retry циклов для указанного бэкенда. Вызывается после того,
+// как DoReload успешно завершился, но повторный запрос снова вернул
+// n_ctx ошибку. Это часть детекции бесконечного цикла.
+func (c *NCtxReloadCoordinator) RecordCycleAttempt(backendID string) {
+	s := c.state(backendID)
+	s.inflightMu.Lock()
+	defer s.inflightMu.Unlock()
+	s.consecutiveCycleFailures++
+	s.lastCycleReset = time.Now()
+}
+
+// IsCycleDetected возвращает true, если количество последовательных
+// неудачных reload+retry циклов превышает maxAttempts. Cycle counter
+// автоматически сбрасывается, если с последнего вызова ResetCycleCounter
+// прошло больше cycleResetInterval (чтобы не накапливать ошибки навсегда).
+// Если backend ещё не был зарегистрирован — возвращает false.
+func (c *NCtxReloadCoordinator) IsCycleDetected(backendID string, maxAttempts int) bool {
+	s := c.state(backendID)
+	s.inflightMu.Lock()
+	defer s.inflightMu.Unlock()
+
+	// Auto-reset: если прошло больше 5 минут с последнего cycle reset —
+	// сбрасываем счётчик (stale counter).
+	const cycleResetInterval = 5 * time.Minute
+	if !s.lastCycleReset.IsZero() && time.Since(s.lastCycleReset) > cycleResetInterval {
+		s.consecutiveCycleFailures = 0
+		return false
+	}
+	return s.consecutiveCycleFailures >= maxAttempts
+}
+
+// ResetCycleCounter обнуляет счётчик cycle failure для бэкенда.
+// Вызывается после успешного инференса (без n_ctx ошибки) или
+// при ручном сбросе.
+func (c *NCtxReloadCoordinator) ResetCycleCounter(backendID string) {
+	s := c.state(backendID)
+	s.inflightMu.Lock()
+	defer s.inflightMu.Unlock()
+	s.consecutiveCycleFailures = 0
+	s.lastCycleReset = time.Now()
 }
 
 // ============================================================
@@ -649,6 +703,7 @@ func (c *NCtxReloadCoordinator) DoReload(
 	payload, _ := json.Marshal(map[string]interface{}{
 		"name":        modelName,
 		"contextSize": plan.NewNCtx,
+		"force":       true,
 		"reason":      "auto-reload: client request exceeded current n_ctx",
 	})
 	endpoint := backendAddr + "/api/models/reload"

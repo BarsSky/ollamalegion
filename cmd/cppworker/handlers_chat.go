@@ -16,8 +16,11 @@ import (
 // ============================================================
 
 type chatMessage struct {
-	Role    string `json:"role"`
-	Content string `json:"content"`
+	Role       string          `json:"role"`
+	Content    string          `json:"content"`
+	ToolCalls  []openAIToolCall `json:"tool_calls,omitempty"`
+	ToolCallID string          `json:"tool_call_id,omitempty"`
+	Name       string          `json:"name,omitempty"`
 }
 
 type chatRequest struct {
@@ -27,6 +30,7 @@ type chatRequest struct {
 	Temperature *float64      `json:"temperature,omitempty"`
 	MaxTokens   *int          `json:"max_tokens,omitempty"`
 	NumCtx      *int          `json:"num_ctx,omitempty"`
+	Tools       []openAITool  `json:"tools,omitempty"`
 }
 
 type chatResponse struct {
@@ -70,10 +74,16 @@ func handleChat(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Inject tool definitions into system prompt if tools are provided
+	msgs := req.Messages
+	if len(req.Tools) > 0 {
+		msgs = augmentSystemWithTools(msgs, req.Tools)
+	}
+
 	// Собираем prompt через GGUF chat template (если доступен)
 	// ApplyChatTemplate использует tokenizer.chat_template из GGUF метаданных,
 	// что гарантирует корректную токенизацию и избегает segfault при ручной сборке.
-	prompt, err := buildChatPrompt(req.Messages, req.Model)
+	prompt, err := buildChatPrompt(msgs, req.Model)
 	if err != nil {
 		logger.Get().Errorw("handleChat: failed to build prompt", "model", req.Model, "error", err)
 		writeError(w, http.StatusInternalServerError, "chat prompt error: "+err.Error())
@@ -82,8 +92,9 @@ func handleChat(w http.ResponseWriter, r *http.Request) {
 
 	logger.Get().Debugw("handleChat: assembled prompt",
 		"model", req.Model,
-		"messages_count", len(req.Messages),
+		"messages_count", len(msgs),
 		"prompt_len", len(prompt),
+		"has_tools", len(req.Tools) > 0,
 		"stream", req.Stream)
 
 	genReq := generateRequest{
@@ -110,6 +121,37 @@ func handleChat(w http.ResponseWriter, r *http.Request) {
 		"antiprompts", params.Antiprompts)
 
 	if req.Stream {
+		// For streaming with tools: buffer full response, then check for tool_calls
+		if len(req.Tools) > 0 {
+				toolStart := time.Now()
+			result, err := generateWithRamFallback(req.Model, prompt, params)
+			if err != nil {
+				statusCode := http.StatusInternalServerError
+				if info := bridge.GetLastErrorInfo(); info.Code == bridge.ErrCodeNCtxNeedsReload || info.Code == bridge.ErrCodePromptTooLong || info.Code == bridge.ErrCodeBadRequest {
+					statusCode = http.StatusBadRequest
+				}
+				writeCppWorkerErrorWithBridgeInfo(w, statusCode, "chat generate (tool) failed", err)
+				return
+			}
+			duration := time.Since(toolStart)
+			toolCalls := parseToolCallsFromOutput(result.Output)
+			resp := chatResponse{
+				Model:     req.Model,
+				CreatedAt: time.Now().UTC().Format(time.RFC3339),
+				Message: chatMessage{
+					Role:    "assistant",
+					Content: result.Output,
+				},
+				Done:          true,
+				TotalDuration: duration.Nanoseconds(),
+			}
+			if len(toolCalls) > 0 {
+				resp.Message.ToolCalls = toolCalls
+				resp.Message.Content = ""
+			}
+			writeJSON(w, http.StatusOK, resp)
+			return
+		}
 		writeChatStreamResponse(w, r, req.Model, prompt, params)
 		return
 	}
@@ -125,6 +167,8 @@ func handleChat(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	duration := time.Since(start)
+
+	// Parse tool_calls from output if tools were provided
 	resp := chatResponse{
 		Model:     req.Model,
 		CreatedAt: time.Now().UTC().Format(time.RFC3339),
@@ -134,6 +178,12 @@ func handleChat(w http.ResponseWriter, r *http.Request) {
 		},
 		Done:          true,
 		TotalDuration: duration.Nanoseconds(),
+	}
+	if len(req.Tools) > 0 {
+		if calls := parseToolCallsFromOutput(result.Output); len(calls) > 0 {
+			resp.Message.ToolCalls = calls
+			resp.Message.Content = ""
+		}
 	}
 	writeJSON(w, http.StatusOK, resp)
 }
@@ -173,19 +223,35 @@ func extractSystemFromMessages(msgs []chatMessage) string {
 	return ""
 }
 
-// msgsToBridge конвертирует []chatMessage в []bridge.ChatMessage
+// msgsToBridge конвертирует []chatMessage в []bridge.ChatMessage.
+// Для assistant-сообщений с ToolCalls сериализует tool_calls в content,
+// так как bridge.ApplyChatTemplate не имеет отдельного поля для tool_calls.
+// Для tool-сообщений content передаётся как есть (уже содержит результат вызова).
 func msgsToBridge(msgs []chatMessage) []bridge.ChatMessage {
 	result := make([]bridge.ChatMessage, 0, len(msgs))
 	for _, m := range msgs {
+		content := m.Content
+		// Если assistant сообщение содержит tool_calls — сериализуем их в content
+		if m.Role == "assistant" && len(m.ToolCalls) > 0 {
+			tcJSON, err := json.Marshal(m.ToolCalls)
+			if err == nil {
+				if content != "" {
+					content += "\n" + string(tcJSON)
+				} else {
+					content = string(tcJSON)
+				}
+			}
+		}
 		result = append(result, bridge.ChatMessage{
 			Role:    m.Role,
-			Content: m.Content,
+			Content: content,
 		})
 	}
 	return result
 }
 
 // buildChatPromptFromMessages — собирает prompt из массива сообщений.
+// Поддерживает tool-сообщения и assistant-сообщения с ToolCalls для function calling.
 func buildChatPromptFromMessages(msgs []chatMessage, modelName string) string {
 	var promptBuilder strings.Builder
 	isGemma := isGemmaModel(modelName)
@@ -222,7 +288,38 @@ func buildChatPromptFromMessages(msgs []chatMessage, modelName string) string {
 			} else {
 				promptBuilder.WriteString("<|assistant|>\n")
 			}
-			promptBuilder.WriteString(msg.Content)
+			// Если есть tool_calls, сериализуем их в content
+			content := msg.Content
+			if len(msg.ToolCalls) > 0 {
+				tcJSON, err := json.Marshal(msg.ToolCalls)
+				if err == nil {
+					if content != "" {
+						content += "\n" + string(tcJSON)
+					} else {
+						content = string(tcJSON)
+					}
+				}
+			}
+			promptBuilder.WriteString(content)
+			if isGemma {
+				promptBuilder.WriteString("<end_of_turn>\n")
+			} else {
+				promptBuilder.WriteString("<|end|>\n")
+			}
+		case "tool":
+			// Форматируем tool-сообщение: имя инструмента : результат
+			content := msg.Content
+			if msg.Name != "" {
+				content = "tool_call_result(" + msg.Name + "): " + content
+			} else if msg.ToolCallID != "" {
+				content = "tool_call_result(" + msg.ToolCallID + "): " + content
+			}
+			if isGemma {
+				promptBuilder.WriteString("<start_of_turn>tool\n")
+			} else {
+				promptBuilder.WriteString("<|tool|>\n")
+			}
+			promptBuilder.WriteString(content)
 			if isGemma {
 				promptBuilder.WriteString("<end_of_turn>\n")
 			} else {

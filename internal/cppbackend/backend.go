@@ -48,8 +48,9 @@ type ModelInfo struct {
 	NKvHeads      int       `json:"nKvHeads"`
 	NEmbd         int       `json:"nEmbd"`
 	NVocab        int       `json:"nVocab"`
-	ContextSize   int       `json:"contextSize"`
-	SizeBytes     uint64    `json:"sizeBytes"`
+	ContextSize        int       `json:"contextSize"`
+	GGUFContextLength  int       `json:"ggufContextLength"`
+	SizeBytes          uint64    `json:"sizeBytes"`
 	LoadedAt      time.Time `json:"loadedAt"`
 	GPUCount      int       `json:"gpuCount,omitempty"`
 	GPULayers     int       `json:"gpuLayers"`
@@ -409,7 +410,8 @@ func (b *Backend) LoadModelWithOpts(name string, path string, opts LoadModelOpts
 	inst.info.NHeads = meta.NHeads
 	inst.info.NEmbd = meta.NEmbd
 	inst.info.NVocab = meta.NVocab
-	inst.info.ContextSize = meta.ContextLength
+	inst.info.ContextSize = ctxSize
+	inst.info.GGUFContextLength = meta.ContextLength
 	inst.info.SizeBytes = meta.SizeTotalBytes
 	inst.info.GPUCount = b.gpuCount
 	b.mu.Unlock()

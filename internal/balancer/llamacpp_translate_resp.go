@@ -12,7 +12,37 @@ import (
 )
 
 
+// buildErrorOllamaResponse — строит корректный Ollama-ответ с ошибкой для случаев,
+// когда upstream вернул пустое или невалидное тело. Возвращает JSON в Ollama-формате
+// с полями done:true, done_reason:"error", error:"<msg>" и пустым message/response.
+func buildErrorOllamaResponse(ollamaPath, modelName, errMsg string) []byte {
+	if ollamaPath == "/api/generate" {
+		out, _ := json.Marshal(map[string]interface{}{
+			"model":       modelName,
+			"created_at":  time.Now().UTC().Format(time.RFC3339),
+			"done":        true,
+			"done_reason": "error",
+			"error":       errMsg,
+			"response":    "",
+		})
+		return out
+	}
+	out, _ := json.Marshal(map[string]interface{}{
+		"model":       modelName,
+		"created_at":  time.Now().UTC().Format(time.RFC3339),
+		"done":        true,
+		"done_reason": "error",
+		"error":       errMsg,
+		"message": map[string]interface{}{
+			"role":    "assistant",
+			"content": "",
+		},
+	})
+	return out
+}
+
 // convertCreatedToRFC3339 — нормализует поле created (Unix timestamp в секундах)
+
 // из OpenAI-ответа в RFC3339-строку, которую ожидает Ollama API.
 //
 // Проблема: OpenAI возвращает `created` как целое число (Unix timestamp в секундах),
@@ -65,7 +95,9 @@ func convertCreatedToRFC3339(v interface{}) string {
 // translateOpenAIResponseToOllama — преобразует OpenAI response body в Ollama-формат.
 func translateOpenAIResponseToOllama(ollamaPath string, openaiBody []byte, modelName string) ([]byte, error) {
 	if len(openaiBody) == 0 {
-		return openaiBody, nil
+		logger.Get().Warnw("translateOpenAIResponseToOllama: empty body from upstream",
+			"model", modelName, "path", ollamaPath)
+		return buildErrorOllamaResponse(ollamaPath, modelName, "upstream returned empty response"), nil
 	}
 	switch ollamaPath {
 	case "/api/chat":
@@ -79,11 +111,17 @@ func translateOpenAIResponseToOllama(ollamaPath string, openaiBody []byte, model
 	}
 }
 
+
 // translateOpenAIChatToOllama — маппит OpenAI /v1/chat/completions ответ на Ollama /api/chat.
 func translateOpenAIChatToOllama(body []byte, modelName string) ([]byte, error) {
 	var openaiResp map[string]interface{}
 	if err := json.Unmarshal(body, &openaiResp); err != nil {
-		return body, nil
+		// Возвращаем структурированную Ollama-ошибку вместо сырого тела,
+		// чтобы клиент (OpenWebUI) получил валидный JSON, а не "Expecting value".
+		logger.Get().Warnw("translateOpenAIChatToOllama: failed to unmarshal upstream body",
+			"model", modelName, "error", err, "body_len", len(body))
+		return buildErrorOllamaResponse("/api/chat", modelName,
+			"upstream returned invalid JSON: "+err.Error()), nil
 	}
 	ollamaResp := map[string]interface{}{
 		"model":      modelName,
@@ -112,12 +150,21 @@ func translateOpenAIChatToOllama(body []byte, modelName string) ([]byte, error) 
 			if role == nil || role == "" {
 				role = "assistant"
 			}
-			ollamaResp["message"] = map[string]interface{}{
+			msgMap := map[string]interface{}{
 				"role":    role,
 				"content": message["content"],
 			}
+			// Handle tool_calls in the response message
+			if tc, ok := message["tool_calls"].([]interface{}); ok && len(tc) > 0 {
+				msgMap["tool_calls"] = tc
+				// Ollama клиенты ожидают content:"" если есть tool_calls
+				if msgMap["content"] == nil {
+					msgMap["content"] = ""
+				}
+			}
+			ollamaResp["message"] = msgMap
 			if finishReason, ok := choice["finish_reason"].(string); ok {
-				ollamaResp["done"] = finishReason == "stop"
+				ollamaResp["done"] = finishReason == "stop" || finishReason == "tool_calls"
 				ollamaResp["done_reason"] = finishReason
 			}
 		}
@@ -236,8 +283,10 @@ func translateSSEChatToOllama(chunk map[string]interface{}, modelName string) []
 	}
 	var hasContent bool
 	var hasRoleOnly bool
+	var hasToolCalls bool
 	var roleStr string
 	var contentStr string
+	var toolCallsJSON json.RawMessage
 
 	// Проброс ошибки от upstream.
 	if errStr, ok := chunk["error"].(string); ok && errStr != "" {
@@ -265,9 +314,16 @@ func translateSSEChatToOllama(chunk map[string]interface{}, modelName string) []
 			}
 			hasContent = contentStr != ""
 			hasRoleOnly = !hasContent && roleStr != ""
+			// Detect delta.tool_calls in SSE chunks from cppworker
+			if tc, ok := delta["tool_calls"]; ok && tc != nil {
+				hasToolCalls = true
+				if tcRaw, err := json.Marshal(tc); err == nil {
+					toolCallsJSON = tcRaw
+				}
+			}
 		}
 		if finishReason, ok := choice["finish_reason"].(string); ok && finishReason != "" {
-			ollamaChunk["done"] = true
+			ollamaChunk["done"] = finishReason == "stop" || finishReason == "tool_calls"
 			ollamaChunk["done_reason"] = finishReason
 		}
 	}
@@ -294,6 +350,41 @@ func translateSSEChatToOllama(chunk map[string]interface{}, modelName string) []
 			msg["role"] = "assistant"
 		}
 		ollamaChunk["message"] = msg
+		result, _ := json.Marshal(ollamaChunk)
+		return append(result, '\n')
+	}
+
+	// Role-only чанк с tool_calls (первый от OpenAI при finish_reason="tool_calls").
+	// CppWorker при стриминге с tools отправляет SSE chunk с delta.role + delta.tool_calls
+	// (но без content). Этот чанк надо сконвертировать в NDJSON с message.tool_calls.
+	if hasRoleOnly && hasToolCalls && len(toolCallsJSON) > 0 {
+		msgMap := map[string]interface{}{
+			"role":    roleStr,
+			"content": "",
+		}
+		// Парсим toolCallsJSON обратно в []interface{} для корректной сериализации
+		var toolCallsArr []interface{}
+		if err := json.Unmarshal(toolCallsJSON, &toolCallsArr); err == nil {
+			msgMap["tool_calls"] = toolCallsArr
+		}
+		ollamaChunk["message"] = msgMap
+		result, _ := json.Marshal(ollamaChunk)
+		return append(result, '\n')
+	}
+
+	// Tool-call content чанк (с content + tool_calls одновременно, если delta содержит оба).
+	// В cppworker такого не бывает (tools стриминг всегда буферизированный), но
+	// на случай future-совместимости — конвертируем как content + tool_calls.
+	if hasContent && hasToolCalls && len(toolCallsJSON) > 0 {
+		msgMap := map[string]interface{}{
+			"role":    roleStr,
+			"content": contentStr,
+		}
+		var toolCallsArr []interface{}
+		if err := json.Unmarshal(toolCallsJSON, &toolCallsArr); err == nil {
+			msgMap["tool_calls"] = toolCallsArr
+		}
+		ollamaChunk["message"] = msgMap
 		result, _ := json.Marshal(ollamaChunk)
 		return append(result, '\n')
 	}

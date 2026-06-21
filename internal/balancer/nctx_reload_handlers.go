@@ -100,11 +100,12 @@ func (p *Proxy) handleNCtxReload(
 		}
 
 	case DecisionReload:
-		p.handleNCtxReloadActual(ctx, w, r, backendID, modelName, plan, bodyBuf)
+		p.handleNCtxReloadActual(ctx, w, r, backendID, modelName, plan, bodyBuf, bridgeErr)
 	}
 }
 
 // handleNCtxReloadActual — выполняет reload на бэкенде и повторяет запрос.
+// bridgeErr — оригинальная n_ctx ошибка (нужна для writeNCtxRejectResponse при цикле).
 func (p *Proxy) handleNCtxReloadActual(
 	ctx context.Context,
 	w http.ResponseWriter,
@@ -112,6 +113,7 @@ func (p *Proxy) handleNCtxReloadActual(
 	backendID, modelName string,
 	plan *ReloadPlan,
 	bodyBuf []byte,
+	bridgeErr *NCtxBridgeError,
 ) {
 	// 1. Получаем backend (для формирования backendAddr).
 	p.mu.RLock()
@@ -141,16 +143,44 @@ func (p *Proxy) handleNCtxReloadActual(
 		return
 	}
 
-	// 3. Reload успешен — повторяем исходный запрос.
-	logger.Get().Infow("nctx_reload: reloading done, retrying request",
+	// 3. Reload успешен — проверяем, не цикл ли это (reload успешен, но retry
+	// снова возвращает n_ctx ошибку). Если cycle detected — reject вместо retry.
+	logger.Get().Infow("nctx_reload: reloading done, checking for cycles before retry",
 		"backend", backendID, "model", modelName,
 		"new_n_ctx", plan.NewNCtx, "duration_ms", duration.Milliseconds())
+
+	// Запоминаем reload как попытку. Если retry снова упадёт с n_ctx —
+	// следующий вызов handleNCtxReloadActual снова попадёт сюда и увеличит счётчик.
+	p.nctxReload.RecordCycleAttempt(backendID)
+
+	// Детекция цикла: 5+ последовательных reload+retry неудач.
+	// Лимит 5 (а не 3) даёт запас для tool calling через OpenWebUI,
+	// где каждая итерация поиска может генерировать n_ctx overflow.
+	if p.nctxReload.IsCycleDetected(backendID, 5) {
+		logger.Get().Errorw("nctx_reload: cycle detected after reload, switching to reject",
+			"backend", backendID, "model", modelName,
+			"n_ctx", plan.NewNCtx, "attempts", 5)
+		p.nctxReload.RecordDecision(backendID, "cycle-reject",
+			"cycle detected: "+plan.Reason)
+		writeNCtxRejectResponse(w, plan, bridgeErr)
+		return
+	}
 
 	// Прокидываем новый n_ctx в upstream через X-Cpp-Ctx header (см. num_ctx_resolver.go).
 	if r.Header == nil {
 		r.Header = http.Header{}
 	}
 	r.Header.Set("X-Cpp-Ctx", strconv.Itoa(plan.NewNCtx))
+
+	// ВАЖНО: удаляем num_ctx из bodyBuf перед retry, чтобы cppworker использовал
+	// полный n_ctx перезагруженной модели (plan.NewNCtx). Исходный body содержал
+	// старый num_ctx (например, 16384), который cppworker применит вместо нового
+	// n_ctx (32768), и retry снова упадёт с code 3.
+	//
+	// Header X-Cpp-Ctx не может поднять n_ctx, т.к. applyCppCtxHeader — это
+	// UPPER LIMIT (только зажимает, если body > header). Поэтому мы чистим
+	// num_ctx из body, чтобы cppworker взял n_ctx из контекста загруженной модели.
+	bodyBuf = removeNumCtxFromBody(bodyBuf)
 
 	// 4. Повторно проксируем. Используем существующие proxyRequestLlamaCpp / proxyRequestLlamaCppNonStream,
 	// но с восстановленным body.
@@ -270,6 +300,62 @@ func isNCtxReloadStreaming(r *http.Request) bool {
 		return true
 	}
 	return false
+}
+
+// removeNumCtxFromBody — удаляет num_ctx из body перед retry после n_ctx reload.
+//
+// После успешного reload модели на больший n_ctx (plan.NewNCtx), retry должен
+// использовать полный контекст перезагруженной модели. Если body содержит
+// num_ctx (например, 16384 из OpenWebUI), cppworker будет использовать его
+// вместо нового n_ctx (32768), что приведёт к повторной ошибке code 3.
+//
+// Удаляет:
+//   - options.num_ctx (Ollama format)
+//   - top-level num_ctx (OpenAI / generic format)
+//
+// Возвращает исходный bodyBuf, если нечего удалять или JSON невалидный.
+func removeNumCtxFromBody(bodyBuf []byte) []byte {
+	if len(bodyBuf) == 0 {
+		return bodyBuf
+	}
+	var req map[string]interface{}
+	if err := json.Unmarshal(bodyBuf, &req); err != nil {
+		return bodyBuf
+	}
+
+	modified := false
+
+	// 1) Ollama: options.num_ctx
+	if opts, ok := req["options"].(map[string]interface{}); ok {
+		if _, exists := opts["num_ctx"]; exists {
+			delete(opts, "num_ctx")
+			modified = true
+			// Если options стал пустым — удаляем и его
+			if len(opts) == 0 {
+				delete(req, "options")
+			}
+		}
+	}
+
+	// 2) OpenAI / generic: top-level num_ctx
+	if _, exists := req["num_ctx"]; exists {
+		delete(req, "num_ctx")
+		modified = true
+	}
+
+	if !modified {
+		return bodyBuf
+	}
+
+	newBody, err := json.Marshal(req)
+	if err != nil {
+		logger.Get().Warnw("removeNumCtxFromBody: failed to marshal modified body", "error", err)
+		return bodyBuf
+	}
+
+	logger.Get().Infow("removeNumCtxFromBody: removed num_ctx from retry body after n_ctx reload",
+		"original_size", len(bodyBuf), "new_size", len(newBody))
+	return newBody
 }
 
 // bytesReaderBuffer — небольшой helper для преобразования bodyBuf → io.Reader

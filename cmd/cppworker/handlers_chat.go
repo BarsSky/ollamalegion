@@ -16,11 +16,11 @@ import (
 // ============================================================
 
 type chatMessage struct {
-	Role       string          `json:"role"`
-	Content    string          `json:"content"`
+	Role       string           `json:"role"`
+	Content    string           `json:"content"`
 	ToolCalls  []openAIToolCall `json:"tool_calls,omitempty"`
-	ToolCallID string          `json:"tool_call_id,omitempty"`
-	Name       string          `json:"name,omitempty"`
+	ToolCallID string           `json:"tool_call_id,omitempty"`
+	Name       string           `json:"name,omitempty"`
 }
 
 type chatRequest struct {
@@ -121,35 +121,13 @@ func handleChat(w http.ResponseWriter, r *http.Request) {
 		"antiprompts", params.Antiprompts)
 
 	if req.Stream {
-		// For streaming with tools: buffer full response, then check for tool_calls
+		// При stream=true && tools!=[] стримим токены как обычно, но накапливаем
+		// полный output параллельно. После завершения генерации проверяем tool_calls
+		// и эмитим финальный чанк с done:true + message.tool_calls при необходимости.
+		// Раньше здесь был bug: cppworker возвращал non-streaming JSON через writeJSON,
+		// что ломало OpenWebUI (он ждал NDJSON чанки).
 		if len(req.Tools) > 0 {
-				toolStart := time.Now()
-			result, err := generateWithRamFallback(req.Model, prompt, params)
-			if err != nil {
-				statusCode := http.StatusInternalServerError
-				if info := bridge.GetLastErrorInfo(); info.Code == bridge.ErrCodeNCtxNeedsReload || info.Code == bridge.ErrCodePromptTooLong || info.Code == bridge.ErrCodeBadRequest {
-					statusCode = http.StatusBadRequest
-				}
-				writeCppWorkerErrorWithBridgeInfo(w, statusCode, "chat generate (tool) failed", err)
-				return
-			}
-			duration := time.Since(toolStart)
-			toolCalls := parseToolCallsFromOutput(result.Output)
-			resp := chatResponse{
-				Model:     req.Model,
-				CreatedAt: time.Now().UTC().Format(time.RFC3339),
-				Message: chatMessage{
-					Role:    "assistant",
-					Content: result.Output,
-				},
-				Done:          true,
-				TotalDuration: duration.Nanoseconds(),
-			}
-			if len(toolCalls) > 0 {
-				resp.Message.ToolCalls = toolCalls
-				resp.Message.Content = ""
-			}
-			writeJSON(w, http.StatusOK, resp)
+			writeChatStreamResponseWithTools(w, r, req.Model, prompt, params)
 			return
 		}
 		writeChatStreamResponse(w, r, req.Model, prompt, params)
@@ -157,8 +135,14 @@ func handleChat(w http.ResponseWriter, r *http.Request) {
 	}
 
 	start := time.Now()
-	result, err := generateWithRamFallback(req.Model, prompt, params)
+	hasTools := len(req.Tools) > 0
+	result, err := generateWithRamFallback(req.Model, prompt, params, hasTools)
 	if err != nil {
+		// Специальная обработка reload-loop-limit (HTTP 413 с понятным message).
+		if rllErr, ok := err.(*ReloadLoopLimitError); ok {
+			writeReloadLoopLimitResponse(w, rllErr)
+			return
+		}
 		statusCode := http.StatusInternalServerError
 		if info := bridge.GetLastErrorInfo(); info.Code == bridge.ErrCodeNCtxNeedsReload || info.Code == bridge.ErrCodePromptTooLong || info.Code == bridge.ErrCodeBadRequest {
 			statusCode = http.StatusBadRequest
@@ -373,8 +357,30 @@ func writeChatStreamResponse(w http.ResponseWriter, r *http.Request, modelName, 
 		return true
 	}
 
-	if err := generateStreamWithRamFallback(modelName, prompt, params, callback); err != nil {
+	// /api/chat endpoint: tools НЕ поддерживаются (Ollama-чат), reload разрешён при n_ctx overflow.
+	if err := generateStreamWithRamFallback(modelName, prompt, params, callback, false); err != nil {
 		maybeRestartOnMemorySlotError(err, modelName)
+		// Специальная обработка reload-loop-limit (HTTP 413 в NDJSON-чанке).
+		if rllErr, ok := err.(*ReloadLoopLimitError); ok {
+			errChunk := map[string]interface{}{
+				"model":           modelName,
+				"created_at":      createdAt,
+				"message":         map[string]string{"role": "assistant", "content": ""},
+				"done":            true,
+				"done_reason":     "error",
+				"error":           rllErr.Error(),
+				"code":            "reload_loop_limit",
+				"attempts":        rllErr.Count,
+				"elapsed_seconds": rllErr.Elapsed.Seconds(),
+				"http_status":     http.StatusRequestEntityTooLarge,
+			}
+			errJSON, _ := json.Marshal(errChunk)
+			w.Header().Set("X-CppWorker-Error", "reload_loop_limit")
+			w.Header().Set("X-HTTP-Status", "413")
+			fmt.Fprintf(w, "%s\n", errJSON)
+			flusher.Flush()
+			return
+		}
 		errChunk := map[string]interface{}{
 			"model":      modelName,
 			"created_at": createdAt,
@@ -390,15 +396,166 @@ func writeChatStreamResponse(w http.ResponseWriter, r *http.Request, modelName, 
 
 	duration := time.Since(start)
 	doneChunk := map[string]interface{}{
-		"model":      modelName,
-		"created_at": createdAt,
-		"message":    map[string]string{"role": "assistant", "content": ""},
-		"done":       true,
+		"model":          modelName,
+		"created_at":     createdAt,
+		"message":        map[string]string{"role": "assistant", "content": ""},
+		"done":           true,
 		"total_duration": duration.Nanoseconds(),
 		"eval_count":     0,
 		"eval_duration":  duration.Nanoseconds(),
 	}
 	doneJSON, _ := json.Marshal(doneChunk)
+	fmt.Fprintf(w, "%s\n", doneJSON)
+	flusher.Flush()
+}
+
+// writeChatStreamResponseWithTools — streaming-ответ с поддержкой tool calling.
+//
+// В отличие от writeChatStreamResponse, эта функция:
+//  1. Стримит токены как обычно через generateStreamWithRamFallback (real-time feedback).
+//  2. Параллельно накапливает полный output в буфер.
+//  3. После завершения генерации проверяет tool_calls через parseToolCallsFromOutput.
+//  4. Если есть tool_calls — очищает content и эмитит финальный чанк с done:true,
+//     done_reason:"tool_calls" и message.tool_calls.
+//  5. Если нет — эмитит обычный done:true чанк.
+//
+// Это решает баг, при котором OpenWebUI (stream=true + tools) получал non-streaming
+// JSON-ответ и не мог корректно его обработать (видел "источник использован" без ответа).
+func writeChatStreamResponseWithTools(w http.ResponseWriter, r *http.Request, modelName, prompt string, params bridge.GenerationParams) {
+	flusher, ok := w.(http.Flusher)
+	if !ok {
+		writeError(w, http.StatusInternalServerError, "streaming not supported")
+		return
+	}
+	w.Header().Set("Content-Type", "application/x-ndjson")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("Connection", "keep-alive")
+	flusher.Flush()
+	ctx := r.Context()
+	start := time.Now()
+	createdAt := time.Now().UTC().Format(time.RFC3339)
+
+	// Буферизация полного output для последующего парсинга tool_calls.
+	// Используем strings.Builder + мьютекс для безопасности из разных goroutine,
+	// хотя callback вызывается синхронно из generateStreamWithRamFallback.
+	var outputBuf strings.Builder
+
+	callback := func(token string) bool {
+		select {
+		case <-ctx.Done():
+			return false
+		default:
+		}
+		// Накапливаем output для последующего парсинга tool_calls.
+		outputBuf.WriteString(token)
+
+		// Эмитим обычный streaming chunk с content.
+		chunk := map[string]interface{}{
+			"model":      modelName,
+			"created_at": createdAt,
+			"message": map[string]string{
+				"role":    "assistant",
+				"content": token,
+			},
+			"done": false,
+		}
+		jsonData, _ := json.Marshal(chunk)
+		fmt.Fprintf(w, "%s\n", jsonData)
+		flusher.Flush()
+		return true
+	}
+
+	// /api/chat streaming fallback: tools не поддерживаются.
+	streamErr := generateStreamWithRamFallback(modelName, prompt, params, callback, false)
+
+	// Если во время streaming произошла ошибка — отдаём финальный chunk с error,
+	// как в writeChatStreamResponse. Tool calls в этом случае не анализируем.
+	if streamErr != nil {
+		maybeRestartOnMemorySlotError(streamErr, modelName)
+		// Специальная обработка reload-loop-limit: HTTP-статус 413 в NDJSON-чанке
+		// с error+code+model+attempts. OpenWebUI увидит error и завершит сессию
+		// с понятным сообщением (вместо бесконечного цикла unload+reload).
+		if rllErr, ok := streamErr.(*ReloadLoopLimitError); ok {
+			errChunk := map[string]interface{}{
+				"model":           modelName,
+				"created_at":      createdAt,
+				"message":         map[string]string{"role": "assistant", "content": ""},
+				"done":            true,
+				"done_reason":     "error",
+				"error":           rllErr.Error(),
+				"code":            "reload_loop_limit",
+				"attempts":        rllErr.Count,
+				"elapsed_seconds": rllErr.Elapsed.Seconds(),
+				"http_status":     http.StatusRequestEntityTooLarge,
+			}
+			errJSON, _ := json.Marshal(errChunk)
+			// Также ставим HTTP-статус в response (best-effort: если streaming уже начат — http.status будет проигнорирован клиентом, но код в NDJSON всё равно будет передан).
+			w.Header().Set("X-CppWorker-Error", "reload_loop_limit")
+			w.Header().Set("X-HTTP-Status", "413")
+			fmt.Fprintf(w, "%s\n", errJSON)
+			flusher.Flush()
+			return
+		}
+		errChunk := map[string]interface{}{
+			"model":       modelName,
+			"created_at":  createdAt,
+			"message":     map[string]string{"role": "assistant", "content": ""},
+			"done":        true,
+			"done_reason": "error",
+			"error":       streamErr.Error(),
+		}
+		errJSON, _ := json.Marshal(errChunk)
+		fmt.Fprintf(w, "%s\n", errJSON)
+		flusher.Flush()
+		return
+	}
+
+	fullOutput := outputBuf.String()
+	duration := time.Since(start)
+
+	// Пытаемся распарсить tool_calls из финального текста.
+	toolCalls := parseToolCallsFromOutput(fullOutput)
+
+	finalChunk := map[string]interface{}{
+		"model":          modelName,
+		"created_at":     createdAt,
+		"message":        map[string]interface{}{"role": "assistant"},
+		"done":           true,
+		"total_duration": duration.Nanoseconds(),
+		"eval_count":     0,
+		"eval_duration":  duration.Nanoseconds(),
+	}
+
+	if len(toolCalls) > 0 {
+		// Tool calls обнаружены — эмитим message.tool_calls и очищаем content.
+		// Это критично: OpenWebUI при `done_reason: "tool_calls"` ожидает
+		// что content пустой, а tool_calls содержит вызовы функций.
+		msg := finalChunk["message"].(map[string]interface{})
+		msg["content"] = ""
+		msg["tool_calls"] = toolCalls
+		finalChunk["done_reason"] = "tool_calls"
+		logger.Get().Infow("writeChatStreamResponseWithTools: detected tool_calls in streamed output",
+			"model", modelName, "tool_calls_count", len(toolCalls))
+	} else {
+		// Нет tool calls — обычный текстовый ответ. КРИТИЧНО: возвращаем
+		// полный output в финальном чанке, иначе OpenWebUI видит пустой
+		// content и завершает сессию ("один источник найден, ответа нет").
+		//
+		// Раньше здесь был bug: финальный чанк имел content: "", хотя
+		// текст уже был отправлен в streaming chunks. OpenWebUI после
+		// done:true берёт content из финального чанка (не агрегирует
+		// из streaming chunks), поэтому видел пустой ответ.
+		//
+		// Делаем минимальную очистку: удаляем хвостовые служебные токены,
+		// которые модель могла эмитить (</tool_call>, [TOOL_CALLS], и т.п.).
+		msg := finalChunk["message"].(map[string]interface{})
+		msg["content"] = cleanFinalContent(fullOutput)
+		finalChunk["done_reason"] = "stop"
+		logger.Get().Debugw("writeChatStreamResponseWithTools: text response (no tool_calls)",
+			"model", modelName, "content_len", len(msg["content"].(string)))
+	}
+
+	doneJSON, _ := json.Marshal(finalChunk)
 	fmt.Fprintf(w, "%s\n", doneJSON)
 	flusher.Flush()
 }

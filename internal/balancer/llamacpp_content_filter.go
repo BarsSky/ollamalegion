@@ -9,6 +9,106 @@ import (
 	"strings"
 )
 
+// cleanContentAfterToolCallExtraction — финальная очистка content после извлечения tool_calls.
+// Удаляет:
+//   - дубликаты JSON tool calls (через рекурсивный вызов detectAndExtractToolCallsFromContent)
+//   - role-маркеры ("system", "assistant"), оставшиеся после удаления XML-токенов
+//   - лишние пробелы, символы новой строки
+// Возвращает пустую строку, если контента не осталось (желаемое поведение для tool calls).
+func cleanContentAfterToolCallExtraction(s string) string {
+	result := strings.TrimSpace(s)
+	if result == "" {
+		return ""
+	}
+
+	// Пока есть дубликаты JSON tool calls — извлекаем их и продолжаем с остатком
+	for {
+		_, remainingTC, found := detectAndExtractToolCallsFromContent(result)
+		if !found {
+			break
+		}
+		result = strings.TrimSpace(remainingTC)
+		if result == "" {
+			return ""
+		}
+	}
+
+	// Удаляем role-маркеры, оставшиеся после удаления XML-токенов Gemma
+	// (например: <start_of_turn>system\n[JSON] → после strip → "system\n[JSON]")
+	roleMarkers := []string{
+		"system",
+		"assistant",
+		"user",
+		"model",
+	}
+	for _, marker := range roleMarkers {
+		// Удаляем маркер как целое слово (окружённое пробелами или границами строки)
+		for {
+			trimmed := strings.TrimSpace(result)
+			if trimmed == "" {
+				return ""
+			}
+			// Проверяем, начинается ли строка с role-маркера
+			if strings.HasPrefix(trimmed, marker) {
+				afterMarker := strings.TrimSpace(trimmed[len(marker):])
+				// Если после маркера только пробелы — заменяем на пустоту
+				result = afterMarker
+				continue
+			}
+			// Проверяем, заканчивается ли строка на role-маркер
+			if strings.HasSuffix(trimmed, marker) {
+				beforeMarker := strings.TrimSpace(trimmed[:len(trimmed)-len(marker)])
+				result = beforeMarker
+				continue
+			}
+			break
+		}
+	}
+
+	// Если остались только пустые скобки/JSON остатки — чистим
+	result = strings.TrimSpace(result)
+	if result == "[]" || result == "{}" || result == "" {
+		return ""
+	}
+
+	return result
+}
+
+// stripServiceTokens — удаляет известные служебные токены из строки (Gemma <start_of_turn>,
+// Llama3 <|eot_id|>, ChatML <|im_end|> и т.д.), возвращая очищенный текст.
+// Используется после детекции tool calls для очистки remainingContent.
+func stripServiceTokens(s string) string {
+	if s == "" {
+		return ""
+	}
+	tokens := []string{
+		"<end_of_turn>",
+		"</end_of_turn>",
+		"<start_of_turn>",
+		"</start_of_turn>",
+		"<bos>",
+		"<eos>",
+		"<endoftext>",
+		"<|endoftext|>",
+		"<|eot_id|>",
+		"<|eot|>",
+		"<|im_start|>",
+		"<|im_end|>",
+		"<|start_header_id|>",
+		"<|end_header_id|>",
+		"<|begin_of_text|>",
+		"<|end_of_text|>",
+		"<sep>",
+		"<pad>",
+		"<unk>",
+	}
+	result := s
+	for _, tok := range tokens {
+		result = strings.ReplaceAll(result, tok, "")
+	}
+	return strings.TrimSpace(result)
+}
+
 // shouldFilterLlamaCppContent — определяет, нужно ли отфильтровать строку
 // content из streaming-ответа llama.cpp/cppworker как служебный токен
 // (например Gemma `<end_of_turn>`, Llama3 `<|eot_id|>`, ChatML `<|im_end|>`).
@@ -35,6 +135,8 @@ func shouldFilterLlamaCppContent(content string) bool {
 	filteredTokens := []string{
 		"<end_of_turn>",       // Gemma
 		"<start_of_turn>",     // Gemma
+	"</start_of_turn>",    // Gemma (closing tag)
+	"</end_of_turn>",      // Gemma (closing tag)
 		"<bos>",               // Llama, общий
 		"<eos>",               // Llama, общий
 		"<endoftext>",         // GPT-2 / некоторые GGUF

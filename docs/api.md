@@ -104,6 +104,103 @@ CppWorker предоставляет следующие API помимо про�
 - Если путь или параметры отличаются — сначала вызывается `UnloadModel`, затем `LoadModelWithOpts` (reload-in-place).
 - Две одновременные загрузки одной модели сериализуются через `IsModelLoading`: вторая получает 503 с `loading: true`.
 
+### CppWorker: Tool Calling (Function Calling)
+
+CppWorker поддерживает function calling в форматах, совместимых с OpenAI/Ollama:
+
+- `/api/chat` (Ollama NDJSON) с полем `tools: [...]` в запросе.
+- `/v1/chat/completions` (OpenAI SSE) с полем `tools: [...]` в запросе.
+
+Поведение:
+
+1. При наличии `tools` в запросе cppworker расширяет system prompt описаниями доступных функций (`buildToolsSystemPrompt` в `cmd/cppworker/tool_calls.go`).
+2. После генерации cppworker пытается распарсить tool_calls из plain-text выхода модели через `parseToolCallsFromOutput`.
+3. Если распознано — возвращает `finish_reason: "tool_calls"` и `message.tool_calls`.
+4. Если НЕ распознано — возвращает обычный текстовый ответ `finish_reason: "stop"`.
+
+#### Поддерживаемые форматы tool_call от моделей
+
+cppworker (`parseToolCallsFromOutput`) и балансер (`detectAndExtractToolCallsFromContent`) распознают следующие форматы:
+
+| # | Формат | Пример | Модели |
+|---|--------|--------|--------|
+| 1 | Ollama/JSON-массив | `[{"id":"call_x","type":"function","function":{"name":"search","arguments":"..."}}]` | Gemma-4, llama.cpp chat template |
+| 2 | Hermes / Qwen 2.5 (XML) | `<tool_call>{"name":"search","arguments":{...}}</tool_call>` | NousResearch Hermes, Qwen 2.5 |
+| 3 | Llama-3.x python_tag | `<\|python_tag\|>{"name":"search","parameters":{...}}<\|eom_id\|>` | Llama-3.1+, Meta Llama-3 instruct |
+| 4 | Mistral Nemo | `[TOOL_CALLS][{"name":"search","arguments":{...}}]` | Mistral Nemo, Mistral-7B-instruct |
+| 5 | JSON внутри markdown | ``` ```json [...] ``` ``` | Универсальный |
+| 6 | Single-object JSON | `{"name":"search","arguments":{...}}` | Кастомные модели |
+| 7 | JSON с префиксом | `Reasoning... [{"id":"call_x",...}]` | Модели с chain-of-thought |
+
+Распознавание выполняется по приоритету: сначала Hermes, затем Llama-3, затем Mistral, затем стандартный JSON-массив, затем single-object.
+
+#### Поля `tools` (OpenAI/Ollama)
+
+```json
+{
+  "model": "my-model",
+  "messages": [{"role": "user", "content": "What is the weather?"}],
+  "tools": [
+    {
+      "type": "function",
+      "function": {
+        "name": "search",
+        "description": "Search the web",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "q": {"type": "string", "description": "Search query"}
+          },
+          "required": ["q"]
+        }
+      }
+    }
+  ]
+}
+```
+
+Поддерживается также `tool_choice`:
+- `"auto"` (по умолчанию) — модель сама решает, вызывать ли инструмент.
+- `"none"` — модель не должна вызывать инструменты.
+- `{"type": "function", "function": {"name": "search"}}` — форсированный вызов.
+
+#### Follow-up сообщения от tool результатов
+
+OpenWebUI и другие клиенты отправляют результат вызова инструмента как сообщение с `role: "tool"`:
+
+```json
+{
+  "role": "tool",
+  "tool_call_id": "call_search",
+  "name": "search",
+  "content": "Result of the search..."
+}
+```
+
+cppworker сериализует tool-сообщения в prompt модели через `buildChatPrompt` (формат `tool_call_result(<name>): <content>`).
+
+#### Streaming с tools
+
+Для streaming (`stream: true`) при наличии `tools` (Ollama-формат `/api/chat`):
+
+- cppworker стримит токены как обычно через `generateStreamWithRamFallback` (real-time feedback).
+- Параллельно накапливает полный output в буфер.
+- После завершения генерации проверяет `tool_calls` через `parseToolCallsFromOutput`.
+- Если `tool_calls` обнаружены — очищает `content` и эмитит финальный NDJSON chunk с `done: true`, `done_reason: "tool_calls"`, `message.tool_calls`.
+- Если НЕ обнаружены — эмитит обычный chunk с `done_reason: "stop"`.
+
+> **Примечание:** До этого cppworker при `stream=true && tools!=[]` отдавал non-streaming JSON через `writeJSON`, что ломало OpenWebUI (он ожидал NDJSON чанки и интерпретировал ответ как "источник использован" без видимого ответа). Теперь исправлено через `writeChatStreamResponseWithTools` в `cmd/cppworker/handlers_chat.go`.
+
+Для OpenAI-формата `/v1/chat/completions` streaming с tools использует `writeToolCallsStream` или `writeStaticTextStream` (SSE).
+
+Балансер (`internal/balancer/llamacpp_translate_resp.go`) дополнительно пытается распарсить tool_calls из content SSE chunk'ов через `detectAndExtractToolCallsFromContent`, чтобы восстановить структурированные tool_calls даже если cppworker их не распознал.
+
+#### Известные ограничения
+
+- Ollama Modelfile templates (`template`, `system` в `.gguf.json`) не применяются — cppworker использует chat template из GGUF или naive fallback.
+- Ollama registry (`ollama pull llama3`) не поддерживается; для загрузки моделей используй `hf:<repo>/<file.gguf>` через `/api/pull` или `/api/hf/download`.
+- Vision/мультимодальные tools (image inputs) не поддерживаются — модель получит только текстовую часть.
+
 ### CppWorker: per-model profiles (управление n_ctx)
 
 **Полная документация:** [cppworker-model-params.md](./cppworker-model-params.md).

@@ -59,7 +59,41 @@ import (
 //     применимо) и скорректирован NPredict
 //
 // Возвращает: ничего (мутирует params in-place; логирует через zap).
+// CppCtxApplyOptions — опциональные параметры ApplyCppCtxHeader.
+// Используем opt-in pattern (HasTools, ToolsPromptReserveTokens), чтобы не
+// ломать существующий API для вызовов без tools.
+type CppCtxApplyOptions struct {
+	// HasTools — true, если запрос содержит tool definitions (OpenAI tools,
+	// function calling). В этом случае резерв под prompt увеличивается.
+	HasTools bool
+	// ToolsPromptReserveTokens — сколько токенов зарезервировать под tools-prompt.
+	// Используется только если HasTools=true. По умолчанию (если 0) —
+	// toolsPromptDefaultReserveTokens.
+	ToolsPromptReserveTokens int
+}
+
+const (
+	// toolsPromptDefaultReserveTokens — базовый резерв токенов под tools-prompt.
+	// Подобран эмпирически: buildToolsSystemPrompt для 5-10 tools даёт
+	// 800-1500 символов ~ 300-600 токенов, плюс user history в OpenWebUI обычно
+	// занимает 1-2K токенов. Итого 2-3K — берём с запасом.
+	toolsPromptDefaultReserveTokens = 2048
+	// basePromptReserveTokens — базовый резерв токенов под prompt без tools.
+	// Используется при расчёте maxPredict: n_ctx - reserve.
+	basePromptReserveTokens = 1024
+	// minNPredict — нижний предел NPredict (даже при n_ctx=2048).
+	minNPredict = 512
+)
+
 func ApplyCppCtxHeader(r *http.Request, params *bridge.GenerationParams) {
+	// Backwards-compat wrapper: применяем стандартную логику без tools-reserve.
+	ApplyCppCtxHeaderWithOptions(r, params, CppCtxApplyOptions{})
+}
+
+// ApplyCppCtxHeaderWithOptions — расширенная версия с учётом tools reserve.
+// Если opts.HasTools=true, резервирует больше места под tools-prompt и историю,
+// чтобы избежать n_ctx overflow → reload loop.
+func ApplyCppCtxHeaderWithOptions(r *http.Request, params *bridge.GenerationParams, opts CppCtxApplyOptions) {
 	s := r.Header.Get("X-Cpp-Ctx")
 	if s == "" {
 		return
@@ -78,29 +112,38 @@ func ApplyCppCtxHeader(r *http.Request, params *bridge.GenerationParams) {
 			"body_n_ctx", params.NCtxOverride, "header_limit", headerLimit)
 		params.NCtxOverride = headerLimit
 	}
-	// Шаг 2: фикс D.6 + D.8 — ограничиваем default NPredict, чтобы он
-	// гарантированно помещался в n_ctx ВМЕСТЕ с prompt любого разумного размера.
-	//
-	// Эвристика: NPredict = n_ctx - 1024. Резервируем 1024 токена на prompt
-	// (system + диалог в OpenWebUI), остальное — на генерацию вывода.
-	// Это значительно лучше старой эвристики n_ctx/2, при которой для
-	// n_ctx=2048 оставалось всего 1024 токена на ответ — катастрофически
-	// мало для длинных ответов на русском языке.
-	//
-	// Минимум: 2048 токенов на вывод (если n_ctx позволяет), иначе n_ctx-1024.
-	// Если клиент явно задал NPredict в body (MaxTokens/NumPredict),
-	// то buildGenerationParams уже установил params.NPredict отличным от
-	// reference default — оставляем его значение (условие >= referenceDefault
-	// будет false).
-	maxPredict := params.NCtxOverride - 1024
-	if maxPredict < 1024 {
-		maxPredict = 1024 // нижний предел: хотя бы 1024 токена на вывод
+
+	// Шаг 2: рассчитываем резерв токенов под prompt.
+	// Если есть tools — увеличенный резерв, чтобы system+tools+history не вытеснили вывод.
+	promptReserve := basePromptReserveTokens
+	if opts.HasTools {
+		promptReserve = opts.ToolsPromptReserveTokens
+		if promptReserve <= 0 {
+			promptReserve = toolsPromptDefaultReserveTokens
+		}
+		logger.Get().Debugw("applyCppCtxHeader: tools-aware prompt reserve",
+			"reserve_tokens", promptReserve, "n_ctx", params.NCtxOverride)
 	}
+
+	// Шаг 3: ограничиваем default NPredict, чтобы он гарантированно помещался
+	// в n_ctx ВМЕСТЕ с prompt любого разумного размера.
+	//
+	// Эвристика: NPredict = n_ctx - promptReserve.
+	// Минимум: minNPredict токенов на вывод.
+	maxPredict := params.NCtxOverride - promptReserve
+	if maxPredict < minNPredict {
+		maxPredict = minNPredict // нижний предел
+	}
+
 	// D.8 fix: используем reference default из bridge вместо hardcoded 4096.
 	referenceDefault := bridge.DefaultGenerationParams().NPredict
 	if params.NPredict >= referenceDefault {
-		logger.Get().Debugw("applyCppCtxHeader: replacing default n_predict with n_ctx-1024",
-			"old_n_predict", params.NPredict, "new_n_predict", maxPredict, "n_ctx", params.NCtxOverride,
+		logger.Get().Debugw("applyCppCtxHeader: replacing default n_predict with n_ctx-reserve",
+			"old_n_predict", params.NPredict,
+			"new_n_predict", maxPredict,
+			"n_ctx", params.NCtxOverride,
+			"prompt_reserve", promptReserve,
+			"has_tools", opts.HasTools,
 			"reference_default", referenceDefault)
 		params.NPredict = maxPredict
 	}

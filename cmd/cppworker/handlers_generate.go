@@ -60,7 +60,22 @@ func normalizeGenerateRequest(req *generateRequest) {
 		req.Prompt = req.System + "\n" + req.Prompt
 	}
 
-	_ = req.KeepAlive // accepted for compatibility
+	// keep_alive: парсим и сохраняем в LastUsedAt (если != 0).
+	// Формат Ollama:
+	//   "5m", "30s", "1h"   — duration (парсим через time.ParseDuration)
+	//   "0" / "0s"          — выгрузить модель сразу после ответа (handled below)
+	//   "-1" / ""           — бесконечно (default), но мы ставим 30 минут как разумный fallback
+	//
+	// ВАЖНО (2026-06-22): раньше это поле игнорировалось полностью (_ = req.KeepAlive).
+	// Это означало, что клиенты OpenWebUI/Cline, рассчитывающие на стандартный Ollama-семантик
+	// keep_alive, получали выгрузку модели по IdleUnloadManager cppworker (если он включён) или
+	// UnloadScheduler балансировщика (если включён) — вне зависимости от того, что они запросили.
+	// Теперь keep_alive ПРАВИЛЬНО влияет на время жизни модели в VRAM:
+	//   - "5m" → lastUsedAt += 5 минут
+	//   - "0"  → unload immediately after response (handled in runGenerateCore caller)
+	//   - ""   → дефолт 30 минут
+	keepAliveDur := parseKeepAlive(req.KeepAlive)
+	req._keepAliveDuration = keepAliveDur
 }
 
 func buildGenerationParams(req generateRequest) bridge.GenerationParams {
@@ -154,6 +169,10 @@ func parseStopSequences(stop interface{}) []string {
 
 // runGenerateCore — общая часть handleGenerate/handleOllamaGenerate:
 // валидация, нормализация Ollama-формата, lazy-load, построение params.
+//
+// ВАЖНО (2026-06-22): если keep_alive == "0" (клиент явно попросил выгрузить),
+// runGenerateCore вызывает backend.UnloadModel(modelName) после успешного инференса
+// через caller'а (handleGenerate/handleOllamaGenerate должны вызвать applyKeepAlive).
 func runGenerateCore(w http.ResponseWriter, r *http.Request, req generateRequest) (bridge.GenerationParams, string, bool) {
 	normalizeGenerateRequest(&req)
 
@@ -180,6 +199,35 @@ func runGenerateCore(w http.ResponseWriter, r *http.Request, req generateRequest
 	return params, req.Prompt, true
 }
 
+// applyKeepAlive — применяет результат парсинга req.KeepAlive после инференса.
+//
+// Семантика:
+//
+//	keep_alive == "0"  → выгружает модель из VRAM (UnloadModel).
+//	keep_alive == "5m" → lastUsedAt += 5 минут (через backend.UpdateLastUsed).
+//	keep_alive == ""   → дефолт 30 минут (через backend.UpdateLastUsed).
+//
+// Вызывается в defer-блоке handleGenerate/handleOllamaGenerate ПОСЛЕ успешного
+// инференса. Это сохраняет модель в VRAM на запрошенное время даже после отправки
+// ответа клиенту.
+func applyKeepAlive(modelName string, keepAlive time.Duration) {
+	if modelName == "" {
+		return
+	}
+	if keepAlive <= 0 {
+		// Клиент явно попросил выгрузить (keep_alive="0").
+		logger.Get().Infow("model unload requested via keep_alive=0",
+			"name", modelName)
+		if err := backend.UnloadModel(modelName); err != nil {
+			logger.Get().Warnw("applyKeepAlive: unload failed",
+				"name", modelName, "error", err)
+		}
+		return
+	}
+	// Продлеваем время жизни модели.
+	backend.UpdateLastUsed(modelName, keepAlive)
+}
+
 // isEmptyInferenceResult — true, если бэкенд вернул успех, но без текста.
 func isEmptyInferenceResult(result *bridge.InferenceResult) bool {
 	return result != nil && result.Status == 0 && strings.TrimSpace(result.Output) == ""
@@ -197,17 +245,29 @@ func handleGenerate(w http.ResponseWriter, r *http.Request) {
 	}
 	modelName := req.Model
 
+	// keep_alive: после успешного ответа применяется в defer.
+	// Семантика: "0" → unload, "5m" → lastUsedAt += 5 минут, "" → дефолт 30 минут.
+	defer func() {
+		applyKeepAlive(modelName, req._keepAliveDuration)
+	}()
+
 	if req.Stream {
 		writeStreamResponse(w, r, modelName, prompt, params)
 		return
 	}
 
 	start := time.Now()
-	result, err := generateWithRamFallback(modelName, prompt, params)
+	// /api/generate endpoint: tools не поддерживаются.
+	result, err := generateWithRamFallback(modelName, prompt, params, false)
 	if err != nil {
 		statusCode := http.StatusInternalServerError
 		if info := bridge.GetLastErrorInfo(); info.Code == bridge.ErrCodeNCtxNeedsReload || info.Code == bridge.ErrCodePromptTooLong || info.Code == bridge.ErrCodeBadRequest {
 			statusCode = http.StatusBadRequest
+		}
+		// Специальная обработка reload-loop-limit (HTTP 413 с понятным message).
+		if rllErr, ok := err.(*ReloadLoopLimitError); ok {
+			writeReloadLoopLimitResponse(w, rllErr)
+			return
 		}
 		writeCppWorkerErrorWithBridgeInfo(w, statusCode, "generate failed", err)
 		return
@@ -263,7 +323,8 @@ func writeStreamResponse(w http.ResponseWriter, r *http.Request, modelName, prom
 		tokens++
 		return true
 	}
-	if err := generateStreamWithRamFallback(modelName, prompt, params, callback); err != nil {
+	// /api/generate streaming: tools не поддерживаются.
+	if err := generateStreamWithRamFallback(modelName, prompt, params, callback, false); err != nil {
 		maybeRestartOnMemorySlotError(err, modelName)
 		errChunk := map[string]interface{}{
 			"model": modelName,
@@ -306,16 +367,27 @@ func handleOllamaGenerate(w http.ResponseWriter, r *http.Request) {
 	}
 	modelName := req.Model
 
+	// keep_alive: после успешного ответа применяется в defer.
+	defer func() {
+		applyKeepAlive(modelName, req._keepAliveDuration)
+	}()
+
 	if req.Stream {
 		writeOllamaStream(w, r, modelName, prompt, params)
 		return
 	}
 	start := time.Now()
-	result, err := generateWithRamFallback(modelName, prompt, params)
+	// /api/generate (Ollama) — tools не поддерживаются, reload разрешён при n_ctx overflow.
+	result, err := generateWithRamFallback(modelName, prompt, params, false)
 	if err != nil {
 		statusCode := http.StatusInternalServerError
 		if info := bridge.GetLastErrorInfo(); info.Code == bridge.ErrCodeNCtxNeedsReload || info.Code == bridge.ErrCodePromptTooLong || info.Code == bridge.ErrCodeBadRequest {
 			statusCode = http.StatusBadRequest
+		}
+		// Специальная обработка reload-loop-limit (HTTP 413 с понятным message).
+		if rllErr, ok := err.(*ReloadLoopLimitError); ok {
+			writeReloadLoopLimitResponse(w, rllErr)
+			return
 		}
 		writeCppWorkerErrorWithBridgeInfo(w, statusCode, "generate failed", err)
 		return
@@ -371,7 +443,8 @@ func writeOllamaStream(w http.ResponseWriter, r *http.Request, modelName, prompt
 		tokens++
 		return true
 	}
-	if err := generateStreamWithRamFallback(modelName, prompt, params, callback); err != nil {
+	// /api/generate streaming: tools не поддерживаются.
+	if err := generateStreamWithRamFallback(modelName, prompt, params, callback, false); err != nil {
 		maybeRestartOnMemorySlotError(err, modelName)
 		errJSON, _ := json.Marshal(map[string]interface{}{"model": modelName, "done": true, "error": err.Error()})
 		fmt.Fprintf(w, "%s\n", errJSON)
@@ -392,4 +465,40 @@ func writeOllamaStream(w http.ResponseWriter, r *http.Request, modelName, prompt
 	})
 	fmt.Fprintf(w, "%s\n", doneJSON)
 	flusher.Flush()
+}
+
+// defaultKeepAliveDuration — дефолтное значение keep_alive, если клиент его
+// не задал (пустая строка) или задал "-1" / "0" без явной просьбы выгрузить.
+// 30 минут — разумный баланс между «модель живёт для текущей сессии» и
+// «не занимает VRAM вечно, если пользователь забыл выгрузить».
+const defaultKeepAliveDuration = 30 * time.Minute
+
+// parseKeepAlive парсит Ollama-стиль keep_alive в time.Duration.
+//
+// Поддерживаемые форматы:
+//
+//	"5m", "30s", "1h"  — duration через time.ParseDuration
+//	"0", "0s", "0ms"   — 0 (выгрузить модель сразу после ответа, handled separately)
+//	"-1", ""           — дефолт defaultKeepAliveDuration (30 минут)
+//
+// Возвращает 0 только если клиент ЯВНО попросил выгрузить (keep_alive="0").
+// Иначе возвращает положительную длительность.
+func parseKeepAlive(s string) time.Duration {
+	s = strings.TrimSpace(s)
+	if s == "" || s == "-1" {
+		return defaultKeepAliveDuration
+	}
+	if s == "0" || s == "0s" || s == "0ms" {
+		return 0
+	}
+	d, err := time.ParseDuration(s)
+	if err != nil {
+		logger.Get().Warnw("parseKeepAlive: invalid keep_alive value, using default",
+			"keep_alive", s, "error", err, "default", defaultKeepAliveDuration.String())
+		return defaultKeepAliveDuration
+	}
+	if d < 0 {
+		return defaultKeepAliveDuration
+	}
+	return d
 }

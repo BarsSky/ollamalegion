@@ -26,6 +26,7 @@ import (
 	"time"
 
 	"ollama-loadbalancer/pkg/logger"
+	"ollama-loadbalancer/pkg/types"
 )
 
 // handleNCtxReload — обрабатывает запрос, где upstream вернул ErrNCtxNeedsReload.
@@ -362,4 +363,211 @@ func removeNumCtxFromBody(bodyBuf []byte) []byte {
 // (используется внутри handleNCtxReload, чтобы не дублировать логику).
 func bytesReaderBuffer(b []byte) io.Reader {
 	return bytes.NewReader(b)
+}
+
+// preflightNCtxReloadIfNeeded — проверяет ПЕРЕД проксированием, что loaded n_ctx
+// на бэкенде покрывает запрашиваемый клиентом num_ctx. Если нет —
+// АСИНХРОННО запускает POST /api/models/reload с требуемым n_ctx в фоне
+// и возвращает клиенту HTTP 503 + Retry-After.
+//
+// ЗАЧЕМ: при первом запросе от OpenWebUI с tools (system + tool definitions
+// ~3000-5000 токенов) клиент посылает options.num_ctx=16384, а модель
+// загружена с n_ctx=4096 (default cppworker). Без preflight — cppworker
+// сразу возвращает code 2 (ErrNCtxNeedsReload), балансер делает reload
+// по факту ошибки, модель выгружается и загружается заново (10-30 сек).
+//
+// ВАЖНО (2026-06-22): preflight БОЛЬШЕ НЕ ДЕЛАЕТ синхронный reload.
+// Раньше здесь был блокирующий POST /api/models/reload, который:
+//   - выгружал текущую модель из VRAM на 10-30 сек,
+//   - параллельные запросы получали 500 с "handle is nil",
+//   - streaming-клиент получал обрыв без полного ответа.
+//
+// Теперь reload запускается в горутине, а клиент сразу получает
+// 503 Service Unavailable с Retry-After: 5. Клиент (OpenWebUI, Cline, curl)
+// делает повторный запрос через 5 секунд — к этому моменту reload либо
+// уже завершён, либо ещё идёт (тогда клиент получит 503 ещё раз).
+// Стрим НЕ обрывается посередине.
+//
+// Возвращает:
+//   - modifiedBody = bodyBuf (если reload не нужен) —
+//     рекомендуется проксировать с этим body
+//   - needsProxy = true если можно проксировать (reload не нужен)
+//   - needsProxy = false если требуется reload (клиенту возвращён 503)
+//   - errorMessage = "" если ОК, иначе сообщение об ошибки
+//   - statusCode = http.StatusOK если можно проксировать,
+//                  http.StatusServiceUnavailable если запущен reload
+func (p *Proxy) preflightNCtxReloadIfNeeded(
+	ctx context.Context,
+	backendID, modelName string,
+	bodyBuf []byte,
+) (modifiedBody []byte, needsProxy bool, errMsg string, statusCode int) {
+	if p.nctxReload == nil || len(bodyBuf) == 0 {
+		return bodyBuf, true, "", http.StatusOK
+	}
+
+	// Не делаем preflight-reload для streaming-запросов.
+	// Причина: если запустить reload посреди стрима (или прямо перед ним),
+	// текущий стрим оборвётся с "handle is nil", а следующий вызов preflight
+	// зависнет в ожидании reload. Клиент получит обрыв ответа.
+	//
+	// Для streaming-клиентов n_ctx reload обрабатывается в handleNCtxReload
+	// ПОСЛЕ получения ошибки ErrNCtxNeedsReload от cppworker (там уже есть
+	// streaming-aware retry-логика).
+	if isStreamingFromBody("", bodyBuf) {
+		return bodyBuf, true, "", http.StatusOK
+	}
+
+	// 1. Извлекаем num_ctx из body (если задан).
+	requestedNCtx := ExtractNumCtxFromBody(bodyBuf)
+	if requestedNCtx <= 0 {
+		return bodyBuf, true, "", http.StatusOK
+	}
+
+	// 2. Получаем loaded n_ctx из метрик.
+	p.metricsMgr.mu.RLock()
+	lm, hasLm := p.metricsMgr.llamaMetrics[backendID]
+	var loadedNCtx int
+	if hasLm && lm != nil {
+		for _, m := range lm.LoadedModels {
+			if m.Name == modelName || containsFold(m.Name, modelName) || containsFold(modelName, m.Name) {
+				if m.ContextLength > 0 {
+					loadedNCtx = m.ContextLength
+				}
+				break
+			}
+		}
+	}
+	p.metricsMgr.mu.RUnlock()
+
+	// 3. Если loaded >= requested — перезагрузка не нужна.
+	if loadedNCtx >= requestedNCtx {
+		return bodyBuf, true, "", http.StatusOK
+	}
+
+	// 4. Loaded < requested — нужен reload. Запускаем его АСИНХРОННО в горутине.
+	//
+	// Почему не синхронно (как было раньше):
+	//   - reload выгружает текущую модель из VRAM на 10-30 сек,
+	//   - параллельные запросы получают HTTP 500 с "handle is nil",
+	//   - streaming-клиент теряет середину ответа (обрыв стрима),
+	//   - клиент получает context deadline exceeded при медленном reload.
+	//
+	// Новая логика: запускаем reload в горутине, сразу возвращаем клиенту
+	// HTTP 503 Service Unavailable + Retry-After: 5. Клиент повторит
+	// запрос через 5 секунд — к этому моменту reload обычно завершён.
+	logger.Get().Infow("preflightNCtxReload: detected n_ctx mismatch, scheduling async reload",
+		"backend", backendID, "model", modelName,
+		"loaded_n_ctx", loadedNCtx,
+		"requested_n_ctx", requestedNCtx,
+		"loaded_n_ctx_is_zero", loadedNCtx == 0)
+
+	// Получаем backend state для URL.
+	p.mu.RLock()
+	backendState, exists := p.backends[backendID]
+	p.mu.RUnlock()
+	if !exists {
+		// Backend не найден — проксируем как есть, cppworker вернёт свою ошибку.
+		return bodyBuf, true, "", http.StatusOK
+	}
+
+	// Запускаем reload в горутине. Неблокирующий режим: клиент сразу
+	// получит 503 + Retry-After, а reload идёт параллельно.
+	go p.executeAsyncReload(backendID, modelName, requestedNCtx, backendState.Backend)
+
+	// Обновляем кэш метрик: ставим ContextLength = requestedNCtx,
+	// чтобы следующие preflight-чеки не запускали reload повторно.
+	// Реальное значение обновит metrics_poller через ~5 сек после успешного reload.
+	p.metricsMgr.mu.Lock()
+	if lm == nil {
+		lm = &types.LlamaCppMetrics{}
+		p.metricsMgr.llamaMetrics[backendID] = lm
+	}
+	found := false
+	for i := range lm.LoadedModels {
+		if lm.LoadedModels[i].Name == modelName ||
+			containsFold(lm.LoadedModels[i].Name, modelName) {
+			lm.LoadedModels[i].ContextLength = requestedNCtx
+			found = true
+			break
+		}
+	}
+	if !found {
+		lm.LoadedModels = append(lm.LoadedModels, types.LlamaCppModel{
+			Name:          modelName,
+			State:         "loaded",
+			ContextLength: requestedNCtx,
+		})
+	}
+	p.metricsMgr.mu.Unlock()
+
+	// Возвращаем клиенту 503 + Retry-After: 5. needsProxy=false — вызывающий код
+	// должен сам сформировать ответ (status, headers, body).
+	return bodyBuf, false,
+		fmt.Sprintf("model %q is being reloaded to n_ctx=%d (loaded=%d); retry in 5s",
+			modelName, requestedNCtx, loadedNCtx),
+		http.StatusServiceUnavailable
+}
+
+// executeAsyncReload — запускает POST /api/models/reload в фоне.
+// Используется из preflightNCtxReloadIfNeeded для неблокирующего reload.
+//
+// При успехе: модель перезагружена, metrics_poller подхватит новые метрики.
+// При ошибке: логируем, модель остаётся со старым n_ctx (cppworker вернёт
+// ErrNCtxNeedsReload при следующем запросе — тогда сработает handleNCtxReload).
+func (p *Proxy) executeAsyncReload(backendID, modelName string, requestedNCtx int, backend *types.Backend) {
+	start := time.Now()
+	targetURL := p.getBackendBaseURL(backend) + "/api/models/reload"
+
+	reloadPayload, _ := json.Marshal(map[string]interface{}{
+		"name":        modelName,
+		"contextSize": requestedNCtx,
+		"force":       true,
+		"reason":      "balancer preflight async auto-reload (loaded<requested)",
+	})
+
+	reloadCtx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
+	defer cancel()
+
+	req, reqErr := http.NewRequestWithContext(reloadCtx, "POST", targetURL, bytes.NewReader(reloadPayload))
+	if reqErr != nil {
+		logger.Get().Errorw("preflightNCtxReload(async): failed to create reload request",
+			"backend", backendID, "model", modelName, "error", reqErr)
+		return
+	}
+	req.Header.Set("Content-Type", "application/json")
+	if p.config != nil && len(p.config.Auth.Tokens) > 0 {
+		req.Header.Set("Authorization", "Bearer "+p.config.Auth.Tokens[0])
+	}
+
+	logger.Get().Infow("preflightNCtxReload(async): starting reload",
+		"backend", backendID, "model", modelName,
+		"target_n_ctx", requestedNCtx, "url", targetURL)
+
+	resp, err := p.client.Do(req)
+	if err != nil {
+		logger.Get().Errorw("preflightNCtxReload(async): reload HTTP request failed",
+			"backend", backendID, "model", modelName,
+			"target_n_ctx", requestedNCtx, "duration_ms", time.Since(start).Milliseconds(),
+			"error", err)
+		return
+	}
+	defer resp.Body.Close()
+
+	body, _ := io.ReadAll(resp.Body)
+	duration := time.Since(start)
+
+	if resp.StatusCode != http.StatusOK {
+		logger.Get().Warnw("preflightNCtxReload(async): reload returned non-OK status",
+			"backend", backendID, "model", modelName,
+			"target_n_ctx", requestedNCtx,
+			"status", resp.StatusCode,
+			"duration_ms", duration.Milliseconds(),
+			"body", string(body))
+		return
+	}
+
+	logger.Get().Infow("preflightNCtxReload(async): reload SUCCESS",
+		"backend", backendID, "model", modelName,
+		"target_n_ctx", requestedNCtx,
+		"duration_ms", duration.Milliseconds())
 }

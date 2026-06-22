@@ -32,9 +32,14 @@ import (
 // ============================================================
 
 var (
+	startupTime          = time.Now() // Используется для /api/diagnostics uptime.
 	port                 = flag.Int("port", 18092, "HTTP server port (default 18092; 18091 is legacy)")
 	modelsDir            = flag.String("models-dir", "./models", "Directory with GGUF model files")
-	ctxSize              = flag.Int("ctx-size", 4096, "Default context size")
+	// DefaultCtxSize = 8192 (а не 4096): при 4096 у OpenWebUI с tools
+	// (system + tool definitions ~3000-5000 токенов + user message)
+	// prompt не влезает → reload на каждой tool-итерации.
+	// 8192 — минимум для стабильной работы OpenWebUI с tools.
+	ctxSize              = flag.Int("ctx-size", 8192, "Default context size")
 	batchSize            = flag.Int("batch-size", 512, "Default batch size")
 	gpuLayers            = flag.Int("gpu-layers", -1, "GPU layers (-1=all, 0=CPU)")
 	flashAttn            = flag.Int("flash-attn", -1, "Flash Attention type: -1=auto, 0=disabled, 1=enabled")

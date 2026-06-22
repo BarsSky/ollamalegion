@@ -443,3 +443,385 @@ func TestMsgsToBridge_ToolRole(t *testing.T) {
 		t.Errorf("expected role 'tool', got '%s'", result[0].Role)
 	}
 }
+
+// ============================================================
+// Tests for Hermes / Qwen 2.5 <tool_call> format
+// ============================================================
+
+func TestParseToolCallsFromOutput_HermesFormat_SingleObject(t *testing.T) {
+	output := `<tool_call>
+{"name": "search", "arguments": {"q": "weather in Paris"}}
+</tool_call>`
+	result := parseToolCallsFromOutput(output)
+	if len(result) != 1 {
+		t.Fatalf("expected 1 tool call, got %d", len(result))
+	}
+	if result[0].Function.Name != "search" {
+		t.Errorf("expected function 'search', got '%s'", result[0].Function.Name)
+	}
+	if !strings.Contains(result[0].Function.Arguments, "weather in Paris") {
+		t.Errorf("expected arguments to contain 'weather in Paris', got '%s'", result[0].Function.Arguments)
+	}
+	if result[0].ID == "" {
+		t.Error("expected auto-generated ID")
+	}
+	if result[0].Type != "function" {
+		t.Errorf("expected type 'function', got '%s'", result[0].Type)
+	}
+}
+
+func TestParseToolCallsFromOutput_HermesFormat_ArrayOfObjects(t *testing.T) {
+	output := `<tool_call>
+[{"name": "search", "arguments": {"q": "AI news"}}, {"name": "calculator", "arguments": {"expr": "2+2"}}]
+</tool_call>`
+	result := parseToolCallsFromOutput(output)
+	if len(result) != 2 {
+		t.Fatalf("expected 2 tool calls, got %d", len(result))
+	}
+	if result[0].Function.Name != "search" {
+		t.Errorf("expected first 'search', got '%s'", result[0].Function.Name)
+	}
+	if result[1].Function.Name != "calculator" {
+		t.Errorf("expected second 'calculator', got '%s'", result[1].Function.Name)
+	}
+}
+
+func TestParseToolCallsFromOutput_HermesFormat_WithoutNewlines(t *testing.T) {
+	output := `<tool_call>{"name":"search","arguments":{"q":"test"}}</tool_call>`
+	result := parseToolCallsFromOutput(output)
+	if len(result) != 1 {
+		t.Fatalf("expected 1 tool call, got %d", len(result))
+	}
+	if result[0].Function.Name != "search" {
+		t.Errorf("expected 'search', got '%s'", result[0].Function.Name)
+	}
+}
+
+func TestParseToolCallsFromOutput_HermesFormat_MultipleToolCalls(t *testing.T) {
+	output := `I'll help you with that.<tool_call>{"name":"search","arguments":{"q":"test1"}}</tool_call> And also: <tool_call>{"name":"calc","arguments":{"expr":"1+1"}}</tool_call>`
+	result := parseToolCallsFromOutput(output)
+	if len(result) != 2 {
+		t.Fatalf("expected 2 tool calls, got %d", len(result))
+	}
+	if result[0].Function.Name != "search" {
+		t.Errorf("expected first 'search', got '%s'", result[0].Function.Name)
+	}
+	if result[1].Function.Name != "calc" {
+		t.Errorf("expected second 'calc', got '%s'", result[1].Function.Name)
+	}
+}
+
+func TestParseToolCallsFromOutput_HermesFormat_PreservesID(t *testing.T) {
+	output := `<tool_call>{"id":"custom_id_42","name":"search","arguments":{"q":"x"}}</tool_call>`
+	result := parseToolCallsFromOutput(output)
+	if len(result) != 1 {
+		t.Fatalf("expected 1 tool call, got %d", len(result))
+	}
+	if result[0].ID != "custom_id_42" {
+		t.Errorf("expected preserved ID 'custom_id_42', got '%s'", result[0].ID)
+	}
+}
+
+func TestParseToolCallsFromOutput_HermesFormat_ParametersField(t *testing.T) {
+	// Некоторые модели используют "parameters" вместо "arguments"
+	output := `<tool_call>{"name":"search","parameters":{"q":"test"}}</tool_call>`
+	result := parseToolCallsFromOutput(output)
+	if len(result) != 1 {
+		t.Fatalf("expected 1 tool call, got %d", len(result))
+	}
+	if result[0].Function.Name != "search" {
+		t.Errorf("expected 'search', got '%s'", result[0].Function.Name)
+	}
+	if !strings.Contains(result[0].Function.Arguments, "test") {
+		t.Errorf("expected arguments to contain 'test', got '%s'", result[0].Function.Arguments)
+	}
+}
+
+// ============================================================
+// Tests for Llama-3.x <|python_tag|> format
+// ============================================================
+
+func TestParseToolCallsFromOutput_Llama3_PythonTag_SingleObject(t *testing.T) {
+	output := `<|python_tag|>{"name": "search", "parameters": {"q": "test query"}}`
+	result := parseToolCallsFromOutput(output)
+	if len(result) != 1 {
+		t.Fatalf("expected 1 tool call, got %d", len(result))
+	}
+	if result[0].Function.Name != "search" {
+		t.Errorf("expected 'search', got '%s'", result[0].Function.Name)
+	}
+	if !strings.Contains(result[0].Function.Arguments, "test query") {
+		t.Errorf("expected arguments to contain 'test query', got '%s'", result[0].Function.Arguments)
+	}
+}
+
+func TestParseToolCallsFromOutput_Llama3_PythonTag_Array(t *testing.T) {
+	output := `<|python_tag|>[{"name": "search", "parameters": {"q": "AI"}}, {"name": "calc", "parameters": {"expr": "2*3"}}]`
+	result := parseToolCallsFromOutput(output)
+	if len(result) != 2 {
+		t.Fatalf("expected 2 tool calls, got %d", len(result))
+	}
+	if result[0].Function.Name != "search" {
+		t.Errorf("expected first 'search', got '%s'", result[0].Function.Name)
+	}
+	if result[1].Function.Name != "calc" {
+		t.Errorf("expected second 'calc', got '%s'", result[1].Function.Name)
+	}
+}
+
+func TestParseToolCallsFromOutput_Llama3_PythonTag_WithEomId(t *testing.T) {
+	output := `<|python_tag|>{"name":"search","parameters":{"q":"x"}}<|eom_id|>`
+	result := parseToolCallsFromOutput(output)
+	if len(result) != 1 {
+		t.Fatalf("expected 1 tool call, got %d", len(result))
+	}
+	if result[0].Function.Name != "search" {
+		t.Errorf("expected 'search', got '%s'", result[0].Function.Name)
+	}
+}
+
+func TestParseToolCallsFromOutput_Llama3_PythonTag_WithEotId(t *testing.T) {
+	output := `<|python_tag|>{"name":"search","parameters":{"q":"x"}}<|eot_id|>`
+	result := parseToolCallsFromOutput(output)
+	if len(result) != 1 {
+		t.Fatalf("expected 1 tool call, got %d", len(result))
+	}
+	if result[0].Function.Name != "search" {
+		t.Errorf("expected 'search', got '%s'", result[0].Function.Name)
+	}
+}
+
+func TestParseToolCallsFromOutput_Llama3_PythonTag_ArgumentsField(t *testing.T) {
+	// Если модель использует "arguments" вместо "parameters"
+	output := `<|python_tag|>{"name":"search","arguments":{"q":"x"}}`
+	result := parseToolCallsFromOutput(output)
+	if len(result) != 1 {
+		t.Fatalf("expected 1 tool call, got %d", len(result))
+	}
+	if result[0].Function.Name != "search" {
+		t.Errorf("expected 'search', got '%s'", result[0].Function.Name)
+	}
+}
+
+// ============================================================
+// Tests for Mistral Nemo [TOOL_CALLS] format
+// ============================================================
+
+func TestParseToolCallsFromOutput_MistralNemo_BasicFormat(t *testing.T) {
+	output := `[TOOL_CALLS][{"name": "search", "arguments": {"q": "test"}}]`
+	result := parseToolCallsFromOutput(output)
+	if len(result) != 1 {
+		t.Fatalf("expected 1 tool call, got %d", len(result))
+	}
+	if result[0].Function.Name != "search" {
+		t.Errorf("expected 'search', got '%s'", result[0].Function.Name)
+	}
+	if !strings.Contains(result[0].Function.Arguments, "test") {
+		t.Errorf("expected arguments to contain 'test', got '%s'", result[0].Function.Arguments)
+	}
+}
+
+func TestParseToolCallsFromOutput_MistralNemo_WithToolResults(t *testing.T) {
+	output := `[TOOL_CALLS][{"name": "search", "arguments": {"q": "x"}}][TOOL_RESULTS][{"name": "search", "content": "result"}]`
+	result := parseToolCallsFromOutput(output)
+	if len(result) != 1 {
+		t.Fatalf("expected 1 tool call (TOOL_RESULTS should be ignored), got %d", len(result))
+	}
+	if result[0].Function.Name != "search" {
+		t.Errorf("expected 'search', got '%s'", result[0].Function.Name)
+	}
+}
+
+func TestParseToolCallsFromOutput_MistralNemo_MultipleCalls(t *testing.T) {
+	output := `[TOOL_CALLS][{"name":"a","arguments":{}},{"name":"b","arguments":{}}]`
+	result := parseToolCallsFromOutput(output)
+	if len(result) != 2 {
+		t.Fatalf("expected 2 tool calls, got %d", len(result))
+	}
+}
+
+// ============================================================
+// Tests for Single-object JSON format
+// ============================================================
+
+func TestParseToolCallsFromOutput_SingleObject_Basic(t *testing.T) {
+	output := `{"name":"search","arguments":{"q":"test"}}`
+	result := parseToolCallsFromOutput(output)
+	if len(result) != 1 {
+		t.Fatalf("expected 1 tool call, got %d", len(result))
+	}
+	if result[0].Function.Name != "search" {
+		t.Errorf("expected 'search', got '%s'", result[0].Function.Name)
+	}
+}
+
+func TestParseToolCallsFromOutput_SingleObject_WithFunctionField(t *testing.T) {
+	// Llama-3 style: {"function":"search", "arguments":"..."}
+	output := `{"function":"search","arguments":"{\"q\":\"test\"}"}`
+	result := parseToolCallsFromOutput(output)
+	if len(result) != 1 {
+		t.Fatalf("expected 1 tool call, got %d", len(result))
+	}
+	if result[0].Function.Name != "search" {
+		t.Errorf("expected 'search', got '%s'", result[0].Function.Name)
+	}
+}
+
+func TestParseToolCallsFromOutput_SingleObject_NotAToolCall(t *testing.T) {
+	// Объект без признаков tool_call — должен вернуть nil
+	output := `{"some_key":"value","another":"thing"}`
+	result := parseToolCallsFromOutput(output)
+	if result != nil {
+		t.Errorf("expected nil for non-tool-call object, got %v", result)
+	}
+}
+
+func TestParseToolCallsFromOutput_SingleObject_OnlyName(t *testing.T) {
+	// Объект с name, но без arguments — должен вернуть nil
+	output := `{"name":"search"}`
+	result := parseToolCallsFromOutput(output)
+	if result != nil {
+		t.Errorf("expected nil for object without arguments, got %v", result)
+	}
+}
+
+// ============================================================
+// Tests for stringifyArguments helper
+// ============================================================
+
+func TestStringifyArguments_AlreadyJSONString(t *testing.T) {
+	args := `{"q":"test"}`
+	result := stringifyArguments(args)
+	if result != args {
+		t.Errorf("expected unchanged JSON string, got '%s'", result)
+	}
+}
+
+func TestStringifyArguments_PlainString(t *testing.T) {
+	args := "plain text"
+	result := stringifyArguments(args)
+	// plain text должен быть обёрнут в JSON-строку
+	var parsed string
+	if err := json.Unmarshal([]byte(result), &parsed); err != nil {
+		t.Errorf("expected valid JSON string, got '%s' (err: %v)", result, err)
+	}
+	if parsed != "plain text" {
+		t.Errorf("expected 'plain text', got '%s'", parsed)
+	}
+}
+
+func TestStringifyArguments_Map(t *testing.T) {
+	args := map[string]interface{}{"q": "test"}
+	result := stringifyArguments(args)
+	if !strings.Contains(result, "\"q\"") || !strings.Contains(result, "\"test\"") {
+		t.Errorf("expected JSON with q=test, got '%s'", result)
+	}
+}
+
+func TestStringifyArguments_Nil(t *testing.T) {
+	result := stringifyArguments(nil)
+	if result != "{}" {
+		t.Errorf("expected '{}' for nil, got '%s'", result)
+	}
+}
+
+// ============================================================
+// Tests for findMatchingClosingBrace helper
+// ============================================================
+
+func TestFindMatchingClosingBrace_Simple(t *testing.T) {
+	s := `{"a":1}`
+	pos := findMatchingClosingBrace(s, 0)
+	if pos != 6 {
+		t.Errorf("expected pos 6, got %d", pos)
+	}
+}
+
+func TestFindMatchingClosingBrace_Nested(t *testing.T) {
+	s := `{"a":{"b":{"c":1}}}`
+	pos := findMatchingClosingBrace(s, 0)
+	// Длина строки = 19, последний символ '}' на позиции 18 (0-based).
+	if pos != 18 {
+		t.Errorf("expected pos 18 (last char), got %d", pos)
+	}
+}
+
+func TestFindMatchingClosingBrace_WithString(t *testing.T) {
+	s := `{"a":"}inner}","b":1}`
+	pos := findMatchingClosingBrace(s, 0)
+	if pos < 0 {
+		t.Errorf("expected positive pos, got %d", pos)
+	}
+	// Проверяем, что закрывающая скобка действительно на последней позиции
+	if pos != len(s)-1 {
+		t.Errorf("expected last char, got pos %d (len %d)", pos, len(s))
+	}
+}
+
+func TestFindMatchingClosingBrace_WithEscapedQuote(t *testing.T) {
+	s := `{"a":"with \"quote\" inside"}`
+	pos := findMatchingClosingBrace(s, 0)
+	if pos != len(s)-1 {
+		t.Errorf("expected last char, got pos %d (len %d)", pos, len(s))
+	}
+}
+
+func TestFindMatchingClosingBrace_NotFound(t *testing.T) {
+	s := `{"a":1` // нет закрывающей
+	pos := findMatchingClosingBrace(s, 0)
+	if pos != -1 {
+		t.Errorf("expected -1, got %d", pos)
+	}
+}
+
+// ============================================================
+// Real-world scenarios from OpenWebUI
+// ============================================================
+
+func TestParseToolCallsFromOutput_OpenWebUI_RealScenario_Gemma(t *testing.T) {
+	// Gemma часто выводит JSON tool call в content
+	output := `[{"id":"call_abc123","type":"function","function":{"name":"search","arguments":"{\"q\":\"AI developments\"}"}}]`
+	result := parseToolCallsFromOutput(output)
+	if len(result) != 1 {
+		t.Fatalf("expected 1 tool call, got %d", len(result))
+	}
+	if result[0].Function.Name != "search" {
+		t.Errorf("expected 'search', got '%s'", result[0].Function.Name)
+	}
+	if result[0].ID != "call_abc123" {
+		t.Errorf("expected ID 'call_abc123', got '%s'", result[0].ID)
+	}
+}
+
+func TestParseToolCallsFromOutput_OpenWebUI_RealScenario_HermesWithReasoning(t *testing.T) {
+	// Модель сначала объясняет, потом делает tool_call
+	output := `Let me search for that information for you.
+<tool_call>
+{"name": "search", "arguments": {"q": "latest AI news"}}
+</tool_call>`
+	result := parseToolCallsFromOutput(output)
+	if len(result) != 1 {
+		t.Fatalf("expected 1 tool call, got %d", len(result))
+	}
+	if result[0].Function.Name != "search" {
+		t.Errorf("expected 'search', got '%s'", result[0].Function.Name)
+	}
+}
+
+func TestParseToolCallsFromOutput_OpenWebUI_RealScenario_QwenWithSpecialChars(t *testing.T) {
+	// Qwen может экранировать спецсимволы в arguments
+	output := `<tool_call>
+{"name": "search", "arguments": {"q": "hello\"world\nand\nlines"}}
+</tool_call>`
+	result := parseToolCallsFromOutput(output)
+	if len(result) != 1 {
+		t.Fatalf("expected 1 tool call, got %d", len(result))
+	}
+	if result[0].Function.Name != "search" {
+		t.Errorf("expected 'search', got '%s'", result[0].Function.Name)
+	}
+	// arguments должен быть валидным JSON
+	if !json.Valid([]byte(result[0].Function.Arguments)) {
+		t.Errorf("expected valid JSON arguments, got '%s'", result[0].Function.Arguments)
+	}
+}

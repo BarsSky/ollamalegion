@@ -1,5 +1,7 @@
 package main
 
+import "time"
+
 // ============================================================
 // Request/Response types
 // ============================================================
@@ -51,6 +53,11 @@ type generateRequest struct {
 	Seed             int             `json:"seed,omitempty"`
 	NumCtx           int             `json:"numCtx,omitempty"`
 	Stream           bool            `json:"stream"`
+	// _keepAliveDuration — парсится из req.KeepAlive в normalizeGenerateRequest.
+	// Используется в handleGenerate/handleOllamaGenerate для продления lastUsedAt
+	// модели после успешного ответа. 0 = дефолт (30 минут).
+	// Не экспортируется в JSON (unexported field).
+	_keepAliveDuration time.Duration `json:"-"`
 }
 
 type generateResponse struct {

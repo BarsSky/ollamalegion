@@ -161,6 +161,22 @@ func translateOpenAIChatToOllama(body []byte, modelName string) ([]byte, error) 
 				if msgMap["content"] == nil {
 					msgMap["content"] = ""
 				}
+			} else if contentStr, ok := message["content"].(string); ok && contentStr != "" {
+				// Детектируем JSON tool calls в content (для моделей без поддержки tool calling)
+				if detectedTC, remainingTC, found := detectAndExtractToolCallsFromContent(contentStr); found && len(detectedTC) > 0 {
+					logger.Get().Infow("translateOpenAIChatToOllama: detected tool_calls in content, extracting",
+						"model", modelName, "tool_calls_count", len(detectedTC),
+						"original_content_len", len(contentStr),
+						"remaining_content_len", len(remainingTC))
+					msgMap["tool_calls"] = detectedTC
+						// Clean remaining content: remove service tokens, duplicate tool calls, role markers
+					cleaned := stripServiceTokens(remainingTC)
+					cleaned = cleanContentAfterToolCallExtraction(cleaned)
+					msgMap["content"] = cleaned
+					if msgMap["content"] == "" {
+						msgMap["content"] = ""
+					}
+				}
 			}
 			ollamaResp["message"] = msgMap
 			if finishReason, ok := choice["finish_reason"].(string); ok {
@@ -343,6 +359,29 @@ func translateSSEChatToOllama(chunk map[string]interface{}, modelName string) []
 			result, _ := json.Marshal(ollamaChunk)
 			return append(result, '\n')
 		}
+
+		// Детектируем JSON tool calls в content (для моделей без поддержки tool calling)
+		if detectedTC, remainingTC, found := detectAndExtractToolCallsFromContent(contentStr); found && len(detectedTC) > 0 {
+			logger.Get().Infow("translateSSEChatToOllama: detected tool_calls in content, extracting",
+				"model", modelName, "tool_calls_count", len(detectedTC),
+				"original_content_len", len(contentStr),
+				"remaining_content_len", len(remainingTC))
+
+			// Clean remaining: remove service tokens, duplicate tool calls, role markers
+			cleanRemaining := stripServiceTokens(remainingTC)
+			cleanRemaining = cleanContentAfterToolCallExtraction(cleanRemaining)
+			msg := map[string]interface{}{"content": cleanRemaining}
+			if roleStr != "" {
+				msg["role"] = roleStr
+			} else {
+				msg["role"] = "assistant"
+			}
+			msg["tool_calls"] = detectedTC
+			ollamaChunk["message"] = msg
+			result, _ := json.Marshal(ollamaChunk)
+			return append(result, '\n')
+		}
+
 		msg := map[string]interface{}{"content": contentStr}
 		if roleStr != "" {
 			msg["role"] = roleStr

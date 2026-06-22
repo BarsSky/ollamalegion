@@ -67,6 +67,16 @@ type Config struct {
 	EnableMetrics     bool `json:"enableMetrics"`
 	MetricsRetentionS int  `json:"metricsRetentionSeconds"`
 
+	// IdleUnloadMinutes — автоматическая выгрузка моделей из VRAM после N минут простоя.
+	// 0 (по умолчанию) = автовыгрузка ВЫКЛЮЧЕНА. Модель держится в VRAM, пока:
+	//   - пользователь явно не вызовет /api/models/unload или /api/profiles/* unload,
+	//   - или не выключит контейнер,
+	//   - или не запросит другую модель (LRU-eviction).
+	// Раньше IdleUnloadManager использовал MetricsRetentionS (по дефолту 3600 секунд =
+	// 60 минут) как idleTimeout, что путало метрики с автовыгрузкой и иногда вызывало
+	// выгрузку через час, даже если пользователь этого не хотел.
+	IdleUnloadMinutes int `json:"idleUnloadMinutes"`
+
 	// HuggingFace CLI
 	HuggingFaceCLIPath string `json:"huggingFaceCliPath,omitempty"` // путь к huggingface-cli
 }
@@ -80,7 +90,12 @@ func DefaultConfig() Config {
 		ModelsDir:         "./models",
 		DownloadsDir:      "./downloads",
 		CacheDir:          "./cache",
-		DefaultCtxSize:    4096,
+		// DefaultCtxSize = 8192 (а не 4096): при 4096 у OpenWebUI с tools
+		// (system + tool definitions ~3000-5000 токенов + user message)
+		// prompt не влезает → reload на каждой tool-итерации.
+		// 8192 — минимум для стабильной работы OpenWebUI с tools.
+		// Можно override через CPPWORKER_CTX_SIZE или CPPWORKER_DEFAULT_CTX_SIZE.
+		DefaultCtxSize:    8192,
 		DefaultBatchSize:  512,
 		DefaultGPULayers:  -1, // все слои на GPU
 		DefaultFlashAttnType:  -1,
@@ -111,6 +126,11 @@ func DefaultConfig() Config {
 
 		EnableMetrics:     true,
 		MetricsRetentionS: 3600,
+		// IdleUnloadMinutes: 0 = автовыгрузка моделей ВЫКЛЮЧЕНА по умолчанию.
+		// Если нужна автоматическая выгрузка после простоя, задайте явно:
+		//   export CPPWORKER_IDLE_UNLOAD_MINUTES=30
+		// или через JSON-конфиг: {"idleUnloadMinutes": 30}.
+		IdleUnloadMinutes: 0,
 	}
 }
 
@@ -137,6 +157,11 @@ func LoadConfigFromEnv() Config {
 		cfg.CacheDir = v
 	}
 	if v := os.Getenv("CPPWORKER_CTX_SIZE"); v != "" {
+		cfg.DefaultCtxSize = parseInt(v, cfg.DefaultCtxSize)
+	}
+	// Alias: CPPWORKER_DEFAULT_CTX_SIZE — для совместимости с
+	// .env-файлами, где пользователь ожидает именно "default" ctx size.
+	if v := os.Getenv("CPPWORKER_DEFAULT_CTX_SIZE"); v != "" {
 		cfg.DefaultCtxSize = parseInt(v, cfg.DefaultCtxSize)
 	}
 	if v := os.Getenv("CPPWORKER_BATCH_SIZE"); v != "" {
@@ -244,6 +269,13 @@ func LoadConfigFromEnv() Config {
 	// Метрики
 	if v := os.Getenv("CPPWORKER_ENABLE_METRICS"); v != "" {
 		cfg.EnableMetrics = v == "1" || strings.ToLower(v) == "true"
+	}
+
+	// Idle unload (автовыгрузка моделей).
+	// Значение по умолчанию 0 = ВЫКЛЮЧЕНО. Если задано N — модели выгружаются
+	// после N минут простоя (отсчёт от последнего использования).
+	if v := os.Getenv("CPPWORKER_IDLE_UNLOAD_MINUTES"); v != "" {
+		cfg.IdleUnloadMinutes = parseInt(v, cfg.IdleUnloadMinutes)
 	}
 
 	return cfg

@@ -119,6 +119,211 @@ func waitReloadInProgress(modelName string) bool {
 }
 
 // ============================================================
+// RAM fallback reload-loop protection
+// ============================================================
+//
+// Проблема (см. docs/remaining-real-plan.md, OpenWebUI tools-flow bug):
+// При работе с OpenWebUI tools (web search и т.п.) каждая итерация диалога
+// добавляет tool definitions / tool calls / tool results в prompt. Если
+// n_ctx модели слишком мал, на КАЖДОЙ итерации происходит n_ctx overflow
+// → tryRamFallbackReload → unload + reload модели → это занимает 10-30 сек.
+// OpenWebUI при этом не получает ответа, отменяет запрос, шлёт новый —
+// и цикл повторяется. В худшем случае бесконечный reload-loop без шансов
+// на успех (если n_ctx всё равно недостаточен для system prompt + tools).
+//
+// Решение: ограничить количество последовательных reload-попыток для
+// каждой модели в скользящем окне cycleResetInterval. Если превышен лимит —
+// возвращаем ошибку ErrReloadLoopLimit вместо reload. Caller получит
+// HTTP 413 с понятным сообщением "model cannot fit prompt even after
+// N reload attempts, increase n_ctx or reduce prompt/tool definitions".
+//
+// Счётчик сбрасывается после успешного инференса без n_ctx ошибки.
+
+const (
+	// ramFallbackMaxAttempts — максимум reload-попыток для одной модели
+	// в скользящем окне cycleResetInterval.
+	ramFallbackMaxAttempts = 3
+	// ramFallbackCycleResetInterval — скользящее окно для подсчёта попыток.
+	// После успешного инференса без n_ctx ошибки счётчик сбрасывается немедленно.
+	ramFallbackCycleResetInterval = 60 * time.Second
+)
+
+// ramFallbackAttempts — per-model счётчик reload-попыток с временной меткой.
+// Используем sync.Map для потокобезопасности без блокировок на горячем пути.
+var ramFallbackAttempts sync.Map
+
+// ramFallbackAttemptState хранит состояние счётчика для одной модели.
+type ramFallbackAttemptState struct {
+	mu               sync.Mutex
+	count            int
+	firstAttemptTime time.Time
+	lastAttemptTime  time.Time
+}
+
+// getReloadAttempts возвращает (count, isCycleLimit) для модели.
+// count — число reload-попыток в текущем окне.
+// isCycleLimit — true, если превышен лимит (нужно decline reload).
+// Автоматически сбрасывает счётчик, если окно истекло.
+func getReloadAttempts(modelName string) (count int, isCycleLimit bool) {
+	stateRaw, ok := ramFallbackAttempts.Load(modelName)
+	if !ok {
+		return 0, false
+	}
+	state, ok := stateRaw.(*ramFallbackAttemptState)
+	if !ok {
+		return 0, false
+	}
+	state.mu.Lock()
+	defer state.mu.Unlock()
+
+	// Если прошло больше cycleResetInterval с ПЕРВОЙ попытки в окне — сбрасываем.
+	if !state.firstAttemptTime.IsZero() &&
+		time.Since(state.firstAttemptTime) > ramFallbackCycleResetInterval {
+		state.count = 0
+		state.firstAttemptTime = time.Time{}
+		state.lastAttemptTime = time.Time{}
+	}
+	if state.count >= ramFallbackMaxAttempts {
+		return state.count, true
+	}
+	return state.count, false
+}
+
+// recordReloadAttempt увеличивает счётчик reload-попыток для модели.
+// Вызывается в начале каждой tryRamFallbackReload, когда принято решение
+// действительно делать reload (после прохождения isCycleLimit check).
+func recordReloadAttempt(modelName string) {
+	stateRaw, _ := ramFallbackAttempts.LoadOrStore(modelName, &ramFallbackAttemptState{})
+	state := stateRaw.(*ramFallbackAttemptState)
+	state.mu.Lock()
+	defer state.mu.Unlock()
+	now := time.Now()
+	if state.firstAttemptTime.IsZero() ||
+		now.Sub(state.firstAttemptTime) > ramFallbackCycleResetInterval {
+		// Начинаем новое окно
+		state.count = 1
+		state.firstAttemptTime = now
+		state.lastAttemptTime = now
+		return
+	}
+	state.count++
+	state.lastAttemptTime = now
+}
+
+// resetReloadAttempts сбрасывает счётчик reload-попыток для модели.
+// Вызывается после успешного инференса без n_ctx ошибки (т.е. prompt
+// влез в текущий n_ctx — больше reload не нужен).
+func resetReloadAttempts(modelName string) {
+	stateRaw, ok := ramFallbackAttempts.Load(modelName)
+	if !ok {
+		return
+	}
+	state, ok := stateRaw.(*ramFallbackAttemptState)
+	if !ok {
+		return
+	}
+	state.mu.Lock()
+	defer state.mu.Unlock()
+	state.count = 0
+	state.firstAttemptTime = time.Time{}
+	state.lastAttemptTime = time.Time{}
+}
+
+// ErrReloadLoopLimit возвращается из tryRamFallbackReload, когда
+// превышен лимит reload-попыток для модели. Caller (handler) должен
+// вернуть HTTP 413 с понятным сообщением.
+type ReloadLoopLimitError struct {
+	Model   string
+	Count   int
+	Elapsed time.Duration
+}
+
+func (e *ReloadLoopLimitError) Error() string {
+	return fmt.Sprintf("RAM fallback reload limit reached for model %q: %d reloads in %s. "+
+		"Either the prompt is too large for available n_ctx, or tool definitions + history exceed the configured n_ctx. "+
+		"Reduce tools/prompt size, or save a model profile with larger context_length",
+		e.Model, e.Count, e.Elapsed)
+}
+
+// isReloadLoopLimitError — true, если err это *ReloadLoopLimitError.
+// Используется в handlers для трансляции ошибки в HTTP 413.
+func isReloadLoopLimitError(err error) bool {
+	if err == nil {
+		return false
+	}
+	_, ok := err.(*ReloadLoopLimitError)
+	return ok
+}
+
+// ============================================================
+// Превентивный клампинг n_predict
+// ============================================================
+
+// clampNPredictToFitContext — уменьшает params.NPredict так, чтобы
+// (actualPromptTokens + params.NPredict + 1) <= n_ctx.
+//
+// ВАЖНО (2026-06-22): это КРИТИЧНО для tools-запросов. Даже если клиент указал
+// max_tokens=31744, при prompt с tools (например 6887 токенов) сумма
+// 6887+31744+1 = 38632 > n_ctx 32768 → bridge вернёт code 3 "prompt too long".
+// При tools RAM fallback отключён (ReloadDisabledForToolsError в tryRamFallbackReload),
+// клиент получит HTTP 413 без шанса на retry — это выглядит как «модель
+// выгрузилась», хотя на самом деле это отказ от reload для tools.
+//
+// Здесь мы ЗАРАНЕЕ уменьшаем params.NPredict на основе actual_prompt_tokens,
+// чтобы inference прошёл без code 3. Это лучше, чем ждать ошибку и потом
+// отказывать клиенту.
+//
+// Если actualPromptTokens+1 уже >= n_ctx, оставляем minNPredictClamp (512),
+// чтобы модель хоть что-то попыталась сгенерировать (лучше короткий ответ,
+// чем 0 токенов). Tokenizer неидеален, и реальный prompt может оказаться
+// короче — поэтому используем 512 как минимум, а не 0.
+//
+// Эта функция безопасна для concurrent вызовов: только читает params.
+// Вызывать НЕПОСРЕДСТВЕННО ПЕРЕД backend.Generate / backend.GenerateStream.
+func clampNPredictToFitContext(modelName, prompt string, params *bridge.GenerationParams) {
+	if params == nil {
+		return
+	}
+	nCtx := params.NCtxOverride
+	if nCtx <= 0 {
+		// Нет NCtxOverride — не можем оценить. Пропускаем клампинг.
+		return
+	}
+	if params.NPredict <= 0 {
+		// Клиент не задал n_predict — оставляем как есть (default 2048 уже учтён
+		// в applyCppCtxHeader для n_ctx >= 2048).
+		return
+	}
+
+	// Считаем токены в prompt через tokenizer модели.
+	actualTokens := countModelTokensByLoadedInfo(modelName, prompt)
+	if actualTokens <= 0 {
+		// Tokenizer не смог посчитать (модель не загружена или ошибка).
+		// Грубая оценка: 1 токен ≈ 4 символа.
+		actualTokens = len([]rune(prompt)) / 4
+	}
+
+	// Запас 1 токен под EOS-маркер.
+	maxAllowedNPredict := nCtx - actualTokens - 1
+	const minNPredictClamp = 512
+	if maxAllowedNPredict < minNPredictClamp {
+		// Не можем сгенерировать даже минимум. Оставляем minNPredict как «лучше хоть что-то».
+		maxAllowedNPredict = minNPredictClamp
+	}
+
+	if params.NPredict > maxAllowedNPredict {
+		logger.Get().Infow("clamping n_predict to fit n_ctx",
+			"model", modelName,
+			"actual_prompt_tokens", actualTokens,
+			"requested_n_predict", params.NPredict,
+			"clamped_n_predict", maxAllowedNPredict,
+			"n_ctx", nCtx,
+			"reason", "prevent code 3 prompt-too-long for tools/long-prompt requests")
+		params.NPredict = maxAllowedNPredict
+	}
+}
+
+// ============================================================
 // RAM fallback
 // ============================================================
 
@@ -129,9 +334,24 @@ func waitReloadInProgress(modelName string) bool {
 // Если concurrent-запрос попадает на модель, которая сейчас перезагружается
 // (reloadInProgress), он ждёт завершения reload и повторяет попытку вместо
 // возврата "model not loaded" клиенту.
-func generateWithRamFallback(modelName, prompt string, params bridge.GenerationParams) (*bridge.InferenceResult, error) {
+//
+// Параметр hasTools=true отключает reload для tools-запросов: при tools каждая
+// итерация диалога накапливает history, и reload не поможет — на следующей
+// итерации prompt снова переполнит n_ctx. Лучше сразу вернуть ошибку.
+//
+// ВАЖНО (2026-06-22): вызываем clampNPredictToFitContext ПЕРЕД первым Generate.
+// Это уменьшает params.NPredict так, чтобы prompt гарантированно влез в n_ctx,
+// даже если reload для tools отключён. Без этого клиент получает code 3 /
+// HTTP 413 при tools-сценариях, что воспринимается как «модель выгрузилась».
+func generateWithRamFallback(modelName, prompt string, params bridge.GenerationParams, hasTools bool) (*bridge.InferenceResult, error) {
+	// Превентивный клампинг n_predict: даже если reload при tools отключён,
+	// мы можем уменьшить n_predict так, чтобы prompt влез в n_ctx.
+	clampNPredictToFitContext(modelName, prompt, &params)
 	result, err := backend.Generate(modelName, prompt, params)
 	if err == nil {
+		// Успешный инференс без n_ctx ошибки — сбрасываем счётчик reload-попыток,
+		// чтобы следующий overflow мог снова триггернуть reload (новое окно).
+		resetReloadAttempts(modelName)
 		return result, nil
 	}
 	// Если reload уже идёт — ждём и повторяем
@@ -143,40 +363,63 @@ func generateWithRamFallback(modelName, prompt string, params bridge.GenerationP
 	if !isGpuOomOrNCtxNeedsReload() || params.NCtxOverride <= 0 {
 		return result, err
 	}
-	if ok, fbErr := tryRamFallbackReload(modelName, params.NCtxOverride); !ok {
+	if ok, fbErr := tryRamFallbackReload(modelName, params.NCtxOverride, hasTools); !ok {
 		return result, err // возвращаем исходную ошибку; fbErr только логируем
 	} else if fbErr != nil {
 		logger.Get().Warnw("RAM fallback declined", "model", modelName, "error", fbErr)
 		return result, err
 	}
-	return backend.Generate(modelName, prompt, params)
+	result, err = backend.Generate(modelName, prompt, params)
+	if err == nil {
+		// Успешный retry после reload — тоже сбрасываем счётчик.
+		resetReloadAttempts(modelName)
+	}
+	return result, err
 }
 
 // generateStreamWithRamFallback — аналог generateWithRamFallback для streaming.
 // При ErrCodeNCtxNeedsReload или ErrCodeGPUOOM на старте (pre-flight) перезагружает
 // модель и запускает стрим заново. Если стрим уже частично начался, fallback не
 // применяется (вернётся текущая ошибка).
-func generateStreamWithRamFallback(modelName, prompt string, params bridge.GenerationParams, callback bridge.StreamCallback) error {
+//
+// Параметр hasTools=true отключает reload (см. generateWithRamFallback).
+// ВАЖНО (2026-06-22): вызываем clampNPredictToFitContext ПЕРЕД стримом — иначе bridge
+// упадёт в первом же prefill-токене при tools/long-prompt запросах.
+func generateStreamWithRamFallback(modelName, prompt string, params bridge.GenerationParams, callback bridge.StreamCallback, hasTools bool) error {
+	// Превентивный клампинг n_predict (для streaming тоже критично — иначе bridge
+	// упадёт в первом же prefill-токене).
+	clampNPredictToFitContext(modelName, prompt, &params)
 	err := backend.GenerateStream(modelName, prompt, params, callback)
 	if err == nil {
+		// Успешный стрим без n_ctx ошибки — сбрасываем счётчик reload-попыток.
+		resetReloadAttempts(modelName)
 		return nil
 	}
 	// Если reload уже идёт — ждём и повторяем
 	if waitReloadInProgress(modelName) {
 		logger.Get().Debugw("RAM fallback: waiting for concurrent reload to complete before stream retry",
 			"model", modelName)
-		return backend.GenerateStream(modelName, prompt, params, callback)
+		err = backend.GenerateStream(modelName, prompt, params, callback)
+		if err == nil {
+			resetReloadAttempts(modelName)
+		}
+		return err
 	}
 	if !isGpuOomOrNCtxNeedsReload() || params.NCtxOverride <= 0 {
 		return err
 	}
-	if ok, fbErr := tryRamFallbackReload(modelName, params.NCtxOverride); !ok {
+	if ok, fbErr := tryRamFallbackReload(modelName, params.NCtxOverride, hasTools); !ok {
 		return err
 	} else if fbErr != nil {
 		logger.Get().Warnw("RAM fallback declined", "model", modelName, "error", fbErr)
 		return err
 	}
-	return backend.GenerateStream(modelName, prompt, params, callback)
+	err = backend.GenerateStream(modelName, prompt, params, callback)
+	if err == nil {
+		// Успешный retry после reload — тоже сбрасываем счётчик.
+		resetReloadAttempts(modelName)
+	}
+	return err
 }
 
 // effectiveRamFallbackGPULayers возвращает целевое число GPU-слоёв для
@@ -194,7 +437,37 @@ func effectiveRamFallbackGPULayers(current int) int {
 // используя RAM через mmap, если VRAM недостаточна. Вызывается только
 // после ErrCodeNCtxNeedsReload и только если ram-fallback-n-ctx включён.
 // Возвращает (ok=true, nil) если модель успешно перезагружена.
-func tryRamFallbackReload(modelName string, requestedNCtx int) (bool, error) {
+//
+// Защита от reload-loop: если для этой модели в скользящем окне
+// ramFallbackCycleResetInterval уже было выполнено ramFallbackMaxAttempts
+// reload-попыток, возвращается *ReloadLoopLimitError. Caller (handler)
+// транслирует его в HTTP 413 с понятным сообщением для клиента.
+// ErrReloadDisabledForTools возвращается из tryRamFallbackReload, когда
+// запрошен reload для tools-запроса. Reload при tools бесполезен — следующая
+// итерация диалога принесёт ещё больше токенов (tool results + history), и
+// overflow повторится. Вместо reload лучше сразу вернуть 413 с actionable
+// советом (уменьшить tools/history или увеличить n_ctx в профиле).
+type ReloadDisabledForToolsError struct {
+	Model string
+}
+
+func (e *ReloadDisabledForToolsError) Error() string {
+	return fmt.Sprintf("RAM fallback reload disabled for tools-request on model %q: "+
+		"reload would not help because each chat iteration adds tool results to context. "+
+		"Reduce the number of tools, chat history length, or increase n_ctx in the model profile.",
+		e.Model)
+}
+
+// isReloadDisabledForToolsError — true, если err это *ReloadDisabledForToolsError.
+func isReloadDisabledForToolsError(err error) bool {
+	if err == nil {
+		return false
+	}
+	_, ok := err.(*ReloadDisabledForToolsError)
+	return ok
+}
+
+func tryRamFallbackReload(modelName string, requestedNCtx int, hasTools bool) (bool, error) {
 	if !*ramFallbackNCtx {
 		return false, nil
 	}
@@ -204,6 +477,52 @@ func tryRamFallbackReload(modelName string, requestedNCtx int) (bool, error) {
 	if *ramFallbackMaxNCtx > 0 && requestedNCtx > *ramFallbackMaxNCtx {
 		return false, fmt.Errorf("requested n_ctx=%d exceeds ram-fallback-max-n-ctx=%d", requestedNCtx, *ramFallbackMaxNCtx)
 	}
+
+	// Шаг 0 (Шаг 4 фикса): при tools-запросах reload отключён.
+	//
+	// Логика: tools-сценарий (OpenWebUI) добавляет tool definitions + tool calls +
+	// tool results + history в prompt на КАЖДОЙ итерации. Даже если reload увеличит
+	// n_ctx до requestedNCtx, следующая итерация принесёт ещё больше токенов и
+	// overflow повторится. На практике это приводит к циклу reload+timeout+reload,
+	// пока OpenWebUI не отменит запрос — и пользователь получит «пустой ответ».
+	//
+	// Лучше сразу вернуть 413 с понятным сообщением: уменьшите tools / history
+	// или увеличьте n_ctx в профиле модели.
+	if hasTools {
+		logger.Get().Warnw("RAM fallback: reload disabled for tools-request",
+			"model", modelName,
+			"reason", "each chat iteration adds tool results to context, reload would not help",
+			"requested_n_ctx", requestedNCtx)
+		return false, &ReloadDisabledForToolsError{Model: modelName}
+	}
+
+	// Cycle-limit check: если уже было слишком много reload-попыток за последнее
+	// окно — отказываем в reload, чтобы не попасть в бесконечный unload+reload цикл.
+	if count, isLimit := getReloadAttempts(modelName); isLimit {
+		stateRaw, _ := ramFallbackAttempts.Load(modelName)
+		var elapsed time.Duration
+		if state, ok := stateRaw.(*ramFallbackAttemptState); ok && state != nil {
+			state.mu.Lock()
+			if !state.firstAttemptTime.IsZero() {
+				elapsed = time.Since(state.firstAttemptTime)
+			}
+			state.mu.Unlock()
+		}
+		logger.Get().Errorw("RAM fallback: cycle limit reached, refusing reload",
+			"model", modelName,
+			"attempts", count,
+			"elapsed", elapsed.String(),
+			"max_attempts", ramFallbackMaxAttempts,
+			"reset_window", ramFallbackCycleResetInterval.String())
+		return false, &ReloadLoopLimitError{
+			Model:   modelName,
+			Count:   count,
+			Elapsed: elapsed,
+		}
+	}
+	// Регистрируем попытку ДО начала reload — если что-то пойдёт не так,
+	// следующий запрос увидит инкремент и не войдёт в бесконечный цикл.
+	recordReloadAttempt(modelName)
 
 	current, err := backend.GetModel(modelName)
 	if err != nil {

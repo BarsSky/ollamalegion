@@ -7,7 +7,12 @@ import (
 	"ollama-loadbalancer/pkg/types"
 )
 
+// TestNewUnloadScheduler — проверяет что UnloadScheduler ВКЛЮЧАЕТСЯ только при явном
+// указании idleUnloadAfter (ВАЖНО 2026-06-22: раньше планировщик был всегда enabled=true
+// с fallback 30m, теперь — по дефолту ВЫКЛЮЧЕН. Пользователь должен явно задать
+// balancing.modelInstances.idle_unload_after для включения).
 func TestNewUnloadScheduler(t *testing.T) {
+	// Случай 1: idleUnloadAfter="10m" → планировщик ВКЛЮЧЁН с этим timeout.
 	p := &Proxy{
 		config: &types.LoadBalancerConfig{Balancing: types.BalancingSettings{
 			ModelInstances: types.ModelInstanceConfig{IdleUnloadAfter: "10m"},
@@ -21,18 +26,36 @@ func TestNewUnloadScheduler(t *testing.T) {
 		t.Errorf("idleTimeout = %v, want 10m", us.idleTimeout)
 	}
 	if !us.enabled {
-		t.Error("expected enabled by default")
+		t.Error("expected enabled when idleUnloadAfter is set")
 	}
 
-	// Invalid duration should fall back to 30m
+	// Invalid duration → планировщик ВЫКЛЮЧЁН (safety: лучше ничего не выгружать,
+	// чем выгрузить неожиданно из-за опечатки в конфиге).
 	p2 := &Proxy{
 		config: &types.LoadBalancerConfig{Balancing: types.BalancingSettings{
 			ModelInstances: types.ModelInstanceConfig{IdleUnloadAfter: "invalid"},
 		}},
 	}
 	us2 := NewUnloadScheduler(p2)
-	if us2.idleTimeout != 30*time.Minute {
-		t.Errorf("fallback idleTimeout = %v, want 30m", us2.idleTimeout)
+	if us2.idleTimeout != 0 {
+		t.Errorf("invalid duration fallback idleTimeout = %v, want 0 (disabled for safety)", us2.idleTimeout)
+	}
+	if us2.enabled {
+		t.Error("expected DISABLED for invalid duration (no surprise unloads)")
+	}
+
+	// Пустой idleUnloadAfter → планировщик ВЫКЛЮЧЁН (дефолт).
+	pEmpty := &Proxy{
+		config: &types.LoadBalancerConfig{Balancing: types.BalancingSettings{
+			ModelInstances: types.ModelInstanceConfig{IdleUnloadAfter: ""},
+		}},
+	}
+	usEmpty := NewUnloadScheduler(pEmpty)
+	if usEmpty.enabled {
+		t.Error("expected DISABLED by default (empty idleUnloadAfter)")
+	}
+	if usEmpty.idleTimeout != 0 {
+		t.Errorf("default idleTimeout = %v, want 0", usEmpty.idleTimeout)
 	}
 }
 

@@ -22,12 +22,12 @@ import (
 
 // GGUFModelMeta — информация о GGUF файле (извлекается из header)
 type GGUFModelMeta struct {
-	Filename     string `json:"filename"`
-	Path         string `json:"path"`
-	SizeBytes    int64  `json:"sizeBytes"`
+	Filename     string    `json:"filename"`
+	Path         string    `json:"path"`
+	SizeBytes    int64     `json:"sizeBytes"`
 	ModifiedAt   time.Time `json:"modifiedAt"`
-	Architecture string `json:"architecture,omitempty"` // из GGUF header
-	FileType     string `json:"fileType,omitempty"`     // Q4_K_M, Q5_K_M, F16, etc.
+	Architecture string    `json:"architecture,omitempty"` // из GGUF header
+	FileType     string    `json:"fileType,omitempty"`     // Q4_K_M, Q5_K_M, F16, etc.
 }
 
 // ModelManager — управляет модельками
@@ -39,9 +39,9 @@ type ModelManager struct {
 	ggufFiles map[string]*GGUFModelMeta // filename → meta
 
 	// Статистика
-	totalScans      int64
-	lastScanTime    time.Time
-	scanDuration    time.Duration
+	totalScans   int64
+	lastScanTime time.Time
+	scanDuration time.Duration
 }
 
 // NewModelManager создаёт новый ModelManager
@@ -264,7 +264,6 @@ func EstimateGPUMemoryForModel(sizeBytes int64, gpuLayers int, totalLayers int) 
 		ratio = 1.0
 	}
 
-
 	// Размер модели в MB
 	modelSizeMB := float64(sizeBytes) / 1024 / 1024
 
@@ -330,19 +329,19 @@ func GetFileTypeFromName(filename string) string {
 
 // IdleUnloadManager управляет выгрузкой неактивных моделей
 type IdleUnloadManager struct {
-	backend      *Backend
-	idleTimeout  time.Duration
+	backend       *Backend
+	idleTimeout   time.Duration
 	checkInterval time.Duration
-	stopCh       chan struct{}
+	stopCh        chan struct{}
 }
 
 // NewIdleUnloadManager создаёт менеджер выгрузки неактивных моделей
 func NewIdleUnloadManager(backend *Backend, idleTimeout time.Duration) *IdleUnloadManager {
 	return &IdleUnloadManager{
-		backend:      backend,
-		idleTimeout:  idleTimeout,
+		backend:       backend,
+		idleTimeout:   idleTimeout,
 		checkInterval: min(idleTimeout/2, 5*time.Minute),
-		stopCh:       make(chan struct{}),
+		stopCh:        make(chan struct{}),
 	}
 }
 
@@ -371,6 +370,9 @@ func (m *IdleUnloadManager) Stop() {
 	close(m.stopCh)
 }
 
+// idleUnloadModelRef — минимальный интерфейс модели, нужный для проверки idle.
+// Используется вместо полного Backend, чтобы избежать циклической зависимости
+// при тестировании и упростить unit-тесты.
 func (m *IdleUnloadManager) checkAndUnload() {
 	models := m.backend.ListModels()
 	now := time.Now()
@@ -382,13 +384,39 @@ func (m *IdleUnloadManager) checkAndUnload() {
 		if model.ActiveQueries > 0 {
 			continue
 		}
-		// Выгружаем если модель не использовалась дольше idleTimeout
-		idleTime := now.Sub(model.LoadedAt)
-		if idleTime > m.idleTimeout && model.TotalQueries == 0 {
+		// Выгружаем если модель не использовалась дольше idleTimeout.
+		//
+		// ВАЖНО: считаем idle от LastUsedAt, а не от LoadedAt. Раньше (до 2026-06-22)
+		// использовался LoadedAt, что приводило к выгрузке модели после idleTimeout
+		// от момента ЗАГРУЗКИ — даже если модель обслуживала запросы каждую секунду.
+		// Это проявлялось как «периодическая выгрузка при активном использовании»
+		// в мониторе и логах cppworker.
+		//
+		// LastUsedAt обновляется в Backend.Generate / Backend.GenerateStream при
+		// КАЖДОМ запросе (и в начале, и в defer). Если LastUsedAt zero (модель
+		// только что загружена, ещё не использовалась) — fallback на LoadedAt.
+		referenceTime := model.LastUsedAt
+		if referenceTime.IsZero() {
+			referenceTime = model.LoadedAt
+		}
+		idleTime := now.Sub(referenceTime)
+		// ВАЖНО (2026-06-22): убрано условие `&& model.TotalQueries == 0`.
+		// Раньше модель, загруженная через ensureModelLoaded, но не получившая
+		// ни одного Generate/GenerateStream (например, lazy-load из /api/show
+		// или первый запрос упал до Generate), НЕ выгружалась по idle — это
+		// приводило к «видимой бесконечной жизни» неиспользуемых моделей.
+		// Теперь idle считается строго от LastUsedAt (или LoadedAt как fallback),
+		// независимо от того, был ли хоть один запрос. Если idleTimeout задан
+		// и модель простаивает — она выгружается. Если idleTimeout=0 — менеджер
+		// не запускается вовсе (см. Start()).
+		if idleTime > m.idleTimeout {
 			logger.Get().Infow("idle unload",
 				"model", model.Name,
 				"idleTime", idleTime.String(),
-				"timeout", m.idleTimeout.String())
+				"referenceTime", referenceTime.Format(time.RFC3339Nano),
+				"lastUsedAtSet", !model.LastUsedAt.IsZero(),
+				"timeout", m.idleTimeout.String(),
+				"totalQueries", model.TotalQueries)
 			if err := m.backend.UnloadModel(model.Name); err != nil {
 				logger.Get().Warnw("idle unload failed",
 					"model", model.Name,

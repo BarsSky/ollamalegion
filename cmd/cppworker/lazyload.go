@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"time"
 
 	"ollama-loadbalancer/internal/cppbackend"
 	"ollama-loadbalancer/pkg/logger"
@@ -44,6 +45,7 @@ func ensureModelLoaded(modelName string) error {
 	defer backend.UnlockLoad(modelName)
 
 	log := logger.Get()
+	loadStart := time.Now()
 	log.Infow("lazy-loading model from filesystem", "model", modelName)
 
 	// Ищем модель в файловой системе
@@ -72,16 +74,80 @@ func ensureModelLoaded(modelName string) error {
 			UseMmap:       !*noMmap,
 		}
 
+		// Записываем попытку в диагностический буфер (для /api/diagnostics).
+		attempt := LoadAttempt{
+			Timestamp: loadStart,
+			Model:     modelName,
+			Path:      modelPath,
+			Stage:     "loading",
+		}
+
 		if err := backend.LoadModelWithOpts(modelName, modelPath, opts); err != nil {
 			log.Errorw("lazy-load failed", "model", modelName, "path", modelPath, "error", err)
+			attempt.Stage = "load_failed"
+			attempt.Success = false
+			attempt.Error = err.Error()
+			attempt.DurationMs = time.Since(loadStart).Milliseconds()
+			attempt.Diagnostics = map[string]interface{}{
+				"modelPath":  modelPath,
+				"gpuLayers":  opts.GPULayers,
+				"ctxSize":    opts.ContextSize,
+				"batchSize":  opts.BatchSize,
+				"useMmap":    opts.UseMmap,
+				"modelsDir":  derefString(modelsDir),
+				"vramTotalMB": backendGPUVRAMTotal(),
+				"vramFreeMB":  backendGPUVRAMFree(),
+			}
+			RecordLoadAttempt(attempt)
 			return fmt.Errorf("failed to load model %s: %w", modelName, err)
 		}
 
-		log.Infow("lazy-load successful", "model", modelName, "path", modelPath)
+		log.Infow("lazy-load successful", "model", modelName, "path", modelPath,
+			"durationMs", time.Since(loadStart).Milliseconds())
+		attempt.Stage = "complete"
+		attempt.Success = true
+		attempt.DurationMs = time.Since(loadStart).Milliseconds()
+		attempt.Diagnostics = map[string]interface{}{
+			"modelPath": modelPath,
+		}
+		RecordLoadAttempt(attempt)
 		return nil
 	}
 
+	// mm == nil — ModelManager не инициализирован.
+	attempt := LoadAttempt{
+		Timestamp: loadStart,
+		Model:     modelName,
+		Stage:     "model_manager_nil",
+		Success:   false,
+		Error:     "model manager not initialized",
+	}
+	RecordLoadAttempt(attempt)
 	return fmt.Errorf("model %s not found in filesystem", modelName)
+}
+
+// backendGPUVRAMTotal возвращает суммарную VRAM по всем GPU (для диагностики).
+func backendGPUVRAMTotal() uint64 {
+	if backend == nil {
+		return 0
+	}
+	var total uint64
+	for _, d := range backend.GetGPUDevices() {
+		total += d.VRAMTotalMB
+	}
+	return total
+}
+
+// backendGPUVRAMFree возвращает суммарную свободную VRAM по всем GPU.
+func backendGPUVRAMFree() uint64 {
+	if backend == nil {
+		return 0
+	}
+	var free uint64
+	for _, d := range backend.GetGPUDevices() {
+		free += d.VRAMFreeMB
+	}
+	return free
 }
 
 // writeLoadingResponse — хелпер: отвечает 503 Service Unavailable с JSON

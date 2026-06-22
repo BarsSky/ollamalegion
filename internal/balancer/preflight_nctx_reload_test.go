@@ -1,0 +1,308 @@
+//go:build llama_stub
+
+package balancer
+
+import (
+	"bytes"
+	"encoding/json"
+	"fmt"
+	"net/http"
+	"net/http/httptest"
+	"strings"
+	"sync"
+	"sync/atomic"
+	"testing"
+	"time"
+
+	"ollama-loadbalancer/pkg/types"
+)
+
+// makeMockCppWorkerWithReload — создаёт мок cppworker, который:
+//  1. На /api/models возвращает модель с указанным currentNCtx
+//  2. На /api/models/reload записывает новый n_ctx и возвращает success
+//  3. На /v1/chat/completions возвращает фиксированный ответ
+func makeMockCppWorkerWithReload(t *testing.T, modelName string, initialNCtx int) (*httptest.Server, *atomic.Int64, *[]string) {
+	t.Helper()
+	var currentNCtx atomic.Int64
+	currentNCtx.Store(int64(initialNCtx))
+	var muReloadCalls sync.Mutex
+	var reloadCalls []string
+
+	mux := http.NewServeMux()
+
+	mux.HandleFunc("/api/models", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{
+			"models": []map[string]interface{}{},
+			"data": []map[string]interface{}{},
+			"loaded_models": []map[string]interface{}{
+				{
+					"id":            modelName,
+					"name":          modelName,
+					"state":         "loaded",
+					"contextLength": int(currentNCtx.Load()),
+				},
+			},
+		})
+	})
+
+	mux.HandleFunc("/api/models/reload", func(w http.ResponseWriter, r *http.Request) {
+		var payload map[string]interface{}
+		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		newNCtx, _ := payload["contextSize"].(float64)
+		currentNCtx.Store(int64(newNCtx))
+		muReloadCalls.Lock()
+		reloadCalls = append(reloadCalls, fmt.Sprintf("%v", payload))
+		muReloadCalls.Unlock()
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{
+			"status":      "reloaded",
+			"context_size": int(newNCtx),
+		})
+	})
+
+	mux.HandleFunc("/v1/chat/completions", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.Header().Set("Cache-Control", "no-cache")
+		w.WriteHeader(http.StatusOK)
+		flusher, _ := w.(http.Flusher)
+		// Эмитим 2 чанка + [DONE].
+		chunk := map[string]interface{}{
+			"id":      "chatcmpl-test",
+			"object":  "chat.completion.chunk",
+			"created": time.Now().Unix(),
+			"model":   modelName,
+			"choices": []map[string]interface{}{
+				{"index": 0, "delta": map[string]string{"role": "assistant", "content": ""}, "finish_reason": nil},
+			},
+		}
+		data, _ := json.Marshal(chunk)
+		fmt.Fprintf(w, "data: %s\n\n", data)
+		if flusher != nil {
+			flusher.Flush()
+		}
+		// Final chunk
+		final := map[string]interface{}{
+			"id":      "chatcmpl-test",
+			"object":  "chat.completion.chunk",
+			"created": time.Now().Unix(),
+			"model":   modelName,
+			"choices": []map[string]interface{}{
+				{"index": 0, "delta": map[string]string{"role": "assistant", "content": "Hello from cppworker"}, "finish_reason": "stop"},
+			},
+		}
+		data, _ = json.Marshal(final)
+		fmt.Fprintf(w, "data: %s\n\n", data)
+		fmt.Fprintf(w, "data: [DONE]\n\n")
+		if flusher != nil {
+			flusher.Flush()
+		}
+	})
+
+	srv := httptest.NewServer(mux)
+	t.Cleanup(func() {
+		srv.Close()
+	})
+	return srv, &currentNCtx, &reloadCalls
+}
+
+// buildProxyWithCppWorkerBackend создаёт минимальный Proxy с одним cppworker backend.
+func buildProxyWithCppWorkerBackend(t *testing.T, cppWorkerURL string, modelName string) *Proxy {
+	t.Helper()
+	cfg := &types.LoadBalancerConfig{}
+	p := NewProxy(cfg)
+	// Используем internal API для добавления backend.
+	hostPort := strings.TrimPrefix(cppWorkerURL, "http://")
+	parts := strings.Split(hostPort, ":")
+	host := parts[0]
+	port := 80
+	if len(parts) > 1 {
+		fmt.Sscanf(parts[1], "%d", &port)
+	}
+	p.backends["test-backend"] = &BackendState{
+		Backend: &types.Backend{
+			ID:            "test-backend",
+			Type:          types.BackendTypeLlamaCpp,
+			Host:          host,
+			CppWorkerPort: port,
+			OllamaPort:    port,
+		},
+	}
+	// Заполняем llamaMetrics чтобы preflight видел loaded n_ctx.
+	// Конкретное значение ContextLength выставит buildProxyWithMockInitialCtx,
+	// который использует начальное значение из makeMockCppWorkerWithReload.
+	if p.metricsMgr == nil {
+		p.metricsMgr = NewMetricsManager()
+	}
+	p.metricsMgr.mu.Lock()
+	p.metricsMgr.llamaMetrics["test-backend"] = &types.LlamaCppMetrics{}
+	p.metricsMgr.mu.Unlock()
+	return p
+}
+
+// buildProxyWithMockInitialCtx — обёртка над buildProxyWithCppWorkerBackend,
+// которая устанавливает initial n_ctx (как у cppWorker) в llamaMetrics кэш.
+func buildProxyWithMockInitialCtx(t *testing.T, cppWorkerURL, modelName string, initialNCtx int) *Proxy {
+	p := buildProxyWithCppWorkerBackend(t, cppWorkerURL, modelName)
+	p.metricsMgr.mu.Lock()
+	p.metricsMgr.llamaMetrics["test-backend"] = &types.LlamaCppMetrics{
+		LoadedModels: []types.LlamaCppModel{
+			{Name: modelName, State: "loaded", ContextLength: initialNCtx},
+		},
+	}
+	p.metricsMgr.mu.Unlock()
+	return p
+}
+
+// TestPreflightNCtxReload_LoadedLessThanRequested — главный тест НОВОЙ асинхронной семантики:
+// если клиент шлёт options.num_ctx=16384, а loaded=4096 —
+// preflight АСИНХРОННО запускает reload на 16384 и СРАЗУ возвращает клиенту
+// HTTP 503 + Retry-After: 5 (а не блокирует стрим на 30 секунд).
+//
+// ВАЖНО (2026-06-22): тест полностью переписан под новую неблокирующую логику.
+// Старая проверяла синхронный reload (ok=true после успешного reload),
+// новая — что клиент сразу получает 503 и reload уходит в фон.
+func TestPreflightNCtxReload_LoadedLessThanRequested(t *testing.T) {
+	modelName := "test-model"
+	cppWorker, currentNCtx, reloadCalls := makeMockCppWorkerWithReload(t, modelName, 4096)
+	p := buildProxyWithMockInitialCtx(t, cppWorker.URL, modelName, 4096)
+
+	body := []byte(`{"model":"` + modelName + `","messages":[{"role":"user","content":"test"}],"options":{"num_ctx":16384}}`)
+
+	newBody, ok, msg, status := p.preflightNCtxReloadIfNeeded(
+		nil, "test-backend", modelName, body)
+
+	// ОЖИДАЕМО: ok=false (нужно reload), status=503, msg содержит retry-info.
+	// Клиент (балансер в llamacpp_transport) увидит это и вернёт HTTP 503 +
+	// Retry-After: 5 клиенту (см. proxyRequestLlamaCpp / proxyRequestLlamaCppNonStream).
+	if ok {
+		t.Fatalf("preflight should NOT succeed immediately (reload is now async); msg=%q status=%d", msg, status)
+	}
+	if status != http.StatusServiceUnavailable {
+		t.Errorf("preflight status=%d, want 503", status)
+	}
+	if msg == "" {
+		t.Errorf("preflight should return informative msg for client retry")
+	}
+	// bodyBuf должен быть возвращён без изменений (async reload, body не трогаем).
+	if !bytes.Equal(newBody, body) {
+		t.Errorf("async reload should NOT modify body (num_ctx removal happens after successful reload)")
+	}
+
+	// Даём фоновой горутине время завершить reload.
+	time.Sleep(500 * time.Millisecond)
+
+	// Reload должен был вызваться с contextSize=16384.
+	if got := currentNCtx.Load(); got != 16384 {
+		t.Errorf("currentNCtx=%d, want 16384 after async reload", got)
+	}
+	if len(*reloadCalls) != 1 {
+		t.Errorf("expected 1 reload call, got %d", len(*reloadCalls))
+	}
+
+	// Кэш метрик должен быть обновлён до 16384 сразу (без ожидания reload —
+	// это предотвращает retry-цикл preflight на следующих запросах).
+	p.metricsMgr.mu.RLock()
+	lm, hasLm := p.metricsMgr.llamaMetrics["test-backend"]
+	p.metricsMgr.mu.RUnlock()
+	if !hasLm || lm == nil {
+		t.Fatalf("llamaMetrics cache missing for test-backend")
+	}
+	for _, m := range lm.LoadedModels {
+		if strings.Contains(m.Name, modelName) {
+			if m.ContextLength != 16384 {
+				t.Errorf("llamaMetrics LoadedModels ContextLength=%d, want 16384", m.ContextLength)
+			}
+		}
+	}
+}
+
+// TestPreflightNCtxReload_LoadedAlreadyEnough — если loaded >= requested,
+// reload НЕ должен вызываться.
+func TestPreflightNCtxReload_LoadedAlreadyEnough(t *testing.T) {
+	modelName := "test-model"
+	cppWorker, currentNCtx, reloadCalls := makeMockCppWorkerWithReload(t, modelName, 16384)
+	// loaded n_ctx = 16384 (как у mock-cppworker), requested = 8192 — reload не нужен.
+	p := buildProxyWithMockInitialCtx(t, cppWorker.URL, modelName, 16384)
+
+	body := []byte(`{"model":"` + modelName + `","options":{"num_ctx":8192}}`)
+	_, ok, msg, _ := p.preflightNCtxReloadIfNeeded(
+		nil, "test-backend", modelName, body)
+
+	if !ok {
+		t.Fatalf("preflight should succeed (no reload needed); msg=%q", msg)
+	}
+	if got := currentNCtx.Load(); got != 16384 {
+		t.Errorf("currentNCtx should not change; got %d, want 16384", got)
+	}
+	if len(*reloadCalls) != 0 {
+		t.Errorf("expected 0 reload calls, got %d", len(*reloadCalls))
+	}
+}
+
+// TestPreflightNCtxReload_NoNumCtxInBody — если клиент не задал num_ctx,
+// preflight должен быть no-op.
+func TestPreflightNCtxReload_NoNumCtxInBody(t *testing.T) {
+	modelName := "test-model"
+	cppWorker, currentNCtx, reloadCalls := makeMockCppWorkerWithReload(t, modelName, 4096)
+	p := buildProxyWithMockInitialCtx(t, cppWorker.URL, modelName, 4096)
+
+	body := []byte(`{"model":"` + modelName + `","messages":[{"role":"user","content":"test"}]}`)
+	_, ok, msg, _ := p.preflightNCtxReloadIfNeeded(
+		nil, "test-backend", modelName, body)
+
+	if !ok {
+		t.Fatalf("preflight should succeed (no num_ctx in body); msg=%q", msg)
+	}
+	if got := currentNCtx.Load(); got != 4096 {
+		t.Errorf("currentNCtx should not change; got %d, want 4096", got)
+	}
+	if len(*reloadCalls) != 0 {
+		t.Errorf("expected 0 reload calls, got %d", len(*reloadCalls))
+	}
+}
+
+// TestPreflightNCtxReload_ReloadFailureFallsBackToProxyAsIs — если reload endpoint
+// возвращает 500, preflight ЗАПУСКАЕТ async reload в фоне (а не проксирует as-is,
+// потому что cppworker всё равно вернёт 400 при n_ctx overflow).
+// Клиент получает 503 + Retry-After, как и при успешном async reload.
+//
+// ВАЖНО (2026-06-22): тест обновлён под новую асинхронную логику. Раньше
+// при failed reload preflight возвращал ok=true (proxy-as-is fallback), что приводило
+// к 400-ошибке от cppworker и partial response. Теперь при loaded < requested мы
+// ВСЕГДА сигнализируем клиенту о reload (503), даже если reload упал.
+func TestPreflightNCtxReload_ReloadFailureFallsBackToProxyAsIs(t *testing.T) {
+	modelName := "test-model"
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/models", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"loaded_models":[{"name":"` + modelName + `","state":"loaded","contextLength":4096}]}`))
+	})
+	mux.HandleFunc("/api/models/reload", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+		_, _ = w.Write([]byte(`{"error":"reload failed"}`))
+	})
+	cppWorker := httptest.NewServer(mux)
+	defer cppWorker.Close()
+
+	p := buildProxyWithMockInitialCtx(t, cppWorker.URL, modelName, 4096)
+	body := []byte(`{"model":"` + modelName + `","options":{"num_ctx":16384}}`)
+
+	newBody, ok, _, _ := p.preflightNCtxReloadIfNeeded(
+		nil, "test-backend", modelName, body)
+
+	// При failed reload мы всё равно хотим, чтобы клиент повторил через 5 секунд —
+	// иначе cppworker вернёт 400 и клиент получит partial response.
+	if ok {
+		t.Fatalf("preflight should signal reload needed even on reload failure (5xx); 503 for client retry")
+	}
+	if !bytes.Equal(newBody, body) {
+		t.Errorf("preflight should NOT modify body even on reload failure (async retry path)")
+	}
+
+	// Даём фоновой горутине время упасть с 500 и залогировать.
+	time.Sleep(500 * time.Millisecond)
+}

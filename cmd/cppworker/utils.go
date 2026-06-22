@@ -127,6 +127,62 @@ func writeError(w http.ResponseWriter, status int, msg string) {
 	writeJSON(w, status, map[string]string{"error": msg})
 }
 
+// writeReloadLoopLimitResponse — пишет HTTP 413 с детальным JSON-ответом,
+// когда cppworker отказывается делать reload из-за превышения лимита попыток.
+// Используется всеми handler'ами после генерации (если err это *ReloadLoopLimitError).
+//
+// Формат ответа:
+//
+//	{
+//	  "error": "RAM fallback reload limit reached...",
+//	  "code": "reload_loop_limit",
+//	  "model": "...",
+//	  "attempts": 3,
+//	  "elapsed_seconds": 47.2,
+//	  "suggestion": "Reduce tools/prompt size, or save a model profile with larger context_length"
+//	}
+//
+// HTTP 413 — payload too large (стандартный код для "request не помещается в ресурсы").
+func writeReloadLoopLimitResponse(w http.ResponseWriter, err *ReloadLoopLimitError) {
+	body := map[string]interface{}{
+		"error":            err.Error(),
+		"code":             "reload_loop_limit",
+		"model":            err.Model,
+		"attempts":         err.Count,
+		"elapsed_seconds":  err.Elapsed.Seconds(),
+		"suggestion":       "Reduce tools/prompt size, or save a model profile with larger context_length",
+		"profile_endpoint": "/api/v1/cppworker/model-profiles",
+	}
+	writeJSON(w, http.StatusRequestEntityTooLarge, body)
+}
+
+// writeReloadDisabledForToolsResponse — пишет HTTP 413 когда reload отключён
+// для tools-запроса (см. inference.go:ReloadDisabledForToolsError).
+// Причина: при tools каждая итерация диалога добавляет tool definitions + tool calls
+// + tool results в prompt — reload не поможет, prompt будет только расти.
+// Вместо reload клиент получает actionable-сообщение с предложением уменьшить
+// tools/history или увеличить n_ctx в профиле модели.
+//
+// Формат ответа:
+//
+//	{
+//	  "error": "RAM fallback reload disabled for tools-request...",
+//	  "code": "tools_reload_disabled",
+//	  "model": "...",
+//	  "suggestion": "Reduce the number of tools, chat history length, or increase n_ctx in the model profile."
+//	}
+func writeReloadDisabledForToolsResponse(w http.ResponseWriter, err *ReloadDisabledForToolsError) {
+	body := map[string]interface{}{
+		"error":            err.Error(),
+		"code":             "tools_reload_disabled",
+		"model":            err.Model,
+		"reason":           "each chat iteration adds tool results to context, reload would not help",
+		"suggestion":       "Reduce the number of tools, chat history length, or increase n_ctx in the model profile.",
+		"profile_endpoint": "/api/v1/cppworker/model-profiles",
+	}
+	writeJSON(w, http.StatusRequestEntityTooLarge, body)
+}
+
 // ============================================================
 // Хелперы
 // ============================================================

@@ -61,11 +61,11 @@ type openAIChatCompletionRequest struct {
 }
 
 type openAIChatMessage struct {
-	Role       string          `json:"role"`
-	Content    string          `json:"content"`
+	Role       string           `json:"role"`
+	Content    string           `json:"content"`
 	ToolCalls  []openAIToolCall `json:"tool_calls,omitempty"`
-	ToolCallID string          `json:"tool_call_id,omitempty"`
-	Name       string          `json:"name,omitempty"`
+	ToolCallID string           `json:"tool_call_id,omitempty"`
+	Name       string           `json:"name,omitempty"`
 }
 
 // applyCppCtxHeader — backwards-compat алиас для ApplyCppCtxHeader из nctx_clamp.go.
@@ -282,11 +282,24 @@ func handleV1ChatCompletions(w http.ResponseWriter, r *http.Request) {
 			// Если есть tools — буферизируем полный ответ, чтобы распарсить tool_calls
 			// перед отправкой SSE. Это trade-off: теряем real-time streaming,
 			// но получаем корректные tool_calls + finish_reason.
-			result, err := generateWithRamFallback(req.Model, prompt, params)
+			hasTools := len(req.Tools) > 0
+			result, err := generateWithRamFallback(req.Model, prompt, params, hasTools)
 			if err != nil {
 				statusCode := http.StatusInternalServerError
 				if info := bridge.GetLastErrorInfo(); info.Code == bridge.ErrCodeNCtxNeedsReload || info.Code == bridge.ErrCodePromptTooLong || info.Code == bridge.ErrCodeBadRequest {
 					statusCode = http.StatusBadRequest
+				}
+				// Специальная обработка reload-disabled-for-tools (HTTP 413).
+				// Это происходит при попытке reload для tools-запроса — бесполезно,
+				// возвращаем actionable-сообщение сразу.
+				if rdtErr, ok := err.(*ReloadDisabledForToolsError); ok {
+					writeReloadDisabledForToolsResponse(w, rdtErr)
+					return
+				}
+				// Специальная обработка reload-loop-limit (HTTP 413 с понятным message).
+				if rllErr, ok := err.(*ReloadLoopLimitError); ok {
+					writeReloadLoopLimitResponse(w, rllErr)
+					return
 				}
 				writeCppWorkerErrorWithBridgeInfo(w, statusCode, "chat completions (tool) failed", err)
 				return
@@ -311,11 +324,22 @@ func handleV1ChatCompletions(w http.ResponseWriter, r *http.Request) {
 	chatID := fmt.Sprintf("chatcmpl-%d", time.Now().UnixNano())
 	created := time.Now().Unix()
 
-	result, err := generateWithRamFallback(req.Model, prompt, params)
+	hasTools := len(req.Tools) > 0
+	result, err := generateWithRamFallback(req.Model, prompt, params, hasTools)
 	if err != nil {
 		statusCode := http.StatusInternalServerError
 		if info := bridge.GetLastErrorInfo(); info.Code == bridge.ErrCodeNCtxNeedsReload || info.Code == bridge.ErrCodePromptTooLong || info.Code == bridge.ErrCodeBadRequest {
 			statusCode = http.StatusBadRequest
+		}
+		// Специальная обработка reload-disabled-for-tools (HTTP 413).
+		if rdtErr, ok := err.(*ReloadDisabledForToolsError); ok {
+			writeReloadDisabledForToolsResponse(w, rdtErr)
+			return
+		}
+		// Специальная обработка reload-loop-limit (HTTP 413 с понятным message).
+		if rllErr, ok := err.(*ReloadLoopLimitError); ok {
+			writeReloadLoopLimitResponse(w, rllErr)
+			return
 		}
 		writeCppWorkerErrorWithBridgeInfo(w, statusCode, "chat completions failed", err)
 		return
@@ -482,6 +506,13 @@ func writeStaticTextStream(w http.ResponseWriter, modelName, chatID string, crea
 }
 
 // writeOpenAIChatStream — streaming ответ в формате SSE для /v1/chat/completions.
+// writeOpenAIChatStream — streaming ответ в формате SSE для /v1/chat/completions.
+//
+// КРИТИЧЕСКИ ВАЖНО: финальный SSE чанк ДОЛЖЕН содержать полный output в delta.content,
+// а не пустую строку. Иначе OpenWebUI после done:true видит пустой content и завершает
+// сессию ("один источник найден, ответа нет"). Также поддерживаем детекцию tool_calls
+// в выходном тексте — если модель сгенерировала <tool_call>...</tool_call> (Hermes/Gemma-4/Qwen),
+// эмитим tool_calls в финальном чанке и обнуляем content.
 func writeOpenAIChatStream(w http.ResponseWriter, r *http.Request, modelName, prompt string, params bridge.GenerationParams) {
 	flusher, ok := w.(http.Flusher)
 	if !ok {
@@ -515,6 +546,11 @@ func writeOpenAIChatStream(w http.ResponseWriter, r *http.Request, modelName, pr
 		fmt.Fprintf(w, format, a...)
 	}
 
+	// Накапливаем полный output параллельно для финального чанка + tool_calls detection.
+	// Это критично: иначе финальный SSE чанк имел бы пустой delta.content,
+	// и OpenWebUI считал бы ответ пустым после done:true.
+	var outputBuf strings.Builder
+
 	keepaliveDone := make(chan struct{})
 	go func() {
 		ticker := time.NewTicker(keepaliveInterval)
@@ -539,6 +575,9 @@ func writeOpenAIChatStream(w http.ResponseWriter, r *http.Request, modelName, pr
 			return false
 		default:
 		}
+		// Накапливаем output для финального чанка.
+		outputBuf.WriteString(token)
+
 		chunk := map[string]interface{}{
 			"id":      chatID,
 			"object":  "chat.completion.chunk",
@@ -560,8 +599,58 @@ func writeOpenAIChatStream(w http.ResponseWriter, r *http.Request, modelName, pr
 		safeFlush()
 		return true
 	}
-	if err := generateStreamWithRamFallback(modelName, prompt, params, callback); err != nil {
+	// writeOpenAIChatStream вызывается только когда tools НЕ заданы (для tools идёт буферизированный путь в handleV1ChatCompletions). Поэтому reload при n_ctx overflow разрешён.
+	if err := generateStreamWithRamFallback(modelName, prompt, params, callback, false); err != nil {
 		maybeRestartOnMemorySlotError(err, modelName)
+		// Специальная обработка reload-disabled-for-tools (HTTP 413 в SSE-чанке).
+		if rdtErr, ok := err.(*ReloadDisabledForToolsError); ok {
+			errChunk := map[string]interface{}{
+				"id":      chatID,
+				"object":  "chat.completion.chunk",
+				"created": created,
+				"model":   modelName,
+				"choices": []map[string]interface{}{
+					{
+						"index":         0,
+						"delta":         map[string]string{},
+						"finish_reason": "error",
+					},
+				},
+				"error":      rdtErr.Error(),
+				"code":       "tools_reload_disabled",
+				"suggestion": "Reduce the number of tools, chat history length, or increase n_ctx in the model profile.",
+			}
+			errJSON, _ := json.Marshal(errChunk)
+			safeFprintf("data: %s\n\n", errJSON)
+			safeFprintf("data: [DONE]\n\n")
+			safeFlush()
+			return
+		}
+		// Специальная обработка reload-loop-limit (HTTP 413 в SSE-чанке).
+		if rllErr, ok := err.(*ReloadLoopLimitError); ok {
+			errChunk := map[string]interface{}{
+				"id":      chatID,
+				"object":  "chat.completion.chunk",
+				"created": created,
+				"model":   modelName,
+				"choices": []map[string]interface{}{
+					{
+						"index":         0,
+						"delta":         map[string]string{},
+						"finish_reason": "error",
+					},
+				},
+				"error":           rllErr.Error(),
+				"code":            "reload_loop_limit",
+				"attempts":        rllErr.Count,
+				"elapsed_seconds": rllErr.Elapsed.Seconds(),
+			}
+			errJSON, _ := json.Marshal(errChunk)
+			safeFprintf("data: %s\n\n", errJSON)
+			safeFprintf("data: [DONE]\n\n")
+			safeFlush()
+			return
+		}
 		errChunk := map[string]interface{}{
 			"id":      chatID,
 			"object":  "chat.completion.chunk",
@@ -583,6 +672,30 @@ func writeOpenAIChatStream(w http.ResponseWriter, r *http.Request, modelName, pr
 		return
 	}
 
+	// ============================================================
+	// Финальный чанк — содержит ПОЛНЫЙ output или tool_calls.
+	// ============================================================
+	// Раньше здесь был критичный bug: финальный SSE чанк имел пустой delta.content,
+	// OpenWebUI после done:true видел пустой content и завершал сессию.
+	fullOutput := outputBuf.String()
+	toolCalls := parseToolCallsFromOutput(fullOutput)
+
+	finalDelta := map[string]interface{}{}
+	finishReason := "stop"
+
+	if len(toolCalls) > 0 {
+		// Tool calls обнаружены — эмитим их в финальном чанке с finish_reason="tool_calls".
+		finalDelta["role"] = "assistant"
+		finalDelta["content"] = nil
+		finalDelta["tool_calls"] = toolCalls
+		finishReason = "tool_calls"
+	} else {
+		// Plain-text ответ — эмитим полный content в финальном чанке.
+		// Это критично для OpenWebUI, который берёт content из финального чанка.
+		finalDelta["role"] = "assistant"
+		finalDelta["content"] = cleanFinalContent(fullOutput)
+	}
+
 	stopChunk := map[string]interface{}{
 		"id":      chatID,
 		"object":  "chat.completion.chunk",
@@ -591,8 +704,8 @@ func writeOpenAIChatStream(w http.ResponseWriter, r *http.Request, modelName, pr
 		"choices": []map[string]interface{}{
 			{
 				"index":         0,
-				"delta":         map[string]string{},
-				"finish_reason": "stop",
+				"delta":         finalDelta,
+				"finish_reason": finishReason,
 			},
 		},
 	}
@@ -661,11 +774,18 @@ func handleV1Completions(w http.ResponseWriter, r *http.Request) {
 	}
 
 	start := time.Now()
-	result, err := generateWithRamFallback(req.Model, req.Prompt, params)
+	// /v1/completions (legacy text completions) — tools не поддерживаются,
+	// reload разрешён при n_ctx overflow.
+	result, err := generateWithRamFallback(req.Model, req.Prompt, params, false)
 	if err != nil {
 		statusCode := http.StatusInternalServerError
 		if info := bridge.GetLastErrorInfo(); info.Code == bridge.ErrCodeNCtxNeedsReload || info.Code == bridge.ErrCodePromptTooLong || info.Code == bridge.ErrCodeBadRequest {
 			statusCode = http.StatusBadRequest
+		}
+		// Специальная обработка reload-loop-limit (HTTP 413 с понятным message).
+		if rllErr, ok := err.(*ReloadLoopLimitError); ok {
+			writeReloadLoopLimitResponse(w, rllErr)
+			return
 		}
 		writeCppWorkerErrorWithBridgeInfo(w, statusCode, "completions failed", err)
 		return
@@ -694,6 +814,10 @@ func handleV1Completions(w http.ResponseWriter, r *http.Request) {
 }
 
 // writeOpenAICompletionStream — streaming ответ в формате SSE для /v1/completions.
+//
+// КРИТИЧЕСКИ ВАЖНО: финальный SSE чанк содержит полный text, иначе клиенты
+// (включая OpenWebUI) после done:true видят пустой text и завершают сессию
+// без ответа модели. Раньше финальный чанк имел text: "".
 func writeOpenAICompletionStream(w http.ResponseWriter, r *http.Request, modelName, prompt string, params bridge.GenerationParams) {
 	flusher, ok := w.(http.Flusher)
 	if !ok {
@@ -708,12 +832,17 @@ func writeOpenAICompletionStream(w http.ResponseWriter, r *http.Request, modelNa
 	completionID := fmt.Sprintf("cmpl-%d", time.Now().UnixNano())
 	created := time.Now().Unix()
 
+	// Накапливаем полный output параллельно для финального чанка.
+	var outputBuf strings.Builder
+
 	callback := func(token string) bool {
 		select {
 		case <-ctx.Done():
 			return false
 		default:
 		}
+		outputBuf.WriteString(token)
+
 		chunk := map[string]interface{}{
 			"id":      completionID,
 			"object":  "text_completion",
@@ -732,8 +861,34 @@ func writeOpenAICompletionStream(w http.ResponseWriter, r *http.Request, modelNa
 		flusher.Flush()
 		return true
 	}
-	if err := generateStreamWithRamFallback(modelName, prompt, params, callback); err != nil {
+	// writeOpenAICompletionStream — /v1/completions, tools не поддерживаются.
+	if err := generateStreamWithRamFallback(modelName, prompt, params, callback, false); err != nil {
 		maybeRestartOnMemorySlotError(err, modelName)
+		// Специальная обработка reload-loop-limit.
+		if rllErr, ok := err.(*ReloadLoopLimitError); ok {
+			errChunk := map[string]interface{}{
+				"id":      completionID,
+				"object":  "text_completion",
+				"created": created,
+				"model":   modelName,
+				"choices": []map[string]interface{}{
+					{
+						"text":          "",
+						"index":         0,
+						"finish_reason": "error",
+					},
+				},
+				"error":           rllErr.Error(),
+				"code":            "reload_loop_limit",
+				"attempts":        rllErr.Count,
+				"elapsed_seconds": rllErr.Elapsed.Seconds(),
+			}
+			errJSON, _ := json.Marshal(errChunk)
+			fmt.Fprintf(w, "data: %s\n\n", errJSON)
+			fmt.Fprintf(w, "data: [DONE]\n\n")
+			flusher.Flush()
+			return
+		}
 		errChunk := map[string]interface{}{
 			"id":      completionID,
 			"object":  "text_completion",
@@ -755,6 +910,7 @@ func writeOpenAICompletionStream(w http.ResponseWriter, r *http.Request, modelNa
 		return
 	}
 
+	// Финальный чанк с полным output (раньше был пустой text — клиент видел пустой ответ).
 	stopChunk := map[string]interface{}{
 		"id":      completionID,
 		"object":  "text_completion",
@@ -762,7 +918,7 @@ func writeOpenAICompletionStream(w http.ResponseWriter, r *http.Request, modelNa
 		"model":   modelName,
 		"choices": []map[string]interface{}{
 			{
-				"text":          "",
+				"text":          cleanFinalContent(outputBuf.String()),
 				"index":         0,
 				"finish_reason": "stop",
 			},

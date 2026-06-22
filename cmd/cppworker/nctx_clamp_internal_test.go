@@ -77,10 +77,10 @@ func TestApplyCppCtxHeader_BodyOverrides(t *testing.T) {
 	assert.Equal(t, 4096, params.NCtxOverride, "body num_ctx clamped to header limit")
 
 	// NPredict: т.к. он = original (reference default из bridge), он должен быть
-	// заменён на n_ctx/2 = 2048 (D.8 fix: reference default берётся из bridge)
+	// заменён на n_ctx - basePromptReserve = 4096 - 1024 = 3072 (Phase D.6 фикс + Шаг 3 фикс tools-reserve).
 	refDefault := bridge.DefaultGenerationParams().NPredict
 	if originalNPredict >= refDefault {
-		assert.Equal(t, 2048, params.NPredict, "n_predict = n_ctx/2 = 2048 after clamp")
+		assert.Equal(t, 3072, params.NPredict, "n_predict = n_ctx-baseReserve = 3072 after clamp")
 	}
 }
 
@@ -95,10 +95,10 @@ func TestApplyCppCtxHeader_NoBodyNumCtx(t *testing.T) {
 	// n_ctx берётся из header
 	assert.Equal(t, 2048, params.NCtxOverride, "NCtxOverride set to header value when body=0")
 
-	// NPredict должен быть заменён на n_ctx/2 = 1024
+	// NPredict должен быть заменён на n_ctx - basePromptReserve = 2048 - 1024 = 1024
 	refDefault := bridge.DefaultGenerationParams().NPredict
 	if params.NPredict >= refDefault {
-		assert.Equal(t, 1024, params.NPredict, "n_predict = n_ctx/2 = 1024")
+		assert.Equal(t, 1024, params.NPredict, "n_predict = n_ctx-baseReserve = 1024")
 	}
 }
 
@@ -117,10 +117,11 @@ func TestApplyCppCtxHeader_BodySmallerThanHeader(t *testing.T) {
 	// (клиент НЕ задавал NPredict явно, но 1024 < reference default значит считаем
 	// что это значение «не дефолтное» — НО фактически это просто default, а клиент
 	// задал num_ctx=1024 в body, что могло перезаписать context, но NPredict не
-	// задавал, поэтому он равен default → должно клампиться к n_ctx/2=512)
+	// задавал, поэтому он равен default → должно клампиться к n_ctx-baseReserve=0 →
+	// поднимается до minNPredict=512).
 	refDefault := bridge.DefaultGenerationParams().NPredict
 	if params.NPredict >= refDefault {
-		assert.Equal(t, 512, params.NPredict, "n_predict clamped to n_ctx/2 = 512")
+		assert.Equal(t, 512, params.NPredict, "n_predict clamped to minNPredict = 512")
 	}
 }
 
@@ -149,11 +150,11 @@ func TestApplyCppCtxHeader_D8Regression(t *testing.T) {
 	r := newReqWithCtx("2048")
 	ApplyCppCtxHeader(r, &params)
 
-	// КРИТИЧНО: NPredict должен быть заменён на 1024 (n_ctx/2)
+	// КРИТИЧНО: NPredict должен быть заменён на 1024 (n_ctx - baseReserve)
 	// До D.8 fix: NPredict оставался 2048 → 28+2048+1=2077 > 2048 → code 3
 	// После D.8 fix: NPredict = 1024 → 28+1024+1=1053 << 2048 ✓
 	assert.Equal(t, 1024, params.NPredict,
-		"D.8 regression: n_predict must be replaced with n_ctx/2=1024, "+
+		"D.8 regression: n_predict must be replaced with n_ctx-baseReserve=1024, "+
 			"otherwise code 3 'prompt too long' will be returned for OpenWebUI")
 }
 
@@ -164,22 +165,22 @@ func TestApplyCppCtxHeader_SmallNCtx(t *testing.T) {
 	r := newReqWithCtx("128") // n_ctx=128
 	ApplyCppCtxHeader(r, &params)
 
-	// halfCtx = 128/2 = 64 (не меньше 64)
+	// n_ctx=128 → maxPredict = 128 - 1024 = -896 → поднимается до minNPredict=512
 	refDefault := bridge.DefaultGenerationParams().NPredict
 	if params.NPredict >= refDefault {
-		assert.Equal(t, 64, params.NPredict, "small n_ctx → halfCtx=64 minimum")
+		assert.Equal(t, 512, params.NPredict, "small n_ctx → maxPredict raised to minNPredict=512")
 	}
 
-	// Доп. проверка: n_ctx=64 → halfCtx был бы 32, но поднимается до 64
+	// Доп. проверка: n_ctx=64 → maxPredict = 64 - 1024 = -960 → тоже minNPredict=512
 	params2 := bridge.DefaultGenerationParams()
 	r2 := newReqWithCtx("64")
 	ApplyCppCtxHeader(r2, &params2)
 	if params2.NPredict >= refDefault {
-		assert.Equal(t, 64, params2.NPredict, "tiny n_ctx=64 → halfCtx raised to 64")
+		assert.Equal(t, 512, params2.NPredict, "tiny n_ctx=64 → maxPredict raised to minNPredict=512")
 	}
 }
 
-// TestApplyCppCtxHeader_LargeNCtx: большой n_ctx — halfCtx = n_ctx/2
+// TestApplyCppCtxHeader_LargeNCtx: большой n_ctx — maxPredict = n_ctx - baseReserve
 func TestApplyCppCtxHeader_LargeNCtx(t *testing.T) {
 	params := bridge.DefaultGenerationParams()
 
@@ -188,6 +189,6 @@ func TestApplyCppCtxHeader_LargeNCtx(t *testing.T) {
 
 	refDefault := bridge.DefaultGenerationParams().NPredict
 	if params.NPredict >= refDefault {
-		assert.Equal(t, 16384, params.NPredict, "large n_ctx=32768 → halfCtx=16384")
+		assert.Equal(t, 31744, params.NPredict, "large n_ctx=32768 → n_ctx-baseReserve=31744")
 	}
 }

@@ -19,13 +19,36 @@ type UnloadScheduler struct {
 	enabled        bool
 }
 
-// NewUnloadScheduler — создание планировщика выгрузки
+// NewUnloadScheduler — создание планировщика выгрузки.
+//
+// ВАЖНО (2026-06-22): по умолчанию планировщик ВЫКЛЮЧЕН. Раньше здесь всегда
+// стоял enabled=true с idleTimeout=30m, и балансировщик раз в 5 минут помечал
+// модели как «unloading» через WarmingUpModels (без реальной выгрузки с бэкенда).
+// Это приводило к:
+//   - пометке моделей как «выгружаемых» через 30 мин idle, даже если пользователь
+//     активно с ними работает (LRU-эвристика работала по lastUse на бэкенде,
+//     а не по реальной активности пользователя);
+//   - путанице в мониторе и WebUI (модель «выгружена» по мнению балансера, но
+//     реально живёт в VRAM на cppworker).
+//
+// Теперь по умолчанию:
+//   - idleTimeout = 0 → фоновый цикл не запускается,
+//   - enabled = false,
+//   - для включения нужно явно задать balancing.modelInstances.idleUnloadAfter,
+//     например "30m" или "1h".
 func NewUnloadScheduler(proxy *Proxy) *UnloadScheduler {
-	idleTimeout := 30 * time.Minute
+	idleTimeout := time.Duration(0)
 	if proxy.config.Balancing.ModelInstances.IdleUnloadAfter != "" {
 		if d, err := time.ParseDuration(proxy.config.Balancing.ModelInstances.IdleUnloadAfter); err == nil {
 			idleTimeout = d
 		}
+	}
+
+	enabled := idleTimeout > 0
+	if !enabled {
+		logger.Get().Infow("unloadScheduler: disabled (idleUnloadAfter not set or 0). "+
+			"Models will remain in VRAM until explicit /api/models/unload or container restart.",
+			"idleTimeout", idleTimeout.String())
 	}
 
 	us := &UnloadScheduler{
@@ -34,7 +57,7 @@ func NewUnloadScheduler(proxy *Proxy) *UnloadScheduler {
 		checkInterval: 5 * time.Minute,
 		idleTimeout:   idleTimeout,
 		stopCh:        make(chan struct{}),
-		enabled:       true, // включён по умолчанию, можно добавить feature flag при необходимости
+		enabled:       enabled,
 	}
 
 	return us

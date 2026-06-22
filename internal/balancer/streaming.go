@@ -71,6 +71,10 @@ func (p *Proxy) handleStreamingResponse(w http.ResponseWriter, r *http.Request, 
 	lastActivity := time.Now()
 	var clientDisconnected atomic.Bool
 
+	// Loop detection: кольцевой буфер последних N чанков для детекции зацикливания LLM.
+	recentChunksLimit := 16
+	recentChunks := make([]string, 0, recentChunksLimit+1)
+
 	// Устанавливаем read-deadline на backend-соединение, чтобы зависший стрим
 	// (SIGSEGV в llama.cpp / timeout между чанками) корректно детектировался
 	// как ошибка чтения, а не молчаливо "успешно завершался" по EOF.
@@ -253,6 +257,33 @@ func (p *Proxy) handleStreamingResponse(w http.ResponseWriter, r *http.Request, 
 					_ = rc.SetReadDeadline(time.Now().Add(idleTimeout))
 				}
 			}
+			// Детектор зацикливания (loop detection).
+			// Если последние N чанков идентичны — модель, скорее всего, зациклилась
+			// (распространённый паттерн при рассинхроне KV-cache или сломанной модели).
+			// Прерываем стрим только при ЯВНЫХ косвенных признаках, не по таймауту.
+			// См. также: bash-style loops в LLM при температуре 0 и chat templates.
+			if repeated, pattern := detectLoopingChunk(buf[:n], recentChunks); repeated {
+				logger.Get().Errorw("streaming loop detected — aborting stream",
+					"backend", backendID, "model", modelFromCtx,
+					"reason", "repeated_chunk_pattern",
+					"pattern", pattern,
+					"bytes_streamed", bytesStreamed,
+					"chunk_count", chunkCount,
+					"elapsed_sec", time.Since(startTime).Seconds())
+				if isSSE {
+					p.SendSSEErrorSafe(w, flusher, "loop_detected",
+						"Model produced a repeating pattern, aborting stream to prevent infinite output", backendID)
+				} else if isNDJSON {
+					p.SendNDJSONErrorSafe(w, flusher,
+						"Model produced a repeating pattern, aborting stream to prevent infinite output", backendID)
+				}
+				clientDisconnected.Store(true)
+				return
+			}
+			recentChunks = append(recentChunks, string(buf[:n]))
+			if len(recentChunks) > recentChunksLimit {
+				recentChunks = recentChunks[len(recentChunks)-recentChunksLimit:]
+			}
 		}
 		if err != nil {
 			if err == io.EOF {
@@ -403,4 +434,78 @@ func (p *Proxy) logStreamingError(backendID string, err error) {
 // logError - логирование ошибки
 func (p *Proxy) logError(backendID string, err error) {
 	logger.Get().Errorw("proxy error", "backend", backendID, "error", err)
+}
+
+// detectLoopingChunk — детектор зацикливания LLM-стрима.
+//
+// Причины, по которым LLM зацикливается:
+//   - KV-cache рассинхронизирован (баг в модели или квантизации);
+//   - chat template вызывает модель войти в бесконечный repetition;
+//   - модель упала в «echo mode» (повторяет последний токен/чанк);
+//   - температура 0 + degenerate prompt → модель выбирает один и тот же токен.
+//
+// Стратегия: анализируем последние recentChunks (до 16) и ищем признаки цикла.
+//   1. Текущий чанк совпадает с предыдущим ≥3 раза подряд
+//   2. Pattern длиной ≤32 байта встречается в 8+ последних чанках
+//   3. ≥5 из последних 6 чанков одинаковы полностью
+//
+// Возвращает (true, pattern) если зацикливание обнаружено, иначе (false, "").
+//
+// ВАЖНО (2026-06-22): используется для решения проблемы «обрыв стрима по непонятным причинам».
+// Стрим теперь прерывается только при ЯВНЫХ косвенных признаках (loop detection),
+// а не по таймаутам. Таймауты (idleTimeout) продлеваются на каждом чанке.
+func detectLoopingChunk(current []byte, recent []string) (bool, string) {
+	cur := string(current)
+	if len(cur) < 4 {
+		// Слишком короткий чанк (одиночный токен типа ".") — нечего детектировать.
+		return false, ""
+	}
+
+	// 1) Точное совпадение с предыдущими чанками ≥3 раз подряд.
+	if len(recent) >= 2 {
+		sameCount := 1
+		for i := len(recent) - 1; i >= 0 && recent[i] == cur; i-- {
+			sameCount++
+		}
+		if sameCount >= 3 {
+			return true, fmt.Sprintf("exact_match_x%d", sameCount)
+		}
+	}
+
+	// 2) Pattern длиной ≤32 байта встречается в 8+ из последних чанков.
+	if len(recent) >= 8 {
+		for plen := 4; plen <= 32 && plen*2 <= len(cur)+32; plen++ {
+			if len(cur) < plen {
+				continue
+			}
+			pat := cur[len(cur)-plen:]
+			if strings.TrimSpace(pat) == "" {
+				continue
+			}
+			matches := 1 // текущий чанк
+			for _, prev := range recent {
+				if strings.Contains(prev, pat) {
+					matches++
+				}
+			}
+			if matches >= 8 {
+				return true, fmt.Sprintf("pattern_len_%d_x%d", plen, matches)
+			}
+		}
+	}
+
+	// 3) ≥5 из последних 6 чанков одинаковы полностью.
+	if len(recent) >= 6 {
+		same := 0
+		for _, prev := range recent[len(recent)-6:] {
+			if prev == cur {
+				same++
+			}
+		}
+		if same >= 5 {
+			return true, fmt.Sprintf("consecutive_copy_x%d", same+1)
+		}
+	}
+
+	return false, ""
 }

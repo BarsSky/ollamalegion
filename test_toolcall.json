@@ -1,0 +1,1 @@
+{"model":"gemma-4-E4B-it-Q4_K_M","messages":[{"role":"user","content":"what is the weather in Paris?"}],"tools":[{"type":"function","function":{"name":"search","description":"Search the web","parameters":{"type":"object","properties":{"q":{"type":"string"}}}}}]} 

@@ -34,6 +34,36 @@ func (p *Proxy) proxyRequestLlamaCppNonStream(w http.ResponseWriter, r *http.Req
 	llamacppPath := translatePathForLlamaCpp(originalPath)
 	bodyNoStream := stripStreamFlag(bodyBuf)
 
+	// PREFLIGHT n_ctx auto-reload: если клиент задал options.num_ctx,
+	// а loaded n_ctx на бэкенде меньше — синхронно перезагружаем модель на нужный n_ctx
+	// ДО проксирования (аналогично proxyRequestLlamaCpp).
+	preflightBody, preflightOK, preflightMsg, preflightStatus := p.preflightNCtxReloadIfNeeded(
+		r.Context(), backendID, modelFromCtx, bodyNoStream)
+	if preflightOK {
+		bodyNoStream = preflightBody
+		logger.Get().Debugw("proxyRequestLlamaCppNonStream: preflight n_ctx reload applied",
+			"backend", backendID, "model", modelFromCtx, "new_body_len", len(bodyNoStream))
+	} else if preflightMsg != "" || preflightStatus != http.StatusOK {
+		// preflight вернул needsProxy=false: асинхронный reload запущен в фоне.
+		// Отдаём клиенту HTTP 503 Service Unavailable + Retry-After: 5.
+		// Клиент повторит запрос через 5 секунд — к этому моменту reload обычно завершён.
+		// Это решает проблему «обрыв ответа после partial completion»:
+		// раньше preflight синхронно перезагружал модель (10-30 сек), и параллельные
+		// запросы получали HTTP 500 с «handle is nil».
+		logger.Get().Infow("proxyRequestLlamaCppNonStream: preflight triggered async n_ctx reload, returning 503 to client",
+			"backend", backendID, "model", modelFromCtx,
+			"msg", preflightMsg, "status", preflightStatus)
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("Retry-After", "5")
+		w.Header().Set("X-NCtx-Reload-Decision", "async-reload")
+		body := []byte(fmt.Sprintf(`{"error":%q,"decision":"async_reload","retry_after_seconds":5}`,
+			preflightMsg))
+		w.Header().Set("Content-Length", strconv.Itoa(len(body)))
+		w.WriteHeader(http.StatusServiceUnavailable)
+		_, _ = w.Write(body)
+		return nil
+	}
+
 	translatedBody, err := translateOllamaBodyToOpenAI(originalPath, bodyNoStream)
 	if err != nil {
 		translatedBody = bodyNoStream
@@ -187,7 +217,35 @@ func (p *Proxy) proxyRequestLlamaCppNonStream(w http.ResponseWriter, r *http.Req
 						}
 					} else if msg, ok := choice["message"].(map[string]interface{}); ok {
 						if c, ok := msg["content"].(string); ok {
-							fullContent += c
+							// Детектируем JSON tool calls в content для non-stream
+							if detectedTC, remainingTC, found := detectAndExtractToolCallsFromContent(c); found && len(detectedTC) > 0 {
+								logger.Get().Infow("proxyRequestLlamaCppNonStream: detected tool_calls in content",
+									"tool_calls_count", len(detectedTC))
+								// Clean remaining: remove service tokens, duplicate tool calls, role markers
+							cleanedTC := stripServiceTokens(remainingTC)
+							cleanedTC = cleanContentAfterToolCallExtraction(cleanedTC)
+							fullContent += cleanedTC
+								// Конвертируем детектированные tool_calls в accumulatedToolCall формат
+								for i, rawTC := range detectedTC {
+									if tcMap, ok := rawTC.(map[string]interface{}); ok {
+										acc := &accumulatedToolCall{
+											index:    len(toolAccum) + i,
+											function: make(map[string]interface{}),
+										}
+										if id, ok := tcMap["id"].(string); ok && id != "" {
+											acc.id = id
+										}
+										if fn, ok := tcMap["function"].(map[string]interface{}); ok {
+											for k, v := range fn {
+												acc.function[k] = v
+											}
+										}
+										toolAccum[len(toolAccum)] = acc
+									}
+								}
+							} else {
+								fullContent += c
+							}
 						}
 						// Проверяем tool_calls в message (если чанк — это уже готовый message)
 						if tc, ok := msg["tool_calls"].([]interface{}); ok && len(tc) > 0 {

@@ -46,6 +46,12 @@ func setupRouter() http.Handler {
 	mux.HandleFunc("/api/v1/cppworker/config/reload", authMiddleware(handleCppWorkerReloadConfig))
 	mux.HandleFunc("/api/v1/cppworker/health", handleHealth)
 	mux.HandleFunc("/api/v1/cppworker/metrics", handleInfo)
+	// Diagnostics endpoints — помогают диагностировать проблемы с загрузкой моделей
+	// через runtime JSON-ответ без чтения логов.
+	mux.HandleFunc("/api/diagnostics", handleDiagnostics)
+	mux.HandleFunc("/api/diagnostics/models", handleDiagnosticsModels)
+	mux.HandleFunc("/api/diagnostics/load", handleDiagnosticsLoad)
+	mux.HandleFunc("/api/diagnostics/clear", handleDiagnosticsClear)
 	// OpenAI-совместимые /v1/ endpoints
 	mux.HandleFunc("/v1/chat/completions", handleV1ChatCompletions)
 	mux.HandleFunc("/v1/completions", handleV1Completions)

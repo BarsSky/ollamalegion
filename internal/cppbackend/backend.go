@@ -16,6 +16,7 @@ import (
 	"runtime"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 	"unsafe"
 
@@ -39,37 +40,42 @@ const (
 
 // ModelInfo — информация о загруженной модели
 type ModelInfo struct {
-	Name          string    `json:"name"`
-	Path          string    `json:"path"`
-	State         LoadState `json:"state"`
-	Architecture  string    `json:"architecture,omitempty"`
-	NLayers       int       `json:"nLayers"`
-	NHeads        int       `json:"nHeads"`
-	NKvHeads      int       `json:"nKvHeads"`
-	NEmbd         int       `json:"nEmbd"`
-	NVocab        int       `json:"nVocab"`
-	ContextSize        int       `json:"contextSize"`
-	GGUFContextLength  int       `json:"ggufContextLength"`
-	SizeBytes          uint64    `json:"sizeBytes"`
-	LoadedAt      time.Time `json:"loadedAt"`
-	GPUCount      int       `json:"gpuCount,omitempty"`
-	GPULayers     int       `json:"gpuLayers"`
-	TensorSplit   []float32 `json:"tensorSplit,omitempty"`
-	ActiveQueries int       `json:"activeQueries"`
-	TotalQueries  int64     `json:"totalQueries"`
+	Name              string    `json:"name"`
+	Path              string    `json:"path"`
+	State             LoadState `json:"state"`
+	Architecture      string    `json:"architecture,omitempty"`
+	NLayers           int       `json:"nLayers"`
+	NHeads            int       `json:"nHeads"`
+	NKvHeads          int       `json:"nKvHeads"`
+	NEmbd             int       `json:"nEmbd"`
+	NVocab            int       `json:"nVocab"`
+	ContextSize       int       `json:"contextSize"`
+	GGUFContextLength int       `json:"ggufContextLength"`
+	SizeBytes         uint64    `json:"sizeBytes"`
+	LoadedAt          time.Time `json:"loadedAt"`
+	GPUCount          int       `json:"gpuCount,omitempty"`
+	GPULayers         int       `json:"gpuLayers"`
+	TensorSplit       []float32 `json:"tensorSplit,omitempty"`
+	ActiveQueries     int       `json:"activeQueries"`
+	TotalQueries      int64     `json:"totalQueries"`
 	// Дополнительные параметры загрузки (Шаг 4 — /api/models/reload).
 	// Хранятся вместе с моделью, чтобы при reload можно было
 	// переиспользовать их как дефолты, если клиент не указал override.
-	BatchSize     int       `json:"batchSize"`
-	FlashAttnType int       `json:"flashAttnType"`
-	NUMA          bool      `json:"numa"`
-	UseMmap       bool      `json:"useMmap"`
+	BatchSize     int  `json:"batchSize"`
+	FlashAttnType int  `json:"flashAttnType"`
+	NUMA          bool `json:"numa"`
+	UseMmap       bool `json:"useMmap"`
 	// === Loading state (Шаг «отображение загрузки в мониторе и вкладке бэкендов») ===
 	// Заполняются пока State == StateLoading, чтобы UI мог показывать
 	// «Загружается model-name 25s» и спиннер. После успеха/ошибки поля обнуляются.
 	LoadingStartedAt time.Time `json:"loadingStartedAt,omitempty"`
 	LoadingSizeBytes int64     `json:"loadingSizeBytes,omitempty"`
 	LoadingError     string    `json:"loadingError,omitempty"`
+	// LastUsedAt — момент последнего обращения к модели (генерация/стрим).
+	// Поле заполняется в Backend.GetModel/ListModels из inst.lastUsedAt,
+	// чтобы UI мог отображать «idle 5s» и для отладки reload-циклов.
+	// Может быть zero, если модель только что загружена и ещё не использовалась.
+	LastUsedAt time.Time `json:"lastUsedAt,omitempty"`
 }
 
 // Backend — основной объект CppBackend
@@ -114,6 +120,13 @@ type modelInstance struct {
 	handle   *bridge.ModelHandle
 	metadata *bridge.ModelMetadata
 	mu       sync.Mutex
+	// lastUsedAt — момент последнего обращения к модели (генерация/стрим).
+	// Используется IdleUnloadManager'ом для решения о выгрузке неактивных
+	// моделей: считаем idle от LastUsedAt, а не от LoadedAt — иначе модель,
+	// которая периодически обслуживает запросы, будет выгружена после
+	// idleTimeout от момента загрузки, а не от момента последнего использования.
+	// atomic.Value позволяет читать без мьютекса на горячем пути ListModels.
+	lastUsedAt atomic.Value // time.Time
 }
 
 // ============================================================
@@ -142,9 +155,14 @@ func NewBackend(cfg Config) *Backend {
 		loading:      make(map[string]chan struct{}),
 	}
 
-	// Idle unload manager
-	if cfg.MetricsRetentionS > 0 {
-		b.idleUnloader = NewIdleUnloadManager(b, time.Duration(cfg.MetricsRetentionS)*time.Second)
+	// Idle unload manager.
+	// Источник idleTimeout — отдельное поле IdleUnloadMinutes (по дефолту 0 = ВЫКЛЮЧЕНО).
+	// Раньше здесь использовался MetricsRetentionS (по дефолту 3600 секунд = 60 минут),
+	// что путало метрики с автовыгрузкой и приводило к выгрузке модели через час простоя
+	// даже если пользователь этого не хотел. Теперь для автовыгрузки нужно явно задать
+	// CPPWORKER_IDLE_UNLOAD_MINUTES (или idleUnloadMinutes в JSON-конфиге).
+	if cfg.IdleUnloadMinutes > 0 {
+		b.idleUnloader = NewIdleUnloadManager(b, time.Duration(cfg.IdleUnloadMinutes)*time.Minute)
 	}
 
 	// HuggingFace downloader
@@ -286,17 +304,17 @@ func (b *Backend) LoadModelWithOpts(name string, path string, opts LoadModelOpts
 
 	inst := &modelInstance{
 		info: ModelInfo{
-			Name:              name,
-			Path:              path,
-			State:             StateLoading,
-			GPULayers:         gpuLayers,
-			BatchSize:         opts.BatchSize,
-			FlashAttnType:     opts.FlashAttnType,
-			NUMA:              opts.NUMA,
-			UseMmap:           opts.UseMmap,
-			LoadedAt:          time.Now(),
-			LoadingStartedAt:  time.Now(),
-			LoadingSizeBytes:  loadingSizeBytes,
+			Name:             name,
+			Path:             path,
+			State:            StateLoading,
+			GPULayers:        gpuLayers,
+			BatchSize:        opts.BatchSize,
+			FlashAttnType:    opts.FlashAttnType,
+			NUMA:             opts.NUMA,
+			UseMmap:          opts.UseMmap,
+			LoadedAt:         time.Now(),
+			LoadingStartedAt: time.Now(),
+			LoadingSizeBytes: loadingSizeBytes,
 		},
 	}
 	b.models[name] = inst
@@ -415,6 +433,11 @@ func (b *Backend) LoadModelWithOpts(name string, path string, opts LoadModelOpts
 	inst.info.SizeBytes = meta.SizeTotalBytes
 	inst.info.GPUCount = b.gpuCount
 	b.mu.Unlock()
+
+	// Инициализируем lastUsedAt моментом загрузки, чтобы IdleUnloadManager
+	// не считал только что загруженную модель сразу idle. Дальше Generate/GenerateStream
+	// будут обновлять его на каждом запросе.
+	inst.lastUsedAt.Store(time.Now())
 
 	// Записываем метрики
 	if b.metrics != nil {
@@ -730,6 +753,36 @@ func (b *Backend) checkVRAMForModel(name string, path string, opts LoadModelOpts
 	return opts, nil
 }
 
+// UpdateLastUsed продлевает время жизни модели в VRAM на duration d от now.
+//
+// Используется для обработки Ollama-семантики keep_alive:
+//   - "5m" → lastUsedAt = now + 5 минут
+//   - "0"  → unload модели (вызывается через UnloadModel напрямую, не через этот метод)
+//
+// Метод безопасен для concurrent вызовов (atomic.Value.Store lock-free).
+// Если duration <= 0 — ставит lastUsedAt = now (модель только что использована).
+// Если модель не загружена — тихий no-op.
+func (b *Backend) UpdateLastUsed(name string, d time.Duration) {
+	b.mu.RLock()
+	inst, exists := b.models[name]
+	b.mu.RUnlock()
+
+	if !exists {
+		return
+	}
+
+	newTime := time.Now()
+	if d > 0 {
+		newTime = newTime.Add(d)
+	}
+	inst.lastUsedAt.Store(newTime)
+
+	logger.Get().Debugw("model keep_alive extended",
+		"name", name,
+		"keepAliveDuration", d.String(),
+		"newLastUsedAt", newTime.Format(time.RFC3339Nano))
+}
+
 // UnloadModel выгружает модель
 func (b *Backend) UnloadModel(name string) error {
 	b.mu.Lock()
@@ -774,6 +827,7 @@ func (b *Backend) GetModel(name string) (*ModelInfo, error) {
 
 	info := inst.info
 	info.ActiveQueries = b.getActiveQueries(inst)
+	info.LastUsedAt = b.getLastUsedAt(inst)
 	return &info, nil
 }
 
@@ -786,9 +840,25 @@ func (b *Backend) ListModels() []ModelInfo {
 	for _, inst := range b.models {
 		info := inst.info
 		info.ActiveQueries = b.getActiveQueries(inst)
+		info.LastUsedAt = b.getLastUsedAt(inst)
 		result = append(result, info)
 	}
 	return result
+}
+
+// getLastUsedAt возвращает момент последнего использования модели.
+// Используется IdleUnloadManager (через ListModels) и монитором для
+// отображения idle-времени. atomic.Value.Load lock-free, в отличие от
+// чтения через inst.mu, что важно при вызовах из горячего пути ListModels.
+// Если lastUsedAt не было инициализировано (например модель только в процессе
+// загрузки), возвращает LoadedAt как fallback.
+func (b *Backend) getLastUsedAt(inst *modelInstance) time.Time {
+	if v := inst.lastUsedAt.Load(); v != nil {
+		if t, ok := v.(time.Time); ok && !t.IsZero() {
+			return t
+		}
+	}
+	return inst.info.LoadedAt
 }
 
 // GetLoadingModels возвращает список моделей в состоянии Loading/Error.
@@ -933,6 +1003,10 @@ func (b *Backend) Generate(modelName string, prompt string, params bridge.Genera
 	inst.info.TotalQueries++
 	inst.info.ActiveQueries++
 	inst.mu.Unlock()
+	// Обновляем lastUsedAt в начале запроса — IdleUnloadManager использует
+	// это значение (а не LoadedAt) для решения о выгрузке. Делаем это
+	// под мьютексом inst.mu не нужно: atomic.Value.Store lock-free.
+	inst.lastUsedAt.Store(time.Now())
 
 	start := time.Now()
 
@@ -945,6 +1019,7 @@ func (b *Backend) Generate(modelName string, prompt string, params bridge.Genera
 			tokens := approximateTokens(approxResultLen(inst, prompt, params))
 			b.metrics.RecordRequest(modelName, tokens, duration, true)
 		}
+		inst.lastUsedAt.Store(time.Now())
 	}()
 
 	return inst.handle.Infer(prompt, params)
@@ -961,6 +1036,7 @@ func (b *Backend) GenerateStream(modelName string, prompt string, params bridge.
 	inst.info.TotalQueries++
 	inst.info.ActiveQueries++
 	inst.mu.Unlock()
+	inst.lastUsedAt.Store(time.Now())
 
 	start := time.Now()
 
@@ -972,6 +1048,7 @@ func (b *Backend) GenerateStream(modelName string, prompt string, params bridge.
 			duration := time.Since(start)
 			b.metrics.RecordRequest(modelName, 0, duration, true)
 		}
+		inst.lastUsedAt.Store(time.Now())
 	}()
 
 	return inst.handle.InferStream(prompt, params, callback)
@@ -1047,11 +1124,11 @@ func (b *Backend) GetGPUMetrics() []map[string]interface{} {
 	result := make([]map[string]interface{}, 0, b.gpuCount)
 	for _, dev := range b.gpuDevices {
 		metrics := map[string]interface{}{
-			"index":       dev.Index,
-			"name":        dev.Name,
-			"vramTotalMB": dev.VRAMTotalMB,
-			"vramFreeMB":  dev.VRAMFreeMB,
-			"vramUsedMB":  dev.VRAMTotalMB - dev.VRAMFreeMB,
+			"index":        dev.Index,
+			"name":         dev.Name,
+			"vramTotalMB":  dev.VRAMTotalMB,
+			"vramFreeMB":   dev.VRAMFreeMB,
+			"vramUsedMB":   dev.VRAMTotalMB - dev.VRAMFreeMB,
 			"vramUsagePct": float64(0),
 		}
 		if dev.VRAMTotalMB > 0 {
@@ -1270,11 +1347,12 @@ var ggufKeyMap = initGGUFKeyMap()
 // Работает без загрузки модели в llama.cpp — читает только header (metadata KV).
 //
 // Формат GGUF v3:
-//   [4]byte magic = "GGUF"
-//   uint32 version = 3
-//   uint64 tensorCount
-//   uint64 metadataKvCount
-//   []MetadataKV — пары ключ-значение с архитектурой, параметрами и т.д.
+//
+//	[4]byte magic = "GGUF"
+//	uint32 version = 3
+//	uint64 tensorCount
+//	uint64 metadataKvCount
+//	[]MetadataKV — пары ключ-значение с архитектурой, параметрами и т.д.
 //
 // Поддерживаемые GGUF metadata keys (с маппингом по архитектуре):
 //   - general.architecture              (string)

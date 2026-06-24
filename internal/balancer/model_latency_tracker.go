@@ -365,10 +365,23 @@ func (t *ModelLatencyTracker) GetOrComputeTimeout(
 }
 
 // GetOrComputeIdleTimeout — как GetOrComputeTimeout, но для idle timeout.
+//
+// Приоритет:
+//  1. Per-model profile (profileIdleTimeoutSec)
+//  2. ModelLatencyTracker (на основе истории inter-token gap)
+//  3. Эвристика по размеру GGUF файла (для моделей без истории)
+//  4. Глобальный конфиг (globalIdleTimeoutSec)
+//  5. Дефолт 120s
+//
+// modelSizeBytes — размер .gguf файла в байтах (0 = неизвестен). Используется
+// как fallback для моделей без истории генерации: для больших моделей на
+// слабых GPU (partial offload) idle между чанками может быть >120s, и
+// дефолт 120s приводит к обрыву стрима без диагностики (см. STREAMING_IDLE_TIMEOUT).
 func (t *ModelLatencyTracker) GetOrComputeIdleTimeout(
 	modelName string,
 	profileIdleTimeoutSec int,
 	globalIdleTimeoutSec int,
+	modelSizeBytes ...int64,
 ) time.Duration {
 	if profileIdleTimeoutSec > 0 {
 		return time.Duration(profileIdleTimeoutSec) * time.Second
@@ -376,6 +389,12 @@ func (t *ModelLatencyTracker) GetOrComputeIdleTimeout(
 	stats := t.GetStats(modelName)
 	if stats.RecommendedIdleTimeoutSec > 0 {
 		return time.Duration(stats.RecommendedIdleTimeoutSec) * time.Second
+	}
+	// Эвристика по размеру GGUF файла (для моделей без истории)
+	if len(modelSizeBytes) > 0 && modelSizeBytes[0] > 0 {
+		if estimated := EstimateIdleTimeoutFromModelSize(modelSizeBytes[0]); estimated > 0 {
+			return estimated
+		}
 	}
 	if globalIdleTimeoutSec > 0 {
 		return time.Duration(globalIdleTimeoutSec) * time.Second
@@ -461,6 +480,39 @@ func EstimateStreamTimeoutFromModelSize(sizeBytes int64) time.Duration {
 		return 900 * time.Second
 	default:
 		return 1200 * time.Second
+	}
+}
+
+// EstimateIdleTimeoutFromModelSize оценивает разумный idle-таймаут стриминга
+// на основе размера .gguf файла. Используется как эвристика для моделей без истории.
+//
+// Проблема (2026-06-23): для больших моделей (12B+ params) на GPU с
+// partial offload (не все слои в VRAM) idle между чанками может быть
+// >120s (default). При модели с tokens/sec ~5-10 (CPU offload части
+// слоёв) max-inter-token-gap достигает 30-60s. С запасом ×2-3 для
+// burst-pause получается 60-180s → дефолт 120s обрывает стрим.
+//
+// Эвристика (с запасом для "thinking"-моделей и burst-pauses):
+//   - < 2 GB:   120s — маленькие модели (стабильно быстрые)
+//   - 2-5 GB:   180s — средние модели
+//   - 5-12 GB:  300s — большие модели (8-20B, возможен partial offload)
+//   - 12-24 GB: 600s — очень большие (20-40B, частые pause)
+//   - > 24 GB:  900s — гигантские (>40B, длинные thinking)
+func EstimateIdleTimeoutFromModelSize(sizeBytes int64) time.Duration {
+	gb := float64(sizeBytes) / (1024 * 1024 * 1024)
+	switch {
+	case gb <= 0:
+		return 0
+	case gb < 2.0:
+		return 120 * time.Second
+	case gb < 5.0:
+		return 180 * time.Second
+	case gb < 12.0:
+		return 300 * time.Second
+	case gb < 24.0:
+		return 600 * time.Second
+	default:
+		return 900 * time.Second
 	}
 }
 

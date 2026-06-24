@@ -63,6 +63,10 @@ func handleLoadModel(w http.ResponseWriter, r *http.Request) {
 		"batchSize", opts.BatchSize, "flashAttnType", opts.FlashAttnType,
 		"numa", opts.NUMA, "tensorSplit", opts.TensorSplit)
 
+	// Запоминаем момент начала обработки запроса — используется для замера
+	// времени ожидания при concurrent load (см. ниже).
+	loadStart := time.Now()
+
 	// Per-model blocking load
 	lockOk, lockErr := backend.TryLockLoad(modelName)
 	if lockErr != nil {
@@ -96,12 +100,26 @@ func handleLoadModel(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if !lockOk {
+		// Другая горутина уже грузит эту модель. Дождёмся завершения — это
+		// устраняет гонку, когда балансер/клиент отправляют параллельные
+		// POST /api/models/load и второй получает 503, хотя первый успешно
+		// завершится через несколько секунд.
 		logger.Get().Infow("model is already being loaded by another request; waiting", "name", modelName)
+		if backend.WaitForLoad(modelName) {
+			if info, getErr := backend.GetModel(modelName); getErr == nil {
+				logger.Get().Infow("handleLoadModel: model loaded by concurrent request",
+					"name", modelName, "duration_ms", time.Since(loadStart).Milliseconds())
+				writeJSON(w, http.StatusOK, map[string]interface{}{
+					"status": "loaded_by_other",
+					"model":  info,
+				})
+				return
+			}
+		}
 		writeLoadingResponse(w, modelName, errModelIsLoading)
 		return
 	}
 
-	loadStart := time.Now()
 	loadErr := backend.LoadModelWithOpts(modelName, modelPath, opts)
 	backend.UnlockLoad(modelName)
 	if loadErr != nil {
@@ -384,8 +402,8 @@ func handleReloadModel(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "batchSize must be >= 1")
 		return
 	}
-	if req.GPULayers != nil && *req.GPULayers < -1 {
-		writeError(w, http.StatusBadRequest, "gpuLayers must be >= -1 (-1 = all layers)")
+	if req.GPULayers != nil && *req.GPULayers < -2 {
+		writeError(w, http.StatusBadRequest, "gpuLayers must be >= -2 (-1 = all layers, -2 = AUTO)")
 		return
 	}
 
@@ -399,11 +417,57 @@ func handleReloadModel(w http.ResponseWriter, r *http.Request) {
 		TensorSplit:   current.TensorSplit,
 	}
 
+	// === Auto-offload: если GPULayers=-2 (AUTO) или auto_offload включён —
+	// рассчитываем оптимальное число GPU-слоёв для запрошенного n_ctx.
+	// Это решает проблему: большая модель (~18GB) на 20GB VRAM при
+	// gpu_layers=-1 занимает всю VRAM → KV-cache не помещается →
+	// max_vram_n_ctx маленький → балансировщик reject'ит запрос.
+	// При auto_offload gpu_layers уменьшается, часть весов уходит в RAM
+	// (mmap), освобождая VRAM для KV-cache большего размера.
+	if opts.GPULayers == -2 || (*autoOffload && opts.GPULayers == current.GPULayers) {
+		// Создаём временный ModelInfo с запрошенным n_ctx для расчёта.
+		m := *current
+		m.ContextSize = opts.ContextSize
+		calculated := calculateOptimalGPULayersForModel(m)
+		if calculated >= 0 && calculated != opts.GPULayers {
+			logger.Get().Infow("reload: auto-offload recalculated gpu_layers",
+				"name", req.Name,
+				"old_gpu_layers", opts.GPULayers,
+				"new_gpu_layers", calculated,
+				"n_ctx", opts.ContextSize,
+				"model_size_mb", current.SizeBytes/(1024*1024))
+			opts.GPULayers = calculated
+			opts.UseMmap = true // partial offload требует mmap
+		}
+	}
+
+	// === AutoTuneNCtx: если auto_tune_nctx включён — подбираем оптимальные
+	// n_ctx и gpu_layers с учётом реальной свободной VRAM и RAM.
+	// Это позволяет при reload автоматически сделать partial offload,
+	// если запрошенный n_ctx не помещается в VRAM с текущими gpu_layers.
+	if *autoTuneNCtx && opts.ContextSize > current.ContextSize {
+		tuned := AutoTuneNCtx(*current, opts.ContextSize)
+		if tuned.RecommendedNCtx > 0 && tuned.Source != "fallback" {
+			logger.Get().Infow("reload: AutoTuneNCtx applied",
+				"name", req.Name,
+				"requested_n_ctx", opts.ContextSize,
+				"tuned_n_ctx", tuned.RecommendedNCtx,
+				"tuned_gpu_layers", tuned.RecommendedGPULayers,
+				"old_gpu_layers", opts.GPULayers,
+				"source", tuned.Source,
+				"max_viable_n_ctx", tuned.MaxViableNCtx)
+			opts.ContextSize = tuned.RecommendedNCtx
+			opts.GPULayers = tuned.RecommendedGPULayers
+			opts.UseMmap = tuned.UseMmap
+		}
+	}
+
 	logger.Get().Infow("reloading model with new params",
 		"name", req.Name, "path", modelPath,
 		"old_ctx", current.ContextSize, "new_ctx", opts.ContextSize,
 		"old_batch", current.BatchSize, "new_batch", opts.BatchSize,
-		"old_gpu_layers", current.GPULayers, "new_gpu_layers", opts.GPULayers)
+		"old_gpu_layers", current.GPULayers, "new_gpu_layers", opts.GPULayers,
+		"use_mmap", opts.UseMmap)
 
 	// Если force=true — пропускаем проверку "params already sufficient".
 	// Это нужно, когда C-bridge не может реально использовать запрошенный n_ctx

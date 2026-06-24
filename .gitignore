@@ -143,3 +143,15 @@ test_results/
 /cluster*.json
 /add_*.json
 models/
+
+balancer_test_build
+
+apply_streaming_fix.py
+
+apply_gen_fix.py
+
+inspect_out.txt
+
+*.7z
+
+panic_out.txt

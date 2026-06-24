@@ -41,7 +41,9 @@ services:
       # n_ctx auto-reload (ENV overrides config.json)
       - LB_NCTX_RELOAD_ENABLED=${LB_NCTX_RELOAD_ENABLED:-true}
       - LB_NCTX_RELOAD_MAX_N_CTX=${LB_NCTX_RELOAD_MAX_N_CTX:-131072}
-      - LB_NCTX_RELOAD_VRAM_SAFETY_FACTOR=${LB_NCTX_RELOAD_VRAM_SAFETY_FACTOR:-0.85}
+      # Safety 0.95 вместо 0.85: для Gemma-4 (max_vram_n_ctx=40K, required=52K)
+      # при 0.85 reload reject'ится, при 0.95 влезает.
+      - LB_NCTX_RELOAD_VRAM_SAFETY_FACTOR=${LB_NCTX_RELOAD_VRAM_SAFETY_FACTOR:-0.95}
       - LB_NCTX_RELOAD_TIMEOUT_SEC=${LB_NCTX_RELOAD_TIMEOUT_SEC:-120}
     volumes:
       - ../config:/app/config:ro
@@ -80,24 +82,42 @@ services:
       - CPPWORKER_PORT=18092
       - CPPWORKER_MODELS_DIR=/app/models
       # defaults for model load
-      # n_ctx=16384: балансировщик динамически читает реальный n_ctx загруженной
-      # модели из метрик (Tier 3 в maxNumCtxForModel). Клампинг в балансировщике
+      # ЕДИНЫЙ ИСТОЧНИК ИСТИНЫ: config/cppworker-defaults.json (монтируется в /app/config/).
+      # cppworker читает его при старте, WebUI пишет через API.
+      # .env-переменные ниже — ОВЕРРАЙДЫ поверх JSON (приоритет: env > JSON > DefaultConfig).
+      # Если .env.bundled не задаёт CPPWORKER_* — используется fallback (после :-).
+      # n_ctx: 32768 — достаточно для длинных диалогов с запасом ~25000 токенов на ответ.
+      # Балансировщик динамически читает реальный n_ctx загруженной модели
+      # из метрик (Tier 3 в maxNumCtxForModel). Клампинг в балансировщике
       # использует contextSize из /api/models, а не это значение.
       # Для 8GB VRAM cppworker может снизить n_ctx при загрузке (RAM fallback).
-      - CPPWORKER_CTX_SIZE=16384
-      - CPPWORKER_BATCH_SIZE=${DEFAULT_BATCH_SIZE:-512}
+      - CPPWORKER_CTX_SIZE=${CPPWORKER_CTX_SIZE:-32768}
+      - CPPWORKER_BATCH_SIZE=${CPPWORKER_BATCH_SIZE:-512}
       # 20 = partial offload (рекомендуется для 8GB). 42 = all GPU
       # (требует >10GB VRAM). 0 = CPU only.
-      - CPPWORKER_GPU_LAYERS=${DEFAULT_GPU_LAYERS:-20}
-      - CPPWORKER_FLASH_ATTN_TYPE=${DEFAULT_FLASH_ATTN_TYPE:--1}
-      - CPPWORKER_N_THREADS=${DEFAULT_N_THREADS:-0}
-      - CPPWORKER_NUMA=${DEFAULT_NUMA:-false}
-      - CPPWORKER_USE_MMAP=${DEFAULT_USE_MMAP:-true}
+      - CPPWORKER_GPU_LAYERS=${CPPWORKER_GPU_LAYERS:-20}
+      - CPPWORKER_FLASH_ATTN_TYPE=${CPPWORKER_FLASH_ATTN_TYPE:--1}
+      - CPPWORKER_N_THREADS=${CPPWORKER_N_THREADS:-0}
+      - CPPWORKER_NUMA=${CPPWORKER_NUMA:-false}
+      - CPPWORKER_USE_MMAP=${CPPWORKER_USE_MMAP:-true}
       # RAM fallback: auto-reload model with larger n_ctx via mmap/RAM
       # when VRAM is insufficient (e.g. OpenWebUI requests num_ctx=16384).
       - CPPWORKER_RAM_FALLBACK_N_CTX=${CPPWORKER_RAM_FALLBACK_N_CTX:-true}
-      - CPPWORKER_RAM_FALLBACK_GPU_LAYERS=${CPPWORKER_RAM_FALLBACK_GPU_LAYERS:-0}
-      - CPPWORKER_RAM_FALLBACK_MAX_N_CTX=${CPPWORKER_RAM_FALLBACK_MAX_N_CTX:-16384}
+      # -2 = AUTO-расчёт gpu_layers для 19GB+ моделей на 24GB VRAM.
+      # Требует CPPWORKER_AUTO_OFFLOAD=true (см. ниже).
+      - CPPWORKER_RAM_FALLBACK_GPU_LAYERS=${CPPWORKER_RAM_FALLBACK_GPU_LAYERS:--2}
+      - CPPWORKER_RAM_FALLBACK_MAX_N_CTX=${CPPWORKER_RAM_FALLBACK_MAX_N_CTX:-128000}
+      # Auto offload: при загрузке модели проверяет размер .gguf файла vs
+      # доступную VRAM. Если не влезает — auto-рассчитывает число GPU-слоёв.
+      # Решает проблему OOM на 19GB модели + n_ctx=32K + A10 (24GB).
+      - CPPWORKER_AUTO_OFFLOAD=${CPPWORKER_AUTO_OFFLOAD:-true}
+      # AutoTuneNCtx: при RAM-fallback reload вычисляет максимальный n_ctx,
+      # который помещается в VRAM (с учётом partial offload через mmap в RAM).
+      # Решает: «Cline прислал 53K prompt, требуется n_ctx=53K, VRAM=8GB» →
+      # cppworker перезагружает модель с gpu_layers=0 (mmap в RAM) и
+      # n_ctx=максимально возможный (например 32K), чтобы inference прошёл
+      # без кода 3 «prompt too long».
+      - CPPWORKER_AUTO_TUNE_NCTX=${CPPWORKER_AUTO_TUNE_NCTX:-true}
       # auth
       - API_TOKEN=${CPPWORKER_API_TOKEN:-changeme-bundled-token}
       # auto-registration в балансировщике
@@ -118,6 +138,7 @@ services:
       - HF_AUTO_DOWNLOAD_FILE=
     volumes:
       - ../models:/app/models:rw
+      - ../config:/app/config:rw
       - cppworker_cache:/app/.cache
     ports:
       # Прямой доступ к cppworker (для отладки и обхода балансировщика)

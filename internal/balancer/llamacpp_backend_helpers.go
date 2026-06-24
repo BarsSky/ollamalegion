@@ -333,6 +333,34 @@ func (lr *LlamaCppRouter) ensureModelLoadedOnBackend(backendID, modelName string
 				"backend", backendID, "model", modelName, "error", result.Error)
 			return true, nil
 		}
+
+		// Страховка: если ExecuteOperation вернул ошибку вида "model is loading"
+		// (cppworker уже загружает эту модель другой горутиной, наши ретраи
+		// в executeLlamaCppLoad исчерпаны), попробуем дождаться завершения
+		// загрузки через polling /api/models.
+		if strings.Contains(errStr, "model is loading") || strings.Contains(errStr, "loading") {
+			ridLog(lr_recentCtx()).Infow("ensureModelLoadedOnBackend: load returned 'model is loading', polling for ready state",
+				"backend", backendID, "model", modelName,
+				"step", "wait_after_load_error",
+				"op_error", result.Error)
+			pollDeadline := time.Now().Add(5 * time.Minute)
+			for {
+				if lr.isModelReadyOnBackend(backendID, modelName) {
+					ridLog(lr_recentCtx()).Infow("ensureModelLoadedOnBackend: model became ready while polling after load error",
+						"backend", backendID, "model", modelName,
+						"step", "ready_after_load_error")
+					return true, nil
+				}
+				if time.Now().After(pollDeadline) {
+					ridLog(lr_recentCtx()).Errorw("ensureModelLoadedOnBackend: timeout polling for ready after load error",
+						"backend", backendID, "model", modelName,
+						"step", "poll_timeout_after_load_error")
+					return false, fmt.Errorf("auto-load failed: %s", result.Error)
+				}
+				time.Sleep(500 * time.Millisecond)
+			}
+		}
+
 		ridLog(lr_recentCtx()).Errorw("ensureModelLoadedOnBackend: ExecuteOperation failed",
 			"backend", backendID, "model", modelName,
 			"step", "execute_op_result",

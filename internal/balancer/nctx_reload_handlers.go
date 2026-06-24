@@ -571,3 +571,25 @@ func (p *Proxy) executeAsyncReload(backendID, modelName string, requestedNCtx in
 		"target_n_ctx", requestedNCtx,
 		"duration_ms", duration.Milliseconds())
 }
+
+// getLoadedNCtxFromMetrics — возвращает загруженный n_ctx модели из метрик.
+// Используется в handleChat для предотвращения понижения n_ctx:
+// если модель загружена с n_ctx=131072, а клиент шлёт num_ctx=8192,
+// мы сохраняем загруженное значение.
+func (p *Proxy) getLoadedNCtxFromMetrics(backendID, modelName string) int {
+	if p.metricsMgr == nil {
+		return 0
+	}
+	p.metricsMgr.mu.RLock()
+	defer p.metricsMgr.mu.RUnlock()
+	lm, hasLm := p.metricsMgr.llamaMetrics[backendID]
+	if !hasLm || lm == nil {
+		return 0
+	}
+	for _, m := range lm.LoadedModels {
+		if m.Name == modelName || containsFold(m.Name, modelName) || containsFold(modelName, m.Name) {
+			return m.ContextLength
+		}
+	}
+	return 0
+}

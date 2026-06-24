@@ -30,6 +30,11 @@ const GgufRenderer = (window.GgufRenderer = (function () {
         gpuInfo: null,
         localModels: [],
         loadedModels: [],
+        // Runtime-параметры (n_ctx, gpu_layers, batch_size, flash_attn, n_layers, n_embd,
+        // gguf_context_length) реально загруженных моделей. Загружаются параллельно
+        // с loadedModels из /api/v1/cppworker/config/runtime. Используются в
+        // renderLoadedPane() чтобы показать «default: 8192, runtime: 32768».
+        runtimeModels: {},
         activeDownloads: [],
         downloadProgress: {},
         // HF search within the detail view
@@ -472,14 +477,48 @@ const GgufRenderer = (window.GgufRenderer = (function () {
         }).join('');
         const loadedHtml = models.map(function (m) {
             const name = m.model || m.name || m.path || '-';
+            // Ищем runtime-параметры (n_ctx, gpu_layers) этой модели.
+            // Ключ ищем по имени или по path, потому что cppworker может вернуть
+            // «gemma-4.gguf» а loadedModels — «gemma-4» (без расширения).
+            const rt = (state.runtimeModels && (state.runtimeModels[name] || state.runtimeModels[(m.path || '').split(/[\\/]/).pop()] || state.runtimeModels[m.path])) || null;
             const ctx = m.ctxSize || m.contextSize || '-';
             const vram = m.vramBytes ? formatFileSize(m.vramBytes) : (m.vramUsage ? m.vramUsage + ' MB' : '-');
+            // Runtime-блок (показываем рядом с default если rt есть).
+            // Поля из cppworker: context_size, gpu_layers, batch_size, flash_attn_type,
+            // gguf_context_length, n_layers, n_embd, state.
+            let rtHtml = '';
+            if (rt) {
+                const rtCtx = rt.context_size || 0;
+                const rtGpu = (rt.gpu_layers !== undefined) ? rt.gpu_layers : null;
+                const rtBatch = rt.batch_size || 0;
+                const rtFa = rt.flash_attn_type;
+                const rtLayers = rt.n_layers || 0;
+                const rtState = rt.state || 'loaded';
+                const rtCtxBadge = (rtCtx && rtCtx !== ctx) ? '<span class="badge" style="background:var(--accent);margin-left:6px;">runtime: ' + Utils.escapeHtml(String(rtCtx)) + '</span>' : '';
+                const rtGpuBadge = (rtGpu !== null && rtGpu !== undefined && rtGpu !== m.gpuLayers) ?
+                    '<span class="badge" style="background:var(--bg-tertiary);margin-left:6px;padding:2px 6px;font-size:10px;">gpu: ' + Utils.escapeHtml(String(rtGpu)) + '</span>' : '';
+                const meta = [];
+                if (rtCtx) meta.push('<span title="Runtime n_ctx">ctx=' + Utils.escapeHtml(String(rtCtx)) + '</span>');
+                if (rtGpu !== null && rtGpu !== undefined) meta.push('<span title="Runtime GPU layers">gpu_layers=' + Utils.escapeHtml(String(rtGpu)) + '</span>');
+                if (rtBatch) meta.push('<span title="Runtime batch size">batch=' + Utils.escapeHtml(String(rtBatch)) + '</span>');
+                if (rtFa !== undefined && rtFa !== null) meta.push('<span title="Flash attention type">fa=' + Utils.escapeHtml(String(rtFa)) + '</span>');
+                if (rtLayers) meta.push('<span title="Model layers">layers=' + Utils.escapeHtml(String(rtLayers)) + '</span>');
+                if (rt.gguf_context_length && rt.gguf_context_length !== rtCtx) {
+                    meta.push('<span title="Max n_ctx per GGUF metadata">gguf_max=' + Utils.escapeHtml(String(rt.gguf_context_length)) + '</span>');
+                }
+                if (meta.length > 0) {
+                    rtHtml = '<div class="gguf-loaded-model-info" style="margin-top:4px;display:flex;gap:12px;flex-wrap:wrap;font-family:monospace;font-size:11px;">' +
+                        meta.join('') +
+                        '</div>';
+                }
+            }
             return '<div class="gguf-loaded-model-item">' +
                 '<div class="gguf-loaded-model-name">' + Utils.escapeHtml(name) + '</div>' +
                 '<div class="gguf-loaded-model-info">' +
                     '<span>' + _('gguf.ctx_size') + ': ' + ctx + '</span>' +
                     '<span style="margin-left:12px;">VRAM: ' + vram + '</span>' +
                 '</div>' +
+                rtHtml +
                 '<button class="btn btn-sm btn-danger gguf-unload-btn" data-handle="' + Utils.escapeHtml(m.handle || name) + '">' +
                     '<i class="fas fa-stop"></i> ' + _('gguf.unload_model') +
                 '</button>' +
@@ -934,12 +973,31 @@ const GgufRenderer = (window.GgufRenderer = (function () {
         const saveBtn = document.getElementById('ggufBackendOptionsSave');
         if (saveBtn) saveBtn.disabled = true;
         try {
-            await GgufApi.requestViaBackend(backend.id, '/api/v1/cppworker/config/update', {
+            const resp = await GgufApi.requestViaBackend(backend.id, '/api/v1/cppworker/config/update', {
                 method: 'PUT',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify(payload)
             });
             showToast(_('gguf.backend_options_saved'), 'success');
+            // Re-fetch config чтобы пользователь сразу видел, что изменения применились.
+            // cppworker возвращает applied[] и reload_started[] — показываем их в toast.
+            if (resp && resp.reload_started && resp.reload_started.length > 0) {
+                showToast('Reloading ' + resp.reload_started.length + ' model(s) with new defaults...', 'info');
+            }
+            // Перезагружаем форму с актуальными значениями из cppworker.
+            await loadAndRenderBackendOptions();
+            // Также обновляем runtime-параметры загруженных моделей (context_size и т.д.).
+            try {
+                const rtData = await GgufApi.getRuntimeConfigViaBackend(backend.id);
+                if (rtData && rtData.loaded_models) {
+                    state.runtimeModels = {};
+                    (rtData.loaded_models || []).forEach(function (m) {
+                        state.runtimeModels[m.name] = m;
+                    });
+                }
+            } catch (rtErr) {
+                // runtime config может быть недоступен на старых cppworker — игнорируем.
+            }
         } catch (e) {
             showToast(_('gguf.backend_options_save_error') + ': ' + (e.message || e), 'error');
         } finally {
@@ -1285,6 +1343,7 @@ const GgufRenderer = (window.GgufRenderer = (function () {
         state.gpuInfo = null;
         state.localModels = [];
         state.loadedModels = [];
+        state.runtimeModels = {};
         state.activeDownloads = [];
         state.downloadProgress = {};
         state.hfSearchQuery = '';
@@ -1788,7 +1847,28 @@ const GgufRenderer = (window.GgufRenderer = (function () {
                 var history = (data && data.history) || [];
                 state.activeDownloads = Array.isArray(active) ? active : [];
                 state.downloadHistory = Array.isArray(history) ? history : [];
-            }).catch(function () { state.activeDownloads = []; state.downloadHistory = []; })
+            }).catch(function () { state.activeDownloads = []; state.downloadHistory = []; }),
+            // === Runtime-параметры загруженных моделей (n_ctx, gpu_layers, ...) ===
+            // Параллельный запрос к /api/v1/cppworker/config/runtime. Используется
+            // в renderLoadedPane() чтобы показать «default: 8192, runtime: 32768 (gemma-4)».
+            // Если endpoint недоступен (старая версия cppworker'а) — игнорируем.
+            GgufApi.getRuntimeConfigViaBackend(backend.id).then(function (data) {
+                var arr = (data && data.loaded_models) || data || [];
+                // Ключ — model.name (fallback path). Значение — весь объект runtime-параметров.
+                var runtimeMap = {};
+                if (Array.isArray(arr)) {
+                    for (var i = 0; i < arr.length; i++) {
+                        var rm = arr[i];
+                        if (!rm) continue;
+                        var key = rm.name || rm.path || ('unknown-' + i);
+                        runtimeMap[key] = rm;
+                    }
+                }
+                state.runtimeModels = runtimeMap;
+            }).catch(function () {
+                // Не очищаем runtimeModels — пусть остаётся последний успешный snapshot
+                // (если backend временно недоступен, мы не хотим мигать «0 загружено»).
+            })
         ]).then(function () {
             _detailRefreshInProgress = false;
             state.detailLoading = false;

@@ -3,6 +3,7 @@ package cppbackend
 
 import (
 	"bufio"
+	"encoding/json"
 	"fmt"
 	"os"
 	"strconv"
@@ -90,12 +91,14 @@ func DefaultConfig() Config {
 		ModelsDir:         "./models",
 		DownloadsDir:      "./downloads",
 		CacheDir:          "./cache",
-		// DefaultCtxSize = 8192 (а не 4096): при 4096 у OpenWebUI с tools
-		// (system + tool definitions ~3000-5000 токенов + user message)
-		// prompt не влезает → reload на каждой tool-итерации.
-		// 8192 — минимум для стабильной работы OpenWebUI с tools.
-		// Можно override через CPPWORKER_CTX_SIZE или CPPWORKER_DEFAULT_CTX_SIZE.
-		DefaultCtxSize:    8192,
+		// DefaultCtxSize = 32768: достаточно для длинных диалогов
+		// (system + history ~7000 токенов + user message) с запасом
+		// ~25000 токенов на ответ. Предыдущее значение 8192 было
+		// минимумом для OpenWebUI с tools, но для production-использования
+		// с длинными сессиями этого недостаточно.
+		// Можно override через CPPWORKER_CTX_SIZE, CPPWORKER_DEFAULT_CTX_SIZE
+		// или config/cppworker-defaults.json.
+		DefaultCtxSize:    32768,
 		DefaultBatchSize:  512,
 		DefaultGPULayers:  -1, // все слои на GPU
 		DefaultFlashAttnType:  -1,
@@ -134,9 +137,34 @@ func DefaultConfig() Config {
 	}
 }
 
-// LoadConfigFromEnv загружает конфигурацию из переменных окружения
-func LoadConfigFromEnv() Config {
+// LoadConfigFromFile загружает конфигурацию из JSON-файла.
+// Файл config/cppworker-defaults.json — единый источник истины
+// для дефолтных параметров. Если файл не найден — возвращаем DefaultConfig().
+func LoadConfigFromFile(path string) (Config, error) {
 	cfg := DefaultConfig()
+	data, err := os.ReadFile(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return cfg, nil // файла нет — используем хардкод-дефолты
+		}
+		return cfg, fmt.Errorf("read config file %s: %w", path, err)
+	}
+	if err := json.Unmarshal(data, &cfg); err != nil {
+		return cfg, fmt.Errorf("parse config file %s: %w", path, err)
+	}
+	return cfg, nil
+}
+
+// LoadConfigFromEnv загружает конфигурацию из переменных окружения.
+// Приоритет: env-переменные > config/cppworker-defaults.json > DefaultConfig().
+func LoadConfigFromEnv() Config {
+	// 1. Загружаем defaults из JSON-файла (единый источник истины)
+	cfg, err := LoadConfigFromFile("config/cppworker-defaults.json")
+	if err != nil {
+		// Логгируем предупреждение, но продолжаем с DefaultConfig
+		fmt.Fprintf(os.Stderr, "[cppbackend] WARNING: failed to load config/cppworker-defaults.json: %v — using hardcoded defaults\n", err)
+		cfg = DefaultConfig()
+	}
 
 	if v := os.Getenv("CPPWORKER_PORT"); v != "" {
 		cfg.Port = parseInt(v, cfg.Port)

@@ -302,9 +302,13 @@ func (s *Server) applyModelProfile(w http.ResponseWriter, r *http.Request, model
 		}
 	}
 
-	// Шаг 3: reload на всех llama_cpp бэкендах
+	// Шаг 3: reload на всех llama_cpp бэкендах.
+	// ВАЖНО: используем live backends из proxy (GetAllBackends), а не static config.
+	// В bundled-режиме config.Backends пуст — cppworker регистрируется через
+	// auto-registration, и его backend появляется только в runtime state proxy.
+	// Если итерировать по s.config.Backends — apply всегда возвращает "skipped".
 	results := make([]modelProfileApplyBackendResult, 0)
-	for _, backend := range s.config.Backends {
+	for _, backend := range s.proxy.GetAllBackends() {
 		backendID := backend.ID
 		if backend.Type != types.BackendTypeLlamaCpp {
 			results = append(results, modelProfileApplyBackendResult{

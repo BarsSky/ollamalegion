@@ -1,466 +1,286 @@
-# Установка и сборка Ollama Load Balancer
+# Установка и сборка OllamaLegion
 
-Подробное руководство по установке и сборке всех компонентов системы.
+> **Версия:** 2026-06-22  
+> **Связанные документы:** [`deployment.md`](deployment.md), [`configuration.md`](configuration.md), [`audit-2026-06.md`](audit-2026-06.md)
 
 ## Содержание
 
-1. [Требования к системе](#требования-к-системе)
-2. [Установка через Docker (рекомендуемый способ)](#установка-через-docker)
-3. [Локальная установка (из исходников)](#локальная-установка-из-исходников)
-4. [Установка с NVML поддержкой](#установка-с-nvml-поддержкой)
-5. [Сборка с флагами](#сборка-с-флагами)
+1. [Требования к системе](#1-требования-к-системе)
+2. [Установка через Docker (рекомендуемый)](#2-установка-через-docker)
+3. [Локальная установка (из исходников)](#3-локальная-установка-из-исходников)
+4. [Сборка CppWorker](#4-сборка-cppworker)
+5. [Режимы работы без агента](#5-режимы-работы-без-агента)
+6. [Smoke-проверка](#6-smoke-проверка)
 
 ---
 
-## Требования к системе
+## 1. Требования к системе
 
-### Для балансировщика (Load Balancer)
+### Балансировщик (Load Balancer)
 
-| Требование | Минимальные | Рекомендуемые |
-|------------|-------------|---------------|
-| **ОС** | Linux/Windows/macOS | Linux (Ubuntu 20.04+, Debian 11+) |
-| **CPU** | 2 cores | 4 cores |
-| **RAM** | 512 MB | 1 GB |
-| **Disk** | 100 MB | 500 MB |
-| **Network** | 100 Mbps | 1 Gbps |
-| **Go** | 1.21+ | 1.21+ |
+| Компонент | Минимум | Рекомендуется |
+|---|---|---|
+| ОС | Linux / Windows / macOS | Linux (Ubuntu 22.04+, Debian 12+) |
+| CPU | 2 cores | 4 cores |
+| RAM | 512 MB | 1 GB |
+| Disk | 100 MB | 500 MB |
+| Go | 1.21+ | 1.21+ |
+| Network | 100 Mbps | 1 Gbps |
 
-### Для агента (на каждом GPU сервере)
+### Агент (на каждом сервере с Ollama/CppWorker)
 
-| Требование | Минимальные | Рекомендуемые |
-|------------|-------------|---------------|
-| **ОС** | Linux/Windows | Linux (Ubuntu 20.04+, Debian 11+) |
-| **CPU** | 1 core | 2 cores |
-| **RAM** | 128 MB | 256 MB |
-| **Disk** | 50 MB | 100 MB |
-| **Docker** | 20.10+ | 24.0+ с NVIDIA Container Toolkit |
-| **NVIDIA Driver** | 470.x+ | 535.x+ |
-| **Ollama** | Любая версия | Последняя стабильная |
+| Компонент | Минимум | Рекомендуется |
+|---|---|---|
+| ОС | Linux (Ubuntu 20.04+, Debian 11+) | Ubuntu 22.04 LTS |
+| CPU | 1 core | 2 cores |
+| RAM | 128 MB | 256 MB |
+| Disk | 50 MB | 100 MB |
+| Docker | 20.10+ | 24.0+ |
 
-### Для Web UI
+**GPU-режим** дополнительно требует:
 
-| Требование | Минимальные | Рекомендуемые |
-|------------|-------------|---------------|
-| **CPU** | 1 core | 2 cores |
-| **RAM** | 256 MB | 512 MB |
-| **Disk** | 100 MB | 200 MB |
+- NVIDIA GPU (Compute Capability 5.0+, рекомендуется 7.0+).
+- NVIDIA Driver 470.x+ (рекомендуется 535.x+).
+- NVIDIA Container Toolkit 1.12+.
+- CUDA 11.0+ (рекомендуется 12.0+).
 
-### Проверка требований
+### WebUI (Nginx + статика)
 
-```bash
-# Проверка версии Go
-go version
-
-# Проверка Docker
-docker --version
-docker-compose --version
-
-# Проверка NVIDIA драйверов
-nvidia-smi
-
-# Проверка NVIDIA Container Toolkit
-docker run --rm --gpus all nvidia/cuda:11.0-base nvidia-smi
-
-# Проверка Ollama
-curl http://localhost:11434/api/tags
-```
+| Компонент | Минимум |
+|---|---|
+| CPU | 1 core |
+| RAM | 256 MB |
+| Disk | 100 MB |
 
 ---
 
-## Установка через Docker
+## 2. Установка через Docker
 
-Это рекомендуемый способ развертывания.
+Рекомендуемый способ для production.
 
-### Шаг 1: Клонирование репозитория
+### 2.1 Клонирование
 
 ```bash
 git clone https://github.com/BarsSky/ollamalegion.git
 cd ollamalegion
 ```
 
-### Шаг 2: Подготовка конфигурации
+### 2.2 Подготовка `deployments/.env`
 
 ```bash
-# Скопируйте пример конфигурации балансировщика
 cp config/config.example.json config/config.json
-
-# Отредактируйте конфигурацию под ваши нужды
-nano config/config.json
+cp deployments/.env.bundled.example deployments/.env.bundled  # опционально
+# отредактируйте под свои параметры:
+# - LB_PORT, LB_API_PORT (по умолчанию 18080, 18081)
+# - CPPWORKER_API_TOKEN (для auto-registration)
+# - BALANCER_URL (для cppworker auto-registration)
 ```
 
-### Шаг 3: Запуск через Docker Compose
+### 2.3 Запуск bundled-стека
 
 ```bash
-# Запуск балансировщика и Web UI
-docker-compose up -d
+# Linux/macOS/WSL
+./scripts/start-bundled.sh
 
-# Просмотр логов
-docker-compose logs -f loadbalancer
-
-# Проверка статуса
-docker-compose ps
+# Windows PowerShell (Legacy builder обязателен!)
+$env:DOCKER_BUILDKIT=0
+.\scripts\start-bundled.ps1
 ```
 
-### Шаг 4: Проверка работоспособности
+Стек поднимает:
+- `cppworker-gpu` (порт 18092)
+- `loadbalancer` (порты 18080, 18081)
+- `webui` (порт 18083)
+
+### 2.4 Альтернативные compose
 
 ```bash
-# Проверка health endpoint
+# Только балансер + WebUI (без CppWorker)
+cd deployments && docker compose up -d
+
+# Только CppWorker (CPU)
+docker compose -f docker-compose.cppworker.yml --profile cpu up -d --build
+
+# Только CppWorker (GPU)
+docker compose -f docker-compose.cppworker.yml --profile gpu up -d --build
+
+# Только CppWorker (stub — для тестов без llama.cpp)
+docker compose -f docker-compose.cppworker.yml --profile stub up -d --build
+
+# Агент на отдельном сервере
+docker compose -f docker-compose.agent.yml --env-file .env up -d --build
+```
+
+### 2.5 Сборка образов вручную
+
+```powershell
+$env:DOCKER_BUILDKIT=0  # Legacy builder обязателен на Windows 11 + Docker Desktop
+
+docker build -t ollama-legion/balancer:latest --target production -f docker/balancer/Dockerfile .
+docker build -t ollama-legion/cppworker:cpu --target runtime -f docker/cppworker/Dockerfile.cpu .
+docker build -t ollama-legion/cppworker:gpu --target runtime -f docker/cppworker/Dockerfile.gpu .
+docker build -t ollama-legion/cppworker:stub --target runtime -f docker/cppworker/Dockerfile.stub .
+docker build -t ollama-legion/agent:cpu --target agent-cpu -f docker/agent/Dockerfile .
+docker build -t ollama-legion/agent:gpu --target agent-gpu -f docker/agent/Dockerfile .
+docker build -t ollama-legion/webui:latest -f docker/webui/Dockerfile .
+```
+
+| Образ | Размер | Когда использовать |
+|---|---|---|
+| `cppworker:cpu` | ~150 MB | Production CPU-инференс |
+| `cppworker:gpu` | ~3.2 GB | Production GPU (CUDA) |
+| `cppworker:stub` | ~100 MB | CI/тесты без llama.cpp |
+| `balancer` | ~54 MB | Балансировщик |
+| `agent:cpu` | ~16 MB | Метрики без GPU |
+| `agent:gpu` | ~395 MB | Метрики с NVML |
+| `webui` | ~101 MB | Web UI dashboard |
+
+---
+
+## 3. Локальная установка (из исходников)
+
+### 3.1 Сборка балансировщика
+
+```bash
+go build -o balancer ./cmd/balancer
+./balancer --port 18080 --api-port 18081 --config ./config/config.json
+```
+
+### 3.2 Сборка агента
+
+```bash
+go build -o agent ./cmd/agent
+AGENT_ID=local-1 BALANCER_URL=http://localhost:18081 ./agent
+```
+
+### 3.3 Stub-сборка CppWorker (для тестов, без llama.cpp)
+
+```bash
+# Linux/macOS
+go build -tags llama_stub -o cppworker-stub ./cmd/cppworker
+./cppworker-stub --port 18091 --models-dir ./models
+
+# Windows (бинарник отдельно, см. .clinerules §12)
+go test -c ./cmd/cppworker -tags llama_stub -o cppworker_test.exe
+.\cppworker_test.exe
+```
+
+---
+
+## 4. Сборка CppWorker (с реальным llama.cpp)
+
+Только для GPU/CPU-инференса. Stub-сборки достаточно для 90% разработки.
+
+### 4.1 Зависимости
+
+- CMake 3.20+
+- C++17 компилятор (gcc 9+, clang 10+, MSVC 19.30+)
+- CUDA 12.2+ (только для GPU)
+- ~30 минут на полную сборку с llama.cpp
+
+### 4.2 GPU-сборка (CUDA)
+
+```bash
+cd docker/cppworker
+docker build -f Dockerfile.gpu --target runtime -t ollama-legion/cppworker:gpu ..
+```
+
+### 4.3 CPU-сборка (Alpine)
+
+```bash
+cd docker/cppworker
+docker build -f Dockerfile.cpu --target runtime -t ollama-legion/cppworker:cpu ..
+```
+
+### 4.4 Архитектуры GPU
+
+- Аргумент `CUDA_ARCH` управляет тэгом образа `:gpu-<arch>`.
+- Поддерживаются: `80` (A100), `86` (RTX 3070/3080/3090), `89` (RTX 4090), `90` (H100), `all` (multi-arch).
+- Пример: `CUDA_ARCH=86 ./scripts/build-containers.sh cppworker`.
+
+---
+
+## 5. Режимы работы без агента
+
+Балансировщик **может** работать без агента, но с ограниченной функциональностью.
+
+### 5.1 Что работает без агента
+
+| Функция | Работает? | Комментарий |
+|---|---|---|
+| HTTP-проксирование (`/api/generate`, `/api/chat`, `/api/embeddings`) | ✅ | Прямой проброс на бэкенд |
+| Round-robin балансировка | ✅ | Не требует метрик |
+| Health check | ✅ | Через `/api/tags` на Ollama |
+| Session stickiness | ✅ | Хранится в памяти балансировщика |
+| Queue / backpressure | ✅ | Счётчики `ActiveReqs` |
+| Retry / failover | ✅ | На любой healthy бэкенд |
+| Least-connections | ✅ | По `ActiveReqs` (без агента) |
+| Базовый scoring | ✅ | Упрощённая формула |
+
+### 5.2 Что НЕ работает без агента
+
+| Функция | Требует агента | Причина |
+|---|---|---|
+| Model Affinity | ✅ | Список `RunningModels` приходит от агента |
+| Resource-aware scoring v2 | ✅ | GPU/VRAM/CPU/RAM метрики |
+| Prewarm Controller | ✅ | Нужен `freeVRAM` от агента |
+| Auto-pull (Pull-on-Demand) | ✅ | Проверка `RunningModels` |
+| Headroom Reservation | ✅ | Нужны VRAM usage метрики |
+| Predictor | ✅ | История метрик |
+| Model Replication (Variant A) | ✅ | Расширенные метрики |
+| Virtual Model Router (Variant C) | ✅ | Pipeline slicing метрики |
+| Adaptive Weight Tuner | ✅ | История latency/success |
+| Unload Scheduler (smart eviction) | ✅ | Метрики |
+| Agent actions в WebUI (Restart/Logs/Config) | ✅ | Нет endpoint'ов без агента |
+
+### 5.3 Минимальный конфиг без агента
+
+```json
+{
+  "balancing": {
+    "algorithm": "roundrobin",
+    "modelAffinity": false,
+    "sessionStickiness": true,
+    "useEnhancedScoring": false,
+    "prewarm": { "enabled": false },
+    "autoPull": { "enabled": false }
+  }
+}
+```
+
+---
+
+## 6. Smoke-проверка
+
+```bash
+# 1. Health балансировщика (liveness, всегда 200)
+curl http://localhost:18081/api/v1/ping
+
+# 2. Health балансировщика (readiness, 503 в degraded)
 curl http://localhost:18081/api/v1/health
 
-# Проверка Web UI (Dashboard)
-# Откройте http://localhost:18030 в браузере
+# 3. Health CppWorker (через балансер)
+curl http://localhost:18092/health
 
-# Проверка Монитора (real-time визуализация)
-# Откройте http://localhost:18030/monitor.html в браузере
-# Монитор доступен по тому же адресу и порту, что и Web UI Dashboard
+# 4. Список бэкендов
+curl -H 'X-API-Token: <token>' http://localhost:18081/api/v1/backends
+
+# 5. Прямая генерация через CppWorker
+curl -X POST http://localhost:18092/api/generate \
+  -H "Content-Type: application/json" \
+  -d '{"model":"model.gguf","prompt":"Hello","stream":false}'
+
+# 6. WebUI Dashboard
+open http://localhost:18083  # или http://localhost:18030 если без Docker
 ```
 
-### Шаг 5: Развертывание агента на GPU серверах
-
-Агент должен запускаться **отдельно на каждом GPU сервере** с Ollama.
-
-```bash
-# На каждом GPU сервере выполните:
-cd /path/to/ollama-loadbalancer/scripts
-
-# Используйте скрипт автоматического развертывания
-./deploy-agent-docker.sh \
-  --balancer-url http://<balancer-ip>:18081 \
-  --agent-id gpu-1
-
-# Или вручную через docker run
-docker run -d \
-  --name ollama-agent \
-  --restart unless-stopped \
-  -e AGENT_ID=gpu-1 \
-  -e BALANCER_URL=http://<balancer-ip>:18081 \
-  -v /usr/bin/nvidia-smi:/usr/bin/nvidia-smi:ro \
-  -v /proc:/host/proc:ro \
-  -v /sys:/host/sys:ro \
-  --network host \
-  ollama-legion/agent:latest
-```
+Если все 6 шагов проходят — установка успешна.
 
 ---
 
-## Локальная установка (из исходников)
-
-### Шаг 1: Установка Go
-
-```bash
-# Ubuntu/Debian
-sudo apt-get update
-sudo apt-get install -y golang-go
-
-# Проверка версии
-go version  # должна быть 1.21 или выше
-```
-
-### Шаг 2: Клонирование репозитория
-
-```bash
-git clone https://github.com/your-org/ollama-loadbalancer.git
-cd ollama-loadbalancer
-```
-
-### Шаг 3: Установка зависимостей
-
-```bash
-go mod download
-```
-
-### Шаг 4: Сборка балансировщика
-
-```bash
-# Использование скрипта сборки (рекомендуется)
-./scripts/build-balancer.sh
-
-# Или вручную
-go build -o bin/balancer ./cmd/balancer
-
-# Проверка сборки
-./bin/balancer --help
-```
-
-### Шаг 5: Сборка агента
-
-```bash
-# Использование скрипта сборки (рекомендуется)
-./scripts/build-agent.sh
-
-# Или вручную
-go build -o bin/agent ./cmd/agent
-
-# Проверка сборки
-./bin/agent --help
-```
-
-### Шаг 6: Запуск балансировщика
-
-```bash
-# Создание конфигурационного файла
-mkdir -p config
-cp config/config.example.json config/config.json
-
-# Запуск с конфигурацией
-./bin/balancer -config config/config.json
-
-# Или через переменные окружения
-export LB_HOST=0.0.0.0
-export LB_PORT=18080
-export LB_API_PORT=18081
-export BACKEND_0_ID=gpu-1
-export BACKEND_0_HOST=192.168.13.66
-./bin/balancer
-```
-
-### Шаг 7: Запуск агента
-
-```bash
-# На каждом GPU сервере
-export AGENT_ID=gpu-1
-export BALANCER_URL=http://<balancer-ip>:18081
-export NVML_ENABLED=true
-./bin/agent
-```
-
-### Шаг 8: Сборка и запуск Web UI
-
-```bash
-# Web UI собирается из docker/webui/Dockerfile
-# Запуск в составе основного docker-compose.yml:
-cd deployments
-docker-compose up -d
-
-# Или напрямую через nginx (статика должна быть в webui/dist/)
-sudo apt-get install -y nginx
-sudo cp webui/nginx.conf /etc/nginx/sites-available/ollama-legion
-sudo ln -s /etc/nginx/sites-available/ollama-legion /etc/nginx/sites-enabled/
-sudo systemctl restart nginx
-```
-
----
-
-## Установка с NVML поддержкой
-
-NVML (NVIDIA Management Library) обеспечивает точные метрики GPU.
-
-### Шаг 1: Установка NVIDIA драйверов
-
-```bash
-# Ubuntu/Debian
-sudo apt-get update
-sudo apt-get install -y nvidia-driver-535
-
-# Перезагрузка после установки драйверов
-sudo reboot
-```
-
-### Шаг 2: Установка NVML библиотеки
-
-```bash
-# NVML обычно устанавливается вместе с драйверами
-# Проверка наличия библиотеки
-ldconfig -p | grep nvml
-
-# Для разработки могут потребоваться заголовочные файлы
-sudo apt-get install -y nvidia-cuda-toolkit
-```
-
-### Шаг 3: Установка NVIDIA Container Toolkit
-
-```bash
-# Добавление репозитория
-curl -fsSL https://nvidia.github.io/libnvidia-container/gpgkey | \
-  sudo gpg --dearmor -o /usr/share/keyrings/nvidia-container-toolkit.gpg
-
-distribution=$(. /etc/os-release;echo $ID$VERSION_ID)
-curl -fsSL https://nvidia.github.io/libnvidia-container/stable/deb/nvidia-container-toolkit.list | \
-  sed 's#deb https://#deb [signed-by=/usr/share/keyrings/nvidia-container-toolkit.gpg] https://#g' | \
-  sudo tee /etc/apt/sources.list.d/nvidia-container-toolkit.list
-
-sudo apt-get update
-sudo apt-get install -y nvidia-container-toolkit
-
-# Настройка Docker
-sudo nvidia-ctk runtime configure --runtime=docker
-sudo systemctl restart docker
-```
-
-### Шаг 4: Проверка NVML
-
-```bash
-# Проверка внутри контейнера
-docker run --rm --gpus all nvidia/cuda:11.0-base nvidia-smi
-
-# Проверка go-nvml
-go get github.com/NVIDIA/go-nvml/pkg/nvml
-```
-
-### Шаг 5: Сборка с NVML
-
-```bash
-# Для Unix систем с NVML
-go build -tags nvml -o bin/agent ./cmd/agent
-
-# Для Windows
-go build -tags nvml -o bin/agent.exe ./cmd/agent
-
-# Для систем без NVML (используется stub)
-go build -o bin/agent ./cmd/agent
-```
-
-### Шаг 6: Конфигурация агента с NVML
-
-```bash
-# В docker-compose.agent.yml или .env файле
-NVML_ENABLED=true
-
-# При запуске бинарного файла
-export NVML_ENABLED=true
-./bin/agent
-```
-
----
-
-## Сборка с флагами
-
-### Флаги сборки для агента
-
-| Флаг | Описание | Платформа |
-|------|----------|-----------|
-| `-tags nvml` | Включить NVML поддержку | Linux/Windows |
-| `-tags static` | Статическая линковка | Linux |
-| `-ldflags "-s -w"` | Уменьшить размер бинарника | Все |
-
-### Примеры сборки
-
-#### Балансировщик (Linux)
-
-```bash
-# Базовая сборка
-go build -o bin/balancer ./cmd/balancer
-
-# Оптимизированная сборка
-go build -ldflags "-s -w" -o bin/balancer ./cmd/balancer
-
-# Для конкретной архитектуры
-GOOS=linux GOARCH=amd64 go build -o bin/balancer ./cmd/balancer
-```
-
-#### Агент (Linux с NVML)
-
-```bash
-# С NVML поддержкой
-CGO_ENABLED=1 go build -tags nvml -o bin/agent ./cmd/agent
-
-# Статическая сборка с NVML
-CGO_ENABLED=1 go build -tags "nvml static" -ldflags "-s -w" -o bin/agent ./cmd/agent
-
-# Кросс-компиляция
-GOOS=linux GOARCH=amd64 CGO_ENABLED=1 go build -tags nvml -o bin/agent ./cmd/agent
-```
-
-#### Агент (Windows с NVML)
-
-```bash
-# Для Windows
-GOOS=windows GOARCH=amd64 CGO_ENABLED=1 go build -tags nvml -o bin/agent.exe ./cmd/agent
-```
-
-#### Агент (без NVML)
-
-```bash
-# Для систем без GPU или для тестирования
-CGO_ENABLED=0 go build -o bin/agent ./cmd/agent
-```
-
-### Скрипты сборки
-
-Проект включает готовые скрипты сборки:
-
-```bash
-# Сборка балансировщика
-chmod +x scripts/build-balancer.sh
-./scripts/build-balancer.sh
-
-# Сборка агента (Linux)
-chmod +x scripts/build-agent.sh
-./scripts/build-agent.sh
-
-# Сборка агента (Windows)
-chmod +x scripts/build-agent.bat
-./scripts/build-agent.bat
-```
-
----
-
-## Docker образы
-
-### Сборка образов
-
-```bash
-# Балансировщик
-docker build -f docker/balancer/Dockerfile -t ollama-legion/balancer:latest .
-
-# Агент
-docker build -f docker/agent/Dockerfile -t ollama-legion/agent:latest .
-
-# Web UI
-docker build -f docker/webui/Dockerfile -t ollama-legion/webui:latest .
-```
-
-### Мульти-архитектурные образы
-
-```bash
-# Установка buildx
-docker buildx create --use
-
-# Сборка для нескольких архитектур
-docker buildx build \
-  --platform linux/amd64,linux/arm64 \
-  -f docker/balancer/Dockerfile \
-  -t ollama-legion/balancer:latest \
-  --push \
-  .
-```
-
----
-
-## Проверка установки
-
-### Чеклист проверки
-
-```bash
-# 1. Проверка балансировщика
-curl http://localhost:18081/api/v1/health
-# Ожидаемый ответ: {"status": "healthy", ...}
-
-# 2. Проверка списка бэкендов
-curl http://localhost:18081/api/v1/backends
-# Ожидаемый ответ: {"backends": [...], "total": N}
-
-# 3. Проверка Web UI (Dashboard)
-# Откройте http://localhost:18030 в браузере
-
-# 4. Проверка Монитора (real-time визуализация кластера)
-# Откройте http://localhost:18030/monitor.html в браузере
-
-# 5. Проверка агента на GPU сервере
-curl http://localhost:18032/metrics
-
-# 6. Проверка WebSocket подключения
-wscat -c ws://localhost:18081/ws/metrics
-```
-
-### Диагностика проблем
-
-См. раздел [Troubleshooting](troubleshooting.md) для решения часто встречающихся проблем.
-
----
-
-## Следующие шаги
-
-- [Конфигурация системы](configuration.md) — Настройка всех компонентов
-- [Развертывание](deployment.md) — Docker Compose и production deployment
-- [API документация](api.md) — Использование REST API и WebSocket
+## 7. Связанные документы
+
+- [`deployment.md`](deployment.md) — Docker Compose развёртывание.
+- [`agent-deployment.md`](agent-deployment.md) — развёртывание агента CPU/GPU.
+- [`audit-2026-06.md`](audit-2026-06.md) — текущее состояние кода.
+- [`../.clinerules`](../.clinerules) §12 — полезные команды (раздел «Локальная разработка»).

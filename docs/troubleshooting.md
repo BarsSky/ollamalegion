@@ -1,875 +1,454 @@
-# Troubleshooting Ollama Load Balancer
+# Troubleshooting OllamaLegion
 
-Руководство по решению常见 проблем и отладке системы.
+> **Версия:** 3.0 (2026-06-22) — переписан под актуальный код  
+> **Связанные документы:** [`runbook-tools.md`](runbook-tools.md) — детальный runbook для tools/tool_calls, [`cppworker-model-params.md`](cppworker-model-params.md) — n_ctx/Per-Model Profiles, [`audit-2026-06.md`](audit-2026-06.md), [`../.clinerules`](../.clinerules)
 
 ## Содержание
-  
-1. [Частые ошибки](#частые-ошибки)
-2. [Логирование](#логирование)
-3. [Отладка NVML](#отладка-nvml)
-4. [Performance tuning](#performance-tuning)
+
+1. [Частые ошибки балансировщика](#1-частые-ошибки-балансировщика)
+2. [n_ctx overflow: диагностика и решение](#2-n_ctx-overflow-диагностика-и-решение)
+3. [ReloadLoopLimitError (HTTP 413)](#3-reloadlooplimit-error-http-413)
+4. [Бэкенд помечается как unhealthy](#4-бэкенд-помечается-как-unhealthy)
+5. [HTTP 5xx / "Server disconnected" на тяжёлых моделях](#5-http-5xx--server-disconnected-на-тяжёлых-моделях)
+6. [Tools/tool_calls — сброс или пустой ответ](#6-toolstool_calls--сброс-или-пустой-ответ)
+7. [TransferEncodingError при streaming](#7-transferencodingerror-при-streaming)
+8. [Проблемы с NVIDIA Container Toolkit](#8-проблемы-с-nvidia-container-toolkit)
+9. [Agent → Ollama: ограничения](#9-agent--ollama-ограничения)
+10. [Логирование и отладка](#10-логирование-и-отладка)
 
 ---
 
-## Частые ошибки
+## 1. Частые ошибки балансировщика
 
-### Агент не подключается к балансировщику
+### 1.1 Агент не подключается к балансировщику
 
 **Симптомы:**
-- Агент не появляется в списке бэкендов
-- В логах агента ошибки подключения
+- Агент не появляется в списке бэкендов.
+- В логах агента — connection refused / timeout.
 
 **Решение:**
 
 ```bash
-# 1. Проверка доступности балансировщика
+# 1. Проверить доступность балансировщика
 curl -v http://<balancer-ip>:18081/api/v1/health
 
-# 2. Проверка firewall правил
-sudo ufw status
-sudo iptables -L -n
+# 2. Проверить firewall
+sudo ufw status  # Linux
+netsh advfirewall show allprofiles  # Windows
 
-# 3. Проверка логов агента
-docker logs ollama-agent
-# или
-journalctl -u ollama-agent -f
+# 3. Логи агента
+docker logs deployments-agent-1
 
-# 4. Проверка BALANCER_URL
-echo $BALANCER_URL
-# Должен быть доступен из сети агента
+# 4. Проверить BALANCER_URL внутри контейнера
+docker exec deployments-agent-1 sh -c 'echo $BALANCER_URL'
 ```
 
 **Возможные причины:**
-- Неправильный URL балансировщика
-- Firewall блокирует соединение
-- Балансировщик не запущен
-- Сетевые проблемы между серверами
+- Неправильный URL.
+- Firewall блокирует 18081.
+- Балансировщик не запущен.
+- Docker network между контейнерами (для cppworker auto-registration).
 
----
+### 1.2 Бэкенд помечается как unhealthy
 
-### Бэкенд помечается как unhealthy
-
-**Симптомы:**
-- Бэкенд имеет статус `unhealthy` или `offline`
-- Запросы не направляются на бэкенд
+**Симптомы:** `b.status === 'unhealthy'` или `'offline'` в `/api/v1/backends`.
 
 **Решение:**
 
 ```bash
-# 1. Проверка Ollama API на бэкенде
+# 1. Проверить Ollama напрямую
 curl http://<ollama-host>:11434/api/tags
 
-# 2. Проверка доступности агента
-curl http://<agent-host>:18032/metrics
+# 2. Проверить agent (если есть)
+curl http://<agent-host>:18032/health
 
-# 3. Проверка логов агента
-docker logs ollama-agent
-
-# 4. Проверка health check интервала
-# Убедитесь, что HEARTBEAT_INTERVAL < healthCheckInterval
+# 3. Проверить network
+ping <ollama-host>
+telnet <ollama-host> 11434
 ```
 
-**Возможные причины:**
-- Ollama не запущен на бэкенде
-- Агент не отправляет heartbeat
-- Неправильные порты в конфигурации
-- Сетевые проблемы
+**Подробнее:** [`agent-deployment.md`](agent-deployment.md) раздел Troubleshooting.
 
----
+### 1.3 503 "model is loading"
 
-### Высокая задержка запросов
+**Симптом:** сразу после первого запроса с большой моделью приходит 503.
 
-**Симптомы:**
-- Запросы выполняются дольше обычного
-- Таймауты запросов
+**Причина:** cppworker блокируется на `LoadModel` (30-60 сек), следующий запрос видит `errModelIsLoading`.
 
 **Решение:**
-
-```bash
-# 1. Проверка сетевой задержки
-ping <balancer-ip>
-ping <gpu-server-ip>
-
-# 2. Проверка загрузки GPU серверов
-curl http://<lb-ip>:18081/api/v1/metrics | jq
-
-# 3. Проверка очереди запросов
-curl http://<lb-ip>:18081/api/v1/cluster | jq .queuedRequests
-
-# 4. Проверка статистики запросов
-curl http://<lb-ip>:18081/api/v1/metrics | jq '.backends[].ollama.avgResponseTime'
-```
-
-**Возможные причины:**
-- Высокая загрузка GPU серверов
-- Сетевая задержка
-- Неправильные лимиты ресурсов
-- Переполненная очередь
+- Дождаться окончания загрузки (cppworker вернёт `loading: true, retryAfterMs: 3000`).
+- Или увеличить `Balancing.RequestTimeout` до 300-600 сек (см. [`configuration.md`](configuration.md)).
 
 ---
 
-### Ошибки доступа к GPU
+## 2. n_ctx overflow: диагностика и решение
 
-**Симптомы:**
-- Агент не получает GPU метрики
-- В логах ошибки NVML/nvidia-smi
+### 2.1 Симптомы
 
-**Решение:**
-
-```bash
-# 1. Проверка NVIDIA Container Toolkit
-docker run --rm --gpus all nvidia/cuda:11.0-base nvidia-smi
-
-# 2. Проверка NVML внутри контейнера
-docker exec ollama-agent nvidia-smi
-
-# 3. Проверка прав доступа к устройствам
-ls -la /dev/nvidia*
-
-# 4. Пересоздание контейнера с правильными правами
-docker rm -f ollama-agent
-docker run -d \
-  --name ollama-agent \
-  --gpus all \
-  --network host \
-  -e AGENT_ID=gpu-1 \
-  -e BALANCER_URL=http://<balancer-ip>:18081 \
-  -e NVML_ENABLED=true \
-  ollama-legion/agent:latest
+```
+"requested n_ctx=128000 exceeds model's effective n_ctx=4096"
 ```
 
-**Возможные причины:**
-- Не установлен NVIDIA Container Toolkit
-- Неправильные volume mounts
-- Отсутствуют права доступа к /dev/nvidia*
-- NVML библиотека не найдена
+или
+
+```
+HTTP 400 / 413: n_ctx too large for current load
+```
+
+### 2.2 Полный поток проблемы
+
+```
+Cline → {"model":"gemma-4-E4B-...","options":{"num_ctx":128000}}
+  ↓
+Балансировщик:
+  1. ExtractNumCtxFromBody(body) = 128000
+  2. ResolveNumCtx(model, body, backendID):
+     - Tier 1 (body): 128000
+     - Tier 2 (maxNumCtxForModel):
+       ├─ GetModelProfileNumCtx() = 0 → skip
+       ├─ GetDefaultModelProfileNumCtx() = ??? ← ⚠️ Если 4096 — clamping!
+       └─ getModelLoadedCtxFromMetrics() — не достигается
+     - Результат: clamped 128000 → 4096
+  3. ApplyCppCtxHeader → X-Cpp-Ctx: 4096
+  ↓
+CppWorker:
+  1. buildGenerationParams: NCtxOverride = 128000 (из body)
+  2. applyCppCtxHeader: body 128000 > headerLimit 4096 → CLAMP → 4096
+  3. Inference с n_ctx = 4096
+  4. Prompt > 4096 → bridge code 2 (ErrNCtxNeedsReload)
+  ↓
+Балансировщик:
+  1. ParseCppWorkerError → NCtxError
+  2. handleNCtxReload → DecideReloadBackend:
+     - AutoReloadNCtx = false → DecisionNoOp
+  3. HTTP 413/400 клиенту
+```
+
+### 2.3 Диагностика по шагам
+
+```bash
+# 1.1 Проверить defaultModelProfile.contextLength в конфиге
+curl -s http://localhost:18081/api/v1/config | jq '.defaultModelProfile.contextLength'
+# Должно быть: 0 или null
+# Если 4096 — конфиг не обновлён!
+
+# 1.2 Проверить RAM fallback на cppworker
+docker exec deployments-cppworker-gpu-1 sh -c 'echo $CPPWORKER_RAM_FALLBACK_N_CTX'
+# Должно быть: "true"
+
+# 1.3 Проверить n_ctx auto-reload на балансировщике
+curl -s http://localhost:18081/api/v1/config | jq '.balancing.nctxReload'
+# Должен быть объект с autoReloadNCtx: true
+
+# 1.4 Прямой тест генерации с большим num_ctx
+curl -X POST http://localhost:18081/api/generate \
+  -H 'Content-Type: application/json' \
+  -H 'X-API-Token: <token>' \
+  -d '{"model":"<model.gguf>","prompt":"Hello","options":{"num_ctx":32000}}'
+```
+
+### 2.4 Решение
+
+#### Вариант A: Per-Model Profile
+
+```bash
+# Создать профиль для конкретной модели
+curl -X PUT http://localhost:18081/api/v1/cppworker/model-profiles/gemma-4-E4B-it-Q4_K_M \
+  -H "Content-Type: application/json" \
+  -d '{"contextLength": 32768, "batchSize": 1024, "numGpuLayers": -1}'
+
+# Применить (reload на всех бэкендах)
+curl -X POST http://localhost:18081/api/v1/cppworker/model-profiles/gemma-4-E4B-it-Q4_K_M/apply
+```
+
+Подробнее: [`cppworker-model-params.md` §3-4](cppworker-model-params.md).
+
+#### Вариант B: Обновить `config.json`
+
+Убрать `defaultModelProfile.contextLength` (или установить в 0):
+
+```diff
+- "defaultModelProfile": {
+-   "contextLength": 4096,
+-   ...
+- }
++ "defaultModelProfile": {
++   "contextLength": 0,
++   ...
++ }
+```
+
+#### Вариант C: Включить RAM fallback + auto-reload
+
+```env
+# .env.bundled
+CPPWORKER_RAM_FALLBACK_N_CTX=true
+CPPWORKER_RAM_FALLBACK_MAX_N_CTX=128000
+LB_NCTX_RELOAD_ENABLED=true
+LB_NCTX_RELOAD_MAX_N_CTX=131072
+LB_NCTX_RELOAD_VRAM_SAFETY_FACTOR=0.85
+```
 
 ---
 
-### WebSocket не подключается
+## 3. ReloadLoopLimitError (HTTP 413)
 
-**Симптомы:**
-- Ошибки подключения к `/ws/metrics`
-- Real-time метрики не обновляются
+### 3.1 Симптомы
 
-**Решение:**
-
-```bash
-# 1. Проверка доступности порта
-telnet <balancer-ip> 18081
-
-# 2. Проверка WebSocket подключения
-wscat -c ws://localhost:18081/ws/metrics
-
-# 3. Проверка CORS настроек
-curl -v -X OPTIONS http://localhost:18081/ws/metrics
-
-# 4. Проверка логов балансировщика
-docker logs loadbalancer | grep -i websocket
+```
+"reload attempts exceeded maximum of 3 per 60 sec window"
 ```
 
-**Возможные причины:**
-- Порт Management API недоступен
-- Неправильные CORS настройки
-- Firewall блокирует WebSocket
-- Proxy (nginx) не настроен для WebSocket
+или в логах cppworker:
+```
+RAM fallback: cycle limit reached, refusing reload
+```
+
+### 3.2 Причина
+
+cppworker попытался сделать reload 3 раза за 60 сек, но каждый раз получал ту же ошибку (n_ctx overflow). Защита от бесконечного reload loop.
+
+### 3.3 Сброс счётчика (R-6)
+
+**Сейчас:** единственный способ — `docker restart deployments-cppworker-gpu-1`.
+
+**После R-6** (в работе):
+
+```bash
+# Балансировщик (counter на стороне балансировщика):
+curl -X POST http://localhost:18081/api/v1/nctx-reload/cppworker-gpu-1/reset
+
+# CppWorker (counter на стороне cppworker):
+curl -X POST http://localhost:18081/api/v1/cppworker/reset-reload-counter
+```
+
+### 3.4 Перед сбросом
+
+1. Устранить причину (например, уменьшить `num_ctx` в запросе, увеличить VRAM, выгрузить другие модели).
+2. Проверить `max_vram_n_ctx` в логах.
+3. Перезапустить только после устранения.
 
 ---
 
-### Балансировщик падает с panic при POST /api/generate
+## 4. Бэкенд помечается как unhealthy
 
-**Симптомы:**
-- При отправке POST-запросов на `/api/generate` балансировщик падает с `panic: runtime error: invalid memory address or nil pointer dereference`
-- В логах: `http: panic serving ...: ollama-loadbalancer/internal/balancer.(*Proxy).ServeHTTP ... proxy.go:397`
-- Docker-контейнер перезапускается, но падает снова при каждом POST generate
-- GET-запросы (`/api/tags`, `/api/version`) работают корректно
-
-**Решение:**
+### 4.1 Диагностика
 
 ```bash
-# 1. Проверьте версию образа
-docker images | grep balancer
+# Статус всех бэкендов
+curl -H 'X-API-Token: <token>' http://localhost:18081/api/v1/backends | jq
 
-# 2. Пересоберите образ из актуального кода
-docker-compose -f deployments/docker-compose.yml build --no-cache loadbalancer
-
-# 3. Перезапустите контейнер
-docker-compose -f deployments/docker-compose.yml up -d --no-deps loadbalancer
-
-# 4. Убедитесь, что больше нет panic в логах
-docker logs --tail 20 ollama-legion-balancer | grep -i panic
-# Должно быть пусто
+# Конкретный бэкенд (по ID)
+curl -H 'X-API-Token: <token>' http://localhost:18081/api/v1/backends/cppworker-gpu-1
 ```
 
-**Возможные причины:**
-- Docker-образ собран из устаревшего кода без фикса nil pointer dereference
-- Бинарник в образе отличается от актуального исходного кода
-- Слой сборки закэширован и не обновлялся после исправления
+### 4.2 Причины и решения
+
+| Причина | Симптом | Решение |
+|---|---|---|
+| Ollama не запущен | curl 11434 → connection refused | `systemctl restart ollama` |
+| Firewall | timeout | открыть порт |
+| Неправильный host/port | 503 на health | исправить в WebUI → Backends → Edit |
+| Backend перегружен | status=healthy, но ответы 503 | уменьшить `MaxConcurrentRequests` |
+| Агент не регистрируется | `b.hasAgent === false` | проверить `BALANCER_URL` |
 
 ---
 
-### Очередь переполнена
+## 5. HTTP 5xx / "Server disconnected" на тяжёлых моделях
 
-**Симптомы:**
-- Запросы отклоняются с 503 ошибкой
-- В логах сообщения о переполненной очереди
+### 5.1 Причина
 
-**Решение:**
+`Balancing.RequestTimeout` (default 30 сек) бьёт раньше, чем `clampNPredictToFitContext` отрабатывает длинную генерацию.
 
-```bash
-# 1. Увеличьте размер очереди
-LB_QUEUE_MAX_SIZE=200
-
-# 2. Увеличьте таймаут очереди
-LB_QUEUE_TIMEOUT=600
-
-# 3. Добавьте больше бэкендов
-# или увеличьте maxConcurrentRequests
-
-# 4. Проверка текущей очереди
-curl http://<lb-ip>:18081/api/v1/cluster | jq .queuedRequests
-```
-
-**Возможные причины:**
-- Недостаточно GPU серверов
-- Слишком маленький `queueMaxSize`
-- Слишком короткий `queueTimeout`
-- Все бэкенды перегружены
-
----
-
-### Аутентификация не работает
-
-**Симптомы:**
-- 401 Unauthorized ошибки
-- Токены не принимаются
-
-**Решение:**
-
-```bash
-# 1. Проверка статуса аутентификации
-curl http://localhost:18081/api/v1/auth/status
-
-# 2. Проверка заголовка токена
-curl -v -X GET http://localhost:18081/api/v1/cluster \
-  -H "X-API-Token: your-token"
-
-# 3. Проверка имени заголовка
-# По умолчанию: X-API-Token
-# Можно изменить через AUTH_HEADER_NAME
-
-# 4. Генерация нового токена (требуется master token)
-curl -X POST http://localhost:18081/api/v1/auth/token \
-  -H "X-API-Token: your-master-token"
-```
-
-**Возможные причины:**
-- Неправильный токен
-- Неправильное имя заголовка
-- Аутентификация не включена
-- Token expired
-
----
-
-### TLS/SSL ошибки
-
-**Симптомы:**
-- HTTPS соединения не работают
-- Ошибки сертификата
-
-**Решение:**
-
-```bash
-# 1. Проверка наличия сертификатов
-ls -la certs/
-
-# 2. Проверка срока действия сертификата
-openssl x509 -in certs/server.crt -text -noout | grep "Not After"
-
-# 3. Генерация нового self-signed сертификата
-openssl req -x509 -nodes -days 365 -newkey rsa:4096 \
-  -keyout certs/server.key \
-  -out certs/server.crt \
-  -subj "/CN=localhost"
-
-# 4. Проверка TLS конфигурации
-curl -k https://localhost:8443/api/v1/health
-```
-
-**Возможные причины:**
-- Отсутствуют сертификаты
-- Истек срок действия сертификата
-- Неправильные пути к сертификатам
-- TLS не включен в конфигурации
-
----
-
-## Логирование
-
-### Уровни логирования
-
-| Уровень | Описание |
-|---------|----------|
-| `debug` | Подробная отладочная информация |
-| `info` | Общая информация о работе |
-| `warn` | Предупреждения |
-| `error` | Ошибки |
-
-### Настройка логирования
-
-**Балансировщик:**
+### 5.2 Решение
 
 ```json
+// config/config.json
 {
-  "logging": {
-    "level": "debug",
-    "format": "json"
+  "balancing": {
+    "requestTimeout": 600   // 10 минут
   }
 }
 ```
 
-**Переменные окружения:**
+Или через ENV: `LB_REQUEST_TIMEOUT=600`.
 
-```bash
-LB_LOG_LEVEL=debug
-LB_LOG_FORMAT=json
-```
+Также можно увеличить `CPPWORKER_WRITE_TIMEOUT`:
 
-**Агент:**
-
-```bash
-LOG_LEVEL=debug
-LOG_FORMAT=text
-```
-
-### Просмотр логов
-
-**Docker Compose:**
-
-```bash
-# Логи балансировщика
-docker-compose logs -f loadbalancer
-
-# Логи Web UI
-docker-compose logs -f webui
-
-# Логи агента
-docker-compose -f docker-compose.agent.yml logs -f agent
-```
-
-**Systemd:**
-
-```bash
-# Логи агента
-journalctl -u ollama-agent -f
-
-# Логи с фильтром по уровню
-journalctl -u ollama-agent -f | grep -i error
-```
-
-**Docker:**
-
-```bash
-# Логи контейнера
-docker logs -f ollama-legion-balancer
-docker logs -f ollama-agent
-
-# Последние N строк
-docker logs --tail 100 ollama-legion-balancer
+```env
+CPPWORKER_WRITE_TIMEOUT=1800  # 30 минут
 ```
 
 ---
 
-## Отладка NVML
+## 6. Tools/tool_calls — сброс или пустой ответ
 
-### Проверка NVML
+**Это самая частая проблема при работе с OpenWebUI / Cline / Roo Code.** Подробный пошаговый runbook в [`runbook-tools.md`](runbook-tools.md).
+
+### 6.1 Краткая сводка по сценариям
+
+| Симптом | Сценарий | Где искать |
+|---|---|---|
+| HTTP 413 на первом запросе с tools | **A** — RAM fallback disabled для tools | `cmd/cppworker/inference.go:491` |
+| Первый запрос OK, второй пустой NDJSON | **B** — clamping n_predict с has_tools=true | `internal/balancer/nctx_clamp.go` |
+| Бесконечный reload loop, 503 | **C** — `ReloadLoopLimitError` | `cmd/cppworker/inference.go` |
+| Tool_call в content, но `tool_calls=null` | **D** — Hermes/Mistral detection | `internal/balancer/llamacpp_toolcall_detector.go` |
+| HTTP 5xx / "reset by peer" | **E** — таймауты WriteTimeout/RequestTimeout | см. §5 |
+
+### 6.2 Acceptance criteria (перед дебагом)
+
+1. `CPPWORKER_VERBOSE=true` на cppworker.
+2. `data/state.json` (балансер) — список бэкендов и их статусы.
+3. Логи балансировщика: `parsed request`, `[BALANCER → BACKEND]`, `heartbeat write failed`.
+4. Логи cppworker: `clamping n_predict`, `RAM fallback`, `bridge code N`.
+5. Базовые тесты транспорта:
+   ```bash
+   go test ./tests -run "TestDebugOpenWebUI_ToolCalls_Scenario" -tags llama_stub -count=1 -v
+   ```
+6. Inference-тесты:
+   ```bash
+   go test ./cmd/cppworker -run "TestApplyCppCtxHeader|TestClampNPredict|TestReloadDisabledForTools|TestParseToolCalls" -tags llama_stub -count=1 -v
+   ```
+
+---
+
+## 7. TransferEncodingError при streaming
+
+### 7.1 Симптомы
+
+```
+Error: write tcp: ..."write: broken pipe"
+или
+TransferEncodingError: chunked transfer encoding failed
+```
+
+### 7.2 Причина (уже исправлена в 2026-06-08)
+
+Раньше: cppworker возвращал JSON-ошибку для streaming-запроса, балансировщик пытался её проксировать как NDJSON, но Go добавлял `Transfer-Encoding: chunked`, что ломало клиент.
+
+### 7.3 Текущее поведение
+
+`internal/balancer/llamacpp_transport.go:proxyRequestLlamaCpp` проверяет `Content-Type` ответа upstream:
+- Если `application/json` (ошибка) → проксировать как JSON, **не** входить в SSE-ридер.
+- Если `text/event-stream` → нормальный streaming.
+
+`resp.Header.Del("Transfer-Encoding")` удалён — Go управляет этим автоматически.
+
+### 7.4 Если ошибка всё есть
+
+Проверить `Content-Type` от cppworker:
+```bash
+curl -v -X POST http://localhost:18092/api/chat -H "Content-Type: application/json" -d '{"model":"x","stream":true}' 2>&1 | grep -E "^< Content-Type"
+```
+
+Должно быть `text/event-stream` или `application/x-ndjson`, **не** `text/plain` или отсутствовать.
+
+---
+
+## 8. Проблемы с NVIDIA Container Toolkit
+
+### 8.1 GPU не виден из контейнера
 
 ```bash
-# Проверка наличия NVML библиотеки
-ldconfig -p | grep nvml
-
-# Проверка nvidia-smi
+# Проверка на хосте
 nvidia-smi
 
 # Проверка внутри контейнера
-docker exec ollama-agent nvidia-smi
+docker run --rm --gpus all nvidia/cuda:12.2.0-base-ubuntu22.04 nvidia-smi
 ```
 
-### Включение debug логирования NVML
+Если вторая команда fails → не установлен NVIDIA Container Toolkit.
+
+**Установка:** см. https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/latest/install-guide.html
+
+### 8.2 Windows: GPU не пробрасывается
+
+1. Docker Desktop → Settings → General → ✅ Use WSL 2.
+2. Resources → WSL Integration → ✅ Enable integration.
+3. Установить NVIDIA Driver для WSL2: https://developer.nvidia.com/cuda/wsl.
+
+Подробнее: [`agent-deployment.md` §Windows](agent-deployment.md).
+
+---
+
+## 9. Agent → Ollama: ограничения
+
+> **Это архитектурное ограничение Ollama, не баг OllamaLegion.**
+
+Ollama **не имеет публичного REST API** для изменения runtime config. Агент может:
+- ✅ Читать метрики (`/api/ps`, `/api/tags`, `/api/show`).
+- ✅ Отправлять метрики балансировщику.
+- ✅ Применять лимиты через heartbeat.
+- ❌ Менять `numGPU`, `num_parallel`, `num_threads` Ollama напрямую.
+
+Единственные способы изменить Ollama config:
+- Переменные окружения при старте Ollama (`OLLAMA_NUM_PARALLEL`, `OLLAMA_MAX_LOADED_MODELS`).
+- Файл `~/.ollama/config.json`.
+- Аргументы CLI при запуске `ollama serve`.
+
+**Что НЕ реализовано (и не планируется):** механизм Agent → Ollama config через heartbeat.
+
+---
+
+## 10. Логирование и отладка
+
+### 10.1 Уровни логов
+
+| ENV | Уровень |
+|---|---|
+| `LOG_LEVEL=debug` | максимальный |
+| `LOG_LEVEL=info` (default) | базовый |
+| `LOG_LEVEL=warn` | только warnings |
+| `LOG_LEVEL=error` | только ошибки |
+
+### 10.2 Формат
+
+| ENV | Формат |
+|---|---|
+| `LOG_FORMAT=json` (default) | структурированный JSON |
+| `LOG_FORMAT=text` | человекочитаемый |
+
+### 10.3 Просмотр логов
 
 ```bash
-# В агенте
-export NVML_ENABLED=true
-export LOG_LEVEL=debug
+# Балансировщик
+docker logs -f deployments-loadbalancer-1
 
-# Перезапуск агента
-docker restart ollama-agent
+# CppWorker с verbose
+docker logs -f deployments-cppworker-gpu-1 2>&1 | grep -E "clamping|RAM fallback|bridge code|tool_calls"
 
-# Проверка логов
-docker logs ollama-agent | grep -i nvml
+# PowerShell
+docker logs -f deployments-loadbalancer-1 2>&1 | Select-String "tools|chat_id|stream|/v1/chat"
 ```
 
-### Распространенные ошибки NVML
-
-**Ошибка: "NVML: Function Not Found"**
+### 10.4 NVML отладка (Linux)
 
 ```bash
-# Решение: Проверка версии драйвера
-nvidia-smi --query-gpu=driver_version --format=csv
+# Проверить nvidia-smi в агенте
+docker exec deployments-agent-gpu-1 nvidia-smi
 
-# Требуется драйвер 470.x или новее
+# Включить NVML verbose
+docker exec deployments-agent-gpu-1 sh -c 'NVML_DEBUG=1 ./agent'
 ```
 
-**Ошибка: "NVML: Insufficient Permissions"**
+### 10.5 Полезные ENV для дебага
 
 ```bash
-# Решение: Проверка прав доступа
-ls -la /dev/nvidia*
+# Балансировщик
+LOG_LEVEL=debug LOG_FORMAT=text
+BALANCING_DEBUG=true  # не существует, для примера
 
-# Добавление пользователя в группу video
-sudo usermod -aG video $USER
-```
-
-**Ошибка: "NVML: Library Not Found"**
-
-```bash
-# Решение: Установка NVML
-sudo apt-get install -y nvidia-cuda-toolkit
-
-# Или проверка пути к библиотеке
-export LD_LIBRARY_PATH=/usr/lib/x86_64-linux-gnu:$LD_LIBRARY_PATH
+# CppWorker
+CPPWORKER_VERBOSE=true
 ```
 
 ---
 
-## Performance tuning
-
-### Оптимизация балансировщика
-
-```json
-{
-  "balancing": {
-    "requestTimeout": 180,
-    "queueTimeout": 600,
-    "queueMaxSize": 500
-  },
-  "resources": {
-    "gpu": {
-      "maxUsagePercent": 95,
-      "maxVramUsagePercent": 90,
-      "maxTemperature": 90
-    }
-  }
-}
-```
-
-### Оптимизация агента
-
-```bash
-# Увеличение интервала метрик для снижения нагрузки
-METRICS_INTERVAL=10s
-HEARTBEAT_INTERVAL=5s
-
-# Отключение детального логирования
-LOG_LEVEL=info
-```
-
-### Мониторинг производительности
-
-```bash
-# Проверка метрик кластера
-watch -n 5 'curl -s http://localhost:18081/api/v1/cluster | jq'
-
-# Проверка отдельных бэкендов
-watch -n 5 'curl -s http://localhost:18081/api/v1/metrics/gpu-1 | jq'
-
-# WebSocket мониторинг
-wscat -c ws://localhost:18081/ws/metrics
-```
-
-### Tuning параметров
-
-| Параметр | Рекомендация |
-|----------|--------------|
-| `requestTimeout` | Увеличить для долгих запросов (180-300 сек) |
-| `queueMaxSize` | Увеличить при высокой нагрузке (200-500) |
-| `metricsInterval` | Увеличить для снижения нагрузки (10-30 сек) |
-| `healthCheckInterval` | Оптимизировать под сеть (10-30 сек) |
-| `maxConcurrentRequests` | Настроить под GPU (10-50) |
-
----
-
-## Диагностика
-
-### Скрипт диагностики
-
-```bash
-#!/bin/bash
-# diagnose.sh
-
-echo "=== Ollama Load Balancer Diagnostics ==="
-
-echo -e "\n1. Checking Load Balancer health..."
-curl -s http://localhost:18081/api/v1/health | jq
-
-echo -e "\n2. Checking cluster status..."
-curl -s http://localhost:18081/api/v1/cluster | jq
-
-echo -e "\n3. Checking backends..."
-curl -s http://localhost:18081/api/v1/backends | jq
-
-echo -e "\n4. Checking metrics..."
-curl -s http://localhost:18081/api/v1/metrics | jq
-
-echo -e "\n5. Checking Docker containers..."
-docker ps | grep ollama
-
-echo -e "\n6. Checking GPU status..."
-nvidia-smi
-
-echo -e "\n7. Checking Ollama..."
-curl -s http://localhost:11434/api/tags | jq
-```
-
-### Чеклист диагностики
-
-- [ ] Балансировщик запущен и здоров
-- [ ] Все бэкенды в статусе `healthy`
-- [ ] Агенты отправляют heartbeat
-- [ ] Ollama API доступен на всех бэкендах
-- [ ] GPU метрики собираются корректно
-- [ ] WebSocket подключения работают
-- [ ] Аутентификация настроена правильно
-- [ ] TLS сертификаты валидны
-- [ ] Очередь не переполнена
-- [ ] Логи не содержат критических ошибок
-
----
-
-### Модели cppworker не отображаются в OpenWebUI
-
-**Симптомы:**
-- OpenWebUI подключён к балансеру, но список моделей пуст
-- В логах балансера нет ошибок при `GET /api/tags`
-- CppWorker запущен и отвечает на `curl http://localhost:18091/health`
-
-**Причина:**
-Цепочка `OpenWebUI → Balancer /api/tags → CppWorker /api/tags` имеет несколько точек отказа:
-1. **Неверный host в конфигурации бэкенда** — в `data/state.json` указан `localhost`, но балансер в Docker-контейнере не может достучаться до cppworker по `localhost`
-2. **CppWorker не зарегистрирован в балансере** — при запуске `docker-compose.full.yml` нет автоматической регистрации бэкенда
-3. **Модель не загружена в память cppworker** — `/api/tags` возвращает только **активно загруженные** модели
-
-**Диагностика:**
-
-```bash
-# 1. Проверьте, что cppworker отвечает на health-check
-curl http://localhost:18091/health
-
-# 2. Проверьте список загруженных моделей в cppworker
-curl http://localhost:18091/api/tags
-# Если ответ {"models":[]} — модели не загружены
-
-# 3. Проверьте список файлов .gguf в директории моделей
-curl http://localhost:18091/models-dir
-
-# 4. Проверьте, зарегистрирован ли бэкенд в балансере
-curl http://localhost:18081/api/v1/backends | jq '.[] | select(.type=="llama_cpp")'
-
-# 5. Проверьте health-check бэкенда через балансер
-curl http://localhost:18081/api/v1/cluster | jq '.backends[] | {id, status, backendType, host}'
-```
-
-**Решение:**
-
-1. **Загрузите модель в cppworker:**
-   ```bash
-   curl -X POST http://localhost:18091/load \
-     -H "Content-Type: application/json" \
-     -d '{"name": "your-model"}'
-   ```
-
-2. **Зарегистрируйте бэкенд вручную (если авто-регистрация не сработала):**
-   ```bash
-   curl -X POST http://localhost:18081/api/v1/backends \
-     -H "Content-Type: application/json" \
-     -d '{
-       "id": "cppworker-gpu",
-       "name": "CppWorker",
-       "host": "cppworker",
-       "ollamaPort": 0,
-       "agentPort": 0,
-       "cppWorkerPort": 18091,
-       "weight": 10,
-       "maxConcurrentRequests": 4,
-       "maxModels": 3,
-       "backendType": "llama_cpp",
-       "backendEngine": "llama_cpp",
-       "gpuMode": "auto"
-     }'
-   ```
-   Важно: `"host"` должен быть именем Docker-сервиса (`cppworker`) или IP, доступным из контейнера балансера.
-
-3. **Проверьте `data/state.json`:**
-   ```bash
-   docker exec ollama-legion-balancer cat /app/data/state.json | jq '.backends[] | select(.type=="llama_cpp")'
-   ```
-   Убедитесь, что:
-   - `"type": "llama_cpp"` (не `"ollama"`)
-   - `"cppWorkerPort": 18091` (не 0)
-   - `"host"` содержит правильный адрес cppworker (не `localhost`)
-
-4. **Проверьте агрегацию на балансере:**
-   ```bash
-   curl http://localhost:18080/api/tags
-   ```
-   Этот запрос через прокси-порт должен вернуть объединённый список моделей со всех бэкендов.
-
-**Авто-регистрация (docker-compose.full.yml):**
-
-При запуске через `docker-compose.full.yml` cppworker автоматически регистрируется в балансере. Для этого должны быть установлены переменные:
-- `BALANCER_URL=http://loadbalancer:18081` (уже задано в compose-файле)
-- `CPPWORKER_HOST=cppworker` (имя Docker-сервиса)
-
-Если авто-регистрация не сработала, проверьте логи:
-```bash
-docker logs ollama-legion-cppworker | grep "\[register\]"
-```
-
----
-
-### TransferEncodingError / UND_ERR_SOCKET в OpenWebUI
-
-**Симптомы:**
-- OpenWebU показывает ошибку `Response payload is not completed: <TransferEncodingError: 400, message='Not enough data to satisfy transfer length header.'>`
-- В логах OpenWebUI также `UND_ERR_SOCKET`
-- Ошибка возникает при streaming-запросах (/api/generate, /api/chat) при общении через прокси-порт балансера
-
-**Причина:**
-Streaming-ответ (SSE/chunked) был оборван до получения завершающего чанка (`done: true` или chunked terminator `0\r\n\r\n`). Это происходит когда:
-1. Бэкенд Ollama аварийно завершился во время генерации токенов
-2. Сетевое соединение между балансером и бэкендом Ollama разорвано
-3. Таймаут streaming-контекста истёк (по умолчанию 10 минут)
-
-**Диагностика:**
-
-```bash
-# 1. Включите debug-логирование балансера
-docker exec -e LB_LOG_LEVEL=debug ollama-legion-balancer kill -HUP 1
-# Или перезапустите с debug уровнем в config.json:
-# "logging": {"level": "debug"}
-
-# 2. Отслеживайте логи балансера при возникновении ошибки
-docker logs -f ollama-legion-balancer | grep -E "STREAMING_BACKEND_READ_ERROR|PROXY_BACKEND_REQUEST_FAILED|STREAMING_SENDING_SSE_ERROR"
-
-# 3. Проверьте состояние бэкендов
-curl -s http://localhost:18081/api/v1/cluster | jq '.backends[] | {id: .id, status: .status, activeReqs: .ollama.activeRequests}'
-
-# 4. Проверьте логи Ollama на бэкенде
-ssh <gpu-server> 'docker logs ollama --tail 50'
-```
-
-**Ключевые записи в логах балансера:**
-
-При возникновении ошибки ищите следующие префиксы:
-
-| Префикс лога | Значение |
-|-------------|----------|
-| `PROXY_BACKEND_REQUEST_FAILED` | Ошибка при отправке запроса к Ollama. `error_type` указывает тип: `connection_refused`, `connection_reset_by_peer`, `context_deadline_exceeded`, `timeout`, `broken_pipe`, `unexpected_eof` |
-| `STREAMING_BACKEND_READ_ERROR` | Ошибка чтения streaming-ответа от бэкенда. Содержит `read_error`, `bytes_streamed`, `chunk_count`, `elapsed_ms`, `idle_ms` |
-| `STREAMING_SENDING_SSE_ERROR` | Балансер пытается отправить клиенту SSE-ошибку с `done:true` для корректного завершения потока |
-
-**Пример логов при обрыве соединения с бэкендом:**
-```json
-{"level":"error","msg":"STREAMING_BACKEND_READ_ERROR","backend":"gpu-1","model":"qwen3:0.6b","read_error":"read tcp 10.0.1.5:11434->10.0.1.100:48372: connection reset by peer","read_error_type":"*net.OpError","bytes_streamed":1234,"chunk_count":12,"elapsed_ms":4500,"idle_ms":0,"client_disconnected":false,"context_error":"","is_sse":true}
-{"level":"warn","msg":"STREAMING_SENDING_SSE_ERROR","backend":"gpu-1","model":"qwen3:0.6b","code":"backend_read_error","bytes_streamed":1234,"chunk_count":12}
-```
-
-**Решение:**
-
-1. **Проверка стабильности бэкенда:**
-   ```bash
-   # Проверьте, не перезагружается ли Ollama
-   ssh <gpu-server> 'docker ps -a --filter name=ollama'
-   ssh <gpu-server> 'docker logs ollama --tail 100 | grep -i "error\|fatal\|panic"'
-   
-   # Проверьте использование VRAM — возможно OOM killer убивает процесс
-   ssh <gpu-server> 'nvidia-smi'
-   ```
-
-2. **Увеличьте таймауты (если проблема в длинных генерациях):**
-   ```json
-   {
-     "balancing": {
-       "streamTimeout": 900,
-       "requestTimeout": 300
-     }
-   }
-   ```
-
-3. **Проверьте сетевую связность:**
-   ```bash
-   # С балансера проверьте доступность Ollama
-   docker exec ollama-legion-balancer curl -v http://<gpu-ip>:11434/api/tags
-   ```
-
-4. **При множественных ошибках — настройте мониторинг:**
-   ```bash
-   # Логи балансера с фильтрацией ошибок streaming
-   docker logs -f ollama-legion-balancer 2>&1 | grep --line-buffered -E "STREAMING_BACKEND_READ_ERROR|PROXY_BACKEND_REQUEST_FAILED"
-   ```
-
-
-### Cline через Ollama API не разбирает ответ (`Invalid API Response`)
-
-**Симптомы:**
-- Cline (расширение VS Code, использующее `ollama-js` 0.5.x) отправляет `POST /api/chat` на балансер
-- В логах балансера: `200 1931ms` (т.е. запрос успешно дошёл до cppworker)
-- Cline показывает "Invalid API Response: The provider returned an empty or unparsable response"
-- При этом прямой запрос к cppworker (`curl http://<cppworker>:18091/v1/chat/completions`) возвращает нормальный ответ
-
-**Корневые причины и решения:**
-
-#### 1. Модель `gemma-*-it-Q4_K_M` без chat template
-
-Gemma требует специфического chat template (`<start_of_turn>user\n...<end_of_turn>\n<start_of_turn>model\n...`).
-Без него модель эмитит служебные токены как обычный текст, который ломает парсер Cline.
-
-**Проверка:**
-```bash
-strings /models/gemma-*.gguf | grep -A 30 "chat_template"
-# Должна быть секция с Jinja-шаблоном
-```
-
-**Решение:** запустите cppworker с флагом `--jinja`, чтобы использовать chat template из GGUF:
-```bash
-./llama-server \
-  -m /models/gemma-*-it-Q4_K_M.gguf \
-  --jinja \
-  --flash-attn \
-  -ngl -1 \
-  -c 8192
-```
-
-#### 2. Служебные токены в streaming-ответе
-
-Если chat template всё-таки настроен, но модель изредка эмитит `<end_of_turn>` отдельным content-чанком,
-балансер фильтрует такие токены через `shouldFilterLlamaCppContent` (см. `internal/balancer/llamacpp_transport.go`).
-Убедитесь, что используется последняя версия кода — фильтр добавлен в `translateSSEChatToOllama` для покрытия
-Ollama NDJSON-пути (ранее работал только для OpenAI SSE).
-
-#### 3. Неверный формат `created_at`
-
-OpenAI-совместимый ответ от cppworker возвращает `created` как Unix timestamp (число),
-а Ollama ожидает ISO-8601 / RFC3339 строку. Если балансер пробрасывал число «как есть»,
-ollama-js (Cline) мог падать с ошибкой парсинга.
-
-**Решение:** в балансере добавлен helper `convertCreatedToRFC3339`, который нормализует значение в `time.RFC3339`.
-
-#### 4. Диагностика "сырого" ответа от cppworker
-
-Включите debug-логирование балансера:
-```json
-{"logging": {"level": "debug"}}
-```
-
-```bash
-docker logs -f ollama-legion-balancer 2>&1 | grep "proxyRequestLlamaCpp"
-```
-
-Ищите записи `proxyRequestLlamaCpp: non-stream body preview` (для non-stream) или 
-`translateSSEChatToOllama: filtered service token` (для stream) — они покажут, 
-что ИМЕННО отдаёт upstream до трансляции в Ollama-формат.
-
-#### 5. Рекомендуемая конфигурация cppworker для Cline + instruct-моделей
-
-```bash
-# config/cppworker.env
-LLAMA_CTX_SIZE=8192           # Cline шлёт длинный system prompt + tools
-LLAMA_BATCH_SIZE=512
-LLAMA_N_GPU_LAYERS=-1         # все слои на GPU
-LLAMA_FLASH_ATTN=true
-LLAMA_MMAP=true
-LLAMA_IDLE_UNLOAD=30m
-```
-
-Команда запуска `llama-server` (если настраиваете вручную):
-```bash
-./llama-server \
-  -m /models/gemma-3-4b-it-Q4_K_M.gguf \
-  --jinja \
-  --flash-attn \
-  -ngl -1 \
-  -c 8192 \
-  --special \
-  --port 18091
-```
-
-**Примечание:** Gemma 3 имеет ограниченную поддержку function calling / tool use.
-Если Cline активно использует tools, лучше переключиться на модель с полной поддержкой
-(`qwen2.5-coder`, `llama3.1`, `mistral-nemo`).
-
-#### 6. Быстрая диагностика через прямое сравнение
-
-```bash
-# A. Прямой запрос к cppworker (минуя балансер)
-curl -X POST http://<cppworker>:18091/v1/chat/completions \
-  -H "Content-Type: application/json" \
-  -d '{"model":"gemma-*-it-Q4_K_M","messages":[{"role":"user","content":"Say OK"}],"stream":false,"max_tokens":50}'
-
-# B. Запрос через балансер
-curl -X POST http://localhost:18081/api/chat \
-  -H "Content-Type: application/json" \
-  -d '{"model":"gemma-*-it-Q4_K_M","messages":[{"role":"user","content":"Say OK"}],"stream":false,"max_tokens":50}'
-```
-
-Если A возвращает нормальный JSON с `content`, а B — `Invalid API Response` или мусор,
-проблема в трансляции (проверьте логи `proxyRequestLlamaCpp: non-stream body preview`).
-
-Если ОБА возвращают мусор (например, `<end_of_turn>Ok<end_of_turn>`), проблема в chat template модели.
-
----
-
-### go vet: could not determine what C.* refers to
-
-**Симптомы:**
-- `go vet` выдаёт ошибку `could not determine what C.<functionName> refers to` в CGo-файлах
-- Ошибка возникает при проверке пакетов, использующих CGo (например, `./internal/cppbackend/...`)
-
-**Причина:**
-`go vet` имеет ограниченную поддержку CGo и не может полностью разрешить C-идентификаторы, экспортированные из Go через `//export`. Это известное ограничение, особенно на Windows.
-
-**Решение:**
-Исключите CGo-пакеты из `go vet`. Проверяйте только чистые Go-пакеты:
-
-```bash
-# Правильно — только не-CGo пакеты:
-go vet ./internal/balancer/... ./pkg/types/... ./internal/api/... ./internal/config/...
-
-# Не включайте CGo-пакеты:
-# go vet ./internal/cppbackend/...   # ← этот пакет импортирует c/bridge (CGo)
-```
-
-Для проверки CGo-кода используйте `go build`:
-```bash
-go build ./internal/cppbackend/...
-```
-
----
-
-## Дополнительные ресурсы
-
-- [Конфигурация](configuration.md) — Настройка всех компонентов
-- [API документация](api.md) — REST API и WebSocket
-- [Развертывание](deployment.md) — Production deployment
-- [Cline troubleshooting](cline-troubleshooting.md) — Диагностика Cline (VS Code) через балансер + cppworker
-
----
-
-## Получение помощи
-
-Если проблема не решена:
-
-1. Соберите логи всех компонентов
-2. Запустите скрипт диагностики
-3. Проверьте конфигурационные файлы
-4. Убедитесь, что все требования выполнены
+## 11. Связанные документы
+
+- [`runbook-tools.md`](runbook-tools.md) — **детальный пошаговый runbook для tools/tool_calls** (сценарии A-E).
+- [`cppworker-model-params.md`](cppworker-model-params.md) — n_ctx + Per-Model Profiles.
+- [`agent-deployment.md`](agent-deployment.md) — развёртывание агента.
+- [`installation.md`](installation.md) — установка.
+- [`audit-2026-06.md`](audit-2026-06.md) — статус реализации.
+- [`../.clinerules`](../.clinerules) §14 — частые ловушки.

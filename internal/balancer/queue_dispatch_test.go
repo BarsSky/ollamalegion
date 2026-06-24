@@ -34,6 +34,43 @@ func TestGetModelLoadTimeout(t *testing.T) {
 	}
 }
 
+func TestModelManagerGetLoadTimeout(t *testing.T) {
+	tests := []struct {
+		name     string
+		timeout  int
+		expected time.Duration
+	}{
+		{"default (0) → 120s", 0, 120 * time.Second},
+		{"default (-1) → 120s", -1, 120 * time.Second},
+		{"custom 60s", 60, 60 * time.Second},
+		{"custom 300s", 300, 300 * time.Second},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			p := &Proxy{
+				config: &types.LoadBalancerConfig{
+					Balancing: types.BalancingSettings{ModelLoadTimeout: tt.timeout},
+				},
+			}
+			mm := NewModelManager(p)
+			got := mm.getLoadTimeout()
+			if got != tt.expected {
+				t.Errorf("getLoadTimeout() = %v, want %v", got, tt.expected)
+			}
+		})
+	}
+
+	// Проверка nil-proxy fallback
+	t.Run("nil proxy → 120s default", func(t *testing.T) {
+		mm := &ModelManager{proxy: nil}
+		got := mm.getLoadTimeout()
+		if got != 120*time.Second {
+			t.Errorf("getLoadTimeout() with nil proxy = %v, want 120s", got)
+		}
+	})
+}
+
 func TestCanAcceptRequest(t *testing.T) {
 	p := NewProxy(&types.LoadBalancerConfig{
 		Balancing: types.BalancingSettings{

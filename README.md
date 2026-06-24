@@ -7,6 +7,7 @@
 Интеллектуальный балансировщик нагрузки для кластера Ollama с мониторингом ресурсов GPU/CPU/RAM/Disk и умным распределением запросов.
 
 > 📚 **Документация:** [Русский](docs/README.md) | [English](docs/en/README.md)  
+> 🗺 **Roadmap:** [plans/README.md](plans/README.md) | **Audit:** [docs/audit-2026-06.md](docs/audit-2026-06.md)  
 > 🌐 **WebUI:** тёмная/светлая тема • русский/English
 
 ## 🚀 Быстрый старт
@@ -230,19 +231,24 @@ curl http://localhost:18081/api/v1/health
 
 ---
 
-## 📚 Документация
+## 📚 Документация (консолидированная 2026-06-22)
 
 | Документ | Описание |
 |----------|----------|
-| [docs/README.md](docs/README.md) | 📖 Полная документация |
+| [docs/README.md](docs/README.md) | 📖 Главный индекс документации |
 | [docs/installation.md](docs/installation.md) | 🔧 Установка и сборка |
-| [docs/configuration.md](docs/configuration.md) | ⚙️ Конфигурация системы |
-| [docs/deployment.md](docs/deployment.md) | 🚀 Развертывание всех компонентов |
-| [docs/agent-deployment.md](docs/agent-deployment.md) | 🤖 Развертывание агента (CPU/GPU) |
-| [docs/api.md](docs/api.md) | 📡 API документация |
-| [docs/rpc-coordinator.md](docs/rpc-coordinator.md) | 🌐 RPC Model Distribution |
-| [docs/troubleshooting.md](docs/troubleshooting.md) | 🔧 Решение проблем |
-| [docs/openapi.yaml](docs/openapi.yaml) | 📋 OpenAPI спецификация |
+| [docs/deployment.md](docs/deployment.md) | 🚀 Развертывание (bundled, docker-compose, production) |
+| [docs/agent-deployment.md](docs/agent-deployment.md) | 🤖 Развертывание агента (CPU/GPU/Windows) |
+| [docs/api.md](docs/api.md) | 📡 REST API + WebSocket + CppWorker API |
+| [docs/cppworker-model-params.md](docs/cppworker-model-params.md) | 🎯 n_ctx + Per-Model Profiles + Ollama↔OpenAI |
+| [docs/backend-type-isolation.md](docs/backend-type-isolation.md) | 🦙🦒 Изоляция Ollama vs llama.cpp |
+| [docs/metrics.md](docs/metrics.md) | 📊 Справочник всех метрик |
+| [docs/troubleshooting.md](docs/troubleshooting.md) | 🔧 FAQ + диагностика n_ctx |
+| [docs/runbook-tools.md](docs/runbook-tools.md) | 🐛 **Runbook tools/tool_calls** (сценарии A-E) |
+| [docs/rpc-coordinator.md](docs/rpc-coordinator.md) | 🌐 RPC Model Distribution (Variant B, каркас) |
+| [docs/audit-2026-06.md](docs/audit-2026-06.md) | 📋 Финальный аудит-отчёт |
+| [plans/README.md](plans/README.md) | 🗺 Единый roadmap (R-1…R-7) |
+| [docs/openapi.yaml](docs/openapi.yaml) | 📋 OpenAPI 3.0.3 спецификация |
 
 ---
 
@@ -476,12 +482,12 @@ ollama-loadbalancer/
 
 - 📖 [Полная документация](docs/README.md)
 - 🔧 [Установка и сборка](docs/installation.md)
-- ⚙️ [Конфигурация](docs/configuration.md)
-- 🚀 [Развертывание всех компонентов](docs/deployment.md)
+- 🚀 [Развертывание](docs/deployment.md)
 - 🤖 [Развертывание агента (CPU/GPU)](docs/agent-deployment.md)
 - 📡 [API документация](docs/api.md)
 - 🔧 [Troubleshooting](docs/troubleshooting.md)
-- 📋 [OpenAPI спецификация](docs/openapi.yaml)
+- 🗺 [Roadmap (R-1…R-7)](plans/README.md)
+- 📋 [Финальный аудит-отчёт](docs/audit-2026-06.md)
 
 ---
 

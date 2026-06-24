@@ -4,8 +4,10 @@ package main
 import (
 	"encoding/json"
 	"flag"
+	"fmt"
 	"net/http"
 	"os"
+	"path/filepath"
 	"strconv"
 	"time"
 
@@ -317,11 +319,32 @@ func handleCppWorkerReloadConfig(w http.ResponseWriter, r *http.Request) {
 // saveConfigToDefaultsFile сохраняет текущую конфигурацию в
 // config/cppworker-defaults.json — единый источник истины для
 // дефолтных параметров CppWorker.
+//
+// Путь определяется в порядке приоритета:
+//  1. env CPPWORKER_DEFAULTS_PATH (явный override)
+//  2. <modelsDir>/../config/cppworker-defaults.json (Docker: /app/config/...)
+//  3. "config/cppworker-defaults.json" (relative, для dev)
 func saveConfigToDefaultsFile(cfg *cppbackend.Config) error {
-	defaultsPath := "config/cppworker-defaults.json"
+	defaultsPath := os.Getenv("CPPWORKER_DEFAULTS_PATH")
+	if defaultsPath == "" {
+		// Пытаемся построить абсолютный путь из modelsDir (обычно /app/models).
+		if cfg.ModelsDir != "" {
+			absModels, err := filepath.Abs(cfg.ModelsDir)
+			if err == nil {
+				defaultsPath = filepath.Join(filepath.Dir(absModels), "config", "cppworker-defaults.json")
+			}
+		}
+	}
+	if defaultsPath == "" {
+		defaultsPath = "config/cppworker-defaults.json"
+	}
 	data, err := json.MarshalIndent(cfg, "", "  ")
 	if err != nil {
 		return err
+	}
+	// Создаём родительский каталог, если его нет.
+	if err := os.MkdirAll(filepath.Dir(defaultsPath), 0755); err != nil {
+		return fmt.Errorf("create config dir: %w", err)
 	}
 	return os.WriteFile(defaultsPath, data, 0644)
 }

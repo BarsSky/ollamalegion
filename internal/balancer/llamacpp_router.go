@@ -86,6 +86,12 @@ func (lr *LlamaCppRouter) Route(w http.ResponseWriter, r *http.Request) bool {
 		// Агрегируем по всем llama.cpp бэкендам.
 		lr.handleModels(w, r)
 		return true
+	case "/api/v1/cppworker/config/runtime":
+		// Агрегированные runtime-параметры загруженных моделей (n_ctx,
+		// gpu_layers, batch_size, flash_attn, n_layers и т.д.) со всех
+		// llama.cpp бэкендов. Используется WebUI на вкладке GGUF Models.
+		lr.handleRuntimeConfig(w, r)
+		return true
 	// OpenAI-совместимые пути (для OpenWebUI, который вызывает /openai/v1/*)
 	case "/v1/models":
 		lr.handleOpenAIModels(w, r)

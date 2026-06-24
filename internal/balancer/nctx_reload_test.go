@@ -26,14 +26,24 @@ import (
 
 func TestDefaultNCtxReloadConfig(t *testing.T) {
 	cfg := DefaultNCtxReloadConfig()
-	if cfg.AutoReloadNCtx != false {
-		t.Errorf("default AutoReloadNCtx = %v, want false (kill-switch off)", cfg.AutoReloadNCtx)
+	// С 2026-06-23 auto-reload включён по умолчанию (Stage preflight):
+	// балансер сам подстраивает n_ctx под запрос Cline/OpenWebUI,
+	// пока есть запас по VRAM/model_max.
+	if cfg.AutoReloadNCtx != true {
+		t.Errorf("default AutoReloadNCtx = %v, want true (preflight on by default)", cfg.AutoReloadNCtx)
+	}
+	if cfg.AutoReloadAllowTools != true {
+		t.Errorf("default AutoReloadAllowTools = %v, want true (preflight on by default)",
+			cfg.AutoReloadAllowTools)
+	}
+	if cfg.PreflightEnabled != true {
+		t.Errorf("default PreflightEnabled = %v, want true", cfg.PreflightEnabled)
 	}
 	if cfg.AutoReloadVRAMSafetyFactor != 0.85 {
 		t.Errorf("default AutoReloadVRAMSafetyFactor = %v, want 0.85", cfg.AutoReloadVRAMSafetyFactor)
 	}
-	if cfg.AutoReloadTimeoutSec != 60 {
-		t.Errorf("default AutoReloadTimeoutSec = %d, want 60", cfg.AutoReloadTimeoutSec)
+	if cfg.AutoReloadTimeoutSec != 300 {
+		t.Errorf("default AutoReloadTimeoutSec = %d, want 300", cfg.AutoReloadTimeoutSec)
 	}
 }
 
@@ -60,15 +70,16 @@ func TestNCtxReloadCoordinator_SetConfig(t *testing.T) {
 	coord := NewNCtxReloadCoordinator(DefaultNCtxReloadConfig())
 	defer coord.Shutdown() //nolint:errcheck
 
-	if coord.Config().AutoReloadNCtx {
-		t.Error("expected AutoReloadNCtx=false initially")
+	// С 2026-06-23 дефолт AutoReloadNCtx=true (preflight on).
+	if !coord.Config().AutoReloadNCtx {
+		t.Error("expected AutoReloadNCtx=true initially (preflight default)")
 	}
 
 	newCfg := DefaultNCtxReloadConfig()
-	newCfg.AutoReloadNCtx = true
+	newCfg.AutoReloadNCtx = false
 	coord.SetConfig(newCfg)
-	if !coord.Config().AutoReloadNCtx {
-		t.Error("SetConfig didn't update AutoReloadNCtx")
+	if coord.Config().AutoReloadNCtx {
+		t.Error("SetConfig didn't update AutoReloadNCtx to false")
 	}
 }
 
@@ -289,8 +300,9 @@ func TestLoadNCtxReloadConfig_Nil(t *testing.T) {
 		os.Unsetenv(k)
 	}
 	got := loadNCtxReloadConfig(nil)
-	if got.AutoReloadNCtx {
-		t.Error("expected AutoReloadNCtx=false by default")
+	// С 2026-06-23 default — AutoReloadNCtx=true (preflight on).
+	if !got.AutoReloadNCtx {
+		t.Error("expected AutoReloadNCtx=true by default (preflight on)")
 	}
 }
 

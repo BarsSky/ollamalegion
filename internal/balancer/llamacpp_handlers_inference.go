@@ -18,19 +18,12 @@ import (
 // handleOpenAIChatCompletions — проксирует /v1/chat/completions к llama.cpp бэкенду.
 // Этот endpoint вызывают OpenAI-совместимые клиенты: Roo Code, Cline, Continue.dev,
 // и иногда OpenWebUI при выборе OpenAI-совместимого режима.
-//
-// Ключевые отличия от handleChat:
-//  1. Auto-load модели ПЕРЕД проксированием.
-//  2. Проксирование через proxyRequestOpenAIStreaming — с SSE-heartbeat.
-//  3. Выбор бэкенда: сначала ищем, на каком бэкенде модель уже загружена;
-//     если нигде — берём любой healthy llama.cpp бэкенд и запускаем auto-load.
 func (lr *LlamaCppRouter) handleOpenAIChatCompletions(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
 
-	// Читаем тело единожды
 	var bodyBuf []byte
 	if r.Body != nil {
 		var err error
@@ -43,7 +36,6 @@ func (lr *LlamaCppRouter) handleOpenAIChatCompletions(w http.ResponseWriter, r *
 		r.Body = io.NopCloser(bytes.NewReader(bodyBuf))
 	}
 
-	// Извлекаем model из OpenAI-формата
 	var req map[string]interface{}
 	if err := json.Unmarshal(bodyBuf, &req); err != nil {
 		logger.Get().Errorw("handleOpenAIChatCompletions: failed to parse body", "error", err)
@@ -52,13 +44,10 @@ func (lr *LlamaCppRouter) handleOpenAIChatCompletions(w http.ResponseWriter, r *
 	}
 	model, _ := req["model"].(string)
 
-	// Нормализуем messages[].content: современные OpenAI-клиенты посылают
-	// multi-modal content в виде массива. cppworker ожидает строку.
 	if normalized := normalizeOpenAIBody(bodyBuf); len(normalized) > 0 {
 		bodyBuf = normalized
 	}
 
-	// Выбор бэкенда: сначала ищем бэкенд, где модель уже загружена.
 	backendID := lr.findModelOnLlamaCppBackend(model)
 	if backendID == "" {
 		backendID = lr.selectAnyLlamaCppHealthy()
@@ -74,11 +63,33 @@ func (lr *LlamaCppRouter) handleOpenAIChatCompletions(w http.ResponseWriter, r *
 		return
 	}
 
-	// Auto-load: если модель выгружена из VRAM — синхронно грузим перед проксированием.
+	// Preflight n_ctx check.
+	if lr.runInferencePreflight(runInferencePreflightArgs{
+		w:          w,
+		r:          r,
+		body:       bodyBuf,
+		model:      model,
+		backendID:  backendID,
+		backendURL: lr.proxy.backendHTTPAddrByID(backendID),
+	}) {
+		return
+	}
+
+	// Auto-load.
 	if model != "" {
 		loadOpts := warmupOptions{}
-		if nctx := ExtractNumCtxFromBody(bodyBuf); nctx > 0 {
-			loadOpts.NumCtx = nctx
+		resolved := lr.proxy.ResolveNumCtx(model, bodyBuf, backendID)
+		if resolved.Value > 0 {
+			loadedNCtx := lr.proxy.getLoadedNCtxFromMetrics(backendID, model)
+			if loadedNCtx > resolved.Value {
+				logger.Get().Infow("handleChat: keeping loaded n_ctx (not lowering)",
+					"model", model, "backend", backendID,
+					"loaded_n_ctx", loadedNCtx, "requested_n_ctx", resolved.Value,
+					"source", resolved.Source)
+				loadOpts.NumCtx = loadedNCtx
+			} else {
+				loadOpts.NumCtx = resolved.Value
+			}
 		}
 		if _, loadErr := lr.ensureModelLoadedOnBackend(backendID, model, loadOpts); loadErr != nil {
 			logger.Get().Errorw("handleOpenAIChatCompletions: auto-load failed",
@@ -90,10 +101,8 @@ func (lr *LlamaCppRouter) handleOpenAIChatCompletions(w http.ResponseWriter, r *
 		}
 	}
 
-	// Восстанавливаем r.Body для последующего использования.
 	r.Body = io.NopCloser(bytes.NewReader(bodyBuf))
 
-	// 3-tier resolver: применяем X-Cpp-Ctx header (если body не задал num_ctx).
 	resolved := lr.proxy.ApplyCppCtxHeader(r, model, bodyBuf, backendID)
 	if resolved.Value > 0 {
 		logger.Get().Debugw("handleOpenAIChatCompletions: 3-tier resolver applied num_ctx override",
@@ -106,7 +115,6 @@ func (lr *LlamaCppRouter) handleOpenAIChatCompletions(w http.ResponseWriter, r *
 	logger.Get().Infow("handleOpenAIChatCompletions: proxying to cppworker",
 		"backend", backendID, "url", targetURL, "model", model)
 
-	// Создаём upstream-запрос, передавая тело как есть
 	upstreamReq, err := http.NewRequestWithContext(r.Context(), http.MethodPost, targetURL, bytes.NewReader(bodyBuf))
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
@@ -173,20 +181,16 @@ func (lr *LlamaCppRouter) handleOpenAIChatCompletions(w http.ResponseWriter, r *
 		}
 	}
 
-	// Проксируем через streaming-обёртку с heartbeat.
 	_ = lr.proxy.proxyRequestOpenAIStreaming(w, r, upstreamResp, backendID)
 }
 
-// handleChat — проксирует /api/chat запросы к llama.cpp бэкендам с трансляцией форматов.
-// При stream=true использует proxyRequestLlamaCpp (SSE→NDJSON).
-// При stream=false использует proxyRequestLlamaCppNonStream.
+// handleChat — проксирует /api/chat запросы к llama.cpp бэкендам.
 func (lr *LlamaCppRouter) handleChat(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
 
-	// Читаем тело единожды
 	var bodyBuf []byte
 	if r.Body != nil {
 		var err error
@@ -199,7 +203,6 @@ func (lr *LlamaCppRouter) handleChat(w http.ResponseWriter, r *http.Request) {
 		r.Body = io.NopCloser(bytes.NewReader(bodyBuf))
 	}
 
-	// Парсим модель напрямую из bodyBuf.
 	var reqMap map[string]interface{}
 	if err := json.Unmarshal(bodyBuf, &reqMap); err != nil {
 		logger.Get().Errorw("handleChat: failed to parse body JSON", "error", err)
@@ -211,13 +214,10 @@ func (lr *LlamaCppRouter) handleChat(w http.ResponseWriter, r *http.Request) {
 		logger.Get().Warnw("handleChat: empty model in request body")
 	}
 
-	// Нормализуем multi-modal content[].
 	if normalized := normalizeOpenAIBody(bodyBuf); len(normalized) > 0 {
 		bodyBuf = normalized
 	}
 
-	// Выбор бэкенда: сначала ищем бэкенд, где модель уже загружена,
-	// иначе берём любой healthy llama.cpp бэкенд.
 	backendID := lr.findModelOnLlamaCppBackend(model)
 	if backendID == "" {
 		backendID = lr.selectAnyLlamaCppHealthy()
@@ -232,10 +232,23 @@ func (lr *LlamaCppRouter) handleChat(w http.ResponseWriter, r *http.Request) {
 		"model", model, "backend", backendID)
 	r.Body = io.NopCloser(bytes.NewReader(bodyBuf))
 
-	// Auto-load: если модель выгружена из VRAM — синхронно грузим перед проксированием.
+	// Preflight n_ctx check.
+	if lr.runInferencePreflight(runInferencePreflightArgs{
+		w:          w,
+		r:          r,
+		body:       bodyBuf,
+		model:      model,
+		backendID:  backendID,
+		backendURL: lr.proxy.backendHTTPAddrByID(backendID),
+	}) {
+		return
+	}
+
+	// Auto-load.
 	loadOpts := warmupOptions{}
-	if nctx := ExtractNumCtxFromBody(bodyBuf); nctx > 0 {
-		loadOpts.NumCtx = nctx
+	resolvedLoad := lr.proxy.ResolveNumCtx(model, bodyBuf, backendID)
+	if resolvedLoad.Value > 0 {
+		loadOpts.NumCtx = resolvedLoad.Value
 	}
 	if _, loadErr := lr.ensureModelLoadedOnBackend(backendID, model, loadOpts); loadErr != nil {
 		logger.Get().Errorw("handleChat: auto-load failed",
@@ -246,7 +259,13 @@ func (lr *LlamaCppRouter) handleChat(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// 3-tier resolver: применяем X-Cpp-Ctx header (если body не задал num_ctx).
+	// Update LastKnownNCtx after model load.
+	if loadedNCtx := lr.proxy.getLoadedNCtxFromMetrics(backendID, model); loadedNCtx > 0 {
+		lr.proxy.nctxReload.SetLastKnownNCtx(backendID, loadedNCtx)
+		logger.Get().Debugw("handleChat: updated LastKnownNCtx",
+			"backend", backendID, "model", model, "loaded_n_ctx", loadedNCtx)
+	}
+
 	resolved := lr.proxy.ApplyCppCtxHeader(r, model, bodyBuf, backendID)
 	if resolved.Value > 0 {
 		logger.Get().Debugw("handleChat: 3-tier resolver applied num_ctx override",
@@ -254,7 +273,6 @@ func (lr *LlamaCppRouter) handleChat(w http.ResponseWriter, r *http.Request) {
 			"resolved_n_ctx", resolved.Value, "source", resolved.Source)
 	}
 
-	// Выбираем прокси по режиму streaming
 	var err error
 	if isStreamingFromBody(r.URL.Path, bodyBuf) {
 		logger.Get().Debugw("handleChat: streaming mode", "backend", backendID)
@@ -271,14 +289,13 @@ func (lr *LlamaCppRouter) handleChat(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// handleGenerate — проксирует /api/generate запросы к llama.cpp бэкендам с трансляцией форматов.
+// handleGenerate — проксирует /api/generate запросы к llama.cpp бэкендам.
 func (lr *LlamaCppRouter) handleGenerate(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
 
-	// Читаем тело единожды
 	var bodyBuf []byte
 	if r.Body != nil {
 		var err error
@@ -301,13 +318,10 @@ func (lr *LlamaCppRouter) handleGenerate(w http.ResponseWriter, r *http.Request)
 	logger.Get().Infow("handleGenerate: parsed request",
 		"model", model, "body_len", len(bodyBuf))
 
-	// Нормализуем multi-modal content[].
 	if normalized := normalizeOpenAIBody(bodyBuf); len(normalized) > 0 {
 		bodyBuf = normalized
 	}
 
-	// Выбор бэкенда: сначала ищем бэкенд, где модель уже загружена,
-	// иначе берём любой healthy llama.cpp бэкенд.
 	backendID := lr.findModelOnLlamaCppBackend(model)
 	if backendID == "" {
 		backendID = lr.selectAnyLlamaCppHealthy()
@@ -322,10 +336,23 @@ func (lr *LlamaCppRouter) handleGenerate(w http.ResponseWriter, r *http.Request)
 		"model", model, "backend", backendID)
 	r.Body = io.NopCloser(bytes.NewReader(bodyBuf))
 
-	// Auto-load: если модель выгружена из VRAM — синхронно грузим перед проксированием.
+	// Preflight n_ctx check.
+	if lr.runInferencePreflight(runInferencePreflightArgs{
+		w:          w,
+		r:          r,
+		body:       bodyBuf,
+		model:      model,
+		backendID:  backendID,
+		backendURL: lr.proxy.backendHTTPAddrByID(backendID),
+	}) {
+		return
+	}
+
+	// Auto-load.
 	loadOpts := warmupOptions{}
-	if nctx := ExtractNumCtxFromBody(bodyBuf); nctx > 0 {
-		loadOpts.NumCtx = nctx
+	resolvedLoad := lr.proxy.ResolveNumCtx(model, bodyBuf, backendID)
+	if resolvedLoad.Value > 0 {
+		loadOpts.NumCtx = resolvedLoad.Value
 	}
 	if _, loadErr := lr.ensureModelLoadedOnBackend(backendID, model, loadOpts); loadErr != nil {
 		logger.Get().Errorw("handleGenerate: auto-load failed",
@@ -336,7 +363,13 @@ func (lr *LlamaCppRouter) handleGenerate(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
-	// 3-tier resolver: применяем X-Cpp-Ctx header (если body не задал num_ctx).
+	// Update LastKnownNCtx after model load.
+	if loadedNCtx := lr.proxy.getLoadedNCtxFromMetrics(backendID, model); loadedNCtx > 0 {
+		lr.proxy.nctxReload.SetLastKnownNCtx(backendID, loadedNCtx)
+		logger.Get().Debugw("handleGenerate: updated LastKnownNCtx",
+			"backend", backendID, "model", model, "loaded_n_ctx", loadedNCtx)
+	}
+
 	resolved := lr.proxy.ApplyCppCtxHeader(r, model, bodyBuf, backendID)
 	if resolved.Value > 0 {
 		logger.Get().Debugw("handleGenerate: 3-tier resolver applied num_ctx override",
@@ -361,9 +394,6 @@ func (lr *LlamaCppRouter) handleGenerate(w http.ResponseWriter, r *http.Request)
 }
 
 // isHeadersSent — проверяет, были ли уже отправлены HTTP-заголовки.
-// Используется для защиты от double write в обработчиках, где
-// proxyRequestLlamaCpp мог уже отправить заголовки и начать streaming,
-// а затем вернуть ошибку.
 func isHeadersSent(w http.ResponseWriter) bool {
 	if flusher, ok := w.(http.Flusher); ok {
 		_ = flusher

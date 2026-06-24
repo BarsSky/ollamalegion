@@ -1,70 +1,59 @@
-# Документация OllamaLegion (Русский)
+# OllamaLegion — Документация (RU)
 
-Добро пожаловать в документацию **OllamaLegion** — высокопроизводительного балансировщика нагрузки для Ollama с WebUI, мониторингом и поддержкой нескольких бэкендов.
+> **Версия:** 2.0 (2026-06-22) — ревизия и консолидация  
+> **Основной индекс:** [`../README.md`](../README.md)  
+> **Roadmap:** [`../../plans/README.md`](../../plans/README.md) | **Audit:** [`../audit-2026-06.md`](../audit-2026-06.md)
 
-## Содержание
-
-| Документ | Описание |
-|----------|----------|
-| [Установка](../installation.md) | Пошаговая инструкция по установке |
-| [Конфигурация](../configuration.md) | Все параметры конфигурации балансера и агентов |
-| [Режимы балансировки](../balancing-guide.md) | Описание стратегий балансировки: round-robin, resource-aware, model-affinity, session-stickiness |
-| [Деплой](../deployment.md) | Docker Compose, Kubernetes, systemd |
-| [Деплой агента](../agent-deployment.md) | Установка и настройка агентов мониторинга |
-| [API Reference](../api.md) | Полное описание REST API балансера |
-| [Метрики](../ollamalegion-metrics.md) | Prometheus-метрики и мониторинг |
-| [Устранение неполадок](../troubleshooting.md) | Частые проблемы и их решения |
-| [Аудит](../audit-tracking.md) | Система аудита и отслеживания запросов |
-| [OpenAPI спецификация](../openapi.yaml) | Swagger/OpenAPI 3.0 |
-
-## Быстрый старт
-
-```bash
-# Клонируйте репозиторий
-git clone https://github.com/BarsSky/ollamalegion.git
-cd ollamalegion
-
-# Запустите через Docker Compose
-docker compose -f deployments/docker-compose.yml up -d
-
-# Откройте WebUI
-open http://localhost:8080
-```
-
-## Структура проекта
-
-```
-ollamalegion/
-├── cmd/
-│   ├── balancer/     # Точка входа балансировщика
-│   ├── agent/        # Точка входа агента мониторинга
-│   └── monitor/      # Терминальный монитор (TUI)
-├── internal/
-│   ├── api/          # REST API + WebSocket
-│   ├── balancer/     # Ядро балансировки
-│   ├── agent/        # Агент сбора метрик
-│   └── config/       # Загрузка конфигурации
-├── webui/            # Web-интерфейс (SPA)
-├── docs/             # Документация
-│   ├── ru/           #   Русская версия
-│   └── en/           #   English version
-├── deployments/      # Docker Compose, Kubernetes
-├── scripts/          # Скрипты сборки и деплоя
-└── tests/            # Интеграционные тесты
-```
-
-## Поддержка языков
-
-Документация доступна на нескольких языках:
-- [English](../en/README.md)
-- Русский (текущий)
-
-WebUI поддерживает:
-- Русский
-- English
-
-Для добавления нового языка в WebUI см. [инструкцию по i18n](../../webui/js/i18n/README.md).
+> ⚠️ **RU-секция содержит старые версии документов**, синхронизированные с EN-секцией по состоянию на **2026-05-15**. Для актуальной документации (2026-06-22+) используйте корневую `docs/` — она отражает текущее состояние кода.
+>
+> В ближайшее время `docs/ru/` будет синхронизирован с актуальной структурой. Пока что это зеркало для обратной совместимости.
 
 ---
 
-[Вернуться на главную](../../README.md)
+## Актуальная документация (RU)
+
+| Раздел | Документ |
+|---|---|
+| Главный индекс | [`../README.md`](../README.md) |
+| Установка | [`../installation.md`](../installation.md) |
+| Развёртывание | [`../deployment.md`](../deployment.md) |
+| Развёртывание агента | [`../agent-deployment.md`](../agent-deployment.md) |
+| API | [`../api.md`](../api.md) |
+| n_ctx + Per-Model Profiles | [`../cppworker-model-params.md`](../cppworker-model-params.md) |
+| Изоляция типов | [`../backend-type-isolation.md`](../backend-type-isolation.md) |
+| Метрики | [`../metrics.md`](../metrics.md) |
+| RPC Coordinator | [`../rpc-coordinator.md`](../rpc-coordinator.md) |
+| Troubleshooting | [`../troubleshooting.md`](../troubleshooting.md) |
+| Tools debug runbook | [`../runbook-tools.md`](../runbook-tools.md) |
+| Audit | [`../audit-2026-06.md`](../audit-2026-06.md) |
+| Roadmap | [`../../plans/README.md`](../../plans/README.md) |
+
+---
+
+## Содержимое `docs/ru/` (mirror EN, 2026-05-15)
+
+Эти файлы оставлены как есть для обратной совместимости, но могут быть не синхронизированы с актуальным кодом.
+
+| Файл | Статус |
+|---|---|
+| [`installation.md`](installation.md) | зеркало EN, 2026-05-15 |
+| [`deployment.md`](deployment.md) | зеркало EN, 2026-05-15 |
+| [`agent-deployment.md`](agent-deployment.md) | зеркало EN, 2026-05-15 |
+| [`api.md`](api.md) | зеркало EN, 2026-05-15 |
+| [`ollamalegion-metrics.md`](ollamalegion-metrics.md) | зеркало EN, 2026-05-15 (см. актуальную [`../metrics.md`](../metrics.md)) |
+| [`troubleshooting.md`](troubleshooting.md) | зеркало EN, 2026-05-15 |
+| [`configuration.md`](configuration.md) | зеркало EN, **устаревший** — раздел конфигурации перенесён в [`../deployment.md` §3](../deployment.md#3-production-конфигурация) |
+| [`balancing-guide.md`](balancing-guide.md) | **устаревший** — архивирован в [`../../plans/archive/`](../../plans/archive/) |
+| [`docker-compose-guide.md`](docker-compose-guide.md) | legacy Docker-инструкции (см. актуальный [`../deployment.md`](../deployment.md)) |
+
+---
+
+## Roadmap
+
+См. [`../../plans/README.md`](../../plans/README.md) — единый живой roadmap.
+
+---
+
+## Лицензия
+
+MIT License

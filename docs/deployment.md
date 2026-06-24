@@ -1,761 +1,424 @@
-# Развертывание Ollama Load Balancer
+# Развёртывание OllamaLegion
 
-Руководство по развертыванию всех компонентов системы в различных средах.
+> **Версия:** 2.0 (2026-06-22)  
+> **Связанные документы:** [`installation.md`](installation.md), [`agent-deployment.md`](agent-deployment.md), [`backend-type-isolation.md`](backend-type-isolation.md), [`audit-2026-06.md`](audit-2026-06.md)
 
 ## Содержание
 
-1. [Docker Compose развертывание](#docker-compose-развертывание)
-2. [Развертывание агента на GPU серверах](#развертывание-агента-на-gpu-серверах)
-3. [Production развертывание](#production-развертывание)
-4. [Масштабирование](#масштабирование)
+1. [Сценарии развёртывания](#1-сценарии-развёртывания)
+2. [Bundled-стек (cppworker-gpu + balancer + webui)](#2-bundled-стек-cppworker-gpu--balancer--webui)
+3. [Production-конфигурация](#3-production-конфигурация)
+4. [Масштабирование](#4-масштабирование)
+5. [Healthcheck и observability](#5-healthcheck-и-observability)
+6. [Таблица портов](#6-таблица-портов)
 
 ---
 
-## Docker Compose развертывание
+## 1. Сценарии развёртывания
 
-### Быстрый старт
+### 1.1 Минимальный (только балансер + WebUI)
 
 ```bash
-# Перейдите в директорию deployments
 cd deployments
+docker compose up -d --build
+```
 
-# Запуск балансировщика и Web UI
-docker-compose up -d
+Поднимает:
+- `loadbalancer` (18080, 18081)
+- `webui` (18083)
 
-# Просмотр логов
-docker-compose logs -f loadbalancer
+Бэкенды (Ollama) добавляются вручную через WebUI или API.
 
-# Проверка статуса
-docker-compose ps
+### 1.2 Bundled (cppworker-gpu + balancer + webui)
+
+Самый частый production-сценарий. Подробнее см. §2.
+
+```bash
+./scripts/start-bundled.sh  # Linux/macOS/WSL
+# или
+.\scripts\start-bundled.ps1  # Windows PowerShell
+```
+
+### 1.3 CppWorker отдельно
+
+```bash
+# GPU
+cd deployments
+docker compose -f docker-compose.cppworker.yml --profile gpu up -d --build
+
+# CPU
+docker compose -f docker-compose.cppworker.yml --profile cpu up -d --build
+
+# Stub (для тестов без llama.cpp)
+docker compose -f docker-compose.cppworker.yml --profile stub up -d --build
+```
+
+### 1.4 Агент на отдельном Ollama-сервере
+
+```bash
+# Создать .env
+cp config/agent.example.env deployments/.env
+# отредактировать .env (BALANCER_URL, AGENT_PUBLIC_HOST, GPU_MODE)
+
+cd deployments
+docker compose -f docker-compose.agent.yml --env-file .env up -d --build
+```
+
+Подробнее: [`agent-deployment.md`](agent-deployment.md).
+
+### 1.5 Смешанный кластер
+
+```bash
+# Балансер + WebUI + CppWorker (GPU) + Агент
+docker compose \
+  -f deployments/docker-compose.yml \
+  -f deployments/docker-compose.cppworker.yml --profile gpu \
+  -f deployments/docker-compose.agent.yml --env-file .env \
+  up -d --build
+```
+
+Подробнее: [`backend-type-isolation.md` §9](backend-type-isolation.md#9-варианты-развёртывания).
+
+---
+
+## 2. Bundled-стек (cppworker-gpu + balancer + webui)
+
+### 2.1 Архитектура
+
+```
+┌─────────────────────────────────────────────────────┐
+│                  Docker Compose                     │
+│                                                      │
+│  ┌──────────────┐  ┌──────────────┐  ┌───────────┐ │
+│  │ loadbalancer │  │   webui      │  │cppworker- │ │
+│  │ :18080       │◀─┤  :18083      │  │gpu        │ │
+│  │ :18081       │  └──────────────┘  │ :18092    │ │
+│  └──────▲───────┘                   └─────▲─────┘ │
+│         │                                 │       │
+│         │       ┌──────────────┐          │       │
+│         └───────┤  agent (sidecar) ├──────┘       │
+│                 │  :18032       │                  │
+│                 └──────────────┘                  │
+└─────────────────────────────────────────────────────┘
+```
+
+Сеть: `ollama-legion-net` (external), `cppworker-net` (internal).
+
+### 2.2 Подготовка `.env.bundled`
+
+```bash
+cd deployments
+cp .env.bundled.example .env.bundled
+# Отредактируйте .env.bundled:
+```
+
+| ENV | Назначение | Default |
+|---|---|---|
+| `CPPWORKER_API_TOKEN` | токен для auto-registration | обязательно |
+| `CUDA_ARCH` | архитектура GPU (86 для RTX 3070/3080/3090, 89 для 4090) | 86 |
+| `CPPWORKER_GPU_LAYERS` | -1 (все), 0 (CPU), N | -1 |
+| `CPPWORKER_RAM_FALLBACK_N_CTX` | reload в RAM при OOM | true |
+| `CPPWORKER_RAM_FALLBACK_MAX_N_CTX` | верхняя граница | 128000 |
+| `LB_NCTX_RELOAD_ENABLED` | auto-reload на балансировщике | true |
+| `BALANCER_URL` | для cppworker auto-registration | http://loadbalancer:18081 |
+| `CPPWORKER_ADVERTISE_HOST` | DNS-имя для регистрации | cppworker-gpu |
+| `CPPWORKER_PORT` (внутри) | порт cppworker'а | 18091 |
+| `CPPWORKER_ADVERTISED_PORT` | порт для балансировщика | 18091 |
+
+### 2.3 Запуск
+
+```bash
+# Linux/macOS/WSL
+./scripts/start-bundled.sh rebuild    # пересобрать + запустить
+
+# Windows PowerShell (Legacy builder обязателен!)
+$env:DOCKER_BUILDKIT=0
+.\scripts\start-bundled.ps1 -Rebuild
 
 # Остановка
-docker-compose down
+./scripts/start-bundled.sh down
+
+# Логи
+./scripts/start-bundled.sh logs
 ```
 
-### Конфигурация docker-compose.yml
-
-Файл [`deployments/docker-compose.yml`](../deployments/docker-compose.yml):
-
-```yaml
-services:
-  loadbalancer:
-    image: ollama-legion/balancer:latest
-    build:
-      context: ..
-      dockerfile: docker/balancer/Dockerfile
-    container_name: ollama-legion-balancer
-    restart: unless-stopped
-    
-    ports:
-      - "${LB_PORT:-18080}:18080"
-      - "${LB_API_PORT:-18081}:18081"
-      # При включённом TLS раскомментируйте порты:
-      # - "${LB_TLS_PORT:-8443}:8443"
-      # - "${LB_TLS_API_PORT:-8444}:8444"
-    
-    volumes:
-      - ../config/config.example.json:/app/config.json:ro
-    
-    environment:
-      - LB_HOST=${LB_HOST:-0.0.0.0}
-      - LB_PORT=${LB_PORT:-18080}
-      - LB_API_PORT=${LB_API_PORT:-18081}
-      - LB_ALGORITHM=${LB_ALGORITHM:-resource-aware}
-      - LB_MODEL_AFFINITY=${LB_MODEL_AFFINITY:-true}
-      - LB_SESSION_STICKINESS=${LB_SESSION_STICKINESS:-true}
-      - LB_HEALTH_CHECK_INTERVAL=${LB_HEALTH_CHECK_INTERVAL:-10}
-      - LB_METRICS_INTERVAL=${LB_METRICS_INTERVAL:-5}
-      - LB_REQUEST_TIMEOUT=${LB_REQUEST_TIMEOUT:-120}
-      - LB_QUEUE_TIMEOUT=${LB_QUEUE_TIMEOUT:-300}
-      - LB_QUEUE_MAX_SIZE=${LB_QUEUE_MAX_SIZE:-100}
-      - LB_GPU_MAX_USAGE=${LB_GPU_MAX_USAGE:-90}
-      - LB_GPU_MAX_VRAM=${LB_GPU_MAX_VRAM:-85}
-      - LB_GPU_MAX_TEMP=${LB_GPU_MAX_TEMP:-85}
-      - LB_CPU_MAX_USAGE=${LB_CPU_MAX_USAGE:-80}
-      - LB_MEMORY_MAX_USAGE=${LB_MEMORY_MAX_USAGE:-85}
-      - LB_DISK_MIN_FREE_MB=${LB_DISK_MIN_FREE_MB:-10240}
-      - LB_LOG_LEVEL=${LB_LOG_LEVEL:-info}
-      - LB_LOG_FORMAT=${LB_LOG_FORMAT:-json}
-      
-      # Бэкенды через переменные окружения
-      - BACKEND_0_ID=${BACKEND_0_ID:-gpu-1}
-      - BACKEND_0_NAME=${BACKEND_0_NAME:-GPU Server 1}
-      - BACKEND_0_HOST=${BACKEND_0_HOST:-192.168.13.66}
-      - BACKEND_0_PORT=${BACKEND_0_PORT:-11434}
-      - BACKEND_0_AGENT_PORT=${BACKEND_0_AGENT_PORT:-18032}
-      - BACKEND_0_WEIGHT=${BACKEND_0_WEIGHT:-1}
-      - BACKEND_0_MAX_REQS=${BACKEND_0_MAX_REQS:-10}
-    
-    networks:
-      - ollama-legion-net
-    
-    healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:18081/api/v1/health"]
-      interval: 30s
-      timeout: 60s
-      retries: 3
-      start_period: 60s
-
-  webui:
-    image: ollama-legion/webui:latest
-    container_name: ollama-legion-webui
-    restart: unless-stopped
-    
-    ports:
-      - "${WEBUI_PORT:-18030}:80"
-    
-    volumes:
-      - ../webui/dist:/usr/share/nginx/html:ro
-      - ../webui/nginx.conf:/etc/nginx/conf.d/default.conf:ro
-    
-    networks:
-      - ollama-legion-net
-
-networks:
-  ollama-legion-net:
-    driver: bridge
-    ipam:
-      config:
-        - subnet: 172.28.0.0/16
-```
-
-### Файл .env для Docker Compose
-
-Создайте файл `.env` в директории `deployments/`:
+### 2.4 Проверка после запуска
 
 ```bash
-# Load Balancer settings
+# 1. Health балансировщика (liveness)
+curl http://localhost:18081/api/v1/ping
+# Ожидается: 200 OK
+
+# 2. Health cppworker (напрямую)
+curl http://localhost:18092/health
+# Ожидается: {"status":"ok"}
+
+# 3. Список бэкендов (через API)
+curl -H 'X-API-Token: <CPPWORKER_API_TOKEN>' http://localhost:18081/api/v1/backends
+# Ожидается: содержит cppworker-gpu-bundled
+
+# 4. Тестовая генерация
+curl -X POST http://localhost:18081/api/generate \
+  -H "Content-Type: application/json" \
+  -H "X-API-Token: <token>" \
+  -d '{"model":"<model.gguf>","prompt":"hello","stream":false}'
+
+# 5. WebUI Dashboard
+open http://localhost:18083
+```
+
+### 2.5 Auto-registration cppworker
+
+При старте cppworker автоматически регистрируется в балансировщике:
+
+```
+POST http://loadbalancer:18081/api/v1/backends
+{
+  "id": "cppworker-gpu",
+  "host": "cppworker-gpu",  // DNS внутри compose
+  "cppWorkerPort": 18091,
+  "type": "llama_cpp"
+}
+```
+
+**Важно:**
+- `CPPWORKER_ADVERTISE_HOST` — DNS-имя, под которым балансировщик достучится до cppworker.
+- В bundled-compose по умолчанию `cppworker-gpu` (имя сервиса в compose).
+- Для регистрации **по IP** (вне Docker-сети): задать `BALANCER_URL=http://<host-ip>:18081` и `CPPWORKER_ADVERTISE_HOST=<host-ip>`.
+
+### 2.6 Healthcheck в bundled
+
+- Балансировщик healthcheck: `GET /api/v1/ping` (всегда 200).
+- CppWorker healthcheck: `/app/cppworker -healthcheck` (бинарник сам читает `CPPWORKER_PORT` и делает `GET /health` на localhost).
+
+В `deployments/docker-compose.cppworker-bundled.yml`:
+```yaml
+healthcheck:
+  test: ["CMD", "/app/cppworker", "-healthcheck"]
+```
+
+---
+
+## 3. Production-конфигурация
+
+### 3.1 `config/config.json`
+
+Базовый шаблон в `config/config.example.json`. Ключевые секции:
+
+```json
+{
+  "loadBalancer": {
+    "host": "0.0.0.0",
+    "port": 18080,
+    "apiPort": 18081,
+    "tlsPort": 8443,
+    "tlsApiPort": 8444
+  },
+  "balancing": {
+    "algorithm": "resource-aware",
+    "modelAffinity": true,
+    "sessionStickiness": true,
+    "useEnhancedScoring": true,
+    "prewarm": { "enabled": true },
+    "autoPull": { "enabled": true },
+    "nctxReload": {
+      "autoReloadNCtx": true,
+      "maxNCtx": 131072,
+      "vramSafetyFactor": 0.85,
+      "timeoutSec": 120
+    },
+    "requestTimeout": 600,
+    "queueTimeout": 300,
+    "queueMaxSize": 100
+  },
+  "operatingMode": "standard",
+  "defaultModelProfile": {
+    "contextLength": 0,    // ⚠️ должно быть 0 или null
+    "batchSize": 512,
+    "numGpuLayers": -1,
+    "flashAttn": true
+  },
+  "llamaCppModelProfiles": {
+    // per-model overrides (см. cppworker-model-params.md)
+  }
+}
+```
+
+Подробнее: [`configuration.md`](configuration.md) — скоро будет переписан.
+
+### 3.2 ENV-переменные
+
+Все настройки `config.json` можно override через ENV с префиксом `LB_` или прямым именем:
+
+```bash
 LB_HOST=0.0.0.0
 LB_PORT=18080
 LB_API_PORT=18081
-# При включённом TLS добавьте:
-# LB_TLS_PORT=8443
-# LB_TLS_API_PORT=8444
-
-# Algorithm settings
 LB_ALGORITHM=resource-aware
 LB_MODEL_AFFINITY=true
 LB_SESSION_STICKINESS=true
-
-# Intervals (seconds)
 LB_HEALTH_CHECK_INTERVAL=10
 LB_METRICS_INTERVAL=5
-
-# Timeouts (seconds)
-LB_REQUEST_TIMEOUT=120
+LB_REQUEST_TIMEOUT=600
 LB_QUEUE_TIMEOUT=300
 LB_QUEUE_MAX_SIZE=100
-
-# Resource limits
 LB_GPU_MAX_USAGE=90
 LB_GPU_MAX_VRAM=85
 LB_GPU_MAX_TEMP=85
 LB_CPU_MAX_USAGE=80
 LB_MEMORY_MAX_USAGE=85
-LB_DISK_MIN_FREE_MB=10240
-
-# Logging
 LB_LOG_LEVEL=info
 LB_LOG_FORMAT=json
+```
 
-# Web UI
-WEBUI_PORT=18030
+### 3.3 Backend через ENV
 
-# Backends
+```bash
 BACKEND_0_ID=gpu-1
-BACKEND_0_NAME=GPU Server 1
 BACKEND_0_HOST=192.168.13.66
 BACKEND_0_PORT=11434
 BACKEND_0_AGENT_PORT=18032
-BACKEND_0_WEIGHT=1
-BACKEND_0_MAX_REQS=10
+BACKEND_0_TYPE=ollama   # или llama_cpp
+```
 
-BACKEND_1_ID=gpu-2
-BACKEND_1_NAME=GPU Server 2
-BACKEND_1_HOST=192.168.13.70
-BACKEND_1_PORT=11434
-BACKEND_1_AGENT_PORT=18032
-BACKEND_1_WEIGHT=1
-BACKEND_1_MAX_REQS=10
+### 3.4 Аутентификация
+
+```bash
+AUTH_ENABLED=true
+AUTH_TOKENS=master-token,client-token-1,client-token-2
+AUTH_HEADER_NAME=X-API-Token
+```
+
+### 3.5 TLS
+
+```bash
+TLS_ENABLED=true
+TLS_CERT_FILE=/etc/ssl/certs/server.crt
+TLS_KEY_FILE=/etc/ssl/private/server.key
+TLS_AUTO_CERT=true   # self-signed для тестов
 ```
 
 ---
 
-## Развертывание агента на GPU серверах
+## 4. Масштабирование
 
-Агент должен запускаться **отдельно на каждом GPU сервере** с установленным Ollama.
+### 4.1 Горизонтальное (несколько бэкендов)
 
-> **Важно:** Агент и балансер **НЕ обязаны** находиться в одной Docker-сети или на одном хосте.
-> Единственное требование — **взаимная IP-доступность по HTTP**:
-> - Агент → Балансер: HTTP запросы на `BALANCER_URL`
-> - Балансер → Агент/Ollama: HTTP запросы на публичный IP агента
-
-### Способ 1: Скрипт автоматического развертывания (рекомендуется)
-
-Используйте скрипт [`deploy-agent-docker.sh`](../scripts/deploy-agent-docker.sh):
+Добавить бэкенды через WebUI → Backends → Add, или через API:
 
 ```bash
-# Перейдите в директорию скриптов
-cd scripts
-
-# Запуск с параметрами (укажите публичный IP балансера)
-./deploy-agent-docker.sh \
-  --balancer-url http://192.168.1.10:18081 \
-  --agent-id gpu-1 \
-  --public-host 192.168.1.20
-
-# Или кратко:
-./deploy-agent-docker.sh -b http://192.168.1.10:18081 -i gpu-1 -h 192.168.1.20
+curl -X POST http://localhost:18081/api/v1/backends \
+  -H "Content-Type: application/json" \
+  -H "X-API-Token: <token>" \
+  -d '{"id":"gpu-2","host":"192.168.13.70","ollamaPort":11434,"type":"ollama"}'
 ```
 
-#### Параметры скрипта
+### 4.2 Replication (Variant A)
 
-| Параметр | Краткий | Описание | Обязательный |
-|----------|---------|----------|--------------|
-| `--balancer-url` | `-b` | URL балансировщика (публичный IP) | Да |
-| `--agent-id` | `-i` | Идентификатор агента | Да |
-| `--public-host` | `-h` | Публичный IP/hostname агента | Да |
-| `--agent-port` | `-p` | Порт агента (по умолчанию: 18032) | Нет |
-| `--ollama-url` | `-o` | URL Ollama (по умолчанию: http://localhost:11434) | Нет |
-| `--nvml-enabled` | `-n` | Включить NVML (по умолчанию: true) | Нет |
-| `--metrics-interval` | `-m` | Интервал метрик (по умолчанию: 5s) | Нет |
-| `--help` | `-h` | Показать справку | Нет |
-
-### Способ 2: Docker Compose для агента
-
-Используйте [`docker-compose.agent.yml`](../deployments/docker-compose.agent.yml):
-
-```bash
-# На GPU сервере
-cd deployments
-
-# Создание .env файла
-cat > .env << EOF
-# Обязательные параметры
-AGENT_ID=gpu-1
-BALANCER_URL=http://192.168.1.10:18081
-AGENT_PUBLIC_HOST=192.168.1.20
-
-# Сетевые настройки
-# Для Linux используйте IP хоста или network_mode: host
-# Для Windows/macOS host.docker.internal работает из коробки
-AGENT_PORT=18032
-OLLAMA_URL=http://host.docker.internal:11434
-
-# GPU настройки
-NVML_ENABLED=true
-METRICS_INTERVAL=5s
-HEARTBEAT_INTERVAL=3s
-
-# Логирование
-LOG_LEVEL=info
-LOG_FORMAT=text
-EOF
-
-# Запуск агента
-docker-compose -f docker-compose.agent.yml --env-file .env up -d
-
-# Просмотр логов
-docker-compose -f docker-compose.agent.yml logs -f agent
-
-# Проверка статуса
-docker-compose -f docker-compose.agent.yml ps
-```
-
-#### Сетевые режимы Docker
-
-**A) Bridge (по умолчанию)** — агент в изолированной сети, порты проброшены:
-```yaml
-# Порты проброшены на хост, балансер обращается к AGENT_PUBLIC_HOST:AGENT_PORT
-ports:
-  - "18032:18032"
-```
-
-**B) Host network (Linux)** — агент использует сетевой стек хоста напрямую:
-```yaml
-services:
-  agent:
-    network_mode: host
-    # При host mode не нужны ports и networks
-    environment:
-      - AGENT_PUBLIC_HOST=192.168.1.20  # IP хоста
-```
-
-**C) Docker Swarm overlay** — для кластеров в swarm-режиме:
-```yaml
-networks:
-  ollama-legion-net:
-    driver: overlay
-    external: true
-```
-
-#### GPU проброс для NVML
-
-Конфигурация [`docker-compose.agent.yml`](../deployments/docker-compose.agent.yml) включает проброс GPU через NVIDIA Container Toolkit:
-
-```yaml
-services:
-  agent:
-    deploy:
-      resources:
-        reservations:
-          devices:
-            - driver: nvidia
-              count: all
-              capabilities: [gpu]
-```
-
-**Требования для GPU проброса:**
-- NVIDIA Driver (версия 535+ для Linux, 528+ для Windows)
-- NVIDIA Container Toolkit установлен на хосте
-- Docker Compose v3.8+
-
-**Проверка NVIDIA Container Toolkit:**
-```bash
-# Проверка доступности GPU в Docker
-docker run --rm --gpus all nvidia/cuda:12.2.0-base-ubuntu22.04 nvidia-smi
-
-# Если команда выше работает, GPU проброс настроен корректно
-```
-
-**Проверка работы NVML внутри контейнера:**
-```bash
-# Подключение к контейнеру агента
-docker exec -it ollama-legion-agent bash
-
-# Проверка доступности nvidia-smi
-nvidia-smi
-
-# Проверка метрик агента
-curl http://localhost:18032/metrics
-```
-
-### Способ 3: Docker run
-
-```bash
-# С bridge-сетью (порты проброшены)
-docker run -d \
-  --name ollama-agent \
-  --restart unless-stopped \
-  -e AGENT_ID=gpu-1 \
-  -e BALANCER_URL=http://192.168.1.10:18081 \
-  -e AGENT_PUBLIC_HOST=192.168.1.20 \
-  -e AGENT_PORT=18032 \
-  -e OLLAMA_URL=http://192.168.1.20:11434 \
-  -e NVML_ENABLED=true \
-  -e METRICS_INTERVAL=5s \
-  -e HEARTBEAT_INTERVAL=3s \
-  -p 18032:18032 \
-  ollama-legion/agent:latest
-
-# С host-сетью (Linux)
-docker run -d \
-  --name ollama-agent \
-  --restart unless-stopped \
-  --network host \
-  -e AGENT_ID=gpu-1 \
-  -e BALANCER_URL=http://192.168.1.10:18081 \
-  -e AGENT_PUBLIC_HOST=192.168.1.20 \
-  -e AGENT_PORT=18032 \
-  -e OLLAMA_URL=http://localhost:11434 \
-  -e NVML_ENABLED=true \
-  ollama-legion/agent:latest
-```
-
-### Способ 4: Бинарный файл как systemd сервис
-
-#### Шаг 1: Сборка и копирование
-
-```bash
-# На машине для сборки
-cd /path/to/ollama-loadbalancer
-./scripts/build-agent.sh
-
-# Копирование на GPU сервер
-scp ./bin/agent user@gpu-server:/usr/local/bin/
-```
-
-#### Шаг 2: Создание systemd сервиса
-
-Создайте файл `/etc/systemd/system/ollama-agent.service`:
-
-```ini
-[Unit]
-Description=Ollama Load Balancer Agent
-After=network.target ollama.service
-Wants=ollama.service
-
-[Service]
-Type=simple
-User=ollama
-Group=ollama
-Environment="AGENT_ID=gpu-1"
-Environment="BALANCER_URL=http://<balancer-ip>:18081"
-Environment="COLLECT_INTERVAL=5"
-Environment="HEARTBEAT_INTERVAL=3"
-Environment="METRICS_PORT=18032"
-ExecStart=/usr/local/bin/agent
-Restart=always
-RestartSec=10
-LimitNOFILE=65535
-
-[Install]
-WantedBy=multi-user.target
-```
-
-#### Шаг 3: Запуск сервиса
-
-```bash
-# Перезагрузка systemd
-sudo systemctl daemon-reload
-
-# Включение автозапуска
-sudo systemctl enable ollama-agent
-
-# Запуск
-sudo systemctl start ollama-agent
-
-# Проверка статуса
-sudo systemctl status ollama-agent
-
-# Просмотр логов
-journalctl -u ollama-agent -f
-```
-
----
-
-## Production развертывание
-
-### Архитектура production кластера
-
-```
-                    ┌─────────────────┐
-                    │  Load Balancer  │
-                    │   (HA Cluster)  │
-                    └────────┬────────┘
-                             │
-           ┌─────────────────┼─────────────────┐
-           │                 │                 │
-    ┌──────▼──────┐   ┌──────▼──────┐   ┌──────▼──────┐
-    │  GPU Node 1 │   │  GPU Node 2 │   │  GPU Node N │
-    │   + Agent   │   │   + Agent   │   │   + Agent   │
-    │   Ollama    │   │   Ollama    │   │   Ollama    │
-    └─────────────┘   └─────────────┘   └─────────────┘
-```
-
-### Требования для production
-
-| Компонент | Требование |
-|-----------|------------|
-| **Load Balancer** | 2+ ноды для HA, внешний load balancer (nginx/HAProxy) |
-| **GPU Nodes** | NVIDIA GPU с драйверами, Docker + NVIDIA Container Toolkit |
-| **Сеть** | Минимум 1 Gbps между компонентами |
-| **Хранение** | SSD для логов и конфигураций |
-
-### HA конфигурация для Load Balancer
-
-```yaml
-# docker-compose.prod.yml
-version: '3.8'
-
-services:
-   loadbalancer-1:
-     image: ollama-legion/balancer:latest
-     container_name: ollama-legion-1
-     restart: unless-stopped
-     ports:
-       - "18080:18080"
-       - "18081:18081"
-       # При включённом TLS:
-       # - "8443:8443"
-       # - "8444:8444"
-    volumes:
-      - ./config.json:/app/config.json:ro
-    environment:
-      - LB_HOST=0.0.0.0
-      - LB_PORT=18080
-      - LB_API_PORT=18081
-    networks:
-      - ollama-legion-net
-    healthcheck:
-      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:18081/api/v1/health"]
-      interval: 10s
-      timeout: 5s
-      retries: 3
-
-   loadbalancer-2:
-     image: ollama-legion/balancer:latest
-     container_name: ollama-legion-2
-     restart: unless-stopped
-     ports:
-       - "18082:18080"
-       - "18083:18081"
-       # При включённом TLS:
-       # - "8445:8443"
-       # - "8446:8444"
-    volumes:
-      - ./config.json:/app/config.json:ro
-    environment:
-      - LB_HOST=0.0.0.0
-      - LB_PORT=18080
-      - LB_API_PORT=18081
-    networks:
-      - ollama-legion-net
-    healthcheck:
-      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:18081/api/v1/health"]
-      interval: 10s
-      timeout: 5s
-      retries: 3
-
-   nginx-lb:
-     image: nginx:alpine
-     container_name: nginx-lb
-     restart: unless-stopped
-     ports:
-       - "80:80"
-       - "443:443"
-       # При включённом TLS:
-       # - "8443:8443"
-       # - "8444:8444"
-    volumes:
-      - ./nginx-lb.conf:/etc/nginx/nginx.conf:ro
-      - ./certs:/etc/nginx/certs:ro
-    depends_on:
-      - loadbalancer-1
-      - loadbalancer-2
-    networks:
-      - ollama-legion-net
-
-networks:
-  ollama-legion-net:
-    driver: bridge
-```
-
-### Конфигурация nginx для HA
-
-```nginx
-# nginx-lb.conf
-events {
-    worker_connections 1024;
-}
-
-http {
-    upstream ollama_lb {
-        least_conn;
-        server loadbalancer-1:18080;
-        server loadbalancer-2:18080;
-    }
-
-    upstream management_api {
-        least_conn;
-        server loadbalancer-1:18081;
-        server loadbalancer-2:18081;
-    }
-
-    server {
-        listen 80;
-        server_name _;
-
-        location / {
-            proxy_pass http://ollama_lb;
-            proxy_http_version 1.1;
-            proxy_set_header Upgrade $http_upgrade;
-            proxy_set_header Connection 'upgrade';
-            proxy_set_header Host $host;
-            proxy_set_header X-Real-IP $remote_addr;
-        }
-
-        location /api/ {
-            proxy_pass http://management_api;
-            proxy_http_version 1.1;
-            proxy_set_header Upgrade $http_upgrade;
-            proxy_set_header Connection 'upgrade';
-            proxy_set_header Host $host;
-        }
-
-        location /ws/ {
-            proxy_pass http://management_api;
-            proxy_http_version 1.1;
-            proxy_set_header Upgrade $http_upgrade;
-            proxy_set_header Connection "Upgrade";
-            proxy_set_header Host $host;
-        }
-    }
-}
-```
-
-### Безопасность production развертывания
-
-#### 1. TLS/SSL шифрование
-
-При включённом TLS прокси доступен на `tlsPort` (8443), а HTTPS Management API — на `tlsPort+1` (8444).
-
-```bash
-# Генерация сертификатов
-openssl req -x509 -nodes -days 365 -newkey rsa:4096 \
-  -keyout certs/server.key \
-  -out certs/server.crt \
-  -subj "/CN=ollama-legion.example.com"
-```
-
-#### 2. Firewall правила
-
-```bash
-# На Load Balancer
-sudo ufw allow 80/tcp    # HTTP
-sudo ufw allow 443/tcp   # HTTPS
-sudo ufw allow 22/tcp    # SSH
-
-# На GPU серверах
-sudo ufw allow from <lb-ip> to any port 18032
-sudo ufw allow 11434/tcp # Ollama (локально)
-```
-
-#### 3. Аутентификация
+Включить в `config/config.json`:
 
 ```json
 {
-  "auth": {
+  "modelReplication": {
     "enabled": true,
-    "tokens": [
-      "secure-master-token-here"
-    ],
-    "headerName": "X-API-Token"
+    "groups": [
+      {
+        "modelName": "llama3.1-8b",
+        "minInstances": 2,
+        "maxInstances": 4,
+        "targetBackends": ["gpu-1", "gpu-2", "gpu-3"],
+        "idleUnloadSec": 300
+      }
+    ]
   }
 }
 ```
 
----
+Подробнее: [`backend-type-isolation.md` §3](backend-type-isolation.md).
 
-## Масштабирование
-
-### Горизонтальное масштабирование
-
-Добавление новых GPU серверов:
-
-```bash
-# 1. Добавьте новый бэкенд в конфигурацию
-# config.json или через переменные окружения
-
-BACKEND_2_ID=gpu-3
-BACKEND_2_NAME=GPU Server 3
-BACKEND_2_HOST=192.168.13.80
-BACKEND_2_PORT=11434
-BACKEND_2_AGENT_PORT=18032
-BACKEND_2_WEIGHT=1
-BACKEND_2_MAX_REQS=10
-
-# 2. Перезапустите балансировщик
-docker-compose restart loadbalancer
-
-# 3. Разверните агент на новом сервере
-./deploy-agent-docker.sh -b http://<lb-ip>:18081 -i gpu-3
-```
-
-### Добавление бэкенда через API
-
-```bash
-# Регистрация нового бэкенда
-curl -X POST http://<lb-ip>:18081/api/v1/backends \
-  -H "Content-Type: application/json" \
-  -H "X-API-Token: your-token" \
-  -d '{
-    "id": "gpu-3",
-    "name": "GPU Server 3",
-    "host": "192.168.13.80",
-    "ollamaPort": 11434,
-    "agentPort": 18032,
-    "weight": 1,
-    "maxConcurrentRequests": 10,
-    "labels": ["nvidia", "a100"]
-  }'
-```
-
-### Вертикальное масштабирование
-
-Увеличение ресурсов существующих узлов:
+### 4.3 Virtual Router (Variant C, каркас)
 
 ```json
 {
-  "resources": {
-    "gpu": {
-      "maxUsagePercent": 95,
-      "maxVramUsagePercent": 90,
-      "maxTemperature": 90
-    },
-    "cpu": {
-      "maxUsagePercent": 90
-    },
-    "memory": {
-      "maxUsagePercent": 90
+  "virtualModels": [
+    {
+      "name": "llama-mega",
+      "description": "Pipeline: embed + middle + output",
+      "slices": [
+        { "id": "embed",   "modelName": "nomic-embed", "ordinal": 0, "targetBackends": ["gpu-1"] },
+        { "id": "middle",  "modelName": "llama3-8b",   "ordinal": 1, "targetBackends": ["gpu-2"] },
+        { "id": "output",  "modelName": "llama3-8b",   "ordinal": 2, "targetBackends": ["gpu-3"] }
+      ],
+      "coordination": { "mode": "sequential", "timeoutMs": 60000 }
     }
-  },
-  "balancing": {
-    "queueMaxSize": 500,
-    "queueTimeout": 900
-  }
+  ]
 }
 ```
 
-### Мониторинг масштабирования
+> **Статус:** каркас реализован (`internal/virtualmodel/`), но pipeline execution не завершён. См. [`audit-2026-06.md` KL-7](audit-2026-06.md#3-известные-ограничения-known-limitations).
 
-```bash
-# Проверка статуса кластера
-curl http://<lb-ip>:18081/api/v1/cluster | jq
+### 4.4 RPC Coordinator (Variant B)
 
-# Проверка метрик
-curl http://<lb-ip>:18081/api/v1/metrics | jq
-
-# WebSocket для real-time мониторинга
-wscat -c ws://<lb-ip>:18081/ws/metrics
-```
+Каркас в `internal/rpccoordinator/`. Требует отдельных worker-инстансов с HTTP `/rpc/*` endpoints. **Не в текущем релизе.**
 
 ---
 
-## Проверка развертывания
+## 5. Healthcheck и observability
 
-### Чеклист
+### 5.1 Liveness vs Readiness
 
-```bash
-# 1. Проверка балансировщика
-curl http://localhost:18081/api/v1/health
-# Ожидаемый ответ: {"status": "healthy", ...}
+| Endpoint | Назначение | Docker healthcheck |
+|---|---|---|
+| `GET /api/v1/ping` | liveness (всегда 200 если процесс жив) | да |
+| `GET /api/v1/health` | readiness (503 в degraded) | нет (иначе restart loop) |
 
-# 2. Проверка списка бэкендов
-curl http://localhost:18081/api/v1/backends
-# Ожидаемый ответ: {"backends": [...], "total": N}
+> **Важно:** в `healthcheck` Docker используйте `/api/v1/ping`, **не** `/api/v1/health`. Последний может вернуть 503 до того, как бэкенды зарегистрировались, что вызовет restart loop.
 
-# 3. Проверка Web UI (Dashboard)
-# Откройте http://localhost:18030 в браузере
+### 5.2 WebSocket метрики
 
-# 4. Проверка Монитора (real-time визуализация кластера)
-# Откройте http://localhost:18030/monitor.html в браузере
-# Монитор показывает:
-#   - Canvas-визуализацию потока запросов между бэкендами
-#   - Статус бэкендов (Healthy / Busy / Critical)
-#   - Очередь запросов в реальном времени
-#   - Диагностические предупреждения
+`/ws/metrics` — real-time трансляция:
 
-# 5. Проверка агента на GPU сервере
-curl http://localhost:18032/metrics
-
-# 6. Проверка WebSocket
-wscat -c ws://localhost:18081/ws/metrics
-
-# 7. Тестовый запрос к Ollama через балансировщик
-curl -X POST http://localhost:18080/api/generate \
-  -H "Content-Type: application/json" \
-  -d '{"model": "llama3.1:8b", "prompt": "Hello!", "stream": false}'
+```javascript
+const ws = new WebSocket("ws://localhost:18081/ws/metrics?token=...");
+ws.onmessage = (e) => {
+  const metrics = JSON.parse(e.data);
+  console.log(metrics);
+};
 ```
 
-### Диагностика проблем
+### 5.3 Prometheus-стиль метрик
 
-См. раздел [Troubleshooting](troubleshooting.md) для решения часто встречающихся проблем.
+Балансировщик экспортирует JSON-снапшоты через `GET /api/v1/metrics`:
+
+```bash
+curl -H 'X-API-Token: <token>' http://localhost:18081/api/v1/metrics
+```
+
+Содержит: `ActiveRequests`, `FreeSlots`, `CalculatedRPS`, `QueueStats`, гистограммы (`modelLoadTime`, `queueWaitTime`).
 
 ---
 
-## Следующие шаги
+## 6. Таблица портов
 
-- [API документация](api.md) — Использование REST API и WebSocket
-- [Troubleshooting](troubleshooting.md) — Решение проблем
-- [Конфигурация](configuration.md) — Настройка всех компонентов
+| Порт | Компонент | Описание |
+|---|---|---|
+| **18080** | Load Balancer | Ollama/OpenAI API Proxy (внешний) |
+| **18081** | Load Balancer | Management API + WebSocket |
+| **18083** | Web UI | Dashboard |
+| **18032** | Agent | Локальные метрики агента |
+| **11434** | Ollama | Ollama API (на бэкендах) |
+| **18091** | CppWorker (внутри) | Ollama-compat + OpenAI API |
+| **18092** | CppWorker (хост-port bundled) | маппинг на 18091 внутри контейнера |
+| **8443** | Load Balancer | HTTPS Proxy (TLS) |
+| **8444** | Load Balancer | HTTPS Management API (TLSPort+1) |
+
+---
+
+## 7. Связанные документы
+
+- [`installation.md`](installation.md) — установка и сборка.
+- [`agent-deployment.md`](agent-deployment.md) — развёртывание агента.
+- [`backend-type-isolation.md`](backend-type-isolation.md) — варианты развёртывания с разными типами бэкендов.
+- [`cppworker-model-params.md`](cppworker-model-params.md) — n_ctx + Per-Model Profiles.
+- [`audit-2026-06.md`](audit-2026-06.md) — статус реализации.
+- [`../.clinerules`](../.clinerules) §15 — bundled-стек инструкции.

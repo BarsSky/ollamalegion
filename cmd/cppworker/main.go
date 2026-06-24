@@ -35,25 +35,45 @@ var (
 	startupTime          = time.Now() // Используется для /api/diagnostics uptime.
 	port                 = flag.Int("port", 18092, "HTTP server port (default 18092; 18091 is legacy)")
 	modelsDir            = flag.String("models-dir", "./models", "Directory with GGUF model files")
-	// DefaultCtxSize = 8192 (а не 4096): при 4096 у OpenWebUI с tools
-	// (system + tool definitions ~3000-5000 токенов + user message)
-	// prompt не влезает → reload на каждой tool-итерации.
-	// 8192 — минимум для стабильной работы OpenWebUI с tools.
-	ctxSize              = flag.Int("ctx-size", 8192, "Default context size")
+	// DefaultCtxSize = 32768 (а не 8192): 8192 — минимум для OpenWebUI с tools,
+	// но для production-использования с длинными сессиями этого недостаточно.
+	// 32768 покрывает system + history ~7000 токенов + user message + ответ ~25000.
+	// Реальное значение определяется config/cppworker-defaults.json (single source of truth);
+	// этот flag default используется только при --ctx-size без env и без JSON.
+	ctxSize              = flag.Int("ctx-size", 32768, "Default context size")
 	batchSize            = flag.Int("batch-size", 512, "Default batch size")
 	gpuLayers            = flag.Int("gpu-layers", -1, "GPU layers (-1=all, 0=CPU)")
 	flashAttn            = flag.Int("flash-attn", -1, "Flash Attention type: -1=auto, 0=disabled, 1=enabled")
 	numa                 = flag.Bool("numa", false, "Enable NUMA optimization")
 	noMmap               = flag.Bool("no-mmap", false, "Disable mmap")
 	ramFallbackNCtx      = flag.Bool("ram-fallback-n-ctx", false, "Auto-reload model with requested n_ctx using RAM when VRAM is insufficient")
-	ramFallbackGpuLayers = flag.Int("ram-fallback-gpu-layers", -1, "GPU layers to use during RAM fallback (-1=keep current, 0=CPU-only)")
+	ramFallbackGpuLayers = flag.Int("ram-fallback-gpu-layers", -1, "GPU layers to use during RAM fallback (-1=keep current, 0=CPU-only, -2=AUTO via auto-offload)")
 	ramFallbackMaxNCtx   = flag.Int("ram-fallback-max-n-ctx", 32768, "Max n_ctx allowed for RAM fallback")
-	verbose              = flag.Bool("verbose", false, "Verbose logging")
+	// ramFallbackAllowTools — с 2026-06-23 разрешаем reload при tools,
+	// чтобы balancer (preflight) мог динамически увеличивать n_ctx под длинный
+	// prompt от Cline/OpenWebUI. Старое поведение (reload off при tools) можно
+	// вернуть через --ram-fallback-allow-tools=false или CPPWORKER_RAM_FALLBACK_ALLOW_TOOLS=false.
+	ramFallbackAllowTools = flag.Bool("ram-fallback-allow-tools", true, "Allow RAM-fallback reload for tools-requests (works with balancer preflight to dynamically resize n_ctx). Default true.")
+	// autoOffload — авто-расчёт числа GPU-слоёв на основе размера .gguf файла
+	// и доступной VRAM. Используется при ram-fallback-gpu-layers=-2 ИЛИ при
+	// handleLoadModel/handleCppWorkerUpdateConfig, если модель не влезает.
+	autoOffload = flag.Bool("auto-offload", false, "Auto-calculate gpu_layers based on model size and available VRAM (solves OOM for 19GB+ models on 24GB GPU)")
+	// autoTuneNCtx — AutoTuneNCtx: автоподбор n_ctx и gpu_layers при reload.
+	// При включении cppworker при RAM-fallback reload пытается выбрать
+	// максимальный n_ctx, который помещается в VRAM (с учётом partial offload
+	// через mmap в RAM). Если requested_n_ctx не влезает даже при cpu-only
+	// offload (gpu_layers=0) — уменьшает n_ctx до максимально возможного.
+	// Решает: «Cline прислал 53K prompt, требуется n_ctx=53K, VRAM=8GB» →
+	// cppworker перезагружает модель с gpu_layers=0 (через mmap в RAM) и
+	// n_ctx=максимально возможный (например 32K), чтобы inference прошёл
+	// без кода 3 «prompt too long».
+	autoTuneNCtx = flag.Bool("auto-tune-nctx", false, "Auto-tune n_ctx + gpu_layers on RAM-fallback reload based on available VRAM/RAM (solves 'prompt too long' when VRAM is insufficient)")
 	allowedOrigin        = flag.String("cors-origin", "*", "CORS allowed origin")
 	envFile              = flag.String("env", "", "Path to .env configuration file (optional)")
 	preloadModels        = flag.Bool("preload-models", false, "Preload all .gguf models at startup (disabled by default — use with care, may exhaust VRAM)")
 	writeTimeout         = flag.Duration("write-timeout", 30*time.Minute, "HTTP WriteTimeout for streaming inference (use 0 for no timeout)")
 	healthCheck          = flag.Bool("healthcheck", false, "Run a one-shot health probe against /health and exit")
+	verbose              = flag.Bool("verbose", false, "Enable verbose (debug) logging")
 )
 
 // ============================================================
@@ -157,6 +177,30 @@ func main() {
 			}
 		}
 	}
+	// ram-fallback-allow-tools из env (если флаг не передан явно).
+	if !isFlagSet("ram-fallback-allow-tools") {
+		if envVal := os.Getenv("CPPWORKER_RAM_FALLBACK_ALLOW_TOOLS"); envVal != "" {
+			*ramFallbackAllowTools = parseBoolEnv(envVal)
+			log.Infow("applied CPPWORKER_RAM_FALLBACK_ALLOW_TOOLS from env",
+				"ram_fallback_allow_tools", *ramFallbackAllowTools)
+		}
+	}
+	// Применяем флаг к глобальной переменной (используется в inference.go).
+	tryRamFallbackReloadAllowTools = *ramFallbackAllowTools
+	// auto-offload из env (если флаг не передан явно).
+	if !isFlagSet("auto-offload") {
+		if envVal := os.Getenv("CPPWORKER_AUTO_OFFLOAD"); envVal != "" {
+			*autoOffload = parseBoolEnv(envVal)
+			log.Infow("applied CPPWORKER_AUTO_OFFLOAD from env", "auto_offload", *autoOffload)
+		}
+	}
+	// auto-tune-nctx из env (если флаг не передан явно).
+	if !isFlagSet("auto-tune-nctx") {
+		if envVal := os.Getenv("CPPWORKER_AUTO_TUNE_NCTX"); envVal != "" {
+			*autoTuneNCtx = parseBoolEnv(envVal)
+			log.Infow("applied CPPWORKER_AUTO_TUNE_NCTX from env", "auto_tune_nctx", *autoTuneNCtx)
+		}
+	}
 	// WriteTimeout из env (если флаг не передан явно).
 	if !isFlagSet("write-timeout") {
 		if envVal := os.Getenv("CPPWORKER_WRITE_TIMEOUT"); envVal != "" {
@@ -199,6 +243,9 @@ func main() {
 		"ramFallbackNCtx", *ramFallbackNCtx,
 		"ramFallbackGpuLayers", *ramFallbackGpuLayers,
 		"ramFallbackMaxNCtx", *ramFallbackMaxNCtx,
+		"ramFallbackAllowTools", *ramFallbackAllowTools,
+		"autoOffload", *autoOffload,
+		"autoTuneNCtx", *autoTuneNCtx,
 		"writeTimeout", writeTimeout.String())
 
 	if err := os.MkdirAll(cfg.ModelsDir, 0755); err != nil {

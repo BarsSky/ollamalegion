@@ -84,6 +84,13 @@ type GenerationParams struct {
 	// C-bridge возвращает informative ошибку с предложением перезагрузить
 	// модель с большим n_ctx.
 	NCtxOverride int
+	// ClampedNPredict — true, если clampNPredictToFitContext уменьшил NPredict
+	// для предотвращения code 3 (prompt too long). Используется для добавления
+	// warning в ответ клиенту.
+	ClampedNPredict bool `json:"-"`
+	// ClampedNPredictOriginal — исходное значение NPredict до клампинга.
+	// Используется для информативного warning в ответе.
+	ClampedNPredictOriginal int `json:"-"`
 }
 
 // DefaultGenerationParams возвращает параметры по умолчанию

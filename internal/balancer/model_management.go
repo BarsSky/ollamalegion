@@ -451,9 +451,35 @@ func (mm *ModelManager) executeLoad(host string, port int, backendID string, req
 	}
 }
 
+// Параметры retry при 503 "model is loading" от cppworker — чтобы не отдавать
+// клиенту ошибку, если параллельный запрос уже инициировал загрузку.
+const (
+	llamaCppLoadMaxRetries     = 10               // ~30 секунд при retryInterval=3s
+	llamaCppLoadRetryInterval  = 3 * time.Second
+	llamaCppLoadDefaultTimeout = 120 * time.Second // дефолтный таймаут load-запроса (если конфиг не задан)
+)
+
+// getLoadTimeout — возвращает таймаут для POST /api/models/load из конфигурации.
+// Приоритет: Balancing.ModelLoadTimeout → llamaCppLoadDefaultTimeout (120s).
+// Раньше был хардкод 5s, что недостаточно для cold-start больших GGUF моделей.
+func (mm *ModelManager) getLoadTimeout() time.Duration {
+	if mm.proxy != nil && mm.proxy.config != nil {
+		if mm.proxy.config.Balancing.ModelLoadTimeout > 0 {
+			return time.Duration(mm.proxy.config.Balancing.ModelLoadTimeout) * time.Second
+		}
+	}
+	return llamaCppLoadDefaultTimeout
+}
+
 // executeLlamaCppLoad — загрузка модели в память на cppworker-бэкенде.
 // cppworker принимает POST /api/models/load с JSON {"name": "...", ...}.
 // Если в req заданы ContextSize или GPULayers — передаёт их в теле.
+//
+// При получении HTTP 503 с body содержащим "model is loading" — повторяет запрос
+// через llamaCppLoadRetryInterval, до llamaCppLoadMaxRetries попыток. Это
+// закрывает race condition, когда параллельные запросы приходят на cppworker
+// в момент, когда другая горутина уже грузит эту же модель (другая запрос
+// получил `TryLockLoad=false`, а handleLoadModel ещё не завершил WaitForLoad).
 func (mm *ModelManager) executeLlamaCppLoad(host string, port int, backendID string, req ModelOpRequest) *ModelOpResult {
 	url := fmt.Sprintf("http://%s:%d/api/models/load", host, port)
 	body := map[string]interface{}{
@@ -465,7 +491,136 @@ func (mm *ModelManager) executeLlamaCppLoad(host string, port int, backendID str
 	if req.GPULayers != nil {
 		body["gpuLayers"] = *req.GPULayers
 	}
-	return mm.sendCppWorkerRequest("POST", url, backendID, req, body)
+	jsonBody, err := json.Marshal(body)
+	if err != nil {
+		return &ModelOpResult{
+			Success:   false,
+			Operation: req.Operation,
+			ModelName: req.ModelName,
+			BackendID: backendID,
+			Error:     fmt.Sprintf("failed to marshal request body: %v", err),
+		}
+	}
+
+	// Используем отдельный клиент с таймаутом из конфигурации (Balancing.ModelLoadTimeout,
+	// default 120s). Раньше был хардкод 5s — этого недостаточно для cold-start
+	// больших GGUF моделей (чтение файла + загрузка весов в VRAM).
+	// Общий mm.client имеет Timeout 10 минут (для pull/push), что слишком много
+	// для load-запроса к потенциально неотвечающему cppworker.
+	loadTimeout := mm.getLoadTimeout()
+	loadClient := &http.Client{
+		Timeout: loadTimeout,
+	}
+
+	for attempt := 0; attempt < llamaCppLoadMaxRetries; attempt++ {
+		httpReq, reqErr := http.NewRequest("POST", url, bytes.NewReader(jsonBody))
+		if reqErr != nil {
+			return &ModelOpResult{
+				Success:   false,
+				Operation: req.Operation,
+				ModelName: req.ModelName,
+				BackendID: backendID,
+				Error:     fmt.Sprintf("failed to create request: %v", reqErr),
+			}
+		}
+		httpReq.Header.Set("Content-Type", "application/json")
+		if rid := RequestIDFromContext(httpReq.Context()); rid != "" {
+			httpReq.Header.Set(requestIDHeader, rid)
+		}
+
+		start := time.Now()
+		resp, err := loadClient.Do(httpReq)
+		durationMs := time.Since(start).Milliseconds()
+		if err != nil {
+			// Сетевая ошибка или таймаут — НЕ делаем retry.
+			// Если cppworker недоступен (refused, timeout, DNS), повтор не поможет —
+			// нужно сразу вернуть ошибку, чтобы клиент получил осмысленный ответ.
+			logger.Get().Debugw("executeLlamaCppLoad: HTTP error (no retry)",
+				"backend", backendID, "model", req.ModelName,
+				"attempt", attempt+1, "duration_ms", durationMs, "error", err)
+			return &ModelOpResult{
+				Success:   false,
+				Operation: req.Operation,
+				ModelName: req.ModelName,
+				BackendID: backendID,
+				Error:     fmt.Sprintf("request failed: %v", err),
+			}
+		}
+
+		respBody, readErr := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		if readErr != nil {
+			return &ModelOpResult{
+				Success:   false,
+				Operation: req.Operation,
+				ModelName: req.ModelName,
+				BackendID: backendID,
+				Error:     fmt.Sprintf("failed to read response: %v", readErr),
+			}
+		}
+
+		// Успех.
+		if resp.StatusCode >= 200 && resp.StatusCode < 300 {
+			return &ModelOpResult{
+				Success:   true,
+				Operation: req.Operation,
+				ModelName: req.ModelName,
+				BackendID: backendID,
+				Message:   fmt.Sprintf("Model '%s' loaded into memory on backend '%s'", req.ModelName, backendID),
+			}
+		}
+
+		// Извлекаем сообщение об ошибке из JSON-ответа cppworker.
+		errMsg := string(respBody)
+		var cwErr struct {
+			Error   string `json:"error"`
+			Loading bool   `json:"loading"`
+		}
+		if json.Unmarshal(respBody, &cwErr) == nil && cwErr.Error != "" {
+			errMsg = cwErr.Error
+		}
+
+		// Специальный случай: 503 с признаком параллельной загрузки — retry.
+		if resp.StatusCode == http.StatusServiceUnavailable &&
+			(cwErr.Loading || strings.Contains(strings.ToLower(errMsg), "model is loading")) {
+			logger.Get().Infow("executeLlamaCppLoad: model is loading on cppworker, retrying",
+				"backend", backendID, "model", req.ModelName,
+				"attempt", attempt+1, "max_attempts", llamaCppLoadMaxRetries,
+				"retry_in_sec", llamaCppLoadRetryInterval.Seconds(),
+				"status_code", resp.StatusCode)
+			if attempt < llamaCppLoadMaxRetries-1 {
+				time.Sleep(llamaCppLoadRetryInterval)
+				continue
+			}
+			// Последняя попытка исчерпана — возвращаем ошибку.
+			return &ModelOpResult{
+				Success:   false,
+				Operation: req.Operation,
+				ModelName: req.ModelName,
+				BackendID: backendID,
+				Error: fmt.Sprintf("cppworker still loading model '%s' after %d attempts (%v)",
+					req.ModelName, llamaCppLoadMaxRetries, llamaCppLoadMaxRetries*int(llamaCppLoadRetryInterval.Seconds())),
+			}
+		}
+
+		// Другая ошибка — не повторяем.
+		return &ModelOpResult{
+			Success:   false,
+			Operation: req.Operation,
+			ModelName: req.ModelName,
+			BackendID: backendID,
+			Error:     fmt.Sprintf("cppworker error (HTTP %d): %s", resp.StatusCode, errMsg),
+		}
+	}
+
+	// Сюда не должны попасть (цикл всегда выходит через return), но на всякий случай:
+	return &ModelOpResult{
+		Success:   false,
+		Operation: req.Operation,
+		ModelName: req.ModelName,
+		BackendID: backendID,
+		Error:     fmt.Sprintf("cppworker load retries exhausted for model '%s'", req.ModelName),
+	}
 }
 
 // executeLlamaCppUnload — выгрузка модели из памяти на cppworker-бэкенде.

@@ -74,6 +74,52 @@ func ensureModelLoaded(modelName string) error {
 			UseMmap:       !*noMmap,
 		}
 
+		// === Auto-offload: если включён --auto-offload, проверяем, влезает
+		// ли модель целиком в VRAM. Если нет — устанавливаем partial offload
+		// (gpu_layers < N_layers). Решает проблему: большая модель (~18GB)
+		// на 20GB VRAM при gpu_layers=-1 занимает всю VRAM → KV-cache не
+		// помещается → max_vram_n_ctx маленький → n_ctx падает до 4096.
+		//
+		// ВАЖНО: до загрузки модели у нас нет точных N_layers/NEmbd/NHeads
+		// (они в GGUF header, читаются C-bridge при загрузке). Поэтому
+		// используем грубую эвристику: оцениваем N_layers ≈ 80 (типичная
+		// модель 7B-70B) и рассчитываем долю слоёв, которые поместятся в VRAM
+		// с запасом под KV-cache и overhead.
+		if *autoOffload {
+			availableVRAM := availableVRAMBytes()
+			if availableVRAM > 0 {
+				// Получаем размер файла из ModelManager.
+				filename := modelName + ".gguf"
+				if meta, mErr := mm.GetModelMeta(filename); mErr == nil && meta.SizeBytes > 0 {
+					safeVRAM := int64(float64(availableVRAM) * 0.85)
+					overhead := int64(1536) * 1024 * 1024 // 1.5GB CUDA + activations
+					// Резерв под KV-cache для n_ctx=32768 (~2GB для типичной модели).
+					kvReserve := int64(2) * 1024 * 1024 * 1024
+					availableForWeights := safeVRAM - overhead - kvReserve
+					if availableForWeights > 0 && meta.SizeBytes > availableForWeights {
+						// Модель не влезает целиком — partial offload.
+						estimatedLayers := 80 // грубая оценка для типичной модели
+						weightsPerLayer := meta.SizeBytes / int64(estimatedLayers)
+						if weightsPerLayer > 0 {
+							gpuLayers := int(availableForWeights / weightsPerLayer)
+							if gpuLayers > 0 && gpuLayers < estimatedLayers {
+								logger.Get().Infow("lazy-load: auto-offload (file-based estimate)",
+									"model", modelName,
+									"old_gpu_layers", opts.GPULayers,
+									"new_gpu_layers", gpuLayers,
+									"model_size_mb", meta.SizeBytes/(1024*1024),
+									"available_for_weights_mb", availableForWeights/(1024*1024),
+									"estimated_layers", estimatedLayers,
+									"vram_total_mb", availableVRAM/(1024*1024))
+								opts.GPULayers = gpuLayers
+								opts.UseMmap = true
+							}
+						}
+					}
+				}
+			}
+		}
+
 		// Записываем попытку в диагностический буфер (для /api/diagnostics).
 		attempt := LoadAttempt{
 			Timestamp: loadStart,
@@ -89,12 +135,12 @@ func ensureModelLoaded(modelName string) error {
 			attempt.Error = err.Error()
 			attempt.DurationMs = time.Since(loadStart).Milliseconds()
 			attempt.Diagnostics = map[string]interface{}{
-				"modelPath":  modelPath,
-				"gpuLayers":  opts.GPULayers,
-				"ctxSize":    opts.ContextSize,
-				"batchSize":  opts.BatchSize,
-				"useMmap":    opts.UseMmap,
-				"modelsDir":  derefString(modelsDir),
+				"modelPath":   modelPath,
+				"gpuLayers":   opts.GPULayers,
+				"ctxSize":     opts.ContextSize,
+				"batchSize":   opts.BatchSize,
+				"useMmap":     opts.UseMmap,
+				"modelsDir":   derefString(modelsDir),
 				"vramTotalMB": backendGPUVRAMTotal(),
 				"vramFreeMB":  backendGPUVRAMFree(),
 			}

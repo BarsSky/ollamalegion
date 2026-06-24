@@ -7,7 +7,7 @@
 //
 // Использование:
 //   go build -tags llama_stub -o cppworker ./cmd/cppworker
-//
+
 //go:build llama_stub
 // +build llama_stub
 
@@ -16,6 +16,8 @@ package bridge
 import (
 	"fmt"
 	"runtime"
+	"sync"
+	"sync/atomic"
 )
 
 // ModelHandle — заглушка
@@ -58,6 +60,12 @@ type GenerationParams struct {
 	// В stub-режиме не используется, но должен присутствовать для совместимости
 	// типов между bridge.go (build tag !llama_stub) и bridge_stub.go (build tag llama_stub).
 	NCtxOverride int
+	// ClampedNPredict — true, если clampNPredictToFitContext уменьшил NPredict.
+	// В stub-режиме не используется, но должен присутствовать для совместимости типов.
+	ClampedNPredict bool `json:"-"`
+	// ClampedNPredictOriginal — исходное значение NPredict до клампинга.
+	// В stub-режиме не используется, но должен присутствовать для совместимости типов.
+	ClampedNPredictOriginal int `json:"-"`
 }
 
 // DefaultGenerationParams возвращает параметры по умолчанию
@@ -268,17 +276,93 @@ func (m *ModelHandle) Infer(prompt string, params GenerationParams) (*InferenceR
 	}, nil
 }
 
+// stubEmptyOutput — флаг для тестов: если true, InferStream НЕ вызывает
+// callback ни разу (имитирует «модель остановилась на antiprompt сразу
+// или вернула 0 токенов из-за проблемы с chat template»). Используется
+// в регрессионных тестах cmd/cppworker/empty_stream_response_test.go.
+//
+// Доступ к флагу только через SetStubEmptyOutput/GetStubEmptyOutput для
+// thread-safety (atomic.Bool доступна с Go 1.19+).
+var stubEmptyOutput atomic.Bool
+
+// SetStubEmptyOutput — включает/выключает режим «пустой output» для
+// stub bridge. Используется ТОЛЬКО в тестах (build tag llama_stub).
+// Возвращает предыдущее значение, чтобы тесты могли восстановить его
+// через defer.
+func SetStubEmptyOutput(enabled bool) bool {
+	return stubEmptyOutput.Swap(enabled)
+}
+
+// GetStubEmptyOutput — текущее значение флага stubEmptyOutput.
+func GetStubEmptyOutput() bool {
+	return stubEmptyOutput.Load()
+}
+
+// stubEmitTokens — slice токенов, которые должен эмитить stub InferStream.
+// Если nil/empty — используется default stub tokens.
+// Используется для имитации конкретных сценариев (например, "модель эмитит
+// только <end_of_turn> и останавливается" для тестов cleanFinalContent-aware
+// empty check).
+//
+// Доступ через SetStubEmitTokens (thread-safe через mutex).
+var (
+	stubEmitTokensMu sync.Mutex
+	stubEmitTokens   []string
+)
+
+// SetStubEmitTokens — устанавливает токены для эмитации в stub InferStream.
+// Если передать nil/empty — сбрасывает на default stub tokens.
+// Используется ТОЛЬКО в тестах. Возвращает предыдущее значение.
+//
+// Пример: SetStubEmitTokens([]string{"<end_of_turn>"}) — имитирует,
+// что модель единственным токеном сгенерировала antiprompt и остановилась.
+func SetStubEmitTokens(tokens []string) []string {
+	stubEmitTokensMu.Lock()
+	defer stubEmitTokensMu.Unlock()
+	prev := stubEmitTokens
+	stubEmitTokens = tokens
+	return prev
+}
+
+// getStubEmitTokens — thread-safe получение текущего набора токенов.
+func getStubEmitTokens() []string {
+	stubEmitTokensMu.Lock()
+	defer stubEmitTokensMu.Unlock()
+	if len(stubEmitTokens) == 0 {
+		return nil
+	}
+	// Возвращаем копию, чтобы caller не мог мутировать оригинал.
+	out := make([]string, len(stubEmitTokens))
+	copy(out, stubEmitTokens)
+	return out
+}
+
+// defaultStubTokens — стандартный набор токенов для stub (когда не задан SetStubEmitTokens).
+var defaultStubTokens = []string{
+	"\n[llama_stub] ",
+	"Stub ",
+	"mode ",
+	"— ",
+	"no ",
+	"real ",
+	"llama.cpp\n\n",
+}
+
 // InferStream выполняет стриминг-инференс (stub)
 func (m *ModelHandle) InferStream(prompt string, params GenerationParams, callback StreamCallback) error {
-	// Симулируем стриминг: отправляем токены по одному
-	tokens := []string{
-		"\n[llama_stub] ",
-		"Stub ",
-		"mode ",
-		"— ",
-		"no ",
-		"real ",
-		"llama.cpp\n\n",
+	// Режим «пустой output» для тестов: callback не вызывается ни разу,
+	// ошибка не возвращается — это имитирует случай, когда модель
+	// успешно завершила генерацию (Status=0), но не выдала ни одного
+	// токена (например, antiprompt сработал на первом же шаге).
+	if stubEmptyOutput.Load() {
+		return nil
+	}
+
+	// Если тест задал специфичные токены через SetStubEmitTokens — эмитим их.
+	// Иначе используем default stub tokens.
+	tokens := getStubEmitTokens()
+	if tokens == nil {
+		tokens = defaultStubTokens
 	}
 
 	for _, tok := range tokens {

@@ -72,6 +72,25 @@ func (p *Proxy) getBackendBaseURL(backend *types.Backend) string {
 	return fmt.Sprintf("http://%s:%d", backend.Host, p.getBackendPort(backend))
 }
 
+// backendHTTPAddrByID — возвращает базовый URL бэкенда по его ID
+// (например, "http://cppworker:18092"). Используется preflight-helper'ом
+// (см. preflight_helper.go) для POST /api/models/reload.
+//
+// Безопасен при unknown backendID: возвращает пустую строку, и caller
+// может пропустить preflight (graceful degradation).
+func (p *Proxy) backendHTTPAddrByID(backendID string) string {
+	if p == nil {
+		return ""
+	}
+	p.mu.RLock()
+	state, exists := p.backends[backendID]
+	p.mu.RUnlock()
+	if !exists || state == nil || state.Backend == nil {
+		return ""
+	}
+	return p.getBackendBaseURL(state.Backend)
+}
+
 // isLlamaCppBackend — проверяет, является ли конкретный бэкенд llama.cpp.
 // Проверяем по BackendType (не по Engine), чтобы бэкенды с EngineAuto тоже корректно
 // обрабатывались через proxyRequestLlamaCpp с трансляцией форматов.

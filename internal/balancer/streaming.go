@@ -2,9 +2,12 @@ package balancer
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -286,6 +289,49 @@ func (p *Proxy) handleStreamingResponse(w http.ResponseWriter, r *http.Request, 
 			}
 		}
 		if err != nil {
+			// === Различение реального EOF от idle-timeout ===
+			// НА 20GB GPU с большими моделями (>12B params, partial offload):
+			// генерация может иметь паузы между чанками >120s (особенно при
+			// "thinking" или batch-обработке). SetReadDeadline срабатывает,
+			// Go возвращает net.Error.Timeout() (НЕ io.EOF!). Однако в
+			// streaming-loop многие HTTP-body wrappers конвертируют timeout
+			// в io.EOF при чтении из переиспользуемого соединения. Поэтому
+			// проверяем ОБА случая.
+			//
+			// Дополнительный сигнал: если lastActivity был > 60% idleTimeout назад
+			// — это ВЫСОКОВЕРОЯТНО timeout, а не реальное завершение модели.
+			isIdleTimeout := false
+			var netErr net.Error
+			if errors.As(err, &netErr) && netErr.Timeout() {
+				isIdleTimeout = true
+			} else if err == io.EOF && time.Since(lastActivity) > (idleTimeout * 60 / 100) {
+				// EOF пришёл после >60% idleTimeout с последнего чанка —
+				// вероятно Go-сокет конвертировал timeout в EOF. Помечаем как timeout.
+				isIdleTimeout = true
+			}
+			if isIdleTimeout {
+				logger.Get().Errorw("STREAMING_IDLE_TIMEOUT",
+					"backend", backendID, "model", modelFromCtx,
+					"idle_timeout_sec", idleTimeout.Seconds(),
+					"idle_actual_sec", time.Since(lastActivity).Seconds(),
+					"bytes_streamed", bytesStreamed,
+					"chunk_count", chunkCount,
+					"elapsed_ms", time.Since(startTime).Milliseconds(),
+					"raw_err", err.Error(),
+					"hint", "Increase Balancing.StreamingIdleTimeout (or per-model profile.StreamingIdleTimeoutSec) for this model",
+				)
+				if !clientDisconnected.Load() {
+					if isSSE {
+						p.SendSSEErrorSafe(w, flusher, "idle_timeout",
+							"Backend did not produce a chunk within idle_timeout ("+strconv.FormatFloat(idleTimeout.Seconds(), 'f', 0, 64)+"s). Increase LB_STREAMING_IDLE_TIMEOUT_SEC or model profile StreamingIdleTimeoutSec.", backendID)
+					} else if isNDJSON {
+						p.SendNDJSONErrorSafe(w, flusher,
+							"Backend did not produce a chunk within idle_timeout. Increase LB_STREAMING_IDLE_TIMEOUT_SEC.", backendID)
+					}
+				}
+				clientDisconnected.Store(true)
+				return
+			}
 			if err == io.EOF {
 				logger.Get().Infow("streaming session completed",
 					"backend", backendID, "model", modelFromCtx,

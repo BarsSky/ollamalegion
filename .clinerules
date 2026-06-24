@@ -92,6 +92,22 @@ webui/                    # фронтенд
 - Для получения деталей после ошибки вызывай `bridge.GetLastErrorInfo()`.
 - RAM fallback для `n_ctx`: если включён флаг `--ram-fallback-n-ctx` / env `CPPWORKER_RAM_FALLBACK_N_CTX=true`, при `ErrNCtxNeedsReload` cppworker автоматически выгружает модель и перезагружает её с запрошенным `n_ctx`, форсируя `use_mmap=true`. Опционально можно понизить `gpu_layers` через `CPPWORKER_RAM_FALLBACK_GPU_LAYERS` (0 = CPU-only fallback) и задать потолок через `CPPWORKER_RAM_FALLBACK_MAX_N_CTX`. Fallback применяется в `generateWithRamFallback` / `generateStreamWithRamFallback`.
 
+#### RAM fallback & tools (важно для OpenWebUI / Cline / Roo Code)
+
+- `cmd/cppworker/inference.go:tryRamFallbackReload` (строка ~491) **отключает reload, если в запросе есть `tools[]` (`hasTools=true`)**: возвращается `ReloadDisabledForToolsError` → `cmd/cppworker/utils.go:writeReloadDisabledForToolsResponse` транслирует в **HTTP 413** с подсказкой уменьшить tools/history или увеличить `n_ctx`.
+- Счётчик `ramFallbackAttempts` ограничен `ramFallbackMaxAttempts=3` за окно 60 сек. Превышение → `ReloadLoopLimitError` → HTTP 413. **Сбросить без рестарта контейнера пока нельзя** (TODO endpoint `POST /api/v1/cppworker/reset-reload-counter`); используй `docker restart deployments-cppworker-gpu-1`.
+- Полный список env-флагов RAM fallback (см. `cmd/cppworker/main.go:parseRamFallbackFlags`):
+
+| Env / flag | Что делает | Default |
+|---|---|---|
+| `CPPWORKER_RAM_FALLBACK_N_CTX` (`--ram-fallback-n-ctx`) | Включает reload при `ErrNCtxNeedsReload` | `false` |
+| `CPPWORKER_RAM_FALLBACK_GPU_LAYERS` (`--ram-fallback-gpu-layers`) | Понижение `gpu_layers` при fallback (0 = CPU-only) | не понижает |
+| `CPPWORKER_RAM_FALLBACK_MAX_N_CTX` (`--ram-fallback-max-n-ctx`) | Верхняя граница n_ctx при reload (защита от OOM) | без лимита |
+| `CPPWORKER_WRITE_TIMEOUT` (`--write-timeout`) | Таймаут записи SSE в клиент | 30 минут |
+| `CPPWORKER_VERBOSE` (`--verbose`) | Подробные логи clamp/fallback | `false` |
+
+- Подробный сценарий дебага: `docs/tools-request-debug-runbook.md` (сценарии A–E).
+
 ## 5. Ollama-совместимость CppWorker
 
 ### Поддерживаемые поля `/api/generate` и `/api/ollama/generate`
@@ -118,6 +134,7 @@ webui/                    # фронтенд
 - Использует chat template из GGUF через `backend.ApplyChatTemplate` (fallback на naive формат).
 - `options`, `stream`, `temperature`, `max_tokens`, `num_ctx`, `stop`.
 - Возвращает `message.role="assistant"`.
+- **Поддерживает `tools[]`:** извлечение `tool_calls` из вывода модели выполняется в `cmd/cppworker/tool_calls.go` (`parseToolCallsFromOutput`, `extractHermesToolCalls`, `extractMistralToolCalls`, `extractLlamaPythonTagCalls`). Если модель эмитит tool_call в `content` (Hermes/Qwen-стиль) — см. runbook сценарий D (`docs/tools-request-debug-runbook.md`). **NB:** RAM fallback для tools отключён (см. раздел 4).
 
 ### Повторная загрузка / выгрузка
 
@@ -179,6 +196,7 @@ webui/                    # фронтенд
 
 - Ключевые тесты изоляции: `tests/backend_type_isolation_test.go`, `tests/operating_mode_dispatch_test.go`.
 - Полный HTTP flow проверяется в `TestServeHTTP_OllamaRequest_RoutedToOllamaBackend` и `TestServeHTTP_LlamaCppRequest_RoutedToLlamaCppBackend`.
+- **NB:** при проблемах с tools/tool_calls всегда первым делом проверяй `Backend.Type`: для `llama_cpp` (cppworker) и `ollama` code-path в `cmd/cppworker/tool_calls.go` / `internal/balancer/llamacpp_transport.go` различается, и runbook сценарий D (Hermes-стиль) применим только к `llama_cpp` бэкендам.
 
 ## 7. HuggingFace / pull моделей
 
@@ -200,6 +218,7 @@ webui/                    # фронтенд
   ```
 - Бинарник сам делает `GET /health` на `localhost:<CPPWORKER_PORT>` (читает env/flag) и выходит с `0`/`1`. Внутри контейнера порт обычно `18091` (не путать с host-портом `18092` для GPU-сервиса).
 - В WebUI/Nginx healthcheck используй `curl` (`wget` не гарантирован в образе).
+- **NB:** счётчик RAM-fallback attempts (`ramFallbackAttempts`, см. раздел 4) сбрасывается только рестартом контейнера. **TODO**: endpoint `POST /api/v1/cppworker/reset-reload-counter`. До его реализации при `ReloadLoopLimitError` используй `docker restart deployments-cppworker-gpu-1`.
 
 ## 9. Docker-соглашения
 
@@ -398,6 +417,30 @@ go test -c ./cmd/cppworker -tags llama_stub -o cppworker_test.exe
 .\scripts\test-cppworker-stub.ps1
 ```
 
+#### Диагностика tools/tool_calls (runbook-driven)
+
+Эти тесты — точка входа при дебаге OpenWebUI / Cline / Roo Code «сброс» или пустой ответ на tools-запросах. Полный сценарий — `docs/tools-request-debug-runbook.md`.
+
+```bash
+# Транспорт-проксирование tools (SSE↔NDJSON, Hermes/Mistral)
+go test ./tests -run "TestDebugOpenWebUI_ToolCalls_Scenario" -tags llama_stub -count=1 -v
+
+# Inference-логика: clamp n_predict, n_ctx header, RAM fallback, tool_calls parsing
+go test ./cmd/cppworker -run "TestApplyCppCtxHeader|TestClampNPredict|TestReloadDisabledForTools|TestParseToolCalls" -tags llama_stub -count=1 -v
+
+# Полный smoke-tools E2E
+go test ./tests -run "TestDebugOpenWebUI_ToolCalls" -tags llama_stub -count=1 -v
+```
+
+На Windows собери тестовый бинарник (см. предыдущий блок), затем:
+
+```powershell
+$env:CPPWORKER_VERBOSE="true"
+.\cppworker_test.exe -test.run "TestDebugOpenWebUI_ToolCalls_Scenario"
+```
+
+Включение verbose-логов для live-дебага — `deployments/.env.bundled: CPPWORKER_VERBOSE=true` или `$env:CPPWORKER_VERBOSE="true"`.
+
 ## 13. WebUI: управление моделями и агентами
 
 ### Модели (`webui/js/modules/renderers.js`, `webui/js/app.js`)
@@ -427,6 +470,10 @@ go test -c ./cmd/cppworker -tags llama_stub -o cppworker_test.exe
 - CppWorker в Docker должен "рекламировать" себя балансировщику через `CPPWORKER_ADVERTISE_HOST`, а не через `CPPWORKER_HOST`. `CPPWORKER_HOST=0.0.0.0` используется для прослушивания, но балансировщик не может обратиться по `0.0.0.0`.
 - GPU-сервис CppWorker и балансировщик должны быть в одной Docker-сети (`ollama-legion-net` external), иначе балансировщик получит регистрацию, но не сможет проксировать запросы.
 - На Windows при сборке Linux-бинарников в PowerShell задавай переменные окружения через `$env:GOOS="linux"`, иначе Go может собрать Windows PE бинарник несмотря на явный `--`.
+- `ReloadLoopLimitError` (HTTP 413, `ramFallbackAttempts >= 3` за 60 сек) — единственный способ сбросить счётчик прямо сейчас это `docker restart deployments-cppworker-gpu-1`. **TODO:** endpoint `POST /api/v1/cppworker/reset-reload-counter` (см. раздел 8).
+- `Balancing.RequestTimeout=30` (default в `config/config.json`) часто бьёт раньше, чем `clampNPredictToFitContext` отрабатывает длинную генерацию. Для long generations / tools-запросов поднимай до `300-600` сек.
+- Пустой `response: ""` от `/api/generate` или NDJSON-чанк `message.content=""` без `done_reason` — **не** валидный ответ. CppWorker обязан вернуть HTTP 500 с понятным `error` (см. раздел 3, пункт 6). Если видишь пустой ответ в логах — дебаг по runbook сценарию A/B (`docs/tools-request-debug-runbook.md`).
+- Hermes/Qwen модели эмитят tool_call прямо в `content` (`<tool_call>{...}</tool_call>` / `<|im_start|>assistant\n<tool_call>…`). Если финальный NDJSON от OpenWebUI приходит с `message.tool_calls=null`, а `message.content` содержит эти маркеры — см. `cmd/cppworker/tool_calls.go` и runbook сценарий D. Возможно, нужно расширить `extractHermesToolCalls` под конкретную модель.
 
 ## 15. Docker bundle build (cppworker-gpu + balancer + webui)
 
@@ -482,3 +529,47 @@ curl -H 'X-API-Token: <CPPWORKER_API_TOKEN>' http://localhost:18081/api/v1/backe
 - `CPPWORKER_ADVERTISE_HOST` — то, что балансер использует для обратных вызовов.
 - Healthcheck cppworker использует встроенную команду `/app/cppworker -healthcheck`, которая сама читает `CPPWORKER_PORT`.
 - Балансер healthcheck проверяет `/api/v1/ping` (всегда 200), а не `/api/v1/health`, чтобы не уходить в restart loop до регистрации cppworker.
+
+## 16. Tools/tool_calls debugging (краткий reference)
+
+При проблемах с tools/tool_calls в OpenWebUI / Cline / Roo Code — **сначала** открой полный runbook: `docs/tools-request-debug-runbook.md` (сценарии A–E). Эта секция — только quick reference.
+
+### Симптом → лог → сценарий
+
+| Симптом в клиенте | Лог-сообщение в cppworker (`CPPWORKER_VERBOSE=true`) | Сценарий runbook |
+|---|---|---|
+| HTTP 413 на первом запросе с tools | `RAM fallback: reload disabled for tools-request` | **A** — `inference.go:491`, `utils.go:writeReloadDisabledForToolsResponse` |
+| Первый запрос OK, второй — пустой NDJSON (`message.content=""`, `tool_calls=null`) | `clamping n_predict to fit n_ctx` + `applyCppCtxHeader: replacing default n_predict with n_ctx-reserve` (с `has_tools=true`) | **B** — `nctx_clamp.go`, `inference.go:clampNPredictToFitContext` |
+| Бесконечный reload loop, 503 `model is loading` | `RAM fallback: cycle limit reached, refusing reload` (`attempts=3`, `elapsed~10s`) | **C** — `inference.go:ramFallbackAttempts`, единственное лечение сейчас — `docker restart` (TODO reset endpoint) |
+| Tool_call в `content` (`<tool_call>{...}</tool_call>`, `<\|im_start\|>assistant\n<tool_call>…`), но `message.tool_calls=null` | В логе балансировщика: `tool_calls найден: false` (или подобный) | **D** — `cmd/cppworker/tool_calls.go` (Hermes / Mistral / Llama-python-tag), балансировщик: `internal/balancer/llamacpp_transport.go` (`detectAndExtractToolCallsFromContent`) |
+| HTTP 5xx / «reset by peer» без видимых причин | `write: broken pipe` / `connection reset by peer` в cppworker; `heartbeat write failed` в балансировщике | **E** — таймаут. Поднять `Balancing.RequestTimeout` до 300-600 сек и/или `CPPWORKER_WRITE_TIMEOUT` |
+
+### Команды для сбора диагностики
+
+```bash
+# Включить verbose на cppworker
+$env:CPPWORKER_VERBOSE="true"   # PowerShell
+# или в deployments/.env.bundled: CPPWORKER_VERBOSE=true
+
+# Следить за логами cppworker с фильтром
+docker logs -f deployments-cppworker-gpu-1 2>&1 | Select-String "clamping|RAM fallback|bridge code|tool_calls"   # PS
+docker logs -f deployments-cppworker-gpu-1 2>&1 | grep -E "clamping|RAM fallback|bridge code|tool_calls"       # bash
+
+# Смотреть X-Cpp-Ctx header от балансировщика
+curl -v -X POST http://localhost:18080/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -d '{"model":"MODEL.gguf","messages":[{"role":"user","content":"hi"}],"stream":true}' 2>&1 | grep -E "^< |X-Cpp-Ctx"
+```
+
+### Acceptance criteria (runbook §5)
+
+1. `CPPWORKER_VERBOSE=true` на cppworker.
+2. `data/state.json` (балансер) — список бэкендов и их статусы.
+3. Логи балансировщика: `parsed request`, `[BALANCER → BACKEND]`, `heartbeat write failed`.
+4. Логи cppworker: `clamping n_predict`, `RAM fallback`, `bridge code N`.
+5. Базовые тесты транспорта: `go test ./tests -run "TestDebugOpenWebUI_ToolCalls_Scenario" -tags llama_stub -count=1 -v` — все зелёные.
+6. Inference-тесты: `go test ./cmd/cppworker -run "TestApplyCppCtxHeader|TestClampNPredict|TestReloadDisabledForTools|TestParseToolCalls" -tags llama_stub -count=1 -v`.
+7. Сравнение с `ollama serve` напрямую — если ollama работает, проблема в cppworker.
+8. Проверены `n_ctx` и `n_predict` в запросе (через `curl -v` + `X-Cpp-Ctx`).
+9. Длина `tools[]` и system prompt в OpenWebUI (WebUI → Workspace → Tools).
+10. `WriteTimeout` cppworker и `RequestTimeout` балансера.

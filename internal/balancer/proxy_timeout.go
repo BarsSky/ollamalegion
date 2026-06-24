@@ -100,9 +100,14 @@ func (p *Proxy) getModelStreamTimeout(modelName string) time.Duration {
 // getModelStreamingIdleTimeout возвращает per-model idle-таймаут стриминга.
 // Приоритет:
 //  1. Per-model profile (config.LlamaCppModelProfiles[modelName].StreamingIdleTimeoutSec)
-//  2. ModelLatencyTracker (автоматический расчёт)
-//  3. Глобальный config.Balancing.StreamingIdleTimeout
-//  4. Дефолт 120 секунд
+//  2. ModelLatencyTracker (автоматический расчёт на основе истории)
+//  3. Эвристика по размеру GGUF файла (для моделей без истории)
+//  4. Глобальный config.Balancing.StreamingIdleTimeout
+//  5. Дефолт 120 секунд
+//
+// modelSizeBytes используется для tier-3 (эвристика по размеру). Для больших
+// моделей на GPU с partial offload (не все слои в VRAM) idle между чанками
+// может быть >120s → без эвристики стрим обрывался бы без диагностики.
 func (p *Proxy) getModelStreamingIdleTimeout(modelName string) time.Duration {
 	if modelName == "" || p.modelLatencyTracker == nil {
 		return p.getGlobalStreamingIdleTimeout()
@@ -114,12 +119,13 @@ func (p *Proxy) getModelStreamingIdleTimeout(modelName string) time.Duration {
 		return time.Duration(profile.StreamingIdleTimeoutSec) * time.Second
 	}
 
-	// Tier 2: ModelLatencyTracker
+	// Tier 2 + 3: ModelLatencyTracker (с modelSizeBytes для tier-3 fallback)
 	globalIdleSec := p.config.Balancing.StreamingIdleTimeout
 	if globalIdleSec <= 0 {
 		globalIdleSec = 120
 	}
-	return p.modelLatencyTracker.GetOrComputeIdleTimeout(modelName, 0, globalIdleSec)
+	modelSize := p.getModelSizeBytes(modelName)
+	return p.modelLatencyTracker.GetOrComputeIdleTimeout(modelName, 0, globalIdleSec, modelSize)
 }
 
 // getModelRequestTimeout возвращает per-model таймаут non-streaming запроса.

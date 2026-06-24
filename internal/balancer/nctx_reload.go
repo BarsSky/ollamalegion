@@ -98,19 +98,47 @@ type NCtxReloadConfig struct {
 	AutoReloadVRAMSafetyFactor float64 `json:"auto_reload_vram_safety_factor" yaml:"auto_reload_vram_safety_factor"`
 
 	// AutoReloadTimeoutSec — таймаут на сам HTTP reload-запрос
-	// (cppworker может грузить модель 30-60 секунд). 0 = default 60.
+	// (cppworker может грузить модель 30-180 секунд для больших моделей
+	// с VRAM offload). 0 = default 300 (5 минут).
 	AutoReloadTimeoutSec int `json:"auto_reload_timeout_sec" yaml:"auto_reload_timeout_sec"`
+
+	// AutoReloadAllowTools — разрешать auto-reload для tools-запросов.
+	// По умолчанию false (regressive default для совместимости с поведением
+	// до preflight), но preflight в preflight_nctx.go использует это
+	// разрешение для reload-with-tools (Cline/OpenWebUI сценарий).
+	//
+	// Логика: tools-запрос накапливает history+tool_results на каждой
+	// итерации диалога — reload спасёт только если prompt влезет в
+	// max_vram_n_ctx один раз (следующая итерация может принести ещё).
+	// Поэтому allow=true означает «reload ОДИН раз до нужного n_ctx,
+	// дальше полагаемся на prompt-truncation на стороне cppworker».
+	AutoReloadAllowTools bool `json:"auto_reload_allow_tools" yaml:"auto_reload_allow_tools"`
+
+	// PreflightEnabled — включает preflight-проверку n_ctx ДО отправки
+	// запроса на cppworker. По умолчанию true (включено) — иначе первый
+	// запрос с длинным prompt всегда идёт round-trip с ошибкой reload.
+	PreflightEnabled bool `json:"preflight_enabled" yaml:"preflight_enabled"`
 }
 
-// DefaultNCtxReloadConfig — безопасные defaults для фич-флагов.
-// AutoReloadNCtx = false (выключено), пока оператор явно не включит.
+// DefaultNCtxReloadConfig — defaults для фич-флагов.
+// Начиная с версии 2026-06-23 auto-reload и preflight включены по умолчанию.
+// Это нужно для динамической подстройки n_ctx под запросы Cline/OpenWebUI.
 func DefaultNCtxReloadConfig() NCtxReloadConfig {
 	return NCtxReloadConfig{
-		AutoReloadNCtx:             false,
+		AutoReloadNCtx:             true,
 		AutoReloadMaxNCtx:          0,
 		AutoReloadVRAMSafetyFactor: 0.85,
-		AutoReloadTimeoutSec:       60,
+		AutoReloadTimeoutSec:       300,
+		AutoReloadAllowTools:       true,
+		PreflightEnabled:           true,
 	}
+}
+
+// AutoReloadAllowToolsEnabled — helper для проверки, разрешён ли reload
+// для tools-запросов (с учётом kill-switch AutoReloadNCtx).
+// Используется preflight_nctx.go и tryRamFallbackReload (cppworker).
+func (c NCtxReloadConfig) AutoReloadAllowToolsEnabled() bool {
+	return c.AutoReloadNCtx && c.AutoReloadAllowTools
 }
 
 // effectiveSafetyFactor возвращает safety factor (>= 0.1, <= 1.0)
@@ -129,10 +157,10 @@ func (c NCtxReloadConfig) effectiveSafetyFactor() float64 {
 func (c NCtxReloadConfig) effectiveTimeout() time.Duration {
 	t := c.AutoReloadTimeoutSec
 	if t <= 0 {
-		t = 60
+		t = 300 // 5 минут — большие модели с VRAM offload грузятся 2-3 мин
 	}
-	if t < 5 {
-		t = 5
+	if t < 30 {
+		t = 30
 	}
 	if t > 600 {
 		t = 600
@@ -614,7 +642,7 @@ type DefaultNCtxReloadHTTPClient struct {
 func (c *DefaultNCtxReloadHTTPClient) PostReload(ctx context.Context, endpoint string, payload []byte) (*http.Response, error) {
 	client := c.HTTPClient
 	if client == nil {
-		client = &http.Client{Timeout: 90 * time.Second}
+		client = &http.Client{Timeout: 300 * time.Second}
 	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, nil)
 	if err != nil {
@@ -705,6 +733,14 @@ func (c *NCtxReloadCoordinator) DoReload(
 		"contextSize": plan.NewNCtx,
 		"force":       true,
 		"reason":      "auto-reload: client request exceeded current n_ctx",
+		// gpuLayers=-2 (AUTO) — cppworker при reload вызовет calculateOptimalGPULayersForModel
+		// и AutoTuneNCtx для подбора оптимального числа GPU-слоёв с учётом свободной VRAM.
+		// Это решает проблему: большая модель (~18GB) на 20GB VRAM при gpu_layers=-1
+		// занимает всю VRAM → KV-cache не помещается → n_ctx принудительно падает до 4096.
+		// При gpuLayers=-2 cppworker сделает partial offload (часть весов в RAM через mmap),
+		// освободив VRAM для KV-cache большего размера.
+		"gpuLayers": -2,
+		"useMmap":   true,
 	})
 	endpoint := backendAddr + "/api/models/reload"
 	resp, err := loader.PostReload(rctx, endpoint, payload)

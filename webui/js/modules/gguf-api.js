@@ -17,6 +17,7 @@ const GgufApi = (function () {
     let connected = false;
     let connectionCallbacks = [];
     let hfToken = localStorage.getItem('ollamalegion_hf_token') || '';
+    let apiToken = (window.WEBUI_CONFIG && window.WEBUI_CONFIG.API_TOKEN) || '';
     const REQUEST_TIMEOUT_MS = 10000; // 10-second timeout for all requests
 
     // Default ports per backend type (used when backend.url has no port).
@@ -387,9 +388,13 @@ const GgufApi = (function () {
             const controller = new AbortController();
             const timer = setTimeout(function () { controller.abort(); }, 30000);
             try {
+                const headers = { 'Content-Type': 'application/json' };
+                if (apiToken) {
+                    headers['X-API-Token'] = apiToken;
+                }
                 const response = await fetch(url, {
                     method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
+                    headers: headers,
                     body: JSON.stringify(body),
                     signal: controller.signal
                 });
@@ -417,8 +422,12 @@ const GgufApi = (function () {
             const controller = new AbortController();
             const timer = setTimeout(function () { controller.abort(); }, REQUEST_TIMEOUT_MS);
             try {
+                const headers = { 'Content-Type': 'application/json' };
+                if (apiToken) {
+                    headers['X-API-Token'] = apiToken;
+                }
                 const response = await fetch(url, {
-                    headers: { 'Content-Type': 'application/json' },
+                    headers: headers,
                     signal: controller.signal
                 });
                 clearTimeout(timer);
@@ -451,8 +460,12 @@ const GgufApi = (function () {
             const controller = new AbortController();
             const timer = setTimeout(function () { controller.abort(); }, REQUEST_TIMEOUT_MS);
             try {
+                const headers = { 'Content-Type': 'application/json' };
+                if (apiToken) {
+                    headers['X-API-Token'] = apiToken;
+                }
                 const response = await fetch(url, {
-                    headers: { 'Content-Type': 'application/json' },
+                    headers: headers,
                     signal: controller.signal
                 });
                 clearTimeout(timer);
@@ -769,6 +782,10 @@ const GgufApi = (function () {
             const timer = setTimeout(function () { controller.abort(); }, REQUEST_TIMEOUT_MS);
             try {
                 const headers = { 'Content-Type': 'application/json', ...(options.headers || {}) };
+                // Прокидываем API-токен для авторизации на балансировщике
+                if (apiToken) {
+                    headers['X-API-Token'] = apiToken;
+                }
                 // Прокидываем HF token в CppWorker через прокси
                 if (hfToken && (path === '/api/hf/search' || path.indexOf('/api/hf/files') === 0 || path === '/api/hf/download')) {
                     headers['X-HF-Token'] = hfToken;
@@ -853,6 +870,19 @@ const GgufApi = (function () {
         /** List loaded models on a specific backend via balancer proxy */
         async listLoadedModelsViaBackend(backendId) {
             return this.requestViaBackend(backendId, '/api/models');
+        },
+
+        /**
+         * Получить runtime-параметры загруженных моделей (n_ctx, gpu_layers,
+         * batch_size, flash_attn, n_layers, n_embd и т.д.) с cppworker'а через
+         * прокси балансировщика. Используется на вкладке GGUF Models в WebUI
+         * чтобы показать рядом с дефолтами: «default: 8192, runtime: 32768».
+         *
+         * GET /api/v1/cppworker/config/runtime
+         * Ответ: { loaded_models: [{name, path, state, context_size, gpu_layers, ...}], count, ... }
+         */
+        async getRuntimeConfigViaBackend(backendId) {
+            return this.requestViaBackend(backendId, '/api/v1/cppworker/config/runtime');
         },
 
         /** List active downloads on a specific backend via balancer proxy */

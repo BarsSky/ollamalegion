@@ -44,6 +44,8 @@ func setupRouter() http.Handler {
 	mux.HandleFunc("/api/v1/cppworker/config", handleCppWorkerGetConfig)
 	mux.HandleFunc("/api/v1/cppworker/config/update", authMiddleware(handleCppWorkerUpdateConfig))
 	mux.HandleFunc("/api/v1/cppworker/config/reload", authMiddleware(handleCppWorkerReloadConfig))
+	mux.HandleFunc("/api/v1/cppworker/config/runtime", handleCppWorkerRuntimeConfig)
+	mux.HandleFunc("/api/v1/cppworker/reset-reload-counter", authMiddleware(handleResetReloadCounter))
 	mux.HandleFunc("/api/v1/cppworker/health", handleHealth)
 	mux.HandleFunc("/api/v1/cppworker/metrics", handleInfo)
 	// Diagnostics endpoints — помогают диагностировать проблемы с загрузкой моделей

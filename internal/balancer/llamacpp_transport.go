@@ -5,12 +5,14 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
 	"strings"
 	"time"
 
+	"ollama-loadbalancer/c/bridge"
 	"ollama-loadbalancer/pkg/logger"
 )
 
@@ -133,6 +135,29 @@ func (p *Proxy) proxyRequestLlamaCpp(w http.ResponseWriter, r *http.Request, bac
 		logger.Get().Warnw("proxyRequestLlamaCpp: upstream returned non-2xx",
 			"backend", backendID, "status", resp.StatusCode,
 			"body", string(respBody)[:min(500, len(respBody))])
+
+		// 2026-06-24: n_ctx auto-reload — если upstream вернул HTTP 413 / 400
+		// с structured NCtxError (code=2 или code=3 + bridge_info), пытаемся
+		// auto-reload модель на больший n_ctx и retry запрос. БЕЗ этого стрим
+		// от OpenWebUI/Cline обрывается с error в SSE-чанке — клиент видит
+		// "Server Connection Error" вместо нормального ответа после reload.
+		//
+		// Применяем тот же паттерн, что и в proxyRequestLlamaCppNonStream.
+		// bodyBuf уже буферизован (передаётся []byte в сигнатуре), используем
+		// его для retry после reload.
+		if resp.StatusCode >= 400 && p.nctxReload != nil {
+			if nctxErr := ParseCppWorkerError(respBody, resp.StatusCode, backendID); nctxErr != nil {
+				if errors.Is(nctxErr, bridge.ErrNCtxNeedsReload) || errors.Is(nctxErr, bridge.ErrPromptTooLong) {
+					logger.Get().Infow("proxyRequestLlamaCpp: detected n_ctx error from cppworker, invoking auto-reload (streaming retry)",
+						"backend", backendID, "model", modelFromCtx,
+						"status", resp.StatusCode,
+						"is_n_ctx", errors.Is(nctxErr, bridge.ErrNCtxNeedsReload),
+						"is_prompt_too_long", errors.Is(nctxErr, bridge.ErrPromptTooLong))
+					p.handleNCtxReload(r.Context(), w, r, backendID, modelFromCtx, nctxErr, bodyBuf)
+					return nil
+				}
+			}
+		}
 
 		if originalPath == "/v1/chat/completions" {
 			w.Header().Set("X-Accel-Buffering", "no")

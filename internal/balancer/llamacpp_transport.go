@@ -153,7 +153,7 @@ func (p *Proxy) proxyRequestLlamaCpp(w http.ResponseWriter, r *http.Request, bac
 		w.Header().Set("Content-Type", "application/x-ndjson")
 		w.Header().Set("Connection", "keep-alive")
 		w.WriteHeader(resp.StatusCode)
-		errNDJSON := buildDoneResponse(originalPath, modelFromCtx, 2)
+		errNDJSON := buildDoneResponse(originalPath, modelFromCtx, 0)
 		fmt.Fprintf(w, "%s\n", string(errNDJSON))
 		if flusher, ok := w.(http.Flusher); ok {
 			flusher.Flush()
@@ -180,6 +180,16 @@ func (p *Proxy) proxyRequestLlamaCpp(w http.ResponseWriter, r *http.Request, bac
 	var contentBuffer string
 	var contentToolCallsProcessed bool
 
+	// ==== Накопление plain content для финального done-чанка ====
+	// cppworker отдаёт полный ответ в финальном NDJSON-чанке (`done:true`), но
+	// balancer его подавляет (см. ниже hasFinishReason) и формирует свой done-чанк.
+	// Чтобы клиент (Cline) не получил пустой `content`, аккумулируем content
+	// из streaming чанков и используем его в финальном done-чанке.
+	var accumulatedPlainContent string
+	// ==== Content, извлечённый из done-чанка upstream (если cppworker
+	// уже сформировал content в финальном NDJSON; используем его приоритетно). ====
+	var upstreamDoneContent string
+
 	// ==== Основной цикл SSE → NDJSON / SSE → SSE ==========
 	scanner := bufio.NewScanner(resp.Body)
 	scanner.Buffer(make([]byte, 0), 1024*1024)
@@ -195,7 +205,8 @@ func (p *Proxy) proxyRequestLlamaCpp(w http.ResponseWriter, r *http.Request, bac
 
 		data := strings.TrimSpace(strings.TrimPrefix(line, "data:"))
 		if data == "[DONE]" {
-			errFwd := writeStreamingSSEDone(w, originalPath, modelFromCtx, toolAccum)
+			errFwd := writeStreamingSSEDone(w, originalPath, modelFromCtx, toolAccum,
+				accumulatedPlainContent, upstreamDoneContent)
 			if errFwd != nil {
 				logger.Get().Warnw("proxyRequestLlamaCpp: writeStreamingSSEDone error",
 					"backend", backendID, "error", errFwd)
@@ -218,7 +229,20 @@ func (p *Proxy) proxyRequestLlamaCpp(w http.ResponseWriter, r *http.Request, bac
 			}
 		}
 
+		// Для SSE→SSE passthrough (/v1/chat/completions) — проксируем как есть,
+		// дополнительно накапливая delta.content на случай если клиент захочет
+		// полный контент после [DONE].
 		if originalPath == "/v1/chat/completions" {
+			// Накапливаем plain content для /v1/chat/completions (на случай будущего использования).
+			if choices, ok := chunk["choices"].([]interface{}); ok && len(choices) > 0 {
+				if choice, ok := choices[0].(map[string]interface{}); ok {
+					if delta, ok := choice["delta"].(map[string]interface{}); ok {
+						if c, ok := delta["content"].(string); ok && c != "" {
+							accumulatedPlainContent += c
+						}
+					}
+				}
+			}
 			// SSE → SSE passthrough
 			if filtered, shouldSkip := filterOpenAIStreamingLine([]byte(data)); shouldSkip {
 				continue
@@ -262,6 +286,14 @@ func (p *Proxy) proxyRequestLlamaCpp(w http.ResponseWriter, r *http.Request, bac
 								deltaContent = c
 							}
 						}
+					}
+				}
+
+				// Если чанк содержит finish_reason (done:true) — извлекаем content и
+				// done_reason из message, чтобы сохранить полный ответ cppworker'а.
+				if upstreamHasDone, msgMap, _ := extractUpstreamDoneChunk(data); upstreamHasDone {
+					if c, ok := msgMap["content"].(string); ok {
+						upstreamDoneContent = c
 					}
 				}
 
@@ -333,8 +365,36 @@ func (p *Proxy) proxyRequestLlamaCpp(w http.ResponseWriter, r *http.Request, bac
 						}
 					}
 				}
+
+				// Накапливаем plain content (вне tool-call accumulation) для финального
+				// done-чанка — это спасает от пустого content если upstream прислал
+				// полный ответ только в done-чанке.
+				if deltaContent != "" && !contentToolCallsProcessed {
+					accumulatedPlainContent += deltaContent
+				}
+			} else if originalPath == "/api/generate" {
+				// Для /api/generate content лежит в chunk["choices"][0].text или в done_chunk.response
+				if choices, ok := chunk["choices"].([]interface{}); ok && len(choices) > 0 {
+					if choice, ok := choices[0].(map[string]interface{}); ok {
+						if t, ok := choice["text"].(string); ok && t != "" {
+							deltaContent = t
+							accumulatedPlainContent += t
+						}
+					}
+				}
+				// done-чанк /api/generate от OpenAI: {"choices":[{"finish_reason":"stop","text":""}],...}
+				if upstreamHasDone := extractUpstreamGenerateDoneChunk(data, &accumulatedPlainContent); upstreamHasDone {
+					upstreamDoneContent = accumulatedPlainContent
+				}
 			}
 
+			// Подавляем финальный done-чанк от translate, если:
+			//   - tool_calls были уже обработаны (cross-chunk или delta),
+			//   - или последний чанк от cppworker содержит finish_reason (done:true).
+			// В обоих случаях финальный NDJSON формирует writeStreamingSSEDone.
+			if contentToolCallsProcessed || len(toolAccum) > 0 || hasFinishReason(data) {
+				continue
+			}
 			ollamaChunk := translateOpenAISSEDataToOllama(originalPath, []byte(data), modelFromCtx)
 			if len(ollamaChunk) == 0 {
 				continue
@@ -370,4 +430,91 @@ func (p *Proxy) proxyRequestLlamaCpp(w http.ResponseWriter, r *http.Request, bac
 	}
 
 	return nil
+}
+
+// hasFinishReason — проверяет, содержит ли SSE data-чанк finish_reason (done:true).
+// Используется для подавления дублирующего done-чанка от translate.
+func hasFinishReason(data string) bool {
+	if len(data) == 0 {
+		return false
+	}
+	var chunk map[string]interface{}
+	if err := json.Unmarshal([]byte(data), &chunk); err != nil {
+		return false
+	}
+	choices, ok := chunk["choices"].([]interface{})
+	if !ok || len(choices) == 0 {
+		return false
+	}
+	choice, ok := choices[0].(map[string]interface{})
+	if !ok {
+		return false
+	}
+	fr, ok := choice["finish_reason"].(string)
+	if !ok {
+		return false
+	}
+	return fr != "" && fr != "null"
+}
+
+// extractUpstreamDoneChunk — извлекает content и done_reason из OpenAI SSE-чанка
+// с finish_reason (например, финального чанка cppworker'а для /api/chat).
+// Возвращает (true, msgMap, doneReason), если чанк содержит finish_reason.
+func extractUpstreamDoneChunk(data string) (bool, map[string]interface{}, string) {
+	var chunk map[string]interface{}
+	if err := json.Unmarshal([]byte(data), &chunk); err != nil {
+		return false, nil, ""
+	}
+	choices, ok := chunk["choices"].([]interface{})
+	if !ok || len(choices) == 0 {
+		return false, nil, ""
+	}
+	choice, ok := choices[0].(map[string]interface{})
+	if !ok {
+		return false, nil, ""
+	}
+	fr, ok := choice["finish_reason"].(string)
+	if !ok || fr == "" || fr == "null" {
+		return false, nil, ""
+	}
+	msg, _ := choice["message"].(map[string]interface{})
+	if msg == nil {
+		// Иногда content лежит в delta
+		if delta, ok := choice["delta"].(map[string]interface{}); ok {
+			msg = map[string]interface{}{}
+			if c, ok := delta["content"].(string); ok {
+				msg["content"] = c
+			}
+		}
+	}
+	return true, msg, fr
+}
+
+// extractUpstreamGenerateDoneChunk — для /api/generate cppworker возвращает
+// финальный чанк с finish_reason. Накапливает text (если есть) в plainContent.
+// Возвращает true, если чанк содержит finish_reason.
+func extractUpstreamGenerateDoneChunk(data string, plainContent *string) bool {
+	if plainContent == nil {
+		return false
+	}
+	var chunk map[string]interface{}
+	if err := json.Unmarshal([]byte(data), &chunk); err != nil {
+		return false
+	}
+	choices, ok := chunk["choices"].([]interface{})
+	if !ok || len(choices) == 0 {
+		return false
+	}
+	choice, ok := choices[0].(map[string]interface{})
+	if !ok {
+		return false
+	}
+	fr, ok := choice["finish_reason"].(string)
+	if !ok || fr == "" || fr == "null" {
+		return false
+	}
+	if t, ok := choice["text"].(string); ok && t != "" {
+		*plainContent += t
+	}
+	return true
 }

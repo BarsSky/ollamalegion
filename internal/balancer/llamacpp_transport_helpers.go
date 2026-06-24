@@ -102,30 +102,57 @@ func accumulateToolCallsFromDelta(delta map[string]interface{}, toolAccum map[in
 	}
 }
 
+// cleanFinalContent — пост-обработка накопленного контента перед отправкой
+// в финальном done-чанке. Удаляет служебные токены (``, `</s>`),
+// ведущие/завершающие пробелы, и нормализует переносы строк.
+func cleanFinalContent(s string) string {
+	return stripServiceTokens(s)
+}
+
 // writeStreamingSSEDone — пишет финальный [DONE] / done-маркер для streaming-потока.
 //
 // Когда upstream (llama.cpp) присылает data: [DONE], этот обработчик пишет
 // завершающий NDJSON-чанк с tool_calls (если они были накоплены) или просто
 // done:true для Ollama-клиентов.
 //
+// ВАЖНО: чтобы клиент не получил пустой content (как было до фикса),
+// upstreamContent используется как fallback — обычно это уже отфильтрованный
+// cppworker'ом done-чанк, и его message.content равен полному ответу модели.
+//
 // Для /v1/chat/completions (SSE→SSE passthrough) — просто пишет data: [DONE]\n\n.
-// Для /api/chat — пишет NDJSON с done:true, message.role, message.content="",
+// Для /api/chat — пишет NDJSON с done:true, message.role, message.content (из upstreamContent
 //
-//	и если есть tool_calls — message.tool_calls.
+//	или накопленного буфера) и если есть tool_calls — message.tool_calls.
 //
-// Для /api/generate — пишет NDJSON с done:true, response="".
-func writeStreamingSSEDone(w http.ResponseWriter, originalPath, modelFromCtx string, toolAccum map[int]*accumulatedToolCall) error {
+// Для /api/generate — пишет NDJSON с done:true, response (из upstreamContent или буфера).
+func writeStreamingSSEDone(
+	w http.ResponseWriter,
+	originalPath, modelFromCtx string,
+	toolAccum map[int]*accumulatedToolCall,
+	accumulatedContent string,
+	upstreamContent string,
+) error {
 	if originalPath == "/v1/chat/completions" {
 		// SSE→SSE passthrough — просто завершаем [DONE]
 		_, err := fmt.Fprintf(w, "data: [DONE]\n\n")
 		return err
 	}
 
+	// Определяем итоговый контент с приоритетом:
+	//   1. upstreamContent (если есть, обычно это отфильтрованный cppworker done-чанк)
+	//   2. accumulatedContent (накопленный из streaming чанков)
+	//   3. "" (fallback — не должно происходить в нормальной ситуации)
+	finalContent := upstreamContent
+	if finalContent == "" {
+		finalContent = accumulatedContent
+	}
+	finalContent = cleanFinalContent(finalContent)
+
 	// Для /api/chat и /api/generate пишем NDJSON
 	if originalPath == "/api/chat" {
 		msgMap := map[string]interface{}{
 			"role":    "assistant",
-			"content": "",
+			"content": finalContent,
 		}
 
 		// Если есть накопленные tool_calls — добавляем их
@@ -159,6 +186,13 @@ func writeStreamingSSEDone(w http.ResponseWriter, originalPath, modelFromCtx str
 			"message":    msgMap,
 		}
 
+		// Если есть tool_calls — done_reason должен быть "tool_calls"
+		if len(toolAccum) > 0 {
+			doneChunk["done_reason"] = "tool_calls"
+		} else if finalContent != "" {
+			doneChunk["done_reason"] = "stop"
+		}
+
 		out, err := json.Marshal(doneChunk)
 		if err != nil {
 			return fmt.Errorf("marshal /api/chat done chunk: %v", err)
@@ -176,7 +210,10 @@ func writeStreamingSSEDone(w http.ResponseWriter, originalPath, modelFromCtx str
 		"model":      modelName,
 		"created_at": time.Now().UTC().Format(time.RFC3339),
 		"done":       true,
-		"response":   "",
+		"response":   finalContent,
+	}
+	if finalContent != "" {
+		doneChunk["done_reason"] = "stop"
 	}
 
 	out, err := json.Marshal(doneChunk)

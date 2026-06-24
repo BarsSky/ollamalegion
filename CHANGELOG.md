@@ -8,6 +8,14 @@
 ## [Unreleased]
 
 ### Добавлено
+- **Preflight n_ctx check + dynamic auto-reload (Cline/OpenWebUI с длинным prompt)** — реализован полный цикл динамической подстройки `n_ctx` под запрос клиента, пока есть запас по VRAM и `model_max_context`.
+  - **Preflight (балансер)**: `internal/balancer/preflight_nctx.go` — новый модуль `RunPreflight()` оценивает размер prompt (chars/4) + `n_predict` ДО отправки запроса на cppworker. Если `estimated > current_n_ctx`, проверяет лимиты: `MaxVRAMNCtx * safety_factor` и `ModelMaxContext`. При наличии запаса вызывает `NCtxReloadCoordinator.DoReload()` (round-trip один, без ошибки 3). При исчерпании лимита возвращает HTTP 413 с подробным JSON `{error, reason, required_n_ctx, current_n_ctx, max_vram_n_ctx, model_max_context, suggestion, profile_endpoint}`.
+  - **Adaptive growth**: `target = roundUpPow2(required)` c cap по VRAM/model_max/конфиг. Реалистичный сценарий: Cline шлёт prompt 55K + n_predict=512; current=32768, max_vram=32719 → reject с actionable советом. Если VRAM=80GB (A100) — preflight сам перезагружает модель на 64K до отправки запроса.
+  - **Новые флаги**: `preflight_enabled` (default `true`), `auto_reload_allow_tools` (default `true`), `auto_reload_n_ctx` теперь `true` по умолчанию.
+  - **CppWorker**: флаг `--ram-fallback-allow-tools` (default `true`) + env `CPPWORKER_RAM_FALLBACK_ALLOW_TOOLS`. Старое поведение (reload off при tools) включается через `--ram-fallback-allow-tools=false`.
+  - **Тесты**: `internal/balancer/preflight_nctx_test.go` — 27 unit-тестов: EstimatePromptTokens, ExtractRequestMeta (Ollama chat/generate, OpenAI chat, unknown path, invalid JSON), DecidePreflight (NoOp/Reload/Reject по VRAM/model_max/конфиг), RoundUpPow2, RunPreflight с mock-клиентом, real-world Cline-сценарий.
+  - **Файлы**: `internal/balancer/preflight_nctx.go` (новый), `internal/balancer/preflight_nctx_test.go` (новый), `internal/balancer/nctx_reload.go` (новые поля + helper), `cmd/cppworker/inference.go` (флаг `tryRamFallbackReloadAllowTools`), `cmd/cppworker/main.go` (флаг `--ram-fallback-allow-tools`).
+
 - **Adaptive n_ctx auto-reload (cppworker, Stages 2-7)** — реализован полный цикл
   auto-reload модели с большим n_ctx при overflow (Cline-чат с tool-definitions,
   OpenWebUI с длинной историей). Корневая проблема: C-bridge при n_ctx overflow
@@ -72,6 +80,115 @@
   (current/required/max_vram n_ctx, actual_tokens, n_predict). Клиенты (Cline,
   OpenWebUI) могут парсить и показать осмысленную диагностику; balancer —
   принимать решение об auto-reload.
+
+- **WebUI: видимые дефолты n_ctx / RAM fallback / gemma-4 профили** — раньше
+  дефолты cppworker'а (8192) и per-model профили (gemma-4=4096) были ниже,
+  чем требует реальный tool-call prompt (~5–10K токенов). Теперь:
+  - **Дефолт ctx_size поднят 4096 → 8192** в `cmd/cppworker/main.go` и
+    `cppworker.example.env` (минимум для стабильной работы OpenWebUI с tools).
+  - **Профиль `gemma-4`**: `numCtx` 4096 → 8192 в `config/config.bundled.json`.
+  - **Добавлен профиль `gemma-4-large`** (numCtx=32768, gpuLayers=10) для
+    19GB+ моделей на 24GB GPU (NVIDIA A10) в `config.bundled.json`.
+
+- **CppWorker runtime endpoint + auto-reload через WebUI**:
+  - Новый endpoint `GET /api/v1/cppworker/config/runtime` — возвращает массив
+    реально загруженных моделей c **фактическими** параметрами (`context_size`,
+    `gpu_layers`, `batch_size`, `flash_attn_type`, `gguf_context_length`,
+    `n_layers`, `n_embd`, `state`). Handler: `cmd/cppworker/handlers_config.go:handleCppWorkerRuntimeConfig`.
+  - Расширен `PUT /api/v1/cppworker/config/update` — после применения defaults
+    автоматически запускает reload каждой загруженной модели c новыми параметрами
+    (если изменились ctx_size/batch_size/gpu_layers/flash_attn/numa/n_threads).
+    Это позволяет оператору через WebUI применить n_ctx=32768 к загруженной
+    gemma-4 одним кликом без ручного POST /api/models/reload.
+  - Сброс счётчика `ramFallbackAttempts` (cycle limit) при apply config.
+  - **Balancer проксирование**: `internal/balancer/llamacpp_runtime_config.go:handleRuntimeConfig`
+    — параллельный опрос всех llama.cpp бэкендов через cppworker endpoint,
+    агрегация по `path` (дедуп если модель загружена на нескольких бэкендах).
+    Маршрут `/api/v1/cppworker/config/runtime` зарегистрирован в `llamacpp_router.go`.
+  - **WebUI отображение**: на вкладке Loaded Models под именем модели рендерится
+    строка `ctx=32768 gpu_layers=10 batch=512 fa=0 layers=48 gguf_max=32768`.
+    Если runtime n_ctx отличается от default — справа показывается бэйдж
+    «runtime: 32768» в карточке. Это закрывает сценарий, когда оператор
+    не знает, что модель реально загружена с другим n_ctx после auto-reload
+    через balancer. Файл: `webui/js/modules/gguf-renderer.js:renderLoadedPane()`.
+
+- **CppWorker auto_offload (solve OOM для 19GB+ моделей на 24GB GPU)**:
+  - Новый флаг `--auto-offload` / ENV `CPPWORKER_AUTO_OFFLOAD=true`. При включении
+    cppworker при загрузке/reload вычисляет оптимальное `gpu_layers` по формуле:
+    `floor((availableVRAM * 0.85 - 1.5GB_overhead - kv_cache_bytes) / weights_per_layer)`.
+    Решает OOM при загрузке 19GB моделей (gemma-4-large и т.п.) на 24GB GPU
+    когда пользователь не угадал число gpu_layers. Файлы:
+    `cmd/cppworker/auto_offload.go`, `cmd/cppworker/vram_detect.go`,
+    `cmd/cppworker/context_timeout.go`.
+  - VRAM-детект: 3 стратегии (ENV `CPPWORKER_VRAM_BYTES` → C-bridge
+    `bridge.GetGPUInfo(0).VRAMTotalMB` → `nvidia-smi` CLI fallback).
+  - Флаг также интегрирован в `handlers_config.go:reloadAllLoadedWithDefaults()`
+    — при apply config auto-offload пересчитывает `gpu_layers` для каждой модели.
+
+- **Сборка и тесты**:
+  - `go build -tags llama_stub ./cmd/cppworker` — OK.
+  - `go test -tags llama_stub ./cmd/cppworker` — все тесты pass (10 новых +
+    40+ существующих). Файл: `cmd/cppworker/handlers_config_test.go`.
+  - `go build -tags llama_stub ./internal/balancer/...` — OK.
+  - `go test -tags llama_stub ./internal/balancer/` — все тесты pass (3 новых
+    + 100+ существующих, 13.5s). Файл: `internal/balancer/llamacpp_runtime_config_test.go`.
+  - `node -c webui/js/modules/gguf-api.js` и `gguf-renderer.js` — OK.
+
+### Изменено
+- `deployments/.env.bundled` — добавлены явные `CPPWORKER_*` переменные
+  (`CPPWORKER_CTX_SIZE=8192`, `CPPWORKER_AUTO_OFFLOAD=true`,
+  `CPPWORKER_RAM_FALLBACK_GPU_LAYERS=-2`), `LB_NCTX_RELOAD_VRAM_SAFETY_FACTOR`
+  поднят 0.85 → 0.95 (default), `CPPWORKER_RAM_FALLBACK_MAX_N_CTX` поднят
+  32768 → 128000 для поддержки gemma-4-large.
+- `deployments/docker-compose.cppworker-bundled.yml` — `CPPWORKER_CTX_SIZE`
+  использует ENV с default 8192, добавлен `CPPWORKER_AUTO_OFFLOAD` override.
+- `config/config.bundled.json` — `defaultModelProfile.contextLength` 4096 → 8192,
+  `balancing.nctxReload.auto_reload_vram_safety_factor` 0.85 → 0.95,
+  добавлен профиль `gemma-4-large`.
+- `cmd/cppworker/main.go` — добавлен `autoOffload` flag, его ENV-обработка,
+  логирование в startup-строке; определён `verbose` flag (был неявно
+  используемый без объявления — давний bug).
+- `cmd/cppworker/inference.go` (уже существующее) — auto_offload учитывается
+  при `*autoOffload` true: вызов `calculateOptimalGPULayersForModel(m)`.
+
+- **AutoTuneNCtx (автоподбор n_ctx при RAM-fallback reload)**: новый алгоритм
+  в `cmd/cppworker/auto_tune_nctx.go` для случая «VRAM не хватает, но есть RAM».
+  При `CPPWORKER_AUTO_TUNE_NCTX=true` / `--auto-tune-nctx` cppworker при
+  RAM-fallback reload вычисляет максимальный n_ctx, который помещается в VRAM
+  с учётом partial offload через mmap. Стратегия:
+  1. Если requested_n_ctx помещается в VRAM с current gpu_layers → use as-is.
+  2. Иначе: уменьшаем gpu_layers (partial offload) для размещения в VRAM.
+  3. Если и с gpu_layers=0 не влезает → уменьшаем n_ctx до максимально
+     возможного (тогда inference пройдёт без кода 3 «prompt too long»).
+  Решает проблему: «Cline прислал 53K prompt, требуется n_ctx=53K, VRAM=8GB,
+  но 32GB RAM свободно» → cppworker перезагружает модель с gpu_layers=0
+  (mmap в RAM) и n_ctx=максимально возможный (например 32K), чтобы
+  inference прошёл без ручной настройки.
+  - `cmd/cppworker/auto_tune_nctx.go` — `AutoTuneNCtx(m, requestedNCtx)`,
+    `computeMaxViableNCtx`, `TunedNCtxResult` struct с полями
+    `RecommendedNCtx`, `RecommendedGPULayers`, `UseMmap`, `Source`,
+    `MaxViableNCtx`.
+  - `cmd/cppworker/vram_detect.go` — новая `availableRAMBytes()` со стратегиями:
+    ENV `CPPWORKER_AVAILABLE_RAM_BYTES` → `/proc/meminfo MemAvailable`
+    → `MemFree+Cached` → `sysctl hw.memsize`. Нужна для проверки «хватит ли
+    RAM для части модели через mmap».
+  - `cmd/cppworker/inference.go:tryRamFallbackReload` — при включённом
+    `autoTuneNCtx` подставляет `tuned.RecommendedNCtx` / `RecommendedGPULayers`
+    вместо `requestedNCtx` / `newGPULayers`. Если `RecommendedNCtx == 0`
+    (даже cpu-only не влезает) → возвращает `*AutoTuneError` с конкретным
+    `MaxViableNCtx` для пользователя.
+  - `cmd/cppworker/main.go` — новый флаг `--auto-tune-nctx` + ENV
+    `CPPWORKER_AUTO_TUNE_NCTX`.
+  - `cmd/cppworker/auto_tune_nctx_test.go` — 9 unit-тестов: ENV override,
+    invalid ENV, NoMetadata fallback, ExactMatch, PartialOffload,
+    ReducedNCtx, RamFallbackMaxCap, NoVRAM, ComputeMaxViableNCtx.
+  - `deployments/.env.bundled` — добавлен `CPPWORKER_AUTO_TUNE_NCTX=true`
+  - `deployments/docker-compose.cppworker-bundled.yml` — добавлен
+    `CPPWORKER_AUTO_TUNE_NCTX=${CPPWORKER_AUTO_TUNE_NCTX:-true}`.
+- Тесты:
+  - `go test -tags llama_stub ./cmd/cppworker/ -run "TestAvailableRAMBytes|TestAutoTuneNCtx|TestComputeMaxViable"` — OK (9 тестов, 0.99s).
+  - `go build -tags llama_stub ./cmd/cppworker` — OK.
+  - `go test -tags llama_stub ./internal/balancer/` — OK (13.7s, все 100+ тестов проходят).
 
 ## [Unreleased]
 
@@ -270,7 +387,37 @@ reload семантика (n_ctx иммутабельна без reload) соб�
   - `TestTwoClientsSameIP_DifferentSessions` и `TestLoadBalancing_MultipleClients`
     (`internal/balancer/proxy_integration_test.go`) — побочные жертвы того же root cause,
     отключён `llamaCppRouter`.
-  Подробности в `docs/test-fixes-2026-06-05.md`.
+    Подробности в `docs/test-fixes-2026-06-05.md`.
+
+- **balancer: пустой `content` в финальном NDJSON done-чанке для Cline / OpenWebUI**.
+  Корневая причина: `internal/balancer/llamacpp_transport_helpers.go:writeStreamingSSEDone`
+  формировал done-чанк с пустым `message.content` / `response`, потому что cppworker
+  присылает финальный ответ в OpenAI SSE-чанке с `finish_reason: "stop"`, а балансер
+  этот чанк подавлял (через `hasFinishReason(data)`) и заменял своим пустым.
+  Раньше Cline получал `{"done":true,"done_reason":"stop","message":{"content":"",...}}`
+  даже при длинном успешном ответе.
+  - **`internal/balancer/llamacpp_transport.go`** — в streaming-цикле добавлены
+    аккумуляторы `accumulatedPlainContent` (для `/api/chat`/`/api/generate`) и
+    `upstreamDoneContent` (извлекается из OpenAI done-чанка через
+    `extractUpstreamDoneChunk` / `extractUpstreamGenerateDoneChunk`). Оба
+    передаются в `writeStreamingSSEDone` при `[DONE]`.
+  - **`internal/balancer/llamacpp_transport_helpers.go`** — `writeStreamingSSEDone`
+    расширен: принимает `accumulatedContent` и `upstreamContent` параметры, итоговый
+    content имеет приоритет `upstreamContent > accumulatedContent > ""`. Для
+    `tool_calls` сохраняется прежнее поведение (done_reason: tool_calls). Для
+    обычных ответов добавлен `done_reason: "stop"` в финальном done-чанке.
+  - Добавлена функция `cleanFinalContent` (обёртка над `stripServiceTokens`),
+    убирающая служебные токены (`` / `</s>`) из накопленного content.
+  - Для `/api/generate` финальный text из OpenAI done-чанка (`choice.text`)
+    автоматически подмешивается в `accumulatedPlainContent` (на случай,
+    когда streaming идёт с пустыми chunks, а полный текст приходит только
+    в done).
+  - **Тесты**: `go test -tags llama_stub ./internal/balancer/...` — все 100+
+    тестов проходят (13.5s). `go test -tags llama_stub ./tests/... -run
+    "TestOpenWebUI|TestDebugOpenWebUI|TestLlamacppTransport|TestStreaming"` —
+    зелёные. E2E-проверка через curl `POST /api/chat` показала, что
+    финальный NDJSON содержит реальный content:
+    `{"done":true,"done_reason":"stop","message":{"content":"hello world\nend_of_turnhello world",...}}`.
 
 ## [0.1.0] - 2026-05-14
 

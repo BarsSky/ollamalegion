@@ -2,6 +2,8 @@ package main
 
 import (
 	"encoding/json"
+
+	"errors"
 	"fmt"
 	"net/http"
 	"strings"
@@ -260,6 +262,10 @@ func handleGenerate(w http.ResponseWriter, r *http.Request) {
 	// /api/generate endpoint: tools не поддерживаются.
 	result, err := generateWithRamFallback(modelName, prompt, params, false)
 	if err != nil {
+		// 2026-06-24: PromptExceedsNCtxError → HTTP 413 (см. inference.go).
+		if handleInferenceError(w, err) {
+			return
+		}
 		statusCode := http.StatusInternalServerError
 		if info := bridge.GetLastErrorInfo(); info.Code == bridge.ErrCodeNCtxNeedsReload || info.Code == bridge.ErrCodePromptTooLong || info.Code == bridge.ErrCodeBadRequest {
 			statusCode = http.StatusBadRequest
@@ -299,19 +305,32 @@ func writeStreamResponse(w http.ResponseWriter, r *http.Request, modelName, prom
 		writeError(w, http.StatusInternalServerError, "streaming not supported")
 		return
 	}
+	// 2026-06-24: preflight n_ctx check BEFORE flushing headers.
+	if err := clampNPredictToFitContext(modelName, prompt, &params); err != nil {
+		var perr *PromptExceedsNCtxError
+		if errors.As(err, &perr) {
+			writePromptExceedsNCtxResponse(w, perr)
+			return
+		}
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
 	w.Header().Set("Content-Type", "application/x-ndjson")
 	w.Header().Set("Cache-Control", "no-cache")
 	w.Header().Set("Connection", "keep-alive")
 	flusher.Flush()
 	ctx := r.Context()
 	tokens := 0
+	var outputBuf strings.Builder
 	start := time.Now()
+	createdAt := time.Now().UTC().Format(time.RFC3339)
 	callback := func(token string) bool {
 		select {
 		case <-ctx.Done():
 			return false
 		default:
 		}
+		outputBuf.WriteString(token)
 		chunk := map[string]interface{}{
 			"model":    modelName,
 			"response": token,
@@ -327,9 +346,28 @@ func writeStreamResponse(w http.ResponseWriter, r *http.Request, modelName, prom
 	if err := generateStreamWithRamFallback(modelName, prompt, params, callback, false); err != nil {
 		maybeRestartOnMemorySlotError(err, modelName)
 		errChunk := map[string]interface{}{
-			"model": modelName,
-			"done":  true,
-			"error": err.Error(),
+			"model":       modelName,
+			"created_at":  createdAt,
+			"response":    "",
+			"done":        true,
+			"done_reason": "error",
+			"error":       err.Error(),
+		}
+		errJSON, _ := json.Marshal(errChunk)
+		fmt.Fprintf(w, "%s\n", errJSON)
+		flusher.Flush()
+		return
+	}
+	fullOutput := outputBuf.String()
+	// 2026-06-24: проверка на пустой ответ после cleanFinalContent (gemma antiprompt).
+	if strings.TrimSpace(cleanFinalContent(fullOutput)) == "" {
+		errChunk := map[string]interface{}{
+			"model":       modelName,
+			"created_at":  createdAt,
+			"response":    "",
+			"done":        true,
+			"done_reason": "error",
+			"error":       "model produced an empty response (inference succeeded but output is empty). This may indicate n_ctx too small, prompt too long, or model issue.",
 		}
 		errJSON, _ := json.Marshal(errChunk)
 		fmt.Fprintf(w, "%s\n", errJSON)
@@ -343,7 +381,10 @@ func writeStreamResponse(w http.ResponseWriter, r *http.Request, modelName, prom
 	}
 	doneChunk := map[string]interface{}{
 		"model":             modelName,
+		"created_at":        createdAt,
+		"response":          "",
 		"done":              true,
+		"done_reason":       "stop",
 		"total_duration":    duration.Microseconds() * 1000,
 		"eval_count":        tokens,
 		"eval_duration":     duration.Microseconds() * 1000,
@@ -380,6 +421,10 @@ func handleOllamaGenerate(w http.ResponseWriter, r *http.Request) {
 	// /api/generate (Ollama) — tools не поддерживаются, reload разрешён при n_ctx overflow.
 	result, err := generateWithRamFallback(modelName, prompt, params, false)
 	if err != nil {
+		// 2026-06-24: PromptExceedsNCtxError → HTTP 413 (см. inference.go).
+		if handleInferenceError(w, err) {
+			return
+		}
 		statusCode := http.StatusInternalServerError
 		if info := bridge.GetLastErrorInfo(); info.Code == bridge.ErrCodeNCtxNeedsReload || info.Code == bridge.ErrCodePromptTooLong || info.Code == bridge.ErrCodeBadRequest {
 			statusCode = http.StatusBadRequest
@@ -424,18 +469,31 @@ func writeOllamaStream(w http.ResponseWriter, r *http.Request, modelName, prompt
 		writeError(w, http.StatusInternalServerError, "streaming not supported")
 		return
 	}
+	// 2026-06-24: preflight n_ctx check BEFORE flushing headers.
+	if err := clampNPredictToFitContext(modelName, prompt, &params); err != nil {
+		var perr *PromptExceedsNCtxError
+		if errors.As(err, &perr) {
+			writePromptExceedsNCtxResponse(w, perr)
+			return
+		}
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
 	w.Header().Set("Content-Type", "application/x-ndjson")
 	w.Header().Set("Cache-Control", "no-cache")
 	w.Header().Set("Connection", "keep-alive")
 	flusher.Flush()
 	tokens := 0
+	var outputBuf strings.Builder
 	start := time.Now()
+	createdAt := time.Now().UTC().Format(time.RFC3339)
 	callback := func(token string) bool {
 		select {
 		case <-r.Context().Done():
 			return false
 		default:
 		}
+		outputBuf.WriteString(token)
 		chunk := map[string]interface{}{"model": modelName, "response": token, "done": false}
 		jsonData, _ := json.Marshal(chunk)
 		fmt.Fprintf(w, "%s\n", jsonData)
@@ -446,7 +504,29 @@ func writeOllamaStream(w http.ResponseWriter, r *http.Request, modelName, prompt
 	// /api/generate streaming: tools не поддерживаются.
 	if err := generateStreamWithRamFallback(modelName, prompt, params, callback, false); err != nil {
 		maybeRestartOnMemorySlotError(err, modelName)
-		errJSON, _ := json.Marshal(map[string]interface{}{"model": modelName, "done": true, "error": err.Error()})
+		errJSON, _ := json.Marshal(map[string]interface{}{
+			"model":       modelName,
+			"created_at":  createdAt,
+			"response":    "",
+			"done":        true,
+			"done_reason": "error",
+			"error":       err.Error(),
+		})
+		fmt.Fprintf(w, "%s\n", errJSON)
+		flusher.Flush()
+		return
+	}
+	fullOutput := outputBuf.String()
+	// 2026-06-24: проверка на пустой ответ после cleanFinalContent (gemma antiprompt).
+	if strings.TrimSpace(cleanFinalContent(fullOutput)) == "" {
+		errJSON, _ := json.Marshal(map[string]interface{}{
+			"model":       modelName,
+			"created_at":  createdAt,
+			"response":    "",
+			"done":        true,
+			"done_reason": "error",
+			"error":       "model produced an empty response (inference succeeded but output is empty). This may indicate n_ctx too small, prompt too long, or model issue.",
+		})
 		fmt.Fprintf(w, "%s\n", errJSON)
 		flusher.Flush()
 		return
@@ -457,7 +537,8 @@ func writeOllamaStream(w http.ResponseWriter, r *http.Request, modelName, prompt
 		tps = float64(tokens) / duration.Seconds()
 	}
 	doneJSON, _ := json.Marshal(map[string]interface{}{
-		"model": modelName, "done": true,
+		"model": modelName, "done": true, "done_reason": "stop",
+		"created_at":        createdAt,
 		"total_duration":    duration.Microseconds() * 1000,
 		"eval_count":        tokens,
 		"eval_duration":     duration.Microseconds() * 1000,

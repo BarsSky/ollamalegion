@@ -2,6 +2,7 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"sync"
 	"time"
@@ -24,9 +25,17 @@ func countTokens(modelName, text string) int {
 
 // countModelTokensByLoadedInfo — если модель ещё не загружена, не пытаться
 // загружать её ради подсчёта токенов; вернуть грубую оценку.
+// Безопасен при backend == nil (например, в unit-тестах): возвращает грубую оценку
+// по 4 символа на токен. Раньше здесь был nil pointer panic — см. репро в
+// inference_internal_test.go (TestClampNPredictToFitContext_ToolsPromptOverflow).
 func countModelTokensByLoadedInfo(modelName, text string) int {
 	if text == "" {
 		return 0
+	}
+	if backend == nil {
+		// backend не инициализирован (unit-тест, нештатный запуск). Возвращаем
+		// грубую оценку — лучше, чем паника.
+		return len([]rune(text)) / 4
 	}
 	if _, err := backend.GetModel(modelName); err != nil {
 		return len([]rune(text)) / 4
@@ -229,6 +238,17 @@ func resetReloadAttempts(modelName string) {
 	state.lastAttemptTime = time.Time{}
 }
 
+// tryRamFallbackReloadAllowTools — глобальный флаг, разрешающий reload при tools.
+//
+// Когда true (default с 2026-06-23 в связке с preflight), RAM-fallback
+// reload применяется и для tools-запросов: balancer решает, нужен ли reload
+// (на основе VRAM и model_max), а cppworker исполняет. Это позволяет
+// динамически подстраивать n_ctx под длинный prompt Cline/OpenWebUI.
+//
+// Флаг задаётся через env/flag --ram-fallback-allow-tools / CPPWORKER_RAM_FALLBACK_ALLOW_TOOLS
+// (default: true для совместимости с поведением preflight; см. PR).
+var tryRamFallbackReloadAllowTools = true
+
 // ErrReloadLoopLimit возвращается из tryRamFallbackReload, когда
 // превышен лимит reload-попыток для модели. Caller (handler) должен
 // вернуть HTTP 413 с понятным сообщением.
@@ -259,6 +279,40 @@ func isReloadLoopLimitError(err error) bool {
 // Превентивный клампинг n_predict
 // ============================================================
 
+// PromptExceedsNCtxError — возвращается из clampNPredictToFitContext,
+// когда actual_prompt_tokens сам по себе превышает n_ctx (даже с учётом
+// minNPredictClamp). В этом случае ни один разумный n_predict не поможет —
+// bridge вернёт code 3 "prompt too long". Лучше сразу вернуть HTTP 413
+// с понятным сообщением и подсказкой увеличить n_ctx, чем молча клампить
+// n_predict до 512 (как было до 2026-06-24) и получать «пустой ответ»
+// с done_reason="stop" (модель эмитит <end_of_turn> на 1-м токене).
+//
+// ВАЖНО (2026-06-24): MaxVRAMNCtx и NCtxOverride используются writePromptExceedsNCtxResponse
+// для формирования bridge_info в JSON-ответе. Без них балансировщик не сможет
+// принять решение auto-reload (см. internal/balancer/llamacpp_error.go:ParseCppWorkerError):
+//   - NCtxOverride — что клиент прислал в options.num_ctx (нужен для решения
+//     "ignore override and reload to required" в DecideReloadBackend/code 3).
+//   - MaxVRAMNCtx — оценочный максимум n_ctx для текущей VRAM (0 = unknown).
+//     Если 0 — балансер применит fallback (reject).
+type PromptExceedsNCtxError struct {
+	ModelName         string
+	ActualTokens      int
+	RequestedNPredict int
+	NCtx              int
+	MinNPredictFloor  int
+	NCtxOverride      int
+	MaxVRAMNCtx       int
+}
+
+func (e *PromptExceedsNCtxError) Error() string {
+	deficit := e.ActualTokens + e.MinNPredictFloor + 1 - e.NCtx
+	return fmt.Sprintf("prompt exceeds n_ctx even with minimum n_predict floor: "+
+		"model=%s actual_tokens=%d n_ctx=%d min_n_predict_floor=%d deficit_tokens=%d "+
+		"requested_n_predict=%d — increase n_ctx (save model profile with larger context_length and reload), "+
+		"or reduce conversation history / tools[] / system prompt",
+		e.ModelName, e.ActualTokens, e.NCtx, e.MinNPredictFloor, deficit, e.RequestedNPredict)
+}
+
 // clampNPredictToFitContext — уменьшает params.NPredict так, чтобы
 // (actualPromptTokens + params.NPredict + 1) <= n_ctx.
 //
@@ -280,19 +334,23 @@ func isReloadLoopLimitError(err error) bool {
 //
 // Эта функция безопасна для concurrent вызовов: только читает params.
 // Вызывать НЕПОСРЕДСТВЕННО ПЕРЕД backend.Generate / backend.GenerateStream.
-func clampNPredictToFitContext(modelName, prompt string, params *bridge.GenerationParams) {
+//
+// Возвращает *PromptExceedsNCtxError, если actual_tokens + minNPredictFloor + 1 > n_ctx
+// (то есть prompt сам по себе больше n_ctx даже с учётом минимума).
+// В этом случае params не модифицируется — caller должен вернуть HTTP 413.
+func clampNPredictToFitContext(modelName, prompt string, params *bridge.GenerationParams) error {
 	if params == nil {
-		return
+		return errors.New("clampNPredictToFitContext: nil params")
 	}
 	nCtx := params.NCtxOverride
 	if nCtx <= 0 {
 		// Нет NCtxOverride — не можем оценить. Пропускаем клампинг.
-		return
+		return nil
 	}
 	if params.NPredict <= 0 {
 		// Клиент не задал n_predict — оставляем как есть (default 2048 уже учтён
 		// в applyCppCtxHeader для n_ctx >= 2048).
-		return
+		return nil
 	}
 
 	// Считаем токены в prompt через tokenizer модели.
@@ -303,24 +361,75 @@ func clampNPredictToFitContext(modelName, prompt string, params *bridge.Generati
 		actualTokens = len([]rune(prompt)) / 4
 	}
 
+	const minNPredictClamp = 512
 	// Запас 1 токен под EOS-маркер.
 	maxAllowedNPredict := nCtx - actualTokens - 1
-	const minNPredictClamp = 512
+
+	// 2026-06-24: проверяем, что prompt сам по себе влезает в n_ctx с учётом
+	// минимального n_predict. Если нет — это БАГ, который раньше приводил к
+	// «пустому ответу с done_reason=stop» в Cline/OpenWebUI на gemma-4 (см.
+	// обсуждение корневой причины 2026-06-24). Возвращаем явную ошибку.
+	if actualTokens+minNPredictClamp+1 > nCtx {
+		logger.Get().Errorw("clampNPredictToFitContext: prompt exceeds n_ctx even with min floor",
+			"model", modelName,
+			"actual_prompt_tokens", actualTokens,
+			"requested_n_predict", params.NPredict,
+			"n_ctx", nCtx,
+			"min_n_predict_floor", minNPredictClamp,
+			"deficit_tokens", actualTokens+minNPredictClamp+1-nCtx,
+			"action", "returning PromptExceedsNCtxError so caller can return HTTP 413 with clear message")
+		// 2026-06-24: берём MaxVRAMNCtx из bridge.GetLastErrorInfo если есть — это
+		// позволит балансировщику (см. internal/balancer/llamacpp_error.go:ParseCppWorkerError)
+		// принять решение auto-reload, а не сразу возвращать 413 клиенту.
+		maxVRAMNCtx := 0
+		if lastErr := bridge.GetLastErrorInfo(); lastErr != nil && lastErr.MaxVRAMNCtx > 0 {
+			maxVRAMNCtx = lastErr.MaxVRAMNCtx
+		}
+		return &PromptExceedsNCtxError{
+			ModelName:         modelName,
+			ActualTokens:      actualTokens,
+			RequestedNPredict: params.NPredict,
+			NCtx:              nCtx,
+			MinNPredictFloor:  minNPredictClamp,
+			NCtxOverride:      params.NCtxOverride, // что прислал клиент в options.num_ctx
+			MaxVRAMNCtx:       maxVRAMNCtx,         // 0 если неизвестно — balancer применит fallback
+		}
+	}
+
 	if maxAllowedNPredict < minNPredictClamp {
-		// Не можем сгенерировать даже минимум. Оставляем minNPredict как «лучше хоть что-то».
+		// Эта ветка теперь недостижима (предыдущий if уже вернул ошибку),
+		// но оставлена как defense-in-depth.
 		maxAllowedNPredict = minNPredictClamp
 	}
 
 	if params.NPredict > maxAllowedNPredict {
+		reductionPct := float64(params.NPredict-maxAllowedNPredict) / float64(params.NPredict) * 100.0
 		logger.Get().Infow("clamping n_predict to fit n_ctx",
 			"model", modelName,
 			"actual_prompt_tokens", actualTokens,
 			"requested_n_predict", params.NPredict,
 			"clamped_n_predict", maxAllowedNPredict,
 			"n_ctx", nCtx,
+			"prompt_chars", len(prompt),
+			"min_n_predict_floor", minNPredictClamp,
+			"reduction_pct", reductionPct,
 			"reason", "prevent code 3 prompt-too-long for tools/long-prompt requests")
+		if reductionPct > 50.0 {
+			logger.Get().Warnw("n_predict severely clamped (>50% reduction) — response may be truncated",
+				"model", modelName,
+				"requested_n_predict", params.NPredict,
+				"clamped_n_predict", maxAllowedNPredict,
+				"n_ctx", nCtx,
+				"actual_prompt_tokens", actualTokens,
+				"reduction_pct", reductionPct,
+				"advice", "consider increasing n_ctx or reducing conversation history")
+		}
 		params.NPredict = maxAllowedNPredict
+		// Сохраняем флаг для добавления warning в ответ
+		params.ClampedNPredict = true
+		params.ClampedNPredictOriginal = params.NPredict // уже заменено, сохраняем maxAllowedNPredict как новый
 	}
+	return nil
 }
 
 // ============================================================
@@ -346,7 +455,11 @@ func clampNPredictToFitContext(modelName, prompt string, params *bridge.Generati
 func generateWithRamFallback(modelName, prompt string, params bridge.GenerationParams, hasTools bool) (*bridge.InferenceResult, error) {
 	// Превентивный клампинг n_predict: даже если reload при tools отключён,
 	// мы можем уменьшить n_predict так, чтобы prompt влез в n_ctx.
-	clampNPredictToFitContext(modelName, prompt, &params)
+	// 2026-06-24: если prompt>n_ctx даже с учётом min floor — возвращаем ошибку,
+	// а не молча клампим до 512 (что приводило к пустому ответу в Cline).
+	if clampErr := clampNPredictToFitContext(modelName, prompt, &params); clampErr != nil {
+		return nil, clampErr
+	}
 	result, err := backend.Generate(modelName, prompt, params)
 	if err == nil {
 		// Успешный инференс без n_ctx ошибки — сбрасываем счётчик reload-попыток,
@@ -388,7 +501,10 @@ func generateWithRamFallback(modelName, prompt string, params bridge.GenerationP
 func generateStreamWithRamFallback(modelName, prompt string, params bridge.GenerationParams, callback bridge.StreamCallback, hasTools bool) error {
 	// Превентивный клампинг n_predict (для streaming тоже критично — иначе bridge
 	// упадёт в первом же prefill-токене).
-	clampNPredictToFitContext(modelName, prompt, &params)
+	// 2026-06-24: если prompt>n_ctx даже с учётом min floor — возвращаем ошибку.
+	if clampErr := clampNPredictToFitContext(modelName, prompt, &params); clampErr != nil {
+		return clampErr
+	}
 	err := backend.GenerateStream(modelName, prompt, params, callback)
 	if err == nil {
 		// Успешный стрим без n_ctx ошибки — сбрасываем счётчик reload-попыток.
@@ -478,22 +594,46 @@ func tryRamFallbackReload(modelName string, requestedNCtx int, hasTools bool) (b
 		return false, fmt.Errorf("requested n_ctx=%d exceeds ram-fallback-max-n-ctx=%d", requestedNCtx, *ramFallbackMaxNCtx)
 	}
 
-	// Шаг 0 (Шаг 4 фикса): при tools-запросах reload отключён.
+	// Шаг 0 (Шаг 4 фикса): при tools-запросах reload по умолчанию отключён —
+	// НО с 2026-06-23 для динамической подстройки n_ctx под Cline/OpenWebUI
+	// мы разрешаем reload при tools, если глобальный флаг
+	// tryRamFallbackReloadAllowTools включён. Balancer через preflight
+	// уже оценил VRAM/model_max и решил, что reload влезет; cppworker
+	// просто исполняет решение.
 	//
-	// Логика: tools-сценарий (OpenWebUI) добавляет tool definitions + tool calls +
-	// tool results + history в prompt на КАЖДОЙ итерации. Даже если reload увеличит
-	// n_ctx до requestedNCtx, следующая итерация принесёт ещё больше токенов и
-	// overflow повторится. На практике это приводит к циклу reload+timeout+reload,
-	// пока OpenWebUI не отменит запрос — и пользователь получит «пустой ответ».
-	//
-	// Лучше сразу вернуть 413 с понятным сообщением: уменьшите tools / history
-	// или увеличьте n_ctx в профиле модели.
-	if hasTools {
-		logger.Get().Warnw("RAM fallback: reload disabled for tools-request",
+	// Если локально флаг выключен (env CPPWORKER_RAM_FALLBACK_ALLOW_TOOLS=false),
+	// возвращаем ReloadDisabledForToolsError — для совместимости со
+	// старым поведением (operator override).
+	if hasTools && !tryRamFallbackReloadAllowTools {
+		currentNCtx := 0
+		currentInfo, infoErr := backend.GetModel(modelName)
+		if infoErr == nil {
+			currentNCtx = currentInfo.ContextSize
+		}
+		bridgeCode := 0
+		if lastErr := bridge.GetLastErrorInfo(); lastErr != nil {
+			bridgeCode = lastErr.Code
+		}
+		capRatio := 0.0
+		if currentNCtx > 0 {
+			capRatio = float64(requestedNCtx) / float64(currentNCtx)
+		}
+		logger.Get().Warnw("RAM fallback: reload disabled for tools-request (flag off)",
 			"model", modelName,
-			"reason", "each chat iteration adds tool results to context, reload would not help",
-			"requested_n_ctx", requestedNCtx)
+			"reason", "tryRamFallbackReloadAllowTools=false; reduce tools or increase n_ctx in profile",
+			"requested_n_ctx", requestedNCtx,
+			"current_n_ctx", currentNCtx,
+			"cap_ratio", capRatio,
+			"bridge_last_error_code", bridgeCode,
+			"advice", "reduce tools count / chat history, or increase n_ctx in model profile, "+
+				"or enable --ram-fallback-allow-tools")
 		return false, &ReloadDisabledForToolsError{Model: modelName}
+	}
+	if hasTools && tryRamFallbackReloadAllowTools {
+		logger.Get().Infow("RAM fallback: tools-request reload allowed (flag on)",
+			"model", modelName,
+			"requested_n_ctx", requestedNCtx,
+			"advice", "balancer preflight evaluated VRAM/model_max; reload should fit")
 	}
 
 	// Cycle-limit check: если уже было слишком много reload-попыток за последнее
@@ -551,6 +691,37 @@ func tryRamFallbackReload(modelName string, requestedNCtx int, hasTools bool) (b
 		NUMA:          current.NUMA,
 		UseMmap:       true, // RAM fallback через mmap
 		TensorSplit:   current.TensorSplit,
+	}
+
+	// === AutoTuneNCtx (Issue: "Cline + 20GB GPU, есть RAM, но VRAM не хватает") ===
+	// При CPPWORKER_AUTO_TUNE_NCTX=true / --auto-tune-nctx вычисляем оптимальные
+	// n_ctx и gpu_layers с учётом реальных VRAM и RAM. Стратегия:
+	//   1. Если requestedNCtx помещается в VRAM с current gpu_layers → use as-is.
+	//   2. Иначе: уменьшаем gpu_layers (partial offload через mmap).
+	//   3. Если и с gpu_layers=0 не влезает → уменьшаем n_ctx до максимально
+	//      возможного (тогда inference пройдёт без кода 3).
+	if *autoTuneNCtx {
+		tuned := AutoTuneNCtx(*current, requestedNCtx)
+		opts.ContextSize = tuned.RecommendedNCtx
+		opts.GPULayers = tuned.RecommendedGPULayers
+		opts.UseMmap = tuned.UseMmap
+		logger.Get().Infow("AutoTuneNCtx: applied to RAM-fallback reload",
+			"model", modelName,
+			"requested_n_ctx", requestedNCtx,
+			"tuned_n_ctx", tuned.RecommendedNCtx,
+			"tuned_gpu_layers", tuned.RecommendedGPULayers,
+			"max_viable_n_ctx", tuned.MaxViableNCtx,
+			"source", tuned.Source)
+		if tuned.RecommendedNCtx == 0 {
+			// Не влезает даже cpu-only — возвращаем ошибку с конкретным max.
+			return false, &AutoTuneError{
+				Model:          modelName,
+				RequestedNCtx:  requestedNCtx,
+				MaxViableNCtx:  tuned.MaxViableNCtx,
+				ModelSizeBytes: int64(current.SizeBytes),
+				AvailableRAMMB: availableRAMBytes() / (1024 * 1024),
+			}
+		}
 	}
 
 	lockOk, lockErr := backend.TryLockLoad(modelName)

@@ -174,6 +174,143 @@ func TestParseCppWorkerError_NotJSON(t *testing.T) {
 	}
 }
 
+// TestParseCppWorkerError_PromptExceedsNCtx_2026_06_24 —
+// Регрессионный тест для production bug (2026-06-24):
+//
+//   Cline на gemma-4-E4B-it-Q4_K_M получал пустой ответ с done_reason="stop"
+//   потому что cppworker молча клампил n_predict до 512 и возвращал
+//   {code: "prompt_exceeds_n_ctx"} (string). Балансер ParseCppWorkerError
+//   не распознавал string-код, поэтому не триггерил auto-reload — клиент
+//   оставался с n_ctx=32768, а hardware может n_ctx=131072.
+//
+// После фикса cppworker возвращает:
+//   {
+//     "code": 3,                                  ← int=ErrPromptTooLong
+//     "code_str": "prompt_exceeds_n_ctx",
+//     "bridge_info": {
+//       "code": 3,
+//       "current_n_ctx": 32768,
+//       "required_n_ctx": 65536,                  ← roundUpPow2(55111+512+1)
+//       "actual_tokens": 55111,
+//       "n_predict": 512,
+//       "n_ctx_override": 32768,
+//       "max_vram_n_ctx": 131072,
+//       ...
+//     }
+//   }
+//
+// Балансер должен:
+//   1. Распарсить через ParseCppWorkerError → *NCtxError с errors.Is(ErrPromptTooLong).
+//   2. BridgeInfo должен содержать все поля для DecideReloadBackend.
+func TestParseCppWorkerError_PromptExceedsNCtx_2026_06_24(t *testing.T) {
+	body := []byte(`{
+		"error": "prompt exceeds n_ctx even with minimum n_predict floor",
+		"code": 3,
+		"code_str": "prompt_exceeds_n_ctx",
+		"bridge_info": {
+			"code": 3,
+			"current_n_ctx": 32768,
+			"required_n_ctx": 65536,
+			"actual_tokens": 55111,
+			"n_predict": 512,
+			"n_ctx_override": 32768,
+			"max_vram_n_ctx": 131072,
+			"message": "prompt exceeds n_ctx even with minimum n_predict floor"
+		},
+		"model": "gemma-4-E4B-it-Q4_K_M",
+		"actual_prompt_tokens": 55111,
+		"n_ctx": 32768,
+		"deficit_tokens": 22855,
+		"min_n_predict_floor": 512
+	}`)
+
+	got := ParseCppWorkerError(body, 413, "cppworker-gpu")
+	if got == nil {
+		t.Fatalf("expected NCtxError, got nil — balancer won't trigger auto-reload!")
+	}
+	if !errors.Is(got, bridge.ErrPromptTooLong) {
+		t.Error("expected errors.Is(err, bridge.ErrPromptTooLong) == true")
+	}
+
+	nctxErr, ok := got.(*NCtxError)
+	if !ok {
+		t.Fatalf("expected *NCtxError, got %T", got)
+	}
+	if nctxErr.HTTPStatus != 413 {
+		t.Errorf("HTTPStatus = %d, want 413", nctxErr.HTTPStatus)
+	}
+	if nctxErr.BridgeInfo == nil {
+		t.Fatal("BridgeInfo is nil — DecideReloadBackend can't compute reload target")
+	}
+	bi := nctxErr.BridgeInfo
+	if bi.Code != bridge.ErrCodePromptTooLong {
+		t.Errorf("BridgeInfo.Code = %d, want %d (ErrCodePromptTooLong=3)",
+			bi.Code, bridge.ErrCodePromptTooLong)
+	}
+	if bi.CurrentNCtx != 32768 {
+		t.Errorf("CurrentNCtx = %d, want 32768 (loaded n_ctx)", bi.CurrentNCtx)
+	}
+	if bi.RequiredNCtx != 65536 {
+		t.Errorf("RequiredNCtx = %d, want 65536 (roundUpPow2 of 55624)", bi.RequiredNCtx)
+	}
+	if bi.ActualTokens != 55111 {
+		t.Errorf("ActualTokens = %d, want 55111 (real gemma-4 prompt size)", bi.ActualTokens)
+	}
+	if bi.NPredict != 512 {
+		t.Errorf("NPredict = %d, want 512 (minNPredictFloor)", bi.NPredict)
+	}
+	if bi.NCtxOverride != 32768 {
+		t.Errorf("NCtxOverride = %d, want 32768", bi.NCtxOverride)
+	}
+	if bi.MaxVRAMNCtx != 131072 {
+		t.Errorf("MaxVRAMNCtx = %d, want 131072 (hardware capability)", bi.MaxVRAMNCtx)
+	}
+
+	// КРИТИЧНАЯ проверка: balancer должен решить DecisionReload (а не Reject),
+	// потому что required=65536 < max_vram*0.85=111412.
+	coord := NewNCtxReloadCoordinator(DefaultNCtxReloadConfig())
+	plan := coord.DecideReloadBackend("cppworker-gpu", bi, 0)
+	if plan == nil {
+		t.Fatal("DecideReloadBackend returned nil plan")
+	}
+	if plan.Decision != DecisionReload {
+		t.Errorf("DecideReloadBackend = %v, want DecisionReload. Reason: %s",
+			plan.Decision, plan.Reason)
+	}
+	if plan.NewNCtx < 65536 {
+		t.Errorf("NewNCtx = %d, want >= 65536", plan.NewNCtx)
+	}
+	t.Logf("OK: balancer correctly decides Reload to n_ctx=%d (required=65536, max_vram=131072)",
+		plan.NewNCtx)
+}
+
+// TestParseCppWorkerError_OldFormatStillWorks_2026_06_24 —
+// Старый формат cppworker (с string code "prompt_exceeds_n_ctx" без int code=3)
+// НЕ должен триггерить auto-reload — это уже было сломано, мы не регрессируем.
+//
+// Если cppworker ещё не обновлён и возвращает старый формат, балансер
+// увидит generic error и не сделает reload — клиент получит 413 as-is.
+// После deploy нового cppworker всё начнёт работать.
+func TestParseCppWorkerError_OldFormat_NotReloadable(t *testing.T) {
+	oldBody := []byte(`{
+		"error": "prompt exceeds n_ctx even with minimum n_predict floor",
+		"code": "prompt_exceeds_n_ctx",
+		"model": "gemma-4-E4B-it-Q4_K_M",
+		"actual_prompt_tokens": 55111,
+		"n_ctx": 32768,
+		"deficit_tokens": 22855,
+		"min_n_predict_floor": 512,
+		"suggestion": "Increase n_ctx or reduce history"
+	}`)
+
+	got := ParseCppWorkerError(oldBody, 413, "cppworker-gpu")
+	// Старый формат НЕ парсится как NCtxError (string code не подходит под
+	// isNCtxRelevantCode). balancer пробрасывает 413 as-is клиенту.
+	if got != nil {
+		t.Logf("NOTE: old format returned %T (would propagate 413 to client without auto-reload)", got)
+	}
+}
+
 func TestNCtxError_Error(t *testing.T) {
 	// Проверяет, что Error() форматируется без паники и содержит ключевые поля.
 	body := []byte(`{

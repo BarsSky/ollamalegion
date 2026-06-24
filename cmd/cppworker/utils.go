@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"encoding/json"
 	"flag"
 	"fmt"
@@ -181,6 +182,158 @@ func writeReloadDisabledForToolsResponse(w http.ResponseWriter, err *ReloadDisab
 		"profile_endpoint": "/api/v1/cppworker/model-profiles",
 	}
 	writeJSON(w, http.StatusRequestEntityTooLarge, body)
+}
+
+// writePromptExceedsNCtxResponse — пишет HTTP 413 когда prompt (actual_tokens)
+// превышает n_ctx даже с учётом минимального n_predict floor (512).
+//
+// Корневая причина (2026-06-24): Cline на gemma-4-E4B-it-Q4_K_M получал пустой
+// ответ с done_reason="stop", потому что clampNPredictToFitContext молча клампил
+// n_predict до 512 → модель эмитила только <end_of_turn> и завершалась.
+//
+// После фикса (2026-06-24): clampNPredictToFitContext возвращает
+// *PromptExceedsNCtxError, и этот handler транслирует его в HTTP 413
+// с actionable-сообщением: "увеличь n_ctx или уменьши history/tools/system prompt".
+//
+// Формат ответа:
+//
+//	{
+//	  "error": "prompt exceeds n_ctx even with minimum n_predict floor: ...",
+//	  "code": "prompt_exceeds_n_ctx",
+//	  "model": "gemma-4-E4B-it-Q4_K_M",
+//	  "actual_prompt_tokens": 9391,
+//	  "n_ctx": 8196,
+//	  "deficit_tokens": 1708,
+//	  "min_n_predict_floor": 512,
+//	  "suggestion": "Increase n_ctx (save model profile with larger context_length and reload), or reduce conversation history / tools[] / system prompt",
+//	  "profile_endpoint": "/api/v1/cppworker/model-profiles"
+//	}
+//
+// HTTP 413 — payload too large (стандартный код для "request не помещается в ресурсы").
+// handleInferenceError — единая точка обработки ошибок инференса.
+// Возвращает true, если ошибка была обработана (handler должен return).
+// Поддерживает:
+//   - *PromptExceedsNCtxError → HTTP 413 (prompt>n_ctx даже с min floor)
+//   - *ReloadLoopLimitError → HTTP 413 (reload-cycle-limit)
+//   - *ReloadDisabledForToolsError → HTTP 413 (tools-запрос с большим prompt)
+//
+// Любая другая ошибка: возвращает false, caller сам решает что делать
+// (как правило, writeCppWorkerErrorWithBridgeInfo).
+func handleInferenceError(w http.ResponseWriter, err error) bool {
+	if err == nil {
+		return false
+	}
+	var perr *PromptExceedsNCtxError
+	if errors.As(err, &perr) {
+		writePromptExceedsNCtxResponse(w, perr)
+		return true
+	}
+	var rllErr *ReloadLoopLimitError
+	if errors.As(err, &rllErr) {
+		writeReloadLoopLimitResponse(w, rllErr)
+		return true
+	}
+	var rdtErr *ReloadDisabledForToolsError
+	if errors.As(err, &rdtErr) {
+		writeReloadDisabledForToolsResponse(w, rdtErr)
+		return true
+	}
+	return false
+}
+
+// writePromptExceedsNCtxResponse — пишет HTTP 413 когда prompt (actual_tokens)
+// превышает n_ctx даже с учётом минимального n_predict floor (512).
+//
+// Корневая причина (2026-06-24): Cline на gemma-4-E4B-it-Q4_K_M получал пустой
+// ответ с done_reason="stop", потому что clampNPredictToFitContext молча клампил
+// n_predict до 512 → модель эмитила только <end_of_turn> и завершалась.
+//
+// После фикса (2026-06-24): clampNPredictToFitContext возвращает
+// *PromptExceedsNCtxError, и этот handler транслирует его в HTTP 413
+// с actionable-сообщением: "увеличь n_ctx или уменьши history/tools/system prompt".
+//
+// ВАЖНО (2026-06-24): чтобы балансировщик мог перехватить этот ответ и
+// выполнить auto-reload (см. internal/balancer/llamacpp_error.go:ParseCppWorkerError),
+// в JSON-ответе ОБЯЗАТЕЛЬНО должны быть top-level "code" (int = bridge.ErrCodePromptTooLong = 3)
+// и "bridge_info" с полями current_n_ctx / required_n_ctx / actual_tokens / n_predict.
+// Балансировщик по error code 3 вызывает NCtxReloadCoordinator.DecideReloadBackend,
+// который reload'ит модель на n_ctx = required и повторяет запрос. Без этих полей
+// балансировщик не сможет выполнить auto-reload и просто пробросит 413 клиенту.
+//
+// Формат ответа:
+//
+//	{
+//	  "error": "prompt exceeds n_ctx even with minimum n_predict floor: ...",
+//	  "code": 3,
+//	  "code_str": "prompt_exceeds_n_ctx",
+//	  "bridge_info": {
+//	    "code": 3,
+//	    "current_n_ctx": 8196,
+//	    "required_n_ctx": 9391,
+//	    "actual_tokens": 9391,
+//	    "n_predict": 512,
+//	    "n_ctx_override": 8196,
+//	    "max_vram_n_ctx": 131072,
+//	    "message": "..."
+//	  },
+//	  "model": "gemma-4-E4B-it-Q4_K_M",
+//	  "deficit_tokens": 1708,
+//	  "min_n_predict_floor": 512,
+//	  "suggestion": "..."
+//	}
+//
+// HTTP 413 — payload too large.
+func writePromptExceedsNCtxResponse(w http.ResponseWriter, err *PromptExceedsNCtxError) {
+	deficit := err.ActualTokens + err.MinNPredictFloor + 1 - err.NCtx
+	required := err.ActualTokens + err.MinNPredictFloor + 1
+
+	// required_n_ctx = actual_tokens + min_floor + 1, roundUpPow2.
+	requiredRoundUp := roundUpPow2Local(required)
+
+	// currentNCtxOverride (n_ctx_override) — что клиент прислал в options.num_ctx.
+	// 0, если не задан. Берём из err (если есть) или 0.
+	currentOverride := err.NCtxOverride
+
+	body := map[string]interface{}{
+		"error":                err.Error(),
+		"code":                 bridge.ErrCodePromptTooLong, // int=3, чтобы балансер сработал
+		"code_str":             "prompt_exceeds_n_ctx",
+		"bridge_info": map[string]interface{}{
+			"code":           bridge.ErrCodePromptTooLong,
+			"current_n_ctx":  err.NCtx,
+			"required_n_ctx": requiredRoundUp,
+			"actual_tokens":  err.ActualTokens,
+			"n_predict":      err.MinNPredictFloor, // min floor, который пытались использовать
+			"n_ctx_override": currentOverride,
+			"max_vram_n_ctx": err.MaxVRAMNCtx, // 0 если неизвестно — пусть балансер применит fallback
+			"message":        err.Error(),
+		},
+		"model":                err.ModelName,
+		"actual_prompt_tokens": err.ActualTokens,
+		"n_ctx":                err.NCtx,
+		"deficit_tokens":       deficit,
+		"min_n_predict_floor":  err.MinNPredictFloor,
+		"requested_n_predict":  err.RequestedNPredict,
+		"suggestion":           "Increase n_ctx (save model profile with larger context_length and reload via POST /api/v1/cppworker/model-profiles/{name}/apply), or reduce conversation history / tools[] / system prompt",
+		"profile_endpoint":     "/api/v1/cppworker/model-profiles",
+	}
+	writeJSON(w, http.StatusRequestEntityTooLarge, body)
+}
+
+// roundUpPow2Local — локальная копия roundUpPow2 для использования в writePromptExceedsNCtxResponse
+// (не импортируем internal/balancer — это приведёт к циклической зависимости).
+func roundUpPow2Local(v int) int {
+	if v <= 0 {
+		return 512
+	}
+	if v < 512 {
+		return 512
+	}
+	p := 1
+	for p < v {
+		p <<= 1
+	}
+	return p
 }
 
 // ============================================================

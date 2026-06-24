@@ -4,6 +4,8 @@ package main
 
 import (
 	"encoding/json"
+
+	"errors"
 	"fmt"
 	"net/http"
 	"strings"
@@ -285,6 +287,10 @@ func handleV1ChatCompletions(w http.ResponseWriter, r *http.Request) {
 			hasTools := len(req.Tools) > 0
 			result, err := generateWithRamFallback(req.Model, prompt, params, hasTools)
 			if err != nil {
+				// 2026-06-24: PromptExceedsNCtxError → HTTP 413 (см. inference.go).
+				if handleInferenceError(w, err) {
+					return
+				}
 				statusCode := http.StatusInternalServerError
 				if info := bridge.GetLastErrorInfo(); info.Code == bridge.ErrCodeNCtxNeedsReload || info.Code == bridge.ErrCodePromptTooLong || info.Code == bridge.ErrCodeBadRequest {
 					statusCode = http.StatusBadRequest
@@ -327,6 +333,10 @@ func handleV1ChatCompletions(w http.ResponseWriter, r *http.Request) {
 	hasTools := len(req.Tools) > 0
 	result, err := generateWithRamFallback(req.Model, prompt, params, hasTools)
 	if err != nil {
+		// 2026-06-24: PromptExceedsNCtxError → HTTP 413 (см. inference.go).
+		if handleInferenceError(w, err) {
+			return
+		}
 		statusCode := http.StatusInternalServerError
 		if info := bridge.GetLastErrorInfo(); info.Code == bridge.ErrCodeNCtxNeedsReload || info.Code == bridge.ErrCodePromptTooLong || info.Code == bridge.ErrCodeBadRequest {
 			statusCode = http.StatusBadRequest
@@ -519,6 +529,20 @@ func writeOpenAIChatStream(w http.ResponseWriter, r *http.Request, modelName, pr
 		writeError(w, http.StatusInternalServerError, "streaming not supported")
 		return
 	}
+	// 2026-06-24: preflight n_ctx check BEFORE WriteHeader(200).
+	// Once WriteHeader(200) is called, we can't change status code mid-stream.
+	// The HTTP client would see "200 OK" with whatever body we wrote after
+	// (which it would interpret as malformed SSE response).
+	if err := clampNPredictToFitContext(modelName, prompt, &params); err != nil {
+		// Returns *PromptExceedsNCtxError → HTTP 413 with actionable advice.
+		var perr *PromptExceedsNCtxError
+		if errors.As(err, &perr) {
+			writePromptExceedsNCtxResponse(w, perr)
+			return
+		}
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-cache")
 	w.Header().Set("Connection", "keep-alive")
@@ -680,6 +704,30 @@ func writeOpenAIChatStream(w http.ResponseWriter, r *http.Request, modelName, pr
 	fullOutput := outputBuf.String()
 	toolCalls := parseToolCallsFromOutput(fullOutput)
 
+	// 2026-06-24: проверка на пустой ответ после cleanFinalContent (gemma antiprompt).
+	// Если tool_calls нет И cleaned output пустой → error-чанк.
+	if len(toolCalls) == 0 && strings.TrimSpace(cleanFinalContent(fullOutput)) == "" {
+		errChunk := map[string]interface{}{
+			"id":      chatID,
+			"object":  "chat.completion.chunk",
+			"created": created,
+			"model":   modelName,
+			"choices": []map[string]interface{}{
+				{
+					"index":         0,
+					"delta":         map[string]string{},
+					"finish_reason": "error",
+				},
+			},
+			"error": "model produced an empty response (inference succeeded but output is empty). This may indicate n_ctx too small, prompt too long, or model issue.",
+		}
+		errJSON, _ := json.Marshal(errChunk)
+		safeFprintf("data: %s\n\n", errJSON)
+		safeFprintf("data: [DONE]\n\n")
+		safeFlush()
+		return
+	}
+
 	finalDelta := map[string]interface{}{}
 	finishReason := "stop"
 
@@ -778,6 +826,10 @@ func handleV1Completions(w http.ResponseWriter, r *http.Request) {
 	// reload разрешён при n_ctx overflow.
 	result, err := generateWithRamFallback(req.Model, req.Prompt, params, false)
 	if err != nil {
+		// 2026-06-24: PromptExceedsNCtxError → HTTP 413 (см. inference.go).
+		if handleInferenceError(w, err) {
+			return
+		}
 		statusCode := http.StatusInternalServerError
 		if info := bridge.GetLastErrorInfo(); info.Code == bridge.ErrCodeNCtxNeedsReload || info.Code == bridge.ErrCodePromptTooLong || info.Code == bridge.ErrCodeBadRequest {
 			statusCode = http.StatusBadRequest
@@ -822,6 +874,16 @@ func writeOpenAICompletionStream(w http.ResponseWriter, r *http.Request, modelNa
 	flusher, ok := w.(http.Flusher)
 	if !ok {
 		writeError(w, http.StatusInternalServerError, "streaming not supported")
+		return
+	}
+	// 2026-06-24: preflight n_ctx check BEFORE WriteHeader.
+	if err := clampNPredictToFitContext(modelName, prompt, &params); err != nil {
+		var perr *PromptExceedsNCtxError
+		if errors.As(err, &perr) {
+			writePromptExceedsNCtxResponse(w, perr)
+			return
+		}
+		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 	w.Header().Set("Content-Type", "text/event-stream")
@@ -911,6 +973,29 @@ func writeOpenAICompletionStream(w http.ResponseWriter, r *http.Request, modelNa
 	}
 
 	// Финальный чанк с полным output (раньше был пустой text — клиент видел пустой ответ).
+	// 2026-06-24: проверка на пустой ответ после cleanFinalContent (gemma antiprompt).
+	fullOutput := outputBuf.String()
+	if strings.TrimSpace(cleanFinalContent(fullOutput)) == "" {
+		errChunk := map[string]interface{}{
+			"id":      completionID,
+			"object":  "text_completion",
+			"created": created,
+			"model":   modelName,
+			"choices": []map[string]interface{}{
+				{
+					"text":          "",
+					"index":         0,
+					"finish_reason": "error",
+				},
+			},
+			"error": "model produced an empty response (inference succeeded but output is empty). This may indicate n_ctx too small, prompt too long, or model issue.",
+		}
+		errJSON, _ := json.Marshal(errChunk)
+		fmt.Fprintf(w, "data: %s\n\n", errJSON)
+		fmt.Fprintf(w, "data: [DONE]\n\n")
+		flusher.Flush()
+		return
+	}
 	stopChunk := map[string]interface{}{
 		"id":      completionID,
 		"object":  "text_completion",
@@ -918,7 +1003,7 @@ func writeOpenAICompletionStream(w http.ResponseWriter, r *http.Request, modelNa
 		"model":   modelName,
 		"choices": []map[string]interface{}{
 			{
-				"text":          cleanFinalContent(outputBuf.String()),
+				"text":          cleanFinalContent(fullOutput),
 				"index":         0,
 				"finish_reason": "stop",
 			},

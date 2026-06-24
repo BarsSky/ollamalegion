@@ -2,6 +2,8 @@ package main
 
 import (
 	"encoding/json"
+
+	"errors"
 	"fmt"
 	"net/http"
 	"strings"
@@ -138,6 +140,10 @@ func handleChat(w http.ResponseWriter, r *http.Request) {
 	hasTools := len(req.Tools) > 0
 	result, err := generateWithRamFallback(req.Model, prompt, params, hasTools)
 	if err != nil {
+		// 2026-06-24: PromptExceedsNCtxError → HTTP 413 (см. inference.go).
+		if handleInferenceError(w, err) {
+			return
+		}
 		// Специальная обработка reload-loop-limit (HTTP 413 с понятным message).
 		if rllErr, ok := err.(*ReloadLoopLimitError); ok {
 			writeReloadLoopLimitResponse(w, rllErr)
@@ -328,11 +334,22 @@ func writeChatStreamResponse(w http.ResponseWriter, r *http.Request, modelName, 
 		writeError(w, http.StatusInternalServerError, "streaming not supported")
 		return
 	}
+	// 2026-06-24: preflight n_ctx check BEFORE flushing headers.
+	if err := clampNPredictToFitContext(modelName, prompt, &params); err != nil {
+		var perr *PromptExceedsNCtxError
+		if errors.As(err, &perr) {
+			writePromptExceedsNCtxResponse(w, perr)
+			return
+		}
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
 	w.Header().Set("Content-Type", "application/x-ndjson")
 	w.Header().Set("Cache-Control", "no-cache")
 	w.Header().Set("Connection", "keep-alive")
 	flusher.Flush()
 	ctx := r.Context()
+	var outputBuf strings.Builder
 	start := time.Now()
 	createdAt := time.Now().UTC().Format(time.RFC3339)
 
@@ -342,6 +359,7 @@ func writeChatStreamResponse(w http.ResponseWriter, r *http.Request, modelName, 
 			return false
 		default:
 		}
+		outputBuf.WriteString(token)
 		chunk := map[string]interface{}{
 			"model":      modelName,
 			"created_at": createdAt,
@@ -394,12 +412,32 @@ func writeChatStreamResponse(w http.ResponseWriter, r *http.Request, modelName, 
 		return
 	}
 
+	fullOutput := outputBuf.String()
 	duration := time.Since(start)
+
+	// 2026-06-24: проверка на пустой ответ после cleanFinalContent (gemma antiprompt).
+	if strings.TrimSpace(cleanFinalContent(fullOutput)) == "" {
+		errChunk := map[string]interface{}{
+			"model":       modelName,
+			"created_at":  createdAt,
+			"message":     map[string]string{"role": "assistant", "content": ""},
+			"done":        true,
+			"done_reason": "error",
+			"error":       "model produced an empty response (inference succeeded but output is empty). This may indicate n_ctx too small, prompt too long, or model issue.",
+		}
+		errJSON, _ := json.Marshal(errChunk)
+		fmt.Fprintf(w, "%s\n", errJSON)
+		flusher.Flush()
+		return
+	}
+
+	cleanedOutput := cleanFinalContent(fullOutput)
 	doneChunk := map[string]interface{}{
 		"model":          modelName,
 		"created_at":     createdAt,
-		"message":        map[string]string{"role": "assistant", "content": ""},
+		"message":        map[string]string{"role": "assistant", "content": cleanedOutput},
 		"done":           true,
+		"done_reason":     "stop",
 		"total_duration": duration.Nanoseconds(),
 		"eval_count":     0,
 		"eval_duration":  duration.Nanoseconds(),
@@ -425,6 +463,16 @@ func writeChatStreamResponseWithTools(w http.ResponseWriter, r *http.Request, mo
 	flusher, ok := w.(http.Flusher)
 	if !ok {
 		writeError(w, http.StatusInternalServerError, "streaming not supported")
+		return
+	}
+	// 2026-06-24: preflight n_ctx check BEFORE flushing headers.
+	if err := clampNPredictToFitContext(modelName, prompt, &params); err != nil {
+		var perr *PromptExceedsNCtxError
+		if errors.As(err, &perr) {
+			writePromptExceedsNCtxResponse(w, perr)
+			return
+		}
+		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 	w.Header().Set("Content-Type", "application/x-ndjson")
@@ -515,6 +563,22 @@ func writeChatStreamResponseWithTools(w http.ResponseWriter, r *http.Request, mo
 
 	// Пытаемся распарсить tool_calls из финального текста.
 	toolCalls := parseToolCallsFromOutput(fullOutput)
+
+	// 2026-06-24: проверка на пустой ответ после cleanFinalContent (gemma antiprompt).
+	if len(toolCalls) == 0 && strings.TrimSpace(cleanFinalContent(fullOutput)) == "" {
+		errChunk := map[string]interface{}{
+			"model":       modelName,
+			"created_at":  createdAt,
+			"message":     map[string]string{"role": "assistant", "content": ""},
+			"done":        true,
+			"done_reason": "error",
+			"error":       "model produced an empty response (inference succeeded but output is empty). This may indicate n_ctx too small, prompt too long, or model issue.",
+		}
+		errJSON, _ := json.Marshal(errChunk)
+		fmt.Fprintf(w, "%s\n", errJSON)
+		flusher.Flush()
+		return
+	}
 
 	finalChunk := map[string]interface{}{
 		"model":          modelName,

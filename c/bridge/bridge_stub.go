@@ -177,11 +177,14 @@ var ErrNoChatTemplate = fmt.Errorf("chat template not available in stub mode")
 const (
 	ErrCodeOK              = 0
 	ErrCodeGeneric         = 1
-	ErrCodeNCtxNeedsReload = 2
-	ErrCodePromptTooLong   = 3
-	ErrCodeGPUOOM          = 4
-	ErrCodeBadRequest      = 5
+	ErrCodeNCtxNeedsReload      = 2
+	ErrCodePromptTooLong        = 3
+	ErrCodeGPUOOM               = 4
+	ErrCodeBadRequest           = 5
+	ErrCodeInsufficientResources = 6
 )
+
+// ErrNCtxNeedsReload — stub-sentinel. В stub-режиме не выбрасывается,
 
 // BridgeErrorInfo — заглушка. В stub-режиме всегда возвращается OK.
 type BridgeErrorInfo struct {

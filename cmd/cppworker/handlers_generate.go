@@ -241,11 +241,17 @@ func handleGenerate(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid JSON: "+err.Error())
 		return
 	}
+	modelName := req.Model
+	// InFlight counter: защищает активные запросы от reload-обрыва.
+	// handleReloadModel ждёт WaitZero перед UnloadModel.
+	if modelName != "" && backend.InFlight() != nil {
+		backend.InFlight().Inc(modelName)
+		defer backend.InFlight().Dec(modelName)
+	}
 	params, prompt, ok := runGenerateCore(w, r, req)
 	if !ok {
 		return
 	}
-	modelName := req.Model
 
 	// keep_alive: после успешного ответа применяется в defer.
 	// Семантика: "0" → unload, "5m" → lastUsedAt += 5 минут, "" → дефолт 30 минут.
@@ -261,6 +267,8 @@ func handleGenerate(w http.ResponseWriter, r *http.Request) {
 	start := time.Now()
 	// /api/generate endpoint: tools не поддерживаются.
 	result, err := generateWithRamFallback(modelName, prompt, params, false)
+	// 2026-06-25: записываем snapshot последнего inference для endpoint /debug/last-prompt.
+	defer recordLastPromptFromError(modelName, "/api/generate", prompt, &params, false, err)
 	if err != nil {
 		// 2026-06-24: PromptExceedsNCtxError → HTTP 413 (см. inference.go).
 		if handleInferenceError(w, err) {
@@ -324,6 +332,11 @@ func writeStreamResponse(w http.ResponseWriter, r *http.Request, modelName, prom
 	var outputBuf strings.Builder
 	start := time.Now()
 	createdAt := time.Now().UTC().Format(time.RFC3339)
+	// 2026-06-25: snapshot для /api/generate streaming.
+	var streamErr error
+	defer func() {
+		recordLastPromptFromError(modelName, "/api/generate", prompt, &params, false, streamErr)
+	}()
 	callback := func(token string) bool {
 		select {
 		case <-ctx.Done():
@@ -343,15 +356,16 @@ func writeStreamResponse(w http.ResponseWriter, r *http.Request, modelName, prom
 		return true
 	}
 	// /api/generate streaming: tools не поддерживаются.
-	if err := generateStreamWithRamFallback(modelName, prompt, params, callback, false); err != nil {
-		maybeRestartOnMemorySlotError(err, modelName)
+	streamErr = generateStreamWithRamFallback(modelName, prompt, params, callback, false)
+	if streamErr != nil {
+		maybeRestartOnMemorySlotError(streamErr, modelName)
 		errChunk := map[string]interface{}{
 			"model":       modelName,
 			"created_at":  createdAt,
 			"response":    "",
 			"done":        true,
 			"done_reason": "error",
-			"error":       err.Error(),
+			"error":       streamErr.Error(),
 		}
 		errJSON, _ := json.Marshal(errChunk)
 		fmt.Fprintf(w, "%s\n", errJSON)
@@ -402,11 +416,16 @@ func handleOllamaGenerate(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid JSON: "+err.Error())
 		return
 	}
+	modelName := req.Model
+	// InFlight counter: защищает активные запросы от reload-обрыва.
+	if modelName != "" && backend.InFlight() != nil {
+		backend.InFlight().Inc(modelName)
+		defer backend.InFlight().Dec(modelName)
+	}
 	params, prompt, ok := runGenerateCore(w, r, req)
 	if !ok {
 		return
 	}
-	modelName := req.Model
 
 	// keep_alive: после успешного ответа применяется в defer.
 	defer func() {
@@ -420,6 +439,8 @@ func handleOllamaGenerate(w http.ResponseWriter, r *http.Request) {
 	start := time.Now()
 	// /api/generate (Ollama) — tools не поддерживаются, reload разрешён при n_ctx overflow.
 	result, err := generateWithRamFallback(modelName, prompt, params, false)
+	// 2026-06-25: записываем snapshot последнего inference для endpoint /debug/last-prompt.
+	defer recordLastPromptFromError(modelName, "/api/ollama/generate", prompt, &params, false, err)
 	if err != nil {
 		// 2026-06-24: PromptExceedsNCtxError → HTTP 413 (см. inference.go).
 		if handleInferenceError(w, err) {
@@ -487,6 +508,11 @@ func writeOllamaStream(w http.ResponseWriter, r *http.Request, modelName, prompt
 	var outputBuf strings.Builder
 	start := time.Now()
 	createdAt := time.Now().UTC().Format(time.RFC3339)
+	// 2026-06-25: snapshot для /api/ollama/generate streaming.
+	var streamErr error
+	defer func() {
+		recordLastPromptFromError(modelName, "/api/ollama/generate", prompt, &params, false, streamErr)
+	}()
 	callback := func(token string) bool {
 		select {
 		case <-r.Context().Done():
@@ -502,15 +528,16 @@ func writeOllamaStream(w http.ResponseWriter, r *http.Request, modelName, prompt
 		return true
 	}
 	// /api/generate streaming: tools не поддерживаются.
-	if err := generateStreamWithRamFallback(modelName, prompt, params, callback, false); err != nil {
-		maybeRestartOnMemorySlotError(err, modelName)
+	streamErr = generateStreamWithRamFallback(modelName, prompt, params, callback, false)
+	if streamErr != nil {
+		maybeRestartOnMemorySlotError(streamErr, modelName)
 		errJSON, _ := json.Marshal(map[string]interface{}{
 			"model":       modelName,
 			"created_at":  createdAt,
 			"response":    "",
 			"done":        true,
 			"done_reason": "error",
-			"error":       err.Error(),
+			"error":       streamErr.Error(),
 		})
 		fmt.Fprintf(w, "%s\n", errJSON)
 		flusher.Flush()

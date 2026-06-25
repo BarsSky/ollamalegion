@@ -146,6 +146,10 @@
       "gpuHeadroomPercent": 15,
       "ramHeadroomPercent": 10
     },
+    "preflightSyncEnabled": true,
+    "_comment_preflightSyncEnabled": "2026-06-24: синхронное ожидание reload в preflight (round-trip один, без EOF). Default true. false → fallback на async 503 + Retry-After: 5.",
+    "preflightSyncTimeoutMs": 60000,
+    "_comment_preflightSyncTimeoutMs": "2026-06-24: таймаут синхронного ожидания reload. Default 60000ms (60s). Max 180000 (180s). При таймауте fallback на async 503 + Retry-After: 15.",
     "nctxReload": {
       "_comment": "Adaptive n_ctx auto-reload for cppworker. Когда клиент присылает n_ctx > загруженного в VRAM, balancer может auto-reload'ить модель с большим n_ctx (если VRAM позволяет), или вернуть 413 клиенту.",
       "auto_reload_n_ctx": true,
@@ -185,7 +189,7 @@
     "minVersion": "TLS12",
     "autoCert": true
   },
-    "auth": {
+  "auth": {
       "enabled": false,
       "tokens": [
         "changeme-bundled-strong-token-please-change"

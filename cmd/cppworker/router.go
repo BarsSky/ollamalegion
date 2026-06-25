@@ -48,6 +48,9 @@ func setupRouter() http.Handler {
 	mux.HandleFunc("/api/v1/cppworker/reset-reload-counter", authMiddleware(handleResetReloadCounter))
 	mux.HandleFunc("/api/v1/cppworker/health", handleHealth)
 	mux.HandleFunc("/api/v1/cppworker/metrics", handleInfo)
+	// Диагностика prompt-too-long: метаданные последнего inference-запроса
+	// (для runbook сценария B и для диагностики случаев "prompt_exceeds_context" в Cline).
+	mux.HandleFunc("/api/v1/cppworker/debug/last-prompt", authMiddleware(handleDebugLastPrompt))
 	// Diagnostics endpoints — помогают диагностировать проблемы с загрузкой моделей
 	// через runtime JSON-ответ без чтения логов.
 	mux.HandleFunc("/api/diagnostics", handleDiagnostics)

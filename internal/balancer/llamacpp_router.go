@@ -3,6 +3,8 @@ package balancer
 import (
 	"net/http"
 	"strings"
+	"sync"
+	"time"
 )
 
 // LlamaCppRouter — маршрутизатор для llama.cpp backend endpoint'ов.
@@ -10,11 +12,21 @@ import (
 // и ищет модели в метриках llama.cpp вместо Ollama.
 type LlamaCppRouter struct {
 	proxy *Proxy
+	// lastKnownModels + lastKnownModelsAt — кэш последнего успешного ответа
+	// /api/models per backend. Используется в queryCppWorkerModels при EOF
+	// во время reload cppworker (см. cppWorkerLastKnown комментарий).
+	lastKnownModelsMu sync.RWMutex
+	lastKnownModels   map[string][]cppWorkerModelState
+	lastKnownModelsAt map[string]time.Time
 }
 
 // NewLlamaCppRouter — создание маршрутизатора для llama.cpp
 func NewLlamaCppRouter(proxy *Proxy) *LlamaCppRouter {
-	return &LlamaCppRouter{proxy: proxy}
+	return &LlamaCppRouter{
+		proxy:             proxy,
+		lastKnownModels:   make(map[string][]cppWorkerModelState),
+		lastKnownModelsAt: make(map[string]time.Time),
+	}
 }
 
 // Route — диспетчеризация запроса по URL.Path.

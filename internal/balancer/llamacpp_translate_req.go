@@ -63,11 +63,35 @@ func translateOllamaChatToOpenAI(body []byte) ([]byte, error) {
 	}
 	// Пробрасываем tools и tool_choice для function calling (OpenAI-формат в Ollama
 	// /api/chat — это часть сообщения "options.tools" или прямой ключ "tools").
-	if tools, ok := ollamaReq["tools"].([]interface{}); ok {
+	//
+	// 2026-06-25: добавлена поддержка `options.tools` (Ollama-native стиль),
+	// который часто используют Cline/Roo Code/OpenWebUI как fallback. Также
+	// добавлен дефолтный `tool_choice: "auto"` для моделей без нативного tool-call
+	// (Gemma-4, Hermes-prompt) — без явного tool_choice они часто возвращают
+	// обычный текст вместо JSON tool_call.
+	toolsSet := false
+	if tools, ok := ollamaReq["tools"].([]interface{}); ok && len(tools) > 0 {
 		openaiReq["tools"] = tools
+		toolsSet = true
 	}
-	if toolChoice, ok := ollamaReq["tool_choice"]; ok {
-		openaiReq["tool_choice"] = toolChoice
+	if !toolsSet {
+		// Fallback: некоторые клиенты шлют tools через options.tools
+		if options, ok := ollamaReq["options"].(map[string]interface{}); ok {
+			if tools, ok := options["tools"].([]interface{}); ok && len(tools) > 0 {
+				openaiReq["tools"] = tools
+				toolsSet = true
+			}
+		}
+	}
+	if toolsSet {
+		// tool_choice: пропускаем только если клиент явно задал; иначе — "auto".
+		// Без этого Gemma-4 и аналогичные модели без нативного tool support
+		// не понимают, что нужно вызвать tool, и возвращают текст.
+		if toolChoice, ok := ollamaReq["tool_choice"]; ok {
+			openaiReq["tool_choice"] = toolChoice
+		} else {
+			openaiReq["tool_choice"] = "auto"
+		}
 	}
 	if options, ok := ollamaReq["options"].(map[string]interface{}); ok {
 		if temp, ok := options["temperature"]; ok {

@@ -101,7 +101,53 @@ func detectAndExtractToolCallsFromContent(content string) (toolCalls []interface
 		return calls, remaining, true
 	}
 
+	// 6. Gemma-4 специфический формат (2026-06-25): модель часто оборачивает JSON tool call
+	// в `<start_of_turn>model\n[JSON]\n</start_of_turn>` (chat template Gemma). Также поддерживаем
+	// вариант с `<start_of_turn>assistant\n[JSON]\n</start_of_turn>`.
+	if calls, remaining, ok := detectGemmaTurnToolCallsInContent(trimmed); ok {
+		return calls, remaining, true
+	}
+
 	return nil, content, false
+}
+
+// detectGemmaTurnToolCallsInContent — Gemma-4 парсер.
+// Ищет JSON tool call внутри `<start_of_turn>(model|assistant)\n[...JSON...]\n</start_of_turn>`.
+// Допускает как массив, так и одиночный объект.
+func detectGemmaTurnToolCallsInContent(content string) (toolCalls []interface{}, remainingContent string, found bool) {
+	re := regexp.MustCompile(`(?si)<start_of_turn>\s*(?:model|assistant)\s*\n?(\{[\s\S]*?\}+|\[[\s\S]*?\]+)\s*</start_of_turn>`)
+	matches := re.FindAllStringSubmatch(content, -1)
+	if len(matches) == 0 {
+		return nil, content, false
+	}
+
+	var result []interface{}
+	for _, m := range matches {
+		jsonStr := strings.TrimSpace(m[1])
+		jsonStr = trimTrailingExtraBrace(jsonStr)
+		// Попытка 1: массив
+		var arr []json.RawMessage
+		if err := json.Unmarshal([]byte(jsonStr), &arr); err == nil {
+			for _, raw := range arr {
+				if tc := parseHermesToOpenAI(raw); tc != nil {
+					result = append(result, tc)
+				}
+			}
+			continue
+		}
+		// Попытка 2: одиночный объект
+		if tc := parseHermesToOpenAI(json.RawMessage(jsonStr)); tc != nil {
+			result = append(result, tc)
+		}
+	}
+
+	if len(result) == 0 {
+		return nil, content, false
+	}
+
+	remaining := re.ReplaceAllString(content, "")
+	remaining = strings.TrimSpace(remaining)
+	return result, remaining, true
 }
 
 // detectStandardArrayToolCalls — оригинальная логика детекции JSON-массива
@@ -179,7 +225,12 @@ func detectStandardArrayToolCalls(trimmed string) (toolCalls []interface{}, rema
 // Допускает дополнительную '}' после закрывающей скобки JSON — это артефакт
 // кросс-чанковой склейки, когда '}' и '</tool_call>' приходят в разных SSE-чанках.
 // Пример: '...{"q":"x"}}}</tool_call>' должно матчиться как '<tool_call>{"q":"x"}</tool_call>'.
-var hermesToolCallRegex = regexp.MustCompile(`(?s)<tool_call>\s*(\{.*?\}+|\[.*?\]+)\s*</tool_call>`)
+//
+// 2026-06-25: Закрывающий `</tool_call>` теперь опционален — многие модели (qwen2.5-coder,
+// deepseek-coder, Gemma-4 в Hermes-prompt) часто опускают его в коротких ответах
+// или обрезают на стриме. Дополнительно допускается одиночный `<answer>...</answer>` блок
+// для моделей, которые оборачивают tool_call в answer-тег.
+var hermesToolCallRegex = regexp.MustCompile(`(?s)(?:<tool_call>|<answer>)\s*(\{.*?\}+|\[.*?\]+)(?:\s*</tool_call>|\s*</answer>)?`)
 
 func detectHermesToolCallsInContent(content string) (toolCalls []interface{}, remainingContent string, found bool) {
 	matches := hermesToolCallRegex.FindAllStringSubmatch(content, -1)
@@ -438,8 +489,20 @@ func parseHermesToOpenAI(raw json.RawMessage) map[string]interface{} {
 		args = map[string]interface{}{}
 	}
 
-	// Сериализуем arguments в JSON-строку для OpenAI-совместимости
-	argsJSON, _ := json.Marshal(args)
+	// Сериализуем arguments в JSON-строку для OpenAI-совместимости.
+	// 2026-06-25: Если args уже пришёл строкой и это валидный JSON — используем как есть
+	// (модели вроде Gemma-4 часто эмитят arguments как stringified JSON, и двойная
+	// сериализация делает их "невалидным JSON" для Cline/Roo Code).
+	var argsJSON []byte
+	if s, ok := args.(string); ok && json.Valid([]byte(s)) {
+		argsJSON = []byte(s)
+	} else {
+		argsJSON, _ = json.Marshal(args)
+		if !json.Valid(argsJSON) {
+			// fallback: пустой объект
+			argsJSON = []byte(`{}`)
+		}
+	}
 	tc["function"] = map[string]interface{}{
 		"name":      name,
 		"arguments": string(argsJSON),

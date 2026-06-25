@@ -694,33 +694,36 @@ func tryRamFallbackReload(modelName string, requestedNCtx int, hasTools bool) (b
 	}
 
 	// === AutoTuneNCtx (Issue: "Cline + 20GB GPU, есть RAM, но VRAM не хватает") ===
-	// При CPPWORKER_AUTO_TUNE_NCTX=true / --auto-tune-nctx вычисляем оптимальные
-	// n_ctx и gpu_layers с учётом реальных VRAM и RAM. Стратегия:
-	//   1. Если requestedNCtx помещается в VRAM с current gpu_layers → use as-is.
-	//   2. Иначе: уменьшаем gpu_layers (partial offload через mmap).
-	//   3. Если и с gpu_layers=0 не влезает → уменьшаем n_ctx до максимально
-	//      возможного (тогда inference пройдёт без кода 3).
-	if *autoTuneNCtx {
-		tuned := AutoTuneNCtx(*current, requestedNCtx)
-		opts.ContextSize = tuned.RecommendedNCtx
-		opts.GPULayers = tuned.RecommendedGPULayers
-		opts.UseMmap = tuned.UseMmap
-		logger.Get().Infow("AutoTuneNCtx: applied to RAM-fallback reload",
-			"model", modelName,
-			"requested_n_ctx", requestedNCtx,
-			"tuned_n_ctx", tuned.RecommendedNCtx,
-			"tuned_gpu_layers", tuned.RecommendedGPULayers,
-			"max_viable_n_ctx", tuned.MaxViableNCtx,
-			"source", tuned.Source)
-		if tuned.RecommendedNCtx == 0 {
-			// Не влезает даже cpu-only — возвращаем ошибку с конкретным max.
-			return false, &AutoTuneError{
-				Model:          modelName,
-				RequestedNCtx:  requestedNCtx,
-				MaxViableNCtx:  tuned.MaxViableNCtx,
-				ModelSizeBytes: int64(current.SizeBytes),
-				AvailableRAMMB: availableRAMBytes() / (1024 * 1024),
-			}
+	// 2026-06-25: ВСЕГДА активен при RAM-fallback reload (даже без --auto-tune-nctx),
+	// потому что без него каскад невозможен и cppworker возвращает generic 500.
+	//
+	// Каскад (3 уровня):
+	//   1. requestedNCtx + current gpu_layers в VRAM → use as-is.
+	//   2. partial offload: уменьшаем gpu_layers, weights для остальных через mmap.
+	//   3. cpu-only (gpu_layers=0) + n_ctx reduction до max viable.
+	//
+	// Если и 3 не влезает → возвращаем *AutoTuneError, handler транслирует в
+	// HTTP 413 + structured JSON (writeInsufficientResourcesResponse).
+	tuned := AutoTuneNCtx(*current, requestedNCtx)
+	opts.ContextSize = tuned.RecommendedNCtx
+	opts.GPULayers = tuned.RecommendedGPULayers
+	opts.UseMmap = tuned.UseMmap
+	logger.Get().Infow("AutoTuneNCtx: applied to RAM-fallback reload",
+		"model", modelName,
+		"requested_n_ctx", requestedNCtx,
+		"tuned_n_ctx", tuned.RecommendedNCtx,
+		"tuned_gpu_layers", tuned.RecommendedGPULayers,
+		"max_viable_n_ctx", tuned.MaxViableNCtx,
+		"source", tuned.Source)
+	if tuned.RecommendedNCtx == 0 {
+		// Не влезает даже cpu-only — возвращаем ошибку с конкретным max.
+		// handleInferenceError (utils.go) транслирует в HTTP 413 + JSON.
+		return false, &AutoTuneError{
+			Model:          modelName,
+			RequestedNCtx:  requestedNCtx,
+			MaxViableNCtx:  tuned.MaxViableNCtx,
+			ModelSizeBytes: int64(current.SizeBytes),
+			AvailableRAMMB: availableRAMBytes() / (1024 * 1024),
 		}
 	}
 
@@ -763,24 +766,112 @@ func tryRamFallbackReload(modelName string, requestedNCtx int, hasTools bool) (b
 		"model", modelName, "unload_ms", time.Since(unloadStart).Milliseconds())
 
 	loadStart := time.Now()
-	if err := backend.LoadModelWithOpts(modelName, modelPath, opts); err != nil {
+	loadErr := backend.LoadModelWithOpts(modelName, modelPath, opts)
+	if loadErr != nil {
 		logger.Get().Errorw("RAM fallback: reload failed",
-			"model", modelName, "error", err)
-		// best-effort rollback к старым параметрам
-		oldOpts := cppbackend.LoadModelOpts{
-			GPULayers:     current.GPULayers,
-			ContextSize:   current.ContextSize,
-			BatchSize:     current.BatchSize,
-			FlashAttnType: current.FlashAttnType,
-			NUMA:          current.NUMA,
-			UseMmap:       current.UseMmap,
-			TensorSplit:   current.TensorSplit,
+			"model", modelName,
+			"error", loadErr,
+			"attempted_ctx", opts.ContextSize,
+			"attempted_gpu_layers", opts.GPULayers)
+
+		// 2026-06-25: 2-й уровень каскада. Если AutoTuneNCtx выбрал partial
+		// offload, но LoadModel всё равно упал с OOM (например, llama.cpp
+		// не смог выделить KV-cache для n_ctx в VRAM даже при partial offload),
+		// пробуем второй fallback: gpu_layers=0 + уменьшенный n_ctx + mmap.
+		// AutoTuneNCtx уже уменьшил ContextSize до tuned.MaxViableNCtx для
+		// cpu-only случая, так что мы просто форсируем GPULayers=0.
+		if opts.GPULayers != 0 {
+			logger.Get().Warnw("RAM fallback: 2nd cascade attempt (cpu-only + max-viable n_ctx)",
+				"model", modelName,
+				"previous_gpu_layers", opts.GPULayers,
+				"previous_n_ctx", opts.ContextSize,
+				"reason", "first load failed, attempting cpu-only fallback")
+			cpuOnlyOpts := opts
+			cpuOnlyOpts.GPULayers = 0
+			cpuOnlyOpts.UseMmap = true
+			retryErr := backend.LoadModelWithOpts(modelName, modelPath, cpuOnlyOpts)
+			if retryErr == nil {
+				logger.Get().Infow("RAM fallback: cpu-only load succeeded",
+					"model", modelName,
+					"final_n_ctx", cpuOnlyOpts.ContextSize,
+					"gpu_layers", 0)
+				// успех — выходим без rollback
+			} else {
+				logger.Get().Errorw("RAM fallback: cpu-only also failed — insufficient resources",
+					"model", modelName, "first_error", loadErr, "cpu_only_error", retryErr)
+				// best-effort rollback к старым параметрам
+				oldOpts := cppbackend.LoadModelOpts{
+					GPULayers:     current.GPULayers,
+					ContextSize:   current.ContextSize,
+					BatchSize:     current.BatchSize,
+					FlashAttnType: current.FlashAttnType,
+					NUMA:          current.NUMA,
+					UseMmap:       current.UseMmap,
+					TensorSplit:   current.TensorSplit,
+				}
+				if rollbackErr := backend.LoadModelWithOpts(modelName, modelPath, oldOpts); rollbackErr != nil {
+					logger.Get().Errorw("RAM fallback: rollback failed (model no longer loaded!)",
+						"model", modelName, "rollback_error", rollbackErr)
+				}
+				// InsufficientResourcesError с actionable details для клиента.
+				vramMB := int64(0)
+				if vram := freeVRAMBytes(); vram > 0 {
+					vramMB = vram / (1024 * 1024)
+				}
+				kvCacheMB := int64(0)
+				if opts.ContextSize > 0 && current.NLayers > 0 {
+					kvCacheBytes := estimateKVCacheBytes(opts.ContextSize, current.NLayers, current.NEmbd, current.NHeads, current.NKvHeads)
+					kvCacheMB = kvCacheBytes / (1024 * 1024)
+				}
+				return false, &InsufficientResourcesError{
+					Model:              modelName,
+					RequestedNCtx:      requestedNCtx,
+					MaxViableNCtx:      tuned.MaxViableNCtx,
+					AvailableVRAMMB:    vramMB,
+					AvailableRAMMB:     availableRAMBytes() / (1024 * 1024),
+					ModelSizeBytes:     int64(current.SizeBytes),
+					KVCacheRequiredMB:  kvCacheMB,
+					GPULayersAttempted: 0,
+				}
+			}
+		} else {
+			// Уже cpu-only — 2-й уровень не поможет. Возвращаем InsufficientResources.
+			logger.Get().Errorw("RAM fallback: cpu-only load failed — returning InsufficientResourcesError",
+				"model", modelName, "error", loadErr)
+			// best-effort rollback к старым параметрам
+			oldOpts := cppbackend.LoadModelOpts{
+				GPULayers:     current.GPULayers,
+				ContextSize:   current.ContextSize,
+				BatchSize:     current.BatchSize,
+				FlashAttnType: current.FlashAttnType,
+				NUMA:          current.NUMA,
+				UseMmap:       current.UseMmap,
+				TensorSplit:   current.TensorSplit,
+			}
+			if rollbackErr := backend.LoadModelWithOpts(modelName, modelPath, oldOpts); rollbackErr != nil {
+				logger.Get().Errorw("RAM fallback: rollback failed (model no longer loaded!)",
+					"model", modelName, "rollback_error", rollbackErr)
+			}
+			vramMB := int64(0)
+			if vram := freeVRAMBytes(); vram > 0 {
+				vramMB = vram / (1024 * 1024)
+			}
+			kvCacheMB := int64(0)
+			if opts.ContextSize > 0 && current.NLayers > 0 {
+				kvCacheBytes := estimateKVCacheBytes(opts.ContextSize, current.NLayers, current.NEmbd, current.NHeads, current.NKvHeads)
+				kvCacheMB = kvCacheBytes / (1024 * 1024)
+			}
+			return false, &InsufficientResourcesError{
+				Model:              modelName,
+				RequestedNCtx:      requestedNCtx,
+				MaxViableNCtx:      tuned.MaxViableNCtx,
+				AvailableVRAMMB:    vramMB,
+				AvailableRAMMB:     availableRAMBytes() / (1024 * 1024),
+				ModelSizeBytes:     int64(current.SizeBytes),
+				KVCacheRequiredMB:  kvCacheMB,
+				GPULayersAttempted: 0,
+			}
 		}
-		if rollbackErr := backend.LoadModelWithOpts(modelName, modelPath, oldOpts); rollbackErr != nil {
-			logger.Get().Errorw("RAM fallback: rollback failed (model no longer loaded!)",
-				"model", modelName, "rollback_error", rollbackErr)
-		}
-		return false, fmt.Errorf("RAM fallback reload failed: %w", err)
 	}
 	logger.Get().Infow("RAM fallback: model reloaded successfully",
 		"model", modelName,

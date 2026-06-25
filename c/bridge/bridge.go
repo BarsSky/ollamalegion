@@ -184,6 +184,13 @@ const (
 	ErrCodePromptTooLong      = 3 // prompt+n_predict > n_ctx и override не помогает
 	ErrCodeGPUOOM             = 4 // нехватка VRAM при попытке аллокации
 	ErrCodeBadRequest         = 5 // некорректные параметры
+	// ErrCodeInsufficientResources (6) — недостаточно VRAM+RAM для загрузки
+	// модели с запрошенным n_ctx, даже после каскадного auto-fallback
+	// (RAM mmap → partial offload → cpu-only + auto_tune n_ctx).
+	// 2026-06-25: генерируется cppworker (cmd/cppworker/utils.go:writeInsufficientResourcesResponse)
+	// и балансером не считается reloadable — проброс клиенту как HTTP 413
+	// с actionable details (см. docs/runbook-tools.md сценарий G).
+	ErrCodeInsufficientResources = 6
 )
 
 // BridgeErrorInfo — Go-представление C BridgeErrorInfo (см. bridge.h).

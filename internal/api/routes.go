@@ -56,6 +56,17 @@ func (s *Server) setupRoutes() {
 	// Cluster state (с аутентификацией и rate limiting)
 	s.mux.Handle("/api/v1/cluster", AuthMiddleware(RateLimitMiddleware(s.clusterHandler, s.rateLimiter), s.authenticator))
 
+	// Cluster-level model management (с аутентификацией и rate limiting).
+	// Позволяет управлять моделями через балансировщик (порт 18081) без прямого
+	// обращения к cppworker (порт 18092). Полезно для UI и пользовательских скриптов.
+	s.mux.Handle("/api/v1/cluster/models/loaded", AuthMiddleware(RateLimitMiddleware(http.HandlerFunc(s.clusterLoadedModelsHandler), s.rateLimiter), s.authenticator))
+	s.mux.Handle("/api/v1/cluster/models/loading", AuthMiddleware(RateLimitMiddleware(http.HandlerFunc(s.clusterLoadingModelsHandler), s.rateLimiter), s.authenticator))
+	// Cluster-level proxy для cppworker debug endpoint /api/v1/cppworker/debug/last-prompt.
+	// Используется для диагностики случаев "Cline получил 413 prompt_exceeds_context"
+	// без прямого доступа к cppworker (защита сети, единая точка запроса).
+	s.mux.Handle("/api/v1/cluster/cppworker/debug/last-prompt", AuthMiddleware(RateLimitMiddleware(http.HandlerFunc(s.clusterDebugLastPromptHandler), s.rateLimiter), s.authenticator))
+	s.mux.Handle("/api/v1/cluster/models/", AuthMiddleware(RateLimitMiddleware(http.HandlerFunc(s.clusterReloadModelHandler), s.rateLimiter), s.authenticator))
+
 	// Queue stats (с аутентификацией и rate limiting)
 	s.mux.Handle("/api/v1/queue/stats", AuthMiddleware(RateLimitMiddleware(s.queueStatsHandler, s.rateLimiter), s.authenticator))
 	s.mux.Handle("/api/v1/queue/details", AuthMiddleware(RateLimitMiddleware(s.queueDetailsHandler, s.rateLimiter), s.authenticator))
@@ -121,6 +132,11 @@ func (s *Server) setupRoutes() {
 	// POST   /api/v1/cppworker/model-profiles/{name}/apply — save + reload на бэкендах
 	s.mux.Handle("/api/v1/cppworker/model-profiles", AuthMiddleware(RateLimitMiddleware(http.HandlerFunc(s.handleListModelProfiles), s.rateLimiter), s.authenticator))
 	s.mux.Handle("/api/v1/cppworker/model-profiles/", AuthMiddleware(RateLimitMiddleware(http.HandlerFunc(s.handleModelProfile), s.rateLimiter), s.authenticator))
+
+	// 2026-06-24: proxy to cppworker reset-reload-counter endpoint.
+	// Сбрасывает ramFallbackAttempts на cppworker (cycle counter блокирует reload
+	// после превышения лимита). Без этого нужен `docker restart`.
+	s.mux.Handle("/api/v1/cppworker/reset-reload-counter", AuthMiddleware(RateLimitMiddleware(http.HandlerFunc(s.handleResetCppWorkerReloadCounter), s.rateLimiter), s.authenticator))
 
 	// Candidate Backends endpoint (с аутентификацией и rate limiting)
 	// Возвращает группы бэкендов-кандидатов по приоритетам для всех моделей

@@ -109,14 +109,14 @@
                                                    "useMmap":  true
                                                },
                             "profiles":  {
-                                              "gemma-4":  {
-                                                              "_note":  "Профиль для gemma-4 (4-5GB Q4_K_M). Partial GPU offload 30/43 слоёв. numCtx=131072 — большой контекст для Cline/OpenWebUI tools (system+history 60K+ токенов). KV-cache частично на CPU, но inference работает.",
-                                                              "numCtx":  131072,
-                                                             "batchSize":  256,
-                                                             "numGpuLayers":  30,
-                                                             "flashAttention":  true,
-                                                             "useMmap":  true
-                                                         },
+                                                "gemma-4":  {
+                                                                "_note":  "2026-06-25: numCtx снижен 131072 → 32768 для стабильной работы на 8GB VRAM. При 131072 cppworker зависал в KV-cache allocation (deadlock) — для gemma-4-E4B-it (n_embd=2560, 42 layers, FP16 KV) нужно ~13GB под KV-cache, что не влезает в 8GB VRAM даже с mmap в RAM. 32768 — помещается с auto_offload + partial GPU offload (gemma-4 numCtx=32768, gpuLayers=-2/AUTO, flash_attn=1, mmap=true). При необходимости большего контекста Cline должен задать меньший n_ctx в body или использовать ollama-native (без этого профиля).",
+                                                                "numCtx":  32768,
+                                                               "batchSize":  256,
+                                                               "numGpuLayers":  30,
+                                                               "flashAttention":  true,
+                                                               "useMmap":  true
+                                                            },
                                              "gemma-4-large":  {
                                                              "_note":  "Профиль для 19GB+ моделей на A10 (24GB VRAM). numCtx=32768 + KV-cache (~2.6GB) + reserve. gpuLayers=10 — остальные слои в RAM через mmap (CPPWORKER_AUTO_OFFLOAD=true).",
                                                              "numCtx":  32768,

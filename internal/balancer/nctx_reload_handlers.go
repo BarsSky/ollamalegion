@@ -395,7 +395,7 @@ func bytesReaderBuffer(b []byte) io.Reader {
 //   - needsProxy = false если требуется reload (клиенту возвращён 503)
 //   - errorMessage = "" если ОК, иначе сообщение об ошибки
 //   - statusCode = http.StatusOK если можно проксировать,
-//                  http.StatusServiceUnavailable если запущен reload
+//     http.StatusServiceUnavailable если запущен reload
 func (p *Proxy) preflightNCtxReloadIfNeeded(
 	ctx context.Context,
 	backendID, modelName string,
@@ -506,6 +506,161 @@ func (p *Proxy) preflightNCtxReloadIfNeeded(
 		fmt.Sprintf("model %q is being reloaded to n_ctx=%d (loaded=%d); retry in 5s",
 			modelName, requestedNCtx, loadedNCtx),
 		http.StatusServiceUnavailable
+}
+
+// preflightNCtxReloadIfNeededSync — синхронная версия preflight.
+//
+// В отличие от preflightNCtxReloadIfNeeded (которая сразу возвращает 503),
+// эта версия БЛОКИРУЕТСЯ и ждёт завершения reload в фоне (горутина,
+// запущенная executeAsyncReload), а затем проксирует запрос. Round-trip
+// получается ОДИН — клиент не получает EOF/503.
+//
+// Алгоритм:
+//  1. Запустить preflightNCtxReloadIfNeeded (запустит executeAsyncReload).
+//  2. Poll /api/info heartbeat (`reload_pending` поле) каждые 500ms.
+//  3. Когда `reload_pending` исчез И loaded_n_ctx >= requestedNCtx → return success.
+//  4. Если timeout (PreflightSyncTimeoutMs, default 60s, max 180s) — fallback
+//     на async 503 + Retry-After: 15.
+//
+// Преимущества: клиент не получает EOF и не видит reload-процесса вообще.
+// OpenWebUI получает ответ за один round-trip (а не два: 503 + retry).
+//
+// Когда стоит выключить (PreflightSyncEnabled=false):
+//   - Streaming-клиенты (curl без retry, скрипты) — async 503 + Retry-After лучше.
+//   - Если reload ОЧЕНЬ долгий (cold start большой модели > 60s) — async
+//     даст клиенту возможность повторить через 15s.
+func (p *Proxy) preflightNCtxReloadIfNeededSync(
+	ctx context.Context,
+	backendID, modelName string,
+	bodyBuf []byte,
+) (modifiedBody []byte, needsProxy bool, errMsg string, statusCode int, retryAfter int) {
+	// Сначала делаем все проверки (как в async версии).
+	body, ok, msg, status := p.preflightNCtxReloadIfNeeded(ctx, backendID, modelName, bodyBuf)
+	if ok || status == http.StatusOK {
+		// Можно проксировать сразу (reload не нужен или ошибка до запуска reload).
+		return body, true, "", http.StatusOK, 0
+	}
+	// Reload запущен в фоне — ждём его завершения.
+	logger.Get().Infow("preflightNCtxReloadIfNeededSync: waiting for async reload to complete",
+		"backend", backendID, "model", modelName,
+		"reason", msg)
+
+	// Дефолт 60s, max 180s.
+	timeoutMs := 60000
+	if p.config != nil && p.config.Balancing.PreflightSyncTimeoutMs > 0 {
+		timeoutMs = p.config.Balancing.PreflightSyncTimeoutMs
+		if timeoutMs > 180000 {
+			timeoutMs = 180000
+		}
+	}
+	deadline := time.Now().Add(time.Duration(timeoutMs) * time.Millisecond)
+
+	ticker := time.NewTicker(500 * time.Millisecond)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return bodyBuf, false, "client cancelled while waiting for reload", http.StatusServiceUnavailable, 15
+		case <-ticker.C:
+		}
+
+		if time.Now().After(deadline) {
+			logger.Get().Warnw("preflightNCtxReloadIfNeededSync: timeout waiting for reload",
+				"backend", backendID, "model", modelName, "timeout_ms", timeoutMs)
+			return bodyBuf, false,
+				fmt.Sprintf("reload still in progress after %dms; retry in 15s", timeoutMs),
+				http.StatusServiceUnavailable, 15
+		}
+
+		// Проверяем reload_pending через heartbeat /api/info.
+		pendingReload := p.queryBackendReloadPending(backendID)
+		if pendingReload == "" {
+			// Reload завершён (или не начинался). Проверяем loaded_n_ctx.
+			p.metricsMgr.mu.RLock()
+			lm, hasLm := p.metricsMgr.llamaMetrics[backendID]
+			loadedNCtx := 0
+			if hasLm && lm != nil {
+				for _, m := range lm.LoadedModels {
+					if m.Name == modelName || containsFold(m.Name, modelName) || containsFold(modelName, m.Name) {
+						if m.ContextLength > 0 {
+							loadedNCtx = m.ContextLength
+						}
+						break
+					}
+				}
+			}
+			p.metricsMgr.mu.RUnlock()
+
+			requestedNCtx := ExtractNumCtxFromBody(bodyBuf)
+			if loadedNCtx >= requestedNCtx {
+				logger.Get().Infow("preflightNCtxReloadIfNeededSync: reload completed successfully",
+					"backend", backendID, "model", modelName,
+					"loaded_n_ctx", loadedNCtx, "requested_n_ctx", requestedNCtx)
+				return bodyBuf, true, "", http.StatusOK, 0
+			}
+			logger.Get().Warnw("preflightNCtxReloadIfNeededSync: reload completed but loaded_n_ctx still insufficient",
+				"backend", backendID, "model", modelName,
+				"loaded_n_ctx", loadedNCtx, "requested_n_ctx", requestedNCtx)
+			return bodyBuf, false,
+				fmt.Sprintf("reload completed but loaded_n_ctx=%d < requested=%d; retry in 15s", loadedNCtx, requestedNCtx),
+				http.StatusServiceUnavailable, 15
+		}
+	}
+}
+
+// queryBackendReloadPending возвращает имя модели, для которой сейчас идёт reload
+// на бэкенде, или пустую строку. Используется в preflight-sync для ожидания.
+//
+// Реализация: HTTP GET на /api/info cppworker-бэкенда, парсим JSON,
+// ищем поле reload_pending.model. При ошибке (EOF, connection reset) —
+// возвращаем "" (best-effort — reload_pending истечёт по таймауту).
+//
+// HTTP-клиент берётся из p.metricsHTTPDoer (если задан) — это позволяет
+// тестам подменить реальный *http.Client на in-memory stub без сети
+// (см. nctx_reload_sync_test.go). По умолчанию используется реальный
+// http.Client с таймаутом 2s.
+func (p *Proxy) queryBackendReloadPending(backendID string) string {
+	backend := p.GetBackend(backendID)
+	if backend == nil {
+		return ""
+	}
+	port := p.getBackendPort(backend)
+	if port <= 0 {
+		return ""
+	}
+	url := fmt.Sprintf("http://%s:%d/api/info", backend.Host, port)
+	// HTTP-клиент берётся из p.metricsHTTPDoer (если задан) для тестируемости.
+	// По умолчанию — реальный *http.Client с 2s таймаутом.
+	doer := p.metricsHTTPDoer
+	if doer == nil {
+		doer = &http.Client{Timeout: 2 * time.Second}
+	}
+	req, err := http.NewRequest(http.MethodGet, url, nil)
+	if err != nil {
+		return ""
+	}
+	if p.config != nil && len(p.config.Auth.Tokens) > 0 {
+		req.Header.Set("Authorization", "Bearer "+p.config.Auth.Tokens[0])
+	}
+	resp, err := doer.Do(req)
+	if err != nil {
+		return ""
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return ""
+	}
+	var info map[string]interface{}
+	if err := json.NewDecoder(resp.Body).Decode(&info); err != nil {
+		return ""
+	}
+	rp, ok := info["reload_pending"].(map[string]interface{})
+	if !ok {
+		return ""
+	}
+	model, _ := rp["model"].(string)
+	return model
 }
 
 // executeAsyncReload — запускает POST /api/models/reload в фоне.

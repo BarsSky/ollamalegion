@@ -101,6 +101,26 @@ type Backend struct {
 	// Key: model name, Value: chan struct{} (closed when loading completes).
 	loading map[string]chan struct{}
 	loadMu  sync.Mutex
+
+	// inFlight — per-model счётчик активных inference-запросов.
+	// Используется в handleReloadModel чтобы дождаться завершения
+	// всех активных запросов ПЕРЕД UnloadModel — иначе reload обрывает
+	// HTTP-соединения (EOF клиенту). Подробности см. в inflight.go.
+	inFlight *InFlightCounter
+
+	// reloadPending — флаг «reload в процессе». Прокидывается в
+	// /api/metrics → reload_pending heartbeat. Балансировщик читает
+	// и НЕ пытается дёргать LoadModel, пока видит этот флаг.
+	reloadMu       sync.Mutex
+	reloadPending  string // имя модели, для которой идёт reload
+	reloadStartedAt time.Time
+}
+
+// ReloadStartedAt возвращает момент начала текущего reload (zero если нет).
+func (b *Backend) ReloadStartedAt() time.Time {
+	b.reloadMu.Lock()
+	defer b.reloadMu.Unlock()
+	return b.reloadStartedAt
 }
 
 // LoadModelOpts — опции загрузки модели, передаваемые из WebUI/API
@@ -153,6 +173,7 @@ func NewBackend(cfg Config) *Backend {
 		metrics:      metrics,
 		gpuManager:   NewGPUManager(cfg.TensorSplitStrategy),
 		loading:      make(map[string]chan struct{}),
+		inFlight:     NewInFlightCounter(),
 	}
 
 	// Idle unload manager.
@@ -250,6 +271,40 @@ func (b *Backend) Config() Config {
 // ModelManager возвращает менеджер моделей
 func (b *Backend) ModelManager() *ModelManager {
 	return b.modelManager
+}
+
+// InFlight возвращает per-model счётчик активных inference-запросов.
+// Используется в handleReloadModel чтобы дождаться завершения
+// всех активных запросов перед UnloadModel — иначе reload обрывает
+// HTTP-соединения (EOF клиенту). Подробности см. в inflight.go.
+//
+// nil-safe: если NewBackend не был вызван, возвращает nil — Inc/Dec
+// на nil-получателе являются no-op.
+func (b *Backend) InFlight() *InFlightCounter {
+	return b.inFlight
+}
+
+// SetReloadPending устанавливает имя модели, для которой сейчас идёт reload.
+// Используется в handleReloadModel и читается через GetReloadPending
+// для прокидывания в /api/metrics heartbeat (reload_pending).
+// Пустая строка = нет активного reload.
+func (b *Backend) SetReloadPending(modelName string) {
+	b.reloadMu.Lock()
+	defer b.reloadMu.Unlock()
+	b.reloadPending = modelName
+	if modelName != "" {
+		b.reloadStartedAt = time.Now()
+	} else {
+		b.reloadStartedAt = time.Time{}
+	}
+}
+
+// GetReloadPending возвращает имя модели, для которой идёт reload
+// (пустая строка = нет активного reload).
+func (b *Backend) GetReloadPending() string {
+	b.reloadMu.Lock()
+	defer b.reloadMu.Unlock()
+	return b.reloadPending
 }
 
 // Metrics возвращает метрики backend

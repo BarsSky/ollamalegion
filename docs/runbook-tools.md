@@ -327,6 +327,74 @@ KV-cache. Preflight в этом случае возвращает HTTP 413 с ac
 - Чтобы вернуть старое поведение (без auto-reload при tools):
   `LB_NCTX_RELOAD_ENABLED=false` ИЛИ `LB_NCTX_RELOAD_ALLOW_TOOLS=false`.
 
+### 4.7 Сценарий G: EOF при preflight n_ctx reload (cppworker рвёт соединение) — ИСПРАВЛЕНО 2026-06-24
+
+**Симптом:** OpenWebUI / curl получают **пустой ответ / EOF / connection reset** на первом же
+запросе с `options.num_ctx` отличным от default (например `num_ctx=16384`, а модель загружена
+с `n_ctx=8196`). В логах cppworker — `UnloadModel → LoadModelWithOpts` reload. В логах
+балансера — `preflight: triggering reload` + `queryCppWorkerModels: EOF`.
+
+**Корневая причина (ИСПРАВЛЕНО):**
+
+cppworker в `handleReloadModel` вызывал `backend.UnloadModel()` → `backend.LoadModelWithOpts()`
+**без ожидания завершения активных inference-запросов**. В момент `UnloadModel` cppworker
+рвал HTTP-соединения всех текущих запросов → клиенты получали EOF. Балансер,
+который в этот момент polling'ом проверял `/api/models` через `queryCppWorkerModels`,
+ловил connection reset / EOF и зависал в `concurrent load already in progress, waiting`
+polling loop (модель state=loading, но polling тоже падал).
+
+**Что сделано (Track 1: cppworker graceful reload):**
+
+1. `internal/cppbackend/inflight.go` — новый per-model `InFlightCounter` (atomic).
+2. `cmd/cppworker/handlers_generate.go:handleGenerate` / `handleOllamaGenerate`,
+   `handlers_chat.go:handleChat`, `handlers_openai.go:handleV1ChatCompletions` /
+   `handleV1Completions` — каждый делает `Inc(modelName)` на входе и `Dec(modelName)` в defer.
+3. `cmd/cppworker/handlers_model.go:handleReloadModel` — **перед** `UnloadModel` зовёт
+   `backend.InFlight().WaitZero(modelName, 0)` (без лимита; общий watchdog — на уровне reload).
+4. `internal/cppbackend/backend.go:SetReloadPending/GetReloadPending` — добавляет
+   `reload_pending: {model, startedAt, elapsedMs}` в JSON `/api/info` на время reload.
+5. `internal/balancer/preflight_nctx.go:preflightNCtxReloadIfNeededSync` (Track 2) —
+   синхронная версия preflight, polling heartbeat `/api/info` 500ms, default timeout 60s
+   (`Balancing.PreflightSyncTimeoutMs`, max 180s). При таймауте — fallback на
+   `503 + Retry-After: 15`.
+
+**Что сделано (Track 3: balancer EOF retry):**
+
+`internal/balancer/llamacpp_backend_helpers.go:queryCppWorkerModels` теперь:
+
+- До 3 попыток с exponential backoff (100ms, 200ms, 400ms) на EOF/`connection reset`/
+  `broken pipe`/bad status/decode error.
+- При неудаче всех попыток — fallback на `lastKnownModels` кэш (TTL 30s, per backend).
+- `ensureModelLoadedOnBackend` теперь использует этот retry, polling в
+  `concurrent load already in progress, waiting` loop больше НЕ зависает.
+
+**Что сделано (Track 4: balancer reload dedup):**
+
+`internal/balancer/nctx_reload_dedup.go` — `reloadDedupRegistry` (per backendID+modelName+targetNCtx).
+`executeAsyncReload` (preflight) и `ensureModelLoadedOnBackend` координируются:
+
+- `IsReloadPending(backendID, modelName)` — если true, polling на state=loading заменяется
+  на `WaitReloadDone(timeout=5min)`.
+- `StartReloadIfNotPending` — если reload с тем же target уже идёт, возвращает
+  существующий entry, не запускает второй HTTP запрос.
+
+**Acceptance criteria для верификации:**
+
+1. cppworker `handleReloadModel` **не вызывает** `UnloadModel`, пока `InFlight().Get(modelName) > 0`.
+2. cppworker `/api/info` показывает `reload_pending` пока reload в процессе.
+3. Балансер `preflightNCtxReloadIfNeededSync` возвращает 200 OK с проксированным
+   ответом, если reload завершился за `PreflightSyncTimeoutMs` (default 60s).
+4. `queryCppWorkerModels` retry 3 раза на EOF и возвращает последний snapshot из кэша.
+5. Параллельный `executeAsyncReload` (preflight) + `ensureModelLoadedOnBackend` —
+   только один HTTP reload на cppworker, второй ждёт через `WaitReloadDone`.
+
+**Конфигурация:**
+
+- `Balancing.PreflightSyncEnabled` (default `true`) — sync режим (round-trip один).
+- `Balancing.PreflightSyncTimeoutMs` (default `60000`, max `180000`) — таймаут ожидания.
+- Kill-switch для legacy скриптов: `Balancing.PreflightSyncEnabled=false` →
+  fallback на async 503 + `Retry-After: 5` (старое поведение).
+
 ### 4.5 Сценарий E: «сброс» без видимых причин в логах
 
 **Симптом:** клиент получает HTTP 5xx или пустой ответ, в логах cppworker нет ни fallback,

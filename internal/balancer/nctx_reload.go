@@ -224,6 +224,11 @@ type NCtxReloadCoordinator struct {
 	// metricsByBackend — счётчики метрик по каждому бэкенду (sync.Map
 	// используется для ленивого создания без блокировки reload-инфраструктуры).
 	metricsByBackend sync.Map
+
+	// reloadDedup — реестр in-flight reload'ов (см. nctx_reload_dedup.go).
+	// Используется для дедупликации между preflight async reload и
+	// ensureModelLoadedOnBackend. nil-safe.
+	reloadDedup *reloadDedupRegistry
 }
 
 type backendReloadState struct {
@@ -258,9 +263,29 @@ type reloadInflight struct {
 // NewNCtxReloadCoordinator создаёт координатор с переданным конфигом.
 func NewNCtxReloadCoordinator(cfg NCtxReloadConfig) *NCtxReloadCoordinator {
 	return &NCtxReloadCoordinator{
-		config:     cfg,
-		perBackend: make(map[string]*backendReloadState),
+		config:      cfg,
+		perBackend:  make(map[string]*backendReloadState),
+		reloadDedup: newReloadDedupRegistry(),
 	}
+}
+
+// IsReloadPending — wrapper для reloadDedupRegistry.
+// Используется в ensureModelLoadedOnBackend чтобы не запускать LoadModel
+// параллельно с in-flight reload.
+func (c *NCtxReloadCoordinator) IsReloadPending(backendID, modelName string) bool {
+	if c == nil || c.reloadDedup == nil {
+		return false
+	}
+	return c.reloadDedup.IsReloadPending(backendID, modelName)
+}
+
+// WaitReloadDone — wrapper для reloadDedupRegistry.
+// timeout == 0 → без лимита. Возвращает error при таймауте.
+func (c *NCtxReloadCoordinator) WaitReloadDone(backendID, modelName string, timeout time.Duration) error {
+	if c == nil || c.reloadDedup == nil {
+		return nil
+	}
+	return c.reloadDedup.WaitReloadDone(backendID, modelName, timeout)
 }
 
 // Config возвращает текущий конфиг (для логирования и reload из SIGHUP).
@@ -408,52 +433,26 @@ func (c *NCtxReloadCoordinator) DecideReloadBackend(
 	}
 
 	if bridgeErr.Code == NCtxErrCodePromptTooLong {
-		required := bridgeErr.RequiredNCtx
-		if required <= 0 {
-			required = requestedNCtxOverride
-		}
-		if required <= 0 {
-			return &ReloadPlan{Decision: DecisionNoOp,
-				Reason: "no required n_ctx in error info (bridge bug?)"}
-		}
-
-		// Цель: n_ctx, с которым reload'им модель.
-		targetNCtx := required
-		// Если модель уже загружена с достаточным n_ctx — reload'им с тем же,
-		// чтобы просто сбросить клиентский n_ctx_override.
-		if bridgeErr.CurrentNCtx >= required {
-			targetNCtx = bridgeErr.CurrentNCtx
-		}
-
-		// Проверка AutoReloadMaxNCtx
-		cfg := c.Config()
-		if cfg.AutoReloadMaxNCtx > 0 && targetNCtx > cfg.AutoReloadMaxNCtx {
-			targetNCtx = cfg.AutoReloadMaxNCtx
-		}
-
-		// VRAM safety check (только если target больше current)
-		if targetNCtx > bridgeErr.CurrentNCtx && bridgeErr.MaxVRAMNCtx > 0 {
-			safety := cfg.effectiveSafetyFactor()
-			safeMax := int(float64(bridgeErr.MaxVRAMNCtx) * safety)
-			if targetNCtx > safeMax {
-				return c.makeRejectPlan(backendID, bridgeErr, targetNCtx,
-					fmt.Sprintf("required n_ctx=%d exceeds safe VRAM limit=%d (max_vram_n_ctx=%d, safety=%.2f)",
-						targetNCtx, safeMax, bridgeErr.MaxVRAMNCtx, safety))
-			}
-		}
-
-		// Round up до степени 2
-		newNCtx := roundUpPow2(targetNCtx)
-		if newNCtx < targetNCtx {
-			newNCtx = targetNCtx
-		}
-
-		return &ReloadPlan{
-			Decision: DecisionReload,
-			NewNCtx:  newNCtx,
-			Reason: fmt.Sprintf("prompt_too_long: required=%d, current=%d, override=%d, target=%d",
-				required, bridgeErr.CurrentNCtx, bridgeErr.NCtxOverride, newNCtx),
-		}
+		// BRIDGE_ERR_PROMPT_TOO_LONG (code 3) — модель загружена с n_ctx, КОТОРОГО
+		// не хватает для prompt + n_predict, И reload с тем же n_ctx БЕСПОЛЕЗЕН
+		// (current=65536, reload на 65536 не даст ничего). Более того, reload
+		// посреди streaming-ответа (а Cline/OpenWebUI шлют stream=true) вызывает
+		// EOF в Go-клиенте, т.к. cppworker при reload выгружает модель и
+		// закрывает keep-alive соединения, на которых balancer ещё ждёт ответ.
+		//
+		// 2026-06-25 fix: вместо DecisionReload → DecisionReject. Reload с тем
+		// же или меньшим n_ctx — бессмысленная трата времени и причина EOF.
+		// Клиенту возвращается 413 с actionable JSON, Cline показывает
+		// понятную ошибку вместо "не использовал инструмент".
+		//
+		// 2026-06-25 fix v2: используем отдельный error_code="prompt_exceeds_context",
+		// чтобы Cline/UI мог отличить эту ситуацию (prompt слишком длинный,
+		// ничего не поможет, кроме уменьшения prompt) от n_ctx_too_large_for_backend
+		// (VRAM/RAM не хватает — нужен reload с меньшими слоями).
+		return c.makeRejectPlan(backendID, bridgeErr, bridgeErr.RequiredNCtx,
+			"prompt_too_long: model is already loaded with maximum possible n_ctx; "+
+				"reduce conversation history / tools[] / system prompt, or use a smaller model",
+			"prompt_exceeds_context")
 	}
 
 	// ==== BRIDGE_ERR_N_CTX_NEEDS_RELOAD (code 2) — стандартный случай ====
@@ -490,7 +489,8 @@ func (c *NCtxReloadCoordinator) DecideReloadBackend(
 	// Защита от абсурдных значений
 	if cfg.AutoReloadMaxNCtx > 0 && required > cfg.AutoReloadMaxNCtx {
 		return c.makeRejectPlan(backendID, bridgeErr, required,
-			fmt.Sprintf("required n_ctx=%d exceeds configured max=%d", required, cfg.AutoReloadMaxNCtx))
+			fmt.Sprintf("required n_ctx=%d exceeds configured max=%d", required, cfg.AutoReloadMaxNCtx),
+			"n_ctx_too_large_for_backend")
 	}
 
 	// VRAM-оценка от C-bridge (bridge.c)
@@ -528,19 +528,22 @@ func (c *NCtxReloadCoordinator) DecideReloadBackend(
 			return c.makeRejectPlan(backendID, bridgeErr, required,
 				"model fits in VRAM but no space remains for KV-cache (max_vram_n_ctx=0). "+
 					"Try reducing n_gpu_layers (CPU-offload) to free VRAM for context, "+
-					"or use a smaller model / increase physical VRAM")
+					"or use a smaller model / increase physical VRAM",
+				"n_ctx_too_large_for_backend")
 		}
 		// Backend не сообщил (CPU-only? llama.cpp без CUDA? CUDA API failed?).
 		// Безопасный fallback: reject, чтобы не вызвать OOM.
 		return c.makeRejectPlan(backendID, bridgeErr, required,
-			"backend did not report max_vram_n_ctx (CPU-only, unknown GPU, or CUDA-query failed); cannot safely auto-reload")
+			"backend did not report max_vram_n_ctx (CPU-only, unknown GPU, or CUDA-query failed); cannot safely auto-reload",
+			"n_ctx_too_large_for_backend")
 	}
 	safety := cfg.effectiveSafetyFactor()
 	safeMax := int(float64(maxVRAMNCtx) * safety)
 	if required > safeMax {
 		return c.makeRejectPlan(backendID, bridgeErr, required,
 			fmt.Sprintf("required n_ctx=%d exceeds safe VRAM limit=%d (max_vram_n_ctx=%d, safety=%.2f)",
-				required, safeMax, maxVRAMNCtx, safety))
+				required, safeMax, maxVRAMNCtx, safety),
+			"n_ctx_too_large_for_backend")
 	}
 
 	// Round up до степени 2 (типичная llama.cpp рекомендация; экономит память)
@@ -567,27 +570,49 @@ func (c *NCtxReloadCoordinator) DecideReloadBackend(
 	}
 }
 
-// makeRejectPlan собирает ReloadPlan + детальный JSON для 413-ответа
+// makeRejectPlan собирает ReloadPlan + детальный JSON для 413-ответа.
+//
+// errorCode — строковый идентификатор ошибки для JSON-поля "error".
+// Используемые значения:
+//   - "n_ctx_too_large_for_backend" — недостаточно VRAM/RAM для запрошенного n_ctx
+//     (code=2 path). Cline/UI должен показать это как системную проблему.
+//   - "prompt_exceeds_context" — модель загружена с максимальным n_ctx,
+//     но prompt (actual_tokens + n_predict) его превышает (code=3 path).
+//     Cline/UI должен показать это как «нужно укоротить историю/tools».
+//
+// errorCode="" → default = "n_ctx_too_large_for_backend" (обратная совместимость).
 func (c *NCtxReloadCoordinator) makeRejectPlan(
 	backendID string,
 	bridgeErr *NCtxBridgeError,
 	required int,
 	reason string,
+	errorCode string,
 ) *ReloadPlan {
+	if errorCode == "" {
+		errorCode = "n_ctx_too_large_for_backend"
+	}
 	cfg := c.Config()
 	safe := 0
 	if bridgeErr.MaxVRAMNCtx > 0 {
 		safe = int(float64(bridgeErr.MaxVRAMNCtx) * cfg.effectiveSafetyFactor())
 	}
+	// Suggestion зависит от причины: для prompt_exceeds_context нужно
+	// уменьшить prompt/history/tools (reload не поможет), для n_ctx_too_large
+	// можно посоветовать reload с уменьшением gpu_layers.
+	suggestion := "save a model profile with a larger n_ctx and reload manually, or send a smaller options.num_ctx in the request"
+	if errorCode == "prompt_exceeds_context" {
+		suggestion = "reduce conversation history / tools[] / system prompt, or use a smaller model. " +
+			"Reload with the same or larger n_ctx will NOT help — the model is already loaded at maximum."
+	}
 	rej := map[string]interface{}{
-		"error":            "n_ctx_too_large_for_backend",
+		"error":            errorCode,
 		"backend_id":       backendID,
 		"reason":           reason,
 		"requested_n_ctx":  required,
 		"current_n_ctx":    bridgeErr.CurrentNCtx,
 		"max_vram_n_ctx":   bridgeErr.MaxVRAMNCtx,
 		"safe_max_n_ctx":   safe,
-		"suggestion":       "save a model profile with a larger n_ctx and reload manually, or send a smaller options.num_ctx in the request",
+		"suggestion":       suggestion,
 		"profile_endpoint": "/api/profiles",
 		"reload_endpoint":  "/api/models/reload",
 		"bridge_code":      bridgeErr.Code,

@@ -20,6 +20,13 @@
 //   CPPWORKER_REGISTER_RETRY_INTERVAL — Интервал retry (default 30s).
 //   CPPWORKER_REGISTER_HEARTBEAT      — Интервал heartbeat (default 60s). 0 = отключён.
 //   CPPWORKER_REGISTER_MAX_RETRIES    — Максимум попыток регистрации (default 0 = бесконечно).
+//   CPPWORKER_REGISTER_DISABLE        — "true" | "1" — полностью отключить Go-side
+//                                       auto-registration (используется bundled-стеком,
+//                                       где регистрацию делает shell-script
+//                                       register-with-balancer.sh, иначе получается
+//                                       два бэкенда с разными id, но одним физическим
+//                                       cppworker'ом). Default: false (enabled, если
+//                                       CPPWORKER_BALANCER_URL задан).
 //   CPPWORKER_REGISTER_GPU_MODE       — "auto" | "gpu" | "cpu" (default "auto").
 
 package main
@@ -58,9 +65,21 @@ type balancerRegistration struct {
 	client        *http.Client
 }
 
+// isRegisterDisabled проверяет env-флаг CPPWORKER_REGISTER_DISABLE.
+// Используется bundled-стеком, где регистрацию делает shell-script
+// register-with-balancer.sh, а Go-side регистрация отключается чтобы
+// не плодить дубликаты бэкендов.
+func isRegisterDisabled() bool {
+	v := strings.ToLower(strings.TrimSpace(os.Getenv("CPPWORKER_REGISTER_DISABLE")))
+	return v == "true" || v == "1" || v == "yes" || v == "on"
+}
+
 func newBalancerRegistration(cfg *cppbackend.Config) *balancerRegistration {
 	url := strings.TrimRight(os.Getenv("CPPWORKER_BALANCER_URL"), "/")
 	if url == "" {
+		return nil
+	}
+	if isRegisterDisabled() {
 		return nil
 	}
 	token := os.Getenv("CPPWORKER_BALANCER_TOKEN")

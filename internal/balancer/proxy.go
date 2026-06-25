@@ -97,6 +97,15 @@ type Proxy struct {
 	// Используется в proxyRequestLlamaCpp, handleStreamingResponse и proxyRequest
 	// для замены глобальных таймаутов на per-model.
 	modelLatencyTracker *ModelLatencyTracker
+
+	// metricsHTTPDoer — HTTP-клиент для heartbeat /api/info polling
+	// в preflightNCtxReloadIfNeededSync (см. queryBackendReloadPending).
+	// По умолчанию nil → используется реальный *http.Client{Timeout: 2s}.
+	// Тесты могут подменить на in-memory stub, чтобы не зависеть от сети
+	// (см. internal/balancer/nctx_reload_sync_test.go).
+	metricsHTTPDoer interface {
+		Do(*http.Request) (*http.Response, error)
+	}
 }
 
 // NewProxy - создание нового прокси
@@ -137,7 +146,7 @@ func NewProxy(config *types.LoadBalancerConfig) *Proxy {
 		MaxIdleConnsPerHost:   10,
 		IdleConnTimeout:       90 * time.Second,
 		DisableCompression:    true, // Важно для SSE
-		ResponseHeaderTimeout: 0,   // Отключено — управляется per-request контекстом
+		ResponseHeaderTimeout: 0,    // Отключено — управляется per-request контекстом
 	}
 
 	// Определяем TTL сессий из конфигурации
@@ -251,8 +260,6 @@ func NewProxy(config *types.LoadBalancerConfig) *Proxy {
 	return p
 
 }
-
-
 
 // determineRequestBackendType определяет тип бэкенда на основе пути входящего запроса.
 //   - Ollama API endpoints (/api/generate, /api/chat, /api/tags, ...) →

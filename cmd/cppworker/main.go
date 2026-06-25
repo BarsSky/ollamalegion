@@ -294,7 +294,14 @@ func main() {
 	if balancerReg != nil {
 		balancerReg.start(balancerRegCtx, log)
 	} else {
-		log.Infow("balancer auto-registration disabled (CPPWORKER_BALANCER_URL not set); cppworker will work in standalone mode")
+		switch {
+		case isRegisterDisabled():
+			log.Infow("balancer Go-side auto-registration disabled via CPPWORKER_REGISTER_DISABLE; "+
+				"registration is expected to be done by external script (e.g. bundled register-with-balancer.sh)",
+				"balancerURL", os.Getenv("CPPWORKER_BALANCER_URL"))
+		default:
+			log.Infow("balancer auto-registration disabled (CPPWORKER_BALANCER_URL not set); cppworker will work in standalone mode")
+		}
 	}
 
 	<-quit

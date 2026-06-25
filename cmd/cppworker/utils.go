@@ -238,6 +238,25 @@ func handleInferenceError(w http.ResponseWriter, err error) bool {
 		writeReloadDisabledForToolsResponse(w, rdtErr)
 		return true
 	}
+	// 2026-06-25: AutoTuneNCtx exhausted (n_ctx не помещается даже cpu-only + mmap в RAM).
+	// Транслируем в HTTP 413 + InsufficientResourcesResponse со всеми details.
+	var atErr *AutoTuneError
+	if errors.As(err, &atErr) {
+		writeInsufficientResourcesResponse(w, &InsufficientResourcesError{
+			Model:             atErr.Model,
+			RequestedNCtx:     atErr.RequestedNCtx,
+			MaxViableNCtx:     atErr.MaxViableNCtx,
+			AvailableRAMMB:    atErr.AvailableRAMMB,
+			ModelSizeBytes:    atErr.ModelSizeBytes,
+			GPULayersAttempted: 0, // cpu-only после auto_tune
+		})
+		return true
+	}
+	var irErr *InsufficientResourcesError
+	if errors.As(err, &irErr) {
+		writeInsufficientResourcesResponse(w, irErr)
+		return true
+	}
 	return false
 }
 
@@ -334,6 +353,78 @@ func roundUpPow2Local(v int) int {
 		p <<= 1
 	}
 	return p
+}
+
+// ============================================================
+// InsufficientResourcesError — недостаточно VRAM и RAM для загрузки модели
+// с запрошенным n_ctx, даже после каскада (RAM fallback → partial offload →
+// cpu-only + auto_tune n_ctx).
+//
+// Возвращается из tryRamFallbackReload, когда:
+//   1. requested n_ctx не помещается в VRAM с текущим gpu_layers;
+//   2. partial offload через mmap в RAM не помог;
+//   3. cpu-only (gpu_layers=0) тоже не влезает (либо mmap весов модели
+//      не помещается в RAM, либо KV-cache для requested n_ctx не помещается
+//      даже в VRAM при cpu-only).
+//
+// HTTP 413 (как и PromptExceedsNCtxError), но с другим code (6) и bridge_info
+// со всеми деталями ресурсов — балансер проксирует клиенту без изменений.
+// Клиент (Cline/OpenWebUI) видит actionable JSON и может показать
+// пользователю «уменьшите num_ctx / используйте меньшую модель».
+//
+// 2026-06-25: добавлен как часть каскадного auto-fallback (см. CHANGELOG,
+// docs/runbook-tools.md сценарий G, .clinerules Section 4 + 17).
+type InsufficientResourcesError struct {
+	Model              string
+	RequestedNCtx      int
+	MaxViableNCtx      int
+	AvailableVRAMMB    int64
+	AvailableRAMMB     int64
+	ModelSizeBytes     int64
+	KVCacheRequiredMB  int64
+	GPULayersAttempted int
+}
+
+// Error — human-readable message (используется в логах и в generic 5xx fallback).
+func (e *InsufficientResourcesError) Error() string {
+	return fmt.Sprintf(
+		"insufficient resources for model %q: requested n_ctx=%d does not fit in "+
+			"%d MB VRAM + %d MB RAM (model size %d MB, KV-cache %d MB, gpu_layers=%d). "+
+			"Max viable n_ctx: %d. Reduce num_ctx in request or use a smaller model.",
+		e.Model, e.RequestedNCtx, e.AvailableVRAMMB, e.AvailableRAMMB,
+		e.ModelSizeBytes/(1024*1024), e.KVCacheRequiredMB, e.GPULayersAttempted,
+		e.MaxViableNCtx)
+}
+
+// writeInsufficientResourcesResponse — HTTP 413 + structured JSON.
+//
+// Формат совместим с ParseCppWorkerError в балансере:
+//   - top-level "code" = 6 (ErrCodeInsufficientResources)
+//   - "bridge_info" со всеми details для диагностики
+//
+// Балансер проксирует этот JSON клиенту как есть (код 6 — не n_ctx-reloadable,
+// клиент сам решит, уменьшать n_ctx или нет).
+func writeInsufficientResourcesResponse(w http.ResponseWriter, err *InsufficientResourcesError) {
+	body := map[string]interface{}{
+		"error":   "insufficient_resources",
+		"code":    6,
+		"message": err.Error(),
+		"details": err.Error(),
+		"bridge_info": map[string]interface{}{
+			"code":                  6,
+			"requested_n_ctx":       err.RequestedNCtx,
+			"max_viable_n_ctx":      err.MaxViableNCtx,
+			"available_vram_mb":     err.AvailableVRAMMB,
+			"available_ram_mb":      err.AvailableRAMMB,
+			"model_size_mb":         err.ModelSizeBytes / (1024 * 1024),
+			"kv_cache_required_mb":  err.KVCacheRequiredMB,
+			"gpu_layers_attempted":  err.GPULayersAttempted,
+			"model":                 err.Model,
+			"suggestion":            "Reduce num_ctx to " + strconv.Itoa(err.MaxViableNCtx) + " or use a smaller model. You can also save a per-model profile via POST /api/v1/cppworker/model-profiles/{name} with smaller contextSize.",
+		},
+		"http_status": 413,
+	}
+	writeJSON(w, http.StatusRequestEntityTooLarge, body)
 }
 
 // ============================================================

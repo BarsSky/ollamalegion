@@ -133,6 +133,13 @@ services:
       - CPPWORKER_REGISTER_RETRY_INTERVAL=15s
       - CPPWORKER_REGISTER_HEARTBEAT=60s
       - CPPWORKER_REGISTER_GPU_MODE=gpu
+      # 2026-06-25: в bundled-стеке регистрацию делает entrypoint.sh
+      # (register-with-balancer.sh) с фиксированным CPPWORKER_BACKEND_ID.
+      # Без этого флага Go-side код cppworker'а (balancer_register.go) тоже
+      # дёргает POST /api/v1/backends и создаёт ВТОРОЙ бэкенд с id
+      # "cppworker-gpu" (default от os.Hostname) → в кластере два бэкенда
+      # указывают на один физический cppworker, race в selectBackend.
+      - CPPWORKER_REGISTER_DISABLE=true
       # HF auto-download ОТКЛЮЧЁН — пользователь сам управляет моделями
       - HF_AUTO_DOWNLOAD_REPO=
       - HF_AUTO_DOWNLOAD_FILE=

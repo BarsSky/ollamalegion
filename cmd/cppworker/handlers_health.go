@@ -2,6 +2,7 @@ package main
 
 import (
 	"net/http"
+	"time"
 )
 
 // ============================================================
@@ -21,6 +22,26 @@ func handleHealth(w http.ResponseWriter, r *http.Request) {
 
 func handleInfo(w http.ResponseWriter, r *http.Request) {
 	status := backend.Status()
+	// 2026-06-24: heartbeat reload_pending — балансировщик читает это поле
+	// и НЕ пытается дёргать LoadModel API, пока reload не завершён.
+	// Решает race condition: балансировщик polling'ом видел state=loading,
+	// дёргал /api/models/load, оба потока упирались в TryLockLoad друг друга.
+	if reloadModel := backend.GetReloadPending(); reloadModel != "" {
+		startedAt := backend.ReloadStartedAt()
+		reloadInfo := map[string]interface{}{
+			"model":     reloadModel,
+			"startedAt": startedAt.Format(time.RFC3339Nano),
+			"elapsedMs": time.Since(startedAt).Milliseconds(),
+		}
+		status["reload_pending"] = reloadInfo
+	}
+	// Также прокинем in-flight counter для диагностики.
+	if inflight := backend.InFlight(); inflight != nil {
+		snap := inflight.Snapshot()
+		if len(snap) > 0 {
+			status["in_flight_requests"] = snap
+		}
+	}
 	writeJSON(w, http.StatusOK, status)
 }
 

@@ -185,12 +185,22 @@ func TestProxyRequestLlamaCpp_Streaming413_TriggersReload(t *testing.T) {
 		t.Errorf("REGRESSION: balancer propagated SSE error instead of triggering auto-reload!\nbody: %s", respBody)
 	}
 
-	// Клиент должен получить успешный streaming-ответ после reload.
-	if !strings.Contains(respBody, "Reloaded and OK!") {
-		t.Errorf("expected successful streaming content after reload, got body: %s", respBody)
+	// Клиент должен получить actionable 413 с понятной ошибкой (2026-06-25 fix):
+	// раньше balancer пытался reload'ить модель с тем же n_ctx, что вызывало EOF
+	// в Go-клиенте (cppworker при reload выгружает модель и закрывает keep-alive
+	// соединения). Теперь при prompt_too_long balancer возвращает 413 напрямую.
+	//
+	// 2026-06-25 fix v2: для prompt_exceeds_context используется отдельный
+	// error_code (не "n_ctx_too_large_for_backend"), чтобы Cline/UI мог отличить
+	// эту ситуацию от реальной нехватки VRAM и не пытался делать reload.
+	if !strings.Contains(respBody, `"error":"prompt_exceeds_context"`) {
+		t.Errorf("expected prompt_exceeds_context error, got body: %s", respBody)
 	}
-	if !strings.Contains(respBody, "[DONE]") {
-		t.Errorf("expected [DONE] marker in streaming response, got: %s", respBody)
+	if !strings.Contains(respBody, "reduce conversation history") {
+		t.Errorf("expected actionable hint, got body: %s", respBody)
+	}
+	if strings.Contains(respBody, "Reloaded and OK!") {
+		t.Errorf("REGRESSION: balancer tried to reload instead of reject (causes EOF)")
 	}
 }
 
@@ -248,17 +258,24 @@ func TestParseCppWorkerError_PromptTooLong_HasAllBridgeInfoForReload(t *testing.
 		t.Errorf("ActualTokens = %d, want 8313", bi.ActualTokens)
 	}
 
-	// Sanity: DecideReloadBackend должен вернуть DecisionReload
-	// (required=16384 < max_vram*0.85=18659).
+	// 2026-06-25: при prompt_too_long (code 3) balancer возвращает DecisionReject
+	// вместо DecisionReload. Reload с тем же n_ctx бесполезен и вызывает EOF
+	// (cppworker при reload выгружает модель и закрывает keep-alive соединения).
 	coord := NewNCtxReloadCoordinator(DefaultNCtxReloadConfig())
 	plan := coord.DecideReloadBackend("cppworker-gpu", bi, 0)
-	if plan == nil || plan.Decision != DecisionReload {
-		t.Errorf("DecideReloadBackend should return DecisionReload, got plan=%+v", plan)
+	if plan == nil {
+		t.Fatal("DecideReloadBackend returned nil plan")
 	}
-	if plan.NewNCtx != 16384 {
-		t.Errorf("NewNCtx = %d, want 16384", plan.NewNCtx)
+	if plan.Decision != DecisionReject {
+		t.Errorf("DecideReloadBackend should return DecisionReject for prompt_too_long, got plan=%+v", plan)
 	}
-	t.Logf("OK: BridgeInfo parsed correctly → DecideReloadBackend → Reload to n_ctx=%d", plan.NewNCtx)
+	if plan.NewNCtx != 0 {
+		t.Errorf("NewNCtx = %d, want 0 (Reject plan)", plan.NewNCtx)
+	}
+	if plan.RejectMsg == "" {
+		t.Error("RejectMsg is empty — client won't get actionable error")
+	}
+	t.Logf("OK: BridgeInfo parsed correctly → DecideReloadBackend → Reject (no reload, no EOF). Reason: %s", plan.Reason)
 }
 
 // errorIs — обёртка для errors.Is, чтобы не подключать "errors" в каждом тесте.

@@ -65,6 +65,18 @@ type BalancingSettings struct {
 	// клиенту с подробным JSON. По умолчанию выключено (AutoReloadNCtx=false).
 	NCtxReload NCtxReloadSettings `json:"nctxReload"`
 
+	// PreflightSyncEnabled — включает синхронное ожидание reload в preflight
+	// (вместо немедленного HTTP 503 + Retry-After). При включении балансер
+	// ждёт завершения reload до PreflightSyncTimeoutMs (default 60s), затем
+	// проксирует запрос. При таймауте fallback на async с Retry-After: 15.
+	// Дефолт: true (клиент не получает EOF при reload).
+	PreflightSyncEnabled bool `json:"preflightSyncEnabled"`
+
+	// PreflightSyncTimeoutMs — таймаут синхронного ожидания reload в preflight.
+	// Default 60000 (60s). Max 180000 (180s). Если reload не успел —
+	// fallback на async 503 + Retry-After: 15.
+	PreflightSyncTimeoutMs int `json:"preflightSyncTimeoutMs"`
+
 	// OperatingMode — текущий вариант работы балансера для метрик и UI
 	OperatingMode string `json:"operatingMode"` // "standard"|"replication"|"rpc_coordinator"|"virtual_router"|"distributed_inference"
 }

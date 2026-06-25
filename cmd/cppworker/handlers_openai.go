@@ -209,6 +209,12 @@ func handleV1ChatCompletions(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// InFlight counter: защищает активные запросы от reload-обрыва.
+	if req.Model != "" && backend.InFlight() != nil {
+		backend.InFlight().Inc(req.Model)
+		defer backend.InFlight().Dec(req.Model)
+	}
+
 	if err := ensureModelLoaded(req.Model); err != nil {
 		if isModelLoadingError(err) {
 			writeLoadingResponse(w, req.Model, err)
@@ -284,9 +290,11 @@ func handleV1ChatCompletions(w http.ResponseWriter, r *http.Request) {
 			// Если есть tools — буферизируем полный ответ, чтобы распарсить tool_calls
 			// перед отправкой SSE. Это trade-off: теряем real-time streaming,
 			// но получаем корректные tool_calls + finish_reason.
-			hasTools := len(req.Tools) > 0
-			result, err := generateWithRamFallback(req.Model, prompt, params, hasTools)
-			if err != nil {
+		hasTools := len(req.Tools) > 0
+		result, err := generateWithRamFallback(req.Model, prompt, params, hasTools)
+		// 2026-06-25: snapshot для /v1/chat/completions (tools path).
+		defer recordLastPromptFromError(req.Model, "/v1/chat/completions", prompt, &params, hasTools, err)
+		if err != nil {
 				// 2026-06-24: PromptExceedsNCtxError → HTTP 413 (см. inference.go).
 				if handleInferenceError(w, err) {
 					return
@@ -332,6 +340,8 @@ func handleV1ChatCompletions(w http.ResponseWriter, r *http.Request) {
 
 	hasTools := len(req.Tools) > 0
 	result, err := generateWithRamFallback(req.Model, prompt, params, hasTools)
+	// 2026-06-25: snapshot для /v1/chat/completions (non-stream path).
+	defer recordLastPromptFromError(req.Model, "/v1/chat/completions", prompt, &params, hasTools, err)
 	if err != nil {
 		// 2026-06-24: PromptExceedsNCtxError → HTTP 413 (см. inference.go).
 		if handleInferenceError(w, err) {
@@ -556,6 +566,12 @@ func writeOpenAIChatStream(w http.ResponseWriter, r *http.Request, modelName, pr
 	tokenDone := make(chan struct{})
 	defer close(tokenDone)
 
+	// 2026-06-25: snapshot для /v1/chat/completions streaming.
+	var streamErr error
+	defer func() {
+		recordLastPromptFromError(modelName, "/v1/chat/completions", prompt, &params, false, streamErr)
+	}()
+
 	keepaliveInterval := 15 * time.Second
 
 	var writeMu sync.Mutex
@@ -624,10 +640,11 @@ func writeOpenAIChatStream(w http.ResponseWriter, r *http.Request, modelName, pr
 		return true
 	}
 	// writeOpenAIChatStream вызывается только когда tools НЕ заданы (для tools идёт буферизированный путь в handleV1ChatCompletions). Поэтому reload при n_ctx overflow разрешён.
-	if err := generateStreamWithRamFallback(modelName, prompt, params, callback, false); err != nil {
-		maybeRestartOnMemorySlotError(err, modelName)
+	streamErr = generateStreamWithRamFallback(modelName, prompt, params, callback, false)
+	if streamErr != nil {
+		maybeRestartOnMemorySlotError(streamErr, modelName)
 		// Специальная обработка reload-disabled-for-tools (HTTP 413 в SSE-чанке).
-		if rdtErr, ok := err.(*ReloadDisabledForToolsError); ok {
+		if rdtErr, ok := streamErr.(*ReloadDisabledForToolsError); ok {
 			errChunk := map[string]interface{}{
 				"id":      chatID,
 				"object":  "chat.completion.chunk",
@@ -651,7 +668,7 @@ func writeOpenAIChatStream(w http.ResponseWriter, r *http.Request, modelName, pr
 			return
 		}
 		// Специальная обработка reload-loop-limit (HTTP 413 в SSE-чанке).
-		if rllErr, ok := err.(*ReloadLoopLimitError); ok {
+		if rllErr, ok := streamErr.(*ReloadLoopLimitError); ok {
 			errChunk := map[string]interface{}{
 				"id":      chatID,
 				"object":  "chat.completion.chunk",
@@ -687,7 +704,7 @@ func writeOpenAIChatStream(w http.ResponseWriter, r *http.Request, modelName, pr
 					"finish_reason": "error",
 				},
 			},
-			"error": err.Error(),
+			"error": streamErr.Error(),
 		}
 		errJSON, _ := json.Marshal(errChunk)
 		safeFprintf("data: %s\n\n", errJSON)
@@ -783,6 +800,12 @@ func handleV1Completions(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// InFlight counter: защищает активные запросы от reload-обрыва.
+	if req.Model != "" && backend.InFlight() != nil {
+		backend.InFlight().Inc(req.Model)
+		defer backend.InFlight().Dec(req.Model)
+	}
+
 	if err := ensureModelLoaded(req.Model); err != nil {
 		if isModelLoadingError(err) {
 			writeLoadingResponse(w, req.Model, err)
@@ -825,6 +848,8 @@ func handleV1Completions(w http.ResponseWriter, r *http.Request) {
 	// /v1/completions (legacy text completions) — tools не поддерживаются,
 	// reload разрешён при n_ctx overflow.
 	result, err := generateWithRamFallback(req.Model, req.Prompt, params, false)
+	// 2026-06-25: snapshot для /v1/completions.
+	defer recordLastPromptFromError(req.Model, "/v1/completions", req.Prompt, &params, false, err)
 	if err != nil {
 		// 2026-06-24: PromptExceedsNCtxError → HTTP 413 (см. inference.go).
 		if handleInferenceError(w, err) {
@@ -894,6 +919,12 @@ func writeOpenAICompletionStream(w http.ResponseWriter, r *http.Request, modelNa
 	completionID := fmt.Sprintf("cmpl-%d", time.Now().UnixNano())
 	created := time.Now().Unix()
 
+	// 2026-06-25: snapshot для /v1/completions streaming.
+	var streamErr error
+	defer func() {
+		recordLastPromptFromError(modelName, "/v1/completions", prompt, &params, false, streamErr)
+	}()
+
 	// Накапливаем полный output параллельно для финального чанка.
 	var outputBuf strings.Builder
 
@@ -924,10 +955,11 @@ func writeOpenAICompletionStream(w http.ResponseWriter, r *http.Request, modelNa
 		return true
 	}
 	// writeOpenAICompletionStream — /v1/completions, tools не поддерживаются.
-	if err := generateStreamWithRamFallback(modelName, prompt, params, callback, false); err != nil {
-		maybeRestartOnMemorySlotError(err, modelName)
+	streamErr = generateStreamWithRamFallback(modelName, prompt, params, callback, false)
+	if streamErr != nil {
+		maybeRestartOnMemorySlotError(streamErr, modelName)
 		// Специальная обработка reload-loop-limit.
-		if rllErr, ok := err.(*ReloadLoopLimitError); ok {
+		if rllErr, ok := streamErr.(*ReloadLoopLimitError); ok {
 			errChunk := map[string]interface{}{
 				"id":      completionID,
 				"object":  "text_completion",
@@ -963,7 +995,7 @@ func writeOpenAICompletionStream(w http.ResponseWriter, r *http.Request, modelNa
 					"finish_reason": "error",
 				},
 			},
-			"error": err.Error(),
+			"error": streamErr.Error(),
 		}
 		errJSON, _ := json.Marshal(errChunk)
 		fmt.Fprintf(w, "data: %s\n\n", errJSON)

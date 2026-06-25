@@ -5,6 +5,319 @@
 Формат ведётся в соответствии с [Keep a Changelog](https://keepachangelog.com/ru/1.0.0/),
 и этот проект придерживается [Semantic Versioning](https://semver.org/lang/ru/).
 
+## [Unreleased — 2026-06-25]
+
+### Исправлено
+- **EOF при n_ctx auto-reload для Cline/OpenWebUI с n_ctx=65536 на gemma-4 8B (8GB VRAM + 25GB RAM)**
+  — балансировщик возвращал HTTP 413 с actionable сообщением
+  "n_ctx auto-reload failed: ... (saved model profile with larger n_ctx and reload manually via /api/profiles)".
+  Cline интерпретировал это как EOF и зацикливался на retry. Корневая причина: переменная
+  `LB_NCTX_RELOAD_MAX_N_CTX=32768` в `deployments/.env.bundled` ограничивала max n_ctx
+  балансировщика 32K, а Cline по умолчанию запрашивает 65536 → `required (65536) >
+  AutoReloadMaxNCtx (32768)` → reject. Дополнительно `LB_BALANCING_PREFLIGHT_SYNC_TIMEOUT_MS=60000`
+  (60 сек) было недостаточно для reload gemma-4 8B с 65K n_ctx (через partial GPU offload
+  с auto_offload + auto_tune_nctx reload занимает 90-150 сек). Изменения в `.env.bundled`:
+  - `LB_NCTX_RELOAD_MAX_N_CTX`: 32768 → **65536** (соответствует запросу Cline;
+    реальный VRAM-лимит контролируется через `max_vram_n_ctx` в cppworker runtime config
+    и `auto_reload_vram_safety_factor=0.95`).
+  - `LB_BALANCING_PREFLIGHT_SYNC_TIMEOUT_MS`: 60000 → **180000** (3 мин, max значение
+    согласно `pkg/types/balancing.go`). Reload gemma-4 8B на 65K n_ctx через partial
+    offload в RAM может занимать 90-150 сек; 60 сек вызывали EOF на клиенте.
+  - Для 8GB VRAM + gemma-4 8B + 65K n_ctx используется auto_offload + auto_tune_nctx
+    с partial GPU offload (gemma-4 профиль `numCtx=32768` в `config/config.bundled.json:114`).
+    Реальный VRAM-лимит остается в cppworker runtime config (max_vram_n_ctx) и safety_factor=0.95.
+    Профиль `numCtx` снижен 131072 → 32768 (см. запись ниже).
+- **Deadlock при initial load gemma-4 с профильным `numCtx=131072` (8GB VRAM)** —
+  при первом запуске bundled stack модель `gemma-4-E4B-it-Q4_K_M` загружалась
+  с `numCtx=131072` из per-model профиля `config/config.bundled.json:114`.
+  Cppworker пытался аллоцировать KV-cache для 131K контекста (~13GB при FP16,
+  `n_embd=2560`, 42 layers), что **физически не влезает в 8GB VRAM даже с mmap
+  в RAM** (KV-cache в RAM замедляет inference в 5-10x, и cppworker не умеет
+  выбирать это автоматически на initial load). Модель зависала в `state="loading"`
+  на 60+ секунд (cppworker `done_getting_tensors` зависал на KV-cache allocation),
+  балансер делал polling `/api/models/load/progress` каждые 2 сек, клиент (Cline)
+  получал пустой ответ. Профиль `numCtx` снижен **131072 → 32768** — это
+  помещается в 8GB VRAM с `auto_offload` (`gpuLayers=-2`/AUTO) + `flash_attn=1` +
+  `mmap=true`. Дополнительно: `cppworker-defaults.json` (`defaultCtxSize`) уже
+  был 32768, и `gemma-4-large` профиль — тоже 32768. Cline по умолчанию шлёт
+  `n_ctx=65536` в body, но **profile numCtx (32768) клампит body** через
+  `applyCppCtxHeader` (см. `cmd/cppworker/nctx_clamp.go:106-114` — header —
+  UPPER LIMIT). Это безопасный режим: модель всегда загружается с максимальным
+  numCtx, который реально помещается в VRAM, и балансер может сделать reload до
+  большего numCtx (до 65536 в текущей конфигурации) если VRAM позволяет через
+  `auto_tune_nctx` + RAM-fallback.
+
+- **Модель не вызывает tools при проксировании через балансер (Gemma-4, qwen2.5-coder, Hermes-prompt)**
+  — пользователь сообщал "модель не использовала инструмент" или "использован один источник,
+  но самого ответа нет". У Ollama-native таких проблем не было, т.к. ollama сам формирует
+  структурированное `message.tool_calls`. Балансер вынужден парсить JSON из `content`
+  (Gemma-4/Hermes не имеют нативного tool-call через chat template), и ранее парсер ломался
+  на реальных моделях. Внесены 5 связанных правок:
+  - **`hermesToolCallRegex`** теперь делает закрывающий `</tool_call>` и `<answer>` опциональными.
+    Раньше qwen2.5-coder, deepseek-coder и Gemma-4 в Hermes-prompt часто обрезали
+    `</tool_call>` в коротких ответах или стриме — regex не матчил, tool_call уходил
+    в content как обычный текст. Теперь поддерживаются варианты: `<tool_call>{...}`,
+    `<tool_call>{...}</tool_call>`, `<answer>{...}</answer>`, `<answer>{...}`.
+  - **Gemma-4 специфический парсер**: новая функция `detectGemmaTurnToolCallsInContent`
+    ловит JSON tool call внутри `<start_of_turn>(model|assistant)\n[JSON]\n</start_of_turn>` —
+    это специфика chat template Gemma-4 (использует `model` вместо `assistant`).
+  - **`parseHermesToOpenAI`** теперь корректно обрабатывает `arguments`, который пришёл
+    строкой с валидным JSON (Gemma-4 часто эмитит `arguments: "{\"q\": \"test\"}"` как
+    stringified JSON). Раньше происходила двойная сериализация → Cline/Roo Code получали
+    невалидный JSON и падали с ошибкой парсинга tool_call.
+  - **`translateOllamaChatToOpenAI`** теперь автоматически выставляет `tool_choice: "auto"`,
+    если клиент прислал `tools[]` (top-level или в `options.tools`), но не задал `tool_choice`
+    явно. Без этого Gemma-4 и аналогичные модели без нативного tool support не понимали,
+    что нужно вызвать tool, и возвращали обычный текст вместо JSON tool_call.
+  - **`translateOllamaChatToOpenAI`** также fallback'ит на `options.tools` для клиентов
+  типа OpenWebUI, которые шлют tools через `options.tools` (Ollama-native стиль).
+- **Тесты**: добавлены 13 новых тестов в `llamacpp_toolcall_gemma_test.go` и
+  `llamacpp_translate_req_test.go`. Покрыты сценарии: Gemma-4 turn-parsing (8 кейсов),
+  Hermes с опциональным `</tool_call>` (5 кейсов), arguments как JSON-строка/map (2 кейса),
+  `tool_choice: "auto"` для Gemma-4 (4 кейса), `options.tools` fallback, prompt→messages.
+  Все 13 тестов проходят (`go test -tags llama_stub ./internal/balancer/ -v`).
+  Существующие транспортные тесты `TestDebugOpenWebUI_ToolCalls_Scenario*` также зелёные.
+
+### Добавлено
+- **Endpoint `GET /api/v1/cppworker/debug/last-prompt` + cluster-proxy
+  `GET /api/v1/cluster/cppworker/debug/last-prompt` для диагностики `prompt_exceeds_context`** —
+  после фикса `error_code: "prompt_exceeds_context"` пользователю нужно понять,
+  **что именно** заняло столько токенов в prompt (длинная история диалога? tool definitions?
+  system prompt с контекстом проекта?). Без snapshot'а последнего запроса единственный
+  способ — лезть в логи cppworker и grep'ать по `actual_prompt_tokens`, что неудобно.
+  - **CppWorker** (`cmd/cppworker/debug_last_prompt.go`): хранит snapshot последнего
+    inference-запроса в `lastPromptSnapshot` (thread-safe через `sync.RWMutex`). В каждый
+    inference handler (`handleGenerate`, `handleOllamaGenerate`, `handleChat`,
+    `handleV1ChatCompletions`, `handleV1Completions` + все `write*Stream` функции)
+    добавлен `defer recordLastPromptFromError(...)`, который захватывает:
+    `model`, `endpoint`, `prompt_chars`, `prompt_tokens` (через `backend.CountTokens`),
+    `n_ctx_override`, `n_ctx_loaded` (из `backend.GetModel`), `has_tools`, `status`
+    (`ok`/`prompt_too_long`/`n_ctx_too_large`/...), `timestamp`, `prompt_head`,
+    `prompt_tail`, `prompt_lines_hint`, `error`. Endpoint возвращает JSON
+    (404 если запросов ещё не было), защищён `authMiddleware`.
+  - **Cluster-proxy** (`internal/api/handlers_cluster_debug.go`):
+    `GET /api/v1/cluster/cppworker/debug/last-prompt` агрегирует snapshot'ы со всех
+    cppworker бэкендов кластера в один JSON-ответ `{count, backends: [{backendId,
+    status, info, error}]}`. Per-backend ошибки (404 от старого cppworker, 5xx,
+    timeout) не ломают общий ответ — статус `"unavailable"`/`"error"` с описанием.
+  - **Тесты**: добавлены 7 новых тестов в `internal/api/handlers_cluster_debug_test.go`
+    (mock cppworker через `httptest.NewServer`, проверка proxy и graceful degradation).
+    Все 7/7 тестов PASS.
+  - **Acceptance criteria**:
+    - `curl -H "X-API-Token: $LB_TOKEN"
+      http://localhost:18081/api/v1/cluster/cppworker/debug/last-prompt`
+      возвращает JSON с `prompt_tokens`, `prompt_chars`, `prompt_head/tail`,
+      `n_ctx_override`, `n_ctx_loaded` и `status: "prompt_too_long"`.
+    - Старый bundled-образ cppworker (до этой фикса) возвращает 404 → cluster-proxy
+      помечает backend как `status: "unavailable"` с подсказкой "build before 2026-06-25".
+    - Build OK: `go build -tags llama_stub ./cmd/cppworker` и `./cmd/balancer` — exit 0.
+
+- **Cluster-level endpoints для управления моделями через балансировщик** — пользовательский
+  workflow идёт через балансировщик (порт 18080 для OpenAI API, 18081 для admin API,
+  18083 для WebUI), а прямой доступ к cppworker (порт 18092) из Docker-network
+  для UI неудобен и небезопасен. Реализованы 3 новых endpoint'а в
+  `internal/api/handlers_cluster_models.go`:
+  - **`GET /api/v1/cluster/models/loaded`** — агрегирует `LoadedModels[]` всех
+    llama_cpp (cppworker) бэкендов. Возвращает `{count, models[], modelsPerBackend{}}`,
+    где каждая модель содержит `name`, `backendId`, `backendType`, `engine`,
+    `contextLength`, `batchSize`, `numGpuLayers`, `quantization`, `vramUsage`,
+    `ramUsage`, `size`, `state`. UI и пользовательские скрипты могут опросить
+    состояние одной командой `curl -H "X-API-Token: …" http://localhost:18081/api/v1/cluster/models/loaded`
+    вместо N запросов к каждому cppworker:18092.
+  - **`GET /api/v1/cluster/models/loading`** — список моделей в состоянии `loading`
+    (асинхронная загрузка или n_ctx reload). Полезно для дебага зависших
+    загрузок: UI может показать «Загружается model-name 25s». Поля:
+    `name`, `backendId`, `startedAt` (RFC3339Nano), `contextLength`, `batchSize`,
+    `numGpuLayers`, `quantization`, `loadingError`, `loadingSizeBytes`.
+  - **`POST /api/v1/cluster/models/{name}/reload`** — единая точка входа для
+    load/unload/reload модели на llama_cpp бэкендах. Body:
+    ```json
+    {
+      "operation":   "load",     // или "unload" / "reload" (alias "all")
+      "backendId":   "...",      // "" = все llama_cpp бэкенды
+      "contextSize": 32768,      // n_ctx override (опционально)
+      "gpuLayers":   -2,         // -2 = auto, -1 = all, 0 = CPU-only
+      "reason":      "manual reload from UI"
+    }
+    ```
+    Возвращает `{model, operation, results: [{backendId, status, message, error, httpStatus}]}`
+    где `status` ∈ {`ok`, `error`, `skipped`}. Под капотом вызывает
+    `ModelManager.ExecuteOperation(backendID, ModelOpRequest{...})` — тот же
+    код-путь, что и существующий `/api/v1/backends/{id}/models` (POST), включая
+    retry на 503 «model is loading» в `executeLlamaCppLoad`. Это значит,
+    что **поведение cluster endpoint'а и single-backend endpoint'а идентично**
+    (нет дрейфа фич).
+  - Routes зарегистрированы в `internal/api/routes.go` рядом с
+    `/api/v1/cluster` handler'ом. Все три требуют аутентификации
+    (`X-API-Token`) и rate-limit middleware, как и остальные cluster
+    endpoint'ы.
+- **Дублирование бэкенда при auto-registration cppworker в bundled compose** —
+  cppworker в bundled-стеке регистрировался **дважды** с разными `id`, но одним
+  физическим контейнером (`host=cppworker-gpu, port=18092`):
+  - **Go-side** (`cmd/cppworker/balancer_register.go`) — `id="cppworker-gpu"` (default
+    от `os.Hostname()`), `weight=100`, `labels: cppworker,auto-registered`.
+  - **Shell-script** (`docker/cppworker/register-with-balancer.sh` из
+    `docker/cppworker/entrypoint.sh`) — `id="cppworker-gpu-bundled"` (через
+    `CPPWORKER_BACKEND_ID`), `weight=10`, `labels: linux,amd64,llamacpp,gpu,sm_86`.
+  В `data/state.json` виден только `cppworker-gpu-bundled` (записан вторым и
+  выигрывает по уникальности), но in-memory оба бэкенда жили одновременно →
+  race в `selectBackend` (`"no llama.cpp backend available"` в Cline). Фикс:
+  - Добавлен env-флаг **`CPPWORKER_REGISTER_DISABLE=true`/`1`**
+    в `cmd/cppworker/balancer_register.go:isRegisterDisabled()`. При выставленном
+    флаге `newBalancerRegistration()` возвращает `nil`, и Go-side регистрация
+    не запускается. Bundled compose
+    (`deployments/docker-compose.cppworker-bundled.yml`) выставляет флаг явно —
+    shell-script становится единственным источником правды.
+  - Добавлено информативное логирование в `cmd/cppworker/main.go`: при
+    `isRegisterDisabled()=true` пишется `"balancer Go-side auto-registration
+    disabled via CPPWORKER_REGISTER_DISABLE; registration is expected to be
+    done by external script"`. Видно в `docker logs ol-bundled-cppworker-gpu`.
+  - Удалён старый бэкенд `cppworker-gpu` через `DELETE /api/v1/backends/cppworker-gpu`.
+    После рестарта cppworker с новым образом: `GET /api/v1/backends` возвращает
+    `"total": 1` с единственным `cppworker-gpu-bundled`. Cline больше не видит
+    ambiguity в `selectBackend`.
+  - Документация: `.clinerules` обновлён — Section 9 содержит полный список
+    env-флагов auto-registration (включая новый `CPPWORKER_REGISTER_DISABLE`),
+    Section 17 — раздел «Дубликаты бэкендов — недопустимы» с пошаговым
+    acceptance criteria и инструкцией по миграции со старого образа.
+  - **Тесты**: добавлен `cmd/cppworker/balancer_register_test.go` с 5 тестами
+    и 12 кейсами (`TestIsRegisterDisabled` + `TestNewBalancerRegistration_*`).
+    Покрывают: все валидные env-значения (true/1/yes/on, в т.ч. mixed case),
+    отключение регистрации при `CPPWORKER_REGISTER_DISABLE`, дефолт (enabled
+    если `CPPWORKER_BALANCER_URL` задан и `DISABLE` не выставлен), env-isolation
+    через `t.Setenv`. Все 12+5 = 17 кейсов проходят.
+  - **NB:** на старых образах cppworker флаг не действует (Go-side код был
+    без `isRegisterDisabled`). Пересобери образ через `start-bundled.sh rebuild`
+    перед развёртыванием в production.
+- **Каскадный auto-fallback в cppworker для длинных num_ctx (gemma-4 4B + 8GB VRAM + 25GB RAM)** —
+  Cline прислал запрос с `num_ctx=65536` для `gemma-4-E4B-it-Q4_K_M`, а модель была загружена
+  с `contextLength=65536` (cppworker уже пытался загрузить с таким n_ctx через C-bridge).
+  cppworker не сделал **каскад** (RAM mmap → partial offload → cpu-only + auto_tune n_ctx),
+  и через балансер вернулась ошибка `n_ctx_too_large_for_backend` (Ollama-style message,
+  которая балансер не распознавал как reloadable). Cline интерпретировал это как EOF и
+  зацикливался на retry. Корневая причина: cppworker возвращал generic 500 при нехватке
+  VRAM+RAM, потому что:
+  1. `AutoTuneNCtx` вызывался **только при** `autoTuneNCtx=true` (default false) — без
+     него каскад невозможен.
+  2. `AutoTuneError` не имел HTTP-handler'а — cppworker пробрасывал ошибку как generic
+     «reload failed», а не как actionable 413.
+  3. Не было второго уровня каскада (gpu_layers=0 + max_viable n_ctx), когда partial
+     offload не помог.
+  Фикс (cppworker + c/bridge + balancer):
+  - **`cmd/cppworker/inference.go:tryRamFallbackReload`**: убран флаг `*autoTuneNCtx`
+    вокруг `AutoTuneNCtx()` — каскад **всегда активен** при RAM fallback reload, потому что
+    без него каскад невозможен. Добавлен 2-й уровень: если `LoadModelWithOpts` упал после
+    partial offload, делается вторая попытка с `gpu_layers=0` + `max_viable n_ctx`. Если
+    и она упала — возвращается `*InsufficientResourcesError` с actionable details.
+  - **`cmd/cppworker/utils.go`**: новый `*InsufficientResourcesError` (HTTP 413, code=6)
+    с `bridge_info: {requested_n_ctx, max_viable_n_ctx, available_vram_mb, available_ram_mb,
+    model_size_mb, kv_cache_required_mb, gpu_layers_attempted, model, suggestion}`. Новый
+    `writeInsufficientResourcesResponse` пишет structured JSON, совместимый с
+    `ParseCppWorkerError`. Добавлены case'ы в `handleInferenceError` для
+    `*InsufficientResourcesError` и `*AutoTuneError` (синоним).
+  - **`c/bridge/bridge.go`**: новая константа `ErrCodeInsufficientResources = 6`.
+    Используется в `bridge_info.code` для балансера.
+  - **`internal/balancer/llamacpp_error.go`**: обновлён комментарий `isNCtxRelevantCode`
+    — код 6 (InsufficientResources) НЕ считается reloadable, балансер пробрасывает
+    413 клиенту без retry/reload.
+  - **Тесты**: новый `cmd/cppworker/insufficient_resources_response_test.go` с 6 кейсами
+    (`TestInsufficientResourcesError_Error`, `TestWriteInsufficientResourcesResponse_HasAllFieldsForClient`,
+    `TestHandleInferenceError_DispatchesInsufficientResources`, `TestHandleInferenceError_DispatchesAutoTuneError`,
+    `TestHandleInferenceError_GenericErrorReturnsFalse`, `TestHandleInferenceError_NilErrorReturnsFalse`).
+    Все 6/6 проходят. Существующие тесты (TestClampNPredictToFitContext, TestApplyCppCtxHeader,
+    TestParseToolCalls, TestReloadDisabledForTools) — все 60 кейсов зелёные, регрессий нет.
+    Build OK (`go build -tags llama_stub ./cmd/cppworker/` и `./cmd/balancer/` — exit 0).
+  - **Acceptance criteria**: при запросе с `num_ctx=65536` для gemma-4 на 8GB+25GB —
+    каскад уменьшит `n_ctx` до max_viable (~32768) и загрузит модель. Если и
+    max_viable не помещается — клиент получит HTTP 413 с JSON:
+    `{"error":"insufficient_resources","code":6,"bridge_info":{...,"max_viable_n_ctx":32768,"suggestion":"Reduce num_ctx to 32768..."}}`.
+
+- **Различение `prompt_exceeds_context` vs `n_ctx_too_large_for_backend` в JSON 413-ответе** —
+  После пересборки контейнеров клиент Cline всё ещё получал
+  `{"message":"n_ctx_too_large_for_backend","modelId":"gemma-4-E4B-it-Q4_K_M",...}`,
+  хотя в cppworker логах было видно, что cppworker реально возвращает HTTP 413
+  с `bridge_info.code=3` (PromptExceedsNCtx) и `actual_tokens=68271 > n_ctx=65536`.
+  Root cause: `internal/balancer/nctx_reload.go:makeRejectPlan` **всегда**
+  использовал `error: "n_ctx_too_large_for_backend"` в JSON независимо от
+  причины reject. Для Cline это выглядело как системная проблема
+  («n_ctx не влезает в VRAM»), хотя на самом деле модель уже загружена с
+  максимальным n_ctx, и помогло бы только укоротить prompt/history/tools.
+  - **Фикс**: `makeRejectPlan(backendID, bridgeErr, required, reason, errorCode)` —
+    добавлен параметр `errorCode string`. Для `bridgeErr.Code == NCtxErrCodePromptTooLong`
+    (code=3) используется `"prompt_exceeds_context"`, для всех остальных причин —
+    дефолт `"n_ctx_too_large_for_backend"` (обратная совместимость). Suggestion
+    тоже разный: для prompt_exceeds_context — «reduce conversation history / tools[]
+    / system prompt, or use a smaller model. Reload with the same or larger n_ctx
+    will NOT help», для n_ctx_too_large — старая формулировка «save a model profile
+    with a larger n_ctx and reload manually».
+  - **`internal/balancer/proxy_streaming_413_test.go`** обновлён: проверяет
+    новый `error_code="prompt_exceeds_context"` (раньше ждал
+    `n_ctx_too_large_for_backend`). Тест по-прежнему верифицирует,
+    что balancer не делает reload (это вызывало EOF в Go-клиенте).
+  - **Тесты**: `internal/balancer/nctx_reload_errorcode_test.go` (новый, 5 кейсов):
+    `TestMakeRejectPlan_PromptExceedsContext_2026_06_25`,
+    `TestMakeRejectPlan_NCtxTooLargeForBackend_2026_06_25`,
+    `TestMakeRejectPlan_DefaultErrorCode`,
+    `TestDecideReloadBackend_PromptTooLong_ReturnsPromptExceedsContext`,
+    `TestDecideReloadBackend_NCtxNeedsReload_ReturnsVRAMError`. Все зелёные.
+  - **Дополнительно**: удалён дубликат бэкенда `cppworker-gpu` через
+    `DELETE /api/v1/backends/cppworker-gpu` (race condition между Go-side и
+    shell-script auto-registration). После рестарта cppworker:
+    `GET /api/v1/backends` → `{"total": 1, "backends": [{"id": "cppworker-gpu-bundled"}]}`.
+  - **Acceptance criteria**:
+    - Запрос с `actual_tokens > n_ctx` → HTTP 413 с `{"error":"prompt_exceeds_context", ...}`
+      и suggestion «reduce conversation history / tools[] / system prompt».
+    - Запрос с `required > max_vram_n_ctx*safety` → HTTP 413 с
+      `{"error":"n_ctx_too_large_for_backend", ...}` (без изменений).
+    - Build OK: `go build -tags llama_stub ./cmd/balancer/` — exit 0.
+    - Все 21 целевой тест PASS (5 новых + 16 существующих).
+
+## [Unreleased — 2026-06-24]
+
+### Исправлено
+- **EOF при preflight n_ctx reload (Cline/OpenWebUI с длинным prompt ~30K chars)** —
+  cppworker рвал HTTP-соединение в момент `UnloadModel` → `LoadModelWithOpts` reload,
+  балансер polling'ом ловил EOF/RST и зависал в `concurrent load already in progress,
+  waiting` loop, OpenWebUI клиент получал пустой ответ (не 503, EOF). Корневая
+  причина: cppworker не дожидался завершения активных inference-запросов перед reload.
+  - **Track 1 (cppworker graceful reload)**: новый `internal/cppbackend/inflight.go`
+    с per-model `InFlightCounter`. 4 inference-handler'а (`handleGenerate`,
+    `handleChat`, `handleV1ChatCompletions`, `handleV1Completions`,
+    `handleOllamaGenerate`) теперь делают `Inc(modelName)` на входе и `Dec(modelName)`
+    в defer. `handleReloadModel` зовёт `InFlight().WaitZero(modelName, 0)` (без лимита,
+    общий watchdog-таймаут на уровне reload) ПЕРЕД `UnloadModel` — активные запросы
+    завершаются штатно, без EOF. `SetReloadPending(modelName)` ставит heartbeat в
+    `/api/info` (`reload_pending: {model, startedAt, elapsedMs}`) на время reload;
+    балансер НЕ пытается дёргать LoadModel API, пока видит этот флаг.
+  - **Track 2 (balancer preflight-sync)**: `preflightNCtxReloadIfNeededSync` —
+    блокирующая версия preflight, которая ждёт завершения reload через heartbeat
+    polling `/api/info` (500ms интервал). Дефолт таймаут 60s (конфиг
+    `Balancing.PreflightSyncTimeoutMs`, max 180s). При таймауте fallback на
+    `503 + Retry-After: 15`. Дефолт `PreflightSyncEnabled=true` — клиент НЕ получает
+    EOF и не видит reload-процесса вообще. Round-trip один (а не два: 503+retry).
+  - **Track 3 (balancer EOF retry)**: `queryCppWorkerModels` теперь до 3 попыток
+    с exponential backoff (100ms, 200ms, 400ms) при `EOF`/`connection reset`/
+    `bad status`/decode error. На полную неудачу — fallback на `lastKnownModels`
+    (TTL 30s), чтобы `ensureModelLoadedOnBackend` не падал в ловушку `state=loading`
+    вечно.
+  - **Track 4 (balancer reload dedup)**: новый `internal/balancer/nctx_reload_dedup.go`
+    с `reloadDedupRegistry`. `executeAsyncReload` (preflight) и `ensureModelLoadedOnBackend`
+    координируются через `StartReloadIfNotPending/IsReloadPending/WaitReloadDone` —
+    параллельный LoadModel API отменяется (ждёт через `WaitReloadDone`).
+  - **Quick-win**: `POST /api/v1/cppworker/reset-reload-counter` уже существует в
+    cppworker (cmd/cppworker/handlers_reset_reload.go) — позволяет сбросить
+    `ramFallbackAttempts` без `docker restart` (см. docs/runbook-tools.md).
+
+### Добавлено
+- **Конфиг `Balancing.PreflightSyncEnabled` + `Balancing.PreflightSyncTimeoutMs`** —
+  `pkg/types/balancing.go`. Default: enabled=true, timeout=60000ms (max 180000ms).
+  Kill-switch для sync-режима (для legacy скриптов которые ожидают немедленный 503).
+
+## [Unreleased]
+
+Формат ведётся в соответствии с [Keep a Changelog](https://keepachangelog.com/ru/1.0.0/),
+и этот проект придерживается [Semantic Versioning](https://semver.org/lang/ru/).
+
 ## [Unreleased]
 
 ### Добавлено

@@ -515,6 +515,31 @@ func handleReloadModel(w http.ResponseWriter, r *http.Request) {
 	}
 	defer backend.UnlockLoad(req.Name)
 
+	// 2026-06-24: graceful reload без обрыва активных соединений.
+	// Перед UnloadModel ждём завершения ВСЕХ активных inference-запросов
+	// к этой модели (InFlight counter, см. internal/cppbackend/inflight.go).
+	// Без этого cppworker обрывает HTTP-соединения клиентов (EOF), и
+	// балансировщик, polling'нувший /api/models в этот момент, ловит RST.
+	//
+	// Таймаут не ставим — если запросы не завершаются (зависли), общий
+	// reload обёрнут в context.WithTimeout снаружи (см. reload watchdog).
+	// Сам InFlight.WaitZero использует 100ms polling.
+	if inflight := backend.InFlight(); inflight != nil {
+		if n := inflight.Get(req.Name); n > 0 {
+			logger.Get().Infow("reload: waiting for in-flight inference requests to drain",
+				"name", req.Name, "in_flight", n)
+		}
+		inflight.WaitZero(req.Name, 0) // 0 = без лимита
+	}
+
+	// Устанавливаем reload_pending heartbeat — балансировщик читает это
+	// поле из /api/metrics и НЕ пытается дёргать LoadModel API, пока
+	// reload не завершён. Без этого — race condition: балансировщик
+	// polling'ом обнаруживает state=loading, делает LoadModel, и оба
+	// потока упираются в TryLockLoad друг друга.
+	backend.SetReloadPending(req.Name)
+	defer backend.SetReloadPending("")
+
 	unloadStart := time.Now()
 	if err := backend.UnloadModel(req.Name); err != nil {
 		writeError(w, http.StatusInternalServerError, "unload failed: "+err.Error())

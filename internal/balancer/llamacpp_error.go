@@ -109,6 +109,26 @@ func truncateBody(body string, max int) string {
 // Дополнительно: code=1 (Generic) тоже считаем нерелевантным — cppworker
 // использует его для широкого спектра внутренних ошибок (nullptr, OOM при
 // загрузке модели и т.п.), для которых auto-reload не поможет.
+// isNCtxRelevantCode — считается ли legacy top-level code (без bridge_info)
+// n_ctx-релевантным.
+//
+// 2026-06-25: переименовано семантически — теперь «n_ctx-reloadable».
+//   - ErrCodeNCtxNeedsReload (2) → reload с бОльшим n_ctx может помочь.
+//   - ErrCodePromptTooLong (3) → reload с тем же n_ctx бесполезен (см. nctx_reload.go
+//     DecisionReject), но парсер всё равно возвращает NCtxError, чтобы caller
+//     мог дать actionable 413.
+//
+// 2026-06-25: ErrCodeInsufficientResources (6) и ErrCodeBadRequest (5) и
+// ErrCodeGPUOOM (4) НЕ считаются reloadable:
+//   - ErrCodeInsufficientResources — каскад RAM fallback → partial offload →
+//     cpu-only уже исчерпан; reload с другими параметрами не поможет.
+//     Caller должен пробросить 413 с actionable details клиенту.
+//   - ErrCodeGPUOOM — частично reloadable (cppworker делает RAM fallback),
+//     но после исчерпания лимита reloadable превращается в InsufficientResources.
+//   - ErrCodeBadRequest — синтаксическая ошибка, reload не поможет.
+//
+// В итоге только коды 2 и 3 триггерят auto-reload/reject-через-balancer.
+// Остальные пробрасываются как generic 5xx (caller не получит NCtxError).
 func isNCtxRelevantCode(code int) bool {
 	switch code {
 	case bridge.ErrCodeNCtxNeedsReload, bridge.ErrCodePromptTooLong:

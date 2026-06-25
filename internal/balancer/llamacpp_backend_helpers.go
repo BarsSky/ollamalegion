@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 
 	"ollama-loadbalancer/pkg/logger"
@@ -16,6 +17,30 @@ type backendInfo struct {
 	id   string
 	host string
 	port int
+}
+
+// lastKnownModelsMu + lastKnownModels + lastKnownModelsAt — кэш последнего
+// успешного ответа от /api/models per backend. Используется в
+// queryCppWorkerModels при EOF/connection reset (cppworker моргнул на reload).
+// TTL 30s (см. fallback в queryCppWorkerModels).
+//
+// ДО 2026-06-24 балансер просто возвращал nil, и ensureModelLoadedOnBackend
+// зависал в `concurrent load already in progress, waiting` loop. Теперь мы
+// возвращаем последний известный snapshot (модели, которые точно были загружены
+// до reload) — polling корректно завершается при их появлении.
+type cppWorkerLastKnown struct {
+	mu       sync.RWMutex
+	models   map[string][]cppWorkerModelState
+	updatedAt map[string]time.Time
+}
+
+// cppWorkerLastKnownHolder — helper для embedded-инициализации (вызывается из
+// конструктора LlamaCppRouter).
+func newCppWorkerLastKnown() *cppWorkerLastKnown {
+	return &cppWorkerLastKnown{
+		models:    make(map[string][]cppWorkerModelState),
+		updatedAt: make(map[string]time.Time),
+	}
 }
 
 // ---------- Backend helpers (llama.cpp specific) ----------
@@ -91,7 +116,15 @@ func (lr *LlamaCppRouter) selectLlamaCppBackendByResources(r *http.Request) stri
 // Использует endpoint /api/models. Каждая модель имеет поле state
 // ("unloaded" | "loading" | "loaded" | "error").
 //
-// Возвращает (nil, nil) если backend не найден или запрос упал.
+// 2026-06-24: retry на EOF / connection reset / broken pipe + lastKnownModels
+// fallback. cppworker может моргнуть на reload (UnloadModel → RST активных
+// соединений), и балансер polling'ом ловит EOF. Без retry —
+// ensureModelLoadedOnBackend зависает в `concurrent load already in progress,
+// waiting` loop.
+//
+// Стратегия: до 3 попыток с exponential backoff (100ms, 200ms, 400ms).
+// При успехе — обновляем кэш lastKnownModels. При неудаче — возвращаем
+// последний успешный snapshot из кэша (если ему < 30 секунд).
 func (lr *LlamaCppRouter) queryCppWorkerModels(backendID string) []cppWorkerModelState {
 	rid := RequestIDFromContext(lr_recentCtx())
 	backend := lr.proxy.GetBackend(backendID)
@@ -119,41 +152,72 @@ func (lr *LlamaCppRouter) queryCppWorkerModels(backendID string) []cppWorkerMode
 	if rid != "" {
 		req.Header.Set(requestIDHeader, rid)
 	}
-	start := time.Now()
-	resp, err := client.Do(req)
-	durationMs := time.Since(start).Milliseconds()
-	if err != nil {
-		ridLog(lr_recentCtx()).Debugw("queryCppWorkerModels: failed to query cppworker",
-			"backend", backendID, "url", url, "duration_ms", durationMs, "error", err)
-		return nil
+	var lastErr error
+	for attempt := 0; attempt < 3; attempt++ {
+		if attempt > 0 {
+			time.Sleep(time.Duration(100*(1<<uint(attempt-1))) * time.Millisecond)
+		}
+		start := time.Now()
+		resp, err := client.Do(req)
+		durationMs := time.Since(start).Milliseconds()
+		if err != nil {
+			lastErr = err
+			ridLog(lr_recentCtx()).Debugw("queryCppWorkerModels: EOF/error, retrying",
+				"backend", backendID, "attempt", attempt+1, "url", url,
+				"duration_ms", durationMs, "error", err)
+			continue
+		}
+		if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+			lastErr = fmt.Errorf("bad status %d", resp.StatusCode)
+			resp.Body.Close()
+			ridLog(lr_recentCtx()).Debugw("queryCppWorkerModels: bad status, retrying",
+				"backend", backendID, "attempt", attempt+1, "status_code", resp.StatusCode)
+			continue
+		}
+		var data struct {
+			Count  int `json:"count"`
+			Models []struct {
+				Name  string `json:"name"`
+				Path  string `json:"path,omitempty"`
+				State string `json:"state,omitempty"`
+			} `json:"models"`
+		}
+		if err := json.NewDecoder(resp.Body).Decode(&data); err != nil {
+			lastErr = err
+			resp.Body.Close()
+			ridLog(lr_recentCtx()).Debugw("queryCppWorkerModels: decode error, retrying",
+				"backend", backendID, "attempt", attempt+1, "error", err)
+			continue
+		}
+		resp.Body.Close()
+		out := make([]cppWorkerModelState, 0, len(data.Models))
+		for _, m := range data.Models {
+			out = append(out, cppWorkerModelState{Name: m.Name, Path: m.Path, State: m.State})
+		}
+		// Успех — обновляем кэш.
+		lr.lastKnownModelsMu.Lock()
+		if lr.lastKnownModels == nil {
+			lr.lastKnownModels = make(map[string][]cppWorkerModelState)
+		}
+		lr.lastKnownModels[backendID] = out
+		lr.lastKnownModelsAt[backendID] = time.Now()
+		lr.lastKnownModelsMu.Unlock()
+		ridLog(lr_recentCtx()).Debugw("queryCppWorkerModels: response",
+			"backend", backendID, "url", url, "count", len(out),
+			"status_code", resp.StatusCode, "duration_ms", durationMs)
+		return out
 	}
-	defer resp.Body.Close()
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		ridLog(lr_recentCtx()).Debugw("queryCppWorkerModels: bad status",
-			"backend", backendID, "url", url, "status_code", resp.StatusCode, "duration_ms", durationMs)
-		return nil
+	// Все попытки упали — fallback на lastKnownModels.
+	ridLog(lr_recentCtx()).Warnw("queryCppWorkerModels: all retries failed, using last known snapshot",
+		"backend", backendID, "last_error", lastErr)
+	lr.lastKnownModelsMu.RLock()
+	cached, hasCached := lr.lastKnownModels[backendID]
+	cachedAt, hasCachedAt := lr.lastKnownModelsAt[backendID]
+	lr.lastKnownModelsMu.RUnlock()
+	if hasCached && hasCachedAt && time.Since(cachedAt) < 30*time.Second {
+		return cached
 	}
-	var data struct {
-		Count  int `json:"count"`
-		Models []struct {
-			Name  string `json:"name"`
-			Path  string `json:"path,omitempty"`
-			State string `json:"state,omitempty"`
-		} `json:"models"`
-	}
-	if err := json.NewDecoder(resp.Body).Decode(&data); err != nil {
-		ridLog(lr_recentCtx()).Debugw("queryCppWorkerModels: decode error",
-			"backend", backendID, "error", err)
-		return nil
-	}
-	out := make([]cppWorkerModelState, 0, len(data.Models))
-	for _, m := range data.Models {
-		out = append(out, cppWorkerModelState{Name: m.Name, Path: m.Path, State: m.State})
-	}
-	ridLog(lr_recentCtx()).Debugw("queryCppWorkerModels: response",
-		"backend", backendID, "url", url, "count", len(out),
-		"status_code", resp.StatusCode, "duration_ms", durationMs)
-	return out
+	return nil
 }
 
 // matchCppWorkerModel проверяет совпадение имени модели на cppworker.
@@ -257,6 +321,22 @@ func (lr *LlamaCppRouter) ensureModelLoadedOnBackend(backendID, modelName string
 		ridLog(lr_recentCtx()).Debugw("ensureModelLoadedOnBackend: model already loaded",
 			"backend", backendID, "model", modelName, "step", "is_loaded=true")
 		return true, nil
+	}
+	// 2026-06-24: если preflight async reload уже идёт для этой модели —
+	// ждём его завершения (через reloadDedup registry), затем проверяем
+	// готовность. Не запускаем параллельный LoadModel.
+	if lr.proxy.nctxReload != nil && lr.proxy.nctxReload.IsReloadPending(backendID, modelName) {
+		ridLog(lr_recentCtx()).Infow("ensureModelLoadedOnBackend: reload in progress, waiting via dedup",
+			"backend", backendID, "model", modelName, "step", "wait_reload_dedup")
+		if err := lr.proxy.nctxReload.WaitReloadDone(backendID, modelName, 5*time.Minute); err != nil {
+			ridLog(lr_recentCtx()).Warnw("ensureModelLoadedOnBackend: WaitReloadDone error",
+				"backend", backendID, "model", modelName, "error", err)
+			// Не fatal — продолжаем обычный flow (fallback на state=loading polling).
+		} else if lr.isModelReadyOnBackend(backendID, modelName) {
+			ridLog(lr_recentCtx()).Infow("ensureModelLoadedOnBackend: reload done, model ready",
+				"backend", backendID, "model", modelName, "step", "ready_after_reload")
+			return true, nil
+		}
 	}
 	// Проверка: возможно другой запрос уже инициировал загрузку (state="loading").
 	models := lr.queryCppWorkerModels(backendID)

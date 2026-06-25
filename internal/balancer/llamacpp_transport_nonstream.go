@@ -35,29 +35,48 @@ func (p *Proxy) proxyRequestLlamaCppNonStream(w http.ResponseWriter, r *http.Req
 	bodyNoStream := stripStreamFlag(bodyBuf)
 
 	// PREFLIGHT n_ctx auto-reload: если клиент задал options.num_ctx,
-	// а loaded n_ctx на бэкенде меньше — синхронно перезагружаем модель на нужный n_ctx
+	// а loaded n_ctx на бэкенде меньше — перезагружаем модель на нужный n_ctx
 	// ДО проксирования (аналогично proxyRequestLlamaCpp).
-	preflightBody, preflightOK, preflightMsg, preflightStatus := p.preflightNCtxReloadIfNeeded(
-		r.Context(), backendID, modelFromCtx, bodyNoStream)
-	if preflightOK {
-		bodyNoStream = preflightBody
-		logger.Get().Debugw("proxyRequestLlamaCppNonStream: preflight n_ctx reload applied",
-			"backend", backendID, "model", modelFromCtx, "new_body_len", len(bodyNoStream))
-	} else if preflightMsg != "" || preflightStatus != http.StatusOK {
-		// preflight вернул needsProxy=false: асинхронный reload запущен в фоне.
-		// Отдаём клиенту HTTP 503 Service Unavailable + Retry-After: 5.
-		// Клиент повторит запрос через 5 секунд — к этому моменту reload обычно завершён.
-		// Это решает проблему «обрыв ответа после partial completion»:
-		// раньше preflight синхронно перезагружал модель (10-30 сек), и параллельные
-		// запросы получали HTTP 500 с «handle is nil».
-		logger.Get().Infow("proxyRequestLlamaCppNonStream: preflight triggered async n_ctx reload, returning 503 to client",
+	//
+	// Стратегия по умолчанию (PreflightSyncEnabled=true, default): СИНХРОННО ждём
+	// завершения reload (до PreflightSyncTimeoutMs, default 60s), затем проксируем.
+	// Round-trip один — клиент не получает EOF. При таймауте fallback на async
+	// 503 + Retry-After: 15.
+	//
+	// Для streaming-клиентов остаётся старая async логика (Reload-Disabled-For-Tools,
+	// чтобы не блокировать стрим на reload).
+	var preflightOK bool
+	var preflightMsg string
+	var preflightStatus int
+	var retryAfter int = 5
+	var preflightBody []byte
+	if p.config != nil && p.config.Balancing.PreflightSyncEnabled {
+		preflightBody, preflightOK, preflightMsg, preflightStatus, retryAfter =
+			p.preflightNCtxReloadIfNeededSync(r.Context(), backendID, modelFromCtx, bodyNoStream)
+		if preflightOK {
+			bodyNoStream = preflightBody
+			logger.Get().Debugw("proxyRequestLlamaCppNonStream: preflight n_ctx sync-reload applied",
+				"backend", backendID, "model", modelFromCtx, "new_body_len", len(bodyNoStream))
+		}
+	} else {
+		preflightBody, preflightOK, preflightMsg, preflightStatus =
+			p.preflightNCtxReloadIfNeeded(r.Context(), backendID, modelFromCtx, bodyNoStream)
+		if preflightOK {
+			bodyNoStream = preflightBody
+			logger.Get().Debugw("proxyRequestLlamaCppNonStream: preflight n_ctx reload applied",
+				"backend", backendID, "model", modelFromCtx, "new_body_len", len(bodyNoStream))
+		}
+	}
+	if !preflightOK && (preflightMsg != "" || preflightStatus != http.StatusOK) {
+		// Reload запущен в фоне (async) ИЛИ sync timeout — отдаём 503.
+		logger.Get().Infow("proxyRequestLlamaCppNonStream: preflight n_ctx reload, returning 503",
 			"backend", backendID, "model", modelFromCtx,
-			"msg", preflightMsg, "status", preflightStatus)
+			"msg", preflightMsg, "status", preflightStatus, "retry_after", retryAfter)
 		w.Header().Set("Content-Type", "application/json")
-		w.Header().Set("Retry-After", "5")
+		w.Header().Set("Retry-After", strconv.Itoa(retryAfter))
 		w.Header().Set("X-NCtx-Reload-Decision", "async-reload")
-		body := []byte(fmt.Sprintf(`{"error":%q,"decision":"async_reload","retry_after_seconds":5}`,
-			preflightMsg))
+		body := []byte(fmt.Sprintf(`{"error":%q,"decision":"async_reload","retry_after_seconds":%d}`,
+			preflightMsg, retryAfter))
 		w.Header().Set("Content-Length", strconv.Itoa(len(body)))
 		w.WriteHeader(http.StatusServiceUnavailable)
 		_, _ = w.Write(body)

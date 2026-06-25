@@ -66,6 +66,12 @@ func handleChat(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// InFlight counter: защищает активные запросы от reload-обрыва.
+	if req.Model != "" && backend.InFlight() != nil {
+		backend.InFlight().Inc(req.Model)
+		defer backend.InFlight().Dec(req.Model)
+	}
+
 	// Ленивая загрузка модели
 	if err := ensureModelLoaded(req.Model); err != nil {
 		if isModelLoadingError(err) {
@@ -139,6 +145,9 @@ func handleChat(w http.ResponseWriter, r *http.Request) {
 	start := time.Now()
 	hasTools := len(req.Tools) > 0
 	result, err := generateWithRamFallback(req.Model, prompt, params, hasTools)
+	// 2026-06-25: записываем snapshot последнего inference для endpoint /debug/last-prompt.
+	// Это помогает диагностировать случаи "prompt_exceeds_context" в Cline/OpenWebUI.
+	defer recordLastPromptFromError(req.Model, "/api/chat", prompt, &params, hasTools, err)
 	if err != nil {
 		// 2026-06-24: PromptExceedsNCtxError → HTTP 413 (см. inference.go).
 		if handleInferenceError(w, err) {
@@ -353,6 +362,12 @@ func writeChatStreamResponse(w http.ResponseWriter, r *http.Request, modelName, 
 	start := time.Now()
 	createdAt := time.Now().UTC().Format(time.RFC3339)
 
+	// 2026-06-25: запись snapshot после streaming (через именованный результат).
+	var streamErr error
+	defer func() {
+		recordLastPromptFromError(modelName, "/api/chat", prompt, &params, false, streamErr)
+	}()
+
 	callback := func(token string) bool {
 		select {
 		case <-ctx.Done():
@@ -376,10 +391,11 @@ func writeChatStreamResponse(w http.ResponseWriter, r *http.Request, modelName, 
 	}
 
 	// /api/chat endpoint: tools НЕ поддерживаются (Ollama-чат), reload разрешён при n_ctx overflow.
-	if err := generateStreamWithRamFallback(modelName, prompt, params, callback, false); err != nil {
-		maybeRestartOnMemorySlotError(err, modelName)
+	streamErr = generateStreamWithRamFallback(modelName, prompt, params, callback, false)
+	if streamErr != nil {
+		maybeRestartOnMemorySlotError(streamErr, modelName)
 		// Специальная обработка reload-loop-limit (HTTP 413 в NDJSON-чанке).
-		if rllErr, ok := err.(*ReloadLoopLimitError); ok {
+		if rllErr, ok := streamErr.(*ReloadLoopLimitError); ok {
 			errChunk := map[string]interface{}{
 				"model":           modelName,
 				"created_at":      createdAt,
@@ -404,7 +420,7 @@ func writeChatStreamResponse(w http.ResponseWriter, r *http.Request, modelName, 
 			"created_at": createdAt,
 			"message":    map[string]string{"role": "assistant", "content": ""},
 			"done":       true,
-			"error":      err.Error(),
+			"error":      streamErr.Error(),
 		}
 		errJSON, _ := json.Marshal(errChunk)
 		fmt.Fprintf(w, "%s\n", errJSON)
@@ -488,6 +504,12 @@ func writeChatStreamResponseWithTools(w http.ResponseWriter, r *http.Request, mo
 	// хотя callback вызывается синхронно из generateStreamWithRamFallback.
 	var outputBuf strings.Builder
 
+	// 2026-06-25: запись snapshot после streaming (через именованный результат).
+	var streamErr error
+	defer func() {
+		recordLastPromptFromError(modelName, "/api/chat", prompt, &params, true, streamErr)
+	}()
+
 	callback := func(token string) bool {
 		select {
 		case <-ctx.Done():
@@ -514,7 +536,7 @@ func writeChatStreamResponseWithTools(w http.ResponseWriter, r *http.Request, mo
 	}
 
 	// /api/chat streaming fallback: tools не поддерживаются.
-	streamErr := generateStreamWithRamFallback(modelName, prompt, params, callback, false)
+	streamErr = generateStreamWithRamFallback(modelName, prompt, params, callback, false)
 
 	// Если во время streaming произошла ошибка — отдаём финальный chunk с error,
 	// как в writeChatStreamResponse. Tool calls в этом случае не анализируем.

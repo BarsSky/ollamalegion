@@ -1,0 +1,332 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>TP Pipeline · OllamaLegion</title>
+  <link rel="icon" type="image/svg+xml" href="/logo.svg" />
+  <style>
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      padding: 24px;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+      background: #0d1117;
+      color: #c9d1d9;
+      line-height: 1.5;
+    }
+    h1 { font-size: 24px; margin: 0 0 8px; color: #f0f6fc; }
+    h2 { font-size: 18px; margin: 24px 0 12px; color: #f0f6fc; }
+    .subtitle { color: #8b949e; font-size: 14px; margin-bottom: 24px; }
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+      gap: 16px;
+      margin-bottom: 24px;
+    }
+    .card {
+      background: #161b22;
+      border: 1px solid #30363d;
+      border-radius: 6px;
+      padding: 16px;
+    }
+    .card .label {
+      color: #8b949e;
+      font-size: 12px;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      margin-bottom: 6px;
+    }
+    .card .value {
+      font-size: 22px;
+      font-weight: 600;
+      color: #f0f6fc;
+    }
+    .card.ok .value { color: #3fb950; }
+    .card.warn .value { color: #d29922; }
+    .card.err .value { color: #f85149; }
+    .tp-grid {
+      display: grid;
+      gap: 4px;
+      margin-top: 16px;
+      font-family: ui-monospace, "JetBrains Mono", Consolas, monospace;
+      font-size: 12px;
+    }
+    .tp-cell {
+      background: #0d1117;
+      border: 1px solid #21262d;
+      border-radius: 4px;
+      padding: 8px;
+      text-align: center;
+      min-height: 48px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      transition: background 200ms;
+    }
+    .tp-cell.header {
+      background: #161b22;
+      border-color: #30363d;
+      font-weight: 600;
+      color: #8b949e;
+    }
+    .tp-cell.active { background: #1f6feb33; border-color: #1f6feb; }
+    .tp-cell.done { background: #3fb95022; border-color: #3fb950; }
+    .tp-cell.failed { background: #f8514922; border-color: #f85149; }
+    .tp-cell.idle { background: #161b22; color: #484f58; }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      margin-top: 12px;
+      font-size: 14px;
+    }
+    th, td {
+      text-align: left;
+      padding: 8px 12px;
+      border-bottom: 1px solid #21262d;
+    }
+    th { color: #8b949e; font-weight: 500; }
+    td.mono { font-family: ui-monospace, Consolas, monospace; font-size: 12px; }
+    .toolbar {
+      display: flex;
+      gap: 12px;
+      align-items: center;
+      margin-bottom: 16px;
+    }
+    button {
+      background: #21262d;
+      color: #c9d1d9;
+      border: 1px solid #30363d;
+      border-radius: 6px;
+      padding: 8px 16px;
+      cursor: pointer;
+      font-size: 14px;
+    }
+    button:hover { background: #30363d; }
+    button:disabled { opacity: 0.5; cursor: not-allowed; }
+    input[type="text"] {
+      background: #0d1117;
+      color: #c9d1d9;
+      border: 1px solid #30363d;
+      border-radius: 6px;
+      padding: 8px 12px;
+      font-size: 14px;
+      flex: 1;
+    }
+    .error {
+      background: #f8514922;
+      border: 1px solid #f85149;
+      border-radius: 6px;
+      padding: 12px;
+      margin-top: 12px;
+      color: #ffa198;
+      font-family: ui-monospace, Consolas, monospace;
+      font-size: 12px;
+    }
+    .output {
+      background: #161b22;
+      border: 1px solid #30363d;
+      border-radius: 6px;
+      padding: 12px;
+      margin-top: 12px;
+      font-family: ui-monospace, Consolas, monospace;
+      font-size: 12px;
+      max-height: 200px;
+      overflow-y: auto;
+      white-space: pre-wrap;
+      word-break: break-all;
+    }
+  </style>
+</head>
+<body>
+  <h1>Tensor Parallelism Pipeline</h1>
+  <div class="subtitle">B8 — Session 12. Визуализация layers × ranks. Auto-refresh каждые 5s.</div>
+
+  <div class="grid" id="overview"></div>
+
+  <h2>Модели</h2>
+  <table id="models-table">
+    <thead>
+      <tr><th>Model</th><th>World Size</th><th>Layers</th><th>Enabled</th><th>Total Infer</th><th>Errors</th></tr>
+    </thead>
+    <tbody></tbody>
+  </table>
+
+  <h2>Pipeline визуализация</h2>
+  <div class="toolbar">
+    <input type="text" id="model-input" placeholder="Имя модели (например, llama-3-8b)" />
+    <button id="run-btn">Run inference</button>
+    <button id="refresh-btn">Refresh</button>
+  </div>
+  <div class="tp-grid" id="tp-grid"></div>
+  <div id="result"></div>
+
+<script>
+const API = '/api/v1/rpc/tp';
+
+async function fetchJSON(url, opts = {}) {
+  const token = localStorage.getItem('api_token') || '';
+  const headers = Object.assign(
+    { 'X-API-Token': token, 'Content-Type': 'application/json' },
+    opts.headers || {}
+  );
+  const r = await fetch(url, Object.assign({}, opts, { headers }));
+  if (!r.ok) throw new Error(`${r.status} ${r.statusText}: ${await r.text()}`);
+  return r.json();
+}
+
+function statusToClass(enabled, degraded) {
+  if (!enabled) return 'err';
+  if (degraded) return 'warn';
+  return 'ok';
+}
+
+async function loadStatus() {
+  const data = await fetchJSON(`${API}/status`);
+  renderOverview(data);
+  renderModelsTable(data.models || []);
+}
+
+function renderOverview(data) {
+  const enabledCount = (data.models || []).filter(m => m.enabled).length;
+  const totalInfer = (data.models || []).reduce((s, m) => s + (m.total_infer || 0), 0);
+  const totalErr = (data.models || []).reduce((s, m) => s + (m.total_errors || 0), 0);
+  const ws = data.models && data.models[0] ? data.models[0].world_size : 0;
+
+  document.getElementById('overview').innerHTML = `
+    <div class="card ${enabledCount === data.count ? 'ok' : 'warn'}">
+      <div class="label">Configured models</div>
+      <div class="value">${data.count}</div>
+    </div>
+    <div class="card ${enabledCount > 0 ? 'ok' : 'err'}">
+      <div class="label">Enabled</div>
+      <div class="value">${enabledCount}</div>
+    </div>
+    <div class="card">
+      <div class="label">World size (max)</div>
+      <div class="value">${ws || '—'}</div>
+    </div>
+    <div class="card">
+      <div class="label">Total inferences</div>
+      <div class="value">${totalInfer.toLocaleString()}</div>
+    </div>
+    <div class="card ${totalErr > 0 ? 'warn' : 'ok'}">
+      <div class="label">Total errors</div>
+      <div class="value">${totalErr.toLocaleString()}</div>
+    </div>
+  `;
+}
+
+function renderModelsTable(models) {
+  const tbody = document.querySelector('#models-table tbody');
+  tbody.innerHTML = '';
+  if (models.length === 0) {
+    tbody.innerHTML = '<tr><td colspan="6" style="text-align:center;color:#8b949e;">No TP coordinators configured</td></tr>';
+    return;
+  }
+  for (const m of models) {
+    const row = document.createElement('tr');
+    row.innerHTML = `
+      <td class="mono">${m.model_name}</td>
+      <td>${m.world_size}</td>
+      <td>${m.num_layers}</td>
+      <td>${m.enabled ? '✓' : '✗'}</td>
+      <td>${m.total_infer || 0}</td>
+      <td>${m.total_errors || 0}</td>
+    `;
+    tbody.appendChild(row);
+  }
+}
+
+function renderTPGrid(model, layers, ws, layerStats) {
+  // Заголовки: layers по горизонтали, ranks по вертикали.
+  const grid = document.getElementById('tp-grid');
+  grid.innerHTML = '';
+  grid.style.gridTemplateColumns = `repeat(${layers + 1}, 1fr)`;
+
+  // Header row.
+  grid.appendChild(makeCell('Rank ↓ / Layer →', 'header'));
+  for (let l = 0; l < layers; l++) {
+    grid.appendChild(makeCell(`Layer ${l}`, 'header'));
+  }
+  // Rows.
+  for (let r = 0; r < ws; r++) {
+    grid.appendChild(makeCell(`Rank ${r}`, 'header'));
+    for (let l = 0; l < layers; l++) {
+      let cls = 'idle';
+      if (layerStats && layerStats[l]) {
+        const ls = layerStats[l];
+        if (ls.successful === ws) cls = 'done';
+        else if (ls.successful < ws) cls = 'failed';
+      }
+      grid.appendChild(makeCell(cls === 'idle' ? '—' : (cls === 'done' ? '✓' : '✗'), cls));
+    }
+  }
+}
+
+function makeCell(text, cls) {
+  const div = document.createElement('div');
+  div.className = 'tp-cell' + (cls ? ' ' + cls : '');
+  div.textContent = text;
+  return div;
+}
+
+async function runInference() {
+  const model = document.getElementById('model-input').value.trim();
+  if (!model) {
+    showResult('<div class="error">Введите имя модели</div>');
+    return;
+  }
+  const btn = document.getElementById('run-btn');
+  btn.disabled = true;
+  btn.textContent = 'Running...';
+  try {
+    const resp = await fetchJSON(`${API}/infer`, {
+      method: 'POST',
+      body: JSON.stringify({
+        model_name: model,
+        prompt: 'Hello from TP pipeline test',
+      }),
+    });
+    renderTPGrid(model, resp.num_layers, resp.world_size, resp.layer_stats);
+    let html = `<h2>Output</h2><div class="output">${escapeHtml(resp.output || '(empty)')}</div>`;
+    html += `<p>RequestID: <code>${resp.request_id}</code> · Latency: ${resp.latency_ms}ms · Degraded: ${resp.degraded ? 'YES' : 'no'}</p>`;
+    if (resp.rank_errors && resp.rank_errors.length > 0) {
+      html += `<div class="error">Rank errors:<br>${resp.rank_errors.map(e => `· rank=${e.rank} layer=${e.layer}: ${escapeHtml(e.error)}`).join('<br>')}</div>`;
+    }
+    showResult(html);
+  } catch (err) {
+    showResult(`<div class="error">${escapeHtml(String(err))}</div>`);
+  } finally {
+    btn.disabled = false;
+    btn.textContent = 'Run inference';
+  }
+}
+
+function showResult(html) {
+  document.getElementById('result').innerHTML = html;
+}
+
+function escapeHtml(s) {
+  return String(s)
+    .replace(/&/g, '&')
+    .replace(/</g, '<')
+    .replace(/>/g, '>')
+    .replace(/"/g, '"');
+}
+
+// Init.
+document.getElementById('run-btn').addEventListener('click', runInference);
+document.getElementById('refresh-btn').addEventListener('click', loadStatus);
+document.getElementById('model-input').addEventListener('keydown', e => {
+  if (e.key === 'Enter') runInference();
+});
+
+// Авто-refresh каждые 5s + первая загрузка.
+loadStatus().catch(err => showResult(`<div class="error">${escapeHtml(String(err))}</div>`));
+setInterval(() => {
+  loadStatus().catch(() => {});
+}, 5000);
+</script>
+</body>
+</html>

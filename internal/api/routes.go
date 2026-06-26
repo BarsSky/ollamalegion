@@ -152,6 +152,10 @@ func (s *Server) setupRoutes() {
 	// Возвращает text/plain; version=0.0.4 — scrape-совместимый output.
 	s.mux.Handle("/api/v1/rpc/metrics", AuthMiddleware(RateLimitMiddleware(http.HandlerFunc(s.handleRpcMetrics), s.rateLimiter), s.authenticator))
 
+	// B8 — TP (tensor parallelism) endpoints.
+	s.mux.Handle("/api/v1/rpc/tp/infer", AuthMiddleware(RateLimitMiddleware(http.HandlerFunc(s.handleRPCModelTPInfer), s.rateLimiter), s.authenticator))
+	s.mux.Handle("/api/v1/rpc/tp/status", AuthMiddleware(RateLimitMiddleware(http.HandlerFunc(s.handleRPCModelTPStatus), s.rateLimiter), s.authenticator))
+
 	// Candidate Backends endpoint (с аутентификацией и rate limiting)
 	// Возвращает группы бэкендов-кандидатов по приоритетам для всех моделей
 	s.mux.Handle("/api/v1/candidates", AuthMiddleware(RateLimitMiddleware(s.candidatesHandler, s.rateLimiter), s.authenticator))

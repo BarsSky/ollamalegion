@@ -11,6 +11,8 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"ollama-loadbalancer/internal/rptensor"
 )
 
 // WorkerMetricsSnapshot — кэшированные метрики worker'а для selector'а.
@@ -218,6 +220,112 @@ func (wc *WorkerClient) LastCheck() time.Time {
 	wc.mu.RLock()
 	defer wc.mu.RUnlock()
 	return wc.lastCheck
+}
+
+// TPInferSlice — B8: tensor parallelism partial inference.
+//
+// Шлёт POST /rpc/tp/infer на worker'а для конкретного rank'а.
+// Worker возвращает partial output длиной len(input)/worldSize с
+// rank-маркированными байтами (в stub-режиме) или реальным partial
+// tensor'ом (в production с реальной llama.cpp интеграцией).
+//
+// Метод НЕ выполняет all-reduce — только отправляет shard на один rank.
+// Для параллельной обработки всех rank'ов используй TensorParallelCoordinator.
+func (wc *WorkerClient) TPInferSlice(ctx context.Context, req rptensor.TPShardInferRequest) (*rptensor.TPShardInferResponse, error) {
+	url := fmt.Sprintf("%s/rpc/tp/infer", wc.BaseURL())
+	body, err := json.Marshal(req)
+	if err != nil {
+		return nil, err
+	}
+	httpReq, err := http.NewRequestWithContext(ctx, "POST", url, bytes.NewReader(body))
+	if err != nil {
+		return nil, err
+	}
+	httpReq.Header.Set("Content-Type", "application/json")
+
+	resp, err := wc.httpClient.Do(httpReq)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		respBody, _ := io.ReadAll(resp.Body)
+		return nil, fmt.Errorf("tp infer failed: %d: %s", resp.StatusCode, string(respBody))
+	}
+
+	var out rptensor.TPShardInferResponse
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		return nil, fmt.Errorf("tp infer decode: %w", err)
+	}
+	return &out, nil
+}
+
+// TPKvSync — B8: сохранить KV-shard для rank'а сессии.
+//
+// Шлёт POST /rpc/tp/kv_sync с rank-keyed shard. В stub-режиме worker
+// хранит в in-memory KVStore; в production — сериализует ggml cache.
+func (wc *WorkerClient) TPKvSync(ctx context.Context, sessionID string, rank int, shard []byte) error {
+	url := fmt.Sprintf("%s/rpc/tp/kv_sync", wc.BaseURL())
+	body, err := json.Marshal(map[string]interface{}{
+		"session_id": sessionID,
+		"rank":       rank,
+		"shard":      shard,
+	})
+	if err != nil {
+		return err
+	}
+	httpReq, err := http.NewRequestWithContext(ctx, "POST", url, bytes.NewReader(body))
+	if err != nil {
+		return err
+	}
+	httpReq.Header.Set("Content-Type", "application/json")
+
+	resp, err := wc.httpClient.Do(httpReq)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		respBody, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("tp kv_sync failed: %d: %s", resp.StatusCode, string(respBody))
+	}
+	return nil
+}
+
+// TPKvFetch — B8: получить KV-shard для rank'а сессии.
+//
+// Шлёт GET /rpc/tp/kv_fetch?session_id=X&rank=N. nil byte-slice и nil error
+// если shard не найден (404 → возвращается (nil, nil) без ошибки).
+func (wc *WorkerClient) TPKvFetch(ctx context.Context, sessionID string, rank int) ([]byte, error) {
+	url := fmt.Sprintf("%s/rpc/tp/kv_fetch?session_id=%s&rank=%d",
+		wc.BaseURL(), sessionID, rank)
+	httpReq, err := http.NewRequestWithContext(ctx, "GET", url, nil)
+	if err != nil {
+		return nil, err
+	}
+	resp, err := wc.httpClient.Do(httpReq)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode == http.StatusNotFound {
+		return nil, nil // shard не найден — не ошибка
+	}
+	if resp.StatusCode != http.StatusOK {
+		respBody, _ := io.ReadAll(resp.Body)
+		return nil, fmt.Errorf("tp kv_fetch failed: %d: %s", resp.StatusCode, string(respBody))
+	}
+
+	var out struct {
+		Shard []byte `json:"shard"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		return nil, fmt.Errorf("tp kv_fetch decode: %w", err)
+	}
+	return out.Shard, nil
 }
 
 // RefreshMetrics обновляет кэш метрик (B6) через GET /rpc/metrics.

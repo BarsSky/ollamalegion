@@ -1,6 +1,6 @@
 # OllamaLegion — Roadmap (живой документ)
 
-> **Дата обновления:** 2026-06-22  
+> **Дата обновления:** 2026-06-26  
 > **Назначение:** единственный источник правды по реализованному и оставшемуся в проекте OllamaLegion.  
 > Все устаревшие/завершённые планы — в `plans/archive/`.
 
@@ -100,7 +100,7 @@
 
 | # | Задача | Приоритет | Файл(ы) | Оценка | Статус |
 |---|---|---|---|---|---|
-| **R-1** | Windows GPU metrics через `nvidia-smi`/WMI fallback | 🟢 P2 | `internal/agent/system_windows.go` | 6–10 ч | ⬜ |
+| **R-1** | Windows GPU metrics через `nvidia-smi`/WMI fallback | 🟢 P2 | `internal/agent/system_windows.go` | 6–10 ч | ✅ (Session 3, 2026-06-26 — WMI Win32_VideoController fallback через AdapterRAM, 11 unit-тестов в `system_wmi_parse_test.go`) |
 | **R-2** | WebUI фильтры «Все / 🦙 Ollama / 🦒 llama.cpp» в Dashboard, Backends management, Monitor | 🟢 P2 | `webui/js/modules/renderers.js`, `app.js`, `monitor/ui-renderer.js`, `index.html`, `monitor.html`, `css/custom.css` | 2–3 ч | ✅ (Dashboard+Backends: `.type-filter-btn`, Monitor: `renderBackendTypeSwitcher`) |
 | **R-3** | Убрать условный `t.Skip` в `TestTransferEncoding_BackendReturns503ThenRecovers` | 🟢 P2 | `tests/proxy_streaming_test.go:638` | 1–2 ч | ✅ (skip уже убран) |
 | **R-4** | `setup-wizard.js` — полноценный выбор типа бэкенда (применение типа к Backend) | 🟡 P1 | `webui/js/modules/setup-wizard.js` | 2–3 ч | ✅ (`wizardState.backendType` → payload `backendEngine`, localStorage persist) |
@@ -167,7 +167,14 @@ go test ./tests -run TestModelProfile -count=1 -v
 | 2026-06-14 | Backend type isolation 100% (commit `affb4e8`) |
 | 2026-06-17 | n_ctx fix (`config.json` `defaultModelProfile.contextLength=0`) |
 | 2026-06-22 | Documentation consolidation + Tools runbook |
-| **2026-Q3** | **Roadmap to 1.0 — реализация R-1…R-7** |
+| 2026-06-26 | Session 1 — Tech debt A-1/A-2/A-3 (alias `applyCppCtxHeader` удалён, `RequestID` в `BackendMetrics`, TODO `model_management.go` убран) |
+| 2026-06-26 | Session 2 — PF-1 (TestBackendsHandler_Get + TestServeHTTP_MixedCluster_RoutingByURLPath FIXED) |
+| 2026-06-26 | Session 3 — R-1 DONE (Windows GPU metrics: WMI Win32_VideoController fallback через `AdapterRAM`, 11 unit-тестов) |
+| 2026-06-26 | Session 4 — P-1 DONE (`POST /api/models/load-with-params`: расширенные llama.cpp параметры — `nThreads`/`parallel`/`kvCacheType`/`splitMode`/`overrideTensor`. 11 unit-тестов в `handlers_model_loadwithparams_test.go`, проксирование через `/api/v1/gguf/backends/{id}/proxy/...`. Обнаружены pre-existing failures PF-5/PF-6/PF-7 — задокументированы в `plans/pre-existing-test-failures.md`) |
+| 2026-06-26 | Session 5 — **PF-3 FIXED** (`TestDefaultConfig` ожидал 4096, реально 32768) + **B1 DONE** (RPC Worker HTTP Server: `cmd/rpcworker` + `internal/rpcworker`, 7 endpoints, 22+ unit + 8+ e2e тестов, Dockerfile + compose) |
+| 2026-06-26 | Session 6 — **B2 DONE** (RPC Management API: 6 endpoints в `internal/api/handlers_rpc.go` — workers list/register/get/delete, models list, infer через coordinator. Роуты в `internal/api/routes.go`. 13 unit-кейсов в `handlers_rpc_test.go`. Все три пакета rpcworker/rpccoordinator/api — PASS) |
+| 2026-06-26 | Session 7 — **B3 DONE** (Heartbeat & Auto-Discovery: `HeartbeatLoop` в `internal/rpccoordinator/heartbeat.go` — фоновый health-checker с `Start/Stop`/`tickAll`/`Forget`/порогом unhealthy. 8 unit-кейсов в `heartbeat_test.go` (defaults, idempotency, healthy worker, unhealthy worker, recovery, Forget, IsRunning). Все три пакета — PASS) |
+| **2026-Q3** | **Roadmap to 1.0 — реализация B4-B8 + R-2…R-7** |
 
 ---
 

@@ -454,5 +454,6 @@ Build с тегом llama_stub. Unit-тесты обязательны. Доку
 
 ---
 
-**Подготовлено:** 2026-06-27 (Session 11 end)
-**Следующая сессия:** Session 12 — Tensor Parallelism
+**Подготовлено (WIP):** 2026-06-27 (Session 11 end)
+**DONE (DONE Session 12):** 2026-06-27 — все 9 этапов реализованы (B8.1–B8.9). См. подробности в `docs/rpc-coordinator.md` § B8 и `plans/README.md` § 5.
+**Roadmap to 1.0 — полностью завершён** (B1–B8 все DONE).

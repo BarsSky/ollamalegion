@@ -464,6 +464,124 @@ curl http://localhost:18080/rpc/health
 
 ---
 
+## B7 — Prometheus Metrics + WebUI (DONE Session 11)
+
+### Что сделано
+
+Реализован **Prometheus-style metrics aggregation** для coordinator'а + WebUI панель:
+
+1. **`MetricsAggregator`** в `internal/rpccoordinator/metrics.go` (~300 LOC):
+   - `Counter` — атомарный счётчик (Inc/Add/Value, lock-free).
+   - `Gauge` — текущее значение (Set/Inc/Dec/Value).
+   - `Histogram` — fixed-bucket latency distribution (`DefaultLatencyBuckets` = `[5, 10, 25, 50, 100, 250, 500, 1000, 2500, 5000, 10000]` ms).
+   - `MetricsAggregator` — root namespace со всеми счётчиками/gauges/histograms.
+   - `WritePrometheus(w io.Writer)` — экспорт в Prometheus exposition format (text/plain; version=0.0.4).
+2. **`ModelCoordinator.metrics`** поле + `Metrics()` getter + `Stats()` (CoordinatorStats struct с Workers/Models/ActiveJobs/WorkersHealth/Selector).
+3. **Endpoint `GET /api/v1/rpc/metrics`** в `internal/api/handlers_rpc_metrics.go` — scrape-совместимый output.
+4. **WebUI `webui/rpc-status.html`** — dark-mode панель с Overview cards, Workers table, Histogram table, raw Prometheus viewer, auto-refresh 10s.
+
+### Метрики
+
+**Counters:**
+- `rpc_inference_total` — всего inference запросов
+- `rpc_inference_errors_total` — failed inference
+- `rpc_slice_infer_total` — всего slice infer вызовов
+- `rpc_slice_infer_errors_total` — failed slice infer
+- `rpc_load_slice_total`, `rpc_unload_slice_total`
+
+**Gauges:**
+- `rpc_active_jobs` — in-flight inference задач
+- `rpc_registered_workers` — число зарегистрированных worker'ов
+- `rpc_registered_models` — число distributed моделей
+- `rpc_kv_cache_size_bytes` — оценка размера KV cache (stub)
+- `rpc_uptime_seconds` — uptime coordinator'а
+- `rpc_worker_health{worker_id="..."}` — per-worker health gauge (0/1)
+
+**Histograms:**
+- `rpc_inference_duration_ms` — end-to-end latency (buckets 5..10000 ms)
+- `rpc_slice_latency_ms` — per-slice latency (same buckets)
+
+### Архитектура
+
+```
+   ┌──────────────────┐
+   │  Coordinator     │
+   │  .Metrics()      │ → MetricsAggregator (in-memory)
+   │  .Stats()        │ → CoordinatorStats (workers, models, etc.)
+   └────────┬─────────┘
+            │
+            ▼
+   ┌──────────────────┐
+   │  /api/v1/rpc/    │ → AuthMiddleware + RateLimit
+   │  metrics handler │ → refresh gauges (Registered*, Workers*)
+   │                  │ → WritePrometheus(w)
+   └────────┬─────────┘
+            │
+            ▼
+        Prometheus
+        exposition
+       text/plain v0.0.4
+```
+
+### Файлы
+
+- `internal/rpccoordinator/metrics.go` — новый (~340 LOC): Counter/Gauge/Histogram + MetricsAggregator + WritePrometheus.
+- `internal/rpccoordinator/metrics_test.go` — 11 unit-тестов (Counter concurrent, Gauge, Histogram, aggregator, WritePrometheus format/empty/cumulative buckets).
+- `internal/rpccoordinator/coordinator.go` — добавлены поле `metrics`, методы `Metrics()` и `Stats()` (новый тип CoordinatorStats).
+- `internal/api/handlers_rpc_metrics.go` — новый handler (`handleRpcMetrics`, `refreshCoordinatorMetrics`).
+- `internal/api/routes.go` — зарегистрирован роут `/api/v1/rpc/metrics`.
+- `webui/rpc-status.html` — новая WebUI панель (dark mode, без зависимостей).
+
+### Endpoint
+
+`GET /api/v1/rpc/metrics`
+
+```
+# HELP rpc_inference_total Total number of inference requests handled by coordinator.
+# TYPE rpc_inference_total counter
+rpc_inference_total 42
+# HELP rpc_active_jobs Number of in-flight inference jobs.
+# TYPE rpc_active_jobs gauge
+rpc_active_jobs 3
+...
+# HELP rpc_worker_health Worker health (1 = healthy, 0 = unhealthy).
+# TYPE rpc_worker_health gauge
+rpc_worker_health{worker_id="gpu-1"} 1
+rpc_worker_health{worker_id="gpu-2"} 0
+...
+# HELP rpc_inference_duration_ms End-to-end inference duration in milliseconds.
+# TYPE rpc_inference_duration_ms histogram
+rpc_inference_duration_ms_bucket{le="5"} 10
+rpc_inference_duration_ms_bucket{le="100"} 35
+...
+rpc_inference_duration_ms_bucket{le="+Inf"} 42
+rpc_inference_duration_ms_sum 1234.5
+rpc_inference_duration_ms_count 42
+```
+
+- HTTP 200 + `Content-Type: text/plain; version=0.0.4; charset=utf-8` при enabled.
+- HTTP 503 `{"error":"rpc_disabled"}` если RPC Coordinator отключён.
+- HTTP 405 на non-GET.
+- Требует `X-API-Token` (как остальные `/api/v1/rpc/*`).
+
+### Что вне scope B7
+
+- **Prometheus push gateway** — только pull-based exposition.
+- **Custom Prometheus collectors** (например, runtime Go metrics) — нужен `prometheus/client_golang` (нет в go.mod).
+- **Grafana dashboards** — оставлено пользователю (можно импортировать `webui/rpc-status.html` design как Grafana JSON).
+- **Alertmanager rules** — только экспорт метрик.
+
+### Acceptance criteria
+
+1. `go build -tags llama_stub ./internal/rpccoordinator/ ./internal/api/` — exit 0.
+2. `go test -tags llama_stub -count=1 ./internal/rpccoordinator/` — PASS (все 11 metrics_test PASS).
+3. `go test -tags llama_stub -count=1 ./internal/api/` — PASS (без регрессий).
+4. `GET /api/v1/rpc/metrics` с токеном возвращает 200 + Prometheus exposition format.
+5. `GET /api/v1/rpc/metrics` без токена возвращает 401.
+6. WebUI `/rpc-status.html` показывает карточки метрик + per-worker health table.
+
+---
+
 ## B6 — Load Balancing между срезами (DONE Session 10)
 
 ### Что сделано

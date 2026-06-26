@@ -148,6 +148,10 @@ func (s *Server) setupRoutes() {
 	s.mux.Handle("/api/v1/rpc/models", AuthMiddleware(RateLimitMiddleware(http.HandlerFunc(s.handleRpcModelsRouter), s.rateLimiter), s.authenticator))
 	s.mux.Handle("/api/v1/rpc/models/", AuthMiddleware(RateLimitMiddleware(http.HandlerFunc(s.handleRpcModelsRouter), s.rateLimiter), s.authenticator))
 
+	// /api/v1/rpc/metrics — Prometheus exposition для RPC Coordinator (B7).
+	// Возвращает text/plain; version=0.0.4 — scrape-совместимый output.
+	s.mux.Handle("/api/v1/rpc/metrics", AuthMiddleware(RateLimitMiddleware(http.HandlerFunc(s.handleRpcMetrics), s.rateLimiter), s.authenticator))
+
 	// Candidate Backends endpoint (с аутентификацией и rate limiting)
 	// Возвращает группы бэкендов-кандидатов по приоритетам для всех моделей
 	s.mux.Handle("/api/v1/candidates", AuthMiddleware(RateLimitMiddleware(s.candidatesHandler, s.rateLimiter), s.authenticator))

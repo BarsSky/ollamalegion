@@ -31,6 +31,11 @@ type ModelCoordinator struct {
 	// Используется executePipeline для выбора worker'а при наличии
 	// нескольких кандидатов и failover при ошибке primary.
 	selector Selector
+
+	// metrics — B7: Prometheus-style aggregator.
+	// Обновляется при каждом RegisterWorker/Infer/RegisterDistributedModel.
+	// Экспортируется через /metrics endpoint в balancer handler.
+	metrics *MetricsAggregator
 }
 
 // DistributedModel описывает модель, распределённую по worker'ам.
@@ -168,7 +173,20 @@ func NewModelCoordinator(cfg types.RpcCoordinatorConfig) *ModelCoordinator {
 			},
 		},
 		enabled: cfg.Enabled,
+		metrics: NewMetricsAggregator(),
 	}
+}
+
+// Metrics возвращает Prometheus-style aggregator.
+//
+// Используется balancer handler'ом для экспорта /metrics endpoint.
+func (c *ModelCoordinator) Metrics() *MetricsAggregator {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	if c.metrics == nil {
+		c.metrics = NewMetricsAggregator()
+	}
+	return c.metrics
 }
 
 // Enabled возвращает статус включения.
@@ -581,6 +599,48 @@ func (c *ModelCoordinator) HealthCheck() map[string]bool {
 		result[id] = ok
 	}
 	return result
+}
+
+// CoordinatorStats — снимок состояния coordinator'а (для метрик и UI).
+type CoordinatorStats struct {
+	Workers       []string          // список ID зарегистрированных worker'ов
+	Models        []string          // список имён зарегистрированных моделей
+	ActiveJobs    int               // текущее число in-flight задач
+	WorkersHealth map[string]bool   // workerID → IsHealthy()
+	Selector      string            // имя текущей стратегии (для отладки)
+}
+
+// Stats возвращает снимок состояния coordinator'а.
+//
+// Используется /metrics endpoint (B7) и WebUI панелью для отображения статуса.
+func (c *ModelCoordinator) Stats() CoordinatorStats {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+
+	workers := make([]string, 0, len(c.workers))
+	health := make(map[string]bool, len(c.workers))
+	for id, w := range c.workers {
+		workers = append(workers, id)
+		health[id] = w.IsHealthy()
+	}
+
+	models := make([]string, 0, len(c.models))
+	for name := range c.models {
+		models = append(models, name)
+	}
+
+	selector := ""
+	if c.selector != nil {
+		selector = c.selector.Name()
+	}
+
+	return CoordinatorStats{
+		Workers:       workers,
+		Models:        models,
+		ActiveJobs:    len(c.activeJobs),
+		WorkersHealth: health,
+		Selector:      selector,
+	}
 }
 
 // Close закрывает координатор и все соединения.

@@ -1,0 +1,353 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>RPC Status · OllamaLegion</title>
+  <link rel="icon" type="image/svg+xml" href="/logo.svg" />
+  <style>
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      padding: 24px;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+      background: #0d1117;
+      color: #c9d1d9;
+      line-height: 1.5;
+    }
+    h1 { font-size: 24px; margin: 0 0 8px; color: #f0f6fc; }
+    h2 { font-size: 18px; margin: 24px 0 12px; color: #f0f6fc; }
+    .subtitle { color: #8b949e; font-size: 14px; margin-bottom: 24px; }
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+      gap: 16px;
+      margin-bottom: 24px;
+    }
+    .card {
+      background: #161b22;
+      border: 1px solid #30363d;
+      border-radius: 6px;
+      padding: 16px;
+    }
+    .card .label {
+      color: #8b949e;
+      font-size: 12px;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      margin-bottom: 6px;
+    }
+    .card .value {
+      font-size: 28px;
+      font-weight: 600;
+      color: #f0f6fc;
+      font-feature-settings: "tnum";
+    }
+    .card .unit { font-size: 14px; color: #8b949e; margin-left: 4px; }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      background: #161b22;
+      border: 1px solid #30363d;
+      border-radius: 6px;
+      overflow: hidden;
+    }
+    th, td {
+      padding: 8px 12px;
+      text-align: left;
+      border-bottom: 1px solid #30363d;
+    }
+    th { background: #21262d; color: #f0f6fc; font-weight: 600; font-size: 13px; }
+    tr:last-child td { border-bottom: none; }
+    .status-ok { color: #3fb950; }
+    .status-fail { color: #f85149; }
+    .status-disabled { color: #8b949e; font-style: italic; }
+    .worker-pill {
+      display: inline-block;
+      padding: 2px 8px;
+      border-radius: 12px;
+      font-size: 12px;
+      font-weight: 500;
+    }
+    .worker-pill.healthy { background: #033b16; color: #3fb950; }
+    .worker-pill.unhealthy { background: #3d0f0f; color: #f85149; }
+    .pipeline-stage {
+      display: inline-block;
+      padding: 6px 10px;
+      margin: 2px;
+      background: #21262d;
+      border: 1px solid #30363d;
+      border-radius: 4px;
+      font-size: 12px;
+    }
+    .arrow { color: #58a6ff; margin: 0 4px; }
+    pre.metrics {
+      background: #0d1117;
+      border: 1px solid #30363d;
+      border-radius: 6px;
+      padding: 12px;
+      font-size: 12px;
+      overflow-x: auto;
+      max-height: 400px;
+      overflow-y: auto;
+      color: #c9d1d9;
+    }
+    .refresh-btn {
+      background: #238636;
+      color: #fff;
+      border: none;
+      padding: 8px 16px;
+      border-radius: 6px;
+      cursor: pointer;
+      font-size: 14px;
+    }
+    .refresh-btn:hover { background: #2ea043; }
+    .error-banner {
+      background: #3d0f0f;
+      border: 1px solid #f85149;
+      color: #ffa198;
+      padding: 12px;
+      border-radius: 6px;
+      margin-bottom: 16px;
+    }
+  </style>
+</head>
+<body>
+  <h1>RPC Status</h1>
+  <div class="subtitle">Distributed inference monitoring · scrapes <code>/api/v1/rpc/metrics</code></div>
+
+  <div id="error-banner" style="display: none;" class="error-banner"></div>
+
+  <div style="margin-bottom: 16px;">
+    <button class="refresh-btn" onclick="loadAll()">Refresh</button>
+    <span style="margin-left: 12px; color: #8b949e; font-size: 13px;">
+      Auto-refresh: <input type="checkbox" id="auto-refresh" checked /> every 10s
+    </span>
+  </div>
+
+  <div id="disabled-banner" class="status-disabled" style="display: none; padding: 16px; text-align: center;">
+    RPC Coordinator is not enabled in balancer config.
+  </div>
+
+  <div id="main-content">
+    <h2>Overview</h2>
+    <div class="grid">
+      <div class="card">
+        <div class="label">Total Inferences</div>
+        <div class="value" id="m-inference-total">-</div>
+      </div>
+      <div class="card">
+        <div class="label">Errors</div>
+        <div class="value" id="m-inference-errors">-</div>
+      </div>
+      <div class="card">
+        <div class="label">Slice Calls</div>
+        <div class="value" id="m-slice-total">-</div>
+      </div>
+      <div class="card">
+        <div class="label">Active Jobs</div>
+        <div class="value" id="m-active-jobs">-</div>
+      </div>
+      <div class="card">
+        <div class="label">Workers</div>
+        <div class="value" id="m-workers">-</div>
+      </div>
+      <div class="card">
+        <div class="label">Models</div>
+        <div class="value" id="m-models">-</div>
+      </div>
+      <div class="card">
+        <div class="label">Uptime</div>
+        <div class="value"><span id="m-uptime">-</span><span class="unit">s</span></div>
+      </div>
+    </div>
+
+    <h2>Workers</h2>
+    <table>
+      <thead>
+        <tr><th>Worker ID</th><th>Health</th></tr>
+      </thead>
+      <tbody id="workers-tbody">
+        <tr><td colspan="2" class="status-disabled">No workers registered.</td></tr>
+      </tbody>
+    </table>
+
+    <h2>Inference Duration (ms)</h2>
+    <table>
+      <thead><tr><th>Bucket (le)</th><th>Count</th></tr></thead>
+      <tbody id="duration-tbody"></tbody>
+    </table>
+
+    <h2>Raw Prometheus Output</h2>
+    <pre class="metrics" id="raw-metrics">Loading...</pre>
+  </div>
+
+  <script>
+    const API_TOKEN = localStorage.getItem('apiToken') || '';
+    const API_BASE = window.location.origin + '/api/v1';
+
+    let autoTimer = null;
+
+    async function loadMetrics() {
+      const url = API_BASE + '/rpc/metrics';
+      const resp = await fetch(url, {
+        headers: API_TOKEN ? { 'X-API-Token': API_TOKEN } : {}
+      });
+      if (resp.status === 503) {
+        showDisabled();
+        return null;
+      }
+      if (!resp.ok) {
+        showError('HTTP ' + resp.status + ': ' + (await resp.text()).slice(0, 200));
+        return null;
+      }
+      return await resp.text();
+    }
+
+    function parseProm(text) {
+      const lines = text.split('\n');
+      const out = {};
+      const counters = {};
+      const gauges = {};
+      const histograms = {};
+      let currentHistogram = null;
+      let currentBaseName = null;
+
+      for (const line of lines) {
+        if (line.startsWith('# HELP ')) {
+          const parts = line.split(' ');
+          currentBaseName = parts[2];
+          continue;
+        }
+        if (line.startsWith('# TYPE ')) {
+          const parts = line.split(' ');
+          const type = parts[3];
+          if (type === 'counter') {
+            currentHistogram = null;
+          } else if (type === 'gauge') {
+            currentHistogram = null;
+          } else if (type === 'histogram') {
+            currentHistogram = histograms[currentBaseName] = { buckets: [], sum: 0, count: 0 };
+          }
+          continue;
+        }
+        if (!line || line.startsWith('#')) continue;
+
+        const m = line.match(/^([a-zA-Z_][a-zA-Z0-9_]*)(\{[^}]*\})?\s+(.+)$/);
+        if (!m) continue;
+        const name = m[1];
+        const labelsStr = m[2] || '';
+        const value = parseFloat(m[3]);
+
+        if (name.endsWith('_bucket')) {
+          const baseName = name.slice(0, -7);
+          if (histograms[baseName]) {
+            const le = labelsStr.match(/le="([^"]+)"/);
+            histograms[baseName].buckets.push({ le: le ? le[1] : '?', count: value });
+          }
+        } else if (name.endsWith('_sum')) {
+          const baseName = name.slice(0, -4);
+          if (histograms[baseName]) histograms[baseName].sum = value;
+        } else if (name.endsWith('_count')) {
+          const baseName = name.slice(0, -6);
+          if (histograms[baseName]) histograms[baseName].count = value;
+        } else if (labelsStr) {
+          // Gauge с labels (например rpc_worker_health).
+          out[name] = out[name] || [];
+          out[name].push({ labels: labelsStr, value });
+        } else {
+          out[name] = value;
+        }
+      }
+
+      return { flat: out, histograms };
+    }
+
+    function setValue(id, val) {
+      document.getElementById(id).textContent = val;
+    }
+
+    function render(metrics) {
+      const parsed = parseProm(metrics);
+
+      setValue('m-inference-total', parsed.flat['rpc_inference_total'] || 0);
+      setValue('m-inference-errors', parsed.flat['rpc_inference_errors_total'] || 0);
+      setValue('m-slice-total', parsed.flat['rpc_slice_infer_total'] || 0);
+      setValue('m-active-jobs', parsed.flat['rpc_active_jobs'] || 0);
+      setValue('m-workers', parsed.flat['rpc_registered_workers'] || 0);
+      setValue('m-models', parsed.flat['rpc_registered_models'] || 0);
+      setValue('m-uptime', parsed.flat['rpc_uptime_seconds'] || 0);
+
+      // Workers table.
+      const tbody = document.getElementById('workers-tbody');
+      const healthList = parsed.flat['rpc_worker_health'] || [];
+      if (healthList.length === 0) {
+        tbody.innerHTML = '<tr><td colspan="2" class="status-disabled">No workers registered.</td></tr>';
+      } else {
+        tbody.innerHTML = healthList.map(h => {
+          const id = h.labels.match(/worker_id="([^"]+)"/);
+          const wid = id ? id[1] : '?';
+          const cls = h.value === 1 ? 'healthy' : 'unhealthy';
+          const label = h.value === 1 ? 'healthy' : 'unhealthy';
+          return `<tr><td><code>${wid}</code></td><td><span class="worker-pill ${cls}">${label}</span></td></tr>`;
+        }).join('');
+      }
+
+      // Inference duration histogram.
+      const durTbody = document.getElementById('duration-tbody');
+      const hist = parsed.histograms['rpc_inference_duration_ms'];
+      if (hist && hist.buckets.length > 0) {
+        durTbody.innerHTML = hist.buckets.map(b =>
+          `<tr><td>le = ${b.le}</td><td>${b.count}</td></tr>`
+        ).join('');
+        durTbody.innerHTML += `<tr><td><em>sum</em></td><td>${hist.sum}</td></tr>`;
+        durTbody.innerHTML += `<tr><td><em>count</em></td><td>${hist.count}</td></tr>`;
+      } else {
+        durTbody.innerHTML = '<tr><td colspan="2" class="status-disabled">No data.</td></tr>';
+      }
+
+      // Raw output.
+      document.getElementById('raw-metrics').textContent = metrics;
+    }
+
+    function showError(msg) {
+      const b = document.getElementById('error-banner');
+      b.textContent = 'Error: ' + msg;
+      b.style.display = 'block';
+    }
+
+    function hideError() {
+      document.getElementById('error-banner').style.display = 'none';
+    }
+
+    function showDisabled() {
+      document.getElementById('disabled-banner').style.display = 'block';
+      document.getElementById('main-content').style.display = 'none';
+    }
+
+    function showEnabled() {
+      document.getElementById('disabled-banner').style.display = 'none';
+      document.getElementById('main-content').style.display = 'block';
+    }
+
+    async function loadAll() {
+      hideError();
+      const text = await loadMetrics();
+      if (text === null) return;
+      showEnabled();
+      render(text);
+    }
+
+    document.getElementById('auto-refresh').addEventListener('change', (e) => {
+      if (autoTimer) { clearInterval(autoTimer); autoTimer = null; }
+      if (e.target.checked) {
+        autoTimer = setInterval(loadAll, 10000);
+      }
+    });
+
+    // Initial load + auto-refresh.
+    loadAll();
+    autoTimer = setInterval(loadAll, 10000);
+  </script>
+</body>
+</html>

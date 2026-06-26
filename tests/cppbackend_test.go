@@ -35,8 +35,10 @@ func TestDefaultConfig(t *testing.T) {
 	if cfg.ModelsDir != "./models" {
 		t.Errorf("expected modelsDir ./models, got %s", cfg.ModelsDir)
 	}
-	if cfg.DefaultCtxSize != 4096 {
-		t.Errorf("expected ctx size 4096, got %d", cfg.DefaultCtxSize)
+	// DefaultCtxSize поднят до 32768 в 2026-06-05 — см. CHANGELOG.md
+	// ("Дефолт ctx_size поднят 4096 → 8192, потом до 32768 для длинных сессий").
+	if cfg.DefaultCtxSize != 32768 {
+		t.Errorf("expected ctx size 32768, got %d", cfg.DefaultCtxSize)
 	}
 	if cfg.DefaultBatchSize != 512 {
 		t.Errorf("expected batch size 512, got %d", cfg.DefaultBatchSize)

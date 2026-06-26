@@ -138,6 +138,16 @@ func (s *Server) setupRoutes() {
 	// после превышения лимита). Без этого нужен `docker restart`.
 	s.mux.Handle("/api/v1/cppworker/reset-reload-counter", AuthMiddleware(RateLimitMiddleware(http.HandlerFunc(s.handleResetCppWorkerReloadCounter), s.rateLimiter), s.authenticator))
 
+	// RPC Coordinator management endpoints (B2 — Session 5, 2026-06-26).
+	// Управление worker'ами и distributed моделями через балансировщик,
+	// без прямого доступа к worker'ам.
+	// /api/v1/rpc/workers — GET (list) или POST (register через тот же роут)
+	s.mux.Handle("/api/v1/rpc/workers", AuthMiddleware(RateLimitMiddleware(http.HandlerFunc(s.handleRpcWorkersListOrRegister), s.rateLimiter), s.authenticator))
+	s.mux.Handle("/api/v1/rpc/workers/register", AuthMiddleware(RateLimitMiddleware(http.HandlerFunc(s.handleRpcWorkersRegister_POST), s.rateLimiter), s.authenticator))
+	s.mux.Handle("/api/v1/rpc/workers/", AuthMiddleware(RateLimitMiddleware(http.HandlerFunc(s.handleRpcWorkerItem), s.rateLimiter), s.authenticator))
+	s.mux.Handle("/api/v1/rpc/models", AuthMiddleware(RateLimitMiddleware(http.HandlerFunc(s.handleRpcModelsRouter), s.rateLimiter), s.authenticator))
+	s.mux.Handle("/api/v1/rpc/models/", AuthMiddleware(RateLimitMiddleware(http.HandlerFunc(s.handleRpcModelsRouter), s.rateLimiter), s.authenticator))
+
 	// Candidate Backends endpoint (с аутентификацией и rate limiting)
 	// Возвращает группы бэкендов-кандидатов по приоритетам для всех моделей
 	s.mux.Handle("/api/v1/candidates", AuthMiddleware(RateLimitMiddleware(s.candidatesHandler, s.rateLimiter), s.authenticator))

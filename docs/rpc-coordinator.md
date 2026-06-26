@@ -125,6 +125,129 @@ Client → Balancer → ModelCoordinator
 
 ---
 
+## B4 — Streaming Pipeline + KV-cache sync (DONE 2026-06-26)
+
+### Что сделано
+
+Реализованы:
+1. **In-memory KV-store на worker'е** (`internal/rpcworker/kv_store.go`) —
+   thread-safe хранилище KV-shard'ов с TTL (30m default) и capacity limit (1000).
+2. **Реальная реализация /rpc/kv_sync и /rpc/kv_fetch** (раньше были 501 stub).
+3. **SSE-streаming /rpc/infer** через query `?stream=true`
+   (text/event-stream, чанки по 8 байт).
+
+### KVStore API (in-memory на worker'е)
+
+```go
+type KVShard struct {
+    SessionID, WorkerID string
+    KeyTensor, ValueTensor []byte  // opaque B4
+    SeqLen int
+    CreatedAt, LastAccess time.Time
+}
+
+func NewKVStore(workerID string, cfg KVStoreConfig) *KVStore
+func (k *KVStore) Save(shard *KVShard) error
+func (k *KVStore) Load(sessionID string) *KVShard
+func (k *KVStore) Delete(sessionID string) bool
+func (k *KVStore) List() []string
+func (k *KVStore) Sweep() int  // удаляет просроченные по TTL
+func (k *KVStore) Stats() KVStoreStats
+```
+
+Сериализация: opaque bytes через base64 (`encoded: "key_b64:value_b64"`).
+В production это будет safetensors/bincode сериализация llama.cpp cache.
+
+### Контракт `POST /rpc/kv_sync`
+
+```json
+{
+  "session_id": "abc-123",
+  "seq_len": 42,
+  "encoded": "aGVsbG86d29ybGQ=",
+  "layers": [1, 2, 3, 4]
+}
+```
+
+Response 200 OK:
+```json
+{ "status": "saved", "session_id": "abc-123", "seq_len": 42, "worker_id": "rpc-worker-1" }
+```
+
+### Контракт `GET /rpc/kv_fetch?session_id=X`
+
+Response 200 OK:
+```json
+{
+  "session_id": "abc-123", "worker_id": "rpc-worker-1", "seq_len": 42,
+  "encoded": "aGVsbG86d29ybGQ=", "layers": [1,2,3,4],
+  "created_at": "2026-06-26T20:30:00Z", "last_access": "2026-06-26T20:35:00Z"
+}
+```
+
+Response 404 если shard не найден.
+
+### SSE-streаming `/rpc/infer?stream=true`
+
+Content-Type: `text/event-stream`. Каждый чанк (8 байт) — отдельный event:
+
+```
+event: start
+data: {"worker_id":"rpc-worker-1","slice_id":"1-32","model":"llama-3-70b"}
+
+event: token
+data: {"token":"Hello","token_index":0}
+
+event: token
+data: {"token":", wor","token_index":1}
+
+...
+
+event: done
+data: {"worker_id":"rpc-worker-1","slice_id":"1-32","tokens":12,"latency_ms":42,"status":"completed"}
+```
+
+### Edge cases (покрыто тестами)
+
+- KVStore: 400 при пустом body / отсутствии session_id.
+- KVStore: 404 при fetch несуществующего shard.
+- KVStore: 507 Insufficient Storage при переполнении MaxEntries.
+- KVStore: overwrite не считается за новый (Stats.Stores не ++).
+- KVStore: Sweep удаляет просроченные по TTL.
+- SSE-streаming: chunksize 8 байт; last `done` event всегда отправляется.
+- handleInferStream: если ResponseWriter не поддерживает Flusher → 500.
+- handleInferStream: client disconnect не паникует (Write возвращает error → return).
+
+### Файлы
+
+- `internal/rpcworker/kv_store.go` — новый, ~220 LOC (KVStore + KVShard + stats).
+- `internal/rpcworker/server.go` — добавлено поле `kvStore` + `KVStore()` геттер.
+- `internal/rpcworker/handlers.go` — реальные `handleKvSync` / `handleKvFetch`;
+  добавлен `handleInferStream` для SSE.
+- `internal/rpcworker/server_test.go` — обновлены B1-stub тесты (501 → 200/400/404);
+  добавлены KVStore unit-тесты (Save/Load/Delete, overwrite, capacity, TTL).
+
+### Acceptance criteria
+
+- `go test -tags llama_stub -count=1 ./internal/rpcworker` — PASS (1.0s).
+- `go test -tags llama_stub -count=1 ./internal/{rpcworker,rpccoordinator,api}` — PASS.
+- KVStore: Save/Load/Delete/Sweep все работают.
+- KVStore: overwrite не считается новым.
+- KVStore: capacity (MaxEntries) → IsKVStoreFullError.
+- /rpc/kv_sync: 400 без session_id, 200 с shard.
+- /rpc/kv_fetch: 404 если нет shard, 200 с shard.
+- /rpc/infer?stream=true: Content-Type: text/event-stream, chunks of 8 bytes.
+
+### Что вне scope B4
+
+- **Streaming через coordinator** (`coord.Infer()` возвращает SSE) — coordinator
+  пока использует обычный JSON через `coord.Infer()`. Streaming-версия будет
+  добавлена в B6 (Load Balancing) или в отдельной фазе, когда потребуется
+  реальный pipeline parallelism (межсрезная передача hidden states).
+- **Реальная llama.cpp cache file** (safetensors/bincode) — на B4 opaque bytes.
+
+---
+
 ## B3 — Heartbeat & Auto-Discovery (DONE 2026-06-26)
 
 ### Что сделано
@@ -335,3 +458,128 @@ curl http://localhost:18080/rpc/health
 - **B6** (1-2 дня): Load Balancing между срезами.
 - **B7** (3-5 дней): Prometheus метрики + WebUI.
 - **B8** (20-30 дней): Tensor Parallelism (требует custom backend).
+
+## B5 — gRPC-style binary protocol через net/rpc (DONE Session 9)
+
+### Что сделано
+
+Параллельно с HTTP (`/rpc/*`) worker'ы теперь могут слушать **net/rpc (gob)** — бинарный
+протокол, совместимый по семантике с HTTP API. Это B5-stub (без `google.golang.org/grpc`):
+
+- Не требует `protoc-gen-go` или `google.golang.org/grpc` (которых нет в `go.mod`).
+- Даёт binary wire protocol через `encoding/gob`.
+- Те же 7 методов, что и HTTP (`HealthCheck`, `LoadSlice`, `UnloadSlice`, `Infer`,
+  `Metrics`, `KvSync`, `KvFetch`) — реализованы через единый `WorkerRPCService`.
+- Поддерживает lazy reconnect на клиенте (на любую RPC-ошибку соединение закрывается,
+  следующий вызов переоткрывает).
+- HTTP и net/rpc могут работать одновременно на одном worker'е (разные порты).
+
+### Зачем stub, а не настоящий gRPC
+
+- `google.golang.org/grpc` в `go.mod` отсутствует, и его нельзя просто добавить —
+  он тянет за собой `protoc`-генерацию .pb.go файлов и сложную кодогенерацию.
+- `net/rpc/gob` даёт **ту же модель** (typed RPC + binary wire) с минимальным
+  кодом. Покрывает ~80% use-cases B5 (call/return).
+- B5.real (grpc-go + protobuf) — отдельная задача после B8, когда появится
+  production deployment с реальной llama.cpp.
+
+### Протокол
+
+```
+Protocol: rpc-v0.1.0-stub
+Transport: TCP
+Encoding: encoding/gob
+Service: WorkerRPCService
+Methods:
+  HealthCheck(args *HealthCheckArgs, reply *HealthCheckReply) error
+  LoadSlice(args *LoadSliceArgs, reply *LoadSliceReply) error
+  UnloadSlice(args *UnloadSliceArgs, reply *UnloadSliceReply) error
+  Infer(args *InferArgs, reply *InferReply) error
+  Metrics(args *MetricsArgs, reply *MetricsReply) error
+  KvSync(args *KvSyncArgs, reply *KvSyncReply) error
+  KvFetch(args *KvFetchArgs, reply *KvFetchReply) error
+```
+
+Все типы — в `pkg/protocol/rpc_protocol.go`.
+
+### Архитектура
+
+```
+                     ┌────────────────────────────┐
+                     │       WorkerServer         │
+                     │  (rpcworker.WorkerServer)  │
+                     │  HTTP /rpc/{health,...}    │
+                     └─────────┬──────────────────┘
+                               │ (общий Manager/Metrics/KVStore)
+                     ┌─────────▼──────────────────┐
+                     │    WorkerRPCService        │
+                     │  (pkg/protocol)            │
+                     │  7 net/rpc методов         │
+                     └─────────┬──────────────────┘
+                               │ gob over TCP
+                     ┌─────────▼──────────────────┐
+                     │    net/rpc.Server          │
+                     │  port: HTTP_PORT + 1000    │
+                     │  (default 19080)           │
+                     └────────────────────────────┘
+
+            ┌────────────────────────────────────────┐
+            │     WorkerRPCClient (lazy reconnect)   │
+            │  (internal/rpccoordinator)             │
+            └────────────────────────────────────────┘
+```
+
+### Файлы
+
+- `pkg/protocol/rpc_protocol.go` — `WorkerRPCService` + args/reply типы + `StartRPCServer()`.
+- `internal/rpcworker/server.go` — helper-методы `WorkerID()`, `Version()`, `HandleInferRPC()`,
+  `MetricsRPC()`, `KvStoreSaveRPC()`, `KvStoreLoadRPC()` (RPC-обёртки).
+- `internal/rpcworker/metrics.go` — тип `MetricsSnapshot` (gob-сериализуемый аналог map).
+- `cmd/rpcworker/main.go` — флаги `--rpc-host`, `--rpc-port` + ENV `RPC_WORKER_RPC_*`.
+- `internal/rpccoordinator/worker_rpc_client.go` — `WorkerRPCClient` с lazy dial и reconnect.
+
+### ENV / CLI-флаги
+
+| ENV | Flag | Default | Что делает |
+|---|---|---|---|
+| `RPC_WORKER_RPC_HOST` | `--rpc-host` | = `--host` | RPC listen host |
+| `RPC_WORKER_RPC_PORT` | `--rpc-port` | HTTP_PORT + 1000 | RPC listen port (18080 → 19080). 0 = отключить RPC |
+
+### Acceptance criteria
+
+1. `go build -tags llama_stub ./cmd/rpcworker` — exit 0.
+2. `go test -tags llama_stub ./pkg/protocol/` — все unit-тесты PASS (9+).
+3. `go test -tags llama_stub -run TestE2E_RPC_ ./internal/rpccoordinator/` — все e2e PASS (7+).
+4. Worker слушает HTTP (18080) и net/rpc (19080) одновременно.
+5. `WorkerClient` (HTTP) и `WorkerRPCClient` (gob) дают идентичные результаты для одинаковых операций.
+6. Lazy reconnect: после перезапуска worker'а клиент автоматически переоткрывает соединение.
+7. HTTP /rpc/metrics и RPC Metrics возвращают эквивалентные данные (HTTP — map, RPC — `MetricsSnapshot`).
+
+### Файлы тестов
+
+- `pkg/protocol/rpc_protocol_test.go` — 9 unit-тестов:
+  - `TestProtocolVersion`
+  - `TestStartRPCServer_HealthCheck`, `_LoadSlice_NoModel`, `_UnloadSlice_NotLoaded`,
+    `_Infer_NotLoaded`, `_Metrics`, `_KvSync_KvFetch_RoundTrip`,
+    `_KvFetch_NotFound`, `_KvSync_MissingSessionID`, `_ConcurrentCalls`, `_ListenerClosed`.
+- `internal/rpccoordinator/e2e_rpc_test.go` — 7 e2e-тестов:
+  - `TestE2E_RPC_HealthCheck`, `_FullPipeline`, `_TwoWorkersIsolated`,
+    `_ConcurrentClients`, `_ReconnectAfterServerRestart`,
+    `_LoadSliceInvalidModel`, `_MetricsContainsAllFields`.
+
+### Известные ограничения (явно вне scope B5)
+
+- **No streaming**: net/rpc поддерживает streaming через `net/rpc.Stream`, но B5-stub
+  использует только call/reply. Для больших inference ответов (длинные генерации)
+  клиент пока получает весь output за один `Infer`-вызов. SSE streaming по HTTP
+  (`?stream=true`) остаётся основным путём для streaming.
+- **No TLS**: net/rpc соединения plain TCP. В production обязательно обернуть в TLS.
+- **No bidirectional streaming**: B5.real (grpc-go) добавит `BidiStreaming Infer`.
+- **No server reflection**: клиент должен знать имена методов во время компиляции.
+
+### Что вне scope B5 (next: B6-B8)
+
+- **B6** (1-2 дня): Load Balancing между срезами.
+- **B7** (3-5 дней): Prometheus метрики + WebUI.
+- **B8** (20-30 дней): Tensor Parallelism (требует custom backend).
+- **B5.real**: миграция на `google.golang.org/grpc` + protobuf (после B8).

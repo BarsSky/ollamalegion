@@ -11,6 +11,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"ollama-loadbalancer/c/bridge"
 	"ollama-loadbalancer/pkg/logger"
 )
 
@@ -260,3 +261,202 @@ func (c *CounterMap) Snapshot() map[string]int64 {
 	}
 	return out
 }
+
+// =====================================================================
+// B5: helper-методы для net/rpc протокола (pkg/protocol.WorkerRPCService).
+// =====================================================================
+//
+// WorkerRPCService делегирует вызовы к этим методам, не повторяя логику HTTP-хендлеров.
+// Все методы — synchronous, thread-safe (используют уже thread-safe Manager/Metrics/KVStore).
+
+// WorkerID возвращает идентификатор worker'а (cfg.WorkerID).
+func (s *WorkerServer) WorkerID() string {
+	return s.cfg.WorkerID
+}
+
+// Version возвращает версию бинарника, переданную в NewWorkerServer.
+func (s *WorkerServer) Version() string {
+	return s.version
+}
+
+// HandleInferRPC — RPC-обёртка над handleInfer (sync-режим, без SSE).
+//
+// Делает то же, что HTTP /rpc/infer без ?stream=true, но возвращает
+// структуру напрямую, без сериализации в JSON.
+//
+// Возвращает *SliceInferResponse и error. nil slice = модель не загружена.
+func (s *WorkerServer) HandleInferRPC(modelName, prompt string, tokens int, temperature float32) (*SliceInferResponse, error) {
+	slice := s.manager.GetSlice(modelName)
+	if slice == nil {
+		return nil, errModelNotLoaded
+	}
+	if slice.Handle == nil {
+		return nil, errSliceNoHandle
+	}
+
+	params := bridge.DefaultGenerationParams()
+	if tokens > 0 {
+		params.NPredict = tokens
+	}
+	if temperature > 0 {
+		params.Temperature = temperature
+	}
+
+	sliceID := slice.Layers
+
+	end := s.metrics.OnInferStart(modelName)
+	start := time.Now()
+
+	var (
+		output     string
+		tokensUsed int
+		err        error
+	)
+	func() {
+		defer func() {
+			if rec := recover(); rec != nil {
+				err = errPanic
+			}
+		}()
+		result, ierr := slice.Handle.Infer(prompt, params)
+		if ierr != nil {
+			err = ierr
+			return
+		}
+		if result == nil {
+			err = errNilResult
+			return
+		}
+		if result.Status != 0 {
+			err = errBridge(result.ErrorMsg)
+			return
+		}
+		output = result.Output
+		tokensUsed = slice.Handle.CountTokens(output)
+	}()
+	elapsed := time.Since(start).Milliseconds()
+	end(tokensUsed, elapsed, err)
+
+	if err != nil {
+		return nil, err
+	}
+	return &SliceInferResponse{
+		WorkerID:   s.cfg.WorkerID,
+		SliceID:    sliceID,
+		Output:     output,
+		TokensUsed: tokensUsed,
+		LatencyMs:  elapsed,
+	}, nil
+}
+
+// MetricsSnapshot — сериализуемая версия metrics для net/rpc (gob).
+//
+// Gob не умеет кодировать map[string]interface{} (даже с пустым интерфейсом),
+// поэтому используется фиксированная структура с известными типами.
+// HTTP-обработчик /rpc/metrics продолжает возвращать map (более богатая
+// структура), RPC — конкретный тип (gob-совместимый).
+type MetricsSnapshot struct {
+	ActiveRequests int64                  `json:"active_requests"`
+	LoadedSlices   int64                  `json:"loaded_slices"`
+	TotalInfer     int64                  `json:"total_infer"`
+	TotalErrors    int64                  `json:"total_errors"`
+	TotalLoadOK    int64                  `json:"total_load_ok"`
+	TotalLoadErr   int64                  `json:"total_load_err"`
+	AvgLatencyMs   int64                  `json:"avg_latency_ms"`
+	UptimeS        int64                  `json:"uptime_s"`
+	PerModelInfer  map[string]int64       `json:"per_model_infer,omitempty"`
+	PerModelErrors map[string]int64       `json:"per_model_errors,omitempty"`
+}
+
+// MetricsRPC возвращает snapshot метрик в виде конкретной структуры
+// (gob-сериализуемой). HTTP /rpc/metrics продолжает использовать map.
+func (s *WorkerServer) MetricsRPC() MetricsSnapshot {
+	if s.metrics == nil {
+		return MetricsSnapshot{}
+	}
+	snap := s.metrics.Snapshot()
+	out := MetricsSnapshot{
+		LoadedSlices: toInt64(snap["loaded_slices"]),
+		TotalInfer:   toInt64(snap["total_infer"]),
+		TotalErrors:  toInt64(snap["total_errors"]),
+		TotalLoadOK:  toInt64(snap["total_load_ok"]),
+		TotalLoadErr: toInt64(snap["total_load_err"]),
+		AvgLatencyMs: toInt64(snap["avg_latency_ms"]),
+		UptimeS:      toInt64(snap["uptime_s"]),
+	}
+	// active_requests в текущей реализации выставляется отдельно.
+	if ar, ok := snap["active_requests"]; ok {
+		out.ActiveRequests = toInt64(ar)
+	}
+	if pmi, ok := snap["per_model_infer"].(map[string]int64); ok {
+		out.PerModelInfer = pmi
+	}
+	if pme, ok := snap["per_model_errors"].(map[string]int64); ok {
+		out.PerModelErrors = pme
+	}
+	return out
+}
+
+// toInt64 — best-effort конверсия произвольного типа в int64.
+func toInt64(v interface{}) int64 {
+	switch x := v.(type) {
+	case int64:
+		return x
+	case int:
+		return int64(x)
+	case int32:
+		return int64(x)
+	case float64:
+		return int64(x)
+	default:
+		return 0
+	}
+}
+
+// KvStoreSaveRPC — RPC-обёртка над /rpc/kv_sync.
+//
+// encoded — optional base64(key):base64(value) от клиента;
+// если непустой, декодируется в KeyTensor/ValueTensor.
+// Возвращает ошибку при превышении MaxEntries или пустом sessionID.
+func (s *WorkerServer) KvStoreSaveRPC(sessionID string, seqLen int, keyTensor, valueTensor []byte, layers []int, encoded string) error {
+	if sessionID == "" {
+		return errors.New("session_id is required")
+	}
+	shard := &KVShard{
+		SessionID:   sessionID,
+		WorkerID:    s.cfg.WorkerID,
+		SeqLen:      seqLen,
+		KeyTensor:   keyTensor,
+		ValueTensor: valueTensor,
+		Layers:      layers,
+	}
+	if encoded != "" {
+		decoded := DecodeShard(sessionID, s.cfg.WorkerID, seqLen, encoded)
+		shard.KeyTensor = decoded.KeyTensor
+		shard.ValueTensor = decoded.ValueTensor
+	}
+	return s.kvStore.Save(shard)
+}
+
+// KvStoreLoadRPC — RPC-обёртка над /rpc/kv_fetch.
+//
+// Возвращает (shard, nil) если найдено, (nil, errNotFound) если нет.
+func (s *WorkerServer) KvStoreLoadRPC(sessionID string) (*KVShard, error) {
+	if sessionID == "" {
+		return nil, errors.New("session_id is required")
+	}
+	shard := s.kvStore.Load(sessionID)
+	if shard == nil {
+		return nil, errKVShardNotFound
+	}
+	return shard, nil
+}
+
+// errModelNotLoaded — модель не загружена на этом worker'е.
+var errModelNotLoaded = stringError("model not loaded on this worker; call /rpc/load first")
+
+// errSliceNoHandle — у загруженного среза нет bridge handle (не инициализирован).
+var errSliceNoHandle = stringError("loaded slice has no bridge handle")
+
+// errKVShardNotFound — KV-shard для session_id не найден.
+var errKVShardNotFound = stringError("no KV shard for session")

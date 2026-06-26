@@ -24,14 +24,17 @@ import (
 	"context"
 	"flag"
 	"fmt"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
+	"strconv"
 	"syscall"
 	"time"
 
 	"ollama-loadbalancer/internal/rpcworker"
 	"ollama-loadbalancer/pkg/logger"
+	"ollama-loadbalancer/pkg/protocol"
 )
 
 // Version — версия rpcworker (инжектируется через ldflags при сборке).
@@ -46,6 +49,8 @@ func main() {
 	var (
 		flagHost        = flag.String("host", "", "HTTP listen host (RPC_WORKER_HOST)")
 		flagPort        = flag.Int("port", 0, "HTTP listen port (RPC_WORKER_PORT)")
+		flagRPCHost     = flag.String("rpc-host", "", "RPC (net/rpc) listen host (RPC_WORKER_RPC_HOST). Default: same as --host")
+		flagRPCPort     = flag.Int("rpc-port", 0, "RPC (net/rpc) listen port (RPC_WORKER_RPC_PORT). 0 = disabled. Default: HTTP port + 1000 (e.g. 18080→19080)")
 		flagWorkerID    = flag.String("worker-id", "", "Worker ID (RPC_WORKER_ID)")
 		flagLayers      = flag.String("layers", "", "Slice layers, e.g. \"1-40\" (RPC_WORKER_LAYERS)")
 		flagModelsDir   = flag.String("models-dir", "", "Directory with .gguf files (RPC_WORKER_MODELS_DIR)")
@@ -120,6 +125,48 @@ func main() {
 	manager := rpcworker.NewModelManager(cfg)
 	srv := rpcworker.NewWorkerServer(cfg, manager, Version)
 
+	// 2.1 Опциональный RPC (net/rpc) сервер — B5 stub.
+	//
+	// По умолчанию RPC-порт = HTTP-порт + 1000 (18080 → 19080), чтобы оба
+	// могли сосуществовать без конфликта портов. Отключается через
+	// RPC_WORKER_RPC_PORT=0 или --rpc-port=0.
+	rpcHost := *flagRPCHost
+	if rpcHost == "" {
+		rpcHost = os.Getenv("RPC_WORKER_RPC_HOST")
+	}
+	if rpcHost == "" {
+		rpcHost = cfg.Host
+	}
+	rpcPort := *flagRPCPort
+	if rpcPort == 0 {
+		if env := os.Getenv("RPC_WORKER_RPC_PORT"); env != "" {
+			if p, err := strconv.Atoi(env); err == nil && p >= 0 {
+				rpcPort = p
+			}
+		}
+	}
+	if rpcPort == 0 {
+		// default: HTTP port + 1000 (19080 для 18080)
+		rpcPort = cfg.Port + 1000
+	}
+	var rpcListener net.Listener
+	if rpcPort > 0 {
+		svc := protocol.NewWorkerRPCService(srv)
+		ln, _, err := protocol.StartRPCServer(rpcHost, rpcPort, svc)
+		if err != nil {
+			logger.Get().Fatalw("rpc server listen failed", "host", rpcHost, "port", rpcPort, "error", err)
+		}
+		rpcListener = ln
+		logger.Get().Infow("rpc (net/rpc) listening",
+			"protocol", protocol.ProtocolVersion,
+			"host", rpcHost,
+			"port", rpcPort,
+			"worker_id", cfg.WorkerID,
+		)
+	} else {
+		logger.Get().Infow("rpc (net/rpc) disabled (--rpc-port=0)")
+	}
+
 	// 3. Опциональная авто-регистрация в координаторе.
 	if cfg.CoordinatorURL != "" {
 		go runCoordinatorHeartbeat(cfg, manager)
@@ -144,6 +191,10 @@ func main() {
 		}
 	}
 
+	// Закрываем RPC listener первым — иначе in-flight client'ы зависнут.
+	if rpcListener != nil {
+		_ = rpcListener.Close()
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	if err := srv.Shutdown(ctx); err != nil {

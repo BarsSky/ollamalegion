@@ -334,22 +334,34 @@ func TestGetFileTypeFromName(t *testing.T) {
 }
 
 func TestEstimateGPUMemoryForModel(t *testing.T) {
-	mem := cppbackend.EstimateGPUMemoryForModel(10*1024*1024*1024, 20, 40)
+	// 2026-06-26: новая сигнатура EstimateGPUMemoryForModel(sizeBytes, gpuLayers, totalLayers, ctxSize).
+	// ctxSize=4096 (default для теста) → ctxMemoryMB ≈ 1 GB,
+	// gpuMemoryMB (10GB * 0.7 * 20/40 = 3.5 GB) + computeBufferMB (1 GB) = ~5.5 GB.
+	// Допускаем погрешность ±1 GB.
+	mem := cppbackend.EstimateGPUMemoryForModel(10*1024*1024*1024, 20, 40, 4096)
 	if mem == 0 {
 		t.Error("expected non-zero memory estimate")
 	}
-	if mem < 3000 || mem > 5000 {
-		t.Errorf("expected memory around 4096 MB, got %d MB", mem)
+	if mem < 4000 || mem > 6500 {
+		t.Errorf("expected memory around 5500 MB (3.5GB gpu + 1GB kv + 1GB overhead), got %d MB", mem)
 	}
 
-	memAll := cppbackend.EstimateGPUMemoryForModel(10*1024*1024*1024, -1, 40)
+	memAll := cppbackend.EstimateGPUMemoryForModel(10*1024*1024*1024, -1, 40, 4096)
 	if memAll == 0 {
 		t.Error("expected non-zero memory for all layers")
 	}
 
-	memZero := cppbackend.EstimateGPUMemoryForModel(10*1024*1024*1024, 0, 40)
+	memZero := cppbackend.EstimateGPUMemoryForModel(10*1024*1024*1024, 0, 40, 4096)
 	if memZero != 0 {
 		t.Errorf("expected 0 for no GPU layers, got %d", memZero)
+	}
+
+	// Проверяем что ctxSize влияет на оценку: для ctx=32768 должно быть больше,
+	// чем для ctx=4096 (KV-cache ~8x больше).
+	memSmallCtx := cppbackend.EstimateGPUMemoryForModel(10*1024*1024*1024, 20, 40, 4096)
+	memLargeCtx := cppbackend.EstimateGPUMemoryForModel(10*1024*1024*1024, 20, 40, 32768)
+	if memLargeCtx <= memSmallCtx {
+		t.Errorf("ctxSize should affect estimate: 4096=%d vs 32768=%d", memSmallCtx, memLargeCtx)
 	}
 }
 

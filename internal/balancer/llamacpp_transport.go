@@ -167,9 +167,9 @@ func (p *Proxy) proxyRequestLlamaCpp(w http.ResponseWriter, r *http.Request, bac
 			w.WriteHeader(resp.StatusCode)
 			fmt.Fprintf(w, "data: {\"error\":\"upstream returned HTTP %d\",\"choices\":[{\"delta\":{},\"finish_reason\":\"error\"}]}\n\n", resp.StatusCode)
 			fmt.Fprintf(w, "data: [DONE]\n\n")
-			if flusher, ok := w.(http.Flusher); ok {
-				flusher.Flush()
-			}
+			// Flush на error path обязателен — иначе клиент получит FIN до [DONE]
+			// и aiohttp / httpx вернут TransferEncodingError.
+			Flush(w)
 			return nil
 		}
 
@@ -180,9 +180,7 @@ func (p *Proxy) proxyRequestLlamaCpp(w http.ResponseWriter, r *http.Request, bac
 		w.WriteHeader(resp.StatusCode)
 		errNDJSON := buildDoneResponse(originalPath, modelFromCtx, 0)
 		fmt.Fprintf(w, "%s\n", string(errNDJSON))
-		if flusher, ok := w.(http.Flusher); ok {
-			flusher.Flush()
-		}
+		Flush(w)
 		return nil
 	}
 
@@ -235,6 +233,14 @@ func (p *Proxy) proxyRequestLlamaCpp(w http.ResponseWriter, r *http.Request, bac
 			if errFwd != nil {
 				logger.Get().Warnw("proxyRequestLlamaCpp: writeStreamingSSEDone error",
 					"backend", backendID, "error", errFwd)
+			}
+			// writeStreamingSSEDone flush'ит только для SSE→SSE passthrough.
+			// Для /api/chat и /api/generate (NDJSON) делаем явный flush —
+			// иначе на быстрых моделях (Qwen3.6-35B-A3B) финальный done-чанк
+			// может остаться в Go HTTP буфере и клиент получит EOF без последнего чанка.
+			// Видно как TransferEncodingError на стороне aiohttp / httpx.
+			if originalPath != "/v1/chat/completions" {
+				Flush(w)
 			}
 			break
 		}
@@ -417,6 +423,16 @@ func (p *Proxy) proxyRequestLlamaCpp(w http.ResponseWriter, r *http.Request, bac
 			//   - tool_calls были уже обработаны (cross-chunk или delta),
 			//   - или последний чанк от cppworker содержит finish_reason (done:true).
 			// В обоих случаях финальный NDJSON формирует writeStreamingSSEDone.
+			//
+			// ВАЖНО (2026-06-26): НЕ используем `continue` после finish_reason —
+			// cppworker может прислать finish_reason="stop" в середине стрима
+			// (например, при детекции EOS-токена моделью), а потом продолжить
+			// генерировать content. В этом случае `continue` отбрасывает весь
+			// последующий content → OpenWebUI видит обрезанный ответ.
+			//
+			// Вместо этого: если finish_reason уже был, мы только НАКАПЛИВАЕМ
+			// content (для финального done-чанка) и пропускаем отправку текущего чанка
+			// клиенту. cppworker сам закроет TCP после финального [DONE].
 			if contentToolCallsProcessed || len(toolAccum) > 0 || hasFinishReason(data) {
 				continue
 			}

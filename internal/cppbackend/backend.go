@@ -602,12 +602,12 @@ func (b *Backend) CalculateOptimalGPULayers(modelSizeBytes int64, totalLayers, n
 	}
 
 	// Оцениваем VRAM для полной загрузки всех слоёв на GPU
-	vramForFullGPU := EstimateGPUMemoryForModel(modelSizeBytes, totalLayers, totalLayers)
+	vramForFullGPU := EstimateGPUMemoryForModel(modelSizeBytes, totalLayers, totalLayers, requestedCtxSize)
 	vramForFullGPU += kvCacheMB
 	diag2.VRAMRequiredForFullGPU = vramForFullGPU
 
 	// Если желаемые GPU-слои влезают в VRAM — используем их как есть
-	vramForWanted := EstimateGPUMemoryForModel(modelSizeBytes, wantedGPULayers, totalLayers)
+	vramForWanted := EstimateGPUMemoryForModel(modelSizeBytes, wantedGPULayers, totalLayers, requestedCtxSize)
 	vramForWanted += kvCacheMB
 
 	if vramForWanted <= totalFreeVRAM {
@@ -627,7 +627,7 @@ func (b *Backend) CalculateOptimalGPULayers(modelSizeBytes int64, totalLayers, n
 	bestLayers := 0
 	for lo <= hi {
 		mid := (lo + hi) / 2
-		needed := EstimateGPUMemoryForModel(modelSizeBytes, mid, totalLayers)
+		needed := EstimateGPUMemoryForModel(modelSizeBytes, mid, totalLayers, requestedCtxSize)
 		needed += kvCacheMB
 		if needed <= totalFreeVRAM {
 			bestLayers = mid
@@ -643,7 +643,7 @@ func (b *Backend) CalculateOptimalGPULayers(modelSizeBytes int64, totalLayers, n
 	cpuMemoryMB := uint64(modelSizeMB*0.7*float64(cpuLayers)/float64(totalLayers) + float64(kvCacheMB)*0.5)
 
 	diag2.OptimalGPULayers = bestLayers
-	diag2.VRAMRequiredForOptimal = EstimateGPUMemoryForModel(modelSizeBytes, bestLayers, totalLayers) + kvCacheMB
+	diag2.VRAMRequiredForOptimal = EstimateGPUMemoryForModel(modelSizeBytes, bestLayers, totalLayers, requestedCtxSize) + kvCacheMB
 	diag2.RAMRequiredForRemaining = cpuMemoryMB
 
 	if cpuMemoryMB < totalRAM*8/10 { // используем до 80% RAM
@@ -772,6 +772,26 @@ func (b *Backend) checkVRAMForModel(name string, path string, opts LoadModelOpts
 		fi.Size(), totalLayers, nHeads, nKvHeads, nEmbd,
 		opts.GPULayers, opts.ContextSize,
 	)
+
+	// 2026-06-26 BUGFIX: для больших моделей (model_size > 70% VRAM) принудительно
+	// включаем useMmap=true. Без mmap все 20 GB весов модели форсируются в VRAM,
+	// что приводит к OOM на partial offload. С mmap не-вмещающиеся слои остаются
+	// в RAM через page-cache и не занимают VRAM.
+	totalVRAMMB := uint64(0)
+	b.mu.RLock()
+	for _, dev := range b.gpuDevices {
+		totalVRAMMB += uint64(dev.VRAMFreeMB)
+	}
+	b.mu.RUnlock()
+	modelSizeMB := fi.Size() / (1024 * 1024)
+	if totalVRAMMB > 0 && uint64(modelSizeMB)*100 > totalVRAMMB*70 && !opts.UseMmap {
+		logger.Get().Infow("forcing useMmap=true for large model",
+			"model", name,
+			"modelSizeMB", modelSizeMB,
+			"vramFreeMB", totalVRAMMB,
+			"reason", "model > 70% of available VRAM")
+		opts.UseMmap = true
+	}
 
 	if diagnostics != nil && diagnostics.Recomendation != "" {
 		logger.Get().Errorw("cannot load model - insufficient memory",

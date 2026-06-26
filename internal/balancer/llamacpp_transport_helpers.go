@@ -135,6 +135,11 @@ func writeStreamingSSEDone(
 	if originalPath == "/v1/chat/completions" {
 		// SSE→SSE passthrough — просто завершаем [DONE]
 		_, err := fmt.Fprintf(w, "data: [DONE]\n\n")
+		// ВАЖНО: на быстрых моделях (Qwen3.6-35B-A3B, Llama-3.1-70B) финальный
+		// [DONE] может остаться в Go HTTP буфере и не дойти до клиента до закрытия
+		// TCP-сокета. Без flush клиент (aiohttp, httpx) парсит chunked-encoding
+		// с ошибкой: TransferEncodingError: Not enough data to satisfy transfer length header.
+		Flush(w)
 		return err
 	}
 

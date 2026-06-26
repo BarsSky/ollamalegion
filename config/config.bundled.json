@@ -109,6 +109,14 @@
                                                    "useMmap":  true
                                                },
                             "profiles":  {
+                                                "Qwen3.6-35B-A3B-Uncensored-HauhauCS-Aggressive-Q4_K_M":  {
+                                                                 "_note":  "2026-06-26: 35B MoE, ~18-20GB Q4_K_M. На 8GB VRAM обязателен numGpuLayers=-2 (auto offload) — иначе partial offload генерирует мусор или NaN, которые cppworker интерпретирует как stop-токен и закрывает стрим на середине. На 20GB VRAM можно numGpuLayers=20. Per-model профиль критичен для стабильной работы — defaultModelProfile.numGpuLayers=30 не подходит для этой модели.",
+                                                                 "numCtx":  32768,
+                                                                "batchSize":  256,
+                                                                "numGpuLayers":  -2,
+                                                                "flashAttention":  true,
+                                                                "useMmap":  true
+                                                             },
                                                 "gemma-4":  {
                                                                 "_note":  "2026-06-25: numCtx снижен 131072 → 32768 для стабильной работы на 8GB VRAM. При 131072 cppworker зависал в KV-cache allocation (deadlock) — для gemma-4-E4B-it (n_embd=2560, 42 layers, FP16 KV) нужно ~13GB под KV-cache, что не влезает в 8GB VRAM даже с mmap в RAM. 32768 — помещается с auto_offload + partial GPU offload (gemma-4 numCtx=32768, gpuLayers=-2/AUTO, flash_attn=1, mmap=true). При необходимости большего контекста Cline должен задать меньший n_ctx в body или использовать ollama-native (без этого профиля).",
                                                                 "numCtx":  32768,

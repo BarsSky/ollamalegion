@@ -72,6 +72,10 @@ func (s *WorkerServer) routes() {
 	s.mux.HandleFunc("/rpc/metrics", s.handleMetrics)
 	s.mux.HandleFunc("/rpc/kv_sync", s.handleKvSync)
 	s.mux.HandleFunc("/rpc/kv_fetch", s.handleKvFetch)
+	// B8: TP (tensor parallelism) endpoints.
+	s.mux.HandleFunc("/rpc/tp/infer", s.handleTPInfer)
+	s.mux.HandleFunc("/rpc/tp/kv_sync", s.handleTPKvSync)
+	s.mux.HandleFunc("/rpc/tp/kv_fetch", s.handleTPKvFetch)
 }
 
 // middleware — оборачивает хендлеры: recover, auth, logging.

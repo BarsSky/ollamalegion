@@ -252,3 +252,147 @@ func IsKVStoreFullError(err error) bool {
 	_, ok := err.(kvStoreFullError)
 	return ok
 }
+
+// =====================================================================
+// B8 — TP (tensor parallelism) rank-keyed KV-shards
+// =====================================================================
+//
+// В B8 (tensor parallelism) каждый worker (rank) обслуживает только
+// свой шард матриц, и KV-cache для сессии тоже делится по rank'ам.
+// KVStore.SaveShard/LoadShard используют составной ключ (sessionID, rank),
+// чтобы partial KV-shard одного rank'а не перетирал partial KV-shard
+// другого.
+//
+// API обратно совместимо с /rpc/kv_sync и /rpc/kv_fetch — последние
+// используют Save/Load без rank, и для backward-compat это key="".
+// Новые /rpc/tp/kv_sync и /rpc/tp/kv_fetch используют SaveShard/LoadShard
+// с явным rank в URL (?rank=N).
+
+// shardKey — составной ключ (sessionID, rank) для TP shards.
+func shardKey(sessionID string, rank int) string {
+	return sessionID + "|" + itoaRank(rank)
+}
+
+// itoaRank — простая конверсия rank в строку без strconv (избегаем
+// дополнительных allocation в hot path KVStore.SaveShard).
+func itoaRank(rank int) string {
+	if rank == 0 {
+		return "0"
+	}
+	neg := rank < 0
+	if neg {
+		rank = -rank
+	}
+	var buf [20]byte
+	i := len(buf)
+	for rank > 0 {
+		i--
+		buf[i] = byte('0' + rank%10)
+		rank /= 10
+	}
+	if neg {
+		i--
+		buf[i] = '-'
+	}
+	return string(buf[i:])
+}
+
+// SaveShard сохраняет TP KV-shard для конкретного rank'а сессии.
+//
+// Внутри использует тот же bounded map, что и Save — но с ключом
+// (sessionID, rank). TTL и capacity — общие (KVStoreConfig).
+//
+// B8 stub: opaque bytes через base64 в JSON (см. EncodeShard/DecodeShard).
+// В production с реальным llama.cpp — сериализация ggml cache через
+// bincode или safetensors.
+func (k *KVStore) SaveShard(sessionID string, rank int, shard []byte) error {
+	if sessionID == "" {
+		return nil
+	}
+	key := shardKey(sessionID, rank)
+	entry := &KVShard{
+		SessionID:   sessionID,
+		WorkerID:    k.workerID,
+		SeqLen:      -1, // для TP shards не отслеживаем seqLen (per-rank)
+		KeyTensor:   shard,
+		ValueTensor: nil,
+		Layers:      []int{rank}, // rank для отладки
+	}
+	now := time.Now()
+	entry.CreatedAt = now
+	entry.LastAccess = now
+
+	k.mu.Lock()
+	defer k.mu.Unlock()
+
+	if _, exists := k.shards[key]; !exists {
+		if len(k.shards) >= k.cfg.MaxEntries {
+			return errKVStoreFull
+		}
+		k.stats.Stores++
+	}
+	k.shards[key] = entry
+	k.stats.Saves++
+	return nil
+}
+
+// LoadShard возвращает TP KV-shard для конкретного rank'а сессии.
+//
+// nil → не найдено (или TTL истёк, или ещё не сохранён).
+func (k *KVStore) LoadShard(sessionID string, rank int) []byte {
+	if sessionID == "" {
+		k.stats.Misses++
+		return nil
+	}
+	key := shardKey(sessionID, rank)
+	k.mu.Lock()
+	defer k.mu.Unlock()
+	entry, ok := k.shards[key]
+	if !ok {
+		k.stats.Misses++
+		return nil
+	}
+	entry.LastAccess = time.Now()
+	k.stats.Loads++
+	return entry.KeyTensor
+}
+
+// DeleteShard удаляет TP KV-shard для конкретного rank'а.
+//
+// Используется при полной очистке сессии (DELETE /rpc/tp/kv_sync?rank=N)
+// или по TTL через Sweep (общий для всех shards).
+func (k *KVStore) DeleteShard(sessionID string, rank int) bool {
+	if sessionID == "" {
+		return false
+	}
+	key := shardKey(sessionID, rank)
+	k.mu.Lock()
+	defer k.mu.Unlock()
+	if _, ok := k.shards[key]; ok {
+		delete(k.shards, key)
+		k.stats.Stores--
+		return true
+	}
+	return false
+}
+
+// CountShardsForSession — число сохранённых TP shards для сессии.
+//
+// Используется в /api/v1/rpc/tp/status для диагностики: если сессия
+// имеет shards для всех ranks — TP inference работает корректно.
+// Если < worldSize — degraded mode или сессия не использовалась.
+func (k *KVStore) CountShardsForSession(sessionID string) int {
+	if sessionID == "" {
+		return 0
+	}
+	prefix := sessionID + "|"
+	k.mu.RLock()
+	defer k.mu.RUnlock()
+	count := 0
+	for key := range k.shards {
+		if len(key) > len(prefix) && key[:len(prefix)] == prefix {
+			count++
+		}
+	}
+	return count
+}

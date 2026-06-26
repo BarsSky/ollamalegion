@@ -22,6 +22,7 @@ type WorkerServer struct {
 	cfg       WorkerConfig
 	manager   *ModelManager
 	metrics   *Metrics
+	kvStore   *KVStore // B4: in-memory KV-cache
 	mux       *http.ServeMux
 	server    *http.Server
 
@@ -45,6 +46,7 @@ func NewWorkerServer(cfg WorkerConfig, manager *ModelManager, version string) *W
 		cfg:        cfg,
 		manager:    manager,
 		metrics:    NewMetrics(),
+		kvStore:    NewKVStore(cfg.WorkerID, DefaultKVStoreConfig()),
 		version:    version,
 		shutdownCh: make(chan struct{}),
 	}
@@ -152,6 +154,11 @@ func (s *WorkerServer) MiddlewareHandler() http.Handler {
 // Metrics возвращает metrics (для тестов).
 func (s *WorkerServer) Metrics() *Metrics {
 	return s.metrics
+}
+
+// KVStore возвращает KV-store (для тестов).
+func (s *WorkerServer) KVStore() *KVStore {
+	return s.kvStore
 }
 
 // startedAt возвращает время старта сервера.

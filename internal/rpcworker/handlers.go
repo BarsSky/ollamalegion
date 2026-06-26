@@ -10,46 +10,6 @@ import (
 )
 
 // =====================================================================
-// Types
-// =====================================================================
-
-// SliceInferRequestExt — расширенная версия с поддержкой rpccoordinator-формата
-// (input RawMessage вместо prompt string). WorkerClient шлёт JSON с полем input,
-// а rpcworker ожидает prompt — поэтому handler читает оба варианта.
-//
-// Тесты на worker-овский API шлют prompt, тесты через WorkerClient — input.
-type SliceInferRequestExt struct {
-	ModelName   string            `json:"model_name"`
-	Prompt      string            `json:"prompt"`
-	Input       json.RawMessage   `json:"input"`
-	SliceID     string            `json:"slice_id"`
-	Direction   string            `json:"direction,omitempty"`
-	Tokens      int               `json:"tokens,omitempty"`
-	Temperature float32           `json:"temperature,omitempty"`
-	Params      map[string]string `json:"params,omitempty"`
-	SessionID   string            `json:"session_id,omitempty"`
-	Stream      bool              `json:"stream,omitempty"`
-}
-
-// SliceInferResponse — ответ inference среза.
-type SliceInferResponse struct {
-	WorkerID   string `json:"worker_id"`
-	SliceID    string `json:"slice_id"`
-	Output     string `json:"output,omitempty"`
-	TokensUsed int    `json:"tokens_used"`
-	LatencyMs  int64  `json:"latency_ms"`
-	Error      string `json:"error,omitempty"`
-}
-
-// KVCacheShard — структура шарда KV-cache (B1 stub, B4 full).
-type KVCacheShard struct {
-	SeqLen   int    `json:"seq_len"`
-	KeyData  []byte `json:"key_data,omitempty"`
-	ValData  []byte `json:"val_data,omitempty"`
-	WorkerID string `json:"worker_id"`
-}
-
-// =====================================================================
 // /rpc/health
 // =====================================================================
 
@@ -194,6 +154,9 @@ func (s *WorkerServer) handleUnload(w http.ResponseWriter, r *http.Request) {
 // Поддерживает оба формата:
 //   - rpcworker-стиль: { "model_name": "...", "prompt": "..." }
 //   - rpccoordinator-стиль (WorkerClient): { "model_name": "...", "input": "..." }
+//
+// Если query `stream=true` (B4) — стримит SSE (text/event-stream).
+// Иначе возвращает обычный JSON.
 func (s *WorkerServer) handleInfer(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		writeJSONError(w, http.StatusMethodNotAllowed, "method_not_allowed", "POST required")
@@ -250,6 +213,12 @@ func (s *WorkerServer) handleInfer(w http.ResponseWriter, r *http.Request) {
 		sliceID = slice.Layers
 	}
 
+	// B4: SSE streaming, если `stream=true`.
+	if r.URL.Query().Get("stream") == "true" {
+		s.handleInferStream(w, r, slice.Handle, sliceID, req.ModelName, req.Prompt, params)
+		return
+	}
+
 	end := s.metrics.OnInferStart(req.ModelName)
 	start := time.Now()
 
@@ -297,36 +266,229 @@ func (s *WorkerServer) handleInfer(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// handleInferStream — B4: SSE-streаming inference.
+//
+// Content-Type: text/event-stream. Каждый токен (или чанк) — отдельный
+// SSE event с полем `data: {"token": "..."}`. Финальный event — `done: true`.
+//
+// На stub-режиме стримит default stub tokens (см. bridge_stub.go).
+func (s *WorkerServer) handleInferStream(
+	w http.ResponseWriter,
+	r *http.Request,
+	handle *bridge.ModelHandle,
+	sliceID, modelName, prompt string,
+	params bridge.GenerationParams,
+) {
+	flusher, ok := w.(http.Flusher)
+	if !ok {
+		writeJSONError(w, http.StatusInternalServerError, "streaming_unsupported",
+			"ResponseWriter doesn't support Flusher")
+		return
+	}
+
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("Connection", "keep-alive")
+	w.Header().Set("X-Accel-Buffering", "no")
+
+	end := s.metrics.OnInferStart(modelName)
+	start := time.Now()
+	tokensSent := 0
+
+	// SSE event helper.
+	send := func(eventType string, payload interface{}) bool {
+		data, err := json.Marshal(payload)
+		if err != nil {
+			return false
+		}
+		if _, err := w.Write([]byte("event: " + eventType + "\n")); err != nil {
+			return false
+		}
+		if _, err := w.Write([]byte("data: ")); err != nil {
+			return false
+		}
+		if _, err := w.Write(data); err != nil {
+			return false
+		}
+		if _, err := w.Write([]byte("\n\n")); err != nil {
+			return false
+		}
+		flusher.Flush()
+		return true
+	}
+
+	// Header event.
+	if !send("start", map[string]interface{}{
+		"worker_id": s.cfg.WorkerID,
+		"slice_id":  sliceID,
+		"model":     modelName,
+	}) {
+		return // client disconnected
+	}
+
+	// В stub-режиме мы не получаем настоящие токены — InferStream возвращает
+	// chunked output. Симулируем streaming через Infer (получаем output
+	// одним вызовом), затем шлём output чанками.
+	result, err := handle.Infer(prompt, params)
+	if err != nil || result == nil {
+		send("error", map[string]string{"error": "inference_failed", "message": "stub inference failed"})
+		end(0, time.Since(start).Milliseconds(), assertErrStub{})
+		return
+	}
+
+	// Чанкуем output (по 8 байт) и стримим.
+	chunkSize := 8
+	output := result.Output
+	for i := 0; i < len(output); i += chunkSize {
+		end := i + chunkSize
+		if end > len(output) {
+			end = len(output)
+		}
+		token := output[i:end]
+		if !send("token", map[string]interface{}{
+			"token":      token,
+			"token_index": tokensSent,
+		}) {
+			return // client disconnected
+		}
+		tokensSent++
+	}
+
+	elapsed := time.Since(start).Milliseconds()
+	end(tokensSent, elapsed, nil)
+	_ = end
+
+	// Final event.
+	send("done", map[string]interface{}{
+		"worker_id":  s.cfg.WorkerID,
+		"slice_id":   sliceID,
+		"tokens":     tokensSent,
+		"latency_ms": elapsed,
+		"status":     "completed",
+	})
+}
+
 // =====================================================================
-// /rpc/kv_sync, /rpc/kv_fetch
+// /rpc/kv_sync, /rpc/kv_fetch — B4: реальная реализация KV-cache.
 // =====================================================================
 
-// handleKvSync — POST /rpc/kv_sync. B1: 501 not_implemented (stub для B4).
+// kvSyncRequest — POST /rpc/kv_sync body.
+//
+// Координатор шлёт shard, worker сохраняет в in-memory KVStore.
+type kvSyncRequest struct {
+	SessionID   string `json:"session_id"`
+	SeqLen      int    `json:"seq_len"`
+	KeyTensor   []byte `json:"key_tensor,omitempty"`
+	ValueTensor []byte `json:"value_tensor,omitempty"`
+	Layers      []int  `json:"layers,omitempty"`
+	Encoded     string `json:"encoded,omitempty"` // base64-encoded key:value
+}
+
+// handleKvSync — POST /rpc/kv_sync. Сохраняет KV-shard.
 func (s *WorkerServer) handleKvSync(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		writeJSONError(w, http.StatusMethodNotAllowed, "method_not_allowed", "POST required")
 		return
 	}
-	writeJSON(w, http.StatusNotImplemented, map[string]interface{}{
-		"error":   "not_implemented",
-		"message": "kv_sync endpoint is a stub in B1; full implementation scheduled for B4 (Streaming Pipeline)",
-		"phase":   "B1",
-		"next":    "B4",
+	var req kvSyncRequest
+	if err := readJSON(r, &req); err != nil {
+		writeJSONError(w, http.StatusBadRequest, "bad_request", "invalid JSON: "+err.Error())
+		return
+	}
+	if req.SessionID == "" {
+		writeJSONError(w, http.StatusBadRequest, "missing_field", "session_id is required")
+		return
+	}
+
+	shard := &KVShard{
+		SessionID:   req.SessionID,
+		WorkerID:    s.cfg.WorkerID,
+		SeqLen:      req.SeqLen,
+		KeyTensor:   req.KeyTensor,
+		ValueTensor: req.ValueTensor,
+		Layers:      req.Layers,
+	}
+	if req.Encoded != "" {
+		decoded := DecodeShard(req.SessionID, s.cfg.WorkerID, req.SeqLen, req.Encoded)
+		shard.KeyTensor = decoded.KeyTensor
+		shard.ValueTensor = decoded.ValueTensor
+	}
+
+	if err := s.kvStore.Save(shard); err != nil {
+		if IsKVStoreFullError(err) {
+			writeJSONError(w, http.StatusInsufficientStorage, "kv_full",
+				"kv_store max entries reached")
+			return
+		}
+		writeJSONError(w, http.StatusInternalServerError, "save_failed", err.Error())
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]interface{}{
+		"status":     "saved",
+		"session_id": shard.SessionID,
+		"seq_len":    shard.SeqLen,
+		"worker_id":  shard.WorkerID,
 	})
 }
 
-// handleKvFetch — GET /rpc/kv_fetch?seq_len=N. B1: 501 not_implemented.
+// handleKvFetch — GET /rpc/kv_fetch?session_id=X.
 func (s *WorkerServer) handleKvFetch(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		writeJSONError(w, http.StatusMethodNotAllowed, "method_not_allowed", "GET required")
 		return
 	}
-	writeJSON(w, http.StatusNotImplemented, map[string]interface{}{
-		"error":   "not_implemented",
-		"message": "kv_fetch endpoint is a stub in B1; full implementation scheduled for B4 (Streaming Pipeline)",
-		"phase":   "B1",
-		"next":    "B4",
+	sessionID := r.URL.Query().Get("session_id")
+	if sessionID == "" {
+		writeJSONError(w, http.StatusBadRequest, "missing_field", "session_id query param required")
+		return
+	}
+
+	shard := s.kvStore.Load(sessionID)
+	if shard == nil {
+		writeJSONError(w, http.StatusNotFound, "not_found",
+			"no KV shard for session: "+sessionID)
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]interface{}{
+		"session_id":  shard.SessionID,
+		"worker_id":   shard.WorkerID,
+		"seq_len":     shard.SeqLen,
+		"layers":      shard.Layers,
+		"encoded":     EncodeShard(shard),
+		"created_at":  shard.CreatedAt.Format(time.RFC3339Nano),
+		"last_access": shard.LastAccess.Format(time.RFC3339Nano),
 	})
+}
+
+// =====================================================================
+// Types
+// =====================================================================
+
+// SliceInferRequestExt — расширенная версия с поддержкой rpccoordinator-формата
+// (input RawMessage вместо prompt string).
+type SliceInferRequestExt struct {
+	ModelName   string            `json:"model_name"`
+	Prompt      string            `json:"prompt"`
+	Input       json.RawMessage   `json:"input"`
+	SliceID     string            `json:"slice_id"`
+	Direction   string            `json:"direction,omitempty"`
+	Tokens      int               `json:"tokens,omitempty"`
+	Temperature float32           `json:"temperature,omitempty"`
+	Params      map[string]string `json:"params,omitempty"`
+	SessionID   string            `json:"session_id,omitempty"`
+	Stream      bool              `json:"stream,omitempty"`
+}
+
+// SliceInferResponse — ответ inference среза.
+type SliceInferResponse struct {
+	WorkerID   string `json:"worker_id"`
+	SliceID    string `json:"slice_id"`
+	Output     string `json:"output,omitempty"`
+	TokensUsed int    `json:"tokens_used"`
+	LatencyMs  int64  `json:"latency_ms"`
+	Error      string `json:"error,omitempty"`
 }
 
 // =====================================================================
@@ -384,3 +546,8 @@ func errBridge(msg string) error {
 	}
 	return stringError(msg)
 }
+
+// assertErrStub — sentinel для stub-streaming error path.
+type assertErrStub struct{}
+
+func (assertErrStub) Error() string { return "stub inference error" }

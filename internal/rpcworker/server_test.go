@@ -302,26 +302,166 @@ func TestHandleMetrics_AfterInfer(t *testing.T) {
 }
 
 // =====================================================================
-// /rpc/kv_sync, /rpc/kv_fetch — B1 stub
+// /rpc/kv_sync, /rpc/kv_fetch — B4: реальная реализация KV-cache.
 // =====================================================================
 
-func TestHandleKvSync_NotImplemented(t *testing.T) {
+func TestHandleKvSync_MissingSessionID(t *testing.T) {
 	srv := newTestServer(t)
+	// Пустой body без session_id -> 400 missing_field.
 	req := httptest.NewRequest(http.MethodPost, "/rpc/kv_sync", strings.NewReader("{}"))
 	w := httptest.NewRecorder()
 	srv.mux.ServeHTTP(w, req)
-	if w.Code != http.StatusNotImplemented {
-		t.Errorf("expected 501, got %d", w.Code)
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("expected 400, got %d: %s", w.Code, w.Body.String())
 	}
 }
 
-func TestHandleKvFetch_NotImplemented(t *testing.T) {
+func TestHandleKvSync_MethodNotAllowed(t *testing.T) {
+	srv := newTestServer(t)
+	req := httptest.NewRequest(http.MethodGet, "/rpc/kv_sync", nil)
+	w := httptest.NewRecorder()
+	srv.mux.ServeHTTP(w, req)
+	if w.Code != http.StatusMethodNotAllowed {
+		t.Errorf("expected 405, got %d", w.Code)
+	}
+}
+
+func TestHandleKvSync_Success(t *testing.T) {
+	srv := newTestServer(t)
+	body := `{"session_id":"s1","seq_len":42,"encoded":"aGVsbG86d29ybGQ="}`
+	req := httptest.NewRequest(http.MethodPost, "/rpc/kv_sync", strings.NewReader(body))
+	w := httptest.NewRecorder()
+	srv.mux.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	var resp map[string]interface{}
+	_ = json.Unmarshal(w.Body.Bytes(), &resp)
+	if resp["status"] != "saved" {
+		t.Errorf("expected status=saved, got %v", resp["status"])
+	}
+	if resp["session_id"] != "s1" {
+		t.Errorf("expected session_id=s1, got %v", resp["session_id"])
+	}
+}
+
+func TestHandleKvFetch_MissingSessionID(t *testing.T) {
 	srv := newTestServer(t)
 	req := httptest.NewRequest(http.MethodGet, "/rpc/kv_fetch", nil)
 	w := httptest.NewRecorder()
 	srv.mux.ServeHTTP(w, req)
-	if w.Code != http.StatusNotImplemented {
-		t.Errorf("expected 501, got %d", w.Code)
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("expected 400, got %d", w.Code)
+	}
+}
+
+func TestHandleKvFetch_NotFound(t *testing.T) {
+	srv := newTestServer(t)
+	req := httptest.NewRequest(http.MethodGet, "/rpc/kv_fetch?session_id=missing", nil)
+	w := httptest.NewRecorder()
+	srv.mux.ServeHTTP(w, req)
+	if w.Code != http.StatusNotFound {
+		t.Errorf("expected 404, got %d", w.Code)
+	}
+}
+
+func TestHandleKvFetch_MethodNotAllowed(t *testing.T) {
+	srv := newTestServer(t)
+	req := httptest.NewRequest(http.MethodPost, "/rpc/kv_fetch?session_id=x", strings.NewReader("{}"))
+	w := httptest.NewRecorder()
+	srv.mux.ServeHTTP(w, req)
+	if w.Code != http.StatusMethodNotAllowed {
+		t.Errorf("expected 405, got %d", w.Code)
+	}
+}
+
+// =====================================================================
+// KVStore (in-memory) — прямые юнит-тесты.
+// =====================================================================
+
+func TestKVStore_SaveLoadDelete(t *testing.T) {
+	srv := newTestServer(t)
+	kv := srv.KVStore()
+
+	// Save.
+	err := kv.Save(&KVShard{SessionID: "alpha", WorkerID: "w1", SeqLen: 10})
+	if err != nil {
+		t.Fatalf("Save alpha: %v", err)
+	}
+	err = kv.Save(&KVShard{SessionID: "beta", WorkerID: "w1", SeqLen: 20})
+	if err != nil {
+		t.Fatalf("Save beta: %v", err)
+	}
+
+	// Load.
+	got := kv.Load("alpha")
+	if got == nil || got.SeqLen != 10 {
+		t.Errorf("Load alpha: got %+v", got)
+	}
+	got = kv.Load("beta")
+	if got == nil || got.SeqLen != 20 {
+		t.Errorf("Load beta: got %+v", got)
+	}
+
+	// Miss.
+	if kv.Load("nope") != nil {
+		t.Error("expected nil for missing session")
+	}
+
+	// Delete.
+	if !kv.Delete("alpha") {
+		t.Error("expected Delete to return true")
+	}
+	if kv.Load("alpha") != nil {
+		t.Error("expected alpha to be gone")
+	}
+
+	// Stats: 2 saves, 2 loads, 2 misses (Load(alpha) miss after delete + Load(nope)).
+	stats := kv.Stats()
+	if stats.Saves < 2 {
+		t.Errorf("expected Saves>=2, got %d", stats.Saves)
+	}
+}
+
+func TestKVStore_OverwriteAndCapacity(t *testing.T) {
+	cfg := KVStoreConfig{MaxEntries: 2, TTL: 1 * time.Hour, SweepInterval: time.Hour}
+	kv := NewKVStore("test-worker", cfg)
+
+	// Первые 2 сохраняются.
+	if err := kv.Save(&KVShard{SessionID: "a"}); err != nil {
+		t.Fatalf("Save a: %v", err)
+	}
+	if err := kv.Save(&KVShard{SessionID: "b"}); err != nil {
+		t.Fatalf("Save b: %v", err)
+	}
+	// Третий должен fail с kv_full.
+	err := kv.Save(&KVShard{SessionID: "c"})
+	if !IsKVStoreFullError(err) {
+		t.Errorf("expected IsKVStoreFullError, got %v", err)
+	}
+
+	// Overwrite существующего — не считается за новый.
+	if err := kv.Save(&KVShard{SessionID: "a", SeqLen: 99}); err != nil {
+		t.Fatalf("Save a (overwrite): %v", err)
+	}
+	if kv.Load("a").SeqLen != 99 {
+		t.Error("expected overwritten SeqLen=99")
+	}
+}
+
+func TestKVStore_SweepTTL(t *testing.T) {
+	cfg := KVStoreConfig{MaxEntries: 10, TTL: 10 * time.Millisecond, SweepInterval: time.Hour}
+	kv := NewKVStore("test-worker", cfg)
+
+	_ = kv.Save(&KVShard{SessionID: "stale"})
+	time.Sleep(20 * time.Millisecond)
+
+	evicted := kv.Sweep()
+	if evicted != 1 {
+		t.Errorf("expected 1 evicted, got %d", evicted)
+	}
+	if kv.Load("stale") != nil {
+		t.Error("expected stale shard to be evicted")
 	}
 }
 

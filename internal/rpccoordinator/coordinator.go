@@ -26,6 +26,11 @@ type ModelCoordinator struct {
 	activeJobs map[string]*InferenceJob       // jobID → активная задача
 	httpClient *http.Client
 	enabled    bool
+
+	// selector — B6: стратегия load balancing (LeastLoadedSelector default).
+	// Используется executePipeline для выбора worker'а при наличии
+	// нескольких кандидатов и failover при ошибке primary.
+	selector Selector
 }
 
 // DistributedModel описывает модель, распределённую по worker'ам.
@@ -38,10 +43,43 @@ type DistributedModel struct {
 }
 
 // LayerSlice описывает диапазон слоёв на конкретном worker'е.
+//
+// WorkerID — primary worker (для обратной совместимости).
+// WorkerCandidates — все worker'ы, которые могут обслуживать этот срез.
+// Если пусто — используется только [WorkerID]. Если непусто — selector
+// выбирает ordered список с primary первым.
 type LayerSlice struct {
 	StartLayer int
 	EndLayer   int
 	WorkerID   string
+	WorkerCandidates []string // B6: optional failover candidates
+}
+
+// Candidates возвращает полный список worker'ов-кандидатов для среза.
+//
+// Если WorkerCandidates пусто — возвращает [WorkerID].
+func (s *LayerSlice) Candidates() []string {
+	if len(s.WorkerCandidates) == 0 {
+		if s.WorkerID == "" {
+			return nil
+		}
+		return []string{s.WorkerID}
+	}
+	// Если WorkerID не в списке — добавляем.
+	found := false
+	for _, id := range s.WorkerCandidates {
+		if id == s.WorkerID {
+			found = true
+			break
+		}
+	}
+	if !found && s.WorkerID != "" {
+		out := make([]string, 0, len(s.WorkerCandidates)+1)
+		out = append(out, s.WorkerID)
+		out = append(out, s.WorkerCandidates...)
+		return out
+	}
+	return s.WorkerCandidates
 }
 
 // InferenceJob — контекст одной inference-задачи.
@@ -373,65 +411,95 @@ func (c *ModelCoordinator) executePipeline(job *InferenceJob, dm *DistributedMod
 	currentInput := []byte(req.Prompt)
 
 	for _, slice := range sortedSlices {
-		worker := c.GetWorker(slice.WorkerID)
-		if worker == nil {
-			return nil, fmt.Errorf("worker %s not found for slice %d-%d", slice.WorkerID, slice.StartLayer, slice.EndLayer)
+		// B6: получаем ordered список кандидатов через selector (с учётом load + failover).
+		// Если WorkerCandidates пустой — selector вернёт [WorkerID].
+		candidates, selErr := c.SelectWorkersForSlice(slice.Candidates())
+		if selErr != nil {
+			return nil, fmt.Errorf("selector for slice %d-%d: %w",
+				slice.StartLayer, slice.EndLayer, selErr)
 		}
 
-		sliceReq := SliceInferRequest{
-			ModelName:    req.ModelName,
-			StartLayer:   slice.StartLayer,
-			EndLayer:     slice.EndLayer,
-			Input:        currentInput,
-			SessionID:    req.SessionID,
-			Params:       req.Params,
-		}
+		// Пробуем кандидатов по очереди (failover).
+		var (
+			result   []byte
+			err      error
+			chosen   string
+			latency  time.Duration
+		)
+		for _, workerID := range candidates {
+			worker := c.GetWorker(workerID)
+			if worker == nil {
+				logger.Get().Warnw("candidate worker not found, trying next",
+					"worker", workerID, "slice", fmt.Sprintf("%d-%d", slice.StartLayer, slice.EndLayer))
+				continue
+			}
 
-		sliceStart := time.Now()
-		result, err := worker.InferSlice(job.ctx, sliceReq)
-		latency := time.Since(sliceStart)
+			sliceReq := SliceInferRequest{
+				ModelName:    req.ModelName,
+				StartLayer:   slice.StartLayer,
+				EndLayer:     slice.EndLayer,
+				Input:        currentInput,
+				SessionID:    req.SessionID,
+				Params:       req.Params,
+			}
 
-		job.mu.Lock()
-		job.SliceResults[slice.WorkerID] = &SliceResult{
-			WorkerID:   slice.WorkerID,
-			StartLayer: slice.StartLayer,
-			EndLayer:   slice.EndLayer,
-			Latency:    latency,
-			Output:     result,
-			Error:      err,
-		}
-		if err != nil {
-			job.Errors = append(job.Errors, err)
-		}
-		job.mu.Unlock()
+			sliceStart := time.Now()
+			result, err = worker.InferSlice(job.ctx, sliceReq)
+			latency = time.Since(sliceStart)
+			chosen = workerID
 
-		if err != nil {
-			// Retry logic
-			if c.config.MaxRetries > 0 {
+			// Retry logic на том же worker'е (если есть MaxRetries).
+			if err != nil && c.config.MaxRetries > 0 {
 				for attempt := 1; attempt <= c.config.MaxRetries; attempt++ {
 					logger.Get().Warnw("slice infer failed, retrying",
-						"worker", slice.WorkerID,
+						"worker", workerID,
+						"slice", fmt.Sprintf("%d-%d", slice.StartLayer, slice.EndLayer),
 						"attempt", attempt,
 						"maxRetries", c.config.MaxRetries,
 						"error", err)
 
 					time.Sleep(time.Duration(attempt) * 100 * time.Millisecond)
-
 					result, err = worker.InferSlice(job.ctx, sliceReq)
 					if err == nil {
-						job.mu.Lock()
-						job.SliceResults[slice.WorkerID].Output = result
-						job.SliceResults[slice.WorkerID].Error = nil
-						job.mu.Unlock()
 						break
 					}
 				}
 			}
-			if err != nil {
-				job.Status = JobFailed
-				return nil, fmt.Errorf("slice %d-%d on worker %s failed after retries: %w",
-					slice.StartLayer, slice.EndLayer, slice.WorkerID, err)
+
+			// Записываем результат попытки.
+			job.mu.Lock()
+			job.SliceResults[workerID] = &SliceResult{
+				WorkerID:   workerID,
+				StartLayer: slice.StartLayer,
+				EndLayer:   slice.EndLayer,
+				Latency:    latency,
+				Output:     result,
+				Error:      err,
 			}
+			if err != nil {
+				job.Errors = append(job.Errors, err)
+			}
+			job.mu.Unlock()
+
+			if err == nil {
+				logger.Get().Debugw("slice infer succeeded",
+					"worker", workerID,
+					"slice", fmt.Sprintf("%d-%d", slice.StartLayer, slice.EndLayer),
+					"latency_ms", latency.Milliseconds())
+				break
+			}
+
+			// Failover: логируем и пробуем следующего кандидата.
+			logger.Get().Warnw("slice infer failed, trying next candidate",
+				"worker", workerID,
+				"slice", fmt.Sprintf("%d-%d", slice.StartLayer, slice.EndLayer),
+				"error", err)
+		}
+
+		if err != nil {
+			job.Status = JobFailed
+			return nil, fmt.Errorf("slice %d-%d failed on all candidates (last: %s): %w",
+				slice.StartLayer, slice.EndLayer, chosen, err)
 		}
 
 		currentInput = result

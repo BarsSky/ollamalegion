@@ -460,6 +460,102 @@ curl http://localhost:18080/rpc/health
 - **B8** (20-30 дней): Tensor Parallelism (требует custom backend).
 
 ## B5 — gRPC-style binary protocol через net/rpc (DONE Session 9)
+(для краткости секции B5 см. начало файла)
+
+---
+
+## B6 — Load Balancing между срезами (DONE Session 10)
+
+### Что сделано
+
+Реализована инфраструктура load balancing с failover:
+1. **`Selector` interface** в `internal/rpccoordinator/selector.go` — единый интерфейс выбора worker'а.
+2. **`LeastLoadedSelector`** (default) — выбор по `min(active_requests / capacity)`. Healthy workers всегда перед unhealthy. Thread-safe (stateless).
+3. **`RoundRobinSelector`** — простой round-robin (для тестов и homogeneous нагрузки).
+4. **`LayerSlice.WorkerCandidates`** — поле в `LayerSlice` для failover кандидатов (backward-compatible: пусто → [WorkerID]).
+5. **`WorkerClient.LastMetrics`** (`atomic.Value`) — кэш метрик worker'а, обновляется через `WorkerClient.RefreshMetrics(ctx)`.
+6. **`WorkerMetricsSnapshot`** — структура метрик (gob-сериализуемая).
+7. **`executePipeline` failover** — для каждого среза получает ordered candidates через `selector.Select()`, пробует их по очереди, при ошибке переходит к следующему.
+8. **`Coordinator.SetSelector()` / `GetSelector()`** — замена стратегии в runtime.
+
+### Зачем нужен LB
+
+Раньше `executePipeline` использовал только `slice.WorkerID` (single primary). При отказе primary worker'а падал весь pipeline. Теперь:
+
+- Если у среза есть несколько кандидатов (например, две GPU с одинаковыми слоями), selector выбирает наименее загруженного.
+- Если primary возвращает 500 → автоматический failover на следующего кандидата.
+- При нескольких последовательных срезах — каждый выбирается независимо.
+
+### Архитектура
+
+```
+       DistributedModel.SliceLayers[i].WorkerCandidates = [w1, w2, w3]
+                                                  ↓
+                              c.SelectWorkersForSlice(candidates)
+                                                  ↓
+                                      selector.Select()
+                                                  ↓
+                    ordered = [w2 (least loaded), w1, w3 (failover)]
+                                                  ↓
+                                  executePipeline:
+                                    try w2 → success (or failover)
+                                                  ↓
+                            SliceStats: [{w2, ok}, {w1, fail}]
+```
+
+### Файлы
+
+- `internal/rpccoordinator/selector.go` — новый (~250 LOC): `Selector` interface, `LeastLoadedSelector`, `RoundRobinSelector`, `WorkerLoadInfo`.
+- `internal/rpccoordinator/coordinator.go` — добавлено поле `selector`, `LayerSlice.WorkerCandidates`, `LayerSlice.Candidates()`, `executePipeline` обновлён для failover.
+- `internal/rpccoordinator/worker_client.go` — добавлен `WorkerMetricsSnapshot`, `LastMetrics` (atomic.Value), метод `RefreshMetrics(ctx)`.
+- `internal/rpccoordinator/selector_test.go` — 19 unit-тестов.
+- `internal/rpccoordinator/e2e_selector_test.go` — 4 e2e-теста через httptest.Server.
+
+### Контракт `Selector`
+
+```go
+type Selector interface {
+    Name() string
+    Select(candidates []string, loadInfo map[string]WorkerLoadInfo) ([]string, error)
+}
+```
+
+Возвращает **ordered список** workerID (от лучшего к худшему). Первый — primary для `Infer()`, остальные — для failover.
+
+### LoadRatio
+
+`LoadRatio = active_requests / capacity`:
+- `0.0` = свободен
+- `1.0` = полностью загружен
+- `> 1.0` = перегружен (backlog)
+
+Capacity по умолчанию = `1` (sequential worker). Можно расширить через `WorkerConfig.MaxParallel`.
+
+### Что вне scope B6
+
+- **Weighted load balancing** (RoundRobin + веса по GPU layers/RAM). Сейчас LeastLoaded делит одинаково.
+- **Persistent connections reuse** — каждый Infer делает HTTP к worker'у (без keep-alive пула).
+- **Predictive failover** (proactive health score) — сейчас реактивный (после первой ошибки).
+- **Cross-region failover** — B6 в пределах одного региона.
+
+### Acceptance criteria
+
+1. `go build -tags llama_stub ./internal/rpccoordinator/` — exit 0.
+2. `go test -tags llama_stub ./internal/rpccoordinator/` — все тесты PASS (включая 19 selector unit + 4 e2e).
+3. `LeastLoadedSelector.Select([w1, w2, w3], loadInfo)` возвращает ordered список с least-loaded первым.
+4. `RoundRobinSelector.Select` циклически rotated на каждый вызов.
+5. При ошибке primary worker'а — failover на следующего кандидата в `executePipeline`.
+6. Если все кандидаты unhealthy — возвращается `error: "slice X-Y failed on all candidates"`.
+7. `LayerSlice.Candidates()` корректно работает с/без `WorkerCandidates`, автоматически добавляет `WorkerID` если он не в списке.
+
+### Что дальше (B7-B8)
+
+- **B7** (3-5 дней): Prometheus метрики + WebUI.
+- **B8** (20-30 дней): Tensor Parallelism (требует custom backend).
+
+---
+
+## B5 — gRPC-style binary protocol через net/rpc (DONE Session 9)
 
 ### Что сделано
 

@@ -9,20 +9,37 @@ import (
 	"io"
 	"net/http"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
+// WorkerMetricsSnapshot — кэшированные метрики worker'а для selector'а.
+//
+// Обновляется через WorkerClient.RefreshMetrics() (вызывается из HeartbeatLoop).
+// Selector читает атомарно через LastMetrics.Load().
+type WorkerMetricsSnapshot struct {
+	ActiveRequests int64
+	Capacity       int64
+	LoadedSlices   int64
+	TotalInfer     int64
+	TotalErrors    int64
+	UpdatedAt      time.Time
+}
+
 // WorkerClient — HTTP/gRPC клиент для вызова worker'а.
 type WorkerClient struct {
-	WorkerID   string
-	Host       string
-	Port       int
-	Protocol   string // "http" | "grpc"
+	WorkerID    string
+	Host        string
+	Port        int
+	Protocol    string // "http" | "grpc"
 	SliceLayers string // "1-40" — какие слои обслуживает
-	httpClient *http.Client
-	mu         sync.RWMutex
-	healthy    bool
-	lastCheck  time.Time
+	httpClient  *http.Client
+	mu          sync.RWMutex
+	healthy     bool
+	lastCheck   time.Time
+
+	// LastMetrics — кэш метрик для selector'а (B6).
+	LastMetrics atomic.Value // WorkerMetricsSnapshot
 }
 
 // NewWorkerClient создаёт новый клиент worker'а.
@@ -201,4 +218,36 @@ func (wc *WorkerClient) LastCheck() time.Time {
 	wc.mu.RLock()
 	defer wc.mu.RUnlock()
 	return wc.lastCheck
+}
+
+// RefreshMetrics обновляет кэш метрик (B6) через GET /rpc/metrics.
+//
+// Используется HeartbeatLoop или другими периодическими задачами.
+// Обновляет LastMetrics атомарно.
+//
+// При ошибке не паникует — возвращает error и оставляет кэш как есть.
+func (wc *WorkerClient) RefreshMetrics(ctx context.Context) error {
+	metrics, err := wc.GetMetrics()
+	if err != nil {
+		return fmt.Errorf("refresh metrics: %w", err)
+	}
+
+	snap := WorkerMetricsSnapshot{UpdatedAt: time.Now()}
+	if v, ok := metrics["active_requests"].(float64); ok {
+		snap.ActiveRequests = int64(v)
+	}
+	if v, ok := metrics["loaded_slices"].(float64); ok {
+		snap.LoadedSlices = int64(v)
+	}
+	if v, ok := metrics["total_infer"].(float64); ok {
+		snap.TotalInfer = int64(v)
+	}
+	if v, ok := metrics["total_errors"].(float64); ok {
+		snap.TotalErrors = int64(v)
+	}
+	// Capacity по умолчанию — 1. Можно расширить через worker config.
+	snap.Capacity = 1
+
+	wc.LastMetrics.Store(snap)
+	return nil
 }

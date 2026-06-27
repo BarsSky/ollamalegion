@@ -274,6 +274,69 @@ const Api = (function () {
             }
         },
 
+        // ===== Cluster Model Management (Q3 W4 — Session 19, model details panel) =====
+        // Управление моделями на уровне кластера через балансировщик (порт 18081),
+        // без прямого обращения к каждому cppworker. Endpoint'ы:
+        //   GET  /api/v1/cluster/models/loaded                    — список загруженных
+        //   GET  /api/v1/cluster/models/loading                   — список загружающихся
+        //   GET  /api/v1/cluster/models/{name}/info               — детали модели (/api/show)
+        //   POST /api/v1/cluster/models/{name}/reload              — load/unload/reload
+        clusterModels: {
+            /**
+             * GET /api/v1/cluster/models/loaded.
+             * @returns {Promise<{count: number, models: Array, modelsPerBackend?: Object<string, number>}>}
+             */
+            async loaded() {
+                return getJson('/api/v1/cluster/models/loaded');
+            },
+
+            /**
+             * GET /api/v1/cluster/models/loading.
+             * @returns {Promise<{count: number, models: Array}>}
+             */
+            async loading() {
+                return getJson('/api/v1/cluster/models/loading');
+            },
+
+            /**
+             * GET /api/v1/cluster/models/{name}/info.
+             * Проксирует Ollama /api/show на каждый бэкенд в кластере и возвращает
+             * агрегированный результат (details.family, details.format, details.parameter_size,
+             * details.quantization_level, model_info.architecture, model_info.n_layers,
+             * model_info.n_embd, model_info.context_size, model_info.gpu_layers, model_info.state).
+             *
+             * @param {string} modelName — имя модели (например, "gemma-4-E4B-it-Q4_K_M").
+             * @returns {Promise<{model: string, count: number, okCount: number, backends: Array<{
+             *     backendId: string,
+             *     backendType: string,
+             *     status: "ok" | "not_found" | "error" | "unavailable",
+             *     info?: Object,
+             *     error?: string,
+             *     httpStatus?: number
+             * }>}>}
+             */
+            async info(modelName) {
+                return getJson('/api/v1/cluster/models/' + encodeURIComponent(modelName) + '/info');
+            },
+
+            /**
+             * POST /api/v1/cluster/models/{name}/reload.
+             * @param {string} modelName — имя модели.
+             * @param {Object} [options] — { operation?, backendId?, contextSize?, gpuLayers?, reason?, ... }.
+             * @returns {Promise<{model: string, operation: string, results: Array}>}
+             */
+            async reload(modelName, options = {}) {
+                const response = await request(
+                    `${API_BASE}/api/v1/cluster/models/${encodeURIComponent(modelName)}/reload`,
+                    {
+                        method: 'POST',
+                        body: JSON.stringify(options)
+                    }
+                );
+                return response.json();
+            }
+        },
+
         // Generic error handler for UI
 
         handleError(err, fallbackMessage = 'Ошибка API') {

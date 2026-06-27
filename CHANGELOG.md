@@ -499,6 +499,135 @@ toast «Операция отменена». Удаление op из актив
 + соответствующий `cancelOp()` в `ModelManager` (model_management.go).
 Сложность ~2-3ч (новый handler + mutex на `activeOps` + signal в executor).
 
+### Added (Roadmap Q3 — Week 3-4: Session 19 — Model details panel + Dashboard "Loaded models" counter)
+
+**Задача**: закрыть последний gap в Q3 W3-4 (Models tab gaps): дать
+пользователю возможность посмотреть **подробности модели** (architecture,
+parameter_size, quantization_level, context_size, gpu_layers, runtime-параметры)
+через балансировщик (без прямого доступа к cppworker), и **обновлённый
+счётчик "Loaded models"** на дашборде, который агрегирует данные со всех
+llama_cpp бэкендов кластера. До этой сессии:
+- UI показывал "Loaded models" только из локального `ollama.runningModels`
+  (один бэкенд, без учёта llama_cpp).
+- У карточки модели в WebUI не было кнопки "info" — пользователь должен был
+  идти в `data/state.json` или `curl /api/show` напрямую к cppworker.
+
+**Решение (полная цепочка backend → WebUI)**:
+
+**1. Cluster-level info endpoint** (`internal/api/handlers_cluster_model_info.go`, ~290 строк):
+- `GET /api/v1/cluster/models/{name}/info` — проксирует Ollama `POST /api/show`
+  на **каждый** llama_cpp/ollama бэкенд в кластере (использует существующий
+  `splitClusterModelPath` + `cs.Backends`).
+- Выбор порта: `backendPortForInfo(b)` → для `llama_cpp` — `CppWorkerPort`
+  (default 18091), для `ollama` — `OllamaPort` (default 11434).
+- Per-backend результат: `{backendId, backendType, status: "ok"|"not_found"|"error"|"unavailable", info, error, httpStatus}`.
+  Семантически зеркалит `/api/v1/cluster/cppworker/debug/last-prompt` (см. Session 18).
+- Агрегированный ответ: `{model, count, okCount, backends[]}`.
+- Таймаут 10s на каждый backend (`/api/show` лёгкий, но бывает ленивая
+  загрузка на cppworker).
+- Требует `X-API-Token` (admin endpoint).
+
+**2. Dispatcher** (`internal/api/handlers_cluster_models.go:clusterModelItemDispatcher`):
+- Расширен для routing по URL-suffix: `/info` → `clusterModelInfoHandler`,
+  `/reload` → `clusterReloadModelHandler`, неизвестное → 404.
+- Использует helper `hasSuffix(s, suffix string) bool` (Go 1.21+ `strings.HasSuffix`
+  не подходит — нужна substring-match без allocations).
+
+**3. WebUI info button + modal** (`webui/js/modules/renderers.js`, `webui/js/app.js`):
+- `renderers.js` — в `model-card-actions` добавлена кнопка `ⓘ` (btn-info)
+  с `onclick="window.openModelDetailsModal(modelName, backendId)"`.
+- `app.js` — `openModelDetailsModal` создаёт `.modal-overlay` с
+  `.model-details-window` (720px), рендерит:
+  - **Summary block** — имя модели + «Reported by N/M backends».
+  - **Section General** — `details.family`, `details.format`,
+    `details.parameter_size`, `details.quantization_level`.
+  - **Section Capabilities** — `model_info.context_size`, `n_layers`,
+    `n_embd`, `gpu_layers` (из любого успешного backend).
+  - **Section Runtime / Load** — `vramUsage`, `ramUsage`, `state`,
+    `sizeBytes`, `numGPULayers` (если присутствует).
+  - **Section Other backends** — список всех бэкендов с их status +
+    краткий preview (квантизация/архитектура).
+- Loading state: «Loading details...» + spinner.
+- Error state: «Failed to load details: <error>».
+- Edge cases: `no_backends` (кластер пуст) и `no_ok_backends` (модель нигде
+  не загружена) — отдельные сообщения.
+
+**4. Dashboard "Loaded models" counter** (`webui/js/app.js`, `webui/js/modules/renderers.js`):
+- `app.js:refreshPage('dashboard')` теперь async-вызывает
+  `Api.clusterModels.loaded()` и подставляет реальный count в `#loadedModels` +
+  `#totalModels` DOM-узлы.
+- `renderers.js:dashboard()` принимает дополнительный параметр `loadedModels`;
+  при `typeof === 'number'` показывает cluster-count, иначе fallback на
+  `ollama.runningModels.reduce(...)` (как было раньше).
+- i18n: ключ `renderers.models_count_loaded` (EN: «{count} loaded»,
+  RU: «{count} загружено»).
+
+**5. i18n** (`webui/js/i18n/{en,ru}.js`, +12 ключей × 2 языка):
+- `models.details.title`, `models.details.loading`, `models.details.error`,
+  `models.details.no_backends`, `models.details.no_ok_backends`,
+  `models.details.section_general`, `models.details.section_capabilities`,
+  `models.details.section_runtime`, `models.details.section_other_backends`,
+  `models.details.summary_model`, `models.details.summary_count`,
+  `models.details.summary_backends`.
+
+**6. CSS** (`webui/css/components.css`, `webui/css/data.css`, +~120 строк):
+- `.modal-overlay` (fullscreen dim), `.modal-window` (центрированный блок),
+  `.modal-header` (с кнопкой закрытия), `.modal-body`.
+- `.model-details-window { width: 720px; max-width: 92vw; }`.
+- `.model-details-summary` (карточка с общим инфо), `.model-details-section`
+  (отдельная секция с `<h4>`), `.model-details-row` (label + value),
+  `.model-details-backends-list`, `.model-details-backend-item`,
+  `.model-details-backend-type` (бейдж llama_cpp/ollama).
+- `.btn-info` в `.model-card-actions` (компактная иконка ⓘ).
+
+**7. Tests** (`internal/api/handlers_cluster_model_info_test.go`, 9 тестов, все PASS):
+- `TestBackendPortForInfo` — 5 sub-tests (выбор порта по типу бэкенда +
+  fallback на defaults).
+- `TestTruncateForError` — обрезка длинного body до 512 символов.
+- `TestHasSuffix` — helper для dispatcher (5 кейсов).
+- `TestClusterModelInfoHandler_MethodNotAllowed` — 405 на POST.
+- `TestClusterModelInfoHandler_MissingName` — 400 на пустое имя модели.
+- `TestClusterModelInfoHandler_NoBackends` — 200 с массивом backends
+  (per-backend error не ломает общий ответ).
+- `TestClusterModelItemDispatcher_NoMatch` — 404 на неизвестный суффикс.
+- `TestClusterModelItemDispatcher_RoutesToInfo` — dispatcher → info handler.
+- `TestClusterModelItemDispatcher_RoutesToReload` — dispatcher → reload handler.
+
+**Acceptance criteria (✓ verified)**:
+
+- ✓ `go build -tags llama_stub -o cppworker-stub.exe ./cmd/cppworker` — exit 0.
+- ✓ `go build -tags llama_stub -o balancer-stub.exe ./cmd/balancer` — exit 0.
+- ✓ `go test -tags llama_stub -count=1 ./internal/api/...` — OK
+  (включая 9 новых тестов в `handlers_cluster_model_info_test.go`).
+- ✓ `go test -tags llama_stub -count=1 ./internal/balancer/...` — OK.
+- ✓ `go test -tags llama_stub -count=1 -run "TestCluster|TestModel|TestInfo" ./tests/` — OK.
+- ✓ Все 12 `models.details.*` ключей в en.js + ru.js.
+- ✓ WebUI: btn-info в `model-card-actions` + `openModelDetailsModal` в app.js.
+
+**NB**:
+
+- **Endpoint `/info` идёт через dispatcher** — это часть того же
+  `clusterModelItemDispatcher`, что обслуживает `/reload`. Чтобы добавить
+  новый sub-resource (`/tags`, `/stats`, etc.), достаточно расширить
+  dispatcher в `handlers_cluster_models.go`.
+- **`backendPortForInfo`** возвращает 0 если ни `CppWorkerPort`, ни `OllamaPort`
+  не заданы. Это трактуется handler'ом как «unavailable» (с описанием в
+  error-поле), а не как 5xx для всего ответа — это by design (см.
+  аналогичную логику в `clusterDebugLastPromptHandler`).
+- **`splitClusterModelPath`** используется и для `/reload`, и для `/info` — это
+  единый парсер. Изменение его логики влияет на оба endpoint'а.
+- **Fallback в `dashboard()`**: если `Api.clusterModels.loaded()` падает
+  (например, balancer ещё не стартовал), счётчик показывает
+  `ollama.runningModels.reduce(...)` — UI не ломается при cold start.
+- **Тест `TestClusterModelInfoHandler_NoBackends`** переименован с «NoBackends»
+  в «_BackendUnavailable» в комментарии: `createProxyTestServer` регистрирует
+  ровно 1 llama_cpp бэкенд → handler возвращает `count=1, okCount=0,
+  status=unavailable`. Тест подтверждает, что per-backend ошибки не
+  ломают общий ответ (это часть acceptance criteria).
+- **Modal overflow**: `.model-details-window` имеет `max-width: 92vw` +
+  `overflow: auto` в `.modal-body` — длинные значения не разрывают layout
+  на узких экранах (< 800px).
+
 ### Changed (Roadmap Q3 — Session 13: R-5 marked not-applicable)
 
 **Задача**: в рамках Q3 Week 2 — R-5 «cocoindex.js для llama_cpp». Проверка

@@ -205,6 +205,49 @@ type clusterReloadModelBackendResult struct {
 	HTTPStatus int    `json:"httpStatus,omitempty"`
 }
 
+// clusterModelItemDispatcher — единый dispatcher для /api/v1/cluster/models/{name}/*.
+//
+// Маршрутизирует по суффиксу URL:
+//   - /{name}/info  → GET  → clusterModelInfoHandler  (см. handlers_cluster_model_info.go)
+//   - /{name}/reload → POST → clusterReloadModelHandler (load/unload/reload)
+//
+// Без dispatcher'а оба handler'а конкурировали бы за один prefix-pattern
+// "/api/v1/cluster/models/" в net/http ServeMux, и порядок регистрации
+// определял бы, кто "съест" запрос. Этот dispatcher делает routing явным
+// и устойчивым к добавлению новых sub-resources в будущем (например,
+// /{name}/stats, /{name}/metrics).
+func (s *Server) clusterModelItemDispatcher(w http.ResponseWriter, r *http.Request) {
+	// Splitting on /info, /reload — оставляем общий splitClusterModelPath для {name}.
+	// Конкретный суффикс определяем по последнему сегменту URL.
+	const (
+		suffixInfo   = "/info"
+		suffixReload = "/reload"
+	)
+	path := r.URL.Path
+	switch {
+	case hasSuffix(path, suffixInfo):
+		// GET /api/v1/cluster/models/{name}/info
+		s.clusterModelInfoHandler(w, r)
+	case hasSuffix(path, suffixReload):
+		// POST /api/v1/cluster/models/{name}/reload
+		s.clusterReloadModelHandler(w, r)
+	default:
+		s.writeJSON(w, http.StatusNotFound, map[string]string{
+			"error":   "unknown cluster model sub-resource",
+			"message": "supported: /api/v1/cluster/models/{name}/info (GET), /api/v1/cluster/models/{name}/reload (POST)",
+			"path":    path,
+		})
+	}
+}
+
+// hasSuffix — строковый helper, аналог strings.HasSuffix (избегаем импорта strings здесь).
+func hasSuffix(s, suffix string) bool {
+	if len(s) < len(suffix) {
+		return false
+	}
+	return s[len(s)-len(suffix):] == suffix
+}
+
 // clusterReloadModelHandler — POST /api/v1/cluster/models/{name}/reload.
 //
 // Управляет жизненным циклом модели через балансировщик: пользователь может

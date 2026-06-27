@@ -675,6 +675,20 @@ window.I18N_EN = {
   "models.operation_create": "Create",
   "models.operation_copy": "Copy",
 
+  // ===== Model details modal (Q3 W4 — Session 19) =====
+  "models.details.title": "Model details",
+  "models.details.loading": "Loading details...",
+  "models.details.error": "Failed to load details",
+  "models.details.no_backends": "No backends in cluster",
+  "models.details.no_ok_backends": "Model is not loaded on any backend — details unavailable.",
+  "models.details.section_general": "General",
+  "models.details.section_capabilities": "Capabilities",
+  "models.details.section_runtime": "Runtime / Load",
+  "models.details.section_other_backends": "Other backends",
+  "models.details.summary_model": "Model",
+  "models.details.summary_count": "Reported by",
+  "models.details.summary_backends": "backends",
+
   // Virtual Models
   "vm.title": "🧩 Virtual Models",
 

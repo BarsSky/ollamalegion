@@ -406,6 +406,22 @@
 .model-card-actions .btn-load { background: var(--success); color: #fff; }
 .model-card-actions .btn-unload { background: var(--warning); color: #1a1a2e; }
 .model-card-actions .btn-delete { background: var(--danger); color: #fff; }
+/* Q3 W4 — Session 19: кнопка-ⓘ для открытия модалки с детальной информацией о модели.
+   Не flex:1 — модалка не связана с action-flow (load/unload/delete), поэтому остаётся компактной. */
+.model-card-actions .btn-info {
+    background: var(--bg-secondary);
+    color: var(--info, #4a9eff);
+    border: 1px solid var(--border);
+    flex: 0 0 auto;
+    min-width: 36px;
+    padding: 6px 10px;
+    font-size: 14px;
+    line-height: 1;
+}
+.model-card-actions .btn-info:hover {
+    background: var(--bg-hover);
+    border-color: var(--info, #4a9eff);
+}
 .model-card-actions .btn:disabled {
     opacity: 0.5;
     cursor: not-allowed;

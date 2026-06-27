@@ -1375,3 +1375,161 @@
 .ops-action-cancel.cancelling i {
     animation: spin 1s linear infinite;
 }
+
+/* ================================================
+   Q3 W4 — Session 19: Model details modal
+   Модалка с детальной информацией о модели
+   (architecture, family, params, quantization,
+    n_ctx, gpu_layers, state) — через cluster-level
+    endpoint /api/v1/cluster/models/{name}/info.
+   ================================================ */
+
+/* Базовые модальные оверлей/окно (используются и другими модалками). */
+.modal-overlay {
+    position: fixed;
+    inset: 0;
+    background: rgba(0, 0, 0, 0.65);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    z-index: 1500;
+    backdrop-filter: blur(2px);
+    -webkit-backdrop-filter: blur(2px);
+}
+.modal-window {
+    background: var(--bg-card, #1e1e2e);
+    color: var(--text, #e0e0e0);
+    border-radius: 12px;
+    border: 1px solid var(--border, rgba(255, 255, 255, 0.1));
+    box-shadow: 0 16px 48px rgba(0, 0, 0, 0.45);
+    max-height: 86vh;
+    overflow: hidden;
+    display: flex;
+    flex-direction: column;
+}
+.modal-overlay .modal-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 16px 20px;
+    border-bottom: 1px solid var(--border, rgba(255, 255, 255, 0.1));
+}
+.modal-overlay .modal-header h2 {
+    margin: 0;
+    font-size: 16px;
+    font-weight: 600;
+}
+.modal-overlay .modal-close {
+    background: transparent;
+    border: none;
+    color: var(--text-muted, #94a3b8);
+    font-size: 22px;
+    line-height: 1;
+    cursor: pointer;
+    padding: 0 6px;
+    border-radius: 4px;
+    transition: var(--transition, all 0.2s ease);
+}
+.modal-overlay .modal-close:hover {
+    color: var(--text, #e0e0e0);
+    background: var(--bg-hover, rgba(255, 255, 255, 0.05));
+}
+.modal-overlay .modal-body {
+    padding: 20px;
+    overflow-y: auto;
+    flex: 1;
+}
+
+/* Конкретно — модалка деталей модели. */
+.model-details-window {
+    width: 720px;
+    max-width: 92vw;
+}
+.model-details-summary {
+    background: var(--bg-secondary, rgba(255, 255, 255, 0.03));
+    border: 1px solid var(--border, rgba(255, 255, 255, 0.08));
+    border-radius: 8px;
+    padding: 12px 16px;
+    margin-bottom: 16px;
+}
+.model-details-section {
+    margin-bottom: 16px;
+    padding: 12px 14px;
+    background: var(--bg-secondary, rgba(255, 255, 255, 0.03));
+    border: 1px solid var(--border, rgba(255, 255, 255, 0.08));
+    border-radius: 8px;
+}
+.model-details-section h4 {
+    margin: 0 0 8px 0;
+    font-size: 12px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    color: var(--text-muted, #94a3b8);
+}
+.model-details-row {
+    display: flex;
+    justify-content: space-between;
+    padding: 4px 0;
+    font-size: 13px;
+    border-bottom: 1px solid var(--border-light, rgba(255, 255, 255, 0.04));
+}
+.model-details-row:last-child { border-bottom: none; }
+.model-details-row .label {
+    color: var(--text-muted, #94a3b8);
+    flex: 0 0 auto;
+    margin-right: 12px;
+}
+.model-details-row .value {
+    color: var(--text, #e0e0e0);
+    font-family: var(--font-mono, ui-monospace, SFMono-Regular, monospace);
+    text-align: right;
+    word-break: break-all;
+}
+.model-details-row code {
+    background: var(--bg-secondary, rgba(255, 255, 255, 0.05));
+    padding: 1px 6px;
+    border-radius: 3px;
+    font-size: 12px;
+}
+.model-details-backend-title {
+    margin: 18px 0 10px 0;
+    font-size: 14px;
+    color: var(--accent, #4a9eff);
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+.model-details-backend-title:first-child { margin-top: 0; }
+.model-details-backends-list {
+    list-style: none;
+    margin: 8px 0;
+    padding: 0;
+}
+.model-details-backend-item {
+    padding: 6px 10px;
+    border-bottom: 1px solid var(--border-light, rgba(255, 255, 255, 0.04));
+    font-size: 13px;
+}
+.model-details-backend-item:last-child { border-bottom: none; }
+.model-details-backend-type {
+    color: var(--text-muted, #94a3b8);
+    font-size: 12px;
+}
+.model-details-window .warning-message,
+.model-details-window .error-message {
+    padding: 12px 14px;
+    border-radius: 8px;
+    margin: 8px 0;
+    font-size: 13px;
+}
+.model-details-window .warning-message {
+    background: var(--warning-bg-soft, rgba(245, 158, 11, 0.12));
+    color: var(--warning, #f59e0b);
+    border: 1px solid var(--warning-bg-soft, rgba(245, 158, 11, 0.2));
+}
+.model-details-window .error-message {
+    background: var(--danger-bg-soft, rgba(239, 68, 68, 0.12));
+    color: var(--danger, #ef4444);
+    border: 1px solid var(--danger-bg-soft, rgba(239, 68, 68, 0.2));
+}

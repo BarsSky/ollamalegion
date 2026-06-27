@@ -269,6 +269,14 @@ const ui = (function () {
         switch (page) {
             case 'dashboard':
                 var filteredBackends = filterBackendsForUI(data.backends);
+                // Cluster-level loaded count учитывает и ollama-, и llama_cpp-бэкенды.
+                // Запрашиваем асинхронно, не блокируем рендер dashboard.
+                Api.clusterModels.loaded().then(function (loadedResp) {
+                    if (loadedResp && typeof loadedResp.count === 'number') {
+                        Utils.setText('loadedModels', _t('renderers.models_count_loaded', { count: loadedResp.count }));
+                        Utils.setText('totalModels', loadedResp.count);
+                    }
+                }).catch(function () { /* тихо: fallback на ollama.runningModels внутри dashboard() */ });
                 dashboard(filteredBackends, data.sessions, data.queue);
                 predictionAlerts(filteredBackends);
                 break;
@@ -2252,3 +2260,186 @@ window.modelCardAction = function(operation, backendId, modelName) {
     }
     ui.executeModelOperation(backendId, operation, modelName);
 };
+
+// ---- Q3 W4 — Session 19: Model details modal ----
+// Открывает модальное окно с подробностями модели (architecture, family, params,
+// quantization, n_ctx, gpu_layers, state) — через cluster-level endpoint
+// GET /api/v1/cluster/models/{name}/info (см. internal/api/handlers_cluster_model_info.go).
+// Один запрос агрегирует данные со всех бэкендов кластера (cppworker + ollama).
+window.openModelDetailsModal = function(modelName, backendId) {
+    if (!modelName) return;
+    // Modal DOM может быть ещё не создан — создаём лениво.
+    ensureModelDetailsModalDom();
+    const modal = document.getElementById('modelDetailsModal');
+    const body = document.getElementById('modelDetailsBody');
+    const title = document.getElementById('modelDetailsTitle');
+    if (!modal || !body || !title) {
+        console.warn('model details modal DOM not found');
+        return;
+    }
+    title.textContent = (window.I18N ? I18N.t('models.details.title') : 'Model details') + ' — ' + modelName;
+    body.innerHTML = '<div class="loading">' +
+        (window.I18N ? I18N.t('models.details.loading') : 'Loading details...') + '</div>';
+    modal.style.display = 'flex';
+
+    Api.clusterModels.info(modelName).then(function(resp) {
+        renderModelDetailsBody(body, modelName, resp);
+    }).catch(function(err) {
+        body.innerHTML = '<div class="error-message">' +
+            (window.I18N ? I18N.t('models.details.error') : 'Failed to load details') + ': ' +
+            Utils.escapeHtml(err && err.message ? err.message : err) + '</div>';
+    });
+};
+
+// ensureModelDetailsModalDom — создаёт модальное окно в <body> если ещё не существует.
+//
+// Используем ленивую инициализацию, чтобы не раздувать webui/index.html.
+function ensureModelDetailsModalDom() {
+    let modal = document.getElementById('modelDetailsModal');
+    if (modal) return;
+    modal = document.createElement('div');
+    modal.id = 'modelDetailsModal';
+    modal.className = 'modal-overlay';
+    modal.style.display = 'none';
+    modal.innerHTML = `
+        <div class="modal-window model-details-window" role="dialog" aria-modal="true" aria-labelledby="modelDetailsTitle">
+            <div class="modal-header">
+                <h2 id="modelDetailsTitle">${Utils.escapeHtml(window.I18N ? I18N.t('models.details.title') : 'Model details')}</h2>
+                <button class="modal-close" id="modelDetailsClose" aria-label="Close">×</button>
+            </div>
+            <div class="modal-body" id="modelDetailsBody">
+                <div class="loading">...</div>
+            </div>
+        </div>
+    `;
+    document.body.appendChild(modal);
+    // Закрытие по клику на крестик или backdrop.
+    document.getElementById('modelDetailsClose').addEventListener('click', closeModelDetailsModal);
+    modal.addEventListener('click', function(ev) {
+        if (ev.target === modal) closeModelDetailsModal();
+    });
+    // Закрытие по Escape.
+    document.addEventListener('keydown', function(ev) {
+        if (ev.key === 'Escape') closeModelDetailsModal();
+    });
+}
+
+function closeModelDetailsModal() {
+    const modal = document.getElementById('modelDetailsModal');
+    if (modal) modal.style.display = 'none';
+}
+
+// renderModelDetailsBody — рисует содержимое модального окна по ответу
+// /api/v1/cluster/models/{name}/info.
+//
+// Структура ответа:
+//   {
+//     model: string,
+//     count: number,
+//     okCount: number,
+//     backends: [
+//       { backendId, backendType, status, info: { details, model_info, ... }, error?, httpStatus? }
+//     ]
+//   }
+//
+// Семантика:
+//   - Если есть хотя бы один backend со status=ok, рендерим секцию «Primary» с данными info.
+//   - Если есть несколько ok — рендерим несколько секций, чтобы показать расхождения
+//     (например, разные n_ctx / gpu_layers на разных бэкендах).
+//   - Если okCount == 0 — рендерим список ошибок per-backend.
+function renderModelDetailsBody(body, modelName, resp) {
+    if (!resp || !resp.backends || !resp.backends.length) {
+        body.innerHTML = '<div class="error-message">' +
+            (window.I18N ? I18N.t('models.details.no_backends') : 'No backends in cluster') + '</div>';
+        return;
+    }
+    const okBackends = resp.backends.filter(function(b) { return b.status === 'ok'; });
+    const otherBackends = resp.backends.filter(function(b) { return b.status !== 'ok'; });
+    let html = '';
+    if (okBackends.length > 0) {
+        html += renderModelDetailsOkSection(modelName, okBackends, resp);
+    } else {
+        html += '<div class="warning-message">' +
+            (window.I18N ? I18N.t('models.details.no_ok_backends') :
+                'Model is not loaded on any backend — details unavailable.') + '</div>';
+    }
+    if (otherBackends.length > 0) {
+        html += renderModelDetailsBackendsList(otherBackends, /* onlyIssues */ true);
+    }
+    body.innerHTML = html;
+}
+
+// renderModelDetailsOkSection — рендерит секции «General / Capabilities / Model Info» для ok-бэкендов.
+//
+// Если ok-бэкендов несколько, рендерим каждый отдельно (с заголовком backendId),
+// чтобы пользователь видел расхождения в параметрах.
+function renderModelDetailsOkSection(modelName, okBackends, resp) {
+    const _t = function(k, fb) { return (window.I18N ? I18N.t(k) : fb); };
+    let html = '<div class="model-details-summary">';
+    html += '<div class="model-details-row"><span class="label">' + _t('models.details.summary_model', 'Model') + ':</span>' +
+        '<span class="value"><code>' + Utils.escapeHtml(modelName) + '</code></span></div>';
+    html += '<div class="model-details-row"><span class="label">' + _t('models.details.summary_count', 'Reported by') + ':</span>' +
+        '<span class="value">' + resp.okCount + ' / ' + resp.count + ' ' + _t('models.details.summary_backends', 'backends') + '</span></div>';
+    html += '</div>';
+    okBackends.forEach(function(b) {
+        const info = b.info || {};
+        const details = info.details || {};
+        const modelInfo = info.model_info || {};
+        const backendLabel = Utils.escapeHtml(b.backendId) +
+            ' <span class="badge badge-info">' + Utils.escapeHtml(b.backendType) + '</span>';
+        html += '<h3 class="model-details-backend-title">' + backendLabel + '</h3>';
+        html += '<div class="model-details-section">';
+        html += '<h4>' + _t('models.details.section_general', 'General') + '</h4>';
+        html += modelDetailsRow('Family', details.family || modelInfo.architecture);
+        html += modelDetailsRow('Format', details.format);
+        html += modelDetailsRow('Parameter Size', details.parameter_size || info.parameters);
+        html += modelDetailsRow('Quantization', details.quantization_level);
+        html += '</div>';
+        html += '<div class="model-details-section">';
+        html += '<h4>' + _t('models.details.section_capabilities', 'Capabilities') + '</h4>';
+        html += modelDetailsRow('Architecture', modelInfo.architecture);
+        html += modelDetailsRow('Layers (n_layers)', modelInfo.n_layers);
+        html += modelDetailsRow('Heads (n_heads)', modelInfo.n_heads);
+        html += modelDetailsRow('Embedding size (n_embd)', modelInfo.n_embd);
+        html += modelDetailsRow('Vocab size (n_vocab)', modelInfo.n_vocab);
+        html += '</div>';
+        html += '<div class="model-details-section">';
+        html += '<h4>' + _t('models.details.section_runtime', 'Runtime / Load') + '</h4>';
+        html += modelDetailsRow('Context size (n_ctx)', modelInfo.context_size);
+        html += modelDetailsRow('GPU layers', modelInfo.gpu_layers);
+        html += modelDetailsRow('State', modelInfo.state);
+        html += modelDetailsRow('Size (bytes)', modelInfo.size_bytes);
+        html += modelDetailsRow('Modified at', modelInfo.modified_at);
+        html += '</div>';
+    });
+    return html;
+}
+
+function modelDetailsRow(label, value) {
+    if (value === undefined || value === null || value === '') return '';
+    const _t = function(k, fb) { return (window.I18N ? I18N.t(k) : fb); };
+    let display = value;
+    if (typeof value === 'object') {
+        display = JSON.stringify(value);
+    }
+    return '<div class="model-details-row"><span class="label">' + Utils.escapeHtml(label) + ':</span>' +
+        '<span class="value">' + Utils.escapeHtml(String(display)) + '</span></div>';
+}
+
+// renderModelDetailsBackendsList — список проблемных бэкендов (error/not_found/unavailable).
+function renderModelDetailsBackendsList(backends, onlyIssues) {
+    const _t = function(k, fb) { return (window.I18N ? I18N.t(k) : fb); };
+    let html = '<h3>' + _t('models.details.section_other_backends', 'Other backends') + '</h3>';
+    html += '<ul class="model-details-backends-list">';
+    backends.forEach(function(b) {
+        const cls = b.status === 'ok' ? 'success' : (b.status === 'not_found' ? 'info' : 'danger');
+        html += '<li class="model-details-backend-item">';
+        html += '<span class="badge badge-' + cls + '">' + Utils.escapeHtml(b.status) + '</span> ';
+        html += '<strong>' + Utils.escapeHtml(b.backendId) + '</strong> ' +
+                '<span class="model-details-backend-type">(' + Utils.escapeHtml(b.backendType) + ')</span>';
+        if (b.error) html += ' — ' + Utils.escapeHtml(b.error);
+        html += '</li>';
+    });
+    html += '</ul>';
+    return html;
+}

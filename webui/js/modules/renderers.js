@@ -64,9 +64,13 @@ const Renderers = (function () {
 
     // ---- Dashboard ----
 
-    function dashboard(backends, sessions, queue) {
+    function dashboard(backends, sessions, queue, loadedModels) {
         const healthy = backends.filter(b => b.status === 'healthy');
-        const totalModels = backends.reduce((sum, b) => sum + (b.ollama?.runningModels?.length || 0), 0);
+        // Если извне передан cluster-loaded count (рекомендуемый путь) — используем его.
+        // Иначе fallback на ollama.runningModels (учитывает только ollama-бэкенды).
+        const totalModels = (typeof loadedModels === 'number')
+            ? loadedModels
+            : backends.reduce((sum, b) => sum + (b.ollama?.runningModels?.length || 0), 0);
         const activeSessions = (sessions || []).filter(s => s.active).length;
         const totalRequests = (sessions || []).reduce((sum, s) => sum + (s.requestCount || 0), 0);
         const queueSize = queue?.current_size || 0;
@@ -942,6 +946,7 @@ const Renderers = (function () {
                         ${memoryBar('RAM', ramMB, totalRAM, ramPercent, 'ram')}
                     </div>
                     <div class="model-card-actions">
+                        <button class="btn btn-info" title="${escapeHtml(_t('models.details.title'))}" onclick="window.openModelDetailsModal('${safeName}', '${safeBackend}')" aria-label="${escapeHtml(_t('models.details.title'))}">ⓘ</button>
                         <button class="btn btn-load" onclick="window.modelCardAction('load', '${safeBackend}', '${safeName}')" ${m.backendStatus !== 'healthy' ? 'disabled' : ''}>${_t('models.load')}</button>
                         <button class="btn btn-unload" onclick="window.modelCardAction('unload', '${safeBackend}', '${safeName}')" ${m.backendStatus !== 'healthy' ? 'disabled' : ''}>${_t('models.unload')}</button>
                         <button class="btn btn-delete" onclick="window.modelCardAction('delete', '${safeBackend}', '${safeName}')" ${m.backendStatus !== 'healthy' ? 'disabled' : ''}>${_t('models.delete')}</button>

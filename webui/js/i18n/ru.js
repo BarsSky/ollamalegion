@@ -723,6 +723,20 @@ window.I18N_RU = {
   "models.operation_create": "Создание",
   "models.operation_copy": "Копирование",
 
+  // ===== Модальное окно деталей модели (Q3 W4 — Session 19) =====
+  "models.details.title": "Детали модели",
+  "models.details.loading": "Загрузка деталей...",
+  "models.details.error": "Не удалось загрузить детали",
+  "models.details.no_backends": "В кластере нет бэкендов",
+  "models.details.no_ok_backends": "Модель не загружена ни на одном бэкенде — детали недоступны.",
+  "models.details.section_general": "Общие",
+  "models.details.section_capabilities": "Возможности",
+  "models.details.section_runtime": "Среда выполнения / загрузка",
+  "models.details.section_other_backends": "Другие бэкенды",
+  "models.details.summary_model": "Модель",
+  "models.details.summary_count": "Сообщили",
+  "models.details.summary_backends": "бэкендов",
+
   // Virtual Models
   "vm.title": "🧩 Виртуальные модели",
   "vm.name": "Имя",

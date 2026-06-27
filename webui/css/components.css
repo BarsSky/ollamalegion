@@ -1172,6 +1172,56 @@
     margin-top: 4px;
 }
 
+/* Per-Model Profiles wizard — advanced fields (Session 15, Q3 W3-4 Model profiles UI) */
+.cpp-profile-wizard .wizard-advanced {
+    margin-top: 12px;
+    padding: 12px;
+    background: rgba(245, 158, 11, 0.04);
+    border: 1px dashed rgba(245, 158, 11, 0.25);
+    border-radius: 6px;
+}
+.cpp-profile-wizard .advanced-toggle {
+    margin-top: 4px;
+    width: 100%;
+    text-align: center;
+    background: transparent;
+    border-style: dashed;
+}
+.cpp-profile-wizard .advanced-toggle:hover {
+    border-style: solid;
+    background: rgba(245, 158, 11, 0.06);
+}
+.cpp-profile-wizard .wizard-field-row {
+    display: flex;
+    gap: 12px;
+    align-items: stretch;
+}
+.cpp-profile-wizard .wizard-field-row .wizard-field-col {
+    flex: 1;
+    min-width: 0;
+}
+.cpp-profile-wizard select {
+    width: 100%;
+    padding: 6px 10px;
+    background: var(--bg-input, rgba(15, 23, 42, 0.6));
+    color: var(--text-primary, #e2e8f0);
+    border: 1px solid var(--border-color, #2a3441);
+    border-radius: 4px;
+    font-size: 13px;
+    cursor: pointer;
+}
+.cpp-profile-wizard textarea {
+    width: 100%;
+    padding: 6px 10px;
+    background: var(--bg-input, rgba(15, 23, 42, 0.6));
+    color: var(--text-primary, #e2e8f0);
+    border: 1px solid var(--border-color, #2a3441);
+    border-radius: 4px;
+    font-size: 13px;
+    font-family: inherit;
+    resize: vertical;
+}
+
 /* Reload progress modal */
 .cpp-reload-progress {
     padding: 16px 0;

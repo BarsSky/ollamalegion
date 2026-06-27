@@ -985,6 +985,26 @@ window.I18N_RU = {
   "settings.profiles.applied": "Профиль применён",
   "settings.profiles.applied_with_errors": "Профиль применён с ошибками на нескольких бэкендах",
 
+  // ===== Per-Model Profiles — advanced fields (Session 15, Q3 W3-4 Model profiles UI) =====
+  "settings.profiles.advanced_section": "Дополнительно (опциональные override)",
+  "settings.profiles.flash_attn": "Flash Attention",
+  "settings.profiles.flash_attn_help": "Включить Flash Attention для KV-cache. nil = наследовать дефолт cppworker'а.",
+  "settings.profiles.numa": "NUMA",
+  "settings.profiles.numa_help": "NUMA-aware аллокации. Полезно на multi-socket серверах с partial offload.",
+  "settings.profiles.use_mmap": "Использовать mmap",
+  "settings.profiles.use_mmap_help": "Memory-map файла модели. false = полностью читать в RAM. nil = наследовать.",
+  "settings.profiles.notes_help": "Свободное описание (назначение, особенности производительности).",
+  "settings.profiles.timeouts_section": "Per-model таймауты (сек, 0 = глобальные)",
+  "settings.profiles.streaming_timeout": "Общий таймаут streaming",
+  "settings.profiles.streaming_idle_timeout": "Таймаут простоя streaming",
+  "settings.profiles.request_timeout": "Таймаут non-streaming запроса",
+  "settings.profiles.first_byte_timeout": "Таймаут первого байта",
+  "settings.profiles.timeout_help": "0 = использовать глобальное значение из BalancingSettings балансировщика. > 0 переопределяет только для этой модели.",
+  "settings.profiles.invalid_n_ctx": "n_ctx должен быть в [256, 262144]",
+  "settings.profiles.advanced_toggle_show": "Показать расширенные",
+  "settings.profiles.advanced_toggle_hide": "Скрыть расширенные",
+  "settings.profiles.refresh": "Обновить",
+
   // ===== gguf Settings tab — backend options (per-backend cppworker) =====
   "gguf.backend_options_title": "Параметры загрузки бэкенда (этот cppworker)",
   "gguf.backend_options_desc": "Дефолтные параметры llama.cpp для выбранного бэкенда. Сохраняются в .env этого воркера. Per-model профили (ниже) переопределяют n_ctx для конкретных моделей.",

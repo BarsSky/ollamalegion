@@ -7,6 +7,112 @@
 
 ## [Unreleased — 2026-06-27]
 
+### Added (Roadmap Q3 — Week 3-4: Models tab gaps, sub-task Model profiles UI)
+
+**Задача**: в рамках Q3 Week 3-4 (Models tab gaps full set, ~12-16ч) —
+sub-task Model profiles UI (~6-8ч). В предыдущих сессиях был реализован
+backend для per-model profiles (Session 4, `internal/api/handlers_cppworker_profiles.go`,
+5 endpoints: GET list, GET item, PUT, DELETE, POST .../apply) и базовый UI-wizard
+в `webui/js/modules/cppworker-params.js` (Session 5, wizard с пресетами 4K/8K/16K/
+32K/64K/128K/256K/Custom + slider для n_ctx, кнопки edit/apply/delete, progress
+modal). Однако до этой сессии:
+
+1. UI использовал `Api.request()` напрямую с захардкоженными URL, вместо
+   namespace `Api.cppworkerModelProfiles.*` (как у других API групп).
+2. Wizard обрабатывал только 4 поля (`contextLength`, `batchSize`, `numGpuLayers`,
+   `notes`) из 11 доступных в `types.LlamaCppModelProfile` — отсутствовали
+   булевы overrides (`flashAttn`, `numa`, `useMmap`) и 4 per-model таймаута
+   (`streamingTimeoutSec`, `streamingIdleTimeoutSec`, `requestTimeoutSec`,
+   `firstByteTimeoutSec`).
+3. Нет записи в CHANGELOG для сессии 5 (UI был реализован, но без документации).
+
+**Решение**: расширен существующий wizard дополнительными секциями:
+
+- **Advanced section** (collapsed по умолчанию): 3-уровневый select для
+  `flash_attn`/`numa`/`use_mmap` с состояниями `inherit` (по умолчанию) / `on` /
+  `off`. Состояние `inherit` → поле НЕ отправляется в API → cppworker
+  использует свой default.
+- **Per-model timeouts**: 4 поля с шагом 1 сек, диапазон [0, 24ч]. 0 = inherit
+  from `BalancingSettings.StreamingTimeoutSec` etc.
+- **Notes**: `<input>` заменён на `<textarea>` для многострочных описаний.
+- **Refresh**: зарезервирован id `#cppProfileRefreshBtn` в HTML (для будущего
+  использования), реализован обработчик в JS.
+
+Также добавлен namespaced API client `Api.cppworkerModelProfiles` с методами
+`list()`, `get(modelName)`, `upsert(modelName, profile)`, `remove(modelName)`,
+`apply(modelName, profile?)`. UI полностью перешёл с прямого `Api.request(url)`
+на новый namespace — это упрощает maintenance и тестирование.
+
+**Изменения**:
+
+- `webui/js/modules/cppworker-params.js` (полностью переписан, ~610 строк):
+  - Использует `Api.cppworkerModelProfiles.*` вместо прямых fetch.
+  - `profileToWizardState(profile)` / `wizardStateToProfileBody(state)` —
+    изолируют JSON-контракт от UI state (3-state булевы → boolean|null).
+  - Wizard расширен секциями advanced + timeouts (выделены стилем dashed
+    border + light background).
+  - Показ текущих значений overrides в meta-строке списка:
+    `[flash=on · numa=off]` + `⏱ stream=600s · idle=300s`.
+  - Валидация: `n_ctx ∈ [256, 262144]`, `batchSize ∈ [0, 4096]`,
+    `numGpuLayers ∈ [-1, 200]`, `timeout ∈ [0, 86400]`.
+  - Все ошибки показываются через `showToast('error', ...)` (без alert).
+- `webui/js/modules/api.js` (+60 строк): новый namespace
+  `Api.cppworkerModelProfiles = { list, get, upsert, remove, apply }`
+  с JSDoc.
+- `webui/js/i18n/en.js` (+17 ключей): `settings.profiles.advanced_section`,
+  `flash_attn`, `flash_attn_help`, `numa`, `numa_help`, `use_mmap`,
+  `use_mmap_help`, `notes_help`, `timeouts_section`, `streaming_timeout`,
+  `streaming_idle_timeout`, `request_timeout`, `first_byte_timeout`,
+  `timeout_help`, `invalid_n_ctx`, `advanced_toggle_show`, `advanced_toggle_hide`,
+  `refresh`.
+- `webui/js/i18n/ru.js` (+17 ключей): русские переводы для всех новых ключей.
+- `webui/css/components.css` (+~50 строк): `.cpp-profile-wizard .wizard-advanced`
+  (dashed border + light bg), `.advanced-toggle` (dashed border, full-width),
+  `.wizard-field-row` (flex row для пары полей), `.wizard-field-col`,
+  `.cpp-profile-wizard select` и `.cpp-profile-wizard textarea`
+  (единый стиль с input).
+- `webui/index.html`: bump `cppworker-params.js?v=15` → `?v=16`,
+  `app.js?v=13` → `?v=14` (cache busting для новой логики).
+
+**Acceptance criteria**:
+
+1. Открыть Settings → llama.cpp / GGUF Settings → Per-Model Profiles — видны
+   все существующие профили с meta-строкой `[n_ctx=32K · batch=512 · gpuLayers=-1 · [flash=on · numa=off] · ⏱ stream=600s]`.
+2. Клик «Добавить профиль» → wizard с полями: model_name, n_ctx (slider+presets),
+   batch_size, num_gpu_layers, notes (textarea), и advanced toggle для
+   flash_attn/numa/use_mmap/timeouts.
+3. Раскрыть advanced → видны 3 select с `inherit/on/off` и 4 number input для
+   timeouts. Выбрать `flash_attn=on`, `streaming_timeout=900` → сохранить.
+4. После сохранения toast «Профиль создан», профиль появляется в списке,
+   meta показывает `flash=on` и `⏱ stream=900s`.
+5. Клик «Применить» на профиле → progress modal с шагами save/reload и
+   per-backend результатами. Если нет llama.cpp бэкендов — показывается
+   «No llama.cpp backends registered» (не пустой список).
+6. Клик «Редактировать» → wizard открывается с предзаполненными значениями
+   (включая advanced секцию), name readonly.
+7. Клик «Удалить» → confirm dialog → профиль удаляется, toast «Профиль удалён».
+8. Inline-редактирование: открыть wizard → изменить n_ctx slider с 32K на 16K →
+   сохранить → meta показывает `n_ctx=16K`.
+9. Все 4 backend endpoint'а (`list`, `get`, `upsert`, `remove`, `apply`)
+   вызываются через `Api.cppworkerModelProfiles.*` (без прямого `request(url)`).
+
+**NB**:
+
+- Bool 3-state в UI (`inherit/on/off`) маппится на JSON: `inherit` → поле НЕ
+  отправляется, `on` → `true`, `off` → `false`. Это позволяет cppworker'у
+  различать «явно заданное значение» от «наследовать дефолт».
+- Timeouts `> 0` → переопределяют глобальные `BalancingSettings`. `0` → поле
+  НЕ отправляется → балансер использует глобальное значение. Это by design,
+  совпадает с backend валидацией (`validateModelProfile` не проверяет timeout
+  поля, они попадают в merge с текущим профилем при apply).
+- Поле `parallel` / `kv_cache_type` из roadmap Q3 НЕ добавлены — backend API
+  их пока не поддерживает (отсутствуют в `types.LlamaCppModelProfile`).
+  При появлении в API — добавятся как новые поля wizard через тот же
+  простой шаблон.
+- Текущий UI wizard остаётся функциональным для backward compatibility: все
+  ранее сохранённые профили (без advanced полей) загружаются и
+  редактируются без миграции.
+
 ### Added (Roadmap Q3 — Week 3-4: Models tab gaps, sub-task Filter/Search)
 
 **Задача**: в рамках Q3 Week 3-4 (Models tab gaps full set, ~12-16ч) —

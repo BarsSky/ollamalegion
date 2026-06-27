@@ -1089,6 +1089,26 @@ window.I18N_EN = {
   "settings.profiles.applied": "Profile applied",
   "settings.profiles.applied_with_errors": "Profile applied with errors on several backends",
 
+  // ===== Per-Model Profiles — advanced fields (Session 15, Q3 W3-4 Model profiles UI) =====
+  "settings.profiles.advanced_section": "Advanced (optional overrides)",
+  "settings.profiles.flash_attn": "Flash Attention",
+  "settings.profiles.flash_attn_help": "Enable Flash Attention for KV-cache. nil = inherit from cppworker default.",
+  "settings.profiles.numa": "NUMA",
+  "settings.profiles.numa_help": "Enable NUMA-aware allocations. Useful on multi-socket servers with partial offload.",
+  "settings.profiles.use_mmap": "Use mmap",
+  "settings.profiles.use_mmap_help": "Memory-map the model file. False disables mmap (full read into RAM). nil = inherit.",
+  "settings.profiles.notes_help": "Free-form description (purpose, performance notes).",
+  "settings.profiles.timeouts_section": "Per-model timeouts (sec, 0 = use global)",
+  "settings.profiles.streaming_timeout": "Streaming total timeout",
+  "settings.profiles.streaming_idle_timeout": "Streaming idle timeout",
+  "settings.profiles.request_timeout": "Request timeout",
+  "settings.profiles.first_byte_timeout": "First byte timeout",
+  "settings.profiles.timeout_help": "0 = use global value from balancer BalancingSettings. > 0 overrides for this model only.",
+  "settings.profiles.invalid_n_ctx": "n_ctx must be in [256, 262144]",
+  "settings.profiles.advanced_toggle_show": "Show advanced",
+  "settings.profiles.advanced_toggle_hide": "Hide advanced",
+  "settings.profiles.refresh": "Refresh",
+
   // ===== gguf Settings tab — backend options (per-backend cppworker) =====
   "gguf.backend_options_title": "Backend load options (this cppworker)",
   "gguf.backend_options_desc": "Default llama.cpp load options for the selected backend. Saved to the worker's .env file. Per-model profiles (below) override n_ctx for specific models.",

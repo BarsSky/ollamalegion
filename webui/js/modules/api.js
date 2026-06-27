@@ -202,6 +202,78 @@ const Api = (function () {
             return getJson('/api/v1/gguf/backends');
         },
 
+        // ===== Per-Model Profiles (Q3 W3-4 — Session 15, cppworker-params.js) =====
+        // Управляются балансировщиком (НЕ отдельным cppworker'ом): список профилей
+        // общий для всех llama_cpp бэкендов. Каждый профиль — это набор параметров
+        // загрузки (n_ctx, batch_size, gpu_layers и т.д.), применяемый в 3-tier
+        // resolver'е между per-request body и per-backend default. Endpoint POST
+        // .../apply дополнительно делает reload модели на бэкендах, где она уже
+        // загружена (n_ctx immutable после LoadModel).
+        cppworkerModelProfiles: {
+            /**
+             * GET /api/v1/cppworker/model-profiles — список всех профилей.
+             * @returns {Promise<{models: Object<string, LlamaCppModelProfile>, total: number}>}
+             */
+            async list() {
+                return getJson('/api/v1/cppworker/model-profiles');
+            },
+
+            /**
+             * GET /api/v1/cppworker/model-profiles/{name} — один профиль.
+             * @param {string} modelName — имя модели (например, "gemma-4-E4B-it-Q4_K_M").
+             * @returns {Promise<{model: string, profile: LlamaCppModelProfile}>}
+             * @throws Error со status=404 если профиль не найден.
+             */
+            async get(modelName) {
+                return getJson('/api/v1/cppworker/model-profiles/' + encodeURIComponent(modelName));
+            },
+
+            /**
+             * PUT /api/v1/cppworker/model-profiles/{name} — создать или обновить.
+             * @param {string} modelName — имя модели.
+             * @param {Object} profile — {contextLength, batchSize, numGpuLayers, flashAttn?, numa?, useMmap?, notes?, streamingTimeoutSec?, ...}.
+             * @returns {Promise<Object>}
+             */
+            async upsert(modelName, profile) {
+                const response = await request(`${API_BASE}/api/v1/cppworker/model-profiles/${encodeURIComponent(modelName)}`, {
+                    method: 'PUT',
+                    body: JSON.stringify(profile)
+                });
+                return response.json();
+            },
+
+            /**
+             * DELETE /api/v1/cppworker/model-profiles/{name} — удалить профиль.
+             * @param {string} modelName — имя модели.
+             * @returns {Promise<Object>}
+             */
+            async remove(modelName) {
+                const response = await request(`${API_BASE}/api/v1/cppworker/model-profiles/${encodeURIComponent(modelName)}`, {
+                    method: 'DELETE'
+                });
+                return response.json();
+            },
+
+            /**
+             * POST /api/v1/cppworker/model-profiles/{name}/apply — save + reload
+             * модели на всех llama_cpp бэкендах, где она загружена.
+             * @param {string} modelName — имя модели.
+             * @param {Object} [profile] — опциональное частичное обновление профиля (merge с существующим).
+             * @returns {Promise<{model: string, profile: LlamaCppModelProfile, backends: Array<{backendId: string, status: string, message?: string}>}>}
+             */
+            async apply(modelName, profile) {
+                const options = { method: 'POST' };
+                if (profile && Object.keys(profile).length > 0) {
+                    options.body = JSON.stringify(profile);
+                }
+                const response = await request(
+                    `${API_BASE}/api/v1/cppworker/model-profiles/${encodeURIComponent(modelName)}/apply`,
+                    options
+                );
+                return response.json();
+            }
+        },
+
         // Generic error handler for UI
 
         handleError(err, fallbackMessage = 'Ошибка API') {

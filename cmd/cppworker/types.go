@@ -108,4 +108,48 @@ type reloadModelRequest struct {
 	NUMA        *bool  `json:"numa,omitempty"`
 	UseMmap     *bool  `json:"useMmap,omitempty"`
 	Force       *bool  `json:"force,omitempty"`
+	// Session 16 (2026-06-27): расширенные поля для Per-Model Profiles.
+	// Применяются при reload через /api/models/reload, если профиль содержит
+	// parallel/kvCacheType. nil/0 = использовать cppworker defaults.
+	Parallel *int `json:"parallel,omitempty"` // 0 = inherit (1)
+	// KVCacheType принимает строковое значение "f16"/"q8_0"/"q4_0"
+	// (а не int). Внутри маппится в bridge-числа через kvCacheTypeToString helper.
+	KVCacheType *string `json:"kvCacheType,omitempty"`
+}
+
+// loadWithParamsRequest — расширенный набор параметров для
+// endpoint POST /api/models/load-with-params (cppworker).
+//
+// Включает все поля loadModelRequest + дополнительные llama.cpp параметры:
+//   - NThreads        — CPU-потоки (0 = auto).
+//   - Parallel        — параллельные sequences для batched generation.
+//   - KVCacheType     — тип KV-cache quantization (0=F16, 1=Q8_0, 2=Q4_0).
+//                       Q8_0 экономит ~50% VRAM, perplexity delta < 0.1.
+//   - SplitMode       — режим multi-GPU split (0=layer, 1=row).
+//   - OverrideTensor  — переопределение dtype тензоров (regex-pattern).
+//
+// Все поля опциональные (omitempty) — handler использует defaults из
+// cppworker flags (*ctxSize, *gpuLayers, *nThreads и т.д.) если поле == nil/0.
+//
+// Совместимость: loadWithParamsRequest обратно совместим с loadModelRequest —
+// все поля имеют одинаковые имена в JSON.
+type loadWithParamsRequest struct {
+	Name          string    `json:"name"`
+	Path          string    `json:"path,omitempty"`
+	GPULayers     *int      `json:"gpuLayers,omitempty"`
+	ContextSize   *int      `json:"contextSize,omitempty"`
+	BatchSize     *int      `json:"batchSize,omitempty"`
+	TensorSplit   []float32 `json:"tensorSplit,omitempty"`
+	FlashAttnType *int      `json:"flashAttn,omitempty"`
+	NUMA          *bool     `json:"numa,omitempty"`
+	UseMmap       *bool     `json:"useMmap,omitempty"`
+
+	// Extended (load-with-params specific)
+	NThreads      *int    `json:"nThreads,omitempty"` // 0 = auto
+	Parallel      *int    `json:"parallel,omitempty"` // 0 = 1
+	// KVCacheType принимает строковое значение "f16"/"q8_0"/"q4_0".
+	// Внутри LoadModelOpts это тоже string (см. cppbackend.LoadModelOpts).
+	KVCacheType   *string `json:"kvCacheType,omitempty"`
+	SplitMode     *int    `json:"splitMode,omitempty"` // 0=layer, 1=row
+	OverrideTensor *string `json:"overrideTensor,omitempty"` // "blk\\..*=CPU"
 }

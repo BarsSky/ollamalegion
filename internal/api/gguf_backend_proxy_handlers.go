@@ -8,6 +8,27 @@ import (
 // ggufBackendProxyPath — общий диспетчер для проксирования запросов
 // от WebUI к CppWorker конкретного llama_cpp бэкенда.
 //
+// Дополнительный endpoint (Session 4 — P-1):
+//
+//	POST /api/v1/gguf/backends/{id}/proxy/api/models/load-with-params
+//
+// Поддерживает расширенные llama.cpp-параметры (nThreads, parallel,
+// kvCacheType, splitMode, overrideTensor) для тонкой настройки загрузки
+// модели. Пример body:
+//
+//	{
+//	  "name": "gemma-4-E4B-it-Q4_K_M",
+//	  "contextSize": 32768,
+//	  "gpuLayers": -2,           // -2 = AUTO
+//	  "kvCacheType": 1,           // 1 = Q8_0 (50% VRAM savings)
+//	  "parallel": 2,              // batched generation
+//	  "nThreads": 16,
+//	  "overrideTensor": "blk\\..*\\.ffn_.*_exps=CPU"
+//	}
+//
+// Базовые поля (name, path, contextSize, batchSize, gpuLayers, flashAttnType,
+// numa, useMmap, tensorSplit) полностью совместимы с /api/models/load.
+//
 // URL-формат:
 //
 //	GET  /api/v1/gguf/backends/{id}/proxy/info

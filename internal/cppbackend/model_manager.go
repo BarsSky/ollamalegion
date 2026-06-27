@@ -28,6 +28,14 @@ type GGUFModelMeta struct {
 	ModifiedAt   time.Time `json:"modifiedAt"`
 	Architecture string    `json:"architecture,omitempty"` // из GGUF header
 	FileType     string    `json:"fileType,omitempty"`     // Q4_K_M, Q5_K_M, F16, etc.
+
+	// Архитектурные параметры (для auto-tune n_ctx/gpu_layers).
+	// Заполняются лениво при первом обращении через GetModelMeta или
+	// eagerly в ScanModels (если файл маленький и читается за <100ms).
+	NLayers  int `json:"nLayers,omitempty"`
+	NEmbd    int `json:"nEmbd,omitempty"`
+	NHeads   int `json:"nHeads,omitempty"`
+	NKvHeads int `json:"nKvHeads,omitempty"`
 }
 
 // ModelManager — управляет модельками
@@ -148,7 +156,12 @@ func (m *ModelManager) ListModels() []GGUFModelMeta {
 	return result
 }
 
-// GetModelMeta возвращает метаданные конкретного GGUF файла
+// GetModelMeta возвращает метаданные конкретного GGUF файла.
+//
+// Если архитектурные параметры (NLayers/NEmbd/NHeads/NKvHeads) ещё не
+// прочитаны из GGUF header — читает их лениво через ReadGGUFHeader
+// и обновляет кэш. Это даёт ensureModelLoaded возможность рассчитать
+// max viable n_ctx ДО llama.cpp.LoadModel.
 func (m *ModelManager) GetModelMeta(filename string) (*GGUFModelMeta, error) {
 	m.mu.RLock()
 	meta, exists := m.ggufFiles[filename]
@@ -156,6 +169,31 @@ func (m *ModelManager) GetModelMeta(filename string) (*GGUFModelMeta, error) {
 
 	if !exists {
 		return nil, fmt.Errorf("model %s not found in models directory", filename)
+	}
+
+	// Lazy-load архитектурных параметров из GGUF header.
+	if meta.NLayers == 0 || meta.NEmbd == 0 || meta.NHeads == 0 {
+		if hdr, err := ReadGGUFHeader(meta.Path); err == nil && hdr != nil {
+			m.mu.Lock()
+			if meta.NLayers == 0 {
+				meta.NLayers = hdr.NLayers
+			}
+			if meta.NEmbd == 0 {
+				meta.NEmbd = hdr.NEmbd
+			}
+			if meta.NHeads == 0 {
+				meta.NHeads = hdr.NHeads
+			}
+			if meta.NKvHeads == 0 && hdr.NKvHeads > 0 {
+				meta.NKvHeads = hdr.NKvHeads
+			}
+			if meta.Architecture == "" {
+				meta.Architecture = hdr.Architecture
+			}
+			m.mu.Unlock()
+		}
+		// Если ReadGGUFHeader упал — caller использует fallback на
+		// estimateLayersFromFileSize (см. Backend.checkVRAMForModel).
 	}
 
 	return meta, nil

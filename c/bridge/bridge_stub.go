@@ -116,6 +116,10 @@ type ModelConfig struct {
 	YarnBetaSlow      float32
 	NoKVOffload       bool
 	KVCacheType       string
+	// Session 16 (2026-06-27): число параллельных sequences (n_parallel в llama.cpp).
+	// В stub-режиме не используется, но должен присутствовать для совместимости
+	// типов между bridge.go (build tag !llama_stub) и bridge_stub.go (build tag llama_stub).
+	NParallel int
 	RMSNormEps        float32
 	NoMemoryMap       bool
 	RPCBackend        string

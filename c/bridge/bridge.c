@@ -394,6 +394,45 @@ ModelHandle bridge_load_model(const ModelConfig* config, char** error_msg) {
     ctx_params.rope_freq_base = config->rope_freq_base > 0 ? config->rope_freq_base : 0.0f;
     ctx_params.rope_freq_scale = config->rope_freq_scale > 0 ? config->rope_freq_scale : 0.0f;
 
+    // ============================================================
+    // Session 16 (2026-06-27): Parallel + KVCacheType.
+    //
+    // В актуальной llama.cpp (b4500+) llama_context_params::n_parallel нет;
+    // есть n_seq_max (max number of sequences). Это и есть parallel slot
+    // count. 0 (default в llama_context_default_params) означает 1.
+    //
+    // Применяем только если явно > 0 — иначе оставляем default (= 1).
+    // Значения > 1 нужны для multi-slot batched generation
+    // (например, OpenWebUI / Cline параллельные запросы к одной модели).
+    // VRAM растёт линейно: KV-cache × n_seq_max.
+    if (config->n_parallel > 0) {
+        ctx_params.n_seq_max = (uint32_t)config->n_parallel;
+        printf("[bridge] parallel sequences (n_seq_max): %d\n", ctx_params.n_seq_max);
+    }
+
+    // kv_cache_type — управление квантизацией KV-cache через (type_k, type_v).
+    // Маппинг из Go (kvCacheTypeToBridgeInt):
+    //   0 = default (наследуем из llama_context_default_params → F16/F16)
+    //   1 = Q8_0 (-50% VRAM, минимальная потеря)
+    //   2 = Q4_0 (-75% VRAM, заметная потеря на длинных контекстах)
+    // [EXPERIMENTAL] в llama.cpp — может не работать на всех бэкендах.
+    switch (config->kv_cache_type) {
+        case 1:
+            ctx_params.type_k = GGML_TYPE_Q8_0;
+            ctx_params.type_v = GGML_TYPE_Q8_0;
+            printf("[bridge] KV cache type: Q8_0 (-50%% VRAM)\n");
+            break;
+        case 2:
+            ctx_params.type_k = GGML_TYPE_Q4_0;
+            ctx_params.type_v = GGML_TYPE_Q4_0;
+            printf("[bridge] KV cache type: Q4_0 (-75%% VRAM)\n");
+            break;
+        case 0:
+        default:
+            // default — F16/F16 из llama_context_default_params()
+            break;
+    }
+
     // Включаем поддержку эмбеддингов — без этого llama_get_embeddings() всегда
     // возвращает NULL, и bridge_get_embeddings падает с ошибкой.
     // Флаг embeddings включает запись логов в KV-cache для всех токенов prompt.

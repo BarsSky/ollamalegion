@@ -30,6 +30,7 @@ import "C"
 import (
 	"encoding/json"
 	"fmt"
+	"os"
 	"runtime"
 	"runtime/cgo"
 	"sync"
@@ -146,6 +147,10 @@ type ModelConfig struct {
 	// KV Cache
 	NoKVOffload bool
 	KVCacheType string
+	// Session 16 (2026-06-27): число параллельных sequences (n_parallel в llama.cpp).
+	// 0 = дефолт cppworker (=1). >0 = multi-slot batched generation.
+	// Требует больше VRAM (KV-cache × parallel слотов).
+	NParallel int
 	// Нормализация
 	RMSNormEps float32
 	// Прочее
@@ -345,6 +350,19 @@ func LoadModel(cfg ModelConfig) (*ModelHandle, error) {
 	if cfg.UseMlock {
 		cCfg.use_mlock = 1
 	}
+
+	// Session 16 (2026-06-27): Parallel + KVCacheType.
+	// В актуальной llama.cpp (b4500+) "n_parallel" нет — есть n_seq_max
+	// (max number of sequences, см. llama_context_params).
+	// В C-bridge пробрасываем напрямую в n_seq_max.
+	cCfg.n_parallel = C.int(cfg.NParallel)
+	// kv_cache_type в Go API: "f16" | "q8_0" | "q4_0" | "" (inherit default).
+	// Маппим в int по схеме, документированной в bridge.h:
+	//   f16  → 0 (default, наследуется из llama_context_default_params)
+	//   q8_0 → 1 (enum ggml_type GGML_TYPE_Q8_0 = 8)
+	//   q4_0 → 2 (enum ggml_type GGML_TYPE_Q4_0 = 2)
+	// Если строка пустая или неизвестная — 0 (bridge.c интерпретирует как default).
+	cCfg.kv_cache_type = C.int(kvCacheTypeToBridgeInt(cfg.KVCacheType))
 
 	var errMsg *C.char
 	handle := C.bridge_load_model(&cCfg, &errMsg)
@@ -756,3 +774,35 @@ func streamCallbackGo(token *C.char, tokenLen C.int, userData unsafe.Pointer) C.
 	}
 	return 0 // stop
 }
+
+// kvCacheTypeToBridgeInt конвертирует Go-side строковое представление
+// kv_cache_type в int, ожидаемый C-bridge (см. c/bridge/bridge.c::bridge_load_model
+// и c/bridge/bridge.h::ModelConfig.kv_cache_type).
+//
+// Схема (согласована с bridge.h и cppworker):
+//   "" / "f16" / неизвестное → 0  (default = llama.cpp F16, наследуется из default_params)
+//   "q8_0"                  → 1  (GGML_TYPE_Q8_0 = -50% VRAM)
+//   "q4_0"                  → 2  (GGML_TYPE_Q4_0 = -75% VRAM)
+//
+// Возвращает 0 для пустой или неизвестной строки — это safe default
+// (F16, то есть наиболее точный и совместимый режим).
+func kvCacheTypeToBridgeInt(s string) int {
+	switch s {
+	case "", "f16":
+		return 0
+	case "q8_0":
+		return 1
+	case "q4_0":
+		return 2
+	default:
+		// Неизвестное значение (например, typo в профиле модели) — логируем
+		// warning в stderr cppworker'а и fallback на default (F16).
+		// Без warning пользователь не поймёт, почему его q8_0 не применился.
+		fmt.Fprintf(stderrFile(), "[bridge] unknown kv_cache_type %q, falling back to default F16\n", s)
+		return 0
+	}
+}
+
+// stderrFile — для warning-логов из kvCacheTypeToBridgeInt и подобных
+// утилит, которые не должны ломать основной flow LoadModel.
+var stderrFile = func() *os.File { return os.Stderr }

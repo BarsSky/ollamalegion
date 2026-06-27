@@ -121,7 +121,7 @@ func handleChat(w http.ResponseWriter, r *http.Request) {
 	}
 
 	params := buildGenerationParams(genReq)
-	applyCppCtxHeader(r, &params)
+	ApplyCppCtxHeader(r, &params)
 	// Antiprompts для gemma/non-gemma
 	params.Antiprompts = append(params.Antiprompts, defaultAntipromptsForModel(req.Model)...)
 	logger.Get().Debugw("handleChat: antiprompts",

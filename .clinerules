@@ -199,6 +199,121 @@ Root cause: `internal/balancer/nctx_reload.go:makeRejectPlan` **всегда**
 - `bridge_code: 2` (`NCtxNeedsReload`) — reload должен сработать автоматически,
   но если нет — проверьте `LB_NCTX_RELOAD_ENABLED=true` и `CPPWORKER_AUTO_OFFLOAD=true`.
 
+#### AutoTuneNCtx на LOAD (2026-06-26)
+
+Проблема: **qwen3.6-72B (22 GB) на 20 GB VRAM** не загружалась — cppworker
+использовал хардкод `estimatedLayers=80` и `kvReserve=2 GB` для расчёта `gpu_layers`,
+**но не пересчитывал `n_ctx`**. На 20 GB VRAM weights + KV для n_ctx=32768
+не влезали → llama.cpp.LoadModel падал с OOM, пользователь видел либо
+молчаливый fallback на n_ctx=4096, либо ошибку. На 8 GB VRAM работало
+(модель целиком уходила в mmap, gpu_layers=0).
+
+Решение: `AutoTuneNCtx` теперь вызывается уже в `ensureModelLoaded`
+**ДО** `backend.LoadModelWithOpts`, а не только при RAM-fallback reload.
+
+**Файлы и изменения:**
+
+- **`internal/cppbackend/model_manager.go`** — `GGUFModelMeta` расширен
+  полями `NLayers`, `NEmbd`, `NHeads`, `NKvHeads`, заполняются **лениво**
+  через `cppbackend.ReadGGUFHeader` (без загрузки модели в llama.cpp)
+  при первом обращении к `GetModelMeta`. Читаются только KV-блоки header'а
+  (~4-16 KB файла), не тензоры.
+- **`internal/cppbackend/backend.go`** — публичная обёртка `ReadGGUFHeader(path)`
+  над существующей `readGGUFHeaderInfo` (использует `ggufKeyMap` для O(1)
+  маппинга ключей на поля).
+- **`cmd/cppworker/lazyload_calc.go`** (новый файл, ~250 LOC) —
+  `calculateLazyLoadOpts(modelName, requestedNCtx, requestedGPULayers, defaults)`:
+  - **Stage 1 (`exact_fit`)**: все weights + KV-cache влезают в VRAM → opts как есть.
+  - **Stage 2 (`partial_offload`)**: уменьшаем `gpu_layers`, остальные веса через
+    `mmap` в RAM. n_ctx сохраняется.
+  - **Stage 3 (`reduced_nctx`)**: `gpu_layers=0` (CPU-only через mmap) +
+    n_ctx = `maxViableNCtx` (рассчитан по реальному `kvPerToken =
+    4 * NLayers * NKvHeads * headDim`).
+  - **Fallback (`fallback_no_meta`/`fallback_no_fit`)**: если архитектура
+    неизвестна (битый header) или модель не влезает даже в RAM → возвращаем
+    opts как есть, llama.cpp попытается сам и вернёт понятную ошибку.
+- **`cmd/cppworker/lazyload.go:ensureModelLoaded`** — вызов `calculateLazyLoadOpts`
+  ДО `LoadModelWithOpts`. Старая эвристика с хардкодами осталась как fallback
+  для `CPPWORKER_AUTO_TUNE_NCTX_ON_LOAD=false`.
+
+**ENV-флаг:**
+
+| Env | Default | Что делает |
+|---|---|---|
+| `CPPWORKER_AUTO_TUNE_NCTX_ON_LOAD` | `true` | Отключает новое поведение (старая логика с хардкодами) |
+
+**Acceptance criteria:**
+- `qwen3.6-72B` (22 GB) на 20 GB VRAM + n_ctx=32768 →
+  `source=partial_offload, applied_gpu=33 (из 80), applied_nctx=32768,
+  UseMmap=true`. Тест `TestCalculateLazyLoadOpts_Qwen36_On20GBVRAM` PASS.
+- `gemma-3 4B` (5 GB) на 8 GB VRAM + n_ctx=32768 → `n_ctx` сохраняется.
+- Битый GGUF header → `fallback_no_meta`, opts как есть.
+- 17 unit-тестов в `cmd/cppworker/lazyload_calc_test.go` +
+  `cmd/cppworker/safe_stream_writer_test.go` — все зелёные.
+
+#### Безопасный стрим-обрыв (2026-06-26)
+
+Проблема: **«обрыв ответа без каких-либо ошибок»** — после обрыва клиента
+(Cline/OpenWebUI/Roo Code закрыл HTTP-соединение) cppworker продолжал писать
+в мёртвый socket через локальные `safeFprintf/safeFlush` в `writeOpenAIChatStream`,
+получая `broken pipe` без логирования. Пользователь видел пустой/обрезанный
+ответ без объяснений.
+
+Решение: **`safeStreamWriter`** + диагностический endpoint `/debug/last-stream`:
+
+- **`cmd/cppworker/safe_stream_writer.go`** (новый) — потокобезопасная обёртка
+  над `http.ResponseWriter` для streaming-эндпоинтов (SSE/NDJSON):
+  - Проверяет `ctx.Done()` перед каждой операцией (`Writef`, `Write`, `Flush`).
+  - Логирует первый write error с категорией `client disconnected?`.
+  - После первой ошибки writer помечается `broken`, все последующие
+    операции — no-op (без шума `broken pipe` в логах).
+  - Счётчики `bytesWritten`, `writeErrors`, `tokensSent` (atomic).
+- **`cmd/cppworker/debug_last_stream.go`** (новый) — `LastStreamInfo` snapshot
+  + endpoint `GET /api/v1/cppworker/debug/last-stream` (с `X-API-Token`).
+  Возвращает JSON:
+  ```json
+  {
+    "model": "gemma-4-E4B-it-Q4_K_M",
+    "handler": "writeOpenAIChatStream",
+    "tokens_sent": 142,
+    "bytes_written": 4096,
+    "write_errors": 1,
+    "duration_ms": 12500,
+    "disconnected_at": "2026-06-26T16:30:00Z",
+    "reason": "write_error",
+    "last_write_err": "broken pipe"
+  }
+  ```
+- **`cmd/cppworker/handlers_openai.go:writeOpenAIChatStream`** — переписан
+  на `safeStreamWriter`. Убрана race-prone конструкция `defer close(tokenDone)`
+  (заменена на явный `stopCh := make(chan struct{})` + `sync.WaitGroup` —
+  горутина гарантированно выходит до того, как defer попытается закрыть канал).
+- **`cmd/cppworker/router.go`** — endpoint `GET /api/v1/cppworker/debug/last-stream`
+  и `POST .../debug/last-stream/clear` зарегистрированы с `authMiddleware`.
+
+**Как использовать для диагностики:**
+
+```bash
+# После обрыва стрима:
+curl -H "X-API-Token: $LB_TOKEN" \
+  http://localhost:18092/api/v1/cppworker/debug/last-stream | jq .
+
+# Очистить snapshot:
+curl -X POST -H "X-API-Token: $LB_TOKEN" \
+  http://localhost:18092/api/v1/cppworker/debug/last-stream/clear
+```
+
+**Acceptance criteria:**
+- `TestSafeStreamWriter_ContextCanceled` PASS — после `ctx.Done()` `Writef/Flush`
+  возвращают `false`, writer помечается `broken`.
+- `TestSafeStreamWriter_WriteError` PASS — `last_write_err: "broken pipe"`
+  в snapshot, `write_errors: 1`.
+- `TestSafeStreamWriter_RealisticStreaming` PASS — 50 токенов, отмена на 25-м,
+  только первые 25 записаны, writer `broken`.
+- 10 тестов в `cmd/cppworker/safe_stream_writer_test.go` — все зелёные.
+- `go build -tags llama_stub -o cppworker-stub.exe ./cmd/cppworker` — exit 0.
+- `go build -tags llama_stub -o balancer-stub.exe ./cmd/balancer` — exit 0.
+
 **Acceptance criteria:**
 - Запрос с `actual_tokens > current_n_ctx` → HTTP 413 с `error: "prompt_exceeds_context"`
   и suggestion «reduce conversation history / tools[] / system prompt».

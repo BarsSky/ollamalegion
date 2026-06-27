@@ -70,12 +70,6 @@ type openAIChatMessage struct {
 	Name       string           `json:"name,omitempty"`
 }
 
-// applyCppCtxHeader — backwards-compat алиас для ApplyCppCtxHeader из nctx_clamp.go.
-// TODO(refactoring): заменить все вызовы на ApplyCppCtxHeader и удалить этот alias.
-func applyCppCtxHeader(r *http.Request, params *bridge.GenerationParams) {
-	ApplyCppCtxHeader(r, params)
-}
-
 // openAIToChatMessage converts an openAIChatMessage slice to chatMessage slice
 // for use with the canonical buildChatPrompt from handlers_chat.go.
 // Сохраняет tool_calls, tool_call_id, name для поддержки function calling.
@@ -260,7 +254,7 @@ func handleV1ChatCompletions(w http.ResponseWriter, r *http.Request) {
 	if req.NumCtx > 0 {
 		params.NCtxOverride = req.NumCtx
 	}
-	applyCppCtxHeader(r, &params)
+	ApplyCppCtxHeader(r, &params)
 
 	// Antiprompts: дефолтные для формата промпта + пользовательские req.Stop.
 	defaultAP := defaultAntipromptsForModel(req.Model)
@@ -563,9 +557,6 @@ func writeOpenAIChatStream(w http.ResponseWriter, r *http.Request, modelName, pr
 	chatID := fmt.Sprintf("chatcmpl-%d", time.Now().UnixNano())
 	created := time.Now().Unix()
 
-	tokenDone := make(chan struct{})
-	defer close(tokenDone)
-
 	// 2026-06-25: snapshot для /v1/chat/completions streaming.
 	var streamErr error
 	defer func() {
@@ -574,42 +565,68 @@ func writeOpenAIChatStream(w http.ResponseWriter, r *http.Request, modelName, pr
 
 	keepaliveInterval := 15 * time.Second
 
-	var writeMu sync.Mutex
-	safeFlush := func() {
-		writeMu.Lock()
-		defer writeMu.Unlock()
-		flusher.Flush()
-	}
-	safeFprintf := func(format string, a ...interface{}) {
-		writeMu.Lock()
-		defer writeMu.Unlock()
-		fmt.Fprintf(w, format, a...)
-	}
+	// === 2026-06-26 BUGFIX: safeStreamWriter ===
+	//
+	// Раньше использовались локальные safeFprintf/safeFlush, которые
+	// НЕ проверяли ctx.Done() и НЕ возвращали write error. После обрыва
+	// клиента cppworker продолжал писать в мёртвый socket, получая
+	// "broken pipe" без логирования (issue «обрыв ответа без каких-либо
+	// ошибок»). safeStreamWriter:
+	//   - проверяет ctx.Done() перед каждой операцией;
+	//   - логирует первый write error;
+	//   - записывает snapshot в /api/v1/cppworker/debug/last-stream;
+	//   - потокобезопасен.
+	sw := newSafeStreamWriter(w, r, "writeOpenAIChatStream", modelName)
+
+	// === 2026-06-26 BUGFIX: явный stopCh для keepalive goroutine ===
+	//
+	// Старая версия использовала defer close(tokenDone) — это создавало
+	// race: горутина могла выйти по `<-ctx.Done()` ДО того, как defer
+	// main-функции выполнится, и если бы потом defer пытался закрыть уже
+	// закрытый канал, был бы panic. Также при коротких стримах (<15s)
+	// defer мог закрыть tokenDone ДО того, как горутина успеет среагировать.
+	// Решение: явный stopCh, который закрывается в defer с wg.Wait().
+	stopCh := make(chan struct{})
+	var keepaliveWG sync.WaitGroup
 
 	// Накапливаем полный output параллельно для финального чанка + tool_calls detection.
 	// Это критично: иначе финальный SSE чанк имел бы пустой delta.content,
 	// и OpenWebUI считал бы ответ пустым после done:true.
 	var outputBuf strings.Builder
 
-	keepaliveDone := make(chan struct{})
+	keepaliveWG.Add(1)
 	go func() {
+		defer keepaliveWG.Done()
 		ticker := time.NewTicker(keepaliveInterval)
 		defer ticker.Stop()
-		defer close(keepaliveDone)
 		for {
 			select {
 			case <-ctx.Done():
 				return
-			case <-tokenDone:
+			case <-stopCh:
 				return
 			case <-ticker.C:
-				safeFprintf(": keepalive\n\n")
-				safeFlush()
+				if !sw.Writef(": keepalive\n\n") || !sw.Flush() {
+					// Client disconnected — выходим.
+					return
+				}
 			}
 		}
 	}()
 
+	// Гарантируем остановку keepalive goroutine и ожидание её завершения
+	// при любом выходе (нормальный return, panic, disconnect).
+	defer func() {
+		close(stopCh)
+		keepaliveWG.Wait()
+	}()
+
 	callback := func(token string) bool {
+		// Безопасная проверка: если контекст отвалился или writer сломан —
+		// прекращаем генерацию (callback должен вернуть false).
+		if sw.IsBroken() {
+			return false
+		}
 		select {
 		case <-ctx.Done():
 			return false
@@ -635,8 +652,11 @@ func writeOpenAIChatStream(w http.ResponseWriter, r *http.Request, modelName, pr
 			},
 		}
 		jsonData, _ := json.Marshal(chunk)
-		safeFprintf("data: %s\n\n", jsonData)
-		safeFlush()
+		if !sw.Writef("data: %s\n\n", jsonData) {
+			return false // client disconnected
+		}
+		sw.Flush()
+		sw.IncTokens(1)
 		return true
 	}
 	// writeOpenAIChatStream вызывается только когда tools НЕ заданы (для tools идёт буферизированный путь в handleV1ChatCompletions). Поэтому reload при n_ctx overflow разрешён.
@@ -662,9 +682,9 @@ func writeOpenAIChatStream(w http.ResponseWriter, r *http.Request, modelName, pr
 				"suggestion": "Reduce the number of tools, chat history length, or increase n_ctx in the model profile.",
 			}
 			errJSON, _ := json.Marshal(errChunk)
-			safeFprintf("data: %s\n\n", errJSON)
-			safeFprintf("data: [DONE]\n\n")
-			safeFlush()
+			sw.Writef("data: %s\n\n", errJSON)
+			sw.Writef("data: [DONE]\n\n")
+			sw.Flush()
 			return
 		}
 		// Специальная обработка reload-loop-limit (HTTP 413 в SSE-чанке).
@@ -687,9 +707,9 @@ func writeOpenAIChatStream(w http.ResponseWriter, r *http.Request, modelName, pr
 				"elapsed_seconds": rllErr.Elapsed.Seconds(),
 			}
 			errJSON, _ := json.Marshal(errChunk)
-			safeFprintf("data: %s\n\n", errJSON)
-			safeFprintf("data: [DONE]\n\n")
-			safeFlush()
+			sw.Writef("data: %s\n\n", errJSON)
+			sw.Writef("data: [DONE]\n\n")
+			sw.Flush()
 			return
 		}
 		errChunk := map[string]interface{}{
@@ -707,9 +727,9 @@ func writeOpenAIChatStream(w http.ResponseWriter, r *http.Request, modelName, pr
 			"error": streamErr.Error(),
 		}
 		errJSON, _ := json.Marshal(errChunk)
-		safeFprintf("data: %s\n\n", errJSON)
-		safeFprintf("data: [DONE]\n\n")
-		safeFlush()
+		sw.Writef("data: %s\n\n", errJSON)
+		sw.Writef("data: [DONE]\n\n")
+		sw.Flush()
 		return
 	}
 
@@ -739,9 +759,9 @@ func writeOpenAIChatStream(w http.ResponseWriter, r *http.Request, modelName, pr
 			"error": "model produced an empty response (inference succeeded but output is empty). This may indicate n_ctx too small, prompt too long, or model issue.",
 		}
 		errJSON, _ := json.Marshal(errChunk)
-		safeFprintf("data: %s\n\n", errJSON)
-		safeFprintf("data: [DONE]\n\n")
-		safeFlush()
+		sw.Writef("data: %s\n\n", errJSON)
+		sw.Writef("data: [DONE]\n\n")
+		sw.Flush()
 		return
 	}
 
@@ -775,9 +795,9 @@ func writeOpenAIChatStream(w http.ResponseWriter, r *http.Request, modelName, pr
 		},
 	}
 	stopJSON, _ := json.Marshal(stopChunk)
-	safeFprintf("data: %s\n\n", stopJSON)
-	safeFprintf("data: [DONE]\n\n")
-	safeFlush()
+	sw.Writef("data: %s\n\n", stopJSON)
+	sw.Writef("data: [DONE]\n\n")
+	sw.Flush()
 }
 
 // handleV1Completions — OpenAI-совместимый /v1/completions endpoint.
@@ -837,7 +857,7 @@ func handleV1Completions(w http.ResponseWriter, r *http.Request) {
 	if req.NumCtx > 0 {
 		params.NCtxOverride = req.NumCtx
 	}
-	applyCppCtxHeader(r, &params)
+	ApplyCppCtxHeader(r, &params)
 
 	if req.Stream {
 		writeOpenAICompletionStream(w, r, req.Model, req.Prompt, params)

@@ -92,6 +92,14 @@ fi
 export CPPWORKER_BALANCER_URL="${CPPWORKER_BALANCER_URL:-${BALANCER_URL:-}}"
 export CPPWORKER_BALANCER_TOKEN="${CPPWORKER_BALANCER_TOKEN:-${BALANCER_API_TOKEN:-}}"
 
+# ---- Cross-sync API token для authMiddleware ----
+# Go-сторона (cmd/cppworker/utils.go:authMiddleware) теперь читает все три env-имени
+# (API_TOKEN, CPPWORKER_API_TOKEN, BALANCER_API_TOKEN), но для безопасности
+# пробрасываем CPPWORKER_API_TOKEN → API_TOKEN, чтобы cppworker всегда имел
+# рабочий канонический токен. Без этого bundled compose получал HTTP 401 на
+# /api/models/reload от балансировщика (см. env_log.txt строки 72, 114, 123, 135).
+export API_TOKEN="${API_TOKEN:-${CPPWORKER_API_TOKEN:-${BALANCER_API_TOKEN:-}}}"
+
 # ---- Export advertise host for register-with-balancer.sh ----
 # register-with-balancer.sh читает CPPWORKER_ADVERTISED_HOST для поля "host" в JSON регистрации.
 # Если не задан, будет использовано имя контейнера (docker-compose задаёт по умолчанию).

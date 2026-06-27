@@ -986,12 +986,26 @@ func (c *NCtxReloadCoordinator) Snapshot() map[string]interface{} {
 	}
 }
 
-// BackendMetricsFromState возвращает текущее состояние backend (для
-// интеграции в BackendMetrics). TODO: добавить поле в types.BackendMetrics
-// в следующей итерации.
+// BackendMetricsFromState возвращает минимальный снимок состояния backend,
+// агрегированный из состояния n_ctx reload-координатора. Используется для
+// отдачи в /api/v1/metrics/cluster и debug-эндпоинтах, где нужен
+// инициализированный BackendMetrics с заполненными ID/Timestamp.
+//
+// Заполняются только поля, которые координатор реально знает:
+//   - ID, Timestamp — всегда;
+//   - RequestID — пусто (источник — middleware, а не координатор);
+//   - WarmingUpModels — пустой slice (для совместимости с JSON-схемой).
+//
+// Nil-safe: на nil-получателе возвращает nil (как и другие метрики).
 func (c *NCtxReloadCoordinator) BackendMetricsFromState(backendID string) *types.BackendMetrics {
-	// Заглушка — полная интеграция с types.BackendMetrics будет позже.
-	return nil
+	if c == nil {
+		return nil
+	}
+	return &types.BackendMetrics{
+		ID:              backendID,
+		Timestamp:       time.Now(),
+		WarmingUpModels: []string{},
+	}
 }
 
 // Shutdown — освобождает ресурсы координатора. Используется в тестах

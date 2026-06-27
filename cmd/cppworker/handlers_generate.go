@@ -197,7 +197,7 @@ func runGenerateCore(w http.ResponseWriter, r *http.Request, req generateRequest
 	}
 
 	params := buildGenerationParams(req)
-	applyCppCtxHeader(r, &params)
+	ApplyCppCtxHeader(r, &params)
 	return params, req.Prompt, true
 }
 

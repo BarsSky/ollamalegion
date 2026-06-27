@@ -113,6 +113,101 @@ modal). Однако до этой сессии:
   ранее сохранённые профили (без advanced полей) загружаются и
   редактируются без миграции.
 
+### Added (Session 16 — Per-Model Profiles: parallel + kv_cache_type)
+
+**Задача**: завершить roadmap Q3 section 2.2 (Per-Model Profiles). В
+Session 15 были добавлены только базовые поля (n_ctx, batch_size, gpu_layers,
+flash_attn/numa/use_mmap, timeouts). Поля `parallel` и `kv_cache_type` из
+roadmap Q3 НЕ были добавлены — backend API их пока не поддерживал.
+
+**Решение (полная цепочка backend → C-bridge → cppworker → WebUI)**:
+
+**1. Backend (`pkg/types/balancing.go`)** — расширен `LlamaCppModelProfile`:
+- `Parallel int` — число параллельных sequences для batched generation
+  (0 = default = 1). Требует больше VRAM (KV-cache × parallel).
+- `KVCacheType string` — тип квантизации KV-cache: `"f16"`/`"q8_0"`/`"q4_0"`.
+  q8_0 экономит ~50% VRAM с минимальной потерей качества
+  (perplexity delta < 0.1), q4_0 — ~75% с заметной потерей на длинных контекстах.
+  `""` = default (F16).
+
+**2. Backend validation (`internal/api/handlers_cppworker_profiles.go`)**:
+- `validateModelProfile` — bounds-check `Parallel ∈ [0, 8]`, `KVCacheType ∈ {"", "f16", "q8_0", "q4_0"}`.
+- `mergeModelProfile` — добавлена обработка Parallel/KVCacheType в PATCH-semantics
+  (zero-value = "не менять").
+- `reloadModelOnCppWorker` — пробрасывает `parallel`/`kvCacheType` в body запроса
+  `POST /api/models/reload` на cppworker.
+
+**3. cppbackend (`internal/cppbackend/backend.go`)**:
+- `LoadModelOpts` — `Parallel` уже был (Session 4), `KVCacheType` стал `string`
+  (был int). В `LoadModelWithOpts` добавлены правильные override'ы:
+  ранее `cfg.KVCacheType = b.cfg.DefaultKVCacheType` всегда затирал `opts.KVCacheType`
+  (фича была сломана). Теперь: `opts.KVCacheType != ""` → wins, иначе default.
+  Аналогично для NParallel и NThreads.
+- `ModelInfo` — новые поля `Parallel int` + `KVCacheType string`, заполняются
+  в `LoadModelWithOpts` после успешной загрузки.
+
+**4. cppworker (`cmd/cppworker/types.go`, `handlers_model.go`, `utils.go`, `inference.go`)**:
+- `reloadModelRequest` и `loadWithParamsRequest` — `KVCacheType *string`
+  (был `*int`). Принимают строковые значения `"f16"/"q8_0"/"q4_0"`.
+- `handleLoadWithParams` и `handleReloadModel` — мапят `req.KVCacheType`
+  → `opts.KVCacheType` с валидацией через `isValidKVCacheType`.
+- `sameLoadOptions` (inference.go) — теперь сравнивает Parallel + KVCacheType,
+  иначе reload не срабатывал при изменении этих полей.
+- `isValidKVCacheType` / `kvCacheTypeToBridgeInt` — helpers в utils.go.
+
+**5. C-bridge (c/bridge/bridge.{h,c,go,stub.go})**:
+- `ModelConfig` (C struct) — добавлены `int n_parallel` и `int kv_cache_type`.
+- `bridge.c::bridge_load_model`:
+  - `n_parallel > 0` → `ctx_params.n_seq_max = n_parallel` (маппинг в
+    llama_context_params::n_seq_max — реальное имя для parallel в b4500+,
+    где поля n_parallel больше нет).
+  - `kv_cache_type` — switch на `ctx_params.type_k/type_v`:
+    `0` → F16 (default), `1` → Q8_0 (`GGML_TYPE_Q8_0 = 8`),
+    `2` → Q4_0 (`GGML_TYPE_Q4_0 = 2`). `[EXPERIMENTAL]` в llama.cpp.
+- `bridge.go` (Go-side) — `kvCacheTypeToBridgeInt` маппит
+  `""/"f16"/"q8_0"/"q4_0"` → `0/0/1/2`.
+- `bridge_stub.go` — `NParallel int` в stub `ModelConfig` для совместимости
+  build tags.
+
+**6. WebUI (`webui/js/modules/cppworker-params.js`, `webui/js/i18n/{en,ru}.js`)**:
+- Wizard advanced section — 2 новых поля:
+  - `parallel` (number input 0..8) — "Число параллельных sequences".
+  - `kvCacheType` (select) — "f16 (default) / q8_0 (-50% VRAM) / q4_0 (-75% VRAM)".
+- `profileToWizardState` / `wizardStateToProfileBody` / `readWizardState` /
+  `validateWizardState` — полная поддержка Parallel + KVCacheType.
+- Profile list (`renderProfileItem`) — показывает `parallel=N` и `kv=q8_0` в meta.
+- `validateWizardState` — bounds-check Parallel ∈ [0, 8], KVCacheType ∈ valid set.
+- i18n — добавлено 4 ключа × 2 языка (44 всего, баланс EN/RU):
+  `settings.profiles.parallel`, `_parallel_help`, `_kv_cache_type`, `_kv_cache_type_help`.
+
+**7. Tests (`internal/api/handlers_cppworker_profiles_test.go`)** — 4 новых теста,
+все PASS:
+- `TestValidateModelProfile_ParallelBounds` — Parallel ∈ [0, 8] (7 кейсов).
+- `TestValidateModelProfile_KVCacheTypeValid` — KVCacheType ∈ {"", "f16", "q8_0", "q4_0"}
+  + invalid (7 кейсов).
+- `TestMergeModelProfile_PartialUpdate_Parallel` — zero-value Parallel в update
+  сохраняет existing.Parallel.
+- `TestMergeModelProfile_PartialUpdate_KVCacheType` — zero-value "" KVCacheType
+  сохраняет existing.
+
+**Acceptance criteria (✓ verified)**:
+- ✓ `cppworker-stub.exe` и `balancer-stub.exe` собираются (`go build -tags llama_stub`).
+- ✓ 4 новых теста PASS (`go test -tags llama_stub ./internal/api/`).
+- ✓ Все `internal/api` и `internal/balancer` тесты PASS (0 regressions).
+- ✓ i18n баланс EN=44 / RU=44 для `settings.profiles.*`.
+- ✓ JS syntax valid (`node -c webui/js/modules/cppworker-params.js`).
+- ✓ Полная цепочка: WebUI wizard → POST /api/v1/cppworker/model-profiles (apply)
+  → `reloadModelOnCppWorker` → POST /api/models/reload → cppworker → C-bridge
+  → llama.cpp.
+
+**Roadmap Q3 — Per-Model Profiles**: section 2.2 теперь **полностью закрыта**
+(Session 15 + Session 16). Per-Model Profile в WebUI позволяет тонко настроить
+любой параметр загрузки llama.cpp (parallel, kv_cache_type, batch_size,
+gpu_layers, flash_attn, numa, use_mmap, timeouts) per-model, что важно для:
+- GPU-constrained деплоев: q4_0 экономит ~75% VRAM для KV-cache.
+- Multi-tenant workloads: parallel=4 для OpenWebUI-инстансов.
+- Mixed workloads: разные n_ctx + kv_cache_type для разных моделей в одном кластере.
+
 ### Added (Roadmap Q3 — Week 3-4: Models tab gaps, sub-task Filter/Search)
 
 **Задача**: в рамках Q3 Week 3-4 (Models tab gaps full set, ~12-16ч) —

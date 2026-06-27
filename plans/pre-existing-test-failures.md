@@ -335,9 +335,9 @@ non-streaming OpenAI chat completion, а тест ожидает `application/js
 | PF-1 #1 | `TestBackendsHandler_Get` | `internal/api/handlers_test.go:181` | ✅ FIXED Session 2 |
 | PF-1 #2 | `TestServeHTTP_MixedCluster_RoutingByURLPath` | `tests/backend_type_isolation_test.go:702` | ✅ FIXED Session 2 |
 | PF-3 | `TestDefaultConfig` | `tests/cppbackend_test.go:39` | ✅ FIXED Session 5 (2026-06-26) — expected ctx size 4096 → 32768, в соответствии с `cppbackend.DefaultConfig()` (см. CHANGELOG 2026-06-05) |
-| PF-4 | `TestOpenAIChat_SlowFirstToken_HoldsConnection` | `tests/first_byte_timeout_test.go:114` | ⬜ Backlog (flaky) |
-| PF-5 | `TestOpenAIChat_HeaderTimeout_StillWorks` | `tests/first_byte_timeout_test.go:199` | ⬜ Backlog |
-| PF-6 | `TestLlamaCppProxyChat_Streaming`, `TestLlamaCppProxyResponse_NotMarkdownBold/streaming`, `TestLlamaCppProxy_StreamingResponse` | `tests/full_chain_llamacpp_test.go`, `tests/llama_cpp_proxy_test.go` | ⬜ Backlog |
-| PF-7 | `TestOpenWebUI_Sequential_MixedRequests/step6-llamacpp-non-streaming` | `tests/openwebui_compatibility_test.go:766` | ⬜ Backlog |
+| PF-4 | `TestOpenAIChat_SlowFirstToken_HoldsConnection` | `tests/first_byte_timeout_test.go:114` | ⬜ Backlog (flaky — `httptest.Server.Close()` зависает на `WaitGroup`, не относится к proxy-логике) |
+| PF-5 | `TestOpenAIChat_HeaderTimeout_StillWorks` | `tests/first_byte_timeout_test.go:199` | ✅ FIXED 2026-06-27 (Session 13 — PF-5 fix в `internal/balancer/proxy_first_byte_timeout.go` + применение в `proxyRequestLlamaCpp` и `handleOpenAIChatCompletions`) |
+| PF-6 | `TestLlamaCppProxyChat_Streaming`, `TestLlamaCppProxyResponse_NotMarkdownBold/streaming`, `TestLlamaCppProxy_StreamingResponse` | `tests/full_chain_llamacpp_test.go`, `tests/llama_cpp_proxy_test.go` | ✅ FIXED 2026-06-27 (Session 13 — passthrough финального чанка через `translateOpenAISSEDataToOllama` + `streamCompleted=true` при `finish_reason`) |
+| PF-7 | `TestOpenWebUI_Sequential_MixedRequests/step6-llamacpp-non-streaming` | `tests/openwebui_compatibility_test.go:766` | ✅ FIXED ранее (verified Session 13 — PASS за 0.43s) |
 
 **Session 4 (P-1) НЕ вносит новых регрессий.** Упавшие тесты — pre-existing.

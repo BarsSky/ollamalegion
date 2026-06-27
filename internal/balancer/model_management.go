@@ -124,13 +124,11 @@ func (mm *ModelManager) ExecuteOperation(backendID string, req ModelOpRequest) *
 	}
 	defer mm.releaseOp(req.Operation, req.ModelName, backendID)
 
-	// Доступ к request_id из глобального fallback-context (ensureModelLoadedOnBackend
-	// пока не прокидывает ctx сюда явно — TODO). Если ctx есть, используем
-	// ridLogWith() для автоматического добавления request_id в каждую log-запись.
-	logFn := logger.Get()
-	_ = logFn
-
-	logger.Get().Infow("executing model operation",
+	// Берём request_id из глобального fallback-context (ensureModelLoadedOnBackend
+	// вызывает ExecuteOperation синхронно из HTTP-хендлера, и middleware ServeHTTP
+	// уже положил request_id в lr_recentCtx). Если ctx пустой (вызов вне HTTP,
+	// например из background-reload) — ridLog() вернёт обычный logger без полей.
+	ridLog(lr_recentCtx()).Infow("executing model operation",
 		"operation", req.Operation,
 		"model", req.ModelName,
 		"backend", backendID,

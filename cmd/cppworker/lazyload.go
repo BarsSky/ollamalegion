@@ -65,30 +65,44 @@ func ensureModelLoaded(modelName string) error {
 			}
 		}
 
-		opts := cppbackend.LoadModelOpts{
-			GPULayers:     *gpuLayers,
-			ContextSize:   *ctxSize,
-			BatchSize:     *batchSize,
-			FlashAttnType: convertFlashAttn(*flashAttn),
-			NUMA:          *numa,
-			UseMmap:       !*noMmap,
-		}
-
-		// === Auto-offload: если включён --auto-offload, проверяем, влезает
-		// ли модель целиком в VRAM. Если нет — устанавливаем partial offload
-		// (gpu_layers < N_layers). Решает проблему: большая модель (~18GB)
-		// на 20GB VRAM при gpu_layers=-1 занимает всю VRAM → KV-cache не
-		// помещается → max_vram_n_ctx маленький → n_ctx падает до 4096.
+		// === Auto-tune на LOAD (2026-06-26 BUGFIX) ===
 		//
-		// ВАЖНО: до загрузки модели у нас нет точных N_layers/NEmbd/NHeads
-		// (они в GGUF header, читаются C-bridge при загрузке). Поэтому
-		// используем грубую эвристику: оцениваем N_layers ≈ 80 (типичная
-		// модель 7B-70B) и рассчитываем долю слоёв, которые поместятся в VRAM
-		// с запасом под KV-cache и overhead.
-		if *autoOffload {
+		// До этой правки lazy-load шёл с грубыми хардкодами (estimatedLayers=80,
+		// kvReserve=2GB) и НЕ пересчитывал n_ctx. Для qwen3.6 (~22GB) на 20GB VRAM
+		// это приводило к OOM: weights + KV-cache для n_ctx=32768 не влезают,
+		// пользователь получает либо молчаливый fallback на n_ctx=4096,
+		// либо ошибку. На 8GB VRAM работало, потому что модель целиком уходила
+		// в mmap (gpu_layers=0) и n_ctx оставался 32768.
+		//
+		// Новая логика:
+		//   1. Читает реальные NLayers/NEmbd/NHeads из GGUF header
+		//      (cppbackend.ReadGGUFHeader через lazy ModelManager.GetModelMeta).
+		//   2. Считает maxViableNCtx по реальной архитектуре.
+		//   3. Stage 1: если requestedNCtx + gpuLayers влезают → exact_fit.
+		//   4. Stage 2: уменьшаем gpuLayers (partial offload) — то же n_ctx.
+		//   5. Stage 3: gpu_layers=0 + n_ctx = max_viable (всё через mmap).
+		//
+		// Отключается через CPPWORKER_AUTO_TUNE_NCTX_ON_LOAD=false.
+		tunedOpts, rationale := calculateLazyLoadOpts(
+			modelName,
+			*ctxSize,
+			*gpuLayers,
+			currentConfig,
+		)
+		opts := tunedOpts
+		opts.FlashAttnType = convertFlashAttn(*flashAttn)
+		opts.NUMA = *numa
+
+		logger.Get().Infow("lazy-load: load opts calculated",
+			"model", modelName,
+			"rationale", rationale.FormatRationale())
+
+		// Legacy auto-offload остался для обратной совместимости: если
+		// CPPWORKER_AUTO_TUNE_NCTX_ON_LOAD=false, старая логика всё равно
+		// отрабатывает (estimatedLayers=80, kvReserve=2GB).
+		if *autoOffload && rationale.Source == "fallback_no_meta" {
 			availableVRAM := availableVRAMBytes()
 			if availableVRAM > 0 {
-				// Получаем размер файла из ModelManager.
 				filename := modelName + ".gguf"
 				if meta, mErr := mm.GetModelMeta(filename); mErr == nil && meta.SizeBytes > 0 {
 					safeVRAM := int64(float64(availableVRAM) * 0.85)
@@ -103,7 +117,7 @@ func ensureModelLoaded(modelName string) error {
 						if weightsPerLayer > 0 {
 							gpuLayers := int(availableForWeights / weightsPerLayer)
 							if gpuLayers > 0 && gpuLayers < estimatedLayers {
-								logger.Get().Infow("lazy-load: auto-offload (file-based estimate)",
+								logger.Get().Infow("lazy-load: auto-offload (legacy, file-based estimate)",
 									"model", modelName,
 									"old_gpu_layers", opts.GPULayers,
 									"new_gpu_layers", gpuLayers,

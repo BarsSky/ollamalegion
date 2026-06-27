@@ -206,6 +206,34 @@ type LlamaCppModelProfile struct {
 	// таймаутов, если таймауты не заданы явно и autoAdjust=true).
 	// Заполняется автоматически при сканировании моделей.
 	SizeBytes int64 `json:"sizeBytes,omitempty"`
+
+	// Parallel — число параллельных слотов для одновременной обработки запросов
+	// (n_parallel в llama.cpp). 0 = использовать дефолт cppworker (обычно 1).
+	// >0 = до 8 параллельных слотов в одном экземпляре модели. Полезно для
+	// multi-user throughput без репликации модели на N бэкендов.
+	//
+	// Trade-off: каждый слот потребляет отдельный KV-cache (n_parallel × KV-cache per slot),
+	// так что n_ctx × n_parallel должно влезать в VRAM. Например, gemma-4 8B с
+	// n_ctx=65536 + parallel=2 + kv_cache_type=f16 требует ~14 GB на KV-cache
+	// (было бы 7 GB при parallel=1).
+	Parallel int `json:"parallel,omitempty"` // 0 = inherit, 1..8 = parallel slots
+
+	// KVCacheType — тип квантизации KV-cache. "" (или отсутствие поля) = inherit
+	// from cppworker default (обычно f16).
+	//
+	// Поддерживаемые значения (Session 16, 2026-06-27):
+	//   "f16"  — полная точность (по умолчанию). Нет потери качества.
+	//   "q8_0" — 8-bit квантизация. Экономит ~50% VRAM на KV-cache.
+	//            Минимальная деградация качества (perplexity +0.1-0.3).
+	//            **Рекомендуется для длинных контекстов** (gemma-4 256K).
+	//   "q4_0" — 4-bit квантизация. Экономит ~75% VRAM на KV-cache.
+	//            Лёгкая деградация (perplexity +1-2%). Только для очень
+	//            длинных контекстов или VRAM-constrained среды.
+	//
+	// Пример: gemma-4 8B + n_ctx=65536 + kv_cache_type=q8_0 экономит ~3.5 GB VRAM
+	// на KV-cache (7 GB → 3.5 GB) — позволяет загрузить модель с большим n_ctx
+	// на 8GB GPU.
+	KVCacheType string `json:"kvCacheType,omitempty"` // "" = inherit, "f16"/"q8_0"/"q4_0"
 }
 
 // AdvancedTimingConfig — конфигурируемые таймауты

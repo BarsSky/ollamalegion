@@ -119,7 +119,25 @@ func (p *Proxy) proxyRequestLlamaCpp(w http.ResponseWriter, r *http.Request, bac
 	}
 	req.Header.Set("X-Real-IP", clientRealIP)
 
-	resp, err := client.Do(req)
+	// PF-5 FIX (2026-06-27): применяем FirstByteTimeout на уровне HTTP-Transport
+	// через per-request клонирование streamingTransport. По умолчанию
+	// ResponseHeaderTimeout=0 (off), что позволяет зависшему upstream держать
+	// соединение бесконечно. С FirstByteTimeout>0 upstream, не отправивший
+	// HTTP-заголовки за указанное время, получает от Go HTTP-клиента ошибку
+	// "net/http: timeout awaiting response headers" — balancer транслирует её
+	// в понятный клиенту ответ.
+	//
+	// Применяется ТОЛЬКО для streaming + когда задан явный FirstByteTimeout.
+	// Для non-streaming RequestTimeout уже покрывается контекстом выше.
+	clientForReq := client
+	if isStreaming {
+		firstByte := p.getModelFirstByteTimeout(modelFromCtx)
+		if firstByte > 0 {
+			clientForReq = p.newStreamingClientWithResponseHeaderTimeout(firstByte)
+		}
+	}
+
+	resp, err := clientForReq.Do(req)
 	if err != nil {
 		return fmt.Errorf("llama.cpp request failed: %v", err)
 	}
@@ -213,6 +231,21 @@ func (p *Proxy) proxyRequestLlamaCpp(w http.ResponseWriter, r *http.Request, bac
 	// уже сформировал content в финальном NDJSON; используем его приоритетно). ====
 	var upstreamDoneContent string
 
+	// ==== Stream-truncation detection (2026-06-26) ====
+	// Корневая причина бага из env_log.txt: cppworker обрывал стрим (broken pipe,
+	// context cancel клиента, OOM kill, и т.п.), балансер проксировал только то,
+	// что пришло до обрыва, и закрывал соединение без финального [DONE]/done-чанка.
+	// Клиент (Cline/OpenWebUI/Roo Code) при этом считал стрим "успешно завершённым"
+	// (TCP FIN == нормальный конец), хотя фактически получил обрезанный ответ.
+	//
+	// После фикса: явно отслеживаем, дошёл ли финальный маркер завершения стрима,
+	// и если нет — логируем truncation и эмитим клиенту финальный NDJSON/SSE-чанк
+	// с error/done:true, чтобы клиент корректно отобразил сбой вместо "успеха".
+	streamCompleted := false
+	var bytesForwarded int64
+	var firstForwardErr error
+	var lastForwardErr error
+
 	// ==== Основной цикл SSE → NDJSON / SSE → SSE ==========
 	scanner := bufio.NewScanner(resp.Body)
 	scanner.Buffer(make([]byte, 0), 1024*1024)
@@ -228,11 +261,16 @@ func (p *Proxy) proxyRequestLlamaCpp(w http.ResponseWriter, r *http.Request, bac
 
 		data := strings.TrimSpace(strings.TrimPrefix(line, "data:"))
 		if data == "[DONE]" {
+			streamCompleted = true
 			errFwd := writeStreamingSSEDone(w, originalPath, modelFromCtx, toolAccum,
 				accumulatedPlainContent, upstreamDoneContent)
 			if errFwd != nil {
 				logger.Get().Warnw("proxyRequestLlamaCpp: writeStreamingSSEDone error",
 					"backend", backendID, "error", errFwd)
+				lastForwardErr = errFwd
+				if firstForwardErr == nil {
+					firstForwardErr = errFwd
+				}
 			}
 			// writeStreamingSSEDone flush'ит только для SSE→SSE passthrough.
 			// Для /api/chat и /api/generate (NDJSON) делаем явный flush —
@@ -278,8 +316,13 @@ func (p *Proxy) proxyRequestLlamaCpp(w http.ResponseWriter, r *http.Request, bac
 			if filtered, shouldSkip := filterOpenAIStreamingLine([]byte(data)); shouldSkip {
 				continue
 			} else if filtered != nil {
-				_, errFwd := fmt.Fprintf(w, "data: %s\n\n", string(filtered))
+				n, errFwd := fmt.Fprintf(w, "data: %s\n\n", string(filtered))
+				bytesForwarded += int64(n)
 				if errFwd != nil {
+					lastForwardErr = errFwd
+					if firstForwardErr == nil {
+						firstForwardErr = errFwd
+					}
 					return fmt.Errorf("write filtered SSE: %v", errFwd)
 				}
 			} else {
@@ -291,13 +334,23 @@ func (p *Proxy) proxyRequestLlamaCpp(w http.ResponseWriter, r *http.Request, bac
 					}
 				}
 				if modified := extractToolCallsFromSSEContent([]byte(data)); modified != nil {
-					_, errFwd := fmt.Fprintf(w, "data: %s\n\n", string(modified))
+					n, errFwd := fmt.Fprintf(w, "data: %s\n\n", string(modified))
+					bytesForwarded += int64(n)
 					if errFwd != nil {
+						lastForwardErr = errFwd
+						if firstForwardErr == nil {
+							firstForwardErr = errFwd
+						}
 						return fmt.Errorf("write modified SSE (tool calls): %v", errFwd)
 					}
 				} else {
-					_, errFwd := fmt.Fprintf(w, "data: %s\n\n", data)
+					n, errFwd := fmt.Fprintf(w, "data: %s\n\n", data)
+					bytesForwarded += int64(n)
 					if errFwd != nil {
+						lastForwardErr = errFwd
+						if firstForwardErr == nil {
+							firstForwardErr = errFwd
+						}
 						return fmt.Errorf("write SSE: %v", errFwd)
 					}
 				}
@@ -372,8 +425,13 @@ func (p *Proxy) proxyRequestLlamaCpp(w http.ResponseWriter, r *http.Request, bac
 								"message":    msgMap,
 							}
 							out, _ := json.Marshal(ollamaChunk)
-							_, errFwd := fmt.Fprintf(w, "%s\n", string(out))
+							n, errFwd := fmt.Fprintf(w, "%s\n", string(out))
+							bytesForwarded += int64(n)
 							if errFwd != nil {
+								lastForwardErr = errFwd
+								if firstForwardErr == nil {
+									firstForwardErr = errFwd
+								}
 								return fmt.Errorf("write NDJSON (cross-chunk tool calls): %v", errFwd)
 							}
 							if flusher, ok := w.(http.Flusher); ok {
@@ -400,8 +458,25 @@ func (p *Proxy) proxyRequestLlamaCpp(w http.ResponseWriter, r *http.Request, bac
 				// Накапливаем plain content (вне tool-call accumulation) для финального
 				// done-чанка — это спасает от пустого content если upstream прислал
 				// полный ответ только в done-чанке.
-				if deltaContent != "" && !contentToolCallsProcessed {
+				//
+				// НЕ накапливаем чанки с finish_reason: cppworker прислал финальный
+				// чанк с content=" llama.cpp!" + finish_reason="stop". Этот content
+				// уже проксируется через writeStreamingSSEDone ниже (агрегированный
+				// в upstreamDoneContent / accumulatedPlainContent). Без этого guard
+				// в финальный done-чанк попадал дубликат:
+				// "Hello from llama.cpp! llama.cpp!" (см. PF-6 fail 2026-06-27).
+				if deltaContent != "" && !contentToolCallsProcessed && !hasFinishReason(data) {
 					accumulatedPlainContent += deltaContent
+				}
+
+				// Финальный чанк cppworker (с finish_reason) присылает ПОЛНЫЙ content
+				// в message.content — используем его как upstreamDoneContent. Это
+				// перезаписывает накопленный accumulatedPlainContent чтобы избежать
+				// дубликата ("Hello from llama.cpp!" + "Hello from llama.cpp!").
+				if upstreamHasDone, msgMap, _ := extractUpstreamDoneChunk(data); upstreamHasDone {
+					if c, ok := msgMap["content"].(string); ok && c != "" {
+						upstreamDoneContent = c
+					}
 				}
 			} else if originalPath == "/api/generate" {
 				// Для /api/generate content лежит в chunk["choices"][0].text или в done_chunk.response
@@ -409,45 +484,155 @@ func (p *Proxy) proxyRequestLlamaCpp(w http.ResponseWriter, r *http.Request, bac
 					if choice, ok := choices[0].(map[string]interface{}); ok {
 						if t, ok := choice["text"].(string); ok && t != "" {
 							deltaContent = t
-							accumulatedPlainContent += t
+							// НЕ накапливаем чанки с finish_reason (аналогично /api/chat):
+							// cppworker в финальном чанке шлёт ПОЛНЫЙ content=" llama.cpp!",
+							// а accumulatedPlainContent уже содержит "Hello from". Без guard
+							// финальный done-чанк получал дубликат ("Hello from llama.cpp! llama.cpp!").
+							if !hasFinishReason(data) {
+								accumulatedPlainContent += t
+							}
 						}
 					}
 				}
-				// done-чанк /api/generate от OpenAI: {"choices":[{"finish_reason":"stop","text":""}],...}
-				if upstreamHasDone := extractUpstreamGenerateDoneChunk(data, &accumulatedPlainContent); upstreamHasDone {
-					upstreamDoneContent = accumulatedPlainContent
+				// Финальный чанк cppworker с finish_reason: используем accumulatedPlainContent
+				// (без дубликата " llama.cpp!") как upstreamDoneContent. Если cppworker
+				// прислал в финальном чанке text=" llama.cpp!" И finish_reason="stop",
+				// мы уже НЕ добавили его в accumulatedPlainContent (см. guard выше),
+				// поэтому накопленный контент = "Hello from". Дописываем " llama.cpp!"
+				// из финального чанка для полноты ответа.
+				if hasFinishReason(data) {
+					if choices, ok := chunk["choices"].([]interface{}); ok && len(choices) > 0 {
+						if choice, ok := choices[0].(map[string]interface{}); ok {
+							if t, ok := choice["text"].(string); ok && t != "" {
+								upstreamDoneContent = accumulatedPlainContent + t
+							}
+						}
+					}
+					if upstreamDoneContent == "" {
+						upstreamDoneContent = accumulatedPlainContent
+					}
 				}
 			}
 
-			// Подавляем финальный done-чанк от translate, если:
-			//   - tool_calls были уже обработаны (cross-chunk или delta),
-			//   - или последний чанк от cppworker содержит finish_reason (done:true).
-			// В обоих случаях финальный NDJSON формирует writeStreamingSSEDone.
+			// Подавляем перевод только если tool_calls уже были обработаны
+			// (cross-chunk или delta) — для них writeStreamingSSEDone формирует
+			// финальный NDJSON с правильным message.tool_calls.
 			//
-			// ВАЖНО (2026-06-26): НЕ используем `continue` после finish_reason —
-			// cppworker может прислать finish_reason="stop" в середине стрима
-			// (например, при детекции EOS-токена моделью), а потом продолжить
-			// генерировать content. В этом случае `continue` отбрасывает весь
-			// последующий content → OpenWebUI видит обрезанный ответ.
+			// Для чанков с finish_reason НЕ делаем continue — translateOpenAISSEDataToOllama
+			// сам корректно сформирует финальный NDJSON с done:true, done_reason:stop
+			// и content из текста чанка. Это и есть требуемая passthrough-семантика
+			// для streaming: каждый upstream чанк → отдельный NDJSON чанк клиенту,
+			// включая финальный с done:true.
 			//
-			// Вместо этого: если finish_reason уже был, мы только НАКАПЛИВАЕМ
-			// content (для финального done-чанка) и пропускаем отправку текущего чанка
-			// клиенту. cppworker сам закроет TCP после финального [DONE].
-			if contentToolCallsProcessed || len(toolAccum) > 0 || hasFinishReason(data) {
+			// PF-6 fix (2026-06-27): cppworker НЕ отправляет [DONE] маркер в
+			// streaming-режиме — он закрывает TCP сразу после чанка с finish_reason.
+			// Чтобы избежать ложного "truncation" alert, помечаем streamCompleted
+			// при первом чанке с finish_reason.
+			if contentToolCallsProcessed || len(toolAccum) > 0 {
+				// tool_calls уже были обработаны выше — writeStreamingSSEDone возьмёт
+				// их из toolAccum и отправит финальный NDJSON с tool_calls.
+				if !streamCompleted {
+					streamCompleted = true
+					errFwd := writeStreamingSSEDone(w, originalPath, modelFromCtx, toolAccum,
+						accumulatedPlainContent, upstreamDoneContent)
+					if errFwd != nil {
+						logger.Get().Warnw("proxyRequestLlamaCpp: writeStreamingSSEDone on tool_calls error",
+							"backend", backendID, "error", errFwd)
+						lastForwardErr = errFwd
+						if firstForwardErr == nil {
+							firstForwardErr = errFwd
+						}
+					}
+					Flush(w)
+				}
 				continue
+			}
+			if hasFinishReason(data) && !streamCompleted {
+				// cppworker закрывает TCP после этого чанка — отмечаем что стрим
+				// завершён нормально, чтобы ниже не сработал stream-truncation detection.
+				streamCompleted = true
 			}
 			ollamaChunk := translateOpenAISSEDataToOllama(originalPath, []byte(data), modelFromCtx)
 			if len(ollamaChunk) == 0 {
 				continue
 			}
-			_, errFwd := w.Write(ollamaChunk)
+			n, errFwd := w.Write(ollamaChunk)
+			bytesForwarded += int64(n)
 			if errFwd != nil {
+				lastForwardErr = errFwd
+				if firstForwardErr == nil {
+					firstForwardErr = errFwd
+				}
 				return fmt.Errorf("write NDJSON: %v", errFwd)
 			}
 
 			if flusher, ok := w.(http.Flusher); ok {
 				flusher.Flush()
 			}
+		}
+	}
+
+	// ==== Stream-truncation detection (2026-06-26) ====
+	// Если мы вышли из цикла for без streamCompleted (т.е. cppworker оборвал
+	// стрим до того, как прислал финальный [DONE] маркер), явно логируем это
+	// и эмитим клиенту финальный чанк с error/done:true, чтобы клиент
+	// (Cline/OpenWebUI/Roo Code) корректно отобразил сбой вместо "успешного
+	// ответа" с обрезанным content.
+	//
+	// Сценарии:
+	//   1. scanner.Err() != nil → broken pipe / context canceled / timeout
+	//   2. scanner.Err() == nil && streamCompleted == false → cppworker
+	//      закрыл TCP без [DONE] (редкий случай, обычно после ошибки модели).
+	//
+	// В обоих случаях клиент уже получил HTTP 200 + Content-Type, поэтому
+	// поменять HTTP-статус нельзя. Лучшее, что мы можем — дописать в стрим
+	// финальный маркер и закрыть соединение, чтобы клиент не висел.
+	if !streamCompleted {
+		scannerErr := scanner.Err()
+		logger.Get().Warnw("proxyRequestLlamaCpp: SSE stream truncated before [DONE] marker",
+			"backend", backendID, "model", modelFromCtx,
+			"original_path", originalPath,
+			"bytes_forwarded", bytesForwarded,
+			"scanner_err", errString(scannerErr),
+			"first_forward_err", errString(firstForwardErr),
+			"last_forward_err", errString(lastForwardErr))
+
+		// Эмитим финальный чанк с error, чтобы клиент точно завершил стрим.
+		// Пробуем дописать; если клиент уже отвалился (broken pipe) — игнорируем ошибку.
+		if originalPath == "/v1/chat/completions" {
+			truncatedChunk := map[string]interface{}{
+				"id":      fmt.Sprintf("trunc-%d", time.Now().UnixNano()),
+				"object":  "chat.completion.chunk",
+				"created": time.Now().Unix(),
+				"model":   modelFromCtx,
+				"choices": []interface{}{
+					map[string]interface{}{
+						"index":         0,
+						"delta":         map[string]interface{}{},
+						"finish_reason": "truncated",
+					},
+				},
+				"error": map[string]interface{}{
+					"message": "stream truncated by upstream before completion",
+					"type":    "stream_truncated",
+				},
+			}
+			out, _ := json.Marshal(truncatedChunk)
+			_, _ = fmt.Fprintf(w, "data: %s\n\n", string(out))
+			_, _ = fmt.Fprintf(w, "data: [DONE]\n\n")
+			Flush(w)
+		} else {
+			// Для /api/chat и /api/generate (NDJSON): финальный done-чанк с error.
+			truncatedChunk := map[string]interface{}{
+				"model":      modelFromCtx,
+				"created_at": time.Now().UTC().Format(time.RFC3339),
+				"done":       true,
+				"done_reason": "truncated",
+				"error":      "stream truncated by upstream before completion",
+			}
+			out, _ := json.Marshal(truncatedChunk)
+			_, _ = fmt.Fprintf(w, "%s\n", string(out))
+			Flush(w)
 		}
 	}
 
@@ -471,6 +656,14 @@ func (p *Proxy) proxyRequestLlamaCpp(w http.ResponseWriter, r *http.Request, bac
 	}
 
 	return nil
+}
+
+// errString — безопасно возвращает string(err) даже если err == nil.
+func errString(err error) string {
+	if err == nil {
+		return ""
+	}
+	return err.Error()
 }
 
 // hasFinishReason — проверяет, содержит ли SSE data-чанк finish_reason (done:true).

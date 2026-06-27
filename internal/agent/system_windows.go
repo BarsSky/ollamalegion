@@ -121,13 +121,66 @@ func getGPUInfo() GPUInfo {
 }
 
 // getGPUMetrics - получение метрик GPU на Windows.
-// Основной источник — nvidia-smi; при недоступности возвращает пустые метрики.
+//
+// Источники данных (по убыванию приоритета):
+//  1. nvidia-smi (полные метрики: usage%, VRAM used/free, temperature, power, clocks).
+//  2. WMI Win32_VideoController (fallback при отсутствии nvidia-smi —
+//     возвращает только VRAM Total через поле AdapterRAM; usage/temperature
+//     недоступны без проприетарных драйверов).
+//  3. Пустая структура (все нули) — если оба источника недоступны.
+//
+// Ограничения WMI fallback:
+//   - AdapterRAM возвращает 0 для GPU с разделяемой памятью (iGPU) — тогда
+//     MemoryTotal останется 0.
+//   - AdapterRAM на дискретных GPU обычно показывает полный объём VRAM (напр.,
+//     RTX 3070 8GB → 8589934592 bytes = 8192 MB).
+//   - MemoryUsed/MemoryFree/Temperature/PowerUsage/Clocks через WMI
+//     Win32_VideoController НЕ доступны — требуется NVML (Linux) или
+//     nvidia-smi (Windows).
 func getGPUMetrics() types.GPUMetrics {
+	// Основной источник — nvidia-smi.
 	output, err := executeNvidiaSmi()
-	if err != nil {
-		return types.GPUMetrics{}
+	if err == nil {
+		return parseNvidiaSmiOutput(output)
 	}
-	return parseNvidiaSmiOutput(output)
+
+	// Fallback #1: WMI Win32_VideoController (даёт хотя бы AdapterRAM).
+	metrics := getGPUMetricsWMIFallback()
+	if metrics.MemoryTotal > 0 {
+		return metrics
+	}
+
+	// Fallback #2: ничего не доступно — возвращаем пустую структуру
+	// (UI покажет «GPU: unknown» / N/A).
+	return types.GPUMetrics{}
+}
+
+// getGPUMetricsWMIFallback - получение VRAM Total через WMI Win32_VideoController.
+// Используется при отсутствии nvidia-smi (напр., в WSL или на сервере без NVIDIA
+// драйверов).
+//
+// WMI-класс Win32_VideoController предоставляет только AdapterRAM (bytes),
+// Name и DriverVersion. Остальные поля (usage/temperature/power) недоступны.
+//
+// Если машина имеет несколько GPU, суммируем AdapterRAM всех дискретных
+// карт (исключая «Basic Display Adapter» — это всегда встроенная графика
+// Windows без VRAM).
+func getGPUMetricsWMIFallback() types.GPUMetrics {
+	metrics := types.GPUMetrics{}
+
+	cmd := exec.Command("wmic", "path", "Win32_VideoController", "get", "Name,AdapterRAM", "/format:csv")
+	output, err := cmd.Output()
+	if err != nil {
+		return metrics
+	}
+
+	// Парсинг делегирован в платформонезависимую функцию parseWmiVideoControllerCSV.
+	// bytes → MB.
+	totalBytes := parseWmiVideoControllerVRAMBytes(string(output))
+	if totalBytes > 0 {
+		metrics.MemoryTotal = totalBytes / 1024 / 1024
+	}
+	return metrics
 }
 
 // parseWMICValueFloat - парсинг float из WMIC вывода

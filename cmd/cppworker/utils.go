@@ -19,10 +19,22 @@ import (
 // Middleware
 // ============================================================
 
-// authMiddleware проверяет API_TOKEN для защищённых эндпоинтов (PUT/POST/DELETE)
+// authMiddleware проверяет API_TOKEN для защищённых эндпоинтов (PUT/POST/DELETE).
+//
+// Поддерживает несколько env-имён (в порядке приоритета):
+//  1. API_TOKEN            — канонический, используется внутри cppworker
+//  2. CPPWORKER_API_TOKEN  — env-имя, через которое токен передаётся в bundled compose
+//     (docker-compose.cppworker-bundled.yml, .env.bundled). Раньше cppworker читал
+//     только API_TOKEN, из-за чего /api/models/reload от балансировщика стабильно
+//     получал HTTP 401 "invalid or missing API token" (см. env_log.txt строки 72, 114,
+//     123, 135 — все reload-попытки от балансировщика в этом compose-стеке).
+//  3. BALANCER_API_TOKEN   — backward-compat alias.
+//
+// Если ни одно env-имя не задано, middleware пропускает запрос (legacy-поведение:
+// cppworker без токена = открытые защищённые эндпоинты).
 func authMiddleware(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		token := os.Getenv("API_TOKEN")
+		token := resolveAPIToken()
 		if token == "" {
 			next(w, r)
 			return
@@ -34,6 +46,17 @@ func authMiddleware(next http.HandlerFunc) http.HandlerFunc {
 		}
 		next(w, r)
 	}
+}
+
+// resolveAPIToken возвращает API-токен из первой непустой env-переменной.
+// Используется и в authMiddleware, и в тестах.
+func resolveAPIToken() string {
+	for _, name := range []string{"API_TOKEN", "CPPWORKER_API_TOKEN", "BALANCER_API_TOKEN"} {
+		if v := os.Getenv(name); v != "" {
+			return v
+		}
+	}
+	return ""
 }
 
 func corsMiddleware(next http.Handler) http.Handler {
@@ -443,6 +466,49 @@ func defaultIntPtr(v *int, def int) int {
 		return def
 	}
 	return *v
+}
+
+// isValidKVCacheType — true, если value соответствует одному из
+// поддерживаемых llama.cpp kv_cache_type значений: "f16"/"q8_0"/"q4_0".
+//
+// Используется в handleReloadModel и handleLoadWithParams для валидации
+// поля kvCacheType в Per-Model Profile / запросе reload. Невалидные
+// значения (typo или устаревший формат) логируются и отбрасываются —
+// cppbackend.LoadModelWithOpts в этом случае fallback'нет на default F16,
+// но для явной ошибки пользователю мы предпочитаем warning + skip.
+//
+// Session 16 (2026-06-27): Per-Model Profiles — kv_cache_type (Q8_0 -50% VRAM).
+func isValidKVCacheType(value string) bool {
+	switch value {
+	case "f16", "q8_0", "q4_0":
+		return true
+	default:
+		return false
+	}
+}
+
+// kvCacheTypeToBridgeInt — маппинг строкового kvCacheType из Per-Model Profile
+// в int, который ожидает C-bridge (см. c/bridge/bridge.c::bridge_load_model
+// switch на ctx_params->type_k / type_v):
+//
+//   "" / "f16" → 0  (default, F16/F16 из llama_context_default_params)
+//   "q8_0"     → 1  (GGML_TYPE_Q8_0, -50% VRAM)
+//   "q4_0"     → 2  (GGML_TYPE_Q4_0, -75% VRAM)
+//
+// Используется только для логирования/диагностики; реальный маппинг в
+// GGML_TYPE enum делается в bridge.c. cppbackend.LoadModelWithOpts принимает
+// строковое значение напрямую и кладёт его в bridge.ModelConfig.KVCacheType.
+func kvCacheTypeToBridgeInt(value string) int {
+	switch value {
+	case "", "f16":
+		return 0
+	case "q8_0":
+		return 1
+	case "q4_0":
+		return 2
+	default:
+		return 0 // safe default
+	}
 }
 
 // isMemorySlotError — определяет, является ли ошибка llama.cpp "memory slot" leak.

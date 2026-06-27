@@ -65,6 +65,10 @@ type ModelInfo struct {
 	FlashAttnType int  `json:"flashAttnType"`
 	NUMA          bool `json:"numa"`
 	UseMmap       bool `json:"useMmap"`
+	// Session 16 (2026-06-27): Parallel и KVCacheType — Session 16 Per-Model Profiles.
+	// Parallel=0 = дефолт cppworker (=1), KVCacheType=0 = F16.
+	Parallel    int    `json:"parallel"`    // n_parallel в llama.cpp
+	KVCacheType string `json:"kvCacheType"` // "f16"/"q8_0"/"q4_0"
 	// === Loading state (Шаг «отображение загрузки в мониторе и вкладке бэкендов») ===
 	// Заполняются пока State == StateLoading, чтобы UI мог показывать
 	// «Загружается model-name 25s» и спиннер. После успеха/ошибки поля обнуляются.
@@ -124,6 +128,24 @@ func (b *Backend) ReloadStartedAt() time.Time {
 }
 
 // LoadModelOpts — опции загрузки модели, передаваемые из WebUI/API
+// через endpoint /api/models/load-with-params (cppworker).
+//
+// Базовые параметры (GPULayers, ContextSize и т.д.) использовались ещё
+// в /api/models/load (legacy endpoint). Расширенные параметры ниже
+// добавлены для тонкой настройки llama.cpp под конкретный workload:
+//
+//   - NThreads        — количество CPU-потоков для batch/generation
+//                       (по умолчанию физические ядра).
+//   - Parallel         — число параллельных sequences (batched generation).
+//                       Требует больше VRAM (KV-cache × parallel).
+//   - KVCacheType      — тип KV-cache quantization (0=F16, 1=Q8_0, 2=Q4_0).
+//                       Q8_0 экономит ~50% KV-cache VRAM с минимальной
+//                       потерей качества (perplexity delta < 0.1).
+//   - SplitMode        — режим tensor split для multi-GPU (0=layer, 1=row).
+//   - OverrideTensor   — переопределение dtype отдельных тензоров
+//                       (например "blk\\..*\\.ffn_.*_exps=CPU").
+//
+// Если значение 0/empty — используется llama.cpp default (без override).
 type LoadModelOpts struct {
 	GPULayers     int
 	ContextSize   int
@@ -132,6 +154,13 @@ type LoadModelOpts struct {
 	NUMA          bool
 	UseMmap       bool
 	TensorSplit   []float32
+
+	// Extended parameters (для /api/models/load-with-params)
+	NThreads      int    // 0 = auto (use physical cores)
+	Parallel       int    // 0 = 1 (no batching)
+	KVCacheType    string // "" = inherit (default F16), "f16"/"q8_0"/"q4_0" — explicit type
+	SplitMode      int    // 0=layer, 1=row
+	OverrideTensor string // empty = no override
 }
 
 // modelInstance — экземпляр загруженной модели
@@ -393,7 +422,9 @@ func (b *Backend) LoadModelWithOpts(name string, path string, opts LoadModelOpts
 	cfg.NUMA = opts.NUMA
 	cfg.UseMmap = opts.UseMmap
 	cfg.UseMlock = b.cfg.DefaultUseMlock
-	cfg.NThreads = b.cfg.DefaultNThreads
+	// NThreads override см. ниже — после секции KVCacheType/Parallel.
+	// (Раньше cfg.NThreads = b.cfg.DefaultNThreads затирал opts.NThreads;
+	//  теперь мы применяем opts > default корректно.)
 
 	// RoPE параметры контекста
 	cfg.RopeFreqBase = float32(b.cfg.DefaultRopeFreqBase)
@@ -409,7 +440,29 @@ func (b *Backend) LoadModelWithOpts(name string, path string, opts LoadModelOpts
 
 	// KV Cache
 	cfg.NoKVOffload = b.cfg.DefaultNoKVOffload
-	cfg.KVCacheType = b.cfg.DefaultKVCacheType
+	// Session 16 (2026-06-27): KVCacheType и Parallel — пробрасываем opts поверх дефолтов.
+	// До этой правки cfg.KVCacheType жёстко затирал opts.KVCacheType значением
+	// из b.cfg (DefaultKVCacheType), что делало per-model profile с q8_0/q4_0
+	// бесполезным — C-bridge всегда получал default F16.
+	if opts.KVCacheType != "" {
+		cfg.KVCacheType = opts.KVCacheType
+	} else {
+		cfg.KVCacheType = b.cfg.DefaultKVCacheType
+	}
+	// То же для NParallel: 0 в Go = default (=1 в llama.cpp).
+	// > 0 = multi-slot batched generation (требует больше VRAM).
+	if opts.Parallel > 0 {
+		cfg.NParallel = opts.Parallel
+	} else {
+		cfg.NParallel = 0 // оставляем дефолт bridge (1)
+	}
+	// NThreads: было cfg.NThreads = b.cfg.DefaultNThreads (ВСЕГДА затирал opts).
+	// Сейчас opts.NThreads > 0 — выигрывает opts, иначе — дефолт.
+	if opts.NThreads > 0 {
+		cfg.NThreads = opts.NThreads
+	} else {
+		cfg.NThreads = b.cfg.DefaultNThreads
+	}
 
 	// Нормализация
 	cfg.RMSNormEps = float32(b.cfg.DefaultRMSNormEps)
@@ -487,6 +540,16 @@ func (b *Backend) LoadModelWithOpts(name string, path string, opts LoadModelOpts
 	inst.info.GGUFContextLength = meta.ContextLength
 	inst.info.SizeBytes = meta.SizeTotalBytes
 	inst.info.GPUCount = b.gpuCount
+	// Session 16 (2026-06-27): Parallel + KVCacheType.
+	// Сохраняем реально применённые значения opts в ModelInfo, чтобы:
+	//   1. UI мог показать "parallel=4, kv=q8_0" в карточке модели;
+	//   2. reload на тот же path через /api/models/reload видел, что
+	//      текущая загрузка эквивалентна (sameLoadOptions);
+	//   3. metrics broker экспортировал parallel/kvCacheType в /metrics.
+	// opts — value type (не pointer), так что он всегда non-nil после
+	// LoadModelWithOpts (даже если caller передал zero-value).
+	inst.info.Parallel = opts.Parallel
+	inst.info.KVCacheType = opts.KVCacheType
 	b.mu.Unlock()
 
 	// Инициализируем lastUsedAt моментом загрузки, чтобы IdleUnloadManager
@@ -856,6 +919,141 @@ func (b *Backend) UpdateLastUsed(name string, d time.Duration) {
 		"name", name,
 		"keepAliveDuration", d.String(),
 		"newLastUsedAt", newTime.Format(time.RFC3339Nano))
+}
+
+// ResourceLimits — лимиты VRAM/RAM для загруженной модели.
+//
+// Используется cppworker'ом для расширения ответа /api/models
+// (поля max_vram_n_ctx, max_ram_n_ctx, available_vram_mb, available_ram_mb)
+// и балансировщиком для принятия решений по n_ctx reload preflight
+// (см. internal/balancer/preflight_nctx.go:collectPreflightState).
+//
+// 2026-06-26 BUGFIX: до этой фичи балансер видел max_vram_n_ctx=0
+// и model_max_context=0 для всех моделей (env_log.txt строки 121, 133),
+// потому что cppworker не сообщал эти поля в /api/models. Без них
+// preflight не мог расчитать target_n_ctx и ставил хардкод 8192,
+// что приводило к ошибкам при reload на модели типа
+// Qwen3.6-35B-A3B (training context ~32k, фактически нужно 16-32k).
+type ResourceLimits struct {
+	// VRAM
+	TotalVRAMMB     uint64 // суммарный объём VRAM всех GPU
+	AvailableVRAMMB uint64 // свободная VRAM (Total - уже занятое моделями)
+	MaxVRAMNCtx     int    // макс. n_ctx, который влезет в свободную VRAM
+	// RAM (для mmap fallback, если модель не влезает в VRAM)
+	TotalRAMMB     uint64 // суммарный объём системной RAM
+	AvailableRAMMB uint64 // свободная RAM (Total - занятое)
+	MaxRAMNCtx     int    // макс. n_ctx, который влезет в RAM через mmap
+	// Прочее
+	ModelMaxContext int // максимальный контекст из GGUF training metadata (gemma-3: 131072, llama-3: 8192, qwen3.6-72B: 32768)
+}
+
+// CalculateResourceLimits рассчитывает лимиты VRAM/RAM для загруженной модели.
+//
+// Алгоритм:
+//  1. Берём метаданные из уже загруженной модели (NLayers, NEmbd, NKvHeads, ContextLength)
+//     или из GGUF header если модель ещё не загружена.
+//  2. KV-cache размер = 2 (K+V) * 2 байта (fp16) * NLayers * NKvHeads * headDim * n_ctx,
+//     где headDim = NEmbd / NHeads.
+//  3. Для VRAM: доступно = TotalVRAM - уже занято (моделями). Резервируем 2 GB на overhead.
+//     max_vram_n_ctx = (available_vram_mb * 1024 * 1024 - 2GB_reserve) / kv_per_token_bytes.
+//  4. Для RAM: вся свободная RAM, минус 4 GB на систему. max_ram_n_ctx считается так же.
+//  5. Clamp оба значения к ModelMaxContext (из GGUF).
+//
+// Возвращает ResourceLimits со всеми полями заполненными. Если модель не загружена
+// и GGUF header недоступен — MaxVRAMNCtx/MaxRAMNCtx = 0, остальные поля = 0.
+//
+// Эта функция используется:
+//   - cppworker'ом в handleListModels для формирования JSON-ответа /api/models;
+//   - балансировщиком для fallback (если cppworker не сообщил эти поля — баг).
+func (b *Backend) CalculateResourceLimits(name string) ResourceLimits {
+	var limits ResourceLimits
+
+	// 1. Метаданные модели: сначала из загруженной, потом из GGUF header.
+	var nLayers, nHeads, nKvHeads, nEmbd, modelCtx int
+	if info, err := b.GetModel(name); err == nil {
+		nLayers = info.NLayers
+		nHeads = info.NHeads
+		nKvHeads = info.NKvHeads
+		nEmbd = info.NEmbd
+		if info.GGUFContextLength > 0 {
+			modelCtx = info.GGUFContextLength
+		}
+	}
+	if nLayers == 0 || nEmbd == 0 {
+		// Пытаемся получить метаданные через ModelManager (для незагруженных моделей).
+		// GGUFModelMeta не содержит поля ContextLength — оно берётся из GGUF header
+		// через ReadGGUFHeader (если есть Path) или остаётся 0.
+		if mm := b.ModelManager(); mm != nil {
+			if m, err := mm.GetModelMeta(name); err == nil && m != nil {
+				if m.NLayers > 0 {
+					nLayers = m.NLayers
+				}
+				if m.NEmbd > 0 {
+					nEmbd = m.NEmbd
+				}
+				if m.NHeads > 0 {
+					nHeads = m.NHeads
+				}
+				if m.NKvHeads > 0 {
+					nKvHeads = m.NKvHeads
+				}
+				// modelCtx уже из info.GGUFContextLength выше, если не 0 — оставляем
+			}
+		}
+	}
+
+	limits.ModelMaxContext = modelCtx
+
+	// 2. KV-cache per token = 4 * NLayers * NKvHeads * headDim (в байтах, fp16).
+	if nLayers > 0 && nEmbd > 0 {
+		if nHeads <= 0 {
+			nHeads = 1
+		}
+		if nKvHeads <= 0 {
+			nKvHeads = nHeads // GQA fallback
+		}
+		headDim := nEmbd / nHeads
+		kvPerToken := uint64(4) * uint64(nLayers) * uint64(nKvHeads) * uint64(headDim)
+		if kvPerToken > 0 {
+			// 3. VRAM: суммируем свободную VRAM по всем GPU.
+			b.mu.RLock()
+			for _, dev := range b.gpuDevices {
+				limits.TotalVRAMMB += uint64(dev.VRAMTotalMB)
+				limits.AvailableVRAMMB += uint64(dev.VRAMFreeMB)
+			}
+			b.mu.RUnlock()
+
+			// Резервируем 2 GB на overhead/weights (KV-cache для n_ctx считается отдельно).
+			const vramOverheadMB = uint64(2048)
+			if limits.AvailableVRAMMB > vramOverheadMB {
+				usableBytes := (limits.AvailableVRAMMB - vramOverheadMB) * 1024 * 1024
+				limits.MaxVRAMNCtx = int(usableBytes / kvPerToken)
+			}
+
+			// 4. RAM: вся доступная системная память (на Linux читаем /proc/meminfo,
+			// на других платформах — fallback через getSystemRAMGB).
+			limits.TotalRAMMB = getSystemRAMGB() * 1024
+			// Резервируем 4 GB на систему + cppworker + llama.cpp runtime.
+			const ramOverheadMB = uint64(4096)
+			if limits.TotalRAMMB > ramOverheadMB {
+				limits.AvailableRAMMB = limits.TotalRAMMB - ramOverheadMB
+				usableBytes := limits.AvailableRAMMB * 1024 * 1024
+				limits.MaxRAMNCtx = int(usableBytes / kvPerToken)
+			}
+
+			// 5. Clamp к modelCtx (training context из GGUF).
+			if modelCtx > 0 {
+				if limits.MaxVRAMNCtx > modelCtx {
+					limits.MaxVRAMNCtx = modelCtx
+				}
+				if limits.MaxRAMNCtx > modelCtx {
+					limits.MaxRAMNCtx = modelCtx
+				}
+			}
+		}
+	}
+
+	return limits
 }
 
 // UnloadModel выгружает модель
@@ -1417,6 +1615,19 @@ func initGGUFKeyMap() map[string]int {
 // ggufKeyMap — глобальный map "gguf key → field index"
 // Field index: 0=NLayers, 1=NHeads, 2=NKvHeads, 3=NEmbd
 var ggufKeyMap = initGGUFKeyMap()
+
+// ReadGGUFHeader — публичная обёртка над readGGUFHeaderInfo для использования
+// из cmd/cppworker и других пакетов.
+//
+// Используется ensureModelLoaded для lazy-load архитектурных параметров модели
+// (NLayers/NEmbd/NHeads/NKvHeads) ДО llama.cpp.LoadModel, чтобы корректно
+// рассчитать auto-tuned n_ctx/gpu_layers в calculateLazyLoadOpts.
+//
+// Не падает на ошибке — caller сам решает fallback. Возвращает *GGUFHeaderInfo
+// с заполненными полями если header валидный.
+func ReadGGUFHeader(path string) (*GGUFHeaderInfo, error) {
+	return readGGUFHeaderInfo(path)
+}
 
 // readGGUFHeaderInfo читает заголовок GGUF файла и извлекает ключевые метаданные.
 // Работает без загрузки модели в llama.cpp — читает только header (metadata KV).

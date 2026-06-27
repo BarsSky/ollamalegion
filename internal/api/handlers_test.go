@@ -162,11 +162,18 @@ func TestClusterHandlerMethodNotAllowed(t *testing.T) {
 
 // ==================== Тесты для backendsHandler ====================
 
+// TestBackendsHandler_Get проверяет обработчик GET /api/v1/backends.
+//
+// ВАЖНО: createTestServer создаёт 2 бэкенда — backend1 (healthy) и backend2
+// (unhealthy). По умолчанию listBackends фильтрует unhealthy-бэкенды (чтобы
+// WebUI не показывал «мёртвые» ноды), поэтому передаём ?includeUnhealthy=true,
+// чтобы убедиться, что обработчик корректно отдаёт оба бэкенда и что фильтр
+// можно отключить явно (используется в monitor/agent endpoints для диагностики).
 func TestBackendsHandler_Get(t *testing.T) {
 	server, _, _ := createTestServer(t)
 	defer server.Close()
 
-	resp, err := http.Get(server.URL + "/api/v1/backends")
+	resp, err := http.Get(server.URL + "/api/v1/backends?includeUnhealthy=true")
 	assert.NoError(t, err)
 	defer resp.Body.Close()
 

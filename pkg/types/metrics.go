@@ -9,6 +9,10 @@ type BackendMetrics struct {
 	Status    BackendStatus `json:"status"`
 	HasAgent  bool          `json:"hasAgent"` // Флаг наличия активного агента
 
+	// Идентификатор текущего запроса, для которого собраны эти метрики
+	// (correlation id, прокидывается из middleware и логов).
+	RequestID string `json:"request_id,omitempty"`
+
 	// Тип бэкенда и движок
 	BackendType BackendType    `json:"backendType"`
 	Engine      BackendEngine  `json:"engine"`

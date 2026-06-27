@@ -96,6 +96,22 @@ typedef struct {
     int rope_scaling_type;          // тип RoPE scaling (0=unspecified, 1=linear...)
     float rope_freq_base;           // базовая частота RoPE (default: 10000.0)
     float rope_freq_scale;          // масштаб частоты RoPE (default: 1.0)
+    // Session 16 (2026-06-27): Parallel + KVCacheType.
+    //
+    // В актуальной llama.cpp (b4500+) поля n_parallel нет. Используем
+    // llama_context_params::n_seq_max (uint32_t) — max number of sequences
+    // (i.e. distinct states). 0 = дефолт (= 1, single-slot).
+    // > 0 = multi-slot batched generation; требует больше VRAM
+    // (KV-cache × parallel).
+    int n_parallel;
+    //
+    // kv_cache_type в Go API: "f16" | "q8_0" | "q4_0" | "" (inherit default).
+    // В C-bridge маппим в пару (type_k, type_v) = enum ggml_type из ggml.h:
+    //   "f16"  → GGML_TYPE_F16  (1) — полная точность, ~2×VRAM vs Q8_0
+    //   "q8_0" → GGML_TYPE_Q8_0 (8) — -50% VRAM, минимальная потеря качества
+    //   "q4_0" → GGML_TYPE_Q4_0 (2) — -75% VRAM, заметная потеря на длинных контекстах
+    // 0 = наследовать дефолт cppworker (F16).
+    int kv_cache_type;
 } ModelConfig;
 
 // ============================================================

@@ -107,6 +107,9 @@
             flags.push('mmap=' + (profile.useMmap ? 'on' : 'off'));
         }
         if (flags.length > 0) meta.push('[' + flags.join(' · ') + ']');
+        // Session 16 (2026-06-27): Parallel + KVCacheType (advanced fields).
+        if (profile.parallel && profile.parallel > 0) meta.push('parallel=' + profile.parallel);
+        if (profile.kvCacheType && profile.kvCacheType !== '') meta.push('kv=' + profile.kvCacheType);
         // Per-model timeouts (только non-zero)
         const timeouts = [];
         if (profile.streamingTimeoutSec > 0) timeouts.push('stream=' + profile.streamingTimeoutSec + 's');
@@ -189,6 +192,11 @@
             flashAttn: (profile.flashAttn === null || profile.flashAttn === undefined) ? '' : (profile.flashAttn ? 'on' : 'off'),
             numa: (profile.numa === null || profile.numa === undefined) ? '' : (profile.numa ? 'on' : 'off'),
             useMmap: (profile.useMmap === null || profile.useMmap === undefined) ? '' : (profile.useMmap ? 'on' : 'off'),
+            // Session 16 (2026-06-27): Parallel + KVCacheType.
+            // parallel — int [0..8], 0 = наследовать cppworker default (1).
+            // kvCacheType — "f16"/"q8_0"/"q4_0", "" = наследовать default (F16).
+            parallel: (profile.parallel === undefined || profile.parallel === null) ? 0 : profile.parallel,
+            kvCacheType: profile.kvCacheType || '',
             notes: profile.notes || '',
             streamingTimeoutSec: profile.streamingTimeoutSec || 0,
             streamingIdleTimeoutSec: profile.streamingIdleTimeoutSec || 0,
@@ -211,6 +219,10 @@
         else if (state.numa === 'off') body.numa = false;
         if (state.useMmap === 'on') body.useMmap = true;
         else if (state.useMmap === 'off') body.useMmap = false;
+        // Session 16 (2026-06-27): Parallel + KVCacheType.
+        // Оба поля опциональные (omit = inherit). Если >0 / != "" — пробрасываем в API.
+        if (state.parallel > 0) body.parallel = state.parallel;
+        if (state.kvCacheType && state.kvCacheType !== '') body.kvCacheType = state.kvCacheType;
         // Timeouts (только non-zero)
         if (state.streamingTimeoutSec > 0) body.streamingTimeoutSec = state.streamingTimeoutSec;
         if (state.streamingIdleTimeoutSec > 0) body.streamingIdleTimeoutSec = state.streamingIdleTimeoutSec;
@@ -298,6 +310,21 @@
                                 <option value="off" ${state.useMmap === 'off' ? 'selected' : ''}>off</option>
                             </select>
                             <div class="ctx-help">${escapeHtml(I18N.t('settings.profiles.use_mmap_help', 'Memory-map файла модели. false = полностью читать в RAM. nil = наследовать.'))}</div>
+                        </div>
+                        <div class="wizard-field">
+                            <label>${escapeHtml(I18N.t('settings.profiles.parallel', 'Параллельные sequences'))}</label>
+                            <input type="number" id="wizParallel" value="${state.parallel}" min="0" max="8" placeholder="0 = default (1)">
+                            <div class="ctx-help">${escapeHtml(I18N.t('settings.profiles.parallel_help', 'Число параллельных sequences (batched generation). > 1 требует больше VRAM (KV-cache × parallel). 0 = оставить дефолт cppworker (1).'))}</div>
+                        </div>
+                        <div class="wizard-field">
+                            <label>${escapeHtml(I18N.t('settings.profiles.kv_cache_type', 'KV-cache quantization'))}</label>
+                            <select id="wizKVCacheType">
+                                <option value="" ${state.kvCacheType === '' ? 'selected' : ''}>— inherit (F16) —</option>
+                                <option value="f16" ${state.kvCacheType === 'f16' ? 'selected' : ''}>f16 (default)</option>
+                                <option value="q8_0" ${state.kvCacheType === 'q8_0' ? 'selected' : ''}>q8_0 (-50% VRAM)</option>
+                                <option value="q4_0" ${state.kvCacheType === 'q4_0' ? 'selected' : ''}>q4_0 (-75% VRAM)</option>
+                            </select>
+                            <div class="ctx-help">${escapeHtml(I18N.t('settings.profiles.kv_cache_type_help', "Тип квантизации KV-cache. q8_0 экономит ~50% VRAM с минимальной потерей качества. q4_0 экономит ~75%, но заметная потеря на длинных контекстах. '' = default (F16)."))}</div>
                         </div>
                         <div class="wizard-field">
                             <label>${escapeHtml(I18N.t('settings.profiles.timeouts_section', 'Per-model таймауты (сек, 0 = глобальные)'))}</label>
@@ -412,6 +439,9 @@
             flashAttn: overlay.querySelector('#wizFlashAttn').value,
             numa: overlay.querySelector('#wizNUMA').value,
             useMmap: overlay.querySelector('#wizUseMmap').value,
+            // Session 16 (2026-06-27): Parallel + KVCacheType (advanced fields).
+            parallel: parseInt(overlay.querySelector('#wizParallel').value, 10) || 0,
+            kvCacheType: overlay.querySelector('#wizKVCacheType').value,
             notes: (overlay.querySelector('#wizNotes').value || '').trim(),
             streamingTimeoutSec: parseInt(overlay.querySelector('#wizStreamingTimeout').value, 10) || 0,
             streamingIdleTimeoutSec: parseInt(overlay.querySelector('#wizStreamingIdleTimeout').value, 10) || 0,
@@ -435,6 +465,16 @@
         }
         if (state.numGpuLayers < GPU_LAYERS_MIN || state.numGpuLayers > GPU_LAYERS_MAX) {
             showToast('error', 'numGpuLayers должен быть в [' + GPU_LAYERS_MIN + ', ' + GPU_LAYERS_MAX + ']');
+            return false;
+        }
+        // Session 16 (2026-06-27): Parallel [0..8] + KVCacheType валидация.
+        if (state.parallel < 0 || state.parallel > 8) {
+            showToast('error', 'parallel должен быть в [0, 8]');
+            return false;
+        }
+        const allowedKV = ['', 'f16', 'q8_0', 'q4_0'];
+        if (allowedKV.indexOf(state.kvCacheType) === -1) {
+            showToast('error', "kvCacheType должен быть одним из ['', 'f16', 'q8_0', 'q4_0']");
             return false;
         }
         // Timeout валидация

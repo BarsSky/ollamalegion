@@ -115,6 +115,14 @@ func (lr *LlamaCppRouter) handleOpenAIChatCompletions(w http.ResponseWriter, r *
 	logger.Get().Infow("handleOpenAIChatCompletions: proxying to cppworker",
 		"backend", backendID, "url", targetURL, "model", model)
 
+	// PF-5 fix (2026-06-27): используем per-request client с ResponseHeaderTimeout = FirstByteTimeout.
+	// Иначе upstream, не отправивший HTTP-заголовки за указанное время, держит соединение бесконечно.
+	firstByte := lr.proxy.getModelFirstByteTimeout(model)
+	clientForReq := lr.proxy.streamingClient
+	if firstByte > 0 {
+		clientForReq = lr.proxy.newStreamingClientWithResponseHeaderTimeout(firstByte)
+	}
+
 	upstreamReq, err := http.NewRequestWithContext(r.Context(), http.MethodPost, targetURL, bytes.NewReader(bodyBuf))
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
@@ -131,7 +139,7 @@ func (lr *LlamaCppRouter) handleOpenAIChatCompletions(w http.ResponseWriter, r *
 	}
 	upstreamReq.Header.Set("X-Real-IP", clientRealIP)
 
-	upstreamResp, err := lr.proxy.streamingClient.Do(upstreamReq)
+	upstreamResp, err := clientForReq.Do(upstreamReq)
 	if err != nil {
 		errType := determineErrorType(err, r.Context())
 		logger.Get().Errorw("handleOpenAIChatCompletions: upstream request failed",
@@ -151,7 +159,7 @@ func (lr *LlamaCppRouter) handleOpenAIChatCompletions(w http.ResponseWriter, r *
 					retryReq.Header.Set("X-Forwarded-For", lr.proxy.getClientRealIP(r))
 				}
 				retryReq.Header.Set("X-Real-IP", lr.proxy.getClientRealIP(r))
-				upstreamResp, err = lr.proxy.streamingClient.Do(retryReq)
+				upstreamResp, err = clientForReq.Do(retryReq)
 				if err == nil {
 					logger.Get().Infow("handleOpenAIChatCompletions: retry succeeded",
 						"backend", backendID, "model", model)

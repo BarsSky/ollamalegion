@@ -77,6 +77,18 @@ func sameLoadOptions(info cppbackend.ModelInfo, opts cppbackend.LoadModelOpts) b
 			return false
 		}
 	}
+	// Session 16 (2026-06-27): Parallel + KVCacheType.
+	// Если профиль модели изменил parallel=2 → kv=q8_0, handleLoadModel/
+	// handleReloadModel должны видеть разницу и перезагрузить модель с новыми
+	// параметрами. До этой правки сравнение игнорировало parallel/kv, что
+	// делало per-model profile частично нерабочим (можно было поменять parallel
+	// в UI, но модель продолжала работать со старыми значениями).
+	if info.Parallel != opts.Parallel {
+		return false
+	}
+	if info.KVCacheType != opts.KVCacheType {
+		return false
+	}
 	return true
 }
 

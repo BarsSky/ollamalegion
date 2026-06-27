@@ -146,6 +146,173 @@ func handleLoadModel(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// handleLoadWithParams — POST /api/models/load-with-params.
+//
+// Расширенная версия handleLoadModel с дополнительными llama.cpp параметрами:
+//   - nThreads       — CPU-потоки (0 = auto)
+//   - parallel       — параллельные sequences (требует больше KV-cache VRAM)
+//   - kvCacheType    — F16/Q8_0/Q4_0 (Q8_0 экономит ~50% KV-cache VRAM)
+//   - splitMode      — layer/row для multi-GPU tensor split
+//   - overrideTensor — regex-паттерн для переопределения dtype тензоров
+//
+// Совместимость: все базовые поля из loadModelRequest тоже принимаются
+// (json-теги совпадают). Если все расширенные поля == nil/0 —
+// поведение полностью совпадает с handleLoadModel.
+//
+// Логика повторяет handleLoadModel (race-condition handling, parallel
+// requests wait, already_loaded detection) — отличия только в более
+// широком наборе параметров для LoadModelOpts.
+//
+// Прокси через балансировщик: см. internal/balancer/llamacpp_handlers_load.go
+// (handleLlamaCppLoad с поддержкой опциональных полей через mapstructure).
+func handleLoadWithParams(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeError(w, http.StatusMethodNotAllowed, "use POST")
+		return
+	}
+	var req loadWithParamsRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid JSON: "+err.Error())
+		return
+	}
+	if req.Name == "" {
+		writeError(w, http.StatusBadRequest, "name is required")
+		return
+	}
+
+	modelPath := req.Path
+	modelName := req.Name
+
+	// Резолвим путь для HF-скачанных моделей (префикс hf:)
+	if strings.HasPrefix(modelName, "hf:") && backend.HFDownloader() != nil {
+		parts := strings.TrimPrefix(modelName, "hf:")
+		if localPath, err := backend.HFDownloader().GetLocalPath(parts); err == nil && localPath != "" {
+			modelPath = localPath
+		}
+	}
+	if modelPath == "" {
+		modelPath = resolveModelPath(modelName)
+	}
+
+	// Собираем опции загрузки — теперь включая расширенные параметры.
+	opts := cppbackend.LoadModelOpts{
+		GPULayers:     defaultIntPtr(req.GPULayers, *gpuLayers),
+		ContextSize:   defaultIntPtr(req.ContextSize, *ctxSize),
+		BatchSize:     defaultIntPtr(req.BatchSize, *batchSize),
+		FlashAttnType: defaultIntPtr(req.FlashAttnType, *flashAttn),
+		NUMA:          defaultBoolPtr(req.NUMA, *numa),
+		UseMmap:       defaultBoolPtr(req.UseMmap, !*noMmap),
+		TensorSplit:   req.TensorSplit,
+	}
+	if req.NThreads != nil && *req.NThreads > 0 {
+		opts.NThreads = *req.NThreads
+	}
+	if req.Parallel != nil && *req.Parallel > 0 {
+		opts.Parallel = *req.Parallel
+	}
+	if req.KVCacheType != nil && *req.KVCacheType != "" {
+		// Session 16: KVCacheType — строковое значение "f16"/"q8_0"/"q4_0".
+		// Невалидные значения отбрасываются (cppbackend.LoadModelWithOpts
+		// fallback'нет на default F16 если строка не пустая, но неизвестная).
+		if isValidKVCacheType(*req.KVCacheType) {
+			opts.KVCacheType = *req.KVCacheType
+		} else {
+			logger.Get().Warnw("load-with-params: ignoring invalid kvCacheType",
+				"name", modelName, "kvCacheType", *req.KVCacheType,
+				"validValues", []string{"f16", "q8_0", "q4_0"})
+		}
+	}
+	if req.SplitMode != nil && *req.SplitMode >= 0 {
+		opts.SplitMode = *req.SplitMode
+	}
+	if req.OverrideTensor != nil && *req.OverrideTensor != "" {
+		opts.OverrideTensor = *req.OverrideTensor
+	}
+
+	logger.Get().Infow("loading model with extended params",
+		"name", modelName, "path", modelPath,
+		"gpuLayers", opts.GPULayers, "ctxSize", opts.ContextSize,
+		"batchSize", opts.BatchSize, "flashAttnType", opts.FlashAttnType,
+		"numa", opts.NUMA, "tensorSplit", opts.TensorSplit,
+		"nThreads", opts.NThreads, "parallel", opts.Parallel,
+		"kvCacheType", opts.KVCacheType, "splitMode", opts.SplitMode,
+		"overrideTensor", opts.OverrideTensor)
+
+	loadStart := time.Now()
+
+	lockOk, lockErr := backend.TryLockLoad(modelName)
+	if lockErr != nil {
+		if info, getErr := backend.GetModel(modelName); getErr == nil {
+			if info.Path == modelPath && sameLoadOptions(*info, opts) {
+				logger.Get().Infow("model already loaded with same parameters", "name", modelName)
+				writeJSON(w, http.StatusOK, map[string]interface{}{
+					"status": "already_loaded",
+					"model":  info,
+				})
+				return
+			}
+			logger.Get().Infow("reloading model because parameters changed (load-with-params)",
+				"name", modelName, "oldPath", info.Path, "newPath", modelPath)
+			if unloadErr := backend.UnloadModel(modelName); unloadErr != nil {
+				logger.Get().Errorw("failed to unload model before reload", "name", modelName, "error", unloadErr)
+				writeError(w, http.StatusInternalServerError, "unload before reload failed: "+unloadErr.Error())
+				return
+			}
+			lockOk, lockErr = backend.TryLockLoad(modelName)
+			if lockErr != nil {
+				logger.Get().Errorw("race: model appeared after unload", "name", modelName)
+				writeError(w, http.StatusInternalServerError, "concurrent load race after unload")
+				return
+			}
+		} else {
+			lockOk = true
+		}
+	}
+
+	if !lockOk {
+		logger.Get().Infow("model is already being loaded by another request; waiting", "name", modelName)
+		if backend.WaitForLoad(modelName) {
+			if info, getErr := backend.GetModel(modelName); getErr == nil {
+				logger.Get().Infow("handleLoadWithParams: model loaded by concurrent request",
+					"name", modelName, "duration_ms", time.Since(loadStart).Milliseconds())
+				writeJSON(w, http.StatusOK, map[string]interface{}{
+					"status": "loaded_by_other",
+					"model":  info,
+				})
+				return
+			}
+		}
+		writeLoadingResponse(w, modelName, errModelIsLoading)
+		return
+	}
+
+	loadErr := backend.LoadModelWithOpts(modelName, modelPath, opts)
+	backend.UnlockLoad(modelName)
+	if loadErr != nil {
+		logger.Get().Errorw("failed to load model (load-with-params)", "name", modelName, "error", loadErr)
+		writeError(w, http.StatusInternalServerError, "load failed: "+loadErr.Error())
+		return
+	}
+	loadDuration := time.Since(loadStart)
+
+	model, err := backend.GetModel(modelName)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+
+	if balancerReg != nil {
+		balancerReg.notifyModelLoaded(modelName, model.SizeBytes, model.ContextSize, model.GPULayers)
+	}
+
+	writeJSON(w, http.StatusOK, map[string]interface{}{
+		"status":         "loaded",
+		"model":          model,
+		"loadDurationMs": loadDuration.Milliseconds(),
+		"appliedOpts":    opts, // показываем какие параметры реально применились
+	})
+}
+
 // handleLoadProgress — GET /api/models/load/progress?model=<name>
 func handleLoadProgress(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
@@ -221,11 +388,87 @@ func handleUnloadModel(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]string{"status": "unloaded", "name": name})
 }
 
+// handleListModels — GET /api/models.
+//
+// Расширен 2026-06-26: теперь возвращает top-level поля с лимитами VRAM/RAM
+// и max n_ctx для балансировщика (preflight_nctx). До этой фичи балансер
+// видел max_vram_n_ctx=0 и model_max_context=0 для всех моделей
+// (env_log.txt строки 121, 133) и не мог расчитать целевой n_ctx.
+//
+// Лимиты считаются для первой загруженной модели. Если моделей несколько,
+// берём минимальный MaxVRAMNCtx (т.к. лимиты VRAM делятся между моделями).
+// Если моделей нет — лимиты возвращаются для дефолтной модели из ModelManager.
+//
+// NB: эти поля — ресурсы cppworker'а, а не конкретной модели. Для каждой
+// модели балансер может запросить /api/v1/cluster/models/{name}/reload с
+// явным contextSize — в этом случае он сам подберёт n_ctx.
 func handleListModels(w http.ResponseWriter, r *http.Request) {
 	models := backend.ListModels()
+	mm := backend.ModelManager()
+
+	// 1. Собираем VRAM/RAM лимиты для всех загруженных моделей.
+	// Балансер выбирает МИНИМАЛЬНЫЙ max_vram_n_ctx, потому что несколько моделей
+	// одновременно жить в VRAM не могут — общий лимит делится между ними.
+	var totalVRAMMB, availableVRAMMB, totalRAMMB, availableRAMMB uint64
+	maxVRAMNCtx := 0
+	maxRAMNCtx := 0
+	modelMaxContext := 0
+
+	for _, m := range models {
+		if m.State != cppbackend.StateLoaded {
+			continue
+		}
+		limits := backend.CalculateResourceLimits(m.Name)
+		if limits.TotalVRAMMB > totalVRAMMB {
+			totalVRAMMB = limits.TotalVRAMMB
+		}
+		if limits.AvailableVRAMMB > availableVRAMMB {
+			availableVRAMMB = limits.AvailableVRAMMB
+		}
+		if limits.TotalRAMMB > totalRAMMB {
+			totalRAMMB = limits.TotalRAMMB
+		}
+		if limits.AvailableRAMMB > availableRAMMB {
+			availableRAMMB = limits.AvailableRAMMB
+		}
+		if maxVRAMNCtx == 0 || limits.MaxVRAMNCtx < maxVRAMNCtx {
+			maxVRAMNCtx = limits.MaxVRAMNCtx
+		}
+		if maxRAMNCtx == 0 || limits.MaxRAMNCtx < maxRAMNCtx {
+			maxRAMNCtx = limits.MaxRAMNCtx
+		}
+		if modelMaxContext == 0 || limits.ModelMaxContext > modelMaxContext {
+			modelMaxContext = limits.ModelMaxContext
+		}
+	}
+
+	// 2. Fallback: если ни одна модель не загружена — берём модель из
+	// GGUFModelMeta по имени name (берём только header, не грузим в llama.cpp).
+	// GGUFModelMeta не содержит ContextLength — для расчёта лимитов нужно
+	// вызвать cppbackend.ReadGGUFHeader(m.Path) отдельно. Здесь оставляем
+	// modelMaxContext=0, балансер тогда использует дефолтные значения.
+	if maxVRAMNCtx == 0 && mm != nil {
+		_ = mm // заглушено: пусть лимиты остаются 0, preflight всё равно выключится
+	}
+
+	// 3. Если лимиты остались 0 (нет загруженной модели, нет VRAM), пробуем
+	// оценить через первую GGUF в каталоге — но для cppworker без моделей
+	// балансер получит нули, и это корректно (preflight тогда отключён).
 	writeJSON(w, http.StatusOK, map[string]interface{}{
 		"models": models,
 		"count":  len(models),
+		// ==== Resource limits (2026-06-26 BUGFIX) ====
+		// Эти поля читаются балансировщиком в preflight_nctx.go для расчёта
+		// target_n_ctx. Без них preflight ставит target=8192 (хардкод) и
+		// reload ломается на больших моделях.
+		"max_vram_n_ctx":    maxVRAMNCtx,
+		"max_ram_n_ctx":     maxRAMNCtx,
+		"available_vram_mb": availableVRAMMB,
+		"total_vram_mb":     totalVRAMMB,
+		"available_ram_mb":  availableRAMMB,
+		"total_ram_mb":      totalRAMMB,
+		"model_max_context": modelMaxContext,
+		"gpu_count":         backend.GetGPUCount(),
 	})
 }
 
@@ -415,6 +658,25 @@ func handleReloadModel(w http.ResponseWriter, r *http.Request) {
 		NUMA:          defaultBoolPtr(req.NUMA, current.NUMA),
 		UseMmap:       defaultBoolPtr(req.UseMmap, current.UseMmap),
 		TensorSplit:   current.TensorSplit,
+		// Session 16 (2026-06-27): Parallel + KVCacheType через /api/models/reload
+		// для применения Per-Model Profile (parallel + kvCacheType).
+		// По умолчанию (nil от клиента) — inherit из текущей загрузки.
+		Parallel:    current.Parallel,
+		KVCacheType: current.KVCacheType,
+	}
+	if req.Parallel != nil {
+		opts.Parallel = *req.Parallel
+	}
+	if req.KVCacheType != nil && *req.KVCacheType != "" {
+		// Валидируем — пропускаем незнакомые значения (cppbackend fallback'нет
+		// на default F16, но лучше предупредить пользователя в логах).
+		if isValidKVCacheType(*req.KVCacheType) {
+			opts.KVCacheType = *req.KVCacheType
+		} else {
+			logger.Get().Warnw("reload: ignoring invalid kvCacheType",
+				"name", req.Name, "kvCacheType", *req.KVCacheType,
+				"validValues", []string{"f16", "q8_0", "q4_0"})
+		}
 	}
 
 	// === Auto-offload: если GPULayers=-2 (AUTO) или auto_offload включён —

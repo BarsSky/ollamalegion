@@ -14,6 +14,7 @@ func setupRouter() http.Handler {
 	mux.HandleFunc("/api/info", handleInfo)
 	mux.HandleFunc("/api/gpu", handleGPUInfo)
 	mux.HandleFunc("/api/models/load", handleLoadModel)
+	mux.HandleFunc("/api/models/load-with-params", handleLoadWithParams) // расширенные параметры (Session 4 P-1)
 	mux.HandleFunc("/load", handleLoadModel)                        // alias for balancer warmup
 	mux.HandleFunc("/api/models/load/progress", handleLoadProgress) // loading state polling
 	mux.HandleFunc("/api/models/unload", handleUnloadModel)
@@ -51,6 +52,11 @@ func setupRouter() http.Handler {
 	// Диагностика prompt-too-long: метаданные последнего inference-запроса
 	// (для runbook сценария B и для диагностики случаев "prompt_exceeds_context" в Cline).
 	mux.HandleFunc("/api/v1/cppworker/debug/last-prompt", authMiddleware(handleDebugLastPrompt))
+	// Диагностика stream disconnect: последний snapshot обрыва стрима
+	// (Issue «обрыв ответа без каких-либо ошибок»). Помогает понять, был ли
+	// это ctx.Done() (клиент отвалился) или write error (broken pipe).
+	mux.HandleFunc("/api/v1/cppworker/debug/last-stream", authMiddleware(handleDebugLastStream))
+	mux.HandleFunc("/api/v1/cppworker/debug/last-stream/clear", authMiddleware(handleDebugLastStreamClear))
 	// Diagnostics endpoints — помогают диагностировать проблемы с загрузкой моделей
 	// через runtime JSON-ответ без чтения логов.
 	mux.HandleFunc("/api/diagnostics", handleDiagnostics)

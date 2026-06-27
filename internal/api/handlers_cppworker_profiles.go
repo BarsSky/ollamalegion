@@ -389,6 +389,16 @@ func (s *Server) reloadModelOnCppWorker(backend types.Backend, modelName string,
 	if profile.UseMmap != nil {
 		body["useMmap"] = *profile.UseMmap
 	}
+	// Session 16 (2026-06-27): прокидываем Parallel + KVCacheType в cppworker
+	// reload endpoint. Cppworker принимает их в /api/models/reload body
+	// (см. cmd/cppworker/handlers_model.go — handleLoadWithParams).
+	// cppworker defaults применяются, если поля не переданы.
+	if profile.Parallel > 0 {
+		body["parallel"] = profile.Parallel
+	}
+	if profile.KVCacheType != "" {
+		body["kvCacheType"] = profile.KVCacheType
+	}
 	bodyBytes, _ := json.Marshal(body)
 
 	req, err := http.NewRequest(http.MethodPost, target, strings.NewReader(string(bodyBytes)))
@@ -442,6 +452,16 @@ func mergeModelProfile(existing, update types.LlamaCppModelProfile) types.LlamaC
 	if update.Notes != "" {
 		out.Notes = update.Notes
 	}
+	// Session 16 (2026-06-27): Parallel + KVCacheType.
+	// zero-value (Parallel=0 или KVCacheType="") означает "не менять",
+	// аналогично NumGPULayers/Notes. Это позволяет PATCH-like частичные
+	// обновления без сброса уже настроенного parallel/kv.
+	if update.Parallel != 0 {
+		out.Parallel = update.Parallel
+	}
+	if update.KVCacheType != "" {
+		out.KVCacheType = update.KVCacheType
+	}
 	return out
 }
 
@@ -460,6 +480,21 @@ func validateModelProfile(p types.LlamaCppModelProfile) error {
 	}
 	if p.NumGPULayers < -1 {
 		return fmt.Errorf("numGpuLayers must be >= -1 (-1 = all layers), got %d", p.NumGPULayers)
+	}
+	if p.NumGPULayers > 200 {
+		return fmt.Errorf("numGpuLayers must be <= 200, got %d", p.NumGPULayers)
+	}
+	// Session 16 (2026-06-27): валидация Parallel и KVCacheType.
+	// Parallel ∈ [0, 8] — cppworker не поддерживает > 8 параллельных слотов.
+	// KVCacheType ∈ {"", "f16", "q8_0", "q4_0"} — только эти 4 значения валидны.
+	if p.Parallel < 0 || p.Parallel > 8 {
+		return fmt.Errorf("parallel must be in [0, 8], got %d", p.Parallel)
+	}
+	switch p.KVCacheType {
+	case "", "f16", "q8_0", "q4_0":
+		// OK
+	default:
+		return fmt.Errorf("kvCacheType must be one of ['', 'f16', 'q8_0', 'q4_0'], got %q", p.KVCacheType)
 	}
 	return nil
 }

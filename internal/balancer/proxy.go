@@ -32,8 +32,9 @@ type Proxy struct {
 	metricsMgr      *MetricsManager
 	queueMgr        *QueueManager
 	predictor       *Predictor
-	client          *http.Client    // Клиент для обычных запросов
-	streamingClient *http.Client    // Клиент для streaming/SSE запросов (без таймаута)
+	client                    *http.Client    // Клиент для обычных запросов
+	streamingClient           *http.Client    // Клиент для streaming/SSE запросов (без таймаута)
+	streamingTransportBase    *http.Transport // Базовый Transport для per-request клонов с ResponseHeaderTimeout
 	statePath       string          // Путь к state файлу
 	saveTimer       *time.Timer     // Таймер для debounced autosave
 	saveMu          sync.Mutex      // Мьютекс для защиты saveTimer
@@ -183,6 +184,10 @@ func NewProxy(config *types.LoadBalancerConfig) *Proxy {
 			Timeout:   0, // Нет таймаута для streaming
 			Transport: streamingTransport,
 		},
+		// Базовый Transport для per-request клонов с ResponseHeaderTimeout
+		// (используется в newStreamingClientWithResponseHeaderTimeout).
+		// Применяется для streaming + явный FirstByteTimeout>0 (PF-5 fix).
+		streamingTransportBase: streamingTransport,
 	}
 
 	// QueueManager создаём после инициализации p, чтобы передать корректный proxy

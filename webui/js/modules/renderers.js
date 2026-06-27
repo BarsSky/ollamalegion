@@ -827,6 +827,13 @@ const Renderers = (function () {
         if (window.ui && typeof window.ui.applyModelsSort === 'function') {
             try { window.ui.applyModelsSort(); } catch (e) { /* ignore */ }
         }
+        // Session B: применяем текущий search query (если есть) + обновляем счётчик.
+        var searchInput = document.getElementById('modelsSearch');
+        if (window.ui && typeof window.ui.filterModels === 'function') {
+            try {
+                window.ui.filterModels(searchInput ? searchInput.value : '');
+            } catch (e) { /* ignore */ }
+        }
     }
 
     function backendLoad(backends) {
@@ -930,7 +937,7 @@ const Renderers = (function () {
             const safeNameAttr = escapeHtml(m.name);
 
             return `
-                <div class="model-card" data-backend="${safeBackend}" data-model="${safeName}" data-model-name="${escapeHtml(m.name).toLowerCase()}" data-backend-type="${escapeHtml(backendType)}" data-size-bytes="${sizeBytes}">
+                <div class="model-card" data-backend="${safeBackend}" data-model="${safeName}" data-model-name="${escapeHtml(m.name).toLowerCase()}" data-backend-type="${escapeHtml(backendType)}" data-size-bytes="${sizeBytes}" data-vram-mb="${Math.round(vramMB)}">
                     <label class="model-card-checkbox" onclick="event.stopPropagation();" title="${escapeHtml(_t('models.bulk.select_this'))}">
                         <input type="checkbox" class="model-select-cb"
                                data-backend="${safeBackend}" data-model="${safeNameAttr}"

@@ -487,6 +487,11 @@ const ui = (function () {
         // Models search/filter
         var modelsSearch = document.getElementById('modelsSearch');
         if (modelsSearch) {
+            // Session B: восстанавливаем последний query из localStorage.
+            try {
+                var saved = localStorage.getItem('ollamalegion_models_search');
+                if (saved) modelsSearch.value = saved;
+            } catch (e) { /* ignore */ }
             modelsSearch.addEventListener('input', Utils.debounce(function(e) {
                 filterModels(e.target.value);
             }, 150));
@@ -1501,6 +1506,19 @@ const ui = (function () {
         });
     }
 
+    /**
+     * Filter + search + type-filter для карточек моделей на Models tab.
+     *
+     * Логика:
+     * - `query` (search) — подстрочный поиск по всему тексту карточки.
+     * - `activeType` (из #modelsTypeFilter) — фильтр по типу бэкенда (ollama/llama_cpp/all).
+     * - Результат: card.style.display = 'none' для не подходящих, '' для подходящих.
+     *
+     * Session B — Filter/Search + Sort improvements:
+     * - Добавлено отображение счётчика видимых карточек в #modelsCount (если есть).
+     * - Добавлен empty-state #modelsEmpty.
+     * - Сохраняем query в localStorage для восстановления после refresh страницы.
+     */
     function filterModels(query) {
         const cards = document.querySelectorAll('#modelsGrid .model-card');
         const lower = (query || '').toLowerCase();
@@ -1528,6 +1546,22 @@ const ui = (function () {
             if (show) visibleCount++;
         });
 
+        // Session B: показываем счётчик "X из Y" в #modelsCount, если есть.
+        var counter = document.getElementById('modelsCount');
+        if (counter) {
+            if (cards.length > 0) {
+                var total = cards.length;
+                if (visibleCount === total) {
+                    counter.textContent = _t('models.filter_count_all', { count: total });
+                } else {
+                    counter.textContent = _t('models.filter_count_filtered', { visible: visibleCount, total: total });
+                }
+                counter.style.display = '';
+            } else {
+                counter.style.display = 'none';
+            }
+        }
+
         // Показываем/скрываем empty-state
         var empty = document.getElementById('modelsEmpty');
         if (empty) {
@@ -1537,12 +1571,21 @@ const ui = (function () {
                 empty.hidden = true;
             }
         }
+
+        // Сохраняем query в localStorage для восстановления при refresh.
+        try {
+            localStorage.setItem('ollamalegion_models_search', lower || '');
+        } catch (e) { /* localStorage недоступен — ignore */ }
     }
 
     /**
      * Применить сортировку карточек моделей в соответствии с #modelsSortBy.
-     * Поддерживает: name-asc, name-desc, size-desc, size-asc, backend-asc.
+     * Поддерживает: name-asc, name-desc, size-desc, size-asc, vram-desc, vram-asc, backend-asc.
      * Карточки сортируются in-place через appendChild (DOM reordering).
+     *
+     * Session B — Filter/Search + Sort improvements: добавлены VRAM-режимы.
+     * VRAM-режимы полезны для планирования GPU-нагрузки (какие модели занимают
+     * больше всего видеопамяти — отображаются первыми при vram-desc).
      */
     function applyModelsSort() {
         var grid = document.getElementById('modelsGrid');
@@ -1571,6 +1614,16 @@ const ui = (function () {
             if (u === 'KB') return n * 1024;
             return n;
         }
+        function getVram(card) {
+            // VRAM в MB из data-vram-mb (Session B).
+            var v = card.dataset.vramMb;
+            if (v !== undefined && v !== '') return parseInt(v, 10) || 0;
+            // Fallback: парсим "VRAM: 1234 MB" из текста карточки.
+            var t = card.textContent || '';
+            var m = t.match(/VRAM[^\d]*([\d.]+)\s*MB/i);
+            if (!m) return 0;
+            return Math.round(parseFloat(m[1])) || 0;
+        }
         function getBackend(card) {
             return (card.dataset.backendId || card.dataset.backend || '').toLowerCase();
         }
@@ -1583,6 +1636,10 @@ const ui = (function () {
                     return getSize(b) - getSize(a);
                 case 'size-asc':
                     return getSize(a) - getSize(b);
+                case 'vram-desc':
+                    return getVram(b) - getVram(a);
+                case 'vram-asc':
+                    return getVram(a) - getVram(b);
                 case 'backend-asc':
                     var ba = getBackend(a), bb = getBackend(b);
                     if (ba !== bb) return ba.localeCompare(bb);

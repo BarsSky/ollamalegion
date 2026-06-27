@@ -311,6 +311,8 @@
                                 <option value="name-desc" data-i18n="models.sort_name_desc">Имя (Я-А)</option>
                                 <option value="size-desc" data-i18n="models.sort_size_desc">Размер (больше)</option>
                                 <option value="size-asc" data-i18n="models.sort_size_asc">Размер (меньше)</option>
+                                <option value="vram-desc" data-i18n="models.sort_vram_desc">VRAM (больше)</option>
+                                <option value="vram-asc" data-i18n="models.sort_vram_asc">VRAM (меньше)</option>
                                 <option value="backend-asc" data-i18n="models.sort_backend_asc">Бэкенд (А-Я)</option>
                             </select>
                             <button class="btn btn-secondary" id="refreshModelsBtn" data-i18n="common.retry">Обновить</button>
@@ -322,6 +324,7 @@
                         <button class="btn-bulk-select-all" onclick="window.bulkModels.selectAll()" data-i18n="models.bulk.select_all">Select All</button>
                         <button class="btn-bulk-select-loaded" onclick="window.bulkModels.selectLoaded()" data-i18n="models.bulk.select_loaded">Select Loaded</button>
                         <button class="btn-bulk-select-none" onclick="window.bulkModels.selectNone()" data-i18n="models.bulk.select_none">Clear Selection</button>
+                        <span class="models-count" id="modelsCount" style="display:none;margin-left:auto;align-self:center;font-size:13px;color:var(--text-muted)"></span>
                     </div>
                     <div class="models-bulk-toolbar" id="modelsBulkToolbar" style="display:none;">
                         <!-- динамически заполняется bulk-models.js renderToolbar() -->

@@ -659,7 +659,11 @@ window.I18N_EN = {
   "models.sort_size_desc": "Size (largest first)",
   "models.sort_size_asc": "Size (smallest first)",
   "models.sort_backend_asc": "Backend (A–Z)",
+  "models.sort_vram_desc": "VRAM (largest first)",
+  "models.sort_vram_asc": "VRAM (smallest first)",
   "models.empty_filtered": "No models match the current filter.",
+  "models.filter_count_all": "{count} models",
+  "models.filter_count_filtered": "{visible} of {total} models",
 
   // Pull progress / Active ops (Q3 W3-4 sub-task)
   "models.progress": "Progress",

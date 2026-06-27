@@ -5,6 +5,73 @@
 Формат ведётся в соответствии с [Keep a Changelog](https://keepachangelog.com/ru/1.0.0/),
 и этот проект придерживается [Semantic Versioning](https://semver.org/lang/ru/).
 
+## [Unreleased — 2026-06-28b]
+
+### Added (Roadmap Q3 — Session B: Filter/Search + Sort improvements)
+
+**Задача**: улучшить UX поиска и сортировки моделей на Models tab. До этой сессии
+пользователь мог искать по имени модели и фильтровать по типу бэкенда (🦙/🦒/All),
+но:
+
+1. Не было счётчика видимых моделей ("X из Y") — при длинном списке сложно понять,
+   сколько карточек отфильтровано.
+2. Не было сортировки по VRAM — для GPU-планирования полезно видеть, какие модели
+   занимают больше всего видеопамяти.
+3. Search query не сохранялся между перезагрузками страницы — после F5
+   приходилось вводить заново.
+4. После auto-refresh моделей счётчик и фильтр не обновлялись.
+
+**Решение**:
+
+**Frontend improvements**:
+- `webui/js/modules/renderers.js` — в `.model-card` добавлен атрибут
+  `data-vram-mb="${Math.round(vramMB)}"` для сортировки по VRAM.
+- `webui/js/app.js:applyModelsSort()` — добавлены режимы `vram-desc` и `vram-asc`
+  (читают `data-vram-mb`, fallback парсит текст карточки).
+- `webui/js/app.js:filterModels()` — добавлен счётчик `#modelsCount` ("X из Y моделей"),
+  сохранение query в `localStorage` (`ollamalegion_models_search`), восстановление
+  при init.
+- `webui/js/app.js:setupEventListeners()` — при init читается сохранённый query
+  из localStorage и подставляется в `modelsSearch`.
+- `webui/js/modules/renderers.js:modelsPage()` — после `applyModelsSort()`
+  вызывается `filterModels(searchInput.value)` чтобы счётчик обновлялся при auto-refresh.
+
+**HTML**:
+- `webui/index.html` — добавлены 2 `<option>` для сортировки по VRAM
+  (`vram-desc`, `vram-asc`) с `data-i18n` атрибутами.
+- Добавлен `<span class="models-count" id="modelsCount">` для счётчика
+  (изначально скрыт, появляется когда есть карточки).
+
+**CSS**:
+- `webui/css/data.css` — добавлен `.models-count` (pill-style badge с фоном
+  `--glass-bg`, цветом `--text-secondary`, padding 0.2rem 0.6rem).
+
+**i18n** (4 новых ключа × 2 языка = 8):
+`models.sort_vram_desc`, `models.sort_vram_asc` (en+ru),
+`models.filter_count_all`, `models.filter_count_filtered` (en+ru).
+
+**Acceptance criteria**:
+1. В Models tab пользователь видит `<select id="modelsSortBy">` с 7 опциями:
+   name-asc, name-desc, size-desc, size-asc, vram-desc, vram-asc, backend-asc.
+2. Выбор `vram-desc` сортирует карточки по убыванию VRAM (модели с наибольшим
+   потреблением видеопамяти — первыми).
+3. При вводе search query отображается счётчик "X of Y моделей"
+   (или просто "N моделей" если фильтр не активен).
+4. После F5 страницы query из localStorage восстанавливается автоматически.
+5. После auto-refresh моделей фильтр (query + type filter) и счётчик остаются активными.
+
+**Изменения**:
+
+- `webui/js/modules/renderers.js` — `data-vram-mb` атрибут в `.model-card`
+  + вызов `filterModels()` после `applyModelsSort()` в `modelsPage()`.
+- `webui/js/app.js` — расширен `applyModelsSort()` (+2 опции: vram-desc/asc),
+  расширен `filterModels()` (+counter, +localStorage), восстановление query при init.
+- `webui/index.html` — 2 новых `<option>` в `<select id="modelsSortBy">`,
+  элемент `<span id="modelsCount">` для счётчика.
+- `webui/css/data.css` — стиль `.models-count` (pill-style).
+- `webui/js/i18n/en.js` — 4 новых ключа.
+- `webui/js/i18n/ru.js` — 4 новых ключа.
+
 ## [Unreleased — 2026-06-28]
 
 ### Added (Roadmap Q3 — Session A: Bulk operations)

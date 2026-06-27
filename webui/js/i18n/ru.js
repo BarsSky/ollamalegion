@@ -707,7 +707,11 @@ window.I18N_RU = {
   "models.sort_size_desc": "Размер (больше → меньше)",
   "models.sort_size_asc": "Размер (меньше → больше)",
   "models.sort_backend_asc": "Бэкенд",
+  "models.sort_vram_desc": "VRAM (больше)",
+  "models.sort_vram_asc": "VRAM (меньше)",
   "models.empty_filtered": "Нет моделей, соответствующих фильтру. Попробуйте изменить тип бэкенда или очистить поиск.",
+  "models.filter_count_all": "{count} моделей",
+  "models.filter_count_filtered": "{visible} из {total} моделей",
 
   // Pull progress / Active ops (Q3 W3-4 sub-task)
   "models.progress": "Прогресс",

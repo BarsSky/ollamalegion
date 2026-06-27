@@ -71,7 +71,7 @@ func TestHandleLoadWithParams_RequestStructure(t *testing.T) {
 		"useMmap": false,
 		"nThreads": 16,
 		"parallel": 2,
-		"kvCacheType": 1,
+		"kvCacheType": "q8_0",
 		"splitMode": 0,
 		"overrideTensor": "blk\\..*\\.ffn_.*_exps=CPU"
 	}`
@@ -117,8 +117,9 @@ func TestHandleLoadWithParams_RequestStructure(t *testing.T) {
 	if req.Parallel == nil || *req.Parallel != 2 {
 		t.Errorf("Parallel: got %v, want 2", req.Parallel)
 	}
-	if req.KVCacheType == nil || *req.KVCacheType != 1 {
-		t.Errorf("KVCacheType: got %v, want 1 (Q8_0)", req.KVCacheType)
+	// Session 16 (2026-06-27): KVCacheType стал строкой "f16"/"q8_0"/"q4_0".
+	if req.KVCacheType == nil || *req.KVCacheType != "q8_0" {
+		t.Errorf("KVCacheType: got %v, want q8_0", req.KVCacheType)
 	}
 	if req.SplitMode == nil || *req.SplitMode != 0 {
 		t.Errorf("SplitMode: got %v, want 0 (layer)", req.SplitMode)
@@ -194,17 +195,18 @@ func TestHandleLoadWithParams_BackwardCompatibility(t *testing.T) {
 }
 
 // TestHandleLoadWithParams_KVCacheTypeValidValues — проверяет, что структура
-// принимает все валидные значения kvCacheType (0=F16, 1=Q8_0, 2=Q4_0).
+// принимает все валидные строковые значения kvCacheType (Session 16 — 2026-06-27).
+// Допустимые значения: "f16", "q8_0", "q4_0".
 func TestHandleLoadWithParams_KVCacheTypeValidValues(t *testing.T) {
-	for _, kvType := range []int{0, 1, 2} {
-		body := `{"name":"test","kvCacheType":` + intToStr(kvType) + `}`
+	for _, kvType := range []string{"f16", "q8_0", "q4_0"} {
+		body := `{"name":"test","kvCacheType":"` + kvType + `"}`
 		var req loadWithParamsRequest
 		if err := json.Unmarshal([]byte(body), &req); err != nil {
-			t.Errorf("kvCacheType=%d: failed to decode: %v", kvType, err)
+			t.Errorf("kvCacheType=%s: failed to decode: %v", kvType, err)
 			continue
 		}
 		if req.KVCacheType == nil || *req.KVCacheType != kvType {
-			t.Errorf("kvCacheType=%d: got %v", kvType, req.KVCacheType)
+			t.Errorf("kvCacheType=%s: got %v", kvType, req.KVCacheType)
 		}
 	}
 }
@@ -228,7 +230,9 @@ func TestHandleLoadWithParams_SplitModeValidValues(t *testing.T) {
 // принимает отрицательные значения (валидация в checkVRAMForModel/cppworker).
 // Тест проверяет только парсинг, не runtime-валидацию.
 func TestHandleLoadWithParams_NegativeValuesParse(t *testing.T) {
-	body := `{"name":"test","gpuLayers":-1,"kvCacheType":-1,"splitMode":-1,"nThreads":-1,"parallel":-1}`
+	// KVCacheType стал строкой (Session 16) — отрицательные int-значения
+	// для него больше не релевантны. Handler валидирует строки через isValidKVCacheType.
+	body := `{"name":"test","gpuLayers":-1,"splitMode":-1,"nThreads":-1,"parallel":-1}`
 	var req loadWithParamsRequest
 	if err := json.Unmarshal([]byte(body), &req); err != nil {
 		t.Fatalf("failed to decode request with negative values: %v", err)
@@ -237,8 +241,9 @@ func TestHandleLoadWithParams_NegativeValuesParse(t *testing.T) {
 	if req.GPULayers == nil || *req.GPULayers != -1 {
 		t.Errorf("GPULayers: got %v", req.GPULayers)
 	}
-	if req.KVCacheType == nil || *req.KVCacheType != -1 {
-		t.Errorf("KVCacheType: got %v", req.KVCacheType)
+	// KVCacheType должен быть nil (отсутствует в JSON).
+	if req.KVCacheType != nil {
+		t.Errorf("KVCacheType should be nil, got %v", *req.KVCacheType)
 	}
 	if req.SplitMode == nil || *req.SplitMode != -1 {
 		t.Errorf("SplitMode: got %v", req.SplitMode)

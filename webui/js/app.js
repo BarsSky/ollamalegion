@@ -78,19 +78,78 @@ const ui = (function () {
 
     // ---- Theme ----
 
+    /**
+     * Инициализация темы (Session C — Theme toggle).
+     *
+     * Логика:
+     * 1. Anti-FOIT inline скрипт в <head> уже установил data-theme до загрузки CSS
+     *    (приоритет: localStorage > system preference > dark).
+     * 2. Здесь мы только синхронизируем UI (иконка toggle).
+     * 3. Кнопка переключения → toggle + broadcast события.
+     * 4. Keyboard shortcut Ctrl+Shift+T → toggle.
+     * 5. Слушаем изменения system preference (prefers-color-scheme) если пользователь
+     *    явно не выбрал тему (нет ключа в localStorage).
+     *
+     * Broadcast: window event 'theme:changed' с detail={theme: 'dark'|'light'}
+     * позволяет другим модулям (например, Chart.js, монитору) реагировать на смену темы.
+     */
     function initTheme() {
-        var saved = localStorage.getItem('ollamalegion_theme') || 'dark';
-        document.documentElement.setAttribute('data-theme', saved);
-        updateThemeToggleIcon(saved);
+        var current = document.documentElement.getAttribute('data-theme') || 'dark';
+        updateThemeToggleIcon(current);
+
+        // Broadcast theme change — позволяет модулям реагировать на смену.
+        function broadcastThemeChange(theme) {
+            try {
+                window.dispatchEvent(new CustomEvent('theme:changed', { detail: { theme: theme } }));
+            } catch (e) { /* CustomEvent может не поддерживаться в очень старых браузерах */ }
+        }
+
+        // Switch theme — вызывается из button click и из keyboard shortcut.
+        function switchTheme(next) {
+            document.documentElement.setAttribute('data-theme', next);
+            try { localStorage.setItem('ollamalegion_theme', next); } catch (e) { /* ignore */ }
+            updateThemeToggleIcon(next);
+            broadcastThemeChange(next);
+        }
+
         var toggleBtn = document.getElementById('themeToggle');
         if (toggleBtn) {
             toggleBtn.addEventListener('click', function () {
-                var current = document.documentElement.getAttribute('data-theme') || 'dark';
-                var next = current === 'dark' ? 'light' : 'dark';
-                document.documentElement.setAttribute('data-theme', next);
-                localStorage.setItem('ollamalegion_theme', next);
-                updateThemeToggleIcon(next);
+                var cur = document.documentElement.getAttribute('data-theme') || 'dark';
+                switchTheme(cur === 'dark' ? 'light' : 'dark');
             });
+        }
+
+        // Keyboard shortcut: Ctrl+Shift+T (Windows/Linux), Cmd+Shift+T (macOS).
+        document.addEventListener('keydown', function (e) {
+            var isToggleShortcut = (e.ctrlKey || e.metaKey) && e.shiftKey && (e.key === 'T' || e.key === 't' || e.key === 'Е' || e.key === 'е');
+            if (!isToggleShortcut) return;
+            // Не перехватываем если фокус в input/textarea (даём работать обычному вводу).
+            var tag = (e.target && e.target.tagName) || '';
+            if (tag === 'INPUT' || tag === 'TEXTAREA' || (e.target && e.target.isContentEditable)) return;
+            e.preventDefault();
+            var cur = document.documentElement.getAttribute('data-theme') || 'dark';
+            switchTheme(cur === 'dark' ? 'light' : 'dark');
+        });
+
+        // Слушаем изменения system preference (только если пользователь явно не выбрал тему).
+        if (window.matchMedia) {
+            try {
+                var mq = window.matchMedia('(prefers-color-scheme: light)');
+                var onMqChange = function (ev) {
+                    // Не перезаписываем если пользователь явно выбрал тему.
+                    try {
+                        if (localStorage.getItem('ollamalegion_theme')) return;
+                    } catch (e) { /* ignore */ }
+                    var next = ev.matches ? 'light' : 'dark';
+                    document.documentElement.setAttribute('data-theme', next);
+                    updateThemeToggleIcon(next);
+                    broadcastThemeChange(next);
+                };
+                // addEventListener / addListener — старые браузеры используют addListener.
+                if (mq.addEventListener) mq.addEventListener('change', onMqChange);
+                else if (mq.addListener) mq.addListener(onMqChange);
+            } catch (e) { /* matchMedia недоступен — ignore */ }
         }
     }
 

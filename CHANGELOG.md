@@ -5,6 +5,74 @@
 Формат ведётся в соответствии с [Keep a Changelog](https://keepachangelog.com/ru/1.0.0/),
 и этот проект придерживается [Semantic Versioning](https://semver.org/lang/ru/).
 
+## [Unreleased — 2026-06-28c]
+
+### Added (Roadmap Q3 — Session C: Theme toggle improvements)
+
+**Задача**: улучшить UX переключения тем (dark ↔ light) на WebUI. До этой сессии
+theme toggle работал базово (кнопка в header, persist в localStorage), но:
+
+1. На первой загрузке страницы была заметная вспышка неправильной темы (flash of
+   incorrect theme, FOIT) — CSS подгружался позже JS, который устанавливал
+   `data-theme`.
+2. Не было keyboard shortcut для переключения.
+3. Не было auto-detect системной темы (`prefers-color-scheme`).
+4. При смене системной темы (пользователь переключил ОС на light mode) WebUI не
+   реагировал (если пользователь явно не выбирал).
+5. Другие модули (Chart.js, монитор) не знали о смене темы (только CSS-переменные
+   обновлялись, но не кастомные JS-charts).
+
+**Решение**:
+
+**Anti-FOIT**:
+- `webui/index.html` — inline `<script>` в `<head>` ДО загрузки CSS. Приоритет:
+  `localStorage` > `prefers-color-scheme` (system preference) > `dark`. Это
+  исключает любую вспышку неправильной темы при первой загрузке.
+
+**Keyboard shortcut**:
+- `webui/js/app.js:initTheme()` — `Ctrl+Shift+T` (Windows/Linux) или
+  `Cmd+Shift+T` (macOS) переключает тему. Shortcut НЕ срабатывает если фокус
+  в `<input>` / `<textarea>` / `contentEditable` (чтобы не мешать обычному вводу).
+
+**Auto-detect + system preference tracking**:
+- `webui/js/app.js:initTheme()` — `matchMedia('(prefers-color-scheme: light)')`
+  отслеживает изменения системной темы. Применяется только если пользователь
+  явно не выбрал тему (нет ключа в localStorage).
+
+**Broadcast событие**:
+- `window.dispatchEvent('theme:changed', { detail: { theme: 'dark'|'light' } })`
+  при каждом переключении. Позволяет другим модулям реагировать на смену темы
+  (Chart.js для смены цветов графиков, монитор и т.п.).
+
+**UI improvements**:
+- `webui/index.html` — добавлен `data-i18n-title="settings.theme_toggle_title"`
+  на кнопку toggle, в tooltip добавлен хоткей `(Ctrl+Shift+T)`.
+- `webui/css/components.css` — subtle rotate+scale анимация для иконки
+  toggle при hover (rotate 20deg + scale 1.1, 0.3s ease).
+
+**i18n** (1 новый ключ × 2 языка):
+`settings.theme_toggle_title` (en+ru).
+
+**Acceptance criteria**:
+1. Первая загрузка страницы в light-mode системе → UI сразу в light (нет dark flash).
+2. Первая загрузка страницы в dark-mode системе → UI сразу в dark.
+3. После выбора темы в UI → переключение ОС не перезаписывает выбор.
+4. Ctrl+Shift+T (или Cmd+Shift+T на macOS) переключает тему.
+5. При фокусе в search input Ctrl+Shift+T НЕ переключает тему (не мешает вводу).
+6. После смены темы `window.dispatchEvent('theme:changed')` срабатывает
+   (можно слушать через `window.addEventListener('theme:changed', ...)`).
+7. Hover на иконке toggle → плавная rotate+scale анимация.
+
+**Изменения**:
+
+- `webui/index.html` — anti-FOIT inline `<script>` в `<head>`, `data-i18n-title`
+  на `#themeToggle`.
+- `webui/js/app.js` — расширен `initTheme()`: keyboard shortcut, system preference
+  tracking, broadcast события.
+- `webui/css/components.css` — анимация для `.btn-theme-toggle > *`.
+- `webui/js/i18n/en.js` — 1 новый ключ.
+- `webui/js/i18n/ru.js` — 1 новый ключ.
+
 ## [Unreleased — 2026-06-28b]
 
 ### Added (Roadmap Q3 — Session B: Filter/Search + Sort improvements)

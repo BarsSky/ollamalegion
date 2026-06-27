@@ -198,6 +198,7 @@ window.I18N_RU = {
   "settings.theme": "Тема",
   "settings.theme_dark": "Темная",
   "settings.theme_light": "Светлая",
+  "settings.theme_toggle_title": "Переключить тему (Ctrl+Shift+T)",
 
   // Common
   "common.loading": "Загрузка...",

@@ -59,6 +59,16 @@
     color: var(--text-primary);
     border-color: var(--accent);
 }
+/* Session C — Theme toggle: subtle rotate animation при смене иконки. */
+.btn-theme-toggle {
+    overflow: hidden;
+}
+.btn-theme-toggle > * {
+    transition: transform 0.3s ease;
+}
+.btn-theme-toggle:hover > * {
+    transform: rotate(20deg) scale(1.1);
+}
 
 /* Action buttons (in tables) */
 .action-btn {

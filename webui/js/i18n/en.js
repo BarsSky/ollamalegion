@@ -210,6 +210,7 @@ window.I18N_EN = {
   "settings.theme": "Theme",
   "settings.theme_dark": "Dark",
   "settings.theme_light": "Light",
+  "settings.theme_toggle_title": "Toggle theme (Ctrl+Shift+T)",
 
   // Common
   "common.loading": "Loading...",

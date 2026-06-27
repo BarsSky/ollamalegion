@@ -7,6 +7,25 @@
     <meta http-equiv="Pragma" content="no-cache">
     <meta http-equiv="Expires" content="0">
     <title>OllamaLegion — Dashboard</title>
+    <!-- Session C — Theme toggle: anti-FOIT inline script.
+         Применяет data-theme до загрузки CSS, чтобы избежать flash of incorrect theme (FOIT)
+         при первой загрузке страницы. Приоритет: localStorage > system preference > dark. -->
+    <script>
+        (function() {
+            try {
+                var stored = localStorage.getItem('ollamalegion_theme');
+                if (stored === 'dark' || stored === 'light') {
+                    document.documentElement.setAttribute('data-theme', stored);
+                } else {
+                    // auto-detect system preference
+                    var prefersLight = window.matchMedia && window.matchMedia('(prefers-color-scheme: light)').matches;
+                    document.documentElement.setAttribute('data-theme', prefersLight ? 'light' : 'dark');
+                }
+            } catch (e) {
+                document.documentElement.setAttribute('data-theme', 'dark');
+            }
+        })();
+    </script>
     <link rel="icon" type="image/png" sizes="32x32" href="favicon-32x32.png">
     <link rel="icon" type="image/png" sizes="16x16" href="favicon-16x16.png">
     <link rel="shortcut icon" href="favicon.ico">
@@ -84,7 +103,7 @@
                         <option value="ru">🇷🇺 RU</option>
                         <option value="en">🇬🇧 EN</option>
                     </select>
-                    <button class="btn-theme-toggle" id="themeToggle" title="Переключить тему">☀️</button>
+                    <button class="btn-theme-toggle" id="themeToggle" data-i18n-title="settings.theme_toggle_title" title="Переключить тему (Ctrl+Shift+T)">☀️</button>
                     <button class="btn btn-secondary" id="refreshBtn" data-i18n="common.retry">Обновить</button>
                     <button class="btn btn-primary" id="addBackendBtn" data-i18n="backends.add">Добавить бэкенд</button>
                 </div>

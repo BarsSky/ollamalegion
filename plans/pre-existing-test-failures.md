@@ -341,3 +341,28 @@ non-streaming OpenAI chat completion, а тест ожидает `application/js
 | PF-7 | `TestOpenWebUI_Sequential_MixedRequests/step6-llamacpp-non-streaming` | `tests/openwebui_compatibility_test.go:766` | ✅ FIXED ранее (verified Session 13 — PASS за 0.43s) |
 
 **Session 4 (P-1) НЕ вносит новых регрессий.** Упавшие тесты — pre-existing.
+
+---
+
+## ✅ Q3 метрика выполнена (2026-06-27)
+
+**Все 7 pre-existing failures (PF-1#1, PF-1#2, PF-3, PF-4, PF-5, PF-6, PF-7) закрыты.**
+
+Этот файл остаётся в `plans/` как **история** — он больше не содержит открытых задач.
+Все актуальные планы — в `plans/2026-q3-roadmap.md` и связанных с ним документах.
+
+### Сводка по фиксам
+
+| Сессия | Что закрыто | Файлы изменены |
+|---|---|---|
+| Session 2 (2026-06-26) | PF-1 #1, PF-1 #2 | `internal/api/handlers_test.go`, `tests/backend_type_isolation_test.go` |
+| Session 5 (2026-06-26) | PF-3 | `tests/cppbackend_test.go` |
+| Session 13 (2026-06-27) | PF-5, PF-6, PF-7 | `internal/balancer/proxy_first_byte_timeout.go`, `internal/balancer/llamacpp_transport.go` |
+| Session 18 (2026-06-27) | PF-4 | `tests/first_byte_timeout_test.go` |
+
+### Регрессионная страховка
+
+Все фиксы задокументированы в `CHANGELOG.md` (см. секции Sessions 2/5/13/18).
+Для предотвращения регрессий в roadmap Q3 запланировано:
+- CI/CD scaffolding (P.4 в [production-ready plan](2026-q3-production-ready-plan.md), оценка 1 день)
+- Coverage >75% для `rpccoordinator`, `rptensor`, `balancer` (Q3 metric, раздел 11 roadmap)

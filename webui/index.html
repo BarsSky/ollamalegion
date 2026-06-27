@@ -561,8 +561,20 @@
                     <div class="card-header">
                         <h3><i class="fas fa-file-lines section-icon-i"></i> <span data-i18n="logs.title">Системные логи</span></h3>
                         <div class="card-actions">
+                            <select class="sort-select" id="logsLevelFilter" data-i18n-title="logs.level_filter_title" title="Filter by level">
+                                <option value="all" data-i18n="logs.level_all">All levels</option>
+                                <option value="debug" data-i18n="logs.level_debug">Debug</option>
+                                <option value="info" data-i18n="logs.filter_level_info">Info</option>
+                                <option value="warn" data-i18n="logs.filter_level_warn">Warning</option>
+                                <option value="error" data-i18n="logs.filter_level_error">Error</option>
+                            </select>
+                            <select class="sort-select" id="logsExportFormat" data-i18n-title="logs.export_format_title" title="Export format">
+                                <option value="csv" data-i18n="logs.format_csv">CSV</option>
+                                <option value="txt" data-i18n="logs.format_txt">TXT</option>
+                                <option value="json" data-i18n="logs.format_json">JSON</option>
+                            </select>
+                            <button class="btn btn-secondary" id="exportLogs" data-i18n="logs.export">Экспорт</button>
                             <button class="btn btn-secondary" id="clearLogs" data-i18n="logs.clear">Очистить</button>
-                            <button class="btn btn-secondary" id="exportLogs">Экспорт</button>
                         </div>
                     </div>
                     <div class="logs-container" id="logsContainer">

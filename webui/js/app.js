@@ -1838,9 +1838,71 @@ const ui = (function () {
 
     // ---- Export ----
 
+    /**
+     * Export системных логов в файл (Session E — Export logs to CSV).
+     *
+     * Поддерживает 3 формата: CSV (RFC 4180), TXT (legacy), JSON.
+     * Применяет level filter из #logsLevelFilter (по умолчанию "all" — без фильтра).
+     *
+     * CSV-формат: "timestamp,level,message\r\n<row>..." с правильным escape для
+     * запятых/кавычек/переносов строк (RFC 4180 §2.6/§2.7).
+     *
+     * Использует Utils.downloadFile для Blob-based download (без сервера).
+     */
     function exportLogs() {
-        const content = data.logs.map(l => `[${l.time}] ${l.level}: ${l.message}`).join('\n');
-        Utils.downloadFile(content, 'ollamalegion-logs.txt', 'text/plain');
+        // Читаем текущий фильтр уровня (если есть).
+        var levelSelect = document.getElementById('logsLevelFilter');
+        var levelFilter = levelSelect ? levelSelect.value : 'all';
+
+        // Фильтруем логи по уровню.
+        var filteredLogs = (data.logs || []).filter(function (l) {
+            if (!l || !l.level) return levelFilter === 'all';
+            if (levelFilter === 'all') return true;
+            return (l.level || '').toLowerCase() === levelFilter;
+        });
+
+        // Определяем формат из #logsExportFormat (default csv).
+        var formatSelect = document.getElementById('logsExportFormat');
+        var format = formatSelect ? formatSelect.value : 'csv';
+
+        var content = '';
+        var mime = 'text/plain';
+        var ext = 'txt';
+        var stamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
+
+        if (format === 'csv') {
+            // RFC 4180: поля с запятой/кавычкой/переносом оборачиваются в кавычки,
+            // кавычки внутри удваиваются.
+            var escapeCsv = function (val) {
+                var s = val === null || val === undefined ? '' : String(val);
+                if (/[",\r\n]/.test(s)) {
+                    return '"' + s.replace(/"/g, '""') + '"';
+                }
+                return s;
+            };
+            content = 'timestamp,level,message\r\n' + filteredLogs.map(function (l) {
+                return escapeCsv(l.time) + ',' + escapeCsv(l.level) + ',' + escapeCsv(l.message);
+            }).join('\r\n');
+            mime = 'text/csv';
+            ext = 'csv';
+        } else if (format === 'json') {
+            content = JSON.stringify({
+                exportedAt: new Date().toISOString(),
+                count: filteredLogs.length,
+                levelFilter: levelFilter,
+                logs: filteredLogs
+            }, null, 2);
+            mime = 'application/json';
+            ext = 'json';
+        } else {
+            // TXT (legacy): [time] LEVEL: message
+            content = filteredLogs.map(function (l) {
+                return '[' + (l.time || '') + '] ' + (l.level || '') + ': ' + (l.message || '');
+            }).join('\n');
+        }
+
+        var filename = 'ollamalegion-logs-' + stamp + (levelFilter !== 'all' ? '-' + levelFilter : '') + '.' + ext;
+        Utils.downloadFile(content, filename, mime);
     }
 
     function exportBackends() {

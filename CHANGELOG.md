@@ -5,6 +5,63 @@
 Формат ведётся в соответствии с [Keep a Changelog](https://keepachangelog.com/ru/1.0.0/),
 и этот проект придерживается [Semantic Versioning](https://semver.org/lang/ru/).
 
+## [Unreleased — 2026-06-28e]
+
+### Added (Roadmap Q3 — Session E: Export logs to CSV)
+
+**Задача**: улучшить UX экспорта логов в Logs tab. До этой сессии
+`exportLogs()` создавал простой text blob с форматом `[time] LEVEL: message`,
+без фильтрации по уровню и без поддержки CSV/JSON для downstream-аналитики
+(Excel, Pandas, jq, logstash).
+
+**Решение**:
+
+**Frontend**:
+- `webui/js/app.js:exportLogs()` — расширен для поддержки трёх форматов:
+  - **CSV** (RFC 4180): `"timestamp,level,message\r\n<row>..."` с правильным
+    escape для запятых/кавычек/переносов строк. Кавычки внутри значения
+    удваиваются.
+  - **JSON**: массив объектов `{exportedAt, count, levelFilter, logs[]}`,
+    готов для jq / Pandas / logstash.
+  - **TXT** (legacy): `[time] LEVEL: message`, обратная совместимость.
+- Level filter (`#logsLevelFilter`): all/debug/info/warn/error. Применяется
+  перед экспортом. Имя файла включает level (например, `ollamalegion-logs-error.csv`).
+- Format dropdown (`#logsExportFormat`): csv (default) / txt / json.
+- Filename: `ollamalegion-logs-<timestamp>-<level>.<ext>` для удобной
+  сортировки и фильтрации в файловой системе.
+
+**HTML**:
+- `webui/index.html` — два новых `<select>` (level filter + format) в card-actions
+  Logs panel. data-i18n-title для tooltip.
+
+**i18n** (8 новых ключей × 2 языка):
+`logs.export`, `logs.level_all`, `logs.level_debug`, `logs.filter_level_info`,
+`logs.filter_level_warn`, `logs.filter_level_error`, `logs.format_csv`,
+`logs.format_txt`, `logs.format_json`, `logs.level_filter_title`,
+`logs.export_format_title`.
+
+NB: ключи `logs.filter_level_*` отделены от существующих `logs.level_*`
+(которые используются для отображения INFO/WARN/ERROR badges в лог-entry).
+Это позволяет иметь удобочитаемые имена в dropdown фильтра
+("Info" вместо "INFO") без конфликтов с badge-лейблами.
+
+**Acceptance criteria**:
+1. Открыть Logs tab → видны два dropdown'а: "Filter by level" и "Export format".
+2. Выбрать "Errors only" + "CSV" → нажать Export → файл
+   `ollamalegion-logs-<timestamp>-error.csv` скачивается с правильным
+   RFC 4180 escape (запятые в message обёрнуты в кавычки, кавычки удвоены).
+3. Выбрать "JSON" → экспортируется JSON-массив со всеми metadata
+   (`exportedAt`, `count`, `levelFilter`, `logs[]`).
+4. Без фильтра + CSV → файл содержит все записи из `data.logs` (≤500).
+
+**Изменения**:
+
+- `webui/js/app.js:exportLogs()` — полностью переписан (~50 LOC), поддержка
+  CSV/JSON/TXT + level filter.
+- `webui/index.html` — два новых `<select>` в Logs panel card-actions.
+- `webui/js/i18n/en.js` — 11 новых ключей (8 уникальных + 3 filter-level).
+- `webui/js/i18n/ru.js` — 11 новых ключей.
+
 ## [Unreleased — 2026-06-28d]
 
 ### Verified (Roadmap Q3 — Session D: Per-Model Profiles: parallel + kv_cache_type)

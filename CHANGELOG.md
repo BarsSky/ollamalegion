@@ -334,6 +334,41 @@ node --check webui/js/modules/cppworker-params.js                 # OK
 `var(--warning)`/`var(--danger)`/`var(--info)`, которые **изменяют RGB** при
 переключении темы (dark: #fbbf24, light: #d97706 — оба хорошо читаемы на своём фоне).
 
+### Fixed (Session 18 — PF-4: flaky test teardown)
+
+**Файл:** `tests/first_byte_timeout_test.go:114` (`TestOpenAIChat_SlowFirstToken_HoldsConnection`).
+
+**Симптом:**
+```
+panic: test timed out after 2m0s
+    running tests:
+      TestOpenAIChat_SlowFirstToken_HoldsConnection (50s)
+```
+
+**Корневая причина:** `httptest.Server.Close()` в `defer upstream.Close()`
+зависает на WaitGroup, ожидая завершения SSE-handler'а, который блокирован в
+keepalive-цикле `time.NewTimer(50s)`. Production-код корректен — проблема
+только в test teardown.
+
+**Фикс:** применён паттерн из `TestOpenAIChat_HeaderTimeout_StillWorks`
+(строки 121-126), который уже использует `upstream.Listener.Close()` +
+`upstream.CloseClientConnections()` для принудительного teardown hung-сервера.
+
+**Изменения в `tests/first_byte_timeout_test.go`:**
+- `defer upstream.Close()` → `defer func() { upstream.Listener.Close(); upstream.CloseClientConnections() }()`.
+- `time.After(70s)` → `time.After(60s)` (новый ceiling после фикса).
+- (defensive) `startSlowSSEServer`: добавлен `<-r.Context().Done()` в keepalive-цикл
+  для немедленного выхода при отмене клиента (defer закрыл listener/соединения).
+
+**Acceptance criteria:**
+- `go test -tags llama_stub ./tests -run TestOpenAIChat_SlowFirstToken_HoldsConnection -count=1 -timeout 90s` → PASS за ~50-55s.
+- `go test -tags llama_stub ./tests -count=1 -timeout 300s` → PF-4 PASS, остальные сохраняют статус.
+- `TestOpenAIChat_HeaderTimeout_StillWorks` (PF-5) остаётся PASS (не сломан).
+- `internal/balancer/proxy_first_byte_timeout.go` без изменений (только test fixture).
+- `data/state.json` без изменений.
+
+**NB:** все 7 pre-existing failures (PF-1 #1, PF-1 #2, PF-3, PF-4, PF-5, PF-6, PF-7) теперь ✅ FIXED. Q3 метрика "Все pre-existing failures закрыты" выполнена.
+
 ### Added (Roadmap Q3 — Week 3-4: Models tab gaps, sub-task Filter/Search)
 
 **Задача**: в рамках Q3 Week 3-4 (Models tab gaps full set, ~12-16ч) —

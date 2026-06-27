@@ -26,7 +26,14 @@ func TestOpenAIChat_SlowFirstToken_HoldsConnection(t *testing.T) {
 	// приходит только через 50 секунд. Старый ResponseHeaderTimeout=45s ломался
 	// бы на этом тесте; новый FirstByteTimeout=120s должен выдержать.
 	upstream := startSlowSSEServer(50*time.Second, []string{"hello", " world", "[DONE]"})
-	defer upstream.Close()
+	defer func() {
+		// slow SSE-сервер ждёт 50s перед отправкой первого токена;
+		// httptest.Server.Close() зависнет на WaitGroup, ожидая handler'ов.
+		// Принудительно закрываем listener и активные соединения (тот же
+		// паттерн что и в TestOpenAIChat_HeaderTimeout_StillWorks).
+		upstream.Listener.Close()
+		upstream.CloseClientConnections()
+	}()
 
 	host, port := hostPort(upstream.URL)
 	cfg := &types.LoadBalancerConfig{
@@ -108,8 +115,8 @@ func TestOpenAIChat_SlowFirstToken_HoldsConnection(t *testing.T) {
 			t.Log("no keepalive comment in response (upstream may not send it)")
 		}
 		t.Log("PASS ✅ slow first token held")
-	case <-time.After(70 * time.Second):
-		t.Fatal("request did not complete within 70s")
+	case <-time.After(60 * time.Second):
+		t.Fatal("request did not complete within 60s")
 	}
 }
 
@@ -239,6 +246,10 @@ func startSlowSSEServer(firstTokenDelay time.Duration, chunks []string) *httptes
 			case <-ticker.C:
 				fmt.Fprintf(w, ": keepalive\n\n")
 				flusher.Flush()
+			case <-r.Context().Done():
+				// клиент отвалился (defer закрыл listener/соединения) —
+				// не ждём оставшиеся 50s firstTokenDelay, выходим сразу.
+				return
 			}
 		}
 

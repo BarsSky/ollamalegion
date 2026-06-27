@@ -317,6 +317,15 @@
                             <button class="btn btn-primary" id="modelsManageBtn" data-i18n="models.manage_title">Управление моделями</button>
                         </div>
                     </div>
+                    <!-- Session A (Q3 W4): Bulk operations controls -->
+                    <div class="models-bulk-controls">
+                        <button class="btn-bulk-select-all" onclick="window.bulkModels.selectAll()" data-i18n="models.bulk.select_all">Select All</button>
+                        <button class="btn-bulk-select-loaded" onclick="window.bulkModels.selectLoaded()" data-i18n="models.bulk.select_loaded">Select Loaded</button>
+                        <button class="btn-bulk-select-none" onclick="window.bulkModels.selectNone()" data-i18n="models.bulk.select_none">Clear Selection</button>
+                    </div>
+                    <div class="models-bulk-toolbar" id="modelsBulkToolbar" style="display:none;">
+                        <!-- динамически заполняется bulk-models.js renderToolbar() -->
+                    </div>
                     <div class="models-grid" id="modelsGrid">
                         <div class="loading" data-i18n="common.loading">Загрузка...</div>
                     </div>
@@ -1314,6 +1323,7 @@
     <script src="js/modules/mode-wizard.js?v=13"></script>
     <script src="js/modules/setup-wizard.js?v=13"></script>
     <script src="js/modules/cppworker-params.js?v=16"></script>
+    <script src="js/modules/bulk-models.js?v=1"></script>
     <script src="js/app.js?v=14"></script>
 </body>
 </html>

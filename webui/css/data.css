@@ -172,6 +172,111 @@
     color: var(--text-muted);
 }
 
+/* ===== Bulk Operations (Session A — Bulk operations) ===== */
+/* Чекбокс в углу model-card для выбора модели в bulk-операции.
+   Позиционируется абсолютно поверх карточки, кликабельная область — весь label. */
+.model-card-checkbox {
+    position: absolute;
+    top: 10px;
+    left: 10px;
+    z-index: 5;
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 4px 8px;
+    background: rgba(20, 20, 30, 0.78);
+    border: 1px solid var(--glass-border);
+    border-radius: 6px;
+    color: var(--text-secondary);
+    font-size: 11px;
+    cursor: pointer;
+    user-select: none;
+    backdrop-filter: blur(6px);
+    -webkit-backdrop-filter: blur(6px);
+    transition: var(--transition);
+}
+.model-card-checkbox input[type="checkbox"] {
+    margin: 0;
+    cursor: pointer;
+    accent-color: var(--accent);
+}
+.model-card-checkbox:hover {
+    background: rgba(40, 40, 60, 0.92);
+    color: var(--text-primary);
+}
+/* Выбранная карточка — accent-обводка поверх обычного hover. */
+.model-card.selected {
+    outline: 2px solid var(--accent);
+    outline-offset: -2px;
+    box-shadow: var(--glass-shadow), 0 0 0 4px var(--accent-glow-soft);
+}
+/* Тулбар с кнопками bulk-операций (появляется когда выбрано >= 1 модели). */
+.models-bulk-toolbar {
+    display: flex;
+    align-items: center;
+    gap: 0.75rem;
+    flex-wrap: wrap;
+    padding: 0.75rem 1rem;
+    margin: 0 24px 1rem;
+    background: var(--glass-bg);
+    border: 1px solid var(--accent);
+    border-radius: var(--radius);
+    backdrop-filter: blur(var(--glass-blur));
+    -webkit-backdrop-filter: blur(var(--glass-blur));
+    box-shadow: var(--glass-shadow);
+}
+.models-bulk-toolbar .bulk-count {
+    font-weight: 600;
+    color: var(--accent);
+    margin-right: auto;
+}
+.models-bulk-toolbar button {
+    padding: 0.4rem 0.8rem;
+    border: none;
+    border-radius: 4px;
+    font-size: 13px;
+    cursor: pointer;
+    color: #fff;
+    transition: opacity 0.15s ease;
+}
+.models-bulk-toolbar button:hover { opacity: 0.85; }
+.models-bulk-toolbar button:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+}
+.models-bulk-toolbar .btn-bulk-load   { background: var(--success); }
+.models-bulk-toolbar .btn-bulk-unload { background: var(--warning); color: #1a1a2e; }
+.models-bulk-toolbar .btn-bulk-delete { background: var(--danger); }
+.models-bulk-toolbar .btn-bulk-cancel { background: var(--bg-secondary); color: var(--text-primary); }
+
+/* Контролы быстрого выделения (Select All / Select Loaded / Clear). */
+.models-bulk-controls {
+    display: flex;
+    gap: 0.5rem;
+    flex-wrap: wrap;
+    margin: 0 24px 1rem;
+    padding: 0.5rem 0;
+}
+.models-bulk-controls button {
+    padding: 0.3rem 0.7rem;
+    border: 1px solid var(--glass-border);
+    border-radius: 4px;
+    background: var(--glass-bg);
+    color: var(--text-secondary);
+    font-size: 0.85rem;
+    cursor: pointer;
+    transition: var(--transition);
+}
+.models-bulk-controls button:hover {
+    background: var(--bg-hover);
+    color: var(--text-primary);
+    border-color: var(--accent);
+}
+.models-bulk-controls button:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+}
+
 /* ===== Ollama Runtime ===== */
 .runtime-cluster {
     display: grid;

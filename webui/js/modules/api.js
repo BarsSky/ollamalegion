@@ -334,6 +334,32 @@ const Api = (function () {
                     }
                 );
                 return response.json();
+            },
+
+            /**
+             * POST /api/v1/cluster/models/bulk — массовая операция над списком моделей.
+             *
+             * Используется для UI-операций Load/Unload Selected (после multi-select
+             * в моделях — см. webui/js/modules/bulk-models.js). Для "unload" без явного
+             * списка `models` сервер сам подберёт все загруженные модели из cluster state.
+             *
+             * @param {Object} body — { operation, models: [{model, operation?, backendId?, contextSize?, gpuLayers?}], backendId?, contextSize?, gpuLayers?, reason? }
+             * @returns {Promise<{
+             *     operation: string,
+             *     total: number,
+             *     succeeded: number,
+             *     failed: number,
+             *     results: Array<{model, operation, succeeded, results: Array<{backendId, status, message?, error?, httpStatus?}>}>,
+             *     startedAt: string,  // RFC3339Nano
+             *     durationMs: number
+             * }>}
+             */
+            async bulk(body) {
+                const response = await request(`${API_BASE}/api/v1/cluster/models/bulk`, {
+                    method: 'POST',
+                    body: JSON.stringify(body)
+                });
+                return response.json();
             }
         },
 

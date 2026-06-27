@@ -689,6 +689,19 @@ window.I18N_EN = {
   "models.details.summary_count": "Reported by",
   "models.details.summary_backends": "backends",
 
+  // ===== Bulk operations (Session A — Q3 W4) =====
+  "models.bulk.select_this": "Select this model",
+  "models.bulk.select_all": "Select All",
+  "models.bulk.select_loaded": "Select Loaded",
+  "models.bulk.select_none": "Clear Selection",
+  "models.bulk.selected_count": "Selected: {count}",
+  "models.bulk.load_selected": "Load Selected",
+  "models.bulk.unload_selected": "Unload Selected",
+  "models.bulk.delete_selected": "Delete Selected",
+  "models.bulk.cancel": "Cancel",
+  "models.bulk.confirm_delete_title": "Confirm bulk delete",
+  "models.bulk.confirm_delete_msg": "Delete {count} model(s) from disk? This cannot be undone.",
+
   // Virtual Models
   "vm.title": "🧩 Virtual Models",
 

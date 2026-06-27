@@ -1041,6 +1041,20 @@ window.I18N_RU = {
   "gguf.profiles_only_registered": "Per-model профили управляются балансировщиком и требуют регистрации бэкенда. Для незарегистрированного бэкенда используйте модал «Подключиться по URL».",
   "gguf.config_unavailable": "Эндпоинт конфига бэкенда (/api/v1/cppworker/config) недоступен в этой версии cppworker.",
 
+  // ===== Bulk operations (Session A — Q3 W4) =====
+  "models.bulk.select_this": "Выбрать эту модель",
+  "models.bulk.select_all": "Выбрать все",
+  "models.bulk.select_loaded": "Выбрать загруженные",
+  "models.bulk.select_none": "Снять выбор",
+  "models.bulk.selected_count": "Выбрано: {count}",
+  "models.bulk.load_selected": "Загрузить выбранные",
+  "models.bulk.unload_selected": "Выгрузить выбранные",
+  "models.bulk.delete_selected": "Удалить выбранные",
+  "models.bulk.cancel": "Отмена",
+  "models.bulk.confirm_delete_title": "Подтвердите массовое удаление",
+  "models.bulk.confirm_delete_msg": "Удалить {count} модель(и) с диска? Это действие нельзя отменить.",
+
+
   // ===== Common Status =====
   "common.online": "Онлайн",
   "common.offline": "Офлайн"

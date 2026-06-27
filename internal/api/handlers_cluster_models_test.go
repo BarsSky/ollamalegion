@@ -2,6 +2,7 @@ package api
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -377,4 +378,437 @@ var _ = func() *types.ClusterState {
 			{BackendType: types.BackendTypeLlamaCpp},
 		},
 	}
+}
+
+// ===== Bulk endpoint tests (Session A — Q3 W4) =====
+
+// TestClusterBulkModelsHandler_MethodNotAllowed — handler возвращает 405 для не-POST.
+func TestClusterBulkModelsHandler_MethodNotAllowed(t *testing.T) {
+	server, _ := createProxyTestServer(t, "http://127.0.0.1:1")
+	defer server.Close()
+
+	srv := server.Config.Handler.(*Server)
+
+	for _, method := range []string{http.MethodGet, http.MethodDelete, http.MethodPut} {
+		rec := httptest.NewRecorder()
+		req := httptest.NewRequest(method, "/api/v1/cluster/models/bulk", nil)
+		srv.clusterBulkModelsHandler(rec, req)
+		assert.Equal(t, http.StatusMethodNotAllowed, rec.Code, "method=%s body=%s", method, rec.Body.String())
+	}
+}
+
+// TestClusterBulkModelsHandler_InvalidJSON — handler возвращает 400 при невалидном JSON.
+func TestClusterBulkModelsHandler_InvalidJSON(t *testing.T) {
+	server, _ := createProxyTestServer(t, "http://127.0.0.1:1")
+	defer server.Close()
+
+	srv := server.Config.Handler.(*Server)
+
+	body := strings.NewReader(`{not valid json`)
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/cluster/models/bulk", body)
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	srv.clusterBulkModelsHandler(rec, req)
+
+	assert.Equal(t, http.StatusBadRequest, rec.Code)
+	assert.Contains(t, rec.Body.String(), "invalid request body")
+}
+
+// TestClusterBulkModelsHandler_MissingModels_Load — load/reload без списка → 400.
+func TestClusterBulkModelsHandler_MissingModels_Load(t *testing.T) {
+	server, _ := createProxyTestServer(t, "http://127.0.0.1:1")
+	defer server.Close()
+
+	srv := server.Config.Handler.(*Server)
+
+	body := strings.NewReader(`{"operation":"load"}`)
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/cluster/models/bulk", body)
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	srv.clusterBulkModelsHandler(rec, req)
+
+	assert.Equal(t, http.StatusBadRequest, rec.Code)
+	assert.Contains(t, rec.Body.String(), "models list required")
+}
+
+// TestClusterBulkModelsHandler_MissingModels_Reload — reload без списка → 400.
+func TestClusterBulkModelsHandler_MissingModels_Reload(t *testing.T) {
+	server, _ := createProxyTestServer(t, "http://127.0.0.1:1")
+	defer server.Close()
+
+	srv := server.Config.Handler.(*Server)
+
+	body := strings.NewReader(`{"operation":"reload"}`)
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/cluster/models/bulk", body)
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	srv.clusterBulkModelsHandler(rec, req)
+
+	assert.Equal(t, http.StatusBadRequest, rec.Code)
+	assert.Contains(t, rec.Body.String(), "models list required")
+}
+
+// TestClusterBulkModelsHandler_InvalidOperation — неподдерживаемая операция → 400.
+func TestClusterBulkModelsHandler_InvalidOperation(t *testing.T) {
+	server, _ := createProxyTestServer(t, "http://127.0.0.1:1")
+	defer server.Close()
+
+	srv := server.Config.Handler.(*Server)
+
+	body := strings.NewReader(`{"operation":"delete-the-world","models":[{"model":"a"}]}`)
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/cluster/models/bulk", body)
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	srv.clusterBulkModelsHandler(rec, req)
+
+	assert.Equal(t, http.StatusBadRequest, rec.Code)
+	assert.Contains(t, rec.Body.String(), "invalid operation")
+}
+
+// TestClusterBulkModelsHandler_TooManyModels — превышение лимита → 400.
+func TestClusterBulkModelsHandler_TooManyModels(t *testing.T) {
+	server, _ := createProxyTestServer(t, "http://127.0.0.1:1")
+	defer server.Close()
+
+	srv := server.Config.Handler.(*Server)
+
+	// Создаём 101 элемент (лимит bulkOperationMaxModels = 100).
+	items := make([]string, 0, 101)
+	for i := 0; i < 101; i++ {
+		items = append(items, `{"model":"m`+intToStringForTest(i)+`"}`)
+	}
+	body := strings.NewReader(`{"operation":"load","models":[` + strings.Join(items, ",") + `]}`)
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/cluster/models/bulk", body)
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	srv.clusterBulkModelsHandler(rec, req)
+
+	assert.Equal(t, http.StatusBadRequest, rec.Code)
+	assert.Contains(t, rec.Body.String(), "too many models")
+}
+
+// TestClusterBulkModelsHandler_ValidRequest_TwoModels — load двух моделей:
+// handler возвращает 200 + results[2] с per-backend error (cppworker недоступен),
+// но это OK — cluster endpoint агрегирует.
+func TestClusterBulkModelsHandler_ValidRequest_TwoModels(t *testing.T) {
+	server, _ := createProxyTestServer(t, "http://127.0.0.1:1")
+	defer server.Close()
+
+	srv := server.Config.Handler.(*Server)
+
+	body := strings.NewReader(`{"operation":"load","models":[{"model":"a"},{"model":"b"}]}`)
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/cluster/models/bulk", body)
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	srv.clusterBulkModelsHandler(rec, req)
+
+	assert.Equal(t, http.StatusOK, rec.Code, "body=%s", rec.Body.String())
+
+	var resp clusterBulkModelsResponse
+	err := json.Unmarshal(rec.Body.Bytes(), &resp)
+	require.NoError(t, err)
+
+	assert.Equal(t, "load", resp.Operation)
+	assert.Equal(t, 2, resp.Total)
+	assert.Equal(t, 0, resp.Succeeded) // cppworker недоступен → обе упали
+	assert.Equal(t, 2, resp.Failed)
+	require.Len(t, resp.Results, 2)
+
+	assert.Equal(t, "a", resp.Results[0].Model)
+	assert.Equal(t, "load", resp.Results[0].Operation)
+	assert.False(t, resp.Results[0].Succeeded)
+	require.Len(t, resp.Results[0].Results, 1)
+
+	assert.Equal(t, "b", resp.Results[1].Model)
+	assert.False(t, resp.Results[1].Succeeded)
+
+	// StartedAt и DurationMs должны быть заданы.
+	assert.NotEmpty(t, resp.StartedAt)
+	assert.GreaterOrEqual(t, resp.DurationMs, int64(0))
+}
+
+// TestClusterBulkModelsHandler_Defaults_Load — пустой operation = "load" по умолчанию.
+func TestClusterBulkModelsHandler_Defaults_Load(t *testing.T) {
+	server, _ := createProxyTestServer(t, "http://127.0.0.1:1")
+	defer server.Close()
+
+	srv := server.Config.Handler.(*Server)
+
+	// Без operation — handler добавит default "load".
+	body := strings.NewReader(`{"models":[{"model":"x"}]}`)
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/cluster/models/bulk", body)
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	srv.clusterBulkModelsHandler(rec, req)
+
+	assert.Equal(t, http.StatusOK, rec.Code, "body=%s", rec.Body.String())
+
+	var resp clusterBulkModelsResponse
+	err := json.Unmarshal(rec.Body.Bytes(), &resp)
+	require.NoError(t, err)
+
+	assert.Equal(t, "load", resp.Operation)
+	assert.Equal(t, 1, resp.Total)
+	require.Len(t, resp.Results, 1)
+	assert.Equal(t, "load", resp.Results[0].Operation)
+}
+
+// TestClusterBulkModelsHandler_PerModelOperationOverride — per-item operation
+// переопределяет глобальный.
+func TestClusterBulkModelsHandler_PerModelOperationOverride(t *testing.T) {
+	server, _ := createProxyTestServer(t, "http://127.0.0.1:1")
+	defer server.Close()
+
+	srv := server.Config.Handler.(*Server)
+
+	// Глобальная операция "load", но первый элемент имеет свой operation="unload".
+	body := strings.NewReader(`{"operation":"load","models":[{"model":"a","operation":"unload"},{"model":"b"}]}`)
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/cluster/models/bulk", body)
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	srv.clusterBulkModelsHandler(rec, req)
+
+	assert.Equal(t, http.StatusOK, rec.Code, "body=%s", rec.Body.String())
+
+	var resp clusterBulkModelsResponse
+	err := json.Unmarshal(rec.Body.Bytes(), &resp)
+	require.NoError(t, err)
+
+	require.Len(t, resp.Results, 2)
+	assert.Equal(t, "unload", resp.Results[0].Operation) // per-item override
+	assert.Equal(t, "load", resp.Results[1].Operation)   // global default
+}
+
+// TestClusterBulkModelsHandler_UnloadAll_NoModels — unload без списка + cluster state
+// с загруженными моделями → handler собирает модели и выгружает.
+func TestClusterBulkModelsHandler_UnloadAll_NoModels(t *testing.T) {
+	server, _ := createProxyTestServer(t, "http://127.0.0.1:1")
+	defer server.Close()
+
+	srv := server.Config.Handler.(*Server)
+
+	// inject llama_cpp backend with loaded model via MetricsManager.
+	// createProxyTestServer добавляет llama_mock backend в proxy, но LoadedModels
+	// пустой. Используем UpdateLlamaCppMetrics чтобы наполнить кэш.
+	mm := srv.proxy.GetMetricsManager()
+	require.NotNil(t, mm)
+	mm.UpdateLlamaCppMetrics("llama_mock", &types.LlamaCppMetrics{
+		LoadedModels: []types.LlamaCppModel{
+			{Name: "already-loaded"},
+		},
+	})
+
+	// Без списка моделей — handler должен собрать "already-loaded" из cluster state.
+	body := strings.NewReader(`{"operation":"unload"}`)
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/cluster/models/bulk", body)
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	srv.clusterBulkModelsHandler(rec, req)
+
+	assert.Equal(t, http.StatusOK, rec.Code, "body=%s", rec.Body.String())
+
+	var resp clusterBulkModelsResponse
+	err := json.Unmarshal(rec.Body.Bytes(), &resp)
+	require.NoError(t, err)
+
+	assert.Equal(t, "unload", resp.Operation)
+	assert.Equal(t, 1, resp.Total, "должен подобрать модель из cluster state")
+	require.Len(t, resp.Results, 1)
+	assert.Equal(t, "already-loaded", resp.Results[0].Model)
+	assert.Equal(t, "unload", resp.Results[0].Operation)
+}
+
+// TestClusterBulkModelsHandler_EmptyModels_Unload_NoLoaded — unload без списка и без
+// загруженных моделей → 200 с пустым results (no-op).
+func TestClusterBulkModelsHandler_EmptyModels_Unload_NoLoaded(t *testing.T) {
+	server, _ := createProxyTestServer(t, "http://127.0.0.1:1")
+	defer server.Close()
+
+	srv := server.Config.Handler.(*Server)
+
+	// Не инжектим загруженных моделей — handler не должен найти ничего.
+	body := strings.NewReader(`{"operation":"unload","models":[]}`)
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/cluster/models/bulk", body)
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	srv.clusterBulkModelsHandler(rec, req)
+
+	assert.Equal(t, http.StatusOK, rec.Code, "body=%s", rec.Body.String())
+
+	var resp clusterBulkModelsResponse
+	err := json.Unmarshal(rec.Body.Bytes(), &resp)
+	require.NoError(t, err)
+
+	assert.Equal(t, "unload", resp.Operation)
+	assert.Equal(t, 0, resp.Total)
+	assert.Empty(t, resp.Results)
+}
+
+// TestClusterBulkModelsRequest_JSONFields — проверка что структура запроса
+// сериализуется в camelCase, как ожидает фронтенд.
+func TestClusterBulkModelsRequest_JSONFields(t *testing.T) {
+	ctxSize := 32768
+	gpuLayers := -2
+	req := clusterBulkModelsRequest{
+		Operation:   "load",
+		BackendID:   "cppworker-gpu",
+		ContextSize: &ctxSize,
+		GPULayers:   &gpuLayers,
+		Reason:      "manual bulk from UI",
+		Models: []bulkModelItem{
+			{Model: "gemma-4-E4B-it-Q4_K_M", Operation: "load"},
+			{Model: "qwen3-8B", BackendID: "cppworker-cpu"},
+		},
+	}
+	b, err := json.Marshal(req)
+	require.NoError(t, err)
+
+	// Проверяем что camelCase JSON-поля присутствуют.
+	expected := []string{
+		`"operation":"load"`,
+		`"backendId":"cppworker-gpu"`,
+		`"contextSize":32768`,
+		`"gpuLayers":-2`,
+		`"reason":"manual bulk from UI"`,
+		`"model":"gemma-4-E4B-it-Q4_K_M"`,
+		`"model":"qwen3-8B"`,
+	}
+	for _, want := range expected {
+		assert.Contains(t, string(b), want, "missing field %s", want)
+	}
+}
+
+// TestClusterBulkModelsResponse_JSONFields — проверка camelCase полей ответа.
+func TestClusterBulkModelsResponse_JSONFields(t *testing.T) {
+	resp := clusterBulkModelsResponse{
+		Operation:  "load",
+		Total:      3,
+		Succeeded:  2,
+		Failed:     1,
+		StartedAt:  "2026-06-28T00:00:00Z",
+		DurationMs: 1500,
+		Results: []clusterBulkModelResult{
+			{Model: "a", Operation: "load", Succeeded: true},
+		},
+	}
+	b, err := json.Marshal(resp)
+	require.NoError(t, err)
+
+	expected := []string{
+		`"operation":"load"`,
+		`"total":3`,
+		`"succeeded":2`,
+		`"failed":1`,
+		`"startedAt":"2026-06-28T00:00:00Z"`,
+		`"durationMs":1500`,
+		`"succeeded":true`,
+	}
+	for _, want := range expected {
+		assert.Contains(t, string(b), want, "missing field %s", want)
+	}
+}
+
+// TestCollectAllLoadedModels — pure helper test.
+func TestCollectAllLoadedModels(t *testing.T) {
+	server, _ := createProxyTestServer(t, "http://127.0.0.1:1")
+	defer server.Close()
+
+	srv := server.Config.Handler.(*Server)
+
+	// Наполняем кэш llama_cpp метрик для бэкенда llama_mock (уже зарегистрированного
+	// в proxy через createProxyTestServer).
+	mm := srv.proxy.GetMetricsManager()
+	require.NotNil(t, mm)
+	mm.UpdateLlamaCppMetrics("llama_mock", &types.LlamaCppMetrics{
+		LoadedModels: []types.LlamaCppModel{
+			{Name: "model-a"},
+			{Name: "model-b"},
+		},
+	})
+
+	items := srv.collectAllLoadedModels("")
+	require.Len(t, items, 2)
+	names := []string{items[0].Model, items[1].Model}
+	assert.Contains(t, names, "model-a")
+	assert.Contains(t, names, "model-b")
+	for _, it := range items {
+		assert.Equal(t, "unload", it.Operation)
+	}
+}
+
+// TestIntToString — pure helper test.
+func TestIntToString(t *testing.T) {
+	assert.Equal(t, "0", intToString(0))
+	assert.Equal(t, "1", intToString(1))
+	assert.Equal(t, "100", intToString(100))
+	assert.Equal(t, "-42", intToString(-42))
+	assert.Equal(t, "12345", intToString(12345))
+}
+
+// ===== Routes registration test =====
+
+// TestRoutes_ClusterBulkModels — проверяет, что новый маршрут зарегистрирован через mux.
+func TestRoutes_ClusterBulkModels(t *testing.T) {
+	server, _ := createProxyTestServer(t, "http://127.0.0.1:1")
+	defer server.Close()
+
+	tests := []struct {
+		name       string
+		method     string
+		path       string
+		body       string
+		expectCode int
+	}{
+		{
+			name:       "POST /api/v1/cluster/models/bulk with models",
+			method:     http.MethodPost,
+			path:       "/api/v1/cluster/models/bulk",
+			body:       `{"operation":"load","models":[{"model":"a"}]}`,
+			expectCode: http.StatusOK,
+		},
+		{
+			name:       "GET /api/v1/cluster/models/bulk (wrong method)",
+			method:     http.MethodGet,
+			path:       "/api/v1/cluster/models/bulk",
+			expectCode: http.StatusMethodNotAllowed,
+		},
+		{
+			name:       "DELETE /api/v1/cluster/models/bulk (wrong method)",
+			method:     http.MethodDelete,
+			path:       "/api/v1/cluster/models/bulk",
+			expectCode: http.StatusMethodNotAllowed,
+		},
+		{
+			name:       "POST /api/v1/cluster/models/bulk with invalid JSON",
+			method:     http.MethodPost,
+			path:       "/api/v1/cluster/models/bulk",
+			body:       `{not json`,
+			expectCode: http.StatusBadRequest,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var body *strings.Reader
+			if tt.body != "" {
+				body = strings.NewReader(tt.body)
+			} else {
+				body = strings.NewReader("")
+			}
+			req := httptest.NewRequest(tt.method, tt.path, body)
+			if tt.body != "" {
+				req.Header.Set("Content-Type", "application/json")
+			}
+			rec := httptest.NewRecorder()
+			server.Config.Handler.ServeHTTP(rec, req)
+
+			assert.Equal(t, tt.expectCode, rec.Code, "body=%s", rec.Body.String())
+		})
+	}
+}
+
+// intToStringForTest — локальный helper для генерации имён моделей в тестах.
+// Используем простую реализацию на основе fmt.Sprintf (импорт fmt уже есть в тестах).
+func intToStringForTest(n int) string {
+	return fmt.Sprintf("%d", n)
 }

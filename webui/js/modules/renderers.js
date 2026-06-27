@@ -924,9 +924,18 @@ const Renderers = (function () {
             const safeName = escapeHtml(m.name).replace(/'/g, "\\'");
             const backendType = Utils.getBackendType(backend) || (m.backendType || '');
             const sizeBytes = m.size || 0;
-            
+            // session A (Q3 W4): bulk operations — checkbox для multi-select.
+            // Хранится в window.bulkModels.selected (Set ключей `${backend}::${model}`).
+            // Не блокирует клик по карточке (mousedown on .model-card-checkbox → stopPropagation).
+            const safeNameAttr = escapeHtml(m.name);
+
             return `
                 <div class="model-card" data-backend="${safeBackend}" data-model="${safeName}" data-model-name="${escapeHtml(m.name).toLowerCase()}" data-backend-type="${escapeHtml(backendType)}" data-size-bytes="${sizeBytes}">
+                    <label class="model-card-checkbox" onclick="event.stopPropagation();" title="${escapeHtml(_t('models.bulk.select_this'))}">
+                        <input type="checkbox" class="model-select-cb"
+                               data-backend="${safeBackend}" data-model="${safeNameAttr}"
+                               onchange="window.bulkModels.onSelectionChanged()">
+                    </label>
                     <div class="model-card-header">
                         <span class="model-name">${escapeHtml(m.name)}</span>
                         ${getBackendTypeBadge(backend)} ${badge(m.backend, m.backendStatus === 'healthy' ? 'success' : 'danger')}

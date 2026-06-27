@@ -289,6 +289,11 @@ const ui = (function () {
                 break;
             case 'models':
                 modelsPage(filterBackendsForUI(data.backends));
+                // Session A — Bulk operations: после re-render моделей сбросить
+                // stale selections в toolbar (selected Set живёт дольше DOM).
+                if (window.bulkModels && typeof window.bulkModels.renderToolbar === 'function') {
+                    window.bulkModels.renderToolbar();
+                }
                 break;
             case 'sessions':
                 sessionsPage(data.sessions);
@@ -515,6 +520,9 @@ const ui = (function () {
             refreshModelsBtn.addEventListener('click', function() {
                 fetchClusterState().then(function() {
                     modelsPage(data.backends);
+                    if (window.bulkModels && typeof window.bulkModels.renderToolbar === 'function') {
+                        window.bulkModels.renderToolbar();
+                    }
                     showToast(window.I18N ? I18N.t('common.success') : 'Models refreshed', 'success');
                 });
             });

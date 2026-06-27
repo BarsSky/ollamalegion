@@ -65,11 +65,17 @@ func (s *Server) setupRoutes() {
 	// Используется для диагностики случаев "Cline получил 413 prompt_exceeds_context"
 	// без прямого доступа к cppworker (защита сети, единая точка запроса).
 	s.mux.Handle("/api/v1/cluster/cppworker/debug/last-prompt", AuthMiddleware(RateLimitMiddleware(http.HandlerFunc(s.clusterDebugLastPromptHandler), s.rateLimiter), s.authenticator))
+
 	// Cluster models sub-resources: GET /info и POST /reload на одной записи mux.
 	// Используем единый dispatcher, чтобы не зависеть от порядка регистрации
 	// конкретных путей в Go stdlib http.ServeMux (catchall в mux матчится по префиксу,
 	// и /info был бы поглощён reload-handler'ом, если бы шёл после него).
 	s.mux.Handle("/api/v1/cluster/models/", AuthMiddleware(RateLimitMiddleware(http.HandlerFunc(s.clusterModelItemDispatcher), s.rateLimiter), s.authenticator))
+
+	// Bulk operations: POST /api/v1/cluster/models/bulk (Session A — Q3 W4).
+	// Массовые load/unload/reload над списком моделей через единый endpoint,
+	// с агрегацией per-backend результатов и контролем concurrency.
+	s.mux.Handle("/api/v1/cluster/models/bulk", AuthMiddleware(RateLimitMiddleware(http.HandlerFunc(s.clusterBulkModelsHandler), s.rateLimiter), s.authenticator))
 
 	// Queue stats (с аутентификацией и rate limiting)
 	s.mux.Handle("/api/v1/queue/stats", AuthMiddleware(RateLimitMiddleware(s.queueStatsHandler, s.rateLimiter), s.authenticator))

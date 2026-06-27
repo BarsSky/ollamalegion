@@ -5,6 +5,105 @@
 Формат ведётся в соответствии с [Keep a Changelog](https://keepachangelog.com/ru/1.0.0/),
 и этот проект придерживается [Semantic Versioning](https://semver.org/lang/ru/).
 
+## [Unreleased — 2026-06-28]
+
+### Added (Roadmap Q3 — Session A: Bulk operations)
+
+**Задача**: в рамках Q3 Week 3-4 (Models tab gaps full set, ~12-16ч) —
+sub-task Bulk operations на Models tab (~2-3ч). До этой сессии пользователь
+мог выполнять load/unload/delete только по одной модели за раз (по 3 кнопки
+в каждой карточке). Для кластера с десятками моделей это слишком медленно:
+нельзя выделить 10 моделей и одним действием выгрузить их все.
+
+**Решение**: добавлен cluster-level endpoint `POST /api/v1/cluster/models/bulk`
+и UI с multi-select (чекбоксы + toolbar + quick-select controls).
+
+**Backend**:
+- `internal/api/handlers_cluster_models.go` — новый handler
+  `clusterBulkModelsHandler` (~120 LOC):
+  - Поддерживает `operation: "load" | "unload" | "reload"` (default = `"load"`).
+  - Принимает `models: [{model, backendId?}]` — максимум 100 моделей на запрос.
+  - Опциональные `contextSize`, `gpuLayers`, `reason` применяются ко всем моделям
+    (per-model override будет в следующей итерации, если потребуется).
+  - Семантика ответа — HTTP 200 + per-backend results (см. Session 17):
+    ошибка одного бэкенда не ломает общий ответ.
+  - Параллельное выполнение через `sync.WaitGroup` с `bulkOperationConcurrency=4`,
+    чтобы не забивать cppworker при большом bulk-запросе.
+  - Если `models=[]` и `operation="unload"` — делает `collectAllLoadedModels()`
+    (Unload All flow): собирает все загруженные модели со всех cppworker бэкендов
+    и выгружает их.
+- `internal/api/routes.go` — зарегистрирован `POST /api/v1/cluster/models/bulk`
+  рядом с другими cluster endpoints (`/api/v1/cluster/models/{name}/reload`).
+- `internal/api/handlers_cluster_models_test.go` — 13 unit-тестов:
+  method-not-allowed, invalid JSON, missing models для load/reload,
+  invalid operation, > 100 моделей, валидный запрос с 2 моделями,
+  default operation = load, per-model operation override,
+  Unload All без loaded моделей, пустые models + unload + no loaded,
+  JSON-поля camelCase, `collectAllLoadedModels`, `intToString`, route registration.
+
+**WebUI**:
+- `webui/js/modules/renderers.js` — добавлен `<label class="model-card-checkbox">`
+  в каждую карточку модели (Session A — bulk operations).
+- `webui/js/modules/bulk-models.js` (новый, ~270 LOC) — самодостаточный модуль:
+  - `window.bulkModels` с API: `onSelectionChanged`, `selectAll`,
+    `selectNone`, `selectLoaded`, `selectInverse`, `renderToolbar`,
+    `execute`, `confirmDeleteSelected`.
+  - Хранит выделение в `Set` ключей `${backendId}::${modelName}`.
+  - При смене языка (`i18n:changed`) — перерендерить toolbar с новыми строками.
+  - `execute(operation)` отправляет запрос в `Api.clusterModels.bulk()`
+    и показывает toast с количеством успешных/упавших операций.
+  - `confirmDeleteSelected` — confirm dialog перед деструктивной операцией.
+  - `syncSelectionWithDom()` вызывается из `renderToolbar()` для очистки
+    «зомби»-выбора после re-render моделей.
+- `webui/js/modules/api.js` — `clusterModels.bulk(body)` wrapper.
+- `webui/js/app.js` — после `modelsPage()` вызывается
+  `bulkModels.renderToolbar()` для синхронизации с DOM.
+- `webui/index.html` — добавлены `<div class="models-bulk-controls">`
+  с 3 quick-select кнопками и `<div id="modelsBulkToolbar">` (изначально скрыт).
+- `webui/css/data.css` — стили для `.model-card-checkbox`, `.model-card.selected`,
+  `.models-bulk-toolbar`, `.models-bulk-controls`, `.btn-bulk-*`.
+
+**i18n** — 10 ключей × 2 языка (en/ru):
+`models.bulk.select_this`, `models.bulk.select_all`, `models.bulk.select_loaded`,
+`models.bulk.select_none`, `models.bulk.selected_count`, `models.bulk.load_selected`,
+`models.bulk.unload_selected`, `models.bulk.delete_selected`, `models.bulk.cancel`,
+`models.bulk.confirm_delete_title`, `models.bulk.confirm_delete_msg`.
+
+**Acceptance criteria**:
+1. `POST /api/v1/cluster/models/bulk` с `operation:"load", models:[{model,backendId}]`
+   возвращает 200 + `results: [{backendId, status, message/httpStatus}]`.
+2. `POST /api/v1/cluster/models/bulk` с `operation:"unload", models:[]`
+   автоматически выгружает все загруженные модели в кластере.
+3. `POST /api/v1/cluster/models/bulk` с > 100 моделей возвращает 400.
+4. WebUI: пользователь выделяет 3 модели чекбоксами → toolbar появляется
+   с счётчиком «3 selected» и 4 кнопками (Load/Unload/Delete/Cancel).
+5. WebUI: «Select All» выделяет все карточки одной кнопкой; «Clear» снимает.
+6. После auto-refresh моделей (если какие-то карточки исчезли) — toolbar
+   корректно очищает «зомби»-выбор через `syncSelectionWithDom`.
+7. Тесты в `internal/api/handlers_cluster_models_test.go` зелёные
+   (16 test cases + 4 sub-tests = 20 кейсов).
+8. `go build -tags llama_stub ./cmd/balancer/` — exit 0.
+9. `go test -tags llama_stub ./internal/api/` — все тесты зелёные.
+10. `go vet -tags llama_stub ./cmd/balancer/ ./internal/api/` — exit 0.
+
+**Изменения**:
+
+- `internal/api/handlers_cluster_models.go` (+~150 LOC): новые типы
+  `bulkModelItem`, `clusterBulkModelsRequest`, `clusterBulkModelsResponse`,
+  `clusterBulkModelResult`; handler `clusterBulkModelsHandler`,
+  helpers `executeBulkModelItem`, `executeBulkModelItemsParallel`,
+  `collectAllLoadedModels`, `intToString`. Константы
+  `bulkOperationMaxModels=100`, `bulkOperationConcurrency=4`.
+- `internal/api/routes.go` — регистрация нового route.
+- `internal/api/handlers_cluster_models_test.go` (+13 test cases).
+- `webui/js/modules/renderers.js` — добавлен `<label class="model-card-checkbox">`.
+- `webui/js/modules/bulk-models.js` — новый модуль (~270 LOC).
+- `webui/js/modules/api.js` — `clusterModels.bulk()` wrapper.
+- `webui/js/app.js` — hook после `modelsPage()` для `renderToolbar()`.
+- `webui/index.html` — quick-select controls + toolbar container.
+- `webui/css/data.css` — стили для bulk operations UI.
+- `webui/js/i18n/en.js` + `webui/js/i18n/ru.js` — 10 новых ключей × 2 языка.
+
 ## [Unreleased — 2026-06-27]
 
 ### Added (Roadmap Q3 — Week 3-4: Models tab gaps, sub-task Model profiles UI)

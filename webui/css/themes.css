@@ -44,6 +44,46 @@
     --glass-shadow: 0 8px 32px rgba(0, 0, 0, 0.4), 0 2px 8px rgba(0, 0, 0, 0.2), inset 0 1px 0 rgba(255, 255, 255, 0.04);
     --glass-highlight: rgba(255, 255, 255, 0.08);
     --glass-glow: radial-gradient(ellipse at 50% 0%, rgba(59, 130, 246, 0.06) 0%, transparent 70%);
+
+    /* ===== Translucent semantic tokens (для badges/buttons bg) =====
+       Используются вместо хардкоженных rgba() в остальных CSS.
+       Аналогичные значения выводятся из базовых семантических цветов. */
+    --accent-soft: rgba(74, 158, 255, 0.15);
+    --accent-soft-2: rgba(74, 158, 255, 0.85);
+    --accent-soft-3: rgba(74, 158, 255, 0.9);
+    --accent-glow-soft: rgba(59, 130, 246, 0.08);
+    --accent-glow-ring: rgba(59, 130, 246, 0.2);
+    --accent-glow-shadow: rgba(74, 158, 255, 0.35);
+    --warning-soft: rgba(245, 158, 11, 0.15);
+    --warning-soft-2: rgba(245, 158, 11, 0.85);
+    --warning-soft-3: rgba(245, 158, 11, 0.9);
+    --warning-soft-4: rgba(245, 158, 11, 0.2);
+    --warning-soft-5: rgba(245, 158, 11, 0.4);
+    --warning-soft-6: rgba(245, 158, 11, 0.25);
+    --warning-soft-7: rgba(245, 158, 11, 0.04);
+    --warning-soft-8: rgba(245, 158, 11, 0.06);
+    --success-soft: rgba(74, 222, 128, 0.15);
+    --danger-soft: rgba(248, 113, 113, 0.15);
+    --info-soft: rgba(96, 165, 250, 0.15);
+    --info-soft-2: rgba(96, 165, 250, 0.1);
+    --info-soft-3: rgba(96, 165, 250, 0.2);
+    --success-bg-soft: rgba(40, 167, 69, 0.08);
+    --success-bg-soft-2: rgba(40, 167, 69, 0.15);
+    --success-bg-soft-3: rgba(40, 167, 69, 0.06);
+    --info-bg-soft: rgba(96, 165, 250, 0.05);
+    --info-bg-soft-2: rgba(96, 165, 250, 0.1);
+    --warning-bg-soft: rgba(251, 191, 36, 0.1);
+    --warning-bg-soft-2: rgba(255, 193, 7, 0.1);
+    --danger-bg-soft: rgba(248, 113, 113, 0.1);
+    --info-bg-soft-3: rgba(96, 165, 250, 0.05);
+    --glass-soft: rgba(255, 255, 255, 0.04);
+    --glass-soft-2: rgba(255, 255, 255, 0.08);
+    --glass-soft-3: rgba(255, 255, 255, 0.15);
+    --overlay-soft: rgba(0, 0, 0, 0.6);
+    --shadow-strong: rgba(0, 0, 0, 0.4);
+    --shadow-soft: rgba(0, 0, 0, 0.3);
+    --shadow-mid: rgba(0, 0, 0, 0.2);
+    --shadow-faint: rgba(0, 0, 0, 0.15);
 }
 
 /* Light Theme */
@@ -85,6 +125,46 @@
     --glass-shadow: 0 8px 32px rgba(0, 0, 0, 0.08), 0 2px 8px rgba(0, 0, 0, 0.04), inset 0 1px 0 rgba(255, 255, 255, 0.6);
     --glass-highlight: rgba(255, 255, 255, 0.8);
     --glass-glow: radial-gradient(ellipse at 50% 0%, rgba(37, 99, 235, 0.04) 0%, transparent 70%);
+
+    /* ===== Translucent semantic tokens (Light) =====
+       Те же ключи, что в dark-секции — значения переопределены для светлой темы.
+       Базовые RGB смещены к более насыщенным (тёмные тона плохо видны на белом фоне). */
+    --accent-soft: rgba(37, 99, 235, 0.10);
+    --accent-soft-2: rgba(37, 99, 235, 0.85);
+    --accent-soft-3: rgba(37, 99, 235, 0.9);
+    --accent-glow-soft: rgba(37, 99, 235, 0.06);
+    --accent-glow-ring: rgba(37, 99, 235, 0.18);
+    --accent-glow-shadow: rgba(37, 99, 235, 0.30);
+    --warning-soft: rgba(217, 119, 6, 0.12);
+    --warning-soft-2: rgba(217, 119, 6, 0.85);
+    --warning-soft-3: rgba(217, 119, 6, 0.9);
+    --warning-soft-4: rgba(217, 119, 6, 0.18);
+    --warning-soft-5: rgba(217, 119, 6, 0.35);
+    --warning-soft-6: rgba(217, 119, 6, 0.20);
+    --warning-soft-7: rgba(217, 119, 6, 0.05);
+    --warning-soft-8: rgba(217, 119, 6, 0.08);
+    --success-soft: rgba(22, 163, 74, 0.10);
+    --danger-soft: rgba(220, 38, 38, 0.10);
+    --info-soft: rgba(37, 99, 235, 0.10);
+    --info-soft-2: rgba(37, 99, 235, 0.08);
+    --info-soft-3: rgba(37, 99, 235, 0.18);
+    --success-bg-soft: rgba(22, 163, 74, 0.07);
+    --success-bg-soft-2: rgba(22, 163, 74, 0.12);
+    --success-bg-soft-3: rgba(22, 163, 74, 0.05);
+    --info-bg-soft: rgba(37, 99, 235, 0.04);
+    --info-bg-soft-2: rgba(37, 99, 235, 0.08);
+    --warning-bg-soft: rgba(217, 119, 6, 0.08);
+    --warning-bg-soft-2: rgba(217, 119, 6, 0.08);
+    --danger-bg-soft: rgba(220, 38, 38, 0.08);
+    --info-bg-soft-3: rgba(37, 99, 235, 0.04);
+    --glass-soft: rgba(0, 0, 0, 0.03);
+    --glass-soft-2: rgba(0, 0, 0, 0.05);
+    --glass-soft-3: rgba(0, 0, 0, 0.10);
+    --overlay-soft: rgba(0, 0, 0, 0.4);
+    --shadow-strong: rgba(0, 0, 0, 0.18);
+    --shadow-soft: rgba(0, 0, 0, 0.12);
+    --shadow-mid: rgba(0, 0, 0, 0.08);
+    --shadow-faint: rgba(0, 0, 0, 0.06);
 }
 
 /* Theme transition — excluded backdrop-filter */

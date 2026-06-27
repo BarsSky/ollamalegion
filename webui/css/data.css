@@ -60,9 +60,10 @@
     background: var(--glass-highlight);
     pointer-events: none;
 }
+/* model-card hover — тема-управляемая accent glow (Session 17) */
 .model-card:hover {
     border-color: var(--accent);
-    box-shadow: var(--glass-shadow), 0 8px 32px rgba(74, 158, 255, 0.1);
+    box-shadow: var(--glass-shadow), 0 8px 32px var(--accent-glow-soft);
 }
 .model-card-header {
     display: flex;
@@ -226,15 +227,16 @@
     color: var(--accent);
     border: 1px solid rgba(74, 158, 255, 0.3);
 }
+/* flag-badge — тема-управляемые полупрозрачные фоны (Session 17) */
 .flag-badge.warning {
-    background: rgba(251, 191, 36, 0.15);
+    background: var(--warning-bg-soft);
     color: var(--warning);
-    border-color: rgba(251, 191, 36, 0.3);
+    border-color: var(--warning-bg-soft);
 }
 .flag-badge.danger {
-    background: rgba(248, 113, 113, 0.15);
+    background: var(--danger-bg-soft);
     color: var(--danger);
-    border-color: rgba(248, 113, 113, 0.3);
+    border-color: var(--danger-bg-soft);
 }
 
 /* ===== Backend Capacity ===== */

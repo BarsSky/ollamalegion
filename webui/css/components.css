@@ -127,21 +127,22 @@
     font-weight: 600;
     transition: background-color 0.4s ease, color 0.4s ease, box-shadow 0.4s ease;
 }
-.badge-success { background: rgba(74, 222, 128, 0.15); color: var(--success); }
-.badge-warning { background: rgba(251, 191, 36, 0.15); color: var(--warning); }
-.badge-danger  { background: rgba(248, 113, 113, 0.15); color: var(--danger); }
-.badge-info    { background: rgba(96, 165, 250, 0.15); color: var(--info); }
+/* Badge — тема-управляемые полупрозрачные фоны (Session 17) */
+.badge-success { background: var(--success-soft); color: var(--success); }
+.badge-warning { background: var(--warning-bg-soft); color: var(--warning); }
+.badge-danger  { background: var(--danger-bg-soft); color: var(--danger); }
+.badge-info    { background: var(--info-soft); color: var(--info); }
 
 /* Backend type badges */
 .badge.backend-type-ollama {
-    background: rgba(59, 130, 246, 0.15);
-    color: #3b82f6;
-    border: 1px solid rgba(59, 130, 246, 0.2);
+    background: var(--accent-soft);
+    color: var(--info);
+    border: 1px solid var(--accent-glow-ring);
 }
 .badge.backend-type-llama_cpp {
-    background: rgba(245, 158, 11, 0.15);
-    color: #f59e0b;
-    border: 1px solid rgba(245, 158, 11, 0.2);
+    background: var(--warning-soft);
+    color: var(--warning);
+    border: 1px solid var(--warning-soft-4);
 }
 
 /* Queue task status badges */
@@ -155,9 +156,9 @@
     font-weight: 500;
     transition: background-color 0.4s ease, color 0.4s ease;
 }
-.queue-task-status.pending    { background: rgba(251, 191, 36, 0.15); color: var(--warning); }
-.queue-task-status.processing { background: rgba(74, 158, 255, 0.15); color: var(--accent); }
-.queue-task-status.completed  { background: rgba(74, 222, 128, 0.15); color: var(--success); }
+.queue-task-status.pending    { background: var(--warning-bg-soft); color: var(--warning); }
+.queue-task-status.processing { background: var(--accent-soft); color: var(--accent); }
+.queue-task-status.completed  { background: var(--success-soft); color: var(--success); }
 
 /* ===== Toggle ===== */
 .toggle {
@@ -517,10 +518,11 @@
     border-color: var(--accent);
     background: var(--bg-hover);
 }
+/* mode-card active — тема-управляемый accent glow (Q3 W3-4) */
 .mode-card.active {
     border-color: var(--accent);
-    background: rgba(59,130,246,0.08);
-    box-shadow: 0 0 0 2px rgba(59,130,246,0.2);
+    background: var(--accent-glow-soft);
+    box-shadow: 0 0 0 2px var(--accent-glow-ring);
 }
 .mode-card-icon {
     font-size: 28px;
@@ -717,11 +719,12 @@
     margin-bottom: 4px;
     font-size: 13px;
 }
+/* Import Preview — тема-управляемые (Session 17) */
 .import-preview-item.preview-change {
-    background: rgba(255,193,7,0.1);
+    background: var(--warning-bg-soft-2);
 }
 .import-preview-item.preview-new {
-    background: rgba(40,167,69,0.08);
+    background: var(--success-bg-soft);
 }
 .import-preview-item.preview-same {
     background: transparent;
@@ -887,11 +890,12 @@
     letter-spacing: 0.5px;
 }
 
+/* wizard-preview — тема-управляемый success glow (Session 17) */
 .wizard-preview {
     margin: 0 24px 16px;
     padding: 12px 16px;
-    background: rgba(40,167,69,0.06);
-    border: 1px solid rgba(40,167,69,0.15);
+    background: var(--success-bg-soft-3);
+    border: 1px solid var(--success-bg-soft-2);
     border-radius: 10px;
     font-size: 13px;
     color: var(--text-secondary);
@@ -954,13 +958,14 @@
     border-color: var(--accent);
     font-weight: 600;
 }
+/* type-filter-btn active states — тема-управляемые accent/warning (Q3 W3-4) */
 .type-filter-btn.active[data-type="ollama"] {
-    background: rgba(59, 130, 246, 0.85);
-    border-color: rgba(59, 130, 246, 0.9);
+    background: var(--accent-soft-2);
+    border-color: var(--accent-soft-3);
 }
 .type-filter-btn.active[data-type="llama_cpp"] {
-    background: rgba(245, 158, 11, 0.85);
-    border-color: rgba(245, 158, 11, 0.9);
+    background: var(--warning-soft-2);
+    border-color: var(--warning-soft-3);
 }
 
 /* ===== Models tab: backend-type filter + sort (Roadmap Q3 W3-4) ===== */
@@ -999,12 +1004,13 @@
     color: white;
 }
 
+/* filter-btn active states — тема-управляемые accent/warning (Q3 W3-4) */
 .filter-btn.active[data-filter-type="ollama"] {
-    background: rgba(59, 130, 246, 0.85);
+    background: var(--accent-soft-2);
 }
 
 .filter-btn.active[data-filter-type="llama_cpp"] {
-    background: rgba(245, 158, 11, 0.85);
+    background: var(--warning-soft-2);
 }
 
 .sort-label {
@@ -1083,7 +1089,7 @@
     transition: border-color 0.15s ease;
 }
 .cpp-profile-item:hover {
-    border-color: rgba(245, 158, 11, 0.4);
+    border-color: var(--warning-soft-5);
 }
 
 .cpp-profile-info {
@@ -1101,11 +1107,12 @@
     align-items: center;
     gap: 6px;
 }
+/* cpp-profile-name badge — тема-управляемый warning (Q3 W3-4) */
 .cpp-profile-name .badge {
     font-size: 10px;
     padding: 1px 6px;
-    background: rgba(245, 158, 11, 0.2);
-    color: #f59e0b;
+    background: var(--warning-soft-4);
+    color: var(--warning);
     border-radius: 3px;
     font-weight: 500;
 }
@@ -1140,14 +1147,15 @@
     cursor: pointer;
     transition: all 0.15s ease;
 }
+/* ctx-preset/ctx-value — тема-управляемый warning (Q3 W3-4) */
 .cpp-profile-wizard .ctx-preset:hover {
-    border-color: #f59e0b;
-    color: #f59e0b;
+    border-color: var(--warning);
+    color: var(--warning);
 }
 .cpp-profile-wizard .ctx-preset.active {
-    background: rgba(245, 158, 11, 0.2);
-    border-color: #f59e0b;
-    color: #f59e0b;
+    background: var(--warning-soft-4);
+    border-color: var(--warning);
+    color: var(--warning);
 }
 .cpp-profile-wizard .ctx-slider-row {
     display: flex;
@@ -1163,7 +1171,7 @@
     text-align: right;
     font-family: 'SF Mono', 'Consolas', monospace;
     font-weight: 600;
-    color: #f59e0b;
+    color: var(--warning);
     font-size: 13px;
 }
 .cpp-profile-wizard .ctx-help {
@@ -1176,8 +1184,8 @@
 .cpp-profile-wizard .wizard-advanced {
     margin-top: 12px;
     padding: 12px;
-    background: rgba(245, 158, 11, 0.04);
-    border: 1px dashed rgba(245, 158, 11, 0.25);
+    background: var(--warning-soft-7);
+    border: 1px dashed var(--warning-soft-6);
     border-radius: 6px;
 }
 .cpp-profile-wizard .advanced-toggle {
@@ -1189,7 +1197,7 @@
 }
 .cpp-profile-wizard .advanced-toggle:hover {
     border-style: solid;
-    background: rgba(245, 158, 11, 0.06);
+    background: var(--warning-soft-8);
 }
 .cpp-profile-wizard .wizard-field-row {
     display: flex;
@@ -1238,10 +1246,11 @@
     text-align: center;
     font-weight: 600;
 }
+/* reload-step icon — тема-управляемые (Q3 W3-4) */
 .cpp-reload-progress .reload-step.pending .reload-step-icon { color: var(--text-muted, #94a3b8); }
-.cpp-reload-progress .reload-step.running .reload-step-icon { color: #f59e0b; animation: spin 1s linear infinite; }
-.cpp-reload-progress .reload-step.done .reload-step-icon { color: #10b981; }
-.cpp-reload-progress .reload-step.error .reload-step-icon { color: #ef4444; }
+.cpp-reload-progress .reload-step.running .reload-step-icon { color: var(--warning); animation: spin 1s linear infinite; }
+.cpp-reload-progress .reload-step.done .reload-step-icon { color: var(--success); }
+.cpp-reload-progress .reload-step.error .reload-step-icon { color: var(--danger); }
 .cpp-reload-progress .reload-step-text { color: var(--text-primary, #e2e8f0); }
 .cpp-reload-progress .reload-progress-bar {
     width: 100%;

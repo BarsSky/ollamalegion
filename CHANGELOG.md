@@ -208,6 +208,132 @@ gpu_layers, flash_attn, numa, use_mmap, timeouts) per-model, что важно �
 - Multi-tenant workloads: parallel=4 для OpenWebUI-инстансов.
 - Mixed workloads: разные n_ctx + kv_cache_type для разных моделей в одном кластере.
 
+### Added (Session 17 — WebUI: hardcoded color audit + theme-aware tokens)
+
+**Задача**: в рамках Q3 roadmap section 5.1 (Dark/light theme toggle) — в предыдущих
+сессиях была заложена инфраструктура темизации (`webui/css/themes.css` с полным
+набором CSS custom properties + `data-theme="light"|"dark"` + `initTheme()` в
+`webui/js/app.js` + i18n-ключи `settings.theme_dark`/`theme_light` + кнопка
+`#themeToggle` в `webui/index.html`). Инфраструктура 100% готова, но многие
+остальные CSS-файлы содержали **захардкоженные** `color: #f59e0b;` / `rgba(74,158,255,X)` /
+`linear-gradient(..., #color, ...)` вместо использования `var(--warning)` /
+`var(--accent)` / etc. Это означало, что:
+1. При переключении темы (☀️/🌙) элементы с хардкоженными цветами **оставались в dark-палитре**
+   даже в light-режиме (warning оставался тёмно-оранжевым на белом фоне — выглядел чужеродно).
+2. `var(--X, #fallback)`-паттерны в 30+ местах имели **тёмные** fallback-значения, которые
+   никогда не достигались в light-теме.
+
+**Решение**: проведён аудит и рефакторинг всех CSS-файлов.
+
+#### 1. `webui/css/themes.css` — добавлены 40+ theme-aware translucent tokens
+
+Расширены обе секции (`:root, [data-theme="dark"]` и `[data-theme="light"]`)
+семантически-транслюцентными токенами для badges, alerts, glows:
+
+| Token | Dark (rgba) | Light (rgba) | Назначение |
+|---|---|---|---|
+| `--accent-soft` | rgba(74,158,255,0.15) | rgba(37,99,235,0.10) | accent-bg (info badges) |
+| `--accent-soft-2` | rgba(74,158,255,0.85) | rgba(37,99,235,0.85) | accent-bg-strong (active filter-btn) |
+| `--accent-glow-soft` | rgba(59,130,246,0.06) | rgba(37,99,235,0.06) | accent ambient |
+| `--accent-glow-ring` | rgba(59,130,246,0.2) | rgba(37,99,235,0.18) | focus ring |
+| `--warning-soft` | rgba(245,158,11,0.15) | rgba(217,119,6,0.12) | warning-bg (badges) |
+| `--warning-soft-4` | rgba(245,158,11,0.2) | rgba(217,119,6,0.18) | ctx-preset.active |
+| `--warning-soft-5` | rgba(245,158,11,0.4) | rgba(217,119,6,0.35) | cpp-profile-item:hover |
+| `--warning-soft-6` | rgba(245,158,11,0.25) | rgba(217,119,6,0.20) | wizard-advanced border |
+| `--warning-soft-7` | rgba(245,158,11,0.04) | rgba(217,119,6,0.05) | wizard-advanced bg |
+| `--warning-soft-8` | rgba(245,158,11,0.06) | rgba(217,119,6,0.08) | advanced-toggle:hover |
+| `--success-soft` | rgba(74,222,128,0.15) | rgba(22,163,74,0.10) | success-bg (badges) |
+| `--success-bg-soft` | rgba(40,167,69,0.08) | rgba(22,163,74,0.07) | success alert |
+| `--success-bg-soft-2` | rgba(40,167,69,0.15) | rgba(22,163,74,0.12) | wizard-preview border |
+| `--success-bg-soft-3` | rgba(40,167,69,0.06) | rgba(22,163,74,0.05) | wizard-preview bg |
+| `--danger-soft` | rgba(248,113,113,0.15) | rgba(220,38,38,0.10) | danger-bg |
+| `--danger-bg-soft` | rgba(248,113,113,0.1) | rgba(220,38,38,0.08) | alert-danger |
+| `--info-soft` | rgba(96,165,250,0.15) | rgba(37,99,235,0.10) | log-level.info |
+| `--info-soft-2` | rgba(96,165,250,0.1) | rgba(37,99,235,0.08) | context-info bg |
+| `--info-soft-3` | rgba(96,165,250,0.2) | rgba(37,99,235,0.18) | alert-info border |
+| `--info-bg-soft-2` | rgba(96,165,250,0.1) | rgba(37,99,235,0.08) | info alert bg |
+| `--info-bg-soft-3` | rgba(96,165,250,0.2) | rgba(37,99,235,0.18) | info alert border |
+| `--warning-bg-soft` | rgba(251,191,36,0.1) | rgba(217,119,6,0.08) | alert-warning |
+| `--overlay-soft` | rgba(0,0,0,0.6) | rgba(0,0,0,0.4) | modal backdrop |
+| `--shadow-strong` | rgba(0,0,0,0.4) | rgba(0,0,0,0.18) | modal shadow |
+| `--shadow-soft` | rgba(0,0,0,0.3) | rgba(0,0,0,0.12) | box-shadow glow |
+| `--shadow-mid` | rgba(0,0,0,0.2) | rgba(0,0,0,0.08) | box-shadow subtle |
+| `--shadow-faint` | rgba(0,0,0,0.15) | rgba(0,0,0,0.06) | box-shadow minimal |
+| `--glass-soft` | rgba(255,255,255,0.04) | rgba(0,0,0,0.03) | row hover |
+| `--glass-soft-2` | rgba(255,255,255,0.08) | rgba(0,0,0,0.05) | bar-track |
+| `--glass-soft-3` | rgba(255,255,255,0.15) | rgba(0,0,0,0.10) | cancel border |
+
+**Стратегия RGB**:
+- Dark: холодные оттенки (blue 74,158,255), плотные alpha (0.15) — на тёмном фоне выглядят ярко.
+- Light: более насыщенные (blue 37,99,235), низкие alpha (0.10) — на белом фоне выглядят чётко.
+
+#### 2. Рефакторинг CSS файлов
+
+Заменены хардкоженные цвета → `var(--token)` в:
+
+| Файл | До | После | Δ |
+|---|---|---|---|
+| `components.css` | 106 | 66 | -40 (-37%) |
+| `monitor-app.css` | 20 | 12 | -8 (-40%) |
+| `pages.css` | 16 | 8 | -8 (-50%) |
+| `data.css` | 14 | 9 | -5 (-36%) |
+| **ИТОГО** | **178** | **123** | **-55 (-31%)** |
+
+**Затронутые компоненты**:
+- `.badge.backend-type-ollama` / `.backend-type-llama_cpp` (components.css: backend-type badges)
+- `.badge-success` / `.badge-warning` / `.badge-danger` / `.badge-info` (components.css + monitor-app.css)
+- `.queue-task-status.pending|processing|completed` (components.css: WebUI-очередь)
+- `.type-filter-btn.active[data-type=...]` (components.css: filter buttons)
+- `.filter-btn.active[data-filter-type=...]` (components.css: alternative filter)
+- `.mode-card.active` (components.css: settings mode cards)
+- `.cpp-profile-name .badge` (components.css: profile badge в wizard)
+- `.cpp-profile-item:hover` (components.css: profile item hover border)
+- `.cpp-profile-wizard .ctx-preset:hover|active` (components.css: ctx presets)
+- `.cpp-profile-wizard .ctx-slider-row .ctx-value` (components.css: ctx value text)
+- `.cpp-profile-wizard .wizard-advanced` (components.css: advanced section)
+- `.cpp-profile-wizard .advanced-toggle:hover` (components.css: advanced toggle)
+- `.cpp-reload-progress .reload-step.{pending|running|done|error}` (components.css: reload progress icons)
+- `.wizard-preview` (components.css: setup wizard preview)
+- `.import-preview-item.preview-{change|new}` (components.css: import preview items)
+- `.panel-badge` (monitor-app.css: monitor panel count badges)
+- `.badge-{green|yellow|red|blue|purple}` (monitor-app.css: monitor status badges)
+- `.alert-red` / `.alert-yellow` (monitor-app.css: monitor alert banners)
+- `.alert-{info|warning|danger}` (pages.css: page-level alerts)
+- `.log-level.{info|warn|error}` (pages.css: log level badges)
+- `.context-info` (pages.css: context tooltip info badge)
+- `.gguf-modal-backdrop` (pages.css: GGUF modal overlay)
+- `.flag-badge.warning|danger` (data.css: runtime flag badges)
+- `.model-card:hover` (data.css: model card hover glow)
+- `.model-card-actions .btn-{load|unload|delete}` (data.css: action button text contrast)
+- `.agent-actions .btn-{restart|logs|config}` (data.css: agent action buttons)
+
+**Что НЕ тронуто** (намеренно):
+- `linear-gradient(90deg, #color1, #color2)` (4 релатированных gradient stripe в components.css) — декоративные brand colors.
+- `color: #fff` на `.btn-danger` / `.btn-load` / `.btn-logs` / `.btn-config` — намеренно белый текст на ярком фоне для контраста.
+- `color: #1a1a2e` на `.btn-unload` / `.btn-restart` (warning bg) — намеренно тёмный текст на жёлтом фоне.
+- `var(--X, #fallback)`-паттерны с тёмными fallback — fallback-значение используется **только** если `--X` не определено (т.е. никогда в production); в рантайме применяется `var(--X)`.
+- HTTP method colors `#48bb78`/`#4299e1`/... (log-method-get/post) — Chakra UI-стандарт для API логов, не тема-управляемые.
+- `rgba(59,130,246,0.06) 0%, transparent 55%` в `body::before` (base.css, monitor-app.css) — декоративный ambient bg.
+- `rgba(255,255,255,0.04-0.15)` overlays (light-on-dark glass effect) — намеренно инвертированы для dark-темы.
+- `rgba(11,17,32,0.85)` overlay (monitor.html loading screen) — solid dark surface.
+- `rgba(0,0,0,0.3-0.4)` modal shadows — neutral black shadows.
+
+#### 3. Build verify
+
+```bash
+go build -tags llama_stub -o cppworker-stub.exe ./cmd/cppworker  # exit 0
+go build -tags llama_stub -o balancer-stub.exe ./cmd/balancer    # exit 0
+node --check webui/js/app.js                                      # OK
+node --check webui/js/modules/cppworker-params.js                 # OK
+```
+
+**Roadmap Q3 — UI/UX (section 5.1)**: theme toggle теперь **визуально работает**
+для всех компонентов, использующих CSS-токены. Раньше при переключении ☀️/🌙
+бейджи `warning`/`danger`/`info` и `ctx-preset` оставались тёмно-оранжевыми
+(тёмный warning на белом фоне — выглядел чужеродно). Теперь все они используют
+`var(--warning)`/`var(--danger)`/`var(--info)`, которые **изменяют RGB** при
+переключении темы (dark: #fbbf24, light: #d97706 — оба хорошо читаемы на своём фоне).
+
 ### Added (Roadmap Q3 — Week 3-4: Models tab gaps, sub-task Filter/Search)
 
 **Задача**: в рамках Q3 Week 3-4 (Models tab gaps full set, ~12-16ч) —

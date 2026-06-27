@@ -5,6 +5,50 @@
 Формат ведётся в соответствии с [Keep a Changelog](https://keepachangelog.com/ru/1.0.0/),
 и этот проект придерживается [Semantic Versioning](https://semver.org/lang/ru/).
 
+## [Unreleased — 2026-06-28d]
+
+### Verified (Roadmap Q3 — Session D: Per-Model Profiles: parallel + kv_cache_type)
+
+**Задача**: проверить статус реализации Session 3.0 из roadmap — добавить поля
+`Parallel` (n_parallel в llama.cpp) и `KVCacheType` (f16/q8_0/q4_0) в
+`LlamaCppModelProfile`.
+
+**Результат проверки**: задача **полностью завершена** в коммите `bd02938`
+(Session 16, 2026-06-27). Никаких изменений не требуется — ни в backend,
+ни в UI.
+
+**Проверено**:
+- ✅ `pkg/types/balancing.go` — поля `Parallel int` и `KVCacheType string`
+  с полными комментариями (trade-off Q4_0 vs Q8_0, формулы расчёта VRAM).
+- ✅ `internal/api/handlers_cppworker_profiles.go:validateModelProfile()` —
+  валидация Parallel ∈ [0, 8] и KVCacheType ∈ {"", "f16", "q8_0", "q4_0"}.
+- ✅ `internal/api/handlers_cppworker_profiles.go:reloadModelOnCppWorker()` —
+  прокидывает `parallel` и `kvCacheType` в body POST `/api/models/reload`.
+- ✅ `internal/api/handlers_cppworker_profiles.go:mergeModelProfile()` —
+  корректная PATCH-семантика (zero-value = "не менять").
+- ✅ `webui/js/modules/cppworker-params.js` — 2 поля в advanced секции
+  (input number для parallel, select для kv_cache_type).
+- ✅ `cppworker-params.js:profileToWizardState()` / `wizardStateToProfileBody()`
+  — корректная конвертация в обоих направлениях.
+- ✅ `cppworker-params.js:validateProfile()` — клиентская валидация
+  с показом toast-ошибки.
+- ✅ Meta-строка списка: `[parallel=2 · kv=q8_0]` при наличии.
+- ✅ `webui/js/i18n/en.js` + `ru.js` — 4 ключа (`settings.profiles.parallel`,
+  `parallel_help`, `kv_cache_type`, `kv_cache_type_help`).
+- ✅ `internal/api/handlers_cppworker_profiles_test.go` — 4 теста:
+  `TestValidateModelProfile_ParallelBounds`, `TestValidateModelProfile_KVCacheTypeValid`,
+  `TestMergeModelProfile_PartialUpdate_Parallel`, `TestMergeModelProfile_PartialUpdate_KVCacheType`.
+
+**Acceptance verification**:
+- ✅ `go test -tags llama_stub -run "TestValidateModelProfile_ParallelBounds|..." ./internal/api/`
+  → все 4 теста PASS (14 sub-tests).
+- ✅ Trade-off документация в комментариях к полям структуры:
+  gemma-4 8B + n_ctx=65536 + kv_cache_type=q8_0 экономит ~3.5 GB VRAM.
+- ✅ Merge-логика корректно обрабатывает partial updates
+  (zero-value `Parallel=0` / `KVCacheType=""` сохраняют существующие значения).
+
+**Изменения**: нет (задача уже завершена в предыдущей сессии).
+
 ## [Unreleased — 2026-06-28c]
 
 ### Added (Roadmap Q3 — Session C: Theme toggle improvements)

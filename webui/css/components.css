@@ -963,6 +963,100 @@
     border-color: rgba(245, 158, 11, 0.9);
 }
 
+/* ===== Models tab: backend-type filter + sort (Roadmap Q3 W3-4) ===== */
+.filter-group {
+    display: inline-flex;
+    border-radius: 8px;
+    overflow: hidden;
+    background: var(--glass-bg, rgba(255, 255, 255, 0.04));
+    border: 1px solid var(--glass-border, rgba(255, 255, 255, 0.08));
+}
+
+.filter-btn {
+    background: transparent;
+    border: none;
+    border-right: 1px solid var(--glass-border, rgba(255, 255, 255, 0.08));
+    color: var(--text-secondary, #94a3b8);
+    padding: 6px 12px;
+    font-size: 13px;
+    cursor: pointer;
+    transition: var(--transition, all 0.2s ease);
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    font-family: inherit;
+}
+
+.filter-btn:last-child { border-right: none; }
+
+.filter-btn:hover {
+    background: var(--bg-hover, rgba(255, 255, 255, 0.05));
+    color: var(--text-primary, #f1f5f9);
+}
+
+.filter-btn.active {
+    background: var(--accent, #3b82f6);
+    color: white;
+}
+
+.filter-btn.active[data-filter-type="ollama"] {
+    background: rgba(59, 130, 246, 0.85);
+}
+
+.filter-btn.active[data-filter-type="llama_cpp"] {
+    background: rgba(245, 158, 11, 0.85);
+}
+
+.sort-label {
+    color: var(--text-muted, #94a3b8);
+    font-size: 12px;
+    margin-left: 8px;
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+}
+
+.sort-select {
+    background: var(--glass-bg, rgba(255, 255, 255, 0.04));
+    border: 1px solid var(--glass-border, rgba(255, 255, 255, 0.08));
+    color: var(--text-primary, #f1f5f9);
+    padding: 6px 10px;
+    border-radius: 6px;
+    font-size: 13px;
+    font-family: inherit;
+    cursor: pointer;
+    transition: var(--transition, all 0.2s ease);
+    min-width: 130px;
+}
+
+.sort-select:hover {
+    border-color: var(--accent, #3b82f6);
+}
+
+.sort-select:focus {
+    outline: none;
+    border-color: var(--accent, #3b82f6);
+    box-shadow: 0 0 0 2px rgba(59, 130, 246, 0.2);
+}
+
+.sort-select option {
+    background: var(--bg-primary, #0f172a);
+    color: var(--text-primary, #f1f5f9);
+}
+
+.models-empty {
+    padding: 32px 16px;
+    text-align: center;
+    color: var(--text-muted, #94a3b8);
+    font-size: 14px;
+    background: var(--bg-secondary, #1a1f2e);
+    border: 1px dashed var(--border-color, #2a3441);
+    border-radius: 8px;
+    margin-top: 12px;
+}
+
+.models-empty[hidden] { display: none; }
+
 /* ============================================================ */
 /* Per-Model Profiles (Шаг 5 cppworker-preflight-nctx-session)  */
 /* ============================================================ */

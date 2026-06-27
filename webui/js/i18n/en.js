@@ -646,6 +646,21 @@ window.I18N_EN = {
   "models.parameter_size": "Parameters",
   "models.digest": "Digest",
 
+  // ===== Models tab: filter + sort (Roadmap Q3 W3-4) =====
+  "models.filter_all": "All",
+  "models.filter_ollama": "Ollama",
+  "models.filter_llamacpp": "llama.cpp",
+  "models.filter_all_title": "All backend types",
+  "models.filter_ollama_title": "Ollama only",
+  "models.filter_llamacpp_title": "llama.cpp only",
+  "models.sort_by": "Sort:",
+  "models.sort_name_asc": "Name (A–Z)",
+  "models.sort_name_desc": "Name (Z–A)",
+  "models.sort_size_desc": "Size (largest first)",
+  "models.sort_size_asc": "Size (smallest first)",
+  "models.sort_backend_asc": "Backend (A–Z)",
+  "models.empty_filtered": "No models match the current filter.",
+
   // Virtual Models
   "vm.title": "🧩 Virtual Models",
 

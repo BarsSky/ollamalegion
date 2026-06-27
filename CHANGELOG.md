@@ -5,7 +5,440 @@
 Формат ведётся в соответствии с [Keep a Changelog](https://keepachangelog.com/ru/1.0.0/),
 и этот проект придерживается [Semantic Versioning](https://semver.org/lang/ru/).
 
+## [Unreleased — 2026-06-27]
+
+### Added (Roadmap Q3 — Week 3-4: Models tab gaps, sub-task Filter/Search)
+
+**Задача**: в рамках Q3 Week 3-4 (Models tab gaps full set, ~12-16ч) —
+sub-task Filter/Search (~2ч). В WebUI вкладка Models до этой сессии имела
+только текстовый поиск (по подстроке имени), без фильтрации по типу
+бэкенда и без сортировки. При большом кластере (10+ бэкендов, десятки
+моделей) пользователю приходилось скроллить весь список, что делало
+вкладку непригодной для production-использования.
+
+**Решение**: добавлена filter-группа из 3 кнопок (🌐 Все / 🦙 Ollama /
+🦒 llama.cpp) и sort dropdown с 5 опциями (имя А-Я / Я-А, размер
+по убыванию / возрастанию, бэкенд). Применяется in-place через
+`appendChild` без перерисовки grid'а. Поддерживается комбинация
+текстового поиска + типа бэкенда + сортировки одновременно. При
+отсутствии моделей под фильтр показывается empty-state с подсказкой
+очистить фильтр/поиск.
+
+**Изменения**:
+
+- `webui/index.html` (Models tab, ~15 строк):
+  - `<div class="filter-group" id="modelsTypeFilter">` с 3 `<button class="filter-btn" data-filter-type>` (all/ollama/llama_cpp).
+  - `<label class="sort-label"><select class="sort-select" id="modelsSortBy">` с 5 `<option value>`.
+  - `<div class="models-empty" id="modelsEmpty" hidden>` для empty-state.
+- `webui/css/components.css` (~95 строк):
+  - `.filter-group`, `.filter-btn` (hover, active, focus, `[data-filter-type="ollama|llama_cpp"]`),
+  - `.sort-label`, `.sort-select`, `.models-empty`, `[hidden]`.
+- `webui/js/app.js` (~50 строк):
+  - `filterModels(query)` переписан — поддерживает одновременно текстовый
+    поиск И фильтр по `data-backend-type` карточки.
+  - Новая `applyModelsSort()` — сортирует карточки в `#modelsGrid` через
+    `Array.from(...).sort(comparator).forEach(grid.appendChild)`.
+  - В `setupEventListeners()` — обработчики `click` на `#modelsTypeFilter`
+    (toggle active class) и `change` на `#modelsSortBy` (вызов `applyModelsSort`).
+  - Обе функции экспортированы в `window.ui`.
+- `webui/js/modules/renderers.js` (~10 строк):
+  - `modelsGrid()` — добавлены data-атрибуты к `.model-card`:
+    `data-model-name` (lowercase, для быстрого фильтра), `data-backend-type`
+    (из `Utils.getBackendType(backend)`), `data-size-bytes` (для сортировки).
+  - `modelsPage()` — добавлен вызов `window.ui.applyModelsSort()` после
+    рендера, чтобы текущая сортировка применялась к свежему списку.
+- `webui/js/i18n/en.js` (+13 строк): `models.filter_all/ollama/llamacpp`,
+  `models.filter_*_title`, `models.sort_by`, `models.sort_*`, `models.empty_filtered`.
+- `webui/js/i18n/ru.js` (+13 строк): русские переводы для всех новых ключей.
+
+**Acceptance criteria**:
+
+1. Открыть вкладку Models в WebUI → видны 3 кнопки фильтра + dropdown сортировки.
+2. Клик по «🦙 Ollama» — карточки non-ollama скрываются, остаются только Ollama.
+3. Клик по «🌐 Все» — карточки возвращаются.
+4. Выбор «Имя (Я-А)» в dropdown — карточки сортируются по имени в обратном порядке.
+5. Комбинация: текст в строке поиска «gemma» + фильтр «llama.cpp» + sort «Size desc»
+   → видны только llama.cpp модели с «gemma» в имени, отсортированные по размеру.
+6. Если ни одна модель не подходит — показывается empty-state с подсказкой.
+7. При обновлении списка моделей (refresh) текущие фильтры/сортировка сохраняются.
+
+**NB**: backend type определяется через существующую `Utils.getBackendType(backend)`
+(уже использовалась в renderers для бейджей). Никаких изменений на стороне
+бэкенда/балансировщика не потребовалось — фича чисто клиентская.
+
+### Changed (Roadmap Q3 — Session 13: R-5 marked not-applicable)
+
+**Задача**: в рамках Q3 Week 2 — R-5 «cocoindex.js для llama_cpp». Проверка
+показала, что файл `webui/js/modules/cocoindex.js` **физически отсутствует**
+в проекте (не существует в git, не упоминается в `webui/index.html` или других
+модулях). Термин «cocoindex» в проекте относится к **серверному MCP-сервису**
+(`deployments/docker-compose.cocoindex.yml`, образ `cocoindex/cocoindex-code`),
+а не к WebUI-модулю. Embeddings-функционал уже покрыт через OpenAI-совместимый
+`/v1/embeddings` endpoint в cppworker (`cmd/cppworker/handlers_embeddings.go`)
+и балансировщик (`internal/balancer/llamacpp_handlers_inference.go`).
+Задача закрыта как **not-applicable** — другие методы работы (прямой embeddings
+через балансировщик + cocoindex MCP-сервис для code-search) уже настроены.
+Описание roadmap оставлено для истории в `plans/2026-q3-roadmap.md` (секция 1.1).
+
+**Изменения**:
+- `plans/2026-q3-roadmap.md`:
+  - Секция 1.1 — добавлен warning-блок «⚠️ NOT APPLICABLE» с обоснованием.
+  - Секция 9 (Месяц 1 Week 2) — помечен как SKIPPED, рекомендован переход к Models tab.
+  - Секция 10 (Приоритеты) — PF-5/6/7 отмечены как ✅ DONE Session 13.
+
+### Fixed (Roadmap Q3 — PF-5/PF-6/PF-7: закрытие pre-existing failures)
+
+**Задача**: из `plans/2026-q3-roadmap.md` раздел 1.2–1.4 — три pre-existing
+test failure в `tests/` оставались красными даже после Session 4:
+
+- **PF-5**: `TestOpenAIChat_HeaderTimeout_StillWorks` (timeout 10s при
+  `FirstByteTimeout=2`) — ResponseHeaderTimeout был выключен (=0) на
+  streamingTransport, поэтому зависший upstream держал соединение бесконечно.
+- **PF-6**: 3 streaming-теста (`TestLlamaCppProxyChat_Streaming`,
+  `TestLlamaCppProxyResponse_NotMarkdownBold/streaming`,
+  `TestLlamaCppProxy_StreamingResponse`) — stream truncation detection
+  срабатывал преждевременно для нормально завершённых стримов cppworker
+  (cppworker закрывает TCP сразу после чанка с `finish_reason` без маркера
+  `[DONE]`). Также была дублирование финального content в done-чанке.
+- **PF-7**: `TestOpenWebUI_Sequential_MixedRequests/step6-llamacpp-non-streaming`
+  (Content-Type `text/plain` вместо `application/json`) — был уже
+  закрыт ранее (Session 4), в рамках этой сессии только верифицирован.
+
+**Решение**:
+
+- **PF-5 fix**: per-request `http.Client` с включённым
+  `Transport.ResponseHeaderTimeout = FirstByteTimeout` через shallow copy
+  `streamingTransportBase` (keepalive пул соединений общий). Применяется
+  ТОЛЬКО для streaming + когда задан явный `FirstByteTimeout>0`. Helper
+  `newStreamingClientWithResponseHeaderTimeout` в новом файле
+  `internal/balancer/proxy_first_byte_timeout.go`. Используется в обоих
+  call-сайтах: `proxyRequestLlamaCpp` и `handleOpenAIChatCompletions`.
+- **PF-6 fix**: в `proxyRequestLlamaCpp` (NDJSON path) — убран `continue`
+  для чанков с `finish_reason`, чтобы `translateOpenAISSEDataToOllama` сам
+  формировал финальный NDJSON чанк с `done:true` (passthrough-семантика).
+  Добавлена явная пометка `streamCompleted=true` при первом чанке с
+  `finish_reason` — иначе ниже срабатывал бы stream-truncation detection
+  на нормально завершённом стриме. Защита от дубликата content:
+  `accumulatedPlainContent` накапливается только из НЕ-финальных чанков
+  (без `finish_reason`); `upstreamDoneContent` для финального чанка
+  формируется из `accumulatedPlainContent + t` (где `t` — text из
+  финального чанка, не дублируется с уже накопленным). Tool_calls по-прежнему
+  обрабатываются отдельно через `writeStreamingSSEDone`.
+
+### Changed
+
+- `Proxy.streamingClient` (`internal/balancer/proxy.go`):
+  добавлено поле `streamingTransportBase *http.Transport` для per-request
+  shallow copy.
+- `Proxy.proxyRequestLlamaCpp` (`internal/balancer/llamacpp_transport.go`):
+  использует `newStreamingClientWithResponseHeaderTimeout` для streaming
+  с `FirstByteTimeout>0`; passthrough финального чанка через translate;
+  guard от дубликата content в `accumulatedPlainContent`.
+- `LlamaCppRouter.handleOpenAIChatCompletions`
+  (`internal/balancer/llamacpp_handlers_inference.go`): аналогичный
+  per-request client.
+
+## [Unreleased — 2026-06-26]
+
+### Features (Session 4 — P-1: endpoint /api/models/load-with-params)
+
+**Задача**: добавить на `cppworker` endpoint, который принимает **расширенный
+набор параметров** llama.cpp при загрузке модели. Старый `POST /api/load`
+поддерживает только базовые поля (`name`, `path`, `contextSize`, `gpuLayers`,
+`batchSize`, `flashAttn`, `numa`, `useMmap`, `tensorSplit`). Продвинутые
+параметры (`n_threads`, `parallel`, `kv_cache_type`, `split_mode`,
+`override_tensor`) не были доступны через REST API.
+
+**Решение** — новый endpoint `POST /api/models/load-with-params` на cppworker,
+проксируемый балансировщиком через generic proxy
+`/api/v1/gguf/backends/{id}/proxy/api/models/load-with-params`.
+
+**Что сделано**:
+
+- **`internal/cppbackend/backend.go`** — `LoadModelOpts` расширен полями
+  `NThreads`, `Parallel`, `KVCacheType` (0=F16, 1=Q8_0, 2=Q4_0),
+  `SplitMode` (0=layer, 1=row), `OverrideTensor`. Все новые поля
+  опциональны — обратная совместимость сохранена.
+- **`cmd/cppworker/types.go`** — добавлена структура `loadWithParamsRequest`
+  со всеми базовыми + расширенными полями. Базовые поля теперь тоже
+  optional-указатели (`*int`/`*string`) — handler трактует `nil` как
+  "использовать default из cppworker flags". Это позволяет клиентам
+  отправлять JSON, в котором нужны **только** переопределяемые параметры.
+- **`cmd/cppworker/handlers_model.go`** — добавлен `handleLoadWithParams`
+  (~150 LOC):
+  - Валидация `method == POST` (405 иначе), парсинг JSON (400 на ошибке).
+  - Проверка `name != ""` (400 на пустом имени).
+  - Резолвинг пути модели (через `backend.GetModel`, `HFDownloader`,
+    glob-паттерны в `modelsDir`).
+  - Защита от race-condition при concurrent load: `TryLockLoad`,
+    `WaitForLoad` (та же логика, что и в `handleLoadModel`).
+  - Построение `LoadModelOpts` с defaults из `cppworker.flags` и
+    переопределениями из JSON.
+  - Вызов `backend.LoadModelWithOpts` + возврат JSON со статусом, моделью,
+    `loadDurationMs`, `appliedOpts` (что реально применилось).
+- **`cmd/cppworker/router.go`** — зарегистрирован route:
+  `mux.HandleFunc("/api/models/load-with-params", handleLoadWithParams)`.
+- **`internal/api/gguf_backend_proxy_handlers.go`** — добавлена документация
+  для нового endpoint'а (generic proxy уже корректно маршрутизирует
+  все пути под `/api/v1/gguf/backends/{id}/proxy/`).
+- **`cmd/cppworker/handlers_model_loadwithparams_test.go`** (новый) —
+  **11 unit-тестов**:
+  - `TestHandleLoadWithParams_MethodNotAllowed` — GET → 405
+  - `TestHandleLoadWithParams_InvalidJSON` — некорректный JSON → 400
+  - `TestHandleLoadWithParams_MissingName` — пустой `name` → 400
+  - `TestHandleLoadWithParams_RequestStructure` — все 15 полей парсятся
+  - `TestHandleLoadWithParams_MinimalRequest_OnlyValidation` — парсинг
+    минимального `{"name": "..."}` без nil-pointer
+  - `TestHandleLoadWithParams_BackwardCompatibility` — старый формат
+    (без расширенных полей) парсится в новой структуре
+  - `TestHandleLoadWithParams_KVCacheTypeValidValues` — 0/1/2
+  - `TestHandleLoadWithParams_SplitModeValidValues` — 0/1
+  - `TestHandleLoadWithParams_NegativeValuesParse` — отрицательные значения
+    парсятся (валидация в runtime, не в parser)
+  - `TestHandleLoadWithParams_EmptyOverrideTensor` — пустая строка
+    парсится в `*string` (handler трактует `*s == ""` как "не задан")
+  - `TestHandleLoadWithParams_EmptyTensorSplit` — пустой slice → nil
+
+**Пример запроса** (прямой к cppworker):
+```bash
+curl -X POST http://localhost:18092/api/models/load-with-params \
+  -H "Content-Type: application/json" \
+  -d '{
+    "name": "gemma-4-E4B-it-Q4_K_M",
+    "contextSize": 32768,
+    "gpuLayers": -2,
+    "kvCacheType": 1,
+    "parallel": 2,
+    "nThreads": 16,
+    "overrideTensor": "blk\\..*\\.ffn_.*_exps=CPU"
+  }'
+```
+
+**Пример через балансировщик** (cluster proxy):
+```bash
+curl -X POST -H "X-API-Token: $LB_TOKEN" -H "Content-Type: application/json" \
+  http://localhost:18081/api/v1/gguf/backends/cppworker-gpu-bundled/proxy/api/models/load-with-params \
+  -d '{"name":"gemma-4-E4B-it-Q4_K_M","contextSize":32768,"gpuLayers":-2,"kvCacheType":1}'
+```
+
+**Acceptance criteria**:
+1. `POST /api/models/load-with-params` возвращает 200 + JSON со статусом
+   и `appliedOpts` при успешной загрузке.
+2. Все 11 unit-тестов проходят (`go test -tags llama_stub -count=1
+   -run "TestHandleLoadWithParams" ./cmd/cppworker/...`).
+3. `go build -tags llama_stub ./cmd/cppworker/ && ./cmd/balancer/` — exit 0.
+4. `go test -tags llama_stub -count=1 ./cmd/cppworker/...` — все тесты
+   зелёные (regression-checked).
+5. `go test -tags llama_stub -count=1 ./internal/...` — все тесты
+   зелёные.
+6. Pre-existing failures в `./tests/...` (PF-3, PF-4, PF-5, PF-6, PF-7)
+   задокументированы в `plans/pre-existing-test-failures.md` и **не
+   связаны** с этим изменением.
+
+### Bugfixes (Session 2 — большая модель на 20GB VRAM + обрыв стрима)
+
+**Issue: «qwen3.6 на 20GB VRAM не влезает, на 8GB — да»** —
+при lazy-загрузке `cppworker` использовал хардкод `estimatedLayers=80` и
+`kvReserve=2GB` для расчёта `gpu_layers`, **но не пересчитывал `n_ctx`**.
+Для больших моделей на средней VRAM (например, qwen3.6 22GB на 20GB
+RTX 4090 / A4500) `weights + KV-cache для n_ctx=32768` не влезают →
+llama.cpp.LoadModel падает с OOM → пользователь видит либо молчаливый
+fallback на `n_ctx=4096`, либо ошибку.
+
+**Решение** — `AutoTuneNCtx` теперь вызывается уже в `ensureModelLoaded`
+ДО `backend.LoadModelWithOpts`, а не только при RAM-fallback reload:
+
+- **`internal/cppbackend/model_manager.go`** — добавлены поля `NLayers/NEmbd/NHeads/NKvHeads`
+  в `GGUFModelMeta`, заполняются **лениво** через `cppbackend.ReadGGUFHeader`
+  (без загрузки модели в llama.cpp) при первом обращении к `GetModelMeta`.
+- **`internal/cppbackend/backend.go`** — публичная `ReadGGUFHeader(path)`
+  обёртка над существующей `readGGUFHeaderInfo` (использует
+  ggufKeyMap для O(1) маппинга ключей на поля).
+- **`cmd/cppworker/lazyload_calc.go`** (новый файл, ~250 LOC) —
+  `calculateLazyLoadOpts(modelName, requestedNCtx, requestedGPULayers, defaults)`
+  с трёхступенчатым каскадом:
+  - Stage 1 (`exact_fit`): все weights + KV-cache влезают в VRAM → opts как есть.
+  - Stage 2 (`partial_offload`): уменьшаем `gpu_layers`, остальные веса через
+    `mmap` в RAM. n_ctx сохраняется.
+  - Stage 3 (`reduced_nctx`): `gpu_layers=0` (CPU-only через mmap) + n_ctx =
+    `maxViableNCtx` (рассчитан по фактическому `kvPerToken = 4 * NLayers *
+    NKvHeads * headDim`).
+- **`cmd/cppworker/lazyload.go`** — вызов `calculateLazyLoadOpts` ДО
+  `LoadModelWithOpts`. Старая эвристика с хардкодами оставлена как
+  fallback (если `autoTuneNCtxOnLoadEnabled=false`).
+- **ENV-флаг `CPPWORKER_AUTO_TUNE_NCTX_ON_LOAD`** (default `true`) —
+  отключает новое поведение для обратной совместимости.
+
+**Issue: «обрыв ответа без каких-либо ошибок»** — после обрыва клиента
+(Cline/OpenWebUI/Roo Code закрыл соединение) cppworker продолжал писать
+в мёртвый socket через `safeFprintf/safeFlush`, получая `broken pipe`
+без логирования. Пользователь видел пустой/обрезанный ответ без
+объяснений.
+
+**Решение** — `safeStreamWriter` + диагностический endpoint:
+
+- **`cmd/cppworker/safe_stream_writer.go`** (новый) — потокобезопасная
+  обёртка с проверкой `ctx.Done()` перед каждой операцией, логированием
+  первого write error и счётчиками bytes_written/write_errors. После
+  первой ошибки writer помечается `broken` и все последующие операции —
+  no-op (без логирования шума в `broken pipe`).
+- **`cmd/cppworker/debug_last_stream.go`** (новый) — `LastStreamInfo`
+  snapshot + endpoint `GET /api/v1/cppworker/debug/last-stream` (с
+  `X-API-Token`). Возвращает JSON с model, handler, tokens_sent,
+  bytes_written, write_errors, duration_ms, disconnected_at, reason
+  (`ctx_done_before_header`/`ctx_done_on_write`/`write_error`),
+  last_write_err.
+- **`cmd/cppworker/handlers_openai.go`** — `writeOpenAIChatStream`
+  переписан на `safeStreamWriter`. Убрана race-prone конструкция
+  `defer close(tokenDone)` (заменена на явный `stopCh` + `sync.WaitGroup`).
+  Теперь первый write error честно логируется с категорией
+  `client disconnected?`.
+- **`cmd/cppworker/router.go`** — endpoint `GET /api/v1/cppworker/debug/last-stream`
+  и `POST .../debug/last-stream/clear` зарегистрированы с `authMiddleware`.
+
+**Тесты** — 17 unit-тестов, все зелёные:
+
+- `cmd/cppworker/lazyload_calc_test.go` (7 тестов):
+  - `TestCalculateLazyLoadOpts_Qwen36_On20GBVRAM` — главный кейс из задачи:
+    `qwen3.6-72B (22GB)` на 20GB VRAM даёт `source=partial_offload,
+    applied_gpu=33 (из 80), n_ctx=32768 сохранён, UseMmap=true`.
+  - `TestCalculateLazyLoadOpts_SmallModel_On8GBVRAM` — gemma-3 4B на 8GB,
+    n_ctx не снижается.
+  - `TestCalculateLazyLoadOpts_FitsExactly` — llama 13B на 20GB с
+    n_ctx=16K, n_ctx не снижается.
+  - `TestCalculateLazyLoadOpts_PartialOffload_30B_On8GB` — большая
+    модель на ограниченной VRAM.
+  - `TestCalculateLazyLoadOpts_AutoTuneFlagDefaultsToTrue` —
+    `autoTuneNCtxOnLoadEnabled=true` по умолчанию.
+  - `TestCalculateLazyLoadOpts_NoGGUFHeader` — fallback при битом
+    GGUF header.
+  - `TestLazyLoadRationale_FormatRationale` — формат для логов.
+- `cmd/cppworker/safe_stream_writer_test.go` (10 тестов): все
+  проверяют безопасность при `ctx.Done()`, write errors, concurrent
+  writes, no-op после broken, и realistic streaming с отменой на 25-м
+  токене из 50.
+
+**Build**: `go build -tags llama_stub -o cppworker-stub.exe ./cmd/cppworker`
+и `go build -tags llama_stub -o balancer-stub.exe ./cmd/balancer` оба
+зелёные.
+
 ## [Unreleased — 2026-06-25]
+
+### Техдолг (Session 3 — R-1: Windows GPU metrics / WMI fallback)
+- **WMI fallback для `getGPUMetrics` на Windows** —
+  ранее `getGPUMetrics` (`internal/agent/system_windows.go`) возвращала
+  пустую `types.GPUMetrics{}` при отсутствии `nvidia-smi`. Теперь реализован
+  двухуровневый fallback:
+  1. **Уровень 1: nvidia-smi** — полные метрики (usage%, VRAM used/free,
+     temperature, power, clocks). Если доступен, используется он.
+  2. **Уровень 2: WMI `Win32_VideoController`** — возвращает хотя бы
+     `MemoryTotal` через поле `AdapterRAM` (в bytes → конвертируется в MB).
+     Используется при отсутствии `nvidia-smi` (напр., в WSL или на сервере
+     без NVIDIA-драйверов).
+  3. **Уровень 3 (fallback)**: пустая структура — если оба источника
+     недоступны.
+- **Платформонезависимый парсер WMI CSV** — `internal/agent/system_wmi_parse.go`:
+  `parseWmiVideoControllerVRAMBytes(csvOutput string) uint64` — извлекает
+  суммарный VRAM всех дискретных GPU из CSV-вывода
+  `wmic path Win32_VideoController get Name,AdapterRAM /format:csv`.
+  Исключает «Basic Display Adapter» (Windows built-in stub) и iGPU с
+  `AdapterRAM = 0`. Поддерживает CRLF/LF, лишние пробелы, malformed-строки
+  (graceful degradation — пропускает строку, а не паникует).
+- **Unit-тесты парсера** — `internal/agent/system_wmi_parse_test.go`:
+  11 кейсов:
+  - `TestParseWmiVideoControllerVRAMBytes_SingleGPU` — один GPU (8 GB).
+  - `TestParseWmiVideoControllerVRAMBytes_MultiGPU` — суммирование
+    нескольких дискретных GPU.
+  - `TestParseWmiVideoControllerVRAMBytes_BasicDisplayExcluded` — RTX + iGPU
+    + Basic Display (исключается только Basic Display).
+  - `TestParseWmiVideoControllerVRAMBytes_OnlyBuiltinGPU` — машина без
+    дискретного GPU возвращает 0.
+  - `TestParseWmiVideoControllerVRAMBytes_EmptyOutput` / `HeaderOnly` —
+    graceful handling пустого вывода.
+  - `TestParseWmiVideoControllerVRAMBytes_MalformedLine` — нечисловой
+    `AdapterRAM` пропускается, остальные GPU суммируются.
+  - `TestParseWmiVideoControllerVRAMBytes_CRLF` — Windows-стиль
+    разделителей строк.
+  - `TestParseWmiVideoControllerVRAMBytes_RealisticSample` — RTX 4090 +
+    RTX A6000 + Intel Arc (24+48+0.125 GB).
+  - `TestParseWmiVideoControllerVRAMBytes_LeadingTrailingWhitespace` —
+    пробелы вокруг значений.
+  - `TestParseWmiVideoControllerVRAMBytes_RealWorldExample` — Windows
+    Server 2022 (Quadro RTX 4000, 8 GB).
+  Все 11/11 PASS (`go test -tags llama_stub -run "TestParseWmiVideoControllerVRAMBytes" -v ./internal/agent/...`).
+- **Build verification**:
+  - `go build -tags llama_stub ./cmd/balancer ./cmd/agent ./cmd/cppworker` — OK.
+  - `go build -tags "llama_stub nvml" ./cmd/agent` — OK (nvml-build с
+    WMI fallback работает).
+  - `GOOS=windows go build -tags llama_stub ./internal/agent` — OK.
+  - `GOOS=windows go vet -tags llama_stub ./internal/agent` — OK.
+  - `GOOS=windows go build -tags "llama_stub nvml" ./internal/agent` — OK.
+  - `go test -tags llama_stub ./internal/agent/...` — 15s PASS.
+- **Ограничения WMI fallback** (документированы в коде):
+  - `AdapterRAM` возвращает 0 для iGPU с разделяемой памятью.
+  - На дискретных GPU обычно показывает полный объём VRAM (RTX 3070 8GB →
+    8192 MB).
+  - `MemoryUsed`/`MemoryFree`/`Temperature`/`PowerUsage`/`Clocks` через WMI
+    `Win32_VideoController` **НЕ доступны** — требуется NVML (Linux) или
+    nvidia-smi (Windows). UI показывает «unknown» / N/A для этих полей.
+
+### Техдолг (Session 2 — PF-1)
+- **Fixed `TestBackendsHandler_Get` (PF-1 #1)** — тест теперь шлёт
+  `?includeUnhealthy=true` и получает `total=2`. По умолчанию `listBackends`
+  фильтрует unhealthy-бэкенды (by design, чтобы WebUI не показывал «мёртвые»
+  ноды), поэтому без явного флага `backend2` (созданный как `StatusUnhealthy`
+  в `createTestServer`) отфильтровывается. Добавлен docstring к тесту,
+  объясняющий почему `includeUnhealthy=true` обязателен. Принимает все формы
+  `?includeUnhealthy=true|1|yes`, используется в monitor/agent endpoints.
+  **Acceptance**: `go test -tags llama_stub ./internal/api -count=1
+  -run "TestBackendsHandler_Get"` — PASS за 0.02s.
+- **Fixed `TestServeHTTP_MixedCluster_RoutingByURLPath` (PF-1 #2)** —
+  реальные вызовы `proxy.ServeHTTP` удалены, так как `setupMixedCluster`
+  использует фиктивные IP `10.0.0.1:11434` и `10.0.1.1:18091`, где никто
+  не слушает. TCP-connect вызывал блокировку на `Balancing.RequestTimeout=30s`,
+  а Go testing framework `-timeout 60s` срабатывал раньше как `panic: test
+  timed out`. Оставлена только проверка routing-логики через
+  `DetermineRequestBackendTypeForTest` (это и есть суть теста). Полная
+  end-to-end проверка сохранена в отдельных тестах
+  `TestServeHTTP_OllamaRequest_RoutedToOllamaBackend` и
+  `TestServeHTTP_LlamaCppRequest_RoutedToLlamaCppBackend`, которые используют
+  `httptest.NewServer` с фиктивными бэкендами. **Acceptance**: `go test
+  -tags llama_stub ./tests -count=1 -timeout 30s -run
+  "TestServeHTTP_MixedCluster_RoutingByURLPath"` — PASS за 0.00s (вместо
+  panic timeout 60s).
+- **Обнаружены дополнительные pre-existing failures (PF-3, PF-4)**, не
+  относящиеся к PF-1, но мешающие зелёному CI:
+  - `TestDefaultConfig` (`tests/cppbackend_test.go:39`) — устаревший тест
+    ожидает `ctx_size = 4096`, а реальный default уже 32768. Требует
+    обновления expected value.
+  - `TestOpenAIChat_SlowFirstToken_HoldsConnection`
+    (`tests/first_byte_timeout_test.go:114`) — flaky test,
+    `httptest.Server.Close()` зависает на `WaitGroup`. Требует
+    `srv.CloseClientConnections()` перед `srv.Close()`.
+  Подробности в `plans/pre-existing-test-failures.md` (секция «Обнаруженные
+  pre-existing failures»).
+
+### Техдолг (Session 1 — A-1, A-2, A-3)
+- **Удалён backwards-compat alias `applyCppCtxHeader` в `cmd/cppworker/handlers_openai.go`.**
+  Все 5 вызовов в `handlers_openai.go` (2 шт.), `handlers_chat.go` (1 шт.) и
+  `handlers_generate.go` (1 шт.) переведены на каноничный `ApplyCppCtxHeader`
+  из `cmd/cppworker/nctx_clamp.go`. Удалена сама функция-псевдоним и комментарий
+  TODO «refactoring». При поиске по `applyCppCtxHeader` остаются только
+  сообщения логов (строки), но не вызовы. Build `go build -tags llama_stub ./cmd/cppworker`
+  и `go test ./cmd/cppworker` зелёные.
+- **Добавлено поле `RequestID string` с тегом `json:"request_id,omitempty"` в `types.BackendMetrics`**
+  (`pkg/types/metrics.go`). Убран TODO в `internal/balancer/nctx_reload.go:BackendMetricsFromState`;
+  функция теперь возвращает валидный `*types.BackendMetrics` с заполненными
+  `ID`, `Timestamp` и пустым `WarmingUpModels` (nil-safe на nil-координаторе).
+  Поле `RequestID` остаётся пустым в snapshot'е координатора — источник request_id
+  это HTTP-middleware, а не координатор; заполнение ожидается в cluster-state
+  aggregator (см. `internal/api/handlers_metrics.go`).
+- **Убран TODO в `internal/balancer/model_management.go:ExecuteOperation`** про
+  прокидывание `request_id` в лог операций с моделью. Теперь используется
+  `ridLog(lr_recentCtx())` для обогащения log-записи `executing model operation`
+  полем `request_id` (если контекст был положен HTTP-middleware). Удалён мёртвый
+  `_ = logFn`. Behavior совместим: если `lr_recentCtx()` возвращает пустой ctx —
+  `ridLog()` возвращает обычный logger без полей (как было).
 
 ### Исправлено
 - **EOF при n_ctx auto-reload для Cline/OpenWebUI с n_ctx=65536 на gemma-4 8B (8GB VRAM + 25GB RAM)**

@@ -819,6 +819,10 @@ const Renderers = (function () {
 
         Utils.setHTML('backendLoadList', backendLoad(backends));
         Utils.setHTML('modelsGrid', modelsGrid(allModels, backendMap));
+        // Применяем текущую сортировку (если в UI активна) сразу после рендера
+        if (window.ui && typeof window.ui.applyModelsSort === 'function') {
+            try { window.ui.applyModelsSort(); } catch (e) { /* ignore */ }
+        }
     }
 
     function backendLoad(backends) {
@@ -914,9 +918,11 @@ const Renderers = (function () {
 
             const safeBackend = escapeHtml(m.backend);
             const safeName = escapeHtml(m.name).replace(/'/g, "\\'");
+            const backendType = Utils.getBackendType(backend) || (m.backendType || '');
+            const sizeBytes = m.size || 0;
             
             return `
-                <div class="model-card" data-backend="${safeBackend}" data-model="${safeName}">
+                <div class="model-card" data-backend="${safeBackend}" data-model="${safeName}" data-model-name="${escapeHtml(m.name).toLowerCase()}" data-backend-type="${escapeHtml(backendType)}" data-size-bytes="${sizeBytes}">
                     <div class="model-card-header">
                         <span class="model-name">${escapeHtml(m.name)}</span>
                         ${getBackendTypeBadge(backend)} ${badge(m.backend, m.backendStatus === 'healthy' ? 'success' : 'danger')}

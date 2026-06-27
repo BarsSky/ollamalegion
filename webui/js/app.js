@@ -479,6 +479,28 @@ const ui = (function () {
             }, 150));
         }
 
+        // Models backend-type filter (🦙/🦒/All)
+        var modelsTypeFilter = document.getElementById('modelsTypeFilter');
+        if (modelsTypeFilter) {
+            var filterButtons = modelsTypeFilter.querySelectorAll('.filter-btn');
+            filterButtons.forEach(function(btn) {
+                btn.addEventListener('click', function() {
+                    filterButtons.forEach(function(b) { b.classList.remove('active'); });
+                    btn.classList.add('active');
+                    var currentSearch = modelsSearch ? modelsSearch.value : '';
+                    filterModels(currentSearch);
+                });
+            });
+        }
+
+        // Models sort dropdown
+        var modelsSortBy = document.getElementById('modelsSortBy');
+        if (modelsSortBy) {
+            modelsSortBy.addEventListener('change', function() {
+                applyModelsSort();
+            });
+        }
+
         // Models refresh button
         var refreshModelsBtn = document.getElementById('refreshModelsBtn');
         if (refreshModelsBtn) {
@@ -1465,10 +1487,100 @@ const ui = (function () {
 
     function filterModels(query) {
         const cards = document.querySelectorAll('#modelsGrid .model-card');
-        const lower = query.toLowerCase();
-        cards.forEach(card => {
-            card.style.display = card.textContent.toLowerCase().includes(lower) ? '' : 'none';
+        const lower = (query || '').toLowerCase();
+
+        // Текущий выбранный тип бэкенда
+        var activeTypeBtn = document.querySelector('#modelsTypeFilter .filter-btn.active');
+        var activeType = activeTypeBtn ? activeTypeBtn.dataset.filterType : 'all';
+
+        var visibleCount = 0;
+        cards.forEach(function (card) {
+            var text = card.textContent.toLowerCase();
+            var matchQuery = !lower || text.indexOf(lower) !== -1;
+
+            // Определяем тип бэкенда по data-атрибуту карточки или по badge
+            var cardType = card.dataset.backendType || card.getAttribute('data-backend-type') || '';
+            if (!cardType) {
+                // Fallback: ищем в badge тексте 🦙 Ollama / 🦒 llama.cpp
+                if (text.indexOf('🦙 ollama') !== -1) cardType = 'ollama';
+                else if (text.indexOf('🦒 llama.cpp') !== -1) cardType = 'llama_cpp';
+            }
+            var matchType = (activeType === 'all') || (cardType === activeType);
+
+            var show = matchQuery && matchType;
+            card.style.display = show ? '' : 'none';
+            if (show) visibleCount++;
         });
+
+        // Показываем/скрываем empty-state
+        var empty = document.getElementById('modelsEmpty');
+        if (empty) {
+            if (cards.length > 0 && visibleCount === 0) {
+                empty.hidden = false;
+            } else {
+                empty.hidden = true;
+            }
+        }
+    }
+
+    /**
+     * Применить сортировку карточек моделей в соответствии с #modelsSortBy.
+     * Поддерживает: name-asc, name-desc, size-desc, size-asc, backend-asc.
+     * Карточки сортируются in-place через appendChild (DOM reordering).
+     */
+    function applyModelsSort() {
+        var grid = document.getElementById('modelsGrid');
+        if (!grid) return;
+        var sortSelect = document.getElementById('modelsSortBy');
+        if (!sortSelect) return;
+        var sortKey = sortSelect.value || 'name-asc';
+
+        var cards = Array.prototype.slice.call(grid.querySelectorAll('.model-card'));
+        if (cards.length === 0) return;
+
+        function getName(card) {
+            return (card.dataset.modelName || card.querySelector('.model-card-title')?.textContent || '').trim().toLowerCase();
+        }
+        function getSize(card) {
+            // Размер в байтах из data-size-bytes, иначе парсим текст
+            var v = card.dataset.sizeBytes;
+            if (v) return parseInt(v, 10) || 0;
+            var t = card.textContent || '';
+            var m = t.match(/([\d.]+)\s*(GB|MB|KB|B)\b/i);
+            if (!m) return 0;
+            var n = parseFloat(m[1]) || 0;
+            var u = m[2].toUpperCase();
+            if (u === 'GB') return n * 1024 * 1024 * 1024;
+            if (u === 'MB') return n * 1024 * 1024;
+            if (u === 'KB') return n * 1024;
+            return n;
+        }
+        function getBackend(card) {
+            return (card.dataset.backendId || card.dataset.backend || '').toLowerCase();
+        }
+
+        cards.sort(function (a, b) {
+            switch (sortKey) {
+                case 'name-desc':
+                    return getName(b).localeCompare(getName(a));
+                case 'size-desc':
+                    return getSize(b) - getSize(a);
+                case 'size-asc':
+                    return getSize(a) - getSize(b);
+                case 'backend-asc':
+                    var ba = getBackend(a), bb = getBackend(b);
+                    if (ba !== bb) return ba.localeCompare(bb);
+                    return getName(a).localeCompare(getName(b));
+                case 'name-asc':
+                default:
+                    return getName(a).localeCompare(getName(b));
+            }
+        });
+
+        // Перемещаем карточки в DOM в новом порядке
+        var fragment = document.createDocumentFragment();
+        cards.forEach(function (c) { fragment.appendChild(c); });
+        grid.appendChild(fragment);
     }
 
     // ---- UI Utilities ----
@@ -1944,7 +2056,10 @@ const ui = (function () {
         showAgentDetails,
         fetchAgents,
         restartAgent,
-        viewAgentLogs
+        viewAgentLogs,
+        // Models tab UI helpers (Roadmap Q3 W3-4: Filter/Search)
+        filterModels,
+        applyModelsSort
     };
 
 })();

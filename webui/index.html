@@ -298,12 +298,30 @@
                         <h3><i class="fas fa-brain section-icon-i"></i> <span data-i18n="models.loaded">Загруженные модели</span></h3>
                         <div class="card-actions">
                             <input type="text" class="search-input" id="modelsSearch" placeholder="Поиск модели..." data-i18n-placeholder="models.search_placeholder">
+                            <div class="filter-group" id="modelsTypeFilter" role="group" aria-label="Фильтр по типу бэкенда">
+                                <button type="button" class="filter-btn active" data-filter-type="all" data-i18n-title="models.filter_all_title" title="Все типы">🌐 <span data-i18n="models.filter_all">Все</span></button>
+                                <button type="button" class="filter-btn" data-filter-type="ollama" data-i18n-title="models.filter_ollama_title" title="Только Ollama">🦙 <span data-i18n="models.filter_ollama">Ollama</span></button>
+                                <button type="button" class="filter-btn" data-filter-type="llama_cpp" data-i18n-title="models.filter_llamacpp_title" title="Только llama.cpp">🦒 <span data-i18n="models.filter_llamacpp">llama.cpp</span></button>
+                            </div>
+                            <label class="sort-label" for="modelsSortBy">
+                                <span data-i18n="models.sort_by">Сортировка:</span>
+                            </label>
+                            <select class="sort-select" id="modelsSortBy">
+                                <option value="name-asc" data-i18n="models.sort_name_asc">Имя (А-Я)</option>
+                                <option value="name-desc" data-i18n="models.sort_name_desc">Имя (Я-А)</option>
+                                <option value="size-desc" data-i18n="models.sort_size_desc">Размер (больше)</option>
+                                <option value="size-asc" data-i18n="models.sort_size_asc">Размер (меньше)</option>
+                                <option value="backend-asc" data-i18n="models.sort_backend_asc">Бэкенд (А-Я)</option>
+                            </select>
                             <button class="btn btn-secondary" id="refreshModelsBtn" data-i18n="common.retry">Обновить</button>
                             <button class="btn btn-primary" id="modelsManageBtn" data-i18n="models.manage_title">Управление моделями</button>
                         </div>
                     </div>
                     <div class="models-grid" id="modelsGrid">
                         <div class="loading" data-i18n="common.loading">Загрузка...</div>
+                    </div>
+                    <div class="models-empty" id="modelsEmpty" hidden>
+                        <p data-i18n="models.empty_filtered">Нет моделей, удовлетворяющих фильтру.</p>
                     </div>
                 </div>
             </div>

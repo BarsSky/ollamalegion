@@ -694,6 +694,21 @@ window.I18N_RU = {
   "models.parameter_size": "Параметры",
   "models.digest": "Digest",
 
+  // Filter & Sort (Models tab gaps)
+  "models.filter_all": "Все",
+  "models.filter_ollama": "Ollama",
+  "models.filter_llamacpp": "llama.cpp",
+  "models.filter_all_title": "Все типы бэкендов",
+  "models.filter_ollama_title": "Только Ollama",
+  "models.filter_llamacpp_title": "Только llama.cpp",
+  "models.sort_by": "Сортировка:",
+  "models.sort_name_asc": "Имя (А-Я)",
+  "models.sort_name_desc": "Имя (Я-А)",
+  "models.sort_size_desc": "Размер (больше → меньше)",
+  "models.sort_size_asc": "Размер (меньше → больше)",
+  "models.sort_backend_asc": "Бэкенд",
+  "models.empty_filtered": "Нет моделей, соответствующих фильтру. Попробуйте изменить тип бэкенда или очистить поиск.",
+
   // Virtual Models
   "vm.title": "🧩 Виртуальные модели",
   "vm.name": "Имя",

@@ -27,12 +27,25 @@
 
 ### 1.1 R-5 — `cocoindex.js` для llama_cpp (P2, 2–3 ч)
 
-**Файл:** `webui/js/modules/cocoindex.js`
-**Что:** сейчас модуль работает только с Ollama API. Нужно добавить llama_cpp-режим (через `/api/tags` или `/api/show` cppworker'а + OpenAI-совместимый `/v1/embeddings`).
-**Acceptance:**
-- При выборе backend type = llama_cpp WebUI показывает список моделей из cppworker (`GET /api/tags` через balancer).
-- Кнопка «Embeddings» в cocoindex вызывает `/v1/embeddings` на балансировщике.
-- 3 unit-теста на mock httptest-сервере (ollama mode, llamacpp mode, fallback).
+> **⚠️ NOT APPLICABLE — отложено** (Session 13, 2026-06-27):
+> файл `webui/js/modules/cocoindex.js` **физически отсутствует** в проекте —
+> не существует в git, нет упоминаний в `webui/index.html` или других модулях.
+> Термин «cocoindex» в проекте относится к **серверному MCP-сервису**
+> (`deployments/docker-compose.cocoindex.yml`, образ `cocoindex/cocoindex-code`),
+> а не к WebUI-модулю. Embeddings-функционал уже покрыт через OpenAI-совместимый
+> `/v1/embeddings` endpoint в cppworker (`cmd/cppworker/handlers_embeddings.go`)
+> и балансировщик (`internal/balancer/llamacpp_handlers_inference.go`).
+> Задача закрыта как not-applicable — другие методы работы (прямой embeddings
+> через балансировщик + cocoindex MCP-сервис для code-search) уже настроены.
+>
+> Оригинальное описание roadmap (оставлено для истории):
+> **Файл:** `webui/js/modules/cocoindex.js`
+> **Что:** сейчас модуль работает только с Ollama API. Нужно добавить llama_cpp-режим
+> (через `/api/tags` или `/api/show` cppworker'а + OpenAI-совместимый `/v1/embeddings`).
+> **Acceptance:**
+> - При выборе backend type = llama_cpp WebUI показывает список моделей из cppworker (`GET /api/tags` через balancer).
+> - Кнопка «Embeddings» в cocoindex вызывает `/v1/embeddings` на балансировщике.
+> - 3 unit-теста на mock httptest-сервере (ollama mode, llamacpp mode, fallback).
 
 ### 1.2 PF-5 — `TestOpenAIChat_HeaderTimeout_StillWorks` (P2, 1–2 ч)
 
@@ -75,6 +88,17 @@
 | **Sort** — по имени / размеру / дате создания | `webui/js/modules/renderers.js` | 1 ч |
 | **Pull progress UI** — для `hf:` моделей показывать progress bar (download/total bytes, ETA) | `webui/js/modules/renderers.js`, `webui/js/modules/api.js` | 4–6 ч |
 | **Model profiles UI** — визуальный редактор per-model profiles (n_ctx, gpu_layers, parallel, kv_cache_type) | `webui/js/modules/cppworker-params.js`, новый `model-profiles.html` | 6–8 ч |
+
+  **Статус (после Session 15, commit `da852f7` 2026-06-27):** UI wizard реализован
+  с полной поддержкой 11 полей `types.LlamaCppModelProfile` (ContextLength, BatchSize,
+  NumGPULayers, FlashAttn, NUMA, UseMmap, Notes, + 4 per-model таймаута).
+  Все 5 backend endpoints (`list`/`get`/`upsert`/`remove`/`apply`) вызываются через
+  `Api.cppworkerModelProfiles` namespace. i18n парные ключи (40 EN = 40 RU).
+  Поля **`parallel`** (n_parallel, число параллельных запросов) и **`kv_cache_type`**
+  (тип квантизации KV-cache: F16/Q8_0/Q4_0) из roadmap **НЕ добавлены** — backend
+  API их пока не поддерживает. См. **Session 16 — Per-Model Profiles: backend
+  extension** ниже.
+
 | **Loaded models counter в Dashboard** — сколько моделей загружено всего / per backend | `webui/js/modules/renderers.js` | 1 ч |
 
 **Итого:** 19–25 ч реальной работы. Можно разбить на 2–3 сессии (P2, низкий приоритет, но сильно улучшает UX).
@@ -82,6 +106,105 @@
 ---
 
 ## 3. Долгосрочные архитектурные задачи (post-1.0)
+
+### 3.0 Session 16 — Per-Model Profiles: backend extension (`parallel` + `kv_cache_type`) (3–5 ч)
+
+**Контекст:** Session 15 (commit `da852f7`, 2026-06-27) реализовал UI wizard для per-model profiles
+с полной поддержкой 11 полей `types.LlamaCppModelProfile`. Roadmap 2.2 line 90 указывает ещё 2 поля:
+- **`parallel`** (n_parallel) — число параллельных слотов для одновременной обработки нескольких запросов
+  к одной модели. Полезно для multi-user throughput: один экземпляр модели обслуживает N
+  параллельных запросов без необходимости реплицировать модель на N бэкендов.
+- **`kv_cache_type`** — тип квантизации KV-cache (F16 / Q8_0 / Q4_0). Q8_0 экономит ~50% VRAM
+  на KV-cache (выигрыш на длинных контекстах для моделей с gemma-4 256K), Q4_0 — ~75%.
+  Trade-off: лёгкая деградация качества (perplexity increase ~1-2%).
+
+**Что нужно сделать**:
+
+#### Часть A — Backend (Session 16, server-side, ~2-3 ч)
+
+1. **`pkg/types/balancing.go`** — расширить `LlamaCppModelProfile`:
+   ```go
+   Parallel     int    `json:"parallel,omitempty"`     // 0 = default cppworker, 1..8 = parallel slots
+   KVCacheType  string `json:"kvCacheType,omitempty"`  // "" = inherit, "f16"/"q8_0"/"q4_0" = override
+   ```
+   Документировать trade-off Q4_0 (max savings, 1-2% perplexity hit) vs Q8_0 (balanced).
+
+2. **`internal/api/handlers_cppworker_profiles.go`** — расширить `validateModelProfile`:
+   - `parallel ∈ [0, 8]` (cppworker не поддерживает > 8 параллельных слотов).
+   - `kvCacheType ∈ {"", "f16", "q8_0", "q4_0"}`.
+
+3. **`internal/api/handlers_cppworker_profiles.go:reloadModelOnCppWorker`** —
+   прокинуть новые поля в `POST /api/models/reload` body:
+   ```go
+   body["parallel"] = profile.Parallel
+   if profile.KVCacheType != "" {
+       body["kvCacheType"] = profile.KVCacheType
+   }
+   ```
+
+4. **`internal/cppbackend/backend.go`** — `LoadModelOpts` расширить полями
+   `Parallel *int` (nil = inherit), `KVCacheType *string` (nil = inherit).
+   Валидация на backend стороне: `parallel >= 1`, `kv_cache_type ∈ {f16, q8_0, q4_0}`.
+
+5. **`cmd/cppworker/handlers_model.go`** — `handleLoadModel` и
+   `handleLoadWithParams` (`handlers_model_loadwithparams.go`) принимают новые поля,
+   маппят на `LoadModelOpts`.
+
+6. **`cmd/cppworker/inference.go` + `cmd/cppworker/lazyload.go`** — прокинуть
+   `Parallel` в `bridge.GenerationParams.Parallel`, `KVCacheType` в `params.TypeK` / `TypeV`.
+
+7. **`c/bridge/bridge.go`** — расширить `GenerationParams`:
+   ```go
+   Parallel    int32
+   KVCacheType int32  // 0=f16, 1=q8_0, 2=q4_0
+   ```
+   + `bridge_set_parallel(model, n)` и `bridge_set_kv_cache_type(model, type)`
+   в `bridge.c` через llama.cpp `llama_set_n_parallel()` / `llama_set_tensor_params()`.
+
+8. **Тесты**: `internal/api/handlers_cppworker_profiles_test.go` — 4 новых кейса
+   (`TestValidateModelProfile_ParallelBounds`, `TestValidateModelProfile_KVCacheTypeValid`,
+   `TestMergeModelProfile_PartialUpdate_Parallel`, `TestMergeModelProfile_PartialUpdate_KVCacheType`).
+
+#### Часть B — WebUI extension (Session 16, ~1-2 ч)
+
+UI wizard (`webui/js/modules/cppworker-params.js`) уже расширяется по тому же шаблону,
+что и advanced секция в Session 15:
+
+1. **В advanced секции** добавить 2 новых поля:
+   - `parallel` (number, 0-8, default 0 = inherit) — с tooltip
+     «Number of parallel slots for concurrent requests. 0 = use cppworker default.
+     Trade-off: each slot consumes additional KV-cache memory (n_parallel × KV-cache per slot).
+     Useful for multi-user throughput without model replication.»
+   - `kvCacheType` (select `inherit/f16/q8_0/q4_0`, default `inherit`) — с tooltip
+     «KV-cache quantization. f16 = default (full precision).
+     q8_0 = -50% VRAM (recommended, minimal perplexity hit).
+     q4_0 = -75% VRAM (1-2% perplexity hit, use for very long contexts).»
+
+2. **`profileToWizardState` / `wizardStateToProfileBody`** — расширить аналогично
+   `flashAttn` (3-state для bool + новое поле для select с тем же inherit-pattern).
+
+3. **i18n** — 4 новых ключа в en.js + ru.js:
+   `settings.profiles.parallel`, `settings.profiles.parallel_help`,
+   `settings.profiles.kv_cache_type`, `settings.profiles.kv_cache_type_help`.
+
+4. **CSS** — без новых классов, переиспользуется `.wizard-field` + `<select>` из Session 15.
+
+5. **Meta-строка списка** — добавить `[parallel=2 · kv=q8_0]` если заданы.
+
+#### Acceptance criteria
+
+1. Backend принимает и валидирует `parallel` ∈ [0, 8] и `kvCacheType ∈ {"", "f16", "q8_0", "q4_0"}`.
+2. `POST /api/v1/cppworker/model-profiles/{name}` с `{"parallel": 2, "kvCacheType": "q8_0"}`
+   возвращает 200 с профилем.
+3. `POST /api/v1/cppworker/model-profiles/{name}/apply` перезагружает модель
+   с заданными parallel и kv_cache_type (cppworker logs показывают применение).
+4. UI wizard показывает 2 новых поля в advanced секции с правильными значениями
+   при edit и валидацией на save.
+5. `parallel=2, kv_cache_type=q8_0` → gemma-4 8B с n_ctx=65536 экономит ~3.5 GB VRAM
+   на KV-cache (было 7 GB → 3.5 GB при Q8_0) и обслуживает 2 параллельных запроса.
+6. Build OK: `go build -tags llama_stub ./cmd/cppworker/ && ./cmd/balancer/`.
+7. Все тесты профилей зелёные (10+4 = 14 кейсов).
+8. CHANGELOG подсекция `### Added (Session 16 — Per-Model Profiles: parallel + kv_cache_type)`.
 
 ### 3.1 B8.7 — Real ggml/NCCL integration в `TPRuntime` (10–15 дней)
 
@@ -224,8 +347,9 @@
 
 ### Месяц 1 (июль 2026) — закрытие долгов + UX
 
-1. **Week 1**: PF-5, PF-6, PF-7 (фикс pre-existing failures) — 5–7 ч.
-2. **Week 2**: R-5 (cocoindex llama_cpp) — 2–3 ч.
+1. **Week 1**: PF-5, PF-6, PF-7 (фикс pre-existing failures) — ✅ DONE Session 13.
+2. **Week 2**: ~~R-5 (cocoindex llama_cpp)~~ — ⏭️ SKIPPED (см. секцию 1.1, not-applicable).
+   Переходим к **Models tab** (раздел 2).
 3. **Week 3–4**: Models tab — Model details + Bulk operations + Filter/Search — 10–15 ч.
 4. **Параллельно**: CI (7.1) + coverage badges (7.4) — 1 день.
 
@@ -255,10 +379,10 @@
 
 | Приоритет | Что | Почему |
 |---|---|---|
-| 🔴 P0 | PF-5/6/7, R-5 | Стабильность + завершение roadmap R-1…R-7 |
-| 🟡 P1 | rpc_coordinator production, Models tab gaps | Переход от прототипа к production |
+| 🔴 P0 | PF-5/6/7 ✅ DONE Session 13 | Стабильность + завершение roadmap R-1…R-7 |
+| 🟡 P1 | Models tab gaps, rpc_coordinator production | Переход от прототипа к production |
 | 🟢 P2 | UI/UX, observability, continuous batching | UX + production-ready quality |
-| ⚪ P3 | B8.7 real ggml, EP, disaggregated | Research / post-1.0 features |
+| ⚪ P3 | B8.7 real ggml, EP, disaggregated, R-5 (cocoindex) | Research / post-1.0 features |
 
 ---
 

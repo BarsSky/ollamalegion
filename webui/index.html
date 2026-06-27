@@ -1258,6 +1258,10 @@
                     <div class="model-manage-section-title">
                         <i class="fas fa-spinner"></i>
                         <span data-i18n="models.operations_active">Активные операции</span>
+                        <span class="model-ops-auto-refresh" id="modelOpsAutoRefresh" hidden>
+                            <i class="fas fa-circle-notch fa-spin"></i>
+                            <span data-i18n="models.auto_refresh_on">Авто-обновление</span>
+                        </span>
                     </div>
                     <div class="table-responsive">
                         <table class="data-table" id="modelOpsTable">
@@ -1267,11 +1271,13 @@
                                     <th data-i18n="models.model_name">Модель</th>
                                     <th data-i18n="models.backend">Бэкенд</th>
                                     <th data-i18n="models.started">Начало</th>
+                                    <th data-i18n="models.progress">Прогресс</th>
                                     <th data-i18n="models.status">Статус</th>
+                                    <th data-i18n="backends.actions">Действия</th>
                                 </tr>
                             </thead>
                             <tbody id="modelOpsBody">
-                                <tr><td colspan="5" class="loading-cell" data-i18n="models.no_active_ops">Нет активных операций</td></tr>
+                                <tr><td colspan="7" class="loading-cell" data-i18n="models.no_active_ops">Нет активных операций</td></tr>
                             </tbody>
                         </table>
                     </div>

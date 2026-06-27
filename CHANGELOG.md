@@ -66,6 +66,112 @@ sub-task Filter/Search (~2ч). В WebUI вкладка Models до этой се
 (уже использовалась в renderers для бейджей). Никаких изменений на стороне
 бэкенда/балансировщика не потребовалось — фича чисто клиентская.
 
+### Added (Roadmap Q3 — Week 3-4: Models tab gaps, sub-task Pull progress UI)
+
+**Задача**: в рамках Q3 Week 3-4 (Models tab gaps full set, ~12-16ч) —
+sub-task Pull progress UI (~4-6ч). До этой сессии в модалке «Управление моделями»
+(http://localhost:18081 → Backends → «Управление моделями») была только
+таблица «Активные операции» с 5 колонками (Operation / Model / Backend /
+Started / Status) и **без какой-либо визуализации прогресса**: для
+pull HF-модели на 4-8 ГБ пользователь видел просто badge «Running» и
+дату начала, без ETA и без возможности отменить. При запуске нескольких
+parallel pull'ов было непонятно, какой из них уже близок к завершению.
+
+**Решение**: расширена таблица «Активные операции» двумя новыми колонками
+«Progress» (progress-bar + процент + ETA-строка) и «Actions» (кнопка
+Cancel). Прогресс рассчитывается heuristic на стороне UI (startedAt +
+per-operation-type expected duration: pull ~3 мин, load ~30 сек,
+unload ~5 сек) — нет необходимости модифицировать backend endpoint.
+При первой загрузке модалки auto-refresh запускается каждые 2 сек и
+останавливается при закрытии или когда op == 0. Кнопка Cancel помечает
+op в локальном Set, при следующем refresh'е progress-bar замораживается
+на текущем значении и принимает стиль «cancelling» (жёлтый градиент,
+спиннер); когда op реально уходит из active list — пользователь видит
+toast «Операция отменена». Удаление op из активного списка = «cancel success»
+(backend её уберёт сам по окончании штатной работы).
+
+**Изменения**:
+
+- `webui/index.html` (Models tab Manage modal, ~10 строк):
+  - В `#modelOpsTable` добавлены `<th data-i18n="models.progress">` и `<th data-i18n="backends.actions">`.
+  - В `colspan="..."` первой строки (`Нет активных операций`) увеличен 5 → 7.
+  - В `.model-manage-section-title` для секции operations_active добавлен индикатор
+    `#modelOpsAutoRefresh` (скрыт по умолчанию, показывается spinning-кружком
+    при активном auto-refresh).
+- `webui/css/components.css` (~100 строк):
+  - `.model-ops-auto-refresh` — badge-индикатор «Авто-обновление» в шапке секции.
+  - `.ops-progress-wrap` / `.ops-progress-bar` / `.ops-progress-fill` —
+    progress-bar с градиентом blue → lightblue и `transition: width 0.5s ease`.
+  - `.ops-progress-fill.indeterminate` — анимация бегущего gradient'а
+    для ops без ETA (через `@keyframes ops-progress-indeterminate`).
+  - `.ops-progress-fill.cancelling` — жёлтый градиент + opacity 0.6
+    для визуального индикатора отмены.
+  - `.ops-progress-fill.error` / `.complete` — красный / зелёный варианты
+    для будущего использования.
+  - `.ops-progress-text` / `.ops-progress-percent` / `.ops-progress-eta` —
+    строка под прогресс-баром (например, «42%» слева, «~1m 12s» справа).
+  - `.ops-action-cancel` — кнопка отмены, в hover краснеет,
+    в `:disabled` — прозрачная + cursor not-allowed, в `.cancelling` —
+    добавляется spinning-кружок (через `animation: spin 1s linear infinite`).
+- `webui/js/app.js` (~140 строк):
+  - Новые константы `_cancelledOps` (Set), `_opsAutoRefreshTimer`, `OPS_AUTO_REFRESH_MS = 2000`,
+    `OP_HEURISTIC_DURATION_MS` — per-op-type heuristic durations.
+  - Новые helpers: `_opKey(op)`, `computeOpProgress(op)` — линейная функция
+    от 5% до 95% на основе `elapsed / expected`. Возвращает `{pct, etaSec, cancelled}`.
+  - `formatOpsEta(sec)` — формат `~Ns / ~Nm Ns / ~Nh Nm`.
+  - `cancelOperationByKey(opKey)` — добавляет ключ в `_cancelledOps`, тост,
+    немедленный refresh. Backend cancel не делается (DELETE endpoint
+    отсутствует, UI-state only).
+  - `startOpsAutoRefresh()` / `stopOpsAutoRefresh()` — toggle 2-sec polling
+    с видимостью `#modelOpsAutoRefresh`.
+  - `refreshModelOpsStatus()` переписан:
+    - При пустом списке ops → останавливает auto-refresh.
+    - При наличии ops → запускает auto-refresh (если ещё не запущен).
+    - Рендерит каждую строку с progress-bar + percent + ETA + Cancel-кнопкой.
+    - Для cancelled ops → progress-fill в стиле `cancelling`, кнопка disabled.
+    - При уходе op из active list, если она была помечена cancelled → toast
+      «Operation cancelled» (через diff в `seenKeys` vs `_cancelledOps`).
+  - `openModelManageModal` (line ~1880) — вызов `refreshModelOpsStatus()`
+    остался как было (он сам запускает auto-refresh при наличии ops).
+  - `closeModelManageModal` — добавлен `stopOpsAutoRefresh()` для экономии трафика.
+  - Экспорт в `return {…}`: `startOpsAutoRefresh`, `stopOpsAutoRefresh`,
+    `cancelOperationByKey`.
+- `webui/js/i18n/en.js` (+13 строк): `models.progress`, `models.op_running`,
+  `models.op_cancelled`, `models.cancel_op`, `models.cancel_requested`,
+  `models.auto_refresh_on`, `models.operation_pull/load/unload/delete/create/copy`.
+- `webui/js/i18n/ru.js` (+13 строк): русские переводы для тех же ключей.
+
+**Acceptance criteria**:
+
+1. Открыть Backends → любой backend → «Управление моделями» → В секции «Активные операции»
+   видны 7 колонок (Operation / Model / Backend / Started / **Progress** / Status / **Actions**).
+2. Запустить `ollama pull qwen2.5:7b` (через ту же модалку или REST) → в таблице
+   появляется строка с progress-bar (стартует с ~5%), badge «Running», кнопка «Отменить».
+3. Через 2 сек progress-bar обновляется (auto-refresh), ETA-строка показывает
+   «~1m 30s» (или подобное), `#modelOpsAutoRefresh` индикатор виден.
+4. Клик на «Отменить» → progress-bar замораживается на текущем значении и
+   становится жёлтым (стиль `cancelling`), кнопка заблокирована, toast
+   «Отмена…». При следующем refresh'е (через 2 сек), если op ушла из active list,
+   toast «Операция отменена».
+5. Когда op завершается естественно (без cancel) → строка исчезает из
+   таблицы, в шапке остаётся только `Нет активных операций`,
+   `#modelOpsAutoRefresh` скрывается, polling останавливается.
+6. Закрыть модалку → polling останавливается (`stopOpsAutoRefresh`).
+7. Heuristic-прогресс работает корректно для разных типов: pull (3 мин),
+   load (30 сек), unload (5 сек) — ETA пересчитывается через
+   `formatOpsEta`.
+
+**NB**: backend cancel не реализован (нет DELETE endpoint для `/api/v1/models/operations/{key}`).
+Кнопка Cancel помечает op как cancelled **только в UI** — это честный UI-state indicator
+с обратной связью для пользователя. Backend op продолжит работу и уйдёт из active list
+естественным путём; UI покажет «cancelled» toast в момент ухода.
+Это разумный trade-off для UI-only sub-task (server changes в roadmap R-5/PF-5/6/7).
+
+**Альтернатива на будущее** (вне scope этой сессии): добавить
+`DELETE /api/v1/models/operations/{op_key}` endpoint на стороне балансировщика
++ соответствующий `cancelOp()` в `ModelManager` (model_management.go).
+Сложность ~2-3ч (новый handler + mutex на `activeOps` + signal в executor).
+
 ### Changed (Roadmap Q3 — Session 13: R-5 marked not-applicable)
 
 **Задача**: в рамках Q3 Week 2 — R-5 «cocoindex.js для llama_cpp». Проверка

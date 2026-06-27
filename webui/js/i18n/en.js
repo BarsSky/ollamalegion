@@ -661,6 +661,20 @@ window.I18N_EN = {
   "models.sort_backend_asc": "Backend (A–Z)",
   "models.empty_filtered": "No models match the current filter.",
 
+  // Pull progress / Active ops (Q3 W3-4 sub-task)
+  "models.progress": "Progress",
+  "models.op_running": "Running",
+  "models.op_cancelled": "Operation cancelled",
+  "models.cancel_op": "Cancel",
+  "models.cancel_requested": "Cancelling…",
+  "models.auto_refresh_on": "Auto-refresh",
+  "models.operation_pull": "Pull",
+  "models.operation_load": "Load",
+  "models.operation_unload": "Unload",
+  "models.operation_delete": "Delete",
+  "models.operation_create": "Create",
+  "models.operation_copy": "Copy",
+
   // Virtual Models
   "vm.title": "🧩 Virtual Models",
 

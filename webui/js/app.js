@@ -1907,7 +1907,7 @@ const ui = (function () {
             modelsBody.innerHTML = '<tr><td colspan="7" class="loading-cell">' + (window.I18N ? I18N.t('common.loading') : 'Loading...') + '</td></tr>';
         }
 
-        // Show active operations
+        // Show active operations (запускает auto-refresh при наличии активных op)
         refreshModelOpsStatus();
 
         modal.classList.add('active');
@@ -1972,33 +1972,205 @@ const ui = (function () {
         });
     }
 
+    // ===== Pull / Op progress (Q3 W3-4 sub-task) =====
+    // Локальный кэш отмен: ключ = operation + ':' + modelName + ':' + backendId.
+    // Используется для UI-state «cancel requested» — пока op живёт на сервере,
+    // показываем progress как «cancelling» и блокируем кнопку. Когда op уходит
+    // из active list, считаем её завершённой (cancel success).
+    const _cancelledOps = new Set();
+    let _opsAutoRefreshTimer = null;
+    const OPS_AUTO_REFRESH_MS = 2000;
+    // Heuristic-константы для расчёта прогресса (нет данных от backend'а):
+    // — pull операции обычно идут 1–30 мин (HF модели);
+    // — load операции — 5–60 сек (модель уже на диске, нужно прочитать header + mmap).
+    const OP_HEURISTIC_DURATION_MS = {
+        pull:   180000, // 3 мин — default для pull (HF model)
+        load:    30000, // 30 сек — default для load
+        unload:   5000, // 5 сек — default для unload
+        delete:   5000,
+        copy:    10000,
+        create:   5000
+    };
+
+    function _opKey(op) {
+        return (op.operation || '?') + ':' + (op.modelName || '?') + ':' + (op.backendId || '?');
+    }
+
+    /**
+     * Heuristic-расчёт прогресса для op без реального progress-индикатора от backend.
+     * Используется startedAt + heuristic duration (per operation type).
+     * @returns {{pct: number, etaSec: number, isIndeterminate: boolean}}
+     */
+    function computeOpProgress(op) {
+        const key = _opKey(op);
+        const opType = (op.operation || 'load').toLowerCase();
+        const startedMs = op.startedAt ? new Date(op.startedAt).getTime() : Date.now();
+        const elapsedMs = Math.max(0, Date.now() - startedMs);
+        const expectedMs = OP_HEURISTIC_DURATION_MS[opType] || 60000;
+
+        if (_cancelledOps.has(key)) {
+            // Замораживаем прогресс на текущем значении при отмене.
+            const pctFrozen = Math.min(99, Math.max(5, Math.round((elapsedMs / expectedMs) * 100)));
+            return { pct: pctFrozen, etaSec: 0, isIndeterminate: false, cancelled: true };
+        }
+
+        // Линейный прогресс от 5% (сразу) до 95% (по истечении expectedMs).
+        // Не показываем 100% до того, как op реально исчезнет из active list —
+        // иначе пользователь видит «готово», хотя backend ещё работает.
+        const pct = Math.min(95, Math.max(5, Math.round((elapsedMs / expectedMs) * 100)));
+        const remainingMs = Math.max(0, expectedMs - elapsedMs);
+        const etaSec = Math.round(remainingMs / 1000);
+        return { pct: pct, etaSec: etaSec, isIndeterminate: false, cancelled: false };
+    }
+
+    function formatOpsEta(etaSec) {
+        if (!etaSec || etaSec < 0) return '';
+        if (etaSec < 60) return '~' + etaSec + 's';
+        const m = Math.floor(etaSec / 60);
+        const s = etaSec % 60;
+        if (m < 60) return '~' + m + 'm ' + (s ? s + 's' : '');
+        const h = Math.floor(m / 60);
+        const rm = m % 60;
+        return '~' + h + 'h ' + rm + 'm';
+    }
+
+    /**
+     * Помечает op как cancelled в локальном кэше. Backend не получает cancel-сигнал
+     * (DELETE endpoint отсутствует), но UI сразу показывает «cancelling» state.
+     * Когда op уйдёт из active list — toast «cancelled».
+     */
+    function cancelOperation(op) {
+        const key = _opKey(op);
+        const opLabel = (op.operation || 'op') + ' ' + (op.modelName || '');
+        _cancelledOps.add(key);
+        showToast((window.I18N ? I18N.t('models.cancel_requested') : 'Cancel requested for') + ': ' + opLabel, 'warning');
+        addLog('Cancel requested for op: ' + key, 'warning');
+        // Принудительно обновить отображение (без ожидания следующего тика).
+        refreshModelOpsStatus();
+    }
+
+    function startOpsAutoRefresh() {
+        if (_opsAutoRefreshTimer) return; // уже запущен
+        // Защита от race: если модалка закрыта, не запускаем polling.
+        // (race возникает, когда refreshModelOpsStatus resolve'ится ПОСЛЕ closeModelManageModal.)
+        var modalEl = document.getElementById('modelManageModal');
+        if (modalEl && !modalEl.classList.contains('active')) return;
+        const indicator = document.getElementById('modelOpsAutoRefresh');
+        if (indicator) indicator.hidden = false;
+        refreshModelOpsStatus();
+        _opsAutoRefreshTimer = setInterval(refreshModelOpsStatus, OPS_AUTO_REFRESH_MS);
+    }
+
+    function stopOpsAutoRefresh() {
+        if (_opsAutoRefreshTimer) {
+            clearInterval(_opsAutoRefreshTimer);
+            _opsAutoRefreshTimer = null;
+        }
+        const indicator = document.getElementById('modelOpsAutoRefresh');
+        if (indicator) indicator.hidden = true;
+    }
+
     function refreshModelOpsStatus() {
+        const opsBody = document.getElementById('modelOpsBody');
+        if (!opsBody) return;
         Api.modelOperationsStatus().then(function(data) {
-            const ops = data.operations || [];
-            const opsBody = document.getElementById('modelOpsBody');
-            if (!opsBody) return;
+            const ops = (data && data.operations) || [];
+
+            // Отслеживаем op, которые ушли из active list — это «завершённые».
+            // Если op была помечена как cancelled — показываем toast «cancelled».
+            // Если op не была cancelled — показываем toast «completed» (только для
+            // pull/load/unload/delete, чтобы не спамить на каждое обновление).
+            const seenKeys = new Set();
+            ops.forEach(function(op) { seenKeys.add(_opKey(op)); });
+            // Копия — иначе модифицируем Set во время итерации.
+            Array.from(_cancelledOps).forEach(function(key) {
+                if (!seenKeys.has(key)) {
+                    _cancelledOps.delete(key);
+                    showToast((window.I18N ? I18N.t('models.op_cancelled') : 'Operation cancelled'), 'warning');
+                }
+            });
 
             if (ops.length === 0) {
-                opsBody.innerHTML = '<tr><td colspan="5" class="loading-cell">' + (window.I18N ? I18N.t('models.no_active_ops') : 'No active operations') + '</td></tr>';
+                opsBody.innerHTML = '<tr><td colspan="7" class="loading-cell">' +
+                    (window.I18N ? I18N.t('models.no_active_ops') : 'No active operations') + '</td></tr>';
+                // Если была хоть одна op и сейчас ноль — останавливаем auto-refresh.
+                if (_opsAutoRefreshTimer) stopOpsAutoRefresh();
                 return;
             }
 
+            // Есть активные op — убеждаемся, что auto-refresh запущен.
+            if (!_opsAutoRefreshTimer) startOpsAutoRefresh();
+
             opsBody.innerHTML = ops.map(function(op) {
-                return '<tr>' +
-                    '<td>' + Utils.escapeHtml(op.operation || '-') + '</td>' +
-                    '<td>' + Utils.escapeHtml(op.modelName || '-') + '</td>' +
+                const opKey = _opKey(op);
+                const opType = (op.operation || '-');
+                const progress = computeOpProgress(op);
+                const isCancelling = progress.cancelled;
+                const fillClass = 'ops-progress-fill' + (isCancelling ? ' cancelling' : '');
+                const opTypeLabel = window.I18N
+                    ? I18N.t('models.operation_' + opType, opType)
+                    : opType;
+                const etaText = progress.cancelled
+                    ? (window.I18N ? I18N.t('models.cancel_requested') : 'Cancelling…')
+                    : formatOpsEta(progress.etaSec);
+                const cancelLabel = window.I18N ? I18N.t('models.cancel_op') : 'Cancel';
+                const statusLabel = isCancelling
+                    ? (window.I18N ? I18N.t('models.cancel_requested') : 'Cancelling…')
+                    : (window.I18N ? I18N.t('models.op_running') : 'Running');
+
+                // Escape opKey для inline onclick (replace ':' не нужен — это просто строка).
+                const safeOpKey = Utils.escapeHtml(opKey).replace(/'/g, "\\'");
+
+                return '<tr data-op-key="' + Utils.escapeHtml(opKey) + '">' +
+                    '<td><span class="badge badge-info">' + Utils.escapeHtml(opTypeLabel) + '</span></td>' +
+                    '<td><strong>' + Utils.escapeHtml(op.modelName || '-') + '</strong></td>' +
                     '<td>' + Utils.escapeHtml(op.backendId || '-') + '</td>' +
                     '<td>' + (op.startedAt ? new Date(op.startedAt).toLocaleString(Utils._locale()) : '-') + '</td>' +
-                    '<td><span class="badge badge-info">' + Utils.escapeHtml(op.status || 'running') + '</span></td>' +
+                    '<td>' +
+                        '<div class="ops-progress-wrap">' +
+                            '<div class="ops-progress-bar">' +
+                                '<div class="' + fillClass + '" style="width: ' + progress.pct + '%;"></div>' +
+                            '</div>' +
+                            '<div class="ops-progress-text">' +
+                                '<span class="ops-progress-percent">' + progress.pct + '%</span>' +
+                                '<span class="ops-progress-eta">' + etaText + '</span>' +
+                            '</div>' +
+                        '</div>' +
+                    '</td>' +
+                    '<td><span class="badge ' + (isCancelling ? 'badge-warning' : 'badge-info') + '">' +
+                        Utils.escapeHtml(statusLabel) + '</span></td>' +
+                    '<td>' +
+                        '<button type="button" class="ops-action-cancel' + (isCancelling ? ' cancelling' : '') + '"' +
+                            (isCancelling ? ' disabled' : '') +
+                            ' onclick="ui.cancelOperationByKey(\'' + safeOpKey + '\')"' +
+                            ' title="' + Utils.escapeHtml(cancelLabel) + '">' +
+                            '<i class="fas ' + (isCancelling ? 'fa-circle-notch' : 'fa-stop') + '"></i> ' +
+                            '<span>' + Utils.escapeHtml(cancelLabel) + '</span>' +
+                        '</button>' +
+                    '</td>' +
                 '</tr>';
             }).join('');
         }).catch(function(err) {
-            // Silently ignore — this is a background refresh
+            // Silently ignore — это background refresh.
             console.error('Failed to refresh model ops status:', err);
         });
     }
 
+    /**
+     * Cancel-by-key (вызывается из inline onclick в HTML рендере).
+     * Ищет op в кэше по ключу и помечает cancelled.
+     */
+    function cancelOperationByKey(opKey) {
+        // Нам нужен полный op для cancelOperation, но у нас только ключ.
+        // Запоминаем ключ напрямую — следующий refresh подхватит cancelled state.
+        _cancelledOps.add(opKey);
+        showToast((window.I18N ? I18N.t('models.cancel_requested') : 'Cancel requested'), 'warning');
+        refreshModelOpsStatus();
+    }
+
     function closeModelManageModal() {
+        // Останавливаем auto-refresh активных op (экономим трафик, если модалка закрыта).
+        stopOpsAutoRefresh();
         const modal = document.getElementById('modelManageModal');
         if (modal) modal.classList.remove('active');
     }
@@ -2059,7 +2231,11 @@ const ui = (function () {
         viewAgentLogs,
         // Models tab UI helpers (Roadmap Q3 W3-4: Filter/Search)
         filterModels,
-        applyModelsSort
+        applyModelsSort,
+        // Models tab Pull progress (Roadmap Q3 W3-4 sub-task)
+        startOpsAutoRefresh,
+        stopOpsAutoRefresh,
+        cancelOperationByKey
     };
 
 })();

@@ -1211,3 +1211,108 @@
     0% { transform: rotate(0deg); }
     100% { transform: rotate(360deg); }
 }
+
+/* ===== Pull / Op progress (Models tab — Q3 W3-4 sub-task) ===== */
+/* Отображается в таблице «Активные операции» модального окна «Управление моделями».
+   Прогресс-бар + ETA + кнопка Cancel для каждой op. */
+.model-ops-auto-refresh {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    margin-left: 12px;
+    padding: 3px 10px;
+    font-size: 11px;
+    color: var(--text-muted, #94a3b8);
+    background: var(--glass-bg, rgba(255, 255, 255, 0.04));
+    border: 1px solid var(--glass-border, rgba(255, 255, 255, 0.08));
+    border-radius: 12px;
+}
+.model-ops-auto-refresh i {
+    color: var(--accent, #3b82f6);
+}
+.ops-progress-wrap {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    min-width: 160px;
+    max-width: 240px;
+}
+.ops-progress-bar {
+    width: 100%;
+    height: 8px;
+    background: var(--bg-tertiary, rgba(15, 23, 42, 0.6));
+    border: 1px solid var(--glass-border, rgba(255, 255, 255, 0.08));
+    border-radius: 4px;
+    overflow: hidden;
+    position: relative;
+}
+.ops-progress-fill {
+    height: 100%;
+    background: linear-gradient(90deg, #3b82f6, #60a5fa);
+    width: 0%;
+    transition: width 0.5s ease;
+    border-radius: 3px;
+}
+.ops-progress-fill.indeterminate {
+    width: 30% !important;
+    animation: ops-progress-indeterminate 1.4s ease-in-out infinite;
+}
+.ops-progress-fill.cancelling {
+    background: linear-gradient(90deg, #f59e0b, #fbbf24);
+    opacity: 0.6;
+}
+.ops-progress-fill.error {
+    background: linear-gradient(90deg, #ef4444, #f87171);
+}
+.ops-progress-fill.complete {
+    background: linear-gradient(90deg, #10b981, #34d399);
+}
+@keyframes ops-progress-indeterminate {
+    0% { transform: translateX(-100%); }
+    100% { transform: translateX(330%); }
+}
+.ops-progress-text {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    font-size: 11px;
+    color: var(--text-muted, #94a3b8);
+    font-variant-numeric: tabular-nums;
+}
+.ops-progress-percent {
+    font-weight: 600;
+    color: var(--text-primary, #e2e8f0);
+}
+.ops-progress-eta {
+    color: var(--text-muted, #94a3b8);
+}
+.ops-action-cancel {
+    background: transparent;
+    border: 1px solid var(--glass-border, rgba(255, 255, 255, 0.15));
+    color: var(--text-secondary, #94a3b8);
+    padding: 4px 10px;
+    border-radius: 4px;
+    cursor: pointer;
+    font-size: 12px;
+    font-family: inherit;
+    transition: var(--transition, all 0.2s ease);
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+}
+.ops-action-cancel:hover:not(:disabled) {
+    background: var(--danger, #ef4444);
+    border-color: var(--danger, #ef4444);
+    color: #fff;
+}
+.ops-action-cancel:disabled,
+.ops-action-cancel.cancelling {
+    background: transparent;
+    color: var(--text-muted, #64748b);
+    border-color: var(--glass-border, rgba(255, 255, 255, 0.08));
+    cursor: not-allowed;
+    opacity: 0.6;
+}
+.ops-action-cancel.cancelling i {
+    animation: spin 1s linear infinite;
+}

@@ -709,6 +709,20 @@ window.I18N_RU = {
   "models.sort_backend_asc": "Бэкенд",
   "models.empty_filtered": "Нет моделей, соответствующих фильтру. Попробуйте изменить тип бэкенда или очистить поиск.",
 
+  // Pull progress / Active ops (Q3 W3-4 sub-task)
+  "models.progress": "Прогресс",
+  "models.op_running": "Выполняется",
+  "models.op_cancelled": "Операция отменена",
+  "models.cancel_op": "Отменить",
+  "models.cancel_requested": "Отмена…",
+  "models.auto_refresh_on": "Авто-обновление",
+  "models.operation_pull": "Pull",
+  "models.operation_load": "Загрузка",
+  "models.operation_unload": "Выгрузка",
+  "models.operation_delete": "Удаление",
+  "models.operation_create": "Создание",
+  "models.operation_copy": "Копирование",
+
   // Virtual Models
   "vm.title": "🧩 Виртуальные модели",
   "vm.name": "Имя",

@@ -44,6 +44,19 @@ func (p *Proxy) proxyRequestLlamaCpp(w http.ResponseWriter, r *http.Request, bac
 		translatedBody = bodyBuf
 	}
 
+	// F.0.4 (2026-06-28): session F — диагностика EOF.
+	// Запоминаем startTime для расчёта duration_ms при ошибках upstream.
+	llamaStartTime := time.Now()
+	// EOF-retry counter (1 = первая попытка). Используется в error context и для
+	// retry на тот же бэкенд после 500ms (типичный случай — cppworker перезагружал
+	// модель ровно во время первого запроса).
+	llamaAttempt := 1
+	llamaEOFRetries := 0
+	const maxLlamaEOFRetries = 1
+	_ = llamaEOFRetries // используется ниже в EOF retry-блоке
+	_ = llamaAttempt    // используется ниже в error context
+	_ = llamaStartTime  // используется ниже в error context
+
 	// PREFLIGHT n_ctx auto-reload: если клиент (OpenWebUI) задал options.num_ctx,
 	// а loaded n_ctx на бэкенде меньше — синхронно перезагружаем модель на нужный n_ctx
 	// ДО проксирования. Это критично для OpenWebUI с tools: первый запрос
@@ -137,9 +150,53 @@ func (p *Proxy) proxyRequestLlamaCpp(w http.ResponseWriter, r *http.Request, bac
 		}
 	}
 
+	// F.0.4 (2026-06-28): session F — EOF retry перед записью заголовков клиенту.
+	//
+	// Проблема: cppworker может вернуть EOF (закрытое TCP-соединение без ответа) в
+	// редких ситуациях — например, когда модель ещё загружается (lazy load) или
+	// произошёл panic в middleware ДО хендлера. В этом случае клиент видит EOF без
+	// какой-либо диагностики.
+	//
+	// Решение: если получена EOF-ошибка ДО WriteHeader(200), пробуем один раз тот же
+	// backend через 500ms (типичный случай — cppworker перезагружал модель ровно
+	// во время первого запроса). После retry возвращаем расширенный error context
+	// с backend_id, attempt и duration_ms для диагностики.
+	//
+	// После записи заголовков (строка ~213 ниже) retry невозможен — TCP уже начат.
 	resp, err := clientForReq.Do(req)
+	if err != nil && llamaEOFRetries < maxLlamaEOFRetries {
+		errType := determineErrorType(err, reqCtx)
+		if errType == "unexpected_eof" {
+			logger.Get().Warnw("proxyRequestLlamaCpp: EOF from upstream, retrying once on same backend",
+				"backend", backendID, "model", modelFromCtx,
+				"attempt", llamaAttempt, "error", err)
+			// Публикуем EOF event в EventPublisher (если подключён).
+			p.publishTransportEOF(backendID, modelFromCtx, originalPath, err, time.Since(llamaStartTime))
+			// Задержка 500ms перед retry — типичное время reload-операций cppworker.
+			time.Sleep(p.getStreamingRetryDelay())
+			llamaEOFRetries++
+			llamaAttempt++
+			resp, err = clientForReq.Do(req)
+		}
+	}
 	if err != nil {
-		return fmt.Errorf("llama.cpp request failed: %v", err)
+		durationMs := time.Since(llamaStartTime).Milliseconds()
+		errType := determineErrorType(err, reqCtx)
+		logger.Get().Errorw("proxyRequestLlamaCpp: upstream Do() failed",
+			"backend", backendID,
+			"model", modelFromCtx,
+			"url", fullURL,
+			"attempt", llamaAttempt,
+			"duration_ms", durationMs,
+			"error_type", errType,
+			"is_streaming", isStreaming,
+			"error", err)
+		// Публикуем EOF event (если это EOF и мы ещё не публиковали).
+		if errType == "unexpected_eof" {
+			p.publishTransportEOF(backendID, modelFromCtx, originalPath, err, time.Duration(durationMs)*time.Millisecond)
+		}
+		return fmt.Errorf("llama.cpp request failed [backend=%s, attempt=%d, duration_ms=%d, error_type=%s]: %v",
+			backendID, llamaAttempt, durationMs, errType, err)
 	}
 	defer resp.Body.Close()
 

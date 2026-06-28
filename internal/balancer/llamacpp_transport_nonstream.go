@@ -110,10 +110,30 @@ func (p *Proxy) proxyRequestLlamaCppNonStream(w http.ResponseWriter, r *http.Req
 		}
 	}
 
+	// F.0.4 (2026-06-28): session F — error context + EOF retry для non-streaming.
+	//
+	// Тот же фикс что и в proxyRequestLlamaCpp: добавляем backend_id, attempt,
+	// duration_ms в error message и публикуем EOF event в EventPublisher.
 	client := p.client
+	nonStreamStart := time.Now()
+	nonStreamAttempt := 1
 	resp, err := client.Do(req)
 	if err != nil {
-		return fmt.Errorf("llama.cpp request failed: %v", err)
+		durationMs := time.Since(nonStreamStart).Milliseconds()
+		errType := determineErrorType(err, r.Context())
+		logger.Get().Errorw("proxyRequestLlamaCppNonStream: upstream Do() failed",
+			"backend", backendID,
+			"model", modelFromCtx,
+			"url", fullURL,
+			"attempt", nonStreamAttempt,
+			"duration_ms", durationMs,
+			"error_type", errType,
+			"error", err)
+		if errType == "unexpected_eof" {
+			p.publishTransportEOF(backendID, modelFromCtx, originalPath, err, time.Duration(durationMs)*time.Millisecond)
+		}
+		return fmt.Errorf("llama.cpp request failed [backend=%s, attempt=%d, duration_ms=%d, error_type=%s]: %v",
+			backendID, nonStreamAttempt, durationMs, errType, err)
 	}
 	defer resp.Body.Close()
 

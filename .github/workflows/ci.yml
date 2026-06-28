@@ -51,6 +51,10 @@ jobs:
       # поэтому ищем go.exe вручную.
       # Разбит на 4 мелких шага, чтобы каждый работал с минимальным PowerShell скриптом.
       #
+      # ВАЖНО: Out-File -Encoding utf8 добавляет BOM (0xEF BB BF), который
+      # ломает парсинг GITHUB_ENV/GITHUB_PATH у GitHub Actions runner.
+      # Используем Set-Content -NoNewline (без BOM в PS 5.1).
+      #
       # ШАГ A: Проверка хардкодных путей (самый быстрый путь, всегда выполняется)
       - name: Init Go env (A — hardcoded paths)
         shell: powershell
@@ -65,7 +69,7 @@ jobs:
             if ($p -and (Test-Path $p)) {
               $dir = Split-Path $p -Parent
               Write-Host "Found go.exe at: $dir"
-              echo "$dir" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+              Set-Content -Path $env:GITHUB_PATH -Value $dir -NoNewline
               $env:Path = "$dir;$env:Path"
               $found = "yes"
               break
@@ -73,7 +77,7 @@ jobs:
           }
           if (-not $found) {
             Write-Host "hardcoded paths: go.exe NOT found"
-            echo "GO_NOT_FOUND=1" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+            Set-Content -Path $env:GITHUB_ENV -Value "GO_NOT_FOUND=1" -NoNewline
           }
 
       # ШАГ B: PATH lookup + where.exe + рекурсивный поиск (если шаг A не нашёл)
@@ -126,12 +130,12 @@ jobs:
           }
 
           if ($goDir) {
-            echo "$goDir" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+            Add-Content -Path $env:GITHUB_PATH -Value "`n$goDir" -NoNewline
             $env:Path = "$goDir;$env:Path"
             Write-Host "Go PATH added: $goDir"
           } else {
             Write-Host "go.exe NOT found in PATH lookup, will auto-download"
-            echo "GO_NOT_FOUND=1" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+            Set-Content -Path $env:GITHUB_ENV -Value "GO_NOT_FOUND=1" -NoNewline
           }
 
       # ШАГ C: Auto-download Go (если ни шаг A, ни шаг B не нашли)
@@ -159,7 +163,7 @@ jobs:
             Write-Host "ERROR: extraction failed — go.exe not found"
             exit 1
           }
-          echo "$installDir\bin" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+          Add-Content -Path $env:GITHUB_PATH -Value "`n$installDir\bin" -NoNewline
           $env:Path = "$installDir\bin;$env:Path"
           Write-Host "Go auto-installed to $installDir"
 
@@ -169,7 +173,22 @@ jobs:
         run: |
           $v = & go version 2>&1
           if ($LASTEXITCODE -ne 0) {
-            Write-Host "FATAL: Go not available after init steps"
+            Write-Host "go version failed. Trying hardcoded paths as fallback..."
+            foreach ($p in @("C:\Program Files\Go\bin", "C:\Go\bin")) {
+              if (Test-Path "$p\go.exe") {
+                Write-Host "Fallback: found go.exe at $p"
+                $env:Path = "$p;$env:Path"
+                Add-Content -Path $env:GITHUB_PATH -Value "`n$p" -NoNewline
+                $v = & go version 2>&1
+                if ($LASTEXITCODE -eq 0) {
+                  Write-Host "Go OK after fallback: $v"
+                  & go env GOROOT GOPATH GOMODCACHE GOCACHE 2>&1 | ForEach-Object { Write-Host "  $_" }
+                  exit 0
+                }
+              }
+            }
+            Write-Host "FATAL: Go not available after all init steps and fallback"
+            Write-Host "PATH=$env:Path"
             exit 1
           }
           Write-Host "Go OK: $v"

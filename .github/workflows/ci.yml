@@ -56,11 +56,12 @@ jobs:
           $goFound = $false
           $goVersion = "$env:GO_VERSION_WIN"
 
-          function Add-GoToPath($dir) {
+          # Хелпер для добавления Go в PATH
+          function Add-GoDir($dir) {
             Write-Host "Adding Go PATH: $dir"
             echo "$dir" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
             $env:Path = "$dir;$env:Path"
-            $global:goFound = $true
+            $script:goFound = $true
           }
 
           # 1) Прямой PATH lookup (если чудом Go в PATH)
@@ -73,7 +74,7 @@ jobs:
             $whereGo = where.exe go.exe 2>$null
             if ($whereGo) {
               $goDir = Split-Path -Parent ($whereGo | Select-Object -First 1)
-              Add-GoToPath $goDir
+              Add-GoDir $goDir
             }
           }
 
@@ -94,25 +95,25 @@ jobs:
             $candidates += "$env:ALLUSERSPROFILE\scoop\apps\go\current\bin"
             foreach ($dir in $candidates) {
               if (Test-Path "$dir\go.exe") {
-                Add-GoToPath $dir
+                Add-GoDir $dir
                 break
               }
             }
           }
 
           # 4) Рекурсивный поиск go.exe на C:\ (last resort)
-          if (-not $goFound) {
+          if (-not ($goFound -or $script:goFound)) {
             Write-Host "go.exe not found in common paths. Starting recursive search on C:\..."
             Write-Host "This may take 30-60 seconds..."
             $goPath = where.exe /R C:\ go.exe 2>$null | Select-Object -First 1
             if ($goPath) {
               $goDir = Split-Path -Parent $goPath
-              Add-GoToPath $goDir
+              Add-GoDir $goDir
             }
           }
 
           # 5) Auto-download Go if not found anywhere on the runner
-          if (-not $goFound) {
+          if (-not ($goFound -or $script:goFound)) {
             Write-Host "Go not found on system. Downloading Go $goVersion..."
             $url = "https://go.dev/dl/go$goVersion.windows-amd64.zip"
             $zipPath = "$env:TEMP\go.zip"
@@ -121,11 +122,13 @@ jobs:
             # Remove old zip if present
             if (Test-Path $zipPath) { Remove-Item -Force $zipPath }
 
+            Write-Host "Downloading $url ..."
             curl.exe -sSL -o $zipPath $url
             if (-not (Test-Path $zipPath)) {
               Write-Host "::error::Failed to download Go from $url"
               exit 1
             }
+            Write-Host "Download complete ($((Get-Item $zipPath).Length) bytes)"
 
             # Remove old installation directory if exists
             if (Test-Path $installDir) {
@@ -133,19 +136,20 @@ jobs:
             }
 
             # Extract zip to C:\ (creates C:\Go)
-            Write-Host "Extracting Go to $installDir..."
-            tar.exe -xf $zipPath -C "C:\"
+            Write-Host "Extracting Go to $installDir... (may take a minute)"
+            Expand-Archive -Path $zipPath -DestinationPath "C:\" -Force
             if (-not (Test-Path "$installDir\bin\go.exe")) {
               Write-Host "::error::Extraction failed - go.exe not found at $installDir\bin\go.exe"
               exit 1
             }
 
             # Add to PATH
-            Add-GoToPath "$installDir\bin"
+            Add-GoDir "$installDir\bin"
             Write-Host "Go $goVersion auto-installed to $installDir"
           }
 
-          if (-not $goFound) {
+          # Финальная проверка
+          if (-not ($goFound -or $script:goFound)) {
             Write-Host "::error::Go installation not found on the runner and auto-download failed."
             exit 1
           }

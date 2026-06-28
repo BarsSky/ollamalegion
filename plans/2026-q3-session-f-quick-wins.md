@@ -2,7 +2,8 @@
 
 > **Branch:** `feature/q3-session-f`
 > **Date:** 2026-06-28
-> **Status (обновлено 2026-06-28 13:30 MSK):** 🟢 F.0a DONE, 🟢 F.0b DONE, 🟢 F.1 (= F.α) DONE, ⏳ F.2 (live tail) — не начато, ⏳ F.3 (health UI) — не начато, ⏳ F.4 (i18n) — не начато.
+> **Status (обновлено 2026-06-28 15:16 MSK):** 🟢 F.0a DONE, 🟢 F.0b DONE, 🟢 F.1 (= F.α) DONE, 🟢 F.2 (live tail) DONE, 🟢 F.3 (health UI = F.β + F.γ) DONE, ⏳ F.4 (i18n) — не начато.
+> **HEAD:** `0543704` на ветке `feature/q3-session-f`.
 > **Приоритет:** 🟡 P1 (последние UI/UX gap'ы из roadmap section 5)
 
 ## Прогресс по коммитам
@@ -13,8 +14,11 @@
 | **F.0b** recover middleware (panic recovery в cppworker) | `5047239` | ✅ DONE |
 | **F.1** Notifications — backend (SSE `/api/v1/events` + EventBus) | `873c10d` | ✅ DONE |
 | **F.1** Notifications — frontend (bell icon + dropdown + i18n) | `1bc1bf1` | ✅ DONE |
-| **F.2** Live tail Logs через WebSocket | — | ⏳ TODO |
-| **F.3** Health-check UI (отдельная страница) | — | ⏳ TODO |
+| **F.2** Live tail Logs — backend (`/ws/logs`) | `d4375f1` | ✅ DONE |
+| **F.2** Live tail Logs — frontend (`logs-stream.js`) | `20bb65d` | ✅ DONE |
+| **F.3** Health-aggregator (HealthChecker + SSE + transport EOF) | в коммитах F.1+F.2 | ✅ DONE |
+| **F.3** Health endpoint `/api/v1/health/detailed` (backend) | `006ae0c` | ✅ DONE |
+| **F.3** Health UI `/health` страница (frontend) | `0543704` | ✅ DONE |
 | **F.4** i18n финализация (EN/RU баланс) | — | ⏳ TODO |
 
 ---

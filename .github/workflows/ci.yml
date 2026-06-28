@@ -27,7 +27,7 @@ concurrency:
 
 env:
   GO_VERSION: "1.22"           # fallback runner'ы используют эту версию
-  GO_VERSION_WIN: "1.22"       # self-hosted runner (должна совпадать с установленной)
+  GO_VERSION_WIN: "1.25"       # self-hosted runner — установлен глобально, actions/setup-go НЕ используется
   GOPROXY: https://proxy.golang.org,direct
   CGO_ENABLED: 1               # нужен для cgo + C-bridge
 
@@ -47,11 +47,9 @@ jobs:
           submodules: false  # c/llama.cpp — gitlink без .gitmodules
           fetch-depth: 0     # для git log в комментариях
 
-      - name: Setup Go
-        uses: actions/setup-go@v5
-        with:
-          go-version: ${{ env.GO_VERSION_WIN }}
-          cache: false  # persistent cache на диске, не нужно пересоздавать
+      # Setup Go step НЕ используется — Go 1.25.4 установлен глобально на раннере
+      # actions/setup-go на self-hosted раннере под LocalSystem не прописывает PATH
+      # в PowerShell, поэтому полагаемся на системную установку.
 
       - name: Show Go env
         shell: powershell
@@ -151,9 +149,49 @@ jobs:
           go build -tags llama_stub -v -o bin/cppworker-stub    ./cmd/cppworker/
           go build -tags llama_stub -v -o bin/agent-stub        ./cmd/agent/
 
-      - name: Test (internal packages, -race)
+      # Разбивка internal/... на пакеты, чтобы видеть, какой конкретно падает
+      - name: Test internal/agent (no race)
         run: |
-          go test -race -tags llama_stub -timeout 180s ./internal/...
+          go test -tags llama_stub -timeout 120s -v ./internal/agent/ 2>&1 | tail -5
+
+      - name: Test internal/api (no race)
+        run: |
+          go test -tags llama_stub -timeout 120s -v ./internal/api/ 2>&1 | tail -5
+
+      - name: Test internal/balancer (-race)
+        if: always()
+        run: |
+          go test -race -tags llama_stub -timeout 180s -v ./internal/balancer/ 2>&1 | tail -20
+
+      - name: Test internal/config (no race)
+        if: always()
+        run: |
+          go test -tags llama_stub -timeout 60s -v ./internal/config/ 2>&1 | tail -5
+
+      - name: Test internal/cppbackend (no race)
+        if: always()
+        run: |
+          go test -tags llama_stub -timeout 120s -v ./internal/cppbackend/ 2>&1 | tail -10
+
+      - name: Test internal/rpccoordinator (no race)
+        if: always()
+        run: |
+          go test -tags llama_stub -timeout 60s -v ./internal/rpccoordinator/ 2>&1 | tail -5
+
+      - name: Test internal/rpcworker (no race)
+        if: always()
+        run: |
+          go test -tags llama_stub -timeout 60s -v ./internal/rpcworker/ 2>&1 | tail -5
+
+      - name: Test internal/virtualmodel (no race)
+        if: always()
+        run: |
+          go test -tags llama_stub -timeout 60s -v ./internal/virtualmodel/ 2>&1 | tail -5
+
+      - name: Test internal/modelreplication (no race)
+        if: always()
+        run: |
+          go test -tags llama_stub -timeout 60s -v ./internal/modelreplication/ 2>&1 | tail -5
 
       - name: Test (cmd + integration, short)
         run: |

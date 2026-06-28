@@ -51,31 +51,61 @@ function Write-Warn    { Write-Host $args[0] -ForegroundColor Yellow }
 function Write-Err     { Write-Host $args[0] -ForegroundColor Red }
 function Write-Step    { Write-Host "`n=== $($args[0]) ===" -ForegroundColor Cyan }
 
+# Дополняем PATH: гарантируем наличие Go (часто бывает в C:\Program Files\Go\bin,
+# но не в PATH для PowerShell-сессии, особенно при запуске из cmd через -Command).
+# Это backward-compatible: если Go уже в PATH — повторное добавление безвредно.
+$goCandidates = @(
+    "C:\Program Files\Go\bin",
+    "C:\Program Files (x86)\Go\bin",
+    "$env:LOCALAPPDATA\Go\bin"
+)
+foreach ($goDir in $goCandidates) {
+    if ((Test-Path (Join-Path $goDir "go.exe")) -and ($env:Path -notlike "*$goDir*")) {
+        $env:Path = "$goDir;$env:Path"
+    }
+}
+
 # -----------------------------------------------------------------------
 # 1. Проверка prerequisites
 # -----------------------------------------------------------------------
 Write-Step "1/6 Проверка prerequisites"
 
 function Test-Tool {
-    param([string]$Cmd, [string]$Name, [string]$MinVersion = "")
-    try {
-        $version = & $Cmd --version 2>$null
-        if ($LASTEXITCODE -eq 0) {
-            $ver = ($version | Select-Object -First 1).Trim()
-            Write-Success "  ✅ $Name : $ver"
-            return $true
-        }
-    } catch {}
+    param([string]$Cmd, [string]$Name, [string[]]$VersionArgs = @("--version"))
+    # Разные тулзы используют разные способы вывода версии:
+    #   go (1.25+)      → subcommand `version` (флага --version больше нет)
+    #   go (1.21..1.24) → флаг `--version`
+    #   node            → флаг `--version`
+    #   docker          → флаг `--version`
+    #   git             → флаг `--version`
+    #   cmake           → флаг `--version` (но multi-line)
+    # Поэтому пробуем переданные аргументы по очереди. По умолчанию --version,
+    # но для go передаём сначала `version` (subcommand).
+    foreach ($arg in $VersionArgs) {
+        $version = $null
+        try {
+            $version = & $Cmd $arg 2>$null
+            if ($LASTEXITCODE -eq 0) {
+                $ver = ($version | Select-Object -First 1).Trim()
+                if ($ver) {
+                    Write-Success "  ✅ $Name : $ver"
+                    return $true
+                }
+            }
+        } catch {}
+    }
     Write-Err "  ❌ $Name : НЕ НАЙДЕН ($Cmd)"
     return $false
 }
 
 $allOk = $true
-$allOk = (Test-Tool "go" "Go") -and $allOk
+# go 1.25+ использует subcommand `version`, go 1.21..1.24 — флаг `--version`
+$allOk = (Test-Tool "go" "Go" @("version", "--version")) -and $allOk
 $allOk = (Test-Tool "docker" "Docker") -and $allOk
 $allOk = (Test-Tool "git" "Git") -and $allOk
 $allOk = (Test-Tool "node" "Node.js") -and $allOk
-$allOk = (Test-Tool "cmake" "CMake (опционально, для 7.2 GPU)") -and $allOk
+# cmake иногда выводит warning в stderr на первой строке — не считаем это ошибкой
+$allOk = (Test-Tool "cmake" "CMake (опционально, для 7.2 GPU)" @("--version")) -and $allOk
 
 if (-not $allOk) {
     Write-Err "`nНе все prerequisites установлены. Установите недостающие и перезапустите."

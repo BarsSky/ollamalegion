@@ -47,19 +47,25 @@ jobs:
           submodules: false  # c/llama.cpp — gitlink без .gitmodules
           fetch-depth: 0     # для git log в комментариях
 
-      # Init Go env — actions/setup-go@v5 зависает под LocalSystem,
-      # поэтому ищем go.exe вручную.
-      # Разбит на 4 мелких шага, чтобы каждый работал с минимальным PowerShell скриптом.
+      # Init Go env — actions/setup-go@v5 зависает под LocalSystem (SYSTEM account),
+      # поэтому ищем go.exe вручную. ВСЁ в одном шаге, чтобы не полагаться на
+      # межшаговую передачу GITHUB_ENV (BOM-проблемы с Out-File в PS 5.1).
       #
-      # ВАЖНО: Out-File -Encoding utf8 добавляет BOM (0xEF BB BF), который
-      # ломает парсинг GITHUB_ENV/GITHUB_PATH у GitHub Actions runner.
-      # Используем Set-Content -NoNewline (без BOM в PS 5.1).
-      #
-      # ШАГ A: Проверка хардкодных путей (самый быстрый путь, всегда выполняется)
-      - name: Init Go env (A — hardcoded paths)
+      # Стратегия: hardcoded paths → PATH/Get-Command/where → auto-download.
+      # GITHUB_PATH пишем Add-Content с ASCII (без BOM в PS 5.1).
+      - name: Init Go env (one-step, no GITHUB_ENV dependency)
         shell: powershell
         run: |
-          $found = $null
+          $ErrorActionPreference = "Stop"
+
+          # ---------- helper: add to GITHUB_PATH (ASCII, без BOM) ----------
+          function Add-Path($dir) {
+            Add-Content -Path $env:GITHUB_PATH -Value $dir -Encoding ASCII
+          }
+
+          $goDir = $null
+
+          # ---------- 1) hardcoded paths ----------
           foreach ($p in @(
               "C:\Program Files\Go\bin\go.exe",
               "C:\Go\bin\go.exe",
@@ -67,37 +73,28 @@ jobs:
               "${env:ProgramFiles(x86)}\Go\bin\go.exe"
           )) {
             if ($p -and (Test-Path $p)) {
-              $dir = Split-Path $p -Parent
-              Write-Host "Found go.exe at: $dir"
-              Set-Content -Path $env:GITHUB_PATH -Value $dir -NoNewline
-              $env:Path = "$dir;$env:Path"
-              $found = "yes"
+              $goDir = Split-Path $p -Parent
+              Write-Host "FOUND (hardcoded): $goDir"
               break
             }
           }
-          if (-not $found) {
-            Write-Host "hardcoded paths: go.exe NOT found"
-            Set-Content -Path $env:GITHUB_ENV -Value "GO_NOT_FOUND=1" -NoNewline
-          }
 
-      # ШАГ B: PATH lookup + where.exe + рекурсивный поиск (если шаг A не нашёл)
-      - name: Init Go env (B — PATH lookup fallback)
-        if: env.GO_NOT_FOUND == '1'
-        shell: powershell
-        run: |
-          $goDir = $null
+          # ---------- 2) Get-Command / where.exe / known paths ----------
+          if (-not $goDir) {
+            Write-Host "hardcoded: NOT found, trying PATH lookup..."
 
-          $exe = Get-Command go.exe -ErrorAction SilentlyContinue
-          if ($exe) {
-            $goDir = Split-Path $exe.Source -Parent
-            Write-Host "Found go.exe via Get-Command: $goDir"
+            $exe = Get-Command go.exe -ErrorAction SilentlyContinue
+            if ($exe) {
+              $goDir = Split-Path $exe.Source -Parent
+              Write-Host "FOUND (Get-Command): $goDir"
+            }
           }
 
           if (-not $goDir) {
             $w = where.exe go.exe 2>$null
             if ($w) {
               $goDir = Split-Path ($w | Select-Object -First 1) -Parent
-              Write-Host "Found go.exe via where.exe: $goDir"
+              Write-Host "FOUND (where.exe): $goDir"
             }
           }
 
@@ -114,83 +111,50 @@ jobs:
             foreach ($d in $known) {
               if ($d -and (Test-Path "$d\go.exe")) {
                 $goDir = $d
-                Write-Host "Found go.exe at known path: $d"
+                Write-Host "FOUND (known path): $goDir"
                 break
               }
             }
           }
 
+          # ---------- 3) recursive where /R C:\ ----------
           if (-not $goDir) {
-            Write-Host "Starting recursive search on C:\... (may take 30-60 sec)"
+            Write-Host "known paths: NOT found, trying recursive search on C:\... (may take 30-60 sec)"
             $r = where.exe /R "C:\" go.exe 2>$null | Select-Object -First 1
             if ($r) {
               $goDir = Split-Path $r -Parent
-              Write-Host "Found go.exe via recursive search: $goDir"
+              Write-Host "FOUND (recursive): $goDir"
             }
           }
 
-          if ($goDir) {
-            Add-Content -Path $env:GITHUB_PATH -Value "`n$goDir" -NoNewline
-            $env:Path = "$goDir;$env:Path"
-            Write-Host "Go PATH added: $goDir"
-          } else {
-            Write-Host "go.exe NOT found in PATH lookup, will auto-download"
-            Set-Content -Path $env:GITHUB_ENV -Value "GO_NOT_FOUND=1" -NoNewline
+          # ---------- 4) auto-download (если ничего не нашли) ----------
+          if (-not $goDir) {
+            Write-Host "recursive: NOT found. Auto-downloading Go $env:GO_VERSION_WIN ..."
+            $goVersion = "$env:GO_VERSION_WIN"
+            $url = "https://go.dev/dl/go$goVersion.windows-amd64.zip"
+            $zipPath = "$env:TEMP\go.zip"
+            $installDir = "C:\Go"
+
+            if (Test-Path $zipPath) { Remove-Item -Force $zipPath }
+            curl.exe -sSL -o $zipPath $url
+            if (-not (Test-Path $zipPath)) { throw "failed to download Go from $url" }
+            Write-Host "Downloaded: $((Get-Item $zipPath).Length) bytes"
+
+            if (Test-Path $installDir) { Remove-Item -Recurse -Force $installDir }
+            Expand-Archive -Path $zipPath -DestinationPath "C:\" -Force
+            if (-not (Test-Path "$installDir\bin\go.exe")) { throw "extraction failed — go.exe not found" }
+
+            $goDir = "$installDir\bin"
+            Write-Host "Installed Go to: $goDir"
           }
 
-      # ШАГ C: Auto-download Go (если ни шаг A, ни шаг B не нашли)
-      - name: Init Go env (C — auto-download)
-        if: env.GO_NOT_FOUND == '1'
-        shell: powershell
-        run: |
-          $goVersion = "$env:GO_VERSION_WIN"
-          $url = "https://go.dev/dl/go$goVersion.windows-amd64.zip"
-          $zipPath = "$env:TEMP\go.zip"
-          $installDir = "C:\Go"
+          # ---------- 5) apply PATH + verify ----------
+          Write-Host "Adding to PATH: $goDir"
+          $env:Path = "$goDir;$env:Path"
+          Add-Path $goDir
 
-          Write-Host "Go not found. Downloading Go $goVersion from $url ..."
-          if (Test-Path $zipPath) { Remove-Item -Force $zipPath }
-          curl.exe -sSL -o $zipPath $url
-          if (-not (Test-Path $zipPath)) {
-            Write-Host "ERROR: failed to download Go from $url"
-            exit 1
-          }
-          Write-Host "Download complete: $((Get-Item $zipPath).Length) bytes"
-
-          if (Test-Path $installDir) { Remove-Item -Recurse -Force $installDir }
-          Expand-Archive -Path $zipPath -DestinationPath "C:\" -Force
-          if (-not (Test-Path "$installDir\bin\go.exe")) {
-            Write-Host "ERROR: extraction failed — go.exe not found"
-            exit 1
-          }
-          Add-Content -Path $env:GITHUB_PATH -Value "`n$installDir\bin" -NoNewline
-          $env:Path = "$installDir\bin;$env:Path"
-          Write-Host "Go auto-installed to $installDir"
-
-      # ШАГ D: Verify (всегда выполняется, убеждается что Go доступен)
-      - name: Init Go env (D — verify)
-        shell: powershell
-        run: |
           $v = & go version 2>&1
-          if ($LASTEXITCODE -ne 0) {
-            Write-Host "go version failed. Trying hardcoded paths as fallback..."
-            foreach ($p in @("C:\Program Files\Go\bin", "C:\Go\bin")) {
-              if (Test-Path "$p\go.exe") {
-                Write-Host "Fallback: found go.exe at $p"
-                $env:Path = "$p;$env:Path"
-                Add-Content -Path $env:GITHUB_PATH -Value "`n$p" -NoNewline
-                $v = & go version 2>&1
-                if ($LASTEXITCODE -eq 0) {
-                  Write-Host "Go OK after fallback: $v"
-                  & go env GOROOT GOPATH GOMODCACHE GOCACHE 2>&1 | ForEach-Object { Write-Host "  $_" }
-                  exit 0
-                }
-              }
-            }
-            Write-Host "FATAL: Go not available after all init steps and fallback"
-            Write-Host "PATH=$env:Path"
-            exit 1
-          }
+          if ($LASTEXITCODE -ne 0) { throw "go version failed after PATH update" }
           Write-Host "Go OK: $v"
           & go env GOROOT GOPATH GOMODCACHE GOCACHE 2>&1 | ForEach-Object { Write-Host "  $_" }
 

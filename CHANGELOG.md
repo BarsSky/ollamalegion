@@ -5,6 +5,102 @@
 Формат ведётся в соответствии с [Keep a Changelog](https://keepachangelog.com/ru/1.0.0/),
 и этот проект придерживается [Semantic Versioning](https://semver.org/lang/ru/).
 
+## [Unreleased — 2026-06-28h]
+
+### Added (Roadmap Q3 — 7.1: GitHub Actions CI workflow) (0.5–1 день)
+
+**Задача**: создать GitHub Actions CI pipeline с двойной стратегией
+runner'ов: self-hosted Windows (primary, persistent cache) +
+ubuntu-latest (fallback, ephemeral). Это разблокирует P.4 (CI/CD scaffolding)
+из production-ready plan и завершает roadmap §7.1.
+
+**Зачем две стратегии** (после успешной установки 7.1a self-hosted runner'а):
+
+| | Self-hosted Windows | ubuntu-latest (fallback) |
+|---|---|---|
+| **Persistent cache** | ✅ (GOMODCACHE 641 MB + GOCACHE 3 GB) | ❌ (cold-cache каждый job) |
+| **Windows nvml тесты** | ✅ (build tag `nvml && windows`) | ❌ (Linux) |
+| **c/llama.cpp subtree** | ✅ (уже на диске) | ✅ (submodules: recursive) |
+| **Incremental build** | ✅ 5-10 сек | ❌ 5-10 мин cold-cache |
+| **Cost** | Бесплатно (ваша машина) | Лимиты для private repo |
+
+**Что добавлено:**
+
+1. **`.github/workflows/ci.yml`** (~190 LOC, 4 jobs):
+   - **Job 1 `test-self-hosted`** — `runs-on: [self-hosted, windows, ollamalegion-ci]`.
+     Persistent build всех 4 бинарников (balancer, cppworker, agent, monitor).
+     Race-тесты `internal/...`, cmd-тесты, integration `-short`.
+     Coverage report (atomic) → artifact `coverage-self-hosted`.
+   - **Job 2 `test-ubuntu-fallback`** — `runs-on: ubuntu-latest`.
+     Устанавливает build-essential + cmake, собирает stub-бинарники.
+     Те же тесты (без Windows nvml). Coverage → artifact `coverage-ubuntu`.
+   - **Job 3 `lint`** — golangci-lint v1.61.0 с `--only-new-issues: true`
+     (не падает на pre-existing warnings в main branch).
+   - **Job 4 `i18n`** — `node scripts/i18n_diff.js --strict` для проверки
+     en.js vs ru.js баланса.
+   - **Triggers**: push в main/integration/**/feature/**, pull_request в main/integration/**,
+     workflow_dispatch (ручной запуск).
+   - **Concurrency**: новая push отменяет старую (saves CI minutes).
+
+2. **`.golangci.yml`** (~75 LOC, lint config):
+   - 8 enabled линтеров: govet, errcheck, staticcheck, ineffassign, unused, misspell, gosimple, typecheck.
+   - misspell с locale: US,Russian (для русскоязычных комментариев).
+   - skip-dirs: c/llama.cpp, webui/node_modules.
+   - skip-files: bridge_stub.go, bridge.c, _gen.go, _mock.go.
+   - exclude-rules: тесты исключены из errcheck/gosimple, моки из всех.
+   - Таймаут 5 мин, max-issues-per-linter: 50.
+
+3. **README.md** — обновлены CI badges:
+   - `[![CI](actions/workflows/ci.yml/badge.svg)]` — реальный GitHub Actions badge.
+   - `[![Go Report Card](goreportcard.com/...)]` — качество кода.
+   - Status line ссылается на оба файла (`.github/workflows/ci.yml` + `docs/ci/self-hosted-runner.md`).
+
+**Архитектура CI:**
+
+```
+push/PR ──┬──► [self-hosted Windows] ──┐
+          │    build all 4 бинарников  │
+          │    test -race internal     ├──► coverage artifact
+          │    test cmd (stub)         │
+          │    vet + coverage          │
+          │                            │
+          ├──► [ubuntu-latest] ────────┤
+          │    build 4 бинарников      │
+          │    test -race internal     ├──► coverage artifact
+          │    test cmd + tests -short │
+          │    vet + coverage          │
+          │                            │
+          ├──► [lint ubuntu] ──────────┘ (needs ubuntu-fallback)
+          │    golangci-lint v1.61.0
+          │
+          └──► [i18n ubuntu] ─────────── (needs ubuntu-fallback)
+               node i18n_diff.js --strict
+```
+
+**Acceptance criteria:**
+
+1. `.github/workflows/ci.yml` создан с 4 jobs (self-hosted + ubuntu + lint + i18n).
+2. `runs-on: [self-hosted, windows, ollamalegion-ci]` для primary job.
+3. ubuntu-fallback запускается параллельно и работает без self-hosted (для случая offline).
+4. Build всех 4 бинарников: balancer, cppworker, agent, monitor.
+5. Race-тесты `internal/...` с таймаутом 180s.
+6. Coverage report (atomic) → artifact для последующего анализа.
+7. golangci-lint v1.61.0 с `--only-new-issues: true` (не валит CI на pre-existing warnings).
+8. i18n check через `scripts/i18n_diff.js --strict`.
+9. `.golangci.yml` с 8 enabled линтерами + misspell en+ru.
+10. README.md содержит реальный GitHub Actions badge + Go Report Card.
+
+**NB:**
+
+- CI НЕ запустится до push ветки в GitHub + установки self-hosted runner'а.
+- Coverage badge (7.4) — отдельная задача, требует codecov.io account.
+- `only-new-issues: true` означает, что pre-existing lint warnings не валят CI,
+  но новый код должен проходить чисто. Это стандартная практика для устаревших проектов.
+
+**Refs:** plans/2026-q3-roadmap.md §7.1, plans/2026-q3-production-ready-plan.md §5 (P.4)
+**Files:** 2 new + 1 modified, +275 LOC, 0 Go-tests
+**Branch:** feature/7.1-github-actions (от feature/7.1a-self-hosted-runner)
+
 ## [Unreleased — 2026-06-28g]
 
 ### Added (Roadmap Q3 — 7.1a: Self-hosted CI runner infrastructure) (0.5–1 день)

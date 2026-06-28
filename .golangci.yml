@@ -1,0 +1,89 @@
+# golangci-lint config для OllamaLegion
+#
+# Версия linter: v1.61.0 (см. .github/workflows/ci.yml job `lint`)
+# Документация: https://golangci-lint.run/
+#
+# Принципы:
+# - Только базовые линтеры (govet, errcheck, staticcheck, ineffassign, unused).
+#   Не включаем style-лиnterы (gofmt/goimports) — они дублируют gofmt и часто
+#   конфликтуют с IDE autoformatting.
+# - misspell включён для en+ru locale (типичные опечатки).
+# - Тесты исключены из errcheck (defer-Close без проверки ошибки — норма).
+# - Generated code и cgo stubs исключены (c/bridge/bridge_stub.go и др.).
+---
+
+run:
+  timeout: 5m
+  tests: true
+  build-tags:
+    - llama_stub
+  skip-dirs:
+    - c/llama.cpp           # upstream subtree, не наш код
+    - webui/node_modules    # JS код, не Go
+  skip-files:
+    - "c/bridge/bridge_stub.go$"  # auto-generated stub
+    - "c/bridge/bridge.c$"       # C-исходник, не Go
+    - ".*_gen\.go$"              # go generate output
+    - ".*_mock\.go$"             # mocks
+
+linters:
+  disable-all: true
+  enable:
+    - govet           # стандартный go vet
+    - errcheck        # проверка unchecked errors
+    - staticcheck     # staticcheck (включает SA*, правильность, устаревания)
+    - ineffassign     # неэффективные присваивания (x = x)
+    - unused          # неиспользуемый код (включает deadcode, U1000)
+    - misspell        # опечатки (en+ru)
+    - gosimple        # упрощения (включён в staticcheck, но явно для ясности)
+    - typecheck       # базовая проверка типов (всегда включён в CI)
+
+linters-settings:
+  govet:
+    enable-all: true
+    disable:
+      - shadow         # слишком много false-positives в нашем коде
+
+  misspell:
+    locale: US,Russian
+    ignore-words:
+      - cancelled      # en-GB вариант, используем в WebUI
+
+  staticcheck:
+    checks:
+      - all
+      # Отключаем самые "шумные" проверки для большого проекта:
+      - -SA1019  # использование deprecated API (часто осознанное)
+      - -SA4006  # value never used (часто false-positive для multi-return)
+      - -ST1003  # проверка naming convention (для нашего стиля с camelCase норм)
+      - -ST1005  # error strings should not be capitalized (для UI сообщений надо)
+      - -U1000   # unused code (конфликтует с `unused`)
+
+  errcheck:
+    check-blank: false   # не падать на "if err := x; _ = err"
+    check-type-assertions: false  # type assertions часто сознательно unchecked
+
+  gosimple:
+    checks:
+      - all
+      - -S1000  # используйте plain для консистентности (конфликтует с typecheck)
+
+issues:
+  max-issues-per-linter: 50
+  max-same-issues: 3  # 3 одинаковых warning'а → exit 1
+  exclude-rules:
+    - path: _test\.go
+      linters:
+        - errcheck      # defer Close в тестах — норм
+        - gosimple      # тесты часто используют "простой" код
+    - path: cmd/cppworker/.*_test\.go$
+      linters:
+        - staticcheck   # stub-тесты cppworker содержат искусственные примеры
+    # Generated mocks (gomock, mockery, etc.)
+    - path: internal/mocks/
+      linters:
+        - all
+    # Proto-generated code (если появится)
+    - path: ".*\.pb\.go$"
+      linters:
+        - all

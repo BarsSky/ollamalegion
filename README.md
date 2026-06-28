@@ -3,9 +3,10 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE.md)
 [![Go Version](https://img.shields.io/badge/Go-1.21+-00ADD8.svg)](https://go.dev/)
 [![Docker](https://img.shields.io/badge/Docker-Ready-2496ED.svg)](https://www.docker.com/)
-[![CI](https://img.shields.io/badge/CI-self--hosted--windows--blue.svg)](docs/ci/self-hosted-runner.md)
+[![CI](https://github.com/BarsSky/ollamalegion/actions/workflows/ci.yml/badge.svg)](https://github.com/BarsSky/ollamalegion/actions/workflows/ci.yml)
+[![Go Report Card](https://goreportcard.com/badge/github.com/BarsSky/ollamalegion)](https://goreportcard.com/report/github.com/BarsSky/ollamalegion)
 
-> 🖥️ **CI Status:** self-hosted Windows runner (см. [docs/ci/self-hosted-runner.md](docs/ci/self-hosted-runner.md))
+> 🖥️ **CI Status:** self-hosted Windows runner + GitHub-hosted ubuntu-latest fallback (см. [`.github/workflows/ci.yml`](.github/workflows/ci.yml) и [docs/ci/self-hosted-runner.md](docs/ci/self-hosted-runner.md))
 > **Проверить:** `.\scripts\check-runner.ps1` | **Установить:** `.\scripts\setup-runner.ps1 -GitHubToken "<PAT>"`
 
 Интеллектуальный балансировщик нагрузки для кластера Ollama с мониторингом ресурсов GPU/CPU/RAM/Disk и умным распределением запросов.

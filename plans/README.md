@@ -12,8 +12,9 @@
 | План | Файл | Сессия | Статус |
 |------|------|--------|--------|
 | [Session F — UI/UX quick wins (5.3, 5.4, 5.5, 5.7)](2026-q3-session-f-quick-wins.md) | `plans/2026-q3-session-f-quick-wins.md` | Session F (июнь 2026) | ✅ Session F ПОЛНОСТЬЮ ЗАКРЫТ (F.0a/b/α/β/γ + F.4) |
-| **[7.1a — Self-hosted CI runner](2026-q3-roadmap.md#7-cicd-и-тестирование)** | `scripts/setup-runner.ps1` + `scripts/check-runner.ps1` + `docs/ci/self-hosted-runner.md` | Месяц 1 (июль 2026) | ⏳ WIP (setup-runner + check-runner + docs готовы, установка runner'а отложена до получения PAT) |
-| [Production-ready (3.2, 3.3, B8.7, 7.1)](2026-q3-production-ready-plan.md) | `plans/2026-q3-production-ready-plan.md` | Sessions G+ (август-сентябрь 2026) | ⏳ WIP |
+| **[7.1a — Self-hosted CI runner](2026-q3-roadmap.md#7-cicd-и-тестирование)** | `scripts/setup-runner.ps1` + `scripts/check-runner.ps1` + `docs/ci/self-hosted-runner.md` | Месяц 1 (июль 2026) | ✅ DONE 2026-06-28 (commit `01b2afc`); установка runner'а на этой машине отложена до получения GitHub PAT от пользователя |
+| **[7.1 — GitHub Actions CI workflow](2026-q3-roadmap.md#7-cicd-и-тестирование)** | `.github/workflows/ci.yml` (4 jobs: test-self-hosted + test-ubuntu-fallback + lint + i18n) + `.golangci.yml` (8 линтеров) | Месяц 1 (июль 2026) | ⏳ WIP (workflow + lint config созданы, push и фактический запуск CI отложены до получения PAT + установки 7.1a runner'а) |
+| [Production-ready (3.2, 3.3, B8.7, 7.1 → 7.4)](2026-q3-production-ready-plan.md) | `plans/2026-q3-production-ready-plan.md` | Sessions G+ (август-сентябрь 2026) | ⏳ WIP (7.1a ✅, 7.1 ⏳ WIP) |
 
 Все планы B1–B8 реализованы (см. Roadmap ниже).
 Все секции roadmap до раздела 2.2 (Models tab gaps) **полностью DONE** в Sessions 13-19 + A-E.

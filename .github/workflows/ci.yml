@@ -1,0 +1,229 @@
+# GitHub Actions CI для OllamaLegion
+#
+# Стратегия: self-hosted Windows runner (primary) + ubuntu-latest (fallback).
+# Self-hosted использует persistent cache из C:\actions-runner, поэтому
+# build 5-10 сек incremental vs 5-10 мин cold-cache на ubuntu-latest.
+#
+# Self-hosted runner требует Windows + Go 1.21+ + Docker + node + cmake.
+# Установка: см. docs/ci/self-hosted-runner.md и scripts/setup-runner.ps1.
+#
+# Ubuntu fallback работает для stub-only тестов (cgo с stub C-bridge).
+# На ubuntu НЕ работают Windows-specific тесты (internal/agent/nvml_windows.go).
+---
+
+name: CI
+
+on:
+  push:
+    branches: [main, integration/**, feature/**]
+  pull_request:
+    branches: [main, integration/**]
+  workflow_dispatch:  # ручной запуск через UI
+
+# Отмена in-progress для одного и того же workflow (новые push отменяют старые)
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  GO_VERSION: "1.22"           # fallback runner'ы используют эту версию
+  GO_VERSION_WIN: "1.22"       # self-hosted runner (должна совпадать с установленной)
+  GOPROXY: https://proxy.golang.org,direct
+  CGO_ENABLED: 1               # нужен для cgo + C-bridge
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # Job 1: Build + test на self-hosted Windows runner (primary, с persistent cache)
+  # ---------------------------------------------------------------------------
+  test-self-hosted:
+    name: Test (self-hosted Windows)
+    runs-on: [self-hosted, windows, ollamalegion-ci]
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive  # для c/llama.cpp subtree
+          fetch-depth: 0         # для git log в комментариях
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION_WIN }}
+          cache: false  # persistent cache на диске, не нужно пересоздавать
+
+      - name: Show Go env
+        shell: pwsh
+        run: |
+          go version
+          go env GOROOT GOPATH GOMODCACHE GOCACHE
+
+      - name: Build all binaries (stub mode)
+        shell: pwsh
+        run: |
+          go build -tags llama_stub -v -o bin\balancer-stub.exe      .\cmd\balancer\
+          go build -tags llama_stub -v -o bin\cppworker-stub.exe    .\cmd\cppworker\
+          go build -tags llama_stub -v -o bin\agent-stub.exe        .\cmd\agent\
+          go build -tags llama_stub -v -o bin\monitor-stub.exe      .\cmd\monitor\
+
+      - name: Verify healthcheck (stub)
+        shell: pwsh
+        run: |
+          .\bin\cppworker-stub.exe -healthcheck
+
+      - name: Test (internal packages, -race)
+        shell: pwsh
+        run: |
+          go test -race -tags llama_stub -timeout 180s ./internal/...
+
+      - name: Test (cmd packages, stub mode)
+        shell: pwsh
+        run: |
+          go test -tags llama_stub -timeout 60s ./cmd/...
+
+      - name: Test (integration, may use Docker)
+        shell: pwsh
+        run: |
+          go test -tags llama_stub -timeout 300s -short ./tests/...
+        # -short: пропускает e2e тесты, требующие docker-compose stack
+
+      - name: Go vet
+        shell: pwsh
+        run: |
+          go vet -tags llama_stub ./...
+
+      - name: Generate coverage (race + atomic)
+        if: success()
+        shell: pwsh
+        run: |
+          go test -tags llama_stub -coverprofile=coverage.out -covermode=atomic -timeout 180s ./internal/...
+
+      - name: Coverage summary
+        if: success()
+        shell: pwsh
+        run: |
+          go tool cover -func=coverage.out | Tee-Object -FilePath coverage-func.txt
+          Get-Content coverage-func.txt | Select-Object -Last 1
+
+      - name: Upload coverage artifact
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-self-hosted
+          path: |
+            coverage.out
+            coverage-func.txt
+
+  # ---------------------------------------------------------------------------
+  # Job 2: Build + test на ubuntu-latest (fallback, если self-hosted offline)
+  #
+  # Этот job ВСЕГДА запускается параллельно (continue-on-error: true в первом
+  # job'е означает, что если self-hosted упал — этот может дать сигнал).
+  # На ubuntu работают только stub-only тесты (без Windows nvml).
+  # ---------------------------------------------------------------------------
+  test-ubuntu-fallback:
+    name: Test (ubuntu-latest fallback)
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          fetch-depth: 0
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: true
+
+      - name: Install build tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential cmake
+
+      - name: Build all binaries (stub mode)
+        run: |
+          mkdir -p bin
+          go build -tags llama_stub -v -o bin/balancer-stub      ./cmd/balancer/
+          go build -tags llama_stub -v -o bin/cppworker-stub    ./cmd/cppworker/
+          go build -tags llama_stub -v -o bin/agent-stub        ./cmd/agent/
+          go build -tags llama_stub -v -o bin/monitor-stub      ./cmd/monitor/
+
+      - name: Test (internal packages, -race)
+        run: |
+          go test -race -tags llama_stub -timeout 180s ./internal/...
+
+      - name: Test (cmd + integration, short)
+        run: |
+          go test -tags llama_stub -timeout 120s -short ./cmd/... ./tests/...
+
+      - name: Go vet
+        run: |
+          go vet -tags llama_stub ./...
+
+      - name: Generate coverage
+        if: success()
+        run: |
+          go test -tags llama_stub -coverprofile=coverage.out -covermode=atomic -timeout 180s ./internal/...
+          go tool cover -func=coverage.out | tail -1
+
+      - name: Upload coverage artifact
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-ubuntu
+          path: coverage.out
+
+  # ---------------------------------------------------------------------------
+  # Job 3: golangci-lint (только ubuntu, чтобы не дублировать)
+  # ---------------------------------------------------------------------------
+  lint:
+    name: Lint (golangci-lint)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    needs: [test-ubuntu-fallback]  # запускаем после того, как хотя бы один test-job прошёл
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: true
+
+      - name: Run golangci-lint
+        uses: golangci/golangci-lint-action@v6
+        with:
+          version: v1.61.0
+          args: --timeout=5m
+          only-new-issues: true  # не падать на pre-existing warnings в main
+
+  # ---------------------------------------------------------------------------
+  # Job 4: i18n sync check (только ubuntu, lightweight)
+  # ---------------------------------------------------------------------------
+  i18n:
+    name: i18n EN/RU balance
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    needs: [test-ubuntu-fallback]
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Check i18n balance (en.js vs ru.js)
+        run: |
+          node scripts/i18n_diff.js --strict

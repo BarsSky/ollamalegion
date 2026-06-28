@@ -7,6 +7,11 @@ func (s *Server) setupRoutes() {
 	// Health check (без аутентификации и rate limiting)
 	s.mux.HandleFunc("/api/v1/health", s.healthHandler)
 
+	// F.γ (2026-06-28): session F — расширенный health-check для UI страницы health.html.
+	// Агрегирует 3 источника: HealthChecker + SSE events (F.α) + transport EOF.
+	// Без аутентификации (как /api/v1/health), rate limit — через middleware.
+	s.mux.Handle("/api/v1/health/detailed", RateLimitMiddleware(http.HandlerFunc(s.healthDetailedHandler), s.rateLimiter))
+
 	// Liveness probe — всегда 200 OK, пока HTTP-сервер жив.
 	// Используется Docker healthcheck, чтобы не падать в restart loop,
 	// когда бэкенды ещё не зарегистрированы (healthHandler возвращает 503 в degraded).

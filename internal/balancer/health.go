@@ -264,3 +264,22 @@ func (hc *HealthChecker) GetHealthyBackends() []string {
 	}
 	return healthy
 }
+
+// SetStatusForTest — устанавливает произвольный HealthStatus для backend'а.
+// Используется ТОЛЬКО в unit-тестах (F.γ handlers_health_test.go) для имитации
+// healthcheck failures без выполнения реальных HTTP-запросов.
+//
+// Не thread-safe с горячей заменой состояния; для тестов достаточно
+// (вызывается ДО чтения GetAllStatuses).
+func (hc *HealthChecker) SetStatusForTest(backendID string, status *HealthStatus) {
+	hc.mu.Lock()
+	defer hc.mu.Unlock()
+	if hc.results == nil {
+		hc.results = make(map[string]*HealthStatus)
+	}
+	if status == nil {
+		delete(hc.results, backendID)
+		return
+	}
+	hc.results[backendID] = status
+}

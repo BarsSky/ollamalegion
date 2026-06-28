@@ -223,6 +223,17 @@ window.I18N_EN = {
   "settings.theme_light": "Light",
   "settings.theme_toggle_title": "Toggle theme (Ctrl+Shift+T)",
 
+  // Notifications
+  "notifications.title": "Notifications",
+  "notifications.bell_title": "Notifications",
+  "notifications.mark_read": "Mark all read",
+  "notifications.clear_all": "Clear",
+  "notifications.empty": "No notifications",
+  "notifications.severity.info": "Info",
+  "notifications.severity.warning": "Warning",
+  "notifications.severity.error": "Error",
+  "notifications.severity.critical": "Critical",
+
   // Common
   "common.loading": "Loading...",
   "common.error": "Error",

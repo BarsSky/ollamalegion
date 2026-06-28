@@ -104,6 +104,20 @@
                         <option value="en">🇬🇧 EN</option>
                     </select>
                     <button class="btn-theme-toggle" id="themeToggle" data-i18n-title="settings.theme_toggle_title" title="Переключить тему (Ctrl+Shift+T)">☀️</button>
+                    <!-- F.α (2026-06-28): session F — notifications bell icon -->
+                    <div class="notifications-wrapper">
+                        <button class="btn-theme-toggle" id="notificationsBtn" data-i18n-title="notifications.bell_title" title="Notifications">🔔<span class="notification-badge" id="notificationsBadge" hidden>0</span></button>
+                        <div class="notifications-dropdown" id="notificationsDropdown" hidden>
+                            <div class="notifications-header">
+                                <span data-i18n="notifications.title">Notifications</span>
+                                <div>
+                                    <button id="notificationsMarkRead" data-i18n="notifications.mark_read" class="btn-link">Mark all read</button>
+                                    <button id="notificationsClear" data-i18n="notifications.clear_all" class="btn-link">Clear</button>
+                                </div>
+                            </div>
+                            <ul id="notificationsList"></ul>
+                        </div>
+                    </div>
                     <button class="btn btn-secondary" id="refreshBtn" data-i18n="common.retry">Обновить</button>
                     <button class="btn btn-primary" id="addBackendBtn" data-i18n="backends.add">Добавить бэкенд</button>
                 </div>
@@ -1358,6 +1372,7 @@
     <script src="js/modules/setup-wizard.js?v=13"></script>
     <script src="js/modules/cppworker-params.js?v=16"></script>
     <script src="js/modules/bulk-models.js?v=1"></script>
+    <script src="js/modules/notifications.js?v=14"></script>
     <script src="js/app.js?v=14"></script>
 </body>
 </html>

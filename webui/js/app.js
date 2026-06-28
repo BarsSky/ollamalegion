@@ -56,6 +56,18 @@ const ui = (function () {
             SettingsUI.initBackendEngineCards();
         }
 
+        // ---- Notifications (F.α — SSE EventBus) ----
+        // EventSource подключается к /api/v1/events (ring buffer + heartbeat + live stream).
+        // Токен передаётся в query (?token=...) потому что EventSource API не поддерживает custom headers.
+        if (window.notifications && window.notifications.init) {
+            window.notifications.init({
+                token: (window.WEBUI_CONFIG && window.WEBUI_CONFIG.API_TOKEN) || '',
+                onNew: function (ev) { renderNotification(ev); },
+                onClear: function () { renderNotificationsList(); }
+            });
+            setupNotificationsUI();
+        }
+
         // Check if setup wizard should be shown — проверяем сервер, а не localStorage
         if (window.SetupWizard && window.SetupWizard.isInitialized) {
             window.SetupWizard.isInitialized().then(function (initialized) {
@@ -2407,6 +2419,142 @@ const ui = (function () {
             if (results[i]) return results[i];
         }
         return null;
+    }
+
+    // ---- Notifications (F.α) ----
+    // helpers: рендер отдельного уведомления, отрисовка списка, UI-wiring (bell click, mark-read, clear).
+
+    /**
+     * Добавляет новое уведомление в DOM список + обновляет badge.
+     * Вызывается из window.notifications.callbacks.onNew.
+     */
+    function renderNotification(ev) {
+        if (!ev) return;
+        var list = document.getElementById('notificationsList');
+        var badge = document.getElementById('notificationsBadge');
+        if (!list) return;
+
+        var severity = (ev.severity || 'info').toLowerCase();
+        var time = ev.time || new Date().toISOString();
+        var timeStr = new Date(time).toLocaleTimeString(window.I18N && I18N.getLang() === 'ru' ? 'ru' : 'en');
+        var source = ev.source ? '<span class="notification-source">' + Utils.escapeHtml(ev.source) + '</span>' : '';
+        var severityLabel = window.I18N ? I18N.t('notifications.severity.' + severity) : severity;
+
+        var li = document.createElement('li');
+        li.className = 'notifications-item notifications-item-' + severity;
+        li.dataset.eventTime = time;
+        li.innerHTML =
+            '<div class="notifications-item-header">' +
+                '<span class="notifications-severity notifications-severity-' + severity + '">' + Utils.escapeHtml(severityLabel) + '</span>' +
+                source +
+                '<span class="notifications-time">' + Utils.escapeHtml(timeStr) + '</span>' +
+            '</div>' +
+            '<div class="notifications-message">' + Utils.escapeHtml(ev.message || '') + '</div>';
+
+        list.insertBefore(li, list.firstChild);
+
+        // Лимит 50 видимых (сервер держит 100 в ring buffer; UI ограничиваем сильнее).
+        while (list.children.length > 50) {
+            list.removeChild(list.lastChild);
+        }
+
+        // Badge — непрочитанные = общее число видимых (read state мы не храним, по требованию F.α — простая индикация).
+        if (badge) {
+            var unread = list.querySelectorAll('.notifications-item').length;
+            if (unread > 0) {
+                badge.textContent = unread > 99 ? '99+' : String(unread);
+                badge.hidden = false;
+            } else {
+                badge.hidden = true;
+            }
+        }
+    }
+
+    /**
+     * Перерисовка всего списка (после onClear из notifications.js).
+     * Источник истины — DOM внутри #notificationsList; здесь мы только чистим + badge.
+     */
+    function renderNotificationsList() {
+        var list = document.getElementById('notificationsList');
+        var badge = document.getElementById('notificationsBadge');
+        if (!list) return;
+        list.innerHTML = '';
+        if (badge) {
+            badge.hidden = true;
+            badge.textContent = '0';
+        }
+        // Empty-state placeholder
+        var empty = document.createElement('li');
+        empty.className = 'notifications-empty';
+        empty.textContent = window.I18N ? I18N.t('notifications.empty') : 'No notifications';
+        list.appendChild(empty);
+    }
+
+    /**
+     * Подключает обработчики к bell-кнопке, dropdown, mark-read, clear.
+     * Вызывается один раз в init() после window.notifications.init().
+     */
+    function setupNotificationsUI() {
+        var btn = document.getElementById('notificationsBtn');
+        var dropdown = document.getElementById('notificationsDropdown');
+        var markReadBtn = document.getElementById('notificationsMarkRead');
+        var clearBtn = document.getElementById('notificationsClear');
+        var list = document.getElementById('notificationsList');
+
+        if (btn && dropdown) {
+            btn.addEventListener('click', function (e) {
+                e.stopPropagation();
+                var isOpen = !dropdown.hidden;
+                dropdown.hidden = isOpen;
+                btn.setAttribute('aria-expanded', String(!isOpen));
+            });
+            // Закрываем dropdown при клике снаружи
+            document.addEventListener('click', function (e) {
+                if (dropdown.hidden) return;
+                if (e.target === btn || (btn.contains && btn.contains(e.target))) return;
+                if (dropdown.contains && dropdown.contains(e.target)) return;
+                dropdown.hidden = true;
+                btn.setAttribute('aria-expanded', 'false');
+            });
+            // Esc закрывает dropdown
+            document.addEventListener('keydown', function (e) {
+                if (e.key === 'Escape' && !dropdown.hidden) {
+                    dropdown.hidden = true;
+                    btn.setAttribute('aria-expanded', 'false');
+                }
+            });
+        }
+
+        if (markReadBtn) {
+            markReadBtn.addEventListener('click', function (e) {
+                e.stopPropagation();
+                var badge = document.getElementById('notificationsBadge');
+                if (badge) {
+                    badge.hidden = true;
+                    badge.textContent = '0';
+                }
+                if (list) {
+                    var items = list.querySelectorAll('.notifications-item');
+                    items.forEach(function (el) { el.classList.add('notifications-item-read'); });
+                }
+            });
+        }
+
+        if (clearBtn) {
+            clearBtn.addEventListener('click', function (e) {
+                e.stopPropagation();
+                if (window.notifications && typeof window.notifications.clear === 'function') {
+                    window.notifications.clear();
+                } else {
+                    renderNotificationsList();
+                }
+            });
+        }
+
+        // Initial render — empty state
+        if (list && list.children.length === 0) {
+            renderNotificationsList();
+        }
     }
 
     // ---- Public API ----

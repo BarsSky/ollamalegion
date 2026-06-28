@@ -211,6 +211,17 @@ window.I18N_RU = {
   "settings.theme_light": "Светлая",
   "settings.theme_toggle_title": "Переключить тему (Ctrl+Shift+T)",
 
+  // Уведомления
+  "notifications.title": "Уведомления",
+  "notifications.bell_title": "Уведомления",
+  "notifications.mark_read": "Отметить все прочитанными",
+  "notifications.clear_all": "Очистить",
+  "notifications.empty": "Нет уведомлений",
+  "notifications.severity.info": "Информация",
+  "notifications.severity.warning": "Предупреждение",
+  "notifications.severity.error": "Ошибка",
+  "notifications.severity.critical": "Критично",
+
   // Common
   "common.loading": "Загрузка...",
   "common.error": "Ошибка",

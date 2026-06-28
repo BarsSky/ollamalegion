@@ -50,36 +50,33 @@ jobs:
       # Init Go env — actions/setup-go@v5 зависает под LocalSystem,
       # поэтому ищем go.exe вручную (where.exe + известные пути + рекурсивный поиск).
       # Если Go не найден — авто-скачивание в C:\Go.
+      #
+      # ВНИМАНИЕ: без функций PowerShell! $script:goFound ломается под CI runner.
+      # Всё — линейный скрипт.
       - name: Init Go env
         shell: powershell
         run: |
-          $goFound = $false
           $goVersion = "$env:GO_VERSION_WIN"
-
-          # Хелпер для добавления Go в PATH
-          function Add-GoDir($dir) {
-            Write-Host "Adding Go PATH: $dir"
-            echo "$dir" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
-            $env:Path = "$dir;$env:Path"
-            $script:goFound = $true
-          }
+          $goDir = $null
 
           # 1) Прямой PATH lookup (если чудом Go в PATH)
-          if (Get-Command go.exe -ErrorAction SilentlyContinue) {
-            $goFound = $true
+          $goExe = Get-Command go.exe -ErrorAction SilentlyContinue
+          if ($goExe) {
+            $goDir = Split-Path -Parent $goExe.Source
+            Write-Host "go.exe found in PATH at: $goDir"
           }
 
           # 2) where.exe (ищет в SYSTEM PATH)
-          if (-not $goFound) {
+          if (-not $goDir) {
             $whereGo = where.exe go.exe 2>$null
             if ($whereGo) {
               $goDir = Split-Path -Parent ($whereGo | Select-Object -First 1)
-              Add-GoDir $goDir
+              Write-Host "go.exe found via where.exe at: $goDir"
             }
           }
 
           # 3) Известные пути установки Go
-          if (-not $goFound) {
+          if (-not $goDir) {
             $candidates = @()
             if (Test-Path env:GOROOT) { $candidates += "$env:GOROOT\bin" }
             $candidates += "$env:ProgramFiles\Go\bin"
@@ -95,25 +92,26 @@ jobs:
             $candidates += "$env:ALLUSERSPROFILE\scoop\apps\go\current\bin"
             foreach ($dir in $candidates) {
               if (Test-Path "$dir\go.exe") {
-                Add-GoDir $dir
+                $goDir = $dir
+                Write-Host "go.exe found at known path: $dir"
                 break
               }
             }
           }
 
           # 4) Рекурсивный поиск go.exe на C:\ (last resort)
-          if (-not ($goFound -or $script:goFound)) {
+          if (-not $goDir) {
             Write-Host "go.exe not found in common paths. Starting recursive search on C:\..."
             Write-Host "This may take 30-60 seconds..."
             $goPath = where.exe /R C:\ go.exe 2>$null | Select-Object -First 1
             if ($goPath) {
               $goDir = Split-Path -Parent $goPath
-              Add-GoDir $goDir
+              Write-Host "go.exe found via recursive search at: $goDir"
             }
           }
 
           # 5) Auto-download Go if not found anywhere on the runner
-          if (-not ($goFound -or $script:goFound)) {
+          if (-not $goDir) {
             Write-Host "Go not found on system. Downloading Go $goVersion..."
             $url = "https://go.dev/dl/go$goVersion.windows-amd64.zip"
             $zipPath = "$env:TEMP\go.zip"
@@ -143,18 +141,21 @@ jobs:
               exit 1
             }
 
-            # Add to PATH
-            Add-GoDir "$installDir\bin"
+            $goDir = "$installDir\bin"
             Write-Host "Go $goVersion auto-installed to $installDir"
           }
 
+          # Добавляем Go в PATH
+          Write-Host "Adding Go PATH: $goDir"
+          echo "$goDir" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+          $env:Path = "$goDir;$env:Path"
+
           # Финальная проверка
-          if (-not ($goFound -or $script:goFound)) {
+          $goVersionOutput = & go version 2>&1
+          if ($LASTEXITCODE -ne 0) {
             Write-Host "::error::Go installation not found on the runner and auto-download failed."
             exit 1
           }
-
-          $goVersionOutput = & go version 2>&1
           Write-Host "Go found: $goVersionOutput"
           & go env GOROOT GOPATH GOMODCACHE GOCACHE 2>&1 | ForEach-Object { Write-Host $_ }
 
@@ -393,4 +394,4 @@ jobs:
 
       - name: Check i18n balance (en.js vs ru.js)
         run: |
-          node scripts/i18n_diff.js --strict
+          node scripts/i18n_diff.js webui/js/i18n/en.js webui/js/i18n/ru.js --strict

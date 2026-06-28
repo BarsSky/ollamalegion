@@ -17,16 +17,37 @@ run:
   tests: true
   build-tags:
     - llama_stub
-  skip-dirs:
+
+issues:
+  max-issues-per-linter: 50
+  max-same-issues: 3  # 3 одинаковых warning'а → exit 1
+  exclude-dirs:
     - c/llama.cpp           # upstream subtree, не наш код
     - webui/node_modules    # JS код, не Go
-  skip-files:
-    - "c/bridge/bridge_stub.go$"  # auto-generated stub
-    - "c/bridge/bridge.c$"       # C-исходник, не Go
-    - ".*_gen\.go$"              # go generate output
-    - ".*_mock\.go$"             # mocks
+  exclude-files:
+    - 'c/bridge/bridge_stub.go$'  # auto-generated stub
+    - 'c/bridge/bridge.c$'       # C-исходник, не Go
+    - '.*_gen\.go$'              # go generate output
+    - '.*_mock\.go$'             # mocks
+  exclude-rules:
+    - path: _test\.go$
+      linters:
+        - errcheck      # defer Close в тестах — норм
+        - gosimple      # тесты часто используют "простой" код
+    - path: cmd/cppworker/.*_test\.go$
+      linters:
+        - staticcheck   # stub-тесты cppworker содержат искусственные примеры
+    # Generated mocks (gomock, mockery, etc.)
+    - path: internal/mocks/
+      linters:
+        - all
+    # Proto-generated code (если появится)
+    - path: '.*\.pb\.go$'
+      linters:
+        - all
 
 linters:
+
   disable-all: true
   enable:
     - govet           # стандартный go vet
@@ -68,22 +89,3 @@ linters-settings:
       - all
       - -S1000  # используйте plain для консистентности (конфликтует с typecheck)
 
-issues:
-  max-issues-per-linter: 50
-  max-same-issues: 3  # 3 одинаковых warning'а → exit 1
-  exclude-rules:
-    - path: _test\.go
-      linters:
-        - errcheck      # defer Close в тестах — норм
-        - gosimple      # тесты часто используют "простой" код
-    - path: cmd/cppworker/.*_test\.go$
-      linters:
-        - staticcheck   # stub-тесты cppworker содержат искусственные примеры
-    # Generated mocks (gomock, mockery, etc.)
-    - path: internal/mocks/
-      linters:
-        - all
-    # Proto-generated code (если появится)
-    - path: ".*\.pb\.go$"
-      linters:
-        - all

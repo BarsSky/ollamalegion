@@ -85,6 +85,10 @@ const ui = (function () {
         // Load proxy logs from REST API on startup
         fetchProxyLogs();
 
+        // F.2 (Session F): live tail системных логов через WebSocket /ws/logs.
+        // Заменяет polling на Logs tab: при connect получаем snapshot, далее live stream.
+        initLogsStream();
+
         addLog(window.I18N ? I18N.t('app.webui_initialized') : 'WebUI initialized', 'info');
     }
 
@@ -1836,16 +1840,88 @@ const ui = (function () {
         }, 4000);
     }
 
-    function addLog(message, level = 'info') {
+    /**
+     * Добавить запись лога в data.logs и (если пользователь на Logs tab) перерисовать.
+     *
+     * F.2 (Session F): поддерживает 2 формата входа:
+     *   1. addLog(message, level) — старая сигнатура, используется для локальных событий WebUI.
+     *   2. addLogEntry(entry) — новая, для записей из WebSocket /ws/logs. entry = {time, level, message, source}.
+     *
+     * Backend присылает time как ISO-строку (RFC3339) или Date; здесь мы нормализуем
+     * к локализованному HH:MM:SS для совместимости с renderLogs().
+     */
+    function addLogEntry(entry) {
+        if (!entry || typeof entry !== 'object') return;
         var locale = (window.I18N && I18N.getLang() === 'ru') ? 'ru' : 'en';
-        const entry = {
-            time: new Date().toLocaleTimeString(locale),
-            level: level.toUpperCase(),
-            message
+        var timeStr;
+        if (entry.time) {
+            try {
+                var d = entry.time instanceof Date ? entry.time : new Date(entry.time);
+                if (!isNaN(d.getTime())) {
+                    timeStr = d.toLocaleTimeString(locale);
+                }
+            } catch (e) { /* ignore */ }
+        }
+        if (!timeStr) timeStr = new Date().toLocaleTimeString(locale);
+
+        var normalized = {
+            time: timeStr,
+            level: (entry.level || 'info').toUpperCase(),
+            message: entry.message || '',
+            source: entry.source || ''
         };
-        data.logs.unshift(entry);
+        data.logs.unshift(normalized);
         if (data.logs.length > 500) data.logs = data.logs.slice(0, 500);
         if (currentPage === 'logs') renderLogs(data.logs);
+    }
+
+    function addLog(message, level = 'info') {
+        // Обратная совместимость: локальные события WebUI (инициализация, ошибки).
+        addLogEntry({ level: level, message: message });
+    }
+
+    /**
+     * F.2 (Session F): инициализация live tail через WebSocket /ws/logs.
+     *
+     * WS присылает snapshot ring buffer на connect + live LogEntry. Backend-side broker
+     * живёт в process balancer (см. internal/api/handlers_logs_ws.go), наполняется
+     * через logger.Publish(...) из любого места кода.
+     *
+     * Token: тот же что и для остальных API endpoints (через WEBUI_CONFIG.API_TOKEN).
+     * Если broker не инициализирован на сервере — WS всё равно откроется, пришлёт
+     * пустой snapshot и закроется (graceful degradation).
+     */
+    function initLogsStream() {
+        if (!window.logsStream) return;
+        var token = (window.WEBUI_CONFIG && window.WEBUI_CONFIG.API_TOKEN) || '';
+        window.logsStream.start({
+            token: token,
+            onSnapshot: function (msg) {
+                if (!msg || !Array.isArray(msg.entries)) return;
+                // Заменяем data.logs на snapshot (server is source of truth).
+                var locale = (window.I18N && I18N.getLang() === 'ru') ? 'ru' : 'en';
+                data.logs = msg.entries.map(function (e) {
+                    var timeStr;
+                    if (e.time) {
+                        try {
+                            var d = e.time instanceof Date ? e.time : new Date(e.time);
+                            if (!isNaN(d.getTime())) timeStr = d.toLocaleTimeString(locale);
+                        } catch (err) { /* ignore */ }
+                    }
+                    if (!timeStr) timeStr = new Date().toLocaleTimeString(locale);
+                    return {
+                        time: timeStr,
+                        level: (e.level || 'info').toUpperCase(),
+                        message: e.message || '',
+                        source: e.source || ''
+                    };
+                });
+                if (currentPage === 'logs') renderLogs(data.logs);
+            },
+            onEntry: function (entry) {
+                addLogEntry(entry);
+            }
+        });
     }
 
     // ---- Export ----

@@ -27,7 +27,7 @@ concurrency:
 
 env:
   GO_VERSION: "1.22"           # fallback runner'ы используют эту версию
-  GO_VERSION_WIN: "1.25"       # self-hosted runner — установлен глобально, actions/setup-go НЕ используется (зависает под LocalSystem)
+  GO_VERSION_WIN: "1.25.2"     # self-hosted runner — auto-download, если нет
   GOPROXY: https://proxy.golang.org,direct
   CGO_ENABLED: 1               # нужен для cgo + C-bridge
 
@@ -49,10 +49,19 @@ jobs:
 
       # Init Go env — actions/setup-go@v5 зависает под LocalSystem,
       # поэтому ищем go.exe вручную (where.exe + известные пути + рекурсивный поиск).
+      # Если Go не найден — авто-скачивание в C:\Go.
       - name: Init Go env
         shell: powershell
         run: |
           $goFound = $false
+          $goVersion = "$env:GO_VERSION_WIN"
+
+          function Add-GoToPath($dir) {
+            Write-Host "Adding Go PATH: $dir"
+            echo "$dir" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+            $env:Path = "$dir;$env:Path"
+            $global:goFound = $true
+          }
 
           # 1) Прямой PATH lookup (если чудом Go в PATH)
           if (Get-Command go.exe -ErrorAction SilentlyContinue) {
@@ -64,10 +73,7 @@ jobs:
             $whereGo = where.exe go.exe 2>$null
             if ($whereGo) {
               $goDir = Split-Path -Parent ($whereGo | Select-Object -First 1)
-              Write-Host "Found go.exe via where.exe: $goDir"
-              echo "$goDir" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
-              $env:Path = "$goDir;$env:Path"
-              $goFound = $true
+              Add-GoToPath $goDir
             }
           }
 
@@ -88,10 +94,7 @@ jobs:
             $candidates += "$env:ALLUSERSPROFILE\scoop\apps\go\current\bin"
             foreach ($dir in $candidates) {
               if (Test-Path "$dir\go.exe") {
-                Write-Host "Adding Go PATH: $dir"
-                echo "$dir" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
-                $env:Path = "$dir;$env:Path"
-                $goFound = $true
+                Add-GoToPath $dir
                 break
               }
             }
@@ -104,20 +107,52 @@ jobs:
             $goPath = where.exe /R C:\ go.exe 2>$null | Select-Object -First 1
             if ($goPath) {
               $goDir = Split-Path -Parent $goPath
-              Write-Host "Found go.exe via recursive search: $goPath"
-              echo "$goDir" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
-              $env:Path = "$goDir;$env:Path"
-              $goFound = $true
+              Add-GoToPath $goDir
             }
           }
 
+          # 5) Auto-download Go if not found anywhere on the runner
           if (-not $goFound) {
-            Write-Host "::error::Go installation not found on the runner (searched PATH, known paths, and recursive scan)."
-            Write-Host "::error::Install Go manually or update Init Go env with the correct path."
+            Write-Host "Go not found on system. Downloading Go $goVersion..."
+            $url = "https://go.dev/dl/go$goVersion.windows-amd64.zip"
+            $zipPath = "$env:TEMP\go.zip"
+            $installDir = "C:\Go"
+
+            # Remove old zip if present
+            if (Test-Path $zipPath) { Remove-Item -Force $zipPath }
+
+            curl.exe -sSL -o $zipPath $url
+            if (-not (Test-Path $zipPath)) {
+              Write-Host "::error::Failed to download Go from $url"
+              exit 1
+            }
+
+            # Remove old installation directory if exists
+            if (Test-Path $installDir) {
+              Remove-Item -Recurse -Force $installDir
+            }
+
+            # Extract zip to C:\ (creates C:\Go)
+            Write-Host "Extracting Go to $installDir..."
+            tar.exe -xf $zipPath -C "C:\"
+            if (-not (Test-Path "$installDir\bin\go.exe")) {
+              Write-Host "::error::Extraction failed - go.exe not found at $installDir\bin\go.exe"
+              exit 1
+            }
+
+            # Add to PATH
+            Add-GoToPath "$installDir\bin"
+            Write-Host "Go $goVersion auto-installed to $installDir"
+          }
+
+          if (-not $goFound) {
+            Write-Host "::error::Go installation not found on the runner and auto-download failed."
             exit 1
           }
-          Write-Host "Go found: $(go version)"
-          go env GOROOT GOPATH GOMODCACHE GOCACHE
+
+          $goVersionOutput = & go version 2>&1
+          Write-Host "Go found: $goVersionOutput"
+          & go env GOROOT GOPATH GOMODCACHE GOCACHE 2>&1 | ForEach-Object { Write-Host $_ }
 
 
       - name: Build all binaries (stub mode)

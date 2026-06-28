@@ -200,6 +200,7 @@ func TestSafeStreamWriter_HeaderBeforeBody(t *testing.T) {
 func TestSafeStreamWriter_ContextCanceledDuringWrite(t *testing.T) {
 	fw := newFakeWriter()
 	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
 	r := newRequestWithCtx(ctx)
 	sw := newSafeStreamWriter(fw, r, "test", "model-x")
 
@@ -312,6 +313,7 @@ func TestSafeStreamWriter_KeepaliveDoesNotDoubleWrite(t *testing.T) {
 func TestSafeStreamWriter_RealisticStreaming(t *testing.T) {
 	fw := newFakeWriter()
 	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
 	r := newRequestWithCtx(ctx)
 	sw := newSafeStreamWriter(fw, r, "test", "model-x")
 

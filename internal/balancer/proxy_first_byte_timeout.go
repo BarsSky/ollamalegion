@@ -44,13 +44,14 @@ func (p *Proxy) newStreamingClientWithResponseHeaderTimeout(firstByteTimeout tim
 		return p.streamingClient
 	}
 
-	// Shallow copy Transport — разделяет connPool с базовым Transport'ом,
-	// но получает собственное значение ResponseHeaderTimeout.
-	transportCopy := *p.streamingTransportBase
+	// Clone Transport — разделяет connPool с базовым Transport'ом (Transport.Clone()
+	// делает shallow copy с реинициализацией мьютекса), но получает собственное
+	// значение ResponseHeaderTimeout.
+	transportCopy := p.streamingTransportBase.Clone()
 	transportCopy.ResponseHeaderTimeout = firstByteTimeout
 
 	return &http.Client{
 		Timeout:   0, // Таймаут управляется через контекст запроса (streamTimeout)
-		Transport: &transportCopy,
+		Transport: transportCopy,
 	}
 }

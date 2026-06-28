@@ -48,52 +48,79 @@ jobs:
           fetch-depth: 0     # для git log в комментариях
 
       # Init Go env — actions/setup-go@v5 зависает под LocalSystem,
-      # поэтому ищем go.exe вручную (where.exe + известные пути + рекурсивный поиск).
+      # поэтому ищем go.exe вручную (где.exe + известные пути + рекурсивный поиск).
       # Если Go не найден — авто-скачивание в C:\Go.
       #
       # ВНИМАНИЕ: без функций PowerShell! $script:goFound ломается под CI runner.
-      # Всё — линейный скрипт.
+      # Всё — линейный скрипт. Добавлены ::debug:: сообщения для CI логов.
+      # Приоритет: 1) хардкод C:\Program Files\Go\bin; 2) PATH; 3) где.exe;
+      # 4) известные пути; 5) рекурсивный поиск; 6) авто-скачивание.
       - name: Init Go env
         shell: powershell
         run: |
+          Write-Host "::debug::Init Go env — user=$([System.Security.Principal.WindowsIdentity]::GetCurrent().Name)"
+          Write-Host "::debug::PATH=$env:PATH"
+          Write-Host "::debug::ProgramFiles=$env:ProgramFiles"
+          Write-Host "::debug::ALLUSERSPROFILE=$env:ALLUSERSPROFILE"
           $goVersion = "$env:GO_VERSION_WIN"
           $goDir = $null
 
-          # 1) Прямой PATH lookup (если чудом Go в PATH)
-          $goExe = Get-Command go.exe -ErrorAction SilentlyContinue
-          if ($goExe) {
-            $goDir = Split-Path -Parent $goExe.Source
-            Write-Host "go.exe found in PATH at: $goDir"
+          # 0) Хардкодный early check — не зависит от SYSTEM env vars
+          if (-not $goDir) {
+            if (Test-Path "C:\Program Files\Go\bin\go.exe") {
+              $goDir = "C:\Program Files\Go\bin"
+              Write-Host "::debug::go.exe found at hardcoded C:\Program Files\Go\bin"
+            } else {
+              Write-Host "::debug::hardcoded C:\Program Files\Go\bin — NOT found"
+              # Также проверим C:\Go
+              if (Test-Path "C:\Go\bin\go.exe") {
+                $goDir = "C:\Go\bin"
+                Write-Host "::debug::go.exe found at hardcoded C:\Go\bin"
+              }
+            }
           }
 
-          # 2) where.exe (ищет в SYSTEM PATH)
+          # 1) Прямой PATH lookup
+          if (-not $goDir) {
+            $goExe = Get-Command go.exe -ErrorAction SilentlyContinue
+            if ($goExe) {
+              $goDir = Split-Path -Parent $goExe.Source
+              Write-Host "::debug::go.exe found via Get-Command at: $goDir"
+            } else {
+              Write-Host "::debug::go.exe NOT found via Get-Command"
+            }
+          }
+
+          # 2) где.exe (ищет в SYSTEM PATH)
           if (-not $goDir) {
             $whereGo = where.exe go.exe 2>$null
             if ($whereGo) {
               $goDir = Split-Path -Parent ($whereGo | Select-Object -First 1)
-              Write-Host "go.exe found via where.exe at: $goDir"
+              Write-Host "::debug::go.exe found via где.exe at: $goDir"
+            } else {
+              Write-Host "::debug::go.exe NOT found via где.exe"
             }
           }
 
-          # 3) Известные пути установки Go
+          # 3) Известные пути установки Go (с хардкодными fallback-ами без env vars)
           if (-not $goDir) {
             $candidates = @()
             if (Test-Path env:GOROOT) { $candidates += "$env:GOROOT\bin" }
             $candidates += "$env:ProgramFiles\Go\bin"
-            $candidates += "$env:ProgramFiles (x86)\Go\bin"
+            $candidates += "${env:ProgramFiles(x86)}\Go\bin"
+            $candidates += "C:\Program Files\Go\bin"                # хардкод
+            $candidates += "C:\Go\bin"                              # хардкод
             $candidates += "$env:LocalAppData\go\bin"
             $candidates += "$env:ProgramData\chocolatey\bin"
+            $candidates += "C:\ProgramData\chocolatey\bin"           # хардкод
             $candidates += "$env:ALLUSERSPROFILE\chocolatey\bin"
-            $candidates += "C:\Go\bin"
-            $candidates += "C:\Program Files\Go\bin"
-            $candidates += "C:\ProgramData\chocolatey\bin"
             $candidates += "$env:SystemDrive\Go\bin"
             $candidates += "$env:USERPROFILE\scoop\apps\go\current\bin"
             $candidates += "$env:ALLUSERSPROFILE\scoop\apps\go\current\bin"
             foreach ($dir in $candidates) {
-              if (Test-Path "$dir\go.exe") {
+              if ($dir -and (Test-Path "$dir\go.exe")) {
                 $goDir = $dir
-                Write-Host "go.exe found at known path: $dir"
+                Write-Host "::debug::go.exe found at known path: $dir"
                 break
               }
             }
@@ -101,63 +128,60 @@ jobs:
 
           # 4) Рекурсивный поиск go.exe на C:\ (last resort)
           if (-not $goDir) {
-            Write-Host "go.exe not found in common paths. Starting recursive search on C:\..."
-            Write-Host "This may take 30-60 seconds..."
-            $goPath = where.exe /R C:\ go.exe 2>$null | Select-Object -First 1
+            Write-Host "::debug::starting recursive search on C:\... (may take 30-60 sec)"
+            $goPath = where.exe /R "C:\" go.exe 2>$null | Select-Object -First 1
             if ($goPath) {
               $goDir = Split-Path -Parent $goPath
-              Write-Host "go.exe found via recursive search at: $goDir"
+              Write-Host "::debug::go.exe found via recursive search at: $goDir"
+            } else {
+              Write-Host "::debug::recursive search — NOT found"
             }
           }
 
           # 5) Auto-download Go if not found anywhere on the runner
           if (-not $goDir) {
-            Write-Host "Go not found on system. Downloading Go $goVersion..."
+            Write-Host "::debug::Go not found. Downloading Go $goVersion..."
             $url = "https://go.dev/dl/go$goVersion.windows-amd64.zip"
             $zipPath = "$env:TEMP\go.zip"
             $installDir = "C:\Go"
 
-            # Remove old zip if present
             if (Test-Path $zipPath) { Remove-Item -Force $zipPath }
-
-            Write-Host "Downloading $url ..."
+            Write-Host "::debug::downloading from $url"
             curl.exe -sSL -o $zipPath $url
             if (-not (Test-Path $zipPath)) {
-              Write-Host "::error::Failed to download Go from $url"
+              Write-Host "::error::failed to download Go from $url"
               exit 1
             }
-            Write-Host "Download complete ($((Get-Item $zipPath).Length) bytes)"
+            Write-Host "::debug::download complete ($((Get-Item $zipPath).Length) bytes)"
 
-            # Remove old installation directory if exists
             if (Test-Path $installDir) {
               Remove-Item -Recurse -Force $installDir
             }
 
-            # Extract zip to C:\ (creates C:\Go)
-            Write-Host "Extracting Go to $installDir... (may take a minute)"
+            Write-Host "::debug::extracting Go to $installDir..."
             Expand-Archive -Path $zipPath -DestinationPath "C:\" -Force
             if (-not (Test-Path "$installDir\bin\go.exe")) {
-              Write-Host "::error::Extraction failed - go.exe not found at $installDir\bin\go.exe"
+              Write-Host "::error::extraction failed — go.exe not found"
               exit 1
             }
-
             $goDir = "$installDir\bin"
-            Write-Host "Go $goVersion auto-installed to $installDir"
+            Write-Host "::debug::Go auto-installed to $installDir"
           }
 
           # Добавляем Go в PATH
-          Write-Host "Adding Go PATH: $goDir"
+          Write-Host "::debug::adding Go PATH: $goDir"
+          Write-Host "::debug::GITHUB_PATH=$env:GITHUB_PATH"
           echo "$goDir" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
           $env:Path = "$goDir;$env:Path"
 
           # Финальная проверка
           $goVersionOutput = & go version 2>&1
           if ($LASTEXITCODE -ne 0) {
-            Write-Host "::error::Go installation not found on the runner and auto-download failed."
+            Write-Host "::error::Go not found and auto-download failed."
             exit 1
           }
-          Write-Host "Go found: $goVersionOutput"
-          & go env GOROOT GOPATH GOMODCACHE GOCACHE 2>&1 | ForEach-Object { Write-Host $_ }
+          Write-Host "::debug::Go OK: $goVersionOutput"
+          & go env GOROOT GOPATH GOMODCACHE GOCACHE 2>&1 | ForEach-Object { Write-Host "::debug::$_" }
 
 
       - name: Build all binaries (stub mode)
@@ -357,7 +381,8 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
         with:
-          submodules: false  # c/llama.cpp — gitlink без .gitmodules
+          submodules: false   # c/llama.cpp — gitlink без .gitmodules
+          fetch-depth: 0      # для --new-from-rev
 
       - name: Setup Go
         uses: actions/setup-go@v5
@@ -369,7 +394,7 @@ jobs:
         uses: golangci/golangci-lint-action@v6
         with:
           version: v1.61.0
-          args: --timeout=5m
+          args: --timeout=5m --new-from-rev=origin/centurion
           only-new-issues: true  # не падать на pre-existing warnings в main
 
   # ---------------------------------------------------------------------------

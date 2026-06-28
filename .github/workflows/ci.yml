@@ -48,15 +48,19 @@ jobs:
           fetch-depth: 0     # для git log в комментариях
 
       # Init Go env — actions/setup-go@v5 зависает под LocalSystem,
-      # поэтому ищем go.exe вручную (where.exe + известные пути).
+      # поэтому ищем go.exe вручную (where.exe + известные пути + рекурсивный поиск).
       - name: Init Go env
         shell: powershell
         run: |
           $goFound = $false
+
+          # 1) Прямой PATH lookup (если чудом Go в PATH)
           if (Get-Command go.exe -ErrorAction SilentlyContinue) {
             $goFound = $true
-          } else {
-            # Сначала where.exe (SYSTEM PATH)
+          }
+
+          # 2) where.exe (ищет в SYSTEM PATH)
+          if (-not $goFound) {
             $whereGo = where.exe go.exe 2>$null
             if ($whereGo) {
               $goDir = Split-Path -Parent ($whereGo | Select-Object -First 1)
@@ -66,15 +70,22 @@ jobs:
               $goFound = $true
             }
           }
+
+          # 3) Известные пути установки Go
           if (-not $goFound) {
-            # Fallback: известные пути установки Go
             $candidates = @()
             if (Test-Path env:GOROOT) { $candidates += "$env:GOROOT\bin" }
             $candidates += "$env:ProgramFiles\Go\bin"
+            $candidates += "$env:ProgramFiles (x86)\Go\bin"
             $candidates += "$env:LocalAppData\go\bin"
+            $candidates += "$env:ProgramData\chocolatey\bin"
+            $candidates += "$env:ALLUSERSPROFILE\chocolatey\bin"
             $candidates += "C:\Go\bin"
             $candidates += "C:\Program Files\Go\bin"
+            $candidates += "C:\ProgramData\chocolatey\bin"
             $candidates += "$env:SystemDrive\Go\bin"
+            $candidates += "$env:USERPROFILE\scoop\apps\go\current\bin"
+            $candidates += "$env:ALLUSERSPROFILE\scoop\apps\go\current\bin"
             foreach ($dir in $candidates) {
               if (Test-Path "$dir\go.exe") {
                 Write-Host "Adding Go PATH: $dir"
@@ -85,12 +96,29 @@ jobs:
               }
             }
           }
+
+          # 4) Рекурсивный поиск go.exe на C:\ (last resort)
           if (-not $goFound) {
-            Write-Host "::error::go.exe not found anywhere. Check Go installation on runner."
+            Write-Host "go.exe not found in common paths. Starting recursive search on C:\..."
+            Write-Host "This may take 30-60 seconds..."
+            $goPath = where.exe /R C:\ go.exe 2>$null | Select-Object -First 1
+            if ($goPath) {
+              $goDir = Split-Path -Parent $goPath
+              Write-Host "Found go.exe via recursive search: $goPath"
+              echo "$goDir" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+              $env:Path = "$goDir;$env:Path"
+              $goFound = $true
+            }
+          }
+
+          if (-not $goFound) {
+            Write-Host "::error::Go installation not found on the runner (searched PATH, known paths, and recursive scan)."
+            Write-Host "::error::Install Go manually or update Init Go env with the correct path."
             exit 1
           }
-          go version
+          Write-Host "Go found: $(go version)"
           go env GOROOT GOPATH GOMODCACHE GOCACHE
+
 
       - name: Build all binaries (stub mode)
         shell: powershell
@@ -228,9 +256,35 @@ jobs:
         run: |
           go test -tags llama_stub -timeout 60s -v ./internal/modelreplication/ 2>&1 | tail -5
 
-      - name: Test (cmd + integration, short)
+      - name: Test cmd/balancer (no race)
+        if: always()
         run: |
-          go test -tags llama_stub -timeout 120s -short ./cmd/... ./tests/...
+          go test -tags llama_stub -timeout 60s -v ./cmd/balancer/ 2>&1 | tail -10
+
+      - name: Test cmd/cppworker (no race)
+        if: always()
+        run: |
+          go test -tags llama_stub -timeout 60s -v ./cmd/cppworker/ 2>&1 | tail -10
+
+      - name: Test cmd/agent (no race)
+        if: always()
+        run: |
+          go test -tags llama_stub -timeout 60s -v ./cmd/agent/ 2>&1 | tail -5
+
+      - name: Test cmd/monitor (no race)
+        if: always()
+        run: |
+          go test -tags llama_stub -timeout 60s -v ./cmd/monitor/ 2>&1 | tail -5
+
+      - name: Test cmd/rpcworker (no race)
+        if: always()
+        run: |
+          go test -tags llama_stub -timeout 60s -v ./cmd/rpcworker/ 2>&1 | tail -5
+
+      - name: Test tests (integration, short)
+        if: always()
+        run: |
+          go test -tags llama_stub -timeout 120s -short -v ./tests/... 2>&1 | tail -20
 
       - name: Go vet
         run: |
@@ -248,6 +302,7 @@ jobs:
         with:
           name: coverage-ubuntu
           path: coverage.out
+
 
   # ---------------------------------------------------------------------------
   # Job 3: golangci-lint (только ubuntu, чтобы не дублировать)

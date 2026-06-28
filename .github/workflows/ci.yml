@@ -27,7 +27,7 @@ concurrency:
 
 env:
   GO_VERSION: "1.22"           # fallback runner'ы используют эту версию
-  GO_VERSION_WIN: "1.25"       # self-hosted runner — установлен глобально, actions/setup-go НЕ используется
+  GO_VERSION_WIN: "1.25"       # self-hosted runner — установлен глобально, actions/setup-go НЕ используется (зависает под LocalSystem)
   GOPROXY: https://proxy.golang.org,direct
   CGO_ENABLED: 1               # нужен для cgo + C-bridge
 
@@ -47,33 +47,47 @@ jobs:
           submodules: false  # c/llama.cpp — gitlink без .gitmodules
           fetch-depth: 0     # для git log в комментариях
 
-      - name: Setup Go
-        id: setup-go
-        uses: actions/setup-go@v5
-        with:
-          go-version: ${{ env.GO_VERSION_WIN }}
-          cache: false  # persistent cache на диске, не нужно пересоздавать
-        # NB: на Windows self-hosted раннере под LocalSystem GITHUB_PATH может
-        # не обновляться корректно. Используем workaround: проверяем GOROOT/env:GOROOT
-        # в каждом Go-шаге.
-
-      # PowerShell wrapper: добавляет GOROOT\bin в PATH, если go не найден
+      # Init Go env — actions/setup-go@v5 зависает под LocalSystem,
+      # поэтому ищем go.exe вручную (where.exe + известные пути).
       - name: Init Go env
         shell: powershell
         run: |
-          if (-not (Get-Command go.exe -ErrorAction SilentlyContinue)) {
+          $goFound = $false
+          if (Get-Command go.exe -ErrorAction SilentlyContinue) {
+            $goFound = $true
+          } else {
+            # Сначала where.exe (SYSTEM PATH)
+            $whereGo = where.exe go.exe 2>$null
+            if ($whereGo) {
+              $goDir = Split-Path -Parent ($whereGo | Select-Object -First 1)
+              Write-Host "Found go.exe via where.exe: $goDir"
+              echo "$goDir" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+              $env:Path = "$goDir;$env:Path"
+              $goFound = $true
+            }
+          }
+          if (-not $goFound) {
+            # Fallback: известные пути установки Go
             $candidates = @()
             if (Test-Path env:GOROOT) { $candidates += "$env:GOROOT\bin" }
             $candidates += "$env:ProgramFiles\Go\bin"
             $candidates += "$env:LocalAppData\go\bin"
             $candidates += "C:\Go\bin"
+            $candidates += "C:\Program Files\Go\bin"
+            $candidates += "$env:SystemDrive\Go\bin"
             foreach ($dir in $candidates) {
               if (Test-Path "$dir\go.exe") {
                 Write-Host "Adding Go PATH: $dir"
                 echo "$dir" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+                $env:Path = "$dir;$env:Path"
+                $goFound = $true
                 break
               }
             }
+          }
+          if (-not $goFound) {
+            Write-Host "::error::go.exe not found anywhere. Check Go installation on runner."
+            exit 1
           }
           go version
           go env GOROOT GOPATH GOMODCACHE GOCACHE

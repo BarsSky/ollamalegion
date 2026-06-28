@@ -68,5 +68,8 @@ func setupRouter() http.Handler {
 	mux.HandleFunc("/v1/completions", handleV1Completions)
 	mux.HandleFunc("/v1/embeddings", handleV1Embeddings)
 	mux.HandleFunc("/v1/models", handleV1Models)
-	return corsMiddleware(loggingMiddleware(mux))
+	// F.0b (2026-06-28): session F — recoverMiddleware как самый внешний слой,
+	// catch'ит panic от corsMiddleware / loggingMiddleware / любого handler'а.
+	// Без этого panic приводит к EOF без диагностики для клиента.
+	return recoverMiddleware(corsMiddleware(loggingMiddleware(mux)))
 }

@@ -184,6 +184,46 @@ Build OK: `go build -tags llama_stub ./cmd/balancer/` — exit 0.
 Tests OK: `go test -tags llama_stub ./internal/api/ -count=1` — 208/208 PASS,
 `go test -tags llama_stub ./...` — все 16 пакетов PASS, 0 FAIL.
 
+#### F.4 — i18n финализация (EN/RU баланс) (1 ч)
+
+**Задача**: синхронизировать `webui/js/i18n/ru.js` с `en.js` (Sessions 14–19 и A-E
+добавляли новые ключи преимущественно в EN первыми, RU отставал на ~94 ключа).
+
+**Решение**:
+
+- `scripts/i18n_diff.js` (новый, ~140 LOC) — Node.js CLI для сравнения двух i18n-файлов.
+  Извлекает `window.I18N_XX = {…}` через `new Function()` + ленивый regexp-парсер,
+  выводит:
+  - общую статистику (EN/RU ключей, общих, уникальных, пустых);
+  - ключи, которые есть только в одном из файлов;
+  - ключи с пустым значением;
+  - опции `--strict` (exit 1 при расхождениях) и `--missing-in <base|target>`
+    (показать только ключи, отсутствующие в указанном файле).
+- `webui/js/i18n/ru.js` — добавлены переводы 99 отсутствующих ключей в логические
+  секции: `nav.agents`, `nav.gguf`, `header.agents`, `header.gguf`, `app.error_loading_agents`,
+  `common.save`, `agents.*` (44 ключа), `logs.*` (12 ключей), `models.*` (36 ключей).
+  Удалены 5 мёртвых RU-ключей, оставшихся от прошлых версий (`common.in`, `common.total`,
+  `metrics.active_requests`, `metrics.host`, `metrics.models`).
+- `webui/js/i18n/en.js` — без изменений (1019 ключей).
+
+**Результат**:
+
+- `en.js`: 1019 ключей, `ru.js`: 1019 ключей, общих: 1019, разрыв: 0.
+- `node scripts/i18n_diff.js webui/js/i18n/en.js webui/js/i18n/ru.js --strict` → exit 0.
+- `node -c webui/js/i18n/{en,ru}.js` → syntax OK.
+- 100% симметрия по множествам ключей (verified через `Object.keys()`).
+
+**Acceptance criteria**:
+
+1. ✅ `en.js` = `ru.js` = 1019 ключей, разрыв = 0 (план требовал < 10).
+2. ✅ `scripts/i18n_diff.js` (новый) выводит список missing keys.
+3. ✅ Все visible UI-строки имеют русский перевод (manual smoke после сборки).
+4. ✅ `node -c webui/js/i18n/{en,ru}.js` — оба файла парсятся без ошибок.
+5. ✅ `node -e "Object.keys(en).filter(k=>!ru[k])"` — пустой массив.
+
+**Итого**: +140 LOC (`scripts/i18n_diff.js`), +99 переводов в `ru.js` (-5 мёртвых).
+Verification: `node -c webui/js/i18n/{en,ru}.js` — оба OK, `--strict` exit 0.
+
 ## [Unreleased — 2026-06-28e]
 
 ### Added (Roadmap Q3 — Session E: Export logs to CSV)

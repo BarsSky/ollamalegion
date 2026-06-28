@@ -3,7 +3,7 @@
 > **Дата обновления:** 2026-06-28
 > **Назначение:** единственный источник правды по реализованному и оставшемуся в проекте OllamaLegion.
 > Все устаревшие/завершённые планы — в `plans/archive/`.
-> **HEAD:** `006ae0c` на ветке `integration/q3-w3-4` (в процессе Session F).
+> **HEAD:** TBD на ветке `feature/q3-session-f` (Session F.4 — i18n EN/RU баланс).
 
 ---
 
@@ -11,12 +11,12 @@
 
 | План | Файл | Сессия | Статус |
 |------|------|--------|--------|
-| [Session F — UI/UX quick wins (5.3, 5.4, 5.5, 5.7)](2026-q3-session-f-quick-wins.md) | `plans/2026-q3-session-f-quick-wins.md` | Session F (июнь 2026) | 🔄 F.0a/b/α/β/γ DONE, F.4 ⏳ |
+| [Session F — UI/UX quick wins (5.3, 5.4, 5.5, 5.7)](2026-q3-session-f-quick-wins.md) | `plans/2026-q3-session-f-quick-wins.md` | Session F (июнь 2026) | ✅ Session F ПОЛНОСТЬЮ ЗАКРЫТ (F.0a/b/α/β/γ + F.4) |
 | [Production-ready (3.2, 3.3, B8.7, 7.1)](2026-q3-production-ready-plan.md) | `plans/2026-q3-production-ready-plan.md` | Sessions G+ (август-сентябрь 2026) | ⏳ WIP |
 
 Все планы B1–B8 реализованы (см. Roadmap ниже).
 Все секции roadmap до раздела 2.2 (Models tab gaps) **полностью DONE** в Sessions 13-19 + A-E.
-F-сессия (5.3/5.4/5.5/5.7) — F.0a/b/α/β/γ закрыты, остаётся F.4 (i18n EN/RU баланс).
+F-сессия (5.3/5.4/5.5/5.7) **полностью закрыта** в 2026-06-28: F.0a/b/α/β/γ + F.4 (i18n EN/RU баланс, 1019=1019 ключей, разрыв=0).
 
 ---
 
@@ -138,6 +138,7 @@ F-сессия (5.3/5.4/5.5/5.7) — F.0a/b/α/β/γ закрыты, остаё�
 | **F.α** (Health-aggregator из 3 источников) | `HealthAggregator` объединяет данные из `HealthChecker` + `EventBus` (sse) + transport EOF (per-backend), `HealthScore` формула (`100 - %unhealthy - errorPenalty`), `types.HealthLevel` (enum: healthy/degraded/unhealthy/critical) | `internal/balancer/health_aggregator.go`, `pkg/types/health.go` | 14 unit (`health_aggregator_test.go`) |
 | **F.β** (Backend-таблица с подсветкой ошибок) | Endpoint `GET /api/v1/health/detailed` возвращает `[]BackendHealth` (id/name/type/uptime/error_count/last_error/health_level) + `[]RecentError` (timestamp/backend_id/error_type/transport/category), интегрирован с `HealthAggregator` | `internal/api/handlers_health.go`, `handlers_health_test.go` | 12 unit |
 | **F.γ** (Frontend /health страница) | Standalone `webui/health.html` (447 строк, inline i18n EN+RU в `<script>` через JSON-escape, XSS-safe `escapeHtml`), 5 summary cards + backends/recent-errors tables, auto-refresh 2/5/10/30s, pause/refresh/back-to-dashboard, connection status indicator, nav-link "Здоровье" в `index.html`, `healthUIHandler` в `internal/api/handlers_core.go` (search paths `/app/webui/`, `webui/`, `../webui/`, `../../webui/`, `../../../webui/health.html`), route `/health` в `internal/api/routes.go`, COPY `health.html` в `docker/balancer/Dockerfile` и `docker/webui/Dockerfile`, nginx `location = /health { try_files /health.html =404; }` в `webui/nginx.conf` (preserves Docker healthcheck) | `webui/health.html`, `internal/api/handlers_core.go`, `internal/api/routes.go`, `internal/api/handlers_health_test.go`, `webui/index.html`, `docker/balancer/Dockerfile`, `docker/webui/Dockerfile`, `webui/nginx.conf` | 2 unit (`TestHealthUIHandler_GetReturnsHTML` + `TestHealthUIHandler_MethodNotAllowed`) |
+| **F.4** (i18n EN/RU баланс) | CLI `scripts/i18n_diff.js` (~140 LOC) для diff двух i18n-файлов: парсинг `window.I18N_XX = {...}` через lazy regexp, `new Function` для безопасного eval, symmetric diff с разбивкой «только в EN» / «только в RU» / «в обоих», JSON-escape для preview значений (truncate 80 chars), флаги `--strict` (exit 1 на diff) и `--missing-in {base,target}` для CI. Добавлено 99 недостающих RU-переводов в `webui/js/i18n/ru.js` (секции `nav.*`, `header.*`, `app.error_loading_agents`, `common.save`, `agents.*` 44 ключа, `logs.*` 12 ключей, `models.*` 36 ключей). Удалено 5 orphan-ключей: `common.in`, `common.total`, `metrics.host`, `metrics.active_requests`, `metrics.models`. Итог: `en.js = 1019 ключей = ru.js = 1019 ключей`, `разрыв = 0`. | `scripts/i18n_diff.js`, `webui/js/i18n/ru.js` | manual: `node -c webui/js/i18n/{en,ru}.js` → syntax OK; `node scripts/i18n_diff.js webui/js/i18n/en.js webui/js/i18n/ru.js --strict` → exit 0 |
 
 **Архитектура F-сессии:** 3 источника ошибок (HealthChecker background-poll, SSE events от EventBus, transport EOF классификация) → HealthAggregator → /api/v1/health/detailed → standalone /health страница. Все 3 источника теперь видны одновременно, error_penalty от каждого складывается в HealthScore, что позволяет оператору видеть «тихие» деградации (например, health-checker ещё не заметил, а transport EOF уже зафиксировал 10 ресетов за минуту).
 
@@ -243,7 +244,7 @@ go test ./tests -run TestModelProfile -count=1 -v
 | 2026-06-28 | **Session F.α — Health-aggregator из 3 источников** (`internal/balancer/health_aggregator.go` + `pkg/types/health.go`): `HealthAggregator` объединяет данные из `HealthChecker` (background-poll) + `EventBus` (SSE) + transport EOF (per-backend counters). `HealthScore` формула: `100 - %unhealthy * 0.7 - errorPenalty * 0.3` (clamp 0..100). `types.HealthLevel` enum: healthy (≥90), degraded (≥70), unhealthy (≥40), critical (<40). 14 unit-тестов. |
 | 2026-06-28 | **Session F.β — Backend-таблица с подсветкой ошибок** (`internal/api/handlers_health.go`): `GET /api/v1/health/detailed` возвращает `[]BackendHealth{id, name, type, uptime, error_count, last_error, health_level, source_breakdown: {healthchecker, sse_events, transport_eof}}` + `[]RecentError{timestamp, backend_id, error_type, transport, category, message}`. 12 unit-тестов в `handlers_health_test.go`. |
 | 2026-06-28 | **Session F.γ — Frontend /health страница** (`webui/health.html` + handlers/routing/docker): standalone self-contained HTML (447 строк, inline i18n EN+RU через JSON-escape `\uXXXX` в `<script>`, XSS-safe `escapeHtml`), 5 summary cards (Health Score / Total / Healthy / Unhealthy / Recent Errors), 2 tables (Backends / Recent Errors), auto-refresh 2/5/10/30s, pause/refresh/back-to-dashboard, connection status indicator, nav-link "Здоровье" в `index.html`, `healthUIHandler` в `internal/api/handlers_core.go` (5 search paths), route `/health` в `routes.go`, `COPY health.html` в `docker/balancer/Dockerfile` + `docker/webui/Dockerfile`, `nginx.conf`: `location = /health { try_files /health.html =404; }` (preserves Docker healthcheck). 2 unit-теста (`TestHealthUIHandler_GetReturnsHTML` PASS, `TestHealthUIHandler_MethodNotAllowed` PASS). |
-| **2026-Q3** | **Roadmap to 1.0 — Q3 W3-4 (Models tab gaps) ЗАКРЫТ полностью** (Sessions 13-19 + A-E) + **Session F.0a/b/α/β/γ ЗАКРЫТ** (UI/UX quick wins: EOF diagnostics, SSE notifications, Health aggregator, /health page). F.4 (i18n EN/RU баланс) — последняя подзадача Session F. Production-ready фичи (rpc_coordinator, virtual_router, real ggml, CI/CD) запланированы в [production-ready plan](2026-q3-production-ready-plan.md) на август-сентябрь 2026. |
+| **2026-Q3** | **Roadmap to 1.0 — Q3 W3-4 (Models tab gaps) ЗАКРЫТ полностью** (Sessions 13-19 + A-E) + **Session F ЗАКРЫТ ПОЛНОСТЬЮ** (UI/UX quick wins: F.0a/b/α/β/γ + F.4 — EOF diagnostics, SSE notifications, Health aggregator, /health page, i18n EN/RU баланс 1019=1019). Production-ready фичи (rpc_coordinator, virtual_router, real ggml, CI/CD) запланированы в [production-ready plan](2026-q3-production-ready-plan.md) на август-сентябрь 2026. |
 
 ---
 

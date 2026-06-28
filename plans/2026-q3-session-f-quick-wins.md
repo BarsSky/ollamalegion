@@ -2,8 +2,8 @@
 
 > **Branch:** `feature/q3-session-f`
 > **Date:** 2026-06-28
-> **Status (обновлено 2026-06-28 15:16 MSK):** 🟢 F.0a DONE, 🟢 F.0b DONE, 🟢 F.1 (= F.α) DONE, 🟢 F.2 (live tail) DONE, 🟢 F.3 (health UI = F.β + F.γ) DONE, ⏳ F.4 (i18n) — не начато.
-> **HEAD:** `0543704` на ветке `feature/q3-session-f`.
+> **Status (обновлено 2026-06-28 15:23 MSK):** 🟢 F.0a DONE, 🟢 F.0b DONE, 🟢 F.1 (= F.α) DONE, 🟢 F.2 (live tail) DONE, 🟢 F.3 (health UI = F.β + F.γ) DONE, 🟢 F.4 (i18n) DONE.
+> **HEAD:** TBD на ветке `feature/q3-session-f`.
 > **Приоритет:** 🟡 P1 (последние UI/UX gap'ы из roadmap section 5)
 
 ## Прогресс по коммитам
@@ -19,7 +19,7 @@
 | **F.3** Health-aggregator (HealthChecker + SSE + transport EOF) | в коммитах F.1+F.2 | ✅ DONE |
 | **F.3** Health endpoint `/api/v1/health/detailed` (backend) | `006ae0c` | ✅ DONE |
 | **F.3** Health UI `/health` страница (frontend) | `0543704` | ✅ DONE |
-| **F.4** i18n финализация (EN/RU баланс) | — | ⏳ TODO |
+| **F.4** i18n финализация (EN/RU баланс) | TBD (HEAD) | ✅ DONE |
 
 ---
 

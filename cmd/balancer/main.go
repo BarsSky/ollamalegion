@@ -65,6 +65,14 @@ func main() {
 	logger.Init(conf.Logging.Level)
 	defer logger.Sync()
 
+	// F.2 (Session F) — инициализация log-broker для live tail через WebSocket /ws/logs.
+	// Брокер хранит ring buffer из 100 последних записей; Subscribe() из
+	// internal/api/handlers_logs_ws.go получает копию буфера + live channel.
+	// logger.Publish(...) в любом месте кода теперь рассылает запись всем WS-клиентам.
+	logBroker := logger.NewLogBroker(100)
+	logger.SetBroker(logBroker)
+	defer logBroker.Stop()
+
 	// Применение переопределений из environment (приоритет выше config.json)
 	if algo := os.Getenv("LB_ALGORITHM"); algo != "" {
 		validAlgorithms := map[string]bool{

@@ -108,6 +108,11 @@ func (s *Server) setupRoutes() {
 	// WebSocket (с rate limiting, аутентификация внутри handler после Upgrade)
 	s.mux.Handle("/ws/metrics", RateLimitMiddleware(s.wsMetricsHandler, s.wsRateLimiter))
 
+	// F.2 (Session F): live tail системных логов через WebSocket.
+	// Формат: snapshot + live entries + ping. Auth — внутри handler через query ?token=...
+	// (EventSource/WS не поддерживают custom headers; query token — единственный путь).
+	s.mux.Handle("/ws/logs", RateLimitMiddleware(s.wsLogsHandler, s.wsRateLimiter))
+
 	// Monitor HTML page (без аутентификации)
 	s.mux.HandleFunc("/monitor", s.monitorHandler)
 

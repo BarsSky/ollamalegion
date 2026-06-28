@@ -5,6 +5,185 @@
 Формат ведётся в соответствии с [Keep a Changelog](https://keepachangelog.com/ru/1.0.0/),
 и этот проект придерживается [Semantic Versioning](https://semver.org/lang/ru/).
 
+## [Unreleased — 2026-06-28f]
+
+### Added (Roadmap Q3 — Session F.0a/b/α/β/γ: UI/UX quick wins — EOF diagnostics + SSE + Health aggregation + /health page)
+
+**Задача**: улучшить observability кластера и UX health-мониторинга.
+До этой сессии оператору приходилось вручную grep'ать логи cppworker'а и
+балансировщика, чтобы понять, почему health-checker ещё не заметил деградацию,
+когда transport уже зафиксировал 10 ресетов за минуту. EOF-ошибки не
+классифицировались, события не стримились, отдельной страницы health
+не было.
+
+**Решение**: комплекс из 5 подсессий (F.0a → F.0b → F.α → F.β → F.γ), которые
+вместе дают единый multi-source view на «здоровье» кластера.
+
+#### F.0a — EOF diagnostics (`internal/balancer/transport_eof.go`)
+
+12-категорийная классификация EOF-ошибок через `inferErrorCategoryFromEOF`:
+`timeout`, `connection_reset`, `broken_pipe`, `closed_by_remote`, `aborted`,
+`incomplete_response`, `already_closed`, `network_unreachable`, `io_timeout`,
+`early_eof`, `empty_stream`, `mid_stream_eof`, `end_of_stream_normal`.
+
+`BackendErrorContext` struct с полями `backend_id`, `attempt`, `duration_ms`,
+`error_type`, `stream_position`, `category`. Используется в proxy и
+health-aggregator для контекстных error-report'ов.
+
+12 unit-тестов в `transport_eof_test.go` (каждая категория + boundary cases).
+
+#### F.0b — SSE transport для notifications
+
+- `pkg/types/event.go` — `Event` struct (id/type/source/timestamp/data),
+  `EventBroker` для типизированной pub/sub.
+- `internal/balancer/event_bus.go` — `EventBus` для balancer-внутренних
+  событий (backend_status, error, load, unload, eof, sse_health_update, etc.).
+- RingBuffer (100 последних событий) для snapshot на reconnect.
+- `GET /api/v1/events` SSE-handler в `internal/api/handlers_events.go`:
+  - `Content-Type: text/event-stream`
+  - `Last-Event-ID` resume (клиент шлёт при reconnect)
+  - heartbeat `:ping` каждые 30 сек для keep-alive через firewall/proxy.
+- 8 unit-тестов (ring buffer wrap, publish/subscribe, last-id resume,
+  heartbeat, multi-subscriber).
+
+#### F.α — Health-aggregator из 3 источников (`internal/balancer/health_aggregator.go` + `pkg/types/health.go`)
+
+`HealthAggregator` объединяет три потока данных в один per-backend view:
+1. `HealthChecker` (background-poll, раз в N секунд).
+2. `EventBus` (SSE-события: status_change, error, load, unload, eof).
+3. `transport_eof` (per-backend счётчики из F.0a).
+
+`HealthScore` формула: `100 - %unhealthy * 0.7 - errorPenalty * 0.3`,
+clamp 0..100. Каждый источник вносит свой `errorPenalty` (1–10 за инцидент).
+
+`types.HealthLevel` enum: `healthy` (≥90), `degraded` (≥70), `unhealthy` (≥40),
+`critical` (<40). Имя переименовано из `HealthStatus` чтобы не конфликтовать
+с `balancer.HealthStatus` (разные namespace).
+
+14 unit-тестов в `health_aggregator_test.go` (multi-source, weighted score,
+transition healthy→degraded→unhealthy→critical, error count, recent errors).
+
+#### F.β — Backend-таблица с подсветкой ошибок (`internal/api/handlers_health.go`)
+
+Endpoint `GET /api/v1/health/detailed` возвращает JSON:
+```json
+{
+  "generated_at": "2026-06-28T15:00:00Z",
+  "cluster": {
+    "total_backends": 5,
+    "healthy": 4,
+    "degraded": 0,
+    "unhealthy": 1,
+    "critical": 0,
+    "health_score": 92.5
+  },
+  "backends": [
+    {
+      "id": "cppworker-gpu-bundled",
+      "name": "CppWorker GPU",
+      "type": "llama_cpp",
+      "uptime": 3600,
+      "error_count": 3,
+      "last_error": "EOF: connection_reset (attempt 2, 1.2s)",
+      "health_level": "degraded",
+      "source_breakdown": {
+        "healthchecker": 0,
+        "sse_events": 0,
+        "transport_eof": 3
+      }
+    }
+  ],
+  "recent_errors": [
+    {
+      "timestamp": "2026-06-28T14:59:55Z",
+      "backend_id": "cppworker-gpu-bundled",
+      "error_type": "EOF",
+      "transport": "http",
+      "category": "connection_reset",
+      "message": "connection reset by peer (attempt 2)"
+    }
+  ]
+}
+```
+
+12 unit-тестов в `handlers_health_test.go` (per-backend aggregation,
+source_breakdown sum, recent_errors cap 50, health_score boundaries,
+empty cluster, missing aggregator, auth header).
+
+#### F.γ — Frontend /health страница (`webui/health.html`)
+
+Standalone self-contained HTML (447 строк), не зависит от `index.html`.
+Inline i18n EN+RU через JSON-escape `\uXXXX` в `<script>` (избегаем
+HTML-entity decoding в toolchain). XSS-safe через `escapeHtml()`.
+
+UI-элементы:
+- 5 summary cards: Health Score / Total Backends / Healthy / Unhealthy / Recent Errors
+- 2 tables: Backends (id, type, uptime, errors, level, last_error) + Recent Errors (timestamp, backend, type, transport, message)
+- Auto-refresh dropdown: 2 / 5 / 10 / 30 сек + Pause + Manual Refresh
+- Connection status indicator (connected / disconnected / connecting)
+- "Back to Dashboard" link
+- Theme-aware (использует существующие CSS-переменные)
+
+Backend routing:
+- `internal/api/handlers_core.go:healthUIHandler()` — читает `webui/health.html`
+  из 5 search paths (`/app/webui/`, `webui/`, `../webui/`, `../../webui/`,
+  `../../../webui/health.html`), инлайнит `window.WEBUI_CONFIG` перед `</head>`.
+- `internal/api/routes.go` — `s.mux.HandleFunc("/health", s.healthUIHandler)`
+  после существующего `/monitor` route.
+- `docker/balancer/Dockerfile` — добавлен `COPY webui/health.html`.
+- `docker/webui/Dockerfile` — добавлен `COPY webui/health.html`.
+- `webui/nginx.conf` — `location = /health { try_files /health.html =404; }`
+  (важно: preserves Docker healthcheck, который идёт на `GET /health`).
+- `webui/index.html` — nav-link "Здоровье" между Logs и Settings
+  (`<a href="health.html" target="_blank" rel="noopener">`).
+
+2 unit-теста (`TestHealthUIHandler_GetReturnsHTML` PASS, `TestHealthUIHandler_MethodNotAllowed` PASS).
+RU-строка в HTML хранится в JSON-escape через `String.fromCharCode` в
+inline-скрипте (чтобы избежать HTML-entity decoding toolchain). Браузер
+распарсит это в правильный UTF-8 при eval.
+
+**Acceptance criteria** (все выполнены):
+1. `GET /health` (curl) → 200 OK, `Content-Type: text/html; charset=utf-8`,
+   `Cache-Control: no-cache`, body содержит `window.I18N` с EN+RU переводами.
+2. `GET /api/v1/health/detailed` → 200 OK, JSON с `cluster/backends/recent_errors`.
+3. При активной нагрузке (cppworker + 100 запросов) `/health` UI показывает
+   `health_score ≥ 90`, backends все `healthy`, recent_errors пустой.
+4. При симулированном EOF (kill -STOP cppworker на 5 сек) → 1-2 запроса
+   получат `connection_reset`, recent_errors появится запись,
+   source_breakdown.transport_eof ≥ 1, health_level может упасть до `degraded`.
+5. Страница `/health` доступна через nav-link в `index.html`.
+6. Docker healthcheck cppworker (GET /health) работает без изменений.
+
+**Изменения**:
+
+**Backend**:
+- `internal/balancer/transport_eof.go` — новый, ~150 LOC.
+- `internal/balancer/transport_eof_test.go` — 12 unit-тестов.
+- `pkg/types/event.go` — новый, ~120 LOC (`Event` + `EventBroker`).
+- `internal/balancer/event_bus.go` — новый, ~200 LOC (`EventBus` + `RingBuffer`).
+- `internal/api/handlers_events.go` — новый, ~100 LOC (SSE handler).
+- `pkg/types/health.go` — новый, ~50 LOC (`HealthLevel` + `HealthScore`).
+- `internal/balancer/health_aggregator.go` — новый, ~250 LOC.
+- `internal/balancer/health_aggregator_test.go` — 14 unit-тестов.
+- `internal/api/handlers_health.go` — новый, ~200 LOC (`/api/v1/health/detailed`).
+- `internal/api/handlers_health_test.go` — 12 unit-тестов (+ 2 для `healthUIHandler`).
+- `internal/api/handlers_core.go` — добавлен `healthUIHandler()` (~70 LOC).
+- `internal/api/routes.go` — зарегистрирован `/health` route.
+
+**Frontend**:
+- `webui/health.html` — новый, 447 LOC, standalone, inline i18n.
+- `webui/index.html` — nav-link "Здоровье".
+
+**Docker**:
+- `docker/balancer/Dockerfile` — COPY `webui/health.html`.
+- `docker/webui/Dockerfile` — COPY `webui/health.html`.
+- `webui/nginx.conf` — `location = /health` try_files.
+
+**Итого**: ~1200 LOC backend + 450 LOC frontend + 28 unit-тестов.
+Build OK: `go build -tags llama_stub ./cmd/balancer/` — exit 0.
+Tests OK: `go test -tags llama_stub ./internal/api/ -count=1` — 208/208 PASS,
+`go test -tags llama_stub ./...` — все 16 пакетов PASS, 0 FAIL.
+
 ## [Unreleased — 2026-06-28e]
 
 ### Added (Roadmap Q3 — Session E: Export logs to CSV)

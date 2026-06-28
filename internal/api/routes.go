@@ -121,6 +121,11 @@ func (s *Server) setupRoutes() {
 	// Monitor HTML page (без аутентификации)
 	s.mux.HandleFunc("/monitor", s.monitorHandler)
 
+	// F.γ (2026-06-28): session F — health-check UI page.
+	// Standalone страница со встроенной i18n, читает /api/v1/health/detailed.
+	// Без аутентификации (как /monitor и /api/v1/health).
+	s.mux.HandleFunc("/health", s.healthUIHandler)
+
 	// Restart endpoint (c аутентификацией и rate limiting, только от webui)
 	s.mux.Handle("/api/v1/admin/restart", AuthMiddleware(RateLimitMiddleware(s.restartHandler, s.rateLimiter), s.authenticator))
 

@@ -303,6 +303,68 @@ func (s *Server) monitorHandler(w http.ResponseWriter, r *http.Request) {
 	w.Write([]byte(htmlStr))
 }
 
+// healthUIHandler — отдаёт HTML страницу cluster health (F.γ, 2026-06-28).
+//
+// Страница полностью самодостаточна: inline i18n (RU+EN) + inline тема.
+// Данные берёт из /api/v1/health/detailed (handlers_health.go:healthDetailedHandler).
+//
+// Поиск health.html:
+//  1. /app/webui/health.html         — runtime в Docker (CMD задаёт WORKDIR /app)
+//  2. webui/health.html              — локальная разработка из корня репо
+//  3. ../webui/health.html           — dev-режим из internal/api
+func (s *Server) healthUIHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	paths := []string{
+		"/app/webui/health.html",
+		"webui/health.html",
+		"../webui/health.html",
+		// go test из internal/api: cwd = internal/api, нужно ../../webui/health.html
+		"../../webui/health.html",
+		"../../../webui/health.html",
+	}
+
+	var data []byte
+	var err error
+	for _, p := range paths {
+		data, err = os.ReadFile(p)
+		if err == nil {
+			break
+		}
+	}
+
+	if err != nil {
+		logger.Get().Errorw("health.html not found", "error", err)
+		http.Error(w, "Health page not found", http.StatusNotFound)
+		return
+	}
+
+	// apiBase: relative path корректно работает и за nginx-прокси, и при прямом доступе.
+	apiBase := strings.TrimSuffix(r.Header.Get("X-Forwarded-Prefix"), "/")
+
+	// Встраиваем WEBUI_CONFIG (для будущей интеграции с основным webui,
+	// сейчас health.html читает только apiBase). Inline-вариант — самый
+	// простой и не зависит от того, какие файлы есть в /app/webui.
+	configObj := fmt.Sprintf(
+		`<script>window.WEBUI_CONFIG={apiBase:"%s",dashboardUrl:"/",API_BASE:"%s",API_BASE_URL:"%s",API_TOKEN:"",CPPWORKER_URL:"http://localhost:18092",REFRESH_INTERVAL:5000};</script>`,
+		apiBase, apiBase, apiBase,
+	)
+
+	htmlStr := string(data)
+	// Вставляем WEBUI_CONFIG перед </head> (если уже есть — заменяем).
+	if strings.Contains(htmlStr, "</head>") {
+		htmlStr = strings.Replace(htmlStr, "</head>", configObj+"\n</head>", 1)
+	}
+
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.WriteHeader(http.StatusOK)
+	w.Write([]byte(htmlStr))
+}
+
 // restartHandler - перезапуск балансера (только для webui)
 func (s *Server) restartHandler(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {

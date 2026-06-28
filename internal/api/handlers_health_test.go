@@ -518,3 +518,80 @@ func TestBuildHealthReport_NilHealthChecker(t *testing.T) {
 	assert.Equal(t, "unknown", report.Backends[0].Status, "no HC data → status=unknown")
 }
 
+// =============================================================================
+// F.γ UI page tests (2026-06-28): health.html handler.
+// =============================================================================
+
+// TestHealthUIHandler_GetReturnsHTML — GET /health возвращает 200 с HTML-страницей,
+// в которой встроен inline WEBUI_CONFIG и inline i18n (RU/EN).
+//
+// Test читает реальный webui/health.html с диска, поэтому требует запуска из
+// корня репо (как и monitorHandler).
+func TestHealthUIHandler_GetReturnsHTML(t *testing.T) {
+	server, url := setupTestServerForHealthUI(t)
+	defer server.Close()
+
+	resp, err := http.Get(url + "/health")
+	require.NoError(t, err)
+	defer resp.Body.Close()
+
+	assert.Equal(t, http.StatusOK, resp.StatusCode, "GET /health должен вернуть 200")
+	assert.Equal(t, "text/html; charset=utf-8", resp.Header.Get("Content-Type"),
+		"Content-Type должен быть HTML")
+	assert.Equal(t, "no-cache", resp.Header.Get("Cache-Control"),
+		"Cache-Control должен быть no-cache")
+
+	body := make([]byte, 64*1024)
+	n, _ := resp.Body.Read(body)
+	html := string(body[:n])
+
+	// Проверяем ключевые маркеры: inline i18n, inline WEBUI_CONFIG, /api/v1/health/detailed.
+	assert.Contains(t, html, "<title>OllamaLegion", "title должен содержать OllamaLegion")
+	assert.Contains(t, html, "/api/v1/health/detailed",
+		"JS должен вызывать /api/v1/health/detailed")
+	assert.Contains(t, html, "window.I18N",
+		"должна быть встроена inline i18n")
+	assert.Contains(t, html, "window.WEBUI_CONFIG",
+		"должен быть встроен inline WEBUI_CONFIG")
+	assert.Contains(t, html, "Cluster Health", "EN-title")
+	// RU-строка в HTML хранится в JSON-escape (через String.fromCharCode в
+	// inline-скрипте), поэтому ищем escape-вариант. Браузер всё равно
+	// распарсит это в правильный UTF-8 при eval.
+	assert.Contains(t, html, `\u0417\u0434\u043e\u0440\u043e\u0432\u044c\u0435 \u043a\u043b\u0430\u0441\u0442\u0435\u0440\u0430`, "RU-title (JSON-escaped)")
+}
+
+// TestHealthUIHandler_MethodNotAllowed — POST /health → 405.
+func TestHealthUIHandler_MethodNotAllowed(t *testing.T) {
+	server, url := setupTestServerForHealthUI(t)
+	defer server.Close()
+
+	resp, err := http.Post(url+"/health", "application/json", nil)
+	require.NoError(t, err)
+	defer resp.Body.Close()
+
+	assert.Equal(t, http.StatusMethodNotAllowed, resp.StatusCode,
+		"POST /health должен вернуть 405 Method Not Allowed")
+}
+
+// setupTestServerForHealthUI — утилита для тестов /health UI.
+// Поднимает минимальный Server, в котором зарегистрирован /health route.
+func setupTestServerForHealthUI(t *testing.T) (*httptest.Server, string) {
+	t.Helper()
+
+	config := &types.LoadBalancerConfig{
+		Backends: []types.Backend{},
+		API:      types.APISettings{RateLimit: 100, RateBurst: 200},
+		Auth:     types.AuthConfig{Enabled: false},
+	}
+	proxy := balancer.NewProxy(config)
+	server := NewServer(proxy, config, nil)
+	server.SetEventBus(nil)
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/health", server.healthUIHandler)
+	mux.HandleFunc("/api/v1/health/detailed", server.healthDetailedHandler)
+
+	ts := httptest.NewServer(mux)
+	return ts, ts.URL
+}
+

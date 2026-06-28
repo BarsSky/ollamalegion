@@ -1,0 +1,456 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
+  <meta http-equiv="Pragma" content="no-cache">
+  <meta http-equiv="Expires" content="0">
+  <title>OllamaLegion — Cluster Health</title>
+  <!-- F.γ (2026-06-28): session F — health-check UI page.
+       Standalone страница, открывается через /health или прямой link.
+       Не требует модификации app.js / index.html router — это простая
+       diagnostic page поверх endpoint /api/v1/health/detailed.
+       Auto-refresh каждые 5 сек; pause/play кнопка для удобства. -->
+  <script>
+    (function() {
+      try {
+        var stored = localStorage.getItem('ollamalegion_theme');
+        if (stored === 'dark' || stored === 'light') {
+          document.documentElement.setAttribute('data-theme', stored);
+        } else {
+          var prefersLight = window.matchMedia && window.matchMedia('(prefers-color-scheme: light)').matches;
+          document.documentElement.setAttribute('data-theme', prefersLight ? 'light' : 'dark');
+        }
+      } catch (e) {
+        document.documentElement.setAttribute('data-theme', 'dark');
+      }
+    })();
+  </script>
+  <link rel="icon" type="image/png" sizes="32x32" href="favicon-32x32.png">
+  <link rel="icon" type="image/png" sizes="16x16" href="favicon-16x16.png">
+  <link rel="shortcut icon" href="favicon.ico">
+  <link rel="stylesheet" href="css/font-awesome.min.css?v=15">
+  <link rel="stylesheet" href="css/themes.css?v=15">
+  <link rel="stylesheet" href="css/base.css?v=15">
+  <link rel="stylesheet" href="css/components.css?v=15">
+  <link rel="stylesheet" href="css/pages.css?v=15">
+  <link rel="stylesheet" href="css/layout.css?v=15">
+  <style>
+    /* F.γ-specific styles (inline чтобы не плодить css). */
+    .health-page { padding: 24px; max-width: 1400px; margin: 0 auto; }
+    .health-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 24px; flex-wrap: wrap; gap: 12px; }
+    .health-header h1 { margin: 0; font-size: 24px; display: flex; align-items: center; gap: 10px; }
+    .health-header .actions { display: flex; gap: 8px; align-items: center; }
+    .health-header .actions button { padding: 6px 12px; border-radius: 6px; border: 1px solid var(--border-color); background: var(--bg-secondary); color: var(--text-primary); cursor: pointer; font-size: 13px; }
+    .health-header .actions button:hover { background: var(--bg-hover); }
+    .health-header .actions button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+
+    .health-cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 16px; margin-bottom: 24px; }
+    .health-card { background: var(--bg-secondary); border: 1px solid var(--border-color); border-radius: 10px; padding: 18px; }
+    .health-card .label { font-size: 12px; color: var(--text-secondary); text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 6px; }
+    .health-card .value { font-size: 32px; font-weight: 700; color: var(--text-primary); line-height: 1; }
+    .health-card .value.good { color: var(--success, #22c55e); }
+    .health-card .value.warn { color: var(--warning, #f59e0b); }
+    .health-card .value.bad { color: var(--danger, #ef4444); }
+    .health-card .sub { font-size: 12px; color: var(--text-secondary); margin-top: 4px; }
+
+    .health-status-badge { display: inline-block; padding: 4px 12px; border-radius: 12px; font-size: 12px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.5px; }
+    .health-status-badge.healthy { background: rgba(34,197,94,0.15); color: var(--success, #22c55e); }
+    .health-status-badge.degraded { background: rgba(245,158,11,0.15); color: var(--warning, #f59e0b); }
+    .health-status-badge.unhealthy { background: rgba(239,68,68,0.15); color: var(--danger, #ef4444); }
+    .health-status-badge.empty { background: rgba(107,114,128,0.15); color: var(--text-secondary); }
+
+    .health-score-bar { width: 100%; height: 8px; background: var(--bg-primary); border-radius: 4px; overflow: hidden; margin-top: 8px; }
+    .health-score-fill { height: 100%; transition: width 0.3s ease; }
+    .health-score-fill.good { background: var(--success, #22c55e); }
+    .health-score-fill.warn { background: var(--warning, #f59e0b); }
+    .health-score-fill.bad { background: var(--danger, #ef4444); }
+
+    .health-section { background: var(--bg-secondary); border: 1px solid var(--border-color); border-radius: 10px; padding: 20px; margin-bottom: 20px; }
+    .health-section h2 { margin: 0 0 16px 0; font-size: 16px; display: flex; align-items: center; gap: 8px; }
+    .health-section h2 .count { font-size: 12px; font-weight: 400; color: var(--text-secondary); }
+
+    .health-table { width: 100%; border-collapse: collapse; }
+    .health-table th, .health-table td { padding: 10px 12px; text-align: left; border-bottom: 1px solid var(--border-color); font-size: 13px; }
+    .health-table th { color: var(--text-secondary); font-weight: 600; text-transform: uppercase; font-size: 11px; letter-spacing: 0.5px; }
+    .health-table td.mono { font-family: ui-monospace, "SF Mono", monospace; font-size: 12px; }
+    .health-table tr:hover { background: var(--bg-hover); }
+
+    .backend-status { display: inline-block; padding: 2px 8px; border-radius: 10px; font-size: 11px; font-weight: 600; }
+    .backend-status.healthy { background: rgba(34,197,94,0.15); color: var(--success, #22c55e); }
+    .backend-status.degraded { background: rgba(245,158,11,0.15); color: var(--warning, #f59e0b); }
+    .backend-status.unhealthy { background: rgba(239,68,68,0.15); color: var(--danger, #ef4444); }
+    .backend-status.unknown { background: rgba(107,114,128,0.15); color: var(--text-secondary); }
+
+    .error-row { display: flex; align-items: flex-start; gap: 12px; padding: 12px; border-bottom: 1px solid var(--border-color); }
+    .error-row:last-child { border-bottom: none; }
+    .error-row .source-badge { flex: 0 0 90px; padding: 2px 8px; border-radius: 10px; font-size: 11px; font-weight: 600; text-align: center; }
+    .error-row .source-badge.healthcheck { background: rgba(239,68,68,0.15); color: var(--danger, #ef4444); }
+    .error-row .source-badge.transport { background: rgba(245,158,11,0.15); color: var(--warning, #f59e0b); }
+    .error-row .source-badge.event { background: rgba(107,114,128,0.15); color: var(--text-secondary); }
+    .error-row .content { flex: 1; }
+    .error-row .content .message { color: var(--text-primary); font-size: 13px; margin-bottom: 4px; }
+    .error-row .content .meta { color: var(--text-secondary); font-size: 11px; }
+    .error-row .content .meta span { margin-right: 12px; }
+    .error-row .severity { flex: 0 0 70px; text-align: right; font-size: 11px; color: var(--text-secondary); }
+    .error-row .severity .sev { display: inline-block; padding: 2px 6px; border-radius: 8px; font-weight: 600; }
+    .error-row .severity .sev.warning { background: rgba(245,158,11,0.15); color: var(--warning, #f59e0b); }
+    .error-row .severity .sev.error { background: rgba(239,68,68,0.15); color: var(--danger, #ef4444); }
+    .error-row .severity .sev.critical { background: rgba(220,38,38,0.15); color: var(--danger, #ef4444); }
+    .error-row .timestamp { flex: 0 0 100px; text-align: right; font-size: 11px; color: var(--text-secondary); }
+
+    .empty-state { text-align: center; padding: 32px 16px; color: var(--text-secondary); font-size: 14px; }
+    .empty-state i { font-size: 32px; margin-bottom: 12px; display: block; }
+
+    .conn-status { font-size: 12px; color: var(--text-secondary); display: flex; align-items: center; gap: 6px; }
+    .conn-status .dot { width: 8px; height: 8px; border-radius: 50%; }
+    .conn-status.connected .dot { background: var(--success, #22c55e); }
+    .conn-status.disconnected .dot { background: var(--danger, #ef4444); }
+    .conn-status.connecting .dot { background: var(--warning, #f59e0b); animation: pulse 1.5s infinite; }
+    @keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.4; } }
+  </style>
+  <!-- F.γ (2026-06-28): inline i18n (RU+EN), чтобы страница работала автономно
+       без отдельных js/i18n/* файлов (эти скрипты не обслуживаются под balancer'ом
+       на порту 18081). window.I18N.t() читает из DICT по текущему языку браузера. -->
+  <script>
+  (function(){
+    var RU={"health.title":"\u0417\u0434\u043e\u0440\u043e\u0432\u044c\u0435 \u043a\u043b\u0430\u0441\u0442\u0435\u0440\u0430","health.status.healthy":"\u0437\u0434\u043e\u0440\u043e\u0432","health.status.degraded":"\u0434\u0435\u0433\u0440\u0430\u0434\u0438\u0440\u043e\u0432\u0430\u043d","health.status.unhealthy":"\u043d\u0435\u0437\u0434\u043e\u0440\u043e\u0432","health.status.empty":"\u043f\u0443\u0441\u0442\u043e","health.card.score":"\u041e\u0446\u0435\u043d\u043a\u0430 \u0437\u0434\u043e\u0440\u043e\u0432\u044c\u044f","health.card.total":"\u0412\u0441\u0435\u0433\u043e \u0431\u044d\u043a\u0435\u043d\u0434\u043e\u0432","health.card.healthy":"\u0417\u0434\u043e\u0440\u043e\u0432\u044b\u0445","health.card.unhealthy":"\u041d\u0435\u0437\u0434\u043e\u0440\u043e\u0432\u044b\u0445","health.card.errors":"\u041d\u0435\u0434\u0430\u0432\u043d\u0438\u0435 \u043e\u0448\u0438\u0431\u043a\u0438","health.card.healthy_pct":"\u043e\u0442 \u043e\u0431\u0449\u0435\u0433\u043e","health.card.unhealthy_pct":"\u043d\u0435\u0434\u043e\u0441\u0442\u0443\u043f\u043d\u043e","health.card.with_agents":"\u0441 \u0430\u0433\u0435\u043d\u0442\u0430\u043c\u0438","health.card.agents":"\u0441 \u0430\u0433\u0435\u043d\u0442\u0430\u043c\u0438","health.section.backends":"\u0411\u044d\u043a\u0435\u043d\u0434\u044b","health.section.errors":"\u041d\u0435\u0434\u0430\u0432\u043d\u0438\u0435 \u043e\u0448\u0438\u0431\u043a\u0438","health.col.id":"ID","health.col.host":"\u0425\u043e\u0441\u0442:\u041f\u043e\u0440\u0442","health.col.type":"\u0422\u0438\u043f","health.col.status":"\u0421\u0442\u0430\u0442\u0443\u0441","health.col.latency":"\u0421\u0440\u0435\u0434\u043d\u044f\u044f \u0437\u0430\u0434\u0435\u0440\u0436\u043a\u0430","health.col.fails":"\u0421\u0431\u043e\u0438","health.col.agent":"\u0410\u0433\u0435\u043d\u0442","health.col.last_error":"\u041f\u043e\u0441\u043b\u0435\u0434\u043d\u044f\u044f \u043e\u0448\u0438\u0431\u043a\u0430","health.time.just_now":"\u0442\u043e\u043b\u044c\u043a\u043e \u0447\u0442\u043e","health.time.ago":"\u043d\u0430\u0437\u0430\u0434","health.pause":"\u23f8 \u041f\u0430\u0443\u0437\u0430","health.resume":"\u25b6 \u0412\u043e\u0437\u043e\u0431\u043d\u043e\u0432\u0438\u0442\u044c","health.refresh":"\ud83d\udd04 \u041e\u0431\u043d\u043e\u0432\u0438\u0442\u044c","health.back":"\u2190 \u0414\u0430\u0448\u0431\u043e\u0440\u0434","health.connected":"\u041f\u043e\u0434\u043a\u043b\u044e\u0447\u0435\u043d\u043e","health.disconnected":"\u041e\u0442\u043a\u043b\u044e\u0447\u0435\u043d\u043e","health.connecting":"\u041f\u043e\u0434\u043a\u043b\u044e\u0447\u0435\u043d\u0438\u0435\u2026","health.error":"\u041e\u0448\u0438\u0431\u043a\u0430: ","health.loading":"\u0417\u0430\u0433\u0440\u0443\u0437\u043a\u0430\u2026","health.no_errors":"\u041d\u0435\u0442 \u043d\u0435\u0434\u0430\u0432\u043d\u0438\u0445 \u043e\u0448\u0438\u0431\u043e\u043a. \u041a\u043b\u0430\u0441\u0442\u0435\u0440 \u0440\u0430\u0431\u043e\u0442\u0430\u0435\u0442 \u043d\u043e\u0440\u043c\u0430\u043b\u044c\u043d\u043e.","health.no_backends":"\u041d\u0435\u0442 \u0437\u0430\u0440\u0435\u0433\u0438\u0441\u0442\u0440\u0438\u0440\u043e\u0432\u0430\u043d\u043d\u044b\u0445 \u0431\u044d\u043a\u0435\u043d\u0434\u043e\u0432"};
+    var EN={"health.title":"Cluster Health","health.status.healthy":"healthy","health.status.degraded":"degraded","health.status.unhealthy":"unhealthy","health.status.empty":"empty","health.card.score":"Health Score","health.card.total":"Total Backends","health.card.healthy":"Healthy","health.card.unhealthy":"Unhealthy","health.card.errors":"Recent Errors","health.card.healthy_pct":"of total","health.card.unhealthy_pct":"down","health.card.with_agents":"with agents","health.card.agents":"with agents","health.section.backends":"Backends","health.section.errors":"Recent Errors","health.col.id":"ID","health.col.host":"Host:Port","health.col.type":"Type","health.col.status":"Status","health.col.latency":"Avg Latency","health.col.fails":"Fails","health.col.agent":"Agent","health.col.last_error":"Last Error","health.time.just_now":"just now","health.time.ago":"ago","health.pause":"\u23f8 Pause","health.resume":"\u25b6 Resume","health.refresh":"\ud83d\udd04 Refresh","health.back":"\u2190 Dashboard","health.connected":"Connected","health.disconnected":"Disconnected","health.connecting":"Connecting\u2026","health.error":"Error: ","health.loading":"Loading\u2026","health.no_errors":"No recent errors. Cluster is operating normally.","health.no_backends":"No backends registered"};
+    var lang=(navigator.language||navigator.userLanguage||"ru").toLowerCase().indexOf("ru")===0?"ru":"en";
+    try{var s=localStorage.getItem("ollamalegion_lang");if(s==="ru"||s==="en")lang=s;}catch(e){}
+    window.I18N={lang:lang,t:function(k,fb){var d=(lang==="ru")?RU:EN;return(d&&d[k])||fb||k;},setLang:function(l){lang=l;try{localStorage.setItem("ollamalegion_lang",l);}catch(e){}}};
+  })();
+  </script>
+</head>
+<body>
+  <div class="health-page">
+    <div class="health-header">
+      <h1>
+        <i class="fas fa-heartbeat"></i>
+        <span data-i18n="health.title">Cluster Health</span>
+        <span id="statusBadge" class="health-status-badge healthy" data-i18n="health.status.healthy">healthy</span>
+      </h1>
+      <div class="actions">
+        <div id="connStatus" class="conn-status connecting">
+          <span class="dot"></span>
+          <span id="connText" data-i18n="health.connecting">Connecting…</span>
+        </div>
+        <select id="intervalSelect" style="padding:4px 8px;border-radius:6px;border:1px solid var(--border-color);background:var(--bg-secondary);color:var(--text-primary)">
+          <option value="2000">2s</option>
+          <option value="5000" selected>5s</option>
+          <option value="10000">10s</option>
+          <option value="30000">30s</option>
+        </select>
+        <button id="pauseBtn" onclick="togglePause()" data-i18n="health.pause">⏸ Pause</button>
+        <button id="refreshBtn" onclick="loadNow()" class="primary" data-i18n="health.refresh">🔄 Refresh</button>
+        <a href="/" style="padding:6px 12px;border-radius:6px;border:1px solid var(--border-color);background:var(--bg-secondary);color:var(--text-primary);text-decoration:none;font-size:13px" data-i18n="health.back">← Dashboard</a>
+      </div>
+    </div>
+
+    <!-- Summary cards -->
+    <div class="health-cards">
+      <div class="health-card">
+        <div class="label" data-i18n="health.card.score">Health Score</div>
+        <div id="healthScore" class="value good">100</div>
+        <div class="health-score-bar"><div id="healthScoreFill" class="health-score-fill good" style="width:100%"></div></div>
+      </div>
+      <div class="health-card">
+        <div class="label" data-i18n="health.card.total">Total Backends</div>
+        <div id="totalBackends" class="value">0</div>
+        <div class="sub"><span id="withAgent" data-i18n="health.card.agents">with agents</span></div>
+      </div>
+      <div class="health-card">
+        <div class="label" data-i18n="health.card.healthy">Healthy</div>
+        <div id="healthyBackends" class="value good">0</div>
+        <div class="sub" id="healthySub"></div>
+      </div>
+      <div class="health-card">
+        <div class="label" data-i18n="health.card.unhealthy">Unhealthy</div>
+        <div id="unhealthyBackends" class="value">0</div>
+        <div class="sub" id="unhealthySub"></div>
+      </div>
+      <div class="health-card">
+        <div class="label" data-i18n="health.card.errors">Recent Errors</div>
+        <div id="recentErrorsCount" class="value">0</div>
+        <div class="sub" id="errorsBySource"></div>
+      </div>
+    </div>
+
+    <!-- Backends section -->
+    <div class="health-section">
+      <h2>
+        <i class="fas fa-server"></i>
+        <span data-i18n="health.section.backends">Backends</span>
+        <span id="backendsCount" class="count"></span>
+      </h2>
+      <div id="backendsContainer">
+        <div class="empty-state"><i class="fas fa-server"></i><span data-i18n="health.loading">Loading…</span></div>
+      </div>
+    </div>
+
+    <!-- Recent errors section -->
+    <div class="health-section">
+      <h2>
+        <i class="fas fa-exclamation-triangle"></i>
+        <span data-i18n="health.section.errors">Recent Errors</span>
+        <span id="errorsCount" class="count"></span>
+      </h2>
+      <div id="errorsContainer">
+        <div class="empty-state"><i class="fas fa-check-circle"></i><span data-i18n="health.no_errors">No recent errors. Cluster is operating normally.</span></div>
+      </div>
+    </div>
+  </div>
+
+  <script>
+  // F.γ (2026-06-28): session F — health page logic.
+  // Auto-refresh + i18n + render HealthReport from /api/v1/health/detailed.
+
+  (function() {
+    'use strict';
+
+    // Resolve API base (relative path works for both Docker & direct).
+    var apiBase = ''; // same-origin
+    var apiToken = ''; // set via WEBUI_CONFIG if needed
+    try {
+      if (window.WEBUI_CONFIG && window.WEBUI_CONFIG.API_BASE != null) {
+        apiBase = window.WEBUI_CONFIG.API_BASE;
+      }
+      if (window.WEBUI_CONFIG && window.WEBUI_CONFIG.API_TOKEN) {
+        apiToken = window.WEBUI_CONFIG.API_TOKEN;
+      }
+    } catch (e) { /* ignore */ }
+
+    var refreshTimer = null;
+    var paused = false;
+
+    function t(key, fallback) {
+      if (window.I18N && typeof window.I18N.t === 'function') {
+        return window.I18N.t(key) || fallback || key;
+      }
+      return fallback || key;
+    }
+
+    function applyI18n(root) {
+      // Lightweight data-i18n substitution for standalone page.
+      root = root || document;
+      var els = root.querySelectorAll('[data-i18n]');
+      for (var i = 0; i < els.length; i++) {
+        var key = els[i].getAttribute('data-i18n');
+        var text = t(key, els[i].textContent);
+        if (text) els[i].textContent = text;
+      }
+    }
+
+    function fmtTime(iso) {
+      if (!iso) return '—';
+      try {
+        var d = new Date(iso);
+        var now = new Date();
+        var diffSec = Math.floor((now - d) / 1000);
+        if (diffSec < 5) return t('health.time.just_now', 'just now');
+        if (diffSec < 60) return diffSec + 's ' + t('health.time.ago', 'ago');
+        if (diffSec < 3600) return Math.floor(diffSec / 60) + 'm ' + t('health.time.ago', 'ago');
+        if (diffSec < 86400) return Math.floor(diffSec / 3600) + 'h ' + t('health.time.ago', 'ago');
+        return d.toLocaleString();
+      } catch (e) {
+        return iso;
+      }
+    }
+
+    function fmtLatency(ms) {
+      if (ms == null || ms === 0) return '—';
+      if (ms < 1) return '<1ms';
+      if (ms < 1000) return ms.toFixed(0) + 'ms';
+      return (ms / 1000).toFixed(2) + 's';
+    }
+
+    function setConnStatus(state) {
+      var el = document.getElementById('connStatus');
+      var txt = document.getElementById('connText');
+      el.className = 'conn-status ' + state;
+      if (state === 'connected') txt.textContent = t('health.connected', 'Connected');
+      else if (state === 'disconnected') txt.textContent = t('health.disconnected', 'Disconnected');
+      else txt.textContent = t('health.connecting', 'Connecting…');
+    }
+
+    function renderReport(report) {
+      if (!report) return;
+
+      // Status badge
+      var badge = document.getElementById('statusBadge');
+      badge.className = 'health-status-badge ' + report.status;
+      badge.textContent = t('health.status.' + report.status, report.status);
+
+      // Health score
+      var scoreEl = document.getElementById('healthScore');
+      var fillEl = document.getElementById('healthScoreFill');
+      var score = report.healthScore;
+      var scoreClass = 'good';
+      if (score < 50) scoreClass = 'bad';
+      else if (score < 80) scoreClass = 'warn';
+      scoreEl.className = 'value ' + scoreClass;
+      scoreEl.textContent = score;
+      fillEl.className = 'health-score-fill ' + scoreClass;
+      fillEl.style.width = score + '%';
+
+      // Cards
+      document.getElementById('totalBackends').textContent = report.totalBackends;
+      document.getElementById('healthyBackends').textContent = report.healthyBackends;
+      document.getElementById('unhealthyBackends').textContent = report.unhealthyBackends;
+      document.getElementById('recentErrorsCount').textContent = report.recentErrors ? report.recentErrors.length : 0;
+
+      var healthyPct = report.totalBackends > 0 ? Math.floor(report.healthyBackends * 100 / report.totalBackends) : 0;
+      document.getElementById('healthySub').textContent = healthyPct + '% ' + t('health.card.healthy_pct', 'of total');
+      document.getElementById('unhealthySub').textContent = (report.totalBackends - report.healthyBackends) + ' ' + t('health.card.unhealthy_pct', 'down');
+      document.getElementById('withAgent').textContent = (report.withAgent || 0) + ' ' + t('health.card.with_agents', 'with agents');
+
+      // Errors by source
+      var ebs = report.errorsBySource || {};
+      var parts = [];
+      if (ebs.transport) parts.push(ebs.transport + ' transport');
+      if (ebs.healthcheck) parts.push(ebs.healthcheck + ' healthcheck');
+      if (ebs.event) parts.push(ebs.event + ' event');
+      document.getElementById('errorsBySource').textContent = parts.length > 0
+        ? parts.join(' · ')
+        : t('health.no_errors', 'No recent errors');
+
+      // Backends
+      renderBackends(report.backends || []);
+
+      // Errors
+      renderErrors(report.recentErrors || []);
+
+      // Counts in section headers
+      document.getElementById('backendsCount').textContent = '(' + (report.backends ? report.backends.length : 0) + ')';
+      document.getElementById('errorsCount').textContent = '(' + (report.recentErrors ? report.recentErrors.length : 0) + ')';
+    }
+
+    function renderBackends(backends) {
+      var container = document.getElementById('backendsContainer');
+      if (backends.length === 0) {
+        container.innerHTML = '<div class="empty-state"><i class="fas fa-server"></i>' + t('health.no_backends', 'No backends registered') + '</div>';
+        return;
+      }
+      var rows = [];
+      rows.push('<table class="health-table"><thead><tr>');
+      rows.push('<th data-i18n="health.col.id">ID</th>');
+      rows.push('<th data-i18n="health.col.host">Host:Port</th>');
+      rows.push('<th data-i18n="health.col.type">Type</th>');
+      rows.push('<th data-i18n="health.col.status">Status</th>');
+      rows.push('<th data-i18n="health.col.latency">Avg Latency</th>');
+      rows.push('<th data-i18n="health.col.fails">Fails</th>');
+      rows.push('<th data-i18n="health.col.agent">Agent</th>');
+      rows.push('<th data-i18n="health.col.last_error">Last Error</th>');
+      rows.push('</tr></thead><tbody>');
+      for (var i = 0; i < backends.length; i++) {
+        var b = backends[i];
+        var host = b.host || '—';
+        var port = b.ollamaPort || b.cppWorkerPort || 0;
+        var hostPort = port > 0 ? host + ':' + port : host;
+        rows.push('<tr>');
+        rows.push('<td class="mono">' + escapeHtml(b.id) + '</td>');
+        rows.push('<td class="mono">' + escapeHtml(hostPort) + '</td>');
+        rows.push('<td>' + escapeHtml(b.backendType || '—') + '</td>');
+        rows.push('<td><span class="backend-status ' + b.status + '">' + escapeHtml(b.status) + '</span></td>');
+        rows.push('<td>' + fmtLatency(b.avgLatencyMs) + '</td>');
+        rows.push('<td>' + (b.consecutiveFails || 0) + '</td>');
+        rows.push('<td>' + (b.hasAgent ? '✓' : '—') + '</td>');
+        rows.push('<td style="color:var(--text-secondary);font-size:12px;max-width:240px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="' + escapeHtml(b.lastError || '') + '">' + escapeHtml(b.lastError || '—') + '</td>');
+        rows.push('</tr>');
+      }
+      rows.push('</tbody></table>');
+      container.innerHTML = rows.join('');
+      applyI18n(container);
+    }
+
+    function renderErrors(errors) {
+      var container = document.getElementById('errorsContainer');
+      if (errors.length === 0) {
+        container.innerHTML = '<div class="empty-state"><i class="fas fa-check-circle"></i>' + t('health.no_errors', 'No recent errors. Cluster is operating normally.') + '</div>';
+        return;
+      }
+      var html = [];
+      for (var i = 0; i < Math.min(errors.length, 50); i++) {
+        var e = errors[i];
+        var sev = e.severity || 'error';
+        html.push('<div class="error-row">');
+        html.push('<div class="source-badge ' + e.source + '">' + escapeHtml(e.source) + '</div>');
+        html.push('<div class="content">');
+        html.push('<div class="message">' + escapeHtml(e.message) + '</div>');
+        html.push('<div class="meta">');
+        if (e.backendId) html.push('<span><i class="fas fa-server"></i> ' + escapeHtml(e.backendId) + '</span>');
+        if (e.model) html.push('<span><i class="fas fa-brain"></i> ' + escapeHtml(e.model) + '</span>');
+        if (e.path) html.push('<span><i class="fas fa-route"></i> ' + escapeHtml(e.path) + '</span>');
+        html.push('</div>');
+        html.push('</div>');
+        html.push('<div class="severity"><span class="sev ' + sev + '">' + escapeHtml(sev) + '</span></div>');
+        html.push('<div class="timestamp">' + fmtTime(e.timestamp) + '</div>');
+        html.push('</div>');
+      }
+      container.innerHTML = html.join('');
+    }
+
+    // F.γ escapeHtml: правильное HTML-escape (важно для безопасности и валидности разметки).
+    function escapeHtml(s) {
+      if (s == null) return '';
+      return String(s)
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#39;');
+    }
+
+    function loadNow() {
+      var url = apiBase + '/api/v1/health/detailed';
+      var headers = {};
+      if (apiToken) headers['X-API-Token'] = apiToken;
+      fetch(url, { headers: headers, cache: 'no-store' })
+        .then(function(r) {
+          if (!r.ok) throw new Error('HTTP ' + r.status);
+          return r.json();
+        })
+        .then(function(report) {
+          setConnStatus('connected');
+          renderReport(report);
+        })
+        .catch(function(err) {
+          setConnStatus('disconnected');
+          console.error('health fetch failed', err);
+          document.getElementById('connText').textContent = t('health.error', 'Error: ') + err.message;
+        });
+    }
+
+    function schedule() {
+      if (refreshTimer) clearTimeout(refreshTimer);
+      if (paused) return;
+      var ms = parseInt(document.getElementById('intervalSelect').value, 10) || 5000;
+      refreshTimer = setTimeout(function() { loadNow(); schedule(); }, ms);
+    }
+
+    window.loadNow = loadNow;
+    window.togglePause = function() {
+      paused = !paused;
+      var btn = document.getElementById('pauseBtn');
+      btn.textContent = paused ? '▶ ' + t('health.resume', 'Resume') : '⏸ ' + t('health.pause', 'Pause');
+      if (!paused) schedule();
+      else if (refreshTimer) { clearTimeout(refreshTimer); refreshTimer = null; }
+    };
+
+    // Boot
+    if (document.readyState === 'loading') {
+      document.addEventListener('DOMContentLoaded', function() {
+        applyI18n();
+        loadNow();
+        schedule();
+      });
+    } else {
+      applyI18n();
+      loadNow();
+      schedule();
+    }
+  })();
+  </script>
+</body>
+</html>

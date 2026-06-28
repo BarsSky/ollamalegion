@@ -1,9 +1,21 @@
 # Session F — WebUI: UI/UX quick wins (Q3 W3-4 post-final)
 
-> **Branch:** `integration/q3-w3-4` → новая ветка `feature/q3-w3-4-post`
+> **Branch:** `feature/q3-session-f`
 > **Date:** 2026-06-28
-> **Status:** 🆕 Новая сессия — план
+> **Status (обновлено 2026-06-28 13:30 MSK):** 🟢 F.0a DONE, 🟢 F.0b DONE, 🟢 F.1 (= F.α) DONE, ⏳ F.2 (live tail) — не начато, ⏳ F.3 (health UI) — не начато, ⏳ F.4 (i18n) — не начато.
 > **Приоритет:** 🟡 P1 (последние UI/UX gap'ы из roadmap section 5)
+
+## Прогресс по коммитам
+
+| Sub-task | Коммиты | Статус |
+|---|---|---|
+| **F.0a** EOF diagnostics (root cause из bundled-теста) | `0a76724` | ✅ DONE |
+| **F.0b** recover middleware (panic recovery в cppworker) | `5047239` | ✅ DONE |
+| **F.1** Notifications — backend (SSE `/api/v1/events` + EventBus) | `873c10d` | ✅ DONE |
+| **F.1** Notifications — frontend (bell icon + dropdown + i18n) | `1bc1bf1` | ✅ DONE |
+| **F.2** Live tail Logs через WebSocket | — | ⏳ TODO |
+| **F.3** Health-check UI (отдельная страница) | — | ⏳ TODO |
+| **F.4** i18n финализация (EN/RU баланс) | — | ⏳ TODO |
 
 ---
 

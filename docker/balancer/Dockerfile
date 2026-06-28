@@ -71,8 +71,9 @@ COPY --from=builder /build/config/config.example.json ./config.json
 COPY docker/balancer/entrypoint.sh /entrypoint.sh
 RUN chmod +x /entrypoint.sh
 
-# Копирование webui статики (monitor.html, css, js, img, favicon)
+# Копирование webui статики (monitor.html, health.html, css, js, img, favicon)
 COPY --from=builder /build/webui/monitor.html ./webui/monitor.html
+COPY --from=builder /build/webui/health.html ./webui/health.html
 COPY --from=builder /build/webui/css ./webui/css
 COPY --from=builder /build/webui/js ./webui/js
 COPY --from=builder /build/webui/img ./webui/img

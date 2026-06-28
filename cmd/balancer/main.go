@@ -133,9 +133,15 @@ func main() {
 	
 	// Создание API сервера
 	apiServer := api.NewServer(proxy, conf, healthChecker)
-	
+
 	// Подключаем сохранение конфига на диск для авто-загрузки моделей (AutoPull)
 	apiServer.SetConfigSaver(cfg.Save)
+
+	// F.α (2026-06-28): session F — подключаем EventBus балансировщика к API
+	// для SSE notifications endpoint /api/v1/events (F.α).
+	if proxy.EventBus() != nil {
+		apiServer.SetEventBus(proxy.EventBus())
+	}
 	
 	// Запуск health checker
 	healthChecker.Start()

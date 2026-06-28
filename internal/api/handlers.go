@@ -23,8 +23,20 @@ type Server struct {
 	rateLimiter   *RateLimiter
 	wsRateLimiter *RateLimiter
 	authenticator *TokenAuthenticator
+	// eventBus — общая EventBus с балансировщиком (для нотификаций, F.α).
+	// Инициализируется через SetEventBus из main.go (после создания Proxy).
+	eventBus      EventBusLike
+	// eventsHub — локальный ring buffer + подписки на eventBus (F.α SSE endpoint).
+	eventsHub     *eventsHub
 	stopCh        chan struct{} // graceful shutdown for metricsPublishLoop
 	configSaver   func() error  // функция сохранения конфига на диск (устанавливается из main)
+}
+
+// EventBusLike — интерфейс EventBus из balancer.EventBus для тестирования.
+// (Реальная реализация передаётся из main через SetEventBus.)
+type EventBusLike interface {
+	Subscribe() (string, <-chan types.Event)
+	Unsubscribe(id string)
 }
 
 // SetConfigSaver — устанавливает функцию для сохранения конфигурации на диск
@@ -50,6 +62,14 @@ func (s *Server) GetExportHandler() http.HandlerFunc {
 // GetImportHandler возвращает обработчик импорта конфигурации (для тестов)
 func (s *Server) GetImportHandler() http.HandlerFunc {
 	return s.configImportHandler
+}
+
+// SetEventBus — подключает общую EventBus от балансировщика для SSE-нотификаций.
+// Должна быть вызвана из main.go после NewServer (после создания Proxy).
+func (s *Server) SetEventBus(bus EventBusLike) {
+	s.eventBus = bus
+	s.eventsHub = newEventsHub()
+	logger.Get().Infow("Server.SetEventBus: SSE notifications endpoint enabled")
 }
 
 // upgrader - апгрейдер HTTP до WebSocket с CORS whitelist

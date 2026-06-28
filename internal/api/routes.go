@@ -12,6 +12,11 @@ func (s *Server) setupRoutes() {
 	// когда бэкенды ещё не зарегистрированы (healthHandler возвращает 503 в degraded).
 	s.mux.HandleFunc("/api/v1/ping", s.pingHandler)
 
+	// F.α (2026-06-28): session F — SSE notifications endpoint.
+	// Auth: token через query param (EventSource API браузера не поддерживает
+	// custom headers). AuthMiddleware извлекает token из query автоматически.
+	s.mux.Handle("/api/v1/events", AuthMiddleware(http.HandlerFunc(s.handleEvents), s.authenticator))
+
 	// Auth endpoints (требуют токен, кроме health)
 	s.mux.Handle("/api/v1/auth/status", AuthMiddleware(RateLimitMiddleware(AuthStatusHandler(s.authenticator), s.rateLimiter), s.authenticator))
 	s.mux.Handle("/api/v1/auth/token", AuthMiddleware(RateLimitMiddleware(TokenManagementHandler(s.authenticator), s.rateLimiter), s.authenticator))

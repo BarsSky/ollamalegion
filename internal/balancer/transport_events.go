@@ -4,19 +4,17 @@ import (
 	"time"
 
 	"ollama-loadbalancer/pkg/logger"
+	"ollama-loadbalancer/pkg/types"
 )
 
-// F.0.6 (2026-06-28): session F — транспортные события для EOF diagnostics.
+// F.0.6 + F.α (2026-06-28): session F — транспортные события для EOF diagnostics.
 //
 // Контекст: при EOF от upstream cppworker клиент (Cline/OpenWebUI/Roo Code)
 // получает "пустой ответ" без какой-либо диагностики. Чтобы оператор мог
-// увидеть эти события в WebUI notifications (после реализации F.α), публикуем
-// их через единый helper.
-//
-// Текущая реализация — no-op с structured-логированием. После реализации
-// F.α (EventPublisher) добавим вызов publish() в publishTransportEOF ниже.
+// увидеть эти события в WebUI notifications (F.α — SSE endpoint + bell icon),
+// публикуем их через существующий EventBus (типы: types.Event).
 
-// publishTransportEOF публикует событие "EOF from upstream" в EventPublisher.
+// publishTransportEOF публикует событие "EOF from upstream" в EventBus.
 //
 // Параметры:
 //   - backendID: ID бэкенда, от которого пришёл EOF (например, "cppworker-gpu-bundled")
@@ -25,8 +23,8 @@ import (
 //   - err: оригинальная ошибка от http.Client.Do()
 //   - durationMs: сколько миллисекунд прошло до EOF
 //
-// Событие имеет severity=warning (не error, потому что EOF часто транзиентный —
-// cppworker перезагружал модель), source="transport" (отличает от других источников).
+// Событие имеет severity=warning (EOF часто транзиентный — cppworker
+// перезагружал модель), source="transport".
 //
 // Используется из:
 //   - proxyRequestLlamaCpp (streaming SSE/NDJSON)
@@ -43,16 +41,23 @@ func (p *Proxy) publishTransportEOF(backendID, model, path string, err error, du
 		"duration_ms", durationMs.Milliseconds(),
 		"error", err,
 	)
-	// F.α: после реализации EventPublisher раскомментировать:
-	// if p.eventBus != nil {
-	//     p.eventBus.Publish(TransportEvent{
-	//         Type:      EventTransportEOF,
-	//         BackendID: backendID,
-	//         Model:     model,
-	//         Path:      path,
-	//         Error:     err.Error(),
-	//         DurationMs: durationMs.Milliseconds(),
-	//         Ts:        time.Now(),
-	//     })
-	// }
+	// Публикуем в EventBus для F.α SSE endpoint + WebUI notifications.
+	// EventBus.Publish неблокирующий, поэтому не влияет на latency proxy.
+	if p.eventBus != nil {
+		p.eventBus.Publish(types.Event{
+			Type:      types.EventNotification,
+			Timestamp: time.Now(),
+			BackendID: backendID,
+			Model:     model,
+			Severity:  types.SeverityWarning,
+			Source:    "transport",
+			Message:   "EOF from upstream: " + err.Error(),
+			Data: map[string]interface{}{
+				"event_kind":  "transport_eof",
+				"path":        path,
+				"duration_ms": durationMs.Milliseconds(),
+				"error":       err.Error(),
+			},
+		})
+	}
 }

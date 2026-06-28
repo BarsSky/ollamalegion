@@ -99,7 +99,7 @@ type Proxy struct {
 	// для замены глобальных таймаутов на per-model.
 	modelLatencyTracker *ModelLatencyTracker
 
-	// metricsHTTPDoer — HTTP-клиент для heartbeat /api/info polling
+		// metricsHTTPDoer — HTTP-клиент для heartbeat /api/info polling
 	// в preflightNCtxReloadIfNeededSync (см. queryBackendReloadPending).
 	// По умолчанию nil → используется реальный *http.Client{Timeout: 2s}.
 	// Тесты могут подменить на in-memory stub, чтобы не зависеть от сети
@@ -107,6 +107,12 @@ type Proxy struct {
 	metricsHTTPDoer interface {
 		Do(*http.Request) (*http.Response, error)
 	}
+}
+
+// EventBus — геттер для EventBus (используется API-сервером для F.α SSE endpoint).
+// Не nil после NewProxy, всегда возвращает валидный EventBus.
+func (p *Proxy) EventBus() *EventBus {
+	return p.eventBus
 }
 
 // NewProxy - создание нового прокси

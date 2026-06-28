@@ -54,55 +54,53 @@ jobs:
           cache: false  # persistent cache на диске, не нужно пересоздавать
 
       - name: Show Go env
-        shell: pwsh
+        shell: powershell
         run: |
           go version
-
           go env GOROOT GOPATH GOMODCACHE GOCACHE
 
       - name: Build all binaries (stub mode)
-        shell: pwsh
+        shell: powershell
         run: |
           go build -tags llama_stub -v -o bin\balancer-stub.exe      .\cmd\balancer\
           go build -tags llama_stub -v -o bin\cppworker-stub.exe    .\cmd\cppworker\
           go build -tags llama_stub -v -o bin\agent-stub.exe        .\cmd\agent\
-          go build -tags llama_stub -v -o bin\monitor-stub.exe      .\cmd\monitor\
 
       - name: Verify healthcheck (stub)
-        shell: pwsh
+        shell: powershell
         run: |
           .\bin\cppworker-stub.exe -healthcheck
 
       - name: Test (internal packages, -race)
-        shell: pwsh
+        shell: powershell
         run: |
           go test -race -tags llama_stub -timeout 180s ./internal/...
 
       - name: Test (cmd packages, stub mode)
-        shell: pwsh
+        shell: powershell
         run: |
           go test -tags llama_stub -timeout 60s ./cmd/...
 
       - name: Test (integration, may use Docker)
-        shell: pwsh
+        shell: powershell
         run: |
           go test -tags llama_stub -timeout 300s -short ./tests/...
         # -short: пропускает e2e тесты, требующие docker-compose stack
 
       - name: Go vet
-        shell: pwsh
+        shell: powershell
         run: |
           go vet -tags llama_stub ./...
 
       - name: Generate coverage (race + atomic)
         if: success()
-        shell: pwsh
+        shell: powershell
         run: |
           go test -tags llama_stub -coverprofile=coverage.out -covermode=atomic -timeout 180s ./internal/...
 
       - name: Coverage summary
         if: success()
-        shell: pwsh
+        shell: powershell
         run: |
           go tool cover -func=coverage.out | Tee-Object -FilePath coverage-func.txt
           Get-Content coverage-func.txt | Select-Object -Last 1
@@ -142,7 +140,6 @@ jobs:
           cache: true
 
       - name: Install build tools
-
         run: |
           sudo apt-get update
           sudo apt-get install -y build-essential cmake
@@ -153,7 +150,6 @@ jobs:
           go build -tags llama_stub -v -o bin/balancer-stub      ./cmd/balancer/
           go build -tags llama_stub -v -o bin/cppworker-stub    ./cmd/cppworker/
           go build -tags llama_stub -v -o bin/agent-stub        ./cmd/agent/
-          go build -tags llama_stub -v -o bin/monitor-stub      ./cmd/monitor/
 
       - name: Test (internal packages, -race)
         run: |
@@ -202,7 +198,6 @@ jobs:
           cache: true
 
       - name: Run golangci-lint
-
         uses: golangci/golangci-lint-action@v6
         with:
           version: v1.61.0
@@ -225,7 +220,6 @@ jobs:
           submodules: false
 
       - name: Setup Node.js
-
         uses: actions/setup-node@v4
         with:
           node-version: "20"

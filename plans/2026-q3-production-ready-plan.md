@@ -510,6 +510,23 @@ GitHub Actions pipeline для `go build`/`go test`/`go vet`/`golangci-lint` н�
 coverage badge. Это **P0** задача, потому что без CI любой merge может вернуть pre-existing
 failures (PF-8, PF-9, ...).
 
+### Предусловие — 7.1a Self-hosted runner
+
+**Перед началом P.4** необходимо подготовить инфраструктуру — настроить Windows-машину
+разработчика как GitHub Actions self-hosted runner (см. [roadmap §7.1a](2026-q3-roadmap.md#7-cicd-и-тестирование)).
+**Почему:** проект использует cgo + custom C-bridge + Windows nvml build tag, а также
+`c/llama.cpp` subtree, что делает GitHub-hosted runners неоптимальными (cold-cache
+15–20 мин build llama.cpp, нет Windows nvml, ephemeral cache).
+
+Self-hosted runner решает:
+- **Persistent build cache** — incremental build за секунды вместо cold-cache.
+- **Windows nvml тесты** — `internal/agent/nvml_unix.go` (build tag `nvml && windows`).
+- **Stub-режим** — `c/bridge/bridge_stub.go` собирается без C-исходников llama.cpp.
+- **Fallback на GitHub-hosted** — для случая когда self-hosted runner оффлайн.
+
+**Файлы 7.1a:** `scripts/setup-runner.ps1` + `scripts/check-runner.ps1` + `docs/ci/self-hosted-runner.md`.
+**Оценка 7.1a:** 0.5–1 день. **Блокирует P.4.**
+
 ### План реализации
 
 #### Шаг 1 (день 1): GitHub Actions workflows

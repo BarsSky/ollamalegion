@@ -324,7 +324,8 @@ UI wizard (`webui/js/modules/cppworker-params.js`) уже расширяется
 
 | # | Фича | Файл | Оценка |
 |---|---|---|---|
-| 7.1 | **GitHub Actions CI** — `go build`, `go test -race`, lint на каждый PR | `.github/workflows/ci.yml` (новый) | 1 день |
+| 7.1a | **Self-hosted CI runner** — настройка Windows-машины разработчика как GitHub Actions self-hosted runner (метки `self-hosted,windows,ollamalegion-ci`) для stub-only и Windows-специфичных тестов (`internal/agent/nvml_windows.go` build tag `nvml && windows`, persistent build cache) | `scripts/setup-runner.ps1` + `scripts/check-runner.ps1` + `docs/ci/self-hosted-runner.md` | 0.5–1 день |
+| 7.1 | **GitHub Actions CI** — `go build`, `go test -race`, lint на каждый PR (`runs-on: [self-hosted, windows, ollamalegion-ci]` + fallback `ubuntu-latest` для случая когда runner оффлайн) | `.github/workflows/ci.yml` (новый) | 0.5–1 день (после 7.1a) |
 | 7.2 | **GPU integration tests** — отдельный workflow с реальным CUDA runner (self-hosted) | `.github/workflows/gpu.yml` | 1–2 дня |
 | 7.3 | **Mutation testing** через `go-mutesting` для критичных пакетов (`rpccoordinator`, `balancer`) | `.github/workflows/mutation.yml` | 1 день setup + анализ |
 | 7.4 | **Coverage badges** в README (`gocover.io` или codecov) | `README.md` | 30 мин |

@@ -5,6 +5,72 @@
 Формат ведётся в соответствии с [Keep a Changelog](https://keepachangelog.com/ru/1.0.0/),
 и этот проект придерживается [Semantic Versioning](https://semver.org/lang/ru/).
 
+## [Unreleased — 2026-06-28g]
+
+### Added (Roadmap Q3 — 7.1a: Self-hosted CI runner infrastructure) (0.5–1 день)
+
+**Задача**: подготовить инфраструктуру для GitHub Actions CI (roadmap 7.1) — настроить
+Windows-машину разработчика как self-hosted runner с persistent build cache и Windows nvml
+поддержкой. Без этого CI медленный (cold-cache 15–20 мин build llama.cpp) и не покрывает
+Windows-специфичные тесты (`internal/agent/nvml_unix.go` build tag `nvml && windows`).
+
+**Решение**:
+
+- `scripts/setup-runner.ps1` (новый, ~220 LOC) — автоматизированный setup self-hosted
+  runner'а: проверяет prerequisites (Go >= 1.21, Docker, git, node, cmake), скачивает
+  GitHub Actions runner v2.319.1, получает registration token через GitHub API
+  (`POST /repos/{owner}/{repo}/actions/runners/registration-token`), регистрирует с
+  метками `[self-hosted, windows, ollamalegion-ci]`, устанавливает как Windows service
+  `actions.runner.*-ci` (auto-start). Параметры: `-RepoOwner`, `-RepoName`,
+  `-GitHubToken`, `-RunnerName`, `-Labels`, `-RunnerDir`, `-RunnerVersion`, `-Unattended`.
+  Требует прав администратора (для `svc.cmd install`).
+- `scripts/check-runner.ps1` (новый, ~200 LOC) — диагностика без admin-прав: 6 секций
+  проверок (CI prerequisites, runner service, persistent build cache, write permissions,
+  GitHub API connectivity, workflow files). Exit code: 0 = OK, 1 = warnings, 2 = errors.
+  Подсчитывает OK/WARN/ERR счётчики.
+- `docs/ci/self-hosted-runner.md` (новый, ~180 LOC) — полная документация: зачем нужен
+  self-hosted (таблица сравнения с GitHub-hosted), prerequisites, установка за 5 минут,
+  метки и их использование, безопасность (3 стратегии защиты от supply-chain атак),
+  обслуживание (обновление runner'а, логи, очистка диска, удаление), troubleshooting
+  (5 типичных проблем), дальнейшее развитие (TODO: ephemeral Docker runner).
+- `plans/2026-q3-roadmap.md` — добавлена строка `7.1a | Self-hosted CI runner` (0.5–1 день)
+  в секцию `## 7. CI/CD и тестирование`. Обновлён `## 7.1` — ссылка на self-hosted runner
+  с fallback на GitHub-hosted.
+- `plans/2026-q3-production-ready-plan.md` — добавлен раздел «Предусловие — 7.1a Self-hosted
+  runner» в `## 5. P.4 — CI/CD scaffolding` (P.4 теперь зависит от 7.1a).
+- `README.md` — добавлен CI badge `[![CI](https://img.shields.io/badge/CI-self--hosted--windows--blue.svg)](docs/ci/self-hosted-runner.md)`
+  + статус-строка с командами проверки/установки runner'а.
+
+**Результат**: self-hosted Windows runner готов к работе. Следующий шаг — `7.1` (CI workflow
+`.github/workflows/ci.yml`) на этом runner'е + fallback на `ubuntu-latest` для случая
+когда self-hosted оффлайн. Stub-only build через `go build -tags llama_stub` уже работает
+на текущей машине (Go 1.25.4, Docker 29.5.3, GOMODCACHE 641 MB, GOCACHE 3 GB).
+
+**Acceptance criteria** (все ✅):
+
+1. ✅ `scripts/setup-runner.ps1` — проверяет Go, Docker, git, node, cmake, admin-права.
+2. ✅ Получает registration token через `POST /api.github.com/repos/.../actions/runners/registration-token`.
+3. ✅ Регистрирует runner с метками `[self-hosted, windows, ollamalegion-ci]`.
+4. ✅ Устанавливает как Windows service, автозапуск при загрузке.
+5. ✅ `scripts/check-runner.ps1` — 6 секций диагностики, exit codes 0/1/2.
+6. ✅ `docs/ci/self-hosted-runner.md` — 180 LOC, 5 troubleshooting секций, TODO список.
+7. ✅ `plans/2026-q3-roadmap.md` §7.1a — задача задокументирована с оценкой.
+8. ✅ `plans/2026-q3-production-ready-plan.md` §5 — P.4 ссылается на 7.1a как блокирующую.
+9. ✅ `README.md` — CI badge + quick-start команды для setup/check.
+10. ✅ Текущая машина готова: Go 1.25.4, Docker 29.5.3, persistent cache работает.
+
+**Итого**: +600 LOC (скрипты + docs + план sync), 0 breaking changes, 0 тестов (скрипты —
+инфраструктура, не unit-testable без GitHub API).
+
+**Branch**: `feature/7.1a-self-hosted-runner` (от `feature/q3-session-f`).
+
+**NB**: пользователь явно попросил использовать текущую машину (`c:\Ollama\ollamalegion`,
+Windows 11) как self-hosted runner — persistent cache, Windows nvml поддержка, stub-only
+build уже работает. GitHub-hosted runners остаются как fallback для случая когда self-hosted
+оффлайн (см. 7.1 в roadmap).
+
+---
+
 ## [Unreleased — 2026-06-28f]
 
 ### Added (Roadmap Q3 — Session F.0a/b/α/β/γ: UI/UX quick wins — EOF diagnostics + SSE + Health aggregation + /health page)

@@ -12,6 +12,7 @@
 | План | Файл | Сессия | Статус |
 |------|------|--------|--------|
 | [Session F — UI/UX quick wins (5.3, 5.4, 5.5, 5.7)](2026-q3-session-f-quick-wins.md) | `plans/2026-q3-session-f-quick-wins.md` | Session F (июнь 2026) | ✅ Session F ПОЛНОСТЬЮ ЗАКРЫТ (F.0a/b/α/β/γ + F.4) |
+| **[7.1a — Self-hosted CI runner](2026-q3-roadmap.md#7-cicd-и-тестирование)** | `scripts/setup-runner.ps1` + `scripts/check-runner.ps1` + `docs/ci/self-hosted-runner.md` | Месяц 1 (июль 2026) | ⏳ WIP (setup-runner + check-runner + docs готовы, установка runner'а отложена до получения PAT) |
 | [Production-ready (3.2, 3.3, B8.7, 7.1)](2026-q3-production-ready-plan.md) | `plans/2026-q3-production-ready-plan.md` | Sessions G+ (август-сентябрь 2026) | ⏳ WIP |
 
 Все планы B1–B8 реализованы (см. Roadmap ниже).

@@ -44,8 +44,8 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
         with:
-          submodules: recursive  # для c/llama.cpp subtree
-          fetch-depth: 0         # для git log в комментариях
+          submodules: false  # c/llama.cpp — gitlink без .gitmodules
+          fetch-depth: 0     # для git log в комментариях
 
       - name: Setup Go
         uses: actions/setup-go@v5
@@ -57,6 +57,7 @@ jobs:
         shell: pwsh
         run: |
           go version
+
           go env GOROOT GOPATH GOMODCACHE GOCACHE
 
       - name: Build all binaries (stub mode)
@@ -131,7 +132,7 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
         with:
-          submodules: recursive
+          submodules: false  # c/llama.cpp — gitlink без .gitmodules
           fetch-depth: 0
 
       - name: Setup Go
@@ -141,6 +142,7 @@ jobs:
           cache: true
 
       - name: Install build tools
+
         run: |
           sudo apt-get update
           sudo apt-get install -y build-essential cmake
@@ -191,7 +193,7 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
         with:
-          submodules: recursive
+          submodules: false  # c/llama.cpp — gitlink без .gitmodules
 
       - name: Setup Go
         uses: actions/setup-go@v5
@@ -200,6 +202,7 @@ jobs:
           cache: true
 
       - name: Run golangci-lint
+
         uses: golangci/golangci-lint-action@v6
         with:
           version: v1.61.0
@@ -218,8 +221,11 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          submodules: false
 
       - name: Setup Node.js
+
         uses: actions/setup-node@v4
         with:
           node-version: "20"

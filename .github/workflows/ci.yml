@@ -48,19 +48,22 @@ jobs:
           fetch-depth: 0     # для git log в комментариях
 
       # Init Go env — actions/setup-go@v5 зависает под LocalSystem (SYSTEM account),
-      # поэтому ищем go.exe вручную. ВСЁ в одном шаге, чтобы не полагаться на
-      # межшаговую передачу GITHUB_ENV (BOM-проблемы с Out-File в PS 5.1).
+      # поэтому ищем go.exe вручную. Стратегия: hardcoded → PATH → known paths →
+      # recursive C:\ → auto-download. Используем ДВОЙНУЮ propagation:
+      # GITHUB_PATH (для go.exe в PATH последующих шагов) + GITHUB_ENV (для GOROOT/GOEXE
+      # как fallback, если GITHUB_PATH не сработал под SYSTEM account).
       #
-      # Стратегия: hardcoded paths → PATH/Get-Command/where → auto-download.
-      # GITHUB_PATH пишем Add-Content с ASCII (без BOM в PS 5.1).
-      - name: Init Go env (one-step, no GITHUB_ENV dependency)
+      # Все операции с GITHUB_PATH/GITHUB_ENV обёрнуты в try/catch и используют
+      # Add-Content -Encoding ASCII (без BOM, критично для PowerShell 5.1).
+      - name: Init Go env (dual propagation: GITHUB_PATH + GITHUB_ENV)
         shell: powershell
         run: |
-          $ErrorActionPreference = "Stop"
-
-          # ---------- helper: add to GITHUB_PATH (ASCII, без BOM) ----------
-          function Add-Path($dir) {
-            Add-Content -Path $env:GITHUB_PATH -Value $dir -Encoding ASCII
+          # ---- helpers: пишем в GITHUB_PATH / GITHUB_ENV (ASCII, без BOM) ----
+          function Add-Path($d) {
+            try { Add-Content -Path $env:GITHUB_PATH -Value $d -Encoding ASCII } catch { }
+          }
+          function Set-Env($k, $v) {
+            try { Add-Content -Path $env:GITHUB_ENV -Value "$k=$v" -Encoding ASCII } catch { }
           }
 
           $goDir = $null
@@ -68,9 +71,7 @@ jobs:
           # ---------- 1) hardcoded paths ----------
           foreach ($p in @(
               "C:\Program Files\Go\bin\go.exe",
-              "C:\Go\bin\go.exe",
-              "$env:ProgramFiles\Go\bin\go.exe",
-              "${env:ProgramFiles(x86)}\Go\bin\go.exe"
+              "C:\Go\bin\go.exe"
           )) {
             if ($p -and (Test-Path $p)) {
               $goDir = Split-Path $p -Parent
@@ -79,91 +80,93 @@ jobs:
             }
           }
 
-          # ---------- 2) Get-Command / where.exe / known paths ----------
+          # ---------- 2) Get-Command / where.exe ----------
           if (-not $goDir) {
             Write-Host "hardcoded: NOT found, trying PATH lookup..."
-
-            $exe = Get-Command go.exe -ErrorAction SilentlyContinue
-            if ($exe) {
-              $goDir = Split-Path $exe.Source -Parent
-              Write-Host "FOUND (Get-Command): $goDir"
-            }
+            try {
+              $exe = Get-Command go.exe -ErrorAction SilentlyContinue
+              if ($exe) { $goDir = Split-Path $exe.Source -Parent; Write-Host "FOUND (Get-Command): $goDir" }
+            } catch { }
           }
-
           if (-not $goDir) {
-            $w = where.exe go.exe 2>$null
-            if ($w) {
-              $goDir = Split-Path ($w | Select-Object -First 1) -Parent
-              Write-Host "FOUND (where.exe): $goDir"
-            }
+            try {
+              $w = where.exe go.exe 2>$null
+              if ($w) { $goDir = Split-Path ($w | Select-Object -First 1) -Parent; Write-Host "FOUND (where.exe): $goDir" }
+            } catch { }
           }
 
+          # ---------- 3) known paths ----------
           if (-not $goDir) {
             $known = @()
-            if (Test-Path env:GOROOT) { $known += "$env:GOROOT\bin" }
-            $known += "$env:LocalAppData\go\bin"
-            $known += "$env:ProgramData\chocolatey\bin"
+            try { if (Test-Path env:GOROOT) { $known += "$env:GOROOT\bin" } } catch { }
+            try { $known += "$env:ProgramFiles\Go\bin" } catch { }
+            try { $known += "${env:ProgramFiles(x86)}\Go\bin" } catch { }
+            try { $known += "$env:LocalAppData\go\bin" } catch { }
+            try { $known += "$env:ALLUSERSPROFILE\chocolatey\bin" } catch { }
+            $known += "C:\Go\bin"
+            $known += "C:\Program Files\Go\bin"
             $known += "C:\ProgramData\chocolatey\bin"
-            $known += "$env:ALLUSERSPROFILE\chocolatey\bin"
-            $known += "$env:SystemDrive\Go\bin"
-            $known += "$env:USERPROFILE\scoop\apps\go\current\bin"
-            $known += "$env:ALLUSERSPROFILE\scoop\apps\go\current\bin"
+            try { $known += "$env:SystemDrive\Go\bin" } catch { }
+            try { $known += "$env:USERPROFILE\scoop\apps\go\current\bin" } catch { }
+            try { $known += "$env:ALLUSERSPROFILE\scoop\apps\go\current\bin" } catch { }
             foreach ($d in $known) {
-              if ($d -and (Test-Path "$d\go.exe")) {
-                $goDir = $d
-                Write-Host "FOUND (known path): $goDir"
-                break
-              }
+              try {
+                if ($d -and (Test-Path "$d\go.exe")) { $goDir = $d; Write-Host "FOUND (known): $goDir"; break }
+              } catch { }
             }
           }
 
-          # ---------- 3) recursive where /R C:\ ----------
+          # ---------- 4) recursive search C:\ ----------
           if (-not $goDir) {
-            Write-Host "known paths: NOT found, trying recursive search on C:\... (may take 30-60 sec)"
-            $r = where.exe /R "C:\" go.exe 2>$null | Select-Object -First 1
-            if ($r) {
-              $goDir = Split-Path $r -Parent
-              Write-Host "FOUND (recursive): $goDir"
-            }
+            Write-Host "known: NOT found, recursive C:\... (may take 30-60 sec)"
+            try {
+              $r = where.exe /R "C:\" go.exe 2>$null | Select-Object -First 1
+              if ($r) { $goDir = Split-Path $r -Parent; Write-Host "FOUND (recursive): $goDir" }
+            } catch { }
           }
 
-          # ---------- 4) auto-download (если ничего не нашли) ----------
+          # ---------- 5) auto-download (fallback) ----------
           if (-not $goDir) {
             Write-Host "recursive: NOT found. Auto-downloading Go $env:GO_VERSION_WIN ..."
-            $goVersion = "$env:GO_VERSION_WIN"
-            $url = "https://go.dev/dl/go$goVersion.windows-amd64.zip"
-            $zipPath = "$env:TEMP\go.zip"
-            $installDir = "C:\Go"
-
-            if (Test-Path $zipPath) { Remove-Item -Force $zipPath }
-            curl.exe -sSL -o $zipPath $url
-            if (-not (Test-Path $zipPath)) { throw "failed to download Go from $url" }
-            Write-Host "Downloaded: $((Get-Item $zipPath).Length) bytes"
-
-            if (Test-Path $installDir) { Remove-Item -Recurse -Force $installDir }
-            Expand-Archive -Path $zipPath -DestinationPath "C:\" -Force
-            if (-not (Test-Path "$installDir\bin\go.exe")) { throw "extraction failed — go.exe not found" }
-
-            $goDir = "$installDir\bin"
-            Write-Host "Installed Go to: $goDir"
+            try {
+              $goVersion = "$env:GO_VERSION_WIN"
+              $url = "https://go.dev/dl/go$goVersion.windows-amd64.zip"
+              $zipPath = "$env:TEMP\go.zip"
+              $installDir = "C:\Go"
+              if (Test-Path $zipPath) { Remove-Item -Force $zipPath }
+              curl.exe -sSL --connect-timeout 30 -o $zipPath $url
+              if (Test-Path $zipPath) {
+                Write-Host "Downloaded: $((Get-Item $zipPath).Length) bytes"
+                if (Test-Path $installDir) { Remove-Item -Recurse -Force $installDir }
+                Expand-Archive -Path $zipPath -DestinationPath "C:\" -Force
+                if (Test-Path "$installDir\bin\go.exe") { $goDir = "$installDir\bin"; Write-Host "Installed to: $goDir" }
+              }
+            } catch { Write-Host "Auto-download failed: $_" }
           }
 
-          # ---------- 5) apply PATH + verify ----------
-          Write-Host "Adding to PATH: $goDir"
-          $env:Path = "$goDir;$env:Path"
-          Add-Path $goDir
-
-          $v = & go version 2>&1
-          if ($LASTEXITCODE -ne 0) { throw "go version failed after PATH update" }
-          Write-Host "Go OK: $v"
-          & go env GOROOT GOPATH GOMODCACHE GOCACHE 2>&1 | ForEach-Object { Write-Host "  $_" }
+          # ---------- 6) apply PATH + GOROOT/GOEXE env vars + verify ----------
+          if ($goDir) {
+            $env:Path = "$goDir;$env:Path"
+            Add-Path $goDir
+            $goRoot = (Resolve-Path "$goDir\..").Path
+            Set-Env "GOROOT" $goRoot
+            Set-Env "GOEXE" "$goDir\go.exe"
+            $v = & "$goDir\go.exe" version 2>&1
+            if ($LASTEXITCODE -ne 0) { Write-Host "::error::go version failed"; exit 1 }
+            Write-Host "Go OK: $v"
+            & "$goDir\go.exe" env GOROOT GOPATH GOMODCACHE GOCACHE 2>&1 | ForEach-Object { Write-Host "  $_" }
+          } else {
+            Write-Host "::error::Go not found and auto-download failed"
+            exit 1
+          }
 
       - name: Build all binaries (stub mode)
         shell: powershell
         run: |
-          go build -tags llama_stub -v -o bin\balancer-stub.exe      .\cmd\balancer\
-          go build -tags llama_stub -v -o bin\cppworker-stub.exe    .\cmd\cppworker\
-          go build -tags llama_stub -v -o bin\agent-stub.exe        .\cmd\agent\
+          $go = if ($env:GOEXE -and (Test-Path $env:GOEXE)) { $env:GOEXE } else { "go.exe" }
+          & $go build -tags llama_stub -v -o bin\balancer-stub.exe      .\cmd\balancer\
+          & $go build -tags llama_stub -v -o bin\cppworker-stub.exe    .\cmd\cppworker\
+          & $go build -tags llama_stub -v -o bin\agent-stub.exe        .\cmd\agent\
 
       - name: Verify healthcheck (stub)
         shell: powershell
@@ -173,35 +176,41 @@ jobs:
       - name: Test (internal packages, -race)
         shell: powershell
         run: |
-          go test -race -tags llama_stub -timeout 180s ./internal/...
+          $go = if ($env:GOEXE -and (Test-Path $env:GOEXE)) { $env:GOEXE } else { "go.exe" }
+          & $go test -race -tags llama_stub -timeout 180s ./internal/...
 
       - name: Test (cmd packages, stub mode)
         shell: powershell
         run: |
-          go test -tags llama_stub -timeout 60s ./cmd/...
+          $go = if ($env:GOEXE -and (Test-Path $env:GOEXE)) { $env:GOEXE } else { "go.exe" }
+          & $go test -tags llama_stub -timeout 60s ./cmd/...
 
       - name: Test (integration, may use Docker)
         shell: powershell
         run: |
-          go test -tags llama_stub -timeout 300s -short ./tests/...
+          $go = if ($env:GOEXE -and (Test-Path $env:GOEXE)) { $env:GOEXE } else { "go.exe" }
+          & $go test -tags llama_stub -timeout 300s -short ./tests/...
         # -short: пропускает e2e тесты, требующие docker-compose stack
 
       - name: Go vet
         shell: powershell
         run: |
-          go vet -tags llama_stub ./...
+          $go = if ($env:GOEXE -and (Test-Path $env:GOEXE)) { $env:GOEXE } else { "go.exe" }
+          & $go vet -tags llama_stub ./...
 
       - name: Generate coverage (race + atomic)
         if: success()
         shell: powershell
         run: |
-          go test -tags llama_stub -coverprofile=coverage.out -covermode=atomic -timeout 180s ./internal/...
+          $go = if ($env:GOEXE -and (Test-Path $env:GOEXE)) { $env:GOEXE } else { "go.exe" }
+          & $go test -tags llama_stub -coverprofile=coverage.out -covermode=atomic -timeout 180s ./internal/...
 
       - name: Coverage summary
         if: success()
         shell: powershell
         run: |
-          go tool cover -func=coverage.out | Tee-Object -FilePath coverage-func.txt
+          $go = if ($env:GOEXE -and (Test-Path $env:GOEXE)) { $env:GOEXE } else { "go.exe" }
+          & $go tool cover -func=coverage.out | Tee-Object -FilePath coverage-func.txt
           Get-Content coverage-func.txt | Select-Object -Last 1
 
       - name: Upload coverage artifact

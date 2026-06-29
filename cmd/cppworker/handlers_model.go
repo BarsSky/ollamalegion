@@ -703,11 +703,13 @@ func handleReloadModel(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// === AutoTuneNCtx: если auto_tune_nctx включён — подбираем оптимальные
-	// n_ctx и gpu_layers с учётом реальной свободной VRAM и RAM.
+	// === AutoTuneNCtx: подбираем оптимальные n_ctx и gpu_layers
+	// с учётом реальной свободной VRAM и RAM.
 	// Это позволяет при reload автоматически сделать partial offload,
 	// если запрошенный n_ctx не помещается в VRAM с текущими gpu_layers.
-	if *autoTuneNCtx && opts.ContextSize > current.ContextSize {
+	// Gate *autoTuneNCtx убран (bugs #2/#7): AutoTuneNCtx применяется всегда,
+	// как и calculateLazyLoadOpts при первой загрузке.
+	if opts.ContextSize > current.ContextSize {
 		tuned := AutoTuneNCtx(*current, opts.ContextSize)
 		if tuned.RecommendedNCtx > 0 && tuned.Source != "fallback" {
 			logger.Get().Infow("reload: AutoTuneNCtx applied",

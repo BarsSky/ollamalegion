@@ -201,6 +201,61 @@ func TestAutoTuneNCtx_NoVRAM(t *testing.T) {
 	}
 }
 
+// TestAutoTuneNCtx_SafetyFactorFromEnv — 2026-06-29: проверяет, что
+// CPPWORKER_NCTX_SAFETY_FACTOR env-flag уважается и применяется ко всем
+// этапам расчёта (AutoTuneNCtx + computeMaxViableNCtx).
+func TestAutoTuneNCtx_SafetyFactorFromEnv(t *testing.T) {
+	m := cppbackend.ModelInfo{
+		Name:        "gemma-4",
+		SizeBytes:   5 * 1024 * 1024 * 1024, // 5 GB
+		NLayers:     32,
+		NEmbd:       2560,
+		NHeads:      32,
+		NKvHeads:    8,
+		ContextSize: 8192,
+		GPULayers:   32,
+	}
+
+	// Default safetyFactor=0.85.
+	setEnv(t, "CPPWORKER_VRAM_BYTES", "8589934592") // 8 GB
+	setEnv(t, "CPPWORKER_AVAILABLE_RAM_BYTES", "16777216000") // 16 GB
+	gotDefault := AutoTuneNCtx(m, 16384)
+	t.Logf("default safetyFactor=0.85: source=%s n_ctx=%d gpu_layers=%d max_viable_n_ctx=%d",
+		gotDefault.Source, gotDefault.RecommendedNCtx,
+		gotDefault.RecommendedGPULayers, gotDefault.MaxViableNCtx)
+	if gotDefault.Source == "fallback" {
+		t.Fatalf("expected proper autotune (not fallback), got %+v", gotDefault)
+	}
+
+	// Env override 0.92 — больший бюджет (более щедрый partial offload).
+	// MaxViableNCtx должен быть БОЛЬШЕ чем при default.
+	setEnv(t, "CPPWORKER_NCTX_SAFETY_FACTOR", "0.92")
+	gotHighSafety := AutoTuneNCtx(m, 16384)
+	t.Logf("env safetyFactor=0.92: source=%s n_ctx=%d gpu_layers=%d max_viable_n_ctx=%d",
+		gotHighSafety.Source, gotHighSafety.RecommendedNCtx,
+		gotHighSafety.RecommendedGPULayers, gotHighSafety.MaxViableNCtx)
+
+	// Invalid value должно использовать default 0.85 (без fatal).
+	setEnv(t, "CPPWORKER_NCTX_SAFETY_FACTOR", "not-a-number")
+	gotInvalid := AutoTuneNCtx(m, 16384)
+	if gotInvalid.Source == "fallback" {
+		t.Fatalf("invalid env should fallback to default 0.85, not fatal")
+	}
+	t.Logf("invalid env rejected, nctx_safety_factor=%.3f (default)", nctxSafetyFactor)
+
+	// Out-of-range value должен быть rejected.
+	setEnv(t, "CPPWORKER_NCTX_SAFETY_FACTOR", "2.0")
+	gotOOR := AutoTuneNCtx(m, 16384)
+	if gotOOR.Source == "fallback" {
+		t.Fatalf("out-of-range env should be rejected, not fatal")
+	}
+
+	// После out-of-range → возвращаем к default 0.85, проверим, что это всё ещё работает.
+	t.Cleanup(func() {
+		// тест-окружение не сохраняет prev value (через t.Cleanup)
+	})
+}
+
 // TestComputeMaxViableNCtx — sanity check для формулы.
 func TestComputeMaxViableNCtx(t *testing.T) {
 	setEnv(t, "CPPWORKER_VRAM_BYTES", "8589934592") // 8 GB

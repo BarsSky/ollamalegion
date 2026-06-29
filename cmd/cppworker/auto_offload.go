@@ -37,13 +37,21 @@ func calculateOptimalGPULayersForModel(m cppbackend.ModelInfo) int {
 		// Нет метаданных (только что загруженная без path/size) — fallback.
 		return currentConfig.DefaultGPULayers
 	}
-	availableVRAM := availableVRAMBytes()
-	if availableVRAM <= 0 {
+	// Используем FREE VRAM, а не TOTAL VRAM, чтобы не учитывать VRAM,
+	// уже занятую другой загруженной моделью (например, gemma-4 5GB на 20GB GPU
+	// оставляет ~15GB free).
+	// Если freeVRAM недоступен — fallback на availableVRAM с двойным запасом.
+	freeVRAM := freeVRAMBytes()
+	if freeVRAM <= 0 {
+		// freeVRAM не удалось определить — используем availableVRAM с запасом 0.85.
+		freeVRAM = int64(float64(availableVRAMBytes()) * 0.85)
+	}
+	if freeVRAM <= 0 {
 		// Не смогли узнать VRAM (CPU-only host, нет nvidia-smi) — fallback.
 		return currentConfig.DefaultGPULayers
 	}
-	safetyFactor := 0.85
-	safeVRAM := int64(float64(availableVRAM) * safetyFactor)
+	safetyFactor := 0.9
+	safeVRAM := int64(float64(freeVRAM) * safetyFactor)
 	overheadBytes := int64(1536) * 1024 * 1024 // 1.5 GB
 
 	// KV-cache для запрошенного n_ctx (bytes)
@@ -82,7 +90,7 @@ func calculateOptimalGPULayersForModel(m cppbackend.ModelInfo) int {
 		"size_bytes", m.SizeBytes,
 		"n_layers", m.NLayers,
 		"weights_per_layer_mb", weightsPerLayer/(1024*1024),
-		"available_vram_mb", availableVRAM/(1024*1024),
+		"free_vram_mb", freeVRAM/(1024*1024),
 		"safe_vram_mb", safeVRAM/(1024*1024),
 		"kv_cache_mb", kvCacheBytes/(1024*1024),
 		"n_ctx", nCtx,

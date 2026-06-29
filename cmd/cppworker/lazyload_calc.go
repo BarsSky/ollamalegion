@@ -209,7 +209,7 @@ func calculateLazyLoadOpts(
 	}
 
 	// === Stage 1: проверяем, влезает ли requestedNCtx + gpuLayers в VRAM ===
-	safetyFactor := 0.85
+	safetyFactor := nctxSafetyFactor // overridable via CPPWORKER_NCTX_SAFETY_FACTOR
 	overheadBytes := int64(1536) * 1024 * 1024 // 1.5GB CUDA + activations
 	safeVRAM := int64(float64(availableVRAM) * safetyFactor)
 

@@ -130,6 +130,14 @@ services:
       - CPPWORKER_ADVERTISE_HOST=${CPPWORKER_ADVERTISE_HOST:-cppworker-gpu}
       - CPPWORKER_ADVERTISE_PORT=18092
       - CPPWORKER_REGISTER_NAME=cppworker-gpu-bundled
+      # 2026-06-29: bundled compose задаёт CPPWORKER_BACKEND_ID явно, чтобы
+      # shell-script register-with-balancer.sh (docker/cppworker/register-with-balancer.sh:22)
+      # НЕ подхватывал дефолт "cppworker-gpu". Без этой переменной shell-script
+      # создавал бэкенд с id="cppworker-gpu" рядом с (отключённой) Go-side
+      # регистрацией на id="cppworker-gpu-bundled" → два бэкенда указывали
+      # на один физический контейнер (race в selectBackend).
+      - CPPWORKER_BACKEND_ID=cppworker-gpu-bundled
+      - CPPWORKER_NAME=CppWorker GPU (bundled)
       - CPPWORKER_REGISTER_RETRY_INTERVAL=15s
       - CPPWORKER_REGISTER_HEARTBEAT=60s
       - CPPWORKER_REGISTER_GPU_MODE=gpu

@@ -410,7 +410,8 @@ func (s *Server) selectReloadTargets(backendID string) []string {
 // через ModelManager.ExecuteOperation.
 //
 // Семантика operation:
-//   - "load"   → одна операция load.
+//   - "load"   → одна операция load. Если на бэкенде уже загружена ДРУГАЯ модель
+//                 (не запрошенная) — автоматически выгружает её перед load.
 //   - "unload" → одна операция unload.
 //   - "reload" → сначала unload (если модель загружена), затем load.
 func (s *Server) executeReloadOnBackend(backendID, modelName string, req *clusterReloadModelRequest) clusterReloadModelBackendResult {
@@ -442,6 +443,54 @@ func (s *Server) executeReloadOnBackend(backendID, modelName string, req *cluste
 		}
 		// После успешного unload (или если модель не была загружена) — выполняем load.
 		req.Operation = "load"
+	}
+
+	// ============================================================
+	// Bug #8: auto-unload чужой модели при load (балансировщик не блокирует выбор другой модели)
+	// ============================================================
+	//
+	// Проблема: когда через WebUI выбирают model B для загрузки, а на этом же бэкенде
+	// уже загружена model A (другая), балансировщик шлёт cppworker'у LoadModel с model B.
+	// cppworker пытается загрузить B, но model A уже заняла VRAM → OOM или падение.
+	//
+	// Решение: перед operation="load" проверяем getLoadedModelOnBackend(). Если на бэкенде
+	// загружена ДРУГАЯ модель (не запрошенная) — сначала делаем unload для неё.
+	if req.Operation == "load" {
+		// Если модель уже загружена на этом бэкенде — идемпотентный skip.
+		if s.isModelLoaded(backendID, modelName) {
+			result.Status = "ok"
+			result.Message = "already loaded"
+			result.HTTPStatus = http.StatusOK
+			return result
+		}
+
+		// Проверяем, не загружена ли ДРУГАЯ модель на этом же бэкенде.
+		loadedModel, loaded := s.getLoadedModelOnBackend(backendID)
+		if loaded && loadedModel != modelName {
+			logger.Get().Infow("cluster reload: auto-unloading different model before load",
+				"backend_id", backendID,
+				"loaded_model", loadedModel,
+				"requested_model", modelName)
+			unloadOp := balancer.ModelOpRequest{
+				Operation: "unload",
+				ModelName: loadedModel,
+			}
+			unloadResult := mm.ExecuteOperation(backendID, unloadOp)
+			if !unloadResult.Success {
+				// unload чужой модели не удался — логируем, но не блокируем load.
+				// Балансировщик всё равно попытается загрузить запрошенную модель.
+				// Если VRAM не хватит — cppworker вернёт понятную ошибку.
+				logger.Get().Warnw("cluster reload: auto-unload of different model failed, "+
+					"continuing with load anyway",
+					"backend_id", backendID,
+					"loaded_model", loadedModel,
+					"error", unloadResult.Error)
+			} else {
+				logger.Get().Infow("cluster reload: auto-unload succeeded",
+					"backend_id", backendID,
+					"unloaded_model", loadedModel)
+			}
+		}
 	}
 
 	opReq := balancer.ModelOpRequest{
@@ -488,6 +537,31 @@ func (s *Server) isModelLoaded(backendID, modelName string) bool {
 		}
 	}
 	return false
+}
+
+// getLoadedModelOnBackend — возвращает имя загруженной модели на бэкенде (если есть).
+// Используется Bug #8: auto-unload чужой модели при load новой.
+//
+// Возвращает (modelName, true) если на бэкенде есть загруженная модель.
+// Если моделей нет — возвращает ("", false).
+// Если на бэкенде загружено несколько моделей — возвращает первую (такое
+// практически невозможно для llama.cpp, но defensive programming).
+func (s *Server) getLoadedModelOnBackend(backendID string) (string, bool) {
+	cs := s.getClusterState()
+	if cs == nil {
+		return "", false
+	}
+	for _, b := range cs.Backends {
+		if b.ID != backendID {
+			continue
+		}
+		for _, m := range b.LlamaCpp.LoadedModels {
+			if m.Name != "" {
+				return m.Name, true
+			}
+		}
+	}
+	return "", false
 }
 
 // getClusterState — единая точка получения cluster state с проверкой proxy.

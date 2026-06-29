@@ -13,6 +13,8 @@
 | `docker-compose.llama.cpp.yml` | CppWorker + Агент (llama.cpp, GPU) | Отдельный узел с llama.cpp вместо Ollama |
 | `docker-compose.llama.cpu.yml` | CppWorker + Агент (llama.cpp, CPU-only) | То же самое, но без GPU |
 | `docker-compose.cppworker.yml` | Только CppWorker (CPU/GPU/STUB) | Изолированный запуск cppworker с профилями |
+| `docker-compose.cppworker-with-agent.yml` | CppWorker + Agent (sidecar) | Sidecar к существующему балансеру; agent регистрирует бэкенд |
+| `docker-compose.cppworker-with-agent.standalone.yml` | Balancer + WebUI + CppWorker + Agent | Полный самодостаточный стек с парой cppworker+agent |
 | `docker-compose.cocoindex.yml` | CocoIndex (поисковый сервис) | Специфичный компонент |
 
 ---
@@ -329,6 +331,107 @@ llama-net (bridge):
 ```
 
 Агент внутри этого стека использует `BACKEND_TYPE=llama_cpp`, поэтому балансер понимает, что это llama.cpp-узел, и направляет запросы через `CPPWORKER_URL`, а не через Ollama API.
+
+---
+
+## 4.1. Sidecar-стек: cppworker + agent (cppworker-with-agent)
+
+Если у вас уже развёрнут балансировщик OllamaLegion (через `docker-compose.yml` или `docker-compose.cppworker-bundled.yml`), и вы хотите добавить к нему llama.cpp-узел как sidecar-пару «cppworker + agent» — используйте `docker-compose.cppworker-with-agent.yml`. Этот стек — **минималистичная альтернатива** `docker-compose.llama.cpp.yml` с упором на тесную связку cppworker и agent в одной compose-сети.
+
+### Шаг 1: Подготовка
+
+```powershell
+cd deployments
+cp .env.bundled.example .env.cppworker-agent
+```
+
+Отредактируйте `.env.cppworker-agent`:
+```ini
+# === Токен балансировщика (тот же, что в балансере) ===
+LB_TOKEN=ваш_токен_балансировщика
+
+# === URL существующего балансировщика (обязательно!) ===
+# На хосте, где крутится балансировщик:
+BALANCER_URL=http://host.docker.internal:18081
+
+# === Путь к моделям на хосте ===
+MODELS_DIR=C:\Ollama\models
+
+# === CppWorker ===
+CPPWORKER_PORT=18091
+CPPWORKER_ADVERTISED_PORT=18092
+CPPWORKER_GPU_LAYERS=99
+
+# === Agent ===
+AGENT_PORT=18032
+```
+
+### Шаг 2: Запуск
+
+```powershell
+$env:DOCKER_BUILDKIT=0
+docker compose -f docker-compose.cppworker-with-agent.yml `
+  --env-file .env.cppworker-agent up -d --build
+```
+
+### Шаг 3: Проверка
+
+```powershell
+# Health cppworker:
+curl http://localhost:18092/health
+
+# Health agent:
+curl http://localhost:18032/health
+
+# Backend зарегистрирован в балансере:
+curl -H "X-API-Token: $LB_TOKEN" http://localhost:18081/api/v1/backends
+# В ответе будет "cppworker-gpu-with-agent" с hasAgent=true
+```
+
+### Что именно запускается
+
+```
+cppworker-agent-net (bridge):
+├── cppworker-gpu (порт 18092 → 18091 в контейнере)
+│   ├── CPPWORKER_REGISTER_DISABLE=true (Go-side регистрация отключена)
+│   ├── слушает :18091 на 0.0.0.0
+│   └── /models → GGUF-модели (read-only)
+└── agent (порт 18032)
+    ├── AGENT_BACKEND_TYPE=llama_cpp
+    ├── AGENT_CPPWORKER_URL=http://cppworker-gpu-with-agent:18091
+    ├── BALANCER_URL=http://host.docker.internal:18081
+    └── зависит от cppworker (depends_on: service_healthy)
+```
+
+### Альтернативный standalone-стек
+
+Если у вас **нет** существующего балансировщика и вы хотите self-contained стек `balancer + webui + cppworker + agent` в одном `docker compose` — используйте `docker-compose.cppworker-with-agent.standalone.yml`. Он поднимает все четыре сервиса и связывает их в две bridge-сети (`balancer-net` + `cppworker-agent-net`). Используется тот же `CPPWORKER_REGISTER_DISABLE=true` для предотвращения дубликатов бэкендов.
+
+```powershell
+docker compose -f docker-compose.cppworker-with-agent.standalone.yml `
+  --env-file .env.cppworker-standalone up -d --build
+# WebUI: http://localhost:18083
+# Backend cppworker-gpu-standalone появится автоматически с hasAgent=true
+```
+
+### Ключевые отличия от `docker-compose.llama.cpp.yml`
+
+| Аспект | `llama.cpp.yml` | `cppworker-with-agent.yml` |
+|--------|----------------|---------------------------|
+| Регистрация в балансер | agent → `BALANCER_URL` | agent → `BALANCER_URL` |
+| `CPPWORKER_REGISTER_DISABLE` | false (по умолчанию) | **true** (явно отключено) |
+| Go-side дубль-регистрация | Возможна | **Предотвращена** |
+| Подходит для bundled стека | Нет | **Да** (без конфликтов с bundled cppworker) |
+| Healthcheck | curl/wget | Встроенный бинарь `-healthcheck` |
+| `extra_hosts: host.docker.internal` | По ситуации | **Всегда** (для связи с хостовым балансером) |
+
+### Acceptance criteria
+
+1. После `docker compose up -d --build` контейнер `cppworker-gpu-with-agent` стартует и отвечает на `http://localhost:18092/health` с HTTP 200.
+2. Контейнер `cppworker-gpu-agent` стартует после cppworker (depends_on) и отвечает на `http://localhost:18032/health`.
+3. В логах agent видна строка `backend registered successfully` с `backendId=cppworker-gpu-with-agent` и `backendType=llama_cpp`.
+4. `GET /api/v1/backends` показывает ровно один бэкенд `cppworker-gpu-with-agent` с `hasAgent=true`. **Дубликатов нет.**
+5. В WebUI → Dashboard → Backends видны live-метрики GPU/CPU/RAM (через agent), а не нули.
 
 ---
 

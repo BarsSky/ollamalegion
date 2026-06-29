@@ -100,33 +100,61 @@ func ensureModelLoaded(modelName string) error {
 		// Legacy auto-offload остался для обратной совместимости: если
 		// CPPWORKER_AUTO_TUNE_NCTX_ON_LOAD=false, старая логика всё равно
 		// отрабатывает (estimatedLayers=80, kvReserve=2GB).
+		// Legacy auto-offload branch: срабатывает ТОЛЬКО если calculateLazyLoadOpts
+		// не смог прочитать GGUF header (rationale.Source == "fallback_no_meta").
+		// Используем тот же safetyFactor, что в calculateLazyLoadOpts, чтобы
+		// поведение было консистентным.
 		if *autoOffload && rationale.Source == "fallback_no_meta" {
 			availableVRAM := availableVRAMBytes()
+			availableRAM := availableRAMBytes()
 			if availableVRAM > 0 {
 				filename := modelName + ".gguf"
 				if meta, mErr := mm.GetModelMeta(filename); mErr == nil && meta.SizeBytes > 0 {
-					safeVRAM := int64(float64(availableVRAM) * 0.85)
+					safeVRAM := int64(float64(availableVRAM) * nctxSafetyFactor)
 					overhead := int64(1536) * 1024 * 1024 // 1.5GB CUDA + activations
-					// Резерв под KV-cache для n_ctx=32768 (~2GB для типичной модели).
-					kvReserve := int64(2) * 1024 * 1024 * 1024
+					// Резерв под KV-cache: реалистичный расчёт если есть NLayers,
+					// иначе грубый 2GB fallback.
+					var kvReserve int64
+					if meta.NLayers > 0 && meta.NEmbd > 0 {
+						kvReserve = estimateKVCacheBytes(*ctxSize, meta.NLayers, meta.NEmbd, meta.NHeads, meta.NKvHeads)
+					} else {
+						kvReserve = int64(2) * 1024 * 1024 * 1024 // 2 GB legacy fallback
+					}
 					availableForWeights := safeVRAM - overhead - kvReserve
 					if availableForWeights > 0 && meta.SizeBytes > availableForWeights {
 						// Модель не влезает целиком — partial offload.
-						estimatedLayers := 80 // грубая оценка для типичной модели
+						// Используем РЕАЛЬНОЕ число слоёв из GGUF (если есть),
+						// иначе fallback 80 (типичная крупная модель).
+						estimatedLayers := 80 // legacy fallback
+						if meta.NLayers > 0 {
+							estimatedLayers = meta.NLayers
+						}
 						weightsPerLayer := meta.SizeBytes / int64(estimatedLayers)
 						if weightsPerLayer > 0 {
 							gpuLayers := int(availableForWeights / weightsPerLayer)
 							if gpuLayers > 0 && gpuLayers < estimatedLayers {
-								logger.Get().Infow("lazy-load: auto-offload (legacy, file-based estimate)",
-									"model", modelName,
-									"old_gpu_layers", opts.GPULayers,
-									"new_gpu_layers", gpuLayers,
-									"model_size_mb", meta.SizeBytes/(1024*1024),
-									"available_for_weights_mb", availableForWeights/(1024*1024),
-									"estimated_layers", estimatedLayers,
-									"vram_total_mb", availableVRAM/(1024*1024))
-								opts.GPULayers = gpuLayers
-								opts.UseMmap = true
+								// Дополнительно проверяем, что веса для оставшихся слоёв
+								// влезают в RAM (mmap).
+								requiredRAM := int64(estimatedLayers-gpuLayers) * weightsPerLayer
+								if availableRAM > 0 && requiredRAM > availableRAM {
+									// RAM не хватает — пропускаем partial offload,
+									// пусть AutoTuneNCtx разберётся при reload.
+									logger.Get().Warnw("lazy-load: auto-offload skipped (weights don't fit in RAM)",
+										"model", modelName,
+										"required_ram_mb", requiredRAM/(1024*1024),
+										"available_ram_mb", availableRAM/(1024*1024))
+								} else {
+									logger.Get().Infow("lazy-load: auto-offload (legacy, file-based estimate)",
+										"model", modelName,
+										"old_gpu_layers", opts.GPULayers,
+										"new_gpu_layers", gpuLayers,
+										"model_size_mb", meta.SizeBytes/(1024*1024),
+										"available_for_weights_mb", availableForWeights/(1024*1024),
+										"estimated_layers", estimatedLayers,
+										"vram_total_mb", availableVRAM/(1024*1024))
+									opts.GPULayers = gpuLayers
+									opts.UseMmap = true
+								}
 							}
 						}
 					}
@@ -157,6 +185,13 @@ func ensureModelLoaded(modelName string) error {
 				"modelsDir":   derefString(modelsDir),
 				"vramTotalMB": backendGPUVRAMTotal(),
 				"vramFreeMB":  backendGPUVRAMFree(),
+				// 2026-06-29: добавлено для диагностики n_ctx auto-tune
+				// (источник решения, % reduction и max_viable).
+				"source":             rationale.Source,
+				"max_viable_n_ctx":   rationale.MaxViableNCtx,
+				"n_ctx_reduction_pct": rationale.NCtxReductionPct,
+				"available_vram_mb":  rationale.AvailableVRAMBytes / (1024 * 1024),
+				"available_ram_mb":   rationale.AvailableRAMBytes / (1024 * 1024),
 			}
 			RecordLoadAttempt(attempt)
 			return fmt.Errorf("failed to load model %s: %w", modelName, err)
@@ -168,7 +203,15 @@ func ensureModelLoaded(modelName string) error {
 		attempt.Success = true
 		attempt.DurationMs = time.Since(loadStart).Milliseconds()
 		attempt.Diagnostics = map[string]interface{}{
-			"modelPath": modelPath,
+			"modelPath":          modelPath,
+			"gpuLayers":          opts.GPULayers,
+			"ctxSize":            opts.ContextSize,
+			"useMmap":            opts.UseMmap,
+			"source":             rationale.Source,
+			"max_viable_n_ctx":   rationale.MaxViableNCtx,
+			"n_ctx_reduction_pct": rationale.NCtxReductionPct,
+			"available_vram_mb":  rationale.AvailableVRAMBytes / (1024 * 1024),
+			"available_ram_mb":   rationale.AvailableRAMBytes / (1024 * 1024),
 		}
 		RecordLoadAttempt(attempt)
 		return nil

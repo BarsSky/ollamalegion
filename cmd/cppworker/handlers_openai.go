@@ -775,10 +775,15 @@ func writeOpenAIChatStream(w http.ResponseWriter, r *http.Request, modelName, pr
 		finalDelta["tool_calls"] = toolCalls
 		finishReason = "tool_calls"
 	} else {
-		// Plain-text ответ — эмитим полный content в финальном чанке.
-		// Это критично для OpenWebUI, который берёт content из финального чанка.
+		// Plain-text ответ.
+		// 2026-06-29: токены уже стримились инкрементально через callback
+		// (см. тело цикла выше, строки 624-660 — каждый токен улетает отдельным
+		// SSE-чанком с delta.content). Финальный чанк содержит только role +
+		// finish_reason="stop", иначе клиент видит ДУБЛЬ: сначала N стриминговых
+		// чанков с токенами, потом ещё один с ПОЛНЫМ текстом. OpenAI API это
+		// допускает (финальный chunk может иметь пустой delta.content).
 		finalDelta["role"] = "assistant"
-		finalDelta["content"] = cleanFinalContent(fullOutput)
+		finalDelta["content"] = nil
 	}
 
 	stopChunk := map[string]interface{}{
@@ -912,9 +917,11 @@ func handleV1Completions(w http.ResponseWriter, r *http.Request) {
 
 // writeOpenAICompletionStream — streaming ответ в формате SSE для /v1/completions.
 //
-// КРИТИЧЕСКИ ВАЖНО: финальный SSE чанк содержит полный text, иначе клиенты
-// (включая OpenWebUI) после done:true видят пустой text и завершают сессию
-// без ответа модели. Раньше финальный чанк имел text: "".
+// 2026-06-29: токены стримятся инкрементально в callback (ниже). Финальный
+// чанк содержит ТОЛЬКО finish_reason="stop" с пустым text — иначе клиент
+// (после доработки семантики OpenAI-compatible) видит ДУБЛЬ: N чанков с
+// токенами + ещё один с ПОЛНЫМ text. Предыдущая версия шла "open" на спорное
+// поведение OpenWebUI; текущий фикс выровнен с /v1/chat/completions.
 func writeOpenAICompletionStream(w http.ResponseWriter, r *http.Request, modelName, prompt string, params bridge.GenerationParams) {
 	flusher, ok := w.(http.Flusher)
 	if !ok {
@@ -1048,6 +1055,10 @@ func writeOpenAICompletionStream(w http.ResponseWriter, r *http.Request, modelNa
 		flusher.Flush()
 		return
 	}
+	// 2026-06-29: финальный чанк с пустым text. Токены уже стримились
+	// инкрементально в callback; чтобы не дублировать, шлём только role
+	// (через пустой text) и finish_reason="stop". Подробнее см. комментарий
+	// в writeOpenAIChatStream (аналогичная фиксация).
 	stopChunk := map[string]interface{}{
 		"id":      completionID,
 		"object":  "text_completion",
@@ -1055,8 +1066,7 @@ func writeOpenAICompletionStream(w http.ResponseWriter, r *http.Request, modelNa
 		"model":   modelName,
 		"choices": []map[string]interface{}{
 			{
-				"text":          cleanFinalContent(fullOutput),
-				"index":         0,
+				"text":          "",
 				"finish_reason": "stop",
 			},
 		},

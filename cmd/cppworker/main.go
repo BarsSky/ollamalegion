@@ -46,9 +46,9 @@ var (
 	flashAttn            = flag.Int("flash-attn", -1, "Flash Attention type: -1=auto, 0=disabled, 1=enabled")
 	numa                 = flag.Bool("numa", false, "Enable NUMA optimization")
 	noMmap               = flag.Bool("no-mmap", false, "Disable mmap")
-	ramFallbackNCtx      = flag.Bool("ram-fallback-n-ctx", false, "Auto-reload model with requested n_ctx using RAM when VRAM is insufficient")
+	ramFallbackNCtx      = flag.Bool("ram-fallback-n-ctx", true, "Auto-reload model with requested n_ctx using RAM when VRAM is insufficient")
 	ramFallbackGpuLayers = flag.Int("ram-fallback-gpu-layers", -1, "GPU layers to use during RAM fallback (-1=keep current, 0=CPU-only, -2=AUTO via auto-offload)")
-	ramFallbackMaxNCtx   = flag.Int("ram-fallback-max-n-ctx", 32768, "Max n_ctx allowed for RAM fallback")
+	ramFallbackMaxNCtx   = flag.Int("ram-fallback-max-n-ctx", 128000, "Max n_ctx allowed for RAM fallback")
 	// ramFallbackAllowTools — с 2026-06-23 разрешаем reload при tools,
 	// чтобы balancer (preflight) мог динамически увеличивать n_ctx под длинный
 	// prompt от Cline/OpenWebUI. Старое поведение (reload off при tools) можно
@@ -57,7 +57,7 @@ var (
 	// autoOffload — авто-расчёт числа GPU-слоёв на основе размера .gguf файла
 	// и доступной VRAM. Используется при ram-fallback-gpu-layers=-2 ИЛИ при
 	// handleLoadModel/handleCppWorkerUpdateConfig, если модель не влезает.
-	autoOffload = flag.Bool("auto-offload", false, "Auto-calculate gpu_layers based on model size and available VRAM (solves OOM for 19GB+ models on 24GB GPU)")
+	autoOffload = flag.Bool("auto-offload", true, "Auto-calculate gpu_layers based on model size and available VRAM (solves OOM for 19GB+ models on 24GB GPU)")
 	// autoTuneNCtx — AutoTuneNCtx: автоподбор n_ctx и gpu_layers при reload.
 	// При включении cppworker при RAM-fallback reload пытается выбрать
 	// максимальный n_ctx, который помещается в VRAM (с учётом partial offload
@@ -67,7 +67,7 @@ var (
 	// cppworker перезагружает модель с gpu_layers=0 (через mmap в RAM) и
 	// n_ctx=максимально возможный (например 32K), чтобы inference прошёл
 	// без кода 3 «prompt too long».
-	autoTuneNCtx = flag.Bool("auto-tune-nctx", false, "Auto-tune n_ctx + gpu_layers on RAM-fallback reload based on available VRAM/RAM (solves 'prompt too long' when VRAM is insufficient)")
+	autoTuneNCtx = flag.Bool("auto-tune-nctx", true, "Auto-tune n_ctx + gpu_layers on RAM-fallback reload based on available VRAM/RAM (solves 'prompt too long' when VRAM is insufficient)")
 	allowedOrigin        = flag.String("cors-origin", "*", "CORS allowed origin")
 	envFile              = flag.String("env", "", "Path to .env configuration file (optional)")
 	preloadModels        = flag.Bool("preload-models", false, "Preload all .gguf models at startup (disabled by default — use with care, may exhaust VRAM)")

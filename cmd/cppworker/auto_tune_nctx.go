@@ -28,10 +28,34 @@ package main
 
 import (
 	"fmt"
+	"os"
+	"strconv"
 
 	"ollama-loadbalancer/internal/cppbackend"
 	"ollama-loadbalancer/pkg/logger"
 )
+
+// nctxSafetyFactor — коэффициент запаса VRAM при расчёте max_viable_n_ctx
+// и partial offload. По умолчанию 0.85 (т.е. резервируем 15% VRAM под CUDA
+// overhead, activations, fragmentation). Переопределяется через env
+// CPPWORKER_NCTX_SAFETY_FACTOR=<float in (0, 1)>.
+//
+// Для больших моделей на 20GB+ VRAM с запасом RAM рекомендуется
+// 0.90–0.92 (см. docs/issues/2026-06-29-big-model-20gb-fix.md).
+var nctxSafetyFactor = 0.85
+
+func init() {
+	if v := os.Getenv("CPPWORKER_NCTX_SAFETY_FACTOR"); v != "" {
+		if f, err := strconv.ParseFloat(v, 64); err == nil && f > 0 && f < 1.0 {
+			nctxSafetyFactor = f
+			logger.Get().Infow("applied CPPWORKER_NCTX_SAFETY_FACTOR from env",
+				"nctx_safety_factor", nctxSafetyFactor)
+		} else {
+			logger.Get().Warnw("invalid CPPWORKER_NCTX_SAFETY_FACTOR, using default",
+				"env_value", v, "default", 0.85)
+		}
+	}
+}
 
 // TunedNCtxResult — результат AutoTuneNCtx для применения в LoadModelOpts.
 type TunedNCtxResult struct {
@@ -85,7 +109,7 @@ func AutoTuneNCtx(m cppbackend.ModelInfo, requestedNCtx int) TunedNCtxResult {
 		availableVRAM = availableVRAMBytes()
 	}
 	// Параметры для расчётов.
-	safetyFactor := 0.85
+	safetyFactor := nctxSafetyFactor // overridable via CPPWORKER_NCTX_SAFETY_FACTOR
 	overheadBytes := int64(1536) * 1024 * 1024 // 1.5 GB CUDA + activations
 	weightsPerLayer := int64(m.SizeBytes) / int64(m.NLayers)
 
@@ -275,7 +299,7 @@ func computeMaxViableNCtx(m cppbackend.ModelInfo, availableVRAM int64, gpuLayers
 	if m.NLayers == 0 || m.NEmbd == 0 {
 		return m.ContextSize // fallback
 	}
-	safetyFactor := 0.85
+	safetyFactor := nctxSafetyFactor // overridable via CPPWORKER_NCTX_SAFETY_FACTOR
 	safeVRAM := int64(float64(availableVRAM) * safetyFactor)
 	// KV-cache для m.ContextSize → kvPerToken.
 	kvCacheBytes := estimateKVCacheBytes(m.ContextSize, m.NLayers, m.NEmbd, m.NHeads, m.NKvHeads)

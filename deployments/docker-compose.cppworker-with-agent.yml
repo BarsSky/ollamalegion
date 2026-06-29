@@ -1,0 +1,177 @@
+# =============================================================================
+# OllamaLegion — cppworker + agent (sidecar to existing balancer)
+# =============================================================================
+#
+# Назначение: sidecar-стек для уже существующего балансировщика
+# (запущенного на хосте через docker-compose.yml или bundled compose).
+# Поднимает пару "cppworker-gpu-bundled + agent" и регистрирует backend
+# в балансировщик через WebUI/Admin API.
+#
+# Использование:
+#   1. Скопируйте .env.bundled.example → .env.cppworker-agent
+#      и заполните BALANCER_URL=http://host.docker.internal:18081
+#      и CPPWORKER_API_TOKEN=<ваш токен>.
+#   2. Соберите и запустите:
+#        $env:DOCKER_BUILDKIT=0
+#        docker compose -f docker-compose.cppworker-with-agent.yml \
+#          --env-file .env.cppworker-agent up -d --build
+#   3. Проверьте, что backend зарегистрирован:
+#        curl -H "X-API-Token: $LB_TOKEN" http://localhost:18081/api/v1/backends
+#      Должен быть `hasAgent: true` у "cppworker-gpu-with-agent".
+#
+# Альтернатива: если env-файл с токеном заполнен, агент сам зарегистрирует
+# backend в балансер через POST /api/v1/backends. Если токен не задан —
+# регистрация делается вручную через WebUI: Add Backend →
+#   ID: cppworker-gpu-with-agent
+#   Host: host.docker.internal
+#   Port: 18092
+#   Type: llama_cpp
+#   Agent Port: 18032
+#
+# Переменные окружения (в .env.cppworker-agent):
+#   CPPWORKER_PORT           — порт cppworker внутри контейнера (18091)
+#   CPPWORKER_ADVERTISE_HOST — DNS-имя для регистрации (cppworker-gpu-with-agent)
+#   CPPWORKER_ADVERTISED_PORT — порт для балансера (18092)
+#   CPPWORKER_API_TOKEN      — токен, который балансер использует
+#                              для обратных вызовов cppworker
+#   CPPWORKER_GPU_LAYERS     — сколько слоёв модели на GPU (99 = почти все)
+#   AGENT_PORT               — порт агента (18032)
+#   BALANCER_URL             — http://host.docker.internal:18081
+#   LB_TOKEN                 — X-API-Token балансера
+# =============================================================================
+
+x-security: &security-opts
+  read_only: true
+  security_opt:
+    - no-new-privileges:true
+  tmpfs:
+    - /tmp:size=64M,noexec,nosuid
+
+services:
+  # =========================================================================
+  # cppworker-gpu-with-agent — сервер инференса llama.cpp
+  # =========================================================================
+  cppworker-gpu:
+    build:
+      context: ..
+      dockerfile: docker/cppworker/Dockerfile.gpu
+    image: ollama-legion/cppworker:gpu
+    container_name: cppworker-gpu-with-agent
+    restart: unless-stopped
+
+    # Go-side регистрация отключена — её делает agent (или ручной WebUI).
+    # Это предотвращает дубликаты бэкендов в кластере (issue 2026-06-25).
+    environment:
+      - CPPWORKER_HOST=0.0.0.0
+      - CPPWORKER_PORT=${CPPWORKER_PORT:-18091}
+      - CPPWORKER_ADVERTISE_HOST=${CPPWORKER_ADVERTISE_HOST:-cppworker-gpu-with-agent}
+      - CPPWORKER_ADVERTISED_PORT=${CPPWORKER_ADVERTISED_PORT:-18092}
+      - CPPWORKER_REGISTER_DISABLE=true
+      - CPPWORKER_API_TOKEN=${CPPWORKER_API_TOKEN:-}
+      - CPPWORKER_GPU_LAYERS=${CPPWORKER_GPU_LAYERS:-99}
+      - CPPWORKER_MODELS_DIR=/models
+    volumes:
+      - ${MODELS_DIR:-./models}:/models
+    networks:
+      - cppworker-agent-net
+    ports:
+      # Порт cppworker доступен и снаружи для WebUI/скриптов
+      - "${CPPWORKER_ADVERTISED_PORT:-18092}:${CPPWORKER_PORT:-18091}"
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    healthcheck:
+      test: ["CMD", "/app/cppworker", "-healthcheck"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+
+  # =========================================================================
+  # agent — сборщик метрик (GPU, CPU, RAM, llama.cpp runtime)
+  # =========================================================================
+  # Тот же бинарник, что в bundled compose, но в режиме llama_cpp.
+  # Подключается к cppworker по DNS-имени cppworker-gpu-with-agent:18091
+  # (внутри compose-сети), к балансеру — по host.docker.internal:18081.
+  # =========================================================================
+  agent:
+    build:
+      context: ..
+      dockerfile: docker/agent/Dockerfile
+      target: agent-gpu
+      args:
+        ENABLE_NVML: "true"
+    image: ollama-legion/agent:gpu-llamacpp
+    container_name: cppworker-gpu-agent
+    restart: unless-stopped
+    depends_on:
+      cppworker-gpu:
+        condition: service_healthy
+
+    environment:
+      - AGENT_ID=${AGENT_ID:-cppworker-gpu-agent}
+      - AGENT_PORT=${AGENT_PORT:-18032}
+
+      # === Ключевое: тип бэкенда = llama_cpp (а не ollama) ===
+      - AGENT_BACKEND_TYPE=llama_cpp
+      # URL cppworker внутри compose-сети
+      - AGENT_CPPWORKER_URL=http://cppworker-gpu-with-agent:${CPPWORKER_PORT:-18091}
+
+      # === Регистрация в существующий балансер на хосте ===
+      - BALANCER_URL=${BALANCER_URL:-http://host.docker.internal:18081}
+      - BALANCER_API_TOKEN=${LB_TOKEN:-}
+      - AGENT_PUBLIC_HOST=${CPPWORKER_ADVERTISE_HOST:-cppworker-gpu-with-agent}
+      - AGENT_PUBLIC_PORT=${AGENT_PORT:-18032}
+      - AGENT_NODE_LABELS=${AGENT_NODE_LABELS:-gpu,llamacpp,cppworker}
+      - AGENT_WEIGHT=${AGENT_WEIGHT:-1}
+      - AGENT_MAX_CONCURRENT_REQUESTS=${AGENT_MAX_CONCURRENT_REQUESTS:-10}
+      - AGENT_MAX_MODELS=${AGENT_MAX_MODELS:-5}
+
+      # === Тайминги ===
+      - METRICS_INTERVAL=${METRICS_INTERVAL:-5}
+      - HEARTBEAT_INTERVAL=${HEARTBEAT_INTERVAL:-15}
+      - COLLECT_INTERVAL=${COLLECT_INTERVAL:-5}
+      - GPU_MODE=${GPU_MODE:-gpu}
+      - NVML_ENABLED=true
+
+      # === Логи ===
+      - LOG_LEVEL=${LOG_LEVEL:-info}
+      - LOG_FORMAT=${LOG_FORMAT:-text}
+
+    ports:
+      # Agent API/health/logs — для отладки и для балансера
+      - "${AGENT_PORT:-18032}:${AGENT_PORT:-18032}"
+
+    networks:
+      - cppworker-agent-net
+
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+
+    deploy:
+      resources:
+        limits:
+          cpus: '4'
+          memory: 512M
+        reservations:
+          cpus: '1'
+          memory: 128M
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+
+    healthcheck:
+      test: ["CMD", "/app/agent", "-healthcheck"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+
+networks:
+  cppworker-agent-net:
+    driver: bridge

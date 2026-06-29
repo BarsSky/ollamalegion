@@ -1,0 +1,229 @@
+# =============================================================================
+# OllamaLegion — cppworker + agent + bundled balancer + webui (standalone stack)
+# =============================================================================
+#
+# Назначение: полностью самодостаточный стек для пользователя, у которого
+# ещё НЕТ запущенного балансировщика. Поднимает всё необходимое:
+#   * balancer          — основной балансировщик (порты 18080 OpenAI / 18081 Admin)
+#   * webui             — WebUI (порт 18083)
+#   * cppworker-gpu     — сервер инференса llama.cpp (порт 18092)
+#   * agent             — сборщик метрик (порт 18032, llama_cpp режим)
+#
+# Этот файл — самостоятельная альтернатива docker-compose.cppworker-bundled.yml,
+# но с явной парой "cppworker + agent" в одной сети. Балансировщик и WebUI
+# стартуют первыми; agent регистрирует cppworker в балансер после старта
+# cppworker (depends_on: service_healthy).
+#
+# Использование:
+#   1. Скопируйте .env.bundled.example → .env.cppworker-standalone
+#      и заполните LB_TOKEN, BALANCER_TOKEN, CUDA_ARCH, MODELS_DIR.
+#   2. Соберите и запустите:
+#        $env:DOCKER_BUILDKIT=0
+#        docker compose -f docker-compose.cppworker-with-agent.standalone.yml \
+#          --env-file .env.cppworker-standalone up -d --build
+#   3. Откройте WebUI: http://localhost:18083
+#   4. Backend "cppworker-gpu-standalone" появится в Backends автоматически
+#      с hasAgent=true.
+#
+# NB: для отключения Go-side авторегистрации cppworker'а (предотвращение
+# дубликатов бэкендов) выставлен CPPWORKER_REGISTER_DISABLE=true.
+# Единственный источник регистрации — agent.
+#
+# Переменные окружения (в .env.cppworker-standalone):
+#   BALANCER_PORT        — порт OpenAI API (18080)
+#   BALANCER_ADMIN_PORT  — порт Admin API (18081)
+#   WEBUI_PORT           — порт WebUI (18083)
+#   CPPWORKER_PORT       — порт cppworker внутри контейнера (18091)
+#   CPPWORKER_ADVERTISED_PORT — порт снаружи контейнера (18092)
+#   AGENT_PORT           — порт агента (18032)
+#   LB_TOKEN             — X-API-Token для Admin API
+#   BALANCER_TOKEN       — общий токен балансер↔cppworker
+#   CUDA_ARCH            — архитектура GPU (например 86 для RTX 3070)
+#   MODELS_DIR           — путь к локальной папке с GGUF-моделями
+#   CPPWORKER_GPU_LAYERS — сколько слоёв модели на GPU (99 = почти все)
+# =============================================================================
+
+x-security: &security-opts
+  read_only: true
+  security_opt:
+    - no-new-privileges:true
+  tmpfs:
+    - /tmp:size=64M,noexec,nosuid
+
+services:
+  # ===========================================================================
+  # balancer — основной балансировщик OllamaLegion
+  # ===========================================================================
+  balancer:
+    build:
+      context: ..
+      dockerfile: docker/balancer/Dockerfile
+    image: ollama-legion/balancer:latest
+    container_name: cppworker-standalone-balancer
+    restart: unless-stopped
+    environment:
+      - BALANCER_HOST=0.0.0.0
+      - BALANCER_PORT=18080
+      - BALANCER_ADMIN_PORT=18081
+      - BALANCER_API_TOKEN=${LB_TOKEN:-}
+      - BALANCER_STATE_DIR=/data
+    volumes:
+      - ${STATE_DIR:-./data}:/data
+    ports:
+      - "${BALANCER_PORT:-18080}:18080"
+      - "${BALANCER_ADMIN_PORT:-18081}:18081"
+    networks:
+      - balancer-net
+    healthcheck:
+      test: ["CMD", "/app/balancer", "-healthcheck"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+
+  # ===========================================================================
+  # webui — WebUI (nginx + статика)
+  # ===========================================================================
+  webui:
+    build:
+      context: ..
+      dockerfile: docker/webui/Dockerfile
+    image: ollama-legion/webui:latest
+    container_name: cppworker-standalone-webui
+    restart: unless-stopped
+    depends_on:
+      balancer:
+        condition: service_healthy
+    environment:
+      - BALANCER_URL=http://balancer:18081
+      - WEBUI_PORT=18083
+    ports:
+      - "${WEBUI_PORT:-18083}:18083"
+    networks:
+      - balancer-net
+
+  # ===========================================================================
+  # cppworker-gpu — сервер инференса llama.cpp
+  # ===========================================================================
+  cppworker-gpu:
+    build:
+      context: ..
+      dockerfile: docker/cppworker/Dockerfile.gpu
+      args:
+        CUDA_ARCH: ${CUDA_ARCH:-86}
+    image: ollama-legion/cppworker:gpu
+    container_name: cppworker-standalone-gpu
+    restart: unless-stopped
+
+    # Go-side регистрация отключена — её делает agent.
+    environment:
+      - CPPWORKER_HOST=0.0.0.0
+      - CPPWORKER_PORT=${CPPWORKER_PORT:-18091}
+      - CPPWORKER_ADVERTISE_HOST=cppworker-standalone-gpu
+      - CPPWORKER_ADVERTISED_PORT=${CPPWORKER_ADVERTISED_PORT:-18092}
+      - CPPWORKER_REGISTER_DISABLE=true
+      - CPPWORKER_API_TOKEN=${BALANCER_TOKEN:-}
+      - CPPWORKER_GPU_LAYERS=${CPPWORKER_GPU_LAYERS:-99}
+      - CPPWORKER_MODELS_DIR=/models
+    volumes:
+      - ${MODELS_DIR:-./models}:/models
+    networks:
+      - balancer-net
+      - cppworker-agent-net
+    ports:
+      - "${CPPWORKER_ADVERTISED_PORT:-18092}:${CPPWORKER_PORT:-18091}"
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    healthcheck:
+      test: ["CMD", "/app/cppworker", "-healthcheck"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+
+  # ===========================================================================
+  # agent — сборщик метрик (GPU/CPU/RAM/llama.cpp runtime)
+  # Регистрирует cppworker в балансер через POST /api/v1/backends.
+  # ===========================================================================
+  agent:
+    build:
+      context: ..
+      dockerfile: docker/agent/Dockerfile
+      target: agent-gpu
+      args:
+        ENABLE_NVML: "true"
+    image: ollama-legion/agent:gpu-llamacpp
+    container_name: cppworker-standalone-agent
+    restart: unless-stopped
+    depends_on:
+      cppworker-gpu:
+        condition: service_healthy
+      balancer:
+        condition: service_healthy
+
+    environment:
+      - AGENT_ID=cppworker-standalone-agent
+      - AGENT_PORT=18032
+
+      # === Ключевое: тип бэкенда = llama_cpp ===
+      - AGENT_BACKEND_TYPE=llama_cpp
+      - AGENT_CPPWORKER_URL=http://cppworker-standalone-gpu:${CPPWORKER_PORT:-18091}
+
+      # === Регистрация в локальный балансер (через compose-сеть) ===
+      - BALANCER_URL=http://balancer:18081
+      - BALANCER_API_TOKEN=${LB_TOKEN:-}
+      - AGENT_PUBLIC_HOST=cppworker-standalone-gpu
+      - AGENT_PUBLIC_PORT=${CPPWORKER_ADVERTISED_PORT:-18092}
+      - AGENT_NODE_LABELS=gpu,llamacpp,cppworker,standalone
+      - AGENT_WEIGHT=1
+      - AGENT_MAX_CONCURRENT_REQUESTS=10
+      - AGENT_MAX_MODELS=5
+
+      # === Тайминги ===
+      - METRICS_INTERVAL=5
+      - HEARTBEAT_INTERVAL=15
+      - COLLECT_INTERVAL=5
+      - GPU_MODE=gpu
+      - NVML_ENABLED=true
+
+      # === Логи ===
+      - LOG_LEVEL=info
+      - LOG_FORMAT=text
+
+    ports:
+      - "18032:18032"
+
+    networks:
+      - balancer-net
+      - cppworker-agent-net
+
+    deploy:
+      resources:
+        limits:
+          cpus: '4'
+          memory: 512M
+        reservations:
+          cpus: '1'
+          memory: 128M
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+
+    healthcheck:
+      test: ["CMD", "/app/agent", "-healthcheck"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+
+networks:
+  balancer-net:
+    driver: bridge
+  cppworker-agent-net:
+    driver: bridge

@@ -1191,5 +1191,11 @@ window.I18N_RU = {
 
   // ===== Common Status =====
   "common.online": "Онлайн",
-  "common.offline": "Офлайн"
+  "common.offline": "Офлайн",
+
+  // Sprint 1 (2026-06-29): data-density variant i18n keys
+  "density.title": "Плотность интерфейса",
+  "density.toggle": "Переключить плотность (компактно/обычно)",
+  "density.normal": "Обычная",
+  "density.dense": "Компактная"
 };

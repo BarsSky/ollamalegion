@@ -26,6 +26,7 @@ const ui = (function () {
 
     function init() {
         initTheme();
+        initDensity();
         setupI18n();
         setupNavigation();
         setupEventListeners();
@@ -165,8 +166,48 @@ const ui = (function () {
                 // addEventListener / addListener — старые браузеры используют addListener.
                 if (mq.addEventListener) mq.addEventListener('change', onMqChange);
                 else if (mq.addListener) mq.addListener(onMqChange);
-            } catch (e) { /* matchMedia недоступен — ignore */ }
+            } catch (e) { /* matchMedia недоступно — ignore */ }
         }
+    }
+
+    /**
+     * initDensity — Sprint 1 data-dense variant (2026-06-29).
+     * Переключает body[data-density] между "normal" и "dense".
+     * Состояние сохраняется в localStorage["ollamalegion_density"].
+     * Применяется ДО загрузки CSS через inline-скрипт в index.html (early-load).
+     */
+    function initDensity() {
+        var stored = 'normal';
+        try { stored = localStorage.getItem('ollamalegion_density') || 'normal'; } catch (e) { /* ignore */ }
+        if (stored !== 'dense' && stored !== 'normal') stored = 'normal';
+        document.body.setAttribute('data-density', stored);
+        updateDensityToggleIcon(stored);
+
+        var toggleBtn = document.getElementById('densityToggle');
+        if (toggleBtn) {
+            toggleBtn.addEventListener('click', function () {
+                var cur = document.body.getAttribute('data-density') || 'normal';
+                var next = cur === 'dense' ? 'normal' : 'dense';
+                document.body.setAttribute('data-density', next);
+                try { localStorage.setItem('ollamalegion_density', next); } catch (e) { /* ignore */ }
+                updateDensityToggleIcon(next);
+                try {
+                    window.dispatchEvent(new CustomEvent('density:changed', { detail: { density: next } }));
+                } catch (e) { /* ignore */ }
+            });
+        }
+    }
+
+    function updateDensityToggleIcon(density) {
+        var btn = document.getElementById('densityToggle');
+        if (!btn) return;
+        var icon = btn.querySelector('.density-icon');
+        if (icon) {
+            // Меняем FA-class: fa-table-cells-large (dense) / fa-table-cells (normal).
+            icon.className = 'density-icon ' + (density === 'dense' ? 'fas fa-table-cells-large' : 'fas fa-table-cells');
+        }
+        btn.classList.toggle('is-dense', density === 'dense');
+        btn.setAttribute('data-density-current', density);
     }
 
     function updateThemeToggleIcon(theme) {
@@ -1354,7 +1395,15 @@ const ui = (function () {
 
     function startPeriodicRefresh() {
         const interval = (window.WEBUI_CONFIG?.REFRESH_INTERVAL || 5000);
+        // 2026-06-29: добавляем fetchClusterState() в periodic refresh. Без этого
+        // метрики дашборда (totalBackends, healthyBackends и т.д.) обновлялись
+        // ТОЛЬКО через WebSocket — если WS не подключён (балансер за прокси,
+        // CORS preflight, таймаут рукопожатия), карточки метрик оставались
+        // с дефолтом "-" из HTML (webui/index.html:138-139). Periodic REST-poll
+        // гарантирует, что метрики обновятся даже при неработающем WS.
+        // Также добавляем fetchAgents() для консистентности с in-flight refresh.
         refreshTimer = setInterval(() => {
+            fetchClusterState();
             fetchQueue();
             fetchQueueDetails();
             fetchQueueHistory();
@@ -2578,11 +2627,64 @@ const ui = (function () {
         var list = document.getElementById('notificationsList');
 
         if (btn && dropdown) {
+            // 2026-06-29 v3: Portal-паттерн. Переносим .notifications-dropdown
+            // в document.body, чтобы обойти containing block от родителей с
+            // backdrop-filter / transform / filter / will-change / contain
+            // (в частности .header использует backdrop-filter, а иконки —
+            // transform: scale при hover; оба ломают "position: fixed").
+            // После переноса position: fixed гарантированно привязан к
+            // viewport, а z-index 2147483000 попадает в корневой stacking
+            // context и не "проваливается" под вкладки.
+            if (dropdown.parentNode !== document.body) {
+                document.body.appendChild(dropdown);
+            }
+
+            function positionDropdown() {
+                // Не пересчитываем на мобильных — там CSS bottom-sheet
+                if (window.matchMedia && window.matchMedia('(max-width: 768px)').matches) {
+                    return;
+                }
+                var rect = btn.getBoundingClientRect();
+                var dropdownW = dropdown.offsetWidth || 380;
+                var dropdownH = dropdown.offsetHeight || 480;
+                var margin = 8;
+                // top: сразу под кнопкой
+                var top = rect.bottom + margin;
+                // right: правый край выравнивается с правым краем кнопки
+                var right = Math.max(margin, window.innerWidth - rect.right);
+                // Если dropdown не помещается снизу — открыть вверх
+                if (top + dropdownH > window.innerHeight - margin) {
+                    top = Math.max(margin, rect.top - dropdownH - margin);
+                }
+                // Если dropdown не помещается слева — сдвинуть к левому краю
+                if (right + dropdownW > window.innerWidth - margin) {
+                    right = margin;
+                }
+                dropdown.style.top = top + 'px';
+                dropdown.style.right = right + 'px';
+                dropdown.style.left = 'auto';
+                dropdown.style.bottom = 'auto';
+            }
             btn.addEventListener('click', function (e) {
                 e.stopPropagation();
                 var isOpen = !dropdown.hidden;
-                dropdown.hidden = isOpen;
+                if (!isOpen) {
+                    // Открытие — сначала показываем для измерения, потом позиционируем
+                    dropdown.hidden = false;
+                    positionDropdown();
+                } else {
+                    dropdown.hidden = true;
+                    // Очищаем inline-position для корректной работы mobile @media
+                    dropdown.style.top = '';
+                    dropdown.style.right = '';
+                    dropdown.style.left = '';
+                    dropdown.style.bottom = '';
+                }
                 btn.setAttribute('aria-expanded', String(!isOpen));
+            });
+            // При ресайзе пересчитываем позицию, если dropdown открыт
+            window.addEventListener('resize', function () {
+                if (!dropdown.hidden) positionDropdown();
             });
             // Закрываем dropdown при клике снаружи
             document.addEventListener('click', function (e) {
@@ -2590,12 +2692,20 @@ const ui = (function () {
                 if (e.target === btn || (btn.contains && btn.contains(e.target))) return;
                 if (dropdown.contains && dropdown.contains(e.target)) return;
                 dropdown.hidden = true;
+                dropdown.style.top = '';
+                dropdown.style.right = '';
+                dropdown.style.left = '';
+                dropdown.style.bottom = '';
                 btn.setAttribute('aria-expanded', 'false');
             });
             // Esc закрывает dropdown
             document.addEventListener('keydown', function (e) {
                 if (e.key === 'Escape' && !dropdown.hidden) {
                     dropdown.hidden = true;
+                    dropdown.style.top = '';
+                    dropdown.style.right = '';
+                    dropdown.style.left = '';
+                    dropdown.style.bottom = '';
                     btn.setAttribute('aria-expanded', 'false');
                 }
             });

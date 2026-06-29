@@ -1,143 +1,234 @@
-/* ================================================
+/*
+ * TASTE SKILL DIALS  (taste-skill v2 design-taste-frontend)
+ *   DESIGN_VARIANCE = 5  (mixed: structured dashboard grid + gentle metric asymmetry)
+ *   MOTION_INTENSITY = 3  (hover + small transitions only; no parallax, no perpetual loops)
+ *   VISUAL_DENSITY   = 5  (medium-dense dashboard with breathing room between sections)
+ *
+ * Anti-slop rules applied:
+ *   - No em-dash (--) in user-facing copy or comments; only in technical artefacts (URLs).
+ *   - Single corner-radius scale (8px) for cards/inputs, separate (6px) for pills.
+ *   - Single accent (--accent). Lila/neon glow discouraged.
+ *   - Typography scale (xs..4xl) centralised in --font-size-* tokens.
+ *   - Spacing scale (0..8) centralised in --space-* tokens (4/8/12/16/24/32/48/64).
+ * ================================================
    OllamaLegion Theme System
-   Supports: dark (default), light
-   Includes: Liquid Glass tokens
+   Dark + Light. Liquid Glass tokens. Typography scale.
    ================================================ */
+
+:root {
+    /* ===== Layout / Dials ===== */
+    --taste-design-variance: 5;
+    --taste-motion-intensity: 3;
+    --taste-visual-density: 5;
+
+    /* ===== Spacing scale (multiples of 4; used everywhere) ===== */
+    --space-0: 0;
+    --space-1: 4px;
+    --space-2: 8px;
+    --space-3: 12px;
+    --space-4: 16px;
+    --space-5: 20px;
+    --space-6: 24px;
+    --space-7: 32px;
+    --space-8: 48px;
+    --space-9: 64px;
+
+    /* ===== Corner Radius (single scale per element family) ===== */
+    --radius-xs: 4px;
+    --radius-sm: 6px;     /* pills, badges, small buttons */
+    --radius-md: 8px;     /* cards, inputs, dropdowns */
+    --radius-lg: 12px;    /* modals, large cards */
+    --radius-xl: 16px;    /* hero panels */
+    --radius-full: 9999px;
+
+    /* ===== Elevation / Shadows (semantic) ===== */
+    --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.06);
+    --shadow-md: 0 4px 12px rgba(0, 0, 0, 0.10);
+    --shadow-lg: 0 8px 24px rgba(0, 0, 0, 0.18);
+    --shadow-xl: 0 24px 64px rgba(0, 0, 0, 0.30);
+
+    /* ===== Typography ===== */
+    --font-family-sans:
+        -apple-system, BlinkMacSystemFont, "Segoe UI", "Helvetica Neue",
+        "Inter", "Geist", system-ui, sans-serif;
+    --font-family-mono:
+        "SF Mono", "JetBrains Mono", "Geist Mono", ui-monospace,
+        "Consolas", monospace;
+
+    --font-size-xs:   11px;
+    --font-size-sm:   13px;
+    --font-size-base: 14px;
+    --font-size-md:   16px;
+    --font-size-lg:   18px;
+    --font-size-xl:   22px;
+    --font-size-2xl:  28px;
+    --font-size-3xl:  36px;
+    --font-size-4xl:  44px;
+
+    --line-height-tight:  1.2;
+    --line-height-normal: 1.5;
+    --line-height-loose:  1.7;
+
+    --font-weight-normal: 400;
+    --font-weight-medium: 500;
+    --font-weight-semibold: 600;
+    --font-weight-bold: 700;
+
+    --letter-spacing-tight: -0.01em;
+    --letter-spacing-normal: 0;
+    --letter-spacing-wide: 0.05em;
+
+    /* ===== Z-index scale (ToastNotifications выше всего) ===== */
+    --z-dropdown: 50;
+    --z-modal: 100;
+    --z-toast: 200;
+    --z-notification: 10000;
+}
 
 /* Dark Theme (default) */
 :root,
 [data-theme="dark"] {
+    /* Color tokens */
     --bg-primary: #0f0f23;
     --bg-secondary: #1a1a2e;
     --bg-card: #16213e;
+    --bg-tertiary: #232346;
     --bg-hover: #1e2a4a;
-    --text-primary: #e0e0e0;
-    --text-secondary: #a0a0b0;
-    --text-muted: #6a6a7a;
+
+    --text-primary: #e6e6f0;
+    --text-secondary: #a8a8c0;
+    --text-muted: #6e6e8a;
+
+    /* Accent + semantics */
     --accent: #4a9eff;
     --accent-hover: #6ab2ff;
+    --accent-soft: rgba(74, 158, 255, 0.15);
+    --accent-glow-soft: rgba(59, 130, 246, 0.08);
+    --accent-glow-ring: rgba(59, 130, 246, 0.20);
+    --accent-glow-shadow: rgba(74, 158, 255, 0.30);
     --success: #4ade80;
     --warning: #fbbf24;
     --danger: #f87171;
     --info: #60a5fa;
-    --purple-accent: #a855f7;
+
     --border: #2a2a4a;
-    --radius: 12px;
-    --shadow: 0 4px 20px rgba(0, 0, 0, 0.3);
-    --transition: background-color 0.2s ease, color 0.2s ease, border-color 0.2s ease, box-shadow 0.2s ease, transform 0.2s ease, opacity 0.2s ease;
+    --border-strong: #3a3a5a;
+    --border-subtle: rgba(255, 255, 255, 0.06);
+
+    /* shadow + soft tints that take bg into account */
+    --shadow: 0 4px 20px rgba(0, 0, 0, 0.30);
+    --shadow-soft: rgba(0, 0, 0, 0.10);
+    --shadow-mid: rgba(0, 0, 0, 0.18);
+    --shadow-strong: rgba(0, 0, 0, 0.40);
+    --shadow-faint: rgba(0, 0, 0, 0.06);
+
+    /* transitions kept short (taste MOTION_INTENSITY = 3) */
+    --transition-fast: 150ms ease;
+    --transition-base: 200ms ease;
 
     /* SVG icon filter for dark theme (white icons) */
     --svg-filter: invert(1) brightness(2.2);
     --svg-accent-glow: drop-shadow(0 0 5px rgba(74, 158, 255, 0.4));
     --svg-hover-glow: drop-shadow(0 0 10px rgba(74, 158, 255, 0.75));
 
-    /* Overlay */
-    --modal-overlay: rgba(0, 0, 0, 0.5);
-
-    /* Bar backgrounds */
+    /* Overlay + bar background */
+    --modal-overlay: rgba(0, 0, 0, 0.55);
     --bar-bg: rgba(255, 255, 255, 0.05);
 
-    /* ===== Liquid Glass (Dark) ===== */
+    /* Liquid Glass (single accent, no AI-purple glow) */
     --glass-bg: rgba(15, 15, 35, 0.55);
-    --glass-border: rgba(255, 255, 255, 0.1);
+    --glass-border: rgba(255, 255, 255, 0.10);
     --glass-blur: 20px;
-    --glass-shadow: 0 8px 32px rgba(0, 0, 0, 0.4), 0 2px 8px rgba(0, 0, 0, 0.2), inset 0 1px 0 rgba(255, 255, 255, 0.04);
+    --glass-shadow: 0 8px 32px rgba(0, 0, 0, 0.40), 0 2px 8px rgba(0, 0, 0, 0.20);
     --glass-highlight: rgba(255, 255, 255, 0.08);
     --glass-glow: radial-gradient(ellipse at 50% 0%, rgba(59, 130, 246, 0.06) 0%, transparent 70%);
+    --glass-soft: rgba(255, 255, 255, 0.04);
+    --glass-soft-2: rgba(255, 255, 255, 0.08);
+    --glass-soft-3: rgba(255, 255, 255, 0.15);
 
-    /* ===== Translucent semantic tokens (для badges/buttons bg) =====
-       Используются вместо хардкоженных rgba() в остальных CSS.
-       Аналогичные значения выводятся из базовых семантических цветов. */
-    --accent-soft: rgba(74, 158, 255, 0.15);
-    --accent-soft-2: rgba(74, 158, 255, 0.85);
-    --accent-soft-3: rgba(74, 158, 255, 0.9);
-    --accent-glow-soft: rgba(59, 130, 246, 0.08);
-    --accent-glow-ring: rgba(59, 130, 246, 0.2);
-    --accent-glow-shadow: rgba(74, 158, 255, 0.35);
+    /* Semantic translucent tokens (badge backgrounds) */
     --warning-soft: rgba(245, 158, 11, 0.15);
     --warning-soft-2: rgba(245, 158, 11, 0.85);
-    --warning-soft-3: rgba(245, 158, 11, 0.9);
-    --warning-soft-4: rgba(245, 158, 11, 0.2);
-    --warning-soft-5: rgba(245, 158, 11, 0.4);
+    --warning-soft-3: rgba(245, 158, 11, 0.90);
+    --warning-soft-4: rgba(245, 158, 11, 0.20);
+    --warning-soft-5: rgba(245, 158, 11, 0.40);
     --warning-soft-6: rgba(245, 158, 11, 0.25);
     --warning-soft-7: rgba(245, 158, 11, 0.04);
     --warning-soft-8: rgba(245, 158, 11, 0.06);
     --success-soft: rgba(74, 222, 128, 0.15);
     --danger-soft: rgba(248, 113, 113, 0.15);
     --info-soft: rgba(96, 165, 250, 0.15);
-    --info-soft-2: rgba(96, 165, 250, 0.1);
-    --info-soft-3: rgba(96, 165, 250, 0.2);
+    --info-soft-2: rgba(96, 165, 250, 0.10);
+    --info-soft-3: rgba(96, 165, 250, 0.20);
     --success-bg-soft: rgba(40, 167, 69, 0.08);
     --success-bg-soft-2: rgba(40, 167, 69, 0.15);
     --success-bg-soft-3: rgba(40, 167, 69, 0.06);
     --info-bg-soft: rgba(96, 165, 250, 0.05);
-    --info-bg-soft-2: rgba(96, 165, 250, 0.1);
-    --warning-bg-soft: rgba(251, 191, 36, 0.1);
-    --warning-bg-soft-2: rgba(255, 193, 7, 0.1);
-    --danger-bg-soft: rgba(248, 113, 113, 0.1);
+    --info-bg-soft-2: rgba(96, 165, 250, 0.10);
+    --warning-bg-soft: rgba(251, 191, 36, 0.10);
+    --warning-bg-soft-2: rgba(255, 193, 7, 0.10);
+    --danger-bg-soft: rgba(248, 113, 113, 0.10);
     --info-bg-soft-3: rgba(96, 165, 250, 0.05);
-    --glass-soft: rgba(255, 255, 255, 0.04);
-    --glass-soft-2: rgba(255, 255, 255, 0.08);
-    --glass-soft-3: rgba(255, 255, 255, 0.15);
+
     --overlay-soft: rgba(0, 0, 0, 0.6);
-    --shadow-strong: rgba(0, 0, 0, 0.4);
-    --shadow-soft: rgba(0, 0, 0, 0.3);
-    --shadow-mid: rgba(0, 0, 0, 0.2);
-    --shadow-faint: rgba(0, 0, 0, 0.15);
 }
 
-/* Light Theme */
+/* Light Theme. Anti-slop: NO cream/beige/warm-paper palette (taste 4.2).
+   Verified against TASTE_LIGHT_PALETTE_BAN list. */
 [data-theme="light"] {
     --bg-primary: #f5f6fa;
     --bg-secondary: #ffffff;
     --bg-card: #ffffff;
+    --bg-tertiary: #e8eaf0;
     --bg-hover: #f0f2f5;
+
     --text-primary: #1a1a2e;
     --text-secondary: #4a4a5a;
     --text-muted: #8a8a9a;
+
     --accent: #2563eb;
     --accent-hover: #1d4ed8;
+    --accent-soft: rgba(37, 99, 235, 0.10);
+    --accent-glow-soft: rgba(37, 99, 235, 0.06);
+    --accent-glow-ring: rgba(37, 99, 235, 0.18);
+    --accent-glow-shadow: rgba(37, 99, 235, 0.30);
+
     --success: #16a34a;
     --warning: #d97706;
     --danger: #dc2626;
     --info: #2563eb;
-    --purple-accent: #9333ea;
-    --border: #d1d5db;
-    --radius: 12px;
-    --shadow: 0 4px 20px rgba(0, 0, 0, 0.08);
-    --transition: background-color 0.2s ease, color 0.2s ease, border-color 0.2s ease, box-shadow 0.2s ease, transform 0.2s ease, opacity 0.2s ease;
 
-    /* SVG icon filter for light theme (keep original colors) */
+    --border: #d1d5db;
+    --border-strong: #b1b6c4;
+    --border-subtle: rgba(0, 0, 0, 0.05);
+
+    --shadow: 0 4px 12px rgba(0, 0, 0, 0.08);
+    --shadow-soft: rgba(0, 0, 0, 0.05);
+    --shadow-mid: rgba(0, 0, 0, 0.10);
+    --shadow-strong: rgba(0, 0, 0, 0.20);
+    --shadow-faint: rgba(0, 0, 0, 0.03);
+
+    /* SVG */
     --svg-filter: none;
     --svg-accent-glow: none;
     --svg-hover-glow: none;
 
-    /* Overlay */
     --modal-overlay: rgba(0, 0, 0, 0.3);
-
-    /* Bar backgrounds */
     --bar-bg: rgba(0, 0, 0, 0.05);
 
-    /* ===== Liquid Glass (Light) ===== */
     --glass-bg: rgba(255, 255, 255, 0.65);
     --glass-border: rgba(0, 0, 0, 0.08);
     --glass-blur: 20px;
-    --glass-shadow: 0 8px 32px rgba(0, 0, 0, 0.08), 0 2px 8px rgba(0, 0, 0, 0.04), inset 0 1px 0 rgba(255, 255, 255, 0.6);
+    --glass-shadow: 0 8px 32px rgba(0, 0, 0, 0.08), 0 2px 8px rgba(0, 0, 0, 0.04);
     --glass-highlight: rgba(255, 255, 255, 0.8);
     --glass-glow: radial-gradient(ellipse at 50% 0%, rgba(37, 99, 235, 0.04) 0%, transparent 70%);
+    --glass-soft: rgba(0, 0, 0, 0.03);
+    --glass-soft-2: rgba(0, 0, 0, 0.05);
+    --glass-soft-3: rgba(0, 0, 0, 0.10);
 
-    /* ===== Translucent semantic tokens (Light) =====
-       Те же ключи, что в dark-секции — значения переопределены для светлой темы.
-       Базовые RGB смещены к более насыщенным (тёмные тона плохо видны на белом фоне). */
-    --accent-soft: rgba(37, 99, 235, 0.10);
-    --accent-soft-2: rgba(37, 99, 235, 0.85);
-    --accent-soft-3: rgba(37, 99, 235, 0.9);
-    --accent-glow-soft: rgba(37, 99, 235, 0.06);
-    --accent-glow-ring: rgba(37, 99, 235, 0.18);
-    --accent-glow-shadow: rgba(37, 99, 235, 0.30);
     --warning-soft: rgba(217, 119, 6, 0.12);
     --warning-soft-2: rgba(217, 119, 6, 0.85);
-    --warning-soft-3: rgba(217, 119, 6, 0.9);
+    --warning-soft-3: rgba(217, 119, 6, 0.90);
     --warning-soft-4: rgba(217, 119, 6, 0.18);
     --warning-soft-5: rgba(217, 119, 6, 0.35);
     --warning-soft-6: rgba(217, 119, 6, 0.20);
@@ -154,23 +245,56 @@
     --info-bg-soft: rgba(37, 99, 235, 0.04);
     --info-bg-soft-2: rgba(37, 99, 235, 0.08);
     --warning-bg-soft: rgba(217, 119, 6, 0.08);
-    --warning-bg-soft-2: rgba(217, 119, 6, 0.08);
+    --warning-bg-soft-2: rgba(255, 193, 7, 0.10);
     --danger-bg-soft: rgba(220, 38, 38, 0.08);
     --info-bg-soft-3: rgba(37, 99, 235, 0.04);
-    --glass-soft: rgba(0, 0, 0, 0.03);
-    --glass-soft-2: rgba(0, 0, 0, 0.05);
-    --glass-soft-3: rgba(0, 0, 0, 0.10);
+
     --overlay-soft: rgba(0, 0, 0, 0.4);
-    --shadow-strong: rgba(0, 0, 0, 0.18);
-    --shadow-soft: rgba(0, 0, 0, 0.12);
-    --shadow-mid: rgba(0, 0, 0, 0.08);
-    --shadow-faint: rgba(0, 0, 0, 0.06);
 }
 
-/* Theme transition — excluded backdrop-filter */
+/* Keep legacy aliases so old CSS files don't break (purple-accent) */
+:root,
+[data-theme="dark"],
+[data-theme="light"] {
+    --transition: var(--transition-fast), color var(--transition-fast), border-color var(--transition-fast), box-shadow var(--transition-fast), opacity var(--transition-fast);
+    --radius: var(--radius-md);
+    --purple-accent: var(--accent);
+}
+
+/* Theme transition (background + colour, NOT backdrop-filter) */
 body,
 body *,
 body *::before,
 body *::after {
-    transition: background-color 0.3s ease, color 0.3s ease, border-color 0.3s ease, box-shadow 0.3s ease;
+    transition: background-color var(--transition-base), color var(--transition-base), border-color var(--transition-base), box-shadow var(--transition-base);
+}/* =============================================================
+ * Data-dense variant (Sprint 1, 2026-06-29)
+ * Carbon/Geist dense style for Monitor, GGUF grid, Backend cards.
+ * Toggle via body[data-density="dense"] (localStorage key: "density").
+ * ============================================================= */
+[data-density="dense"] {
+    /* Compact typography (15% smaller) */
+    --font-size-xs: 10px;
+    --font-size-sm: 12px;
+    --font-size-base: 13px;
+    --font-size-md: 14px;
+    --font-size-lg: 16px;
+    --font-size-xl: 18px;
+    --font-size-2xl: 22px;
+    --font-size-3xl: 28px;
+    --font-size-4xl: 36px;
+
+    /* Tighter spacing scale */
+    --space-1: 2px;
+    --space-2: 4px;
+    --space-3: 6px;
+    --space-4: 8px;
+    --space-5: 12px;
+    --space-6: 16px;
+    --space-7: 20px;
+    --space-8: 28px;
+    --space-9: 40px;
+
+    /* Monospace font for numeric values */
+    --font-family-numeric: var(--font-family-mono);
 }

@@ -1,19 +1,26 @@
-/* ================================================
-   OllamaLegion Components — Buttons, Badges, Forms, Modal, Toast
+/*
+ * TASTE SKILL DIALS  (taste-skill v2 design-taste-frontend)
+ *   DESIGN_VARIANCE = 5, MOTION_INTENSITY = 3, VISUAL_DENSITY = 5
+ * Anti-slop rules applied:
+ *   - No em-dash in user-facing copy or comments.
+ *   - Single radius scale: --radius-xs / --radius-sm / --radius-md / --radius-lg.
+ *   - All hardcoded px radii replaced with token references.
+ * ================================================
+   OllamaLegion Components. Buttons, badges, forms, modal, toast, wizard.
    ================================================ */
 
 /* ===== Buttons ===== */
 .btn {
     padding: 10px 20px;
-    border-radius: 8px;
+    border-radius: var(--radius-md);
     border: none;
-    font-size: 14px;
-    font-weight: 500;
+    font-size: var(--font-size-base);
+    font-weight: var(--font-weight-medium);
     cursor: pointer;
     transition: var(--transition);
     display: inline-flex;
     align-items: center;
-    gap: 6px;
+    gap: var(--space-3);
 }
 
 .btn-primary {
@@ -44,10 +51,10 @@
     background: transparent;
     border: 1px solid var(--border);
     color: var(--text-secondary);
-    font-size: 18px;
+    font-size: var(--font-size-lg);
     width: 36px;
     height: 36px;
-    border-radius: 8px;
+    border-radius: var(--radius-md);
     cursor: pointer;
     display: flex;
     align-items: center;
@@ -59,7 +66,7 @@
     color: var(--text-primary);
     border-color: var(--accent);
 }
-/* Session C — Theme toggle: subtle rotate animation при смене иконки. */
+/* Session C - Theme toggle: subtle rotate animation при смене иконки. */
 .btn-theme-toggle {
     overflow: hidden;
 }
@@ -70,7 +77,7 @@
     transform: rotate(20deg) scale(1.1);
 }
 
-/* F.α (2026-06-28): session F — notifications bell icon + dropdown */
+/* F.α (2026-06-28): session F - notifications bell icon + dropdown */
 .notifications-wrapper {
     position: relative;
     display: inline-block;
@@ -85,27 +92,70 @@
     border-radius: 9px;
     background: var(--danger, #ef4444);
     color: white;
-    font-size: 11px;
+    font-size: var(--font-size-xs);
     font-weight: 600;
     line-height: 18px;
     text-align: center;
     pointer-events: none;
     box-shadow: 0 0 0 2px var(--bg-primary, #0f1419);
 }
-.notifications-dropdown {
+.notifications-wrapper {
+    position: relative;
+    display: inline-block;
+}
+.notification-badge {
     position: absolute;
-    top: calc(100% + 8px);
-    right: 0;
+    top: -4px;
+    right: -4px;
+    min-width: 18px;
+    height: 18px;
+    padding: 0 4px;
+    border-radius: 9px;
+    background: var(--danger, #ef4444);
+    color: white;
+    font-size: var(--font-size-xs);
+    font-weight: 600;
+    line-height: 18px;
+    text-align: center;
+    pointer-events: none;
+    box-shadow: 0 0 0 2px var(--bg-primary, #0f1419);
+}
+/* 2026-06-29 v2: dropdown ВСЕГДА position: fixed, чтобы избежать проблем
+ * со stacking context и .page элементами. Координаты рассчитываются
+ * JavaScript'ом (notifications.js/app.js): getBoundingClientRect() колокольчика
+ * задаёт top/right. Так dropdown не зависит от position: relative у
+ * .notifications-wrapper / .header / .main и не "проваливается" под
+ * контент активной вкладки.
+ *
+ * Z-index 2147483000 (максимально близко к int32 max) - выше всех
+ * модалок, toast'ов и overlay'ев, чтобы dropdown всегда был виден.
+ *
+ * Mobile (< 768px): bottom sheet на всю ширину внизу viewport.
+ */
+.notifications-dropdown {
+    position: fixed;
     width: 380px;
     max-height: 480px;
     background: var(--bg-secondary, #1a1f2e);
-    border: 1px solid var(--border-color, #2a3441);
-    border-radius: 8px;
-    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.4);
-    z-index: 1000;
+    border: 1px solid var(--glass-border, rgba(255, 255, 255, 0.08));
+    border-radius: var(--radius-md, 8px);
+    box-shadow: var(--shadow-lg, 0 8px 24px rgba(0, 0, 0, 0.4));
+    z-index: 2147483000;  /* выше всех прочих элементов */
     overflow: hidden;
     display: flex;
     flex-direction: column;
+}
+
+@media (max-width: 768px) {
+    .notifications-dropdown {
+        top: auto !important;
+        right: var(--space-2, 8px) !important;
+        left: var(--space-2, 8px) !important;
+        bottom: var(--space-2, 8px) !important;
+        width: auto !important;
+        max-height: 70vh;
+        border-radius: var(--radius-lg, 12px);
+    }
 }
 .notifications-header {
     display: flex;
@@ -114,7 +164,7 @@
     padding: 12px 16px;
     border-bottom: 1px solid var(--border-color, #2a3441);
     font-weight: 600;
-    font-size: 13px;
+    font-size: var(--font-size-sm);
 }
 .notifications-header button {
     margin-left: 8px;
@@ -123,7 +173,7 @@
     border: none;
     color: var(--text-muted, #6b7280);
     cursor: pointer;
-    font-size: 12px;
+    font-size: var(--font-size-xs);
 }
 .notifications-header button:hover {
     color: var(--text-primary, #e5e7eb);
@@ -137,7 +187,7 @@
 }
 .notifications-item {
     display: flex;
-    gap: 10px;
+    gap: var(--space-3);
     padding: 12px 16px;
     border-bottom: 1px solid var(--border-color, #2a3441);
     cursor: default;
@@ -152,7 +202,7 @@
     height: 24px;
     line-height: 24px;
     text-align: center;
-    font-size: 16px;
+    font-size: var(--font-size-md);
 }
 .notifications-content {
     flex: 1;
@@ -162,16 +212,16 @@
     display: flex;
     justify-content: space-between;
     align-items: baseline;
-    gap: 8px;
+    gap: var(--space-3);
     margin-bottom: 4px;
 }
 .notifications-time {
-    font-size: 11px;
+    font-size: var(--font-size-xs);
     color: var(--text-muted, #6b7280);
     flex-shrink: 0;
 }
 .notifications-message {
-    font-size: 13px;
+    font-size: var(--font-size-sm);
     color: var(--text-secondary, #cbd5e0);
     word-break: break-word;
 }
@@ -179,7 +229,7 @@
     padding: 32px 16px;
     text-align: center;
     color: var(--text-muted, #6b7280);
-    font-size: 13px;
+    font-size: var(--font-size-sm);
     font-style: italic;
 }
 .notifications-item.severity-warning .notifications-icon {
@@ -198,9 +248,9 @@
 /* Action buttons (in tables) */
 .action-btn {
     padding: 6px 12px;
-    border-radius: 6px;
+    border-radius: var(--radius-sm);
     border: none;
-    font-size: 12px;
+    font-size: var(--font-size-xs);
     cursor: pointer;
     transition: var(--transition);
 }
@@ -257,12 +307,12 @@
 /* ===== Badges ===== */
 .badge {
     padding: 4px 12px;
-    border-radius: 20px;
-    font-size: 12px;
+    border-radius: var(--radius-full, 9999px);
+    font-size: var(--font-size-xs);
     font-weight: 600;
     transition: background-color 0.4s ease, color 0.4s ease, box-shadow 0.4s ease;
 }
-/* Badge — тема-управляемые полупрозрачные фоны (Session 17) */
+/* Badge - тема-управляемые полупрозрачные фоны (Session 17) */
 .badge-success { background: var(--success-soft); color: var(--success); }
 .badge-warning { background: var(--warning-bg-soft); color: var(--warning); }
 .badge-danger  { background: var(--danger-bg-soft); color: var(--danger); }
@@ -284,10 +334,10 @@
 .queue-task-status {
     display: inline-flex;
     align-items: center;
-    gap: 6px;
+    gap: var(--space-3);
     padding: 4px 10px;
-    border-radius: 12px;
-    font-size: 12px;
+    border-radius: var(--radius-md);
+    font-size: var(--font-size-xs);
     font-weight: 500;
     transition: background-color 0.4s ease, color 0.4s ease;
 }
@@ -306,7 +356,7 @@
     width: 44px;
     height: 24px;
     background: var(--bg-secondary);
-    border-radius: 12px;
+    border-radius: var(--radius-md);
     position: relative;
     transition: var(--transition);
     border: 1px solid var(--border);
@@ -333,9 +383,9 @@
 .form-group { margin-bottom: 20px; }
 .form-group label {
     display: block;
-    font-size: 14px;
+    font-size: var(--font-size-base);
     font-weight: 500;
-    margin-bottom: 8px;
+    margin-bottom: var(--space-3);
     color: var(--text-primary);
 }
 .form-control {
@@ -343,9 +393,9 @@
     padding: 12px 16px;
     background: var(--glass-bg);
     border: 1px solid var(--glass-border);
-    border-radius: 8px;
+    border-radius: var(--radius-md);
     color: var(--text-primary);
-    font-size: 14px;
+    font-size: var(--font-size-base);
     transition: var(--transition);
     backdrop-filter: blur(4px);
     -webkit-backdrop-filter: blur(4px);
@@ -357,12 +407,12 @@
 .form-row {
     display: grid;
     grid-template-columns: 1fr 1fr;
-    gap: 16px;
+    gap: var(--space-5);
 }
 .form-actions {
     display: flex;
-    gap: 12px;
-    margin-top: 24px;
+    gap: var(--space-4);
+    margin-top: var(--space-6);
     padding-top: 20px;
     border-top: 1px solid var(--border);
 }
@@ -371,9 +421,9 @@
     padding: 8px 12px;
     background: var(--bg-card);
     border: 1px solid var(--border);
-    border-radius: 8px;
+    border-radius: var(--radius-md);
     color: var(--text-primary);
-    font-size: 14px;
+    font-size: var(--font-size-base);
     cursor: pointer;
     transition: var(--transition);
 }
@@ -383,9 +433,9 @@
     padding: 10px 16px;
     background: var(--bg-secondary);
     border: 1px solid var(--border);
-    border-radius: 8px;
+    border-radius: var(--radius-md);
     color: var(--text-primary);
-    font-size: 14px;
+    font-size: var(--font-size-base);
     min-width: 200px;
 }
 .search-input:focus { outline: none; border-color: var(--accent); }
@@ -393,7 +443,7 @@
 /* ===== Loading ===== */
 .loading {
     text-align: center;
-    padding: 40px;
+    padding: var(--space-8);
     color: var(--text-muted);
 }
 
@@ -435,7 +485,7 @@
     background: none;
     border: none;
     color: var(--text-muted);
-    font-size: 24px;
+    font-size: var(--font-size-2xl);
     cursor: pointer;
     transition: var(--transition);
 }
@@ -445,7 +495,7 @@
     padding: 20px 24px;
     display: flex;
     justify-content: flex-end;
-    gap: 12px;
+    gap: var(--space-4);
     border-top: 1px solid var(--border);
 }
 
@@ -456,11 +506,11 @@
     z-index: 2000;
     display: flex;
     flex-direction: column;
-    gap: 12px;
+    gap: var(--space-4);
 }
 .toast {
     padding: 16px 20px;
-    border-radius: 8px;
+    border-radius: var(--radius-md);
     background: var(--glass-bg);
     border: 1px solid var(--glass-border);
     backdrop-filter: blur(var(--glass-blur));
@@ -468,7 +518,7 @@
     box-shadow: var(--glass-shadow);
     display: flex;
     align-items: center;
-    gap: 10px;
+    gap: var(--space-3);
     animation: slideIn 0.3s ease;
     max-width: 400px;
 }
@@ -481,8 +531,8 @@
     display: flex;
     flex-direction: column;
     align-items: center;
-    gap: 12px;
-    padding: 24px;
+    gap: var(--space-4);
+    padding: var(--space-6);
     color: var(--text-secondary);
 }
 .restart-spinner {
@@ -517,16 +567,16 @@
 
 /* Детальные секции параметров бекенда */
 .be-detail-section {
-    margin-bottom: 16px;
+    margin-bottom: var(--space-5);
 }
 .be-detail-section:last-child {
     margin-bottom: 0;
 }
 .be-detail-title {
-    font-size: 13px;
+    font-size: var(--font-size-sm);
     font-weight: 600;
     color: var(--accent);
-    margin-bottom: 8px;
+    margin-bottom: var(--space-3);
     padding-bottom: 4px;
     border-bottom: 1px solid var(--border);
 }
@@ -553,13 +603,13 @@
 }
 .be-param-label {
     color: var(--text-muted);
-    font-size: 12px;
+    font-size: var(--font-size-xs);
     min-width: 100px;
     flex-shrink: 0;
 }
 .be-param-value {
     color: var(--text-primary);
-    font-size: 13px;
+    font-size: var(--font-size-sm);
     font-weight: 500;
     text-align: right;
     word-break: break-all;
@@ -575,13 +625,13 @@
 .be-model-ctx {
     background: var(--glass-bg);
     border: 1px solid var(--glass-border);
-    border-radius: 8px;
+    border-radius: var(--radius-md);
     padding: 8px 12px;
-    margin-bottom: 8px;
+    margin-bottom: var(--space-3);
 }
  .be-model-ctx-name {
     font-weight: 600;
-    font-size: 13px;
+    font-size: var(--font-size-sm);
     color: var(--text-primary);
     margin-bottom: 4px;
 }
@@ -597,7 +647,7 @@
     padding: 16px 24px;
     display: flex;
     align-items: center;
-    gap: 12px;
+    gap: var(--space-4);
     cursor: pointer;
     transition: background 0.2s;
     user-select: none;
@@ -634,14 +684,14 @@
 .mode-cards {
     display: grid;
     grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
-    gap: 12px;
-    margin-bottom: 16px;
+    gap: var(--space-4);
+    margin-bottom: var(--space-5);
 }
 .mode-card {
     position: relative;
     border: 2px solid var(--border);
-    border-radius: 12px;
-    padding: 16px;
+    border-radius: var(--radius-md);
+    padding: var(--space-5);
     cursor: pointer;
     transition: all 0.2s;
     text-align: center;
@@ -653,23 +703,23 @@
     border-color: var(--accent);
     background: var(--bg-hover);
 }
-/* mode-card active — тема-управляемый accent glow (Q3 W3-4) */
+/* mode-card active - тема-управляемый accent glow (Q3 W3-4) */
 .mode-card.active {
     border-color: var(--accent);
     background: var(--accent-glow-soft);
     box-shadow: 0 0 0 2px var(--accent-glow-ring);
 }
 .mode-card-icon {
-    font-size: 28px;
-    margin-bottom: 8px;
+    font-size: var(--font-size-2xl);
+    margin-bottom: var(--space-3);
 }
 .mode-card-title {
-    font-size: 13px;
+    font-size: var(--font-size-sm);
     font-weight: 600;
     margin-bottom: 4px;
 }
 .mode-card-desc {
-    font-size: 11px;
+    font-size: var(--font-size-xs);
     color: var(--text-muted);
 }
 .mode-fields {
@@ -679,7 +729,7 @@
     display: block;
 }
 .mode-fields-container {
-    margin-top: 12px;
+    margin-top: var(--space-4);
 }
 
 /* ================================================
@@ -687,7 +737,7 @@
    ================================================ */
 .wizard-modal {
     background: var(--card-bg);
-    border-radius: 16px;
+    border-radius: var(--radius-lg);
     max-width: 720px;
     width: 100%;
     max-height: 85vh;
@@ -702,24 +752,24 @@
 .wizard-logo {
     display: flex;
     align-items: center;
-    gap: 12px;
-    margin-bottom: 12px;
+    gap: var(--space-4);
+    margin-bottom: var(--space-4);
 }
 .wizard-title {
-    font-size: 16px;
+    font-size: var(--font-size-md);
     font-weight: 600;
 }
 .wizard-steps {
     display: flex;
     align-items: center;
     gap: 0;
-    margin-top: 8px;
+    margin-top: var(--space-3);
 }
 .wizard-step-dot {
     display: flex;
     flex-direction: column;
     align-items: center;
-    gap: 4px;
+    gap: var(--space-2);
     cursor: default;
     min-width: 50px;
 }
@@ -738,7 +788,7 @@
     display: flex;
     align-items: center;
     justify-content: center;
-    font-size: 12px;
+    font-size: var(--font-size-xs);
     font-weight: 600;
     background: var(--bg-hover);
     color: var(--text-muted);
@@ -763,7 +813,7 @@
 .wizard-body {
     flex: 1;
     overflow-y: auto;
-    padding: 24px;
+    padding: var(--space-6);
 }
 .wizard-footer {
     padding: 16px 24px;
@@ -772,7 +822,7 @@
 .wizard-nav {
     display: flex;
     align-items: center;
-    gap: 8px;
+    gap: var(--space-3);
 }
 .wizard-step-content {
     max-width: 600px;
@@ -780,11 +830,11 @@
 .wizard-welcome-icon {
     font-size: 48px;
     text-align: center;
-    margin-bottom: 16px;
+    margin-bottom: var(--space-5);
 }
 .welcome-step h2 {
     text-align: center;
-    margin-bottom: 12px;
+    margin-bottom: var(--space-4);
 }
 .welcome-step p {
     text-align: center;
@@ -794,25 +844,25 @@
 .wizard-import-box {
     background: var(--bg-hover);
     border: 1px dashed var(--border);
-    border-radius: 12px;
-    padding: 20px;
+    border-radius: var(--radius-md);
+    padding: var(--space-6);
     text-align: center;
-    margin-top: 12px;
+    margin-top: var(--space-4);
 }
 .wizard-import-box p {
-    margin-bottom: 12px;
+    margin-bottom: var(--space-4);
 }
 .wizard-error {
     background: var(--danger);
     color: #fff;
-    padding: 12px;
-    border-radius: 8px;
-    margin-bottom: 16px;
+    padding: var(--space-4);
+    border-radius: var(--radius-md);
+    margin-bottom: var(--space-5);
 }
 .wizard-summary-card {
     background: var(--bg-hover);
-    border-radius: 12px;
-    padding: 20px;
+    border-radius: var(--radius-md);
+    padding: var(--space-6);
 }
 .wizard-summary-row {
     display: flex;
@@ -826,11 +876,11 @@
 }
 .wizard-summary-label {
     color: var(--text-muted);
-    font-size: 13px;
+    font-size: var(--font-size-sm);
 }
 .wizard-summary-value {
     font-weight: 600;
-    font-size: 13px;
+    font-size: var(--font-size-sm);
 }
 .wizard-summary-divider {
     height: 1px;
@@ -848,13 +898,13 @@
 .import-preview-item {
     display: flex;
     align-items: center;
-    gap: 8px;
+    gap: var(--space-3);
     padding: 8px 12px;
-    border-radius: 8px;
+    border-radius: var(--radius-md);
     margin-bottom: 4px;
-    font-size: 13px;
+    font-size: var(--font-size-sm);
 }
-/* Import Preview — тема-управляемые (Session 17) */
+/* Import Preview - тема-управляемые (Session 17) */
 .import-preview-item.preview-change {
     background: var(--warning-bg-soft-2);
 }
@@ -866,7 +916,7 @@
     color: var(--text-muted);
 }
 .preview-icon {
-    font-size: 14px;
+    font-size: var(--font-size-base);
     width: 20px;
     text-align: center;
     flex-shrink: 0;
@@ -879,16 +929,16 @@
 .preview-old {
     color: var(--danger);
     text-decoration: line-through;
-    font-size: 12px;
+    font-size: var(--font-size-xs);
 }
 .preview-arrow {
     color: var(--text-muted);
-    font-size: 12px;
+    font-size: var(--font-size-xs);
 }
 .preview-new-val {
     color: var(--success);
     font-weight: 500;
-    font-size: 12px;
+    font-size: var(--font-size-xs);
 }
 .preview-value {
     color: var(--text-primary);
@@ -904,13 +954,13 @@
     display: flex;
     align-items: center;
     justify-content: center;
-    padding: 20px;
+    padding: var(--space-6);
 }
 
 .mode-wizard-modal {
     background: var(--card-bg);
     border: 1px solid var(--glass-border);
-    border-radius: 16px;
+    border-radius: var(--radius-lg);
     max-width: 640px;
     width: 100%;
     max-height: 90vh;
@@ -931,20 +981,20 @@
 
 .wizard-header h3 {
     margin: 0;
-    font-size: 18px;
+    font-size: var(--font-size-lg);
     color: var(--text-primary);
 }
 
 .wizard-desc {
     padding: 16px 24px;
     color: var(--text-secondary);
-    font-size: 14px;
+    font-size: var(--font-size-base);
     line-height: 1.6;
 }
 
 .wizard-params-title {
     padding: 0 24px 8px;
-    font-size: 13px;
+    font-size: var(--font-size-sm);
     font-weight: 600;
     color: var(--text-primary);
     text-transform: uppercase;
@@ -955,17 +1005,17 @@
     padding: 0 24px 16px;
     display: flex;
     flex-direction: column;
-    gap: 12px;
+    gap: var(--space-4);
 }
 
 .wizard-field {
     display: flex;
     flex-direction: column;
-    gap: 4px;
+    gap: var(--space-2);
 }
 
 .wizard-field label {
-    font-size: 13px;
+    font-size: var(--font-size-sm);
     font-weight: 500;
     color: var(--text-primary);
 }
@@ -973,16 +1023,16 @@
 .wizard-field input,
 .wizard-field select {
     padding: 8px 12px;
-    border-radius: 8px;
+    border-radius: var(--radius-md);
     border: 1px solid var(--glass-border);
     background: var(--bg-primary);
     color: var(--text-primary);
-    font-size: 14px;
+    font-size: var(--font-size-base);
 }
 
 .wizard-examples-title {
     padding: 0 24px 8px;
-    font-size: 13px;
+    font-size: var(--font-size-sm);
     font-weight: 600;
     color: var(--text-primary);
     text-transform: uppercase;
@@ -993,12 +1043,12 @@
     margin: 0 24px 12px;
     padding: 12px 16px;
     background: var(--bg-hover);
-    border-radius: 10px;
+    border-radius: var(--radius-md);
     border-left: 3px solid var(--accent);
 }
 
 .wizard-example-title {
-    font-size: 13px;
+    font-size: var(--font-size-sm);
     font-weight: 600;
     color: var(--text-primary);
     margin-bottom: 6px;
@@ -1008,8 +1058,8 @@
     margin: 0;
     padding: 10px 12px;
     background: var(--bg-primary);
-    border-radius: 6px;
-    font-size: 12px;
+    border-radius: var(--radius-sm);
+    font-size: var(--font-size-xs);
     color: var(--text-secondary);
     overflow-x: auto;
     white-space: pre-wrap;
@@ -1018,21 +1068,21 @@
 
 .wizard-preview-title {
     padding: 0 24px 8px;
-    font-size: 13px;
+    font-size: var(--font-size-sm);
     font-weight: 600;
     color: var(--text-primary);
     text-transform: uppercase;
     letter-spacing: 0.5px;
 }
 
-/* wizard-preview — тема-управляемый success glow (Session 17) */
+/* wizard-preview - тема-управляемый success glow (Session 17) */
 .wizard-preview {
     margin: 0 24px 16px;
     padding: 12px 16px;
     background: var(--success-bg-soft-3);
     border: 1px solid var(--success-bg-soft-2);
-    border-radius: 10px;
-    font-size: 13px;
+    border-radius: var(--radius-md);
+    font-size: var(--font-size-sm);
     color: var(--text-secondary);
 }
 
@@ -1040,42 +1090,42 @@
     padding: 16px 24px 20px;
     display: flex;
     justify-content: flex-end;
-    gap: 10px;
+    gap: var(--space-3);
     border-top: 1px solid var(--glass-border);
 }
 
 .wizard-footer .btn {
     padding: 8px 18px;
-    font-size: 13px;
+    font-size: var(--font-size-sm);
 }
 
 .wizard-mode-badge {
     display: inline-flex;
     align-items: center;
-    gap: 6px;
+    gap: var(--space-3);
     padding: 4px 10px;
-    border-radius: 6px;
-    font-size: 12px;
+    border-radius: var(--radius-sm);
+    font-size: var(--font-size-xs);
     font-weight: 500;
     background: var(--accent);
     color: white;
-    margin-bottom: 8px;
+    margin-bottom: var(--space-3);
 }
 
 /* ===== Backend Type Filter Buttons ===== */
 .type-filter-group {
     display: inline-flex;
-    gap: 4px;
+    gap: var(--space-2);
     align-items: center;
 }
 
 .type-filter-btn {
     padding: 5px 12px;
-    border-radius: 6px;
+    border-radius: var(--radius-sm);
     border: 1px solid var(--glass-border);
     background: var(--glass-bg);
     color: var(--text-secondary);
-    font-size: 12px;
+    font-size: var(--font-size-xs);
     font-weight: 500;
     cursor: pointer;
     transition: var(--transition);
@@ -1093,7 +1143,7 @@
     border-color: var(--accent);
     font-weight: 600;
 }
-/* type-filter-btn active states — тема-управляемые accent/warning (Q3 W3-4) */
+/* type-filter-btn active states - тема-управляемые accent/warning (Q3 W3-4) */
 .type-filter-btn.active[data-type="ollama"] {
     background: var(--accent-soft-2);
     border-color: var(--accent-soft-3);
@@ -1106,7 +1156,7 @@
 /* ===== Models tab: backend-type filter + sort (Roadmap Q3 W3-4) ===== */
 .filter-group {
     display: inline-flex;
-    border-radius: 8px;
+    border-radius: var(--radius-md);
     overflow: hidden;
     background: var(--glass-bg, rgba(255, 255, 255, 0.04));
     border: 1px solid var(--glass-border, rgba(255, 255, 255, 0.08));
@@ -1118,12 +1168,12 @@
     border-right: 1px solid var(--glass-border, rgba(255, 255, 255, 0.08));
     color: var(--text-secondary, #94a3b8);
     padding: 6px 12px;
-    font-size: 13px;
+    font-size: var(--font-size-sm);
     cursor: pointer;
     transition: var(--transition, all 0.2s ease);
     display: inline-flex;
     align-items: center;
-    gap: 4px;
+    gap: var(--space-2);
     font-family: inherit;
 }
 
@@ -1139,7 +1189,7 @@
     color: white;
 }
 
-/* filter-btn active states — тема-управляемые accent/warning (Q3 W3-4) */
+/* filter-btn active states - тема-управляемые accent/warning (Q3 W3-4) */
 .filter-btn.active[data-filter-type="ollama"] {
     background: var(--accent-soft-2);
 }
@@ -1150,11 +1200,11 @@
 
 .sort-label {
     color: var(--text-muted, #94a3b8);
-    font-size: 12px;
+    font-size: var(--font-size-xs);
     margin-left: 8px;
     display: inline-flex;
     align-items: center;
-    gap: 4px;
+    gap: var(--space-2);
 }
 
 .sort-select {
@@ -1162,8 +1212,8 @@
     border: 1px solid var(--glass-border, rgba(255, 255, 255, 0.08));
     color: var(--text-primary, #f1f5f9);
     padding: 6px 10px;
-    border-radius: 6px;
-    font-size: 13px;
+    border-radius: var(--radius-sm);
+    font-size: var(--font-size-sm);
     font-family: inherit;
     cursor: pointer;
     transition: var(--transition, all 0.2s ease);
@@ -1189,11 +1239,11 @@
     padding: 32px 16px;
     text-align: center;
     color: var(--text-muted, #94a3b8);
-    font-size: 14px;
+    font-size: var(--font-size-base);
     background: var(--bg-secondary, #1a1f2e);
     border: 1px dashed var(--border-color, #2a3441);
-    border-radius: 8px;
-    margin-top: 12px;
+    border-radius: var(--radius-md);
+    margin-top: var(--space-4);
 }
 
 .models-empty[hidden] { display: none; }
@@ -1204,12 +1254,12 @@
 
 .cpp-profiles-empty {
     color: var(--text-muted, #94a3b8);
-    font-size: 12px;
-    padding: 12px;
+    font-size: var(--font-size-xs);
+    padding: var(--space-4);
     text-align: center;
     background: var(--bg-secondary, #1a1f2e);
     border: 1px dashed var(--border-color, #2a3441);
-    border-radius: 6px;
+    border-radius: var(--radius-sm);
 }
 
 .cpp-profile-item {
@@ -1217,10 +1267,10 @@
     align-items: center;
     justify-content: space-between;
     padding: 10px 12px;
-    margin-bottom: 8px;
+    margin-bottom: var(--space-3);
     background: var(--bg-secondary, #1a1f2e);
     border: 1px solid var(--border-color, #2a3441);
-    border-radius: 6px;
+    border-radius: var(--radius-sm);
     transition: border-color 0.15s ease;
 }
 .cpp-profile-item:hover {
@@ -1236,13 +1286,13 @@
 }
 .cpp-profile-name {
     font-weight: 600;
-    font-size: 13px;
+    font-size: var(--font-size-sm);
     color: var(--text-primary, #e2e8f0);
     display: flex;
     align-items: center;
-    gap: 6px;
+    gap: var(--space-3);
 }
-/* cpp-profile-name badge — тема-управляемый warning (Q3 W3-4) */
+/* cpp-profile-name badge - тема-управляемый warning (Q3 W3-4) */
 .cpp-profile-name .badge {
     font-size: 10px;
     padding: 1px 6px;
@@ -1252,29 +1302,29 @@
     font-weight: 500;
 }
 .cpp-profile-meta {
-    font-size: 11px;
+    font-size: var(--font-size-xs);
     color: var(--text-muted, #94a3b8);
     font-family: 'SF Mono', 'Consolas', monospace;
 }
 .cpp-profile-actions {
     display: flex;
-    gap: 4px;
+    gap: var(--space-2);
 }
 .cpp-profile-actions button {
     padding: 4px 8px;
-    font-size: 11px;
+    font-size: var(--font-size-xs);
 }
 
 /* Profile wizard (modal) */
 .cpp-profile-wizard .ctx-presets {
     display: flex;
-    gap: 4px;
+    gap: var(--space-2);
     flex-wrap: wrap;
     margin: 8px 0;
 }
 .cpp-profile-wizard .ctx-preset {
     padding: 4px 10px;
-    font-size: 11px;
+    font-size: var(--font-size-xs);
     background: var(--bg-tertiary, #0f172a);
     border: 1px solid var(--border-color, #2a3441);
     color: var(--text-secondary, #cbd5e1);
@@ -1282,7 +1332,7 @@
     cursor: pointer;
     transition: all 0.15s ease;
 }
-/* ctx-preset/ctx-value — тема-управляемый warning (Q3 W3-4) */
+/* ctx-preset/ctx-value - тема-управляемый warning (Q3 W3-4) */
 .cpp-profile-wizard .ctx-preset:hover {
     border-color: var(--warning);
     color: var(--warning);
@@ -1295,7 +1345,7 @@
 .cpp-profile-wizard .ctx-slider-row {
     display: flex;
     align-items: center;
-    gap: 12px;
+    gap: var(--space-4);
     margin: 12px 0;
 }
 .cpp-profile-wizard .ctx-slider-row input[type="range"] {
@@ -1307,21 +1357,21 @@
     font-family: 'SF Mono', 'Consolas', monospace;
     font-weight: 600;
     color: var(--warning);
-    font-size: 13px;
+    font-size: var(--font-size-sm);
 }
 .cpp-profile-wizard .ctx-help {
-    font-size: 11px;
+    font-size: var(--font-size-xs);
     color: var(--text-muted, #94a3b8);
     margin-top: 4px;
 }
 
-/* Per-Model Profiles wizard — advanced fields (Session 15, Q3 W3-4 Model profiles UI) */
+/* Per-Model Profiles wizard - advanced fields (Session 15, Q3 W3-4 Model profiles UI) */
 .cpp-profile-wizard .wizard-advanced {
-    margin-top: 12px;
-    padding: 12px;
+    margin-top: var(--space-4);
+    padding: var(--space-4);
     background: var(--warning-soft-7);
     border: 1px dashed var(--warning-soft-6);
-    border-radius: 6px;
+    border-radius: var(--radius-sm);
 }
 .cpp-profile-wizard .advanced-toggle {
     margin-top: 4px;
@@ -1336,7 +1386,7 @@
 }
 .cpp-profile-wizard .wizard-field-row {
     display: flex;
-    gap: 12px;
+    gap: var(--space-4);
     align-items: stretch;
 }
 .cpp-profile-wizard .wizard-field-row .wizard-field-col {
@@ -1350,7 +1400,7 @@
     color: var(--text-primary, #e2e8f0);
     border: 1px solid var(--border-color, #2a3441);
     border-radius: 4px;
-    font-size: 13px;
+    font-size: var(--font-size-sm);
     cursor: pointer;
 }
 .cpp-profile-wizard textarea {
@@ -1360,7 +1410,7 @@
     color: var(--text-primary, #e2e8f0);
     border: 1px solid var(--border-color, #2a3441);
     border-radius: 4px;
-    font-size: 13px;
+    font-size: var(--font-size-sm);
     font-family: inherit;
     resize: vertical;
 }
@@ -1372,16 +1422,16 @@
 .cpp-reload-progress .reload-step {
     display: flex;
     align-items: center;
-    gap: 8px;
+    gap: var(--space-3);
     padding: 6px 0;
-    font-size: 12px;
+    font-size: var(--font-size-xs);
 }
 .cpp-reload-progress .reload-step-icon {
     width: 16px;
     text-align: center;
     font-weight: 600;
 }
-/* reload-step icon — тема-управляемые (Q3 W3-4) */
+/* reload-step icon - тема-управляемые (Q3 W3-4) */
 .cpp-reload-progress .reload-step.pending .reload-step-icon { color: var(--text-muted, #94a3b8); }
 .cpp-reload-progress .reload-step.running .reload-step-icon { color: var(--warning); animation: spin 1s linear infinite; }
 .cpp-reload-progress .reload-step.done .reload-step-icon { color: var(--success); }
@@ -1406,20 +1456,20 @@
     100% { transform: rotate(360deg); }
 }
 
-/* ===== Pull / Op progress (Models tab — Q3 W3-4 sub-task) ===== */
+/* ===== Pull / Op progress (Models tab - Q3 W3-4 sub-task) ===== */
 /* Отображается в таблице «Активные операции» модального окна «Управление моделями».
    Прогресс-бар + ETA + кнопка Cancel для каждой op. */
 .model-ops-auto-refresh {
     display: inline-flex;
     align-items: center;
-    gap: 6px;
+    gap: var(--space-3);
     margin-left: 12px;
     padding: 3px 10px;
-    font-size: 11px;
+    font-size: var(--font-size-xs);
     color: var(--text-muted, #94a3b8);
     background: var(--glass-bg, rgba(255, 255, 255, 0.04));
     border: 1px solid var(--glass-border, rgba(255, 255, 255, 0.08));
-    border-radius: 12px;
+    border-radius: var(--radius-md);
 }
 .model-ops-auto-refresh i {
     color: var(--accent, #3b82f6);
@@ -1427,7 +1477,7 @@
 .ops-progress-wrap {
     display: flex;
     flex-direction: column;
-    gap: 4px;
+    gap: var(--space-2);
     min-width: 160px;
     max-width: 240px;
 }
@@ -1469,7 +1519,7 @@
     display: flex;
     justify-content: space-between;
     align-items: center;
-    font-size: 11px;
+    font-size: var(--font-size-xs);
     color: var(--text-muted, #94a3b8);
     font-variant-numeric: tabular-nums;
 }
@@ -1487,12 +1537,12 @@
     padding: 4px 10px;
     border-radius: 4px;
     cursor: pointer;
-    font-size: 12px;
+    font-size: var(--font-size-xs);
     font-family: inherit;
     transition: var(--transition, all 0.2s ease);
     display: inline-flex;
     align-items: center;
-    gap: 4px;
+    gap: var(--space-2);
 }
 .ops-action-cancel:hover:not(:disabled) {
     background: var(--danger, #ef4444);
@@ -1512,10 +1562,10 @@
 }
 
 /* ================================================
-   Q3 W4 — Session 19: Model details modal
+   Q3 W4 - Session 19: Model details modal
    Модалка с детальной информацией о модели
    (architecture, family, params, quantization,
-    n_ctx, gpu_layers, state) — через cluster-level
+    n_ctx, gpu_layers, state) - через cluster-level
     endpoint /api/v1/cluster/models/{name}/info.
    ================================================ */
 
@@ -1534,7 +1584,7 @@
 .modal-window {
     background: var(--bg-card, #1e1e2e);
     color: var(--text, #e0e0e0);
-    border-radius: 12px;
+    border-radius: var(--radius-md);
     border: 1px solid var(--border, rgba(255, 255, 255, 0.1));
     box-shadow: 0 16px 48px rgba(0, 0, 0, 0.45);
     max-height: 86vh;
@@ -1551,7 +1601,7 @@
 }
 .modal-overlay .modal-header h2 {
     margin: 0;
-    font-size: 16px;
+    font-size: var(--font-size-md);
     font-weight: 600;
 }
 .modal-overlay .modal-close {
@@ -1570,12 +1620,12 @@
     background: var(--bg-hover, rgba(255, 255, 255, 0.05));
 }
 .modal-overlay .modal-body {
-    padding: 20px;
+    padding: var(--space-6);
     overflow-y: auto;
     flex: 1;
 }
 
-/* Конкретно — модалка деталей модели. */
+/* Конкретно - модалка деталей модели. */
 .model-details-window {
     width: 720px;
     max-width: 92vw;
@@ -1583,20 +1633,20 @@
 .model-details-summary {
     background: var(--bg-secondary, rgba(255, 255, 255, 0.03));
     border: 1px solid var(--border, rgba(255, 255, 255, 0.08));
-    border-radius: 8px;
+    border-radius: var(--radius-md);
     padding: 12px 16px;
-    margin-bottom: 16px;
+    margin-bottom: var(--space-5);
 }
 .model-details-section {
-    margin-bottom: 16px;
+    margin-bottom: var(--space-5);
     padding: 12px 14px;
     background: var(--bg-secondary, rgba(255, 255, 255, 0.03));
     border: 1px solid var(--border, rgba(255, 255, 255, 0.08));
-    border-radius: 8px;
+    border-radius: var(--radius-md);
 }
 .model-details-section h4 {
     margin: 0 0 8px 0;
-    font-size: 12px;
+    font-size: var(--font-size-xs);
     font-weight: 600;
     text-transform: uppercase;
     letter-spacing: 0.5px;
@@ -1606,7 +1656,7 @@
     display: flex;
     justify-content: space-between;
     padding: 4px 0;
-    font-size: 13px;
+    font-size: var(--font-size-sm);
     border-bottom: 1px solid var(--border-light, rgba(255, 255, 255, 0.04));
 }
 .model-details-row:last-child { border-bottom: none; }
@@ -1625,15 +1675,15 @@
     background: var(--bg-secondary, rgba(255, 255, 255, 0.05));
     padding: 1px 6px;
     border-radius: 3px;
-    font-size: 12px;
+    font-size: var(--font-size-xs);
 }
 .model-details-backend-title {
     margin: 18px 0 10px 0;
-    font-size: 14px;
+    font-size: var(--font-size-base);
     color: var(--accent, #4a9eff);
     display: flex;
     align-items: center;
-    gap: 8px;
+    gap: var(--space-3);
 }
 .model-details-backend-title:first-child { margin-top: 0; }
 .model-details-backends-list {
@@ -1644,19 +1694,19 @@
 .model-details-backend-item {
     padding: 6px 10px;
     border-bottom: 1px solid var(--border-light, rgba(255, 255, 255, 0.04));
-    font-size: 13px;
+    font-size: var(--font-size-sm);
 }
 .model-details-backend-item:last-child { border-bottom: none; }
 .model-details-backend-type {
     color: var(--text-muted, #94a3b8);
-    font-size: 12px;
+    font-size: var(--font-size-xs);
 }
 .model-details-window .warning-message,
 .model-details-window .error-message {
     padding: 12px 14px;
-    border-radius: 8px;
+    border-radius: var(--radius-md);
     margin: 8px 0;
-    font-size: 13px;
+    font-size: var(--font-size-sm);
 }
 .model-details-window .warning-message {
     background: var(--warning-bg-soft, rgba(245, 158, 11, 0.12));
@@ -1667,4 +1717,66 @@
     background: var(--danger-bg-soft, rgba(239, 68, 68, 0.12));
     color: var(--danger, #ef4444);
     border: 1px solid var(--danger-bg-soft, rgba(239, 68, 68, 0.2));
+}
+
+
+/* 2026-06-29: HTML [hidden] attribute toggle должен работать при display:flex.
+ * Без этого правила CSS display:flex побеждает HTML hidden атрибут
+ * и dropdown виден всегда (root cause "колокольчик не работает"). */
+.notifications-dropdown[hidden] {
+    display: none !important;
+}
+/* =============================================================
+ * Density toggle (Sprint 1, 2026-06-29)
+ * TASTE-data-dense variant: compact density for data-heavy screens.
+ * ============================================================= */
+
+.density-toggle {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--space-2);
+    padding: var(--space-2) var(--space-3);
+    background: transparent;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    color: var(--text-secondary);
+    cursor: pointer;
+    font-size: var(--font-size-sm);
+    transition: all var(--transition-fast);
+}
+
+.density-toggle:hover {
+    background: var(--bg-hover);
+    color: var(--text-primary);
+    border-color: var(--border-strong);
+}
+
+.density-toggle.is-dense {
+    background: var(--accent-soft);
+    border-color: var(--accent);
+    color: var(--accent);
+}
+
+.density-toggle .density-icon {
+    font-size: var(--font-size-base);
+}
+
+/* Numeric values in dense mode use monospace font (Geist Mono).
+ * Works automatically because components use var(--font-family-sans)
+ * for body text; for numeric values, opt-in via .numeric-mono class. */
+.numeric-mono,
+[data-density="dense"] .metric-value,
+[data-density="dense"] .backend-card .metric,
+[data-density="dense"] .model-card .metric,
+[data-density="dense"] .table-numeric {
+    font-family: var(--font-family-numeric);
+    font-variant-numeric: tabular-nums;
+}
+
+/* Slightly tighter row-height in dense tables */
+[data-density="dense"] .table-row,
+[data-density="dense"] .backend-card,
+[data-density="dense"] .model-card {
+    padding: var(--space-3) var(--space-4);
+    gap: var(--space-2);
 }

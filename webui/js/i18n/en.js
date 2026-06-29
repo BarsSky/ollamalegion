@@ -1187,6 +1187,12 @@ window.I18N_EN = {
 
   // ===== Common Status =====
   "common.online": "Online",
-  "common.offline": "Offline"
+  "common.offline": "Offline",
+
+  // Sprint 1 (2026-06-29): data-density variant i18n keys
+  "density.title": "UI density",
+  "density.toggle": "Toggle density (compact/comfortable)",
+  "density.normal": "Comfortable",
+  "density.dense": "Compact"
 };
 

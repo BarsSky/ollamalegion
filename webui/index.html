@@ -6,8 +6,8 @@
     <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
     <meta http-equiv="Pragma" content="no-cache">
     <meta http-equiv="Expires" content="0">
-    <title>OllamaLegion — Dashboard</title>
-    <!-- Session C — Theme toggle: anti-FOIT inline script.
+    <title>OllamaLegion - Dashboard</title>
+    <!-- Session C - Theme toggle: anti-FOIT inline script.
          Применяет data-theme до загрузки CSS, чтобы избежать flash of incorrect theme (FOIT)
          при первой загрузке страницы. Приоритет: localStorage > system preference > dark. -->
     <script>
@@ -26,19 +26,32 @@
             }
         })();
     </script>
+    <script>
+        // Sprint 1 (2026-06-29): data-density variant early-load.
+        // Применяет body[data-density] ДО загрузки CSS, чтобы избежать flash-of-density.
+        (function() {
+            try {
+                var stored = localStorage.getItem('ollamalegion_density');
+                if (stored !== 'dense' && stored !== 'normal') stored = 'normal';
+                document.body.setAttribute('data-density', stored);
+            } catch (e) {
+                document.body.setAttribute('data-density', 'normal');
+            }
+        })();
+    </script>
     <link rel="icon" type="image/png" sizes="32x32" href="favicon-32x32.png">
     <link rel="icon" type="image/png" sizes="16x16" href="favicon-16x16.png">
     <link rel="shortcut icon" href="favicon.ico">
-    <link rel="stylesheet" href="css/font-awesome.min.css?v=10">
-    <link rel="stylesheet" href="css/themes.css?v=10">
-    <link rel="stylesheet" href="css/base.css?v=10">
-    <link rel="stylesheet" href="css/icons.css?v=10">
-    <link rel="stylesheet" href="css/components.css?v=10">
-    <link rel="stylesheet" href="css/metrics.css?v=10">
-    <link rel="stylesheet" href="css/data.css?v=10">
-    <link rel="stylesheet" href="css/pages.css?v=10">
-    <link rel="stylesheet" href="css/layout.css?v=10">
-    <link rel="stylesheet" href="css/responsive.css?v=10">
+    <link rel="stylesheet" href="css/font-awesome.min.css?v=11">
+    <link rel="stylesheet" href="css/themes.css?v=11">
+    <link rel="stylesheet" href="css/base.css?v=11">
+    <link rel="stylesheet" href="css/icons.css?v=11">
+    <link rel="stylesheet" href="css/components.css?v=11">
+    <link rel="stylesheet" href="css/metrics.css?v=11">
+    <link rel="stylesheet" href="css/data.css?v=11">
+    <link rel="stylesheet" href="css/pages.css?v=11">
+    <link rel="stylesheet" href="css/layout.css?v=11">
+    <link rel="stylesheet" href="css/responsive.css?v=11">
 </head>
 <body>
     <div class="app">
@@ -49,7 +62,7 @@
                 <span>OllamaLegion</span>
             </div>
             <div class="backend-engine-badge" id="backendEngineBadge" title="Тип движка инференса">
-                <span class="engine-icon">🔌</span>
+                <span class="engine-icon"><i class="fas fa-plug fa-fw" aria-hidden="true"></i></span>
                 <span class="engine-label" id="backendEngineLabel" data-i18n="dashboard.engine_auto">Автоопределение...</span>
             </div>
             <nav class="nav">
@@ -106,8 +119,9 @@
                         <option value="ru">🇷🇺 RU</option>
                         <option value="en">🇬🇧 EN</option>
                     </select>
-                    <button class="btn-theme-toggle" id="themeToggle" data-i18n-title="settings.theme_toggle_title" title="Переключить тему (Ctrl+Shift+T)">☀️</button>
-                    <!-- F.α (2026-06-28): session F — notifications bell icon -->
+                    <button class="density-toggle" id="densityToggle" data-i18n-title="density.toggle" title="Toggle density (compact/comfortable)"><i class="fas fa-table-cells-large density-icon" aria-hidden="true"></i></button>
+                    <button class="btn-theme-toggle" id="themeToggle" data-i18n-title="settings.theme_toggle_title" title="Переключить тему (Ctrl+Shift+T)"><i class="fas fa-circle-half-stroke" aria-hidden="true"></i></button>
+                    <!-- F.α (2026-06-28): session F - notifications bell icon -->
                     <div class="notifications-wrapper">
                         <button class="btn-theme-toggle" id="notificationsBtn" data-i18n-title="notifications.bell_title" title="Notifications">🔔<span class="notification-badge" id="notificationsBadge" hidden>0</span></button>
                         <div class="notifications-dropdown" id="notificationsDropdown" hidden>
@@ -215,9 +229,9 @@
                         <h3><i class="fas fa-server section-icon-i"></i> <span data-i18n="nav.backends">Бэкенды</span></h3>
                         <div class="card-actions" style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
                             <div class="type-filter-group" id="dashboardBackendTypeFilter">
-                                <button class="type-filter-btn active" data-type="all">Все</button>
-                                <button class="type-filter-btn" data-type="ollama">🦙 Ollama</button>
-                                <button class="type-filter-btn" data-type="llama_cpp">🦒 llama.cpp</button>
+                                <button class="type-filter-btn active" data-type="all" data-i18n="models.filter_all">Все</button>
+                                <button class="type-filter-btn" data-type="ollama" data-i18n="models.filter_ollama">Ollama</button>
+                                <button class="type-filter-btn" data-type="llama_cpp" data-i18n="models.filter_llamacpp">llama.cpp</button>
                             </div>
                             <input type="text" class="search-input" placeholder="Поиск..." id="backendSearch" data-i18n-placeholder="backends.search">
                         </div>
@@ -267,8 +281,8 @@
                         <div class="card-actions" style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
                             <div class="type-filter-group" id="manageBackendTypeFilter">
                                 <button class="type-filter-btn active" data-type="all">Все</button>
-                                <button class="type-filter-btn" data-type="ollama">🦙 Ollama</button>
-                                <button class="type-filter-btn" data-type="llama_cpp">🦒 llama.cpp</button>
+                                <button class="type-filter-btn" data-type="ollama">Ollama</button>
+                                <button class="type-filter-btn" data-type="llama_cpp">llama.cpp</button>
                             </div>
                             <button class="btn btn-secondary" id="exportBackends" data-i18n="backends.export">Экспорт</button>
                             <button class="btn btn-primary" id="addBackendBtn2" data-i18n="backends.add">Добавить</button>
@@ -335,9 +349,9 @@
                         <div class="card-actions">
                             <input type="text" class="search-input" id="modelsSearch" placeholder="Поиск модели..." data-i18n-placeholder="models.search_placeholder">
                             <div class="filter-group" id="modelsTypeFilter" role="group" aria-label="Фильтр по типу бэкенда">
-                                <button type="button" class="filter-btn active" data-filter-type="all" data-i18n-title="models.filter_all_title" title="Все типы">🌐 <span data-i18n="models.filter_all">Все</span></button>
-                                <button type="button" class="filter-btn" data-filter-type="ollama" data-i18n-title="models.filter_ollama_title" title="Только Ollama">🦙 <span data-i18n="models.filter_ollama">Ollama</span></button>
-                                <button type="button" class="filter-btn" data-filter-type="llama_cpp" data-i18n-title="models.filter_llamacpp_title" title="Только llama.cpp">🦒 <span data-i18n="models.filter_llamacpp">llama.cpp</span></button>
+                                <button type="button" class="filter-btn active" data-filter-type="all" data-i18n-title="models.filter_all_title" title="Все типы"><span data-i18n="models.filter_all">Все</span></button>
+                                <button type="button" class="filter-btn" data-filter-type="ollama" data-i18n-title="models.filter_ollama_title" title="Только Ollama"><span data-i18n="models.filter_ollama">Ollama</span></button>
+                                <button type="button" class="filter-btn" data-filter-type="llama_cpp" data-i18n-title="models.filter_llamacpp_title" title="Только llama.cpp"><span data-i18n="models.filter_llamacpp">llama.cpp</span></button>
                             </div>
                             <label class="sort-label" for="modelsSortBy">
                                 <span data-i18n="models.sort_by">Сортировка:</span>
@@ -558,7 +572,7 @@
 
             <!-- Monitor Page -->
             <div class="page" id="monitor-page">
-                <iframe id="monitorFrame" src="monitor.html?v=13" class="monitor-iframe"></iframe>
+                <iframe id="monitorFrame" src="monitor.html?v=15" class="monitor-iframe"></iframe>
             </div>
 
             <!-- Logs Page -->
@@ -610,7 +624,7 @@
                         <div class="card-actions">
                             <button class="btn btn-secondary" id="clearProxyLogs" data-i18n="logs.clear">Очистить</button>
                             <button class="btn btn-secondary" id="refreshProxyLogs">Обновить</button>
-                            <button class="btn btn-secondary" id="copyProxyLogs" data-i18n="logs.copy_proxy">📋 Копировать</button>
+                            <button class="btn btn-secondary" id="copyProxyLogs" data-i18n="logs.copy_proxy" data-i18n-title="logs.copy_proxy_title" title="Копировать логи прокси"><i class="fas fa-copy" aria-hidden="true"></i> Копировать</button>
                         </div>
                     </div>
                     <div class="proxy-logs-container" id="proxyLogsContainer">
@@ -625,8 +639,8 @@
                     <div class="card-header">
                         <h3><i class="fas fa-gear section-icon-i"></i> <span data-i18n="settings.title">Настройки</span></h3>
                         <div class="card-actions">
-                            <button class="btn btn-secondary" id="exportSettingsBtn" data-i18n="config.export">📤 Экспорт</button>
-                            <button class="btn btn-secondary" id="importSettingsBtn" data-i18n="config.import">📥 Импорт</button>
+                            <button class="btn btn-secondary" id="exportSettingsBtn" data-i18n="config.export" data-i18n-title="config.export_title" title="Экспорт конфигурации в JSON"><i class="fas fa-file-export" aria-hidden="true"></i> Экспорт</button>
+                            <button class="btn btn-secondary" id="importSettingsBtn" data-i18n="config.import" data-i18n-title="config.import_title" title="Импорт конфигурации из JSON"><i class="fas fa-file-import" aria-hidden="true"></i> Импорт</button>
                         </div>
                     </div>
                     <div class="settings-form" id="settingsForm">
@@ -645,13 +659,13 @@
                                      <div class="mode-cards" id="backendEngineCards">
                                          <label class="mode-card" data-backend-engine-type="ollama">
                                              <input type="radio" name="settingsBackendEngine" value="ollama">
-                                             <div class="mode-card-icon">🦙</div>
+                                             <div class="mode-card-icon"><i class="fas fa-server fa-fw"></i></div>
                                              <div class="mode-card-title">Ollama API</div>
                                              <div class="mode-card-desc" data-i18n="wizard.backend_type_ollama_desc">Стандартное Ollama API</div>
                                          </label>
                                          <label class="mode-card" data-backend-engine-type="llama_cpp">
                                              <input type="radio" name="settingsBackendEngine" value="llama_cpp">
-                                             <div class="mode-card-icon">🦒</div>
+                                             <div class="mode-card-icon"><i class="fas fa-microchip fa-fw"></i></div>
                                              <div class="mode-card-title">llama.cpp</div>
                                              <div class="mode-card-desc" data-i18n="wizard.backend_type_llama_desc">llama.cpp через CppWorker</div>
                                          </label>
@@ -663,31 +677,31 @@
                                  <div class="mode-cards">
                                     <label class="mode-card" data-mode="standard">
                                         <input type="radio" name="operatingMode" value="standard" checked>
-                                        <div class="mode-card-icon">⚙️</div>
+                                        <div class="mode-card-icon"><i class="fas fa-gear fa-fw" aria-hidden="true"></i></div>
                                         <div class="mode-card-title" data-i18n="settings.mode.standard">Стандартный балансировщик</div>
                                         <div class="mode-card-desc" data-i18n="settings.mode.standard_desc">Балансировка без RPC</div>
                                     </label>
                                     <label class="mode-card" data-mode="replication">
                                         <input type="radio" name="operatingMode" value="replication">
-                                        <div class="mode-card-icon">📋</div>
+                                        <div class="mode-card-icon"><i class="fas fa-copy fa-fw" aria-hidden="true"></i></div>
                                         <div class="mode-card-title" data-i18n="settings.mode.replication">Model Replication (A)</div>
                                         <div class="mode-card-desc" data-i18n="settings.mode.replication_desc">Репликация моделей на N бэкендов</div>
                                     </label>
                                     <label class="mode-card" data-mode="rpc_coordinator">
                                         <input type="radio" name="operatingMode" value="rpc_coordinator">
-                                        <div class="mode-card-icon">🌐</div>
+                                        <div class="mode-card-icon"><i class="fas fa-globe fa-fw" aria-hidden="true"></i></div>
                                         <div class="mode-card-title" data-i18n="settings.mode.rpc_coordinator">External RPC Coordinator (B)</div>
                                         <div class="mode-card-desc" data-i18n="settings.mode.rpc_coordinator_desc">Внешний RPC-координатор</div>
                                     </label>
                                     <label class="mode-card" data-mode="virtual_router">
                                         <input type="radio" name="operatingMode" value="virtual_router">
-                                        <div class="mode-card-icon">🧩</div>
+                                        <div class="mode-card-icon"><i class="fas fa-puzzle-piece fa-fw" aria-hidden="true"></i></div>
                                         <div class="mode-card-title" data-i18n="settings.mode.virtual_router">Virtual Model Router (C)</div>
                                         <div class="mode-card-desc" data-i18n="settings.mode.virtual_router_desc">Маршрутизация через виртуальные модели</div>
                                     </label>
                                     <label class="mode-card" data-mode="distributed_inference">
                                         <input type="radio" name="operatingMode" value="distributed_inference">
-                                        <div class="mode-card-icon">🔬</div>
+                                        <div class="mode-card-icon"><i class="fas fa-microscope fa-fw" aria-hidden="true"></i></div>
                                         <div class="mode-card-title" data-i18n="settings.mode.distributed">Distributed Inference (D)</div>
                                         <div class="mode-card-desc" data-i18n="settings.mode.distributed_desc">Распределённый инференс</div>
                                     </label>
@@ -695,7 +709,7 @@
                                 <!-- Mode-specific fields -->
                                 <div class="mode-fields-container">
                                     <div id="modeFields-standard" class="mode-fields active">
-                                        <p style="color:var(--text-muted);font-size:13px;" data-i18n="wizard.summary_empty">Стандартный режим — дополнительные параметры не требуются</p>
+                                        <p style="color:var(--text-muted);font-size:13px;" data-i18n="wizard.summary_empty">Стандартный режим - дополнительные параметры не требуются</p>
                                     </div>
                                     <div id="modeFields-replication" class="mode-fields">
                                         <div class="form-row">
@@ -771,11 +785,11 @@
                                 <div class="form-group">
                                     <label data-i18n="settings.balancing_mode">Алгоритм балансировки</label>
                                     <span class="tooltip-trigger">?<span class="tooltip-content" data-i18n="settings.balancing_mode_desc">
-<strong>Resource-Aware</strong> — выбор по GPU/VRAM/CPU + скоринг (рекомендуется)<br>
-<strong>Least Connections</strong> — наименьшее число активных запросов<br>
-<strong>Round Robin</strong> — циклическое переключение с учётом веса<br>
-<strong>Weighted</strong> — пропорционально весу бэкенда<br>
-<strong>Model Affinity</strong> — приоритет бэкенда с загруженной моделью
+<strong>Resource-Aware</strong> - выбор по GPU/VRAM/CPU + скоринг (рекомендуется)<br>
+<strong>Least Connections</strong> - наименьшее число активных запросов<br>
+<strong>Round Robin</strong> - циклическое переключение с учётом веса<br>
+<strong>Weighted</strong> - пропорционально весу бэкенда<br>
+<strong>Model Affinity</strong> - приоритет бэкенда с загруженной моделью
                                     </span></span>
                                     <select id="balancingAlgorithm" class="form-control">
                                         <option value="resource-aware" data-i18n="settings.balancing_resource_aware">Resource-Aware (по умолчанию)</option>
@@ -788,7 +802,7 @@
                                 <div class="form-group">
                                     <label>Use Enhanced Scoring</label>
                                     <span class="tooltip-trigger">?<span class="tooltip-content">
-Включает полную формулу скоринга v2: бонус за загруженные модели, штраф за очередь и ошибки, прогноз критического состояния. При выключении — упрощённый скоринг (GPU/VRAM/CPU + weight).
+Включает полную формулу скоринга v2: бонус за загруженные модели, штраф за очередь и ошибки, прогноз критического состояния. При выключении - упрощённый скоринг (GPU/VRAM/CPU + weight).
                                     </span></span>
                                     <label class="toggle">
                                         <input type="checkbox" id="useEnhancedScoring">
@@ -1014,7 +1028,7 @@
                                         <span data-i18n="settings.profiles.title">Per-Model Profiles (n_ctx override)</span>
                                     </h4>
                                     <p style="color:var(--text-muted);margin:0 0 12px 0;font-size:12px;" data-i18n="settings.profiles.desc">
-                                        Per-model profile переопределяет contextLength для конкретной GGUF-модели. Применяется в 3-tier резолвере между body и per-backend default. Используйте это для моделей с большим окном (gemma-4 — до 256K) или для ускорения малых моделей коротким окном.
+                                        Per-model profile переопределяет contextLength для конкретной GGUF-модели. Применяется в 3-tier резолвере между body и per-backend default. Используйте это для моделей с большим окном (gemma-4 - до 256K) или для ускорения малых моделей коротким окном.
                                     </p>
 
                                     <div id="cppProfilesList" style="margin-bottom:12px;">
@@ -1057,8 +1071,8 @@
                                     Экспортируйте текущую конфигурацию в JSON-файл или импортируйте ранее сохранённую.
                                 </p>
                                 <div class="form-row" style="grid-template-columns:1fr 1fr;max-width:400px;">
-                                    <button class="btn btn-secondary" id="exportSettingsBtn2" data-i18n="config.export">📤 Экспорт</button>
-                                    <button class="btn btn-primary" id="importSettingsBtn2" data-i18n="config.import">📥 Импорт</button>
+                                    <button class="btn btn-secondary" id="exportSettingsBtn2" data-i18n="config.export" data-i18n-title="config.export_title" title="Экспорт конфигурации в JSON"><i class="fas fa-file-export" aria-hidden="true"></i> Экспорт</button>
+                                    <button class="btn btn-primary" id="importSettingsBtn2" data-i18n="config.import" data-i18n-title="config.import_title" title="Импорт конфигурации из JSON"><i class="fas fa-file-import" aria-hidden="true"></i> Импорт</button>
                                 </div>
                             </div>
                         </div>
@@ -1097,28 +1111,28 @@
                             <div class="settings-section-body open">
                                 <div class="help-section">
                                     <a href="https://github.com/BarsSky/ollamalegion/blob/main/docs/ru/README.md" target="_blank" rel="noopener" class="help-link">
-                                        <span class="help-link-icon">📖</span>
+                                        <span class="help-link-icon"><i class="fas fa-book" aria-hidden="true"></i></span>
                                         <div class="help-link-text">
                                             <div class="help-link-title" data-i18n="help.documentation">Полная документация</div>
                                             <div class="help-link-desc" data-i18n="help.documentation_desc">Руководство по установке, настройке и эксплуатации</div>
                                         </div>
                                     </a>
                                     <a href="https://github.com/BarsSky/ollamalegion/blob/main/docs/ru/api.md" target="_blank" rel="noopener" class="help-link">
-                                        <span class="help-link-icon">🔌</span>
+                                        <span class="help-link-icon"><i class="fas fa-plug" aria-hidden="true"></i></span>
                                         <div class="help-link-text">
                                             <div class="help-link-title" data-i18n="help.api_reference">API Справка</div>
                                             <div class="help-link-desc" data-i18n="help.api_reference_desc">Список API эндпоинтов и WebSocket</div>
                                         </div>
                                     </a>
                                     <a href="https://github.com/BarsSky/ollamalegion/blob/main/docs/ru/balancing-guide.md" target="_blank" rel="noopener" class="help-link">
-                                        <span class="help-link-icon">⚖️</span>
+                                        <span class="help-link-icon"><i class="fas fa-scale-balanced" aria-hidden="true"></i></span>
                                         <div class="help-link-text">
                                             <div class="help-link-title" data-i18n="help.balancing_guide">Гайд по балансировке</div>
                                             <div class="help-link-desc" data-i18n="help.balancing_guide_desc">Режимы балансировки и рекомендации</div>
                                         </div>
                                     </a>
                                     <a href="https://github.com/BarsSky/ollamalegion" target="_blank" rel="noopener" class="help-link">
-                                        <span class="help-link-icon">🐙</span>
+                                        <span class="help-link-icon"><i class="fab fa-github" aria-hidden="true"></i></span>
                                         <div class="help-link-text">
                                             <div class="help-link-title" data-i18n="help.github_repo">Репозиторий на GitHub</div>
                                             <div class="help-link-desc" data-i18n="help.github_repo_desc">Исходный код, задачи и обсуждения</div>
@@ -1137,11 +1151,11 @@
 
             <!-- Footer -->
             <footer class="app-footer">
-                <a href="https://github.com/BarsSky/ollamalegion/blob/main/docs/ru/README.md" target="_blank" rel="noopener" data-i18n="footer.documentation">📖 Документация</a>
+                <a href="https://github.com/BarsSky/ollamalegion/blob/main/docs/ru/README.md" target="_blank" rel="noopener" data-i18n="footer.documentation"><i class="fas fa-book" aria-hidden="true"></i> Документация</a>
                 <span class="footer-separator"></span>
-                <a href="https://github.com/BarsSky/ollamalegion" target="_blank" rel="noopener" data-i18n="footer.github">🐙 GitHub</a>
+                <a href="https://github.com/BarsSky/ollamalegion" target="_blank" rel="noopener" data-i18n="footer.github"><i class="fab fa-github" aria-hidden="true"></i> GitHub</a>
                 <span class="footer-separator"></span>
-                <span data-i18n="footer.license">⚖️ Лицензия MIT</span>
+                <span data-i18n="footer.license"><i class="fas fa-scale-balanced" aria-hidden="true"></i> Лицензия MIT</span>
                 <span class="footer-separator"></span>
                 <span>v1.0.0</span>
             </footer>
@@ -1174,8 +1188,8 @@
                     <div class="form-group">
                         <label>Тип бэкенда</label>
                         <select id="formBackendType" class="form-control">
-                            <option value="ollama">🦙 Ollama</option>
-                            <option value="llama_cpp">🦒 llama.cpp</option>
+                            <option value="ollama">Ollama</option>
+                            <option value="llama_cpp">llama.cpp</option>
                         </select>
                         <small style="color: var(--text-muted); font-size: 11px;">Выберите тип инференс-движка</small>
                     </div>
@@ -1196,9 +1210,9 @@
                             <label>Порт CppWorker</label>
                             <div style="display:flex; gap:6px; align-items:center;">
                                 <input type="number" id="formBackendCppWorkerPort" class="form-control" value="18092" style="flex:1;">
-                                <button type="button" id="formBackendCppWorkerPortDetect" class="btn btn-secondary" style="white-space:nowrap;" title="Автоматически определить порт CppWorker (probe 18092/18091/18093/18090 на /info)">🔍 Auto-detect</button>
+                                <button type="button" id="formBackendCppWorkerPortDetect" class="btn btn-secondary" style="white-space:nowrap;" title="Автоматически определить порт CppWorker (probe 18092/18091/18093/18090 на /info)"><i class="fas fa-magnifying-glass" aria-hidden="true"></i> Auto-detect</button>
                             </div>
-                            <small style="color: var(--text-muted); font-size: 11px;">Дефолт: 18092. Если пусто — auto-detect при сохранении.</small>
+                            <small style="color: var(--text-muted); font-size: 11px;">Дефолт: 18092. Если пусто - auto-detect при сохранении.</small>
                         </div>
                         <div class="form-group">
                             <label>gRPC порт</label>
@@ -1353,29 +1367,29 @@
     <div class="toast-container" id="toastContainer"></div>
 
     <!-- i18n Language Packs -->
-    <script src="js/i18n/ru.js?v=13"></script>
-    <script src="js/i18n/en.js?v=13"></script>
-    <script src="js/i18n/index.js?v=13"></script>
-    <script src="js/modules/backend-type-filter.js?v=13"></script>
+    <script src="js/i18n/ru.js?v=15"></script>
+    <script src="js/i18n/en.js?v=15"></script>
+    <script src="js/i18n/index.js?v=15"></script>
+    <script src="js/modules/backend-type-filter.js?v=15"></script>
 
     <!-- Runtime config injected by entrypoint for Docker / local nginx -->
     <script>window.WEBUI_CONFIG = window.WEBUI_CONFIG || {};</script>
     <!-- Modules -->
-    <script src="js/modules/config.js?v=13"></script>
-    <script src="js/modules/utils.js?v=13"></script>
-    <script src="js/modules/api.js?v=13"></script>
-    <script src="js/modules/gguf-api.js?v=13"></script>
-    <script src="js/modules/websocket.js?v=13"></script>
-    <script src="js/modules/renderers.js?v=13"></script>
-    <script src="js/modules/gguf-load-progress.js?v=1"></script>
+    <script src="js/modules/config.js?v=15"></script>
+    <script src="js/modules/utils.js?v=15"></script>
+    <script src="js/modules/api.js?v=15"></script>
+    <script src="js/modules/gguf-api.js?v=15"></script>
+    <script src="js/modules/websocket.js?v=15"></script>
+    <script src="js/modules/renderers.js?v=15"></script>
+    <script src="js/modules/gguf-load-progress.js?v=15"></script>
     <script src="js/modules/gguf-renderer.js?v=15"></script>
-    <script src="js/modules/settings-ui.js?v=13"></script>
-    <script src="js/modules/config-io.js?v=13"></script>
-    <script src="js/modules/mode-wizard.js?v=13"></script>
-    <script src="js/modules/setup-wizard.js?v=13"></script>
+    <script src="js/modules/settings-ui.js?v=15"></script>
+    <script src="js/modules/config-io.js?v=15"></script>
+    <script src="js/modules/mode-wizard.js?v=15"></script>
+    <script src="js/modules/setup-wizard.js?v=15"></script>
     <script src="js/modules/cppworker-params.js?v=16"></script>
-    <script src="js/modules/bulk-models.js?v=1"></script>
-    <script src="js/modules/notifications.js?v=14"></script>
+    <script src="js/modules/bulk-models.js?v=15"></script>
+    <script src="js/modules/notifications.js?v=15"></script>
     <script src="js/modules/logs-stream.js?v=15"></script>
     <script src="js/app.js?v=15"></script>
 </body>

@@ -155,3 +155,15 @@ inspect_out.txt
 *.7z
 
 panic_out.txt
+
+# Playwright / Node tooling (Sprint 1 Day 2 - 2026-06-29)
+# Note: we COMMIT package-lock.json for reproducible installs and we
+# COMMIT the -snapshots folder so visual baselines are reviewed in PRs.
+/node_modules/
+/playwright-report/
+/test-results/
+/blob-report/
+/playwright/.cache/
+/tests/visual/**/*-actual.png
+/tests/visual/**/*-diff.png
+

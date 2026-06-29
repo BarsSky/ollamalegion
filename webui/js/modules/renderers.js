@@ -539,7 +539,10 @@ const Renderers = (function () {
 
         // Для llama_cpp показываем упрощённые параметры вместо Ollama-специфичных флагов
         if (isLlamaCpp) {
-            var cppParams = backend.llama_cpp || {};
+            // NB: Go-структура `LlamaCppMetrics` маршалится в JSON как `llamaCpp` (camelCase),
+            // а не `llama_cpp` (snake_case). Использование неправильного ключа оставляло все
+            // параметры llama.cpp бэкенда пустыми на вкладке "Бэкенды" (issue 2026-06-29).
+            var cppParams = backend.llamaCpp || {};
             var cppHtml = '<div class="be-detail-section"><div class="be-detail-title">🦒 ' + escapeHtml(_t('renderers.section_llama_cpp_params') || 'llama.cpp Parameters') + '</div><div class="be-params-grid">';
             if (cppParams.modelPath) cppHtml += '<div class="be-param-item"><span class="be-param-label">' + escapeHtml(_t('renderers.model_path') || 'Model Path') + '</span><span class="be-param-value">' + escapeHtml(cppParams.modelPath) + '</span></div>';
             if (cppParams.contextLength !== undefined) cppHtml += '<div class="be-param-item"><span class="be-param-label">' + escapeHtml(_t('renderers.context')) + '</span><span class="be-param-value">' + escapeHtml(String(cppParams.contextLength)) + '</span></div>';

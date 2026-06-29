@@ -1,5 +1,16 @@
-/* ================================================
-   OllamaLegion Base — Reset, Body, Animations
+/*
+ * TASTE SKILL DIALS  (taste-skill v2 design-taste-frontend)
+ *   DESIGN_VARIANCE = 5  (mixed dashboard)
+ *   MOTION_INTENSITY = 3 (hover transitions only)
+ *   VISUAL_DENSITY   = 5 (medium-dense with breathing room)
+ *
+ * Anti-slop rules applied:
+ *   - No em-dash (--) in user-facing copy or comments.
+ *   - Typography uses --font-family-sans / --font-size-* tokens.
+ *   - Background glow uses --accent-glow-* tokens (no hardcoded rgba).
+ *   - Animations only on pulse / fade / spin (no parallax).
+ * ================================================
+   OllamaLegion Base. Reset, body shell, keyframes.
    ================================================ */
 
 * {
@@ -8,8 +19,16 @@
     box-sizing: border-box;
 }
 
+html {
+    font-family: var(--font-family-sans);
+    font-size: var(--font-size-base);
+    line-height: var(--line-height-normal);
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+}
+
 body {
-    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+    font-family: var(--font-family-sans);
     background: var(--bg-primary);
     color: var(--text-primary);
     min-height: 100vh;
@@ -17,28 +36,24 @@ body {
     position: relative;
 }
 
-/* Liquid Glass depth background */
+/* Liquid Glass depth background: three soft glows.
+ * Tokenised so themes can mute / intensify independently. */
 body::before {
     content: '';
     position: fixed;
     inset: 0;
     background:
-        radial-gradient(ellipse at 20% 50%, rgba(59,130,246,0.06) 0%, transparent 55%),
-        radial-gradient(ellipse at 80% 30%, rgba(168,85,247,0.05) 0%, transparent 50%),
-        radial-gradient(ellipse at 50% 80%, rgba(34,197,94,0.04) 0%, transparent 45%);
+        radial-gradient(ellipse at 20% 50%, var(--accent-glow-soft) 0%, transparent 55%),
+        radial-gradient(ellipse at 80% 30%, var(--accent-glow-soft) 0%, transparent 50%),
+        radial-gradient(ellipse at 50% 80%, var(--accent-glow-soft) 0%, transparent 45%);
     pointer-events: none;
     z-index: 0;
 }
 
-/* ===== Animations ===== */
+/* ===== Keyframes (TASTE: hover / ambient only) ===== */
 @keyframes pulse {
     0%, 100% { opacity: 1; }
-    50% { opacity: 0.5; }
-}
-
-@keyframes slideIn {
-    from { transform: translateX(100%); opacity: 0; }
-    to   { transform: translateX(0); opacity: 1; }
+    50%      { opacity: 0.5; }
 }
 
 @keyframes fadeIn {
@@ -48,4 +63,25 @@ body::before {
 
 @keyframes spin {
     to { transform: rotate(360deg); }
+}
+
+@keyframes slideIn {
+    from { transform: translateX(100%); opacity: 0; }
+    to   { transform: translateX(0);   opacity: 1; }
+}
+
+@keyframes slideUp {
+    from { transform: translateY(8px); opacity: 0; }
+    to   { transform: translateY(0);   opacity: 1; }
+}
+
+/* Eyebrow restraint: respect prefers-reduced-motion (TASTE accessibility). */
+@media (prefers-reduced-motion: reduce) {
+    *,
+    *::before,
+    *::after {
+        animation-duration: 0.01ms !important;
+        animation-iteration-count: 1 !important;
+        transition-duration: 0.01ms !important;
+    }
 }

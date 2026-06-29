@@ -95,7 +95,7 @@ webui/                    # фронтенд
 #### RAM fallback & tools (важно для OpenWebUI / Cline / Roo Code)
 
 - `cmd/cppworker/inference.go:tryRamFallbackReload` (строка ~491) **отключает reload, если в запросе есть `tools[]` (`hasTools=true`)**: возвращается `ReloadDisabledForToolsError` → `cmd/cppworker/utils.go:writeReloadDisabledForToolsResponse` транслирует в **HTTP 413** с подсказкой уменьшить tools/history или увеличить `n_ctx`.
-- Счётчик `ramFallbackAttempts` ограничен `ramFallbackMaxAttempts=3` за окно 60 сек. Превышение → `ReloadLoopLimitError` → HTTP 413. **Сбросить без рестарта контейнера пока нельзя** (TODO endpoint `POST /api/v1/cppworker/reset-reload-counter`); используй `docker restart deployments-cppworker-gpu-1`.
+- Счётчик `ramFallbackAttempts` ограничен `ramFallbackMaxAttempts=3` за окно 60 сек. Превышение → `ReloadLoopLimitError` → HTTP 413. **Сброс без рестарта:** `POST /api/v1/cppworker/reset-reload-counter` (с `X-API-Token`); без body — reset всех моделей, с `{"model":"..."}` — только указанной. Реализация: `cmd/cppworker/handlers_reset_reload.go`, тесты: `cmd/cppworker/handlers_reset_reload_test.go` (5/5 PASS).
 - Полный список env-флагов RAM fallback (см. `cmd/cppworker/main.go:parseRamFallbackFlags`):
 
 | Env / flag | Что делает | Default |
@@ -433,7 +433,7 @@ curl -X POST -H "X-API-Token: $LB_TOKEN" \
   ```
 - Бинарник сам делает `GET /health` на `localhost:<CPPWORKER_PORT>` (читает env/flag) и выходит с `0`/`1`. Внутри контейнера порт обычно `18091` (не путать с host-портом `18092` для GPU-сервиса).
 - В WebUI/Nginx healthcheck используй `curl` (`wget` не гарантирован в образе).
-- **NB:** счётчик RAM-fallback attempts (`ramFallbackAttempts`, см. раздел 4) сбрасывается только рестартом контейнера. **TODO**: endpoint `POST /api/v1/cppworker/reset-reload-counter`. До его реализации при `ReloadLoopLimitError` используй `docker restart deployments-cppworker-gpu-1`.
+- **NB:** счётчик RAM-fallback attempts (`ramFallbackAttempts`, см. раздел 4) сбрасывается через `POST /api/v1/cppworker/reset-reload-counter` (без body — все модели, с `{"model":"..."}` — одна). Endpoint зарегистрирован в `cmd/cppworker/router.go` под `authMiddleware`. `docker restart` больше не требуется для этой задачи.
 
 ## 9. Docker-соглашения
 
@@ -693,7 +693,7 @@ $env:CPPWORKER_VERBOSE="true"
 - CppWorker в Docker должен "рекламировать" себя балансировщику через `CPPWORKER_ADVERTISE_HOST`, а не через `CPPWORKER_HOST`. `CPPWORKER_HOST=0.0.0.0` используется для прослушивания, но балансировщик не может обратиться по `0.0.0.0`.
 - GPU-сервис CppWorker и балансировщик должны быть в одной Docker-сети (`ollama-legion-net` external), иначе балансировщик получит регистрацию, но не сможет проксировать запросы.
 - На Windows при сборке Linux-бинарников в PowerShell задавай переменные окружения через `$env:GOOS="linux"`, иначе Go может собрать Windows PE бинарник несмотря на явный `--`.
-- `ReloadLoopLimitError` (HTTP 413, `ramFallbackAttempts >= 3` за 60 сек) — единственный способ сбросить счётчик прямо сейчас это `docker restart deployments-cppworker-gpu-1`. **TODO:** endpoint `POST /api/v1/cppworker/reset-reload-counter` (см. раздел 8).
+- `ReloadLoopLimitError` (HTTP 413, `ramFallbackAttempts >= 3` за 60 сек) — сброс через `POST /api/v1/cppworker/reset-reload-counter` (см. раздел 8). `docker restart` больше не нужен.
 - `Balancing.RequestTimeout=30` (default в `config/config.json`) часто бьёт раньше, чем `clampNPredictToFitContext` отрабатывает длинную генерацию. Для long generations / tools-запросов поднимай до `300-600` сек.
 - Пустой `response: ""` от `/api/generate` или NDJSON-чанк `message.content=""` без `done_reason` — **не** валидный ответ. CppWorker обязан вернуть HTTP 500 с понятным `error` (см. раздел 3, пункт 6). Если видишь пустой ответ в логах — дебаг по runbook сценарию A/B (`docs/tools-request-debug-runbook.md`).
 - Hermes/Qwen модели эмитят tool_call прямо в `content` (`<tool_call>{...}</tool_call>` / `<|im_start|>assistant\n<tool_call>…`). Если финальный NDJSON от OpenWebUI приходит с `message.tool_calls=null`, а `message.content` содержит эти маркеры — см. `cmd/cppworker/tool_calls.go` и runbook сценарий D. Возможно, нужно расширить `extractHermesToolCalls` под конкретную модель.
@@ -763,7 +763,7 @@ curl -H 'X-API-Token: <CPPWORKER_API_TOKEN>' http://localhost:18081/api/v1/backe
 |---|---|---|
 | HTTP 413 на первом запросе с tools | `RAM fallback: reload disabled for tools-request` | **A** — `inference.go:491`, `utils.go:writeReloadDisabledForToolsResponse` |
 | Первый запрос OK, второй — пустой NDJSON (`message.content=""`, `tool_calls=null`) | `clamping n_predict to fit n_ctx` + `applyCppCtxHeader: replacing default n_predict with n_ctx-reserve` (с `has_tools=true`) | **B** — `nctx_clamp.go`, `inference.go:clampNPredictToFitContext` |
-| Бесконечный reload loop, 503 `model is loading` | `RAM fallback: cycle limit reached, refusing reload` (`attempts=3`, `elapsed~10s`) | **C** — `inference.go:ramFallbackAttempts`, единственное лечение сейчас — `docker restart` (TODO reset endpoint) |
+| Бесконечный reload loop, 503 `model is loading` | `RAM fallback: cycle limit reached, refusing reload` (`attempts=3`, `elapsed~10s`) | **C** — `inference.go:ramFallbackAttempts`, лечение: `POST /api/v1/cppworker/reset-reload-counter` (без body) с `X-API-Token` |
 | Tool_call в `content` (`<tool_call>{...}</tool_call>`, `<\|im_start\|>assistant\n<tool_call>…`), но `message.tool_calls=null` | В логе балансировщика: `tool_calls найден: false` (или подобный) | **D** — `cmd/cppworker/tool_calls.go` (Hermes / Mistral / Llama-python-tag), балансировщик: `internal/balancer/llamacpp_transport.go` (`detectAndExtractToolCallsFromContent`) |
 | HTTP 5xx / «reset by peer» без видимых причин | `write: broken pipe` / `connection reset by peer` в cppworker; `heartbeat write failed` в балансировщике | **E** — таймаут. Поднять `Balancing.RequestTimeout` до 300-600 сек и/или `CPPWORKER_WRITE_TIMEOUT` |
 

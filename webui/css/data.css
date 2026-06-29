@@ -1,5 +1,13 @@
-/* ================================================
-   OllamaLegion Data — Tables, Models, Runtime, Capacity, Backend Load
+/*
+ * TASTE SKILL DIALS  (taste-skill v2 design-taste-frontend)
+ *   DESIGN_VARIANCE = 5, MOTION_INTENSITY = 3, VISUAL_DENSITY = 5
+ * Anti-slop rules applied:
+ *   - No em-dash in user-facing copy or comments.
+ *   - Single corner-radius scale: --radius-md (8px) for cards, --radius-sm (6px) for pills.
+ *   - All hardcoded rgba() replaced with --accent-soft / --warning-soft / --danger-soft / --info-soft.
+ *   - All font sizes use --font-size-* tokens.
+ * ================================================
+   OllamaLegion Data. Tables, models, runtime, capacity, load.
    ================================================ */
 
 /* ===== Tables ===== */
@@ -13,14 +21,14 @@
     padding: 14px 20px;
     text-align: left;
     border-bottom: 1px solid var(--border);
-    font-size: 14px;
+    font-size: var(--font-size-base);
 }
 .data-table th {
-    font-weight: 600;
+    font-weight: var(--font-weight-semibold);
     color: var(--text-secondary);
     text-transform: uppercase;
-    font-size: 11px;
-    letter-spacing: 0.5px;
+    font-size: var(--font-size-xs);
+    letter-spacing: var(--letter-spacing-wide);
     background: var(--glass-bg);
     backdrop-filter: blur(4px);
     -webkit-backdrop-filter: blur(4px);
@@ -29,26 +37,26 @@
 .loading-cell {
     text-align: center;
     color: var(--text-muted);
-    padding: 40px;
+    padding: var(--space-7);
 }
 
 /* ===== Models Grid ===== */
 .models-grid {
-    padding: 24px;
+    padding: var(--space-6);
     display: grid;
     grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
-    gap: 20px;
+    gap: var(--space-5);
 }
 
 .model-card {
     position: relative;
     background: var(--glass-bg);
-    border-radius: var(--radius);
+    border-radius: var(--radius-md);
     border: 1px solid var(--glass-border);
     backdrop-filter: blur(var(--glass-blur));
     -webkit-backdrop-filter: blur(var(--glass-blur));
     box-shadow: var(--glass-shadow);
-    padding: 20px;
+    padding: var(--space-5);
     overflow: hidden;
     transition: var(--transition);
 }
@@ -60,7 +68,6 @@
     background: var(--glass-highlight);
     pointer-events: none;
 }
-/* model-card hover — тема-управляемая accent glow (Session 17) */
 .model-card:hover {
     border-color: var(--accent);
     box-shadow: var(--glass-shadow), 0 8px 32px var(--accent-glow-soft);
@@ -69,112 +76,131 @@
     display: flex;
     justify-content: space-between;
     align-items: center;
-    margin-bottom: 12px;
+    margin-bottom: var(--space-3);
 }
-.model-name { font-weight: 600; font-size: 16px; }
-.model-size { font-size: 12px; color: var(--text-muted); }
+.model-name {
+    font-weight: var(--font-weight-semibold);
+    font-size: var(--font-size-md);
+}
+.model-size {
+    font-size: var(--font-size-xs);
+    color: var(--text-muted);
+}
 .model-details {
     display: grid;
     grid-template-columns: repeat(3, 1fr);
-    gap: 12px;
-    margin-top: 12px;
+    gap: var(--space-3);
+    margin-top: var(--space-3);
 }
 .model-detail { text-align: center; }
-.model-detail-label { font-size: 11px; color: var(--text-muted); }
-.model-detail-value { font-size: 14px; font-weight: 600; margin-top: 2px; }
+.model-detail-label {
+    font-size: var(--font-size-xs);
+    color: var(--text-muted);
+}
+.model-detail-value {
+    font-size: var(--font-size-base);
+    font-weight: var(--font-weight-semibold);
+    margin-top: 2px;
+}
 
 /* Model Memory Bars */
 .model-memory-section {
-    margin-top: 16px;
-    padding-top: 16px;
+    margin-top: var(--space-4);
+    padding-top: var(--space-4);
     border-top: 1px solid var(--border);
 }
 .model-memory-title {
-    font-size: 12px;
+    font-size: var(--font-size-xs);
     color: var(--text-secondary);
-    margin-bottom: 10px;
-    font-weight: 500;
+    margin-bottom: var(--space-3);
+    font-weight: var(--font-weight-medium);
 }
-.model-memory-bar-container { margin-bottom: 8px; }
+.model-memory-bar-container { margin-bottom: var(--space-2); }
 .model-memory-bar-labels {
     display: flex;
     justify-content: space-between;
-    font-size: 11px;
+    font-size: var(--font-size-xs);
     color: var(--text-muted);
     margin-bottom: 3px;
 }
 .model-memory-bar {
     height: 6px;
     background: var(--bar-bg);
-    border-radius: 3px;
+    border-radius: var(--radius-xs);
     overflow: hidden;
 }
 .model-memory-bar-fill {
     height: 100%;
-    border-radius: 3px;
+    border-radius: var(--radius-xs);
     transition: width 0.5s ease;
 }
-.model-memory-bar-fill.vram { background: linear-gradient(90deg, var(--success), var(--warning)); }
-.model-memory-bar-fill.ram  { background: linear-gradient(90deg, var(--info), var(--accent)); }
+.model-memory-bar-fill.vram {
+    background: linear-gradient(90deg, var(--success), var(--warning));
+}
+.model-memory-bar-fill.ram {
+    background: linear-gradient(90deg, var(--info), var(--accent));
+}
 .model-memory-legend {
     display: flex;
-    gap: 16px;
-    margin-top: 8px;
-    font-size: 11px;
+    gap: var(--space-4);
+    margin-top: var(--space-2);
+    font-size: var(--font-size-xs);
     color: var(--text-muted);
 }
-.model-memory-legend-item { display: flex; align-items: center; gap: 6px; }
+.model-memory-legend-item {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+}
 .model-memory-legend-dot {
     width: 8px; height: 8px;
-    border-radius: 2px;
+    border-radius: var(--radius-xs);
 }
 .model-memory-legend-dot.vram { background: var(--success); }
 .model-memory-legend-dot.ram  { background: var(--info); }
 
-/* Available Models List */
+/* ===== Available Models List ===== */
 .available-models-list {
     display: grid;
     grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
-    gap: 0.5rem;
+    gap: var(--space-2);
     max-height: 400px;
     overflow-y: auto;
 }
 .available-model-item {
     display: flex;
     align-items: center;
-    gap: 0.75rem;
-    padding: 0.5rem 0.75rem;
-    border-radius: 6px;
+    gap: var(--space-3);
+    padding: var(--space-2) var(--space-3);
+    border-radius: var(--radius-sm);
     background: var(--glass-bg);
     border: 1px solid var(--glass-border);
     backdrop-filter: blur(4px);
     -webkit-backdrop-filter: blur(4px);
-    font-size: 0.85rem;
+    font-size: var(--font-size-sm);
 }
 .available-model-item .model-indicator {
     width: 8px; height: 8px;
     border-radius: 50%;
     flex-shrink: 0;
 }
-.model-loadable .model-indicator { background: var(--success); }
+.model-loadable   .model-indicator { background: var(--success); }
 .model-unloadable .model-indicator { background: var(--danger); }
-.model-loadable { opacity: 1; }
+.model-loadable   { opacity: 1; }
 .model-unloadable { opacity: 0.6; }
 .available-model-item .model-name {
     flex: 1;
-    font-weight: 500;
+    font-weight: var(--font-weight-medium);
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
 }
 .available-model-item .model-vram {
-    font-size: 0.75rem;
+    font-size: var(--font-size-xs);
     color: var(--text-muted);
 }
 
-/* ===== Bulk Operations (Session A — Bulk operations) ===== */
-/* Чекбокс в углу model-card для выбора модели в bulk-операции.
-   Позиционируется абсолютно поверх карточки, кликабельная область — весь label. */
+/* ===== Bulk Operations ===== */
 .model-card-checkbox {
     position: absolute;
     top: 10px;
@@ -183,12 +209,12 @@
     display: inline-flex;
     align-items: center;
     gap: 6px;
-    padding: 4px 8px;
-    background: rgba(20, 20, 30, 0.78);
+    padding: var(--space-1) var(--space-2);
+    background: var(--bg-secondary);
     border: 1px solid var(--glass-border);
-    border-radius: 6px;
+    border-radius: var(--radius-sm);
     color: var(--text-secondary);
-    font-size: 11px;
+    font-size: var(--font-size-xs);
     cursor: pointer;
     user-select: none;
     backdrop-filter: blur(6px);
@@ -201,69 +227,63 @@
     accent-color: var(--accent);
 }
 .model-card-checkbox:hover {
-    background: rgba(40, 40, 60, 0.92);
+    background: var(--bg-hover);
     color: var(--text-primary);
 }
-/* Выбранная карточка — accent-обводка поверх обычного hover. */
 .model-card.selected {
     outline: 2px solid var(--accent);
     outline-offset: -2px;
     box-shadow: var(--glass-shadow), 0 0 0 4px var(--accent-glow-soft);
 }
-/* Тулбар с кнопками bulk-операций (появляется когда выбрано >= 1 модели). */
 .models-bulk-toolbar {
     display: flex;
     align-items: center;
-    gap: 0.75rem;
+    gap: var(--space-3);
     flex-wrap: wrap;
-    padding: 0.75rem 1rem;
-    margin: 0 24px 1rem;
+    padding: var(--space-3) var(--space-4);
+    margin: 0 24px var(--space-4);
     background: var(--glass-bg);
     border: 1px solid var(--accent);
-    border-radius: var(--radius);
+    border-radius: var(--radius-md);
     backdrop-filter: blur(var(--glass-blur));
     -webkit-backdrop-filter: blur(var(--glass-blur));
     box-shadow: var(--glass-shadow);
 }
 .models-bulk-toolbar .bulk-count {
-    font-weight: 600;
+    font-weight: var(--font-weight-semibold);
     color: var(--accent);
     margin-right: auto;
 }
 .models-bulk-toolbar button {
-    padding: 0.4rem 0.8rem;
+    padding: var(--space-2) var(--space-3);
     border: none;
-    border-radius: 4px;
-    font-size: 13px;
+    border-radius: var(--radius-xs);
+    font-size: var(--font-size-sm);
     cursor: pointer;
     color: #fff;
     transition: opacity 0.15s ease;
 }
 .models-bulk-toolbar button:hover { opacity: 0.85; }
-.models-bulk-toolbar button:disabled {
-    opacity: 0.5;
-    cursor: not-allowed;
-}
+.models-bulk-toolbar button:disabled { opacity: 0.5; cursor: not-allowed; }
 .models-bulk-toolbar .btn-bulk-load   { background: var(--success); }
 .models-bulk-toolbar .btn-bulk-unload { background: var(--warning); color: #1a1a2e; }
 .models-bulk-toolbar .btn-bulk-delete { background: var(--danger); }
 .models-bulk-toolbar .btn-bulk-cancel { background: var(--bg-secondary); color: var(--text-primary); }
 
-/* Контролы быстрого выделения (Select All / Select Loaded / Clear). */
 .models-bulk-controls {
     display: flex;
-    gap: 0.5rem;
+    gap: var(--space-2);
     flex-wrap: wrap;
-    margin: 0 24px 1rem;
-    padding: 0.5rem 0;
+    margin: 0 24px var(--space-4);
+    padding: var(--space-2) 0;
 }
 .models-bulk-controls button {
-    padding: 0.3rem 0.7rem;
+    padding: var(--space-1) var(--space-3);
     border: 1px solid var(--glass-border);
-    border-radius: 4px;
+    border-radius: var(--radius-xs);
     background: var(--glass-bg);
     color: var(--text-secondary);
-    font-size: 0.85rem;
+    font-size: var(--font-size-sm);
     cursor: pointer;
     transition: var(--transition);
 }
@@ -272,18 +292,14 @@
     color: var(--text-primary);
     border-color: var(--accent);
 }
-.models-bulk-controls button:disabled {
-    opacity: 0.5;
-    cursor: not-allowed;
-}
+.models-bulk-controls button:disabled { opacity: 0.5; cursor: not-allowed; }
 
-/* Session B — Filter/Search + Sort improvements: счётчик видимых моделей. */
 .models-count {
-    padding: 0.2rem 0.6rem;
+    padding: 2px var(--space-3);
     background: var(--glass-bg);
     border: 1px solid var(--glass-border);
-    border-radius: 4px;
-    font-size: 12px;
+    border-radius: var(--radius-xs);
+    font-size: var(--font-size-xs);
     color: var(--text-secondary);
     white-space: nowrap;
 }
@@ -292,14 +308,14 @@
 .runtime-cluster {
     display: grid;
     grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
-    gap: 1rem;
+    gap: var(--space-4);
 }
 .runtime-card {
     position: relative;
     background: var(--glass-bg);
     border: 1px solid var(--glass-border);
-    border-radius: 8px;
-    padding: 1rem;
+    border-radius: var(--radius-md);
+    padding: var(--space-4);
     backdrop-filter: blur(var(--glass-blur));
     -webkit-backdrop-filter: blur(var(--glass-blur));
     box-shadow: var(--glass-shadow);
@@ -317,56 +333,55 @@
     display: flex;
     justify-content: space-between;
     align-items: center;
-    margin-bottom: 0.5rem;
-    font-size: 0.9rem;
+    margin-bottom: var(--space-2);
+    font-size: var(--font-size-sm);
 }
 .runtime-host {
-    font-size: 0.75rem;
+    font-size: var(--font-size-xs);
     color: var(--text-muted);
-    margin-bottom: 0.5rem;
+    margin-bottom: var(--space-2);
 }
 .runtime-flags {
     display: flex;
     flex-wrap: wrap;
-    gap: 0.4rem;
-    margin-top: 0.5rem;
+    gap: var(--space-2);
+    margin-top: var(--space-2);
 }
 .flag-badge {
     display: inline-flex;
     align-items: center;
-    gap: 0.3rem;
-    padding: 0.25rem 0.6rem;
-    border-radius: 4px;
-    font-size: 0.75rem;
-    font-weight: 600;
-    background: rgba(74, 158, 255, 0.15);
+    gap: 4px;
+    padding: var(--space-1) var(--space-3);
+    border-radius: var(--radius-xs);
+    font-size: var(--font-size-xs);
+    font-weight: var(--font-weight-semibold);
+    background: var(--accent-soft);
     color: var(--accent);
-    border: 1px solid rgba(74, 158, 255, 0.3);
+    border: 1px solid var(--accent-soft);
 }
-/* flag-badge — тема-управляемые полупрозрачные фоны (Session 17) */
 .flag-badge.warning {
-    background: var(--warning-bg-soft);
+    background: var(--warning-soft);
     color: var(--warning);
-    border-color: var(--warning-bg-soft);
+    border-color: var(--warning-soft);
 }
 .flag-badge.danger {
-    background: var(--danger-bg-soft);
+    background: var(--danger-soft);
     color: var(--danger);
-    border-color: var(--danger-bg-soft);
+    border-color: var(--danger-soft);
 }
 
 /* ===== Backend Capacity ===== */
 .capacity-section {
     display: grid;
     grid-template-columns: repeat(auto-fit, minmax(350px, 1fr));
-    gap: 1rem;
+    gap: var(--space-4);
 }
 .capacity-card {
     position: relative;
     background: var(--glass-bg);
     border: 1px solid var(--glass-border);
-    border-radius: 8px;
-    padding: 1rem;
+    border-radius: var(--radius-md);
+    padding: var(--space-4);
     backdrop-filter: blur(var(--glass-blur));
     -webkit-backdrop-filter: blur(var(--glass-blur));
     box-shadow: var(--glass-shadow);
@@ -383,24 +398,24 @@
 .capacity-host {
     display: flex;
     justify-content: space-between;
-    padding: 0.35rem 0;
-    font-size: 0.8rem;
+    padding: var(--space-2) 0;
+    font-size: var(--font-size-sm);
     color: var(--text-secondary);
 }
 .capacity-host span:first-child { color: var(--text-muted); }
-.capacity-host span:last-child  { font-weight: 600; }
-.capacity-bar-container { margin: 0.75rem 0; }
+.capacity-host span:last-child  { font-weight: var(--font-weight-semibold); }
+.capacity-bar-container { margin: var(--space-3) 0; }
 .capacity-bar-labels {
     display: flex;
     justify-content: space-between;
-    font-size: 0.8rem;
+    font-size: var(--font-size-sm);
     color: var(--text-secondary);
-    margin-bottom: 0.25rem;
+    margin-bottom: var(--space-1);
 }
 .capacity-bar {
     height: 8px;
     background: var(--bar-bg);
-    border-radius: 4px;
+    border-radius: var(--radius-xs);
     overflow: hidden;
     display: flex;
 }
@@ -411,9 +426,9 @@
 .capacity-stats {
     display: grid;
     grid-template-columns: repeat(2, 1fr);
-    gap: 0.5rem;
-    font-size: 0.8rem;
-    margin-top: 0.5rem;
+    gap: var(--space-2);
+    font-size: var(--font-size-sm);
+    margin-top: var(--space-2);
 }
 .capacity-stat {
     display: flex;
@@ -421,36 +436,35 @@
     color: var(--text-secondary);
 }
 
-/* Cloud capacity variant */
 .capacity-cloud {
     border-left: 3px solid var(--info);
-    background: linear-gradient(135deg, var(--glass-bg) 0%, rgba(96, 165, 250, 0.05) 100%);
+    background: linear-gradient(135deg, var(--glass-bg) 0%, var(--info-soft) 100%);
 }
-.capacity-cloud-info { padding: 0.75rem; }
+.capacity-cloud-info { padding: var(--space-3); }
 .capacity-cloud-row {
     display: flex;
     justify-content: space-between;
-    padding: 0.35rem 0;
+    padding: var(--space-2) 0;
     border-bottom: 1px solid var(--border);
-    font-size: 0.85rem;
+    font-size: var(--font-size-sm);
 }
 .capacity-cloud-row:last-child { border-bottom: none; }
 .capacity-cloud-row span:first-child { color: var(--text-muted); }
-.capacity-cloud-row span:last-child  { font-weight: 600; }
+.capacity-cloud-row span:last-child  { font-weight: var(--font-weight-semibold); }
 
 /* ===== Backend Load ===== */
 .backend-load-list {
-    padding: 1rem;
+    padding: var(--space-4);
     display: flex;
     flex-direction: column;
-    gap: 1rem;
+    gap: var(--space-4);
 }
 .backend-load-item {
     position: relative;
     background: var(--glass-bg);
     border: 1px solid var(--glass-border);
-    border-radius: var(--radius);
-    padding: 1rem;
+    border-radius: var(--radius-md);
+    padding: var(--space-4);
     backdrop-filter: blur(var(--glass-blur));
     -webkit-backdrop-filter: blur(var(--glass-blur));
     box-shadow: var(--glass-shadow);
@@ -470,63 +484,76 @@
     display: flex;
     justify-content: space-between;
     align-items: center;
-    margin-bottom: 0.75rem;
+    margin-bottom: var(--space-3);
 }
-.backend-load-name { font-size: 1rem; color: var(--text-primary); }
-.backend-load-stats { display: flex; gap: 1.5rem; margin-bottom: 0.75rem; font-size: 0.85rem; }
+.backend-load-name {
+    font-size: var(--font-size-base);
+    color: var(--text-primary);
+}
+.backend-load-stats {
+    display: flex;
+    gap: var(--space-6);
+    margin-bottom: var(--space-3);
+    font-size: var(--font-size-sm);
+}
 .backend-load-stat  { color: var(--text-secondary); }
-.backend-load-stat strong { color: var(--text-primary); font-weight: 600; }
+.backend-load-stat strong {
+    color: var(--text-primary);
+    font-weight: var(--font-weight-semibold);
+}
 .backend-load-bar-row {
     display: flex;
     justify-content: space-between;
     align-items: center;
-    margin-bottom: 0.25rem;
-    font-size: 0.8rem;
+    margin-bottom: var(--space-1);
+    font-size: var(--font-size-sm);
     color: var(--text-muted);
 }
 .backend-load-bar {
     height: 6px;
     background: var(--bar-bg);
-    border-radius: 3px;
+    border-radius: var(--radius-xs);
     overflow: hidden;
-    margin-bottom: 0.75rem;
+    margin-bottom: var(--space-3);
 }
 .backend-load-fill {
     height: 100%;
-    border-radius: 3px;
+    border-radius: var(--radius-xs);
     transition: width 0.5s ease;
 }
-.backend-load-fill.vram { background: linear-gradient(90deg, var(--success), var(--warning)); }
-.backend-load-fill.ram  { background: linear-gradient(90deg, var(--info), var(--accent)); }
+.backend-load-fill.vram {
+    background: linear-gradient(90deg, var(--success), var(--warning));
+}
+.backend-load-fill.ram {
+    background: linear-gradient(90deg, var(--info), var(--accent));
+}
 
 /* ===== Model Card Actions ===== */
 .model-card-actions {
     display: flex;
-    gap: 8px;
-    margin-top: 12px;
-    padding-top: 12px;
+    gap: var(--space-2);
+    margin-top: var(--space-3);
+    padding-top: var(--space-3);
     border-top: 1px solid var(--border);
 }
 .model-card-actions .btn {
     flex: 1;
     padding: 6px 10px;
-    font-size: 12px;
-    border-radius: 6px;
+    font-size: var(--font-size-xs);
+    border-radius: var(--radius-sm);
     cursor: pointer;
     transition: var(--transition);
     border: none;
-    font-weight: 500;
+    font-weight: var(--font-weight-medium);
     text-align: center;
 }
 .model-card-actions .btn:hover { opacity: 0.85; }
-.model-card-actions .btn-load { background: var(--success); color: #fff; }
+.model-card-actions .btn-load   { background: var(--success); color: #fff; }
 .model-card-actions .btn-unload { background: var(--warning); color: #1a1a2e; }
-.model-card-actions .btn-delete { background: var(--danger); color: #fff; }
-/* Q3 W4 — Session 19: кнопка-ⓘ для открытия модалки с детальной информацией о модели.
-   Не flex:1 — модалка не связана с action-flow (load/unload/delete), поэтому остаётся компактной. */
+.model-card-actions .btn-delete { background: var(--danger);  color: #fff; }
 .model-card-actions .btn-info {
     background: var(--bg-secondary);
-    color: var(--info, #4a9eff);
+    color: var(--info);
     border: 1px solid var(--border);
     flex: 0 0 auto;
     min-width: 36px;
@@ -536,33 +563,30 @@
 }
 .model-card-actions .btn-info:hover {
     background: var(--bg-hover);
-    border-color: var(--info, #4a9eff);
+    border-color: var(--info);
 }
-.model-card-actions .btn:disabled {
-    opacity: 0.5;
-    cursor: not-allowed;
-}
+.model-card-actions .btn:disabled { opacity: 0.5; cursor: not-allowed; }
 
 /* ===== Agent Actions in Backend Expandable Row ===== */
 .agent-actions {
     display: flex;
-    gap: 8px;
-    margin-top: 12px;
+    gap: var(--space-2);
+    margin-top: var(--space-3);
     flex-wrap: wrap;
 }
 .agent-actions .btn {
     padding: 6px 14px;
-    font-size: 12px;
-    border-radius: 6px;
+    font-size: var(--font-size-xs);
+    border-radius: var(--radius-sm);
     cursor: pointer;
     transition: var(--transition);
     border: none;
-    font-weight: 500;
+    font-weight: var(--font-weight-medium);
 }
 .agent-actions .btn:hover { opacity: 0.85; }
 .agent-actions .btn-restart { background: var(--warning); color: #1a1a2e; }
-.agent-actions .btn-logs { background: var(--info); color: #fff; }
-.agent-actions .btn-config { background: var(--accent); color: #fff; }
+.agent-actions .btn-logs    { background: var(--info);    color: #fff; }
+.agent-actions .btn-config  { background: var(--accent);  color: #fff; }
 .agent-actions .btn:disabled { opacity: 0.5; cursor: not-allowed; }
 
 /* Agent logs modal */
@@ -570,15 +594,15 @@
     max-height: 400px;
     overflow-y: auto;
     background: var(--bg-secondary);
-    border-radius: var(--radius);
-    padding: 12px;
-    font-family: monospace;
-    font-size: 12px;
+    border-radius: var(--radius-md);
+    padding: var(--space-3);
+    font-family: var(--font-family-mono);
+    font-size: var(--font-size-xs);
     white-space: pre-wrap;
     word-break: break-all;
 }
 .agent-logs-content .log-entry { margin-bottom: 4px; }
-.agent-logs-content .log-time { color: var(--text-muted); margin-right: 8px; }
-.agent-logs-content .log-level-info { color: var(--info); }
-.agent-logs-content .log-level-warn { color: var(--warning); }
+.agent-logs-content .log-time { color: var(--text-muted); margin-right: var(--space-2); }
+.agent-logs-content .log-level-info  { color: var(--info); }
+.agent-logs-content .log-level-warn  { color: var(--warning); }
 .agent-logs-content .log-level-error { color: var(--danger); }

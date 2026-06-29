@@ -70,7 +70,7 @@ header h1 .dot.demo { background: var(--info); animation: none; }
 .legend-dot.yellow { background: var(--warning); }
 .legend-dot.red { background: var(--danger); }
 .legend-text { font-size: 11px; color: var(--text-secondary); white-space: nowrap; margin-right: 4px; }
-/* Badges — тема-управляемые полупрозрачные фоны (Session 17) */
+/* Badges - тема-управляемые полупрозрачные фоны (Session 17) */
 .badge { display: inline-flex; align-items: center; gap: 4px; padding: 3px 8px; border-radius: 6px; font-size: 11px; font-weight: 600; font-family: var(--font-mono); background: var(--glass-soft-2); color: var(--text-secondary); border: 1px solid var(--border-color); }
 .badge-green { background: var(--success-bg-soft-2); color: var(--success); border-color: var(--success-bg-soft-2); }
 .badge-yellow { background: var(--warning-soft); color: var(--warning); border-color: var(--warning-soft); }
@@ -89,7 +89,7 @@ button:disabled { opacity: 0.5; cursor: not-allowed; }
 main { display: flex; flex-direction: column; height: calc(100vh - 45px); overflow: hidden; }
 .topo-section { flex: 1 1 auto; position: relative; min-height: 280px; display: flex; padding-bottom: 52px; }
 #vizCanvas { width: 100%; height: 100%; display: block; }
-/* conveyorCanvas — overlay поверх topo-section, совпадает по размеру с vizCanvas */
+/* conveyorCanvas - overlay поверх topo-section, совпадает по размеру с vizCanvas */
 #conveyorCanvas { position: absolute; top: 0; left: 0; right: 0; bottom: 52px; z-index: 3; pointer-events: none; opacity: 0.75; }
 .stats-bar { position: absolute; bottom: 0; left: 0; right: 0; display: flex; justify-content: center; gap: 12px; background: var(--glass-bg); border: 1px solid var(--glass-border); border-radius: 0; padding: 8px 16px; backdrop-filter: blur(var(--glass-blur)); -webkit-backdrop-filter: blur(var(--glass-blur)); box-shadow: var(--glass-shadow); z-index: 1; border-top: 2px solid var(--glass-border); }
 .stats-bar::after { content: ''; position: absolute; top: 0; left: 0; right: 0; height: 1px; background: var(--glass-highlight); pointer-events: none; }
@@ -121,7 +121,7 @@ tbody tr:hover { background: rgba(255,255,255,0.04); }
   gap: 8px;
 }
 
-/* Panel count badge — тема-управляемый accent (Session 17) */
+/* Panel count badge - тема-управляемый accent (Session 17) */
 .panel-badge {
   display: inline-flex;
   align-items: center;
@@ -147,7 +147,7 @@ tbody tr:hover { background: rgba(255,255,255,0.04); }
   border-radius: 8px;
   background: var(--bg-primary);
 }
-/* Alert banner — тема-управляемые полупрозрачные фоны (Session 17) */
+/* Alert banner - тема-управляемые полупрозрачные фоны (Session 17) */
 .alert-banner { display: flex; align-items: center; gap: 8px; padding: 8px 12px; border-radius: 6px; margin: 6px 14px 0; font-size: 12px; }
 .alert-red { background: var(--danger-bg-soft); border: 1px solid var(--danger-bg-soft); color: var(--danger); }
 .alert-yellow { background: var(--warning-bg-soft); border: 1px solid var(--warning-bg-soft); color: var(--warning); }

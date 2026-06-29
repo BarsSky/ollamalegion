@@ -31,10 +31,43 @@ const DENSITY_DENSE = 'dense';
 // state (from a previous run, or from a manual session) does not pollute
 // the assertions. We use a per-context navigation so the early-load script
 // in <head> sees the cleared value.
+//
+// NB: setupWizardModal is not part of the data-density variant — it lives
+// in <body> as a sibling of the topbar and intercepts pointer events. We
+// remove it as soon as it appears so the toggle is clickable. The modal is
+// driven by `setup-wizard.js` and is shown only when the server reports
+// `initialized: false`. Stub stacks may not have run the setup wizard
+// before Playwright opens the page, so we accept the visual-modal artifact
+// and just hide it. This keeps the visual baselines deterministic across
+// fresh stub stacks and post-setup stacks alike.
 test.beforeEach(async ({ context }) => {
     await context.clearCookies();
-    // Storage is per-origin; clearing cookies alone is not enough.
-    // We rely on the test's first navigation calling addInitScript.
+    // Mark wizard as done so future server checks return initialized=true.
+    await context.addInitScript(() => {
+        try {
+            localStorage.setItem('ollamalegion_wizard_done', '1');
+            localStorage.setItem('ollamalegion_backend_type', 'llama_cpp');
+        } catch (e) {
+            // Ignore quota / private-mode errors.
+        }
+    });
+    // Belt-and-braces: remove the modal if it does appear, so the toggle
+    // stays clickable. We do this on every animation frame until the modal
+    // is gone or the test ends.
+    await context.addInitScript(() => {
+        const removeModal = () => {
+            const m = document.getElementById('setupWizardModal');
+            if (m && m.parentNode) m.parentNode.removeChild(m);
+        };
+        // First remove before app.js runs.
+        if (document.readyState === 'loading') {
+            document.addEventListener('DOMContentLoaded', removeModal, { once: true });
+        } else {
+            removeModal();
+        }
+        // Then keep removing every 50ms in case app.js injects it later.
+        setInterval(removeModal, 50);
+    });
 });
 
 test.describe('data-density variant', () => {

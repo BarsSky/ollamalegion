@@ -338,6 +338,25 @@ NVML_ENABLED=true
                     └──────────────────┘
 ```
 
+### 📊 Метрики: poller vs agent
+
+Для `BackendType=llama_cpp` (cppworker) сбор метрик разделён на два механизма:
+
+- **`llamaCppMetricsPoller`** (внутри балансировщика) — опрашивает `GET /api/models` каждые 30 сек (или 2 сек при loading). Даёт список загруженных моделей и прогресс загрузки. **Не** собирает GPU/CPU/RAM (не имеет NVML).
+- **Agent sidecar** (`cmd/agent` + `LlamaCollector`) — отдельный контейнер рядом с cppworker. Собирает NVML GPU metrics, CPU/RAM хоста, `requests_per_second` через `exec.Command("nvidia-smi")` (Windows) или NVML (Linux).
+
+**Без agent'а** на UI будут видны `LoadedModels`, но `GPU Usage`, `VRAM Used`, `CPU`, `RAM` будут нулями. Это **by design**, не баг — poller не имеет доступа к железу cppworker'а. Для live-метрик разверните agent:
+
+```bash
+# Sidecar к существующему балансировщику
+cd deployments && docker compose -f docker-compose.cppworker-with-agent.yml up -d --build
+
+# Или standalone (balancer + webui + cppworker + agent в одном стеке)
+cd deployments && docker compose -f docker-compose.cppworker-with-agent.standalone.yml up -d --build
+```
+
+📖 **Подробная архитектура, troubleshooting, сводная таблица «что откуда берётся»:** [`docs/cppworker-metrics-collection.md`](docs/cppworker-metrics-collection.md).
+
 ---
 
 ## 📋 Примеры использования
@@ -491,6 +510,7 @@ ollama-loadbalancer/
 - 🤖 [Развертывание агента (CPU/GPU)](docs/agent-deployment.md)
 - 📡 [API документация](docs/api.md)
 - 🔧 [Troubleshooting](docs/troubleshooting.md)
+- 📊 [Архитектура метрик cppworker (poller vs agent)](docs/cppworker-metrics-collection.md)
 - 🗺 [Roadmap (R-1…R-7)](plans/README.md)
 - 📋 [Финальный аудит-отчёт](docs/audit-2026-06.md)
 

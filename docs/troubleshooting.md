@@ -1,7 +1,7 @@
 # Troubleshooting OllamaLegion
 
-> **Версия:** 3.0 (2026-06-22) — переписан под актуальный код  
-> **Связанные документы:** [`runbook-tools.md`](runbook-tools.md) — детальный runbook для tools/tool_calls, [`cppworker-model-params.md`](cppworker-model-params.md) — n_ctx/Per-Model Profiles, [`audit-2026-06.md`](audit-2026-06.md), [`../.clinerules`](../.clinerules)
+> **Версия:** 3.1 (2026-06-29) — добавлена §10 «Live metrics = 0 для cppworker backend» + ссылка на [`cppworker-metrics-collection.md`](cppworker-metrics-collection.md)  
+> **Связанные документы:** [`runbook-tools.md`](runbook-tools.md) — детальный runbook для tools/tool_calls, [`cppworker-model-params.md`](cppworker-model-params.md) — n_ctx/Per-Model Profiles, [`cppworker-metrics-collection.md`](cppworker-metrics-collection.md) — архитектура метрик, [`audit-2026-06.md`](audit-2026-06.md), [`../.clinerules`](../.clinerules)
 
 ## Содержание
 
@@ -14,7 +14,9 @@
 7. [TransferEncodingError при streaming](#7-transferencodingerror-при-streaming)
 8. [Проблемы с NVIDIA Container Toolkit](#8-проблемы-с-nvidia-container-toolkit)
 9. [Agent → Ollama: ограничения](#9-agent--ollama-ограничения)
-10. [Логирование и отладка](#10-логирование-и-отладка)
+10. [Live metrics = 0 для cppworker backend](#10-live-metrics--0-для-cppworker-backend)
+11. [Логирование и отладка](#11-логирование-и-отладка)
+12. [Связанные документы](#12-связанные-документы)
 
 ---
 
@@ -390,9 +392,43 @@ Ollama **не имеет публичного REST API** для изменени
 
 ---
 
-## 10. Логирование и отладка
+## 10. Live metrics = 0 для cppworker backend
 
-### 10.1 Уровни логов
+> **Это ожидаемое поведение poller'а, не баг.** Подробная архитектура: [`cppworker-metrics-collection.md`](cppworker-metrics-collection.md).
+
+**Симптом:** на вкладках Dashboard / Backends / Models / GGUF Models у `cppworker-gpu` бэкенда видно `GPU Usage: 0%`, `VRAM Used: 0 MB`, `CPU: 0%`, `RAM: 0 MB`. Список загруженных моделей (LoadedModels) **может** при этом заполняться.
+
+**Корневая причина:** poller в балансировщике (`internal/balancer/llamacpp_metrics_poller.go`) собирает **только** `GET /api/models` и `GET /api/models/load/progress`. Он не имеет NVML-доступа к GPU cppworker'а, не снимает CPU/RAM с хоста cppworker'а и не публикует `requests_per_second`. Для live-метрик нужен **agent sidecar**.
+
+**Быстрая диагностика:**
+
+```bash
+# 1. Проверить, есть ли agent у бэкенда
+curl -H "X-API-Token: $LB_TOKEN" http://localhost:18081/api/v1/backends | \
+  jq '.backends[] | select(.id | contains("cppworker")) | {id, type, hasAgent}'
+# Если hasAgent=false — agent не запущен, см. ниже.
+
+# 2. Если hasAgent=true, но метрики 0:
+docker exec <agent-container> nvidia-smi
+# Если "command not found" — образ собран без nvidia-container-toolkit.
+```
+
+**Решение:** развернуть agent рядом с cppworker:
+
+| Сценарий | Compose |
+|---|---|
+| Sidecar к существующему балансеру | `deployments/docker-compose.cppworker-with-agent.yml` |
+| Standalone (всё-в-одном) | `deployments/docker-compose.cppworker-with-agent.standalone.yml` |
+
+Подробнее про архитектуру poller vs agent, legacy `BackendType=""` и все сценарии troubleshooting — в [`cppworker-metrics-collection.md`](cppworker-metrics-collection.md).
+
+**NB:** poller **не** трогать (`llamacpp_metrics_poller.go` — read-only). Это намеренное разделение ответственности: poller для моделей, agent для железа.
+
+---
+
+## 11. Логирование и отладка
+
+### 11.1 Уровни логов
 
 | ENV | Уровень |
 |---|---|
@@ -401,14 +437,14 @@ Ollama **не имеет публичного REST API** для изменени
 | `LOG_LEVEL=warn` | только warnings |
 | `LOG_LEVEL=error` | только ошибки |
 
-### 10.2 Формат
+### 11.2 Формат
 
 | ENV | Формат |
 |---|---|
 | `LOG_FORMAT=json` (default) | структурированный JSON |
 | `LOG_FORMAT=text` | человекочитаемый |
 
-### 10.3 Просмотр логов
+### 11.3 Просмотр логов
 
 ```bash
 # Балансировщик
@@ -421,7 +457,7 @@ docker logs -f deployments-cppworker-gpu-1 2>&1 | grep -E "clamping|RAM fallback
 docker logs -f deployments-loadbalancer-1 2>&1 | Select-String "tools|chat_id|stream|/v1/chat"
 ```
 
-### 10.4 NVML отладка (Linux)
+### 11.4 NVML отладка (Linux)
 
 ```bash
 # Проверить nvidia-smi в агенте
@@ -431,7 +467,7 @@ docker exec deployments-agent-gpu-1 nvidia-smi
 docker exec deployments-agent-gpu-1 sh -c 'NVML_DEBUG=1 ./agent'
 ```
 
-### 10.5 Полезные ENV для дебага
+### 11.5 Полезные ENV для дебага
 
 ```bash
 # Балансировщик
@@ -444,10 +480,11 @@ CPPWORKER_VERBOSE=true
 
 ---
 
-## 11. Связанные документы
+## 12. Связанные документы
 
 - [`runbook-tools.md`](runbook-tools.md) — **детальный пошаговый runbook для tools/tool_calls** (сценарии A-E).
 - [`cppworker-model-params.md`](cppworker-model-params.md) — n_ctx + Per-Model Profiles.
+- [`cppworker-metrics-collection.md`](cppworker-metrics-collection.md) — **архитектура сбора метрик cppworker: poller vs agent**.
 - [`agent-deployment.md`](agent-deployment.md) — развёртывание агента.
 - [`installation.md`](installation.md) — установка.
 - [`audit-2026-06.md`](audit-2026-06.md) — статус реализации.

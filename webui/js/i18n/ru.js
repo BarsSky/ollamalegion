@@ -374,6 +374,8 @@ window.I18N_RU = {
   "settings.agent.timeout": "Таймаут агента (сек)",
 
   // Monitor
+  "monitor.sparkline.empty": "Метрики ещё собираются…",
+  "monitor.sparkline.trend": "{metric}: мин {min}% / макс {max}% / текущее {current}%",
   "monitor.status.live": "Загружен",
   "monitor.status.offline": "Перегружен",
   "monitor.status.demo": "Демо",

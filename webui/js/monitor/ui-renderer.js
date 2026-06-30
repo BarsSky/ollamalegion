@@ -353,7 +353,15 @@
       }).filter(function(v) { return v > 0; });
       var avg = vals.length ? vals.reduce(function(a, b) { return a + b; }, 0) / vals.length : 0;
       var max = vals.length ? Math.max.apply(null, vals) : 0;
-      return '<div class="capacity-card"><h4>' + MA.esc(m.label) + '</h4><div class="capacity-bar"><div class="bar-track-wide"><div class="bar-fill-wide" style="width:' + avg + '%;background:' + m.color + '"></div></div><span class="capacity-val">avg ' + avg.toFixed(0) + m.unit + '</span></div><div class="capacity-bar"><div class="bar-track-wide"><div class="bar-fill-wide" style="width:' + max + '%;background:' + m.color + ';opacity:0.5"></div></div><span class="capacity-val">max ' + max.toFixed(0) + m.unit + '</span></div></div>';
+      var slKey = m.key === 'system' ? (m.useFlatKey ? 'ram' : 'cpu') : m.key;
+      var clusterSl = '';
+      if (window.Sparkline) {
+        try {
+          var avgVal = avg, maxVal = max;
+          clusterSl = '<div class="sl-cluster-cell" style="margin-top:4px">' + window.Sparkline.renderCluster(slKey, avgVal, maxVal, m.color) + '</div>';
+        } catch (e) { clusterSl = ''; }
+      }
+      return '<div class="capacity-card"><h4>' + MA.esc(m.label) + '</h4><div class="capacity-bar"><div class="bar-track-wide"><div class="bar-fill-wide" style="width:' + avg + '%;background:' + m.color + '"></div></div><span class="capacity-val">avg ' + avg.toFixed(0) + m.unit + '</span></div><div class="capacity-bar"><div class="bar-track-wide"><div class="bar-fill-wide" style="width:' + max + '%;background:' + m.color + ';opacity:0.5"></div></div><span class="capacity-val">max ' + max.toFixed(0) + m.unit + '</span></div>' + clusterSl + '</div>';
     }).join('') +
       '<div class="capacity-card"><h4>' + T('monitor.capacity.freeSlots') + '</h4>' +
       bk.map(function(b) {
@@ -501,7 +509,16 @@
       } else if (btType === 'ollama' || !btType) {
         typeBadge = ' <span class="badge" style="background:#1a73e820;border:1px solid #1a73e8;color:#1a73e8;font-size:10px;padding:0 4px;border-radius:3px">🦙 Ollama</span>';
       }
-      return '<tr data-backend-type="' + MA.esc(btType) + '"><td><strong>' + MA.esc(b.id) + '</strong>' + typeBadge + '</td><td><span class="badge ' + scs + '">' + b.status + '</span></td><td>' + MA.bar(gu) + ' ' + gu.toFixed(0) + '%' + gpuHidden + '</td><td>' + MA.bar(vu) + ' ' + vu.toFixed(0) + '%</td><td title="' + cpuHint + '">' + MA.bar(cu) + ' ' + cu.toFixed(0) + '%</td><td>' + MA.bar(ru) + ' ' + ru.toFixed(0) + '%</td><td class="col-right">' + a + '/' + mr + '</td><td class="col-right">' + (rps > 0 ? rps.toFixed(1) : '-') + '</td><td class="col-right">' + avgRT + '</td><td class="col-right">' + reqCap + '</td><td class="col-right">' + sc + '</td><td style="font-size:11px">' + loadingCell + '</td><td>' + (b.models || []).slice(0, 3).map(function(m) { return '<span class="badge" style="background:rgba(168,85,247,0.12);color:var(--purple-accent);border-color:rgba(168,85,247,0.2)">' + MA.esc(m) + '</span>'; }).join(' ') + '</td><td class="col-right">' + up + '</td></tr>';
+// Sparkline helper: record + render per backend (no-op if Sparkline not loaded).
+      function sl(bid, key, color) {
+        if (!window.Sparkline) return '';
+        try {
+          var avgRTraw = (b.ollama && b.ollama.avgResponseTime != null) ? b.ollama.avgResponseTime : 0;
+          window.Sparkline.recordMetricsHistory(bid, { gpu: gu, vram: vu, cpu: cu, ram: ru, rps: rps, avgRt: avgRTraw });
+          return window.Sparkline.render(bid, key, color);
+        } catch (e) { return ''; }
+      }
+      return '<tr data-backend-type="' + MA.esc(btType) + '"><td><strong>' + MA.esc(b.id) + '</strong>' + typeBadge + '</td><td><span class="badge ' + scs + '">' + b.status + '</span></td><td>' + MA.bar(gu) + ' ' + gu.toFixed(0) + '%' + gpuHidden + '<div class="sl-cell">' + sl(b.id, 'gpu', 'var(--accent)') + '</div></td><td>' + MA.bar(vu) + ' ' + vu.toFixed(0) + '%<div class="sl-cell">' + sl(b.id, 'vram', 'var(--purple-accent)') + '</div></td><td title="' + cpuHint + '">' + MA.bar(cu) + ' ' + cu.toFixed(0) + '%<div class="sl-cell">' + sl(b.id, 'cpu', 'var(--success)') + '</div></td><td>' + MA.bar(ru) + ' ' + ru.toFixed(0) + '%<div class="sl-cell">' + sl(b.id, 'ram', 'var(--warning)') + '</div></td><td class="col-right">' + a + '/' + mr + '</td><td class="col-right">' + (rps > 0 ? rps.toFixed(1) : '-') + '<div class="sl-cell">' + sl(b.id, 'rps', 'var(--info)') + '</div></td><td class="col-right">' + avgRT + '<div class="sl-cell">' + sl(b.id, 'avgRt', 'var(--text-secondary)') + '</div></td><td class="col-right">' + reqCap + '</td><td class="col-right">' + sc + '</td><td style="font-size:11px">' + loadingCell + '</td><td>' + (b.models || []).slice(0, 3).map(function(m) { return '<span class="badge" style="background:rgba(168,85,247,0.12);color:var(--purple-accent);border-color:rgba(168,85,247,0.2)">' + MA.esc(m) + '</span>'; }).join(' ') + '</td><td class="col-right">' + up + '</td></tr>';
     }).join('');
   }
 

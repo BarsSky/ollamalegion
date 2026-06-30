@@ -105,6 +105,10 @@
   setTimeout(function() { if (typeof window.updateMonitorTexts === 'function') window.updateMonitorTexts(); }, 500);
 
   MA.timerId = setInterval(window.fetchAllSafe, MA.refreshInterval);
+  // A.2: отдельный sparkline-поллер (5s) — не нагружает основной 2s цикл UI.
+  if (window.Sparkline && typeof window.Sparkline.startPoller === 'function') {
+    window.Sparkline.startPoller();
+  }
   anim();
   if (typeof window.fetchAll === 'function') window.fetchAll();
 })();

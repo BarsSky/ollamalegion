@@ -297,6 +297,8 @@ window.I18N_EN = {
   "settings.dist_inference_grpc_port": "gRPC Port",
 
   // Monitor
+  "monitor.sparkline.empty": "Metrics are still being collected…",
+  "monitor.sparkline.trend": "{metric}: min {min}% / max {max}% / current {current}%",
   "monitor.status.live": "Live",
   "monitor.status.offline": "Offline",
   "monitor.status.demo": "Demo",

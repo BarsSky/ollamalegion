@@ -606,3 +606,61 @@
 .agent-logs-content .log-level-info  { color: var(--info); }
 .agent-logs-content .log-level-warn  { color: var(--warning); }
 .agent-logs-content .log-level-error { color: var(--danger); }
+/* === Sparkline (live trend) ============================================= */
+/* Q3=Q3_data-dense: live SVG sparkline для Monitor tables (A.2). */
+.sl-cell {
+  display: block;
+  margin-top: 2px;
+  min-height: 22px;
+  line-height: 0;
+}
+.sl-cluster-cell {
+  display: block;
+  margin-top: 4px;
+  line-height: 0;
+}
+.sparkline-container {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-family: var(--font-mono, monospace);
+  font-size: 10px;
+  color: var(--text-secondary);
+  cursor: default;
+}
+.sparkline-svg {
+  width: 60px;
+  height: 24px;
+  display: block;
+  overflow: visible;
+}
+.sparkline-path {
+  fill: none;
+  stroke-width: 1.5;
+  stroke-linejoin: round;
+  stroke-linecap: round;
+}
+.sparkline-area {
+  opacity: 0.15;
+  stroke: none;
+}
+.sparkline-label {
+  display: inline-block;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  min-width: 36px;
+  text-align: right;
+}
+.sparkline-empty {
+  opacity: 0.55;
+  font-style: italic;
+}
+.sparkline-label-empty {
+  color: var(--text-secondary);
+  font-weight: 400;
+}
+.sparkline-cluster {
+  width: 60px;
+  height: 24px;
+}
+/* === /Sparkline ========================================================= */

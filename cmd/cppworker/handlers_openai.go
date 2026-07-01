@@ -246,7 +246,14 @@ func handleV1ChatCompletions(w http.ResponseWriter, r *http.Request) {
 		params.TopP = float32(req.TopP)
 	}
 	if req.MaxTokens > 0 {
-		params.NPredict = req.MaxTokens
+		// 2026-07-01: для reasoning-моделей (qwen3.5, deepseek-r1, gemma-4) поднимаем
+		// дефолт n_predict до DefaultNPredictReasoning, иначе модель обрывает генерацию
+		// сразу после <think>...</think> (completion_tokens=0).
+		params.NPredict = ResolveNPredict(req.MaxTokens, req.Model)
+	} else {
+		// 2026-07-01: req.MaxTokens==0 → используем дефолт cppworker (2048), но для
+		// reasoning-моделей повышаем до DefaultNPredictReasoning (8192).
+		params.NPredict = ResolveNPredict(0, req.Model)
 	}
 	if req.Seed != 0 {
 		params.Seed = req.Seed
@@ -376,7 +383,20 @@ func handleV1ChatCompletions(w http.ResponseWriter, r *http.Request) {
 		message["content"] = nil
 		message["tool_calls"] = toolCalls
 	} else {
-		message["content"] = result.Output
+		// 2026-07-01: для reasoning-моделей (qwen3.5/qwen3.6/deepseek-r1/gemma-4)
+		// разделяем output на (reasoning_content, content). Это позволяет
+		// OpenWebUI/Cline отображать think-блок и видимый ответ раздельно.
+		if IsReasoningModel(req.Model) {
+			r, c, has := SplitReasoningContent(result.Output)
+			if has {
+				message["content"] = c
+				message["reasoning_content"] = r
+			} else {
+				message["content"] = result.Output
+			}
+		} else {
+			message["content"] = result.Output
+		}
 	}
 
 	finishReason := "stop"
@@ -594,6 +614,14 @@ func writeOpenAIChatStream(w http.ResponseWriter, r *http.Request, modelName, pr
 	// и OpenWebUI считал бы ответ пустым после done:true.
 	var outputBuf strings.Builder
 
+	// 2026-07-01: reasoning-парсер. Для reasoning-моделей (qwen3.5, deepseek-r1,
+	// gemma-4 и т.п.) разделяем токены на (reasoning, content) и эмитим
+	// отдельный `delta.reasoning_content` в SSE — это позволяет OpenWebUI/Cline
+	// корректно отображать think-блок и видимый ответ раздельно.
+	rsParser := NewReasoningStreamState()
+	rsIsReasoning := IsReasoningModel(modelName)
+	rsSentHeader := false
+
 	keepaliveWG.Add(1)
 	go func() {
 		defer keepaliveWG.Done()
@@ -621,6 +649,37 @@ func writeOpenAIChatStream(w http.ResponseWriter, r *http.Request, modelName, pr
 		keepaliveWG.Wait()
 	}()
 
+
+
+	// writeReasoningChunk — низкоуровневый helper, эмитит ОДИН SSE чанк с указанным
+	// delta (map[string]interface{}). Возвращает false при обрыве клиента / writer broken.
+	writeReasoningChunk := func(delta map[string]interface{}) bool {
+		if sw.IsBroken() {
+			return false
+		}
+		chunk := map[string]interface{}{
+			"id":      chatID,
+			"object":  "chat.completion.chunk",
+			"created": created,
+			"model":   modelName,
+			"choices": []map[string]interface{}{
+				{
+					"index":         0,
+					"delta":         delta,
+					"finish_reason": nil,
+				},
+			},
+		}
+		jsonData, _ := json.Marshal(chunk)
+		if !sw.Writef("data: %s\n\n", jsonData) {
+			return false
+		}
+		if !sw.Flush() {
+			return false
+		}
+		return true
+	}
+
 	callback := func(token string) bool {
 		// Безопасная проверка: если контекст отвалился или writer сломан —
 		// прекращаем генерацию (callback должен вернуть false).
@@ -635,27 +694,46 @@ func writeOpenAIChatStream(w http.ResponseWriter, r *http.Request, modelName, pr
 		// Накапливаем output для финального чанка.
 		outputBuf.WriteString(token)
 
-		chunk := map[string]interface{}{
-			"id":      chatID,
-			"object":  "chat.completion.chunk",
-			"created": created,
-			"model":   modelName,
-			"choices": []map[string]interface{}{
-				{
-					"index": 0,
-					"delta": map[string]string{
-						"role":    "assistant",
-						"content": token,
-					},
-					"finish_reason": nil,
-				},
-			},
+		// 2026-07-01: reasoning-парсер — разделяем токены на (reasoning, content)
+		// для reasoning-моделей (qwen3.5/qwen3.6/deepseek-r1/gemma-4/...). Эмитим
+		// отдельный `delta.reasoning_content` в SSE, что позволяет OpenWebUI/Cline
+		// корректно отображать think-блок и видимый ответ раздельно.
+		if rsIsReasoning {
+			reasoningDelta, contentDelta := rsParser.Feed(token)
+
+			// Header-chunk: первый чанк содержит role=assistant. Отправляется ОДИН раз
+			// до первого reasoning/content delta. Это упрощает клиент-парсер.
+			if !rsSentHeader {
+				rsSentHeader = true
+				if !writeReasoningChunk(map[string]interface{}{"role": "assistant"}) {
+					return false
+				}
+			}
+
+			ok := true
+			// Сначала отправляем reasoning_delta (если есть), затем content_delta.
+			// Каждый — отдельный SSE чанк с одним непустым полем.
+			if reasoningDelta != "" {
+				if !writeReasoningChunk(map[string]interface{}{"reasoning_content": reasoningDelta}) {
+					ok = false
+				}
+			}
+			if ok && contentDelta != "" {
+				if !writeReasoningChunk(map[string]interface{}{"content": contentDelta}) {
+					ok = false
+				}
+			}
+			// Каждый входной token = 1 токен генерации, независимо от того, на какие
+			// части он был разделён.
+			sw.IncTokens(1)
+			return ok
 		}
-		jsonData, _ := json.Marshal(chunk)
-		if !sw.Writef("data: %s\n\n", jsonData) {
-			return false // client disconnected
+
+		// Non-reasoning путь: legacy-логика с одним SSE чанком и content=token.
+		delta := map[string]interface{}{"role": "assistant", "content": token}
+		if !writeReasoningChunk(delta) {
+			return false
 		}
-		sw.Flush()
 		sw.IncTokens(1)
 		return true
 	}
@@ -848,7 +926,14 @@ func handleV1Completions(w http.ResponseWriter, r *http.Request) {
 		params.TopP = float32(req.TopP)
 	}
 	if req.MaxTokens > 0 {
-		params.NPredict = req.MaxTokens
+		// 2026-07-01: для reasoning-моделей (qwen3.5, deepseek-r1, gemma-4) поднимаем
+		// дефолт n_predict до DefaultNPredictReasoning, иначе модель обрывает генерацию
+		// сразу после <think>...</think> (completion_tokens=0).
+		params.NPredict = ResolveNPredict(req.MaxTokens, req.Model)
+	} else {
+		// 2026-07-01: req.MaxTokens==0 → дефолт cppworker (2048), для reasoning-моделей
+		// повышаем до DefaultNPredictReasoning (8192).
+		params.NPredict = ResolveNPredict(0, req.Model)
 	}
 	if req.PresencePenalty > 0 {
 		params.PresencePenalty = float32(req.PresencePenalty)
@@ -894,14 +979,27 @@ func handleV1Completions(w http.ResponseWriter, r *http.Request) {
 	}
 	durationMs := time.Since(start).Milliseconds()
 
-	writeJSON(w, http.StatusOK, map[string]interface{}{
+	// 2026-07-01: для reasoning-моделей (qwen3.5/qwen3.6/deepseek-r1/gemma-4)
+	// разделяем output на (reasoning_content, text) на верхнем уровне ответа.
+	// Это позволяет OpenWebUI/Cline отображать think-блок и видимый ответ раздельно.
+	textValue := result.Output
+	reasoningValue := ""
+	if IsReasoningModel(req.Model) {
+		r, c, has := SplitReasoningContent(result.Output)
+		if has {
+			textValue = c
+			reasoningValue = r
+		}
+	}
+
+	resp := map[string]interface{}{
 		"id":      fmt.Sprintf("cmpl-%d", time.Now().UnixNano()),
 		"object":  "text_completion",
 		"created": time.Now().Unix(),
 		"model":   req.Model,
 		"choices": []map[string]interface{}{
 			{
-				"text":          result.Output,
+				"text":          textValue,
 				"index":         0,
 				"finish_reason": "stop",
 			},
@@ -912,7 +1010,11 @@ func handleV1Completions(w http.ResponseWriter, r *http.Request) {
 			"total_tokens":      0,
 		},
 		"duration_ms": durationMs,
-	})
+	}
+	if reasoningValue != "" {
+		resp["reasoning_content"] = reasoningValue
+	}
+	writeJSON(w, http.StatusOK, resp)
 }
 
 // writeOpenAICompletionStream — streaming ответ в формате SSE для /v1/completions.
@@ -922,6 +1024,17 @@ func handleV1Completions(w http.ResponseWriter, r *http.Request) {
 // (после доработки семантики OpenAI-compatible) видит ДУБЛЬ: N чанков с
 // токенами + ещё один с ПОЛНЫМ text. Предыдущая версия шла "open" на спорное
 // поведение OpenWebUI; текущий фикс выровнен с /v1/chat/completions.
+// writeOpenAICompletionStream — streaming ответ в формате SSE для /v1/completions.
+//
+// 2026-06-29: токены стримятся инкрементально в callback (ниже). Финальный
+// чанк содержит ТОЛЬКО finish_reason="stop" с пустым text — иначе клиент
+// (после доработки семантики OpenAI-compatible) видит ДУБЛЬ: N чанков с
+// токенами + ещё один с ПОЛНЫМ text. Предыдущая версия шла "open" на спорное
+// поведение OpenWebUI; текущий фикс выровнен с /v1/chat/completions.
+//
+// 2026-07-01: для reasoning-моделей (qwen3.5/qwen3.6/deepseek-r1/gemma-4)
+// эмитим отдельный `reasoning_content` (если есть) и `text` (если есть) в
+// каждом SSE-чанке, аналогично writeOpenAIChatStream.
 func writeOpenAICompletionStream(w http.ResponseWriter, r *http.Request, modelName, prompt string, params bridge.GenerationParams) {
 	flusher, ok := w.(http.Flusher)
 	if !ok {
@@ -955,6 +1068,38 @@ func writeOpenAICompletionStream(w http.ResponseWriter, r *http.Request, modelNa
 	// Накапливаем полный output параллельно для финального чанка.
 	var outputBuf strings.Builder
 
+	// 2026-07-01: reasoning-парсер (по аналогии с writeOpenAIChatStream).
+	rcParser := NewReasoningStreamState()
+	rcIsReasoning := IsReasoningModel(modelName)
+
+	// writeCompletionChunk — низкоуровневый helper, эмитит ОДИН SSE чанк с указанным
+	// полями (text + опционально reasoning_content). Возвращает false при обрыве.
+	writeCompletionChunk := func(text, reasoning string) bool {
+		if text == "" && reasoning == "" {
+			return true
+		}
+		choice := map[string]interface{}{"index": 0, "finish_reason": nil}
+		if text != "" {
+			choice["text"] = text
+		}
+		if reasoning != "" {
+			choice["reasoning_content"] = reasoning
+		}
+		chunk := map[string]interface{}{
+			"id":      completionID,
+			"object":  "text_completion",
+			"created": created,
+			"model":   modelName,
+			"choices": []map[string]interface{}{choice},
+		}
+		jsonData, _ := json.Marshal(chunk)
+		if _, err := fmt.Fprintf(w, "data: %s\n\n", jsonData); err != nil {
+			return false
+		}
+		flusher.Flush()
+		return true
+	}
+
 	callback := func(token string) bool {
 		select {
 		case <-ctx.Done():
@@ -963,23 +1108,14 @@ func writeOpenAICompletionStream(w http.ResponseWriter, r *http.Request, modelNa
 		}
 		outputBuf.WriteString(token)
 
-		chunk := map[string]interface{}{
-			"id":      completionID,
-			"object":  "text_completion",
-			"created": created,
-			"model":   modelName,
-			"choices": []map[string]interface{}{
-				{
-					"text":          token,
-					"index":         0,
-					"finish_reason": nil,
-				},
-			},
+		// 2026-07-01: reasoning-парсер — для reasoning-моделей разделяем токен на
+		// (reasoning, text) и эмитим отдельный `reasoning_content` в SSE.
+		if rcIsReasoning {
+			reasoningDelta, textDelta := rcParser.Feed(token)
+			return writeCompletionChunk(textDelta, reasoningDelta)
 		}
-		jsonData, _ := json.Marshal(chunk)
-		fmt.Fprintf(w, "data: %s\n\n", jsonData)
-		flusher.Flush()
-		return true
+
+		return writeCompletionChunk(token, "")
 	}
 	// writeOpenAICompletionStream — /v1/completions, tools не поддерживаются.
 	streamErr = generateStreamWithRamFallback(modelName, prompt, params, callback, false)

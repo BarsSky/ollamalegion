@@ -23,6 +23,11 @@ type chatMessage struct {
 	ToolCalls  []openAIToolCall `json:"tool_calls,omitempty"`
 	ToolCallID string           `json:"tool_call_id,omitempty"`
 	Name       string           `json:"name,omitempty"`
+	// 2026-07-01: reasoning-контент для reasoning-моделей (qwen3.5, deepseek-r1,
+	// gemma-4 и т.п.). В OpenAI-совместимом формате называется `reasoning_content`,
+	// в Ollama — `reasoning`. Используется при non-streaming ответе, чтобы клиенты
+	// могли отображать think-блок и видимый ответ раздельно.
+	Reasoning string `json:"reasoning,omitempty"`
 }
 
 type chatRequest struct {
@@ -182,6 +187,15 @@ func handleChat(w http.ResponseWriter, r *http.Request) {
 		if calls := parseToolCallsFromOutput(result.Output); len(calls) > 0 {
 			resp.Message.ToolCalls = calls
 			resp.Message.Content = ""
+		}
+	} else if IsReasoningModel(req.Model) {
+		// 2026-07-01: для reasoning-моделей (qwen3.5/qwen3.6/deepseek-r1/gemma-4)
+		// разделяем output на (reasoning, content) и кладём в отдельные поля
+		// (Ollama API использует `reasoning`, OpenAI — `reasoning_content`).
+		r, c, has := SplitReasoningContent(result.Output)
+		if has {
+			resp.Message.Content = c
+			resp.Message.Reasoning = r
 		}
 	}
 	writeJSON(w, http.StatusOK, resp)
@@ -368,6 +382,10 @@ func writeChatStreamResponse(w http.ResponseWriter, r *http.Request, modelName, 
 		recordLastPromptFromError(modelName, "/api/chat", prompt, &params, false, streamErr)
 	}()
 
+	// 2026-07-01: reasoning-парсер (для reasoning-моделей).
+	rcParser := NewReasoningStreamState()
+	rcIsReasoning := IsReasoningModel(modelName)
+
 	callback := func(token string) bool {
 		select {
 		case <-ctx.Done():
@@ -375,6 +393,42 @@ func writeChatStreamResponse(w http.ResponseWriter, r *http.Request, modelName, 
 		default:
 		}
 		outputBuf.WriteString(token)
+
+		// 2026-07-01: для reasoning-моделей делим токен на (reasoning, content) и
+		// эмитим НЕЗАВИСИМЫЕ NDJSON-чанки с message.reasoning / message.content.
+		if rcIsReasoning {
+			reasoningDelta, contentDelta := rcParser.Feed(token)
+			if reasoningDelta != "" {
+				rcChunk := map[string]interface{}{
+					"model":      modelName,
+					"created_at": createdAt,
+					"message": map[string]interface{}{
+						"role":      "assistant",
+						"reasoning": reasoningDelta,
+					},
+					"done": false,
+				}
+				rcJSON, _ := json.Marshal(rcChunk)
+				fmt.Fprintf(w, "%s\n", rcJSON)
+				flusher.Flush()
+			}
+			if contentDelta != "" {
+				ccChunk := map[string]interface{}{
+					"model":      modelName,
+					"created_at": createdAt,
+					"message": map[string]string{
+						"role":    "assistant",
+						"content": contentDelta,
+					},
+					"done": false,
+				}
+				ccJSON, _ := json.Marshal(ccChunk)
+				fmt.Fprintf(w, "%s\n", ccJSON)
+				flusher.Flush()
+			}
+			return true
+		}
+
 		chunk := map[string]interface{}{
 			"model":      modelName,
 			"created_at": createdAt,

@@ -470,9 +470,24 @@ func handleOllamaGenerate(w http.ResponseWriter, r *http.Request) {
 	}
 	duration := time.Since(start)
 	tokens := countTokens(modelName, result.Output)
-	writeJSON(w, http.StatusOK, map[string]interface{}{
+
+	// 2026-07-01: для reasoning-моделей (qwen3.5/qwen3.6/deepseek-r1/gemma-4)
+	// разделяем output на (reasoning, response) и кладём в отдельные поля.
+	// Ollama API использует `thinking` (не `reasoning`!), OpenAI — `reasoning_content`.
+	// Здесь используем `thinking` для совместимости с Ollama-клиентами (Cline/OpenWebUI).
+	response := result.Output
+	thinking := ""
+	if IsReasoningModel(modelName) {
+		r, c, has := SplitReasoningContent(result.Output)
+		if has {
+			response = c
+			thinking = r
+		}
+	}
+
+	resp := map[string]interface{}{
 		"model":                modelName,
-		"response":             result.Output,
+		"response":             response,
 		"done":                 true,
 		"context":              []int{},
 		"total_duration":       duration.Microseconds() * 1000,
@@ -481,7 +496,11 @@ func handleOllamaGenerate(w http.ResponseWriter, r *http.Request) {
 		"prompt_eval_duration": duration.Microseconds() * 1000,
 		"eval_count":           tokens,
 		"eval_duration":        duration.Microseconds() * 1000,
-	})
+	}
+	if thinking != "" {
+		resp["thinking"] = thinking
+	}
+	writeJSON(w, http.StatusOK, resp)
 }
 
 func writeOllamaStream(w http.ResponseWriter, r *http.Request, modelName, prompt string, params bridge.GenerationParams) {
@@ -513,6 +532,10 @@ func writeOllamaStream(w http.ResponseWriter, r *http.Request, modelName, prompt
 	defer func() {
 		recordLastPromptFromError(modelName, "/api/ollama/generate", prompt, &params, false, streamErr)
 	}()
+	// 2026-07-01: reasoning-парсер (для reasoning-моделей).
+	ogParser := NewReasoningStreamState()
+	ogIsReasoning := IsReasoningModel(modelName)
+
 	callback := func(token string) bool {
 		select {
 		case <-r.Context().Done():
@@ -520,6 +543,23 @@ func writeOllamaStream(w http.ResponseWriter, r *http.Request, modelName, prompt
 		default:
 		}
 		outputBuf.WriteString(token)
+		if ogIsReasoning {
+			thinkingDelta, responseDelta := ogParser.Feed(token)
+			if thinkingDelta != "" {
+				tc := map[string]interface{}{"model": modelName, "thinking": thinkingDelta, "done": false}
+				tcJSON, _ := json.Marshal(tc)
+				fmt.Fprintf(w, "%s\n", tcJSON)
+				flusher.Flush()
+			}
+			if responseDelta != "" {
+				rc := map[string]interface{}{"model": modelName, "response": responseDelta, "done": false}
+				rcJSON, _ := json.Marshal(rc)
+				fmt.Fprintf(w, "%s\n", rcJSON)
+				flusher.Flush()
+			}
+			tokens++
+			return true
+		}
 		chunk := map[string]interface{}{"model": modelName, "response": token, "done": false}
 		jsonData, _ := json.Marshal(chunk)
 		fmt.Fprintf(w, "%s\n", jsonData)

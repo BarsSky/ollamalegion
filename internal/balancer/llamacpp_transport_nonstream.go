@@ -228,6 +228,7 @@ func (p *Proxy) proxyRequestLlamaCppNonStream(w http.ResponseWriter, r *http.Req
 	contentType := resp.Header.Get("Content-Type")
 	if strings.Contains(contentType, "text/event-stream") || bytes.HasPrefix(respBody, []byte("data:")) {
 		var fullContent string
+		var fullReasoning string // 2026-07-01: для reasoning-моделей собираем reasoning_content
 		var modelName = modelFromCtx
 		var finishReason = "stop"
 		toolAccum := make(map[int]*accumulatedToolCall)
@@ -253,6 +254,11 @@ func (p *Proxy) proxyRequestLlamaCppNonStream(w http.ResponseWriter, r *http.Req
 						accumulateToolCallsFromDelta(delta, toolAccum)
 						if c, ok := delta["content"].(string); ok {
 							fullContent += c
+						}
+						// 2026-07-01: reasoning-парсер (qwen3.5/qwen3.6/deepseek-r1/gemma-4).
+						// cppworker эмитит отдельный SSE-чанк с delta.reasoning_content, аккумулируем.
+						if r, ok := delta["reasoning_content"].(string); ok && r != "" {
+							fullReasoning += r
 						}
 					} else if msg, ok := choice["message"].(map[string]interface{}); ok {
 						if c, ok := msg["content"].(string); ok {
@@ -326,11 +332,20 @@ func (p *Proxy) proxyRequestLlamaCppNonStream(w http.ResponseWriter, r *http.Req
 				"done":        finishReason == "stop" || finishReason == "tool_calls",
 				"done_reason": finishReason,
 			}
+			// 2026-07-01: для reasoning-моделей (qwen3.5/qwen3.6/deepseek-r1/gemma-4) добавляем
+			// поле `thinking` (Ollama API) с накопленным reasoning_content.
+			if fullReasoning != "" {
+				resp["thinking"] = fullReasoning
+			}
 			ollamaBody, _ = json.Marshal(resp)
 		} else {
 			msgMap := map[string]interface{}{
 				"role":    "assistant",
 				"content": fullContent,
+			}
+			// 2026-07-01: для reasoning-моделей добавляем поле `reasoning` (Ollama API).
+			if fullReasoning != "" {
+				msgMap["reasoning"] = fullReasoning
 			}
 			// Добавляем накопленные tool_calls в финальный ответ
 			if len(toolAccum) > 0 {

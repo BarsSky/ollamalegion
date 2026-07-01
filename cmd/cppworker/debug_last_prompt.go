@@ -64,6 +64,17 @@ type LastPromptInfo struct {
 	PromptTail     string    `json:"prompt_tail"`
 	PromptLinesHint int      `json:"prompt_lines_hint"`
 	Error          string    `json:"error,omitempty"`
+	// 2026-07-01: reasoning-поля. Для reasoning-моделей (qwen3.5/qwen3.6/deepseek-r1/gemma-4)
+	// разделяем output на (reasoning, content) и фиксируем размеры в snapshot'е.
+	// Это помогает диагностировать случаи, когда модель сгенерировала много reasoning-токенов
+	// и упёрлась в n_predict.
+	ReasoningChars  int    `json:"reasoning_chars,omitempty"`
+	ContentChars    int    `json:"content_chars,omitempty"`
+	ReasoningHead   string `json:"reasoning_head,omitempty"`
+	ContentHead     string `json:"content_head,omitempty"`
+	ReasoningTail   string `json:"reasoning_tail,omitempty"`
+	ContentTail     string `json:"content_tail,omitempty"`
+	UnclosedThink   bool   `json:"unclosed_think,omitempty"` // true если модель не закрыла <think>
 }
 
 // lastPromptMu защищает lastPromptSnapshot от concurrent read/write.

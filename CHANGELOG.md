@@ -5,6 +5,115 @@
 Формат ведётся в соответствии с [Keep a Changelog](https://keepachangelog.com/ru/1.0.0/),
 и этот проект придерживается [Semantic Versioning](https://semver.org/lang/ru/).
 
+## [Unreleased — 2026-07-01]
+
+### Added (Reasoning content extraction для qwen3.5/qwen3.6/deepseek-r1/gemma-4)
+
+**Проблема (см. log_docker.txt, сессия 2026-06-30)**:
+qwen3.6-72B (MoE + SSM hybrid, 22 GB) успешно загружается в VRAM (20 GB) + mmap
+в RAM (0.27 GB) + KV-cache (0.64 GB) + SSM state (62 MB), но при первом же
+запросе с `num_ctx=32768` эмитит `<think>...</think>` (reasoning) и сразу
+останавливается (`completion_tokens: 0`). Причина: у reasoning-моделей
+дефолт `n_predict=2048` недостаточен для завершения thinking-блока + видимого
+ответа. Дополнительно: `<think>...</think>` блок занимал весь `delta.content`,
+и OpenWebUI/Cline показывал его пользователю как «пустой ответ».
+
+**Фикс** — двухуровневый:
+
+1. **Поднимаем `n_predict` для reasoning-моделей** (qwen3.5/qwen3.6/deepseek-r1/gemma-4)
+   через `ResolveNPredict(req.MaxTokens, req.Model)`. По умолчанию — 8192 токенов
+   (env `CPPWORKER_DEFAULT_N_PREDICT_REASONING`). Модель успевает завершить
+   `</think>` и сгенерировать ответ.
+
+2. **Извлекаем `reasoning_content` в отдельное поле** (DeepSeek API pattern):
+   - **OpenAI `/v1/chat/completions`**: `delta.reasoning_content` в SSE;
+     `message.reasoning_content` в non-stream.
+   - **OpenAI `/v1/completions`**: `reasoning_content` в choices[0] (SSE+non-stream).
+   - **Ollama `/api/chat`**: `message.reasoning` в JSON и `message.reasoning`
+     в NDJSON-чанках.
+   - **Ollama `/api/generate`**: `thinking` в JSON и `thinking` в NDJSON-чанках.
+
+   OpenWebUI/Cline получают раздельно think-блок и видимый ответ, и могут
+   показать thinking свёрнутым (как в DeepSeek Chat).
+
+**Что добавлено:**
+
+1. **`cmd/cppworker/reasoning_content.go`** (новый файл, ~330 LOC):
+   - `ReasoningArchPrefixes` — список reasoning-архитектур (qwen3.5, qwen3.6,
+     qwen35moe, qwen35, qwen3moe, qwen3, deepseek-r1, kimi-k2, gemma-4, seed-oss,
+     apriel, smallthinker, step3.5).
+   - `IsReasoningModel(modelName)` — case-insensitive substring check.
+   - `openThinkTag(s, from)` / `closeThinkTag(s, from, isThinking)` — поиск
+     `<think>`/`<thinking>` и `</think>`/`</thinking>` от позиции.
+   - `SplitReasoningContent(s)` — разделяет output на (reasoning, content).
+   - `ReasoningStreamState` — incremental O(N) парсер (новое состояние + буфер).
+   - `Snapshot()` — `ReasoningSnapshot{ReasoningChars, ContentChars, ...}`.
+   - `ResolveNPredict(nPredictFromRequest, modelName)` — env
+     `CPPWORKER_DEFAULT_N_PREDICT_REASONING` (default 8192).
+   - Env: `CPPWORKER_REASONING_ARCHS` (расширяет дефолтный список).
+
+2. **`cmd/cppworker/reasoning_content_test.go`** (новый, 25 unit-тестов, все PASS):
+   - 11 тестов `SplitReasoningContent` (empty, no-think, single-block, multi-block,
+     prefill, unclosed, alt-tag, only-think, only-think-no-close, realistic-qwen,
+     empty-think-body).
+   - 5 тестов `ReasoningStreamState` (whole-in-one-chunk, split-mid-tag,
+     progressive-content, think-then-content, concurrent-safe).
+   - 5 тестов `IsReasoningModel` / `ResolveNPredict` / `HeadTail` / `hasOpenThink`.
+
+3. **Интеграция в handlers cppworker**:
+   - `handlers_openai.go`:
+     - `writeOpenAIChatStream` — `rsParser.Feed(token) → reasoningDelta + contentDelta`
+       → два отдельных SSE-чанка с `delta.reasoning_content` / `delta.content`.
+     - `writeOpenAICompletionStream` — аналогично для `/v1/completions`.
+     - `handleV1ChatCompletions` (non-stream) — `message.reasoning_content`.
+     - `handleV1Completions` (non-stream) — `resp.reasoning_content`.
+     - `params.NPredict = ResolveNPredict(req.MaxTokens, req.Model)` в обоих
+       handlers.
+   - `handlers_chat.go`:
+     - `writeChatStreamResponse` — `rcParser.Feed(token)` → NDJSON с
+       `message.reasoning` / `message.content` (Ollama API).
+     - `handleChat` (non-stream) — `resp.Message.Reasoning` через
+       `SplitReasoningContent`.
+     - Структура `chatMessage` дополнена полем `Reasoning string`.
+   - `handlers_generate.go`:
+     - `writeOllamaStream` — `ogParser.Feed(token)` → NDJSON с
+       `thinking` / `response`.
+     - `handleOllamaGenerate` (non-stream) — `resp["thinking"]`.
+
+4. **Интеграция в balancer proxy** (`internal/balancer/llamacpp_transport_nonstream.go`):
+   - `fullReasoning` accumulator собирает `delta.reasoning_content` из SSE-чанков.
+   - Для `/api/chat` non-stream: добавляется поле `message.reasoning`.
+   - Для `/api/generate` non-stream: добавляется поле `thinking`.
+   - Streaming path (`llamacpp_transport.go`) прозрачно проксирует SSE-чанки
+     с `delta.reasoning_content` без изменений.
+
+5. **Debug snapshot** (`cmd/cppworker/debug_last_prompt.go`):
+   - `LastPromptInfo` дополнен полями `ReasoningChars, ContentChars,
+     ReasoningHead, ContentHead, ReasoningTail, ContentTail, UnclosedThink`.
+
+**Acceptance criteria:**
+
+- Запрос к qwen3.6 с `num_ctx=32768` → 200 OK с `completion_tokens > 0`,
+  `delta.reasoning_content` в SSE-потоке (или `message.reasoning_content` в
+  non-stream), OpenWebUI отображает think-блок свёрнутым.
+- Запрос к не-reasoning модели (gemma-3, llama-3) → поведение не изменилось,
+  `delta.content` / `message.content` работают как раньше.
+- Build OK: `go build -tags llama_stub ./cmd/cppworker + ./cmd/balancer`.
+- 25 unit-тестов в `cmd/cppworker/reasoning_content_test.go` PASS.
+- 24 теста в `internal/balancer/...` PASS (нет регрессий).
+- env `CPPWORKER_DEFAULT_N_PREDICT_REASONING=8192` (default), может быть
+  переопределён для отдельных моделей через `CPPWORKER_REASONING_ARCHS` (список
+  подстрок имён через запятую).
+
+**NB для пользователей Cline/OpenWebUI/Roo Code:**
+
+- В режиме streaming OpenWebUI/ChatBox видят think-блок как первый кусок
+  ответа (до `</think>`), затем видимый ответ. Это поведение DeepSeek API.
+- В режиме non-stream: `message.reasoning` (Ollama) или `message.reasoning_content`
+  (OpenAI) содержит полный think-блок. Клиенты могут показать его свёрнутым.
+- Если `n_predict=8192` недостаточно (qwen3.6 72B с длинной историей),
+  увеличьте через `CPPWORKER_DEFAULT_N_PREDICT_REASONING=16384`.
+
 ## [Unreleased — 2026-06-28h]
 
 ### Added (Roadmap Q3 — 7.1: GitHub Actions CI workflow) (0.5–1 день)

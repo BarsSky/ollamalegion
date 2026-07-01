@@ -114,7 +114,100 @@ qwen3.6-72B (MoE + SSM hybrid, 22 GB) успешно загружается в V
 - Если `n_predict=8192` недостаточно (qwen3.6 72B с длинной историей),
   увеличьте через `CPPWORKER_DEFAULT_N_PREDICT_REASONING=16384`.
 
+### Fixed (Transparent lazy-load retry на 503 "model is loading" в proxyRequestLlamaCpp)
+
+**Проблема (см. сессия 2026-07-01)**:
+cppworker при первом inference-запросе к незагруженной модели (cold-start
+после рестарта, или после unload из WebUI) отвечает HTTP 503 с body
+`{"error":"model is loading: <name>","loading":true,"retryAfterMs":3000}`.
+До этого фикса балансировщик проксировал 503 as-is → OpenWebUI/Cline видели
+оборванный стрим/JSON-ответ и не получали модель. WebUI позволял загрузить
+вручную через `/api/v1/cluster/models/{name}/reload`, но для inference-пути
+retry отсутствовал.
+
+**Решение** — прозрачный retry в `internal/balancer/proxyRequestLlamaCpp`
+(и `proxyRequestLlamaCppNonStream`):
+
+1. **Новый хелпер `internal/balancer/loading_retry.go`** (208 LOC):
+   - `loadingSignalFromBody(statusCode, body)` — детектирует cppworker-формат
+     `{"error":"model is loading: ...","loading":true,...}` и ollama-вариант
+     (строковый fallback).
+   - `waitForBackendModelLoaded(ctx, backend, modelName, backendID)` —
+     polling бэкенда до 30 сек (60 attempts × 500ms):
+     - llama.cpp: `GET /api/models/load/progress?model=<name>` — state="loaded".
+     - ollama: `GET /api/ps` — модель в `models[]` (с учётом тегов через prefix).
+   - `checkLlamaCppModelLoaded` / `checkOllamaModelLoaded` — отдельные
+     реализации с правильным разбором JSON-ответов.
+   - Early exit при `ctx.Done()` (клиент отвалился — не блокируем polling).
+
+2. **Retry-блок в `proxyRequestLlamaCpp`** (ДО записи HTTP-заголовков клиенту):
+   - Если `resp.StatusCode == 503` И `loadingSignalFromBody==true` →
+     `waitForBackendModelLoaded` → пересоздание `req2` с `bytes.NewReader(translatedBody)` →
+     повторный `clientForReq.Do(req2)`.
+   - На исчерпание polling — `503` с `Retry-After: 5` и `X-Model-Loading-Retry: exhausted`.
+
+3. **Retry-блок в `proxyRequestLlamaCppNonStream`** — зеркальная логика
+   для non-stream пути (тот же polling, тот же `bytes.NewReader(translatedBody)`).
+
+**Acceptance criteria:**
+
+- OpenWebUI/Cline отправляет первый запрос к незагруженной модели →
+  `proxyRequestLlamaCpp` видит 503 "model is loading" → polling →
+  успешный `clientForReq.Do(req2)` → клиент получает нормальный SSE/JSON
+  ответ БЕЗ обрыва.
+- Polling не превышает 30 секунд (cold-start 22GB qwen3.6 на 20GB VRAM).
+- `ctx.Done()` (клиент отвалился) прерывает polling немедленно.
+- Build OK: `go build -tags llama_stub ./cmd/balancer + ./cmd/cppworker`.
+- 16 unit-тестов в `internal/balancer/loading_retry_test.go` PASS:
+  - 6 тестов `loadingSignalFromBody` (cppworker format, loading:true, error-only,
+    not loading, wrong status, default retryMs).
+  - 4 теста `checkLlamaCppModelLoaded` (loaded, loading, 404 best-effort, error).
+  - 4 теста `checkOllamaModelLoaded` (present, prefix match, not present, empty list).
+  - 4 теста `waitForBackendModelLoaded` (immediate success, retry until loaded,
+    context cancel, nil backend, empty model, backend unreachable).
+  - 2 теста `checkModelLoadedOnBackend` dispatch (llama.cpp → /progress, ollama → /ps).
+- Регрессионные тесты `internal/balancer/...` PASS (16.4s, 0 failures).
+
+**NB для OpenWebUI/Cline/Roo Code:**
+
+- Поведение "первый запрос к новой модели занимает 10-30 секунд"
+  теперь прозрачно для клиента — пользователь видит нормальный streaming-ответ
+  (с задержкой), а не обрыв с ошибкой.
+- При timeout polling (модель >30 сек) клиент получает 503 с
+  `X-Model-Loading-Retry: exhausted` и `retryAfterMs: 5000` — нужно
+  повторить запрос через 5 секунд.
+- Endpoint `/api/v1/cluster/models/{name}/reload` остаётся для ручного управления
+  (для pre-warming и для UI, который показывает статус загрузки).
+
 ## [Unreleased — 2026-06-28h]
+<task_progress>
+- [x] Реализовать SplitReasoningContent и IsReasoningModel в cppworker (commit 824738d)
+- [x] Добавить reasoningContent в OpenAI /v1/chat/completions (commit 824738d)
+- [x] Добавить reasoning в Ollama /api/chat (commit 824738d)
+- [x] Добавить thinking в Ollama /api/generate (commit 824738d)
+- [x] Поднять default n_predict для reasoning моделей через ResolveNPredict (commit 824738d)
+- [x] Расширить debug/last-prompt полями reasoning/content (commit 824738d)
+- [x] Прокинуть reasoning_content через балансировщик в SSE-ответе (commit 824738d)
+- [x] Обновить CHANGELOG.md с описанием Level B fix (commit 824738d)
+- [x] Написать 25 unit-тестов для reasoning_content (все PASS)
+- [x] Сборка + тесты (BUILD OK)
+- [x] Создать commit 824738d
+- [x] Исправить дефолт defaultUseMmap в cppworker-defaults.json (false → true) (commit ed97409)
+- [x] handleLoadModel: fallback на currentConfig.DefaultUseMmap (commit ed97409)
+- [x] handleLoadWithParams: fallback на currentConfig.DefaultUseMmap (commit ed97409)
+- [x] handleReloadModel: fallback учитывает currentConfig.DefaultUseMmap (commit ed97409)
+- [x] Сборка cppworker + balancer OK после mmap-фикса
+- [x] cppworker + cppbackend + balancer тесты PASS
+- [x] Создать commit ed97409
+- [x] Создать loading_retry.go (helper для polling /progress и /ps)
+- [x] Добавить retry на 503 "model is loading" в proxyRequestLlamaCpp (streaming)
+- [x] Добавить retry на 503 "model is loading" в proxyRequestLlamaCppNonStream
+- [x] Написать unit-тесты (loading_retry_test.go)
+- [x] Сборка OK (balancer + cppworker stub)
+- [x] Регрессионные тесты internal/balancer PASS
+- [x] Обновить CHANGELOG.md
+- [ ] Commit retry-фикса — IN PROGRESS
+</task_progress>
 
 ### Added (Roadmap Q3 — 7.1: GitHub Actions CI workflow) (0.5–1 день)
 

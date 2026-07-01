@@ -137,6 +137,98 @@ func (p *Proxy) proxyRequestLlamaCppNonStream(w http.ResponseWriter, r *http.Req
 	}
 	defer resp.Body.Close()
 
+	// 2026-07-01: transparent lazy-load retry (см. loading_retry.go).
+	//
+	// cppworker при первом inference-запросе к незагруженной модели отвечает
+	// HTTP 503 с body {"error":"model is loading: <name>","loading":true,...}.
+	// Без retry OpenWebUI/Cline видел оборванный JSON-ответ. Теперь:
+	//   1. Читаем 503 body.
+	//   2. Если loading — polling /api/models/load/progress (llama.cpp) или
+	//      /api/ps (ollama) до 30 сек.
+	//   3. После успешного polling повторяем client.Do(req) с тем же body.
+	if resp.StatusCode == http.StatusServiceUnavailable {
+		loadingBody, readErr := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		if readErr != nil {
+			loadingBody = []byte(fmt.Sprintf(`{"error":"upstream read error: %v"}`, readErr))
+		}
+		isLoading, loadingModelName, _ := loadingSignalFromBody(resp.StatusCode, loadingBody)
+		if isLoading {
+			if loadingModelName == "" {
+				loadingModelName = modelFromCtx
+			}
+			logger.Get().Infow("proxyRequestLlamaCppNonStream: 503 'model is loading', polling for load completion",
+				"backend", backendID, "model", loadingModelName,
+				"duration_ms", time.Since(nonStreamStart).Milliseconds())
+
+			loaded, waitErr := p.waitForBackendModelLoaded(r.Context(), state.Backend, loadingModelName, backendID)
+			if waitErr != nil {
+				logger.Get().Warnw("proxyRequestLlamaCppNonStream: waitForBackendModelLoaded error",
+					"backend", backendID, "model", loadingModelName, "error", waitErr)
+			}
+			if loaded {
+				nonStreamAttempt++
+				// Пересоздаём req: body — это bytes.NewReader(translatedBody) (т.к. translateOllamaBodyToOpenAI выше).
+				req2, reqErr := http.NewRequestWithContext(r.Context(), r.Method, fullURL, bytes.NewReader(translatedBody))
+				if reqErr != nil {
+					return fmt.Errorf("failed to create retry request: %v", reqErr)
+				}
+				req2.Header.Set("Content-Type", "application/json")
+				req2.Header.Set("Accept", "application/json")
+				for key, values := range r.Header {
+					lowerKey := strings.ToLower(key)
+					if lowerKey == "content-type" || lowerKey == "accept" || lowerKey == "content-length" || lowerKey == "host" {
+						continue
+					}
+					for _, value := range values {
+						req2.Header.Add(key, value)
+					}
+				}
+				resp, err = client.Do(req2)
+				if err != nil {
+					durationMs := time.Since(nonStreamStart).Milliseconds()
+					errType := determineErrorType(err, r.Context())
+					logger.Get().Errorw("proxyRequestLlamaCppNonStream: upstream Do() failed after loading retry",
+						"backend", backendID, "model", modelFromCtx, "attempt", nonStreamAttempt,
+						"duration_ms", durationMs, "error_type", errType, "error", err)
+					if errType == "unexpected_eof" {
+						p.publishTransportEOF(backendID, modelFromCtx, originalPath, err, time.Duration(durationMs)*time.Millisecond)
+					}
+					return fmt.Errorf("llama.cpp request failed after load retry [backend=%s, attempt=%d, duration_ms=%d, error_type=%s]: %v",
+						backendID, nonStreamAttempt, durationMs, errType, err)
+				}
+				defer resp.Body.Close()
+				logger.Get().Infow("proxyRequestLlamaCppNonStream: retry after load successful",
+					"backend", backendID, "model", modelFromCtx,
+					"attempt", nonStreamAttempt, "duration_ms", time.Since(nonStreamStart).Milliseconds())
+			} else {
+				// Polling исчерпан — отдаём 503 клиенту с понятным сообщением.
+				logger.Get().Warnw("proxyRequestLlamaCppNonStream: load wait timeout, returning 503 to client",
+					"backend", backendID, "model", loadingModelName)
+				w.Header().Set("Content-Type", "application/json")
+				w.Header().Set("Retry-After", "5")
+				w.Header().Set("X-Model-Loading-Retry", "exhausted")
+				errBody, _ := json.Marshal(map[string]interface{}{
+					"error":         fmt.Sprintf("model is still loading after %ds: %s", loadingRetryMaxAttempts*int(loadingRetryInterval.Seconds()), loadingModelName),
+					"loading":       true,
+					"model":         loadingModelName,
+					"retryAfterMs":  5000,
+				})
+				w.Header().Set("Content-Length", strconv.Itoa(len(errBody)))
+				w.WriteHeader(http.StatusServiceUnavailable)
+				_, _ = w.Write(errBody)
+				return nil
+			}
+		} else {
+			// 503 без признака loading — восстанавливаем body и идём по обычному пути.
+			resp = &http.Response{
+				StatusCode: http.StatusServiceUnavailable,
+				Body:       io.NopCloser(bytes.NewReader(loadingBody)),
+				Header:     make(http.Header),
+			}
+		}
+	}
+
 	respBody, err := io.ReadAll(resp.Body)
 	if err != nil {
 		return fmt.Errorf("failed to read response: %v", err)

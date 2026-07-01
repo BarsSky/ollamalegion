@@ -7,7 +7,7 @@
   "defaultGpuLayers": 32,
   "defaultFlashAttnType": 0,
   "defaultNuma": false,
-  "defaultUseMmap": false,
+  "defaultUseMmap": true,
   "defaultUseMlock": false,
   "defaultNThreads": 0,
   "defaultRopeFreqBase": 0,

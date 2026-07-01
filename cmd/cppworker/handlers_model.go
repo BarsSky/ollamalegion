@@ -47,13 +47,23 @@ func handleLoadModel(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Собираем опции загрузки
+	// 2026-07-01 BUGFIX: UseMmap fallback берётся из currentConfig.DefaultUseMmap
+	// (а не из !*noMmap), чтобы env CPPWORKER_USE_MMAP и config/cppworker-defaults.json
+	// реально влияли на загрузку. Раньше здесь стоял `!*noMmap`, что игнорировало
+	// JSON-дефолт defaultUseMmap=true и приводило к загрузке qwen3.6 22GB на 20GB
+	// VRAM без mmap → OOM, т.к. веса не помещаются в VRAM, а без mmap не
+	// мапятся в RAM.
+	mmapFallback := true
+	if currentConfig != nil {
+		mmapFallback = currentConfig.DefaultUseMmap
+	}
 	opts := cppbackend.LoadModelOpts{
 		GPULayers:     defaultIntPtr(req.GPULayers, *gpuLayers),
 		ContextSize:   defaultIntPtr(req.ContextSize, *ctxSize),
 		BatchSize:     defaultIntPtr(req.BatchSize, *batchSize),
 		FlashAttnType: defaultIntPtr(req.FlashAttnType, *flashAttn),
 		NUMA:          defaultBoolPtr(req.NUMA, *numa),
-		UseMmap:       defaultBoolPtr(req.UseMmap, !*noMmap),
+		UseMmap:       defaultBoolPtr(req.UseMmap, mmapFallback),
 		TensorSplit:   req.TensorSplit,
 	}
 
@@ -61,7 +71,7 @@ func handleLoadModel(w http.ResponseWriter, r *http.Request) {
 		"name", modelName, "path", modelPath,
 		"gpuLayers", opts.GPULayers, "ctxSize", opts.ContextSize,
 		"batchSize", opts.BatchSize, "flashAttnType", opts.FlashAttnType,
-		"numa", opts.NUMA, "tensorSplit", opts.TensorSplit)
+		"numa", opts.NUMA, "useMmap", opts.UseMmap, "tensorSplit", opts.TensorSplit)
 
 	// Запоминаем момент начала обработки запроса — используется для замера
 	// времени ожидания при concurrent load (см. ниже).
@@ -195,13 +205,20 @@ func handleLoadWithParams(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Собираем опции загрузки — теперь включая расширенные параметры.
+	// 2026-07-01 BUGFIX: UseMmap fallback берётся из currentConfig.DefaultUseMmap
+	// (а не из !*noMmap), чтобы env CPPWORKER_USE_MMAP и config/cppworker-defaults.json
+	// реально влияли на загрузку для больших моделей, требующих partial offload.
+	mmapFallback2 := true
+	if currentConfig != nil {
+		mmapFallback2 = currentConfig.DefaultUseMmap
+	}
 	opts := cppbackend.LoadModelOpts{
 		GPULayers:     defaultIntPtr(req.GPULayers, *gpuLayers),
 		ContextSize:   defaultIntPtr(req.ContextSize, *ctxSize),
 		BatchSize:     defaultIntPtr(req.BatchSize, *batchSize),
 		FlashAttnType: defaultIntPtr(req.FlashAttnType, *flashAttn),
 		NUMA:          defaultBoolPtr(req.NUMA, *numa),
-		UseMmap:       defaultBoolPtr(req.UseMmap, !*noMmap),
+		UseMmap:       defaultBoolPtr(req.UseMmap, mmapFallback2),
 		TensorSplit:   req.TensorSplit,
 	}
 	if req.NThreads != nil && *req.NThreads > 0 {
@@ -650,13 +667,29 @@ func handleReloadModel(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// 2026-07-01 BUGFIX: UseMmap fallback при reload. Раньше здесь было
+	// `current.UseMmap` — это "freeze" текущего (потенциально неправильного)
+	// значения UseMmap на всё время жизни модели. После этой правки fallback
+	// берётся из currentConfig.DefaultUseMmap (env/JSON), но при условии, что
+	// текущая загрузка не использовала mmap — иначе "оптимистично" включаем
+	// mmap на reload, если так хочет глобальная конфигурация.
+	mmapReloadFallback := current.UseMmap // безопасный fallback: сохраняем текущее
+	if currentConfig != nil {
+		// Если глобальный конфиг хочет mmap=true, а текущая загрузка была без mmap,
+		// разрешаем включить mmap при reload. Это лечит ситуацию, когда модель
+		// была загружена до фикса (с дефолтом false) — reload теперь подхватит
+		// правильное значение из env/JSON.
+		if currentConfig.DefaultUseMmap {
+			mmapReloadFallback = true
+		}
+	}
 	opts := cppbackend.LoadModelOpts{
 		GPULayers:     defaultIntPtr(req.GPULayers, current.GPULayers),
 		ContextSize:   defaultIntPtr(req.ContextSize, current.ContextSize),
 		BatchSize:     defaultIntPtr(req.BatchSize, current.BatchSize),
 		FlashAttnType: defaultIntPtr(req.FlashAttn, current.FlashAttnType),
 		NUMA:          defaultBoolPtr(req.NUMA, current.NUMA),
-		UseMmap:       defaultBoolPtr(req.UseMmap, current.UseMmap),
+		UseMmap:       defaultBoolPtr(req.UseMmap, mmapReloadFallback),
 		TensorSplit:   current.TensorSplit,
 		// Session 16 (2026-06-27): Parallel + KVCacheType через /api/models/reload
 		// для применения Per-Model Profile (parallel + kvCacheType).

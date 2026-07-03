@@ -1,4 +1,4 @@
-﻿<!DOCTYPE html>
+<!DOCTYPE html>
 <html lang="ru">
 <head>
     <meta charset="UTF-8">
@@ -14,7 +14,7 @@
         (function() {
             try {
                 var stored = localStorage.getItem('ollamalegion_theme');
-                if (stored === 'dark' || stored === 'light') {
+                var validThemes = ['dark','light','linear','nvidia','vercel']; if (stored && validThemes.indexOf(stored) >= 0) {
                     document.documentElement.setAttribute('data-theme', stored);
                 } else {
                     // auto-detect system preference
@@ -52,9 +52,6 @@
     <link rel="stylesheet" href="css/pages.css?v=11">
     <link rel="stylesheet" href="css/layout.css?v=11">
     <link rel="stylesheet" href="css/responsive.css?v=11">
-    <link rel="preconnect" href="https://fonts.googleapis.com">
-    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-    <link href="https://fonts.googleapis.com/css2?family=Geist:wght@300;400;500;600;700&family=Geist+Mono:wght@400;500&display=swap" rel="stylesheet">
 </head>
 <body>
     <div class="app">
@@ -1115,21 +1112,21 @@
                             </div>
                             <div class="settings-section-body open">
                                 <div class="help-section">
-                                    <a href="https://github.com/BarsSky/ollamalegion/blob/main/docs/ru/README.md" target="_blank" rel="noopener" class="help-link">
+                                    <a href="https://github.com/BarsSky/ollamalegion/blob/centurion/docs/ru/README.md" target="_blank" rel="noopener" class="help-link">
                                         <span class="help-link-icon"><i class="fas fa-book" aria-hidden="true"></i></span>
                                         <div class="help-link-text">
                                             <div class="help-link-title" data-i18n="help.documentation">Полная документация</div>
                                             <div class="help-link-desc" data-i18n="help.documentation_desc">Руководство по установке, настройке и эксплуатации</div>
                                         </div>
                                     </a>
-                                    <a href="https://github.com/BarsSky/ollamalegion/blob/main/docs/ru/api.md" target="_blank" rel="noopener" class="help-link">
+                                    <a href="https://github.com/BarsSky/ollamalegion/blob/centurion/docs/ru/api.md" target="_blank" rel="noopener" class="help-link">
                                         <span class="help-link-icon"><i class="fas fa-plug" aria-hidden="true"></i></span>
                                         <div class="help-link-text">
                                             <div class="help-link-title" data-i18n="help.api_reference">API Справка</div>
                                             <div class="help-link-desc" data-i18n="help.api_reference_desc">Список API эндпоинтов и WebSocket</div>
                                         </div>
                                     </a>
-                                    <a href="https://github.com/BarsSky/ollamalegion/blob/main/docs/ru/balancing-guide.md" target="_blank" rel="noopener" class="help-link">
+                                    <a href="https://github.com/BarsSky/ollamalegion/blob/centurion/docs/ru/balancing-guide.md" target="_blank" rel="noopener" class="help-link">
                                         <span class="help-link-icon"><i class="fas fa-scale-balanced" aria-hidden="true"></i></span>
                                         <div class="help-link-text">
                                             <div class="help-link-title" data-i18n="help.balancing_guide">Гайд по балансировке</div>
@@ -1156,7 +1153,7 @@
 
             <!-- Footer -->
             <footer class="app-footer">
-                <a href="https://github.com/BarsSky/ollamalegion/blob/main/docs/ru/README.md" target="_blank" rel="noopener" data-i18n="footer.documentation"><i class="fas fa-book" aria-hidden="true"></i> Документация</a>
+                <a href="https://github.com/BarsSky/ollamalegion/blob/centurion/docs/ru/README.md" target="_blank" rel="noopener" data-i18n="footer.documentation"><i class="fas fa-book" aria-hidden="true"></i> Документация</a>
                 <span class="footer-separator"></span>
                 <a href="https://github.com/BarsSky/ollamalegion" target="_blank" rel="noopener" data-i18n="footer.github"><i class="fab fa-github" aria-hidden="true"></i> GitHub</a>
                 <span class="footer-separator"></span>
@@ -1397,57 +1394,5 @@
     <script src="js/modules/notifications.js?v=15"></script>
     <script src="js/modules/logs-stream.js?v=15"></script>
     <script src="js/app.js?v=15"></script>
-<script>
-// Theme system — sets data-theme from localStorage on load
-(function() {
-  const themes = ['linear', 'nvidia', 'vercel', 'dark', 'light'];
-  const labels = { linear: 'Linear', nvidia: 'NVIDIA', vercel: 'Vercel', dark: 'Dark', light: 'Light' };
-  const stored = localStorage.getItem('ollamalegion_theme');
-  if (stored && themes.includes(stored)) {
-    document.documentElement.setAttribute('data-theme', stored);
-  }
-  // Inject settings gear icon + theme panel into header
-  document.addEventListener('DOMContentLoaded', function() {
-    const header = document.querySelector('.nav-header, header, .header');
-    if (!header) return;
-    const current = document.documentElement.getAttribute('data-theme') || 'linear';
-    const html = `
-      <div class="settings-trigger" title="Settings" style="margin-left:auto;cursor:pointer;padding:6px 12px;border-radius:6px;font-size:13px;color:var(--text-tertiary);display:flex;align-items:center;gap:6px;user-select:none;">
-        <span style="font-size:16px;">⚙</span> ${labels[current]}
-      </div>
-      <div class="settings-panel" style="display:none;position:absolute;top:52px;right:12px;background:var(--bg-elevated);border:1px solid var(--border-standard);border-radius:8px;padding:8px;z-index:200;box-shadow:0 8px 32px rgba(0,0,0,0.4);min-width:140px;">
-        ${themes.map(t => '<div class="theme-opt" data-theme="' + t + '" style="padding:8px 12px;border-radius:4px;cursor:pointer;font-size:13px;color:' + (t === current ? 'var(--accent)' : 'var(--text-secondary)') + ';' + (t === current ? 'background:var(--accent-subtle);' : '') + '">' + labels[t] + '</div>').join('')}
-      </div>`;
-    const el = document.createElement('div');
-    el.innerHTML = html;
-    el.style.position = 'relative';
-    header.appendChild(el);
-    // Toggle panel
-    const trigger = el.querySelector('.settings-trigger');
-    const panel = el.querySelector('.settings-panel');
-    trigger.addEventListener('click', function(e) { e.stopPropagation(); panel.style.display = panel.style.display === 'none' ? 'block' : 'none'; });
-    document.addEventListener('click', function() { panel.style.display = 'none'; });
-    // Theme selection
-    el.querySelectorAll('.theme-opt').forEach(opt => {
-      opt.addEventListener('click', function(e) {
-        e.stopPropagation();
-        const theme = this.dataset.theme;
-        document.documentElement.setAttribute('data-theme', theme);
-        localStorage.setItem('ollamalegion_theme', theme);
-        trigger.innerHTML = '<span style="font-size:16px;">⚙</span> ' + labels[theme];
-        el.querySelectorAll('.theme-opt').forEach(o => {
-          o.style.color = 'var(--text-secondary)';
-          o.style.background = '';
-        });
-        this.style.color = 'var(--accent)';
-        this.style.background = 'var(--accent-subtle)';
-        panel.style.display = 'none';
-      });
-    });
-  });
-})();
-</script>
 </body>
 </html>
-
-

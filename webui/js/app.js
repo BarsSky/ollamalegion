@@ -129,11 +129,14 @@ const ui = (function () {
             broadcastThemeChange(next);
         }
 
+        var THEMES = ['dark', 'light', 'linear', 'nvidia', 'vercel'];
         var toggleBtn = document.getElementById('themeToggle');
         if (toggleBtn) {
             toggleBtn.addEventListener('click', function () {
                 var cur = document.documentElement.getAttribute('data-theme') || 'dark';
-                switchTheme(cur === 'dark' ? 'light' : 'dark');
+                var idx = THEMES.indexOf(cur);
+                var next = THEMES[(idx + 1) % THEMES.length];
+                switchTheme(next);
             });
         }
 
@@ -146,7 +149,7 @@ const ui = (function () {
             if (tag === 'INPUT' || tag === 'TEXTAREA' || (e.target && e.target.isContentEditable)) return;
             e.preventDefault();
             var cur = document.documentElement.getAttribute('data-theme') || 'dark';
-            switchTheme(cur === 'dark' ? 'light' : 'dark');
+            var idx2 = ['dark','light','linear','nvidia','vercel'].indexOf(cur); var next2 = ['dark','light','linear','nvidia','vercel'][(idx2 + 1) % 5]; switchTheme(next2);
         });
 
         // Слушаем изменения system preference (только если пользователь явно не выбрал тему).
@@ -381,6 +384,17 @@ const ui = (function () {
     function filterBackendsForUI(backends) {
         if (!Array.isArray(backends)) return backends;
         var filtered = backends.filter(function (b) {
+            // Skip agent-only registrations: same host + cppWorkerPort as another backend.
+            // Agent provides GPU metrics but is not a separate inference backend.
+            if (b.type === 'llama_cpp' && b.hasAgent) {
+                // Check if there's a non-agent backend with same host + cppWorkerPort
+                var hasNonAgent = backends.some(function (bb) {
+                    return bb.id !== b.id && bb.type === 'llama_cpp' &&
+                           !bb.hasAgent && bb.host === b.host &&
+                           bb.cppWorkerPort === b.cppWorkerPort;
+                });
+                if (hasNonAgent) return false; // hide agent duplicate
+            }
             return !UNHEALTHY_STATUSES_UI[b.status];
         });
         if (!window.BackendTypeFilter) return filtered;

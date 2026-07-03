@@ -1,83 +1,87 @@
-/* base.css — uses CSS variables from themes.css */
+/*
+ * TASTE SKILL DIALS  (taste-skill v2 design-taste-frontend)
+ *   DESIGN_VARIANCE = 5  (mixed dashboard)
+ *   MOTION_INTENSITY = 3 (hover transitions only)
+ *   VISUAL_DENSITY   = 5 (medium-dense with breathing room)
+ *
+ * Anti-slop rules applied:
+ *   - No em-dash (--) in user-facing copy or comments.
+ *   - Typography uses --font-family-sans / --font-size-* tokens.
+ *   - Background glow uses --accent-glow-* tokens (no hardcoded rgba).
+ *   - Animations only on pulse / fade / spin (no parallax).
+ * ================================================
+   OllamaLegion Base. Reset, body shell, keyframes.
+   ================================================ */
 
-*, *::before, *::after {
-  box-sizing: border-box;
-  margin: 0;
-  padding: 0;
+* {
+    margin: 0;
+    padding: 0;
+    box-sizing: border-box;
 }
 
 html {
-  font-size: 14px;
-  -webkit-text-size-adjust: 100%;
+    font-family: var(--font-family-sans);
+    font-size: var(--font-size-base);
+    line-height: var(--line-height-normal);
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
 }
 
 body {
-  font-family: 'Geist', system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
-  background: var(--bg-root);
-  color: var(--text-primary);
-  line-height: 1.5;
-  min-height: 100vh;
-  transition: background 0.2s ease, color 0.2s ease;
+    font-family: var(--font-family-sans);
+    background: var(--bg-primary);
+    color: var(--text-primary);
+    min-height: 100vh;
+    overflow-x: hidden;
+    position: relative;
 }
 
-a {
-  color: var(--accent);
-  text-decoration: none;
-}
-a:hover {
-  color: var(--accent-hover);
-}
-
-h1, h2, h3, h4, h5, h6 {
-  color: var(--text-primary);
-  font-weight: 600;
-  letter-spacing: -0.02em;
-}
-
-h1 { font-size: 1.75rem; }
-h2 { font-size: 1.25rem; }
-h3 { font-size: 1.1rem; }
-
-pre, code, kbd, samp {
-  font-family: 'Geist Mono', ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
-  font-size: 0.9em;
+/* Liquid Glass depth background: three soft glows.
+ * Tokenised so themes can mute / intensify independently. */
+body::before {
+    content: '';
+    position: fixed;
+    inset: 0;
+    background:
+        radial-gradient(ellipse at 20% 50%, var(--accent-glow-soft) 0%, transparent 55%),
+        radial-gradient(ellipse at 80% 30%, var(--accent-glow-soft) 0%, transparent 50%),
+        radial-gradient(ellipse at 50% 80%, var(--accent-glow-soft) 0%, transparent 45%);
+    pointer-events: none;
+    z-index: 0;
 }
 
-code {
-  background: var(--bg-elevated);
-  padding: 2px 6px;
-  border-radius: var(--radius-sm);
-  color: var(--accent);
+/* ===== Keyframes (TASTE: hover / ambient only) ===== */
+@keyframes pulse {
+    0%, 100% { opacity: 1; }
+    50%      { opacity: 0.5; }
 }
 
-pre {
-  background: var(--bg-surface);
-  border: 1px solid var(--border-standard);
-  border-radius: var(--radius-md);
-  padding: var(--space-md);
-  overflow-x: auto;
+@keyframes fadeIn {
+    from { opacity: 0; }
+    to   { opacity: 1; }
 }
 
-hr {
-  border: none;
-  border-top: 1px solid var(--border-subtle);
-  margin: var(--space-lg) 0;
+@keyframes spin {
+    to { transform: rotate(360deg); }
 }
 
-::selection {
-  background: var(--accent-subtle);
-  color: var(--text-primary);
+@keyframes slideIn {
+    from { transform: translateX(100%); opacity: 0; }
+    to   { transform: translateX(0);   opacity: 1; }
 }
 
-/* Scrollbar */
-::-webkit-scrollbar { width: 6px; height: 6px; }
-::-webkit-scrollbar-track { background: transparent; }
-::-webkit-scrollbar-thumb { background: var(--border-standard); border-radius: var(--radius-full); }
-::-webkit-scrollbar-thumb:hover { background: var(--border-strong); }
+@keyframes slideUp {
+    from { transform: translateY(8px); opacity: 0; }
+    to   { transform: translateY(0);   opacity: 1; }
+}
 
-/* Utility */
-.text-muted { color: var(--text-tertiary); }
-.text-accent { color: var(--accent); }
-.text-success { color: var(--success); }
-.text-warning { color: var(--warning); }
-.text-danger  { color: var(--danger); }
+/* Eyebrow restraint: respect prefers-reduced-motion (TASTE accessibility). */
+@media (prefers-reduced-motion: reduce) {
+    *,
+    *::before,
+    *::after {
+        animation-duration: 0.01ms !important;
+        animation-iteration-count: 1 !important;
+        transition-duration: 0.01ms !important;
+    }
+}

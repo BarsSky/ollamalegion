@@ -1,100 +1,311 @@
-/* layout.css — uses CSS variables from themes.css */
+/*
+ * TASTE SKILL / layout.css
+ *   - DESIGN_VARIANCE = 5: structured dashboard, sidebar+main
+ *   - Single-line nav cap 80px desktop (per taste 4.7)
+ *   - No em-dash in user-facing copy or comments
+ *   - No !important anywhere
+ *   - Spacing uses --space-* tokens; radius uses --radius-*
+ * ================================================ */
 
-/* Header / Nav */
-.nav-header, .header, header, .top-bar {
-  background: var(--bg-surface);
-  border-bottom: 1px solid var(--border-subtle);
-  height: 48px;
-  display: flex;
-  align-items: center;
-  padding: 0 var(--space-lg);
-  gap: var(--space-lg);
-  position: sticky;
-  top: 0;
-  z-index: 100;
+.app {
+    display: flex;
+    min-height: 100vh;
 }
 
-.nav-brand, .brand {
-  font-weight: 600;
-  font-size: 15px;
-  color: var(--text-primary);
-  letter-spacing: -0.02em;
+/* ===== Sidebar (260px fixed) ===== */
+.sidebar {
+    width: 260px;
+    background: var(--bg-secondary);
+    border-right: 1px solid var(--border);
+    display: flex;
+    flex-direction: column;
+    position: fixed;
+    height: 100vh;
+    z-index: var(--z-dropdown);
+
+    background: var(--glass-bg);
+    backdrop-filter: blur(var(--glass-blur));
+    -webkit-backdrop-filter: blur(var(--glass-blur));
+    border-right: 1px solid var(--glass-border);
 }
 
-/* Sidebar */
-.sidebar, .nav-sidebar {
-  background: var(--bg-surface);
-  border-right: 1px solid var(--border-subtle);
-  width: 240px;
-  min-height: calc(100vh - 48px);
-  padding: var(--space-md);
-  position: sticky;
-  top: 48px;
+.logo {
+    padding: var(--space-6) var(--space-5);
+    display: flex;
+    align-items: center;
+    gap: var(--space-3);
+    border-bottom: 1px solid var(--border);
 }
 
-.sidebar a, .nav-item {
-  display: flex;
-  align-items: center;
-  gap: var(--space-sm);
-  padding: var(--space-sm) var(--space-md);
-  border-radius: var(--radius-md);
-  color: var(--text-secondary);
-  font-size: 13px;
-  font-weight: 500;
-  transition: background 0.15s ease, color 0.15s ease;
-}
-.sidebar a:hover, .nav-item:hover {
-  background: var(--bg-hover);
-  color: var(--text-primary);
-}
-.sidebar a.active, .nav-item.active {
-  background: var(--accent-subtle);
-  color: var(--accent);
+.logo img {
+    width: 36px;
+    height: 36px;
 }
 
-/* Main content */
-.main-content, .content, .page-content {
-  padding: var(--space-xl);
-  max-width: 1400px;
-  margin: 0 auto;
-  min-height: calc(100vh - 48px);
+.logo span {
+    font-size: var(--font-size-xl);
+    font-weight: var(--font-weight-bold);
+    color: var(--accent);
 }
 
-/* Dashboard grid */
-.dashboard {
-  padding: var(--space-xl);
-  max-width: 1400px;
-  margin: 0 auto;
-}
-.metrics-grid {
-  display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
-  gap: var(--space-md);
-  margin-bottom: var(--space-xl);
-}
-.cards-grid {
-  display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
-  gap: var(--space-md);
+/* Engine type badge */
+.backend-engine-badge {
+    display: flex;
+    align-items: center;
+    gap: var(--space-2);
+    padding: var(--space-2) var(--space-5);
+    font-size: var(--font-size-xs);
+    font-weight: var(--font-weight-medium);
+    color: var(--text-secondary);
+    border-bottom: 1px solid var(--border);
+    background: var(--bg-tertiary);
+    transition: var(--transition-base);
 }
 
-/* Footer */
-.footer {
-  background: var(--bg-surface);
-  border-top: 1px solid var(--border-subtle);
-  padding: var(--space-lg);
-  text-align: center;
-  color: var(--text-quaternary);
-  font-size: 12px;
+.backend-engine-badge .engine-icon {
+    font-size: var(--font-size-md);
+    flex-shrink: 0;
 }
 
-/* Responsive */
-@media (max-width: 768px) {
-  .sidebar { display: none; }
-  .dashboard, .main-content { padding: var(--space-md); }
-  .metrics-grid { grid-template-columns: repeat(2, 1fr); }
-  .cards-grid { grid-template-columns: 1fr; }
+.backend-engine-badge .engine-label {
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
 }
-@media (max-width: 480px) {
-  .metrics-grid { grid-template-columns: 1fr; }
+
+.backend-engine-badge.engine-ollama {
+    color: var(--accent);
+    border-left: 3px solid var(--accent);
+}
+
+/* 2026-06-30: 2026-Q3 — нейтральный цвет плашки llama_cpp вместо warning-yellow (var(--warning)).
+   Раньше engine-llama_cpp светился янтарным/жёлтым, что визуально воспринималось
+   как "ошибка/warning", хотя llama_cpp — это нормальное рабочее состояние.
+   Используем info-soft blue accent, чтобы плашка визуально соответствовала
+   theme toggle / notification bell (var(--text-secondary)) и не конфликтовала
+   с настоящими warning-индикаторами (--warning / --warning-soft). */
+.backend-engine-badge.engine-llama_cpp {
+    color: var(--text-secondary);
+    border-left: 3px solid var(--text-secondary);
+}
+
+.backend-engine-badge.engine-auto {
+    color: var(--text-muted);
+    border-left: 3px solid var(--text-muted);
+}
+
+/* ===== Nav (single-line, max 80px tall condensed) ===== */
+.nav {
+    flex: 1;
+    padding: var(--space-4) var(--space-3);
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-1);
+    overflow-y: auto;
+    overflow-x: hidden;
+}
+
+.nav-item {
+    display: flex;
+    align-items: center;
+    gap: var(--space-3);
+    padding: var(--space-3) var(--space-4);
+    border-radius: var(--radius-md);
+    color: var(--text-secondary);
+    text-decoration: none;
+    font-size: var(--font-size-base);
+    font-weight: var(--font-weight-medium);
+    transition: var(--transition-base), transform var(--transition-fast), box-shadow var(--transition-fast), padding var(--transition-fast);
+    position: relative;
+    overflow: hidden;
+    line-height: var(--line-height-tight);
+}
+
+/* Hover indicator bar (no em-dash separators, just visual affinity) */
+.nav-item::before {
+    content: "";
+    position: absolute;
+    left: 0;
+    top: var(--space-3);
+    bottom: var(--space-3);
+    width: 3px;
+    border-radius: 0 4px 4px 0;
+    background: var(--accent);
+    opacity: 0;
+    transform: scaleY(0.5);
+    transition: opacity var(--transition-fast), transform var(--transition-fast);
+}
+
+.nav-item:hover {
+    background: var(--bg-hover);
+    color: var(--text-primary);
+    box-shadow: inset 0 0 var(--space-5) rgba(74, 158, 255, 0.08);
+    padding-left: var(--space-6);
+}
+.nav-item:hover::before {
+    opacity: 1;
+    transform: scaleY(1);
+}
+
+.nav-item.active {
+    background: var(--accent);
+    color: white;
+    box-shadow:
+        0 4px 15px var(--accent-glow-shadow),
+        inset 0 1px 0 rgba(255, 255, 255, 0.15);
+    font-weight: var(--font-weight-semibold);
+    padding-left: var(--space-6);
+    transform: translateX(2px);
+}
+.nav-item.active::before {
+    opacity: 1;
+    transform: scaleY(1);
+    background: white;
+    box-shadow: 0 0 var(--space-2) rgba(255, 255, 255, 0.5);
+}
+
+.nav-item .icon {
+    font-size: var(--font-size-lg);
+}
+
+/* ===== Sidebar footer ===== */
+.sidebar-footer {
+    padding: var(--space-4);
+    border-top: 1px solid var(--border);
+}
+
+.connection-status {
+    display: flex;
+    align-items: center;
+    gap: var(--space-2);
+    font-size: var(--font-size-xs);
+    color: var(--text-muted);
+    margin-bottom: var(--space-2);
+}
+
+.status-dot {
+    width: var(--space-2);
+    height: var(--space-2);
+    border-radius: var(--radius-full);
+    background: var(--warning);
+    animation: pulse 2s infinite;
+}
+
+.status-dot.connected {
+    background: var(--success);
+    animation: none;
+}
+
+.status-dot.disconnected {
+    background: var(--danger);
+    animation: none;
+}
+
+.version {
+    font-size: 11px;
+    color: var(--text-muted);
+}
+
+/* ===== Main (offset by sidebar) ===== */
+.main {
+    flex: 1;
+    margin-left: 260px;
+    padding: var(--space-6);
+    min-height: 100vh;
+}
+
+/* ===== Header (cap 64-72px per taste 4.7) ===== */
+.header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: var(--space-6);
+    padding: var(--space-4) var(--space-5);
+    background: var(--glass-bg);
+    border: 1px solid var(--glass-border);
+    border-radius: var(--radius-md);
+    backdrop-filter: blur(var(--glass-blur));
+    -webkit-backdrop-filter: blur(var(--glass-blur));
+    box-shadow: var(--glass-shadow);
+    position: relative;
+    /* Allow notifications-dropdown to overflow vertically downward */
+    overflow: visible;
+    min-height: 64px;
+}
+
+.header::after {
+    content: "";
+    position: absolute;
+    top: 0; left: 0; right: 0;
+    height: 1px;
+    background: var(--glass-highlight);
+    pointer-events: none;
+}
+
+/* Page title (single line, max font-size 2xl) */
+.header h1 {
+    font-size: var(--font-size-2xl);
+    font-weight: var(--font-weight-bold);
+    line-height: var(--line-height-tight);
+    margin: 0;
+}
+
+.header-actions {
+    display: flex;
+    gap: var(--space-3);
+    align-items: center;
+}
+
+/* ===== Footer ===== */
+.app-footer {
+    padding: var(--space-5) var(--space-6);
+    border-top: 1px solid var(--border);
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    gap: var(--space-6);
+    font-size: var(--font-size-sm);
+    color: var(--text-muted);
+    flex-wrap: wrap;
+}
+
+.app-footer a {
+    color: var(--accent);
+    text-decoration: none;
+    transition: var(--transition-base);
+    display: inline-flex;
+    align-items: center;
+    gap: var(--space-2);
+}
+
+.app-footer a:hover {
+    color: var(--accent-hover);
+    text-decoration: underline;
+}
+
+.footer-separator {
+    width: 1px;
+    height: var(--space-4);
+    background: var(--border);
+}
+
+/* ===== Animations (kept short per taste MOTION_INTENSITY=3) ===== */
+@keyframes pulse {
+    0%, 100% { opacity: 1; }
+    50%      { opacity: 0.4; }
+}
+
+@keyframes fadeIn {
+    from { opacity: 0; transform: translateY(var(--space-1)); }
+    to   { opacity: 1; transform: translateY(0); }
+}
+
+@keyframes slideIn {
+    from { opacity: 0; transform: translateX(var(--space-5)); }
+    to   { opacity: 1; transform: translateX(0); }
+}
+
+@keyframes spin {
+    from { transform: rotate(0deg); }
+    to   { transform: rotate(360deg); }
 }

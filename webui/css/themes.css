@@ -95,6 +95,35 @@ pre, code, .mono {
   --transition-fast: 150ms ease;
   --transition-normal: 200ms ease;
 }
+/* === LEGACY ALIASES (for backward compat with existing components.css) === */
+[data-theme="linear"]:root, :root {
+  --glass-border: rgba(255,255,255,0.08);
+  --glass-shadow: 0 4px 24px rgba(0,0,0,0.3);
+  --border: var(--border-standard);
+  --border-color: var(--border-solid);
+  --border-light: var(--border-subtle);
+  --border-strong: var(--border-strong);
+  --bg-card: var(--bg-card);
+  --bg-primary: var(--bg-root);
+  --card-bg: var(--bg-card);
+  --accent-glow-ring: var(--accent-subtle);
+  --accent-soft-3: rgba(94, 106, 210, 0.3);
+  --warning-soft-3: rgba(245, 166, 35, 0.3);
+  --warning-soft-4: rgba(245, 166, 35, 0.4);
+  --warning-soft-5: rgba(245, 166, 35, 0.5);
+  --warning-soft-6: rgba(245, 166, 35, 0.6);
+  --warning-bg-soft: rgba(245, 166, 35, 0.12);
+  --danger-bg-soft: rgba(229, 72, 77, 0.12);
+  --success-bg-soft-2: rgba(39, 166, 68, 0.2);
+  --radius: var(--radius-md);
+}
+[data-theme="light"] {
+  --glass-border: rgba(0,0,0,0.08);
+  --glass-shadow: 0 4px 24px rgba(0,0,0,0.08);
+  --border: var(--border-standard);
+  --border-color: var(--border-solid);
+}
+
 
 /* ============================================================
    THEME: NVIDIA Green (Linear base + green accent)

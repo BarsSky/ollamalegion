@@ -121,6 +121,19 @@ func (s *Server) listBackends(w http.ResponseWriter, r *http.Request) {
 		return allBackends[i].ID < allBackends[j].ID
 	})
 
+	// 2026-06-30: de-dup по (host, CppWorkerPort). Без этого на bundled-стеке
+	// (cppworker + agent) в /api/v1/backends видно 2-3 записи на один
+	// физический контейнер (cppworker-gpu-bundled + cppworker-gpu от агента).
+	// На вкладке Backends WebUI это выглядит как «один и тот же бэкенд дважды»,
+	// а в selectBackend вызывает race. См. internal/api/dedup.go.
+	allBackends = dedupBackendsByHostPort(
+		allBackends,
+		func(b types.Backend) string { return b.Host },
+		func(b types.Backend) int { return backendEffectivePort(b.OllamaPort, b.CppWorkerPort) },
+		func(b types.Backend) bool { return b.HasAgent },
+		true, // preferAgent: бэкенд с агентом даёт реальные GPU/VRAM метрики
+	)
+
 	// Получение метрик из состояния кластера
 	state := s.proxy.GetClusterState()
 

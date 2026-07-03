@@ -58,6 +58,12 @@ func main() {
 		Weight:                env.GetInt("AGENT_WEIGHT", *weight),
 		BackendType:           types.BackendType(env.Get("BACKEND_TYPE", "ollama")),
 		NodeLabels:            env.Get("NODE_LABELS", ""),
+		// 2026-06-30: CppWorkerHost/Port используются в register() как host/cppWorkerPort,
+		// чтобы de-dup по (host, port) в /api/v1/gguf/backends корректно склеивал
+		// cppworker-gpu и cppworker-gpu-bundled-agent (агент — observer физического cppworker).
+		// Fallback на CppWorkerURL (если задан) иначе localhost:18092.
+		CppWorkerHost:         env.Get("AGENT_CPPWORKER_HOST", ""),
+		CppWorkerPort:         env.GetInt("AGENT_CPPWORKER_PORT", 0),
 	}
 
 	// Если передан файл конфигурации — загружаем из него
@@ -82,15 +88,41 @@ func main() {
 		}
 	}
 	
+	// 2026-06-30: баннер зависит от backend type — раньше был всегда
+	// "Ollama Load Balancer - Agent", что вводило в заблуждение при запуске
+	// на llama.cpp бэкенде (выглядело как баг конфигурации). Теперь имя и
+	// engine-line определяются backend type, а default-конфигурация agent'а
+	// для llama.cpp бэкендов включает NVML по умолчанию (бессмысленно
+	// собирать GPU-метрики без NVML, если у нас GPU-платформа).
+	engineLabel := "Ollama"
+	defaultNVML := false
+	switch cfg.BackendType {
+	case types.BackendTypeLlamaCpp:
+		engineLabel = "llama.cpp (CppWorker)"
+		// llama.cpp-бэкенды собираются на GPU-хостах с CppWorker, NVML —
+		// основной источник GPU/VRAM метрик, default ON.
+		if !env.HasExplicit("NVML_ENABLED") && !*nvmlEnabled {
+			cfg.NVMLEnabled = true
+		}
+		defaultNVML = cfg.NVMLEnabled
+	case types.BackendTypeOllama:
+		engineLabel = "Ollama"
+		defaultNVML = cfg.NVMLEnabled
+	default:
+		engineLabel = cfg.BackendType.Label()
+		defaultNVML = cfg.NVMLEnabled
+	}
+
 	fmt.Printf("╔═══════════════════════════════════════════════════════════╗\n")
 	fmt.Printf("║         Ollama Load Balancer - Agent                      ║\n")
+	fmt.Printf("║         Engine: %-41s║\n", engineLabel)
 	fmt.Printf("╠═══════════════════════════════════════════════════════════╣\n")
 	fmt.Printf("║ Agent ID:    %-46s║\n", cfg.AgentID)
 	fmt.Printf("║ Backend:     %-46s║\n", cfg.BackendType.Label())
 	fmt.Printf("║ Balancer:    %-46s║\n", cfg.BalancerURL)
 	fmt.Printf("║ Public Host:  %-46s║\n", cfg.PublicHost)
 	fmt.Printf("║ Mode:        %-46s║\n", string(cfg.GPUMode))
-	fmt.Printf("║ NVML:        %-46v║\n", cfg.NVMLEnabled)
+	fmt.Printf("║ NVML:        %-46v║\n", defaultNVML)
 	fmt.Printf("║ Collect:     %-46ds║\n", cfg.CollectInterval)
 	fmt.Printf("║ Heartbeat:   %-46ds║\n", cfg.HeartbeatInterval)
 	fmt.Printf("╚═══════════════════════════════════════════════════════════╝\n")

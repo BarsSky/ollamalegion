@@ -72,6 +72,16 @@ func corsMiddleware(next http.Handler) http.Handler {
 	})
 }
 
+// pollingPaths — endpoints that are polled frequently by balancer/agent.
+// Logging these at Info floods the log; they are suppressed to Debug level.
+var pollingPaths = map[string]bool{
+	"/health":                   true,
+	"/api/health":               true,
+	"/api/v1/cppworker/health":  true,
+	"/api/models":               true,
+	"/api/models/load/progress": true,
+}
+
 func loggingMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		start := time.Now()
@@ -83,12 +93,24 @@ func loggingMiddleware(next http.Handler) http.Handler {
 		if idx := strings.LastIndex(r.RemoteAddr, ":"); idx > 0 {
 			remoteIP = r.RemoteAddr[:idx]
 		}
-		logger.Get().Infow("HTTP request",
-			"method", r.Method,
-			"path", r.URL.Path,
-			"status", lw.statusCode,
-			"duration", duration.String(),
-			"remote", remoteIP)
+		// Suppress frequent poll requests to Debug level to reduce log noise.
+		// These endpoints are pinged every 200ms by balancer/agent and generate
+		// thousands of log lines that drown out actual request logs.
+		if pollingPaths[r.URL.Path] && r.Method == http.MethodGet {
+			logger.Get().Debugw("HTTP request",
+				"method", r.Method,
+				"path", r.URL.Path,
+				"status", lw.statusCode,
+				"duration", duration.String(),
+				"remote", remoteIP)
+		} else {
+			logger.Get().Infow("HTTP request",
+				"method", r.Method,
+				"path", r.URL.Path,
+				"status", lw.statusCode,
+				"duration", duration.String(),
+				"remote", remoteIP)
+		}
 	})
 }
 

@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"runtime"
+	"strings"
 	"sync"
 	"time"
 
@@ -30,7 +31,7 @@ type Agent struct {
 	balancerURL    string
 	registered     bool
 	platformMode   types.PlatformMode
-	gpuUnavailable bool // кэш: GPU недоступна на этой ноде
+	// gpuUnavailable cache вынесен в collector_gpu.go (TTL-based, не зависит от Agent).
 
 	// Ollama статистика
 	ollamaStats    *OllamaStats
@@ -126,39 +127,85 @@ func (a *Agent) Stop() {
 	}
 }
 
-// detectPlatformMode - runtime автоопределение GPU/CPU режима
+// detectPlatformMode - runtime автоопределение GPU/CPU режима.
+//
+// 2026-06-30: порядок проверок изменён, чтобы корректно работать в контейнере
+// с runtime: nvidia (где нет nvidia-smi в PATH, но есть /dev/nvidia* и libnvidia-ml.so.1).
+//
+//  1. /dev/nvidia0 (Linux-контейнер с runtime nvidia) — самый дешёвый и надёжный признак.
+//  2. /proc/driver/nvidia/version (нативный Linux с NVIDIA-драйвером, но без nvidia-smi).
+//  3. nvmlAvailable() (через build tag `nvml`): NVML Init() + DeviceGetCount > 0.
+//  4. nvidia-smi (последним: обычно НЕТ в base-образах nvidia/cuda, но может быть на хосте).
+//
+// Каждый шаг логируется с причиной успеха/неудачи, чтобы пользователь мог понять,
+// почему GPU не обнаружен (vs. старый лог «No GPU detected» без объяснений).
 func (a *Agent) detectPlatformMode() types.PlatformMode {
-	// Если явно задан режим
+	now := time.Now().Format(time.RFC3339)
+
+	// Если явно задан режим — уважаем override.
 	if a.config.GPUMode != types.ModeAuto {
-		fmt.Printf("[%s] Platform mode override: %s\n", time.Now().Format(time.RFC3339), a.config.GPUMode)
+		fmt.Printf("[%s] Platform mode override: %s\n", now, a.config.GPUMode)
 		return a.config.GPUMode
 	}
 
-	// Проверяем nvidia-smi
-	if _, err := exec.LookPath("nvidia-smi"); err == nil {
-		// Пробуем выполнить
-		cmd := exec.Command("nvidia-smi", "--query-gpu=name", "--format=csv,noheader")
-		if out, err := cmd.Output(); err == nil && len(bytes.TrimSpace(out)) > 0 {
-			fmt.Printf("[%s] nvidia-smi found, GPU mode detected\n", time.Now().Format(time.RFC3339))
-			return types.ModeGPU
-		}
-	}
+	reasons := []string{} // накапливаем причины неудачи для финального лога
 
-	// Проверяем NVML (если собрано с тегом)
-	if nvmlAvailable() {
-		fmt.Printf("[%s] NVML available, GPU mode detected\n", time.Now().Format(time.RFC3339))
-		return types.ModeGPU
-	}
-
-	// Проверяем /dev/nvidia* (Linux)
+	// 1. /dev/nvidia0 — стандартный признак NVIDIA Container Toolkit с runtime: nvidia.
 	if runtime.GOOS == "linux" {
 		if _, err := os.Stat("/dev/nvidia0"); err == nil {
-			fmt.Printf("[%s] /dev/nvidia0 found, GPU mode detected\n", time.Now().Format(time.RFC3339))
+			fmt.Printf("[%s] GPU detected via /dev/nvidia0\n", now)
 			return types.ModeGPU
+		} else {
+			reasons = append(reasons, "/dev/nvidia0: "+err.Error())
 		}
 	}
 
-	fmt.Printf("[%s] No GPU detected, CPU mode\n", time.Now().Format(time.RFC3339))
+	// 2. /proc/driver/nvidia/version — нативный Linux без NVIDIA Container Toolkit.
+	if runtime.GOOS == "linux" {
+		if _, err := os.Stat("/proc/driver/nvidia/version"); err == nil {
+			fmt.Printf("[%s] GPU detected via /proc/driver/nvidia/version\n", now)
+			return types.ModeGPU
+		} else {
+			reasons = append(reasons, "/proc/driver/nvidia/version: "+err.Error())
+		}
+	}
+
+	// 3. NVML (Go-nvml через CGO). Самый надёжный, если /dev/nvidia* ещё не
+	// проброшены, но libnvidia-ml.so.1 уже смонтирована (редко, но бывает).
+	//
+	// 2026-06-30: добавлен дополнительный gate — nvmlAvailable() вызываем
+	// ТОЛЬКО если /dev/nvidia0 существует (т.е. NVIDIA Container Toolkit
+	// гарантированно смонтировал и устройства, и userspace-библиотеку).
+	// Без этого gate'а в окружениях без libnvidia-ml.so.1 вызов nvml.Init()
+	// падает с SIGSEGV (PC=0x0) из-за NULL-указателя от неудачного dlopen().
+	if runtime.GOOS == "linux" {
+		if _, err := os.Stat("/dev/nvidia0"); err == nil {
+			if nvmlAvailable() {
+				fmt.Printf("[%s] GPU detected via NVML (libnvidia-ml.so.1)\n", now)
+				return types.ModeGPU
+			} else {
+				reasons = append(reasons, "nvml.Init() failed (см. лог NVML выше)")
+			}
+		} else {
+			reasons = append(reasons, "/dev/nvidia0 отсутствует — NVML skip (защита от SIGSEGV)")
+		}
+	}
+
+	// 4. nvidia-smi — последний шанс (на хосте без container runtime часто есть).
+	if _, err := exec.LookPath("nvidia-smi"); err == nil {
+		cmd := exec.Command("nvidia-smi", "--query-gpu=name", "--format=csv,noheader")
+		if out, err := cmd.Output(); err == nil && len(bytes.TrimSpace(out)) > 0 {
+			fmt.Printf("[%s] GPU detected via nvidia-smi\n", now)
+			return types.ModeGPU
+		} else {
+			reasons = append(reasons, "nvidia-smi не вернул GPU")
+		}
+	} else {
+		reasons = append(reasons, "nvidia-smi not in PATH")
+	}
+
+	// Ничего не нашли — подробный лог причин.
+	fmt.Printf("[%s] No GPU detected, CPU mode. Причины: %s\n", now, strings.Join(reasons, "; "))
 	return types.ModeCPU
 }
 
@@ -497,11 +544,17 @@ func (a *Agent) collectLlamaMetrics(base *types.BackendMetrics) *types.BackendMe
 
 	// Маппим LlamaMetrics → BackendMetrics
 	// GPU: приоритет — данные от CppWorker (llamaMetrics.GPUMetrics имеет актуальную информацию),
-	// затем nvidia-smi/NVML (collectGPUMetrics), только если platformMode == GPU.
+	// затем nvidia-smi/NVML (collectGPUMetrics), безусловно — даже если detectPlatformMode()
+	// не смог найти драйверы на старте (NVML lib не найдена в контейнере, nvidia-smi
+	// недоступен через PATH), мы всё равно пытаемся собрать метрики. Если ничего
+	// не получилось — base.GPU остаётся нулевым и балансер не увидит GPU.
 	if len(llamaMetrics.GPUMetrics) > 0 {
 		base.GPU = mapLlamaGPUMetrics(llamaMetrics.GPUMetrics)
-	} else if a.platformMode == types.ModeGPU {
-		base.GPU = a.collectGPUMetrics()
+	} else {
+		// Попытка взять GPU-метрики из nvidia-smi / NVML, безусловно.
+		if gpu := a.collectGPUMetrics(); gpu.MemoryTotal > 0 || gpu.UsagePercent > 0 || gpu.Temperature > 0 {
+			base.GPU = gpu
+		}
 	}
 	base.System = a.collectSystemMetrics()
 

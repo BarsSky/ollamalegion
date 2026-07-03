@@ -72,9 +72,32 @@
 }
 .btn-theme-toggle > * {
     transition: transform 0.3s ease;
+    /* 2026-06-30: фикс жёлтого цвета. FA-наследует color от родителя, но некоторые
+       стили Font Awesome могут переопределить цвет иконки (например, отдельные
+       миксины .fa-stack, .fa-ul). Явно наследуем цвет от .btn-theme-toggle и
+       центрируем иконку (line-height: 1 — иначе увеличенный font-size сдвигает
+       вниз). fa-circle-half-stroke в Font Awesome 6 Free solid рисует половину
+       залитой жёлтым — мы отказались от неё в пользу fa-moon / fa-sun в JS. */
+    color: inherit;
+    line-height: 1;
+    font-size: var(--font-size-lg);
 }
 .btn-theme-toggle:hover > * {
     transform: rotate(20deg) scale(1.1);
+}
+
+/* 2026-06-30: явный fix для колокольчика (notifications bell) и иконки темы (moon/sun).
+   Оба используют класс .btn-theme-toggle (см. index.html:128 — notificationsBtn
+   и index.html:123 — themeToggle). Без явного color: inherit Font Awesome
+   для отдельных иконок (fa-bell, fa-moon) может переопределить цвет родителя
+   через свои внутренние стили (особенно при наследовании через fill/stroke в SVG).
+   Явный color: inherit гарантирует, что иконки получают var(--text-secondary)
+   (серый в dark/light) вместо потенциально жёлтого default. */
+.btn-theme-toggle > i.fa-bell,
+.btn-theme-toggle > i.fa-moon,
+.btn-theme-toggle > i.fa-sun,
+.btn-theme-toggle > #themeToggleIcon {
+    color: inherit;
 }
 
 /* F.α (2026-06-28): session F - notifications bell icon + dropdown */

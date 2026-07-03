@@ -45,9 +45,9 @@ type aggregateLoadingModel struct {
 
 // clusterLoadedModelsResponse — агрегированный список загруженных моделей по всему кластеру.
 type clusterLoadedModelsResponse struct {
-	Count           int                    `json:"count"`
-	Models          []aggregateLoadedModel `json:"models"`
-	ModelsPerBackend map[string]int        `json:"modelsPerBackend,omitempty"`
+	Count            int                    `json:"count"`
+	Models           []aggregateLoadedModel `json:"models"`
+	ModelsPerBackend map[string]int         `json:"modelsPerBackend,omitempty"`
 }
 
 // clusterLoadingModelsResponse — список моделей в процессе загрузки.
@@ -82,12 +82,25 @@ func (s *Server) clusterLoadedModelsHandler(w http.ResponseWriter, r *http.Reque
 	}
 
 	resp := clusterLoadedModelsResponse{
-		Count:           0,
-		Models:          []aggregateLoadedModel{},
+		Count:            0,
+		Models:           []aggregateLoadedModel{},
 		ModelsPerBackend: map[string]int{},
 	}
 
-	for _, b := range cs.Backends {
+	// Bug #11 (2026-06-30): де-дупликация бэкендов по (host, port).
+	// Один физический cppworker может быть зарегистрирован в кластере
+	// несколько раз (shell-script + Go-side cppworker + agent) — без
+	// де-дупа модели дублируются в ответе. Оставляем предпочитаемого
+	// кандидата: (a) бэкенд с hasAgent=true, (b) иначе первый встретившийся.
+	dedupedBackends := dedupBackendsByHostPort(
+		cs.Backends,
+		func(b types.BackendMetrics) string { return b.Host },
+		func(b types.BackendMetrics) int { return b.CppWorkerPort },
+		func(b types.BackendMetrics) bool { return b.HasAgent },
+		true,
+	)
+
+	for _, b := range dedupedBackends {
 		if b.BackendType != types.BackendTypeLlamaCpp {
 			continue
 		}
@@ -143,7 +156,18 @@ func (s *Server) clusterLoadingModelsHandler(w http.ResponseWriter, r *http.Requ
 		Models: []aggregateLoadingModel{},
 	}
 
-	for _, b := range cs.Backends {
+	// Bug #11 (2026-06-30): де-дупликация бэкендов по (host, port) — иначе
+	// модели, загружаемые на одном физическом cppworker, видны несколько раз
+	// (по числу дублей регистрации в state).
+	dedupedBackends := dedupBackendsByHostPort(
+		cs.Backends,
+		func(b types.BackendMetrics) string { return b.Host },
+		func(b types.BackendMetrics) int { return b.CppWorkerPort },
+		func(b types.BackendMetrics) bool { return b.HasAgent },
+		true,
+	)
+
+	for _, b := range dedupedBackends {
 		if b.BackendType != types.BackendTypeLlamaCpp {
 			continue
 		}
@@ -378,7 +402,8 @@ func splitClusterModelPath(path string) (string, bool) {
 
 // selectReloadTargets — выбирает ID бэкендов для reload-операции.
 // Если backendId задан — возвращает только его (если llama_cpp).
-// Если не задан — возвращает все llama_cpp бэкенды.
+// Если не задан — возвращает все llama_cpp бэкенды (де-дуплицированные по host:port,
+// см. Bug #11 2026-06-30).
 //
 // Возвращает []string (backend IDs) — мы потом резолвим через ModelManager,
 // который сам вызовет proxy.GetBackend().
@@ -397,8 +422,20 @@ func (s *Server) selectReloadTargets(backendID string) []string {
 		return nil
 	}
 
-	targets := make([]string, 0, len(cs.Backends))
-	for _, b := range cs.Backends {
+	// Bug #11 (2026-06-30): де-дупликация бэкендов по (host, port). Иначе
+	// cluster reload шлёт N HTTP-запросов на один физический cppworker,
+	// вызывая race в tryAcquireOp и параллельные попытки загрузить/выгрузить
+	// одну и ту же модель. Оставляем один backendId на физический эндпоинт.
+	deduped := dedupBackendsByHostPort(
+		cs.Backends,
+		func(b types.BackendMetrics) string { return b.Host },
+		func(b types.BackendMetrics) int { return b.CppWorkerPort },
+		func(b types.BackendMetrics) bool { return b.HasAgent },
+		true,
+	)
+
+	targets := make([]string, 0, len(deduped))
+	for _, b := range deduped {
 		if b.BackendType == types.BackendTypeLlamaCpp {
 			targets = append(targets, b.ID)
 		}
@@ -608,7 +645,7 @@ type bulkModelItem struct {
 	Operation   string `json:"operation,omitempty"`   // "load" | "unload" | "reload" (default: req.Operation)
 	BackendID   string `json:"backendId,omitempty"`   // override глобального BackendID
 	ContextSize *int   `json:"contextSize,omitempty"` // override глобального ContextSize
-	GPULayers   *int   `json:"gpuLayers,omitempty"`   // override глобального GPULayers
+	GPULayers   *int   `json:"gpuLayers,omitempty"`   // override глобального GPUlayers
 	Reason      string `json:"reason,omitempty"`      // комментарий для логов
 }
 
@@ -628,14 +665,14 @@ type bulkModelItem struct {
 //   2. Глобальный BackendID/ContextSize/GPULayers/Operation в запросе.
 //   3. Значения по умолчанию ("load", n_ctx из профиля, gpu_layers=-1=auto).
 type clusterBulkModelsRequest struct {
-	Operation   string         `json:"operation,omitempty"`   // "load" | "unload" | "reload" (default: "load")
-	Models      []bulkModelItem `json:"models"`              // список моделей (опционально для unload)
-	BackendID   string         `json:"backendId,omitempty"`  // глобальный backendId override
-	ContextSize *int           `json:"contextSize,omitempty"` // глобальный n_ctx override
-	GPULayers   *int           `json:"gpuLayers,omitempty"`  // глобальный gpu_layers override (-1=auto)
-	Insecure    bool           `json:"insecure,omitempty"`
-	Stream      bool           `json:"stream,omitempty"`
-	Reason      string         `json:"reason,omitempty"`
+	Operation   string          `json:"operation,omitempty"`   // "load" | "unload" | "reload" (default: "load")
+	Models      []bulkModelItem `json:"models"`                // список моделей (опционально для unload)
+	BackendID   string          `json:"backendId,omitempty"`   // глобальный backendId override
+	ContextSize *int            `json:"contextSize,omitempty"` // глобальный n_ctx override
+	GPULayers   *int            `json:"gpuLayers,omitempty"`   // глобальный gpu_layers override (-1=auto)
+	Insecure    bool            `json:"insecure,omitempty"`
+	Stream      bool            `json:"stream,omitempty"`
+	Reason      string          `json:"reason,omitempty"`
 }
 
 // clusterBulkModelsResponse — агрегированный результат bulk-операции по всем моделям.
@@ -656,9 +693,9 @@ type clusterBulkModelsResponse struct {
 // clusterBulkModelResult — результат одной модели из bulk-запроса.
 type clusterBulkModelResult struct {
 	Model     string                            `json:"model"`
-	Operation string                            `json:"operation"`   // применённая операция
-	Succeeded bool                              `json:"succeeded"`   // все бэкенды status=ok
-	Results   []clusterReloadModelBackendResult `json:"results"`     // детали per-backend (переиспользуем Session 17)
+	Operation string                            `json:"operation"` // применённая операция
+	Succeeded bool                              `json:"succeeded"` // все бэкенды status=ok
+	Results   []clusterReloadModelBackendResult `json:"results"`   // детали per-backend (переиспользуем Session 17)
 }
 
 // clusterBulkModelsHandler — POST /api/v1/cluster/models/bulk.

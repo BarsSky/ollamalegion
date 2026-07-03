@@ -152,27 +152,41 @@ func (s *Server) agentRegisterHandler(w http.ResponseWriter, r *http.Request) {
 	// Обновление статуса после health check
 	go func() {
 		time.Sleep(1 * time.Second)
-		// Проверяем доступность бэкенда через Ollama API
 		backend := s.proxy.GetBackend(req.AgentID)
-		if backend != nil {
-			url := fmt.Sprintf("http://%s:%d/api/tags", backend.Host, backend.OllamaPort)
-			client := &http.Client{Timeout: 5 * time.Second}
-			resp, err := client.Get(url)
-			if err == nil && resp.StatusCode == http.StatusOK {
-				s.proxy.UpdateBackendStatus(req.AgentID, types.StatusHealthy)
-				if resp != nil {
-					resp.Body.Close()
-				}
-			} else {
-				// Бэкенд недоступен - оставляем статус unhealthy
-				if err != nil {
-					logger.Get().Errorw("agent health check unreachable",
-						"agent", req.AgentID,
-						"error", err,
-					)
-				}
-				s.proxy.UpdateBackendStatus(req.AgentID, types.StatusUnhealthy)
+		if backend == nil {
+			return
+		}
+
+		// 2026-06-30: для llama_cpp-бэкенда проверяем cppworker /health,
+		// а не Ollama /api/tags. Иначе agent-бэкенд, указывающий на
+		// физический cppworker (host=cppworker-gpu:18092) и не имеющий
+		// Ollama API на :11434, помечается как unhealthy сразу после
+		// регистрации и "мигает" (пропадает/появляется) на странице GGUF.
+		var healthURL string
+		if backend.Type == types.BackendTypeLlamaCpp && backend.CppWorkerPort > 0 {
+			healthURL = fmt.Sprintf("http://%s:%d/health", backend.Host, backend.CppWorkerPort)
+		} else {
+			healthURL = fmt.Sprintf("http://%s:%d/api/tags", backend.Host, backend.OllamaPort)
+		}
+
+		client := &http.Client{Timeout: 5 * time.Second}
+		resp, err := client.Get(healthURL)
+		if err == nil && resp.StatusCode == http.StatusOK {
+			s.proxy.UpdateBackendStatus(req.AgentID, types.StatusHealthy)
+			if resp != nil {
+				resp.Body.Close()
 			}
+		} else {
+			if err != nil {
+				logger.Get().Errorw("agent health check unreachable",
+					"agent", req.AgentID,
+					"url", healthURL,
+					"error", err,
+				)
+			} else if resp != nil {
+				resp.Body.Close()
+			}
+			s.proxy.UpdateBackendStatus(req.AgentID, types.StatusUnhealthy)
 		}
 	}()
 
@@ -341,6 +355,20 @@ func (s *Server) agentStatsHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	backends := s.proxy.GetAllBackends()
+
+	// 2026-06-30: de-dup по (host, CppWorkerPort). Без этого на bundled-стеке
+	// (cppworker + agent) в /api/v1/agents/stats видно 2 записи на один
+	// физический контейнер: cppworker-gpu-bundled (без агента) и cppworker-gpu
+	// (с агентом). В WebUI на вкладке Agents это выглядит как дубль.
+	// preferAgent=true: оставляем запись с hasAgent=true, чтобы карточка
+	// показывала реальные GPU/VRAM метрики.
+	backends = dedupBackendsByHostPort(
+		backends,
+		func(b types.Backend) string { return b.Host },
+		func(b types.Backend) int { return backendEffectivePort(b.OllamaPort, b.CppWorkerPort) },
+		func(b types.Backend) bool { return b.HasAgent },
+		true,
+	)
 
 	agents := make([]map[string]interface{}, 0, len(backends))
 	healthyCount := 0

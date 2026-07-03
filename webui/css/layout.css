@@ -78,9 +78,15 @@
     border-left: 3px solid var(--accent);
 }
 
+/* 2026-06-30: 2026-Q3 — нейтральный цвет плашки llama_cpp вместо warning-yellow (#f59e0b).
+   Раньше engine-llama_cpp светился янтарным/жёлтым, что визуально воспринималось
+   как "ошибка/warning", хотя llama_cpp — это нормальное рабочее состояние.
+   Используем info-soft blue accent, чтобы плашка визуально соответствовала
+   theme toggle / notification bell (var(--text-secondary)) и не конфликтовала
+   с настоящими warning-индикаторами (--warning / --warning-soft). */
 .backend-engine-badge.engine-llama_cpp {
-    color: #f59e0b;
-    border-left: 3px solid #f59e0b;
+    color: var(--text-secondary);
+    border-left: 3px solid var(--text-secondary);
 }
 
 .backend-engine-badge.engine-auto {

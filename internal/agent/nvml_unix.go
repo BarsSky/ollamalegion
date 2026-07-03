@@ -4,6 +4,7 @@ package agent
 
 import (
 	"fmt"
+	"os"
 	"sync"
 
 	"github.com/NVIDIA/go-nvml/pkg/nvml"
@@ -17,7 +18,48 @@ var (
 	nvmlMu          sync.Mutex
 )
 
-// initNVML - инициализация NVML библиотеки
+// nvmlLibraryPaths - типичные пути поиска libnvidia-ml.so.1.
+//
+// 2026-06-30: до добавления этого списка вызов nvml.Init() мог вызвать SIGSEGV
+// (PC=0x0) на системах без NVIDIA-драйвера / без NVIDIA Container Toolkit.
+// Причина: cgo-обёртка над libnvidia-ml.so.1 делает dlopen() и затем
+// dereference указателя на функцию. Если библиотека не найдена, dlopen()
+// возвращает NULL, и попытка вызвать функцию по NULL-указателю приводит
+// к segmentation fault, который НЕЛЬЗЯ перехватить через recover().
+//
+// Безопасная стратегия: сначала проверить наличие библиотеки через os.Stat
+// (или эквивалент), и только потом вызывать nvml.Init().
+var nvmlLibraryPaths = []string{
+	"/usr/lib/x86_64-linux-gnu/libnvidia-ml.so.1",
+	"/usr/lib64/libnvidia-ml.so.1",
+	"/lib/x86_64-linux-gnu/libnvidia-ml.so.1",
+	"/usr/lib/aarch64-linux-gnu/libnvidia-ml.so.1",
+	"/usr/lib64/libnvidia-ml.so.1",
+	"/usr/local/lib/libnvidia-ml.so.1",
+	"/usr/lib/libnvidia-ml.so.1",
+	"/lib64/libnvidia-ml.so.1",
+}
+
+// nvmlLibraryPresent - проверяет наличие libnvidia-ml.so.1 по известным путям.
+//
+// Возвращает (path, true) если найден хотя бы один файл, иначе ("", false).
+// Используется как «дешёвый» pre-check перед nvml.Init(), чтобы избежать
+// SIGSEGV в окружениях без NVIDIA-драйвера (например, в nvidia/cuda:*-base
+// образах, которые НЕ содержат userspace-часть драйвера).
+func nvmlLibraryPresent() (string, bool) {
+	for _, p := range nvmlLibraryPaths {
+		if _, err := os.Stat(p); err == nil {
+			return p, true
+		}
+	}
+	return "", false
+}
+
+// initNVML - инициализация NVML библиотеки.
+//
+// 2026-06-30: добавлена pre-check через nvmlLibraryPresent(), чтобы не вызывать
+// nvml.Init() в окружениях без libnvidia-ml.so.1. Без этого check'а процесс
+// падает с SIGSEGV (PC=0x0) на стадии dlopen внутри CGo-обёртки.
 func initNVML() bool {
 	nvmlMu.Lock()
 	defer nvmlMu.Unlock()
@@ -26,14 +68,39 @@ func initNVML() bool {
 		return true
 	}
 
-	ret := nvml.Init()
-	if ret != nvml.SUCCESS {
-		fmt.Printf("[NVML] Init failed: %v\n", ret)
+	// Pre-check: убеждаемся, что библиотека доступна в файловой системе,
+	// прежде чем вызывать nvml.Init() (который может SIGSEGV при NULL dlopen).
+	libPath, ok := nvmlLibraryPresent()
+	if !ok {
+		fmt.Println("[NVML] libnvidia-ml.so.1 not found в известных путях — NVML недоступен (безопасно пропускаем)")
+		return false
+	}
+
+	// Defense-in-depth: recover() не ловит SIGSEGV из C-кода (POSIX сигналы не идут через
+	// Go runtime), но ловит panic'и, которые cgo-обёртка может бросить при невалидной
+	// библиотеке или ошибке драйвера. В случае panic'а помечаем NVML как «не инициализирован»
+	// и возвращаем false — collectGPUInfoNVML() вернёт пустой результат.
+	initOK := false
+	func() {
+		defer func() {
+			if r := recover(); r != nil {
+				fmt.Printf("[NVML] Panic during Init (lib=%s): %v — NVML помечен как недоступный\n", libPath, r)
+			}
+		}()
+		ret := nvml.Init()
+		if ret != nvml.SUCCESS {
+			fmt.Printf("[NVML] Init failed (lib=%s): %v\n", libPath, ret)
+			return
+		}
+		initOK = true
+	}()
+
+	if !initOK {
 		return false
 	}
 
 	nvmlInitialized = true
-	fmt.Println("[NVML] Successfully initialized")
+	fmt.Printf("[NVML] Successfully initialized (lib=%s)\n", libPath)
 	return true
 }
 

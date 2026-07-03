@@ -40,7 +40,12 @@ type AgentConfig struct {
 	HeartbeatInterval     int          `json:"heartbeatInterval"` // секунды
 	GPUMode               PlatformMode `json:"gpuMode"`           // auto/gpu/cpu
 	NVMLEnabled           bool         `json:"nvmlEnabled"`       // включить NVML
-	PublicHost            string       `json:"publicHost"`        // публичный IP/hostname, доступный балансеру
+	PublicHost            string       `json:"publicHost"`        // публичный IP/hostname agent'а, доступный балансеру
+	// 2026-06-30: явный host/port физического cppworker-бэкенда, который agent обёртывает.
+	// Используется в register() как host/cppWorkerPort, чтобы de-dup по (host, port)
+	// в /api/v1/gguf/backends корректно склеивал cppworker-gpu и cppworker-gpu-bundled-agent.
+	CppWorkerHost         string       `json:"cppWorkerHost"`     // host физического cppworker (например, "cppworker-gpu")
+	CppWorkerPort         int          `json:"cppWorkerPort"`     // port физического cppworker (например, 18092)
 	MaxModels             int          `json:"maxModels"`         // максимум моделей (-1 = авто/не задано)
 	MaxConcurrentRequests int          `json:"maxConcurrentRequests"` // максимум одновременных запросов (-1 = авто/не задано)
 	Weight                int          `json:"weight"`            // приоритетный вес бэкенда (1-100, по умолчанию 1)

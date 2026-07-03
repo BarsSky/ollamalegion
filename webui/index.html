@@ -120,10 +120,12 @@
                         <option value="en">🇬🇧 EN</option>
                     </select>
                     <button class="density-toggle" id="densityToggle" data-i18n-title="density.toggle" title="Toggle density (compact/comfortable)"><i class="fas fa-table-cells-large density-icon" aria-hidden="true"></i></button>
-                    <button class="btn-theme-toggle" id="themeToggle" data-i18n-title="settings.theme_toggle_title" title="Переключить тему (Ctrl+Shift+T)"><i class="fas fa-circle-half-stroke" aria-hidden="true"></i></button>
+                    <button class="btn-theme-toggle" id="themeToggle" data-i18n-title="settings.theme_toggle_title" title="Переключить тему (Ctrl+Shift+T)"><i id="themeToggleIcon" class="fas fa-moon" aria-hidden="true"></i></button>
                     <!-- F.α (2026-06-28): session F - notifications bell icon -->
                     <div class="notifications-wrapper">
-                        <button class="btn-theme-toggle" id="notificationsBtn" data-i18n-title="notifications.bell_title" title="Notifications">🔔<span class="notification-badge" id="notificationsBadge" hidden>0</span></button>
+                        <!-- 2026-06-30: заменили системный эмодзи 🔔 (жёлтый, расходится со стилем) на Font Awesome fa-bell
+                             в тон остальным иконкам header. Цвет наследуется от .btn-theme-toggle (var(--text-secondary)). -->
+                        <button class="btn-theme-toggle" id="notificationsBtn" data-i18n-title="notifications.bell_title" title="Notifications"><i class="fas fa-bell" aria-hidden="true"></i><span class="notification-badge" id="notificationsBadge" hidden>0</span></button>
                         <div class="notifications-dropdown" id="notificationsDropdown" hidden>
                             <div class="notifications-header">
                                 <span data-i18n="notifications.title">Notifications</span>

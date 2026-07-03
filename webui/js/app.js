@@ -210,14 +210,21 @@ const ui = (function () {
         btn.setAttribute('data-density-current', density);
     }
 
+    // 2026-06-30: заменили ☀️/🌙 эмодзи (жёлтые/белые системные, расходились со стилем)
+    // на Font Awesome fa-moon (в dark) / fa-sun (в light) — цвет наследуется от .btn-theme-toggle
+    // через var(--text-secondary) и больше не зависит от emoji-рендера ОС.
     function updateThemeToggleIcon(theme) {
         var btn = document.getElementById('themeToggle');
-        if (btn) {
-            btn.innerHTML = theme === 'dark' ? '☀️' : '🌙';
-            btn.title = theme === 'dark'
-                ? (window.I18N ? I18N.t('settings.theme_light') : 'Light theme')
-                : (window.I18N ? I18N.t('settings.theme_dark') : 'Dark theme');
+        if (!btn) return;
+        var icon = document.getElementById('themeToggleIcon');
+        if (icon) {
+            // В dark показываем луну (призыв «перейти в светлую»), в light — солнце.
+            icon.className = (theme === 'dark' ? 'fas fa-moon' : 'fas fa-sun');
+            icon.setAttribute('aria-hidden', 'true');
         }
+        btn.title = theme === 'dark'
+            ? (window.I18N ? I18N.t('settings.theme_light') : 'Light theme')
+            : (window.I18N ? I18N.t('settings.theme_dark') : 'Dark theme');
     }
 
     // ---- i18n ----

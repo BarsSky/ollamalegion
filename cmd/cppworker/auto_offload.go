@@ -9,9 +9,12 @@
 //
 //   availableVRAM_safety = availableVRAM * 0.85
 //   overhead = 1.5 GB (CUDA + activations + llama.cpp)
-//   kvCacheBytes = n_ctx * kv_cache_per_token (зависит от архитектуры)
+//   kvCacheBytes = n_ctx * kv_cache_per_token (зависит от архитектуры и kvCacheType)
 //   weightsPerLayer = SizeBytes / NLayers
 //   gpu_layers = floor((availableVRAM_safety - overhead - kvCacheBytes) / weightsPerLayer)
+//
+// kvCacheType влияет на размер KV-cache: f16=4B/token, q8_0=2B/token, q4_0=1B/token.
+// Если не указан — используется f16 (консервативная оценка).
 //
 // Файл активируется только при сборке с реальным llama.cpp (не stub).
 package main
@@ -19,17 +22,37 @@ package main
 import (
 	"ollama-loadbalancer/internal/cppbackend"
 	"ollama-loadbalancer/pkg/logger"
+	"os/exec"
+	"strings"
+	"strconv"
 )
 
+// kvCacheBytesPerType возвращает количество байт на KV-pair в зависимости от типа KV-cache.
+//   "f16" или ""  → 4 (2 байта K + 2 байта V = f16)
+//   "q8_0"       → 2 (1 байт K + 1 байт V = 8-bit quant)
+//   "q4_0"       → 1 (0.5 байта K + 0.5 байта V = 4-bit quant)
+func kvCacheBytesPerType(kvCacheType string) int64 {
+	switch strings.ToLower(kvCacheType) {
+	case "q8_0":
+		return 2
+	case "q4_0":
+		return 1
+	default:
+		return 4 // f16
+	}
+}
+
 // calculateOptimalGPULayersForModel вычисляет оптимальное число GPU-слоёв
-// для размещения модели в доступной VRAM с учётом KV-cache.
+// для размещения модели в доступной VRAM с учётом KV-cache и типа KV-cache.
+//
+// Параметр kvCacheType принимает "f16"/"q8_0"/"q4_0" или "" (default=f16).
 //
 // Возвращает:
 //   - GPULayers: 0..NLayers (0 = CPU-only через mmap)
 //   - -1 (=all layers), если модель целиком влезает в VRAM с запасом
 //
 // Если auto_offload отключён — возвращает currentConfig.DefaultGPULayers как есть.
-func calculateOptimalGPULayersForModel(m cppbackend.ModelInfo) int {
+func calculateOptimalGPULayersForModel(m cppbackend.ModelInfo, kvCacheType string) int {
 	if !*autoOffload {
 		return currentConfig.DefaultGPULayers
 	}
@@ -37,32 +60,29 @@ func calculateOptimalGPULayersForModel(m cppbackend.ModelInfo) int {
 		// Нет метаданных (только что загруженная без path/size) — fallback.
 		return currentConfig.DefaultGPULayers
 	}
-	// Используем FREE VRAM, а не TOTAL VRAM, чтобы не учитывать VRAM,
-	// уже занятую другой загруженной моделью (например, gemma-4 5GB на 20GB GPU
-	// оставляет ~15GB free).
-	// Если freeVRAM недоступен — fallback на availableVRAM с двойным запасом.
-	freeVRAM := freeVRAMBytes()
-	if freeVRAM <= 0 {
-		// freeVRAM не удалось определить — используем availableVRAM с запасом 0.85.
-		freeVRAM = int64(float64(availableVRAMBytes()) * 0.85)
+	availableVRAM := availableVRAMBytes()
+	if availableVRAM <= 0 {
+		// Fallback: пробуем через nvidia-smi
+		availableVRAM = nvidiaSmiVRAMBytes()
 	}
-	if freeVRAM <= 0 {
-		// Не смогли узнать VRAM (CPU-only host, нет nvidia-smi) — fallback.
+	if availableVRAM <= 0 {
+		// Не смогли узнать VRAM — fallback.
+		logger.Get().Warnw("auto_offload: cannot determine available VRAM (NVML + nvidia-smi both failed), using DefaultGPULayers",
+			"model", m.Name)
 		return currentConfig.DefaultGPULayers
 	}
-	safetyFactor := 0.9
-	safeVRAM := int64(float64(freeVRAM) * safetyFactor)
+	safetyFactor := 0.85
+	safeVRAM := int64(float64(availableVRAM) * safetyFactor)
 	overheadBytes := int64(1536) * 1024 * 1024 // 1.5 GB
 
 	// KV-cache для запрошенного n_ctx (bytes)
-	// Формула (f16, 4 байта на токен на KV-pair): 4 * NLayers * headDim
+	// Формула: bytesPerType(v) * n_ctx * n_layers * effKVHeads * headDim
 	// где headDim ≈ n_embd (для MHA) или n_embd / n_heads * n_kv_heads (GQA).
-	// Упрощённо: 4 * NLayers * NEmbd для MHA, 4 * NLayers * NKvHeads * (NEmbd/NHeads) для GQA.
 	nCtx := m.ContextSize
 	if nCtx <= 0 {
 		nCtx = currentConfig.DefaultCtxSize
 	}
-	kvCacheBytes := estimateKVCacheBytes(nCtx, m.NLayers, m.NEmbd, m.NHeads, m.NKvHeads)
+	kvCacheBytes := estimateKVCacheBytes(nCtx, m.NLayers, m.NEmbd, m.NHeads, m.NKvHeads, kvCacheType)
 
 	availableForWeights := safeVRAM - overheadBytes - kvCacheBytes
 	if availableForWeights <= 0 {
@@ -71,6 +91,7 @@ func calculateOptimalGPULayersForModel(m cppbackend.ModelInfo) int {
 			"model", m.Name,
 			"safe_vram_mb", safeVRAM/(1024*1024),
 			"kv_cache_mb", kvCacheBytes/(1024*1024),
+			"kv_cache_type", kvCacheType,
 			"overhead_mb", overheadBytes/(1024*1024))
 		return 0
 	}
@@ -90,23 +111,51 @@ func calculateOptimalGPULayersForModel(m cppbackend.ModelInfo) int {
 		"size_bytes", m.SizeBytes,
 		"n_layers", m.NLayers,
 		"weights_per_layer_mb", weightsPerLayer/(1024*1024),
-		"free_vram_mb", freeVRAM/(1024*1024),
+		"available_vram_mb", availableVRAM/(1024*1024),
 		"safe_vram_mb", safeVRAM/(1024*1024),
 		"kv_cache_mb", kvCacheBytes/(1024*1024),
+		"kv_cache_type", kvCacheType,
 		"n_ctx", nCtx,
 		"gpu_layers", gpuLayers)
 	return gpuLayers
 }
 
+// nvidiaSmiVRAMBytes — fallback для availableVRAMBytes через nvidia-smi.
+// Используется когда NVML недоступен. Возвращает свободную VRAM в байтах.
+func nvidiaSmiVRAMBytes() int64 {
+	cmd := exec.Command("nvidia-smi", "--query-gpu=memory.free", "--format=csv,noheader,nounits")
+	out, err := cmd.Output()
+	if err != nil {
+		return 0
+	}
+	line := strings.TrimSpace(string(out))
+	if line == "" {
+		return 0
+	}
+	// Берём первую строку (первая GPU), отрезаем единицы
+	parts := strings.SplitN(line, "\n", 2)
+	vramStr := strings.TrimSpace(parts[0])
+	vramMiB, err := strconv.ParseInt(vramStr, 10, 64)
+	if err != nil {
+		return 0
+	}
+	return vramMiB * 1024 * 1024
+}
+
 // estimateKVCacheBytes — оценка размера KV-cache для n_ctx токенов.
 //
 // Формула для f16 (4 байта на KV-pair на токен на слой):
-//   bytes = 4 * n_ctx * n_layers * head_dim * 2 (K+V)
+//   bytes = bytesPerType * n_ctx * n_layers * head_dim * 2 (K+V)
 //
 // head_dim для MHA = n_embd
 // head_dim для GQA = n_embd / n_heads * n_kv_heads
 // Для простоты используем среднее: head_dim ≈ n_embd / n_heads * min(n_heads, n_kv_heads)
-func estimateKVCacheBytes(nCtx, nLayers, nEmbd, nHeads, nKvHeads int) int64 {
+//
+// Параметр kvCacheType влияет на множитель bytesPerType:
+//   "f16" или "" → 4
+//   "q8_0"      → 2
+//   "q4_0"      → 1
+func estimateKVCacheBytes(nCtx, nLayers, nEmbd, nHeads, nKvHeads int, kvCacheType string) int64 {
 	if nCtx <= 0 || nLayers <= 0 {
 		return 0
 	}
@@ -122,6 +171,6 @@ func estimateKVCacheBytes(nCtx, nLayers, nEmbd, nHeads, nKvHeads int) int64 {
 	if headDim <= 0 {
 		headDim = nEmbd
 	}
-	// 4 (f16 = 2 байта × K+V) × n_ctx × n_layers × effKVHeads × headDim
-	return int64(4) * int64(nCtx) * int64(nLayers) * int64(effKVHeads) * int64(headDim)
+	bytesPerType := kvCacheBytesPerType(kvCacheType)
+	return bytesPerType * int64(nCtx) * int64(nLayers) * int64(effKVHeads) * int64(headDim)
 }

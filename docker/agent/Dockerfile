@@ -56,12 +56,17 @@ RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 \
 
 # -----------------------------------------------------------------------------
 # Stage 3b: builder-gpu — сборка с NVML (требует glibc, не alpine)
-# Использует локальный nvidia/cuda образ с установленным golang
+# Использует локальный nvidia/cuda образ с установленным golang.
+#
+# 2026-06-30: добавляем -tags llama_stub чтобы не подтягивать c/bridge/bridge.c
+# (требует llama.h из upstream llama.cpp, который не копируется на этой стадии).
+# bridge_stub.go полностью покрывает все симптомы CGo, которые нужны агенту
+# — agent не вызывает llama.cpp напрямую (он работает с CppWorker через HTTP).
 # -----------------------------------------------------------------------------
 FROM nvidia/cuda:12.2.0-base-ubuntu22.04 AS builder-gpu
 
-# Устанавливаем Go 1.22 напрямую (обход Docker Hub)
-# Используем go1.22.10 — stable, не требует Docker Hub
+# Устанавливаем Go напрямую (обход Docker Hub).
+# Используем go1.22.10 — stable, не требует Docker Hub.
 ARG GO_VERSION=1.22.10
 RUN apt-get update && apt-get install -y --no-install-recommends \
     wget ca-certificates gcc libc6-dev && \
@@ -85,10 +90,12 @@ COPY . .
 
 ARG ENABLE_NVML=true
 
-# Сборка с NVML под glibc (nvidia/cuda base)
+# Сборка с NVML под glibc (nvidia/cuda base).
+# -tags "nvml llama_stub" включает NVML (Go-nvml) и stub-режим bridge —
+# agent не вызывает bridge symbols на runtime, поэтому stub покрывает потребности.
 RUN CGO_ENABLED=1 GOOS=linux GOARCH=amd64 \
-    go build -trimpath -ldflags "-w -s" \
-    -tags nvml -o agent ./cmd/agent
+    go build -trimpath -ldflags "-w -s -extldflags '-static'" \
+    -tags "nvml llama_stub" -o agent ./cmd/agent
 
 # -----------------------------------------------------------------------------
 # Stage 4: agent-cpu — distroless (статический бинарник, без shell)

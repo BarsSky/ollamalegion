@@ -74,18 +74,60 @@ func (a *Agent) getOllamaBaseURL() string {
 	return "http://localhost:11434"
 }
 
-// extractCppWorkerPort - извлечение порта cppworker из CppWorkerURL
+// extractCppWorkerHost - возвращает host физического cppworker-бэкенда.
+//
+// 2026-06-30: раньше для отправки register() в балансер использовался
+// `getPublicHost()` (== PublicHost == AGENT_PUBLIC_HOST == имя контейнера agent'а),
+// что давало ключ (host=cppworker-gpu-bundled-agent, port=18091), отличный от
+// ключа cppworker-бэкенда (host=cppworker-gpu, port=18092). De-dup в
+// /api/v1/gguf/backends по (host, port) НЕ срабатывал, и WebUI показывал
+// два бэкенда с одним физическим endpoint.
+//
+// Приоритет (для llama_cpp):
+//  1. CppWorkerHost из AgentConfig (compose выставляет AGENT_CPPWORKER_HOST=cppworker-gpu).
+//  2. Хост из CppWorkerURL (если задан).
+//  3. PublicHost (как fallback — например, для локальной разработки).
+//  4. "localhost" (последний resort).
+func (a *Agent) extractCppWorkerHost() string {
+	if a.config.CppWorkerHost != "" {
+		return a.config.CppWorkerHost
+	}
+	if a.config.CppWorkerURL != "" {
+		if u, err := url.Parse(a.config.CppWorkerURL); err == nil && u.Hostname() != "" {
+			return u.Hostname()
+		}
+	}
+	if a.config.PublicHost != "" {
+		return a.config.PublicHost
+	}
+	return "localhost"
+}
+
+// extractCppWorkerPort - извлечение порта физического cppworker.
+//
+// 2026-06-30: раньше возвращал 18091 (legacy) как fallback для llama_cpp,
+// хотя в bundled-compose cppworker слушает 18092. Это давало port=18091
+// в register-payload и ломало de-dup с cppworker-бэкендом (port=18092).
+//
+// Приоритет:
+//  1. CppWorkerPort из AgentConfig (compose выставляет AGENT_CPPWORKER_PORT=18092).
+//  2. Порт из CppWorkerURL (если задан).
+//  3. 18092 для llama_cpp (актуальный bundled-default).
+//  4. 0 для остальных типов.
 func (a *Agent) extractCppWorkerPort() int {
+	if a.config.CppWorkerPort > 0 {
+		return a.config.CppWorkerPort
+	}
 	if a.config.CppWorkerURL != "" {
 		if u, err := url.Parse(a.config.CppWorkerURL); err == nil && u.Port() != "" {
-			if port, err := strconv.Atoi(u.Port()); err == nil {
+			if port, err := strconv.Atoi(u.Port()); err == nil && port > 0 {
 				return port
 			}
 		}
 	}
-	// Если тип llama_cpp — дефолтный порт 18091
+	// Fallback: 18092 (актуальный дефолт для bundled llama.cpp, см. cmd/cppworker/main.go).
 	if a.config.BackendType == types.BackendTypeLlamaCpp {
-		return 18091
+		return 18092
 	}
 	return 0
 }

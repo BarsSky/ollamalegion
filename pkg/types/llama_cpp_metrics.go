@@ -2,6 +2,14 @@ package types
 
 // LlamaCppMetrics - метрики llama.cpp бэкенда
 type LlamaCppMetrics struct {
+	// MaxVRAMNCtx — макс. n_ctx, помещающийся в VRAM (из /api/models cppworker).
+	// Используется preflight_nctx для оценки возможности reload без round-trip.
+	// 0 = неизвестно (poller ещё не опросил бэкенд).
+	MaxVRAMNCtx     int    `json:"maxVramNCtx"`
+	MaxRAMNCtx      int    `json:"maxRamNCtx"`
+	AvailableVRAMMB uint64 `json:"availableVramMb"`
+	TotalVRAMMB     uint64 `json:"totalVramMb"`
+	ModelMaxContext int    `json:"modelMaxContext"`
 	LoadedModels []LlamaCppModel `json:"loadedModels"`
 	// LoadingModels — модели, которые сейчас в процессе загрузки (State="loading").
 	// Заполняется из cppworker /api/models/load/progress (либо из notifyModelLoaded callback).

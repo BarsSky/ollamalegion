@@ -8,6 +8,8 @@ import (
 	"net/http"
 	"os"
 	"time"
+
+	"ollama-loadbalancer/pkg/types"
 )
 
 // register - регистрация на балансировщике
@@ -28,11 +30,28 @@ func (a *Agent) register() error {
 	// Извлекаем порт Ollama из конфигурации (OLLAMA_URL)
 	ollamaPort := a.extractOllamaPort()
 
+	// 2026-06-30: для host/cppWorkerPort в register-payload используем координаты
+	// ФИЗИЧЕСКОГО cppworker-бэкенда, а не самого agent'а. Это критично для de-dup
+	// по (host, port) в /api/v1/gguf/backends: и cppworker-bundled, и agent-бэкенд
+	// должны попадать в одну группу (host=cppworker-gpu, port=18092) и WebUI будет
+	// показывать ровно одну запись.
+	//
+	// publicHost (== AGENT_PUBLIC_HOST == имя контейнера agent'а) теперь используется
+	// только для agentPort/healthcheck самого agent'а, а не для хоста бэкенда.
+	registerHost := publicHost
+	registerCppWorkerPort := 0
+	if a.config.BackendType == types.BackendTypeLlamaCpp {
+		registerHost = a.extractCppWorkerHost()
+		registerCppWorkerPort = a.extractCppWorkerPort()
+		fmt.Printf("[%s] Registering llama_cpp backend at %s:%d (agent at %s)\n",
+			time.Now().Format(time.RFC3339), registerHost, registerCppWorkerPort, publicHost)
+	}
+
 	// Отправляем регистрацию напрямую в формате, который ожидает балансировщик
 	reqBody := map[string]interface{}{
 		"agentId":     a.config.AgentID,
 		"hostname":    hostname,
-		"host":        publicHost,
+		"host":        registerHost,
 		"ollamaPort":  ollamaPort,
 		"agentPort":   a.config.MetricsPort,
 		"gpuCount":    gpuInfo.Count,
@@ -40,7 +59,7 @@ func (a *Agent) register() error {
 		"labels":      []string{osName, "amd64", string(a.platformMode)},
 		"weight":        a.config.Weight,
 		"backendType":   string(a.config.BackendType),
-		"cppWorkerPort": a.extractCppWorkerPort(),
+		"cppWorkerPort": registerCppWorkerPort,
 		"nodeLabels":    a.config.NodeLabels,
 	}
 

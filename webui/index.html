@@ -1,4 +1,4 @@
-<!DOCTYPE html>
+﻿<!DOCTYPE html>
 <html lang="ru">
 <head>
     <meta charset="UTF-8">
@@ -52,6 +52,9 @@
     <link rel="stylesheet" href="css/pages.css?v=11">
     <link rel="stylesheet" href="css/layout.css?v=11">
     <link rel="stylesheet" href="css/responsive.css?v=11">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Geist:wght@300;400;500;600;700&family=Geist+Mono:wght@400;500&display=swap" rel="stylesheet">
 </head>
 <body>
     <div class="app">
@@ -1394,5 +1397,41 @@
     <script src="js/modules/notifications.js?v=15"></script>
     <script src="js/modules/logs-stream.js?v=15"></script>
     <script src="js/app.js?v=15"></script>
+<script>
+// Theme switcher
+(function() {
+  const themes = ['linear', 'nvidia', 'vercel', 'dark', 'light'];
+  const labels = { linear: 'Linear', nvidia: 'NVIDIA', vercel: 'Vercel', dark: 'Dark', light: 'Light' };
+  const stored = localStorage.getItem('ollamalegion_theme');
+  if (stored && themes.includes(stored)) {
+    document.documentElement.setAttribute('data-theme', stored);
+  }
+  // Inject switcher into DOM
+  document.addEventListener('DOMContentLoaded', function() {
+    const header = document.querySelector('.nav-header, header, .header');
+    if (!header) return;
+    const current = document.documentElement.getAttribute('data-theme') || 'linear';
+    let html = '<div class="theme-switcher" title="Switch theme">';
+    themes.forEach(t => {
+      html += '<button class="theme-btn' + (t === current ? ' active' : '') + '" data-theme="' + t + '">' + labels[t] + '</button>';
+    });
+    html += '</div>';
+    const el = document.createElement('div');
+    el.innerHTML = html;
+    header.appendChild(el.firstElementChild);
+    // Click handlers
+    header.querySelectorAll('.theme-btn').forEach(btn => {
+      btn.addEventListener('click', function() {
+        const theme = this.dataset.theme;
+        document.documentElement.setAttribute('data-theme', theme);
+        localStorage.setItem('ollamalegion_theme', theme);
+        header.querySelectorAll('.theme-btn').forEach(b => b.classList.remove('active'));
+        this.classList.add('active');
+      });
+    });
+  });
+})();
+</script>
 </body>
 </html>
+

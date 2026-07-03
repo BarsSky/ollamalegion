@@ -648,7 +648,9 @@ func (b *Backend) CalculateOptimalGPULayers(modelSizeBytes int64, totalLayers, n
 
 	// Определяем желаемое количество GPU-слоёв
 	wantedGPULayers := requestedGPULayers
-	if wantedGPULayers == -1 || wantedGPULayers > totalLayers {
+	// -1 and -2 both mean "auto / all layers on GPU". -2 is used by the adaptive
+	// reload path when fallback_no_meta can't read GGUF metadata (e.g. gemma4).
+	if wantedGPULayers < 0 || wantedGPULayers > totalLayers {
 		wantedGPULayers = totalLayers
 	}
 
@@ -746,8 +748,22 @@ func (b *Backend) CalculateOptimalGPULayers(modelSizeBytes int64, totalLayers, n
 //
 // Добавляет 10% буфера безопасности для избежания граничных OOM.
 func estimateKVCacheMB(nLayers, nHeads, nKvHeads, nEmbd, nCtx int) uint64 {
-	if nLayers <= 0 || nHeads <= 0 || nEmbd <= 0 || nCtx <= 0 {
+	if nLayers <= 0 || nCtx <= 0 {
 		return 0
+	}
+
+	// fallback: если nHeads/nEmbd неизвестны (GGUF не прочитан),
+	// используем консервативную оценку: nKvHeads=2, headDim=128
+	// Для gemma-4: 42 слоя × 65K контекст × 2 головы × 128 × 2 байта ≈ 2.7 GB KV-cache
+	if nHeads <= 0 || nEmbd <= 0 {
+		if nKvHeads <= 0 {
+			nKvHeads = 2
+		}
+		headDim := 128
+		kvBytes := uint64(2) * uint64(nLayers) * uint64(nCtx) * uint64(nKvHeads) * uint64(headDim) * 2
+		kvMB := kvBytes / (1024 * 1024)
+		kvMB = kvMB + kvMB/10 // +10% safety buffer
+		return kvMB
 	}
 
 	if nKvHeads <= 0 {
@@ -828,7 +844,10 @@ func (b *Backend) checkVRAMForModel(name string, path string, opts LoadModelOpts
 	// Если GGUF header не дал результатов — fallback на эвристику по размеру файла
 	if totalLayers <= 0 {
 		totalLayers = estimateLayersFromFileSize(fi.Size())
-		// nHeads и nEmbd остаются 0 — estimateKVCacheMB вернёт 0
+		// nHeads и nEmbd остаются 0, но nKvHeads=2 чтобы estimateKVCacheMB сработал с fallback
+		if nKvHeads <= 0 {
+			nKvHeads = 2
+		}
 	}
 
 	optGPULayers, useMmap, diagnostics := b.CalculateOptimalGPULayers(
@@ -1871,8 +1890,10 @@ func ggufTypeSize(valType uint32) int64 {
 func estimateLayersFromFileSize(sizeBytes int64) int {
 	sizeGB := float64(sizeBytes) / 1024 / 1024 / 1024
 	switch {
-	case sizeGB < 5:
+	case sizeGB < 4.5:
 		return 32 // 7B params
+	case sizeGB < 7:
+		return 42 // 7-9B class (gemma-4, mistral-7B v3, etc.)
 	case sizeGB < 10:
 		return 40 // 13B params
 	case sizeGB < 20:

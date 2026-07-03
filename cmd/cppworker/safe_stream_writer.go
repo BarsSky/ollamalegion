@@ -206,6 +206,15 @@ func (sw *safeStreamWriter) markBroken(why string, err error) {
 	sw.disconnectWhy = why
 	atomic.AddInt64(&sw.writeErrors, 1)
 
+	// Уведомляем NaN-healer об обрыве стрима (адаптивный загрузчик)
+	if RecordStreamBreakWrapper != nil {
+		errStr := ""
+		if err != nil {
+			errStr = err.Error()
+		}
+		RecordStreamBreakWrapper(sw.modelName, why, errStr)
+	}
+
 	// Snapshot для /api/v1/cppworker/debug/last-stream.
 	snapshot := LastStreamInfo{
 		Model:          sw.modelName,

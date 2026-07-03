@@ -83,13 +83,57 @@ func ensureModelLoaded(modelName string) error {
 		//   5. Stage 3: gpu_layers=0 + n_ctx = max_viable (всё через mmap).
 		//
 		// Отключается через CPPWORKER_AUTO_TUNE_NCTX_ON_LOAD=false.
-		tunedOpts, rationale := calculateLazyLoadOpts(
-			modelName,
-			*ctxSize,
-			*gpuLayers,
-			currentConfig,
-		)
-		opts := tunedOpts
+		// Try adaptive SelectStrategy first (kvCacheType, gpu_layers, n_ctx auto-tuning)
+		// Falls back to calculateLazyLoadOpts if environment profile not available.
+		var opts cppbackend.LoadModelOpts
+		var rationale LazyLoadRationale
+		if globalEnv != nil && autoTuneNCtxOnLoadEnabled {
+			env := globalEnv.Get()
+			// Read GGUF meta for the model
+			filename := modelName + ".gguf"
+			meta, mErr := mm.GetModelMeta(filename)
+			if mErr != nil {
+				meta, mErr = mm.GetModelMeta(modelName)
+			}
+			if mErr == nil && meta != nil && meta.NLayers > 0 {
+				strategy := SelectStrategy(&env, modelName, *meta, *ctxSize, *gpuLayers, currentConfig)
+				opts = cppbackend.LoadModelOpts{
+					GPULayers:   strategy.GPULayers,
+					ContextSize: strategy.NCtx,
+					BatchSize:   *batchSize,
+					UseMmap:     strategy.UseMmap,
+				}
+				rationale = LazyLoadRationale{
+					RequestedNCtx:      *ctxSize,
+					RequestedGPULayers: *gpuLayers,
+					AppliedNCtx:        strategy.NCtx,
+					AppliedGPULayers:   strategy.GPULayers,
+					AppliedUseMmap:     strategy.UseMmap,
+					Source:             strategy.Stage,
+					NLayers:            meta.NLayers,
+					NEmbd:              meta.NEmbd,
+					NHeads:             meta.NHeads,
+					NKvHeads:           meta.NKvHeads,
+					ModelSize:          meta.SizeBytes,
+				}
+				logger.Get().Infow("lazy-load: adaptive SelectStrategy applied",
+					"model", modelName,
+					"stage", strategy.Stage,
+					"kv_cache_type", strategy.KVCacheType,
+					"gpu_layers", strategy.GPULayers,
+					"n_ctx", strategy.NCtx,
+					"explanation", strategy.Explanation)
+			} else {
+				// Fallback to calculateLazyLoadOpts
+				tunedOpts, calcRationale := calculateLazyLoadOpts(modelName, *ctxSize, *gpuLayers, currentConfig)
+				opts = tunedOpts
+				rationale = calcRationale
+			}
+		} else {
+			tunedOpts, calcRationale := calculateLazyLoadOpts(modelName, *ctxSize, *gpuLayers, currentConfig)
+			opts = tunedOpts
+			rationale = calcRationale
+		}
 		opts.FlashAttnType = convertFlashAttn(*flashAttn)
 		opts.NUMA = *numa
 
@@ -100,61 +144,33 @@ func ensureModelLoaded(modelName string) error {
 		// Legacy auto-offload остался для обратной совместимости: если
 		// CPPWORKER_AUTO_TUNE_NCTX_ON_LOAD=false, старая логика всё равно
 		// отрабатывает (estimatedLayers=80, kvReserve=2GB).
-		// Legacy auto-offload branch: срабатывает ТОЛЬКО если calculateLazyLoadOpts
-		// не смог прочитать GGUF header (rationale.Source == "fallback_no_meta").
-		// Используем тот же safetyFactor, что в calculateLazyLoadOpts, чтобы
-		// поведение было консистентным.
 		if *autoOffload && rationale.Source == "fallback_no_meta" {
 			availableVRAM := availableVRAMBytes()
-			availableRAM := availableRAMBytes()
 			if availableVRAM > 0 {
 				filename := modelName + ".gguf"
 				if meta, mErr := mm.GetModelMeta(filename); mErr == nil && meta.SizeBytes > 0 {
-					safeVRAM := int64(float64(availableVRAM) * nctxSafetyFactor)
+					safeVRAM := int64(float64(availableVRAM) * 0.85)
 					overhead := int64(1536) * 1024 * 1024 // 1.5GB CUDA + activations
-					// Резерв под KV-cache: реалистичный расчёт если есть NLayers,
-					// иначе грубый 2GB fallback.
-					var kvReserve int64
-					if meta.NLayers > 0 && meta.NEmbd > 0 {
-						kvReserve = estimateKVCacheBytes(*ctxSize, meta.NLayers, meta.NEmbd, meta.NHeads, meta.NKvHeads)
-					} else {
-						kvReserve = int64(2) * 1024 * 1024 * 1024 // 2 GB legacy fallback
-					}
+					// Резерв под KV-cache для n_ctx=32768 (~2GB для типичной модели).
+					kvReserve := int64(2) * 1024 * 1024 * 1024
 					availableForWeights := safeVRAM - overhead - kvReserve
 					if availableForWeights > 0 && meta.SizeBytes > availableForWeights {
 						// Модель не влезает целиком — partial offload.
-						// Используем РЕАЛЬНОЕ число слоёв из GGUF (если есть),
-						// иначе fallback 80 (типичная крупная модель).
-						estimatedLayers := 80 // legacy fallback
-						if meta.NLayers > 0 {
-							estimatedLayers = meta.NLayers
-						}
+						estimatedLayers := 80 // грубая оценка для типичной модели
 						weightsPerLayer := meta.SizeBytes / int64(estimatedLayers)
 						if weightsPerLayer > 0 {
 							gpuLayers := int(availableForWeights / weightsPerLayer)
 							if gpuLayers > 0 && gpuLayers < estimatedLayers {
-								// Дополнительно проверяем, что веса для оставшихся слоёв
-								// влезают в RAM (mmap).
-								requiredRAM := int64(estimatedLayers-gpuLayers) * weightsPerLayer
-								if availableRAM > 0 && requiredRAM > availableRAM {
-									// RAM не хватает — пропускаем partial offload,
-									// пусть AutoTuneNCtx разберётся при reload.
-									logger.Get().Warnw("lazy-load: auto-offload skipped (weights don't fit in RAM)",
-										"model", modelName,
-										"required_ram_mb", requiredRAM/(1024*1024),
-										"available_ram_mb", availableRAM/(1024*1024))
-								} else {
-									logger.Get().Infow("lazy-load: auto-offload (legacy, file-based estimate)",
-										"model", modelName,
-										"old_gpu_layers", opts.GPULayers,
-										"new_gpu_layers", gpuLayers,
-										"model_size_mb", meta.SizeBytes/(1024*1024),
-										"available_for_weights_mb", availableForWeights/(1024*1024),
-										"estimated_layers", estimatedLayers,
-										"vram_total_mb", availableVRAM/(1024*1024))
-									opts.GPULayers = gpuLayers
-									opts.UseMmap = true
-								}
+								logger.Get().Infow("lazy-load: auto-offload (legacy, file-based estimate)",
+									"model", modelName,
+									"old_gpu_layers", opts.GPULayers,
+									"new_gpu_layers", gpuLayers,
+									"model_size_mb", meta.SizeBytes/(1024*1024),
+									"available_for_weights_mb", availableForWeights/(1024*1024),
+									"estimated_layers", estimatedLayers,
+									"vram_total_mb", availableVRAM/(1024*1024))
+								opts.GPULayers = gpuLayers
+								opts.UseMmap = true
 							}
 						}
 					}
@@ -185,13 +201,6 @@ func ensureModelLoaded(modelName string) error {
 				"modelsDir":   derefString(modelsDir),
 				"vramTotalMB": backendGPUVRAMTotal(),
 				"vramFreeMB":  backendGPUVRAMFree(),
-				// 2026-06-29: добавлено для диагностики n_ctx auto-tune
-				// (источник решения, % reduction и max_viable).
-				"source":             rationale.Source,
-				"max_viable_n_ctx":   rationale.MaxViableNCtx,
-				"n_ctx_reduction_pct": rationale.NCtxReductionPct,
-				"available_vram_mb":  rationale.AvailableVRAMBytes / (1024 * 1024),
-				"available_ram_mb":   rationale.AvailableRAMBytes / (1024 * 1024),
 			}
 			RecordLoadAttempt(attempt)
 			return fmt.Errorf("failed to load model %s: %w", modelName, err)
@@ -203,15 +212,7 @@ func ensureModelLoaded(modelName string) error {
 		attempt.Success = true
 		attempt.DurationMs = time.Since(loadStart).Milliseconds()
 		attempt.Diagnostics = map[string]interface{}{
-			"modelPath":          modelPath,
-			"gpuLayers":          opts.GPULayers,
-			"ctxSize":            opts.ContextSize,
-			"useMmap":            opts.UseMmap,
-			"source":             rationale.Source,
-			"max_viable_n_ctx":   rationale.MaxViableNCtx,
-			"n_ctx_reduction_pct": rationale.NCtxReductionPct,
-			"available_vram_mb":  rationale.AvailableVRAMBytes / (1024 * 1024),
-			"available_ram_mb":   rationale.AvailableRAMBytes / (1024 * 1024),
+			"modelPath": modelPath,
 		}
 		RecordLoadAttempt(attempt)
 		return nil

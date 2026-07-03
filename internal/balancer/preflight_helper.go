@@ -148,7 +148,7 @@ func (lr *LlamaCppRouter) collectPreflightState(backendID, model string) *NCtxBa
 	return &NCtxBackendState{
 		BackendID:       backendID,
 		CurrentNCtx:     currentNCtx,
-		MaxVRAMNCtx:     0, // не доступен на стороне балансера (cppworker сообщает только после code 3)
+		MaxVRAMNCtx:     lr.proxy.getMaxVRAMNCtxFromMetrics(backendID), // из /api/models poller (ранее было 0 — не доступен)
 		ModelMaxContext: modelMaxContext,
 	}
 }

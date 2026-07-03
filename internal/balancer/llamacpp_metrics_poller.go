@@ -168,7 +168,11 @@ func (p *llamaCppMetricsPoller) pollBackend(b backendInfo) {
 	}
 
 	var data struct {
-		Count  int `json:"count"`
+		Count           int    `json:"count"`
+		MaxVRAMNCtx     int    `json:"max_vram_n_ctx"`
+		ModelMaxContext int    `json:"model_max_context"`
+		AvailableVRAMMB uint64 `json:"available_vram_mb"`
+		TotalVRAMMB     uint64 `json:"total_vram_mb"`
 		Models []struct {
 			Name          string `json:"name"`
 			Path          string `json:"path,omitempty"`
@@ -226,6 +230,10 @@ func (p *llamaCppMetricsPoller) pollBackend(b backendInfo) {
 		p.proxy.metricsMgr.llamaMetrics[b.id] = lm
 	}
 	lm.LoadedModels = loadedModels
+	lm.MaxVRAMNCtx = data.MaxVRAMNCtx
+	lm.ModelMaxContext = data.ModelMaxContext
+	lm.AvailableVRAMMB = data.AvailableVRAMMB
+	lm.TotalVRAMMB = data.TotalVRAMMB
 	p.proxy.metricsMgr.mu.Unlock()
 	logger.Get().Infow("llamaCppMetricsPoller: updated llama.cpp metrics",
 		"backend", b.id, "url", url, "loaded_models", len(loadedModels))

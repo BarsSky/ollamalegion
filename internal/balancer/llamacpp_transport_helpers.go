@@ -10,7 +10,6 @@ import (
 	"time"
 )
 
-
 // accumulatedToolCall — состояние одного tool_call, собранное из нескольких SSE-чанков.
 type accumulatedToolCall struct {
 	index    int
@@ -115,22 +114,32 @@ func cleanFinalContent(s string) string {
 // завершающий NDJSON-чанк с tool_calls (если они были накоплены) или просто
 // done:true для Ollama-клиентов.
 //
-// ВАЖНО: чтобы клиент не получил пустой content (как было до фикса),
-// upstreamContent используется как fallback — обычно это уже отфильтрованный
-// cppworker'ом done-чанк, и его message.content равен полному ответу модели.
+// Семантика по originalPath:
+//   - /v1/chat/completions (SSE→SSE passthrough) — пишет data: [DONE]\n\n и flush.
+//   - /api/chat — пишет NDJSON с done:true, message.role, message.content (из upstreamContent
+//     или накопленного буфера) и если есть tool_calls — message.tool_calls.
+//   - /api/generate — пишет NDJSON с done:true, response (из upstreamContent или буфера).
 //
-// Для /v1/chat/completions (SSE→SSE passthrough) — просто пишет data: [DONE]\n\n.
-// Для /api/chat — пишет NDJSON с done:true, message.role, message.content (из upstreamContent
+// Bug #12 (2026-06-30): параметр upstreamSentFinishReason предотвращает дублирование
+// финального NDJSON. Если upstream ПРИСЛАЛ finish_reason в одном из чанков до [DONE],
+// то translateOpenAISSEDataToOllama УЖЕ записал финальный done-чанк с полным
+// message.content / response. В этом случае writeStreamingSSEDone НЕ пишет второй
+// чанк с тем же content, иначе клиент увидит дубликат ответа.
 //
-//	или накопленного буфера) и если есть tool_calls — message.tool_calls.
+// Если upstream НЕ прислал finish_reason (только [DONE] без завершающего чанка),
+// writeStreamingSSEDone пишет финальный NDJSON с накопленным content — это
+// спасает от пустого content в клиенте.
 //
-// Для /api/generate — пишет NDJSON с done:true, response (из upstreamContent или буфера).
+// Если есть tool_calls — writeStreamingSSEDone ВСЕГДА пишет финальный чанк
+// (translate не формирует tool_calls в финальном чанке), при этом content
+// ставится пустым (tool_calls заменяют content по семантике OpenAI).
 func writeStreamingSSEDone(
 	w http.ResponseWriter,
 	originalPath, modelFromCtx string,
 	toolAccum map[int]*accumulatedToolCall,
 	accumulatedContent string,
 	upstreamContent string,
+	upstreamSentFinishReason bool,
 ) error {
 	if originalPath == "/v1/chat/completions" {
 		// SSE→SSE passthrough — просто завершаем [DONE]
@@ -143,7 +152,7 @@ func writeStreamingSSEDone(
 		return err
 	}
 
-	// Определяем итоговый контент с приоритетом:
+	// Bug #12 fix (2026-06-30): определяем итоговый контент с приоритетом:
 	//   1. upstreamContent (если есть, обычно это отфильтрованный cppworker done-чанк)
 	//   2. accumulatedContent (накопленный из streaming чанков)
 	//   3. "" (fallback — не должно происходить в нормальной ситуации)
@@ -153,15 +162,33 @@ func writeStreamingSSEDone(
 	}
 	finalContent = cleanFinalContent(finalContent)
 
+	hasToolCalls := len(toolAccum) > 0
+
+	// Bug #12 fix (2026-06-30): если upstream уже прислал finish_reason
+	// (т.е. translateOpenAISSEDataToOllama записал финальный NDJSON с done:true
+	// и message.content), мы НЕ должны писать второй финальный чанк с тем же
+	// content — это дубль. Единственное исключение — наличие tool_calls,
+	// которые translate не формирует в финальном чанке.
+	if upstreamSentFinishReason && !hasToolCalls {
+		// Translate уже записал финальный done-чанк с content. Просто flush.
+		Flush(w)
+		return nil
+	}
+
 	// Для /api/chat и /api/generate пишем NDJSON
 	if originalPath == "/api/chat" {
+		// При наличии tool_calls content намеренно пустой (tool_calls заменяют content).
+		contentForMsg := finalContent
+		if hasToolCalls {
+			contentForMsg = ""
+		}
 		msgMap := map[string]interface{}{
 			"role":    "assistant",
-			"content": finalContent,
+			"content": contentForMsg,
 		}
 
 		// Если есть накопленные tool_calls — добавляем их
-		if len(toolAccum) > 0 {
+		if hasToolCalls {
 			toolCallsArr := make([]map[string]interface{}, 0, len(toolAccum))
 			for i := 0; i < len(toolAccum); i++ {
 				acc, ok := toolAccum[i]
@@ -192,7 +219,7 @@ func writeStreamingSSEDone(
 		}
 
 		// Если есть tool_calls — done_reason должен быть "tool_calls"
-		if len(toolAccum) > 0 {
+		if hasToolCalls {
 			doneChunk["done_reason"] = "tool_calls"
 		} else if finalContent != "" {
 			doneChunk["done_reason"] = "stop"
@@ -211,13 +238,22 @@ func writeStreamingSSEDone(
 	if modelName == "" {
 		modelName = "unknown"
 	}
+	// При наличии tool_calls response должен быть пустым (как и в /api/chat)
+	// и done_reason = "tool_calls" (Ollama-семантика).
+	responseValue := finalContent
+	if hasToolCalls {
+		responseValue = ""
+	}
 	doneChunk := map[string]interface{}{
 		"model":      modelName,
 		"created_at": time.Now().UTC().Format(time.RFC3339),
 		"done":       true,
-		"response":   finalContent,
+		"response":   responseValue,
 	}
-	if finalContent != "" {
+	switch {
+	case hasToolCalls:
+		doneChunk["done_reason"] = "tool_calls"
+	case finalContent != "":
 		doneChunk["done_reason"] = "stop"
 	}
 

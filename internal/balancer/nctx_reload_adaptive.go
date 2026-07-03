@@ -1,0 +1,116 @@
+// nctx_reload_adaptive.go — адаптивная стратегия reload через cppworker /adaptive/strategy API.
+// Добавляет запрос стратегии в DoReload: kvCacheType, gpuLayers, n_ctx подбираются
+// cppworker'ом на основе реальной VRAM и архитектуры модели.
+package balancer
+
+import (
+	"encoding/json"
+	"fmt"
+	"io"
+	"net/http"
+	"time"
+
+	"ollama-loadbalancer/pkg/logger"
+)
+
+// AdaptiveStrategy — ответ от /api/v1/cppworker/adaptive/strategy.
+type AdaptiveStrategy struct {
+	GPULayers    int    `json:"gpuLayers"`
+	NCtx         int    `json:"nCtx"`
+	KVCacheType  string `json:"kvCacheType"`
+	UseMmap      bool   `json:"useMmap"`
+	Stage        string `json:"stage"` // "exact_fit", "partial_offload", "cpu_only", "moe_offload"
+	KVReduced    bool   `json:"kvReduced"`
+	GPUReduced   bool   `json:"gpuReduced"`
+	NCtxReduced  bool   `json:"nCtxReduced"`
+	MaxViableNCtx int   `json:"maxViableNCtx"`
+	Explanation  string `json:"explanation"`
+}
+
+// queryAdaptiveStrategy запрашивает у cppworker оптимальную стратегию загрузки
+// через GET /api/v1/cppworker/adaptive/strategy?name=...&n_ctx=...&gpu_layers=-2
+//
+// Возвращает стратегию или nil при ошибке (caller использует fallback).
+func queryAdaptiveStrategy(backendAddr, modelName string, targetNCtx int, httpClient *http.Client) *AdaptiveStrategy {
+	if httpClient == nil {
+		httpClient = &http.Client{Timeout: 5 * time.Second}
+	}
+	url := fmt.Sprintf("%s/api/v1/cppworker/adaptive/strategy?name=%s&n_ctx=%d&gpu_layers=-2",
+		backendAddr, modelName, targetNCtx)
+
+	req, err := http.NewRequest(http.MethodGet, url, nil)
+	if err != nil {
+		logger.Get().Debugw("queryAdaptiveStrategy: failed to create request",
+			"url", url, "error", err)
+		return nil
+	}
+
+	resp, err := httpClient.Do(req)
+	if err != nil {
+		logger.Get().Debugw("queryAdaptiveStrategy: request failed",
+			"url", url, "error", err)
+		return nil
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		logger.Get().Debugw("queryAdaptiveStrategy: non-200 status",
+			"url", url, "status", resp.StatusCode)
+		return nil
+	}
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil
+	}
+
+	var strategy AdaptiveStrategy
+	if err := json.Unmarshal(body, &strategy); err != nil {
+		logger.Get().Debugw("queryAdaptiveStrategy: unmarshal failed",
+			"error", err)
+		return nil
+	}
+
+	logger.Get().Infow("queryAdaptiveStrategy: got strategy",
+		"model", modelName,
+		"stage", strategy.Stage,
+		"gpuLayers", strategy.GPULayers,
+		"kvCacheType", strategy.KVCacheType,
+		"nCtx", strategy.NCtx,
+		"maxViableNCtx", strategy.MaxViableNCtx,
+		"explanation", strategy.Explanation)
+
+	return &strategy
+}
+
+// enrichReloadPayload добавляет параметры из AdaptiveStrategy в payload reload-запроса.
+// Возвращает модифицированный payload (gpuLayers, kvCacheType, contextSize, useMmap).
+func enrichReloadPayload(payload map[string]interface{}, strategy *AdaptiveStrategy) map[string]interface{} {
+	if strategy == nil {
+		return payload
+	}
+	// gpuLayers: используем из стратегии
+	payload["gpuLayers"] = strategy.GPULayers
+	payload["useMmap"] = strategy.UseMmap
+
+	// kvCacheType: передаём cppworker'у
+	if strategy.KVCacheType != "" && strategy.KVCacheType != "f16" {
+		payload["kvCacheType"] = strategy.KVCacheType
+	}
+
+	// contextSize: если стратегия уменьшила n_ctx — используем новый
+	if strategy.NCtx > 0 {
+		payload["contextSize"] = strategy.NCtx
+	}
+
+	// Отмечаем что стратегия подобрана адаптивно
+	payload["adaptiveStage"] = strategy.Stage
+
+	logger.Get().Infow("enrichReloadPayload: payload enriched with adaptive strategy",
+		"gpuLayers", strategy.GPULayers,
+		"kvCacheType", strategy.KVCacheType,
+		"contextSize", payload["contextSize"],
+		"stage", strategy.Stage)
+
+	return payload
+}

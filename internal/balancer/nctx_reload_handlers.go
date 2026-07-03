@@ -21,6 +21,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"os"
 	"strconv"
 	"strings"
 	"time"
@@ -208,6 +209,12 @@ func (p *Proxy) newNCtxReloadHTTPClient() NCtxReloadHTTPClient {
 	token := ""
 	if p.config != nil && len(p.config.Auth.Tokens) > 0 {
 		token = p.config.Auth.Tokens[0]
+	}
+	// Override with LB_API_TOKEN env var if set (config.json has placeholder token,
+	// actual token comes from compose env). The cppworker uses the same token from
+	// API_TOKEN env var, so they must match for /api/models/reload auth.
+	if envToken := os.Getenv("LB_API_TOKEN"); envToken != "" {
+		token = envToken
 	}
 	return &DefaultNCtxReloadHTTPClient{
 		HTTPClient: &http.Client{Timeout: 90 * time.Second},
@@ -745,6 +752,39 @@ func (p *Proxy) getLoadedNCtxFromMetrics(backendID, modelName string) int {
 		if m.Name == modelName || containsFold(m.Name, modelName) || containsFold(modelName, m.Name) {
 			return m.ContextLength
 		}
+	}
+	return 0
+}
+
+// getMaxVRAMNCtxFromMetrics возвращает max_vram_n_ctx из llama.cpp метрик бэкенда.
+// Позволяет preflight узнать реальный VRAM-потолок без round-trip к cppworker.
+func (p *Proxy) getMaxVRAMNCtxFromMetrics(backendID string) int {
+	if p == nil || p.metricsMgr == nil {
+		return 0
+	}
+	p.metricsMgr.mu.RLock()
+	defer p.metricsMgr.mu.RUnlock()
+	if lm, ok := p.metricsMgr.llamaMetrics[backendID]; ok && lm != nil {
+		return lm.MaxVRAMNCtx
+	}
+	return 0
+}
+
+// resolveModelMaxContext выбирает modelMaxContext для preflight:
+// приоритет per-model profile > метрики poller'а.
+func (p *Proxy) resolveModelMaxContext(backendID, model string, profileMaxContext int) int {
+	// Per-model profile имеет приоритет
+	if profileMaxContext > 0 {
+		return profileMaxContext
+	}
+	// Fallback на метрики из poller'а (/api/models → model_max_context)
+	if p == nil || p.metricsMgr == nil {
+		return 0
+	}
+	p.metricsMgr.mu.RLock()
+	defer p.metricsMgr.mu.RUnlock()
+	if lm, ok := p.metricsMgr.llamaMetrics[backendID]; ok && lm != nil {
+		return lm.ModelMaxContext
 	}
 	return 0
 }

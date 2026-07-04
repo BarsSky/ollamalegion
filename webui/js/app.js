@@ -216,18 +216,25 @@ const ui = (function () {
     // 2026-06-30: заменили ☀️/🌙 эмодзи (жёлтые/белые системные, расходились со стилем)
     // на Font Awesome fa-moon (в dark) / fa-sun (в light) — цвет наследуется от .btn-theme-toggle
     // через var(--text-secondary) и больше не зависит от emoji-рендера ОС.
+    var THEME_ICONS = { dark: 'fa-moon', light: 'fa-sun', linear: 'fa-circle', nvidia: 'fa-bold', vercel: 'fa-arrow-up' };
+    var THEME_LETTERS = { dark: '', light: '', linear: 'L', nvidia: 'N', vercel: 'V' };
+    var THEME_LABELS = { dark: 'Dark', light: 'Light', linear: 'Linear', nvidia: 'NVIDIA', vercel: 'Vercel' };
     function updateThemeToggleIcon(theme) {
         var btn = document.getElementById('themeToggle');
         if (!btn) return;
         var icon = document.getElementById('themeToggleIcon');
         if (icon) {
-            // В dark показываем луну (призыв «перейти в светлую»), в light — солнце.
-            icon.className = (theme === 'dark' ? 'fas fa-moon' : 'fas fa-sun');
+            if (theme === 'dark' || theme === 'light') {
+                icon.className = (theme === 'dark' ? 'fas fa-moon' : 'fas fa-sun');
+                icon.textContent = '';
+            } else {
+                icon.className = '';
+                icon.textContent = (THEME_LETTERS[theme] || '?');
+                icon.style.cssText = 'font-weight:700;font-size:14px;font-style:normal;';
+            }
             icon.setAttribute('aria-hidden', 'true');
         }
-        btn.title = theme === 'dark'
-            ? (window.I18N ? I18N.t('settings.theme_light') : 'Light theme')
-            : (window.I18N ? I18N.t('settings.theme_dark') : 'Dark theme');
+        btn.title = THEME_LABELS[theme] || theme;
     }
 
     // ---- i18n ----

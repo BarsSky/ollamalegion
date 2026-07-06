@@ -184,6 +184,36 @@ func (s *Server) listBackends(w http.ResponseWriter, r *http.Request) {
 			backendData["gpu"] = metrics.GPU
 			backendData["system"] = metrics.System
 			backendData["prediction"] = metrics.Prediction
+			// Phase 2 (2026-07-06): fallback для llama_cpp бэкендов. Без NVML в
+			// agent metrics.GPU пуст (MemoryTotal=0, MemoryUsed=0). Если есть
+			// данные от cppworker poller (LlamaCppMetrics.GPUInfo) — используем их.
+			if backend.Type == types.BackendTypeLlamaCpp && metrics.GPU.MemoryTotal == 0 {
+				if lm := s.proxy.GetMetricsManager().GetLlamaCppMetrics(backend.ID); lm != nil && lm.GPUInfo != nil {
+					devMemTotal := uint64(0)
+					devMemFree := uint64(0)
+					devUtil := 0.0
+					if len(lm.GPUInfo.Devices) > 0 {
+						d := lm.GPUInfo.Devices[0]
+						devMemTotal = d.MemoryTotal
+						devMemFree = d.MemoryFree
+						devUtil = d.Utilization
+					} else {
+						devMemTotal = lm.GPUInfo.TotalVRAM
+						devMemFree = lm.GPUInfo.FreeVRAM
+					}
+					backendData["gpu"] = map[string]interface{}{
+						"usagePercent": devUtil,
+						"memoryTotal":  devMemTotal,
+						"memoryUsed":   devMemTotal - devMemFree,
+						"memoryFree":   devMemFree,
+						"temperature":  0,
+						"powerUsage":   0,
+						"powerLimit":   0,
+						"gpuClock":     0,
+						"memClock":     0,
+					}
+				}
+			}
 
 			// === Шаг «отображение загрузки в мониторе и вкладке бэкендов» ===
 			// Если бэкенд — llama_cpp, передаём loadingModels напрямую из LlamaCppMetrics

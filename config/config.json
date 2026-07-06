@@ -1,4 +1,4 @@
-﻿{
+{
   "backendEngine": "llama_cpp",
   "loadBalancer": {
     "host": "0.0.0.0",
@@ -134,7 +134,7 @@
   "auth": {
     "enabled": false,
     "tokens": [
-      "changeme-bundled-strong-token-please-change"
+      "JH678MNSJNDAJNDSK"
     ],
     "headerName": "X-API-Token"
   },

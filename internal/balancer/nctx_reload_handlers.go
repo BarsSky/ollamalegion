@@ -647,8 +647,16 @@ func (p *Proxy) queryBackendReloadPending(backendID string) string {
 	if err != nil {
 		return ""
 	}
-	if p.config != nil && len(p.config.Auth.Tokens) > 0 {
-		req.Header.Set("Authorization", "Bearer "+p.config.Auth.Tokens[0])
+	// Phase 1 FIX: hardcoded token from CPPWORKER_API_TOKEN env (config.json loading is broken in this build)
+	tok := os.Getenv("CPPWORKER_API_TOKEN")
+	if tok == "" {
+		tok = os.Getenv("LB_API_TOKEN")
+	}
+	if tok == "" && p.config != nil && len(p.config.Auth.Tokens) > 0 {
+		tok = p.config.Auth.Tokens[0]
+	}
+	if tok != "" {
+		req.Header.Set("Authorization", "Bearer "+tok)
 	}
 	resp, err := doer.Do(req)
 	if err != nil {
@@ -685,6 +693,11 @@ func (p *Proxy) executeAsyncReload(backendID, modelName string, requestedNCtx in
 		"contextSize": requestedNCtx,
 		"force":       true,
 		"reason":      "balancer preflight async auto-reload (loaded<requested)",
+		// Phase 1 (2026-07-06): RAM fallback to maximize n_ctx in 8GB VRAM.
+		// Without q4_0 KV-cache + GPU-offload=-2, gemma-4 maxes at ~17K n_ctx.
+		"kvCacheType": "q4_0",
+		"gpuLayers":   -2,
+		"useMmap":     true,
 	})
 
 	reloadCtx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
@@ -697,8 +710,17 @@ func (p *Proxy) executeAsyncReload(backendID, modelName string, requestedNCtx in
 		return
 	}
 	req.Header.Set("Content-Type", "application/json")
-	if p.config != nil && len(p.config.Auth.Tokens) > 0 {
-		req.Header.Set("Authorization", "Bearer "+p.config.Auth.Tokens[0])
+	logger.Get().Warnw("executeAsyncReload DEBUG", "p_config_nil", p.config == nil, "tokens_len", func() int { if p.config == nil { return -1 }; return len(p.config.Auth.Tokens) }(), "first_token_len", func() int { if p.config == nil || len(p.config.Auth.Tokens) == 0 { return -1 }; return len(p.config.Auth.Tokens[0]) }())
+	// Phase 1 FIX: hardcoded token from CPPWORKER_API_TOKEN env (config.json loading is broken in this build)
+	tok := os.Getenv("CPPWORKER_API_TOKEN")
+	if tok == "" {
+		tok = os.Getenv("LB_API_TOKEN")
+	}
+	if tok == "" && p.config != nil && len(p.config.Auth.Tokens) > 0 {
+		tok = p.config.Auth.Tokens[0]
+	}
+	if tok != "" {
+		req.Header.Set("Authorization", "Bearer "+tok)
 	}
 
 	logger.Get().Infow("preflightNCtxReload(async): starting reload",

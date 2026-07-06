@@ -253,6 +253,9 @@ type ModelMetadata struct {
 	ContextLength  int
 	NLayers        int
 	NHeads         int
+	NKvHeads       int  // NEW: GQA kv heads
+	HeadDimK       int  // NEW: K head dim
+	HeadDimV       int  // NEW: V head dim
 	NEmbd          int
 	NVocab         int
 	SizeTotalBytes uint64
@@ -744,6 +747,9 @@ func (m *ModelHandle) GetMetadata() (*ModelMetadata, error) {
 		ContextLength:  int(cMeta.context_length),
 		NLayers:        int(cMeta.n_layers),
 		NHeads:         int(cMeta.n_heads),
+		NKvHeads:       int(cMeta.n_head_kv),
+		HeadDimK:       int(cMeta.n_embd_head_k),
+		HeadDimV:       int(cMeta.n_embd_head_v),
 		NEmbd:          int(cMeta.n_embd),
 		NVocab:         int(cMeta.n_vocab),
 		SizeTotalBytes: uint64(cMeta.size_total),

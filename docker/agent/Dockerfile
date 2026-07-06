@@ -51,7 +51,7 @@ ARG ENABLE_NVML=false
 #   поэтому GPU-вариант требует glibc-совместимого билдера.
 #   Для GPU используйте отдельный builder (см. stage builder-gpu ниже).
 RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 \
-    go build -trimpath -ldflags "-w -s -extldflags '-static'" \
+    go build -tags llama_stub -trimpath -ldflags "-w -s -extldflags '-static'" \
     -a -installsuffix cgo -o agent ./cmd/agent
 
 # -----------------------------------------------------------------------------

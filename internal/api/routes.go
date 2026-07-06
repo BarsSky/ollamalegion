@@ -105,6 +105,13 @@ func (s *Server) setupRoutes() {
 
 	// Agents endpoints (с аутентификацией и rate limiting)
 	s.mux.Handle("/api/v1/agents/register", AuthMiddleware(RateLimitMiddleware(s.agentRegisterHandler, s.rateLimiter), s.authenticator))
+	// Agent V2 routes (metrics-only, no backend duplication).
+	// Оборачиваем func(w,r) handlers в http.HandlerFunc, чтобы соответствовать
+	// сигнатуре mux.Handle (http.Handler) и AuthMiddleware (http.Handler).
+	s.mux.Handle("/api/v1/agents/v2/register", AuthMiddleware(http.HandlerFunc(s.agentV2RegisterHandler), s.authenticator))
+	s.mux.Handle("/api/v1/agents/v2/metrics", http.HandlerFunc(s.agentV2MetricsHandler))
+	s.mux.Handle("/api/v1/agents/v2/heartbeat", http.HandlerFunc(s.agentV2HeartbeatHandler))
+
 	s.mux.Handle("/api/v1/agents/metrics", AuthMiddleware(RateLimitMiddleware(s.agentMetricsHandler, s.rateLimiter), s.authenticator))
 	s.mux.Handle("/api/v1/agents/heartbeat", AuthMiddleware(RateLimitMiddleware(s.agentHeartbeatHandler, s.rateLimiter), s.authenticator))
 	s.mux.Handle("/api/v1/agents/stats", AuthMiddleware(RateLimitMiddleware(s.agentStatsHandler, s.rateLimiter), s.authenticator))

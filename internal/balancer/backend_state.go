@@ -34,6 +34,7 @@ type BackendState struct {
 	RequestHistory  []time.Time             // Таймстемпы запросов для расчёта RPS (окно 60с)
 	CalculatedRPS   float64                 // Вычисленный RPS
 	WarmingUpModels map[string]*types.WarmupState // Модели в превентивной загрузке
+	AgentID         string                     // ID агента v2, прикреплённого к этому бэкенду
 	ErrorCount      int                     // Счётчик ошибок
 	TotalAttempts   int                     // Всего попыток
 

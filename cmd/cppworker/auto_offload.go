@@ -165,6 +165,14 @@ func estimateKVCacheBytes(nCtx, nLayers, nEmbd, nHeads, nKvHeads int, kvCacheTyp
 	}
 	effKVHeads := nKvHeads
 	if effKVHeads <= 0 {
+		// Session 16+ (gemma-4, qwen3 fix): GGUF v3 parser (ggufKeyMap) may not know architecture,
+		// returning nKvHeads=0 even when real model has GQA. Use 1:4 ratio as a sane default for 7-35B.
+		effKVHeads = nHeads / 4
+		if effKVHeads < 1 {
+			effKVHeads = 1
+		}
+	}
+	if effKVHeads <= 0 {
 		effKVHeads = nHeads
 	}
 	headDim := nEmbd / nHeads

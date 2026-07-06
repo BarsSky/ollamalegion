@@ -488,3 +488,157 @@ func (s *Server) proxyAgentRequest(w http.ResponseWriter, r *http.Request, targe
 	w.WriteHeader(resp.StatusCode)
 	w.Write(respBody)
 }
+// ============================================================
+// Agent V2 handlers — metrics-only agent, no duplicate backend
+// ============================================================
+
+// agentV2RegisterHandler — регистрация агента v2 (без создания бэкенда).
+// POST /api/v1/agents/v2/register
+// Прикрепляет агента к существующему cppworker-бэкенду по backendID
+// или находит бэкенд по (host, cppWorkerPort).
+func (s *Server) agentV2RegisterHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	var req struct {
+		AgentID       string `json:"agentId"`
+		BackendID     string `json:"backendId"`     // ID существующего cppworker-бэкенда
+		Host          string `json:"host"`           // host cppworker (если backendID не указан)
+		CppWorkerPort int    `json:"cppWorkerPort"`  // порт cppworker
+		AgentPort     int    `json:"agentPort"`      // порт агента
+		Name          string `json:"name"`
+		Labels        []string `json:"labels"`
+	}
+
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		s.writeJSON(w, http.StatusBadRequest, map[string]interface{}{
+			"success": false,
+			"error":   "Invalid request body",
+		})
+		return
+	}
+
+	if req.AgentID == "" {
+		s.writeJSON(w, http.StatusBadRequest, map[string]interface{}{
+			"success": false,
+			"error":   "agentId is required",
+		})
+		return
+	}
+
+	host := req.Host
+	if host == "" {
+		if h, _, err := net.SplitHostPort(r.RemoteAddr); err == nil {
+			host = h
+		}
+	}
+
+	// Находим целевой бэкенд
+	backendID := req.BackendID
+	if backendID == "" && req.CppWorkerPort > 0 {
+		// Ищем бэкенд по (host, cppWorkerPort)
+		backendID = s.proxy.FindBackendByHostPort(host, req.CppWorkerPort)
+	}
+
+	if backendID == "" {
+		s.writeJSON(w, http.StatusNotFound, map[string]interface{}{
+			"success": false,
+			"error":   "No cppworker backend found. Register a cppworker backend first.",
+		})
+		return
+	}
+
+	// Прикрепляем агента к бэкенду (не создавая новый)
+	s.proxy.AttachAgentToBackend(backendID, req.AgentID, req.AgentPort)
+
+	logger.Get().Infow("agent v2 attached to backend",
+		"agentID", req.AgentID,
+		"backendID", backendID,
+	)
+
+	s.writeJSON(w, http.StatusOK, map[string]interface{}{
+		"success":   true,
+		"action":    "attached",
+		"agentId":   req.AgentID,
+		"backendId": backendID,
+		"message":   "Agent v2 attached to existing backend.",
+	})
+}
+
+// agentV2MetricsHandler — приём метрик от агента v2.
+// POST /api/v1/agents/v2/metrics
+func (s *Server) agentV2MetricsHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	agentID := r.Header.Get("X-Agent-ID")
+	if agentID == "" {
+		s.writeJSON(w, http.StatusBadRequest, map[string]interface{}{
+			"success": false,
+			"error":   "X-Agent-ID header is required",
+		})
+		return
+	}
+
+	var metrics types.BackendMetrics
+	if err := json.NewDecoder(r.Body).Decode(&metrics); err != nil {
+		http.Error(w, "Invalid metrics format", http.StatusBadRequest)
+		return
+	}
+
+	// Ищем бэкенд, к которому прикреплён этот агент
+	backendID := s.proxy.FindBackendByAgentID(agentID)
+	if backendID == "" {
+		s.writeJSON(w, http.StatusNotFound, map[string]interface{}{
+			"success": false,
+			"error":   "Agent not attached to any backend. Register first.",
+		})
+		return
+	}
+
+	s.proxy.UpdateMetrics(backendID, &metrics)
+	s.writeJSON(w, http.StatusOK, map[string]interface{}{
+		"success": true,
+	})
+}
+
+// agentV2HeartbeatHandler — heartbeat от агента v2.
+// POST /api/v1/agents/v2/heartbeat
+func (s *Server) agentV2HeartbeatHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	agentID := r.Header.Get("X-Agent-ID")
+	if agentID == "" {
+		s.writeJSON(w, http.StatusBadRequest, map[string]interface{}{
+			"success": false,
+			"error":   "X-Agent-ID header is required",
+		})
+		return
+	}
+
+	// Обновляем LastAgentContact для бэкенда агента
+	backendID := s.proxy.FindBackendByAgentID(agentID)
+	if backendID == "" {
+		s.writeJSON(w, http.StatusNotFound, map[string]interface{}{
+			"success": false,
+			"error":   "Agent not attached to any backend.",
+		})
+		return
+	}
+
+	s.proxy.TouchAgentContact(backendID)
+
+	// Возвращаем конфигурационные параметры
+	s.writeJSON(w, http.StatusOK, map[string]interface{}{
+		"success":                true,
+		"maxConcurrentRequests":  -1,
+		"maxModels":              -1,
+	})
+}

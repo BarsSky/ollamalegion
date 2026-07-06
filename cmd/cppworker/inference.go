@@ -703,6 +703,9 @@ func tryRamFallbackReload(modelName string, requestedNCtx int, hasTools bool) (b
 		NUMA:          current.NUMA,
 		UseMmap:       true, // RAM fallback ????? mmap
 		TensorSplit:   current.TensorSplit,
+		// Session 16+ (gemma-4/qwen3 fix): RAM fallback must use q4_0 KV-cache to fit big n_ctx in 8GB VRAM.
+		// Without this, llama.cpp reserves f16 KV and OOMs on 65536+ for any model.
+		KVCacheType:   "q4_0",
 	}
 
 	// === AutoTuneNCtx (Issue: "Cline + 20GB GPU, ???? RAM, ?? VRAM ?? ???????") ===
@@ -799,6 +802,7 @@ func tryRamFallbackReload(modelName string, requestedNCtx int, hasTools bool) (b
 				"previous_n_ctx", opts.ContextSize,
 				"reason", "first load failed, attempting cpu-only fallback")
 			cpuOnlyOpts := opts
+			// Keep KVCacheType=q4_0 from initial opts (set above) — bridge needs it on 2nd cascade too
 			cpuOnlyOpts.GPULayers = 0
 			cpuOnlyOpts.UseMmap = true
 			retryErr := backend.LoadModelWithOpts(modelName, modelPath, cpuOnlyOpts)

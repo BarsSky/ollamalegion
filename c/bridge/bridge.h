@@ -163,6 +163,9 @@ typedef struct {
     int context_length;
     int n_layers;
     int n_heads;
+    int n_head_kv;        // GQA kv heads (public API in llama.h)
+    int n_embd_head_k;    // K head dim (computed: n_embd / n_heads)
+    int n_embd_head_v;    // V head dim (computed: n_embd / n_heads)
     int n_embd;
     int n_vocab;
     uint64_t size_total;    // размер файла в байтах

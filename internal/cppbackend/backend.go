@@ -534,6 +534,7 @@ func (b *Backend) LoadModelWithOpts(name string, path string, opts LoadModelOpts
 	inst.info.Architecture = meta.Architecture
 	inst.info.NLayers = meta.NLayers
 	inst.info.NHeads = meta.NHeads
+	inst.info.NKvHeads = meta.NKvHeads // BUG 13
 	inst.info.NEmbd = meta.NEmbd
 	inst.info.NVocab = meta.NVocab
 	inst.info.ContextSize = ctxSize
@@ -1035,12 +1036,21 @@ func (b *Backend) CalculateResourceLimits(name string) ResourceLimits {
 		kvPerToken := uint64(4) * uint64(nLayers) * uint64(nKvHeads) * uint64(headDim)
 		if kvPerToken > 0 {
 			// 3. VRAM: суммируем свободную VRAM по всем GPU.
-			b.mu.RLock()
+			// Live refresh b.gpuDevices from C-bridge (was snapshot from init, not updated runtime).
+			b.mu.Lock()
+			for i := 0; i < b.gpuCount; i++ {
+				if dev, err := bridge.GetGPUInfo(i); err == nil && dev != nil {
+					if i < len(b.gpuDevices) {
+						b.gpuDevices[i].VRAMFreeMB = dev.VRAMFreeMB
+						b.gpuDevices[i].VRAMTotalMB = dev.VRAMTotalMB
+					}
+				}
+			}
 			for _, dev := range b.gpuDevices {
 				limits.TotalVRAMMB += uint64(dev.VRAMTotalMB)
 				limits.AvailableVRAMMB += uint64(dev.VRAMFreeMB)
 			}
-			b.mu.RUnlock()
+			b.mu.Unlock()
 
 			// Резервируем 2 GB на overhead/weights (KV-cache для n_ctx считается отдельно).
 			const vramOverheadMB = uint64(2048)
@@ -1614,8 +1624,9 @@ var ggufFieldSuffixes = []string{
 // ggufModelArchs — известные архитектуры GGUF.
 // Каждая архитектура может иметь префикс для ключей метаданных.
 var ggufModelArchs = []string{
-	"llama", "qwen2", "gemma2", "starcoder2", "gpt_bigcode",
-	"falcon", "mpt", "phi3", "bert", "nemotron",
+	"llama", "qwen2", "qwen3", "qwen3moe", "qwen3next", "qwen35", "qwen35moe",
+	"gemma2", "gemma4", "gemma3",
+	"starcoder2", "gpt_bigcode", "falcon", "mpt", "phi3", "bert", "nemotron",
 }
 
 // initGGUFKeyMap инициализирует реверсивный маппинг "gguf key → field index"
@@ -1903,4 +1914,9 @@ func estimateLayersFromFileSize(sizeBytes int64) int {
 	default:
 		return 120 // 120B+ params
 	}
+}
+
+// GetSystemRAMGB — экспортированная обёртка для использования из других пакетов
+func GetSystemRAMGB() uint64 {
+	return getSystemRAMGB()
 }

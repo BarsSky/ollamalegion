@@ -1191,7 +1191,17 @@ ModelMetadata bridge_get_model_metadata(ModelHandle model) {
     metadata.context_length = (int)llama_model_n_ctx_train(im->model);
     metadata.n_layers = (int)llama_model_n_layer(im->model);
     metadata.n_heads = (int)llama_model_n_head(im->model);
-    metadata.n_embd = (int)llama_model_n_embd(im->model);
+    metadata.n_head_kv = (int)llama_model_n_head_kv(im->model);  // public API
+
+    // head_dim computed inline (n_embd_head_k/v are NOT in public llama.h header)
+
+    int _n_embd = (int)llama_model_n_embd(im->model); int _n_heads = (int)llama_model_n_head(im->model);
+
+    metadata.n_embd_head_k = (_n_heads > 0) ? _n_embd / _n_heads : 0;
+
+    metadata.n_embd_head_v = (_n_heads > 0) ? _n_embd / _n_heads : 0;
+
+    metadata.n_embd = _n_embd;
     metadata.n_vocab = (int)llama_vocab_n_tokens(im->vocab);
     metadata.size_total = 0; // будет заполнено из Go-уровня через stat()
 

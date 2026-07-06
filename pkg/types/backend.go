@@ -39,6 +39,7 @@ type Backend struct {
 	ConsecutiveFailures int           `json:"consecutiveFailures"`
 	ActiveRequests      int           `json:"activeRequests"`
 	HasAgent            bool          `json:"hasAgent"`
+	AgentID             string        `json:"agentId,omitempty"` // ID прикреплённого агента v2
 	LastAgentContact    time.Time     `json:"lastAgentContact"`
 
 	// Тип бэкенда (ollama / llama_cpp)

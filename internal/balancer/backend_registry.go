@@ -404,3 +404,56 @@ func (p *Proxy) Restart() error {
 	os.Exit(0)
 	return nil
 }
+
+// Agent V2 support methods
+
+// FindBackendByHostPort — ищет ID бэкенда по (host, cppWorkerPort).
+func (p *Proxy) FindBackendByHostPort(host string, cppWorkerPort int) string {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	for id, state := range p.backends {
+		b := state.Backend
+		if b.Host == host && b.CppWorkerPort == cppWorkerPort && b.Type == types.BackendTypeLlamaCpp {
+			return id
+		}
+	}
+	return ""
+}
+
+// AttachAgentToBackend — прикрепляет агента v2 к существующему бэкенду.
+func (p *Proxy) AttachAgentToBackend(backendID, agentID string, agentPort int) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	state, ok := p.backends[backendID]
+	if !ok {
+		return
+	}
+	state.Backend.HasAgent = true
+	state.Backend.AgentPort = agentPort
+	state.Backend.AgentID = agentID
+	state.AgentID = agentID
+	state.Backend.LastAgentContact = time.Now()
+}
+
+// FindBackendByAgentID — ищет ID бэкенда по agentID (v2).
+func (p *Proxy) FindBackendByAgentID(agentID string) string {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	for id, state := range p.backends {
+		if state.AgentID == agentID || state.Backend.AgentID == agentID {
+			return id
+		}
+	}
+	return ""
+}
+
+// TouchAgentContact — обновляет LastAgentContact для бэкенда.
+func (p *Proxy) TouchAgentContact(backendID string) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	state, ok := p.backends[backendID]
+	if !ok {
+		return
+	}
+	state.Backend.LastAgentContact = time.Now()
+}

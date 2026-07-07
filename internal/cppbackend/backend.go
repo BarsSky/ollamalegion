@@ -555,6 +555,12 @@ func (b *Backend) LoadModelWithOpts(name string, path string, opts LoadModelOpts
 	// LoadModelWithOpts (даже если caller передал zero-value).
 	inst.info.Parallel = opts.Parallel
 	inst.info.KVCacheType = opts.KVCacheType
+	if inst.info.KVCacheType == "" {
+		// Fallback на default (аналогично line 452 для cfg.KVCacheType).
+		// Без этого /api/show показывает пустую строку, хотя llama.cpp использует
+		// DefaultKVCacheType (f16).
+		inst.info.KVCacheType = b.cfg.DefaultKVCacheType
+	}
 	b.mu.Unlock()
 
 	// Инициализируем lastUsedAt моментом загрузки, чтобы IdleUnloadManager

@@ -1008,8 +1008,9 @@ func handleOllamaShow(w http.ResponseWriter, r *http.Request) {
 			"model_info": map[string]interface{}{
 				"architecture": info.Architecture, "n_layers": info.NLayers,
 				"n_heads": info.NHeads, "n_embd": info.NEmbd,
+			"n_kv_heads": info.NKvHeads, "head_dim_k": info.HeadDimK, "head_dim_v": info.HeadDimV,
 				"n_vocab": info.NVocab, "context_size": info.ContextSize,
-				"gpu_layers": info.GPULayers, "state": info.State,
+				"gpu_layers": info.GPULayers, "kv_cache_type": info.KVCacheType, "state": info.State,
 			},
 		})
 		return

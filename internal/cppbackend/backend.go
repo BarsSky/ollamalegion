@@ -47,6 +47,9 @@ type ModelInfo struct {
 	NLayers           int       `json:"nLayers"`
 	NHeads            int       `json:"nHeads"`
 	NKvHeads          int       `json:"nKvHeads"`
+	HeadDimK          int       `json:"headDimK"`
+	HeadDimV          int       `json:"headDimV"`
+	KVCacheType       string    `json:"kvCacheType"`
 	NEmbd             int       `json:"nEmbd"`
 	NVocab            int       `json:"nVocab"`
 	ContextSize       int       `json:"contextSize"`
@@ -535,6 +538,8 @@ func (b *Backend) LoadModelWithOpts(name string, path string, opts LoadModelOpts
 	inst.info.NLayers = meta.NLayers
 	inst.info.NHeads = meta.NHeads
 	inst.info.NKvHeads = meta.NKvHeads // BUG 13
+	inst.info.HeadDimK = meta.HeadDimK // Phase 3 (2026-07-06): expose to /api/show
+	inst.info.HeadDimV = meta.HeadDimV // Phase 3
 	inst.info.NEmbd = meta.NEmbd
 	inst.info.NVocab = meta.NVocab
 	inst.info.ContextSize = ctxSize
@@ -1607,6 +1612,9 @@ type GGUFHeaderInfo struct {
 	NLayers      int    `json:"nLayers"`
 	NHeads       int    `json:"nHeads"`
 	NKvHeads     int    `json:"nKvHeads"`
+	HeadDimK          int       `json:"headDimK"`
+	HeadDimV          int       `json:"headDimV"`
+	KVCacheType       string    `json:"kvCacheType"`
 	NEmbd        int    `json:"nEmbd"`
 	FileSize     int64  `json:"fileSize"`
 }

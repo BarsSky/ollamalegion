@@ -49,7 +49,6 @@ type ModelInfo struct {
 	NKvHeads          int       `json:"nKvHeads"`
 	HeadDimK          int       `json:"headDimK"`
 	HeadDimV          int       `json:"headDimV"`
-	KVCacheType       string    `json:"kvCacheType"`
 	NEmbd             int       `json:"nEmbd"`
 	NVocab            int       `json:"nVocab"`
 	ContextSize       int       `json:"contextSize"`

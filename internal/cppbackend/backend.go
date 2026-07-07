@@ -1386,7 +1386,13 @@ func (b *Backend) CountTokens(modelName string, text string) int {
 		}
 		return len([]rune(text)) / 4
 	}
-	return inst.handle.CountTokens(text)
+	n := inst.handle.CountTokens(text)
+	if n <= 0 && text != "" {
+		// Fallback to heuristic for gemma-4 and models where
+		// llama_tokenize returns 0 (multilingual / broken tokenizers).
+		n = len([]rune(text))
+	}
+	return n
 }
 
 // ApplyChatTemplate applies GGUF chat template to messages for a model.

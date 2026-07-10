@@ -153,7 +153,33 @@ func main() {
 	if proxy.EventBus() != nil {
 		apiServer.SetEventBus(proxy.EventBus())
 	}
-	
+
+	// Phase 8 (2026-07-10): P.1 — rpc_coordinator production mode.
+	// Если balancer в OperatingMode=rpc_coordinator И RPC coordinator
+	// инициализирован (cfg.RpcCoordinator.Enabled=true) — создаём
+	// RpcCoordinatorDispatcher и подключаем к proxy. Dispatcher'у нужно
+	// знать coordinator + proxy reference (для fallback в ShouldRoute).
+	//
+	// Phase 8 Session 2: только non-streaming + 6 unit tests.
+	// Phase 9 (Session 3): streaming + circuit breaker integration + auth.
+	//
+	// Phase 8.5 scaffold в Proxy.ServeHTTP уже проверяет IsRpcCoordinatorMode
+	// + rpcDispatcher != nil + IsRpcPath — при выполнении всех 3 условий
+	// request маршрутизируется через dispatcher (вместо обычного прокси).
+	if balancer.IsRpcCoordinatorMode(conf.Balancing.OperatingMode) {
+		if coord := proxy.GetRpcCoordinator(); coord != nil {
+			dispatcher := balancer.NewRpcCoordinatorDispatcher(coord, proxy)
+			proxy.SetRpcCoordinatorDispatcher(dispatcher)
+			logger.Get().Infow("rpc_coordinator_dispatcher wired",
+				"mode", conf.Balancing.OperatingMode,
+			"coordinator_enabled", conf.Balancing.RpcCoordinator.Enabled,
+			"embedded", conf.Balancing.RpcCoordinator.Embedded)
+		} else {
+			logger.Get().Warnw("rpc_coordinator mode is active but coordinator is nil — " +
+				"check balancing.rpcCoordinator.enabled in config")
+		}
+	}
+
 	// Запуск health checker
 	healthChecker.Start()
 

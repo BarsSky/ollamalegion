@@ -10,6 +10,27 @@ const (
 	AlgorithmModelAffinity BalancingAlgorithm = "model-affinity"
 )
 
+// OperatingMode — режим работы балансировщика. Определяет, как balancer
+// обрабатывает inference-запросы (стандартный прокси vs coordinator pipeline
+// vs virtual router и т.д.). Phase 8 (P.1): добавлены константы для
+// type-safety в OperatingModeRpcCoordinator check (вместо magic string).
+// Реальные значения остаются string для backward-compatible JSON config.
+type OperatingMode string
+
+const (
+	// OperatingModeStandard — обычный прокси-режим (default).
+	OperatingModeStandard OperatingMode = "standard"
+	// OperatingModeReplication — через model replication manager.
+	OperatingModeReplication OperatingMode = "replication"
+	// OperatingModeRpcCoordinator — через external/embedded RPC coordinator
+	// (Plan §P.1). Inference маршрутизируется через ModelCoordinator.
+	OperatingModeRpcCoordinator OperatingMode = "rpc_coordinator"
+	// OperatingModeVirtualRouter — через virtual model router.
+	OperatingModeVirtualRouter OperatingMode = "virtual_router"
+	// OperatingModeDistributedInference — через custom distributed engine.
+	OperatingModeDistributedInference OperatingMode = "distributed_inference"
+)
+
 // BalancingSettings - настройки балансировки
 type BalancingSettings struct {
 	Algorithm            BalancingAlgorithm `json:"algorithm"`

@@ -119,8 +119,17 @@
       "models": []
     },
     "rpcCoordinator": {
+      "_note": "Phase 8 (2026-07-10): P.1 — rpc_coordinator production mode. Set `balancing.operatingMode` to `rpc_coordinator` AND `enabled: true` to activate. Two modes: `embedded: true` spawns ModelCoordinator in-process (recommended for single-host), `embedded: false` connects to external CoordinatorURL.",
       "enabled": false,
       "coordinatorURL": "http://localhost:18090",
+      "embedded": true,
+      "workers": [
+        "http://rpcworker-0:18080",
+        "http://rpcworker-1:18080"
+      ],
+      "failoverPolicy": "circuit_breaker",
+      "requestTimeout": "30s",
+      "streamTimeout": "5m",
       "workerPort": 18080,
       "timeout": "30s",
       "protocol": "http",

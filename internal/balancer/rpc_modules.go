@@ -139,6 +139,19 @@ func (p *Proxy) GetRpcCoordinator() *rpccoordinator.ModelCoordinator {
 	return p.rpcCoordinator
 }
 
+// GetRpcCoordinatorDispatcher возвращает dispatcher (Phase 8.5).
+// Используется в Phase 9 main.go wiring (cmd/balancer/main.go) для
+// инициализации dispatcher после создания coordinator.
+func (p *Proxy) GetRpcCoordinatorDispatcher() *RpcCoordinatorDispatcher {
+	return p.rpcDispatcher
+}
+
+// SetRpcCoordinatorDispatcher устанавливает dispatcher (Phase 9 main.go wiring).
+// Вызывается после initRpcModules() если cfg.RpcCoordinator.Embedded=true.
+func (p *Proxy) SetRpcCoordinatorDispatcher(d *RpcCoordinatorDispatcher) {
+	p.rpcDispatcher = d
+}
+
 // HasDistributedModel проверяет, доступна ли модель через RPC Coordinator.
 func (p *Proxy) HasDistributedModel(modelName string) bool {
 	if p.rpcCoordinator == nil {

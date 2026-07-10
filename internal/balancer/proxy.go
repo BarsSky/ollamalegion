@@ -75,6 +75,12 @@ type Proxy struct {
 	virtualModelRouter  *virtualmodel.Router
 	rpcCoordinator      *rpccoordinator.ModelCoordinator
 
+	// Phase 8 (2026-07-10): P.1 — rpc_coordinator production mode.
+	// RpcCoordinatorDispatcher routes inference через coordinator при
+	// OperatingMode=rpc_coordinator. Phase 8.5: добавлено поле + scaffold в
+	// ServeHTTP. Phase 9: полная интеграция (streaming + circuit breakers).
+	rpcDispatcher *RpcCoordinatorDispatcher
+
 	// Прокси-логгер для отслеживания запросов
 	proxyLogger *ProxyLogger
 
@@ -432,6 +438,24 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// Обработка CORS preflight (OPTIONS) запросов
 	if r.Method == "OPTIONS" {
 		w.WriteHeader(http.StatusNoContent)
+		return
+	}
+
+	// Phase 8 (2026-07-10): P.1 — rpc_coordinator production mode scaffold.
+	// Если balancer в OperatingMode=rpc_coordinator + dispatcher инициализирован
+	// + path is intercepted inference endpoint → маршрутизируем через
+	// ModelCoordinator. Phase 8.5: добавлен scaffold (полная версия в Phase 9).
+	//
+	// ВАЖНО: scaffold безопасен — если rpcDispatcher == nil (default bundled
+	// config) или mode != rpc_coordinator, выполнение идёт дальше как обычно
+	// (existing behavior preserved). Phase 9 заменит ServeHTTP stub на полную
+	// реализацию (parse body, call ShouldRoute, dispatch Infer/Stream).
+	if IsRpcCoordinatorMode(p.config.Balancing.OperatingMode) &&
+		p.rpcDispatcher != nil &&
+		p.rpcDispatcher.IsRpcPath(r.URL.Path) {
+		logger.Get().Debugw("rpc_coordinator: intercepting request",
+			"path", r.URL.Path, "method", r.Method)
+		p.rpcDispatcher.ServeHTTP(w, r)
 		return
 	}
 

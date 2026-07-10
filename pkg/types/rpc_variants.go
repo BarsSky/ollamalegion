@@ -37,14 +37,55 @@ type ModelInstanceState struct {
 // Вариант B: External RPC Coordinator
 // ============================================================
 
-// RpcCoordinatorConfig - конфигурация внешнего RPC координатора
+// RpcCoordinatorConfig - конфигурация внешнего RPC координатора.
+//
+// Phase 8 (2026-07-10): P.1 — rpc_coordinator production mode. Расширено полями:
+//   - Embedded       — true = поднять ModelCoordinator в balancer (in-process)
+//   - Workers        — initial worker URLs для Embedded mode (если coordinator
+//                      не получает их динамически через heartbeat)
+//   - FailoverPolicy — "circuit_breaker" | "retry" | "fail_fast"
+//   - RequestTimeout — non-streaming inference timeout (default 30s)
+//   - StreamTimeout  — streaming inference timeout (default 5min)
+//
+// Legacy поля (WorkerPort, Protocol, MaxRetries, Timeout) сохранены для
+// backward-compatible JSON config.
 type RpcCoordinatorConfig struct {
-	Enabled        bool   `json:"enabled"`
+	// Enabled — true если rpc_coordinator mode активен. Phase 8: также
+	// требует cfg.Balancing.OperatingMode == "rpc_coordinator".
+	Enabled bool `json:"enabled"`
+
+	// CoordinatorURL — URL внешнего coordinator (для external mode).
+	// Игнорируется если Embedded=true. Default: "" (только Embedded mode).
 	CoordinatorURL string `json:"coordinatorURL"`
-	WorkerPort     int    `json:"workerPort"`
-	Timeout        string `json:"timeout"`    // "30s"
-	Protocol       string `json:"protocol"`   // "http" | "grpc"
-	MaxRetries     int    `json:"maxRetries"`
+
+	// Embedded — true = поднять ModelCoordinator в balancer (in-process).
+	// Phase 8.5+ используется в cmd/balancer/main.go для activation logic.
+	// Default: false (external mode).
+	Embedded bool `json:"embedded"`
+
+	// Workers — initial worker URLs для Embedded mode. Workers обычно
+	// регистрируются динамически через heartbeat, но можно pre-register.
+	// Default: nil (dynamic registration).
+	Workers []string `json:"workers"`
+
+	// FailoverPolicy — как обрабатывать worker failures.
+	// "circuit_breaker" (default) — открыть breaker на N failures, half-open
+	//                              после resetTimeout.
+	// "retry" — retry до MaxRetries на каждого worker.
+	// "fail_fast" — сразу 503 без retry.
+	FailoverPolicy string `json:"failoverPolicy"`
+
+	// RequestTimeout — non-streaming inference timeout. Default 30s.
+	RequestTimeout time.Duration `json:"requestTimeout"`
+
+	// StreamTimeout — streaming inference timeout. Default 5min.
+	StreamTimeout time.Duration `json:"streamTimeout"`
+
+	// === Legacy fields (Phase 8: keep для backward compat) ===
+	WorkerPort int    `json:"workerPort"`  // (legacy) port for rpcworker discovery
+	Timeout    string `json:"timeout"`     // (legacy) "30s" — superseded by RequestTimeout
+	Protocol   string `json:"protocol"`    // (legacy) "http" | "grpc"
+	MaxRetries int    `json:"maxRetries"`  // (legacy) для FailoverPolicy="retry"
 }
 
 // RpcWorkerConfig - конфигурация RPC worker'а

@@ -20,6 +20,7 @@
 package balancer
 
 import (
+	"bytes"
 	"encoding/json"
 	"regexp"
 	"strings"
@@ -640,4 +641,52 @@ func extractToolCallsFromSSEContent(sseData []byte) []byte {
 	}
 
 	return modified
+}
+
+// isOpenAISSEDataLine — true если строка начинается с `data: `.
+// Используется в SSE-фильтре чтобы пропустить [DONE], комментарии и пустые строки.
+//
+// Round 3: balancer proxy теперь извлекает tool calls из delta.content —
+// мы должны знать, является ли строка JSON data-чанком, прежде чем парсить её.
+func isOpenAISSEDataLine(line []byte) bool {
+	if len(line) < 6 {
+		return false
+	}
+	return bytes.HasPrefix(line, []byte("data: "))
+}
+
+// extractSSEDataPayload возвращает JSON-тело после `data: ` префикса.
+// Возвращает nil если строка не data-line.
+//
+// Round 3 helper.
+func extractSSEDataPayload(line []byte) []byte {
+	if !isOpenAISSEDataLine(line) {
+		return nil
+	}
+	payload := bytes.TrimSpace(line[6:])
+	if bytes.HasPrefix(payload, []byte("{")) {
+		return payload
+	}
+	return nil
+}
+
+// rewriteSSEDataPayload заменяет JSON-тело в SSE data-строке на новое.
+// Ожидаемый формат: "data: <json>\n\n" → "data: <new_json>\n\n".
+//
+// Round 3 helper для случая когда extractToolCallsFromSSEContent модифицировал
+// chunk и нужно заменить оригинальный JSON модифицированным.
+func rewriteSSEDataPayload(line, newPayload []byte) []byte {
+	if !isOpenAISSEDataLine(line) {
+		return line
+	}
+	// Сохраняем терминатор строки (если был).
+	lineTerminator := []byte{}
+	if len(line) > 0 && line[len(line)-1] == '\n' {
+		lineTerminator = []byte("\n")
+	}
+	out := make([]byte, 0, 6+len(newPayload)+len(lineTerminator))
+	out = append(out, "data: "...)
+	out = append(out, newPayload...)
+	out = append(out, lineTerminator...)
+	return out
 }

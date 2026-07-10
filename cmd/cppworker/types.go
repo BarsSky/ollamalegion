@@ -115,6 +115,9 @@ type reloadModelRequest struct {
 	// KVCacheType принимает строковое значение "f16"/"q8_0"/"q4_0"
 	// (а не int). Внутри маппится в bridge-числа через kvCacheTypeToString helper.
 	KVCacheType *string `json:"kvCacheType,omitempty"`
+	// Round 7: parallel arrays for MoE override-tensors.
+	OverrideTensors     []string `json:"overrideTensors,omitempty"`
+	OverrideTensorBufts []string `json:"overrideTensorBufts,omitempty"`
 }
 
 // loadWithParamsRequest — расширенный набор параметров для
@@ -151,5 +154,9 @@ type loadWithParamsRequest struct {
 	// Внутри LoadModelOpts это тоже string (см. cppbackend.LoadModelOpts).
 	KVCacheType   *string `json:"kvCacheType,omitempty"`
 	SplitMode     *int    `json:"splitMode,omitempty"` // 0=layer, 1=row
-	OverrideTensor *string `json:"overrideTensor,omitempty"` // "blk\\..*=CPU"
+	OverrideTensor *string `json:"overrideTensor,omitempty"` // legacy: "blk\\..*=CPU"
+	// Round 7: parallel arrays for per-tensor override-tensors.
+	// Each pair is (regex-pattern, buft-name). Prefer these over OverrideTensor.
+	OverrideTensors     []string `json:"overrideTensors,omitempty"`
+	OverrideTensorBufts []string `json:"overrideTensorBufts,omitempty"`
 }

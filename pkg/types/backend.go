@@ -65,6 +65,13 @@ type Backend struct {
 	// CppWorkerConfig — настройки llama.cpp (только для llama_cpp-типа)
 	CppWorkerConfig *LlamaCppConfig `json:"cppWorkerConfig,omitempty"`
 
+	// CppWorkerApiToken — Bearer token для аутентификации на cppworker endpoints
+	// (например /api/models/reload требует authMiddleware).
+	// Если пусто, balancer НЕ отправляет Authorization header
+	// (подходит для bundled-режима без auth или если cppworker тоже без auth).
+	// Round 7 (2026-07-09): используется в reloadModelOnCppWorker для apply профилей.
+	CppWorkerApiToken string `json:"cppWorkerApiToken,omitempty"`
+
 	// RequestTimeout — пер-бэкенд таймаут запроса (сек), 0 = использовать глобальный LB_REQUEST_TIMEOUT
 	RequestTimeout int `json:"requestTimeout"`
 	// RuntimeRequestTimeout — runtime-значение таймаута от балансера (меняется адаптивно, сохраняется в state.json)

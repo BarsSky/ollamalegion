@@ -25,6 +25,12 @@ type AdaptiveStrategy struct {
 	NCtxReduced  bool   `json:"nCtxReduced"`
 	MaxViableNCtx int   `json:"maxViableNCtx"`
 	Explanation  string `json:"explanation"`
+	// Round 7: parallel arrays for MoE override-tensors.
+	// Each pair is (regex-pattern, buft-name). Forwarded to cppworker reload
+	// via the load-with-params handler so expert tensors are routed to CPU
+	// and attention stays on GPU regardless of gpu_layers.
+	OverrideTensors     []string `json:"overrideTensors,omitempty"`
+	OverrideTensorBufts []string `json:"overrideTensorBufts,omitempty"`
 }
 
 // queryAdaptiveStrategy запрашивает у cppworker оптимальную стратегию загрузки
@@ -105,6 +111,15 @@ func enrichReloadPayload(payload map[string]interface{}, strategy *AdaptiveStrat
 
 	// Отмечаем что стратегия подобрана адаптивно
 	payload["adaptiveStage"] = strategy.Stage
+
+	// Round 7: forward MoE override-tensors to /api/models/reload payload.
+	// cppworker handler accepts parallel arrays via overrideTensors / overrideTensorBufts.
+	if len(strategy.OverrideTensors) > 0 && len(strategy.OverrideTensors) == len(strategy.OverrideTensorBufts) {
+		payload["overrideTensors"] = strategy.OverrideTensors
+		payload["overrideTensorBufts"] = strategy.OverrideTensorBufts
+		logger.Get().Infow("enrichReloadPayload: forwarding MoE override-tensors",
+			"count", len(strategy.OverrideTensors))
+	}
 
 	logger.Get().Infow("enrichReloadPayload: payload enriched with adaptive strategy",
 		"gpuLayers", strategy.GPULayers,

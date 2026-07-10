@@ -54,6 +54,10 @@ type ModelOpRequest struct {
 	GPULayers   *int  `json:"gpuLayers,omitempty"`   // optional: override gpu_layers для загрузки
 	Insecure   bool   `json:"insecure,omitempty"`
 	Stream     bool   `json:"stream,omitempty"`
+	// Round 7: per-tensor override (parallel arrays) для MoE.
+	// Если заданы и согласованы по длине — load через /api/models/load-with-params.
+	OverrideTensors     []string `json:"overrideTensors,omitempty"`
+	OverrideTensorBufts []string `json:"overrideTensorBufts,omitempty"`
 }
 
 // ModelOpResult — результат операции с моделью
@@ -454,7 +458,11 @@ func (mm *ModelManager) executeLoad(host string, port int, backendID string, req
 const (
 	llamaCppLoadMaxRetries     = 10               // ~30 секунд при retryInterval=3s
 	llamaCppLoadRetryInterval  = 3 * time.Second
-	llamaCppLoadDefaultTimeout = 120 * time.Second // дефолтный таймаут load-запроса (если конфиг не задан)
+	// Round 8 (2026-07-10): bumped default to 10 minutes. 21GB Qwen3-A3B takes
+	// ~7 min на A10, плюс пользовательские модели могут быть больше.
+	// Если клиент отвалится по timeout, graceful poll завершения
+	// (pollLoadCompletionUntilLoaded) подхватит успех.
+	llamaCppLoadDefaultTimeout = 600 * time.Second // 10 минут — для больших MoE/Qwen моделей
 )
 
 // getLoadTimeout — возвращает таймаут для POST /api/models/load из конфигурации.
@@ -469,9 +477,125 @@ func (mm *ModelManager) getLoadTimeout() time.Duration {
 	return llamaCppLoadDefaultTimeout
 }
 
+// resolveOverrideTensors — резолвит per-tensor override для load.
+// Приоритет: явные поля req.OverrideTensors > сохранённый LlamaCppModelProfile.
+// Возвращает согласованные по длине parallel arrays или пустые slices.
+//
+// Round 7 (2026-07-09): сохраняем override-tensors между перезагрузками через
+// /api/profiles endpoint. Если у модели есть сохранённый профиль с override-tensors,
+// каждая автоматическая загрузка применяет их (Qwen3-A3B → CPU offload экспертов).
+func (mm *ModelManager) resolveOverrideTensors(req ModelOpRequest) ([]string, []string) {
+	// 1) явное override в запросе — наивысший приоритет.
+	if len(req.OverrideTensors) > 0 && len(req.OverrideTensors) == len(req.OverrideTensorBufts) {
+		return req.OverrideTensors, req.OverrideTensorBufts
+	}
+	// 2) сохранённый профиль.
+	if mm.proxy != nil {
+		if prof, ok := mm.proxy.GetModelProfile(req.ModelName); ok {
+			if len(prof.OverrideTensors) > 0 && len(prof.OverrideTensors) == len(prof.OverrideTensorBufts) {
+				return prof.OverrideTensors, prof.OverrideTensorBufts
+			}
+		}
+	}
+	return nil, nil
+}
+
+// isTimeoutError — проверяет, является ли ошибка HTTP-клиента таймаутом
+// (Client.Timeout exceeded while awaiting headers). Используется в Round 8
+// graceful load timeout path.
+func isTimeoutError(err error) bool {
+	if err == nil {
+		return false
+	}
+	s := err.Error()
+	return strings.Contains(s, "Client.Timeout exceeded") ||
+		strings.Contains(s, "context deadline exceeded") ||
+		strings.Contains(s, "i/o timeout")
+}
+
+// pollLoadCompletionUntilLoaded — после HTTP timeout на /api/models/load
+// проверяет cppworker (state="loaded" в /api/models) периодически до завершения
+// загрузки или до истечения maxWait. Возвращает success если модель загружена,
+// nil если polling превысил maxWait.
+//
+// Round 8 (2026-07-10): решает проблему "model loaded but client got timeout":
+//   1. cppworker начинает загружать 21GB модель (5-10 мин).
+//   2. balancer HTTP client timeout (default 120s) срабатывает.
+//   3. НО cppworker всё ещё грузит — polling показывает state="loading".
+//   4. По завершении cppworker state="loaded" — мы возвращаем success клиенту.
+//
+// Без этой логики клиент получал ошибку даже при успешной загрузке.
+func (mm *ModelManager) pollLoadCompletionUntilLoaded(
+	host string, port int, backendID string, modelName string, maxWait time.Duration,
+) *ModelOpResult {
+	if maxWait <= 0 {
+		maxWait = 5 * time.Minute
+	}
+	deadline := time.Now().Add(maxWait)
+	pollInterval := 2 * time.Second
+	pollClient := &http.Client{
+		Timeout: 10 * time.Second, // poll-запросы быстрые
+	}
+
+	logger.Get().Infow("executeLlamaCppLoad: polling for model load completion",
+		"backend", backendID, "model", modelName,
+		"max_wait", maxWait, "poll_interval", pollInterval)
+
+	for time.Now().Before(deadline) {
+		time.Sleep(pollInterval)
+
+		// Проверяем /api/models — там state="loaded"/"loading"
+		modelsURL := fmt.Sprintf("http://%s:%d/api/models", host, port)
+		resp, err := pollClient.Get(modelsURL)
+		if err != nil {
+			logger.Get().Debugw("pollLoadCompletion: /api/models poll failed",
+				"backend", backendID, "error", err)
+			continue
+		}
+		body, readErr := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		if readErr != nil {
+			continue
+		}
+
+		// Парсим models[].state — ищем нашу модель
+		var modelsResp struct {
+			Models []struct {
+				Name  string `json:"name"`
+				State string `json:"state"`
+			} `json:"models"`
+		}
+		if json.Unmarshal(body, &modelsResp) != nil {
+			continue
+		}
+		for _, m := range modelsResp.Models {
+			if m.Name == modelName && m.State == "loaded" {
+				logger.Get().Infow("executeLlamaCppLoad: model loaded successfully (recovered from HTTP timeout)",
+					"backend", backendID, "model", modelName,
+					"elapsed", maxWait-time.Until(deadline))
+				return &ModelOpResult{
+					Success:   true,
+					Operation: "load",
+					ModelName: modelName,
+					BackendID: backendID,
+					Message:   "model loaded (load request timed out but polling confirmed completion)",
+				}
+			}
+		}
+	}
+
+	logger.Get().Warnw("executeLlamaCppLoad: poll for load completion exceeded max_wait",
+		"backend", backendID, "model", modelName, "max_wait", maxWait)
+	return nil
+}
+
 // executeLlamaCppLoad — загрузка модели в память на cppworker-бэкенде.
 // cppworker принимает POST /api/models/load с JSON {"name": "...", ...}.
 // Если в req заданы ContextSize или GPULayers — передаёт их в теле.
+//
+// Round 7: если заданы OverrideTensors/OverrideTensorBufts (явно в req или
+// через сохранённый LlamaCppModelProfile) — роутим на /api/models/load-with-params
+// чтобы cppworker применил per-tensor routing для MoE моделей.
 //
 // При получении HTTP 503 с body содержащим "model is loading" — повторяет запрос
 // через llamaCppLoadRetryInterval, до llamaCppLoadMaxRetries попыток. Это
@@ -479,7 +603,14 @@ func (mm *ModelManager) getLoadTimeout() time.Duration {
 // в момент, когда другая горутина уже грузит эту же модель (другая запрос
 // получил `TryLockLoad=false`, а handleLoadModel ещё не завершил WaitForLoad).
 func (mm *ModelManager) executeLlamaCppLoad(host string, port int, backendID string, req ModelOpRequest) *ModelOpResult {
+	// Round 7: resolve override-tensors (req override > profile > none).
+	overrideTensors, overrideTensorBufts := mm.resolveOverrideTensors(req)
+	useLoadWithParams := len(overrideTensors) > 0 && len(overrideTensors) == len(overrideTensorBufts)
+
 	url := fmt.Sprintf("http://%s:%d/api/models/load", host, port)
+	if useLoadWithParams {
+		url = fmt.Sprintf("http://%s:%d/api/models/load-with-params", host, port)
+	}
 	body := map[string]interface{}{
 		"name": req.ModelName,
 	}
@@ -488,6 +619,10 @@ func (mm *ModelManager) executeLlamaCppLoad(host string, port int, backendID str
 	}
 	if req.GPULayers != nil {
 		body["gpuLayers"] = *req.GPULayers
+	}
+	if useLoadWithParams {
+		body["overrideTensors"] = overrideTensors
+		body["overrideTensorBufts"] = overrideTensorBufts
 	}
 	jsonBody, err := json.Marshal(body)
 	if err != nil {
@@ -530,9 +665,26 @@ func (mm *ModelManager) executeLlamaCppLoad(host string, port int, backendID str
 		resp, err := loadClient.Do(httpReq)
 		durationMs := time.Since(start).Milliseconds()
 		if err != nil {
-			// Сетевая ошибка или таймаут — НЕ делаем retry.
-			// Если cppworker недоступен (refused, timeout, DNS), повтор не поможет —
-			// нужно сразу вернуть ошибку, чтобы клиент получил осмысленный ответ.
+			// Сетевая ошибка или таймаут. Раньше сразу возвращали ошибку —
+			// но для 21GB+ моделей load занимает 5-10 минут, что может превысить
+			// даже увеличенный timeout. Поэтому проверяем, может модель уже загружена
+			// на cppworker (load продолжается в фоне) — poll /api/models/load/progress
+			// и /api/models пока не получим state="loaded" или timeout на poll.
+			//
+			// Round 8 (2026-07-10): graceful load timeout — если наш HTTP client
+			// отвалился по таймауту, но cppworker всё ещё грузит, ждём завершения
+			// через polling. Это решает проблему "model loaded but client got timeout".
+			if isTimeoutError(err) {
+				logger.Get().Warnw("executeLlamaCppLoad: HTTP timeout, polling for load completion",
+					"backend", backendID, "model", req.ModelName,
+					"timeout", loadTimeout, "duration_ms", durationMs)
+				if pollResult := mm.pollLoadCompletionUntilLoaded(
+					host, port, backendID, req.ModelName,
+					loadTimeout); pollResult != nil {
+					return pollResult
+				}
+				// poll тоже не дождался — возвращаем ошибку таймаута клиенту
+			}
 			logger.Get().Debugw("executeLlamaCppLoad: HTTP error (no retry)",
 				"backend", backendID, "model", req.ModelName,
 				"attempt", attempt+1, "duration_ms", durationMs, "error", err)

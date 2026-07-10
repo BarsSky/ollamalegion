@@ -162,7 +162,13 @@ type LoadModelOpts struct {
 	Parallel       int    // 0 = 1 (no batching)
 	KVCacheType    string // "" = inherit (default F16), "f16"/"q8_0"/"q4_0" — explicit type
 	SplitMode      int    // 0=layer, 1=row
-	OverrideTensor string // empty = no override
+	OverrideTensor string // legacy single-string override, empty = no override
+	// Round 7: parallel arrays for per-tensor override-tensors.
+	// Each entry is (regex-pattern, buft-name) where buft-name is one of
+	//   "CPU", "CUDA0", "CUDA1", ...
+	// For MoE: keep attention on GPU, expert tensors in RAM.
+	OverrideTensors     []string
+	OverrideTensorBufts []string
 }
 
 // modelInstance — экземпляр загруженной модели
@@ -466,7 +472,17 @@ func (b *Backend) LoadModelWithOpts(name string, path string, opts LoadModelOpts
 		cfg.NThreads = b.cfg.DefaultNThreads
 	}
 
-	// Нормализация
+	// Round 7: override-tensors (parallel arrays, length must match).
+	if len(opts.OverrideTensors) > 0 &&
+		len(opts.OverrideTensors) == len(opts.OverrideTensorBufts) {
+		cfg.OverrideTensors = opts.OverrideTensors
+		cfg.OverrideTensorBufts = opts.OverrideTensorBufts
+		logger.Get().Infow("override-tensors applied",
+			"model", name,
+			"count", len(opts.OverrideTensors))
+	}
+
+	// Normalization
 	cfg.RMSNormEps = float32(b.cfg.DefaultRMSNormEps)
 
 	// Прочее
@@ -763,18 +779,14 @@ func estimateKVCacheMB(nLayers, nHeads, nKvHeads, nEmbd, nCtx int) uint64 {
 		return 0
 	}
 
-	// fallback: если nHeads/nEmbd неизвестны (GGUF не прочитан),
-	// используем консервативную оценку: nKvHeads=2, headDim=128
-	// Для gemma-4: 42 слоя × 65K контекст × 2 головы × 128 × 2 байта ≈ 2.7 GB KV-cache
+	// Safe-fail: если nHeads или nEmbd неизвестны (0/отрицательные),
+	// невозможно корректно вычислить head_dim = n_embd/n_heads.
+	// Возвращаем 0 чтобы caller использовал другой метод оценки
+	// (например, реальные метрики из cppworker или иной эвристический fallback).
+	// Лучше недооценить размер и загрузить с чуть меньшим n_ctx,
+	// чем переоценить и нарваться на OOM в production.
 	if nHeads <= 0 || nEmbd <= 0 {
-		if nKvHeads <= 0 {
-			nKvHeads = 2
-		}
-		headDim := 128
-		kvBytes := uint64(2) * uint64(nLayers) * uint64(nCtx) * uint64(nKvHeads) * uint64(headDim) * 2
-		kvMB := kvBytes / (1024 * 1024)
-		kvMB = kvMB + kvMB/10 // +10% safety buffer
-		return kvMB
+		return 0
 	}
 
 	if nKvHeads <= 0 {
@@ -784,7 +796,7 @@ func estimateKVCacheMB(nLayers, nHeads, nKvHeads, nEmbd, nCtx int) uint64 {
 	// head_dim = n_embd / n_heads (обычно 128 для большинства моделей)
 	headDim := nEmbd / nHeads
 	if headDim <= 0 {
-		headDim = 128 // fallback
+		headDim = 128 // fallback (теоретически недостижимо после проверки выше)
 	}
 
 	// KV Cache = 2 (K+V) × n_layers × n_ctx × n_kv_heads × head_dim × bytes_per_elem

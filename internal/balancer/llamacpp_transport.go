@@ -168,6 +168,47 @@ func (p *Proxy) proxyRequestLlamaCpp(w http.ResponseWriter, r *http.Request, bac
 	//
 	// После записи заголовков (строка ~213 ниже) retry невозможен — TCP уже начат.
 	resp, err := clientForReq.Do(req)
+	// Round 8 (2026-07-10): connection-level error retry with exponential backoff
+	// (только для non-streaming — для streaming headers ещё не записаны,
+	// поэтому retry безопасен ДО первой записи в ResponseWriter).
+	//
+	// cppworker может быть в transition window (docker recreate, network blip):
+	//   - connection refused (port 18092 ещё не listening)
+	//   - connection reset (контейнер завершает keep-alive)
+	//
+	// 3 retry с backoff 1s/2s/4s перед сдачей. Не применяем к streaming после
+	// записи headers (этот код срабатывает до WriteHeader, проверяется через
+	// isStreaming + content-type).
+	if err != nil && isConnectionLevelError(err) {
+		maxConnectionRetries := 3
+		connectionBackoffs := []time.Duration{1 * time.Second, 2 * time.Second, 4 * time.Second}
+		for retryIdx := 0; retryIdx < maxConnectionRetries; retryIdx++ {
+			backoff := connectionBackoffs[retryIdx]
+			logger.Get().Warnw("proxyRequestLlamaCpp: connection-level error, backing off before retry",
+				"backend", backendID,
+				"model", modelFromCtx,
+				"attempt", llamaAttempt,
+				"retry_idx", retryIdx+1,
+				"max_retries", maxConnectionRetries,
+				"backoff_ms", backoff.Milliseconds(),
+				"error", err)
+			select {
+			case <-time.After(backoff):
+			case <-reqCtx.Done():
+				durationMs := time.Since(llamaStartTime).Milliseconds()
+				return fmt.Errorf("llama.cpp request failed [backend=%s, attempt=%d, duration_ms=%d, error_type=%s, cancelled_during_backoff]: %v",
+					backendID, llamaAttempt, durationMs, determineErrorType(err, reqCtx), err)
+			}
+			llamaAttempt++
+			resp, err = clientForReq.Do(req)
+			if err == nil {
+				break // success
+			}
+			if !isConnectionLevelError(err) {
+				break // error type changed, exit retry loop
+			}
+		}
+	}
 	if err != nil && llamaEOFRetries < maxLlamaEOFRetries {
 		errType := determineErrorType(err, reqCtx)
 		if errType == "unexpected_eof" {
@@ -198,6 +239,10 @@ func (p *Proxy) proxyRequestLlamaCpp(w http.ResponseWriter, r *http.Request, bac
 		// Публикуем EOF event (если это EOF и мы ещё не публиковали).
 		if errType == "unexpected_eof" {
 			p.publishTransportEOF(backendID, modelFromCtx, originalPath, err, time.Duration(durationMs)*time.Millisecond)
+		}
+		// Round 8 (2026-07-10): persistent connection_refused → mark backend unhealthy.
+		if errType == "connection_refused" {
+			p.markBackendConnectionFailed(backendID)
 		}
 		return fmt.Errorf("llama.cpp request failed [backend=%s, attempt=%d, duration_ms=%d, error_type=%s]: %v",
 			backendID, llamaAttempt, durationMs, errType, err)

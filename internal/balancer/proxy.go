@@ -32,6 +32,10 @@ type Proxy struct {
 	metricsMgr      *MetricsManager
 	queueMgr        *QueueManager
 	predictor       *Predictor
+	// healthChecker — опциональная зависимость. Выставляется через SetHealthChecker
+	// после конструктора (избегаем circular dep). Используется для MarkUnhealthy
+	// при persistent connection failures (Round 8 fix).
+	healthChecker           *HealthChecker
 	client                    *http.Client    // Клиент для обычных запросов
 	streamingClient           *http.Client    // Клиент для streaming/SSE запросов (без таймаута)
 	streamingTransportBase    *http.Transport // Базовый Transport для per-request клонов с ResponseHeaderTimeout
@@ -318,6 +322,13 @@ func (p *Proxy) SetQueueManagerProxy() {
 	p.queueMgr.proxy = p
 }
 
+// SetHealthChecker — устанавливает HealthChecker после создания Proxy
+// (избегаем circular dep Proxy ↔ HealthChecker).
+// Round 8 (2026-07-10): нужен для MarkUnhealthy при persistent connection failures.
+func (p *Proxy) SetHealthChecker(hc *HealthChecker) {
+	p.healthChecker = hc
+}
+
 // Shutdown — graceful shutdown с завершением активных SSE-сессий и сохранением состояния.
 // Порядок остановки:
 //  1. Запрет новых запросов (возврат 503)
@@ -475,7 +486,7 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		durationMs := time.Since(startTime).Milliseconds()
-		p.proxyLogger.Append(ProxyLogEntry{
+		entry := ProxyLogEntry{
 			Timestamp:  startTime,
 			Method:     r.Method,
 			Path:       path,
@@ -488,7 +499,14 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			StatusCode: sr.statusCode,
 			DurationMs: durationMs,
 			Stream:     isStream,
-		})
+		}
+		// Round 16 (2026-07-10): для 4xx/5xx — заполняем Error field чтобы в WebUI
+		// логах (Logs page) видно что произошло. Используем sr.errBody
+		// (накоплен в statusRecorder через Write/WriteHeader).
+		if sr.statusCode >= 400 && sr.errBody != "" {
+			entry.Error = sr.errBody
+		}
+		p.proxyLogger.Append(entry)
 	}()
 
 	ctx := context.WithValue(r.Context(), modelContextKey, model)
@@ -770,6 +788,12 @@ func (p *Proxy) extractModel(r *http.Request) (string, bool) {
 
 // UpdateMetrics - обновление метрик бэкенда с прогнозированием
 func (p *Proxy) UpdateMetrics(backendID string, metrics *types.BackendMetrics) {
+	// Round 15 (2026-07-10): нормализуем metrics.ID = backendID. Агент может
+	// отправить metrics с ID=agentID (старый handler использовал agentID
+	// как ключ). После dedup attach бэкенд имеет другой ID — нормализуем
+	// чтобы listBackends нашёл metricsMap[backend.ID].
+	metrics.ID = backendID
+
 	p.mu.RLock()
 	state, exists := p.backends[backendID]
 	p.mu.RUnlock()
@@ -1011,6 +1035,9 @@ type statusRecorder struct {
 	http.ResponseWriter
 	statusCode  int
 	wroteHeader bool
+	// errBody — накопленный body response (для 4xx/5xx). Round 16 (2026-07-10).
+	// Только первые 1 KB чтобы не раздувать лог.
+	errBody string
 }
 
 func (r *statusRecorder) WriteHeader(code int) {
@@ -1030,6 +1057,18 @@ func (r *statusRecorder) Write(b []byte) (int, error) {
 		r.wroteHeader = true
 		r.statusCode = http.StatusOK
 		r.ResponseWriter.WriteHeader(http.StatusOK)
+	}
+	// Round 16: для error responses захватываем body чтобы логи могли показать
+	// что конкретно вернул бэкенд. Обрезаем до 1 KB.
+	if r.statusCode >= 400 && len(r.errBody) < 1024 {
+		remaining := 1024 - len(r.errBody)
+		if remaining > 0 {
+			take := remaining
+			if take > len(b) {
+				take = len(b)
+			}
+			r.errBody += string(b[:take])
+		}
 	}
 	return r.ResponseWriter.Write(b)
 }

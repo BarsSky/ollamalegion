@@ -40,8 +40,9 @@ func TestModelManagerGetLoadTimeout(t *testing.T) {
 		timeout  int
 		expected time.Duration
 	}{
-		{"default (0) → 120s", 0, 120 * time.Second},
-		{"default (-1) → 120s", -1, 120 * time.Second},
+		// Round 8 (2026-07-10): default bumped to 10 min for 21GB MoE models.
+		{"default (0) → 10m", 0, 600 * time.Second},
+		{"default (-1) → 10m", -1, 600 * time.Second},
 		{"custom 60s", 60, 60 * time.Second},
 		{"custom 300s", 300, 300 * time.Second},
 	}
@@ -62,11 +63,11 @@ func TestModelManagerGetLoadTimeout(t *testing.T) {
 	}
 
 	// Проверка nil-proxy fallback
-	t.Run("nil proxy → 120s default", func(t *testing.T) {
+	t.Run("nil proxy → 10m default", func(t *testing.T) {
 		mm := &ModelManager{proxy: nil}
 		got := mm.getLoadTimeout()
-		if got != 120*time.Second {
-			t.Errorf("getLoadTimeout() with nil proxy = %v, want 120s", got)
+		if got != 600*time.Second {
+			t.Errorf("getLoadTimeout() with nil proxy = %v, want 600s", got)
 		}
 	})
 }

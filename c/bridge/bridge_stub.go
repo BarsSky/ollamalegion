@@ -123,6 +123,9 @@ type ModelConfig struct {
 	RMSNormEps        float32
 	NoMemoryMap       bool
 	RPCBackend        string
+	// Round 7: override-tensors (parallel slices; ignored in stub).
+	OverrideTensors     []string
+	OverrideTensorBufts []string
 }
 
 // DefaultModelConfig возвращает конфигурацию по умолчанию
@@ -153,6 +156,9 @@ type ModelMetadata struct {
 	ContextLength  int
 	NLayers        int
 	NHeads         int
+	NKvHeads       int // NEW: GQA kv heads (added 2026-07-06)
+	HeadDimK       int // NEW: K head dim (added 2026-07-06)
+	HeadDimV       int // NEW: V head dim (added 2026-07-06)
 	NEmbd          int
 	NVocab         int
 	SizeTotalBytes uint64

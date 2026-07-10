@@ -156,6 +156,13 @@ type ModelConfig struct {
 	// Прочее
 	NoMemoryMap bool
 	RPCBackend  string
+
+	// Round 7: override-tensors. Parallel arrays (length = OverrideTensorCount).
+	// Patterns are POSIX regex (e.g. `blk\\..*\\.ffn_.*_exps\\.weight`),
+	// buft names resolve to ggml_backend_buffer_type_t internally in C.
+	// Supported buft names: "CPU", "CUDA0", "CUDA1", ...
+	OverrideTensors      []string // nil = no override
+	OverrideTensorBufts  []string // parallel slice, len == len(OverrideTensors)
 }
 
 // DefaultModelConfig возвращает конфигурацию по умолчанию
@@ -366,6 +373,29 @@ func LoadModel(cfg ModelConfig) (*ModelHandle, error) {
 	//   q4_0 → 2 (enum ggml_type GGML_TYPE_Q4_0 = 2)
 	// Если строка пустая или неизвестная — 0 (bridge.c интерпретирует как default).
 	cCfg.kv_cache_type = C.int(kvCacheTypeToBridgeInt(cfg.KVCacheType))
+
+	// Round 7: pack OverrideTensors parallel arrays to C.
+	// Use runtime.Pinner to keep the slice backing array from being
+	// moved by the GC during the C call, and free C-strings inline.
+	if len(cfg.OverrideTensors) > 0 && len(cfg.OverrideTensors) == len(cfg.OverrideTensorBufts) {
+		pinnedPats := make([]*C.char, len(cfg.OverrideTensors))
+		pinnedBufts := make([]*C.char, len(cfg.OverrideTensorBufts))
+		for i, p := range cfg.OverrideTensors {
+			pinnedPats[i] = C.CString(p)
+			defer C.free(unsafe.Pointer(pinnedPats[i]))
+		}
+		for i, b := range cfg.OverrideTensorBufts {
+			pinnedBufts[i] = C.CString(b)
+			defer C.free(unsafe.Pointer(pinnedBufts[i]))
+		}
+		cCfg.override_tensor_count = C.int(len(cfg.OverrideTensors))
+		var pinner runtime.Pinner
+		defer pinner.Unpin()
+		pinner.Pin(&pinnedPats[0])
+		pinner.Pin(&pinnedBufts[0])
+		cCfg.override_tensor_patterns = &pinnedPats[0]
+		cCfg.override_tensor_buft_names = &pinnedBufts[0]
+	}
 
 	var errMsg *C.char
 	handle := C.bridge_load_model(&cCfg, &errMsg)

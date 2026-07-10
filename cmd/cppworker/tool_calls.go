@@ -3,6 +3,7 @@
 package main
 
 import (
+	"container/list"
 	"crypto/sha1"
 	"encoding/hex"
 	"encoding/json"
@@ -58,10 +59,103 @@ type toolsPromptCacheEntry struct {
 	createdAt time.Time
 }
 
+// toolsPromptCacheMaxEntries — лимит LRU-кеша. OpenWebUI часто держит один и
+// тот же набор tools на всю сессию (1-3 fingerprint'а), но при разных tooling
+// profiles в рамках одной ноды кеш может расти. 256 — разумный предел:
+// каждый entry ~1-10 KB → ~1-3 MB максимум при полном заполнении.
+//
+// Round 6 #3: было sync.Map без лимита — медленная утечка при OpenWebUI с
+// динамическими tool sets (каждый чат свои tools → новый fingerprint).
+const toolsPromptCacheMaxEntries = 256
+
 // toolsPromptCache — потокобезопасный LRU-кеш для tools prompts.
-// sync.Map выбран для lock-free доступа на горячем пути (OpenWebUI отправляет
-// tool-запросы часто).
-var toolsPromptCache sync.Map // map[string]toolsPromptCacheEntry
+// TTL + LRU eviction (Round 6 #3). sync.Map.Lock уже не используется —
+// единый mutex защищает и map, и list.
+type toolsPromptCacheLRU struct {
+	mu    sync.Mutex
+	items map[string]*list.Element // fingerprint -> doubly-linked list element
+	order *list.List               // front = most-recently-used, back = LRU
+}
+
+func newToolsPromptCacheLRU() *toolsPromptCacheLRU {
+	return &toolsPromptCacheLRU{
+		items: make(map[string]*list.Element),
+		order: list.New(),
+	}
+}
+
+// Get returns cached prompt if present and not expired; updates LRU position.
+func (c *toolsPromptCacheLRU) Get(fp string) (string, bool) {
+	if fp == "" {
+		return "", false
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	el, ok := c.items[fp]
+	if !ok {
+		return "", false
+	}
+	entry := el.Value.(*toolsPromptCacheEntry)
+	if time.Since(entry.createdAt) > toolsPromptCacheTTL {
+		// Expired — drop and treat as miss.
+		c.order.Remove(el)
+		delete(c.items, fp)
+		return "", false
+	}
+	c.order.MoveToFront(el)
+	return entry.prompt, true
+}
+
+// Put inserts/updates entry, evicting the oldest if over capacity.
+func (c *toolsPromptCacheLRU) Put(fp, prompt string) {
+	if fp == "" || prompt == "" {
+		return
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	now := time.Now()
+	if el, ok := c.items[fp]; ok {
+		entry := el.Value.(*toolsPromptCacheEntry)
+		entry.prompt = prompt
+		entry.createdAt = now
+		c.order.MoveToFront(el)
+		return
+	}
+	el := c.order.PushFront(&toolsPromptCacheEntry{prompt: prompt, createdAt: now})
+	c.items[fp] = el
+	// Evict LRU until under cap. We need to scan the map to find the
+	// key associated with the back element (no key on list.Element).
+	for c.order.Len() > toolsPromptCacheMaxEntries {
+		back := c.order.Back()
+		if back == nil {
+			break
+		}
+		backKey := ""
+		for k, v := range c.items {
+			if v == back {
+				backKey = k
+				break
+			}
+		}
+		c.order.Remove(back)
+		if backKey != "" {
+			delete(c.items, backKey)
+		}
+	}
+}
+
+// Delete removes a specific fingerprint (used on expiry).
+func (c *toolsPromptCacheLRU) Delete(fp string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if el, ok := c.items[fp]; ok {
+		c.order.Remove(el)
+		delete(c.items, fp)
+	}
+}
+
+// toolsPromptCache — singleton LRU-кеш.
+var toolsPromptCache = newToolsPromptCacheLRU()
 
 // toolsPromptCacheStats — счётчики попаданий/промахов для отладки.
 var (
@@ -95,24 +189,13 @@ func toolsPromptFingerprint(tools []openAITool) string {
 }
 
 // getCachedToolsPrompt возвращает промпт из кеша или пустую строку если miss.
-// Также применяет TTL — устаревшие записи игнорируются (но не удаляются
-// немедленно — это происходит при следующей записи с тем же fingerprint).
+// Также применяет TTL — устаревшие записи удаляются сразу (Round 6 #3 LRU).
 func getCachedToolsPrompt(fingerprint string) string {
 	if fingerprint == "" {
 		return ""
 	}
-	v, ok := toolsPromptCache.Load(fingerprint)
-	if !ok {
-		return ""
-	}
-	entry, ok := v.(toolsPromptCacheEntry)
-	if !ok {
-		return ""
-	}
-	if time.Since(entry.createdAt) > toolsPromptCacheTTL {
-		return ""
-	}
-	return entry.prompt
+	prompt, _ := toolsPromptCache.Get(fingerprint)
+	return prompt
 }
 
 // putCachedToolsPrompt сохраняет промпт в кеш с текущей меткой времени.
@@ -120,10 +203,7 @@ func putCachedToolsPrompt(fingerprint, prompt string) {
 	if fingerprint == "" || prompt == "" {
 		return
 	}
-	toolsPromptCache.Store(fingerprint, toolsPromptCacheEntry{
-		prompt:    prompt,
-		createdAt: time.Now(),
-	})
+	toolsPromptCache.Put(fingerprint, prompt)
 }
 
 // trimDescription обрезает описание tool до разумной длины.
@@ -307,33 +387,49 @@ func parseHermesSingleCall(raw json.RawMessage) *openAIToolCall {
 // extractLlamaPythonTagCalls извлекает tool_calls из Llama-3.x python_tag формата:
 //
 //	<|python_tag|>{"name":"search","parameters":{"q":"test"}}
-//	<|python_tag|>[{"name":"search","parameters":{...}}]
+//	<|python_tag|>[{"name":"search","parameters":{...}}, {...}]
 //
 // Аргументы передаются в поле "parameters" (не arguments).
+//
+// Bug fix (Round 5 Fix 2): старая версия использовала greedy regex
+// `<\|python_tag\|>\s*(\{.*|\[.*)` — захватывала ВСЁ до конца строки, ломая
+// много-call-сценарии и случаи когда модель продолжает писать текст после
+// JSON. Теперь используем findMatchingClosingBrace для аккуратного
+// определения конца JSON-блока (учитывает вложенные {} и строки).
 func extractLlamaPythonTagCalls(output string) []openAIToolCall {
-	// Находим позицию начала python_tag, отрезаем префикс, парсим остаток как JSON.
-	// Используем FindStringSubmatchIndex чтобы получить позицию начала группы захвата (idx 2),
-	// а не всего матча (idx 1), иначе rest будет пустым.
-	re := regexp.MustCompile(`<\|python_tag\|>\s*(\{.*|\[.*)`)
-	matches := re.FindStringSubmatchIndex(output)
-	if matches == nil {
+	// Ищем позицию <|python_tag|> и берём ПОСЛЕДУЮЩИЙ { или [.
+	tagIdx := strings.Index(output, "<|python_tag|>")
+	if tagIdx < 0 {
+		return nil
+	}
+	rest := output[tagIdx+len("<|python_tag|>"):]
+	rest = strings.TrimLeft(rest, " \t\r\n")
+
+	if len(rest) == 0 || (rest[0] != '{' && rest[0] != '[') {
 		return nil
 	}
 
-	// matches[2:4] — позиция группы захвата { или [.
-	// matches[3:4] — конец группы захвата (greedy .*).
-	// rest = output от первого { или [ после python_tag до конца группы захвата.
-	groupStart := matches[2]
-	groupEnd := matches[3]
-	rest := output[groupStart:groupEnd]
-	// Обрезаем по известным stop-токенам Llama-3
-	stopTokens := []string{"<|eom_id|>", "<|eot_id|>", "<|end_of_text|>", "<|start_header_id|>"}
-	for _, tok := range stopTokens {
-		if idx := strings.Index(rest, tok); idx >= 0 {
-			rest = rest[:idx]
-		}
+	// Находим matching closing bracket (для массива или объекта).
+	// findMatchingClose учитывает вложенность и строки (включая экранирование).
+	var closeIdx int
+	if rest[0] == '{' {
+		closeIdx = findMatchingClosingBrace(rest, 0)
+	} else {
+		closeIdx = findMatchingClosingBracket(rest, 0)
 	}
-	rest = strings.TrimSpace(rest)
+	if closeIdx < 0 {
+		// Fallback: используем старый подход с stop-токенами.
+		stopTokens := []string{"<|eom_id|>", "<|eot_id|>", "<|end_of_text|>", "<|start_header_id|>"}
+		for _, tok := range stopTokens {
+			if idx := strings.Index(rest, tok); idx >= 0 {
+				rest = rest[:idx]
+				break
+			}
+		}
+		rest = strings.TrimSpace(rest)
+	} else {
+		rest = rest[:closeIdx+1]
+	}
 
 	// Пытаемся распарсить как JSON
 	var raw json.RawMessage
@@ -495,10 +591,15 @@ func extractSingleObjectToolCall(output string) []openAIToolCall {
 	return nil
 }
 
-// findMatchingClosingBrace находит позицию закрывающей '}' с учётом
-// вложенности и строк (включая экранированные кавычки).
-func findMatchingClosingBrace(s string, openPos int) int {
-	if openPos < 0 || openPos >= len(s) || s[openPos] != '{' {
+// findMatchingClose находит позицию closing-символа для opening-символа
+// (openCh='{' → closeCh='}', openCh='[' → closeCh=']') с учётом вложенности
+// и строк (включая экранированные кавычки). Возвращает индекс закрывающего
+// символа или -1 если не найден.
+//
+// Bug fix (Round 5 Fix 2): старая findMatchingClosingBrace работала только
+// для {…}, что не покрывало кейс с массивами tool calls в Llama-3 python_tag.
+func findMatchingClose(s string, openPos int, openCh, closeCh byte) int {
+	if openPos < 0 || openPos >= len(s) || s[openPos] != openCh {
 		return -1
 	}
 	depth := 0
@@ -523,9 +624,9 @@ func findMatchingClosingBrace(s string, openPos int) int {
 		switch c {
 		case '"':
 			inStr = true
-		case '{':
+		case openCh:
 			depth++
-		case '}':
+		case closeCh:
 			depth--
 			if depth == 0 {
 				return i
@@ -533,6 +634,18 @@ func findMatchingClosingBrace(s string, openPos int) int {
 		}
 	}
 	return -1
+}
+
+// findMatchingClosingBrace находит позицию закрывающей '}' с учётом
+// вложенности и строк (включая экранированные кавычки).
+// Backward-compat обёртка вокруг findMatchingClose.
+func findMatchingClosingBrace(s string, openPos int) int {
+	return findMatchingClose(s, openPos, '{', '}')
+}
+
+// findMatchingClosingBracket — аналогично для '[' → ']'.
+func findMatchingClosingBracket(s string, openPos int) int {
+	return findMatchingClose(s, openPos, '[', ']')
 }
 
 // stringifyArguments сериализует аргументы в JSON-строку для OpenAI-совместимого формата.

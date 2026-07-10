@@ -337,6 +337,36 @@ int bridge_get_gpu_info(int gpu_index, GPUDeviceInfo* info) {
 // Загрузка модели — РЕАЛЬНАЯ через llama.cpp
 // ============================================================
 
+
+// Round 7: resolve_buft_by_name — resolves a buft name ("CPU" / "CUDA0" / "CUDA1" / ...)
+// to a ggml_backend_buffer_type_t handle. Returns NULL for unknown names.
+// The handle is cached per-name; entries with NULL handle are skipped at override-build time.
+
+struct ggml_backend_buffer_type * resolve_buft_by_name(const char *name) {
+    if (name == NULL || name[0] == 0) return NULL;
+    if (strcmp(name, "CPU") == 0) {
+        return ggml_backend_cpu_buffer_type();
+    }
+    if (strncmp(name, "CUDA", 4) == 0) {
+        int idx = 0;
+        if (name[4] >= '0' && name[4] <= '9') idx = atoi(name + 4);
+        if (idx >= 0 && idx < (int)ggml_backend_dev_count()) {
+            return ggml_backend_dev_buffer_type(ggml_backend_dev_get(idx));
+        }
+    }
+    for (size_t i = 0; i < ggml_backend_dev_count(); ++i) {
+        ggml_backend_dev_t dev = ggml_backend_dev_get(i);
+        ggml_backend_buffer_type_t buft = ggml_backend_dev_buffer_type(dev);
+        if (buft != NULL && ggml_backend_buft_name(buft) != NULL &&
+            strcmp(ggml_backend_buft_name(buft), name) == 0) {
+            return buft;
+        }
+    }
+    return NULL;
+}
+
+// 
+
 ModelHandle bridge_load_model(const ModelConfig* config, char** error_msg) {
     if (!initialized) {
         set_error("bridge not initialized");
@@ -362,6 +392,48 @@ ModelHandle bridge_load_model(const ModelConfig* config, char** error_msg) {
     }
     model_params.use_mmap = config->use_mmap;
     model_params.use_mlock = config->use_mlock;
+    model_params.use_mlock = config->use_mlock;
+
+    // Round 7: override-tensors. If override_tensor_count > 0 we build
+    // a NULL-terminated array of llama_model_tensor_buft_override and
+    // attach it to model_params.tensor_buft_overrides (read by
+    // llama_model_load_from_file internally).
+    static struct llama_model_tensor_buft_override *buft_overrides = NULL;
+    static int buft_overrides_count = 0;
+    if (config->override_tensor_count > 0 &&
+        config->override_tensor_patterns != NULL &&
+        config->override_tensor_buft_names != NULL) {
+        int n = config->override_tensor_count;
+        // +1 for NULL-terminator (llama.cpp API requires).
+        buft_overrides = calloc((size_t)(n + 1),
+            sizeof(struct llama_model_tensor_buft_override));
+        if (buft_overrides != NULL) {
+            int valid = 0;
+            for (int i = 0; i < n; i++) {
+                const char *pat = config->override_tensor_patterns[i];
+                const char *buft_name = config->override_tensor_buft_names[i];
+                if (pat == NULL || pat[0] == 0) continue;
+                ggml_backend_buffer_type_t buft = resolve_buft_by_name(buft_name);
+                if (buft == NULL) continue;
+                buft_overrides[valid].pattern = pat;
+                buft_overrides[valid].buft = buft;
+                ++valid;
+            }
+            if (valid > 0) {
+                buft_overrides[valid].pattern = NULL;
+                buft_overrides[valid].buft = NULL;
+                model_params.tensor_buft_overrides = buft_overrides;
+                buft_overrides_count = valid;
+                fprintf(stderr,
+                    "[bridge] override-tensors: applied %d entries\n",
+                    valid);
+            } else {
+                free(buft_overrides);
+                buft_overrides = NULL;
+            }
+        }
+    }
+
 
     // Загружаем модель
     struct llama_model *model = llama_model_load_from_file(config->model_path, model_params);

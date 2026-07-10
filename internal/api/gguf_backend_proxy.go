@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"ollama-loadbalancer/internal/balancer"
 	"ollama-loadbalancer/pkg/logger"
 	"ollama-loadbalancer/pkg/types"
 )
@@ -125,6 +126,60 @@ func (s *Server) proxyToCppWorker(w http.ResponseWriter, r *http.Request, backen
 		Timeout: cppWorkerProxyTimeout,
 	}
 	resp, err := httpClient.Do(req)
+	// Round 8 (2026-07-10): connection-level error retry with exponential backoff.
+	// Используется для устойчивости к docker recreate / network blip:
+	//   - "connection refused" (cppworker port ещё не listening)
+	//   - "connection reset" (контейнер закрыл keep-alive)
+	//   - "no such host" (DNS не резолвится — редко)
+	//
+	// Не применяем к context canceled / deadline (caller ушёл) и EOF/timeout
+	// (имеют свои handlers).
+	if err != nil && balancer.IsConnectionLevelError(err) {
+		maxConnectionRetries := 3
+		connectionBackoffs := []time.Duration{1 * time.Second, 2 * time.Second, 4 * time.Second}
+		for retryIdx := 0; retryIdx < maxConnectionRetries; retryIdx++ {
+			backoff := connectionBackoffs[retryIdx]
+			log.Warnw("cppworker proxy: connection-level error, backing off before retry",
+				"backend", backendID,
+				"path", path,
+				"target", target,
+				"retry_idx", retryIdx+1,
+				"max_retries", maxConnectionRetries,
+				"backoff_ms", backoff.Milliseconds(),
+				"error", err.Error())
+			select {
+			case <-time.After(backoff):
+			case <-ctx.Done():
+				log.Warnw("cppworker proxy: cancelled during backoff",
+					"backend", backendID, "path", path)
+				s.writeJSON(w, http.StatusBadGateway, map[string]string{
+					"error":   "cppworker unreachable",
+					"message": fmt.Sprintf("cancelled during backoff: %v", err),
+					"backend": backendID,
+					"target":  fmt.Sprintf("%s:%d", host, port),
+				})
+				return
+			}
+			// Recreate req with fresh context (old ctx may have expired)
+			ctx2, cancel2 := context.WithTimeout(r.Context(), cppWorkerProxyTimeout)
+			req2, reqErr := http.NewRequestWithContext(ctx2, r.Method, target, bytes.NewReader(bodyBytes))
+			if reqErr != nil {
+				cancel2()
+				break
+			}
+			// Copy headers from original
+			req2.Header = req.Header
+			resp, err = httpClient.Do(req2)
+			cancel2()
+			if err == nil {
+				ctx = ctx2
+				break // success
+			}
+			if !balancer.IsConnectionLevelError(err) {
+				break // error type changed, exit retry loop
+			}
+		}
+	}
 	if err != nil {
 		log.Warnw("cppworker proxy request failed",
 			"backend", backendID, "path", path, "target", target, "error", err.Error())

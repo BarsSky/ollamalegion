@@ -140,3 +140,169 @@ func TestMergeModelProfile_PartialUpdate_KVCacheType(t *testing.T) {
 		t.Errorf("KVCacheType: expected 'q4_0' (preserved), got %q", out.KVCacheType)
 	}
 }
+
+// Round 7 (2026-07-09): tests for override-tensors validation and merge.
+func TestValidateModelProfile_OverrideTensors(t *testing.T) {
+	tests := []struct {
+		name      string
+		profile   types.LlamaCppModelProfile
+		wantError bool
+	}{
+		{
+			name: "valid_qwen3_a3b_cpu",
+			profile: types.LlamaCppModelProfile{
+				ContextLength:       16384,
+				OverrideTensors:     []string{`blk\.\d+\.ffn_.*_exps\.weight`},
+				OverrideTensorBufts: []string{"CPU"},
+			},
+			wantError: false,
+		},
+		{
+			name: "valid_multiple",
+			profile: types.LlamaCppModelProfile{
+				ContextLength: 16384,
+				OverrideTensors: []string{
+					`blk\.\d+\.ffn_.*_exps\.weight`,
+					`blk\.\d+\.ffn_.*_exps\.bias`,
+				},
+				OverrideTensorBufts: []string{"CPU", "CUDA0"},
+			},
+			wantError: false,
+		},
+		{
+			name: "empty_arrays_allowed",
+			profile: types.LlamaCppModelProfile{
+				ContextLength: 8192,
+			},
+			wantError: false,
+		},
+		{
+			name: "mismatched_length_rejected",
+			profile: types.LlamaCppModelProfile{
+				ContextLength:       16384,
+				OverrideTensors:     []string{"a", "b"},
+				OverrideTensorBufts: []string{"CPU"}, // only 1
+			},
+			wantError: true,
+		},
+		{
+			name: "invalid_buft_value_rejected",
+			profile: types.LlamaCppModelProfile{
+				ContextLength:       16384,
+				OverrideTensors:     []string{"x"},
+				OverrideTensorBufts: []string{"DISK0"}, // not CPU or CUDA<n>
+			},
+			wantError: true,
+		},
+		{
+			name: "invalid_buft_in_array_rejected",
+			profile: types.LlamaCppModelProfile{
+				ContextLength:       16384,
+				OverrideTensors:     []string{"a", "b"},
+				OverrideTensorBufts: []string{"CPU", "RAM0"},
+			},
+			wantError: true,
+		},
+		{
+			name: "one_side_only_rejected",
+			profile: types.LlamaCppModelProfile{
+				ContextLength:   16384,
+				OverrideTensors: []string{"a"}, // bufts missing → length 0 vs 1 → mismatch
+			},
+			wantError: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := validateModelProfile(tt.profile)
+			if tt.wantError && err == nil {
+				t.Errorf("expected error, got nil")
+			}
+			if !tt.wantError && err != nil {
+				t.Errorf("unexpected error: %v", err)
+			}
+		})
+	}
+}
+
+// TestMergeModelProfile_PartialUpdate_OverrideTensors verifies:
+//   - existing overrides preserved when update.OverrideTensors == nil
+//   - explicit empty slice clears them
+//   - non-nil matching arrays replace them
+//   - mismatched-length update is rejected (existing preserved)
+func TestMergeModelProfile_PartialUpdate_OverrideTensors(t *testing.T) {
+	t.Run("nil_preserves_existing", func(t *testing.T) {
+		existing := types.LlamaCppModelProfile{
+			ContextLength:       16384,
+			OverrideTensors:     []string{`blk\.\d+\.ffn_.*_exps\.weight`},
+			OverrideTensorBufts: []string{"CPU"},
+		}
+		update := types.LlamaCppModelProfile{
+			ContextLength: 0,
+			// OverrideTensors nil → keep existing
+		}
+		out := mergeModelProfile(existing, update)
+		if len(out.OverrideTensors) != 1 {
+			t.Errorf("expected existing OverrideTensors preserved, got %v", out.OverrideTensors)
+		}
+		if len(out.OverrideTensorBufts) != 1 || out.OverrideTensorBufts[0] != "CPU" {
+			t.Errorf("expected existing OverrideTensorBufts preserved, got %v", out.OverrideTensorBufts)
+		}
+	})
+
+	t.Run("non_nil_replaces", func(t *testing.T) {
+		existing := types.LlamaCppModelProfile{
+			ContextLength: 16384,
+			// Empty existing.
+		}
+		update := types.LlamaCppModelProfile{
+			OverrideTensors:     []string{`blk\.\d+\.ffn_.*_exps\.weight`},
+			OverrideTensorBufts: []string{"CUDA0"},
+		}
+		out := mergeModelProfile(existing, update)
+		if len(out.OverrideTensors) != 1 || out.OverrideTensors[0] != `blk\.\d+\.ffn_.*_exps\.weight` {
+			t.Errorf("OverrideTensors not replaced: %v", out.OverrideTensors)
+		}
+		if len(out.OverrideTensorBufts) != 1 || out.OverrideTensorBufts[0] != "CUDA0" {
+			t.Errorf("OverrideTensorBufts not replaced: %v", out.OverrideTensorBufts)
+		}
+	})
+
+	t.Run("mismatched_length_keeps_existing", func(t *testing.T) {
+		existing := types.LlamaCppModelProfile{
+			ContextLength:       16384,
+			OverrideTensors:     []string{`blk\.\d+\.ffn_.*_exps\.weight`},
+			OverrideTensorBufts: []string{"CPU"},
+		}
+		update := types.LlamaCppModelProfile{
+			OverrideTensors:     []string{"a", "b"},
+			OverrideTensorBufts: []string{"CPU"}, // mismatch
+		}
+		out := mergeModelProfile(existing, update)
+		// Existing should be preserved.
+		if len(out.OverrideTensors) != 1 || out.OverrideTensors[0] != `blk\.\d+\.ffn_.*_exps\.weight` {
+			t.Errorf("mismatch should preserve existing, got %v", out.OverrideTensors)
+		}
+	})
+
+	t.Run("explicit_clear", func(t *testing.T) {
+		existing := types.LlamaCppModelProfile{
+			ContextLength:       16384,
+			OverrideTensors:     []string{`blk\.\d+\.ffn_.*_exps\.weight`},
+			OverrideTensorBufts: []string{"CPU"},
+		}
+		update := types.LlamaCppModelProfile{
+			OverrideTensors:     []string{}, // explicit empty
+			OverrideTensorBufts: []string{},
+		}
+		out := mergeModelProfile(existing, update)
+		// Both arrays now empty.
+		if len(out.OverrideTensors) != 0 {
+			t.Errorf("explicit empty should clear, got %v", out.OverrideTensors)
+		}
+		if len(out.OverrideTensorBufts) != 0 {
+			t.Errorf("explicit empty should clear, got %v", out.OverrideTensorBufts)
+		}
+	})
+}

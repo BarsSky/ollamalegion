@@ -109,6 +109,13 @@ func (s *Server) buildHealthReport() *types.HealthReport {
 			Healthy:       meta.Status == types.StatusHealthy,
 			HasAgent:      meta.HasAgent,
 		}
+		// Round 14 (2026-07-10): подтягиваем agent attachment данные из proxy
+		// (backend.AgentID/AgentPort/LastAgentContact) — нужны для UI drill-down.
+		if backend := s.proxy.GetBackend(id); backend != nil {
+			bh.AgentID = backend.AgentID
+			bh.AgentPort = backend.AgentPort
+			bh.LastAgentContact = backend.LastAgentContact
+		}
 		if bh.HasAgent {
 			report.WithAgent++
 		}

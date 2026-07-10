@@ -146,15 +146,28 @@ models/
 
 balancer_test_build
 
-apply_streaming_fix.py
-
-apply_gen_fix.py
-
+# Round 11 (2026-07-10): consolidated root cleanup — all one-shot dev
+# scripts moved to scripts/, never committed at repo root.
+apply_*.py
+*_helper.py
 inspect_out.txt
-
 *.7z
+*.zip
+*.tar.gz
 
-panic_out.txt
+# Old task tracker / plan files (replaced by plans/README.md roadmap)
+plan.md
+task_progress.md
+task_progress.json
+DEPLOYMENT.md
+
+# Round 17 (2026-07-10): misc dev artifacts.
+# One-off dev scripts that should live in scripts/ instead of source tree.
+cmd/cppworker/find.py
+# Backup directories (created by IDE / manual cp -r before refactor).
+cmd/cppworker/.backup-*/
+cmd/agent/.backup-*/
+internal/**/*.backup-*/
 
 # Playwright / Node tooling (Sprint 1 Day 2 - 2026-06-29)
 # Note: we COMMIT package-lock.json for reproducible installs and we

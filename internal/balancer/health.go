@@ -235,8 +235,38 @@ func (hc *HealthChecker) performCheck(backend *types.Backend) *HealthCheckResult
 func (hc *HealthChecker) GetStatus(backendID string) *HealthStatus {
 	hc.mu.Lock()
 	defer hc.mu.Unlock()
-	
+
 	return hc.results[backendID]
+}
+
+// MarkUnhealthy — пометить backend как unhealthy (вызывается из proxy при persistent
+// connection-level failures). Healthcheck (checkLoop) снимет метку через threshold
+// успешных проверок. Используется чтобы не routing'ить запросы к мёртвому backend
+// пока он не восстановится.
+//
+// Round 8 (2026-07-10): после 3 retry с backoff на connection_refused balancer
+// вызывает MarkUnhealthy(reason), чтобы selectBackend исключил этот backend.
+func (hc *HealthChecker) MarkUnhealthy(backendID string, reason string) {
+	if hc == nil {
+		return
+	}
+	hc.mu.Lock()
+	defer hc.mu.Unlock()
+	status, ok := hc.results[backendID]
+	if !ok {
+		status = &HealthStatus{Healthy: true}
+		hc.results[backendID] = status
+	}
+	if status.Healthy {
+		status.Healthy = false
+		status.LastFailure = time.Now()
+		if status.LastError == "" {
+			status.LastError = reason
+		}
+		// ConsecutiveFails увеличим — при следующем checkLoop backend будет проверен
+		// с более высоким приоритетом для восстановления статуса.
+		status.ConsecutiveFails++
+	}
 }
 
 // GetAllStatuses - получение всех статусов

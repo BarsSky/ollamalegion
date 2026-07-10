@@ -151,15 +151,29 @@ func ApplyCppCtxHeaderWithOptions(r *http.Request, params *bridge.GenerationPara
 
 // defaultAntipromptsForModel — возвращает дефолтный набор стоп-последовательностей
 // для указанной модели, чтобы модель корректно останавливалась в конце своего хода.
-// Для gemma: "<end_of_turn>" (нормальный EOS) + "<start_of_turn>user" (защита от
-// ситуации, когда модель генерирует открывающий токен следующего хода вместо EOS).
-// Для прочих: "<|end|>" + "<|user|>" + "<|assistant|>".
+//
+// Round 6 #5: для Qwen3-семейства (qwen3 / qwen3.5 / qwen3.6 / qwen3moe / qwen35moe)
+// эмитим ChatML-stop-токены `` + <|im_end|> + <|im_start|>, иначе модель не
+// останавливается на EOS-токене и генерирует мусор до n_predict. Gemma использует
+// <end_of_turn> + <start_of_turn>*, остальные — <|end|> / <|user|> / <|assistant|>.
+//
+// Защита от race: если модель не имеет training-своего stop-token в списке,
+// llama.cpp сам остановит на n_predict. Поэтому добавляем несколько запасных.
 func defaultAntipromptsForModel(modelName string) []string {
 	ml := strings.ToLower(modelName)
-	if strings.Contains(ml, "gemma") {
+	switch {
+	case strings.Contains(ml, "gemma"):
 		return []string{"<end_of_turn>", "<start_of_turn>user", "<start_of_turn>model"}
+	case strings.Contains(ml, "qwen3"), strings.Contains(ml, "qwen35"),
+		strings.Contains(ml, "qwen2"):
+		// Qwen3 / Qwen3.5 / Qwen3.6 / Qwen3-MoE / Qwen35-MoE / Qwen2 используют
+		// ChatML: "<|im_end|>" (ChatML-EOS) + "<|im_start|>" маркеры ходов.
+		// НЕ используем пустую строку — в llama.cpp она всегда матчит любой токен
+		// и модель останавливается на первом токене.
+		return []string{"<|im_end|>", "<|im_start|>system", "<|im_start|>user", "<|end|>"}
+	default:
+		return []string{"<|end|>", "<|user|>", "<|assistant|>"}
 	}
-	return []string{"<|end|>", "<|user|>", "<|assistant|>"}
 }
 
 // isGemmaModel — true, если имя модели содержит "gemma" (gemma, gemma-2, gemma-4, и т.п.).

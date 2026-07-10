@@ -24,11 +24,27 @@ func (p *Proxy) AddBackend(backend types.Backend) error {
 	if backend.MaxConcurrentReqs == 0 {
 		backend.MaxConcurrentReqs = 10
 	}
-	if backend.OllamaPort == 0 {
-		backend.OllamaPort = 11434
-	}
-	if backend.AgentPort == 0 {
-		backend.AgentPort = 18032
+	// Defaults зависят от типа бэкенда:
+	//   - llama_cpp (cppworker): OllamaPort=0 (неприменимо), CppWorkerPort=18092 (default если не задан).
+	//   - ollama (legacy): OllamaPort=11434 (default), CppWorkerPort=0 (неприменимо).
+	//   - agent: OllamaPort=11434, AgentPort=18032 (если не заданы).
+	//
+	// Round 7 fix: не выставляем OllamaPort=11434 для llama_cpp бэкендов,
+	// потому что это вызывало dedup-collision с ollama-агентами на том же
+	// физическом endpoint (test setup). backendEffectivePort() корректно
+	// обрабатывает 0 OllamaPort для llama_cpp, используя CppWorkerPort.
+	isLlamaCpp := backend.Type == types.BackendTypeLlamaCpp
+	if isLlamaCpp {
+		if backend.CppWorkerPort == 0 {
+			backend.CppWorkerPort = 18092
+		}
+	} else {
+		if backend.OllamaPort == 0 {
+			backend.OllamaPort = 11434
+		}
+		if backend.AgentPort == 0 {
+			backend.AgentPort = 18032
+		}
 	}
 	if backend.Status == "" {
 		backend.Status = types.StatusStarting
@@ -433,6 +449,40 @@ func (p *Proxy) AttachAgentToBackend(backendID, agentID string, agentPort int) {
 	state.Backend.AgentID = agentID
 	state.AgentID = agentID
 	state.Backend.LastAgentContact = time.Now()
+}
+
+// MarkAgentContact — обновляет только LastAgentContact уже прикреплённого агента.
+// Round 13 (2026-07-10): используется в heartbeat-цикле после attach для
+// лёжких обновлений (без race-condition на повторный attach).
+// Если backendID не найден или agentID не совпадает с прикреплённым — no-op.
+func (p *Proxy) MarkAgentContact(backendID, agentID string) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	state, ok := p.backends[backendID]
+	if !ok {
+		return
+	}
+	if state.Backend.AgentID != "" && state.Backend.AgentID != agentID {
+		return
+	}
+	state.Backend.LastAgentContact = time.Now()
+}
+
+// UpdateAgentPort — обновляет только AgentPort бэкенда.
+// Round 14 (2026-07-10): используется в heartbeat handler для retrofit
+// agentPort в cppworker-бэкенды, которые были созданы без знания про agent.
+// Если agentPort = 0 — no-op (нельзя обнулить уже установленный).
+func (p *Proxy) UpdateAgentPort(backendID string, agentPort int) {
+	if agentPort <= 0 {
+		return
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	state, ok := p.backends[backendID]
+	if !ok {
+		return
+	}
+	state.Backend.AgentPort = agentPort
 }
 
 // FindBackendByAgentID — ищет ID бэкенда по agentID (v2).

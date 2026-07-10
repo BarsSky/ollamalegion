@@ -98,7 +98,8 @@ REGISTER_JSON=$(cat <<EOF
   "labels": ${LABELS_JSON},
   "backendType": "llama_cpp",
   "backendEngine": "llama_cpp",
-  "gpuMode": "${CPPWORKER_GPU_MODE}"
+  "gpuMode": "${CPPWORKER_GPU_MODE}",
+  "cppWorkerApiToken": "${CPPWORKER_API_TOKEN:-${API_TOKEN:-}}"
 }
 EOF
 )

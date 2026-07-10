@@ -165,15 +165,17 @@ func estimateKVCacheBytes(nCtx, nLayers, nEmbd, nHeads, nKvHeads int, kvCacheTyp
 	}
 	effKVHeads := nKvHeads
 	if effKVHeads <= 0 {
-		// Session 16+ (gemma-4, qwen3 fix): GGUF v3 parser (ggufKeyMap) may not know architecture,
-		// returning nKvHeads=0 even when real model has GQA. Use 1:4 ratio as a sane default for 7-35B.
-		effKVHeads = nHeads / 4
-		if effKVHeads < 1 {
-			effKVHeads = 1
-		}
+		// Fallback to MHA (nHeads) when n_kv_heads is unknown.
+		// Using MHA is the safe upper bound for VRAM estimation:
+		//   - actual GQA models use LESS KV-cache (smaller than estimate)
+		//   - actual MHA models match the estimate exactly
+		// Going with nHeads/4 (1:4 GQA ratio) would underestimate VRAM for
+		// MHA models and cause false OOM. The conservative MHA fallback ensures
+		// we never claim more n_ctx than the worst-case model can handle.
+		effKVHeads = nHeads
 	}
 	if effKVHeads <= 0 {
-		effKVHeads = nHeads
+		effKVHeads = 1
 	}
 	headDim := nEmbd / nHeads
 	if headDim <= 0 {

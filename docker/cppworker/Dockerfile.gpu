@@ -144,6 +144,7 @@ RUN apt-get update && \
 
 COPY docker/cppworker/entrypoint.sh /entrypoint.sh
 COPY docker/cppworker/register-with-balancer.sh /register-with-balancer.sh
+    # Round 7: cppworker ApiToken in registration payload
 RUN chmod +x /entrypoint.sh /register-with-balancer.sh
 COPY --from=go-builder /build/cppworker .
 

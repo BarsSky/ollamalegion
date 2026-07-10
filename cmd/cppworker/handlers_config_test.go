@@ -266,24 +266,24 @@ func TestEstimateKVCacheBytes(t *testing.T) {
 	// head_dim = 4096/32 = 128
 	// bytes = 4 * n_ctx * 32 * 32 * 128 = 524288 * n_ctx
 	// Для n_ctx=8192: 524288 * 8192 = 4_294_967_296 байт = 4 GB
-	bytes := estimateKVCacheBytes(8192, 32, 4096, 32, 32)
+	bytes := estimateKVCacheBytes(8192, 32, 4096, 32, 32, "f16")
 	expectedBytes := int64(4) * 8192 * 32 * 32 * 128
 	if bytes != expectedBytes {
-		t.Errorf("estimateKVCacheBytes(8192, 32, 4096, 32, 32) = %d, want %d",
+		t.Errorf("estimateKVCacheBytes(8192, 32, 4096, 32, 32, f16) = %d, want %d",
 			bytes, expectedBytes)
 	}
 
 	// GQA (n_kv_heads < n_heads): 7B с GQA-8 (n_kv_heads=8)
 	// head_dim = 4096/32 = 128, effKVHeads = 8
 	// bytes = 4 * n_ctx * 32 * 8 * 128 = 131072 * n_ctx
-	bytesGQA := estimateKVCacheBytes(4096, 32, 4096, 32, 8)
+	bytesGQA := estimateKVCacheBytes(4096, 32, 4096, 32, 8, "f16")
 	expectedGQA := int64(4) * 4096 * 32 * 8 * 128
 	if bytesGQA != expectedGQA {
 		t.Errorf("GQA estimate = %d, want %d", bytesGQA, expectedGQA)
 	}
 
 	// n_kv_heads=0 → fallback на n_heads (MHA)
-	bytesNoKV := estimateKVCacheBytes(1024, 32, 4096, 32, 0)
+	bytesNoKV := estimateKVCacheBytes(1024, 32, 4096, 32, 0, "f16")
 	expectedNoKV := int64(4) * 1024 * 32 * 32 * 128
 	if bytesNoKV != expectedNoKV {
 		t.Errorf("n_kv_heads=0 fallback = %d, want %d", bytesNoKV, expectedNoKV)
@@ -291,19 +291,19 @@ func TestEstimateKVCacheBytes(t *testing.T) {
 
 	// Нулевые nEmbd/nHeads → fallback на 4MB per 1K tokens.
 	// nLayers=32, чтобы пройти первую проверку (nCtx>0 && nLayers>0).
-	bytesZero := estimateKVCacheBytes(1024, 32, 0, 0, 0)
+	bytesZero := estimateKVCacheBytes(1024, 32, 0, 0, 0, "f16")
 	if bytesZero != 1024*4096 {
 		t.Errorf("zero n_embd/n_heads fallback = %d, want %d", bytesZero, 1024*4096)
 	}
 
 	// nLayers=0 → возврат 0 (нет слоёв для KV-cache)
-	bytesNoLayers := estimateKVCacheBytes(1024, 0, 4096, 32, 32)
+	bytesNoLayers := estimateKVCacheBytes(1024, 0, 4096, 32, 32, "f16")
 	if bytesNoLayers != 0 {
 		t.Errorf("n_layers=0 should return 0, got %d", bytesNoLayers)
 	}
 
 	// Отрицательные значения → 0
-	bytesNeg := estimateKVCacheBytes(-1, 32, 4096, 32, 32)
+	bytesNeg := estimateKVCacheBytes(-1, 32, 4096, 32, 32, "f16")
 	if bytesNeg != 0 {
 		t.Errorf("negative n_ctx should return 0, got %d", bytesNeg)
 	}

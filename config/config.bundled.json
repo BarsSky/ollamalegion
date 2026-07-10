@@ -38,7 +38,7 @@
                       "queueWorkers":  4,
                       "sessionTTL":  900,
                       "useEnhancedScoring":  true,
-                      "modelLoadTimeout":  300,
+                       "modelLoadTimeout":  900,
                       "streamingMaxDuration":  0,
                       "autoPull":  {
                                        "enabled":  false,

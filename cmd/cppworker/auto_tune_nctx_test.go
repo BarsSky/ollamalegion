@@ -57,7 +57,7 @@ func TestAutoTuneNCtx_NoMetadata(t *testing.T) {
 		Name: "test-model",
 		// SizeBytes и NLayers = 0 → fallback
 	}
-	got := AutoTuneNCtx(m, 0)
+	got := AutoTuneNCtx(m, 0, "")
 	if got.Source != "fallback" {
 		t.Errorf("expected source=fallback, got %q", got.Source)
 	}
@@ -81,7 +81,7 @@ func TestAutoTuneNCtx_ExactMatch(t *testing.T) {
 		ContextSize:   8192,
 		GPULayers:     32,
 	}
-	got := AutoTuneNCtx(m, 16384)
+	got := AutoTuneNCtx(m, 16384, "")
 	if got.Source != "exact_match" {
 		t.Errorf("expected source=exact_match, got %q (ctx=%d, gpu=%d)",
 			got.Source, got.RecommendedNCtx, got.RecommendedGPULayers)
@@ -112,7 +112,7 @@ func TestAutoTuneNCtx_PartialOffload(t *testing.T) {
 		ContextSize: 8192,
 		GPULayers:   40, // all layers currently
 	}
-	got := AutoTuneNCtx(m, 16384)
+	got := AutoTuneNCtx(m, 16384, "")
 	if got.Source != "partial_offload" {
 		t.Errorf("expected source=partial_offload, got %q (ctx=%d, gpu=%d, max=%d)",
 			got.Source, got.RecommendedNCtx, got.RecommendedGPULayers, got.MaxViableNCtx)
@@ -142,7 +142,7 @@ func TestAutoTuneNCtx_ReducedNCtx(t *testing.T) {
 		ContextSize: 32768,
 		GPULayers:   32,
 	}
-	got := AutoTuneNCtx(m, 200000)
+	got := AutoTuneNCtx(m, 200000, "")
 	if got.Source != "reduced_nctx" {
 		t.Errorf("expected source=reduced_nctx, got %q (ctx=%d, max=%d)",
 			got.Source, got.RecommendedNCtx, got.MaxViableNCtx)
@@ -173,7 +173,7 @@ func TestAutoTuneNCtx_RamFallbackMaxCap(t *testing.T) {
 		GPULayers:   32,
 	}
 	// requested=100000, но ram-fallback-max=16384 → cap до 16384.
-	got := AutoTuneNCtx(m, 100000)
+	got := AutoTuneNCtx(m, 100000, "")
 	if got.RecommendedNCtx > 16384 {
 		t.Errorf("expected RecommendedNCtx <= 16384 (capped by ram-fallback-max), got %d", got.RecommendedNCtx)
 	}
@@ -193,7 +193,7 @@ func TestAutoTuneNCtx_NoVRAM(t *testing.T) {
 		ContextSize: 8192,
 		GPULayers:   20,
 	}
-	got := AutoTuneNCtx(m, 16384)
+	got := AutoTuneNCtx(m, 16384, "")
 	// При VRAM=0 → tryBridgeGPUInfo/nvidia-smi могут вернуть > 0 в реальной системе,
 	// но в unit-тестах окружение не имеет GPU → fallback.
 	if got.Source != "fallback" {
@@ -219,7 +219,7 @@ func TestAutoTuneNCtx_SafetyFactorFromEnv(t *testing.T) {
 	// Default safetyFactor=0.85.
 	setEnv(t, "CPPWORKER_VRAM_BYTES", "8589934592") // 8 GB
 	setEnv(t, "CPPWORKER_AVAILABLE_RAM_BYTES", "16777216000") // 16 GB
-	gotDefault := AutoTuneNCtx(m, 16384)
+	gotDefault := AutoTuneNCtx(m, 16384, "")
 	t.Logf("default safetyFactor=0.85: source=%s n_ctx=%d gpu_layers=%d max_viable_n_ctx=%d",
 		gotDefault.Source, gotDefault.RecommendedNCtx,
 		gotDefault.RecommendedGPULayers, gotDefault.MaxViableNCtx)
@@ -230,22 +230,22 @@ func TestAutoTuneNCtx_SafetyFactorFromEnv(t *testing.T) {
 	// Env override 0.92 — больший бюджет (более щедрый partial offload).
 	// MaxViableNCtx должен быть БОЛЬШЕ чем при default.
 	setEnv(t, "CPPWORKER_NCTX_SAFETY_FACTOR", "0.92")
-	gotHighSafety := AutoTuneNCtx(m, 16384)
+	gotHighSafety := AutoTuneNCtx(m, 16384, "")
 	t.Logf("env safetyFactor=0.92: source=%s n_ctx=%d gpu_layers=%d max_viable_n_ctx=%d",
 		gotHighSafety.Source, gotHighSafety.RecommendedNCtx,
 		gotHighSafety.RecommendedGPULayers, gotHighSafety.MaxViableNCtx)
 
 	// Invalid value должно использовать default 0.85 (без fatal).
 	setEnv(t, "CPPWORKER_NCTX_SAFETY_FACTOR", "not-a-number")
-	gotInvalid := AutoTuneNCtx(m, 16384)
+	gotInvalid := AutoTuneNCtx(m, 16384, "")
 	if gotInvalid.Source == "fallback" {
 		t.Fatalf("invalid env should fallback to default 0.85, not fatal")
 	}
-	t.Logf("invalid env rejected, nctx_safety_factor=%.3f (default)", nctxSafetyFactor)
+	t.Logf("invalid env rejected, nctx_safety_factor=%.3f (default)", 0.85)
 
 	// Out-of-range value должен быть rejected.
 	setEnv(t, "CPPWORKER_NCTX_SAFETY_FACTOR", "2.0")
-	gotOOR := AutoTuneNCtx(m, 16384)
+	gotOOR := AutoTuneNCtx(m, 16384, "")
 	if gotOOR.Source == "fallback" {
 		t.Fatalf("out-of-range env should be rejected, not fatal")
 	}

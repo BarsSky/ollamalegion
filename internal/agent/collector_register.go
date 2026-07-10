@@ -94,6 +94,28 @@ func (a *Agent) register() error {
 		return err
 	}
 
+	// Round 12 (2026-07-10): отличаем "attached" (dedup) от "created".
+	// В bundled-режиме agent attach'ится к cppworker-бэкенду, а не создаёт новый.
+	// Это устраняет дублирование: раньше для одного физического inference endpoint
+	// было 2 бэкенда (cppworker + agent), теперь 1.
+	if action, ok := registerResp["action"].(string); ok {
+		if action == "attached" {
+			bid, _ := registerResp["backendId"].(string)
+			// Round 13 (2026-07-10): сохраняем backendId для нового heartbeat endpoint.
+			// При attached режиме agentID != backendID, поэтому старый /agents/heartbeat
+			// обновлял неправильный бэкенд. Новый /backends/{backendId}/agent/heartbeat
+			// использует правильный ID.
+			a.config.BackendID = bid
+			fmt.Printf("[%s] Agent ATTACHED to existing cppworker backend %q (dedup, single backend for host=%s cppWorkerPort=%d)\n",
+				time.Now().Format(time.RFC3339), bid, registerHost, registerCppWorkerPort)
+		} else if action == "created" {
+			// Standalone mode: agent создал свой бэкенд, backendId == agentId.
+			a.config.BackendID = a.config.AgentID
+			fmt.Printf("[%s] Agent created NEW backend (no cppworker at %s:%d, standalone mode)\n",
+				time.Now().Format(time.RFC3339), registerHost, registerCppWorkerPort)
+		}
+	}
+
 	if success, ok := registerResp["success"].(bool); ok && !success {
 		errorMsg := "unknown"
 		if msg, ok := registerResp["error"].(string); ok {

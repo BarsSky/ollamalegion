@@ -399,6 +399,14 @@ func (s *Server) reloadModelOnCppWorker(backend types.Backend, modelName string,
 	if profile.KVCacheType != "" {
 		body["kvCacheType"] = profile.KVCacheType
 	}
+	// Round 7 (2026-07-09): прокидываем override-tensors в reload endpoint.
+	// Применяется к MoE моделям для роутинга routed-expert тензоров на CPU
+	// (освобождает VRAM для KV-cache). Параллельные массивы должны быть
+	// согласованы по длине, иначе cppworker их игнорирует.
+	if len(profile.OverrideTensors) > 0 && len(profile.OverrideTensors) == len(profile.OverrideTensorBufts) {
+		body["overrideTensors"] = profile.OverrideTensors
+		body["overrideTensorBufts"] = profile.OverrideTensorBufts
+	}
 	bodyBytes, _ := json.Marshal(body)
 
 	req, err := http.NewRequest(http.MethodPost, target, strings.NewReader(string(bodyBytes)))
@@ -407,6 +415,13 @@ func (s *Server) reloadModelOnCppWorker(backend types.Backend, modelName string,
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("X-Real-IP", "balancer")
+	// Round 7 fix: cppworker /api/models/reload защищён authMiddleware,
+	// который ожидает `Authorization: Bearer <token>`. Per-backend token берём
+	// из backend.CppWorkerApiToken (если задан в конфиге). Если пусто — шлём
+	// без Authorization (cppworker пропустит без authMiddleware).
+	if backend.CppWorkerApiToken != "" {
+		req.Header.Set("Authorization", "Bearer "+backend.CppWorkerApiToken)
+	}
 
 	httpClient := &http.Client{}
 	resp, err := httpClient.Do(req)
@@ -462,6 +477,20 @@ func mergeModelProfile(existing, update types.LlamaCppModelProfile) types.LlamaC
 	if update.KVCacheType != "" {
 		out.KVCacheType = update.KVCacheType
 	}
+	// Round 7 (2026-07-09): override-tensors (parallel arrays).
+	// nil в update означает "не менять"; [] в update (явно пустой массив)
+	// означает "очистить". Непустой update перезаписывает целиком.
+	// Должны быть согласованы по длине, иначе — игнорируем (warning в логе).
+	if update.OverrideTensors != nil || update.OverrideTensorBufts != nil {
+		if len(update.OverrideTensors) == len(update.OverrideTensorBufts) {
+			out.OverrideTensors = update.OverrideTensors
+			out.OverrideTensorBufts = update.OverrideTensorBufts
+		} else {
+			logger.Get().Warnw("mergeModelProfile: override-tensors length mismatch, keeping existing",
+				"tensors", len(update.OverrideTensors),
+				"bufts", len(update.OverrideTensorBufts))
+		}
+	}
 	return out
 }
 
@@ -495,6 +524,19 @@ func validateModelProfile(p types.LlamaCppModelProfile) error {
 		// OK
 	default:
 		return fmt.Errorf("kvCacheType must be one of ['', 'f16', 'q8_0', 'q4_0'], got %q", p.KVCacheType)
+	}
+	// Round 7 (2026-07-09): validate override-tensors.
+	// Длины должны совпадать (parallel arrays). Каждый buft должен быть
+	// одним из поддерживаемых значений (CPU / CUDA<N>).
+	// Пустые массивы — допустимы (= inherit default, без override).
+	if len(p.OverrideTensors) != len(p.OverrideTensorBufts) {
+		return fmt.Errorf("overrideTensors and overrideTensorBufts length mismatch: %d vs %d",
+			len(p.OverrideTensors), len(p.OverrideTensorBufts))
+	}
+	for i, buft := range p.OverrideTensorBufts {
+		if buft != "CPU" && !strings.HasPrefix(buft, "CUDA") {
+			return fmt.Errorf("overrideTensorBufts[%d]=%q is invalid (must be 'CPU' or 'CUDA<n>')", i, buft)
+		}
 	}
 	return nil
 }

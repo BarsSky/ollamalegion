@@ -105,7 +105,7 @@ func TestBuildToolsSystemPrompt_CacheHit(t *testing.T) {
 		t.Errorf("Cached prompt differs from original:\nfirst:  %s\nsecond: %s", prompt1, prompt2)
 	}
 	// Гарантируем, что запись действительно есть в кеше.
-	if _, ok := toolsPromptCache.Load(fp); !ok {
+	if _, ok := toolsPromptCache.items[fp]; !ok {
 		t.Errorf("cache entry for fingerprint %q should exist after first call", fp)
 	}
 	// И что getCachedToolsPrompt возвращает тот же текст.
@@ -191,10 +191,13 @@ func TestGetCachedToolsPrompt_TTLExpiry(t *testing.T) {
 		createdAt time.Time
 	}
 	oldPrompt := "outdated prompt content"
-	toolsPromptCache.Store(fp, struct {
-		prompt    string
-		createdAt time.Time
-	}{prompt: oldPrompt, createdAt: time.Now().Add(-2 * toolsPromptCacheTTL)})
+	toolsPromptCache.Put(fp, oldPrompt)
+	// Force backdate via internal access (Go test in same package).
+	toolsPromptCache.mu.Lock()
+	if el, ok := toolsPromptCache.items[fp]; ok {
+		el.Value.(*toolsPromptCacheEntry).createdAt = time.Now().Add(-2 * toolsPromptCacheTTL)
+	}
+	toolsPromptCache.mu.Unlock()
 
 	if got := getCachedToolsPrompt(fp); got != "" {
 		t.Errorf("getCachedToolsPrompt after TTL expiry = %q, want empty string", got)
@@ -206,11 +209,11 @@ func TestGetCachedToolsPrompt_TTLExpiry(t *testing.T) {
 func TestPutCachedToolsPrompt_EmptyFingerprintIsNoOp(t *testing.T) {
 	toolsPromptCache.Delete("")
 	putCachedToolsPrompt("", "should not be stored")
-	if _, ok := toolsPromptCache.Load(""); ok {
+	if _, ok := toolsPromptCache.Get(""); ok {
 		t.Error("empty fingerprint should not be stored")
 	}
 	putCachedToolsPrompt("valid-fp", "")
-	if _, ok := toolsPromptCache.Load("valid-fp"); ok {
+	if _, ok := toolsPromptCache.Get("valid-fp"); ok {
 		t.Error("empty prompt should not be stored")
 	}
 }

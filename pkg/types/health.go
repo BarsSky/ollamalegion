@@ -68,6 +68,12 @@ type BackendHealth struct {
 	LastFailure     time.Time `json:"lastFailure,omitempty"`
 	LastError       string    `json:"lastError,omitempty"`
 	HasAgent        bool      `json:"hasAgent"`
+	// Round 14 (2026-07-10): AgentID + AgentPort для UI/API потребления.
+	// В WebUI видно какой agent прикреплён к бэкенду и на каком порту
+	// доступен (для drill-down и healthchecks).
+	AgentID         string    `json:"agentId,omitempty"`
+	AgentPort       int       `json:"agentPort,omitempty"`
+	LastAgentContact time.Time `json:"lastAgentContact,omitempty"`
 }
 
 // HealthReport — агрегированный отчёт о здоровье для /api/v1/health/detailed.

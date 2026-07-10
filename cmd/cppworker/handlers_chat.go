@@ -1,4 +1,4 @@
-package main
+﻿package main
 
 import (
 	"encoding/json"
@@ -126,7 +126,13 @@ func handleChat(w http.ResponseWriter, r *http.Request) {
 	}
 
 	params := buildGenerationParams(genReq)
-	ApplyCppCtxHeader(r, &params)
+	// Round 6 #6: прокидываем HasTools=true чтобы увеличить резерв токенов
+	// под tools-prompt в n_ctx clamp (для Ollama-пути), как и в Round 4 для
+	// OpenAI handlers. Без этого tools-запросы получают 1024 токен резерва →
+	// n_ctx overflow → reload-loop → 413.
+	ApplyCppCtxHeaderWithOptions(r, &params, CppCtxApplyOptions{
+		HasTools: len(req.Tools) > 0,
+	})
 	// Antiprompts ??? gemma/non-gemma
 	params.Antiprompts = append(params.Antiprompts, defaultAntipromptsForModel(req.Model)...)
 	logger.Get().Debugw("handleChat: antiprompts",
@@ -252,16 +258,22 @@ func msgsToBridge(msgs []chatMessage) []bridge.ChatMessage {
 	for _, m := range msgs {
 		content := m.Content
 		// ???? assistant ????????? ???????? tool_calls ? ??????????? ?? ? content
+			// Round 6 #2: wrap tool_calls as JSON array [{...},{...}] in Hermes/Qwen
+		// format, which llama.cpp chat_template recognizes as structured
+		// tool_call (not plain-JSON). bridge.ChatMessage has no native ToolCalls
+		// field (C-bridge limitation), so we serialize into Content.
 		if m.Role == "assistant" && len(m.ToolCalls) > 0 {
 			tcJSON, err := json.Marshal(m.ToolCalls)
-			if err == nil {
+			if err == nil && len(tcJSON) > 0 {
+				toolCallsBlock := "[" + string(tcJSON) + "]"
 				if content != "" {
-					content += "\n" + string(tcJSON)
+					content = content + "\n" + toolCallsBlock
 				} else {
-					content = string(tcJSON)
+					content = toolCallsBlock
 				}
 			}
 		}
+
 		result = append(result, bridge.ChatMessage{
 			Role:    m.Role,
 			Content: content,
@@ -309,14 +321,17 @@ func buildChatPromptFromMessages(msgs []chatMessage, modelName string) string {
 				promptBuilder.WriteString("<|assistant|>\n")
 			}
 			// ???? ???? tool_calls, ??????????? ?? ? content
+			// Round 6 #2: wrap tool_calls as JSON array in Hermes/Qwen format
+			// (see msgsToBridge comment for rationale).
 			content := msg.Content
 			if len(msg.ToolCalls) > 0 {
 				tcJSON, err := json.Marshal(msg.ToolCalls)
-				if err == nil {
+				if err == nil && len(tcJSON) > 0 {
+					toolCallsBlock := "[" + string(tcJSON) + "]"
 					if content != "" {
-						content += "\n" + string(tcJSON)
+						content = content + "\n" + toolCallsBlock
 					} else {
-						content = string(tcJSON)
+						content = toolCallsBlock
 					}
 				}
 			}
@@ -386,7 +401,8 @@ func writeChatStreamResponse(w http.ResponseWriter, r *http.Request, modelName, 
 	// 2026-06-25: ?????? snapshot ????? streaming (????? ??????????? ?????????).
 	var streamErr error
 	defer func() {
-		recordLastPromptFromError(modelName, "/api/chat", prompt, &params, false, streamErr)
+		// Round 5 Fix 3: пробрасываем r для детекции client_disconnect.
+		recordLastPromptFromErrorWithContext(modelName, "/api/chat", prompt, &params, false, streamErr, r)
 	}()
 
 	// 2026-07-01: reasoning-?????? (??? reasoning-???????).
@@ -555,48 +571,72 @@ func writeChatStreamResponseWithTools(w http.ResponseWriter, r *http.Request, mo
 	w.Header().Set("Content-Type", "application/x-ndjson")
 	w.Header().Set("Cache-Control", "no-cache")
 	w.Header().Set("Connection", "keep-alive")
+	// Round 6 Fix 5: do NOT flush headers immediately — buffer the response.
+	// Previously every prose token was sent on the wire and then the final
+	// chunk tried to set content="" with tool_calls — clients got garbage
+	// (raw JSON in chat). New approach: callback ONLY writes to outputBuf,
+	// no flushes. After inference, parse tool_calls and emit one final
+	// chunk (either tool_calls or content). Heartbeat goroutine keeps
+	// the connection alive during long generations.
 	flusher.Flush()
 	ctx := r.Context()
 	start := time.Now()
 	createdAt := time.Now().UTC().Format(time.RFC3339)
 
-	// ??????????? ??????? output ??? ???????????? ???????? tool_calls.
-	// ?????????? strings.Builder + ??????? ??? ???????????? ?? ?????? goroutine,
-	// ???? callback ?????????? ????????? ?? generateStreamWithRamFallback.
+	// Buffer full output for final tool_calls detection.
 	var outputBuf strings.Builder
 
-	// 2026-06-25: ?????? snapshot ????? streaming (????? ??????????? ?????????).
-	var streamErr error
+	// Round 6 Fix 5: heartbeat goroutine prevents idle-timeout during
+	// long generations. SSE comment ": keepalive\n\n" is ignored by
+	// Ollama/OpenWebUI clients but prevents TCP idle disconnect.
+	heartbeatStop := make(chan struct{})
+	heartbeatDone := make(chan struct{})
+	go func() {
+		defer close(heartbeatDone)
+		ticker := time.NewTicker(100 * time.Millisecond)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-heartbeatStop:
+				return
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				if _, err := fmt.Fprintf(w, ": keepalive\n\n"); err != nil {
+					return
+				}
+				flusher.Flush()
+			}
+		}
+	}()
 	defer func() {
-		recordLastPromptFromError(modelName, "/api/chat", prompt, &params, true, streamErr)
+		close(heartbeatStop)
+		select {
+		case <-heartbeatDone:
+		case <-time.After(50 * time.Millisecond):
+		}
 	}()
 
+	// Snapshot for chat streaming (debug endpoint).
+	var streamErr error
+	defer func() {
+		recordLastPromptFromErrorWithContext(modelName, "/api/chat", prompt, &params, true, streamErr, r)
+	}()
+
+	// Round 6 Fix 5: callback ONLY buffers. Prose is NEVER sent to the wire
+	// because it might be part of a tool_call (Gemma-4 / Qwen3 stream prose
+	// before tool_call). Without buffering, clients see raw JSON in chat.
 	callback := func(token string) bool {
 		select {
 		case <-ctx.Done():
 			return false
 		default:
 		}
-		// ??????????? output ??? ???????????? ???????? tool_calls.
 		outputBuf.WriteString(token)
-
-		// ?????? ??????? streaming chunk ? content.
-		chunk := map[string]interface{}{
-			"model":      modelName,
-			"created_at": createdAt,
-			"message": map[string]string{
-				"role":    "assistant",
-				"content": token,
-			},
-			"done": false,
-		}
-		jsonData, _ := json.Marshal(chunk)
-		fmt.Fprintf(w, "%s\n", jsonData)
-		flusher.Flush()
 		return true
 	}
 
-	// /api/chat streaming fallback: tools ?? ??????????????.
+	// /api/chat streaming with tools: full buffer, single final response.
 	streamErr = generateStreamWithRamFallback(modelName, prompt, params, callback, false)
 
 	// ???? ?? ????? streaming ????????? ?????? ? ?????? ????????? chunk ? error,

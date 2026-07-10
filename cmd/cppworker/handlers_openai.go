@@ -60,6 +60,14 @@ type openAIChatCompletionRequest struct {
 	Tools []openAITool `json:"tools,omitempty"`
 	// ToolChoice — управление выбором инструмента ("auto", "none", "required", или {"type":"function","function":{"name":"..."}}).
 	ToolChoice json.RawMessage `json:"tool_choice,omitempty"`
+	// StreamOptions — параметры стриминга (include_usage добавляет usage в финальный SSE чанк).
+	StreamOptions *openAIStreamOptions `json:"stream_options,omitempty"`
+}
+
+// openAIStreamOptions — подмножество OpenAI `stream_options`.
+// Используется Cline для отслеживания контекстного окна (usage-чанк в SSE).
+type openAIStreamOptions struct {
+	IncludeUsage bool `json:"include_usage,omitempty"`
 }
 
 type openAIChatMessage struct {
@@ -261,7 +269,13 @@ func handleV1ChatCompletions(w http.ResponseWriter, r *http.Request) {
 	if req.NumCtx > 0 {
 		params.NCtxOverride = req.NumCtx
 	}
-	ApplyCppCtxHeader(r, &params)
+	// Bug fix (Round 4): прокидываем HasTools=true чтобы увеличить резерв
+	// токенов под tools-prompt в n_ctx clamp. Без этого tools-запросы
+	// получают 1024 токен резерва (как обычные чаты), и при 5+ tools с
+	// длинными описаниями n_ctx overflow → reload-loop → 413 "n_ctx_too_large".
+	ApplyCppCtxHeaderWithOptions(r, &params, CppCtxApplyOptions{
+		HasTools: len(req.Tools) > 0,
+	})
 
 	// Antiprompts: дефолтные для формата промпта + пользовательские req.Stop.
 	defaultAP := defaultAntipromptsForModel(req.Model)
@@ -291,11 +305,11 @@ func handleV1ChatCompletions(w http.ResponseWriter, r *http.Request) {
 			// Если есть tools — буферизируем полный ответ, чтобы распарсить tool_calls
 			// перед отправкой SSE. Это trade-off: теряем real-time streaming,
 			// но получаем корректные tool_calls + finish_reason.
-		hasTools := len(req.Tools) > 0
-		result, err := generateWithRamFallback(req.Model, prompt, params, hasTools)
-		// 2026-06-25: snapshot для /v1/chat/completions (tools path).
-		defer recordLastPromptFromError(req.Model, "/v1/chat/completions", prompt, &params, hasTools, err)
-		if err != nil {
+			hasTools := len(req.Tools) > 0
+			result, err := generateWithRamFallback(req.Model, prompt, params, hasTools)
+			// 2026-06-25: snapshot для /v1/chat/completions (tools path).
+			defer recordLastPromptFromError(req.Model, "/v1/chat/completions", prompt, &params, hasTools, err)
+			if err != nil {
 				// 2026-06-24: PromptExceedsNCtxError → HTTP 413 (см. inference.go).
 				if handleInferenceError(w, err) {
 					return
@@ -320,15 +334,18 @@ func handleV1ChatCompletions(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 			if calls := parseToolCallsFromOutput(result.Output); len(calls) > 0 {
-				writeToolCallsStream(w, req.Model, chatID(), time.Now().Unix(), calls)
+				includeUsage := req.StreamOptions != nil && req.StreamOptions.IncludeUsage
+				writeToolCallsStream(w, req.Model, chatID(), time.Now().Unix(), calls, prompt, includeUsage)
 			} else {
 				// Нет tool_calls — стримим как обычный текст
-				writeStaticTextStream(w, req.Model, chatID(), time.Now().Unix(), result.Output)
+				includeUsage := req.StreamOptions != nil && req.StreamOptions.IncludeUsage
+				writeStaticTextStream(w, req.Model, chatID(), time.Now().Unix(), result.Output, prompt, includeUsage)
 			}
 			return
 		}
 		// Без tools — обычный real-time streaming
-		writeOpenAIChatStream(w, r, req.Model, prompt, params)
+		includeUsage := req.StreamOptions != nil && req.StreamOptions.IncludeUsage
+		writeOpenAIChatStream(w, r, req.Model, prompt, params, includeUsage)
 		return
 	}
 
@@ -380,12 +397,30 @@ func handleV1ChatCompletions(w http.ResponseWriter, r *http.Request) {
 		"role": "assistant",
 	}
 	if hasToolCalls {
-		message["content"] = nil
+		// Round 6 #4+#10: for reasoning models we still want to expose
+		// reasoning_content alongside tool_calls. SplitReasoningContent
+		// peels off ``...`` block from output; remaining content goes
+		// into tool_calls via parser above.
+		if IsReasoningModel(req.Model) {
+			r, c, has := SplitReasoningContent(result.Output)
+			if has {
+				message["reasoning_content"] = r
+				// c is normally empty when tool_calls cover the rest,
+				// but keep it as plain content if non-empty (some models
+				// stream prose before tool_call even with tools present).
+				if c != "" {
+					message["content"] = c
+				} else {
+					message["content"] = nil
+				}
+			} else {
+				message["content"] = nil
+			}
+		} else {
+			message["content"] = nil
+		}
 		message["tool_calls"] = toolCalls
 	} else {
-		// 2026-07-01: для reasoning-моделей (qwen3.5/qwen3.6/deepseek-r1/gemma-4)
-		// разделяем output на (reasoning_content, content). Это позволяет
-		// OpenWebUI/Cline отображать think-блок и видимый ответ раздельно.
 		if IsReasoningModel(req.Model) {
 			r, c, has := SplitReasoningContent(result.Output)
 			if has {
@@ -416,11 +451,7 @@ func handleV1ChatCompletions(w http.ResponseWriter, r *http.Request) {
 				"finish_reason": finishReason,
 			},
 		},
-		"usage": map[string]interface{}{
-			"prompt_tokens":     0,
-			"completion_tokens": 0,
-			"total_tokens":      0,
-		},
+		"usage":       buildUsage(prompt, result.Output, req.Model),
 		"duration_ms": durationMs,
 	})
 }
@@ -432,7 +463,15 @@ func chatID() string {
 
 // writeToolCallsStream отправляет SSE-поток с tool_calls (без content).
 // Формат: один chunk с delta.tool_calls, затем chunk с finish_reason="tool_calls".
-func writeToolCallsStream(w http.ResponseWriter, modelName, chatID string, created int64, calls []openAIToolCall) {
+//
+// ВАЖНО: каждый tool_call эмитится с полем `index` — это требование OpenAI
+// streaming spec. Без `index` Cline/Roo не могут правильно склеить
+// инкрементальные deltas аргументов и интерпретируют tool_call как
+// невалидный ("Invalid API Response").
+//
+// Параметр includeUsage включает финальный usage-чанк (после finish_reason
+// но до [DONE]) — соответствует OpenAI stream_options.include_usage=true.
+func writeToolCallsStream(w http.ResponseWriter, modelName, chatID string, created int64, calls []openAIToolCall, prompt string, includeUsage bool) {
 	flusher, ok := w.(http.Flusher)
 	if !ok {
 		return
@@ -442,6 +481,11 @@ func writeToolCallsStream(w http.ResponseWriter, modelName, chatID string, creat
 	w.Header().Set("Connection", "keep-alive")
 	w.WriteHeader(http.StatusOK)
 	flusher.Flush()
+
+	// OpenAI streaming spec требует поле `index` для каждого tool_call,
+	// чтобы клиент мог склеивать инкрементальные deltas по index.
+	// helper indexedToolCalls добавляет индексы 0..N-1.
+	indexed := indexedToolCalls(calls)
 
 	// Chunk 1: роль ассистента (без content, с tool_calls)
 	firstChunk := map[string]interface{}{
@@ -455,7 +499,7 @@ func writeToolCallsStream(w http.ResponseWriter, modelName, chatID string, creat
 				"delta": map[string]interface{}{
 					"role":       "assistant",
 					"content":    nil,
-					"tool_calls": calls,
+					"tool_calls": indexed,
 				},
 				"finish_reason": nil,
 			},
@@ -481,13 +525,37 @@ func writeToolCallsStream(w http.ResponseWriter, modelName, chatID string, creat
 	}
 	stopJSON, _ := json.Marshal(stopChunk)
 	fmt.Fprintf(w, "data: %s\n\n", stopJSON)
+	flusher.Flush()
+
+	// Chunk 3 (опционально): usage блок, если includeUsage=true.
+	// Для tool_calls output completion=JSON аргументы функций.
+	// Тут output = serialized tool_calls (см. caller), используем как есть.
+	if includeUsage {
+		writeOpenAIUsageChunk(w, flusher, chatID, created, modelName, prompt, serializeToolCallsForUsage(indexed), includeUsage)
+	}
+
 	fmt.Fprintf(w, "data: [DONE]\n\n")
 	flusher.Flush()
 }
 
+// serializeToolCallsForUsage склеивает tool_calls в строку для подсчёта
+// completion_tokens. Подсчёт токенов на JSON-сериализации близок к реальному,
+// т.к. модель сгенерировала этот JSON-текст.
+func serializeToolCallsForUsage(calls []map[string]interface{}) string {
+	b, err := json.Marshal(calls)
+	if err != nil {
+		return ""
+	}
+	return string(b)
+}
+
 // writeStaticTextStream отправляет SSE-поток с фиксированным текстом
 // (используется когда tools запросили буферизированный ответ).
-func writeStaticTextStream(w http.ResponseWriter, modelName, chatID string, created int64, content string) {
+//
+// Параметр includeUsage добавляет финальный usage-чанк перед [DONE]
+// (OpenAI stream_options.include_usage=true). Используется Cline/Roo для
+// корректного трекинга контекстного окна.
+func writeStaticTextStream(w http.ResponseWriter, modelName, chatID string, created int64, content, prompt string, includeUsage bool) {
 	flusher, ok := w.(http.Flusher)
 	if !ok {
 		return
@@ -535,6 +603,12 @@ func writeStaticTextStream(w http.ResponseWriter, modelName, chatID string, crea
 	}
 	stopJSON, _ := json.Marshal(stopChunk)
 	fmt.Fprintf(w, "data: %s\n\n", stopJSON)
+	flusher.Flush()
+
+	// Финальный usage chunk (если include_usage=true) — перед [DONE].
+	// OpenAI stream_options.include_usage=true → клиент получает prompt/completion/total_tokens.
+	writeOpenAIUsageChunk(w, flusher, chatID, created, modelName, prompt, content, includeUsage)
+
 	fmt.Fprintf(w, "data: [DONE]\n\n")
 	flusher.Flush()
 }
@@ -547,7 +621,7 @@ func writeStaticTextStream(w http.ResponseWriter, modelName, chatID string, crea
 // сессию ("один источник найден, ответа нет"). Также поддерживаем детекцию tool_calls
 // в выходном тексте — если модель сгенерировала <tool_call>...</tool_call> (Hermes/Gemma-4/Qwen),
 // эмитим tool_calls в финальном чанке и обнуляем content.
-func writeOpenAIChatStream(w http.ResponseWriter, r *http.Request, modelName, prompt string, params bridge.GenerationParams) {
+func writeOpenAIChatStream(w http.ResponseWriter, r *http.Request, modelName, prompt string, params bridge.GenerationParams, includeUsage bool) {
 	flusher, ok := w.(http.Flusher)
 	if !ok {
 		writeError(w, http.StatusInternalServerError, "streaming not supported")
@@ -580,10 +654,13 @@ func writeOpenAIChatStream(w http.ResponseWriter, r *http.Request, modelName, pr
 	// 2026-06-25: snapshot для /v1/chat/completions streaming.
 	var streamErr error
 	defer func() {
-		recordLastPromptFromError(modelName, "/v1/chat/completions", prompt, &params, false, streamErr)
+		// Round 5 Fix 3: проброс r в новую context-aware версию —
+		// при client_disconnect err==nil, без ctx этого не видно.
+		recordLastPromptFromErrorWithContext(modelName, "/v1/chat/completions", prompt, &params, false, streamErr, r)
 	}()
 
-	keepaliveInterval := 15 * time.Second
+	// Round 6 #7: configurable heartbeat via env. Default 15s for OpenAI SSE.
+	keepaliveInterval := getHeartbeatInterval(15 * time.Second)
 
 	// === 2026-06-26 BUGFIX: safeStreamWriter ===
 	//
@@ -648,8 +725,6 @@ func writeOpenAIChatStream(w http.ResponseWriter, r *http.Request, modelName, pr
 		close(stopCh)
 		keepaliveWG.Wait()
 	}()
-
-
 
 	// writeReasoningChunk — низкоуровневый helper, эмитит ОДИН SSE чанк с указанным
 	// delta (map[string]interface{}). Возвращает false при обрыве клиента / writer broken.
@@ -848,9 +923,11 @@ func writeOpenAIChatStream(w http.ResponseWriter, r *http.Request, modelName, pr
 
 	if len(toolCalls) > 0 {
 		// Tool calls обнаружены — эмитим их в финальном чанке с finish_reason="tool_calls".
+		// Каждый tool_call должен иметь `index` per OpenAI streaming spec —
+		// иначе Cline/Roo/openai-python SDK не могут правильно склеить инкремент.
 		finalDelta["role"] = "assistant"
 		finalDelta["content"] = nil
-		finalDelta["tool_calls"] = toolCalls
+		finalDelta["tool_calls"] = indexedToolCalls(toolCalls)
 		finishReason = "tool_calls"
 	} else {
 		// Plain-text ответ.
@@ -879,6 +956,21 @@ func writeOpenAIChatStream(w http.ResponseWriter, r *http.Request, modelName, pr
 	}
 	stopJSON, _ := json.Marshal(stopChunk)
 	sw.Writef("data: %s\n\n", stopJSON)
+
+	// Финальный usage chunk (если include_usage=true) — перед [DONE].
+	// OpenAI stream_options.include_usage=true → клиент получает prompt/completion/total_tokens.
+	// Для tool_calls output completion_tokens считаем по JSON-сериализации calls;
+	// для текстового output completion_tokens = sw.Tokens() (atomic counter, лояльный).
+	if includeUsage {
+		var completionText string
+		if len(toolCalls) > 0 {
+			completionText = serializeToolCallsForUsage(indexedToolCalls(toolCalls))
+		} else {
+			completionText = fullOutput
+		}
+		emitOpenAIUsageChunkSafe(sw, chatID, created, modelName, prompt, completionText, true)
+	}
+
 	sw.Writef("data: [DONE]\n\n")
 	sw.Flush()
 }
@@ -1004,11 +1096,7 @@ func handleV1Completions(w http.ResponseWriter, r *http.Request) {
 				"finish_reason": "stop",
 			},
 		},
-		"usage": map[string]interface{}{
-			"prompt_tokens":     0,
-			"completion_tokens": 0,
-			"total_tokens":      0,
-		},
+		"usage":       buildUsage(req.Prompt, result.Output, req.Model),
 		"duration_ms": durationMs,
 	}
 	if reasoningValue != "" {
@@ -1062,7 +1150,7 @@ func writeOpenAICompletionStream(w http.ResponseWriter, r *http.Request, modelNa
 	// 2026-06-25: snapshot для /v1/completions streaming.
 	var streamErr error
 	defer func() {
-		recordLastPromptFromError(modelName, "/v1/completions", prompt, &params, false, streamErr)
+		recordLastPromptFromErrorWithContext(modelName, "/v1/completions", prompt, &params, false, streamErr, r)
 	}()
 
 	// Накапливаем полный output параллельно для финального чанка.
@@ -1247,8 +1335,8 @@ func handleV1Embeddings(w http.ResponseWriter, r *http.Request) {
 		},
 		"model": req.Model,
 		"usage": map[string]interface{}{
-			"prompt_tokens": 0,
-			"total_tokens":  0,
+			"prompt_tokens": buildPromptTokens(req.Model, req.Input),
+			"total_tokens":  buildPromptTokens(req.Model, req.Input),
 		},
 	})
 }
@@ -1269,4 +1357,151 @@ func handleV1Models(w http.ResponseWriter, r *http.Request) {
 		"object": "list",
 		"data":   openaiModels,
 	})
+}
+
+// ============================================================
+// Streaming helpers
+// ============================================================
+
+// indexedToolCalls конвертирует []openAIToolCall в []map с полем `index` per OpenAI
+// streaming spec. Без `index` клиенты (Cline/Roo/openai-python) не могут правильно
+// склеить инкрементальные deltas tool_calls и считают ответ невалидным.
+// Каждый элемент получает уникальный индекс в порядке массива.
+func indexedToolCalls(calls []openAIToolCall) []map[string]interface{} {
+	out := make([]map[string]interface{}, 0, len(calls))
+	for i, c := range calls {
+		out = append(out, map[string]interface{}{
+			"index": i,
+			"id":    c.ID,
+			"type":  c.Type,
+			"function": map[string]interface{}{
+				"name":      c.Function.Name,
+				"arguments": c.Function.Arguments,
+			},
+		})
+	}
+	return out
+}
+
+// openAITokenUsage — счётчики токенов для OpenAI usage.
+type openAITokenUsage struct {
+	PromptTokens     int
+	CompletionTokens int
+}
+
+// writeOpenAIUsageChunk эмитит в поток SSE chunk с блоком `usage` если запрошено.
+// Соответствует OpenAI streaming spec (https://platform.openai.com/docs/api-reference/chat-streaming).
+//
+// Использование:
+//   - includeUsage == true → chunk с полем `usage` (только в финальном чанке).
+//   - includeUsage == false → no-op (legacy-режим, не мешаем старым клиентам).
+//
+// chunkID, created, modelName — копируются из вызывающего запроса (или
+// генерируются заново). Безопасно для буферизованной и реальной передачи.
+func writeOpenAIUsageChunk(w http.ResponseWriter, flusher http.Flusher, chunkID string, created int64, modelName string, prompt, output string, includeUsage bool) {
+	if !includeUsage {
+		return
+	}
+	usage := openAITokenUsage{
+		PromptTokens:     countTokensSafe(modelName, prompt),
+		CompletionTokens: countTokensSafe(modelName, output),
+	}
+	chunk := map[string]interface{}{
+		"id":      chunkID,
+		"object":  "chat.completion.chunk",
+		"created": created,
+		"model":   modelName,
+		"choices": []map[string]interface{}{},
+		"usage": map[string]interface{}{
+			"prompt_tokens":     usage.PromptTokens,
+			"completion_tokens": usage.CompletionTokens,
+			"total_tokens":      usage.PromptTokens + usage.CompletionTokens,
+		},
+	}
+	jsonData, _ := json.Marshal(chunk)
+	fmt.Fprintf(w, "data: %s\n\n", jsonData)
+	if flusher != nil {
+		flusher.Flush()
+	}
+}
+
+// emitOpenAIUsageChunkSafe — то же что writeOpenAIUsageChunk, но использует
+// safeStreamWriter (для уже-стартовавшего streaming). Используется в
+// writeOpenAIChatStream где WriteHeader уже вызван и балансером может
+// уже идти инкрементальный стрим.
+//
+// Возвращает false если writer broken (клиент отвалился) — позволяет
+// caller прервать дальнейшую работу.
+func emitOpenAIUsageChunkSafe(sw *safeStreamWriter, chunkID string, created int64, modelName, prompt, output string, includeUsage bool) {
+	if !includeUsage {
+		return
+	}
+	usage := openAITokenUsage{
+		PromptTokens:     countTokensSafe(modelName, prompt),
+		CompletionTokens: countTokensSafe(modelName, output),
+	}
+	chunk := map[string]interface{}{
+		"id":      chunkID,
+		"object":  "chat.completion.chunk",
+		"created": created,
+		"model":   modelName,
+		"choices": []map[string]interface{}{},
+		"usage": map[string]interface{}{
+			"prompt_tokens":     usage.PromptTokens,
+			"completion_tokens": usage.CompletionTokens,
+			"total_tokens":      usage.PromptTokens + usage.CompletionTokens,
+		},
+	}
+	jsonData, _ := json.Marshal(chunk)
+	sw.Writef("data: %s\n\n", jsonData)
+}
+
+// ============================================================
+// Usage helpers
+// ============================================================
+
+// buildUsage возвращает OpenAI-совместимый блок `usage` для /v1/chat/completions
+// и /v1/completions. Использует реальный токенайзер модели (backend.CountTokens);
+// если он недоступен — fallback на ~4 символа/токен. Cline/Roo/OpenWebUI читают
+// `total_tokens` для трекинга заполненности контекстного окна.
+//
+// Параметры:
+//   - prompt     — входные сообщения (для chat) или prompt (для completions);
+//   - output     — полный output модели (result.Output);
+//   - modelName  — для выбора токенайзера.
+//
+// Возвращает map с ключами prompt_tokens, completion_tokens, total_tokens,
+// совместимыми со спецификацией OpenAI.
+func buildUsage(prompt, output, modelName string) map[string]interface{} {
+	promptTokens := countTokensSafe(modelName, prompt)
+	completionTokens := countTokensSafe(modelName, output)
+	totalTokens := promptTokens + completionTokens
+	return map[string]interface{}{
+		"prompt_tokens":     promptTokens,
+		"completion_tokens": completionTokens,
+		"total_tokens":      totalTokens,
+	}
+}
+
+// buildPromptTokens считает prompt_tokens для embeddings (только входной текст).
+// Используется в /v1/embeddings.
+func buildPromptTokens(modelName, input string) int {
+	return countTokensSafe(modelName, input)
+}
+
+// countTokensSafe считает токены, безопасно обрабатывая backend==nil (в unit-тестах).
+// Fallback: ~4 символа на токен, что соответствует эвристике для
+// BPE-токенизаторов llama.cpp/Gemma. Для CJK и кириллицы это занижает
+// реальный счёт, но лучше чем 0 — клиент хотя бы видит порядок.
+func countTokensSafe(modelName, text string) int {
+	if text == "" {
+		return 0
+	}
+	if backend == nil {
+		return len([]rune(text)) / 4
+	}
+	if _, err := backend.GetModel(modelName); err != nil {
+		return len([]rune(text)) / 4
+	}
+	return backend.CountTokens(modelName, text)
 }

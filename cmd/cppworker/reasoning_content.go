@@ -40,9 +40,22 @@ import (
 // ReasoningArchPrefixes — подстроки в имени файла модели или в имени
 // модели (req.Model), которые маркируют её как reasoning-модель.
 // Регистр игнорируется. Применяется в дополнение к архитектуре из GGUF.
+//
+// IMPORTANT: голое "qwen3" НЕ включено, потому что Qwen3 выпускается и в
+// thinking и в non-thinking вариантах, и имя файла часто не различает
+// (например "qwen3-32b-Q4_K_M.gguf" может быть оба). По умолчанию голый
+// qwen3 НЕ считается reasoning-моделью. Для включения нужно либо:
+//   - Имя модели содержит ".5", ".6" (qwen3.5 / qwen3.6) — reasoning by default.
+//   - Имя модели содержит "moe" / "A3B" (Qwen3-MoE) — has thinking mode enabled.
+//   - Имя модели содержит явный маркер "-thinking" или ":thinking".
+//   - Установить env CPPWORKER_REASONING_ARCHS=qwen3 для force-enable.
 var ReasoningArchPrefixes = []string{
 	"qwen3.5", "qwen3.6", "qwen3.5moe", "qwen35moe", "qwen35",
-	"qwen3moe", "qwen3",
+	"qwen3moe", "qwen3-thinking", "qwen3_thinking",
+	// "-thinking" с ведущим дефисом — глобальный маркер любой thinking-варианта
+	// модели (qwen3-32b-thinking, kimi-k2-thinking, и т.д.). Голое "thinking"
+	// не используем, чтобы не ловить случайные совпадения вроде "anything".
+	"-thinking", ":thinking",
 	"deepseek-r1", "deepseek_r1", "deepseekr1",
 	"kimi-k2", "kimi_k2", "kimik2",
 	"gemma4", "gemma-4",

@@ -82,6 +82,11 @@ func (p *Proxy) LoadState() error {
 			p.config.Backends[i].HasAgent = saved.HasAgent
 			p.config.Backends[i].LastAgentContact = saved.LastAgentContact
 			p.config.Backends[i].RuntimeRequestTimeout = saved.RuntimeRequestTimeout
+			// Round 13 (2026-07-10): restore AgentID — нужен для dedup migration
+			// (canonical = hasAgent && agentId!=""). Без этого LoadState
+			// восстанавливал hasAgent=true, но терял agentId → миграция
+			// не находила canonical и оставляла оба бэкенда.
+			p.config.Backends[i].AgentID = saved.AgentID
 
 			if bs, exists := p.backends[p.config.Backends[i].ID]; exists {
 				bs.Backend = &p.config.Backends[i]
@@ -101,6 +106,60 @@ func (p *Proxy) LoadState() error {
 				p.config.Backends = append(p.config.Backends, backend)
 			}
 		}
+
+	// Round 13 (2026-07-10): migration — drop orphan legacy "agent-only" backends
+	// (created by old /agents/register when cppworker had its own backend).
+	// Canonical = backend with hasAgent=true AND agentId!="" (set via AttachAgentToBackend).
+	// Legacy = backend with hasAgent=true BUT agentId=="" (created by old agent handler).
+	// If both exist for same (host, cppWorkerPort) → drop legacy, keep canonical.
+	type bmKey struct {
+		host string
+		port int
+	}
+	canonicalByKey := make(map[bmKey]string)
+	legacyIDs := make([]string, 0)
+	for id, state := range p.backends {
+		b := state.Backend
+		if b.Type != types.BackendTypeLlamaCpp || b.CppWorkerPort == 0 {
+			continue
+		}
+		k := bmKey{host: b.Host, port: b.CppWorkerPort}
+		if b.AgentID != "" {
+			// Real attach — this is canonical
+			canonicalByKey[k] = id
+		}
+	}
+	for id, state := range p.backends {
+		b := state.Backend
+		if b.Type != types.BackendTypeLlamaCpp || b.CppWorkerPort == 0 {
+			continue
+		}
+		k := bmKey{host: b.Host, port: b.CppWorkerPort}
+		if b.AgentID == "" && canonicalByKey[k] != "" && canonicalByKey[k] != id {
+			legacyIDs = append(legacyIDs, id)
+		}
+	}
+	if len(legacyIDs) > 0 {
+		logger.Get().Infow("LoadState: dropping legacy orphan backends (Round 13 migration)",
+			"count", len(legacyIDs), "ids", legacyIDs)
+		for _, id := range legacyIDs {
+			delete(p.backends, id)
+			// Также удаляем из p.config.Backends
+			for i, b := range p.config.Backends {
+				if b.ID == id {
+					p.config.Backends = append(p.config.Backends[:i], p.config.Backends[i+1:]...)
+					break
+				}
+			}
+		}
+		// Сохраняем state.json сразу чтобы миграция применилась при следующем рестарте
+		go func() {
+			time.Sleep(1 * time.Second)
+			if err := p.SaveState(); err != nil {
+				logger.Get().Warnw("LoadState: failed to save migrated state", "error", err)
+			}
+		}()
+	}
 
 	logger.Get().Infow("state loaded", "path", p.statePath, "backends", len(state.Backends))
 	return nil

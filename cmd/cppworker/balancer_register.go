@@ -53,16 +53,20 @@ type balancerRegistration struct {
 	enabled       bool
 	balancerURL   string
 	balancerToken string
-	advertiseHost string
-	advertisePort int
-	backendID     string
-	gpuMode       string
-	retryInterval time.Duration
-	heartbeat     time.Duration
-	maxRetries    int
-	registered    atomic.Bool
-	stopCh        chan struct{}
-	client        *http.Client
+	// Round 7 (2026-07-09): API token cppworker'а для авторизации balancer'а
+	// на /api/models/reload. cppworker пробрасывает его в balancer при
+	// регистрации через поле CppWorkerApiToken в registerPayload.
+	apiTokenForCppWorker string
+	advertiseHost        string
+	advertisePort        int
+	backendID            string
+	gpuMode              string
+	retryInterval        time.Duration
+	heartbeat            time.Duration
+	maxRetries           int
+	registered           atomic.Bool
+	stopCh               chan struct{}
+	client               *http.Client
 }
 
 // isRegisterDisabled проверяет env-флаг CPPWORKER_REGISTER_DISABLE.
@@ -140,14 +144,18 @@ func newBalancerRegistration(cfg *cppbackend.Config) *balancerRegistration {
 		enabled:       true,
 		balancerURL:   url,
 		balancerToken: token,
-		advertiseHost: host,
-		advertisePort: port,
-		backendID:     name,
-		gpuMode:       gpuMode,
-		retryInterval: retryInterval,
-		heartbeat:     heartbeat,
-		maxRetries:    maxRetries,
-		stopCh:        make(chan struct{}),
+		// Round 7: cppworker's own API_TOKEN. Это то, что cppworker ожидает
+		// на защищённых endpoints (например /api/models/reload). Совпадает с
+		// API_TOKEN, CPPWORKER_API_TOKEN или LB_API_TOKEN env-переменной.
+		apiTokenForCppWorker: resolveAPIToken(),
+		advertiseHost:        host,
+		advertisePort:        port,
+		backendID:            name,
+		gpuMode:              gpuMode,
+		retryInterval:        retryInterval,
+		heartbeat:            heartbeat,
+		maxRetries:           maxRetries,
+		stopCh:               make(chan struct{}),
 		client: &http.Client{
 			Timeout: 10 * time.Second,
 		},
@@ -166,6 +174,11 @@ type registerPayload struct {
 	MaxConcurrentReqs int      `json:"maxConcurrentRequests"`
 	MaxModels         int      `json:"maxModels"`
 	Labels            []string `json:"labels"`
+	// Round 7 (2026-07-09): cppworker пробрасывает свой API_TOKEN balancer'у,
+	// чтобы тот мог авторизоваться на /api/models/reload (authMiddleware).
+	// В bundled-режиме это устраняет необходимость вручную настраивать
+	// CppWorkerApiToken в конфиге каждого backend'а.
+	CppWorkerApiToken string `json:"cppWorkerApiToken,omitempty"`
 }
 
 // register отправляет POST /api/v1/backends.
@@ -181,6 +194,11 @@ func (r *balancerRegistration) register(ctx context.Context, log *zap.SugaredLog
 		MaxConcurrentReqs: 4,
 		MaxModels:         4,
 		Labels:            []string{"cppworker", "auto-registered"},
+		// Round 7: cppworker отдаёт свой API_TOKEN balancer'у для последующего
+		// apply профилей (reloadModelOnCppWorker использует этот токен).
+		// Берём из того же источника, что и для авторизации на balancer
+		// (CPPWORKER_BALANCER_TOKEN → API_TOKEN → LB_API_TOKEN).
+		CppWorkerApiToken: r.apiTokenForCppWorker,
 	}
 	body, err := json.Marshal(payload)
 	if err != nil {

@@ -702,7 +702,7 @@ func TestLazyLoadSweep_InvariantKVCacheFormula(t *testing.T) {
 	//   headDim = 4096/32 = 128
 	//   kvPerToken = 4 * 32 * 32 * 128 = 524288 байт = 512 KB на токен.
 	//   Для n_ctx=4096: 4096 * 524288 = 2147483648 байт = 2 GB.
-	kvBytes := estimateKVCacheBytes(4096, 32, 4096, 32, 32)
+	kvBytes := estimateKVCacheBytes(4096, 32, 4096, 32, 32, "f16")
 	expectedMin := int64(1900 * 1024 * 1024) // 1.9 GB
 	expectedMax := int64(2200 * 1024 * 1024) // 2.2 GB
 	if kvBytes < expectedMin || kvBytes > expectedMax {
@@ -715,7 +715,7 @@ func TestLazyLoadSweep_InvariantKVCacheFormula(t *testing.T) {
 	//   headDim = 8192/64 = 128
 	//   kvPerToken = 4 * 80 * 8 * 128 = 327680 байт = 320 KB на токен.
 	//   Для n_ctx=32K: 32768 * 327680 = 10.7 GB.
-	kvBytes = estimateKVCacheBytes(32768, 80, 8192, 64, 8)
+	kvBytes = estimateKVCacheBytes(32768, 80, 8192, 64, 8, "f16")
 	expectedMin70B := int64(10 * 1024 * 1024 * 1024)
 	expectedMax70B := int64(11 * 1024 * 1024 * 1024)
 	if kvBytes < expectedMin70B || kvBytes > expectedMax70B {
@@ -730,7 +730,7 @@ func TestLazyLoadSweep_InvariantNoOverflow(t *testing.T) {
 	// 4 * nCtx * nLayers * nKvHeads * headDim не должно переполнять int64.
 	// nCtx = 100M, nLayers = 200, nKvHeads = 200, headDim = 256.
 	// 4 * 100M * 200 * 200 * 256 = 4.096 * 10^15 — влезает в int64 (max 9.2 * 10^18).
-	kv := estimateKVCacheBytes(100_000_000, 200, 256*200, 200, 200)
+	kv := estimateKVCacheBytes(100_000_000, 200, 256*200, 200, 200, "f16")
 	if kv <= 0 {
 		t.Errorf("kv=%d — overflow или zero", kv)
 	}

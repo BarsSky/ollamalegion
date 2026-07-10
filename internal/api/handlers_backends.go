@@ -87,6 +87,31 @@ func (s *Server) backendHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Round 13 (2026-07-10): /agent/heartbeat — heartbeat прикреплённого агента
+	// (раньше agent слал heartbeat на /api/v1/agents/heartbeat по agentID —
+	// при attach режиме обновлялся неправильный бэкенд).
+	if len(parts) > 1 && parts[1] == "agent" && len(parts) > 2 && parts[2] == "heartbeat" {
+		if r.Method == http.MethodPost {
+			s.agentBackendHeartbeatHandler(w, r, backendID)
+			return
+		}
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	// Round 15 (2026-07-10): /agent/metrics — метрики прикреплённого агента.
+	// Та же проблема что и с heartbeat: agent шлёт на /api/v1/agents/metrics по
+	// agentID, но после dedup attach бэкенд имеет другой ID → 404 "Backend not found".
+	// Новый endpoint использует backendID из path.
+	if len(parts) > 1 && parts[1] == "agent" && len(parts) > 2 && parts[2] == "metrics" {
+		if r.Method == http.MethodPost {
+			s.agentBackendMetricsHandler(w, r, backendID)
+			return
+		}
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
 	switch r.Method {
 	case http.MethodGet:
 		s.getBackend(w, r, backendID)
@@ -176,6 +201,10 @@ func (s *Server) listBackends(w http.ResponseWriter, r *http.Request) {
 			"status":                       backend.Status,
 			"type":                         backend.Type,
 			"engine":                       backend.Engine,
+			// Round 13 (2026-07-10): expose agent attachment info для WebUI.
+			"hasAgent":       backend.HasAgent,
+			"agentId":        backend.AgentID,
+			"lastAgentContact": backend.LastAgentContact,
 		}
 
 		// Добавление метрик если они доступны
@@ -302,6 +331,11 @@ func (s *Server) addBackend(w http.ResponseWriter, r *http.Request) {
 		Labels            []string `json:"labels"`
 		BackendType       string   `json:"backendType"`
 		BackendEngine     string   `json:"backendEngine"`
+		// Round 7 (2026-07-09): cppworker пробрасывает свой API_TOKEN при
+		// регистрации, чтобы balancer мог авторизоваться на /api/models/reload
+		// (authMiddleware). В bundled-режиме устраняет необходимость ручной
+		// настройки CppWorkerApiToken в конфиге.
+		CppWorkerApiToken string `json:"cppWorkerApiToken,omitempty"`
 	}
 
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -412,6 +446,7 @@ func (s *Server) addBackend(w http.ResponseWriter, r *http.Request) {
 		Status:            types.StatusStarting,
 		GPUMode:           gpuMode,
 		Type:              backendType,
+		CppWorkerApiToken: req.CppWorkerApiToken,
 		Engine:            types.ResolveEngine(types.BackendEngine(req.BackendEngine), backendType),
 	}
 
@@ -475,6 +510,10 @@ func (s *Server) updateBackend(w http.ResponseWriter, r *http.Request, backendID
 		Labels            []string `json:"labels"`
 		BackendType       string   `json:"backendType"`
 		BackendEngine     string   `json:"backendEngine"`
+		// Round 7 (2026-07-09): см. addBackend — обновление тоже должно
+		// принимать CppWorkerApiToken, иначе при re-registration (PUT update)
+		// после первого запуска cppworker теряет свой токен в backend state.
+		CppWorkerApiToken string `json:"cppWorkerApiToken,omitempty"`
 	}
 
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -562,6 +601,7 @@ func (s *Server) updateBackend(w http.ResponseWriter, r *http.Request, backendID
 		MaxModels:                    req.MaxModels,
 		Labels:                       req.Labels,
 		Status:                       existing.Status,
+		CppWorkerApiToken:            req.CppWorkerApiToken,
 		HasAgent:                     existing.HasAgent,
 		LastAgentContact:             existing.LastAgentContact,
 		LastHealthCheck:              existing.LastHealthCheck,

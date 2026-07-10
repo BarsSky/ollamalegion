@@ -138,6 +138,9 @@ func main() {
 		time.Duration(conf.Balancing.HealthCheckInterval)*time.Second,
 		3,
 	)
+	// Round 8 (2026-07-10): wire HealthChecker в Proxy чтобы markBackendConnectionFailed
+	// мог помечать backend unhealthy при persistent connection failures.
+	proxy.SetHealthChecker(healthChecker)
 	
 	// Создание API сервера
 	apiServer := api.NewServer(proxy, conf, healthChecker)

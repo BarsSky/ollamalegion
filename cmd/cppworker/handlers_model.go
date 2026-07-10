@@ -229,6 +229,13 @@ func handleLoadWithParams(w http.ResponseWriter, r *http.Request) {
 	if req.OverrideTensor != nil && *req.OverrideTensor != "" {
 		opts.OverrideTensor = *req.OverrideTensor
 	}
+	// Round 7: prefer parallel-array OverrideTensors if present and matching length.
+	if len(req.OverrideTensors) > 0 && len(req.OverrideTensors) == len(req.OverrideTensorBufts) {
+		opts.OverrideTensors = req.OverrideTensors
+		opts.OverrideTensorBufts = req.OverrideTensorBufts
+		logger.Get().Infow("override-tensors (parallel arrays) applied",
+			"name", modelName, "count", len(req.OverrideTensors))
+	}
 
 	logger.Get().Infow("loading model with extended params",
 		"name", modelName, "path", modelPath,
@@ -685,6 +692,12 @@ func handleReloadModel(w http.ResponseWriter, r *http.Request) {
 		Parallel:    current.Parallel,
 		KVCacheType: current.KVCacheType,
 	}
+	// Round 7: forward MoE override-tensors (parallel arrays) from request
+	// body to LoadModelOpts so the bridge applies them to llama_model_params.
+	if len(req.OverrideTensors) > 0 && len(req.OverrideTensors) == len(req.OverrideTensorBufts) {
+		opts.OverrideTensors = req.OverrideTensors
+		opts.OverrideTensorBufts = req.OverrideTensorBufts
+	}
 	if req.Parallel != nil {
 		opts.Parallel = *req.Parallel
 	}
@@ -737,6 +750,16 @@ func handleReloadModel(w http.ResponseWriter, r *http.Request) {
 				calculated = strategy.GPULayers
 				opts.KVCacheType = strategy.KVCacheType
 				opts.UseMmap = strategy.UseMmap
+			}
+			// Round 7: apply MoE override-tensors from strategy. For Qwen3-A3B
+			// (and other MoE) this routes routed-expert tensors to CPU, keeping
+			// attention on GPU regardless of gpu_layers.
+			if len(strategy.OverrideTensors) > 0 && len(strategy.OverrideTensors) == len(strategy.OverrideTensorBufts) {
+				opts.OverrideTensors = strategy.OverrideTensors
+				opts.OverrideTensorBufts = strategy.OverrideTensorBufts
+				logger.Get().Infow("reload: override-tensors from strategy applied",
+					"name", req.Name,
+					"count", len(strategy.OverrideTensors))
 			}
 			logger.Get().Infow("reload: adaptive SelectStrategy applied",
 				"name", req.Name,

@@ -52,6 +52,52 @@ func determineErrorType(err error, reqCtx context.Context) string {
 	return "unknown"
 }
 
+// isConnectionLevelError — проверяет, является ли ошибка сетевой/connection-level
+// (а не HTTP-уровня). Для таких ошибок мы делаем retry с exponential backoff
+// (cppworker в transition window: port ещё не listening, контейнер запускается).
+//
+// Connection-level:
+//   - connection refused (cppworker port not yet listening)
+//   - connection reset by peer (cppworker closed keep-alive during restart)
+//   - no such host (DNS не резолвится — редко)
+//
+// NOT connection-level (HTTP errors handled by other paths):
+//   - EOF (handled by EOF retry/EOF event publisher)
+//   - timeout (caller должен решить)
+//   - context canceled / deadline (не retry — caller уже ушёл)
+func isConnectionLevelError(err error) bool {
+	if err == nil {
+		return false
+	}
+	s := err.Error()
+	return strings.Contains(s, "connection refused") ||
+		strings.Contains(s, "connection reset") ||
+		strings.Contains(s, "no such host") ||
+		strings.Contains(s, "broken pipe")
+}
+
+// IsConnectionLevelError — экспортированная обёртка для использования в
+// internal/api package (см. gguf_backend_proxy.go). Тот же алгоритм, просто
+// публичный идентификатор.
+func IsConnectionLevelError(err error) bool { return isConnectionLevelError(err) }
+
+// markBackendConnectionFailed — пометить backend как unhealthy после persistent
+// connection_refused. Healthcheck (который запускается каждые 10s) снимет метку
+// когда backend восстановится.
+//
+// Round 8 (2026-07-10): после добавления connection-level retry, если все 3
+// retry с backoff вернули connection_refused — backend скорее всего мёртв
+// (recreate, network partition, etc.). Помечаем unhealthy чтобы не routing'ить
+// новые запросы к нему пока healthcheck не восстановит.
+func (p *Proxy) markBackendConnectionFailed(backendID string) {
+	if p == nil || p.healthChecker == nil {
+		return
+	}
+	p.healthChecker.MarkUnhealthy(backendID, "connection_refused_after_retry")
+	logger.Get().Warnw("proxyRequest: backend marked unhealthy after persistent connection failures",
+		"backend", backendID, "reason", "connection_refused_after_retry")
+}
+
 // isModelNotFoundError — проверяет, является ли ошибка от Ollama "model not found"
 func isModelNotFoundError(body []byte) bool {
 	var errResp OllamaErrorResponse
@@ -617,13 +663,22 @@ func (p *Proxy) proxyRequestOpenAIStreaming(w http.ResponseWriter, r *http.Reque
 				return nil
 			}
 
-			// Фильтрация служебных токенов модели (Gemma `<end_of_turn>`,
-			// Llama3 `<|eot_id|>`, ChatML `<|im_end|>` и т.д.). Без этого
-			// OpenAI-клиенты (Cline, Roo) видят "мусорный" content и
-			// интерпретируют его как tool-call-like вывод → "Invalid API Response".
-			// Функция возвращает либо отфильтрованную строку (с пустым delta),
-			// либо оригинал, если фильтрация не нужна.
+			// Bug fix (Round 3): extract tool calls from delta.content for models
+			// that emit them as text (Gemma-4, Hermes/Qwen without native tool_call
+			// support, etc.). Without this, Cline/Roo see raw JSON text and ignore it
+			// → tool_calls never reach the client. extractToolCallsFromSSEContent
+			// returns nil if no tool calls detected (passthrough).
+			//
+			// Filter line BEFORE normalization so we see exactly what client would see.
 			lineToWrite, _ := filterOpenAIStreamingLine(res.line)
+			if isOpenAISSEDataLine(lineToWrite) {
+				if payload := extractSSEDataPayload(lineToWrite); payload != nil {
+					if modified := extractToolCallsFromSSEContent(payload); modified != nil {
+						lineToWrite = rewriteSSEDataPayload(lineToWrite, modified)
+					}
+				}
+			}
+
 			if _, werr := w.Write(lineToWrite); werr != nil {
 				logger.Get().Warnw("proxyRequestOpenAIStreaming: write to client failed",
 					"backend", backendID, "error", werr)

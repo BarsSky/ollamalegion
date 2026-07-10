@@ -93,6 +93,13 @@ func (p *Proxy) GetClusterState() *types.ClusterState {
 			metrics.Status = status
 			metrics.HasAgent = hasAgent
 			metrics.Prediction = prediction
+			// Round 15 (2026-07-10): ВАЖНО — восстановить ID. Без этого
+			// metrics.ID остаётся от старого agent handler'а (использовал
+			// agentID как ID — "cppworker-gpu-bundled-agent"). После Round 12
+			// dedup attach бэкенд имеет другой ID ("cppworker-gpu-bundled"),
+			// но кеш метрик может содержать старый ID → listBackends не находит
+			// соответствия в metricsMap (разные ключи) → пустые GPU/VRAM/CPU.
+			metrics.ID = id
 
 			// Мерджим llama.cpp метрики из отдельного кэша metricsMgr.llamaMetrics[id].
 			// agentMetrics приходит от Ollama-agent и не содержит данных о

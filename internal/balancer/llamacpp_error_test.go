@@ -266,27 +266,27 @@ func TestParseCppWorkerError_PromptExceedsNCtx_2026_06_24(t *testing.T) {
 		t.Errorf("MaxVRAMNCtx = %d, want 131072 (hardware capability)", bi.MaxVRAMNCtx)
 	}
 
-	// КРИТИЧНАЯ проверка (2026-06-25): balancer должен решить DecisionReject
-	// (а не DecisionReload) при code=3 / prompt_too_long. Reload с тем же или
-	// меньшим n_ctx бесполезен и при streaming вызывает EOF в Go-клиенте
-	// (cppworker при reload выгружает модель и закрывает keep-alive соединения).
-	// Клиенту возвращается 413 с actionable JSON.
+	// КРИТИЧНАЯ проверка (Round 7, 2026-07-03 fix): balancer должен решить
+	// DecisionReload (а не DecisionReject) при code=3 / prompt_too_long,
+	// потому что adaptive loader теперь может уменьшить gpuLayers для
+	// размещения большего n_ctx в том же VRAM. Round 7 также добавил
+	// override-tensors для MoE моделей, что расширяет возможности reload.
+	// Reload через queryAdaptiveStrategy уменьшает gpu_layers → освобождает
+	// VRAM → позволяет загрузить модель с бо́льшим n_ctx.
 	coord := NewNCtxReloadCoordinator(DefaultNCtxReloadConfig())
 	plan := coord.DecideReloadBackend("cppworker-gpu", bi, 0)
 	if plan == nil {
 		t.Fatal("DecideReloadBackend returned nil plan")
 	}
-	if plan.Decision != DecisionReject {
-		t.Errorf("DecideReloadBackend = %v, want DecisionReject. Reason: %s",
+	if plan.Decision != DecisionReload {
+		t.Errorf("DecideReloadBackend = %v, want DecisionReload (Round 7 adaptive). Reason: %s",
 			plan.Decision, plan.Reason)
 	}
-	if plan.NewNCtx != 0 {
-		t.Errorf("NewNCtx = %d, want 0 (Reject plan)", plan.NewNCtx)
+	if plan.NewNCtx <= 0 {
+		t.Errorf("NewNCtx = %d, want > 0 (Reload plan should have new n_ctx target)", plan.NewNCtx)
 	}
-	if plan.RejectMsg == "" {
-		t.Error("RejectMsg is empty — client won't get actionable error")
-	}
-	t.Logf("OK: balancer correctly decides Reject for prompt_too_long. Reason: %s", plan.Reason)
+	t.Logf("OK: balancer triggers adaptive reload for prompt_too_long. Reason: %s, NewNCtx: %d",
+		plan.Reason, plan.NewNCtx)
 }
 
 // TestParseCppWorkerError_OldFormatStillWorks_2026_06_24 —

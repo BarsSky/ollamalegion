@@ -253,27 +253,42 @@ func totalRAMBytes() int64 {
 // detectArchType ?????????? ??? ???????????: "moe", "dense", "unknown"
 func detectArchType(arch string, nHeads, nKvHeads int) string {
 	// MoE ????????: n_kv_heads << n_heads (????????, 8 vs 64 ??? Qwen2 MoE)
-	if nKvHeads > 0 && nHeads > 0 && nKvHeads < nHeads/4 {
+	if nKvHeads > 0 && nHeads > 0 && nKvHeads*4 < nHeads {
 		return "moe"
 	}
 	// ?? ????? ???????????
 	archLower := strings.ToLower(arch)
-	if strings.Contains(archLower, "moe") || strings.Contains(archLower, "mixtral") || strings.Contains(archLower, "qwen2") && strings.Contains(archLower, "a3b") {
+	if strings.Contains(archLower, "moe") ||
+		strings.Contains(archLower, "mixtral") ||
+		(strings.Contains(archLower, "qwen2") && strings.Contains(archLower, "a3b")) ||
+		(strings.Contains(archLower, "qwen3") && strings.Contains(archLower, "a3b")) ||
+		strings.Contains(archLower, "qwen3moe") ||
+		strings.Contains(archLower, "qwen3next") ||
+		strings.Contains(archLower, "qwen35moe") {
 		return "moe"
 	}
 	return "dense"
 }
 
-// MoEWeightRatio ?????????? ???? ?????, ??????? ??????? ???? ?? GPU ??? MoE.
-// ??? MoE: ?????? attention ???? (gate+up+down ???????? ????????? ? RAM).
-// ??????: Qwen3.6 35B-A3B ????? 80 ?????, 64 ????????, topK=8.
-// ?? GPU ???? ?????? KV-cache (attention), ???????? ????? mmap ? RAM.
-// ?????????? 1.0 ??? dense ???????.
+// MoEWeightRatio — backward-compat wrapper (returns 0.30 generic, use MoEWeightRatioForSize for size-aware ratio).
 func MoEWeightRatio(archType string) float64 {
-	if archType == "moe" {
-		return 0.3 // ~30% ????? ? attention, 70% ? ???????? ? RAM
+	return MoEWeightRatioForSize(archType, 0)
+}
+
+// MoEWeightRatioForSize — variant with explicit model size (in bytes).
+//
+// Qwen3.6 35B-A3B Q4_K_M = 22 GB → 0.10 (attention+embed ≈ 2 GB of 22 GB).
+// Mixtral 8x7B Q4_K_M ≈ 24 GB → 0.30 (active part is denser).
+//
+// Возвращает 1.0 для dense архитектур.
+func MoEWeightRatioForSize(archType string, sizeBytes int64) float64 {
+	if archType != "moe" {
+		return 1.0
 	}
-	return 1.0
+	if sizeBytes >= 20*1024*1024*1024 {
+		return 0.10 // A3B-class
+	}
+	return 0.30 // generic MoE fallback
 }
 
 // ============================================================
@@ -292,6 +307,10 @@ type LoadStrategyResult struct {
 	NCtxReduced  bool   `json:"nCtxReduced"`  // ??? ?? ???????? n_ctx
 	MaxViableNCtx int   `json:"maxViableNCtx"` // ????. n_ctx ??? cpu-only
 	Explanation  string `json:"explanation"`  // ???????????????? ????????
+	// Round 7: per-tensor override (parallel arrays).
+	// For MoE: leave attention on GPU, route expert tensors to CPU.
+	OverrideTensors     []string `json:"overrideTensors,omitempty"`
+	OverrideTensorBufts []string `json:"overrideTensorBufts,omitempty"`
 }
 
 // KVCacheTypeOrder ? ??????? ????: ?? ??????? ? ???????.
@@ -327,6 +346,13 @@ func SelectStrategy(
 	requestedGPULayers int,
 	defaults *cppbackend.Config,
 ) LoadStrategyResult {
+	// Round 7: MoE override-tensors (parallel arrays). When isMOE, route
+	// expert tensors to CPU and keep attention on GPU. Pattern matches Qwen3-A3B /
+	// Mixtral routed-experts (GGUF: blk.N.ffn_*.exps.weight/bias). Declared
+	// here at function top so all branches (including fallback_no_meta) can
+	// reference them safely (nil if not MoE).
+	var moeOverridePatterns, moeOverrideBufts []string
+
 	if meta.NLayers == 0 || meta.NEmbd == 0 || meta.NHeads == 0 {
 		// Auto-select optimal kvCacheType based on available VRAM.
 		// With f16 at 65K context on 8GB GPU, KV-cache alone is ~6.7GB → guaranteed OOM.
@@ -360,17 +386,47 @@ func SelectStrategy(
 		// minimal layers on GPU. This frees VRAM for larger KV-cache.
 		// Use actual model size from GGUF if available, otherwise conservative estimate.
 		const defaultModelMB = 5120
+		// Round 6 #11: arch-aware fallback. meta.Architecture is set even when
+		// NLayers/NEmbd/NHeads are zero (the trigger for this branch), so we
+		// can narrow numLayers per architecture family. Without this, a Qwen3.6
+		// 35B-A3B (48 layers, 22 GB) was being estimated as 60 layers (8-15 GB
+		// size class), causing per-layer weight math to be off by 25% and
+		// partial_offload to mis-target GPU layer count.
 		const defaultLayers = 42
 		modelBytes := int64(defaultModelMB) * 1024 * 1024
 		numLayers := defaultLayers
 		if meta.SizeBytes > 0 {
 			modelBytes = int64(meta.SizeBytes)
-			// Guess layers from file size: ~119 MB/layer for Q4_K_M 7-9B,
-			// ~250 MB/layer for larger models.
-			if modelBytes > 15*1024*1024*1024 {
-				numLayers = 80 // 70B+ class
-			} else if modelBytes > 8*1024*1024*1024 {
-				numLayers = 60 // 30-34B class
+			// Layer estimate: arch first (more accurate), fall back to size heuristic.
+			arch := strings.ToLower(meta.Architecture)
+			switch {
+			case strings.Contains(arch, "qwen3"), strings.Contains(arch, "qwen35"):
+				// Qwen3.5 72B is 80 layers, Qwen3.6-35B-A3B is 48, Qwen3-32B is 64.
+				if modelBytes > 30*1024*1024*1024 {
+					numLayers = 80 // 72B+ class
+				} else if modelBytes > 15*1024*1024*1024 {
+					numLayers = 48 // 30-35B class (Qwen3.6 35B-A3B)
+				} else {
+					numLayers = 64 // small Qwen3 default
+				}
+			case strings.Contains(arch, "gemma"), strings.Contains(arch, "gemma2"):
+				numLayers = 42 // Gemma2/3/4 default
+			case strings.Contains(arch, "llama"):
+				// Llama 3.x: 32 (8B), 40 (70B), 80 (405B).
+				if modelBytes > 250*1024*1024*1024 {
+					numLayers = 80 // Llama-3.1 405B
+				} else if modelBytes > 50*1024*1024*1024 {
+					numLayers = 80 // Llama-3 70B
+				} else {
+					numLayers = 32 // Llama-3 8B
+				}
+			default:
+				// Size-based heuristic as fallback (was the only path before).
+				if modelBytes > 15*1024*1024*1024 {
+					numLayers = 80 // 70B+ class
+				} else if modelBytes > 8*1024*1024*1024 {
+					numLayers = 60 // 30-34B class
+				}
 			}
 		}
 		const minGPULayers = 4 // keep attention layers on GPU
@@ -433,6 +489,8 @@ func SelectStrategy(
 			MaxViableNCtx: maxViableNCtx,
 			Explanation: fmt.Sprintf("GGUF header has no architecture data, auto-selected kvCacheType=%s (auto_kv=%v, free_vram=%dMB, free_ram=%dMB, offload=%v, n_ctx=%d, max_viable=%d)",
 				kvType, autoKVCacheEnabled, env.FreeVRAM/(1024*1024), env.FreeRAM/(1024*1024), canOffload, requestedNCtx, maxViableNCtx),
+			OverrideTensors:     moeOverridePatterns,
+			OverrideTensorBufts: moeOverrideBufts,
 		}
 	}
 
@@ -442,12 +500,31 @@ func SelectStrategy(
 
 	// ??? ?????? ? overhead
 	weightsPerLayer := int64(meta.SizeBytes) / int64(meta.NLayers)
-	moefrac := MoEWeightRatio(archType)
+	moefrac := MoEWeightRatioForSize(archType, meta.SizeBytes)
+
+	// Round 7: When isMOE, populate MoE override-tensors (parallel arrays)
+	// to route expert tensors to CPU and keep attention on GPU. Pattern
+	// matches Qwen3-A3B / Mixtral routed-experts
+	// (GGUF: blk.N.ffn_*.exps.weight/bias).
+	if isMOE {
+		moeOverridePatterns = []string{
+			`blk\.\d+\.ffn_.*_exps\.weight`,
+			`blk\.\d+\.ffn_.*_exps\.bias`,
+		}
+		moeOverrideBufts = []string{"CPU", "CPU"}
+	}
 
 	// ?????????? VRAM
 	safeVRAM := int64(float64(env.FreeVRAM) * 0.85)
 	if safeVRAM <= 0 {
 		safeVRAM = int64(float64(env.TotalVRAM) * 0.85)
+	}
+	// ????????? RAM ?????????? ??? cpu_only branch (?????????, ??????????
+	// weights ? KV-cache ???????????? ? RAM/mmap). 0.5 = ?????????????
+	// ??? ??????? OS ???????????.
+	safeRAM := int64(0)
+	if env != nil && env.FreeRAM > 0 {
+		safeRAM = int64(float64(env.FreeRAM) * 0.5)
 	}
 	overhead := env.OverheadBytes
 
@@ -513,13 +590,29 @@ func SelectStrategy(
 				MaxViableNCtx: requestedNCtx,
 				Explanation:  fmt.Sprintf("exact_fit: kvType=%s, gpuLayers=%d/%d, vram=%dMB < safe=%dMB",
 					kvType, gpuL, meta.NLayers, totalVRAMNeeded/(1024*1024), safeVRAM/(1024*1024)),
+				OverrideTensors:     moeOverridePatterns,
+				OverrideTensorBufts: moeOverrideBufts,
 			}
 		}
 
 		// partial_offload: ????????? gpu_layers
 		availForWeights := safeVRAM - overhead - kvCacheBytes
 		if availForWeights > 0 {
-			reducedGPULayers := int(availForWeights / weightsPerLayer)
+						// Bug fix (Round 5 Fix 4): for MoE, attention-only per-layer
+			// is much smaller than full per-layer (Qwen3.6-A3B: 60 MB attn vs
+			// 470 MB full with experts). Using effectivePerLayer gives a more
+			// honest count of GPU layers, so partial_offload doesn't load
+			// too few layers and leave everything in RAM.
+			//
+			// Estimate: 3 * NEmbd^2 bytes (q + out + small kv ~ 3 * d^2 ~ 60 MB at d=5120 f16).
+			effectivePerLayer := weightsPerLayer
+			if isMOE && meta.NEmbd > 0 {
+				attnEstimate := int64(3) * int64(meta.NEmbd) * int64(meta.NEmbd)
+				if attnEstimate > 0 && attnEstimate < weightsPerLayer {
+					effectivePerLayer = attnEstimate
+				}
+			}
+reducedGPULayers := int(availForWeights / effectivePerLayer)
 			if reducedGPULayers > meta.NLayers {
 				reducedGPULayers = meta.NLayers
 			}
@@ -536,8 +629,10 @@ func SelectStrategy(
 						KVReduced:    kvType != "f16",
 						GPUReduced:   true,
 						MaxViableNCtx: requestedNCtx,
-						Explanation:  fmt.Sprintf("partial_offload: kvType=%s, gpuLayers=%d/%d, ram_needed=%dMB, free_ram=%dMB",
-							kvType, reducedGPULayers, meta.NLayers, ramNeeded/(1024*1024), env.FreeRAM/(1024*1024)),
+						Explanation:  fmt.Sprintf("partial_offload: kvType=%s, gpuLayers=%d/%d, attn_per_layer=%dMB, ram_needed=%dMB, free_ram=%dMB",
+							kvType, reducedGPULayers, meta.NLayers, effectivePerLayer/(1024*1024), ramNeeded/(1024*1024), env.FreeRAM/(1024*1024)),
+						OverrideTensors:     moeOverridePatterns,
+						OverrideTensorBufts: moeOverrideBufts,
 					}
 				}
 			}
@@ -551,7 +646,15 @@ func SelectStrategy(
 			if kvPerToken <= 0 {
 				kvPerToken = 4096
 			}
-			maxNCtx := int((safeVRAM - overhead) / kvPerToken)
+			// Bug fix (Round 2): cpu_only maxNCtx теперь учитывает не только VRAM,
+			// но и безопасную RAM (mmap для KV-cache при gpu_layers=0).
+			// Без этого на A10 (24GB) + 30GB RAM с Qwen3.6-A3B мы получали ~103k вместо
+			// желаемых 128k при f16 KV (или ~200k при q4_0).
+			kvBudget := safeVRAM - overhead
+			if safeRAM > 0 {
+				kvBudget = kvBudget + safeRAM
+			}
+			maxNCtx := int(kvBudget / kvPerToken)
 			if maxNCtx < 512 {
 				maxNCtx = 512
 			}
@@ -571,6 +674,8 @@ func SelectStrategy(
 				MaxViableNCtx: maxNCtx,
 				Explanation:  fmt.Sprintf("cpu_only: kvType=%s, n_ctx=%d/%d, max_viable=%d",
 					kvType, finalNCtx, requestedNCtx, maxNCtx),
+				OverrideTensors:     moeOverridePatterns,
+				OverrideTensorBufts: moeOverrideBufts,
 			}
 		}
 	}
@@ -583,6 +688,8 @@ func SelectStrategy(
 		UseMmap:     true,
 		Stage:       "fallback_no_fit",
 		Explanation: "no strategy fits available VRAM/RAM at any kvCacheType",
+		OverrideTensors:     moeOverridePatterns,
+		OverrideTensorBufts: moeOverrideBufts,
 	}
 }
 
@@ -770,7 +877,10 @@ func handleAdaptiveEnvironment(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	env := globalEnv.Get()
-	writeJSON(w, http.StatusOK, env)
+	// Pass by pointer to avoid copying the embedded sync.RWMutex inside
+	// EnvironmentProfile (vet's copylocks check). json.Marshal handles the
+	// mu field via reflection (it gets a zero value, which is harmless).
+	writeJSON(w, http.StatusOK, &env)
 }
 
 // handleAdaptiveHealConfig ? GET/POST /api/v1/cppworker/adaptive/heal-config

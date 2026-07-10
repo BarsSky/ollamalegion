@@ -101,11 +101,30 @@ var lastPromptSnapshot *LastPromptInfo
 //
 // Параметр hasTools проставляется caller'ом в зависимости от наличия tools[]
 // в исходном запросе (для OpenAI /api/chat и Ollama /api/chat).
+//
+// Backward-compat: эта функция НЕ детектит client_disconnect. Используйте
+// recordLastPromptFromErrorWithContext если хотите видеть обрывы стримов
+// в debug snapshot (Round 5 Fix 3).
 func recordLastPromptFromError(model, endpoint, prompt string, params *bridge.GenerationParams, hasTools bool, err error) {
+	recordLastPromptFromErrorWithContext(model, endpoint, prompt, params, hasTools, err, nil)
+}
+
+// recordLastPromptFromErrorWithContext — расширенная версия: при err==nil
+// проверяет ctx.Err() и фиксирует обрыв клиента как "client_disconnected".
+// Если r == nil — fallback на legacy-поведение (status="ok" при err==nil).
+func recordLastPromptFromErrorWithContext(model, endpoint, prompt string, params *bridge.GenerationParams, hasTools bool, err error, r *http.Request) {
 	status := "ok"
 	errStr := ""
 	if err != nil {
 		status, errStr = classifyLastPromptStatus(err)
+	} else if r != nil && r.Context() != nil {
+		// Bug fix (Round 5 Fix 3): если err == nil, но клиент уже отвалился —
+		// фиксируем как "client_disconnected", чтобы диагност видел обрывы,
+		// которые раньше маскировались под "ok".
+		if ctxErr := r.Context().Err(); ctxErr != nil {
+			status = "client_disconnected"
+			errStr = ctxErr.Error()
+		}
 	}
 
 	promptTokens := 0

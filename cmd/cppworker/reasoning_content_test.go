@@ -227,12 +227,15 @@ func TestIsReasoningModel(t *testing.T) {
 		// Reasoning архитектуры.
 		{"Qwen3.6-35B-A3B-Uncensored-HauhauCS-Aggressive-Q4_K_M.gguf", true},
 		{"qwen3.5-72b-instruct.Q4_K_M.gguf", true},
-		{"qwen3-32b-Q4_K_M.gguf", true},
+		{"qwen3-32b-thinking-Q4_K_M.gguf", true}, // explicit "-thinking" marker
 		{"deepseek-r1-distill-qwen-7b.Q4_K_M.gguf", true},
 		{"Kimi-K2-Thinking-Q4_K_M.gguf", true},
 		{"gemma-4-E4B-it-Q4_K_M.gguf", true},
 		{"seed-oss-36b.Q4_K_M.gguf", true},
-		// Без reasoning.
+		// Без reasoning (исправлено Round 5 Fix 1: голый "qwen3"
+		// больше НЕ считается reasoning, т.к. Qwen3 выпускается в обоих
+		// вариантах, а имя файла часто не различает).
+		{"qwen3-32b-Q4_K_M.gguf", false},
 		{"llama-3.1-8b-instruct.Q4_K_M.gguf", false},
 		{"mistral-7b-instruct.Q4_K_M.gguf", false},
 		{"phi-3-mini-4k-instruct.Q4_K_M.gguf", false},

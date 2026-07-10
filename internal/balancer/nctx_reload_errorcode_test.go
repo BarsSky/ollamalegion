@@ -129,8 +129,11 @@ func TestMakeRejectPlan_DefaultErrorCode(t *testing.T) {
 }
 
 // TestDecideReloadBackend_PromptTooLong_ReturnsPromptExceedsContext проверяет
-// end-to-end flow: DecideReloadBackend с code=3 возвращает DecisionReject
-// с error_code="prompt_exceeds_context" в RejectMsg.
+// end-to-end flow: DecideReloadBackend с code=3 возвращает DecisionReload
+// (Round 7 #6 fix, 2026-07-03): adaptive loader может уменьшить gpuLayers
+// чтобы освободить VRAM для большего KV-cache. Раньше (pre-2026-07-03)
+// возвращался DecisionReject, но это блокировало MoE/Qwen3 модели, для
+// которых reload с override-tensors теперь успешно работает (см. Round 7).
 func TestDecideReloadBackend_PromptTooLong_ReturnsPromptExceedsContext(t *testing.T) {
 	c := makeTestCoordinator()
 	bridgeErr := &NCtxBridgeError{
@@ -146,22 +149,16 @@ func TestDecideReloadBackend_PromptTooLong_ReturnsPromptExceedsContext(t *testin
 	if plan == nil {
 		t.Fatal("DecideReloadBackend returned nil")
 	}
-	if plan.Decision != DecisionReject {
-		t.Fatalf("expected DecisionReject (не reload — текущий n_ctx уже на максимуме), got %s", plan.Decision)
+	// Round 7 fix: prompt_too_long теперь DecisionReload с newNCtx = roundUpPow2(required).
+	// Reason содержит "prompt_too_long" для observability.
+	if plan.Decision != DecisionReload {
+		t.Fatalf("expected DecisionReload (adaptive strategy may fit), got %s", plan.Decision)
 	}
-
-	var rej map[string]interface{}
-	if err := json.Unmarshal([]byte(plan.RejectMsg), &rej); err != nil {
-		t.Fatalf("RejectMsg is not valid JSON: %v", err)
+	if plan.NewNCtx <= 0 {
+		t.Errorf("NewNCtx = %d, want > 0 for DecisionReload plan", plan.NewNCtx)
 	}
-
-	if got := rej["error"]; got != "prompt_exceeds_context" {
-		t.Errorf("expected error=\"prompt_exceeds_context\" for code=3 path, got error=%v", got)
-	}
-
-	// В Reason должно быть упоминание prompt_too_long (для логов)
 	if !strings.Contains(plan.Reason, "prompt_too_long") {
-		t.Errorf("expected Reason to mention 'prompt_too_long', got: %s", plan.Reason)
+		t.Errorf("expected Reason to mention 'prompt_too_long' for observability, got: %s", plan.Reason)
 	}
 }
 

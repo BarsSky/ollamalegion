@@ -234,6 +234,21 @@ type LlamaCppModelProfile struct {
 	// на KV-cache (7 GB → 3.5 GB) — позволяет загрузить модель с большим n_ctx
 	// на 8GB GPU.
 	KVCacheType string `json:"kvCacheType,omitempty"` // "" = inherit, "f16"/"q8_0"/"q4_0"
+
+	// Round 7 (2026-07-09): per-tensor override для MoE моделей.
+	// Применяется при load/reload если массивы непустые и согласованы по длине.
+	// Используется для роутинга routed-expert тензоров (blk.N.ffn_*.exps.weight/bias)
+	// на CPU/CUDA_Host вместо VRAM. Это освобождает VRAM для KV-cache.
+	//
+	// Поддерживаемые buft: "CPU" (= CUDA_Host pinned memory на CUDA-бэкендах),
+	// "CUDA0"/"CUDA1" — конкретный GPU. Невалидные значения игнорируются с warn.
+	//
+	// Длина OverrideTensorBufts должна совпадать с длиной OverrideTensors.
+	// Пример для Qwen3.6-35B-A3B / Mixtral:
+	//   OverrideTensors:     ["blk\\.\\d+\\.ffn_.*_exps\\.weight", "blk\\.\\d+\\.ffn_.*_exps\\.bias"]
+	//   OverrideTensorBufts: ["CPU", "CPU"]
+	OverrideTensors     []string `json:"overrideTensors,omitempty"`
+	OverrideTensorBufts []string `json:"overrideTensorBufts,omitempty"`
 }
 
 // AdvancedTimingConfig — конфигурируемые таймауты

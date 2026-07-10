@@ -51,4 +51,11 @@ type AgentConfig struct {
 	Weight                int          `json:"weight"`            // приоритетный вес бэкенда (1-100, по умолчанию 1)
 	BackendType           BackendType  `json:"backendType"`       // тип бэкенда: ollama или llama_cpp (по умолчанию ollama)
 	NodeLabels            string       `json:"nodeLabels"`        // метки узла (key=value через запятую)
+
+	// Round 13 (2026-07-10): BackendID — ID бэкенда, к которому agent прикреплён.
+	// Получается из ответа /api/v1/agents/register (поле backendId при action=attached).
+	// Используется в heartbeat: agent отправляет heartbeat на
+	// POST /api/v1/backends/{BackendID}/agent/heartbeat — это правильный ID,
+	// а не agentID (который при attached режиме отличается от backendID).
+	BackendID             string       `json:"backendId,omitempty"`
 }

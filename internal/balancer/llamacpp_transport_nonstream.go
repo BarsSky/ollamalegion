@@ -118,6 +118,57 @@ func (p *Proxy) proxyRequestLlamaCppNonStream(w http.ResponseWriter, r *http.Req
 	nonStreamStart := time.Now()
 	nonStreamAttempt := 1
 	resp, err := client.Do(req)
+	// 2026-07-10: connection-level error retry with exponential backoff.
+	//
+	// cppworker может быть в recreate-фазе (docker restart, build deploy):
+	//   - Порт 18092 ещё не listening → dial tcp: connection refused
+	//   - Контейнер запускается, но init не закончен → connection reset
+	//   - DNS не резолвится (редко) → no such host
+	//
+	// Раньше balancer делал мгновенный retry (attempt=1, attempt=2 без задержки),
+	// что приводило к OpenWebUI ошибкам "connection_refused" в transition window.
+	// Теперь: 3 retry с backoff 1s, 2s, 4s (cap 7s total) перед тем как сдаться.
+	// Только для connection-level ошибок — HTTP ошибки (5xx, 4xx) идут через
+	// существующий 503/loading_retry путь без backoff.
+	if err != nil && isConnectionLevelError(err) {
+		maxConnectionRetries := 3
+		connectionBackoffs := []time.Duration{1 * time.Second, 2 * time.Second, 4 * time.Second}
+		for retryIdx := 0; retryIdx < maxConnectionRetries; retryIdx++ {
+			backoff := connectionBackoffs[retryIdx]
+			logger.Get().Warnw("proxyRequestLlamaCppNonStream: connection-level error, backing off before retry",
+				"backend", backendID,
+				"model", modelFromCtx,
+				"attempt", nonStreamAttempt,
+				"retry_idx", retryIdx+1,
+				"max_retries", maxConnectionRetries,
+				"backoff_ms", backoff.Milliseconds(),
+				"error", err)
+			// Respect request context cancellation during backoff
+			select {
+			case <-time.After(backoff):
+			case <-r.Context().Done():
+				durationMs := time.Since(nonStreamStart).Milliseconds()
+				return fmt.Errorf("llama.cpp request failed [backend=%s, attempt=%d, duration_ms=%d, error_type=%s, cancelled_during_backoff]: %v",
+					backendID, nonStreamAttempt, durationMs, determineErrorType(err, r.Context()), err)
+			}
+			nonStreamAttempt++
+			// Recreate req body reader (it's been consumed)
+			req2, reqErr := http.NewRequestWithContext(r.Context(), r.Method, fullURL, bytes.NewReader(translatedBody))
+			if reqErr != nil {
+				return fmt.Errorf("failed to create retry request: %v", reqErr)
+			}
+			req2.Header.Set("Content-Type", "application/json")
+			req2.Header.Set("Accept", "application/json")
+			resp, err = client.Do(req2)
+			if err == nil {
+				break // success
+			}
+			if !isConnectionLevelError(err) {
+				// Если ошибка изменилась на non-connection-level, выходим из retry loop
+				break
+			}
+		}
+	}
 	if err != nil {
 		durationMs := time.Since(nonStreamStart).Milliseconds()
 		errType := determineErrorType(err, r.Context())
@@ -131,6 +182,11 @@ func (p *Proxy) proxyRequestLlamaCppNonStream(w http.ResponseWriter, r *http.Req
 			"error", err)
 		if errType == "unexpected_eof" {
 			p.publishTransportEOF(backendID, modelFromCtx, originalPath, err, time.Duration(durationMs)*time.Millisecond)
+		}
+		// Если после всех retry connection_refused — помечаем backend unhealthy.
+		// Это предотвращает routing новых запросов к мёртвому backend до следующего healthcheck.
+		if errType == "connection_refused" {
+			p.markBackendConnectionFailed(backendID)
 		}
 		return fmt.Errorf("llama.cpp request failed [backend=%s, attempt=%d, duration_ms=%d, error_type=%s]: %v",
 			backendID, nonStreamAttempt, durationMs, errType, err)

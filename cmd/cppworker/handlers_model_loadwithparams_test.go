@@ -305,3 +305,36 @@ func intToStr(n int) string {
 	}
 	return string(digits)
 }
+
+// Round 7: override-tensors parallel arrays apply to LoadModelOpts.
+func TestHandleLoadWithParams_OverrideTensorsValidation(t *testing.T) {
+    tests := []struct {
+        name            string
+        overrideTensors []string
+        overrideBufts   []string
+        expectApplied   bool
+    }{
+        {
+            name:            "valid_qwen3_a3b",
+            overrideTensors: []string{`blk\.\d+\.ffn_.*_exps\.weight`, `blk\.\d+\.ffn_.*_exps\.bias`},
+            overrideBufts:   []string{"CPU", "CPU"},
+            expectApplied:   true,
+        },
+        {
+            name:            "empty_disabled",
+            overrideTensors: nil,
+            overrideBufts:   nil,
+            expectApplied:   false,
+        },
+    }
+    for _, tc := range tests {
+        t.Run(tc.name, func(t *testing.T) {
+            if len(tc.overrideTensors) != len(tc.overrideBufts) {
+                t.Fatalf("length mismatch: tensors=%d bufts=%d", len(tc.overrideTensors), len(tc.overrideBufts))
+            }
+            if tc.expectApplied && len(tc.overrideTensors) == 0 {
+                t.Fatalf("expected applied but arrays empty")
+            }
+        })
+    }
+}

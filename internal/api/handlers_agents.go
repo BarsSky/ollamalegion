@@ -97,7 +97,35 @@ func (s *Server) agentRegisterHandler(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// Проверка, существует ли уже бэкенд
+	// Round 12 (2026-07-10): agent attach to existing cppworker backend.
+	// Bundled-режим: cppworker первично регистрирует inference endpoint,
+	// agent при старте должен прикрепиться к этому же бэкенду (как metrics
+	// provider), а не создавать второй бэкенд с тем же host:cppWorkerPort.
+	// Lookup по (host, CppWorkerPort) → если найден cppworker-бэкенд →
+	// attach через AttachAgentToBackend, не создаём новый.
+	if req.CppWorkerPort > 0 {
+		if existingID := s.proxy.FindBackendByHostPort(host, req.CppWorkerPort); existingID != "" && existingID != req.AgentID {
+			logger.Get().Infow("agentRegisterHandler: attaching to existing cppworker backend (dedup)",
+				"agentId", req.AgentID,
+				"existingBackendId", existingID,
+				"host", host,
+				"cppWorkerPort", req.CppWorkerPort)
+			s.proxy.AttachAgentToBackend(existingID, req.AgentID, agentPort)
+			existing := s.proxy.GetBackend(existingID)
+			s.writeJSON(w, http.StatusOK, map[string]interface{}{
+				"success":         true,
+				"action":          "attached",
+				"agentId":         req.AgentID,
+				"backendId":       existingID,
+				"backend":         existing,
+				"hasAgent":        true,
+				"message":         "Agent attached to existing cppworker backend (dedup).",
+			})
+			return
+		}
+	}
+
+	// Проверка, существует ли уже бэкенд (legacy: ID-based lookup)
 	if s.proxy.BackendExists(req.AgentID) {
 		// Обновляем существующий
 		existing := s.proxy.GetBackend(req.AgentID)
@@ -640,5 +668,175 @@ func (s *Server) agentV2HeartbeatHandler(w http.ResponseWriter, r *http.Request)
 		"success":                true,
 		"maxConcurrentRequests":  -1,
 		"maxModels":              -1,
+	})
+}
+
+// agentBackendHeartbeatHandler — heartbeat agent для конкретного backendID.
+// В отличие от старого /agents/heartbeat (который использовал agentID как
+// backendID, что было неправильно при attached режиме), здесь backendID
+// приходит из path — это и есть canonical ID бэкенда.
+//
+// Валидация: X-Agent-ID должен совпадать с AgentID бэкенда (защита от
+// подмены heartbeat от чужого агента).
+func (s *Server) agentBackendHeartbeatHandler(w http.ResponseWriter, r *http.Request, backendID string) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	agentID := r.Header.Get("X-Agent-ID")
+	if agentID == "" {
+		http.Error(w, "X-Agent-ID header required", http.StatusBadRequest)
+		return
+	}
+
+	// Проверяем, что бэкенд существует
+	backend := s.proxy.GetBackend(backendID)
+	if backend == nil {
+		http.Error(w, "backend not found", http.StatusNotFound)
+		return
+	}
+
+	// Валидация: X-Agent-ID должен совпадать с прикреплённым AgentID бэкенда.
+	// Если бэкенд был создан cppworker'ом (а не agent'ом), AgentID может быть пуст —
+	// разрешаем attach от любого agent (первый attach становится владельцем).
+	if backend.AgentID != "" && backend.AgentID != agentID {
+		http.Error(w, "agent ID mismatch", http.StatusForbidden)
+		return
+	}
+
+	// Читаем payload
+	body, _ := io.ReadAll(r.Body)
+	r.Body = io.NopCloser(bytes.NewBuffer(body))
+
+	var hbPayload struct {
+		Weight                int    `json:"weight"`
+		MaxConcurrentRequests int    `json:"maxConcurrentRequests"`
+		MaxModels             int    `json:"maxModels"`
+		Status                string `json:"status"`
+		BackendType           string `json:"backendType"`
+		// Round 14 (2026-07-10): agent шлёт свой agentPort чтобы cppworker-бэкенд
+		// (который не знал про agent при создании) получил правильный port.
+		// Раньше AttachAgentToBackend использовал backend.AgentPort=0, что было
+		// бесполезно для UI/API.
+		AgentPort             int    `json:"agentPort"`
+	}
+	_ = json.Unmarshal(body, &hbPayload)
+
+	// Обновление статуса бэкенда
+	s.proxy.UpdateBackendStatus(backendID, types.StatusHealthy)
+
+	// Определяем agentPort: из payload (новый способ, agent шлёт свой порт)
+	// или fallback на текущий backend.AgentPort. Это решает проблему "agentPort=0"
+	// когда cppworker создал бэкенд без знания про agent port.
+	effectiveAgentPort := hbPayload.AgentPort
+	if effectiveAgentPort == 0 {
+		effectiveAgentPort = backend.AgentPort
+	}
+
+	// Если X-Agent-ID не был прикреплён к бэкенду ранее — attach'им сейчас
+	if backend.AgentID == "" {
+		s.proxy.AttachAgentToBackend(backendID, agentID, effectiveAgentPort)
+	} else {
+		// Уже прикреплён — обновляем только LastAgentContact
+		s.proxy.MarkAgentContact(backendID, agentID)
+		// Если agentPort ещё 0 (cppworker не знал), обновляем с effective
+		if effectiveAgentPort > 0 && backend.AgentPort == 0 {
+			s.proxy.UpdateAgentPort(backendID, effectiveAgentPort)
+		}
+	}
+
+	// Применяем runtime-лимиты из heartbeat
+	updated := *backend
+	needUpdate := false
+	if hbPayload.Weight > 0 && updated.Weight != hbPayload.Weight {
+		updated.Weight = hbPayload.Weight
+		needUpdate = true
+	}
+	if hbPayload.MaxConcurrentRequests > 0 && updated.RuntimeMaxConcurrentRequests != hbPayload.MaxConcurrentRequests {
+		updated.RuntimeMaxConcurrentRequests = hbPayload.MaxConcurrentRequests
+		needUpdate = true
+	}
+	if hbPayload.MaxModels > 0 && updated.RuntimeMaxModels != hbPayload.MaxModels {
+		updated.RuntimeMaxModels = hbPayload.MaxModels
+		needUpdate = true
+	}
+	if needUpdate {
+		s.proxy.UpdateBackend(backendID, updated)
+	}
+
+	logger.Get().Debugw("agent heartbeat via backends/{id}/agent/heartbeat",
+		"backend", backendID, "agent", agentID,
+		"weight", hbPayload.Weight, "maxConcurrent", hbPayload.MaxConcurrentRequests)
+
+	// Возвращаем runtime-лимиты от балансера
+	s.writeJSON(w, http.StatusOK, map[string]interface{}{
+		"success": true,
+		"config": map[string]interface{}{
+			"maxConcurrentRequests": -1, // не меняем
+			"maxModels":             -1,
+		},
+	})
+}
+
+// agentBackendMetricsHandler — приём метрик от прикреплённого агента по правильному backendID.
+// Round 15 (2026-07-10): в Round 12 dedup сделал 1 бэкенд на физический inference
+// endpoint (cppworker-gpu-bundled). Agent ID стал отличаться от backend ID
+// (cppworker-gpu-bundled-agent). Старый endpoint /api/v1/agents/metrics использовал
+// agentID как ключ для BackendExists() → 404 "Backend not found" → метрики
+// не доходили до балансера и WebUI показывал пустые GPU/VRAM/CPU/RAM.
+//
+// Новый endpoint /api/v1/backends/{backendID}/agent/metrics принимает backendID
+// из path (тот самый что был получен при register через response.backendId).
+func (s *Server) agentBackendMetricsHandler(w http.ResponseWriter, r *http.Request, backendID string) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	agentID := r.Header.Get("X-Agent-ID")
+	if agentID == "" {
+		http.Error(w, "X-Agent-ID header required", http.StatusBadRequest)
+		return
+	}
+
+	// Парсим метрики
+	var metrics types.BackendMetrics
+	if err := json.NewDecoder(r.Body).Decode(&metrics); err != nil {
+		http.Error(w, "Invalid metrics format", http.StatusBadRequest)
+		return
+	}
+
+	// Проверяем что backend существует
+	backend := s.proxy.GetBackend(backendID)
+	if backend == nil {
+		http.Error(w, "backend not found", http.StatusNotFound)
+		return
+	}
+
+	// Валидация: X-Agent-ID должен совпадать с прикреплённым AgentID бэкенда
+	// (защита от подмены — чужой агент не может слать метрики от имени чужого бэкенда).
+	// При первом attach (backend.AgentID пуст) — allow, потом attach ниже.
+	if backend.AgentID != "" && backend.AgentID != agentID {
+		http.Error(w, "agent ID mismatch", http.StatusForbidden)
+		return
+	}
+
+	// Auto-attach если ещё не прикреплён
+	if backend.AgentID == "" {
+		s.proxy.AttachAgentToBackend(backendID, agentID, backend.AgentPort)
+	}
+
+	// Обновляем метрики для правильного backendID
+	s.proxy.UpdateMetrics(backendID, &metrics)
+
+	// Обновляем флаг активного агента
+	s.proxy.UpdateBackendAgentStatus(backendID, true)
+
+	// Обновляем LastAgentContact (лёгкий путь — без race-condition)
+	s.proxy.MarkAgentContact(backendID, agentID)
+
+	s.writeJSON(w, http.StatusOK, map[string]interface{}{
+		"status": "received",
 	})
 }

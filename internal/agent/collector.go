@@ -288,9 +288,18 @@ func (a *Agent) sendMetrics(data []byte) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost,
-		fmt.Sprintf("%s/api/v1/agents/metrics", a.balancerURL),
-		bytes.NewReader(data))
+	// Round 15 (2026-07-10): если есть backendId (из register/attach), шлём на
+	// /api/v1/backends/{backendId}/agent/metrics — правильный endpoint, который
+	// обновляет метрики для canonical бэкенда. Иначе fallback на legacy
+	// /api/v1/agents/metrics (standalone mode или старый балансер).
+	var metricsURL string
+	if a.config.BackendID != "" {
+		metricsURL = fmt.Sprintf("%s/api/v1/backends/%s/agent/metrics", a.balancerURL, a.config.BackendID)
+	} else {
+		metricsURL = fmt.Sprintf("%s/api/v1/agents/metrics", a.balancerURL)
+	}
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, metricsURL, bytes.NewReader(data))
 	if err != nil {
 		fmt.Printf("[%s] Failed to create request: %v\n", time.Now().Format(time.RFC3339), err)
 		return
@@ -303,6 +312,26 @@ func (a *Agent) sendMetrics(data []byte) {
 	if err != nil {
 		fmt.Printf("[%s] Failed to send metrics: %v\n", time.Now().Format(time.RFC3339), err)
 		return
+	}
+
+	// Fallback: новый endpoint вернул 404 (старая версия балансера) → legacy
+	if resp.StatusCode == http.StatusNotFound && a.config.BackendID != "" {
+		resp.Body.Close()
+		fmt.Printf("[%s] New metrics endpoint returned 404, falling back to legacy /agents/metrics\n",
+			time.Now().Format(time.RFC3339))
+		legacyURL := fmt.Sprintf("%s/api/v1/agents/metrics", a.balancerURL)
+		req2, reqErr := http.NewRequestWithContext(ctx, http.MethodPost, legacyURL, bytes.NewReader(data))
+		if reqErr == nil {
+			req2.Header.Set("Content-Type", "application/json")
+			req2.Header.Set("X-Agent-ID", a.config.AgentID)
+			resp2, err2 := a.httpClient.Do(req2)
+			if err2 == nil {
+				resp = resp2
+			} else {
+				fmt.Printf("[%s] Legacy metrics also failed: %v\n", time.Now().Format(time.RFC3339), err2)
+				return
+			}
+		}
 	}
 	defer resp.Body.Close()
 
@@ -388,6 +417,10 @@ func (a *Agent) sendHeartbeat() {
 		"maxModels":             a.config.MaxModels,
 		"backendType":           string(a.config.BackendType),
 		"nodeLabels":            a.config.NodeLabels,
+		// Round 14 (2026-07-10): шлём свой agentPort чтобы cppworker-бэкенд
+		// (созданный без знания про agent) получил правильный порт. Без этого
+		// AttachAgentToBackend использовал backend.AgentPort=0 → UI показывал 0.
+		"agentPort": a.config.MetricsPort,
 	}
 
 	data, err := json.Marshal(wrapper)
@@ -399,9 +432,19 @@ func (a *Agent) sendHeartbeat() {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost,
-		fmt.Sprintf("%s/api/v1/agents/heartbeat", a.balancerURL),
-		bytes.NewReader(data))
+	// Round 13 (2026-07-10): если есть backendId (из attach/register), шлём на новый
+	// endpoint /backends/{id}/agent/heartbeat — он правильно идентифицирует
+	// бэкенд (в отличие от /agents/heartbeat, который использовал agentID).
+	// Fallback на legacy endpoint если новый вернёт 404 (старая версия балансера).
+	var heartbeatURL string
+	if a.config.BackendID != "" {
+		heartbeatURL = fmt.Sprintf("%s/api/v1/backends/%s/agent/heartbeat", a.balancerURL, a.config.BackendID)
+	} else {
+		// Standalone режим: agentID == backendID, legacy endpoint работает.
+		heartbeatURL = fmt.Sprintf("%s/api/v1/agents/heartbeat", a.balancerURL)
+	}
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, heartbeatURL, bytes.NewReader(data))
 	if err != nil {
 		fmt.Printf("[%s] Failed to create heartbeat request: %v\n", time.Now().Format(time.RFC3339), err)
 		return
@@ -414,6 +457,25 @@ func (a *Agent) sendHeartbeat() {
 	if err != nil {
 		fmt.Printf("[%s] Failed to send heartbeat: %v\n", time.Now().Format(time.RFC3339), err)
 		return
+	}
+	// Fallback: если новый endpoint вернул 404, шлём на legacy.
+	if resp.StatusCode == http.StatusNotFound && a.config.BackendID != "" {
+		resp.Body.Close()
+		fmt.Printf("[%s] New heartbeat endpoint returned 404, falling back to legacy /agents/heartbeat\n",
+			time.Now().Format(time.RFC3339))
+		legacyURL := fmt.Sprintf("%s/api/v1/agents/heartbeat", a.balancerURL)
+		req2, reqErr := http.NewRequestWithContext(ctx, http.MethodPost, legacyURL, bytes.NewReader(data))
+		if reqErr == nil {
+			req2.Header.Set("Content-Type", "application/json")
+			req2.Header.Set("X-Agent-ID", a.config.AgentID)
+			resp2, err2 := a.httpClient.Do(req2)
+			if err2 == nil {
+				resp = resp2
+			} else {
+				fmt.Printf("[%s] Legacy heartbeat also failed: %v\n", time.Now().Format(time.RFC3339), err2)
+				return
+			}
+		}
 	}
 	defer resp.Body.Close()
 

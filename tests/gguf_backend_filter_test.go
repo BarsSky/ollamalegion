@@ -68,12 +68,16 @@ func TestGgufBackends_HidesUnhealthyByDefault(t *testing.T) {
 
 // TestGgufBackends_IncludeUnhealthyParameter проверяет, что query-параметр
 // includeUnhealthy=true возвращает все llama_cpp бэкенды, включая нерабочие.
+//
+// Round 7 fix: используем РАЗНЫЕ CppWorkerPort для двух бэкендов, потому что
+// dedupBackendsByHostPort склеивает записи с одинаковым (host, port) — это
+// корректное поведение (один физический endpoint = одна запись).
 func TestGgufBackends_IncludeUnhealthyParameter(t *testing.T) {
 	testServer, _, proxy, _ := setupTestEnvironment(t)
 	defer testServer.Close()
 	baseURL := testServer.URL
 
-	// Добавляем healthy и unhealthy llama_cpp бэкенды
+	// Добавляем healthy и unhealthy llama_cpp бэкенды на РАЗНЫХ портах.
 	require.NoError(t, proxy.AddBackend(types.Backend{
 		ID:                "llamacpp-healthy",
 		Name:              "Healthy CppWorker",
@@ -87,7 +91,7 @@ func TestGgufBackends_IncludeUnhealthyParameter(t *testing.T) {
 		ID:                "llamacpp-unhealthy",
 		Name:              "Unhealthy CppWorker",
 		Host:              "localhost",
-		CppWorkerPort:     18092,
+		CppWorkerPort:     18093, // другой порт → не dedup'ится
 		Type:              types.BackendTypeLlamaCpp,
 		Status:            types.StatusUnhealthy,
 		MaxConcurrentReqs: 4,

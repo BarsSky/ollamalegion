@@ -112,6 +112,18 @@ typedef struct {
     //   "q4_0" → GGML_TYPE_Q4_0 (2) — -75% VRAM, заметная потеря на длинных контекстах
     // 0 = наследовать дефолт cppworker (F16).
     int kv_cache_type;
+    // Round 7: override-tensors (per-tensor GPU/CPU redirection).
+    //
+    // Is used for MoE: keep attention on GPU, expert tensors in RAM.
+    // Each entry = (regex-pattern, buft-name).
+    // buft names resolved via ggml_backend_buft_name:
+    //   "CPU"  -> ggml_backend_cpu_buffer_type()
+    //   "CUDA0" / "CUDA1" -> ggml_backend_dev_buffer_type(dev_get(i))
+    // --ot-style parsing (pattern=CPU) NOT done here.
+    // Caller passes already-split arrays. NULL/0 = no override.
+    const char** override_tensor_patterns;
+    const char** override_tensor_buft_names;
+    int         override_tensor_count;
 } ModelConfig;
 
 // ============================================================

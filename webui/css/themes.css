@@ -102,10 +102,18 @@
     /* Accent + semantics */
     --accent: #4a9eff;
     --accent-hover: #6ab2ff;
-    --accent-soft: rgba(74, 158, 255, 0.15);
-    --accent-glow-soft: rgba(59, 130, 246, 0.08);
-    --accent-glow-ring: rgba(59, 130, 246, 0.20);
-    --accent-glow-shadow: rgba(74, 158, 255, 0.30);
+    /* Phase 7 (2026-07-10): derive accent-soft / glow variants from --accent via
+       color-mix() so they auto-track accent changes (no need to maintain 4 RGB
+       tuples per theme). Each variant uses a different alpha (15/8/20/30%) for
+       its use-case: soft = subtle bg, glow-soft = shadow at low alpha, glow-ring
+       = focus ring at mid alpha, glow-shadow = prominent glow at high alpha.
+       color-mix() is CSS Color Module L5 (Chrome 111+, Firefox 113+, Safari 16.2+).
+       Shadows and bg-alpha colors below stay as rgba() because they're
+       theme-agnostic (always dark/black, never accent-derived). */
+    --accent-soft:        color-mix(in srgb, var(--accent) 15%, transparent);
+    --accent-glow-soft:   color-mix(in srgb, var(--accent)  8%, transparent);
+    --accent-glow-ring:   color-mix(in srgb, var(--accent) 20%, transparent);
+    --accent-glow-shadow: color-mix(in srgb, var(--accent) 30%, transparent);
     --success: #4ade80;
     --warning: #fbbf24;
     --danger: #f87171;
@@ -128,6 +136,9 @@
 
     /* SVG icon filter for dark theme (white icons) */
     --svg-filter: invert(1) brightness(2.2);
+    /* Phase 7: drop-shadow() doesn't support var() in rgba, so we keep the
+       hardcoded RGB here. To track --accent dynamically, the consuming code
+       can wrap the drop-shadow value into another color-mix() at use site. */
     --svg-accent-glow: drop-shadow(0 0 5px rgba(74, 158, 255, 0.4));
     --svg-hover-glow: drop-shadow(0 0 10px rgba(74, 158, 255, 0.75));
 
@@ -188,10 +199,11 @@
 
     --accent: #2563eb;
     --accent-hover: #1d4ed8;
-    --accent-soft: rgba(37, 99, 235, 0.10);
-    --accent-glow-soft: rgba(37, 99, 235, 0.06);
-    --accent-glow-ring: rgba(37, 99, 235, 0.18);
-    --accent-glow-shadow: rgba(37, 99, 235, 0.30);
+    /* Phase 7: derive from --accent (was rgba(37, 99, 235, *) hardcoded). */
+    --accent-soft:        color-mix(in srgb, var(--accent) 10%, transparent);
+    --accent-glow-soft:   color-mix(in srgb, var(--accent)  6%, transparent);
+    --accent-glow-ring:   color-mix(in srgb, var(--accent) 18%, transparent);
+    --accent-glow-shadow: color-mix(in srgb, var(--accent) 30%, transparent);
 
     --success: #16a34a;
     --warning: #d97706;
@@ -313,10 +325,11 @@ body *::after {
     --text-muted: #8a8f98;
     --accent: #5e6ad2;
     --accent-hover: #828fff;
-    --accent-soft: rgba(94, 106, 210, 0.15);
-    --accent-glow-soft: rgba(94, 106, 210, 0.08);
-    --accent-glow-ring: rgba(94, 106, 210, 0.20);
-    --accent-glow-shadow: rgba(94, 106, 210, 0.30);
+    /* Phase 7: derive from --accent (was rgba(94, 106, 210, *) hardcoded). */
+    --accent-soft:        color-mix(in srgb, var(--accent) 15%, transparent);
+    --accent-glow-soft:   color-mix(in srgb, var(--accent)  8%, transparent);
+    --accent-glow-ring:   color-mix(in srgb, var(--accent) 20%, transparent);
+    --accent-glow-shadow: color-mix(in srgb, var(--accent) 30%, transparent);
     --success: #27a644;
     --warning: #f5a623;
     --danger: #e5484d;
@@ -348,10 +361,11 @@ body *::after {
 [data-theme="nvidia"] {
     --accent: #76b900;
     --accent-hover: #8cd600;
-    --accent-soft: rgba(118,185,0,0.15);
-    --accent-glow-soft: rgba(118,185,0,0.08);
-    --accent-glow-ring: rgba(118,185,0,0.20);
-    --accent-glow-shadow: rgba(118,185,0,0.30);
+    /* Phase 7: derive from --accent (was rgba(118,185,0,*) hardcoded). */
+    --accent-soft:        color-mix(in srgb, var(--accent) 15%, transparent);
+    --accent-glow-soft:   color-mix(in srgb, var(--accent)  8%, transparent);
+    --accent-glow-ring:   color-mix(in srgb, var(--accent) 20%, transparent);
+    --accent-glow-shadow: color-mix(in srgb, var(--accent) 30%, transparent);
     --success: #76b900;
     --success-soft: rgba(118,185,0,0.15);
     --glass-glow: radial-gradient(ellipse at 50% 0%, rgba(118,185,0,0.06) 0%, transparent 70%);
@@ -371,10 +385,11 @@ body *::after {
     --text-muted: #71717a;
     --accent: #fafafa;
     --accent-hover: #ffffff;
-    --accent-soft: rgba(250,250,250,0.1);
-    --accent-glow-soft: rgba(250,250,250,0.06);
-    --accent-glow-ring: rgba(250,250,250,0.15);
-    --accent-glow-shadow: rgba(250,250,250,0.2);
+    /* Phase 7: derive from --accent (was rgba(250,250,250,*) hardcoded). */
+    --accent-soft:        color-mix(in srgb, var(--accent) 10%, transparent);
+    --accent-glow-soft:   color-mix(in srgb, var(--accent)  6%, transparent);
+    --accent-glow-ring:   color-mix(in srgb, var(--accent) 15%, transparent);
+    --accent-glow-shadow: color-mix(in srgb, var(--accent) 20%, transparent);
     --border-strong: #27272a;
     --border-subtle: rgba(255,255,255,0.06);
     --glass-bg: rgba(0,0,0,0.55);

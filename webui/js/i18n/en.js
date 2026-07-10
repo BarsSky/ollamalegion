@@ -1,4 +1,4 @@
-// OllamaLegion i18n — English translations
+// OllamaLegion i18n - English translations
 window.I18N_EN = {
   // Nav
   "nav.dashboard": "Dashboard",

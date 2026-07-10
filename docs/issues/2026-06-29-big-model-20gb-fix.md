@@ -615,9 +615,19 @@ theme toggle / bell в шапке (они уже наследовали `var(--t
 
 ## Known Issues / TODO
 
-1. **RAM fallback reset endpoint** — `POST /api/v1/cppworker/reset-reload-counter` is still TODO.
-   For now, `docker restart deployments-cppworker-gpu-1` to clear `ramFallbackAttempts`.
+1. ~~**RAM fallback reset endpoint** — `POST /api/v1/cppworker/reset-reload-counter` is still TODO.~~
+   ✅ **DONE 2026-06-25** (commit включён в `feat(balancer): Rounds 8-15`, `4b4bfbd`).
+   - cppworker: `cmd/cppworker/handlers_reset_reload.go` (handleResetReloadCounter) + `router.go` регистрация.
+   - balancer proxy: `internal/api/handlers_cppworker_reset_reload.go` (handleResetCppWorkerReloadCounter) + роут в `routes.go:176`.
+   - 5 unit-тестов в `cmd/cppworker/handlers_reset_reload_test.go` PASS.
+   - Использование: `curl -X POST http://localhost:18081/api/v1/cppworker/reset-reload-counter` (reset всех моделей) или `curl -X POST ... -d '{"model":"gemma-4"}'` (reset одной).
 2. **i18n helper scripts** — `tools/fix_i18n_syntax.py`, `tools/collapse_quotes.py`, `tools/scan_i18n_keys.py` are kept for future i18n emergencies. Устаревшие `restore_i18n_quotes*.py` v1-v4, `fix_i18n_syntax.ps1`, `fix_doubled_quotes.py` удалены из `tools/` (2026-06-29 v2 cleanup).
-3. **Em-dash compliance** — 7 remaining em-dash violations in CSS comments (icons.css:?, components.css:69, monitor-app.css:73, pages.css:20, responsive.css:2, i18n/ru.js:1, i18n/en.js:1). Treated as low priority; user-facing copy is clean.
-4. **rgba() compliance** — ~120 rgba() in CSS (mostly theme tokens, box-shadows in :root, and gradient stops). Mostly legitimate use; some can be replaced with color-mix() for theme-friendly variants. Low priority.
+3. ~~**Em-dash compliance** — 7 remaining em-dash violations in CSS comments (icons.css:?, components.css:69, monitor-app.css:73, pages.css:20, responsive.css:2, i18n/ru.js:1, i18n/en.js:1). Treated as low priority; user-facing copy is clean.~~
+   ✅ **DONE 2026-07-10** (Phase 7, commit см. `git log --grep="Phase 7"`).
+   - 9 em-dash заменены на `-`: components.css (4), data.css (1), layout.css (2), en.js header (1), ru.js header (1).
+   - Regression-тест `internal/api/lint_css_i18n_test.go:TestLintCSSAndI18nNoEmDash` (PASS) предотвращает возвращение em-dash в CSS comments и i18n headers.
+   - User-facing copy в i18n (P1-P4 help, etc.) сохранён — em-dash там легитимная русская/английская типографика.
+4. **rgba() compliance** — ~120 rgba() in CSS (mostly theme tokens, box-shadows in :root, and gradient stops). **PARTIAL FIX 2026-07-10** (Phase 7):
+   - 20 `rgba(R,G,B,α)` для accent-derived variants (--accent-soft / --accent-glow-soft / --accent-glow-ring / --accent-glow-shadow) в 5 темах (default dark, light, linear, nvidia, vercel) заменены на `color-mix(in srgb, var(--accent) X%, transparent)`. Теперь auto-track accent color changes.
+   - Осталось ~100 rgba(): shadows (rgba(0,0,0,α) — theme-agnostic), white/black bg-alphas (theme-agnostic), gradient stops, drop-shadow() (CSS не поддерживает var() в rgba). Низкий приоритет — оставлено для будущих итераций.
 5. **Ollama-only messages** in CppWorker (e.g. `/api/pull` for `ollama` registry) — return HTTP 501 as expected.

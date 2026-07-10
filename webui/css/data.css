@@ -167,7 +167,7 @@
     max-height: 400px;
     overflow-y: auto;
 }
-/* Round 11 (2026-07-10): scrollable wrapper for full model list — replaced
+/* Round 11 (2026-07-10): scrollable wrapper for full model list - replaced
    hard-cap at 50 models (operators with 100+ GGUF files on shared fileservers
    couldn't load anything past position 50). Renderers emits this single-child
    wrapper so the parent grid layout is preserved and only inner content scrolls. */

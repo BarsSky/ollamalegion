@@ -1,4 +1,4 @@
-// OllamaLegion i18n — Russian translations
+// OllamaLegion i18n - Russian translations
 window.I18N_RU = {
   // Nav
   "nav.dashboard": "Дашборд",

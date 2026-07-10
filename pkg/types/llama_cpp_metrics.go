@@ -42,6 +42,17 @@ type LlamaCppModel struct {
 	NumGPULayers  int    `json:"numGpuLayers"`
 	Quantization  string `json:"quantization"`
 	State         string `json:"state"` // "loaded", "loading", "error"
+	// === Architecture metadata (Round 18+ — для оценки VRAM/RAM split по слоям) ===
+	// cppworker reports per-model architecture details, используем для расчёта
+	// estimatedVram/estimatedRam (cppworker не сообщает actual usage per-model).
+	Architecture string `json:"architecture,omitempty"` // "gemma4", "qwen35moe", ...
+	NLayers      int    `json:"nLayers,omitempty"`      // total layers in model
+	NKvHeads     int    `json:"nKvHeads,omitempty"`     // n_kv_heads (для KV cache расчёта)
+	NEmbd        int    `json:"nEmbd,omitempty"`        // n_embd (для KV cache)
+	HeadDimK     int    `json:"headDimK,omitempty"`     // head_dim_k
+	HeadDimV     int    `json:"headDimV,omitempty"`     // head_dim_v
+	MaxContext   int    `json:"maxContext,omitempty"`  // ggufContextLength (макс n_ctx для этой модели)
+	LoadedAt     string `json:"loadedAt,omitempty"`     // RFC3339Nano
 	// === Loading state (Шаг «отображение загрузки в мониторе и вкладке бэкендов») ===
 	// Заполняются только пока State == "loading" / "error". После успешной
 	// загрузки поля обнуляются (omitempty).

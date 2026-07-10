@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"regexp"
 	"strings"
 	"sync"
 	"time"
@@ -78,6 +79,31 @@ type ModelInfo struct {
 	Digest     string `json:"digest"`
 	ModifiedAt string `json:"modifiedAt,omitempty"`
 	Loaded     bool   `json:"loaded"` // загружена ли в память
+
+	// Round 18 (2026-07-10): llama.cpp runtime fields — populated from cppworker
+	// /api/models. cppworker tracks these per-model: context length (n_ctx),
+	// GPU layers (n_gpu_layers), quantization, file path, batch size, etc.
+	// Используются WebUI Models tab для корректных метрик в карточках
+	// (раньше показывались нули/прочерки потому что aggregator endpoint
+	// не пробрасывал эти поля из cppworker).
+	ContextLength  int    `json:"contextLength,omitempty"` // n_ctx
+	NumGPULayers   int    `json:"numGpuLayers,omitempty"`  // -1 = all, 0 = cpu only
+	BatchSize      int    `json:"batchSize,omitempty"`
+	Quantization   string `json:"quantization,omitempty"`
+	GGUFPath       string `json:"ggufPath,omitempty"`
+	State          string `json:"state,omitempty"` // loaded | loading | unloaded | error
+	Architecture   string `json:"architecture,omitempty"`
+	VRAMUsage      uint64 `json:"vramUsage,omitempty"` // MB (cppworker returns 0 — not tracked)
+	RAMUsage       uint64 `json:"ramUsage,omitempty"`  // MB (cppworker returns 0 — not tracked)
+	LoadedAt       string `json:"loadedAt,omitempty"`
+	// Architecture metadata (для VRAM/RAM split estimation на frontend).
+	// cppworker /api/models reports эти поля — пробрасываем в API.
+	NLayers    int `json:"nLayers,omitempty"`
+	NKvHeads   int `json:"nKvHeads,omitempty"`
+	NEmbd      int `json:"nEmbd,omitempty"`
+	HeadDimK   int `json:"headDimK,omitempty"`
+	HeadDimV   int `json:"headDimV,omitempty"`
+	MaxContext int `json:"maxContext,omitempty"` // ggufContextLength — макс n_ctx для модели
 }
 
 // resolveBackendPort — возвращает порт инференса в зависимости от движка бэкенда.
@@ -262,7 +288,11 @@ func (mm *ModelManager) listOllamaModels(backend *types.Backend) ([]ModelInfo, e
 }
 
 // listLlamaCppModels — список моделей cppworker-бэкенда: /api/models/files (на диске)
-// + /api/models/loaded (что в памяти). Метка Loaded выставляется по handle.
+// + /api/models (что в памяти через state="loaded"). Round 17 (2026-07-10).
+// Round 18 (2026-07-10): пробрасывает runtime поля (contextLength, numGpuLayers,
+// quantization, ggufPath, batchSize, state, architecture) из /api/models response.
+// Также использует loadingSizeBytes как fallback для size (cppworker reports sizeBytes=0
+// для загруженных моделей).
 func (mm *ModelManager) listLlamaCppModels(backend *types.Backend) ([]ModelInfo, error) {
 	port := mm.resolveBackendPort(backend)
 	base := fmt.Sprintf("http://%s:%d", backend.Host, port)
@@ -274,38 +304,64 @@ func (mm *ModelManager) listLlamaCppModels(backend *types.Backend) ([]ModelInfo,
 	}
 	defer filesResp.Body.Close()
 
+	// Round 17: cppworker returns 'name' (filename with .gguf), NOT 'path' + 'quantization'.
+	// The previous schema caused name="" in response (Models tab bug — loaded models invisible).
 	var filesData struct {
 		Files []struct {
-			Path         string `json:"path"`
-			SizeBytes    int64  `json:"sizeBytes"`
-			Quantization string `json:"quantization"`
+			Name       string `json:"name"`
+			SizeBytes  int64  `json:"sizeBytes"`
+			ModifiedAt string `json:"modifiedAt"`
 		} `json:"files"`
 	}
 	if err := json.NewDecoder(filesResp.Body).Decode(&filesData); err != nil {
 		return nil, fmt.Errorf("failed to decode models from cppworker %s: %w", backend.ID, err)
 	}
 
+	// Round 17+18: читаем /api/models (НЕ /api/models/loaded — он не реализован в cppworker).
+	// Используем для определения loaded state И для пробрасывания runtime полей.
+	type runtimeModel struct {
+		Name              string `json:"name"`
+		State             string `json:"state"`
+		Path              string `json:"path,omitempty"`
+		SizeBytes         int64  `json:"sizeBytes,omitempty"`
+		LoadingSizeBytes  int64  `json:"loadingSizeBytes,omitempty"` // cppworker: real file size (sizeBytes=0 для loaded)
+		ContextSize       int    `json:"contextSize,omitempty"`
+		GPULayers         int    `json:"gpuLayers,omitempty"`
+		BatchSize         int    `json:"batchSize,omitempty"`
+		Quantization      string `json:"quantization,omitempty"`
+		Architecture      string `json:"architecture,omitempty"`
+		VRAMUsage         uint64 `json:"vramUsage,omitempty"`
+		RAMUsage          uint64 `json:"ramUsage,omitempty"`
+		LoadedAt          string `json:"loadedAt,omitempty"`
+		// Round 18+: architecture metadata для оценки VRAM/RAM на frontend.
+		NLayers           int    `json:"nLayers,omitempty"`
+		NHeads            int    `json:"nHeads,omitempty"`
+		NKvHeads          int    `json:"nKvHeads,omitempty"`
+		HeadDimK          int    `json:"headDimK,omitempty"`
+		HeadDimV          int    `json:"headDimV,omitempty"`
+		NEmbd             int    `json:"nEmbd,omitempty"`
+		GGUFContextLength int    `json:"ggufContextLength,omitempty"`
+	}
 	loadedSet := make(map[string]bool)
-	loadedURL := base + "/api/models/loaded"
-	if lr, lerr := mm.client.Get(loadedURL); lerr == nil {
+	// runtimeMap: ключ — basename (с .gguf и без), значение — runtime данные.
+	// Используется для обогащения ModelInfo из /api/models/files.
+	runtimeMap := make(map[string]runtimeModel)
+	allURL := base + "/api/models"
+	if lr, lerr := mm.client.Get(allURL); lerr == nil {
 		defer lr.Body.Close()
 		var ld struct {
-			Models []struct {
-				Handle string `json:"handle"`
-				Name   string `json:"name,omitempty"`
-				Path   string `json:"path,omitempty"`
-			} `json:"models"`
+			Models []runtimeModel `json:"models"`
 		}
 		if err := json.NewDecoder(lr.Body).Decode(&ld); err == nil {
 			for _, m := range ld.Models {
-				if m.Handle != "" {
-					loadedSet[m.Handle] = true
-				}
-				if m.Name != "" {
+				// Сохраняем runtime данные по трём ключам (name, basename, basename без .gguf).
+				runtimeMap[m.Name] = m
+				runtimeMap[mm.basename(m.Name)] = m
+				runtimeMap[strings.TrimSuffix(m.Name, ".gguf")] = m
+				if m.State == "loaded" && m.Name != "" {
 					loadedSet[m.Name] = true
-				}
-				if m.Path != "" {
-					loadedSet[mm.basename(m.Path)] = true
+					loadedSet[mm.basename(m.Name)] = true
+					loadedSet[strings.TrimSuffix(m.Name, ".gguf")] = true
 				}
 			}
 		}
@@ -313,15 +369,104 @@ func (mm *ModelManager) listLlamaCppModels(backend *types.Backend) ([]ModelInfo,
 
 	models := make([]ModelInfo, 0, len(filesData.Files))
 	for _, f := range filesData.Files {
-		name := mm.basename(f.Path)
-		models = append(models, ModelInfo{
-			Name:   name,
-			Model:  name,
-			Size:   f.SizeBytes,
-			Loaded: loadedSet[name] || loadedSet[f.Path],
-		})
+		// f.Name это полное имя файла (Qwen3...Q4_K_M.gguf).
+		// Для UI используем basename БЕЗ .gguf чтобы совпадало с тем что
+		// отдаёт /api/tags у Ollama.
+		name := strings.TrimSuffix(f.Name, ".gguf")
+		// Берём runtime данные (по трём возможным ключам).
+		rt := runtimeMap[name]
+		if rt.Name == "" {
+			rt = runtimeMap[f.Name]
+		}
+		if rt.Name == "" {
+			rt = runtimeMap[mm.basename(f.Name)]
+		}
+
+		// cppworker reports sizeBytes=0 для загруженных моделей — fallback на loadingSizeBytes.
+		size := f.SizeBytes
+		if size == 0 {
+			size = rt.LoadingSizeBytes
+		}
+		if size == 0 {
+			size = rt.SizeBytes
+		}
+
+		mi := ModelInfo{
+			Name:       name,
+			Model:      name,
+			Size:       size,
+			Digest:     "",
+			ModifiedAt: f.ModifiedAt,
+			Loaded:     loadedSet[name] || loadedSet[f.Name],
+		}
+		// Round 18: проброс runtime полей в ModelInfo (omitempty — пустые поля не уходят в JSON).
+		if rt.Name != "" {
+			mi.ContextLength = rt.ContextSize
+			mi.NumGPULayers = rt.GPULayers
+			mi.BatchSize = rt.BatchSize
+			mi.Quantization = rt.Quantization
+			mi.GGUFPath = rt.Path
+			mi.State = rt.State
+			mi.Architecture = rt.Architecture
+			mi.VRAMUsage = rt.VRAMUsage
+			mi.RAMUsage = rt.RAMUsage
+			mi.LoadedAt = rt.LoadedAt
+			// Round 18+: architecture metadata для оценки VRAM/RAM split на frontend.
+			mi.NLayers = rt.NLayers
+			mi.NKvHeads = rt.NKvHeads
+			mi.NEmbd = rt.NEmbd
+			mi.HeadDimK = rt.HeadDimK
+			mi.HeadDimV = rt.HeadDimV
+			mi.MaxContext = rt.GGUFContextLength
+		}
+		// Round 18b (2026-07-10): cppworker reports quantization="" (баг в cppworker).
+		// GGUF quantization всегда в имени файла (Q4_K_M, Q5_K_S, Q8_0, F16, IQ4_XS, ...).
+		// Парсим из имени файла если cppworker не вернул.
+		if mi.Quantization == "" {
+			mi.Quantization = extractQuantizationFromName(f.Name)
+		}
+		models = append(models, mi)
 	}
 	return models, nil
+}
+
+// extractQuantizationFromName — парсит GGUF quantization из имени файла.
+//
+// cppworker не сообщает quantization в /api/models (баг cppworker), но
+// стандарт GGUF-квантизации всегда в имени файла после последнего "-"
+// и до ".gguf": Qwen3-...-Q4_K_M.gguf → Q4_K_M.
+//
+// Поддерживает все стандартные квантизации llama.cpp:
+//   - Legacy k-quants:    Q2_K, Q3_K_S/M/L, Q4_0, Q4_1, Q4_K_S/M, Q5_0, Q5_1, Q5_K_S/M, Q6_K, Q8_0
+//   - I-quants (I-quant): IQ1_S/M, IQ2_XXS/XS/S/M, IQ3_XXS/XS/S/M, IQ4_XS/NL
+//   - Trellis quants:     TQ1_0, TQ2_0
+//   - F-types (precise):  F16, F32, BF16
+//   - fpW types:          FP16, BF16
+//
+// Возвращает "" если не нашёл.
+func extractQuantizationFromName(filename string) string {
+	if filename == "" {
+		return ""
+	}
+	// Убираем .gguf (case-insensitive).
+	base := filename
+	if i := strings.LastIndex(strings.ToLower(base), ".gguf"); i >= 0 {
+		base = base[:i]
+	}
+	// Ищем последний "-<QUANT>" в имени.
+	// Паттерн: -(IQ?|TQ?|Q|F|BF|FP)?<digits>(_[A-Z]+)?(_[A-Z]+)?
+	// Например: -Q4_K_M, -IQ4_XS, -F16, -BF16, -Q5_K
+	re := regexp.MustCompile(`-(IQ[1-4]_[A-Z]+|TQ[12]_[0-9]|Q[0-8]_[0-9K]|Q[0-8]_[A-Z]|F1[26]|F32|BF16|FP16)$`)
+	m := re.FindStringSubmatch(base)
+	if len(m) >= 2 {
+		return m[1]
+	}
+	// Fallback: ищем "Q\d_K_[A-Z]" или "Q\d_\d" в любом месте.
+	re2 := regexp.MustCompile(`(Q[0-8]_[K0-9](_[A-Z])?|IQ[1-4]_[A-Z]+|TQ[12]_[0-9])`)
+	if m2 := re2.FindStringSubmatch(base); len(m2) >= 2 {
+		return m2[1]
+	}
+	return ""
 }
 
 // basename — выделяет имя файла из пути (поддержка '/' и '\').

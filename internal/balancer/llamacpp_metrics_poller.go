@@ -174,23 +174,28 @@ func (p *llamaCppMetricsPoller) pollBackend(b backendInfo) {
 		AvailableVRAMMB uint64 `json:"available_vram_mb"`
 		TotalVRAMMB     uint64 `json:"total_vram_mb"`
 		Models []struct {
-			Name          string `json:"name"`
-			Path          string `json:"path,omitempty"`
-			State         string `json:"state,omitempty"`
-			SizeBytes     int64  `json:"sizeBytes,omitempty"`
-			NLayers       int    `json:"nLayers,omitempty"`
-			NHeads        int    `json:"nHeads,omitempty"`
-			NEmbd         int    `json:"nEmbd,omitempty"`
-			NVocab        int    `json:"nVocab,omitempty"`
-			ContextSize   int    `json:"contextSize,omitempty"`
-			GPULayers     int    `json:"gpuLayers,omitempty"`
-			ActiveQueries int    `json:"activeQueries,omitempty"`
-			TotalQueries  int    `json:"totalQueries,omitempty"`
-			Architecture  string `json:"architecture,omitempty"`
-			Quantization  string `json:"quantization,omitempty"`
-			VRAMUsage     uint64 `json:"vramUsage,omitempty"`
-			RAMUsage      uint64 `json:"ramUsage,omitempty"`
-			LoadedAt      string `json:"loadedAt,omitempty"`
+			Name             string `json:"name"`
+			Path             string `json:"path,omitempty"`
+			State            string `json:"state,omitempty"`
+			SizeBytes        int64  `json:"sizeBytes,omitempty"`
+			LoadingSizeBytes int64  `json:"loadingSizeBytes,omitempty"` // Round 18: cppworker reports this for loaded models (sizeBytes=0)
+			NLayers          int    `json:"nLayers,omitempty"`
+			NHeads           int    `json:"nHeads,omitempty"`
+			NKvHeads         int    `json:"nKvHeads,omitempty"`     // Round 18: для оценки KV cache
+			HeadDimK         int    `json:"headDimK,omitempty"`      // Round 18: для оценки KV cache
+			HeadDimV         int    `json:"headDimV,omitempty"`      // Round 18: для оценки KV cache
+			NEmbd            int    `json:"nEmbd,omitempty"`
+			NVocab           int    `json:"nVocab,omitempty"`
+			ContextSize      int    `json:"contextSize,omitempty"`
+			GGUFContextLength int   `json:"ggufContextLength,omitempty"` // Round 18: макс n_ctx для модели
+			GPULayers        int    `json:"gpuLayers,omitempty"`
+			ActiveQueries    int    `json:"activeQueries,omitempty"`
+			TotalQueries     int    `json:"totalQueries,omitempty"`
+			Architecture     string `json:"architecture,omitempty"`
+			Quantization     string `json:"quantization,omitempty"`
+			VRAMUsage        uint64 `json:"vramUsage,omitempty"`
+			RAMUsage         uint64 `json:"ramUsage,omitempty"`
+			LoadedAt         string `json:"loadedAt,omitempty"`
 		} `json:"models"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&data); err != nil {
@@ -209,16 +214,43 @@ func (p *llamaCppMetricsPoller) pollBackend(b backendInfo) {
 		if state == "" {
 			state = "loaded"
 		}
+		// Round 18: cppworker reports sizeBytes=0 для загруженных моделей.
+		// loadingSizeBytes содержит реальный file size — fallback на него.
+		size := uint64(m.SizeBytes)
+		if size == 0 {
+			size = uint64(m.LoadingSizeBytes)
+		}
+		// Round 18b (2026-07-10): cppworker reports quantization="" (баг).
+		// Парсим из имени файла (path) если cppworker не вернул.
+		quant := m.Quantization
+		if quant == "" {
+			quant = extractQuantizationFromName(m.Path)
+			if quant == "" {
+				// Fallback: name без .gguf
+				quant = extractQuantizationFromName(m.Name + ".gguf")
+			}
+		}
 		loadedModels = append(loadedModels, types.LlamaCppModel{
 			Name:          m.Name,
 			Path:          m.Path,
-			Size:          uint64(m.SizeBytes),
+			Size:          size,
 			VRAMUsage:     m.VRAMUsage,
 			RAMUsage:      m.RAMUsage,
 			ContextLength: m.ContextSize,
+			BatchSize:     0, // cppworker reports batchSize too, см. ниже в более широкой структуре
 			NumGPULayers:  m.GPULayers,
-			Quantization:  m.Quantization,
+			Quantization:  quant,
 			State:         state,
+			// Round 18: architecture metadata — frontend использует для оценки
+			// VRAM/RAM split по слоям (cppworker не сообщает actual per-model usage).
+			Architecture: m.Architecture,
+			NLayers:      m.NLayers,
+			NKvHeads:     m.NKvHeads,
+			NEmbd:        m.NEmbd,
+			HeadDimK:     m.HeadDimK,
+			HeadDimV:     m.HeadDimV,
+			MaxContext:   m.GGUFContextLength,
+			LoadedAt:     m.LoadedAt,
 		})
 	}
 

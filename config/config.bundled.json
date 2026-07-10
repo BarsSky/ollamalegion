@@ -1,138 +1,134 @@
 {
-    "_comment":  "Ollama Legion — bundled config для стека cppworker-gpu + balancer + webui",
-    "_note":  "backends: [] — cppworker-gpu зарегистрирует себя сам через POST /api/v1/backends при старте. Если этого не произошло — проверьте ENV CPPWORKER_BALANCER_URL в docker-compose.cppworker-bundled.yml.",
-    "loadBalancer":  {
-                         "host":  "0.0.0.0",
-                         "port":  18080,
-                         "apiPort":  18081,
-                         "statePath":  "data/state.json",
-                         "trustedProxies":  [
-                                                "127.0.0.1/8",
-                                                "172.17.0.0/16",
-                                                "172.18.0.0/16",
-                                                "172.28.0.0/16",
-                                                "10.0.0.0/8",
-                                                "192.168.0.0/16"
-                                            ],
-                         "clientIPHeaders":  [
-                                                 "X-Forwarded-For",
-                                                 "X-Real-IP",
-                                                 "CF-Connecting-IP"
-                                             ]
-                     },
-    "backends":  [
-
-                 ],
-    "balancing":  {
-                      "algorithm":  "resource-aware",
-                      "modelAffinity":  true,
-                      "sessionStickiness":  true,
-                      "healthCheckInterval":  10,
-                      "metricsInterval":  5,
-                       "requestTimeout":  600,
-                       "firstByteTimeout":  300,
-                       "_note_streaming":  "streamingIdleTimeout 600 (а не 120) — для 20GB GPU с большими моделями (>12B params, partial offload) default 120s обрывает стрим без диагностики. ModelLatencyTracker.GetOrComputeIdleTimeout() также использует эвристику по размеру GGUF файла (EstimateIdleTimeoutFromModelSize) для моделей без истории: 12-24GB → 600s, >24GB → 900s. На малых моделях работает быстрее — реальный deadline продлевается после каждого чанка. ENV override: LB_STREAMING_IDLE_TIMEOUT_SEC. Дополнительная защита: streaming.go детектирует net.Error.Timeout() и шлёт STREAMING_IDLE_TIMEOUT с подсказкой вместо тихого обрыва.",
-                       "streamingIdleTimeout":  600,
-                      "queueTimeout":  300,
-                      "queueMaxSize":  100,
-                      "queueWorkers":  4,
-                      "sessionTTL":  900,
-                      "useEnhancedScoring":  true,
-                       "modelLoadTimeout":  900,
-                      "streamingMaxDuration":  0,
-                      "autoPull":  {
-                                       "enabled":  false,
-                                       "maxConcurrent":  1,
-                                       "pullTimeout":  "5m",
-                                       "retryCount":  1
-                                   },
-                      "prewarm":  {
-                                      "enabled":  false,
-                                      "interval":  "10m",
-                                      "minIdleMinutes":  5
-                                  },
-                      "unload":  {
-                                     "enabled":  false,
-                                     "idleMinutes":  30
-                                 },
-                      "backpressure":  {
-                                           "enabled":  true,
-                                           "highWatermark":  0.85,
-                                           "lowWatermark":  0.6
-                                       },
-                      "operatingMode":  "standard",
-                      "_note_operatingMode":  "standard — валидный режим (standard/replication/rpc_coordinator/virtual_router/distributed_inference). 'llama_cpp' НЕ является валидным operatingMode (это BackendType). Для llama_cpp-only стека используется standard, cppworker регистрируется через auto-registration.",
-                      "nctxReload":  {
-                                         "_note":  "Адаптивный auto-reload n_ctx при prompt_too_long (code 3) / n_ctx_needed (code 2). Safety 0.95 вместо дефолтного 0.85 — для Gemma-4 (max_vram_n_ctx=40K, required=52K) при 0.85 отвергается reload, при 0.95 влезает. ENV overrides: LB_NCTX_RELOAD_*",
-                                         "auto_reload_n_ctx":  true,
-                                         "auto_reload_max_n_ctx":  131072,
-                                         "auto_reload_vram_safety_factor":  0.95,
-                                          "auto_reload_timeout_sec":  300
-                                     }
-                  },
-    "rateLimit":  {
-                      "enabled":  false,
-                      "requestsPerMinute":  600,
-                      "burstSize":  100,
-                      "trustForwardedFor":  false
-                  },
-    "auth":  {
-                 "enabled":  true,
-                 "tokens":  [
-                                {
-                                    "name":  "bundled-default",
-                                    "_note":  "Должен совпадать с CPPWORKER_API_TOKEN в .env.bundled. В проде замените!"
-                                }
-                            ]
-             },
-    "logging":  {
-                    "level":  "debug",
-                    "format":  "json",
-                    "output":  "stdout"
-                },
-    "defaultModelProfile":  {
-                                 "_note":  "Единый источник истины: config/cppworker-defaults.json. Значение здесь — fallback если cppworker не ответил. 32768 покрывает длинные диалоги (system+history ~7000 токенов) + ответ (~25000 токенов).",
-                                 "contextLength":  32768,
-                                 "batchSize":  512,
-                                 "numGpuLayers":  30,
-                                 "flashAttention":  true,
-                                 "useMmap":  true
-                             },
-    "modelManagement":  {
-                            "_comment":  "Per-model profiles для cppworker-gpu (Шаг 5 из cppworker-preflight-nctx плана).",
-                            "_note":  "Эти профили применяются балансировщиком при роутинге запросов к cppworker. num_ctx побеждает defaults из ENV.",
-                             "defaultProfile":  {
-                                                    "numCtx":  32768,
-                                                   "batchSize":  512,
-                                                   "numGpuLayers":  30,
-                                                   "flashAttention":  true,
-                                                   "useMmap":  true
-                                               },
-                            "profiles":  {
-                                                "Qwen3.6-35B-A3B-Uncensored-HauhauCS-Aggressive-Q4_K_M":  {
-                                                                 "_note":  "2026-06-26: 35B MoE, ~18-20GB Q4_K_M. На 8GB VRAM обязателен numGpuLayers=-2 (auto offload) — иначе partial offload генерирует мусор или NaN, которые cppworker интерпретирует как stop-токен и закрывает стрим на середине. На 20GB VRAM можно numGpuLayers=20. Per-model профиль критичен для стабильной работы — defaultModelProfile.numGpuLayers=30 не подходит для этой модели.",
-                                                                 "numCtx":  32768,
-                                                                "batchSize":  256,
-                                                                "numGpuLayers":  -2,
-                                                                "flashAttention":  true,
-                                                                "useMmap":  true
-                                                             },
-                                                "gemma-4":  {
-                                                                "_note":  "2026-06-25: numCtx снижен 131072 → 32768 для стабильной работы на 8GB VRAM. При 131072 cppworker зависал в KV-cache allocation (deadlock) — для gemma-4-E4B-it (n_embd=2560, 42 layers, FP16 KV) нужно ~13GB под KV-cache, что не влезает в 8GB VRAM даже с mmap в RAM. 32768 — помещается с auto_offload + partial GPU offload (gemma-4 numCtx=32768, gpuLayers=-2/AUTO, flash_attn=1, mmap=true). При необходимости большего контекста Cline должен задать меньший n_ctx в body или использовать ollama-native (без этого профиля).",
-                                                                "numCtx":  32768,
-                                                               "batchSize":  256,
-                                                               "numGpuLayers":  30,
-                                                               "flashAttention":  true,
-                                                               "useMmap":  true
-                                                            },
-                                             "gemma-4-large":  {
-                                                             "_note":  "Профиль для 19GB+ моделей на A10 (24GB VRAM). numCtx=32768 + KV-cache (~2.6GB) + reserve. gpuLayers=10 — остальные слои в RAM через mmap (CPPWORKER_AUTO_OFFLOAD=true).",
-                                                             "numCtx":  32768,
-                                                             "batchSize":  512,
-                                                             "numGpuLayers":  10,
-                                                             "flashAttention":  true,
-                                                             "useMmap":  true
-                                                         }
-                                         }
-                    }
+    "_comment": "Ollama Legion — bundled config для стека cppworker-gpu + balancer + webui",
+    "_note": "backends: [] — cppworker-gpu зарегистрирует себя сам через POST /api/v1/backends при старте. Если этого не произошло — проверьте ENV CPPWORKER_BALANCER_URL в docker-compose.cppworker-bundled.yml.",
+    "loadBalancer": {
+        "host": "0.0.0.0",
+        "port": 18080,
+        "apiPort": 18081,
+        "statePath": "data/state.json",
+        "trustedProxies": [
+            "127.0.0.1/8",
+            "172.17.0.0/16",
+            "172.18.0.0/16",
+            "172.28.0.0/16",
+            "10.0.0.0/8",
+            "192.168.0.0/16"
+        ],
+        "clientIPHeaders": [
+            "X-Forwarded-For",
+            "X-Real-IP",
+            "CF-Connecting-IP"
+        ]
+    },
+    "backends": [],
+    "balancing": {
+        "algorithm": "resource-aware",
+        "modelAffinity": true,
+        "sessionStickiness": true,
+        "healthCheckInterval": 10,
+        "metricsInterval": 5,
+        "requestTimeout": 600,
+        "firstByteTimeout": 300,
+        "_note_streaming": "streamingIdleTimeout 600 (а не 120) — для 20GB GPU с большими моделями (>12B params, partial offload) default 120s обрывает стрим без диагностики. ModelLatencyTracker.GetOrComputeIdleTimeout() также использует эвристику по размеру GGUF файла (EstimateIdleTimeoutFromModelSize) для моделей без истории: 12-24GB → 600s, >24GB → 900s. На малых моделях работает быстрее — реальный deadline продлевается после каждого чанка. ENV override: LB_STREAMING_IDLE_TIMEOUT_SEC. Дополнительная защита: streaming.go детектирует net.Error.Timeout() и шлёт STREAMING_IDLE_TIMEOUT с подсказкой вместо тихого обрыва.",
+        "streamingIdleTimeout": 600,
+        "queueTimeout": 300,
+        "queueMaxSize": 100,
+        "queueWorkers": 4,
+        "sessionTTL": 900,
+        "useEnhancedScoring": true,
+        "modelLoadTimeout": 900,
+        "streamingMaxDuration": 0,
+        "autoPull": {
+            "enabled": false,
+            "maxConcurrent": 1,
+            "pullTimeout": "5m",
+            "retryCount": 1
+        },
+        "prewarm": {
+            "enabled": false,
+            "interval": "10m",
+            "minIdleMinutes": 5
+        },
+        "unload": {
+            "enabled": false,
+            "idleMinutes": 30
+        },
+        "backpressure": {
+            "enabled": true,
+            "highWatermark": 0.85,
+            "lowWatermark": 0.6
+        },
+        "operatingMode": "standard",
+        "_note_operatingMode": "standard — валидный режим (standard/replication/rpc_coordinator/virtual_router/distributed_inference). 'llama_cpp' НЕ является валидным operatingMode (это BackendType). Для llama_cpp-only стека используется standard, cppworker регистрируется через auto-registration.",
+        "nctxReload": {
+            "_note": "Адаптивный auto-reload n_ctx при prompt_too_long (code 3) / n_ctx_needed (code 2). Safety 0.95 вместо дефолтного 0.85 — для Gemma-4 (max_vram_n_ctx=40K, required=52K) при 0.85 отвергается reload, при 0.95 влезает. ENV overrides: LB_NCTX_RELOAD_*",
+            "auto_reload_n_ctx": true,
+            "auto_reload_max_n_ctx": 131072,
+            "auto_reload_vram_safety_factor": 0.95,
+            "auto_reload_timeout_sec": 300
+        }
+    },
+    "rateLimit": {
+        "enabled": false,
+        "requestsPerMinute": 600,
+        "burstSize": 100,
+        "trustForwardedFor": false
+    },
+    "auth": {
+        "enabled": true,
+        "tokens": [
+            {
+                "name": "bundled-default",
+                "_note": "Должен совпадать с CPPWORKER_API_TOKEN в .env.bundled. В проде замените!"
+            }
+        ]
+    },
+    "logging": {
+        "level": "debug",
+        "format": "json",
+        "output": "stdout"
+    },
+    "defaultModelProfile": {
+        "_note": "Единый источник истины: config/cppworker-defaults.json. Значение здесь — fallback если cppworker не ответил. 32768 покрывает длинные диалоги (system+history ~7000 токенов) + ответ (~25000 токенов).",
+        "contextLength": 32768,
+        "batchSize": 512,
+        "numGpuLayers": 30,
+        "useMmap": true,
+        "flashAttn": true
+    },
+    "llamaCppModelProfiles": {
+        "Qwen3.6-35B-A3B-Uncensored-HauhauCS-Aggressive-Q4_K_M": {
+            "_note": "2026-06-26: 35B MoE, ~18-20GB Q4_K_M. На 8GB VRAM обязателен numGpuLayers=-2 (auto offload) — иначе partial offload генерирует мусор или NaN, которые cppworker интерпретирует как stop-токен и закрывает стрим на середине. На 20GB VRAM можно numGpuLayers=20. Per-model профиль критичен для стабильной работы — defaultModelProfile.numGpuLayers=30 не подходит для этой модели.\n2026-07-10: добавлены overrideTensors/overrideTensorBufts для MoE offload (routed-experts → CPU) и kvCacheType=q8_0 для экономии VRAM на KV-cache (6.4GB → 3.2GB @ 32K). Без этого 21GB модель не влезает в 24GB A10 с 32K ctx.",
+            "contextLength": 32768,
+            "batchSize": 256,
+            "numGpuLayers": -2,
+            "flashAttn": true,
+            "useMmap": true,
+            "overrideTensors": [
+                "blk\\.\\d+\\.ffn_.*_exps\\.weight",
+                "blk\\.\\d+\\.ffn_.*_exps\\.bias"
+            ],
+            "overrideTensorBufts": [
+                "CPU",
+                "CPU"
+            ],
+            "kvCacheType": "q8_0"
+        },
+        "gemma-4": {
+            "_note": "2026-06-25: numCtx снижен 131072 → 32768 для стабильной работы на 8GB VRAM. При 131072 cppworker зависал в KV-cache allocation (deadlock) — для gemma-4-E4B-it (n_embd=2560, 42 layers, FP16 KV) нужно ~13GB под KV-cache, что не влезает в 8GB VRAM даже с mmap в RAM. 32768 — помещается с auto_offload + partial GPU offload (gemma-4 numCtx=32768, gpuLayers=-2/AUTO, flash_attn=1, mmap=true). При необходимости большего контекста Cline должен задать меньший n_ctx в body или использовать ollama-native (без этого профиля).",
+            "contextLength": 32768,
+            "batchSize": 256,
+            "numGpuLayers": 30,
+            "flashAttn": true,
+            "useMmap": true
+        },
+        "gemma-4-large": {
+            "_note": "Профиль для 19GB+ моделей на A10 (24GB VRAM). numCtx=32768 + KV-cache (~2.6GB) + reserve. gpuLayers=10 — остальные слои в RAM через mmap (CPPWORKER_AUTO_OFFLOAD=true).",
+            "contextLength": 32768,
+            "batchSize": 512,
+            "numGpuLayers": 10,
+            "flashAttn": true,
+            "useMmap": true
+        }
+    }
 }

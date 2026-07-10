@@ -47,14 +47,45 @@ func handleLoadModel(w http.ResponseWriter, r *http.Request) {
 		modelPath = resolveModelPath(modelName)
 	}
 
-	// ???????? ????? ????????
+	// Round 19 (2026-07-10): fallbacks from currentConfig.Default* so that
+	// CPPWORKER_GPU_LAYERS / CPPWORKER_CTX_SIZE / ... env vars are honored
+	// by load handlers. Without this, *gpuLayers flag default (-1 = "all layers
+	// on GPU") wins over the env value, and 21GB Q4_K_M models OOM on 24GB A10.
+	defGPULayers := *gpuLayers
+	defCtxSize := *ctxSize
+	defBatchSize := *batchSize
+	defFlashAttn := *flashAttn
+	defNUMA := *numa
+	defUseMmap := !*noMmap
+	if currentConfig != nil {
+		if currentConfig.DefaultGPULayers != 0 || os.Getenv("CPPWORKER_GPU_LAYERS") != "" {
+			defGPULayers = currentConfig.DefaultGPULayers
+		}
+		if currentConfig.DefaultCtxSize != 0 || os.Getenv("CPPWORKER_CTX_SIZE") != "" {
+			defCtxSize = currentConfig.DefaultCtxSize
+		}
+		if currentConfig.DefaultBatchSize != 0 || os.Getenv("CPPWORKER_BATCH_SIZE") != "" {
+			defBatchSize = currentConfig.DefaultBatchSize
+		}
+		if currentConfig.DefaultFlashAttnType != 0 || os.Getenv("CPPWORKER_FLASH_ATTN_TYPE") != "" {
+			defFlashAttn = currentConfig.DefaultFlashAttnType
+		}
+		if currentConfig.DefaultNUMA || os.Getenv("CPPWORKER_NUMA") != "" {
+			defNUMA = currentConfig.DefaultNUMA
+		}
+		if currentConfig.DefaultUseMmap || os.Getenv("CPPWORKER_USE_MMAP") != "" {
+			defUseMmap = currentConfig.DefaultUseMmap
+		}
+	}
+
+	// Build load options (Round 19: env-driven defaults).
 	opts := cppbackend.LoadModelOpts{
-		GPULayers:     defaultIntPtr(req.GPULayers, *gpuLayers),
-		ContextSize:   defaultIntPtr(req.ContextSize, *ctxSize),
-		BatchSize:     defaultIntPtr(req.BatchSize, *batchSize),
-		FlashAttnType: defaultIntPtr(req.FlashAttnType, *flashAttn),
-		NUMA:          defaultBoolPtr(req.NUMA, *numa),
-		UseMmap:       defaultBoolPtr(req.UseMmap, !*noMmap),
+		GPULayers:     defaultIntPtr(req.GPULayers, defGPULayers),
+		ContextSize:   defaultIntPtr(req.ContextSize, defCtxSize),
+		BatchSize:     defaultIntPtr(req.BatchSize, defBatchSize),
+		FlashAttnType: defaultIntPtr(req.FlashAttnType, defFlashAttn),
+		NUMA:          defaultBoolPtr(req.NUMA, defNUMA),
+		UseMmap:       defaultBoolPtr(req.UseMmap, defUseMmap),
 		TensorSplit:   req.TensorSplit,
 	}
 
@@ -195,14 +226,45 @@ func handleLoadWithParams(w http.ResponseWriter, r *http.Request) {
 		modelPath = resolveModelPath(modelName)
 	}
 
-	// ???????? ????? ???????? ? ?????? ??????? ??????????? ?????????.
+	// Round 19 (2026-07-10): fallbacks from currentConfig.Default* so that
+	// CPPWORKER_GPU_LAYERS / CPPWORKER_CTX_SIZE / ... env vars are honored
+	// by load handlers. Without this, *gpuLayers flag default (-1 = "all layers
+	// on GPU") wins over the env value, and 21GB Q4_K_M models OOM on 24GB A10.
+	defGPULayers := *gpuLayers
+	defCtxSize := *ctxSize
+	defBatchSize := *batchSize
+	defFlashAttn := *flashAttn
+	defNUMA := *numa
+	defUseMmap := !*noMmap
+	if currentConfig != nil {
+		if currentConfig.DefaultGPULayers != 0 || os.Getenv("CPPWORKER_GPU_LAYERS") != "" {
+			defGPULayers = currentConfig.DefaultGPULayers
+		}
+		if currentConfig.DefaultCtxSize != 0 || os.Getenv("CPPWORKER_CTX_SIZE") != "" {
+			defCtxSize = currentConfig.DefaultCtxSize
+		}
+		if currentConfig.DefaultBatchSize != 0 || os.Getenv("CPPWORKER_BATCH_SIZE") != "" {
+			defBatchSize = currentConfig.DefaultBatchSize
+		}
+		if currentConfig.DefaultFlashAttnType != 0 || os.Getenv("CPPWORKER_FLASH_ATTN_TYPE") != "" {
+			defFlashAttn = currentConfig.DefaultFlashAttnType
+		}
+		if currentConfig.DefaultNUMA || os.Getenv("CPPWORKER_NUMA") != "" {
+			defNUMA = currentConfig.DefaultNUMA
+		}
+		if currentConfig.DefaultUseMmap || os.Getenv("CPPWORKER_USE_MMAP") != "" {
+			defUseMmap = currentConfig.DefaultUseMmap
+		}
+	}
+
+	// Build load options (Round 19: env-driven defaults).
 	opts := cppbackend.LoadModelOpts{
-		GPULayers:     defaultIntPtr(req.GPULayers, *gpuLayers),
-		ContextSize:   defaultIntPtr(req.ContextSize, *ctxSize),
-		BatchSize:     defaultIntPtr(req.BatchSize, *batchSize),
-		FlashAttnType: defaultIntPtr(req.FlashAttnType, *flashAttn),
-		NUMA:          defaultBoolPtr(req.NUMA, *numa),
-		UseMmap:       defaultBoolPtr(req.UseMmap, !*noMmap),
+		GPULayers:     defaultIntPtr(req.GPULayers, defGPULayers),
+		ContextSize:   defaultIntPtr(req.ContextSize, defCtxSize),
+		BatchSize:     defaultIntPtr(req.BatchSize, defBatchSize),
+		FlashAttnType: defaultIntPtr(req.FlashAttnType, defFlashAttn),
+		NUMA:          defaultBoolPtr(req.NUMA, defNUMA),
+		UseMmap:       defaultBoolPtr(req.UseMmap, defUseMmap),
 		TensorSplit:   req.TensorSplit,
 	}
 	if req.NThreads != nil && *req.NThreads > 0 {

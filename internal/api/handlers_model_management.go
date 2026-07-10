@@ -76,8 +76,20 @@ func (s *Server) executeBackendModelOp(w http.ResponseWriter, r *http.Request, b
 	var req struct {
 		Operation string `json:"operation"` // pull, push, delete, load, unload
 		ModelName string `json:"modelName"`
-		Insecure  bool   `json:"insecure,omitempty"`
-		Stream    bool   `json:"stream,omitempty"`
+		// Round 19 (2026-07-10): WebUI GGUF tab sends these fields when the user
+		// sets gpuLayers/ctxSize/overrideTensors in the load dialog. Before this
+		// change they were silently dropped here, then resolveOverrideTensors()
+		// (which prefers explicit > profile > none) couldn't see them — only the
+		// saved profile (which was a dead config block until Round 19 fix #2) was
+		// consulted. For MoE models with override-tensors profiles this caused
+		// /api/models/load to be used (no per-tensor routing) instead of
+		// /api/models/load-with-params, which OOM'd the 21GB Qwen3-A3B on 24GB A10.
+		ContextSize        *int     `json:"contextSize,omitempty"`
+		GPULayers          *int     `json:"gpuLayers,omitempty"`
+		OverrideTensors    []string `json:"overrideTensors,omitempty"`
+		OverrideTensorBufts []string `json:"overrideTensorBufts,omitempty"`
+		Insecure           bool     `json:"insecure,omitempty"`
+		Stream             bool     `json:"stream,omitempty"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		s.writeJSON(w, http.StatusBadRequest, map[string]interface{}{
@@ -113,10 +125,14 @@ func (s *Server) executeBackendModelOp(w http.ResponseWriter, r *http.Request, b
 	}
 
 	opReq := balancer.ModelOpRequest{
-		Operation: req.Operation,
-		ModelName: req.ModelName,
-		Insecure:  req.Insecure,
-		Stream:    req.Stream,
+		Operation:          req.Operation,
+		ModelName:          req.ModelName,
+		ContextSize:        req.ContextSize,
+		GPULayers:          req.GPULayers,
+		OverrideTensors:    req.OverrideTensors,
+		OverrideTensorBufts: req.OverrideTensorBufts,
+		Insecure:           req.Insecure,
+		Stream:             req.Stream,
 	}
 
 	result := mm.ExecuteOperation(backendID, opReq)

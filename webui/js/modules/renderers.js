@@ -101,23 +101,60 @@ const Renderers = (function () {
         backends = stableBackendOrder(backends);
         if (!backends.length) return loading(_t('renderers.no_backend_data'));
         return backends.map(backend => {
-            // B-02: показываем Ollama-флаги только для ollama бэкендов
-            const isOllama = Utils.getBackendType(backend) === 'ollama';
+            // Round 11 (2026-07-10): render flags for both Ollama AND llama.cpp backends.
+            // Before: cppworker cards only showed "default" — operators couldn't see
+            // gpu_layers/n_ctx/parallel/kv_cache_type for the most important backend type.
+            const backendType = Utils.getBackendType(backend);
+            const isOllama = backendType === 'ollama';
+            const isLlamaCpp = backendType === 'llama_cpp';
             const flags = isOllama ? (backend.ollama?.runtimeFlags || {}) : {};
-            const contexts = backend.ollama?.modelContexts || [];
+            const contexts = isOllama ? (backend.ollama?.modelContexts || []) : [];
+            // For llama.cpp we synthesize flag badges from the FIRST loaded model —
+            // cppworker reports per-model runtime state, not process-level flags.
+            const cppLoaded = isLlamaCpp && Array.isArray(backend.llamaCpp?.loadedModels)
+                ? backend.llamaCpp.loadedModels
+                : [];
 
             const flagBadges = [];
-            if (flags.numGpuLayers !== undefined && flags.numGpuLayers !== 0) {
-                const cls = flags.numGpuLayers === -1 ? '' : 'warning';
-                flagBadges.push(`<span class="flag-badge ${cls}">GPU:${flags.numGpuLayers === -1 ? 'auto' : flags.numGpuLayers}</span>`);
+
+            // === Ollama process-level flags ===
+            if (isOllama) {
+                if (flags.numGpuLayers !== undefined && flags.numGpuLayers !== 0) {
+                    const cls = flags.numGpuLayers === -1 ? '' : 'warning';
+                    flagBadges.push(`<span class="flag-badge ${cls}">GPU:${flags.numGpuLayers === -1 ? 'auto' : flags.numGpuLayers}</span>`);
+                }
+                if (flags.contextLength) flagBadges.push(`<span class="flag-badge">C:${formatNumber(flags.contextLength)}</span>`);
+                if (flags.numParallel && flags.numParallel > 1) flagBadges.push(`<span class="flag-badge warning">NP:${flags.numParallel}</span>`);
+                if (flags.numThreads) flagBadges.push(`<span class="flag-badge">T:${flags.numThreads}</span>`);
+                if (flags.batchSize && flags.batchSize !== 512) flagBadges.push(`<span class="flag-badge">B:${flags.batchSize}</span>`);
+                if (flags.lowVram) flagBadges.push(`<span class="flag-badge danger">LOW_VRAM</span>`);
+                if (flags.flashAttention) flagBadges.push(`<span class="flag-badge">FA</span>`);
+                if (flags.kvCacheQuant && flags.kvCacheQuant !== 'f16') flagBadges.push(`<span class="flag-badge warning">KV:${flags.kvCacheQuant}</span>`);
             }
-            if (flags.contextLength) flagBadges.push(`<span class="flag-badge">C:${formatNumber(flags.contextLength)}</span>`);
-            if (flags.numParallel && flags.numParallel > 1) flagBadges.push(`<span class="flag-badge warning">NP:${flags.numParallel}</span>`);
-            if (flags.numThreads) flagBadges.push(`<span class="flag-badge">T:${flags.numThreads}</span>`);
-            if (flags.batchSize && flags.batchSize !== 512) flagBadges.push(`<span class="flag-badge">B:${flags.batchSize}</span>`);
-            if (flags.lowVram) flagBadges.push(`<span class="flag-badge danger">LOW_VRAM</span>`);
-            if (flags.flashAttention) flagBadges.push(`<span class="flag-badge">FA</span>`);
-            if (flags.kvCacheQuant && flags.kvCacheQuant !== 'f16') flagBadges.push(`<span class="flag-badge warning">KV:${flags.kvCacheQuant}</span>`);
+
+            // === llama.cpp per-loaded-model summary ===
+            // Show the first loaded model's stats as the cluster summary; if multiple
+            // are loaded, append a "+N more" indicator so the operator knows to open
+            // the Models tab for full detail.
+            if (isLlamaCpp && cppLoaded.length) {
+                const m = cppLoaded[0];
+                if (m.numGpuLayers !== undefined && m.numGpuLayers !== 0) {
+                    const cls = m.numGpuLayers === -1 ? '' : 'warning';
+                    flagBadges.push(`<span class="flag-badge ${cls}" title="${escapeHtml(m.name)}">GPU:${m.numGpuLayers === -1 ? 'auto' : m.numGpuLayers}</span>`);
+                }
+                if (m.contextLength) {
+                    flagBadges.push(`<span class="flag-badge" title="${escapeHtml(m.name)}">C:${formatNumber(m.contextLength)}</span>`);
+                }
+                if (m.batchSize && m.batchSize !== 512) {
+                    flagBadges.push(`<span class="flag-badge">B:${m.batchSize}</span>`);
+                }
+                if (m.quantization) {
+                    flagBadges.push(`<span class="flag-badge">Q:${escapeHtml(m.quantization)}</span>`);
+                }
+                if (cppLoaded.length > 1) {
+                    flagBadges.push(`<span class="flag-badge" title="${escapeHtml(cppLoaded.slice(1).map(x => x.name).join(', '))}">+${cppLoaded.length - 1}</span>`);
+                }
+            }
 
             const contextBadges = contexts.map(ctx => `
                 <span class="context-info">
@@ -135,6 +172,22 @@ const Renderers = (function () {
                 </span>
             `).join('');
 
+            // For llama.cpp, render per-loaded-model context info (since we don't have
+            // modelContexts from the agent — cppworker reports it per-model in loadedModels).
+            const cppContextBadges = isLlamaCpp && cppLoaded.length ? cppLoaded.map(m => `
+                <span class="context-info">
+                    ${escapeHtml(m.name)}: Ctx ${formatNumber(m.contextLength || 0)}
+                    <div class="context-tooltip">
+                        ${tooltipRow('Quantization', m.quantization || '-')}
+                        ${tooltipRow('GPU Layers', m.numGpuLayers === -1 ? 'auto' : (m.numGpuLayers || 0))}
+                        ${tooltipRow('Batch Size', m.batchSize || '-')}
+                        ${tooltipRow('VRAM', formatMB(m.vramUsage))}
+                        ${tooltipRow('RAM', formatMB(m.ramUsage))}
+                        ${tooltipRow('State', m.state || 'unknown')}
+                    </div>
+                </span>
+            `).join('') : '';
+
             return `
                 <div class="runtime-card">
                     <div class="runtime-header">
@@ -146,6 +199,7 @@ const Renderers = (function () {
                         ${flagBadges.length ? flagBadges.join('') : '<span class="flag-badge">default</span>'}
                     </div>
                     ${contextBadges ? `<div style="margin-top:0.5rem;">${contextBadges}</div>` : ''}
+                    ${cppContextBadges ? `<div style="margin-top:0.5rem;">${cppContextBadges}</div>` : ''}
                 </div>
             `;
         }).join('');
@@ -378,7 +432,11 @@ const Renderers = (function () {
             return (a.estimatedVram || 0) - (b.estimatedVram || 0);
         });
 
-        const items = allModels.slice(0, 50).map(m => {
+        // Round 11 (2026-07-10): wrap in a scrollable container instead of hard-capping
+        // at 50 models. Operators with 100+ models on a backend (typical for shared
+        // llama.cpp fileservers) couldn't load anything past position 50.
+        // CSS class .available-models-scroll caps height and enables vertical scroll.
+        const items = allModels.map(m => {
             const cls = m.canLoad ? 'model-loadable' : 'model-unloadable';
             const vram = m.estimatedVram || 0;
             return `
@@ -390,11 +448,7 @@ const Renderers = (function () {
             `;
         }).join('');
 
-        const extra = allModels.length > 50
-            ? `<div style="text-align:center;color:var(--text-muted);padding:0.5rem;font-size:0.8rem;">${_t('renderers.extra_models', { count: allModels.length - 50 })}</div>`
-            : '';
-
-        return items + extra;
+        return `<div class="available-models-scroll">${items}</div>`;
     }
 
     // ---- Backends Table (Dashboard) ----
@@ -870,6 +924,22 @@ const Renderers = (function () {
                 <div class="backend-load-bar"><div class="backend-load-fill vram" style="width: ${vramPercent}%"></div></div>
             ` : '';
 
+            // Round 16 (2026-07-10): для cppworker бэкенда показываем llama.cpp loaded models
+            // (имя + ctx + GPU layers), а не только ollama runningModels.
+            const loadedCppModels = (b.llamaCpp && Array.isArray(b.llamaCpp.loadedModels)) ? b.llamaCpp.loadedModels : [];
+            const displayModels = isLlamaCpp && loadedCppModels.length ? loadedCppModels : models;
+            const modelsHtml = displayModels.slice(0, 4).map(function (m) {
+                const name = (typeof m === 'string') ? m : (m.name || m);
+                let extra = '';
+                if (typeof m === 'object' && m !== null) {
+                    if (m.contextLength) extra += ' <span style="color:var(--text-secondary);font-size:0.85em">C:' + formatNumber(m.contextLength) + '</span>';
+                    if (m.numGpuLayers && m.numGpuLayers !== -1) extra += ' <span style="color:var(--text-secondary);font-size:0.85em">GPU:' + m.numGpuLayers + '</span>';
+                    else if (m.numGpuLayers === -1) extra += ' <span style="color:var(--text-secondary);font-size:0.85em">GPU:all</span>';
+                }
+                return '<span class="badge" style="background:rgba(168,85,247,0.12);color:var(--purple-accent);border-color:rgba(168,85,247,0.2);margin:2px">' +
+                    escapeHtml(name) + extra + '</span>';
+            }).join(' ');
+
             return `
                 <div class="backend-load-item">
                     <div class="backend-load-header">
@@ -877,10 +947,11 @@ const Renderers = (function () {
                         ${badge(b.status, b.status === 'healthy' ? 'success' : 'danger')}
                     </div>
                     <div class="backend-load-stats">
-                        <span class="backend-load-stat">${_t('renderers.models_label')} <strong>${models.length}</strong></span>
+                        <span class="backend-load-stat">${_t('renderers.models_label')} <strong>${displayModels.length}</strong></span>
                         <span class="backend-load-stat">${_t('renderers.active')}: <strong>${activeReq}/${maxReq}</strong></span>
                         <span class="backend-load-stat">${_t('renderers.free_label')} <strong>${freeSlots}</strong></span>
                     </div>
+                    ${modelsHtml ? '<div class="backend-load-models" style="margin:6px 0;display:flex;flex-wrap:wrap;gap:2px">' + modelsHtml + '</div>' : ''}
                     ${vramBar}
                     <div class="backend-load-bar-row">
                         <span class="backend-load-bar-label">RAM ${formatMB(usedRAM)} / ${formatMB(totalRAM)}</span>
@@ -1207,8 +1278,42 @@ const Renderers = (function () {
             container.innerHTML = `<div class="proxy-log-placeholder">${_t('logs.proxy_waiting')}</div>`;
             return;
         }
+        // Round 16 (2026-07-10): фильтры level (all/4xx/5xx/2xx) и search
+        var levelFilter = (window.proxyLogFilters && window.proxyLogFilters.level) || 'all';
+        var searchQuery = (window.proxyLogFilters && window.proxyLogFilters.search || '').toLowerCase();
+        var filtered = entries.filter(function(e) {
+            // Level filter
+            if (levelFilter !== 'all') {
+                var sc = e.statusCode || 0;
+                if (levelFilter === '2xx' && (sc < 200 || sc >= 300)) return false;
+                if (levelFilter === '4xx' && (sc < 400 || sc >= 500)) return false;
+                if (levelFilter === '5xx' && sc < 500) return false;
+            }
+            // Search filter (path, model, error, backend)
+            if (searchQuery) {
+                var haystack = ((e.path || '') + ' ' + (e.model || '') + ' ' +
+                    (e.backendID || '') + ' ' + (e.error || '') + ' ' + (e.clientName || '')).toLowerCase();
+                if (haystack.indexOf(searchQuery) === -1) return false;
+            }
+            return true;
+        });
+        if (!filtered.length) {
+            container.innerHTML = `<div class="proxy-log-placeholder">No entries match filter</div>`;
+            return;
+        }
         const locale = (window.I18N && I18N.getLang() === 'ru') ? 'ru' : 'en';
-        var html = '<table class="data-table proxy-logs-table"><thead><tr>' +
+        // Toolbar с фильтрами (вставляется в container, над таблицей).
+        var html = '<div class="proxy-logs-toolbar">' +
+            '<select class="proxy-logs-level-filter">' +
+            '<option value="all"' + (levelFilter === 'all' ? ' selected' : '') + '>All</option>' +
+            '<option value="2xx"' + (levelFilter === '2xx' ? ' selected' : '') + '>2xx OK</option>' +
+            '<option value="4xx"' + (levelFilter === '4xx' ? ' selected' : '') + '>4xx Client</option>' +
+            '<option value="5xx"' + (levelFilter === '5xx' ? ' selected' : '') + '>5xx Server</option>' +
+            '</select>' +
+            '<input type="text" class="proxy-logs-search" placeholder="' + (window.I18N ? I18N.t('common.search') : 'Search...') + '" value="' + escapeHtml(searchQuery) + '">' +
+            '<span class="proxy-logs-count">' + filtered.length + '/' + entries.length + '</span>' +
+            '</div>' +
+            '<table class="data-table proxy-logs-table"><thead><tr>' +
             '<th>' + _t('logs.time') + '</th>' +
             '<th>' + _t('logs.method') + '</th>' +
             '<th>' + _t('logs.path') + '</th>' +
@@ -1217,8 +1322,9 @@ const Renderers = (function () {
             '<th>' + _t('logs.status') + '</th>' +
             '<th>' + _t('logs.duration') + '</th>' +
             '<th>' + _t('logs.backend') + '</th>' +
+            '<th>Error</th>' +
             '</tr></thead><tbody>';
-        entries.slice(0, 500).forEach(function(e) {
+        filtered.slice(0, 500).forEach(function(e) {
             var time = e._time || (e.timestamp ? new Date(e.timestamp).toLocaleTimeString(locale) : '-');
             var method = e.method || 'GET';
             var path = e.path || '-';
@@ -1234,6 +1340,7 @@ const Renderers = (function () {
             var status = e.statusCode ? String(e.statusCode) : '-';
             var duration = e.durationMs ? e.durationMs + 'ms' : '-';
             var backend = e.backendID || '-';
+            var error = e.error ? escapeHtml(String(e.error).substring(0, 100)) : '-';
             var statusClass = 'log-status-ok';
             if (status !== '-' && parseInt(status) >= 400) statusClass = 'log-status-err';
             html += '<tr>' +
@@ -1245,10 +1352,24 @@ const Renderers = (function () {
                 '<td><span class="' + statusClass + '">' + escapeHtml(status) + '</span></td>' +
                 '<td>' + escapeHtml(duration) + '</td>' +
                 '<td>' + escapeHtml(backend) + '</td>' +
+                '<td class="log-error-cell" title="' + escapeHtml(error) + '">' + error + '</td>' +
                 '</tr>';
         });
         html += '</tbody></table>';
         container.innerHTML = html;
+        // Bind filter events (Round 16)
+        var sel = container.querySelector('.proxy-logs-level-filter');
+        var inp = container.querySelector('.proxy-logs-search');
+        if (sel) sel.onchange = function() {
+            window.proxyLogFilters = window.proxyLogFilters || {};
+            window.proxyLogFilters.level = sel.value;
+            proxyLogs(entries);
+        };
+        if (inp) inp.oninput = function() {
+            window.proxyLogFilters = window.proxyLogFilters || {};
+            window.proxyLogFilters.search = inp.value;
+            proxyLogs(entries);
+        };
     }
 
     // ---- Agents Page ----

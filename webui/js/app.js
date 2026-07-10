@@ -2087,6 +2087,30 @@ const ui = (function () {
         }
         data.proxyLogs.unshift(entry);
         if (data.proxyLogs.length > 500) data.proxyLogs = data.proxyLogs.slice(0, 500);
+        // Round 16 (2026-07-10): для 4xx/5xx дубль в общий Logs page — пользователь
+        // увидит и в Logs (system) и в Proxy Logs. Бэкенд вернул клиенту ошибку →
+        // оператор должен видеть это в обеих секциях.
+        if (entry.statusCode && entry.statusCode >= 400) {
+            var logEntry = {
+                time: entry._time,
+                level: entry.statusCode >= 500 ? 'error' : 'warn',
+                message: 'Backend "' + (entry.backendID || '?') + '" returned ' + entry.statusCode +
+                    ' on ' + (entry.method || '?') + ' ' + (entry.path || '?') +
+                    (entry.error ? ' — ' + String(entry.error).substring(0, 200) : ''),
+                source: 'proxy'
+            };
+            data.logs.unshift(logEntry);
+            if (data.logs.length > 1000) data.logs = data.logs.slice(0, 1000);
+            // Если активна вкладка Logs (system, не proxy) — тоже обновить
+            if (currentPage === 'logs') {
+                var systemTab = document.getElementById('logsTabSystem') || document.getElementById('logsTab');
+                var proxyTabActive = document.getElementById('logsTabProxy');
+                if (systemTab && systemTab.classList.contains('active') &&
+                    !(proxyTabActive && proxyTabActive.classList.contains('active'))) {
+                    renderLogs(data.logs);
+                }
+            }
+        }
         if (currentPage === 'logs') {
             var proxyTab = document.getElementById('logsTabProxy');
             if (proxyTab && proxyTab.classList.contains('active')) {
@@ -2955,6 +2979,12 @@ function renderModelDetailsOkSection(modelName, okBackends, resp) {
         html += '<h4>' + _t('models.details.section_runtime', 'Runtime / Load') + '</h4>';
         html += modelDetailsRow('Context size (n_ctx)', modelInfo.context_size);
         html += modelDetailsRow('GPU layers', modelInfo.gpu_layers);
+        html += modelDetailsRow('Batch size', modelInfo.batch_size);
+        html += modelDetailsRow('Parallel (n_parallel)', modelInfo.parallel);
+        html += modelDetailsRow('KV cache type', modelInfo.kv_cache_type);
+        html += modelDetailsRow('Flash attention', modelInfo.flash_attn);
+        html += modelDetailsRow('Use mmap', modelInfo.use_mmap);
+        html += modelDetailsRow('NUMA', modelInfo.numa);
         html += modelDetailsRow('State', modelInfo.state);
         html += modelDetailsRow('Size (bytes)', modelInfo.size_bytes);
         html += modelDetailsRow('Modified at', modelInfo.modified_at);

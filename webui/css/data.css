@@ -167,6 +167,13 @@
     max-height: 400px;
     overflow-y: auto;
 }
+/* Round 11 (2026-07-10): scrollable wrapper for full model list — replaced
+   hard-cap at 50 models (operators with 100+ GGUF files on shared fileservers
+   couldn't load anything past position 50). Renderers emits this single-child
+   wrapper so the parent grid layout is preserved and only inner content scrolls. */
+.available-models-scroll {
+    display: contents;
+}
 .available-model-item {
     display: flex;
     align-items: center;
@@ -664,3 +671,65 @@
   height: 24px;
 }
 /* === /Sparkline ========================================================= */
+
+/* === Round 16 (2026-07-10): Proxy Logs toolbar + filter ============== */
+.proxy-logs-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  margin-bottom: 8px;
+  background: var(--glass-bg);
+  border: 1px solid var(--glass-border);
+  border-radius: var(--radius-md);
+  font-size: var(--font-size-sm);
+}
+.proxy-logs-level-filter,
+.proxy-logs-search {
+  background: var(--bg-secondary);
+  color: var(--text-primary);
+  border: 1px solid var(--glass-border);
+  border-radius: var(--radius-sm);
+  padding: 4px 8px;
+  font-size: var(--font-size-sm);
+}
+.proxy-logs-search {
+  flex: 1;
+  min-width: 200px;
+}
+.proxy-logs-level-filter:focus,
+.proxy-logs-search:focus {
+  outline: 1px solid var(--accent);
+}
+.proxy-logs-count {
+  color: var(--text-secondary);
+  font-size: var(--font-size-xs);
+  white-space: nowrap;
+}
+.log-error-cell {
+  color: var(--danger);
+  font-size: var(--font-size-xs);
+  font-family: monospace;
+  max-width: 240px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.log-method-badge {
+  display: inline-block;
+  padding: 1px 6px;
+  border-radius: 3px;
+  font-size: var(--font-size-xs);
+  font-family: monospace;
+  background: var(--bg-secondary);
+  color: var(--text-primary);
+}
+.log-method-get { color: #4a9eff; }
+.log-method-post { color: #22c55e; }
+.log-method-put,
+.log-method-delete { color: #f59e0b; }
+.log-status-ok { color: var(--success); font-weight: 600; }
+.log-status-err { color: var(--danger); font-weight: 600; }
+.log-time-cell { color: var(--text-secondary); font-family: monospace; font-size: var(--font-size-xs); }
+.log-path-cell { font-family: monospace; font-size: var(--font-size-xs); max-width: 280px; overflow: hidden; text-overflow: ellipsis; }
+/* === /Proxy Logs toolbar ============================================== */

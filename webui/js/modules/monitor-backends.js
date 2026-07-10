@@ -73,7 +73,10 @@ const MonitorBackends = (() => {
         const mr = b.maxConcurrentRequests || 10;
         const a = b.activeRequests || 0;
         const gu = (b.gpu && b.gpu.usagePercent != null) ? b.gpu.usagePercent : 0;
-        const vu = (b.vram && b.vram.usagePercent != null) ? b.vram.usagePercent : 0;
+        // Round 16 (2026-07-10): VRAM% — поле vramUsagePercent (computed в balancer),
+        // не b.vram.usagePercent. Старое имя читалось как 0 → колонка "VRAM" пустая.
+        const vu = (b.vramUsagePercent != null) ? b.vramUsagePercent :
+                   ((b.vram && b.vram.usagePercent != null) ? b.vram.usagePercent : 0);
         const cu = (b.system && b.system.cpuUsagePercent != null) ? b.system.cpuUsagePercent : 0;
         const ru = (b.memoryUsagePercent != null) ? b.memoryUsagePercent : ((b.system && b.system.memoryUsagePercent != null) ? b.system.memoryUsagePercent : 0);
         const sc = (b.score || b.weight || 0).toFixed(2);
@@ -82,6 +85,8 @@ const MonitorBackends = (() => {
                     (b.status === 'ollama_unavailable' ? 'badge-orange' : 'badge-yellow'));
         const up = b.lastSeen ? MA.fmtDur ? MA.fmtDur(Date.now() - new Date(b.lastSeen).getTime()) : '-' : '-';
         const rps = (b.ollama && b.ollama.requestsPerSecond != null) ? b.ollama.requestsPerSecond : 0;
+        // Round 16: hasAgent + agentPort + agentId для visibility (после Round 12 dedup)
+        const hasAgent = b.hasAgent ? '<span class="badge" style="background:rgba(34,197,94,0.12);color:#22c55e" title="' + MA.esc(b.agentId || 'agent') + '">●</span>' : '<span class="badge" style="opacity:0.4">○</span>';
 
         // ==== Loading column (Issue: «отображение загрузки в мониторе») ====
         // Поддерживается два источника:
@@ -134,7 +139,7 @@ const MonitorBackends = (() => {
         const tooltip = [powerLimit, gpuClock, memClock, diskInfo, netInfo].filter(Boolean).join(' | ');
 
         return `<tr data-backend="${MA.esc(b.id)}" title="${MA.esc(tooltip)}">
-            <td><strong>${MA.esc(b.id)}</strong></td>
+            <td><strong>${MA.esc(b.id)}</strong> ${hasAgent}</td>
             <td><span class="badge ${scs}">${b.status}</span></td>
             <td>${bar(gu)} ${gu.toFixed(0)}%</td>
             <td>${bar(vu)} ${vu.toFixed(0)}%</td>

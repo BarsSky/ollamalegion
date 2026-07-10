@@ -76,21 +76,33 @@ const MonitorCharts = (() => {
         if (!metrics) return;
 
         const rps = metrics.rps || 0;
-        const latency = metrics.avg_wait_time_ms || 0;
+        // Latency: среднее время ответа по всем бэкендам (avgResponseTime в ms).
+        // Раньше был несуществующий metrics.avg_wait_time_ms → график был 0.
+        const backends = metrics.backends || [];
+        let latency = 0, latCount = 0;
+        backends.forEach(b => {
+            const ollama = b.ollama || {};
+            if (ollama.avgResponseTime != null && ollama.avgResponseTime > 0) {
+                latency += ollama.avgResponseTime;
+                latCount++;
+            }
+        });
+        if (latCount > 0) latency /= latCount;
 
         pushData('rps', rps);
         pushData('latency', latency);
 
-        // GPU/VRAM averages across backends
-        const backends = metrics.backends || [];
+        // GPU/VRAM averages across backends.
+        // Поля: b.gpu.usagePercent, b.vramUsagePercent (вычислено в GetClusterState).
+        // Раньше читал несуществующее b.vram.usagePercent → график был 0.
         let gpuAvg = 0, vramAvg = 0, count = 0;
         backends.forEach(b => {
             if (b.gpu && b.gpu.usagePercent != null) {
                 gpuAvg += b.gpu.usagePercent;
                 count++;
             }
-            if (b.vram && b.vram.usagePercent != null) {
-                vramAvg += b.vram.usagePercent;
+            if (b.vramUsagePercent != null) {
+                vramAvg += b.vramUsagePercent;
             }
         });
         if (count > 0) {

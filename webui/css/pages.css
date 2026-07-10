@@ -935,8 +935,12 @@
 
 .gguf-backend-item.active {
     border-color: var(--accent);
-    background: var(--bg-hover);
-    box-shadow: 0 0 0 1px var(--accent) inset;
+    background: rgba(168, 85, 247, 0.18);
+    box-shadow: 0 0 0 2px var(--accent) inset, 0 0 12px rgba(168, 85, 247, 0.4);
+    font-weight: 600;
+}
+.gguf-backend-item.active .gguf-backend-item-header > span:not(.badge):not(.gguf-status-dot) {
+    color: var(--accent);
 }
 
 .gguf-backend-item-header {

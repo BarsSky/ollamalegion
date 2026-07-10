@@ -14,29 +14,36 @@
     var container = document.getElementById('monitorBackendTypeSwitcher');
     if (!container) return;
 
-    var currentType = 'ollama';
+    var currentType = 'all';
     if (window.BackendTypeFilter) {
-      currentType = window.BackendTypeFilter.getCurrentType();
+      currentType = window.BackendTypeFilter.getCurrentType() || 'all';
     }
 
+    // Round 18f: 3-state switcher (All / Ollama / llama.cpp) вместо 2-state.
+    // Кнопки вместо <select> — нагляднее и не зависит от native dropdown.
     container.innerHTML =
-      '<div class="monitor-type-switcher" style="display:flex;align-items:center;gap:6px">' +
-        '<span style="font-size:11px;color:var(--text-secondary);font-weight:600">' + T('monitor.common.backendType') + '</span>' +
-        '<select id="monitorBackendType" style="background:var(--bg-secondary);border:1px solid var(--border-color);border-radius:4px;color:var(--text-primary);padding:4px 8px;font-size:12px;font-family:inherit" onchange="window.MonitorApp.switchBackendType(this.value)">' +
-          '<option value="ollama"' + (currentType === 'ollama' ? ' selected' : '') + '>🦙 Ollama API</option>' +
-          '<option value="llama_cpp"' + (currentType === 'llama_cpp' ? ' selected' : '') + '>🦒 llama.cpp</option>' +
-        '</select>' +
+      '<div class="monitor-type-switcher" style="display:flex;align-items:center;gap:4px">' +
+        '<span style="font-size:11px;color:var(--text-secondary);font-weight:600;margin-right:4px">' + T('monitor.common.backendType') + '</span>' +
+        '<button type="button" data-type="all" class="mtype-btn' + (currentType === 'all' || currentType === '' ? ' active' : '') + '" onclick="window.switchBackendType(\'all\')" style="font-size:11px;padding:3px 8px;border-radius:4px;border:1px solid var(--border-color);background:' + (currentType === 'all' || currentType === '' ? 'var(--accent)' : 'var(--bg-secondary)') + ';color:' + (currentType === 'all' || currentType === '' ? '#fff' : 'var(--text-primary)') + ';cursor:pointer;font-weight:600" title="Все бэкенды">' + T('monitor.common.allBackends') + '</button>' +
+        '<button type="button" data-type="ollama" class="mtype-btn' + (currentType === 'ollama' ? ' active' : '') + '" onclick="window.switchBackendType(\'ollama\')" style="font-size:11px;padding:3px 8px;border-radius:4px;border:1px solid var(--border-color);background:' + (currentType === 'ollama' ? 'var(--accent)' : 'var(--bg-secondary)') + ';color:' + (currentType === 'ollama' ? '#fff' : 'var(--text-primary)') + ';cursor:pointer;font-weight:600" title="Ollama API">🦙 Ollama</button>' +
+        '<button type="button" data-type="llama_cpp" class="mtype-btn' + (currentType === 'llama_cpp' ? ' active' : '') + '" onclick="window.switchBackendType(\'llama_cpp\')" style="font-size:11px;padding:3px 8px;border-radius:4px;border:1px solid var(--border-color);background:' + (currentType === 'llama_cpp' ? 'var(--accent)' : 'var(--bg-secondary)') + ';color:' + (currentType === 'llama_cpp' ? '#fff' : 'var(--text-primary)') + ';cursor:pointer;font-weight:600" title="llama.cpp / GGUF">🦒 llama.cpp</button>' +
       '</div>';
   }
 
   function switchBackendType(type) {
+    // Round 18f: нормализуем 'all' → '' для BackendTypeFilter.
+    if (type === 'all') type = '';
     if (window.BackendTypeFilter) {
       window.BackendTypeFilter.setCurrentType(type);
     }
-    localStorage.setItem('ollamalegion_backend_type', type);
+    localStorage.setItem('ollamalegion_backend_type', type || '');
     // Trigger data refresh with new filter
     if (window.MonitorApp && window.MonitorApp.fetchData) {
       window.MonitorApp.fetchData();
+    }
+    // Re-render switcher buttons (active state changed)
+    if (typeof renderBackendTypeSwitcher === 'function') {
+      try { renderBackendTypeSwitcher(); } catch (e) { /* ignore */ }
     }
   }
 
@@ -49,8 +56,73 @@
       return;
     }
 
-    // Collect per-backend feasibility info from ollama.backendCapacity
+    // Collect per-backend feasibility info from ollama.backendCapacity (Ollama)
+    // или llamaCpp.loadedModels + freeSlots (llama.cpp). Round 18f: для llama.cpp
+    // бэкенда b.ollama == null, читаем из b.llamaCpp.
     var cards = bk.map(function(b) {
+      var isLlamaCpp = (b.backendType || b.BackendType || '') === 'llama_cpp';
+
+      if (isLlamaCpp) {
+        // === llama.cpp backend ===
+        var lc = b.llamaCpp || b.LlamaCpp || {};
+        var loadedModels = Array.isArray(lc.loadedModels) ? lc.loadedModels : [];
+        var freeSlots = (lc.freeSlots !== undefined) ? lc.freeSlots
+                       : (lc.availableSlots !== undefined) ? lc.availableSlots
+                       : 0;
+        var maxConcurrent = (lc.maxConcurrentReqs !== undefined) ? lc.maxConcurrentReqs
+                           : (b.maxConcurrentRequests || 4);
+        // Для llama.cpp «loadable» = сколько ещё моделей может загрузить.
+        // Грубая оценка: maxConcurrent - loadedModels.length (cppworker load = slot).
+        var loadableCount = Math.max(0, maxConcurrent - loadedModels.length);
+
+        var totalVRAM = b.vram ? b.vram.totalGB : 0;
+        var usedVRAM = b.vram ? b.vram.usedGB : 0;
+        var freeVRAM = Math.max(0, totalVRAM - usedVRAM) * 1024; // GB → MB
+
+        var fillColor = loadableCount >= 1 ? 'var(--success)' : 'var(--warning)';
+        var fillPct = totalVRAM > 0 ? Math.min(100, (usedVRAM / totalVRAM) * 100) : 0;
+
+        // Loaded models: каждый показываем как «✅ loaded»
+        var loadableModelsHtml = '';
+        if (loadedModels.length > 0) {
+          loadableModelsHtml += '<div style="margin-top:6px;font-size:10px;color:var(--text-secondary)">✅ ' + T('monitor.feasibility.canLoad') + ' (' + loadedModels.length + ')</div>' +
+            loadedModels.slice(0, 8).map(function(m) {
+              var nm = m.name || m.Name || m;
+              var ctx = m.contextLength ? ' C:' + m.contextLength : '';
+              return '<span class="badge badge-green" style="font-size:10px;margin:1px 2px" title="loaded">' + MA.esc(nm) + ctx + '</span>';
+            }).join('') + (loadedModels.length > 8 ? ' <span style="font-size:10px;color:var(--text-secondary)">+' + (loadedModels.length - 8) + '</span>' : '');
+        }
+
+        return '<div class="capacity-card" style="min-width:280px;flex:1">' +
+          '<h4>' + MA.esc(b.id) + ' 🦒 ' + T('monitor.feasibility.modeLlamaCpp') + '</h4>' +
+          // VRAM bar
+          '<div style="margin-bottom:6px">' +
+            '<div style="display:flex;justify-content:space-between;font-size:10px;color:var(--text-secondary);margin-bottom:2px">' +
+              '<span>' + T('monitor.feasibility.vram') + ' (' + (totalVRAM > 0 ? usedVRAM.toFixed(1) + '/' + totalVRAM.toFixed(0) + 'GB' : '—') + ')</span>' +
+              '<span>' + fillPct.toFixed(0) + '%</span>' +
+            '</div>' +
+            '<div class="bar-track-wide"><div class="bar-fill-wide" style="width:' + fillPct + '%;background:' + fillColor + '"></div></div>' +
+          '</div>' +
+          // Free VRAM + Loadable count
+          '<div style="display:flex;gap:12px;margin-top:6px">' +
+            '<div style="flex:1;background:var(--bg-secondary);border-radius:6px;padding:6px 8px;text-align:center">' +
+              '<div style="font-size:9px;color:var(--text-secondary);text-transform:uppercase;letter-spacing:0.5px">' + T('monitor.feasibility.freeVram') + '</div>' +
+              '<div style="font-size:16px;font-weight:700;color:' + (freeVRAM > 4096 ? 'var(--success)' : freeVRAM > 1024 ? 'var(--warning)' : 'var(--danger)') + '">' + (freeVRAM > 1024 ? (freeVRAM / 1024).toFixed(1) + 'G' : freeVRAM.toFixed(0) + 'M') + '</div>' +
+            '</div>' +
+            '<div style="flex:1;background:var(--bg-secondary);border-radius:6px;padding:6px 8px;text-align:center">' +
+              '<div style="font-size:9px;color:var(--text-secondary);text-transform:uppercase;letter-spacing:0.5px">' + T('monitor.feasibility.loadable') + '</div>' +
+              '<div style="font-size:16px;font-weight:700;color:' + fillColor + '">' + loadableCount + '</div>' +
+            '</div>' +
+            '<div style="flex:1;background:var(--bg-secondary);border-radius:6px;padding:6px 8px;text-align:center">' +
+              '<div style="font-size:9px;color:var(--text-secondary);text-transform:uppercase;letter-spacing:0.5px">' + T('monitor.feasibility.loaded') + '</div>' +
+              '<div style="font-size:16px;font-weight:700;color:var(--accent)">' + loadedModels.length + '</div>' +
+            '</div>' +
+          '</div>' +
+          (loadableModelsHtml ? '<div style="margin-top:4px">' + loadableModelsHtml + '</div>' : '') +
+        '</div>';
+      }
+
+      // === Ollama backend ===
       var cap = b.ollama && b.ollama.backendCapacity;
       if (!cap) return null;
 
@@ -142,17 +214,39 @@
     var adapt = function(b) {
       if (!b) return b;
       if (b.activeRequests !== undefined && b.vram !== undefined) return b;
-      var o = b.ollama || b.Ollama || {}, g = b.gpu || b.GPU || {}, s = b.system || b.System || {};
+      var o = b.ollama || b.Ollama || {};
+      // Round 18f: для llama.cpp бэкендов читаем из b.llamaCpp (cppworker poller).
+      // balancer НЕ выставляет b.ollama.activeRequests для llama.cpp, поэтому
+      // stats bar (statActive/statRate/statRPSCluster) показывал «—». Теперь
+      // fallback на b.llamaCpp для всех полей.
+      var lc = b.llamaCpp || b.LlamaCpp || {};
+      var g = b.gpu || b.GPU || {}, s = b.system || b.System || {};
       var sr = (b.status || b.Status || '').toString().toLowerCase();
       var sm = { healthy: 'active', active: 'active', ready: 'ready', unhealthy: 'error', offline: 'offline', starting: 'starting', ollama_unavailable: 'ollama_unavailable' };
+      // Active requests / RPS — fallback llama.cpp → ollama → 0.
+      var activeReq = b.activeRequests;
+      if (activeReq === undefined) activeReq = lc.activeRequests !== undefined ? lc.activeRequests : (o.activeRequests || 0);
+      // Models list — для llama.cpp берём из loadedModels.
+      var models = b.models;
+      if (!models) {
+        if (Array.isArray(lc.loadedModels) && lc.loadedModels.length) {
+          models = lc.loadedModels.map(function (m) { return m.name || m.Name || m; });
+        } else {
+          models = (o.runningModels || []).map(function (m) { return m.name || m; });
+        }
+      }
       return Object.assign({}, b, {
         id: b.id || b.ID,
         status: sm[sr] || sr || 'unknown',
         score: b.score !== undefined ? b.score : (b.Score !== undefined ? b.Score : 50),
-        activeRequests: b.activeRequests !== undefined ? b.activeRequests : (o.activeRequests || o.ActiveRequests || 0),
-        maxConcurrentRequests: b.maxConcurrentRequests !== undefined ? b.maxConcurrentRequests : (o.maxConcurrentRequests || o.MaxConcurrentRequests || 10),
-        models: b.models || ((o.runningModels || o.RunningModels || []).map(function(m) { return m.name || m.Name; })),
+        activeRequests: activeReq,
+        maxConcurrentRequests: b.maxConcurrentRequests !== undefined ? b.maxConcurrentRequests : (lc.maxConcurrentReqs || lc.maxConcurrentRequests || o.maxConcurrentRequests || 10),
+        models: models,
         backendType: b.backendType || b.BackendType || b.type || b.Type || '',
+        // Round 18f: rps / avgResponseTime — fallback llama.cpp → ollama.
+        rps: b.rps !== undefined ? b.rps : (lc.requestsPerSecond !== undefined ? lc.requestsPerSecond : (o.requestsPerSecond || 0)),
+        avgResponseTime: b.avgResponseTime !== undefined ? b.avgResponseTime : (lc.avgResponseTime !== undefined ? lc.avgResponseTime : (o.avgResponseTime || 0)),
+        freeSlots: b.freeSlots !== undefined ? b.freeSlots : (lc.freeSlots !== undefined ? lc.freeSlots : null),
         vram: b.vram || {
           totalGB: (g.memoryTotal || g.MemoryTotal || 0) / 1024,
           usedGB: (g.memoryUsed || g.MemoryUsed || 0) / 1024,
@@ -162,7 +256,7 @@
           var t = s.memoryTotal || s.MemoryTotal || 0, u = s.memoryUsed || s.MemoryUsed || 0;
           return t > 0 ? u / t * 100 : 0;
         })(),
-        gpu: g, system: s, ollama: o
+        gpu: g, system: s, ollama: o, llamaCpp: lc
       });
     };
 
@@ -261,6 +355,11 @@
       document.getElementById('statusDot').className = 'dot';
       if (typeof window.setConnStatus === 'function') window.setConnStatus(T('monitor.status.idle'), 'green');
     }
+
+    // Round 18f: hide Ollama-specific panels if no Ollama backends present.
+    // Auto-Pull / Virtual Models — специфичны для Ollama workflow.
+    // Если в кластере только llama.cpp — панели бесполезны, скрываем.
+    hideOllamaOnlyPanels(bk);
 
     renderAutoPullPanel(data.autoPullConfig || null, data.autoPullStatus || null);
     renderModelOps(data.modelOps || null);
@@ -562,6 +661,41 @@
       }
       return '<tr><td>' + MA.esc(s.id.slice(0, 16)) + '…</td><td>' + MA.esc(s.backendId || '—') + streamIndicator + '</td><td>' + modelCell + '</td><td class="col-right">' + (s.requestCount || 0) + '</td><td class="col-right">' + idl + '</td><td><span style="color:' + ipCol + ';font-weight:600">' + MA.esc(s.clientIP || '-') + '</span></td><td>' + ci + ' <span style="color:' + ipCol + '">' + MA.esc(s.clientName || '-') + '</span></td></tr>';
     }).join('');
+  }
+
+  /**
+   * Round 18f: hideOllamaOnlyPanels — скрывает Ollama-специфичные панели когда
+   * в кластере нет Ollama-бэкендов. Это «Auto-Pull» (Ollama workflow) и
+   * «Virtual Models» (Ollama slicer). Для llama.cpp-only setup эти панели
+   * бесполезны и засоряют экран.
+   *
+   * Также скрываем Dispatch panel если routing mode = simple (нет scoring).
+   * И AutoPull — если нет активных pulls и нет ollama-бэкендов.
+   */
+  function hideOllamaOnlyPanels(bk) {
+    var hasOllama = bk.some(function (b) {
+      var bt = b.backendType || b.BackendType || b.backend_type || b.type || '';
+      return bt === 'ollama' || bt === '' || bt === 'ollama_api';
+    });
+    var hasLlamaCpp = bk.some(function (b) {
+      var bt = b.backendType || b.BackendType || b.backend_type || b.type || '';
+      return bt === 'llama_cpp';
+    });
+
+    // Auto-Pull — только Ollama. Скрываем если нет ollama-бэкендов.
+    var autoPullPanel = document.getElementById('panelAutoPull');
+    if (autoPullPanel) {
+      autoPullPanel.style.display = hasOllama ? '' : 'none';
+    }
+
+    // Virtual Models — Ollama-специфичны (slicer). Скрываем если нет ollama-бэкендов.
+    var vmPanel = document.getElementById('panelVirtualModels');
+    if (vmPanel) {
+      vmPanel.style.display = hasOllama ? '' : 'none';
+    }
+
+    // Dispatch Stats — generic, но описание modes (P1-P4) специфично для Ollama.
+    // Не скрываем — может быть полезно для llama.cpp тоже.
   }
 
   function renderAutoPullPanel(cfg, status) {

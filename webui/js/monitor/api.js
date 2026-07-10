@@ -311,9 +311,11 @@
 
   function togglePause() {
     MA.paused = !MA.paused;
-    document.getElementById('pauseBtn').textContent = MA.paused
-      ? '▶ ' + T('monitor.header.continue')
-      : '⏸ ' + T('monitor.header.pause');
+    // Round 18e: иконка и текст — отдельные span'ы чтобы не дублировались.
+    var icon = document.getElementById('pauseBtnIcon');
+    var text = document.getElementById('pauseBtnText');
+    if (icon) icon.textContent = MA.paused ? '▶' : '⏸';
+    if (text) text.textContent = T(MA.paused ? 'monitor.header.continue' : 'monitor.header.pause');
     setConnStatus(
       MA.paused ? T('monitor.header.pause') : (MA.demoMode ? T('monitor.status.demo') : T('monitor.status.live')),
       MA.paused ? 'yellow' : MA.demoMode ? 'blue' : 'green'

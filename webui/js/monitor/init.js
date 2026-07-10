@@ -104,6 +104,14 @@
   setTimeout(function() { if (typeof window.updateMonitorTexts === 'function') window.updateMonitorTexts(); }, 100);
   setTimeout(function() { if (typeof window.updateMonitorTexts === 'function') window.updateMonitorTexts(); }, 500);
 
+  // Round 18f: render backend-type switcher IMMEDIATELY at init (не ждём первого fetch).
+  // Раньше renderBackendTypeSwitcher() вызывался только из updateUI(), который
+  // стартует после fetchAll(). Если fetch падает или долго идёт — switcher пустой.
+  // Также рендерим All/Ollama/llama.cpp — раньше было только Ollama/llama.cpp.
+  if (typeof window.renderBackendTypeSwitcher === 'function') {
+    try { window.renderBackendTypeSwitcher(); } catch (e) { console.warn('[init] switcher:', e); }
+  }
+
   MA.timerId = setInterval(window.fetchAllSafe, MA.refreshInterval);
   // A.2: отдельный sparkline-поллер (5s) — не нагружает основной 2s цикл UI.
   if (window.Sparkline && typeof window.Sparkline.startPoller === 'function') {

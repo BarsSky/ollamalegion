@@ -8,6 +8,7 @@ window.I18N_EN = {
   "nav.sessions": "Sessions",
   "nav.queue": "Queue",
   "nav.logs": "Logs",
+  "nav.health": "Health",
   "nav.settings": "Settings",
 
   // Header
@@ -56,6 +57,8 @@ window.I18N_EN = {
   "metrics.queue": "Queue",
   "metrics.loaded_models": "Models",
   "metrics.last_seen": "Last Seen",
+  "metrics.rps": "RPS",
+  "metrics.avgRt": "Avg RT",
 
   // Backends
   "backends.title": "Backends",
@@ -187,6 +190,7 @@ window.I18N_EN = {
   "logs.backend": "Backend",
   "logs.proxy_waiting": "Waiting for data...",
   "logs.copy_proxy": "📋 Copy",
+  "logs.copy_proxy_title": "Copy proxy logs",
 
 
   // Settings
@@ -244,7 +248,9 @@ window.I18N_EN = {
   "common.cancel": "Cancel",
   "common.yes": "Yes",
   "common.no": "No",
-  "common.retry": "Retry",
+  // Round 18e: refresh state, not retry.
+  "common.retry": "Refresh",
+  "common.refresh": "Refresh",
   "common.unknown": "Unknown",
   "common.offline": "Offline",
   "common.online": "Online",
@@ -419,7 +425,8 @@ window.I18N_EN = {
   "monitor.overlay.waitingDesc": "Waiting for balancer response. If running under Docker, ensure the <b>loadbalancer</b> service is up.",
   "monitor.overlay.noConnection": "⚠ No connection to balancer",
   "monitor.overlay.checkConnection": "Failed to fetch data. Check that the API is accessible and CORS is configured correctly.",
-  "monitor.overlay.retry": "🔄 Retry",
+  // Round 18e: refresh state, not retry.
+  "monitor.overlay.retry": "🔄 Refresh",
   "monitor.overlay.demoMode": "▶ Demo Mode",
 
   "monitor.canvas.balancer": "Balancer",
@@ -513,6 +520,7 @@ window.I18N_EN = {
   "models.delete_op": "Delete",
   "models.load": "Load",
   "models.unload": "Unload",
+  "models.delete": "Delete",
   "models.operation_running": "Operation in progress...",
   "models.operation_success": "Operation completed successfully",
   "models.operation_error": "Operation error",
@@ -706,6 +714,8 @@ window.I18N_EN = {
 
   // ===== Model details modal (Q3 W4 — Session 19) =====
   "models.details.title": "Model details",
+  // Round 18e: для llama.cpp кнопка ⓘ редиректит на GGUF Models tab, не открывает модал.
+  "models.details.title_llama_cpp": "Open in GGUF Models",
   "models.details.loading": "Loading details...",
   "models.details.error": "Failed to load details",
   "models.details.no_backends": "No backends in cluster",
@@ -817,6 +827,7 @@ window.I18N_EN = {
 
   // ===== Config Import/Export (NEW) =====
   "config.export": "Export Configuration",
+  "config.export_title": "Export configuration to JSON",
   "config.export_success": "Configuration exported",
   "config.import": "Import Configuration",
   "config.import_title": "Import Configuration",
@@ -855,6 +866,8 @@ window.I18N_EN = {
   "renderers.digest": "Digest",
   "renderers.expires": "Expires",
   "renderers.expired": "Expired",
+  "renderers.vram_estimated_tooltip": "Estimated from model size + GPU layer split. cppworker does not report actual per-model VRAM usage.",
+  "renderers.ram_estimated_tooltip": "Estimated from model size + GPU layer split. cppworker does not report actual per-model RAM usage.",
   "renderers.no_candidate_data": "No candidate data",
 
   // ===== Localization Audit Fixes (2026-05-12) =====
@@ -868,6 +881,9 @@ window.I18N_EN = {
   "monitor.feasibility.freeVram": "Free VRAM",
   "monitor.feasibility.loadable": "Loadable",
   "monitor.feasibility.available": "Available",
+  // Round 18f: for llama.cpp backends.
+  "monitor.feasibility.loaded": "Loaded",
+  "monitor.feasibility.modeLlamaCpp": "llama.cpp",
 
   "monitor.models.expired": "Expired",
   "monitor.models.cloudNA": "N/A",
@@ -993,6 +1009,9 @@ window.I18N_EN = {
   "dashboard.engine_hint_auto": "Engine type: auto-detect",
   "dashboard.engine_hint_ollama": "Engine: Ollama API",
   "dashboard.engine_hint_llama_cpp": "Engine: llama.cpp",
+  // Round 18g: user picked "All engines" in the type switcher.
+  "dashboard.engine_all": "All engines",
+  "dashboard.engine_hint_all": "Engine: showing all backends",
 
   // Settings sections
   "settings.section.llama_cpp": "llama.cpp / GGUF Settings",
@@ -1000,6 +1019,8 @@ window.I18N_EN = {
 
   // Monitor backend type filter
   "monitor.common.backendType": "Backend Type",
+  // Round 18f: 3-state switcher — All / Ollama / llama.cpp.
+  "monitor.common.allBackends": "All",
 
   // Wizard backend type switch
   "wizard.backend_type_confirm_change": "Are you sure you want to switch the engine type to \"{0}\"?",
@@ -1186,6 +1207,7 @@ window.I18N_EN = {
   "gguf.profiles_section_desc": "Per-model profiles apply globally (any registered cppworker). Use this to override n_ctx for specific models — e.g. gemma-4 up to 256K, or small models with a short window for speed.",
   "gguf.profiles_only_registered": "Per-model profiles are managed by the load balancer and require the backend to be registered. Use the 'Alternate URL' modal to connect to an unregistered backend.",
   "gguf.config_unavailable": "Backend config endpoint (/api/v1/cppworker/config) is unavailable on this cppworker version.",
+  "gguf.show_unhealthy": "Show unhealthy backends",
 
   // ===== Common Status =====
   "common.online": "Online",

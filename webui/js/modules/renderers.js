@@ -416,17 +416,53 @@ const Renderers = (function () {
         let totalLoadable = 0;
         const allModels = [];
         backends.forEach(b => {
-            const models = b.ollama?.backendCapacity?.availableModels || [];
-            models.forEach(m => {
-                allModels.push({ ...m, backendId: b.id, backendStatus: b.status });
-                if (m.canLoad) totalLoadable++;
-            });
+            const isLlamaCpp = Utils.getBackendType(b) === 'llama_cpp';
+            if (isLlamaCpp) {
+                // Round 18d (2026-07-10): для llama.cpp бэкендов показываем
+                // загруженные модели (loadedModels) — это «доступные сейчас» модели.
+                // Каждая карточка показывает «Loaded @ backend», оператор видит что
+                // уже в памяти cppworker. Раньше для llama.cpp карточка была пустой
+                // (использовался только b.ollama.backendCapacity.availableModels).
+                const cppLoaded = (b.llamaCpp && Array.isArray(b.llamaCpp.loadedModels))
+                    ? b.llamaCpp.loadedModels : [];
+                cppLoaded.forEach(function (lm) {
+                    // Парсим quantization из имени (cppworker не отдаёт).
+                    var quant = lm.quantization || parseQuantizationFromName(lm.name) || '';
+                    // Считаем estimated VRAM если cppworker не сообщил.
+                    var split = computeMemorySplit(lm);
+                    var vramMB = split.vramBytes > 0 ? Math.round(split.vramBytes / 1024 / 1024) : 0;
+                    allModels.push({
+                        name: lm.name,
+                        backendId: b.id,
+                        backendStatus: b.status,
+                        // Для llama.cpp «canLoad» = уже загружена.
+                        canLoad: true,
+                        // estimatedVram в MB (для совместимости с formatMB).
+                        estimatedVram: vramMB * 1024 * 1024,
+                        // Доп. поля для отображения.
+                        backendType: 'llama_cpp',
+                        loaded: lm.state === 'loaded' || !lm.state,
+                        contextLength: lm.contextLength || 0,
+                        numGpuLayers: lm.numGpuLayers || 0,
+                        quantization: quant
+                    });
+                    totalLoadable++;
+                });
+            } else {
+                // Ollama: используем backendCapacity.availableModels.
+                const models = b.ollama?.backendCapacity?.availableModels || [];
+                models.forEach(m => {
+                    allModels.push({ ...m, backendId: b.id, backendStatus: b.status, backendType: 'ollama' });
+                    if (m.canLoad) totalLoadable++;
+                });
+            }
         });
 
         if (badge) badge.textContent = totalLoadable;
 
         if (!allModels.length) return loading(_t('renderers.no_available_models'));
 
+        // Сортировка: loadable (true) выше, потом по VRAM asc.
         allModels.sort((a, b) => {
             if (a.canLoad !== b.canLoad) return b.canLoad - a.canLoad;
             return (a.estimatedVram || 0) - (b.estimatedVram || 0);
@@ -439,11 +475,25 @@ const Renderers = (function () {
         const items = allModels.map(m => {
             const cls = m.canLoad ? 'model-loadable' : 'model-unloadable';
             const vram = m.estimatedVram || 0;
+            // Round 18d: для llama.cpp показываем quant + gpu layers в subtitle.
+            var subtitle = '';
+            if (m.backendType === 'llama_cpp') {
+                var parts = [];
+                if (m.contextLength) parts.push('C:' + formatNumber(m.contextLength));
+                if (m.numGpuLayers && m.numGpuLayers !== -1) parts.push('GPU:' + m.numGpuLayers);
+                else if (m.numGpuLayers === -1) parts.push('GPU:all');
+                if (m.quantization) parts.push(m.quantization);
+                subtitle = parts.join(' · ');
+            }
+            var rightText = subtitle
+                ? '<span class="model-vram">' + formatMB(vram) + ' · ' + escapeHtml(subtitle) + '</span>' +
+                  '<span class="model-backend">@ ' + escapeHtml(m.backendId) + '</span>'
+                : '<span class="model-vram">' + formatMB(vram) + ' @ ' + escapeHtml(m.backendId) + '</span>';
             return `
                 <div class="available-model-item ${cls}">
                     <div class="model-indicator"></div>
                     <span class="model-name">${escapeHtml(m.name)}</span>
-                    <span class="model-vram">${formatMB(vram)} @ ${escapeHtml(m.backendId)}</span>
+                    ${rightText}
                 </div>
             `;
         }).join('');
@@ -485,7 +535,12 @@ const Renderers = (function () {
 
             const activeReq = b.activeRequests || 0;
             const maxReq = b.maxConcurrentRequests || 10;
-            const models = oll.runningModels?.length || 0;
+            // Round 18d (2026-07-10): для llama.cpp бэкендов показываем loadedModels
+            // вместо runningModels (которые только для Ollama).
+            const isLlamaCpp = Utils.getBackendType(b) === 'llama_cpp';
+            const models = isLlamaCpp
+                ? ((b.llamaCpp && Array.isArray(b.llamaCpp.loadedModels)) ? b.llamaCpp.loadedModels.length : 0)
+                : (oll.runningModels?.length || 0);
             // Model details tooltip for the Models column
             // Format expiresAt for display
             function fmtExpires(exp) {
@@ -499,7 +554,20 @@ const Renderers = (function () {
                 if (diff < 3600000) return ' ⌛' + Math.round(diff/60000) + 'm';
                 return ' ⌛' + Math.round(diff/3600000) + 'h';
             }
-            const modelDetailsHtml = (oll.runningModels || []).map(function(m) {
+            // Round 18d (2026-07-10): для llama.cpp бэкендов берём loadedModels иначе tooltip пустой.
+            const modelsList = isLlamaCpp
+                ? ((b.llamaCpp && Array.isArray(b.llamaCpp.loadedModels)) ? b.llamaCpp.loadedModels : [])
+                : (oll.runningModels || []);
+            const modelDetailsHtml = modelsList.map(function(m) {
+                if (isLlamaCpp) {
+                    var ctx = m.contextLength ? 'C:' + formatNumber(m.contextLength) : '';
+                    var gpuL = m.numGpuLayers === -1 ? 'GPU:all' : (m.numGpuLayers ? 'GPU:' + m.numGpuLayers : '');
+                    var q = m.quantization || parseQuantizationFromName(m.name) || '';
+                    var runtime = [ctx, gpuL, q].filter(Boolean).join(' | ');
+                    return '<div class="model-tooltip-row">' + Utils.escapeHtml(m.name) + ' — ' +
+                        (runtime ? Utils.escapeHtml(runtime) : 'loaded') +
+                        '</div>';
+                }
                 var expStr = fmtExpires(m.expiresAt || m.ExpiresAt);
                 return '<div class="model-tooltip-row">' + Utils.escapeHtml(m.name) + ' — ' +
                     Utils.escapeHtml(m.family || '-') + ' | ' +
@@ -508,7 +576,14 @@ const Renderers = (function () {
                     (expStr ? ' ' + expStr : '') +
                     '</div>';
             }).join('');
-            const modelDetailsTitle = (oll.runningModels || []).map(function(m) {
+            const modelDetailsTitle = modelsList.map(function(m) {
+                if (isLlamaCpp) {
+                    var ctx = m.contextLength ? 'C:' + formatNumber(m.contextLength) : '';
+                    var gpuL = m.numGpuLayers === -1 ? 'GPU:all' : (m.numGpuLayers ? 'GPU:' + m.numGpuLayers : '');
+                    var q = m.quantization || parseQuantizationFromName(m.name) || '';
+                    var runtime = [ctx, gpuL, q].filter(Boolean).join(' | ');
+                    return (m.name || '-') + ' — ' + (runtime || 'loaded');
+                }
                 var expStr = fmtExpires(m.expiresAt || m.ExpiresAt);
                 return (m.name || '-') + ' — ' + (m.family || '-') + ' | ' + (m.parameterSize || '-') + ' | ' + (m.quantization || '-') + (expStr ? ' ' + expStr : '');
             }).join('\n');
@@ -542,7 +617,7 @@ const Renderers = (function () {
 
             return `
                 <tr>
-                    <td><strong>${escapeHtml(b.id)}</strong> ${getBackendTypeBadge(b)} ${getBackendModeBadge(b)}</td>
+                    <td><div class="backend-id-cell"><span class="backend-id-name">${escapeHtml(b.id)}</span><div class="backend-id-badges">${getBackendTypeBadge(b)} ${getBackendModeBadge(b)}</div></div></td>
                     <td>${badge(b.status, b.status === 'healthy' ? 'success' : 'danger')}</td>
                     <td>${escapeHtml(gpuUsage)}${gpuHidden}</td>
                     <td>${escapeHtml(vramPercent)}</td>
@@ -813,7 +888,7 @@ const Renderers = (function () {
 
             return `
                 <tr class="be-main-row" data-expand="${rowId}" style="cursor:pointer;">
-                    <td><strong>${escapeHtml(b.id)}</strong> ${getBackendTypeBadge(b)} <span class="be-expand-icon">▶</span></td>
+                    <td><div class="backend-id-cell"><span class="backend-id-name">${escapeHtml(b.id)}</span><div class="backend-id-badges">${getBackendTypeBadge(b)} <span class="be-expand-icon">▶</span></div></div></td>
                     <td>${escapeHtml(b.name || b.id)}</td>
                     <td>${escapeHtml(b.host)}</td>
                     <td>${(Utils.getBackendType(b) === 'llama_cpp' ? (b.cppWorkerPort || b.port || 8080) : (b.ollamaPort || 11434))}</td>
@@ -870,9 +945,71 @@ const Renderers = (function () {
         const backendMap = {};
         backends.forEach(b => {
             backendMap[b.id] = b;
-            (b.ollama?.runningModels || []).forEach(m => {
+            // Round 17 (2026-07-10): для Ollama бэкенда берём из b.ollama.runningModels.
+            // Для llama.cpp бэкенда — из b.llamaCpp.loadedModels (cppworker poller).
+            // Раньше читался ТОЛЬКО ollama → models tab был пустой для bundled-режима.
+            const ollamaModels = (b.ollama && Array.isArray(b.ollama.runningModels)) ? b.ollama.runningModels : [];
+            ollamaModels.forEach(m => {
                 allModels.push({ ...m, backend: b.id, backendStatus: b.status });
             });
+            const isLlamaCpp = Utils.getBackendType(b) === 'llama_cpp';
+            if (isLlamaCpp) {
+                const cppLoaded = (b.llamaCpp && Array.isArray(b.llamaCpp.loadedModels)) ? b.llamaCpp.loadedModels : [];
+                cppLoaded.forEach(function (lm) {
+                    // Round 18: cppworker doesn't track per-model VRAM/RAM.
+                    // Вычисляем estimatedVram/estimatedRam из file size + GPU layer split.
+                    // Formula:
+                    //   layerRatio = numGpuLayers / nLayers  (0..1)
+                    //   modelWeightsVRAM ≈ size * layerRatio
+                    //   modelWeightsRAM  ≈ size * (1 - layerRatio)
+                    //   kvCache ≈ 2 × nLayers × nKvHeads × headDim × 2 bytes × contextSize
+                    //     (split по layerRatio аналогично — KV cache для GPU-слоёв в VRAM)
+                    //   overhead ≈ 10% runtime buffer
+                    const split = computeMemorySplit(lm);
+                    // Round 18b: fallback — парсим quantization из имени если пусто
+                    // (cppworker не отдаёт; backend-парсер уже пытается, но это страховка).
+                    var lmQuant = lm.quantization || '';
+                    if (!lmQuant) {
+                        lmQuant = parseQuantizationFromName(lm.name) ||
+                                  parseQuantizationFromName(lm.path || '') || '';
+                    }
+                    allModels.push({
+                        name: lm.name,
+                        // cppworker returns size in bytes, modelsGrid expects bytes
+                        size: lm.size || 0,
+                        // Round 18+: estimated VRAM/RAM (cppworker reports 0 for these)
+                        // modelsGrid делает (m.vramUsage || 0) / 1024 / 1024 → ожидает bytes.
+                        vramUsage: split.vramBytes,
+                        ramUsage: split.ramBytes,
+                        // cppworker doesn't track expiresAt / digest
+                        digest: '',
+                        expiresAt: '',
+                        // GGUF-specific
+                        quantization: lmQuant,
+                        ggufPath: lm.path || '',
+                        // Backend identification
+                        backend: b.id,
+                        backendStatus: b.status,
+                        backendType: 'llama_cpp',
+                        // Context size, gpu layers, batch size (for tooltip)
+                        contextLength: lm.contextLength || 0,
+                        numGpuLayers: lm.numGpuLayers || 0,
+                        batchSize: lm.batchSize || 0,
+                        state: lm.state || 'loaded',
+                        // Round 18+: architecture metadata (для tooltip)
+                        architecture: lm.architecture || '',
+                        nLayers: lm.nLayers || 0,
+                        nKvHeads: lm.nKvHeads || 0,
+                        nEmbd: lm.nEmbd || 0,
+                        headDimK: lm.headDimK || 0,
+                        headDimV: lm.headDimV || 0,
+                        maxContext: lm.maxContext || 0,
+                        // Round 18+: пометка что VRAM/RAM оценочные (не реальные)
+                        vramEstimated: split.estimated,
+                        ramEstimated: split.estimated
+                    });
+                });
+            }
         });
 
         Utils.setText('modelsTotal', allModels.length);
@@ -893,6 +1030,69 @@ const Renderers = (function () {
         }
     }
 
+    /**
+     * Round 18: computeMemorySplit — оценка VRAM/RAM для cppworker моделей.
+     * cppworker не сообщает actual per-model usage, поэтому вычисляем из
+     * архитектуры + GPU layer split + KV cache.
+     *
+     * @param {Object} lm - loaded model из b.llamaCpp.loadedModels
+     * @returns {Object} { vramBytes, ramBytes, estimated, layerRatio }
+     *   - estimated=true если расчёт приблизительный (нет nLayers).
+     */
+    function computeMemorySplit(lm) {
+        const sizeBytes = (lm && lm.size) ? Number(lm.size) : 0;
+        const nLayers = (lm && lm.nLayers) ? Number(lm.nLayers) : 0;
+        const numGpuLayers = (lm && lm.numGpuLayers) ? Number(lm.numGpuLayers) : 0;
+        const nKvHeads = (lm && lm.nKvHeads) ? Number(lm.nKvHeads) : 0;
+        // Head dimension: KV cache использует head_dim_k. Если нет — fallback на n_embd/n_heads.
+        const headDimK = (lm && lm.headDimK) ? Number(lm.headDimK)
+            : (lm && lm.nEmbd && lm.nHeads ? Math.floor(Number(lm.nEmbd) / Number(lm.nHeads)) : 0);
+        const headDimV = (lm && lm.headDimV) ? Number(lm.headDimV) : headDimK;
+        const contextSize = (lm && lm.contextLength) ? Number(lm.contextLength) : 0;
+
+        // Если нет nLayers/size — нечего оценивать.
+        if (!sizeBytes || !nLayers) {
+            return { vramBytes: 0, ramBytes: 0, estimated: false, layerRatio: 0 };
+        }
+
+        // Layer ratio: доля слоёв в GPU.
+        // numGpuLayers: -1 = all, 0 = none, N = N слоёв.
+        let layerRatio = 0;
+        if (numGpuLayers === -1 || numGpuLayers >= nLayers) {
+            layerRatio = 1.0;
+        } else if (numGpuLayers > 0) {
+            layerRatio = numGpuLayers / nLayers;
+        }
+
+        // Model weights: распределяются по layerRatio.
+        const weightsVRAM = sizeBytes * layerRatio;
+        const weightsRAM = sizeBytes * (1 - layerRatio);
+
+        // KV cache (fp16 по умолчанию, 2 байта на элемент).
+        // Формула: 2 (K + V) × n_layers × n_kv_heads × head_dim × 2 (bytes) × context_size
+        // Если headDimK/V или nKvHeads неизвестны — пропускаем (≈0).
+        let kvCacheTotal = 0;
+        if (nKvHeads > 0 && headDimK > 0 && contextSize > 0) {
+            const headDim = Math.max(headDimK, headDimV);
+            kvCacheTotal = 2 * nLayers * nKvHeads * headDim * 2 * contextSize;
+        }
+        const kvVRAM = kvCacheTotal * layerRatio;
+        const kvRAM = kvCacheTotal * (1 - layerRatio);
+
+        // Runtime overhead ~10% (activations, scratch buffer, etc).
+        const overheadFactor = 1.1;
+
+        const vramBytes = Math.round((weightsVRAM + kvVRAM) * overheadFactor);
+        const ramBytes = Math.round((weightsRAM + kvRAM) * overheadFactor);
+
+        return {
+            vramBytes: vramBytes,
+            ramBytes: ramBytes,
+            estimated: true,
+            layerRatio: layerRatio
+        };
+    }
+
     function backendLoad(backends) {
         backends = stableBackendOrder(backends);
         if (!backends.length) return loading(_t('renderers.no_data'));
@@ -904,6 +1104,11 @@ const Renderers = (function () {
             const sys = b.system || {};
             const oll = b.ollama || {};
 
+            // Round 17 (2026-07-10): declare isLlamaCpp — used to switch between Ollama
+            // runningModels and cppworker loadedModels in the Models column.
+            const backendType = Utils.getBackendType(b);
+            const isLlamaCpp = backendType === 'llama_cpp';
+
             const totalVRAM = gpu.memoryTotal || 0;
             const usedVRAM = gpu.memoryUsed || 0;
             const totalRAM = sys.memoryTotal || 0;
@@ -911,7 +1116,7 @@ const Renderers = (function () {
             const vramPercent = percent(usedVRAM, totalVRAM);
             const ramPercent = percent(usedRAM, totalRAM);
 
-            const models = oll.runningModels || [];
+            const ollamaModels = oll.runningModels || [];
             const activeReq = oll.activeRequests || 0;
             const maxReq = oll.maxConcurrentRequests || 10;
             const freeSlots = oll.freeSlots || 0;
@@ -927,7 +1132,7 @@ const Renderers = (function () {
             // Round 16 (2026-07-10): для cppworker бэкенда показываем llama.cpp loaded models
             // (имя + ctx + GPU layers), а не только ollama runningModels.
             const loadedCppModels = (b.llamaCpp && Array.isArray(b.llamaCpp.loadedModels)) ? b.llamaCpp.loadedModels : [];
-            const displayModels = isLlamaCpp && loadedCppModels.length ? loadedCppModels : models;
+            const displayModels = isLlamaCpp && loadedCppModels.length ? loadedCppModels : ollamaModels;
             const modelsHtml = displayModels.slice(0, 4).map(function (m) {
                 const name = (typeof m === 'string') ? m : (m.name || m);
                 let extra = '';
@@ -977,14 +1182,55 @@ const Renderers = (function () {
         return '⌛' + exp.substring(0, 10);
     }
 
+    /**
+     * Round 18b (2026-07-10): parseQuantizationFromName — extract GGUF quantization
+     * from filename. cppworker не отдаёт quantization, поэтому парсим из имени.
+     * Поддерживает Q2_K..Q8_0, Q*_K_S/M/L, IQ*_XXS/XS/S/M/NL, TQ*, F16/F32/BF16.
+     */
+    function parseQuantizationFromName(name) {
+        if (!name || typeof name !== 'string') return '';
+        // Убираем .gguf (если есть) — regex с $ не работает с суффиксом после квантизации.
+        var base = name;
+        if (base.toLowerCase().endsWith('.gguf')) {
+            base = base.substring(0, base.length - 5);
+        }
+        // Ищем квантизацию в конце имени.
+        // Разделитель: - или . (mistral-7B-v0.3.Q4_K_M.gguf) или в начале (Q2_K.gguf).
+        // Паттерны: IQ1..IQ4, TQ1/TQ2, Q2..Q8, F16/F26/F32, BF16/FP16.
+        var re = new RegExp(
+            '(?:^|[-._])' +              // separator (start of string, -, ., _)
+            '(IQ[1-4]_[A-Z]+' +          // IQ4_XS, IQ3_XXS, IQ1_S, IQ2_M, IQ4_NL
+            '|TQ[12]_[0-9]' +            // TQ1_0, TQ2_0
+            '|Q[0-8]_[0-9K]_[A-Z]' +     // Q4_K_M, Q5_K_S, Q3_K_L, Q2_K_S
+            '|Q[0-8]_[0-9K]' +           // Q2_K, Q4_K, Q5_K, Q6_K
+            '|Q[0-8]_[0-9]' +            // Q4_0, Q5_1, Q8_0
+            '|F1[26]' +                  // F16, F26
+            '|F32' +                     // F32
+            '|BF16' +                    // BF16
+            '|FP16' +                    // FP16
+            ')$',
+            'i'
+        );
+        var m = base.match(re);
+        return m && m[1] ? m[1].toUpperCase() : '';
+    }
+
     function modelsGrid(allModels, backendMap) {
         if (!allModels.length) return loading(_t('models.no_models'));
 
         return allModels.map(m => {
-            const vramMB = (m.vramUsage || 0) / 1024 / 1024;
-            const ramMB = (m.ramUsage || 0) / 1024 / 1024;
-            const sizeGB = (m.size || 0) / 1024 / 1024 / 1024;
-            const ramGB = (m.ramUsage || 0) / 1024 / 1024 / 1024;
+            // Round 18 (2026-07-10): cppworker does NOT track per-model VRAM/RAM,
+            // reports 0. Show "—" instead of "0 MB" to avoid misleading operators.
+            // Same for size when file is missing/corrupt.
+            const hasVram = (m.vramUsage || 0) > 0;
+            const hasRam = (m.ramUsage || 0) > 0;
+            const hasSize = (m.size || 0) > 0;
+            const vramMB = hasVram ? Math.round(m.vramUsage / 1024 / 1024) : null;
+            const ramMB = hasRam ? Math.round(m.ramUsage / 1024 / 1024) : null;
+            const sizeGB = hasSize ? (m.size / 1024 / 1024 / 1024) : null;
+            const ramGB = hasRam ? (m.ramUsage / 1024 / 1024 / 1024) : null;
+            const fmtMB = function (v) { return v === null ? '—' : v + ' MB'; };
+            const fmtGB = function (v, fixed) { return v === null ? '—' : v.toFixed(fixed || 1) + ' GB'; };
             var digestShort = (m.digest || m.Digest || '').substring(0, 12);
             var expDate = m.expiresAt || m.ExpiresAt || '';
             var expShort = fmtExpiresShort(expDate);
@@ -997,9 +1243,11 @@ const Renderers = (function () {
 
             const totalVRAM = isGPU ? (gpu.memoryTotal || 1) : 0;
             const totalRAM = sys.memoryTotal || 1;
-            const vramPercent = totalVRAM > 0 ? Math.min(percent(vramMB, totalVRAM), 100) : 0;
-            const ramPercent = totalRAM > 0 ? Math.min(percent(ramMB, totalRAM), 100) : 0;
-            const showVRAM = isGPU && totalVRAM > 0;
+            // Round 18: handle null vramMB/ramMB gracefully (cppworker doesn't track them).
+            const vramPercent = (hasVram && totalVRAM > 0) ? Math.min(percent(vramMB, totalVRAM), 100) : 0;
+            const ramPercent = (hasRam && totalRAM > 0) ? Math.min(percent(ramMB, totalRAM), 100) : 0;
+            const showVRAM = isGPU && totalVRAM > 0 && hasVram;
+            const showRAM = totalRAM > 0 && hasRam;
 
             const safeBackend = escapeHtml(m.backend);
             const safeName = escapeHtml(m.name).replace(/'/g, "\\'");
@@ -1011,7 +1259,7 @@ const Renderers = (function () {
             const safeNameAttr = escapeHtml(m.name);
 
             return `
-                <div class="model-card" data-backend="${safeBackend}" data-model="${safeName}" data-model-name="${escapeHtml(m.name).toLowerCase()}" data-backend-type="${escapeHtml(backendType)}" data-size-bytes="${sizeBytes}" data-vram-mb="${Math.round(vramMB)}">
+                <div class="model-card" data-backend="${safeBackend}" data-model="${safeName}" data-model-name="${escapeHtml(m.name).toLowerCase()}" data-backend-type="${escapeHtml(backendType)}" data-size-bytes="${sizeBytes}" data-vram-mb="${vramMB === null ? 0 : vramMB}">
                     <label class="model-card-checkbox" onclick="event.stopPropagation();" title="${escapeHtml(_t('models.bulk.select_this'))}">
                         <input type="checkbox" class="model-select-cb"
                                data-backend="${safeBackend}" data-model="${safeNameAttr}"
@@ -1021,25 +1269,31 @@ const Renderers = (function () {
                         <span class="model-name">${escapeHtml(m.name)}</span>
                         ${getBackendTypeBadge(backend)} ${badge(m.backend, m.backendStatus === 'healthy' ? 'success' : 'danger')}
                     </div>
-                    <div class="model-size">${sizeGB.toFixed(1)} GB</div>
+                    <div class="model-size">${sizeGB === null ? '—' : sizeGB.toFixed(1) + ' GB'}</div>
                     <div class="model-details">
-                        ${modelDetail('VRAM', `${vramMB.toFixed(0)} MB`)}
-                        ${modelDetail('RAM', `${ramMB.toFixed(0)} MB`)}
+                        ${modelDetail('VRAM', fmtMB(vramMB), m.vramEstimated ? 'Estimated from model size + GPU layer split' : '')}
+                        ${modelDetail('RAM', fmtMB(ramMB), m.ramEstimated ? 'Estimated from model size + GPU layer split' : '')}
                         ${backendTypeDetails(m, backend)}
                         ${digestShort ? '<div class="model-detail"><div class="model-detail-label">' + _t('renderers.digest') + '</div><div class="model-detail-value"><code style="font-size:10px;background:var(--bg-secondary);padding:1px 4px;border-radius:3px">' + escapeHtml(digestShort) + '</code></div></div>' : ''}
                         ${expShort ? '<div class="model-detail"><div class="model-detail-label">' + _t('renderers.expires') + '</div><div class="model-detail-value" title="' + escapeHtml(expDate) + '" style="color:var(--warning);font-size:11px">' + expShort + '</div></div>' : ''}
-                        ${ramGB > 0.5 ? '<div class="model-detail"><div class="model-detail-label">RAM</div><div class="model-detail-value" style="font-size:11px;color:var(--text-secondary)">' + ramGB.toFixed(2) + ' GB</div></div>' : ''}
+                        ${(ramGB !== null && ramGB > 0.5) ? '<div class="model-detail"><div class="model-detail-label">RAM</div><div class="model-detail-value" style="font-size:11px;color:var(--text-secondary)">' + ramGB.toFixed(2) + ' GB</div></div>' : ''}
                     </div>
                     <div class="model-memory-section">
                         <div class="model-memory-title">${_t('models.memory_title')}</div>
                         ${showVRAM ? memoryBar('VRAM', vramMB, totalVRAM, vramPercent, 'vram') : ''}
-                        ${memoryBar('RAM', ramMB, totalRAM, ramPercent, 'ram')}
+                        ${showRAM ? memoryBar('RAM', ramMB, totalRAM, ramPercent, 'ram') : ''}
                     </div>
                     <div class="model-card-actions">
-                        <button class="btn btn-info" title="${escapeHtml(_t('models.details.title'))}" onclick="window.openModelDetailsModal('${safeName}', '${safeBackend}')" aria-label="${escapeHtml(_t('models.details.title'))}">ⓘ</button>
-                        <button class="btn btn-load" onclick="window.modelCardAction('load', '${safeBackend}', '${safeName}')" ${m.backendStatus !== 'healthy' ? 'disabled' : ''}>${_t('models.load')}</button>
-                        <button class="btn btn-unload" onclick="window.modelCardAction('unload', '${safeBackend}', '${safeName}')" ${m.backendStatus !== 'healthy' ? 'disabled' : ''}>${_t('models.unload')}</button>
-                        <button class="btn btn-delete" onclick="window.modelCardAction('delete', '${safeBackend}', '${safeName}')" ${m.backendStatus !== 'healthy' ? 'disabled' : ''}>${_t('models.delete')}</button>
+                        <button class="btn btn-info" title="${escapeHtml(backendType === 'llama_cpp' ? _t('models.details.title_llama_cpp') : _t('models.details.title'))}" onclick="window.openModelDetailsModal('${safeName}', '${safeBackend}', '${backendType}')" aria-label="${escapeHtml(backendType === 'llama_cpp' ? _t('models.details.title_llama_cpp') : _t('models.details.title'))}">ⓘ</button>
+                        ${backendType === 'llama_cpp'
+                            // Round 18e: для llama.cpp бэкендов кнопки load/unload/delete
+                            // скрыты — ⓘ редиректит на GGUF Models tab с pre-selected
+                            // backend, где есть полноценное управление (load options,
+                            // profiles, file management, delete).
+                            ? ''
+                            : '<button class="btn btn-load" onclick="window.modelCardAction(\'load\', \'' + safeBackend + '\', \'' + safeName + '\')" ' + (m.backendStatus !== 'healthy' ? 'disabled' : '') + '>' + _t('models.load') + '</button>' +
+                              '<button class="btn btn-unload" onclick="window.modelCardAction(\'unload\', \'' + safeBackend + '\', \'' + safeName + '\')" ' + (m.backendStatus !== 'healthy' ? 'disabled' : '') + '>' + _t('models.unload') + '</button>' +
+                              '<button class="btn btn-delete" onclick="window.modelCardAction(\'delete\', \'' + safeBackend + '\', \'' + safeName + '\')" ' + (m.backendStatus !== 'healthy' ? 'disabled' : '') + '>' + _t('models.delete') + '</button>'}
                     </div>
                 </div>
             `;
@@ -1054,11 +1308,17 @@ const Renderers = (function () {
     function backendTypeDetails(model, backend) {
         var bt = Utils.getBackendType(backend);
         if (bt === 'llama_cpp') {
-            // GGUF-специфичные поля
+            // GGUF-специфичные поля. Round 17: добавлены context length и GPU layers
+            // чтобы оператор видел runtime config прямо в карточке модели.
             var ggufPath = model.ggufPath || model.path || '-';
             var ggufQuant = model.quantization || model.ggufQuant || '-';
+            var ctx = model.contextLength ? 'C:' + formatNumber(model.contextLength) : '';
+            var gpu = model.numGpuLayers === -1 ? 'GPU:all' :
+                      (model.numGpuLayers ? 'GPU:' + model.numGpuLayers : '');
+            var runtime = [ctx, gpu].filter(Boolean).join(' ');
             return modelDetail('GGUF Path', ggufPath) +
-                modelDetail('Quantization', ggufQuant);
+                modelDetail('Quantization', ggufQuant) +
+                (runtime ? modelDetail('Runtime', runtime) : '');
         }
         // Ollama-специфичные поля
         return modelDetail('Family', model.family || '-') +
@@ -1067,11 +1327,11 @@ const Renderers = (function () {
             modelDetail('Quant', model.quantization || '-');
     }
 
-    function modelDetail(label, value) {
+    function modelDetail(label, value, title) {
         return `
             <div class="model-detail">
                 <div class="model-detail-label">${escapeHtml(label)}</div>
-                <div class="model-detail-value">${escapeHtml(String(value))}</div>
+                <div class="model-detail-value"${title ? ' title="' + escapeHtml(title) + '" style="cursor:help;border-bottom:1px dotted var(--text-secondary)"' : ''}>${escapeHtml(String(value))}</div>
             </div>
         `;
     }

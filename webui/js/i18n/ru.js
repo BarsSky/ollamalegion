@@ -8,6 +8,7 @@ window.I18N_RU = {
   "nav.sessions": "Сессии",
   "nav.queue": "Очередь",
   "nav.logs": "Логи",
+  "nav.health": "Здоровье",
   "nav.settings": "Настройки",
 
   // Header
@@ -56,6 +57,8 @@ window.I18N_RU = {
   "metrics.queue": "Очередь",
   "metrics.loaded_models": "Модели",
   "metrics.last_seen": "Последняя активность",
+  "metrics.rps": "RPS",
+  "metrics.avgRt": "Среднее время ответа",
 
   // Backends
   "backends.title": "Бэкенды",
@@ -228,7 +231,11 @@ window.I18N_RU = {
   "common.cancel": "Отмена",
   "common.yes": "Да",
   "common.no": "Нет",
-  "common.retry": "Повторить",
+  // Round 18e (2026-07-10): «Повторить» → «Обновить». Кнопка «Повторить» в WebUI
+  // используется для refresh state (не для retry failed op). В английском
+  // retry → refresh. Семантика «обновить состояние», а не «повторить запрос».
+  "common.retry": "Обновить",
+  "common.refresh": "Обновить",
   "common.unknown": "Неизвестно",
   "common.offline": "Офлайн",
   "common.online": "Онлайн",
@@ -339,6 +346,7 @@ window.I18N_RU = {
 
   // ===== Config Import/Export (NEW) =====
   "config.export": "Экспорт конфигурации",
+  "config.export_title": "Экспорт конфигурации в JSON",
   "config.export_success": "Конфигурация экспортирована",
   "config.import": "Импорт конфигурации",
   "config.import_title": "Импорт конфигурации",
@@ -496,7 +504,8 @@ window.I18N_RU = {
   "monitor.overlay.waitingDesc": "Ожидание ответа от балансировщика. Если вы запускаете под Docker, убедитесь, что сервис <b>loadbalancer</b> поднят.",
   "monitor.overlay.noConnection": "⚠ Нет подключения к балансировщику",
   "monitor.overlay.checkConnection": "Не удалось получить данные. Проверьте, что API доступен и CORS настроен корректно.",
-  "monitor.overlay.retry": "🔄 Повторить",
+  // Round 18e: «Повторить» → «Обновить» (refresh state, not retry).
+  "monitor.overlay.retry": "🔄 Обновить",
   "monitor.overlay.demoMode": "▶ Демо-режим",
 
   "monitor.canvas.balancer": "Балансер",
@@ -643,6 +652,8 @@ window.I18N_RU = {
   "renderers.digest": "Digest",
   "renderers.expires": "Истекает",
   "renderers.expired": "Истёк",
+  "renderers.vram_estimated_tooltip": "Оценка по размеру модели + распределению слоёв по GPU. cppworker не сообщает фактическое использование VRAM на модель.",
+  "renderers.ram_estimated_tooltip": "Оценка по размеру модели + распределению слоёв по GPU. cppworker не сообщает фактическое использование RAM на модель.",
   "renderers.no_candidate_data": "Нет данных о кандидатах",
 
   // ===== Исправления локализации (2026-05-12) =====
@@ -656,6 +667,9 @@ window.I18N_RU = {
   "monitor.feasibility.freeVram": "Свободно VRAM",
   "monitor.feasibility.loadable": "Можно загрузить",
   "monitor.feasibility.available": "Доступно",
+  // Round 18f: для llama.cpp бэкенда.
+  "monitor.feasibility.loaded": "Загружено",
+  "monitor.feasibility.modeLlamaCpp": "llama.cpp",
 
   "monitor.models.expired": "Истёк",
   "monitor.models.cloudNA": "N/A",
@@ -749,6 +763,8 @@ window.I18N_RU = {
 
   // ===== Модальное окно деталей модели (Q3 W4 — Session 19) =====
   "models.details.title": "Детали модели",
+  // Round 18e: для llama.cpp кнопка ⓘ редиректит на GGUF Models tab, не открывает модал.
+  "models.details.title_llama_cpp": "Открыть в GGUF Models",
   "models.details.loading": "Загрузка деталей...",
   "models.details.error": "Не удалось загрузить детали",
   "models.details.no_backends": "В кластере нет бэкендов",
@@ -871,6 +887,9 @@ window.I18N_RU = {
   "dashboard.engine_hint_auto": "Тип движка: автоопределение",
   "dashboard.engine_hint_ollama": "Движок: Ollama API",
   "dashboard.engine_hint_llama_cpp": "Движок: llama.cpp",
+  // Round 18g: пользователь выбрал "Все движки" в type switcher.
+  "dashboard.engine_all": "Все движки",
+  "dashboard.engine_hint_all": "Движок: показаны все бэкенды",
 
   // Секции настроек
   "settings.section.llama_cpp": "Настройки llama.cpp / GGUF",
@@ -878,6 +897,8 @@ window.I18N_RU = {
 
   // Фильтр типа бэкенда в мониторе
   "monitor.common.backendType": "Тип бэкенда",
+  // Round 18f: 3-state switcher — All / Ollama / llama.cpp.
+  "monitor.common.allBackends": "Все",
 
   // Переключение типа движка в настройках
   "wizard.backend_type_confirm_change": "Вы уверены, что хотите сменить тип движка на «{0}»?",
@@ -1064,6 +1085,7 @@ window.I18N_RU = {
   "gguf.profiles_section_desc": "Per-model профили применяются глобально (к любому зарегистрированному cppworker). Используйте для override n_ctx конкретных моделей — например gemma-4 до 256K, или маленькие модели с коротким окном для скорости.",
   "gguf.profiles_only_registered": "Per-model профили управляются балансировщиком и требуют регистрации бэкенда. Для незарегистрированного бэкенда используйте модал «Подключиться по URL».",
   "gguf.config_unavailable": "Эндпоинт конфига бэкенда (/api/v1/cppworker/config) недоступен в этой версии cppworker.",
+  "gguf.show_unhealthy": "Показать недоступные бэкенды",
 
   // ===== Bulk operations (Session A — Q3 W4) =====
   "models.bulk.select_this": "Выбрать эту модель",
@@ -1146,6 +1168,7 @@ window.I18N_RU = {
   "logs.proxy": "Прокси",
   "logs.system": "Система",
   "logs.copy_proxy": "📋 Копировать",
+  "logs.copy_proxy_title": "Копировать логи прокси",
   "logs.method": "Метод",
   "logs.path": "Путь",
   "logs.model": "Модель",
@@ -1175,6 +1198,7 @@ window.I18N_RU = {
   "models.load_hint": "Загрузить модель в память",
   "models.unload": "Выгрузить",
   "models.unload_hint": "Выгрузить модель из памяти",
+  "models.delete": "Удалить",
   "models.delete_op": "Удалить",
   "models.delete_hint": "Удалить модель с бэкенда",
   "models.confirm_delete": "Удалить модель",

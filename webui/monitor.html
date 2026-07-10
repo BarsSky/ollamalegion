@@ -10,14 +10,14 @@
   <link rel="icon" type="image/png" sizes="32x32" href="favicon-32x32.png">
   <link rel="icon" type="image/png" sizes="16x16" href="favicon-16x16.png">
   <link rel="shortcut icon" href="favicon.ico">
-  <link rel="stylesheet" href="css/themes.css?v=11">
-  <link rel="stylesheet" href="css/base.css?v=11">
-  <link rel="stylesheet" href="css/monitor-app.css?v=11">
-  <link rel="stylesheet" href="css/monitor.css?v=11">
-  <script src="js/i18n/ru.js?v=11"></script>
-  <script src="js/i18n/en.js?v=11"></script>
-  <script src="js/i18n/index.js?v=11"></script>
-  <script src="js/monitor/backend-type-badges.js?v=11"></script>
+  <link rel="stylesheet" href="css/themes.css?v=12">
+  <link rel="stylesheet" href="css/base.css?v=12">
+  <link rel="stylesheet" href="css/monitor-app.css?v=12">
+  <link rel="stylesheet" href="css/monitor.css?v=12">
+  <script src="js/i18n/ru.js?v=12"></script>
+  <script src="js/i18n/en.js?v=12"></script>
+  <script src="js/i18n/index.js?v=12"></script>
+  <script src="js/monitor/backend-type-badges.js?v=12"></script>
 </head>
 <body>
 <header>
@@ -40,8 +40,17 @@
       <option value="1000">1 s</option>
       <option value="2000" selected>2 s</option>
     </select>
-    <button id="pauseBtn" onclick="togglePause()" data-i18n="monitor.header.pause">⏸ Pause</button>
-    <button id="demoBtn" onclick="enterDemoMode()" style="display:none" data-i18n="monitor.header.demo">▶ Demo</button>
+    <!-- Round 18e: pause button — иконка в отдельном span чтобы не дублировалась при переключении.
+         togglePause() раньше делал textContent = '⏸ ' + 'Пауза', но если i18n успел поставить 'Пауза' первой,
+         получалось '⏸ ⏸ Пауза' (duplicate icon). Сейчас иконка и текст — отдельные элементы. -->
+    <button id="pauseBtn" onclick="togglePause()">
+      <span id="pauseBtnIcon">⏸</span>
+      <span id="pauseBtnText" data-i18n="monitor.header.pause">Pause</span>
+    </button>
+    <button id="demoBtn" onclick="enterDemoMode()" style="display:none">
+      <span>▶</span>
+      <span data-i18n="monitor.header.demo">Demo</span>
+    </button>
     <span id="connBadge" class="badge badge-yellow" data-i18n="monitor.header.connecting">Connecting…</span>
     <button id="resetZoomBtn" onclick="MonitorApp.resetViewport()" title="Reset Zoom" style="font-size:12px;padding:2px 8px;border-radius:4px;cursor:pointer;background:var(--bg-secondary);color:var(--text-primary);border:1px solid var(--border-color);margin-left:2px">🔍 1:1</button>
     <button id="helpBtn" onclick="event.stopPropagation(); toggleHelp();" title="Help" style="font-weight:bold;font-size:14px;padding:2px 10px;border-radius:50%;width:30px;height:30px;line-height:1;cursor:pointer">?</button>
@@ -462,17 +471,17 @@
     </div>
   </div>
 </main>
-  <script src="js/modules/monitor-charts.js?v=10"></script>
-  <script src="js/modules/monitor-metrics.js?v=10"></script>
-  <script src="js/modules/monitor-backends.js?v=10"></script>
-  <script src="js/monitor/state.js?v=10"></script>
-  <script src="js/monitor/api.js?v=10"></script>
-  <script src="js/monitor/ui-renderer.js?v=10"></script>
+  <script src="js/modules/monitor-charts.js?v=12"></script>
+  <script src="js/modules/monitor-metrics.js?v=12"></script>
+  <script src="js/modules/monitor-backends.js?v=12"></script>
+  <script src="js/monitor/state.js?v=12"></script>
+  <script src="js/monitor/api.js?v=12"></script>
+  <script src="js/monitor/ui-renderer.js?v=12"></script>
   <script src="js/monitor/sparkline.js?v=1"></script>
-  <script src="js/monitor/canvas-topology.js?v=10"></script>
-  <script src="js/monitor/canvas-conveyor.js?v=10"></script>
-  <script src="js/monitor/i18n-theme.js?v=10"></script>
-  <script src="js/monitor/init.js?v=10"></script>
+  <script src="js/monitor/canvas-topology.js?v=12"></script>
+  <script src="js/monitor/canvas-conveyor.js?v=12"></script>
+  <script src="js/monitor/i18n-theme.js?v=12"></script>
+  <script src="js/monitor/init.js?v=12"></script>
 
   <!-- Fallback API base + theme + lang sync (when opened directly, not via iframe) -->
   <script>

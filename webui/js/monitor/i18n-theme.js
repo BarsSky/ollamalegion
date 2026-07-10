@@ -82,10 +82,13 @@
       if (thm[tx]) th.textContent = thm[tx];
     });
 
-    var pb = document.getElementById('pauseBtn');
-    if (pb) pb.textContent = MA.paused ? '▶ ' + t('monitor.header.continue') : '⏸ ' + t('monitor.header.pause');
+    // Round 18e: pause/demo buttons — иконка и текст в отдельных span'ах.
+    var pbIcon = document.getElementById('pauseBtnIcon');
+    var pbText = document.getElementById('pauseBtnText');
+    if (pbIcon) pbIcon.textContent = MA.paused ? '▶' : '⏸';
+    if (pbText) pbText.textContent = t(MA.paused ? 'monitor.header.continue' : 'monitor.header.pause');
     var db = document.getElementById('demoBtn');
-    if (db) db.textContent = '▶ ' + t('monitor.header.demo');
+    if (db && db.firstElementChild) db.lastElementChild.textContent = t('monitor.header.demo');
     var cb = document.getElementById('connBadge');
     if (cb && cb.textContent === 'Подключение…') cb.textContent = t('monitor.header.connecting');
     var lo = document.querySelector('#loadingOverlay h2');

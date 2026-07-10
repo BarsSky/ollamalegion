@@ -38,6 +38,12 @@
             if (cached === 'llama_cpp' || cached === 'ollama') {
                 return cached;
             }
+            // Round 18g: '' = пользователь явно выбрал "Все". Возвращаем 'all',
+            // иначе fallthrough на server config (который может вернуть 'ollama')
+            // и active-state в switcher не обновится при выборе "Все".
+            if (cached === '') {
+                return 'all';
+            }
 
             // 2. Пытаемся получить из API config через кэш (серверный конфиг)
             try {
@@ -124,8 +130,13 @@
          * или при явном изменении в настройках (settings-ui.js).
          */
         setCurrentType: function (type) {
-            if (type !== 'ollama' && type !== 'llama_cpp') return;
-            localStorage.setItem(STORAGE_KEY, type);
+            // Round 18f: добавили 'all' как 3-й вариант (показывать все бэкенды).
+            if (type !== 'ollama' && type !== 'llama_cpp' && type !== 'all') return;
+            if (type === 'all') {
+                localStorage.setItem(STORAGE_KEY, '');
+            } else {
+                localStorage.setItem(STORAGE_KEY, type);
+            }
             this.updateUI(type);
         },
 
@@ -207,6 +218,16 @@
             var effectiveType = state.effectiveBackendType || '';
 
             console.log('[BackendTypeFilter.syncFromClusterState] localStorage:', localStorageType, 'serverEngine:', serverEngine, 'effectiveBackendType:', effectiveType);
+
+            // Round 18g: пользователь явно выбрал "Все" (localStorage === '').
+            // НЕ перезаписываем на serverEngine — иначе выбор "Все" теряется
+            // при каждом cluster update (2с цикл) и выделение не перешагивает.
+            if (localStorageType === '') {
+                window.__lastClusterState = state;
+                // UI уже показывает "Все" (getCurrentType возвращает 'all'),
+                // updateUI не нужен. Просто return.
+                return 'all';
+            }
 
             // Определяем целевой тип из серверных данных
             // Приоритет: effectiveBackendType > backendEngine

@@ -353,6 +353,28 @@
     border: 1px solid var(--warning-soft-4);
 }
 
+/* Round 18d (2026-07-10): backend ID + type badge in Backends table.
+   Раньше ID и badge шли в одну строку через inline → при длинных ID
+   (например, «cppworker-gpu-bundled-agent») badge «🦒 llama.cpp»
+   съезжал и ломал вёрстку. Сейчас они стекаются вертикально с gap 4px. */
+.backend-id-cell {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 4px;
+}
+.backend-id-cell .backend-id-name {
+    font-weight: 600;
+    word-break: break-all;
+    line-height: 1.2;
+}
+.backend-id-cell .backend-id-badges {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px;
+    align-items: center;
+}
+
 /* Queue task status badges */
 .queue-task-status {
     display: inline-flex;

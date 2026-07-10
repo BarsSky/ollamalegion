@@ -1845,6 +1845,12 @@ const ui = (function () {
             text = 'Ollama API';
             cssClass = 'engine-ollama';
             title = (window.I18N ? I18N.t('dashboard.engine_hint_ollama') : 'Движок: Ollama API');
+        } else if (userType === 'all') {
+            // Round 18g: пользователь выбрал "Все" — показываем нейтральный badge.
+            icon = '🔌';
+            text = (window.I18N ? I18N.t('dashboard.engine_all') : 'Все движки');
+            cssClass = 'engine-auto';
+            title = (window.I18N ? I18N.t('dashboard.engine_hint_all') : 'Движок: все');
         } else if (effectiveType === 'llama_cpp') {
             icon = '🦒';
             text = 'llama.cpp';
@@ -2838,8 +2844,31 @@ window.modelCardAction = function(operation, backendId, modelName) {
 // quantization, n_ctx, gpu_layers, state) — через cluster-level endpoint
 // GET /api/v1/cluster/models/{name}/info (см. internal/api/handlers_cluster_model_info.go).
 // Один запрос агрегирует данные со всех бэкендов кластера (cppworker + ollama).
-window.openModelDetailsModal = function(modelName, backendId) {
+//
+// Round 18 (2026-07-10): для llama.cpp бэкенда перенаправляем на GGUF Models tab
+// с pre-selected backend вместо модала. Причина: cluster-models-info возвращает
+// «parameter_size: 0.0B / quantization: unknown» для cppworker (cppworker их не
+// отдаёт), а на GGUF tab оператор видит реальные load options, file management,
+// batch/parallel/kv_cache controls и per-model profiles — всё что нужно для
+// работы с cppworker моделью.
+window.openModelDetailsModal = function(modelName, backendId, backendType) {
     if (!modelName) return;
+    // Round 18: если backend llama.cpp → редирект на GGUF tab с pre-selected backend.
+    if (backendType === 'llama_cpp' && backendId) {
+        // Переключаемся на GGUF tab через nav link.
+        var navLink = document.querySelector('[data-page="gguf"]');
+        if (navLink) navLink.click();
+        // Pre-select backend после того как GgufRenderer отрендерит.
+        setTimeout(function() {
+            if (window.GgufRenderer && typeof window.GgufRenderer.selectBackend === 'function') {
+                window.GgufRenderer.selectBackend(backendId);
+            } else {
+                console.warn('[openModelDetailsModal] GgufRenderer.selectBackend unavailable');
+            }
+        }, 100);
+        return;
+    }
+    // Ollama (или backend type неизвестен) → показываем модал как раньше.
     // Modal DOM может быть ещё не создан — создаём лениво.
     ensureModelDetailsModalDom();
     const modal = document.getElementById('modelDetailsModal');

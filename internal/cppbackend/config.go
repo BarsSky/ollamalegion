@@ -31,6 +31,14 @@ type Config struct {
 	DefaultUseMmap    bool `json:"defaultUseMmap"`
 	DefaultUseMlock   bool `json:"defaultUseMlock"`
 
+	// Phase 8 P.4 (2026-07-11): multi-GPU tensor_split + split_mode defaults.
+	// DefaultTensorSplit — массив пропорций (e.g. [0.5, 0.5] для 2 GPU).
+	// nil/empty = auto (llama.cpp решает по VRAM). Применяется при n_gpu_layers > 0.
+	// DefaultSplitMode — -1=default (LAYER), 0=NONE, 1=LAYER, 2=ROW, 3=TENSOR.
+	// См. также docs/phase-8-p3-research.md.
+	DefaultTensorSplit []float32 `json:"defaultTensorSplit,omitempty"`
+	DefaultSplitMode   int       `json:"defaultSplitMode"`
+
 	// Параметры потоков CPU
 	DefaultNThreads int `json:"defaultNThreads"` // 0 = auto
 

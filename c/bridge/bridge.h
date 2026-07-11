@@ -90,6 +90,13 @@ typedef struct {
     int numa;                       // 0/1 — NUMA оптимизация
     float* tensor_split;            // пропорции для multi-GPU (NULL если авто)
     int tensor_split_len;           // длина массива tensor_split
+    // Phase 8 P.4 (2026-07-11): split_mode enum from llama.h.
+    //   0=LLAMA_SPLIT_MODE_NONE (single GPU)
+    //   1=LLAMA_SPLIT_MODE_LAYER (default, pipeline parallel, stable)
+    //   2=LLAMA_SPLIT_MODE_ROW (deprecated row split)
+    //   3=LLAMA_SPLIT_MODE_TENSOR (experimental, requires NCCL + Flash Attn + dense model)
+    // -1 = use llama.cpp default (LAYER).
+    int split_mode;                 // -1 (default) / 0 / 1 / 2 / 3
     int vocab_only;                 // 0/1 — загрузить только словарь
     int use_mmap;                   // 0/1 — использовать mmap
     int use_mlock;                  // 0/1 — заблокировать память

@@ -394,6 +394,35 @@ ModelHandle bridge_load_model(const ModelConfig* config, char** error_msg) {
     model_params.use_mlock = config->use_mlock;
     model_params.use_mlock = config->use_mlock;
 
+    // Phase 8 P.4 (2026-07-11): multi-GPU tensor_split wiring.
+    //
+    // config->tensor_split (if non-NULL) — массив float[tensor_split_len] с
+    // пропорциями распределения model по GPU (e.g. [0.5, 0.5] для 2 GPU).
+    // Используется llama.cpp при n_gpu_layers > 0 И multi-GPU: layer split
+    // mode распределяет слои между GPU пропорционально значениям массива.
+    //
+    // Default mode (split_mode=LLAMA_SPLIT_MODE_LAYER, value=1) — стабильный
+    // pipeline parallelism. Layer split — production-ready.
+    // Tensor split (LLAMA_SPLIT_MODE_TENSOR, value=3) — experimental, requires
+    // NCCL + Flash Attn + dense model (NE MoE). Post-1.0.
+    //
+    // Если split_mode не задан в config → используем default (LAYER).
+    if (config->split_mode >= 0 && config->split_mode <= 3) {
+        model_params.split_mode = (enum llama_split_mode)config->split_mode;
+    }
+    if (config->tensor_split != NULL && config->tensor_split_len > 0) {
+        model_params.tensor_split = config->tensor_split;
+        fprintf(stderr,
+            "[bridge] multi-GPU tensor_split: applied %d proportions [",
+            config->tensor_split_len);
+        for (int i = 0; i < config->tensor_split_len; i++) {
+            fprintf(stderr, "%.2f%s",
+                config->tensor_split[i],
+                (i < config->tensor_split_len - 1) ? ", " : "");
+        }
+        fprintf(stderr, "], split_mode=%d\n", (int)model_params.split_mode);
+    }
+
     // Round 7: override-tensors. If override_tensor_count > 0 we build
     // a NULL-terminated array of llama_model_tensor_buft_override and
     // attach it to model_params.tensor_buft_overrides (read by

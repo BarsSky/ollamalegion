@@ -18,6 +18,7 @@ import (
 	"os"
 	"os/signal"
 	"strconv"
+	"strings"
 	"syscall"
 	"time"
 
@@ -216,6 +217,53 @@ func main() {
 				*writeTimeout = d
 				log.Infow("applied CPPWORKER_WRITE_TIMEOUT from env", "write_timeout", d.String())
 			}
+		}
+	}
+
+	// Phase 8 P.4 (2026-07-11): multi-GPU tensor_split + split_mode.
+	// CPPWORKER_TENSOR_SPLIT — comma-separated proportions, e.g. "0.5,0.5"
+	// for 2-GPU box, "0.7,0.3" for uneven split. Empty = auto.
+	if envVal := strings.TrimSpace(os.Getenv("CPPWORKER_TENSOR_SPLIT")); envVal != "" {
+		parts := strings.Split(envVal, ",")
+		ts := make([]float32, 0, len(parts))
+		for _, p := range parts {
+			p = strings.TrimSpace(p)
+			if p == "" {
+				continue
+			}
+			v, perr := strconv.ParseFloat(p, 32)
+			if perr != nil || v < 0 || v > 1 {
+				log.Warnw("CPPWORKER_TENSOR_SPLIT: invalid proportion, ignoring",
+					"value", p, "error", perr)
+				ts = nil
+				break
+			}
+			ts = append(ts, float32(v))
+		}
+		if len(ts) > 0 {
+			// Scale to sum=1.0 (llama.cpp requirement).
+			var sum float32
+			for _, v := range ts {
+				sum += v
+			}
+			if sum > 0 {
+				for i := range ts {
+					ts[i] /= sum
+				}
+			}
+			cfg.DefaultTensorSplit = ts
+			log.Infow("applied CPPWORKER_TENSOR_SPLIT from env",
+				"proportions", ts, "gpus", len(ts))
+		}
+	}
+	// CPPWORKER_SPLIT_MODE — -1=default (layer), 0=none, 1=layer,
+	// 2=row (deprecated), 3=tensor (experimental, requires NCCL).
+	if envVal := strings.TrimSpace(os.Getenv("CPPWORKER_SPLIT_MODE")); envVal != "" {
+		if v, err := strconv.Atoi(envVal); err == nil && v >= -1 && v <= 3 {
+			cfg.DefaultSplitMode = v
+			log.Infow("applied CPPWORKER_SPLIT_MODE from env", "mode", v)
+		} else {
+			log.Warnw("CPPWORKER_SPLIT_MODE: invalid value, ignoring (use -1..3)", "value", envVal)
 		}
 	}
 

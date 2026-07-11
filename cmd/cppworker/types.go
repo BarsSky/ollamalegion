@@ -89,6 +89,10 @@ type loadModelRequest struct {
 	ContextSize   *int      `json:"contextSize,omitempty"`
 	BatchSize     *int      `json:"batchSize,omitempty"`
 	TensorSplit   []float32 `json:"tensorSplit,omitempty"`
+	// Phase 8 P.4 (2026-07-11): split_mode per-request override.
+	// -1 = use default (currentConfig.DefaultSplitMode / env / LAYER).
+	// 0-3 = explicit (NONE / LAYER / ROW / TENSOR).
+	SplitMode     *int      `json:"splitMode,omitempty"`
 	FlashAttnType *int      `json:"flashAttn,omitempty"`
 	NUMA          *bool     `json:"numa,omitempty"`
 	UseMmap       *bool     `json:"useMmap,omitempty"`

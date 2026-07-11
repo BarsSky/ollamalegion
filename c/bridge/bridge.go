@@ -132,6 +132,13 @@ type ModelConfig struct {
 	FlashAttnType  int      // llama_flash_attn_type: -1=auto, 0=disabled, 1=enabled
 	NUMA           bool     // NUMA оптимизация
 	TensorSplit    []float32 // пропорции multi-GPU
+	// SplitMode (Phase 8 P.4, 2026-07-11):
+	//   -1 = use llama.cpp default (LLAMA_SPLIT_MODE_LAYER)
+	//    0 = LLAMA_SPLIT_MODE_NONE (single GPU)
+	//    1 = LLAMA_SPLIT_MODE_LAYER (pipeline parallel, stable)
+	//    2 = LLAMA_SPLIT_MODE_ROW (deprecated)
+	//    3 = LLAMA_SPLIT_MODE_TENSOR (experimental, requires NCCL)
+	SplitMode      int
 	UseMmap        bool     // mmap (true)
 	UseMlock       bool     // mlock
 	// RoPE параметры контекста
@@ -344,7 +351,7 @@ func LoadModel(cfg ModelConfig) (*ModelHandle, error) {
 		cCfg.n_threads = C.int(runtime.NumCPU())
 	}
 
-	// Tensor split
+	// Tensor split (Phase 8 P.4): array + split_mode.
 	if len(cfg.TensorSplit) > 0 {
 		ts := make([]C.float, len(cfg.TensorSplit))
 		for i, v := range cfg.TensorSplit {
@@ -353,6 +360,8 @@ func LoadModel(cfg ModelConfig) (*ModelHandle, error) {
 		cCfg.tensor_split = &ts[0]
 		cCfg.tensor_split_len = C.int(len(cfg.TensorSplit))
 	}
+	// split_mode: -1 = use llama.cpp default; 0-3 = explicit value.
+	cCfg.split_mode = C.int(cfg.SplitMode)
 
 	if cfg.UseMmap {
 		cCfg.use_mmap = 1

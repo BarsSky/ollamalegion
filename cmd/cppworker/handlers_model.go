@@ -79,6 +79,28 @@ func handleLoadModel(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Build load options (Round 19: env-driven defaults).
+	// Phase 8 P.4: TensorSplit + SplitMode defaults from currentConfig
+	// (CPPWORKER_TENSOR_SPLIT / CPPWORKER_SPLIT_MODE env vars or config file).
+	// Falls back to request value if set explicitly.
+	defTensorSplit := req.TensorSplit
+	defSplitMode := 0
+	if req.SplitMode != nil {
+		defSplitMode = *req.SplitMode
+	}
+	if currentConfig != nil {
+		if len(currentConfig.DefaultTensorSplit) > 0 {
+			defTensorSplit = currentConfig.DefaultTensorSplit
+		}
+		if currentConfig.DefaultSplitMode != 0 || os.Getenv("CPPWORKER_SPLIT_MODE") != "" {
+			if v := currentConfig.DefaultSplitMode; v >= -1 && v <= 3 {
+				if v == -1 {
+					defSplitMode = 0 // bridge: 0 = use llama.cpp default
+				} else {
+					defSplitMode = v
+				}
+			}
+		}
+	}
 	opts := cppbackend.LoadModelOpts{
 		GPULayers:     defaultIntPtr(req.GPULayers, defGPULayers),
 		ContextSize:   defaultIntPtr(req.ContextSize, defCtxSize),
@@ -86,7 +108,8 @@ func handleLoadModel(w http.ResponseWriter, r *http.Request) {
 		FlashAttnType: defaultIntPtr(req.FlashAttnType, defFlashAttn),
 		NUMA:          defaultBoolPtr(req.NUMA, defNUMA),
 		UseMmap:       defaultBoolPtr(req.UseMmap, defUseMmap),
-		TensorSplit:   req.TensorSplit,
+		TensorSplit:   defTensorSplit,
+		SplitMode:     defSplitMode,
 	}
 
 	logger.Get().Infow("loading model",
@@ -258,6 +281,28 @@ func handleLoadWithParams(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Build load options (Round 19: env-driven defaults).
+	// Phase 8 P.4: TensorSplit + SplitMode defaults from currentConfig
+	// (CPPWORKER_TENSOR_SPLIT / CPPWORKER_SPLIT_MODE env vars or config file).
+	// Falls back to request value if set explicitly.
+	defTensorSplit2 := req.TensorSplit
+	defSplitMode2 := 0
+	if req.SplitMode != nil {
+		defSplitMode2 = *req.SplitMode
+	}
+	if currentConfig != nil {
+		if len(currentConfig.DefaultTensorSplit) > 0 {
+			defTensorSplit2 = currentConfig.DefaultTensorSplit
+		}
+		if currentConfig.DefaultSplitMode != 0 || os.Getenv("CPPWORKER_SPLIT_MODE") != "" {
+			if v := currentConfig.DefaultSplitMode; v >= -1 && v <= 3 {
+				if v == -1 {
+					defSplitMode2 = 0
+				} else {
+					defSplitMode2 = v
+				}
+			}
+		}
+	}
 	opts := cppbackend.LoadModelOpts{
 		GPULayers:     defaultIntPtr(req.GPULayers, defGPULayers),
 		ContextSize:   defaultIntPtr(req.ContextSize, defCtxSize),
@@ -265,7 +310,8 @@ func handleLoadWithParams(w http.ResponseWriter, r *http.Request) {
 		FlashAttnType: defaultIntPtr(req.FlashAttnType, defFlashAttn),
 		NUMA:          defaultBoolPtr(req.NUMA, defNUMA),
 		UseMmap:       defaultBoolPtr(req.UseMmap, defUseMmap),
-		TensorSplit:   req.TensorSplit,
+		TensorSplit:   defTensorSplit2,
+		SplitMode:     defSplitMode2,
 	}
 	if req.NThreads != nil && *req.NThreads > 0 {
 		opts.NThreads = *req.NThreads

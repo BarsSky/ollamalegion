@@ -271,7 +271,7 @@
     #monitorBackendTypeSwitcher {
         display: none !important;
     }
-    /* Compact table — minimal padding. */
+    /* Compact table - minimal padding. */
     #backendsTable th, #backendsTable td {
         padding: 3px 4px;
         font-size: 11px;

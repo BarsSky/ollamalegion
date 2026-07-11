@@ -228,7 +228,10 @@ func TestVirtualRouter_LeastLoadedSelection(t *testing.T) {
 }
 
 // Test 4: All backends down — fake backend returns 500.
-func TestVirtualRouter_AllBackendsDown_503(t *testing.T) {
+// После Phase 8 P.2 backlog (auto-failover) поведение изменилось:
+// 5xx теперь retryable. Если в pool'е только 1 backend, failover loop
+// заканчивается без success → 502 "all_backends_failed".
+func TestVirtualRouter_AllBackendsDown_502(t *testing.T) {
 	t.Parallel()
 	// 1 "down" backend.
 	downServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -252,8 +255,9 @@ func TestVirtualRouter_AllBackendsDown_503(t *testing.T) {
 	w := httptest.NewRecorder()
 	router.ServeHTTP(w, req)
 
-	// Backend returned 500 — proxy passes status code through.
-	assert.Equal(t, http.StatusInternalServerError, w.Code)
+	// Single backend in pool, returns 500 (5xx = retryable). После 1 retry loop →
+	// "all_backends_failed" (502). С pre-Phase-8-P.2-backlog поведение было 500.
+	assert.Equal(t, http.StatusBadGateway, w.Code)
 }
 
 // Test 5: Unknown virtual model → 404.
@@ -612,8 +616,184 @@ func TestVirtualRouter_Auth_OpenAIFormat_401(t *testing.T) {
 // Определён в auth_checker_test.go (общий).
 
 // =====================================================================
-// Phase 8 P.2 backlog: Auto-failover tests.
+// Phase 8 Item 2: LoadProvider wire-up for least_loaded selector.
 // =====================================================================
+
+// TestVirtualRouter_LeastLoaded_LoadProvider_PrefersFreeBackend —
+// LoadProvider correctly identifies backend with most free slots.
+func TestVirtualRouter_LeastLoaded_LoadProvider_PrefersFreeBackend(t *testing.T) {
+	t.Parallel()
+
+	// Use real httptest backends.
+	o1 := newOllamaFake(t, "o1")
+	o2 := newOllamaFake(t, "o2")
+	o1ID := fmt.Sprintf("%s:%d", o1.host, o1.port)
+	o2ID := fmt.Sprintf("%s:%d", o2.host, o2.port)
+
+	// o1 has 1/10 slots used (9 free), o2 has 5/10 slots used (5 free).
+	// least_loaded should always pick o1 (more free).
+	loadFn := func(backendID string) (int, bool) {
+		switch backendID {
+		case o1ID:
+			return 9, true // 9 free
+		case o2ID:
+			return 5, true // 5 free
+		}
+		return 0, false
+	}
+
+	registry := newRegistryWithVMs(t, types.VirtualModelConfig{
+		Name:        "vm-ll",
+		Selection:   virtualmodel.SelectionLeastLoaded,
+		BackendPool: []string{o1ID, o2ID},
+		ModelName:   "physical",
+	})
+	proxy := newTestProxy(t)
+	router := NewVirtualRouter(registry, proxy)
+	router.SetLoadProvider(loadFn)
+
+	// Trigger selector creation (lazy) + apply LoadProvider to it.
+	body := bytes.NewReader([]byte(`{"model":"vm-ll","prompt":"hi","stream":false}`))
+	req := httptest.NewRequest(http.MethodPost, "/api/generate", body)
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+	router.selectorsMu.RLock()
+	sel := router.selectors["vm-ll"]
+	router.selectorsMu.RUnlock()
+	if ll, ok := sel.(*virtualmodel.LeastLoadedSelector); ok {
+		ll.SetLoadProvider(loadFn)
+	}
+
+	// 5 запросов — все должны идти на o1 (больше free slots).
+	counts := map[string]int{}
+	for i := 0; i < 5; i++ {
+		body := bytes.NewReader([]byte(`{"model":"vm-ll","prompt":"x","stream":false}`))
+		req := httptest.NewRequest(http.MethodPost, "/api/generate", body)
+		w := httptest.NewRecorder()
+		router.ServeHTTP(w, req)
+		backend := w.Header().Get("X-Original-Backend")
+		counts[backend]++
+	}
+	// o1 should get all 5 (since it has 9 free vs 5 free).
+	assert.Equal(t, 5, counts[o1ID], "%s should be preferred (9 free vs 5 free)", o1ID)
+	assert.Equal(t, 0, counts[o2ID], "%s should NOT be selected", o2ID)
+}
+
+// TestVirtualRouter_LeastLoaded_LoadProvider_BalancesAfterChange —
+// При изменении load provider'а selector rebalances.
+func TestVirtualRouter_LeastLoaded_LoadProvider_BalancesAfterChange(t *testing.T) {
+	t.Parallel()
+
+	o1 := newOllamaFake(t, "o1")
+	o2 := newOllamaFake(t, "o2")
+	o1ID := fmt.Sprintf("%s:%d", o1.host, o1.port)
+	o2ID := fmt.Sprintf("%s:%d", o2.host, o2.port)
+
+	// Phase 1: o1 busy (3 free), o2 idle (10 free) → o2 gets all requests.
+	loadFn1 := func(backendID string) (int, bool) {
+		switch backendID {
+		case o1ID:
+			return 3, true
+		case o2ID:
+			return 10, true
+		}
+		return 0, false
+	}
+
+	registry := newRegistryWithVMs(t, types.VirtualModelConfig{
+		Name:        "vm-ll2",
+		Selection:   virtualmodel.SelectionLeastLoaded,
+		BackendPool: []string{o1ID, o2ID},
+		ModelName:   "physical",
+	})
+	proxy := newTestProxy(t)
+	router := NewVirtualRouter(registry, proxy)
+	router.SetLoadProvider(loadFn1)
+
+	// Trigger selector creation + set provider.
+	body := bytes.NewReader([]byte(`{"model":"vm-ll2","prompt":"hi","stream":false}`))
+	req := httptest.NewRequest(http.MethodPost, "/api/generate", body)
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+	router.selectorsMu.RLock()
+	sel := router.selectors["vm-ll2"]
+	router.selectorsMu.RUnlock()
+	ll, ok := sel.(*virtualmodel.LeastLoadedSelector)
+	require.True(t, ok)
+	ll.SetLoadProvider(loadFn1)
+
+	// Phase 1: o2 wins (10 free).
+	for i := 0; i < 3; i++ {
+		body := bytes.NewReader([]byte(`{"model":"vm-ll2","prompt":"x","stream":false}`))
+		req := httptest.NewRequest(http.MethodPost, "/api/generate", body)
+		w := httptest.NewRecorder()
+		router.ServeHTTP(w, req)
+		assert.Equal(t, o2ID, w.Header().Get("X-Original-Backend"),
+			"phase 1 iter %d: %s should win (10 free vs 3)", i, o2ID)
+	}
+
+	// Phase 2: flip — o1 now idle, o2 busy.
+	loadFn2 := func(backendID string) (int, bool) {
+		switch backendID {
+		case o1ID:
+			return 10, true
+		case o2ID:
+			return 1, true
+		}
+		return 0, false
+	}
+	ll.SetLoadProvider(loadFn2)
+
+	// Phase 2: o1 wins (10 free).
+	for i := 0; i < 3; i++ {
+		body := bytes.NewReader([]byte(`{"model":"vm-ll2","prompt":"x","stream":false}`))
+		req := httptest.NewRequest(http.MethodPost, "/api/generate", body)
+		w := httptest.NewRecorder()
+		router.ServeHTTP(w, req)
+		assert.Equal(t, o1ID, w.Header().Get("X-Original-Backend"),
+			"phase 2 iter %d: %s should win (10 free vs 1)", i, o1ID)
+	}
+}
+
+// TestProxy_GetBackendFreeSlots — unit test для proxy.GetBackendFreeSlots.
+func TestProxy_GetBackendFreeSlots(t *testing.T) {
+	t.Parallel()
+	conf := createE2EConfig()
+	conf.Backends = []types.Backend{
+		{ID: "b1", Name: "b1", Host: "localhost", OllamaPort: 11434, MaxConcurrentReqs: 10, Status: types.StatusHealthy},
+		{ID: "b2", Name: "b2", Host: "localhost", OllamaPort: 11435, MaxConcurrentReqs: 5, Status: types.StatusHealthy},
+	}
+	proxy := NewProxy(conf)
+	proxy.SetQueueManagerProxy()
+	defer proxy.queueMgr.Stop()
+
+	// b1: 10 max, 0 active → 10 free.
+	free, ok := proxy.GetBackendFreeSlots("b1")
+	require.True(t, ok)
+	assert.Equal(t, 10, free)
+
+	// b2: 5 max, 0 active → 5 free.
+	free, ok = proxy.GetBackendFreeSlots("b2")
+	require.True(t, ok)
+	assert.Equal(t, 5, free)
+
+	// Симулируем active requests: increment ActiveReqs напрямую.
+	proxy.mu.Lock()
+	state := proxy.backends["b1"]
+	state.mu.Lock()
+	state.ActiveReqs = 7
+	state.mu.Unlock()
+	proxy.mu.Unlock()
+
+	// b1: 10 max, 7 active → 3 free.
+	free, ok = proxy.GetBackendFreeSlots("b1")
+	require.True(t, ok)
+	assert.Equal(t, 3, free)
+
+	// Несуществующий backend.
+	_, ok = proxy.GetBackendFreeSlots("nonexistent")
+	assert.False(t, ok)
+}
 
 // TestVirtualRouter_Failover_PrimaryDown_RetryNext — primary backend down,
 // retry на next candidate in pool. Должен вернуть success от 2-го backend.

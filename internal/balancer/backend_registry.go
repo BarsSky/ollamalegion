@@ -313,6 +313,34 @@ func (p *Proxy) GetBackend(backendID string) *types.Backend {
 	return nil
 }
 
+// GetBackendFreeSlots — возвращает количество свободных слотов backend'а
+// (MaxConcurrentReqs - ActiveReqs) для use в least_loaded selector'ах.
+// Phase 8 Item 2 (2026-07-11): LoadProvider wire-up.
+//
+// Возвращает (freeSlots, ok). Если backend не найден, ok=false.
+// Использует thread-safe reads: state.mu.Lock() для ActiveReqs.
+func (p *Proxy) GetBackendFreeSlots(backendID string) (int, bool) {
+	p.mu.RLock()
+	state, exists := p.backends[backendID]
+	p.mu.RUnlock()
+	if !exists {
+		return 0, false
+	}
+	state.mu.Lock()
+	active := state.ActiveReqs
+	max := state.Backend.MaxConcurrentReqs
+	state.mu.Unlock()
+	if max <= 0 {
+		// Default: unlimited. Возвращаем большое число чтобы selector не skip'ал.
+		return 1000, true
+	}
+	free := max - active
+	if free < 0 {
+		free = 0
+	}
+	return free, true
+}
+
 // GetAllBackends - получение всех бэкендов
 func (p *Proxy) GetAllBackends() []types.Backend {
 	p.mu.RLock()

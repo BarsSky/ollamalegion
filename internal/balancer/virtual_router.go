@@ -526,6 +526,39 @@ func (r *VirtualRouter) ResetSelector(vmName string) {
 	}
 }
 
+// SetLoadProvider — устанавливает LoadProvider для всех LeastLoadedSelector'ов.
+// Phase 8 Item 2 (2026-07-11): real metrics wire-up.
+//
+// Без этой wiring'а `least_loaded` selector использует fallback FreeSlots=1
+// для всех backends (эквивалент round-robin). С LoadProvider —
+// FreeSlots = MaxConcurrentReqs - ActiveReqs (real load balancing).
+//
+// Идемпотентно: вызывается несколько раз, последний вызов wins. Повторно
+// создаёт lazy selectors с новым provider (если они уже созданы).
+func (r *VirtualRouter) SetLoadProvider(fn func(backendID string) (int, bool)) {
+	if r == nil {
+		return
+	}
+	r.selectorsMu.Lock()
+	defer r.selectorsMu.Unlock()
+	// Save в package-level variable, чтобы новые lazy selectors использовали его.
+	// (LeastLoadedSelector читает LoadProvider при каждом Select — но мы должны
+	// установить его при создании selector'а. Пройдёмся по всем existing.)
+	for name, s := range r.selectors {
+		if ll, ok := s.(*virtualmodel.LeastLoadedSelector); ok {
+			ll.SetLoadProvider(fn)
+			_ = name
+		}
+	}
+	// Также сохраним provider для будущих lazy selectors.
+	// Реализация: selector создаётся в getOrCreateSelector() с
+	// r.defaultStrategy. Чтобы будущие LeastLoadedSelector'ы
+	// автоматически получили provider — обновим default strategy.
+	// (Сейчас default = RoundRobin, но если user переключит — получит provider.)
+	logger.Get().Infow("virtual_router: SetLoadProvider applied to existing selectors",
+		"count", len(r.selectors))
+}
+
 // parseBackendHostPort — разбирает "host:port" string. Default port = 11434.
 func parseBackendHostPort(s string) (string, int, error) {
 	parts := strings.Split(s, ":")

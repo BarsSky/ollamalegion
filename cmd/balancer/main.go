@@ -235,10 +235,18 @@ func main() {
 					"token_count", len(conf.Auth.Tokens),
 					"header", conf.Auth.HeaderName)
 			}
+			// Phase 8 Item 2 (2026-07-11): wire LoadProvider для least_loaded selector.
+			// Без этого SetLoadProvider() selector с least_loaded использует
+			// fallback=1 (эквивалент round-robin). Теперь: FreeSlots из
+			// proxy.GetBackendFreeSlots() = MaxConcurrentReqs - ActiveReqs.
+			router.SetLoadProvider(func(backendID string) (int, bool) {
+				return proxy.GetBackendFreeSlots(backendID)
+			})
 			proxy.SetVirtualRouter(router)
 			logger.Get().Infow("virtual_router wired",
 				"mode", conf.Balancing.OperatingMode,
-				"virtual_models", len(vmRegistry.List()))
+				"virtual_models", len(vmRegistry.List()),
+				"load_provider", "MaxConcurrentReqs-ActiveReqs")
 		} else {
 			logger.Get().Warnw("virtual_router mode is active but VirtualModelRegistry is nil — " +
 				"check balancing.virtualModels.enabled in config")

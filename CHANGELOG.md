@@ -261,6 +261,51 @@ retry отсутствовал.
 - Tests: 30 новых (16 selector + 14 virtual router) + 4 proxy integration
   = 34 новых теста. Все зелёные на `llama_stub` build tag.
 - Production status: **P.2 (virtual_router) — Steps 1-5 DONE**.
+
+**Step 6 (commit `da220f5`)** — CRUD + WebUI + e2e tests:
+
+### Step 6.1: CRUD REST API
+- `internal/api/handlers_virtual_crud.go` (~280 LOC):
+  - `GET    /api/v1/virtual-models` — list all VMs (mode-aware)
+  - `POST   /api/v1/virtual-models` — create new VM (alias-on-pool OR pipeline)
+  - `GET    /api/v1/virtual-models/{name}` — get details
+  - `DELETE /api/v1/virtual-models/{name}` — unregister
+  - `POST   /api/v1/virtual-models/{name}/infer` — test inference
+- Validation: modelName+backendPool required для alias-on-pool mode;
+  pipeline mode (Slices) — только name обязателен.
+- Selection strategy validation: round_robin / least_loaded / random.
+- Legacy `/api/v1/virtualmodels` (без дефиса) для pipeline mode оставлен
+  backward-compat.
+- 10 unit-тестов: List, Create, Validation (5 sub-cases), Get, Delete,
+  InvalidMethod, FullLifecycle, PipelineMode toggle.
+
+### Step 6.2: WebUI page
+- `webui/virtual-models.html` (~410 LOC): self-contained dark-mode UI.
+  Overview cards, models table с pills/chips, Create modal с form
+  (name/description/modelName/selection/backendPool/timeout), Delete
+  с confirm, auto-refresh 10s, error/disabled banners.
+- 28 i18n keys в en.js + ru.js: `nav.virtual_models` + `vm.*` namespace
+  (title, create, refresh, total, inferences, errors, streaming, name,
+  description, model_name, selection, backend_pool, actions, delete,
+  empty, empty_hint, disabled_banner, delete_confirm, mode.*, selection.*,
+  *_failed, network_error, timeout).
+
+### Step 6.3: CSS — не требуется
+- Page self-contained с inline styles (как rpc-status.html).
+- themes.css / components.css / data.css не затрагиваются.
+
+### Step 6.4: Manual e2e test
+- `internal/balancer/virtual_router_e2e_test.go` (3 теста): реальные
+  httptest.Server (balancer) + backends, симулирует full user flow:
+  - TestE2E_VirtualRouter_FullFlow: create → 3 inference requests
+    (round-robin, verify backend call counts) → DELETE → verify
+    fall-through к standard flow.
+  - TestE2E_VirtualRouter_HealthCheck_NotAffected: GET /api/tags НЕ
+    intercepts virtual_router.
+  - TestE2E_VirtualRouter_StreamingResponse: SSE events passthrough
+    (3 chunks + [DONE]).
+
+**Production status: P.2 (virtual_router) — STEPS 1-6 COMPLETE.**
   Foundation готов. Step 6 (CRUD REST API + WebUI) — deferred.
 
 ### Известные ограничения (post-P.2 backlog)
@@ -272,9 +317,6 @@ retry отсутствовал.
 - **Pipeline mode не через VirtualRouter**: только alias-on-pool mode.
 - **No auth**: в отличие от P.1, virtual_router пока не проверяет token.
   Phase 9.
-- **CRUD REST API не реализован**: VirtualModels добавляются через config
-  файл, не через API. Phase 9.
-- **No WebUI page**: virtual-models.html отсутствует. Phase 9.
 
 См. также: `docs/virtual-router.md`, `docs/phase-8-rpc-coordinator.md`.
 

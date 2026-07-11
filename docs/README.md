@@ -3,8 +3,26 @@
 > **Версия:** 2.0 (2026-06-22) — ревизия и консолидация  
 > **Языки:** [English](en/README.md) | **Русский** (текущий)  
 > **Roadmap:** [`../plans/README.md`](../plans/README.md) | **Audit:** [`audit-2026-06.md`](audit-2026-06.md)
+>
+> 📋 **Phase 8 (2026-07-11):** полный набор документации теперь доступен на двух языках.
+> См. [`en/README.md`](en/README.md) для English версии всех 15+ документов.
 
 OllamaLegion — балансировщик нагрузки + WebUI для кластера Ollama и llama.cpp (через CppWorker) с мониторингом GPU/CPU/RAM/Disk/Network и умным распределением запросов.
+
+---
+
+## 🌍 Мультиязычность / Multilingual
+
+| Язык | Директория | Описание |
+|---|---|---|
+| 🇷🇺 Русский | `./` (текущая) | Все документы на русском (исходный язык) |
+| 🇬🇧 English | [`en/`](en/README.md) | All docs translated to English (15+ files) |
+
+WebUI (Dashboard) также поддерживает переключение языка в реальном времени:
+- 🌍 В правом верхнем углу → language switcher
+- 🇬🇧 English (`en.js`) / 🇷🇺 Русский (`ru.js`) — автоопределение по `navigator.language`
+- 💾 Выбор сохраняется в `localStorage` (key: `ollamalegion_lang`)
+- Тесты parity: `internal/api/lint_css_i18n_test.go::TestI18nKeyParity_EN_RU`
 
 ---
 
@@ -12,19 +30,23 @@ OllamaLegion — балансировщик нагрузки + WebUI для кл
 
 ### Основные разделы
 
-| Документ | Описание |
-|---|---|
-| [**installation.md**](installation.md) | Требования, Docker, локальная сборка, stub-режим |
-| [**deployment.md**](deployment.md) | Docker Compose, bundled-стек, production-конфигурация, масштабирование |
-| [**agent-deployment.md**](agent-deployment.md) | Развёртывание агента CPU/GPU (включая Windows + WSL2) |
-| [**api.md**](api.md) | REST API + WebSocket + CppWorker API + Ollama-совместимость |
-| [**cppworker-model-params.md**](cppworker-model-params.md) | n_ctx resolver, Per-Model Profiles, RAM fallback, Ollama ↔ OpenAI proxy |
-| [**backend-type-isolation.md**](backend-type-isolation.md) | Изоляция Ollama vs llama.cpp бэкендов |
-| [**metrics.md**](metrics.md) | Полный справочник всех метрик (GPU/System/Ollama/Proxy) |
-| [**rpc-coordinator.md**](rpc-coordinator.md) | Вариант B: распределённый inference через RPC (каркас) |
-| [**troubleshooting.md**](troubleshooting.md) | FAQ + диагностика n_ctx + tools/tool_calls |
-| [**runbook-tools.md**](runbook-tools.md) | **Детальный runbook** для диагностики tools/tool_calls (сценарии A-E) |
-| [**audit-2026-06.md**](audit-2026-06.md) | Финальный аудит-отчёт (реализовано / осталось / ограничения) |
+| Документ | English | Описание |
+|---|---|---|
+| [**installation.md**](installation.md) | [en/installation.md](en/installation.md) | Требования, Docker, локальная сборка, stub-режим |
+| [**deployment.md**](deployment.md) | [en/deployment.md](en/deployment.md) | Docker Compose, bundled-стек, production-конфигурация, масштабирование |
+| [**agent-deployment.md**](agent-deployment.md) | [en/agent-deployment.md](en/agent-deployment.md) | Развёртывание агента CPU/GPU (включая Windows + WSL2) |
+| [**api.md**](api.md) | [en/api.md](en/api.md) | REST API + WebSocket + CppWorker API + Ollama-совместимость |
+| [**cppworker-model-params.md**](cppworker-model-params.md) | [en/cppworker-model-params.md](en/cppworker-model-params.md) | n_ctx resolver, Per-Model Profiles, RAM fallback, Ollama ↔ OpenAI proxy |
+| [**backend-type-isolation.md**](backend-type-isolation.md) | [en/backend-type-isolation.md](en/backend-type-isolation.md) | Изоляция Ollama vs llama.cpp бэкендов |
+| [**metrics.md**](metrics.md) | [en/metrics.md](en/metrics.md) | Полный справочник всех метрик (GPU/System/Ollama/Proxy) |
+| [**rpc-coordinator.md**](rpc-coordinator.md) | [en/rpc-coordinator.md](en/rpc-coordinator.md) | **P.1**: распределённый inference через RPC (production mode) |
+| [**virtual-router.md**](virtual-router.md) | [en/virtual-router.md](en/virtual-router.md) | **P.2**: alias-on-pool virtual models |
+| [**phase-8-rpc-coordinator.md**](phase-8-rpc-coordinator.md) | [en/phase-8-rpc-coordinator.md](en/phase-8-rpc-coordinator.md) | P.1 implementation log |
+| [**phase-8-p3-research.md**](phase-8-p3-research.md) | [en/phase-8-p3-research.md](en/phase-8-p3-research.md) | P.3 research: real ggml/NCCL (post-1.0) |
+| [**phase-7-style-compliance.md**](phase-7-style-compliance.md) | [en/phase-7-style-compliance.md](en/phase-7-style-compliance.md) | Phase 7 style guide (em-dash → ASCII) |
+| [**troubleshooting.md**](troubleshooting.md) | [en/troubleshooting.md](en/troubleshooting.md) | FAQ + диагностика n_ctx + tools/tool_calls |
+| [**runbook-tools.md**](runbook-tools.md) | [en/runbook-tools.md](en/runbook-tools.md) | **Детальный runbook** для диагностики tools/tool_calls (сценарии A-G) |
+| [**audit-2026-06.md**](audit-2026-06.md) | — | Финальный аудит-отчёт (реализовано / осталось / ограничения) |
 
 ### API спецификации
 

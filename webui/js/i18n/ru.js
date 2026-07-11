@@ -107,7 +107,12 @@ window.I18N_RU = {
   "backends.test_fail": "Бэкенд {name} не отвечает",
   "backends.testing": "Проверка {name}...",
   "backends.host": "Хост",
+  "backends.ollama_port": "Ollama Порт",
   "backends.agent_port": "Порт агента",
+  "backends.max_concurrent": "Max Concurrent",
+  "backends.max_models": "Max Models",
+  "backends.has_agent": "Агент",
+  "backends.tags": "Метки",
 
   // Models
   "models.title": "Модели",

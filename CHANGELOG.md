@@ -528,6 +528,68 @@ inference через несколько worker'ов. План см. `plans/2026-
 
 См. также: `docs/phase-8-rpc-coordinator.md`, `docs/rpc-coordinator.md`.
 
+## [Unreleased — 2026-07-11] — i18n: полный набор EN docs + parity tests
+
+**Цель**: документация проекта доступна на двух языках (RU + EN);
+WebUI i18n keys синхронизированы между `en.js` и `ru.js` (parity test
+предотвращает drift).
+
+### Added
+
+**English translations (10 новых EN docs)**:
+- `docs/en/rpc-coordinator.md` — P.1 production mode (10KB, hand-translated)
+- `docs/en/virtual-router.md` — P.2 production mode (10KB, hand-translated)
+- `docs/en/runbook-tools.md` — operational runbook scenarios A-G (29KB)
+- `docs/en/backend-type-isolation.md` — Ollama vs llama.cpp isolation
+- `docs/en/cppworker-metrics-collection.md` — agent metrics
+- `docs/en/cppworker-model-params.md` — n_ctx resolver, profiles, RAM fallback
+- `docs/en/metrics.md` — full metrics reference
+- `docs/en/phase-7-style-compliance.md` — style guide
+- `docs/en/phase-8-p3-research.md` — Tensor Parallelism research
+- `docs/en/phase-8-rpc-coordinator.md` — P.1 implementation log
+
+**WebUI i18n additions** (5 missing keys found via HTML scan, добавлены в en.js + ru.js):
+- `backends.ollama_port` — "Ollama Port" / "Ollama Порт"
+- `backends.max_concurrent` — "Max Concurrent" / "Max Concurrent"
+- `backends.max_models` — "Max Models" / "Max Models"
+- `backends.has_agent` — "Agent" / "Агент"
+- `backends.tags` — "Tags" / "Метки"
+
+**i18n parity test** (`internal/api/lint_css_i18n_test.go`):
+- `TestI18nKeyParity_EN_RU` — validates en.js и ru.js содержат identical
+  set of keys. При добавлении нового ключа тест упадёт, если забыть
+  синхронизировать оба файла. Сейчас 1072 ключей в каждом.
+
+**HTML fixes** (`webui/index.html`):
+- 4 hardcoded Russian strings ("Хост", "Агент", "Метки", "Ollama Порт", "Agent Порт",
+  "Max Concurrent", "Max Models", "Все") получили `data-i18n` атрибуты.
+- Теперь переключение языка в реальном времени работает для всех полей.
+
+**Docs README** (`docs/README.md`):
+- Добавлена секция "🌍 Multilingual" с ссылками на оба языка.
+- Каждый документ в таблице имеет ссылку на свой EN аналог.
+- 19 EN docs теперь доступны (15 main + 4 reference).
+
+### Statistics
+
+| | Before | After |
+|---|---|---|
+| RU docs (main) | 15 | 15 |
+| EN docs | 9 | **19** |
+| WebUI i18n keys (en.js / ru.js) | 1067 | 1072 |
+| HTML hardcoded RU strings | 5 | 0 |
+| i18n parity test | ❌ | ✅ `TestI18nKeyParity_EN_RU` |
+
+### Verification
+
+- `go test -tags llama_stub ./internal/api/` → all pass, including
+  new `TestI18nKeyParity_EN_RU` (0.00s) and existing `TestLintCSSAndI18nNoEmDash`.
+- `go build -tags llama_stub ./...` → OK.
+- WebUI language switcher: 🇬🇧/🇷🇺 переключаются в реальном времени,
+  выбор сохраняется в `localStorage` (`ollamalegion_lang`).
+- All HTML `data-i18n` keys resolve correctly in both languages.
+
+
 ## [Unreleased — 2026-06-28h]
 <task_progress>
 - [x] Реализовать SplitReasoningContent и IsReasoningModel в cppworker (commit 824738d)

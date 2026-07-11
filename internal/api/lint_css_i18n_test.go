@@ -25,9 +25,12 @@
 package api
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"runtime"
+	"sort"
 	"strings"
 	"testing"
 )
@@ -207,4 +210,86 @@ func lintItoa(n int) string {
 		buf[i] = '-'
 	}
 	return string(buf[i:])
+}
+
+// TestI18nKeyParity_EN_RU — проверяет, что webui/js/i18n/en.js и ru.js
+// содержат одинаковый набор ключей (1073+).
+//
+// Зачем: при добавлении нового ключа легко забыть синхронизировать оба файла.
+// Этот тест гарантирует parity — иначе language switch показывает fallback.
+//
+// Phase 8 (2026-07-11): добавлен как часть i18n hardening.
+func TestI18nKeyParity_EN_RU(t *testing.T) {
+	repoRoot := findRepoRoot(t)
+	enPath := filepath.Join(repoRoot, "webui", "js", "i18n", "en.js")
+	ruPath := filepath.Join(repoRoot, "webui", "js", "i18n", "ru.js")
+
+	enKeys := extractI18nKeys(t, enPath)
+	ruKeys := extractI18nKeys(t, ruPath)
+
+	if len(enKeys) != len(ruKeys) {
+		t.Errorf("i18n key count mismatch: en.js=%d, ru.js=%d (expected equal)",
+			len(enKeys), len(ruKeys))
+	}
+
+	// In en.js but missing from ru.js.
+	missingInRu := diffKeys(enKeys, ruKeys)
+	if len(missingInRu) > 0 {
+		t.Errorf("keys in en.js but missing from ru.js (%d):\n  %s\n"+
+			"Add these keys to ru.js (or remove from en.js if obsolete).",
+			len(missingInRu), joinKeys(missingInRu, 20))
+	}
+
+	// In ru.js but missing from en.js.
+	missingInEn := diffKeys(ruKeys, enKeys)
+	if len(missingInEn) > 0 {
+		t.Errorf("keys in ru.js but missing from en.js (%d):\n  %s\n"+
+			"Add these keys to en.js (or remove from ru.js if obsolete).",
+			len(missingInEn), joinKeys(missingInEn, 20))
+	}
+}
+
+// extractI18nKeys парсит i18n JS-файл и возвращает sorted unique keys.
+// Поддерживает формат "key": "value" (внутри window.I18N_EN = {...}).
+func extractI18nKeys(t *testing.T, path string) []string {
+	t.Helper()
+	content, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("cannot read %s: %v", path, err)
+	}
+	// Regex: "key": "value" — match quoted key followed by colon.
+	re := regexp.MustCompile(`"([a-zA-Z][a-zA-Z0-9._]*)"\s*:\s*"`)
+	matches := re.FindAllStringSubmatch(string(content), -1)
+	keys := make(map[string]bool)
+	for _, m := range matches {
+		keys[m[1]] = true
+	}
+	result := make([]string, 0, len(keys))
+	for k := range keys {
+		result = append(result, k)
+	}
+	sort.Strings(result)
+	return result
+}
+
+func diffKeys(a, b []string) []string {
+	bSet := make(map[string]bool, len(b))
+	for _, k := range b {
+		bSet[k] = true
+	}
+	var diff []string
+	for _, k := range a {
+		if !bSet[k] {
+			diff = append(diff, k)
+		}
+	}
+	sort.Strings(diff)
+	return diff
+}
+
+func joinKeys(keys []string, max int) string {
+	if len(keys) <= max {
+		return strings.Join(keys, "\n  ")
+	}
+	return strings.Join(keys[:max], "\n  ") + fmt.Sprintf("\n  ... and %d more", len(keys)-max)
 }

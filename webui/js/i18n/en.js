@@ -107,7 +107,12 @@ window.I18N_EN = {
   "backends.test_fail": "Backend {name} is not responding",
   "backends.testing": "Testing {name}...",
   "backends.host": "Host",
+  "backends.ollama_port": "Ollama Port",
   "backends.agent_port": "Agent Port",
+  "backends.max_concurrent": "Max Concurrent",
+  "backends.max_models": "Max Models",
+  "backends.has_agent": "Agent",
+  "backends.tags": "Tags",
 
   // Models
 

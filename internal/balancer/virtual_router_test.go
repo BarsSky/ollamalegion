@@ -611,5 +611,112 @@ func TestVirtualRouter_Auth_OpenAIFormat_401(t *testing.T) {
 // fakeAuthChecker — test double для AuthChecker.
 // Определён в auth_checker_test.go (общий).
 
+// =====================================================================
+// Phase 8 P.2 backlog: Auto-failover tests.
+// =====================================================================
+
+// TestVirtualRouter_Failover_PrimaryDown_RetryNext — primary backend down,
+// retry на next candidate in pool. Должен вернуть success от 2-го backend.
+func TestVirtualRouter_Failover_PrimaryDown_RetryNext(t *testing.T) {
+	t.Parallel()
+
+	// Backend 1: alive.
+	b1 := newFakeBackend(t)
+	// Backend 2: not listening (port 1).
+	b2Host := "127.0.0.1"
+	b2Port := 1
+
+	registry := newRegistryWithVMs(t, types.VirtualModelConfig{
+		Name:      "vm-failover",
+		Selection: virtualmodel.SelectionRoundRobin,
+		// b2 first (selected, will fail), b1 second (failover target).
+		// NB: round-robin counter might pick either; we use a single test
+		// scenario where selector returns b2 first.
+		BackendPool: []string{
+			fmt.Sprintf("%s:%d", b2Host, b2Port),    // primary — will fail
+			fmt.Sprintf("%s:%d", b1.host, b1.port), // failover — succeeds
+		},
+		ModelName: "physical",
+	})
+	proxy := newTestProxy(t)
+	router := NewVirtualRouter(registry, proxy)
+
+	// Force selector to always return b2 (so primary is the down one).
+	if rr, ok := router.selectors["vm-failover"].(*virtualmodel.RoundRobinSelector); ok {
+		_ = rr
+	}
+	// Reset round-robin + use a custom selector that always returns b2.
+	router.selectorsMu.Lock()
+	router.selectors["vm-failover"] = virtualmodel.NewSelector(virtualmodel.SelectionRoundRobin)
+	router.selectorsMu.Unlock()
+
+	// After reset, round-robin counter starts at 0, so first call returns pool[0] = b2.
+	body := bytes.NewReader([]byte(`{"model":"vm-failover","prompt":"hi","stream":false}`))
+	req := httptest.NewRequest(http.MethodPost, "/api/generate", body)
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+
+	// Должен succeed от b1 (failover).
+	assert.Equal(t, http.StatusOK, w.Code,
+		"body: %s", w.Body.String())
+	assert.Equal(t, fmt.Sprintf("%s:%d", b1.host, b1.port), w.Header().Get("X-Original-Backend"),
+		"X-Original-Backend should be the failover target b1")
+	assert.Equal(t, "2", w.Header().Get("X-Failover-Attempts"),
+		"X-Failover-Attempts should be 2 (1 primary failed, 1 retry succeeded)")
+
+	// b1 должен получить ровно 1 запрос.
+	assert.Equal(t, int64(1), b1.calls.Load())
+}
+
+// TestVirtualRouter_Failover_AllDown_502 — все backends down → 502.
+func TestVirtualRouter_Failover_AllDown_502(t *testing.T) {
+	t.Parallel()
+	registry := newRegistryWithVMs(t, types.VirtualModelConfig{
+		Name:      "vm-alldown",
+		Selection: virtualmodel.SelectionRoundRobin,
+		// 2 backends, оба на port 1 (not listening).
+		BackendPool: []string{"127.0.0.1:1", "127.0.0.1:2"},
+		ModelName:   "physical",
+	})
+	proxy := newTestProxy(t)
+	router := NewVirtualRouter(registry, proxy)
+
+	body := bytes.NewReader([]byte(`{"model":"vm-alldown","prompt":"hi","stream":false}`))
+	req := httptest.NewRequest(http.MethodPost, "/api/generate", body)
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+
+	assert.Equal(t, http.StatusBadGateway, w.Code,
+		"all backends down should return 502")
+	// Ollama format: {error: "all 2 backends failed for model \"vm-alldown\", ..."}
+	assert.Contains(t, w.Body.String(), "backends failed",
+		"body should mention 'backends failed', got: %s", w.Body.String())
+}
+
+// TestBuildFailoverCandidates — unit test для candidate list builder.
+func TestBuildFailoverCandidates(t *testing.T) {
+	t.Parallel()
+
+	// Single backend, no duplicates.
+	got := buildFailoverCandidates("a:1", []string{"a:1"})
+	assert.Equal(t, []string{"a:1"}, got)
+
+	// Primary + 1 other.
+	got = buildFailoverCandidates("b:2", []string{"a:1", "b:2", "c:3"})
+	assert.Equal(t, []string{"b:2", "a:1", "c:3"}, got)
+
+	// Primary not in pool (edge case).
+	got = buildFailoverCandidates("d:4", []string{"a:1", "b:2"})
+	assert.Equal(t, []string{"d:4", "a:1", "b:2"}, got)
+
+	// Empty pool.
+	got = buildFailoverCandidates("a:1", nil)
+	assert.Equal(t, []string{"a:1"}, got)
+
+	// Empty primary.
+	got = buildFailoverCandidates("", []string{"a:1", "b:2"})
+	assert.Equal(t, []string{"a:1", "b:2"}, got)
+}
+
 // Suppress unused time import warning (used in some test patterns).
 var _ = time.Second

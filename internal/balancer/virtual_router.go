@@ -345,33 +345,105 @@ func (r *VirtualRouter) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 		r.metrics.StreamPassThrough.Add(1)
 	}
 
-	// 8. Construct new request to the selected backend.
-	// Parse "host:port" → http://host:port/path.
-	host, port, err := parseBackendHostPort(backendID)
-	if err != nil {
-		writeVirtualRouterError(w, req.URL.Path, http.StatusInternalServerError,
-			"parse backend address: "+err.Error(), "backend_address_error")
-		r.metrics.InferenceErrors.Add(1)
-		return
-	}
-	targetURL := fmt.Sprintf("http://%s:%d%s", host, port, req.URL.Path)
-
-	// 9. Apply timeout from virtual model config (or default 30s).
+	// 8. Apply timeout from virtual model config (or default 30s).
 	timeout := 30 * time.Second
 	if vm.Config.Coordination.TimeoutMs > 0 {
 		timeout = time.Duration(vm.Config.Coordination.TimeoutMs) * time.Millisecond
 	}
 
-	// 10. Create proxy request.
+	// Get original model name for X-Virtual-Model header (re-parse body).
+	var origEnv struct {
+		Model string `json:"model"`
+	}
+	_ = json.Unmarshal(body, &origEnv) // best effort
+
+	// 9. Phase 8 P.2 backlog: auto-failover — try multiple backends on failure.
+	//
+	// Build candidate list: starts with selected backend, then iterates through
+	// remaining pool (skipping already-tried). On connection refused / timeout,
+	// попробовать next. После всех failed → 502 / 503.
+	candidates := buildFailoverCandidates(backendID, vm.Config.BackendPool)
+	var lastErr error
+	for i, candidateID := range candidates {
+		if i > 0 {
+			// Failover: log + increment metrics.
+			logger.Get().Warnw("virtual_router: failover retry",
+				"attempt", i+1, "from", backendID, "to", candidateID,
+				"prev_error", lastErr)
+			r.metrics.InferenceErrors.Add(1)
+		}
+		host, port, err := parseBackendHostPort(candidateID)
+		if err != nil {
+			lastErr = fmt.Errorf("parse backend address %q: %w", candidateID, err)
+			continue
+		}
+		targetURL := fmt.Sprintf("http://%s:%d%s", host, port, req.URL.Path)
+		resp, retryable, err := r.proxyToBackend(
+			req, targetURL, candidateID, rewrittenBody, origEnv.Model,
+			selector.Name(), timeout,
+		)
+		if err == nil {
+			// Success — copy response to client.
+			defer resp.Body.Close()
+			for k, v := range resp.Header {
+				if k == "Content-Length" || k == "Connection" {
+					continue
+				}
+				w.Header()[k] = v
+			}
+			w.Header().Set("X-Original-Backend", candidateID)
+			w.Header().Set("X-Virtual-Model", origEnv.Model)
+			if i > 0 {
+				w.Header().Set("X-Failover-Attempts", fmt.Sprintf("%d", i+1))
+			}
+			w.WriteHeader(resp.StatusCode)
+			if _, copyErr := io.Copy(w, resp.Body); copyErr != nil {
+				logger.Get().Warnw("virtual_router: response copy failed",
+					"backend", candidateID, "error", copyErr)
+				r.metrics.InferenceErrors.Add(1)
+			}
+			return
+		}
+		lastErr = err
+		if !retryable {
+			// Non-retryable error (e.g. 4xx from backend) — fail immediately.
+			logger.Get().Debugw("virtual_router: non-retryable error from backend",
+				"backend", candidateID, "error", err)
+			// err уже записан в response writer; return.
+			return
+		}
+		// Retryable: try next candidate.
+	}
+
+	// Все candidates failed.
+	r.metrics.InferenceErrors.Add(1)
+	r.metrics.SelectionSkips.Add(1)
+	writeVirtualRouterError(w, req.URL.Path, http.StatusBadGateway,
+		fmt.Sprintf("all %d backends failed for model %q, last error: %v",
+			len(candidates), origEnv.Model, lastErr),
+		"all_backends_failed")
+}
+
+// proxyToBackend — single attempt to proxy request to a backend.
+// Returns:
+//   - resp: non-nil on HTTP success (any 2xx/4xx/5xx from backend)
+//   - retryable: true if err is network-level (connection refused, timeout)
+//     → caller should try next candidate. false if err is HTTP-level
+//     (backend returned 5xx) or already written to w.
+//   - err: error reason (nil on success)
+func (r *VirtualRouter) proxyToBackend(
+	req *http.Request,
+	targetURL, backendID string,
+	rewrittenBody []byte,
+	originalModel, strategy string,
+	timeout time.Duration,
+) (*http.Response, bool, error) {
 	ctx, cancel := context.WithTimeout(req.Context(), timeout)
 	defer cancel()
 
 	proxyReq, err := http.NewRequestWithContext(ctx, req.Method, targetURL, bytes.NewReader(rewrittenBody))
 	if err != nil {
-		writeVirtualRouterError(w, req.URL.Path, http.StatusInternalServerError,
-			"create proxy request: "+err.Error(), "proxy_request_error")
-		r.metrics.InferenceErrors.Add(1)
-		return
+		return nil, true, fmt.Errorf("create proxy request: %w", err)
 	}
 	// Copy original headers (кроме Host).
 	for k, v := range req.Header {
@@ -380,48 +452,44 @@ func (r *VirtualRouter) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 		}
 		proxyReq.Header[k] = v
 	}
-	// Re-set X-Original-Backend (it's in req.Header, so already copied).
-	// Add X-Virtual-Model with the ORIGINAL virtual name (we re-derive from raw body).
-	// Simplest: re-parse original body to get original model name.
-	var origEnv struct {
-		Model string `json:"model"`
-	}
-	_ = json.Unmarshal(body, &origEnv) // best effort
-	proxyReq.Header.Set("X-Virtual-Model", origEnv.Model)
+	proxyReq.Header.Set("X-Virtual-Model", originalModel)
 	proxyReq.Header.Set("X-Backend-Selected", backendID)
-	proxyReq.Header.Set("X-Selection-Strategy", selector.Name())
+	proxyReq.Header.Set("X-Selection-Strategy", strategy)
 
-	// 11. Execute request.
-	client := &http.Client{
-		Timeout: timeout,
-	}
+	client := &http.Client{Timeout: timeout}
 	resp, err := client.Do(proxyReq)
 	if err != nil {
-		writeVirtualRouterError(w, req.URL.Path, http.StatusBadGateway,
-			"backend request failed: "+err.Error(), "backend_unreachable")
-		r.metrics.InferenceErrors.Add(1)
-		return
+		// Network error (connection refused, timeout, etc.) — retryable.
+		return nil, true, err
 	}
-	defer resp.Body.Close()
+	// HTTP response from backend. Check status — 5xx = retryable, 4xx = not.
+	if resp.StatusCode >= 500 {
+		resp.Body.Close()
+		return nil, true, fmt.Errorf("backend returned %d", resp.StatusCode)
+	}
+	// 2xx/3xx/4xx — return as-is (not retryable).
+	return resp, false, nil
+}
 
-	// 12. Copy response headers.
-	for k, v := range resp.Header {
-		if k == "Content-Length" || k == "Connection" {
-			continue
+// buildFailoverCandidates — строит ordered list кандидатов для failover.
+// Начинается с primary (selected) backend, затем остальные pool'а (в original order).
+// Исключает дубликаты. Если pool = 1 → 1 candidate. Если 0 → empty.
+func buildFailoverCandidates(primary string, pool []string) []string {
+	seen := make(map[string]bool)
+	result := make([]string, 0, len(pool))
+	// Primary first.
+	if primary != "" && !seen[primary] {
+		seen[primary] = true
+		result = append(result, primary)
+	}
+	// Then remaining pool in order.
+	for _, b := range pool {
+		if !seen[b] {
+			seen[b] = true
+			result = append(result, b)
 		}
-		w.Header()[k] = v
 	}
-	// Add debug header back to response (for client-side observability).
-	w.Header().Set("X-Original-Backend", backendID)
-	w.Header().Set("X-Virtual-Model", origEnv.Model)
-
-	// 13. Status code + body.
-	w.WriteHeader(resp.StatusCode)
-	if _, err := io.Copy(w, resp.Body); err != nil {
-		logger.Get().Warnw("virtual_router: response copy failed",
-			"backend", backendID, "error", err)
-		r.metrics.InferenceErrors.Add(1)
-	}
+	return result
 }
 
 // getOrCreateSelector — lazy create + cache selector per virtual model.

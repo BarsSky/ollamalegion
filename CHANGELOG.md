@@ -306,6 +306,45 @@ retry отсутствовал.
     (3 chunks + [DONE]).
 
 **Production status: P.2 (virtual_router) — STEPS 1-6 COMPLETE.**
+
+**Step 7 (commits `1b0e537` + `554926e`)** — P.2 backlog cleanup:
+
+### Auth middleware для VirtualRouter (commit `1b0e537`)
+- `internal/balancer/auth_checker.go` (NEW): `AuthChecker` interface
+  extracted from rpc_coordinator_dispatcher (shared между dispatcher
+  + virtual_router).
+- `internal/balancer/auth_checker_test.go` (NEW): `fakeAuthChecker`
+  test double, общий для всех auth тестов (раньше был дублирован).
+- `internal/balancer/virtual_router.go`:
+  - `SetAuthenticator(checker)` — устанавливает checker.
+  - `checkAuth(w, req)` — вызывается в начале ServeHTTP. Если auth
+    enabled + token invalid → 401 в per-endpoint format (Ollama
+    {error: msg} / OpenAI {error: {message, type: 'unauthorized'}}).
+  - `authChecker` field добавлен в struct.
+- `cmd/balancer/main.go`: при `IsVirtualRouterMode + conf.Auth.Enabled`
+  → `router.SetAuthenticator(api.NewTokenAuthenticator(...))`.
+- 5 новых auth тестов: NoToken_Rejected, ValidToken_Allowed,
+  Disabled_NoCheck, NilChecker_NoCheck, OpenAIFormat_401.
+
+### Auto-failover (commit `554926e`)
+- `internal/balancer/virtual_router.go`:
+  - `proxyToBackend()` — extracted single attempt. Returns
+    (resp, retryable, err). Network error + 5xx → retryable=true.
+    4xx → not retryable.
+  - `buildFailoverCandidates(primary, pool)` — ordered list
+    (primary first, then rest of pool). Dedup, empty-pool safe.
+  - `ServeHTTP` refactored: цикл по candidates. Network/5xx → try
+    next. All failed → 502 all_backends_failed.
+  - Success → `X-Failover-Attempts: N` header (если N>1).
+- 3 новых failover теста: PrimaryDown_RetryNext, AllDown_502,
+  BuildFailoverCandidates (5 unit cases).
+
+**Production status: P.2 (virtual_router) — STEPS 1-7 COMPLETE.**
+
+**P.4 (3.1) layer-mode TP — commit `85b0be7`:** wiring tensor_split +
+split_mode в C bridge + cppworker env vars (CPPWORKER_TENSOR_SPLIT,
+CPPWORKER_SPLIT_MODE) + 19 unit тестов. Multi-GPU box теперь может
+распределять слои между GPU через env vars без перекомпиляции.
   Foundation готов. Step 6 (CRUD REST API + WebUI) — deferred.
 
 ### Известные ограничения (post-P.2 backlog)

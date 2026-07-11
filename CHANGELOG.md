@@ -347,15 +347,21 @@ CPPWORKER_SPLIT_MODE) + 19 unit тестов. Multi-GPU box теперь мож�
 распределять слои между GPU через env vars без перекомпиляции.
   Foundation готов. Step 6 (CRUD REST API + WebUI) — deferred.
 
+**Item 2 (LoadProvider wire-up) — commit `8e9ab04`:** real load balancing
+for `least_loaded` selector через `proxy.GetBackendFreeSlots(backendID)`
+(MaxConcurrentReqs - ActiveReqs). 3 новых теста + fix pre-existing
+flaky test (`TestVirtualRouter_AllBackendsDown_502` теперь отражает
+post-failover semantic).
+
 ### Известные ограничения (post-P.2 backlog)
 - **No automatic failover**: при backend down connection refused → 502.
-  Selector не retry'ит на следующий backend. Phase 9: добавить retry logic.
+  Selector не retry'ит на следующий backend. Phase 9: добавить retry logic. ✅ DONE (commit `554926e`)
 - **LoadProvider stub**: `least_loaded` без настроенного provider использует
   fallback `FreeSlots=1` (эквивалент round-robin). Phase 9: wire с
-  `Proxy.GetBackendMetrics()`.
+  `Proxy.GetBackendMetrics()`. ✅ DONE (commit `8e9ab04` — `MaxConcurrentReqs - ActiveReqs`)
 - **Pipeline mode не через VirtualRouter**: только alias-on-pool mode.
 - **No auth**: в отличие от P.1, virtual_router пока не проверяет token.
-  Phase 9.
+  Phase 9. ✅ DONE (commit `1b0e537` — TokenAuthenticator wire)
 
 См. также: `docs/virtual-router.md`, `docs/phase-8-rpc-coordinator.md`.
 

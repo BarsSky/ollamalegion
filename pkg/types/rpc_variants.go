@@ -86,6 +86,22 @@ type RpcCoordinatorConfig struct {
 	Timeout    string `json:"timeout"`     // (legacy) "30s" — superseded by RequestTimeout
 	Protocol   string `json:"protocol"`    // (legacy) "http" | "grpc"
 	MaxRetries int    `json:"maxRetries"`  // (legacy) для FailoverPolicy="retry"
+
+	// CircuitBreaker — настройки per-worker circuit breaker (Phase 8 Session 3.3).
+	// Применяется в dispatcher'е: накапливает failure/success по каждому worker'у
+	// и skip'ает workers с Open breaker (fail-fast вместо cascade failures).
+	CircuitBreaker CircuitBreakerConfig `json:"circuitBreaker"`
+}
+
+// CircuitBreakerConfig — параметры circuit breaker (per-worker).
+// Phase 8 Session 3.3: defaults применяются если значения = 0.
+type CircuitBreakerConfig struct {
+	// FailureThreshold — число failures перед Open. Default 5.
+	FailureThreshold int `json:"failureThreshold"`
+	// SuccessThreshold — successes в HalfOpen для перехода в Closed. Default 1.
+	SuccessThreshold int `json:"successThreshold"`
+	// ResetTimeoutMs — время в Open перед HalfOpen probe (ms). Default 30000.
+	ResetTimeoutMs int `json:"resetTimeoutMs"`
 }
 
 // RpcWorkerConfig - конфигурация RPC worker'а

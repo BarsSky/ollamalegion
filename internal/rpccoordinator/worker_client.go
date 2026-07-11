@@ -2,12 +2,14 @@
 package rpccoordinator
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -358,4 +360,147 @@ func (wc *WorkerClient) RefreshMetrics(ctx context.Context) error {
 
 	wc.LastMetrics.Store(snap)
 	return nil
+}
+
+// =====================================================================
+// Phase 8 (2026-07-10): Session 3.2 — streaming inference (SSE).
+//
+// Worker имеет handleInferStream (POST /rpc/infer?stream=true) — стримит
+// токены через SSE. WorkerClient.InferSliceStream даёт iterator-based API
+// поверх этого — caller получает токены через callback по мере чтения.
+// =====================================================================
+
+// InferSliceStreamResult — один SSE-event от worker'а, распарсенный в структуру.
+// StreamTokenEvent — текстовый chunk ("event: token" → {"token":"..."}).
+// StreamDoneEvent — финальный event ("event: done" → {"done":true,...}).
+// StreamErrorEvent — error event ("event: error" → {"error":"...","message":"..."}).
+type StreamEvent struct {
+	Type    string          // "token" | "done" | "error" | "start" | "unknown"
+	Payload json.RawMessage // raw JSON payload
+}
+
+// OnTokenFunc — callback для streaming chunks. Вернёт non-nil error чтобы
+// прервать чтение (например, клиент отвалился). Coordinator пробрасывает
+// эту ошибку наверх.
+type OnTokenFunc func(token string, tokenIndex int) error
+
+// InferSliceStream — POST /rpc/infer?stream=true, читает SSE events и
+// вызывает onToken для каждого token event.
+//
+// Возвращает:
+//   - totalTokens — количество token events прочитанных
+//   - elapsedMs — время от старта запроса до последнего event
+//   - err — ошибка чтения SSE, callback error, или HTTP error
+//
+// Стрим читается синхронно в этой горутине. Caller (coordinator) вызывает
+// InferSliceStream последовательно для каждого slice pipeline'а.
+func (wc *WorkerClient) InferSliceStream(
+	ctx context.Context,
+	req SliceInferRequest,
+	onToken OnTokenFunc,
+) (totalTokens int, elapsedMs int64, err error) {
+	url := fmt.Sprintf("%s/rpc/infer?stream=true", wc.BaseURL())
+	body, err := json.Marshal(req)
+	if err != nil {
+		return 0, 0, err
+	}
+
+	httpReq, err := http.NewRequestWithContext(ctx, "POST", url, bytes.NewReader(body))
+	if err != nil {
+		return 0, 0, err
+	}
+	httpReq.Header.Set("Content-Type", "application/json")
+	httpReq.Header.Set("Accept", "text/event-stream")
+
+	resp, err := wc.httpClient.Do(httpReq)
+	if err != nil {
+		return 0, 0, err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		respBody, _ := io.ReadAll(resp.Body)
+		return 0, 0, fmt.Errorf("infer slice stream failed: %d: %s",
+			resp.StatusCode, string(respBody))
+	}
+
+	start := time.Now()
+	scanner := bufio.NewScanner(resp.Body)
+	// SSE events могут быть длинными (большие JSON payload'ы).
+	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
+
+	var (
+		eventType string
+		dataLines []string
+	)
+
+	for scanner.Scan() {
+		line := scanner.Text()
+
+		// Пустая строка — конец event'а. Парсим накопленные data.
+		if line == "" {
+			if len(dataLines) == 0 {
+				continue
+			}
+			data := strings.Join(dataLines, "\n")
+			ev := StreamEvent{
+				Type:    eventType,
+				Payload: json.RawMessage(data),
+			}
+			// Извлекаем token если это token event.
+			if ev.Type == "token" {
+				var p struct {
+					Token      string `json:"token"`
+					TokenIndex int    `json:"token_index"`
+				}
+				if jsonErr := json.Unmarshal([]byte(data), &p); jsonErr == nil && p.Token != "" {
+					if onToken != nil {
+						if cbErr := onToken(p.Token, p.TokenIndex); cbErr != nil {
+							return totalTokens, time.Since(start).Milliseconds(), cbErr
+						}
+					}
+					totalTokens++
+				}
+			} else if ev.Type == "error" {
+				var p struct {
+					Error   string `json:"error"`
+					Message string `json:"message"`
+				}
+				_ = json.Unmarshal([]byte(data), &p)
+				msg := p.Message
+				if msg == "" {
+					msg = p.Error
+				}
+				return totalTokens, time.Since(start).Milliseconds(),
+					fmt.Errorf("worker stream error: %s", msg)
+			} else if ev.Type == "done" {
+				// Final event — break loop, оставшиеся done stats не нужны.
+				break
+			}
+			// Reset для следующего event'а.
+			eventType = ""
+			dataLines = dataLines[:0]
+			continue
+		}
+
+		// SSE field line: "event: <type>" или "data: <payload>" или комментарии ":".
+		if strings.HasPrefix(line, "event:") {
+			eventType = strings.TrimSpace(strings.TrimPrefix(line, "event:"))
+		} else if strings.HasPrefix(line, "data:") {
+			data := strings.TrimPrefix(line, "data:")
+			// Первый пробел после data: — это часть формата (SSE spec).
+			if strings.HasPrefix(data, " ") {
+				data = data[1:]
+			}
+			dataLines = append(dataLines, data)
+		}
+		// Игнорируем id:, retry:, и комментарии (:).
+	}
+
+	if scanErr := scanner.Err(); scanErr != nil {
+		return totalTokens, time.Since(start).Milliseconds(),
+			fmt.Errorf("scan SSE: %w", scanErr)
+	}
+
+	return totalTokens, time.Since(start).Milliseconds(), nil
 }

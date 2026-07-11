@@ -14,6 +14,7 @@ import (
 	"ollama-loadbalancer/internal/api"
 	"ollama-loadbalancer/internal/balancer"
 	"ollama-loadbalancer/internal/config"
+	"ollama-loadbalancer/internal/rpccoordinator"
 	"ollama-loadbalancer/pkg/logger"
 	"ollama-loadbalancer/pkg/types"
 )
@@ -161,7 +162,7 @@ func main() {
 	// знать coordinator + proxy reference (для fallback в ShouldRoute).
 	//
 	// Phase 8 Session 2: только non-streaming + 6 unit tests.
-	// Phase 9 (Session 3): streaming + circuit breaker integration + auth.
+	// Phase 8 Session 3: streaming + circuit breaker integration + auth.
 	//
 	// Phase 8.5 scaffold в Proxy.ServeHTTP уже проверяет IsRpcCoordinatorMode
 	// + rpcDispatcher != nil + IsRpcPath — при выполнении всех 3 условий
@@ -169,16 +170,40 @@ func main() {
 	if balancer.IsRpcCoordinatorMode(conf.Balancing.OperatingMode) {
 		if coord := proxy.GetRpcCoordinator(); coord != nil {
 			dispatcher := balancer.NewRpcCoordinatorDispatcher(coord, proxy)
+			// Session 3.3: применяем circuit breaker config из RpcCoordinatorConfig
+			// (defaults: failure_threshold=5, success_threshold=1, reset_timeout=30s).
+			dispatcher.SetCircuitBreakerConfig(rpccoordinator.CircuitBreakerConfig{
+				FailureThreshold: defaultIfZero(conf.Balancing.RpcCoordinator.CircuitBreaker.FailureThreshold, 5),
+				SuccessThreshold: defaultIfZero(conf.Balancing.RpcCoordinator.CircuitBreaker.SuccessThreshold, 1),
+				ResetTimeout:     time.Duration(defaultIfZero(conf.Balancing.RpcCoordinator.CircuitBreaker.ResetTimeoutMs, 30000)) * time.Millisecond,
+			})
+			// Session 3.4: wire auth если auth.Enabled.
+			// AuthChecker interface в balancer реализуется *api.TokenAuthenticator
+			// (см. internal/balancer/rpc_coordinator_dispatcher.go).
+			if conf.Auth.Enabled {
+				authChecker := api.NewTokenAuthenticator(
+					conf.Auth.Tokens,
+					conf.Auth.HeaderName,
+					conf.Auth.Enabled,
+				)
+				dispatcher.SetAuthenticator(authChecker)
+				logger.Get().Infow("rpc_coordinator_dispatcher: auth wired",
+					"token_count", len(conf.Auth.Tokens),
+					"header", conf.Auth.HeaderName)
+			}
 			proxy.SetRpcCoordinatorDispatcher(dispatcher)
 			logger.Get().Infow("rpc_coordinator_dispatcher wired",
 				"mode", conf.Balancing.OperatingMode,
-			"coordinator_enabled", conf.Balancing.RpcCoordinator.Enabled,
-			"embedded", conf.Balancing.RpcCoordinator.Embedded)
+				"coordinator_enabled", conf.Balancing.RpcCoordinator.Enabled,
+				"embedded", conf.Balancing.RpcCoordinator.Embedded,
+				"cb_failure_threshold", conf.Balancing.RpcCoordinator.CircuitBreaker.FailureThreshold,
+				"cb_reset_timeout_ms", conf.Balancing.RpcCoordinator.CircuitBreaker.ResetTimeoutMs)
 		} else {
 			logger.Get().Warnw("rpc_coordinator mode is active but coordinator is nil — " +
 				"check balancing.rpcCoordinator.enabled in config")
 		}
 	}
+
 
 	// Запуск health checker
 	healthChecker.Start()
@@ -339,4 +364,13 @@ func main() {
 		}
 	}
 	fmt.Println("[Shutdown] Completed. Goodbye!")
+}
+
+// defaultIfZero — возвращает def если v == 0, иначе v. Helper для
+// optional config значений с defaults.
+func defaultIfZero(v, def int) int {
+	if v == 0 {
+		return def
+	}
+	return v
 }

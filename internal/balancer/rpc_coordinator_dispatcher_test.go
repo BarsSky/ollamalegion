@@ -422,38 +422,17 @@ func TestServeHTTP_NotInitialized(t *testing.T) {
 	}
 }
 
-// TestServeHTTP_BodyParseError — invalid JSON → 400.
-// NOTE: ServeHTTP returns 503 if coordinator is nil (which is the case
-// when NewRpcCoordinatorDispatcher is called with nil coord). So to test
-// body parse error, we need a real coordinator. For Session 2 we skip
-// this and rely on TestParseEnvelope_* to cover the JSON parsing logic.
-// The ServeHTTP-level body parse integration test is deferred to Session 3
-// (e2e with real coordinator).
-func TestServeHTTP_BodyParseError_DeferredToSession3(t *testing.T) {
-	t.Skip("body parse integration test requires real coordinator (Session 3 e2e)")
-}
+// TestServeHTTP_BodyParseError and TestServeHTTP_EmptyModel — оба теста
+// требуют реальный coordinator (с nil coord ServeHTTP возвращает 503
+// "coordinator not initialized" до body parsing). Реальные тесты
+// реализованы в rpc_coordinator_dispatcher_e2e_test.go (build tag llama_stub):
+//   - TestDispatcherE2E_BodyParseError
+//   - TestDispatcherE2E_EmptyModel
+// Старые Skip-заглушки удалены в Session 3.
 
-// TestServeHTTP_EmptyModel — model == "" → 400.
-// Same deferral as TestServeHTTP_BodyParseError.
-func TestServeHTTP_EmptyModel_DeferredToSession3(t *testing.T) {
-	t.Skip("empty-model integration test requires real coordinator (Session 3 e2e)")
-}
-
-// TestServeHTTP_StreamingNotImplemented — stream=true → 501.
-func TestServeHTTP_StreamingNotImplemented(t *testing.T) {
-	d := NewRpcCoordinatorDispatcher(nil, &Proxy{})
-
-	req := makeRequest(t, http.MethodPost, "/api/generate",
-		`{"model":"qwen3-a3b","prompt":"hi","stream":true}`)
-	w := httptest.NewRecorder()
-	d.ServeHTTP(w, req)
-
-	// 503 (coordinator nil) takes precedence over 501 (streaming not implemented).
-	// This is OK because both indicate "rpc_coordinator not ready".
-	if w.Code != http.StatusServiceUnavailable && w.Code != http.StatusNotImplemented {
-		t.Errorf("status = %d, want 503 or 501", w.Code)
-	}
-}
+// TestServeHTTP_StreamingSuccess — stream=true теперь работает (Session 3.2).
+// Coverage перенесён в TestDispatcherE2E_Streaming_OllamaGenerate и
+// TestDispatcherE2E_Streaming_OpenAIChat (build tag llama_stub, real workers).
 
 // =====================================================================
 // Test helpers (errors)

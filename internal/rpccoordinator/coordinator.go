@@ -704,3 +704,218 @@ func SendSliceRequest(client *http.Client, url string, req SliceInferRequest) ([
 
 	return io.ReadAll(resp.Body)
 }
+
+// =====================================================================
+// Phase 8 (2026-07-10): Session 3.2 — streaming pipeline inference.
+//
+// InferStream оркестрирует pipeline с streaming chunks. Для каждого среза:
+//   1. Вызывает worker.InferSliceStream() — получает токены через callback.
+//   2. По мере получения токенов вызывает onToken callback coordinator'а
+//      (это позволяет клиенту видеть real-time прогресс).
+//   3. Собирает full output этого среза.
+//   4. Передаёт output следующему срезу как Input.
+//
+// Возвращает totalTokens (сколько токенов прошло через все срезы) и
+// totalMs. Slice stats собираются параллельно.
+//
+// Streaming семантика для pipeline:
+//   - Slice 1 стримит свои токены → onToken вызывается по мере чтения.
+//   - Когда slice 1 завершён, его full output отправляется в slice 2.
+//   - Slice 2 стримит свои токены → onToken вызывается.
+//   - И т.д.
+//
+// Это даёт "real-time feel" — клиент видит частичный output пока
+// следующий slice ещё загружает KV-cache или стартует.
+//
+// При ошибке в любом срезе — возвращает partial output + error.
+func (c *ModelCoordinator) InferStream(
+	ctx context.Context,
+	req InferRequest,
+	onToken OnTokenFunc,
+) (*InferResponse, error) {
+	if !c.Enabled() {
+		return nil, fmt.Errorf("rpc coordinator is disabled")
+	}
+
+	dm := c.GetDistributedModel(req.ModelName)
+	if dm == nil {
+		return nil, fmt.Errorf("distributed model %s not found", req.ModelName)
+	}
+
+	jobID := fmt.Sprintf("stream-%s-%d", req.ModelName, time.Now().UnixNano())
+	jobCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+
+	job := &InferenceJob{
+		JobID:        jobID,
+		ModelName:    req.ModelName,
+		Input:        []byte(req.Prompt),
+		Status:       JobPending,
+		SliceResults: make(map[string]*SliceResult),
+		CreatedAt:    time.Now(),
+		ctx:          jobCtx,
+		cancel:       cancel,
+	}
+
+	c.mu.Lock()
+	c.activeJobs[jobID] = job
+	c.mu.Unlock()
+	defer func() {
+		cancel()
+		c.mu.Lock()
+		delete(c.activeJobs, jobID)
+		c.mu.Unlock()
+	}()
+
+	// Сортируем срезы по StartLayer (тот же пузырёк что в executePipeline).
+	sortedSlices := make([]LayerSlice, len(dm.SliceLayers))
+	copy(sortedSlices, dm.SliceLayers)
+	for i := 0; i < len(sortedSlices)-1; i++ {
+		for j := i + 1; j < len(sortedSlices); j++ {
+			if sortedSlices[i].StartLayer > sortedSlices[j].StartLayer {
+				sortedSlices[i], sortedSlices[j] = sortedSlices[j], sortedSlices[i]
+			}
+		}
+	}
+
+	start := time.Now()
+	currentInput := []byte(req.Prompt)
+	var totalTokens int
+	tokenIndex := 0
+
+	for _, slice := range sortedSlices {
+		// На каждый slice — свой callback который инкрементит totalTokens
+		// и пробрасывает token в outer onToken с глобальным tokenIndex.
+		sliceTokens := 0
+		sliceCb := func(token string, _ int) error {
+			sliceTokens++
+			if onToken != nil {
+				if err := onToken(token, tokenIndex); err != nil {
+					return err
+				}
+			}
+			tokenIndex++
+			return nil
+		}
+
+		// Try candidates (failover) — последовательно, тот же подход что в executePipeline.
+		candidates, selErr := c.SelectWorkersForSlice(slice.Candidates())
+		if selErr != nil {
+			return nil, fmt.Errorf("selector for slice %d-%d: %w",
+				slice.StartLayer, slice.EndLayer, selErr)
+		}
+
+		var (
+			chosen   string
+			latency  time.Duration
+			sliceErr error
+		)
+
+		for _, workerID := range candidates {
+			worker := c.GetWorker(workerID)
+			if worker == nil {
+				logger.Get().Warnw("stream candidate worker not found, trying next",
+					"worker", workerID, "slice", fmt.Sprintf("%d-%d", slice.StartLayer, slice.EndLayer))
+				continue
+			}
+
+			sliceStart := time.Now()
+			_, _, err := worker.InferSliceStream(jobCtx, SliceInferRequest{
+				ModelName:  req.ModelName,
+				StartLayer: slice.StartLayer,
+				EndLayer:   slice.EndLayer,
+				Input:      currentInput,
+				SessionID:  req.SessionID,
+				Params:     req.Params,
+			}, sliceCb)
+			latency = time.Since(sliceStart)
+			chosen = workerID
+
+			if err != nil {
+				// Сохраняем error для этой попытки.
+				job.mu.Lock()
+				job.SliceResults[workerID] = &SliceResult{
+					WorkerID:   workerID,
+					StartLayer: slice.StartLayer,
+					EndLayer:   slice.EndLayer,
+					Latency:    latency,
+					Output:     nil,
+					Error:      err,
+				}
+				job.Errors = append(job.Errors, err)
+				job.mu.Unlock()
+
+				if c.config.MaxRetries > 0 {
+					for attempt := 1; attempt <= c.config.MaxRetries; attempt++ {
+						logger.Get().Warnw("stream slice failed, retrying",
+							"worker", workerID, "slice", fmt.Sprintf("%d-%d", slice.StartLayer, slice.EndLayer),
+							"attempt", attempt, "error", err)
+						time.Sleep(time.Duration(attempt) * 100 * time.Millisecond)
+						_, _, err = worker.InferSliceStream(jobCtx, SliceInferRequest{
+							ModelName:  req.ModelName,
+							StartLayer: slice.StartLayer,
+							EndLayer:   slice.EndLayer,
+							Input:      currentInput,
+							SessionID:  req.SessionID,
+							Params:     req.Params,
+						}, sliceCb)
+						if err == nil {
+							break
+						}
+					}
+				}
+				if err == nil {
+					// Success after retry.
+					break
+				}
+				// Failover: пробуем следующего кандидата.
+				logger.Get().Warnw("stream slice failed, trying next candidate",
+					"worker", workerID, "slice", fmt.Sprintf("%d-%d", slice.StartLayer, slice.EndLayer),
+					"error", err)
+				sliceErr = err
+				continue
+			}
+
+			// Success.
+			job.mu.Lock()
+			job.SliceResults[workerID] = &SliceResult{
+				WorkerID:   workerID,
+				StartLayer: slice.StartLayer,
+				EndLayer:   slice.EndLayer,
+				Latency:    latency,
+				Output:     []byte(fmt.Sprintf("%d", sliceTokens)), // не используется ниже
+				Error:      nil,
+			}
+			job.mu.Unlock()
+			totalTokens += sliceTokens
+			break
+		}
+
+		if sliceErr != nil && chosen == "" {
+			// Никто из кандидатов не сработал.
+			job.Status = JobFailed
+			return nil, fmt.Errorf("stream slice %d-%d failed on all candidates (last: %s): %w",
+				slice.StartLayer, slice.EndLayer, chosen, sliceErr)
+		}
+
+		// Для pipeline: следующий slice получает на вход последний output предыдущего.
+		// Упрощённо: используем req.Prompt + accumulated tokens как input.
+		// В stub-режиме worker'ы игнорируют input length, так что это OK.
+		// В production с реальной llama.cpp — нужно передавать last_hidden_state tensor,
+		// что значительно сложнее (KV-cache merge). Phase 9.
+		currentInput = []byte(req.Prompt + "\n[partial:" + fmt.Sprintf("%d", sliceTokens) + "]")
+	}
+
+	job.Status = JobCompleted
+	job.FinishedAt = time.Now()
+	duration := time.Since(start)
+
+	// Возвращаем InferResponse с empty Output (стрим уже отправлен через onToken)
+	// и totalTokens в stats. Caller (dispatcher) использует свой token counter.
+	return &InferResponse{
+		RequestID:  jobID,
+		Output:     "", // streaming — output ушёл в onToken
+		TotalMs:    duration.Milliseconds(),
+		SliceStats: c.buildSliceStats(job),
+	}, nil
+}

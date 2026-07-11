@@ -39,10 +39,11 @@ type RpcCoordinatorDispatcher struct {
 	proxy       *Proxy
 
 	// circuitBreakers — per-worker CircuitBreaker (Phase 8.3: для failover).
-	// Phase 9: integrate with coordinator.executePipeline() (обёртка для
-	// каждого worker slice — Allow() before Infer, RecordSuccess/Failure after).
+	// Phase 8 Session 3.3: lazy init в getOrCreateCircuitBreaker с
+	// дефолтами из cbDefaults (или из RpcCoordinatorConfig.CircuitBreaker).
 	circuitBreakers   map[string]*rpccoordinator.CircuitBreaker
 	circuitBreakersMu sync.RWMutex
+	cbDefaults        rpccoordinator.CircuitBreakerConfig
 
 	// requestTimeout / streamTimeout — copy of RpcCoordinatorConfig (Phase 9: read from cfg).
 	requestTimeout time.Duration
@@ -50,10 +51,104 @@ type RpcCoordinatorDispatcher struct {
 
 	// failFast — true если FailoverPolicy="fail_fast" (без retry).
 	failFast bool
+
+	// authChecker — Phase 8 Session 3.4: опциональная проверка auth перед
+	// обработкой request. nil или IsEnabled()=false → пропускаем.
+	authChecker AuthChecker
+}
+
+// SetCircuitBreakerConfig — устанавливает дефолты для circuit breaker'ов.
+// Должно быть вызвано ДО первого request (иначе уже созданные CB останутся
+// со старыми defaults). Применяется к getOrCreateCircuitBreaker.
+//
+// Phase 8 Session 3.3: вызывается из main.go с cfg.Balancing.RpcCoordinator.CircuitBreaker.
+func (d *RpcCoordinatorDispatcher) SetCircuitBreakerConfig(cfg rpccoordinator.CircuitBreakerConfig) {
+	if d == nil {
+		return
+	}
+	d.circuitBreakersMu.Lock()
+	defer d.circuitBreakersMu.Unlock()
+	d.cbDefaults = cfg
+	logger.Get().Debugw("rpc_coordinator_dispatcher: circuit breaker config updated",
+		"failure_threshold", cfg.FailureThreshold,
+		"success_threshold", cfg.SuccessThreshold,
+		"reset_timeout", cfg.ResetTimeout)
+}
+
+// AuthChecker — минимальный interface для проверки auth в dispatcher'е.
+// Phase 8 Session 3.4: позволяет избежать циклической зависимости
+// balancer → api. Реальная реализация — *api.TokenAuthenticator
+// (см. internal/api/auth.go). Interface содержит только то, что
+// dispatcher'у нужно: IsEnabled() и Authenticate(r).
+//
+// Если interface не установлен (nil) или IsEnabled()=false, dispatcher
+// не проверяет auth — поведение как в default bundled config.
+type AuthChecker interface {
+	IsEnabled() bool
+	Authenticate(r *http.Request) (bool, string)
+}
+
+// SetAuthenticator — устанавливает AuthChecker. Должна вызываться
+// ДО первого request. Если checker = nil, auth отключен в dispatcher'е
+// (default для тестов и bundled config без auth).
+//
+// Phase 8 Session 3.4: в main.go вызывается с api.NewTokenAuthenticator
+// если cfg.Auth.Enabled.
+func (d *RpcCoordinatorDispatcher) SetAuthenticator(checker AuthChecker) {
+	if d == nil {
+		return
+	}
+	d.authChecker = checker
+	if checker != nil {
+		logger.Get().Infow("rpc_coordinator_dispatcher: auth enabled",
+			"enabled", checker.IsEnabled())
+	} else {
+		logger.Get().Infow("rpc_coordinator_dispatcher: auth disabled (nil checker)")
+	}
+}
+
+// checkAuth — Phase 8 Session 3.4: проверяет auth перед обработкой request.
+// Возвращает true если auth passed (или disabled), false если 401.
+func (d *RpcCoordinatorDispatcher) checkAuth(w http.ResponseWriter, r *http.Request) bool {
+	if d == nil || d.authChecker == nil || !d.authChecker.IsEnabled() {
+		return true // auth не настроен — пропускаем
+	}
+	valid, _ := d.authChecker.Authenticate(r)
+	if valid {
+		return true
+	}
+	// 401 Unauthorized
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusUnauthorized)
+	path := r.URL.Path
+	if strings.HasPrefix(path, "/v1/") {
+		// OpenAI format
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{
+			"error": map[string]string{
+				"message": "Unauthorized: valid API token required",
+				"type":    "unauthorized",
+			},
+		})
+	} else {
+		// Ollama format
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{
+			"error": "Unauthorized: valid API token required",
+		})
+	}
+	logger.Get().Warnw("rpc_coordinator_dispatcher: auth failed",
+		"path", path, "method", r.Method, "remote", r.RemoteAddr)
+	return false
 }
 
 // NewRpcCoordinatorDispatcher создаёт dispatcher поверх coordinator.
 // Вызывается из Proxy.initRpcModules() в Phase 9 (cmd/balancer/main.go).
+//
+// cbConfig — параметры circuit breaker. Если значения = 0, применяются defaults:
+//   - FailureThreshold = 5
+//   - SuccessThreshold = 1
+//   - ResetTimeout     = 30s
+//
+// Phase 8 Session 3.3: CB per-worker (lazy init в getOrCreateCircuitBreaker).
 func NewRpcCoordinatorDispatcher(coord *rpccoordinator.ModelCoordinator, p *Proxy) *RpcCoordinatorDispatcher {
 	if coord == nil {
 		logger.Get().Warnw("rpc_coordinator_dispatcher: coordinator is nil, dispatcher will be inactive")
@@ -70,9 +165,22 @@ func NewRpcCoordinatorDispatcher(coord *rpccoordinator.ModelCoordinator, p *Prox
 		streamTimeout:     5 * time.Minute, // default
 		failFast:          false,           // default — retry через circuit breaker
 	}
+	// Store CB defaults на dispatcher; применяются в getOrCreateCircuitBreaker.
+	d.cbDefaults = defaultCBConfig()
 	logger.Get().Infow("rpc_coordinator_dispatcher initialized",
-		"coordinator_present", coord != nil)
+		"coordinator_present", coord != nil,
+		"cb_failure_threshold", d.cbDefaults.FailureThreshold,
+		"cb_reset_timeout", d.cbDefaults.ResetTimeout)
 	return d
+}
+
+// defaultCBConfig — sensible defaults для circuit breaker.
+func defaultCBConfig() rpccoordinator.CircuitBreakerConfig {
+	return rpccoordinator.CircuitBreakerConfig{
+		FailureThreshold: 5,
+		SuccessThreshold: 1,
+		ResetTimeout:     30 * time.Second,
+	}
 }
 
 // IsRpcPath returns true если path — один из intercepted inference endpoints.
@@ -93,7 +201,9 @@ func (d *RpcCoordinatorDispatcher) IsRpcPath(path string) bool {
 // Conditions:
 //   1. Coordinator инициализирован (не nil).
 //   2. Модель зарегистрирована в coordinator (HasDistributedModel).
-//   3. (Phase 9) Circuit breaker для всех workers не Open.
+//   3. (Phase 8.3) Хотя бы один worker для этой модели имеет CB != Open.
+//
+// Использует State() (без side effects на halfOpenInFlight), а не Allow().
 func (d *RpcCoordinatorDispatcher) ShouldRoute(modelName string) bool {
 	if d == nil || d.coordinator == nil {
 		return false
@@ -101,11 +211,31 @@ func (d *RpcCoordinatorDispatcher) ShouldRoute(modelName string) bool {
 	if !d.coordinator.HasDistributedModel(modelName) {
 		return false
 	}
-	// TODO (Phase 9): check circuit breaker state per worker.
-	return true
+	// Phase 8 Session 3.3: проверяем что хотя бы один worker не Open.
+	dm := d.coordinator.GetDistributedModel(modelName)
+	if dm == nil {
+		return false
+	}
+	for _, slice := range dm.SliceLayers {
+		for _, workerID := range slice.Candidates() {
+			if workerID == "" {
+				continue
+			}
+			cb := d.getOrCreateCircuitBreaker(workerID)
+			if cb.State() != rpccoordinator.StateOpen {
+				return true
+			}
+		}
+	}
+	// Все workers Open → fail-fast.
+	logger.Get().Warnw("rpc_coordinator: all workers are circuit-broken, refusing model",
+		"model", modelName)
+	return false
 }
 
 // getOrCreateCircuitBreaker returns CircuitBreaker для workerID (lazy).
+// Использует d.cbDefaults (настройки из RpcCoordinatorConfig.CircuitBreaker
+// или hardcoded defaults).
 func (d *RpcCoordinatorDispatcher) getOrCreateCircuitBreaker(workerID string) *rpccoordinator.CircuitBreaker {
 	d.circuitBreakersMu.RLock()
 	if cb, ok := d.circuitBreakers[workerID]; ok {
@@ -120,9 +250,43 @@ func (d *RpcCoordinatorDispatcher) getOrCreateCircuitBreaker(workerID string) *r
 	if cb, ok := d.circuitBreakers[workerID]; ok {
 		return cb
 	}
-	cb := rpccoordinator.NewCircuitBreaker(5, 30*time.Second)
+	cfg := d.cbDefaults
+	if cfg.FailureThreshold == 0 {
+		cfg.FailureThreshold = 5
+	}
+	if cfg.SuccessThreshold == 0 {
+		cfg.SuccessThreshold = 1
+	}
+	if cfg.ResetTimeout == 0 {
+		cfg.ResetTimeout = 30 * time.Second
+	}
+	cb := rpccoordinator.NewCircuitBreakerWithConfig(cfg)
 	d.circuitBreakers[workerID] = cb
 	return cb
+}
+
+// recordCBFromStats — обновляет circuit breaker для каждого worker'а
+// на основе slice stats из InferResponse. Вызывается после coordinator.Infer
+// и coordinator.InferStream.
+//
+// Phase 8 Session 3.3: success → RecordSuccess, failure → RecordFailure.
+// Это позволяет breaker'у автоматически skip'ать workers с cascade failures
+// (при следующих вызовах ShouldRoute вернёт false для модели).
+func (d *RpcCoordinatorDispatcher) recordCBFromStats(sliceStats []rpccoordinator.SliceStat) {
+	if d == nil || len(sliceStats) == 0 {
+		return
+	}
+	for _, s := range sliceStats {
+		if s.WorkerID == "" {
+			continue
+		}
+		cb := d.getOrCreateCircuitBreaker(s.WorkerID)
+		if s.Success {
+			cb.RecordSuccess()
+		} else {
+			cb.RecordFailure()
+		}
+	}
 }
 
 // inferenceRequestEnvelope — общий envelope для парсинга всех inference endpoints.
@@ -163,14 +327,22 @@ func flattenPrompt(env *inferenceRequestEnvelope) string {
 // Flow:
 //   1. Read body
 //   2. Parse JSON envelope
-//   3. ShouldRoute(model) — false → 404 (model not distributed)
-//   4. stream=true → 501 (Phase 9 deferred)
+//   3. ShouldRoute(model) — false → 404 (model not distributed) или
+//      503 если все workers circuit-broken (Phase 8 Session 3.3)
+//   4. stream=true → serveStreaming() (Phase 8 Session 3.2)
 //   5. coordinator.Infer(ctx, req)
-//   6. Format response by path (Ollama /api/generate, /api/chat; OpenAI
+//   6. recordCBFromStats() — обновляет circuit breaker per worker (Session 3.3)
+//   7. Format response by path (Ollama /api/generate, /api/chat; OpenAI
 //      /v1/chat/completions, /v1/completions)
 //
-// Streaming + circuit breaker integration: Phase 9.
+// Session 3.3: circuit breaker integration per worker slice.
 func (d *RpcCoordinatorDispatcher) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	// Phase 8 Session 3.4: auth check ДО всего остального.
+	// Если auth включен и токен невалиден — 401, request не обрабатывается.
+	if !d.checkAuth(w, r) {
+		return
+	}
+
 	if d == nil || d.coordinator == nil {
 		writeRpcError(w, r.URL.Path, http.StatusServiceUnavailable,
 			"rpc_coordinator not initialized", "coordinator_disabled")
@@ -202,25 +374,19 @@ func (d *RpcCoordinatorDispatcher) ServeHTTP(w http.ResponseWriter, r *http.Requ
 
 	// ShouldRoute check.
 	if !d.ShouldRoute(env.Model) {
-		writeRpcError(w, r.URL.Path, http.StatusNotFound,
-			fmt.Sprintf("model %q is not distributed via rpc_coordinator", env.Model),
-			"model_not_distributed")
+		// Различаем 2 причины отказа (Phase 8 Session 3.3):
+		//   1. Модель не зарегистрирована → 404 model_not_distributed
+		//   2. Все workers circuit-broken → 503 all_workers_unhealthy
+		if !d.coordinator.HasDistributedModel(env.Model) {
+			writeRpcError(w, r.URL.Path, http.StatusNotFound,
+				fmt.Sprintf("model %q is not distributed via rpc_coordinator", env.Model),
+				"model_not_distributed")
+		} else {
+			writeRpcError(w, r.URL.Path, http.StatusServiceUnavailable,
+				fmt.Sprintf("all workers for model %q are circuit-broken", env.Model),
+				"all_workers_unhealthy")
+		}
 		return
-	}
-
-	// Streaming — Phase 9.
-	if env.Stream {
-		writeRpcError(w, r.URL.Path, http.StatusNotImplemented,
-			"streaming not yet implemented in rpc_coordinator dispatcher (Phase 9)",
-			"streaming_not_implemented")
-		return
-	}
-
-	// Build InferRequest.
-	prompt := flattenPrompt(&env)
-	inferReq := &rpccoordinator.InferRequest{
-		ModelName: env.Model,
-		Prompt:    prompt,
 	}
 
 	// Apply timeout.
@@ -231,10 +397,28 @@ func (d *RpcCoordinatorDispatcher) ServeHTTP(w http.ResponseWriter, r *http.Requ
 		defer cancel()
 	}
 
+	// Streaming path — Phase 8 Session 3.2.
+	if env.Stream {
+		d.serveStreaming(w, r, ctx, env)
+		return
+	}
+
+	// Non-streaming path.
+	prompt := flattenPrompt(&env)
+	inferReq := &rpccoordinator.InferRequest{
+		ModelName: env.Model,
+		Prompt:    prompt,
+	}
+
 	logger.Get().Debugw("rpc_coordinator_dispatcher: inferring",
 		"path", r.URL.Path, "model", env.Model, "prompt_len", len(prompt))
 
 	resp, err := d.coordinator.Infer(ctx, *inferReq)
+	// Phase 8 Session 3.3: record CB state per worker from slice stats.
+	// Делаем ДО проверки err (для partial failure stats тоже важно).
+	if resp != nil {
+		d.recordCBFromStats(resp.SliceStats)
+	}
 	if err != nil {
 		d.handleInferError(w, r, err)
 		return
@@ -364,6 +548,215 @@ var (
 	// ErrModelNotDistributed — модель не зарегистрирована в coordinator.
 	ErrModelNotDistributed = dispatcherError("model is not distributed via rpc_coordinator")
 )
+
+// serveStreaming — Phase 8 Session 3.2: SSE passthrough для stream=true requests.
+//
+// Coordinator.InferStream оркестрирует pipeline с real-time callback'ом.
+// Каждый token chunk, прочитанный из worker'а, пробрасывается в эту
+// функцию через onToken. Здесь мы форматируем его per endpoint и пишем
+// в ResponseWriter как SSE event.
+//
+// Format per path:
+//   - /api/generate, /api/ollama/generate:
+//       data: {"model":"...","response":"<token>","done":false}\n\n
+//       data: {"model":"...","response":"","done":true,"done_reason":"stop",...}\n\n
+//   - /api/chat, /api/ollama/chat:
+//       data: {"model":"...","message":{"role":"assistant","content":"<token>"},"done":false}\n\n
+//       data: {"model":"...","message":{"role":"assistant","content":""},"done":true,...}\n\n
+//   - /v1/chat/completions:
+//       data: {"id":"chatcmpl-...","choices":[{"delta":{"content":"<token>"}}]}\n\n
+//       data: [DONE]\n\n
+//   - /v1/completions:
+//       data: {"id":"cmpl-...","choices":[{"text":"<token>"}]}\n\n
+//       data: [DONE]\n\n
+func (d *RpcCoordinatorDispatcher) serveStreaming(
+	w http.ResponseWriter, r *http.Request,
+	ctx context.Context, env inferenceRequestEnvelope,
+) {
+	flusher, ok := w.(http.Flusher)
+	if !ok {
+		writeRpcError(w, r.URL.Path, http.StatusInternalServerError,
+			"streaming requires http.Flusher support", "streaming_unsupported")
+		return
+	}
+
+	// SSE headers.
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("Connection", "keep-alive")
+	w.Header().Set("X-Accel-Buffering", "no")
+	w.WriteHeader(http.StatusOK)
+	flusher.Flush()
+
+	// Per-path event formatter.
+	path := r.URL.Path
+	isChat := path == "/api/chat" || path == "/api/ollama/chat"
+	isOpenAIChat := path == "/v1/chat/completions"
+	isOpenAICompletion := path == "/v1/completions"
+	completionID := fmt.Sprintf("chatcmpl-%d", time.Now().UnixNano())
+	if isOpenAICompletion {
+		completionID = fmt.Sprintf("cmpl-%d", time.Now().UnixNano())
+	}
+
+	// sendSSE пишет один event и flush'ит.
+	sendSSE := func(payload interface{}) bool {
+		data, err := json.Marshal(payload)
+		if err != nil {
+			return false
+		}
+		if _, err := w.Write([]byte("data: ")); err != nil {
+			return false
+		}
+		if _, err := w.Write(data); err != nil {
+			return false
+		}
+		if _, err := w.Write([]byte("\n\n")); err != nil {
+			return false
+		}
+		flusher.Flush()
+		return true
+	}
+
+	// Format per-token event.
+	formatTokenEvent := func(token string) interface{} {
+		switch {
+		case isChat:
+			return map[string]interface{}{
+				"model":   env.Model,
+				"message": map[string]string{"role": "assistant", "content": token},
+				"done":    false,
+			}
+		case isOpenAIChat:
+			return map[string]interface{}{
+				"id":      completionID,
+				"object":  "chat.completion.chunk",
+				"created": time.Now().Unix(),
+				"model":   env.Model,
+				"choices": []map[string]interface{}{{
+					"index": 0,
+					"delta": map[string]string{"content": token},
+				}},
+			}
+		case isOpenAICompletion:
+			return map[string]interface{}{
+				"id":      completionID,
+				"object":  "text_completion",
+				"created": time.Now().Unix(),
+				"model":   env.Model,
+				"choices": []map[string]interface{}{{
+					"index": 0,
+					"text": token,
+				}},
+			}
+		default:
+			// /api/generate, /api/ollama/generate
+			return map[string]interface{}{
+				"model":    env.Model,
+				"response": token,
+				"done":     false,
+			}
+		}
+	}
+
+	// Format terminal event.
+	formatDoneEvent := func(totalMs int64) interface{} {
+		switch {
+		case isChat:
+			return map[string]interface{}{
+				"model":          env.Model,
+				"message":        map[string]string{"role": "assistant", "content": ""},
+				"done":           true,
+				"done_reason":    "stop",
+				"total_duration": totalMs * int64(time.Millisecond),
+			}
+		case isOpenAIChat:
+			return map[string]interface{}{
+				"id":      completionID,
+				"object":  "chat.completion.chunk",
+				"created": time.Now().Unix(),
+				"model":   env.Model,
+				"choices": []map[string]interface{}{{
+					"index":         0,
+					"delta":         map[string]string{},
+					"finish_reason": "stop",
+				}},
+			}
+		case isOpenAICompletion:
+			return map[string]interface{}{
+				"id":      completionID,
+				"object":  "text_completion",
+				"created": time.Now().Unix(),
+				"model":   env.Model,
+				"choices": []map[string]interface{}{{
+					"index":         0,
+					"text":          "",
+					"finish_reason": "stop",
+				}},
+			}
+		default:
+			// /api/generate
+			return map[string]interface{}{
+				"model":          env.Model,
+				"response":       "",
+				"done":           true,
+				"done_reason":    "stop",
+				"total_duration": totalMs * int64(time.Millisecond),
+			}
+		}
+	}
+
+	// Token callback — вызывается из coordinator.InferStream.
+	tokenIndex := 0
+	onToken := func(token string, _ int) error {
+		if !sendSSE(formatTokenEvent(token)) {
+			return fmt.Errorf("client disconnected")
+		}
+		tokenIndex++
+		return nil
+	}
+
+	// Run streaming pipeline.
+	prompt := flattenPrompt(&env)
+	inferReq := &rpccoordinator.InferRequest{
+		ModelName: env.Model,
+		Prompt:    prompt,
+	}
+
+	logger.Get().Debugw("rpc_coordinator_dispatcher: streaming",
+		"path", path, "model", env.Model, "prompt_len", len(prompt))
+
+	resp, err := d.coordinator.InferStream(ctx, *inferReq, onToken)
+	// Phase 8 Session 3.3: record CB state per worker from streaming slice stats.
+	if resp != nil {
+		d.recordCBFromStats(resp.SliceStats)
+	}
+	if err != nil {
+		// Если streaming уже начался — error event, не меняем status code.
+		errEv := map[string]interface{}{
+			"error": map[string]string{
+				"message": err.Error(),
+				"type":    "stream_error",
+			},
+		}
+		_ = sendSSE(errEv)
+		// Для OpenAI — финальный [DONE] event.
+		if isOpenAIChat || isOpenAICompletion {
+			_, _ = w.Write([]byte("data: [DONE]\n\n"))
+			flusher.Flush()
+		}
+		return
+	}
+
+	// Terminal event.
+	if !sendSSE(formatDoneEvent(0)) {
+		return // client disconnected
+	}
+	// Для OpenAI — финальный [DONE] event.
+	if isOpenAIChat || isOpenAICompletion {
+		_, _ = w.Write([]byte("data: [DONE]\n\n"))
+		flusher.Flush()
+	}
+}
 
 // dispatcherError — typed error для dispatcher's specific errors.
 type dispatcherError string

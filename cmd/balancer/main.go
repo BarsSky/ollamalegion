@@ -204,6 +204,36 @@ func main() {
 		}
 	}
 
+	// Phase 8 (2026-07-11): P.2 — virtual_router production mode.
+	// Если balancer в OperatingMode=virtual_router → создаём VirtualRouter
+	// поверх существующего VirtualModel Registry (создан в initRpcModules).
+	// VirtualRouter перехватывает requests с model=virtual:xxx (на самом деле
+	// любое имя, зарегистрированное в VirtualModels config) и выбирает
+	// backend через Selector (round_robin / least_loaded / random).
+	//
+	// Phase 8 P.2 Step 4: wiring в Proxy.ServeHTTP через virtualRouter
+	// interceptor (mode=virtual_router + IsVirtualPathRequest + MatchesVirtualRequest).
+	//
+	// Активация:
+	//   1. balancing.operatingMode = "virtual_router"
+	//   2. balancing.virtualModels.enabled = true
+	//   3. В конфиге есть хотя бы одна VirtualModel в alias-on-pool mode
+	//      (BackendPool + ModelName заданы).
+	if balancer.IsVirtualRouterMode(conf.Balancing.OperatingMode) {
+		vmRegistry := proxy.GetVirtualModelRegistry()
+		if vmRegistry != nil {
+			vmRegistry.SetEnabled(true)
+			router := balancer.NewVirtualRouter(vmRegistry, proxy)
+			proxy.SetVirtualRouter(router)
+			logger.Get().Infow("virtual_router wired",
+				"mode", conf.Balancing.OperatingMode,
+				"virtual_models", len(vmRegistry.List()))
+		} else {
+			logger.Get().Warnw("virtual_router mode is active but VirtualModelRegistry is nil — " +
+				"check balancing.virtualModels.enabled in config")
+		}
+	}
+
 
 	// Запуск health checker
 	healthChecker.Start()

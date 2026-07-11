@@ -152,6 +152,25 @@ func (p *Proxy) SetRpcCoordinatorDispatcher(d *RpcCoordinatorDispatcher) {
 	p.rpcDispatcher = d
 }
 
+// GetVirtualRouter возвращает Phase 8 P.2 VirtualRouter (для API и main.go).
+// VirtualRouter перехватывает requests с model=virtual:xxx и выбирает backend
+// через Selector (round_robin / least_loaded / random).
+func (p *Proxy) GetVirtualRouter() *VirtualRouter {
+	return p.virtualRouter
+}
+
+// SetVirtualRouter устанавливает VirtualRouter (Phase 8 P.2 main.go wiring).
+// Вызывается после initRpcModules() если cfg.Balancing.OperatingMode=virtual_router.
+func (p *Proxy) SetVirtualRouter(r *VirtualRouter) {
+	p.virtualRouter = r
+}
+
+// GetVirtualModelRegistry возвращает VirtualModel Registry (Phase 8 P.2).
+// Используется в main.go для создания VirtualRouter поверх registry.
+func (p *Proxy) GetVirtualModelRegistry() *virtualmodel.Registry {
+	return p.virtualModels
+}
+
 // HasDistributedModel проверяет, доступна ли модель через RPC Coordinator.
 func (p *Proxy) HasDistributedModel(modelName string) bool {
 	if p.rpcCoordinator == nil {

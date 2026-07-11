@@ -123,12 +123,53 @@ type VirtualModelsConfig struct {
 	Models  []VirtualModelConfig `json:"models"`
 }
 
-// VirtualModelConfig - конфигурация виртуальной модели
+// VirtualModelConfig - конфигурация виртуальной модели.
+//
+// Phase 8 P.2 (2026-07-11): добавлены 3 поля для alias-on-pool mode (NEW):
+//   - Selection   — стратегия выбора backend'а из BackendPool.
+//   - BackendPool — список real backends (host:port strings).
+//   - ModelName   — physical model name (например, "llama-70b"), общий для всех backends.
+//
+// Alias-on-pool mode (новый, простой): virtual model = алиас на пул
+// backends с одной и той же физической моделью. balancer выбирает
+// backend через Selection, делает обычный proxy request к выбранному.
+//
+// Pipeline mode (legacy): Slices + Coordination = multi-step pipeline
+// через несколько бэкендов с разными срезами. Использует ExecutePipeline
+// (см. internal/virtualmodel/virtual_model.go).
+//
+// Какой режим активен:
+//   - Если BackendPool != nil && ModelName != "" → alias-on-pool mode.
+//   - Иначе → pipeline mode (legacy, Slices + Coordination).
 type VirtualModelConfig struct {
 	Name         string              `json:"name"`
 	Description  string              `json:"description"`
 	Slices       []ModelSliceConfig  `json:"slices"`
 	Coordination CoordinationConfig  `json:"coordination"`
+
+	// === Alias-on-pool mode (Phase 8 P.2) ===
+	Selection   SelectionStrategy `json:"selection"`   // "round_robin" | "least_loaded" | "random"
+	BackendPool []string          `json:"backendPool"` // pool of "host:port" strings
+	ModelName   string            `json:"modelName"`   // physical model on those backends
+}
+
+// SelectionStrategy — алгоритм выбора backend'а из пула.
+// Phase 8 P.2.
+type SelectionStrategy string
+
+const (
+	// SelectionRoundRobin — atomic counter, инкремент на каждый Select.
+	SelectionRoundRobin SelectionStrategy = "round_robin"
+	// SelectionLeastLoaded — выбирает backend с max FreeSlots (least busy).
+	SelectionLeastLoaded SelectionStrategy = "least_loaded"
+	// SelectionRandom — math/rand (для тестов и stress testing).
+	SelectionRandom SelectionStrategy = "random"
+)
+
+// IsAliasOnPoolMode — true если config в alias-on-pool mode (Phase 8 P.2).
+// В pipeline mode (legacy) Selection/BackendPool/ModelName игнорируются.
+func (c *VirtualModelConfig) IsAliasOnPoolMode() bool {
+	return c != nil && len(c.BackendPool) > 0 && c.ModelName != ""
 }
 
 // ModelSliceConfig - конфигурация среза модели

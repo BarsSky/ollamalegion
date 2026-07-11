@@ -81,6 +81,11 @@ type Proxy struct {
 	// ServeHTTP. Phase 9: полная интеграция (streaming + circuit breakers).
 	rpcDispatcher *RpcCoordinatorDispatcher
 
+	// VirtualRouter routes virtual models (alias-on-pool) при
+	// OperatingMode=virtual_router. Phase 8 P.2: перехватывает requests
+	// с model=virtual:xxx и выбирает backend через Selector.
+	virtualRouter *VirtualRouter
+
 	// Прокси-логгер для отслеживания запросов
 	proxyLogger *ProxyLogger
 
@@ -457,6 +462,27 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			"path", r.URL.Path, "method", r.Method)
 		p.rpcDispatcher.ServeHTTP(w, r)
 		return
+	}
+
+	// Phase 8 (2026-07-11): P.2 — virtual_router production mode interceptor.
+	// Если balancer в OperatingMode=virtual_router + VirtualRouter инициализирован
+	// + path is intercepted inference endpoint → проверяем body на virtual model.
+	//
+	// ВАЖНО: VirtualRouter парсит body сам (нужно для extract model name).
+	// Если model не в registry — falls through к стандартному flow без изменений.
+	// Default bundled config (OperatingMode="standard" или "") → не срабатывает.
+	if IsVirtualRouterMode(p.config.Balancing.OperatingMode) &&
+		p.virtualRouter != nil &&
+		p.virtualRouter.IsActive() &&
+		p.virtualRouter.IsVirtualPathRequest(r) {
+		// Quick check: read body to extract model. Если model in registry +
+		// alias-on-pool mode → forward to VirtualRouter. Иначе — fall through.
+		if p.virtualRouter.MatchesVirtualRequest(r) {
+			logger.Get().Debugw("virtual_router: intercepting request",
+				"path", r.URL.Path, "method", r.Method)
+			p.virtualRouter.ServeHTTP(w, r)
+			return
+		}
 	}
 
 	// Единый разбор тела запроса (избегаем тройного чтения в recordRecentClient + extractModel + proxyRequest)

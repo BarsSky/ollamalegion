@@ -58,9 +58,18 @@ func IsStandardMode(mode string) bool {
 	return canonical == "standard"
 }
 
+// IsVirtualRouterMode — true если balancer в virtual_router mode.
+// Phase 8 P.2: используется в Proxy.ServeHTTP для intercept при наличии
+// VirtualRouter. Включает legacy aliases ("virtual-router" с дефисом).
+func IsVirtualRouterMode(mode string) bool {
+	canonical := OperatingModeCanonical(mode)
+	return canonical == "virtual_router"
+}
+
 // Ensure types.OperatingMode constants are accessible from balancer package
 // (compile-time check — если types.OperatingMode* переименуют, увидим).
 var (
 	_ = types.OperatingModeStandard
 	_ = types.OperatingModeRpcCoordinator
+	_ = types.OperatingModeVirtualRouter
 )

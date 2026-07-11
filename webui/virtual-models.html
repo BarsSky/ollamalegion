@@ -204,6 +204,26 @@
       color: #8b949e;
     }
     .empty-state h3 { color: #c9d1d9; margin: 0 0 8px; }
+
+    /* ---- Mobile responsive (Phase 8 — 2026-07-11) ---- */
+    @media (max-width: 768px) {
+      body { padding: 12px; }
+      h1 { font-size: 20px; }
+      .grid { grid-template-columns: 1fr; gap: 12px; }
+      .toolbar { flex-direction: column; align-items: stretch; gap: 8px; }
+      .toolbar-spacer { display: none; }
+      .modal { padding: 16px; width: 95vw; }
+      .form-row input, .form-row select, .form-row textarea { font-size: 14px; }
+      /* Stack table cells on phones. */
+      table { font-size: 12px; }
+      th, td { padding: 6px 8px; }
+      /* Hide backendPool cell on phones (too wide). */
+      th:nth-child(5), td:nth-child(5) { display: none; }
+    }
+    @media (max-width: 480px) {
+      .card .value { font-size: 22px; }
+      .btn { font-size: 11px; padding: 3px 8px; }
+    }
   </style>
 </head>
 <body>

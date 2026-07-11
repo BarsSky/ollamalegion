@@ -163,16 +163,117 @@
 }
 
 /* ---- Responsive ---- */
+/* Tablet (≤1024px): reduce charts height, allow filter wrap. */
+@media (max-width: 1024px) {
+    .monitor-charts-container {
+        height: 200px;
+    }
+    .backend-filter {
+        flex-wrap: wrap;
+        gap: 6px;
+    }
+    /* Header: hide legend labels (keep dots), tighten spacing. */
+    .monitor-legend .legend-text {
+        display: none;
+    }
+    .monitor-legend {
+        gap: 4px;
+    }
+    /* Demo badge: smaller. */
+    #demoIndicator {
+        font-size: 9px !important;
+        padding: 1px 6px !important;
+    }
+}
+
+/* Phone (≤768px): single-column, compact header, smaller text. */
 @media (max-width: 768px) {
     .monitor-charts-container {
         height: 160px;
     }
-    
+
     .backend-filter {
         flex-wrap: wrap;
     }
-    
+
     #backendsTable th[data-sort]::after {
         display: none;
+    }
+
+    /* Header: stack title and controls vertically. */
+    header {
+        flex-direction: column;
+        align-items: stretch;
+        gap: 8px;
+        padding: 8px 12px;
+    }
+    header h1 {
+        font-size: 14px;
+        justify-content: center;
+    }
+    .header-right {
+        display: flex;
+        flex-wrap: wrap;
+        justify-content: center;
+        gap: 6px;
+    }
+    .header-right > * {
+        flex-shrink: 0;
+    }
+    /* Compact buttons. */
+    #pauseBtn, #demoBtn, #resetZoomBtn, #helpBtn {
+        font-size: 11px !important;
+        padding: 2px 6px !important;
+    }
+    #helpBtn {
+        width: 24px !important;
+        height: 24px !important;
+        padding: 0 !important;
+    }
+    #intervalSelect {
+        font-size: 11px;
+        padding: 2px 6px;
+    }
+    #connBadge {
+        font-size: 10px;
+        padding: 2px 6px;
+    }
+    /* Table: smaller font, hide some columns on phones. */
+    #backendsTable {
+        font-size: 12px;
+    }
+    #backendsTable th, #backendsTable td {
+        padding: 4px 6px;
+    }
+    /* Hide less-important columns on phones. */
+    #backendsTable th:nth-child(4),
+    #backendsTable td:nth-child(4),
+    #backendsTable th:nth-child(5),
+    #backendsTable td:nth-child(5) {
+        display: none;
+    }
+    /* Help modal: full screen on phones. */
+    #helpModal > div {
+        max-width: 100vw !important;
+        max-height: 100vh !important;
+        width: 100% !important;
+        height: 100% !important;
+        border-radius: 0 !important;
+    }
+}
+
+/* Very small phones (≤480px): minimal UI. */
+@media (max-width: 480px) {
+    .monitor-charts-container {
+        height: 120px;
+    }
+    /* Hide monitor type switcher (it's a meta-UI element). */
+    #monitorBackendTypeSwitcher {
+        display: none !important;
+    }
+    /* Compact table — minimal padding. */
+    #backendsTable th, #backendsTable td {
+        padding: 3px 4px;
+        font-size: 11px;
     }
 }

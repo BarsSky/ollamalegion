@@ -110,6 +110,18 @@
       border-radius: 6px;
       margin-bottom: 16px;
     }
+
+    /* ---- Mobile responsive (Phase 8 — 2026-07-11) ---- */
+    @media (max-width: 768px) {
+      body { padding: 12px; }
+      h1 { font-size: 20px; }
+      .grid { grid-template-columns: 1fr; gap: 12px; }
+      button.refresh-btn { font-size: 12px; padding: 6px 12px; }
+      pre.metrics { font-size: 11px; max-height: 300px; }
+    }
+    @media (max-width: 480px) {
+      .card .value { font-size: 22px; }
+    }
   </style>
 </head>
 <body>

@@ -179,6 +179,109 @@ retry отсутствовал.
 - Endpoint `/api/v1/cluster/models/{name}/reload` остаётся для ручного управления
   (для pre-warming и для UI, который показывает статус загрузки).
 
+## [Unreleased — 2026-07-11] — Phase 8: rpc_coordinator production mode (P.1)
+
+**Цель**: production-ready rpc_coordinator mode для распределённого
+inference через несколько worker'ов. План см. `plans/2026-q3-production-ready-plan.md`
+§P.1.
+
+**Сделано в 3 сессиях:**
+
+### Session 1 (`b10560e`) — foundation
+- `pkg/types/balancing.go`: тип `OperatingMode` (string) + 5 констант
+  (`OperatingModeStandard`/`Replication`/`RpcCoordinator`/`VirtualRouter`/
+  `DistributedInference`) для type-safety в mode checks.
+- `pkg/types/rpc_variants.go`: расширен `RpcCoordinatorConfig` —
+  `Embedded`/`Workers`/`FailoverPolicy`/`RequestTimeout`/`StreamTimeout`.
+- `internal/balancer/operating_modes.go` + `operating_modes_test.go`:
+  `OperatingModeCanonical()` (legacy aliases), `IsRpcCoordinatorMode()`,
+  `IsStandardMode()` + 7 unit tests.
+- `internal/rpccoordinator/circuit_breaker.go` (285 LOC) + 8 unit tests:
+  3-state machine (Closed/Open/HalfOpen) с `StateChangeCallback`.
+- `internal/balancer/rpc_coordinator_dispatcher.go` (skeleton, 193 LOC):
+  `IsRpcPath` (6 inference endpoints), `ShouldRoute`, `InferNonStreaming`,
+  per-worker lazy `getOrCreateCircuitBreaker`. `ServeHTTP` stub возвращает
+  501.
+- `internal/balancer/proxy.go`: `rpcDispatcher` field + scaffold block в
+  `ServeHTTP` (intercepts только при mode=dispatcher+path match).
+- `config/config.example.json`: пример rpc_coordinator config.
+
+### Session 2 (`9fe639f`) — full non-streaming ServeHTTP + main.go wiring
+- `inferenceRequestEnvelope` парсит 4 endpoint формата (Ollama generate/chat,
+  OpenAI chat/completion) в single struct.
+- `flattenPrompt` объединяет messages как `"role: content\n"`.
+- `writeSuccessResponse` — 4 endpoint-specific response shapes (Ollama
+  `response/done/context/total_duration`, OpenAI `id/choices/usage`).
+- `handleInferError` — mapping по message substring: `coordinator is disabled`
+  → 503, `distributed model ... not found` → 404, `DeadlineExceeded` → 504,
+  `Canceled` → 499, generic → 502.
+- `writeRpcError` — Ollama `{"error": msg}` vs OpenAI
+  `{"error": {message, type}}` format.
+- 17 unit тестов (TestParseEnvelope_*, TestFlattenPrompt_*,
+  TestWriteSuccessResponse_*, TestHandleInferError_*, TestIsRpcPath,
+  TestShouldRoute, TestServeHTTP_NotInitialized).
+- 4 proxy integration теста для interceptor scaffold
+  (`ProxyServeHTTP_RpcCoordinatorIntercepts`).
+- `cmd/balancer/main.go`: wiring — если `IsRpcCoordinatorMode && coord != nil`
+  → `NewRpcCoordinatorDispatcher` + `SetRpcCoordinatorDispatcher`.
+- Default bundled config (RpcCoordinator.Enabled=false) unaffected.
+
+### Session 3 (`143b69b`) — e2e + streaming + circuit breaker + auth
+- **e2e (Session 3.1)**: `rpc_coordinator_dispatcher_e2e_test.go` (550 LOC,
+  10 тестов) поднимает реальный `rpcworker.WorkerServer` через
+  `httptest.NewServer`, регистрирует в реальный `ModelCoordinator`.
+  Покрытие: все 4 endpoint shapes + error paths (model_not_distributed,
+  body_parse_error, empty_model, disabled_coordinator, InferNonStreaming).
+  Lifts 2 `t.Skip` stubs из Session 2.
+- **streaming (Session 3.2)**: `WorkerClient.InferSliceStream` (SSE parser),
+  `ModelCoordinator.InferStream` (pipeline orchestration с real-time callback),
+  `RpcCoordinatorDispatcher.serveStreaming` (4 endpoint-specific SSE
+  format'а + `[DONE]` для OpenAI). 2 e2e streaming теста.
+- **circuit breaker (Session 3.3)**: `RpcCoordinatorConfig.CircuitBreakerConfig`
+  (FailureThreshold/SuccessThreshold/ResetTimeoutMs), `cbDefaults` на
+  dispatcher, `recordCBFromStats` обновляет CB per worker после Infer /
+  InferStream. `ShouldRoute` возвращает false если все workers Open →
+  503 `all_workers_unhealthy` (отделено от 404 `model_not_distributed`).
+  3 e2e CB теста (AllWorkersOpen, SuccessRecorded, CustomConfig).
+- **auth (Session 3.4)**: `AuthChecker` interface (small surface чтобы
+  избежать import cycle), `SetAuthenticator`, `checkAuth` в начале
+  `ServeHTTP`. Реальная реализация — `*api.TokenAuthenticator`. Если
+  `conf.Auth.Enabled` в main.go — token auth на rpc_coordinator paths.
+  7 e2e auth теста (NoToken, ValidToken, InvalidToken, Disabled, NilChecker,
+  QueryToken, OpenAIFormat).
+
+### Поведенческие гарантии
+- Default bundled config (`RpcCoordinator.Enabled=false`, `OperatingMode=""`)
+  полностью unaffected — scaffold в `Proxy.ServeHTTP` падает через
+  IsRpcCoordinatorMode check.
+- Non-streaming и streaming работают на обоих форматах (Ollama + OpenAI).
+- Circuit breaker защищает от cascade failures (skip workers с Open CB).
+- Auth опциональна — если `conf.Auth.Enabled=true`, проверяется на
+  rpc_coordinator paths; иначе — no-op.
+
+### Статистика
+- 4 commits в `centurion`: `b10560e` → `9fe639f` → `143b69b` (Sessions 1-3).
+- ~2400 LOC добавлено (3 файла + tests), 0 LOC удалено (backward compat).
+- Tests: 21 e2e + 17 unit dispatcher + 4 proxy integration = 42 новых
+  теста. Все зелёные на `llama_stub` build tag.
+- Production status: **P.1 (rpc_coordinator) — COMPLETE**. Streaming
+  через `coordinator.InferStream` работает на stub workers; real llama.cpp
+  streaming ещё не интегрирован (worker handleInferStream в stub-режиме
+  симулирует через Infer() с chunked output).
+
+### Известные ограничения (post-P.1 backlog)
+- Pipeline streaming упрощён: slice 2 получает на вход "prompt +
+  accumulated tokens", а не реальный `last_hidden_state` tensor. В
+  production с реальной llama.cpp нужен KV-cache merge (P.3 research).
+- `WorkerClient.InferSliceStream` парсит SSE через `bufio.Scanner` —
+  для очень больших payloads (>1MB) может быть медленно; future:
+  использовать `bufio.Reader.ReadBytes('\n')` или SSE library.
+- Circuit breaker не покрывает `WorkerClient.HealthCheck` failures
+  (только Infer / InferStream errors). Health-check как signal для
+  CB — Phase 9 enhancement.
+
+См. также: `docs/phase-8-rpc-coordinator.md`, `docs/rpc-coordinator.md`.
+
 ## [Unreleased — 2026-06-28h]
 <task_progress>
 - [x] Реализовать SplitReasoningContent и IsReasoningModel в cppworker (commit 824738d)

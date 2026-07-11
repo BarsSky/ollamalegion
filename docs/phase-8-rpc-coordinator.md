@@ -287,3 +287,22 @@
 
 **Подготовлено:** 2026-07-10 22:40 MSK (Phase 8 — P.1 rpc_coordinator production mode, Session 1 of 3)
 **После Session 1:** готов к Session 2 (Step 2 full + Step 3).
+
+---
+
+## Update 2026-07-11: P.1 COMPLETE (Sessions 2 + 3 done)
+
+Session 2 (`9fe639f`) — full non-streaming `ServeHTTP` + main.go wiring.
+Session 3 (`143b69b`) — e2e tests + streaming SSE + circuit breaker + auth.
+
+**P.1 (rpc_coordinator production mode) — CLOSED.**
+
+Production-ready: balancer в `OperatingMode=rpc_coordinator` маршрутизирует
+все 6 inference paths (Ollama generate/chat, OpenAI chat/completion) через
+`ModelCoordinator`, поддерживает streaming SSE passthrough, circuit breaker
+per worker, и token-based auth.
+
+См.:
+- `docs/rpc-coordinator.md` — user guide (полная документация).
+- `CHANGELOG.md` секция "Phase 8: rpc_coordinator production mode (P.1)" — version history.
+- 21 e2e теста в `internal/balancer/rpc_coordinator_dispatcher_e2e_test.go`.

@@ -650,29 +650,7 @@ func TestDispatcherE2E_CircuitBreaker_CustomConfig(t *testing.T) {
 // =====================================================================
 
 // fakeAuthChecker — test double для AuthChecker interface.
-type fakeAuthChecker struct {
-	enabled bool
-	tokens  map[string]bool
-}
-
-func (f *fakeAuthChecker) IsEnabled() bool { return f.enabled }
-
-func (f *fakeAuthChecker) Authenticate(r *http.Request) (bool, string) {
-	if !f.enabled {
-		return true, ""
-	}
-	token := r.Header.Get("X-API-Token")
-	if token == "" {
-		token = r.URL.Query().Get("token")
-	}
-	if token == "" {
-		return false, ""
-	}
-	if f.tokens[token] {
-		return true, token
-	}
-	return false, ""
-}
+// Определён в auth_checker_test.go (общий для dispatcher'ов).
 
 // Test 16: Auth enabled, no token → 401.
 func TestDispatcherE2E_Auth_NoToken_Rejected(t *testing.T) {

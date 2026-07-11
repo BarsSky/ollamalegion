@@ -224,6 +224,17 @@ func main() {
 		if vmRegistry != nil {
 			vmRegistry.SetEnabled(true)
 			router := balancer.NewVirtualRouter(vmRegistry, proxy)
+			// Phase 8 P.2 backlog (2026-07-11): wire auth (same pattern as P.1).
+			if conf.Auth.Enabled {
+				router.SetAuthenticator(api.NewTokenAuthenticator(
+					conf.Auth.Tokens,
+					conf.Auth.HeaderName,
+					conf.Auth.Enabled,
+				))
+				logger.Get().Infow("virtual_router: auth wired",
+					"token_count", len(conf.Auth.Tokens),
+					"header", conf.Auth.HeaderName)
+			}
 			proxy.SetVirtualRouter(router)
 			logger.Get().Infow("virtual_router wired",
 				"mode", conf.Balancing.OperatingMode,

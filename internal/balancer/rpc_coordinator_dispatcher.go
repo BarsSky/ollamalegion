@@ -75,18 +75,7 @@ func (d *RpcCoordinatorDispatcher) SetCircuitBreakerConfig(cfg rpccoordinator.Ci
 		"reset_timeout", cfg.ResetTimeout)
 }
 
-// AuthChecker — минимальный interface для проверки auth в dispatcher'е.
-// Phase 8 Session 3.4: позволяет избежать циклической зависимости
-// balancer → api. Реальная реализация — *api.TokenAuthenticator
-// (см. internal/api/auth.go). Interface содержит только то, что
-// dispatcher'у нужно: IsEnabled() и Authenticate(r).
-//
-// Если interface не установлен (nil) или IsEnabled()=false, dispatcher
-// не проверяет auth — поведение как в default bundled config.
-type AuthChecker interface {
-	IsEnabled() bool
-	Authenticate(r *http.Request) (bool, string)
-}
+// AuthChecker — определён в auth_checker.go (общий для dispatcher'ов).
 
 // SetAuthenticator — устанавливает AuthChecker. Должна вызываться
 // ДО первого request. Если checker = nil, auth отключен в dispatcher'е

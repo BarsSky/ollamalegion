@@ -488,5 +488,128 @@ func TestVirtualRouter_MetricsRecorded(t *testing.T) {
 	assert.Equal(t, int64(3), selections[fmt.Sprintf("%s:%d", b.host, b.port)])
 }
 
+// =====================================================================
+// Phase 8 P.2 backlog: Auth middleware integration tests.
+// =====================================================================
+
+// TestVirtualRouter_Auth_NoToken_Rejected — auth enabled, no token → 401.
+func TestVirtualRouter_Auth_NoToken_Rejected(t *testing.T) {
+	t.Parallel()
+	b := newFakeBackend(t)
+	registry := newRegistryWithVMs(t, types.VirtualModelConfig{
+		Name:        "vm-auth",
+		Selection:   virtualmodel.SelectionRoundRobin,
+		BackendPool: []string{fmt.Sprintf("%s:%d", b.host, b.port)},
+		ModelName:   "physical",
+	})
+	proxy := newTestProxy(t)
+	router := NewVirtualRouter(registry, proxy)
+	router.SetAuthenticator(&fakeAuthChecker{enabled: true, tokens: map[string]bool{"valid": true}})
+
+	body := bytes.NewReader([]byte(`{"model":"vm-auth","prompt":"hi","stream":false}`))
+	req := httptest.NewRequest(http.MethodPost, "/api/generate", body)
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+
+	assert.Equal(t, http.StatusUnauthorized, w.Code)
+}
+
+// TestVirtualRouter_Auth_ValidToken_Allowed — auth enabled, valid token → request passes.
+func TestVirtualRouter_Auth_ValidToken_Allowed(t *testing.T) {
+	t.Parallel()
+	b := newFakeBackend(t)
+	registry := newRegistryWithVMs(t, types.VirtualModelConfig{
+		Name:        "vm-auth2",
+		Selection:   virtualmodel.SelectionRoundRobin,
+		BackendPool: []string{fmt.Sprintf("%s:%d", b.host, b.port)},
+		ModelName:   "physical",
+	})
+	proxy := newTestProxy(t)
+	router := NewVirtualRouter(registry, proxy)
+	router.SetAuthenticator(&fakeAuthChecker{enabled: true, tokens: map[string]bool{"valid": true}})
+
+	body := bytes.NewReader([]byte(`{"model":"vm-auth2","prompt":"hi","stream":false}`))
+	req := httptest.NewRequest(http.MethodPost, "/api/generate", body)
+	req.Header.Set("X-API-Token", "valid")
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+
+	assert.Equal(t, http.StatusOK, w.Code, "body: %s", w.Body.String())
+}
+
+// TestVirtualRouter_Auth_Disabled_NoCheck — auth disabled → no check.
+func TestVirtualRouter_Auth_Disabled_NoCheck(t *testing.T) {
+	t.Parallel()
+	b := newFakeBackend(t)
+	registry := newRegistryWithVMs(t, types.VirtualModelConfig{
+		Name:        "vm-auth3",
+		Selection:   virtualmodel.SelectionRoundRobin,
+		BackendPool: []string{fmt.Sprintf("%s:%d", b.host, b.port)},
+		ModelName:   "physical",
+	})
+	proxy := newTestProxy(t)
+	router := NewVirtualRouter(registry, proxy)
+	router.SetAuthenticator(&fakeAuthChecker{enabled: false, tokens: nil})
+
+	body := bytes.NewReader([]byte(`{"model":"vm-auth3","prompt":"hi","stream":false}`))
+	req := httptest.NewRequest(http.MethodPost, "/api/generate", body)
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+
+	assert.Equal(t, http.StatusOK, w.Code)
+}
+
+// TestVirtualRouter_Auth_NilChecker_NoCheck — nil authenticator → no check.
+func TestVirtualRouter_Auth_NilChecker_NoCheck(t *testing.T) {
+	t.Parallel()
+	b := newFakeBackend(t)
+	registry := newRegistryWithVMs(t, types.VirtualModelConfig{
+		Name:        "vm-auth4",
+		Selection:   virtualmodel.SelectionRoundRobin,
+		BackendPool: []string{fmt.Sprintf("%s:%d", b.host, b.port)},
+		ModelName:   "physical",
+	})
+	proxy := newTestProxy(t)
+	router := NewVirtualRouter(registry, proxy)
+	// НЕ вызываем SetAuthenticator — d.authChecker == nil.
+
+	body := bytes.NewReader([]byte(`{"model":"vm-auth4","prompt":"hi","stream":false}`))
+	req := httptest.NewRequest(http.MethodPost, "/api/generate", body)
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+
+	assert.Equal(t, http.StatusOK, w.Code)
+}
+
+// TestVirtualRouter_Auth_OpenAIFormat_401 — 401 на OpenAI endpoint в OpenAI error format.
+func TestVirtualRouter_Auth_OpenAIFormat_401(t *testing.T) {
+	t.Parallel()
+	b := newFakeBackend(t)
+	registry := newRegistryWithVMs(t, types.VirtualModelConfig{
+		Name:        "vm-auth5",
+		Selection:   virtualmodel.SelectionRoundRobin,
+		BackendPool: []string{fmt.Sprintf("%s:%d", b.host, b.port)},
+		ModelName:   "physical",
+	})
+	proxy := newTestProxy(t)
+	router := NewVirtualRouter(registry, proxy)
+	router.SetAuthenticator(&fakeAuthChecker{enabled: true, tokens: map[string]bool{"valid": true}})
+
+	body := bytes.NewReader([]byte(`{"model":"vm-auth5","messages":[{"role":"user","content":"x"}]}`))
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", body)
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+
+	assert.Equal(t, http.StatusUnauthorized, w.Code)
+	var errResp map[string]interface{}
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &errResp))
+	errObj, ok := errResp["error"].(map[string]interface{})
+	require.True(t, ok, "expected OpenAI error format: {error: {message, type}}")
+	assert.Equal(t, "unauthorized", errObj["type"])
+}
+
+// fakeAuthChecker — test double для AuthChecker.
+// Определён в auth_checker_test.go (общий).
+
 // Suppress unused time import warning (used in some test patterns).
 var _ = time.Second

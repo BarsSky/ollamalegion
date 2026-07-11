@@ -38,6 +38,59 @@ import (
 	"ollama-loadbalancer/pkg/types"
 )
 
+// AuthChecker — определён в auth_checker.go (общий для dispatcher'ов).
+
+// SetAuthenticator — устанавливает AuthChecker. Должна вызываться
+// ДО первого request. Если checker = nil, auth отключен.
+//
+// Phase 8 P.2 backlog: в main.go вызывается с api.NewTokenAuthenticator
+// если conf.Auth.Enabled.
+func (r *VirtualRouter) SetAuthenticator(checker AuthChecker) {
+	if r == nil {
+		return
+	}
+	r.authChecker = checker
+	if checker != nil {
+		logger.Get().Infow("virtual_router: auth enabled",
+			"enabled", checker.IsEnabled())
+	} else {
+		logger.Get().Infow("virtual_router: auth disabled (nil checker)")
+	}
+}
+
+// checkAuth — Phase 8 P.2 backlog: проверяет auth перед обработкой request.
+// Возвращает true если auth passed (или disabled), false если 401.
+func (r *VirtualRouter) checkAuth(w http.ResponseWriter, req *http.Request) bool {
+	if r == nil || r.authChecker == nil || !r.authChecker.IsEnabled() {
+		return true
+	}
+	valid, _ := r.authChecker.Authenticate(req)
+	if valid {
+		return true
+	}
+	// 401 Unauthorized
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusUnauthorized)
+	path := req.URL.Path
+	if strings.HasPrefix(path, "/v1/") {
+		// OpenAI format
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{
+			"error": map[string]string{
+				"message": "Unauthorized: valid API token required",
+				"type":    "unauthorized",
+			},
+		})
+	} else {
+		// Ollama format
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{
+			"error": "Unauthorized: valid API token required",
+		})
+	}
+	logger.Get().Warnw("virtual_router: auth failed",
+		"path", path, "method", req.Method, "remote", req.RemoteAddr)
+	return false
+}
+
 // VirtualRouterMetrics — counter'ы для observability.
 // Phase 8 P.2: Prometheus-style counters.
 type VirtualRouterMetrics struct {
@@ -97,6 +150,9 @@ type VirtualRouter struct {
 
 	// defaultStrategy — если virtual model config не задаёт Selection явно.
 	defaultStrategy virtualmodel.SelectionStrategy
+
+	// authChecker — Phase 8 P.2 backlog: опциональная проверка auth.
+	authChecker AuthChecker
 }
 
 // NewVirtualRouter создаёт router поверх registry + proxy.
@@ -193,6 +249,12 @@ func (r *VirtualRouter) MatchesVirtualRequest(req *http.Request) bool {
 //   - Иначе: 404 unknown_virtual_model (но это уже должно быть отфильтровано в
 //     Proxy через IsVirtualModelPath check).
 func (r *VirtualRouter) ServeHTTP(w http.ResponseWriter, req *http.Request) {
+	// Phase 8 P.2 backlog: auth check ДО всего остального.
+	// Если auth enabled и токен невалиден — 401, request не обрабатывается.
+	if !r.checkAuth(w, req) {
+		return
+	}
+
 	if !r.IsActive() {
 		http.Error(w, "virtual_router not active", http.StatusServiceUnavailable)
 		return

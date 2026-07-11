@@ -320,6 +320,66 @@ retry отсутствовал.
 
 См. также: `docs/virtual-router.md`, `docs/phase-8-rpc-coordinator.md`.
 
+## [Unreleased — 2026-07-11] — Phase 8 P.3: research-spike (post-1.0)
+
+**Цель:** survey llama.cpp TP API + оценить интеграцию в существующий
+`internal/rptensor/` stub. **NO code changes** — pure research + planning.
+Implementation отложена в post-1.0 фазу.
+
+**Deliverable:** `docs/phase-8-p3-research.md` (~250 LOC) с comprehensive
+survey + integration plan + risks.
+
+### Key findings
+
+1. **llama.cpp получил first-class tensor parallelism** в PR #19378
+   (~April 2026) под флагом `--split-mode tensor`. Experimental, only
+   stable для 2 equal-VRAM GPUs, dense models only (НЕ MoE).
+
+2. **Default mode `--split-mode layer`** (pipeline parallel) — stable,
+   production-ready, работает для MoE. Наш P.1 rpc_coordinator уже
+   делает cluster-level pipeline parallelism (эквивалент).
+
+3. **Текущая инфраструктура**:
+   - `internal/rptensor/StubTPRuntime` — чистый stub (rank-marked bytes,
+     concat AllReduce). Нет реального llama.cpp.
+   - C bridge (`c/bridge/bridge.h`) имеет `tensor_split` config, но
+     не пробрасывает `split_mode` в `llama_context_params`.
+   - Megatron-style partitioning helpers существуют, но conceptual.
+
+4. **Integration plan** (3 уровня):
+   - **3.1 (2-3 дня):** layer-mode TP at worker level. Pass
+     `tensor_split` array. No NCCL. Low risk.
+   - **3.2 (5-7 дней):** tensor-mode TP. Требует CUDA/NCCL expertise,
+     real 2-GPU test rig, performance tuning.
+   - **3.3 (10-15 дней):** RealTPRuntime в rptensor. Заменяет stub.
+     Research-grade, post-1.0.
+
+5. **Рекомендация для 1.0 release:** остаёмся на StubTPRuntime. P.1
+   rpc_coordinator покрывает cluster-level pipeline parallelism.
+   Layer-mode TP (3.1) — P.4 enhancement. True tensor split (3.2) — P.5
+   research track. Требует CUDA/NCCL team + multi-GPU test hardware.
+
+6. **Constraints**:
+   - Tensor mode НЕ работает с MoE моделями (Qwen3-A3B incompatible).
+   - Flash Attention required, KV cache quantization off.
+   - NCCL install required (не auto-distributed с CUDA).
+   - Performance зависит от inter-GPU bandwidth (NVLink >> PCIe).
+
+### Что НЕ реализуем
+
+- Cross-host NCCL (cluster-level TP across machines) — too complex,
+  low ROI. Наш rpc_coordinator уже делает cluster pipeline.
+- CPU-only TP (Metal/Vulkan) — bridge is CUDA-focused.
+- Dynamic resharding — out of scope.
+
+### Production status
+
+P.3 (real ggml/NCCL integration) — **RESEARCH SPIKE COMPLETE**.
+Implementation deferred to post-1.0 (P.4 / P.5 / P.6) при наличии
+CUDA/NCCL expertise + multi-GPU test rig.
+
+См. также: `docs/phase-8-p3-research.md`.
+
 ## [Unreleased — 2026-07-11] — Phase 8: rpc_coordinator production mode (P.1)
 
 **Цель**: production-ready rpc_coordinator mode для распределённого

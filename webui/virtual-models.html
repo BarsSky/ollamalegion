@@ -1,0 +1,506 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Virtual Models · OllamaLegion</title>
+  <link rel="icon" type="image/svg+xml" href="/logo.svg" />
+  <style>
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      padding: 24px;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+      background: #0d1117;
+      color: #c9d1d9;
+      line-height: 1.5;
+    }
+    h1 { font-size: 24px; margin: 0 0 8px; color: #f0f6fc; }
+    h2 { font-size: 18px; margin: 24px 0 12px; color: #f0f6fc; }
+    .subtitle { color: #8b949e; font-size: 14px; margin-bottom: 24px; }
+
+    /* Grid cards (overview) */
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+      gap: 16px;
+      margin-bottom: 24px;
+    }
+    .card {
+      background: #161b22;
+      border: 1px solid #30363d;
+      border-radius: 6px;
+      padding: 16px;
+    }
+    .card .label {
+      color: #8b949e;
+      font-size: 12px;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      margin-bottom: 6px;
+    }
+    .card .value {
+      font-size: 28px;
+      font-weight: 600;
+      color: #f0f6fc;
+    }
+
+    /* Table */
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      background: #161b22;
+      border: 1px solid #30363d;
+      border-radius: 6px;
+      overflow: hidden;
+      margin-bottom: 16px;
+    }
+    th, td {
+      padding: 8px 12px;
+      text-align: left;
+      border-bottom: 1px solid #30363d;
+      font-size: 13px;
+    }
+    th { background: #21262d; color: #f0f6fc; font-weight: 600; }
+    tr:last-child td { border-bottom: none; }
+    tr:hover td { background: #1c2128; }
+
+    /* Pills (status / selection) */
+    .pill {
+      display: inline-block;
+      padding: 2px 8px;
+      border-radius: 12px;
+      font-size: 12px;
+      font-weight: 500;
+    }
+    .pill.alias_on_pool { background: #1f3a5f; color: #79c0ff; }
+    .pill.pipeline { background: #2d1f4a; color: #d2a8ff; }
+    .pill.round_robin { background: #033b16; color: #3fb950; }
+    .pill.least_loaded { background: #2d2a1f; color: #d29922; }
+    .pill.random { background: #1f2a3a; color: #58a6ff; }
+    .pill.enabled { background: #033b16; color: #3fb950; }
+    .pill.disabled { background: #3d0f0f; color: #f85149; }
+
+    /* Backend list (chips) */
+    .backends { display: flex; flex-wrap: wrap; gap: 4px; }
+    .backend-chip {
+      display: inline-block;
+      padding: 2px 8px;
+      background: #0d1117;
+      border: 1px solid #30363d;
+      border-radius: 4px;
+      font-family: ui-monospace, "SF Mono", Menlo, monospace;
+      font-size: 12px;
+      color: #c9d1d9;
+    }
+
+    /* Action buttons */
+    .actions { display: flex; gap: 4px; }
+    .btn {
+      background: #21262d;
+      color: #c9d1d9;
+      border: 1px solid #30363d;
+      padding: 4px 10px;
+      border-radius: 4px;
+      cursor: pointer;
+      font-size: 12px;
+    }
+    .btn:hover { background: #30363d; color: #f0f6fc; }
+    .btn-primary {
+      background: #238636;
+      color: #fff;
+      border-color: #2ea043;
+    }
+    .btn-primary:hover { background: #2ea043; }
+    .btn-danger {
+      background: #21262d;
+      color: #f85149;
+      border-color: #f85149;
+    }
+    .btn-danger:hover { background: #3d0f0f; color: #ffa198; }
+
+    /* Toolbar */
+    .toolbar {
+      display: flex;
+      gap: 12px;
+      align-items: center;
+      margin-bottom: 16px;
+    }
+    .toolbar-spacer { flex: 1; }
+
+    /* Modal */
+    .modal-backdrop {
+      display: none;
+      position: fixed;
+      inset: 0;
+      background: rgba(0, 0, 0, 0.6);
+      z-index: 100;
+      align-items: center;
+      justify-content: center;
+    }
+    .modal-backdrop.active { display: flex; }
+    .modal {
+      background: #161b22;
+      border: 1px solid #30363d;
+      border-radius: 8px;
+      padding: 24px;
+      width: 480px;
+      max-width: 90vw;
+      max-height: 90vh;
+      overflow-y: auto;
+    }
+    .modal h3 { margin: 0 0 16px; color: #f0f6fc; }
+    .form-row { margin-bottom: 12px; }
+    .form-row label {
+      display: block;
+      color: #8b949e;
+      font-size: 12px;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      margin-bottom: 4px;
+    }
+    .form-row input, .form-row select, .form-row textarea {
+      width: 100%;
+      background: #0d1117;
+      border: 1px solid #30363d;
+      color: #c9d1d9;
+      padding: 6px 8px;
+      border-radius: 4px;
+      font-size: 13px;
+      font-family: inherit;
+    }
+    .form-row textarea {
+      min-height: 60px;
+      resize: vertical;
+      font-family: ui-monospace, "SF Mono", Menlo, monospace;
+    }
+    .modal-actions { display: flex; gap: 8px; margin-top: 16px; justify-content: flex-end; }
+    .modal-error {
+      background: #3d0f0f;
+      border: 1px solid #f85149;
+      color: #ffa198;
+      padding: 8px;
+      border-radius: 4px;
+      font-size: 12px;
+      margin-bottom: 8px;
+      display: none;
+    }
+    .modal-error.active { display: block; }
+
+    /* Banners */
+    .banner {
+      padding: 12px;
+      border-radius: 6px;
+      margin-bottom: 16px;
+      font-size: 14px;
+    }
+    .banner.info { background: #0d2942; border: 1px solid #1f6feb; color: #79c0ff; }
+    .banner.disabled { background: #21262d; border: 1px solid #30363d; color: #8b949e; }
+
+    /* Empty state */
+    .empty-state {
+      text-align: center;
+      padding: 48px 24px;
+      color: #8b949e;
+    }
+    .empty-state h3 { color: #c9d1d9; margin: 0 0 8px; }
+  </style>
+</head>
+<body>
+  <h1>Virtual Models</h1>
+  <div class="subtitle">
+    Manage virtual model aliases for high-availability inference · API
+    <code>/api/v1/virtual-models</code>
+  </div>
+
+  <div id="disabled-banner" class="banner disabled" style="display: none;">
+    Virtual Router mode is not enabled in balancer config.
+    Set <code>balancing.operatingMode = "virtual_router"</code> and restart.
+  </div>
+
+  <div id="error-banner" class="banner" style="background:#3d0f0f;border:1px solid #f85149;color:#ffa198;display:none;"></div>
+
+  <div class="toolbar">
+    <button class="btn btn-primary" onclick="openCreateModal()">+ Create Virtual Model</button>
+    <button class="btn" onclick="loadAll()">Refresh</button>
+    <span class="toolbar-spacer"></span>
+    <span style="color: #8b949e; font-size: 13px;">
+      Auto-refresh: <input type="checkbox" id="auto-refresh" checked /> every 10s
+    </span>
+  </div>
+
+  <div id="main-content">
+    <h2>Overview</h2>
+    <div class="grid">
+      <div class="card">
+        <div class="label">Total Virtual Models</div>
+        <div class="value" id="m-count">-</div>
+      </div>
+      <div class="card">
+        <div class="label">Inferences</div>
+        <div class="value" id="m-inferences">-</div>
+      </div>
+      <div class="card">
+        <div class="label">Errors</div>
+        <div class="value" id="m-errors">-</div>
+      </div>
+      <div class="card">
+        <div class="label">Streaming</div>
+        <div class="value" id="m-streaming">-</div>
+      </div>
+    </div>
+
+    <h2>Virtual Models</h2>
+    <div id="models-container">
+      <div class="empty-state">
+        <h3>No virtual models yet</h3>
+        <p>Click "+ Create Virtual Model" to add one.</p>
+      </div>
+    </div>
+  </div>
+
+  <!-- Create / Edit Modal -->
+  <div id="modal-backdrop" class="modal-backdrop">
+    <div class="modal">
+      <h3 id="modal-title">Create Virtual Model</h3>
+      <div id="modal-error" class="modal-error"></div>
+      <form id="vm-form" onsubmit="return submitForm(event)">
+        <div class="form-row">
+          <label for="vm-name">Name *</label>
+          <input type="text" id="vm-name" required placeholder="virtual:my-gpt" />
+        </div>
+        <div class="form-row">
+          <label for="vm-description">Description</label>
+          <input type="text" id="vm-description" placeholder="Distributed Llama-70B" />
+        </div>
+        <div class="form-row">
+          <label for="vm-modelname">Physical Model Name *</label>
+          <input type="text" id="vm-modelname" required placeholder="llama-70b" />
+        </div>
+        <div class="form-row">
+          <label for="vm-selection">Selection Strategy</label>
+          <select id="vm-selection">
+            <option value="round_robin">Round Robin (default)</option>
+            <option value="least_loaded">Least Loaded</option>
+            <option value="random">Random</option>
+          </select>
+        </div>
+        <div class="form-row">
+          <label for="vm-backendpool">Backend Pool * (one host:port per line)</label>
+          <textarea id="vm-backendpool" required placeholder="backend-1:11434&#10;backend-2:11434&#10;backend-3:11434"></textarea>
+        </div>
+        <div class="form-row">
+          <label for="vm-timeout">Timeout (ms, default 30000)</label>
+          <input type="number" id="vm-timeout" min="1000" max="600000" placeholder="30000" />
+        </div>
+        <div class="modal-actions">
+          <button type="button" class="btn" onclick="closeModal()">Cancel</button>
+          <button type="submit" class="btn btn-primary" id="modal-submit">Create</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <script>
+    const API_BASE = '/api/v1/virtual-models';
+    let autoRefreshInterval = null;
+    let editingName = null;
+
+    // ==== Data loading ====
+
+    async function loadAll() {
+      try {
+        const resp = await fetch(API_BASE);
+        if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+        const data = await resp.json();
+
+        // Disabled banner.
+        const banner = document.getElementById('disabled-banner');
+        if (!data.enabled) {
+          banner.style.display = 'block';
+          document.getElementById('main-content').style.display = 'none';
+          return;
+        }
+        banner.style.display = 'none';
+        document.getElementById('main-content').style.display = 'block';
+
+        // Overview.
+        document.getElementById('m-count').textContent = data.count;
+        // Aggregate metrics across all VMs.
+        let inf = 0, errs = 0, stream = 0;
+        (data.models || []).forEach(m => {
+          // selections total — proxy for inference count.
+          if (m.selections) {
+            Object.values(m.selections).forEach(v => { inf += v; });
+          }
+        });
+        document.getElementById('m-inferences').textContent = inf;
+        // Real metrics not exposed in list — set 0 for now.
+        document.getElementById('m-errors').textContent = '-';
+        document.getElementById('m-streaming').textContent = '-';
+
+        // Models table.
+        renderModels(data.models || []);
+        hideError();
+      } catch (err) {
+        showError('Load failed: ' + err.message);
+      }
+    }
+
+    function renderModels(models) {
+      const container = document.getElementById('models-container');
+      if (models.length === 0) {
+        container.innerHTML = '<div class="empty-state"><h3>No virtual models yet</h3><p>Click "+ Create Virtual Model" to add one.</p></div>';
+        return;
+      }
+      const rows = models.map(m => {
+        const mode = m.mode || 'unknown';
+        const selection = m.selection || 'round_robin';
+        const backends = (m.backendPool || []).map(b => `<span class="backend-chip">${escapeHtml(b)}</span>`).join('');
+        const selectionsStr = m.selections
+          ? Object.entries(m.selections).map(([k, v]) => `${escapeHtml(k)}: ${v}`).join(', ')
+          : '(no calls yet)';
+        return `
+          <tr>
+            <td><strong>${escapeHtml(m.name)}</strong><br><span style="color:#8b949e;font-size:11px;">${escapeHtml(m.description || '')}</span></td>
+            <td><span class="pill ${mode}">${mode}</span></td>
+            <td>${escapeHtml(m.modelName || '-')}</td>
+            <td><span class="pill ${selection}">${selection}</span></td>
+            <td><div class="backends">${backends}</div></td>
+            <td style="font-size:11px;color:#8b949e;">${selectionsStr}</td>
+            <td class="actions">
+              <button class="btn btn-danger" onclick="deleteVM('${escapeHtml(m.name)}')">Delete</button>
+            </td>
+          </tr>
+        `;
+      }).join('');
+      container.innerHTML = `
+        <table>
+          <thead>
+            <tr>
+              <th>Name</th>
+              <th>Mode</th>
+              <th>Model</th>
+              <th>Selection</th>
+              <th>Backends</th>
+              <th>Stats</th>
+              <th>Actions</th>
+            </tr>
+          </thead>
+          <tbody>${rows}</tbody>
+        </table>
+      `;
+    }
+
+    // ==== CRUD ====
+
+    function openCreateModal() {
+      editingName = null;
+      document.getElementById('modal-title').textContent = 'Create Virtual Model';
+      document.getElementById('modal-submit').textContent = 'Create';
+      document.getElementById('vm-form').reset();
+      hideModalError();
+      document.getElementById('modal-backdrop').classList.add('active');
+    }
+
+    function closeModal() {
+      document.getElementById('modal-backdrop').classList.remove('active');
+      hideModalError();
+    }
+
+    async function submitForm(event) {
+      event.preventDefault();
+      const body = {
+        name: document.getElementById('vm-name').value.trim(),
+        description: document.getElementById('vm-description').value.trim(),
+        modelName: document.getElementById('vm-modelname').value.trim(),
+        selection: document.getElementById('vm-selection').value,
+        backendPool: document.getElementById('vm-backendpool').value
+          .split('\n').map(s => s.trim()).filter(s => s),
+        timeoutMs: parseInt(document.getElementById('vm-timeout').value, 10) || 0,
+      };
+
+      try {
+        const resp = await fetch(API_BASE, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(body),
+        });
+        if (!resp.ok) {
+          const errText = await resp.text();
+          let errMsg = errText;
+          try { errMsg = JSON.parse(errText).error || errText; } catch (e) {}
+          showModalError('Create failed: ' + errMsg);
+          return;
+        }
+        closeModal();
+        await loadAll();
+      } catch (err) {
+        showModalError('Network error: ' + err.message);
+      }
+    }
+
+    async function deleteVM(name) {
+      if (!confirm(`Delete virtual model "${name}"? This cannot be undone.`)) return;
+      try {
+        const resp = await fetch(`${API_BASE}/${encodeURIComponent(name)}`, {
+          method: 'DELETE',
+        });
+        if (!resp.ok) {
+          const errText = await resp.text();
+          let errMsg = errText;
+          try { errMsg = JSON.parse(errText).error || errText; } catch (e) {}
+          showError('Delete failed: ' + errMsg);
+          return;
+        }
+        await loadAll();
+      } catch (err) {
+        showError('Delete failed: ' + err.message);
+      }
+    }
+
+    // ==== UI helpers ====
+
+    function escapeHtml(s) {
+      if (s == null) return '';
+      return String(s)
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#39;');
+    }
+
+    function showError(msg) {
+      const banner = document.getElementById('error-banner');
+      banner.textContent = msg;
+      banner.style.display = 'block';
+    }
+    function hideError() {
+      document.getElementById('error-banner').style.display = 'none';
+    }
+    function showModalError(msg) {
+      const el = document.getElementById('modal-error');
+      el.textContent = msg;
+      el.classList.add('active');
+    }
+    function hideModalError() {
+      document.getElementById('modal-error').classList.remove('active');
+    }
+
+    // ==== Auto-refresh ====
+
+    function setupAutoRefresh() {
+      if (autoRefreshInterval) clearInterval(autoRefreshInterval);
+      if (document.getElementById('auto-refresh').checked) {
+        autoRefreshInterval = setInterval(loadAll, 10000);
+      }
+    }
+
+    document.getElementById('auto-refresh').addEventListener('change', setupAutoRefresh);
+
+    // Initial load.
+    loadAll().then(setupAutoRefresh);
+  </script>
+</body>
+</html>

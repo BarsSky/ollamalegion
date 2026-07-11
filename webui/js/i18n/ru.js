@@ -10,6 +10,7 @@ window.I18N_RU = {
   "nav.logs": "Логи",
   "nav.health": "Здоровье",
   "nav.settings": "Настройки",
+  "nav.virtual_models": "Виртуальные модели",
 
   // Header
   "header.dashboard": "Ollama Legion",
@@ -1221,7 +1222,38 @@ window.I18N_RU = {
 
   // Sprint 1 (2026-06-29): data-density variant i18n keys
   "density.title": "Плотность интерфейса",
-  "density.toggle": "Переключить плотность (компактно/обычно)",
-  "density.normal": "Обычная",
-  "density.dense": "Компактная"
+  "density.toggle": "Переключить плотность (компактно/комфортно)",
+  "density.normal": "Комфортно",
+  "density.dense": "Компактно",
+
+  // Phase 8 P.2 (2026-07-11): virtual_router mode
+  "vm.title": "Виртуальные модели",
+  "vm.subtitle": "Управление алиасами виртуальных моделей для высокой доступности",
+  "vm.create": "Создать виртуальную модель",
+  "vm.refresh": "Обновить",
+  "vm.total": "Всего виртуальных моделей",
+  "vm.inferences": "Запросы",
+  "vm.errors": "Ошибки",
+  "vm.streaming": "Стриминг",
+  "vm.name": "Имя",
+  "vm.description": "Описание",
+  "vm.model_name": "Имя физической модели",
+  "vm.selection": "Стратегия выбора",
+  "vm.backend_pool": "Пул бэкендов",
+  "vm.actions": "Действия",
+  "vm.delete": "Удалить",
+  "vm.empty": "Виртуальных моделей пока нет",
+  "vm.empty_hint": "Нажмите «+ Создать виртуальную модель» для добавления.",
+  "vm.disabled_banner": "Режим virtual_router не включён в конфиге балансировщика. Установите balancing.operatingMode = \"virtual_router\" и перезапустите.",
+  "vm.delete_confirm": "Удалить виртуальную модель \"{name}\"? Это действие необратимо.",
+  "vm.mode.alias_on_pool": "алиас_на_пул",
+  "vm.mode.pipeline": "конвейер",
+  "vm.selection.round_robin": "По кругу (по умолчанию)",
+  "vm.selection.least_loaded": "Наименее загруженный",
+  "vm.selection.random": "Случайный",
+  "vm.create_failed": "Ошибка создания: {error}",
+  "vm.delete_failed": "Ошибка удаления: {error}",
+  "vm.load_failed": "Ошибка загрузки: {error}",
+  "vm.network_error": "Сетевая ошибка: {error}",
+  "vm.timeout": "Таймаут (мс, по умолчанию 30000)"
 };

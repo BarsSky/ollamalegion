@@ -1,6 +1,9 @@
 package api
 
-import "net/http"
+import (
+	"net/http"
+	"strings"
+)
 
 // setupRoutes - настройка маршрутов API сервера
 func (s *Server) setupRoutes() {
@@ -150,6 +153,40 @@ func (s *Server) setupRoutes() {
 	// Virtual Model endpoints (Variant C) — с аутентификацией и rate limiting
 	s.mux.Handle("/api/v1/virtualmodels", AuthMiddleware(RateLimitMiddleware(s.virtualModelsListHandler, s.rateLimiter), s.authenticator))
 	s.mux.Handle("/api/v1/virtualmodels/", AuthMiddleware(RateLimitMiddleware(s.virtualModelsStatusHandler, s.rateLimiter), s.authenticator))
+
+	// Virtual Model CRUD (Phase 8 P.2) — alias-on-pool mode management.
+	// Отдельный namespace /api/v1/virtual-models (с дефисом) чтобы не
+	// конфликтовать с legacy /api/v1/virtualmodels (без дефиса, pipeline mode).
+	// POST/GET коллекции + GET/DELETE /{name} + POST /{name}/infer.
+	s.mux.Handle("/api/v1/virtual-models", AuthMiddleware(RateLimitMiddleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.Method {
+		case http.MethodGet:
+			s.virtualModelsCRUDListHandler(w, r)
+		case http.MethodPost:
+			s.virtualModelsCRUDCreateHandler(w, r)
+		default:
+			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		}
+	}), s.rateLimiter), s.authenticator))
+	s.mux.Handle("/api/v1/virtual-models/", AuthMiddleware(RateLimitMiddleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		path := r.URL.Path
+		// POST /{name}/infer → test endpoint.
+		if strings.HasSuffix(path, "/infer") && r.Method == http.MethodPost {
+			s.virtualModelsCRUDInferHandler(w, r)
+			return
+		}
+		// GET /{name} → details.
+		if r.Method == http.MethodGet {
+			s.virtualModelsCRUDGetHandler(w, r)
+			return
+		}
+		// DELETE /{name} → unregister.
+		if r.Method == http.MethodDelete {
+			s.virtualModelsCRUDDeleteHandler(w, r)
+			return
+		}
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+	}), s.rateLimiter), s.authenticator))
 
 	// GGUF backends info for WebUI (публичный, без аутентификации — используется страницей GGUF)
 	s.mux.HandleFunc("/api/v1/gguf/backends", s.handleGgufBackends)

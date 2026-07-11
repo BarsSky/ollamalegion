@@ -10,6 +10,7 @@ window.I18N_EN = {
   "nav.logs": "Logs",
   "nav.health": "Health",
   "nav.settings": "Settings",
+  "nav.virtual_models": "Virtual Models",
 
   // Header
   "header.dashboard": "Ollama Legion",
@@ -1217,6 +1218,37 @@ window.I18N_EN = {
   "density.title": "UI density",
   "density.toggle": "Toggle density (compact/comfortable)",
   "density.normal": "Comfortable",
-  "density.dense": "Compact"
+  "density.dense": "Compact",
+
+  // Phase 8 P.2 (2026-07-11): virtual_router mode
+  "vm.title": "Virtual Models",
+  "vm.subtitle": "Manage virtual model aliases for high-availability inference",
+  "vm.create": "Create Virtual Model",
+  "vm.refresh": "Refresh",
+  "vm.total": "Total Virtual Models",
+  "vm.inferences": "Inferences",
+  "vm.errors": "Errors",
+  "vm.streaming": "Streaming",
+  "vm.name": "Name",
+  "vm.description": "Description",
+  "vm.model_name": "Physical Model Name",
+  "vm.selection": "Selection Strategy",
+  "vm.backend_pool": "Backend Pool",
+  "vm.actions": "Actions",
+  "vm.delete": "Delete",
+  "vm.empty": "No virtual models yet",
+  "vm.empty_hint": "Click \"+ Create Virtual Model\" to add one.",
+  "vm.disabled_banner": "Virtual Router mode is not enabled in balancer config. Set balancing.operatingMode = \"virtual_router\" and restart.",
+  "vm.delete_confirm": "Delete virtual model \"{name}\"? This cannot be undone.",
+  "vm.mode.alias_on_pool": "alias_on_pool",
+  "vm.mode.pipeline": "pipeline",
+  "vm.selection.round_robin": "Round Robin (default)",
+  "vm.selection.least_loaded": "Least Loaded",
+  "vm.selection.random": "Random",
+  "vm.create_failed": "Create failed: {error}",
+  "vm.delete_failed": "Delete failed: {error}",
+  "vm.load_failed": "Load failed: {error}",
+  "vm.network_error": "Network error: {error}",
+  "vm.timeout": "Timeout (ms, default 30000)"
 };
 

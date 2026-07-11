@@ -482,24 +482,14 @@ func TestCRUD_Scenario_Backend_LimitsPut(t *testing.T) {
 	t.Logf("limits PUT: status=%d", resp.StatusCode)
 }
 
-// TestCRUD_Scenario_NCtxReload_Status — GET /api/v1/nctx-reload/status.
-func TestCRUD_Scenario_NCtxReload_Status(t *testing.T) {
-	t.Parallel()
-	r := newAPIRig(t, "")
-
-	resp := r.get(t, "/api/v1/nctx-reload/status", "")
-	defer resp.Body.Close()
-	t.Logf("nctx-reload status: status=%d", resp.StatusCode)
-}
-
-// TestCRUD_Scenario_NCtxReload_Reset — POST /api/v1/nctx-reload/reset.
+// TestCRUD_Scenario_NCtxReload_Reset — POST /api/v1/cppworker/reset-reload-counter.
 func TestCRUD_Scenario_NCtxReload_Reset(t *testing.T) {
 	t.Parallel()
 	r := newAPIRig(t, "")
 
-	resp := r.post(t, "/api/v1/nctx-reload/reset", "", `{}`)
+	resp := r.post(t, "/api/v1/cppworker/reset-reload-counter", "", `{}`)
 	defer resp.Body.Close()
-	t.Logf("nctx-reload reset: status=%d", resp.StatusCode)
+	t.Logf("cppworker reset-reload-counter: status=%d", resp.StatusCode)
 }
 
 // TestCRUD_Scenario_AutoPull_Status — GET /api/v1/autopull/status.

@@ -112,7 +112,7 @@ func TestE2E_VirtualRouter_FullFlow(t *testing.T) {
 		req.Header.Set("Content-Type", "application/json")
 		resp, err := http.DefaultClient.Do(req)
 		require.NoError(t, err, "iter %d", i)
-		assert.Equal(t, http.StatusOK, resp.StatusCode, "iter %d body: %s", i, readBody(resp))
+		assert.Equal(t, http.StatusOK, resp.StatusCode, "iter %d body: %s", i, readBodySim(resp))
 
 		// Check X-Original-Backend + X-Virtual-Model headers.
 		assert.Equal(t, "virtual:e2e", resp.Header.Get("X-Virtual-Model"),
@@ -281,12 +281,6 @@ func createE2EConfig() *types.LoadBalancerConfig {
 	cfg := createTestConfig()
 	cfg.Balancing.VirtualModels.Enabled = true
 	return cfg
-}
-
-// readBody helper for tests.
-func readBody(resp *http.Response) string {
-	body, _ := io.ReadAll(resp.Body)
-	return string(body)
 }
 
 // Suppress unused time import.

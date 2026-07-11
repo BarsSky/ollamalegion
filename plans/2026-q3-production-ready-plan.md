@@ -1,10 +1,19 @@
 # Production-Ready план (Sessions G+): rpc_coordinator + virtual_router + real ggml + CI/CD
 
-> **Branch:** новая ветка `feature/q3-production` от `integration/q3-w3-4`
-> **Date:** 2026-06-28
-> **Status:** 🆕 Новая сессия — главный план 1.0 release
-> **Приоритет:** 🔴 P0 (блокирует 1.0 release)
-> **Период:** август-сентябрь 2026 (~25-30 рабочих дней)
+> **Branch:** `centurion`
+> **Date:** 2026-06-28 (created) → **2026-07-11 (DONE)**
+> **Status:** ✅ **DONE 2026-07-11** — все 4 трека (P.1-P.4) реализованы
+> **Tag:** `v1.0-rc1` released
+> **Блокирует:** v1.0 final требует manual hardware smoke (A10 + Qwen3-A3B)
+
+**Summary**: 4 of 4 production tracks completed:
+- ✅ **P.1** rpc_coordinator (4 commits, 13 e2e tests)
+- ✅ **P.2** virtual_router (7 steps + backlog cleanup)
+- ✅ **P.3** research-spike (post-1.0)
+- ✅ **P.4** CI/CD (workflow + runner + 8 linters)
+- ✅ **Smoke test 1.0** (8 sub-flows)
+- ✅ **231 scenario tests** total
+- ✅ **Full i18n** (19 EN docs, 1072 i18n keys, perfect parity)
 
 ---
 

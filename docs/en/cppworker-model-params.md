@@ -313,29 +313,28 @@ Delete a profile. **Persisted in `config.json`.**
 }
 ```
 
-### 7.2 n_ctx-reload endpoints (`internal/balancer/nctx_reload_handlers.go`)
+### 7.2 Reload-counter reset endpoint
 
-#### `POST /api/v1/nctx-reload/{backendId}/reset`
+#### `POST /api/v1/cppworker/reset-reload-counter`
 
-Resets the `ramFallbackAttempts` counter on the balancer for a single backend.
+Resets the `ramFallbackAttempts` counter on cppworker. Supports reset for a single
+backend (via `{"backendId": "..."}`) or for all at once (via `{"all": true}` or empty body).
 
 **Usage:** after manually fixing the cause of the reload loop (for example, freeing up VRAM).
 
 ```bash
-curl -X POST http://localhost:18081/api/v1/nctx-reload/cppworker-gpu-1/reset
+# Reset for a specific backend
+curl -X POST http://localhost:18081/api/v1/cppworker/reset-reload-counter \
+  -H "Content-Type: application/json" \
+  -d '{"backendId": "cppworker-gpu-1"}'
+
+# Reset for all backends
+curl -X POST http://localhost:18081/api/v1/cppworker/reset-reload-counter \
+  -H "Content-Type: application/json" \
+  -d '{"all": true}'
 ```
 
-#### `POST /api/v1/nctx-reload/reset`
-
-Resets counters for all backends.
-
-```bash
-curl -X POST http://localhost:18081/api/v1/nctx-reload/reset
-```
-
-#### `GET /api/v1/nctx-reload/status`
-
-Snapshot of the coordinator state: per-backend metrics (attempts, errors, last decision).
+**Note:** the `/api/v1/nctx-reload/*` endpoint is deprecated; only this unified endpoint remains.
 
 **Response 200:**
 ```json

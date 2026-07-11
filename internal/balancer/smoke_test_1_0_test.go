@@ -257,7 +257,7 @@ func TestSmoke_1_0Release_FullFlow(t *testing.T) {
 		defer resp.Body.Close()
 
 		assert.Equal(t, http.StatusOK, resp.StatusCode,
-			"rpc_coordinator should return 200 for distributed model: %s", readBody(resp))
+			"rpc_coordinator should return 200 for distributed model: %s", readBodySim(resp))
 
 		// Verify both backends got called (pipeline: slice 1-16 + 17-32).
 		assert.True(t, w1.calls.Load() >= 1, "cppworker-1 should get >=1 call, got %d", w1.calls.Load())

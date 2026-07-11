@@ -313,29 +313,28 @@ if hasTools {
 }
 ```
 
-### 7.2 n_ctx-reload endpoints (`internal/balancer/nctx_reload_handlers.go`)
+### 7.2 Reload-counter reset endpoint
 
-#### `POST /api/v1/nctx-reload/{backendId}/reset`
+#### `POST /api/v1/cppworker/reset-reload-counter`
 
-Сбрасывает счётчик `ramFallbackAttempts` на балансировщике для одного бэкенда.
+Сбрасывает счётчик `ramFallbackAttempts` на cppworker. Поддерживает сброс для одного бэкенда
+(через `{"backendId": "..."}`) или для всех сразу (через `{"all": true}` или пустое тело).
 
-**Использование:** после ручного исправления причины reload-loop (например, увеличение VRAM).
-
-```bash
-curl -X POST http://localhost:18081/api/v1/nctx-reload/cppworker-gpu-1/reset
-```
-
-#### `POST /api/v1/nctx-reload/reset`
-
-Сбрасывает счётчики для всех бэкендов.
+**Использование:** после ручного исправления причины reload-loop (например, увеличение VRAM или смена модели).
 
 ```bash
-curl -X POST http://localhost:18081/api/v1/nctx-reload/reset
+# Сброс для конкретного бэкенда
+curl -X POST http://localhost:18081/api/v1/cppworker/reset-reload-counter \
+  -H "Content-Type: application/json" \
+  -d '{"backendId": "cppworker-gpu-1"}'
+
+# Сброс для всех бэкендов
+curl -X POST http://localhost:18081/api/v1/cppworker/reset-reload-counter \
+  -H "Content-Type: application/json" \
+  -d '{"all": true}'
 ```
 
-#### `GET /api/v1/nctx-reload/status`
-
-Снапшот состояния coordinator'а: per-backend метрики (attempts, errors, last decision).
+**Примечание:** endpoint `/api/v1/nctx-reload/*` deprecated, остался только этот unified endpoint.
 
 **Ответ 200:**
 ```json

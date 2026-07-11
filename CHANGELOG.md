@@ -179,6 +179,105 @@ retry отсутствовал.
 - Endpoint `/api/v1/cluster/models/{name}/reload` остаётся для ручного управления
   (для pre-warming и для UI, который показывает статус загрузки).
 
+## [Unreleased — 2026-07-11] — Phase 8 P.2: virtual_router production mode
+
+**Цель**: production-ready `virtual_router` mode для high-availability
+балансировки одной модели по нескольким backends. План см.
+`plans/2026-q3-production-ready-plan.md` §P.2.
+
+### Сделано (Step 1-5 в одном коммите `a320f3a`)
+
+**Step 1 — расширение типов** (`pkg/types/rpc_variants.go`):
+- `VirtualModelConfig` дополнен 3 полями: `Selection` (string),
+  `BackendPool` ([]string), `ModelName` (string).
+- Тип `SelectionStrategy` + 3 константы: `SelectionRoundRobin`,
+  `SelectionLeastLoaded`, `SelectionRandom`.
+- Метод `IsAliasOnPoolMode()` — true если BackendPool+ModelName заданы.
+- **Alias-on-pool mode** (NEW): virtual model = алиас на пул backends
+  с одной physical model. Существующий pipeline mode (Slices+Coordination)
+  остаётся backward-compat.
+
+**Step 2 — Selection strategies** (`internal/virtualmodel/selector.go`):
+- `Selector` interface (Name, Select, Reset).
+- 3 реализации: `RoundRobinSelector` (atomic counter), `LeastLoadedSelector`
+  (LoadProvider callback + round-robin между равными), `RandomSelector`
+  (math/rand с SetSeed для reproducible tests).
+- `NewSelector(strategy)` factory с fallback на round_robin для unknown.
+- Re-export констант из `pkg/types` для удобства.
+- 16 unit-тестов: empty/single/multi/healthy-preference/reset/distribution/
+  concurrent-safety + interface assignment. Все thread-safe (run с `-race`).
+
+**Step 3 — VirtualRouter core** (`internal/balancer/virtual_router.go`):
+- `VirtualRouter` struct поверх `*virtualmodel.Registry` + `*Proxy`.
+- `VirtualRouterMetrics` — atomic counters (inferenceTotal, errors,
+  streamPassThrough, selectionSkips, per-backend selections).
+- `NewVirtualRouter`, `IsActive`, `IsVirtualModelPath`, `IsVirtualPathRequest`,
+  `MatchesVirtualRequest`, `GetMetrics`, `SetVirtualRouter`, `ResetSelector`.
+- `ServeHTTP` — full flow: read body, parse JSON, lookup registry,
+  select backend через Selector, rewrite `model` field в body,
+  добавить `X-Original-Backend` / `X-Virtual-Model` / `X-Backend-Selected`
+  / `X-Selection-Strategy` headers, proxy на `http://backend:port/path`,
+  copy response headers + body.
+- `getOrCreateSelector` — lazy init + cache per virtual model.
+- `parseBackendHostPort` — "host:port" parser (default port 11434).
+- `writeVirtualRouterError` — Ollama `{"error":msg}` vs OpenAI
+  `{"error":{"message","type"}}` format.
+- 14 unit-тестов: round-robin distribution, least-loaded priority,
+  unknown model 404, body parse error 400, backend unreachable 502,
+  streaming passthrough (3 SSE events через backend), debug headers,
+  registry disabled 503, IsActive, IsVirtualPathRequest filter,
+  parseBackendHostPort edge cases, metrics snapshot.
+
+**Step 4 — wiring в Proxy.ServeHTTP + main.go**:
+- `internal/balancer/proxy.go`: добавлено `virtualRouter *VirtualRouter`
+  field + interceptor block в `ServeHTTP` (после rpc_coordinator scaffold).
+  Условия intercept: `IsVirtualRouterMode && router.IsActive &&
+  IsVirtualPathRequest && MatchesVirtualRequest`. Falls through к
+  стандартному flow если любое false → default bundled config unaffected.
+- `internal/balancer/operating_modes.go`: `IsVirtualRouterMode(mode)` —
+  canonical name + legacy aliases ("virtual-router" с дефисом).
+- `internal/balancer/rpc_modules.go`: `GetVirtualRouter` /
+  `SetVirtualRouter` / `GetVirtualModelRegistry` accessors.
+- `cmd/balancer/main.go`: если `IsVirtualRouterMode` → `SetEnabled(true)`
+  на registry + `NewVirtualRouter` + `SetVirtualRouter` + log.
+- 4 Proxy.ServeHTTP integration теста: intercept, standard mode noop,
+  non-virtual model fallback, non-rpc path noop.
+
+**Step 5 — docs** (этот commit + `docs/virtual-router.md`):
+- User guide с архитектурой, конфигурацией, error responses, метриками,
+  примерами, сравнением с P.1, известными ограничениями.
+
+### Поведенческие гарантии
+- Default bundled config (OperatingMode="" / "standard", virtualModels.enabled=false)
+  полностью unaffected — scaffold в `Proxy.ServeHTTP` не срабатывает.
+- Streaming (SSE) проходит passthrough от backend'а к клиенту без изменений.
+- Alias-on-pool mode работает параллельно с legacy pipeline mode (разные
+  virtual models, разные routes).
+- Auth — Phase 9 (пока нет, в отличие от P.1).
+
+### Статистика
+- 1 commit `a320f3a` в `centurion`.
+- 10 файлов, +1816 LOC, 0 удалено (backward compat).
+- Tests: 30 новых (16 selector + 14 virtual router) + 4 proxy integration
+  = 34 новых теста. Все зелёные на `llama_stub` build tag.
+- Production status: **P.2 (virtual_router) — Steps 1-5 DONE**.
+  Foundation готов. Step 6 (CRUD REST API + WebUI) — deferred.
+
+### Известные ограничения (post-P.2 backlog)
+- **No automatic failover**: при backend down connection refused → 502.
+  Selector не retry'ит на следующий backend. Phase 9: добавить retry logic.
+- **LoadProvider stub**: `least_loaded` без настроенного provider использует
+  fallback `FreeSlots=1` (эквивалент round-robin). Phase 9: wire с
+  `Proxy.GetBackendMetrics()`.
+- **Pipeline mode не через VirtualRouter**: только alias-on-pool mode.
+- **No auth**: в отличие от P.1, virtual_router пока не проверяет token.
+  Phase 9.
+- **CRUD REST API не реализован**: VirtualModels добавляются через config
+  файл, не через API. Phase 9.
+- **No WebUI page**: virtual-models.html отсутствует. Phase 9.
+
+См. также: `docs/virtual-router.md`, `docs/phase-8-rpc-coordinator.md`.
+
 ## [Unreleased — 2026-07-11] — Phase 8: rpc_coordinator production mode (P.1)
 
 **Цель**: production-ready rpc_coordinator mode для распределённого

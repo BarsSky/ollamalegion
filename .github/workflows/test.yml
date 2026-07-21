@@ -1,0 +1,109 @@
+# Минимальный CI для ветки centurion: build + test + vet, без Docker.
+#
+# Назначение:
+#   - Быстрый сигнал "зелёное/красное" на каждый push в centurion и каждый PR.
+#   - Без self-hosted runner'а (используем ubuntu-latest — public runner).
+#   - Без Docker: только `go build` + `go test` + `go vet` в stub-режиме
+#     (тег `llama_stub` отключает C-bridge, тесты не требуют GPU/llama.cpp).
+#   - Интеграционные тесты, требующие docker-compose, НЕ запускаются
+#     (см. ./tests/... — они за флагом `-short` или требуют явного `docker compose up`).
+#
+# Отличие от .github/workflows/ci.yml:
+#   ci.yml     — полный pipeline (self-hosted Windows + ubuntu + lint + i18n),
+#                триггерится на main/integration/**/feature/**, ~10-20 мин.
+#   test.yml   — лёгкий smoke-test для centurion, ~3-5 мин cold cache,
+#                ~1-2 мин с Go cache hit.
+#
+# Если centurion станет стабильным main, ci.yml можно упростить или удалить.
+# Пока оба живут параллельно — это intentional.
+
+name: test
+
+on:
+  push:
+    branches: [centurion]
+  pull_request:
+    branches: [centurion]
+  workflow_dispatch:
+
+# Отмена in-progress для одного и того же workflow (новый push отменяет старый прогон)
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  GO_VERSION: "1.22"
+  GOPROXY: https://proxy.golang.org,direct
+  CGO_ENABLED: 1   # нужен для cgo (даже в stub-режиме)
+
+jobs:
+  test:
+    name: Build + test (ubuntu, no Docker)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          submodules: false   # c/llama.cpp — gitlink без .gitmodules
+          fetch-depth: 0      # для git log в сообщениях/комментариях
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: true         # кеширует GOMODCACHE + GOCACHE между прогонами
+
+      - name: Install build tools
+        # build-essential нужен для cgo (хотя в stub-режиме не линкуемся
+        # с реальной llama.cpp, headers gcc всё равно используются).
+        # cmake не требуется — собираем только Go-бинарь.
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential
+
+      - name: Build all binaries (stub mode)
+        run: |
+          mkdir -p bin
+          go build -tags llama_stub -o bin/balancer-stub   ./cmd/balancer/
+          go build -tags llama_stub -o bin/cppworker-stub ./cmd/cppworker/
+          go build -tags llama_stub -o bin/agent-stub     ./cmd/agent/
+
+      - name: Verify healthcheck (cppworker)
+        # -healthcheck делает exit 0, если cppworker может стартовать.
+        # Полезно как smoke-test: код хотя бы линкуется.
+        run: ./bin/cppworker-stub -healthcheck
+
+      - name: Test internal/... (-race)
+        run: |
+          go test -race -tags llama_stub -timeout 180s -v ./internal/... 2>&1 | tail -50
+
+      - name: Test cmd/... (no race)
+        run: |
+          go test -tags llama_stub -timeout 60s -v ./cmd/... 2>&1 | tail -50
+
+      - name: Test tests/... (integration, -short)
+        # -short: пропускает e2e тесты, требующие docker-compose stack.
+        # На ubuntu без Docker можно прогнать только короткие Go-тесты.
+        run: |
+          go test -tags llama_stub -timeout 120s -short -v ./tests/... 2>&1 | tail -50
+
+      - name: go vet
+        if: always()
+        run: |
+          go vet -tags llama_stub ./...
+
+      - name: Generate coverage (atomic)
+        if: success()
+        run: |
+          go test -tags llama_stub -coverprofile=coverage.out -covermode=atomic -timeout 180s ./internal/... ./cmd/...
+          go tool cover -func=coverage.out | tail -1
+
+      - name: Upload coverage artifact
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-test
+          path: coverage.out
+          retention-days: 14

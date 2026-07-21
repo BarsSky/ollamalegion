@@ -144,8 +144,6 @@ func TestRunbook_Scenario_C_ReloadLoopLimit(t *testing.T) {
 		// Counter для reload attempts.
 		var mu sync.Mutex
 		attempts := make([]time.Time, 0)
-		_ = attempts
-		_ = mu
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			if strings.Contains(r.URL.Path, "/reload") {
 				now := time.Now()
@@ -303,9 +301,7 @@ func TestRunbook_Scenario_G_EOFDuringReload(t *testing.T) {
 	// Second reload request → success.
 	reloadAttempts := atomic.Int64{}
 	rig.o1.server.Config.Handler = func() http.Handler {
-		var mu sync.Mutex
 		count := int64(0)
-		_ = mu
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			if strings.Contains(r.URL.Path, "/reload") {
 				count++

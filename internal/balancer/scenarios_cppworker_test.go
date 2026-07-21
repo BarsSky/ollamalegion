@@ -443,9 +443,10 @@ func TestRpcCoordinator_Streaming_ChunkedResponse(t *testing.T) {
 	}))
 	defer balancer.Close()
 
-	resp, _ := http.Post(balancer.URL+"/api/generate",
+	resp, err := http.Post(balancer.URL+"/api/generate",
 		"application/json",
 		strings.NewReader(`{"model":"llama-3-8b","prompt":"stream","stream":true}`))
+	require.NoError(t, err)
 	defer resp.Body.Close()
 
 	// Read NDJSON streaming response.

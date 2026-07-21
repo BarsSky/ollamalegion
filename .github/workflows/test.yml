@@ -70,10 +70,10 @@ jobs:
           go build -tags llama_stub -o bin/cppworker-stub ./cmd/cppworker/
           go build -tags llama_stub -o bin/agent-stub     ./cmd/agent/
 
-      - name: Verify healthcheck (cppworker)
-        # -healthcheck делает exit 0, если cppworker может стартовать.
-        # Полезно как smoke-test: код хотя бы линкуется.
-        run: ./bin/cppworker-stub -healthcheck
+      # cppworker -healthcheck — это probe живого сервера на 127.0.0.1:18092
+      # (см. cmd/cppworker/utils.go:616), а не smoke-test бинарника. Используется
+      # как Docker healthcheck изнутри контейнера. В CI без запущенного
+      # cppworker'а шаг бесполезен — build выше уже доказывает, что код линкуется.
 
       - name: Test internal/... (-race)
         run: |

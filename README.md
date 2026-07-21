@@ -4,6 +4,8 @@
 [![Go Version](https://img.shields.io/badge/Go-1.21+-00ADD8.svg)](https://go.dev/)
 [![Docker](https://img.shields.io/badge/Docker-Ready-2496ED.svg)](https://www.docker.com/)
 
+> 🇷🇺 **Русский** (текущий) | [🇬🇧 English documentation](docs/en/README.md)
+
 Интеллектуальный балансировщик нагрузки для llama.cpp inference с адаптивной загрузкой моделей, авто-подбором параметров под доступные ресурсы и мониторингом GPU/CPU/RAM.
 
 ## Что нового
@@ -250,10 +252,14 @@ plans/               — roadmap, ADR, фазовые отчёты
 
 ## Документация
 
-- [docs/README.md](docs/README.md) — индекс документации
-- [docs/installation.md](docs/installation.md) — установка и сборка
-- [docs/deployment.md](docs/deployment.md) — развёртывание
-- [docs/api.md](docs/api.md) — REST API
+- 🇷🇺 [docs/README.md](docs/README.md) — индекс документации (RU)
+- 🇬🇧 [docs/en/README.md](docs/en/README.md) — English documentation index
+- 🇷🇺 [docs/installation.md](docs/installation.md) — установка и сборка
+- 🇬🇧 [docs/en/installation.md](docs/en/installation.md) — installation & build
+- 🇷🇺 [docs/deployment.md](docs/deployment.md) — развёртывание
+- 🇬🇧 [docs/en/deployment.md](docs/en/deployment.md) — deployment
+- 🇷🇺 [docs/api.md](docs/api.md) — REST API
+- 🇬🇧 [docs/en/api.md](docs/en/api.md) — REST API (English)
 - [plans/README.md](plans/README.md) — roadmap
 
 ## Лицензия

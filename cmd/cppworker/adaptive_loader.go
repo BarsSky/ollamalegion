@@ -321,6 +321,16 @@ var KVCacheTypeOrder = []string{"f16", "q8_0", "q4_0"}
 // to disable and always use f16.
 var autoKVCacheEnabled = true
 
+// init читает CPPWORKER_AUTO_KV_CACHE из окружения (P0 fix: ранее env-var был
+// задокументирован, но не читался — переменная оставалась hardcoded=true).
+// Принимаемые значения: true/1/yes/on → enable, false/0/no/off → disable.
+// Пустая строка или нераспознанное значение → дефолт (true, backward-compatible).
+func init() {
+	if v := os.Getenv("CPPWORKER_AUTO_KV_CACHE"); v != "" {
+		autoKVCacheEnabled = parseBoolEnv(v)
+	}
+}
+
 // bytesPerKVCacheType ? ????????? ??? ??????? ????.
 var bytesPerKVCacheType = map[string]int64{
 	"f16":  4,

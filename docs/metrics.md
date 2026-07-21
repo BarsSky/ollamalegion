@@ -47,8 +47,10 @@
 | `diskTotal` | uint64 | MB | gopsutil | ❌ | Всего диска |
 | `diskUsed` | uint64 | MB | gopsutil | ❌ | Использовано диска |
 | `diskFree` | uint64 | MB | gopsutil | ❌ | Свободно диска |
-| `networkRX` | uint64 | bytes | gopsutil | ❌ | Получено по сети |
-| `networkTX` | uint64 | bytes | gopsutil | ❌ | Отправлено по сети |
+| `networkRX` | uint64 | bytes | gopsutil | ❌ | Получено по сети (накопительно) |
+| `networkTX` | uint64 | bytes | gopsutil | ❌ | Отправлено по сети (накопительно) |
+| `networkRXRate` | float64 | bytes/s | gopsutil | ❌ | Скорость получения (вычисляется из дельты) |
+| `networkTXRate` | float64 | bytes/s | gopsutil | ❌ | Скорость отправки (вычисляется из дельты) |
 
 ### 2.1 CPU Details (`SystemMetrics.CPU` / `CPUMetrics`)
 

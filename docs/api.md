@@ -23,9 +23,16 @@
 # Management API (управление кластером, метрики, сессии)
 http://localhost:18081
 
-# HTTPS (если включен TLS)
-https://localhost:8443
+# HTTPS (если `tls.enabled=true` в config.json)
+# Порт задаётся полем `loadBalancer.tlsPort` (HTTPS proxy) и `tlsPort+1`
+# (HTTPS management API). Дефолт в config.example.json не задан — выставьте
+# явно, иначе сервер может стартовать на случайном порту.
+https://localhost:<loadBalancer.tlsPort>      # proxy (Ollama API)
+https://localhost:<loadBalancer.tlsPort + 1>  # management API
 ```
+
+См. также: `internal/api/tls.go` (`GenerateSelfSignedCert`, `HTTPSRedirectMiddleware`)
+и `cmd/balancer/main.go:291-356` (запуск HTTPS-серверов).
 
 ### CppWorker (llama.cpp) API
 
@@ -248,6 +255,46 @@ curl -X POST http://localhost:18081/api/v1/cppworker/model-profiles/gemma-4-E4B-
 ```
 
 **Валидация профиля:** `contextLength` ∈ `[256, 262144]` (256K — нативный max для gemma-4), `batchSize >= 1`, `numGpuLayers >= -1` (`-1` = все слои).
+
+### CppWorker: Admin / Diagnostics API
+
+Эти endpoint'ы живут **на самом cppworker** (порт 18092), а не на балансере.
+Предназначены для диагностики и runtime-управления — обычно используются
+WebUI-страницей GGUF или админскими скриптами, не публичными клиентами.
+
+| Endpoint | Метод | Описание | Auth |
+|----------|-------|----------|------|
+| `/health` | `GET` | Health check (Liveness probe) | ❌ |
+| `/api/health` | `GET` | Алиас `/health` | ❌ |
+| `/info` | `GET` | Версия, env, build-info | ❌ |
+| `/api/info` | `GET` | Алиас `/info` | ❌ |
+| `/api/gpu` | `GET` | GPU info (NVML) | ❌ |
+| `/api/models` | `GET` | Список загруженных моделей (`{count, models:[...]}`) | ❌ |
+| `/api/model` | `GET` | Получить инфо по конкретной модели (по `?name=`) | ❌ |
+| `/api/models/files` | `GET` | Список `.gguf` в `modelsDir` | ❌ |
+| `/api/models/load` | `POST` | Загрузить модель | ❌ |
+| `/api/models/load/progress` | `GET` | Прогресс загрузки (polling) | ❌ |
+| `/load` | `POST` | Alias для `/api/models/load` (используется balancer warmup) | ❌ |
+| `/api/models/unload` | `POST` | Выгрузить модель | ❌ |
+| `/api/models/reload` | `POST` | Unload + load с новыми параметрами | ✅ API_TOKEN |
+| `/api/models/delete` | `POST` | Удалить GGUF-файл с диска | ❌ |
+| `/api/delete` | `POST` | Ollama-совместимый alias для `delete` | ❌ |
+| `/api/v1/cppworker/config` | `GET` | Текущий config (env+defaults merged) | ❌ |
+| `/api/v1/cppworker/config/update` | `POST` | Apply override-параметров | ✅ API_TOKEN |
+| `/api/v1/cppworker/config/reload` | `POST` | Reload конфига | ✅ API_TOKEN |
+| `/api/v1/cppworker/config/runtime` | `GET` | Runtime-параметры загруженных моделей (n_ctx, gpu_layers и т.д.) | ❌ |
+| `/api/v1/cppworker/reset-reload-counter` | `POST` | Сброс `ramFallbackAttempts` (cycle counter) | ✅ API_TOKEN |
+| `/api/v1/cppworker/health` | `GET` | Health check (v1 namespace) | ❌ |
+| `/api/v1/cppworker/metrics` | `GET` | Метрики (Prometheus-совместимые) | ❌ |
+| `/api/v1/cppworker/debug/last-prompt` | `GET` | Последний prompt, вызвавший 413 | ✅ API_TOKEN |
+| `/api/v1/cppworker/debug/last-stream` | `GET` | Snapshot последнего стрима (для диагностики disconnect) | ✅ API_TOKEN |
+| `/api/v1/cppworker/debug/last-stream/clear` | `POST` | Очистить snapshot | ✅ API_TOKEN |
+| `/api/diagnostics` | `GET` | Полный диагностический JSON | ❌ |
+| `/api/diagnostics/models` | `GET` | Диагностика по моделям | ❌ |
+| `/api/diagnostics/load` | `GET` | Диагностика последней загрузки | ❌ |
+| `/api/diagnostics/clear` | `POST` | Очистить диагностику | ❌ |
+
+См. `cmd/cppworker/router.go` для регистрации всех маршрутов.
 
 ## GGUF Backend Proxy API (через балансер)
 

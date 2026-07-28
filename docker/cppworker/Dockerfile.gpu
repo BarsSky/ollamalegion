@@ -56,7 +56,11 @@ RUN mkdir -p build && cd build && \
       -DLLAMA_CURL=OFF \
       -DLLAMA_BUILD_TESTS=OFF \
       -DLLAMA_BUILD_EXAMPLES=OFF \
-      -DBUILD_SHARED_LIBS=OFF && \
+      -DBUILD_SHARED_LIBS=OFF \
+      # Round 14a: enable LLAMA_BUILD_COMMON для libcommon.a (chat.h, common_chat_*).
+      # Default is OFF (только при LLAMA_STANDALONE=ON), но нам нужна libcommon.a
+      # для нашего C++ wrapper chat_thinking.cpp.
+      -DLLAMA_BUILD_COMMON=ON && \
     cmake --build . --config Release -j$(nproc)
 
 # -----------------------------------------------------------------------------
@@ -78,8 +82,14 @@ COPY c/bridge/csrc ./csrc/
 COPY --from=llama-builder /build/llama.cpp/include /build/llama.cpp/include
 COPY --from=llama-builder /build/llama.cpp/ggml/include /build/llama.cpp/ggml/include
 COPY --from=llama-builder /build/llama.cpp/ggml/src/ggml-cpu /build/llama.cpp/ggml/src/ggml-cpu
+# Round 14a: c/llama.cpp/common/ нужен для chat.h (common_chat_templates_apply).
+# Без этого chat_thinking.cpp не скомпилируется ("fatal error: chat.h: No such file").
+COPY --from=llama-builder /build/llama.cpp/common /build/llama.cpp/common
 COPY --from=llama-builder /build/llama.cpp/build/src /build/llama.cpp/build/src
 COPY --from=llama-builder /build/llama.cpp/build/ggml/src /build/llama.cpp/build/ggml/src
+# Round 14a: libcommon.a содержит реализацию common_chat_templates_apply и других
+# C++ API. Без неё линковка chat_thinking.cpp упадёт (undefined reference).
+COPY --from=llama-builder /build/llama.cpp/build/common /build/llama.cpp/build/common
 
 RUN mkdir -p build && cd build && \
     cmake .. \
@@ -127,7 +137,7 @@ COPY --from=bridge-builder /build/bridge/build /build/c/bridge/build
 
 ENV CGO_ENABLED=1
 ENV CGO_CFLAGS="-DGGML_USE_CUDA -I/build/c/llama.cpp/include -I/build/c/llama.cpp/ggml/include -I/build/c/llama.cpp/ggml/src/ggml-cpu -I/build/c/bridge -I/usr/local/cuda/include -I/usr/local/cuda/targets/x86_64-linux/include -fopenmp"
-ENV CGO_LDFLAGS="-L/build/c/llama.cpp/build/src -L/build/c/llama.cpp/build/ggml/src -L/build/c/llama.cpp/build/ggml/src/ggml-cuda -L/build/c/bridge/build -L/usr/local/cuda/lib64 -L/usr/local/cuda/lib64/stubs -lllama -lggml -lggml-cpu -lggml-base -lggml-cuda -lollamalegion_bridge -lcublas -lcublasLt -lcudart -lcuda -lstdc++ -lm -lpthread -fopenmp"
+ENV CGO_LDFLAGS="-L/build/c/llama.cpp/build/src -L/build/c/llama.cpp/build/ggml/src -L/build/c/llama.cpp/build/ggml/src/ggml-cuda -L/build/c/llama.cpp/build/common -L/build/c/bridge/build -L/usr/local/cuda/lib64 -L/usr/local/cuda/lib64/stubs -lllama -lggml -lggml-cpu -lggml-base -lggml-cuda -lcommon -lollamalegion_bridge -lcublas -lcublasLt -lcudart -lcuda -lstdc++ -lm -lpthread -fopenmp"
 
 # GOMAXPROCS=2 ограничивает параллелизм компиляции Go,
 # чтобы уложиться в доступную RAM при сборке в Docker Desktop / WSL2.

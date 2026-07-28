@@ -23,7 +23,8 @@ RUN mkdir -p build && cd build && \
       -DLLAMA_CURL=OFF \
       -DLLAMA_BUILD_TESTS=OFF \
       -DLLAMA_BUILD_EXAMPLES=OFF \
-      -DBUILD_SHARED_LIBS=OFF && \
+      -DBUILD_SHARED_LIBS=OFF \
+      -DLLAMA_BUILD_COMMON=ON && \
     cmake --build . --config Release -j$(nproc)
 
 FROM nvidia/cuda:12.2.0-devel-ubuntu22.04 AS bridge-builder
@@ -37,6 +38,10 @@ WORKDIR /build/bridge
 # source file: csrc/chat_thinking.cpp".
 COPY c/bridge/bridge.h c/bridge/bridge.c c/bridge/CMakeLists.txt ./
 COPY c/bridge/csrc ./csrc/
+
+# Round 14a: c/llama.cpp/common/ нужен для chat.h + libcommon.a.
+COPY --from=llama-builder /build/llama.cpp/common /build/llama.cpp/common
+COPY --from=llama-builder /build/llama.cpp/build/common /build/llama.cpp/build/common
 
 COPY --from=llama-builder /build/llama.cpp /build/llama.cpp
 
@@ -74,7 +79,7 @@ COPY --from=bridge-builder /build/bridge/build /build/c/bridge/build
 
 ENV CGO_ENABLED=1
 ENV CGO_CFLAGS="-DGGML_USE_CUDA -I/build/c/llama.cpp/include -I/build/c/llama.cpp/ggml/include -I/build/c/llama.cpp/ggml/src/ggml-cpu -I/build/c/bridge -I/usr/local/cuda/include -I/usr/local/cuda/targets/x86_64-linux/include -fopenmp"
-ENV CGO_LDFLAGS="-L/build/c/llama.cpp/build/src -L/build/c/llama.cpp/build/ggml/src -L/build/c/llama.cpp/build/ggml/src/ggml-cuda -L/build/c/bridge/build -L/usr/local/cuda/lib64 -L/usr/local/cuda/lib64/stubs -lllama -lggml -lggml-cpu -lggml-base -lggml-cuda -lollamalegion_bridge -lcublas -lcublasLt -lcudart -lcuda -lstdc++ -lm -lpthread -fopenmp"
+ENV CGO_LDFLAGS="-L/build/c/llama.cpp/build/src -L/build/c/llama.cpp/build/ggml/src -L/build/c/llama.cpp/build/ggml/src/ggml-cuda -L/build/c/llama.cpp/build/common -L/build/c/bridge/build -L/usr/local/cuda/lib64 -L/usr/local/cuda/lib64/stubs -lllama -lggml -lggml-cpu -lggml-base -lggml-cuda -lcommon -lollamalegion_bridge -lcublas -lcublasLt -lcudart -lcuda -lstdc++ -lm -lpthread -fopenmp"
 
 RUN CGO_ENABLED=1 GOOS=linux GOARCH=amd64 \
     go build -trimpath -ldflags "-w -s" \

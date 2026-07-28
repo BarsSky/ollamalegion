@@ -128,6 +128,7 @@ func TestHasReloadedDefaults(t *testing.T) {
 		{[]string{"defaultNuma"}, true},
 		{[]string{"defaultUseMmap"}, true},
 		{[]string{"defaultNThreads"}, true},
+		{[]string{"defaultNParallel"}, true}, // Round 12
 		{[]string{}, false},
 		{nil, false},
 		{[]string{"port", "modelsDir"}, false},
@@ -776,7 +777,8 @@ func TestHasReloadedDefaults_Extended(t *testing.T) {
 		// Базовые
 		"defaultCtxSize", "defaultBatchSize", "defaultGpuLayers",
 		"defaultFlashAttnType", "defaultNuma", "defaultUseMmap",
-		"defaultUseMlock", "defaultNThreads", "defaultRmsNormEps",
+		"defaultUseMlock", "defaultNThreads", "defaultNParallel", // Round 12
+		"defaultRmsNormEps",
 		// Multi-GPU
 		"autoGpuDistribution", "tensorSplitStrategy", "defaultMainGpu",
 		"defaultNoMemoryMap", "defaultTensorSplit", "defaultSplitMode",

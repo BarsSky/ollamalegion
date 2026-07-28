@@ -367,6 +367,9 @@ func (b *Backend) LoadModel(name string, path string) error {
 		FlashAttnType: b.cfg.DefaultFlashAttnType,
 		NUMA:          b.cfg.DefaultNUMA,
 		UseMmap:       b.cfg.DefaultUseMmap,
+		// Round 12: проброс DefaultNParallel в opts — даёт CLI/env/JSON
+		// default работать через простой LoadModel (без явных opts).
+		Parallel: b.cfg.DefaultNParallel,
 	})
 }
 
@@ -459,8 +462,13 @@ func (b *Backend) LoadModelWithOpts(name string, path string, opts LoadModelOpts
 	}
 	// То же для NParallel: 0 в Go = default (=1 в llama.cpp).
 	// > 0 = multi-slot batched generation (требует больше VRAM).
+	// Round 12 (2026-07-28): если opts.Parallel не задан (0), используем
+	// b.cfg.DefaultNParallel — это даёт CLI/env/JSON-конфигурируемый default,
+	// который раньше был только per-model в opts.
 	if opts.Parallel > 0 {
 		cfg.NParallel = opts.Parallel
+	} else if b.cfg.DefaultNParallel > 0 {
+		cfg.NParallel = b.cfg.DefaultNParallel
 	} else {
 		cfg.NParallel = 0 // оставляем дефолт bridge (1)
 	}

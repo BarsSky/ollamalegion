@@ -334,6 +334,11 @@ func handleCppWorkerUpdateConfig(w http.ResponseWriter, r *http.Request) {
 	applyBool("defaultUseMmap", &currentConfig.DefaultUseMmap)
 	applyBool("defaultUseMlock", &currentConfig.DefaultUseMlock)
 	applyInt("defaultNThreads", &currentConfig.DefaultNThreads, 0, 4096)
+	// Round 12 (2026-07-28): defaultNParallel — n_parallel для batched generation.
+	// 0 = bridge default (=1), 1..8 = multi-slot. Потолок 8 — больше никто
+	// не использует, llama.cpp рекомендует ≤ batch_size/threads.
+	// При изменении — load-affecting (нужен reload моделей).
+	applyInt("defaultNParallel", &currentConfig.DefaultNParallel, 0, 8)
 	applyFloat("defaultRmsNormEps", &currentConfig.DefaultRMSNormEps, 0)
 
 	// === Multi-GPU / distribution ===
@@ -388,7 +393,7 @@ func handleCppWorkerUpdateConfig(w http.ResponseWriter, r *http.Request) {
 		"defaultCtxSize": true, "defaultBatchSize": true,
 		"defaultGpuLayers": true, "defaultFlashAttnType": true,
 		"defaultNuma": true, "defaultUseMmap": true, "defaultUseMlock": true,
-		"defaultNThreads": true, "defaultRmsNormEps": true,
+		"defaultNThreads": true, "defaultNParallel": true, "defaultRmsNormEps": true,
 		// Multi-GPU
 		"autoGpuDistribution": true, "tensorSplitStrategy": true,
 		"defaultMainGpu": true, "defaultRpcBackend": true,
@@ -465,6 +470,7 @@ func hasReloadedDefaults(applied []string) bool {
 		"defaultUseMmap":       true,
 		"defaultUseMlock":      true,
 		"defaultNThreads":      true,
+		"defaultNParallel":     true, // Round 12: load-affecting (n_seq_max)
 		"defaultRmsNormEps":    true,
 		// Multi-GPU
 		"autoGpuDistribution": true,
@@ -524,6 +530,8 @@ func reloadAllLoadedWithDefaults() ([]string, []string) {
 			NThreads:      currentConfig.DefaultNThreads,
 			KVCacheType:   currentConfig.DefaultKVCacheType,
 			SplitMode:     currentConfig.DefaultSplitMode,
+			// Round 12: Parallel (n_parallel) — load-affecting, reload подхватит.
+			Parallel: currentConfig.DefaultNParallel,
 		}
 		// Если в currentConfig задан defaultTensorSplit и AutoGPUDistribution
 		// отключён — используем явный split из конфига (приоритет над runtime m.TensorSplit).

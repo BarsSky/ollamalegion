@@ -42,6 +42,14 @@ type Config struct {
 	// Параметры потоков CPU
 	DefaultNThreads int `json:"defaultNThreads"` // 0 = auto
 
+	// Round 12 (2026-07-28): n_parallel — число параллельных sequences
+	// для batched generation. 0 = дефолт llama.cpp (=1), 1 = явное n_parallel=1,
+	// 2..8 = multi-slot batched generation (требует больше VRAM для KV-cache).
+	// ВАЖНО: даже при NParallel>1 инференс пока СЕРИАЛИЗУЕТСЯ через Round 8
+	// inst.mu lock (backend.go:1319-1379) — для настоящего параллельного
+	// инференса требуется ещё C-bridge slot pool (Round 13+, future work).
+	DefaultNParallel int `json:"defaultNParallel"` // 0 = bridge default (1)
+
 	// RoPE параметры контекста
 	DefaultRopeFreqBase     float64 `json:"defaultRopeFreqBase"`
 	DefaultRopeFreqScale    float64 `json:"defaultRopeFreqScale"`
@@ -130,6 +138,7 @@ func DefaultConfig() Config {
 		DefaultUseMlock:   false,
 
 		DefaultNThreads:         0, // auto
+		DefaultNParallel:        0, // 0 = bridge default (1); >0 = multi-slot batched
 		DefaultRopeFreqBase:     10000.0,
 		DefaultRopeFreqScale:    1.0,
 		DefaultRopeScalingType:  "none",
@@ -251,6 +260,14 @@ func LoadConfigFromEnv() Config {
 	// Потоки CPU
 	if v := os.Getenv("CPPWORKER_N_THREADS"); v != "" {
 		cfg.DefaultNThreads = parseInt(v, cfg.DefaultNThreads)
+	}
+
+	// Round 12: n_parallel для batched generation.
+	// 0 = bridge default (=1), 1..8 = multi-slot batched. -1 в env = 0 (legacy).
+	if v := os.Getenv("CPPWORKER_N_PARALLEL"); v != "" {
+		if n := parseInt(v, cfg.DefaultNParallel); n >= 0 {
+			cfg.DefaultNParallel = n
+		}
 	}
 
 	// RoPE параметры

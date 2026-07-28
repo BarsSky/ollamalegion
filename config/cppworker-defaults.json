@@ -14,6 +14,7 @@
   "defaultUseMlock": false,
   "defaultSplitMode": 1,
   "defaultNThreads": 0,
+  "defaultNParallel": 0,
   "defaultRopeFreqBase": 0,
   "defaultRopeFreqScale": 0,
   "defaultRopeScalingType": "yarn",

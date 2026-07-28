@@ -5,6 +5,154 @@
 Формат ведётся в соответствии с [Keep a Changelog](https://keepachangelog.com/ru/1.0.0/),
 и этот проект придерживается [Semantic Versioning](https://semver.org/lang/ru/).
 
+## [0.4.6 — 2026-07-28]
+
+Patch-релиз поверх `v0.4.5-2026.06.25`. Цели: устранить HTTP 401 при WebUI PUT
+per-backend options, добавить секцию `llamaCpp` в cluster config, стабилизировать
+SSE streaming, отрефакторить Settings tab и добавить Reasoning/Thinking settings.
+
+### Fixed (auth chain + validation)
+
+**Проблема:** WebUI отправляет PUT на `/api/v1/cppworker/config/update` с
+`X-API-Token`, но cppworker принимал только `Authorization: Bearer` → 401 на
+каждом сохранении. Плюс валидация падала на `null`/0 для необязательных полей
+типа `rope_freq_base` / `rms_norm_eps`, где `0` это валидный default-sentinel
+в llama.cpp, а не «skip».
+
+**Четыре связанных фикса:**
+
+1. **P.3 — cppworker `authMiddleware`** (`cmd/cppworker/utils.go`):
+   принимает `Authorization: Bearer` (приоритет) **или** `X-API-Token` (fallback).
+   Helper `extractClientToken(r)`. 6 sub-тестов в `auth_env_test.go`.
+
+2. **P.5 — WebUI compose env** (`docker-compose.cppworker-bundled.yml`):
+   `API_TOKEN=${CPPWORKER_API_TOKEN:-changeme-bundled-token}` — раньше
+   `entrypoint.sh` инжектил пустую строку, и `config.js` отдавал `API_TOKEN=''`.
+
+3. **P.6 — null/0 = skip** (`cmd/cppworker/handlers_config.go`): все 4 helper'а
+   (`getInt`, `getFloat`, `getString`, `getBool`) принимают JSON `null` и
+   `getFloat` трактует `0` как «skip» (sentinel convention llama.cpp).
+   2 regression теста.
+
+4. **P.4 — fetch spread bug** (`webui/js/modules/gguf-api.js:794-798`):
+   `{headers: headers, ...options}` перетирал `X-API-Token` через spread.
+   Заменено на explicit `fetchOptions`. 18/18 unit-тестов в
+   `webui/tests/test_gguf_api_headers.js`.
+
+**Дополнительно:** `defaultGpuLayers` min `-1 → -2` (cppworker уже поддерживает
+`-2` как «auto / all GPU layers» в `internal/cppbackend/backend.go:678`).
+
+### Added (cluster config + runtime-overrides sidecar)
+
+**Проблема:** bundled `config.json` монтируется `:ro` (контейнерная конвенция),
+поэтому прямые PUT'ы в cluster config не персистятся между рестартами.
+
+**Решение:** sidecar-механизм runtime-overrides — файл `/app/data/runtime-overrides/llama-cpp.json`,
+который перекрывает дефолты in-memory и на диске, но не трогает ro-mounted
+`config.json`.
+
+- Новый пакет `internal/runtimeoverrides` (`OverridesStore` interface +
+  file-based реализация, replace semantics).
+- `clusterConfigHandler` (`internal/api/handlers_cluster.go`) расширен секцией
+  `llamaCpp` (32 поля, валидация).
+- Эндпоинты `GET/DELETE /api/v1/cluster/llama-cpp/overrides` для WebUI
+  панели «Reset to bundled defaults».
+- 4 новых теста (2 cluster_llamacpp + 2 overrides handler + 2 pkg).
+
+### Added (SSE stability)
+
+**Проблема:** heartbeat SSE был 30s. Под навигацией WebUI прокси/балансер
+закрывал idle-соединение → reconnect in 1000ms в логах каждые 30s.
+
+- **P.7** — `webui/nginx.conf`: отдельный `location /api/v1/events` с
+  `proxy_buffering off`, `proxy_read_timeout 600s`, `Connection ""`,
+  `proxy_cache off`, `proxy_next_upstream off`. Catchall `/api/` сохраняет
+  `proxy_buffering on` для REST.
+- **P.12** — `internal/api/handlers_events.go`: heartbeat `30s → 10s`.
+  10s × 60 = 600s timeout margin. Соединение «тёплое», reconnect'ов
+  в логах больше нет.
+
+### Changed (Settings tab refactor — P.13)
+
+- **4 Quick Preset** кнопки в GGUF секции (Speed / Memory / Context / CPU).
+  `PRESETS` объект + `applyGgufPreset(name)` handler в `app.js`.
+- **h5 subheaders → `.settings-subheader`** (accent bar, uppercase,
+  `bg-hover` background, padding 10×14) — applied к 4 subheaders
+  (Multi-GPU, KV-cache, RoPE/YaRN, Performance).
+- **13 missing tooltips** (yarn_*, rpc_backend, gpu_strategy, use_mmap,
+  numa, flash_attn, metrics_*) добавлены.
+- **18 новых i18n ключей** (en+ru) для presets + tooltip desc.
+- per-backend форма `gguf-renderer.js`: 7 → 25 полей, разделение на 5 секций
+  (General, Multi-GPU, KV-cache, RoPE/YaRN, Performance).
+- settingsFields array в `app.js` расширен helpers `setVal/checkVal/intVal/
+  floatVal` для всех 24 полей.
+- Phase 7 lint: заменены em-dashes (—) в `components.css:1830` и
+  `pages.css:657` на ASCII hyphen.
+
+### Added (Reasoning/Thinking settings — P.14)
+
+- `internal/cppbackend/config.go`: `DefaultEnableReasoning bool`,
+  `DefaultReasoningBudget int`, per-model `EnableReasoning/ReasoningBudget`.
+- `cmd/cppworker/handlers_config.go:382-383`: `applyBool("enableReasoning")` +
+  `applyInt("reasoningBudget", 0, 100000)`.
+- WebUI секция «Reasoning / Thinking» в GGUF (brain icon, toggle + budget input).
+- i18n: `gguf.tab_reasoning`, `gguf.enable_reasoning`, `gguf.reasoning_budget`
+  + desc (en+ru).
+- **Парсер** `cmd/cppworker/reasoning_content.go` уже умеет разделять
+  `<think>...</think>` для `qwen3.5/3.6/deepseek-r1/kimi-k2/gemma-4` и т.д.
+- **C-bridge `enable_thinking` параметр отложен** в Session 19+: low-level
+  `llama_chat_apply_template` в llama.cpp не поддерживает эту фичу, нужен
+  переход на `common::chat::common_chat_templates_apply` (как в `llama-server`).
+  До тех пор `EnableReasoning` это storage + parser для моделей, эмитящих
+  `<think>` блоки нативно (Qwen3-thinking, DeepSeek-R1, и т.п.).
+
+### Added (другие мелочи)
+
+- P.8 — anti-FOIT скрипт в `<head>`: `document.body` → `document.documentElement`
+  (скрипт в head выполняется до создания body).
+- P.9 — `window.Api = Api` export в `webui/js/modules/api.js` (фикс
+  `Cannot read properties of undefined (reading 'list')` в Per-Model Profiles).
+- P.10 — i18n `common.in` (en «in» / ru «за»).
+- P.11 — Setup wizard tooltips: `t_label(labelKey, labelFallback, descKey,
+  descFallback)` helper, 18 `wizard.tooltip.*` ключей, замена хардкоженного
+  English.
+
+### Tests
+
+- `scripts/smoke_test_gguf_extended.ps1` (новый, 14 end-to-end тестов, 0 failures):
+  1) GET /api/v1/cppworker/config — все extended fields; 2) PUT applied[];
+  3) invalid kvCacheType → validation_errors; 4) cppworker-defaults.json
+  на диске; 5) WebUI IDs в HTML; 5b) config.js API_TOKEN; 6) Balancer
+  llamaCpp section; 7) Runtime overrides sidecar; 8) Auth chain (4 sub-tests);
+  9) WebUI fetch spread regression (delegates to test_gguf_api_headers.js);
+  10-14) nginx SSE, documentElement, window.Api, common.in, wizard tooltips.
+- `webui/tests/test_gguf_api_headers.js` (новый, 18 Node.js assertions).
+- Token resolution: smoke test берёт API_TOKEN из running container
+  (authoritative), не из `.env.bundled`.
+
+### Verification
+
+```
+$ go build -tags llama_stub ./...                OK
+$ go vet -tags llama_stub ./...                  OK
+$ go test ./cmd/cppworker/                       OK (4.7s)
+$ go test ./internal/api/                        OK (0.9s)
+$ go test ./internal/runtimeoverrides/           OK (1.0s)
+$ powershell scripts/smoke_test_gguf_extended.ps1  14/14 ✓
+```
+
+### Breaking changes
+
+Нет. Все фиксы backward-compatible. `X-API-Token` теперь опционально
+поддерживается в дополнение к существующему `Authorization: Bearer`.
+
+### Container state (post-deploy)
+
+- `ol-bundled-cppworker-gpu`: image `2026-07-28 07:31:28` (P.14 reasoning).
+- `ol-bundled-balancer`: image `2026-07-27 23:42:06` (P.12 SSE heartbeat).
+- `ol-bundled-webui`: image `2026-07-28 06:46` (P.13/P.14 UI).
+- Token (bundled): `changeme-bundled-strong-token-please-change`.
+
 ## [Unreleased — 2026-07-01]
 
 ### Added (Reasoning content extraction для qwen3.5/qwen3.6/deepseek-r1/gemma-4)

@@ -5,6 +5,89 @@
 Формат ведётся в соответствии с [Keep a Changelog](https://keepachangelog.com/ru/1.0.0/),
 и этот проект придерживается [Semantic Versioning](https://semver.org/lang/ru/).
 
+## [0.4.9 — 2026-07-28]
+
+Patch-релиз поверх `v0.4.8`. Цель: реализовать `enable_thinking` через
+soft prompt injection (immediate value для instruction-tuned моделей
+без native thinking support типа gemma-4-it).
+
+### Added (soft prompt injection для EnableReasoning)
+
+**Проблема:** `internal/cppbackend/config.go:91-92` — поля `EnableReasoning`
+и `ReasoningBudget` хранились в конфиге, UI их отображал, но реально
+ничего не делали (документировано в CHANGELOG.md v0.4.6 P.14 как deferred
+до common::chat миграции). Native C-bridge `enable_thinking` требует
+переход на `common::chat::common_chat_templates_apply` (1-2 дня работы
+с llama.cpp internals), а soft mode не был реализован.
+
+**Решение (Round 11 — soft mode):** при `config.EnableReasoning=true`
+добавляем "thinking instruction" к system промпту:
+
+```
+Before answering, use detailed step-by-step thinking. Reason about
+the problem carefully, consider different angles, show your work,
+then provide a clear final answer. Structure your response: first
+explain your reasoning, then give the answer.
+```
+
+**Покрытие** (cmd/cppworker/handlers_chat.go, handlers_generate.go):
+- `/api/chat` (Ollama) — prepended к system message через
+  `injectThinkingInstruction` (GGUF template path) или
+  `injectThinkingIntoMessages` (fallback path).
+- `/api/generate` (Ollama) — prepended к prompt (Ollama generate не
+  имеет system role, поэтому подмешиваем в prompt).
+- `/v1/chat/completions` (OpenAI) — наследует от `buildChatPrompt`
+  (используется через `handlers_openai.go:236`).
+
+**Backward compat:** при `config.EnableReasoning=false` (default)
+поведение не меняется. Тесты в `soft_thinking_test.go` проверяют
+edge cases (empty system, existing system, single system, empty msgs).
+
+**Native C-bridge enable_thinking** остаётся future work (требует
+common::chat миграцию). Модели с native thinking support
+(Qwen3-thinking, DeepSeek-R1) уже корректно работают через парсер
+`cmd/cppworker/reasoning_content.go` независимо от soft injection —
+они игнорируют soft prompt и продолжают эмитить `<think>` блоки.
+
+### Tests (новые)
+
+- `cmd/cppworker/soft_thinking_test.go`:
+  * `TestInjectThinkingInstruction_Empty`
+  * `TestInjectThinkingInstruction_Existing` (с проверкой порядка)
+  * `TestInjectThinkingIntoMessages_Prepend`
+  * `TestInjectThinkingIntoMessages_Merge` (с existing system)
+  * `TestInjectThinkingIntoMessages_OnlySystem`
+  * `TestInjectThinkingIntoMessages_Empty`
+
+### Verification
+
+```
+$ go build -tags llama_stub ./...                  OK
+$ go vet -tags llama_stub ./...                    OK
+$ go test ./cmd/cppworker/ ./internal/api/         OK
+        ./internal/balancer/ ./internal/cppbackend/
+        ./internal/runtimeoverrides/              OK (5/5 пакетов)
+$ TestInjectThinking*                             OK (6/6)
+$ smoke_test_gguf_extended.ps1                    14/14 OK
+```
+
+### Container state (post-deploy)
+
+Round 11 — только Go код, **rebuild cppworker НЕ требуется**:
+- handlers_chat.go: buildChatPrompt проверяет currentConfig.EnableReasoning
+- handlers_generate.go: handleGenerate проверяет currentConfig.EnableReasoning
+- behavior не меняется при config.EnableReasoning=false (default)
+- при EnableReasoning=true — soft prompt prepended
+
+Достаточно restart cppworker.
+
+### Known limitations (post-Round 11)
+
+- Native C-bridge `enable_thinking` через `common::chat` — отложено
+  (требует ~1-2 дня работы с llama.cpp internals).
+- n_parallel > 1 support — отложено (требует RWMutex + per-slot inference).
+- Crash recovery — отложено.
+
 ## [0.4.8 — 2026-07-28]
 
 Patch-релиз поверх `v0.4.7`. Цель: вынести hardcoded константы в fallback

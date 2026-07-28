@@ -5,6 +5,83 @@
 Формат ведётся в соответствии с [Keep a Changelog](https://keepachangelog.com/ru/1.0.0/),
 и этот проект придерживается [Semantic Versioning](https://semver.org/lang/ru/).
 
+## [0.4.8 — 2026-07-28]
+
+Patch-релиз поверх `v0.4.7`. Цель: вынести hardcoded константы в fallback
+path (lazy-load когда GGUF header read failed) в env-vars для безопасной
+настройки под разные hardware / model architectures.
+
+### Added (env-var overrides для fallback path)
+
+**Проблема:** `cmd/cppworker/lazyload.go:152-159` — fallback path
+(auto-offload когда `rationale.Source == "fallback_no_meta"`) использовал
+захардкоженные константы:
+- `estimatedLayers = 80` — для partial offload math (model size / 80 = weightsPerLayer)
+- `kvReserve = 2GB` — резерв под KV-cache для n_ctx=32768
+- `overhead = 1.5GB` — CUDA + activations
+- `safetyFactor = 0.85` — 15% headroom от available VRAM
+
+Для MoE/35B+ моделей с количеством слоёв != 80 (qwen3.6 35B = 40 слоёв,
+LLaMA-3 70B = 80 слоёв, Mixtral 8x7B = 32 слоёв) **partial offload math
+давал неверный gpuLayers → OOM risk при lazy-load на 20-24GB GPU**.
+
+**Fix:** все 4 константы вынесены в env-vars с sensible defaults:
+
+| Env-var | Default | Range | Effect |
+|---|---|---|---|
+| `CPPWORKER_FALLBACK_ESTIMATED_LAYERS` | 80 | 20-200 | weightsPerLayer = size / N |
+| `CPPWORKER_FALLBACK_KV_RESERVE_MB` | 2048 | 256-16384 | KV-cache reserve |
+| `CPPWORKER_FALLBACK_OVERHEAD_MB` | 1536 | 256-4096 | CUDA + activations |
+| `CPPWORKER_FALLBACK_SAFETY_FACTOR` | 0.85 | 0.5-1.0 | VRAM headroom |
+
+Out-of-range или невалидные значения → fallback на default (без fatal).
+Init() логирует warning + использованный default в логи.
+
+**Примеры использования (для конкретных моделей):**
+```bash
+# qwen3.6 35B A3B (40 слоёв):
+export CPPWORKER_FALLBACK_ESTIMATED_LAYERS=40
+export CPPWORKER_FALLBACK_KV_RESERVE_MB=4096
+
+# Mixtral 8x7B (32 слоёв):
+export CPPWORKER_FALLBACK_ESTIMATED_LAYERS=32
+
+# Conservative для 24GB GPU с несколькими моделями:
+export CPPWORKER_FALLBACK_SAFETY_FACTOR=0.75
+```
+
+### Tests (новые)
+
+- `cmd/cppworker/fallback_envvars_test.go`:
+  * `TestRound10_FallbackDefaults` — defaults (80, 2048, 1536, 0.85).
+  * `TestRound10_FallbackValidOverride` — env vars parse without panic.
+  * `TestRound10_FallbackInvalidValue_FallbackToDefault` — out-of-range
+    values → defaults (no fatal).
+  * `TestRound10_FallbackBoundaryValues` — boundary values 20/200,
+    256/16384, 0.5/1.0.
+
+### Verification
+
+```
+$ go build -tags llama_stub ./...                  OK
+$ go vet -tags llama_stub ./...                    OK
+$ go test ./cmd/cppworker/ ./internal/api/         OK
+        ./internal/balancer/ ./internal/cppbackend/
+        ./internal/runtimeoverrides/              OK (5/5 пакетов)
+$ TestRound10_Fallback*                           OK (4/4)
+$ smoke_test_gguf_extended.ps1                    14/14 OK
+```
+
+### Container state (post-deploy)
+
+Round 10 — только Go код, **rebuild cppworker НЕ требуется**:
+- lazyload.go: package-level vars + init() для env-var parsing
+- fallback path использует vars вместо hardcoded
+- behavior не меняется при default values (backward-compatible)
+
+cppworker image остаётся `2026-07-28 11:04:26` (v0.4.7 с Round 8 SIGABRT fix).
+Достаточно restart'а cppworker для применения Round 10.
+
 ## [0.4.7 — 2026-07-28]
 
 Patch-релиз поверх `v0.4.6`. Цели: устранить SIGABRT при concurrent inference

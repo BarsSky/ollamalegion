@@ -15,7 +15,7 @@
 // Round 14b (next session): интеграция в cmd/cppworker/handlers_chat.go
 // + замена soft prompt на native apply.
 
-#include "bridge.h"            // c/bridge/bridge.h — для ModelHandle, extern "C"
+#include "bridge.h"            // c/bridge/bridge.h — ModelHandle, CBridgeChatMessage (extern "C")
 #include "chat.h"              // c/llama.cpp/common/chat.h — common_chat_templates_*
 #include "llama.h"             // c/llama.cpp/include/llama.h — для llama_model
 
@@ -23,6 +23,11 @@
 #include <vector>
 #include <cstring>
 #include <cstdio>
+
+// Все C-bridge функции обёрнуты в extern "C" для совместимости с C-вызовами
+// из Go (cgo). C++ имеет name mangling, без extern "C" имена будут
+// искажены и Go-сторона не сможет их найти.
+extern "C" {
 
 // InternalModel определён в c/bridge/bridge.c. Мы не можем включить bridge.c
 // напрямую (multiple definition), но нам нужен доступ к model pointer.
@@ -36,13 +41,9 @@
 struct InternalModel;
 typedef struct llama_model llama_model_t;
 
-// C struct для chat messages (flat, без std::vector).
-// Используется только в Round 14a C API. Legacy bridge_apply_chat_template
-// (Round 13) использует другую сигнатуру.
-struct CBridgeChatMessage {
-    const char* role;
-    const char* content;
-};
+// C struct CBridgeChatMessage определён в bridge.h (line ~42) и
+// переиспользуется здесь через #include "bridge.h". НЕ определять
+// повторно — это даёт "error: redefinition of 'struct CBridgeChatMessage'".
 
 // bridge_chat_templates_apply_with_thinking — C-обёртка над common_chat_templates_apply.
 //
@@ -150,3 +151,5 @@ int32_t bridge_chat_templates_apply_with_thinking(
     out_buf[prompt_len] = '\0';
     return prompt_len;
 }
+
+} // extern "C"

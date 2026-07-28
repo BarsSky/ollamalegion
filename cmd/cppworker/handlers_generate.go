@@ -66,6 +66,13 @@ func normalizeGenerateRequest(req *generateRequest) {
 	// Prepend thinking instruction к prompt (Ollama /api/generate не
 	// имеет system role, поэтому подмешиваем в prompt). Работает для
 	// любой instruction-tuned модели (gemma-4-it, llama-3-it, и т.д.).
+	//
+	// Round 14b (2026-07-28): native enable_thinking НЕ применяется здесь,
+	// потому что /api/generate использует single prompt (без messages[]).
+	// Native path через common_chat_templates_apply требует structured
+	// chat messages — это /api/chat endpoint (см. handlers_chat.go).
+	// Для моделей с native thinking (Qwen3-thinking) рекомендуется
+	// использовать /api/chat вместо /api/generate.
 	if currentConfig != nil && currentConfig.EnableReasoning && !req.Raw {
 		const thinkingInstruction = "Before answering, use detailed step-by-step thinking. " +
 			"Reason about the problem carefully, consider different angles, " +

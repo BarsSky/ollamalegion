@@ -225,6 +225,43 @@ func buildChatPrompt(msgs []chatMessage, modelName string) (string, error) {
 	//
 	// Native C-bridge enable_thinking требует common::chat миграцию
 	// (см. docs/CHANGELOG.md v0.4.6 P.14) — отложено.
+	//
+	// Round 14b (2026-07-28): native enable_thinking через
+	// common_chat_templates_apply (см. c/bridge/csrc/chat_thinking.cpp).
+	// Если native path работает И template поддерживает thinking —
+	// soft prompt НЕ нужен, template сам эмитит <think> блоки.
+	// Иначе fallback на soft prompt.
+	if currentConfig != nil && currentConfig.EnableReasoning {
+		nativePrompt, supportsThinking, err := backend.ApplyChatTemplateWithThinking(
+			modelName, "" /* override */, msgsToBridge(msgs),
+			true /* enableThinking */, true /* addGenerationPrompt */,
+		)
+		if err == nil && nativePrompt != "" {
+			if supportsThinking {
+				logger.Get().Debugw("buildChatPrompt: used native enable_thinking path",
+					"model", modelName, "prompt_len", len(nativePrompt))
+				return nativePrompt, nil
+			}
+			// Native API works but template doesn't support enable_thinking.
+			// Fallback: re-apply legacy + soft prompt in system.
+			logger.Get().Debugw("buildChatPrompt: native enable_thinking not supported by template, using soft prompt",
+				"model", modelName, "prompt_len", len(nativePrompt))
+			system = injectThinkingInstruction(system)
+			prompt2, err2 := backend.ApplyChatTemplate(modelName, system, msgsToBridge(msgs), true)
+			if err2 == nil && prompt2 != "" {
+				return prompt2, nil
+			}
+			// Both native + legacy GGUF template failed — fall through to manual assembly.
+		} else if err != nil && err != bridge.ErrNoChatTemplate {
+			logger.Get().Warnw("buildChatPrompt: ApplyChatTemplateWithThinking failed, falling back",
+				"model", modelName, "error", err)
+		}
+	}
+
+	// Round 11 (2026-07-28) SOFT PROMPT PATH (для моделей без native support
+	// или когда EnableReasoning=false): добавляем "thinking instruction"
+	// к system промпту. Работает универсально для ЛЮБОЙ instruction-tuned
+	// модели (включая gemma-4-it, который не эмитит нативные <think> блоки).
 	if currentConfig != nil && currentConfig.EnableReasoning {
 		system = injectThinkingInstruction(system)
 	}

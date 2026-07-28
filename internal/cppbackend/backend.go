@@ -1538,6 +1538,43 @@ func (b *Backend) ApplyChatTemplate(modelName, system string, messages []bridge.
 	return inst.handle.ApplyChatTemplate(system, messages, addAss)
 }
 
+// ApplyChatTemplateWithThinking — Round 14b (2026-07-28): native enable_thinking
+// через C++ API common_chat_templates_apply (см. c/bridge/csrc/chat_thinking.cpp).
+//
+// Применяет chat template с native enable_thinking параметром. Для моделей
+// с Jinja enable_thinking variable (Qwen3-thinking, DeepSeek-R1) это даёт
+// правильное thinking tag emission. Для моделей без такой variable
+// (gemma-4-it, llama-3-it) — supportsThinking=false, caller решает что
+// делать (наш fallback — soft prompt injection, см. handlers_chat.go).
+//
+// Параметры:
+//   modelName         — загруженная модель
+//   chatTemplateOverride — кастомный Jinja template ("" = use GGUF default)
+//   messages          — список chat-сообщений (включая system если нужно)
+//   enableThinking    — true = native thinking mode
+//   addGenerationPrompt — true = добавить assistant turn tokens в конец
+//
+// Возвращает:
+//   prompt            — formatted prompt
+//   supportsThinking  — true если template поддерживает thinking
+//   error             — nil / generic error
+func (b *Backend) ApplyChatTemplateWithThinking(
+	modelName, chatTemplateOverride string,
+	messages []bridge.ChatMessage,
+	enableThinking, addGenerationPrompt bool,
+) (string, bool, error) {
+	inst, err := b.getModelInstance(modelName)
+	if err != nil {
+		return "", false, err
+	}
+	if inst.handle == nil {
+		return "", false, fmt.Errorf("model %s has no loaded handle", modelName)
+	}
+	return inst.handle.ApplyChatTemplateWithThinking(
+		chatTemplateOverride, messages, enableThinking, addGenerationPrompt,
+	)
+}
+
 // GetChatTemplate returns raw chat template from GGUF of a model.
 func (b *Backend) GetChatTemplate(modelName string) (string, error) {
 	inst, err := b.getModelInstance(modelName)

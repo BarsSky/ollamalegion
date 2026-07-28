@@ -820,6 +820,7 @@ func (m *ModelHandle) ApplyChatTemplateWithThinking(
 
 	// Output buffer: 64KB начальный, retry при -4 (buffer too small).
 	const initialBufSize = 64 * 1024
+	const maxBufSize = 4 * 1024 * 1024 // 4MB cap — long multi-turn chats
 	outBufSize := initialBufSize
 	outBuf := (*C.char)(C.malloc(C.size_t(outBufSize)))
 	defer C.free(unsafe.Pointer(outBuf))
@@ -843,13 +844,36 @@ func (m *ModelHandle) ApplyChatTemplateWithThinking(
 		&supportsThinking,
 	)
 
-	// Round 14a: -4 = buffer too small, caller can retry with bigger buffer.
-	// В этой реализации мы выделяем фиксированный 64KB, так что -4 не
-	// обрабатываем retry. Для длинных chat (multi-turn) этого может быть
-	// недостаточно. Round 14b: добавить retry logic с растущим буфером.
+	// Round 14b: -4 = buffer too small. Retry с 2x buffer size до max.
+	for ret == -4 && outBufSize < maxBufSize {
+		// Realloc to 2x current size.
+		newSize := outBufSize * 2
+		if newSize > maxBufSize {
+			newSize = maxBufSize
+		}
+		newBuf := (*C.char)(C.realloc(unsafe.Pointer(outBuf), C.size_t(newSize)))
+		if newBuf == nil {
+			return "", false, fmt.Errorf("realloc to %d bytes failed", newSize)
+		}
+		outBuf = newBuf
+		outBufSize = newSize
+
+		supportsThinking = C.bool(false)
+		ret = C.bridge_chat_templates_apply_with_thinking(
+			m.ptr,
+			cOverride,
+			&cMsgs[0],
+			C.int32_t(len(cMsgs)),
+			C.bool(enableThinking),
+			C.bool(addGenerationPrompt),
+			outBuf,
+			C.int32_t(outBufSize),
+			&supportsThinking,
+		)
+	}
+
 	if ret == -4 {
-		return "", false, fmt.Errorf("output buffer too small (need %d+ bytes, have %d)",
-			outBufSize, outBufSize)
+		return "", false, fmt.Errorf("output buffer overflow (need >%d bytes, max=%d)", outBufSize, maxBufSize)
 	}
 	if ret == -3 {
 		return "", false, fmt.Errorf("common_chat_templates_init failed (no template in GGUF or invalid override)")

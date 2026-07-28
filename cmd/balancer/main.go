@@ -15,6 +15,7 @@ import (
 	"ollama-loadbalancer/internal/balancer"
 	"ollama-loadbalancer/internal/config"
 	"ollama-loadbalancer/internal/rpccoordinator"
+	"ollama-loadbalancer/internal/runtimeoverrides"
 	"ollama-loadbalancer/pkg/logger"
 	"ollama-loadbalancer/pkg/types"
 )
@@ -148,6 +149,32 @@ func main() {
 
 	// Подключаем сохранение конфига на диск для авто-загрузки моделей (AutoPull)
 	apiServer.SetConfigSaver(cfg.Save)
+
+	// Session 17 (2026-07-27): persistent runtime overrides для llamaCpp.
+	// В bundled compose config.json монтируется :ro, поэтому WebUI-изменения
+	// llamaCpp пишутся в sidecar-файл /app/data/runtime-overrides/llama-cpp.json
+	// (writable named volume `balancer_data`). При старте Load+Apply восстанавливает
+	// состояние; DELETE endpoint стирает override и возвращает in-memory к base.
+	//
+	// baseSnapshot — копия LlamaCpp ДО применения override, чтобы можно было
+	// корректно сделать "Reset to bundled defaults" без перезапуска.
+	//
+	// dataDir берётся из /app/data (volume mount). На dev-окружениях без
+	// volume (LB_DATA_DIR env override) store.IsEnabled() == false → оверрайды
+	// отключены, но in-memory PUT продолжает работать (как до этой сессии).
+	dataDir := os.Getenv("LB_DATA_DIR")
+	if dataDir == "" {
+		dataDir = "/app/data"
+	}
+	overridesStore := runtimeoverrides.New(dataDir)
+	baseSnapshot := conf.LlamaCpp // копия значения (struct value, не pointer)
+	if err := overridesStore.ApplyLlamaCppToConfig(conf); err != nil {
+		log.Printf("Warning: failed to apply runtime overrides on startup: %v", err)
+	}
+	if overridesStore.IsEnabled() && overridesStore.HasLlamaCppOverride() {
+		fmt.Println("[Runtime] llamaCpp override active (see /api/v1/cluster/llama-cpp/overrides)")
+	}
+	apiServer.SetOverridesStore(overridesStore, &baseSnapshot)
 
 	// F.α (2026-06-28): session F — подключаем EventBus балансировщика к API
 	// для SSE notifications endpoint /api/v1/events (F.α).

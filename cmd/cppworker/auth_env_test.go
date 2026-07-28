@@ -194,4 +194,148 @@ func TestAuthMiddleware_TokenValidation(t *testing.T) {
 			t.Errorf("expected 200 OK with BALANCER_API_TOKEN Bearer, got %d", rec.Code)
 		}
 	})
+
+	// Session 17 P.3 (2026-07-27): WebUI → balancer → cppworker прокси-цепочка.
+	// WebUI ставит X-API-Token (см. webui/js/modules/gguf-api.js:787), balancer
+	// проксирует его через copyProxyHeaders (internal/api/gguf_backend_proxy.go:287-305).
+	// До фикса cppworker понимал только Authorization: Bearer → 401 на per-backend save.
+	t.Run("X-API-Token + correct token → 200 OK (Session 17 P.3 fix)", func(t *testing.T) {
+		os.Unsetenv("API_TOKEN")
+		os.Unsetenv("CPPWORKER_API_TOKEN")
+		os.Unsetenv("BALANCER_API_TOKEN")
+		os.Setenv("API_TOKEN", "secret_bundled")
+
+		wrapped := authMiddleware(okHandler)
+		req := httptest.NewRequest("PUT", "/api/v1/cppworker/config/update", nil)
+		req.Header.Set("X-API-Token", "secret_bundled")
+		rec := httptest.NewRecorder()
+		wrapped(rec, req)
+		if rec.Code != http.StatusOK {
+			t.Errorf("expected 200 OK with X-API-Token, got %d (body: %s)", rec.Code, rec.Body.String())
+		}
+	})
+
+	t.Run("X-API-Token + wrong token → 401", func(t *testing.T) {
+		os.Unsetenv("API_TOKEN")
+		os.Unsetenv("CPPWORKER_API_TOKEN")
+		os.Unsetenv("BALANCER_API_TOKEN")
+		os.Setenv("API_TOKEN", "secret_bundled")
+
+		wrapped := authMiddleware(okHandler)
+		req := httptest.NewRequest("PUT", "/api/v1/cppworker/config/update", nil)
+		req.Header.Set("X-API-Token", "wrong_token")
+		rec := httptest.NewRecorder()
+		wrapped(rec, req)
+		if rec.Code != http.StatusUnauthorized {
+			t.Errorf("expected 401 with wrong X-API-Token, got %d", rec.Code)
+		}
+	})
+
+	t.Run("Authorization: Bearer wins over X-API-Token (priority)", func(t *testing.T) {
+		os.Unsetenv("API_TOKEN")
+		os.Unsetenv("CPPWORKER_API_TOKEN")
+		os.Unsetenv("BALANCER_API_TOKEN")
+		os.Setenv("API_TOKEN", "secret_bundled")
+
+		wrapped := authMiddleware(okHandler)
+		req := httptest.NewRequest("PUT", "/api/v1/cppworker/config/update", nil)
+		// Authorization правильный, X-API-Token неправильный — должно пройти (Bearer wins).
+		req.Header.Set("Authorization", "Bearer secret_bundled")
+		req.Header.Set("X-API-Token", "wrong_token")
+		rec := httptest.NewRecorder()
+		wrapped(rec, req)
+		if rec.Code != http.StatusOK {
+			t.Errorf("expected 200 OK (Authorization takes priority over X-API-Token), got %d", rec.Code)
+		}
+	})
+
+	t.Run("Authorization without Bearer prefix + correct X-API-Token → 200 OK", func(t *testing.T) {
+		// Сценарий: клиент прислал "Token xyz" вместо "Bearer xyz" в Authorization,
+		// но X-API-Token корректный — должно пройти.
+		os.Unsetenv("API_TOKEN")
+		os.Unsetenv("CPPWORKER_API_TOKEN")
+		os.Unsetenv("BALANCER_API_TOKEN")
+		os.Setenv("API_TOKEN", "secret_bundled")
+
+		wrapped := authMiddleware(okHandler)
+		req := httptest.NewRequest("PUT", "/api/v1/cppworker/config/update", nil)
+		req.Header.Set("Authorization", "Token secret_bundled") // не "Bearer "
+		req.Header.Set("X-API-Token", "secret_bundled")
+		rec := httptest.NewRecorder()
+		wrapped(rec, req)
+		if rec.Code != http.StatusOK {
+			t.Errorf("expected 200 OK (X-API-Token fallback), got %d (body: %s)", rec.Code, rec.Body.String())
+		}
+	})
+
+	t.Run("empty X-API-Token header + no Authorization → 401", func(t *testing.T) {
+		os.Unsetenv("API_TOKEN")
+		os.Unsetenv("CPPWORKER_API_TOKEN")
+		os.Unsetenv("BALANCER_API_TOKEN")
+		os.Setenv("API_TOKEN", "secret_bundled")
+
+		wrapped := authMiddleware(okHandler)
+		req := httptest.NewRequest("PUT", "/api/v1/cppworker/config/update", nil)
+		req.Header.Set("X-API-Token", "") // пустой header
+		rec := httptest.NewRecorder()
+		wrapped(rec, req)
+		if rec.Code != http.StatusUnauthorized {
+			t.Errorf("expected 401 with empty X-API-Token and no Authorization, got %d", rec.Code)
+		}
+	})
+}
+
+// TestExtractClientToken — тесты для вспомогательной функции извлечения токена.
+// Покрывает оба пути (Authorization: Bearer, X-API-Token) и приоритет.
+func TestExtractClientToken(t *testing.T) {
+	t.Run("Authorization: Bearer (canonical)", func(t *testing.T) {
+		req := httptest.NewRequest("PUT", "/x", nil)
+		req.Header.Set("Authorization", "Bearer abc123")
+		if got := extractClientToken(req); got != "abc123" {
+			t.Errorf("got %q, want abc123", got)
+		}
+	})
+
+	t.Run("X-API-Token only (no Authorization)", func(t *testing.T) {
+		req := httptest.NewRequest("PUT", "/x", nil)
+		req.Header.Set("X-API-Token", "xyz789")
+		if got := extractClientToken(req); got != "xyz789" {
+			t.Errorf("got %q, want xyz789", got)
+		}
+	})
+
+	t.Run("both: Authorization wins", func(t *testing.T) {
+		req := httptest.NewRequest("PUT", "/x", nil)
+		req.Header.Set("Authorization", "Bearer primary")
+		req.Header.Set("X-API-Token", "secondary")
+		if got := extractClientToken(req); got != "primary" {
+			t.Errorf("got %q, want primary (Authorization priority)", got)
+		}
+	})
+
+	t.Run("Authorization without Bearer prefix → falls back to X-API-Token", func(t *testing.T) {
+		req := httptest.NewRequest("PUT", "/x", nil)
+		req.Header.Set("Authorization", "Token primary")
+		req.Header.Set("X-API-Token", "fallback")
+		if got := extractClientToken(req); got != "fallback" {
+			t.Errorf("got %q, want fallback (X-API-Token used when Authorization has wrong prefix)", got)
+		}
+	})
+
+	t.Run("neither set → empty", func(t *testing.T) {
+		req := httptest.NewRequest("PUT", "/x", nil)
+		if got := extractClientToken(req); got != "" {
+			t.Errorf("got %q, want empty", got)
+		}
+	})
+
+	t.Run("Bearer with empty token → falls back to X-API-Token", func(t *testing.T) {
+		// Edge case: "Bearer " (с пробелом, без токена) — TrimSpace даёт "".
+		req := httptest.NewRequest("PUT", "/x", nil)
+		req.Header.Set("Authorization", "Bearer ")
+		req.Header.Set("X-API-Token", "real_token")
+		if got := extractClientToken(req); got != "real_token" {
+			t.Errorf("got %q, want real_token (empty Bearer falls back to X-API-Token)", got)
+		}
+	})
 }

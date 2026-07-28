@@ -68,6 +68,13 @@ type Config struct {
 	DefaultRPCBackend    string `json:"defaultRpcBackend"`    // cuda / vulkan / kompute
 	DefaultNoMemoryMap   bool   `json:"defaultNoMemoryMap"`   // отключить mmap для конкретных моделей
 
+	// Session 18 (2026-07-28): Включает reasoning-режим для моделей которые
+	// поддерживают thinking (gemma-4, deepseek-r1, qwen3-thinking, и т.п.).
+	// При включении — к chat template добавляется thinking_mode и парсер
+	// извлекает think-блоки в отдельное поле `reasoning_content`.
+	DefaultEnableReasoning bool  `json:"defaultEnableReasoning"`
+	DefaultReasoningBudget  int   `json:"defaultReasoningBudget"` // max tokens for thinking (0 = no limit)
+
 	// HuggingFace
 	HuggingFaceToken string `json:"huggingFaceToken,omitempty"`
 	HFMirror         string `json:"hfMirror,omitempty"` // e.g. https://hf-mirror.com
@@ -75,6 +82,14 @@ type Config struct {
 	// Метрики
 	EnableMetrics     bool `json:"enableMetrics"`
 	MetricsRetentionS int  `json:"metricsRetentionSeconds"`
+
+	// Session 18 (2026-07-28): Reasoning/Thinking для моделей gemma-4,
+	// deepseek-r1, qwen3-thinking и др. При включении — chat template
+	// получает thinking_mode и парсер reasoning_content.go извлекает
+	// think-блоки в отдельное поле. ReasoningBudget — max токенов на
+	// размышления (0 = без лимита).
+	EnableReasoning bool `json:"enableReasoning"`
+	ReasoningBudget int  `json:"reasoningBudget"`
 
 	// IdleUnloadMinutes — автоматическая выгрузка моделей из VRAM после N минут простоя.
 	// 0 (по умолчанию) = автовыгрузка ВЫКЛЮЧЕНА. Модель держится в VRAM, пока:
@@ -132,11 +147,15 @@ func DefaultConfig() Config {
 		AutoGPUDistribution: true,
 		TensorSplitStrategy: "vram-ratio",
 		DefaultMainGPU:      0,
+		DefaultEnableReasoning: false, // по умолчанию выключено; пользователь включает per-model
+		DefaultReasoningBudget: 0,     // 0 = без лимита; иначе макс. токенов на thinking
 		DefaultRPCBackend:   "cuda",
 		DefaultNoMemoryMap:  false,
 
 		EnableMetrics:     true,
 		MetricsRetentionS: 3600,
+		EnableReasoning:    false, // Session 18: по умолчанию выключено
+		ReasoningBudget:    0,     // 0 = без лимита на thinking-токены
 		// IdleUnloadMinutes: 0 = автовыгрузка моделей ВЫКЛЮЧЕНА по умолчанию.
 		// Если нужна автоматическая выгрузка после простоя, задайте явно:
 		//   export CPPWORKER_IDLE_UNLOAD_MINUTES=30

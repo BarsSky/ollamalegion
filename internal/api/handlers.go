@@ -30,6 +30,16 @@ type Server struct {
 	eventsHub     *eventsHub
 	stopCh        chan struct{} // graceful shutdown for metricsPublishLoop
 	configSaver   func() error  // функция сохранения конфига на диск (устанавливается из main)
+	// overridesStore — persistent runtime overrides для read-only config.json
+	// (Session 17, 2026-07-27). Хранит llamaCpp-секцию в /app/data/runtime-overrides/
+	// (writable named volume `balancer_data`). Опционально — если nil, PUT
+	// llamaCpp пишет в in-memory только, без персистенции.
+	overridesStore OverridesStore
+	// baseLlamaCpp — snapshot LlamaCppConfig из config.json ПРИ СТАРТЕ (до
+	// применения override). Используется для "Reset to bundled defaults":
+	// после DELETE override мы восстанавливаем s.config.LlamaCpp из этого
+	// snapshot, иначе пользователь увидит reset в UI, но runtime не изменится.
+	baseLlamaCpp *types.LlamaCppConfig
 }
 
 // EventBusLike — интерфейс EventBus из balancer.EventBus для тестирования.
@@ -42,6 +52,33 @@ type EventBusLike interface {
 // SetConfigSaver — устанавливает функцию для сохранения конфигурации на диск
 func (s *Server) SetConfigSaver(saver func() error) {
 	s.configSaver = saver
+}
+
+// OverridesStore — интерфейс для persistent runtime-оверрайдов.
+// Реализация по умолчанию — *runtimeoverrides.Store (Session 17).
+// Абстракция нужна, чтобы handlers.go не зависел от runtimeoverrides напрямую
+// (избегаем циклических импортов и упрощаем тестирование с mock-реализацией).
+//
+// Контракт: LoadLlamaCpp возвращает:
+//   - (config, true, nil)  — override есть и загружен
+//   - (nil, false, nil)    — override отсутствует (нормальная ситуация)
+//   - (nil, false, err)    — ошибка ввода-вывода / парсинга
+type OverridesStore interface {
+	IsEnabled() bool
+	LoadLlamaCpp() (*types.LlamaCppConfig, bool, error)
+	SaveLlamaCpp(*types.LlamaCppConfig) error
+	ClearLlamaCpp() error
+	HasLlamaCppOverride() bool
+	ApplyLlamaCppToConfig(target *types.LoadBalancerConfig) error
+}
+
+// SetOverridesStore — устанавливает persistent runtime overrides store.
+// nil = оверрайды отключены (по умолчанию для dev-режима).
+// baseSnapshot — snapshot LlamaCppConfig из config.json ДО применения override.
+// Используется для restore при DELETE override.
+func (s *Server) SetOverridesStore(store OverridesStore, baseSnapshot *types.LlamaCppConfig) {
+	s.overridesStore = store
+	s.baseLlamaCpp = baseSnapshot
 }
 
 // GetConfig — возвращает текущую конфигурацию (для тестов и отладки)

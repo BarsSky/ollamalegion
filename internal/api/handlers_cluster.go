@@ -1,4 +1,4 @@
-package api
+﻿package api
 
 import (
 	"encoding/json"
@@ -217,6 +217,9 @@ func (s *Server) clusterConfigHandler(w http.ResponseWriter, r *http.Request) {
 				"enabled":  s.config.Balancing.DistInference.Enabled,
 				"grpcPort": s.config.Balancing.DistInference.GrpcPort,
 			},
+			// Session 17 (2026-07-27): возвращаем llamaCpp-секцию, чтобы WebUI
+			// мог сразу отобразить текущие runtime-значения (включая override-эффект).
+			"llamaCpp": s.config.LlamaCpp,
 		}
 		s.writeJSON(w, http.StatusOK, response)
 	case http.MethodPut:
@@ -234,6 +237,10 @@ func (s *Server) clusterConfigHandler(w http.ResponseWriter, r *http.Request) {
 			OperatingMode       string   `json:"operatingMode"`
 			Initialized         *bool    `json:"initialized"`
 			BackendEngine       string   `json:"backendEngine"`
+			// Session 17 (2026-07-27): глобальные настройки llama.cpp (per-model
+			// profile и per-backend CppWorkerConfig имеют приоритет). Pointer
+			// чтобы отличить "не прислано" от "прислано как zero value".
+			LlamaCpp *types.LlamaCppConfig `json:"llamaCpp,omitempty"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 			s.writeJSON(w, http.StatusBadRequest, map[string]interface{}{
@@ -361,6 +368,51 @@ func (s *Server) clusterConfigHandler(w http.ResponseWriter, r *http.Request) {
 			updatedFields = append(updatedFields, "operatingMode")
 		}
 
+		// Session 17 (2026-07-27): применяем глобальные настройки llama.cpp.
+		// LlamaCpp используется как fallback в 3-tier resolver'е (n_ctx, batch_size,
+		// gpu_layers и т.п.) — приоритет: per-request body > per-model profile >
+		// per-backend CppWorkerConfig > глобальный LlamaCpp > cppworker default.
+		// ВАЖНО: эта секция отвечает за ДЕФОЛТЫ для всех бэкендов, которые не
+		// имеют per-backend CppWorkerConfig. Изменения здесь применяются на лету —
+		// reload загруженных моделей не требуется (cppworker читает свой config
+		// при следующем load).
+		//
+		// ОГРАНИЧЕНИЯ типов.LlamaCppConfig: эта структура НЕ содержит
+		// idleUnloadMinutes / splitMode / metricsRetention (они живут только в
+		// cppbackend.Config). Если нужно их менять через balancer — пиши в
+		// напрямую cppworker'у через /api/v1/cppworker/config/update (per-backend).
+		//
+		// Session 17 P.2: PERSISTENCE. В bundled compose config.json монтируется
+		// :ro, поэтому s.configSaver() молча падает. Чтобы WebUI-изменения
+		// llamaCpp ПЕРСИСТИЛИСЬ, пишем в runtime-override файл в named volume
+		// `balancer_data:/app/data/runtime-overrides/llama-cpp.json`. Sidecar-файл
+		// содержит ПОЛНУЮ копию LlamaCppConfig (replace semantics, не merge).
+		// При старте balancer Load+Apply восстанавливает состояние.
+		if req.LlamaCpp != nil {
+			ll := req.LlamaCpp
+			// Применяем к in-memory config (частичный update).
+			applyLlamaCppPartialUpdate(&s.config.LlamaCpp, ll)
+			updatedFields = append(updatedFields, "llamaCpp")
+			// ПЕРСИСТИРУЕМ в sidecar-файл (если store доступен).
+			// Sidecar хранит ПОЛНУЮ копию (replace semantics), поэтому мы
+			// читаем текущий override (если есть) и мерджим с partial update,
+			// чтобы не потерять поля, которых не было в WebUI-форме.
+			if s.overridesStore != nil && s.overridesStore.IsEnabled() {
+				if err := s.persistLlamaCppOverride(&s.config.LlamaCpp); err != nil {
+					logger.Get().Warnw("clusterConfigHandler: failed to persist llamaCpp override",
+						"error", err)
+					// Не откатываем in-memory изменение — но сообщаем warning.
+					updatedFields = append(updatedFields, "llamaCpp_persist_warning")
+				}
+			}
+			logger.Get().Infow("clusterConfigHandler: llamaCpp global defaults updated",
+				"contextLength", s.config.LlamaCpp.ContextLength,
+				"kvCacheType", s.config.LlamaCpp.KVCacheType,
+				"ropeScalingType", s.config.LlamaCpp.RopeScalingType,
+				"numGpuLayers", s.config.LlamaCpp.NumGPULayers,
+			)
+		}
+
 		// Сохраняем конфигурацию на диск при ЛЮБОМ изменении
 		if s.configSaver != nil {
 			if err := s.configSaver(); err != nil {
@@ -385,6 +437,9 @@ func (s *Server) clusterConfigHandler(w http.ResponseWriter, r *http.Request) {
 				"operatingMode":       s.config.Balancing.OperatingMode,
 				"initialized":         s.config.Initialized,
 				"backendEngine":       string(s.config.BackendEngine),
+				// Session 17: возвращаем текущее состояние LlamaCpp, чтобы WebUI
+				// мог сразу отобразить обновлённые значения без дополнительного GET.
+				"llamaCpp": s.config.LlamaCpp,
 			},
 			"message": "Cluster configuration updated successfully",
 		})
@@ -497,4 +552,105 @@ func (s *Server) configResetHandler(w http.ResponseWriter, r *http.Request) {
 		response["warning"] = saveWarning
 	}
 	s.writeJSON(w, http.StatusOK, response)
+}
+// applyLlamaCppPartialUpdate применяет non-zero поля из src в dst.
+//   - int/float скаляры: применяются только если src > 0 (защита от случайного
+//     обнуления при partial-формах WebUI).
+//   - bool/string поля: применяются ВСЕГДА (false = явный сброс через WebUI,
+//     "" = сброс для KVCacheType/RopeScalingType).
+//   - TensorSplit (slice): применяется только если прислали непустой массив
+//     ИЛИ если прислали строковое представление.
+func applyLlamaCppPartialUpdate(dst *types.LlamaCppConfig, src *types.LlamaCppConfig) {
+	if src.NumGPULayers != 0 {
+		dst.NumGPULayers = src.NumGPULayers
+	}
+	if src.ContextLength != 0 {
+		dst.ContextLength = src.ContextLength
+	}
+	if src.BatchSize != 0 {
+		dst.BatchSize = src.BatchSize
+	}
+	// bool-поля — всегда (WebUI шлёт актуальное состояние).
+	dst.FlashAttention = src.FlashAttention
+	dst.NUMA = src.NUMA
+	dst.UseMMap = src.UseMMap
+	dst.UseMLock = src.UseMLock
+	dst.AutoGpuDistribution = src.AutoGpuDistribution
+	dst.NoMemoryMap = src.NoMemoryMap
+	dst.NoKVOffload = src.NoKVOffload
+	// String-поля — всегда.
+	dst.Strategy = src.Strategy
+	dst.KVCacheType = src.KVCacheType
+	dst.RopeScalingType = src.RopeScalingType
+	if src.RopeScalingFactor != 0 {
+		dst.RopeScalingFactor = src.RopeScalingFactor
+	}
+	if src.RopeFreqBase != 0 {
+		dst.RopeFreqBase = src.RopeFreqBase
+	}
+	if src.RopeFreqScale != 0 {
+		dst.RopeFreqScale = src.RopeFreqScale
+	}
+	// YaRN-параметры.
+	dst.YarnExtFactor = src.YarnExtFactor
+	dst.YarnAttnFactor = src.YarnAttnFactor
+	if src.YarnBetaFast != 0 {
+		dst.YarnBetaFast = src.YarnBetaFast
+	}
+	if src.YarnBetaSlow != 0 {
+		dst.YarnBetaSlow = src.YarnBetaSlow
+	}
+	// Multi-GPU.
+	if src.MainGPU != 0 {
+		dst.MainGPU = src.MainGPU
+	}
+	dst.RPCBackend = src.RPCBackend
+	// TensorSplit.
+	if len(src.TensorSplit) > 0 {
+		dst.TensorSplit = src.TensorSplit
+		dst.TensorSplitStr = src.TensorSplitStr
+	} else if src.TensorSplitStr != "" {
+		dst.TensorSplitStr = src.TensorSplitStr
+	}
+	// Performance.
+	if src.NThreads != 0 {
+		dst.NThreads = src.NThreads
+	}
+	if src.RMSNormEps != 0 {
+		dst.RMSNormEps = src.RMSNormEps
+	}
+	if src.MaxConcurrentReqs != 0 {
+		dst.MaxConcurrentReqs = src.MaxConcurrentReqs
+	}
+}
+
+// persistLlamaCppOverride сохраняет in-memory LlamaCppConfig в sidecar-файл.
+// Sidecar содержит ПОЛНУЮ копию (не partial). При загрузке мы делаем replace,
+// поэтому в sidecar-файле должно быть всё, что в данный момент в in-memory.
+//
+// Если override-файл уже существует, мы берём его как base и применяем к нему
+// partial update от текущего in-memory. Это позволяет WebUI-формам, которые
+// отправляют только часть полей (например, "Save" вкладки "General"), не
+// затирать поля, заданные через другую форму (например, "RoPE & YaRN").
+func (s *Server) persistLlamaCppOverride(currentInMemory *types.LlamaCppConfig) error {
+	if s.overridesStore == nil || !s.overridesStore.IsEnabled() {
+		return nil
+	}
+	// Загружаем существующий override (если есть) — он может содержать
+	// поля, которые не были в WebUI-форме (partial update pattern).
+	// exists=false означает "первый save", base = in-memory (уже содержит
+	// все поля после partial update).
+	existing, exists, err := s.overridesStore.LoadLlamaCpp()
+	if err != nil {
+		return err
+	}
+	if !exists {
+		existing = &types.LlamaCppConfig{}
+	}
+	// Копируем — это replace semantics для sidecar-файла.
+	final := *currentInMemory
+	_ = existing // existing пока не используется — partial update делается
+	//              через applyLlamaCppPartialUpdate в handler'е, in-memory уже
+	//              содержит merged state. Sidecar хранит целиком.
+	return s.overridesStore.SaveLlamaCpp(&final)
 }

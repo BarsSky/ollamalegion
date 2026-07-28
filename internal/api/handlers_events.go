@@ -27,7 +27,7 @@ import (
 
 const (
 	eventsBufferCapacity  = 100
-	eventsHeartbeatPeriod = 30 * time.Second
+	eventsHeartbeatPeriod = 10 * time.Second
 )
 
 // eventsBuffer — thread-safe ring buffer последних событий (для snapshot при reconnect).

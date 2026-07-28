@@ -4,6 +4,7 @@ package main
 import (
 	"encoding/json"
 	"flag"
+	"fmt"
 	"net/http"
 	"os"
 	"strconv"
@@ -89,6 +90,62 @@ func handleCppWorkerRuntimeConfig(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// handleCppWorkerUpdateConfig — PUT /api/v1/cppworker/config/update.
+//
+// Принимает JSON с любым подмножеством полей cppbackend.Config и применяет
+// их к currentConfig. Невалидированные / нераспознанные поля молча игнорируются
+// (только в лог пишем). Если хотя бы одно поле, влияющее на загрузку модели
+// (defaultCtxSize, defaultGpuLayers, defaultKVCacheType, defaultTensorSplit и
+// т.п.), было обновлено — инициируется auto-reload всех загруженных моделей
+// с новыми defaults (через reloadAllLoadedWithDefaults).
+//
+// Список принимаемых полей (полное покрытие cppbackend.Config без чувствительных
+// HuggingFace-токенов и путей):
+//
+//	Базовые:
+//	  defaultCtxSize (int >= 256)
+//	  defaultBatchSize (int >= 1)
+//	  defaultGpuLayers (int >= -1)
+//	  defaultFlashAttnType (int >= -1)
+//	  defaultNuma (bool)
+//	  defaultUseMmap (bool)
+//	  defaultUseMlock (bool)
+//	  defaultNThreads (int >= 0)
+//	  defaultNuma, defaultRmsNormEps (float)
+//
+//	Multi-GPU:
+//	  autoGpuDistribution (bool)
+//	  tensorSplitStrategy (string: "auto"|"vram-ratio"|"manual")
+//	  defaultMainGpu (int >= 0)
+//	  defaultRpcBackend (string: "cuda"|"vulkan"|"kompute"|"")
+//	  defaultNoMemoryMap (bool)
+//	  defaultTensorSplit ([]float, optional; nil = auto)
+//	  defaultSplitMode (int >= -1)
+//
+//	KV-cache:
+//	  defaultKvCacheType (string: "f16"|"f32"|"q8_0"|"q4_0"|"")
+//	  defaultNoKvOffload (bool)
+//
+//	RoPE:
+//	  defaultRopeFreqBase (float > 0)
+//	  defaultRopeFreqScale (float > 0)
+//	  defaultRopeScalingType (string: "none"|"linear"|"yarn")
+//	  defaultRopeScalingFactor (float > 0)
+//
+//	YaRN:
+//	  defaultYarnExtFactor (float)
+//	  defaultYarnAttnFactor (float)
+//	  defaultYarnBetaFast (float)
+//	  defaultYarnBetaSlow (float)
+//
+//	Метрики и lifecycle:
+//	  enableMetrics (bool)
+//	  metricsRetentionSeconds (int >= 0)
+//	  idleUnloadMinutes (int >= 0, 0 = off)
+//
+// Возврат: {status, applied, reload_started, reload_failed, validation_errors}.
+// validation_errors содержит список полей, которые были отправлены, но не прошли
+// валидацию (чтобы WebUI мог показать пользователю, что именно не принято).
 func handleCppWorkerUpdateConfig(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPut {
 		writeError(w, http.StatusMethodNotAllowed, "use PUT")
@@ -98,92 +155,339 @@ func handleCppWorkerUpdateConfig(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusServiceUnavailable, "backend not initialized yet")
 		return
 	}
+	// Декодируем в generic map — так WebUI может слать partial update
+	// (только изменённые поля), а мы знаем точный список валидных ключей.
 	var updates map[string]interface{}
 	if err := json.NewDecoder(r.Body).Decode(&updates); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid JSON: "+err.Error())
 		return
 	}
+
 	applied := []string{}
-	if v, ok := updates["defaultCtxSize"]; ok {
-		if ctx, ok := v.(float64); ok && ctx >= 256 {
-			currentConfig.DefaultCtxSize = int(ctx)
-			applied = append(applied, "defaultCtxSize")
+	validationErrors := []string{}
+
+	// === Хелперы для безопасного извлечения + валидации ===
+	// Каждый helper пишет в applied[] при успехе и в validationErrors[] при ошибке.
+	// Возвращают (value, ok). ok=false означает, что поле либо отсутствует,
+	// либо неверного типа, либо не прошло валидацию.
+	//
+	// Session 17 P.6 (2026-07-27): JSON `null` для поля трактуется как "skip"
+	// (same as key not present), а не "validation error". Раньше WebUI слал
+	// `defaultTensorSplit: null` для пустого поля → "expected array of numbers".
+	// Аналогично для defaultRopeFreqBase=0 (форма не заполнена, но default 0).
+	// Теперь null/undefined-equivalent → "поле не обновлять".
+	getInt := func(key string, min, max int) (int, bool) {
+		v, ok := updates[key]
+		if !ok || v == nil {
+			return 0, false
+		}
+		f, ok := v.(float64)
+		if !ok {
+			validationErrors = append(validationErrors, key+": expected number")
+			return 0, false
+		}
+		n := int(f)
+		if n < min {
+			validationErrors = append(validationErrors,
+				fmt.Sprintf("%s: must be >= %d, got %d", key, min, n))
+			return 0, false
+		}
+		if max > 0 && n > max {
+			validationErrors = append(validationErrors,
+				fmt.Sprintf("%s: must be <= %d, got %d", key, max, n))
+			return 0, false
+		}
+		return n, true
+	}
+	getFloat := func(key string, min float64) (float64, bool) {
+		v, ok := updates[key]
+		if !ok || v == nil {
+			return 0, false
+		}
+		f, ok := v.(float64)
+		if !ok {
+			validationErrors = append(validationErrors, key+": expected number")
+			return 0, false
+		}
+		// Session 17 P.6: 0 трактуется как "use llama.cpp default" (skip)
+		// для опциональных float-полей где 0 = sentinel default. Это легитимная
+		// llama.cpp конвенция (0 в n_ctx, n_threads, rope_freq_base и т.д.
+		// = "let llama.cpp decide"). Раньше форма с пустым полем шлёт 0
+		// → "must be >= 1, got 0" → пользователь не мог сохранить.
+		// Теперь: 0 = skip, валидные значения > min проходят нормально.
+		if f == 0 {
+			return 0, false
+		}
+		if f < min {
+			validationErrors = append(validationErrors,
+				fmt.Sprintf("%s: must be >= %g, got %g", key, min, f))
+			return 0, false
+		}
+		return f, true
+	}
+	getBool := func(key string) (bool, bool) {
+		v, ok := updates[key]
+		if !ok || v == nil {
+			return false, false
+		}
+		b, ok := v.(bool)
+		if !ok {
+			validationErrors = append(validationErrors, key+": expected boolean")
+			return false, false
+		}
+		return b, true
+	}
+	getString := func(key string, allowed []string) (string, bool) {
+		v, ok := updates[key]
+		if !ok || v == nil {
+			return "", false
+		}
+		s, ok := v.(string)
+		if !ok {
+			validationErrors = append(validationErrors, key+": expected string")
+			return "", false
+		}
+		if len(allowed) > 0 {
+			ok := false
+			for _, a := range allowed {
+				if s == a {
+					ok = true
+					break
+				}
+			}
+			if !ok {
+				validationErrors = append(validationErrors,
+					fmt.Sprintf("%s: must be one of %v, got %q", key, allowed, s))
+				return "", false
+			}
+		}
+		return s, true
+	}
+	getFloatSlice := func(key string) ([]float32, bool) {
+		v, ok := updates[key]
+		if !ok || v == nil {
+			return nil, false
+		}
+		arr, ok := v.([]interface{})
+		if !ok {
+			validationErrors = append(validationErrors, key+": expected array of numbers")
+			return nil, false
+		}
+		out := make([]float32, 0, len(arr))
+		for i, item := range arr {
+			f, ok := item.(float64)
+			if !ok {
+				validationErrors = append(validationErrors,
+					fmt.Sprintf("%s[%d]: expected number", key, i))
+				return nil, false
+			}
+			out = append(out, float32(f))
+		}
+		return out, true
+	}
+	// applyInt — если поле валидно, мутирует *target и пишет в applied[].
+	applyInt := func(key string, target *int, min, max int) {
+		if n, ok := getInt(key, min, max); ok {
+			*target = n
+			applied = append(applied, key)
 		}
 	}
-	if v, ok := updates["defaultBatchSize"]; ok {
-		if batch, ok := v.(float64); ok && batch >= 1 {
-			currentConfig.DefaultBatchSize = int(batch)
-			applied = append(applied, "defaultBatchSize")
+	applyFloat := func(key string, target *float64, min float64) {
+		if f, ok := getFloat(key, min); ok {
+			*target = f
+			applied = append(applied, key)
 		}
 	}
-	if v, ok := updates["defaultGpuLayers"]; ok {
-		if gpu, ok := v.(float64); ok {
-			currentConfig.DefaultGPULayers = int(gpu)
-			applied = append(applied, "defaultGpuLayers")
+	applyBool := func(key string, target *bool) {
+		if b, ok := getBool(key); ok {
+			*target = b
+			applied = append(applied, key)
 		}
 	}
-	if v, ok := updates["defaultFlashAttnType"]; ok {
-		if fa, ok := v.(float64); ok {
-			currentConfig.DefaultFlashAttnType = int(fa)
-			applied = append(applied, "defaultFlashAttnType")
+	applyString := func(key string, target *string, allowed []string) {
+		if s, ok := getString(key, allowed); ok {
+			*target = s
+			applied = append(applied, key)
 		}
 	}
-	if v, ok := updates["defaultNuma"]; ok {
-		if numa, ok := v.(bool); ok {
-			currentConfig.DefaultNUMA = numa
-			applied = append(applied, "defaultNuma")
+	applyFloatSlice := func(key string, target *[]float32) {
+		if arr, ok := getFloatSlice(key); ok {
+			*target = arr
+			applied = append(applied, key)
 		}
 	}
-	if v, ok := updates["defaultUseMmap"]; ok {
-		if mmap, ok := v.(bool); ok {
-			currentConfig.DefaultUseMmap = mmap
-			applied = append(applied, "defaultUseMmap")
+
+	// === Базовые параметры загрузки ===
+	// defaultCtxSize: минимум 256 (lower bound C-bridge), максимум 262144 (gemma-4 256K).
+	applyInt("defaultCtxSize", &currentConfig.DefaultCtxSize, 256, 262144)
+	applyInt("defaultBatchSize", &currentConfig.DefaultBatchSize, 1, 4096)
+	// defaultGpuLayers: -2 = auto/all (adaptive reload path), -1 = all, 0 = CPU only, >0 = N слоёв.
+	// Без верхней границы (теоретически может быть 999 для какой-нибудь MoE).
+	// Session 17 P.3 (2026-07-27): -2 был неявно отклоняем валидатором ("must be >= -1"),
+	// хотя internal/cppbackend/backend.go:678 явно обрабатывает -2 как auto/all.
+	// Фикс: min=-2.
+	applyInt("defaultGpuLayers", &currentConfig.DefaultGPULayers, -2, 0)
+	// defaultFlashAttnType: -1=auto, 0=disabled, 1=enabled (см. llama.cpp).
+	// На 2026-07 cppworker использует только {0, 1, -1}, но оставляем запас.
+	applyInt("defaultFlashAttnType", &currentConfig.DefaultFlashAttnType, -1, 2)
+	applyBool("defaultNuma", &currentConfig.DefaultNUMA)
+	applyBool("defaultUseMmap", &currentConfig.DefaultUseMmap)
+	applyBool("defaultUseMlock", &currentConfig.DefaultUseMlock)
+	applyInt("defaultNThreads", &currentConfig.DefaultNThreads, 0, 4096)
+	applyFloat("defaultRmsNormEps", &currentConfig.DefaultRMSNormEps, 0)
+
+	// === Multi-GPU / distribution ===
+	applyBool("autoGpuDistribution", &currentConfig.AutoGPUDistribution)
+	applyString("tensorSplitStrategy", &currentConfig.TensorSplitStrategy,
+		[]string{"", "auto", "vram-ratio", "manual", "round-robin"})
+	applyInt("defaultMainGpu", &currentConfig.DefaultMainGPU, 0, 0)
+	applyString("defaultRpcBackend", &currentConfig.DefaultRPCBackend,
+		[]string{"", "cuda", "vulkan", "kompute"})
+	applyBool("defaultNoMemoryMap", &currentConfig.DefaultNoMemoryMap)
+	applyFloatSlice("defaultTensorSplit", &currentConfig.DefaultTensorSplit)
+	applyInt("defaultSplitMode", &currentConfig.DefaultSplitMode, -1, 3)
+
+	// === KV cache ===
+	// "" = inherit default (f16). "f16"/"f32" — full precision, "q8_0"/"q4_0" — quant.
+	applyString("defaultKvCacheType", &currentConfig.DefaultKVCacheType,
+		[]string{"", "f16", "f32", "q8_0", "q4_0"})
+	applyBool("defaultNoKvOffload", &currentConfig.DefaultNoKVOffload)
+
+	// === RoPE ===
+	applyFloat("defaultRopeFreqBase", &currentConfig.DefaultRopeFreqBase, 1)
+	applyFloat("defaultRopeFreqScale", &currentConfig.DefaultRopeFreqScale, 0)
+	// ropeScalingType: "none"/"linear"/"yarn" + "" = none.
+	applyString("defaultRopeScalingType", &currentConfig.DefaultRopeScalingType,
+		[]string{"", "none", "linear", "yarn"})
+	applyFloat("defaultRopeScalingFactor", &currentConfig.DefaultRopeScalingFactor, 0)
+
+	// === YaRN ===
+	// Все 4 float. Без нижней границы — llama.cpp сам валидирует семантику.
+	applyFloat("defaultYarnExtFactor", &currentConfig.DefaultYarnExtFactor, 0)
+	applyFloat("defaultYarnAttnFactor", &currentConfig.DefaultYarnAttnFactor, 0)
+	applyFloat("defaultYarnBetaFast", &currentConfig.DefaultYarnBetaFast, 0)
+	applyFloat("defaultYarnBetaSlow", &currentConfig.DefaultYarnBetaSlow, 0)
+
+	// === Метрики и lifecycle ===
+	applyBool("enableMetrics", &currentConfig.EnableMetrics)
+	applyInt("metricsRetentionSeconds", &currentConfig.MetricsRetentionS, 0, 0)
+	// idleUnloadMinutes: 0 = off. > 0 = выгружать после N минут простоя.
+	// Без верхней границы (для long-running тестов можно поставить 99999).
+	applyInt("idleUnloadMinutes", &currentConfig.IdleUnloadMinutes, 0, 0)
+
+	// Session 18 (2026-07-28): Reasoning/Thinking — для моделей gemma-4,
+	// deepseek-r1, qwen3-thinking и др. Включает thinking-режим в chat
+	// template (если GGUF содержит tokenizer.chat_template с поддержкой).
+	// Парсер think-блоков уже работает в reasoning_content.go.
+	applyBool("enableReasoning", &currentConfig.EnableReasoning)
+	applyInt("reasoningBudget", &currentConfig.ReasoningBudget, 0, 100000)
+
+	// === Логируем нераспознанные ключи (помогает WebUI отлаживать) ===
+	knownKeys := map[string]bool{
+		// Базовые
+		"defaultCtxSize": true, "defaultBatchSize": true,
+		"defaultGpuLayers": true, "defaultFlashAttnType": true,
+		"defaultNuma": true, "defaultUseMmap": true, "defaultUseMlock": true,
+		"defaultNThreads": true, "defaultRmsNormEps": true,
+		// Multi-GPU
+		"autoGpuDistribution": true, "tensorSplitStrategy": true,
+		"defaultMainGpu": true, "defaultRpcBackend": true,
+		"defaultNoMemoryMap": true, "defaultTensorSplit": true, "defaultSplitMode": true,
+		// KV cache
+		"defaultKvCacheType": true, "defaultNoKvOffload": true,
+		// RoPE
+		"defaultRopeFreqBase": true, "defaultRopeFreqScale": true,
+		"defaultRopeScalingType": true, "defaultRopeScalingFactor": true,
+		// YaRN
+		"defaultYarnExtFactor": true, "defaultYarnAttnFactor": true,
+		"defaultYarnBetaFast": true, "defaultYarnBetaSlow": true,
+		// Метрики и lifecycle
+		"enableMetrics": true, "metricsRetentionSeconds": true, "idleUnloadMinutes": true,
+	}
+	for k := range updates {
+		if !knownKeys[k] {
+			logger.Get().Warnw("handleCppWorkerUpdateConfig: unknown field",
+				"field", k, "value", updates[k])
 		}
 	}
-	if v, ok := updates["defaultNThreads"]; ok {
-		if threads, ok := v.(float64); ok {
-			currentConfig.DefaultNThreads = int(threads)
-			applied = append(applied, "defaultNThreads")
-		}
-	}
-	// ????????? ? config/cppworker-defaults.json ? ?????? ???????? ??????.
-	// ?????? ? .env ???????: .env ?? ??????????? ? bundled compose, ?
-	// ???????????? ???????? ????? JSON ? .env ???????? ? ???????????.
+
+	// Сохраняем в config/cppworker-defaults.json — единый источник истины.
+	// Запись в .env удалена: .env не монтируется в bundled compose, и
+	// дублирование значений между JSON и .env приводит к рассинхрону.
 	if err := saveConfigToDefaultsFile(currentConfig); err != nil {
 		logger.Get().Warnw("failed to save config to cppworker-defaults.json", "error", err)
 	} else {
 		logger.Get().Infow("config saved to cppworker-defaults.json",
+			"applied", len(applied),
+			"validationErrors", len(validationErrors),
 			"defaultCtxSize", currentConfig.DefaultCtxSize,
 			"defaultGpuLayers", currentConfig.DefaultGPULayers,
+			"defaultKvCacheType", currentConfig.DefaultKVCacheType,
 			"defaultUseMmap", currentConfig.DefaultUseMmap)
 	}
 
-	// ???? 1: auto-reload ??????????? ??????? ? ?????? defaults, ???? ??????????
-	// ????????? ????????. ??? ????????? ????????? ????? WebUI ????????? n_ctx=32768
-	// ? ??? ??????????? ?????? ????? ?????? ? ??? ??????? POST /api/models/reload.
+	// Шаг 1: auto-reload загруженных моделей с новыми defaults, если изменены
+	// параметры нагрузки. При изменении только метрик/lifecycle — reload не нужен.
 	reloadStarted := []string{}
 	reloadFailed := []string{}
 	if backend != nil && hasReloadedDefaults(applied) {
 		reloadStarted, reloadFailed = reloadAllLoadedWithDefaults()
-		// ?????????? RAM fallback attempts ? ????????? ??????????, ???? ?????? ??????????.
+		// Сбрасываем RAM fallback attempts во избежание зацикливания.
 		resetAllReloadAttempts()
 	}
 
-	writeJSON(w, http.StatusOK, map[string]interface{}{
+	resp := map[string]interface{}{
 		"status":         "updated",
 		"applied":        applied,
 		"reload_started": reloadStarted,
 		"reload_failed":  reloadFailed,
-	})
+	}
+	if len(validationErrors) > 0 {
+		resp["validation_errors"] = validationErrors
+	}
+	writeJSON(w, http.StatusOK, resp)
 }
 
 // hasReloadedDefaults ? true, ???? ????? ??????????? ????? ???? ?????????,
 // ??????? ?????? ?? ???????? ? ??????? reload ??????.
 func hasReloadedDefaults(applied []string) bool {
+	// Load-affecting fields. Если хотя бы одно из них изменилось —
+	// загруженные модели нужно перезагрузить с новыми defaults.
+	// Метрики / lifecycle / debug-поля (enableMetrics, idleUnloadMinutes и т.п.)
+	// НЕ требуют reload — они читаются из b.cfg без перезагрузки модели.
+	loadAffecting := map[string]bool{
+		// Базовые
+		"defaultCtxSize":       true,
+		"defaultBatchSize":     true,
+		"defaultGpuLayers":     true,
+		"defaultFlashAttnType": true,
+		"defaultNuma":          true,
+		"defaultUseMmap":       true,
+		"defaultUseMlock":      true,
+		"defaultNThreads":      true,
+		"defaultRmsNormEps":    true,
+		// Multi-GPU
+		"autoGpuDistribution": true,
+		"tensorSplitStrategy": true,
+		"defaultMainGpu":      true,
+		"defaultNoMemoryMap":  true,
+		"defaultTensorSplit":  true,
+		"defaultSplitMode":    true,
+		// KV cache
+		"defaultKvCacheType": true,
+		"defaultNoKvOffload": true,
+		// RoPE/YaRN (меняются на лету, но reload безопаснее и явнее)
+		"defaultRopeFreqBase":     true,
+		"defaultRopeFreqScale":    true,
+		"defaultRopeScalingType":  true,
+		"defaultRopeScalingFactor": true,
+		"defaultYarnExtFactor":    true,
+		"defaultYarnAttnFactor":   true,
+		"defaultYarnBetaFast":     true,
+		"defaultYarnBetaSlow":     true,
+	}
 	for _, k := range applied {
-		switch k {
-		case "defaultCtxSize", "defaultBatchSize", "defaultGpuLayers",
-			"defaultFlashAttnType", "defaultNuma", "defaultUseMmap", "defaultNThreads":
+		if loadAffecting[k] {
 			return true
 		}
 	}
@@ -217,6 +521,16 @@ func reloadAllLoadedWithDefaults() ([]string, []string) {
 			NUMA:          currentConfig.DefaultNUMA,
 			UseMmap:       currentConfig.DefaultUseMmap,
 			TensorSplit:   m.TensorSplit,
+			NThreads:      currentConfig.DefaultNThreads,
+			KVCacheType:   currentConfig.DefaultKVCacheType,
+			SplitMode:     currentConfig.DefaultSplitMode,
+		}
+		// Если в currentConfig задан defaultTensorSplit и AutoGPUDistribution
+		// отключён — используем явный split из конфига (приоритет над runtime m.TensorSplit).
+		// Если AutoGPUDistribution=true — оставляем m.TensorSplit (auto-распределение в
+		// LoadModelWithOpts само рассчитает split по VRAM).
+		if !currentConfig.AutoGPUDistribution && len(currentConfig.DefaultTensorSplit) > 0 {
+			opts.TensorSplit = currentConfig.DefaultTensorSplit
 		}
 		// Use adaptive SelectStrategy if available (tries f16→q8_0→q4_0)
 		if *autoOffload {

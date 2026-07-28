@@ -16,6 +16,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -236,7 +237,200 @@ func TestHandleCppWorkerUpdateConfig_AppliesUseMmap(t *testing.T) {
 	}
 }
 
-// TestHandleCppWorkerUpdateConfig_AppliesCtxSize — проверяет, что PUT с
+// TestHandleCppWorkerUpdateConfig_AppliesGpuLayers_Negative — регрессионный тест.
+// Session 17 P.3 (2026-07-27): WebUI форма для per-backend настроек имела min=-1,
+// но llama.cpp поддерживает gpuLayers=-2 как "auto / all layers" (см.
+// internal/cppbackend/backend.go:678). Валидатор PUT отклонял -2 с ошибкой
+// "must be >= -1, got -2", что блокировало сохранение "auto" режима.
+// После фикса: min=-2, -2/-1/0/N принимаются.
+func TestHandleCppWorkerUpdateConfig_AppliesGpuLayers_Negative(t *testing.T) {
+	cfg := setupConfigForTest(t)
+	prev := cfg.DefaultGPULayers
+	defer func() { cfg.DefaultGPULayers = prev }()
+
+	cfg.DefaultGPULayers = 20 // initial state from user
+
+	// Test all accepted values: -2 (auto), -1 (all), 0 (CPU), N (specific).
+	cases := []int{-2, -1, 0, 20, 100}
+	for _, want := range cases {
+		body := `{"defaultGpuLayers": ` + strconv.Itoa(want) + `}`
+		req := httptest.NewRequest(http.MethodPut,
+			"/api/v1/cppworker/config/update",
+			strings.NewReader(body))
+		w := httptest.NewRecorder()
+		handleCppWorkerUpdateConfig(w, req)
+
+		if w.Code != http.StatusOK {
+			t.Errorf("gpuLayers=%d: expected 200, got %d (body: %s)",
+				want, w.Code, w.Body.String())
+			continue
+		}
+		if cfg.DefaultGPULayers != want {
+			t.Errorf("gpuLayers=%d: expected applied, got %d", want, cfg.DefaultGPULayers)
+		}
+	}
+}
+
+// TestHandleCppWorkerUpdateConfig_NullValuesAreSkipped — регрессионный тест.
+// Session 17 P.6 (2026-07-27): WebUI шлёт `defaultTensorSplit: null` для пустого
+// поля в форме, и `defaultRopeFreqBase: 0` для неинициализированных numeric полей.
+// Раньше cppworker трактовал null как validation error ("expected array of numbers"),
+// а 0 — как "must be >= 1, got 0" (если min=1).
+// После фикса: null и "0 для поля с min>0" — это "skip" (не обновлять), а не ошибка.
+func TestHandleCppWorkerUpdateConfig_NullValuesAreSkipped(t *testing.T) {
+	cfg := setupConfigForTest(t)
+	prevSplit := cfg.DefaultTensorSplit
+	prevRope := cfg.DefaultRopeFreqBase
+	defer func() {
+		cfg.DefaultTensorSplit = prevSplit
+		cfg.DefaultRopeFreqBase = prevRope
+	}()
+
+	// Initial values (что-то конкретное, чтобы проверить что НЕ перезаписались)
+	cfg.DefaultTensorSplit = []float32{0.5, 0.5}
+	cfg.DefaultRopeFreqBase = 10000.0
+
+	// WebUI отправляет null для очищенных полей
+	body := `{"defaultTensorSplit": null, "defaultCtxSize": 8192}`
+	req := httptest.NewRequest(http.MethodPut,
+		"/api/v1/cppworker/config/update",
+		strings.NewReader(body))
+	w := httptest.NewRecorder()
+	handleCppWorkerUpdateConfig(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d (body: %s)", w.Code, w.Body.String())
+	}
+	// defaultCtxSize должен примениться
+	if cfg.DefaultCtxSize != 8192 {
+		t.Errorf("defaultCtxSize should be applied: got %d", cfg.DefaultCtxSize)
+	}
+	// defaultTensorSplit НЕ должен перезаписаться (null = skip)
+	if len(cfg.DefaultTensorSplit) != 2 || cfg.DefaultTensorSplit[0] != 0.5 {
+		t.Errorf("defaultTensorSplit should be unchanged (null=skip), got %v", cfg.DefaultTensorSplit)
+	}
+	// defaultRopeFreqBase НЕ должен перезаписаться (не в payload = skip)
+	if cfg.DefaultRopeFreqBase != 10000.0 {
+		t.Errorf("defaultRopeFreqBase should be unchanged, got %v", cfg.DefaultRopeFreqBase)
+	}
+
+	// Дополнительный кейс: явный null для bool/string/float
+	body2 := `{"defaultNuma": null, "defaultKvCacheType": null, "defaultRmsNormEps": null}`
+	req2 := httptest.NewRequest(http.MethodPut,
+		"/api/v1/cppworker/config/update",
+		strings.NewReader(body2))
+	w2 := httptest.NewRecorder()
+	handleCppWorkerUpdateConfig(w2, req2)
+
+	if w2.Code != http.StatusOK {
+		t.Fatalf("null bool/string/float: expected 200, got %d (body: %s)", w2.Code, w2.Body.String())
+	}
+	// Проверяем что в ответе нет validation_errors (иначе fix не сработал)
+	var resp2 map[string]interface{}
+	_ = json.NewDecoder(w2.Body).Decode(&resp2)
+	if ve, ok := resp2["validation_errors"].([]interface{}); ok && len(ve) > 0 {
+		t.Errorf("null values should not produce validation_errors, got: %v", ve)
+	}
+}
+
+// TestHandleCppWorkerUpdateConfig_ZeroIsSkipForFloat — регрессионный тест.
+// Session 17 P.6 (2026-07-27): 0 для опциональных float полей (defaultRopeFreqBase,
+// defaultRmsNormEps и т.д.) трактуется как "use llama.cpp default" (skip), а не
+// как "must be >= 1, got 0" (validation error). До фикса WebUI форма с пустым
+// полем шлёт 0 → пользователь не мог сохранить.
+func TestHandleCppWorkerUpdateConfig_ZeroIsSkipForFloat(t *testing.T) {
+	cfg := setupConfigForTest(t)
+	prevRope := cfg.DefaultRopeFreqBase
+	prevEps := cfg.DefaultRMSNormEps
+	defer func() {
+		cfg.DefaultRopeFreqBase = prevRope
+		cfg.DefaultRMSNormEps = prevEps
+	}()
+
+	// Initial non-zero values
+	cfg.DefaultRopeFreqBase = 10000.0
+	cfg.DefaultRMSNormEps = 0.00001
+
+	// 0 для обоих полей → должны skip'аться
+	body := `{"defaultRopeFreqBase": 0, "defaultRmsNormEps": 0, "defaultCtxSize": 8192}`
+	req := httptest.NewRequest(http.MethodPut,
+		"/api/v1/cppworker/config/update",
+		strings.NewReader(body))
+	w := httptest.NewRecorder()
+	handleCppWorkerUpdateConfig(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d (body: %s)", w.Code, w.Body.String())
+	}
+	// defaultCtxSize применился
+	if cfg.DefaultCtxSize != 8192 {
+		t.Errorf("defaultCtxSize should be applied: got %d", cfg.DefaultCtxSize)
+	}
+	// defaultRopeFreqBase НЕ изменился (0 = skip)
+	if cfg.DefaultRopeFreqBase != 10000.0 {
+		t.Errorf("defaultRopeFreqBase should be unchanged (0=skip), got %v", cfg.DefaultRopeFreqBase)
+	}
+	// defaultRmsNormEps НЕ изменился (0 = skip)
+	if cfg.DefaultRMSNormEps != 0.00001 {
+		t.Errorf("defaultRmsNormEps should be unchanged (0=skip), got %v", cfg.DefaultRMSNormEps)
+	}
+
+	// Проверяем что в ответе НЕТ validation_errors
+	var resp map[string]interface{}
+	_ = json.NewDecoder(w.Body).Decode(&resp)
+	if ve, ok := resp["validation_errors"].([]interface{}); ok && len(ve) > 0 {
+		t.Errorf("0 should not produce validation_errors, got: %v", ve)
+	}
+
+	// Дополнительно: явное ненулевое значение должно примениться
+	body2 := `{"defaultRopeFreqBase": 500000.0}`
+	req2 := httptest.NewRequest(http.MethodPut,
+		"/api/v1/cppworker/config/update",
+		strings.NewReader(body2))
+	w2 := httptest.NewRecorder()
+	handleCppWorkerUpdateConfig(w2, req2)
+	if w2.Code != http.StatusOK {
+		t.Fatalf("explicit value: expected 200, got %d (body: %s)", w2.Code, w2.Body.String())
+	}
+	if cfg.DefaultRopeFreqBase != 500000.0 {
+		t.Errorf("explicit value should be applied: got %v", cfg.DefaultRopeFreqBase)
+	}
+}
+
+// TestHandleCppWorkerUpdateConfig_RejectsGpuLayers_BelowMinus2 — нижняя граница.
+// После фикса min=-2; -3 и ниже должны отвергаться.
+func TestHandleCppWorkerUpdateConfig_RejectsGpuLayers_BelowMinus2(t *testing.T) {
+	cfg := setupConfigForTest(t)
+	prev := cfg.DefaultGPULayers
+	defer func() { cfg.DefaultGPULayers = prev }()
+
+	cfg.DefaultGPULayers = 20
+
+	for _, bad := range []int{-3, -10, -100} {
+		body := `{"defaultGpuLayers": ` + strconv.Itoa(bad) + `}`
+		req := httptest.NewRequest(http.MethodPut,
+			"/api/v1/cppworker/config/update",
+			strings.NewReader(body))
+		w := httptest.NewRecorder()
+		handleCppWorkerUpdateConfig(w, req)
+
+		if w.Code == http.StatusOK {
+			// Если 200, проверим что значение НЕ применилось и есть validation error.
+			var resp map[string]interface{}
+			_ = json.NewDecoder(w.Body).Decode(&resp)
+			if ve, ok := resp["validation_errors"].([]interface{}); ok {
+				if len(ve) == 0 {
+					t.Errorf("gpuLayers=%d: got 200 but no validation error reported", bad)
+				}
+			} else {
+				t.Errorf("gpuLayers=%d: expected 400 or 200+validation_errors, got 200", bad)
+			}
+			if cfg.DefaultGPULayers == bad {
+				t.Errorf("gpuLayers=%d: validation should have rejected, but value was applied", bad)
+			}
+		}
+	}
+}
 // defaultCtxSize корректно применяется и триггерит reload.
 func TestHandleCppWorkerUpdateConfig_AppliesCtxSize(t *testing.T) {
 	cfg := setupConfigForTest(t)
@@ -257,6 +451,357 @@ func TestHandleCppWorkerUpdateConfig_AppliesCtxSize(t *testing.T) {
 	}
 	if cfg.DefaultCtxSize != 32768 {
 		t.Fatalf("expected DefaultCtxSize=32768 after update, got %d", cfg.DefaultCtxSize)
+	}
+}
+
+// TestHandleCppWorkerUpdateConfig_AppliesKVCacheType — проверяет, что
+// defaultKvCacheType принимается и применяется к currentConfig.
+// Раньше это поле было в Config, но не принималось в PUT — регрессионный тест.
+func TestHandleCppWorkerUpdateConfig_AppliesKVCacheType(t *testing.T) {
+	cfg := setupConfigForTest(t)
+	prev := cfg.DefaultKVCacheType
+	defer func() { cfg.DefaultKVCacheType = prev }()
+
+	cfg.DefaultKVCacheType = "f16"
+
+	for _, kvType := range []string{"f16", "f32", "q8_0", "q4_0", ""} {
+		body := `{"defaultKvCacheType": "` + kvType + `"}`
+		req := httptest.NewRequest(http.MethodPut,
+			"/api/v1/cppworker/config/update",
+			strings.NewReader(body))
+		w := httptest.NewRecorder()
+		handleCppWorkerUpdateConfig(w, req)
+
+		if w.Code != http.StatusOK {
+			t.Fatalf("kvCacheType=%q: expected 200, got %d (%s)",
+				kvType, w.Code, w.Body.String())
+		}
+		if cfg.DefaultKVCacheType != kvType {
+			t.Errorf("kvCacheType=%q: expected applied, got %q",
+				kvType, cfg.DefaultKVCacheType)
+		}
+	}
+}
+
+// TestHandleCppWorkerUpdateConfig_RejectsInvalidKVCacheType — невалидный
+// тип KV-cache → не применяется, в validation_errors есть запись.
+func TestHandleCppWorkerUpdateConfig_RejectsInvalidKVCacheType(t *testing.T) {
+	cfg := setupConfigForTest(t)
+	prev := cfg.DefaultKVCacheType
+	defer func() { cfg.DefaultKVCacheType = prev }()
+
+	// Явно ставим известное начальное значение (setupConfigForTest не сбрасывает
+	// DefaultKVCacheType — он приходит из DefaultConfig() = "f16", но если
+	// предыдущий тест уже изменил — здесь мы форсируем известное).
+	cfg.DefaultKVCacheType = "f16"
+
+	body := `{"defaultKvCacheType": "q2_k"}` // не входит в [f16, f32, q8_0, q4_0, ""]
+	req := httptest.NewRequest(http.MethodPut,
+		"/api/v1/cppworker/config/update",
+		strings.NewReader(body))
+	w := httptest.NewRecorder()
+	handleCppWorkerUpdateConfig(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200 (validation errors in body), got %d", w.Code)
+	}
+	// Конфиг не должен быть изменён.
+	if cfg.DefaultKVCacheType != "f16" {
+		t.Errorf("expected DefaultKVCacheType to remain f16, got %q", cfg.DefaultKVCacheType)
+	}
+	// В ответе должны быть validation_errors.
+	var resp map[string]interface{}
+	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
+		t.Fatalf("invalid JSON: %v", err)
+	}
+	errs, ok := resp["validation_errors"].([]interface{})
+	if !ok || len(errs) == 0 {
+		t.Fatalf("expected validation_errors, got %v", resp)
+	}
+	found := false
+	for _, e := range errs {
+		if s, ok := e.(string); ok && strings.Contains(s, "defaultKvCacheType") {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Errorf("expected defaultKvCacheType in validation_errors, got %v", errs)
+	}
+}
+
+// TestHandleCppWorkerUpdateConfig_AppliesRoPE — проверяет rope_freq_base /
+// rope_freq_scale / rope_scaling_type / rope_scaling_factor.
+func TestHandleCppWorkerUpdateConfig_AppliesRoPE(t *testing.T) {
+	cfg := setupConfigForTest(t)
+	prevBase, prevScale, prevType, prevFactor :=
+		cfg.DefaultRopeFreqBase, cfg.DefaultRopeFreqScale,
+		cfg.DefaultRopeScalingType, cfg.DefaultRopeScalingFactor
+	defer func() {
+		cfg.DefaultRopeFreqBase = prevBase
+		cfg.DefaultRopeFreqScale = prevScale
+		cfg.DefaultRopeScalingType = prevType
+		cfg.DefaultRopeScalingFactor = prevFactor
+	}()
+
+	body := `{
+		"defaultRopeFreqBase": 500000.0,
+		"defaultRopeFreqScale": 0.5,
+		"defaultRopeScalingType": "yarn",
+		"defaultRopeScalingFactor": 4.0
+	}`
+	req := httptest.NewRequest(http.MethodPut,
+		"/api/v1/cppworker/config/update",
+		strings.NewReader(body))
+	w := httptest.NewRecorder()
+	handleCppWorkerUpdateConfig(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d (%s)", w.Code, w.Body.String())
+	}
+	if cfg.DefaultRopeFreqBase != 500000.0 {
+		t.Errorf("expected base=500000, got %v", cfg.DefaultRopeFreqBase)
+	}
+	if cfg.DefaultRopeFreqScale != 0.5 {
+		t.Errorf("expected scale=0.5, got %v", cfg.DefaultRopeFreqScale)
+	}
+	if cfg.DefaultRopeScalingType != "yarn" {
+		t.Errorf("expected type=yarn, got %q", cfg.DefaultRopeScalingType)
+	}
+	if cfg.DefaultRopeScalingFactor != 4.0 {
+		t.Errorf("expected factor=4.0, got %v", cfg.DefaultRopeScalingFactor)
+	}
+}
+
+// TestHandleCppWorkerUpdateConfig_RejectsBadRopeType — невалидный scaling type
+// (не из [none, linear, yarn]) → не применяется.
+func TestHandleCppWorkerUpdateConfig_RejectsBadRopeType(t *testing.T) {
+	cfg := setupConfigForTest(t)
+	prev := cfg.DefaultRopeScalingType
+	defer func() { cfg.DefaultRopeScalingType = prev }()
+
+	cfg.DefaultRopeScalingType = "none"
+	body := `{"defaultRopeScalingType": "lolwut"}`
+	req := httptest.NewRequest(http.MethodPut,
+		"/api/v1/cppworker/config/update",
+		strings.NewReader(body))
+	w := httptest.NewRecorder()
+	handleCppWorkerUpdateConfig(w, req)
+
+	if cfg.DefaultRopeScalingType != "none" {
+		t.Errorf("expected type to remain none, got %q", cfg.DefaultRopeScalingType)
+	}
+}
+
+// TestHandleCppWorkerUpdateConfig_AppliesYaRN — yarn_ext_factor / yarn_attn_factor
+// / yarn_beta_fast / yarn_beta_slow.
+func TestHandleCppWorkerUpdateConfig_AppliesYaRN(t *testing.T) {
+	cfg := setupConfigForTest(t)
+	prevExt, prevAttn, prevFast, prevSlow :=
+		cfg.DefaultYarnExtFactor, cfg.DefaultYarnAttnFactor,
+		cfg.DefaultYarnBetaFast, cfg.DefaultYarnBetaSlow
+	defer func() {
+		cfg.DefaultYarnExtFactor = prevExt
+		cfg.DefaultYarnAttnFactor = prevAttn
+		cfg.DefaultYarnBetaFast = prevFast
+		cfg.DefaultYarnBetaSlow = prevSlow
+	}()
+
+	body := `{
+		"defaultYarnExtFactor": 2.0,
+		"defaultYarnAttnFactor": 1.5,
+		"defaultYarnBetaFast": 64.0,
+		"defaultYarnBetaSlow": 2.0
+	}`
+	req := httptest.NewRequest(http.MethodPut,
+		"/api/v1/cppworker/config/update",
+		strings.NewReader(body))
+	w := httptest.NewRecorder()
+	handleCppWorkerUpdateConfig(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d (%s)", w.Code, w.Body.String())
+	}
+	if cfg.DefaultYarnExtFactor != 2.0 {
+		t.Errorf("ext_factor: got %v, want 2.0", cfg.DefaultYarnExtFactor)
+	}
+	if cfg.DefaultYarnAttnFactor != 1.5 {
+		t.Errorf("attn_factor: got %v, want 1.5", cfg.DefaultYarnAttnFactor)
+	}
+	if cfg.DefaultYarnBetaFast != 64.0 {
+		t.Errorf("beta_fast: got %v, want 64.0", cfg.DefaultYarnBetaFast)
+	}
+	if cfg.DefaultYarnBetaSlow != 2.0 {
+		t.Errorf("beta_slow: got %v, want 2.0", cfg.DefaultYarnBetaSlow)
+	}
+}
+
+// TestHandleCppWorkerUpdateConfig_AppliesTensorSplit — массив []float для
+// tensor split. Multi-GPU use-case.
+func TestHandleCppWorkerUpdateConfig_AppliesTensorSplit(t *testing.T) {
+	cfg := setupConfigForTest(t)
+	prev := cfg.DefaultTensorSplit
+	defer func() { cfg.DefaultTensorSplit = prev }()
+
+	body := `{
+		"defaultTensorSplit": [0.5, 0.5],
+		"defaultSplitMode": 0,
+		"defaultMainGpu": 0,
+		"autoGpuDistribution": false
+	}`
+	req := httptest.NewRequest(http.MethodPut,
+		"/api/v1/cppworker/config/update",
+		strings.NewReader(body))
+	w := httptest.NewRecorder()
+	handleCppWorkerUpdateConfig(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d (%s)", w.Code, w.Body.String())
+	}
+	if len(cfg.DefaultTensorSplit) != 2 {
+		t.Fatalf("expected 2-element split, got %d", len(cfg.DefaultTensorSplit))
+	}
+	if cfg.DefaultTensorSplit[0] != 0.5 || cfg.DefaultTensorSplit[1] != 0.5 {
+		t.Errorf("split mismatch: %v", cfg.DefaultTensorSplit)
+	}
+	if cfg.DefaultSplitMode != 0 {
+		t.Errorf("split_mode: got %d, want 0", cfg.DefaultSplitMode)
+	}
+	if cfg.DefaultMainGPU != 0 {
+		t.Errorf("main_gpu: got %d, want 0", cfg.DefaultMainGPU)
+	}
+	if cfg.AutoGPUDistribution {
+		t.Errorf("autoGpuDistribution: got true, want false")
+	}
+}
+
+// TestHandleCppWorkerUpdateConfig_PartialUpdate — partial update: только
+// одно поле в body, остальные не должны затираться.
+func TestHandleCppWorkerUpdateConfig_PartialUpdate(t *testing.T) {
+	cfg := setupConfigForTest(t)
+	prevBatch := cfg.DefaultBatchSize
+	prevKV := cfg.DefaultKVCacheType
+	defer func() {
+		cfg.DefaultBatchSize = prevBatch
+		cfg.DefaultKVCacheType = prevKV
+	}()
+
+	cfg.DefaultBatchSize = 256
+	cfg.DefaultKVCacheType = "f32"
+
+	// Только defaultBatchSize — KV cache должен остаться f32.
+	body := `{"defaultBatchSize": 1024}`
+	req := httptest.NewRequest(http.MethodPut,
+		"/api/v1/cppworker/config/update",
+		strings.NewReader(body))
+	w := httptest.NewRecorder()
+	handleCppWorkerUpdateConfig(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d (%s)", w.Code, w.Body.String())
+	}
+	if cfg.DefaultBatchSize != 1024 {
+		t.Errorf("batch: got %d, want 1024", cfg.DefaultBatchSize)
+	}
+	if cfg.DefaultKVCacheType != "f32" {
+		t.Errorf("kv_cache: got %q, want f32 (unchanged)", cfg.DefaultKVCacheType)
+	}
+}
+
+// TestHandleCppWorkerUpdateConfig_AppliesIdleUnload — int >= 0, 0 = off.
+func TestHandleCppWorkerUpdateConfig_AppliesIdleUnload(t *testing.T) {
+	cfg := setupConfigForTest(t)
+	prev := cfg.IdleUnloadMinutes
+	defer func() { cfg.IdleUnloadMinutes = prev }()
+
+	for _, val := range []int{0, 5, 30, 1440} {
+		body := `{"idleUnloadMinutes": ` + strconv.Itoa(val) + `}`
+		req := httptest.NewRequest(http.MethodPut,
+			"/api/v1/cppworker/config/update",
+			strings.NewReader(body))
+		w := httptest.NewRecorder()
+		handleCppWorkerUpdateConfig(w, req)
+
+		if w.Code != http.StatusOK {
+			t.Fatalf("idleUnload=%d: expected 200, got %d (%s)",
+				val, w.Code, w.Body.String())
+		}
+		if cfg.IdleUnloadMinutes != val {
+			t.Errorf("idleUnload=%d: got %d", val, cfg.IdleUnloadMinutes)
+		}
+	}
+}
+
+// TestHandleCppWorkerUpdateConfig_RejectsNegativeCtxSize — нижняя граница
+// defaultCtxSize >= 256.
+func TestHandleCppWorkerUpdateConfig_RejectsNegativeCtxSize(t *testing.T) {
+	cfg := setupConfigForTest(t)
+	prev := cfg.DefaultCtxSize
+	defer func() { cfg.DefaultCtxSize = prev }()
+
+	cfg.DefaultCtxSize = 4096
+	body := `{"defaultCtxSize": 100}`
+	req := httptest.NewRequest(http.MethodPut,
+		"/api/v1/cppworker/config/update",
+		strings.NewReader(body))
+	w := httptest.NewRecorder()
+	handleCppWorkerUpdateConfig(w, req)
+
+	if cfg.DefaultCtxSize != 4096 {
+		t.Errorf("ctx should remain 4096, got %d", cfg.DefaultCtxSize)
+	}
+}
+
+// TestHandleCppWorkerUpdateConfig_LogsUnknownFields — неизвестные поля
+// принимаются без ошибки (для forward-compat), но логируются как warning.
+// Здесь мы только проверяем, что не валим запрос.
+func TestHandleCppWorkerUpdateConfig_UnknownFieldIsOK(t *testing.T) {
+	setupConfigForTest(t)
+
+	body := `{"unknownField": 42, "defaultCtxSize": 4096}`
+	req := httptest.NewRequest(http.MethodPut,
+		"/api/v1/cppworker/config/update",
+		strings.NewReader(body))
+	w := httptest.NewRecorder()
+	handleCppWorkerUpdateConfig(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d (%s)", w.Code, w.Body.String())
+	}
+}
+
+// TestHasReloadedDefaults_Extended — все новые load-affecting поля триггерят reload.
+func TestHasReloadedDefaults_Extended(t *testing.T) {
+	loadFields := []string{
+		// Базовые
+		"defaultCtxSize", "defaultBatchSize", "defaultGpuLayers",
+		"defaultFlashAttnType", "defaultNuma", "defaultUseMmap",
+		"defaultUseMlock", "defaultNThreads", "defaultRmsNormEps",
+		// Multi-GPU
+		"autoGpuDistribution", "tensorSplitStrategy", "defaultMainGpu",
+		"defaultNoMemoryMap", "defaultTensorSplit", "defaultSplitMode",
+		// KV cache
+		"defaultKvCacheType", "defaultNoKvOffload",
+		// RoPE/YaRN
+		"defaultRopeFreqBase", "defaultRopeFreqScale",
+		"defaultRopeScalingType", "defaultRopeScalingFactor",
+		"defaultYarnExtFactor", "defaultYarnAttnFactor",
+		"defaultYarnBetaFast", "defaultYarnBetaSlow",
+	}
+	for _, f := range loadFields {
+		if !hasReloadedDefaults([]string{f}) {
+			t.Errorf("hasReloadedDefaults([%q]) = false, want true (load-affecting)", f)
+		}
+	}
+
+	// Метрики / lifecycle НЕ должны триггерить reload.
+	nonLoadFields := []string{
+		"enableMetrics", "metricsRetentionSeconds", "idleUnloadMinutes",
+	}
+	for _, f := range nonLoadFields {
+		if hasReloadedDefaults([]string{f}) {
+			t.Errorf("hasReloadedDefaults([%q]) = true, want false (non-load)", f)
+		}
 	}
 }
 

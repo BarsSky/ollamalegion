@@ -98,6 +98,20 @@ func (s *Server) setupRoutes() {
 	// Cluster config (runtime-смена алгоритма)
 	s.mux.Handle("/api/v1/cluster/config", AuthMiddleware(RateLimitMiddleware(s.clusterConfigHandler, s.rateLimiter), s.authenticator))
 
+	// Session 17 (2026-07-27): persistent runtime overrides для read-only config.json.
+	// Sidecar-файлы в /app/data/runtime-overrides/. WebUI использует GET для badge
+	// "Runtime overrides active", DELETE для кнопки "Reset to bundled defaults".
+	s.mux.Handle("/api/v1/cluster/llama-cpp/overrides", AuthMiddleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.Method {
+		case http.MethodGet:
+			s.handleGetLlamaCppOverride(w, r)
+		case http.MethodDelete:
+			s.handleDeleteLlamaCppOverride(w, r)
+		default:
+			http.Error(w, "Method not allowed; use GET or DELETE", http.StatusMethodNotAllowed)
+		}
+	}), s.authenticator))
+
 	// Predictions (с аутентификацией и rate limiting)
 	s.mux.Handle("/api/v1/predictions", AuthMiddleware(RateLimitMiddleware(s.predictionsHandler, s.rateLimiter), s.authenticator))
 	s.mux.Handle("/api/v1/predictions/", AuthMiddleware(RateLimitMiddleware(s.predictionHandler, s.rateLimiter), s.authenticator))

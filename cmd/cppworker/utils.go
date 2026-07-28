@@ -30,6 +30,15 @@ import (
 //     123, 135 — все reload-попытки от балансировщика в этом compose-стеке).
 //  3. BALANCER_API_TOKEN   — backward-compat alias.
 //
+// Принимает токен в одном из двух заголовков (в порядке приоритета):
+//   1. Authorization: Bearer <token>  — стандартный путь
+//   2. X-API-Token: <token>           — fallback для прокси-цепочек вида
+//      WebUI → balancer (auth.go:31) → cppworker. WebUI ставит X-API-Token
+//      в window.WEBUI_CONFIG.API_TOKEN (см. webui/js/modules/gguf-api.js:787),
+//      balancer проксирует этот заголовок через copyProxyHeaders
+//      (internal/api/gguf_backend_proxy.go:287-305), и раньше cppworker его
+//      не понимал → HTTP 401 на per-backend save (Session 17 P.3, 2026-07-27).
+//
 // Если ни одно env-имя не задано, middleware пропускает запрос (legacy-поведение:
 // cppworker без токена = открытые защищённые эндпоинты).
 func authMiddleware(next http.HandlerFunc) http.HandlerFunc {
@@ -39,13 +48,28 @@ func authMiddleware(next http.HandlerFunc) http.HandlerFunc {
 			next(w, r)
 			return
 		}
-		authHeader := r.Header.Get("Authorization")
-		if !strings.HasPrefix(authHeader, "Bearer ") || strings.TrimPrefix(authHeader, "Bearer ") != token {
+		clientToken := extractClientToken(r)
+		if clientToken == "" || clientToken != token {
 			writeError(w, http.StatusUnauthorized, "invalid or missing API token")
 			return
 		}
 		next(w, r)
 	}
+}
+
+// extractClientToken — извлекает токен клиента из Authorization: Bearer
+// (приоритет) или X-API-Token (fallback). Возвращает "" если ни один не задан
+// или Authorization задан без префикса "Bearer ".
+func extractClientToken(r *http.Request) string {
+	if authHeader := r.Header.Get("Authorization"); strings.HasPrefix(authHeader, "Bearer ") {
+		if tok := strings.TrimSpace(strings.TrimPrefix(authHeader, "Bearer ")); tok != "" {
+			return tok
+		}
+	}
+	if h := r.Header.Get("X-API-Token"); h != "" {
+		return strings.TrimSpace(h)
+	}
+	return ""
 }
 
 // resolveAPIToken возвращает API-токен из первой непустой env-переменной.

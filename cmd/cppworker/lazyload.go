@@ -14,6 +14,65 @@ import (
 	"ollama-loadbalancer/pkg/logger"
 )
 
+// Round 10 (2026-07-28) BUGFIX: env-var overrides для hardcoded fallback-параметров.
+// До фикса: lazy-load fallback path (когда GGUF header read failed) использовал
+// захардкоженные значения estimatedLayers=80, kvReserve=2GB, overhead=1.5GB,
+// safetyFactor=0.85. Для MoE/35B+ моделей с <80 слоями (qwen3.6 35B = 40 слоёв)
+// partial offload math давал неверный gpuLayers → OOM risk.
+//
+// Теперь эти параметры конфигурируются через env-vars:
+//   CPPWORKER_FALLBACK_ESTIMATED_LAYERS — default 80 (типичная LLM, диапазон 20-200)
+//   CPPWORKER_FALLBACK_KV_RESERVE_MB    — default 2048 (диапазон 256-16384)
+//   CPPWORKER_FALLBACK_OVERHEAD_MB      — default 1536 (CUDA + activations)
+//   CPPWORKER_FALLBACK_SAFETY_FACTOR   — default 0.85 (диапазон 0.5-1.0)
+//
+// Out-of-range или невалидные значения → fallback на default (без fatal).
+var (
+	fallbackEstimatedLayers int     = 80
+	fallbackKVReserveMB     int64   = 2048
+	fallbackOverheadMB      int64   = 1536
+	fallbackSafetyFactor    float64 = 0.85
+)
+
+func init() {
+	if v := os.Getenv("CPPWORKER_FALLBACK_ESTIMATED_LAYERS"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n >= 20 && n <= 200 {
+			fallbackEstimatedLayers = n
+			logger.Get().Infow("applied CPPWORKER_FALLBACK_ESTIMATED_LAYERS from env", "value", n)
+		} else {
+			logger.Get().Warnw("CPPWORKER_FALLBACK_ESTIMATED_LAYERS: invalid value, using default",
+				"value", v, "default", fallbackEstimatedLayers, "valid_range", "20-200")
+		}
+	}
+	if v := os.Getenv("CPPWORKER_FALLBACK_KV_RESERVE_MB"); v != "" {
+		if n, err := strconv.ParseInt(v, 10, 64); err == nil && n >= 256 && n <= 16384 {
+			fallbackKVReserveMB = n
+			logger.Get().Infow("applied CPPWORKER_FALLBACK_KV_RESERVE_MB from env", "value", n)
+		} else {
+			logger.Get().Warnw("CPPWORKER_FALLBACK_KV_RESERVE_MB: invalid value, using default",
+				"value", v, "default", fallbackKVReserveMB, "valid_range", "256-16384")
+		}
+	}
+	if v := os.Getenv("CPPWORKER_FALLBACK_OVERHEAD_MB"); v != "" {
+		if n, err := strconv.ParseInt(v, 10, 64); err == nil && n >= 256 && n <= 4096 {
+			fallbackOverheadMB = n
+			logger.Get().Infow("applied CPPWORKER_FALLBACK_OVERHEAD_MB from env", "value", n)
+		} else {
+			logger.Get().Warnw("CPPWORKER_FALLBACK_OVERHEAD_MB: invalid value, using default",
+				"value", v, "default", fallbackOverheadMB, "valid_range", "256-4096")
+		}
+	}
+	if v := os.Getenv("CPPWORKER_FALLBACK_SAFETY_FACTOR"); v != "" {
+		if f, err := strconv.ParseFloat(v, 64); err == nil && f >= 0.5 && f <= 1.0 {
+			fallbackSafetyFactor = f
+			logger.Get().Infow("applied CPPWORKER_FALLBACK_SAFETY_FACTOR from env", "value", f)
+		} else {
+			logger.Get().Warnw("CPPWORKER_FALLBACK_SAFETY_FACTOR: invalid value, using default",
+				"value", v, "default", fallbackSafetyFactor, "valid_range", "0.5-1.0")
+		}
+	}
+}
+
 // ensureModelLoaded — ленивая загрузка модели из файловой системы если она ещё не в памяти.
 //
 // Возвращаемые ошибки:
@@ -143,20 +202,23 @@ func ensureModelLoaded(modelName string) error {
 
 		// Legacy auto-offload остался для обратной совместимости: если
 		// CPPWORKER_AUTO_TUNE_NCTX_ON_LOAD=false, старая логика всё равно
-		// отрабатывает (estimatedLayers=80, kvReserve=2GB).
+		// отрабатывает. Round 10 (2026-07-28) BUGFIX: hardcoded константы
+		// (estimatedLayers, kvReserve, overhead, safetyFactor) вынесены в
+		// env-vars — см. CPPWORKER_FALLBACK_* в init() ниже.
 		if *autoOffload && rationale.Source == "fallback_no_meta" {
 			availableVRAM := availableVRAMBytes()
 			if availableVRAM > 0 {
 				filename := modelName + ".gguf"
 				if meta, mErr := mm.GetModelMeta(filename); mErr == nil && meta.SizeBytes > 0 {
-					safeVRAM := int64(float64(availableVRAM) * 0.85)
-					overhead := int64(1536) * 1024 * 1024 // 1.5GB CUDA + activations
-					// Резерв под KV-cache для n_ctx=32768 (~2GB для типичной модели).
-					kvReserve := int64(2) * 1024 * 1024 * 1024
+					safeVRAM := int64(float64(availableVRAM) * fallbackSafetyFactor)
+					overhead := fallbackOverheadMB * 1024 * 1024
+					// Резерв под KV-cache для n_ctx=32768 (configurable).
+					kvReserve := fallbackKVReserveMB * 1024 * 1024
 					availableForWeights := safeVRAM - overhead - kvReserve
 					if availableForWeights > 0 && meta.SizeBytes > availableForWeights {
 						// Модель не влезает целиком — partial offload.
-						estimatedLayers := 80 // грубая оценка для типичной модели
+						// Используем configurable оценку (default 80 для типичной LLM).
+						estimatedLayers := fallbackEstimatedLayers
 						weightsPerLayer := meta.SizeBytes / int64(estimatedLayers)
 						if weightsPerLayer > 0 {
 							gpuLayers := int(availableForWeights / weightsPerLayer)
@@ -168,7 +230,10 @@ func ensureModelLoaded(modelName string) error {
 									"model_size_mb", meta.SizeBytes/(1024*1024),
 									"available_for_weights_mb", availableForWeights/(1024*1024),
 									"estimated_layers", estimatedLayers,
-									"vram_total_mb", availableVRAM/(1024*1024))
+									"vram_total_mb", availableVRAM/(1024*1024),
+									"safety_factor", fallbackSafetyFactor,
+									"kv_reserve_mb", fallbackKVReserveMB,
+									"overhead_mb", fallbackOverheadMB)
 								opts.GPULayers = gpuLayers
 								opts.UseMmap = true
 							}

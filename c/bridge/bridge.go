@@ -832,8 +832,10 @@ func (m *ModelHandle) ApplyChatTemplateWithThinking(
 	}
 
 	var supportsThinking C.bool
+	// m.ptr имеет тип *C.ModelHandle (typed pointer), но C-функция ожидает
+	// void*. CGo не делает auto-cast — нужен явный unsafe.Pointer().
 	ret := C.bridge_chat_templates_apply_with_thinking(
-		m.ptr,
+		unsafe.Pointer(m.ptr),
 		cOverride,
 		&cMsgs[0],
 		C.int32_t(len(cMsgs)),
@@ -860,7 +862,7 @@ func (m *ModelHandle) ApplyChatTemplateWithThinking(
 
 		supportsThinking = C.bool(false)
 		ret = C.bridge_chat_templates_apply_with_thinking(
-			m.ptr,
+			unsafe.Pointer(m.ptr),
 			cOverride,
 			&cMsgs[0],
 			C.int32_t(len(cMsgs)),

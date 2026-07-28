@@ -840,10 +840,23 @@ type warmupOptions struct {
 // для Ollama: POST /api/generate с пустым промптом,
 // для llama.cpp: POST /load или аналогичный warmup вызов.
 // numCtx и gpuLayers — опциональные параметры для llama.cpp загрузки (0 = не заданы).
+//
+// Round 9 (2026-07-28) BUGFIX: пропускаем warmup если model=="" — это
+// происходит для служебных эндпоинтов (health, models list, cluster
+// introspect) и приводит к 4-5 лишним POST /load 400 ошибкам в логах
+// cppworker + к 30s timeout на balancer /api/health (warmup-цикл
+// блокирует прокси-запрос).
 func (p *Proxy) warmupModel(backendID, host string, port int, model string, extraOpts ...warmupOptions) {
 
 	if p.client == nil {
 		logger.Get().Warnw("warmupModel: no HTTP client configured", "backend", backendID, "model", model)
+		return
+	}
+
+	// Round 9 BUGFIX: warmup имеет смысл только когда мы знаем какую
+	// модель загружать. Для /health, /api/models, /api/v1/cluster/* и
+	// других служебных эндпоинтов model=="" — не дёргаем бэкенд.
+	if model == "" {
 		return
 	}
 

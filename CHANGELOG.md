@@ -5,6 +5,108 @@
 Формат ведётся в соответствии с [Keep a Changelog](https://keepachangelog.com/ru/1.0.0/),
 и этот проект придерживается [Semantic Versioning](https://semver.org/lang/ru/).
 
+## [0.4.10 — 2026-07-28]
+
+Patch-релиз поверх `v0.4.9`. Цель: дать `defaultNParallel` через WebUI /
+`/api/v1/cppworker/config` PUT — фундамент для n_parallel > 1 (multi-slot
+batched generation). Сам по себе NParallel > 1 пока **не активирует
+параллельный инференс** (он по-прежнему сериализуется через Round 8
+inst.mu lock), но правильно пробрасывает `n_seq_max` в C-bridge при
+загрузке модели, и при будущем slot pool (Round 13+) заработает сразу.
+
+### Added (defaultNParallel в runtime config)
+
+**Проблема:** `n_parallel` можно было задать только через per-model profile
+(`/api/models/load-with-params` → `req.Parallel`). Глобального default
+для всех моделей не было — пользователь не мог одной строкой в WebUI
+выставить n_parallel=2 для всех будущих загрузок.
+
+**Решение (Round 12):**
+
+1. `internal/cppbackend/config.go` — добавлено поле `DefaultNParallel int`
+   (json `defaultNParallel`). Диапазон 0..8: 0 = bridge default (=1 в
+   llama.cpp), 1 = явное n_parallel=1, 2..8 = multi-slot batched.
+
+2. `LoadConfigFromEnv` — читает `CPPWORKER_N_PARALLEL`. Невалидные
+   (negative, non-numeric) значения → fallback на 0.
+
+3. `cmd/cppworker/handlers_config.go`:
+   - `applyInt("defaultNParallel", &currentConfig.DefaultNParallel, 0, 8)`
+     в PUT-обработчике. WebUI / Sidecar теперь могут править это поле
+     через `PUT /api/v1/cppworker/config` (валидация, null-skip, errors).
+   - `defaultNParallel` в `knownKeys` (без "unknown field" warning).
+   - В `loadAffecting` map — load-affecting, иначе reload не сработает.
+   - В `reloadAllLoadedWithDefaults` opts construction — `Parallel:
+     currentConfig.DefaultNParallel`, чтобы reload подхватил новое
+     значение.
+
+4. `internal/cppbackend/backend.go`:
+   - `LoadModel` (simple wrapper) теперь пробрасывает
+     `Parallel: b.cfg.DefaultNParallel` в `LoadModelOpts`.
+   - `LoadModelWithOpts` — в логике `if opts.Parallel > 0` добавлена
+     ветка `else if b.cfg.DefaultNParallel > 0 { cfg.NParallel =
+     b.cfg.DefaultNParallel }`. **Приоритет:** per-model `opts.Parallel`
+     ВСЕГДА выигрывает у default.
+
+5. `config/cppworker-defaults.json` — добавлено `"defaultNParallel": 0`
+   (явный default для UI / Sidecar).
+
+### Important (n_parallel > 1 НЕ активирует параллельный инференс)
+
+`defaultNParallel > 0` правильно выставит `n_seq_max` в C-bridge при
+загрузке (это подготовительный шаг), но инференс **по-прежнему
+сериализуется** через Round 8 `inst.mu` lock (`backend.go:1319-1379`).
+Для настоящего параллельного инференса нужен ещё:
+
+- **C-bridge slot pool** — на каждый Infer() выделять свой `llama_seq_id`
+  вместо захвата `inst.mu` на всё время.
+- **Go-side slot manager** — отслеживать свободные слоты, блокировать
+  Infer() если все заняты.
+
+Это Round 13+ (отдельный рефактор на 1-2 дня с миграцией на
+`RWMutex`). См. CHANGELOG.md v0.4.7 (Round 8) — описание почему
+inst.mu lock нужен (llama.cpp context НЕ thread-safe).
+
+**Сейчас** defaultNParallel=2..8 в конфиге **безопасен**: n_seq_max
+выделяется больше, инференс сериализуется, VRAM тратится чуть больше
+на KV-cache. Пользы от 2..8 без slot pool нет, но и вреда тоже нет —
+просто готовим почву.
+
+### Tests (новые, 9 тестов)
+
+`internal/cppbackend/round12_nparallel_test.go`:
+- `TestDefaultConfig_NParallel_Default` — DefaultConfig() даёт 0
+- `TestLoadConfigFromEnv_NParallel_Valid` — ENV 0/1/2/4/8 применяются
+- `TestLoadConfigFromEnv_NParallel_Invalid` — negative/non-numeric → 0
+- `TestLoadConfigFromEnv_NParallel_NotSet` — unset → 0 (или json file)
+
+`cmd/cppworker/round12_nparallel_config_test.go`:
+- `TestPUTConfig_DefaultNParallel_Valid` — PUT 0/1/2/4/8 принимается
+- `TestPUTConfig_DefaultNParallel_OutOfRange` — PUT 9/16/100/1000 →
+  200 OK с validation_errors, currentConfig НЕ меняется
+- `TestPUTConfig_DefaultNParallel_InvalidType` — "not-a-number" → reject
+- `TestPUTConfig_DefaultNParallel_NullSkip` — null → baseline сохраняется
+
+`cmd/cppworker/handlers_config_test.go`:
+- `TestHasReloadedDefaults` — добавлен кейс `{[]string{"defaultNParallel"}, true}`
+- `TestHasReloadedDefaults_Extended` — `"defaultNParallel"` в loadFields
+
+### Files changed
+
+- `internal/cppbackend/config.go` (DefaultNParallel field, env loader)
+- `internal/cppbackend/backend.go` (LoadModel + LoadModelWithOpts wiring)
+- `cmd/cppworker/handlers_config.go` (applyInt, knownKeys, loadAffecting, reload)
+- `cmd/cppworker/handlers_config_test.go` (HasReloadedDefaults tests)
+- `config/cppworker-defaults.json` (defaultNParallel: 0)
+
+### Container state (post-v0.4.10 deploy)
+
+- ol-bundled-cppworker-gpu: image 2026-07-28 14:xx:xx (Round 12 fix)
+- ol-bundled-balancer: image 2026-07-28 11:56:35 (v0.4.7, без изменений)
+- ol-bundled-webui: image 2026-07-28 (P.13/P.14, без изменений)
+
+**Smoke test 14/14 ✓** после deploy.
+
 ## [0.4.9 — 2026-07-28]
 
 Patch-релиз поверх `v0.4.8`. Цель: реализовать `enable_thinking` через

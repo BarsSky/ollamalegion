@@ -1297,19 +1297,43 @@ func (b *Backend) UnlockLoad(name string) {
 // waitForLoad блокируется до завершения загрузки модели другой горутиной.
 // Возвращает true если модель успешно загружена, false если произошла ошибка
 // или канал закрыт по другой причине.
+// WaitForLoad — блокируется до завершения загрузки модели другой горутиной.
 // Используется когда tryLockLoad вернул (false, nil) — другая горутина уже грузит.
+//
+// Round 9 (2026-07-28) BUGFIX: если b.loading[name] уже удалён (канал
+// закрыт и cleaned-up), ПРОВЕРЯЕМ b.models[name] перед возвратом false.
+// До фикса был race: goroutine A загрузила модель, вызвала UnlockLoad
+// (закрыла канал, удалила из map) — goroutine B видела `!ok` и сразу
+// возвращала false, даже если модель УЖЕ в b.models. Caller (lazyload.go
+// и 3 handler'а) интерпретировал false как "модель не загружена" и
+// возвращал 503 errModelIsLoading.
+//
+// Корректная семантика: возвращаем true если модель загружена (любым
+// способом), false только если загрузка точно провалилась.
 func (b *Backend) WaitForLoad(name string) bool {
 	b.loadMu.Lock()
 	ch, ok := b.loading[name]
 	b.loadMu.Unlock()
-	if !ok {
-		return false // загрузка уже завершена
-	}
-	<-ch // ждём завершения загрузки
 
-	// Проверяем результат
-	_, err := b.GetModel(name)
-	return err == nil
+	if ok {
+		// Другая горутина ещё грузит — ждём канал.
+		<-ch
+		// После пробуждения канал закрыт, b.loading[name] уже удалён
+		// (UnlockLoad делает close+delete под loadMu). Fallthrough к
+		// проверке b.models.
+	}
+
+	// Round 9: проверяем b.models — модель может быть уже загружена
+	// (другая горутина завершила load между TryLockLoad и нашим чтением
+	// канала, или мы пришли сюда после того как b.loading[name] уже
+	// удалён).
+	if _, err := b.GetModel(name); err == nil {
+		return true
+	}
+
+	// Модель не в b.models → загрузка не удалась (или её никогда не было
+	// через TryLockLoad, что не наш случай).
+	return false
 }
 
 // ============================================================

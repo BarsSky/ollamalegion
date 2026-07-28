@@ -9,6 +9,7 @@
 package cppbackend
 
 import (
+	"context"
 	"encoding/binary"
 	"fmt"
 	"math"
@@ -177,6 +178,13 @@ type modelInstance struct {
 	handle   *bridge.ModelHandle
 	metadata *bridge.ModelMetadata
 	mu       sync.Mutex
+	// Round 13 (2026-07-28): slot manager для multi-slot batched inference.
+	// maxSlots = max(1, inst.info.Parallel). При Parallel=1 (default) —
+	// семантика идентична Round 8 (mu сериализует llama_decode, slot
+	// acquisition не блокирует). При Parallel>1 — до N concurrent calls
+	// на разных seq_id, каждый держит свой регион KV-cache.
+	// Инициализируется в LoadModelWithOpts после успешной загрузки.
+	slots *SlotManager
 	// lastUsedAt — момент последнего обращения к модели (генерация/стрим).
 	// Используется IdleUnloadManager'ом для решения о выгрузке неактивных
 	// моделей: считаем idle от LastUsedAt, а не от LoadedAt — иначе модель,
@@ -579,6 +587,22 @@ func (b *Backend) LoadModelWithOpts(name string, path string, opts LoadModelOpts
 	// LoadModelWithOpts (даже если caller передал zero-value).
 	inst.info.Parallel = opts.Parallel
 	inst.info.KVCacheType = opts.KVCacheType
+
+	// Round 13 (2026-07-28): initialize SlotManager после успешной загрузки.
+	// maxSlots = max(1, opts.Parallel). Parallel=0/1 → single-slot (Round 8 behavior).
+	// Parallel>1 → до N concurrent calls, каждый со своим seq_id.
+	// Инициализация тут (а не в NewBackend) потому что Parallel — per-model,
+	// и для каждой загруженной модели нужен свой SlotManager.
+	parallelSlots := opts.Parallel
+	if parallelSlots < 1 {
+		parallelSlots = 1
+	}
+	inst.slots = NewSlotManager(parallelSlots)
+	logger.Get().Infow("slot manager initialized",
+		"name", name,
+		"maxSlots", parallelSlots,
+		"parallel", opts.Parallel)
+
 	if inst.info.KVCacheType == "" {
 		// Fallback на default (аналогично line 452 для cfg.KVCacheType).
 		// Без этого /api/show показывает пустую строку, хотя llama.cpp использует
@@ -1361,11 +1385,42 @@ func (b *Backend) WaitForLoad(name string) bool {
 // второй запрос ЖДЁТ завершения первого, а не падает. Параллельность
 // inference регулируется на уровне балансера (slot manager) и/или
 // n_parallel (если >1, нужно сменить на отдельный RWMutex).
+//
+// Round 13 (2026-07-28): добавлен slot manager. ПОРЯДОК LOCK'ов критичен:
+//   1. sm.Acquire(ctx) — получаем slot ID (блокирует если все заняты)
+//   2. inst.mu.Lock()  — serialize llama_decode
+//   3. handle.Infer(params{SeqId: slot, ...})
+//   4. defer sm.Release(slot) срабатывает ПОСЛЕ Unlock (через defer LIFO)
+//   5. defer inst.mu.Unlock()
 func (b *Backend) Generate(modelName string, prompt string, params bridge.GenerationParams) (*bridge.InferenceResult, error) {
 	inst, err := b.getModelInstance(modelName)
 	if err != nil {
 		return nil, err
 	}
+
+	// Round 13: acquire slot FIRST. Если все слоты заняты — блокируемся
+	// (FIFO) пока не освободится. Для defaultNParallel=1 — никогда не
+	// блокируется (единственный слот занят только текущим call'ом).
+	// ctx — context.Background() (no timeout). Если нужен timeout —
+	// передать через params (пока не реализовано).
+	if inst.slots == nil {
+		// Защита от nil: если модель загружена через устаревший путь без
+		// SlotManager (например, init race), создаём single-slot.
+		inst.slots = NewSlotManager(1)
+	}
+	slot, release, err := inst.slots.Acquire(context.Background())
+	if err != nil {
+		return nil, err
+	}
+	// ВАЖНО: defer release() ДО defer mu.Unlock() — defer LIFO order:
+	// сначала выполнится Unlock (release mu), потом Release slot.
+	// Это предотвращает deadlock: слот освобождается ПОСЛЕ unlock mu,
+	// поэтому следующий waiter может взять слот, а затем ждать mu.
+	defer release()
+
+	// Round 13: пробрасываем slot ID как seq_id в C-bridge.
+	// seq_id=0 (default) → legacy single-slot, > 0 → multi-slot slot region.
+	params.SeqId = slot
 
 	// Round 8 BUGFIX: держим mu на всём инференсе. До фикса Unlock() был
 	// сразу после ++ActiveQueries — два goroutine могли одновременно войти
@@ -1397,11 +1452,29 @@ func (b *Backend) Generate(modelName string, prompt string, params bridge.Genera
 //
 // Round 8 (2026-07-28) BUGFIX: см. Generate — удерживаем inst.mu на всём
 // протяжении inst.handle.InferStream().
+//
+// Round 13 (2026-07-28): добавлен slot manager (см. Generate для деталей
+// ordering). Тот же lock pattern: Acquire → Lock → InferStream → Unlock → Release.
 func (b *Backend) GenerateStream(modelName string, prompt string, params bridge.GenerationParams, callback bridge.StreamCallback) error {
 	inst, err := b.getModelInstance(modelName)
 	if err != nil {
 		return err
 	}
+
+	// Round 13: acquire slot (см. Generate для объяснения).
+	if inst.slots == nil {
+		inst.slots = NewSlotManager(1)
+	}
+	slot, release, err := inst.slots.Acquire(context.Background())
+	if err != nil {
+		return err
+	}
+	// ВАЖНО: defer release() ДО defer mu.Unlock() — defer LIFO:
+	// сначала Unlock, потом Release (без deadlock).
+	defer release()
+
+	// Round 13: пробрасываем slot ID как seq_id.
+	params.SeqId = slot
 
 	inst.mu.Lock()
 	inst.info.TotalQueries++
@@ -1414,8 +1487,7 @@ func (b *Backend) GenerateStream(modelName string, prompt string, params bridge.
 		inst.info.ActiveQueries--
 		inst.mu.Unlock()
 		if b.metrics != nil {
-			duration := time.Since(start)
-			b.metrics.RecordRequest(modelName, 0, duration, true)
+			b.metrics.RecordRequest(modelName, 0, time.Since(start), true)
 		}
 		inst.lastUsedAt.Store(time.Now())
 	}()

@@ -92,6 +92,12 @@ type GenerationParams struct {
 	// ClampedNPredictOriginal — исходное значение NPredict до клампинга.
 	// Используется для информативного warning в ответе.
 	ClampedNPredictOriginal int `json:"-"`
+	// Round 13 (2026-07-28): sequence id for multi-slot batched inference.
+	// 0 = single-slot legacy (clear all KV-cache on every call).
+	// > 0 = use slot seq_id (clear only this slot's region; isolated from
+	//       other concurrent calls). Caller (Go slot manager) assigns unique
+	//       seq_ids per concurrent slot (slot = 0..n_parallel-1).
+	SeqId int
 }
 
 // DefaultGenerationParams возвращает параметры по умолчанию
@@ -493,6 +499,9 @@ func (m *ModelHandle) Infer(prompt string, params GenerationParams) (*InferenceR
 		antiprompts:      cApArr,
 		n_antiprompts:    cApN,
 		n_ctx_override:   C.int(params.NCtxOverride),
+		// Round 13: seq_id для multi-slot.
+		// params.SeqId 0 = legacy single-slot, > 0 = use slot region.
+		seq_id:           C.int(params.SeqId),
 	}
 
 	result := C.bridge_infer(m.ptr, cPrompt, &cParams)
@@ -556,6 +565,8 @@ func (m *ModelHandle) InferStream(prompt string, params GenerationParams, callba
 		antiprompts:      cApArr,
 		n_antiprompts:    cApN,
 		n_ctx_override:   C.int(params.NCtxOverride),
+		// Round 13: seq_id для multi-slot.
+		seq_id:           C.int(params.SeqId),
 	}
 
 	// Используем cgo.Handle для безопасной передачи Go-контекста в C.

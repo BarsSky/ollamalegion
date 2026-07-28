@@ -66,6 +66,17 @@ typedef struct {
     // — возвращается ошибка «effective n_ctx too small for request, reload
     // model with larger n_ctx».
     int n_ctx_override;
+    // Round 13 (2026-07-28): sequence id for multi-slot batched inference.
+    // 0 = single-slot legacy (KV-cache cleared on every call via
+    //     llama_memory_clear; all tokens use seq_id 0).
+    // > 0 = use slot seq_id in llama_batch_get_one; clear only this slot's
+    //       KV-cache via llama_memory_seq_rm(mem, seq_id, -1, -1).
+    // Caller (Go slot manager) is responsible for assigning unique seq_ids
+    // per concurrent slot (slot = 0..n_parallel-1).
+    // В Round 13 НЕ активирует настоящий параллельный инференс (forward pass
+    // всё равно сериализуется через inst.mu), но даёт state isolation
+    // между concurrent calls без необходимости reset_inference_state.
+    int seq_id;
 } GenerationParams;
 
 // GpuSplitConfig — конфигурация распределения по GPU

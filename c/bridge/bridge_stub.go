@@ -67,6 +67,11 @@ type GenerationParams struct {
 	// ClampedNPredictOriginal — исходное значение NPredict до клампинга.
 	// В stub-режиме не используется, но должен присутствовать для совместимости типов.
 	ClampedNPredictOriginal int `json:"-"`
+	// Round 13 (2026-07-28): sequence id for multi-slot batched inference.
+	// 0 = single-slot legacy. > 0 = use slot seq_id. В stub-режиме не
+	// используется, но должен присутствовать для совместимости типов
+	// между bridge.go (build tag !llama_stub) и bridge_stub.go (build tag llama_stub).
+	SeqId int
 }
 
 // DefaultGenerationParams возвращает параметры по умолчанию

@@ -68,22 +68,77 @@ static void set_error(const char* msg) {
 // с ошибкой "failed to find a memory slot". Также сбрасываем сэмплер, чтобы
 // repetition_penalty / top_p / т.п. начинались с чистого состояния.
 //
+// Round 13 (2026-07-28): seq_id — параметр, определяющий область очистки.
+//   seq_id == 0  — legacy single-slot: clear ВСЕ KV-cache (llama_memory_clear).
+//                  Используется когда n_parallel=1 (default).
+//   seq_id >  0  — multi-slot: clear только регион этого seq_id
+//                  (llama_memory_seq_rm(mem, seq_id, -1, -1)).
+//                  Другие concurrent calls на других seq_ids не затрагиваются.
+//
 // Примечание: в актуальной llama.cpp (b4500+, коммит 4414c04b9) функция
 // llama_kv_self_clear УДАЛЕНА. Правильный путь: получить llama_memory_t
 // через llama_get_memory() и вызвать llama_memory_clear(mem, data=true).
 // Это эквивалентно «очистить все кэшированные KV» независимо от backend
 // (Recurrent / AttentionBased).
-static void reset_inference_state(InternalModel *im) {
+static void reset_inference_state(InternalModel *im, llama_seq_id seq_id) {
     if (im == NULL) return;
     if (im->context != NULL) {
         llama_memory_t mem = llama_get_memory(im->context);
         if (mem != NULL) {
-            llama_memory_clear(mem, true);
+            if (seq_id == 0) {
+                // Legacy single-slot: clear all KV-cache.
+                llama_memory_clear(mem, true);
+            } else {
+                // Multi-slot: clear only this slot's KV-cache region.
+                // Другие concurrent calls (другие seq_id) не затрагиваются.
+                llama_memory_seq_rm(mem, seq_id, -1, -1);
+            }
         }
     }
     if (im->sampler != NULL) {
+        // Sampler один на context (Round 13 не делает per-slot sampler state).
+        // reset безопасен — sampler state не переносится между seq_id.
         llama_sampler_reset(im->sampler);
     }
+}
+
+// build_batch_with_seq — создаёт llama_batch с явным seq_id для каждого токена.
+// Round 13: заменяет llama_batch_get_one в bridge_infer / bridge_infer_stream
+// чтобы корректно работать с multi-slot KV-cache.
+//
+// Использует llama_batch_init(n_tokens, 0, 1) — каждый токен может быть
+// назначен максимум 1 sequence id (соответствует common_batch_add из
+// examples/parallel/parallel.cpp, line 254).
+//
+// Caller ОБЯЗАН вызвать llama_batch_free(batch) после использования.
+//
+// Параметры:
+//   tokens    — массив токенов (входной, не копируется)
+//   n_tokens  — число токенов (>= 1)
+//   seq_id    — llama_seq_id, который назначается каждому токену
+//   start_pos — начальная позиция (для prompt: 0; для gen step i: prompt_len + i)
+//
+// В batch последний токен получает logits=1 (для sampling в следующей итерации),
+// остальные logits=0 (промежуточные токены).
+static struct llama_batch build_batch_with_seq(
+    llama_token* tokens, int32_t n_tokens, llama_seq_id seq_id, llama_pos start_pos
+) {
+    // GGML_ASSERT в llama_batch_init требует n_tokens > 0.
+    if (n_tokens <= 0) {
+        // Возвращаем пустой batch (n_tokens=0). Безопасно для llama_decode (no-op).
+        return llama_batch_init(1, 0, 1);
+    }
+    struct llama_batch batch = llama_batch_init(n_tokens, 0, 1);
+    for (int32_t i = 0; i < n_tokens; i++) {
+        batch.token[i]    = tokens[i];
+        batch.pos[i]      = (llama_pos)(start_pos + i);
+        batch.n_seq_id[i] = 1;
+        // batch.seq_id[i] — массив llama_seq_id размера 1, pre-allocated by llama_batch_init
+        batch.seq_id[i][0] = seq_id;
+        // Last token in batch has logits=1 (нужно для llama_sampler_sample).
+        batch.logits[i]   = (i == n_tokens - 1) ? 1 : 0;
+    }
+    return batch;
 }
 
 // ============================================================
@@ -858,11 +913,16 @@ InferenceResult bridge_infer(
 
     InternalModel *im = (InternalModel *)model;
 
+    // Round 13 (2026-07-28): извлекаем seq_id для multi-slot support.
+    // seq_id=0 — legacy single-slot (clear all), seq_id>0 — multi-slot
+    // (clear only this slot's region).
+    llama_seq_id seq_id = (llama_seq_id)(params->seq_id > 0 ? params->seq_id : 0);
+
     // Сбрасываем KV-cache и сэмплер перед новым запросом.
     // Без этого prompt-токены и сгенерированные токены предыдущего запроса
     // остаются в KV-cache, и через 1-2 запроса контекст переполняется
     // с ошибкой "failed to find a memory slot".
-    reset_inference_state(im);
+    reset_inference_state(im, seq_id);
 
     // Токенизируем prompt
     int n_tokens = -llama_tokenize(im->vocab, prompt, (int)strlen(prompt), NULL, 0, true, true);
@@ -926,19 +986,22 @@ InferenceResult bridge_infer(
     while (n_processed < actual_tokens) {
         int batch_size = (actual_tokens - n_processed) > n_batch ? n_batch : (actual_tokens - n_processed);
 
-        struct llama_batch batch = llama_batch_get_one(
-            tokens + n_processed,
-            batch_size
+        // Round 13: build batch with explicit seq_id (multi-slot support).
+        // start_pos = n_processed — позиции в prompt последовательны с 0.
+        struct llama_batch batch = build_batch_with_seq(
+            tokens + n_processed, batch_size, seq_id, (llama_pos)n_processed
         );
 
         if (llama_decode(im->context, batch) != 0) {
             free(tokens);
             free(output);
-            result.status = 1;
             result.error_msg = strdup("llama_decode failed for prompt");
+            result.status = 1;
+            llama_batch_free(batch);
             return result;
         }
 
+        llama_batch_free(batch);
         n_processed += batch_size;
     }
 
@@ -987,13 +1050,18 @@ InferenceResult bridge_infer(
         }
 
         // Декодируем следующий шаг
-        struct llama_batch gen_batch = llama_batch_get_one(&new_token, 1);
+        // Round 13: build batch with seq_id, pos = n_processed + i (absolute position).
+        struct llama_batch gen_batch = build_batch_with_seq(
+            &new_token, 1, seq_id, (llama_pos)(n_processed + i)
+        );
         if (llama_decode(im->context, gen_batch) != 0) {
             free(output);
             result.status = 1;
             result.error_msg = strdup("llama_decode failed during generation");
+            llama_batch_free(gen_batch);
             return result;
         }
+        llama_batch_free(gen_batch);
     }
 
     // Сбрасываем сэмплер для следующего запроса
@@ -1024,10 +1092,13 @@ int bridge_infer_stream(
 
     InternalModel *im = (InternalModel *)model;
 
+    // Round 13 (2026-07-28): extract seq_id for multi-slot support.
+    llama_seq_id seq_id = (llama_seq_id)(params->seq_id > 0 ? params->seq_id : 0);
+
     // Сбрасываем KV-cache и сэмплер перед новым запросом — иначе
     // после 1-2 инференсов контекст забит и llama_decode падает
     // с "failed to find a memory slot".
-    reset_inference_state(im);
+    reset_inference_state(im, seq_id);
 
     // Токенизируем prompt
     int n_tokens = -llama_tokenize(im->vocab, prompt, (int)strlen(prompt), NULL, 0, true, true);
@@ -1071,9 +1142,10 @@ int bridge_infer_stream(
     while (n_processed < actual_tokens) {
         int batch_size = (actual_tokens - n_processed) > n_batch ? n_batch : (actual_tokens - n_processed);
 
-        struct llama_batch batch = llama_batch_get_one(
-            tokens + n_processed,
-            batch_size
+        // Round 13: build batch with explicit seq_id (multi-slot support).
+        // start_pos = n_processed — позиции в prompt последовательны с 0.
+        struct llama_batch batch = build_batch_with_seq(
+            tokens + n_processed, batch_size, seq_id, (llama_pos)n_processed
         );
 
         if (llama_decode(im->context, batch) != 0) {
@@ -1081,9 +1153,11 @@ int bridge_infer_stream(
             // Самая частая причина: n_ctx переполнен (kv-cache overflow),
             // либо n_batch > n_ctx, либо модель не помещается в VRAM.
             set_error("llama_decode failed for prompt batch (likely n_ctx overflow, prompt too long, or n_batch > n_ctx)");
+            llama_batch_free(batch);
             return 1;
         }
 
+        llama_batch_free(batch);
         n_processed += batch_size;
     }
 
@@ -1149,13 +1223,18 @@ int bridge_infer_stream(
         }
 
         // Декодируем следующий шаг
-        struct llama_batch gen_batch = llama_batch_get_one(&new_token, 1);
+        // Round 13: build batch with seq_id, pos = n_processed + i (absolute position).
+        struct llama_batch gen_batch = build_batch_with_seq(
+            &new_token, 1, seq_id, (llama_pos)(n_processed + i)
+        );
         if (llama_decode(im->context, gen_batch) != 0) {
             // Обычно это переполнение KV-cache при длинной выдаче
             // (n_predict > n_ctx - prompt_len), либо OOM на GPU.
             set_error("llama_decode failed during generation step (likely KV-cache overflow: n_predict + prompt_len > n_ctx, or GPU OOM)");
+            llama_batch_free(gen_batch);
             return 1;
         }
+        llama_batch_free(gen_batch);
     }
 
     llama_sampler_reset(im->sampler);

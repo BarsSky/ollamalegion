@@ -236,6 +236,18 @@ func (m *ModelHandle) GetChatTemplate() (string, error) {
 	return "", ErrNoChatTemplate
 }
 
+// ApplyChatTemplateWithThinking — Round 14a (2026-07-28): stub-реализация.
+// В stub-режиме нет реального llama.cpp, поэтому всегда возвращает
+// ErrNoChatTemplate. Совпадает с поведением GetChatTemplate.
+func (m *ModelHandle) ApplyChatTemplateWithThinking(
+	chatTemplateOverride string,
+	messages []ChatMessage,
+	enableThinking bool,
+	addGenerationPrompt bool,
+) (string, bool, error) {
+	return "", false, ErrNoChatTemplate
+}
+
 // ============================================================
 // Bridge initialization (stub)
 // ============================================================

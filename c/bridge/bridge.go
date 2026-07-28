@@ -760,6 +760,107 @@ func (m *ModelHandle) GetChatTemplate() (string, error) {
 	return C.GoStringN(buf, C.int(ret)), nil
 }
 
+// ApplyChatTemplateWithThinking — Round 14a (2026-07-28): native
+// enable_thinking через C++ API common_chat_templates_apply.
+//
+// В отличие от ApplyChatTemplate (legacy, использует llama_chat_apply_template),
+// эта функция поддерживает native enable_thinking — для моделей, у которых
+// Jinja template содержит enable_thinking variable (Qwen3-thinking, DeepSeek-R1,
+// GLM-Z1 и др.).
+//
+// Параметры:
+//   chatTemplateOverride  — кастомный Jinja template ("" = use GGUF default)
+//   messages              — список chat-сообщений (включая system если нужно)
+//   enableThinking        — true = native thinking mode
+//   addGenerationPrompt   — true = добавить assistant turn tokens в конец
+//
+// Возвращает:
+//   prompt               — formatted prompt
+//   supportsThinking     — true если template поддерживает thinking (Jinja variable)
+//   error                — nil / ErrNoChatTemplate / generic
+//
+// Round 14b (next session): интеграция в cmd/cppworker/handlers_chat.go
+// — заменить soft prompt injection из Round 11 на этот native вызов.
+func (m *ModelHandle) ApplyChatTemplateWithThinking(
+	chatTemplateOverride string,
+	messages []ChatMessage,
+	enableThinking bool,
+	addGenerationPrompt bool,
+) (string, bool, error) {
+	if m == nil || m.ptr == nil {
+		return "", false, fmt.Errorf("model not loaded")
+	}
+	if len(messages) == 0 {
+		return "", false, fmt.Errorf("no messages provided")
+	}
+
+	// Строим C-массив CBridgeChatMessage.
+	cMsgs := make([]C.CBridgeChatMessage, len(messages))
+	cRoleStrs := make([]*C.char, len(messages))
+	cContentStrs := make([]*C.char, len(messages))
+	defer func() {
+		for _, p := range cRoleStrs {
+			if p != nil {
+				C.free(unsafe.Pointer(p))
+			}
+		}
+		for _, p := range cContentStrs {
+			if p != nil {
+				C.free(unsafe.Pointer(p))
+			}
+		}
+	}()
+
+	for i, msg := range messages {
+		cRoleStrs[i] = C.CString(msg.Role)
+		cContentStrs[i] = C.CString(msg.Content)
+		cMsgs[i].role = cRoleStrs[i]
+		cMsgs[i].content = cContentStrs[i]
+	}
+
+	// Output buffer: 64KB начальный, retry при -4 (buffer too small).
+	const initialBufSize = 64 * 1024
+	outBufSize := initialBufSize
+	outBuf := (*C.char)(C.malloc(C.size_t(outBufSize)))
+	defer C.free(unsafe.Pointer(outBuf))
+
+	var cOverride *C.char
+	if chatTemplateOverride != "" {
+		cOverride = C.CString(chatTemplateOverride)
+		defer C.free(unsafe.Pointer(cOverride))
+	}
+
+	var supportsThinking C.bool
+	ret := C.bridge_chat_templates_apply_with_thinking(
+		m.ptr,
+		cOverride,
+		&cMsgs[0],
+		C.int32_t(len(cMsgs)),
+		C.bool(enableThinking),
+		C.bool(addGenerationPrompt),
+		outBuf,
+		C.int32_t(outBufSize),
+		&supportsThinking,
+	)
+
+	// Round 14a: -4 = buffer too small, caller can retry with bigger buffer.
+	// В этой реализации мы выделяем фиксированный 64KB, так что -4 не
+	// обрабатываем retry. Для длинных chat (multi-turn) этого может быть
+	// недостаточно. Round 14b: добавить retry logic с растущим буфером.
+	if ret == -4 {
+		return "", false, fmt.Errorf("output buffer too small (need %d+ bytes, have %d)",
+			outBufSize, outBufSize)
+	}
+	if ret == -3 {
+		return "", false, fmt.Errorf("common_chat_templates_init failed (no template in GGUF or invalid override)")
+	}
+	if ret < 0 {
+		return "", false, fmt.Errorf("bridge_chat_templates_apply_with_thinking failed: %d", ret)
+	}
+
+	return C.GoStringN(outBuf, C.int(ret)), bool(supportsThinking), nil
+}
+
 // ErrNoChatTemplate — в GGUF нет tokenizer.chat_template.
 var ErrNoChatTemplate = fmt.Errorf("no chat template in GGUF metadata")
 

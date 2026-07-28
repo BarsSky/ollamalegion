@@ -301,6 +301,56 @@ int32_t bridge_get_chat_template(
     int32_t out_buf_size
 );
 
+// ============================================================
+// Round 14a (2026-07-28): native enable_thinking via common::chat
+// ============================================================
+//
+// C-обёртка над common_chat_templates_apply (c/llama.cpp/common/chat.h:230),
+// которая добавляет native enable_thinking параметр (отсутствует в
+// low-level llama_chat_apply_template API, см. llama.h:1162).
+//
+// Round 11 (v0.4.9) использовал soft prompt injection для instruction-tuned
+// моделей типа gemma-4-it. Round 14a добавляет NATIVE путь для моделей,
+// которые в своём chat template поддерживают enable_thinking Jinja variable
+// (Qwen3-thinking, DeepSeek-R1, GLM-Z1 и др.).
+//
+// C-структура для одного сообщения. Caller владеет массивом.
+struct CBridgeChatMessage {
+    const char* role;
+    const char* content;
+};
+
+// bridge_chat_templates_apply_with_thinking — C-обёртка над native API.
+//
+// Параметры:
+//   model                    — загруженная модель (ModelHandle из bridge_load_model)
+//   chat_template_override   — кастомный Jinja template (NULL = use GGUF default)
+//   messages                 — массив {role, content} пар
+//   n_messages               — количество сообщений
+//   enable_thinking          — true = native thinking mode
+//   add_generation_prompt    — true = добавить assistant turn tokens в конец
+//   out_buf                  — выходной буфер (null-terminated)
+//   out_buf_size             — размер выходного буфера
+//   out_supports_thinking    — [OUT] true если template поддерживает thinking
+//
+// Возвращает:
+//   >= 0  количество записанных байт (без \0)
+//   -1    invalid args (model/messages/out_buf NULL, n_messages <= 0)
+//   -2    (legacy: template not found, but common_chat_templates_init returns -3 now)
+//   -3    common_chat_templates_init failed (no template in GGUF, invalid override)
+//   -4    output buffer too small (caller может retry с большим out_buf)
+int32_t bridge_chat_templates_apply_with_thinking(
+    void* model,
+    const char* chat_template_override,
+    const struct CBridgeChatMessage* messages,
+    int32_t n_messages,
+    bool enable_thinking,
+    bool add_generation_prompt,
+    char* out_buf,
+    int32_t out_buf_size,
+    bool* out_supports_thinking
+);
+
 #ifdef __cplusplus
 }
 #endif

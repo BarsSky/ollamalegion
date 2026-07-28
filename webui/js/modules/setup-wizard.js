@@ -137,6 +137,25 @@
         wizardState = null;
     }
 
+    // Session 17 P.11 (2026-07-27): helper для создания label с tooltip.
+    // Возвращает HTML-строку, которую можно использовать в форме:
+    //   <label>{LABEL} <span class="tooltip-trigger">?<span class="tooltip-content">{DESC}</span></span></label>
+    // Если перевод не найден, label и desc показываются на английском (fallback).
+    // Использует тот же CSS что и settings (pages.css .tooltip-trigger/.tooltip-content).
+    function t_label(labelKey, labelFallback, descKey, descFallback) {
+        var lbl = (window.I18N && window.I18N.t(labelKey, null)) || labelFallback;
+        var desc = (window.I18N && window.I18N.t(descKey, null)) || descFallback;
+        return '<span class="tooltip-trigger" tabindex="0">?' +
+            '<span class="tooltip-content">' + escapeHtml(desc) + '</span>' +
+            '</span>' + escapeHtml(lbl);
+    }
+
+    function escapeHtml(s) {
+        return String(s == null ? '' : s)
+            .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+            .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+    }
+
     // ================================================================
     // RENDERING
     // ================================================================
@@ -421,42 +440,42 @@
             '</div>' +
             '<div id="modeFields-replication" class="mode-fields" style="display:none;">' +
             '<div class="form-row">' +
-            '<div class="form-group"><label>' + (window.I18N ? I18N.t('settings.model_replication_min') : 'Min Instances') + '</label>' +
+            '<div class="form-group"><label>' + t_label('settings.model_replication_min', 'Min Instances', 'wizard.tooltip.replication_min', 'Min number of model instances across backends. 0 = replication disabled.') + '</label>' +
             '<input type="number" id="modelReplicationMinInstances" class="form-control" value="' + ((sc.replication && sc.replication.defaultMinInstances) || 1) + '" min="0" max="10"></div>' +
-            '<div class="form-group"><label>' + (window.I18N ? I18N.t('settings.model_replication_max') : 'Max Instances') + '</label>' +
+            '<div class="form-group"><label>' + t_label('settings.model_replication_max', 'Max Instances', 'wizard.tooltip.replication_max', 'Max number of instances. New replicas spin up to this limit.') + '</label>' +
             '<input type="number" id="modelReplicationMaxInstances" class="form-control" value="' + ((sc.replication && sc.replication.defaultMaxInstances) || 3) + '" min="0" max="20"></div>' +
             '</div>' +
-            '<div class="form-group"><label>' + (window.I18N ? I18N.t('settings.model_replication_idle_unload') : 'Idle Unload After') + '</label>' +
+            '<div class="form-group"><label>' + t_label('settings.model_replication_idle_unload', 'Idle Unload After', 'wizard.tooltip.replication_idle_unload', 'How long to keep an idle replica before unloading. Format: 10m, 30m, 1h.') + '</label>' +
             '<input type="text" id="modelReplicationIdleUnload" class="form-control" value="' + ((sc.replication && sc.replication.idleUnloadAfter) || '10m') + '" placeholder="10m, 30m, 1h"></div>' +
             '</div>' +
             '<div id="modeFields-rpc_coordinator" class="mode-fields" style="display:none;">' +
-            '<div class="form-group"><label>' + (window.I18N ? I18N.t('settings.rpc_coordinator_url') : 'Coordinator URL') + '</label>' +
+            '<div class="form-group"><label>' + t_label('settings.rpc_coordinator_url', 'Coordinator URL', 'wizard.tooltip.rpc_url', 'URL of external RPC coordinator (e.g. http://coordinator:8080).') + '</label>' +
             '<input type="text" id="rpcCoordinatorURL" class="form-control" value="' + ((sc.rpcCoordinator && sc.rpcCoordinator.coordinatorURL) || '') + '" placeholder="http://coordinator:8080"></div>' +
             '<div class="form-row">' +
-            '<div class="form-group"><label>' + (window.I18N ? I18N.t('settings.rpc_coordinator_port') : 'Worker Port') + '</label>' +
+            '<div class="form-group"><label>' + t_label('settings.rpc_coordinator_port', 'Worker Port', 'wizard.tooltip.rpc_worker_port', 'Port where workers listen for commands. Must match across all workers.') + '</label>' +
             '<input type="number" id="rpcCoordinatorWorkerPort" class="form-control" value="' + ((sc.rpcCoordinator && sc.rpcCoordinator.workerPort) || 18050) + '"></div>' +
-            '<div class="form-group"><label>' + (window.I18N ? I18N.t('settings.rpc_coordinator_protocol') : 'Protocol') + '</label>' +
+            '<div class="form-group"><label>' + t_label('settings.rpc_coordinator_protocol', 'Protocol', 'wizard.tooltip.rpc_protocol', 'HTTP — simple, gRPC — faster for streaming.') + '</label>' +
             '<select id="rpcCoordinatorProtocol" class="form-control"><option value="http">HTTP</option><option value="grpc">gRPC</option></select></div>' +
             '</div>' +
             '<div class="form-row">' +
-            '<div class="form-group"><label>' + (window.I18N ? I18N.t('settings.rpc_coordinator_timeout') : 'Timeout') + '</label>' +
+            '<div class="form-group"><label>' + t_label('settings.rpc_coordinator_timeout', 'Timeout', 'wizard.tooltip.rpc_timeout', 'Timeout for worker response. Format: 30s, 60s, 2m.') + '</label>' +
             '<input type="text" id="rpcCoordinatorTimeout" class="form-control" value="' + ((sc.rpcCoordinator && sc.rpcCoordinator.timeout) || '30s') + '" placeholder="30s, 60s"></div>' +
-            '<div class="form-group"><label>' + (window.I18N ? I18N.t('settings.rpc_coordinator_retries') : 'Max Retries') + '</label>' +
+            '<div class="form-group"><label>' + t_label('settings.rpc_coordinator_retries', 'Max Retries', 'wizard.tooltip.rpc_max_retries', 'How many times to retry on worker failure.') + '</label>' +
             '<input type="number" id="rpcCoordinatorMaxRetries" class="form-control" value="' + ((sc.rpcCoordinator && sc.rpcCoordinator.maxRetries) || 3) + '" min="0" max="10"></div>' +
             '</div>' +
             '</div>' +
             '<div id="modeFields-virtual_router" class="mode-fields" style="display:none;">' +
-            '<div class="form-group"><label>' + (window.I18N ? I18N.t('settings.virtual_models_coord_mode') : 'Coordination Mode') + '</label>' +
+            '<div class="form-group"><label>' + t_label('settings.virtual_models_coord_mode', 'Coordination Mode', 'wizard.tooltip.virtual_coord_mode', 'Sequential — chain. Parallel — concurrent. Tree — parent → children.') + '</label>' +
             '<select id="virtualModelsCoordMode" class="form-control">' +
             '<option value="sequential">Sequential</option>' +
             '<option value="parallel">Parallel</option>' +
             '<option value="tree">Tree</option>' +
             '</select></div>' +
-            '<div class="form-group"><label>' + (window.I18N ? I18N.t('settings.virtual_models_timeout') : 'Timeout (ms)') + '</label>' +
+            '<div class="form-group"><label>' + t_label('settings.virtual_models_timeout', 'Timeout (ms)', 'wizard.tooltip.virtual_timeout', 'Timeout for virtual model request (ms).') + '</label>' +
             '<input type="number" id="virtualModelsTimeout" class="form-control" value="' + ((sc.virtualModels && sc.virtualModels.timeout) || 30000) + '" min="1000"></div>' +
             '</div>' +
             '<div id="modeFields-distributed_inference" class="mode-fields" style="display:none;">' +
-            '<div class="form-group"><label>' + (window.I18N ? I18N.t('settings.dist_inference_grpc_port') : 'gRPC Port') + '</label>' +
+            '<div class="form-group"><label>' + t_label('settings.dist_inference_grpc_port', 'gRPC Port', 'wizard.tooltip.dist_grpc_port', 'gRPC server port for custom distributed inference.') + '</label>' +
             '<input type="number" id="distInferenceGrpcPort" class="form-control" value="' + ((sc.distInference && sc.distInference.grpcPort) || 19000) + '" min="1024" max="65535"></div>' +
             '</div>' +
             '</div>';
@@ -467,7 +486,7 @@
         return '<div class="wizard-step-content general-step">' +
             '<h3>' + (window.I18N ? I18N.t('wizard.step4') : 'General Settings') + '</h3>' +
             '<div class="form-group">' +
-            '<label>' + (window.I18N ? I18N.t('settings.balancing_mode') : 'Balancing Algorithm') + '</label>' +
+            '<label>' + t_label('settings.balancing_mode', 'Balancing Algorithm', 'wizard.tooltip.balancing_algorithm', 'Algorithm for routing requests to backends.') + '</label>' +
             '<select id="balancingAlgorithm" class="form-control">' +
             '<option value="resource-aware"' + (sc.algorithm === 'resource-aware' ? ' selected' : '') + '>Resource-Aware</option>' +
             '<option value="least-connections"' + (sc.algorithm === 'least-connections' ? ' selected' : '') + '>Least Connections</option>' +
@@ -476,18 +495,18 @@
             '<option value="model-affinity"' + (sc.algorithm === 'model-affinity' ? ' selected' : '') + '>Model Affinity</option>' +
             '</select></div>' +
             '<div class="form-row">' +
-            '<div class="form-group"><label>GPU Max %</label>' +
+            '<div class="form-group"><label>' + t_label('wizard.gpu_max_label', 'GPU Max %', 'wizard.tooltip.gpu_max', 'Max GPU% before routing elsewhere.') + '</label>' +
             '<input type="number" id="gpuMaxUsage" class="form-control" value="' + sc.gpuMaxUsage + '" min="50" max="100"></div>' +
-            '<div class="form-group"><label>VRAM Max %</label>' +
+            '<div class="form-group"><label>' + t_label('wizard.vram_max_label', 'VRAM Max %', 'wizard.tooltip.vram_max', 'Max VRAM% before routing. Leave 5-10% margin for KV cache.') + '</label>' +
             '<input type="number" id="vramMaxUsage" class="form-control" value="' + sc.vramMaxUsage + '" min="50" max="100"></div>' +
             '</div>' +
             '<div class="form-row">' +
-            '<div class="form-group"><label>CPU Max %</label>' +
+            '<div class="form-group"><label>' + t_label('wizard.cpu_max_label', 'CPU Max %', 'wizard.tooltip.cpu_max', 'Max CPU% before routing.') + '</label>' +
             '<input type="number" id="cpuMaxUsage" class="form-control" value="' + sc.cpuMaxUsage + '" min="50" max="100"></div>' +
-            '<div class="form-group"><label>RAM Max %</label>' +
+            '<div class="form-group"><label>' + t_label('wizard.ram_max_label', 'RAM Max %', 'wizard.tooltip.ram_max', 'Max RAM% (cppworker uses RAM for mmap).') + '</label>' +
             '<input type="number" id="ramMaxUsage" class="form-control" value="' + sc.ramMaxUsage + '" min="50" max="100"></div>' +
             '</div>' +
-            '<div class="form-group"><label>API Token</label>' +
+            '<div class="form-group"><label>' + t_label('wizard.api_token_label', 'API Token', 'wizard.tooltip.api_token', 'Auth token (must match API_TOKEN env).') + '</label>' +
             '<input type="password" id="apiToken" class="form-control" placeholder="API Token"></div>' +
             '</div>';
     }

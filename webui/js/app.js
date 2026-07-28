@@ -521,6 +521,49 @@ const ui = (function () {
         document.getElementById('saveSettings').addEventListener('click', function () { saveSettings(false); });
         document.getElementById('resetSettings').addEventListener('click', resetSettings);
 
+        // Session 17 (2026-07-27): runtime overrides "Reset to bundled defaults" кнопка.
+        var llamaCppResetBtn = document.getElementById('llamaCppResetBtn');
+        if (llamaCppResetBtn) {
+            llamaCppResetBtn.addEventListener('click', function () { resetLlamaCppOverride(); });
+        }
+
+        // Session 18 (2026-07-28): Quick Presets bar (Speed / Memory / Context / CPU-only)
+        // Клик по пресету заполняет форму рекомендованными значениями и подсвечивает активную кнопку.
+        var PRESETS = {
+            speed:   { ctxSize: 4096,  gpuLayers: -2, kvCacheType: 'f16',  flashAttn: true,  nThreads: 0,  useMmap: true,  batchSize: 512, idleUnloadMinutes: 0 },
+            memory:  { ctxSize: 2048,  gpuLayers: -2, kvCacheType: 'q4_0', flashAttn: true,  nThreads: 0,  useMmap: true,  batchSize: 256, idleUnloadMinutes: 5 },
+            context: { ctxSize: 32768, gpuLayers: -2, kvCacheType: 'q8_0', flashAttn: true,  nThreads: 0,  useMmap: true,  batchSize: 512, idleUnloadMinutes: 0, ropeScalingType: 'yarn', ropeScalingFactor: 4 },
+            cpu:     { ctxSize: 2048,  gpuLayers: 0,  kvCacheType: 'q8_0', flashAttn: true,  nThreads: 8,  useMmap: true,  batchSize: 256, idleUnloadMinutes: 0 }
+        };
+        function applyGgufPreset(name) {
+            var preset = PRESETS[name];
+            if (!preset) return;
+            // Заполняем поля формы (id-ы совпадают с index.html)
+            var map = {
+                ctxSize: 'ctxSize', gpuLayers: 'gpuLayers', kvCacheType: 'kvCacheType',
+                flashAttn: 'flashAttn', nThreads: 'nThreads', useMmap: 'useMmap',
+                batchSize: 'batchSize', idleUnloadMinutes: 'idleUnloadMinutes',
+                ropeScalingType: 'ropeScalingType', ropeScalingFactor: 'ropeScalingFactor'
+            };
+            Object.keys(map).forEach(function (k) {
+                if (preset[k] === undefined) return;
+                var el = document.getElementById(map[k]);
+                if (!el) return;
+                if (el.type === 'checkbox') el.checked = !!preset[k];
+                else el.value = preset[k];
+            });
+            // Visual feedback: подсветить активную кнопку
+            document.querySelectorAll('#ggufPresetSpeed, #ggufPresetMemory, #ggufPresetContext, #ggufPresetCpu')
+                .forEach(function (btn) { btn.classList.toggle('active', btn.dataset.preset === name); });
+            // Тост/уведомление (используем глобальный showToast если есть)
+            var label = (window.I18N && I18N.t('gguf.preset_applied', 'Preset applied:') + ' ' + name) || ('Preset: ' + name);
+            if (typeof window.showToast === 'function') window.showToast(label, 'success');
+        }
+        ['ggufPresetSpeed', 'ggufPresetMemory', 'ggufPresetContext', 'ggufPresetCpu'].forEach(function (id) {
+            var btn = document.getElementById(id);
+            if (btn) btn.addEventListener('click', function () { applyGgufPreset(btn.dataset.preset); });
+        });
+
         // Export / Import Config buttons
         var exportBtn = document.getElementById('exportSettingsBtn');
         if (exportBtn) exportBtn.addEventListener('click', function () {
@@ -557,7 +600,7 @@ const ui = (function () {
         });
 
         // Auto-save on settings form changes
-        var settingsFields = ['balancingAlgorithm', 'useEnhancedScoring', 'modelAffinity', 'sessionStickiness', 'predictionFiltering', 'gpuMaxUsage', 'vramMaxUsage', 'cpuMaxUsage', 'ramMaxUsage', 'minFreeDisk', 'modelReplicationMinInstances', 'modelReplicationMaxInstances', 'modelReplicationIdleUnload', 'rpcCoordinatorURL', 'rpcCoordinatorWorkerPort', 'rpcCoordinatorProtocol', 'rpcCoordinatorTimeout', 'virtualModelsCoordMode', 'virtualModelsTimeout', 'distInferenceGrpcPort', 'agentCollectInterval', 'agentHeartbeatInterval', 'agentMaxConcurrent', 'agentMaxModels', 'agentTimeout', 'gpuLayers', 'ctxSize', 'batchSize', 'gpuStrategy', 'tensorSplit', 'autoGpuDistribution', 'flashAttn', 'numa', 'useMmap'];
+        var settingsFields = ['balancingAlgorithm', 'useEnhancedScoring', 'modelAffinity', 'sessionStickiness', 'predictionFiltering', 'gpuMaxUsage', 'vramMaxUsage', 'cpuMaxUsage', 'ramMaxUsage', 'minFreeDisk', 'modelReplicationMinInstances', 'modelReplicationMaxInstances', 'modelReplicationIdleUnload', 'rpcCoordinatorURL', 'rpcCoordinatorWorkerPort', 'rpcCoordinatorProtocol', 'rpcCoordinatorTimeout', 'virtualModelsCoordMode', 'virtualModelsTimeout', 'distInferenceGrpcPort', 'agentCollectInterval', 'agentHeartbeatInterval', 'agentMaxConcurrent', 'agentMaxModels', 'agentTimeout', 'gpuLayers', 'ctxSize', 'batchSize', 'flashAttnType', 'nThreads', 'gpuStrategy', 'tensorSplit', 'splitMode', 'mainGpu', 'rpcBackend', 'noMemoryMap', 'kvCacheType', 'noKvOffload', 'ropeFreqBase', 'ropeFreqScale', 'ropeScalingType', 'ropeScalingFactor', 'yarnExtFactor', 'yarnAttnFactor', 'yarnBetaFast', 'yarnBetaSlow', 'rmsNormEps', 'idleUnloadMinutes', 'enableMetrics', 'metricsRetention', 'autoGpuDistribution', 'flashAttn', 'numa', 'useMmap', 'useMlock', 'enableReasoning', 'reasoningBudget'];
         settingsFields.forEach(function (id) {
             var el = document.getElementById(id);
             if (el) {
@@ -1172,25 +1215,133 @@ const ui = (function () {
 
         // llama.cpp / GGUF Settings
         var llamaCpp = serverConfig.llamaCpp || {};
-        var gpuLayersEl = document.getElementById('gpuLayers');
-        if (gpuLayersEl && llamaCpp.numGpuLayers !== undefined) gpuLayersEl.value = llamaCpp.numGpuLayers;
-        var ctxSizeEl = document.getElementById('ctxSize');
-        if (ctxSizeEl && llamaCpp.contextLength) ctxSizeEl.value = llamaCpp.contextLength;
-        var batchSizeEl = document.getElementById('batchSize');
-        if (batchSizeEl && llamaCpp.batchSize) batchSizeEl.value = llamaCpp.batchSize;
-        var gpuStrategyEl = document.getElementById('gpuStrategy');
-        if (gpuStrategyEl && llamaCpp.strategy) gpuStrategyEl.value = llamaCpp.strategy;
-        var tensorSplitEl = document.getElementById('tensorSplit');
-        if (tensorSplitEl && llamaCpp.tensorSplitStr) tensorSplitEl.value = llamaCpp.tensorSplitStr;
-        else if (tensorSplitEl && llamaCpp.tensorSplit && Array.isArray(llamaCpp.tensorSplit)) tensorSplitEl.value = llamaCpp.tensorSplit.join(',');
-        var autoGpuEl = document.getElementById('autoGpuDistribution');
-        if (autoGpuEl) autoGpuEl.checked = llamaCpp.autoGpuDistribution !== false;
-        var flashAttnEl = document.getElementById('flashAttn');
-        if (flashAttnEl && llamaCpp.flashAttention !== undefined) flashAttnEl.checked = !!llamaCpp.flashAttention;
-        var numaEl = document.getElementById('numa');
-        if (numaEl && llamaCpp.numa !== undefined) numaEl.checked = !!llamaCpp.numa;
-        var useMmapEl = document.getElementById('useMmap');
-        if (useMmapEl) useMmapEl.checked = llamaCpp.useMmap !== false;
+        // Хелпер для безопасной установки value (поддерживает "0" как валидное значение).
+        var setVal = function (id, val, fallback) {
+            var el = document.getElementById(id);
+            if (!el) return;
+            if (val === undefined || val === null) {
+                if (fallback !== undefined) el.value = fallback;
+                return;
+            }
+            el.value = val;
+        };
+        var setCheck = function (id, val, fallback) {
+            var el = document.getElementById(id);
+            if (!el) return;
+            if (val === undefined || val === null) {
+                if (fallback !== undefined) el.checked = !!fallback;
+                return;
+            }
+            el.checked = !!val;
+        };
+        // Базовые параметры
+        setVal('gpuLayers', llamaCpp.numGpuLayers, -1);
+        setVal('ctxSize', llamaCpp.contextLength, 2048);
+        setVal('batchSize', llamaCpp.batchSize, 512);
+        setVal('flashAttnType', llamaCpp.flashAttnType, -1);
+        setVal('nThreads', llamaCpp.nThreads, 0);
+        setCheck('flashAttn', llamaCpp.flashAttention, false);
+        setCheck('numa', llamaCpp.numa, false);
+        setCheck('useMmap', llamaCpp.useMmap, true);
+        setCheck('useMlock', llamaCpp.useMlock, false);
+        // Multi-GPU
+        setVal('gpuStrategy', llamaCpp.strategy, 'vram-ratio');
+        if (llamaCpp.tensorSplitStr) {
+            setVal('tensorSplit', llamaCpp.tensorSplitStr, '');
+        } else if (llamaCpp.tensorSplit && Array.isArray(llamaCpp.tensorSplit)) {
+            setVal('tensorSplit', llamaCpp.tensorSplit.join(','), '');
+        } else {
+            setVal('tensorSplit', '', '');
+        }
+        setVal('splitMode', llamaCpp.splitMode, -1);
+        setVal('mainGpu', llamaCpp.mainGpu, 0);
+        setVal('rpcBackend', llamaCpp.rpcBackend, '');
+        setCheck('autoGpuDistribution', llamaCpp.autoGpuDistribution, true);
+        setCheck('noMemoryMap', llamaCpp.noMemoryMap, false);
+        // KV cache
+        setVal('kvCacheType', llamaCpp.kvCacheType, '');
+        setCheck('noKvOffload', llamaCpp.noKvOffload, false);
+        // RoPE/YaRN
+        setVal('ropeFreqBase', llamaCpp.ropeFreqBase, 10000);
+        setVal('ropeFreqScale', llamaCpp.ropeFreqScale, 1.0);
+        setVal('ropeScalingType', llamaCpp.ropeScalingType, 'none');
+        setVal('ropeScalingFactor', llamaCpp.ropeScalingFactor, 1.0);
+        setVal('yarnExtFactor', llamaCpp.yarnExtFactor, 1.0);
+        setVal('yarnAttnFactor', llamaCpp.yarnAttnFactor, 1.0);
+        setVal('yarnBetaFast', llamaCpp.yarnBetaFast, 32.0);
+        setVal('yarnBetaSlow', llamaCpp.yarnBetaSlow, 1.0);
+        // Performance
+        setVal('rmsNormEps', llamaCpp.rmsNormEps, 0.00001);
+        setVal('idleUnloadMinutes', llamaCpp.idleUnloadMinutes, 0);
+        setCheck('enableMetrics', llamaCpp.enableMetrics, true);
+        setVal('metricsRetention', llamaCpp.metricsRetentionSeconds, 3600);
+        // Session 18: Reasoning/Thinking
+        setCheck('enableReasoning', llamaCpp.enableReasoning, false);
+        setVal('reasoningBudget', llamaCpp.reasoningBudget, 0);
+        // Session 17: показать/скрыть panel "Runtime overrides active" в зависимости
+        // от наличия sidecar-файла. Делаем ПОСЛЕ setVal чтобы DOM был готов.
+        updateLlamaCppOverridesPanel();
+    }
+
+    /**
+     * Session 17 (2026-07-27): проверяет, есть ли активный sidecar override
+     * для llamaCpp-секции, и показывает/скрывает panel с кнопкой "Reset".
+     *
+     * Вызывается:
+     *   - После applyServerConfig (когда UI подгружен значениями)
+     *   - После saveSettings (после PUT, чтобы UI обновился)
+     *   - После resetLlamaCppOverride (чтобы скрыть panel)
+     */
+    function updateLlamaCppOverridesPanel() {
+        if (!window.Api || !window.Api.getLlamaCppOverride) return;
+        const panel = document.getElementById('llamaCppRuntimeOverridesPanel');
+        if (!panel) return;
+        window.Api.getLlamaCppOverride()
+            .then(function (resp) {
+                if (resp && resp.exists) {
+                    panel.style.display = '';
+                } else {
+                    panel.style.display = 'none';
+                }
+            })
+            .catch(function () {
+                // Store отключён (например, dev-режим) или ошибка сети — скрываем.
+                panel.style.display = 'none';
+            });
+    }
+
+    /**
+     * Session 17: handler кнопки "Reset to bundled defaults".
+     * Стирает sidecar override и перезагружает UI с base значениями из config.json.
+     */
+    function resetLlamaCppOverride() {
+        if (!window.Api || !window.Api.deleteLlamaCppOverride) {
+            showToast('Reset API not available', 'error');
+            return;
+        }
+        const confirmMsg = window.I18N
+            ? I18N.t('gguf.overrides_confirm_reset', 'Reset runtime overrides? llamaCpp will revert to bundled defaults from config.json.')
+            : 'Reset runtime overrides? llamaCpp will revert to bundled defaults from config.json.';
+        if (!confirm(confirmMsg)) return;
+        const btn = document.getElementById('llamaCppResetBtn');
+        if (btn) btn.disabled = true;
+        window.Api.deleteLlamaCppOverride()
+            .then(function (resp) {
+                const successMsg = window.I18N
+                    ? I18N.t('gguf.overrides_reset_done', 'Runtime overrides cleared. llamaCpp reverted to bundled defaults.')
+                    : 'Runtime overrides cleared. llamaCpp reverted to bundled defaults.';
+                showToast(successMsg, 'success');
+                // Перезагружаем UI с сервера (in-memory уже восстановлен).
+                return Api.config().then(applyServerConfig);
+            })
+            .catch(function (err) {
+                const errMsg = (window.I18N ? I18N.t('common.error') : 'Error') + ': ' +
+                    (err.message || err);
+                showToast(errMsg, 'error');
+            })
+            .then(function () {
+                if (btn) btn.disabled = false;
+            });
     }
 
     function applyLocalConfig(config) {
@@ -1283,15 +1434,67 @@ const ui = (function () {
         var agentTimeout = parseInt((document.getElementById('agentTimeout') && document.getElementById('agentTimeout').value)) || 10;
 
         // llama.cpp / GGUF settings (имена полей соответствуют Go-структуре LlamaCppConfig)
-        var llamaCppGpuLayers = parseInt((document.getElementById('gpuLayers') && document.getElementById('gpuLayers').value)) || -1;
-        var llamaCppCtxSize = parseInt((document.getElementById('ctxSize') && document.getElementById('ctxSize').value)) || 2048;
-        var llamaCppBatchSize = parseInt((document.getElementById('batchSize') && document.getElementById('batchSize').value)) || 512;
-        var llamaCppStrategy = (document.getElementById('gpuStrategy') && document.getElementById('gpuStrategy').value) || 'vram-ratio';
-        var llamaCppTensorSplitStr = (document.getElementById('tensorSplit') && document.getElementById('tensorSplit').value) || '';
-        var llamaCppAutoGpu = (document.getElementById('autoGpuDistribution') && document.getElementById('autoGpuDistribution').checked) !== false;
-        var llamaCppFlashAttn = (document.getElementById('flashAttn') && document.getElementById('flashAttn').checked) === true;
-        var llamaCppNuma = (document.getElementById('numa') && document.getElementById('numa').checked) === true;
-        var llamaCppUseMmap = (document.getElementById('useMmap') && document.getElementById('useMmap').checked) !== false;
+        // Хелпер: безопасный int (0 = валидное значение, NaN → fallback).
+        var intVal = function (id, fallback) {
+            var el = document.getElementById(id);
+            if (!el) return fallback;
+            var n = parseInt(el.value, 10);
+            return Number.isFinite(n) ? n : fallback;
+        };
+        var floatVal = function (id, fallback) {
+            var el = document.getElementById(id);
+            if (!el) return fallback;
+            var n = parseFloat(el.value);
+            return Number.isFinite(n) ? n : fallback;
+        };
+        var checkVal = function (id, fallback) {
+            var el = document.getElementById(id);
+            if (!el) return fallback;
+            return el.checked;
+        };
+        var strVal = function (id, fallback) {
+            var el = document.getElementById(id);
+            if (!el) return fallback;
+            return el.value;
+        };
+        // Базовые
+        var llamaCppGpuLayers = intVal('gpuLayers', -1);
+        var llamaCppCtxSize = intVal('ctxSize', 2048);
+        var llamaCppBatchSize = intVal('batchSize', 512);
+        var llamaCppFlashAttnType = intVal('flashAttnType', -1);
+        var llamaCppNThreads = intVal('nThreads', 0);
+        var llamaCppFlashAttn = checkVal('flashAttn', false);
+        var llamaCppNuma = checkVal('numa', false);
+        var llamaCppUseMmap = checkVal('useMmap', true);
+        var llamaCppUseMlock = checkVal('useMlock', false);
+        // Multi-GPU
+        var llamaCppStrategy = strVal('gpuStrategy', 'vram-ratio');
+        var llamaCppTensorSplitStr = strVal('tensorSplit', '');
+        var llamaCppSplitMode = intVal('splitMode', -1);
+        var llamaCppMainGpu = intVal('mainGpu', 0);
+        var llamaCppRpcBackend = strVal('rpcBackend', '');
+        var llamaCppAutoGpu = checkVal('autoGpuDistribution', true);
+        var llamaCppNoMemoryMap = checkVal('noMemoryMap', false);
+        // KV cache
+        var llamaCppKvCacheType = strVal('kvCacheType', '');
+        var llamaCppNoKvOffload = checkVal('noKvOffload', false);
+        // RoPE/YaRN
+        var llamaCppRopeFreqBase = floatVal('ropeFreqBase', 10000.0);
+        var llamaCppRopeFreqScale = floatVal('ropeFreqScale', 1.0);
+        var llamaCppRopeScalingType = strVal('ropeScalingType', 'none');
+        var llamaCppRopeScalingFactor = floatVal('ropeScalingFactor', 1.0);
+        var llamaCppYarnExtFactor = floatVal('yarnExtFactor', 1.0);
+        var llamaCppYarnAttnFactor = floatVal('yarnAttnFactor', 1.0);
+        var llamaCppYarnBetaFast = floatVal('yarnBetaFast', 32.0);
+        var llamaCppYarnBetaSlow = floatVal('yarnBetaSlow', 1.0);
+        // Performance
+        var llamaCppRmsNormEps = floatVal('rmsNormEps', 0.00001);
+        var llamaCppIdleUnloadMinutes = intVal('idleUnloadMinutes', 0);
+        var llamaCppEnableMetrics = checkVal('enableMetrics', true);
+        var llamaCppMetricsRetention = intVal('metricsRetention', 3600);
+        // Session 18 (2026-07-28): Reasoning/Thinking (gemma-4, deepseek-r1, qwen3-thinking)
+        var llamaCppEnableReasoning = checkVal('enableReasoning', false);
+        var llamaCppReasoningBudget = intVal('reasoningBudget', 0);
 
         // Определяем текущий operatingMode из radio-кнопок на странице
         var operatingModeRadio = document.querySelector('input[name="operatingMode"]:checked');
@@ -1353,15 +1556,44 @@ const ui = (function () {
                 grpcPort: distInferenceGrpcPort
             },
             llamaCpp: {
+                // Базовые
                 numGpuLayers: llamaCppGpuLayers,
                 contextLength: llamaCppCtxSize,
                 batchSize: llamaCppBatchSize,
-                strategy: llamaCppStrategy,
-                tensorSplitStr: llamaCppTensorSplitStr,
-                autoGpuDistribution: llamaCppAutoGpu,
+                flashAttnType: llamaCppFlashAttnType,
+                nThreads: llamaCppNThreads,
                 flashAttention: llamaCppFlashAttn,
                 numa: llamaCppNuma,
-                useMmap: llamaCppUseMmap
+                useMmap: llamaCppUseMmap,
+                useMlock: llamaCppUseMlock,
+                // Multi-GPU
+                strategy: llamaCppStrategy,
+                tensorSplitStr: llamaCppTensorSplitStr,
+                splitMode: llamaCppSplitMode,
+                mainGpu: llamaCppMainGpu,
+                rpcBackend: llamaCppRpcBackend,
+                autoGpuDistribution: llamaCppAutoGpu,
+                noMemoryMap: llamaCppNoMemoryMap,
+                // KV cache
+                kvCacheType: llamaCppKvCacheType,
+                noKvOffload: llamaCppNoKvOffload,
+                // RoPE/YaRN
+                ropeFreqBase: llamaCppRopeFreqBase,
+                ropeFreqScale: llamaCppRopeFreqScale,
+                ropeScalingType: llamaCppRopeScalingType,
+                ropeScalingFactor: llamaCppRopeScalingFactor,
+                yarnExtFactor: llamaCppYarnExtFactor,
+                yarnAttnFactor: llamaCppYarnAttnFactor,
+                yarnBetaFast: llamaCppYarnBetaFast,
+                yarnBetaSlow: llamaCppYarnBetaSlow,
+                // Performance / lifecycle
+                rmsNormEps: llamaCppRmsNormEps,
+                idleUnloadMinutes: llamaCppIdleUnloadMinutes,
+                enableMetrics: llamaCppEnableMetrics,
+                metricsRetentionSeconds: llamaCppMetricsRetention,
+                // Session 18: Reasoning/Thinking
+                enableReasoning: llamaCppEnableReasoning,
+                reasoningBudget: llamaCppReasoningBudget
             }
         };
 

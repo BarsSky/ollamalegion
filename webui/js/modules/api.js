@@ -370,6 +370,35 @@ const Api = (function () {
             const msg = err?.message || fallbackMessage;
             window.dispatchEvent(new CustomEvent('api-error', { detail: { message: msg, error: err } }));
             return msg;
+        },
+
+        // ===== Session 17 (2026-07-27): runtime overrides =====
+        // Проверяет, есть ли активный sidecar override для llamaCpp-секции.
+        // Используется для badge "Runtime overrides active" в UI.
+        // @returns {Promise<{exists: boolean, enabled: boolean, config?: LlamaCppConfig}>}
+        async getLlamaCppOverride() {
+            const response = await request(`${API_BASE}/api/v1/cluster/llama-cpp/overrides`, {
+                method: 'GET',
+            });
+            return response.json();
+        },
+
+        // Сбрасывает override (Reset to bundled defaults). In-memory state
+        // восстанавливается к base значениям из config.json — restart не нужен.
+        // @returns {Promise<{status: string, existed_before: boolean}>}
+        async deleteLlamaCppOverride() {
+            const response = await request(`${API_BASE}/api/v1/cluster/llama-cpp/overrides`, {
+                method: 'DELETE',
+            });
+            return response.json();
         }
     };
 })();
+
+// Session 17 P.9 (2026-07-27): `const Api = ...` был локальной переменной IIFE.
+// Другие модули (cppworker-params.js, setup-wizard.js) используют `window.Api.*`,
+// но window.Api никогда не присваивался → "Cannot read properties of undefined
+// (reading 'list')" в Per-Model Profile UI. Фикс: экспортируем в window.
+if (typeof window !== 'undefined') {
+    window.Api = Api;
+}

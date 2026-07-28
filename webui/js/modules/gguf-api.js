@@ -229,11 +229,15 @@ const GgufApi = (function () {
             if (hfToken && (path === '/api/hf/search' || path.indexOf('/api/hf/files') === 0 || path === '/api/hf/download')) {
                 headers['X-HF-Token'] = hfToken;
             }
-            const response = await fetch(buildUrl(path), {
+            // ВАЖНО (Session 17 P.4, 2026-07-27): не spread'им `...options` после headers,
+            // иначе caller headers перезапишут наш X-HF-Token. Явный fetch.
+            const fetchOptions = {
+                method: options.method,
                 headers: headers,
                 signal: controller.signal,
-                ...options
-            });
+            };
+            if (options.body !== undefined) fetchOptions.body = options.body;
+            const response = await fetch(buildUrl(path), fetchOptions);
             clearTimeout(timer);
             if (!response.ok) {
                 const text = await response.text().catch(function () { return ''; });
@@ -791,11 +795,28 @@ const GgufApi = (function () {
                     headers['X-HF-Token'] = hfToken;
                 }
                 const fullUrl = this.buildBackendProxyUrl(backendId, path);
-                const response = await fetch(fullUrl, {
+                // ВАЖНО (Session 17 P.4, 2026-07-27): НЕЛЬЗЯ использовать `...options` после
+                // `headers: headers`, потому что spread object в JS перезаписывает
+                // свойства слева направо. Если caller передал `options.headers` (например
+                // `{ 'Content-Type': 'application/json' }`), то наш X-API-Token будет
+                // затёрт → HTTP 401 на per-backend save.
+                // Фикс: явно мерджим нужные поля, и НЕ spread'им options целиком.
+                const fetchOptions = {
+                    method: options.method,
                     headers: headers,
                     signal: controller.signal,
-                    ...options
-                });
+                };
+                if (options.body !== undefined) {
+                    fetchOptions.body = options.body;
+                }
+                // Поддержка AbortController и других опций которые мог пропустить
+                // (credentials, mode, cache, redirect) — мерджим осторожно,
+                // НЕ допуская override наших headers.
+                if (options.credentials) fetchOptions.credentials = options.credentials;
+                if (options.mode) fetchOptions.mode = options.mode;
+                if (options.cache) fetchOptions.cache = options.cache;
+                if (options.redirect) fetchOptions.redirect = options.redirect;
+                const response = await fetch(fullUrl, fetchOptions);
                 clearTimeout(timer);
                 if (!response.ok) {
                     let body = '';

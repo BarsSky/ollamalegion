@@ -28,14 +28,18 @@
     </script>
     <script>
         // Sprint 1 (2026-06-29): data-density variant early-load.
-        // Применяет body[data-density] ДО загрузки CSS, чтобы избежать flash-of-density.
+        // Применяет [data-density] ДО загрузки CSS, чтобы избежать flash-of-density.
+        // Session 17 P.8 (2026-07-27): использовал document.body, но в <head> document.body = null
+        // → Uncaught TypeError: Cannot read properties of null (reading 'setAttribute').
+        // Фикс: используем document.documentElement (всегда доступен в <head>),
+        // CSS селектор [data-density="dense"] матчится на любом элементе.
         (function() {
             try {
                 var stored = localStorage.getItem('ollamalegion_density');
                 if (stored !== 'dense' && stored !== 'normal') stored = 'normal';
-                document.body.setAttribute('data-density', stored);
+                document.documentElement.setAttribute('data-density', stored);
             } catch (e) {
-                document.body.setAttribute('data-density', 'normal');
+                document.documentElement.setAttribute('data-density', 'normal');
             }
         })();
     </script>
@@ -953,6 +957,24 @@
                                 <p style="color:var(--text-muted);margin-bottom:16px;font-size:13px;" data-i18n="settings.llama_cpp_desc">
                                     Глобальные параметры загрузки GGUF-моделей. Применяются ко всем llama.cpp бэкендам. Могут быть переопределены на странице GGUF для конкретной модели.
                                 </p>
+
+                                <!-- ==================== Quick Presets (Session 18, рефакторинг) ==================== -->
+                                <div class="gguf-presets-bar" style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:20px;padding:12px;background:var(--bg-hover);border-radius:8px;">
+                                    <span style="font-size:12px;color:var(--text-muted);align-self:center;margin-right:4px;" data-i18n="gguf.presets_label">Пресеты:</span>
+                                    <button type="button" class="btn btn-sm btn-secondary" id="ggufPresetSpeed" data-preset="speed">
+                                        <i class="fas fa-bolt"></i> <span data-i18n="gguf.preset_speed">Макс. скорость</span>
+                                    </button>
+                                    <button type="button" class="btn btn-sm btn-secondary" id="ggufPresetMemory" data-preset="memory">
+                                        <i class="fas fa-memory"></i> <span data-i18n="gguf.preset_memory">Макс. экономия VRAM</span>
+                                    </button>
+                                    <button type="button" class="btn btn-sm btn-secondary" id="ggufPresetContext" data-preset="context">
+                                        <i class="fas fa-expand"></i> <span data-i18n="gguf.preset_context">Большой контекст</span>
+                                    </button>
+                                    <button type="button" class="btn btn-sm btn-secondary" id="ggufPresetCpu" data-preset="cpu">
+                                        <i class="fas fa-microchip"></i> <span data-i18n="gguf.preset_cpu">CPU-only</span>
+                                    </button>
+                                </div>
+
                                 <div class="form-row">
                                     <div class="form-group">
                                         <label data-i18n="gguf.gpu_layers">GPU Layers</label>
@@ -964,9 +986,9 @@
                                     <div class="form-group">
                                         <label data-i18n="gguf.ctx_size">Context Size</label>
                                         <span class="tooltip-trigger">?<span class="tooltip-content" data-i18n="gguf.ctx_size_desc">
-Размер контекстного окна в токенах. Больше = длиннее диалоги, но больше потребление VRAM/RAM.
+Размер контекстного окна в токенах. Больше = длиннее диалоги, но больше потребление VRAM/RAM. gemma-4 поддерживает до 256K.
                                         </span></span>
-                                        <input type="number" id="ctxSize" class="form-control" value="2048" min="512" max="32768" step="512">
+                                        <input type="number" id="ctxSize" class="form-control" value="2048" min="256" max="262144" step="256">
                                     </div>
                                 </div>
                                 <div class="form-row">
@@ -978,12 +1000,91 @@
                                         <input type="number" id="batchSize" class="form-control" value="512" min="1" max="4096">
                                     </div>
                                     <div class="form-group">
+                                        <label data-i18n="gguf.flash_attn_type">Flash Attention Type</label>
+                                        <span class="tooltip-trigger">?<span class="tooltip-content" data-i18n="gguf.flash_attn_type_desc">
+0=disabled, 1=enabled, -1=auto. cppworker пишет это как defaultFlashAttnType.
+                                        </span></span>
+                                        <input type="number" id="flashAttnType" class="form-control" value="-1" min="-1" max="2">
+                                    </div>
+                                </div>
+                                <div class="form-row">
+                                    <div class="form-group">
+                                        <label data-i18n="gguf.n_threads">Threads (n_threads)</label>
+                                        <span class="tooltip-trigger">?<span class="tooltip-content" data-i18n="gguf.n_threads_desc">
+Число CPU-потоков. 0 = авто (использовать все логические ядра).
+                                        </span></span>
+                                        <input type="number" id="nThreads" class="form-control" value="0" min="0" max="256">
+                                    </div>
+                                    <div class="form-group">
+                                        <label data-i18n="gguf.flash_attn">Flash Attention (toggle)</label>
+                                        <span class="tooltip-trigger">?<span class="tooltip-content" data-i18n="gguf.flash_attn_desc">
+Включает Flash Attention (память-O(n) вместо O(n²)). Рекомендуется — ускорение на длинных контекстах.
+                                        </span></span>
+                                        <label class="toggle">
+                                            <input type="checkbox" id="flashAttn">
+                                            <span class="toggle-slider"></span>
+                                        </label>
+                                    </div>
+                                </div>
+                                <div class="form-row">
+                                    <div class="form-group">
+                                        <label data-i18n="gguf.numa">NUMA</label>
+                                        <span class="tooltip-trigger">?<span class="tooltip-content" data-i18n="gguf.numa_desc">
+Non-Uniform Memory Access. Включай только на NUMA-системах (многосокетные серверы). На десктопе обычно 0.
+                                        </span></span>
+                                        <label class="toggle">
+                                            <input type="checkbox" id="numa">
+                                            <span class="toggle-slider"></span>
+                                        </label>
+                                    </div>
+                                    <div class="form-group">
+                                        <label data-i18n="gguf.use_mmap">Use MMAP</label>
+                                        <span class="tooltip-trigger">?<span class="tooltip-content" data-i18n="gguf.use_mmap_desc">
+Memory-map файл модели вместо загрузки в RAM. Экономит RAM, но замедляет cold-start. Рекомендуется true.
+                                        </span></span>
+                                        <label class="toggle">
+                                            <input type="checkbox" id="useMmap" checked>
+                                            <span class="toggle-slider"></span>
+                                        </label>
+                                    </div>
+                                    <div class="form-group">
+                                        <label data-i18n="gguf.use_mlock">Use MLOCK</label>
+                                        <span class="tooltip-trigger">?<span class="tooltip-content" data-i18n="gguf.use_mlock_desc">
+Заблокировать страницы модели в RAM (не выгружать в swap). Требует CAP_IPC_LOCK. Обычно не нужно при mmap=true.
+                                        </span></span>
+                                        <label class="toggle">
+                                            <input type="checkbox" id="useMlock">
+                                            <span class="toggle-slider"></span>
+                                        </label>
+                                    </div>
+                                </div>
+
+                                <!-- ==================== Multi-GPU / Tensor split ==================== -->
+                                <h5 class="settings-subheader">
+                                    <i class="fas fa-layer-group"></i> <span data-i18n="gguf.tab_multi_gpu">Multi-GPU и распределение</span>
+                                </h5>
+                                <div class="form-row">
+                                    <div class="form-group">
                                         <label data-i18n="gguf.strategy">Стратегия распределения GPU</label>
+                                        <span class="tooltip-trigger">?<span class="tooltip-content" data-i18n="gguf.strategy_desc">
+Как распределять слои модели между GPU. vram-ratio (по памяти) — auto. Manual — задать доли вручную. Auto — пусть llama.cpp решает.
+                                        </span></span>
                                         <select id="gpuStrategy" class="form-control">
                                             <option value="vram-ratio" data-i18n="gguf.strategy_vram_ratio">VRAM Ratio (пропорционально памяти)</option>
                                             <option value="manual" data-i18n="gguf.strategy_manual">Manual (ручной tensor split)</option>
                                             <option value="round-robin" data-i18n="gguf.strategy_round_robin">Round Robin (поочерёдно)</option>
+                                            <option value="auto" data-i18n="gguf.strategy_auto">Auto (llama.cpp решает)</option>
                                         </select>
+                                    </div>
+                                    <div class="form-group">
+                                        <label data-i18n="gguf.auto_gpu_distribution">Auto GPU Distribution</label>
+                                        <span class="tooltip-trigger">?<span class="tooltip-content" data-i18n="gguf.auto_gpu_distribution_desc">
+Автоматически считать оптимальный tensor split на основе свободной VRAM. Удобно при mixed-GPU.
+                                        </span></span>
+                                        <label class="toggle">
+                                            <input type="checkbox" id="autoGpuDistribution" checked>
+                                            <span class="toggle-slider"></span>
+                                        </label>
                                     </div>
                                 </div>
                                 <div class="form-row">
@@ -995,35 +1096,233 @@
                                         <input type="text" id="tensorSplit" class="form-control" placeholder="0.5,0.5" data-i18n-placeholder="gguf.tensor_split_placeholder">
                                     </div>
                                     <div class="form-group">
-                                        <label data-i18n="gguf.auto_gpu_distribution">Auto GPU Distribution</label>
-                                        <label class="toggle">
-                                            <input type="checkbox" id="autoGpuDistribution" checked>
-                                            <span class="toggle-slider"></span>
-                                        </label>
+                                        <label data-i18n="gguf.split_mode">Split Mode</label>
+                                        <span class="tooltip-trigger">?<span class="tooltip-content" data-i18n="gguf.split_mode_desc">
+-1=default, 0=NONE, 1=LAYER, 2=ROW, 3=TENSOR. Режим разбиения модели между GPU.
+                                        </span></span>
+                                        <input type="number" id="splitMode" class="form-control" value="-1" min="-1" max="3">
+                                    </div>
+                                    <div class="form-group">
+                                        <label data-i18n="gguf.main_gpu">Main GPU</label>
+                                        <span class="tooltip-trigger">?<span class="tooltip-content" data-i18n="gguf.main_gpu_desc">
+Индекс GPU для буферов, которые не помещаются в split (например, scratch). 0 = первая карта.
+                                        </span></span>
+                                        <input type="number" id="mainGpu" class="form-control" value="0" min="0" max="16">
                                     </div>
                                 </div>
                                 <div class="form-row">
                                     <div class="form-group">
-                                        <label data-i18n="gguf.flash_attn">Flash Attention</label>
+                                        <label data-i18n="gguf.rpc_backend">RPC Backend</label>
+                                        <span class="tooltip-trigger">?<span class="tooltip-content" data-i18n="gguf.rpc_backend_desc">
+RPC backend для распределённых вычислений (cuda/vulkan/kompute). Оставь default если модель на одном бэкенде.
+                                        </span></span>
+                                        <select id="rpcBackend" class="form-control">
+                                            <option value="">— default —</option>
+                                            <option value="cuda">CUDA</option>
+                                            <option value="vulkan">Vulkan</option>
+                                            <option value="kompute">Kompute</option>
+                                        </select>
+                                    </div>
+                                    <div class="form-group">
+                                        <label data-i18n="gguf.no_memory_map">No Memory Map</label>
+                                        <span class="tooltip-trigger">?<span class="tooltip-content" data-i18n="gguf.no_memory_map_desc">
+Полностью загрузить модель в RAM (без mmap). Используется редко — mmap=true обычно лучше.
+                                        </span></span>
                                         <label class="toggle">
-                                            <input type="checkbox" id="flashAttn">
+                                            <input type="checkbox" id="noMemoryMap">
+                                            <span class="toggle-slider"></span>
+                                        </label>
+                                    </div>
+                                </div>
+
+                                <!-- ==================== KV Cache ==================== -->
+                                <h5 class="settings-subheader">
+                                    <i class="fas fa-memory"></i> <span data-i18n="gguf.tab_kv_cache">KV-cache</span>
+                                </h5>
+                                <div class="form-row">
+                                    <div class="form-group">
+                                        <label data-i18n="gguf.kv_cache_type">KV-cache quantization</label>
+                                        <span class="tooltip-trigger">?<span class="tooltip-content" data-i18n="gguf.kv_cache_type_desc">
+Тип квантизации KV-cache. q8_0 экономит ~50% VRAM, q4_0 — ~75%, с минимальной потерей качества.
+                                        </span></span>
+                                        <select id="kvCacheType" class="form-control">
+                                            <option value="">— inherit (F16) —</option>
+                                            <option value="f16">f16 (default)</option>
+                                            <option value="f32">f32 (full precision)</option>
+                                            <option value="q8_0">q8_0 (-50% VRAM)</option>
+                                            <option value="q4_0">q4_0 (-75% VRAM)</option>
+                                        </select>
+                                    </div>
+                                    <div class="form-group">
+                                        <label data-i18n="gguf.no_kv_offload">No KV offload</label>
+                                        <span class="tooltip-trigger">?<span class="tooltip-content" data-i18n="gguf.no_kv_offload_desc">
+Держать KV-cache в RAM (не выгружать на GPU). Полезно при нехватке VRAM, но сильно замедляет.
+                                        </span></span>
+                                        <label class="toggle">
+                                            <input type="checkbox" id="noKvOffload">
+                                            <span class="toggle-slider"></span>
+                                        </label>
+                                    </div>
+                                </div>
+
+                                <!-- ==================== RoPE / YaRN ==================== -->
+                                <h5 class="settings-subheader">
+                                    <i class="fas fa-wave-square"></i> <span data-i18n="gguf.tab_rope_yarn">RoPE и YaRN (расширение контекста)</span>
+                                </h5>
+                                <div class="form-row">
+                                    <div class="form-group">
+                                        <label data-i18n="gguf.rope_freq_base">RoPE Frequency Base</label>
+                                        <span class="tooltip-trigger">?<span class="tooltip-content" data-i18n="gguf.rope_freq_base_desc">
+Базовая частота RoPE. Стандарт: 10000. Для некоторых моделей (LLaMA-3, gemma) нужно 500000-1000000.
+                                        </span></span>
+                                        <input type="number" id="ropeFreqBase" class="form-control" value="10000" min="1" step="0.0001">
+                                    </div>
+                                    <div class="form-group">
+                                        <label data-i18n="gguf.rope_freq_scale">RoPE Frequency Scale</label>
+                                        <span class="tooltip-trigger">?<span class="tooltip-content" data-i18n="gguf.rope_freq_scale_desc">
+Множитель частоты RoPE. Стандарт: 1.0. Используется при scaling_type=linear.
+                                        </span></span>
+                                        <input type="number" id="ropeFreqScale" class="form-control" value="1.0" min="0" step="0.0001">
+                                    </div>
+                                </div>
+                                <div class="form-row">
+                                    <div class="form-group">
+                                        <label data-i18n="gguf.rope_scaling_type">RoPE Scaling Type</label>
+                                        <span class="tooltip-trigger">?<span class="tooltip-content" data-i18n="gguf.rope_scaling_type_desc">
+Метод расширения контекста: none (стандарт), linear (линейная экстраполяция), yarn (умное расширение для длинных контекстов).
+                                        </span></span>
+                                        <select id="ropeScalingType" class="form-control">
+                                            <option value="none">none (default)</option>
+                                            <option value="linear">linear</option>
+                                            <option value="yarn">yarn</option>
+                                        </select>
+                                    </div>
+                                    <div class="form-group">
+                                        <label data-i18n="gguf.rope_scaling_factor">RoPE Scaling Factor</label>
+                                        <span class="tooltip-trigger">?<span class="tooltip-content" data-i18n="gguf.rope_scaling_factor_desc">
+Фактор расширения контекста (например, 4.0 = 4x больше контекста через RoPE/YaRN).
+                                        </span></span>
+                                        <input type="number" id="ropeScalingFactor" class="form-control" value="1.0" min="0" step="0.01">
+                                    </div>
+                                </div>
+                                <div class="form-row">
+                                    <div class="form-group">
+                                        <label data-i18n="gguf.yarn_ext_factor">YaRN Ext Factor</label>
+                                        <span class="tooltip-trigger">?<span class="tooltip-content" data-i18n="gguf.yarn_ext_factor_desc">
+Коэффициент экстраполяции YaRN. Больше = агрессивнее расширение, выше риск галлюцинаций. Стандарт: 1.0.
+                                        </span></span>
+                                        <input type="number" id="yarnExtFactor" class="form-control" value="1.0" min="0" step="0.01">
+                                    </div>
+                                    <div class="form-group">
+                                        <label data-i18n="gguf.yarn_attn_factor">YaRN Attn Factor</label>
+                                        <span class="tooltip-trigger">?<span class="tooltip-content" data-i18n="gguf.yarn_attn_factor_desc">
+Коэффициент внимания YaRN. Стандарт: 1.0. Уменьшай если модель теряет фокус на длинных контекстах.
+                                        </span></span>
+                                        <input type="number" id="yarnAttnFactor" class="form-control" value="1.0" min="0" step="0.01">
+                                    </div>
+                                    <div class="form-group">
+                                        <label data-i18n="gguf.yarn_beta_fast">YaRN Beta Fast</label>
+                                        <span class="tooltip-trigger">?<span class="tooltip-content" data-i18n="gguf.yarn_beta_fast_desc">
+Beta-fast параметр YaRN. Стандарт: 32. Низкое = более агрессивное внимание к старым токенам.
+                                        </span></span>
+                                        <input type="number" id="yarnBetaFast" class="form-control" value="32.0" min="0" step="0.01">
+                                    </div>
+                                    <div class="form-group">
+                                        <label data-i18n="gguf.yarn_beta_slow">YaRN Beta Slow</label>
+                                        <span class="tooltip-trigger">?<span class="tooltip-content" data-i18n="gguf.yarn_beta_slow_desc">
+Beta-slow параметр YaRN. Стандарт: 1. Низкое = более агрессивное внимание к новым токенам.
+                                        </span></span>
+                                        <input type="number" id="yarnBetaSlow" class="form-control" value="1.0" min="0" step="0.01">
+                                    </div>
+                                </div>
+
+                                <!-- ==================== Performance / Metrics / Lifecycle ==================== -->
+                                <h5 class="settings-subheader">
+                                    <i class="fas fa-tachometer-alt"></i> <span data-i18n="gguf.tab_perf">Производительность и метрики</span>
+                                </h5>
+
+                                <!-- ==================== Reasoning / Thinking (Session 18) ==================== -->
+                                <h5 class="settings-subheader">
+                                    <i class="fas fa-brain"></i> <span data-i18n="gguf.tab_reasoning">Reasoning / Thinking</span>
+                                </h5>
+                                <div class="form-row">
+                                    <div class="form-group">
+                                        <label data-i18n="gguf.enable_reasoning">Включить размышления</label>
+                                        <span class="tooltip-trigger">?<span class="tooltip-content" data-i18n="gguf.enable_reasoning_desc">
+Включает thinking-режим для моделей, которые его поддерживают (gemma-4, deepseek-r1, qwen3-thinking). Парсер автоматически извлечёт think-блоки в отдельное поле reasoning_content.
+                                        </span></span>
+                                        <label class="toggle">
+                                            <input type="checkbox" id="enableReasoning">
                                             <span class="toggle-slider"></span>
                                         </label>
                                     </div>
                                     <div class="form-group">
-                                        <label data-i18n="gguf.numa">NUMA</label>
+                                        <label data-i18n="gguf.reasoning_budget">Бюджет токенов на размышления</label>
+                                        <span class="tooltip-trigger">?<span class="tooltip-content" data-i18n="gguf.reasoning_budget_desc">
+Максимум токенов, которые модель может потратить на размышления перед ответом. 0 = без лимита. Рекомендуется 1024-8192 для большинства reasoning-моделей.
+                                        </span></span>
+                                        <input type="number" id="reasoningBudget" class="form-control" value="0" min="0" max="100000" step="256">
+                                    </div>
+                                </div>
+                                <div class="form-row">
+                                    <div class="form-group">
+                                        <label data-i18n="gguf.rms_norm_eps">RMS Norm Epsilon</label>
+                                        <span class="tooltip-trigger">?<span class="tooltip-content" data-i18n="gguf.rms_norm_eps_desc">
+Эпсилон для RMS-нормализации. Стандарт: 1e-5. Менять обычно не нужно.
+                                        </span></span>
+                                        <input type="number" id="rmsNormEps" class="form-control" value="0.00001" min="0" step="0.000001">
+                                    </div>
+                                    <div class="form-group">
+                                        <label data-i18n="gguf.idle_unload_minutes">Idle unload (минуты)</label>
+                                        <span class="tooltip-trigger">?<span class="tooltip-content" data-i18n="gguf.idle_unload_desc">
+Автовыгрузка модели из VRAM после N минут простоя. 0 = выключено (по умолчанию).
+                                        </span></span>
+                                        <input type="number" id="idleUnloadMinutes" class="form-control" value="0" min="0" max="10080">
+                                    </div>
+                                </div>
+                                <div class="form-row">
+                                    <div class="form-group">
+                                        <label data-i18n="gguf.enable_metrics">Enable Metrics</label>
+                                        <span class="tooltip-trigger">?<span class="tooltip-content" data-i18n="gguf.enable_metrics_desc">
+Включает Prometheus-style метрики (токены/сек, latency, queue depth). Видны в Monitor page.
+                                        </span></span>
                                         <label class="toggle">
-                                            <input type="checkbox" id="numa">
+                                            <input type="checkbox" id="enableMetrics" checked>
                                             <span class="toggle-slider"></span>
                                         </label>
                                     </div>
                                     <div class="form-group">
-                                        <label data-i18n="gguf.use_mmap">Use MMAP</label>
-                                        <label class="toggle">
-                                            <input type="checkbox" id="useMmap" checked>
-                                            <span class="toggle-slider"></span>
-                                        </label>
+                                        <label data-i18n="gguf.metrics_retention">Metrics Retention (sec)</label>
+                                        <span class="tooltip-trigger">?<span class="tooltip-content" data-i18n="gguf.metrics_retention_desc">
+Сколько секунд хранить метрики в памяти. 0 = хранить вечно. По умолчанию 3600 (1 час).
+                                        </span></span>
+                                        <input type="number" id="metricsRetention" class="form-control" value="3600" min="0">
                                     </div>
+                                </div>
+
+                                <!-- ==================== Runtime Overrides indicator (Session 17) ==================== -->
+                                <div class="settings-subsection" id="llamaCppRuntimeOverridesPanel" style="margin-top:24px; padding-top:16px; border-top:1px solid var(--border-color, #2a3441); display:none;">
+                                    <div style="display:flex; align-items:center; justify-content:space-between; gap:12px; flex-wrap:wrap;">
+                                        <div style="display:flex; align-items:center; gap:8px;">
+                                            <i class="fas fa-database" style="color:var(--accent, #3b82f6);"></i>
+                                            <strong data-i18n="gguf.overrides_active">Runtime overrides active</strong>
+                                            <span class="badge" id="llamaCppOverridesBadge">sidecar</span>
+                                        </div>
+                                        <div style="display:flex; align-items:center; gap:8px;">
+                                            <small style="color:var(--text-muted);" data-i18n="gguf.overrides_path">
+                                                /app/data/runtime-overrides/llama-cpp.json
+                                            </small>
+                                            <button type="button" class="btn btn-secondary btn-sm" id="llamaCppResetBtn" style="color:var(--danger);">
+                                                <i class="fas fa-undo"></i>
+                                                <span data-i18n="gguf.reset_to_bundled">Reset to bundled defaults</span>
+                                            </button>
+                                        </div>
+                                    </div>
+                                    <p style="color:var(--text-muted);margin:8px 0 0 0;font-size:12px;" data-i18n="gguf.overrides_desc">
+                                        Текущие значения отличаются от config.json (host = source of truth).
+                                        Изменения сохранены в sidecar-файле и переживают restart контейнера.
+                                        "Reset" стирает override и возвращает значения из config.json.
+                                    </p>
                                 </div>
 
                                 <!-- ==================== Sub-section: Per-Model Profiles (Шаг 5) ==================== -->

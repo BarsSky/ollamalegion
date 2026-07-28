@@ -896,18 +896,60 @@ const GgufRenderer = (window.GgufRenderer = (function () {
     }
 
     function renderBackendOptionsForm(cfg, backend) {
-        // Маппинг полей cppbackend.Config ↔ UI
-        const ctx = (cfg.defaultCtxSize != null) ? cfg.defaultCtxSize : 4096;
-        const batch = (cfg.defaultBatchSize != null) ? cfg.defaultBatchSize : 512;
-        const gpu = (cfg.defaultGpuLayers != null) ? cfg.defaultGpuLayers : -1;
-        const fa = (cfg.defaultFlashAttnType != null) ? cfg.defaultFlashAttnType : -1;
-        const numa = !!cfg.defaultNuma;
-        const mmap = (cfg.defaultUseMmap !== undefined) ? !!cfg.defaultUseMmap : true;
-        const threads = (cfg.defaultNThreads != null) ? cfg.defaultNThreads : 0;
+        // Маппинг полей cppbackend.Config ↔ UI. Полное покрытие (~25 полей),
+        // сгруппировано по секциям: General / Multi-GPU / KV-cache / RoPE-YaRN / Perf.
+        //
+        // Все inputs имеют префикс "ggufOpt" для удобства findElementById.
+        const v = function (key, fallback) {
+            return (cfg[key] !== undefined && cfg[key] !== null) ? cfg[key] : fallback;
+        };
+        const chk = function (key, fallback) {
+            if (cfg[key] === undefined || cfg[key] === null) return !!fallback;
+            return !!cfg[key];
+        };
+        const ctx = v('defaultCtxSize', 4096);
+        const batch = v('defaultBatchSize', 512);
+        const gpu = v('defaultGpuLayers', -1);
+        const fa = v('defaultFlashAttnType', -1);
+        const numa = chk('defaultNuma', false);
+        const mmap = chk('defaultUseMmap', true);
+        const mlock = chk('defaultUseMlock', false);
+        const threads = v('defaultNThreads', 0);
+        const rmsNormEps = v('defaultRmsNormEps', 0.00001);
+        // Multi-GPU
+        const autoGpu = chk('autoGpuDistribution', true);
+        const splitMode = v('defaultSplitMode', -1);
+        const mainGpu = v('defaultMainGpu', 0);
+        const rpcBackend = v('defaultRpcBackend', '') || '';
+        const noMemoryMap = chk('defaultNoMemoryMap', false);
+        // Tensor split: из бэка приходит []float32.
+        let tensorSplitVal = '';
+        if (cfg.defaultTensorSplit && Array.isArray(cfg.defaultTensorSplit)) {
+            tensorSplitVal = cfg.defaultTensorSplit.join(',');
+        }
+        // KV cache
+        const kvCacheType = v('defaultKvCacheType', '') || '';
+        const noKvOffload = chk('defaultNoKvOffload', false);
+        // RoPE/YaRN
+        const ropeFreqBase = v('defaultRopeFreqBase', 10000.0);
+        const ropeFreqScale = v('defaultRopeFreqScale', 1.0);
+        const ropeScalingType = v('defaultRopeScalingType', 'none') || 'none';
+        const ropeScalingFactor = v('defaultRopeScalingFactor', 1.0);
+        const yarnExtFactor = v('defaultYarnExtFactor', 1.0);
+        const yarnAttnFactor = v('defaultYarnAttnFactor', 1.0);
+        const yarnBetaFast = v('defaultYarnBetaFast', 32.0);
+        const yarnBetaSlow = v('defaultYarnBetaSlow', 1.0);
+        // Performance / lifecycle
+        const idleUnload = v('idleUnloadMinutes', 0);
+        const enableMetrics = chk('enableMetrics', true);
+        const metricsRetention = v('metricsRetentionSeconds', 3600);
+        // Diagnostics
         const nodeName = (cfg.nodeName != null) ? cfg.nodeName : (backend ? backend.id : '');
         const balancerUrl = (cfg.balancerUrl != null) ? cfg.balancerUrl : '';
         const uptime = (cfg.uptime != null) ? cfg.uptime : '';
         return '' +
+            // ====== General ======
+            '<h6 class="gguf-section-header"><i class="fas fa-sliders-h"></i> ' + Utils.escapeHtml(_('gguf.tab_general') || 'General') + '</h6>' +
             '<div class="form-row" style="display:grid;grid-template-columns:1fr 1fr;gap:12px;">' +
                 '<div class="form-group">' +
                     '<label>' + Utils.escapeHtml(_('gguf.ctx_size')) + '</label>' +
@@ -936,11 +978,116 @@ const GgufRenderer = (window.GgufRenderer = (function () {
                     '<small style="color:var(--text-muted);">' + Utils.escapeHtml(_('gguf.n_threads_desc')) + '</small>' +
                 '</div>' +
             '</div>' +
-            '<div class="form-row" style="display:grid;grid-template-columns:repeat(3,1fr);gap:12px;">' +
+            '<div class="form-row" style="display:grid;grid-template-columns:repeat(4,1fr);gap:12px;">' +
                 '<div class="form-group"><label><input type="checkbox" id="ggufOptNuma" ' + (numa ? 'checked' : '') + '> ' + Utils.escapeHtml(_('gguf.numa')) + '</label></div>' +
                 '<div class="form-group"><label><input type="checkbox" id="ggufOptUseMmap" ' + (mmap ? 'checked' : '') + '> ' + Utils.escapeHtml(_('gguf.use_mmap')) + '</label></div>' +
-                '<div class="form-group"><label><input type="checkbox" id="ggufOptAutoGpu" ' + (state.loadOptions.autoGpuDistribution ? 'checked' : '') + '> ' + Utils.escapeHtml(_('gguf.auto_gpu_distribution')) + '</label></div>' +
+                '<div class="form-group"><label><input type="checkbox" id="ggufOptUseMlock" ' + (mlock ? 'checked' : '') + '> ' + Utils.escapeHtml(_('gguf.use_mlock')) + '</label></div>' +
+                '<div class="form-group"><label><input type="checkbox" id="ggufOptAutoGpu" ' + (autoGpu ? 'checked' : '') + '> ' + Utils.escapeHtml(_('gguf.auto_gpu_distribution')) + '</label></div>' +
             '</div>' +
+            // ====== Multi-GPU ======
+            '<h6 class="gguf-section-header"><i class="fas fa-layer-group"></i> ' + Utils.escapeHtml(_('gguf.tab_multi_gpu') || 'Multi-GPU') + '</h6>' +
+            '<div class="form-row" style="display:grid;grid-template-columns:1fr 1fr;gap:12px;">' +
+                '<div class="form-group">' +
+                    '<label>' + Utils.escapeHtml(_('gguf.tensor_split')) + '</label>' +
+                    '<input type="text" id="ggufOptTensorSplit" class="form-control" value="' + Utils.escapeHtml(tensorSplitVal) + '" placeholder="0.5,0.5">' +
+                    '<small style="color:var(--text-muted);">' + Utils.escapeHtml(_('gguf.tensor_split_desc')) + '</small>' +
+                '</div>' +
+                '<div class="form-group">' +
+                    '<label>' + Utils.escapeHtml(_('gguf.split_mode')) + '</label>' +
+                    '<input type="number" id="ggufOptSplitMode" class="form-control" value="' + splitMode + '" min="-1" max="3">' +
+                    '<small style="color:var(--text-muted);">' + Utils.escapeHtml(_('gguf.split_mode_desc') || '-1=default, 0=NONE, 1=LAYER, 2=ROW, 3=TENSOR') + '</small>' +
+                '</div>' +
+            '</div>' +
+            '<div class="form-row" style="display:grid;grid-template-columns:1fr 1fr;gap:12px;">' +
+                '<div class="form-group">' +
+                    '<label>' + Utils.escapeHtml(_('gguf.main_gpu')) + '</label>' +
+                    '<input type="number" id="ggufOptMainGpu" class="form-control" value="' + mainGpu + '" min="0" max="16">' +
+                '</div>' +
+                '<div class="form-group">' +
+                    '<label>' + Utils.escapeHtml(_('gguf.rpc_backend')) + '</label>' +
+                    '<select id="ggufOptRpcBackend" class="form-control">' +
+                        '<option value=""' + (rpcBackend === '' ? ' selected' : '') + '>— default —</option>' +
+                        '<option value="cuda"' + (rpcBackend === 'cuda' ? ' selected' : '') + '>CUDA</option>' +
+                        '<option value="vulkan"' + (rpcBackend === 'vulkan' ? ' selected' : '') + '>Vulkan</option>' +
+                        '<option value="kompute"' + (rpcBackend === 'kompute' ? ' selected' : '') + '>Kompute</option>' +
+                    '</select>' +
+                '</div>' +
+            '</div>' +
+            '<div class="form-row">' +
+                '<div class="form-group"><label><input type="checkbox" id="ggufOptNoMemoryMap" ' + (noMemoryMap ? 'checked' : '') + '> ' + Utils.escapeHtml(_('gguf.no_memory_map')) + '</label></div>' +
+            '</div>' +
+            // ====== KV Cache ======
+            '<h6 class="gguf-section-header"><i class="fas fa-memory"></i> ' + Utils.escapeHtml(_('gguf.tab_kv_cache') || 'KV-cache') + '</h6>' +
+            '<div class="form-row" style="display:grid;grid-template-columns:1fr 1fr;gap:12px;">' +
+                '<div class="form-group">' +
+                    '<label>' + Utils.escapeHtml(_('gguf.kv_cache_type')) + '</label>' +
+                    '<select id="ggufOptKvCacheType" class="form-control">' +
+                        '<option value=""' + (kvCacheType === '' ? ' selected' : '') + '>— inherit (F16) —</option>' +
+                        '<option value="f16"' + (kvCacheType === 'f16' ? ' selected' : '') + '>f16 (default)</option>' +
+                        '<option value="f32"' + (kvCacheType === 'f32' ? ' selected' : '') + '>f32 (full precision)</option>' +
+                        '<option value="q8_0"' + (kvCacheType === 'q8_0' ? ' selected' : '') + '>q8_0 (-50% VRAM)</option>' +
+                        '<option value="q4_0"' + (kvCacheType === 'q4_0' ? ' selected' : '') + '>q4_0 (-75% VRAM)</option>' +
+                    '</select>' +
+                    '<small style="color:var(--text-muted);">' + Utils.escapeHtml(_('gguf.kv_cache_type_desc')) + '</small>' +
+                '</div>' +
+                '<div class="form-group">' +
+                    '<label><input type="checkbox" id="ggufOptNoKvOffload" ' + (noKvOffload ? 'checked' : '') + '> ' + Utils.escapeHtml(_('gguf.no_kv_offload')) + '</label>' +
+                    '<small style="color:var(--text-muted);">' + Utils.escapeHtml(_('gguf.no_kv_offload_desc') || 'Держать KV-cache в RAM (не выгружать на GPU)') + '</small>' +
+                '</div>' +
+            '</div>' +
+            // ====== RoPE & YaRN ======
+            '<h6 class="gguf-section-header"><i class="fas fa-wave-square"></i> ' + Utils.escapeHtml(_('gguf.tab_rope_yarn') || 'RoPE / YaRN') + '</h6>' +
+            '<div class="form-row" style="display:grid;grid-template-columns:1fr 1fr;gap:12px;">' +
+                '<div class="form-group">' +
+                    '<label>' + Utils.escapeHtml(_('gguf.rope_freq_base')) + '</label>' +
+                    '<input type="number" id="ggufOptRopeFreqBase" class="form-control" value="' + ropeFreqBase + '" min="1" step="0.0001">' +
+                '</div>' +
+                '<div class="form-group">' +
+                    '<label>' + Utils.escapeHtml(_('gguf.rope_freq_scale')) + '</label>' +
+                    '<input type="number" id="ggufOptRopeFreqScale" class="form-control" value="' + ropeFreqScale + '" min="0" step="0.0001">' +
+                '</div>' +
+            '</div>' +
+            '<div class="form-row" style="display:grid;grid-template-columns:1fr 1fr;gap:12px;">' +
+                '<div class="form-group">' +
+                    '<label>' + Utils.escapeHtml(_('gguf.rope_scaling_type')) + '</label>' +
+                    '<select id="ggufOptRopeScalingType" class="form-control">' +
+                        '<option value="none"' + (ropeScalingType === 'none' ? ' selected' : '') + '>none</option>' +
+                        '<option value="linear"' + (ropeScalingType === 'linear' ? ' selected' : '') + '>linear</option>' +
+                        '<option value="yarn"' + (ropeScalingType === 'yarn' ? ' selected' : '') + '>yarn</option>' +
+                    '</select>' +
+                '</div>' +
+                '<div class="form-group">' +
+                    '<label>' + Utils.escapeHtml(_('gguf.rope_scaling_factor')) + '</label>' +
+                    '<input type="number" id="ggufOptRopeScalingFactor" class="form-control" value="' + ropeScalingFactor + '" min="0" step="0.01">' +
+                '</div>' +
+            '</div>' +
+            '<div class="form-row" style="display:grid;grid-template-columns:repeat(4,1fr);gap:12px;">' +
+                '<div class="form-group"><label>' + Utils.escapeHtml(_('gguf.yarn_ext_factor')) + '<input type="number" id="ggufOptYarnExtFactor" class="form-control" value="' + yarnExtFactor + '" min="0" step="0.01"></label></div>' +
+                '<div class="form-group"><label>' + Utils.escapeHtml(_('gguf.yarn_attn_factor')) + '<input type="number" id="ggufOptYarnAttnFactor" class="form-control" value="' + yarnAttnFactor + '" min="0" step="0.01"></label></div>' +
+                '<div class="form-group"><label>' + Utils.escapeHtml(_('gguf.yarn_beta_fast')) + '<input type="number" id="ggufOptYarnBetaFast" class="form-control" value="' + yarnBetaFast + '" min="0" step="0.01"></label></div>' +
+                '<div class="form-group"><label>' + Utils.escapeHtml(_('gguf.yarn_beta_slow')) + '<input type="number" id="ggufOptYarnBetaSlow" class="form-control" value="' + yarnBetaSlow + '" min="0" step="0.01"></label></div>' +
+            '</div>' +
+            // ====== Performance / Metrics / Lifecycle ======
+            '<h6 class="gguf-section-header"><i class="fas fa-tachometer-alt"></i> ' + Utils.escapeHtml(_('gguf.tab_perf') || 'Performance') + '</h6>' +
+            '<div class="form-row" style="display:grid;grid-template-columns:1fr 1fr;gap:12px;">' +
+                '<div class="form-group">' +
+                    '<label>' + Utils.escapeHtml(_('gguf.rms_norm_eps')) + '</label>' +
+                    '<input type="number" id="ggufOptRmsNormEps" class="form-control" value="' + rmsNormEps + '" min="0" step="0.000001">' +
+                '</div>' +
+                '<div class="form-group">' +
+                    '<label>' + Utils.escapeHtml(_('gguf.idle_unload_minutes')) + '</label>' +
+                    '<input type="number" id="ggufOptIdleUnloadMinutes" class="form-control" value="' + idleUnload + '" min="0" max="10080">' +
+                    '<small style="color:var(--text-muted);">' + Utils.escapeHtml(_('gguf.idle_unload_desc') || '0 = off, >0 = unload after N minutes idle') + '</small>' +
+                '</div>' +
+            '</div>' +
+            '<div class="form-row" style="display:grid;grid-template-columns:1fr 1fr;gap:12px;">' +
+                '<div class="form-group"><label><input type="checkbox" id="ggufOptEnableMetrics" ' + (enableMetrics ? 'checked' : '') + '> ' + Utils.escapeHtml(_('gguf.enable_metrics')) + '</label></div>' +
+                '<div class="form-group">' +
+                    '<label>' + Utils.escapeHtml(_('gguf.metrics_retention')) + '</label>' +
+                    '<input type="number" id="ggufOptMetricsRetention" class="form-control" value="' + metricsRetention + '" min="0">' +
+                '</div>' +
+            '</div>' +
+            // ====== Diagnostics ======
             '<div class="form-group" style="color:var(--text-muted);font-size:12px;margin-top:8px;">' +
                 (nodeName ? ('<div><b>node:</b> ' + Utils.escapeHtml(nodeName) + '</div>') : '') +
                 (balancerUrl ? ('<div><b>balancer:</b> ' + Utils.escapeHtml(balancerUrl) + '</div>') : '') +
@@ -959,16 +1106,53 @@ const GgufRenderer = (window.GgufRenderer = (function () {
     async function saveBackendOptions() {
         const backend = currentBackend();
         if (!backend) return;
+        // Парсим значения из формы. Хелперы parseIntOr/parseFloatOr/strVal
+        // (определены ниже) устойчивы к NaN/пустым полям.
+        const splitStr = parseStr('ggufOptTensorSplit', '');
+        let tensorSplit = null;
+        if (splitStr.trim() !== '') {
+            // Парсим "0.5,0.5" → [0.5, 0.5]
+            const parts = splitStr.split(',').map(s => parseFloat(s.trim()));
+            if (parts.every(p => Number.isFinite(p))) {
+                tensorSplit = parts;
+            }
+        }
         const payload = {
+            // Базовые
             defaultCtxSize: parseIntOr(document.getElementById('ggufOptCtxSize').value, 4096),
             defaultBatchSize: parseIntOr(document.getElementById('ggufOptBatchSize').value, 512),
             defaultGpuLayers: parseIntOr(document.getElementById('ggufOptGpuLayers').value, -1),
             defaultFlashAttnType: parseIntOr(document.getElementById('ggufOptFlashAttn').value, -1),
             defaultNuma: !!document.getElementById('ggufOptNuma').checked,
             defaultUseMmap: !!document.getElementById('ggufOptUseMmap').checked,
-            defaultNThreads: parseIntOr(document.getElementById('ggufOptNThreads').value, 0)
+            defaultUseMlock: !!document.getElementById('ggufOptUseMlock').checked,
+            defaultNThreads: parseIntOr(document.getElementById('ggufOptNThreads').value, 0),
+            defaultRmsNormEps: parseFloatOr(document.getElementById('ggufOptRmsNormEps').value, 0.00001),
+            // Multi-GPU
+            autoGpuDistribution: !!document.getElementById('ggufOptAutoGpu').checked,
+            defaultSplitMode: parseIntOr(document.getElementById('ggufOptSplitMode').value, -1),
+            defaultMainGpu: parseIntOr(document.getElementById('ggufOptMainGpu').value, 0),
+            defaultRpcBackend: parseStr('ggufOptRpcBackend', ''),
+            defaultNoMemoryMap: !!document.getElementById('ggufOptNoMemoryMap').checked,
+            defaultTensorSplit: tensorSplit,
+            // KV cache
+            defaultKvCacheType: parseStr('ggufOptKvCacheType', ''),
+            defaultNoKvOffload: !!document.getElementById('ggufOptNoKvOffload').checked,
+            // RoPE/YaRN
+            defaultRopeFreqBase: parseFloatOr(document.getElementById('ggufOptRopeFreqBase').value, 10000.0),
+            defaultRopeFreqScale: parseFloatOr(document.getElementById('ggufOptRopeFreqScale').value, 1.0),
+            defaultRopeScalingType: parseStr('ggufOptRopeScalingType', 'none'),
+            defaultRopeScalingFactor: parseFloatOr(document.getElementById('ggufOptRopeScalingFactor').value, 1.0),
+            defaultYarnExtFactor: parseFloatOr(document.getElementById('ggufOptYarnExtFactor').value, 1.0),
+            defaultYarnAttnFactor: parseFloatOr(document.getElementById('ggufOptYarnAttnFactor').value, 1.0),
+            defaultYarnBetaFast: parseFloatOr(document.getElementById('ggufOptYarnBetaFast').value, 32.0),
+            defaultYarnBetaSlow: parseFloatOr(document.getElementById('ggufOptYarnBetaSlow').value, 1.0),
+            // Performance
+            idleUnloadMinutes: parseIntOr(document.getElementById('ggufOptIdleUnloadMinutes').value, 0),
+            enableMetrics: !!document.getElementById('ggufOptEnableMetrics').checked,
+            metricsRetentionSeconds: parseIntOr(document.getElementById('ggufOptMetricsRetention').value, 3600)
         };
-        // Локально закэшируем auto-gpu в state (используется в loadModelAt)
+        // state.loadOptions для совместимости с локальным кэшем (loadModelAt)
         state.loadOptions.autoGpuDistribution = !!document.getElementById('ggufOptAutoGpu').checked;
         const saveBtn = document.getElementById('ggufBackendOptionsSave');
         if (saveBtn) saveBtn.disabled = true;
@@ -978,7 +1162,16 @@ const GgufRenderer = (window.GgufRenderer = (function () {
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify(payload)
             });
-            showToast(_('gguf.backend_options_saved'), 'success');
+            // Показываем пользователю, что применилось и сколько ошибок валидации.
+            let msg = _('gguf.backend_options_saved');
+            if (resp && resp.applied) {
+                msg += ' (' + resp.applied.length + ' полей)';
+            }
+            if (resp && resp.validation_errors && resp.validation_errors.length > 0) {
+                showToast('⚠️ ' + resp.validation_errors.length + ' validation errors: ' +
+                    resp.validation_errors.slice(0, 3).join('; '), 'error');
+            }
+            showToast(msg, 'success');
             // Re-fetch config чтобы пользователь сразу видел, что изменения применились.
             // cppworker возвращает applied[] и reload_started[] — показываем их в toast.
             if (resp && resp.reload_started && resp.reload_started.length > 0) {
@@ -1003,6 +1196,18 @@ const GgufRenderer = (window.GgufRenderer = (function () {
         } finally {
             if (saveBtn) saveBtn.disabled = false;
         }
+    }
+
+    // Хелперы для парсинга значений из формы (parseIntOr объявлена ниже,
+    // parseFloatOr/parseStr определяем тут же — близко к месту использования).
+    function parseFloatOr(v, def) {
+        const n = parseFloat(v);
+        return Number.isFinite(n) ? n : def;
+    }
+    function parseStr(id, def) {
+        const el = document.getElementById(id);
+        if (!el) return def;
+        return el.value;
     }
 
     function parseIntOr(v, def) {

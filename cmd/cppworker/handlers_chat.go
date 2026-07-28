@@ -211,10 +211,25 @@ func handleChat(w http.ResponseWriter, r *http.Request) {
 // ?????? ?????? (fallback). ?????????? GGUF chat template ???????????
 // ?????????? ??????????? ? ???????? segfault ??? ?????? ??????.
 func buildChatPrompt(msgs []chatMessage, modelName string) (string, error) {
-	// ????????? system ????????? (???? ????)
+	// Извлекаем system промпт (если есть)
 	system := extractSystemFromMessages(msgs)
 
-	// ??????? ??????? ApplyChatTemplate ?? GGUF
+	// Round 11 (2026-07-28) SOFT PROMPT Injection для EnableReasoning:
+	// Если config.EnableReasoning=true, добавляем "thinking instruction"
+	// к system промпту. Это работает универсально для ЛЮБОЙ модели
+	// (включая gemma-4-it, который не эмитит нативные <think> блоки).
+	//
+	// Модели с native thinking (Qwen3-thinking, DeepSeek-R1) игнорируют
+	// soft prompt и продолжают эмитить <think> блоки — парсер
+	// (cmd/cppworker/reasoning_content.go) корректно их извлекает.
+	//
+	// Native C-bridge enable_thinking требует common::chat миграцию
+	// (см. docs/CHANGELOG.md v0.4.6 P.14) — отложено.
+	if currentConfig != nil && currentConfig.EnableReasoning {
+		system = injectThinkingInstruction(system)
+	}
+
+	// Применяем chat template из GGUF
 	prompt, err := backend.ApplyChatTemplate(modelName, system, msgsToBridge(msgs), true)
 	if err == nil && prompt != "" {
 		logger.Get().Debugw("buildChatPrompt: used GGUF chat template",
@@ -236,7 +251,57 @@ func buildChatPrompt(msgs []chatMessage, modelName string) (string, error) {
 	// Fallback: ?????? ??????
 	logger.Get().Debugw("buildChatPrompt: using manual prompt assembly (no GGUF chat template)",
 		"model", modelName)
+	// Round 11: для fallback path — НЕ модифицируем msgs (chat template
+	// здесь не применяется, только ручная сборка). Чтобы thinking
+	// instruction сработал, модель должна получить system промпт через
+	// buildChatPromptFromMessages. Это делает prepended system message
+	// в msgs (если её ещё нет). См. injectThinkingIntoMessages.
+	if currentConfig != nil && currentConfig.EnableReasoning {
+		msgs = injectThinkingIntoMessages(msgs)
+	}
 	return buildChatPromptFromMessages(msgs, modelName), nil
+}
+
+// Round 11 (2026-07-28) Soft Prompt Injection — две helper-функции.
+//
+// enable_thinking native C-bridge support требует common::chat
+// миграцию (отложено). В soft mode добавляем "thinking instruction"
+// к system промпту, что работает для ЛЮБОЙ instruction-tuned модели.
+
+// injectThinkingInstruction возвращает system промпт с prepended
+// thinking instruction. Если исходный system пустой — возвращает
+// только instruction. Если есть — instruction + "\n\n" + original.
+func injectThinkingInstruction(system string) string {
+	const thinkingInstruction = "Before answering, use detailed step-by-step thinking. " +
+		"Reason about the problem carefully, consider different angles, " +
+		"show your work, then provide a clear final answer. " +
+		"Structure your response: first explain your reasoning, then give the answer."
+	if system == "" {
+		return thinkingInstruction
+	}
+	return thinkingInstruction + "\n\n" + system
+}
+
+// injectThinkingIntoMessages prepended system message с thinking
+// instruction к msgs. Если system message уже есть — конкатенирует.
+// Используется для fallback path (buildChatPromptFromMessages) где
+// system промпт собирается руками, а не через chat template.
+func injectThinkingIntoMessages(msgs []chatMessage) []chatMessage {
+	thinking := "Before answering, use detailed step-by-step thinking. " +
+		"Reason about the problem carefully, consider different angles, " +
+		"show your work, then provide a clear final answer. " +
+		"Structure your response: first explain your reasoning, then give the answer."
+
+	// Ищем существующий system message
+	for i, m := range msgs {
+		if m.Role == "system" {
+			msgs[i].Content = thinking + "\n\n" + m.Content
+			return msgs
+		}
+	}
+	// Нет system — prepended
+	systemMsg := chatMessage{Role: "system", Content: thinking}
+	return append([]chatMessage{systemMsg}, msgs...)
 }
 
 // extractSystemFromMessages ????????? system ????????? ?? ?????? ?????????.

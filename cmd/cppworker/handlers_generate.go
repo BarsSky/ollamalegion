@@ -62,6 +62,18 @@ func normalizeGenerateRequest(req *generateRequest) {
 		req.Prompt = req.System + "\n" + req.Prompt
 	}
 
+	// Round 11 (2026-07-28) SOFT Prompt Injection для EnableReasoning:
+	// Prepend thinking instruction к prompt (Ollama /api/generate не
+	// имеет system role, поэтому подмешиваем в prompt). Работает для
+	// любой instruction-tuned модели (gemma-4-it, llama-3-it, и т.д.).
+	if currentConfig != nil && currentConfig.EnableReasoning && !req.Raw {
+		const thinkingInstruction = "Before answering, use detailed step-by-step thinking. " +
+			"Reason about the problem carefully, consider different angles, " +
+			"show your work, then provide a clear final answer. " +
+			"Structure your response: first explain your reasoning, then give the answer."
+		req.Prompt = thinkingInstruction + "\n\n" + req.Prompt
+	}
+
 	// keep_alive: парсим и сохраняем в LastUsedAt (если != 0).
 	// Формат Ollama:
 	//   "5m", "30s", "1h"   — duration (парсим через time.ParseDuration)

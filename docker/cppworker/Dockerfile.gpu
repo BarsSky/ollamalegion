@@ -68,7 +68,12 @@ RUN apt-get update && apt-get install -y --no-install-recommends cmake && \
     rm -rf /var/lib/apt/lists/*
 
 WORKDIR /build/bridge
+# Round 14a (2026-07-28): копируем csrc/ для C++ wrapper chat_thinking.cpp
+# (native enable_thinking через common::chat). CMakeLists.txt ссылается
+# на csrc/chat_thinking.cpp — без COPY csrc/ сборка падает с "Cannot find
+# source file: csrc/chat_thinking.cpp".
 COPY c/bridge/bridge.h c/bridge/bridge.c c/bridge/CMakeLists.txt ./
+COPY c/bridge/csrc ./csrc/
 
 COPY --from=llama-builder /build/llama.cpp/include /build/llama.cpp/include
 COPY --from=llama-builder /build/llama.cpp/ggml/include /build/llama.cpp/ggml/include

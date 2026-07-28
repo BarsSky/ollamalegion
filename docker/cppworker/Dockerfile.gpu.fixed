@@ -43,7 +43,9 @@ FROM nvidia/cuda:12.2.0-devel-ubuntu22.04 AS bridge-builder
 RUN apt-get update && apt-get install -y --no-install-recommends cmake && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /build/bridge
+# Round 14a: копируем csrc/ для C++ wrapper chat_thinking.cpp
 COPY c/bridge/bridge.h c/bridge/bridge.c c/bridge/CMakeLists.txt ./
+COPY c/bridge/csrc ./csrc/
 
 COPY --from=llama-builder /build/llama.cpp /build/llama.cpp
 

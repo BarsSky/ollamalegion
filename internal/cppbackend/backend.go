@@ -1317,25 +1317,37 @@ func (b *Backend) WaitForLoad(name string) bool {
 // ============================================================
 
 // Generate выполняет синхронный инференс
+//
+// Round 8 (2026-07-28) BUGFIX: удерживаем inst.mu на всём протяжении
+// inst.handle.Infer(). Без этого два параллельных запроса к одной модели
+// вызывали llama_decode() на одном и том же контексте — race на KV-cache
+// приводил к GGML_ASSERT(ggml_are_same_shape) и крашу cppworker (SIGABRT).
+// Симптом у пользователя: на qwen3.6 35B A3B (inference 5-30s) второй
+// юзер получал 503 "connection closed" / "model is loading".
+//
+// С n_parallel=1 (default) и Hold-Mu-Through-Infer корректное поведение —
+// второй запрос ЖДЁТ завершения первого, а не падает. Параллельность
+// inference регулируется на уровне балансера (slot manager) и/или
+// n_parallel (если >1, нужно сменить на отдельный RWMutex).
 func (b *Backend) Generate(modelName string, prompt string, params bridge.GenerationParams) (*bridge.InferenceResult, error) {
 	inst, err := b.getModelInstance(modelName)
 	if err != nil {
 		return nil, err
 	}
 
+	// Round 8 BUGFIX: держим mu на всём инференсе. До фикса Unlock() был
+	// сразу после ++ActiveQueries — два goroutine могли одновременно войти
+	// в inst.handle.Infer() и race на llama.cpp context.
 	inst.mu.Lock()
 	inst.info.TotalQueries++
 	inst.info.ActiveQueries++
-	inst.mu.Unlock()
-	// Обновляем lastUsedAt в начале запроса — IdleUnloadManager использует
-	// это значение (а не LoadedAt) для решения о выгрузке. Делаем это
-	// под мьютексом inst.mu не нужно: atomic.Value.Store lock-free.
+	// lastUsedAt.Store — atomic, мьютекс не нужен. Делаем тут же для
+	// удобства чтения (IdleUnloadManager смотрит на это значение).
 	inst.lastUsedAt.Store(time.Now())
 
 	start := time.Now()
 
 	defer func() {
-		inst.mu.Lock()
 		inst.info.ActiveQueries--
 		inst.mu.Unlock()
 		if b.metrics != nil {
@@ -1350,6 +1362,9 @@ func (b *Backend) Generate(modelName string, prompt string, params bridge.Genera
 }
 
 // GenerateStream выполняет стриминг-инференс
+//
+// Round 8 (2026-07-28) BUGFIX: см. Generate — удерживаем inst.mu на всём
+// протяжении inst.handle.InferStream().
 func (b *Backend) GenerateStream(modelName string, prompt string, params bridge.GenerationParams, callback bridge.StreamCallback) error {
 	inst, err := b.getModelInstance(modelName)
 	if err != nil {
@@ -1359,13 +1374,11 @@ func (b *Backend) GenerateStream(modelName string, prompt string, params bridge.
 	inst.mu.Lock()
 	inst.info.TotalQueries++
 	inst.info.ActiveQueries++
-	inst.mu.Unlock()
 	inst.lastUsedAt.Store(time.Now())
 
 	start := time.Now()
 
 	defer func() {
-		inst.mu.Lock()
 		inst.info.ActiveQueries--
 		inst.mu.Unlock()
 		if b.metrics != nil {

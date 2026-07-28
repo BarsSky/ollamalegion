@@ -18,6 +18,7 @@ import (
 	"runtime"
 	"sync"
 	"sync/atomic"
+	"time"
 )
 
 // ModelHandle — заглушка
@@ -277,6 +278,12 @@ func (m *ModelHandle) FreeModel() {
 
 // Infer выполняет синхронный инференс (stub)
 func (m *ModelHandle) Infer(prompt string, params GenerationParams) (*InferenceResult, error) {
+	// Round 8 (2026-07-28): если тест задал stubInferDelay через SetStubInferDelay —
+	// имитируем долгий inference (нужно для теста concurrent serialization в
+	// internal/cppbackend/backend_test.go). В обычной работе delay=0.
+	if d := getStubInferDelay(); d > 0 {
+		time.Sleep(d)
+	}
 	output := fmt.Sprintf("[llama_stub] Echo: %s\n\n(Stub mode — no real llama.cpp)\n\nGenerated with %d max tokens, temperature %.2f",
 		prompt[:min(len(prompt), 100)],
 		params.NPredict,
@@ -287,6 +294,26 @@ func (m *ModelHandle) Infer(prompt string, params GenerationParams) (*InferenceR
 		Status:   0,
 		ErrorMsg: "",
 	}, nil
+}
+
+// stubInferDelay — искусственная задержка в stub.Infer, нужна для теста
+// concurrent serialization (Round 8 BUGFIX: Generate должен удерживать
+// inst.mu на всём инференсе, иначе race в llama_decode).
+//
+// Доступ через SetStubInferDelay/getStubInferDelay (atomic.Int64 наносекунды).
+// Используется ТОЛЬКО в тестах (build tag llama_stub).
+var stubInferDelay atomic.Int64
+
+// SetStubInferDelay — устанавливает задержку для stub.Infer.
+// Возвращает предыдущее значение для восстановления через defer.
+func SetStubInferDelay(d time.Duration) time.Duration {
+	prev := stubInferDelay.Swap(int64(d))
+	return time.Duration(prev)
+}
+
+// getStubInferDelay — текущее значение задержки (thread-safe).
+func getStubInferDelay() time.Duration {
+	return time.Duration(stubInferDelay.Load())
 }
 
 // stubEmptyOutput — флаг для тестов: если true, InferStream НЕ вызывает

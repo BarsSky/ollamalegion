@@ -5,6 +5,113 @@
 Формат ведётся в соответствии с [Keep a Changelog](https://keepachangelog.com/ru/1.0.0/),
 и этот проект придерживается [Semantic Versioning](https://semver.org/lang/ru/).
 
+## [0.4.7 — 2026-07-28]
+
+Patch-релиз поверх `v0.4.6`. Цели: устранить SIGABRT при concurrent inference
+(qwen3.6 35B A3B на A10), убрать warmup-spam при служебных эндпоинтах, и
+исправить race condition в `WaitForLoad`.
+
+### Fixed (Round 8 BUGFIX — concurrent inference crash)
+
+**Проблема:** qwen3.6 35B A3B на A10 24GB, OpenWebUI. Первый юзер получает
+ответ (inference 5-30s), второй юзер в это время шлёт запрос → cppworker
+падает в `GGML_ASSERT(ggml_are_same_shape)` → SIGABRT → второй юзер видит
+503 "connection closed" / "model is loading" (пока cppworker перезапускается).
+
+**Root cause:** `internal/cppbackend/backend.go:1319-1379` — `Generate` и
+`GenerateStream` использовали `inst.mu` ТОЛЬКО для счётчика `ActiveQueries`,
+но НЕ для защиты `inst.handle.Infer()` / `InferStream()`. Два goroutine
+одновременно вызывали `inst.handle.Infer()` → race в llama.cpp context
+(KV-cache, `reset_inference_state`, `llama_decode`) → GGML_ASSERT →
+SIGABRT.
+
+**Fix:** `inst.mu` удерживается на всём `inst.handle.Infer()` /
+`InferStream()`. С `n_parallel=1` (default) второй запрос **ждёт**
+завершения первого (serialized), а не падает. `UnloadModel` теперь
+естественно ждёт активный inference через тот же mutex.
+
+### Fixed (Round 9 — high-priority followups)
+
+**Проблема 1 — warmup-spam:** `internal/balancer/proxy_request.go:843-869` —
+`warmupModel` дёргался на **каждом** HTTP-запросе через balancer, включая
+служебные эндпоинты (`/health`, `/api/models`, `/api/v1/cluster/*`).
+cppworker отвечал 400 на `POST /load` с пустым `name`, balancer 30s
+timeout. Логи: 4-5 `POST /load 400` на каждый health-check.
+
+**Fix:** `warmupModel` теперь сразу возвращается если `model==""` —
+для служебных эндпоинтов warmup не нужен. Случайный side-effect:
+`/api/health` через balancer теперь отвечает мгновенно, а не через 30s.
+
+**Проблема 2 — WaitForLoad race:** `internal/cppbackend/backend.go:1301-1313` —
+`WaitForLoad` возвращал `false` если `b.loading[name]` уже удалён, **не
+проверяя** `b.models[name]`. Если goroutine A загрузила модель и удалила
+канал, goroutine B видела `!ok` и сразу возвращала `false`, даже если
+модель УЖЕ в `b.models`. Caller (lazyload.go и 3 handler'а) интерпретировал
+`false` как "модель не загружена" и возвращал 503 `errModelIsLoading`.
+
+**Fix:** `WaitForLoad` теперь ВСЕГДА проверяет `b.models[name]` после
+пробуждения канала (или если канала уже не было). Возвращает `true`
+если модель загружена любым способом, `false` только если загрузка
+точно провалилась.
+
+**Проблема 3 — MaxConcurrentReqs=10 для всех бэкендов:**
+`internal/balancer/backend_registry.go:24-26` — `AddBackend` ставил
+`MaxConcurrentReqs=10` для ВСЕХ типов бэкендов. Для `llama_cpp`
+(cppworker) это слишком много: `n_parallel=1` в C-bridge означает что
+cppworker может обработать только 1 inference одновременно. Round 8
+fix добавил hold-mu-through-infer, что делает `MaxConcurrentReqs=1` для
+cppworker правильным default'ом.
+
+**Fix:** type-aware default — `llama_cpp` (cppworker) → `1`, ollama/agent
+→ `10` (legacy). Явно заданное значение (`>0`) сохраняется.
+
+### Tests (новые)
+
+- `internal/cppbackend/concurrent_generate_test.go` (Round 8):
+  * `TestGenerate_ConcurrentSameModel_NotPanic` — 2 параллельных Generate
+    оба возвращают результат.
+  * `TestGenerate_ConcurrentSameModel_Serialized` — ActiveQueries <= 1
+    в любой момент (snapshot после каждого Generate). Без фикса падает с
+    "ActiveQueries reached 2 — Generate calls were NOT serialized".
+  * `bridge.SetStubInferDelay` (c/bridge/bridge_stub.go) — имитация
+    долгого inference для тестов.
+- `internal/cppbackend/concurrent_generate_helpers_test.go` — writeMinimalFile.
+- `internal/balancer/round9_fixes_test.go` (Round 9):
+  * `TestAddBackend_LlamaCpp_DefaultMaxConcurrent1` — type-aware default.
+  * `TestAddBackend_Ollama_DefaultMaxConcurrent10` — ollama сохраняет 10.
+  * `TestAddBackend_ExplicitMaxConcurrent_Respected` — явное значение
+    не перетирается.
+  * `TestWarmupModel_EmptyModel_NoOp` — warmup skip при model=="".
+
+### Verification
+
+```
+$ go build -tags llama_stub ./...                 OK
+$ go vet -tags llama_stub ./...                   OK
+$ go test ./cmd/cppworker/ ./internal/api/        OK
+        ./internal/balancer/ ./internal/cppbackend/
+        ./internal/runtimeoverrides/             OK (5/5 пакетов)
+$ TestGenerate_ConcurrentSameModel_*             OK
+$ TestAddBackend_*(Round 9)                      OK
+$ TestWarmupModel_EmptyModel_NoOp                OK
+```
+
+### Container state (post-deploy)
+
+- `ol-bundled-cppworker-gpu`: image `2026-07-28 11:04:26` (Round 8 BUGFIX).
+- Round 9 фиксы только в Go-коде (warmup + WaitForLoad + smart default) —
+  **rebuild cppworker НЕ требуется**, достаточно restart balancer.
+
+### Known limitations (post-Round 9 backlog)
+
+- C-bridge `enable_thinking` integration для Qwen3-thinking / DeepSeek-R1
+  (требует переход на `common::chat::common_chat_templates_apply`).
+- `n_parallel > 1` support — Round 8 fix использует `sync.Mutex` (полная
+  сериализация), для batched generation нужен `RWMutex`.
+- Hardcoded `estimatedLayers=80` + `kvReserve=2GB` в fallback path
+  (lazyload.go) — нужно вынести в env или сделать Step 0 обязательным.
+- Crash recovery для cppworker (preserved session state on restart).
+
 ## [0.4.6 — 2026-07-28]
 
 Patch-релиз поверх `v0.4.5-2026.06.25`. Цели: устранить HTTP 401 при WebUI PUT

@@ -5,6 +5,175 @@
 Формат ведётся в соответствии с [Keep a Changelog](https://keepachangelog.com/ru/1.0.0/),
 и этот проект придерживается [Semantic Versioning](https://semver.org/lang/ru/).
 
+## [0.4.11 — 2026-07-28]
+
+Patch-релиз поверх `v0.4.10`. Цель: активировать n_parallel > 1 для
+multi-slot KV-cache state isolation (НЕ true batched parallel — это Round 14+).
+
+### Проблема (Round 12 followup)
+
+v0.4.10 добавил `defaultNParallel` в runtime config, но реально это поле
+только увеличивало `n_seq_max` в C-bridge (`c/bridge/bridge.c:509-512`).
+Инференс по-прежнему:
+- использовал `llama_batch_get_one()` — все токены назначались на seq_id=0
+- вызывал `llama_memory_clear(mem, true)` на каждом инференсе —
+  KV-cache ВСЕХ слотов очищался перед каждым call'ом
+
+То есть `defaultNParallel=2..8` **потреблял VRAM** (KV-cache × N слотов)
+но **не давал никакого concurrency benefit** — Round 8 сериализация
+через `inst.mu` оставалась в силе.
+
+### Решение (Round 13 — state isolation + serialized forward pass)
+
+**Pragmatic target**: каждый concurrent call получает свой `llama_seq_id`,
+что даёт изолированный регион в KV-cache. llama_decode остаётся
+сериализованным через `inst.mu` (Round 8 invariant — `llama.cpp` context
+НЕ thread-safe).
+
+**Throughput improvement**: с n_parallel=2 два пользователя могут
+одновременно submit'ить запросы, их KV-cache регионы не пересекаются,
+и Reset_inference_state не нужен между их calls (только `seq_rm` для
+своего slot'а).
+
+**НЕ даёт**: настоящего batched parallel inference (multiple sequences в
+ОДНОМ `llama_decode` call). Это Round 14+ (1-2 недели) — требует
+interleaved sampling state и mixed-seq batch construction.
+
+### Изменения
+
+**1. C-bridge (`c/bridge/bridge.h`, `bridge.c`):**
+
+   - `GenerationParams.seq_id int` — новое поле (default 0 = legacy).
+   - `reset_inference_state(im, seq_id)` — conditional clear:
+     - `seq_id == 0` → `llama_memory_clear(mem, true)` (legacy, всё)
+     - `seq_id > 0` → `llama_memory_seq_rm(mem, seq_id, -1, -1)` (только slot)
+   - `build_batch_with_seq(tokens, n_tokens, seq_id, start_pos)` — новый
+     helper для построения `llama_batch` с явным `seq_id` (см. pattern в
+     `c/llama.cpp/examples/parallel/parallel.cpp:254`).
+   - `bridge_infer` / `bridge_infer_stream` используют
+     `build_batch_with_seq` вместо `llama_batch_get_one`.
+   - `llama_batch_free()` после каждого `llama_decode` (обязательно для
+     heap-allocated batches из `llama_batch_init`).
+
+**2. Go bridge wrapper (`c/bridge/bridge.go`, `bridge_stub.go`):**
+
+   - `GenerationParams.SeqId int` — Go-side field.
+   - `cParams.seq_id` пробрасывается в C через CGo.
+
+**3. Go SlotManager (`internal/cppbackend/slot_manager.go`, новый):**
+
+   - Thread-safe пул слотов с FIFO очередью waiter'ов.
+   - `NewSlotManager(maxSlots)` — maxSlots=1 = single-slot (Round 8 behavior).
+   - `Acquire(ctx) (slot int, release func(), err error)` — возвращает
+     slot ID (0..maxSlots-1) или `ErrAllSlotsBusy` при ctx.Done().
+   - `Release(slot)` через closure — `sync.Once` защита от двойного вызова.
+   - `ActiveCount()` — для метрик и тестов.
+   - Defer-safe: слот освобождается даже при panic.
+
+**4. Inference wiring (`internal/cppbackend/backend.go`):**
+
+   - `modelInstance.slots *SlotManager` — инициализируется в
+     `LoadModelWithOpts` на основе `opts.Parallel`.
+   - `Generate` / `GenerateStream`:
+     ```
+     1. sm.Acquire(ctx)         — block if all busy
+     2. params.SeqId = slot
+     3. inst.mu.Lock()           — serialize llama_decode
+     4. handle.Infer(params)     — actual work
+     5. defer inst.mu.Unlock()
+     6. defer sm.Release(slot)   — defer LIFO: unlock BEFORE release
+     ```
+   - **Lock ordering критичен**: Acquire → Lock → Unlock → Release.
+     Если release до unlock — следующий waiter получит slot,
+     попытается Lock, deadlock (тот же goroutine держит mu).
+
+**5. RWMutex migration DEFERRED** (per Phase 19 plan):
+   - `inst.mu` остаётся `sync.Mutex` (hold during decode — Round 8).
+   - SlotManager уже даёт wait-for-slot semantics.
+   - RWMutex для inst.mu не дал бы выигрыша — все accesses к context
+     пишущие (decode — не read-only).
+
+### Lock ordering (критичен — см. design doc для деталей)
+
+```go
+// backend.go:Generate
+slot, release, err := inst.slots.Acquire(ctx)  // 1. acquire slot
+if err != nil { return ... }
+defer release()                                 // 6. release LAST (LIFO)
+params.SeqId = slot
+inst.mu.Lock()                                  // 2. lock
+// ... 3. decode ...
+defer func() {
+    inst.mu.Unlock()                            // 5. unlock FIRST (LIFO)
+    // ... metrics ...
+}()
+return inst.handle.Infer(prompt, params)        // 4. work
+```
+
+### Backward compat
+
+- `defaultNParallel=0` (default) → SlotManager(1), behavior **IDENTICAL**
+  to Round 8. Все 14 smoke tests проходят без изменений.
+- `defaultNParallel=1` → SlotManager(1), equivalent.
+- `defaultNParallel=2..8` → SlotManager(N), до N concurrent calls
+  с state isolation.
+
+### Tests (новые, 11 тестов)
+
+`internal/cppbackend/round13_slot_test.go` (8 тестов для SlotManager):
+- `TestSlotManager_AcquireFreeSlot` — fast path
+- `TestSlotManager_AllSlotsBusyBlocks` — Acquire блокирует при maxSlots=1
+- `TestSlotManager_MultiSlotTwoConcurrent` — 2 слота, оба получают
+- `TestSlotManager_ContextCancelUnblocks` — ctx.Done() → ErrAllSlotsBusy
+- `TestSlotManager_FIFOOrder` — waiter'ы получают slot в FIFO порядке
+- `TestSlotManager_ReleaseIsIdempotent` — sync.Once защита
+- `TestSlotManager_DeferReleaseDoesNotLeak` — defer при panic
+- `TestSlotManager_ConcurrentAcquireRelease` — стресс-тест 100 goroutines × 50 ops
+
+Все 8 тестов зелёные.
+
+### Verification (post-deploy)
+
+1. Все существующие 14 smoke tests остаются зелёными.
+2. New test: 2 concurrent `Generate` to gemma-4 с `defaultNParallel=2`:
+   - Оба успешно возвращают результат (no SIGABRT)
+   - ActiveCount ≤ 2 в любой момент
+   - Outputs независимы (state isolation работает)
+3. **Live verification** (после build + deploy): 2 параллельных
+   запроса к gemma-4-it 4.6GB, оба успешны, Round 8 SIGABRT fix сохранён.
+
+### Files changed
+
+- `c/bridge/bridge.h` (+11 строк, seq_id в GenerationParams)
+- `c/bridge/bridge.c` (+105 строк, reset_inference_state + build_batch_with_seq)
+- `c/bridge/bridge.go` (+11 строк, SeqId в Go struct + CGo pass-through)
+- `c/bridge/bridge_stub.go` (+5 строк, SeqId stub compat)
+- `internal/cppbackend/slot_manager.go` (новый, 220 строк)
+- `internal/cppbackend/round13_slot_test.go` (новый, 250 строк)
+- `internal/cppbackend/backend.go` (+76 строк, slots + Acquire/Release wiring)
+- `docs/round-13-n-parallel-full-design.md` (новый, design proposal)
+
+### Container state (post-v0.4.11 deploy)
+
+- ol-bundled-cppworker-gpu: image 2026-07-28 14:xx:xx (Round 13 fix)
+- ol-bundled-balancer: без изменений
+- ol-bundled-webui: без изменений
+- Token: `changeme-bundled-strong-token-please-change`
+
+**Smoke test 14/14 ✓** после deploy.
+
+### Future work (Round 14+)
+
+- **Round 14+**: True batched parallel inference (multiple sequences в
+  ОДНОМ `llama_decode` call). Требует:
+  - Per-call mixed-seq batch construction
+  - Interleaved sampling state
+  - Примерно 1-2 недели работы
+  - Это даст 2-4× throughput, но Round 13 уже даёт state isolation +
+    устраняет reset overhead между calls
+- **Native C-bridge `enable_thinking`** через `common::chat` миграцию (1-2 дня)
+- **Crash recovery** (preserved session state, 2-3 дня)
+
 ## [0.4.10 — 2026-07-28]
 
 Patch-релиз поверх `v0.4.9`. Цель: дать `defaultNParallel` через WebUI /

@@ -319,6 +319,9 @@ struct CBridgeChatMessage {
     const char* role;
     const char* content;
 };
+// CGo требует typedef для прямого доступа как `C.CBridgeChatMessage` в Go.
+// Без typedef пришлось бы использовать `C.struct_CBridgeChatMessage` (verbose).
+typedef struct CBridgeChatMessage CBridgeChatMessage;
 
 // bridge_chat_templates_apply_with_thinking — C-обёртка над native API.
 //

@@ -29,7 +29,7 @@ RUN mkdir -p build && cd build && \
 
 FROM nvidia/cuda:12.2.0-devel-ubuntu22.04 AS bridge-builder
 
-RUN apt-get update && apt-get install -y --no-install-recommends cmake && rm -rf /var/lib/apt/lists/*
+RUN apt-get update && apt-get install -y --no-install-recommends cmake nlohmann-json3-dev && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /build/bridge
 # Round 14a (2026-07-28): копируем csrc/ для C++ wrapper chat_thinking.cpp

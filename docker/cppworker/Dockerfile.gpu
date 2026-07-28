@@ -68,7 +68,14 @@ RUN mkdir -p build && cd build && \
 # -----------------------------------------------------------------------------
 FROM dockerhub.timeweb.cloud/nvidia/cuda:12.2.0-devel-ubuntu22.04 AS bridge-builder
 
-RUN apt-get update && apt-get install -y --no-install-recommends cmake && \
+# Round 14a (2026-07-28): nlohmann-json3-dev для c/llama.cpp/common/
+# (nlohmann/json_fwd.hpp, nlohmann/json.hpp — нужны для chat.h).
+# Обычно предустановлен в Linux системах (Ubuntu 22.04 universe repo).
+# Без этого chat_thinking.cpp не скомпилируется: "fatal error:
+# nlohmann/json_fwd.hpp: No such file or directory".
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    cmake \
+    nlohmann-json3-dev && \
     rm -rf /var/lib/apt/lists/*
 
 WORKDIR /build/bridge

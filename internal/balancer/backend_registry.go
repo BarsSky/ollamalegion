@@ -21,8 +21,22 @@ func (p *Proxy) AddBackend(backend types.Backend) error {
 	if backend.Weight == 0 {
 		backend.Weight = 1
 	}
+	// Round 9 (2026-07-28) BUGFIX: type-aware default для MaxConcurrentReqs.
+	// До фикса ВСЕ бэкенды получали 10 по умолчанию. Для llama_cpp
+	// (cppworker) это слишком много — n_parallel=1 в C-bridge означает
+	// что cppworker может обработать только 1 inference одновременно.
+	// Balancer всё равно сериализует остальные через slot manager, но
+	// "свободные слоты" 2-10 — это впустую зарезервированные ресурсы
+	// (дают ложное ощущение что можно слать больше). Round 8 BUGFIX
+	// добавил hold-mu-through-infer в cppworker, что делает
+	// MaxConcurrentReqs=1 для cppworker правильным default'ом.
+	isLlamaCpp := backend.Type == types.BackendTypeLlamaCpp
 	if backend.MaxConcurrentReqs == 0 {
-		backend.MaxConcurrentReqs = 10
+		if isLlamaCpp {
+			backend.MaxConcurrentReqs = 1 // cppworker: n_parallel=1
+		} else {
+			backend.MaxConcurrentReqs = 10 // ollama/agent: legacy
+		}
 	}
 	// Defaults зависят от типа бэкенда:
 	//   - llama_cpp (cppworker): OllamaPort=0 (неприменимо), CppWorkerPort=18092 (default если не задан).
@@ -33,7 +47,6 @@ func (p *Proxy) AddBackend(backend types.Backend) error {
 	// потому что это вызывало dedup-collision с ollama-агентами на том же
 	// физическом endpoint (test setup). backendEffectivePort() корректно
 	// обрабатывает 0 OllamaPort для llama_cpp, используя CppWorkerPort.
-	isLlamaCpp := backend.Type == types.BackendTypeLlamaCpp
 	if isLlamaCpp {
 		if backend.CppWorkerPort == 0 {
 			backend.CppWorkerPort = 18092

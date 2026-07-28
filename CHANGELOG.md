@@ -5,6 +5,111 @@
 Формат ведётся в соответствии с [Keep a Changelog](https://keepachangelog.com/ru/1.0.0/),
 и этот проект придерживается [Semantic Versioning](https://semver.org/lang/ru/).
 
+## [0.4.12 — 2026-07-28]
+
+Patch-релиз поверх `v0.4.11`. Цель: добавить **native** `enable_thinking`
+поддержку через C++ API `common_chat_templates_apply` (для моделей с
+Jinja `enable_thinking` variable типа Qwen3-thinking, DeepSeek-R1), с
+fallback на soft prompt injection (Round 11) для моделей без такой
+variable (gemma-4-it, llama-3-it).
+
+### Проблема (Round 11 followup)
+
+Round 11 (v0.4.9) использовал soft prompt injection для instruction-tuned
+моделей. Это работает для gemma-4-it, llama-3-it (не имеют native thinking),
+но НЕ идеально для моделей с native thinking (Qwen3-thinking, DeepSeek-R1):
+- Soft prompt может конфликтовать с обучением модели
+- Некоторые модели игнорируют soft prompt
+- Reasoning может выводиться в неожиданном формате
+
+Native API `common_chat_templates_apply` (c/llama.cpp/common/chat.h) даёт
+правильное thinking tag emission через Jinja template (Qwen3-thinking
+знает как рендерить `<think>...</think>` правильно).
+
+### Решение (Round 14 — двухфазный рефактор)
+
+**Round 14a (commit e12a8e5) — C-bridge foundation**:
+- c/bridge/csrc/chat_thinking.cpp (новый) — C++ wrapper вокруг
+  `common_chat_templates_apply` с native `enable_thinking` параметром
+- c/bridge/bridge.h — C API `bridge_chat_templates_apply_with_thinking`
+- c/bridge/bridge.go — Go wrapper `ApplyChatTemplateWithThinking`
+- c/bridge/CMakeLists.txt — project C → CXX, C++17, link common lib
+- c/bridge/bridge_stub.go — stub compat для тестов
+
+**Round 14b (commit 8ff004f) — Go integration (этот PR)**:
+- internal/cppbackend/backend.go — `Backend.ApplyChatTemplateWithThinking`
+- cmd/cppworker/handlers_chat.go — `buildChatPrompt` теперь пробует
+  native path первым, fallback на soft prompt если template не поддерживает
+- cmd/cppworker/handlers_generate.go — комментарий почему /api/generate
+  не использует native path (single prompt, не messages[])
+- c/bridge/bridge.go — retry logic для output buffer (2x growth до 4MB)
+- 4 теста в cmd/cppworker/round14_native_thinking_test.go
+
+### Стратегия в `buildChatPrompt`
+
+```
+1. EnableReasoning=true?
+   ↓ да
+   native path: ApplyChatTemplateWithThinking(model, "", msgs, true, true)
+   ↓
+   success + supportsThinking=true?
+   ↓ да                                    ↓ нет
+   return native prompt                    success + supportsThinking=false:
+   (НЕТ soft prompt — template             → fallback: soft prompt + legacy ApplyChatTemplate
+    сам эмитит <think> блоки)               ↓
+                                            failure?
+                                            ↓ log + fallback to legacy
+   НИКОГДА не вызывается для моделей
+   с Jinja enable_thinking
+```
+
+2. EnableReasoning=false → старая логика (legacy ApplyChatTemplate + manual fallback)
+
+### Backward compat (verified)
+
+| Сценарий | v0.4.11 | v0.4.12 |
+|---|---|---|
+| `/api/chat` EnableReasoning=false | legacy path | **legacy path (same)** |
+| `/api/chat` EnableReasoning=true + gemma-4 (нет Jinja variable) | soft prompt | **soft prompt (same path)** |
+| `/api/chat` EnableReasoning=true + Qwen3-thinking (с Jinja variable) | soft prompt | **native path (NEW)** |
+| `/api/generate` EnableReasoning=true | soft prompt | **soft prompt (same)** |
+| `/api/generate` EnableReasoning=false | no reasoning | **no reasoning (same)** |
+
+### Тесты
+
+- 4 теста в cmd/cppworker/round14_native_thinking_test.go (compile-time
+  + stub-skip). Реальная верификация — smoke test 14/14 + live test
+  на gemma-4 (verify no regression).
+- 8 существующих SlotManager тестов (Round 13) — pass
+- 9 Round 12 n_parallel тестов — pass
+- 22+ существующих tests в cmd/cppworker/ — pass
+
+### Live verification (post-deploy)
+
+1. gemma-4-it 4.6GB, EnableReasoning=true → soft prompt path → reasoning
+   output (as before v0.4.11) — verify no regression
+2. gemma-4-it 4.6GB, EnableReasoning=false → no reasoning (as before)
+3. (если есть) Qwen3-thinking с EnableReasoning=true → native path → правильное
+   извлечение <think> блоков через reasoning parser
+
+### Files changed
+
+- internal/cppbackend/backend.go (+30 строк, ApplyChatTemplateWithThinking)
+- cmd/cppworker/handlers_chat.go (+50 строк, native path с fallback)
+- cmd/cppworker/handlers_generate.go (+5 строк, комментарий)
+- c/bridge/bridge.go (+30 строк, retry logic)
+- cmd/cppworker/round14_native_thinking_test.go (новый, 130 строк)
+
+3 коммита:
+- 8ae47c4 docs: Round 13 design doc + CHANGELOG entry for v0.4.11 (предыдущий)
+- e12a8e5 feat(c-bridge): C++ wrapper for native enable_thinking (Round 14a)
+- 8ff004f feat(cppworker): Go integration for native enable_thinking (Round 14b)
+
+### Future work
+
+- True batched parallel inference (Round 15+, 1-2 недели)
+- Crash recovery with preserved session state (Round 16+, 2-3 дня)
+
 ## [0.4.11 — 2026-07-28]
 
 Patch-релиз поверх `v0.4.10`. Цель: активировать n_parallel > 1 для

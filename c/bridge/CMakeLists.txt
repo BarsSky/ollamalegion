@@ -28,8 +28,10 @@ find_library(LLAMA_LIB llama PATHS "${LLAMA_BUILD_DIR}" "${LLAMA_BUILD_DIR}/src"
 find_library(GGML_LIB ggml PATHS "${LLAMA_BUILD_DIR}" "${LLAMA_BUILD_DIR}/ggml/src" NO_DEFAULT_PATH)
 find_library(GGML_CPU_LIB ggml-cpu PATHS "${LLAMA_BUILD_DIR}" "${LLAMA_BUILD_DIR}/ggml/src" NO_DEFAULT_PATH)
 find_library(GGML_BASE_LIB ggml-base PATHS "${LLAMA_BUILD_DIR}" "${LLAMA_BUILD_DIR}/ggml/src" NO_DEFAULT_PATH)
-# Round 14a: libcommon.a — для C++ API common_chat_templates_apply и др.
-find_library(COMMON_LIB common PATHS "${LLAMA_BUILD_DIR}/common" "${LLAMA_BUILD_DIR}" NO_DEFAULT_PATH)
+# Round 14a: libllama-common.a — для C++ API common_chat_templates_apply и др.
+# ВНИМАНИЕ: имя файла libllama-common.a (CMake target `llama-common`),
+# find_library берёт basename без префикса "lib" и расширения.
+find_library(COMMON_LIB llama-common PATHS "${LLAMA_BUILD_DIR}/common" "${LLAMA_BUILD_DIR}" NO_DEFAULT_PATH)
 
 # Если библиотеки не найдены, пробуем без NO_DEFAULT_PATH
 if(NOT LLAMA_LIB)
@@ -45,7 +47,7 @@ if(NOT GGML_BASE_LIB)
     find_library(GGML_BASE_LIB ggml-base PATHS "${LLAMA_BUILD_DIR}" "${LLAMA_BUILD_DIR}/ggml/src")
 endif()
 if(NOT COMMON_LIB)
-    find_library(COMMON_LIB common PATHS "${LLAMA_BUILD_DIR}/common" "${LLAMA_BUILD_DIR}")
+    find_library(COMMON_LIB llama-common PATHS "${LLAMA_BUILD_DIR}/common" "${LLAMA_BUILD_DIR}")
 endif()
 
 message(STATUS "LLAMA_LIB: ${LLAMA_LIB}")

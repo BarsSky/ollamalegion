@@ -1019,15 +1019,19 @@ func (m *ModelHandle) BatchedDecode(sequences []BatchedSequence) ([][]float32, e
 	}
 
 	// Аллоцируем logits_out буфер: n_sequences * n_vocab float32.
-	nVocab := int(C.bridge_get_n_vocab(m.ptr))
+	// bridge_get_n_vocab принимает void* (C → unsafe.Pointer в Go),
+	// поэтому нужен явный каст typed pointer → unsafe.Pointer.
+	nVocab := int(C.bridge_get_n_vocab(unsafe.Pointer(m.ptr)))
 	if nVocab <= 0 {
 		return nil, fmt.Errorf("invalid n_vocab=%d from bridge_get_n_vocab", nVocab)
 	}
 	logitsOut := make([]float32, len(sequences)*nVocab)
 
 	// Вызываем C-side: ОДИН llama_decode для всех sequences.
+	// bridge_batched_decode принимает void* handle (C → unsafe.Pointer в Go),
+	// поэтому нужен явный каст typed pointer → unsafe.Pointer.
 	rc := C.bridge_batched_decode(
-		m.ptr,
+		unsafe.Pointer(m.ptr),
 		(*C.CBridgeBatchedSeq)(cSeqs),
 		C.int32_t(len(sequences)),
 		C.int32_t(nVocab),

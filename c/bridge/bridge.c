@@ -154,6 +154,84 @@ struct llama_batch build_batch_with_seq(
     return batch;
 }
 
+// build_batched_batch — Round 15.1 (2026-07-29): multi-sequence batch для
+// true batched parallel inference.
+//
+// Создаёт ОДИН llama_batch, содержащий токены от N sequences. Каждый токен
+// получает seq_id своей sequence (через batch.seq_id[i][0]), что позволяет
+// llama_decode выполнить forward pass для всех sequences параллельно в
+// одной CUDA-операции (1 graph build + 1 graph launch вместо N).
+//
+// Архитектурный reference: c/llama.cpp/examples/parallel/parallel.cpp:254-490
+// (common_batch_add с явным seq_id для каждого токена; примерно
+// идентично нашему коду, но мы формируем batch целиком за один call).
+//
+// Caller обязан вызвать llama_batch_free(batch) после использования.
+//
+// Контракт: см. декларацию в bridge.h:CBridgeBatchedSeq + build_batched_batch.
+struct llama_batch build_batched_batch(
+    const struct CBridgeBatchedSeq* sequences, int32_t n_sequences
+) {
+    // Early return для пустого batch (n_sequences=0) — no-op для llama_decode.
+    // Возвращаем batch с n_tokens=0 (безопасно — llama_decode игнорирует).
+    if (n_sequences <= 0) {
+        return llama_batch_init(1, 0, 1);
+    }
+
+    // Шаг 1: вычисляем общий n_tokens (sum всех sequences[i].n_tokens).
+    // Проверяем что все sequences[i].n_tokens > 0 (caller bug если 0).
+    int32_t total_tokens = 0;
+    for (int32_t i = 0; i < n_sequences; i++) {
+        if (sequences[i].n_tokens <= 0) {
+            // Смешанный batch (с и без токенов) — пропускаем пустые sequences
+            // (не добавляем их токены). Caller может сам фильтровать
+            // неактивные slots перед вызовом.
+            continue;
+        }
+        total_tokens += sequences[i].n_tokens;
+    }
+
+    // Если все sequences пустые — return no-op batch.
+    if (total_tokens == 0) {
+        return llama_batch_init(1, 0, 1);
+    }
+
+    // Шаг 2: аллоцируем batch через llama_batch_init(total_tokens, 0, 1).
+    // Параметры (n_tokens, embd=0, n_seq_max=1): каждый токен может
+    // принадлежать максимум 1 sequence. Соответствует паттерну из
+    // examples/parallel/parallel.cpp:254.
+    struct llama_batch batch = llama_batch_init(total_tokens, 0, 1);
+
+    // Шаг 3: populate — копируем tokens, pos, seq_id, logits.
+    int32_t offset = 0;
+    for (int32_t s = 0; s < n_sequences; s++) {
+        int32_t n = sequences[s].n_tokens;
+        if (n <= 0) {
+            continue;  // skip empty sequences
+        }
+        for (int32_t j = 0; j < n; j++) {
+            int32_t i = offset + j;
+            batch.token[i]    = sequences[s].tokens[j];
+            batch.pos[i]      = (llama_pos)(sequences[s].start_pos + j);
+            batch.n_seq_id[i] = 1;
+            batch.seq_id[i][0] = sequences[s].seq_id;
+            // Last token в этой sequence получает logits=1 (для sampling
+            // в следующей llama_decode). Промежуточные — logits=0.
+            batch.logits[i]   = (j == n - 1) ? 1 : 0;
+        }
+        offset += n;
+    }
+
+    // CRITICAL FIX: llama_batch_init() инициализирует batch.n_tokens = 0
+    // (см. c/llama.cpp/src/llama-batch.cpp:879). Без явного n_tokens=...
+    // llama_decode() видит пустой batch и возвращает -1 с "decode: n_tokens == 0".
+    // Тот же bug что и в build_batch_with_seq (Round 13), теперь исправлен
+    // превентивно в build_batched_batch чтобы не повторить regression.
+    batch.n_tokens = total_tokens;
+
+    return batch;
+}
+
 // ============================================================
 // Структурированная ошибка (last_error_info) + мьютекс
 // ============================================================

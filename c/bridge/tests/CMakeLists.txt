@@ -56,10 +56,28 @@ endif()
 # C standard для bridge.c
 target_compile_features(test_batch_n_tokens PRIVATE C99)
 
-# Smoke test target (alias для удобства)
+# ============================================================
+# test_batched_batch — Round 15.1 regression test для build_batched_batch
+# (true batched parallel inference — N sequences в ОДНОМ llama_batch).
+# ============================================================
+# Аналогично test_batch_n_tokens, линкуется против bridge.c напрямую
+# (для доступа к internal build_batched_batch через bridge_internal.h)
+# и против libllama-common.a (для llama_batch_init, llama_batch_free).
+add_executable(test_batched_batch
+    test_batched_batch.c
+    ../bridge.c
+)
+target_include_directories(test_batched_batch PRIVATE
+    ${CMAKE_SOURCE_DIR}/..
+    ${CMAKE_CURRENT_SOURCE_DIR}/../..
+)
+target_link_libraries(test_batched_batch PRIVATE ${COMMON_LIB})
+target_compile_features(test_batched_batch PRIVATE C99)
+
+# Smoke test target (alias для удобства) — обновлён для запуска обоих тестов
 add_custom_target(bridge-tests
-    COMMAND test_batch_n_tokens
-    DEPENDS test_batch_n_tokens
+    COMMAND test_batch_n_tokens && test_batched_batch
+    DEPENDS test_batch_n_tokens test_batched_batch
     WORKING_DIRECTORY ${CMAKE_BINARY_DIR}
     COMMENT "Running bridge regression tests"
 )

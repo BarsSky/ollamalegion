@@ -354,6 +354,69 @@ int32_t bridge_chat_templates_apply_with_thinking(
     bool* out_supports_thinking
 );
 
+// ============================================================
+// Round 15.1 (2026-07-29): true batched parallel inference
+// ============================================================
+//
+// Round 13 (v0.4.11) добавил per-seq_id support в llama_batch, но actual
+// parallel inference всё равно сериализовался через inst.mu на Go-стороне
+// (один forward pass за раз → batch содержит токены одной sequence).
+//
+// Round 15.1 (по дизайн-доку docs/plans/round-15-batched-parallel.md):
+// 1. C-bridge `build_batched_batch` (этот шаг) — собирает ОДИН llama_batch
+//    из N sequences (каждая со своим tokens, n_tokens, seq_id, start_pos).
+//    Все sequences обрабатываются в ОДНОМ llama_decode call → real parallel.
+// 2. Go BatchedScheduler (шаг 3.2) — собирает токены от N горутин,
+//    флашит в один batch при заполнении/таймауте.
+// 3. WebUI toggle + cppworker integration (шаг 3.3) — opt-in через config.
+//
+// Шаг 3.1 (C-bridge only) не меняет behavior существующих вызовов
+// bridge_infer / bridge_infer_stream — это НОВЫЙ API для batched path.
+// Round 13 multi-slot (inst.mu + per-seq_id) остаётся default, opt-in
+// через `EnableBatchedParallel` в cppworker-defaults.json.
+
+// CBridgeBatchedSeq — описание одной sequence для batched parallel inference.
+// Caller владеет массивом tokens (НЕ копируется — только borrows).
+// Аналогично build_batch_with_seq, но для N sequences в одном batch.
+struct CBridgeBatchedSeq {
+    const llama_token* tokens;    // массив токенов (входной, не копируется)
+    int32_t n_tokens;             // число токенов в этой sequence (>= 0)
+    llama_seq_id seq_id;          // уникальный seq_id для этой sequence
+    llama_pos start_pos;          // начальная позиция (для prompt = 0)
+};
+// CGo требует typedef для доступа как C.CBridgeBatchedSeq в Go.
+typedef struct CBridgeBatchedSeq CBridgeBatchedSeq;
+
+// build_batched_batch — создаёт ОДИН llama_batch для N sequences.
+//
+// Каждый токен получает seq_id своей sequence (для KV-cache routing).
+// В каждой sequence последний токен получает logits=1 (для sampling
+// в следующей итерации), промежуточные — logits=0.
+//
+// Параметры:
+//   sequences   — массив структур CBridgeBatchedSeq (входной, не копируется)
+//   n_sequences — число sequences (>= 0; 0 = no-op batch)
+//
+// Возвращаемый batch должен быть освобождён через llama_batch_free().
+//
+// Контракт (n_sequences > 0, все sequences[i].n_tokens > 0):
+//   - batch.n_tokens == sum(sequences[i].n_tokens)
+//   - batch.token[offset + j] == sequences[i].tokens[j] для j ∈ [0, sequences[i].n_tokens)
+//   - batch.seq_id[offset + j][0] == sequences[i].seq_id
+//   - batch.pos[offset + j] == sequences[i].start_pos + j
+//   - batch.logits[offset + sequences[i].n_tokens - 1] == 1
+//   - batch.logits[другие] == 0
+//
+// Ограничения:
+//   - Все sequences должны иметь разные seq_id (caller отвечает).
+//   - n_sequences * n_seq_max не должно превышать n_seq_max контекста.
+//
+// Это аналог llama-cli's examples/parallel/parallel.cpp:254-490
+// (common_batch_add с явным seq_id для каждого токена).
+struct llama_batch build_batched_batch(
+    const struct CBridgeBatchedSeq* sequences, int32_t n_sequences
+);
+
 #ifdef __cplusplus
 }
 #endif

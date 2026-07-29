@@ -986,13 +986,10 @@ func writeOpenAIChatStream(w http.ResponseWriter, r *http.Request, modelName, pr
 
 	// Round 15 (2026-07-29): debug-логирование для диагностики missing usage chunk.
 	// TODO: убрать после подтверждения фикса в проде.
-	swTokens := 0
-	if safeSw, ok := sw.(*safeStreamWriter); ok {
-		swTokens = int(safeSw.Tokens())
-	}
+	snapBefore := sw.Snapshot()
 	logger.Get().Infow("[R15-USAGE-DEBUG] about to emit usage chunk",
 		"model", modelName, "includeUsage_param", includeUsage, "sw_broken", sw.IsBroken(),
-		"sw_bytes_written", sw.BytesWritten(), "sw_tokens", swTokens, "fullOutput_len", len(fullOutput))
+		"sw_bytes_written", snapBefore.BytesWritten, "sw_tokens", snapBefore.TokensSent, "fullOutput_len", len(fullOutput))
 
 	// Финальный usage chunk (если include_usage=true) — перед [DONE].
 	// OpenAI stream_options.include_usage=true → клиент получает prompt/completion/total_tokens.
@@ -1008,8 +1005,9 @@ func writeOpenAIChatStream(w http.ResponseWriter, r *http.Request, modelName, pr
 		logger.Get().Infow("[R15-USAGE-DEBUG] calling emitOpenAIUsageChunkSafe",
 			"model", modelName, "completionText_len", len(completionText))
 		emitOpenAIUsageChunkSafe(sw, chatID, created, modelName, prompt, completionText, true)
+		snapAfter := sw.Snapshot()
 		logger.Get().Infow("[R15-USAGE-DEBUG] emitOpenAIUsageChunkSafe returned",
-			"model", modelName, "sw_broken_after", sw.IsBroken(), "sw_bytes_written_after", sw.BytesWritten())
+			"model", modelName, "sw_broken_after", sw.IsBroken(), "sw_bytes_written_after", snapAfter.BytesWritten)
 	} else {
 		logger.Get().Warnw("[R15-USAGE-DEBUG] includeUsage is FALSE, usage chunk will NOT be emitted",
 			"model", modelName, "request", r.URL.Path)
@@ -1017,8 +1015,9 @@ func writeOpenAIChatStream(w http.ResponseWriter, r *http.Request, modelName, pr
 
 	sw.Writef("data: [DONE]\n\n")
 	sw.Flush()
+	snapFinal := sw.Snapshot()
 	logger.Get().Infow("[R15-USAGE-DEBUG] writeOpenAIChatStream: exit",
-		"model", modelName, "sw_broken_final", sw.IsBroken(), "sw_bytes_written_final", sw.BytesWritten())
+		"model", modelName, "sw_broken_final", sw.IsBroken(), "sw_bytes_written_final", snapFinal.BytesWritten)
 }
 
 // handleV1Completions — OpenAI-совместимый /v1/completions endpoint.

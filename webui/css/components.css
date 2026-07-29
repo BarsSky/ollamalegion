@@ -781,14 +781,20 @@
    Setup Wizard Modal
    ================================================ */
 .wizard-modal {
-    background: var(--card-bg);
+    /* Session 18 Round 15 (2026-07-29): FIX — `var(--card-bg)` (missing token)
+       приводил к полностью прозрачному фону модалки → текст и поля сливались
+       с body background. Заменяем на `var(--bg-card)` (реальный токен из
+       themes.css:93-94 / 191-192 / 320-321) + явный цвет для light theme. */
+    background: var(--bg-card, #16213e);
     border-radius: var(--radius-lg);
     max-width: 720px;
     width: 100%;
     max-height: 85vh;
     display: flex;
     flex-direction: column;
-    box-shadow: 0 20px 60px rgba(0,0,0,0.3);
+    box-shadow: 0 20px 60px rgba(0,0,0,0.5);
+    color: var(--text-primary);
+    overflow: hidden;
 }
 .wizard-header {
     padding: 20px 24px 12px;
@@ -835,13 +841,19 @@
     justify-content: center;
     font-size: var(--font-size-xs);
     font-weight: 600;
-    background: var(--bg-hover);
-    color: var(--text-muted);
+    /* Round 15 (2026-07-29): --bg-hover + --text-muted дают почти-невидимый
+       круг (bg #1e2a4a поверх card #16213e, цифра #6e6e8a). Контрастируем
+       через --bg-tertiary (#232346) и --text-secondary (#a8a8c0). */
+    background: var(--bg-tertiary, #232346);
+    color: var(--text-secondary, #a8a8c0);
     transition: all 0.2s;
 }
 .wizard-step-label {
     font-size: 10px;
-    color: var(--text-muted);
+    /* Round 15 (2026-07-29): --text-muted (#6e6e8a) слишком тусклый на фоне
+       --bg-card (#16213e), подписи шагов "сливаются". Повышаем до
+       --text-secondary (#a8a8c0) — заметно, но не агрессивно. */
+    color: var(--text-secondary, #a8a8c0);
     white-space: nowrap;
     text-align: center;
 }
@@ -1003,14 +1015,17 @@
 }
 
 .mode-wizard-modal {
-    background: var(--card-bg);
-    border: 1px solid var(--glass-border);
+    /* Round 15 (2026-07-29): same fix as .wizard-modal — `var(--card-bg)` это
+       несуществующий токен, нужен `var(--bg-card)`. */
+    background: var(--bg-card, #16213e);
+    border: 1px solid var(--border, #2a2a4a);
     border-radius: var(--radius-lg);
     max-width: 640px;
     width: 100%;
     max-height: 90vh;
     overflow-y: auto;
-    box-shadow: 0 20px 60px rgba(0,0,0,0.4);
+    box-shadow: 0 20px 60px rgba(0,0,0,0.5);
+    color: var(--text-primary);
     animation: wizardSlideIn 0.25s ease-out;
 }
 
@@ -1069,10 +1084,54 @@
 .wizard-field select {
     padding: 8px 12px;
     border-radius: var(--radius-md);
-    border: 1px solid var(--glass-border);
-    background: var(--bg-primary);
-    color: var(--text-primary);
+    /* Round 15 (2026-07-29): `var(--glass-border)` это rgba(255,255,255,0.10) —
+       граница практически невидима, поле «сливается» с body. Используем
+       `var(--border)` (#2a2a4a dark / #d1d5db light) — solid, контрастный. */
+    border: 1px solid var(--border, #2a2a4a);
+    background: var(--bg-primary, #0f0f23);
+    color: var(--text-primary, #e6e6f0);
     font-size: var(--font-size-base);
+    transition: border-color 0.15s, box-shadow 0.15s;
+}
+.wizard-field input:focus,
+.wizard-field select:focus {
+    outline: none;
+    border-color: var(--accent, #4a9eff);
+    box-shadow: 0 0 0 3px var(--accent-glow-ring, rgba(74,158,255,0.20));
+}
+
+/* Round 15 (2026-07-29): generic form-control внутри wizard-modal — твёрдый
+   фон вместо полупрозрачного glass-bg, чтобы поля не «сливались» с body. */
+.wizard-modal .form-control,
+.wizard-modal input[type="text"],
+.wizard-modal input[type="number"],
+.wizard-modal input[type="email"],
+.wizard-modal input[type="password"],
+.wizard-modal select,
+.wizard-modal textarea {
+    background: var(--bg-primary, #0f0f23);
+    border: 1px solid var(--border, #2a2a4a);
+    color: var(--text-primary, #e6e6f0);
+    backdrop-filter: none;
+    -webkit-backdrop-filter: none;
+}
+.wizard-modal .form-control:focus,
+.wizard-modal input:focus,
+.wizard-modal select:focus,
+.wizard-modal textarea:focus {
+    outline: none;
+    border-color: var(--accent, #4a9eff);
+    box-shadow: 0 0 0 3px var(--accent-glow-ring, rgba(74,158,255,0.20));
+}
+.wizard-modal label {
+    color: var(--text-primary, #e6e6f0);
+    font-weight: 500;
+}
+.wizard-modal .form-group,
+.wizard-modal .ctx-help,
+.wizard-modal small {
+    color: var(--text-secondary, #a8a8c0);
+}
 }
 
 .wizard-examples-title {

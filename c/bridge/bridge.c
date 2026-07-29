@@ -138,6 +138,13 @@ static struct llama_batch build_batch_with_seq(
         // Last token in batch has logits=1 (нужно для llama_sampler_sample).
         batch.logits[i]   = (i == n_tokens - 1) ? 1 : 0;
     }
+    // CRITICAL FIX (2026-07-29): llama_batch_init() инициализирует batch.n_tokens = 0
+    // (см. c/llama.cpp/src/llama-batch.cpp:879). Без явного n_tokens=... здесь
+    // llama_decode() видит пустой batch и возвращает -1 с "decode: n_tokens == 0".
+    // БАГ введён в Round 13 (v0.4.11) при замене llama_batch_get_one на batch_init
+    // для multi-slot support. Round 9-10 inference работал потому что
+    // llama_batch_get_one сама ставила n_tokens = n_tokens.
+    batch.n_tokens = n_tokens;
     return batch;
 }
 

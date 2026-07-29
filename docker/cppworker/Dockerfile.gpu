@@ -153,6 +153,27 @@ RUN CGO_ENABLED=1 GOOS=linux GOARCH=amd64 GOMAXPROCS=2 \
     -o cppworker ./cmd/cppworker
 
 # -----------------------------------------------------------------------------
+# Stage 3.5: Round 13 regression test (build + run)
+# -----------------------------------------------------------------------------
+# Компилирует и запускает c/bridge/tests/test_batch_n_tokens. Ломает build
+# если build_batch_with_seq забыл выставить batch.n_tokens (Round 13 баг).
+# Полная документация: c/bridge/tests/test_batch_n_tokens.c
+FROM dockerhub.timeweb.cloud/nvidia/cuda:12.2.0-devel-ubuntu22.04 AS bridge-tests
+
+ENV DEBIAN_FRONTEND=noninteractive
+RUN apt-get update && apt-get install -y --no-install-recommends cmake gcc g++ && \
+    rm -rf /var/lib/apt/lists/*
+
+COPY c/bridge /build/c/bridge
+COPY --from=llama-builder /build/llama.cpp /build/llama.cpp
+
+WORKDIR /build/c/bridge/tests
+RUN mkdir -p build && cd build && \
+    cmake -DCOMMON_LIB=/build/llama.cpp/build/common/libllama-common.a .. && \
+    make test_batch_n_tokens && \
+    ./test_batch_n_tokens
+
+# -----------------------------------------------------------------------------
 # Stage 4: runtime
 # -----------------------------------------------------------------------------
 FROM dockerhub.timeweb.cloud/nvidia/cuda:12.2.0-runtime-ubuntu22.04 AS runtime

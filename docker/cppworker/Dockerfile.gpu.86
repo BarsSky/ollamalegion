@@ -85,6 +85,30 @@ RUN CGO_ENABLED=1 GOOS=linux GOARCH=amd64 \
     go build -trimpath -ldflags "-w -s" \
     -o cppworker ./cmd/cppworker
 
+# Round 13 regression test stage: builds + runs c/bridge/tests/test_batch_n_tokens.
+# Этот stage закомпилирует bridge.c + тест, линкует с libllama-common.a, и
+# запустит. Если test_batch_with_seq регрессирует (Round 13 баг: забыли
+# выставить batch.n_tokens после populate loop), build сломается.
+# Это — страховка от тихих регрессий в C-bridge (Round 13 баг прожил
+# с v0.4.11 до v0.4.12 прежде чем был обнаружен).
+FROM nvidia/cuda:12.2.0-devel-ubuntu22.04 AS bridge-tests
+
+ENV DEBIAN_FRONTEND=noninteractive
+RUN apt-get update && apt-get install -y --no-install-recommends cmake gcc g++ && \
+    rm -rf /var/lib/apt/lists/*
+
+# Копируем полный набор: bridge source + csrc + llama.cpp headers + libllama-common.a
+# (тест линкует bridge.c напрямую, поэтому нужны все includes что bridge.c использует)
+COPY c/bridge /build/c/bridge
+COPY --from=llama-builder /build/llama.cpp /build/llama.cpp
+
+# Build test
+WORKDIR /build/c/bridge/tests
+RUN mkdir -p build && cd build && \
+    cmake -DCOMMON_LIB=/build/llama.cpp/build/common/libllama-common.a .. && \
+    make test_batch_n_tokens && \
+    ./test_batch_n_tokens
+
 FROM nvidia/cuda:12.2.0-runtime-ubuntu22.04 AS runtime
 
 WORKDIR /app

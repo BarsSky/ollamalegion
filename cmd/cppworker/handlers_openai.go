@@ -40,6 +40,11 @@ type openAICompletionRequest struct {
 	// > effective n_ctx → C-bridge вернёт informative ошибку с предложением
 	// перезагрузить модель через /api/models/reload.
 	NumCtx int `json:"num_ctx,omitempty"`
+	// StreamOptions — параметры стриминга (Round 15, 2026-07-29: теперь и
+	// для legacy /v1/completions endpoint). include_usage добавляет usage chunk
+	// в финальный SSE чанк — требуется Cline/прочим IDE-агентам для трекинга
+	// контекста. По дефолту ВКЛЮЧЕНО (см. includeUsageEffective ниже).
+	StreamOptions *openAIStreamOptions `json:"stream_options,omitempty"`
 }
 
 // openAIChatCompletionRequest — структура запроса OpenAI /v1/chat/completions
@@ -334,17 +339,25 @@ func handleV1ChatCompletions(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 			if calls := parseToolCallsFromOutput(result.Output); len(calls) > 0 {
-				includeUsage := req.StreamOptions != nil && req.StreamOptions.IncludeUsage
+				// Round 15 (2026-07-29): default includeUsage=true (кроме явного
+				// include_usage=false в stream_options). OpenAI/стандарт говорит
+				// "по умолчанию false", но Cline/Roo/Aider/Continue и другие IDE-агенты
+				// ВСЕГДА хотят usage в финальном чанке для отслеживания контекстного
+				// окна. Без usage chunk клиент не знает prompt_tokens и не может
+				// предупредить о превышении контекста — что и наблюдал пользователь
+				// на локальной машине. Совместимость: клиент может явно opt-out
+				// через "stream_options": {"include_usage": false}.
+				includeUsage := req.StreamOptions == nil || req.StreamOptions.IncludeUsage
 				writeToolCallsStream(w, req.Model, chatID(), time.Now().Unix(), calls, prompt, includeUsage)
 			} else {
 				// Нет tool_calls — стримим как обычный текст
-				includeUsage := req.StreamOptions != nil && req.StreamOptions.IncludeUsage
+				includeUsage := req.StreamOptions == nil || req.StreamOptions.IncludeUsage
 				writeStaticTextStream(w, req.Model, chatID(), time.Now().Unix(), result.Output, prompt, includeUsage)
 			}
 			return
 		}
 		// Без tools — обычный real-time streaming
-		includeUsage := req.StreamOptions != nil && req.StreamOptions.IncludeUsage
+		includeUsage := req.StreamOptions == nil || req.StreamOptions.IncludeUsage
 		writeOpenAIChatStream(w, r, req.Model, prompt, params, includeUsage)
 		return
 	}
@@ -1042,7 +1055,11 @@ func handleV1Completions(w http.ResponseWriter, r *http.Request) {
 	ApplyCppCtxHeader(r, &params)
 
 	if req.Stream {
-		writeOpenAICompletionStream(w, r, req.Model, req.Prompt, params)
+		// Round 15 (2026-07-29): default include_usage=true (см. подробный
+		// комментарий в /v1/chat/completions handler). Cline и другие
+		// IDE-агенты ВСЕГДА хотят usage chunk для tracking контекстного окна.
+		includeUsage := req.StreamOptions == nil || req.StreamOptions.IncludeUsage
+		writeOpenAICompletionStream(w, r, req.Model, req.Prompt, params, includeUsage)
 		return
 	}
 
@@ -1123,7 +1140,12 @@ func handleV1Completions(w http.ResponseWriter, r *http.Request) {
 // 2026-07-01: для reasoning-моделей (qwen3.5/qwen3.6/deepseek-r1/gemma-4)
 // эмитим отдельный `reasoning_content` (если есть) и `text` (если есть) в
 // каждом SSE-чанке, аналогично writeOpenAIChatStream.
-func writeOpenAICompletionStream(w http.ResponseWriter, r *http.Request, modelName, prompt string, params bridge.GenerationParams) {
+//
+// 2026-07-29 (Round 15): includeUsage добавляет финальный usage-чанк с
+// prompt_tokens/completion_tokens/total_tokens — нужно Cline и другим
+// IDE-агентам для tracking контекстного окна. По дефолту ВКЛЮЧЕНО (если
+// клиент явно не передал stream_options.include_usage=false).
+func writeOpenAICompletionStream(w http.ResponseWriter, r *http.Request, modelName, prompt string, params bridge.GenerationParams, includeUsage bool) {
 	flusher, ok := w.(http.Flusher)
 	if !ok {
 		writeError(w, http.StatusInternalServerError, "streaming not supported")
@@ -1297,6 +1319,13 @@ func writeOpenAICompletionStream(w http.ResponseWriter, r *http.Request, modelNa
 	}
 	stopJSON, _ := json.Marshal(stopChunk)
 	fmt.Fprintf(w, "data: %s\n\n", stopJSON)
+	flusher.Flush()
+
+	// Round 15 (2026-07-29): финальный usage chunk (если includeUsage=true)
+	// — перед [DONE]. OpenAI stream_options.include_usage=true. Cline/прочие
+	// IDE-агенты читают prompt_tokens из этого чанка и трекают контекст.
+	writeOpenAIUsageChunk(w, flusher, completionID, created, modelName, prompt, fullOutput, includeUsage)
+
 	fmt.Fprintf(w, "data: [DONE]\n\n")
 	flusher.Flush()
 }

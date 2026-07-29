@@ -211,10 +211,13 @@ struct llama_batch build_batched_batch(
         }
         for (int32_t j = 0; j < n; j++) {
             int32_t i = offset + j;
-            batch.token[i]    = sequences[s].tokens[j];
+            // sequences[s].* поля — int32_t (см. CBridgeBatchedSeq в bridge.h),
+            // batch.* поля — llama_token/llama_pos/llama_seq_id (все int32_t).
+            // Используем explicit cast для ясности + подавления потенциальных warnings.
+            batch.token[i]    = (llama_token)sequences[s].tokens[j];
             batch.pos[i]      = (llama_pos)(sequences[s].start_pos + j);
             batch.n_seq_id[i] = 1;
-            batch.seq_id[i][0] = sequences[s].seq_id;
+            batch.seq_id[i][0] = (llama_seq_id)sequences[s].seq_id;
             // Last token в этой sequence получает logits=1 (для sampling
             // в следующей llama_decode). Промежуточные — logits=0.
             batch.logits[i]   = (j == n - 1) ? 1 : 0;

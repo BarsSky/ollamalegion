@@ -983,7 +983,10 @@ func (m *ModelHandle) BatchedDecode(sequences []BatchedSequence) ([][]float32, e
 	// Заполняем C-массив: для каждой BatchedSequence вычисляем указатель
 	// на i-й элемент CBridgeBatchedSeq и заполняем его.
 	// Используем unsafe.Pointer arithmetic (как в C, cSeqs + i).
-	cSeqsPtr := (*C.CBridgeBatchedSeq)(cSeqs)
+	//
+	// CBridgeBatchedSeq в bridge.h использует int32_t (а не llama_token/
+	// llama_seq_id/llama_pos) чтобы bridge.h не зависел от llama.h. C-bridge
+	// (bridge.c) делает explicit cast int32_t → llama_* внутри.
 	for i, seq := range sequences {
 		if len(seq.Tokens) == 0 {
 			C.free(cSeqs)
@@ -991,24 +994,24 @@ func (m *ModelHandle) BatchedDecode(sequences []BatchedSequence) ([][]float32, e
 		}
 
 		// Сохраняем Go-слайс в C-heap (C-сторона его borrow, не копирует).
-		// Используем C.malloc + C.memcpy — Go GC не знает про этот указатель.
-		cTokensPtr := C.malloc(C.size_t(len(seq.Tokens)) * C.sizeof_llama_token)
+		// Используем C.malloc — Go GC не знает про этот указатель.
+		cTokensPtr := C.malloc(C.size_t(len(seq.Tokens)) * C.size_t(unsafe.Sizeof(C.int32_t(0))))
 		if cTokensPtr == nil {
 			C.free(cSeqs)
 			return nil, fmt.Errorf("malloc failed for sequence tokens")
 		}
-		// Копируем int32 → llama_token (alias of int32 в llama.h).
-		cTokensSlice := unsafe.Slice((*C.llama_token)(cTokensPtr), len(seq.Tokens))
+		// Копируем int32 напрямую (tokens — int32_t в C-стороне, не llama_token).
+		cTokensSlice := unsafe.Slice((*C.int32_t)(cTokensPtr), len(seq.Tokens))
 		for j, t := range seq.Tokens {
-			cTokensSlice[j] = C.llama_token(t)
+			cTokensSlice[j] = C.int32_t(t)
 		}
 
 		// Заполняем i-й CBridgeBatchedSeq.
 		seqPtr := (*C.CBridgeBatchedSeq)(unsafe.Pointer(uintptr(cSeqs) + uintptr(i)*C.sizeof_CBridgeBatchedSeq))
-		seqPtr.tokens = (*C.llama_token)(cTokensPtr)
+		seqPtr.tokens = (*C.int32_t)(cTokensPtr)
 		seqPtr.n_tokens = C.int32_t(len(seq.Tokens))
-		seqPtr.seq_id = C.llama_seq_id(seq.SeqID)
-		seqPtr.start_pos = C.llama_pos(seq.StartPos)
+		seqPtr.seq_id = C.int32_t(seq.SeqID)
+		seqPtr.start_pos = C.int32_t(seq.StartPos)
 
 		// TODO: free cTokensPtr после llama_decode. Сейчас leak (для
 		// batched_decode который вызывается тысячи раз это критично).

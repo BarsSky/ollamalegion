@@ -66,7 +66,7 @@ int main(void) {
     // ============================================================
     {
         printf("  test 2: all sequences empty\n");
-        llama_token dummy_tok = 1;
+        int32_t dummy_tok = 1;
         struct CBridgeBatchedSeq seqs[2] = {
             {.tokens = &dummy_tok, .n_tokens = 0, .seq_id = 0, .start_pos = 0},
             {.tokens = &dummy_tok, .n_tokens = 0, .seq_id = 1, .start_pos = 0},
@@ -83,8 +83,8 @@ int main(void) {
     // ============================================================
     {
         printf("  test 3: 2 sequences (3 + 2 tokens)\n");
-        llama_token seq0_tokens[3] = {100, 101, 102};
-        llama_token seq1_tokens[2] = {200, 201};
+        int32_t seq0_tokens[3] = {100, 101, 102};
+        int32_t seq1_tokens[2] = {200, 201};
         struct CBridgeBatchedSeq seqs[2] = {
             {.tokens = seq0_tokens, .n_tokens = 3, .seq_id = 0, .start_pos = 0},
             {.tokens = seq1_tokens, .n_tokens = 2, .seq_id = 1, .start_pos = 10},
@@ -126,8 +126,8 @@ int main(void) {
     // ============================================================
     {
         printf("  test 4: 2 sequences (0 + 2 tokens, mixed)\n");
-        llama_token dummy_tok = 0;
-        llama_token seq1_tokens[2] = {300, 301};
+        int32_t dummy_tok = 0;
+        int32_t seq1_tokens[2] = {300, 301};
         struct CBridgeBatchedSeq seqs[2] = {
             {.tokens = &dummy_tok, .n_tokens = 0, .seq_id = 0, .start_pos = 0},  // empty
             {.tokens = seq1_tokens, .n_tokens = 2, .seq_id = 1, .start_pos = 5},
@@ -157,7 +157,7 @@ int main(void) {
     // ============================================================
     {
         printf("  test 5: 3 sequences (1 + 1 + 1 tokens, multi-slot)\n");
-        llama_token t0 = 1000, t1 = 2000, t2 = 3000;
+        int32_t t0 = 1000, t1 = 2000, t2 = 3000;
         struct CBridgeBatchedSeq seqs[3] = {
             {.tokens = &t0, .n_tokens = 1, .seq_id = 10, .start_pos = 0},
             {.tokens = &t1, .n_tokens = 1, .seq_id = 20, .start_pos = 0},
@@ -188,7 +188,7 @@ int main(void) {
     // ============================================================
     {
         printf("  test 6: n_tokens is set (Round 13 regression check)\n");
-        llama_token tokens[2] = {1, 2};
+        int32_t tokens[2] = {1, 2};
         struct CBridgeBatchedSeq seqs[1] = {
             {.tokens = tokens, .n_tokens = 2, .seq_id = 0, .start_pos = 0},
         };

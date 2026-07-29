@@ -378,11 +378,18 @@ int32_t bridge_chat_templates_apply_with_thinking(
 // CBridgeBatchedSeq — описание одной sequence для batched parallel inference.
 // Caller владеет массивом tokens (НЕ копируется — только borrows).
 // Аналогично build_batch_with_seq, но для N sequences в одном batch.
+//
+// ПРИМЕЧАНИЕ: используем plain int32_t вместо llama_token/llama_seq_id/llama_pos
+// чтобы bridge.h не зависел от llama.h. В llama.h:
+//   llama_token  == int32_t
+//   llama_seq_id == int32_t
+//   llama_pos    == int32_t
+// C-bridge (bridge.c) делает cast int32_t → llama_token/seq_id/pos внутри.
 struct CBridgeBatchedSeq {
-    const llama_token* tokens;    // массив токенов (входной, не копируется)
-    int32_t n_tokens;             // число токенов в этой sequence (>= 0)
-    llama_seq_id seq_id;          // уникальный seq_id для этой sequence
-    llama_pos start_pos;          // начальная позиция (для prompt = 0)
+    const int32_t* tokens;   // массив llama_token (входной, не копируется)
+    int32_t n_tokens;         // число токенов в этой sequence (>= 0)
+    int32_t seq_id;           // llama_seq_id — уникальный для этой sequence
+    int32_t start_pos;        // llama_pos — начальная позиция (для prompt = 0)
 };
 // CGo требует typedef для доступа как C.CBridgeBatchedSeq в Go.
 typedef struct CBridgeBatchedSeq CBridgeBatchedSeq;

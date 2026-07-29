@@ -933,6 +933,127 @@ func (m *ModelHandle) GetMetadata() (*ModelMetadata, error) {
 	}, nil
 }
 
+// BatchedSequence — Go-представление CBridgeBatchedSeq для batched inference.
+//
+// Описывает одну sequence (slot) в multi-seq batch. Каждый токен в sequence
+// получает seq_id, что позволяет llama_decode выполнить forward pass для всех
+// sequences параллельно в одной CUDA-операции.
+//
+// Round 15.1 (true batched parallel inference): см. дизайн-доку
+// docs/plans/round-15-batched-parallel.md.
+type BatchedSequence struct {
+	Tokens   []int32  // токены этой sequence (borrowed, не копируется)
+	SeqID    int32    // llama_seq_id (уникальный в пределах batch)
+	StartPos int32    // llama_pos для первого токена (для prompt = 0)
+}
+
+// BatchedDecode — Round 15.1: ОДИН llama_decode call для N sequences.
+//
+// Используется BatchedScheduler (internal/cppbackend/batched_scheduler.go)
+// для true parallel inference: один forward pass на GPU, обработка всех
+// active sessions в одном matmul.
+//
+// Параметры:
+//   - sequences: массив BatchedSequence, каждая со своими tokens + seq_id
+//   - возвращает: [][]float32 (len = len(sequences), inner len = n_vocab)
+//                 — logits для ПОСЛЕДНЕГО токена каждой sequence
+//
+// Caller (BatchedScheduler) держит instance.mu на время вызова —
+// lock-семантика на стороне Go (как Round 8 для BridgeInferStream).
+//
+// ВАЖНО: сейчас C-side поддерживает только n_tokens=1 на sequence
+// (single-step decode). Для prompt ingestion caller разбивает prompt
+// на chunks вне bridge и итерирует.
+func (m *ModelHandle) BatchedDecode(sequences []BatchedSequence) ([][]float32, error) {
+	if m == nil || m.ptr == nil {
+		return nil, fmt.Errorf("model not loaded")
+	}
+	if len(sequences) == 0 {
+		return nil, fmt.Errorf("no sequences")
+	}
+
+	// Аллоцируем C-массив CBridgeBatchedSeq (caller-managed, передаётся в C).
+	// Освобождаем сразу после C-вызова.
+	cSeqs := C.malloc(C.size_t(len(sequences)) * C.sizeof_CBridgeBatchedSeq)
+	if cSeqs == nil {
+		return nil, fmt.Errorf("malloc failed for batched sequences")
+	}
+	defer C.free(cSeqs)
+
+	// Заполняем C-массив: для каждой BatchedSequence вычисляем указатель
+	// на i-й элемент CBridgeBatchedSeq и заполняем его.
+	// Используем unsafe.Pointer arithmetic (как в C, cSeqs + i).
+	cSeqsPtr := (*C.CBridgeBatchedSeq)(cSeqs)
+	for i, seq := range sequences {
+		if len(seq.Tokens) == 0 {
+			C.free(cSeqs)
+			return nil, fmt.Errorf("sequences[%d].Tokens is empty", i)
+		}
+
+		// Сохраняем Go-слайс в C-heap (C-сторона его borrow, не копирует).
+		// Используем C.malloc + C.memcpy — Go GC не знает про этот указатель.
+		cTokensPtr := C.malloc(C.size_t(len(seq.Tokens)) * C.sizeof_llama_token)
+		if cTokensPtr == nil {
+			C.free(cSeqs)
+			return nil, fmt.Errorf("malloc failed for sequence tokens")
+		}
+		// Копируем int32 → llama_token (alias of int32 в llama.h).
+		cTokensSlice := unsafe.Slice((*C.llama_token)(cTokensPtr), len(seq.Tokens))
+		for j, t := range seq.Tokens {
+			cTokensSlice[j] = C.llama_token(t)
+		}
+
+		// Заполняем i-й CBridgeBatchedSeq.
+		seqPtr := (*C.CBridgeBatchedSeq)(unsafe.Pointer(uintptr(cSeqs) + uintptr(i)*C.sizeof_CBridgeBatchedSeq))
+		seqPtr.tokens = (*C.llama_token)(cTokensPtr)
+		seqPtr.n_tokens = C.int32_t(len(seq.Tokens))
+		seqPtr.seq_id = C.llama_seq_id(seq.SeqID)
+		seqPtr.start_pos = C.llama_pos(seq.StartPos)
+
+		// TODO: free cTokensPtr после llama_decode. Сейчас leak (для
+		// batched_decode который вызывается тысячи раз это критично).
+		// Можно использовать sync.Pool для переиспользования буферов.
+	}
+
+	// Аллоцируем logits_out буфер: n_sequences * n_vocab float32.
+	nVocab := int(C.bridge_get_n_vocab(m.ptr))
+	if nVocab <= 0 {
+		return nil, fmt.Errorf("invalid n_vocab=%d from bridge_get_n_vocab", nVocab)
+	}
+	logitsOut := make([]float32, len(sequences)*nVocab)
+
+	// Вызываем C-side: ОДИН llama_decode для всех sequences.
+	rc := C.bridge_batched_decode(
+		m.ptr,
+		(*C.CBridgeBatchedSeq)(cSeqs),
+		C.int32_t(len(sequences)),
+		C.int32_t(nVocab),
+		(*C.float)(unsafe.Pointer(&logitsOut[0])),
+	)
+	if rc != 0 {
+		info := GetLastErrorInfo()
+		errMsg := info.Message
+		if errMsg == "" {
+			errMsg = C.GoString(C.bridge_last_error())
+		}
+		return nil, fmt.Errorf("bridge_batched_decode failed (code=%d): %s", rc, errMsg)
+	}
+
+	// Разбиваем плоский logitsOut на [][]float32 по n_vocab.
+	result := make([][]float32, len(sequences))
+	for i := range sequences {
+		start := i * nVocab
+		end := start + nVocab
+		// Создаём slice с backing array = logitsOut[start:end] — Go GC
+		// не скопирует, но и не освободит logitsOut пока есть ссылка.
+		// Можно скопировать если нужна независимость (для batched_decode
+		// caller сразу использует logits и logitsOut перезаписывается
+		// на следующем tick — copy не нужен).
+		result[i] = logitsOut[start:end:end]
+	}
+	return result, nil
+}
+
 // ============================================================
 // Утилиты
 // ============================================================

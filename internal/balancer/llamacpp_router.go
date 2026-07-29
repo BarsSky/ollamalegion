@@ -111,6 +111,16 @@ func (lr *LlamaCppRouter) Route(w http.ResponseWriter, r *http.Request) bool {
 	case "/v1/chat/completions":
 		lr.handleOpenAIChatCompletions(w, r)
 		return true
+	case "/v1/completions":
+		// Round 15.1 follow-up (2026-07-29): /v1/completions (legacy text completion)
+		// теперь идёт через dedicated handler вместо main proxy flow → queue manager.
+		// Без этого: balancer блокирует запрос с "all backends busy" при высокой
+		// VRAM загрузке (>85%) потому что headroom check в queue_manager.go
+		// не пропускает запросы пока gpuHeadroomPercent (15%) не освободится.
+		// /v1/chat/completions (handleOpenAIChatCompletions выше) делает direct
+		// dispatch и работает; /v1/completions шёл в общий flow и блокировался.
+		lr.handleOpenAICompletion(w, r)
+		return true
 	}
 	return false
 }

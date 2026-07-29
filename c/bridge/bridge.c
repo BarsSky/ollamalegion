@@ -15,6 +15,7 @@
 #ifndef GO_BRIDGE_LLAMA_STUB
 
 #include "bridge.h"
+#include "bridge_internal.h"
 #include "llama.h"
 #include <stdlib.h>
 #include <string.h>
@@ -120,7 +121,12 @@ static void reset_inference_state(InternalModel *im, llama_seq_id seq_id) {
 //
 // В batch последний токен получает logits=1 (для sampling в следующей итерации),
 // остальные logits=0 (промежуточные токены).
-static struct llama_batch build_batch_with_seq(
+//
+// NOTE: функция объявлена в bridge_internal.h (НЕ в bridge.h) только для
+// regression-тестов. Это не часть стабильного API — может быть переименована
+// или рефакторнута без обратной совместимости. Внутри bridge.c она
+// объявлена через bridge_internal.h (см. #include ниже).
+struct llama_batch build_batch_with_seq(
     llama_token* tokens, int32_t n_tokens, llama_seq_id seq_id, llama_pos start_pos
 ) {
     // GGML_ASSERT в llama_batch_init требует n_tokens > 0.

@@ -352,6 +352,64 @@ jobs:
 
 
   # ---------------------------------------------------------------------------
+  # Job 2.5: C-bridge regression test (build llama.cpp CPU-only + run test_batch_n_tokens)
+  # ---------------------------------------------------------------------------
+  # Ловит регрессии в c/bridge/bridge.c (например, Round 13: build_batch_with_seq
+  # забыл выставить batch.n_tokens). Работает на ubuntu-latest без GPU
+  # (~3-5 мин: cmake + make для libllama-common.a CPU-only + compile + run test).
+  # ---------------------------------------------------------------------------
+  test-c-bridge:
+    name: C-bridge regression test (libllama-common.a CPU-only)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          submodules: false
+          fetch-depth: 0
+
+      - name: Install build deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential cmake git
+
+      - name: Build llama.cpp CPU-only (libllama-common.a)
+        run: |
+          set -e
+          cd c/llama.cpp
+          mkdir -p build
+          cd build
+          # CPU-only build, no CUDA, no METAL, no OpenCL. -j$(nproc) для скорости.
+          cmake .. \
+            -DGGML_CUDA=OFF \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DLLAMA_BUILD_COMMON=ON \
+            -DLLAMA_BUILD_TESTS=OFF \
+            -DLLAMA_BUILD_EXAMPLES=OFF \
+            -DLLAMA_BUILD_TOOLS=OFF \
+            -DBUILD_SHARED_LIBS=OFF
+          make -j$(nproc) llama-common
+          echo "--- libllama-common.a ---"
+          ls -la common/libllama-common.a
+
+      - name: Build c/bridge regression test
+        run: |
+          set -e
+          mkdir -p c/bridge/tests/build
+          cd c/bridge/tests/build
+          cmake -DCOMMON_LIB=$(realpath ../../../c/llama.cpp/build/common/libllama-common.a) ..
+          make test_batch_n_tokens
+
+      - name: Run test_batch_n_tokens
+        run: |
+          set -e
+          cd c/bridge/tests/build
+          ./test_batch_n_tokens
+          echo "--- TEST PASSED: build_batch_with_seq contract holds, Round 13 regression guarded ---"
+
+  # ---------------------------------------------------------------------------
   # Job 3: golangci-lint (только ubuntu, чтобы не дублировать)
   # ---------------------------------------------------------------------------
   lint:

@@ -358,12 +358,6 @@ func handleV1ChatCompletions(w http.ResponseWriter, r *http.Request) {
 		}
 		// Без tools — обычный real-time streaming
 		includeUsage := req.StreamOptions == nil || req.StreamOptions.IncludeUsage
-		// Round 15 (2026-07-29): debug-логирование для диагностики missing usage chunk.
-		explicitIncludeUsage := req.StreamOptions != nil && req.StreamOptions.IncludeUsage
-		logger.Get().Infow("[R15-USAGE-DEBUG] handleV1ChatCompletions: calling writeOpenAIChatStream",
-			"model", req.Model, "includeUsage_computed", includeUsage,
-			"streamOptions_nil", req.StreamOptions == nil,
-			"explicit_include_usage", explicitIncludeUsage)
 		writeOpenAIChatStream(w, r, req.Model, prompt, params, includeUsage)
 		return
 	}
@@ -624,9 +618,6 @@ func writeStaticTextStream(w http.ResponseWriter, modelName, chatID string, crea
 	fmt.Fprintf(w, "data: %s\n\n", stopJSON)
 	flusher.Flush()
 
-	// Round 15 (2026-07-29): debug-логирование.
-	logger.Get().Infow("[R15-USAGE-DEBUG] writeStaticTextStream: about to emit usage",
-		"model", modelName, "includeUsage_param", includeUsage, "content_len", len(content))
 	// Финальный usage chunk (если include_usage=true) — перед [DONE].
 	// OpenAI stream_options.include_usage=true → клиент получает prompt/completion/total_tokens.
 	writeOpenAIUsageChunk(w, flusher, chatID, created, modelName, prompt, content, includeUsage)
@@ -645,10 +636,6 @@ func writeStaticTextStream(w http.ResponseWriter, modelName, chatID string, crea
 // эмитим tool_calls в финальном чанке и обнуляем content.
 func writeOpenAIChatStream(w http.ResponseWriter, r *http.Request, modelName, prompt string, params bridge.GenerationParams, includeUsage bool) {
 	// Round 15 (2026-07-29): debug-логирование для диагностики missing usage chunk.
-	// TODO: убрать после подтверждения фикса в проде. Оставил как комментарий-маркер
-	// чтобы можно было легко grep'ом найти и удалить все [R15-USAGE-DEBUG] строки.
-	logger.Get().Infow("[R15-USAGE-DEBUG] writeOpenAIChatStream: enter",
-		"model", modelName, "includeUsage_param", includeUsage, "prompt_len", len(prompt))
 	flusher, ok := w.(http.Flusher)
 	if !ok {
 		writeError(w, http.StatusInternalServerError, "streaming not supported")
@@ -984,13 +971,6 @@ func writeOpenAIChatStream(w http.ResponseWriter, r *http.Request, modelName, pr
 	stopJSON, _ := json.Marshal(stopChunk)
 	sw.Writef("data: %s\n\n", stopJSON)
 
-	// Round 15 (2026-07-29): debug-логирование для диагностики missing usage chunk.
-	// TODO: убрать после подтверждения фикса в проде.
-	snapBefore := sw.Snapshot()
-	logger.Get().Infow("[R15-USAGE-DEBUG] about to emit usage chunk",
-		"model", modelName, "includeUsage_param", includeUsage, "sw_broken", sw.IsBroken(),
-		"sw_bytes_written", snapBefore.BytesWritten, "sw_tokens", snapBefore.TokensSent, "fullOutput_len", len(fullOutput))
-
 	// Финальный usage chunk (если include_usage=true) — перед [DONE].
 	// OpenAI stream_options.include_usage=true → клиент получает prompt/completion/total_tokens.
 	// Для tool_calls output completion_tokens считаем по JSON-сериализации calls;
@@ -1002,22 +982,11 @@ func writeOpenAIChatStream(w http.ResponseWriter, r *http.Request, modelName, pr
 		} else {
 			completionText = fullOutput
 		}
-		logger.Get().Infow("[R15-USAGE-DEBUG] calling emitOpenAIUsageChunkSafe",
-			"model", modelName, "completionText_len", len(completionText))
 		emitOpenAIUsageChunkSafe(sw, chatID, created, modelName, prompt, completionText, true)
-		snapAfter := sw.Snapshot()
-		logger.Get().Infow("[R15-USAGE-DEBUG] emitOpenAIUsageChunkSafe returned",
-			"model", modelName, "sw_broken_after", sw.IsBroken(), "sw_bytes_written_after", snapAfter.BytesWritten)
-	} else {
-		logger.Get().Warnw("[R15-USAGE-DEBUG] includeUsage is FALSE, usage chunk will NOT be emitted",
-			"model", modelName, "request", r.URL.Path)
 	}
 
 	sw.Writef("data: [DONE]\n\n")
 	sw.Flush()
-	snapFinal := sw.Snapshot()
-	logger.Get().Infow("[R15-USAGE-DEBUG] writeOpenAIChatStream: exit",
-		"model", modelName, "sw_broken_final", sw.IsBroken(), "sw_bytes_written_final", snapFinal.BytesWritten)
 }
 
 // handleV1Completions — OpenAI-совместимый /v1/completions endpoint.

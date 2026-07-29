@@ -232,6 +232,135 @@ struct llama_batch build_batched_batch(
     return batch;
 }
 
+// bridge_get_n_vocab — возвращает vocab size модели (для аллокации logits буфера
+// в bridge_batched_decode). Простая обёртка над llama_vocab_n_tokens.
+//
+// Используем новый API: llama_model_get_vocab + llama_vocab_n_tokens
+// (старый llama_n_vocab DEPRECATED в текущей llama.cpp).
+int32_t bridge_get_n_vocab(void* model) {
+    if (model == NULL) {
+        return -1;
+    }
+    InternalModel* im = (InternalModel*)model;
+    const struct llama_vocab* vocab = llama_model_get_vocab(im->model);
+    if (vocab == NULL) {
+        return -1;
+    }
+    return (int32_t)llama_vocab_n_tokens(vocab);
+}
+
+// bridge_batched_decode — Round 15.1: ОДИН llama_decode для N sequences.
+//
+// Поток:
+//  1. Validate args (model, sequences, logits_out, n_vocab).
+//  2. Собрать llama_batch через build_batched_batch (multi-seq population).
+//  3. llama_decode(im->context, batch) — ОДИН forward pass на GPU.
+//  4. Для каждой sequence: logits на позиции batch.logits_index(seq_idx) →
+//     копируем в logits_out[seq_idx * n_vocab + token_id].
+//  5. llama_batch_free(batch) — cleanup.
+//
+// Шаг 4 важен: llama.cpp экспортирует logits через llama_get_logits_ith(ctx, i)
+// где i — индекс в batch (только для token с logits=1). build_batched_batch
+// выставляет logits=1 на ПОСЛЕДНЕМ токене каждой sequence, так что каждый
+// sequence имеет ровно один i_batch с logits.
+//
+// Logits copying: memcopy from llama_get_logits_ith to logits_out[seq_idx*n_vocab+...].
+// Это dominant overhead для batched_decode, но всё равно < 1% от GPU compute time.
+int bridge_batched_decode(
+    void* model,
+    const struct CBridgeBatchedSeq* sequences,
+    int32_t n_sequences,
+    int32_t n_vocab,
+    float* logits_out
+) {
+    // Validate args.
+    if (model == NULL) {
+        set_error("bridge_batched_decode: model is NULL");
+        return -1;
+    }
+    if (sequences == NULL || n_sequences <= 0) {
+        set_error("bridge_batched_decode: invalid sequences (NULL or n_sequences<=0)");
+        return -2;
+    }
+    if (logits_out == NULL || n_vocab <= 0) {
+        set_error("bridge_batched_decode: invalid logits_out (NULL or n_vocab<=0)");
+        return -2;
+    }
+    InternalModel* im = (InternalModel*)model;
+
+    // Шаг 1: проверяем что у ВСЕХ sequences есть n_tokens==1 (для inference).
+    // Для batched decode (1 token per sequence per step) — caller разбивает
+    // prompt на отдельные chunks вне C-bridge. Если caller хочет decode
+    // сразу N tokens (multi-token per seq) — нужно несколько вызовов.
+    for (int32_t s = 0; s < n_sequences; s++) {
+        if (sequences[s].n_tokens != 1) {
+            // Warning: build_batched_batch всё равно поддерживает multi-token
+            // sequences, но logits extraction рассчитан на 1 token. Можно
+            // расширить позже (нужно знать i_batch каждого logits=1 токена).
+            // Пока — bail out с понятной ошибкой.
+            char err_buf[256];
+            snprintf(err_buf, sizeof(err_buf),
+                "bridge_batched_decode: sequences[%d].n_tokens=%d (expected 1 for single-step decode)",
+                s, sequences[s].n_tokens);
+            set_error(err_buf);
+            return -2;
+        }
+    }
+
+    // Шаг 2: собираем batch.
+    struct llama_batch batch = build_batched_batch(sequences, n_sequences);
+    if (batch.n_tokens == 0) {
+        // Все sequences пустые — нет чего декодить. Возвращаем success с
+        // logits_out заполненным нулями (caller всё равно ничего не использует).
+        memset(logits_out, 0, (size_t)n_sequences * n_vocab * sizeof(float));
+        return 0;
+    }
+
+    // Шаг 3: ОДИН llama_decode. Locking — на стороне вызывающего (Go BatchedScheduler
+    // держит instance.mu, как Round 8 сделал для bridge_infer_stream).
+    int decode_rc = llama_decode(im->context, batch);
+    if (decode_rc != 0) {
+        set_error("llama_decode failed in bridge_batched_decode");
+        llama_batch_free(batch);
+        return -1;
+    }
+
+    // Шаг 4: копируем logits каждой sequence в logits_out.
+    // batch.logits_index() (или вручную) даёт индекс последнего токена
+    // каждой sequence (с logits=1).
+    //
+    // После build_batched_batch:
+    //   - sequences[0] занимает tokens [0, sequences[0].n_tokens)
+    //   - sequences[1] занимает [sequences[0].n_tokens, ...)
+    //   - last token sequences[s] — позиция sum(prev) + sequences[s].n_tokens - 1
+    //
+    // Для n_tokens=1 (наш случай) — i_batch каждой sequence = sum(prev).
+    int32_t offset = 0;
+    for (int32_t s = 0; s < n_sequences; s++) {
+        int32_t n = sequences[s].n_tokens;
+        // Defensive: если caller передал multi-token (мы уже bailed, но на всякий случай)
+        if (n <= 0) {
+            // Skip — нет logits для пустой sequence.
+            offset += 0;
+            continue;
+        }
+        // Last token of this sequence = offset + n - 1
+        int32_t i_batch = offset + n - 1;
+        const float* src_logits = llama_get_logits_ith(im->context, i_batch);
+        if (src_logits == NULL) {
+            // Это не должно происходить если batch корректный, но defensive.
+            memset(logits_out + s * n_vocab, 0, n_vocab * sizeof(float));
+        } else {
+            memcpy(logits_out + s * n_vocab, src_logits, n_vocab * sizeof(float));
+        }
+        offset += n;
+    }
+
+    // Шаг 5: cleanup.
+    llama_batch_free(batch);
+    return 0;
+}
+
 // ============================================================
 // Структурированная ошибка (last_error_info) + мьютекс
 // ============================================================

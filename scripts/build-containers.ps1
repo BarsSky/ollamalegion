@@ -82,7 +82,19 @@ try {
             $gpuBuildArgs += "--build-arg"
             $gpuBuildArgs += "CUDA_ARCH=$CudaArch"
         }
-        & docker build @gpuBuildArgs -t $gpuImage -f docker/cppworker/Dockerfile.gpu --target runtime .
+        # Round 14a follow-up (2026-07-29): для одиночной архитектуры (напр. "86")
+        # используем Dockerfile.gpu.<arch> — у него более полный COPY в go-builder
+        # stage и короче компиляция (только один CUDA arch). Для "all" или
+        # нескольких arch — Dockerfile.gpu (универсальный).
+        $dockerfile = "docker/cppworker/Dockerfile.gpu"
+        if ($lowerArch -notmatch "all" -and $lowerArch -notmatch "-" -and $lowerArch -notmatch ";") {
+            $archSpecific = "docker/cppworker/Dockerfile.gpu.$CudaArch"
+            if (Test-Path $archSpecific) {
+                $dockerfile = $archSpecific
+                Write-Host "Using arch-specific Dockerfile: $dockerfile" -ForegroundColor Yellow
+            }
+        }
+        & docker build @gpuBuildArgs -t $gpuImage -f $dockerfile --target runtime .
         if ($LASTEXITCODE -ne 0) { throw "CppWorker GPU build failed" }
 
         Write-Host "=== Building $cpuImage ===" -ForegroundColor Cyan

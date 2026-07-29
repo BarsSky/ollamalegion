@@ -137,6 +137,12 @@ COPY . .
 # static library directories needed for linking.
 COPY --from=llama-builder /build/llama.cpp/build/src /build/c/llama.cpp/build/src
 COPY --from=llama-builder /build/llama.cpp/build/ggml/src /build/c/llama.cpp/build/ggml/src
+# Round 14a follow-up (2026-07-29): добавляем build/common для libllama-common.a +
+# libllama-common-base.a. Без этой строки линкер Go-этапа не находит эти либы
+# (`/usr/bin/ld: cannot find -lllama-common: No such file or directory`),
+# хотя CGO_LDFLAGS на них ссылается. В bridge-builder COPY уже есть
+# (line ~99), но это другой stage — каждый stage изолирован.
+COPY --from=llama-builder /build/llama.cpp/build/common /build/c/llama.cpp/build/common
 COPY --from=llama-builder /build/llama.cpp/include /build/c/llama.cpp/include
 COPY --from=llama-builder /build/llama.cpp/ggml/include /build/c/llama.cpp/ggml/include
 COPY --from=llama-builder /build/llama.cpp/ggml/src/ggml-cpu /build/c/llama.cpp/ggml/src/ggml-cpu

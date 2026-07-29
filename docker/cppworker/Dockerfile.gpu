@@ -138,15 +138,12 @@ ENV GOMODCACHE="/go/pkg/mod"
 
 WORKDIR /build
 
+COPY go.mod go.sum ./
 # Round 15 follow-up (2026-07-29): BuildKit cache mount для Go modules.
-# Персистит /go/pkg/mod между билдами, ускоряет `go mod download` с ~30 сек
-# до <1 сек на второй и далее билды. Требует DOCKER_BUILDKIT=1 (build-containers.ps1
-# уже выставляет, см. set BUILDKIT_PROGRESS=plain).
+# Кеш /go/pkg/mod + /root/.cache/go-build персистится между билдами.
 RUN --mount=type=cache,target=/go/pkg/mod \
     --mount=type=cache,target=/root/.cache/go-build \
-    go mod download
-COPY go.mod go.sum ./
-RUN go mod verify
+    go mod download && go mod verify
 
 COPY . .
 

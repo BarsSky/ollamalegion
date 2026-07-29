@@ -7,25 +7,37 @@ FROM nvidia/cuda:12.2.0-devel-ubuntu22.04 AS llama-builder
 ENV DEBIAN_FRONTEND=noninteractive
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    gcc g++ make git cmake ca-certificates && \
+    gcc g++ make git cmake ca-certificates ccache && \
     rm -rf /var/lib/apt/lists/*
+
+# ccache setup (Round 15 follow-up 2026-07-29): ccache ускоряет повторные
+# сборки llama.cpp в 10-20x. CMake находит ccache через CMAKE_*_COMPILER_LAUNCHER.
+ENV CCACHE_DIR=/root/.ccache
+ENV CCACHE_MAXSIZE=5G
+ENV CCACHE_COMPILERCHECK=content
+ENV CMAKE_C_COMPILER_LAUNCHER=ccache
+ENV CMAKE_CXX_COMPILER_LAUNCHER=ccache
 
 WORKDIR /build/llama.cpp
 COPY c/llama.cpp .
 
 RUN git init && git add -A && git -c user.name=docker -c user.email=docker@build commit -m "llama.cpp"
 
-RUN mkdir -p build && cd build && \
+# Round 15 follow-up (2026-07-29): --mount=type=cache,target=/root/.ccache
+# персистит ccache между билдами.
+RUN --mount=type=cache,target=/root/.ccache \
+    mkdir -p build && cd build && \
     cmake .. \
       -DGGML_CUDA=ON \
       -DCMAKE_CUDA_ARCHITECTURES="86" \
-      -DGGML_CCACHE=OFF \
+      -DGGML_CCACHE=ON \
       -DLLAMA_CURL=OFF \
       -DLLAMA_BUILD_TESTS=OFF \
       -DLLAMA_BUILD_EXAMPLES=OFF \
       -DBUILD_SHARED_LIBS=OFF \
       -DLLAMA_BUILD_COMMON=ON && \
-    cmake --build . --config Release -j$(nproc)
+    cmake --build . --config Release -j$(nproc) && \
+    ccache -s | tail -5
 
 FROM nvidia/cuda:12.2.0-devel-ubuntu22.04 AS bridge-builder
 
@@ -66,8 +78,12 @@ ENV GOMODCACHE="/go/pkg/mod"
 
 WORKDIR /build
 
+# Round 15 follow-up (2026-07-29): BuildKit cache mount для Go modules.
+RUN --mount=type=cache,target=/go/pkg/mod \
+    --mount=type=cache,target=/root/.cache/go-build \
+    go mod download
 COPY go.mod go.sum ./
-RUN go mod download && go mod verify
+RUN go mod verify
 
 COPY . .
 

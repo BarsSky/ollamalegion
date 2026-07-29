@@ -29,8 +29,17 @@ ARG CUDA_ARCH="all"
 ENV DEBIAN_FRONTEND=noninteractive
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    gcc g++ make git cmake ca-certificates && \
+    gcc g++ make git cmake ca-certificates ccache && \
     rm -rf /var/lib/apt/lists/*
+
+# ccache setup (Round 15 follow-up 2026-07-29): ccache ускоряет повторные
+# сборки llama.cpp в 10-20x. CMake находит ccache через переменные
+# CC/CXX (CCACHE_WRAPPER_PATH) или переменную CMAKE_CXX_COMPILER_LAUNCHER.
+ENV CCACHE_DIR=/root/.ccache
+ENV CCACHE_MAXSIZE=5G
+ENV CCACHE_COMPILERCHECK=content
+ENV CMAKE_C_COMPILER_LAUNCHER=ccache
+ENV CMAKE_CXX_COMPILER_LAUNCHER=ccache
 
 WORKDIR /build/llama.cpp
 COPY c/llama.cpp .
@@ -39,7 +48,12 @@ RUN git init && git add -A && git -c user.name=docker -c user.email=docker@build
 
 # При CUDA_ARCH=all (или пусто) собираем под широкий список архитектур.
 # Иначе пробрасываем значение как есть (например "86", "89" или "75;86;89").
-RUN mkdir -p build && cd build && \
+# Round 15 follow-up (2026-07-29): --mount=type=cache,target=/root/.ccache
+# персистит ccache между билдами. Без него каждый билд перекомпилирует
+# ВСЕ .cu.o/.cpp.o заново (18 мин C++). С ним — только изменённые файлы
+# (обычно <1 мин для Go-only изменений).
+RUN --mount=type=cache,target=/root/.ccache \
+    mkdir -p build && cd build && \
     if [ -z "${CUDA_ARCH}" ] || [ "${CUDA_ARCH}" = "all" ]; then \
         # CUDA 12.2 поддерживает sm_50..sm_90. Blackwell (sm_120) — только в CUDA 12.8+.
         GGML_CUDA_ARCH_LIST="50;61;70;75;80;86;89;90" && \
@@ -52,7 +66,7 @@ RUN mkdir -p build && cd build && \
       -DGGML_CUDA=ON \
       -DGGML_CUDA_NCCL=OFF \
       -DCMAKE_CUDA_ARCHITECTURES="${GGML_CUDA_ARCH_LIST}" \
-      -DGGML_CCACHE=OFF \
+      -DGGML_CCACHE=ON \
       -DLLAMA_CURL=OFF \
       -DLLAMA_BUILD_TESTS=OFF \
       -DLLAMA_BUILD_EXAMPLES=OFF \
@@ -61,7 +75,8 @@ RUN mkdir -p build && cd build && \
       # Default is OFF (только при LLAMA_STANDALONE=ON), но нам нужна libcommon.a
       # для нашего C++ wrapper chat_thinking.cpp.
       -DLLAMA_BUILD_COMMON=ON && \
-    cmake --build . --config Release -j$(nproc)
+    cmake --build . --config Release -j$(nproc) && \
+    ccache -s | tail -5
 
 # -----------------------------------------------------------------------------
 # Stage 2: bridge-builder — сборка libollamalegion_bridge.a
@@ -123,12 +138,15 @@ ENV GOMODCACHE="/go/pkg/mod"
 
 WORKDIR /build
 
-# Legacy builder compatibility: BuildKit cache mounts (--mount=type=cache)
-# are disabled because Windows builds use DOCKER_BUILDKIT=0. Module and
-# build caches live inside the layer, which slightly increases rebuild
-# time but keeps the Dockerfile portable.
+# Round 15 follow-up (2026-07-29): BuildKit cache mount для Go modules.
+# Персистит /go/pkg/mod между билдами, ускоряет `go mod download` с ~30 сек
+# до <1 сек на второй и далее билды. Требует DOCKER_BUILDKIT=1 (build-containers.ps1
+# уже выставляет, см. set BUILDKIT_PROGRESS=plain).
+RUN --mount=type=cache,target=/go/pkg/mod \
+    --mount=type=cache,target=/root/.cache/go-build \
+    go mod download
 COPY go.mod go.sum ./
-RUN go mod download && go mod verify
+RUN go mod verify
 
 COPY . .
 

@@ -2171,6 +2171,23 @@ const GgufRenderer = (window.GgufRenderer = (function () {
         var content = document.querySelector('#ggufDetailPanel .gguf-detail-content');
         if (!content) return;
         content.innerHTML = renderDetailPane();
+        // Round 15 (2026-07-29): обновляем класс .active на кнопках вкладок —
+        // без этого после клика на таб контент переключался, но визуальный
+        // highlight оставался на ПРЕДЫДУЩЕЙ вкладке (пользователь видел
+        // "выделение на Инфо, хотя контент Настройки"). Меняем класс на
+        // существующих кнопках чтобы не ломать делегированный click handler.
+        var tabsContainer = document.querySelector('#ggufDetailPanel .gguf-detail-tabs');
+        if (tabsContainer) {
+            var tabBtns = tabsContainer.querySelectorAll('.gguf-detail-tab');
+            for (var i = 0; i < tabBtns.length; i++) {
+                var btn = tabBtns[i];
+                if (btn.getAttribute('data-detail-tab') === state.detailPane) {
+                    btn.classList.add('active');
+                } else {
+                    btn.classList.remove('active');
+                }
+            }
+        }
         var panel = document.getElementById('ggufDetailPanel');
         if (panel) {
             bindSettingsChange(panel, 'ggufDetailAutoGpu', 'autoGpuDistribution', 'checked');

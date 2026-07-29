@@ -943,6 +943,15 @@ const GgufRenderer = (window.GgufRenderer = (function () {
         const idleUnload = v('idleUnloadMinutes', 0);
         const enableMetrics = chk('enableMetrics', true);
         const metricsRetention = v('metricsRetentionSeconds', 3600);
+        // Session 18 Round 15 (2026-07-29): Inference defaults — параллелизм и reasoning.
+        // defaultNParallel: 0 = inherit cppworker default (1), 1..8 = parallel slots per model.
+        // enableReasoning: включает soft+native thinking path (Round 11/14).
+        //   cppworker handler принимает ключ "enableReasoning" (без "default" префикса),
+        //   см. handlers_config.go:387 applyBool("enableReasoning", ...).
+        // reasoningBudget: max thinking tokens before answer (0 = unlimited).
+        const nParallel = v('defaultNParallel', 0);
+        const enableReasoning = chk('enableReasoning', false);
+        const reasoningBudget = v('reasoningBudget', 0);
         // Diagnostics
         const nodeName = (cfg.nodeName != null) ? cfg.nodeName : (backend ? backend.id : '');
         const balancerUrl = (cfg.balancerUrl != null) ? cfg.balancerUrl : '';
@@ -1087,6 +1096,27 @@ const GgufRenderer = (window.GgufRenderer = (function () {
                     '<input type="number" id="ggufOptMetricsRetention" class="form-control" value="' + metricsRetention + '" min="0">' +
                 '</div>' +
             '</div>' +
+            // ====== Inference (Round 15, 2026-07-29) ======
+            // n_parallel + enableReasoning + reasoningBudget — default значения
+            // для ВСЕХ загружаемых моделей на этом backend. Per-Model Profile
+            // (cppworker-params.js) может override'нуть для конкретной модели.
+            '<h6 class="gguf-section-header"><i class="fas fa-brain"></i> ' + Utils.escapeHtml(_('gguf.tab_inference') || 'Inference') + '</h6>' +
+            '<div class="form-row" style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:12px;">' +
+                '<div class="form-group">' +
+                    '<label>' + Utils.escapeHtml(_('gguf.n_parallel') || 'Parallel sequences (n_parallel)') + '</label>' +
+                    '<input type="number" id="ggufOptNParallel" class="form-control" value="' + nParallel + '" min="0" max="8">' +
+                    '<small style="color:var(--text-muted);">' + Utils.escapeHtml(_('gguf.n_parallel_desc') || 'Default parallel slots per model. 0 = 1 (sequential), 1..8 = multi-slot KV-cache isolation. > 1 = more VRAM.') + '</small>' +
+                '</div>' +
+                '<div class="form-group">' +
+                    '<label><input type="checkbox" id="ggufOptEnableReasoning" ' + (enableReasoning ? 'checked' : '') + '> ' + Utils.escapeHtml(_('gguf.enable_reasoning') || 'Enable reasoning/thinking') + '</label>' +
+                    '<small style="color:var(--text-muted);">' + Utils.escapeHtml(_('gguf.enable_reasoning_desc') || 'Soft+native thinking path for gemma-4, deepseek-r1, qwen3-thinking.') + '</small>' +
+                '</div>' +
+                '<div class="form-group">' +
+                    '<label>' + Utils.escapeHtml(_('gguf.reasoning_budget') || 'Reasoning budget (tokens)') + '</label>' +
+                    '<input type="number" id="ggufOptReasoningBudget" class="form-control" value="' + reasoningBudget + '" min="0" max="100000" step="256">' +
+                    '<small style="color:var(--text-muted);">' + Utils.escapeHtml(_('gguf.reasoning_budget_desc') || 'Max thinking tokens before answer. 0 = unlimited.') + '</small>' +
+                '</div>' +
+            '</div>' +
             // ====== Diagnostics ======
             '<div class="form-group" style="color:var(--text-muted);font-size:12px;margin-top:8px;">' +
                 (nodeName ? ('<div><b>node:</b> ' + Utils.escapeHtml(nodeName) + '</div>') : '') +
@@ -1150,7 +1180,13 @@ const GgufRenderer = (window.GgufRenderer = (function () {
             // Performance
             idleUnloadMinutes: parseIntOr(document.getElementById('ggufOptIdleUnloadMinutes').value, 0),
             enableMetrics: !!document.getElementById('ggufOptEnableMetrics').checked,
-            metricsRetentionSeconds: parseIntOr(document.getElementById('ggufOptMetricsRetention').value, 3600)
+            metricsRetentionSeconds: parseIntOr(document.getElementById('ggufOptMetricsRetention').value, 3600),
+            // Inference (Round 15, 2026-07-29): n_parallel + reasoning.
+            // enableReasoning / reasoningBudget — без "default" префикса, как в app.js
+            // (handler applyBool("enableReasoning") в handlers_config.go:387).
+            defaultNParallel: parseIntOr(document.getElementById('ggufOptNParallel').value, 0),
+            enableReasoning: !!document.getElementById('ggufOptEnableReasoning').checked,
+            reasoningBudget: parseIntOr(document.getElementById('ggufOptReasoningBudget').value, 0)
         };
         // state.loadOptions для совместимости с локальным кэшем (loadModelAt)
         state.loadOptions.autoGpuDistribution = !!document.getElementById('ggufOptAutoGpu').checked;

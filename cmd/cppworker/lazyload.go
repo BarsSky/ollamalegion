@@ -365,6 +365,12 @@ func autoLoadModels(cfg cppbackend.Config) {
 			FlashAttnType: cfg.DefaultFlashAttnType,
 			NUMA:          cfg.DefaultNUMA,
 			UseMmap:       cfg.DefaultUseMmap,
+			// Round 15 (2026-07-29): propagate defaultNParallel to LoadModelOpts
+			// (bugfix: до этого поле Parallel оставалось 0 → SlotManager создавался
+			// с maxSlots=1, multi-slot state isolation не работала). 0 = inherit
+			// bridge default (=1).
+			Parallel:    cfg.DefaultNParallel,
+			KVCacheType: cfg.DefaultKVCacheType,
 		}
 
 		log.Infow("auto-loading model",

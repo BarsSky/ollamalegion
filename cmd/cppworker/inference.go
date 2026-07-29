@@ -706,6 +706,9 @@ func tryRamFallbackReload(modelName string, requestedNCtx int, hasTools bool) (b
 		// Session 16+ (gemma-4/qwen3 fix): RAM fallback must use q4_0 KV-cache to fit big n_ctx in 8GB VRAM.
 		// Without this, llama.cpp reserves f16 KV and OOMs on 65536+ for any model.
 		KVCacheType:   "q4_0",
+		// Round 15 (2026-07-29): inherit Parallel из current для сохранения multi-slot
+		// state isolation после reload (иначе SlotManager пересоздаётся с maxSlots=1).
+		Parallel:      current.Parallel,
 	}
 
 	// === AutoTuneNCtx (Issue: "Cline + 20GB GPU, ???? RAM, ?? VRAM ?? ???????") ===

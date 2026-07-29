@@ -219,6 +219,9 @@ func reloadAllLoadedWithDefaults() ([]string, []string) {
 			NUMA:          currentConfig.DefaultNUMA,
 			UseMmap:       currentConfig.DefaultUseMmap,
 			TensorSplit:   m.TensorSplit,
+			// Round 15 (2026-07-29): propagate defaultNParallel + KVCacheType на reload.
+			Parallel:    currentConfig.DefaultNParallel,
+			KVCacheType: currentConfig.DefaultKVCacheType,
 		}
 		// Если включён auto_offload и файл > availableVRAM — пересчитываем gpu_layers.
 		if *autoOffload {

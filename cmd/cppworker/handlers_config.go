@@ -408,6 +408,8 @@ func handleCppWorkerUpdateConfig(w http.ResponseWriter, r *http.Request) {
 		"defaultYarnBetaFast": true, "defaultYarnBetaSlow": true,
 		// Метрики и lifecycle
 		"enableMetrics": true, "metricsRetentionSeconds": true, "idleUnloadMinutes": true,
+		// Session 18 (Round 11/14): Reasoning/Thinking — runtime fields, не load-affecting.
+		"enableReasoning": true, "reasoningBudget": true,
 	}
 	for k := range updates {
 		if !knownKeys[k] {

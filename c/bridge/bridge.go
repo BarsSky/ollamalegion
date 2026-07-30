@@ -925,7 +925,9 @@ func (m *ModelHandle) Tokenize(text string) ([]int32, error) {
 	defer C.free(unsafe.Pointer(cText))
 
 	// Сначала узнаём нужный размер буфера.
-	needed := C.bridge_count_tokens(unsafe.Pointer(m.ptr), cText)
+	// bridge_count_tokens объявлен с ModelHandle в bridge.h → cgo биндинг
+	// ожидает _Ctype_ModelHandle (=*C.ModelHandle), не unsafe.Pointer.
+	needed := C.bridge_count_tokens(m.ptr, cText)
 	if needed < 0 {
 		return nil, fmt.Errorf("bridge_count_tokens failed: %s", C.GoString(C.bridge_last_error()))
 	}
@@ -941,7 +943,8 @@ func (m *ModelHandle) Tokenize(text string) ([]int32, error) {
 	}
 	defer C.free(unsafe.Pointer(cBuf))
 
-	actual := C.bridge_tokenize(unsafe.Pointer(m.ptr), cText, cBuf, C.int32_t(bufSize))
+	// bridge_tokenize объявлен с ModelHandle в bridge.h → typed, не unsafe.Pointer.
+	actual := C.bridge_tokenize(m.ptr, cText, cBuf, C.int32_t(bufSize))
 	if actual < 0 {
 		return nil, fmt.Errorf("bridge_tokenize failed: %s", C.GoString(C.bridge_last_error()))
 	}
@@ -974,8 +977,9 @@ func (m *ModelHandle) TokenToPiece(token int32) string {
 	}
 	defer C.free(unsafe.Pointer(cBuf))
 
-	// bridge_token_to_piece принимает void* (C → unsafe.Pointer в Go).
-	n := int(C.bridge_token_to_piece(unsafe.Pointer(m.ptr), C.int32_t(token), cBuf, C.int32_t(bufSize)))
+	// bridge_token_to_piece объявлен с ModelHandle в bridge.h → cgo биндинг
+	// ожидает _Ctype_ModelHandle (typed), не unsafe.Pointer.
+	n := int(C.bridge_token_to_piece(m.ptr, C.int32_t(token), cBuf, C.int32_t(bufSize)))
 	if n <= 0 {
 		return ""
 	}

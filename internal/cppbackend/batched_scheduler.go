@@ -82,6 +82,13 @@ type BatchedScheduler struct {
 	windowMs  int32         // batching window (default 5ms)
 	interval  time.Duration // = time.Duration(windowMs) * time.Millisecond
 
+	// modelLock — external lock (modelInstance.mu) which scheduler MUST
+	// hold на время BatchedDecode (Round 8 BUGFIX: llama.cpp context is
+	// not thread-safe, и в batched path единственный Run goroutine
+	// обращается к handle, но всё равно держим lock для safety — если
+	// кто-то добавит direct inst.handle.Infer() в другом месте).
+	modelLock sync.Locker
+
 	mu       sync.Mutex
 	sessions map[BatchedSessionID]*BatchedSessionState
 	nextSeq  int32 // next available seq_id (1, 2, 3, ...)
@@ -98,6 +105,10 @@ type BatchedSchedulerConfig struct {
 	Model     *bridge.ModelHandle
 	NParallel int32         // должно совпадать с n_parallel в ModelConfig
 	WindowMs  int32         // batching window (default 5ms; range 1-50)
+	// ModelLock — external lock, держится scheduler'ом на время llama_decode
+	// (Round 8 BUGFIX: serialize access к llama.cpp context). nil → scheduler
+	// НЕ лочит (deprecated, только для unit-тестов).
+	ModelLock sync.Locker
 }
 
 // NewBatchedScheduler — создаёт scheduler. nParallel должно совпадать с
@@ -121,6 +132,7 @@ func NewBatchedScheduler(cfg BatchedSchedulerConfig) (*BatchedScheduler, error) 
 		nParallel: cfg.NParallel,
 		windowMs:  cfg.WindowMs,
 		interval:  time.Duration(cfg.WindowMs) * time.Millisecond,
+		modelLock: cfg.ModelLock, // может быть nil для тестов
 		sessions:  make(map[BatchedSessionID]*BatchedSessionState),
 		nextSeq:   1, // 0 зарезервирован для legacy single-slot
 		stop:      make(chan struct{}),
@@ -304,10 +316,17 @@ func (bs *BatchedScheduler) tick(ctx context.Context) {
 	}
 
 	// Шаг 3: ОДИН llama_decode для всех sequences.
-	// ВАЖНО: instance.mu держится на стороне вызывающего (Backend). Здесь
-	// мы НЕ берём никаких блокировок — caller (Backend.batchedInfer) обязан
-	// сериализовать через inst.mu.
+	// Round 8 BUGFIX: llama.cpp context is not thread-safe. Держим
+	// modelLock (modelInstance.mu) на время BatchedDecode. В batched path
+	// только Run goroutine обращается к handle, но external lock остаётся
+	// для safety (если кто-то добавит direct inst.handle.Infer()).
+	if bs.modelLock != nil {
+		bs.modelLock.Lock()
+	}
 	logits, err := bs.model.BatchedDecode(sequences)
+	if bs.modelLock != nil {
+		bs.modelLock.Unlock()
+	}
 	if err != nil {
 		logger.Get().Errorw("BatchedScheduler: BatchedDecode failed", "error", err)
 		// Распространяем ошибку на все sessions.

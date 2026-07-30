@@ -24,7 +24,7 @@ import (
 
 func init() {
 	// Quiet logger в тестах (no info-level spam).
-	_ = logger.Init(logger.Config{Level: "error"})
+	logger.Init("error")
 }
 
 // ============================================================

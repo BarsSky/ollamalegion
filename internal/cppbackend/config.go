@@ -99,6 +99,19 @@ type Config struct {
 	EnableReasoning bool `json:"enableReasoning"`
 	ReasoningBudget int  `json:"reasoningBudget"`
 
+	// Round 15.1 (2026-07-30): opt-in флаг для batched parallel inference.
+	// При false (default) используется Round 13 multi-slot path с serialized
+	// llama_decode через inst.mu — backward compat. При true Backend создаёт
+	// BatchedScheduler для каждой загруженной модели и маршрутизирует
+	// streaming inference через него (ОДИН llama_decode call для N concurrent
+	// requests → real GPU matmul sharing).
+	//
+	// CAVEAT: BatchedScheduler (Round 15.1) использует GREEDY argmax sampling
+	// — temperature/top_p/top_k НЕ применяются. Это regression vs Round 13.
+	// Round 15.2 добавит полный Sampler chain. Use case: best for short
+	// classification/extraction workloads, не для creative generation.
+	EnableBatchedParallel bool `json:"enableBatchedParallel"`
+
 	// IdleUnloadMinutes — автоматическая выгрузка моделей из VRAM после N минут простоя.
 	// 0 (по умолчанию) = автовыгрузка ВЫКЛЮЧЕНА. Модель держится в VRAM, пока:
 	//   - пользователь явно не вызовет /api/models/unload или /api/profiles/* unload,
@@ -165,6 +178,10 @@ func DefaultConfig() Config {
 		MetricsRetentionS: 3600,
 		EnableReasoning:    false, // Session 18: по умолчанию выключено
 		ReasoningBudget:    0,     // 0 = без лимита на thinking-токены
+
+		// Round 15.1: opt-in. Greedy argmax пока — НЕ для production
+		// creative generation, только для тестов / classification workloads.
+		EnableBatchedParallel: false,
 		// IdleUnloadMinutes: 0 = автовыгрузка моделей ВЫКЛЮЧЕНА по умолчанию.
 		// Если нужна автоматическая выгрузка после простоя, задайте явно:
 		//   export CPPWORKER_IDLE_UNLOAD_MINUTES=30
@@ -348,6 +365,13 @@ func LoadConfigFromEnv() Config {
 	// после N минут простоя (отсчёт от последнего использования).
 	if v := os.Getenv("CPPWORKER_IDLE_UNLOAD_MINUTES"); v != "" {
 		cfg.IdleUnloadMinutes = parseInt(v, cfg.IdleUnloadMinutes)
+	}
+
+	// Round 15.1: opt-in флаг для batched parallel inference. Default = false
+	// (Round 13 multi-slot path — backward compat). Включение — только для
+	// workloads где greedy argmax acceptable.
+	if v := os.Getenv("CPPWORKER_ENABLE_BATCHED_PARALLEL"); v != "" {
+		cfg.EnableBatchedParallel = v == "1" || strings.ToLower(v) == "true"
 	}
 
 	return cfg

@@ -11,6 +11,7 @@ package cppbackend
 import (
 	"context"
 	"encoding/binary"
+	"errors"
 	"fmt"
 	"math"
 	"os"
@@ -83,6 +84,11 @@ type ModelInfo struct {
 	// чтобы UI мог отображать «idle 5s» и для отладки reload-циклов.
 	// Может быть zero, если модель только что загружена и ещё не использовалась.
 	LastUsedAt time.Time `json:"lastUsedAt,omitempty"`
+	// Round 15.1 (2026-07-30): true если модель использует BatchedScheduler
+	// для true parallel inference (ОДИН llama_decode для N sessions).
+	// false = legacy Round 13 multi-slot path с serialized llama_decode.
+	// Виден в /api/models (UI может показать "Batched: ON" / "Batched: OFF").
+	BatchedParallel bool `json:"batchedParallel"`
 }
 
 // Backend — основной объект CppBackend
@@ -170,6 +176,12 @@ type LoadModelOpts struct {
 	// For MoE: keep attention on GPU, expert tensors in RAM.
 	OverrideTensors     []string
 	OverrideTensorBufts []string
+
+	// Round 15.1: per-model override для batched parallel inference.
+	// - nil (default) → use cfg.EnableBatchedParallel (Backend global toggle)
+	// - non-nil → explicit per-model choice (overrides cfg.EnableBatchedParallel)
+	// CAVEAT: BatchedScheduler пока greedy argmax (no temp/top_p).
+	EnableBatchedParallel *bool
 }
 
 // modelInstance — экземпляр загруженной модели
@@ -185,6 +197,19 @@ type modelInstance struct {
 	// на разных seq_id, каждый держит свой регион KV-cache.
 	// Инициализируется в LoadModelWithOpts после успешной загрузки.
 	slots *SlotManager
+
+	// Round 15.1 (2026-07-30): BatchedScheduler для true parallel inference.
+	// nil = не используется (default, Round 13 path). Если не-nil — GenerateStream
+	// маршрутизирует через RegisterSession + чтение из TokenCh (с per-token
+	// detokenize через ModelHandle.TokenToPiece). Создаётся в LoadModelWithOpts
+	// только если (opts.EnableBatchedParallel ?? cfg.EnableBatchedParallel) = true
+	// И Parallel >= 2 (нужен реальный slot pool).
+	batchedScheduler *BatchedScheduler
+	// batchedSchedulerCancel — отмена Run() goroutine при UnloadModel.
+	// cancel != nil означает scheduler активен; вызов cancel() останавливает
+	// tick loop и закрывает все активные sessions с ошибкой.
+	batchedSchedulerCancel context.CancelFunc
+
 	// lastUsedAt — момент последнего обращения к модели (генерация/стрим).
 	// Используется IdleUnloadManager'ом для решения о выгрузке неактивных
 	// моделей: считаем idle от LastUsedAt, а не от LoadedAt — иначе модель,
@@ -602,6 +627,42 @@ func (b *Backend) LoadModelWithOpts(name string, path string, opts LoadModelOpts
 		"name", name,
 		"maxSlots", parallelSlots,
 		"parallel", opts.Parallel)
+
+	// Round 15.1 (2026-07-30): initialize BatchedScheduler если включён
+	// (per-model override или global toggle). Требует Parallel >= 2 потому
+	// что batched path использует seq_id (1..N), а seq_id=0 зарезервирован
+	// для legacy single-slot. NParallel в BatchedSchedulerConfig = Parallel
+	// (max concurrent sessions).
+	//
+	// Effective flag = opts.EnableBatchedParallel (если != nil) иначе
+	// b.cfg.EnableBatchedParallel (env / JSON config). Per-model wins.
+	enableBatched := b.cfg.EnableBatchedParallel
+	if opts.EnableBatchedParallel != nil {
+		enableBatched = *opts.EnableBatchedParallel
+	}
+	if enableBatched && parallelSlots >= 2 {
+		bs, err := NewBatchedScheduler(BatchedSchedulerConfig{
+			Model:     handle,
+			NParallel: int32(parallelSlots),
+			WindowMs:  5, // 5ms batching window (per design doc R3)
+			ModelLock: &inst.mu, // serialize llama_decode access (Round 8 BUGFIX)
+		})
+		if err != nil {
+			logger.Get().Warnw("BatchedScheduler init failed, falling back to Round 13 path",
+				"name", name, "error", err)
+		} else {
+			bsCtx, bsCancel := context.WithCancel(context.Background())
+			inst.batchedScheduler = bs
+			inst.batchedSchedulerCancel = bsCancel
+			inst.info.BatchedParallel = true
+			go bs.Run(bsCtx)
+			logger.Get().Infow("BatchedScheduler started (Round 15.1 batched parallel mode)",
+				"name", name, "n_parallel", parallelSlots, "window_ms", 5)
+		}
+	} else if enableBatched && parallelSlots < 2 {
+		logger.Get().Warnw("EnableBatchedParallel=true but parallel < 2; ignoring (need parallel >= 2 for batched seq_ids)",
+			"name", name, "parallel", parallelSlots)
+	}
 
 	if inst.info.KVCacheType == "" {
 		// Fallback на default (аналогично line 452 для cfg.KVCacheType).
@@ -1150,6 +1211,22 @@ func (b *Backend) UnloadModel(name string) error {
 	delete(b.models, name)
 	b.mu.Unlock()
 
+	// Round 15.1: stop BatchedScheduler ДО FreeModel, чтобы in-flight
+	// sessions получили ошибку через ctx.Done() и закрыли каналы.
+	// Без этого Run() goroutine может пытаться обращаться к handle
+	// после FreeModel() — use-after-free в C-bridge (SIGABRT / segfault).
+	if inst.batchedSchedulerCancel != nil {
+		inst.batchedSchedulerCancel() // cancel ctx → Run() returns
+		inst.batchedSchedulerCancel = nil
+	}
+	if inst.batchedScheduler != nil {
+		// Ждём завершения Run() (graceful shutdown). Без timeout
+		// потому что UnloadModel обычно вызывается из HTTP handler
+		// и не блокирует другие операции.
+		<-inst.batchedScheduler.Done()
+		inst.batchedScheduler = nil
+	}
+
 	inst.mu.Lock()
 	if inst.handle != nil {
 		inst.handle.FreeModel()
@@ -1160,6 +1237,7 @@ func (b *Backend) UnloadModel(name string) error {
 	inst.info.LoadingStartedAt = time.Time{}
 	inst.info.LoadingSizeBytes = 0
 	inst.info.LoadingError = ""
+	inst.info.BatchedParallel = false
 	inst.mu.Unlock()
 
 	// Записываем метрики
@@ -1455,10 +1533,20 @@ func (b *Backend) Generate(modelName string, prompt string, params bridge.Genera
 //
 // Round 13 (2026-07-28): добавлен slot manager (см. Generate для деталей
 // ordering). Тот же lock pattern: Acquire → Lock → InferStream → Unlock → Release.
+//
+// Round 15.1 (2026-07-30): если BatchedScheduler активен для этой модели,
+// маршрутизируем через BatchedInferStream (true parallel inference).
+// Greedy argmax sampling (temp/top_p ignored). Иначе — legacy Round 13 path.
 func (b *Backend) GenerateStream(modelName string, prompt string, params bridge.GenerationParams, callback bridge.StreamCallback) error {
 	inst, err := b.getModelInstance(modelName)
 	if err != nil {
 		return err
+	}
+
+	// Round 15.1: если BatchedScheduler активен, маршрутизируем в batched path.
+	// BatchedInferStream владеет собственным slot management через BatchedScheduler.
+	if inst.batchedScheduler != nil {
+		return b.batchedInferStream(inst, modelName, prompt, params, callback)
 	}
 
 	// Round 13: acquire slot (см. Generate для объяснения).
@@ -1493,6 +1581,84 @@ func (b *Backend) GenerateStream(modelName string, prompt string, params bridge.
 	}()
 
 	return inst.handle.InferStream(prompt, params, callback)
+}
+
+// batchedInferStream — Round 15.1: streaming inference через BatchedScheduler.
+//
+// Контракт:
+//   1. Tokenize prompt через inst.handle.Tokenize → []int32
+//   2. RegisterSession в BatchedScheduler (получаем id, state, TokenCh)
+//   3. Loop: читаем int32 токены из state.TokenCh, detokenize через
+//      inst.handle.TokenToPiece, передаём в user callback
+//   4. TokenCh закрывается scheduler'ом когда session finished
+//      (EOG, max_tokens, или scheduler stop)
+//
+// ВАЖНО: НЕ держим inst.mu здесь! BatchedScheduler.Run goroutine берёт
+// modelLock (= &inst.mu) сам на время BatchedDecode. Это позволяет
+// реальный parallel inference (N sessions одновременно в одном
+// llama_decode call).
+//
+// Slot management: BatchedScheduler.RegisterSession возвращает ошибку
+// при capacity overflow. Caller (HTTP handler) перехватывает и возвращает
+// 503 клиенту. Round 15.1 НЕ блокирует на capacity — opt-in флаг для
+// workloads где caller знает лимит.
+func (b *Backend) batchedInferStream(inst *modelInstance, modelName string, prompt string, params bridge.GenerationParams, callback bridge.StreamCallback) error {
+	// 1. Tokenize prompt.
+	tokens, err := inst.handle.Tokenize(prompt)
+	if err != nil {
+		return fmt.Errorf("batched stream: tokenize failed: %w", err)
+	}
+	if len(tokens) == 0 {
+		return errors.New("batched stream: empty prompt after tokenize")
+	}
+
+	// 2. Determine MaxTokens.
+	maxTokens := params.NPredict
+	if maxTokens <= 0 || maxTokens > 4096 {
+		// Batched path: cap at 4096 чтобы один greedy loop не съел всю память.
+		// Default = 2048 (DefaultGenerationParams).
+		maxTokens = 2048
+	}
+
+	// 3. Register session.
+	id, state, err := inst.batchedScheduler.RegisterSession(tokens, maxTokens)
+	if err != nil {
+		return fmt.Errorf("batched stream: register session: %w", err)
+	}
+	defer inst.batchedScheduler.UnregisterSession(id)
+
+	// 4. Update metrics (BatchedScheduler сам берёт modelLock на время
+	// decode, поэтому нам НЕ нужно держать inst.mu тут).
+	inst.info.TotalQueries++
+	inst.info.ActiveQueries++
+	inst.lastUsedAt.Store(time.Now())
+	start := time.Now()
+	defer func() {
+		inst.info.ActiveQueries--
+		if b.metrics != nil {
+			b.metrics.RecordRequest(modelName, 0, time.Since(start), true)
+		}
+		inst.lastUsedAt.Store(time.Now())
+	}()
+
+	// 5. Stream tokens.
+	for tok := range state.TokenCh {
+		piece := inst.handle.TokenToPiece(tok)
+		if piece == "" {
+			// Некоторые токены (BOS, special) декодируются в пустую строку.
+			// Пропускаем — callback их всё равно не отдаст клиенту.
+			continue
+		}
+		if !callback(piece) {
+			// Caller попросил остановиться (return false из callback).
+			return nil
+		}
+	}
+	// TokenCh закрыт scheduler'ом. Проверяем session.Err.
+	if state.Err != nil {
+		return state.Err
+	}
+	return nil
 }
 
 // GetEmbeddings получает эмбеддинги текста

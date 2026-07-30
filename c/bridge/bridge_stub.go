@@ -444,6 +444,34 @@ func (m *ModelHandle) CountTokens(text string) int {
 	return len([]rune(text)) / 4
 }
 
+// Tokenize возвращает ошибку в stub-режиме (нет словаря).
+// Round 15.1: в stub-режиме batched path не используется; сигнатура нужна
+// для компиляции пакета.
+func (m *ModelHandle) Tokenize(text string) ([]int32, error) {
+	return nil, fmt.Errorf("Tokenize not available in llama_stub build")
+}
+
+// BatchedSequence — stub-представление CBridgeBatchedSeq (Round 15.1).
+// В stub-режиме BatchedScheduler не используется, но тип нужен для компиляции.
+type BatchedSequence struct {
+	Tokens   []int32
+	SeqID    int32
+	StartPos int32
+}
+
+// BatchedDecode возвращает ошибку в stub-режиме (нет llama.cpp).
+func (m *ModelHandle) BatchedDecode(sequences []BatchedSequence) ([][]float32, error) {
+	return nil, fmt.Errorf("BatchedDecode not available in llama_stub build")
+}
+
+// TokenToPiece возвращает пустую строку в stub-режиме (нет словаря).
+// Round 15.1: в stub-режиме batched infer path не используется
+// (cppworker собирается с реальным llama.cpp через cgo), но сигнатура
+// нужна чтобы пакет компилировался.
+func (m *ModelHandle) TokenToPiece(token int32) string {
+	return ""
+}
+
 // GetMetadata возвращает метаданные модели (stub)
 func (m *ModelHandle) GetMetadata() (*ModelMetadata, error) {
 	return &ModelMetadata{

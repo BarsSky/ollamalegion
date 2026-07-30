@@ -263,6 +263,63 @@ int32_t bridge_count_tokens(
     const char* text
 );
 
+// bridge_tokenize
+// Round 15.1: токенизирует строку в int32 массив. Нужно для batched
+// parallel path (BatchedScheduler.RegisterSession принимает []int32
+// промпт — caller должен сначала токенизировать).
+//
+// Параметры:
+//   model     — загруженная модель
+//   text      — UTF-8 строка
+//   out_buf   — caller-allocated буфер int32 (out_buf_size элементов)
+//   out_buf_size — размер out_buf в int32 элементах
+//
+// Возвращает:
+//   >= 0  — число токенов, записанных в out_buf (= bridge_count_tokens())
+//           Caller может использовать возвращённое значение для проверки
+//           переполнения: если == out_buf_size, нужно retry с большим буфером.
+//   -1    — bridge internal error (last_error установлен)
+//   -2    — invalid args
+//
+// Семантика: add_special=true, parse_special=true (как в bridge_infer).
+// BOS токен НЕ добавляется автоматически (add_special=true для chat template
+// не добавляет BOS; BOS обычно добавляется в chat template строку).
+int32_t bridge_tokenize(
+    ModelHandle model,
+    const char* text,
+    int32_t* out_buf,
+    int32_t out_buf_size
+);
+
+// bridge_token_to_piece
+// Round 15.1: конвертирует один токен (int32) в текстовый фрагмент (UTF-8
+// bytes) через llama_token_to_piece(). Нужно для batched_infer_stream
+// (BatchedScheduler отдаёт int32 токены; Go-код на стороне Backend должен
+// конвертировать каждый в текст для SSE-стрима клиенту).
+//
+// Параметры:
+//   model     — загруженная модель (ModelHandle из bridge_load_model)
+//   token     — int32 token ID
+//   out_buf   — caller-allocated буфер для UTF-8 байт
+//   buf_size  — размер out_buf в байтах
+//
+// Возвращает:
+//   >= 0  — число байт, записанных в out_buf (НЕ включая '\0'; null-terminated
+//           для удобства caller'а, если хватает места)
+//   -1    — bridge internal error (last_error установлен)
+//   -2    — invalid args (model==NULL, out_buf==NULL, buf_size<=0)
+//
+// Специальный флаг lstrip=0 (default) — сохраняет ведущий space для
+// первого токена в "свежем" слове, что соответствует поведению
+// bridge_infer_stream. Если нужно aggressive lstrip — caller может сам
+// пропустить первый пробел.
+int32_t bridge_token_to_piece(
+    ModelHandle model,
+    int32_t token,
+    char* out_buf,
+    int32_t buf_size
+);
+
 // ============================================================
 // Chat template — применяет tokenizer.chat_template из GGUF
 // ============================================================

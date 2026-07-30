@@ -1652,6 +1652,83 @@ int32_t bridge_count_tokens(ModelHandle model, const char* text) {
     return n_tokens;
 }
 
+// bridge_tokenize — Round 15.1: токенизация в int32 массив для batched path.
+int32_t bridge_tokenize(ModelHandle model, const char* text, int32_t* out_buf, int32_t out_buf_size) {
+    if (model == NULL || text == NULL || out_buf == NULL || out_buf_size <= 0) {
+        set_error("bridge_tokenize: invalid args");
+        return -2;
+    }
+
+    InternalModel *im = (InternalModel *)model;
+    if (im->vocab == NULL) {
+        set_error("bridge_tokenize: model vocab is NULL");
+        return -1;
+    }
+
+    int text_len = (int)strlen(text);
+
+    // Первый вызов: узнаём сколько токенов нужно.
+    int n_tokens = -llama_tokenize(im->vocab, text, text_len, NULL, 0, true, true);
+    if (n_tokens < 0) {
+        set_error("bridge_tokenize: llama_tokenize returned negative");
+        return -1;
+    }
+
+    if (n_tokens > out_buf_size) {
+        set_error("bridge_tokenize: out_buf too small");
+        return -1;
+    }
+
+    // Второй вызов: пишем токены в out_buf.
+    int actual = llama_tokenize(im->vocab, text, text_len, out_buf, n_tokens, true, true);
+    if (actual < 0) {
+        set_error("bridge_tokenize: second llama_tokenize pass failed");
+        return -1;
+    }
+    return (int32_t)actual;
+}
+
+// bridge_token_to_piece — Round 15.1: конвертирует int32 токен в UTF-8 bytes.
+// Нужно для batched_infer_stream (BatchedScheduler возвращает int32 токены;
+// Go-код в Backend.GenerateBatchedStream конвертит каждый через эту функцию
+// для SSE-стрима клиенту).
+//
+// Семантика lstrip=0 (default) — сохраняет ведущий space для первого токена
+// в "свежем" слове, что соответствует поведению bridge_infer_stream.
+//
+// Контракт возврата:
+//   >= 0 — bytes written в out_buf (НЕ включая '\0'; null-terminated если
+//          хватает места)
+//   -1   — bridge internal error
+//   -2   — invalid args
+int32_t bridge_token_to_piece(ModelHandle model, int32_t token, char* out_buf, int32_t buf_size) {
+    if (model == NULL || out_buf == NULL || buf_size <= 0) {
+        set_error("bridge_token_to_piece: invalid args (model/out_buf NULL or buf_size <= 0)");
+        return -2;
+    }
+
+    InternalModel *im = (InternalModel *)model;
+    if (im->vocab == NULL) {
+        set_error("bridge_token_to_piece: model vocab is NULL");
+        return -1;
+    }
+
+    // llama_token_to_piece возвращает число байт (без '\0'). Если >= buf_size —
+    // текст обрезан. Caller может retry с большим буфером.
+    int n = llama_token_to_piece(im->vocab, (llama_token)token, out_buf, (int)buf_size - 1, 0, false);
+    if (n < 0) {
+        set_error("bridge_token_to_piece: llama_token_to_piece returned negative");
+        return -1;
+    }
+    // Null-terminate если есть место (для удобства Go-caller'а).
+    if (n < buf_size) {
+        out_buf[n] = '\0';
+    } else {
+        out_buf[buf_size - 1] = '\0';
+    }
+    return (int32_t)n;
+}
+
 const char* bridge_version(void) {
     return "0.2.0 (real llama.cpp linked)";
 }

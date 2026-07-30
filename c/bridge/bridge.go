@@ -909,6 +909,79 @@ func (m *ModelHandle) CountTokens(text string) int {
 	return int(n)
 }
 
+// Tokenize — Round 15.1: конвертирует text в int32 массив токенов. Нужно для
+// batched parallel path (BatchedScheduler.RegisterSession принимает []int32).
+//
+// Возвращает токены или nil + error при сбое. Семантика BOS: НЕ добавляется
+// автоматически (chat template обычно вставляет BOS сам).
+func (m *ModelHandle) Tokenize(text string) ([]int32, error) {
+	if m == nil || m.ptr == nil {
+		return nil, fmt.Errorf("model not loaded")
+	}
+	if text == "" {
+		return []int32{}, nil
+	}
+	cText := C.CString(text)
+	defer C.free(unsafe.Pointer(cText))
+
+	// Сначала узнаём нужный размер буфера.
+	needed := C.bridge_count_tokens(unsafe.Pointer(m.ptr), cText)
+	if needed < 0 {
+		return nil, fmt.Errorf("bridge_count_tokens failed: %s", C.GoString(C.bridge_last_error()))
+	}
+	if needed == 0 {
+		return []int32{}, nil
+	}
+
+	// Аллоцируем буфер и запрашиваем токенизацию.
+	bufSize := int(needed) + 16 // +16 запас (теоретически tokenize может вернуть больше)
+	cBuf := (*C.int32_t)(C.malloc(C.size_t(bufSize) * C.sizeof_int32_t))
+	if cBuf == nil {
+		return nil, fmt.Errorf("malloc failed for %d tokens", bufSize)
+	}
+	defer C.free(unsafe.Pointer(cBuf))
+
+	actual := C.bridge_tokenize(unsafe.Pointer(m.ptr), cText, cBuf, C.int32_t(bufSize))
+	if actual < 0 {
+		return nil, fmt.Errorf("bridge_tokenize failed: %s", C.GoString(C.bridge_last_error()))
+	}
+
+	// Копируем из C-буфера в Go slice (Go GC будет владеть).
+	result := make([]int32, int(actual))
+	for i := 0; i < int(actual); i++ {
+		result[i] = int32(*(*C.int32_t)(unsafe.Pointer(uintptr(unsafe.Pointer(cBuf)) + uintptr(i)*unsafe.Sizeof(C.int32_t(0)))))
+	}
+	return result, nil
+}
+
+// TokenToPiece конвертирует int32 token ID в UTF-8 текст.
+//
+// Round 15.1: используется Backend.GenerateBatchedStream для detokenize
+// int32 токенов из BatchedScheduler.TokenCh перед отправкой клиенту через
+// SSE. Возвращает строку; пустая строка если ошибка или model==nil.
+//
+// Семантика соответствует llama_token_to_piece с lstrip=0 (сохраняет
+// ведущий space для первого токена в "свежем" слове) — что совпадает с
+// поведением bridge_infer_stream (line 1405 bridge.c).
+func (m *ModelHandle) TokenToPiece(token int32) string {
+	if m == nil || m.ptr == nil {
+		return ""
+	}
+	const bufSize = 256 // достаточно для одного токена (max ~32 chars обычно)
+	cBuf := (*C.char)(C.malloc(C.size_t(bufSize)))
+	if cBuf == nil {
+		return ""
+	}
+	defer C.free(unsafe.Pointer(cBuf))
+
+	// bridge_token_to_piece принимает void* (C → unsafe.Pointer в Go).
+	n := int(C.bridge_token_to_piece(unsafe.Pointer(m.ptr), C.int32_t(token), cBuf, C.int32_t(bufSize)))
+	if n <= 0 {
+		return ""
+	}
+	return C.GoStringN(cBuf, C.int(n))
+}
+
 // GetMetadata возвращает метаданные модели
 func (m *ModelHandle) GetMetadata() (*ModelMetadata, error) {
 	if m == nil || m.ptr == nil {

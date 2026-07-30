@@ -52,14 +52,25 @@ type BatchedSessionID uint64
 // Выдаётся scheduler'ом при RegisterSession, стабильный на всю жизнь сессии.
 // Может быть переиспользован после UnregisterSession + RegisterSession
 // (но в Round 15.1 — инкрементный counter без reuse).
+//
+// State machine:
+//   registering → prefill (ingest prompt tokens, 1 per tick)
+//   → generating (1 token per tick via BatchedDecode + greedy sample)
+//   → finished (close TokenCh + DoneCh)
 type BatchedSessionState struct {
 	ID         BatchedSessionID
 	SeqID      int32         // llama_seq_id для KV-cache routing
 	Prompt     []int32       // начальные токены prompt'а
 	Generated  []int32       // сгенерированные токены (excluding prompt)
 	MaxTokens  int           // max tokens to generate
-	NextToken  int32         // следующий токен для feed'а в decode (start: prompt[0])
+	NextToken  int32         // следующий токен для feed'а в decode
 	NextPos    int32         // позиция в KV-cache для следующего токена
+	// PrefillDone — true когда ВСЕ prompt токены ingested в KV-cache.
+	// Round 15.1 fix: без prefill модель видит только 1 токен и генерирует
+	// бессмыслицу (e.g. "What is 2+2?" → "Okay, the user asked...").
+	// Prefill: NextPos от 0 до len(Prompt), на каждом tick ингестим prompt[NextPos].
+	// После prefill: переходим в generation phase, NextPos = len(Prompt).
+	PrefillDone bool
 	TokenCh    chan int32    // stream output (sampled tokens)
 	DoneCh     chan struct{} // closed when session finishes
 	Finished   bool          // true after EOG or MaxTokens
@@ -170,7 +181,8 @@ func (bs *BatchedScheduler) RegisterSession(prompt []int32, maxTokens int) (Batc
 		Generated: make([]int32, 0, maxTokens),
 		MaxTokens: maxTokens,
 		NextToken: prompt[0], // первый токен = первый токен prompt'а
-		NextPos:   0,
+		NextPos:   0,         // начинаем с prefill pos 0
+		PrefillDone: len(prompt) == 0, // edge case: пустой prompt = prefilled
 		TokenCh:   make(chan int32, 8), // буферизованный, чтобы scheduler не блокировался
 		DoneCh:    make(chan struct{}),
 	}
@@ -285,6 +297,18 @@ func (bs *BatchedScheduler) markAllSessionsFinished(err error) {
 }
 
 // tick — один цикл batched inference.
+//
+// Phase 1: PREFILL (Round 15.1 fix).
+//   Каждая session на каждом tick ингестит ОДИН prompt токен (NextPos).
+//   Так пока PrefillDone=false — generation НЕ происходит, только KV-fill.
+//   Это критично: без prefill модель видит только NextToken=prompt[0] и
+//   генерирует бессмыслицу (e.g. "What is 2+2?" → "Okay, the user
+//   asked..." вместо "4").
+//
+// Phase 2: GENERATION (один раз за tick).
+//   Когда PrefillDone=true — каждая session предоставляет NextToken
+//   (последний сгенерированный) для BatchedDecode. После decode делаем
+//   greedy argmax и диспатчим в TokenCh.
 func (bs *BatchedScheduler) tick(ctx context.Context) {
 	// Шаг 1: собираем active sessions.
 	bs.mu.Lock()
@@ -303,16 +327,40 @@ func (bs *BatchedScheduler) tick(ctx context.Context) {
 	}
 
 	// Шаг 2: готовим BatchedSequence для каждой session.
-	// Каждая session предоставляет ОДИН токен (NextToken) для текущего шага.
+	// В PREFILL phase — NextToken = prompt[NextPos] (для ингеста в KV-cache).
+	// В GENERATION phase — NextToken = последний сгенерированный токен
+	// (s.NextToken, обновлён в предыдущем tick).
+	// В обоих случаях передаём ОДИН токен за раз.
 	sequences := make([]bridge.BatchedSequence, 0, len(active))
 	for _, s := range active {
 		s.mu.Lock()
+		var tokenToDecode int32
+		if !s.PrefillDone {
+			// Prefill: ингестим prompt[NextPos]. StartPos = NextPos.
+			if int(s.NextPos) < len(s.Prompt) {
+				tokenToDecode = s.Prompt[s.NextPos]
+			} else {
+				// Defensive: если NextPos вышел за пределы prompt — finish.
+				s.Finished = true
+				s.Err = errors.New("prefill NextPos out of bounds")
+				close(s.DoneCh)
+				s.mu.Unlock()
+				continue
+			}
+		} else {
+			// Generation: NextToken = последний сгенерированный (или prompt[last] при первом gen tick).
+			tokenToDecode = s.NextToken
+		}
 		sequences = append(sequences, bridge.BatchedSequence{
-			Tokens:   []int32{s.NextToken}, // borrow — НЕ копируется
+			Tokens:   []int32{tokenToDecode}, // borrow — НЕ копируется
 			SeqID:    s.SeqID,
 			StartPos: s.NextPos,
 		})
 		s.mu.Unlock()
+	}
+
+	if len(sequences) == 0 {
+		return // все sessions finished во время prefill phase
 	}
 
 	// Шаг 3: ОДИН llama_decode для всех sequences.
@@ -334,18 +382,36 @@ func (bs *BatchedScheduler) tick(ctx context.Context) {
 		return
 	}
 
-	// Шаг 4: per-session sampling + dispatch.
-	// TODO Round 15.2: заменить на полный Sampler chain. Пока — greedy argmax.
+	// Шаг 4: per-session update + dispatch.
+	// PREFILL phase: advance NextPos, mark PrefillDone когда весь prompt ингестнут.
+	//   НЕ sample (на prefill последний токен НЕ имеет logits=1 если мы хотим
+	//   убрать sample, но build_batched_batch ВСЕГДА ставит logits=1 на
+	//   последнем токене каждой sequence — так что logits приходят, но мы
+	//   их игнорируем в prefill).
+	// GENERATION phase: greedy argmax + dispatch to TokenCh.
 	for i, s := range active {
 		s.mu.Lock()
 		if s.Finished {
-			// Между нашим сбором active и текущим моментом session мог
-			// быть finished (например, ctx.Done() обработан параллельно).
 			s.mu.Unlock()
 			continue
 		}
 
-		// Sampling: greedy argmax. logits[i] = []float32 длины n_vocab.
+		if !s.PrefillDone {
+			// PREFILL: advance NextPos, не sample, не dispatch.
+			s.NextPos++
+			if int(s.NextPos) >= len(s.Prompt) {
+				// Весь prompt ингестнут. Следующий tick — GENERATION phase.
+				s.PrefillDone = true
+				// NextToken = последний prompt токен — его logits уже посчитаны
+				// в предыдущем batched_decode вызове, так что generation
+				// tick сразу даст next sampled token.
+				s.NextToken = s.Prompt[len(s.Prompt)-1]
+			}
+			s.mu.Unlock()
+			continue
+		}
+
+		// GENERATION: greedy argmax. logits[i] = []float32 длины n_vocab.
 		nextToken := argmaxToken(logits[i])
 
 		// Шаг 5: обновляем session state.

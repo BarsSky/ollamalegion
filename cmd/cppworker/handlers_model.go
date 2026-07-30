@@ -312,6 +312,9 @@ func handleLoadWithParams(w http.ResponseWriter, r *http.Request) {
 		UseMmap:       defaultBoolPtr(req.UseMmap, defUseMmap),
 		TensorSplit:   defTensorSplit2,
 		SplitMode:     defSplitMode2,
+		// Round 15.1: per-model override для batched parallel inference.
+		// nil = inherit global cfg.EnableBatchedParallel. non-nil = explicit choice.
+		EnableBatchedParallel: req.EnableBatchedParallel,
 	}
 	if req.NThreads != nil && *req.NThreads > 0 {
 		opts.NThreads = *req.NThreads

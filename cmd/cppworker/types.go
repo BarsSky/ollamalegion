@@ -163,4 +163,10 @@ type loadWithParamsRequest struct {
 	// Each pair is (regex-pattern, buft-name). Prefer these over OverrideTensor.
 	OverrideTensors     []string `json:"overrideTensors,omitempty"`
 	OverrideTensorBufts []string `json:"overrideTensorBufts,omitempty"`
+
+	// Round 15.1 (2026-07-30): opt-in флаг для batched parallel inference.
+	// nil = inherit global cfg.EnableBatchedParallel.
+	// non-nil = explicit per-model choice (overrides global).
+	// CAVEAT: BatchedScheduler пока greedy argmax (no temp/top_p).
+	EnableBatchedParallel *bool `json:"enableBatchedParallel,omitempty"`
 }

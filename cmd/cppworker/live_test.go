@@ -136,3 +136,27 @@ func TestLiveParser_ThinkingPrefix(t *testing.T) {
 		t.Fatalf("expected 2, got %d", len(calls))
 	}
 }
+
+// TestLiveParser_TrailingBraceBug — Round 16 multi-tool recovery.
+//
+// EXACT live failure (Qwen3-4B-Instruct-2507, 2026-07-30):
+//   Output: [{...function1...},{...function2...}]}
+//   228 bytes, last byte = 0x7d ("}")
+//   Standard json.Unmarshal fails at char 226 (Expecting ',' delimiter).
+//   Strategy 4b (recoverToolCallsByPrefixTrimming) должна найти префикс
+//   [...function2...]} (без последней "}) который парсится валидно.
+func TestLiveParser_TrailingBraceBug(t *testing.T) {
+	output := `[{"id":"call_get_weather","type":"function","function":{"name":"get_weather","arguments":"{\"city\":\"Paris\"}"}},{"id":"call_get_weather","type":"function","function":{"name":"get_weather","arguments":"{\"city\":\"London\"}"}]}`
+	if len(output) != 228 {
+		t.Logf("WARNING: expected 228 bytes, got %d", len(output))
+	}
+	calls := parseToolCallsFromOutput(output)
+	t.Logf("TrailingBraceBug → %d calls", len(calls))
+	for i, c := range calls {
+		b, _ := json.Marshal(c)
+		t.Logf("  [%d] %s", i, string(b))
+	}
+	if len(calls) != 2 {
+		t.Fatalf("expected 2 (after recovery), got %d", len(calls))
+	}
+}

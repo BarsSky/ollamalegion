@@ -285,6 +285,16 @@ func parseToolCallsFromOutput(output string) []openAIToolCall {
 		}
 	}
 
+	// Стратегия 4b (2026-07-30, multi-tool recovery): модель может выдать
+	// "почти-валидный" JSON с trailing garbage — например лишний "}" после
+	// закрытия массива: `[{...},{...}]}`. Чистый json.Unmarshal падает.
+	// Пробуем найти самый длинный префикс строки, который парсится как
+	// валидный JSON, и использовать его. Стратегия 6 ниже тоже попробует,
+	// но ищет "[", а этот recovery работает на всю строку.
+	if calls := recoverToolCallsByPrefixTrimming(output); len(calls) > 0 {
+		return calls
+	}
+
 	// Стратегия 5: JSON внутри ```json ... ``` блока
 	re := regexp.MustCompile("```json\n?(.*?)\n?```")
 	if matches := re.FindStringSubmatch(output); len(matches) > 1 {
@@ -926,5 +936,111 @@ var trailingToolTokens = []string{
 	"<start_of_turn>model",
 	"<end_of_turn>",
 	"<end_of_turn>\n",
+}
+
+// recoverToolCallsByPrefixTrimming — Round 16 (2026-07-30) multi-tool recovery.
+//
+// Symptom: Qwen3-4B-Instruct и аналогичные instruct-модели при multi-tool
+// запросах иногда выдают "почти-валидный" JSON с лишним trailing garbage
+// (см. live test TestLiveParser_TrailingBraceBug, 228 байт, последний `}`
+// лишний). Чистый json.Unmarshal падает.
+//
+// Алгоритм: пробуем серию простых фиксов, после каждого — парсим. Фиксы:
+//   1. Trim trailing non-JSON символов (`}`, whitespace, etc.)
+//   2. Trim trailing `}` после `]` (самый частый случай)
+//   3. Strip extra `}` INSIDE string values (Qwen3-4B quirk: model пишет
+//      `"arguments":"{...}}"}` вместо `"arguments":"{...}"}` — лишний `}` внутри строки)
+//   4. Prefix trimming (last resort: отрезаем по 1 символу с конца)
+func recoverToolCallsByPrefixTrimming(output string) []openAIToolCall {
+	if len(output) < 4 {
+		return nil
+	}
+	if !strings.ContainsAny(output, "[{") {
+		return nil
+	}
+
+	// Helper: try to parse the given string as tool_calls.
+	tryParse := func(s string) []openAIToolCall {
+		s = strings.TrimSpace(s)
+		if !strings.ContainsAny(s, "[{") {
+			return nil
+		}
+		var arr []openAIToolCall
+		if err := json.Unmarshal([]byte(s), &arr); err == nil && len(arr) > 0 {
+			if normalizeToolCalls(arr) {
+				return arr
+			}
+		}
+		var single openAIToolCall
+		if err := json.Unmarshal([]byte(s), &single); err == nil && single.Function.Name != "" {
+			if normalizeToolCalls([]openAIToolCall{single}) {
+				return []openAIToolCall{single}
+			}
+		}
+		return nil
+	}
+
+	// 1. Trim trailing non-JSON chars (whitespace, stray `}` after `]`).
+	candidate := strings.TrimRight(output, " \t\r\n}")
+	if calls := tryParse(candidate); len(calls) > 0 {
+		return calls
+	}
+
+	// 2. Strip extra `}` INSIDE string values. Типичный кейс:
+	//    `"arguments":"{\"city\":\"Paris\"}}"}` → `"arguments":"{\"city\":\"Paris\"}\""`
+	//    Модель добавляет лишний `}` перед закрывающей кавычкой string value.
+	//    Паттерн: `}` followed by `"` followed by `}` — внутри string это лишний brace.
+	//    Ищем `}}"` где первая `}` — лишний brace в string, вторая `}` — закрытие объекта.
+	//    Простой regex: заменяем `}}` на `}` если после `}}` идёт `,` или `}` или `]`.
+	fixed := stripExtraBracesInStringValues(output)
+	if fixed != output {
+		if calls := tryParse(fixed); len(calls) > 0 {
+			return calls
+		}
+		// Также попробуем после trimRight
+		if calls := tryParse(strings.TrimRight(fixed, " \t\r\n}")); len(calls) > 0 {
+			return calls
+		}
+	}
+
+	// 3. Prefix trimming (last resort): отрезаем 1-2 символа с конца.
+	for trim := 1; trim <= 4; trim++ {
+		if len(output) <= trim {
+			break
+		}
+		if calls := tryParse(output[:len(output)-trim]); len(calls) > 0 {
+			return calls
+		}
+	}
+	return nil
+}
+
+// stripExtraBracesInStringValues — находит и перемещает/удаляет лишний trailing `}`.
+//
+// Конкретный баг Qwen3-4B-Instruct (2026-07-30, live multi-tool test):
+// Модель ТЕРЯЕТ `}` для закрытия последнего call-объекта и добавляет лишний `}`
+// в самом конце. Точные позиции в live input (228 байт):
+//   - Промежуточный call (Paris): input `..."}},"` (4 chars между string close и `,`)
+//     — ПРАВИЛЬНАЯ структура (`}"` + `}}` close function + close call), НЕ трогаем.
+//   - Последний call (London) + array: input `..."}"]}` (4 chars в конце)
+//     — НЕПРАВИЛЬНАЯ. Модель забыла close call `}`, потом `]` array close, потом extra `}`.
+//     Correct: `..."}"}]` (close function, close call, array close) — нужно ВСТАВИТЬ `}` перед `]`.
+//
+// Эвристика: одна точечная вставка в самом конце.
+// (Идемпотентно: повторный прогон не меняет результат.)
+func stripExtraBracesInStringValues(s string) string {
+	prev := ""
+	for iter := 0; iter < 8 && prev != s; iter++ {
+		prev = s
+		// Паттерн: trailing `]}` (2 chars) → `}]` (INSERT `}` BEFORE `]`)
+		//   Live end:      `..."}"]}` (4 chars: function close, array close, extra `}`)
+		//   Correct end:   `..."}"}]` (4 chars: function close, call close, array close)
+		// Модель "потеряла" `}` для close call и "вставила" его после `]`.
+		// Чиним: перемещаем trailing `}` ПЕРЕД `]`.
+		if strings.HasSuffix(s, string([]byte{0x5D, 0x7D})) {
+			s = s[:len(s)-2] + string([]byte{0x7D, 0x5D})
+		}
+	}
+	return s
 }
 

@@ -112,7 +112,7 @@
                     <span class="status-dot"></span>
                     <span class="status-text" data-i18n="common.connecting">Подключение...</span>
                 </div>
-                <div class="version">v0.2.0-adaptive</div>
+                <div class="version"><span id="appVersion" data-i18n="[title]footer.version" title="Build version">dev</span></div>
             </div>
         </aside>
 
@@ -1461,7 +1461,7 @@ Beta-slow параметр YaRN. Стандарт: 1. Низкое = более 
                 <span class="footer-separator"></span>
                 <span data-i18n="footer.license"><i class="fas fa-scale-balanced" aria-hidden="true"></i> Лицензия MIT</span>
                 <span class="footer-separator"></span>
-                <span>v0.2.0-adaptive</span>
+                <span class="app-footer-version" data-i18n="[title]footer.version" title="Build version">dev</span>
             </footer>
         </main>
     </div>
@@ -1680,6 +1680,39 @@ Beta-slow параметр YaRN. Стандарт: 1. Низкое = более 
     <script>window.WEBUI_CONFIG = window.WEBUI_CONFIG || {};</script>
     <!-- Modules -->
     <script src="js/modules/config.js?v=16"></script>
+    <!-- Sprint 30 (2026-07-30): привязка version display к build tag.
+         Читает VERSION / GIT_COMMIT / BUILD_DATE из WEBUI_CONFIG (заполняется
+         entrypoint.sh из Docker --build-arg VERSION=...) и обновляет
+         #appVersion в sidebar footer + .app-footer-version в page footer
+         + ставит title с дополнительной инфой (commit + build date). -->
+    <script>
+    (function() {
+        try {
+            var cfg = window.WEBUI_CONFIG || {};
+            var v = cfg.VERSION || 'dev';
+            var tipParts = [];
+            if (cfg.GIT_COMMIT && cfg.GIT_COMMIT !== 'unknown') {
+                tipParts.push('commit ' + cfg.GIT_COMMIT);
+            }
+            if (cfg.BUILD_DATE && cfg.BUILD_DATE !== 'unknown') {
+                tipParts.push('built ' + cfg.BUILD_DATE);
+            }
+            var tip = tipParts.length ? ('v=' + v + ' (' + tipParts.join(', ') + ')') : '';
+            // Sidebar footer (всегда есть на всех страницах с .sidebar)
+            var sidebarEl = document.getElementById('appVersion');
+            if (sidebarEl) {
+                sidebarEl.textContent = v;
+                if (tip) sidebarEl.setAttribute('title', tip);
+            }
+            // Page footer (только на index.html — class .app-footer-version)
+            var footerEls = document.querySelectorAll('.app-footer-version');
+            for (var i = 0; i < footerEls.length; i++) {
+                footerEls[i].textContent = v;
+                if (tip) footerEls[i].setAttribute('title', tip);
+            }
+        } catch (e) { /* keep 'dev' fallback */ }
+    })();
+    </script>
     <script src="js/modules/utils.js?v=16"></script>
     <script src="js/modules/api.js?v=16"></script>
     <script src="js/modules/gguf-api.js?v=16"></script>

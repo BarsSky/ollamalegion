@@ -101,6 +101,21 @@ server {
 
 $NginxTemplate | Set-Content -Path $NginxConf -Encoding UTF8
 
+# Build info (Sprint 30, 2026-07-30):
+# VERSION / GIT_COMMIT / BUILD_DATE показываются в sidebar footer (id=appVersion).
+# В локальном запуске нет Docker build-args → берём из git текущего workspace
+# (если это git checkout) или fallback `dev-local` / `unknown` / `unknown`.
+$localVersion = 'dev-local'
+$localCommit = 'unknown'
+$localBuildDate = 'unknown'
+try {
+    $gitTag = & git describe --tags --always 2>$null
+    if ($LASTEXITCODE -eq 0 -and $gitTag) { $localVersion = $gitTag.Trim() }
+    $gitSha = & git rev-parse --short HEAD 2>$null
+    if ($LASTEXITCODE -eq 0 -and $gitSha) { $localCommit = $gitSha.Trim() }
+    $localBuildDate = (Get-Date -Format 'yyyy-MM-ddTHH:mm:ssZ')
+} catch { }
+
 # Генерация config.js для локального запуска
 $ConfigJs = @"
 window.WEBUI_CONFIG = window.WEBUI_CONFIG || {};
@@ -111,13 +126,16 @@ Object.assign(window.WEBUI_CONFIG, {
     CPPWORKER_URL: '/api/worker',
     REFRESH_INTERVAL: 5000,
     MAX_RECONNECT_ATTEMPTS: 10,
-    RECONNECT_INTERVAL_BASE: 3000
+    RECONNECT_INTERVAL_BASE: 3000,
+    VERSION: '$localVersion',
+    GIT_COMMIT: '$localCommit',
+    BUILD_DATE: '$localBuildDate'
 });
 "@
 
 $ConfigJs | Set-Content -Path "$Webui\js\modules\config.js" -Encoding UTF8
 
-Write-Host "[run-webui-local] Starting nginx on http://localhost:$NginxPort"
+Write-Host "[run-webui-local] Starting nginx on http://localhost:$NginxPort (version=$localVersion, commit=$localCommit)"
 Write-Host "[run-webui-local] Press Ctrl+C to stop"
 
 # Запуск nginx с кастомным конфигом

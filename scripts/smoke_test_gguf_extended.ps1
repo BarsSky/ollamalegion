@@ -605,5 +605,106 @@ if (Test-Path $wizPath) {
     Write-Host "  [FAIL] setup-wizard.js not found" -ForegroundColor Red
 }
 
+# ==================== 15. WebUI: version display wired to build tag (Sprint 30) ====================
+# Регрессионный тест: index.html раньше имел хардкод `<div class="version">v0.2.0-adaptive</div>`,
+# без привязки к git tag / build-arg VERSION. Sprint 30 добавил:
+#   - ARG VERSION в docker/webui/Dockerfile
+#   - entrypoint.sh пишет VERSION/GIT_COMMIT/BUILD_DATE в js/modules/config.js
+#   - JS init в index.html обновляет #appVersion из WEBUI_CONFIG.VERSION
+#   - build-containers.ps1 + run-webui-local.ps1 + bundled compose пробрасывают args
+# Тест: проверяет все компоненты + что served /js/modules/config.js содержит VERSION.
+Write-Host ""
+Write-Host "[smoke] 15. WebUI: version display wired to build tag (Sprint 30)" -ForegroundColor Yellow
+
+# 15a. Dockerfile содержит ARG VERSION
+$webuiDockerfile = Join-Path $PSScriptRoot "..\docker\webui\Dockerfile"
+if (Test-Path $webuiDockerfile) {
+    $dockerfileContent = Get-Content $webuiDockerfile -Raw
+    if ($dockerfileContent -match "ARG VERSION=") {
+        Write-Host "  [OK] docker/webui/Dockerfile declares ARG VERSION" -ForegroundColor Green
+    } else {
+        Write-Host "  [FAIL] docker/webui/Dockerfile missing ARG VERSION" -ForegroundColor Red
+    }
+} else {
+    Write-Host "  [FAIL] docker/webui/Dockerfile not found" -ForegroundColor Red
+}
+
+# 15b. entrypoint.sh пишет VERSION в config.js
+$webuiEntrypoint = Join-Path $PSScriptRoot "..\docker\webui\entrypoint.sh"
+if (Test-Path $webuiEntrypoint) {
+    $entrypointContent = Get-Content $webuiEntrypoint -Raw
+    if ($entrypointContent -match "VERSION:\s*'") {
+        Write-Host "  [OK] entrypoint.sh injects VERSION into config.js" -ForegroundColor Green
+    } else {
+        Write-Host "  [FAIL] entrypoint.sh does not inject VERSION into config.js" -ForegroundColor Red
+    }
+} else {
+    Write-Host "  [FAIL] docker/webui/entrypoint.sh not found" -ForegroundColor Red
+}
+
+# 15c. index.html использует #appVersion span + JS init читает WEBUI_CONFIG.VERSION
+$webuiIndex = Join-Path $PSScriptRoot "..\webui\index.html"
+if (Test-Path $webuiIndex) {
+    $indexContent = Get-Content $webuiIndex -Raw
+    if ($indexContent -match 'id="appVersion"') {
+        Write-Host "  [OK] index.html has #appVersion span (no more hardcoded v0.2.0-adaptive)" -ForegroundColor Green
+    } else {
+        Write-Host "  [FAIL] index.html missing #appVersion span" -ForegroundColor Red
+    }
+    if ($indexContent -match 'cfg\.VERSION') {
+        Write-Host "  [OK] index.html JS init reads WEBUI_CONFIG.VERSION" -ForegroundColor Green
+    } else {
+        Write-Host "  [FAIL] index.html JS init does not read WEBUI_CONFIG.VERSION" -ForegroundColor Red
+    }
+    # Проверяем что старый хардкод убран
+    if ($indexContent -match 'v0\.2\.0-adaptive') {
+        Write-Host "  [FAIL] index.html still contains hardcoded 'v0.2.0-adaptive'" -ForegroundColor Red
+    } else {
+        Write-Host "  [OK] hardcoded 'v0.2.0-adaptive' removed from index.html" -ForegroundColor Green
+    }
+} else {
+    Write-Host "  [FAIL] webui/index.html not found" -ForegroundColor Red
+}
+
+# 15d. build-containers.ps1 пробрасывает --build-arg VERSION
+$buildScript = Join-Path $PSScriptRoot "build-containers.ps1"
+if (Test-Path $buildScript) {
+    $buildContent = Get-Content $buildScript -Raw
+    if ($buildContent -match '--build-arg "VERSION=') {
+        Write-Host "  [OK] build-containers.ps1 passes --build-arg VERSION" -ForegroundColor Green
+    } else {
+        Write-Host "  [FAIL] build-containers.ps1 does not pass --build-arg VERSION" -ForegroundColor Red
+    }
+} else {
+    Write-Host "  [FAIL] scripts/build-containers.ps1 not found" -ForegroundColor Red
+}
+
+# 15e. bundled compose содержит args: VERSION
+$bundledCompose = Join-Path $PSScriptRoot "..\deployments\docker-compose.cppworker-bundled.yml"
+if (Test-Path $bundledCompose) {
+    $composeContent = Get-Content $bundledCompose -Raw
+    if ($composeContent -match 'VERSION:\s*\$\{WEBUI_VERSION:-dev\}') {
+        Write-Host "  [OK] docker-compose.cppworker-bundled.yml has WEBUI_VERSION arg" -ForegroundColor Green
+    } else {
+        Write-Host "  [FAIL] docker-compose.cppworker-bundled.yml missing WEBUI_VERSION arg" -ForegroundColor Red
+    }
+} else {
+    Write-Host "  [FAIL] bundled compose not found" -ForegroundColor Red
+}
+
+# 15f. Live: served /js/modules/config.js содержит VERSION (если WebUI up)
+$webuiCfgUrl = "http://localhost:18083/js/modules/config.js"
+try {
+    $cfgResponse = Invoke-WebRequest -Uri $webuiCfgUrl -UseBasicParsing -TimeoutSec 5 -ErrorAction Stop
+    $cfgLive = $cfgResponse.Content
+    if ($cfgLive -match "VERSION:\s*'") {
+        Write-Host "  [OK] live WebUI /js/modules/config.js has VERSION field" -ForegroundColor Green
+    } else {
+        Write-Host "  [WARN] live WebUI /js/modules/config.js has NO VERSION field (rebuild WebUI)" -ForegroundColor Yellow
+    }
+} catch {
+    Write-Host "  [WARN] live WebUI check skipped (not running)" -ForegroundColor Yellow
+}
+
 Write-Host ""
 Write-Host "[smoke] Done." -ForegroundColor Cyan

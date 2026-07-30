@@ -220,6 +220,15 @@ services:
     build:
       context: ..
       dockerfile: docker/webui/Dockerfile
+      # Sprint 30 (2026-07-30): VERSION / GIT_COMMIT / BUILD_DATE пробрасываются
+      # как build-args в WebUI. entrypoint.sh инжектит их в config.js, JS в
+      # index.html показывает в sidebar footer (id=appVersion).
+      # Можно переопределить через env:
+      #   WEBUI_VERSION, WEBUI_GIT_COMMIT, WEBUI_BUILD_DATE
+      args:
+        VERSION: ${WEBUI_VERSION:-dev}
+        GIT_COMMIT: ${WEBUI_GIT_COMMIT:-unknown}
+        BUILD_DATE: ${WEBUI_BUILD_DATE:-unknown}
     image: ollama-legion/webui:cppworker-bundled
     container_name: ol-bundled-webui
     restart: unless-stopped

@@ -6,6 +6,27 @@ FROM dockerhub.timeweb.cloud/library/nginx:alpine
 # Установка gettext для envsubst
 RUN apk add --no-cache gettext
 
+# === Build args: пробрасываем git tag / commit / build date в рантайм ===
+# Используются entrypoint.sh для подстановки в js/modules/config.js
+# как window.WEBUI_CONFIG.VERSION / GIT_COMMIT / BUILD_DATE.
+# Передаются через `docker build --build-arg VERSION=...`.
+# По умолчанию `dev` (локальная сборка без тега).
+ARG VERSION=dev
+ARG GIT_COMMIT=unknown
+ARG BUILD_DATE=unknown
+
+# Делаем ARG доступными как ENV для entrypoint.sh
+ENV VERSION=${VERSION} \
+    GIT_COMMIT=${GIT_COMMIT} \
+    BUILD_DATE=${BUILD_DATE}
+
+# OCI image labels (для `docker inspect` / registries)
+LABEL org.opencontainers.image.version="${VERSION}" \
+      org.opencontainers.image.revision="${GIT_COMMIT}" \
+      org.opencontainers.image.created="${BUILD_DATE}" \
+      org.opencontainers.image.source="https://github.com/BarsSky/ollamalegion" \
+      org.opencontainers.image.title="ollama-legion/webui"
+
 WORKDIR /usr/share/nginx/html
 
 # Удаление стандартных файлов nginx

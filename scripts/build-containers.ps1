@@ -37,7 +37,24 @@ try {
 
     if ($WebUI) {
         Write-Host "=== Building ollama-legion/webui ===" -ForegroundColor Cyan
-        docker compose -f deployments/docker-compose.yml build webui
+        # Sprint 30 (2026-07-30): пробрасываем VERSION / GIT_COMMIT / BUILD_DATE
+        # в WebUI build как --build-arg. entrypoint.sh инжектит их в config.js,
+        # JS в index.html показывает версию в sidebar footer (id=appVersion).
+        $webuiVersion = 'dev'
+        $webuiCommit = 'unknown'
+        $webuiBuildDate = 'unknown'
+        try {
+            $gitTag = & git describe --tags --always 2>$null
+            if ($LASTEXITCODE -eq 0 -and $gitTag) { $webuiVersion = $gitTag.Trim() }
+            $gitSha = & git rev-parse --short HEAD 2>$null
+            if ($LASTEXITCODE -eq 0 -and $gitSha) { $webuiCommit = $gitSha.Trim() }
+            $webuiBuildDate = (Get-Date -Format 'yyyy-MM-ddTHH:mm:ssZ')
+        } catch { }
+        Write-Host "  version=$webuiVersion commit=$webuiCommit" -ForegroundColor Gray
+        docker compose -f deployments/docker-compose.yml build webui `
+            --build-arg "VERSION=$webuiVersion" `
+            --build-arg "GIT_COMMIT=$webuiCommit" `
+            --build-arg "BUILD_DATE=$webuiBuildDate"
         if ($LASTEXITCODE -ne 0) { throw "WebUI build failed" }
     }
 

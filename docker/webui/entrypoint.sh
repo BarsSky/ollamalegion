@@ -20,6 +20,13 @@ NGINX_CONF="/etc/nginx/conf.d/default.conf"
 : "${REFRESH_INTERVAL:=5000}"
 : "${MAX_RECONNECT_ATTEMPTS:=10}"
 : "${RECONNECT_INTERVAL_BASE:=3000}"
+# === Build info (передаются через --build-arg в docker build) ===
+# VERSION: git tag (v0.5.0, v0.4.12, ...) или "dev" для локальных сборок
+# GIT_COMMIT: короткий SHA (abc1234) или "unknown"
+# BUILD_DATE: ISO 8601 timestamp или "unknown"
+: "${VERSION:=dev}"
+: "${GIT_COMMIT:=unknown}"
+: "${BUILD_DATE:=unknown}"
 
 # 1. Генерация nginx.conf через envsubst (надёжнее, чем awk)
 echo "[entrypoint] Generating nginx config..."
@@ -48,7 +55,12 @@ Object.assign(window.WEBUI_CONFIG, {
     REFRESH_INTERVAL: ${REFRESH_INTERVAL},
     // WebSocket reconnect
     MAX_RECONNECT_ATTEMPTS: ${MAX_RECONNECT_ATTEMPTS},
-    RECONNECT_INTERVAL_BASE: ${RECONNECT_INTERVAL_BASE}
+    RECONNECT_INTERVAL_BASE: ${RECONNECT_INTERVAL_BASE},
+    // === Build info (из Docker --build-arg VERSION=...) ===
+    // Показывается в sidebar footer + page footer через JS init.
+    VERSION: '${VERSION}',
+    GIT_COMMIT: '${GIT_COMMIT}',
+    BUILD_DATE: '${BUILD_DATE}'
 });
 EOF
 
@@ -60,6 +72,9 @@ echo "  CPPWORKER_HOST=$CPPWORKER_HOST"
 echo "  CPPWORKER_PORT=$CPPWORKER_PORT"
 echo "  API_TOKEN=${API_TOKEN:+(set)}"
 echo "  REFRESH_INTERVAL=$REFRESH_INTERVAL"
+echo "  VERSION=$VERSION"
+echo "  GIT_COMMIT=$GIT_COMMIT"
+echo "  BUILD_DATE=$BUILD_DATE"
 
 # 3. Запуск nginx (передаём аргументы CMD)
 exec "$@"

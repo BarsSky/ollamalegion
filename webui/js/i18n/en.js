@@ -270,6 +270,7 @@ window.I18N_EN = {
   "footer.documentation": "Documentation",
   "footer.github": "GitHub",
   "footer.license": "MIT License",
+  "footer.version": "Build version",
 
   // Help
   "help.title": "Help",

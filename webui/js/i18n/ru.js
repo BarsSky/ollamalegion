@@ -256,6 +256,7 @@ window.I18N_RU = {
   "footer.documentation": "Документация",
   "footer.github": "GitHub",
   "footer.license": "Лицензия MIT",
+  "footer.version": "Версия сборки",
 
   // Help
   "help.title": "Справка",

@@ -43,7 +43,11 @@ __attribute__((constructor)) static void disable_stdout_buffering(void) {
 typedef struct {
     struct llama_model *model;
     struct llama_context *context;
-    struct llama_sampler *sampler;
+    // NOTE: sampler больше НЕ хранится в InternalModel. С Round 15.2d sampler
+    // chain пересоздаётся per-request в bridge_infer / bridge_infer_stream
+    // через build_sampler_chain_from_params(params). Хранение default sampler
+    // здесь было dead code (создавался при load, reset перед каждым запросом,
+    // free при unload, но НИКОГДА не использовался для sampling).
     struct llama_vocab *vocab;
     uint32_t ctx_n_ctx;       // n_ctx, с которым создан context (из llama_context_params)
     uint32_t ctx_n_batch;     // n_batch, с которым создан context
@@ -98,11 +102,7 @@ static void reset_inference_state(InternalModel *im, llama_seq_id seq_id) {
             }
         }
     }
-    if (im->sampler != NULL) {
-        // Sampler один на context (Round 13 не делает per-slot sampler state).
-        // reset безопасен — sampler state не переносится между seq_id.
-        llama_sampler_reset(im->sampler);
-    }
+    // Sampler reset больше не нужен — sampler chain per-request (Round 15.2d).
 }
 
 // build_batch_with_seq — создаёт llama_batch с явным seq_id для каждого токена.
@@ -973,18 +973,16 @@ ModelHandle bridge_load_model(const ModelConfig* config, char** error_msg) {
     // Получаем vocabulary
     const struct llama_vocab *vocab = llama_model_get_vocab(model);
 
-    // Создаём default sampler (greedy). Per-request sampler chain строится
-    // заново в bridge_infer / bridge_infer_stream на основе params (см.
-    // build_sampler_chain_from_params). im->sampler остаётся для случаев,
-    // когда params не заданы или для batched-path fallback.
-    struct llama_sampler *sampler = llama_sampler_chain_init(llama_sampler_chain_default_params());
-    llama_sampler_chain_add(sampler, llama_sampler_init_greedy());
+    // Sampler НЕ создаётся здесь. С Round 15.2d sampler chain пересоздаётся
+    // per-request в bridge_infer / bridge_infer_stream через
+    // build_sampler_chain_from_params(params) — учитывает temperature, top_p,
+    // top_k, seed, penalties. Default sampler на уровне модели был бы либо
+    // всегда-greedy (старый баг), либо просто проигнорирован бы.
 
     // Выделяем память под InternalModel
     InternalModel *im = (InternalModel *)malloc(sizeof(InternalModel));
     if (im == NULL) {
         set_error("out of memory");
-        llama_sampler_free(sampler);
         llama_free(context);
         llama_model_free(model);
         if (error_msg) *error_msg = strdup("out of memory");
@@ -993,7 +991,6 @@ ModelHandle bridge_load_model(const ModelConfig* config, char** error_msg) {
 
     im->model = model;
     im->context = context;
-    im->sampler = sampler;
     im->vocab = (struct llama_vocab *)vocab;
     // Сохраняем фактические параметры контекста — они нужны для pre-flight
     // проверки ёмкости (prompt + n_predict <= n_ctx) перед llama_decode.
@@ -1244,10 +1241,7 @@ void bridge_free_model(ModelHandle model) {
     if (model == NULL) return;
     InternalModel *im = (InternalModel *)model;
 
-    if (im->sampler) {
-        llama_sampler_free(im->sampler);
-        im->sampler = NULL;
-    }
+    // Sampler больше не хранится в InternalModel (per-request с Round 15.2d).
     if (im->context) {
         llama_free(im->context);
         im->context = NULL;

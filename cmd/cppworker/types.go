@@ -30,29 +30,33 @@ type generateOptions struct {
 }
 
 type generateRequest struct {
-	Model            string          `json:"model"`
-	Prompt           string          `json:"prompt"`
-	System           string          `json:"system,omitempty"`
-	Template         string          `json:"template,omitempty"`
-	Raw              bool            `json:"raw"`
-	Format           string          `json:"format,omitempty"`
-	KeepAlive        string          `json:"keep_alive,omitempty"`
-	Context          []int           `json:"context,omitempty"`
-	Images           []string        `json:"images,omitempty"` // not supported yet, accepted for compatibility
-	Options          generateOptions `json:"options"`
-	Temperature      float64         `json:"temperature,omitempty"`
-	TopP             float64         `json:"topP,omitempty"`
-	TopK             int             `json:"topK,omitempty"`
-	MinP             float64         `json:"minP,omitempty"`
-	TypicalP         float64         `json:"typicalP,omitempty"`
-	TfsZ             float64         `json:"tfsZ,omitempty"`
-	MaxTokens        int             `json:"maxTokens,omitempty"`
-	RepeatPenalty    float64         `json:"repeatPenalty,omitempty"`
-	FrequencyPenalty float64         `json:"frequencyPenalty,omitempty"`
-	PresencePenalty  float64         `json:"presencePenalty,omitempty"`
-	Seed             int             `json:"seed,omitempty"`
-	NumCtx           int             `json:"numCtx,omitempty"`
-	Stream           bool            `json:"stream"`
+	Model     string          `json:"model"`
+	Prompt    string          `json:"prompt"`
+	System    string          `json:"system,omitempty"`
+	Template  string          `json:"template,omitempty"`
+	Raw       bool            `json:"raw"`
+	Format    string          `json:"format,omitempty"`
+	KeepAlive string          `json:"keep_alive,omitempty"`
+	Context   []int           `json:"context,omitempty"`
+	Images    []string        `json:"images,omitempty"` // not supported yet, accepted for compatibility
+	Options   generateOptions `json:"options"`
+	// Sampling params — *float64 / *int для различения "unset" vs "explicit 0".
+	// Round 16 follow-up fix (2026-07-30): раньше `if > 0` ИГНОРИРОВАЛО
+	// temperature=0, top_p=0, repeat_penalty<1 от клиента. nil → дефолт
+	// cppworker; *0.0 → explicit 0 (greedy/no-top_p/no-repeat-penalty).
+	Temperature      *float64 `json:"temperature,omitempty"`
+	TopP             *float64 `json:"topP,omitempty"`
+	TopK             *int     `json:"topK,omitempty"`
+	MinP             *float64 `json:"minP,omitempty"`
+	TypicalP         *float64 `json:"typicalP,omitempty"`
+	TfsZ             *float64 `json:"tfsZ,omitempty"`
+	MaxTokens        int      `json:"maxTokens,omitempty"`
+	RepeatPenalty    *float64 `json:"repeatPenalty,omitempty"`
+	FrequencyPenalty *float64 `json:"frequencyPenalty,omitempty"`
+	PresencePenalty  *float64 `json:"presencePenalty,omitempty"`
+	Seed             int      `json:"seed,omitempty"`
+	NumCtx           int      `json:"numCtx,omitempty"`
+	Stream           bool     `json:"stream"`
 	// _keepAliveDuration — парсится из req.KeepAlive в normalizeGenerateRequest.
 	// Используется в handleGenerate/handleOllamaGenerate для продления lastUsedAt
 	// модели после успешного ответа. 0 = дефолт (30 минут).

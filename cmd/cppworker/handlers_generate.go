@@ -19,41 +19,60 @@ import (
 
 // normalizeGenerateRequest приводит Ollama-формат (options.*, system, raw)
 // к единому виду, понятному buildGenerationParams.
+//
+// Round 16 follow-up fix (2026-07-30): req.* теперь *float64/*int (nil = unset).
+// Конвертация из Options.* в req.* использует указатели чтобы отличить
+// "Options.Temperature = 0.7" (явно задано) от "Options.Temperature = 0"
+// (Ollama-клиент часто не заполняет поле — нужно использовать дефолт).
+// Раньше `if Options.X > 0` означало что 0 → "не задано" — баг.
+//
+// Логика: если req.X == nil И Options.X != 0 → req.X = &Options.X
+// (Options.X == 0 трактуем как "клиент не задал" для полей которые по
+// дефолту > 0 — temperature, top_p и т.д.).
 func normalizeGenerateRequest(req *generateRequest) {
-	if req.Options.Temperature > 0 && req.Temperature == 0 {
-		req.Temperature = req.Options.Temperature
+	if req.Temperature == nil && req.Options.Temperature != 0 {
+		v := req.Options.Temperature
+		req.Temperature = &v
 	}
-	if req.Options.TopP > 0 && req.TopP == 0 {
-		req.TopP = req.Options.TopP
+	if req.TopP == nil && req.Options.TopP != 0 {
+		v := req.Options.TopP
+		req.TopP = &v
 	}
-	if req.Options.TopK > 0 && req.TopK == 0 {
-		req.TopK = req.Options.TopK
+	if req.TopK == nil && req.Options.TopK != 0 {
+		v := req.Options.TopK
+		req.TopK = &v
 	}
-	if req.Options.MinP > 0 && req.MinP == 0 {
-		req.MinP = req.Options.MinP
+	if req.MinP == nil && req.Options.MinP != 0 {
+		v := req.Options.MinP
+		req.MinP = &v
 	}
-	if req.Options.TypicalP > 0 && req.TypicalP == 0 {
-		req.TypicalP = req.Options.TypicalP
+	if req.TypicalP == nil && req.Options.TypicalP != 0 {
+		v := req.Options.TypicalP
+		req.TypicalP = &v
 	}
-	if req.Options.TfsZ > 0 && req.TfsZ == 0 {
-		req.TfsZ = req.Options.TfsZ
+	if req.TfsZ == nil && req.Options.TfsZ != 0 {
+		v := req.Options.TfsZ
+		req.TfsZ = &v
 	}
-	if req.Options.NumPredict > 0 && req.MaxTokens == 0 {
+	if req.MaxTokens == 0 && req.Options.NumPredict > 0 {
 		req.MaxTokens = req.Options.NumPredict
 	}
-	if req.Options.RepeatPenalty > 0 && req.RepeatPenalty == 0 {
-		req.RepeatPenalty = req.Options.RepeatPenalty
+	if req.RepeatPenalty == nil && req.Options.RepeatPenalty != 0 {
+		v := req.Options.RepeatPenalty
+		req.RepeatPenalty = &v
 	}
-	if req.Options.FrequencyPenalty != 0 && req.FrequencyPenalty == 0 {
-		req.FrequencyPenalty = req.Options.FrequencyPenalty
+	if req.FrequencyPenalty == nil && req.Options.FrequencyPenalty != 0 {
+		v := req.Options.FrequencyPenalty
+		req.FrequencyPenalty = &v
 	}
-	if req.Options.PresencePenalty != 0 && req.PresencePenalty == 0 {
-		req.PresencePenalty = req.Options.PresencePenalty
+	if req.PresencePenalty == nil && req.Options.PresencePenalty != 0 {
+		v := req.Options.PresencePenalty
+		req.PresencePenalty = &v
 	}
-	if req.Options.Seed != 0 && req.Seed == 0 {
+	if req.Seed == 0 && req.Options.Seed != 0 {
 		req.Seed = req.Options.Seed
 	}
-	if req.Options.NumCtx > 0 && req.NumCtx == 0 {
+	if req.NumCtx == 0 && req.Options.NumCtx > 0 {
 		req.NumCtx = req.Options.NumCtx
 	}
 
@@ -101,35 +120,38 @@ func normalizeGenerateRequest(req *generateRequest) {
 
 func buildGenerationParams(req generateRequest) bridge.GenerationParams {
 	params := bridge.DefaultGenerationParams()
-	if req.Temperature > 0 {
-		params.Temperature = float32(req.Temperature)
+	// Round 16 follow-up fix (2026-07-30): *float64/*int — nil = use default, *0.0 = explicit 0.
+	// Раньше `if > 0` ИГНОРИРОВАЛО temperature=0, top_p=0, top_k=0 (no filter)
+	// и т.п. от клиента → подставлялся дефолт cppworker → не то что хотел клиент.
+	if req.Temperature != nil {
+		params.Temperature = float32(*req.Temperature)
 	}
-	if req.TopP > 0 {
-		params.TopP = float32(req.TopP)
+	if req.TopP != nil {
+		params.TopP = float32(*req.TopP)
 	}
-	if req.TopK > 0 {
-		params.TopK = float32(req.TopK)
+	if req.TopK != nil {
+		params.TopK = float32(*req.TopK)
 	}
-	if req.MinP > 0 {
-		params.MinP = float32(req.MinP)
+	if req.MinP != nil {
+		params.MinP = float32(*req.MinP)
 	}
-	if req.TypicalP > 0 {
-		params.TypicalP = float32(req.TypicalP)
+	if req.TypicalP != nil {
+		params.TypicalP = float32(*req.TypicalP)
 	}
-	if req.TfsZ > 0 {
-		params.TfsZ = float32(req.TfsZ)
+	if req.TfsZ != nil {
+		params.TfsZ = float32(*req.TfsZ)
 	}
 	if req.MaxTokens > 0 {
 		params.NPredict = req.MaxTokens
 	}
-	if req.RepeatPenalty > 0 {
-		params.RepeatPenalty = float32(req.RepeatPenalty)
+	if req.RepeatPenalty != nil {
+		params.RepeatPenalty = float32(*req.RepeatPenalty)
 	}
-	if req.FrequencyPenalty != 0 {
-		params.FrequencyPenalty = float32(req.FrequencyPenalty)
+	if req.FrequencyPenalty != nil {
+		params.FrequencyPenalty = float32(*req.FrequencyPenalty)
 	}
-	if req.PresencePenalty != 0 {
-		params.PresencePenalty = float32(req.PresencePenalty)
+	if req.PresencePenalty != nil {
+		params.PresencePenalty = float32(*req.PresencePenalty)
 	}
 	if req.Options.RepeatLastN > 0 {
 		params.RepeatLastN = req.Options.RepeatLastN

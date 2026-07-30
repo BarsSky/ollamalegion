@@ -116,7 +116,8 @@ func handleChat(w http.ResponseWriter, r *http.Request) {
 		Stream: req.Stream,
 	}
 	if req.Temperature != nil {
-		genReq.Temperature = *req.Temperature
+		v := *req.Temperature
+		genReq.Temperature = &v
 	}
 	if req.MaxTokens != nil {
 		genReq.MaxTokens = *req.MaxTokens

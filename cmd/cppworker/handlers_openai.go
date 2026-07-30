@@ -21,19 +21,24 @@ import (
 // ============================================================
 
 // openAICompletionRequest — структура запроса OpenAI /v1/completions
+//
+// IMPORTANT: Temperature, TopP, PresencePenalty, FrequencyPenalty используют
+// *float64 — см. комментарий к openAIChatCompletionRequest (Round 16 follow-up
+// fix). nil = использовать дефолт cppworker; *0.0 = explicit 0 от клиента.
 type openAICompletionRequest struct {
-	Model            string   `json:"model"`
-	Prompt           string   `json:"prompt"`
-	Suffix           string   `json:"suffix,omitempty"`
-	MaxTokens        int      `json:"max_tokens,omitempty"`
-	Temperature      float64  `json:"temperature,omitempty"`
-	TopP             float64  `json:"top_p,omitempty"`
+	Model     string   `json:"model"`
+	Prompt    string   `json:"prompt"`
+	Suffix    string   `json:"suffix,omitempty"`
+	MaxTokens int      `json:"max_tokens,omitempty"`
+	// Sampling params — *float64 для различения "unset" vs "explicit 0".
+	Temperature      *float64 `json:"temperature,omitempty"`
+	TopP             *float64 `json:"top_p,omitempty"`
 	N                int      `json:"n,omitempty"`
 	Stream           bool     `json:"stream,omitempty"`
 	Echo             bool     `json:"echo,omitempty"`
 	Stop             []string `json:"stop,omitempty"`
-	PresencePenalty  float64  `json:"presence_penalty,omitempty"`
-	FrequencyPenalty float64  `json:"frequency_penalty,omitempty"`
+	PresencePenalty  *float64 `json:"presence_penalty,omitempty"`
+	FrequencyPenalty *float64 `json:"frequency_penalty,omitempty"`
 	Seed             int      `json:"seed,omitempty"`
 	// NumCtx — per-request переопределение n_ctx (OpenAI-совместимый).
 	// 0 = использовать n_ctx модели. > 0 → C-bridge pre-flight check.
@@ -48,16 +53,25 @@ type openAICompletionRequest struct {
 }
 
 // openAIChatCompletionRequest — структура запроса OpenAI /v1/chat/completions
+//
+// IMPORTANT (Round 16 follow-up fix, 2026-07-30): поля с optional zero values
+// (Temperature, TopP) используют *float64 чтобы отличить "не задано клиентом"
+// (nil → использовать дефолт cppworker 0.7/0.9) от "клиент явно задал 0"
+// (*0.0 → greedy/no-top_p). Раньше использовался float64 + `if > 0` — это
+// ИГНОРИРОВАЛО temperature=0 от клиента (Cline/Aider/Continue все шлют
+// temperature=0 для tool calls) и подставляло 0.7 по умолчанию → не-greedy
+// sampling, недетерминированные tool calls. См. _audit_test_temp0_2.py для repro.
 type openAIChatCompletionRequest struct {
-	Model       string              `json:"model"`
-	Messages    []openAIChatMessage `json:"messages"`
-	MaxTokens   int                 `json:"max_tokens,omitempty"`
-	Temperature float64             `json:"temperature,omitempty"`
-	TopP        float64             `json:"top_p,omitempty"`
-	N           int                 `json:"n,omitempty"`
-	Stream      bool                `json:"stream,omitempty"`
-	Stop        []string            `json:"stop,omitempty"`
-	Seed        int                 `json:"seed,omitempty"`
+	Model     string              `json:"model"`
+	Messages  []openAIChatMessage `json:"messages"`
+	MaxTokens int                 `json:"max_tokens,omitempty"`
+	// Temperature / TopP — pointer types: nil = не задано, *0.0 = explicit 0.
+	Temperature *float64 `json:"temperature,omitempty"`
+	TopP        *float64 `json:"top_p,omitempty"`
+	N           int      `json:"n,omitempty"`
+	Stream      bool     `json:"stream,omitempty"`
+	Stop        []string `json:"stop,omitempty"`
+	Seed        int      `json:"seed,omitempty"`
 	// NumCtx — per-request переопределение n_ctx (OpenAI-совместимый).
 	// 0 = использовать n_ctx модели. > 0 → C-bridge pre-flight check.
 	NumCtx int `json:"num_ctx,omitempty"`
@@ -252,11 +266,14 @@ func handleV1ChatCompletions(w http.ResponseWriter, r *http.Request) {
 	}
 
 	params := bridge.DefaultGenerationParams()
-	if req.Temperature > 0 {
-		params.Temperature = float32(req.Temperature)
+	// Round 16 follow-up fix (2026-07-30): *float64 — nil = use default, *0.0 = greedy/no-top_p.
+	// Раньше `if req.Temperature > 0` ИГНОРИРОВАЛО temperature=0 (Cline tool calls) → использовался
+	// дефолт 0.7 → не-greedy sampling, недетерминированные tool calls.
+	if req.Temperature != nil {
+		params.Temperature = float32(*req.Temperature)
 	}
-	if req.TopP > 0 {
-		params.TopP = float32(req.TopP)
+	if req.TopP != nil {
+		params.TopP = float32(*req.TopP)
 	}
 	if req.MaxTokens > 0 {
 		// 2026-07-01: для reasoning-моделей (qwen3.5, deepseek-r1, gemma-4) поднимаем
@@ -1025,11 +1042,12 @@ func handleV1Completions(w http.ResponseWriter, r *http.Request) {
 	}
 
 	params := bridge.DefaultGenerationParams()
-	if req.Temperature > 0 {
-		params.Temperature = float32(req.Temperature)
+	// Round 16 follow-up fix (2026-07-30): *float64 — nil = use default, *0.0 = explicit 0.
+	if req.Temperature != nil {
+		params.Temperature = float32(*req.Temperature)
 	}
-	if req.TopP > 0 {
-		params.TopP = float32(req.TopP)
+	if req.TopP != nil {
+		params.TopP = float32(*req.TopP)
 	}
 	if req.MaxTokens > 0 {
 		// 2026-07-01: для reasoning-моделей (qwen3.5, deepseek-r1, gemma-4) поднимаем
@@ -1041,11 +1059,11 @@ func handleV1Completions(w http.ResponseWriter, r *http.Request) {
 		// повышаем до DefaultNPredictReasoning (8192).
 		params.NPredict = ResolveNPredict(0, req.Model)
 	}
-	if req.PresencePenalty > 0 {
-		params.PresencePenalty = float32(req.PresencePenalty)
+	if req.PresencePenalty != nil {
+		params.PresencePenalty = float32(*req.PresencePenalty)
 	}
-	if req.FrequencyPenalty > 0 {
-		params.FrequencyPenalty = float32(req.FrequencyPenalty)
+	if req.FrequencyPenalty != nil {
+		params.FrequencyPenalty = float32(*req.FrequencyPenalty)
 	}
 	if req.Seed != 0 {
 		params.Seed = req.Seed

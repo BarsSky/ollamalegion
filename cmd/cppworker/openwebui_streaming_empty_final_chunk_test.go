@@ -218,8 +218,15 @@ func TestOpenAIChatStream_AccumulatesFullText(t *testing.T) {
 	// ВСЕ content-чанки должны иметь delta.content (даже если stub возвращает пусто)
 	for i, chunk := range chunks {
 		choices, _ := chunk["choices"].([]interface{})
+		// 2026-07-30: allow trailing usage chunk (include_usage=true by default,
+		// см. commit 3017590). Это финальный чанк БЕЗ choices, только с usage.
+		_, hasUsage := chunk["usage"]
+		if len(choices) == 0 && hasUsage {
+			t.Logf("chunk[%d] is trailing usage chunk (include_usage=true, no choices) — OK", i)
+			continue
+		}
 		if len(choices) == 0 {
-			t.Errorf("chunk[%d] has no choices", i)
+			t.Errorf("chunk[%d] has no choices and no usage", i)
 			continue
 		}
 		choice, _ := choices[0].(map[string]interface{})

@@ -5,6 +5,96 @@
 Формат ведётся в соответствии с [Keep a Changelog](https://keepachangelog.com/ru/1.0.0/),
 и этот проект придерживается [Semantic Versioning](https://semver.org/lang/ru/).
 
+## [0.5.2 — 2026-07-30]
+
+PATCH-релиз. **Round 16 code review**: критический bug в Go-слой
+(temperature=0 игнорировался) + 4 P1 observability/resilience fixes.
+
+### 🔴 CRITICAL: temperature=0 от клиента теперь honor'ится
+
+**Bug**: все OpenAI-совместимые handlers (`/v1/chat/completions`,
+`/v1/completions`, `/api/chat`, `/api/generate`) использовали паттерн
+`if req.Temperature > 0 { params.Temperature = ... }`. Когда клиент шлёт
+`temperature: 0` (greedy — OpenAI convention, Cline/Aider/Continue
+**все** так делают для tool calls), проверка проваливается и подставляется
+default cppworker 0.7. Tool calls получаются не-greedy →
+недетерминированные.
+
+**Live verification до фикса** (одинаковый запрос 5 раз с temperature=0):
+```
+Run 1: cacophony, catachresis, carnivore, coup de grâce, crampy
+Run 2: cacophony, catachresis, cynicism, crepuscular, cryptogram
+Run 3: cack-handed, carnivorous, cryptogamous, cobwebbed, cobbled-corner
+Run 4: cacophony, cayenne, cramp, cleft, coup
+Run 5: cacophony, catachresis, censurability, cognac, congeal
+5/5 unique → не greedy, баг подтверждён.
+```
+
+**Это вторая итерация того же бага, что был в sampler hotfix (v0.5.1)**
+в C-bridge (`f245996`): Go-слой имел точно такой же баг, но на уровень
+выше. Прошлый "sampler fix verified" был обманчив — тест сравнивал
+temp=0 (→ params 0.7) vs temp=2.0 (→ params 2.0), оба разные, но
+не покрывал именно greedy path.
+
+**Fix** (commits `7f4ef32`, `ee95a5e`): request struct'ы переведены на
+`*float64` / `*int`:
+- `nil` = клиент не задал → использовать дефолт cppworker
+- `*0.0` = клиент явно задал 0 → honor как есть (greedy / no-top_p / no-penalty)
+
+Затронуты все OpenAI/Ollama endpoints. `chatRequest` уже использовал
+`*float64` для Temperature — fix применён везде для consistency.
+
+**Live verification после фикса** (image `d705bafc3baf`):
+```
+temperature=0:    1/5 unique → GREEDY HONORED ✓
+temperature=1.5:  5/5 unique → high random honored ✓
+```
+
+### 🟡 P1: Round 16 code review fixes (commit `ee95a5e`)
+
+| # | Что | Где | Эффект |
+|---|-----|-----|--------|
+| 3 | Rename `stripExtraBracesInStringValues` → `fixTrailingBraceMisorder` | `cmd/cppworker/tool_calls.go` | Misleading name fixed. 29 parse tests pass. |
+| 4 | BatchedScheduler TokenCh buffer 8 → 128 + non-blocking send + tick drop counter | `internal/cppbackend/batched_scheduler.go` | Head-of-line blocking fix. Медленный consumer больше не блокирует весь batch. |
+| 5 | `sampleFromLogits` C-bridge errors теперь логируются + counter | `internal/cppbackend/batched_scheduler.go` | Был silent fallback (production могла выдавать greedy output без видимой причины). Теперь observable через `GetSampleStats()`. |
+| 6 | `UnloadModel` timeout 10 сек на `<-batchedScheduler.Done()` | `internal/cppbackend/backend.go` | Если Run() goroutine зависнет (deadlock/infinite loop), UnloadModel больше не блокируется навсегда. HTTP `/api/models/unload` не зависает. |
+
+### 🧹 Cleanup: dead `im->sampler` removed (commit `5a396f5`)
+
+После sampler hotfix в v0.5.1 поле `im->sampler` в C-bridge `InternalModel`
+стало dead code (создавалось, reset'алось, free'алось, но НИКОГДА не
+использовалось для sampling — per-request sampler chain всегда брал
+верх). Удалены: поле, init в `bridge_load_model`, reset в
+`reset_inference_state`, free в `bridge_free_model`.
+
+### 📊 Code review Round 16 status
+
+8 audit'ов проведено (`c/bridge/bridge.c`, `handlers_openai.go`,
+`tool_calls.go`, `reasoning_content.go`, `BatchedScheduler`,
+`inference.go`, `tools_prompt_cache`, `backend.go`):
+
+| Severity | # | Status |
+|----------|---|--------|
+| 🔴 P0 (CRITICAL) | 1 | ✅ Fixed (7f4ef32) |
+| 🟡 P1 | 4 | ✅ Fixed (ee95a5e) |
+| 🟢 P2 | 5 | ⏳ Deferred to Round 17+ (defer-by-value inconsistency, LRU O(N) eviction, magic 2048, etc.) |
+
+### 🧪 Tests
+
+- 8 unit-тестов в `build_generation_params_test.go` (temperature=0/0.7/unset, top_p=0, repeat_penalty=0.5, options fallback, explicit 0 beats options)
+- 3 unit-теста в `batched_scheduler_metrics_test.go` (GetSampleStats initial/counters/concurrent)
+- 29 `TestParseToolCallsFromOutput_*` (rename non-breaking) — all PASS
+- Production audit: temperature=0 → 1/5 unique, temperature=1.5 → 5/5 unique
+
+### 📦 Commits (centurion, latest first)
+
+- `ee95a5e` — P1 observability + resilience fixes
+- `7f4ef32` — CRITICAL temperature=0 fix + 8 unit-тестов
+- `5a396f5` — dead im->sampler cleanup
+
+**Production image**: `ollama-legion/cppworker:gpu-86 @ d705bafc3baf` (3.86GB, 2026-07-31 01:15:48 MSK)
+**Deployed**: `ol-bundled-cppworker-gpu` at 01:18 MSK, healthy
+
 ## [0.5.1 — 2026-07-30]
 
 PATCH-релиз. **Round 15.2 step 15.2h + Multi-tool Recovery**: закрывает

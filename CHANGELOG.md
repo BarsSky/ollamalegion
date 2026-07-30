@@ -5,6 +5,83 @@
 Формат ведётся в соответствии с [Keep a Changelog](https://keepachangelog.com/ru/1.0.0/),
 и этот проект придерживается [Semantic Versioning](https://semver.org/lang/ru/).
 
+## [0.5.0 — 2026-07-30]
+
+MINOR-релиз. Главная фича: **Round 15.1 — True Batched Parallel Inference**
+через C-bridge `BatchedScheduler` + новые C-функции `build_batched_batch`,
+`bridge_batched_decode`, `bridge_tokenize`, `bridge_token_to_piece`.
+
+### Что это даёт
+
+При `enableBatchedParallel: true` + `parallel: N` (per-model или global)
+cppworker маршрутизирует streaming inference через `BatchedScheduler`:
+single-goroutine tick loop, периодически (5ms window) делает **ОДИН**
+`llama_decode` для N concurrent sessions, копирует per-seq logits, делает
+greedy argmax, диспатчит sampled токены в per-session каналы.
+
+**Backed by real GPU matmul sharing**: вместо N отдельных
+сериализованных `llama_decode` вызовов (Round 13 path с `inst.mu` lock) —
+ОДИН `llama_decode` для всех N sequences. KV-cache state изолирован
+через `seq_id` (1..N).
+
+### Caveat (Round 15.1 limitations)
+
+- **Greedy argmax sampling** (без temperature/top_p/top_k/rep_penalty).
+  Round 15.2 заменит на полный `common_sampler` chain.
+- **Per-token prefill** (1 token за `BatchedDecode` call). Это даёт
+  корректный результат (модель видит полный prompt) но не даёт wall-time
+  speedup. Round 15.2 оптимизирует prefill: multi-token sequences через
+  тот же `build_batched_batch` или отдельный `bridge_batched_prefill`.
+- **Integration test result**: `parallel=4` × 4 concurrent /v1/chat
+  даёт ~0.96x (slightly slower than sequential). Sequential путь быстрее
+  потому что llama.cpp `bridge_infer_stream` использует multi-token
+  prefill + autoregressive batched decode. **Round 15.1 НЕ оптимизирован
+  для production wall-time** — это functional baseline для дальнейшей
+  оптимизации (Round 15.2+).
+
+### Включение (per-model opt-in)
+
+```bash
+POST /api/models/load-with-params
+{
+  "name": "qwen3-4b",
+  "path": "/app/models/qwen3-4b.gguf",
+  "n_ctx": 4096,
+  "parallel": 4,
+  "enableBatchedParallel": true
+}
+```
+
+Или глобально (env var):
+```bash
+export CPPWORKER_ENABLE_BATCHED_PARALLEL=true
+# + нужно parallel >= 2 при load
+```
+
+### Commits (Round 15.1)
+
+- `b52d591` C-bridge `build_batched_batch` (multi-seq llama_batch)
+- `3c28d8b` C-bridge `bridge_batched_decode` (1 llama_decode для N sequences + per-seq logits)
+- `b63c55e` Go `BatchedScheduler` (350+ lines, single-goroutine tick loop, 5ms window)
+- `869959f` type fix CBridgeBatchedSeq (int32_t вместо llama_* типов)
+- `0ddb72a` CGo fix (unsafe.Pointer cast для void* handle)
+- `9dd09e5` C-bridge `bridge_tokenize` + `bridge_token_to_piece`
+- `8724a5f` CGo fix #2 (m.ptr для ModelHandle-typed params)
+- `b0cef3c` Backend integration (Config + LoadModelOpts + ModelInfo + GenerateStream routing)
+- `cf088d5` HTTP wire: `enableBatchedParallel` через `/api/models/load-with-params`
+- `4e0286e` **PREFILL phase fix** (без него модель генерировала от prompt[0] → nonsense)
+
+### Также в этом релизе
+
+- Round 14 (v0.4.12): native `enable_thinking` через C++ `common_chat_templates_apply`
+  (full refactor из soft prompt)
+- Round 13 (v0.4.11): SlotManager + multi-slot batched state isolation
+- Round 12 (v0.4.10): `defaultNParallel` foundation
+- Round 11 (v0.4.9): soft `enable_thinking` prompt injection
+- Round 10 (v0.4.8): env-var overrides
+- Round 9 (v0.4.7): WaitForLoad + warmup-skip + smart default
+- Round 8 (v0.4.6): Hold-Mu-Through-Inference fix (race on llama_decode)
+
 ## [0.4.12 — 2026-07-28]
 
 Patch-релиз поверх `v0.4.11`. Цель: добавить **native** `enable_thinking`

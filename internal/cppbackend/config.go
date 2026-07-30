@@ -360,6 +360,41 @@ func LoadConfigFromEnv() Config {
 		cfg.EnableMetrics = v == "1" || strings.ToLower(v) == "true"
 	}
 
+	// Round 16 (2026-07-30): reasoning/thinking env vars.
+	// Раньше DefaultEnableReasoning/EnableReasoning были только в JSON
+	// конфиге. Теперь можно управлять через env — это критично для
+	// docker-compose deployments, где хочется globally задать policy
+	// (например, OFF для tool use workloads) без per-model overrides.
+	//
+	// DefaultEnableReasoning (env CPPWORKER_DEFAULT_ENABLE_REASONING) —
+	// default для всех моделей, которые НЕ задают enableReasoning в load
+	// request. Default = false (reasoning OFF) — backward compat.
+	if v := os.Getenv("CPPWORKER_DEFAULT_ENABLE_REASONING"); v != "" {
+		cfg.DefaultEnableReasoning = v == "1" || strings.ToLower(v) == "true"
+	}
+	// DefaultReasoningBudget (env CPPWORKER_DEFAULT_REASONING_BUDGET) —
+	// max tokens for thinking (0 = no limit). Default = 0.
+	if v := os.Getenv("CPPWORKER_DEFAULT_REASONING_BUDGET"); v != "" {
+		cfg.DefaultReasoningBudget = parseInt(v, cfg.DefaultReasoningBudget)
+	}
+	// EnableReasoning (env CPPWORKER_ENABLE_REASONING) — runtime override
+	// для Config.EnableReasoning (для backward compat — изначально
+	// cppworker стартовал без JSON, было только env).
+	if v := os.Getenv("CPPWORKER_ENABLE_REASONING"); v != "" {
+		cfg.EnableReasoning = v == "1" || strings.ToLower(v) == "true"
+	}
+	// ReasoningBudget (env CPPWORKER_REASONING_BUDGET) — max tokens.
+	if v := os.Getenv("CPPWORKER_REASONING_BUDGET"); v != "" {
+		cfg.ReasoningBudget = parseInt(v, cfg.ReasoningBudget)
+	}
+
+	// Round 15.1: opt-in flag для batched parallel inference.
+	// Default = false (Round 13 multi-slot path — backward compat).
+	// Включение требует parallel >= 2 при load (см. LoadModelOpts).
+	if v := os.Getenv("CPPWORKER_ENABLE_BATCHED_PARALLEL"); v != "" {
+		cfg.EnableBatchedParallel = v == "1" || strings.ToLower(v) == "true"
+	}
+
 	// Idle unload (автовыгрузка моделей).
 	// Значение по умолчанию 0 = ВЫКЛЮЧЕНО. Если задано N — модели выгружаются
 	// после N минут простоя (отсчёт от последнего использования).

@@ -21,7 +21,7 @@
 #include <string.h>
 #include <stdio.h>
 #include <math.h>
-#include <random>
+#include <time.h>  // для time() — time-based RNG seed (для seed=0)
 
 // Отключаем буферизацию stdout для Docker-логов — все printf выводятся немедленно.
 // Без этого [bridge] сообщения могут не появляться в `docker compose logs`
@@ -258,13 +258,38 @@ int32_t bridge_get_n_vocab(void* model) {
 //
 // Реализация:
 //   temperature <= 0  → greedy argmax (быстро, deterministic)
-//   temperature > 0   → softmax с temperature, потом std::mt19937 multinomial sample
+//   temperature > 0   → softmax с temperature, потом C-совместимый LCG
+//                        multinomial sample (Round 15.2: НЕ std::mt19937 —
+//                        bridge.c компилируется как C через CGO, std недоступен)
 //
 // Численная стабильность: вычитаем max перед exp() чтобы избежать overflow
 // (классический log-sum-exp trick).
 //
-// Determinism: при seed=0 используем time-based seed (через random_device);
+// Determinism: при seed=0 используем time-based seed (через time());
 // при seed!=0 — фиксированный seed для reproducible tests.
+//
+// LCG: x_{n+1} = (a*x_n + c) mod 2^32, a=1664525, c=1013904223
+// (Numerical Recipes constants). Достаточно для multinomial sampling
+// (нам не нужен криптостойкий RNG).
+static uint32_t lcg_state = 0;
+
+static void lcg_seed(uint32_t seed) {
+    lcg_state = seed ? seed : (uint32_t)time(NULL);
+}
+
+static uint32_t lcg_next(void) {
+    // unsigned overflow в C — defined behavior (modulo 2^32).
+    lcg_state = 1664525U * lcg_state + 1013904223U;
+    return lcg_state;
+}
+
+static float lcg_random_float(void) {
+    // [0.0, 1.0). Конвертируем uint32 → [0, 1) путём деления на 2^32.
+    // Используем double для точности (float round-off может давать
+    // значение 1.0 на крае, что сломает cumulative sum check).
+    return (float)((double)lcg_next() / (double)4294967296.0);
+}
+
 int32_t bridge_sample_token(
     const float* logits,
     int32_t n_vocab,
@@ -323,17 +348,11 @@ int32_t bridge_sample_token(
     }
 
     // Шаг 3: multinomial sampling.
-    // Используем std::mt19937 для reproducible sampling.
-    std::mt19937 rng;
-    if (seed == 0) {
-        // Time-based seed (для production).
-        std::random_device rd;
-        rng.seed(rd());
-    } else {
-        rng.seed(seed);
-    }
-    std::uniform_real_distribution<float> dist(0.0f, 1.0f);
-    float r = dist(rng);
+    // Round 15.2: C-совместимый LCG (см. helpers выше). bridge.c
+    // компилируется как C через CGO — std::mt19937/random_device
+    // недоступны. LCG даёт reproducible multinomial sampling.
+    lcg_seed(seed);
+    float r = lcg_random_float();
 
     // Cumulative distribution — sample по кумулятивной сумме.
     float cumsum = 0.0f;

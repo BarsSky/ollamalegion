@@ -1,4 +1,4 @@
-// tool_calls.go — Parsing tool_calls from model output and building
+﻿// tool_calls.go — Parsing tool_calls from model output and building
 // properly structured OpenAI-compatible responses with finish_reason="tool_calls".
 package main
 
@@ -223,6 +223,15 @@ func trimDescription(desc string, maxChars int) string {
 	return strings.TrimRight(trimmed, " .,:;") + "..."
 }
 
+
+
+// truncateForLog returns first N chars + "..." if longer.
+func truncateForLog(s string, n int) string {
+    if len(s) <= n {
+        return s
+    }
+    return s[:n] + "..."
+}
 // parseToolCallsFromOutput пытается распарсить tool_calls из plain text выхода модели.
 //
 // Поддерживаемые форматы (по приоритету):
@@ -918,3 +927,4 @@ var trailingToolTokens = []string{
 	"<end_of_turn>",
 	"<end_of_turn>\n",
 }
+

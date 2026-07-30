@@ -1265,6 +1265,12 @@ void bridge_free_model(ModelHandle model) {
 // Инференс — РЕАЛЬНАЯ через llama_decode()
 // ============================================================
 
+// Forward declaration для build_sampler_chain_from_params (определена ниже,
+// но используется в bridge_infer И bridge_infer_stream — оба используют
+// per-request sampler chain). C требует forward declaration до первого
+// использования.
+struct llama_sampler* build_sampler_chain_from_params(const GenerationParams* params);
+
 InferenceResult bridge_infer(
     ModelHandle model,
     const char* prompt,

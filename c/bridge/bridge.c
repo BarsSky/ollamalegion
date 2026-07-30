@@ -973,7 +973,10 @@ ModelHandle bridge_load_model(const ModelConfig* config, char** error_msg) {
     // Получаем vocabulary
     const struct llama_vocab *vocab = llama_model_get_vocab(model);
 
-    // Создаём сэмплер (стандартная цепочка)
+    // Создаём default sampler (greedy). Per-request sampler chain строится
+    // заново в bridge_infer / bridge_infer_stream на основе params (см.
+    // build_sampler_chain_from_params). im->sampler остаётся для случаев,
+    // когда params не заданы или для batched-path fallback.
     struct llama_sampler *sampler = llama_sampler_chain_init(llama_sampler_chain_default_params());
     llama_sampler_chain_add(sampler, llama_sampler_init_greedy());
 
@@ -1343,6 +1346,15 @@ InferenceResult bridge_infer(
     output[0] = '\0';
     size_t output_len = 0;
 
+    // Round 15.2d: per-request sampler chain (было im->sampler = greedy).
+    struct llama_sampler* sampler = build_sampler_chain_from_params(params);
+    if (sampler == NULL) {
+        free(output);
+        result.status = 1;
+        result.error_msg = strdup("failed to build sampler chain");
+        return result;
+    }
+
     // Процессим токены промпта через llama_decode батчами
     int n_batch = params->n_batch > 0 ? params->n_batch : 512;
     int n_processed = 0;
@@ -1374,7 +1386,7 @@ InferenceResult bridge_infer(
     // Генерируем новые токены
     for (int i = 0; i < n_predict; i++) {
         // Сэмплируем следующий токен
-        llama_token new_token = llama_sampler_sample(im->sampler, im->context, -1);
+        llama_token new_token = llama_sampler_sample(sampler, im->context, -1);
 
         // Проверяем конец генерации
         if (llama_vocab_is_eog(im->vocab, new_token)) {
@@ -1398,6 +1410,7 @@ InferenceResult bridge_infer(
                 free(output);
                 result.status = 1;
                 result.error_msg = strdup("out of memory");
+                llama_sampler_free(sampler);
                 return result;
             }
             output = new_output;
@@ -1423,19 +1436,113 @@ InferenceResult bridge_infer(
             result.status = 1;
             result.error_msg = strdup("llama_decode failed during generation");
             llama_batch_free(gen_batch);
+            llama_sampler_free(sampler);
             return result;
         }
         llama_batch_free(gen_batch);
     }
 
-    // Сбрасываем сэмплер для следующего запроса
-    llama_sampler_reset(im->sampler);
+    // Сэмплер per-request — освобождаем.
+    llama_sampler_free(sampler);
 
     result.output = output;
     result.output_len = (int)output_len;
     result.status = 0;
 
     return result;
+}
+
+// ============================================================
+// build_sampler_chain_from_params — Round 15.2d (2026-07-30):
+// Per-request sampler chain на основе GenerationParams.
+//
+// ДО ЭТОГО ФИКСА: im->sampler создавался ОДИН раз при bridge_load_model
+// с ТОЛЬКО greedy sampler (`llama_sampler_init_greedy()`). Это значило
+// что params->temperature / top_p / top_k / seed ИГНОРИРОВАЛИСЬ полностью
+// на legacy path (bridge_infer / bridge_infer_stream). Видимый симптом:
+// temp=0 и temp=2.0 давали IDENTICAL output.
+//
+// ФИКС: пересоздаём sampler chain на каждый запрос на основе params.
+// Стоимость: ~микросекунды (sampler init — это просто аллокации структур).
+// Преимущество: temp/top_p/top_k/seed реально влияют на выход, что
+// позволяет Cline/Roo/etc использовать творческие сценарии.
+//
+// Цепочка (порядок важен для llama.cpp sampler chain):
+//   1. penalties (repeat/frequency/presence) — обновляет логиты с учётом истории
+//   2. top_k (если top_k > 0)
+//   3. top_p (если top_p < 1.0)
+//   4. temperature (если temperature != 1.0)
+//   5. dist (всегда — финальный сэмплер)
+//   6. seed (для RNG, если задан)
+//
+// Round 15.2d: реализовано top_k, top_p, temperature, seed, penalties.
+// Round 15.3+ TODO: grammar sampling, mirostat, typical_p.
+//
+// Создаёт НОВЫЙ sampler chain. Caller ответственен за llama_sampler_free.
+// Если params NULL или все параметры дефолтные — возвращает обычный greedy.
+struct llama_sampler* build_sampler_chain_from_params(const GenerationParams* params) {
+    struct llama_sampler_chain_params chain_params = llama_sampler_chain_default_params();
+    struct llama_sampler* sampler = llama_sampler_chain_init(chain_params);
+    if (sampler == NULL) {
+        return NULL;
+    }
+
+    // Если params NULL — fallback на greedy (для случаев когда params не заданы).
+    if (params == NULL) {
+        llama_sampler_chain_add(sampler, llama_sampler_init_greedy());
+        return sampler;
+    }
+
+    // Penalty sampler (если любой из penalty > 0) — обновляет логиты
+    // с учётом сгенерированных токенов. Применяется ПЕРВЫМ, до фильтров.
+    if (params->repeat_penalty > 1.0f ||
+        params->frequency_penalty != 0.0f ||
+        params->presence_penalty != 0.0f) {
+        // llama_sampler_init_penalties: last_n, repeat, freq, presence
+        // last_n = 64 (default для большинства моделей), параметры penalties
+        // из GenerationParams.
+        struct llama_sampler* penalties = llama_sampler_init_penalties(
+            64,
+            params->repeat_penalty,
+            params->frequency_penalty,
+            params->presence_penalty
+        );
+        if (penalties != NULL) {
+            llama_sampler_chain_add(sampler, penalties);
+        }
+    }
+
+    // Top-K (если > 0): обрезает до top_k токенов с наибольшими вероятностями.
+    if (params->top_k > 0.0f) {
+        llama_sampler_chain_add(sampler, llama_sampler_init_top_k((int)params->top_k));
+    }
+
+    // Top-P (nucleus sampling, если < 1.0): обрезает до cumulative prob = top_p.
+    if (params->top_p > 0.0f && params->top_p < 1.0f) {
+        llama_sampler_chain_add(sampler, llama_sampler_init_top_p(params->top_p, 1));
+    }
+
+    // Temperature (если != 1.0): масштабирует логиты перед softmax.
+    if (params->temperature != 1.0f) {
+        llama_sampler_chain_add(sampler, llama_sampler_init_temp(params->temperature));
+    }
+
+    // Если все фильтры пустые (defaults: temp=1.0, top_p=1.0, top_k=0) —
+    // добавляем greedy чтобы sampler chain был непустой.
+    // llama_sampler_chain_apply должен получить хотя бы один sampler.
+    if (params->temperature == 1.0f &&
+        (params->top_p <= 0.0f || params->top_p >= 1.0f) &&
+        params->top_k <= 0.0f &&
+        params->repeat_penalty <= 1.0f &&
+        params->frequency_penalty == 0.0f &&
+        params->presence_penalty == 0.0f) {
+        llama_sampler_chain_add(sampler, llama_sampler_init_greedy());
+    } else {
+        // Dist sampler: финальный сэмплер, возвращает token по распределению.
+        llama_sampler_chain_add(sampler, llama_sampler_init_dist(params->seed));
+    }
+
+    return sampler;
 }
 
 // ============================================================
@@ -1501,6 +1608,14 @@ int bridge_infer_stream(
         return (code != BRIDGE_OK) ? code : 1;
     }
 
+    // Round 15.2d: per-request sampler chain (было im->sampler = greedy).
+    struct llama_sampler* sampler = build_sampler_chain_from_params(params);
+    if (sampler == NULL) {
+        free(tokens);
+        set_error("failed to build sampler chain");
+        return 1;
+    }
+
     // Процессим токены промпта
     int n_processed = 0;
     while (n_processed < actual_tokens) {
@@ -1536,7 +1651,7 @@ int bridge_infer_stream(
     streamed_acc[0] = '\0';
 
     for (int i = 0; i < n_predict; i++) {
-        llama_token new_token = llama_sampler_sample(im->sampler, im->context, -1);
+        llama_token new_token = llama_sampler_sample(sampler, im->context, -1);
 
         if (llama_vocab_is_eog(im->vocab, new_token)) {
             break;
@@ -1572,7 +1687,7 @@ int bridge_infer_stream(
             // отправляем то, что осталось (без antiprompt-хвоста)
             if (streamed_acc_len > 0) {
                 if (callback(streamed_acc, (int)streamed_acc_len, user_data) == 0) {
-                    llama_sampler_reset(im->sampler);
+                    llama_sampler_free(sampler);
                     return 0;
                 }
             }
@@ -1582,7 +1697,7 @@ int bridge_infer_stream(
         // Конвенция callback: возврат !=0 (true) — продолжить стриминг,
         // возврат 0 (false) — остановить стриминг (клиент отвалился / ctx.Done).
         if (callback(token_text, token_len, user_data) == 0) {
-            llama_sampler_reset(im->sampler);
+            llama_sampler_free(sampler);
             return 0; // клиент остановил стриминг
         }
 
@@ -1596,12 +1711,13 @@ int bridge_infer_stream(
             // (n_predict > n_ctx - prompt_len), либо OOM на GPU.
             set_error("llama_decode failed during generation step (likely KV-cache overflow: n_predict + prompt_len > n_ctx, or GPU OOM)");
             llama_batch_free(gen_batch);
+            llama_sampler_free(sampler);
             return 1;
         }
         llama_batch_free(gen_batch);
     }
 
-    llama_sampler_reset(im->sampler);
+    llama_sampler_free(sampler);
     return 0;
 }
 

@@ -225,13 +225,6 @@ func trimDescription(desc string, maxChars int) string {
 
 
 
-// truncateForLog returns first N chars + "..." if longer.
-func truncateForLog(s string, n int) string {
-    if len(s) <= n {
-        return s
-    }
-    return s[:n] + "..."
-}
 // parseToolCallsFromOutput пытается распарсить tool_calls из plain text выхода модели.
 //
 // Поддерживаемые форматы (по приоритету):

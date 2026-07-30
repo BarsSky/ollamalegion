@@ -5,6 +5,68 @@
 Формат ведётся в соответствии с [Keep a Changelog](https://keepachangelog.com/ru/1.0.0/),
 и этот проект придерживается [Semantic Versioning](https://semver.org/lang/ru/).
 
+## [0.5.1 — 2026-07-30]
+
+PATCH-релиз. **Round 15.2 step 15.2h + Multi-tool Recovery**: закрывает
+Round 15.2 (batched inference завершён) + hotfix для Qwen3-4B-Instruct
+multi-tool парсинга, который ломался 4/4 на 228-байтном live output.
+
+### 🐛 Multi-tool recovery (Qwen3-4B-Instruct-2507)
+
+**Bug**: при 2+ tool calls модель выдаёт malformed JSON: последний
+`}` для закрытия call-объекта "пропадает" и появляется ПОСЛЕ `]`
+закрытия массива. Живой вывод (228 байт):
+
+```
+Live:    [{...}, {...}]]}      ← 4 лишних chars в конце
+Correct: [{...}, {...}]}        ← закрытие last call + array close
+```
+
+JSON баланс скобок `[` и `]` сходился (1/1), но порядок нарушен — Go
+`json.Unmarshal` падал на 227-м байте с "invalid character ']' after
+object key:value pair". Парсер корректно отдавал 0 calls, клиент
+получал `content=raw JSON, finish_reason=stop`.
+
+**Fix** (commit `22728a1`): новая Strategy 4b в
+`parseToolCallsFromOutput` — `recoverToolCallsByPrefixTrimming` +
+`stripExtraBracesInStringValues`. Эвристика: при `]}` в самом конце
+строки — переставляет trailing `}` ПЕРЕД `]` (idempotent, max 8
+итераций). 10/10 live-repro тестов в `cmd/cppworker/live_test.go`
+проходят, включая exact 228-байтный live input.
+
+**Production verification** (image `ollama-legion/cppworker:gpu-86`
+ID `1ab5b650e6a2`, deployed 18:01):
+
+| Тест | До (v0.5.0) | После (v0.5.1) |
+| --- | --- | --- |
+| 2× get_weather | `tool_calls=[]` content=JSON stop | `tool_calls=2` finish=tool_calls |
+| calculator + list_files | `tool_calls=[]` content=JSON stop | `tool_calls=2` finish=tool_calls |
+| 1× list_files (regression) | works | works (still 1 call) |
+
+### Round 15.2 status — CLOSED
+
+Этот релиз завершает Round 15.2:
+- ✅ 15.2a (multi-token prefill) — commit `0e8fc0e`
+- ✅ 15.2c (multi-temp unit tests) — passing
+- ✅ 15.2e (vocab-aware EOG) — commit `51942cb`
+- ✅ 15.2f (temperature sampling via C-bridge) — commit `93aeb66`
+- ✅ C-LCG вместо `std::mt19937` (CGo compatibility) — commit `f1beabb`
+- ✅ **15.2h** (multi-tool recovery + tag) — THIS RELEASE
+
+DEFERRED на будущее:
+- 15.2d (multi-temp integration test через /v1/chat) — low priority
+- 15.2g (Reasoning parser для batched path) — нужен когда batched
+  path начнёт работать с reasoning моделями в production
+
+### 🧹 Cleanup
+
+- Удалён DEBUG log из `handleV1ChatCompletions` (commit 63addd0 был
+  только для ловли бага — теперь не нужен)
+- Удалён неиспользуемый helper `truncateForLog` из `tool_calls.go`
+- Все 10 live-repro тестов остаются в `cmd/cppworker/live_test.go`
+  (документируют все edge cases, что парсер должен корректно
+  обрабатывать)
+
 ## [0.5.0 — 2026-07-30]
 
 MINOR-релиз. Главная фича: **Round 15.1 — True Batched Parallel Inference**

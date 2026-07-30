@@ -402,14 +402,6 @@ func handleV1ChatCompletions(w http.ResponseWriter, r *http.Request) {
 	var toolCalls []openAIToolCall
 	if len(req.Tools) > 0 {
 		toolCalls = parseToolCallsFromOutput(result.Output)
-		// DEBUG: логируем первые 500 + последние 200 символов + длину + результат парсера
-		logger.Get().Infow("DEBUG parseToolCallsFromOutput",
-			"model", req.Model,
-			"output_len", len(result.Output),
-			"output_first_500", truncateForLog(result.Output, 500),
-			"output_last_200", truncateForLog(result.Output[max(0, len(result.Output)-200):], 200),
-			"toolCalls_count", len(toolCalls),
-		)
 		hasToolCalls = len(toolCalls) > 0
 	}
 

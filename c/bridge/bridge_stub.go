@@ -471,6 +471,11 @@ func (m *ModelHandle) SampleToken(logits []float32, temperature float32, seed ui
 	return 0, fmt.Errorf("SampleToken not available in llama_stub build")
 }
 
+// IsEOG возвращает false в stub-режиме (нет vocab). Round 15.2.
+func (m *ModelHandle) IsEOG(token int32) (bool, error) {
+	return false, fmt.Errorf("IsEOG not available in llama_stub build")
+}
+
 // TokenToPiece возвращает пустую строку в stub-режиме (нет словаря).
 // Round 15.1: в stub-режиме batched infer path не используется
 // (cppworker собирается с реальным llama.cpp через cgo), но сигнатура

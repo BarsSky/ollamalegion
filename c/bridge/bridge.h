@@ -572,6 +572,23 @@ int32_t bridge_sample_token(
     uint32_t seed
 );
 
+// bridge_token_is_eog — Round 15.2 (2026-07-30): correct EOG detection.
+//
+// Заменяет heuristic isEOGToken(t) := t==1 || t==2 (Round 15.1) на
+// llama_vocab_is_eog (правильная проверка EOS/EOT/etc для текущей модели).
+// Round 15.1 heuristic работал для Qwen3/Llama где EOG tokens = 1 или 2,
+// но не для моделей с другим vocab (gemma-4, mistral, и т.п.).
+//
+// Параметры:
+//   model  — загруженная модель (ModelHandle)
+//   token  — int32 token id
+//
+// Возвращает:
+//   1  — token is EOG (should stop generation)
+//   0  — token is NOT EOG
+//   -1 — bridge internal error (model==NULL)
+int32_t bridge_token_is_eog(ModelHandle model, int32_t token);
+
 #ifdef __cplusplus
 }
 #endif

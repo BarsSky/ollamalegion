@@ -1026,6 +1026,25 @@ func (m *ModelHandle) SampleToken(logits []float32, temperature float32, seed ui
 	return int32(rc), nil
 }
 
+// IsEOG — Round 15.2 (2026-07-30): vocab-aware EOG detection.
+//
+// Заменяет heuristic isEOGToken(t) := t==1 || t==2 (Round 15.1) на
+// llama_vocab_is_eog через C-bridge. Корректно для всех vocab (Qwen3,
+// Llama, gemma-4, mistral, и т.п.).
+//
+// Используется BatchedScheduler для определения когда остановить
+// generation (token == EOG token).
+func (m *ModelHandle) IsEOG(token int32) (bool, error) {
+	if m == nil || m.ptr == nil {
+		return false, fmt.Errorf("model not loaded")
+	}
+	rc := C.bridge_token_is_eog(m.ptr, C.int32_t(token))
+	if rc < 0 {
+		return false, fmt.Errorf("bridge_token_is_eog failed")
+	}
+	return rc == 1, nil
+}
+
 // GetMetadata возвращает метаданные модели
 func (m *ModelHandle) GetMetadata() (*ModelMetadata, error) {
 	if m == nil || m.ptr == nil {

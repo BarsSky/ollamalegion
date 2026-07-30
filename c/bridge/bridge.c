@@ -350,6 +350,32 @@ int32_t bridge_sample_token(
     return sampled;
 }
 
+// bridge_token_is_eog — Round 15.2 (2026-07-30): correct EOG detection.
+//
+// Заменяет heuristic isEOGToken(t) := t==1 || t==2 (Round 15.1) на
+// llama_vocab_is_eog (правильная проверка EOS/EOT/etc для текущей модели).
+// Round 15.1 heuristic работал для Qwen3/Llama где EOG tokens = 1 или 2,
+// но не для моделей с другим vocab (gemma-4, mistral, и т.п.).
+//
+// Использует правильную vocab-aware проверку через llama_vocab_is_eog.
+int32_t bridge_token_is_eog(ModelHandle model, int32_t token) {
+    if (model == NULL) {
+        return -1;
+    }
+    InternalModel* im = (InternalModel*)model;
+    const struct llama_vocab* vocab = llama_model_get_vocab(im->model);
+    if (vocab == NULL) {
+        return -1;
+    }
+    // llama_vocab_is_eog возвращает true для EOS, EOT, и любых других
+    // токенов которые модель обучена считать "end of generation".
+    // Также учитывает EOG sequence (multitoken EOG для некоторых моделей).
+    if (llama_vocab_is_eog(vocab, (llama_token)token)) {
+        return 1;
+    }
+    return 0;
+}
+
 // bridge_batched_decode — Round 15.1: ОДИН llama_decode для N sequences.
 //
 // Поток:

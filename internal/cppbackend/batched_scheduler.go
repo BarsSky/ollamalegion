@@ -430,7 +430,8 @@ func (bs *BatchedScheduler) tick(ctx context.Context) {
 			s.NextPos = int32(len(s.Prompt)) // all prompt ingested
 			s.NextToken = firstToken
 			s.Generated = append(s.Generated, firstToken)
-			isFinished := isEOGToken(firstToken) || len(s.Generated) >= s.MaxTokens
+			// Round 15.2: vocab-aware EOG detection через C-bridge.
+			isFinished := isEOGTokenModel(bs.model, firstToken) || len(s.Generated) >= s.MaxTokens
 			if isFinished {
 				s.Finished = true
 			}
@@ -442,7 +443,7 @@ func (bs *BatchedScheduler) tick(ctx context.Context) {
 				close(s.DoneCh)
 				logger.Get().Infow("BatchedScheduler: session finished (during prefill→gen transition)",
 					"id", s.ID, "seq_id", s.SeqID, "first_token", firstToken,
-					"eog", isEOGToken(firstToken), "max_reached", len(s.Generated) >= s.MaxTokens)
+					"eog", isEOGTokenModel(bs.model, firstToken), "max_reached", len(s.Generated) >= s.MaxTokens)
 			} else {
 				select {
 				case s.TokenCh <- firstToken:
@@ -461,7 +462,8 @@ func (bs *BatchedScheduler) tick(ctx context.Context) {
 		// Шаг 5: обновляем session state.
 		s.Generated = append(s.Generated, nextToken)
 		s.NextPos++
-		isFinished := isEOGToken(nextToken) || len(s.Generated) >= s.MaxTokens
+		// Round 15.2: vocab-aware EOG detection через C-bridge.
+		isFinished := isEOGTokenModel(bs.model, nextToken) || len(s.Generated) >= s.MaxTokens
 
 		// Готовим NextToken для следующего tick'а (всегда — для batched
 		// decoder нужны logits от nextToken, не от текущего).
@@ -486,7 +488,7 @@ func (bs *BatchedScheduler) tick(ctx context.Context) {
 			close(s.DoneCh)
 			logger.Get().Infow("BatchedScheduler: session finished",
 				"id", s.ID, "seq_id", s.SeqID, "generated_tokens", len(s.Generated),
-				"eog", isEOGToken(nextToken), "max_reached", len(s.Generated) >= s.MaxTokens)
+				"eog", isEOGTokenModel(bs.model, nextToken), "max_reached", len(s.Generated) >= s.MaxTokens)
 		}
 	}
 }
@@ -532,11 +534,26 @@ func argmaxToken(logits []float32) int32 {
 	return int32(bestIdx)
 }
 
-// isEOGToken — простая проверка на end-of-generation token. В Round 15.2
-// будет использовать llama_vocab_is_eog через C-bridge (нужна новая
-// функция bridge_vocab_is_eog). Пока — heuristic: token 1 (обычно <eos>)
-// и 2 (<bos> для некоторых моделей) считаются EOG. Это неточно — в проде
-// нужно использовать vocab API.
+// isEOGTokenModel — Round 15.2 (2026-07-30): vocab-aware EOG detection
+// через C-bridge llama_vocab_is_eog. Корректно для всех моделей (Qwen3,
+// Llama, gemma-4, mistral, и т.п.) — не зависит от magic token IDs.
+//
+// При ошибке C-вызова (например model=nil в unit-тестах) fallback на
+// heuristic isEOGToken.
+func isEOGTokenModel(model *bridge.ModelHandle, t int32) bool {
+	if model == nil {
+		return isEOGToken(t)
+	}
+	isEOG, err := model.IsEOG(t)
+	if err != nil {
+		return isEOGToken(t)
+	}
+	return isEOG
+}
+
+// isEOGToken — простой fallback для unit-тестов и случаев когда model=nil.
+// Token 1 (обычно <eos>) и 2 (<bos> для некоторых моделей) считаются EOG.
+// В production используйте isEOGTokenModel (Round 15.2+).
 func isEOGToken(t int32) bool {
 	return t == 1 || t == 2
 }

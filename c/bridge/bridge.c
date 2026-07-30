@@ -20,6 +20,8 @@
 #include <stdlib.h>
 #include <string.h>
 #include <stdio.h>
+#include <math.h>
+#include <random>
 
 // Отключаем буферизацию stdout для Docker-логов — все printf выводятся немедленно.
 // Без этого [bridge] сообщения могут не появляться в `docker compose logs`
@@ -250,6 +252,102 @@ int32_t bridge_get_n_vocab(void* model) {
         return -1;
     }
     return (int32_t)llama_vocab_n_tokens(vocab);
+}
+
+// bridge_sample_token — Round 15.2 (2026-07-30): temperature sampling.
+//
+// Реализация:
+//   temperature <= 0  → greedy argmax (быстро, deterministic)
+//   temperature > 0   → softmax с temperature, потом std::mt19937 multinomial sample
+//
+// Численная стабильность: вычитаем max перед exp() чтобы избежать overflow
+// (классический log-sum-exp trick).
+//
+// Determinism: при seed=0 используем time-based seed (через random_device);
+// при seed!=0 — фиксированный seed для reproducible tests.
+int32_t bridge_sample_token(
+    const float* logits,
+    int32_t n_vocab,
+    float temperature,
+    uint32_t seed
+) {
+    if (logits == NULL || n_vocab <= 0) {
+        return -1;
+    }
+
+    // Шаг 1: greedy argmax baseline.
+    // Также находим max для log-sum-exp.
+    int32_t best_idx = 0;
+    float best_val = logits[0];
+    float max_val = logits[0];
+    for (int32_t i = 1; i < n_vocab; i++) {
+        if (logits[i] > best_val) {
+            best_val = logits[i];
+            best_idx = i;
+        }
+        if (logits[i] > max_val) {
+            max_val = logits[i];
+        }
+    }
+
+    // Если temperature <= 0 — возвращаем argmax (deterministic).
+    if (temperature <= 0.0f) {
+        return best_idx;
+    }
+
+    // Шаг 2: temperature scaling + softmax.
+    // probs[i] = exp((logits[i] - max) / temperature)
+    // sum = sum(probs)
+    // normalized[i] = probs[i] / sum
+    const float inv_t = 1.0f / temperature;
+    double sum_exp = 0.0;
+    // Аллоцируем probs на стеке (для n_vocab=150K = 600KB — слишком много для стека,
+    // делаем через malloc).
+    float* probs = (float*)malloc((size_t)n_vocab * sizeof(float));
+    if (probs == NULL) {
+        // Fallback на greedy при OOM.
+        return best_idx;
+    }
+    for (int32_t i = 0; i < n_vocab; i++) {
+        probs[i] = expf((float)((logits[i] - max_val) * (double)inv_t));
+        sum_exp += (double)probs[i];
+    }
+    if (sum_exp <= 0.0 || !isfinite(sum_exp)) {
+        // Defensive: если все probs = 0 (крайне маловероятно) — fallback на greedy.
+        free(probs);
+        return best_idx;
+    }
+    const float inv_sum = (float)(1.0 / sum_exp);
+    for (int32_t i = 0; i < n_vocab; i++) {
+        probs[i] *= inv_sum;
+    }
+
+    // Шаг 3: multinomial sampling.
+    // Используем std::mt19937 для reproducible sampling.
+    std::mt19937 rng;
+    if (seed == 0) {
+        // Time-based seed (для production).
+        std::random_device rd;
+        rng.seed(rd());
+    } else {
+        rng.seed(seed);
+    }
+    std::uniform_real_distribution<float> dist(0.0f, 1.0f);
+    float r = dist(rng);
+
+    // Cumulative distribution — sample по кумулятивной сумме.
+    float cumsum = 0.0f;
+    int32_t sampled = n_vocab - 1; // fallback на last token
+    for (int32_t i = 0; i < n_vocab; i++) {
+        cumsum += probs[i];
+        if (r < cumsum) {
+            sampled = i;
+            break;
+        }
+    }
+
+    free(probs);
+    return sampled;
 }
 
 // bridge_batched_decode — Round 15.1: ОДИН llama_decode для N sequences.

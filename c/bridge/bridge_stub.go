@@ -464,6 +464,13 @@ func (m *ModelHandle) BatchedDecode(sequences []BatchedSequence) ([][]float32, e
 	return nil, fmt.Errorf("BatchedDecode not available in llama_stub build")
 }
 
+// SampleToken возвращает ошибку в stub-режиме (нет RNG/llama.cpp).
+// Round 15.2: в stub-режиме BatchedScheduler не используется, но
+// сигнатура нужна для компиляции пакета.
+func (m *ModelHandle) SampleToken(logits []float32, temperature float32, seed uint32) (int32, error) {
+	return 0, fmt.Errorf("SampleToken not available in llama_stub build")
+}
+
 // TokenToPiece возвращает пустую строку в stub-режиме (нет словаря).
 // Round 15.1: в stub-режиме batched infer path не используется
 // (cppworker собирается с реальным llama.cpp через cgo), но сигнатура

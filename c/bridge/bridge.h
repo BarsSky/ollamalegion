@@ -536,6 +536,42 @@ int bridge_batched_decode(
 // Возвращает -1 при ошибке.
 int32_t bridge_get_n_vocab(void* model);
 
+// bridge_sample_token — Round 15.2 (2026-07-30): temperature sampling.
+//
+// Простой single-token sampler для batched path (используется после
+// bridge_batched_decode чтобы сэмплировать из logits последнего токена).
+// Реализует:
+//   - greedy argmax при temperature <= 0 (default behavior для chain-of-thought)
+//   - temperature scaling + softmax + multinomial sampling при temperature > 0
+//
+// НЕ поддерживает (Round 15.3+ TODO):
+//   - top_p (nucleus sampling)
+//   - top_k
+//   - min_p / typical_p / tfs_z
+//   - repetition_penalty (требует per-session state, см. BatchedScheduler)
+//   - grammar-based sampling
+//
+// Эти features в Round 15.2 не критичны — пользователь может использовать
+// greedy (temperature=0) или базовое temperature scaling. Round 15.3+ заменит
+// на полный llama.cpp common_sampler с per-session state.
+//
+// Параметры:
+//   logits       — массив float размера n_vocab (raw logits из bridge_batched_decode)
+//   n_vocab      — размер logits
+//   temperature  — sampling temperature. 0 или отрицательная = greedy argmax.
+//                  1.0 = native distribution. > 1.0 = более flat. < 1.0 = более sharp.
+//   seed         — RNG seed для reproducibility. 0 = use time-based seed.
+//
+// Возвращает:
+//   >= 0 — sampled token id
+//   -1   — bridge internal error (invalid args)
+int32_t bridge_sample_token(
+    const float* logits,
+    int32_t n_vocab,
+    float temperature,
+    uint32_t seed
+);
+
 #ifdef __cplusplus
 }
 #endif

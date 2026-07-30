@@ -1621,7 +1621,14 @@ func (b *Backend) batchedInferStream(inst *modelInstance, modelName string, prom
 	}
 
 	// 3. Register session.
-	id, state, err := inst.batchedScheduler.RegisterSession(tokens, maxTokens)
+	// Round 15.2: pass Temperature/Seed из params для sampling.
+	// 0 = greedy (default), > 0 = softmax+multinomial.
+	id, state, err := inst.batchedScheduler.RegisterSession(BatchedSessionParams{
+		Prompt:      tokens,
+		MaxTokens:   maxTokens,
+		Temperature: params.Temperature,
+		Seed:        uint32(params.Seed),
+	})
 	if err != nil {
 		return fmt.Errorf("batched stream: register session: %w", err)
 	}

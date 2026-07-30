@@ -986,6 +986,46 @@ func (m *ModelHandle) TokenToPiece(token int32) string {
 	return C.GoStringN(cBuf, C.int(n))
 }
 
+// SampleToken — Round 15.2 (2026-07-30): temperature sampling для batched path.
+//
+// Используется BatchedScheduler после BatchedDecode для sampling next token
+// из logits последнего токена sequence. Реализует:
+//   - greedy argmax при temperature <= 0 (default для chain-of-thought)
+//   - temperature scaling + softmax + multinomial sampling при temperature > 0
+//
+// Параметры:
+//   logits      — []float32 размера n_vocab (raw logits из BatchedDecode)
+//   temperature — 0 или negative = greedy. > 0 = softmax(temp) + multinomial
+//   seed        — 0 = time-based (для production), != 0 = reproducible
+//
+// Round 15.3+ TODO: top_p/top_k/rep_penalty через common_sampler с
+// per-session state (для rep_penalty нужно знать сгенерированные токены).
+func (m *ModelHandle) SampleToken(logits []float32, temperature float32, seed uint32) (int32, error) {
+	_ = m // m не используется — bridge_sample_token работает только с logits
+	if len(logits) == 0 {
+		return 0, fmt.Errorf("empty logits")
+	}
+	cLogits := (*C.float)(C.malloc(C.size_t(len(logits)) * C.sizeof_float))
+	if cLogits == nil {
+		return 0, fmt.Errorf("malloc failed for logits")
+	}
+	defer C.free(unsafe.Pointer(cLogits))
+	cSlice := unsafe.Slice((*C.float)(cLogits), len(logits))
+	for i, v := range logits {
+		cSlice[i] = C.float(v)
+	}
+	rc := C.bridge_sample_token(
+		cLogits,
+		C.int32_t(len(logits)),
+		C.float(temperature),
+		C.uint32_t(seed),
+	)
+	if rc < 0 {
+		return 0, fmt.Errorf("bridge_sample_token failed")
+	}
+	return int32(rc), nil
+}
+
 // GetMetadata возвращает метаданные модели
 func (m *ModelHandle) GetMetadata() (*ModelMetadata, error) {
 	if m == nil || m.ptr == nil {

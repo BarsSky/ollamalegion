@@ -71,6 +71,11 @@ type BatchedSessionState struct {
 	// Prefill: NextPos от 0 до len(Prompt), на каждом tick ингестим prompt[NextPos].
 	// После prefill: переходим в generation phase, NextPos = len(Prompt).
 	PrefillDone bool
+	// Round 15.2 (2026-07-30): sampling params.
+	// Temperature = 0 (default) → greedy argmax. > 0 → softmax+multinomial.
+	// Seed для RNG (0 = time-based, non-zero = reproducible).
+	Temperature float32
+	Seed        uint32
 	TokenCh    chan int32    // stream output (sampled tokens)
 	DoneCh     chan struct{} // closed when session finishes
 	Finished   bool          // true after EOG or MaxTokens
@@ -155,13 +160,22 @@ func NewBatchedScheduler(cfg BatchedSchedulerConfig) (*BatchedScheduler, error) 
 // каналы для streaming (TokenCh читает сгенерированные токены, DoneCh
 // закрывается по завершении).
 //
+// BatchedSessionParams — параметры для RegisterSession.
+// Round 15.2 (2026-07-30): добавлены Temperature/Seed для sampling.
+type BatchedSessionParams struct {
+	Prompt      []int32
+	MaxTokens   int
+	Temperature float32 // 0 = greedy argmax. > 0 = softmax(temp) + multinomial.
+	Seed        uint32  // 0 = time-based. != 0 = reproducible для тестов.
+}
+
 // Caller обязан:
 //   1. Читать TokenCh пока не закроется.
 //   2. После close проверить session.Err.
 //
 // Неблокирующий: возвращает управление сразу. Scheduler начнёт
 // обрабатывать session на следующем tick'е (latency = 1 batching window).
-func (bs *BatchedScheduler) RegisterSession(prompt []int32, maxTokens int) (BatchedSessionID, *BatchedSessionState, error) {
+func (bs *BatchedScheduler) RegisterSession(params BatchedSessionParams) (BatchedSessionID, *BatchedSessionState, error) {
 	bs.mu.Lock()
 	defer bs.mu.Unlock()
 
@@ -177,19 +191,22 @@ func (bs *BatchedScheduler) RegisterSession(prompt []int32, maxTokens int) (Batc
 	state := &BatchedSessionState{
 		ID:        bs.nextID,
 		SeqID:     seqID,
-		Prompt:    prompt,
-		Generated: make([]int32, 0, maxTokens),
-		MaxTokens: maxTokens,
-		NextToken: prompt[0], // первый токен = первый токен prompt'а
-		NextPos:   0,         // начинаем с prefill pos 0
-		PrefillDone: len(prompt) == 0, // edge case: пустой prompt = prefilled
+		Prompt:    params.Prompt,
+		Generated: make([]int32, 0, params.MaxTokens),
+		MaxTokens: params.MaxTokens,
+		NextToken: params.Prompt[0], // первый токен = первый токен prompt'а
+		NextPos:   0,                 // начинаем с prefill pos 0
+		PrefillDone: len(params.Prompt) == 0, // edge case: пустой prompt = prefilled
+		Temperature: params.Temperature,
+		Seed:        params.Seed,
 		TokenCh:   make(chan int32, 8), // буферизованный, чтобы scheduler не блокировался
 		DoneCh:    make(chan struct{}),
 	}
 	bs.sessions[bs.nextID] = state
 	logger.Get().Infow("BatchedScheduler: session registered",
-		"id", bs.nextID, "seq_id", seqID, "prompt_tokens", len(prompt),
-		"max_tokens", maxTokens, "active", len(bs.sessions))
+		"id", bs.nextID, "seq_id", seqID, "prompt_tokens", len(params.Prompt),
+		"max_tokens", params.MaxTokens, "temperature", params.Temperature,
+		"seed", params.Seed, "active", len(bs.sessions))
 	return bs.nextID, state, nil
 }
 
@@ -404,7 +421,9 @@ func (bs *BatchedScheduler) tick(ctx context.Context) {
 			// PREFILL (Round 15.2): use logits from last prompt token to sample
 			// first generated token. Это экономит 1 generation tick vs
 			// Round 15.1 (где первый token был NextToken=prompt[last] без sample).
-			firstToken := argmaxToken(logits[i])
+			// Round 15.2: temperature sampling (через bridge_sample_token C-side).
+			// s.Temperature = 0 (default) → greedy argmax. > 0 → softmax+multinomial.
+			firstToken := sampleFromLogits(bs.model, logits[i], s.Temperature, s.Seed)
 
 			// State transitions: prompt ingested, generation phase begins.
 			s.PrefillDone = true
@@ -435,8 +454,9 @@ func (bs *BatchedScheduler) tick(ctx context.Context) {
 			continue
 		}
 
-		// GENERATION: greedy argmax. logits[i] = []float32 длины n_vocab.
-		nextToken := argmaxToken(logits[i])
+		// GENERATION: temperature sampling (Round 15.2). logits[i] = []float32 длины n_vocab.
+		// s.Temperature = 0 → greedy (как Round 15.1). > 0 → softmax+multinomial.
+		nextToken := sampleFromLogits(bs.model, logits[i], s.Temperature, s.Seed)
 
 		// Шаг 5: обновляем session state.
 		s.Generated = append(s.Generated, nextToken)
@@ -471,8 +491,32 @@ func (bs *BatchedScheduler) tick(ctx context.Context) {
 	}
 }
 
+// sampleFromLogits — Round 15.2 (2026-07-30): temperature sampling.
+//
+// Использует C-bridge bridge_sample_token (см. c/bridge/bridge.h + bridge.c):
+//   temperature <= 0  → greedy argmax (быстро, deterministic)
+//   temperature > 0   → softmax с temperature, multinomial sampling с std::mt19937
+//
+// При ошибке C-вызова (например n_vocab=0 или malloc OOM) fallback на
+// argmax — лучше плохой ответ чем паника.
+func sampleFromLogits(model *bridge.ModelHandle, logits []float32, temperature float32, seed uint32) int32 {
+	if len(logits) == 0 {
+		return 0
+	}
+	// Используем C-bridge (там proper log-sum-exp + std::mt19937).
+	// Подавляем ошибку в логе — для production с temperature=0 будет много
+	// одинаковых аргмакс-вызовов без ошибок.
+	tok, err := model.SampleToken(logits, temperature, seed)
+	if err != nil {
+		// Fallback на greedy argmax (Go-side, без C-вызова).
+		return argmaxToken(logits)
+	}
+	return tok
+}
+
 // argmaxToken — greedy sampling. Возвращает индекс argmax'а во float массиве.
-// В Round 15.2 заменим на полный Sampler chain.
+// Round 15.2: теперь это fallback для sampleFromLogits (если C-вызов упал).
+// Для primary path используется sampleFromLogits с temperature.
 func argmaxToken(logits []float32) int32 {
 	if len(logits) == 0 {
 		return 0

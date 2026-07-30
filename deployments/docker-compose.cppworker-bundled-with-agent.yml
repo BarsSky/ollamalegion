@@ -88,6 +88,18 @@ services:
       - CPPWORKER_RAM_FALLBACK_MAX_N_CTX=${CPPWORKER_RAM_FALLBACK_MAX_N_CTX:-128000}
       - CPPWORKER_AUTO_OFFLOAD=${CPPWORKER_AUTO_OFFLOAD:-true}
       - CPPWORKER_AUTO_TUNE_NCTX=${CPPWORKER_AUTO_TUNE_NCTX:-true}
+      # Round 16 (2026-07-30): reasoning/thinking policy.
+      # Default = OFF — backward compat + tool use workloads (Cline/Roo/Aider).
+      # Qwen3 thinking оборачивает tool call в <think> блоки, ломает tool call
+      # парсеры. Поставьте true если используете Coder/Qwen3-Coder и вам НЕ
+      # нужен tool use. Можно переопределить per-model через load-with-params.
+      - CPPWORKER_DEFAULT_ENABLE_REASONING=${CPPWORKER_DEFAULT_ENABLE_REASONING:-false}
+      - CPPWORKER_DEFAULT_REASONING_BUDGET=${CPPWORKER_DEFAULT_REASONING_BUDGET:-0}
+      - CPPWORKER_ENABLE_REASONING=${CPPWORKER_ENABLE_REASONING:-false}
+      - CPPWORKER_REASONING_BUDGET=${CPPWORKER_REASONING_BUDGET:-0}
+      # Round 15.1: opt-in flag для true parallel llama_decode через
+      # BatchedScheduler. Default = false (Round 13 multi-slot path).
+      - CPPWORKER_ENABLE_BATCHED_PARALLEL=${CPPWORKER_ENABLE_BATCHED_PARALLEL:-false}
       - API_TOKEN=${CPPWORKER_API_TOKEN:-changeme-bundled-with-agent-token}
       # Регистрация бэкенда в балансер.
       - CPPWORKER_BALANCER_URL=${BALANCER_URL:-http://loadbalancer:18081}

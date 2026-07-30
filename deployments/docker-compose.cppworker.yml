@@ -60,6 +60,13 @@ services:
       - HF_AUTO_DOWNLOAD_FILE=${HF_AUTO_DOWNLOAD_FILE:-}
       - HF_AUTO_DOWNLOAD_QUANT=${HF_AUTO_DOWNLOAD_QUANT:-Q4_K_M}
       - HF_MIRROR=${HF_MIRROR:-}
+      # Round 16 (2026-07-30): reasoning/thinking policy (default OFF).
+      - CPPWORKER_DEFAULT_ENABLE_REASONING=${CPPWORKER_DEFAULT_ENABLE_REASONING:-false}
+      - CPPWORKER_DEFAULT_REASONING_BUDGET=${CPPWORKER_DEFAULT_REASONING_BUDGET:-0}
+      - CPPWORKER_ENABLE_REASONING=${CPPWORKER_ENABLE_REASONING:-false}
+      - CPPWORKER_REASONING_BUDGET=${CPPWORKER_REASONING_BUDGET:-0}
+      # Round 15.1: opt-in batched parallel inference.
+      - CPPWORKER_ENABLE_BATCHED_PARALLEL=${CPPWORKER_ENABLE_BATCHED_PARALLEL:-false}
       # === Auto-registration in balancer (port 18081) ===
       # BALANCER_URL is the canonical name. CPPWORKER_BALANCER_URL/CPPWORKER_BALANCER_TOKEN
       # are read by the Go-side registration (cmd/cppworker/balancer_register.go).
@@ -130,6 +137,13 @@ services:
       - HF_AUTO_DOWNLOAD_FILE=${HF_AUTO_DOWNLOAD_FILE:-}
       - HF_AUTO_DOWNLOAD_QUANT=${HF_AUTO_DOWNLOAD_QUANT:-Q4_K_M}
       - HF_MIRROR=${HF_MIRROR:-}
+      # Round 16 (2026-07-30): reasoning/thinking policy (default OFF).
+      - CPPWORKER_DEFAULT_ENABLE_REASONING=${CPPWORKER_DEFAULT_ENABLE_REASONING:-false}
+      - CPPWORKER_DEFAULT_REASONING_BUDGET=${CPPWORKER_DEFAULT_REASONING_BUDGET:-0}
+      - CPPWORKER_ENABLE_REASONING=${CPPWORKER_ENABLE_REASONING:-false}
+      - CPPWORKER_REASONING_BUDGET=${CPPWORKER_REASONING_BUDGET:-0}
+      # Round 15.1: opt-in batched parallel inference.
+      - CPPWORKER_ENABLE_BATCHED_PARALLEL=${CPPWORKER_ENABLE_BATCHED_PARALLEL:-false}
       # === Auto-registration in balancer (port 18081) ===
       # BALANCER_URL is the canonical name. CPPWORKER_BALANCER_URL/CPPWORKER_BALANCER_TOKEN
       # are read by the Go-side registration (cmd/cppworker/balancer_register.go).
@@ -199,9 +213,15 @@ services:
       - HF_AUTO_DOWNLOAD_FILE=${HF_AUTO_DOWNLOAD_FILE:-}
       - HF_AUTO_DOWNLOAD_QUANT=${HF_AUTO_DOWNLOAD_QUANT:-Q4_K_M}
       - HF_MIRROR=${HF_MIRROR:-}
+      # Round 16 (2026-07-30): reasoning/thinking policy (default OFF).
+      - CPPWORKER_DEFAULT_ENABLE_REASONING=${CPPWORKER_DEFAULT_ENABLE_REASONING:-false}
+      - CPPWORKER_DEFAULT_REASONING_BUDGET=${CPPWORKER_DEFAULT_REASONING_BUDGET:-0}
+      - CPPWORKER_ENABLE_REASONING=${CPPWORKER_ENABLE_REASONING:-false}
+      - CPPWORKER_REASONING_BUDGET=${CPPWORKER_REASONING_BUDGET:-0}
+      # Round 15.1: opt-in batched parallel inference.
+      - CPPWORKER_ENABLE_BATCHED_PARALLEL=${CPPWORKER_ENABLE_BATCHED_PARALLEL:-false}
 
     networks:
-      - cppworker-net
 
     healthcheck:
       test: ["CMD", "/app/cppworker", "-healthcheck"]

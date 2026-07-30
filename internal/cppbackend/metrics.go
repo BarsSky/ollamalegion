@@ -26,6 +26,12 @@ type Metrics struct {
 	TotalModelsLoaded  atomic.Int64 `json:"totalModelsLoaded"`
 	TotalModelsUnloaded atomic.Int64 `json:"totalModelsUnloaded"`
 	ActiveModels       atomic.Int64 `json:"activeModels"`
+	// Round 16 code-review fix (2026-07-30): UnloadModel timeout counter.
+	// Инкрементится когда BatchedScheduler.Run() не возвращается в течение
+	// 10s timeout при UnloadModel — указывает на баг в scheduler (deadlock,
+	// infinite loop, blocked channel). Если этот счётчик растёт в production —
+	// нужна postmortem.
+	TotalUnloadTimeouts atomic.Int64 `json:"totalUnloadTimeouts"`
 
 	// GPU
 	GPUMemoryUsedMB    atomic.Int64 `json:"gpuMemoryUsedMb"`
@@ -99,6 +105,14 @@ func (m *Metrics) RecordLoad(modelName string) {
 func (m *Metrics) RecordUnload(modelName string) {
 	m.TotalModelsUnloaded.Add(1)
 	m.ActiveModels.Add(-1)
+}
+
+// RecordUnloadTimeout — Round 16 code-review fix: фиксирует случай, когда
+// BatchedScheduler.Run() не вернулся в течение timeout при UnloadModel.
+// reason — категория причины ("batched_scheduler_stuck", "inference_loop",
+// и т.п.) для диагностики.
+func (m *Metrics) RecordUnloadTimeout(modelName, reason string) {
+	m.TotalUnloadTimeouts.Add(1)
 }
 
 // getOrCreateModelMetrics возвращает или создаёт метрики для модели

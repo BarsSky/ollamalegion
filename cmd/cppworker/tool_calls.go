@@ -985,7 +985,7 @@ func recoverToolCallsByPrefixTrimming(output string) []openAIToolCall {
 	//    Паттерн: `}` followed by `"` followed by `}` — внутри string это лишний brace.
 	//    Ищем `}}"` где первая `}` — лишний brace в string, вторая `}` — закрытие объекта.
 	//    Простой regex: заменяем `}}` на `}` если после `}}` идёт `,` или `}` или `]`.
-	fixed := stripExtraBracesInStringValues(output)
+	fixed := fixTrailingBraceMisorder(output)
 	if fixed != output {
 		if calls := tryParse(fixed); len(calls) > 0 {
 			return calls
@@ -1008,7 +1008,10 @@ func recoverToolCallsByPrefixTrimming(output string) []openAIToolCall {
 	return nil
 }
 
-// stripExtraBracesInStringValues — находит и перемещает/удаляет лишний trailing `}`.
+// fixTrailingBraceMisorder — Round 16 code-review fix (2026-07-30): переименована из
+// misleadingly-named `stripExtraBracesInStringValues`. Оригинальное имя предполагало
+// работу внутри string values, но функция делает ровно одно: переставляет trailing
+// `]}` → `}]` (move `}` before `]`). Никаких "string values" внутри не трогает.
 //
 // Конкретный баг Qwen3-4B-Instruct (2026-07-30, live multi-tool test):
 // Модель ТЕРЯЕТ `}` для закрытия последнего call-объекта и добавляет лишний `}`
@@ -1021,7 +1024,7 @@ func recoverToolCallsByPrefixTrimming(output string) []openAIToolCall {
 //
 // Эвристика: одна точечная вставка в самом конце.
 // (Идемпотентно: повторный прогон не меняет результат.)
-func stripExtraBracesInStringValues(s string) string {
+func fixTrailingBraceMisorder(s string) string {
 	prev := ""
 	for iter := 0; iter < 8 && prev != s; iter++ {
 		prev = s

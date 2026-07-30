@@ -1220,10 +1220,30 @@ func (b *Backend) UnloadModel(name string) error {
 		inst.batchedSchedulerCancel = nil
 	}
 	if inst.batchedScheduler != nil {
-		// Ждём завершения Run() (graceful shutdown). Без timeout
-		// потому что UnloadModel обычно вызывается из HTTP handler
-		// и не блокирует другие операции.
-		<-inst.batchedScheduler.Done()
+		// Round 16 code-review fix (2026-07-30): добавил timeout.
+		// Round 8 BUGFIX: <inst.batchedScheduler.Done() без timeout —
+		// если Run() goroutine зависнет (deadlock, infinite loop, blocked
+		// channel), UnloadModel блокируется НАВСЕГДА → HTTP /api/models/unload
+		// зависает, админ-операции недоступны. DOS-вектор.
+		//
+		// Timeout 10 сек — generous: нормальный shutdown Run() = <1 сек
+		// (один tick). 10 сек = 10x headroom для медленных систем.
+		// После timeout — force-detach (Nil scheduler), C-bridge handle
+		// всё ещё будет FreeModel'ен ниже. Run() goroutine упадёт с nil
+		// pointer dereference или завершится когда C-bridge handle free'н —
+		// в обоих случаях процесс не зависнет.
+		select {
+		case <-inst.batchedScheduler.Done():
+			// Normal shutdown
+		case <-time.After(10 * time.Second):
+			logger.Get().Errorw("UnloadModel: BatchedScheduler.Run() did not return within 10s, force-detaching",
+				"model", name, "active_sessions", inst.batchedScheduler.ActiveSessions())
+			// Record в metrics для postmortem — это указывает на баг
+			// в scheduler (deadlock, infinite loop, или blocked channel).
+			if b.metrics != nil {
+				b.metrics.RecordUnloadTimeout(name, "batched_scheduler_stuck")
+			}
+		}
 		inst.batchedScheduler = nil
 	}
 

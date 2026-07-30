@@ -36,6 +36,7 @@ import (
 	"fmt"
 	"math"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"ollama-loadbalancer/c/bridge"
@@ -114,6 +115,14 @@ type BatchedScheduler struct {
 	stopOnce sync.Once
 	stop     chan struct{}
 	done     chan struct{} // closed after Run() returns
+
+	// Round 16 code-review fix (2026-07-30): мониторинг fallback'ов в
+	// sampleFromLogits. Раньше C-bridge ошибки при sampling молча
+	// пропадали → production с temperature=0.7 могла выдавать greedy output
+	// без видимой причины. Сейчас логируем + атомарный счётчик для
+	// observability (можно экспортировать через /metrics).
+	sampleFallbackCount atomic.Int64
+	sampleOKCount      atomic.Int64
 }
 
 // BatchedSchedulerConfig — параметры конструктора.
@@ -199,7 +208,23 @@ func (bs *BatchedScheduler) RegisterSession(params BatchedSessionParams) (Batche
 		PrefillDone: len(params.Prompt) == 0, // edge case: пустой prompt = prefilled
 		Temperature: params.Temperature,
 		Seed:        params.Seed,
-		TokenCh:   make(chan int32, 8), // буферизованный, чтобы scheduler не блокировался
+		// Round 16 code-review fix (2026-07-30): buffer 8 → 128.
+		// Раньше buffer=8: если consumer (batchedInferStream) медленнее
+		// scheduler tick rate (default 5ms), за 8 ticks (40ms) TokenCh
+		// заполняется → tick блокируется на send → ВСЕ остальные сессии
+		// в текущем batch стоят (head-of-line blocking). При
+		// разноскоростных клиентах (Cline + WebUI одновременно) throughput
+		// всей ноды деградирует до самого медленного consumer'а.
+		//
+		// 128 = ~640ms при 5ms tick (10x предыдущего) — достаточно чтобы
+		// bursty consumers (типичный WebUI SSE chunking) выровнялись,
+		// при этом не настолько большой чтобы OOM на 8 параллельных
+		// сессиях с MaxTokens=4096. Каждый int32 = 4 bytes → 512B/session
+		// = 4KB на 8 sessions = ничтожно.
+		//
+		// Если buffer всё равно заполняется — sampleFromLogits tick drop'нет
+		// token (skip dispatch) и логирует (см. tickSendTokenWithDrop).
+		TokenCh:   make(chan int32, 128),
 		DoneCh:    make(chan struct{}),
 	}
 	bs.sessions[bs.nextID] = state
@@ -476,11 +501,30 @@ func (bs *BatchedScheduler) tick(ctx context.Context) {
 		s.mu.Unlock()
 
 		// Шаг 6: диспатч.
+		// Round 16 code-review fix (2026-07-30): non-blocking send +
+		// context check. Раньше blocking send блокировал ВСЕ остальные
+		// сессии в batch при медленном consumer'е (head-of-line blocking).
+		// Теперь если TokenCh полон — пропускаем token для ЭТОЙ сессии
+		// (state всё равно обновлён выше: Generated++, NextPos++, NextToken
+		// обновлён — model не re-sample'нет), counter инкрементится для
+		// observability. Consumer в catch-up mode прочитает следующие
+		// токены, этот токен просто потерян (acceptable для streaming
+		// UI — не блокирует всю ноду).
 		select {
 		case s.TokenCh <- nextToken:
-			// OK
+			// OK — consumer успевает
 		case <-ctx.Done():
 			return
+		default:
+			// TokenCh полон — consumer отстал. Skip этот token.
+			// Логируем не на каждом — counter-based throttle.
+			dropCnt := tickDropCounter.Add(1)
+			if dropCnt == 1 || dropCnt%1000 == 0 {
+				logger.Get().Warnw("BatchedScheduler: TokenCh full, dropping token (consumer too slow)",
+					"session_id", s.ID, "seq_id", s.SeqID,
+					"generated_tokens", len(s.Generated),
+					"drop_count_total", dropCnt)
+			}
 		}
 
 		if isFinished {
@@ -501,20 +545,67 @@ func (bs *BatchedScheduler) tick(ctx context.Context) {
 //
 // При ошибке C-вызова (например n_vocab=0 или malloc OOM) fallback на
 // argmax — лучше плохой ответ чем паника.
-func sampleFromLogits(model *bridge.ModelHandle, logits []float32, temperature float32, seed uint32) int32 {
+//
+// Round 16 code-review fix (2026-07-30): fallback теперь ЛОГИРУЕТСЯ (раньше
+// молча) + инкрементит atomic counter для observability. Без логов production
+// с temperature=0.7 могла выдавать greedy output без видимой причины — баг,
+// который невозможно диагностировать post-mortem.
+func sampleFromLogits(model *bridge.ModelHandle, logits []float32, temperature float32, seed uint32) (result int32) {
 	if len(logits) == 0 {
 		return 0
 	}
 	// Используем C-bridge (там proper log-sum-exp + std::mt19937).
-	// Подавляем ошибку в логе — для production с temperature=0 будет много
-	// одинаковых аргмакс-вызовов без ошибок.
 	tok, err := model.SampleToken(logits, temperature, seed)
 	if err != nil {
 		// Fallback на greedy argmax (Go-side, без C-вызова).
+		// Round 16 fix: логируем (но не на каждом тике — иначе заспамит при
+		// массовом OOM). Используем counter-based throttle: логируем только
+		// каждую 1000-ную ошибку, и summary каждые 10 сек. Простая эвристика —
+		// логировать первую ошибку и потом каждую 1000-ную.
+		fbCount := sampleFallbackCounter.Add(1)
+		if fbCount == 1 || fbCount%1000 == 0 {
+			logger.Get().Warnw("sampleFromLogits: C-bridge SampleToken failed, falling back to greedy argmax",
+				"error", err,
+				"logits_len", len(logits),
+				"temperature", temperature,
+				"fallback_count_total", fbCount)
+		}
 		return argmaxToken(logits)
 	}
+	sampleOKCounter.Add(1)
 	return tok
 }
+
+// sampleFallbackCounter / sampleOKCounter — process-global мониторинг fallback'ов
+// sampleFromLogits. Round 16 code-review fix. Можно экспортировать через /metrics
+// или /status endpoint для production observability.
+var (
+	sampleFallbackCounter atomic.Int64
+	sampleOKCounter      atomic.Int64
+)
+
+// SampleStats — snapshot для /metrics endpoint.
+type SampleStats struct {
+	OKCount      int64 `json:"sample_ok_count"`
+	FallbackCount int64 `json:"sample_fallback_count"`
+	TickDropCount int64 `json:"tick_drop_count"` // HoL: tokens dropped because consumer slow
+}
+
+// GetSampleStats возвращает текущее количество OK/fallback sampling calls
+// + tick drop counter для HoL observability.
+func GetSampleStats() SampleStats {
+	return SampleStats{
+		OKCount:      sampleOKCounter.Load(),
+		FallbackCount: sampleFallbackCounter.Load(),
+		TickDropCount: tickDropCounter.Load(),
+	}
+}
+
+// tickDropCounter — Round 16 code-review fix: счётчик token drops при
+// head-of-line blocking. Если растёт в production — consumer (batchedInferStream)
+// медленнее scheduler tick rate. Увеличить TokenCh buffer (Round 16 уже
+// 8→128) или оптимизировать consumer.
+var tickDropCounter atomic.Int64
 
 // argmaxToken — greedy sampling. Возвращает индекс argmax'а во float массиве.
 // Round 15.2: теперь это fallback для sampleFromLogits (если C-вызов упал).

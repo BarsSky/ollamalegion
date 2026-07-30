@@ -291,19 +291,17 @@ int bridge_batched_decode(
     }
     InternalModel* im = (InternalModel*)model;
 
-    // Шаг 1: проверяем что у ВСЕХ sequences есть n_tokens==1 (для inference).
-    // Для batched decode (1 token per sequence per step) — caller разбивает
-    // prompt на отдельные chunks вне C-bridge. Если caller хочет decode
-    // сразу N tokens (multi-token per seq) — нужно несколько вызовов.
+    // Шаг 1: validate sequences — n_tokens должен быть >= 0 (n=0 = skip).
+    // Round 15.2 (2026-07-30): раньше требовался n_tokens==1 для single-step
+    // decode. Теперь поддерживаем multi-token (для batched prefill — все
+    // prompt токены за один call). Logits extraction ниже корректно
+    // обрабатывает любой n_tokens: i_batch каждой sequence = sum(prev) + n - 1
+    // (позиция последнего токена = где build_batched_batch ставит logits=1).
     for (int32_t s = 0; s < n_sequences; s++) {
-        if (sequences[s].n_tokens != 1) {
-            // Warning: build_batched_batch всё равно поддерживает multi-token
-            // sequences, но logits extraction рассчитан на 1 token. Можно
-            // расширить позже (нужно знать i_batch каждого logits=1 токена).
-            // Пока — bail out с понятной ошибкой.
+        if (sequences[s].n_tokens < 0) {
             char err_buf[256];
             snprintf(err_buf, sizeof(err_buf),
-                "bridge_batched_decode: sequences[%d].n_tokens=%d (expected 1 for single-step decode)",
+                "bridge_batched_decode: sequences[%d].n_tokens=%d (negative, invalid)",
                 s, sequences[s].n_tokens);
             set_error(err_buf);
             return -2;

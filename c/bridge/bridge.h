@@ -482,15 +482,18 @@ struct llama_batch build_batched_batch(
 );
 
 // bridge_batched_decode — Round 15.1: ОДИН llama_decode call для N sequences.
+// Round 15.2 (2026-07-30): теперь поддерживает multi-token sequences для
+// batched prefill (все prompt токены за один call вместо N).
 //
 // Использует build_batched_batch для сборки llama_batch, затем llama_decode
 // выполняет forward pass на GPU (matmul shared между sequences → real
 // parallel throughput, в отличие от Round 13 где каждый inference сериализуется
 // через inst.mu).
 //
-// После успешного llama_decode, logits для последнего токена каждой sequence
-// копируются в logits_out. Caller (Go BatchedScheduler) делает per-seq sampling
-// используя свой Sampler на своих logits (sampler state — per-session, не общий).
+// После успешного llama_decode, logits для ПОСЛЕДНЕГО токена каждой sequence
+// (тот где build_batched_batch ставит logits=1) копируются в logits_out.
+// Caller (Go BatchedScheduler) делает per-seq sampling используя свой Sampler
+// на своих logits (sampler state — per-session, не общий).
 //
 // Locking: lock-семантика полностью на стороне вызывающего (Go BatchedScheduler
 // держит instance.mu на время вызова — как Round 8 сделал для bridge_infer).
@@ -499,10 +502,13 @@ struct llama_batch build_batched_batch(
 //
 // Параметры:
 //   model          — загруженная модель (ModelHandle из bridge_load_model)
-//   sequences      — массив CBridgeBatchedSeq (не копируется; n_tokens должен
-//                    быть 1 для inference — только ОДИН токен на sequence для
-//                    batched decode; для prompt ingestion вызывающий код
-//                    разбивает prompt на chunks и итерирует)
+//   sequences      — массив CBridgeBatchedSeq (не копируется).
+//                    n_tokens:
+//                      0  — empty sequence, skip (нет logits для неё)
+//                      1  — single-step generation (1 token в batch, logits=1)
+//                      N>1— multi-token prefill (N tokens, последний = logits=1)
+//                    Logits копируются в logits_out[seq_idx * n_vocab : ...] для
+//                    КАЖДОЙ sequence с n_tokens >= 1 (i_batch = sum(prev) + n - 1).
 //   n_sequences    — число sequences (>= 1; 0 — no-op, не вызывайте)
 //   n_vocab        — vocab size (для индексации logits_out)
 //   logits_out     — [OUT] caller-allocated буфер размера n_sequences * n_vocab.
@@ -512,7 +518,7 @@ struct llama_batch build_batched_batch(
 //   0  — успех, logits_out заполнен
 //   -1 — bridge internal error (last_error установлен)
 //   -2 — invalid args (sequences==NULL или n_sequences<=0 или logits_out==NULL
-//        или n_vocab<=0)
+//        или n_vocab<=0 или sequences[i].n_tokens < 0)
 //
 // Сложность: O(n_sequences * n_vocab) на копирование logits — это доминирующий
 // overhead относительно одного llama_decode call. Для n_vocab=150K и 4 sequences

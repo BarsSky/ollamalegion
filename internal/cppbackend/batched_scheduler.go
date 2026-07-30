@@ -298,17 +298,19 @@ func (bs *BatchedScheduler) markAllSessionsFinished(err error) {
 
 // tick — один цикл batched inference.
 //
-// Phase 1: PREFILL (Round 15.1 fix).
-//   Каждая session на каждом tick ингестит ОДИН prompt токен (NextPos).
-//   Так пока PrefillDone=false — generation НЕ происходит, только KV-fill.
-//   Это критично: без prefill модель видит только NextToken=prompt[0] и
-//   генерирует бессмыслицу (e.g. "What is 2+2?" → "Okay, the user
-//   asked..." вместо "4").
+// Phase 1: PREFILL (Round 15.2 — multi-token).
+//   Каждая session ингестит ВСЕ оставшиеся prompt токены за ОДИН call
+//   (через bridge_batched_decode с n_tokens>1). Round 15.1 делал
+//   1 токен за call — медленно (80 calls для 4 sessions × 20 prompt tokens).
+//   Round 15.2: 4 calls для тех же 4 sessions (по 1 call на session).
+//   Logits копируются для ПОСЛЕДНЕГО токена каждой sequence —
+//   используем их для первого sampled token (это эффективнее чем
+//   отдельный generation tick с prompt[last]).
 //
-// Phase 2: GENERATION (один раз за tick).
+// Phase 2: GENERATION.
 //   Когда PrefillDone=true — каждая session предоставляет NextToken
-//   (последний сгенерированный) для BatchedDecode. После decode делаем
-//   greedy argmax и диспатчим в TokenCh.
+//   (последний сгенерированный) для BatchedDecode (1 token за call).
+//   После decode делаем greedy argmax и диспатчим в TokenCh.
 func (bs *BatchedScheduler) tick(ctx context.Context) {
 	// Шаг 1: собираем active sessions.
 	bs.mu.Lock()
@@ -327,47 +329,51 @@ func (bs *BatchedScheduler) tick(ctx context.Context) {
 	}
 
 	// Шаг 2: готовим BatchedSequence для каждой session.
-	// В PREFILL phase — NextToken = prompt[NextPos] (для ингеста в KV-cache).
-	// В GENERATION phase — NextToken = последний сгенерированный токен
-	// (s.NextToken, обновлён в предыдущем tick).
-	// В обоих случаях передаём ОДИН токен за раз.
+	// В PREFILL phase — отправляем ВСЕ оставшиеся prompt токены за раз
+	// (multi-token sequence, n_tokens может быть 1..len(prompt)).
+	// В GENERATION phase — отправляем ОДИН NextToken за раз.
 	sequences := make([]bridge.BatchedSequence, 0, len(active))
+	// activeByIdx — маппинг sequences index → session. Нужен в шаге 4
+	// для правильного обновления state (sessions которые finished в
+	// шаге 1 уже отфильтрованы).
 	for _, s := range active {
 		s.mu.Lock()
-		var tokenToDecode int32
 		if !s.PrefillDone {
-			// Prefill: ингестим prompt[NextPos]. StartPos = NextPos.
+			// Prefill: отправляем prompt[NextPos:]. StartPos = NextPos.
+			// n_tokens = len(prompt) - NextPos (оставшиеся токены).
 			if int(s.NextPos) < len(s.Prompt) {
-				tokenToDecode = s.Prompt[s.NextPos]
+				tokensToIngest := s.Prompt[s.NextPos:]
+				sequences = append(sequences, bridge.BatchedSequence{
+					Tokens:   tokensToIngest, // borrow — НЕ копируется
+					SeqID:    s.SeqID,
+					StartPos: s.NextPos,
+				})
 			} else {
-				// Defensive: если NextPos вышел за пределы prompt — finish.
-				s.Finished = true
-				s.Err = errors.New("prefill NextPos out of bounds")
-				close(s.DoneCh)
+				// Defensive: NextPos уже == len(prompt) — отметить PrefillDone.
+				// Не должно происходить, но на всякий случай.
+				s.PrefillDone = true
+				s.NextToken = s.Prompt[len(s.Prompt)-1]
 				s.mu.Unlock()
 				continue
 			}
 		} else {
-			// Generation: NextToken = последний сгенерированный (или prompt[last] при первом gen tick).
-			tokenToDecode = s.NextToken
+			// Generation: 1 token (s.NextToken = последний сгенерированный).
+			sequences = append(sequences, bridge.BatchedSequence{
+				Tokens:   []int32{s.NextToken}, // borrow — НЕ копируется
+				SeqID:    s.SeqID,
+				StartPos: s.NextPos,
+			})
 		}
-		sequences = append(sequences, bridge.BatchedSequence{
-			Tokens:   []int32{tokenToDecode}, // borrow — НЕ копируется
-			SeqID:    s.SeqID,
-			StartPos: s.NextPos,
-		})
 		s.mu.Unlock()
 	}
 
 	if len(sequences) == 0 {
-		return // все sessions finished во время prefill phase
+		return // все sessions finished (defensive path)
 	}
 
 	// Шаг 3: ОДИН llama_decode для всех sequences.
 	// Round 8 BUGFIX: llama.cpp context is not thread-safe. Держим
-	// modelLock (modelInstance.mu) на время BatchedDecode. В batched path
-	// только Run goroutine обращается к handle, но external lock остаётся
-	// для safety (если кто-то добавит direct inst.handle.Infer()).
+	// modelLock (modelInstance.mu) на время BatchedDecode.
 	if bs.modelLock != nil {
 		bs.modelLock.Lock()
 	}
@@ -377,18 +383,16 @@ func (bs *BatchedScheduler) tick(ctx context.Context) {
 	}
 	if err != nil {
 		logger.Get().Errorw("BatchedScheduler: BatchedDecode failed", "error", err)
-		// Распространяем ошибку на все sessions.
 		bs.markAllSessionsFinished(fmt.Errorf("batched decode failed: %w", err))
 		return
 	}
 
 	// Шаг 4: per-session update + dispatch.
-	// PREFILL phase: advance NextPos, mark PrefillDone когда весь prompt ингестнут.
-	//   НЕ sample (на prefill последний токен НЕ имеет logits=1 если мы хотим
-	//   убрать sample, но build_batched_batch ВСЕГДА ставит logits=1 на
-	//   последнем токене каждой sequence — так что logits приходят, но мы
-	//   их игнорируем в prefill).
-	// GENERATION phase: greedy argmax + dispatch to TokenCh.
+	// PREFILL phase: используем logits[session_idx] для первого sampled
+	//   token (это logits последнего prompt токена — корректно!), set
+	//   NextToken = sampled, NextPos = len(prompt), PrefillDone=true.
+	//   Dispatch в TokenCh (это первый ответ клиенту).
+	// GENERATION phase: greedy argmax + dispatch (как раньше).
 	for i, s := range active {
 		s.mu.Lock()
 		if s.Finished {
@@ -397,17 +401,37 @@ func (bs *BatchedScheduler) tick(ctx context.Context) {
 		}
 
 		if !s.PrefillDone {
-			// PREFILL: advance NextPos, не sample, не dispatch.
-			s.NextPos++
-			if int(s.NextPos) >= len(s.Prompt) {
-				// Весь prompt ингестнут. Следующий tick — GENERATION phase.
-				s.PrefillDone = true
-				// NextToken = последний prompt токен — его logits уже посчитаны
-				// в предыдущем batched_decode вызове, так что generation
-				// tick сразу даст next sampled token.
-				s.NextToken = s.Prompt[len(s.Prompt)-1]
+			// PREFILL (Round 15.2): use logits from last prompt token to sample
+			// first generated token. Это экономит 1 generation tick vs
+			// Round 15.1 (где первый token был NextToken=prompt[last] без sample).
+			firstToken := argmaxToken(logits[i])
+
+			// State transitions: prompt ingested, generation phase begins.
+			s.PrefillDone = true
+			s.NextPos = int32(len(s.Prompt)) // all prompt ingested
+			s.NextToken = firstToken
+			s.Generated = append(s.Generated, firstToken)
+			isFinished := isEOGToken(firstToken) || len(s.Generated) >= s.MaxTokens
+			if isFinished {
+				s.Finished = true
 			}
 			s.mu.Unlock()
+
+			// Dispatch first generated token (или close если finished).
+			if isFinished {
+				close(s.TokenCh)
+				close(s.DoneCh)
+				logger.Get().Infow("BatchedScheduler: session finished (during prefill→gen transition)",
+					"id", s.ID, "seq_id", s.SeqID, "first_token", firstToken,
+					"eog", isEOGToken(firstToken), "max_reached", len(s.Generated) >= s.MaxTokens)
+			} else {
+				select {
+				case s.TokenCh <- firstToken:
+					// OK
+				case <-ctx.Done():
+					return
+				}
+			}
 			continue
 		}
 

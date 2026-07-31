@@ -798,8 +798,13 @@ func writeOpenAIChatStream(w http.ResponseWriter, r *http.Request, modelName, pr
 	// Стоимость: O(N²) на 1024 chars max = ~1M ops worst case — приемлемо.
 	rsAutoDetectActive := !rsIsReasoning // false если уже reasoning
 	rsAutoDetectChecked := false
-	const autoDetectThreshold = 1024 // max chars для проверки на `<think>`
-	const thinkStartTag = "<think>"
+	const autoDetectThreshold = 1024 // max chars для проверки на reasoning-теги
+	// Round 17.1 (2026-07-31): check ВСЕ supported tag-pairs, не только <think>.
+	// Live test: qwen3-instruct при soft prompt "use <think> tags" выдаёт
+	// `<reasoning>...</reasoning>`. Без multi-tag check L3 бы его пропустил.
+	// Используем len(smallestTag) как стартовое окно для первого символа —
+	// см. detectFirstReasoningTagOpen.
+	thinkStartTags := []string{"<think>", "<thinking>", "<reasoning>", "<analysis>"}
 
 	keepaliveWG.Add(1)
 	go func() {
@@ -874,25 +879,35 @@ func writeOpenAIChatStream(w http.ResponseWriter, r *http.Request, modelName, pr
 		// === Round 17 Layer 3 + Round 17.1 fix: LAZY AUTO-DETECT ===
 		// Если rsIsReasoning=false (модель не в whitelist + пользователь не задал
 		// load-with-params enableReasoning=true) — всё равно прогоняем токен
-		// через парсер и смотрим ВЕСЬ outputBuf на `<think>`. Как только видим —
+		// через парсер и смотрим ВЕСЬ outputBuf на reasoning-теги. Как только видим —
 		// auto-включаем routing:
 		//   1) rsIsReasoning = true → split'им и шлём как reasoning для ЭТОГО стрима
 		//   2) backend.AutoEnableReasoning(modelName) → ВСЕ будущие запросы тоже
 		//      будут split'ить (persist через inst.reasoningEnabled)
 		// 3) логируем warning с подсказкой как превентивно задать флаг
 		//
-		// Round 17.1 fix: threshold увеличен 64→1024 + проверяем ВЕСЬ outputBuf
-		// (не только префикс). Старая версия сдавалась слишком рано, если модель
-		// с длинным preamble ("Here's my thinking process..." + 200+ chars до
-		// `<think>`) — `<think>` приходил ПОСЛЕ первых 64 chars, L3 уже сдался,
-		// routing не включался, reasoning шёл в content.
+		// Round 17.1 fix: threshold увеличен 64→1024 + проверяем ВСЕ tag-пары
+		// (не только `<think>`, но и `<reasoning>`, `<thinking>`, `<analysis>`).
+		// qwen3-instruct при soft prompt "use <think> tags" выдаёт
+		// `<reasoning>...</reasoning>` — это detected теперь.
 		//
 		// Стоимость: O(N²) max на autoDetectThreshold=1024 chars = ~1M ops worst
 		// case. Для типичных 200-500 token streams — десятки тысяч ops, < 1ms.
 		if rsAutoDetectActive && !rsAutoDetectChecked && len(token) > 0 {
 			fullOutput := outputBuf.String()
-			if strings.Contains(fullOutput, thinkStartTag) {
-				// AUTO-DETECT FIRED! Модель явно эмитит reasoning с `<think>` тегами.
+			// Ищем первый matching tag (любой из thinkStartTags).
+			detectedTag := ""
+			detectedPos := -1
+			for _, tag := range thinkStartTags {
+				if i := strings.Index(fullOutput, tag); i >= 0 {
+					if detectedPos < 0 || i < detectedPos {
+						detectedTag = tag
+						detectedPos = i
+					}
+				}
+			}
+			if detectedTag != "" {
+				// AUTO-DETECT FIRED! Модель эмитит reasoning с этим тегом.
 				rsAutoDetectChecked = true
 				rsIsReasoning = true
 				rsAutoDetectActive = false
@@ -904,15 +919,15 @@ func writeOpenAIChatStream(w http.ResponseWriter, r *http.Request, modelName, pr
 					"handler", "writeOpenAIChatStream",
 					"model", modelName,
 					"output_len", len(fullOutput),
-					"think_position", strings.Index(fullOutput, thinkStartTag),
-					"hint", "model emits <think> but is not in reasoning whitelist; "+
+					"detected_tag", detectedTag,
+					"tag_position", detectedPos,
+					"hint", "model emits reasoning tag but is not in reasoning whitelist; "+
 						"auto-enabled routing. To pre-set, use load-with-params "+
 						"enableReasoning=true or set CPPWORKER_REASONING_ARCHS env var.")
 			} else if len(fullOutput) > autoDetectThreshold {
-				// OutputBuf длиннее threshold, `<think>` не нашли — сдаёмся.
-				// Модель точно не использует `<think>` теги в этом выводе.
+				// OutputBuf длиннее threshold, ни один tag не нашли — сдаёмся.
 				rsAutoDetectChecked = true
-				logger.Get().Debugw("reasoning auto-detect gave up (no <think> in first N chars)",
+				logger.Get().Debugw("reasoning auto-detect gave up (no reasoning tag in first N chars)",
 					"handler", "writeOpenAIChatStream",
 					"model", modelName,
 					"checked_chars", autoDetectThreshold)
@@ -1342,12 +1357,12 @@ func writeOpenAICompletionStream(w http.ResponseWriter, r *http.Request, modelNa
 	rcParser := NewReasoningStreamState()
 	rcIsReasoning := IsReasoningEnabledForRequest(modelName)
 	// Round 17 Layer 3 + Round 17.1 fix: lazy auto-detect.
-	// Round 17.1 fix: threshold увеличен 64→1024 + проверяем ВЕСЬ outputBuf.
-	// См. writeOpenAIChatStream — та же логика, та же причина.
+	// Round 17.1 fix: threshold увеличен 64→1024 + проверяем ВСЕ tag-пары.
+	// См. writeOpenAIChatStream — та же логика.
 	rcAutoDetectActive := !rcIsReasoning
 	rcAutoDetectChecked := false
 	const rcAutoDetectThreshold = 1024
-	const rcThinkStartTag = "<think>"
+	rcThinkStartTags := []string{"<think>", "<thinking>", "<reasoning>", "<analysis>"}
 
 	// writeCompletionChunk — низкоуровневый helper, эмитит ОДИН SSE чанк с указанным
 	// полями (text + опционально reasoning_content). Возвращает false при обрыве.
@@ -1389,7 +1404,17 @@ func writeOpenAICompletionStream(w http.ResponseWriter, r *http.Request, modelNa
 		// (аналогично writeOpenAIChatStream — см. подробный комментарий там)
 		if rcAutoDetectActive && !rcAutoDetectChecked && len(token) > 0 {
 			fullOutput := outputBuf.String()
-			if strings.Contains(fullOutput, rcThinkStartTag) {
+			detectedTag := ""
+			detectedPos := -1
+			for _, tag := range rcThinkStartTags {
+				if i := strings.Index(fullOutput, tag); i >= 0 {
+					if detectedPos < 0 || i < detectedPos {
+						detectedTag = tag
+						detectedPos = i
+					}
+				}
+			}
+			if detectedTag != "" {
 				rcAutoDetectChecked = true
 				rcIsReasoning = true
 				rcAutoDetectActive = false
@@ -1400,12 +1425,13 @@ func writeOpenAICompletionStream(w http.ResponseWriter, r *http.Request, modelNa
 					"handler", "writeOpenAICompletionStream",
 					"model", modelName,
 					"output_len", len(fullOutput),
-					"think_position", strings.Index(fullOutput, rcThinkStartTag),
+					"detected_tag", detectedTag,
+					"tag_position", detectedPos,
 					"hint", "auto-enabled routing. To pre-set, use load-with-params "+
 						"enableReasoning=true or set CPPWORKER_REASONING_ARCHS env var.")
 			} else if len(fullOutput) > rcAutoDetectThreshold {
 				rcAutoDetectChecked = true
-				logger.Get().Debugw("reasoning auto-detect gave up (no <think> in first N chars)",
+				logger.Get().Debugw("reasoning auto-detect gave up (no reasoning tag in first N chars)",
 					"handler", "writeOpenAICompletionStream",
 					"model", modelName,
 					"checked_chars", rcAutoDetectThreshold)

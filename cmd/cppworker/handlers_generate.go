@@ -94,16 +94,17 @@ func normalizeGenerateRequest(req *generateRequest) {
 	// использовать /api/chat вместо /api/generate.
 	//
 	// Round 17.1 fix (2026-07-31): добавлена инструкция "Wrap your reasoning
-	// in <think>...</think> tags". Без этого модели без нативного thinking
+	// in <reasoning>...</reasoning> tags". Без этого модели без нативного thinking
 	// эмитят reasoning как обычный текст — парсер не split'ит. С тегами
 	// парсер SplitReasoningContent корректно разделяет reasoning vs content.
+	// См. handlers_chat.go:injectThinkingInstruction — подробное обоснование.
 	if currentConfig != nil && currentConfig.EnableReasoning && !req.Raw {
 		const thinkingInstruction = "Before answering, use detailed step-by-step thinking. " +
 			"Reason about the problem carefully, consider different angles, " +
 			"show your work, then provide a clear final answer. " +
 			"Structure your response: first explain your reasoning, then give the answer. " +
-			"IMPORTANT: Wrap your step-by-step reasoning inside <think>...</think> tags. " +
-			"Your final answer (the user-facing response) should be OUTSIDE the </think> tag."
+			"IMPORTANT: Wrap your step-by-step reasoning inside <reasoning>...</reasoning> tags. " +
+			"Your final answer (the user-facing response) should be OUTSIDE the </reasoning> tag."
 		req.Prompt = thinkingInstruction + "\n\n" + req.Prompt
 	}
 

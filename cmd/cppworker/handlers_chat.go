@@ -314,22 +314,26 @@ func buildChatPrompt(msgs []chatMessage, modelName string) (string, error) {
 // только instruction. Если есть — instruction + "\n\n" + original.
 //
 // Round 17.1 fix (2026-07-31): добавлена инструкция "Wrap your reasoning
-// in <think>...</think> tags". Без этого модели без нативного thinking
+// in `<reasoning>...</reasoning>` tags". Без этого модели без нативного thinking
 // (qwen3-instruct, gemma-4-it, custom fine-tunes типа
 // Qwen3.6-35B-A3B-Uncensored-HauhauCS-Aggressive) эмитят reasoning
-// КАК ОБЫЧНЫЙ ТЕКСТ — парсер SplitReasoningContent ищет `<think>` теги,
-// не находит, кладёт reasoning в `content` вместо `reasoning_content`.
+// КАК ОБЫЧНЫЙ ТЕКСТ — парсер SplitReasoningContent не находит теги,
+// кладёт reasoning в `content` вместо `reasoning_content`.
 // OpenWebUI показывает reasoning как ответ — выглядит как "неполный ответ".
 //
-// С инструкцией "use <think> tags" модель ВЫНУЖДЕНА эмитить `<think>` блок,
-// парсер split'ит корректно, OpenWebUI показывает reasoning в своём UI.
+// Round 17.1 update: live test показал, что qwen3-instruct при prompt "use
+// `<think>` tags" реально использует `<reasoning>...</reasoning>` (свой
+// convention). Поэтому:
+//   - Soft prompt просит `<reasoning>` напрямую (более широкая совместимость)
+//   - Parser (cmd/cppworker/reasoning_content.go) поддерживает ОБА варианта
+//     (плюс `<thinking>`, `<analysis>`) для других custom fine-tunes
 func injectThinkingInstruction(system string) string {
 	const thinkingInstruction = "Before answering, use detailed step-by-step thinking. " +
 		"Reason about the problem carefully, consider different angles, " +
 		"show your work, then provide a clear final answer. " +
 		"Structure your response: first explain your reasoning, then give the answer. " +
-		"IMPORTANT: Wrap your step-by-step reasoning inside <think>...</think> tags. " +
-		"Your final answer (the user-facing response) should be OUTSIDE the </think> tag."
+		"IMPORTANT: Wrap your step-by-step reasoning inside <reasoning>...</reasoning> tags. " +
+		"Your final answer (the user-facing response) should be OUTSIDE the </reasoning> tag."
 	if system == "" {
 		return thinkingInstruction
 	}
@@ -342,14 +346,14 @@ func injectThinkingInstruction(system string) string {
 // system промпт собирается руками, а не через chat template.
 //
 // Round 17.1 fix (2026-07-31): добавлена инструкция "Wrap your reasoning
-// in <think>...</think> tags" (см. injectThinkingInstruction).
+// in `<reasoning>...</reasoning>` tags" (см. injectThinkingInstruction).
 func injectThinkingIntoMessages(msgs []chatMessage) []chatMessage {
 	thinking := "Before answering, use detailed step-by-step thinking. " +
 		"Reason about the problem carefully, consider different angles, " +
 		"show your work, then provide a clear final answer. " +
 		"Structure your response: first explain your reasoning, then give the answer. " +
-		"IMPORTANT: Wrap your step-by-step reasoning inside <think>...</think> tags. " +
-		"Your final answer (the user-facing response) should be OUTSIDE the </think> tag."
+		"IMPORTANT: Wrap your step-by-step reasoning inside <reasoning>...</reasoning> tags. " +
+		"Your final answer (the user-facing response) should be OUTSIDE the </reasoning> tag."
 
 	// Ищем существующий system message
 	for i, m := range msgs {

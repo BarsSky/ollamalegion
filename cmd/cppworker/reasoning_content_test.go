@@ -76,6 +76,64 @@ func TestSplitReasoningContent_AlternativeTag(t *testing.T) {
 	}
 }
 
+// Round 17.1 (2026-07-31): парсер теперь поддерживает несколько tag-пар.
+// qwen3-instruct при soft prompt реально использует <reasoning> вместо <think>.
+// Этот тест документирует поведение.
+func TestSplitReasoningContent_ReasoningTag(t *testing.T) {
+	cases := []struct {
+		name        string
+		input       string
+		wantReason  string
+		wantContent string
+		wantHas     bool
+	}{
+		{
+			name:        "reasoning tag basic",
+			input:       "before<reasoning>my thoughts</reasoning>after",
+			wantReason:  "my thoughts",
+			wantContent: "beforeafter",
+			wantHas:     true,
+		},
+		{
+			name:        "analysis tag (o1-style)",
+			input:       "<analysis>step by step</analysis>final",
+			wantReason:  "step by step",
+			wantContent: "final",
+			wantHas:     true,
+		},
+		{
+			name:        "mixed think+reasoning",
+			input:       "<think>r1</think>c1<reasoning>r2</reasoning>c2",
+			wantReason:  "r1r2",
+			wantContent: "c1c2",
+			wantHas:     true,
+		},
+		{
+			name:        "realistic qwen3-instruct output",
+			input:       "<reasoning>\nTo compute 17 × 23, break down 23 into 20 + 3.\n17 × 20 = 340\n17 × 3 = 51\n340 + 51 = 391\n</reasoning>\n\nFinal answer: 391",
+			wantReason:  "\nTo compute 17 × 23, break down 23 into 20 + 3.\n17 × 20 = 340\n17 × 3 = 51\n340 + 51 = 391\n",
+			wantContent: "\n\nFinal answer: 391", // два \n: первый после </reasoning>, второй в тексте
+			wantHas:     true,
+		},
+		{
+			name:        "unclosed reasoning (best-effort)",
+			input:       "text<reasoning>still reasoning",
+			wantReason:  "still reasoning",
+			wantContent: "text",
+			wantHas:     true,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			r, c, has := SplitReasoningContent(tc.input)
+			if r != tc.wantReason || c != tc.wantContent || has != tc.wantHas {
+				t.Errorf("got (%q, %q, %v), want (%q, %q, %v)",
+					r, c, has, tc.wantReason, tc.wantContent, tc.wantHas)
+			}
+		})
+	}
+}
+
 func TestSplitReasoningContent_OnlyThinkNoBody(t *testing.T) {
 	in := "<think>only thoughts</think>"
 	r, c, has := SplitReasoningContent(in)

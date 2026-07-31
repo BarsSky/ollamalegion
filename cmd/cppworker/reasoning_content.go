@@ -169,60 +169,104 @@ func IsReasoningEnabledForRequest(modelName string) bool {
 // Разбор think-блоков
 // ============================================================
 
-// Тег начала/конца think-блока. Qwen, DeepSeek-R1, Kimi-K2, gemma-4-thinking,
-// Seed-OSS и др. используют `<think>`/`</think>`. Некоторые экспериментальные
-// модели (gemma-4-it) могут использовать `<thinking>`/`</thinking>`. Поддерживаем оба.
+// Round 17.1 (2026-07-31): расширил набор поддерживаемых tag-пар reasoning-блоков.
+// Live test показал: qwen3-instruct при soft prompt "use <think> tags" реально
+// использует `<reasoning>...</reasoning>` (НЕ `<think>`!). Это собственный
+// convention модели, не поддаётся override через soft prompt. Решение —
+// поддержать ВСЕ популярные варианты в парсере, чтобы любая модель
+// (native thinking + custom fine-tunes) работала out-of-the-box.
+//
+// Список пар:
+//   - <think>...</think>  — Qwen3-thinking, DeepSeek-R1, Kimi-K2, Seed-OSS (default)
+//   - <thinking>...</thinking> — gemma-4-it, некоторые экспериментальные
+//   - <reasoning>...</reasoning> — qwen3-instruct (при soft prompt "use tags")
+//   - <analysis>...</analysis> — некоторые o1-style модели
+//
+// Каждая пара симметрична — открывающий тег имеет соответствующий закрывающий.
+var thinkTagPairs = []struct {
+	open  string
+	close string
+}{
+	{"<think>", "</think>"},
+	{"<thinking>", "</thinking>"},
+	{"<reasoning>", "</reasoning>"},
+	{"<analysis>", "</analysis>"},
+}
+
+// thinkStart/thinkEnd — backward-compat aliases (используются в тестах и ниже).
+// ВСЕ новые callers должны использовать thinkTagPairs.
 const (
 	thinkStart  = "<think>"
 	thinkEnd    = "</think>"
-	thinkStart2 = "<thinking>"  // альтернативный
-	thinkEnd2   = "</thinking>" // альтернативный
+	thinkStart2 = "<thinking>"
+	thinkEnd2   = "</thinking>"
 )
 
 // openThinkTag ищет ближайший открывающий тег в позиции ≥ from.
-// Возвращает (startPos, endPos, isThinking) — startPos это индекс символа '<',
-// endPos — индекс после '>'. isThinking = true для `<thinking>`, false для `<think>`.
-func openThinkTag(s string, from int) (int, int, bool) {
+// Возвращает (startPos, endPos, kindIdx) — startPos это индекс символа '<',
+// endPos — индекс после '>'. kindIdx — индекс в thinkTagPairs, -1 если не найдено.
+//
+// Round 17.1: ищем ВСЕ пары, не только первые две.
+func openThinkTag(s string, from int) (int, int, int) {
 	if from < 0 {
 		from = 0
 	}
-	idx1 := strings.Index(s[from:], thinkStart)
-	idx2 := strings.Index(s[from:], thinkStart2)
-	switch {
-	case idx1 < 0 && idx2 < 0:
-		return -1, -1, false
-	case idx1 < 0:
-		return from + idx2, from + idx2 + len(thinkStart2), true
-	case idx2 < 0:
-		return from + idx1, from + idx1 + len(thinkStart), false
-	case idx1 < idx2:
-		return from + idx1, from + idx1 + len(thinkStart), false
-	default:
-		return from + idx2, from + idx2 + len(thinkStart2), true
+	bestPos := -1
+	bestKind := -1
+	for i, pair := range thinkTagPairs {
+		idx := strings.Index(s[from:], pair.open)
+		if idx < 0 {
+			continue
+		}
+		absPos := from + idx
+		if bestPos < 0 || absPos < bestPos {
+			bestPos = absPos
+			bestKind = i
+		}
 	}
+	if bestPos < 0 {
+		return -1, -1, -1
+	}
+	return bestPos, bestPos + len(thinkTagPairs[bestKind].open), bestKind
 }
 
-// closeThinkTag ищет соответствующий закрывающий тег в позиции ≥ from.
-// Альтернативный тег `</thinking>` может закрывать только блок `<thinking>`,
-// основной `</think>` — только блок `<think>` (но на практике gemma-4
-// использует один из них консистентно).
-func closeThinkTag(s string, from int, isThinking bool) int {
-	if isThinking {
-		if i := strings.Index(s[from:], thinkEnd2); i >= 0 {
-			return from + i + len(thinkEnd2)
-		}
-		if i := strings.Index(s[from:], thinkEnd); i >= 0 {
-			return from + i + len(thinkEnd)
-		}
+// closeThinkTag ищет соответствующий закрывающий тег в позиции ≥ from
+// для пары, найденной openThinkTag (kindIdx).
+//
+// Round 17.1: принимает kindIdx, ищет соответствующий close из thinkTagPairs.
+func closeThinkTag(s string, from int, kindIdx int) int {
+	if kindIdx < 0 || kindIdx >= len(thinkTagPairs) {
 		return -1
 	}
-	if i := strings.Index(s[from:], thinkEnd); i >= 0 {
-		return from + i + len(thinkEnd)
+	// Ищем соответствующий close tag (тот же kind).
+	pair := thinkTagPairs[kindIdx]
+	if i := strings.Index(s[from:], pair.close); i >= 0 {
+		return from + i + len(pair.close)
 	}
-	if i := strings.Index(s[from:], thinkEnd2); i >= 0 {
-		return from + i + len(thinkEnd2)
+	// Fallback: для обратной совместимости — может закрываться тегом из другой пары
+	// (например, кто-то открыл <think> а закрыл </thinking>). На практике не встречается,
+	// но добавляем fallback чтобы не терять данные.
+	for _, alt := range thinkTagPairs {
+		if alt.close == pair.close {
+			continue
+		}
+		if i := strings.Index(s[from:], alt.close); i >= 0 {
+			return from + i + len(alt.close)
+		}
 	}
 	return -1
+}
+
+// backward-compat wrapper для кода, использующего bool isThinking.
+// kindIdx == 0 (<think>) → isThinking=false
+// kindIdx == 1 (<thinking>) → isThinking=true
+// остальные → деградируют на старую логику.
+func openThinkTagLegacy(s string, from int) (int, int, bool) {
+	pos, end, kind := openThinkTag(s, from)
+	if pos < 0 {
+		return -1, -1, false
+	}
+	return pos, end, kind == 1
 }
 
 // SplitReasoningContent разделяет строку на (reasoning, content) по think-блокам.
@@ -255,15 +299,15 @@ func SplitReasoningContent(s string) (reasoning, content string, hasReasoning bo
 	pos := 0
 	foundAny := false
 	for pos < len(s) {
-		tagStart, tagEnd, isThinking := openThinkTag(s, pos)
+		tagStart, tagEnd, kindIdx := openThinkTag(s, pos)
 		if tagStart < 0 {
 			sbContent.WriteString(s[pos:])
 			break
 		}
 		// Текст до открывающего тега → content.
 		sbContent.WriteString(s[pos:tagStart])
-		// Ищем закрывающий тег после tagEnd.
-		closePos := closeThinkTag(s, tagEnd, isThinking)
+		// Ищем закрывающий тег после tagEnd (используем тот же kindIdx).
+		closePos := closeThinkTag(s, tagEnd, kindIdx)
 		if closePos < 0 {
 			// Незакрытый блок: только тело (от tagEnd до конца) → reasoning.
 			// Сам `<think>` в reasoning не включаем (это технический маркер).
@@ -271,12 +315,10 @@ func SplitReasoningContent(s string) (reasoning, content string, hasReasoning bo
 			foundAny = true
 			break
 		}
-		tagLen := len(thinkEnd)
-		if isThinking {
-			tagLen = len(thinkEnd2)
-		}
+		// Длина close-тега для расчёта bodyEnd.
+		closeTagLen := len(thinkTagPairs[kindIdx].close)
 		bodyStart := tagEnd
-		bodyEnd := closePos - tagLen
+		bodyEnd := closePos - closeTagLen
 		sbReasoning.WriteString(s[bodyStart:bodyEnd])
 		foundAny = true
 		pos = closePos

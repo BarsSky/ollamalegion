@@ -49,13 +49,15 @@ import (
 //   - Имя модели содержит "moe" / "A3B" (Qwen3-MoE) — has thinking mode enabled.
 //   - Имя модели содержит явный маркер "-thinking" или ":thinking".
 //   - Установить env CPPWORKER_REASONING_ARCHS=qwen3 для force-enable.
+//
+// Round 17 (2026-07-31): добавлены суффикс-маркеры (с дефисом/двоеточием/точкой
+// ПЕРЕД) — "-thinking", "-reasoning", "-r1", ":thinking" и т.п. Это безопасные
+// паттерны (word boundary через separator) и НЕ дают false-positive для
+// "anything", "everything", "gemma-4-it" (matches "gemma-4" prefix).
 var ReasoningArchPrefixes = []string{
+	// === Specific reasoning architectures (qwen3.5+, deepseek-r1, kimi-k2, etc.) ===
 	"qwen3.5", "qwen3.6", "qwen3.5moe", "qwen35moe", "qwen35",
 	"qwen3moe", "qwen3-thinking", "qwen3_thinking",
-	// "-thinking" с ведущим дефисом — глобальный маркер любой thinking-варианта
-	// модели (qwen3-32b-thinking, kimi-k2-thinking, и т.д.). Голое "thinking"
-	// не используем, чтобы не ловить случайные совпадения вроде "anything".
-	"-thinking", ":thinking",
 	"deepseek-r1", "deepseek_r1", "deepseekr1",
 	"kimi-k2", "kimi_k2", "kimik2",
 	"gemma4", "gemma-4",
@@ -63,6 +65,15 @@ var ReasoningArchPrefixes = []string{
 	"apriel",
 	"smallthinker",
 	"step3.5", "step-3.5",
+	// === Round 17 (2026-07-31): SAFER suffix-based patterns ===
+	// Анкоры через separator (- : . _ /) — не дают false-positive.
+	// "qwen3-32b-thinking" matches "-thinking" → reasoning ✓
+	// "llama-3.1-8b" НЕ matches anything → no reasoning ✓
+	// "my-thinking-model" matches "-thinking" → reasoning ✓
+	"-thinking", ":thinking", "_thinking", "/thinking", ".thinking",
+	"-reasoning", ":reasoning",
+	"-r1", "_r1", // DeepSeek-R1 distill, Qwen-R1
+	"-instruct-r1",
 }
 
 // reasoningArchsEnvOnce — потокобезопасная инициализация списка архитектур
@@ -113,6 +124,43 @@ func IsReasoningModel(modelName string) bool {
 		if strings.Contains(lower, strings.ToLower(p)) {
 			return true
 		}
+	}
+	return false
+}
+
+// IsReasoningEnabledForRequest — Round 17 (2026-07-31) — фикс bug
+// plans/bug-2026-07-31-reasoning-not-routed.md.
+//
+// Source of truth для "эта модель в текущем запросе эмитит reasoning → split'ить".
+// Проверяет ОБА источника:
+//   1. IsReasoningModel(name) — hardcoded whitelist префиксов (legacy).
+//   2. per-model EnableReasoning, resolved в modelInstance.reasoningEnabled
+//      при LoadModel (см. internal/cppbackend/backend.go:LoadModelWithOpts).
+//
+// Используется парсерами во всех 4 точках:
+//   - handleV1ChatCompletions (non-stream)
+//   - writeOpenAIChatStream (stream)
+//   - handleV1Completions (non-stream legacy)
+//   - writeOpenAICompletionStream (stream legacy)
+//
+// Раньше: IsReasoningModel(name) — qwen3-instruct (нет в whitelist) с
+// включённым SOFT prompt reasoning → parser не split'ил → OpenWebUI не
+// видел reasoning_content. Теперь: также проверяется inst.reasoningEnabled.
+//
+// Nil-safe: backend может быть nil в тестах (или при ранней инициализации).
+// В этом случае fallback на whitelist (IsReasoningModel) — graceful degradation.
+func IsReasoningEnabledForRequest(modelName string) bool {
+	if IsReasoningModel(modelName) {
+		return true
+	}
+	// Fallback: per-model override через resolved EnableReasoning.
+	// Если backend не инициализирован (nil) или модель не загружена —
+	// GetModel возвращает error, IsReasoningModel fallback решает.
+	if backend == nil {
+		return false
+	}
+	if info, err := backend.GetModel(modelName); err == nil && info != nil && info.ReasoningEnabled {
+		return true
 	}
 	return false
 }

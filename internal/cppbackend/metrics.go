@@ -33,6 +33,14 @@ type Metrics struct {
 	// нужна postmortem.
 	TotalUnloadTimeouts atomic.Int64 `json:"totalUnloadTimeouts"`
 
+	// Round 17 Layer 3 (2026-07-31): reasoning auto-detect counter.
+	// Инкрементится когда парсер видит <think> в output модели с
+	// reasoningEnabled=false и auto-включает routing. Рост счётчика
+	// указывает на (а) новую reasoning-модель вне whitelist, или
+	// (б) систематическую проблему с пользовательским workflow
+	// (забывают ставить enableReasoning=true при load).
+	ReasoningAutoEnables atomic.Int64 `json:"reasoningAutoEnables"`
+
 	// GPU
 	GPUMemoryUsedMB    atomic.Int64 `json:"gpuMemoryUsedMb"`
 	GPUMemoryTotalMB   atomic.Int64 `json:"gpuMemoryTotalMb"`
@@ -113,6 +121,16 @@ func (m *Metrics) RecordUnload(modelName string) {
 // и т.п.) для диагностики.
 func (m *Metrics) RecordUnloadTimeout(modelName, reason string) {
 	m.TotalUnloadTimeouts.Add(1)
+}
+
+// RecordReasoningAutoEnable — Round 17 Layer 3: фиксирует случай, когда
+// парсер lazy-auto-detect reasoning в output модели. modelName — для
+// логирования, счётчик в ReasoningAutoEnables — глобальный (по всем моделям).
+// Если счётчик быстро растёт — оператор должен либо добавить новую модель
+// в IsReasoningModel whitelist, либо рекомендовать пользователю
+// выставить enableReasoning=true при load-with-params.
+func (m *Metrics) RecordReasoningAutoEnable(modelName string) {
+	m.ReasoningAutoEnables.Add(1)
 }
 
 // getOrCreateModelMetrics возвращает или создаёт метрики для модели

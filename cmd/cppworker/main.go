@@ -316,6 +316,18 @@ func main() {
 		log.Fatalw("failed to initialize backend", "error", err)
 	}
 	log.Infow("Backend initialized", "version", backend.Version(), "gpuCount", backend.GetGPUCount())
+
+	// Round 17 (2026-07-31): startup self-test для reasoning routing.
+	// Логируем какие модели БУДУТ иметь reasoning routing при LoadModel —
+	// это помогает оператору сразу увидеть конфигурационные баги (типа
+	// "gemma-4-it" матчит "gemma-4" prefix и reasoning попадает в IT-model
+	// которая его не поддерживает).
+	reasoningList := getReasoningArchList()
+	log.Infow("reasoning self-test: default reasoning prefix list",
+		"prefixes_count", len(reasoningList),
+		"prefixes", reasoningList,
+		"hint", "set CPPWORKER_REASONING_ARCHS=... to add custom prefixes; per-model override via load-with-params enableReasoning")
+
 	// Initialize adaptive loader (EnvironmentProfile, NaN-healer, strategy selector)
 	log.Infow("adaptive: initializing EnvironmentProfile...")
 	initAdaptiveLoader(func(modelName string, reductionPct float64) error {

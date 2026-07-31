@@ -89,6 +89,12 @@ type ModelInfo struct {
 	// false = legacy Round 13 multi-slot path с serialized llama_decode.
 	// Виден в /api/models (UI может показать "Batched: ON" / "Batched: OFF").
 	BatchedParallel bool `json:"batchedParallel"`
+	// Round 17 (2026-07-31): resolved в LoadModel из opts.EnableReasoning ??
+	// cfg.DefaultEnableReasoning. Парсеры reasoning_content.go читают это
+	// чтобы split'ить <think> для моделей вне IsReasoningModel() whitelist
+	// (например, qwen3-instruct с SOFT prompt reasoning).
+	// Виден в /api/models для UI transparency.
+	ReasoningEnabled bool `json:"reasoningEnabled"`
 }
 
 // Backend — основной объект CppBackend
@@ -182,6 +188,20 @@ type LoadModelOpts struct {
 	// - non-nil → explicit per-model choice (overrides cfg.EnableBatchedParallel)
 	// CAVEAT: BatchedScheduler пока greedy argmax (no temp/top_p).
 	EnableBatchedParallel *bool
+
+	// Round 17 (2026-07-31): per-model override для reasoning parser routing.
+	// Решает баг 2026-07-31 (см. plans/bug-2026-07-31-reasoning-not-routed.md):
+	// SOFT prompt injection работает для ЛЮБОЙ модели при cfg.EnableReasoning=true,
+	// но парсер SplitReasoningContent срабатывал ТОЛЬКО для моделей из
+	// IsReasoningModel() whitelist (qwen3.5, qwen3.6, deepseek-r1, ...).
+	// Для qwen3-instruct (которой нет в whitelist) reasoning text попадал
+	// в `content` вместо `reasoning_content` — OpenWebUI не показывал reasoning.
+	//
+	// С этим флагом:
+	//   nil (default) → use cfg.DefaultEnableReasoning (для всех моделей)
+	//   *true / *false → explicit per-model choice (override default)
+	// После LoadModel этот флаг резолвится в modelInstance.reasoningEnabled.
+	EnableReasoning *bool
 }
 
 // modelInstance — экземпляр загруженной модели
@@ -209,6 +229,20 @@ type modelInstance struct {
 	// cancel != nil означает scheduler активен; вызов cancel() останавливает
 	// tick loop и закрывает все активные sessions с ошибкой.
 	batchedSchedulerCancel context.CancelFunc
+
+	// Round 17 (2026-07-31): reasoningEnabled — resolved в LoadModelWithOpts
+	// из opts.EnableReasoning ?? cfg.DefaultEnableReasoning. Используется
+	// парсером (SplitReasoningContent / ReasoningStreamState) чтобы split'ить
+	// <think> блоки для моделей ВНЕ IsReasoningModel() whitelist (например,
+	// qwen3-instruct с включённым SOFT prompt reasoning).
+	//
+	// Source of truth для "эта модель эмитит reasoning — нужно split'ить".
+	// cfg.DefaultEnableReasoning и per-model override оба резолвятся сюда
+	// ОДИН раз при LoadModel — нет рассинхрона между settings и parser.
+	//
+	// Связь: handler.responds.IsReasoningModel(name) || inst.reasoningEnabled.
+	// Читается из handler через *(inst) или снимок в ModelInfo.
+	reasoningEnabled bool
 
 	// lastUsedAt — момент последнего обращения к модели (генерация/стрим).
 	// Используется IdleUnloadManager'ом для решения о выгрузке неактивных
@@ -670,6 +704,17 @@ func (b *Backend) LoadModelWithOpts(name string, path string, opts LoadModelOpts
 		// DefaultKVCacheType (f16).
 		inst.info.KVCacheType = b.cfg.DefaultKVCacheType
 	}
+	// Round 17 (2026-07-31): resolve reasoningEnabled для этой модели ОДИН раз
+	// при LoadModel. Per-model override (opts.EnableReasoning) имеет приоритет
+	// над global default. Это source of truth для parser'а — handler читает
+	// через inst.reasoningEnabled, чтобы IsReasoningModel(name) whitelist
+	// не пропускал qwen3-instruct с SOFT prompt reasoning.
+	enableReasoning := b.cfg.DefaultEnableReasoning
+	if opts.EnableReasoning != nil {
+		enableReasoning = *opts.EnableReasoning
+	}
+	inst.reasoningEnabled = enableReasoning
+	inst.info.ReasoningEnabled = enableReasoning
 	b.mu.Unlock()
 
 	// Инициализируем lastUsedAt моментом загрузки, чтобы IdleUnloadManager
@@ -1283,6 +1328,50 @@ func (b *Backend) GetModel(name string) (*ModelInfo, error) {
 	info.ActiveQueries = b.getActiveQueries(inst)
 	info.LastUsedAt = b.getLastUsedAt(inst)
 	return &info, nil
+}
+
+// AutoEnableReasoning — Round 17 Layer 3 (2026-07-31): LAZY AUTO-DETECT.
+//
+// Парсер в writeOpenAIChatStream / handleV1ChatCompletions вызывает этот
+// метод когда видит `<think>` в output модели, у которой reasoningEnabled=false
+// (т.е. модель не в IsReasoningModel whitelist и пользователь не задал
+// load-with-params enableReasoning=true). Включает routing для этой модели
+// "на лету" — все последующие запросы будут split'ить <think> корректно.
+//
+// Идемпотентно: повторный вызов на уже-enabled модели — no-op.
+// Безопасно при многократных concurrent вызовах: под b.mu.Lock.
+//
+// Не применяется, если модель не загружена (UnloadModel между запросами)
+// — в этом случае пользователю нужно явно указать enableReasoning=true
+// при следующем LoadModelWithOpts.
+//
+// Возвращает true если флаг реально изменился (false→true), false если
+// уже был включён. Используется для логирования и метрик.
+func (b *Backend) AutoEnableReasoning(name string) bool {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+
+	inst, exists := b.models[name]
+	if !exists {
+		return false
+	}
+	if inst.reasoningEnabled {
+		return false
+	}
+	inst.reasoningEnabled = true
+	inst.info.ReasoningEnabled = true
+	logger.Get().Warnw("reasoning auto-enabled (lazy detect)",
+		"model", name,
+		"hint", "model emits <think> but not in IsReasoningModel whitelist; "+
+			"to pre-set, use load-with-params with enableReasoning=true, "+
+			"or add model name pattern to CPPWORKER_REASONING_ARCHS env")
+	if b.metrics != nil {
+		// Counter-based observability для postmortem.
+		// Если counter быстро растёт — есть системная проблема с whitelist
+		// или с пользователями, загружающими reasoning-модели без флага.
+		b.metrics.RecordReasoningAutoEnable(name)
+	}
+	return true
 }
 
 // ListModels возвращает список всех загруженных моделей

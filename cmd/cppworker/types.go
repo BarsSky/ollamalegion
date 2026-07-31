@@ -173,4 +173,14 @@ type loadWithParamsRequest struct {
 	// non-nil = explicit per-model choice (overrides global).
 	// CAVEAT: BatchedScheduler пока greedy argmax (no temp/top_p).
 	EnableBatchedParallel *bool `json:"enableBatchedParallel,omitempty"`
+
+	// Round 17 (2026-07-31): per-model override для reasoning parser routing.
+	// Решает баг plans/bug-2026-07-31-reasoning-not-routed.md: для моделей ВНЕ
+	// IsReasoningModel() whitelist (например, qwen3-instruct) при включённом
+	// SOFT prompt reasoning text не попадал в reasoning_content.
+	//   nil = inherit global cfg.DefaultEnableReasoning
+	//   *true / *false = explicit per-model choice
+	// Хранится в modelInstance.reasoningEnabled после LoadModel, читается
+	// парсерами (SplitReasoningContent, ReasoningStreamState) для routing.
+	EnableReasoning *bool `json:"enableReasoning,omitempty"`
 }

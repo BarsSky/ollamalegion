@@ -1,4 +1,4 @@
-﻿// handlers_openai.go — OpenAI-compatible /v1/ endpoints (/v1/chat/completions,
+// handlers_openai.go — OpenAI-compatible /v1/ endpoints (/v1/chat/completions,
 // /v1/completions, /v1/embeddings, /v1/models).
 package main
 
@@ -441,7 +441,7 @@ func handleV1ChatCompletions(w http.ResponseWriter, r *http.Request) {
 		// reasoning_content alongside tool_calls. SplitReasoningContent
 		// peels off ``...`` block from output; remaining content goes
 		// into tool_calls via parser above.
-		if IsReasoningModel(req.Model) {
+		if IsReasoningEnabledForRequest(req.Model) {
 			r, c, has := SplitReasoningContent(result.Output)
 			if has {
 				message["reasoning_content"] = r
@@ -457,11 +457,36 @@ func handleV1ChatCompletions(w http.ResponseWriter, r *http.Request) {
 				message["content"] = nil
 			}
 		} else {
-			message["content"] = nil
+			// === Round 17 Layer 3 (2026-07-31): POST-HOC AUTO-DETECT (tools path) ===
+			// Если reasoning был ВЫКЛЮЧЕН, но output содержит `<think>` — split'им
+			// + auto-enable routing для будущих запросов. Стоимость: 1 split + check.
+			r, c, has := SplitReasoningContent(result.Output)
+			if has {
+				message["reasoning_content"] = r
+				if c != "" {
+					message["content"] = c
+				} else {
+					message["content"] = nil
+				}
+				if backend != nil {
+					if backend.AutoEnableReasoning(req.Model) {
+						logger.Get().Warnw("reasoning auto-detected (non-stream tools)",
+							"handler", "handleV1ChatCompletions",
+							"model", req.Model,
+							"reasoning_chars", len(r),
+							"hint", "model emits <think> but not in reasoning whitelist; "+
+								"auto-enabled routing for future requests. "+
+								"To pre-set, use load-with-params enableReasoning=true "+
+								"or set CPPWORKER_REASONING_ARCHS env var.")
+					}
+				}
+			} else {
+				message["content"] = nil
+			}
 		}
 		message["tool_calls"] = toolCalls
 	} else {
-		if IsReasoningModel(req.Model) {
+		if IsReasoningEnabledForRequest(req.Model) {
 			r, c, has := SplitReasoningContent(result.Output)
 			if has {
 				message["content"] = c
@@ -470,7 +495,31 @@ func handleV1ChatCompletions(w http.ResponseWriter, r *http.Request) {
 				message["content"] = result.Output
 			}
 		} else {
-			message["content"] = result.Output
+			// === Round 17 Layer 3 (2026-07-31): POST-HOC AUTO-DETECT (non-stream) ===
+			// Если reasoning был ВЫКЛЮЧЕН, но output содержит `<think>` — split'им anyway
+			// + auto-enable routing для ВСЕХ будущих запросов на этой модели.
+			// Стоимость: 1 SplitReasoningContent + 1 strings.Contains на не-reasoning
+			// запрос. Ложных срабатываний не бывает: если <think> в output — модель
+			// РЕАЛЬНО reasoning, и пользователь увидит корректный routing на следующий запрос.
+			r, c, has := SplitReasoningContent(result.Output)
+			if has {
+				message["content"] = c
+				message["reasoning_content"] = r
+				if backend != nil {
+					if backend.AutoEnableReasoning(req.Model) {
+						logger.Get().Warnw("reasoning auto-detected (non-stream)",
+							"handler", "handleV1ChatCompletions",
+							"model", req.Model,
+							"reasoning_chars", len(r),
+							"hint", "model emits <think> but not in reasoning whitelist; "+
+								"auto-enabled routing for future requests. "+
+								"To pre-set, use load-with-params enableReasoning=true "+
+								"or set CPPWORKER_REASONING_ARCHS env var.")
+					}
+				}
+			} else {
+				message["content"] = result.Output
+			}
 		}
 	}
 
@@ -737,8 +786,18 @@ func writeOpenAIChatStream(w http.ResponseWriter, r *http.Request, modelName, pr
 	// отдельный `delta.reasoning_content` в SSE — это позволяет OpenWebUI/Cline
 	// корректно отображать think-блок и видимый ответ раздельно.
 	rsParser := NewReasoningStreamState()
-	rsIsReasoning := IsReasoningModel(modelName)
+	rsIsReasoning := IsReasoningEnabledForRequest(modelName)
 	rsSentHeader := false
+	// Round 17 Layer 3 (2026-07-31): LAZY AUTO-DETECT. Если rsIsReasoning=false
+	// но parser всё равно увидит <think> в первых 64 символах — auto-enable
+	// routing для ЭТОГО и ВСЕХ будущих запросов на этой модели. Защита от:
+	//   - новая reasoning-модель вне IsReasoningModel whitelist;
+	//   - пользователь забыл поставить enableReasoning=true при load.
+	// Стоимость: ~3 сравнения строк на stream (внутри early-return).
+	rsAutoDetectActive := !rsIsReasoning // false если уже reasoning
+	rsAutoDetectChecked := false
+	const autoDetectPrefixLen = 64 // первые N символов выхода для проверки
+	const thinkStartTag = "<think>"
 
 	keepaliveWG.Add(1)
 	go func() {
@@ -809,6 +868,50 @@ func writeOpenAIChatStream(w http.ResponseWriter, r *http.Request, modelName, pr
 		}
 		// Накапливаем output для финального чанка.
 		outputBuf.WriteString(token)
+
+		// === Round 17 Layer 3: LAZY AUTO-DETECT ===
+		// Если rsIsReasoning=false (модель не в whitelist + пользователь не задал
+		// load-with-params enableReasoning=true) — всё равно прогоняем токен
+		// через парсер и смотрим prefix. Как только видим `<think>` в первых
+		// autoDetectPrefixLen символах — auto-включаем routing:
+		//   1) rsIsReasoning = true → split'им и шлём как reasoning для ЭТОГО стрима
+		//   2) backend.AutoEnableReasoning(modelName) → ВСЕ будущие запросы тоже
+		//      будут split'ить (persist через inst.reasoningEnabled)
+		// 3) логируем warning с подсказкой как превентивно задать флаг
+		//
+		// Стоимость: Feed() всегда вызывался и раньше (была строка rsIsReasoning check).
+		// Доп. стоимость auto-detect: 1 strings.Contains на каждом callback до срабатывания.
+		if rsAutoDetectActive && !rsAutoDetectChecked && len(token) > 0 {
+			// Проверяем только накопленный prefix, не весь outputBuf (parser сам
+			// сделает полный split когда rsIsReasoning станет true).
+			// Берём первые autoDetectPrefixLen байт outputBuf — этого достаточно
+			// чтобы поймать <think> в любой нормальной генерации (тег идёт в самом
+			// начале output reasoning-моделей).
+			prefix := outputBuf.String()
+			if len(prefix) > autoDetectPrefixLen {
+				prefix = prefix[:autoDetectPrefixLen]
+			}
+			if strings.Contains(prefix, thinkStartTag) {
+				rsAutoDetectChecked = true
+				rsIsReasoning = true
+				rsAutoDetectActive = false
+				// Persist для будущих запросов на этой модели.
+				if backend != nil {
+					backend.AutoEnableReasoning(modelName)
+				}
+				logger.Get().Warnw("reasoning auto-detected mid-stream",
+					"handler", "writeOpenAIChatStream",
+					"model", modelName,
+					"prefix", headString(prefix, 48),
+					"hint", "model emits <think> but is not in reasoning whitelist; "+
+						"auto-enabled routing. To pre-set, use load-with-params "+
+						"enableReasoning=true or set CPPWORKER_REASONING_ARCHS env var.")
+			} else if len(outputBuf.String()) > autoDetectPrefixLen {
+				// Prefix уже достаточно длинный, а <think> не нашли — отключаем
+				// проверку (модель точно не reasoning, дальше искать бессмысленно).
+				rsAutoDetectChecked = true
+			}
+		}
 
 		// 2026-07-01: reasoning-парсер — разделяем токены на (reasoning, content)
 		// для reasoning-моделей (qwen3.5/qwen3.6/deepseek-r1/gemma-4/...). Эмитим
@@ -1123,13 +1226,32 @@ func handleV1Completions(w http.ResponseWriter, r *http.Request) {
 	// 2026-07-01: для reasoning-моделей (qwen3.5/qwen3.6/deepseek-r1/gemma-4)
 	// разделяем output на (reasoning_content, text) на верхнем уровне ответа.
 	// Это позволяет OpenWebUI/Cline отображать think-блок и видимый ответ раздельно.
+	// Round 17 Layer 3: post-hoc auto-detect (см. handleV1ChatCompletions).
 	textValue := result.Output
 	reasoningValue := ""
-	if IsReasoningModel(req.Model) {
+	if IsReasoningEnabledForRequest(req.Model) {
 		r, c, has := SplitReasoningContent(result.Output)
 		if has {
 			textValue = c
 			reasoningValue = r
+		}
+	} else {
+		// Layer 3: даже если reasoning был ВЫКЛЮЧЕН — split'им anyway если <think> есть
+		// + persist для будущих запросов.
+		r, c, has := SplitReasoningContent(result.Output)
+		if has {
+			textValue = c
+			reasoningValue = r
+			if backend != nil {
+				if backend.AutoEnableReasoning(req.Model) {
+					logger.Get().Warnw("reasoning auto-detected (non-stream /v1/completions)",
+						"handler", "handleV1Completions",
+						"model", req.Model,
+						"reasoning_chars", len(r),
+						"hint", "model emits <think> but not in reasoning whitelist; "+
+							"auto-enabled routing for future requests.")
+				}
+			}
 		}
 	}
 
@@ -1212,7 +1334,12 @@ func writeOpenAICompletionStream(w http.ResponseWriter, r *http.Request, modelNa
 
 	// 2026-07-01: reasoning-парсер (по аналогии с writeOpenAIChatStream).
 	rcParser := NewReasoningStreamState()
-	rcIsReasoning := IsReasoningModel(modelName)
+	rcIsReasoning := IsReasoningEnabledForRequest(modelName)
+	// Round 17 Layer 3: lazy auto-detect (аналогично writeOpenAIChatStream).
+	rcAutoDetectActive := !rcIsReasoning
+	rcAutoDetectChecked := false
+	const rcAutoDetectPrefixLen = 64
+	const rcThinkStartTag = "<think>"
 
 	// writeCompletionChunk — низкоуровневый helper, эмитит ОДИН SSE чанк с указанным
 	// полями (text + опционально reasoning_content). Возвращает false при обрыве.
@@ -1249,6 +1376,30 @@ func writeOpenAICompletionStream(w http.ResponseWriter, r *http.Request, modelNa
 		default:
 		}
 		outputBuf.WriteString(token)
+
+		// === Round 17 Layer 3: LAZY AUTO-DETECT (аналогично writeOpenAIChatStream) ===
+		if rcAutoDetectActive && !rcAutoDetectChecked && len(token) > 0 {
+			prefix := outputBuf.String()
+			if len(prefix) > rcAutoDetectPrefixLen {
+				prefix = prefix[:rcAutoDetectPrefixLen]
+			}
+			if strings.Contains(prefix, rcThinkStartTag) {
+				rcAutoDetectChecked = true
+				rcIsReasoning = true
+				rcAutoDetectActive = false
+				if backend != nil {
+					backend.AutoEnableReasoning(modelName)
+				}
+				logger.Get().Warnw("reasoning auto-detected mid-stream",
+					"handler", "writeOpenAICompletionStream",
+					"model", modelName,
+					"prefix", headString(prefix, 48),
+					"hint", "auto-enabled routing. To pre-set, use load-with-params "+
+						"enableReasoning=true or set CPPWORKER_REASONING_ARCHS env var.")
+			} else if len(outputBuf.String()) > rcAutoDetectPrefixLen {
+				rcAutoDetectChecked = true
+			}
+		}
 
 		// 2026-07-01: reasoning-парсер — для reasoning-моделей разделяем токен на
 		// (reasoning, text) и эмитим отдельный `reasoning_content` в SSE.

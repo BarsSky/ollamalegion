@@ -315,6 +315,10 @@ func handleLoadWithParams(w http.ResponseWriter, r *http.Request) {
 		// Round 15.1: per-model override для batched parallel inference.
 		// nil = inherit global cfg.EnableBatchedParallel. non-nil = explicit choice.
 		EnableBatchedParallel: req.EnableBatchedParallel,
+		// Round 17 (2026-07-31): per-model override для reasoning parser routing.
+		// nil = inherit global cfg.DefaultEnableReasoning. non-nil = explicit choice.
+		// Решает bug plans/bug-2026-07-31-reasoning-not-routed.md.
+		EnableReasoning: req.EnableReasoning,
 	}
 	if req.NThreads != nil && *req.NThreads > 0 {
 		opts.NThreads = *req.NThreads

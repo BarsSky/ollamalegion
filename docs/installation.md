@@ -1,7 +1,7 @@
 # Установка и сборка OllamaLegion
 
-> **Версия:** 2026-06-22  
-> **Связанные документы:** [`deployment.md`](deployment.md), [`configuration.md`](configuration.md), [`audit-2026-06.md`](audit-2026-06.md)
+> **Версия:** 2026-07-31 (обновлено под v0.5.2)
+> **Связанные документы:** [`deployment.md`](deployment.md), [`configuration.md`](configuration.md), [`../../CHANGELOG.md`](../CHANGELOG.md)
 
 ## Содержание
 
@@ -78,6 +78,34 @@ cp deployments/.env.bundled.example deployments/.env.bundled  # опционал
 
 ### 2.3 Запуск bundled-стека
 
+**Вариант A: с sidecar-агентом метрик (рекомендуется для production)**
+
+Это вариант, который используется по умолчанию. Sidecar-агент отдаёт в WebUI
+реальные GPU/VRAM/CPU метрики.
+
+```bash
+# 1) Один раз — скопировать .env
+cd deployments
+cp .env.bundled-with-agent.example .env.bundled-with-agent
+# Отредактируйте .env.bundled-with-agent: смените CPPWORKER_API_TOKEN
+
+# 2) Linux/macOS/WSL
+export DOCKER_BUILDKIT=1
+export CUDA_ARCH=86    # sm_86 (RTX 30xx), sm_89 (RTX 40xx), sm_90 (RTX 50xx)
+docker compose -f docker-compose.cppworker-bundled-with-agent.yml \
+  --env-file .env.bundled-with-agent \
+  up -d --build
+
+#    Windows PowerShell
+$env:DOCKER_BUILDKIT=1
+$env:CUDA_ARCH=86
+docker compose -f docker-compose.cppworker-bundled-with-agent.yml `
+               --env-file .env.bundled-with-agent `
+               up -d --build
+```
+
+**Вариант B: без агента (проще, но без GPU/VRAM метрик в WebUI)**
+
 ```bash
 # Linux/macOS/WSL
 ./scripts/start-bundled.sh
@@ -87,16 +115,36 @@ $env:DOCKER_BUILDKIT=0
 .\scripts\start-bundled.ps1
 ```
 
-Стек поднимает:
+Стек (вариант A или B) поднимает:
 - `cppworker-gpu` (порт 18092)
 - `loadbalancer` (порты 18080, 18081)
 - `webui` (порт 18083)
+- `agent` (только в варианте A, sidecar к cppworker-gpu, порт 18032 internal)
+
+Полезные endpoints:
+- WebUI: http://localhost:18083
+- Balancer OpenAI API: http://localhost:18080
+- Balancer admin: http://localhost:18081
+- CppWorker direct: http://localhost:18092
+
+Smoke-check:
+```bash
+# Балансер
+curl http://localhost:18081/api/v1/ping
+
+# Бэкенды
+curl -H 'X-API-Token: $CPPWORKER_API_TOKEN' http://localhost:18081/api/v1/backends
+
+# CppWorker info
+curl -H 'X-API-Token: $CPPWORKER_API_TOKEN' http://localhost:18092/api/info
+```
 
 ### 2.4 Альтернативные compose
 
 ```bash
 # Только балансер + WebUI (без CppWorker)
-cd deployments && docker compose up -d
+cd deployments
+docker compose -f docker-compose.yml up -d --build
 
 # Только CppWorker (CPU)
 docker compose -f docker-compose.cppworker.yml --profile cpu up -d --build
@@ -107,9 +155,21 @@ docker compose -f docker-compose.cppworker.yml --profile gpu up -d --build
 # Только CppWorker (stub — для тестов без llama.cpp)
 docker compose -f docker-compose.cppworker.yml --profile stub up -d --build
 
+# Bundled без агента (Вариант B из 2.3)
+docker compose -f docker-compose.cppworker-bundled.yml \
+  --env-file .env.bundled up -d --build
+
+# Bundled с sidecar-агентом (Вариант A из 2.3, рекомендуется)
+docker compose -f docker-compose.cppworker-bundled-with-agent.yml \
+  --env-file .env.bundled-with-agent up -d --build
+
 # Агент на отдельном сервере
 docker compose -f docker-compose.agent.yml --env-file .env up -d --build
 ```
+
+> **Примечание:** скрипт `start-bundled.sh` / `start-bundled.ps1` оборачивает
+> Вариант B (bundled без агента). Для Варианта A используйте
+> `docker-compose.cppworker-bundled-with-agent.yml` напрямую (команда выше).
 
 ### 2.5 Сборка образов вручную
 

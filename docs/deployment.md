@@ -1,7 +1,22 @@
 # Развёртывание OllamaLegion
 
-> **Версия:** 2.0 (2026-06-22)  
-> **Связанные документы:** [`installation.md`](installation.md), [`agent-deployment.md`](agent-deployment.md), [`backend-type-isolation.md`](backend-type-isolation.md), [`audit-2026-06.md`](audit-2026-06.md)
+> **Версия:** 3.0 (2026-07-31, обновлено под v0.5.2)
+> **Связанные документы:** [`installation.md`](installation.md), [`agent-deployment.md`](agent-deployment.md), [`backend-type-isolation.md`](backend-type-isolation.md), [`../../CHANGELOG.md`](../CHANGELOG.md)
+
+## Что нового в v0.5.x (по сравнению с v0.2.0)
+
+Список фич, появившихся с момента предыдущей версии этого документа (2026-06-22):
+
+- **Round 13 (n_parallel > 1)** — несколько одновременных sequences на одной модели без race conditions
+- **Round 14 (native enable_thinking)** — для Qwen3-thinking моделей без `<think>` block
+- **Round 15.1 (Batched Parallel Inference)** — true parallel llama_decode через BatchedScheduler
+- **Round 15.2 (multi-token prefill + temperature sampling + vocab-aware EOG)** — production-ready sampling
+- **Round 16 (Round 16 code review)** — CRITICAL `temperature=0` fix, 4 P1 observability/resilience fixes
+- **WebUI Sprint 30** — version display wired to git tag
+- **Auth improvements** — `X-API-Token` для Cline/Roo compatibility, Cline-style streaming
+- **Bundle with sidecar agent** — `docker-compose.cppworker-bundled-with-agent.yml` для production
+
+Подробности: см. [CHANGELOG.md](../../CHANGELOG.md).
 
 ## Содержание
 

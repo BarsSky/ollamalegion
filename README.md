@@ -11,19 +11,29 @@
 
 ## Что нового
 
-**v0.2.0-adaptive** (в разработке, см. `CHANGELOG.md` → `[Unreleased]`):
+**v0.5.2 — 2026-07-30** (последний релиз, [полный CHANGELOG](CHANGELOG.md)):
 
-- **Адаптивная загрузка моделей** — авто-подбор GPU-слоёв и типа KV-cache (f16→q8_0→q4_0) под доступную VRAM/RAM
-- **KV-cache fallback** — работает даже без GGUF-метаданных (gemma4, новые архитектуры)
-- **Авто-reload n_ctx** — при превышении контекста балансер перезагружает модель с бóльшим n_ctx и уменьшенными GPU-слоями
-- **Динамический max viable n_ctx** — рассчитывается из VRAM+RAM, без жёстких лимитов
-- **Bundled deployment** — готовый стек: balancer + cppworker + agent + webui в одном compose
-- **Phase 8 P.1 — RPC Coordinator (production mode)** — distributed inference через RPC workers
-- **Phase 8 P.2 — Virtual Models (alias-on-pool)** — управление виртуальными моделями через `/api/v1/virtual-models`
-- **Phase 8 P.3 — Tensor Parallelism (research)** — ресёрч-фаза, post-1.0
+- 🐛 **CRITICAL bug fix: `temperature=0` от клиента теперь honor'ится** — раньше Go-слой игнорировал `temperature=0` (Cline/Aider/Continue все шлют greedy) и подставлял default `0.7`, что приводило к не-детерминированным tool calls. Pointer types в request structs (`*float64` / `*int`) различают "не задано" от "explicit 0". 8 unit-тестов.
+- 🟡 **P1 — 4 code-review fix'а**: rename misleading function, BatchedScheduler head-of-line blocking (TokenCh buffer 8→128 + non-blocking send + drop counter), sampleFromLogits silent fallback → logging + counter, UnloadModel infinite wait → 10s timeout.
+- 🧹 **Dead code cleanup** — `im->sampler` removed из C-bridge (после sampler hotfix стал no-op).
+- 🧪 11 новых unit-тестов (build params, sample stats). Production verified: 5/5 unique до фикса, 1/5 после на `temperature=0` (greedy).
 
-Последний релиз: **v0.1.0** (2026-05-14). Все «Unreleased» секции в `CHANGELOG.md`
-описывают в разработке, но ещё не зарелижены.
+**v0.5.1 — 2026-07-30**: Batched Parallel Inference (Round 15.1) + Round 15.2 (multi-token prefill, temperature sampling, vocab-aware EOG) + **Multi-tool Recovery** (Qwen3-4B-Instruct quirk с trailing `}]}`).
+
+**v0.5.0 — 2026-07-30**: Batched Parallel Inference functional baseline + 6 unit-тестов.
+
+**v0.4.12 — 2026-07-29**: Native `enable_thinking` для Qwen3-thinking + Round 13 inference fix.
+
+**v0.4.6 — v0.4.11** (2026-07-28): WebUI settings, api token auth, Cline/Roo совместимость через `X-API-Token`, Phase 8 RPC Coordinator (production), n_parallel > 1 (state isolation), preflight n_ctx reload.
+
+**v0.4.5** (2026-06-25): Cluster-level model management + cascade fallback + graceful reload.
+
+**v0.2.0-adaptive** (2026-06-22): адаптивная загрузка, KV-cache fallback, авто-reload n_ctx, bundled deployment.
+
+**v0.1.0** (2026-05-14): initial release.
+
+Все 12+ релизов с v0.2.0+ документированы в [CHANGELOG.md](CHANGELOG.md). Каждый коммит
+помечен тегом — `git log v0.5.2..HEAD` показывает unpushed changes.
 
 ## Быстрый старт (Bundled)
 

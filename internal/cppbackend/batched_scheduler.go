@@ -209,22 +209,26 @@ func (bs *BatchedScheduler) RegisterSession(params BatchedSessionParams) (Batche
 		Temperature: params.Temperature,
 		Seed:        params.Seed,
 		// Round 16 code-review fix (2026-07-30): buffer 8 → 128.
-		// Раньше buffer=8: если consumer (batchedInferStream) медленнее
-		// scheduler tick rate (default 5ms), за 8 ticks (40ms) TokenCh
-		// заполняется → tick блокируется на send → ВСЕ остальные сессии
-		// в текущем batch стоят (head-of-line blocking). При
-		// разноскоростных клиентах (Cline + WebUI одновременно) throughput
-		// всей ноды деградирует до самого медленного consumer'а.
+		// Round 17.1 fix (2026-07-31): buffer 128 → 4096.
+		// Раньше buffer=128: при медленном consumer'е (WebUI через balancer,
+		// 2+ parallel sessions) tick drop'ал токены — модель продолжала
+		// генерировать, но клиент НИКОГДА не видел dropped токены → truncation
+		// ("ответ обрубается в клиенте, модель продолжает работать").
 		//
-		// 128 = ~640ms при 5ms tick (10x предыдущего) — достаточно чтобы
-		// bursty consumers (типичный WebUI SSE chunking) выровнялись,
-		// при этом не настолько большой чтобы OOM на 8 параллельных
-		// сессиях с MaxTokens=4096. Каждый int32 = 4 bytes → 512B/session
-		// = 4KB на 8 sessions = ничтожно.
+		// 4096 = ~20 секунд при 5ms tick (32x предыдущего). Достаточно чтобы:
+		//   - bursty consumers (типичный WebUI SSE chunking) выровнялись
+		//   - кратковременные network blips (1-5s) не приводили к drops
+		//   - 2-3 параллельных сессии могли одновременно буферизоваться
+		// OOM cost: 4 bytes/token × 4096 × 8 sessions = 128KB — ничтожно.
 		//
 		// Если buffer всё равно заполняется — sampleFromLogits tick drop'нет
-		// token (skip dispatch) и логирует (см. tickSendTokenWithDrop).
-		TokenCh:   make(chan int32, 128),
+		// token (см. tickSendTokenWithDrop) и логирует warning. Теперь
+		// с 4096 buffer этот случай будет rare, что:
+		//   - (a) лучше UX (нет silent data loss)
+		//   - (b) drop counter становится более точным health-сигналом
+		//       (если счётчик всё ещё растёт — у нас фундаментальная проблема
+		//        с consumer throughput, надо чинить не buffer).
+		TokenCh:   make(chan int32, 4096),
 		DoneCh:    make(chan struct{}),
 	}
 	bs.sessions[bs.nextID] = state

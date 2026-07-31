@@ -312,11 +312,24 @@ func buildChatPrompt(msgs []chatMessage, modelName string) (string, error) {
 // injectThinkingInstruction возвращает system промпт с prepended
 // thinking instruction. Если исходный system пустой — возвращает
 // только instruction. Если есть — instruction + "\n\n" + original.
+//
+// Round 17.1 fix (2026-07-31): добавлена инструкция "Wrap your reasoning
+// in <think>...</think> tags". Без этого модели без нативного thinking
+// (qwen3-instruct, gemma-4-it, custom fine-tunes типа
+// Qwen3.6-35B-A3B-Uncensored-HauhauCS-Aggressive) эмитят reasoning
+// КАК ОБЫЧНЫЙ ТЕКСТ — парсер SplitReasoningContent ищет `<think>` теги,
+// не находит, кладёт reasoning в `content` вместо `reasoning_content`.
+// OpenWebUI показывает reasoning как ответ — выглядит как "неполный ответ".
+//
+// С инструкцией "use <think> tags" модель ВЫНУЖДЕНА эмитить `<think>` блок,
+// парсер split'ит корректно, OpenWebUI показывает reasoning в своём UI.
 func injectThinkingInstruction(system string) string {
 	const thinkingInstruction = "Before answering, use detailed step-by-step thinking. " +
 		"Reason about the problem carefully, consider different angles, " +
 		"show your work, then provide a clear final answer. " +
-		"Structure your response: first explain your reasoning, then give the answer."
+		"Structure your response: first explain your reasoning, then give the answer. " +
+		"IMPORTANT: Wrap your step-by-step reasoning inside <think>...</think> tags. " +
+		"Your final answer (the user-facing response) should be OUTSIDE the </think> tag."
 	if system == "" {
 		return thinkingInstruction
 	}
@@ -327,11 +340,16 @@ func injectThinkingInstruction(system string) string {
 // instruction к msgs. Если system message уже есть — конкатенирует.
 // Используется для fallback path (buildChatPromptFromMessages) где
 // system промпт собирается руками, а не через chat template.
+//
+// Round 17.1 fix (2026-07-31): добавлена инструкция "Wrap your reasoning
+// in <think>...</think> tags" (см. injectThinkingInstruction).
 func injectThinkingIntoMessages(msgs []chatMessage) []chatMessage {
 	thinking := "Before answering, use detailed step-by-step thinking. " +
 		"Reason about the problem carefully, consider different angles, " +
 		"show your work, then provide a clear final answer. " +
-		"Structure your response: first explain your reasoning, then give the answer."
+		"Structure your response: first explain your reasoning, then give the answer. " +
+		"IMPORTANT: Wrap your step-by-step reasoning inside <think>...</think> tags. " +
+		"Your final answer (the user-facing response) should be OUTSIDE the </think> tag."
 
 	// Ищем существующий system message
 	for i, m := range msgs {

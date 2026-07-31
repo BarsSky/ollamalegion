@@ -788,15 +788,17 @@ func writeOpenAIChatStream(w http.ResponseWriter, r *http.Request, modelName, pr
 	rsParser := NewReasoningStreamState()
 	rsIsReasoning := IsReasoningEnabledForRequest(modelName)
 	rsSentHeader := false
-	// Round 17 Layer 3 (2026-07-31): LAZY AUTO-DETECT. Если rsIsReasoning=false
-	// но parser всё равно увидит <think> в первых 64 символах — auto-enable
-	// routing для ЭТОГО и ВСЕХ будущих запросов на этой модели. Защита от:
-	//   - новая reasoning-модель вне IsReasoningModel whitelist;
-	//   - пользователь забыл поставить enableReasoning=true при load.
-	// Стоимость: ~3 сравнения строк на stream (внутри early-return).
+	// Round 17 Layer 3 (2026-07-31): LAZY AUTO-DETECT.
+	// Round 17.1 fix (2026-07-31): увеличен threshold 64→1024 + проверка
+	// ВСЕГО outputBuf (не только префикса). Раньше bug: модели с длинным
+	// preamble ("Here's my thinking process..." + 200+ chars) — `<think>`
+	// появлялся ПОСЛЕ первых 64 chars, L3 уже сдавался, тег не находился,
+	// routing не включался. С новой логикой: пока outputBuf < 1024 chars,
+	// проверяем ВЕСЬ outputBuf на `<think>`; после 1024 — сдаёмся.
+	// Стоимость: O(N²) на 1024 chars max = ~1M ops worst case — приемлемо.
 	rsAutoDetectActive := !rsIsReasoning // false если уже reasoning
 	rsAutoDetectChecked := false
-	const autoDetectPrefixLen = 64 // первые N символов выхода для проверки
+	const autoDetectThreshold = 1024 // max chars для проверки на `<think>`
 	const thinkStartTag = "<think>"
 
 	keepaliveWG.Add(1)
@@ -869,29 +871,28 @@ func writeOpenAIChatStream(w http.ResponseWriter, r *http.Request, modelName, pr
 		// Накапливаем output для финального чанка.
 		outputBuf.WriteString(token)
 
-		// === Round 17 Layer 3: LAZY AUTO-DETECT ===
+		// === Round 17 Layer 3 + Round 17.1 fix: LAZY AUTO-DETECT ===
 		// Если rsIsReasoning=false (модель не в whitelist + пользователь не задал
 		// load-with-params enableReasoning=true) — всё равно прогоняем токен
-		// через парсер и смотрим prefix. Как только видим `<think>` в первых
-		// autoDetectPrefixLen символах — auto-включаем routing:
+		// через парсер и смотрим ВЕСЬ outputBuf на `<think>`. Как только видим —
+		// auto-включаем routing:
 		//   1) rsIsReasoning = true → split'им и шлём как reasoning для ЭТОГО стрима
 		//   2) backend.AutoEnableReasoning(modelName) → ВСЕ будущие запросы тоже
 		//      будут split'ить (persist через inst.reasoningEnabled)
 		// 3) логируем warning с подсказкой как превентивно задать флаг
 		//
-		// Стоимость: Feed() всегда вызывался и раньше (была строка rsIsReasoning check).
-		// Доп. стоимость auto-detect: 1 strings.Contains на каждом callback до срабатывания.
+		// Round 17.1 fix: threshold увеличен 64→1024 + проверяем ВЕСЬ outputBuf
+		// (не только префикс). Старая версия сдавалась слишком рано, если модель
+		// с длинным preamble ("Here's my thinking process..." + 200+ chars до
+		// `<think>`) — `<think>` приходил ПОСЛЕ первых 64 chars, L3 уже сдался,
+		// routing не включался, reasoning шёл в content.
+		//
+		// Стоимость: O(N²) max на autoDetectThreshold=1024 chars = ~1M ops worst
+		// case. Для типичных 200-500 token streams — десятки тысяч ops, < 1ms.
 		if rsAutoDetectActive && !rsAutoDetectChecked && len(token) > 0 {
-			// Проверяем только накопленный prefix, не весь outputBuf (parser сам
-			// сделает полный split когда rsIsReasoning станет true).
-			// Берём первые autoDetectPrefixLen байт outputBuf — этого достаточно
-			// чтобы поймать <think> в любой нормальной генерации (тег идёт в самом
-			// начале output reasoning-моделей).
-			prefix := outputBuf.String()
-			if len(prefix) > autoDetectPrefixLen {
-				prefix = prefix[:autoDetectPrefixLen]
-			}
-			if strings.Contains(prefix, thinkStartTag) {
+			fullOutput := outputBuf.String()
+			if strings.Contains(fullOutput, thinkStartTag) {
+				// AUTO-DETECT FIRED! Модель явно эмитит reasoning с `<think>` тегами.
 				rsAutoDetectChecked = true
 				rsIsReasoning = true
 				rsAutoDetectActive = false
@@ -902,14 +903,19 @@ func writeOpenAIChatStream(w http.ResponseWriter, r *http.Request, modelName, pr
 				logger.Get().Warnw("reasoning auto-detected mid-stream",
 					"handler", "writeOpenAIChatStream",
 					"model", modelName,
-					"prefix", headString(prefix, 48),
+					"output_len", len(fullOutput),
+					"think_position", strings.Index(fullOutput, thinkStartTag),
 					"hint", "model emits <think> but is not in reasoning whitelist; "+
 						"auto-enabled routing. To pre-set, use load-with-params "+
 						"enableReasoning=true or set CPPWORKER_REASONING_ARCHS env var.")
-			} else if len(outputBuf.String()) > autoDetectPrefixLen {
-				// Prefix уже достаточно длинный, а <think> не нашли — отключаем
-				// проверку (модель точно не reasoning, дальше искать бессмысленно).
+			} else if len(fullOutput) > autoDetectThreshold {
+				// OutputBuf длиннее threshold, `<think>` не нашли — сдаёмся.
+				// Модель точно не использует `<think>` теги в этом выводе.
 				rsAutoDetectChecked = true
+				logger.Get().Debugw("reasoning auto-detect gave up (no <think> in first N chars)",
+					"handler", "writeOpenAIChatStream",
+					"model", modelName,
+					"checked_chars", autoDetectThreshold)
 			}
 		}
 
@@ -1335,10 +1341,12 @@ func writeOpenAICompletionStream(w http.ResponseWriter, r *http.Request, modelNa
 	// 2026-07-01: reasoning-парсер (по аналогии с writeOpenAIChatStream).
 	rcParser := NewReasoningStreamState()
 	rcIsReasoning := IsReasoningEnabledForRequest(modelName)
-	// Round 17 Layer 3: lazy auto-detect (аналогично writeOpenAIChatStream).
+	// Round 17 Layer 3 + Round 17.1 fix: lazy auto-detect.
+	// Round 17.1 fix: threshold увеличен 64→1024 + проверяем ВЕСЬ outputBuf.
+	// См. writeOpenAIChatStream — та же логика, та же причина.
 	rcAutoDetectActive := !rcIsReasoning
 	rcAutoDetectChecked := false
-	const rcAutoDetectPrefixLen = 64
+	const rcAutoDetectThreshold = 1024
 	const rcThinkStartTag = "<think>"
 
 	// writeCompletionChunk — низкоуровневый helper, эмитит ОДИН SSE чанк с указанным
@@ -1377,13 +1385,11 @@ func writeOpenAICompletionStream(w http.ResponseWriter, r *http.Request, modelNa
 		}
 		outputBuf.WriteString(token)
 
-		// === Round 17 Layer 3: LAZY AUTO-DETECT (аналогично writeOpenAIChatStream) ===
+		// === Round 17 Layer 3 + Round 17.1 fix: LAZY AUTO-DETECT ===
+		// (аналогично writeOpenAIChatStream — см. подробный комментарий там)
 		if rcAutoDetectActive && !rcAutoDetectChecked && len(token) > 0 {
-			prefix := outputBuf.String()
-			if len(prefix) > rcAutoDetectPrefixLen {
-				prefix = prefix[:rcAutoDetectPrefixLen]
-			}
-			if strings.Contains(prefix, rcThinkStartTag) {
+			fullOutput := outputBuf.String()
+			if strings.Contains(fullOutput, rcThinkStartTag) {
 				rcAutoDetectChecked = true
 				rcIsReasoning = true
 				rcAutoDetectActive = false
@@ -1393,11 +1399,16 @@ func writeOpenAICompletionStream(w http.ResponseWriter, r *http.Request, modelNa
 				logger.Get().Warnw("reasoning auto-detected mid-stream",
 					"handler", "writeOpenAICompletionStream",
 					"model", modelName,
-					"prefix", headString(prefix, 48),
+					"output_len", len(fullOutput),
+					"think_position", strings.Index(fullOutput, rcThinkStartTag),
 					"hint", "auto-enabled routing. To pre-set, use load-with-params "+
 						"enableReasoning=true or set CPPWORKER_REASONING_ARCHS env var.")
-			} else if len(outputBuf.String()) > rcAutoDetectPrefixLen {
+			} else if len(fullOutput) > rcAutoDetectThreshold {
 				rcAutoDetectChecked = true
+				logger.Get().Debugw("reasoning auto-detect gave up (no <think> in first N chars)",
+					"handler", "writeOpenAICompletionStream",
+					"model", modelName,
+					"checked_chars", rcAutoDetectThreshold)
 			}
 		}
 

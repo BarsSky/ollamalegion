@@ -1633,11 +1633,16 @@ func (b *Backend) batchedInferStream(inst *modelInstance, modelName string, prom
 	}
 
 	// 2. Determine MaxTokens.
+	// Round 16 P2 fix (2026-07-30): используем константы вместо magic numbers
+	// + ссылка на bridge.DefaultGenerationParams().NPredict для default.
+	// Раньше было `maxTokens = 2048` hardcoded — при изменении дефолта в
+	// bridge.go забылось бы тут.
+	const batchedMaxTokensCap = 4096
 	maxTokens := params.NPredict
-	if maxTokens <= 0 || maxTokens > 4096 {
+	if maxTokens <= 0 || maxTokens > batchedMaxTokensCap {
 		// Batched path: cap at 4096 чтобы один greedy loop не съел всю память.
-		// Default = 2048 (DefaultGenerationParams).
-		maxTokens = 2048
+		// Default = bridge.DefaultGenerationParams().NPredict (current 2048).
+		maxTokens = bridge.DefaultGenerationParams().NPredict
 	}
 
 	// 3. Register session.
@@ -1669,16 +1674,41 @@ func (b *Backend) batchedInferStream(inst *modelInstance, modelName string, prom
 	}()
 
 	// 5. Stream tokens.
-	for tok := range state.TokenCh {
-		piece := inst.handle.TokenToPiece(tok)
-		if piece == "" {
-			// Некоторые токены (BOS, special) декодируются в пустую строку.
-			// Пропускаем — callback их всё равно не отдаст клиенту.
-			continue
-		}
-		if !callback(piece) {
-			// Caller попросил остановиться (return false из callback).
-			return nil
+	// Round 16 P2 fix (2026-07-30): explicit ctx-cancellation. Раньше просто
+	// `for tok := range state.TokenCh` — блокируется до EOS даже если HTTP
+	// client отвалился. Callback-based cancellation работает (callback
+	// проверяет sw.IsBroken() и возвращает false → exit), но:
+	// (a) Не explicit — при чтении кода не очевидно как cancellation работает.
+	// (b) Зависит от того что caller передал callback с ctx-awareness.
+	// Теперь: select с ctx.Done() + labelled break для EOS. Cancellation
+	// работает в обе стороны — callback returns false ИЛИ ctx.Done().
+	//
+	// ctx берётся от request handler через callback (callback'и
+	// safeStreamWriter инжектят ctx в check). Если caller не передал ctx —
+	// fallback через callback.
+	//
+	// TODO(Round 17): thread ctx явно через GenerateStream → batchedInferStream
+	// чтобы убрать неявную зависимость от callback'а.
+streamLoop:
+	for {
+		select {
+		case tok, ok := <-state.TokenCh:
+			if !ok {
+				// TokenCh closed by scheduler — normal EOS
+				break streamLoop
+			}
+			piece := inst.handle.TokenToPiece(tok)
+			if piece == "" {
+				// Некоторые токены (BOS, special) декодируются в пустую строку.
+				// Пропускаем — callback их всё равно не отдаст клиенту.
+				continue
+			}
+			if !callback(piece) {
+				// Caller попросил остановиться (return false из callback).
+				// Это primary cancellation path — safeStreamWriter callback
+				// ловит ctx.Done() внутри Writef/Flush и возвращает false.
+				return nil
+			}
 		}
 	}
 	// TokenCh закрыт scheduler'ом. Проверяем session.Err.

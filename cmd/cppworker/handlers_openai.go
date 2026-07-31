@@ -330,7 +330,14 @@ func handleV1ChatCompletions(w http.ResponseWriter, r *http.Request) {
 			hasTools := len(req.Tools) > 0
 			result, err := generateWithRamFallback(req.Model, prompt, params, hasTools)
 			// 2026-06-25: snapshot для /v1/chat/completions (tools path).
-			defer recordLastPromptFromError(req.Model, "/v1/chat/completions", prompt, &params, hasTools, err)
+			// Round 16 P2 fix (2026-07-30): closure pattern (consistent с streaming
+			// path line 686). Раньше `defer recordLastPromptFromError(... err)`
+			// captures err by value at defer time — fragile к refactoring (если
+			// кто-то переставит defer выше err, тихо получит nil всегда).
+			// Closure form гарантирует что err захватывается при return.
+			defer func() {
+				recordLastPromptFromError(req.Model, "/v1/chat/completions", prompt, &params, hasTools, err)
+			}()
 			if err != nil {
 				// 2026-06-24: PromptExceedsNCtxError → HTTP 413 (см. inference.go).
 				if handleInferenceError(w, err) {
@@ -389,7 +396,10 @@ func handleV1ChatCompletions(w http.ResponseWriter, r *http.Request) {
 	hasTools := len(req.Tools) > 0
 	result, err := generateWithRamFallback(req.Model, prompt, params, hasTools)
 	// 2026-06-25: snapshot для /v1/chat/completions (non-stream path).
-	defer recordLastPromptFromError(req.Model, "/v1/chat/completions", prompt, &params, hasTools, err)
+	// Round 16 P2 fix (2026-07-30): closure form (см. tools path выше).
+	defer func() {
+		recordLastPromptFromError(req.Model, "/v1/chat/completions", prompt, &params, hasTools, err)
+	}()
 	if err != nil {
 		// 2026-06-24: PromptExceedsNCtxError → HTTP 413 (см. inference.go).
 		if handleInferenceError(w, err) {
@@ -1087,7 +1097,10 @@ func handleV1Completions(w http.ResponseWriter, r *http.Request) {
 	// reload разрешён при n_ctx overflow.
 	result, err := generateWithRamFallback(req.Model, req.Prompt, params, false)
 	// 2026-06-25: snapshot для /v1/completions.
-	defer recordLastPromptFromError(req.Model, "/v1/completions", req.Prompt, &params, false, err)
+	// Round 16 P2 fix (2026-07-30): closure form (consistent со всеми другими).
+	defer func() {
+		recordLastPromptFromError(req.Model, "/v1/completions", req.Prompt, &params, false, err)
+	}()
 	if err != nil {
 		// 2026-06-24: PromptExceedsNCtxError → HTTP 413 (см. inference.go).
 		if handleInferenceError(w, err) {

@@ -54,7 +54,10 @@ const (
 )
 
 // toolsPromptCacheEntry — запись кеша для конкретного fingerprint.
+// Round 16 P2 fix (2026-07-30): хранит `key` для O(1) eviction — раньше
+// нужен был O(N) scan map при каждом eviction (256 entries → 256 scan).
 type toolsPromptCacheEntry struct {
+	key       string
 	prompt    string
 	createdAt time.Time
 }
@@ -71,6 +74,11 @@ const toolsPromptCacheMaxEntries = 256
 // toolsPromptCache — потокобезопасный LRU-кеш для tools prompts.
 // TTL + LRU eviction (Round 6 #3). sync.Map.Lock уже не используется —
 // единый mutex защищает и map, и list.
+//
+// Round 16 P2 fix (2026-07-30): key хранится в list element (через
+// toolsPromptCacheEntry.key), eviction O(1) вместо O(N) scan map.
+// При MaxEntries=256 + 1000 evictions/sec → было 256K comparisons/sec,
+// теперь 1000 O(1) lookups. Не критично при низком трафике, но правильнее.
 type toolsPromptCacheLRU struct {
 	mu    sync.Mutex
 	items map[string]*list.Element // fingerprint -> doubly-linked list element
@@ -121,26 +129,17 @@ func (c *toolsPromptCacheLRU) Put(fp, prompt string) {
 		c.order.MoveToFront(el)
 		return
 	}
-	el := c.order.PushFront(&toolsPromptCacheEntry{prompt: prompt, createdAt: now})
+	el := c.order.PushFront(&toolsPromptCacheEntry{key: fp, prompt: prompt, createdAt: now})
 	c.items[fp] = el
-	// Evict LRU until under cap. We need to scan the map to find the
-	// key associated with the back element (no key on list.Element).
+	// Evict LRU until under cap. O(1) — key хранится в list element.
 	for c.order.Len() > toolsPromptCacheMaxEntries {
 		back := c.order.Back()
 		if back == nil {
 			break
 		}
-		backKey := ""
-		for k, v := range c.items {
-			if v == back {
-				backKey = k
-				break
-			}
-		}
+		backEntry := back.Value.(*toolsPromptCacheEntry)
 		c.order.Remove(back)
-		if backKey != "" {
-			delete(c.items, backKey)
-		}
+		delete(c.items, backEntry.key)
 	}
 }
 

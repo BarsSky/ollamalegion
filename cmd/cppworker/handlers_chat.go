@@ -159,7 +159,10 @@ func handleChat(w http.ResponseWriter, r *http.Request) {
 	result, err := generateWithRamFallback(req.Model, prompt, params, hasTools)
 	// 2026-06-25: ?????????? snapshot ?????????? inference ??? endpoint /debug/last-prompt.
 	// ??? ???????? ??????????????? ?????? "prompt_exceeds_context" ? Cline/OpenWebUI.
-	defer recordLastPromptFromError(req.Model, "/api/chat", prompt, &params, hasTools, err)
+	// Round 16 P2 fix (2026-07-30): closure form (consistent со всеми другими endpoints).
+	defer func() {
+		recordLastPromptFromError(req.Model, "/api/chat", prompt, &params, hasTools, err)
+	}()
 	if err != nil {
 		// 2026-06-24: PromptExceedsNCtxError ? HTTP 413 (??. inference.go).
 		if handleInferenceError(w, err) {

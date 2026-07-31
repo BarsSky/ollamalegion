@@ -309,7 +309,10 @@ func handleGenerate(w http.ResponseWriter, r *http.Request) {
 	// /api/generate endpoint: tools не поддерживаются.
 	result, err := generateWithRamFallback(modelName, prompt, params, false)
 	// 2026-06-25: записываем snapshot последнего inference для endpoint /debug/last-prompt.
-	defer recordLastPromptFromError(modelName, "/api/generate", prompt, &params, false, err)
+	// Round 16 P2 fix (2026-07-30): closure form (consistent со всеми другими endpoints).
+	defer func() {
+		recordLastPromptFromError(modelName, "/api/generate", prompt, &params, false, err)
+	}()
 	if err != nil {
 		// 2026-06-24: PromptExceedsNCtxError → HTTP 413 (см. inference.go).
 		if handleInferenceError(w, err) {
@@ -481,7 +484,10 @@ func handleOllamaGenerate(w http.ResponseWriter, r *http.Request) {
 	// /api/generate (Ollama) — tools не поддерживаются, reload разрешён при n_ctx overflow.
 	result, err := generateWithRamFallback(modelName, prompt, params, false)
 	// 2026-06-25: записываем snapshot последнего inference для endpoint /debug/last-prompt.
-	defer recordLastPromptFromError(modelName, "/api/ollama/generate", prompt, &params, false, err)
+	// Round 16 P2 fix (2026-07-30): closure form (consistent со всеми другими endpoints).
+	defer func() {
+		recordLastPromptFromError(modelName, "/api/ollama/generate", prompt, &params, false, err)
+	}()
 	if err != nil {
 		// 2026-06-24: PromptExceedsNCtxError → HTTP 413 (см. inference.go).
 		if handleInferenceError(w, err) {

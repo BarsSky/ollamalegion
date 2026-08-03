@@ -5,6 +5,89 @@
 Формат ведётся в соответствии с [Keep a Changelog](https://keepachangelog.com/ru/1.0.0/),
 и этот проект придерживается [Semantic Versioning](https://semver.org/lang/ru/).
 
+## [0.5.4 — 2026-08-03]
+
+MINOR-релиз. **Round 22 — общий аудит полноты проброса Ollama API** (plans/round-22-balancer-general-audit.md).
+
+Закрывает 12 ранее необнаруженных багов в пробросе Ollama/OpenAI API до llama.cpp бэкендов:
+read/mgmt endpoints зависали на 10-60s, `/v1/embeddings` не работал, unsupported endpoints
+возвращали 30s timeout вместо мгновенного 404.
+
+### 🟢 Round 22 fixes (commits `58eb93a` + `645cc59`)
+
+**P0:**
+- **Fix #1+13**: read/mgmt endpoints (show, pull, copy, create, delete, push, blobs, models/files)
+  больше НЕ вызывают warmup и НЕ берут slot. Результат: 30-60s timeout → **37-71ms**.
+- **Fix #2**: `ModelManager` теперь помнит `name → path` маппинг при успешной загрузке.
+  Решает "после idle-unload, alias `qwen3-4b` не резолвится в файл когда в `modelsDir` 2+ .gguf".
+- **Fix #3**: `handleV1Embeddings` в cppworker расширен — поддержка `input: []string` (batch)
+  + `ensureModelLoaded` перед embeddings.
+- **Fix #14+16**: `/v1/embeddings` direct dispatch handler в LlamaCppRouter (минуя queue_manager
+  + VRAM headroom check). Read/mgmt endpoints bypass VRAM check.
+
+**P2:**
+- **Fix #7+11**: early 404 для unsupported OpenAI endpoints (`/v1/audio/*`, `/v1/images/*`,
+  `/v1/realtime`, `/v1/fine_tuning/*`, `/v1/batches`, `/v1/assistants`, `/v1/threads`)
+  и Ollama endpoints (`/api/signin`, `/api/logout`, `/api/web/*`). Мгновенный 404
+  вместо 30s timeout.
+- **Fix #9**: observability counters (`round22SkipWarmupTotal`, `round22Early404Total`,
+  `round22AliasResolvedTotal` / `round22AliasResolveFailedTotal`) — доступ через
+  `(*Proxy).Round22Metrics()`.
+
+**CRASH fix:**
+- **Fix #6**: `panic: http: multiple registrations for /v1/embeddings` в cppworker
+  (duplicate handler) — удалён лишний handler, расширен существующий.
+
+### 📊 Live verify (bundled-full стек, RTX 3070 CUDA_ARCH=86)
+
+| Endpoint | Before | After |
+|----------|--------|-------|
+| `POST /api/show` (file name) | 30-60s timeout | **200 OK in 37ms** |
+| `POST /api/show` (alias) | 30-60s timeout | **200 OK in 71ms** |
+| `POST /api/pull/copy/create/delete/push` | 30s timeout | 503 in 3-8ms (no model) |
+| `GET /api/models/files` | 10s timeout | **200 OK in 39ms** |
+| `POST /v1/embeddings` | 30s timeout (cppworker 404) | **200 OK in 486ms** |
+| `POST /v1/audio/speech` | 30s timeout | **404 in 3ms** |
+| `POST /api/signin/logout/web/*` | 30s timeout | **404 in 3ms** |
+| `POST /v1/chat/completions` | 200 OK | 200 OK in 356ms (unchanged) |
+
+### 📁 Файлы
+
+- `internal/balancer/router.go` — isReadOnlyOrMgmtEndpoint, isUnsupportedOpenAIEndpoint,
+  isUnsupportedOllamaEndpoint, early 404 handler
+- `internal/balancer/backend_selector.go` — selectBackend получил variadic skipSyncLoad
+- `internal/balancer/proxy.go` — ServeHTTP определяет skipWarmup, для read/mgmt
+  использует findModelOnAnyBackendNoVRAMCheck + selectAnyHealthy
+- `internal/balancer/slot_manager.go` — findModelOnAnyBackendNoVRAMCheck, selectAnyHealthy
+- `internal/balancer/llamacpp_router.go` — /v1/embeddings → handleOpenAIEmbeddings
+- `internal/balancer/llamacpp_handlers_inference.go` — handleOpenAIEmbeddings (direct dispatch)
+- `internal/balancer/llamacpp_handlers_admin.go` — handleShow использует
+  findModelOnAnyBackendNoVRAMCheck
+- `internal/balancer/metrics.go` — Round 22 observability counters
+- `internal/cppbackend/model_manager.go` — nameHistory, RecordModelLoad,
+  LookupNameHistory, FindModelByPath Шаг 0
+- `internal/cppbackend/backend.go` — вызов RecordModelLoad после успешного LoadModel
+- `cmd/cppworker/handlers_openai.go` — handleV1Embeddings extensions (batch + load)
+- `cmd/cppworker/handlers_embeddings.go` — cleanup (убран handleOpenAIEmbeddings)
+- `cmd/cppworker/router.go` — убран duplicate registration
+- `plans/round-22-balancer-general-audit.md` — обновлён до "Closed" статуса
+
+### ⚠️ Breaking changes
+
+None. Полностью backward-compatible.
+
+### 🔗 Commits (centurion branch)
+
+```
+6d1e7ca docs(plans): Round 22 audit closed — all P0 fixes applied
+645cc59 fix(balancer+cppworker): Round 22 — VRAM headroom bypass for read endpoints + duplicate route fix
+58eb93a fix(balancer+cppworker): Round 22 — read/mgmt skip warmup, name→path history, /v1/embeddings
+```
+
+### 📌 Тег
+
+`v0.5.4` (pushed to `github/centurion`)
+
 ## [0.5.3 — 2026-08-03]
 
 MINOR-релиз. **Round 17 reasoning + Round 17.3 HF download + bundled-full stack**.

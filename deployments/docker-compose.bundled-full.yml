@@ -1,0 +1,281 @@
+# =============================================================================
+# OllamaLegion — bundled-full stack (single compose file)
+# =============================================================================
+# Полный стек в ОДНОМ файле: loadbalancer + cppworker-gpu + agent-sidecar + webui.
+# Поднимается одной командой:
+#
+#   cd deployments
+#   docker compose -f docker-compose.bundled-full.yml --env-file .env.bundled-full up -d --build
+#
+# Или через скрипт (Windows):
+#   .\scripts\start-bundled-full.ps1
+#
+# Архитектура:
+#
+#   ┌────────────┐  register/heartbeat  ┌─────────────────┐
+#   │  webui     │  ─────────────────▶  │  loadbalancer   │  ◀──  client requests
+#   │  :18083    │  ◀──── proxy  ──────  │  :18080/:18081  │       (Ollama API)
+#   └────────────┘                       └─────────────────┘
+#                                              │   ▲
+#                                              │   │ register (hasAgent=true)
+#                                              ▼   │
+#                                      ┌──────────────┐
+#                                      │    agent     │  собирает GPU/VRAM/CPU метрики,
+#                                      │  (sidecar)   │  регистрирует cppworker
+#                                      └──────────────┘  с hasAgent=true
+#                                              │
+#                                              │ http GET /health, /metrics
+#                                              ▼
+#                                      ┌──────────────┐
+#                                      │ cppworker-gpu│  llama.cpp inference
+#                                      │  :18092      │
+#                                      └──────────────┘
+#
+# Сервисы:
+#   - loadbalancer  — Go-based reverse proxy с session stickiness, метриками, RPC
+#   - cppworker-gpu — llama.cpp backend (основной inference)
+#   - agent         — sidecar для GPU/VRAM/CPU метрик (отдельный backend registration)
+#   - webui         — WebUI для управления и мониторинга
+#
+# ВАЖНО: после изменения CPPWORKER_API_TOKEN в .env нужно пересобрать
+#        и перезапустить стек (token baked into env at startup).
+# =============================================================================
+
+name: ollama-legion-bundled-full
+
+services:
+  # ===========================================================================
+  # 1. LOAD BALANCER (Go)
+  # ===========================================================================
+  loadbalancer:
+    build:
+      context: ..
+      dockerfile: docker/balancer/Dockerfile
+    image: ollama-legion/balancer:cppworker-bundled-full
+    container_name: ol-bundled-full-balancer
+    restart: unless-stopped
+    ports:
+      - "${LB_PORT:-18080}:18080"      # Ollama API proxy
+      - "${LB_ADMIN_PORT:-18081}:18081"  # Admin API
+    environment:
+      - GIN_MODE=release
+      - LOG_LEVEL=${LB_LOG_LEVEL:-info}
+      - LB_CONFIG_PATH=/app/config/config.json
+      - LB_API_TOKEN=${CPPWORKER_API_TOKEN}
+      - LB_NCTX_RELOAD_ENABLED=${LB_NCTX_RELOAD_ENABLED:-true}
+      - LB_NCTX_RELOAD_MAX_N_CTX=${LB_NCTX_RELOAD_MAX_N_CTX:-131072}
+      - LB_NCTX_RELOAD_VRAM_SAFETY_FACTOR=${LB_NCTX_RELOAD_VRAM_SAFETY_FACTOR:-0.95}
+      - LB_NCTX_RELOAD_TIMEOUT_SEC=${LB_NCTX_RELOAD_TIMEOUT_SEC:-120}
+    volumes:
+      - ../config:/app/config:ro
+      - balancer_data:/app/data
+    networks:
+      - ol-bundled-net
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:18081/api/v1/ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 15s
+
+  # ===========================================================================
+  # 2. CPPWORKER-GPU (llama.cpp inference)
+  # ===========================================================================
+  cppworker-gpu:
+    build:
+      context: ..
+      dockerfile: docker/cppworker/Dockerfile.gpu
+      args:
+        CUDA_ARCH: ${CUDA_ARCH:-all}
+    image: ollama-legion/cppworker:gpu-${CPPWORKER_GPU_TAG:-arch_all}
+    container_name: ol-bundled-full-cppworker-gpu
+    restart: unless-stopped
+    runtime: nvidia
+    environment:
+      - NVIDIA_VISIBLE_DEVICES=${NVIDIA_VISIBLE_DEVICES:-all}
+      - NVIDIA_DRIVER_CAPABILITIES=compute,utility
+      - CPPWORKER_HOST=0.0.0.0
+      - CPPWORKER_PORT=18092
+      - CPPWORKER_MODELS_DIR=/app/models
+      - CPPWORKER_CTX_SIZE=${CPPWORKER_CTX_SIZE:-32768}
+      - CPPWORKER_BATCH_SIZE=${CPPWORKER_BATCH_SIZE:-512}
+      - CPPWORKER_GPU_LAYERS=${CPPWORKER_GPU_LAYERS:-20}
+      - CPPWORKER_FLASH_ATTN_TYPE=${CPPWORKER_FLASH_ATTN_TYPE:--1}
+      - CPPWORKER_N_THREADS=${CPPWORKER_N_THREADS:-0}
+      - CPPWORKER_NUMA=${CPPWORKER_NUMA:-false}
+      - CPPWORKER_USE_MMAP=${CPPWORKER_USE_MMAP:-true}
+      - CPPWORKER_RAM_FALLBACK_N_CTX=${CPPWORKER_RAM_FALLBACK_N_CTX:-true}
+      - CPPWORKER_RAM_FALLBACK_GPU_LAYERS=${CPPWORKER_RAM_FALLBACK_GPU_LAYERS:--2}
+      - CPPWORKER_RAM_FALLBACK_MAX_N_CTX=${CPPWORKER_RAM_FALLBACK_MAX_N_CTX:-128000}
+      - CPPWORKER_AUTO_OFFLOAD=${CPPWORKER_AUTO_OFFLOAD:-true}
+      - CPPWORKER_AUTO_TUNE_NCTX=${CPPWORKER_AUTO_TUNE_NCTX:-true}
+      # Round 16 (2026-07-30): reasoning/thinking policy.
+      # Default = OFF — backward compat + tool use workloads (Cline/Roo/Aider).
+      # Qwen3 thinking оборачивает tool call в <think> блоки, ломает tool call
+      # парсеры. Поставьте true если используете Coder/Qwen3-Coder и вам НЕ
+      # нужен tool use. Можно переопределить per-model через load-with-params.
+      - CPPWORKER_DEFAULT_ENABLE_REASONING=${CPPWORKER_DEFAULT_ENABLE_REASONING:-false}
+      - CPPWORKER_DEFAULT_REASONING_BUDGET=${CPPWORKER_DEFAULT_REASONING_BUDGET:-0}
+      - CPPWORKER_ENABLE_REASONING=${CPPWORKER_ENABLE_REASONING:-false}
+      - CPPWORKER_REASONING_BUDGET=${CPPWORKER_REASONING_BUDGET:-0}
+      # Round 15.1: opt-in flag для true parallel llama_decode через
+      # BatchedScheduler. Default = false (Round 13 multi-slot path).
+      - CPPWORKER_ENABLE_BATCHED_PARALLEL=${CPPWORKER_ENABLE_BATCHED_PARALLEL:-false}
+      - API_TOKEN=${CPPWORKER_API_TOKEN}
+      # Регистрация бэкенда в балансере.
+      - CPPWORKER_BALANCER_URL=${BALANCER_URL:-http://loadbalancer:18081}
+      - CPPWORKER_BALANCER_TOKEN=${CPPWORKER_API_TOKEN}
+      - CPPWORKER_ADVERTISE_HOST=cppworker-gpu
+      - CPPWORKER_ADVERTISE_PORT=18092
+      - CPPWORKER_REGISTER_NAME=cppworker-gpu-bundled
+      - CPPWORKER_BACKEND_ID=cppworker-gpu-bundled
+      # 2026-06-25: Go-side регистрация cppworker отключена, чтобы избежать дубликатов
+      # на одном физическом endpoint. Регистрацию делает agent ниже отдельным id.
+      - CPPWORKER_REGISTER_DISABLE=true
+      - HF_AUTO_DOWNLOAD_REPO=
+      - HF_AUTO_DOWNLOAD_FILE=
+    volumes:
+      - ../models:/app/models:rw
+      - ../config:/app/config:rw
+      - cppworker_cache:/app/.cache
+    ports:
+      - "${CPPWORKER_GPU_PORT:-18092}:18092"
+    networks:
+      - ol-bundled-net
+    healthcheck:
+      test: ["CMD", "/app/cppworker", "-healthcheck"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+    depends_on:
+      loadbalancer:
+        condition: service_healthy
+
+  # ===========================================================================
+  # 3. AGENT (GPU/VRAM/CPU metrics sidecar)
+  # ===========================================================================
+  # Регистрирует cppworker-gpu в балансер отдельным backend с id
+  # "cppworker-gpu-bundled-agent" (с hasAgent=true) — чтобы WebUI показывал
+  # реальные GPU/VRAM/CPU метрики на странице GGUF и в мониторинге.
+  #
+  # De-dup на стороне WebUI:
+  #   internal/api/gguf_backends_handler.go автоматически склеивает
+  #   cppworker-gpu-bundled и cppworker-gpu-bundled-agent (один host:port)
+  #   и выводит запись с hasAgent=true (приоритет), чтобы реальные метрики
+  #   отображались в UI.
+  # ===========================================================================
+  agent:
+    build:
+      context: ..
+      dockerfile: docker/agent/Dockerfile
+      target: agent-gpu
+      args:
+        ENABLE_NVML: "true"
+    image: ollama-legion/agent:gpu-llamacpp
+    container_name: ol-bundled-full-cppworker-gpu-agent
+    restart: unless-stopped
+    # 2026-06-30: критично для GPU-метрик.
+    # Без runtime: nvidia NVIDIA Container Toolkit не смонтирует в контейнер agent'а
+    #   /dev/nvidia0, /dev/nvidiactl, /dev/nvidia-uvm* и libnvidia-ml.so.1.
+    # В результате nvml.Init() возвращает ERROR_LIBRARY_NOT_FOUND, nvidia-smi
+    #   не находится в PATH (нет в base-образе nvidia/cuda), /dev/nvidia0
+    #   отсутствует → detectPlatformMode() возвращает ModeCPU и агент шлёт
+    #   только CPU/RAM метрики.
+    # Это симметрично cppworker-gpu (строка runtime: nvidia выше).
+    runtime: nvidia
+    environment:
+      - AGENT_ID=cppworker-gpu-bundled-agent
+      - AGENT_PORT=18032
+      # cppworker внутри compose-сети (DNS service discovery).
+      - AGENT_CPPWORKER_URL=http://cppworker-gpu:18092
+      # 2026-06-30: код в cmd/agent/main.go читает именно BALANCER_URL
+      # (не AGENT_BALANCER_URL) — иначе используется дефолт http://localhost:18081,
+      # который внутри compose указывает на сам контейнер agent и connection refused.
+      - BALANCER_URL=${BALANCER_URL:-http://loadbalancer:18081}
+      - BALANCER_TOKEN=${CPPWORKER_API_TOKEN}
+      # 2026-06-30: BACKEND_TYPE=llama_cpp обязательно — иначе баннер показывает
+      # "Engine: Ollama" и весь смысл llama.cpp-агента теряется.
+      - BACKEND_TYPE=llama_cpp
+      # 2026-06-30: NVML_ENABLED=true обязательно — без NVML agent собирает
+      # "No GPU detected, CPU mode" на хосте с GPU.
+      - NVML_ENABLED=true
+      # 2026-06-30 (de-dup v2): явно сообщаем агенту, какой физический cppworker
+      # он обёртывает. Эти host/port попадают в register-payload как host/cppWorkerPort
+      # и совпадают с тем, что отправляет register-with-balancer.sh для cppworker-gpu.
+      # Без этого de-dup по (host, port) в /api/v1/gguf/backends не срабатывал.
+      - AGENT_CPPWORKER_HOST=cppworker-gpu
+      - AGENT_CPPWORKER_PORT=18092
+      # Public host:port для самого агента (используется только для agentPort/healthcheck,
+      # НЕ для хоста бэкенда — это и было источником дубля).
+      - AGENT_PUBLIC_HOST=cppworker-gpu-bundled-agent
+      - AGENT_PUBLIC_PORT=18032
+      - NVIDIA_VISIBLE_DEVICES=${NVIDIA_VISIBLE_DEVICES:-all}
+      # 2026-06-30: NVIDIA_DRIVER_CAPABILITIES обязательно для доступа к GPU в контейнере.
+      #   "compute" — доступ к GPU для вычислений (NVML Init использует его).
+      #   "utility" — доступ к nvidia-smi и management утилитам.
+      # Без этого NVIDIA Container Toolkit не выдаёт права на /dev/nvidia* даже при runtime: nvidia.
+      - NVIDIA_DRIVER_CAPABILITIES=compute,utility
+      - AGENT_MODE=gpu
+      - AGENT_COLLECT_INTERVAL=${AGENT_COLLECT_INTERVAL:-15}
+      - AGENT_HEARTBEAT_INTERVAL=${AGENT_HEARTBEAT_INTERVAL:-30}
+      - AGENT_BACKEND_ID=cppworker-gpu-bundled-agent
+      - AGENT_CPPWORKER_PORT=18092
+      - AGENT_REGISTER_GPU_MODE=gpu
+    networks:
+      - ol-bundled-net
+    healthcheck:
+      test: ["CMD", "/app/agent", "-healthcheck"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+    depends_on:
+      loadbalancer:
+        condition: service_healthy
+      cppworker-gpu:
+        condition: service_healthy
+
+  # ===========================================================================
+  # 4. WEBUI (dashboard + monitoring)
+  # ===========================================================================
+  webui:
+    build:
+      context: ..
+      dockerfile: docker/webui/Dockerfile
+      # Sprint 30 (2026-07-30): VERSION / GIT_COMMIT / BUILD_DATE пробрасываются
+      # как build-args в WebUI. entrypoint.sh инжектит их в config.js, JS в
+      # index.html показывает в sidebar footer (id=appVersion).
+      # Можно переопределить через env:
+      #   WEBUI_VERSION, WEBUI_GIT_COMMIT, WEBUI_BUILD_DATE
+      args:
+        VERSION: ${WEBUI_VERSION:-dev}
+        GIT_COMMIT: ${WEBUI_GIT_COMMIT:-unknown}
+        BUILD_DATE: ${WEBUI_BUILD_DATE:-unknown}
+    image: ollama-legion/webui:cppworker-bundled-full
+    container_name: ol-bundled-full-webui
+    restart: unless-stopped
+    ports:
+      - "${WEBUI_PORT:-18083}:80"
+    environment:
+      - LB_API_URL=http://loadbalancer:18081
+      - LB_OLLAMA_URL=http://loadbalancer:18080
+      - WEBUI_PORT=80
+      # Session 18 Round 15 (2026-07-29): API_TOKEN обязателен — иначе WebUI
+      # шлёт X-API-Token: "" → cppworker возвращает 401 на per-backend save
+      # (config update). Используем тот же токен что у cppworker и balancer.
+      - API_TOKEN=${CPPWORKER_API_TOKEN}
+    networks:
+      - ol-bundled-net
+    depends_on:
+      loadbalancer:
+        condition: service_healthy
+
+networks:
+  ol-bundled-net:
+    driver: bridge
+    name: ollama-legion-bundled-net
+
+volumes:
+  balancer_data:
+  cppworker_cache:

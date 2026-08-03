@@ -14,8 +14,18 @@ import (
 // ---------- Read-only endpoints ----------
 
 // handleTags — агрегирует список моделей со всех llama.cpp бэкендов.
-// Сначала собирает из метрик (быстро). Если метрики пустые — делает fallback-запрос
-// к /v1/models здорового llama.cpp бэкенда для получения актуального списка.
+//
+// Возвращает ОБЪЕДИНЕНИЕ (дедуплицированное по имени):
+//  1. Loaded models из метрик (быстро, in-memory)
+//  2. Available models (cppworker's /api/models/files, все .gguf на диске)
+//
+// Round 19 hotfix (2026-08-03): раньше fallbacks (cppworker /api/tags) запускались
+// ТОЛЬКО когда loaded=0. В результате если 1+ модель загружена — клиенту возвращался
+// только loaded список, БЕЗ on-disk моделей. OpenWebUI не видел остальные .gguf
+// файлы, которые можно подгрузить lazy-load'ом.
+//
+// Теперь fallbacks запускаются ВСЕГДА (best-effort, ранний выход если уже нашли
+// что-то). Источники объединяются, дедуп по name.
 func (lr *LlamaCppRouter) handleTags(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
@@ -28,15 +38,20 @@ func (lr *LlamaCppRouter) handleTags(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Собираем модели из метрик всех llama.cpp бэкендов
+	// 1) Loaded models из метрик всех llama.cpp бэкендов (быстро, in-memory).
+	//
+	// Round 19 hotfix (2026-08-03): читаем из `llamaMetrics[id]` (куда пишет
+	// llamaCppMetricsPoller), а не из `metrics[id].LlamaCpp` (куда пишет
+	// Ollama-agent). Без этого fix'а — `LoadedModels` всегда пустой для бэкендов
+	// без agent, и loaded модели пропадают из /api/tags.
 	lr.proxy.metricsMgr.mu.RLock()
 	uniqueModels := make(map[string]OllamaTag)
 	for _, b := range backends {
-		metrics, ok := lr.proxy.metricsMgr.metrics[b.id]
-		if !ok {
+		lm, ok := lr.proxy.metricsMgr.llamaMetrics[b.id]
+		if !ok || lm == nil {
 			continue
 		}
-		for _, m := range metrics.LlamaCpp.LoadedModels {
+		for _, m := range lm.LoadedModels {
 			if _, exists := uniqueModels[m.Name]; !exists {
 				uniqueModels[m.Name] = OllamaTag{
 					Name:  m.Name,
@@ -48,37 +63,42 @@ func (lr *LlamaCppRouter) handleTags(w http.ResponseWriter, r *http.Request) {
 	}
 	lr.proxy.metricsMgr.mu.RUnlock()
 
-	// Fallback 1: если метрики пустые — запрашиваем /v1/models (OpenAI) у бэкендов.
-	if len(uniqueModels) == 0 {
-		for _, b := range backends {
-			models, err := lr.fetchLlamaCppModels(b.host, b.port)
-			if err != nil {
-				logger.Get().Warnw("handleTags: fallback /v1/models failed",
-					"backend", b.id, "host", b.host, "port", b.port, "error", err)
-				continue
+	// 2) ВСЕГДА опрашиваем /api/models/files на каждом бэкенде чтобы получить
+	//    полный список .gguf на диске (включая выгруженные). Round 19 hotfix:
+	//    убрал условие `if len(uniqueModels) == 0` — раньше on-disk список
+	//    возвращался ТОЛЬКО когда loaded=0, скрывая остальные модели от клиента.
+	//    Дедупликация по имени сохраняется (map).
+	for _, b := range backends {
+		files, err := lr.fetchLlamaCppFiles(b.host, b.port)
+		if err != nil {
+			logger.Get().Debugw("handleTags: /api/models/files fetch failed (non-fatal)",
+				"backend", b.id, "host", b.host, "port", b.port, "error", err)
+			continue
+		}
+		for _, f := range files {
+			// f.Name includes .gguf extension, strip for Ollama convention
+			name := f.Name
+			if strings.HasSuffix(strings.ToLower(name), ".gguf") {
+				name = name[:len(name)-5]
 			}
-			for _, m := range models {
-				if _, exists := uniqueModels[m.Name]; !exists {
-					uniqueModels[m.Name] = OllamaTag{
-						Name:  m.Name,
-						Model: m.Name,
-						Size:  0,
-					}
+			if _, exists := uniqueModels[name]; !exists {
+				uniqueModels[name] = OllamaTag{
+					Name:       name,
+					Model:      name,
+					Size:       f.SizeBytes,
+					ModifiedAt: f.ModifiedAt,
 				}
-			}
-			if len(uniqueModels) > 0 {
-				break
 			}
 		}
 	}
 
-	// Fallback 2: если и /v1/models пустой — запрашиваем cppworker's Ollama-совместимый
-	// /api/tags. Отдаёт ВСЕ .gguf файлы на диске (включая выгруженные).
+	// 3) Final fallback: если по-прежнему пусто (все бэкенды недоступны), пробуем
+	//    cppworker's /api/tags — он делает то же что и files, но с другим форматом.
 	if len(uniqueModels) == 0 {
 		for _, b := range backends {
 			tags, err := lr.fetchLlamaCppTags(b.host, b.port)
 			if err != nil {
-				logger.Get().Warnw("handleTags: fallback cppworker /api/tags failed",
+				logger.Get().Warnw("handleTags: final fallback cppworker /api/tags failed",
 					"backend", b.id, "host", b.host, "port", b.port, "error", err)
 				continue
 			}
@@ -104,7 +124,6 @@ func (lr *LlamaCppRouter) handleTags(w http.ResponseWriter, r *http.Request) {
 
 	logger.Get().Infow("handleTags: returning models",
 		"count", len(models),
-		"from_metrics", len(uniqueModels) > 0,
 	)
 
 	writeJSON(w, http.StatusOK, OllamaTagsResponse{Models: models})
@@ -143,6 +162,61 @@ func (lr *LlamaCppRouter) fetchLlamaCppModels(host string, port int) ([]OllamaTa
 		})
 	}
 	return tags, nil
+}
+
+// fetchLlamaCppFiles — запрашивает /api/models/files у cppworker.
+// Возвращает список ВСЕХ .gguf файлов на диске (включая выгруженные).
+// Round 19 hotfix: используется как primary source для on-disk моделей.
+//
+// Преимущества перед /api/tags:
+//   - быстрее (только fs.ReadDir, без загрузки метаданных модели)
+//   - всегда возвращает актуальный список (не зависит от того, загружена модель или нет)
+//   - не зависает если какая-то модель в состоянии loading
+type llamaCppFileEntry struct {
+	Name       string
+	SizeBytes  int64
+	ModifiedAt time.Time
+}
+
+func (lr *LlamaCppRouter) fetchLlamaCppFiles(host string, port int) ([]llamaCppFileEntry, error) {
+	url := fmt.Sprintf("http://%s:%d/api/models/files", host, port)
+	client := &http.Client{Timeout: 10 * time.Second}
+	resp, err := client.Get(url)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("status %d", resp.StatusCode)
+	}
+
+	var result struct {
+		Files []struct {
+			Name       string `json:"name"`
+			SizeBytes  int64  `json:"sizeBytes"`
+			ModifiedAt string `json:"modifiedAt"`
+		} `json:"files"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return nil, err
+	}
+
+	entries := make([]llamaCppFileEntry, 0, len(result.Files))
+	for _, f := range result.Files {
+		var modTime time.Time
+		if f.ModifiedAt != "" {
+			if t, err := time.Parse(time.RFC3339, f.ModifiedAt); err == nil {
+				modTime = t
+			}
+		}
+		entries = append(entries, llamaCppFileEntry{
+			Name:       f.Name,
+			SizeBytes:  f.SizeBytes,
+			ModifiedAt: modTime,
+		})
+	}
+	return entries, nil
 }
 
 // fetchLlamaCppTags — запрашивает Ollama-совместимый /api/tags у cppworker.
@@ -383,6 +457,10 @@ func (lr *LlamaCppRouter) handleVersion(w http.ResponseWriter, r *http.Request) 
 // handleOpenAIModels — возвращает список моделей в OpenAI-формате
 // {"object":"list","data":[{"id":"...","object":"model","created":...,"owned_by":"ollamalegion"}]}
 // Используется OpenWebUI при обращении к /openai/v1/models.
+//
+// Round 19 hotfix (2026-08-03): баг был в том, что fallback на /v1/models и
+// /api/models/files срабатывал ТОЛЬКО когда loaded=0. Если хоть 1 модель загружена —
+// клиент видел только её. Теперь объединяем loaded + on-disk ВСЕГДА, как в handleTags.
 func (lr *LlamaCppRouter) handleOpenAIModels(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
@@ -392,25 +470,44 @@ func (lr *LlamaCppRouter) handleOpenAIModels(w http.ResponseWriter, r *http.Requ
 	backends := lr.getLlamaCppBackends()
 	uniqueModels := make(map[string]bool)
 
-	// Собираем модели из метрик
+	// 1) Loaded models из метрик всех llama.cpp бэкендов.
+	//    Round 19 hotfix: читаем из llamaMetrics (cppworker-poller), не metrics[id].LlamaCpp (Ollama-agent).
 	lr.proxy.metricsMgr.mu.RLock()
 	for _, b := range backends {
-		metrics, ok := lr.proxy.metricsMgr.metrics[b.id]
-		if !ok {
+		lm, ok := lr.proxy.metricsMgr.llamaMetrics[b.id]
+		if !ok || lm == nil {
 			continue
 		}
-		for _, m := range metrics.LlamaCpp.LoadedModels {
+		for _, m := range lm.LoadedModels {
 			uniqueModels[m.Name] = true
 		}
 	}
 	lr.proxy.metricsMgr.mu.RUnlock()
 
-	// Fallback: если метрики пустые — запрашиваем /v1/models у бэкендов напрямую
+	// 2) ВСЕГДА опрашиваем /api/models/files чтобы получить .gguf на диске.
+	//    Round 19 hotfix: убрал `if len(uniqueModels) == 0` guard.
+	for _, b := range backends {
+		files, err := lr.fetchLlamaCppFiles(b.host, b.port)
+		if err != nil {
+			logger.Get().Debugw("handleOpenAIModels: /api/models/files fetch failed (non-fatal)",
+				"backend", b.id, "error", err)
+			continue
+		}
+		for _, f := range files {
+			name := f.Name
+			if strings.HasSuffix(strings.ToLower(name), ".gguf") {
+				name = name[:len(name)-5]
+			}
+			uniqueModels[name] = true
+		}
+	}
+
+	// 3) Final fallback: cppworker /v1/models (только loaded), затем /api/tags.
 	if len(uniqueModels) == 0 {
 		for _, b := range backends {
 			models, err := lr.fetchLlamaCppModels(b.host, b.port)
 			if err != nil {
-				logger.Get().Warnw("handleOpenAIModels: fallback /v1/models failed",
+				logger.Get().Warnw("handleOpenAIModels: final fallback /v1/models failed",
 					"backend", b.id, "error", err)
 				continue
 			}
@@ -441,7 +538,6 @@ func (lr *LlamaCppRouter) handleOpenAIModels(w http.ResponseWriter, r *http.Requ
 
 	logger.Get().Infow("handleOpenAIModels: returning models",
 		"count", len(data),
-		"from_metrics", len(uniqueModels) > 0,
 	)
 
 	writeJSON(w, http.StatusOK, map[string]interface{}{

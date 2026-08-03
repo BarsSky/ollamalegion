@@ -1,0 +1,43 @@
+fix(balancer): Round 19 hotfix — /api/tags and /v1/models show all models
+
+User reported: when a model is loaded in backend, balancer's /api/tags
+returns ONLY the loaded one, hiding on-disk .gguf files from clients.
+When nothing is loaded, full on-disk list is returned. This breaks
+OpenWebUI's model picker (only sees loaded model, can't lazy-load others).
+
+Root cause: TWO independent bugs in handleTags and handleOpenAIModels.
+
+Bug 1 — Wrong metrics field:
+The code read `metrics.LlamaCpp.LoadedModels` from `metricsMgr.metrics[id]`,
+but cppworker's llamaCppMetricsPoller writes to a SEPARATE cache:
+`metricsMgr.llamaMetrics[id]`. For backends WITHOUT an Ollama agent
+(typical cppworker deployment), `metrics[id].LlamaCpp.LoadedModels` is
+always empty, so loaded models were silently lost. The fallbacks then
+kicked in but ALSO had the same broken condition.
+
+Bug 2 — Fallbacks gated on `len(uniqueModels) == 0`:
+The cppworker /api/models/files and /api/tags fallbacks only ran when
+loaded=0. If 1+ model was loaded, on-disk files were hidden.
+
+Both bugs combined: in normal usage (cppworker with model loaded),
+`/api/tags` returned 1 (only loaded), `/api/tags` returned 0 if nothing
+loaded (fallback fired, returned all on-disk). User got exactly the
+"asymmetric" behaviour they described.
+
+Fix (internal/balancer/llamacpp_handlers_readonly.go):
+1. Read loaded models from `metricsMgr.llamaMetrics[id]` (correct cache).
+2. ALWAYS query /api/models/files on every backend (not just when 0 loaded).
+3. Dedup by name. cppworker /v1/models and /api/tags kept as final fallback.
+4. New helper `fetchLlamaCppFiles` for /api/models/files (was using
+   /api/tags which is heavier — reads model metadata for every file).
+
+Tests (internal/balancer/llamacpp_handlers_readonly_round19_test.go):
+- T1: 1 loaded + 2 on-disk → /api/tags returns 2 (dedup), /v1/models returns 2
+- T2: 0 loaded + 1 on-disk → /api/tags returns 1, name strips .gguf
+
+Production verify (bundled-full, qwen3-4b loaded, 2 .gguf on disk):
+- BEFORE: balancer /api/tags → 1 (qwen3-4b)
+- AFTER:  balancer /api/tags → 3 (qwen3-4b + 2 on-disk)
+- matches cppworker /api/tags response exactly
+
+Image: ollama-legion/balancer:cppworker-bundled-full @ c409e5f4

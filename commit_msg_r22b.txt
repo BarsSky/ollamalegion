@@ -1,0 +1,123 @@
+fix(balancer+cppworker): Round 22 — VRAM headroom bypass for read endpoints + duplicate route fix
+
+**Дополнительные правки к Round 22 после live verify:**
+
+---
+
+## Fix #14 (P0): /v1/embeddings direct dispatch handler
+
+**Проблема:** `/v1/embeddings` после первой загрузки модели (VRAM > 85%)
+попадал в queue_manager → slot manager → блокировался на VRAM headroom
+15% (т.к. embeddings не имели dedicated handler как /v1/chat/completions).
+
+**Fix:** Добавлен `handleOpenAIEmbeddings` в
+`internal/balancer/llamacpp_handlers_inference.go` (как у `handleOpenAICompletion`).
+Делает direct dispatch на cppworker, минуя queue_manager.
+
+Зарегистрирован в `llamacpp_router.go`.
+
+**Также** улучшен существующий `handleV1Embeddings` в cppworker:
+- Поддержка `input: []string` (batch) — раньше только `string`
+- `ensureModelLoaded` перед embeddings — раньше 500 если модель не загружена
+
+---
+
+## Fix #15 (P0): Duplicate `/v1/embeddings` route в cppworker (CRASH)
+
+**Проблема:** Сборка cppworker r22 упала с `panic: http: multiple
+registrations for /v1/embeddings`. Я добавил новый
+`handleOpenAIEmbeddings` рядом с существующим `handleV1Embeddings` — оба
+регистрировались на тот же URL.
+
+**Fix:** Удалён мой новый handler (cppworker уже имеет `handleV1Embeddings`).
+Расширил существующий поддержкой `[]string` и `ensureModelLoaded`.
+
+---
+
+## Fix #16 (P0): Read/mgmt endpoints bypass VRAM headroom check
+
+**Проблема:** После Fix #1 (skip warmup) read/mgmt endpoints типа
+`/api/show` всё равно возвращали 503 при VRAM > 85% потому что
+`selectBackend` P1 (Model Affinity) вызывает `canAcceptRequest` который
+делает VRAM headroom check. Read operations не нагружают GPU, но
+slot manager их блокирует.
+
+**Fix:** В `Proxy.ServeHTTP` для read/mgmt endpoints:
+- Сначала ищем backend с загруженной моделью через новую функцию
+  `findModelOnAnyBackendNoVRAMCheck` (минуя VRAM check)
+- Fallback на `selectAnyHealthy` (любой healthy без VRAM check)
+
+Добавлены:
+- `internal/balancer/slot_manager.go:findModelOnAnyBackendNoVRAMCheck`
+- `internal/balancer/slot_manager.go:selectAnyHealthy`
+
+Также `LlamaCppRouter.handleShow` обновлён для использования
+новых функций вместо `selectLlamaCppBackendByResources` (которая
+вызывала `canAcceptRequest` с VRAM check).
+
+---
+
+## Fix #17 (P1): observability counters уже добавлены в Round 22 main commit
+
+Round 22 main commit (`fix(balancer+cppworker): Round 22 — read/mgmt
+skip warmup, name→path history, /v1/embeddings`) уже добавил:
+- `round22SkipWarmupTotal`
+- `round22Early404Total`
+- `round22AliasResolvedTotal` / `round22AliasResolveFailedTotal`
+
+Доступ через `(*Proxy).Round22Metrics()`. Можно вызвать из /metrics endpoint
+(будущий PR).
+
+---
+
+## Live verify (bundled-full стек)
+
+```
+READ/MGMT (Fix #1+13+16):
+[200]  71ms /api/show              (alias qwen3-4b → 200 with model info!)
+[200]  37ms /api/show              (file name)
+[200]  39ms /api/models/files
+[503]   8ms /api/pull              (no model to operate on, expected)
+[503]   4ms /api/copy              (idem)
+[503]   3ms /api/create            (idem)
+[503]   4ms /api/delete            (idem)
+[503]   3ms /api/push              (idem)
+
+UNSUPPORTED (Fix #7+11):
+[404]   3ms /v1/audio/speech
+[404]   3ms /v1/images/generations
+[404]   3ms /v1/realtime
+[404]   3ms /api/signin
+[404]   4ms /api/logout
+[404]   4ms /api/web/settings
+
+OpenAI v1/* (Fix #3 + new handleV1Embeddings):
+[200] 486ms /v1/embeddings         (real embedding data)
+[200] 356ms /v1/chat/completions
+[200] 353ms /v1/completions
+
+Other:
+[200]  39ms /v1/models
+[200]  39ms /api/tags
+[200]  39ms /api/ps
+```
+
+**КРИТИЧНО:** до Round 22 эти endpoints висели 10-60 секунд или возвращали
+500. Теперь все — 200/503/404 за миллисекунды.
+
+---
+
+## Файлы
+
+- cmd/cppworker/handlers_embeddings.go — удалён handleOpenAIEmbeddings
+- cmd/cppworker/handlers_openai.go — расширен handleV1Embeddings
+  (input: []string, ensureModelLoaded)
+- cmd/cppworker/router.go — убран duplicate registration
+- internal/balancer/llamacpp_handlers_admin.go — handleShow использует
+  findModelOnAnyBackendNoVRAMCheck + selectAnyLlamaCppHealthy
+- internal/balancer/llamacpp_handlers_inference.go — добавлен
+  handleOpenAIEmbeddings
+- internal/balancer/llamacpp_router.go — /v1/embeddings → handleOpenAIEmbeddings
+- internal/balancer/proxy.go — read/mgmt использует новые функции выбора
+- internal/balancer/slot_manager.go — findModelOnAnyBackendNoVRAMCheck,
+  selectAnyHealthy

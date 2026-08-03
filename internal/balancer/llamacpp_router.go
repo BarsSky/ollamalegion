@@ -121,6 +121,12 @@ func (lr *LlamaCppRouter) Route(w http.ResponseWriter, r *http.Request) bool {
 		// dispatch и работает; /v1/completions шёл в общий flow и блокировался.
 		lr.handleOpenAICompletion(w, r)
 		return true
+	case "/v1/embeddings":
+		// Round 22 (2026-08-03): /v1/embeddings тоже direct dispatch.
+		// Без этого: после загрузки модели (VRAM > 85%) embeddings застревают
+		// в queue_manager с 503 (slot blocked из-за headroom 15%).
+		lr.handleOpenAIEmbeddings(w, r)
+		return true
 	}
 	return false
 }

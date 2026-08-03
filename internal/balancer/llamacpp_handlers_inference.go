@@ -369,6 +369,102 @@ func (lr *LlamaCppRouter) handleOpenAICompletion(w http.ResponseWriter, r *http.
 	_ = lr.proxy.proxyRequestOpenAIStreaming(w, r, upstreamResp, backendID)
 }
 
+// handleOpenAIEmbeddings — OpenAI /v1/embeddings через dedicated dispatch.
+//
+// Round 22 (2026-08-03): вместо main proxy flow (который идёт в queue_manager
+// → slot manager → блокируется на VRAM headroom 15%) делаем direct dispatch
+// на cppworker, как handleOpenAICompletion. Без этого: при VRAM > 85%
+// (например после /v1/chat/completions загрузившего модель) embeddings
+// получают 30s timeout 503.
+//
+// Использует ensureModelLoadedOnBackend для автозагрузки модели.
+func (lr *LlamaCppRouter) handleOpenAIEmbeddings(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	var bodyBuf []byte
+	if r.Body != nil {
+		var err error
+		bodyBuf, err = io.ReadAll(r.Body)
+		if err != nil {
+			logger.Get().Errorw("handleOpenAIEmbeddings: failed to read body", "error", err)
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid request body"})
+			return
+		}
+		r.Body = io.NopCloser(bytes.NewReader(bodyBuf))
+	}
+
+	var req map[string]interface{}
+	if err := json.Unmarshal(bodyBuf, &req); err != nil {
+		logger.Get().Errorw("handleOpenAIEmbeddings: failed to parse body", "error", err)
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid request body"})
+		return
+	}
+	model, _ := req["model"].(string)
+
+	backendID := lr.findModelOnLlamaCppBackend(model)
+	if backendID == "" {
+		backendID = lr.selectAnyLlamaCppHealthy()
+	}
+	if backendID == "" {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "no llama.cpp backend available"})
+		return
+	}
+
+	state, ok := lr.proxy.backends[backendID]
+	if !ok {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "backend state not found"})
+		return
+	}
+
+	// Auto-load (если модель ещё не загружена).
+	if model != "" {
+		if _, loadErr := lr.ensureModelLoadedOnBackend(backendID, model, warmupOptions{}); loadErr != nil {
+			logger.Get().Errorw("handleOpenAIEmbeddings: auto-load failed",
+				"backend", backendID, "model", model, "error", loadErr)
+			writeJSON(w, http.StatusServiceUnavailable, map[string]string{
+				"error": fmt.Sprintf("model '%s' is not loaded and auto-load failed: %v", model, loadErr),
+			})
+			return
+		}
+	}
+
+	r.Body = io.NopCloser(bytes.NewReader(bodyBuf))
+
+	targetURL := fmt.Sprintf("http://%s:%d/v1/embeddings", state.Backend.Host, lr.proxy.getBackendPort(state.Backend))
+
+	logger.Get().Infow("handleOpenAIEmbeddings: proxying to cppworker",
+		"backend", backendID, "url", targetURL, "model", model)
+
+	upstreamReq, err := http.NewRequestWithContext(r.Context(), http.MethodPost, targetURL, bytes.NewReader(bodyBuf))
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+	upstreamReq.Header.Set("Content-Type", "application/json")
+	upstreamReq.Header.Set("Accept", "application/json")
+
+	upstreamResp, err := lr.proxy.client.Do(upstreamReq)
+	if err != nil {
+		logger.Get().Errorw("handleOpenAIEmbeddings: upstream request failed",
+			"backend", backendID, "model", model, "error", err)
+		writeJSON(w, http.StatusBadGateway, map[string]string{"error": err.Error()})
+		return
+	}
+	defer upstreamResp.Body.Close()
+
+	// Пробрасываем ответ клиенту.
+	for k, v := range upstreamResp.Header {
+		for _, vv := range v {
+			w.Header().Add(k, vv)
+		}
+	}
+	w.WriteHeader(upstreamResp.StatusCode)
+	_, _ = io.Copy(w, upstreamResp.Body)
+}
+
 // handleChat — проксирует /api/chat запросы к llama.cpp бэкендам.
 func (lr *LlamaCppRouter) handleChat(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {

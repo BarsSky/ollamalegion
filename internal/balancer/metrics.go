@@ -2,6 +2,7 @@ package balancer
 
 import (
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"ollama-loadbalancer/pkg/logger"
@@ -162,6 +163,33 @@ var modelLoadTimeHistogram = newHistogramCollector(0.5, 1, 2, 5, 10, 30, 60, 120
 
 // queueWaitTimeHistogram — гистограмма времени ожидания в очереди (секунды)
 var queueWaitTimeHistogram = newHistogramCollector(0.001, 0.01, 0.1, 0.5, 1, 2, 5, 10, 30, 60)
+
+// Round 22 (2026-08-03): observability counters для отслеживания поведения
+// балансера после фиксов (read/mgmt skip warmup, early 404, alias resolution).
+// Без них невозможно понять в продакшене "работают ли фиксы".
+var (
+	// round22SkipWarmupTotal — сколько раз warmup был SKIP'нут для read/mgmt
+	// endpoint'ов. Должно быть > 0 после первого /api/show, /api/pull, etc.
+	round22SkipWarmupTotal atomic.Int64
+	// round22Early404Total — сколько раз balancer вернул early 404 для
+	// unsupported OpenAI endpoints (/v1/audio/*, /v1/images/*, etc).
+	round22Early404Total atomic.Int64
+	// round22AliasResolvedTotal — сколько раз alias был успешно резолвнут
+	// через ModelManager.nameHistory (Round 22 BUG #2 fix).
+	round22AliasResolvedTotal atomic.Int64
+	// round22AliasResolveFailedTotal — сколько раз alias НЕ был найден.
+	round22AliasResolveFailedTotal atomic.Int64
+)
+
+// Round 22 metrics — getter'ы для /metrics endpoint (если будет).
+func (p *Proxy) Round22Metrics() map[string]int64 {
+	return map[string]int64{
+		"skip_warmup_total":         round22SkipWarmupTotal.Load(),
+		"early_404_total":           round22Early404Total.Load(),
+		"alias_resolved_total":      round22AliasResolvedTotal.Load(),
+		"alias_resolve_failed_total": round22AliasResolveFailedTotal.Load(),
+	}
+}
 
 // RecordModelLoadTime — запись времени загрузки модели (вызывается из warmupModel)
 func (p *Proxy) RecordModelLoadTime(backendID, model string, duration time.Duration) {

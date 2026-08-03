@@ -255,11 +255,29 @@ func (m *ModelManager) FindModelByPath(path string) (string, error) {
 	// Это решает BUG #2: после idle-unload alias типа "qwen3-4b" больше
 	// не в loaded-моделях, но мы ЗНАЕМ что она соответствовала определённому
 	// файлу (записано RecordModelLoad при успешной загрузке).
+	//
+	// Также проверяем nameHistory для path + ".gguf" — некоторые handlers
+	// (например handleOllamaShow) добавляют .gguf перед вызовом.
 	if histPath, ok := m.nameHistory[path]; ok {
 		if _, err := os.Stat(histPath); err == nil {
 			return histPath, nil
 		}
 		// Файл был удалён — fallback дальше
+	}
+	if !strings.HasSuffix(path, ".gguf") {
+		if histPath, ok := m.nameHistory[path+".gguf"]; ok {
+			if _, err := os.Stat(histPath); err == nil {
+				return histPath, nil
+			}
+		}
+	} else {
+		// path уже с .gguf — попробуем без
+		baseName := strings.TrimSuffix(path, ".gguf")
+		if histPath, ok := m.nameHistory[baseName]; ok {
+			if _, err := os.Stat(histPath); err == nil {
+				return histPath, nil
+			}
+		}
 	}
 
 	// Точное совпадение

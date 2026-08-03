@@ -1551,41 +1551,85 @@ func writeOpenAICompletionStream(w http.ResponseWriter, r *http.Request, modelNa
 }
 
 // handleV1Embeddings — OpenAI-совместимый /v1/embeddings endpoint.
+// Round 22 (2026-08-03): добавлена поддержка `input: []string` (batch) и
+// lazy model load (раньше — только string + 500 если модель не загружена).
 func handleV1Embeddings(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		writeError(w, http.StatusMethodNotAllowed, "use POST")
 		return
 	}
 	var req struct {
-		Model string `json:"model"`
-		Input string `json:"input"`
+		Model string      `json:"model"`
+		Input interface{} `json:"input"` // string OR []string
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid JSON: "+err.Error())
 		return
 	}
-	if req.Model == "" || req.Input == "" {
+	if req.Model == "" || req.Input == nil {
 		writeError(w, http.StatusBadRequest, "model and input are required")
 		return
 	}
-	embeddings, err := backend.GetEmbeddings(req.Model, req.Input)
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, "embeddings failed: "+err.Error())
+
+	// Нормализуем input → []string
+	var inputs []string
+	switch v := req.Input.(type) {
+	case string:
+		inputs = []string{v}
+	case []interface{}:
+		for _, item := range v {
+			if s, ok := item.(string); ok {
+				inputs = append(inputs, s)
+			} else {
+				writeError(w, http.StatusBadRequest, "input array must contain only strings")
+				return
+			}
+		}
+	default:
+		writeError(w, http.StatusBadRequest, "input must be string or []string")
 		return
 	}
+	if len(inputs) == 0 {
+		writeError(w, http.StatusBadRequest, "input must contain at least one string")
+		return
+	}
+
+	// Round 22: lazy model load (раньше handler возвращал 500 без load).
+	if err := ensureModelLoaded(req.Model); err != nil {
+		if isModelLoadingError(err) {
+			writeLoadingResponse(w, req.Model, err)
+			return
+		}
+		logger.Get().Errorw("v1/embeddings: model load failed", "model", req.Model, "error", err)
+		writeError(w, http.StatusInternalServerError, "model load failed: "+err.Error())
+		return
+	}
+
+	// GetEmbeddings поддерживает только 1 input за раз. Для batch — вызываем
+	// в цикле. (В будущем можно оптимизировать через batched API.)
+	data := make([]map[string]interface{}, 0, len(inputs))
+	totalTokens := 0
+	for idx, text := range inputs {
+		vec, err := backend.GetEmbeddings(req.Model, text)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "embeddings failed: "+err.Error())
+			return
+		}
+		data = append(data, map[string]interface{}{
+			"object":    "embedding",
+			"index":     idx,
+			"embedding": vec,
+		})
+		totalTokens += buildPromptTokens(req.Model, text)
+	}
+
 	writeJSON(w, http.StatusOK, map[string]interface{}{
 		"object": "list",
-		"data": []map[string]interface{}{
-			{
-				"object":    "embedding",
-				"index":     0,
-				"embedding": embeddings,
-			},
-		},
-		"model": req.Model,
+		"data":   data,
+		"model":  req.Model,
 		"usage": map[string]interface{}{
-			"prompt_tokens": buildPromptTokens(req.Model, req.Input),
-			"total_tokens":  buildPromptTokens(req.Model, req.Input),
+			"prompt_tokens": totalTokens,
+			"total_tokens":  totalTokens,
 		},
 	})
 }

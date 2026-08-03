@@ -632,8 +632,22 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		// delete, push, blobs, models, models/files) НЕ требуют загруженной
 		// модели. Пропускаем SyncModelLoad (P3 warmup), иначе balancer
 		// зависает на 10-30s ожидая load модели, которая endpoint'у не нужна.
+		// ТАКЖЕ пропускаем VRAM headroom check в selectBackend (P1), потому что
+		// read operations не нагружают GPU — они могут работать при 95% VRAM.
 		skipWarmup := isReadOnlyOrMgmtEndpoint(path)
-		targetBackend = p.selectBackend(model, bt, skipWarmup)
+		if skipWarmup {
+			round22SkipWarmupTotal.Add(1)
+		}
+		if skipWarmup {
+			// Для read/mgmt — выбираем backend минуя VRAM check.
+			// Сначала ищем backend где модель загружена, потом любой healthy.
+			targetBackend = p.findModelOnAnyBackendNoVRAMCheck(model, bt)
+			if targetBackend == "" {
+				targetBackend = p.selectAnyHealthy(bt)
+			}
+		} else {
+			targetBackend = p.selectBackend(model, bt, false)
+		}
 		if targetBackend != "" && p.config.Balancing.SessionStickiness && !isEmbeddingsRequest(path) {
 			sessionID = p.getSessionIDWithModel(r, clientName, model)
 			p.sessionMgr.Set(sessionID, targetBackend, model, clientName, p.getClientRealIP(r), r.UserAgent())
@@ -653,15 +667,29 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// Гарантированное освобождение слота при любом выходе из ServeHTTP
 	defer releaseAcquired()
 
+	// Round 22 (2026-08-03): read/mgmt endpoints НЕ берут slot. Это короткие
+	// операции (HTTP GET, сканирование файлов, ответ из in-memory кэша).
+	// Брать slot для них — тратить concurrency budget бэкенда. Если бы
+	// взяли slot для /api/show, balancer завис бы на slot-wait когда
+	// все слоты заняты inference-запросами (Round 22 BUG #13).
+	readOnlyOrMgmt := isReadOnlyOrMgmtEndpoint(path)
+
 	// Атомарный захват слота с retry при неудаче
-	if targetBackend != "" {
+	if targetBackend != "" && !readOnlyOrMgmt {
 		if p.tryAcquireSlot(targetBackend) {
 			acquiredBackend = targetBackend
 		}
 	}
 
+	// Round 22 (2026-08-03): для read/mgmt endpoints — slot не берём,
+	// но acquiredBackend всё равно ставим = targetBackend чтобы дальнейший
+	// flow (proxyRequest) работал без slot-wait.
+	if readOnlyOrMgmt && targetBackend != "" {
+		acquiredBackend = targetBackend
+	}
+
 	// Если не удалось захватить слот на выбранном бэкенде — пробуем другие
-	if targetBackend != "" && acquiredBackend == "" {
+	if targetBackend != "" && acquiredBackend == "" && !readOnlyOrMgmt {
 		attemptedBackends := map[string]bool{targetBackend: true}
 		const maxRetries = 10
 		for retry := 0; retry < maxRetries; retry++ {
@@ -684,6 +712,13 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if acquiredBackend == "" {
+		// Round 22 (2026-08-03): read/mgmt endpoints не идут в очередь —
+		// они короткие операции, queueing тратит время впустую.
+		if readOnlyOrMgmt {
+			// Fallback: если не выбрали backend (нет healthy) — return 503
+			http.Error(w, "Service unavailable - no healthy backends for read endpoint", http.StatusServiceUnavailable)
+			return
+		}
 		if !p.queueRequest(w, r, model) {
 			http.Error(w, "Service unavailable - all backends busy", http.StatusServiceUnavailable)
 		}

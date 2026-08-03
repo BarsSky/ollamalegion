@@ -5,12 +5,20 @@ import (
 	"net/http"
 	"sync"
 	"time"
+
+	"ollama-loadbalancer/pkg/types"
 )
 
 // ---------- Model operation endpoints ----------
 
 func (lr *LlamaCppRouter) handleShow(w http.ResponseWriter, r *http.Request) {
-	backendID := lr.selectLlamaCppBackendByResources(r)
+	// Round 22 (2026-08-03): /api/show — read/mgmt endpoint, skip warmup и
+	// VRAM check. Используем findModelOnAnyBackendNoVRAMCheck.
+	model := lr.proxy.parseRequestBody(r).Model
+	backendID := lr.proxy.findModelOnAnyBackendNoVRAMCheck(model, types.BackendTypeLlamaCpp)
+	if backendID == "" {
+		backendID = lr.selectAnyLlamaCppHealthy()
+	}
 	if backendID == "" {
 		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "no llama.cpp backend available"})
 		return

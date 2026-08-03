@@ -2,6 +2,7 @@ package balancer
 
 import (
 	"net/http"
+	"strings"
 
 	"ollama-loadbalancer/pkg/logger"
 	"ollama-loadbalancer/pkg/types"
@@ -15,6 +16,20 @@ func (p *Proxy) routeRequest(w http.ResponseWriter, r *http.Request) bool {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
 		w.Write([]byte("{\"status\":\"healthy\"}"))
+		return true
+	}
+
+	// Round 22 (2026-08-03): early 404 для OpenAI endpoints, которые мы НЕ
+	// поддерживаем (audio/images). Без этого balancer проксирует на
+	// backend → 404 → ждёт 30s timeout (Round 22 BUG #7). Клиент сразу
+	// получает 404 + понятное сообщение.
+	if isUnsupportedOpenAIEndpoint(r.URL.Path) || isUnsupportedOllamaEndpoint(r.URL.Path) {
+		round22Early404Total.Add(1)
+		logger.Get().Debugw("routeRequest: unsupported endpoint, returning 404",
+			"path", r.URL.Path, "method", r.Method)
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusNotFound)
+		w.Write([]byte(`{"error":"not_supported","message":"this endpoint is not implemented in OllamaLegion balancer","path":"` + r.URL.Path + `"}`))
 		return true
 	}
 
@@ -127,6 +142,44 @@ func isReadOnlyOrMgmtEndpoint(path string) bool {
 	}
 	// /api/blobs/<digest> — upload/download
 	if len(path) >= len("/api/blobs/") && path[:len("/api/blobs/")] == "/api/blobs/" {
+		return true
+	}
+	return false
+}
+
+// isUnsupportedOpenAIEndpoint — OpenAI endpoints, которые OllamaLegion НЕ
+// реализует (audio/images/etc). Возвращаем early 404 вместо проксирования
+// на backend → 30s timeout (Round 22 BUG #7).
+func isUnsupportedOpenAIEndpoint(path string) bool {
+	switch {
+	case strings.HasPrefix(path, "/v1/audio/"):
+		return true
+	case strings.HasPrefix(path, "/v1/images/"):
+		return true
+	case path == "/v1/realtime":
+		return true
+	case path == "/v1/fine_tuning/jobs" || strings.HasPrefix(path, "/v1/fine_tuning/"):
+		return true
+	case path == "/v1/batches" || strings.HasPrefix(path, "/v1/batches/"):
+		return true
+	case path == "/v1/assistants" || strings.HasPrefix(path, "/v1/assistants/"):
+		return true
+	case path == "/v1/threads" || strings.HasPrefix(path, "/v1/threads/"):
+		return true
+	}
+	return false
+}
+
+// isUnsupportedOllamaEndpoint — Ollama endpoints, которые OllamaLegion НЕ
+// реализует (signin/logout/web UI). Возвращаем early 404 чтобы не висеть
+// 30s на проксировании (Round 22 BUG #11).
+func isUnsupportedOllamaEndpoint(path string) bool {
+	switch {
+	case path == "/api/signin":
+		return true
+	case path == "/api/logout":
+		return true
+	case strings.HasPrefix(path, "/api/web/"):
 		return true
 	}
 	return false

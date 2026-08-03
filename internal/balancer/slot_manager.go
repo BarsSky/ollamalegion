@@ -162,3 +162,68 @@ func (p *Proxy) checkResourceLimits(backendID string) bool {
 
 	return true
 }
+
+// findModelOnAnyBackendNoVRAMCheck — ищет backend с загруженной моделью,
+// игнорируя VRAM headroom check. Для read/mgmt endpoints (Round 22).
+//
+// Read operations не нагружают GPU/VRAM (нет inference), поэтому блокировка
+// при 95% VRAM некорректна — нужно дать им пройти.
+func (p *Proxy) findModelOnAnyBackendNoVRAMCheck(model string, bt types.BackendType) string {
+	if model == "" {
+		return ""
+	}
+	allowedTypes := p.getAllowedTypesList(bt)
+
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+
+	for id, state := range p.backends {
+		if !isBackendTypeAllowed(normalizeBackendType(state.Backend.Type), allowedTypes) {
+			continue
+		}
+		if state.Backend.Status != types.StatusHealthy {
+			continue
+		}
+
+		p.metricsMgr.mu.RLock()
+		// Проверяем оба cache: Ollama-agent и cppworker-poller.
+		hasModel := false
+		if metrics, ok := p.metricsMgr.metrics[id]; ok {
+			if p.backendHasModel(metrics, model) {
+				hasModel = true
+			}
+		}
+		if !hasModel {
+			if lm, ok := p.metricsMgr.llamaMetrics[id]; ok && lm != nil {
+				for _, m := range lm.LoadedModels {
+					if m.Name == model {
+						hasModel = true
+						break
+					}
+				}
+			}
+		}
+		p.metricsMgr.mu.RUnlock()
+		if hasModel {
+			return id
+		}
+	}
+	return ""
+}
+
+// selectAnyHealthy — выбирает любой healthy бэкенд подходящего типа.
+// Для read/mgmt endpoints (Round 22) — fallback когда модель нигде не загружена.
+func (p *Proxy) selectAnyHealthy(bt types.BackendType) string {
+	allowedTypes := p.getAllowedTypesList(bt)
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	for id, state := range p.backends {
+		if !isBackendTypeAllowed(normalizeBackendType(state.Backend.Type), allowedTypes) {
+			continue
+		}
+		if state.Backend.Status == types.StatusHealthy {
+			return id
+		}
+	}
+	return ""
+}

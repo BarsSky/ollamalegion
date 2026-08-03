@@ -133,6 +133,12 @@ type Backend struct {
 	// HTTP-соединения (EOF клиенту). Подробности см. в inflight.go.
 	inFlight *InFlightCounter
 
+	// Round 18 P0.2 (2026-08-03): per-request cancel tracking для /api/cancel.
+	// Хранит context.CancelFunc каждой активной inference-генерации
+	// (по requestID). Позволяет cancel API отменять отдельные запросы
+	// (не дожидаясь полной остановки backend'а).
+	activeGenerations *ActiveGenerations
+
 	// reloadPending — флаг «reload в процессе». Прокидывается в
 	// /api/metrics → reload_pending heartbeat. Балансировщик читает
 	// и НЕ пытается дёргать LoadModel, пока видит этот флаг.
@@ -304,7 +310,20 @@ func NewBackend(cfg Config) *Backend {
 		cfg.ModelsDir,
 	)
 
+	// Round 18 P0.2 (2026-08-03): ActiveGenerations tracker для /api/cancel.
+	// Инициализируется здесь (не в Init) потому что не требует GPU/bridge.
+	b.activeGenerations = NewActiveGenerations()
+
 	return b
+}
+
+// ActiveGenerations возвращает tracker активных генераций для /api/cancel.
+// Round 18 P0.2 (2026-08-03). nil-safe.
+func (b *Backend) ActiveGenerations() *ActiveGenerations {
+	if b == nil {
+		return nil
+	}
+	return b.activeGenerations
 }
 
 // Init инициализирует backend (инициализация bridge + GPU discovery)

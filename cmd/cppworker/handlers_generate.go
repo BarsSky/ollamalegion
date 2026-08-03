@@ -297,6 +297,14 @@ func handleGenerate(w http.ResponseWriter, r *http.Request) {
 		backend.InFlight().Inc(modelName)
 		defer backend.InFlight().Dec(modelName)
 	}
+
+	// Round 18 P0.2 (2026-08-03): per-request cancel tracking.
+	// re-bind r к child context через setupCancelTracking (фикс первого P0.2-бага —
+	// иначе writeGenerateStreamResponse смотрит на parent и не видит отмену).
+	r, requestID, cancelCleanup := setupCancelTracking(r, modelName, "cppworker-gpu", "gen")
+	defer cancelCleanup()
+	logger.Get().Debugw("handleGenerate: cancel tracking enabled",
+		"request_id", requestID, "model", modelName)
 	params, prompt, ok := runGenerateCore(w, r, req)
 	if !ok {
 		return

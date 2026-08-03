@@ -1,4 +1,4 @@
-﻿package main
+package main
 
 import (
 	"encoding/json"
@@ -76,6 +76,15 @@ func handleChat(w http.ResponseWriter, r *http.Request) {
 		backend.InFlight().Inc(req.Model)
 		defer backend.InFlight().Dec(req.Model)
 	}
+
+	// Round 18 P0.2 (2026-08-03): per-request cancel tracking for /api/cancel.
+	// ВАЖНО: используем helper setupCancelTracking, который re-bind r к child context —
+	// без этого writeChatStreamResponse будет смотреть на parent (r.Context()) и не увидит
+	// отмену через /api/cancel (фикс первого P0.2-бага).
+	r, requestID, cancelCleanup := setupCancelTracking(r, req.Model, "cppworker-gpu", "chat")
+	defer cancelCleanup()
+	logger.Get().Debugw("handleChat: cancel tracking enabled",
+		"request_id", requestID, "model", req.Model)
 
 	// ??????? ???????? ??????
 	if err := ensureModelLoaded(req.Model); err != nil {

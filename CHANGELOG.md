@@ -5,6 +5,66 @@
 Формат ведётся в соответствии с [Keep a Changelog](https://keepachangelog.com/ru/1.0.0/),
 и этот проект придерживается [Semantic Versioning](https://semver.org/lang/ru/).
 
+## [0.5.5 — 2026-08-03]
+
+PATCH-релиз. **Round 18 P0.2 — Cancel API: per-request cancel через `POST /api/cancel`**.
+
+Закрывает P0-баг первой реализации P0.2: `cancelFunc` отменял **child**-контекст,
+а стрим (`writeChatStreamResponse`, `writeGenerateStreamResponse`, `writeOpenAIChatStream`,
+`writeOpenAICompletionStream`) смотрел на **parent** (`r.Context()`). При `POST /api/cancel`
+child отменялся, parent — нет, callback в Go никогда не видел `ctx.Done()`, стрим
+жил до `n_predict` (4096 токенов). Теперь `r.WithContext(ctx)` re-bind'ит request
+к child-контексту — и `cancelFunc`, и streaming-callback работают с одним контекстом.
+
+### 🟢 Round 18 P0.2 — Cancel API (P0-bug fix)
+
+**P0 bug fix (фикс первой реализации):**
+- `setupCancelTracking(r, modelName, backendID, prefix)` helper в `cmd/cppworker/cancel_tracking.go` —
+  возвращает `(*http.Request, requestID, cleanup)`. `r.WithContext(ctx)` гарантирует, что
+  и cancelFunc, и downstream-strem callback используют один и тот же child-контекст.
+- Применён в `handleChat`, `handleGenerate`, `handleV1ChatCompletions`, `handleV1Completions`.
+
+**Coverage:**
+- `/api/chat` (Ollama streaming + non-streaming)
+- `/api/generate` (Ollama streaming + non-streaming)
+- `/v1/chat/completions` (OpenAI streaming + non-streaming, включая tools-buf)
+- `/v1/completions` (OpenAI streaming + non-streaming)
+
+**API:**
+- `POST /api/cancel` — `{"request_id": "..."}` — отмена одного (200, `by=id`), 404 если не найден.
+- `POST /api/cancel` — `{"user_id": "..."}` — отмена всех для user.
+- `POST /api/cancel` — `{"user_id": "...", "model": "..."}` — отмена для user+model.
+- `POST /api/cancel` — `{}` — admin override, отмена ВСЕХ активных.
+- `GET /api/infer/active` — список активных: `{"count": N, "generations": [{"request_id", "user_id", "model", "backend"}]}`.
+- Auth: `X-API-Token` обязателен.
+
+**Misc:**
+- JSON-теги в `GenerationInfo`: `requestId`/`userId` → `request_id`/`user_id` (snake_case, консистентно с X-Request-Id).
+
+### 📊 Live verify (bundled-full стек, RTX 3070 CUDA_ARCH=86)
+
+| Сценарий | Before | After |
+|----------|--------|-------|
+| `POST /api/chat` streaming → `POST /api/cancel` → стрим живёт 30+ с | cancelled=1, но стрим жив | **cancelled=1, стрим мгновенно завершён** |
+| `GET /api/infer/active` во время стрима | count=0, generations пусто | **count=1, generations[0].request_id=X-Request-Id** |
+| `GET /api/infer/active` после cancel | count=1 (не сбрасывался) | **count=0** |
+
+### 📁 Файлы
+
+- **new** `cmd/cppworker/cancel_tracking.go` — `setupCancelTracking` helper
+- **new** `cmd/cppworker/handlers_cancel.go` — `handleCancel` (POST /api/cancel) + `handleInferActive` (GET /api/infer/active)
+- **new** `internal/cppbackend/active_generations.go` — `ActiveGenerations` struct (Add/Remove/CancelByID/CancelByUser/CancelByModel/Snapshot)
+- `internal/cppbackend/backend.go` — `activeGenerations *ActiveGenerations` field, `NewActiveGenerations()` init, `ActiveGenerations()` accessor
+- `internal/cppbackend/active_generations.go` — `GenerationInfo` JSON-теги: `request_id`/`user_id` (snake_case)
+- `cmd/cppworker/handlers_chat.go` — Add/Remove через `setupCancelTracking` + `r.WithContext` fix
+- `cmd/cppworker/handlers_generate.go` — то же
+- `cmd/cppworker/handlers_openai.go` — `handleV1ChatCompletions` + `handleV1Completions` теперь отслеживаются
+- `cmd/cppworker/router.go` — `/api/cancel` + `/api/infer/active` регистрация
+
+### ⚠️ Breaking changes
+
+None. Полностью backward-compatible.
+
 ## [0.5.4 — 2026-08-03]
 
 MINOR-релиз. **Round 22 — общий аудит полноты проброса Ollama API** (plans/round-22-balancer-general-audit.md).

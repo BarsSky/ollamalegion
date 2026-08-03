@@ -87,9 +87,10 @@ def main():
 
     # Run all test scripts
     scripts = [
-        ("streaming", os.path.join(HERE, "test_streaming.py")),
-        ("reasoning", os.path.join(HERE, "test_reasoning.py")),
-        ("parallel",  os.path.join(HERE, "test_parallel.py")),
+        ("streaming",     os.path.join(HERE, "test_streaming.py")),
+        ("reasoning",     os.path.join(HERE, "test_reasoning.py")),
+        ("parallel",      os.path.join(HERE, "test_parallel.py")),
+        ("api-coverage",  os.path.join(HERE, "test_api_coverage.py")),  # Round 21
     ]
 
     results: Dict[str, Tuple[int, str]] = {}

@@ -1,0 +1,44 @@
+fix(cppworker+balancer): Round 21 — auto-load path, /api/ps, /api/embed
+
+Three P0 fixes from Round 20 audit (plans/round-20-ollama-api-coverage-audit.md):
+
+**P0.1: Auto-load path mismatch (THE big fix)**
+- cppworker's resolveModelPath() now auto-picks the only .gguf in modelsDir
+  if exact match fails. Previously, when user named model `qwen3-4b` but file
+  was `Qwen3-Instruct-2507-q4km.gguf`, the auto-load after idle-unload failed
+  with HTTP 500 (cppworker tried `models/qwen3-4b.gguf`). ALL inference
+  endpoints (chat, generate, embeddings, show, embed) broke after first
+  idle cycle. Now single-model dirs auto-pick correctly.
+
+**P0.2: /api/ps implementation**
+- Round 21 NEW: handleOllamaPS in cppworker returns real list of loaded
+  models (name, size, digest, expires_at, details). Previously cppworker
+  returned 404 → balancer's "phantom 200" with empty `{"models":null}`.
+- OpenWebUI/Cline expect real data to display memory usage.
+
+**P0.3: /api/embed (Ollama v0.1.14+ new-style)**
+- Round 21 NEW: handleOllamaEmbed supports `input: string | []string` (batch).
+  Legacy /api/embeddings still supported.
+- OpenWebUI 0.4+ uses /api/embed, not /api/embeddings.
+- Returns `{"model":..., "embeddings":[[...], [...]], "prompt_eval_count":N}`.
+
+**Balancer side:**
+- ollama_router.go: /api/embed falls through to main proxy flow (cppworker
+  handles natively).
+
+**Verification:**
+- tests/verify_bundled/test_api_coverage.py: 19 tests covering all
+  endpoints + auto-load after unload regression check.
+- run_all.py: added api-coverage to the test list.
+
+Production verify (after rebuild): T16-T19 (auto-load after unload) PASS,
+fixing the root cause of all 502/503/500 errors that appeared after first
+idle cycle.
+
+Files:
+- cmd/cppworker/handlers_model.go (resolveModelPath + handleOllamaPS)
+- cmd/cppworker/handlers_embeddings.go (handleOllamaEmbed)
+- cmd/cppworker/router.go (register /api/ps, /api/embed)
+- internal/balancer/ollama_router.go (fall-through for /api/embed)
+- tests/verify_bundled/test_api_coverage.py (NEW, 19 tests)
+- tests/verify_bundled/run_all.py (api-coverage added)

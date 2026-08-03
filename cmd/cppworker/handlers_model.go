@@ -1100,6 +1100,48 @@ func handleOllamaTags(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]interface{}{"models": ollamaModels})
 }
 
+// handleOllamaPS — Ollama /api/ps (running models in memory).
+// Round 21 hotfix (2026-08-03): раньше не было реализовано, balancer возвращал
+// phantom 200 с `{"models":null}`. Теперь возвращает реальный список загруженных
+// моделей в формате Ollama, с size_vram / expires_at / size, как ожидает клиент.
+func handleOllamaPS(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeError(w, http.StatusMethodNotAllowed, "use GET")
+		return
+	}
+
+	loadedModels := backend.ListModels()
+	psModels := make([]map[string]interface{}, 0, len(loadedModels))
+
+	for _, m := range loadedModels {
+		// Ollama-формат: name, model, size, size_vram, digest, expires_at, details.
+		// size_vram = сколько занимает в VRAM (если есть), size = общий размер файла.
+		// expires_at — через сколько модель выгрузится (idle TTL). У нас пока
+		// нет per-model idle TTL, поэтому ставим дефолт 5 минут как в Ollama.
+		sizeBytes := m.SizeBytes
+		if sizeBytes == 0 && m.LoadingSizeBytes > 0 {
+			sizeBytes = uint64(m.LoadingSizeBytes)
+		}
+		digest := fmt.Sprintf("sha256:%x", sizeBytes)
+		psModels = append(psModels, map[string]interface{}{
+			"name":       m.Name,
+			"model":      m.Name,
+			"size":       sizeBytes,
+			"size_vram":  uint64(0), // cppworker не отслеживает per-model VRAM пока; 0 = неизвестно
+			"digest":     digest,
+			"expires_at": time.Now().Add(5 * time.Minute).Format(time.RFC3339),
+			"details": map[string]interface{}{
+				"format":             "gguf",
+				"family":             m.Architecture,
+				"parameter_size":     fmt.Sprintf("%.1fB", float64(m.NLayers*m.NEmbd)/1e9),
+				"quantization_level": "unknown",
+			},
+		})
+	}
+
+	writeJSON(w, http.StatusOK, map[string]interface{}{"models": psModels})
+}
+
 // handleOllamaShow ? Ollama /api/show.
 func handleOllamaShow(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
@@ -1343,13 +1385,26 @@ func handleOllamaPush(w http.ResponseWriter, r *http.Request) {
 	writeError(w, http.StatusNotImplemented, "Ollama registry push is not supported for llama.cpp backends")
 }
 
-// resolveModelPath ? ?????? ??? ?????? ???? ? .gguf ????? ?? ????? ??????.
+// resolveModelPath резолвит имя модели в абсолютный путь к .gguf файлу.
+//
+// Стратегия поиска (от точного к приблизительному):
+//  1. ModelManager.FindModelByPath — прямое совпадение имени или пути
+//  2. Glob "modelsDir/<name>*.gguf" — wildcards (qwen3-4b → qwen3-4b-it.gguf)
+//  3. ModelManager library scan — если в директории РОВНО ОДИН .gguf, берём его
+//     (auto-pick the only model — пользователь загрузил одну модель с коротким именем)
+//  4. Fallback: "modelsDir/<name>.gguf" (вызовет 500 на cppworker, но с осмысленной ошибкой)
+//
+// Round 21 hotfix (2026-08-03): добавлен шаг 3. Раньше при `name=qwen3-4b` и единственном
+// файле `Qwen3-Instruct-2507-q4km.gguf` в директории — балансер не мог auto-load
+// модель (имя не совпадало с файлом), и все inference-эндпоинты после idle-unload
+// падали с HTTP 500 "load failed". Теперь single-model dirs auto-pick'аются.
 func resolveModelPath(modelName string) string {
 	mm := backend.ModelManager()
 	if mm != nil {
 		if foundPath, err := mm.FindModelByPath(modelName); err == nil {
 			return foundPath
 		}
+		// Шаг 2: glob
 		modelPath := filepath.Join(*modelsDir, modelName)
 		if !strings.HasSuffix(modelPath, ".gguf") {
 			if matches, err := filepath.Glob(modelPath + "*.gguf"); err == nil && len(matches) > 0 {
@@ -1357,8 +1412,23 @@ func resolveModelPath(modelName string) string {
 			}
 			modelPath += ".gguf"
 		}
+
+		// Шаг 3 (Round 21 hotfix): auto-pick единственного .gguf в директории.
+		// Типичный случай: пользователь скачал одну модель и переименовал её
+		// при load (name=qwen3-4b, file=Qwen3-Instruct-2507-q4km.gguf). При
+		// auto-load после idle-unload — балансер не знает правильного path, и
+		// ищет models/qwen3-4b.gguf. Если в директории РОВНО ОДИН .gguf файл —
+		// логично предположить, что это и есть нужная модель.
+		files := mm.ListModels()
+		if len(files) == 1 {
+			logger.Get().Infow("resolveModelPath: auto-pick single .gguf from modelsDir",
+				"requested_name", modelName, "resolved_path", files[0].Path)
+			return files[0].Path
+		}
+
 		return modelPath
 	}
+	// Fallback без ModelManager
 	modelPath := filepath.Join(*modelsDir, modelName)
 	if !strings.HasSuffix(modelPath, ".gguf") {
 		if matches, err := filepath.Glob(modelPath + "*.gguf"); err == nil && len(matches) > 0 {

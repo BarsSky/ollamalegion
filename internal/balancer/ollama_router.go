@@ -32,13 +32,16 @@ func (or *OllamaRouter) Route(w http.ResponseWriter, r *http.Request) bool {
 	case "/api/version":
 		or.handleVersion(w, r)
 		return true
-	case "/api/ps":
-		or.handlePS(w, r)
-		return true
 	case "/api/embed":
 		// Round 21: Ollama v0.1.14+ new-style embeddings. Path passes through
 		// to cppworker (which now natively supports /api/embed). Falls through
 		// to main proxy flow if router doesn't handle it.
+		return false
+	case "/api/ps":
+		// Round 21: don't proxy /api/ps to Ollama backend (which doesn't expose
+		// this endpoint natively, fetchPS returns nothing). Fall through to
+		// LlamaCppRouter which reads from llamaMetrics[id].LoadedModels
+		// (Round 21 cppworker added real /api/ps handler too).
 		return false
 	case "/api/show":
 		or.handleShow(w, r)

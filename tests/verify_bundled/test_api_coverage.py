@@ -72,7 +72,7 @@ def http(method: str, path: str, payload: Optional[dict] = None,
         return 0, {"_raw": str(e)}
 
 
-def expect(test_id: str, name: str, status: int, want: int, body: dict, check=None):
+def expect(test_id: str, name: str, status: int, body, want: int = 200, check=None):
     """Verify HTTP status + optional body check."""
     global PASS, FAIL
     ok = status == want
@@ -88,7 +88,7 @@ def expect(test_id: str, name: str, status: int, want: int, body: dict, check=No
         print(f"  [{test_id}] {name}  HTTP {status} ✓")
     else:
         FAIL += 1
-        msg = f"[{test_id}] {name}  expected {want}, got {status}  body={json.dumps(body)[:200]}"
+        msg = f"[{test_id}] {name}  expected HTTP {want}, got {status}  body={json.dumps(body, default=str)[:200]}"
         FAILURES.append(msg)
         print(f"  {msg} ✗")
 

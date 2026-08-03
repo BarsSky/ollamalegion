@@ -492,7 +492,11 @@ func (lr *LlamaCppRouter) proxyHTTP(r *http.Request, backendID string) (*http.Re
 
 	port := lr.proxy.getBackendPort(backend)
 	url := fmt.Sprintf("http://%s:%d%s", backend.Host, port, r.URL.String())
-	client := &http.Client{Timeout: 30 * time.Second}
+	// Round 21: увеличил timeout с 30s до 120s. /api/show, /api/pull, /api/create
+	// могут вызывать lazy load модели (50-70s для 5GB qwen3-4b). 30s было
+	// слишком мало — клиент получал 502 timeout, а cppworker продолжал
+	// грузить в фоне (теряя slot).
+	client := &http.Client{Timeout: 120 * time.Second}
 
 	req, err := http.NewRequestWithContext(r.Context(), r.Method, url, r.Body)
 	if err != nil {

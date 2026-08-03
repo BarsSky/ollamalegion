@@ -421,11 +421,12 @@ func (lr *LlamaCppRouter) handlePS(w http.ResponseWriter, r *http.Request) {
 	lr.proxy.metricsMgr.mu.RLock()
 	var allProcesses []OllamaProcess
 	for _, b := range backends {
-		metrics, ok := lr.proxy.metricsMgr.metrics[b.id]
-		if !ok {
+		// Round 19 hotfix: читаем из llamaMetrics (cppworker-poller), не metrics[id].LlamaCpp (Ollama-agent).
+		lm, ok := lr.proxy.metricsMgr.llamaMetrics[b.id]
+		if !ok || lm == nil {
 			continue
 		}
-		for _, m := range metrics.LlamaCpp.LoadedModels {
+		for _, m := range lm.LoadedModels {
 			allProcesses = append(allProcesses, OllamaProcess{
 				Name:     m.Name,
 				Model:    m.Name,

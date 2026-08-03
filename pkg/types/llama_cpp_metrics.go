@@ -53,6 +53,11 @@ type LlamaCppModel struct {
 	HeadDimV     int    `json:"headDimV,omitempty"`     // head_dim_v
 	MaxContext   int    `json:"maxContext,omitempty"`  // ggufContextLength (макс n_ctx для этой модели)
 	LoadedAt     string `json:"loadedAt,omitempty"`     // RFC3339Nano
+	// === Capabilities (Round 18 P0.1, 2026-08-03) ===
+	// Single source of truth для auto-detect (vision, tools, reasoning).
+	// Прокидывается клиенту через X-Model-Capabilities, X-Model-Max-Context,
+	// X-Model-Architecture headers.
+	Capabilities *ModelCapabilities `json:"capabilities,omitempty"`
 	// === Loading state (Шаг «отображение загрузки в мониторе и вкладке бэкендов») ===
 	// Заполняются только пока State == "loading" / "error". После успешной
 	// загрузки поля обнуляются (omitempty).

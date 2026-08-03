@@ -196,6 +196,10 @@ func (p *llamaCppMetricsPoller) pollBackend(b backendInfo) {
 			VRAMUsage        uint64 `json:"vramUsage,omitempty"`
 			RAMUsage         uint64 `json:"ramUsage,omitempty"`
 			LoadedAt         string `json:"loadedAt,omitempty"`
+			// Round 18 P0.1 (2026-08-03): capabilities (reasoning/vision/tools).
+			// cppworker теперь возвращает готовый capabilities объект в /api/models.
+			Capabilities      *types.ModelCapabilities `json:"capabilities,omitempty"`
+			ReasoningEnabled  bool                     `json:"reasoningEnabled,omitempty"`
 		} `json:"models"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&data); err != nil {
@@ -251,6 +255,9 @@ func (p *llamaCppMetricsPoller) pollBackend(b backendInfo) {
 			HeadDimV:     m.HeadDimV,
 			MaxContext:   m.GGUFContextLength,
 			LoadedAt:     m.LoadedAt,
+			// Round 18 P0.1 (2026-08-03): capabilities. Если cppworker не вернул
+			// (старая версия), вычисляем по имени как fallback.
+			Capabilities: capabilitiesOrFallback(m.Capabilities, m.Name, m.Architecture, m.GGUFContextLength, m.ReasoningEnabled),
 		})
 	}
 
@@ -353,4 +360,17 @@ func (p *llamaCppMetricsPoller) pollLoadingProgress(b backendInfo) {
 		logger.Get().Debugw("llamaCppMetricsPoller: loading models observed",
 			"backend", b.id, "count", len(loading))
 	}
+}
+
+// capabilitiesOrFallback — если cppworker вернул capabilities, используем их.
+// Иначе вычисляем по имени модели (fallback для старых cppworker).
+//
+// Round 18 P0.1 (2026-08-03).
+func capabilitiesOrFallback(cppCaps *types.ModelCapabilities, name, architecture string, maxContext int, reasoningEnabled bool) *types.ModelCapabilities {
+	if cppCaps != nil {
+		// cppworker вернул — приоритет.
+		return cppCaps
+	}
+	caps := types.CapabilitiesFromModelInfo(name, reasoningEnabled, architecture, maxContext, maxContext)
+	return &caps
 }

@@ -394,6 +394,8 @@ func (p *Proxy) proxyRequestLlamaCpp(w http.ResponseWriter, r *http.Request, bac
 		w.Header().Set("Cache-Control", "no-cache")
 		w.Header().Set("Content-Type", "application/x-ndjson")
 		w.Header().Set("Connection", "keep-alive")
+		// Round 18 P0.1: capabilities headers (X-Model-*)
+		p.addModelCapabilitiesHeaders(w, modelFromCtx)
 		w.WriteHeader(resp.StatusCode)
 		errNDJSON := buildDoneResponse(originalPath, modelFromCtx, 0)
 		fmt.Fprintf(w, "%s\n", string(errNDJSON))

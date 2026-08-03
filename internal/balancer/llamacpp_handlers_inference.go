@@ -189,6 +189,8 @@ func (lr *LlamaCppRouter) handleOpenAIChatCompletions(w http.ResponseWriter, r *
 		}
 	}
 
+	// Round 18 P0.1: X-Model-* capability headers.
+	lr.proxy.addModelCapabilitiesHeaders(w, model)
 	_ = lr.proxy.proxyRequestOpenAIStreaming(w, r, upstreamResp, backendID)
 }
 
@@ -366,6 +368,8 @@ func (lr *LlamaCppRouter) handleOpenAICompletion(w http.ResponseWriter, r *http.
 		}
 	}
 
+	// Round 18 P0.1: X-Model-* capability headers.
+	lr.proxy.addModelCapabilitiesHeaders(w, model)
 	_ = lr.proxy.proxyRequestOpenAIStreaming(w, r, upstreamResp, backendID)
 }
 
@@ -454,6 +458,9 @@ func (lr *LlamaCppRouter) handleOpenAIEmbeddings(w http.ResponseWriter, r *http.
 		return
 	}
 	defer upstreamResp.Body.Close()
+
+	// Round 18 P0.1: X-Model-* capability headers.
+	lr.proxy.addModelCapabilitiesHeaders(w, model)
 
 	// Пробрасываем ответ клиенту.
 	for k, v := range upstreamResp.Header {

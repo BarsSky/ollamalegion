@@ -24,6 +24,7 @@ import (
 
 	"ollama-loadbalancer/c/bridge"
 	"ollama-loadbalancer/pkg/logger"
+	"ollama-loadbalancer/pkg/types"
 )
 
 // ============================================================
@@ -95,6 +96,11 @@ type ModelInfo struct {
 	// (например, qwen3-instruct с SOFT prompt reasoning).
 	// Виден в /api/models для UI transparency.
 	ReasoningEnabled bool `json:"reasoningEnabled"`
+	// Round 18 P0.1 (2026-08-03): single source of truth для capabilities.
+	// Заполняется в ListModels из DefaultCapabilitiesForModelName (по имени) +
+	// реального reasoningEnabled из instance. Прокидывается balancer'у для
+	// X-Model-* headers и клиенту через /api/models.
+	Capabilities *types.ModelCapabilities `json:"capabilities,omitempty"`
 }
 
 // Backend — основной объект CppBackend
@@ -1392,6 +1398,17 @@ func (b *Backend) ListModels() []ModelInfo {
 		info := inst.info
 		info.ActiveQueries = b.getActiveQueries(inst)
 		info.LastUsedAt = b.getLastUsedAt(inst)
+		// Round 18 P0.1 (2026-08-03): single source of truth для capabilities.
+		// Используем реальный reasoningEnabled из instance (не из whitelist),
+		// чтобы auto-detect (Round 17 Layer 3) тоже отражался.
+		caps := types.CapabilitiesFromModelInfo(
+			info.Name,
+			inst.reasoningEnabled,
+			info.Architecture,
+			info.ContextSize,
+			info.GGUFContextLength,
+		)
+		info.Capabilities = &caps
 		result = append(result, info)
 	}
 	return result

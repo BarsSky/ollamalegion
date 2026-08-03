@@ -1,0 +1,16 @@
+chore(release): v0.5.3 — Round 17 reasoning + HF resume + bundled-full stack
+
+MINOR release. Backport Round 17.0/17.1/17.2/17.3 + bundled-full stack
+into tagged v0.5.3. No new code, just changelog + env defaults.
+
+Changes:
+- CHANGELOG.md: v0.5.3 entry documenting Round 17.0-17.3 + bundled-full + Round 18 audit
+- deployments/.env.bundled-full: CUDA_ARCH default all → 86 (RTX 30xx),
+  CPPWORKER_GPU_TAG arch_all → 86. Saves 90+ min on default build.
+  Multi-GPU users can set back to all + arch_all in their .env.
+
+Production verified: bundled-full stack up, all 4 containers healthy,
+model load + chat works (temperature=0 → "4" greedy, Round 16 fix
+confirmed in production).
+
+Next: v0.5.4 = Round 18 implementation (5 commits per audit plan).

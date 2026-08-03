@@ -5,6 +5,95 @@
 Формат ведётся в соответствии с [Keep a Changelog](https://keepachangelog.com/ru/1.0.0/),
 и этот проект придерживается [Semantic Versioning](https://semver.org/lang/ru/).
 
+## [0.5.3 — 2026-08-03]
+
+MINOR-релиз. **Round 17 reasoning + Round 17.3 HF download + bundled-full stack**.
+Закрывает баг 2026-07-31 (reasoning не роутился в `reasoning_content`), добавляет
+HF resume+cleanup, и ships `bundled-full` — single-compose стек для production.
+
+### 🟡 Round 17: Reasoning routing for unknown models (commits `775f011` + `b971104` + `02bc98f`)
+
+**Bug** (см. `plans/bug-2026-07-31-reasoning-not-routed.md`): при `CPPWORKER_ENABLE_REASONING=true`
++ soft prompt injection в `handlers_chat.go`, парсер `SplitReasoningContent` срабатывал
+ТОЛЬКО для моделей из `IsReasoningModel()` whitelist (qwen3.5, qwen3.6, deepseek-r1, ...).
+Для `qwen3-instruct` (нет в whitelist) reasoning text попадал в `content` вместо
+`reasoning_content` → OpenWebUI не показывал reasoning.
+
+**3 коммита, 3 подхода** (defense in depth):
+
+| Sub | Что | Где |
+|-----|-----|-----|
+| 17.0 | Per-model `EnableReasoning *bool` (overrides global config) + `IsReasoningEnabledForRequest` + startup self-test | `internal/cppbackend/backend.go` |
+| 17.1 | Soft prompt требует `<reasoning>...</reasoning>` теги + L3 threshold 64→1024 chars + BatchedScheduler TokenCh 128→4096 | `cmd/cppworker/handlers_*.go` |
+| 17.2 | `thinkTagPairs` теперь 4 пары: `<think>`/`<thinking>`/`<reasoning>`/`<analysis>` + soft prompt обновлён на `<reasoning>` | `cmd/cppworker/reasoning_content.go` |
+
+**Honest test scope** (`265216d`): R1-R5 + P5 tests обновлены чтобы документировать
+**что они реально проверяют** (не притворяться, что парсер split'ит модели с LaTeX
+output как qwen3-instruct). Tag-based parser работает для моделей с native
+`<think>`/`<reasoning>` тегами; для остальных нужна chat template override (future work).
+
+### 🟡 Round 17.3: HF download resume + paths + cleanup (commit `b1241eb`)
+
+| Что | Где |
+|-----|-----|
+| HTTP `Range: bytes=N-` resume — HuggingFace возвращает 206 Partial Content, файл докачивается | `internal/cppbackend/hf_downloader.go` |
+| `TempPath` / `FinalPath` / `Resumable` / `ResumedFrom` поля в `HFDownloadProgress` | `internal/cppbackend/hf_downloader.go` |
+| `POST /api/hf/cleanup` endpoint + `DeleteDownload` method (returns `bytesFreed`) | `cmd/cppworker/handlers_hf.go` + `internal/balancer/router.go` |
+| UI: Resume + Delete buttons в `renderDownloadItem` | `webui/js/modules/gguf-renderer.js` |
+| `deleteDownloadedFileViaBackend` в gguf-api | `webui/js/modules/gguf-api.js` |
+
+### 🟢 Round 18: Comprehensive balancer architecture audit (commit `5292b3e`)
+
+37 KB, 870 строк: review всех 7 пользовательских требований, дизайн 5 P0/P1
+фиксов (capability advertisement, explicit cancel API, per-user session tracking,
+per-model live metrics). Implementation начнётся в v0.5.4.
+
+### 📦 Bundled-full stack (commit `73a7ad1`)
+
+**Production-ready** single-compose deployment с 4 сервисами:
+- `loadbalancer` (18080, 18081)
+- `cppworker-gpu` (18092, NVIDIA runtime)
+- `agent` (sidecar, GPU/VRAM metrics)
+- `webui` (18083, Sprint 30 version display)
+
+**Файлы**:
+- `deployments/docker-compose.bundled-full.yml`
+- `deployments/.env.bundled-full` (production defaults)
+- `scripts/start-bundled-full.ps1` / `.sh` (single command start)
+- `scripts/stop-bundled-full.ps1` / `.sh` (stop with -Clean / -CleanImages)
+- `scripts/status-bundled-full.ps1` (containers + health + endpoints + docker stats)
+
+**Container prefix**: `ol-bundled-full-*` (coexists with `ol-bundled-*` от `start-bundled.ps1`).
+
+**Default CUDA**: `CUDA_ARCH=86` (RTX 30xx) — сборка `arch_all` занимает 90+ мин,
+большинству пользователей нужен один arch. Для RTX 40xx поменяйте на `89`.
+
+### 🧪 Tests
+
+- 15+4=19 verify-bundled tests pass (streaming/reasoning/parallel + HF resume)
+- 5 unit-тестов в `reasoning_content_test.go` (multi-tag parser)
+- Production verify: temperature=0 → "4" (greedy honored), 75s model load
+
+### 📦 Commits (centurion, v0.5.3)
+
+- `5292b3e` — Round 18 audit
+- `73a7ad1` — bundled-full stack
+- `1d1a1fd` — verify-bundled Round 17.3 tests
+- `b1241eb` — Round 17.3 HF download fixes
+- `265216d` — honest test scope update
+- `02bc98f` — Round 17.2 multi-tag parser
+- `b971104` — Round 17.1 critical fixes
+- `775f011` — Round 17 reasoning routing
+
+**Production images**:
+- `ollama-legion/balancer:cppworker-bundled-full @ 6a706ece237f` (60.7 MB)
+- `ollama-legion/webui:cppworker-bundled-full @ bd84934fd45a` (116 MB)
+- `ollama-legion/agent:gpu-llamacpp @ c7b9572f9534` (GPU sidecar)
+- `ollama-legion/cppworker:gpu-86 @ e02a1639af12` (3.86 GB, Round 17.3)
+- `ollama-legion/cppworker:gpu-arch_all` (skipped — long build, opt-in for multi-GPU)
+
+**Deployed**: `ol-bundled-full-*` 4 services, all healthy. Token: `changeme-bundled-full-token-min-32-chars-please` (⚠️ change in production!).
+
 ## [0.5.2 — 2026-07-30]
 
 PATCH-релиз. **Round 16 code review**: критический bug в Go-слой

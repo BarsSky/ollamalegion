@@ -855,16 +855,44 @@ Add to BalancerMetrics.GetMetrics():
 
 ---
 
-## 10. Open Questions for User
+## 10. User Decisions (2026-08-03, after review)
 
-1. **Session ID break**: Acceptable to lose existing session bindings on upgrade? (Default: yes, but document)
-2. **MaxParallel default**: If model capabilities don't include `parallel`, should we use backend's `MaxConcurrentReqs` as fallback? (Default: yes)
-3. **Cancel API auth**: Should `/api/cancel` require the same X-API-Token as other admin endpoints? (Default: yes, to prevent DoS)
-4. **Capability header in response vs separate endpoint**: Both? Or just one? (Default: header for backward compat + endpoint for explicit query)
-5. **Per-user limit**: Default to `min(parallel, 2)` per user? (Default: `parallel` — let users max out their own capacity)
+1. **Session ID formula (P0.3)**:
+   - **Decision**: Break old formula, use new one immediately.
+   - **Clarification**: Балансер не имеет first-class "users". Имеет clients (OpenWebUI, Cline), которые передают запросы от нескольких users. Нужно различать users ВНУТРИ client.
+   - **Implementation**: `getUserID()` extracts from Authorization header (OpenWebUI multi-user) / X-Client-ID (Cline workspace) / X-User-ID (custom). New session ID = `userID + "::" + model + "::" + endpointType`.
+   - **Migration**: Document in CHANGELOG. Old sessions will be lost on upgrade (acceptable per user).
+
+2. **MaxParallel default (P0.3)**:
+   - **Decision**: Администратор балансера задаёт лимит в конфиге. Зависит от мощностей бэкендов.
+   - **Implementation**: New config `Balancing.MaxParallelPerUser int` (default: derived from sum of `defaultNParallel` across backends / unique clients estimate). Or simply `min(2, sum_n_parallel)`. Pluggable for now: default 2, hard cap 8.
+
+3. **Cancel API auth (P0.2)**:
+   - **Decision**: С X-API-Token, как другие admin endpoints.
+   - **Implementation**: `mux.HandleFunc("/api/cancel", authMiddleware(handleCancel))`. Balancer's call uses the same env-stored token.
+
+4. **Capability header in response vs separate endpoint (P0.1)**:
+   - **Decision**: Сначала v0.5.3 = Round 17.3 bundled-full, потом v0.5.4 = Round 18.
+   - **Implementation**: Both — header for client passive detection (X-Model-Capabilities), explicit endpoint for proactive query (GET /api/v1/models/capabilities?model=...).
+
+5. **v0.5.3 timing**:
+   - **Decision**: Сначала v0.5.3 = Round 17.3 (bundled-full) + backport текущего cppworker (Round 17.3 image e02a1639af12 уже в проде). Потом v0.5.4 = Round 18 (все 5 коммитов).
+   - **Implementation**: v0.5.3 = backport + bundled-full script (commit 73a7ad1) + tests. v0.5.4 = Round 18 целиком.
+
+## 11. Implementation Order (revised 2026-08-03)
+
+Wait for bundled-full build to complete. Then:
+
+1. Tag v0.5.3 (backport, no new code)
+2. Start Round 18 P0.1 (Capabilities)
+3. Round 18 P0.2 (Cancel API)
+4. Round 18 P0.3 (Per-user tracking)
+5. Round 18 P1.4 (Per-model metrics)
+6. Verify suite
+7. Tag v0.5.4
 
 ---
 
-**Document version**: 1.0
-**Last updated**: 2026-08-03
-**Status**: Awaiting user review and approval
+**Document version**: 1.1
+**Last updated**: 2026-08-03 10:28 MSK
+**Status**: Approved, waiting for bundled-full build to complete before starting P0.1

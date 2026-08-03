@@ -1073,6 +1073,15 @@ func (p *Proxy) parseRequestBody(r *http.Request) *parsedRequest {
 	if m, ok := req["model"].(string); ok {
 		result.Model = m
 	}
+	// Round 21: also extract "name" field (used by /api/show, /api/pull,
+	// /api/delete, /api/copy, /api/create — Ollama-style endpoints).
+	// Without this, parsed.Model="" for these endpoints, balancer thinks
+	// there's no model to route to, and times out.
+	if result.Model == "" {
+		if n, ok := req["name"].(string); ok {
+			result.Model = n
+		}
+	}
 	if stream, ok := req["stream"].(bool); ok {
 		result.Stream = stream
 	}

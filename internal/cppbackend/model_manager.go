@@ -46,6 +46,15 @@ type ModelManager struct {
 	mu        sync.RWMutex
 	ggufFiles map[string]*GGUFModelMeta // filename → meta
 
+	// Round 22 (2026-08-03): history успешных load-операций (name → path).
+	// Нужно для resolveModelPath после idle-unload: имя, под которым модель
+	// загружалась (например "qwen3-4b"), больше не в ggufFiles (т.к. это alias,
+	// не filename), но мы ЗНАЕМ что она соответствует файлу
+	// Qwen3-Instruct-2507-q4km.gguf — потому что загружали её с этим path.
+	// Без этой истории: auto-pick single .gguf требует len==1, не работает
+	// когда в директории 2+ файла (Round 22 BUG #2).
+	nameHistory map[string]string // name → resolved file path
+
 	// Статистика
 	totalScans   int64
 	lastScanTime time.Time
@@ -55,10 +64,39 @@ type ModelManager struct {
 // NewModelManager создаёт новый ModelManager
 func NewModelManager(modelsDir string, cfg Config) *ModelManager {
 	return &ModelManager{
-		modelsDir: modelsDir,
-		config:    cfg,
-		ggufFiles: make(map[string]*GGUFModelMeta),
+		modelsDir:   modelsDir,
+		config:      cfg,
+		ggufFiles:   make(map[string]*GGUFModelMeta),
+		nameHistory: make(map[string]string),
 	}
+}
+
+// RecordModelLoad — записывает успешный load (name → path) в nameHistory.
+// Вызывается из Backend.LoadModel после успешной загрузки модели в VRAM,
+// чтобы resolveModelPath мог найти alias после idle-unload.
+//
+// Round 22 (2026-08-03).
+func (m *ModelManager) RecordModelLoad(name, path string) {
+	if name == "" || path == "" {
+		return
+	}
+	m.mu.Lock()
+	m.nameHistory[name] = path
+	m.mu.Unlock()
+	logger.Get().Infow("ModelManager.RecordModelLoad: recorded",
+		"name", name, "path", path)
+}
+
+// LookupNameHistory — проверяет, был ли name ранее загружен с каким-то path.
+// Round 22 (2026-08-03).
+func (m *ModelManager) LookupNameHistory(name string) (string, bool) {
+	if name == "" {
+		return "", false
+	}
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	path, ok := m.nameHistory[name]
+	return path, ok
 }
 
 // ScanModels сканирует директорию на предмет .gguf файлов
@@ -212,6 +250,17 @@ func (m *ModelManager) FindModelByPath(path string) (string, error) {
 	// Ищем по имени среди gguf файлов
 	m.mu.RLock()
 	defer m.mu.RUnlock()
+
+	// Round 22 (2026-08-03): Шаг 0 — проверить nameHistory (alias → path).
+	// Это решает BUG #2: после idle-unload alias типа "qwen3-4b" больше
+	// не в loaded-моделях, но мы ЗНАЕМ что она соответствовала определённому
+	// файлу (записано RecordModelLoad при успешной загрузке).
+	if histPath, ok := m.nameHistory[path]; ok {
+		if _, err := os.Stat(histPath); err == nil {
+			return histPath, nil
+		}
+		// Файл был удалён — fallback дальше
+	}
 
 	// Точное совпадение
 	if meta, ok := m.ggufFiles[path]; ok {

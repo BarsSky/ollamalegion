@@ -45,7 +45,15 @@ func isBackendTypeAllowed(bt types.BackendType, allowedTypes []types.BackendType
 
 // selectBackend - выбор бэкенда для запроса (pre-step + 4 этапа = 5 шагов)
 // bt — требуемый тип бэкенда (если пустой — определяется из OperatingMode)
-func (p *Proxy) selectBackend(model string, bt types.BackendType) string {
+// skipSyncLoad (variadic bool) — если true, пропускает P3 (Sync Model Load / warmup).
+// Используется для read/mgmt endpoints (/api/show, /api/pull, /api/copy, ...),
+// которым НЕ нужна загруженная модель — иначе balancer зависает на 10-30s
+// timeout ожидая load (Round 22 BUG #1, 2026-08-03).
+func (p *Proxy) selectBackend(model string, bt types.BackendType, skipSyncLoad ...bool) string {
+	skipWarmup := false
+	if len(skipSyncLoad) > 0 {
+		skipWarmup = skipSyncLoad[0]
+	}
 	// RPC Module: Model Replication — если модель в группе репликации, выбираем из реплик
 	if p.replicationSelector != nil {
 		if selected := p.replicationSelector.Select(model); selected != "" {
@@ -129,7 +137,11 @@ func (p *Proxy) selectBackend(model string, bt types.BackendType) string {
 	}
 
 	// 3. Sync Model Load (запуск загрузки) — P3
-	if p.config.Balancing.SyncModelLoad.Enabled {
+	// Round 22 (2026-08-03): skip для read/mgmt endpoints — они НЕ требуют
+	// загруженной модели. Без skip balancer зависает на 10-30s timeout
+	// (warmup инициирует POST /load к cppworker, который для /api/show
+	// бесполезен — endpoint работает с файлом на диске).
+	if !skipWarmup && p.config.Balancing.SyncModelLoad.Enabled {
 		for _, group := range candidates {
 			if group.Priority != 3 {
 				continue

@@ -727,6 +727,14 @@ func (b *Backend) LoadModelWithOpts(name string, path string, opts LoadModelOpts
 		b.metrics.RecordLoad(name)
 	}
 
+	// Round 22 (2026-08-03): записать name → path в ModelManager.nameHistory
+	// чтобы resolveModelPath мог найти alias после idle-unload.
+	// Без этого: auto-load для alias "qwen3-4b" (когда в директории 2+ .gguf)
+	// падает с HTTP 500 "models/qwen3-4b.gguf not found".
+	if mm := b.modelManager; mm != nil {
+		mm.RecordModelLoad(name, path)
+	}
+
 	logger.Get().Infow("model loaded",
 		"name", name,
 		"path", path,

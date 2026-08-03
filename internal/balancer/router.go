@@ -92,6 +92,46 @@ func isEmbeddingsRequest(path string) bool {
 	return path == "/api/embeddings" || path == "/api/embed"
 }
 
+// Round 22 (2026-08-03): endpoints которые НЕ требуют загруженной модели в VRAM.
+// Для них warmup/sync-load ПРОПУСКАЕТСЯ — иначе balancer зависает на 10-30s
+// ожидая load модели, которая этому endpoint'у не нужна.
+//
+// Read-only (информация о моделях/бэкендах):
+//   - /api/version      (Ollama version)
+//   - /api/tags         (список моделей)
+//   - /api/ps           (running processes)
+//   - /v1/models        (OpenAI models)
+//   - /api/models       (cppworker state)
+//   - /api/models/files (cppworker filesystem scan)
+//   - /api/show         (model info — НЕ требует loaded модели, файл на диске)
+//
+// Model management (Ollama registry-style):
+//   - /api/pull         (скачать модель)
+//   - /api/push         (залить модель в registry, cppworker отдаёт 501)
+//   - /api/copy         (скопировать)
+//   - /api/delete       (удалить)
+//   - /api/create       (создать из Modelfile)
+//
+// Blob upload/download:
+//   - /api/blobs/*      (digest-based file storage)
+//
+// Embeddings — отдельная категория: требует загруженную модель, но НЕ должна
+// триггерить sync-warmup (т.к. embeddings — короткие операции, лучше 503
+// чем 30s wait). Поэтому их тут НЕТ — они идут через обычный flow.
+func isReadOnlyOrMgmtEndpoint(path string) bool {
+	switch path {
+	case "/api/version", "/api/tags", "/api/ps", "/v1/models",
+		"/api/models", "/api/models/files", "/api/show",
+		"/api/pull", "/api/push", "/api/copy", "/api/delete", "/api/create":
+		return true
+	}
+	// /api/blobs/<digest> — upload/download
+	if len(path) >= len("/api/blobs/") && path[:len("/api/blobs/")] == "/api/blobs/" {
+		return true
+	}
+	return false
+}
+
 // isChatOrGenerateRequest — проверяет, является ли запрос основным LLM-вызовом
 func isChatOrGenerateRequest(path string) bool {
 	return path == "/api/generate" || path == "/api/chat"

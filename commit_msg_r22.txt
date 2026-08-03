@@ -1,0 +1,104 @@
+fix(balancer+cppworker): Round 22 — read/mgmt skip warmup, name→path history, /v1/embeddings
+
+**Три P0/P1 фикса найдены в общем аудите (plans/round-22-balancer-general-audit.md).**
+
+---
+
+## Fix #1 (P0): Read/MGMT endpoints skip warmup
+
+**Проблема:** /api/show, /api/pull, /api/copy, /api/create, /api/delete,
+/api/push, /api/blobs/*, /api/models/files вызывали warmup модели
+через SyncModelLoad (P3 в selectBackend). Endpoint'ы НЕ требуют
+загруженной модели, но balancer зависал на 10-30s timeout ожидая
+load. Live: /api/show = timeout 60s (vs ожидание ~30ms).
+
+**Root cause:** `selectBackend` всегда вызывал warmup для любого
+запроса с `model != ""`, если `SyncModelLoad.Enabled=true`. Никакого
+разграничения между inference и read/mgmt endpoints.
+
+**Fix:** добавлен `isReadOnlyOrMgmtEndpoint(path string) bool` в
+`internal/balancer/router.go`. Список путей, для которых warmup SKIP:
+- Read-only: /api/version, /api/tags, /api/ps, /v1/models, /api/models,
+  /api/models/files, /api/show
+- Management: /api/pull, /api/push, /api/copy, /api/delete, /api/create
+- Blobs: /api/blobs/* (всё что с префиксом)
+
+`selectBackend` получил variadic параметр `skipSyncLoad bool`. При
+true — P3 (Sync Model Load) пропускается.
+
+В `proxy.go:ServeHTTP` (proxy.go:631) — `isReadOnlyOrMgmtEndpoint(path)`
+определяет skipWarmup и передаёт в `selectBackend`.
+
+Embeddings (`/api/embed`, `/api/embeddings`, `/v1/embeddings`) НЕ в
+списке — они требуют загруженную модель, но warmup не поможет
+(загрузка 5GB модели = 50-70s, embeddings = быстрая операция, лучше
+503 чем 30s wait). Они идут через обычный flow.
+
+---
+
+## Fix #2 (P0): ModelManager name→path history
+
+**Проблема:** `resolveModelPath("qwen3-4b")` не находил файл, если
+на диске 2+ .gguf (Round 21 P0.1 auto-pick требует `len==1`).
+Live: `auto-load failed: models/qwen3-4b.gguf` (файл не существует).
+
+**Root cause:** cppworker alias `qwen3-4b` не имеет прямого файла —
+он указывает на `Qwen3-Instruct-2507-q4km.gguf`. После idle-unload
+информация "alias → path" теряется, и resolveModelPath не находит
+совпадения.
+
+**Fix:** `ModelManager` теперь хранит `nameHistory map[string]string`
+(name → resolved file path):
+- `RecordModelLoad(name, path)` — записывает после успешного LoadModel
+  (internal/cppbackend/backend.go после строки с metrics.RecordLoad)
+- `LookupNameHistory(name)` — проверяет, был ли name загружен
+
+`FindModelByPath` (internal/cppbackend/model_manager.go) теперь
+проверяет `nameHistory` **ПЕРВЫМ** шагом (Шаг 0) перед file scan.
+
+---
+
+## Fix #3 (P0): OpenAI /v1/embeddings handler
+
+**Проблема:** `POST /v1/embeddings` — timeout 30s. cppworker не
+имел handler для этого пути, balancer проксировал как есть → 404
+на cppworker.
+
+**Root cause:** cppworker имел /api/embed и /api/embeddings (Ollama-style),
+но НЕ /v1/embeddings (OpenAI-style). Cline и некоторые OpenAI-совместимые
+клиенты шлют напрямую на /v1/embeddings.
+
+**Fix:** добавлен `handleOpenAIEmbeddings` в
+`cmd/cppworker/handlers_embeddings.go` + регистрация в router.go.
+Возвращает OpenAI-формат:
+```
+{
+  "object": "list",
+  "data": [{"object":"embedding", "embedding":[...], "index":0}, ...],
+  "model": "...",
+  "usage": {"prompt_tokens": N, "total_tokens": N}
+}
+```
+
+Поддерживает `input: string | []string` (batch).
+
+---
+
+## Файлы
+
+- internal/balancer/router.go — добавлен isReadOnlyOrMgmtEndpoint
+- internal/balancer/backend_selector.go — selectBackend получил
+  variadic skipSyncLoad
+- internal/balancer/proxy.go — ServeHTTP передаёт skipWarmup
+- internal/cppbackend/model_manager.go — nameHistory + RecordModelLoad +
+  LookupNameHistory + FindModelByPath Шаг 0
+- internal/cppbackend/backend.go — вызов RecordModelLoad после
+  успешного LoadModel
+- cmd/cppworker/handlers_embeddings.go — handleOpenAIEmbeddings
+- cmd/cppworker/router.go — регистрация /v1/embeddings
+
+## Тесты
+- Существующие тесты должны проходить (variadic параметр не ломает
+  signature для текущих callers)
+- Live verify TBD (Round 22 verify suite: все T1-T19 должны
+  проходить, дополнить тестами для /v1/embeddings и read/mgmt)

@@ -35,6 +35,7 @@ func setupRouter() http.Handler {
 	mux.HandleFunc("/api/chat", handleChat)
 	mux.HandleFunc("/api/embeddings", handleOllamaEmbeddings)
 	mux.HandleFunc("/api/embed", handleOllamaEmbed) // Round 21: Ollama v0.1.14+ new-style embeddings (OpenWebUI 0.4+)
+	mux.HandleFunc("/v1/embeddings", handleOpenAIEmbeddings) // Round 22: OpenAI-compatible embeddings
 	mux.HandleFunc("/api/ollama/generate", handleOllamaGenerate)
 	mux.HandleFunc("/api/ollama/tags", handleOllamaTags)
 	mux.HandleFunc("/api/tags", handleOllamaTags)

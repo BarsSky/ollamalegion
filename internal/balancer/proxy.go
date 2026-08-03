@@ -628,7 +628,12 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if targetBackend == "" {
-		targetBackend = p.selectBackend(model, bt)
+		// Round 22 (2026-08-03): read/mgmt endpoints (show, pull, copy, create,
+		// delete, push, blobs, models, models/files) НЕ требуют загруженной
+		// модели. Пропускаем SyncModelLoad (P3 warmup), иначе balancer
+		// зависает на 10-30s ожидая load модели, которая endpoint'у не нужна.
+		skipWarmup := isReadOnlyOrMgmtEndpoint(path)
+		targetBackend = p.selectBackend(model, bt, skipWarmup)
 		if targetBackend != "" && p.config.Balancing.SessionStickiness && !isEmbeddingsRequest(path) {
 			sessionID = p.getSessionIDWithModel(r, clientName, model)
 			p.sessionMgr.Set(sessionID, targetBackend, model, clientName, p.getClientRealIP(r), r.UserAgent())

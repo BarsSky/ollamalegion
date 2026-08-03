@@ -48,6 +48,9 @@ func setupRouter() http.Handler {
 	mux.HandleFunc("/api/hf/progress", handleHFDownloadProgress)
 	mux.HandleFunc("/api/hf/downloads", handleHFDownloads)
 	mux.HandleFunc("/api/hf/cancel", handleHFCancel)
+	// Round 17.3 (2026-08-03): cleanup endpoint — удаляет скачанный/частичный
+	// файл из контейнера. Поддерживает DELETE (с query params) и POST (с body).
+	mux.HandleFunc("/api/hf/cleanup", handleHFCleanup)
 	mux.HandleFunc("/api/pull", handlePull)
 	mux.HandleFunc("/api/v1/cppworker/config", handleCppWorkerGetConfig)
 	mux.HandleFunc("/api/v1/cppworker/config/update", authMiddleware(handleCppWorkerUpdateConfig))

@@ -564,17 +564,34 @@ const GgufRenderer = (window.GgufRenderer = (function () {
         const isCompleted = status === 'completed';
         const isFailed = status === 'failed' || status === 'error';
         const isCancelled = status === 'cancelled';
-        const fillColor = isCompleted ? 'var(--success)' : isFailed ? 'var(--danger)' : isCancelled ? 'var(--text-muted)' : 'var(--accent)';
+        const isInterrupted = status === 'interrupted'; // Round 17.3
+        const fillColor = isCompleted ? 'var(--success)' : isFailed ? 'var(--danger)' : isCancelled ? 'var(--text-muted)' : (isInterrupted ? 'var(--warning)' : 'var(--accent)');
         const totalBytes = dl.totalBytes || dl.TotalBytes || 0;
         const downloaded = dl.downloaded || dl.Downloaded || 0;
         const sizeLabel = totalBytes > 0
             ? (formatFileSize(downloaded) + ' / ' + formatFileSize(totalBytes))
             : (downloaded > 0 ? formatFileSize(downloaded) : '');
         const speedLabel = speed ? formatFileSize(speed) + '/s' : '';
+        // Round 17.3 (2026-08-03): пути + resume state.
+        const tempPath = progress ? (progress.tempPath || '') : (dl.tempPath || dl.TempPath || '');
+        const finalPath = progress ? (progress.finalPath || '') : (dl.finalPath || dl.FinalPath || '');
+        const resumable = progress ? !!progress.resumable : !!dl.resumable;
+        const resumedFrom = progress ? (progress.resumedFrom || 0) : (dl.resumedFrom || 0);
+        const isActive = (status === 'downloading' || status === 'queued' || status === 'starting' || status === '');
+
         return '<div class="gguf-download-item">' +
             '<div class="gguf-download-info">' +
                 '<div class="gguf-download-model">' + Utils.escapeHtml(dl.modelId) + '</div>' +
                 '<div class="gguf-download-file">' + Utils.escapeHtml(dl.filename) + '</div>' +
+                // Round 17.3: показываем пути маленьким серым текстом.
+                (finalPath ? '<div class="gguf-download-paths" style="font-size:10px;color:var(--text-muted);margin-top:2px;line-height:1.4;">' +
+                    '<i class="fas fa-folder-open" style="margin-right:3px;"></i>' + Utils.escapeHtml(finalPath) +
+                    (tempPath ? '<br><i class="fas fa-file-download" style="margin-right:3px;"></i><span style="opacity:0.8;">temp: </span>' + Utils.escapeHtml(tempPath) : '') +
+                  '</div>' : '') +
+                (resumable ? '<div style="font-size:10px;color:var(--warning);margin-top:2px;"><i class="fas fa-pause-circle"></i> ' +
+                    (_('gguf.partial_download_resumable') || 'Partial download — can be resumed') +
+                    (resumedFrom > 0 ? ' (' + formatFileSize(resumedFrom) + ' ' + (_('gguf.already_downloaded') || 'already downloaded') + ')' : '') +
+                  '</div>' : '') +
             '</div>' +
             '<div class="gguf-download-progress-bar">' +
                 '<div class="gguf-progress-fill" style="width:' + pct + '%;background:' + fillColor + '"></div>' +
@@ -586,9 +603,22 @@ const GgufRenderer = (window.GgufRenderer = (function () {
                 (status ? '<span style="margin-left:8px;text-transform:capitalize;">' + status + '</span>' : '') +
             '</div>' +
             '<div class="gguf-download-actions">' +
-                ((status === 'downloading' || status === 'queued' || status === 'starting' || status === '')
+                // Cancel для активных
+                (isActive
                     ? '<button class="btn btn-sm btn-danger gguf-cancel-dl-btn" data-model-id="' + Utils.escapeHtml(dl.modelId) + '" data-filename="' + Utils.escapeHtml(dl.filename) + '">' +
                         '<i class="fas fa-ban"></i> ' + _('gguf.cancel_download') +
+                      '</button>'
+                    : '') +
+                // Round 17.3: Resume для прерванных
+                (isInterrupted && resumable
+                    ? '<button class="btn btn-sm btn-warning gguf-resume-dl-btn" data-model-id="' + Utils.escapeHtml(dl.modelId) + '" data-filename="' + Utils.escapeHtml(dl.filename) + '" data-quantization="' + Utils.escapeHtml(dl.quantization || '') + '">' +
+                        '<i class="fas fa-play"></i> ' + (_('gguf.resume_download') || 'Resume') +
+                      '</button>'
+                    : '') +
+                // Round 17.3: Delete для completed/failed/interrupted
+                ((isCompleted || isFailed || isCancelled || isInterrupted)
+                    ? '<button class="btn btn-sm btn-secondary gguf-delete-dl-btn" data-model-id="' + Utils.escapeHtml(dl.modelId) + '" data-filename="' + Utils.escapeHtml(dl.filename) + '" title="' + (_('gguf.delete_from_disk') || 'Delete downloaded file from disk') + '">' +
+                        '<i class="fas fa-trash"></i> ' + (_('gguf.delete') || 'Delete') +
                       '</button>'
                     : '') +
             '</div>' +
@@ -1350,6 +1380,23 @@ const GgufRenderer = (window.GgufRenderer = (function () {
             cancelDownload(cancelDl.getAttribute('data-model-id'), cancelDl.getAttribute('data-filename'));
             return;
         }
+        // Round 17.3 (2026-08-03): Resume кнопка для прерванных загрузок.
+        // Re-trigger download — backend обнаружит .download файл и пошлёт Range request.
+        var resumeDl = e.target.closest('.gguf-resume-dl-btn');
+        if (resumeDl) {
+            var rmi = resumeDl.getAttribute('data-model-id');
+            var rfn = resumeDl.getAttribute('data-filename');
+            startDownload(rmi, rfn);
+            return;
+        }
+        // Round 17.3: Delete кнопка — удаляет скачанный/частичный файл из контейнера.
+        var deleteDl = e.target.closest('.gguf-delete-dl-btn');
+        if (deleteDl) {
+            var dmi = deleteDl.getAttribute('data-model-id');
+            var dfn = deleteDl.getAttribute('data-filename');
+            deleteDownloadedFile(dmi, dfn);
+            return;
+        }
         var viewHf = e.target.closest('.gguf-view-hf-files-btn');
         if (viewHf) {
             var vi = parseInt(viewHf.getAttribute('data-model-idx'));
@@ -1950,6 +1997,37 @@ const GgufRenderer = (window.GgufRenderer = (function () {
             refreshActiveDownloads();
         }).catch(function (err) {
             showToast('Cancel error: ' + (err.message || 'unknown error'), 'error');
+        });
+    }
+
+    /**
+     * Round 17.3 (2026-08-03): удаляет скачанный/частичный файл из контейнера
+     * через новый endpoint DELETE /api/hf/cleanup. UI: с подтверждением,
+     * потому что освобождает диск и необратимо.
+     */
+    function deleteDownloadedFile(modelId, filename) {
+        var backend = currentBackend();
+        if (!backend) return;
+        var confirmed = window.confirm(
+            (_('gguf.delete_confirm') || 'Delete downloaded file from disk? This frees up disk space and cannot be undone.') +
+            '\n\n' + modelId + '\n' + filename
+        );
+        if (!confirmed) return;
+        GgufApi.deleteDownloadedFileViaBackend(backend.id, modelId, filename).then(function (resp) {
+            var freedMB = resp && resp.result && resp.result.bytesFreed
+                ? (resp.result.bytesFreed / (1024 * 1024)).toFixed(1) + ' MB'
+                : '';
+            showToast(
+                (_('gguf.file_deleted') || 'File deleted from disk') +
+                (freedMB ? ' (' + _('gguf.disk_freed') + ': ' + freedMB + ')' : ''),
+                'success'
+            );
+            // Очищаем локальный progress и обновляем список
+            delete state.downloadProgress[modelId + '/' + filename];
+            // Помечаем запись в downloadHistory как очищенную (UI не показывает Delete повторно)
+            refreshActiveDownloads();
+        }).catch(function (err) {
+            showToast('Delete error: ' + (err.message || 'unknown error'), 'error');
         });
     }
 

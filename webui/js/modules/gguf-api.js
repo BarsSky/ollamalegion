@@ -941,6 +941,18 @@ const GgufApi = (function () {
             });
         },
 
+        /**
+         * Round 17.3 (2026-08-03): удаляет скачанный/частичный файл из контейнера
+         * через DELETE /api/hf/cleanup. Освобождает дисковое пространство.
+         * Body: { modelId, filename }
+         */
+        async deleteDownloadedFileViaBackend(backendId, modelId, filename) {
+            return this.requestViaBackend(backendId, '/api/hf/cleanup', {
+                method: 'POST',
+                body: JSON.stringify({ modelId: modelId, filename: filename })
+            });
+        },
+
         /** Search HF models via balancer proxy */
         async searchModelsViaBackend(backendId, query, limit = 10) {
             return this.requestViaBackend(backendId, '/api/hf/search?query=' + encodeURIComponent(query) + '&limit=' + limit);

@@ -19,6 +19,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -82,10 +83,19 @@ type HFDownloadProgress struct {
 	Downloaded   int64   `json:"downloaded"`   // загружено байт
 	ProgressPct  float64 `json:"progressPct"`  // процент
 	SpeedBps     int64   `json:"speedBps"`     // скорость байт/сек
-	Status       string  `json:"status"`       // "downloading", "completed", "failed", "cancelled"
+	Status       string  `json:"status"`       // "downloading", "completed", "failed", "cancelled", "interrupted"
 	ErrorMessage string  `json:"errorMessage,omitempty"`
 	StartedAt    string  `json:"startedAt"`    // ISO 8601
 	CompletedAt  string  `json:"completedAt,omitempty"`
+	// Round 17.3 (2026-08-03): пути и resume support.
+	// TempPath = где сейчас лежит частично скачанный .download файл.
+	// FinalPath = куда переедет файл после успешного завершения.
+	// Resumable = true если есть .download файл с N байт и можно
+	//   продолжить через HTTP Range request.
+	TempPath   string `json:"tempPath,omitempty"`
+	FinalPath  string `json:"finalPath,omitempty"`
+	Resumable  bool   `json:"resumable"`
+	ResumedFrom int64  `json:"resumedFrom,omitempty"` // байт с которого продолжили (0 если fresh)
 }
 
 // HFDownloadRequest — запрос на загрузку модели
@@ -642,11 +652,31 @@ func (d *HuggingFaceDownloader) StartDownload(req HFDownloadRequest) (*HFDownloa
 	// Создаём контекст с отменой
 	ctx, cancel := context.WithCancel(context.Background())
 
+	// Round 17.3 (2026-08-03): RESUME support.
+	// Проверяем существует ли .download файл от предыдущей попытки.
+	// Если да — пометить Resumable=true и ResumedFrom=size.
+	tmpPath := destPath + ".download"
+	var resumedFrom int64
+	resumable := false
+	if fi, err := os.Stat(tmpPath); err == nil && fi.Size() > 0 {
+		resumedFrom = fi.Size()
+		resumable = true
+		log.Infow("resuming partial download",
+			"modelID", req.ModelID,
+			"filename", filename,
+			"resumedFrom", resumedFrom,
+			"tmpPath", tmpPath)
+	}
+
 	progress := HFDownloadProgress{
-		ModelID:    req.ModelID,
-		Filename:   filename,
-		Status:     "downloading",
-		StartedAt:  time.Now().UTC().Format(time.RFC3339),
+		ModelID:     req.ModelID,
+		Filename:    filename,
+		Status:      "downloading",
+		StartedAt:   time.Now().UTC().Format(time.RFC3339),
+		TempPath:    tmpPath,    // UI: "Currently at: /app/downloads/foo.gguf.download"
+		FinalPath:   finalPath,  // UI: "Will end up at: /app/models/foo.gguf"
+		Resumable:   resumable,
+		ResumedFrom: resumedFrom,
 	}
 
 	task := &downloadTask{
@@ -705,6 +735,20 @@ func (d *HuggingFaceDownloader) downloadFile(ctx context.Context, task *download
 	}
 	httpReq = httpReq.WithContext(ctx)
 
+	// Round 17.3 (2026-08-03): RESUME support — HTTP Range request.
+	// Если tmpPath уже существует с N байт (от предыдущей попытки), шлём
+	// `Range: bytes=N-` чтобы получить только остаток файла. HuggingFace
+	// (как и любой S3-совместимый storage) возвращает 206 Partial Content
+	// с заголовком `Content-Range: bytes N-(total-1)/total`.
+	existingSize := task.progress.ResumedFrom
+	if existingSize > 0 {
+		httpReq.Header.Set("Range", fmt.Sprintf("bytes=%d-", existingSize))
+		log.Infow("sending HTTP Range request to resume",
+			"modelID", req.ModelID,
+			"filename", req.Filename,
+			"fromByte", existingSize)
+	}
+
 	// Выполняем запрос
 	resp, err := d.httpClient.Do(httpReq)
 	if err != nil {
@@ -713,7 +757,22 @@ func (d *HuggingFaceDownloader) downloadFile(ctx context.Context, task *download
 	}
 	defer resp.Body.Close()
 
-	if resp.StatusCode != http.StatusOK {
+	// Для resume: ожидаем 206 Partial Content, для fresh: 200 OK.
+	// Если сервер не поддерживает Range (например, CDN) — 200 OK с полным файлом,
+	// тогда нужно начать с нуля (удаляем tmp файл).
+	// ПРИМЕЧАНИЕ: tmpPath ещё не определён ниже — определяем здесь явно для ранней
+	// проверки (перед MkdirAll downloadsDir).
+	tmpPathEarly := destPath + ".download"
+	if existingSize > 0 && resp.StatusCode == http.StatusOK {
+		log.Warnw("server doesn't support Range, restarting from 0",
+			"modelID", req.ModelID, "filename", req.Filename)
+		os.Remove(tmpPathEarly)
+		existingSize = 0
+		d.mu.Lock()
+		task.progress.ResumedFrom = 0
+		task.progress.Resumable = false
+		d.mu.Unlock()
+	} else if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusPartialContent {
 		body, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
 		d.updateTaskError(task, fmt.Sprintf("HTTP %d: %s", resp.StatusCode, string(body)))
 		return
@@ -721,8 +780,15 @@ func (d *HuggingFaceDownloader) downloadFile(ctx context.Context, task *download
 
 	// Получаем размер файла
 	totalBytes := resp.ContentLength
+	if totalSize := resp.Header.Get("Content-Range"); totalSize != "" {
+		// Content-Range: bytes 0-99/12345 → totalBytes=12345
+		if slash := strings.LastIndex(totalSize, "/"); slash >= 0 {
+			if t, err := strconv.ParseInt(totalSize[slash+1:], 10, 64); err == nil && t > 0 {
+				totalBytes = t
+			}
+		}
+	}
 	if totalBytes <= 0 {
-		// Пробуем из заголовка Content-Range или другого
 		totalBytes = 0 // неизвестно
 	}
 
@@ -738,15 +804,32 @@ func (d *HuggingFaceDownloader) downloadFile(ctx context.Context, task *download
 	}
 
 	tmpPath := destPath + ".download"
-	tmpFile, err := os.Create(tmpPath)
+	// Round 17.3: если resuming — открываем файл в append mode.
+	// Если fresh (existingSize==0) — создаём новый (truncate если был garbage).
+	// (tmpPathEarly использовался выше для early Range check, теперь tmpPath — основной)
+	var tmpFile *os.File
+	if existingSize > 0 {
+		tmpFile, err = os.OpenFile(tmpPath, os.O_WRONLY|os.O_APPEND, 0644)
+		if err != nil {
+			// Файл мог быть удалён между StartDownload и downloadFile — fallback на fresh.
+			log.Warnw("resumed file missing, starting fresh",
+				"tmpPath", tmpPath, "error", err)
+			existingSize = 0
+			tmpFile, err = os.Create(tmpPath)
+		}
+	} else {
+		tmpFile, err = os.Create(tmpPath)
+	}
 	if err != nil {
-		d.updateTaskError(task, fmt.Sprintf("create temp file: %v", err))
+		d.updateTaskError(task, fmt.Sprintf("create/open temp file: %v", err))
 		return
 	}
 	defer tmpFile.Close()
 
 	// Копируем с отслеживанием прогресса
 	buf := make([]byte, ChunkSize)
+	// downloaded = сколько скачали в ЭТОМ запуске; existingSize = сколько уже было на диске.
+	// Общий прогресс = existingSize + downloaded.
 	var downloaded int64
 	var lastUpdate time.Time
 	var lastBytes int64
@@ -766,7 +849,6 @@ func (d *HuggingFaceDownloader) downloadFile(ctx context.Context, task *download
 		if n > 0 {
 			if _, writeErr := tmpFile.Write(buf[:n]); writeErr != nil {
 				tmpFile.Close()
-				os.Remove(tmpPath)
 				d.updateTaskError(task, fmt.Sprintf("write file: %v", writeErr))
 				return
 			}
@@ -783,13 +865,14 @@ func (d *HuggingFaceDownloader) downloadFile(ctx context.Context, task *download
 					}
 				}
 
+				totalDownloaded := existingSize + downloaded
 				pct := 0.0
 				if totalBytes > 0 {
-					pct = float64(downloaded) / float64(totalBytes) * 100
+					pct = float64(totalDownloaded) / float64(totalBytes) * 100
 				}
 
 				d.mu.Lock()
-				task.progress.Downloaded = downloaded
+				task.progress.Downloaded = totalDownloaded
 				task.progress.ProgressPct = pct
 				task.progress.SpeedBps = speed
 				d.mu.Unlock()
@@ -803,15 +886,39 @@ func (d *HuggingFaceDownloader) downloadFile(ctx context.Context, task *download
 			break
 		}
 		if readErr != nil {
+			// Round 17.3: НЕ удаляем partial file при network/IO ошибке —
+			// оставляем для RESUME при следующем вызове StartDownload.
+			// Удаляем только при явной отмене (ctx.Done()).
 			tmpFile.Close()
-			os.Remove(tmpPath)
-			d.updateTaskError(task, fmt.Sprintf("read response: %v", readErr))
+			if ctx.Err() != nil {
+				// User cancelled — cleanup
+				os.Remove(tmpPath)
+				d.updateTaskStatus(task, "cancelled", readErr.Error())
+			} else {
+				// Network/IO error — keep partial file
+				totalDownloaded := existingSize + downloaded
+				log.Warnw("download interrupted, partial file kept for resume",
+					"modelID", req.ModelID,
+					"filename", req.Filename,
+					"partialBytes", totalDownloaded,
+					"tmpPath", tmpPath,
+					"readError", readErr.Error())
+				d.updateTaskStatus(task, "interrupted", readErr.Error())
+				// Resumable остаётся true — следующий StartDownload подхватит
+				d.mu.Lock()
+				task.progress.Downloaded = totalDownloaded
+				d.mu.Unlock()
+			}
 			return
 		}
 	}
 
 	// Закрываем временный файл
 	tmpFile.Close()
+
+	// Round 17.3: финальный размер = existingSize (от прошлой попытки) + downloaded (этот запуск).
+	// Это для корректного ProgressPct=100% и метрик.
+	totalDownloaded := existingSize + downloaded
 
 	// Перемещаем в директорию моделей
 	if err := os.MkdirAll(d.modelsDir, 0755); err != nil {
@@ -855,13 +962,14 @@ func (d *HuggingFaceDownloader) downloadFile(ctx context.Context, task *download
 	// Обновляем прогресс как завершённый
 	duration := time.Since(startTime)
 	d.mu.Lock()
-	task.progress.Downloaded = downloaded
-	task.progress.TotalBytes = downloaded
+	task.progress.Downloaded = totalDownloaded
+	task.progress.TotalBytes = totalDownloaded
 	task.progress.ProgressPct = 100.0
 	task.progress.SpeedBps = int64(float64(downloaded) / duration.Seconds())
 	task.progress.Status = "completed"
 	task.progress.CompletedAt = time.Now().UTC().Format(time.RFC3339)
 	task.progress.Filename = filenameFromPath(destPath)
+	task.progress.Resumable = false // больше нечего resume'ить
 	d.downloadHistory = append(d.downloadHistory, task.progress)
 	if len(d.downloadHistory) > 50 {
 		d.downloadHistory = d.downloadHistory[len(d.downloadHistory)-50:]
@@ -871,7 +979,9 @@ func (d *HuggingFaceDownloader) downloadFile(ctx context.Context, task *download
 	log.Infow("download completed",
 		"modelID", req.ModelID,
 		"filename", filenameFromPath(destPath),
-		"sizeBytes", downloaded,
+		"sizeBytes", totalDownloaded,
+		"resumedFrom", existingSize,
+		"downloadedThisRun", downloaded,
 		"duration", duration.String(),
 		"speed", formatSpeed(downloaded, duration))
 }
@@ -947,6 +1057,68 @@ func (d *HuggingFaceDownloader) ListDownloadHistory() []HFDownloadProgress {
 	result := make([]HFDownloadProgress, len(d.downloadHistory))
 	copy(result, d.downloadHistory)
 	return result
+}
+
+// DeleteDownload — Round 17.3 (2026-08-03): удаляет скачанный/частичный файл
+// из контейнера, освобождая место на диске. Удаляет:
+//   - .download файл (частичная загрузка, downloadsDir)
+//   - final файл (полная загрузка, modelsDir)
+//   - запись из downloadHistory (помечается как cleaned)
+//
+// Возвращает DeleteDownloadResult с информацией о том, что было удалено и
+// сколько байт освобождено — для UI toast "Disk freed: 5.2 GB".
+func (d *HuggingFaceDownloader) DeleteDownload(modelID, filename string) (*DeleteDownloadResult, error) {
+	filename = filepath.Base(filename)
+	result := &DeleteDownloadResult{
+		ModelID:  modelID,
+		Filename: filename,
+	}
+
+	// 1. Удаляем .download файл (если есть)
+	tmpPath := filepath.Join(d.downloadsDir, filename+".download")
+	if fi, err := os.Stat(tmpPath); err == nil {
+		if err := os.Remove(tmpPath); err == nil {
+			result.TempDeleted = true
+			result.BytesFreed += fi.Size()
+		}
+	}
+
+	// 2. Удаляем final файл (если есть)
+	finalPath := filepath.Join(d.modelsDir, filename)
+	if fi, err := os.Stat(finalPath); err == nil {
+		if err := os.Remove(finalPath); err == nil {
+			result.FinalDeleted = true
+			result.BytesFreed += fi.Size()
+		}
+	}
+
+	// 3. Чистим history — помечаем что файл удалён (Resumable=false).
+	// Не удаляем запись — пользователь может видеть что скачивал.
+	d.mu.Lock()
+	for i := range d.downloadHistory {
+		if d.downloadHistory[i].ModelID == modelID && d.downloadHistory[i].Filename == filename {
+			d.downloadHistory[i].Resumable = false
+			d.downloadHistory[i].TempPath = ""   // пути уже неактуальны
+			d.downloadHistory[i].FinalPath = ""
+			d.downloadHistory[i].ErrorMessage = "deleted by user"
+		}
+	}
+	d.mu.Unlock()
+
+	if !result.TempDeleted && !result.FinalDeleted {
+		return result, fmt.Errorf("no file found for %s/%s", modelID, filename)
+	}
+
+	return result, nil
+}
+
+// DeleteDownloadResult — результат DeleteDownload.
+type DeleteDownloadResult struct {
+	ModelID      string `json:"modelId"`
+	Filename     string `json:"filename"`
+	TempDeleted  bool   `json:"tempDeleted"`  // .download файл удалён
+	FinalDeleted bool   `json:"finalDeleted"` // final файл удалён
+	BytesFreed   int64  `json:"bytesFreed"`   // освобождено байт на диске
 }
 
 // ============================================================

@@ -188,6 +188,57 @@ func handleHFCancel(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]string{"status": "cancelled"})
 }
 
+// handleHFCleanup — Round 17.3 (2026-08-03): DELETE /api/hf/download
+// Удаляет скачанный/частичный файл из контейнера, освобождая дисковое пространство.
+// Раньше единственный способ освободить место — остановить контейнер.
+//
+// Поддерживает оба варианта: query params (для DELETE) и body (для POST).
+func handleHFCleanup(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodDelete && r.Method != http.MethodPost {
+		writeError(w, http.StatusMethodNotAllowed, "use DELETE or POST")
+		return
+	}
+	modelID := r.URL.Query().Get("modelId")
+	filename := r.URL.Query().Get("filename")
+	if r.Method == http.MethodPost || (modelID == "" && filename == "") {
+		var req struct {
+			ModelID  string `json:"modelId"`
+			Filename string `json:"filename"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			writeError(w, http.StatusBadRequest, "invalid JSON: "+err.Error())
+			return
+		}
+		if modelID == "" {
+			modelID = req.ModelID
+		}
+		if filename == "" {
+			filename = req.Filename
+		}
+	}
+	if modelID == "" {
+		writeError(w, http.StatusBadRequest, "modelId is required (query param or body)")
+		return
+	}
+	if filename == "" {
+		writeError(w, http.StatusBadRequest, "filename is required (query param or body)")
+		return
+	}
+	result, err := backend.HFDownloader().DeleteDownload(modelID, filename)
+	if err != nil {
+		// 200 с noop — UI просто покажет toast "no file found"
+		writeJSON(w, http.StatusOK, map[string]interface{}{
+			"status":  "noop",
+			"message": err.Error(),
+		})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]interface{}{
+		"status": "deleted",
+		"result": result,
+	})
+}
+
 // handlePull — Ollama-compatible /api/pull для llama.cpp бэкендов.
 // Поддерживает загрузку GGUF-моделей с HuggingFace по имени вида:
 //

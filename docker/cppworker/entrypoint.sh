@@ -111,7 +111,16 @@ echo "Starting CppWorker with args: $@"
 CPPWORKER_PID=$!
 
 # ---- Auto-register with balancer (if BALANCER_URL is set) ----
+# CPPWORKER_REGISTER_DISABLE=true (bundled-full compose) также блокирует
+# shell-script регистрацию, иначе получаются дубликаты
+# (cppworker-gpu-bundled от register-with-balancer.sh + cppworker-gpu-bundled-agent
+# от agent'а на одном и том же физическом endpoint).
 if [ -n "${BALANCER_URL}" ] || [ -n "${CPPWORKER_BALANCER_URL}" ]; then
+    if [ "${CPPWORKER_REGISTER_DISABLE}" = "true" ] || [ "${CPPWORKER_REGISTER_DISABLE}" = "1" ]; then
+        echo ""
+        echo ">>> Auto-registration DISABLED via CPPWORKER_REGISTER_DISABLE=${CPPWORKER_REGISTER_DISABLE} <<<"
+        echo "[entrypoint] Skipping register-with-balancer.sh (agent does registration separately)"
+    else
     echo ""
     echo ">>> Auto-registration with balancer enabled <<<"
     echo "BALANCER_URL=${BALANCER_URL:-<not set>}"
@@ -157,6 +166,7 @@ if [ -n "${BALANCER_URL}" ] || [ -n "${CPPWORKER_BALANCER_URL}" ]; then
             fi
         done
     ) &
+    fi
 fi
 
 # ---- Wait for cppworker to finish ----

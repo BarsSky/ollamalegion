@@ -26,10 +26,10 @@ import (
 // *float64 — см. комментарий к openAIChatCompletionRequest (Round 16 follow-up
 // fix). nil = использовать дефолт cppworker; *0.0 = explicit 0 от клиента.
 type openAICompletionRequest struct {
-	Model     string   `json:"model"`
-	Prompt    string   `json:"prompt"`
-	Suffix    string   `json:"suffix,omitempty"`
-	MaxTokens int      `json:"max_tokens,omitempty"`
+	Model     string `json:"model"`
+	Prompt    string `json:"prompt"`
+	Suffix    string `json:"suffix,omitempty"`
+	MaxTokens int    `json:"max_tokens,omitempty"`
 	// Sampling params — *float64 для различения "unset" vs "explicit 0".
 	Temperature      *float64 `json:"temperature,omitempty"`
 	TopP             *float64 `json:"top_p,omitempty"`
@@ -340,6 +340,20 @@ func handleV1ChatCompletions(w http.ResponseWriter, r *http.Request) {
 		"model", req.Model, "used_naive", usedNaive,
 		"antiprompts_count", len(params.Antiprompts),
 		"antiprompts", params.Antiprompts)
+
+	// Round 26 v0.5.13: n_ctx overflow detection + X-Model-Context-Warning.
+	// Cutoff-bug: длинная беседа через OpenAI-совместимый API (Cline, Roo Code, IDE plugins, Hermes)
+	// → prompt > n_ctx → reload loop → 413 abrupt stop. Pre-emptive: проверяем и
+	// clamp n_predict + ставим warning header.
+	openaiWarning, _ := ComputeContextWarning(req.Model, prompt, params.NPredict, params.NCtxOverride)
+	if openaiWarning.NPredict != params.NPredict {
+		logger.Get().Warnw("handleV1ChatCompletions: clamping n_predict to fit n_ctx",
+			"model", req.Model, "old_n_predict", params.NPredict,
+			"new_n_predict", openaiWarning.NPredict, "n_ctx", openaiWarning.NCtx,
+			"prompt_tokens", openaiWarning.PromptTokens, "used_pct", openaiWarning.UsedPercent)
+		params.NPredict = openaiWarning.NPredict
+	}
+	SetContextWarningHeader(w, openaiWarning)
 
 	// ============================================================
 	// Streaming
@@ -1849,5 +1863,3 @@ func countTokensSafe(modelName, text string) int {
 	}
 	return backend.CountTokens(modelName, text)
 }
-
-

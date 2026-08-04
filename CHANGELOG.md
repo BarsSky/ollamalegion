@@ -5,6 +5,136 @@
 Формат ведётся в соответствии с [Keep a Changelog](https://keepachangelog.com/ru/1.0.0/),
 и этот проект придерживается [Semantic Versioning](https://semver.org/lang/ru/).
 
+## [0.5.13 — 2026-08-04]
+
+PATCH-релиз. **Bug fixes: WebUI settings busy + n_ctx overflow detection + long-conversation timeouts**.
+
+### ✨ New features
+
+#### WebUI busy badge + async apply profile (Round 26, 2026-08-04)
+
+**Что было** (`v0.5.12`): при генерации ответа моделью cppworker
+`handleReloadModel` блокирует на `inflight.WaitZero(name, 0)` — 30-60+ сек.
+WebUI не мог ни показать, ни изменить настройки модели в процессе
+генерации. Apply profile казался "заблокированным".
+
+**Что стало**:
+- **cppworker `GET /api/models/active-queries[?model=X]`** — lightweight
+  endpoint возвращает `{model, activeQueries: N}` для конкретной модели
+  или `{queries: {modelA: N, modelB: M}}` для всех моделей с ненулевыми
+  счётчиками. Использует существующий `InFlightCounter`. Round 26.
+- **api server `GetActiveQueriesForModel` helper** — синхронный HTTP
+  запрос к cppworker'у, timeout 3s, без блокировки busy event loop.
+- **api server async apply path** — `applyModelProfile` детектит busy
+  бэкенды ДО reload. Если хотя бы один занят — возвращает **HTTP 202
+  + Location** с `applyId, progressUrl, statusUrl` вместо блокирующего
+  reload.
+- **api server `GET /api/v1/cppworker/model-profiles/{name}/apply/progress?applyId=X`**
+  — SSE stream с прогрессом apply (events каждые 500ms, terminal event
+  с финальным результатом). Heartbeat 15s. Auto-close на terminal.
+- **api server `GET /api/v1/cppworker/model-profiles/{name}/apply/status/{applyId}`**
+  — JSON snapshot статуса (для polling fallback если EventSource не
+  работает).
+- **WebUI busy badge** на loaded model card: `🔴 Generating (N active)`
+  с pulse-анимацией. Polling `/api/models/active-queries` каждые 3s.
+  Cleanup при смене бэкенда.
+- **WebUI async apply UX** — modal показывает:
+  - "Сохранение профиля…"
+  - "Ожидание завершения активных генераций (initial: N)…" (только если busy)
+  - "Reload модели на бэкендах…"
+  - per-backend статусы с inline обновлениями
+  - Использует EventSource (SSE) с auto-fallback на polling.
+- **API client helpers** — `Api.cppworkerActiveQueries.get(backend, model)`,
+  `Api.cppworkerApplyProgress.streamProgress(name, id, callbacks)`,
+  `Api.cppworkerApplyProgress.pollStatus(name, id, maxWaitMs)`.
+
+#### n_ctx overflow detection + X-Model-Context-Warning header (Round 26, 2026-08-04)
+
+**Что было**: при длинной беседе prompt мог превысить `n_ctx` модели.
+cppworker'у приходилось делать reload с большим n_ctx, и после 3
+неудачных попыток возвращал 413 "reload_loop_limit". Пользователь
+получал abrupt stop без предупреждения.
+
+**Что стало**:
+- **Pure-function `ComputeContextWarning(modelName, prompt, nPredict, nCtxOverride)`**
+  в `cmd/cppworker/nctx_clamp.go` — рассчитывает уровень предупреждения
+  перед генерацией:
+  - `ok`         : prompt < 80% n_ctx, output помещается
+  - `approaching`: prompt > 80% n_ctx, output будет урезан
+  - `overflow`   : prompt + n_predict > n_ctx, урезаем до 0
+  - `impossible` : prompt > n_ctx, n_predict=0
+- **Auto-clamp n_predict** — функция возвращает `adjustedNPredict` который
+  caller использует вместо исходного `nPredict`. Pre-empts reload loop
+  (Round 18 safety net) — модель не пытается reload, если можно просто
+  урезать output.
+- **HTTP headers** (`X-Model-Context-Warning`,
+  `X-Model-Context-Suggestion`, `X-Model-Adjusted-NPredict`) ставятся
+  в `/api/chat`, `/api/generate`, `/v1/chat/completions`. Клиент
+  (OpenWebUI, Cline, Roo Code, IDE plugins, Hermes) может показать
+  предупреждение пользователю ДО обрыва ответа.
+- **Pure-function split** — `computeContextWarningFromLoaded(modelName,
+  prompt, nPredict, nCtxOverride, loadedNCtx, ggufMax)` для unit-тестов
+  без side-effects (stub-build не имеет реальной loaded model registry).
+
+### 🐛 Bug fixes
+
+#### Long-conversation cutoff в bundled-full (Round 26, 2026-08-04)
+
+**Что было**: при длинных беседах в OpenWebUI / Cline / Roo Code / IDE
+plugins / Hermes (все клиенты) ответ обрывался на середине. Юзер
+подтвердил что cutoff происходит во ВСЕХ клиентах → server-side issue.
+
+**Что стало** (config update + n_ctx detection):
+- **`config/config.json` defaults увеличены**:
+  - `streamingIdleTimeout: 600 → 1800` (10 мин → 30 мин)
+  - `streamTimeout:        0   → 1800` (default 10 мин → 30 мин)
+  
+  Причины: для больших моделей (Qwen3-Instruct-2507-q4km 2.5GB, gemma-4
+  5GB) с длинным контекстом генерация может занимать >10 мин. Раньше
+  balancer резал по 10-минутному idle/deadline.
+- **Per-model profile override** (уже было в WebUI) — пользователь
+  может выставить `streamingTimeoutSec=3600`, `streamingIdleTimeoutSec=3600`
+  в wizard'е "Edit profile" для конкретной модели.
+- **n_ctx overflow detection** (см. выше) — клиент теперь видит
+  предупреждение через `X-Model-Context-Warning` header до того как
+  произойдёт cutoff.
+
+### 📊 Stats
+
+- **8 + 7 + 11 = 26 новых тестов** (8 active-queries, 7 apply-async, 11 context-warning).
+  Все green с `llama_stub` build tag. **775 total tests passing**, 0 fail
+  (исключая pre-existing `TestLintCSSAndI18nNoEmDash` в `components.css`).
+- **4 new endpoints** (cppworker `/api/models/active-queries`, api
+  `apply/progress`, `apply/status/{id}`, cppworker
+  `X-Model-Context-Warning` header).
+- **3 new files** (`handlers_active_queries.go`,
+  `handlers_cppworker_apply_async.go`, `cppworker_active_queries.go`).
+- **3 new helpers** (`ComputeContextWarning`, `GetActiveQueriesForModel`,
+  `submitApplyJob`).
+- **WebUI** busy badge CSS, async apply modal, active-queries polling
+  в `gguf-renderer.js`, `cppworker-params.js`, `api.js`, `pages.css`.
+
+### 🔧 Migration notes
+
+- **Bundled-full users**: pull + restart. Новые defaults
+  `streamingIdleTimeout=1800`, `streamTimeout=1800` применяются
+  автоматически (через config.json).
+- **External balancer users**: добавьте `streamTimeout: 1800` в ваш
+  `balancing` config если хотите увеличить timeout для больших моделей.
+  Per-model profile override остаётся приоритетным.
+- **WebUI**: новая зависимость `EventSource` API — поддерживается всеми
+  современными браузерами, fallback на polling для старых.
+
+### Unaddressed (v0.5.14+)
+
+- **Bug #3**: Cline infinite tool instructions (Qwen3-Instruct-4B echoes
+  system prompt с длинными tool defs) — model behavior, не code fix;
+  нужен qwen3.5+ или prompt tuning.
+- **Bug #9**: Done flag before response — not reproduced, streaming looks
+  correct.
+- **gemma-4 5GB upstream**: GGML_ASSERT `n_inputs < GGML_SCHED_MAX_SPLIT_INPUTS`
+  (upstream llama.cpp issue, не наш код).
+
 ## [0.5.12 — 2026-08-04]
 
 PATCH-релиз. **SSE load progress + measured load time + WebUI auto-cleanup**.

@@ -35,6 +35,13 @@ const GgufRenderer = (window.GgufRenderer = (function () {
         // с loadedModels из /api/v1/cppworker/config/runtime. Используются в
         // renderLoadedPane() чтобы показать «default: 8192, runtime: 32768».
         runtimeModels: {},
+        // === Round 26 v0.5.13: Active queries per model ===
+        // Polling /api/models/active-queries каждые 3s для отображения
+        // busy badge "🔴 Generating (N active)" на loaded model card.
+        // Помогает UX: пользователь видит, почему apply ждёт, и не
+        // путает это с "настройки заблокированы".
+        activeQueries: {}, // key: model name, value: number
+        _activeQueriesTimer: null,
         activeDownloads: [],
         downloadProgress: {},
         // HF search within the detail view
@@ -536,8 +543,19 @@ const GgufRenderer = (window.GgufRenderer = (function () {
                         '</div>';
                 }
             }
+            // Round 26 v0.5.13: busy badge. Если activeQueries > 0, показываем
+            // "🔴 Generating (N active)" inline рядом с именем модели. Это
+            // разъясняет пользователю, почему apply может ждать.
+            const activeCount = (state.activeQueries && state.activeQueries[name]) || 0;
+            const busyBadge = activeCount > 0
+                ? '<span class="gguf-loaded-busy-badge" style="display:inline-flex;align-items:center;gap:4px;margin-left:8px;padding:2px 8px;background:rgba(217,83,79,0.15);color:#ff7b76;border-radius:10px;font-size:11px;font-weight:600;" title="' + (_('gguf.busy_badge_title') || 'Active generations') + '">' +
+                    '<span style="display:inline-block;width:6px;height:6px;background:#ff7b76;border-radius:50%;animation:gguf-pulse 1.2s infinite;"></span>' +
+                    (_('gguf.busy_badge') || 'Generating') + ' (' + activeCount + ' ' + (_('gguf.active_short') || 'active') + ')' +
+                  '</span>'
+                : '';
+
             return '<div class="gguf-loaded-model-item">' +
-                '<div class="gguf-loaded-model-name">' + Utils.escapeHtml(name) + '</div>' +
+                '<div class="gguf-loaded-model-name">' + Utils.escapeHtml(name) + busyBadge + '</div>' +
                 '<div class="gguf-loaded-model-info">' +
                     '<span>' + _('gguf.ctx_size') + ': ' + ctx + '</span>' +
                     '<span style="margin-left:12px;">VRAM: ' + vram + '</span>' +
@@ -1649,6 +1667,9 @@ const GgufRenderer = (window.GgufRenderer = (function () {
         if (state.selectedBackendId === backendId) {
             return;
         }
+        // Round 26 v0.5.13: cleanup old active-queries polling
+        stopActiveQueriesPolling();
+        state.activeQueries = {};
         state.selectedBackendId = backendId;
         state.detailPane = 'about';
         state.workerInfo = null;
@@ -2231,6 +2252,66 @@ const GgufRenderer = (window.GgufRenderer = (function () {
             state.detailError = err.message;
             refreshDetailPanel();
         });
+
+        // === Round 26 v0.5.13: запустить polling active-queries ===
+        // Параллельно с загрузкой loaded list. Polling даёт busy badge в UI.
+        startActiveQueriesPolling();
+    }
+
+    // ===== Active queries polling (Round 26 v0.5.13) =====
+
+    /**
+     * Запустить polling /api/models/active-queries для текущего выбранного бэкенда.
+     * Polling каждые 3 секунды. Авто-cleanup при смене бэкенда.
+     */
+    function startActiveQueriesPolling() {
+        // Очищаем предыдущий таймер, если был
+        stopActiveQueriesPolling();
+        const backend = currentBackend();
+        if (!backend) return;
+        if (!window.Api || !window.Api.cppworkerActiveQueries) return;
+
+        const tick = function () {
+            // Polling всех загруженных моделей параллельно
+            const models = (state.loadedModels || []).map(function (m) {
+                return (m.model || m.name || m.path || '').replace(/\.gguf$/, '');
+            }).filter(Boolean);
+            if (models.length === 0) {
+                state.activeQueries = {};
+                refreshDetailPane();
+                return;
+            }
+            Promise.all(models.map(function (name) {
+                return window.Api.cppworkerActiveQueries.get(backend.id, name)
+                    .then(function (data) { return [name, data.activeQueries || 0]; })
+                    .catch(function () { return [name, 0]; });
+            })).then(function (results) {
+                const newMap = {};
+                let changed = false;
+                results.forEach(function (pair) {
+                    newMap[pair[0]] = pair[1];
+                    if ((state.activeQueries[pair[0]] || 0) !== pair[1]) changed = true;
+                });
+                if (changed) {
+                    state.activeQueries = newMap;
+                    refreshDetailPane();
+                }
+            });
+        };
+
+        // Первый tick сразу, потом каждые 3s
+        tick();
+        state._activeQueriesTimer = setInterval(tick, 3000);
+    }
+
+    /**
+     * Остановить polling active-queries.
+     */
+    function stopActiveQueriesPolling() {
+        if (state._activeQueriesTimer) {
+            clearInterval(state._activeQueriesTimer);
+            state._activeQueriesTimer = null;
+        }
     }
 
     function refreshActiveDownloads() {

@@ -26,7 +26,8 @@
     "metricsInterval": 5,
     "requestTimeout": 600,
     "firstByteTimeout": 600,
-    "streamingIdleTimeout": 600,
+    "streamingIdleTimeout": 1800,
+    "streamTimeout": 1800,
     "queueTimeout": 900,
 
     "queueMaxSize": 100,

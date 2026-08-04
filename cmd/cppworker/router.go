@@ -21,12 +21,13 @@ func setupRouter() http.Handler {
 	mux.HandleFunc("/api/info", handleInfo)
 	mux.HandleFunc("/api/gpu", handleGPUInfo)
 	mux.HandleFunc("/api/models/load", handleLoadModel)
-	mux.HandleFunc("/api/models/load-with-params", handleLoadWithParams) // ??????????? ????????? (Session 4 P-1)
-	mux.HandleFunc("/load", handleLoadModel)                        // alias for balancer warmup
-	mux.HandleFunc("/api/models/load/progress", handleLoadProgress) // loading state polling
+	mux.HandleFunc("/api/models/load-with-params", handleLoadWithParams)         // ??????????? ????????? (Session 4 P-1)
+	mux.HandleFunc("/load", handleLoadModel)                                     // alias for balancer warmup
+	mux.HandleFunc("/api/models/load/progress", handleLoadProgress)              // loading state polling
 	mux.HandleFunc("/api/models/load/progress/stream", handleLoadProgressStream) // Round 25: SSE stream
 	mux.HandleFunc("/api/models/unload", handleUnloadModel)
 	mux.HandleFunc("/api/models/reload", authMiddleware(handleReloadModel))
+	mux.HandleFunc("/api/models/active-queries", handleGetActiveQueries) // Round 26 v0.5.13: WebUI busy badge
 	mux.HandleFunc("/api/models", handleListModels)
 	mux.HandleFunc("/api/model", handleGetModel)
 	mux.HandleFunc("/api/models/files", handleListModelsDir)
@@ -46,11 +47,11 @@ func setupRouter() http.Handler {
 	mux.HandleFunc("/api/create", handleOllamaCreate)
 	mux.HandleFunc("/api/push", handleOllamaPush)
 	mux.HandleFunc("/api/version", handleCppWorkerVersion)
-	mux.HandleFunc("/api/cancel", handleCancel) // Round 18 P0.2: cancel active generation
-	mux.HandleFunc("/api/infer/active", handleInferActive) // Round 18 P1.4: list active generations
-	mux.HandleFunc("/api/infer/users", handleInferUsers) // Round 18 P0.3: per-user parallel counters
+	mux.HandleFunc("/api/cancel", handleCancel)              // Round 18 P0.2: cancel active generation
+	mux.HandleFunc("/api/infer/active", handleInferActive)   // Round 18 P1.4: list active generations
+	mux.HandleFunc("/api/infer/users", handleInferUsers)     // Round 18 P0.3: per-user parallel counters
 	mux.HandleFunc("/api/infer/metrics", handleInferMetrics) // Round 18 P1.4: per-model metrics with percentiles
-	mux.HandleFunc("/metrics", handlePrometheusMetrics) // Round 22 deferred: Prometheus exposition format
+	mux.HandleFunc("/metrics", handlePrometheusMetrics)      // Round 22 deferred: Prometheus exposition format
 	mux.HandleFunc("/api/hf/search", handleHFSearch)
 	mux.HandleFunc("/api/hf/files", handleHFFiles)
 	mux.HandleFunc("/api/hf/download", handleHFDownload)
@@ -93,4 +94,3 @@ func setupRouter() http.Handler {
 	// ??? ????? panic ???????? ? EOF ??? ??????????? ??? ???????.
 	return recoverMiddleware(corsMiddleware(loggingMiddleware(mux)))
 }
-

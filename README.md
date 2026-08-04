@@ -11,7 +11,13 @@
 
 ## Что нового
 
-**v0.5.12 — 2026-08-04** (последний релиз, [полный CHANGELOG](CHANGELOG.md)):
+**v0.5.13 — 2026-08-04** (последний релиз, [полный CHANGELOG](CHANGELOG.md)):
+
+- ✨ **WebUI busy badge + async apply profile (Round 26)** — при генерации ответа моделью cppworker'овский `handleReloadModel` блокировал на `inflight.WaitZero` 30-60+ сек. WebUI не мог ни показать, ни изменить настройки. Теперь: cppworker endpoint `/api/models/active-queries` показывает busy count, **api server детектит busy ДО apply и возвращает HTTP 202 + Location + SSE progress** (events каждые 500ms), WebUI показывает `🔴 Generating (N active)` на loaded model card + per-backend progress modal с auto-fallback на polling.
+- ✨ **n_ctx overflow detection + X-Model-Context-Warning header (Round 26)** — preflight check перед каждой генерацией (`ComputeContextWarning`). Уровни: `ok` / `approaching` (>80% n_ctx) / `overflow` (prompt+n_predict>n_ctx, clamp до 0) / `impossible` (prompt>n_ctx). Auto-clamp n_predict (без reload-loop). HTTP headers в `/api/chat`, `/api/generate`, `/v1/chat/completions` — клиент (OpenWebUI/Cline/Hermes) видит предупреждение ДО обрыва.
+- 🐛 **Long-conversation cutoff fix** — юзер подтвердил cutoff во ВСЕХ клиентах (OpenWebUI, Cline, Curl, Roo Code, IDE plugins, Hermes) → server-side. Config defaults: `streamingIdleTimeout: 600→1800`, `streamTimeout: 0→1800` (10 мин → 30 мин). Per-model profile override (через WebUI wizard) остаётся приоритетным.
+
+**v0.5.12 — 2026-08-04**:
 
 - ✨ **SSE load progress** — WebUI переключился с polling каждые 1.5s на `EventSource`. Cppworker шлёт `text/event-stream` push-events каждые 500ms с `{state, elapsedMs, loadingSizeBytes}`. Heartbeat `:keepalive` каждые 15s. Auto-close на terminal state. **Live verify**: 30 events за 15s direct, 22 events за 11s через balancer API proxy (без буферизации).
 - ✨ **Measured load time cache** — динамическая оценка `estimatedLoadTimeMs` на основе реальных измерений (weighted average последних 20 load'ов, stale-фильтр 7d, zero-filter). После первого load'а Qwen3 (2.5GB, 99s) estimate становится ~70s вместо хардкода 28s. Более реалистичный feedback для клиента.

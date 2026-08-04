@@ -324,6 +324,19 @@ func handleGenerate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Round 26 v0.5.13: n_ctx overflow detection + X-Model-Context-Warning.
+	// Cutoff-bug: длинная беседа в OpenWebUI → prompt > n_ctx → reload loop → 413.
+	// Pre-emptive: проверяем и clamp n_predict + ставим warning header.
+	genWarning, _ := ComputeContextWarning(modelName, prompt, params.NPredict, params.NCtxOverride)
+	if genWarning.NPredict != params.NPredict {
+		logger.Get().Warnw("handleGenerate: clamping n_predict to fit n_ctx",
+			"model", modelName, "old_n_predict", params.NPredict,
+			"new_n_predict", genWarning.NPredict, "n_ctx", genWarning.NCtx,
+			"prompt_tokens", genWarning.PromptTokens, "used_pct", genWarning.UsedPercent)
+		params.NPredict = genWarning.NPredict
+	}
+	SetContextWarningHeader(w, genWarning)
+
 	// keep_alive: после успешного ответа применяется в defer.
 	// Семантика: "0" → unload, "5m" → lastUsedAt += 5 минут, "" → дефолт 30 минут.
 	defer func() {

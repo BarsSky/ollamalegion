@@ -34,8 +34,8 @@ type modelProfileResponse struct {
 
 // modelProfileApplyResponse — результат apply (reload на бэкендах).
 type modelProfileApplyResponse struct {
-	Model    string                       `json:"model"`
-	Profile  types.LlamaCppModelProfile   `json:"profile"`
+	Model    string                           `json:"model"`
+	Profile  types.LlamaCppModelProfile       `json:"profile"`
 	Backends []modelProfileApplyBackendResult `json:"backends"`
 }
 
@@ -98,6 +98,22 @@ func (s *Server) handleModelProfile(w http.ResponseWriter, r *http.Request) {
 		s.deleteModelProfile(w, r, modelName)
 	case sub == "apply" && r.Method == http.MethodPost:
 		s.applyModelProfile(w, r, modelName)
+	case strings.HasPrefix(sub, "apply/") && r.Method == http.MethodGet:
+		// Round 26 v0.5.13: async apply progress + status.
+		// sub = "apply/progress?applyId=..."  или  "apply/status/{applyId}"
+		// Trim query string first (Go's SplitN не отрезает ?query)
+		subPath := sub
+		if qIdx := strings.Index(subPath, "?"); qIdx >= 0 {
+			subPath = subPath[:qIdx]
+		}
+		subParts := strings.SplitN(strings.TrimPrefix(subPath, "apply/"), "/", 2)
+		if len(subParts) >= 1 && subParts[0] == "progress" {
+			s.handleApplyProfileProgress(w, r, modelName)
+		} else if len(subParts) >= 2 && subParts[0] == "status" {
+			s.handleApplyProfileStatus(w, r, modelName, subParts[1])
+		} else {
+			s.writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "unknown sub-path"})
+		}
 	default:
 		s.writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
 	}
@@ -166,10 +182,10 @@ func (s *Server) upsertModelProfile(w http.ResponseWriter, r *http.Request, mode
 				"model", modelName, "error", err)
 			// Не откатываем in-memory изменение — но сообщаем warning
 			s.writeJSON(w, http.StatusOK, map[string]interface{}{
-				"status":   "ok",
-				"model":    modelName,
-				"profile":  incoming,
-				"warning":  "profile saved in memory, but config.json write failed: " + err.Error(),
+				"status":  "ok",
+				"model":   modelName,
+				"profile": incoming,
+				"warning": "profile saved in memory, but config.json write failed: " + err.Error(),
 			})
 			return
 		}
@@ -308,6 +324,46 @@ func (s *Server) applyModelProfile(w http.ResponseWriter, r *http.Request, model
 	// auto-registration, и его backend появляется только в runtime state proxy.
 	// Если итерировать по s.config.Backends — apply всегда возвращает "skipped".
 	results := make([]modelProfileApplyBackendResult, 0)
+
+	// Round 26 v0.5.13 (Bug #1+#2): проверяем busy state каждого бэкенда.
+	// Если модель генерирует ответ, cppworker handleReloadModel сделает
+	// inflight.WaitZero(req.Name, 0) и зависнет на 30-60+ секунд. WebUI
+	// в это время не может ни посмотреть, ни изменить настройки ("blocked").
+	//
+	// Решение: детектим busy state ДО reload, и если хотя бы один бэкенд
+	// занят — возвращаем 202 Accepted + Location с SSE-эндпоинтом прогресса.
+	// WebUI показывает modal "Model is busy (3 active), applying in background…"
+	// и продолжает polling /api/v1/cppworker/model-profiles/{name}/apply/progress.
+	busyBackends := make([]string, 0)
+	for _, backend := range s.proxy.GetAllBackends() {
+		if backend.Type != types.BackendTypeLlamaCpp {
+			continue
+		}
+		if !s.proxy.IsLlamaCppModelLoaded(backend.ID, modelName) {
+			continue
+		}
+		count, err := s.GetActiveQueriesForModel(backend.ID, modelName)
+		if err != nil {
+			// soft-fail: если cppworker недоступен для busy check,
+			// делаем sync apply (старое поведение — может зависнуть,
+			// но юзер увидит это по таймауту браузера)
+			log.Debugw("applyModelProfile: active-queries check failed, falling back to sync",
+				"backend", backend.ID, "model", modelName, "error", err)
+			continue
+		}
+		if count > 0 {
+			busyBackends = append(busyBackends, backend.ID)
+			log.Infow("applyModelProfile: backend busy, will use async path",
+				"backend", backend.ID, "model", modelName, "active", count)
+		}
+	}
+
+	// Если есть занятые бэкенды — async path.
+	if len(busyBackends) > 0 {
+		s.handleAsyncApply(w, r, modelName, merged, busyBackends)
+		return
+	}
+
 	for _, backend := range s.proxy.GetAllBackends() {
 		backendID := backend.ID
 		if backend.Type != types.BackendTypeLlamaCpp {
@@ -375,10 +431,10 @@ func (s *Server) reloadModelOnCppWorker(backend types.Backend, modelName string,
 	target := fmt.Sprintf("http://%s:%d/api/models/reload", host, port)
 
 	body := map[string]interface{}{
-		"name":          modelName,
-		"contextSize":   profile.ContextLength,
-		"batchSize":     profile.BatchSize,
-		"numGpuLayers":  profile.NumGPULayers,
+		"name":         modelName,
+		"contextSize":  profile.ContextLength,
+		"batchSize":    profile.BatchSize,
+		"numGpuLayers": profile.NumGPULayers,
 	}
 	if profile.FlashAttn != nil {
 		body["flashAttn"] = *profile.FlashAttn

@@ -259,18 +259,122 @@ const Api = (function () {
              * модели на всех llama_cpp бэкендах, где она загружена.
              * @param {string} modelName — имя модели.
              * @param {Object} [profile] — опциональное частичное обновление профиля (merge с существующим).
-             * @returns {Promise<{model: string, profile: LlamaCppModelProfile, backends: Array<{backendId: string, status: string, message?: string}>}>}
+             * @returns {Promise<Object>} — синхронный ответ 200 (все бэкенды idle),
+             *                                ИЛИ 202 + {applyId, progressUrl, ...} (async path при занятом бэкенде).
              */
             async apply(modelName, profile) {
                 const options = { method: 'POST' };
                 if (profile && Object.keys(profile).length > 0) {
                     options.body = JSON.stringify(profile);
                 }
-                const response = await request(
+                const response = await fetch(
                     `${API_BASE}/api/v1/cppworker/model-profiles/${encodeURIComponent(modelName)}/apply`,
-                    options
+                    {
+                        method: 'POST',
+                        credentials: 'include',
+                        headers: Object.assign(
+                            { 'Content-Type': 'application/json' },
+                            request._getAuthHeaders ? request._getAuthHeaders() : {}
+                        ),
+                        body: options.body || null
+                    }
                 );
-                return response.json();
+                const data = await response.json();
+                // Attach status to result so caller can distinguish sync (200) vs async (202)
+                data._status = response.status;
+                return data;
+            }
+        },
+
+        // ===== Active Queries (Round 26 v0.5.13) =====
+        // Используется для busy badge в WebUI: показывает, генерирует ли модель
+        // ответ прямо сейчас. Помогает UX — пользователь видит, что apply нужно
+        // подождать, а не сидеть с disabled формой "Save".
+        cppworkerActiveQueries: {
+            /**
+             * GET /api/v1/gguf/backends/{id}/proxy/api/models/active-queries?model=<name>
+             * Возвращает {model, activeQueries: N} для конкретной модели на конкретном бэкенде.
+             * @param {string} backendId — ID cppworker'а.
+             * @param {string} modelName — имя модели.
+             * @returns {Promise<{model: string, activeQueries: number}>}
+             */
+            async get(backendId, modelName) {
+                // Используем существующий proxyToCppWorker (GgufApi), не идём напрямую.
+                if (!window.GgufApi || !window.GgufApi.requestViaBackend) {
+                    throw new Error('GgufApi.requestViaBackend not available');
+                }
+                const path = `/api/models/active-queries?model=${encodeURIComponent(modelName)}`;
+                const data = await window.GgufApi.requestViaBackend(backendId, path);
+                return { model: data.model || modelName, activeQueries: data.activeQueries || 0 };
+            }
+        },
+
+        // ===== Apply Profile Progress (Round 26 v0.5.13) =====
+        // Async apply + SSE progress. handleAsyncApply возвращает 202 + applyId,
+        // и UI подписывается на /api/v1/cppworker/model-profiles/{name}/apply/progress.
+        cppworkerApplyProgress: {
+            /**
+             * GET /api/v1/cppworker/model-profiles/{name}/apply/progress?applyId=X
+             * EventSource-совместимый SSE endpoint. Возвращает EventSource.
+             * @param {string} modelName — имя модели.
+             * @param {string} applyId — ID async apply job'а.
+             * @param {Object} callbacks — {onProgress, onComplete, onError}.
+             * @returns {EventSource}
+             */
+            streamProgress(modelName, applyId, callbacks) {
+                if (typeof EventSource === 'undefined') {
+                    // Fallback для старых браузеров
+                    throw new Error('EventSource not supported');
+                }
+                const url = `${API_BASE}/api/v1/cppworker/model-profiles/${encodeURIComponent(modelName)}/apply/progress?applyId=${encodeURIComponent(applyId)}`;
+                const es = new EventSource(url, { withCredentials: true });
+                es.addEventListener('progress', (e) => {
+                    try {
+                        const data = JSON.parse(e.data);
+                        if (callbacks.onProgress) callbacks.onProgress(data);
+                    } catch (err) { /* ignore */ }
+                });
+                es.addEventListener('complete', (e) => {
+                    try {
+                        const data = JSON.parse(e.data);
+                        if (callbacks.onComplete) callbacks.onComplete(data);
+                    } catch (err) { /* ignore */ }
+                    es.close();
+                });
+                es.onerror = (e) => {
+                    if (callbacks.onError) callbacks.onError(e);
+                    // EventSource auto-reconnects — close explicitly to stop
+                    es.close();
+                };
+                return es;
+            },
+
+            /**
+             * GET /api/v1/cppworker/model-profiles/{name}/apply/status/{applyId}
+             * Одноразовый JSON snapshot. Для fallback если SSE не работает.
+             * @param {string} modelName — имя модели.
+             * @param {string} applyId — ID async apply job'а.
+             * @returns {Promise<Object>}
+             */
+            async getStatus(modelName, applyId) {
+                return getJson(`/api/v1/cppworker/model-profiles/${encodeURIComponent(modelName)}/apply/status/${encodeURIComponent(applyId)}`);
+            },
+
+            /**
+             * Polling fallback: опрашивает /status каждые 1s пока terminal.
+             * @param {string} modelName — имя модели.
+             * @param {string} applyId — ID async apply job'а.
+             * @param {number} [maxWaitMs=300000] — max 5 минут.
+             * @returns {Promise<Object>}
+             */
+            async pollStatus(modelName, applyId, maxWaitMs = 300000) {
+                const start = Date.now();
+                while (Date.now() - start < maxWaitMs) {
+                    const status = await this.getStatus(modelName, applyId);
+                    if (status.terminal) return status;
+                    await new Promise(r => setTimeout(r, 1000));
+                }
+                throw new Error('pollStatus: timeout after ' + maxWaitMs + 'ms');
             }
         },
 

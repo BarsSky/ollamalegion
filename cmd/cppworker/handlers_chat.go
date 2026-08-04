@@ -165,6 +165,24 @@ func handleChat(w http.ResponseWriter, r *http.Request) {
 		"model", req.Model, "count", len(params.Antiprompts),
 		"antiprompts", params.Antiprompts)
 
+	// Round 26 v0.5.13: n_ctx overflow detection + X-Model-Context-Warning.
+	// Проверяем, помещается ли prompt + n_predict в n_ctx. Если нет —
+	// 1) корректируем n_predict чтобы избежать overflow (Round 18 retry-loop)
+	// 2) ставим X-Model-Context-Warning header чтобы клиент (OpenWebUI/Cline/Hermes)
+	//    мог показать предупреждение пользователю ДО обрыва ответа.
+	// Это объясняет cutoff-баг из Round 26: при длинной беседе prompt > n_ctx,
+	// reload-loop после 3 попыток → 413 + abrupt stop.
+	warning, adjustedNPredict := ComputeContextWarning(req.Model, prompt, params.NPredict, params.NCtxOverride)
+	if warning.NPredict != params.NPredict {
+		logger.Get().Warnw("handleChat: clamping n_predict to fit n_ctx",
+			"model", req.Model, "old_n_predict", params.NPredict,
+			"new_n_predict", warning.NPredict, "n_ctx", warning.NCtx,
+			"prompt_tokens", warning.PromptTokens, "used_pct", warning.UsedPercent)
+		params.NPredict = warning.NPredict
+	}
+	_ = adjustedNPredict
+	SetContextWarningHeader(w, warning)
+
 	if req.Stream {
 		// ??? stream=true && tools!=[] ??????? ?????? ??? ??????, ?? ???????????
 		// ?????? output ???????????. ????? ?????????? ????????? ????????? tool_calls
@@ -263,7 +281,7 @@ func buildChatPrompt(msgs []chatMessage, modelName string) (string, error) {
 	if currentConfig != nil && currentConfig.EnableReasoning {
 		nativePrompt, supportsThinking, err := backend.ApplyChatTemplateWithThinking(
 			modelName, "" /* override */, msgsToBridge(msgs),
-			true /* enableThinking */, true /* addGenerationPrompt */,
+			true /* enableThinking */, true, /* addGenerationPrompt */
 		)
 		if err == nil && nativePrompt != "" {
 			if supportsThinking {
@@ -411,7 +429,7 @@ func msgsToBridge(msgs []chatMessage) []bridge.ChatMessage {
 	for _, m := range msgs {
 		content := m.Content
 		// ???? assistant ????????? ???????? tool_calls ? ??????????? ?? ? content
-			// Round 6 #2: wrap tool_calls as JSON array [{...},{...}] in Hermes/Qwen
+		// Round 6 #2: wrap tool_calls as JSON array [{...},{...}] in Hermes/Qwen
 		// format, which llama.cpp chat_template recognizes as structured
 		// tool_call (not plain-JSON). bridge.ChatMessage has no native ToolCalls
 		// field (C-bridge limitation), so we serialize into Content.
@@ -683,7 +701,7 @@ func writeChatStreamResponse(w http.ResponseWriter, r *http.Request, modelName, 
 		"created_at":     createdAt,
 		"message":        map[string]string{"role": "assistant", "content": cleanedOutput},
 		"done":           true,
-		"done_reason":     "stop",
+		"done_reason":    "stop",
 		"total_duration": duration.Nanoseconds(),
 		"eval_count":     0,
 		"eval_duration":  duration.Nanoseconds(),
@@ -899,4 +917,3 @@ func writeChatStreamResponseWithTools(w http.ResponseWriter, r *http.Request, mo
 	fmt.Fprintf(w, "%s\n", doneJSON)
 	flusher.Flush()
 }
-

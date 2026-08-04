@@ -27,6 +27,8 @@
     'use strict';
 
     const PROFILES = window.Api && window.Api.cppworkerModelProfiles;
+    const ACTIVE_QUERIES = window.Api && window.Api.cppworkerActiveQueries;
+    const APPLY_PROGRESS = window.Api && window.Api.cppworkerApplyProgress;
     const I18N = window.I18N || { t: (k, def) => def || k };
 
     // Пресеты contextLength (в токенах)
@@ -524,14 +526,16 @@
         }
     }
 
-    // ----- Apply with progress modal -----
+    // ----- Apply with progress modal (Round 26 v0.5.13) -----
+    // Async path: detect busy → 202 + SSE progress → terminal state.
+    // Sync path: 200 + final backends list → close modal.
 
     async function applyProfileWithProgress(modelName) {
         // Создаём modal
         const overlay = document.createElement('div');
         overlay.className = 'mode-wizard-overlay';
         overlay.innerHTML = `
-            <div class="mode-wizard-modal" style="max-width:480px;">
+            <div class="mode-wizard-modal" style="max-width:520px;">
                 <div class="wizard-header">
                     <h3>${escapeHtml(I18N.t('settings.profiles.applying', 'Применение профиля…'))}</h3>
                 </div>
@@ -543,6 +547,10 @@
                     <div class="reload-step pending" data-step="reload">
                         <span class="reload-step-icon">⏵</span>
                         <span class="reload-step-text">${escapeHtml(I18N.t('settings.profiles.step_reload', 'Reload модели на бэкендах…'))}</span>
+                    </div>
+                    <div class="reload-step pending" data-step="busy" id="busyStep" style="display:none;">
+                        <span class="reload-step-icon">⏵</span>
+                        <span class="reload-step-text">${escapeHtml(I18N.t('settings.profiles.step_busy', 'Ожидание завершения активных генераций…'))}</span>
                     </div>
                     <div class="reload-progress-bar"><div class="reload-progress-fill" id="reloadProgressFill"></div></div>
                 </div>
@@ -557,12 +565,14 @@
         const fillEl = overlay.querySelector('#reloadProgressFill');
         const steps = {
             save: overlay.querySelector('[data-step="save"]'),
-            reload: overlay.querySelector('[data-step="reload"]')
+            reload: overlay.querySelector('[data-step="reload"]'),
+            busy: overlay.querySelector('[data-step="busy"]')
         };
 
         function setStep(name, state) {
             const el = steps[name];
             if (!el) return;
+            el.style.display = '';
             el.classList.remove('pending', 'running', 'done', 'error');
             el.classList.add(state);
             const icon = el.querySelector('.reload-step-icon');
@@ -572,20 +582,9 @@
             else icon.textContent = '⏵';
         }
 
-        try {
-            // Шаг 1: save+reload в одном вызове
-            setStep('save', 'running');
-            fillEl.style.width = '20%';
-
-            const resp = await PROFILES.apply(modelName);
-
-            setStep('save', 'done');
-            setStep('reload', 'running');
-            fillEl.style.width = '70%';
-
-            // Рендерим результаты
+        function renderBackendResults(backends) {
             const body = overlay.querySelector('#reloadProgressBody');
-            const details = (resp.backends || []).map(b => {
+            const details = (backends || []).map(b => {
                 let icon = '·';
                 let cls = 'pending';
                 if (b.status === 'reloaded') { icon = '✓'; cls = 'done'; }
@@ -599,11 +598,107 @@
             } else {
                 body.insertAdjacentHTML('beforeend', '<div class="reload-step pending"><span class="reload-step-icon">·</span><span class="reload-step-text">No llama.cpp backends registered</span></div>');
             }
+        }
+
+        try {
+            // Шаг 1: save+reload в одном вызове
+            setStep('save', 'running');
+            fillEl.style.width = '20%';
+
+            const resp = await PROFILES.apply(modelName);
+
+            setStep('save', 'done');
+
+            // Если 202 — async path (buggy бэкенд был занят).
+            // Используем SSE для live прогресса.
+            if (resp._status === 202 && resp.applyId && APPLY_PROGRESS) {
+                fillEl.style.width = '30%';
+                setStep('busy', 'running');
+                steps.busy.querySelector('.reload-step-text').textContent =
+                    I18N.t('settings.profiles.step_busy_with_count',
+                        'Ожидание завершения активных генераций (initial: ' + (resp.initialActiveQueries || 0) + ')…');
+
+                // Попробуем EventSource (SSE), fallback на polling
+                const useSSE = typeof EventSource !== 'undefined';
+                if (useSSE) {
+                    const es = APPLY_PROGRESS.streamProgress(modelName, resp.applyId, {
+                        onProgress: (data) => {
+                            if (data.state === 'reloading') {
+                                setStep('busy', 'done');
+                                setStep('reload', 'running');
+                                fillEl.style.width = '70%';
+                            }
+                            // Update per-backend status
+                            if (data.backends) {
+                                Object.keys(data.backends).forEach(bid => {
+                                    const b = data.backends[bid];
+                                    // Find or add a step for this backend
+                                    let stepEl = overlay.querySelector('[data-backend-id="' + bid + '"]');
+                                    if (!stepEl) {
+                                        const html = `<div class="reload-step pending" data-backend-id="${escapeHtml(bid)}">
+                                            <span class="reload-step-icon">·</span>
+                                            <span class="reload-step-text">${escapeHtml(bid)}</span>
+                                        </div>`;
+                                        overlay.querySelector('#reloadProgressBody').insertAdjacentHTML('beforeend', html);
+                                        stepEl = overlay.querySelector('[data-backend-id="' + bid + '"]');
+                                    }
+                                    stepEl.classList.remove('pending', 'running', 'done', 'error');
+                                    let cls = 'pending';
+                                    if (b.status === 'reloaded') cls = 'done';
+                                    else if (b.status === 'error') cls = 'error';
+                                    else if (b.status === 'pending') cls = 'running';
+                                    stepEl.classList.add(cls);
+                                    const icon = stepEl.querySelector('.reload-step-icon');
+                                    if (b.status === 'reloaded') icon.textContent = '✓';
+                                    else if (b.status === 'error') icon.textContent = '✗';
+                                    else if (b.status === 'pending') icon.textContent = '⟳';
+                                    else icon.textContent = '⏵';
+                                    const txt = stepEl.querySelector('.reload-step-text');
+                                    txt.textContent = bid + (b.message ? ' — ' + b.message : '');
+                                });
+                            }
+                        },
+                        onComplete: (data) => {
+                            // Финализация
+                            setStep('reload', 'done');
+                            fillEl.style.width = '100%';
+                            // Replace per-backend steps with final results
+                            const body = overlay.querySelector('#reloadProgressBody');
+                            body.querySelectorAll('[data-backend-id]').forEach(el => el.remove());
+                            renderBackendResults(data.result && data.result.backends);
+
+                            const errors = (data.result && data.result.backends || []).filter(b => b.status === 'error');
+                            if (errors.length > 0) {
+                                showToast('warning', I18N.t('settings.profiles.applied_with_errors', 'Профиль применён с ошибками на нескольких бэкендах'));
+                            } else {
+                                showToast('success', I18N.t('settings.profiles.applied', 'Профиль применён'));
+                            }
+                            closeBtn.disabled = false;
+                        },
+                        onError: () => {
+                            // SSE упал — fallback на polling
+                            pollUntilDone(modelName, resp.applyId, overlay, setStep, fillEl, renderBackendResults, closeBtn);
+                        }
+                    });
+                    // Cleanup: close EventSource when overlay closed
+                    closeBtn.addEventListener('click', () => { try { es.close(); } catch (_) {} overlay.remove(); });
+                } else {
+                    // Polling fallback
+                    pollUntilDone(modelName, resp.applyId, overlay, setStep, fillEl, renderBackendResults, closeBtn);
+                    closeBtn.addEventListener('click', () => overlay.remove());
+                }
+                return; // async path, close button enabled by callbacks
+            }
+
+            // Sync path (200) — все бэкенды были idle, reload сделался в момент запроса
+            setStep('reload', 'running');
+            fillEl.style.width = '70%';
+
+            renderBackendResults(resp.backends);
 
             setStep('reload', 'done');
             fillEl.style.width = '100%';
 
-            // Проверяем, все ли ok
             const errors = (resp.backends || []).filter(b => b.status === 'error');
             if (errors.length > 0) {
                 showToast('warning', I18N.t('settings.profiles.applied_with_errors', 'Профиль применён с ошибками на нескольких бэкендах'));
@@ -619,6 +714,32 @@
         }
 
         closeBtn.addEventListener('click', () => overlay.remove());
+    }
+
+    /**
+     * Polling fallback если EventSource не работает.
+     * Опрос /status каждые 1s пока terminal.
+     */
+    async function pollUntilDone(modelName, applyId, overlay, setStep, fillEl, renderBackendResults, closeBtn) {
+        try {
+            const final = await APPLY_PROGRESS.pollStatus(modelName, applyId, 300000);
+            setStep('reload', 'done');
+            fillEl.style.width = '100%';
+            const body = overlay.querySelector('#reloadProgressBody');
+            body.querySelectorAll('[data-backend-id]').forEach(el => el.remove());
+            renderBackendResults(final.result && final.result.backends);
+
+            const errors = (final.result && final.result.backends || []).filter(b => b.status === 'error');
+            if (errors.length > 0) {
+                showToast('warning', I18N.t('settings.profiles.applied_with_errors', 'Профиль применён с ошибками'));
+            } else {
+                showToast('success', I18N.t('settings.profiles.applied', 'Профиль применён'));
+            }
+        } catch (err) {
+            showToast('error', 'Polling failed: ' + (err.message || err));
+        } finally {
+            closeBtn.disabled = false;
+        }
     }
 
     // ----- Helpers -----

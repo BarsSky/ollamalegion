@@ -112,6 +112,12 @@ type Config struct {
 	// classification/extraction workloads, не для creative generation.
 	EnableBatchedParallel bool `json:"enableBatchedParallel"`
 
+	// Round 18 P0.3 (2026-08-04): per-user parallel limit (fair-share).
+	// 0 = unlimited (default, backward-compat). >0 = max parallel requests per
+	// X-User-Id header (или RemoteAddr fallback, или "anonymous").
+	// При превышении — HTTP 429 Too Many Requests.
+	MaxParallelPerUser int `json:"maxParallelPerUser,omitempty"`
+
 	// IdleUnloadMinutes — автоматическая выгрузка моделей из VRAM после N минут простоя.
 	// 0 (по умолчанию) = автовыгрузка ВЫКЛЮЧЕНА. Модель держится в VRAM, пока:
 	//   - пользователь явно не вызовет /api/models/unload или /api/profiles/* unload,
@@ -182,6 +188,9 @@ func DefaultConfig() Config {
 		// Round 15.1: opt-in. Greedy argmax пока — НЕ для production
 		// creative generation, только для тестов / classification workloads.
 		EnableBatchedParallel: false,
+		// Round 18 P0.3: per-user parallel limit. 0 = unlimited (backward-compat).
+		// Включается через env CPPWORKER_MAX_PARALLEL_PER_USER или config.json.
+		MaxParallelPerUser: 0,
 		// IdleUnloadMinutes: 0 = автовыгрузка моделей ВЫКЛЮЧЕНА по умолчанию.
 		// Если нужна автоматическая выгрузка после простоя, задайте явно:
 		//   export CPPWORKER_IDLE_UNLOAD_MINUTES=30
@@ -407,6 +416,15 @@ func LoadConfigFromEnv() Config {
 	// workloads где greedy argmax acceptable.
 	if v := os.Getenv("CPPWORKER_ENABLE_BATCHED_PARALLEL"); v != "" {
 		cfg.EnableBatchedParallel = v == "1" || strings.ToLower(v) == "true"
+	}
+
+	// Round 18 P0.3 (2026-08-04): per-user parallel admission.
+	// 0 = unlimited (default, backward-compat). >0 = max parallel requests per user.
+	// При превышении — HTTP 429 с сообщением "exceeded MaxParallelPerUser=N".
+	if v := os.Getenv("CPPWORKER_MAX_PARALLEL_PER_USER"); v != "" {
+		if n := parseInt(v, cfg.MaxParallelPerUser); n >= 0 {
+			cfg.MaxParallelPerUser = n
+		}
 	}
 
 	return cfg

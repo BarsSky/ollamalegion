@@ -47,6 +47,7 @@ func setupRouter() http.Handler {
 	mux.HandleFunc("/api/version", handleCppWorkerVersion)
 	mux.HandleFunc("/api/cancel", handleCancel) // Round 18 P0.2: cancel active generation
 	mux.HandleFunc("/api/infer/active", handleInferActive) // Round 18 P1.4: list active generations
+	mux.HandleFunc("/api/infer/users", handleInferUsers) // Round 18 P0.3: per-user parallel counters
 	mux.HandleFunc("/api/hf/search", handleHFSearch)
 	mux.HandleFunc("/api/hf/files", handleHFFiles)
 	mux.HandleFunc("/api/hf/download", handleHFDownload)

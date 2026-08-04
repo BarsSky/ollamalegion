@@ -121,6 +121,9 @@ services:
       # Round 15.1: opt-in flag для true parallel llama_decode через
       # BatchedScheduler. Default = false (Round 13 multi-slot path).
       - CPPWORKER_ENABLE_BATCHED_PARALLEL=${CPPWORKER_ENABLE_BATCHED_PARALLEL:-false}
+      # Round 18 P0.3 (2026-08-04): per-user parallel admission (fair-share).
+      # 0 = unlimited (default, backward-compat). >0 = max concurrent per user.
+      - CPPWORKER_MAX_PARALLEL_PER_USER=${CPPWORKER_MAX_PARALLEL_PER_USER:-0}
       - API_TOKEN=${CPPWORKER_API_TOKEN}
       # Регистрация бэкенда в балансере.
       - CPPWORKER_BALANCER_URL=${BALANCER_URL:-http://loadbalancer:18081}

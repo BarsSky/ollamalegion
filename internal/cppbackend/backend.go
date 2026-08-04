@@ -139,6 +139,11 @@ type Backend struct {
 	// (не дожидаясь полной остановки backend'а).
 	activeGenerations *ActiveGenerations
 
+	// Round 18 P0.3 (2026-08-04): per-user parallel counter.
+	// Admission control: каждый X-User-Id имеет свой bucket, max = MaxParallelPerUser
+	// из Config. Защищает от сценария "один клиент занял все слоты".
+	userTracker *UserTracker
+
 	// reloadPending — флаг «reload в процессе». Прокидывается в
 	// /api/metrics → reload_pending heartbeat. Балансировщик читает
 	// и НЕ пытается дёргать LoadModel, пока видит этот флаг.
@@ -314,6 +319,9 @@ func NewBackend(cfg Config) *Backend {
 	// Инициализируется здесь (не в Init) потому что не требует GPU/bridge.
 	b.activeGenerations = NewActiveGenerations()
 
+	// Round 18 P0.3 (2026-08-04): UserTracker для per-user admission.
+	b.userTracker = NewUserTracker()
+
 	return b
 }
 
@@ -324,6 +332,15 @@ func (b *Backend) ActiveGenerations() *ActiveGenerations {
 		return nil
 	}
 	return b.activeGenerations
+}
+
+// UserTracker возвращает per-user parallel counter для admission control.
+// Round 18 P0.3 (2026-08-04). nil-safe.
+func (b *Backend) UserTracker() *UserTracker {
+	if b == nil {
+		return nil
+	}
+	return b.userTracker
 }
 
 // Init инициализирует backend (инициализация bridge + GPU discovery)

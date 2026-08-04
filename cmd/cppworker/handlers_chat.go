@@ -77,6 +77,22 @@ func handleChat(w http.ResponseWriter, r *http.Request) {
 		defer backend.InFlight().Dec(req.Model)
 	}
 
+	// Round 18 P0.3 (2026-08-04): per-user parallel admission (fair-share).
+	// 0 = unlimited (default, backward-compat). Слот acquire ДО model load —
+	// иначе 100 параллельных запросов вызовут 100 model load'ов до отказа.
+	userID := getUserID(r)
+	if max := currentConfig.MaxParallelPerUser; max > 0 {
+		if !backend.UserTracker().TryAcquire(userID, max) {
+			logger.Get().Warnw("handleChat: user exceeded MaxParallelPerUser",
+				"user_id", userID, "max", max, "model", req.Model, "remote", r.RemoteAddr)
+			writeError(w, http.StatusTooManyRequests,
+				fmt.Sprintf("user %q exceeded MaxParallelPerUser=%d (in-flight requests). Wait for current requests to complete.",
+					userID, max))
+			return
+		}
+		defer backend.UserTracker().Release(userID)
+	}
+
 	// Round 18 P0.2 (2026-08-03): per-request cancel tracking for /api/cancel.
 	// ВАЖНО: используем helper setupCancelTracking, который re-bind r к child context —
 	// без этого writeChatStreamResponse будет смотреть на parent (r.Context()) и не увидит
@@ -84,7 +100,7 @@ func handleChat(w http.ResponseWriter, r *http.Request) {
 	r, requestID, cancelCleanup := setupCancelTracking(r, req.Model, "cppworker-gpu", "chat")
 	defer cancelCleanup()
 	logger.Get().Debugw("handleChat: cancel tracking enabled",
-		"request_id", requestID, "model", req.Model)
+		"request_id", requestID, "model", req.Model, "user_id", userID)
 
 	// ??????? ???????? ??????
 	if err := ensureModelLoaded(req.Model); err != nil {

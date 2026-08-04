@@ -5,6 +5,67 @@
 Формат ведётся в соответствии с [Keep a Changelog](https://keepachangelog.com/ru/1.0.0/),
 и этот проект придерживается [Semantic Versioning](https://semver.org/lang/ru/).
 
+## [0.5.6 — 2026-08-04]
+
+PATCH-релиз. **Round 18 P0.3 — per-user parallel limit (`MaxParallelPerUser`)**.
+
+Закрывает сценарий "один пользователь занял все слоты бэкенда" (баг в клиенте,
+retry-loop, abuse). Без лимита один клиент мог открыть 100 параллельных
+`/v1/chat/completions` и заблокировать всех остальных.
+
+### 🟢 Round 18 P0.3 — Per-user admission (fair-share)
+
+**Архитектура:**
+- `internal/cppbackend/user_tracker.go` — `UserTracker` (atomic check-and-increment
+  per-user counter, nil-safe, max<=0 = unlimited mode).
+- `cmd/cppworker/user_id.go` — `getUserID(r)` извлекает userID с приоритетом
+  `X-User-Id` → `RemoteAddr` (порт убран) → `anonymous`. Sanitize: max 128 chars,
+  control chars → `_`, non-ASCII → `_`.
+- Admission check стоит **ДО** `ensureModelLoaded` — иначе 100 параллельных
+  запросов вызвали бы 100 model load'ов до отказа.
+- На отказ — HTTP 429 с понятным сообщением.
+
+**API:**
+- `GET /api/infer/users` → `{"users":[{"user_id":"alice","current":2},...], "max_per_user":4, "enabled":true}`
+- `X-API-Token` обязателен.
+- При `enabled=false` (max_per_user=0) admission не выполняется, `users` пуст.
+
+**Конфигурация:**
+- `Config.MaxParallelPerUser` (int, default `0` = unlimited)
+- env: `CPPWORKER_MAX_PARALLEL_PER_USER` (default `0`)
+- В `docker-compose.bundled-full.yml` прокинуто через `${CPPWORKER_MAX_PARALLEL_PER_USER:-0}`
+
+**Coverage** (admission в каждом streaming handler):
+- `/api/chat` (Ollama)
+- `/api/generate` (Ollama)
+- `/v1/chat/completions` (OpenAI)
+- `/v1/completions` (OpenAI)
+
+**SECURITY NOTE:** `getUserID` НЕ authentication. cppworker TRUSTS `X-User-Id`
+header. В проде между клиентом и cppworker должен быть API gateway / proxy,
+который верифицирует identity и проставляет header. cppworker использует его
+только для fair-share, не для авторизации.
+
+### 📁 Файлы (8)
+
+- **new** `internal/cppbackend/user_tracker.go` — `UserTracker` struct
+- **new** `internal/cppbackend/user_tracker_test.go` — 9 unit tests
+- **new** `cmd/cppworker/user_id.go` — `getUserID` + `sanitizeUserID`
+- **new** `cmd/cppworker/user_id_test.go` — 4 unit tests (12 sub-tests для sanitize)
+- **new** `cmd/cppworker/handlers_user.go` — `handleInferUsers`
+- **new** `plans/round-18-p0.3-user-parallel.md` — план
+- `internal/cppbackend/config.go` — `MaxParallelPerUser` field + env loading + default
+- `internal/cppbackend/backend.go` — `userTracker` field + `NewUserTracker()` init + `UserTracker()` accessor
+- `cmd/cppworker/handlers_chat.go` — admission в `handleChat`
+- `cmd/cppworker/handlers_generate.go` — admission в `handleGenerate`
+- `cmd/cppworker/handlers_openai.go` — admission в `handleV1ChatCompletions` + `handleV1Completions`
+- `cmd/cppworker/router.go` — `/api/infer/users` route
+- `deployments/docker-compose.bundled-full.yml` — env var прокинут
+
+### ⚠️ Breaking changes
+
+None. Полностью backward-compatible (`MaxParallelPerUser=0` = unlimited = v0.5.5 behaviour).
+
 ## [0.5.5 — 2026-08-03]
 
 PATCH-релиз. **Round 18 P0.2 — Cancel API: per-request cancel через `POST /api/cancel`**.

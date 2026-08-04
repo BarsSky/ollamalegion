@@ -298,13 +298,27 @@ func handleGenerate(w http.ResponseWriter, r *http.Request) {
 		defer backend.InFlight().Dec(modelName)
 	}
 
+	// Round 18 P0.3 (2026-08-04): per-user parallel admission (fair-share).
+	userID := getUserID(r)
+	if max := currentConfig.MaxParallelPerUser; max > 0 {
+		if !backend.UserTracker().TryAcquire(userID, max) {
+			logger.Get().Warnw("handleGenerate: user exceeded MaxParallelPerUser",
+				"user_id", userID, "max", max, "model", modelName, "remote", r.RemoteAddr)
+			writeError(w, http.StatusTooManyRequests,
+				fmt.Sprintf("user %q exceeded MaxParallelPerUser=%d (in-flight requests). Wait for current requests to complete.",
+					userID, max))
+			return
+		}
+		defer backend.UserTracker().Release(userID)
+	}
+
 	// Round 18 P0.2 (2026-08-03): per-request cancel tracking.
 	// re-bind r к child context через setupCancelTracking (фикс первого P0.2-бага —
 	// иначе writeGenerateStreamResponse смотрит на parent и не видит отмену).
 	r, requestID, cancelCleanup := setupCancelTracking(r, modelName, "cppworker-gpu", "gen")
 	defer cancelCleanup()
 	logger.Get().Debugw("handleGenerate: cancel tracking enabled",
-		"request_id", requestID, "model", modelName)
+		"request_id", requestID, "model", modelName, "user_id", userID)
 	params, prompt, ok := runGenerateCore(w, r, req)
 	if !ok {
 		return

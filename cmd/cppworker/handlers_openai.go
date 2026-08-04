@@ -236,13 +236,27 @@ func handleV1ChatCompletions(w http.ResponseWriter, r *http.Request) {
 		defer backend.InFlight().Dec(req.Model)
 	}
 
+	// Round 18 P0.3 (2026-08-04): per-user parallel admission (fair-share).
+	userID := getUserID(r)
+	if max := currentConfig.MaxParallelPerUser; max > 0 {
+		if !backend.UserTracker().TryAcquire(userID, max) {
+			logger.Get().Warnw("handleV1ChatCompletions: user exceeded MaxParallelPerUser",
+				"user_id", userID, "max", max, "model", req.Model, "remote", r.RemoteAddr)
+			writeError(w, http.StatusTooManyRequests,
+				fmt.Sprintf("user %q exceeded MaxParallelPerUser=%d (in-flight requests). Wait for current requests to complete.",
+					userID, max))
+			return
+		}
+		defer backend.UserTracker().Release(userID)
+	}
+
 	// Round 18 P0.2 (2026-08-03): per-request cancel tracking для /api/cancel.
 	// re-bind r к child context — иначе writeOpenAIChatStream смотрит на parent
 	// и не видит отмену через /api/cancel.
 	r, requestID, cancelCleanup := setupCancelTracking(r, req.Model, "cppworker-gpu", "oai")
 	defer cancelCleanup()
 	logger.Get().Debugw("handleV1ChatCompletions: cancel tracking enabled",
-		"request_id", requestID, "model", req.Model)
+		"request_id", requestID, "model", req.Model, "user_id", userID)
 
 	if err := ensureModelLoaded(req.Model); err != nil {
 		if isModelLoadingError(err) {
@@ -1174,13 +1188,27 @@ func handleV1Completions(w http.ResponseWriter, r *http.Request) {
 		defer backend.InFlight().Dec(req.Model)
 	}
 
+	// Round 18 P0.3 (2026-08-04): per-user parallel admission (fair-share).
+	userID := getUserID(r)
+	if max := currentConfig.MaxParallelPerUser; max > 0 {
+		if !backend.UserTracker().TryAcquire(userID, max) {
+			logger.Get().Warnw("handleV1Completions: user exceeded MaxParallelPerUser",
+				"user_id", userID, "max", max, "model", req.Model, "remote", r.RemoteAddr)
+			writeError(w, http.StatusTooManyRequests,
+				fmt.Sprintf("user %q exceeded MaxParallelPerUser=%d (in-flight requests). Wait for current requests to complete.",
+					userID, max))
+			return
+		}
+		defer backend.UserTracker().Release(userID)
+	}
+
 	// Round 18 P0.2 (2026-08-03): per-request cancel tracking для /api/cancel.
 	// re-bind r к child context — иначе writeOpenAICompletionStream смотрит на parent
 	// и не видит отмену через /api/cancel.
 	r, requestID, cancelCleanup := setupCancelTracking(r, req.Model, "cppworker-gpu", "oai-cmpl")
 	defer cancelCleanup()
 	logger.Get().Debugw("handleV1Completions: cancel tracking enabled",
-		"request_id", requestID, "model", req.Model)
+		"request_id", requestID, "model", req.Model, "user_id", userID)
 
 	if err := ensureModelLoaded(req.Model); err != nil {
 		if isModelLoadingError(err) {

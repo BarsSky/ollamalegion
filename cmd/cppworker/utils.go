@@ -105,7 +105,9 @@ func corsMiddleware(next http.Handler) http.Handler {
 			"Content-Type, Authorization, X-HF-Token, "+
 				"X-API-Token, X-Request-Id, X-User-Id")
 		w.Header().Set("Access-Control-Expose-Headers",
-			"X-Model-Capabilities, X-Model-Max-Context, X-Model-Architecture, X-Request-Id")
+			"X-Model-Capabilities, X-Model-Max-Context, X-Model-Architecture, "+
+				"X-Request-Id, X-Model-Context-Warning, X-Model-Context-Suggestion, "+
+				"X-Model-Adjusted-NPredict")
 		w.Header().Set("Access-Control-Max-Age", "600")
 		if r.Method == http.MethodOptions {
 			w.WriteHeader(http.StatusNoContent)

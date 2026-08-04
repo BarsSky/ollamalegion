@@ -5,6 +5,63 @@
 Формат ведётся в соответствии с [Keep a Changelog](https://keepachangelog.com/ru/1.0.0/),
 и этот проект придерживается [Semantic Versioning](https://semver.org/lang/ru/).
 
+## [0.5.8 — 2026-08-04]
+
+PATCH-релиз. **Round 22 deferred — CORS fix + Prometheus `/metrics`**.
+
+Закрывает 2 из 3 отложенных из Round 22 (X-Request-Id pass-through уже работает
+через общий header copy в `internal/balancer/llamacpp_transport.go:117`).
+
+### 🟢 Round 22 deferred — фикс CORS + Prometheus scrape
+
+**1. CORS fix (для browser-based клиентов)**
+
+- Добавлены `X-API-Token`, `X-Request-Id`, `X-User-Id` в `Access-Control-Allow-Headers`
+  (без них preflight отбрасывал кросс-доменные запросы с Round 18 features)
+- Добавлены `X-Model-Capabilities`, `X-Model-Max-Context`, `X-Model-Architecture`,
+  `X-Request-Id` в `Access-Control-Expose-Headers` (Round 18 P0.1 headers теперь
+  видны JS-коду в браузере)
+- `Access-Control-Max-Age: 600` (10 минут) — browser кеширует preflight
+- `OPTIONS` теперь возвращает `204 No Content` вместо `200` (стандарт CORS)
+
+**2. Prometheus `/metrics` endpoint**
+
+- `GET /metrics` → text/plain (Prometheus exposition v0.0.4)
+- Per-model counters: `cppworker_requests_total{model}`, `cppworker_errors_total{model}`,
+  `cppworker_tokens_total{model}`
+- Per-model summary: `cppworker_request_duration_ms{model, quantile="0.5|0.95|0.99"}`
+  + `_sum` + `_count` (стандартный Prometheus summary pattern)
+- Global gauges: `cppworker_active_requests`, `cppworker_active_models`,
+  `cppworker_models_loaded_total`, `cppworker_models_unloaded_total`,
+  `cppworker_unload_timeouts`, `cppworker_reasoning_auto_enables`,
+  `cppworker_uptime_seconds`, `cppworker_gpu_memory_used_mb`,
+  `cppworker_gpu_memory_total_mb`, `cppworker_token_latency_ms`
+- **Auth: НЕТ** — Prometheus scrape'ит обычно через internal network
+  (security model: `/metrics` не должен быть доступен снаружи)
+- Если нужна auth — обернуть в `authMiddleware` (но тогда scrape'ы
+  нужно конфигурить с X-API-Token)
+
+**Use cases:**
+- Grafana dashboard: latency p50/p95/p99 per model, error rate, GPU memory
+- Alert'ы: P99 > 5s, error_rate > 5%, unload_timeouts растёт
+- Capacity planning: tokens_total per model, active_models vs VRAM
+
+**Out of scope:**
+- histogram с buckets (используем summary — проще и достаточно для tail latency)
+- Bearer auth (см. Auth note выше)
+- Balancer-side `/metrics` (там уже есть `handleInfo` с JSON; Prometheus
+  endpoint — отдельный PR)
+
+### 📁 Файлы (3)
+
+- `cmd/cppworker/utils.go` — `corsMiddleware` обновлён (X-API-Token, X-Request-Id, X-User-Id, Expose-Headers, Max-Age, 204 No Content)
+- `cmd/cppworker/handlers_metrics.go` — `handlePrometheusMetrics` + `promSample` + `formatPromValue`
+- `cmd/cppworker/router.go` — `/metrics` route
+
+### ⚠️ Breaking changes
+
+None. Новый endpoint, изменение CORS headers — backward-compatible.
+
 ## [0.5.7 — 2026-08-04]
 
 PATCH-релиз. **Round 18 P1.4 — per-model metrics with latency percentiles**.

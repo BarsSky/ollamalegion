@@ -49,6 +49,7 @@ func setupRouter() http.Handler {
 	mux.HandleFunc("/api/infer/active", handleInferActive) // Round 18 P1.4: list active generations
 	mux.HandleFunc("/api/infer/users", handleInferUsers) // Round 18 P0.3: per-user parallel counters
 	mux.HandleFunc("/api/infer/metrics", handleInferMetrics) // Round 18 P1.4: per-model metrics with percentiles
+	mux.HandleFunc("/metrics", handlePrometheusMetrics) // Round 22 deferred: Prometheus exposition format
 	mux.HandleFunc("/api/hf/search", handleHFSearch)
 	mux.HandleFunc("/api/hf/files", handleHFFiles)
 	mux.HandleFunc("/api/hf/download", handleHFDownload)

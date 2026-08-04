@@ -83,13 +83,32 @@ func resolveAPIToken() string {
 	return ""
 }
 
+// corsMiddleware — Round 22 deferred fix (2026-08-04).
+//
+// Browser-side: для cross-origin запросов с кастомными headers (X-API-Token,
+// X-Request-Id, X-User-Id) и чтения X-Model-* response headers (Round 18 P0.1
+// ModelCapabilities) нужен preflight (OPTIONS) с полным набором headers.
+//
+// Round 22 deferred fix:
+//   - Добавлены X-API-Token, X-Request-Id, X-User-Id в Allow-Headers
+//   - Access-Control-Max-Age=600 (10 min) — browser кеширует preflight
+//   - Access-Control-Expose-Headers для X-Model-* (headers из P0.1)
+//
+// Allow-Credentials НЕ ставим: --cors-origin="*" несовместимо с credentials
+// (W3C CORS spec). Если нужны cookies/auth from browser — ставить конкретный
+// origin и Allow-Credentials=true.
 func corsMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Access-Control-Allow-Origin", *allowedOrigin)
 		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
-		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization, X-HF-Token")
+		w.Header().Set("Access-Control-Allow-Headers",
+			"Content-Type, Authorization, X-HF-Token, "+
+				"X-API-Token, X-Request-Id, X-User-Id")
+		w.Header().Set("Access-Control-Expose-Headers",
+			"X-Model-Capabilities, X-Model-Max-Context, X-Model-Architecture, X-Request-Id")
+		w.Header().Set("Access-Control-Max-Age", "600")
 		if r.Method == http.MethodOptions {
-			w.WriteHeader(http.StatusOK)
+			w.WriteHeader(http.StatusNoContent)
 			return
 		}
 		next.ServeHTTP(w, r)

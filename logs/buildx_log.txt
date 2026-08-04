@@ -1,9 +1,0 @@
-time="2026-08-04T10:17:17Z" level=info msg="auto snapshotter: using overlayfs"
-time="2026-08-04T10:17:17Z" level=warning msg="using host network as the default"
-time="2026-08-04T10:17:18Z" level=info msg="found worker \"116jbg5no7be1kzsk9texg1d1\", labels=map[org.mobyproject.buildkit.worker.executor:oci org.mobyproject.buildkit.worker.hostname:7af392bb8d44 org.mobyproject.buildkit.worker.network:host org.mobyproject.buildkit.worker.oci.process-mode:sandbox org.mobyproject.buildkit.worker.selinux.enabled:false org.mobyproject.buildkit.worker.snapshotter:overlayfs], platforms=[linux/amd64 linux/amd64/v2 linux/amd64/v3 linux/386]"
-time="2026-08-04T10:17:18Z" level=warning msg="skipping containerd worker, as \"/run/containerd/containerd.sock\" does not exist"
-time="2026-08-04T10:17:18Z" level=info msg="found 1 workers, default=\"116jbg5no7be1kzsk9texg1d1\""
-time="2026-08-04T10:17:18Z" level=warning msg="currently, only the default worker can be used."
-time="2026-08-04T10:17:18Z" level=info msg="running server on /run/buildkit/buildkitd.sock"
-time="2026-08-04T11:36:41Z" level=error msg="/moby.buildkit.v1.Control/Solve returned error: rpc error: code = Unavailable desc = failed to copy to tar: rpc error: code = Unavailable desc = error reading from server: rpc error: code = Canceled desc = context canceled" spanID=7890704998241bdf traceID=758ddc71db56be7b071cee4cfbeb8fcd
-time="2026-08-04T11:46:41Z" level=error msg="/moby.buildkit.v1.Control/Solve returned error: rpc error: code = Canceled desc = rpc error: code = Canceled desc = context canceled" spanID=52d21398d6845aa0 traceID=adfce0165dadf8d30baa72d9050272f8

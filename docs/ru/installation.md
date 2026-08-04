@@ -210,7 +210,7 @@ export LB_HOST=0.0.0.0
 export LB_PORT=18080
 export LB_API_PORT=18081
 export BACKEND_0_ID=gpu-1
-export BACKEND_0_HOST=192.168.13.66
+export BACKEND_0_HOST=192.0.2.66
 ./bin/balancer
 ```
 

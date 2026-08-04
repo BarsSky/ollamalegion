@@ -1030,7 +1030,7 @@
           },
           "host": {
             "type": "string",
-            "example": "192.168.13.66"
+            "example": "192.0.2.66"
           },
           "ollamaPort": {
             "type": "integer",
@@ -1086,7 +1086,7 @@
           },
           "host": {
             "type": "string",
-            "example": "192.168.13.80"
+            "example": "192.0.2.80"
           },
           "ollamaPort": {
             "type": "integer",

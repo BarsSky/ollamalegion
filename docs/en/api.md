@@ -836,7 +836,7 @@ Get the list of all backends.
     {
       "id": "gpu-1",
       "name": "GPU Server 1",
-      "host": "192.168.13.66",
+      "host": "192.0.2.66",
       "ollamaPort": 11434,
       "agentPort": 18032,
       "weight": 1,
@@ -862,7 +862,7 @@ Add a new backend.
 {
   "id": "gpu-3",
   "name": "GPU Server 3",
-  "host": "192.168.13.80",
+  "host": "192.0.2.80",
   "ollamaPort": 11434,
   "agentPort": 18032,
   "weight": 1,
@@ -1137,7 +1137,7 @@ Get the logs of proxied requests (HTTP access log).
       "backend_id": "gpu-1",
       "status_code": 200,
       "duration_ms": 250,
-      "client_ip": "192.168.1.100"
+      "client_ip": "192.0.2.100"
     }
   ],
   "total": 1500
@@ -1222,7 +1222,7 @@ Register an agent in the balancing system. The agent sends this request at start
 {
   "agentId": "gpu-1",
   "hostname": "gpu-server-1",
-  "host": "192.168.1.100",
+  "host": "192.0.2.100",
   "ollamaPort": 11434,
   "agentPort": 18032,
   "gpuCount": 1,
@@ -1253,7 +1253,7 @@ Register an agent in the balancing system. The agent sends this request at start
   "backend": {
     "id": "gpu-1",
     "name": "GPU Server 1",
-    "host": "192.168.1.100",
+    "host": "192.0.2.100",
     "ollamaPort": 11434,
     "agentPort": 18032,
     "weight": 1,
@@ -1272,7 +1272,7 @@ curl -X POST http://localhost:18081/api/v1/agents/register \
   -H "X-API-Token: your-api-token" \
   -d '{
     "agentId": "gpu-1",
-    "host": "192.168.1.100",
+    "host": "192.0.2.100",
     "ollamaPort": 11434,
     "agentPort": 18032,
     "name": "GPU Server 1",
@@ -1817,7 +1817,7 @@ curl http://localhost:18081/api/v1/cluster
 # Add a backend
 curl -X POST http://localhost:18081/api/v1/backends \
   -H "Content-Type: application/json" \
-  -d '{"id":"gpu-3","host":"192.168.1.102","ollamaPort":11434}'
+  -d '{"id":"gpu-3","host":"192.0.2.102","ollamaPort":11434}'
 
 # Delete a backend
 curl -X DELETE http://localhost:18081/api/v1/backends/gpu-3
@@ -1840,7 +1840,7 @@ print(f"Queue size: {data['queue']['current_size']}")
 # Add a backend
 resp = requests.post("http://localhost:18081/api/v1/backends", json={
     "id": "gpu-3",
-    "host": "192.168.1.102",
+    "host": "192.0.2.102",
     "ollamaPort": 11434
 })
 ```
@@ -1860,7 +1860,7 @@ await fetch('http://localhost:18081/api/v1/backends', {
   headers: { 'Content-Type': 'application/json' },
   body: JSON.stringify({
     id: 'gpu-3',
-    host: '192.168.1.102',
+    host: '192.0.2.102',
     ollamaPort: 11434
   })
 });

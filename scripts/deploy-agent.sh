@@ -11,8 +11,8 @@
 #   OPTIONS       - Дополнительные опции
 #
 # Примеры:
-#   ./deploy-agent.sh gpu-1 http://192.168.1.100:8081
-#   ./deploy-agent.sh gpu-1 http://192.168.1.100:8081 --port 9090 --interval 5
+#   ./deploy-agent.sh gpu-1 http://192.0.2.100:8081
+#   ./deploy-agent.sh gpu-1 http://192.0.2.100:8081 --port 9090 --interval 5
 #
 
 set -e

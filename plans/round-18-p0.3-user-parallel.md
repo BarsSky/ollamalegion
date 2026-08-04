@@ -35,7 +35,7 @@ Env: `CPPWORKER_MAX_PARALLEL_PER_USER` (default `0` = отключено для 
 
 Приоритет (по убыванию):
 1. `X-User-Id` header (если непустой, после sanitization)
-2. `RemoteAddr` (с убранным портом: `192.168.1.1:54321` → `192.168.1.1`)
+2. `RemoteAddr` (с убранным портом: `192.0.2.1:54321` → `192.0.2.1`)
 3. `"anonymous"` (fallback)
 
 **Sanitization**:

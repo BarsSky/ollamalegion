@@ -4,7 +4,8 @@
 
 $logPath = "C:\Users\knaga\runner-setup.log"
 $runnerDir = "C:\actions-runner"
-$regToken = "AHOXUNLGHM6PON3MHLYEFJLKIITGK"
+$regToken = $env:GITHUB_REGISTRATION_TOKEN
+if (-not $regToken) { Write-Host "ERROR: GITHUB_REGISTRATION_TOKEN env var is required (obtain from https://github.com/BarsSky/ollamalegion/settings/actions/runners/new)"; exit 1 }
 $runnerName = "skyworker-ci"
 $labels = "self-hosted,windows,ollamalegion-ci"
 

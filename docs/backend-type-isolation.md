@@ -266,12 +266,12 @@ docker compose \
 # Ollama-бэкенд
 curl -X POST http://localhost:18081/api/v1/backends \
   -H "Content-Type: application/json" \
-  -d '{"id":"ollama-gpu-1","host":"192.168.1.10","ollamaPort":11434,"type":"ollama"}'
+  -d '{"id":"ollama-gpu-1","host":"192.0.2.10","ollamaPort":11434,"type":"ollama"}'
 
 # llama.cpp-бэкенд
 curl -X POST http://localhost:18081/api/v1/backends \
   -H "Content-Type: application/json" \
-  -d '{"id":"llamacpp-1","host":"192.168.1.20","cppWorkerPort":18091,"type":"llama_cpp"}'
+  -d '{"id":"llamacpp-1","host":"192.0.2.20","cppWorkerPort":18091,"type":"llama_cpp"}'
 ```
 
 **Авто-детект:** бэкенды с `cppWorkerPort > 0` автоматически определяются как `llama_cpp`, даже если `type` не задан явно.

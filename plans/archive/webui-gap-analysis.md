@@ -331,7 +331,7 @@ Ollama НЕ ИМЕЕТ публичного REST API для изменения �
   "agents": [
     {
       "id": "gpu-node-01",
-      "host": "192.168.1.101",
+      "host": "192.0.2.101",
       "agentPort": 18032,
       "status": "healthy",
       "platform": "gpu",
@@ -349,7 +349,7 @@ Ollama НЕ ИМЕЕТ публичного REST API для изменения �
 // GET /api/v1/agents/gpu-node-01
 {
   "id": "gpu-node-01",
-  "host": "192.168.1.101",
+  "host": "192.0.2.101",
   "ollamaPort": 11434,
   "agentPort": 18032,
   "status": "healthy",

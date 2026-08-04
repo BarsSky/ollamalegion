@@ -27,7 +27,7 @@ func TestAgentMetricsStructure(t *testing.T) {
 				Timestamp: time.Now(),
 				Status:    types.StatusHealthy,
 				HasAgent:  true,
-				Host:      "192.168.1.100",
+				Host:      "192.0.2.100",
 				OllamaPort: 11434,
 				GPU: types.GPUMetrics{
 					UsagePercent: 45.5,
@@ -73,7 +73,7 @@ func TestAgentMetricsStructure(t *testing.T) {
 				Timestamp: time.Now(),
 				Status:    types.StatusHealthy,
 				HasAgent:  false,
-				Host:      "192.168.1.200",
+				Host:      "192.0.2.200",
 				OllamaPort: 11434,
 			},
 			wantKeys: []string{"id", "timestamp", "status", "hasAgent", "host", "ollamaPort"},

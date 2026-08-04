@@ -167,7 +167,7 @@ POST /api/delete             - Delete модели
     {
       "id": "gpu-1",
       "name": "GPU Server 1",
-      "host": "192.168.13.66",
+      "host": "192.0.2.66",
       "ollamaPort": 11434,
       "agentPort": 18032,
       "weight": 1,

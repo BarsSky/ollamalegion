@@ -86,7 +86,7 @@ Write-Host "  ✓ Compose file exists"
 # Env file
 if (-not (Test-Path $EnvFile)) {
     Write-Host "  ⚠ Env file not found, creating with defaults: $EnvFile" -ForegroundColor Yellow
-    & $PSScriptRoot\help\..\deployments\.env.bundled-full.example $EnvFile 2>$null
+    Copy-Item (Join-Path $DeployDir ".env.bundled-full.example") $EnvFile -Force
     if (-not (Test-Path $EnvFile)) {
         Write-Host "    No example either, using inline defaults" -ForegroundColor Yellow
     }

@@ -37,7 +37,16 @@ out/
 # ============================================================
 # Environment / data
 # ============================================================
+# Local env files with real config (tokens, IPs) — NOT in git.
+# Use the corresponding `.example` file as a template and copy to
+# the local filename. Example: `cp deployments/.env.bundled-full.example
+# deployments/.env.bundled-full && $EDITOR deployments/.env.bundled-full`.
 deployments/.env
+deployments/.env.bundled
+deployments/.env.bundled-full
+deployments/.env.bundled-with-agent
+deployments/.env.cocoindex
+deployments/.env.llama
 deployments/data/
 data/
 

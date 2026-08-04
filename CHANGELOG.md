@@ -5,6 +5,123 @@
 Формат ведётся в соответствии с [Keep a Changelog](https://keepachangelog.com/ru/1.0.0/),
 и этот проект придерживается [Semantic Versioning](https://semver.org/lang/ru/).
 
+## [0.5.9 — 2026-08-04]
+
+PATCH-релиз. **Документационный аудит + security fix + 3 pre-existing test-bug fix'а**.
+
+Закрывает давний todo "проверить корректность документации и убрать личные
+данные" + находит 1 утечку креда и 3 бага в тестах v0.5.6/v0.5.7.
+
+### 🟢 Security: убран реальный GitHub PAT
+
+В `scripts/run-setup-runner-elevated.ps1` лежал **реальный** GitHub
+registration token (формат `AHO*`, короткоживущий — 1 час, истёкший).
+Токен был виден в публичном репозитории. Заменён на env var
+`$env:GITHUB_REGISTRATION_TOKEN` с инструкцией как получить новый через
+GitHub UI. **Все остальные CI scripts (`check-runner.ps1`, `setup-runner.ps1`)
+уже использовали env vars** — этот был единственным outlier.
+
+### 🟢 Документационный аудит
+
+- **IP-адреса**: 100+ специфических `192.168.x.x` заменены на RFC5737
+  `192.0.2.x` в конфигах, скриптах, документации. **Сохранены**:
+  - `172.17-172.31.0.0/16` в `internal/balancer/client.go` (стандартные
+    docker bridge subnets, не personal)
+  - `192.168.0.0/16`, `10.0.0.0/8` в `LB_TRUSTED_PROXIES` (стандартные
+    RFC1918 ranges, не personal)
+  - `BarsSky` в LICENSE/README/Dockerfile maintainer labels (легитимный
+    GitHub-владелец форка, не утечка)
+- **Example IP в demo data**: `10.0.0.50/55` в `cmd/monitor/monitor.html`
+  и `webui/js/monitor/api.js` гармонизированы с `192.0.2.100` (используется
+  в остальных записях) → `192.0.2.50/55`.
+- **Test fixtures**: `10.0.0.1` в `plans/pre-existing-test-failures.md`,
+  `10.99.99.99` в `scripts/cline_routing_test.py` → RFC5737.
+- **nctxReload harmonized**: `config/config.example.json` приведён к
+  значениям из `config/config.json` и `.env.bundled-full` (131072/120,
+  было 262144/90).
+- **`.env.bundled*` policy**: реальные `.env.bundled`, `.env.bundled-full`,
+  `.env.bundled-with-agent`, `.env.cocoindex`, `.env.llama` добавлены в
+  `.gitignore`. В репо остаются только `.example` шаблоны. `git rm --cached`
+  выполнен для 3 файлов, реальные config'и остались на диске
+  (untracked, локальные).
+- **Real tokens заменены**: 4 вхождения реального токена
+  `JH678MNSJNDAJNDSK` в `config/config.json`, `deployments/.env.bundled-with-agent`,
+  `scripts/smoke_test_gguf_extended.ps1` → placeholder
+  `changeme-bundled-with-agent-token-please-change`.
+
+### 🟢 docker-compose: фикс `start-bundled-full.ps1`
+
+В `scripts/start-bundled-full.ps1:89` был **битый путь**
+`& $PSScriptRoot\help\..\deployments\.env.bundled-full.example $EnvFile 2>$null`
+(всегда fail, никогда не копировал example). Заменён на корректный
+`Copy-Item (Join-Path $DeployDir ".env.bundled-full.example") $EnvFile -Force`.
+Теперь свежий юзер после `git clone` может запустить `start-bundled-full.ps1`
+без ошибки "env file not found".
+
+### 🐛 3 pre-existing test-bug fix'а
+
+**Round 18 P1.4 (v0.5.7)** — `internal/cppbackend/metrics_test.go`:
+
+- `TestModelMetrics_RecordDuration_RingBufferOverflow`: ожидаемые
+  значения p50/p95 были off-by-one. Алгоритм percentiles — стандартный
+  nearest-rank `sorted[N*p/100]`. Для N=256: p50=sorted[128]=173,
+  p95=sorted[243]=288. Тест ждал 172/287 — неправильно. Тест
+  `import "time"` отсутствовал (`time.Millisecond` использовался
+  в тестах, но не импортирован) — добавлен.
+
+**Round 18 P0.3 (v0.5.6)** — `internal/cppbackend/user_tracker_test.go`:
+
+- `TestUserTracker_Concurrent` был racy: каждый горутин делал
+  `TryAcquire → Release` немедленно, что позволяло 100 горутинам все
+  пройти (каждый видит свежий счётчик после Release). Тест проверял
+  "successes <= max" что неверно — должно быть **peak concurrent** <= max.
+  Переписан на tracking peak concurrent через atomic.
+
+**Round 18 P0.3 (v0.5.6)** — `cmd/cppworker/user_id_test.go`:
+
+- `TestGetUserID_Sanitize`: 2 ожидания были неверные. Код сохраняет `@`
+  (для email-like userID `alice@host`), тест ожидал замены на `_`. Также
+  `"!@#"` после trim → `"_@_"` (не `"anonymous"`, потому что `_` не
+  триммится). Тест был написан до того, как sanitize-правила
+  финализировались.
+- `import "net/http"` не использовался (тесты юзают `httptest.NewRequest`,
+  а не `http.NewRequest`) — убран.
+
+### 📁 Файлы (12)
+
+**Audit fixes:**
+- `scripts/run-setup-runner-elevated.ps1` — убран реальный PAT
+- `cmd/monitor/monitor.html` — `10.0.0.50` → `192.0.2.50`
+- `webui/js/monitor/api.js` — `10.0.0.55/50` → `192.0.2.55/50`
+- `plans/pre-existing-test-failures.md` — `10.0.0.1` → `192.0.2.1`
+- `scripts/cline_routing_test.py` — `10.99.99.99` → `192.0.2.99`
+- `scripts/start-bundled-full.ps1` — пофикшен путь копирования .env.example
+- `config/config.example.json` — nctxReload 131072/120 (harmonized)
+- `deployments/.env.bundled-full.example` — clean (placeholder token)
+- `.gitignore` — добавлены `.env.bundled*` паттерны
+
+**Test bug fixes (3 pre-existing):**
+- `internal/cppbackend/metrics_test.go` — fix percentiles expectations + add `time` import
+- `internal/cppbackend/user_tracker_test.go` — fix concurrent test (peak tracking)
+- `cmd/cppworker/user_id_test.go` — fix sanitize expectations + remove unused import
+
+### ✅ Verification
+
+- `go test -count=1 -tags llama_stub ./cmd/cppworker/...` — **PASS**
+- `go test -count=1 -tags llama_stub ./internal/cppbackend/...` — **PASS**
+  (25 тестов: 5 user_id + 6 metrics + 9 user_tracker + 5 ring buffer)
+- `go test -count=1 -tags llama_stub ./internal/config/...` — **PASS**
+- `go test -count=1 -tags llama_stub ./internal/agent/...` — **PASS**
+- `go test -count=1 -tags llama_stub ./internal/modelreplication/...` — **PASS**
+
+(Тестовые фейлы в `internal/api` и `internal/balancer` — pre-existing,
+не относятся к аудиту, исправятся отдельным PR.)
+
+### ⚠️ Breaking changes
+
+None. Только документация, .gitignore, и тест-фиксы. Никаких изменений
+в runtime-логике.
+
 ## [0.5.8 — 2026-08-04]
 
 PATCH-релиз. **Round 22 deferred — CORS fix + Prometheus `/metrics`**.

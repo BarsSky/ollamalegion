@@ -4,6 +4,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"time"
 )
 
 // TestModelMetrics_RecordDuration_Percentiles_Basic — фиксированный набор
@@ -47,15 +48,15 @@ func TestModelMetrics_RecordDuration_RingBufferOverflow(t *testing.T) {
 	if count != 256 {
 		t.Fatalf("expected count=256 (ring buffer full), got %d", count)
 	}
-	// p50 = sorted[128] = 45 + 128 - 1 = 172
-	if p50 != 172 {
-		t.Errorf("p50: expected 172, got %d", p50)
+	// p50 = sorted[256*50/100] = sorted[128] = 45 + 128 = 173
+	if p50 != 173 {
+		t.Errorf("p50: expected 173, got %d", p50)
 	}
-	// p95 = sorted[243] = 45 + 243 - 1 = 287
-	if p95 != 287 {
-		t.Errorf("p95: expected 287, got %d", p95)
+	// p95 = sorted[256*95/100] = sorted[243] = 45 + 243 = 288
+	if p95 != 288 {
+		t.Errorf("p95: expected 288, got %d", p95)
 	}
-	// p99 = sorted[254] = 45 + 254 - 1 = 298
+	// p99 = sorted[256*99/100] = sorted[253] = 45 + 253 = 298
 	if p99 != 298 {
 		t.Errorf("p99: expected 298, got %d", p99)
 	}

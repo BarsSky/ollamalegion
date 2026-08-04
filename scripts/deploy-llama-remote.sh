@@ -19,13 +19,13 @@
 #
 # Примеры:
 #   # LAN с GPU:
-#   ./deploy-llama-remote.sh root@192.168.1.50 /data/models http://192.168.1.10:18081
+#   ./deploy-llama-remote.sh root@192.0.2.50 /data/models http://192.0.2.10:18081
 #
 #   # WAN с GPU:
 #   ./deploy-llama-remote.sh root@node.example.com /data/models https://balancer.example.com:18081 llama-gpu-1 mytoken123
 #
 #   # CPU-only:
-#   ./deploy-llama-remote.sh root@192.168.1.60 /data/models http://192.168.1.10:18081 llama-cpu-1 "" 0 cpu
+#   ./deploy-llama-remote.sh root@192.0.2.60 /data/models http://192.0.2.10:18081 llama-cpu-1 "" 0 cpu
 # ============================================================
 
 set -euo pipefail

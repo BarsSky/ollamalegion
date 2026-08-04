@@ -535,7 +535,7 @@ const ws = new WebSocket('ws://...'); // new WebSocket(url, protocols) не по
     {
       "id": "gpu-1",
       "name": "GPU Server 1",
-      "host": "192.168.13.66",
+      "host": "192.0.2.66",
       "ollamaPort": 11434,
       "agentPort": 18032,
       "weight": 1,
@@ -561,7 +561,7 @@ const ws = new WebSocket('ws://...'); // new WebSocket(url, protocols) не по
 {
   "id": "gpu-3",
   "name": "GPU Server 3",
-  "host": "192.168.13.80",
+  "host": "192.0.2.80",
   "ollamaPort": 11434,
   "agentPort": 18032,
   "weight": 1,
@@ -836,7 +836,7 @@ const ws = new WebSocket('ws://...'); // new WebSocket(url, protocols) не по
       "backend_id": "gpu-1",
       "status_code": 200,
       "duration_ms": 250,
-      "client_ip": "192.168.1.100"
+      "client_ip": "192.0.2.100"
     }
   ],
   "total": 1500
@@ -923,7 +923,7 @@ const ws = new WebSocket('ws://...'); // new WebSocket(url, protocols) не по
 {
   "agentId": "gpu-1",
   "hostname": "gpu-server-1",
-  "host": "192.168.1.100",
+  "host": "192.0.2.100",
   "ollamaPort": 11434,
   "agentPort": 18032,
   "gpuCount": 1,
@@ -954,7 +954,7 @@ const ws = new WebSocket('ws://...'); // new WebSocket(url, protocols) не по
   "backend": {
     "id": "gpu-1",
     "name": "GPU Server 1",
-    "host": "192.168.1.100",
+    "host": "192.0.2.100",
     "ollamaPort": 11434,
     "agentPort": 18032,
     "weight": 1,
@@ -973,7 +973,7 @@ curl -X POST http://localhost:18081/api/v1/agents/register \
   -H "X-API-Token: your-api-token" \
   -d '{
     "agentId": "gpu-1",
-    "host": "192.168.1.100",
+    "host": "192.0.2.100",
     "ollamaPort": 11434,
     "agentPort": 18032,
     "name": "GPU Server 1",
@@ -1613,7 +1613,7 @@ curl -X POST http://localhost:18081/api/v1/backends \
   -d '{
     "id": "gpu-3",
     "name": "GPU Server 3",
-    "host": "192.168.13.80",
+    "host": "192.0.2.80",
     "ollamaPort": 11434,
     "agentPort": 18032,
     "weight": 1,
@@ -1658,7 +1658,7 @@ print(response.json())
 new_backend = {
     'id': 'gpu-3',
     'name': 'GPU Server 3',
-    'host': '192.168.13.80',
+    'host': '192.0.2.80',
     'ollamaPort': 11434,
     'agentPort': 18032,
     'weight': 1,

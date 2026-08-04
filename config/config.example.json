@@ -12,19 +12,26 @@
       "10.0.0.0/8",
       "192.168.0.0/16"
     ],
-    "clientIPHeaders": ["X-Forwarded-For", "X-Real-IP", "CF-Connecting-IP"]
+    "clientIPHeaders": [
+      "X-Forwarded-For",
+      "X-Real-IP",
+      "CF-Connecting-IP"
+    ]
   },
   "backends": [
     {
       "id": "ollama-gpu-1",
       "name": "Ollama GPU Server 1",
-      "host": "192.168.1.10",
+      "host": "192.0.2.10",
       "ollamaPort": 11434,
       "agentPort": 18090,
       "weight": 10,
       "maxConcurrentRequests": 4,
       "maxModels": 8,
-      "labels": ["gpu", "production"],
+      "labels": [
+        "gpu",
+        "production"
+      ],
       "type": "ollama",
       "engine": "auto",
       "gpuMode": "gpu",
@@ -33,13 +40,16 @@
     {
       "id": "llamacpp-gpu-1",
       "name": "llama.cpp GPU Server 1",
-      "host": "192.168.1.20",
+      "host": "192.0.2.20",
       "ollamaPort": 0,
       "agentPort": 18090,
       "weight": 10,
       "maxConcurrentRequests": 4,
       "maxModels": 4,
-      "labels": ["gpu", "llamacpp"],
+      "labels": [
+        "gpu",
+        "llamacpp"
+      ],
       "type": "llama_cpp",
       "engine": "auto",
       "gpuMode": "gpu",
@@ -61,7 +71,7 @@
         "ropeFreqScale": 1.0,
         "noKvOffload": false,
         "kvCacheType": "f16",
-        "rmsNormEps": 0.00001,
+        "rmsNormEps": 1e-05,
         "ropeScalingType": "none",
         "ropeScalingFactor": 1.0,
         "yarnExtFactor": 1.0,
@@ -98,7 +108,7 @@
     },
     "prewarm": {
       "enabled": true,
-      "triggerLoadThreshold": 0.70,
+      "triggerLoadThreshold": 0.7,
       "maxPrewarmPerCycle": 2,
       "checkIntervalSec": 10
     },
@@ -142,10 +152,10 @@
     },
     "scoring": {
       "modelAlreadyLoaded": 0.15,
-      "modelLoadingCost": 0.10,
+      "modelLoadingCost": 0.1,
       "queueDepthPenalty": 0.05,
       "errorRatePenalty": 0.05,
-      "predictionBonus": 0.10
+      "predictionBonus": 0.1
     },
     "syncModelLoad": {
       "enabled": true,
@@ -162,9 +172,9 @@
     "nctxReload": {
       "_comment": "Adaptive n_ctx auto-reload for cppworker. Когда клиент присылает n_ctx > загруженного в VRAM, balancer может auto-reload'ить модель с большим n_ctx (если VRAM позволяет), или вернуть 413 клиенту.",
       "auto_reload_n_ctx": true,
-      "auto_reload_max_n_ctx": 262144,
+      "auto_reload_max_n_ctx": 131072,
       "auto_reload_vram_safety_factor": 0.85,
-      "auto_reload_timeout_sec": 90
+      "auto_reload_timeout_sec": 120
     }
   },
   "resources": {
@@ -199,11 +209,11 @@
     "autoCert": true
   },
   "auth": {
-      "enabled": false,
-      "tokens": [
-        "changeme-bundled-strong-token-please-change"
-      ],
-      "headerName": "X-API-Token"
+    "enabled": false,
+    "tokens": [
+      "changeme-bundled-strong-token-please-change"
+    ],
+    "headerName": "X-API-Token"
   },
   "llamaCppModelProfiles": {
     "gemma-4-E4B-it-Q4_K_M": {

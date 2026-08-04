@@ -39,7 +39,7 @@
     {
       "id": "gpu-1",
       "name": "GPU Server 1",
-      "host": "192.168.13.66",
+      "host": "192.0.2.66",
       "ollamaPort": 11434,
       "agentPort": 18032,
       "weight": 1,
@@ -49,7 +49,7 @@
     {
       "id": "gpu-2",
       "name": "GPU Server 2",
-      "host": "192.168.13.70",
+      "host": "192.0.2.70",
       "ollamaPort": 11434,
       "agentPort": 18032,
       "weight": 1,
@@ -218,7 +218,7 @@ API_RATE_BURST=200
 # Backend 1
 BACKEND_0_ID=gpu-1
 BACKEND_0_NAME=GPU Server 1
-BACKEND_0_HOST=192.168.13.66
+BACKEND_0_HOST=192.0.2.66
 BACKEND_0_PORT=11434
 BACKEND_0_AGENT_PORT=18032
 BACKEND_0_WEIGHT=1
@@ -227,7 +227,7 @@ BACKEND_0_MAX_REQS=10
 # Backend 2
 BACKEND_1_ID=gpu-2
 BACKEND_1_NAME=GPU Server 2
-BACKEND_1_HOST=192.168.13.70
+BACKEND_1_HOST=192.0.2.70
 BACKEND_1_PORT=11434
 BACKEND_1_AGENT_PORT=18032
 BACKEND_1_WEIGHT=1
@@ -245,7 +245,7 @@ BACKEND_1_MAX_REQS=10
 | Переменная | Описание | Пример |
 |------------|----------|--------|
 | `AGENT_ID` | Уникальный идентификатор агента | `gpu-1`, `server-a100` |
-| `BALANCER_URL` | URL балансировщика | `http://192.168.1.100:18081` |
+| `BALANCER_URL` | URL балансировщика | `http://192.0.2.100:18081` |
 
 ### Опциональные переменные
 
@@ -271,7 +271,7 @@ BACKEND_1_MAX_REQS=10
 
 # Обязательные параметры
 AGENT_ID=gpu-1
-BALANCER_URL=http://192.168.1.100:18081
+BALANCER_URL=http://192.0.2.100:18081
 
 # Настройки портов
 AGENT_PORT=18032
@@ -666,7 +666,7 @@ GET /api/v1/ratelimit/status
     {
       "id": "prod-gpu-1",
       "name": "Production GPU Server 1",
-      "host": "192.168.1.10",
+      "host": "192.0.2.10",
       "ollamaPort": 11434,
       "agentPort": 18032,
       "weight": 2,
@@ -676,7 +676,7 @@ GET /api/v1/ratelimit/status
     {
       "id": "prod-gpu-2",
       "name": "Production GPU Server 2",
-      "host": "192.168.1.11",
+      "host": "192.0.2.11",
       "ollamaPort": 11434,
       "agentPort": 18032,
       "weight": 2,

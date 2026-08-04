@@ -95,7 +95,7 @@ func TestCRUD_Scenario_BackendCreate_ValidPayload(t *testing.T) {
 	body := `{
 		"id": "new-backend",
 		"name": "New Backend",
-		"host": "192.168.1.100",
+		"host": "192.0.2.100",
 		"ollamaPort": 11434,
 		"weight": 1
 	}`

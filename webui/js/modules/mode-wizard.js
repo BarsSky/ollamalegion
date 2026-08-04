@@ -97,7 +97,7 @@
             examples: [
                 { param: 'grpcPort', value: 19000, desc: 'Порт для gRPC-соединений между воркерами' }
             ],
-            jsonExample: '{\n  "balancing": {\n    "distInference": {\n      "enabled": true,\n      "grpcPort": 19000,\n      "workers": [\n        { "workerId": "node-1", "host": "192.168.1.10", "layerRange": "1-20" },\n        { "workerId": "node-2", "host": "192.168.1.11", "layerRange": "21-40" }\n      ]\n    }\n  }\n}'
+            jsonExample: '{\n  "balancing": {\n    "distInference": {\n      "enabled": true,\n      "grpcPort": 19000,\n      "workers": [\n        { "workerId": "node-1", "host": "192.0.2.10", "layerRange": "1-20" },\n        { "workerId": "node-2", "host": "192.0.2.11", "layerRange": "21-40" }\n      ]\n    }\n  }\n}'
         }
     };
 

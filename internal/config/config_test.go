@@ -20,7 +20,7 @@ func TestLoad(t *testing.T) {
 	// Создаём конфигурацию напрямую в types
 	data := []byte(`{
 		"loadBalancer": {"host": "localhost", "port": 8080},
-		"backends": [{"id": "b1", "name": "Backend 1", "host": "192.168.1.1", "ollamaPort": 11434}],
+		"backends": [{"id": "b1", "name": "Backend 1", "host": "192.0.2.1", "ollamaPort": 11434}],
 		"balancing": {"algorithm": "round-robin", "requestTimeout": 30}
 	}`)
 	err := os.WriteFile(configPath, data, 0644)

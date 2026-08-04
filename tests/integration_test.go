@@ -146,7 +146,7 @@ func TestE2E_FullWorkflow(t *testing.T) {
 		payload := map[string]interface{}{
 			"agentId":    "agent-3",
 			"hostname":   "new-host",
-			"host":       "192.168.1.200",
+			"host":       "192.0.2.200",
 			"ollamaPort": 11436,
 			"agentPort":  9092,
 			"gpuCount":   2,
@@ -447,7 +447,7 @@ func TestE2E_AgentRegistrationFlow(t *testing.T) {
 	payload := map[string]interface{}{
 		"agentId":    "flow-agent",
 		"hostname":   "flow-host",
-		"host":       "192.168.100.50",
+		"host":       "192.0.2.150",
 		"ollamaPort": 11440,
 		"agentPort":  9095,
 		"gpuCount":   4,

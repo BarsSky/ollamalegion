@@ -40,7 +40,7 @@ CPPWORKER_PORT=18092           # порт внутри контейнера (и�
 
 Если cppworker запущен вне Docker-сети:
 ```yaml
-CPPWORKER_HOST=192.168.13.20   # реальный IP хоста с cppworker
+CPPWORKER_HOST=192.0.2.20   # реальный IP хоста с cppworker
 CPPWORKER_PORT=18091
 ```
 
@@ -125,8 +125,8 @@ CPPWORKER_PORT=18091
 
 ### Проверка доступности cppworker
 ```bash
-curl http://192.168.13.20:18091/health
-curl http://192.168.13.20:18091/v1/models
+curl http://192.0.2.20:18091/health
+curl http://192.0.2.20:18091/v1/models
 ```
 
 ### Проверка балансера

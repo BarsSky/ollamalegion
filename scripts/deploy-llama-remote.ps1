@@ -20,13 +20,13 @@
 #
 # Примеры:
 #   # LAN с GPU (WinRM):
-#   .\deploy-llama-remote.ps1 -ComputerName 192.168.1.50 -ModelsDir D:\models -BalancerUrl http://192.168.1.10:18081
+#   .\deploy-llama-remote.ps1 -ComputerName 192.0.2.50 -ModelsDir D:\models -BalancerUrl http://192.0.2.10:18081
 #
 #   # По SSH:
-#   .\deploy-llama-remote.ps1 -ComputerName 192.168.1.50 -ModelsDir /data/models -BalancerUrl http://192.168.1.10:18081 -UseSsh -Credential (Get-Credential)
+#   .\deploy-llama-remote.ps1 -ComputerName 192.0.2.50 -ModelsDir /data/models -BalancerUrl http://192.0.2.10:18081 -UseSsh -Credential (Get-Credential)
 #
 #   # CPU-only:
-#   .\deploy-llama-remote.ps1 -ComputerName 192.168.1.60 -ModelsDir D:\models -BalancerUrl http://192.168.1.10:18081 -Variant cpu -GpuCount 0
+#   .\deploy-llama-remote.ps1 -ComputerName 192.0.2.60 -ModelsDir D:\models -BalancerUrl http://192.0.2.10:18081 -Variant cpu -GpuCount 0
 # ============================================================
 
 param(

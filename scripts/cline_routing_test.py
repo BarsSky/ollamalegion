@@ -447,7 +447,7 @@ def test_06_session_stickiness() -> None:
     headers = {
         "Content-Type": "application/json",
         "User-Agent": CLINE_USER_AGENT,
-        "X-Forwarded-For": "10.99.99.99",  # фиксируем клиента
+        "X-Forwarded-For": "192.0.2.99",  # фиксируем клиента
     }
 
     n = 3

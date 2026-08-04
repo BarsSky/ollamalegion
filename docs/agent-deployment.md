@@ -120,8 +120,8 @@ notepad "deployments\.env"
 Ключевые переменные для GPU:
 ```env
 AGENT_ID=gpu-1
-BALANCER_URL=http://192.168.1.10:18081
-AGENT_PUBLIC_HOST=192.168.1.20
+BALANCER_URL=http://192.0.2.10:18081
+AGENT_PUBLIC_HOST=192.0.2.20
 GPU_MODE=gpu
 NVML_ENABLED=true
 ENABLE_NVML=true
@@ -207,10 +207,10 @@ docker run -d \
   --restart unless-stopped \
   --gpus all \
   -e AGENT_ID=gpu-1 \
-  -e BALANCER_URL=http://192.168.1.10:18081 \
-  -e AGENT_PUBLIC_HOST=192.168.1.20 \
+  -e BALANCER_URL=http://192.0.2.10:18081 \
+  -e AGENT_PUBLIC_HOST=192.0.2.20 \
   -e AGENT_PORT=18032 \
-  -e OLLAMA_URL=http://192.168.1.20:11434 \
+  -e OLLAMA_URL=http://192.0.2.20:11434 \
   -e GPU_MODE=gpu \
   -e NVML_ENABLED=true \
   -e COLLECT_INTERVAL=5 \
@@ -257,8 +257,8 @@ notepad "deployments\.env"
 Ключевые переменные для CPU:
 ```env
 AGENT_ID=cpu-1
-BALANCER_URL=http://192.168.1.10:18081
-AGENT_PUBLIC_HOST=192.168.1.30
+BALANCER_URL=http://192.0.2.10:18081
+AGENT_PUBLIC_HOST=192.0.2.30
 GPU_MODE=cpu
 NVML_ENABLED=false
 ENABLE_NVML=false
@@ -318,10 +318,10 @@ docker run -d \
   --name ollama-agent \
   --restart unless-stopped \
   -e AGENT_ID=cpu-1 \
-  -e BALANCER_URL=http://192.168.1.10:18081 \
-  -e AGENT_PUBLIC_HOST=192.168.1.30 \
+  -e BALANCER_URL=http://192.0.2.10:18081 \
+  -e AGENT_PUBLIC_HOST=192.0.2.30 \
   -e AGENT_PORT=18032 \
-  -e OLLAMA_URL=http://192.168.1.30:11434 \
+  -e OLLAMA_URL=http://192.0.2.30:11434 \
   -e GPU_MODE=cpu \
   -e NVML_ENABLED=false \
   -e COLLECT_INTERVAL=5 \
@@ -351,7 +351,7 @@ CGO_ENABLED=0 go build -o bin/agent ./cmd/agent
 | Переменная | Описание | Пример |
 |------------|----------|--------|
 | `AGENT_ID` | Уникальный идентификатор агента в кластере | `gpu-1`, `cpu-1`, `node-01` |
-| `BALANCER_URL` | URL балансировщика для регистрации и heartbeat | `http://192.168.1.10:18081` |
+| `BALANCER_URL` | URL балансировщика для регистрации и heartbeat | `http://192.0.2.10:18081` |
 
 ### Сетевые настройки
 
@@ -392,8 +392,8 @@ CGO_ENABLED=0 go build -o bin/agent ./cmd/agent
 
 ```bash
 AGENT_ID=gpu-server-prod-01
-BALANCER_URL=http://192.168.1.100:18081
-AGENT_PUBLIC_HOST=192.168.1.101
+BALANCER_URL=http://192.0.2.100:18081
+AGENT_PUBLIC_HOST=192.0.2.101
 
 GPU_MODE=gpu
 NVML_ENABLED=true
@@ -412,8 +412,8 @@ LOG_FORMAT=json
 
 ```bash
 AGENT_ID=cpu-server-prod-01
-BALANCER_URL=http://192.168.1.100:18081
-AGENT_PUBLIC_HOST=192.168.1.102
+BALANCER_URL=http://192.0.2.100:18081
+AGENT_PUBLIC_HOST=192.0.2.102
 
 GPU_MODE=cpu
 NVML_ENABLED=false

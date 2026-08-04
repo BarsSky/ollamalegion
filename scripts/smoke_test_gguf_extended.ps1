@@ -165,7 +165,7 @@ $body6 = '{"llamaCpp":{"contextLength":131072,"batchSize":1024,"kvCacheType":"q8
 $tmp6 = [System.IO.Path]::GetTempFileName()
 $utf8NoBom = [System.Text.UTF8Encoding]::new($false)
 [System.IO.File]::WriteAllText($tmp6, $body6, $utf8NoBom)
-$balancerToken = 'JH678MNSJNDAJNDSK'
+$balancerToken = 'changeme-bundled-with-agent-token-please-change'
 $resp6 = (& curl.exe -s -X PUT -H "Authorization: Bearer $balancerToken" -H "Content-Type: application/json" -d "@$tmp6" "http://localhost:18081/api/v1/cluster/config") -join "`n"
 Remove-Item -LiteralPath $tmp6 -Force -ErrorAction SilentlyContinue
 # Проверяем что API вернул updated:["llamaCpp"] и значения в config.llamaCpp.

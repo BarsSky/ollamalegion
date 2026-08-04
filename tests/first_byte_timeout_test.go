@@ -95,7 +95,7 @@ func TestOpenAIChat_SlowFirstToken_HoldsConnection(t *testing.T) {
 	})
 	req := httptest.NewRequest("POST", "/v1/chat/completions", bytes.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
-	req.RemoteAddr = "192.168.1.100:54321"
+	req.RemoteAddr = "192.0.2.100:54321"
 
 	rec := httptest.NewRecorder()
 	done := make(chan bool, 1)
@@ -187,7 +187,7 @@ func TestOpenAIChat_HeaderTimeout_StillWorks(t *testing.T) {
 	})
 	req := httptest.NewRequest("POST", "/v1/chat/completions", bytes.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
-	req.RemoteAddr = "192.168.1.100:54322"
+	req.RemoteAddr = "192.0.2.100:54322"
 
 	rec := httptest.NewRecorder()
 	done := make(chan bool, 1)

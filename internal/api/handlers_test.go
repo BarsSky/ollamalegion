@@ -843,7 +843,7 @@ func TestAgentRegisterHandler(t *testing.T) {
 	payload := map[string]interface{}{
 		"agentId":    "agent-test-1",
 		"hostname":   "test-host",
-		"host":       "192.168.1.100",
+		"host":       "192.0.2.100",
 		"ollamaPort": 11434,
 		"agentPort":  9090,
 		"gpuCount":   1,
@@ -895,7 +895,7 @@ func TestAgentRegisterHandler_UpdateExisting(t *testing.T) {
 	// Сначала регистрируем агента
 	payload := map[string]interface{}{
 		"agentId":  "agent-test-2",
-		"host":     "192.168.1.101",
+		"host":     "192.0.2.101",
 		"name":     "Original Name",
 		"labels":   []string{"gpu:nvidia"},
 	}

@@ -171,11 +171,11 @@
       },
       sessions: {
         sessions: [
-          { id: '192.168.1.100::Cline::llama3.1:cloud', backendId: '', model: 'llama3.1:cloud', clientIP: '192.168.1.100', clientName: 'Cline', requestCount: 12, lastRequestAt: new Date(Date.now() - 3000).toISOString() },
-          { id: '10.0.0.55::Cline::llama3.1:cloud', backendId: '', model: 'llama3.1:cloud', clientIP: '10.0.0.55', clientName: 'Cline', requestCount: 7, lastRequestAt: new Date(Date.now() - 1500).toISOString() },
-          { id: '192.168.1.100::OpenWebUI::gemma2', backendId: 'ollama-2', model: 'gemma2', clientIP: '192.168.1.100', clientName: 'OpenWebUI', requestCount: 5, lastRequestAt: new Date(Date.now() - 8000).toISOString() },
-          { id: '192.168.1.100::python-requests::llama3.1', backendId: 'ollama-1', model: 'llama3.1', clientIP: '192.168.1.100', clientName: 'python-requests/2.31.0', requestCount: 3, lastRequestAt: new Date(Date.now() - 1200).toISOString() },
-          { id: '10.0.0.50::Cline::deepseek-r1', backendId: 'ollama-1', model: 'deepseek-r1', clientIP: '10.0.0.50', clientName: 'Cline', requestCount: 8, lastRequestAt: new Date(Date.now() - 4000).toISOString() }
+          { id: '192.0.2.100::Cline::llama3.1:cloud', backendId: '', model: 'llama3.1:cloud', clientIP: '192.0.2.100', clientName: 'Cline', requestCount: 12, lastRequestAt: new Date(Date.now() - 3000).toISOString() },
+          { id: '192.0.2.55::Cline::llama3.1:cloud', backendId: '', model: 'llama3.1:cloud', clientIP: '192.0.2.55', clientName: 'Cline', requestCount: 7, lastRequestAt: new Date(Date.now() - 1500).toISOString() },
+          { id: '192.0.2.100::OpenWebUI::gemma2', backendId: 'ollama-2', model: 'gemma2', clientIP: '192.0.2.100', clientName: 'OpenWebUI', requestCount: 5, lastRequestAt: new Date(Date.now() - 8000).toISOString() },
+          { id: '192.0.2.100::python-requests::llama3.1', backendId: 'ollama-1', model: 'llama3.1', clientIP: '192.0.2.100', clientName: 'python-requests/2.31.0', requestCount: 3, lastRequestAt: new Date(Date.now() - 1200).toISOString() },
+          { id: '192.0.2.50::Cline::deepseek-r1', backendId: 'ollama-1', model: 'deepseek-r1', clientIP: '192.0.2.50', clientName: 'Cline', requestCount: 8, lastRequestAt: new Date(Date.now() - 4000).toISOString() }
         ]
       },
       modelOps: {

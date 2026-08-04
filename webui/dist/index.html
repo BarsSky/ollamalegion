@@ -61,7 +61,7 @@
                                 <label for="backendHost" title="IP-адрес или hostname сервера, к которому балансер будет подключаться.">
                                     Host <span class="field-hint-icon">ⓘ</span>
                                 </label>
-                                <input type="text" id="backendHost" name="host" placeholder="192.168.1.100" required
+                                <input type="text" id="backendHost" name="host" placeholder="192.0.2.100" required
                                        title="IP или hostname сервера Ollama. Балансер будет проксировать запросы сюда.">
                                 <span class="field-hint">IP/hostname для проксирования запросов к Ollama.</span>
                             </div>
@@ -69,7 +69,7 @@
                                 <label for="backendIp" title="Дополнительное поле для фиксированного IP (опционально). Используется если Host — это hostname.">
                                     IP Address <span class="field-hint-icon">ⓘ</span>
                                 </label>
-                                <input type="text" id="backendIp" name="ip" placeholder="192.168.1.100"
+                                <input type="text" id="backendIp" name="ip" placeholder="192.0.2.100"
                                        title="Опционально. Фиксированный IP если Host — DNS имя. Оставьте пустым если совпадает с Host.">
                                 <span class="field-hint">Опционально. Фиксированный IP если Host — это DNS-имя.</span>
                             </div>

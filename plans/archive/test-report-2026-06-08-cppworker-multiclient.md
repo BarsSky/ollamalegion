@@ -315,12 +315,12 @@ cppworker пытался обработать 16384 — что превышае�
 
 ```
 Found 2 backends:
-  id=llamacpp-gpu-1 host=192.168.1.20 status=unhealthy cppPort=18091
-  id=ollama-gpu-1   host=192.168.1.10 status=unhealthy cppPort=0
+  id=llamacpp-gpu-1 host=192.0.2.20 status=unhealthy cppPort=18091
+  id=ollama-gpu-1   host=192.0.2.10 status=unhealthy cppPort=0
 ```
 
-Оба указывают на старые IP (192.168.1.20 и 192.168.1.10) — **не от текущей машины**
-(192.168.13.20), поэтому балансер не мог до них достучаться. Удалены через
+Оба указывают на старые IP (192.0.2.20 и 192.0.2.10) — **не от текущей машины**
+(192.0.2.20), поэтому балансер не мог до них достучаться. Удалены через
 `DELETE /api/v1/backends/{id}` с auth-токеном.
 
 После удаления cppworker автоматически перерегистрировался с `host: "cppworker-gpu"`

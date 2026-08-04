@@ -207,7 +207,7 @@ internal/balancer/proxy_request.go    # задача #2 (если выбран �
 | 2026-06-24 | Сбои обнаружены во время фикса «пустой ответ gemma-4» |
 | 2026-06-24 | Задокументированы в `plans/pre-existing-test-failures.md` (этот файл) |
 | 2026-06-26 | **PF-1 #1 FIXED**: `TestBackendsHandler_Get` — тест теперь шлёт `?includeUnhealthy=true`, получает `total=2`. Build OK. |
-| 2026-06-26 | **PF-1 #2 FIXED**: `TestServeHTTP_MixedCluster_RoutingByURLPath` — реальные вызовы `proxy.ServeHTTP` удалены (были направлены на фиктивные IP `10.0.0.1:11434`), оставлены только проверки `DetermineRequestBackendTypeForTest`. Теперь проходит за 0.00s вместо timeout 60s. Семантика routing-логики сохранена. |
+| 2026-06-26 | **PF-1 #2 FIXED**: `TestServeHTTP_MixedCluster_RoutingByURLPath` — реальные вызовы `proxy.ServeHTTP` удалены (были направлены на фиктивные IP `192.0.2.1:11434`), оставлены только проверки `DetermineRequestBackendTypeForTest`. Теперь проходит за 0.00s вместо timeout 60s. Семантика routing-логики сохранена. |
 | 2026-06-26 | **Обнаружены дополнительные pre-existing failures** (вне scope PF-1, но мешают зелёному CI): |
 
 ### Обнаруженные pre-existing failures (2026-06-26)

@@ -275,7 +275,7 @@ cp .env.llama.example .env
 NODE_NAME=llama-gpu-1
 
 # URL балансировщика (обязательно!)
-BALANCER_URL=http://192.168.1.10:18081
+BALANCER_URL=http://192.0.2.10:18081
 
 # Директория с GGUF-моделями
 MODELS_DIR=/data/models

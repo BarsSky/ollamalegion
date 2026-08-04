@@ -38,12 +38,12 @@ runtime.(*mheap).sysAlloc(...)
 
 **Симптом:** `go mod download` падает с ошибкой:
 ```
-dial tcp: lookup proxy.golang.org on 192.168.65.7:53: read udp ... i/o timeout
+dial tcp: lookup proxy.golang.org on 192.0.2.65:53: read udp ... i/o timeout
 ```
 
 **Когда проявляется:** При первом `go mod download` внутри Docker (особенно после перезапуска Docker Desktop).
 
-**Причина:** Встроенный DNS Docker (192.168.65.7) иногда теряет связь с внешним DNS, особенно на Windows с WSL2.
+**Причина:** Встроенный DNS Docker (192.0.2.65) иногда теряет связь с внешним DNS, особенно на Windows с WSL2.
 
 **Решение:**
 - Повторить сборку (обычно проходит со 2-3 попытки)

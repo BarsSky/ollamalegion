@@ -80,7 +80,7 @@ services:
       # Бэкенды через переменные окружения
       - BACKEND_0_ID=${BACKEND_0_ID:-gpu-1}
       - BACKEND_0_NAME=${BACKEND_0_NAME:-GPU Server 1}
-      - BACKEND_0_HOST=${BACKEND_0_HOST:-192.168.13.66}
+      - BACKEND_0_HOST=${BACKEND_0_HOST:-192.0.2.66}
       - BACKEND_0_PORT=${BACKEND_0_PORT:-11434}
       - BACKEND_0_AGENT_PORT=${BACKEND_0_AGENT_PORT:-18032}
       - BACKEND_0_WEIGHT=${BACKEND_0_WEIGHT:-1}
@@ -164,7 +164,7 @@ WEBUI_PORT=18030
 # Backends
 BACKEND_0_ID=gpu-1
 BACKEND_0_NAME=GPU Server 1
-BACKEND_0_HOST=192.168.13.66
+BACKEND_0_HOST=192.0.2.66
 BACKEND_0_PORT=11434
 BACKEND_0_AGENT_PORT=18032
 BACKEND_0_WEIGHT=1
@@ -172,7 +172,7 @@ BACKEND_0_MAX_REQS=10
 
 BACKEND_1_ID=gpu-2
 BACKEND_1_NAME=GPU Server 2
-BACKEND_1_HOST=192.168.13.70
+BACKEND_1_HOST=192.0.2.70
 BACKEND_1_PORT=11434
 BACKEND_1_AGENT_PORT=18032
 BACKEND_1_WEIGHT=1
@@ -200,12 +200,12 @@ cd scripts
 
 # Запуск с параметрами (укажите публичный IP балансера)
 ./deploy-agent-docker.sh \
-  --balancer-url http://192.168.1.10:18081 \
+  --balancer-url http://192.0.2.10:18081 \
   --agent-id gpu-1 \
-  --public-host 192.168.1.20
+  --public-host 192.0.2.20
 
 # Или кратко:
-./deploy-agent-docker.sh -b http://192.168.1.10:18081 -i gpu-1 -h 192.168.1.20
+./deploy-agent-docker.sh -b http://192.0.2.10:18081 -i gpu-1 -h 192.0.2.20
 ```
 
 #### Параметры скрипта
@@ -233,8 +233,8 @@ cd deployments
 cat > .env << EOF
 # Обязательные параметры
 AGENT_ID=gpu-1
-BALANCER_URL=http://192.168.1.10:18081
-AGENT_PUBLIC_HOST=192.168.1.20
+BALANCER_URL=http://192.0.2.10:18081
+AGENT_PUBLIC_HOST=192.0.2.20
 
 # Сетевые настройки
 # Для Linux используйте IP хоста или network_mode: host
@@ -278,7 +278,7 @@ services:
     network_mode: host
     # При host mode не нужны ports и networks
     environment:
-      - AGENT_PUBLIC_HOST=192.168.1.20  # IP хоста
+      - AGENT_PUBLIC_HOST=192.0.2.20  # IP хоста
 ```
 
 **C) Docker Swarm overlay** — для кластеров в swarm-режиме:
@@ -338,10 +338,10 @@ docker run -d \
   --name ollama-agent \
   --restart unless-stopped \
   -e AGENT_ID=gpu-1 \
-  -e BALANCER_URL=http://192.168.1.10:18081 \
-  -e AGENT_PUBLIC_HOST=192.168.1.20 \
+  -e BALANCER_URL=http://192.0.2.10:18081 \
+  -e AGENT_PUBLIC_HOST=192.0.2.20 \
   -e AGENT_PORT=18032 \
-  -e OLLAMA_URL=http://192.168.1.20:11434 \
+  -e OLLAMA_URL=http://192.0.2.20:11434 \
   -e NVML_ENABLED=true \
   -e METRICS_INTERVAL=5s \
   -e HEARTBEAT_INTERVAL=3s \
@@ -354,8 +354,8 @@ docker run -d \
   --restart unless-stopped \
   --network host \
   -e AGENT_ID=gpu-1 \
-  -e BALANCER_URL=http://192.168.1.10:18081 \
-  -e AGENT_PUBLIC_HOST=192.168.1.20 \
+  -e BALANCER_URL=http://192.0.2.10:18081 \
+  -e AGENT_PUBLIC_HOST=192.0.2.20 \
   -e AGENT_PORT=18032 \
   -e OLLAMA_URL=http://localhost:11434 \
   -e NVML_ENABLED=true \
@@ -639,7 +639,7 @@ sudo ufw allow 11434/tcp # Ollama (локально)
 
 BACKEND_2_ID=gpu-3
 BACKEND_2_NAME=GPU Server 3
-BACKEND_2_HOST=192.168.13.80
+BACKEND_2_HOST=192.0.2.80
 BACKEND_2_PORT=11434
 BACKEND_2_AGENT_PORT=18032
 BACKEND_2_WEIGHT=1
@@ -662,7 +662,7 @@ curl -X POST http://<lb-ip>:18081/api/v1/backends \
   -d '{
     "id": "gpu-3",
     "name": "GPU Server 3",
-    "host": "192.168.13.80",
+    "host": "192.0.2.80",
     "ollamaPort": 11434,
     "agentPort": 18032,
     "weight": 1,

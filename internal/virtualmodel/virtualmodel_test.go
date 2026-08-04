@@ -195,7 +195,7 @@ func TestParseBackendID(t *testing.T) {
 		wantErr  bool
 	}{
 		{"127.0.0.1:11434", "127.0.0.1", 11434, false},
-		{"192.168.1.1:8080", "192.168.1.1", 8080, false},
+		{"192.0.2.1:8080", "192.0.2.1", 8080, false},
 		{"localhost:11434", "localhost", 11434, false},
 		{"10.0.0.1", "10.0.0.1", 11434, false},
 		{"host:port", "", 0, true},

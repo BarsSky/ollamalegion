@@ -1,11 +1,11 @@
 {
   "version": 1,
-  "updated": "2026-07-11T12:29:34.5041979Z",
+  "updated": "2026-08-04T07:18:50.4839902Z",
   "backends": [
     {
       "id": "test-agent-1",
       "name": "test-agent-1",
-      "host": "192.168.1.100",
+      "host": "192.0.2.100",
       "ollamaPort": 11434,
       "agentPort": 9090,
       "weight": 100,

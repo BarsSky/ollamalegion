@@ -71,7 +71,7 @@ func TestFirstByteTimeout_RetryOnHungStream(t *testing.T) {
 	req := httptest.NewRequest("POST", "/api/generate", bytes.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("User-Agent", "Cline/1.0")
-	req.RemoteAddr = "192.168.1.100:54321"
+	req.RemoteAddr = "192.0.2.100:54321"
 
 	rec := httptest.NewRecorder()
 	done := make(chan bool, 1)
@@ -130,13 +130,13 @@ func TestTwoClientsSameIP_DifferentSessions(t *testing.T) {
 	r1 := httptest.NewRequest("POST", "/api/generate", bytes.NewReader(b))
 	r1.Header.Set("Content-Type", "application/json")
 	r1.Header.Set("User-Agent", "Cline/2.0 (VSCode)")
-	r1.RemoteAddr = "192.168.1.100:11111"
+	r1.RemoteAddr = "192.0.2.100:11111"
 	proxy.ServeHTTP(httptest.NewRecorder(), r1)
 
 	r2 := httptest.NewRequest("POST", "/api/generate", bytes.NewReader(b))
 	r2.Header.Set("Content-Type", "application/json")
 	r2.Header.Set("User-Agent", "OpenWebUI/1.0")
-	r2.RemoteAddr = "192.168.1.100:22222"
+	r2.RemoteAddr = "192.0.2.100:22222"
 	proxy.ServeHTTP(httptest.NewRecorder(), r2)
 
 	ss := proxy.GetSessions()

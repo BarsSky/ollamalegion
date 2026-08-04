@@ -1989,7 +1989,7 @@ components:
           example: GPU Server 1
         host:
           type: string
-          example: 192.168.13.66
+          example: 192.0.2.66
         ollamaPort:
           type: integer
           example: 11434
@@ -2035,7 +2035,7 @@ components:
           example: GPU Server 3
         host:
           type: string
-          example: 192.168.13.80
+          example: 192.0.2.80
         ollamaPort:
           type: integer
           default: 11434

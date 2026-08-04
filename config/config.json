@@ -134,7 +134,7 @@
   "auth": {
     "enabled": false,
     "tokens": [
-      "JH678MNSJNDAJNDSK"
+      "changeme-bundled-with-agent-token-please-change"
     ],
     "headerName": "X-API-Token"
   },

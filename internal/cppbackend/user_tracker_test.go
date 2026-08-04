@@ -1,6 +1,7 @@
 package cppbackend
 
 import (
+	"runtime"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -145,8 +146,12 @@ func TestUserTracker_SnapshotOnlyNonZero(t *testing.T) {
 	}
 }
 
-// TestUserTracker_Concurrent — стресс-тест: 100 горутин, max=4,
-// ровно 4 acquire=true должны быть успешными в любой момент времени.
+// TestUserTracker_Concurrent — стресс-тест: 100 горутин, max=4.
+// Проверяем что **в любой момент времени** одновременно активных слотов
+// не больше max (= 4). Это и есть admission control invariant.
+//
+// Каждый горутин: TryAcquire → spin (имитация работы) → Release.
+// Используем атомарный пик-concurrent-counter для детекта overshoot.
 func TestUserTracker_Concurrent(t *testing.T) {
 	t.Parallel()
 	tr := NewUserTracker()
@@ -154,6 +159,8 @@ func TestUserTracker_Concurrent(t *testing.T) {
 	const goroutines = 100
 
 	var successCount, failCount int64
+	var inFlight int64 // текущее число активных горутинов
+	var peakInFlight int64
 	var wg sync.WaitGroup
 	wg.Add(goroutines)
 	for i := 0; i < goroutines; i++ {
@@ -161,7 +168,17 @@ func TestUserTracker_Concurrent(t *testing.T) {
 			defer wg.Done()
 			if tr.TryAcquire("alice", max) {
 				atomic.AddInt64(&successCount, 1)
-				// Имитация работы — release через горутину
+				cur := atomic.AddInt64(&inFlight, 1)
+				// Atomic max — record peak
+				for {
+					p := atomic.LoadInt64(&peakInFlight)
+					if cur <= p || atomic.CompareAndSwapInt64(&peakInFlight, p, cur) {
+						break
+					}
+				}
+				// Имитация работы — release после небольшой задержки
+				runtime.Gosched()
+				atomic.AddInt64(&inFlight, -1)
 				tr.Release("alice")
 			} else {
 				atomic.AddInt64(&failCount, 1)
@@ -170,18 +187,21 @@ func TestUserTracker_Concurrent(t *testing.T) {
 	}
 	wg.Wait()
 
-	// В идеальном случае: 4 success (слоты 1-4) + 96 fail (слоты 5+).
-	// Реально из-за concurrent: success может быть от 0 до 4 (зависит от race),
-	// но суммарно successes <= max всегда, и counter в конце = 0.
+	// Проверка 1: admission control — пиковое число одновременных
+	// слотов не должно превышать max.
 	success := atomic.LoadInt64(&successCount)
 	fail := atomic.LoadInt64(&failCount)
+	peak := atomic.LoadInt64(&peakInFlight)
 	if success+fail != goroutines {
 		t.Fatalf("expected sum=%d, got success=%d + fail=%d", goroutines, success, fail)
 	}
-	if success > max {
-		t.Fatalf("concurrent success (%d) exceeded max (%d)", success, max)
+	if peak > max {
+		t.Fatalf("peak in-flight (%d) exceeded max (%d) — admission control broken", peak, max)
 	}
-	// После всех Release counter должен быть 0
+	if peak == 0 {
+		t.Fatal("expected at least some in-flight acquisitions")
+	}
+	// Проверка 2: после всех Release counter = 0.
 	if tr.Current("alice") != 0 {
 		t.Fatalf("counter should be 0 after all releases, got %d", tr.Current("alice"))
 	}

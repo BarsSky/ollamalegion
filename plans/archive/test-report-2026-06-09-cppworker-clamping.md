@@ -338,10 +338,10 @@ GET https://ai.skynas.ru/ollama/api/version 500 (Internal Server Error)
 
 **Симптом (от пользователя):**
 
-> в OpenWebui настроено подключение по http://192.168.13.20:18080 и при запросе
+> в OpenWebui настроено подключение по http://192.0.2.20:18080 и при запросе
 > к модели на генерацию в ответ приходит пустое сообщение
 
-То есть **на локальном IP 192.168.13.20 (порт 18080)** OpenWebUI получает пустой
+То есть **на локальном IP 192.0.2.20 (порт 18080)** OpenWebUI получает пустой
 ответ при генерации — регрессия после фикса D.6.
 
 ### Root cause анализ
@@ -456,7 +456,7 @@ go test -tags "llama_stub nvml" ./internal/balancer/
      -f docker/cppworker/Dockerfile.gpu --target runtime .
    ```
 2. Перезапустить контейнер `ol-bundled-cppworker-gpu`
-3. Проверить через OpenWebUI на `http://192.168.13.20:18080` — генерация
+3. Проверить через OpenWebUI на `http://192.0.2.20:18080` — генерация
    должна возвращать текст, а не пустой ответ
 4. Если что-то ещё не работает — собрать больше diag-дампов через
    `tests/diag/owui-empty-options.json` / `dump_backends.py`
@@ -510,8 +510,8 @@ go test -tags "llama_stub nvml" ./internal/balancer/
    ```
 
 4. **Проверка балансера** (работает):
-   - `GET http://192.168.13.20:18080/api/version` → 200 OK `{"llamaVersions":{},"version":"ollamalegion-1.0.0"}`
-   - `GET http://192.168.13.20:18080/api/tags` → 200 OK `{"models":[]}`
+   - `GET http://192.0.2.20:18080/api/version` → 200 OK `{"llamaVersions":{},"version":"ollamalegion-1.0.0"}`
+   - `GET http://192.0.2.20:18080/api/tags` → 200 OK `{"models":[]}`
 
 5. **Проверка cppworker-gpu:**
    - Контейнер стартует, `entrypoint.sh` ловит `Waiting for CppWorker to be ready...`
@@ -539,7 +539,7 @@ go test -tags "llama_stub nvml" ./internal/balancer/
 Даже если cppworker не зарегистрировался, балансер живой:
 
 ```bash
-$ curl -X POST http://192.168.13.20:18080/api/chat \
+$ curl -X POST http://192.0.2.20:18080/api/chat \
     -H 'Content-Type: application/json' \
     -d @tests\diag\owui-empty-options.json
 
@@ -580,7 +580,7 @@ HTTP=503
 6. **Проверить VRAM:** другие процессы не должны занимать > 6 GB (модель + KV cache требуют)
 7. После успешного старта — повторить regression test:
    ```bash
-   curl -X POST http://192.168.13.20:18080/api/chat \
+   curl -X POST http://192.0.2.20:18080/api/chat \
      -H 'Content-Type: application/json' \
      -d @tests\diag\owui-empty-options.json
    ```

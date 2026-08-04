@@ -290,7 +290,7 @@ LB_LOG_FORMAT=json
 
 ```bash
 BACKEND_0_ID=gpu-1
-BACKEND_0_HOST=192.168.13.66
+BACKEND_0_HOST=192.0.2.66
 BACKEND_0_PORT=11434
 BACKEND_0_AGENT_PORT=18032
 BACKEND_0_TYPE=ollama   # или llama_cpp
@@ -325,7 +325,7 @@ TLS_AUTO_CERT=true   # self-signed для тестов
 curl -X POST http://localhost:18081/api/v1/backends \
   -H "Content-Type: application/json" \
   -H "X-API-Token: <token>" \
-  -d '{"id":"gpu-2","host":"192.168.13.70","ollamaPort":11434,"type":"ollama"}'
+  -d '{"id":"gpu-2","host":"192.0.2.70","ollamaPort":11434,"type":"ollama"}'
 ```
 
 ### 4.2 Replication (Variant A)

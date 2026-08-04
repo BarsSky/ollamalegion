@@ -1,7 +1,6 @@
 package main
 
 import (
-	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
@@ -12,7 +11,7 @@ func TestGetUserID_XUserId(t *testing.T) {
 	t.Parallel()
 	r := httptest.NewRequest("POST", "/api/chat", nil)
 	r.Header.Set("X-User-Id", "alice")
-	r.RemoteAddr = "192.168.1.1:54321"
+	r.RemoteAddr = "192.0.2.1:54321"
 	got := getUserID(r)
 	if got != "alice" {
 		t.Fatalf("expected alice, got %q", got)
@@ -23,10 +22,10 @@ func TestGetUserID_XUserId(t *testing.T) {
 func TestGetUserID_RemoteAddr(t *testing.T) {
 	t.Parallel()
 	r := httptest.NewRequest("POST", "/api/chat", nil)
-	r.RemoteAddr = "192.168.1.1:54321"
+	r.RemoteAddr = "192.0.2.1:54321"
 	got := getUserID(r)
-	if got != "192.168.1.1" {
-		t.Fatalf("expected 192.168.1.1, got %q", got)
+	if got != "192.0.2.1" {
+		t.Fatalf("expected 192.0.2.1, got %q", got)
 	}
 }
 
@@ -63,11 +62,12 @@ func TestGetUserID_Sanitize(t *testing.T) {
 		{"control char", "alice\nbob", "alice_bob"},
 		{"tab", "alice\tbob", "alice_bob"},
 		{"NUL", "alice\x00bob", "alice_bob"},
-		{"punctuation", "user!@#name", "user___name"}, // ! # заменяются
+		{"punctuation", "user!@#name", "user_@_name"}, // !# → _ (@ kept for email-like IDs)
 		{"truncate long", strings.Repeat("a", 200), strings.Repeat("a", 128)},
-		{"all bad", "!@#", "anonymous"},       // всё trimmed → anonymous
+		{"all bad", "!@#", "_@_"},             // @ kept, only trim of leading/trailing space; _ is not trimmed
 		{"multi-byte", "user\u00e9", "user_"}, // é → _ (non-ASCII)
 		{"keep allowed", "user-name.v2@host:1234 ok", "user-name.v2@host:1234 ok"},
+		{"only spaces", "   ", "anonymous"},   // TrimSpace → empty → anonymous
 	}
 	for _, c := range cases {
 		c := c

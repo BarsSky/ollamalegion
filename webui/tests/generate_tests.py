@@ -234,7 +234,7 @@ def gen():
     html += '<div class="modal" id="backendModal"><div class="mo"><div class="mh"><h3>Добавить бэкенд</h3><button class="mcl">&times;</button></div><div class="mb">'
     html += '<div class="fg"><label>ID *</label><input type="text" id="formBackendId" class="fc" placeholder="gpu-1"></div>'
     html += '<div class="fg"><label>Имя</label><input type="text" id="formBackendName" class="fc" placeholder="GPU Server 1"></div>'
-    html += '<div class="fg"><label>Хост *</label><input type="text" id="formBackendHost" class="fc" placeholder="192.168.1.100"></div>'
+    html += '<div class="fg"><label>Хост *</label><input type="text" id="formBackendHost" class="fc" placeholder="192.0.2.100"></div>'
     html += '<div class="fr"><div class="fg"><label>Порт Ollama</label><input type="number" id="formBackendOllamaPort" class="fc" value="11434"></div><div class="fg"><label>Порт агента</label><input type="number" id="formBackendAgentPort" class="fc" value="18032"></div></div>'
     html += '<div class="fr"><div class="fg"><label>Вес</label><input type="number" id="formBackendWeight" class="fc" value="1" step="0.1"></div><div class="fg"><label>Max Concurrent</label><input type="number" id="formBackendMaxConcurrent" class="fc" value="10"></div></div>'
     html += '<div class="fg"><label>Метки</label><input type="text" id="formBackendLabels" class="fc" placeholder="nvidia,rtx4090"></div>'
@@ -610,7 +610,7 @@ const Renderers = (function () {
     html += '''
 // ===== MOCK DATA =====
 const mockBackends = [
-    { id: 'gpu-node-01', name: 'GPU Node 01', host: '192.168.1.101', ollamaPort: 11434, agentPort: 18032, weight: 1, maxConcurrentRequests: 10, labels: ['nvidia','rtx4090'], status: 'healthy', hasAgent: true, lastAgentContact: new Date().toISOString(), activeRequests: 3,
+    { id: 'gpu-node-01', name: 'GPU Node 01', host: '192.0.2.101', ollamaPort: 11434, agentPort: 18032, weight: 1, maxConcurrentRequests: 10, labels: ['nvidia','rtx4090'], status: 'healthy', hasAgent: true, lastAgentContact: new Date().toISOString(), activeRequests: 3,
         gpu: { usagePercent: 65.2, memoryTotal: 24576, memoryUsed: 18200, memoryFree: 6376, temperature: 72, powerUsage: 280, powerLimit: 450, gpuClock: 2520, memClock: 10500 },
         system: { cpuUsagePercent: 34.5, memoryTotal: 65536, memoryUsed: 28000, memoryFree: 37536, cpu: { usagePercent: 34.5, coreCount: 32, threadCount: 64, model: 'AMD EPYC 7543', loadAverage1: 4.2, loadAverage5: 3.8, loadAverage15: 3.5, temperature: 55, throttled: false }, diskTotal: 500000, diskUsed: 120000, diskFree: 380000, networkRX: 5000000000, networkTX: 2000000000 },
         ollama: { runningModels: [{ name: 'llama3:8b', size: 5000000000, vramUsage: 5000, ramUsage: 500, family: 'llama', format: 'gguf', parameterSize: '8B', quantization: 'Q4_0' }, { name: 'mistral:7b', size: 4370000000, vramUsage: 4400, ramUsage: 400, family: 'mistral', format: 'gguf', parameterSize: '7B', quantization: 'Q4_0' }], activeRequests: 3, totalRequests: 15000, avgResponseTime: 45.3, requestsPerSecond: 12.5, maxModels: 4, maxConcurrentRequests: 10, freeSlots: 7,
@@ -620,7 +620,7 @@ const mockBackends = [
         },
         prediction: { secondsToCritical: 450, criticalReason: 'none', gpuUsageTrend: 0.5, vramUsageTrend: 0.2, ramUsageTrend: 0.1, freeSlotsTrend: 0, requestCapacity: 30 }
     },
-    { id: 'cpu-node-01', name: 'CPU Node 01', host: '192.168.1.201', ollamaPort: 11434, agentPort: 18032, weight: 1, maxConcurrentRequests: 5, labels: ['cpu-only'], status: 'healthy', hasAgent: true, lastAgentContact: new Date().toISOString(), activeRequests: 1,
+    { id: 'cpu-node-01', name: 'CPU Node 01', host: '192.0.2.201', ollamaPort: 11434, agentPort: 18032, weight: 1, maxConcurrentRequests: 5, labels: ['cpu-only'], status: 'healthy', hasAgent: true, lastAgentContact: new Date().toISOString(), activeRequests: 1,
         gpu: { usagePercent: 0, memoryTotal: 0, memoryUsed: 0, memoryFree: 0, temperature: 0, powerUsage: 0 },
         system: { cpuUsagePercent: 42.1, memoryTotal: 131072, memoryUsed: 55000, memoryFree: 76072, cpu: { usagePercent: 42.1, coreCount: 16, threadCount: 32, model: 'Intel Xeon W-2295', loadAverage1: 6.8, loadAverage5: 5.2, loadAverage15: 4.9, temperature: 62, throttled: false }, diskTotal: 1000000, diskUsed: 300000, diskFree: 700000, networkRX: 2000000000, networkTX: 800000000 },
         ollama: { runningModels: [{ name: 'phi3:mini', size: 3800000000, vramUsage: 0, ramUsage: 3800, family: 'phi', format: 'gguf', parameterSize: '3.8B', quantization: 'Q4_0' }], activeRequests: 1, totalRequests: 5000, avgResponseTime: 120.7, requestsPerSecond: 3.2, maxModels: 3, maxConcurrentRequests: 5, freeSlots: 4,
@@ -639,7 +639,7 @@ const mockBackends = [
         },
         prediction: { secondsToCritical: -1, criticalReason: 'none' }
     },
-    { id: 'gpu-node-02', name: 'GPU Node 02', host: '192.168.1.102', ollamaPort: 11434, agentPort: 18032, weight: 1, maxConcurrentRequests: 8, labels: ['nvidia','a100'], status: 'healthy', hasAgent: true, lastAgentContact: new Date(Date.now() - 86400000).toISOString(), activeRequests: 7,
+    { id: 'gpu-node-02', name: 'GPU Node 02', host: '192.0.2.102', ollamaPort: 11434, agentPort: 18032, weight: 1, maxConcurrentRequests: 8, labels: ['nvidia','a100'], status: 'healthy', hasAgent: true, lastAgentContact: new Date(Date.now() - 86400000).toISOString(), activeRequests: 7,
         gpu: { usagePercent: 92.5, memoryTotal: 81920, memoryUsed: 77000, memoryFree: 4920, temperature: 82, powerUsage: 380, powerLimit: 500 },
         system: { cpuUsagePercent: 55.0, memoryTotal: 262144, memoryUsed: 180000, memoryFree: 82144 },
         ollama: { runningModels: [{ name: 'llama3:70b', size: 40000000000, vramUsage: 40000, ramUsage: 2000, family: 'llama', format: 'gguf' }], activeRequests: 7, totalRequests: 3000, avgResponseTime: 85.0, requestsPerSecond: 8.0, maxModels: 2, maxConcurrentRequests: 8, freeSlots: 1,
@@ -1137,7 +1137,7 @@ function runTests() {
 
     // === XSS ESCAPING ===
     details.push('<div class="tse">🛡️ Edge Cases — XSS защита</div>');
-    const xssBackend = { id: '<scr' + 'ipt>alert("xss")<' + '/scr' + 'ipt>', name: 'Test', host: '192.168.1.1', ollamaPort: 11434, agentPort: 18032, weight: 1, maxConcurrentRequests: 5, labels: [], status: 'healthy', hasAgent: true, lastAgentContact: new Date().toISOString(), activeRequests: 0,
+    const xssBackend = { id: '<scr' + 'ipt>alert("xss")<' + '/scr' + 'ipt>', name: 'Test', host: '192.0.2.1', ollamaPort: 11434, agentPort: 18032, weight: 1, maxConcurrentRequests: 5, labels: [], status: 'healthy', hasAgent: true, lastAgentContact: new Date().toISOString(), activeRequests: 0,
         gpu: { usagePercent: 0, memoryTotal: 1, memoryUsed: 0, memoryFree: 1 }, system: { cpuUsagePercent: 0, memoryTotal: 1, memoryUsed: 0, memoryFree: 1 },
         ollama: { runningModels: [], activeRequests: 0, totalRequests: 0, requestsPerSecond: 0, runtimeFlags: {}, modelContexts: [], backendCapacity: { freeVram: 0, guaranteedVram: 0, loadedModelVram: 0, contextOverheadMB: 0, availableModels: [], loadableModelCount: 0, mode: 'gpu' } },
         prediction: { secondsToCritical: -1 }

@@ -445,7 +445,7 @@ python scripts/cline_routing_test.py
 python scripts/cline_routing_test.py --verbose
 
 # На другой URL
-python scripts/cline_routing_test.py --balancer http://192.168.1.10:18080
+python scripts/cline_routing_test.py --balancer http://192.0.2.10:18080
 
 # С другой моделью
 python scripts/cline_routing_test.py --model llama3.1:8b

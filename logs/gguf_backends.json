@@ -1,0 +1,8 @@
+﻿{
+    "backendType":  "llama_cpp",
+    "backends":  [
+
+                 ],
+    "operatingMode":  "standard",
+    "total":  0
+}

@@ -5,6 +5,191 @@
 Формат ведётся в соответствии с [Keep a Changelog](https://keepachangelog.com/ru/1.0.0/),
 и этот проект придерживается [Semantic Versioning](https://semver.org/lang/ru/).
 
+## [0.5.10 — 2026-08-04]
+
+PATCH-релиз. **Bug fixes: 5 из 9 из последнего bug-list + persistent ccache infrastructure**.
+
+### 🐛 Bug fixes
+
+#### Bug #6+#8: Reload storm при num_ctx > loaded_n_ctx
+**Symptom**: каждый запрос от Cline/OpenWebUI с `options.num_ctx=32000`
+триггерил async reload (50с), клиент получал 503 с `Retry-After: 5`
+и зацикливался на retry пока reload не закончится. Субъективно —
+"бесконечная перезагрузка".
+
+**Root cause**: `internal/balancer/nctx_reload_handlers.go:preflightNCtxReloadIfNeeded`
+сравнивал только `requested_n_ctx > loaded_n_ctx`, без проверки
+реального размера prompt. Cline шлёт num_ctx=32000 "на всякий случай"
+(default), но реальный prompt "2+2?" = 1 токен — прекрасно влезает в
+loaded 16384. Reload не нужен, но триггерился.
+
+**Fix (smart-skip reload)**:
+- Добавлена проверка `estimated_prompt_tokens + n_predict + slack`
+  в preflight. Если помещается в current_n_ctx → patch body
+  (`patchNumCtxInBody` — новый helper) с `num_ctx=loaded_n_ctx` и proxy
+  БЕЗ reload.
+- `Retry-After` 5с → 30с (реальное время reload = 30-60с, 5с заставляло
+  клиента делать 10-12 retry за reload).
+- Тесты: `TestPreflightNCtxReload_LoadedLessThanRequested` обновлён
+  (ожидает smart-skip), `TestPreflightNCtxReload_ReloadFailureFallsBackToProxyAsIs`
+  использует 8KB prompt чтобы действительно триггерить reload.
+- Новые тесты: `TestPatchNumCtxInBody_Ollama`, `_OpenAI`, `_NoNumCtx`,
+  `_InvalidJSON`, `_EmptyBody`, `_InvalidNCtx` (6 кейсов).
+
+**Live verify**: 3 запроса с `num_ctx=32000` после reload:
+- Req 1: 6.1s (cold cache)
+- Req 2: 1.3s (instant!)
+- Req 3: 8.3s
+
+Модель остаётся на n_ctx=32000, никаких reload'ов. До фикса:
+130с (3 запроса × 30+50+50с).
+
+#### Bug #4: OpenWebUI cancel ignore
+**Symptom**: Cline cancel работает (через /api/cancel или connection close),
+OpenWebUI ignore cancel — модель продолжает генерировать, расходуя
+CPU/GPU.
+
+**Root cause**: `internal/balancer/llamacpp_transport.go:proxyRequestLlamaCpp`
+— основной streaming loop (`for scanner.Scan() { ... }`) не проверял
+`r.Context().Done()` перед каждой итерацией. Cancel обнаруживался
+только при `scanner.Scan() return error` или `Write` failure, что
+происходило с задержкой. Особенно критично для OpenWebUI (Ollama
+API path), которое дольше держит соединение.
+
+**Fix**: добавлен `select { case <-r.Context().Done(): ... }` в начале
+каждой итерации scanner loop. При срабатывании — закрываем
+`resp.Body` (cppworker прекращает генерацию после текущего token'а)
+и выходим. Покрывает все paths: /v1/chat/completions, /api/chat,
+/api/generate.
+
+#### Bug #7: Think block leak в OpenWebUI response
+**Symptom**: модель выдаёт `<think>...</think>reasoning...actual answer`,
+cppworker L3 auto-detect не находит think-тег (give up на 1024 chars),
+thinking попадает в `content` вместо `reasoning_content`.
+
+**Root cause**: `cmd/cppworker/handlers_openai.go:949` — L3 "give up"
+логика срабатывала на `len(fullOutput) > autoDetectThreshold=1024`.
+Если preamble модели > 1024 chars перед `<think>`, тег пропускался.
+
+**Fix**: убран give-up — L3 теперь ВСЕГДА проверяет ВЕСЬ outputBuf
+на любой из 4 think-тегов (`<think>`, `<thinking>`, `<reasoning>`,
+`<analysis>`). Стоимость: O(N²) per token (strings.Index на полном
+буфере), для typical streams 200-2000 tokens это <1s дополнительной
+CPU.
+
+Применено в обоих streaming путях: `writeOpenAIChatStream` и
+`writeOpenAICompletionStream`.
+
+**Caveat**: токены, УЖЕ отправленные клиенту до L3 fire, остаются
+в `content` (SSE не позволяет "отменить" отправленное). Для полной
+корректности нужен pre-streaming buffer; пока принимаем partial accuracy.
+
+#### Bug #5: WebUI -2 GPU layers indicator
+**Symptom**: `CPPWORKER_RAM_FALLBACK_GPU_LAYERS=-2` (AUTO mode) —
+валидное значение, но WebUI input field `wizNumGpuLayers` имел
+`min="-1"`, не позволяя ввести -2. Profile display показывал
+`gpuLayers=-1` вместо "AUTO" для -2.
+
+**Fix**:
+- `GPU_LAYERS_MIN` в `webui/js/modules/cppworker-params.js` изменён
+  -1 → -2.
+- Placeholder обновлён: `-2=AUTO, -1=все, 0=CPU only`.
+- `renderProfileItem` теперь показывает "AUTO" для -2, "all" для -1,
+  числовое значение для 0..N.
+
+### 🏗️ Infrastructure: persistent ccache для cppworker build
+
+**Problem**: каждый `docker build cppworker` занимал 20+ мин, потому что
+ccache НЕ работал:
+1. `DOCKER_BUILDKIT=1` не был установлен → cache mount ignored.
+2. c/llama.cpp/build-*/ артефакты (687MB!) не были в `.dockerignore` →
+   build context = 969MB на каждый build, COPY layer инвалидировался
+   на разных mtime артефактов.
+
+**Fix**:
+- `scripts/build-containers.ps1`: добавлен `$env:DOCKER_BUILDKIT = "1"`
+  в начале (активирует BuildKit + cache mounts).
+- `.dockerignore`: `c/llama.cpp/build/` → `c/llama.cpp/build/` +
+  `c/llama.cpp/build-*/` (catch build-cpu, build-mingw-cuda,
+  build-msvc-cuda). Context size: 969MB → ~280MB.
+- `.gitignore`: `build/` → `build/` + `build-*/` (parallel fix).
+- `docker/cppworker/Dockerfile.gpu` + `Dockerfile.gpu.86`: cache mount
+  теперь explicit: `--mount=type=cache,id=ccache,target=/root/.ccache,
+  mode=0755,uid=0,gid=0`. Без mode/uid/gid mount иногда
+  read-only → ccache fails silently.
+
+**Persistent buildx container** (для настоящего cross-build persistence):
+```bash
+docker buildx create --name ollamalegion --driver docker-container
+docker buildx build --builder ollamalegion ...
+```
+Без persistent container — ccache живёт только внутри ОДНОГО build
+(ephemeral default Docker Desktop BuildKit instance).
+
+**Measured** (single cold build with persistent container):
+- cppworker: 47 мин (cold ccache, full CUDA compile)
+- balancer: <2 sec (Go unchanged, all CACHED)
+- webui: <5 sec (Web assets unchanged, all CACHED)
+
+**Expected** (warm builds):
+- cppworker с инкрементными Go-изменениями: 1-2 мин
+- cppworker с c/llama.cpp изменениями: ~5-7 мин
+- balancer/webui: 0-5 sec
+
+### 📁 Files (14)
+
+**Bug fixes**:
+- `internal/balancer/nctx_reload_handlers.go` — smart-skip reload + patchNumCtxInBody
+- `internal/balancer/llamacpp_transport.go` — context cancel в stream loop
+- `internal/balancer/llamacpp_transport_nonstream.go` — Retry-After 5→30
+- `cmd/cppworker/handlers_openai.go` — L3 give-up убран
+- `webui/js/modules/cppworker-params.js` — -2 GPU layers support
+
+**Infra fixes**:
+- `docker/cppworker/Dockerfile.gpu` + `Dockerfile.gpu.86` — explicit cache mount
+- `scripts/build-containers.ps1` — DOCKER_BUILDKIT=1
+- `.dockerignore` — build-*/ patterns
+- `.gitignore` — build-*/ patterns
+
+**Tests**:
+- `internal/balancer/preflight_nctx_reload_test.go` — обновлены для smart-skip
+- `internal/balancer/nctx_reload_sync_test.go` — signature change
+- `internal/balancer/num_ctx_resolver_test.go` — TestPatchNumCtxInBody_*
+
+### ✅ Verification
+
+- `go test -count=1 -tags llama_stub ./cmd/cppworker/...` — PASS (7.2s)
+- `go test -count=1 -tags llama_stub ./internal/cppbackend/...` — PASS (5.2s, 25 тестов)
+- `go test -count=1 -tags llama_stub ./internal/balancer/...` — PASS для
+  preflight/nctx/extractnum/patchnum (28 тестов)
+- Live verify smart-skip: 1.3-6.1s на запрос с num_ctx > loaded (было 30-50s)
+
+### ⚠️ Breaking changes
+
+None. Все fixes backward-compatible:
+- Smart-skip: reloads only if actually needed, no behavior change for
+  cases where reload was already triggered.
+- L3 give-up removal: strictly more permissive, never breaks.
+- Cancel check: stops on disconnect, but cppworker already had EOF
+  handling — no behavior change for normal streams.
+- GPU layers -2: новый валидный input range, не ломает -1/0/N.
+
+### 🔄 Unaddressed (из bug list 9) — отложено в v0.5.11+
+
+- **Bug #1**: WebUI settings slow when model reasoning — не воспроизводится
+  в текущей конфигурации (Qwen3-Instruct-4B non-reasoning). Может быть
+  связано с gemma-4 нагрузкой — нужно тестировать после deploy.
+- **Bug #2**: WebUI all-models show "active" — не воспроизводится,
+  /api/models возвращает корректный список (1 model loaded из 2).
+  Возможно stale state в UI — refresh WebUI должен помочь.
+- **Bug #3**: Cline infinite tool instructions — это model behavior
+  (Qwen3-Instruct-4B склонна к echo'ингу system prompt при длинных
+  tool definitions). Code-fix не поможет, нужен larger model (qwen3.5+).
+- **Bug #9**: Done flag before response — не воспроизводится в моих
+  тестах (callback flush'ит после каждого token, финальный chunk
+  flush'ит после [DONE]). Возможно был transient race в v0.5.8 —
+  current code path через `sw.Flush()` корректен.
+
 ## [0.5.9 — 2026-08-04]
 
 PATCH-релиз. **Документационный аудит + security fix + 3 pre-existing test-bug fix'а**.

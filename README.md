@@ -11,15 +11,15 @@
 
 ## Что нового
 
-**v0.5.9 — 2026-08-04** (последний релиз, [полный CHANGELOG](CHANGELOG.md)):
+**v0.5.10 — 2026-08-04** (последний релиз, [полный CHANGELOG](CHANGELOG.md)):
 
-- 🟢 **Security: убран реальный GitHub PAT** из `scripts/run-setup-runner-elevated.ps1` (истёкший, формат `AHO*`, но всё равно виден в публичном репо). Заменён на `$env:GITHUB_REGISTRATION_TOKEN` с инструкцией.
-- 🟢 **Документационный аудит**: 100+ специфических `192.168.x.x` IP → RFC5737 `192.0.2.x` в конфигах/доках. Real tokens → `changeme-*-token-please-change`. `nctxReload` harmonized (131072/120). `.env.bundled*` реальные config'ы в `.gitignore`, tracked только `.example`.
-- 🐛 **3 pre-existing test-bug fix'а**: `metrics_test.go` off-by-one в percentiles (v0.5.7), `user_tracker_test.go` расовый concurrent test (v0.5.6), `user_id_test.go` неверные sanitize expectations + unused import (v0.5.6).
-- 🐛 **docker-compose: фикс `start-bundled-full.ps1:89`** — был битый путь копирования `.env.bundled-full.example` (никогда не срабатывал), теперь `Copy-Item` через `$DeployDir`.
-- ✅ Все 25 unit-тестов в `cmd/cppworker/` и `internal/cppbackend/` PASS.
+- 🐛 **Bug #6+#8: Smart-skip reload** — клиент (Cline/OpenWebUI) шлёт `num_ctx=32000` "на всякий случай", но реальный prompt "2+2?" = 1 токен. Balancer теперь проверяет `estimated_prompt + n_predict` — если помещается в loaded_n_ctx, **patch'ит body** и proxy'ит БЕЗ reload. Live verify: 1.3s/req (было 30-50s + retry-loop).
+- 🐛 **Bug #4: OpenWebUI cancel** — добавлен `r.Context().Done()` check в streaming loop. Cancel теперь останавливает генерацию <1s (было: модель работает до natural completion).
+- 🐛 **Bug #7: Think block leak** — убран L3 "give up" на 1024 chars. Auto-detect теперь ВСЕГДА проверяет весь outputBuf на любой из 4 think-тегов.
+- 🐛 **Bug #5: WebUI -2 GPU layers** — `GPU_LAYERS_MIN -1 → -2`, display "AUTO" для auto-рассчёта.
+- 🏗️ **Persistent ccache** — `DOCKER_BUILDKIT=1` + `docker buildx create --driver docker-container` + `.dockerignore build-*/`. ccache теперь действительно persistent: 47 мин cold, **<2 мин warm** для Go-изменений (было 20+ мин каждый build).
 
-**v0.5.8 — 2026-08-04**: Round 22 deferred — CORS fix (`X-API-Token`, `X-Request-Id`, `X-User-Id` в `Allow-Headers`; `X-Model-*` в `Expose-Headers`; 204 No Content) + Prometheus `/metrics` endpoint (text/plain v0.0.4, per-model + global counters/gauges/summaries).
+**v0.5.9 — 2026-08-04**: Documentation audit + 3 pre-existing test-bug fixes (percentiles off-by-one, racy concurrent test, sanitize expectations) + security fix (real GitHub PAT removed).
 
 - 🐛 **CRITICAL bug fix: `temperature=0` от клиента теперь honor'ится** — раньше Go-слой игнорировал `temperature=0` (Cline/Aider/Continue все шлют greedy) и подставлял default `0.7`, что приводило к не-детерминированным tool calls. Pointer types в request structs (`*float64` / `*int`) различают "не задано" от "explicit 0". 8 unit-тестов.
 - 🟡 **P1 — 4 code-review fix'а**: rename misleading function, BatchedScheduler head-of-line blocking (TokenCh buffer 8→128 + non-blocking send + drop counter), sampleFromLogits silent fallback → logging + counter, UnloadModel infinite wait → 10s timeout.

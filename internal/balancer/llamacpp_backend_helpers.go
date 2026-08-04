@@ -320,6 +320,8 @@ func (lr *LlamaCppRouter) ensureModelLoadedOnBackend(backendID, modelName string
 	if lr.isModelReadyOnBackend(backendID, modelName) {
 		ridLog(lr_recentCtx()).Debugw("ensureModelLoadedOnBackend: model already loaded",
 			"backend", backendID, "model", modelName, "step", "is_loaded=true")
+		// Round 26 v0.5.14: сбрасываем circuit breaker (модель загружена)
+		lr.loadBackoff.recordSuccess(backendID, modelName)
 		return true, nil
 	}
 	// 2026-06-24: если preflight async reload уже идёт для этой модели —
@@ -395,6 +397,18 @@ func (lr *LlamaCppRouter) ensureModelLoadedOnBackend(backendID, modelName string
 		}
 	}
 
+	// Round 26 v0.5.14: circuit breaker check. Если breaker открыт (3+ подряд
+	// failures в течение failureWindow), НЕ пытаемся load'ить сразу. Это
+	// предотвращает infinite retry loop при upstream bug (gemma-4 GGML_ASSERT
+	// при n_ctx>32768 → cppworker crash → restart → re-load → crash → loop).
+	if skip, reason, until := lr.loadBackoff.shouldSkip(backendID, modelName); skip {
+		ridLog(lr_recentCtx()).Warnw("ensureModelLoadedOnBackend: skipped due to circuit breaker",
+			"backend", backendID, "model", modelName,
+			"reason", reason, "breakerOpenUntil", until.Format(time.RFC3339))
+		return false, fmt.Errorf("circuit breaker open for backend=%s model=%s (until %s) — recent load failures, retry later",
+			backendID, modelName, until.Format(time.RFC3339))
+	}
+
 	ridLog(lr_recentCtx()).Infow("ensureModelLoadedOnBackend: auto-loading model",
 		"backend", backendID, "model", modelName, "step", "execute_op=load",
 		"numCtx", ctxSize, "gpuLayers", gpuLayers)
@@ -407,6 +421,18 @@ func (lr *LlamaCppRouter) ensureModelLoadedOnBackend(backendID, modelName string
 
 	if !result.Success {
 		errStr := strings.ToLower(result.Error)
+		// Round 26 v0.5.14: записываем failure в backoff. После 3 подряд failures
+		// breaker откроется и предотвратит infinite retry. НЕ применяется к
+		// 404/501 (lazy-load fallback) — это нормальные случаи, не баг upstream.
+		if !strings.Contains(errStr, "404") && !strings.Contains(errStr, "not found") &&
+			!strings.Contains(errStr, "not implemented") && !strings.Contains(errStr, "501") {
+			breakerOpened, retryAfter := lr.loadBackoff.recordFailure(backendID, modelName, result.Error)
+			if breakerOpened {
+				ridLog(lr_recentCtx()).Errorw("ensureModelLoadedOnBackend: circuit breaker opened after failures",
+					"backend", backendID, "model", modelName,
+					"error", result.Error, "retryAfterSec", int(retryAfter.Seconds()))
+			}
+		}
 		if strings.Contains(errStr, "404") || strings.Contains(errStr, "not found") ||
 			strings.Contains(errStr, "not implemented") || strings.Contains(errStr, "501") {
 			ridLog(lr_recentCtx()).Warnw("ensureModelLoadedOnBackend: explicit load not supported by upstream, falling back to lazy-load",
@@ -461,6 +487,8 @@ func (lr *LlamaCppRouter) ensureModelLoadedOnBackend(backendID, modelName string
 		if lr.isModelReadyOnBackend(backendID, modelName) {
 			logger.Get().Infow("ensureModelLoadedOnBackend: auto-load successful",
 				"backend", backendID, "model", modelName)
+			// Round 26 v0.5.14: успешный load сбрасывает circuit breaker
+			lr.loadBackoff.recordSuccess(backendID, modelName)
 			return true, nil
 		}
 		models := lr.queryCppWorkerModels(backendID)

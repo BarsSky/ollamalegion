@@ -18,6 +18,12 @@ type LlamaCppRouter struct {
 	lastKnownModelsMu sync.RWMutex
 	lastKnownModels   map[string][]cppWorkerModelState
 	lastKnownModelsAt map[string]time.Time
+	// loadBackoff — circuit breaker для failed auto-load (Round 26 v0.5.14).
+	// После maxConsecutiveFailures подряд failures, breaker открывается
+	// на breakerOpenDuration — balancer возвращает ошибку сразу без retry,
+	// предотвращая infinite retry loop при upstream bug (например,
+	// gemma-4 GGML_ASSERT при n_ctx>32768).
+	loadBackoff *loadBackoff
 }
 
 // NewLlamaCppRouter — создание маршрутизатора для llama.cpp
@@ -26,6 +32,7 @@ func NewLlamaCppRouter(proxy *Proxy) *LlamaCppRouter {
 		proxy:             proxy,
 		lastKnownModels:   make(map[string][]cppWorkerModelState),
 		lastKnownModelsAt: make(map[string]time.Time),
+		loadBackoff:       newLoadBackoff(),
 	}
 }
 

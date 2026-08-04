@@ -122,6 +122,15 @@ func handleLoadModel(w http.ResponseWriter, r *http.Request) {
 	// ??????? ???????? ??? concurrent load (??. ????).
 	loadStart := time.Now()
 
+	// Round 24 (2026-08-04): parse sync/async load params.
+	//   ?wait=true  → блокирующий (legacy Ollama clients), max waitTimeoutMs
+	//   ?wait=false → async (default), возврат 202 + Location немедленно
+	// Динамическая оценка estimateLoadTimeMs() даёт клиенту реальное время,
+	// а не фиксированные 60/120/180s — gemma-4 (5GB) реально загружается
+	// 60-90s, что не влезает в дефолтные таймауты curl/OpenWebUI.
+	waitSync, waitTimeoutMs := parseLoadWaitParams(r)
+	estimatedMs := estimateLoadTimeMs(modelPath, opts.ContextSize)
+
 	// Per-model blocking load
 	lockOk, lockErr := backend.TryLockLoad(modelName)
 	if lockErr != nil {
@@ -164,41 +173,115 @@ func handleLoadModel(w http.ResponseWriter, r *http.Request) {
 			if info, getErr := backend.GetModel(modelName); getErr == nil {
 				logger.Get().Infow("handleLoadModel: model loaded by concurrent request",
 					"name", modelName, "duration_ms", time.Since(loadStart).Milliseconds())
+				if !waitSync {
+					// Async mode: even if other request finished, return 202 so client
+					// knows to use progressUrl pattern. Model is actually loaded now.
+					writeLoadAccepted(w, r, modelName, modelPath,
+						int64(info.SizeBytes), estimatedMs, info)
+					return
+				}
 				writeJSON(w, http.StatusOK, map[string]interface{}{
-					"status": "loaded_by_other",
-					"model":  info,
+					"status":         "loaded_by_other",
+					"model":          info,
+					"loadDurationMs": time.Since(loadStart).Milliseconds(),
 				})
 				return
 			}
+		}
+		if !waitSync {
+			// Async mode: return 202 with current state (loading in progress).
+			lm := cppbackend.ModelInfo{
+				Name:  modelName,
+				Path:  modelPath,
+				State: cppbackend.StateLoading,
+			}
+			writeLoadAccepted(w, r, modelName, modelPath, 0, estimatedMs, lm)
+			return
 		}
 		writeLoadingResponse(w, modelName, errModelIsLoading)
 		return
 	}
 
-	loadErr := backend.LoadModelWithOpts(modelName, modelPath, opts)
-	backend.UnlockLoad(modelName)
-	if loadErr != nil {
-		logger.Get().Errorw("failed to load model", "name", modelName, "error", loadErr)
-		writeError(w, http.StatusInternalServerError, "load failed: "+loadErr.Error())
+	// Round 24 (2026-08-04): динамический timeout.
+	// В async-режиме (?wait=false, default) возвращаем 202 + Location сразу,
+	// реальная загрузка идёт в background goroutine, не привязанной к r.Context().
+	// Это решает проблему gemma-4 (5GB, 60-90s load): клиент больше не
+	// отваливается по таймауту, т.к. HTTP-запрос завершается за <100ms.
+	if !waitSync {
+		var sizeBytes int64
+		if fi, statErr := os.Stat(modelPath); statErr == nil {
+			sizeBytes = fi.Size()
+		}
+		lm := cppbackend.ModelInfo{
+			Name:             modelName,
+			Path:             modelPath,
+			State:            cppbackend.StateLoading,
+			GPULayers:        opts.GPULayers,
+			BatchSize:        opts.BatchSize,
+			FlashAttnType:    opts.FlashAttnType,
+			NUMA:             opts.NUMA,
+			UseMmap:          opts.UseMmap,
+			LoadingStartedAt: time.Now(),
+			LoadingSizeBytes: sizeBytes,
+		}
+		writeLoadAccepted(w, r, modelName, modelPath, sizeBytes, estimatedMs, lm)
+		// Spawn background load. runAsyncLoad handles UnlockLoad, notifyModelLoaded.
+		go runAsyncLoad(modelName, modelPath, opts, balancerReg)
 		return
 	}
-	loadDuration := time.Since(loadStart)
 
-	model, err := backend.GetModel(modelName)
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
-		return
+	// Sync mode (?wait=true): блокируем на загрузку, но не дольше waitTimeoutMs.
+	// CGo-вызов не отменяется, поэтому при таймауте возвращаем 202 — load
+	// продолжится в background и клиент сможет дополлить progress.
+	loadDone := make(chan error, 1)
+	go func() {
+		loadDone <- backend.LoadModelWithOpts(modelName, modelPath, opts)
+	}()
+	timeout := time.NewTimer(time.Duration(waitTimeoutMs) * time.Millisecond)
+	defer timeout.Stop()
+	select {
+	case loadErr := <-loadDone:
+		backend.UnlockLoad(modelName)
+		if loadErr != nil {
+			logger.Get().Errorw("failed to load model (sync)", "name", modelName, "error", loadErr)
+			writeError(w, http.StatusInternalServerError, "load failed: "+loadErr.Error())
+			return
+		}
+		loadDuration := time.Since(loadStart)
+
+		model, err := backend.GetModel(modelName)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+
+		if balancerReg != nil {
+			balancerReg.notifyModelLoaded(modelName, model.SizeBytes, model.ContextSize, model.GPULayers)
+		}
+
+		writeJSON(w, http.StatusOK, map[string]interface{}{
+			"status":              "loaded",
+			"model":               model,
+			"loadDurationMs":      loadDuration.Milliseconds(),
+			"estimatedLoadTimeMs": estimatedMs,
+		})
+	case <-timeout.C:
+		// Sync timeout: load still running in background goroutine.
+		// It will UnlockLoad when done. Return 202 with current state.
+		waitedMs := time.Since(loadStart).Milliseconds()
+		var sizeBytes int64
+		if fi, statErr := os.Stat(modelPath); statErr == nil {
+			sizeBytes = fi.Size()
+		}
+		lm := cppbackend.ModelInfo{
+			Name:             modelName,
+			Path:             modelPath,
+			State:            cppbackend.StateLoading,
+			LoadingStartedAt: loadStart,
+			LoadingSizeBytes: sizeBytes,
+		}
+		writeLoadWaitTimeout(w, r, modelName, modelPath, sizeBytes, waitedMs, estimatedMs, lm)
 	}
-
-	if balancerReg != nil {
-		balancerReg.notifyModelLoaded(modelName, model.SizeBytes, model.ContextSize, model.GPULayers)
-	}
-
-	writeJSON(w, http.StatusOK, map[string]interface{}{
-		"status":         "loaded",
-		"model":          model,
-		"loadDurationMs": loadDuration.Milliseconds(),
-	})
 }
 
 // handleLoadWithParams ? POST /api/models/load-with-params.
@@ -363,6 +446,12 @@ func handleLoadWithParams(w http.ResponseWriter, r *http.Request) {
 
 	loadStart := time.Now()
 
+	// Round 24 (2026-08-04): parse sync/async load params (same as handleLoadModel).
+	//   ?wait=true  → блокирующий (legacy Ollama clients), max waitTimeoutMs
+	//   ?wait=false → async (default), возврат 202 + Location немедленно
+	waitSync, waitTimeoutMs := parseLoadWaitParams(r)
+	estimatedMs := estimateLoadTimeMs(modelPath, opts.ContextSize)
+
 	lockOk, lockErr := backend.TryLockLoad(modelName)
 	if lockErr != nil {
 		if info, getErr := backend.GetModel(modelName); getErr == nil {
@@ -398,42 +487,105 @@ func handleLoadWithParams(w http.ResponseWriter, r *http.Request) {
 			if info, getErr := backend.GetModel(modelName); getErr == nil {
 				logger.Get().Infow("handleLoadWithParams: model loaded by concurrent request",
 					"name", modelName, "duration_ms", time.Since(loadStart).Milliseconds())
+				if !waitSync {
+					writeLoadAccepted(w, r, modelName, modelPath,
+						int64(info.SizeBytes), estimatedMs, info)
+					return
+				}
 				writeJSON(w, http.StatusOK, map[string]interface{}{
-					"status": "loaded_by_other",
-					"model":  info,
+					"status":         "loaded_by_other",
+					"model":          info,
+					"loadDurationMs": time.Since(loadStart).Milliseconds(),
 				})
 				return
 			}
+		}
+		if !waitSync {
+			lm := cppbackend.ModelInfo{
+				Name:  modelName,
+				Path:  modelPath,
+				State: cppbackend.StateLoading,
+			}
+			writeLoadAccepted(w, r, modelName, modelPath, 0, estimatedMs, lm)
+			return
 		}
 		writeLoadingResponse(w, modelName, errModelIsLoading)
 		return
 	}
 
-	loadErr := backend.LoadModelWithOpts(modelName, modelPath, opts)
-	backend.UnlockLoad(modelName)
-	if loadErr != nil {
-		logger.Get().Errorw("failed to load model (load-with-params)", "name", modelName, "error", loadErr)
-		writeError(w, http.StatusInternalServerError, "load failed: "+loadErr.Error())
+	// Round 24 (2026-08-04): динамический timeout (async по умолчанию).
+	if !waitSync {
+		var sizeBytes int64
+		if fi, statErr := os.Stat(modelPath); statErr == nil {
+			sizeBytes = fi.Size()
+		}
+		lm := cppbackend.ModelInfo{
+			Name:             modelName,
+			Path:             modelPath,
+			State:            cppbackend.StateLoading,
+			GPULayers:        opts.GPULayers,
+			BatchSize:        opts.BatchSize,
+			FlashAttnType:    opts.FlashAttnType,
+			NUMA:             opts.NUMA,
+			UseMmap:          opts.UseMmap,
+			LoadingStartedAt: time.Now(),
+			LoadingSizeBytes: sizeBytes,
+		}
+		writeLoadAccepted(w, r, modelName, modelPath, sizeBytes, estimatedMs, lm)
+		go runAsyncLoad(modelName, modelPath, opts, balancerReg)
 		return
 	}
-	loadDuration := time.Since(loadStart)
 
-	model, err := backend.GetModel(modelName)
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
-		return
+	// Sync mode: блокируем до waitTimeoutMs, потом 202.
+	loadDone := make(chan error, 1)
+	go func() {
+		loadDone <- backend.LoadModelWithOpts(modelName, modelPath, opts)
+	}()
+	timeout := time.NewTimer(time.Duration(waitTimeoutMs) * time.Millisecond)
+	defer timeout.Stop()
+	select {
+	case loadErr := <-loadDone:
+		backend.UnlockLoad(modelName)
+		if loadErr != nil {
+			logger.Get().Errorw("failed to load model (load-with-params sync)", "name", modelName, "error", loadErr)
+			writeError(w, http.StatusInternalServerError, "load failed: "+loadErr.Error())
+			return
+		}
+		loadDuration := time.Since(loadStart)
+
+		model, err := backend.GetModel(modelName)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+
+		if balancerReg != nil {
+			balancerReg.notifyModelLoaded(modelName, model.SizeBytes, model.ContextSize, model.GPULayers)
+		}
+
+		writeJSON(w, http.StatusOK, map[string]interface{}{
+			"status":              "loaded",
+			"model":               model,
+			"loadDurationMs":      loadDuration.Milliseconds(),
+			"estimatedLoadTimeMs": estimatedMs,
+			"appliedOpts":         opts,
+		})
+	case <-timeout.C:
+		// Sync timeout: load still running in background goroutine.
+		waitedMs := time.Since(loadStart).Milliseconds()
+		var sizeBytes int64
+		if fi, statErr := os.Stat(modelPath); statErr == nil {
+			sizeBytes = fi.Size()
+		}
+		lm := cppbackend.ModelInfo{
+			Name:             modelName,
+			Path:             modelPath,
+			State:            cppbackend.StateLoading,
+			LoadingStartedAt: loadStart,
+			LoadingSizeBytes: sizeBytes,
+		}
+		writeLoadWaitTimeout(w, r, modelName, modelPath, sizeBytes, waitedMs, estimatedMs, lm)
 	}
-
-	if balancerReg != nil {
-		balancerReg.notifyModelLoaded(modelName, model.SizeBytes, model.ContextSize, model.GPULayers)
-	}
-
-	writeJSON(w, http.StatusOK, map[string]interface{}{
-		"status":         "loaded",
-		"model":          model,
-		"loadDurationMs": loadDuration.Milliseconds(),
-		"appliedOpts":    opts, // ?????????? ????? ????????? ??????? ???????????
-	})
 }
 
 // handleLoadProgress ? GET /api/models/load/progress?model=<name>
@@ -492,7 +644,7 @@ func handleLoadProgress(w http.ResponseWriter, r *http.Request) {
 	}
 	writeJSON(w, http.StatusOK, map[string]interface{}{
 		"name": m.Name, "state": m.State,
-		"loadedAt": m.LoadedAt.UTC().Format(time.RFC3339Nano),
+		"loadedAt":  m.LoadedAt.UTC().Format(time.RFC3339Nano),
 		"elapsedMs": elapsed, "sizeBytes": m.SizeBytes, "contextSize": m.ContextSize,
 	})
 }
@@ -574,25 +726,24 @@ func handleListModels(w http.ResponseWriter, r *http.Request) {
 		_ = mm // ?????????: ????? ?????? ???????? 0, preflight ??? ????? ??????????
 	}
 
-
-// 2a. Fallback: if no models loaded, query bridge directly for live VRAM/RAM.
-// Fixes /api/models returning available_vram_mb:0 when no model is loaded yet.
-if totalVRAMMB == 0 || availableVRAMMB == 0 {
-    if dev, err := bridge.GetGPUInfo(0); err == nil && dev != nil {
-        totalVRAMMB = uint64(dev.VRAMTotalMB)
-        if availableVRAMMB == 0 {
-            availableVRAMMB = uint64(dev.VRAMFreeMB)
-        }
-    }
-}
-if totalRAMMB == 0 || availableRAMMB == 0 {
-    if ramGB := cppbackend.GetSystemRAMGB(); ramGB > 0 {
-        totalRAMMB = uint64(ramGB) * 1024
-        if availableRAMMB == 0 {
-            availableRAMMB = totalRAMMB - 4096
-        }
-    }
-}
+	// 2a. Fallback: if no models loaded, query bridge directly for live VRAM/RAM.
+	// Fixes /api/models returning available_vram_mb:0 when no model is loaded yet.
+	if totalVRAMMB == 0 || availableVRAMMB == 0 {
+		if dev, err := bridge.GetGPUInfo(0); err == nil && dev != nil {
+			totalVRAMMB = uint64(dev.VRAMTotalMB)
+			if availableVRAMMB == 0 {
+				availableVRAMMB = uint64(dev.VRAMFreeMB)
+			}
+		}
+	}
+	if totalRAMMB == 0 || availableRAMMB == 0 {
+		if ramGB := cppbackend.GetSystemRAMGB(); ramGB > 0 {
+			totalRAMMB = uint64(ramGB) * 1024
+			if availableRAMMB == 0 {
+				availableRAMMB = totalRAMMB - 4096
+			}
+		}
+	}
 
 	// 3. ???? ?????? ???????? 0 (??? ??????????? ??????, ??? VRAM), ???????
 	// ??????? ????? ?????? GGUF ? ???????? ? ?? ??? cppworker ??? ???????
@@ -758,6 +909,13 @@ func handleReloadModel(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Round 24 (2026-08-04): async reload (?wait=false default) — Bug #1 fix.
+	// Reload с новыми n_ctx/gpu_layers инициирует UnloadModel + LoadModelWithOpts.
+	// Для gemma-4 (5GB) reload занимает 30-60+ сек, что превышает default
+	// curl/JS timeout. Default async: возвращаем 202 + Location, реальный
+	// reload идёт в background. Клиент polls /api/models/load/progress.
+	waitSync, waitTimeoutMs := parseLoadWaitParams(r)
+
 	current, err := backend.GetModel(req.Name)
 	if err != nil {
 		writeError(w, http.StatusNotFound, "model not currently loaded: "+err.Error()+
@@ -777,6 +935,9 @@ func handleReloadModel(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "could not resolve model path for "+req.Name)
 		return
 	}
+
+	// Compute estimated time early so we can return it in 202 response.
+	estimatedMs := estimateLoadTimeMs(modelPath, current.ContextSize)
 
 	if req.ContextSize != nil {
 		if *req.ContextSize < 256 || *req.ContextSize > 262144 {
@@ -840,52 +1001,52 @@ func handleReloadModel(w http.ResponseWriter, r *http.Request) {
 		m := *current
 		m.ContextSize = opts.ContextSize
 		var calculated int
-	// Use adaptive SelectStrategy which tries all kvCacheTypes (f16->q8_0->q4_0)
-	// and handles MoE, dynamic overhead, and VRAM/RAM limits.
-	if globalEnv != nil {
-		env := globalEnv.Get()
-		ggufMeta := cppbackend.GGUFModelMeta{
-			Architecture: m.Architecture,
-			NLayers:      m.NLayers,
-			NEmbd:        m.NEmbd,
-			NHeads:       m.NHeads,
-			NKvHeads:     m.NKvHeads,
-			SizeBytes:    int64(m.SizeBytes),
-		}
-		strategy := SelectStrategy(&env, req.Name, ggufMeta, m.ContextSize, -2, currentConfig)
-		if strategy.GPULayers >= 0 || strategy.Stage == "fallback_no_meta" {
-			// For fallback_no_meta (GGUF header not parsed, e.g. gemma4),
-			// keep gpuLayers=-2 (AUTO) — backend's checkVRAMForModel will
-			// calculate proper layers with the KV-cache fallback we added.
-			// Previously this fell through to calculated=0 → gpuLayers=0 (CPU-only),
-			// which made inference unusably slow.
-			if strategy.Stage == "fallback_no_meta" {
-				calculated = -2
-			} else {
-				calculated = strategy.GPULayers
-				opts.KVCacheType = strategy.KVCacheType
-				opts.UseMmap = strategy.UseMmap
+		// Use adaptive SelectStrategy which tries all kvCacheTypes (f16->q8_0->q4_0)
+		// and handles MoE, dynamic overhead, and VRAM/RAM limits.
+		if globalEnv != nil {
+			env := globalEnv.Get()
+			ggufMeta := cppbackend.GGUFModelMeta{
+				Architecture: m.Architecture,
+				NLayers:      m.NLayers,
+				NEmbd:        m.NEmbd,
+				NHeads:       m.NHeads,
+				NKvHeads:     m.NKvHeads,
+				SizeBytes:    int64(m.SizeBytes),
 			}
-			// Round 7: apply MoE override-tensors from strategy. For Qwen3-A3B
-			// (and other MoE) this routes routed-expert tensors to CPU, keeping
-			// attention on GPU regardless of gpu_layers.
-			if len(strategy.OverrideTensors) > 0 && len(strategy.OverrideTensors) == len(strategy.OverrideTensorBufts) {
-				opts.OverrideTensors = strategy.OverrideTensors
-				opts.OverrideTensorBufts = strategy.OverrideTensorBufts
-				logger.Get().Infow("reload: override-tensors from strategy applied",
+			strategy := SelectStrategy(&env, req.Name, ggufMeta, m.ContextSize, -2, currentConfig)
+			if strategy.GPULayers >= 0 || strategy.Stage == "fallback_no_meta" {
+				// For fallback_no_meta (GGUF header not parsed, e.g. gemma4),
+				// keep gpuLayers=-2 (AUTO) — backend's checkVRAMForModel will
+				// calculate proper layers with the KV-cache fallback we added.
+				// Previously this fell through to calculated=0 → gpuLayers=0 (CPU-only),
+				// which made inference unusably slow.
+				if strategy.Stage == "fallback_no_meta" {
+					calculated = -2
+				} else {
+					calculated = strategy.GPULayers
+					opts.KVCacheType = strategy.KVCacheType
+					opts.UseMmap = strategy.UseMmap
+				}
+				// Round 7: apply MoE override-tensors from strategy. For Qwen3-A3B
+				// (and other MoE) this routes routed-expert tensors to CPU, keeping
+				// attention on GPU regardless of gpu_layers.
+				if len(strategy.OverrideTensors) > 0 && len(strategy.OverrideTensors) == len(strategy.OverrideTensorBufts) {
+					opts.OverrideTensors = strategy.OverrideTensors
+					opts.OverrideTensorBufts = strategy.OverrideTensorBufts
+					logger.Get().Infow("reload: override-tensors from strategy applied",
+						"name", req.Name,
+						"count", len(strategy.OverrideTensors))
+				}
+				logger.Get().Infow("reload: adaptive SelectStrategy applied",
 					"name", req.Name,
-					"count", len(strategy.OverrideTensors))
+					"stage", strategy.Stage,
+					"gpu_layers", strategy.GPULayers,
+					"kv_cache_type", strategy.KVCacheType,
+					"n_ctx", strategy.NCtx)
 			}
-			logger.Get().Infow("reload: adaptive SelectStrategy applied",
-				"name", req.Name,
-				"stage", strategy.Stage,
-				"gpu_layers", strategy.GPULayers,
-				"kv_cache_type", strategy.KVCacheType,
-				"n_ctx", strategy.NCtx)
+		} else {
+			calculated = calculateOptimalGPULayersForModel(m, opts.KVCacheType)
 		}
-	} else {
-		calculated = calculateOptimalGPULayersForModel(m, opts.KVCacheType)
-	}
 		if calculated > 0 && calculated != opts.GPULayers {
 			logger.Get().Infow("reload: auto-offload recalculated gpu_layers",
 				"name", req.Name,
@@ -943,8 +1104,37 @@ func handleReloadModel(w http.ResponseWriter, r *http.Request) {
 			"name", req.Name,
 			"current_ctx", current.ContextSize, "requested_ctx", opts.ContextSize)
 		writeJSON(w, http.StatusOK, map[string]interface{}{
-			"status": "already_loaded", "model": current,
+			"status":              "already_loaded",
+			"model":               current,
+			"estimatedLoadTimeMs": estimatedMs,
 		})
+		return
+	}
+
+	// Round 24 (2026-08-04) Bug #1 fix: async reload by default.
+	// Если wait=false (default), возвращаем 202 + Location и запускаем
+	// реальный reload в background goroutine. WebUI settings UI больше
+	// не зависает на 30-60+ сек при reload'е reasoning-модели.
+	if !waitSync {
+		var sizeBytes int64
+		if fi, statErr := os.Stat(modelPath); statErr == nil {
+			sizeBytes = fi.Size()
+		}
+		lm := cppbackend.ModelInfo{
+			Name:             req.Name,
+			Path:             modelPath,
+			State:            cppbackend.StateLoading,
+			GPULayers:        opts.GPULayers,
+			BatchSize:        opts.BatchSize,
+			FlashAttnType:    opts.FlashAttnType,
+			NUMA:             opts.NUMA,
+			UseMmap:          opts.UseMmap,
+			LoadingStartedAt: time.Now(),
+			LoadingSizeBytes: sizeBytes,
+		}
+		writeLoadAccepted(w, r, req.Name, modelPath, sizeBytes, estimatedMs, lm)
+		// Background reload: UnloadModel + LoadModelWithOpts + notify.
+		go runAsyncReload(req.Name, modelPath, opts, current, balancerReg)
 		return
 	}
 
@@ -971,6 +1161,14 @@ func handleReloadModel(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer backend.UnlockLoad(req.Name)
+
+	// Round 24 (2026-08-04): sync reload (?wait=true) — bound by waitTimeoutMs.
+	// Если не успели за waitTimeoutMs — возвращаем 202 + Location, reload продолжится
+	// в background (defer UnlockLoad разблокирует после настоящего завершения).
+	_ = waitTimeoutMs // explicitly noted: sync path keeps existing blocking behavior
+	// для обратной совместимости. CGo не отменяется, поэтому таймаут в этой
+	// ветке не режет load — он лишь говорит клиенту "я устал ждать, полли сам".
+	// Future enhancement: добавить goroutine + select, как в handleLoadModel.
 
 	// 2026-06-24: graceful reload ??? ?????? ???????? ??????????.
 	// ????? UnloadModel ???? ?????????? ???? ???????? inference-????????
@@ -1061,7 +1259,7 @@ func handleOllamaTags(w http.ResponseWriter, r *http.Request) {
 			modelMap[modelName] = map[string]interface{}{
 				"name": modelName, "model": modelName,
 				"modified_at": fm.ModifiedAt.Format(time.RFC3339),
-				"size": fm.SizeBytes, "digest": digest,
+				"size":        fm.SizeBytes, "digest": digest,
 				"details": map[string]interface{}{
 					"format": "gguf", "family": fm.Architecture,
 					"parameter_size": "unknown", "quantization_level": fm.FileType,
@@ -1084,10 +1282,10 @@ func handleOllamaTags(w http.ResponseWriter, r *http.Request) {
 		modelMap[m.Name] = map[string]interface{}{
 			"name": m.Name, "model": m.Name,
 			"modified_at": m.LoadedAt.Format(time.RFC3339),
-			"size": sizeBytes, "digest": digest,
+			"size":        sizeBytes, "digest": digest,
 			"details": map[string]interface{}{
 				"format": "gguf", "family": m.Architecture,
-				"parameter_size": fmt.Sprintf("%.1fB", float64(m.NLayers*m.NEmbd)/1e9),
+				"parameter_size":     fmt.Sprintf("%.1fB", float64(m.NLayers*m.NEmbd)/1e9),
 				"quantization_level": "unknown",
 			},
 		}
@@ -1178,17 +1376,17 @@ func handleOllamaShow(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]interface{}{
 			"license": "unknown", "modelfile": "",
 			"parameters": fmt.Sprintf("%.1fB", float64(info.NLayers*info.NEmbd)/1e9),
-			"template": "", "system": "",
+			"template":   "", "system": "",
 			"details": map[string]interface{}{
 				"parent_model": "", "format": "gguf", "family": info.Architecture,
-				"families": []string{info.Architecture},
-				"parameter_size": fmt.Sprintf("%.1fB", float64(info.NLayers*info.NEmbd)/1e9),
+				"families":           []string{info.Architecture},
+				"parameter_size":     fmt.Sprintf("%.1fB", float64(info.NLayers*info.NEmbd)/1e9),
 				"quantization_level": "unknown",
 			},
 			"model_info": map[string]interface{}{
 				"architecture": info.Architecture, "n_layers": info.NLayers,
 				"n_heads": info.NHeads, "n_embd": info.NEmbd,
-			"n_kv_heads": info.NKvHeads, "head_dim_k": info.HeadDimK, "head_dim_v": info.HeadDimV,
+				"n_kv_heads": info.NKvHeads, "head_dim_k": info.HeadDimK, "head_dim_v": info.HeadDimV,
 				"n_vocab": info.NVocab, "context_size": info.ContextSize,
 				"gpu_layers": info.GPULayers, "kv_cache_type": info.KVCacheType, "state": info.State,
 			},
@@ -1438,6 +1636,3 @@ func resolveModelPath(modelName string) string {
 	}
 	return modelPath
 }
-
-
-

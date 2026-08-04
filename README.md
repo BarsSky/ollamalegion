@@ -11,7 +11,14 @@
 
 ## Что нового
 
-**v0.5.10 — 2026-08-04** (последний релиз, [полный CHANGELOG](CHANGELOG.md)):
+**v0.5.11 — 2026-08-04** (последний релиз, [полный CHANGELOG](CHANGELOG.md)):
+
+- ✨ **Dynamic / async model loading** — gemma-4 (5GB) и другие большие модели больше НЕ ломаются по client timeout. `POST /api/models/load` теперь возвращает **HTTP 202 Accepted + Location за <100ms** с динамической оценкой `estimatedLoadTimeMs` (compute из `size / 100MB/s + ctx + 2s overhead`). Реальный load идёт в background goroutine, polling через `/api/models/load/progress`. `?wait=true` для legacy sync. **Live verify**: Qwen3-Instruct-2507-q4km (2.5GB) async load = 101ms response + 99s background, end-to-end chat = 44s (load + gen), 2.1s на already-loaded.
+- 🐛 **Bug #1: WebUI settings UI hang** — `handleReloadModel` теперь async (default). Apply с новыми n_ctx больше не зависает UI на 30-60+ сек при reload'е reasoning-модели.
+- 🐛 **Bug #2: WebUI "active/Unload" badge на unloaded моделях** — `isLoaded` check сломан при несовпадении имён (`m.name` с `.gguf` vs `lm.name` без). Fix: `stripGGUF` helper + normalized match + path basename. Устойчиво к load через WebUI/API/balancer warmup.
+- 🔧 **Balancer integration** — `executeLlamaCppLoad` детектит 202 + `status=loading` и поллит до `state=loaded` (max = estimated × 1.5 + 10s). `ensureModelLoadedOnBackend` deadline 5s → 5min (метрики кэшируются с 1-2s задержкой; 5s давал false positive).
+
+**v0.5.10 — 2026-08-04**: Round 23 — bug fixes (5 из 9) + persistent ccache infrastructure.
 
 - 🐛 **Bug #6+#8: Smart-skip reload** — клиент (Cline/OpenWebUI) шлёт `num_ctx=32000` "на всякий случай", но реальный prompt "2+2?" = 1 токен. Balancer теперь проверяет `estimated_prompt + n_predict` — если помещается в loaded_n_ctx, **patch'ит body** и proxy'ит БЕЗ reload. Live verify: 1.3s/req (было 30-50s + retry-loop).
 - 🐛 **Bug #4: OpenWebUI cancel** — добавлен `r.Context().Done()` check в streaming loop. Cancel теперь останавливает генерацию <1s (было: модель работает до natural completion).

@@ -1,0 +1,78 @@
+chore(release): v0.5.11 — async model loading + Bug #1, #2
+
+Round 24 (2026-08-04). Resolves the gemma-4 (5GB) load-by-timeout issue
+and 2 unaddressed bugs from v0.5.10.
+
+## New: Dynamic / async model loading
+
+Before: `POST /api/models/load` blocked the HTTP worker on CGo
+`LoadModelWithOpts`. gemma-4 (5GB) takes 60-90s to load — exceeds default
+curl/OpenWebUI/Cline timeouts (60-180s). Client times out, connection drops,
+UI shows "load failed" but the model keeps loading on cppworker.
+
+After:
+- `POST /api/models/load` returns **HTTP 202 Accepted + Location** in
+  **<100ms** with `estimatedLoadTimeMs` (computed from file size + ctx).
+- Background goroutine does the actual `bridge.LoadModel` (CGo can't be
+  cancelled, but is no longer tied to `r.Context()`).
+- Polling endpoint `/api/models/load/progress?model=<name>` (existed
+  before, now primary UI feedback channel via `GgufLoadProgress`).
+- `?wait=true&waitTimeoutSec=N` for legacy sync (Ollama clients, Cline).
+- Balancer `executeLlamaCppLoad` detects 202 + `status=loading` and polls
+  `/api/models` until `state=loaded` (max wait = estimated × 1.5 + 10s).
+- `ensureModelLoadedOnBackend` deadline bumped 5s → 5min (metrics poller
+  caches 1-2s behind reality; 5s was a false positive for big models).
+
+## Bug fixes
+
+### Bug #1: WebUI settings UI hang на reload'е reasoning-модели
+- `handleReloadModel` async default.
+- Background goroutine: UnloadModel + LoadModelWithOpts + rollback.
+- HTTP response in <50ms, reload completes silently in background.
+- WebUI modal показывает прогресс через polling.
+
+### Bug #2: WebUI "active/Unload" badge на unloaded моделях
+- `isLoaded` check (gguf-renderer.js:406) ломался при несовпадении имён
+  (с .gguf vs без, разные endpoints load'а).
+- New `stripGGUF` helper + 3-tier check: exact match → normalized match
+  → path basename match.
+- Устойчиво к load через WebUI (filename) / OpenAI API (model name) /
+  balancer auto-warmup.
+
+## Files
+
+New:
+- `cmd/cppworker/handlers_model_async.go` — async helpers
+  (parseLoadWaitParams, estimateLoadTimeMs, writeLoadAccepted,
+   writeLoadWaitTimeout, runAsyncLoad, runAsyncReload,
+   balancerRegNotifier interface, derefIntPtr/derefBoolPtr)
+- `cmd/cppworker/handlers_model_async_test.go` — 18 unit tests
+
+Modified:
+- `cmd/cppworker/handlers_model.go` — handleLoadModel + handleLoadWithParams
+  + handleReloadModel (все async по default)
+- `internal/balancer/model_management.go` — executeLlamaCppLoad detects 202
+- `internal/balancer/llamacpp_backend_helpers.go` — 5s → 5min deadline
+- `internal/balancer/load_timeout_test.go` — 4 new TestExecuteLlamaCppLoad_202*
+- `webui/js/modules/gguf-renderer.js` — stripGGUF + improved isLoaded check
+- `CHANGELOG.md` + `README.md`
+
+## Live verify (bundled-full)
+
+- Qwen3-Instruct-2507-q4km (2.5GB) async load: 101ms response, 99s background
+  completion, polling every 1.5s — UI не зависал.
+- estimatedLoadTimeMs=27815 (28s) для 2.5GB Qwen3 — разумная оценка.
+- End-to-end: unload → chat request → 202 detected → poll → response in 44s
+  (load + gen). Second request (model loaded): 2.1s.
+
+## Test summary
+
+- cppworker: 18 new + 14 existing load tests PASS (llama_stub).
+- balancer: 4 new TestExecuteLlamaCppLoad_202* PASS (36s).
+- gofmt -l clean, go build -tags llama_stub clean для cmd/cppworker и
+  internal/balancer.
+
+## Unaddressed (v0.5.12+)
+
+- Bug #3: Cline infinite tool instructions (model behavior, needs qwen3.5+)
+- Bug #9: Done flag before response — not reproduced

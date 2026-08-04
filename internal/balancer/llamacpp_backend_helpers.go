@@ -449,7 +449,14 @@ func (lr *LlamaCppRouter) ensureModelLoadedOnBackend(backendID, modelName string
 			"op_message", result.Message)
 		return false, fmt.Errorf("auto-load failed: %s", result.Error)
 	}
-	pollDeadline := time.Now().Add(5 * time.Second)
+	pollDeadline := time.Now().Add(5 * time.Minute)
+	// Round 24 (2026-08-04): async load поддержка — cppworker может вернуть
+	// 202 Accepted с status=loading. В этом случае executeLlamaCppLoad
+	// уже сделал polling до maxWait (estimated * 1.5 + 10s), и в норме
+	// result.Success=true означает что state=loaded. Но metrics poller
+	// cppworker'а кэширует с 1-2s задержкой, поэтому даём 5 минут на
+	// финальную синхронизацию (вместо жёстких 5s — gemma-4 5GB грузится
+	// 60-90s, 5s deadline давал false positive "still loading").
 	for {
 		if lr.isModelReadyOnBackend(backendID, modelName) {
 			logger.Get().Infow("ensureModelLoadedOnBackend: auto-load successful",

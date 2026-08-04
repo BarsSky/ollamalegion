@@ -403,8 +403,32 @@ const GgufRenderer = (window.GgufRenderer = (function () {
             const name = m.name || m.filename || m.path || '-';
             const size = m.size ? formatFileSize(m.size) : '-';
             const quant = m.quantization || m.quant || '-';
+            // Round 24 (2026-08-04) Bug #2 fix: isLoaded check was unreliable.
+            // Old check `(lm.model || lm.name) === name || lm.path === m.path` failed
+            // when user loaded via API (e.g., balancer auto-warmup) with name without
+            // .gguf extension: lm.name="Qwen3-Instruct-2507-q4km" vs
+            // m.name="Qwen3-Instruct-2507-q4km.gguf" → no match → state shows
+            // "Load" button for already-loaded model. Or reverse: stale loadedModels
+            // after switch backends → "Unload" button for unloaded model.
+            //
+            // Robust check: compare normalized names (strip .gguf) AND check if
+            // lm.path basename matches m.name (when lm.path is available).
+            const nameNoExt = stripGGUF(name);
             const isLoaded = state.loadedModels.some(function (lm) {
-                return (lm.model || lm.name || '') === name || lm.path === m.path;
+                const lmName = lm.model || lm.name || '';
+                // 1) Exact match (handles case where both have .gguf or both don't).
+                if (lmName && lmName === name) return true;
+                // 2) Normalized match (strip .gguf from both sides).
+                if (lmName && stripGGUF(lmName) === nameNoExt) return true;
+                // 3) Path basename match (m.name is a basename from /api/models/files;
+                //    lm.path is full path from /api/models — compare basenames).
+                if (lm.path) {
+                    const lmPathBase = lm.path.split(/[\\/]/).pop();
+                    if (lmPathBase === name || stripGGUF(lmPathBase) === nameNoExt) {
+                        return true;
+                    }
+                }
+                return false;
             });
             return '<div class="gguf-local-card">' +
                 '<div class="gguf-local-icon"><i class="fas fa-cube"></i></div>' +
@@ -2291,6 +2315,20 @@ const GgufRenderer = (window.GgufRenderer = (function () {
     }
 
     // ---- Helpers ----
+
+    // stripGGUF — убирает суффикс ".gguf" (case-insensitive) из имени файла.
+    // Используется в Bug #2 fix (Round 24) для нормализации сравнения
+    // локального имени файла и имени загруженной модели.
+    //   "Qwen3-Instruct-2507-q4km.gguf" → "Qwen3-Instruct-2507-q4km"
+    //   "Qwen3-Instruct-2507-q4km.GGUF" → "Qwen3-Instruct-2507-q4km"
+    //   "Qwen3-Instruct-2507-q4km"      → "Qwen3-Instruct-2507-q4km" (no change)
+    function stripGGUF(name) {
+        if (!name) return '';
+        if (name.length > 5 && name.slice(-5).toLowerCase() === '.gguf') {
+            return name.slice(0, -5);
+        }
+        return name;
+    }
 
     function formatFileSize(bytes) {
         if (!bytes || bytes === 0) return '0 B';

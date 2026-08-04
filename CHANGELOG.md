@@ -5,6 +5,137 @@
 Формат ведётся в соответствии с [Keep a Changelog](https://keepachangelog.com/ru/1.0.0/),
 и этот проект придерживается [Semantic Versioning](https://semver.org/lang/ru/).
 
+## [0.5.11 — 2026-08-04]
+
+PATCH-релиз. **Dynamic / async model loading + Bug fixes #1, #2** (WebUI settings + isLoaded check).
+
+### 🐛 Bug fixes
+
+#### Bug #1: WebUI settings UI hangs при reload'е reasoning-модели
+**Symptom**: при изменении параметров (n_ctx, gpu_layers) в WebUI → apply → modal
+висит 30-60+ секунд на reasoning-моделях (gemma-4 5GB). HTTP-запрос на
+`POST /api/models/reload` блокировался на CGo `LoadModelWithOpts()`, клиент
+рвал соединение по таймауту, UI показывал "load failed" хотя на бэкенде
+reload шёл штатно.
+
+**Fix**: `handleReloadModel` теперь по умолчанию async (Round 24):
+- `?wait=false` (default) → 202 Accepted + Location немедленно, реальный reload
+  в background goroutine, polling `/api/models/load/progress` покажет
+  `loading → loaded`.
+- `?wait=true&waitTimeoutSec=N` → legacy sync (как раньше, для совместимости).
+- Background goroutine делает `UnloadModel + LoadModelWithOpts` с rollback
+  при ошибке.
+
+**Verification**: gemma-4 (5GB) reload через WebUI теперь не зависает —
+HTTP-запрос возвращает 202 за ~50ms, reload идёт в фоне, UI показывает
+прогресс через polling.
+
+#### Bug #2: WebUI "active/Unload" badge показывается на unloaded моделях
+**Symptom**: в табе "Local Models" все модели показывали "Loaded" badge и
+"Unload" кнопку после unload'а или при работе с несколькими бэкендами.
+Intermittent — зависело от того, через какой endpoint грузили модель
+(WebUI vs OpenAI API vs balancer auto-warmup).
+
+**Root cause**: check `state.loadedModels.some(lm => lm.name === m.name || lm.path === m.path)`
+ломается при несовпадении имён:
+- `/api/models/files` возвращает `name: "Qwen3-Instruct-2507-q4km.gguf"` (с .gguf)
+- `/api/models` возвращает `name: "Qwen3-Instruct-2507-q4km"` (без .gguf, если
+  грузили по имени через OpenAI API или balancer warmup)
+- `m.path` = undefined (не возвращается в /api/models/files), `lm.path` = full path
+  → `lm.path === m.path` всегда false
+
+**Fix** (`webui/js/modules/gguf-renderer.js:406`):
+1. Добавлен helper `stripGGUF(name)` — убирает `.gguf` (case-insensitive).
+2. Check теперь: exact match ИЛИ normalized match (strip .gguf с обеих сторон)
+   ИЛИ `lm.path` basename === `m.name`.
+3. Устойчиво к:
+   - разным форматам имён (с/без .gguf)
+   - missing path fields
+   - load через WebUI (filename) vs API (model name)
+
+### ✨ New features
+
+#### Dynamic / async model loading (Round 24)
+Решает проблему gemma-4 (5GB) и других больших моделей, чей load time
+(60-90s+) превышает default curl/OpenWebUI/Cline timeout (60-180s).
+
+**Что было**: `POST /api/models/load` блокировал HTTP worker на всё время
+`bridge.LoadModel` (CGo, не отменяется). Клиент рвал соединение →
+модель продолжала грузиться в фоне, но UI видел "failed".
+
+**Что стало**:
+- **Default async**: `POST /api/models/load` возвращает **HTTP 202 Accepted**
+  с `Location: /api/models/load/progress?model=<name>` за **<100ms**.
+- **Background goroutine** делает реальный load (CGo не отменяется,
+  но уже не привязан к r.Context()).
+- **Dynamic load time estimate** в response: `estimatedLoadTimeMs` —
+  compute из `sizeBytes / 100MB/s + ctxFactor + 2s overhead`. Для
+  gemma-4 (5GB, 32K ctx) = ~28-57s (реально 60-90s, conservative).
+- **Polling endpoint** `/api/models/load/progress?model=<name>` уже
+  существовал — теперь используется WebUI (`GgufLoadProgress`).
+- **Sync mode** `?wait=true&waitTimeoutSec=N` для legacy Ollama clients
+  (Cline, OpenWebUI, etc.) — блокирующий, max N сек, потом 202 anyway.
+
+**Balancer integration** (`internal/balancer/model_management.go:857`):
+- `executeLlamaCppLoad` детектит 202 + `status=loading` и автоматически
+  поллит `/api/models` пока `state="loaded"` (max wait = estimated * 1.5 + 10s).
+- `ensureModelLoadedOnBackend` deadline увеличен 5s → 5min (метрики
+  кэшируются с 1-2s задержкой; 5s давал false positive "still loading"
+  для больших моделей).
+
+**New files**:
+- `cmd/cppworker/handlers_model_async.go` — `parseLoadWaitParams`,
+  `estimateLoadTimeMs`, `writeLoadAccepted`, `writeLoadWaitTimeout`,
+  `runAsyncLoad`, `runAsyncReload`, `balancerRegNotifier` interface,
+  `derefIntPtr/derefBoolPtr` helpers.
+- `cmd/cppworker/handlers_model_async_test.go` — 18 unit tests
+  (parseLoadWaitParams, estimateLoadTimeMs с sparse files, writeLoadAccepted
+  с query escaping, writeLoadWaitTimeout, ProgressURLConsistency).
+
+**Modified files**:
+- `cmd/cppworker/handlers_model.go` — `handleLoadModel` и
+  `handleLoadWithParams` получили async path; `handleReloadModel`
+  получил async path (Bug #1).
+- `internal/balancer/model_management.go` — `executeLlamaCppLoad`
+  детектит 202 и поллит.
+- `internal/balancer/llamacpp_backend_helpers.go` —
+  `ensureModelLoadedOnBackend` deadline 5s → 5min.
+- `internal/balancer/load_timeout_test.go` — 4 новых теста
+  (`TestExecuteLlamaCppLoad_202*`).
+- `webui/js/modules/gguf-renderer.js` — `stripGGUF` helper +
+  устойчивый `isLoaded` check (Bug #2).
+
+**Verification** (live, bundled-full):
+- Qwen3-Instruct-2507-q4km (2.5GB) async load: **101ms response**,
+  background load completed in 99s, polled every 1.5s — UI не зависал.
+- estimatedLoadTimeMs=27815 (28s) для 2.5GB Qwen3 — разумная оценка.
+- End-to-end: unload → chat request → 202 detected → poll → response in 44s
+  (load+gen). Second request (model loaded): **2.1s**.
+
+### 📊 Test summary
+
+- cppworker: **18 new + 14 existing load tests PASS** (with `llama_stub` tag).
+- balancer: **4 new TestExecuteLlamaCppLoad_202* PASS** (36s total).
+- `gofmt -l` clean, `go build -tags llama_stub` clean для
+  `cmd/cppworker` и `internal/balancer`.
+
+### 🔧 Backward compat
+
+- Default async mode меняет HTTP status: `200 → 202` для load endpoint.
+  Existing clients (Cline, OpenWebUI) использующие polling готовы
+  (WebUI GgufLoadProgress уже умеет).
+- `?wait=true` параметр для legacy sync — 200 OK как раньше.
+- `state=loading` уже был в API для /api/models/load/progress — без изменений.
+- `state=loaded` приходит нормально, polling endpoint без изменений.
+
+### 🚧 Unaddressed (v0.5.12+)
+
+- **Bug #3**: Cline infinite tool instructions (Qwen3-Instruct-4B echoes
+  system prompt with long tool defs) — model behavior, не code fix;
+  нужен qwen3.5+ или prompt tuning.
+- **Bug #9**: Done flag before response — not reproduced, streaming
+  looks correct.
+
 ## [0.5.10 — 2026-08-04]
 
 PATCH-релиз. **Bug fixes: 5 из 9 из последнего bug-list + persistent ccache infrastructure**.

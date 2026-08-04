@@ -856,6 +856,56 @@ func (mm *ModelManager) executeLlamaCppLoad(host string, port int, backendID str
 
 		// Успех.
 		if resp.StatusCode >= 200 && resp.StatusCode < 300 {
+			// Round 24 (2026-08-04): detect 202 Accepted from cppworker.
+			// cppworker теперь по умолчанию возвращает 202 + Location сразу,
+			// реальная загрузка идёт в background goroutine. Без polling balancer
+			// считал бы модель загруженной, но инференс-вызов получил бы 503
+			// "model is loading". Поэтому при 202 — polling /api/models пока
+			// state не станет "loaded" или maxWait не истечёт.
+			//
+			//   - status=loading      → ещё грузится
+			//   - status=already_loaded → готово
+			//   - status=loaded       → готово (sync ?wait=true path)
+			if resp.StatusCode == http.StatusAccepted {
+				var loadResp struct {
+					Status              string `json:"status"`
+					EstimatedLoadTimeMs int64  `json:"estimatedLoadTimeMs"`
+				}
+				_ = json.Unmarshal(respBody, &loadResp)
+				if loadResp.Status == "loading" || loadResp.Status == "loading_after_timeout" {
+					// Use estimated load time as max wait, with sane bounds.
+					// Default min 30s (in case estimate is 0), max 5min.
+					maxWait := 5 * time.Minute
+					if loadResp.EstimatedLoadTimeMs > 0 {
+						// 1.5x estimated + 10s buffer
+						est := time.Duration(loadResp.EstimatedLoadTimeMs) * time.Millisecond
+						maxWait = est + est/2 + 10*time.Second
+						if maxWait < 30*time.Second {
+							maxWait = 30 * time.Second
+						}
+						if maxWait > 10*time.Minute {
+							maxWait = 10 * time.Minute
+						}
+					}
+					logger.Get().Infow("executeLlamaCppLoad: 202 Accepted (async load), polling for completion",
+						"backend", backendID, "model", req.ModelName,
+						"estimated_ms", loadResp.EstimatedLoadTimeMs, "max_wait", maxWait)
+					if pollResult := mm.pollLoadCompletionUntilLoaded(
+						host, port, backendID, req.ModelName, maxWait); pollResult != nil {
+						return pollResult
+					}
+					// Polling exhausted — return error so caller can retry.
+					return &ModelOpResult{
+						Success:   false,
+						Operation: req.Operation,
+						ModelName: req.ModelName,
+						BackendID: backendID,
+						Error: fmt.Sprintf("async load (202) on cppworker: model not ready after %v",
+							maxWait),
+					}
+				}
+				// status=already_loaded / loaded / loaded_by_other / unknown → fall through to success.
+			}
 			return &ModelOpResult{
 				Success:   true,
 				Operation: req.Operation,

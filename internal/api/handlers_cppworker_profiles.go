@@ -337,9 +337,13 @@ func (s *Server) applyModelProfile(w http.ResponseWriter, r *http.Request, model
 	busyBackends := make([]string, 0)
 	for _, backend := range s.proxy.GetAllBackends() {
 		if backend.Type != types.BackendTypeLlamaCpp {
+			log.Debugw("applyModelProfile: skipping non-llama_cpp backend",
+				"backend", backend.ID, "type", backend.Type)
 			continue
 		}
 		if !s.proxy.IsLlamaCppModelLoaded(backend.ID, modelName) {
+			log.Debugw("applyModelProfile: backend doesn't have model loaded",
+				"backend", backend.ID, "model", modelName)
 			continue
 		}
 		count, err := s.GetActiveQueriesForModel(backend.ID, modelName)
@@ -347,10 +351,12 @@ func (s *Server) applyModelProfile(w http.ResponseWriter, r *http.Request, model
 			// soft-fail: если cppworker недоступен для busy check,
 			// делаем sync apply (старое поведение — может зависнуть,
 			// но юзер увидит это по таймауту браузера)
-			log.Debugw("applyModelProfile: active-queries check failed, falling back to sync",
+			log.Warnw("applyModelProfile: active-queries check failed, falling back to sync",
 				"backend", backend.ID, "model", modelName, "error", err)
 			continue
 		}
+		log.Infow("applyModelProfile: busy check result",
+			"backend", backend.ID, "model", modelName, "active", count)
 		if count > 0 {
 			busyBackends = append(busyBackends, backend.ID)
 			log.Infow("applyModelProfile: backend busy, will use async path",

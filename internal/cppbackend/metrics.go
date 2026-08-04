@@ -2,6 +2,7 @@
 package cppbackend
 
 import (
+	"sort"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -52,13 +53,23 @@ type Metrics struct {
 
 // ModelMetrics — метрики по конкретной модели
 type ModelMetrics struct {
-	Name           string        `json:"name"`
-	Requests       atomic.Int64  `json:"requests"`
-	Tokens         atomic.Int64  `json:"tokens"`
-	Errors         atomic.Int64  `json:"errors"`
-	TotalDuration  atomic.Int64  `json:"totalDurationMs"`
-	FirstLoadedAt  time.Time     `json:"firstLoadedAt"`
-	LastUsedAt     atomic.Value  `json:"-"` // time.Time
+	Name          string       `json:"name"`
+	Requests      atomic.Int64 `json:"requests"`
+	Tokens        atomic.Int64 `json:"tokens"`
+	Errors        atomic.Int64 `json:"errors"`
+	TotalDuration atomic.Int64 `json:"totalDurationMs"`
+	FirstLoadedAt time.Time    `json:"firstLoadedAt"`
+	LastUsedAt    atomic.Value `json:"-"` // time.Time
+
+	// Round 18 P1.4 (2026-08-04): per-model ring buffer последних 256 duration_ms.
+	// Нужен для p50/p95/p99 latency percentiles (нужно в /api/infer/metrics).
+	// Сэмплов сортируются под lock при ComputePercentiles — O(N log N) на сэмпл
+	// обычно < 1ms (256 элементов). Если N=256 не хватит для p99 precision —
+	// увеличить (constant). Сейчас размер — константа для lock-free инициализации.
+	sampleMu     sync.Mutex
+	durations   [256]int64 // ms
+	durationsIdx int      // next write position
+	durationsLen int      // valid count (0..256)
 }
 
 // NewMetrics создаёт новый Metrics
@@ -86,6 +97,12 @@ func (m *Metrics) RecordRequest(modelName string, tokens int, duration time.Dura
 		modelMetrics.Errors.Add(1)
 	}
 	modelMetrics.LastUsedAt.Store(time.Now())
+
+	// Round 18 P1.4: ring buffer для percentiles. 0-duration (errors) — пропускаем,
+	// чтобы не skew p50/p95 вниз (иначе 0 latency у 50% запросов).
+	if duration > 0 {
+		modelMetrics.recordDuration(duration.Milliseconds())
+	}
 
 	// Rolling window длительности
 	m.mu.Lock()
@@ -152,6 +169,109 @@ func (m *Metrics) GetModelMetricsList() []*ModelMetrics {
 		return true
 	})
 	return result
+}
+
+// recordDuration добавляет sample в per-model ring buffer (Round 18 P1.4).
+//
+// Семантика: ring buffer последних 256 samples. Lock-free write per slot.
+// Сортировка при ComputePercentiles. Сэмплы с duration=0 не пишутся
+// (вызывающий код RecordRequest уже фильтрует).
+func (mm *ModelMetrics) recordDuration(ms int64) {
+	mm.sampleMu.Lock()
+	mm.durations[mm.durationsIdx] = ms
+	mm.durationsIdx = (mm.durationsIdx + 1) % len(mm.durations)
+	if mm.durationsLen < len(mm.durations) {
+		mm.durationsLen++
+	}
+	mm.sampleMu.Unlock()
+}
+
+// Percentiles возвращает p50/p95/p99 latency (ms) и размер выборки.
+//
+// Round 18 P1.4. Используется в /api/infer/metrics.
+//
+// Семантика:
+//   - p50/p95/p99 = nearest-rank method (sorted[len * p / 100])
+//   - Возвращает 0 для всех если сэмплов < 1
+//   - count = текущее количество сэмплов (0..256)
+//   - Sorted snapshot под lock — O(N log N), N <= 256 обычно < 1ms
+func (mm *ModelMetrics) Percentiles() (p50, p95, p99 int64, count int) {
+	mm.sampleMu.Lock()
+	if mm.durationsLen == 0 {
+		mm.sampleMu.Unlock()
+		return 0, 0, 0, 0
+	}
+	// Copy под lock (чтобы не держать lock во время sort).
+	sorted := make([]int64, mm.durationsLen)
+	copy(sorted, mm.durations[:mm.durationsLen])
+	mm.sampleMu.Unlock()
+
+	sort.Slice(sorted, func(i, j int) bool { return sorted[i] < sorted[j] })
+
+	p50 = sorted[len(sorted)*50/100]
+	p95 = sorted[len(sorted)*95/100]
+	p99 = sorted[len(sorted)*99/100]
+	return p50, p95, p99, len(sorted)
+}
+
+// GetModelMetricsSnapshot — Round 18 P1.4. JSON-ready per-model stats для
+// /api/infer/metrics endpoint.
+//
+// Returns map[modelName] → ModelMetricsSnapshotJSON. nil-safe.
+func (m *Metrics) GetModelMetricsSnapshot() map[string]ModelMetricsSnapshotJSON {
+	if m == nil {
+		return map[string]ModelMetricsSnapshotJSON{}
+	}
+	out := make(map[string]ModelMetricsSnapshotJSON)
+	m.ModelRequests.Range(func(key, value interface{}) bool {
+		name := key.(string)
+		mm := value.(*ModelMetrics)
+		requests := mm.Requests.Load()
+		errors := mm.Errors.Load()
+		var errorRate float64
+		if requests > 0 {
+			errorRate = float64(errors) / float64(requests)
+		}
+		var avgMs int64
+		if requests > 0 {
+			avgMs = mm.TotalDuration.Load() / requests
+		}
+		p50, p95, p99, _ := mm.Percentiles()
+		var lastUsedAt string
+		if v := mm.LastUsedAt.Load(); v != nil {
+			if t, ok := v.(time.Time); ok {
+				lastUsedAt = t.Format(time.RFC3339Nano)
+			}
+		}
+		out[name] = ModelMetricsSnapshotJSON{
+			Name:        name,
+			Requests:    requests,
+			Errors:      errors,
+			ErrorRate:   errorRate,
+			Tokens:      mm.Tokens.Load(),
+			AvgMs:       avgMs,
+			P50Ms:       p50,
+			P95Ms:       p95,
+			P99Ms:       p99,
+			LastUsedAt:  lastUsedAt,
+		}
+		return true
+	})
+	return out
+}
+
+// ModelMetricsSnapshotJSON — Round 18 P1.4. JSON shape для /api/infer/metrics.
+type ModelMetricsSnapshotJSON struct {
+	Name       string  `json:"name"`
+	Requests   int64   `json:"requests"`
+	Errors     int64   `json:"errors"`
+	ErrorRate  float64 `json:"error_rate"`
+	Tokens     int64   `json:"tokens"`
+	AvgMs      int64   `json:"avg_ms"`
+	P50Ms      int64   `json:"p50_ms"`
+	P95Ms      int64   `json:"p95_ms"`
+	P99Ms      int64   `json:"p99_ms"`
+	LastUsedAt string  `json:"last_used_at,omitempty"`
 }
 
 // GetMetricsSnapshot возвращает снимок метрик

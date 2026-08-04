@@ -5,6 +5,47 @@
 Формат ведётся в соответствии с [Keep a Changelog](https://keepachangelog.com/ru/1.0.0/),
 и этот проект придерживается [Semantic Versioning](https://semver.org/lang/ru/).
 
+## [0.5.7 — 2026-08-04]
+
+PATCH-релиз. **Round 18 P1.4 — per-model metrics with latency percentiles**.
+
+Закрывает запрос на admin-мониторинг per-model latency. До этого была только
+глобальная avg duration (rolling window 1000 samples), без per-model stats
+и без percentiles. Теперь — полная картина: requests/errors/tokens/p50/p95/p99
+**для каждой модели отдельно**.
+
+### 🟢 Round 18 P1.4 — Per-model metrics
+
+**Архитектура:**
+- `Metrics.ModelMetrics` расширен: per-model ring buffer последних 256 durations (ms).
+- `Metrics.GetModelMetricsSnapshot()` — JSON-ready per-model stats.
+- `ModelMetrics.Percentiles()` — nearest-rank p50/p95/p99 (O(N log N), N≤256).
+- 0-duration (errors) НЕ пишутся в ring buffer (иначе p50 бы скакал вниз).
+- Thread-safe: sampleMu защищает ring buffer; atomic.Int64 для счётчиков.
+
+**API:**
+- `GET /api/infer/metrics` → per-model + totals
+- `X-API-Token` обязателен
+- Response: `{"uptime_seconds", "totals": {...}, "models": {model_name: {...}}}`
+
+**Use case:** WebUI admin dashboard, alert pipelines (P99 > 5s → page on-call),
+debugging per-model perf regressions.
+
+**Out of scope (Round 22 deferred):** Prometheus `/metrics` exposure (text format,
+counters/gauges/histograms). Этот endpoint — JSON only.
+
+### 📁 Файлы (5)
+
+- **new** `cmd/cppworker/handlers_metrics.go` — `handleInferMetrics`
+- **new** `internal/cppbackend/metrics_test.go` — 10 unit tests (ring buffer, percentiles, concurrent, error_rate, multiple models, lock no-leak)
+- `internal/cppbackend/metrics.go` — `recordDuration`, `Percentiles`, `GetModelMetricsSnapshot`, `ModelMetricsSnapshotJSON`
+- `cmd/cppworker/router.go` — `/api/infer/metrics` route
+- `CHANGELOG.md` — v0.5.7 entry
+
+### ⚠️ Breaking changes
+
+None. Полностью backward-compatible (новый endpoint, не меняет существующее).
+
 ## [0.5.6 — 2026-08-04]
 
 PATCH-релиз. **Round 18 P0.3 — per-user parallel limit (`MaxParallelPerUser`)**.

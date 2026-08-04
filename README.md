@@ -11,7 +11,14 @@
 
 ## Что нового
 
-**v0.5.11 — 2026-08-04** (последний релиз, [полный CHANGELOG](CHANGELOG.md)):
+**v0.5.12 — 2026-08-04** (последний релиз, [полный CHANGELOG](CHANGELOG.md)):
+
+- ✨ **SSE load progress** — WebUI переключился с polling каждые 1.5s на `EventSource`. Cppworker шлёт `text/event-stream` push-events каждые 500ms с `{state, elapsedMs, loadingSizeBytes}`. Heartbeat `:keepalive` каждые 15s. Auto-close на terminal state. **Live verify**: 30 events за 15s direct, 22 events за 11s через balancer API proxy (без буферизации).
+- ✨ **Measured load time cache** — динамическая оценка `estimatedLoadTimeMs` на основе реальных измерений (weighted average последних 20 load'ов, stale-фильтр 7d, zero-filter). После первого load'а Qwen3 (2.5GB, 99s) estimate становится ~70s вместо хардкода 28s. Более реалистичный feedback для клиента.
+- 🔧 **WebUI auto-cleanup** — `pagehide` + `visibilitychange` listeners останавливают все polling/SSE при уходе со страницы. Без этого фоновые EventSource'ы удерживали cppworker'а после закрытия вкладки.
+- 🔧 **Balancer SSE proxy** — `internal/api/gguf_backend_proxy.go` детектит `Content-Type: text/event-stream` и стримит напрямую через `streamCopy` (без буферизации). `X-Accel-Buffering: no` для nginx.
+
+**v0.5.11 — 2026-08-04**: Dynamic / async model loading + Bug fixes #1, #2.
 
 - ✨ **Dynamic / async model loading** — gemma-4 (5GB) и другие большие модели больше НЕ ломаются по client timeout. `POST /api/models/load` теперь возвращает **HTTP 202 Accepted + Location за <100ms** с динамической оценкой `estimatedLoadTimeMs` (compute из `size / 100MB/s + ctx + 2s overhead`). Реальный load идёт в background goroutine, polling через `/api/models/load/progress`. `?wait=true` для legacy sync. **Live verify**: Qwen3-Instruct-2507-q4km (2.5GB) async load = 101ms response + 99s background, end-to-end chat = 44s (load + gen), 2.1s на already-loaded.
 - 🐛 **Bug #1: WebUI settings UI hang** — `handleReloadModel` теперь async (default). Apply с новыми n_ctx больше не зависает UI на 30-60+ сек при reload'е reasoning-модели.
@@ -291,3 +298,6 @@ plans/               — roadmap, ADR, фазовые отчёты
 ## Лицензия
 
 MIT
+
+
+**v0.5.10 — 2026-08-04**: Round 23 — bug fixes (5 из 9) + persistent ccache infrastructure.

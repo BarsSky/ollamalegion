@@ -96,10 +96,17 @@ func parseLoadWaitParams(r *http.Request) (wait bool, waitTimeoutMs int) {
 // estimateLoadTimeMs вычисляет примерное время загрузки модели в миллисекундах
 // на основе размера файла и размера контекста.
 //
+// Round 25 (2026-08-04): использует Backend.EstimatedBytesPerSec (измеренная
+// скорость на основе последних N=20 load'ов) если доступна, иначе fallback
+// на хардкод 100 MB/s. Для gemma-4 (5GB) реальная скорость ~55-83 MB/s
+// (60-90s load), а 100 MB/s хардкод занижает оценку → клиент думает "скоро"
+// → timeout. Measured cache даёт реалистичную оценку.
+//
 // Возвращает 0 если файл недоступен (например, hf: downloader ещё не скачал).
 // В этом случае клиент должен поллить progress и не полагаться на оценку.
 //
 // Формула: max(loadBaseMinMs, size/speed + ctx/4K*initMs + overhead*1000)
+// где speed = backend.EstimatedBytesPerSec() ?? 100MB/s (если нет данных).
 func estimateLoadTimeMs(modelPath string, ctxSize int) int64 {
 	if modelPath == "" {
 		return 0
@@ -115,8 +122,20 @@ func estimateLoadTimeMs(modelPath string, ctxSize int) int64 {
 		return 0
 	}
 
-	// Base: disk read time at conservative 100 MB/s.
-	baseMs := int64(float64(sizeBytes) / float64(loadSpeedBytesPerSec) * 1000.0)
+	// Round 25: используем measured speed если есть история.
+	// Хардкод 100MB/s — fallback для первого load'а (когда история пуста).
+	speedBytesPerSec := int64(loadSpeedBytesPerSec)
+	if backend != nil {
+		if measured := backend.EstimatedBytesPerSec(); measured > 0 {
+			speedBytesPerSec = measured
+			logger.Get().Debugw("estimateLoadTimeMs: using measured speed",
+				"measured_bps", measured,
+				"hardcoded_bps", loadSpeedBytesPerSec)
+		}
+	}
+
+	// Base: disk read time at speed (measured или hardcoded).
+	baseMs := int64(float64(sizeBytes) / float64(speedBytesPerSec) * 1000.0)
 
 	// Ctx factor: KV-cache initialization for contextSize tokens.
 	ctxMs := int64(0)
@@ -250,15 +269,15 @@ func runAsyncLoad(modelName, modelPath string, opts cppbackend.LoadModelOpts,
 // currentModelInfo — локальный snapshot типа *cppbackend.ModelInfo, чтобы
 // runAsyncReload мог знать старые параметры для rollback при ошибке.
 type currentModelInfo struct {
-	Name             string
-	Path             string
-	GPULayers        int
-	BatchSize        int
-	FlashAttnType    int
-	NUMA             bool
-	UseMmap          bool
-	TensorSplit      []float32
-	ContextSize      int
+	Name          string
+	Path          string
+	GPULayers     int
+	BatchSize     int
+	FlashAttnType int
+	NUMA          bool
+	UseMmap       bool
+	TensorSplit   []float32
+	ContextSize   int
 }
 
 // runAsyncReload — фоновая перезагрузка модели (unload + load) с новыми

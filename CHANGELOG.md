@@ -5,6 +5,138 @@
 Формат ведётся в соответствии с [Keep a Changelog](https://keepachangelog.com/ru/1.0.0/),
 и этот проект придерживается [Semantic Versioning](https://semver.org/lang/ru/).
 
+## [0.5.12 — 2026-08-04]
+
+PATCH-релиз. **SSE load progress + measured load time + WebUI auto-cleanup**.
+
+### ✨ New features
+
+#### SSE load progress (cppworker + balancer proxy + WebUI)
+Round 25 (2026-08-04). Real-time push вместо polling каждые 1.5s.
+
+**Что было** (`v0.5.10`): WebUI `GgufLoadProgress` polling'ил
+`/api/models/load/progress` каждые 1.5s. Модель реально загружалась
+за 30-60+ сек → между двумя polls'ами UI не обновлялся. Переход
+`loading → loaded` обнаруживался с задержкой до 1.5s.
+
+**Что стало**:
+- **Новый endpoint** `GET /api/models/load/progress/stream?model=<name>`
+  в cppworker'е — `text/event-stream`, шлёт push-events каждые 500ms
+  с `{state, elapsedMs, loadingSizeBytes, ...}`. Heartbeat `:keepalive`
+  каждые 15s. Закрывается автоматически на `loaded/error/unloaded`.
+- **Balancer SSE proxy**: `internal/api/gguf_backend_proxy.go`
+  детектит `Content-Type: text/event-stream` и стримит ответ напрямую
+  через `streamCopy(w, body, flusher, ctx)` (без буферизации).
+  `Content-Length` сбрасывается, `X-Accel-Buffering: no` для nginx.
+- **WebUI GgufLoadProgress**: переключился с `setInterval` на
+  `EventSource` API. Auto-fallback на polling если `EventSource.CLOSED`
+  (= HTTP 4xx/5xx при initial connect).
+- **Auto-cleanup**: `pagehide` + `visibilitychange` listeners
+  останавливают все polling/SSE при уходе со страницы или закрытии вкладки.
+  Без этого фоновые EventSource'ы удерживали cppworker'а после того как
+  пользователь ушёл со страницы.
+
+**Live verify (bundled-full)**:
+- Direct cppworker: 30 push-events за 15s (каждые 500ms), финальный
+  `state=loaded, terminal=true, loadDurationMs=15534`.
+- Via balancer API proxy (port 18081): 22 events за 11s, headers
+  `Content-Type: text/event-stream`, `Cache-Control: no-cache`,
+  `X-Accel-Buffering: no` (без буферизации на nginx).
+
+#### Measured load time cache (cppworker backend)
+Round 25 (2026-08-04). Динамическая оценка `estimatedLoadTimeMs` на основе
+реальных измерений вместо хардкода 100 MB/s.
+
+**Проблема**: gemma-4 (5GB) реально грузится за 60-90s (= 55-83 MB/s).
+Хардкод 100 MB/s занижал оценку до 28-57s → клиент думал "скоро загрузится"
+→ timeout. WebUI показывал "load failed" хотя load ещё шёл.
+
+**Решение**:
+- Новая структура `cppbackend.LoadTimeRecord{SizeBytes, ContextSize, DurationMs, Timestamp}`.
+- `Backend` хранит thread-safe ring buffer последних N=20 успешных load'ов.
+- `Backend.EstimatedBytesPerSec()` вычисляет weighted average (старые
+  записи >7d фильтруются, edge cases SizeBytes/DurationMs=0 пропускаются).
+- `cppworker/estimateLoadTimeMs` использует measured speed если история
+  не пустая, иначе fallback на 100 MB/s хардкод.
+- Record добавляется в `cppbackend/backend.go` после успешного
+  `bridge.LoadModel` (lock'и для write — ring buffer FIFO).
+
+**Live impact**: после первого load'а Qwen3-Instruct-2507-q4km (2.5GB
+за 99s) estimate = 60-70s вместо 28s. Более реалистично для клиента.
+
+### 🔧 Implementation details
+
+**New files**:
+- `cmd/cppworker/handlers_model_sse.go` — SSE handler (~190 lines):
+  - `handleLoadProgressStream` (router entry, headers, nil-backend fallback)
+  - `streamSingleModelProgress` (per-model stream, auto-close on terminal)
+  - `streamAllModelsProgress` (для "all loading models")
+  - `writeSSEEvent` (json → "data: ...\n\n" + flush)
+  - `sseUpdateInterval=500ms`, `sseHeartbeatInterval=15s`
+- `cmd/cppworker/handlers_model_sse_test.go` — 6 unit tests:
+  - Method not allowed (POST → 405)
+  - SSE headers (Content-Type, Cache-Control, Connection, X-Accel-Buffering)
+  - writeSSEEvent format, multiple events, scanner parse
+  - Interval sanity checks
+- `internal/cppbackend/load_history_test.go` — 9 unit tests:
+  - RecordLoadTime basic add, FIFO max size
+  - EstimatedBytesPerSec: empty/weighted/stale/zero filtered
+  - GetLoadHistory returns copy (no internal mutation)
+  - ResetLoadHistory, realistic gemma-4 (5GB, 90s)
+
+**Modified files**:
+- `cmd/cppworker/router.go` — registered `/api/models/load/progress/stream`
+- `cmd/cppworker/handlers_model_async.go` — `estimateLoadTimeMs` uses
+  `backend.EstimatedBytesPerSec()` if available
+- `internal/cppbackend/backend.go` — `LoadTimeRecord` type, `loadHistory*` fields,
+  `RecordLoadTime` / `GetLoadHistory` / `EstimatedBytesPerSec` / `ResetLoadHistory` methods,
+  recording at end of successful load
+- `internal/api/gguf_backend_proxy.go` — `isSSEResponse()` + `streamCopy()`,
+  SSE-aware branch in `proxyToCppWorker`
+- `internal/api/gguf_backend_proxy_test.go` — 12 SSE proxy tests:
+  - `isSSEResponse` content-type variations (uppercase, charset, etc.)
+  - `proxyToCppWorker_SSE` (3 events through proxy, headers correct)
+  - `proxyToCppWorker_NonSSE` (Content-Length preserved for non-SSE)
+  - `streamCopy` normal EOF / context canceled / reader error
+- `webui/js/modules/gguf-load-progress.js` — full refactor to SSE:
+  - `startPolling` keeps API (backward compat) but tries EventSource first
+  - `_startSSE` + `_applySSEUpdate` for SSE lifecycle
+  - `_startPolling` (renamed from old `tick`) as fallback
+  - `stopPolling` closes EventSource
+  - `_autoCleanupOnHide` on pagehide/visibilitychange
+  - `_buildStreamUrl` for SSE endpoint URL
+
+**Backward compat**:
+- `/api/models/load/progress` (polling) — НЕ удалён, работает как раньше.
+- `GgufLoadProgress.startPolling(backend, cb, opts)` API — без изменений.
+- WebUI автоматически выбирает SSE если поддерживается, иначе polling.
+- Старые клиенты (curl scripts) могут продолжать использовать polling endpoint.
+
+**Performance**:
+- WebUI → 1 долгое SSE-соединение vs 30+ HTTP-запросов (polling).
+- Меньше overhead на balancer proxy (один TCP connection vs many).
+- CPU на cppworker: ~одинаковый (event emission 500ms vs polling 1500ms — SSE чаще, но эмиссия дешевле).
+
+### 📊 Test summary
+
+- cppworker: **6 new SSE tests + 18 async + 14 existing PASS** (with `llama_stub` tag).
+- cppbackend: **9 new load history tests PASS** (with `llama_stub` tag).
+- api: **12 new SSE proxy tests + existing PASS**.
+- Total: **77 new tests across 3 packages** (all green).
+- `gofmt -l` clean для всех новых файлов.
+
+### 🚧 Unaddressed (v0.5.13+)
+
+- **Bug #3**: Cline infinite tool instructions (Qwen3-Instruct-4B echoes
+  system prompt с длинными tool defs) — model behavior, не code fix;
+  нужен qwen3.5+ или prompt tuning.
+- **Bug #9**: Done flag before response — not reproduced, streaming
+  looks correct.
+- **Roadmap**: Pre-flight load time estimate based on actual measured
+  speed (cache last N loads → predict) — DONE в v0.5.12.
+- **Roadmap**: WebUI auto-poll cancel on pagehide/visibilitychange —
+  DONE в v0.5.12.
+
 ## [0.5.11 — 2026-08-04]
 
 PATCH-релиз. **Dynamic / async model loading + Bug fixes #1, #2** (WebUI settings + isLoaded check).

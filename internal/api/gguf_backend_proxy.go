@@ -217,6 +217,24 @@ func (s *Server) proxyToCppWorker(w http.ResponseWriter, r *http.Request, backen
 	}
 	w.Header().Set("X-Proxied-From-CppWorker", fmt.Sprintf("%s:%d", host, port))
 
+	// Round 25: SSE / streaming responses (Content-Type: text/event-stream)
+	// должны стримиться напрямую, без буферизации. Иначе EventSource
+	// на клиенте не получит push-обновления (получит только финальный
+	// chunk после закрытия upstream-соединения, что для SSE бесполезно).
+	// Дополнительно сбрасываем Content-Length (т.к. длина неизвестна заранее)
+	// и X-Accel-Buffering=no для nginx (запрет буферизации на proxy).
+	if isSSEResponse(resp.Header) {
+		w.Header().Set("Content-Length", "")
+		w.Header().Set("X-Accel-Buffering", "no")
+		w.WriteHeader(resp.StatusCode)
+		flusher, _ := w.(http.Flusher)
+		if err := streamCopy(w, resp.Body, flusher, r.Context()); err != nil {
+			log.Debugw("cppworker proxy: SSE stream ended",
+				"backend", backendID, "path", path, "error", err.Error())
+		}
+		return
+	}
+
 	// Читаем тело ответа в буфер — нужно для возможной подмены ответа
 	// (страховка от старого CppWorker, который возвращает 500 «already in progress»).
 	respBody, readErr := io.ReadAll(resp.Body)
@@ -272,7 +290,7 @@ func isDuplicateDownloadResponse(r *http.Request, path string, statusCode int, b
 // интерпретирует как нормальный успех и переключается на вкладку Downloads.
 func writeDuplicateDownloadJSON(w http.ResponseWriter) {
 	progress := map[string]interface{}{
-		"status":     "downloading",
+		"status":      "downloading",
 		"progressPct": 0.0,
 	}
 	resp := map[string]interface{}{
@@ -300,6 +318,56 @@ func copyProxyHeaders(dst, src http.Header) {
 		}
 		for _, v := range values {
 			dst.Add(key, v)
+		}
+	}
+}
+
+// isSSEResponse — true если upstream отвечает Server-Sent Events stream.
+// Round 25: WebUI подписывается на /api/models/load/progress/stream чтобы
+// получать real-time push-обновления (а не polling каждые 1.5s). Proxy
+// должен стримить ответ, не буферизировать — иначе EventSource получает
+// только финальный chunk после закрытия upstream-соединения.
+//
+// Детектим по Content-Type: text/event-stream (стандарт SSE).
+func isSSEResponse(h http.Header) bool {
+	ct := h.Get("Content-Type")
+	return strings.HasPrefix(strings.ToLower(strings.TrimSpace(ct)), "text/event-stream")
+}
+
+// streamCopy копирует body в w с периодическим Flush (для SSE).
+// Использует 4KB буфер и flush после каждой записи —
+// баланс между latency (быстро видим chunks) и syscall overhead.
+//
+// Возвращает:
+//   - nil если стрим завершился нормально (EOF на body или ctx.Done()).
+//   - ctx.Err() если клиент отвалился (r.Context().Done()).
+//   - другую ошибку io при network failure.
+func streamCopy(w http.ResponseWriter, body io.Reader, flusher http.Flusher, ctx context.Context) error {
+	if flusher == nil {
+		// Fallback: copy без flush (SSE работать не будет, но не упадём).
+		_, err := io.Copy(w, body)
+		return err
+	}
+	buf := make([]byte, 4096)
+	for {
+		// Проверяем client disconnect (нажал Stop, закрыл вкладку, network blip).
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		default:
+		}
+		n, readErr := body.Read(buf)
+		if n > 0 {
+			if _, writeErr := w.Write(buf[:n]); writeErr != nil {
+				return writeErr
+			}
+			flusher.Flush() // SSE: push chunk to client immediately
+		}
+		if readErr != nil {
+			if readErr == io.EOF {
+				return nil
+			}
+			return readErr
 		}
 	}
 }

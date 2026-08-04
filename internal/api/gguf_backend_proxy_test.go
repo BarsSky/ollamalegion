@@ -1,7 +1,9 @@
 package api
 
 import (
+	"bufio"
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -103,11 +105,11 @@ func newMockCppWorker() *mockCppWorker {
 		_ = json.NewEncoder(w).Encode(map[string]interface{}{
 			"status": "started",
 			"progress": map[string]interface{}{
-				"modelId":    req["modelId"],
-				"filename":   req["filename"],
-				"percent":    0,
-				"status":     "starting",
-				"startedAt":  time.Now().UTC().Format(time.RFC3339),
+				"modelId":   req["modelId"],
+				"filename":  req["filename"],
+				"percent":   0,
+				"status":    "starting",
+				"startedAt": time.Now().UTC().Format(time.RFC3339),
 			},
 		})
 	})
@@ -649,3 +651,159 @@ func TestGgufBackendProxy_500_other_error_passthrough(t *testing.T) {
 
 	assert.Equal(t, http.StatusInternalServerError, resp.StatusCode, "other 500 errors should not be rewritten")
 }
+
+// ============================================================
+// Round 25 (2026-08-04): SSE proxy tests
+// ============================================================
+
+// TestIsSSEResponse — sanity check детектора SSE-стрима.
+func TestIsSSEResponse(t *testing.T) {
+	cases := []struct {
+		name string
+		ct   string
+		want bool
+	}{
+		{"text/event-stream", "text/event-stream", true},
+		{"text/event-stream; charset=utf-8", "text/event-stream; charset=utf-8", true},
+		{"uppercase", "TEXT/EVENT-STREAM", true},
+		{"mixed case", "Text/Event-Stream", true},
+		{"application/json", "application/json", false},
+		{"text/plain", "text/plain", false},
+		{"empty", "", false},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			h := http.Header{}
+			if c.ct != "" {
+				h.Set("Content-Type", c.ct)
+			}
+			if got := isSSEResponse(h); got != c.want {
+				t.Errorf("isSSEResponse(Content-Type=%q) = %v, want %v", c.ct, got, c.want)
+			}
+		})
+	}
+}
+
+// TestProxyToCppWorker_SSE — proxy прозрачно стримит SSE-ответ.
+func TestProxyToCppWorker_SSE(t *testing.T) {
+	var upstreamFlushed int
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.Header().Set("Cache-Control", "no-cache")
+		w.WriteHeader(http.StatusOK)
+		flusher, _ := w.(http.Flusher)
+		// 3 SSE events.
+		for i := 0; i < 3; i++ {
+			fmt.Fprintf(w, "data: {\"event\":%d}\n\n", i)
+			flusher.Flush()
+			upstreamFlushed++
+		}
+	}))
+	defer upstream.Close()
+
+	server, _ := createProxyTestServer(t, upstream.URL)
+	defer server.Close()
+
+	// Клиент читает SSE stream.
+	req, _ := http.NewRequest("GET",
+		server.URL+"/api/v1/gguf/backends/llama_mock/proxy/api/test/stream", nil)
+	resp, err := http.DefaultClient.Do(req)
+	require.NoError(t, err)
+	defer resp.Body.Close()
+
+	assert.Equal(t, http.StatusOK, resp.StatusCode)
+	assert.Equal(t, "text/event-stream", resp.Header.Get("Content-Type"))
+	// Proxy должен был сбросить Content-Length (неизвестен заранее для стрима).
+	assert.Equal(t, "", resp.Header.Get("Content-Length"),
+		"Content-Length should be empty for SSE (chunked transfer encoding)")
+	// nginx не должен буферизировать.
+	assert.Equal(t, "no", resp.Header.Get("X-Accel-Buffering"))
+
+	// Читаем body и проверяем, что все 3 event'а пришли.
+	scanner := bufio.NewScanner(resp.Body)
+	events := 0
+	for scanner.Scan() {
+		if strings.HasPrefix(scanner.Text(), "data: ") {
+			events++
+		}
+	}
+	assert.GreaterOrEqual(t, events, 3, "expected at least 3 SSE events")
+	assert.GreaterOrEqual(t, upstreamFlushed, 3, "upstream should have flushed 3 times")
+}
+
+// TestProxyToCppWorker_NonSSE — обычный JSON-ответ буферизируется (старое поведение).
+func TestProxyToCppWorker_NonSSE(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"status":"ok","count":42}`))
+	}))
+	defer upstream.Close()
+
+	server, _ := createProxyTestServer(t, upstream.URL)
+	defer server.Close()
+
+	resp, err := http.Get(server.URL + "/api/v1/gguf/backends/llama_mock/proxy/api/test")
+	require.NoError(t, err)
+	defer resp.Body.Close()
+
+	assert.Equal(t, http.StatusOK, resp.StatusCode)
+	assert.Equal(t, "application/json", resp.Header.Get("Content-Type"))
+	// Для НЕ-SSE Content-Length сохраняется (proxy буферизирует).
+	cl := resp.Header.Get("Content-Length")
+	assert.NotEqual(t, "", cl, "non-SSE response should keep Content-Length")
+
+	body, _ := io.ReadAll(resp.Body)
+	assert.Contains(t, string(body), `"status":"ok"`)
+}
+
+// TestStreamCopy_NormalEOF — streamCopy возвращает nil на нормальный EOF.
+func TestStreamCopy_NormalEOF(t *testing.T) {
+	body := strings.NewReader("data: hello\n\ndata: world\n\n")
+	w := httptest.NewRecorder()
+	var flusher http.Flusher
+	if f, ok := any(w).(http.Flusher); ok {
+		flusher = f
+	}
+	err := streamCopy(w, body, flusher, context.Background())
+	assert.NoError(t, err)
+	assert.Contains(t, w.Body.String(), "data: hello")
+	assert.Contains(t, w.Body.String(), "data: world")
+}
+
+// TestStreamCopy_ContextCanceled — streamCopy возвращает ctx.Err() на client disconnect.
+func TestStreamCopy_ContextCanceled(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel() // отменяем сразу
+	body := strings.NewReader("data: should\n\ndata: not\n\ndata: be\n\ndata: delivered\n\n")
+	w := httptest.NewRecorder()
+	var flusher http.Flusher
+	if f, ok := any(w).(http.Flusher); ok {
+		flusher = f
+	}
+	err := streamCopy(w, body, flusher, ctx)
+	// Должен либо err == context.Canceled, либо err == nil (если успел прочитать всё).
+	// Главное: не паника и не висит вечно.
+	if err != nil {
+		assert.Contains(t, err.Error(), "context canceled")
+	}
+}
+
+// TestStreamCopy_ReaderError — streamCopy возвращает io error при network failure.
+func TestStreamCopy_ReaderError(t *testing.T) {
+	body := &errReader{err: io.ErrUnexpectedEOF}
+	w := httptest.NewRecorder()
+	var flusher http.Flusher
+	if f, ok := any(w).(http.Flusher); ok {
+		flusher = f
+	}
+	err := streamCopy(w, body, flusher, context.Background())
+	assert.Error(t, err)
+}
+
+// --- helpers ---
+
+// errReader — всегда возвращает ошибку.
+type errReader struct{ err error }
+
+func (e *errReader) Read(p []byte) (int, error) { return 0, e.err }

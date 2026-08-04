@@ -24,6 +24,7 @@ func setupRouter() http.Handler {
 	mux.HandleFunc("/api/models/load-with-params", handleLoadWithParams) // ??????????? ????????? (Session 4 P-1)
 	mux.HandleFunc("/load", handleLoadModel)                        // alias for balancer warmup
 	mux.HandleFunc("/api/models/load/progress", handleLoadProgress) // loading state polling
+	mux.HandleFunc("/api/models/load/progress/stream", handleLoadProgressStream) // Round 25: SSE stream
 	mux.HandleFunc("/api/models/unload", handleUnloadModel)
 	mux.HandleFunc("/api/models/reload", authMiddleware(handleReloadModel))
 	mux.HandleFunc("/api/models", handleListModels)

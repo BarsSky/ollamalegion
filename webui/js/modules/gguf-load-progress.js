@@ -1,27 +1,33 @@
 /**
- * GgufLoadProgress — модуль поллинга состояния загрузки моделей
+ * GgufLoadProgress — модуль real-time прогресса загрузки моделей
  *
- * Проблема: модель llama.cpp грузится в blocking CGo-вызове 5-30+ секунд.
- * Во время этой загрузки:
- *   - бэкенд отдаёт 503 + {loading:true, elapsedMs, retryAfterMs}
- *   - WebUI должен показывать «Загружается model-name 25s» в sidebar/detail
- *   - polling /api/models/load/progress раз в 1.5 сек показывает live-прогресс
+ * Round 25 (2026-08-04): переключился с polling на SSE (EventSource).
+ *   - cppworker: GET /api/models/load/progress/stream — text/event-stream,
+ *     шлёт push-обновления каждые 500ms пока state=loading, потом
+ *     финальный event loaded/error и закрывает соединение.
+ *   - WebUI: EventSource подписывается на stream, мгновенный feedback
+ *     при переходе loading→loaded (0ms vs 1500ms polling).
+ *   - Fallback: если EventSource не работает (proxy buffer, network
+ *     issue), автоматически переключаемся на старый polling.
  *
- * API:
+ * До Round 25 (polling): каждые 1.5s GET /api/models/load/progress, parse JSON.
+ *
+ * API (без изменений для обратной совместимости):
  *   GgufLoadProgress.startPolling(backend, isActiveCallback, [opts])
- *     — запускает polling для конкретного бэкенда.
+ *     — запускает real-time updates для конкретного бэкенда.
+ *     — внутри пытается EventSource (SSE), fallback на polling.
  *     — isActiveCallback() — функция, возвращающая true, пока polling должен
  *       продолжаться (например, return currentBackend() === backend).
  *     — opts: { intervalMs?: number, onUpdate?: (models) => void, onLoaded?: (name)=>void, onError?: (name,err)=>void }
  *
  *   GgufLoadProgress.stopPolling(backendId)
- *     — останавливает polling для бэкенда (если был запущен).
+ *     — останавливает updates для бэкенда (закрывает EventSource или clearInterval).
  *
  *   GgufLoadProgress.stopAll()
- *     — останавливает все активные поллеры.
+ *     — останавливает все активные источники.
  *
  *   GgufLoadProgress.isActive(backendId)
- *     — проверяет, активен ли polling для бэкенда.
+ *     — проверяет, активен ли источник для бэкенда.
  *
  *   GgufLoadProgress.getState(backendId)
  *     — возвращает последнее известное состояние моделей: [{name,path,state,elapsedMs,loadingStartedAt,loadingSizeBytes,error}]
@@ -29,7 +35,7 @@
 (function () {
     'use strict';
 
-    // Map backendId -> { timer, state, backend, isActive, opts, lastSeen, lastActivity }
+    // Map backendId -> { mode: 'sse'|'poll', timer/es, state, backend, isActive, opts, ... }
     const _pollers = Object.create(null);
 
     /**
@@ -44,6 +50,17 @@
             (typeof window !== 'undefined' && window.location && window.location.origin) ||
             '/';
         return balancerUrl.replace(/\/+$/, '') + '/api/v1/gguf/backends/' + encodeURIComponent(backendId) + '/proxy/api/models/load/progress';
+    }
+
+    /**
+     * Создаёт URL для /api/models/load/progress/stream (SSE endpoint).
+     * Round 25: real-time push вместо polling.
+     */
+    function _buildStreamUrl(backendId) {
+        const pollUrl = _buildProgressUrl(backendId);
+        // Заменяем последний path segment на /stream.
+        // /api/models/load/progress → /api/models/load/progress/stream
+        return pollUrl.replace(/\/progress(\?.*)?$/, '/progress/stream$1');
     }
 
     function _now() {
@@ -153,6 +170,8 @@
 
         const state = {
             timer: null,
+            es: null,           // EventSource instance (SSE mode)
+            mode: null,         // 'sse' or 'poll' — set after first attempt
             inFlight: false,
             lastError: null,
             lastActivity: _now(),
@@ -162,6 +181,159 @@
             opts: opts
         };
         _pollers[backendId] = state;
+
+        // Round 25: try SSE first, fall back to polling if EventSource fails.
+        // EventSource НЕ поддерживается в IE и очень старых браузерах —
+        // проверяем typeof и переходим к polling.
+        if (typeof EventSource === 'function') {
+            _startSSE(backendId, state);
+        } else {
+            _startPolling(backendId, state);
+        }
+    }
+
+    /**
+     * Запускает EventSource для SSE-обновлений.
+     * При ошибке (network, HTTP 4xx/5xx) переключается на polling fallback.
+     */
+    function _startSSE(backendId, state) {
+        const url = _buildStreamUrl(backendId);
+        let es;
+        try {
+            es = new EventSource(url, { withCredentials: true });
+        } catch (e) {
+            // EventSource constructor может бросить исключение
+            // (e.g. invalid URL). Fallback на polling.
+            console.debug('[gguf-load-progress] EventSource construct failed, falling back to polling', e);
+            _startPolling(backendId, state);
+            return;
+        }
+        state.es = es;
+        state.mode = 'sse';
+
+        es.onopen = function () {
+            state.lastError = null;
+            state.lastActivity = _now();
+        };
+
+        es.onmessage = function (event) {
+            if (!_pollers[backendId]) return; // был stopPolling
+            // Проверяем isActive (пользователь мог уйти с бэкенда).
+            if (typeof state.isActive === 'function' && !state.isActive()) {
+                stopPolling(backendId);
+                return;
+            }
+            let data;
+            try {
+                data = JSON.parse(event.data);
+            } catch (e) {
+                console.debug('[gguf-load-progress] SSE invalid JSON:', event.data, e);
+                return;
+            }
+            state.lastActivity = _now();
+            // Single model: data имеет поля name, state, elapsedMs, ...
+            // All models: data имеет { models: [...], count, timestamp }.
+            const models = _parseProgressResponse(data);
+            _applySSEUpdate(backendId, state, models, data);
+        };
+
+        es.onerror = function () {
+            // EventSource auto-reconnect'ит сам. Но если readyState == CLOSED
+            // (= 2), то EventSource решил не переподключаться (часто это
+            // значит HTTP 4xx/5xx при initial connect). В этом случае
+            // переключаемся на polling.
+            if (es.readyState === EventSource.CLOSED) {
+                console.debug('[gguf-load-progress] EventSource CLOSED, falling back to polling for', backendId);
+                try { es.close(); } catch (e) {}
+                if (state.es === es) state.es = null;
+                if (state.mode === 'sse') {
+                    state.mode = 'poll';
+                    _startPolling(backendId, state);
+                }
+            }
+        };
+    }
+
+    /**
+     * Обрабатывает SSE-update: сохраняет state, вызывает callbacks,
+     * детектит terminal state (loaded/error) и закрывает EventSource.
+     */
+    function _applySSEUpdate(backendId, state, models, rawData) {
+        // Terminal state: model loaded/error → закрываем EventSource.
+        // Single-model stream: terminal:true в event означает конец.
+        if (rawData && rawData.terminal === true) {
+            state.models = models;
+            _applyToState(backendId, models);
+            if (typeof state.opts.onUpdate === 'function') {
+                try { state.opts.onUpdate(models); } catch (e) { console.warn('[gguf-load-progress] onUpdate error', e); }
+            }
+            // Детектим переход loading → loaded / loading → error
+            const prev = state._prevModels || [];
+            const prevByName = Object.create(null);
+            for (let i = 0; i < prev.length; i++) {
+                if (prev[i] && prev[i].name) prevByName[prev[i].name] = prev[i];
+            }
+            for (let i = 0; i < models.length; i++) {
+                const m = models[i];
+                const p = prevByName[m.name];
+                if (p && p.state === 'loading' && m.state === 'loaded') {
+                    if (typeof state.opts.onLoaded === 'function') {
+                        try { state.opts.onLoaded(m.name); } catch (e) {}
+                    }
+                } else if (p && p.state === 'loading' && m.state === 'error') {
+                    if (typeof state.opts.onError === 'function') {
+                        try { state.opts.onError(m.name, m.error || 'unknown'); } catch (e) {}
+                    }
+                }
+            }
+            // Terminal: stop streaming. Polling fall back (если есть loading
+            // модели на других бэкендах) — это не нужно, т.к. SSE per-backend.
+            stopPolling(backendId);
+            return;
+        }
+
+        // Non-terminal: обычный update.
+        state.models = models;
+        _applyToState(backendId, models);
+        if (typeof state.opts.onUpdate === 'function') {
+            try { state.opts.onUpdate(models); } catch (e) { console.warn('[gguf-load-progress] onUpdate error', e); }
+        }
+        // Детектим переход loading → loaded / loading → error
+        const prev = state._prevModels || [];
+        const prevByName = Object.create(null);
+        for (let i = 0; i < prev.length; i++) {
+            if (prev[i] && prev[i].name) prevByName[prev[i].name] = prev[i];
+        }
+        for (let i = 0; i < models.length; i++) {
+            const m = models[i];
+            const p = prevByName[m.name];
+            if (p && p.state === 'loading' && m.state === 'loaded') {
+                if (typeof state.opts.onLoaded === 'function') {
+                    try { state.opts.onLoaded(m.name); } catch (e) {}
+                }
+            } else if (p && p.state === 'loading' && m.state === 'error') {
+                if (typeof state.opts.onError === 'function') {
+                    try { state.opts.onError(m.name, m.error || 'unknown'); } catch (e) {}
+                }
+            }
+        }
+        state._prevModels = models;
+        // onAllLoaded: список loading моделей опустел.
+        if (models.length === 0 && prev.length > 0) {
+            if (typeof state.opts.onAllLoaded === 'function') {
+                try { state.opts.onAllLoaded(); } catch (e) {}
+            }
+        }
+    }
+
+    /**
+     * Старый polling-based путь (fallback если SSE не работает).
+     * Сохранён для обратной совместимости с proxy/балансер без SSE proxying.
+     */
+    function _startPolling(backendId, state) {
+        if (state.mode === 'poll') return; // уже запущен
+        state.mode = 'poll';
+        const intervalMs = state.opts.intervalMs || 1500;
 
         const tick = function () {
             if (!_pollers[backendId]) return;          // был stopPolling между тиками
@@ -243,12 +415,16 @@
     }
 
     /**
-     * Останавливает polling для бэкенда.
+     * Останавливает polling/SSE для бэкенда.
+     * Round 25: закрывает EventSource если активен, иначе clearInterval.
      */
     function stopPolling(backendId) {
         const p = _pollers[backendId];
         if (!p) return;
         if (p.timer) clearInterval(p.timer);
+        if (p.es) {
+            try { p.es.close(); } catch (e) {}
+        }
         delete _pollers[backendId];
     }
 
@@ -279,6 +455,27 @@
         if (!renderer || typeof renderer.getState !== 'function') return;
         renderer.getState()._backendsRefreshFn = fn;
     }
+
+    // Round 25: auto-cleanup on pagehide/visibilitychange.
+    // WebUI теряет смысл показывать loading-спиннеры когда вкладка скрыта
+    // или браузер закрывается. Останавливаем все активные источники.
+    function _autoCleanupOnHide() {
+        if (typeof document === 'undefined') return;
+        const cleanup = function () {
+            if (typeof stopAll === 'function') {
+                try { stopAll(); } catch (e) {}
+            }
+        };
+        // pagehide — fired when user navigates away / closes tab (more reliable than unload).
+        document.addEventListener('pagehide', cleanup, { capture: true });
+        // visibilitychange — cleanup when tab becomes hidden (background).
+        document.addEventListener('visibilitychange', function () {
+            if (document.visibilityState === 'hidden') {
+                cleanup();
+            }
+        });
+    }
+    _autoCleanupOnHide();
 
     window.GgufLoadProgress = {
         startPolling: startPolling,

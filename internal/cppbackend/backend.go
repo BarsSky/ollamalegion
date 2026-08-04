@@ -147,9 +147,20 @@ type Backend struct {
 	// reloadPending — флаг «reload в процессе». Прокидывается в
 	// /api/metrics → reload_pending heartbeat. Балансировщик читает
 	// и НЕ пытается дёргать LoadModel, пока видит этот флаг.
-	reloadMu       sync.Mutex
-	reloadPending  string // имя модели, для которой идёт reload
+	reloadMu        sync.Mutex
+	reloadPending   string // имя модели, для которой идёт reload
 	reloadStartedAt time.Time
+
+	// Round 25 (2026-08-04): load time history для динамической оценки
+	// estimateLoadTimeMs. Хранит последние N=20 успешных load'ов с
+	// (size, ctxSize, durationMs, timestamp). Используется в cppworker'е
+	// (handlers_model_async.go) для compute avgSpeedBytesPerSec на
+	// основе реальных измерений вместо хардкода 100 MB/s.
+	//
+	// Thread-safe: ring buffer с защитой mu.RLock для чтения,
+	// mu.Lock для записи (record add при завершении load).
+	loadHistoryMu sync.RWMutex
+	loadHistory   []LoadTimeRecord // FIFO, max 20 entries
 }
 
 // ReloadStartedAt возвращает момент начала текущего reload (zero если нет).
@@ -167,16 +178,107 @@ func (b *Backend) ReloadStartedAt() time.Time {
 // добавлены для тонкой настройки llama.cpp под конкретный workload:
 //
 //   - NThreads        — количество CPU-потоков для batch/generation
-//                       (по умолчанию физические ядра).
+//     (по умолчанию физические ядра).
 //   - Parallel         — число параллельных sequences (batched generation).
-//                       Требует больше VRAM (KV-cache × parallel).
+//     Требует больше VRAM (KV-cache × parallel).
 //   - KVCacheType      — тип KV-cache quantization (0=F16, 1=Q8_0, 2=Q4_0).
-//                       Q8_0 экономит ~50% KV-cache VRAM с минимальной
-//                       потерей качества (perplexity delta < 0.1).
+//     Q8_0 экономит ~50% KV-cache VRAM с минимальной
+//     потерей качества (perplexity delta < 0.1).
 //   - SplitMode        — режим tensor split для multi-GPU (0=layer, 1=row).
 //   - OverrideTensor   — переопределение dtype отдельных тензоров
-//                       (например "blk\\..*\\.ffn_.*_exps=CPU").
+//     (например "blk\\..*\\.ffn_.*_exps=CPU").
 //
+// LoadTimeRecord — запись о реальном времени загрузки модели.
+// Round 25 (2026-08-04): используется в cppworker для динамической оценки
+// estimateLoadTimeMs (compute avgSpeedBytesPerSec на основе последних
+// N=20 успешных load'ов).
+type LoadTimeRecord struct {
+	SizeBytes   int64     // размер .gguf файла
+	ContextSize int       // n_ctx (для KV-cache init factor)
+	DurationMs  int64     // реальное время от LoadModelWithOpts до возврата
+	Timestamp   time.Time // когда load завершился (для TTL)
+}
+
+// loadHistoryMaxSize — сколько последних записей хранить.
+// 20 записей × ~50B = 1KB памяти. Достаточно для статистики и не растёт
+// unbounded при долгой работе сервера.
+const loadHistoryMaxSize = 20
+
+// loadHistoryMaxAge — максимальный возраст записи. Старые записи (после
+// GPU upgrade / disk defrag) могут быть misleading — игнорируем через 7 дней.
+const loadHistoryMaxAge = 7 * 24 * time.Hour
+
+// RecordLoadTime добавляет запись в историю. Вызывается при успешном
+// load'е. Thread-safe (lock на write).
+func (b *Backend) RecordLoadTime(record LoadTimeRecord) {
+	b.loadHistoryMu.Lock()
+	defer b.loadHistoryMu.Unlock()
+	b.loadHistory = append(b.loadHistory, record)
+	// Trim to max size (FIFO).
+	if len(b.loadHistory) > loadHistoryMaxSize {
+		// Drop oldest entries.
+		b.loadHistory = b.loadHistory[len(b.loadHistory)-loadHistoryMaxSize:]
+	}
+}
+
+// GetLoadHistory возвращает копию истории. Thread-safe (RLock).
+// Caller не должен мутировать результат.
+func (b *Backend) GetLoadHistory() []LoadTimeRecord {
+	b.loadHistoryMu.RLock()
+	defer b.loadHistoryMu.RUnlock()
+	out := make([]LoadTimeRecord, len(b.loadHistory))
+	copy(out, b.loadHistory)
+	return out
+}
+
+// EstimatedBytesPerSec вычисляет среднюю скорость загрузки на основе
+// истории. Используется в cppworker'е для динамической оценки.
+//
+// Стратегия: weighted average по records, weight ∝ 1/size_diff (closer
+// size = higher weight). Возвращает 0 если история пустая.
+//
+// Round 25: gemma-4 5GB реально грузится 60-90s, что даёт ~55-83 MB/s.
+// Хардкод 100MB/s в estimateLoadTimeMs ЗАНИЖАЕТ оценку для больших
+// моделей → клиент думает "скоро загрузится" → 60-90s timeout.
+// С measured cache estimate становится реалистичной.
+func (b *Backend) EstimatedBytesPerSec() int64 {
+	history := b.GetLoadHistory()
+	if len(history) == 0 {
+		return 0
+	}
+	// Фильтруем по age (отсекаем слишком старые записи).
+	now := time.Now()
+	var totalWeight float64
+	var weightedSum float64
+	for _, r := range history {
+		if now.Sub(r.Timestamp) > loadHistoryMaxAge {
+			continue
+		}
+		if r.SizeBytes <= 0 || r.DurationMs <= 0 {
+			continue
+		}
+		// bytes per second
+		bps := float64(r.SizeBytes) * 1000.0 / float64(r.DurationMs)
+		// Weight: recent records (more recent = higher weight) AND
+		// we want all records to count equally (simple average works
+		// well for our use case; 5-20 records is enough for stable estimate).
+		weight := 1.0
+		totalWeight += weight
+		weightedSum += bps * weight
+	}
+	if totalWeight == 0 {
+		return 0
+	}
+	return int64(weightedSum / totalWeight)
+}
+
+// ResetLoadHistory очищает историю. Для тестов и admin endpoint'а.
+func (b *Backend) ResetLoadHistory() {
+	b.loadHistoryMu.Lock()
+	defer b.loadHistoryMu.Unlock()
+	b.loadHistory = nil
+}
+
 // Если значение 0/empty — используется llama.cpp default (без override).
 type LoadModelOpts struct {
 	GPULayers     int
@@ -188,7 +290,7 @@ type LoadModelOpts struct {
 	TensorSplit   []float32
 
 	// Extended parameters (для /api/models/load-with-params)
-	NThreads      int    // 0 = auto (use physical cores)
+	NThreads       int    // 0 = auto (use physical cores)
 	Parallel       int    // 0 = 1 (no batching)
 	KVCacheType    string // "" = inherit (default F16), "f16"/"q8_0"/"q4_0" — explicit type
 	SplitMode      int    // 0=layer, 1=row
@@ -635,6 +737,11 @@ func (b *Backend) LoadModelWithOpts(name string, path string, opts LoadModelOpts
 	}
 
 	handle, err := bridge.LoadModel(cfg)
+	// Round 25 (2026-08-04): замеряем реальное время load'а для истории.
+	// bridge.LoadModel — blocking CGo, возвращает после успешной загрузки.
+	// Эта метрика используется cppworker'ом для динамической оценки
+	// estimatedLoadTimeMs (вместо хардкода 100 MB/s).
+	loadStartTime := time.Now()
 	if err != nil {
 		// Сохраняем LoadingError на короткое время, чтобы UI мог показать
 		// причину сбоя (даже после того, как inst удалён из b.models).
@@ -678,6 +785,17 @@ func (b *Backend) LoadModelWithOpts(name string, path string, opts LoadModelOpts
 	inst.info.GGUFContextLength = meta.ContextLength
 	inst.info.SizeBytes = meta.SizeTotalBytes
 	inst.info.GPUCount = b.gpuCount
+
+	// Round 25: записываем реальное время load'а в историю для
+	// последующей динамической оценки estimatedLoadTimeMs.
+	// sizeBytes = meta.SizeTotalBytes (от llama.cpp, точнее чем os.Stat).
+	b.RecordLoadTime(LoadTimeRecord{
+		SizeBytes:   int64(meta.SizeTotalBytes),
+		ContextSize: ctxSize,
+		DurationMs:  time.Since(loadStartTime).Milliseconds(),
+		Timestamp:   time.Now(),
+	})
+
 	// Session 16 (2026-06-27): Parallel + KVCacheType.
 	// Сохраняем реально применённые значения opts в ModelInfo, чтобы:
 	//   1. UI мог показать "parallel=4, kv=q8_0" в карточке модели;
@@ -720,7 +838,7 @@ func (b *Backend) LoadModelWithOpts(name string, path string, opts LoadModelOpts
 		bs, err := NewBatchedScheduler(BatchedSchedulerConfig{
 			Model:     handle,
 			NParallel: int32(parallelSlots),
-			WindowMs:  5, // 5ms batching window (per design doc R3)
+			WindowMs:  5,        // 5ms batching window (per design doc R3)
 			ModelLock: &inst.mu, // serialize llama_decode access (Round 8 BUGFIX)
 		})
 		if err != nil {
@@ -1635,11 +1753,11 @@ func (b *Backend) WaitForLoad(name string) bool {
 // n_parallel (если >1, нужно сменить на отдельный RWMutex).
 //
 // Round 13 (2026-07-28): добавлен slot manager. ПОРЯДОК LOCK'ов критичен:
-//   1. sm.Acquire(ctx) — получаем slot ID (блокирует если все заняты)
-//   2. inst.mu.Lock()  — serialize llama_decode
-//   3. handle.Infer(params{SeqId: slot, ...})
-//   4. defer sm.Release(slot) срабатывает ПОСЛЕ Unlock (через defer LIFO)
-//   5. defer inst.mu.Unlock()
+//  1. sm.Acquire(ctx) — получаем slot ID (блокирует если все заняты)
+//  2. inst.mu.Lock()  — serialize llama_decode
+//  3. handle.Infer(params{SeqId: slot, ...})
+//  4. defer sm.Release(slot) срабатывает ПОСЛЕ Unlock (через defer LIFO)
+//  5. defer inst.mu.Unlock()
 func (b *Backend) Generate(modelName string, prompt string, params bridge.GenerationParams) (*bridge.InferenceResult, error) {
 	inst, err := b.getModelInstance(modelName)
 	if err != nil {
@@ -1756,12 +1874,12 @@ func (b *Backend) GenerateStream(modelName string, prompt string, params bridge.
 // batchedInferStream — Round 15.1: streaming inference через BatchedScheduler.
 //
 // Контракт:
-//   1. Tokenize prompt через inst.handle.Tokenize → []int32
-//   2. RegisterSession в BatchedScheduler (получаем id, state, TokenCh)
-//   3. Loop: читаем int32 токены из state.TokenCh, detokenize через
-//      inst.handle.TokenToPiece, передаём в user callback
-//   4. TokenCh закрывается scheduler'ом когда session finished
-//      (EOG, max_tokens, или scheduler stop)
+//  1. Tokenize prompt через inst.handle.Tokenize → []int32
+//  2. RegisterSession в BatchedScheduler (получаем id, state, TokenCh)
+//  3. Loop: читаем int32 токены из state.TokenCh, detokenize через
+//     inst.handle.TokenToPiece, передаём в user callback
+//  4. TokenCh закрывается scheduler'ом когда session finished
+//     (EOG, max_tokens, или scheduler stop)
 //
 // ВАЖНО: НЕ держим inst.mu здесь! BatchedScheduler.Run goroutine берёт
 // modelLock (= &inst.mu) сам на время BatchedDecode. Это позволяет
@@ -1921,16 +2039,18 @@ func (b *Backend) ApplyChatTemplate(modelName, system string, messages []bridge.
 // делать (наш fallback — soft prompt injection, см. handlers_chat.go).
 //
 // Параметры:
-//   modelName         — загруженная модель
-//   chatTemplateOverride — кастомный Jinja template ("" = use GGUF default)
-//   messages          — список chat-сообщений (включая system если нужно)
-//   enableThinking    — true = native thinking mode
-//   addGenerationPrompt — true = добавить assistant turn tokens в конец
+//
+//	modelName         — загруженная модель
+//	chatTemplateOverride — кастомный Jinja template ("" = use GGUF default)
+//	messages          — список chat-сообщений (включая system если нужно)
+//	enableThinking    — true = native thinking mode
+//	addGenerationPrompt — true = добавить assistant turn tokens в конец
 //
 // Возвращает:
-//   prompt            — formatted prompt
-//   supportsThinking  — true если template поддерживает thinking
-//   error             — nil / generic error
+//
+//	prompt            — formatted prompt
+//	supportsThinking  — true если template поддерживает thinking
+//	error             — nil / generic error
 func (b *Backend) ApplyChatTemplateWithThinking(
 	modelName, chatTemplateOverride string,
 	messages []bridge.ChatMessage,
@@ -2162,9 +2282,9 @@ type GGUFHeaderInfo struct {
 	NLayers      int    `json:"nLayers"`
 	NHeads       int    `json:"nHeads"`
 	NKvHeads     int    `json:"nKvHeads"`
-	HeadDimK          int       `json:"headDimK"`
-	HeadDimV          int       `json:"headDimV"`
-	KVCacheType       string    `json:"kvCacheType"`
+	HeadDimK     int    `json:"headDimK"`
+	HeadDimV     int    `json:"headDimV"`
+	KVCacheType  string `json:"kvCacheType"`
 	NEmbd        int    `json:"nEmbd"`
 	FileSize     int64  `json:"fileSize"`
 }

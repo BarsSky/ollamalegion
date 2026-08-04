@@ -98,7 +98,15 @@ Thumbs.db
 # c/ нужен для сборки llama.cpp с CUDA (cppworker-gpu)
 # но исключаем временные артефакты сборки и модели
 # ВАЖНО: c/llama.cpp/scripts/ НЕ исключаем — нужен для Makefile (get-flags.mk)
+#
+# Round 23 (2026-08-04): c/llama.cpp содержит **687MB build-артефактов** (build-cpu,
+# build-mingw-cuda, build-msvc-cuda) от старых сборок, которые НЕ были
+# исключены ранее (только `c/llama.cpp/build/` попадал в ignore, но не
+# `c/llama.cpp/build-*/`). Без exclude — Docker build context = 969MB,
+# COPY layer инвалидируется на каждом билде из-за разных mtime у артефактов.
+# Эти паттерны экономят ~70% context size и ускоряют COPY layer.
 c/llama.cpp/build/
+c/llama.cpp/build-*/
 c/llama.cpp/models/
 c/llama.cpp/examples/
 c/llama.cpp/tests/

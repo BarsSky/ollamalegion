@@ -52,7 +52,25 @@ RUN git init && git add -A && git -c user.name=docker -c user.email=docker@build
 # персистит ccache между билдами. Без него каждый билд перекомпилирует
 # ВСЕ .cu.o/.cpp.o заново (18 мин C++). С ним — только изменённые файлы
 # (обычно <1 мин для Go-only изменений).
-RUN --mount=type=cache,target=/root/.ccache \
+#
+# Round 23 (2026-08-04) FIX: добавлены mode/uid/gid в cache mount.
+# Без них BuildKit создаёт cache dir с дефолтным owner (root:root) и mode 0755.
+# Проблема в том, что на Docker Desktop (Windows backend) cache mount иногда
+# монтируется read-only или с другим uid, что приводит к "ccache: failed to
+# create directory" и ccache не работает. mode=0755,uid=0,gid=0 ЯВНО
+# указывают writable root-owned cache. Также `id=ccache` для явного
+# identifier (позволяет использовать cache-to/cache-from для cross-build
+# sharing в будущем).
+#
+# IMPORTANT: cache mount PERSISTS только в пределах ОДНОЙ buildx builder
+# instance. На Docker Desktop при каждом `docker build` создаётся новая
+# ephemeral BuildKit instance (default = "docker" driver, in-process),
+# cache ТЕРЯЕТСЯ между invocations. Для persistent ccache нужен отдельный
+# builder container:
+#   docker buildx create --name ollamalegion --driver docker-container --use
+#   docker buildx build --builder ollamalegion ...
+# С этим ccache реально переиспользуется между билдами (с 20 мин до 1-2 мин).
+RUN --mount=type=cache,id=ccache,target=/root/.ccache,mode=0755,uid=0,gid=0 \
     mkdir -p build && cd build && \
     if [ -z "${CUDA_ARCH}" ] || [ "${CUDA_ARCH}" = "all" ]; then \
         # CUDA 12.2 поддерживает sm_50..sm_90. Blackwell (sm_120) — только в CUDA 12.8+.

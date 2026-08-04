@@ -61,6 +61,54 @@ func TestExtractNumCtxFromBody_NumCtxFloat(t *testing.T) {
 }
 
 // ============================================================
+// patchNumCtxInBody (Round 23, 2026-08-04)
+// Используется в preflightNCtxReloadIfNeeded для smart-skip reload.
+// ============================================================
+
+func TestPatchNumCtxInBody_Ollama(t *testing.T) {
+	body := []byte(`{"model":"qwen","options":{"num_ctx":32000,"temperature":0}}`)
+	patched := patchNumCtxInBody(body, 16384)
+	if patched == nil {
+		t.Fatal("patchNumCtxInBody returned nil for valid ollama body")
+	}
+	got := ExtractNumCtxFromBody(patched)
+	assert.Equal(t, 16384, got, "patched body should have num_ctx=16384")
+}
+
+func TestPatchNumCtxInBody_OpenAI(t *testing.T) {
+	body := []byte(`{"model":"qwen","num_ctx":32000,"max_tokens":100}`)
+	patched := patchNumCtxInBody(body, 8192)
+	if patched == nil {
+		t.Fatal("patchNumCtxInBody returned nil for valid openai body")
+	}
+	got := ExtractNumCtxFromBody(patched)
+	assert.Equal(t, 8192, got, "patched body should have num_ctx=8192")
+}
+
+func TestPatchNumCtxInBody_NoNumCtx(t *testing.T) {
+	// body без num_ctx — patch не должен ничего делать (return nil → fallback на reload).
+	body := []byte(`{"model":"qwen","messages":[{"role":"user","content":"hi"}]}`)
+	patched := patchNumCtxInBody(body, 16384)
+	assert.Nil(t, patched, "patchNumCtxInBody should return nil when num_ctx absent")
+}
+
+func TestPatchNumCtxInBody_InvalidJSON(t *testing.T) {
+	patched := patchNumCtxInBody([]byte("not json"), 16384)
+	assert.Nil(t, patched)
+}
+
+func TestPatchNumCtxInBody_EmptyBody(t *testing.T) {
+	assert.Nil(t, patchNumCtxInBody(nil, 16384))
+	assert.Nil(t, patchNumCtxInBody([]byte{}, 16384))
+}
+
+func TestPatchNumCtxInBody_InvalidNCtx(t *testing.T) {
+	body := []byte(`{"options":{"num_ctx":32000}}`)
+	assert.Nil(t, patchNumCtxInBody(body, 0), "should return nil for newNCtx=0")
+	assert.Nil(t, patchNumCtxInBody(body, -1), "should return nil for negative newNCtx")
+}
+
+// ============================================================
 // GetModelProfileNumCtx / Set / Get / Delete
 // ============================================================
 

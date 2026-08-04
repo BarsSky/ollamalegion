@@ -1,4 +1,4 @@
-//go:build llama_stub
+﻿//go:build llama_stub
 
 // Package balancer — unit-тесты для preflightNCtxReloadIfNeededSync
 // (sync-вариант n_ctx preflight, см. nctx_reload_handlers.go).
@@ -157,7 +157,7 @@ func TestPreflightSync_NoOp_LoadedCoversRequested(t *testing.T) {
 	body := []byte(`{"model":"` + modelName + `","options":{"num_ctx":4096}}`)
 	start := time.Now()
 	modifiedBody, needsProxy, msg, status, retry := p.preflightNCtxReloadIfNeededSync(
-		context.Background(), backendID, modelName, body)
+		context.Background(), backendID, modelName, body, "/api/chat")
 	elapsed := time.Since(start)
 
 	if !needsProxy || status != http.StatusOK {
@@ -195,7 +195,7 @@ func TestPreflightSync_AsyncReloadCompletes(t *testing.T) {
 
 	body := []byte(`{"model":"` + modelName + `","options":{"num_ctx":16384}}`)
 	modifiedBody, needsProxy, msg, status, retry := p.preflightNCtxReloadIfNeededSync(
-		context.Background(), backendID, modelName, body)
+		context.Background(), backendID, modelName, body, "/api/chat")
 
 	if !needsProxy || status != http.StatusOK {
 		t.Errorf("expected OK после reload; got needsProxy=%v status=%d msg=%q retry=%d",
@@ -219,7 +219,7 @@ func TestPreflightSync_NoNumCtxInBody(t *testing.T) {
 
 	body := []byte(`{"model":"` + modelName + `"}`) // без num_ctx
 	modifiedBody, needsProxy, msg, status, _ := p.preflightNCtxReloadIfNeededSync(
-		context.Background(), backendID, modelName, body)
+		context.Background(), backendID, modelName, body, "/api/chat")
 
 	if !needsProxy || status != http.StatusOK {
 		t.Errorf("expected OK без num_ctx в body; got needsProxy=%v status=%d msg=%q",
@@ -264,7 +264,7 @@ func TestPreflightSync_NilNctxReloadReturnsImmediateOK(t *testing.T) {
 	body := []byte(`{"model":"` + modelName + `"}`) // без num_ctx
 	start := time.Now()
 	_, needsProxy, _, status, _ := p.preflightNCtxReloadIfNeededSync(
-		context.Background(), backendID, modelName, body)
+		context.Background(), backendID, modelName, body, "/api/chat")
 	elapsed := time.Since(start)
 
 	// Без num_ctx в body async-фаза возвращает (bodyBuf, true, "", 200, 0)
@@ -276,3 +276,4 @@ func TestPreflightSync_NilNctxReloadReturnsImmediateOK(t *testing.T) {
 		t.Errorf("должен вернуться мгновенно; elapsed=%v", elapsed)
 	}
 }
+

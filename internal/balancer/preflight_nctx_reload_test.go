@@ -1,4 +1,4 @@
-//go:build llama_stub
+﻿//go:build llama_stub
 
 package balancer
 
@@ -172,39 +172,41 @@ func TestPreflightNCtxReload_LoadedLessThanRequested(t *testing.T) {
 
 	body := []byte(`{"model":"` + modelName + `","messages":[{"role":"user","content":"test"}],"options":{"num_ctx":16384}}`)
 
-	newBody, ok, msg, status := p.preflightNCtxReloadIfNeeded(
-		nil, "test-backend", modelName, body)
+	newBody, ok, msg, status := p.preflightNCtxReloadIfNeeded(nil, "test-backend", modelName, body, "/api/chat")
 
-	// ОЖИДАЕМО: ok=false (нужно reload), status=503, msg содержит retry-info.
-	// Клиент (балансер в llamacpp_transport) увидит это и вернёт HTTP 503 +
-	// Retry-After: 5 клиенту (см. proxyRequestLlamaCpp / proxyRequestLlamaCppNonStream).
-	if ok {
-		t.Fatalf("preflight should NOT succeed immediately (reload is now async); msg=%q status=%d", msg, status)
+	// Round 23 (2026-08-04) FIX: SMART-SKIP RELOAD.
+	// Для prompt "test" (1 токен) + default n_predict=2048:
+	//   required = 1 + 2048 + 1 + slack ≈ 2050
+	//   loaded = 4096
+	//   2050 < 4096 → smart-skip (NO reload, body patched down to 4096)
+	if !ok {
+		t.Fatalf("preflight SHOULD succeed (smart-skip reload: prompt fits in current n_ctx); msg=%q status=%d", msg, status)
 	}
-	if status != http.StatusServiceUnavailable {
-		t.Errorf("preflight status=%d, want 503", status)
+	if status != http.StatusOK {
+		t.Errorf("preflight status=%d, want 200 (smart-skip)", status)
 	}
-	if msg == "" {
-		t.Errorf("preflight should return informative msg for client retry")
+	// Body должен быть patched: options.num_ctx=16384 → 4096 (downgrade).
+	if bytes.Equal(newBody, body) {
+		t.Errorf("smart-skip SHOULD modify body (num_ctx should be downgraded from 16384 to 4096)")
 	}
-	// bodyBuf должен быть возвращён без изменений (async reload, body не трогаем).
-	if !bytes.Equal(newBody, body) {
-		t.Errorf("async reload should NOT modify body (num_ctx removal happens after successful reload)")
+	// Проверяем что num_ctx в patched body = 4096.
+	if nctx := ExtractNumCtxFromBody(newBody); nctx != 4096 {
+		t.Errorf("patched body num_ctx=%d, want 4096", nctx)
+	}
+	// Reload НЕ должен был вызваться.
+	time.Sleep(200 * time.Millisecond)
+	if got := currentNCtx.Load(); got != 4096 {
+		t.Errorf("currentNCtx=%d, want 4096 (reload should NOT fire)", got)
+	}
+	if len(*reloadCalls) != 0 {
+		t.Errorf("expected 0 reload calls (smart-skip), got %d", len(*reloadCalls))
 	}
 
-	// Даём фоновой горутине время завершить reload.
-	time.Sleep(500 * time.Millisecond)
-
-	// Reload должен был вызваться с contextSize=16384.
-	if got := currentNCtx.Load(); got != 16384 {
-		t.Errorf("currentNCtx=%d, want 16384 after async reload", got)
-	}
-	if len(*reloadCalls) != 1 {
-		t.Errorf("expected 1 reload call, got %d", len(*reloadCalls))
-	}
-
-	// Кэш метрик должен быть обновлён до 16384 сразу (без ожидания reload —
-	// это предотвращает retry-цикл preflight на следующих запросах).
+	// Round 23 (2026-08-04) FIX: SMART-SKIP — кэш НЕ обновляется (reload не было).
+	// Раньше: ожидалось что cache обновляется до 16384 (чтобы предотвратить retry-цикл).
+	// Теперь: smart-skip не трогает cache — модель остаётся на 4096, request проксируется
+	// с patched body (num_ctx=4096). На следующем запросе с тем же num_ctx=16384 —
+	// опять smart-skip. Никакого reload нет.
 	p.metricsMgr.mu.RLock()
 	lm, hasLm := p.metricsMgr.llamaMetrics["test-backend"]
 	p.metricsMgr.mu.RUnlock()
@@ -213,8 +215,8 @@ func TestPreflightNCtxReload_LoadedLessThanRequested(t *testing.T) {
 	}
 	for _, m := range lm.LoadedModels {
 		if strings.Contains(m.Name, modelName) {
-			if m.ContextLength != 16384 {
-				t.Errorf("llamaMetrics LoadedModels ContextLength=%d, want 16384", m.ContextLength)
+			if m.ContextLength != 4096 {
+				t.Errorf("llamaMetrics LoadedModels ContextLength=%d, want 4096 (smart-skip — no reload)", m.ContextLength)
 			}
 		}
 	}
@@ -229,8 +231,7 @@ func TestPreflightNCtxReload_LoadedAlreadyEnough(t *testing.T) {
 	p := buildProxyWithMockInitialCtx(t, cppWorker.URL, modelName, 16384)
 
 	body := []byte(`{"model":"` + modelName + `","options":{"num_ctx":8192}}`)
-	_, ok, msg, _ := p.preflightNCtxReloadIfNeeded(
-		nil, "test-backend", modelName, body)
+	_, ok, msg, _ := p.preflightNCtxReloadIfNeeded(nil, "test-backend", modelName, body, "/api/chat")
 
 	if !ok {
 		t.Fatalf("preflight should succeed (no reload needed); msg=%q", msg)
@@ -251,8 +252,7 @@ func TestPreflightNCtxReload_NoNumCtxInBody(t *testing.T) {
 	p := buildProxyWithMockInitialCtx(t, cppWorker.URL, modelName, 4096)
 
 	body := []byte(`{"model":"` + modelName + `","messages":[{"role":"user","content":"test"}]}`)
-	_, ok, msg, _ := p.preflightNCtxReloadIfNeeded(
-		nil, "test-backend", modelName, body)
+	_, ok, msg, _ := p.preflightNCtxReloadIfNeeded(nil, "test-backend", modelName, body, "/api/chat")
 
 	if !ok {
 		t.Fatalf("preflight should succeed (no num_ctx in body); msg=%q", msg)
@@ -289,12 +289,15 @@ func TestPreflightNCtxReload_ReloadFailureFallsBackToProxyAsIs(t *testing.T) {
 	defer cppWorker.Close()
 
 	p := buildProxyWithMockInitialCtx(t, cppWorker.URL, modelName, 4096)
-	body := []byte(`{"model":"` + modelName + `","options":{"num_ctx":16384}}`)
+	// Round 23 (2026-08-04): чтобы сработал reload (а не smart-skip), body должен
+	// содержать prompt который НЕ влезает в 4096. Используем большой prompt +
+	// num_predict=4096 → required ~ 2048+4096+slack > 4096.
+	bigPrompt := strings.Repeat("a", 8192) // 8KB → ~2048 tokens
+	body := []byte(`{"model":"` + modelName + `","messages":[{"role":"user","content":"` + bigPrompt + `"}],"options":{"num_ctx":16384,"num_predict":4096}}`)
 
-	newBody, ok, _, _ := p.preflightNCtxReloadIfNeeded(
-		nil, "test-backend", modelName, body)
+	newBody, ok, _, _ := p.preflightNCtxReloadIfNeeded(nil, "test-backend", modelName, body, "/api/chat")
 
-	// При failed reload мы всё равно хотим, чтобы клиент повторил через 5 секунд —
+	// При failed reload мы всё равно хотим, чтобы клиент повторил через 30 секунд —
 	// иначе cppworker вернёт 400 и клиент получит partial response.
 	if ok {
 		t.Fatalf("preflight should signal reload needed even on reload failure (5xx); 503 for client retry")
@@ -306,3 +309,4 @@ func TestPreflightNCtxReload_ReloadFailureFallsBackToProxyAsIs(t *testing.T) {
 	// Даём фоновой горутине время упасть с 500 и залогировать.
 	time.Sleep(500 * time.Millisecond)
 }
+

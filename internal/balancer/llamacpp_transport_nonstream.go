@@ -48,11 +48,11 @@ func (p *Proxy) proxyRequestLlamaCppNonStream(w http.ResponseWriter, r *http.Req
 	var preflightOK bool
 	var preflightMsg string
 	var preflightStatus int
-	var retryAfter int = 5
+	var retryAfter int = 30 // Round 23 (2026-08-04): 5 → 30 (реальное время reload)
 	var preflightBody []byte
 	if p.config != nil && p.config.Balancing.PreflightSyncEnabled {
 		preflightBody, preflightOK, preflightMsg, preflightStatus, retryAfter =
-			p.preflightNCtxReloadIfNeededSync(r.Context(), backendID, modelFromCtx, bodyNoStream)
+			p.preflightNCtxReloadIfNeededSync(r.Context(), backendID, modelFromCtx, bodyNoStream, originalPath)
 		if preflightOK {
 			bodyNoStream = preflightBody
 			logger.Get().Debugw("proxyRequestLlamaCppNonStream: preflight n_ctx sync-reload applied",
@@ -60,7 +60,7 @@ func (p *Proxy) proxyRequestLlamaCppNonStream(w http.ResponseWriter, r *http.Req
 		}
 	} else {
 		preflightBody, preflightOK, preflightMsg, preflightStatus =
-			p.preflightNCtxReloadIfNeeded(r.Context(), backendID, modelFromCtx, bodyNoStream)
+			p.preflightNCtxReloadIfNeeded(r.Context(), backendID, modelFromCtx, bodyNoStream, originalPath)
 		if preflightOK {
 			bodyNoStream = preflightBody
 			logger.Get().Debugw("proxyRequestLlamaCppNonStream: preflight n_ctx reload applied",

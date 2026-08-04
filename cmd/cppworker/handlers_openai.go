@@ -946,14 +946,25 @@ func writeOpenAIChatStream(w http.ResponseWriter, r *http.Request, modelName, pr
 					"hint", "model emits reasoning tag but is not in reasoning whitelist; "+
 						"auto-enabled routing. To pre-set, use load-with-params "+
 						"enableReasoning=true or set CPPWORKER_REASONING_ARCHS env var.")
-			} else if len(fullOutput) > autoDetectThreshold {
-				// OutputBuf длиннее threshold, ни один tag не нашли — сдаёмся.
-				rsAutoDetectChecked = true
-				logger.Get().Debugw("reasoning auto-detect gave up (no reasoning tag in first N chars)",
-					"handler", "writeOpenAIChatStream",
-					"model", modelName,
-					"checked_chars", autoDetectThreshold)
 			}
+			// Round 23 (2026-08-04) FIX: убрали "give up" на autoDetectThreshold=1024 chars.
+			//
+			// Проблема (issue #7): если модель выдаёт длинный preamble (>1024 chars) перед
+			// `<think>` тегом, L3 сдавался и тег не находился. Дальнейшие токены шли
+			// в `content` без split'а → think-блок УТЕКАЛ в финальный ответ клиенту.
+			//
+			// Решение: ВСЕГДА проверяем ВЕСЬ outputBuf на think-теги. Стоимость: O(N²) per
+			// token (strings.Index на полном буфере). Для типичных стримов 200-2000 токенов
+			// (≈1-10KB) это ~10K-100K ops на токен = ~1-10ms per token. На стриме 100 токенов
+			// это < 1s дополнительной CPU. Приемлемо для correctness.
+			//
+			// Ограничение: токены, УЖЕ отправленные клиенту до L3 fire, остаются в `content`.
+			// То есть если preamble + think block > 200 chars и до этого уже отправлено
+			// несколько чанков, первые чанки будут содержать preamble в content. Это
+			// неизбежно для streaming (протокол SSE не позволяет "отменить" отправленное).
+			// Round 23 partial mitigation: в Finalize (после EOS) cppworker отправляет
+			// финальный chunk с split'нутым reasoning и content — клиент может его
+			// использовать для отображения если ещё не закрыл UI.
 		}
 
 		// 2026-07-01: reasoning-парсер — разделяем токены на (reasoning, content)
@@ -1473,13 +1484,9 @@ func writeOpenAICompletionStream(w http.ResponseWriter, r *http.Request, modelNa
 					"tag_position", detectedPos,
 					"hint", "auto-enabled routing. To pre-set, use load-with-params "+
 						"enableReasoning=true or set CPPWORKER_REASONING_ARCHS env var.")
-			} else if len(fullOutput) > rcAutoDetectThreshold {
-				rcAutoDetectChecked = true
-				logger.Get().Debugw("reasoning auto-detect gave up (no reasoning tag in first N chars)",
-					"handler", "writeOpenAICompletionStream",
-					"model", modelName,
-					"checked_chars", rcAutoDetectThreshold)
 			}
+			// Round 23 (2026-08-04) FIX: убрали "give up" на autoDetectThreshold.
+			// Аналогично writeOpenAIChatStream — ВСЕГДА проверяем весь outputBuf.
 		}
 
 		// 2026-07-01: reasoning-парсер — для reasoning-моделей разделяем токен на

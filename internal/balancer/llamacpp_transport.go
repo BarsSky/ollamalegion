@@ -62,23 +62,25 @@ func (p *Proxy) proxyRequestLlamaCpp(w http.ResponseWriter, r *http.Request, bac
 	// ДО проксирования. Это критично для OpenWebUI с tools: первый запрос
 	// получает reload один раз (10-30 сек), последующие — instant response.
 	preflightBody, preflightOK, preflightMsg, preflightStatus := p.preflightNCtxReloadIfNeeded(
-		r.Context(), backendID, modelFromCtx, bodyBuf)
+		r.Context(), backendID, modelFromCtx, bodyBuf, originalPath)
 	if preflightOK {
 		bodyBuf = preflightBody // preflight удалил num_ctx из body (cppworker возьмёт new n_ctx)
 		logger.Get().Debugw("proxyRequestLlamaCpp: preflight n_ctx reload applied",
 			"backend", backendID, "model", modelFromCtx, "new_body_len", len(bodyBuf))
 	} else if preflightMsg != "" || preflightStatus != http.StatusOK {
 		// preflight вернул needsProxy=false: асинхронный reload запущен в фоне.
-		// Отдаём клиенту HTTP 503 Service Unavailable + Retry-After: 5.
-		// Клиент повторит запрос через 5 секунд — к этому моменту reload обычно завершён.
-		// Стрим НЕ обрывается посередине.
+		// Отдаём клиенту HTTP 503 Service Unavailable + Retry-After: 30.
+		// Клиент повторит запрос через 30 секунд — реалистичное время reload'а.
+		// Round 23 (2026-08-04): Retry-After 5 → 30 (reload 30-60с на GPU; 5с
+		// заставляло Cline/OpenWebUI повторять 10-12 раз за reload, накапливая
+		// 503 и путая retry-логику).
 		logger.Get().Infow("proxyRequestLlamaCpp: preflight triggered async n_ctx reload, returning 503 to client",
 			"backend", backendID, "model", modelFromCtx,
 			"msg", preflightMsg, "status", preflightStatus)
 		w.Header().Set("Content-Type", "application/json")
-		w.Header().Set("Retry-After", "5")
+		w.Header().Set("Retry-After", "30")
 		w.Header().Set("X-NCtx-Reload-Decision", "async-reload")
-		body := []byte(fmt.Sprintf(`{"error":%q,"decision":"async_reload","retry_after_seconds":5}`,
+		body := []byte(fmt.Sprintf(`{"error":%q,"decision":"async_reload","retry_after_seconds":30}`,
 			preflightMsg))
 		w.Header().Set("Content-Length", fmt.Sprintf("%d", len(body)))
 		w.WriteHeader(http.StatusServiceUnavailable)
@@ -455,6 +457,29 @@ func (p *Proxy) proxyRequestLlamaCpp(w http.ResponseWriter, r *http.Request, bac
 	lastData := ""
 
 	for scanner.Scan() {
+		// Round 23 (2026-08-04): проверяем отмену клиента ПЕРЕД чтением следующего чанка.
+		// Без этого streaming-прокси ждёт [DONE] от upstream (cppworker генерирует
+		// токены пока cancel не дойдёт через отдельный канал), что приводит к
+		// зависанию при OpenWebUI cancel — клиент закрыл соединение, но прокси
+		// продолжает тянуть токены с cppworker и тратить CPU/GPU.
+		//
+		// Применяется ко всем путям: /v1/chat/completions (Cline), /api/chat
+		// (OpenWebUI), /api/generate (Ollama CLI). При срабатывании — закрываем
+		// upstream body (cppworker прекратит генерацию после текущего token'а)
+		// и выходим из loop.
+		select {
+		case <-r.Context().Done():
+			logger.Get().Infow("proxyRequestLlamaCpp: client cancelled, aborting stream",
+				"backend", backendID, "model", modelFromCtx,
+				"context_error", r.Context().Err(),
+				"bytes_forwarded", bytesForwarded)
+			if resp.Body != nil {
+				_ = resp.Body.Close()
+			}
+			return nil
+		default:
+		}
+
 		line := scanner.Text()
 
 		if !strings.HasPrefix(line, "data:") {

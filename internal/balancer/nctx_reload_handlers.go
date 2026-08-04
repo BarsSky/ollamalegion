@@ -407,6 +407,7 @@ func (p *Proxy) preflightNCtxReloadIfNeeded(
 	ctx context.Context,
 	backendID, modelName string,
 	bodyBuf []byte,
+	requestPath string,
 ) (modifiedBody []byte, needsProxy bool, errMsg string, statusCode int) {
 	if p.nctxReload == nil || len(bodyBuf) == 0 {
 		return bodyBuf, true, "", http.StatusOK
@@ -449,6 +450,47 @@ func (p *Proxy) preflightNCtxReloadIfNeeded(
 	// 3. Если loaded >= requested — перезагрузка не нужна.
 	if loadedNCtx >= requestedNCtx {
 		return bodyBuf, true, "", http.StatusOK
+	}
+
+	// 3.1 Round 23 (2026-08-04): SMART RELOAD SKIP.
+	//
+	// Проблема (issue #6+#8): клиент (Cline/OpenWebUI) посылает num_ctx=32000
+	// "на всякий случай" (default), но реальный prompt — "2+2?" (1 токен).
+	// Текущая логика ТУПО триггерит async reload на 50с, клиент получает
+	// 503 + Retry-After: 5, retry 10 раз за 50с, потом (когда reload закончен)
+	// получает успех. Субъективно для пользователя: "бесконечная перезагрузка".
+	//
+	// Решение: оценить реальный prompt size. Если estimated_prompt_tokens +
+	// n_predict + slack <= loaded_n_ctx, то reload НЕ НУЖЕН — просто
+	// patch'нем body (options.num_ctx = loaded_n_ctx) и проксируем дальше.
+	// Модель работает с loaded_n_ctx, prompt помещается, всё OK.
+	//
+	// Стоимость: +1 JSON parse на preflight (≈50µs). Эвристика 1 token ≈ 4 chars
+	// даёт ~25% точности; для коротких промптов это перестраховка, для длинных —
+	// clamp'нем n_predict в cppworker (clampNPredictToFitContext).
+	if requestedNCtx > 0 && loadedNCtx > 0 {
+		meta := ExtractRequestMeta(bodyBuf, requestPath)
+		if meta != nil {
+			required := meta.EstimatedPromptTokens + meta.RequestedNPredict + 1
+			// +10% slack под округление tokenizer'а и накопление KV.
+			slack := meta.EstimatedPromptTokens / 10
+			required += slack
+			if required <= loadedNCtx {
+				// Промпт влезает в текущий n_ctx. Patch body и проксируем.
+				patchedBody := patchNumCtxInBody(bodyBuf, loadedNCtx)
+				if patchedBody != nil {
+					logger.Get().Infow("preflightNCtxReload: smart-skip reload (prompt fits in current n_ctx)",
+						"backend", backendID, "model", modelName,
+						"loaded_n_ctx", loadedNCtx,
+						"requested_n_ctx", requestedNCtx,
+						"estimated_prompt_tokens", meta.EstimatedPromptTokens,
+						"required_n_ctx", required,
+						"n_predict", meta.RequestedNPredict)
+					return patchedBody, true, "", http.StatusOK
+				}
+				// patchNumCtxInBody вернул nil (не смог распарсить) — fallback на reload.
+			}
+		}
 	}
 
 	// 4. Loaded < requested — нужен reload. Запускаем его АСИНХРОННО в горутине.
@@ -507,12 +549,61 @@ func (p *Proxy) preflightNCtxReloadIfNeeded(
 	}
 	p.metricsMgr.mu.Unlock()
 
-	// Возвращаем клиенту 503 + Retry-After: 5. needsProxy=false — вызывающий код
+	// Возвращаем клиенту 503 + Retry-After: 30. needsProxy=false — вызывающий код
 	// должен сам сформировать ответ (status, headers, body).
+	//
+	// Round 23 (2026-08-04): Retry-After увеличен 5 → 30 секунд.
+	// Причина: реальный reload (unload + load с большим n_ctx) занимает 30-60с
+	// на типичной GPU. Старое Retry-After: 5 заставляло клиента (Cline/OpenWebUI)
+	// повторять 10-12 раз за время reload'а, накапливая 503 в логах и путая
+	// retry-логику. С 30с клиент делает 1-2 retry и попадает в окно
+	// завершения reload'а.
 	return bodyBuf, false,
-		fmt.Sprintf("model %q is being reloaded to n_ctx=%d (loaded=%d); retry in 5s",
+		fmt.Sprintf("model %q is being reloaded to n_ctx=%d (loaded=%d); retry in 30s",
 			modelName, requestedNCtx, loadedNCtx),
 		http.StatusServiceUnavailable
+}
+
+// patchNumCtxInBody — патчит options.num_ctx (Ollama) или top-level num_ctx
+// (OpenAI/generic) в JSON body к заданному значению.
+//
+// Round 23 (2026-08-04): для smart-skip reload (см. preflightNCtxReloadIfNeeded).
+// Используется чтобы "понизить" запрос клиента с num_ctx=32000 до loaded_n_ctx=16384,
+// когда prompt помещается в текущий контекст.
+//
+// Возвращает nil если body не JSON или не содержит options/num_ctx (тогда caller
+// fallback'нет на reload — безопасно).
+func patchNumCtxInBody(body []byte, newNCtx int) []byte {
+	if len(body) == 0 || newNCtx <= 0 {
+		return nil
+	}
+	var req map[string]interface{}
+	if err := json.Unmarshal(body, &req); err != nil {
+		return nil
+	}
+	patched := false
+	// Ollama: options.num_ctx
+	if opts, ok := req["options"].(map[string]interface{}); ok {
+		if _, exists := opts["num_ctx"]; exists {
+			opts["num_ctx"] = float64(newNCtx)
+			patched = true
+		}
+	}
+	// OpenAI / generic: top-level num_ctx
+	if !patched {
+		if _, exists := req["num_ctx"]; exists {
+			req["num_ctx"] = float64(newNCtx)
+			patched = true
+		}
+	}
+	if !patched {
+		return nil
+	}
+	out, err := json.Marshal(req)
+	if err != nil {
+		return nil
+	}
+	return out
 }
 
 // preflightNCtxReloadIfNeededSync — синхронная версия preflight.
@@ -540,9 +631,10 @@ func (p *Proxy) preflightNCtxReloadIfNeededSync(
 	ctx context.Context,
 	backendID, modelName string,
 	bodyBuf []byte,
+	requestPath string,
 ) (modifiedBody []byte, needsProxy bool, errMsg string, statusCode int, retryAfter int) {
 	// Сначала делаем все проверки (как в async версии).
-	body, ok, msg, status := p.preflightNCtxReloadIfNeeded(ctx, backendID, modelName, bodyBuf)
+	body, ok, msg, status := p.preflightNCtxReloadIfNeeded(ctx, backendID, modelName, bodyBuf, requestPath)
 	if ok || status == http.StatusOK {
 		// Можно проксировать сразу (reload не нужен или ошибка до запуска reload).
 		return body, true, "", http.StatusOK, 0

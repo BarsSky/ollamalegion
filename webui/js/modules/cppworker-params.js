@@ -47,8 +47,13 @@
     const TIMEOUT_MIN = 0;
     const TIMEOUT_MAX = 24 * 3600; // 24ч максимум
 
-    // Max gpu layers (верхний предел для slider/number). -1 = все, 0 = CPU only.
-    const GPU_LAYERS_MIN = -1;
+    // Max gpu layers (верхний предел для slider/number).
+    // -2 = AUTO (Round 23, 2026-08-04): cppworker auto-рассчитывает на основе
+    //      modelSize, availableVRAM, requestedNCtx. Подробнее cmd/cppworker/inference.go.
+    // -1 = все слои на GPU (требует больше VRAM)
+    //  0 = CPU-only (модель целиком в RAM через mmap, медленно)
+    //  N = явное число слоёв на GPU (1..200)
+    const GPU_LAYERS_MIN = -2;
     const GPU_LAYERS_MAX = 200;
     const BATCH_SIZE_MIN = 0;
     const BATCH_SIZE_MAX = 4096;
@@ -93,7 +98,12 @@
         meta.push('n_ctx=' + ctxFormatted);
         if (profile.batchSize && profile.batchSize > 0) meta.push('batch=' + profile.batchSize);
         if (profile.numGpuLayers !== 0 && profile.numGpuLayers !== undefined) {
-            meta.push('gpuLayers=' + (profile.numGpuLayers === -1 ? 'all' : profile.numGpuLayers));
+            // Round 23 (2026-08-04): -2 = AUTO (auto-рассчёт gpu_layers по modelSize+VRAM+ctx)
+            let gpuDisplay;
+            if (profile.numGpuLayers === -1) gpuDisplay = 'all';
+            else if (profile.numGpuLayers === -2) gpuDisplay = 'AUTO';
+            else gpuDisplay = profile.numGpuLayers;
+            meta.push('gpuLayers=' + gpuDisplay);
         }
         // Boolean overrides (3-state)
         const flags = [];
@@ -267,7 +277,7 @@
                     </div>
                     <div class="wizard-field">
                         <label>${escapeHtml(I18N.t('settings.profiles.num_gpu_layers', 'Num GPU Layers (опционально)'))}</label>
-                        <input type="number" id="wizNumGpuLayers" value="${state.numGpuLayers}" min="${GPU_LAYERS_MIN}" max="${GPU_LAYERS_MAX}" placeholder="0 = не задано, -1 = все слои">
+                        <input type="number" id="wizNumGpuLayers" value="${state.numGpuLayers}" min="${GPU_LAYERS_MIN}" max="${GPU_LAYERS_MAX}" placeholder="-2=AUTO, -1=все, 0=CPU only">
                     </div>
                     <div class="wizard-field">
                         <label>${escapeHtml(I18N.t('settings.profiles.notes', 'Заметки'))}</label>

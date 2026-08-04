@@ -25,7 +25,11 @@ RUN git init && git add -A && git -c user.name=docker -c user.email=docker@build
 
 # Round 15 follow-up (2026-07-29): --mount=type=cache,target=/root/.ccache
 # персистит ccache между билдами.
-RUN --mount=type=cache,target=/root/.ccache \
+#
+# Round 23 (2026-08-04) FIX: mode/uid/gid добавлены (см. Dockerfile.gpu
+# подробный комментарий). Также работает только с persistent buildx
+# container (docker buildx create --driver docker-container --use).
+RUN --mount=type=cache,id=ccache,target=/root/.ccache,mode=0755,uid=0,gid=0 \
     mkdir -p build && cd build && \
     cmake .. \
       -DGGML_CUDA=ON \

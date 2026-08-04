@@ -20,6 +20,7 @@
 # Build / coverage / generated dirs
 bin/
 build/
+build-*/
 coverage/
 out/
 

@@ -20,6 +20,19 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
+
+# Round 23 (2026-08-04): ВКЛЮЧАЕМ BuildKit глобально.
+# Без этого:
+#   - `--mount=type=cache,target=/root/.ccache` в docker/cppworker/Dockerfile.gpu
+#     ИГНОРИРУЕТСЯ → ccache всегда пустой → каждый билд = полная перекомпиляция
+#     CUDA (15-20 мин вместо 1-2 мин с инкрементной пересборкой).
+#   - `--mount=type=cache,target=/go/pkg/mod` для Go modules тоже не работает.
+#   - BuildKit cache mounts требуют `DOCKER_BUILDKIT=1` (или docker buildx).
+#
+# Безопасно для всех Dockerfile'ов: legacy builders без mount'ов работают как раньше,
+# просто добавляется BuildKit-монтирование для ccache/Go modules.
+$env:DOCKER_BUILDKIT = "1"
+
 Push-Location $PSScriptRoot\..
 try {
     if (-not $Balancer -and -not $WebUI -and -not $Agent -and -not $CppWorker) {

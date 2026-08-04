@@ -124,6 +124,9 @@ plugins / Hermes (все клиенты) ответ обрывался на се
   Per-model profile override остаётся приоритетным.
 - **WebUI**: новая зависимость `EventSource` API — поддерживается всеми
   современными браузерами, fallback на polling для старых.
+- **CORS Expose-Headers** (`X-Model-Context-Warning`,
+  `X-Model-Context-Suggestion`, `X-Model-Adjusted-NPredict`) — WebUI может
+  видеть headers в cross-origin запросах.
 
 ### Unaddressed (v0.5.14+)
 

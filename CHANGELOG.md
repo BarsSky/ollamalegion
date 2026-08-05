@@ -5,6 +5,81 @@
 Формат ведётся в соответствии с [Keep a Changelog](https://keepachangelog.com/ru/1.0.0/),
 и этот проект придерживается [Semantic Versioning](https://semver.org/lang/ru/).
 
+## [0.5.15 — 2026-08-05]
+
+PATCH-релиз. **Bug fix: order-of-checks — disabled-profile check moved to ServeHTTP**.
+
+### 🐛 Bug fix
+
+#### gemma-4 (и другие disabled-модели) возвращали неправильную ошибку
+
+**Проблема**: в v0.5.14 follow-up (commit `b7422a3`) мы добавили `disabled: true` в
+профиль gemma-4, чтобы выходить из upstream GGML_ASSERT crash-loop'а. Но
+проверка `prof.Disabled` была слишком глубоко в коде — она срабатывала только в
+`executeLlamaCppLoad` (внутри `ModelManager`), а в некоторых code-paths до
+неё запрос не доходил. Наблюдалось три разных симптома:
+
+1. **Mixed-mode main proxy** (default bundled-full: 1 llama.cpp backend,
+   `operatingMode="standard"`):
+   ```
+   /api/chat → ServeHTTP → routeRequest (bt=="" → fall through) →
+   selectBackend → proxyRequest → POST http://cppworker-gpu:18092/v1/chat/completions
+   ```
+   `ensureModelLoadedOnBackend` НЕ вызывается в этом пути. Запрос летит
+   напрямую в cppworker → SIGABRT в `ggml-backend.cpp:1367`
+   (`GGML_ASSERT n_inputs < GGML_SCHED_MAX_SPLIT_INPUTS`) → container crash.
+
+2. **Single-mode (llamacpp_router)**: `Route → handleChat → ensureModelLoadedOnBackend`.
+   `isModelReadyOnBackend` возвращал `true` для уже-загруженной gemma-4
+   (cppworker запущен с ней при старте, `n_ctx=32768`) → функция
+   возвращала `true, nil` ДО disabled-check → запрос шёл в inference →
+   cppworker SIGABRT.
+
+3. **Circuit breaker открывался на disabled-модели**: после 3-х
+   `auto-load refused (disabled)` ответов breaker (v0.5.14) открывался,
+   и пользователь видел непонятный
+   `circuit breaker open for backend=cppworker-gpu-bundled-agent
+   model=gemma-4-E4B-it-Q4_K_M (until ...)` вместо
+   `model is marked as disabled in profile`.
+
+**Что изменилось** (`internal/balancer/proxy.go` + `llamacpp_backend_helpers.go`):
+- **Disabled-check переехал в самый верх `ServeHTTP`** — сразу после
+  `parseRequestBody()` и `recordRecentClientParsed()`, **до** `routeRequest`,
+  `selectBackend`, `proxyRequest`. Это единственное место, которое
+  ВСЕГДА срабатывает, независимо от bt / routing path / backend type.
+- В `ensureModelLoadedOnBackend` остался **второй** disabled-check
+  (на случай, если кто-то вызовет функцию напрямую — например,
+  warmup scheduler) — **перед** `isModelReadyOnBackend` И **перед**
+  circuit breaker check. Так disabled-модель не может инкрементировать
+  breaker, даже если её запросы по какой-то причине доходят до
+  `ensureModelLoadedOnBackend`.
+
+**Тесты** (`internal/balancer/load_order_test.go`, 3 новых, all PASS):
+- `TestEnsureModelLoaded_DisabledProfile_BypassesBreaker`: 5 вызовов подряд
+  возвращают disabled-error, cppworker получает 0 load-requests.
+- `TestEnsureModelLoaded_DisabledProfile_DoesNotIncrementBreaker`: 10
+  disabled-refusals оставляют breaker в initial state.
+- `TestEnsureModelLoaded_EnabledModel_StillUsesBreaker`: enabled-модели
+  продолжают трипать breaker после 3 failures (no regression).
+
+**Live verify (bundled-full, gemma-4, profile.disabled=true, 5 calls)**:
+- До фикса: 5× `upstream returned HTTP 500` (cppworker SIGABRT) ИЛИ
+  `circuit breaker open` после 3-й попытки.
+- После фикса: 5× HTTP 503 с чистым сообщением:
+  ```json
+  {"error":"model \"gemma-4-E4B-it-Q4_K_M\" is marked as disabled in profile
+   (broken: see profile.notes). Request refused. Use a different model or
+   remove the disabled flag from the profile."}
+  ```
+
+**Backward compat**: enabled-модели ведут себя ровно как раньше (3 unit-test'а
+подтверждают). Disabled-check no-op для моделей без профиля или с
+`Disabled=false`.
+
+**Refs**:
+- v0.5.14 follow-up (commit `b7422a3`): original disabled flag (insufficient — bypassed в mixed mode).
+- v0.5.15 (commit `8b2ce1f`): финальный fix на уровне ServeHTTP.
+
 ## [0.5.14 — 2026-08-05]
 
 PATCH-релиз. **Bug fixes: cppworker keepalive format + bundled-full duplicate backend**.

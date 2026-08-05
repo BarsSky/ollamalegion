@@ -162,6 +162,94 @@ Cline CLI, ollama-python — бросали `invalid json: : keepalive` на К�
   ≥24GB VRAM.
 
 
+
+### 🐛 Bug fixes (continued)
+
+#### Balancer circuit breaker integration + gemma-4 SIGABRT crash loop fix (live verified 2026-08-05)
+
+**Issue discovered during Cline VSCode + bundled-full E2E testing:**
+
+Cline VSCode OpenAI Compatible → balancer 18080 → cppworker 18092
+→ `executeLlamaCppLoad` triggered auto-load of gemma-4-E4B-it-Q4_K_M
+(profile: n_ctx=8192, numGpuLayers=-1). Cppworker loaded the model
+without running AutoTuneNCtx (it only runs in handleReloadModel, not in
+handleLoadWithParams used by balancer), so weights + KV cache exceeded
+8GB VRAM. During inference, upstream llama.cpp triggered:
+
+    /build/llama.cpp/ggml/src/ggml-backend.cpp:1367:
+    GGML_ASSERT(n_inputs < GGML_SCHED_MAX_SPLIT_INPUTS) failed
+    SIGABRT: abort
+
+Cline retried → crash loop. Even n_ctx=2048 (lowered profile) didn't help
+— same GGML_ASSERT.
+
+**Fix 1: AutoTuneNCtx в handleLoadWithParams (cmd/cppworker/handlers_model.go:430-470)**
+
+Now `handleLoadWithParams` calls `calculateLazyLoadOpts` (the same function
+used by `ensureModelLoaded` for lazy-load) BEFORE the actual load. Reads
+GGUF header (cached in ModelManager), runs the 3-stage fallback:
+- Stage 1: requested n_ctx + gpu_layers → exact fit
+- Stage 2: reduce gpu_layers (partial offload) + mmap rest to RAM
+- Stage 3: gpu_layers=0 + n_ctx = maxViable (cpu-only)
+
+This fixes OOM/segfault from bad memory layout on first load.
+Skipped when client explicitly passes OverrideTensors (per-tensor routing
+is more complex, don't break opt-in advanced flow).
+
+**Fix 2: Disabled profile flag (pkg/types/balancing.go + internal/balancer/model_management.go)**
+
+`LlamaCppModelProfile` gets new field:
+
+```go
+Disabled bool `json:"disabled,omitempty"`
+```
+
+In `executeLlamaCppLoad`, if the model profile has `disabled=true`,
+the balancer refuses auto-load with a clear error:
+
+    model "gemma-4" is marked as disabled in profile (broken: see
+    profile.notes). Auto-load refused. Use a different model or
+    remove the disabled flag from the profile.
+
+This breaks the crash loop for known-broken models. User must manually
+PUT the profile (via WebUI or API):
+
+    PUT /api/v1/cppworker/model-profiles/gemma-4-E4B-it-Q4_K_M
+    Body: {"disabled": true, "contextLength": 2048, "numGpuLayers": -1,
+            "notes": "upstream GGML_ASSERT, see CHANGELOG"}
+
+Tests: `internal/balancer/load_disabled_test.go` (2 new, all PASS):
+- `TestExecuteLlamaCppLoad_DisabledProfile_Refused`: 0 POST to
+  /api/models/load for disabled model (critical — load would crash)
+- `TestExecuteLlamaCppLoad_EnabledProfile_LoadsNormally`: sanity check
+
+**Heuristic cap (C) — откатил, фундаментально ненадёжно**
+
+Tried `applyGGMLSchedulerCap` with `ops = n_ctx * n_heads * (n_embd/head_dim)`:
+- gemma-4 (crashes) n_ctx=8192 ops=8.39M → medium cap 4096
+- Qwen3-4B (works) n_ctx=32768 ops=33.5M → high cap 2048 ← false-positive
+- llama-3.1-8B (works) n_ctx=8192 ops=8.39M → medium cap 4096 ← needless
+
+The upstream llama.cpp scheduler split depends on per-graph partitioning
+(not just op count), so op-based heuristic cannot distinguish crashing
+from working models. Rely on D (disabled flag, manual) instead. For
+auto-detection of unknown broken models, B (dry-run inference) is the
+right approach — deferred to v0.5.15.
+
+**Live verify (bundled-full):**
+- Qwen3-Instruct-2507-q4km via balancer 18080: HTTP 200 in 1.5s ✅
+- gemma-4-E4B-it-Q4_K_M via balancer 18080: HTTP 503 with clean error
+  message, NO SIGABRT, cppworker uptime unchanged (2h, no auto-restart) ✅
+- Cline VSCode OpenAI Compatible (baseUrl=http://host:18080, model=Qwen3):
+  E2E path works (gemma-4 path gracefully refused)
+
+**Known side-issue: agent `RunningModels` shows null in /api/v1/models**
+
+Agent's llama_collector.go reports Models=0 even when models are loaded
+on cppworker. Doesn't affect routing/auto-load (still works), but
+WebUI may show empty model list. Tracked separately.
+
+
 ## [0.5.13 — 2026-08-04]
 
 PATCH-релиз. **Bug fixes: WebUI settings busy + n_ctx overflow detection + long-conversation timeouts**.

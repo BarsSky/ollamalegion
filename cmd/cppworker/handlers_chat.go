@@ -758,13 +758,23 @@ func writeChatStreamResponseWithTools(w http.ResponseWriter, r *http.Request, mo
 	var outputBuf strings.Builder
 
 	// Round 6 Fix 5: heartbeat goroutine prevents idle-timeout during
-	// long generations. SSE comment ": keepalive\n\n" is ignored by
-	// Ollama/OpenWebUI clients but prevents TCP idle disconnect.
+	// long generations.
+	//
+	// Round 27 (v0.5.14 follow-up): /api/chat (Ollama native) is NDJSON,
+	// not SSE. SSE comment ": keepalive\n\n" was being parsed as JSON
+	// by Cline and other strict NDJSON clients, causing "invalid json"
+	// spam. Use a valid NDJSON object `{"keepalive":true}` instead —
+	// NDJSON parsers parse it as a no-content chunk and continue.
+	// Also bumped interval from 100ms to 15s default (same as OpenAI
+	// SSE handler) — 100ms × N seconds of generation = thousands of
+	// useless chunks. 15s × N still keeps TCP alive (typical proxy
+	// idle-timeout is 30-60s).
+	keepaliveInterval := getHeartbeatInterval(15 * time.Second)
 	heartbeatStop := make(chan struct{})
 	heartbeatDone := make(chan struct{})
 	go func() {
 		defer close(heartbeatDone)
-		ticker := time.NewTicker(100 * time.Millisecond)
+		ticker := time.NewTicker(keepaliveInterval)
 		defer ticker.Stop()
 		for {
 			select {
@@ -773,7 +783,7 @@ func writeChatStreamResponseWithTools(w http.ResponseWriter, r *http.Request, mo
 			case <-ctx.Done():
 				return
 			case <-ticker.C:
-				if _, err := fmt.Fprintf(w, ": keepalive\n\n"); err != nil {
+				if _, err := fmt.Fprintf(w, "{\"keepalive\":true}\n"); err != nil {
 					return
 				}
 				flusher.Flush()

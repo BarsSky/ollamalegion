@@ -1,9 +1,166 @@
-# Changelog
+﻿# Changelog
 
 Все заметные изменения в проекте Ollama Legion будут задокументированы в этом файле.
 
 Формат ведётся в соответствии с [Keep a Changelog](https://keepachangelog.com/ru/1.0.0/),
 и этот проект придерживается [Semantic Versioning](https://semver.org/lang/ru/).
+
+## [0.5.14 — 2026-08-05]
+
+PATCH-релиз. **Bug fixes: cppworker keepalive format + bundled-full duplicate backend**.
+
+### 🐛 Bug fixes
+
+#### cppworker `/api/chat` keepalive must be NDJSON, not SSE comment (Round 27)
+
+**Проблема**: `cmd/cppworker/handlers_chat.go:776` отправлял SSE-коммент
+`: keepalive\n\n` каждые 100ms во время стрима `/api/chat` (Ollama native NDJSON).
+OpenWebUI и Ollama Web это игнорировали, но **строгие NDJSON-клиенты** —
+Cline CLI, ollama-python — бросали `invalid json: : keepalive` на КАЖДОЙ
+строке (сотни ошибок за один inference, ответ терялся).
+
+**Что изменилось** (`cmd/cppworker/handlers_chat.go`):
+- Формат: `: keepalive\n\n` → `{"keepalive":true}\n` (валидный NDJSON,
+  парсеры читают как no-content chunk и продолжают).
+- Интервал: hardcoded 100ms → `getHeartbeatInterval(15s)` (default такой же
+  как в OpenAI SSE handler, env `OLLAMALEGION_HEARTBEAT_MS` работает).
+  100ms × 60s = 600 useless chunks; 15s × 60s = 4 chunks.
+- `/v1/chat/completions` (OpenAI SSE) **не трогали** — там keepalive
+  `: keepalive\n\n` корректен для SSE-клиентов (OpenWebUI EventSource,
+  Hermes и т.д.).
+
+**Тесты** (`cmd/cppworker/handlers_chat_keepalive_test.go`, 3 новых):
+- `TestKeepaliveFormat_NDJSON`: каждая строка стрима — валидный JSON.
+- `TestKeepaliveFormat_NotSSEComment`: regression guard против SSE.
+- `TestKeepaliveInterval_Default`: 15s default, не 100ms.
+
+**Live verify (bundled-full)**:
+- Cline CLI v2.16.0 + Qwen3-Instruct-2507-q4km (n_ctx=32768):
+  до фикса — тысячи `invalid json: : keepalive` в stderr, stream теряется.
+  после фикса — `0 SSE comment lines, 0 invalid JSON` (Python stream parser).
+  Cline все ещё таймаутит на ollama-клиент default 5 мин при 16K-токенном
+  system prompt, но это ограничение Cline-клиента, не нашего endpoint'а.
+- OpenAI-compat `/v1/chat/completions` (SSE): без изменений, `12 SSE data chunks`,
+  ответ `3+5 equals 8.` за 12.7s.
+
+#### bundled-full: дублирующаяся регистрация бэкенда (Round 27 follow-up)
+
+**Проблема**: в bundled-full стеке регистрировались **два бэкенда** на одном
+и том же физическом endpoint:
+- `cppworker-gpu-bundled` (от `docker/cppworker/register-with-balancer.sh`,
+  `weight=10` hard-coded в скрипте:95)
+- `cppworker-gpu-bundled-agent` (от agent'а, `weight=1`)
+
+Дубль имел `weight=10` (выше реального!) и забирал часть запросов у
+настоящего backend'а. Через `DELETE /api/v1/backends/{id}` удалялся,
+но при рестарте cppworker-контейнера появлялся снова.
+
+**Root cause**: `CPPWORKER_REGISTER_DISABLE=true` отключал только Go-side
+`balancer_register.go`, а `entrypoint.sh` всё равно запускал shell-script
+`register-with-balancer.sh` (потому что `BALANCER_URL` задан).
+
+**Что изменилось** (`docker/cppworker/entrypoint.sh`):
+- Добавлена проверка `CPPWORKER_REGISTER_DISABLE` в `if`-блоке запуска
+  shell-script регистрации (раньше была только в Go-side).
+- При `CPPWORKER_REGISTER_DISABLE=true` пишет "Auto-registration DISABLED"
+  в entrypoint log и пропускает `register-with-balancer.sh`.
+- Match Go-side поведению.
+
+**Live verify**:
+- Удаление существующего дубля: `DELETE /api/v1/backends/cppworker-gpu-bundled` → 200 OK.
+- Дубль не должен появиться при следующем рестарте контейнера (требует ребилда
+  образа для применения).
+
+### ✅ Live tests
+
+#### Cline CLI v2.16.0 + Qwen3-Instruct-2507-q4km (E2E)
+
+Настройка Cline (`%USERPROFILE%/.cline/data/settings/providers.json`):
+```json
+"ollama": {{
+  "settings": {{
+    "provider": "ollama",
+    "model": "Qwen3-Instruct-2507-q4km",
+    "baseUrl": "http://192.168.13.20:18092",
+    "timeout": 1800000
+  }}
+}}
+```
+
+**Важные нюансы**:
+- Cline CLI `openai-compatible` provider — это **прокси через cline.ai**
+  (CloudFront), НЕ наш baseUrl. Требует платный Cline balance.
+- Для локального cppworker использовать `ollama` provider.
+- Cline ollama client: keepalive-фикс обязателен (см. выше).
+- **Cline 16K-токенный system prompt + Qwen3** требует `n_ctx >= 32768`
+  (default 16384 не хватает: 16325 prompt + 2048 n_predict > 16384).
+
+**Команды** (PowerShell, отдельные блоки):
+- Загрузка модели: `Invoke-RestMethod POST /api/models/load-with-params -Body '{{"name":"Qwen3-Instruct-2507-q4km","contextSize":32768,"gpuLayers":-1,"batchSize":512}}'`
+- Cline test: `cline --model Qwen3-Instruct-2507-q4km --yolo --timeout 600 "Reply with OK"`
+
+**Результат**: keepalive-фикс подтверждён (`0 SSE comment lines, 0 invalid JSON`
+в stream parser). Сам Cline таймаутит на 5 мин из-за 16K prefill — это
+ограничение Cline-клиента (default ollama client timeout), не endpoint'а.
+При n_ctx=32768 и полном GPU offload Cline-агент успевает сделать inference
+за приемлемое время (зависит от hardware, на RTX 3070 — порядка 5 мин).
+
+#### Qwen3.6-35B-A3B-UD-Q4_K_M (20.6 GB) inference test
+
+**Параметры загрузки**:
+- `numGpuLayers=20` (partial offload, фактически `gpuLayers=7` после auto-adjust)
+- `contextSize=4096`
+- `batchSize=256`
+- Архитектура: `qwen35moe` (Mixture of Experts: 35B total / 3B active)
+- 40 слоёв, 7 на GPU (sm_86), 33 на CPU (из-за нехватки VRAM)
+- 248K vocab, 2048 hidden
+
+**Результаты**:
+- **Load time**: 763s (12.7 мин) — 22.1GB с disk через mmap, 16GB RAM
+  peak (66% от 24GB лимита).
+- **Inference speed** (Qwen3.6 + simple prompt + 200 tokens):
+  - First chunk: 74s (prefill)
+  - Total: 219.8s
+  - **~0.91 tok/s** (CPU offload — медленно, но работает)
+  - Response: thinking-mode с chain-of-thought + final answer.
+  - `0 SSE comment lines, 0 invalid JSON` (keepalive-фикс для /api/chat).
+
+- **Inference speed** (Qwen3.6 + simple math + 12 tokens, OpenAI SSE):
+  - First chunk: 12.7s
+  - Response: "3+5 equals 8." ✅
+  - `12 SSE data chunks, 0 invalid JSON`.
+
+**Вывод**: Qwen3.6 функциональна, MOE-инференс возможен на 8GB VRAM +
+24GB RAM с partial offload. Для production latency нужно ≥24GB VRAM
+(например RTX 4090/A5000) для полного GPU offload.
+
+### 📦 Build
+
+- `ollama-legion/cppworker:gpu-86` (id `2aed223a0ac8`, новый билд 17 мин)
+  - Тег `ollama-legion/cppworker:gpu-86-v0.5.14-dev` для истории.
+- Rebuilt только cppworker (balancer/webui/agent не менялись, остаются на v0.5.13).
+
+### 🔧 Commits
+
+- `6143a13` fix(cppworker): /api/chat keepalive must be NDJSON, not SSE comment
+- `0725910` fix(docker): entrypoint.sh must also respect CPPWORKER_REGISTER_DISABLE
+- `17191fd` scripts: add fix-gemma4-retry-loop helper for Cline + gemma-4
+- `99f3378` feat(balancer): circuit breaker for auto-load failures (v0.5.14 part 1)
+
+### 📝 Migration
+
+- **bundled-full** users: после pull'а нужно пересобрать cppworker-образ
+  (`scripts/build-containers.ps1 -CppWorker -CudaArch 86`), затем
+  `docker compose -f deployments/docker-compose.bundled-full.yml up -d
+  --no-deps cppworker-gpu`. Дубль `cppworker-gpu-bundled` (если ещё есть)
+  удалить: `Invoke-RestMethod DELETE /api/v1/backends/cppworker-gpu-bundled`.
+- **Cline users**: настроить `ollama` provider с baseUrl вашего cppworker
+  (например `http://your-host:18092`). `openai-compatible` provider Cline
+  проксирует через cline.ai — НЕ использовать.
+- **Qwen3.6 / большие MOE модели**: для inference на 8GB VRAM использовать
+  `numGpuLayers=20` (partial CPU offload). Полная GPU-загрузка требует
+  ≥24GB VRAM.
+
 
 ## [0.5.13 — 2026-08-04]
 

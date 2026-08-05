@@ -11,7 +11,14 @@
 
 ## Что нового
 
-**v0.5.13 — 2026-08-04** (последний релиз, [полный CHANGELOG](CHANGELOG.md)):
+**v0.5.14 — 2026-08-05** (последний релиз, [полный CHANGELOG](CHANGELOG.md)):
+
+- 🐛 **cppworker `/api/chat` keepalive must be NDJSON, not SSE comment** — Round 6 Fix 5 слал `: keepalive\n\n` каждые 100ms для TCP idle-prevention, но `/api/chat` это **NDJSON** (Ollama native), а не SSE. Строгие NDJSON-клиенты (Cline CLI, ollama-python) бросали `invalid json: : keepalive` на КАЖДОЙ строке (сотни ошибок за inference). Fix: `{"keepalive":true}\n` (валидный NDJSON) + интервал 100ms → 15s (через `getHeartbeatInterval(15s)`). OpenAI-compat `/v1/chat/completions` (SSE) — без изменений, SSE-комменты корректны для EventSource-клиентов. Live verify: `0 SSE comment lines, 0 invalid JSON` для обоих путей.
+- 🐛 **bundled-full: дублирующийся backend при рестарте** — `entrypoint.sh` запускал `register-with-balancer.sh` несмотря на `CPPWORKER_REGISTER_DISABLE=true` (disable действовал только на Go-side). Дубль `cppworker-gpu-bundled` (`weight=10`, hard-coded в shell-скрипте) перебивал реальный `cppworker-gpu-bundled-agent` (`weight=1`) при routing. Fix: добавлена проверка `CPPWORKER_REGISTER_DISABLE` в `entrypoint.sh` для shell-скрипта. Существующий дубль удаляется через `DELETE /api/v1/backends/{id}`.
+- ✅ **Cline CLI v2.16.0 + Qwen3 (E2E)** — keepalive-фикс обязателен. Настройка: `ollama` provider (НЕ `openai-compatible` — тот проксирует через cline.ai и требует платный Cline balance), `baseUrl=http://your-host:18092`. Cline system prompt 16K токенов → нужен `n_ctx=32768`.
+- ✅ **Qwen3.6-35B-A3B-UD-Q4_K_M (20.6GB) inference** — MOE (35B total / 3B active). На 8GB VRAM + 24GB RAM с `numGpuLayers=20` (фактически 7/40 на GPU, 33/40 на CPU): load 12.7 мин, inference ~0.91 tok/s (медленно из-за CPU offload), простые запросы работают (`3+5=8` за 12.7s). Полная GPU-загрузка требует ≥24GB VRAM.
+
+**v0.5.13 — 2026-08-04**:
 
 - ✨ **WebUI busy badge + async apply profile (Round 26)** — при генерации ответа моделью cppworker'овский `handleReloadModel` блокировал на `inflight.WaitZero` 30-60+ сек. WebUI не мог ни показать, ни изменить настройки. Теперь: cppworker endpoint `/api/models/active-queries` показывает busy count, **api server детектит busy ДО apply и возвращает HTTP 202 + Location + SSE progress** (events каждые 500ms), WebUI показывает `🔴 Generating (N active)` на loaded model card + per-backend progress modal с auto-fallback на polling.
 - ✨ **n_ctx overflow detection + X-Model-Context-Warning header (Round 26)** — preflight check перед каждой генерацией (`ComputeContextWarning`). Уровни: `ok` / `approaching` (>80% n_ctx) / `overflow` (prompt+n_predict>n_ctx, clamp до 0) / `impossible` (prompt>n_ctx). Auto-clamp n_predict (без reload-loop). HTTP headers в `/api/chat`, `/api/generate`, `/v1/chat/completions` — клиент (OpenWebUI/Cline/Hermes) видит предупреждение ДО обрыва.

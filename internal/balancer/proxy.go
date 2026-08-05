@@ -24,27 +24,27 @@ import (
 
 // Proxy - HTTP прокси для балансировки запросов
 type Proxy struct {
-	config          *types.LoadBalancerConfig
-	backends        map[string]*BackendState
-	mu              sync.RWMutex
-	roundRobin      int
-	sessionMgr      *SessionManager
-	metricsMgr      *MetricsManager
-	queueMgr        *QueueManager
-	predictor       *Predictor
+	config     *types.LoadBalancerConfig
+	backends   map[string]*BackendState
+	mu         sync.RWMutex
+	roundRobin int
+	sessionMgr *SessionManager
+	metricsMgr *MetricsManager
+	queueMgr   *QueueManager
+	predictor  *Predictor
 	// healthChecker — опциональная зависимость. Выставляется через SetHealthChecker
 	// после конструктора (избегаем circular dep). Используется для MarkUnhealthy
 	// при persistent connection failures (Round 8 fix).
-	healthChecker           *HealthChecker
-	client                    *http.Client    // Клиент для обычных запросов
-	streamingClient           *http.Client    // Клиент для streaming/SSE запросов (без таймаута)
-	streamingTransportBase    *http.Transport // Базовый Transport для per-request клонов с ResponseHeaderTimeout
-	statePath       string          // Путь к state файлу
-	saveTimer       *time.Timer     // Таймер для debounced autosave
-	saveMu          sync.Mutex      // Мьютекс для защиты saveTimer
-	totalRequests   int64           // Atomic: всего запросов через прокси
-	ollamaRouter    *OllamaRouter   // Маршрутизатор Ollama API endpoint'ов
-	llamaCppRouter  *LlamaCppRouter // Маршрутизатор llama.cpp API endpoint'ов
+	healthChecker          *HealthChecker
+	client                 *http.Client    // Клиент для обычных запросов
+	streamingClient        *http.Client    // Клиент для streaming/SSE запросов (без таймаута)
+	streamingTransportBase *http.Transport // Базовый Transport для per-request клонов с ResponseHeaderTimeout
+	statePath              string          // Путь к state файлу
+	saveTimer              *time.Timer     // Таймер для debounced autosave
+	saveMu                 sync.Mutex      // Мьютекс для защиты saveTimer
+	totalRequests          int64           // Atomic: всего запросов через прокси
+	ollamaRouter           *OllamaRouter   // Маршрутизатор Ollama API endpoint'ов
+	llamaCppRouter         *LlamaCppRouter // Маршрутизатор llama.cpp API endpoint'ов
 
 	// llamaCppMetricsPoller синхронизирует metricsMgr.llamaMetrics[].LoadedModels
 	// с фактическим состоянием cppworker через периодический poll /api/models.
@@ -114,7 +114,7 @@ type Proxy struct {
 	// для замены глобальных таймаутов на per-model.
 	modelLatencyTracker *ModelLatencyTracker
 
-		// metricsHTTPDoer — HTTP-клиент для heartbeat /api/info polling
+	// metricsHTTPDoer — HTTP-клиент для heartbeat /api/info polling
 	// в preflightNCtxReloadIfNeededSync (см. queryBackendReloadPending).
 	// По умолчанию nil → используется реальный *http.Client{Timeout: 2s}.
 	// Тесты могут подменить на in-memory stub, чтобы не зависеть от сети
@@ -496,6 +496,34 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	// Трекинг всех клиентов для монитора (использует уже распарсенные данные)
 	p.recordRecentClientParsed(r, parsed)
+
+	// Round 27 follow-up (v0.5.15): disabled-profile check на самом раннем
+	// этапе ServeHTTP — до routeRequest, до selectBackend, до любого proxy.
+	//
+	// Почему здесь, а не в ensureModelLoadedOnBackend (как было в v0.5.15.1):
+	//   - В mixed mode (bt == "") /api/chat и /api/generate идут через main
+	//     proxy flow, который НЕ вызывает ensureModelLoadedOnBackend для
+	//     уже-загруженных моделей (они идут сразу в proxyRequest).
+	//   - Только llamacpp_router.Route → handleChat вызывает ensureModelLoadedOnBackend,
+	//     но это срабатывает только при bt == BackendTypeLlamaCpp.
+	//   - В default bundled-full config (single llama.cpp backend) bt == "" → fall
+	//     through → proxyRequest → cppworker → SIGABRT.
+	//
+	// Поэтому ранняя проверка здесь — единственное место, которое ВСЕГДА
+	// срабатывает для disabled-модели, независимо от bt и routing path.
+	if model != "" {
+		if prof, ok := p.GetModelProfile(model); ok && prof.Disabled {
+			msg := fmt.Sprintf("model %q is marked as disabled in profile (broken: see profile.notes). "+
+				"Request refused. Use a different model or remove the disabled flag from the profile.",
+				model)
+			ridLog(ctxWithRID).Warnw("ServeHTTP: model disabled in profile, refusing request",
+				"path", r.URL.Path, "model", model, "profileNotes", prof.Notes)
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusServiceUnavailable)
+			_, _ = w.Write([]byte(`{"error":"` + msg + `"}`))
+			return
+		}
+	}
 
 	// Очистка зомби-сессий перед обработкой запроса.
 	// Предотвращает ситуацию "все бэкенды заняты" из-за старых оборванных сессий.

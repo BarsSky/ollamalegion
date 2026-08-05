@@ -29,8 +29,8 @@ type backendInfo struct {
 // возвращаем последний известный snapshot (модели, которые точно были загружены
 // до reload) — polling корректно завершается при их появлении.
 type cppWorkerLastKnown struct {
-	mu       sync.RWMutex
-	models   map[string][]cppWorkerModelState
+	mu        sync.RWMutex
+	models    map[string][]cppWorkerModelState
 	updatedAt map[string]time.Time
 }
 
@@ -316,6 +316,24 @@ func (lr *LlamaCppRouter) ensureModelLoadedOnBackend(backendID, modelName string
 			"backend", backendID)
 		return false, fmt.Errorf("empty model name")
 	}
+	// Round 27 follow-up (v0.5.15): disabled-profile check ПЕРЕД isModelReadyOnBackend
+	// и circuit breaker. Если профиль явно помечен disabled (gemma-4 с upstream
+	// GGML_ASSERT) — сразу отказываем в inference. Без этого:
+	//   1. Если модель уже загружена (cppworker started with it) — isModelReady
+	//      вернёт true, и balancer пойдёт в inference, где cppworker упадёт с
+	//      SIGABRT при n_ctx >= 8192.
+	//   2. Если breaker открыт от прошлых failures — пользователь увидит
+	//      'circuit breaker open' вместо понятного 'disabled'.
+	// И то, и другое — не та диагностика. Disabled-модель должна ВСЕГДА
+	// возвращать одну и ту же чистую ошибку.
+	if prof, ok := lr.proxy.GetModelProfile(modelName); ok && prof.Disabled {
+		msg := fmt.Sprintf("model %q is marked as disabled in profile (broken: see profile.notes). "+
+			"Auto-load refused. Use a different model or remove the disabled flag from the profile.",
+			modelName)
+		ridLog(lr_recentCtx()).Warnw("ensureModelLoadedOnBackend: model disabled in profile, refusing request (no breaker touch)",
+			"backend", backendID, "model", modelName, "profileNotes", prof.Notes)
+		return false, fmt.Errorf("%s", msg)
+	}
 	// Быстрая проверка — может модель уже загружена
 	if lr.isModelReadyOnBackend(backendID, modelName) {
 		ridLog(lr_recentCtx()).Debugw("ensureModelLoadedOnBackend: model already loaded",
@@ -401,6 +419,11 @@ func (lr *LlamaCppRouter) ensureModelLoadedOnBackend(backendID, modelName string
 	// failures в течение failureWindow), НЕ пытаемся load'ить сразу. Это
 	// предотвращает infinite retry loop при upstream bug (gemma-4 GGML_ASSERT
 	// при n_ctx>32768 → cppworker crash → restart → re-load → crash → loop).
+	//
+	// Round 27 follow-up (v0.5.15): disabled-check ПЕРЕНЕСЁН выше (перед
+	// isModelReadyOnBackend) — иначе breaker мог открыться для заведомо
+	// disabled-моделей от прошлых failures, и пользователь видел
+	// 'circuit breaker open' вместо 'marked as disabled'.
 	if skip, reason, until := lr.loadBackoff.shouldSkip(backendID, modelName); skip {
 		ridLog(lr_recentCtx()).Warnw("ensureModelLoadedOnBackend: skipped due to circuit breaker",
 			"backend", backendID, "model", modelName,
@@ -413,10 +436,10 @@ func (lr *LlamaCppRouter) ensureModelLoadedOnBackend(backendID, modelName string
 		"backend", backendID, "model", modelName, "step", "execute_op=load",
 		"numCtx", ctxSize, "gpuLayers", gpuLayers)
 	result := mm.ExecuteOperation(backendID, ModelOpRequest{
-		Operation:  "load",
-		ModelName:  modelName,
+		Operation:   "load",
+		ModelName:   modelName,
 		ContextSize: ctxSize,
-		GPULayers:  gpuLayers,
+		GPULayers:   gpuLayers,
 	})
 
 	if !result.Success {

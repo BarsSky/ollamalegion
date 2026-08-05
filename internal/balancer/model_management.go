@@ -748,6 +748,26 @@ func (mm *ModelManager) pollLoadCompletionUntilLoaded(
 // в момент, когда другая горутина уже грузит эту же модель (другая запрос
 // получил `TryLockLoad=false`, а handleLoadModel ещё не завершил WaitForLoad).
 func (mm *ModelManager) executeLlamaCppLoad(host string, port int, backendID string, req ModelOpRequest) *ModelOpResult {
+	// Round 27 follow-up (v0.5.14 follow-up #2): если у модели стоит профиль
+	// с disabled=true (например, gemma-4 с upstream GGML_ASSERT на любом n_ctx >= 8192)
+	// — отказываем в авто-загрузке с понятной ошибкой. Без этого клиент (Cline/OpenWebUI)
+	// уходит в crash-loop: cppworker SIGABRT → Docker restart → балансер снова
+	// пытается загрузить → опять SIGABRT.
+	if prof, ok := mm.proxy.GetModelProfile(req.ModelName); ok && prof.Disabled {
+		msg := fmt.Sprintf("model %q is marked as disabled in profile (broken: see profile.notes). "+
+			"Auto-load refused. Use a different model or remove the disabled flag from the profile.",
+			req.ModelName)
+		logger.Get().Warnw("executeLlamaCppLoad: model disabled in profile, refusing auto-load",
+			"model", req.ModelName, "backend", backendID, "profileNotes", prof.Notes)
+		return &ModelOpResult{
+			Success:   false,
+			Operation: req.Operation,
+			ModelName: req.ModelName,
+			BackendID: backendID,
+			Error:     msg,
+		}
+	}
+
 	// Round 7: resolve override-tensors (req override > profile > none).
 	overrideTensors, overrideTensorBufts := mm.resolveOverrideTensors(req)
 	useLoadWithParams := len(overrideTensors) > 0 && len(overrideTensors) == len(overrideTensorBufts)

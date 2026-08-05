@@ -198,6 +198,12 @@ type LlamaCppModelProfile struct {
 	UseMmap       *bool  `json:"useMmap,omitempty"`   // nil = не менять
 	Notes         string `json:"notes,omitempty"`     // человеческое описание (для WebUI/API)
 
+	// Disabled — Round 27 follow-up: помечает модель как сломанную (например, gemma-4
+	// с upstream GGML_ASSERT на любом n_ctx >= 8192). Балансер ОТКАЗЫВАЕТСЯ авто-грузить
+	// такие модели — executeLlamaCppLoad возвращает ошибку с объяснением, чтобы клиент
+	// (Cline/OpenWebUI) не уходил в crash-loop.
+	Disabled bool `json:"disabled,omitempty"`
+
 	// Per-model таймауты. 0 = использовать глобальные значения из BalancingSettings.
 	// Позволяют задать бóльшие таймауты для тяжёлых моделей (CPU offload) и
 	// меньшие — для лёгких (GPU-only, fast).

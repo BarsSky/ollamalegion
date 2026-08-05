@@ -435,6 +435,47 @@ func handleLoadWithParams(w http.ResponseWriter, r *http.Request) {
 			"name", modelName, "count", len(req.OverrideTensors))
 	}
 
+	// Round 27 follow-up (v0.5.14 follow-up #3): apply SelectStrategy (memory auto-tune)
+	// BEFORE the actual load. До этого момента AutoTuneNCtx вызывался только в
+	// handleReloadModel — при auto-load через handleLoadWithParams (которую
+	// использует балансер для executeLlamaCppLoad) AutoTuneNCtx не срабатывал.
+	// Это приводило к OOM/crash при загрузке больших моделей с высокими n_ctx.
+	//
+	// Стратегия:
+	//   1. Читаем GGUF header (lazy, уже кэширован в ModelManager).
+	//   2. SelectStrategy подбирает n_ctx/gpu_layers под доступную VRAM + RAM.
+	//   3. Если клиент явно передал n_ctx и оно влезает → не меняем.
+	//   4. Если не влезает → уменьшаем n_ctx (partial offload / cpu-only fallback).
+	//
+	// Skip если клиент явно задал OverrideTensors (per-tensor routing сложнее
+	// пересчитывать, не ломаем opt-in advanced flow).
+	if len(req.OverrideTensors) == 0 && autoTuneNCtxOnLoadEnabled && req.ContextSize != nil {
+		tunedGPULayers := 0
+		if req.GPULayers != nil {
+			tunedGPULayers = *req.GPULayers
+		}
+		tunedOpts, _ := calculateLazyLoadOpts(modelName, *req.ContextSize, tunedGPULayers, currentConfig)
+		if tunedOpts.ContextSize > 0 && tunedOpts.ContextSize != *req.ContextSize {
+			logger.Get().Infow("handleLoadWithParams: applying AutoTuneNCtx from GGUF meta",
+				"name", modelName,
+				"requested_n_ctx", *req.ContextSize,
+				"tuned_n_ctx", tunedOpts.ContextSize,
+				"requested_gpu_layers", tunedGPULayers,
+				"tuned_gpu_layers", tunedOpts.GPULayers)
+			*req.ContextSize = tunedOpts.ContextSize
+			opts.ContextSize = tunedOpts.ContextSize
+		}
+		if tunedOpts.GPULayers != 0 && tunedOpts.GPULayers != tunedGPULayers {
+			if req.GPULayers != nil {
+				*req.GPULayers = tunedOpts.GPULayers
+			}
+			opts.GPULayers = tunedOpts.GPULayers
+		}
+		if tunedOpts.UseMmap {
+			opts.UseMmap = true
+		}
+	}
+
 	logger.Get().Infow("loading model with extended params",
 		"name", modelName, "path", modelPath,
 		"gpuLayers", opts.GPULayers, "ctxSize", opts.ContextSize,

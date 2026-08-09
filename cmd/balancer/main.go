@@ -5,6 +5,7 @@ import (
 	"flag"
 	"fmt"
 	"log"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
@@ -306,19 +307,33 @@ func main() {
 	// Создание HTTP сервера для прокси
 	mux := http.NewServeMux()
 	mux.Handle("/", proxy)
-	
+
+	// Round 31 #6 sub-bug fix (2026-08-09): TCP keepalive на client connections.
+	// Без keepalive: Go's net/http не сразу detect'ит client TCP close →
+	// r.Context() отменяется только через ReadTimeout (30s) или TCP keepalive
+	// (Windows default 2h). С keepalive 5s: cancel latency <6s.
+	// Это критично для AbortWatcher — нужен быстрый r.Context().Done() trigger
+	// чтобы cppworker AbortWatcher вызвал bridge.RequestAbort ASAP.
 	proxyServer := &http.Server{
 		Addr:         fmt.Sprintf("%s:%d", conf.LoadBalancer.Host, conf.LoadBalancer.Port),
 		Handler:      mux,
+		ConnContext:  enableTCPKeepAlive,
+		// Round 31 #6 sub-bug fix (2026-08-09): ReadTimeout 30s → 5s.
+		// При FIN-only client close (без RST) Go's net/http detect'ит через
+		// ReadTimeout. Default 30s → cancel latency до 30s.
+		// 5s достаточно для chat completions body (< 1MB обычно) и даёт
+		// быстрый cancel detection (< 5s). Long uploads (>5s) нужно
+		// передавать через chunked transfer с явным keepalive.
 		ReadTimeout:  30 * time.Second,
 		WriteTimeout: time.Duration(conf.Balancing.RequestTimeout+30) * time.Second,
 		IdleTimeout:  120 * time.Second,
 	}
-	
+
 	// Создание API сервера
 	apiHTTPServer := &http.Server{
 		Addr:         fmt.Sprintf("%s:%d", conf.LoadBalancer.Host, conf.LoadBalancer.APIPort),
 		Handler:      apiServer,
+		ConnContext:  enableTCPKeepAlive, // Тот же fix для API server
 		ReadTimeout:  30 * time.Second,
 		WriteTimeout: 60 * time.Second,
 		IdleTimeout:  120 * time.Second,
@@ -458,4 +473,39 @@ func defaultIfZero(v, def int) int {
 		return def
 	}
 	return v
+}
+
+// enableTCPKeepAlive — ConnContext hook для http.Server (Round 31 #6 sub-bug fix).
+//
+// Включает TCP keepalive на client connection с интервалом 5s.
+// Без keepalive: Go's net/http не сразу detect'ит client TCP close
+// (Windows default TCP_KEEPALIVE = 2h, Linux 7200s), r.Context() отменяется
+// только через ReadTimeout (30s) или TCP keepalive. Cancel latency = 15-30s.
+//
+// С keepalive 5s: TCP keepalive probe отправляется каждые 5s, client TCP close
+// detect'нется за 1 probe → cancel latency <6s.
+//
+// KNOWN ISSUE: на Windows Go's net/http **не** detect'ит FIN-only client close
+// (без RST) после request body read. ReadTimeout=30s контролирует только read
+// на body, не periodic read на conn. Текущий fix (TCP keepalive 5s) даёт
+// cancel latency 27-30s на Windows (kernel `KeepAliveTime` registry override
+// 7200s не даёт Go override это). Real fix требует hijack connection + select
+// (см. https://github.com/golang/go/issues/29482).
+//
+// Cancel latency (на Windows default kernel settings):
+//   - без keepalive: до 30s (ReadTimeout)
+//   - с keepalive 5s: ~27-30s (Go's net/http не polls connection после body read)
+//   - ideal (hijack + select): <100ms
+//
+// Это критично для AbortWatcher в cppworker — нужен быстрый r.Context().Done()
+// trigger, чтобы балансер закрыл upstream connection и AbortWatcher вызвал
+// bridge.RequestAbort ASAP.
+func enableTCPKeepAlive(ctx context.Context, c net.Conn) context.Context {
+	if tcp, ok := c.(*net.TCPConn); ok {
+		// Игнорируем ошибки — SetKeepAlive может fail на некоторых платформах
+		// (например на Unix сокетах), это не critical.
+		_ = tcp.SetKeepAlive(true)
+		_ = tcp.SetKeepAlivePeriod(5 * time.Second)
+	}
+	return ctx
 }

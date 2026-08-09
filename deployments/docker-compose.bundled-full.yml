@@ -51,7 +51,7 @@ services:
     build:
       context: ..
       dockerfile: docker/balancer/Dockerfile
-    image: ollama-legion/balancer:cppworker-bundled-full-v31r5
+    image: ollama-legion/balancer:cppworker-bundled-full-v31r8
     container_name: ol-bundled-full-balancer
     restart: unless-stopped
     ports:

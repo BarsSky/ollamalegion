@@ -19,11 +19,58 @@ import (
 // правильно, но close tag `</think>` может остаться в content).
 //
 // Round 31 (2026-08-09).
+// Round 32 (2026-08-09): добавлены gemma-4 native chat-template форматы
+// (`<|channel>thought...<channel|>`) и Qwen-style `<|think>...<think|>`.
+// cppworker SplitReasoningContent теперь их распознаёт (после фикса в
+// reasoning_content.go), но balancer делает defensive cleanup если
+// (а) cppworker старой версии, (б) tag разорван между чанками и split
+// не сработал, (в) модель вне whitelist IsReasoningModel и reasoning
+// не был отделён на стороне cppworker.
+//
+// ВАЖНО про close-теги: некоторые close разделяются между разными open
+// (`<|channel>thought` и `<|channel>analysis` оба используют `<channel|>`).
+// Для таких shared close мы НЕ делаем ReplaceAll после pair-strip — иначе
+// iter для thought сожрал бы close, нужный для analysis пары.
+// См. sharedClose[i] ниже.
+//
+// Также для orphan strip используем stripWithBoundary (не ReplaceAll)
+// чтобы не сожрать prefix более длинного тега. Например, `<think` без
+// границы сожрал бы `<think|>` (qwen-style с bar-обёрткой).
 func stripReasoningTags(content string) string {
 	// Поддерживаем все 4 типа тегов из thinkTagPairs (cppworker/cmd/cppworker/reasoning_content.go).
-	// Также включаем "<think" (без ">") — gemma-4 иногда эмитит его неполным.
-	openTags := []string{"<think>", "<thinking>", "<reasoning>", "<analysis>", "<think"}
-	closeTags := []string{"</think>", "</thinking>", "</reasoning>", "</analysis>", ""}
+	openTags := []string{
+		"<think>", "<thinking>", "<reasoning>", "<analysis>",
+		// Round 31: <think (без ">") — gemma-4 иногда эмитит неполный open.
+		// stripWithBoundary защищает от strip'а prefix <think|>.
+		"<think",
+		// Round 32: gemma-4 native channel format (chat template canonical).
+		"<|channel>thought\n", "<|channel>thought",
+		// Round 32: gemma-4 alternative analysis channel.
+		"<|channel>analysis\n", "<|channel>analysis",
+		// Round 32: Qwen-style with |...| wrapping.
+		"<|think>",
+		// Round 32: message separator (appears inside channel blocks).
+		"<|message|>",
+	}
+	closeTags := []string{
+		"</think>", "</thinking>", "</reasoning>", "</analysis>",
+		"", // <think — orphan open, no close pair
+		"\n<channel|>", "<channel|>",
+		"\n<channel|>", "<channel|>",
+		"<think|>",
+		"", // <|message|> — не используется как парный close
+	}
+	// sharedClose: true = НЕ делать ReplaceAll на close после pair-strip
+	// (close используется несколькими open — нужно сохранить для следующего iter).
+	// false = close уникален для этого open, можно безопасно strip'ать orphan close.
+	sharedClose := []bool{
+		false, false, false, false,
+		false, // <think has no close
+		true, true, // \n<channel|> and <channel|> used by both thought and analysis
+		true, true,
+		false, // <think|> is unique
+		false, // <|message|> has no close
+	}
 
 	for i, open := range openTags {
 		close := closeTags[i]
@@ -38,15 +85,23 @@ func stripReasoningTags(content string) string {
 				if closeIdx < 0 {
 					break
 				}
-				// Удаляем пару (без самих тегов).
+				// Удаляем пару (ВКЛЮЧАЯ тело между ними).
+				// Round 32 (2026-08-09): для gemma-4 channel format это критично —
+				// если cppworker не split'нул (старая версия, model не в whitelist),
+				// reasoning текст лежит в content, и его надо убрать.
 				absClose := openIdx + len(open) + closeIdx + len(close)
 				content = content[:openIdx] + content[absClose:]
 			}
 		}
-		// Затем удаляем одиночные opening tags (с close="", не нашло пары).
-		content = strings.ReplaceAll(content, open, "")
-		if close != "" {
-			content = strings.ReplaceAll(content, close, "")
+		// Затем удаляем одиночные opening tags (orphan open — close не нашло пары).
+		// Используем stripWithBoundary вместо ReplaceAll, чтобы не сожрать
+		// prefix более длинного тега. Например, "<think" без границы сожрал бы
+		// "<think|>" (qwen-style с bar-обёрткой).
+		content = stripWithBoundary(content, open)
+		// Strip orphan close только если close уникален для этого open.
+		// Для shared close — оставляем как есть, чтобы не сломать пары с другими open.
+		if close != "" && !sharedClose[i] {
+			content = stripWithBoundary(content, close)
 		}
 	}
 	// Collapse multiple newlines/spaces в один (после удаления тегов
@@ -59,6 +114,62 @@ func stripReasoningTags(content string) string {
 	// Round 31 #4 (2026-08-09): only "\n\r\t", без " ".
 	content = strings.TrimLeft(content, "\n\r\t")
 	return content
+}
+
+// stripWithBoundary — заменяет все вхождения needle на "" в content,
+// НО только если вхождение является полным тегом. Защищает от strip'а
+// prefix более длинного тега (например, "<think" без границы сожрал бы
+// "<think|>" (qwen-style с bar-обёрткой)).
+//
+// Оптимизация: для needle, которые заканчиваются на '>' (полные теги
+// вроде `<think>` или `<|message|>`), после '>' не может быть продолжения
+// того же тега — используем прямой strings.ReplaceAll.
+//
+// Для needle без '>' (например, "<think" или "<|channel>thought") нужна
+// проверка границы: следующий символ должен быть '>', '\n', пробелом или
+// концом строки. Если после needle идёт буква или '|' — это часть
+// более длинного тега, оставляем как есть.
+//
+// Round 32 (2026-08-09): для orphan handling после pair-strip.
+func stripWithBoundary(content, needle string) string {
+	if needle == "" {
+		return content
+	}
+	// Полные теги (заканчиваются на '>') — после '>' не может быть другого
+	// тега с тем же началом, поэтому ReplaceAll безопасен.
+	if needle[len(needle)-1] == '>' {
+		return strings.ReplaceAll(content, needle, "")
+	}
+	// Неполные теги (без '>') — нужна проверка границы.
+	var sb strings.Builder
+	sb.Grow(len(content))
+	pos := 0
+	for {
+		idx := strings.Index(content[pos:], needle)
+		if idx < 0 {
+			sb.WriteString(content[pos:])
+			break
+		}
+		absIdx := pos + idx
+		sb.WriteString(content[pos:absIdx])
+		nextIdx := absIdx + len(needle)
+		if nextIdx < len(content) {
+			nextCh := content[nextIdx]
+			// Tag boundary: '>' (full tag), '\n' (partial open), ' ' (rare).
+			// NOT boundary: alphanumeric или '|' (part of longer tag).
+			if nextCh == '>' || nextCh == '\n' || nextCh == ' ' {
+				pos = nextIdx // strip
+				continue
+			}
+			// Not a boundary — оставляем needle на месте
+			sb.WriteString(needle)
+			pos = absIdx + len(needle)
+			continue
+		}
+		// End of string after needle — complete tag, strip it
+		pos = nextIdx
+	}
+	return sb.String()
 }
 
 

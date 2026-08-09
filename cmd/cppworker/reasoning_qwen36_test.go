@@ -68,6 +68,89 @@ func TestReasoningArchPrefixes_Contains_Qwen36(t *testing.T) {
 }
 
 // ============================================================
+// SplitReasoningContent для gemma-4 native channel format (Round 32)
+// ============================================================
+
+// TestSplitReasoningContent_Gemma4ChannelFormat — Round 32 (2026-08-09).
+// Gemma-4 native chat template (gemma-4-E4B-it) рендерит reasoning через
+// `<|channel>thought\n[reasoning]\n<channel|>`. Этот формат НЕ распознавался
+// предыдущей версией thinkTagPairs → reasoning leak'ался в content клиенту.
+// Live verified: gemma-4 в режиме thinking эмитит именно эту форму.
+func TestSplitReasoningContent_Gemma4ChannelFormat(t *testing.T) {
+	tests := []struct {
+		name        string
+		input       string
+		wantReason  string
+		wantContent string
+		wantHas     bool
+	}{
+		{
+			name:        "gemma4_canonical_with_newlines",
+			input:       "<|channel>thought\nStep 1: compute 7*8\nStep 2: get 56\n<channel|>The answer is 56.",
+			wantReason:  "Step 1: compute 7*8\nStep 2: get 56",
+			wantContent: "The answer is 56.",
+			wantHas:     true,
+		},
+		{
+			name:        "gemma4_no_newlines_fallback",
+			input:       "<|channel>thoughtQuick analysis<channel|>Final answer: 42",
+			wantReason:  "Quick analysis",
+			wantContent: "Final answer: 42",
+			wantHas:     true,
+		},
+		{
+			name:        "gemma4_analysis_channel",
+			input:       "<|channel>analysis\nThinking here\n<channel|>Answer here",
+			wantReason:  "Thinking here",
+			wantContent: "Answer here",
+			wantHas:     true,
+		},
+		{
+			name:        "gemma4_with_message_separator",
+			input:       "<|channel>thought<|message|>\nMy reasoning\n<channel|>My answer",
+			wantReason:  "<|message|>\nMy reasoning",
+			wantContent: "My answer",
+			wantHas:     true,
+		},
+		{
+			name:        "gemma4_unclosed_channel",
+			input:       "<|channel>thought\nLong thinking without close",
+			wantReason:  "\nLong thinking without close",
+			wantContent: "",
+			wantHas:     true,
+		},
+		{
+			name:        "gemma4_plain_response_no_thinking",
+			input:       "Just a plain answer without any thinking tags",
+			wantReason:  "",
+			wantContent: "Just a plain answer without any thinking tags",
+			wantHas:     false,
+		},
+		{
+			name:        "gemma4_mixed_qwen_and_channel",
+			input:       "<think>Some qwen-style thinking</think><|channel>thought\nChannel thinking\n<channel|>Final answer",
+			wantReason:  "Some qwen-style thinkingChannel thinking",
+			wantContent: "\nFinal answer",
+			wantHas:     true,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			gotR, gotC, gotHas := SplitReasoningContent(tt.input)
+			if gotR != tt.wantReason {
+				t.Errorf("reasoning: got %q, want %q", gotR, tt.wantReason)
+			}
+			if gotC != tt.wantContent {
+				t.Errorf("content: got %q, want %q", gotC, tt.wantContent)
+			}
+			if gotHas != tt.wantHas {
+				t.Errorf("has: got %v, want %v", gotHas, tt.wantHas)
+			}
+		})
+	}
+}
+
+// ============================================================
 // SplitReasoningContent для qwen3.6
 // ============================================================
 

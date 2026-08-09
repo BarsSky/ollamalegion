@@ -182,6 +182,18 @@ func IsReasoningEnabledForRequest(modelName string) bool {
 //   - <reasoning>...</reasoning> — qwen3-instruct (при soft prompt "use tags")
 //   - <analysis>...</analysis> — некоторые o1-style модели
 //
+// Round 32 (2026-08-09): добавлены gemma-4 native chat-template форматы.
+// В GGUF токенизаторе gemma-4 (см. dump special tokens) есть токены
+// <|think|>, <|channel>, <channel|>, <|turn>, <turn|>. Chat template
+// gemma-4-E4B рендерит reasoning как:
+//   {{- '<|channel>thought\n' + thinking_text + '\n<channel|>' -}}
+// ВАЖНО: эти теги — single tokens, при detokenization они эмитятся
+// в output как есть, БЕЗ пробелов между <|channel> и thought.
+// Поддерживаем 2 варианта: с \n (chat-template канонический) и без
+// (на случай если модель детектит reasoning без newline после thought).
+// Также <|think>...<think|> — канонический think-блок Gemma native (без
+// channel-обёртки, для совместимости с qwen-style).
+//
 // Каждая пара симметрична — открывающий тег имеет соответствующий закрывающий.
 var thinkTagPairs = []struct {
 	open  string
@@ -191,6 +203,14 @@ var thinkTagPairs = []struct {
 	{"<thinking>", "</thinking>"},
 	{"<reasoning>", "</reasoning>"},
 	{"<analysis>", "</analysis>"},
+	// Round 32 (2026-08-09): gemma-4 native channel format (chat template canonical).
+	{"<|channel>thought\n", "\n<channel|>"},
+	{"<|channel>thought", "<channel|>"},
+	// Round 32: gemma-4 alternative analysis channel.
+	{"<|channel>analysis\n", "\n<channel|>"},
+	{"<|channel>analysis", "<channel|>"},
+	// Round 32: Qwen-style with |...| wrapping (gemma-4 also accepts this).
+	{"<|think>", "<think|>"},
 }
 
 // thinkStart/thinkEnd — backward-compat aliases (используются в тестах и ниже).

@@ -522,6 +522,16 @@ retrySucceeded:
 func (p *Proxy) proxyRequestOpenAIStreaming(w http.ResponseWriter, r *http.Request, resp *http.Response, backendID string) error {
 	defer resp.Body.Close()
 
+	// Round 31 #6 real fix (2026-08-09): hijack-based client disconnect detection.
+	// Если w поддерживает http.Hijacker — используем hijack path для <1s detection.
+	// Иначе (HTTP/2, wrapped writer) — fallback к legacy w.Write + ReadTimeout=30s.
+	if hj, ok := w.(http.Hijacker); ok {
+		logger.Get().Infow("Round 31 #6 hijack: using hijack path", "backend", backendID)
+		return p.proxyRequestOpenAIStreamingHijacked(w, r, resp, backendID, hj)
+	} else {
+		logger.Get().Infow("Round 31 #6 hijack: NOT supported, using fallback", "backend", backendID, "w_type", fmt.Sprintf("%T", w))
+	}
+
 	// 0. Проверка статус-кода: если upstream вернул не-2xx, не начинаем SSE-стрим,
 	// а возвращаем структурированную ошибку. Без этой проверки клиент получает
 	// пустой SSE-поток (или не-SSE тело), и OpenWebUI/Cline падает с

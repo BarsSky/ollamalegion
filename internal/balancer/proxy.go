@@ -1,6 +1,7 @@
 package balancer
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -1206,6 +1207,27 @@ func (r *statusRecorder) Write(b []byte) (int, error) {
 		}
 	}
 	return r.ResponseWriter.Write(b)
+}
+
+// Round 31 #6 real fix (2026-08-09): hijack support на statusRecorder.
+// Без этого Round 31 #6 hijack path не активируется (type assertion w.(http.Hijacker)
+// возвращает false для *statusRecorder даже при embed http.ResponseWriter).
+// Делегируем к underlying ResponseWriter.
+func (r *statusRecorder) Hijack() (net.Conn, *bufio.ReadWriter, error) {
+	hj, ok := r.ResponseWriter.(http.Hijacker)
+	if !ok {
+		return nil, nil, fmt.Errorf("statusRecorder: underlying ResponseWriter %T does not support hijack", r.ResponseWriter)
+	}
+	return hj.Hijack()
+}
+
+// Round 31 #6 real fix: Flush support (для случая если statusRecorder используется
+// вместо w, который раньше кастился в http.Flusher). Hijack path требует Flusher
+// для manual chunked writes. Делегируем.
+func (r *statusRecorder) Flush() {
+	if f, ok := r.ResponseWriter.(http.Flusher); ok {
+		f.Flush()
+	}
 }
 
 // queueRequest - постановка запроса в очередь

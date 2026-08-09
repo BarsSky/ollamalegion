@@ -143,17 +143,13 @@ func (p *Proxy) handleStreamingResponse(w http.ResponseWriter, r *http.Request, 
 				if isSSE {
 					heartbeatBytes = []byte(":heartbeat\n\n")
 				} else {
-					// NDJSON-heartbeat с явным model+done:false+пустым message —
-					// именно этот формат OpenWebUI гарантированно игнорирует
-					// как «пустой чанк», но не считает «новым сообщением» и не сбрасывает
-					// ассемблирование контента. Раньше здесь был «{}\n», из-за чего
-					// при коротких паузах между токенами UI обрывал склейку
-					// и второе сообщение в чате рендерилось пустым.
-					hb := map[string]interface{}{
-						"model":   modelFromCtx,
-						"done":    false,
-						"message": map[string]interface{}{"role": "assistant", "content": ""},
-					}
+					// Round 31 (2026-08-09): минимальный NDJSON heartbeat — только {"done":false}.
+					// Без полей "model" и "message" (раньше они были) — OpenWebUI мог
+					// интерпретировать "message":{"role":"assistant"} как начало нового
+					// сообщения и сбрасывать ассемблирование reasoning секции.
+					// {"done":false} — JSON-line валидный для Ollama-parser'а,
+					// который игнорирует строки без "message" поля.
+					hb := map[string]interface{}{"done": false}
 					hbJSON, _ := json.Marshal(hb)
 					heartbeatBytes = append(hbJSON, '\n')
 				}

@@ -435,6 +435,27 @@ func handleLoadWithParams(w http.ResponseWriter, r *http.Request) {
 			"name", modelName, "count", len(req.OverrideTensors))
 	}
 
+	// Round 26 (2026-08-06): pull-based profile sync from balancer.
+	// Применяется ПОСЛЕ env defaults но ДО AutoTuneNCtx — чтобы AutoTuneNCtx
+	// мог ещё уменьшить n_ctx/gpu_layers, если профиль задал слишком много
+	// (partial offload fallback).
+	if profileSyncer != nil {
+		if prof := profileSyncer.applyProfileOnLoad(modelName); prof != nil {
+			if !applyProfileToLoadRequest(prof, &opts.ContextSize, &opts.BatchSize, &opts.GPULayers, &opts.FlashAttnType, &opts.KVCacheType) {
+				logger.Get().Warnw("handleLoadWithParams: profile is disabled, refusing load",
+					"name", modelName, "profile", prof)
+				writeError(w, http.StatusForbidden, "model "+modelName+" is disabled by profile")
+				return
+			}
+			logger.Get().Infow("handleLoadWithParams: applied profile (pull-based sync from balancer)",
+				"name", modelName,
+				"profileCtxSize", prof.ContextLength,
+				"profileBatchSize", prof.BatchSize,
+				"profileGPULayers", prof.NumGPULayers,
+				"profileKVCacheType", prof.KVCacheType)
+		}
+	}
+
 	// Round 27 follow-up (v0.5.14 follow-up #3): apply SelectStrategy (memory auto-tune)
 	// BEFORE the actual load. До этого момента AutoTuneNCtx вызывался только в
 	// handleReloadModel — при auto-load через handleLoadWithParams (которую
@@ -1027,6 +1048,28 @@ func handleReloadModel(w http.ResponseWriter, r *http.Request) {
 			logger.Get().Warnw("reload: ignoring invalid kvCacheType",
 				"name", req.Name, "kvCacheType", *req.KVCacheType,
 				"validValues", []string{"f16", "q8_0", "q4_0"})
+		}
+	}
+
+	// Round 26 (2026-08-06): pull-based profile sync from balancer.
+	// При reload запрошенные параметры имеют приоритет над профилем (явный вызов),
+	// но если reload идёт без параметров (пустой body) — профиль задаёт дефолты.
+	if profileSyncer != nil {
+		if prof := profileSyncer.applyProfileOnLoad(req.Name); prof != nil {
+			// For reload: apply profile to fields that are still zero-value
+			// (i.e. user didn't override them via body).
+			if !applyProfileToLoadRequest(prof, &opts.ContextSize, &opts.BatchSize, &opts.GPULayers, &opts.FlashAttnType, &opts.KVCacheType) {
+				logger.Get().Warnw("handleReloadModel: profile is disabled, refusing reload",
+					"name", req.Name, "profile", prof)
+				writeError(w, http.StatusForbidden, "model "+req.Name+" is disabled by profile")
+				return
+			}
+			logger.Get().Infow("handleReloadModel: applied profile (pull-based sync from balancer)",
+				"name", req.Name,
+				"profileCtxSize", prof.ContextLength,
+				"profileBatchSize", prof.BatchSize,
+				"profileGPULayers", prof.NumGPULayers,
+				"profileKVCacheType", prof.KVCacheType)
 		}
 	}
 

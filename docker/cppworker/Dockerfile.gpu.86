@@ -39,7 +39,14 @@ RUN --mount=type=cache,id=ccache,target=/root/.ccache,mode=0755,uid=0,gid=0 \
       -DLLAMA_BUILD_TESTS=OFF \
       -DLLAMA_BUILD_EXAMPLES=OFF \
       -DBUILD_SHARED_LIBS=OFF \
-      -DLLAMA_BUILD_COMMON=ON && \
+      -DLLAMA_BUILD_COMMON=ON \
+      # v0.5.16: gemma-4 workaround — её compute-graph с Gated Delta Net hybrid
+      # attention даёт split с n_inputs > 30, что триггерит GGML_ASSERT в
+      # ggml-backend.cpp:1367 (SIGABRT). Upstream PR #6137 сделал эту константу
+      # variable (=GGML_MAX_SRC), но в нашей форкнутой версии она hard-coded.
+      # Бампаем до 128 — покрывает gemma-4 и оставляет запас для будущих моделей.
+      # Только размер массива, не влияет на производительность.
+      -DGGML_SCHED_MAX_SPLIT_INPUTS=128 && \
     cmake --build . --config Release -j$(nproc) && \
     ccache -s | tail -5
 

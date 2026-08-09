@@ -1,4 +1,4 @@
-﻿// tool_calls.go — Parsing tool_calls from model output and building
+// tool_calls.go — Parsing tool_calls from model output and building
 // properly structured OpenAI-compatible responses with finish_reason="tool_calls".
 package main
 
@@ -222,8 +222,6 @@ func trimDescription(desc string, maxChars int) string {
 	return strings.TrimRight(trimmed, " .,:;") + "..."
 }
 
-
-
 // parseToolCallsFromOutput пытается распарсить tool_calls из plain text выхода модели.
 //
 // Поддерживаемые форматы (по приоритету):
@@ -256,6 +254,14 @@ func parseToolCallsFromOutput(output string) []openAIToolCall {
 
 	// Стратегия 1: Hermes / Qwen 2.5 формат <tool_call>...</tool_call>
 	if calls := extractHermesToolCalls(output); len(calls) > 0 {
+		return calls
+	}
+
+	// Стратегия 1b (Round 25 2026-08-06): gemma-4 native формат <tool_call>name{args}</tool_call>.
+	// gemma-4 обучена выдавать Hermes-style XML, но с сокращённым JSON:
+	// имя функции идёт ПЕРЕД объектом аргументов, а не внутри.
+	// Стандартный Hermes-парсер не справляется — добавляем отдельную стратегию.
+	if calls := extractGemmaToolCalls(output); len(calls) > 0 {
 		return calls
 	}
 
@@ -393,6 +399,163 @@ func parseHermesSingleCall(raw json.RawMessage) *openAIToolCall {
 		return nil
 	}
 	return call
+}
+
+// extractGemmaToolCalls извлекает tool_calls из gemma-4 native формата.
+//
+// Round 25 (2026-08-06): gemma-4 обучена выводить tool calls в Hermes-style
+// XML-обёртке, но с сокращённым JSON внутри: имя функции идёт ПЕРЕД объектом
+// аргументов, а не внутри него. Пример:
+//
+//	<tool_call>list_files{}</tool_call>
+//	<tool_call>read_file{"path":"/foo"}</tool_call>
+//	<tool_call>write_to_file{"path":"/bar","content":"baz"}</tool_call>
+//
+// Стандартный Hermes-парсер (Strategy 1) ожидает: <tool_call>{"name":"...","arguments":{...}}</tool_call>
+// и для этого формата НЕ срабатывает. Эта функция парсит сокращённый формат.
+//
+// Round 25 P2 fix: gemma-4-it часто выдаёт "расслабленный" JSON без кавычек
+// вокруг ключей (`{path: ".", count: 5}` вместо `{"path": ".", "count": 5}`).
+// OpenAI-клиенты (Cline/Roo/openai-python) ожидают СТРОГИЙ JSON в поле
+// `arguments` — иначе `json.loads(arguments)` падает. Применяем fixGemmaArgs
+// чтобы превратить relaxed JSON в валидный.
+//
+// Поддерживает как пустые аргументы `name{}`, так и с аргументами `name{json}`.
+func extractGemmaToolCalls(output string) []openAIToolCall {
+	// Регекс: <tool_call>имя{json}</tool_call>
+	// Имя функции: [a-zA-Z_][a-zA-Z0-9_]* (допускаем подчёркивания и цифры)
+	// JSON-объект аргументов: {...} (включая пустой {})
+	re := regexp.MustCompile(`(?s)<tool_call>([a-zA-Z_][a-zA-Z0-9_]*)(\{.*?\})</tool_call>`)
+	matches := re.FindAllStringSubmatch(output, -1)
+	if len(matches) == 0 {
+		return nil
+	}
+
+	var result []openAIToolCall
+	for _, m := range matches {
+		name := m[1]
+		argsJSON := fixGemmaArgs(strings.TrimSpace(m[2]))
+		call := openAIToolCall{
+			Type: "function",
+			Function: struct {
+				Name      string `json:"name"`
+				Arguments string `json:"arguments"`
+			}{
+				Name:      name,
+				Arguments: argsJSON, // raw JSON string (may be "{}"); fixGemmaArgs guarantees valid JSON
+			},
+		}
+		// Генерируем стабильный ID на основе имени + индекс (Round 25: id валиден для OpenAI)
+		call.ID = "call_" + name
+		result = append(result, call)
+	}
+
+	if len(result) > 0 {
+		normalizeToolCalls(result)
+		return result
+	}
+	return nil
+}
+
+// fixGemmaArgs превращает "расслабленный" JSON от gemma-4-it (без кавычек
+// вокруг ключей) в валидный JSON. Пример:
+//
+//	{path: ".", count: 5}              → {"path": ".", "count": 5}
+//	{path: "/foo", verbose: true}      → {"path": "/foo", "verbose": true}
+//	{user: {name: "foo", age: 30}}     → {"user": {"name": "foo", "age": 30}}
+//
+// gemma-4-it не была обучена строгому JSON — она выдаёт JS/Python-style объекты
+// (ключи без кавычек, иногда значения тоже). OpenAI spec требует `arguments`
+// быть валидным JSON-string-of-JSON-object, иначе `json.loads(arguments)` у клиента
+// падает → "tool call failed" → "Cline hit repeated tool call failures".
+//
+// Алгоритм:
+//  1. Если строка уже валидный JSON — возвращаем как есть.
+//  2. State machine: идём по символам, отслеживая "внутри строки" vs "снаружи".
+//     Снаружи: находим последовательность identifier-символов, за которой идёт
+//     опциональный whitespace и ':' — это unquoted key, оборачиваем в кавычки.
+//     Внутри строки: пропускаем всё как есть (чтобы ":" в значениях не трогать).
+//
+// Числовые/boolean/null значения (5, true, false, null) не трогаем — JSON их
+// принимает без кавычек. Строки-значения с одинарными кавычками ('foo')
+// оставляем — openai-python обычно их понимает, а ломать regex'ом опасно.
+func fixGemmaArgs(s string) string {
+	if s == "" {
+		return s
+	}
+	s = strings.TrimSpace(s)
+	if s == "" || s == "{}" {
+		return s
+	}
+	// Шаг 1: уже валидный JSON? Возвращаем как есть.
+	var v interface{}
+	if err := json.Unmarshal([]byte(s), &v); err == nil {
+		return s
+	}
+
+	// Шаг 2: state machine — оборачиваем unquoted keys.
+	var b strings.Builder
+	b.Grow(len(s) + 16)
+	inString := false
+	escaped := false
+	i := 0
+	for i < len(s) {
+		c := s[i]
+		if inString {
+			b.WriteByte(c)
+			if escaped {
+				escaped = false
+			} else if c == '\\' {
+				escaped = true
+			} else if c == '"' {
+				inString = false
+			}
+			i++
+			continue
+		}
+		// Not in string.
+		if c == '"' {
+			inString = true
+			b.WriteByte(c)
+			i++
+			continue
+		}
+		// Ищем identifier, за которым идёт ':' — это unquoted key.
+		if isIdentStart(c) {
+			j := i
+			for j < len(s) && isIdentPart(s[j]) {
+				j++
+			}
+			// Пропускаем whitespace
+			k := j
+			for k < len(s) && (s[k] == ' ' || s[k] == '\t') {
+				k++
+			}
+			if k < len(s) && s[k] == ':' {
+				// Unquoted key: оборачиваем.
+				b.WriteByte('"')
+				b.WriteString(s[i:j])
+				b.WriteByte('"')
+				i = j
+				continue
+			}
+			// Не ключ — просто пишем identifier как есть.
+			b.WriteString(s[i:j])
+			i = j
+			continue
+		}
+		b.WriteByte(c)
+		i++
+	}
+	return b.String()
+}
+
+func isIdentStart(c byte) bool {
+	return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || c == '_'
+}
+
+func isIdentPart(c byte) bool {
+	return isIdentStart(c) || (c >= '0' && c <= '9')
 }
 
 // extractLlamaPythonTagCalls извлекает tool_calls из Llama-3.x python_tag формата:
@@ -938,11 +1101,11 @@ var trailingToolTokens = []string{
 // лишний). Чистый json.Unmarshal падает.
 //
 // Алгоритм: пробуем серию простых фиксов, после каждого — парсим. Фиксы:
-//   1. Trim trailing non-JSON символов (`}`, whitespace, etc.)
-//   2. Trim trailing `}` после `]` (самый частый случай)
-//   3. Strip extra `}` INSIDE string values (Qwen3-4B quirk: model пишет
-//      `"arguments":"{...}}"}` вместо `"arguments":"{...}"}` — лишний `}` внутри строки)
-//   4. Prefix trimming (last resort: отрезаем по 1 символу с конца)
+//  1. Trim trailing non-JSON символов (`}`, whitespace, etc.)
+//  2. Trim trailing `}` после `]` (самый частый случай)
+//  3. Strip extra `}` INSIDE string values (Qwen3-4B quirk: model пишет
+//     `"arguments":"{...}}"}` вместо `"arguments":"{...}"}` — лишний `}` внутри строки)
+//  4. Prefix trimming (last resort: отрезаем по 1 символу с конца)
 func recoverToolCallsByPrefixTrimming(output string) []openAIToolCall {
 	if len(output) < 4 {
 		return nil
@@ -1038,4 +1201,3 @@ func fixTrailingBraceMisorder(s string) string {
 	}
 	return s
 }
-

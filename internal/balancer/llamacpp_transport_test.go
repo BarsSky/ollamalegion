@@ -1,4 +1,4 @@
-package balancer
+﻿package balancer
 
 import (
 	"encoding/json"
@@ -19,7 +19,7 @@ func TestTranslateSSEChatToOllama_ContentOnly(t *testing.T) {
 			},
 		},
 	}
-	got := translateSSEChatToOllama(chunk, "gemma-4")
+	got := translateSSEChatToOllama(chunk, "gemma-4", nil)
 	if got == nil {
 		t.Fatal("expected non-nil result for content chunk")
 	}
@@ -50,7 +50,7 @@ func TestTranslateSSEChatToOllama_ContentAndRole(t *testing.T) {
 			},
 		},
 	}
-	got := translateSSEChatToOllama(chunk, "gemma-4")
+	got := translateSSEChatToOllama(chunk, "gemma-4", nil)
 	if got == nil {
 		t.Fatal("expected non-nil result")
 	}
@@ -79,7 +79,7 @@ func TestTranslateSSEChatToOllama_RoleOnly(t *testing.T) {
 			},
 		},
 	}
-	got := translateSSEChatToOllama(chunk, "gemma-4")
+	got := translateSSEChatToOllama(chunk, "gemma-4", nil)
 	if got == nil {
 		t.Fatal("role-only chunk must NOT return nil (fix from previous version)")
 	}
@@ -106,7 +106,7 @@ func TestTranslateSSEChatToOllama_FinishOnly(t *testing.T) {
 			},
 		},
 	}
-	got := translateSSEChatToOllama(chunk, "gemma-4")
+	got := translateSSEChatToOllama(chunk, "gemma-4", nil)
 	if got == nil {
 		t.Fatal("finish-only chunk must return done marker (NOT nil)")
 	}
@@ -125,7 +125,7 @@ func TestTranslateSSEChatToOllama_FinishOnly(t *testing.T) {
 func TestTranslateSSEChatToOllama_Empty(t *testing.T) {
 	// Пустой / невалидный chunk
 	chunk := map[string]interface{}{}
-	got := translateSSEChatToOllama(chunk, "gemma-4")
+	got := translateSSEChatToOllama(chunk, "gemma-4", nil)
 	if got != nil {
 		t.Errorf("empty chunk should return nil, got: %s", got)
 	}
@@ -142,7 +142,7 @@ func TestTranslateSSEChatToOllama_FullReconstruction(t *testing.T) {
 	}
 	fullContent := ""
 	for _, c := range chunks {
-		b := translateSSEChatToOllama(c, "gemma-4")
+		b := translateSSEChatToOllama(c, "gemma-4", nil)
 		if b == nil {
 			continue
 		}
@@ -169,7 +169,7 @@ func TestTranslateSSEGenerateToOllama_TextContent(t *testing.T) {
 			},
 		},
 	}
-	got := translateSSEGenerateToOllama(chunk, "gemma-4")
+	got := translateSSEGenerateToOllama(chunk, "gemma-4", nil)
 	if got == nil {
 		t.Fatal("expected non-nil result")
 	}
@@ -190,7 +190,7 @@ func TestTranslateSSEGenerateToOllama_EmptyText(t *testing.T) {
 			},
 		},
 	}
-	got := translateSSEGenerateToOllama(chunk, "gemma-4")
+	got := translateSSEGenerateToOllama(chunk, "gemma-4", nil)
 	if got != nil {
 		t.Errorf("empty text should return nil, got: %s", got)
 	}
@@ -205,7 +205,7 @@ func TestTranslateSSEGenerateToOllama_FinishOnly(t *testing.T) {
 			},
 		},
 	}
-	got := translateSSEGenerateToOllama(chunk, "gemma-4")
+	got := translateSSEGenerateToOllama(chunk, "gemma-4", nil)
 	if got == nil {
 		t.Fatal("finish-only should still emit done marker")
 	}
@@ -305,7 +305,7 @@ func TestTranslateSSEChatToOllama_DoneHasModel(t *testing.T) {
 			},
 		},
 	}
-	got := translateSSEChatToOllama(chunk, "gemma-4-E4B-it-Q4_K_M")
+	got := translateSSEChatToOllama(chunk, "gemma-4-E4B-it-Q4_K_M", nil)
 	if got == nil {
 		t.Fatal("finish-only chunk must NOT return nil (done-marker required)")
 	}
@@ -337,7 +337,7 @@ func TestTranslateSSEGenerateToOllama_DoneHasModel(t *testing.T) {
 			},
 		},
 	}
-	got := translateSSEGenerateToOllama(chunk, "gemma-4-E4B-it-Q4_K_M")
+	got := translateSSEGenerateToOllama(chunk, "gemma-4-E4B-it-Q4_K_M", nil)
 	if got == nil {
 		t.Fatal("finish-only chunk must NOT return nil")
 	}
@@ -368,7 +368,7 @@ func TestTranslateSSEChatToOllama_FullSequenceDoneHasModel(t *testing.T) {
 		{"choices": []interface{}{map[string]interface{}{"delta": map[string]interface{}{}, "finish_reason": "stop"}}},
 	}
 	for i, c := range chunks {
-		b := translateSSEChatToOllama(c, "test-model")
+		b := translateSSEChatToOllama(c, "test-model", nil)
 		if b == nil {
 			t.Fatalf("chunk %d: returned nil (non-content chunks must be skipped, but role-only and done MUST be emitted)", i)
 		}
@@ -415,7 +415,7 @@ func TestTranslateSSEChatToOllama_FilterServiceTokens(t *testing.T) {
 					},
 				},
 			}
-			got := translateSSEChatToOllama(chunk, "gemma-3-4b-it")
+			got := translateSSEChatToOllama(chunk, "gemma-3-4b-it", nil)
 			if got == nil {
 				t.Fatalf("expected non-nil result for filtered service token")
 			}
@@ -463,7 +463,7 @@ func TestTranslateSSEChatToOllama_PreservesValidContent(t *testing.T) {
 					},
 				},
 			}
-			got := translateSSEChatToOllama(chunk, "gemma-3-4b-it")
+			got := translateSSEChatToOllama(chunk, "gemma-3-4b-it", nil)
 			if got == nil {
 				t.Fatalf("expected non-nil result for valid content")
 			}
@@ -482,3 +482,5 @@ func TestTranslateSSEChatToOllama_PreservesValidContent(t *testing.T) {
 		})
 	}
 }
+
+

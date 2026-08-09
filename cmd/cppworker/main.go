@@ -99,6 +99,12 @@ var errModelIsLoading = fmt.Errorf("model is loading")
 // ???????? (CPPWORKER_BALANCER_URL ?? ?????).
 var balancerReg *balancerRegistration
 
+// profileSyncer — pull-based per-model profile sync from balancer (Round 26, 2026-08-06).
+// Самостоятельный модуль: не зависит от balancerReg (registration может быть отключена
+// через CPPWORKER_REGISTER_DISABLE, а sync профилей всё равно нужен).
+// nil, если balancer URL не задан или sync отключён.
+var profileSyncer *profileSyncerT
+
 var backend *cppbackend.Backend
 var uptimeStart = time.Now()
 
@@ -381,6 +387,28 @@ func main() {
 		}
 	}
 
+	// Round 26 (2026-08-06): pull-based per-model profile sync. Self-healing после recreate:
+	// cppworker сам подтянет актуальный профиль из балансера (contextLength, numGpuLayers,
+	// kvCacheType, ...) ДО того, как начнёт обслуживать первый запрос.
+	// Работает независимо от balancerReg (даже если registration отключена).
+	balancerURL := resolveBalancerURL()
+	balancerToken := resolveBalancerToken()
+	if balancerURL != "" {
+		// backendID: используем то же значение, что и для register, чтобы логи можно было сопоставить.
+		// Если register отключён (CPPWORKER_REGISTER_DISABLE=true), profileSyncer всё равно работает —
+		// ему нужен только URL балансера + токен.
+		backendID := os.Getenv("CPPWORKER_REGISTER_NAME")
+		if backendID == "" {
+			backendID = "cppworker-unknown"
+		}
+		profileSyncer = newProfileSyncer(balancerURL, balancerToken, backendID, log)
+		profileSyncer.start(balancerRegCtx)
+		log.Infow("profileSyncer started (pull-based profile sync from balancer)",
+			"balancerURL", balancerURL, "backendID", backendID)
+	} else {
+		log.Infow("profileSyncer disabled (no balancer URL env)")
+	}
+
 	<-quit
 	log.Infow("Shutting down...")
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -388,6 +416,10 @@ func main() {
 	balancerRegCancel()
 	if balancerReg != nil {
 		balancerReg.stop(ctx, log)
+	}
+	// Round 26 (2026-08-06): graceful stop profile syncer.
+	if profileSyncer != nil {
+		profileSyncer.stop()
 	}
 	backend.Close()
 	if err := server.Shutdown(ctx); err != nil {

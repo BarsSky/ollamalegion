@@ -22,6 +22,7 @@
 package balancer
 
 import (
+	"fmt"
 	"net/http"
 
 	"ollama-loadbalancer/pkg/logger"
@@ -110,6 +111,21 @@ func (lr *LlamaCppRouter) runInferencePreflight(args runInferencePreflightArgs) 
 			"backend", args.backendID, "model", meta.ModelName,
 			"new_n_ctx", res.TargetNCtx, "has_tools", meta.HasTools)
 		return false
+	case PreflightAsyncReload:
+		// Round 31 #2 (2026-08-09): async mode — модель reload'ится в фоне,
+		// клиенту сразу отдаём 503 + Retry-After. Cline/OpenWebUI автоматически
+		// повторяют запрос через указанное время, и модель уже будет готова.
+		retryAfter := coord.Config().effectiveAsyncRetryAfter()
+		logger.Get().Infow("preflight: HTTP 503 + Retry-After (async reload in progress)",
+			"backend", args.backendID, "model", meta.ModelName,
+			"target_n_ctx", res.TargetNCtx, "retry_after_sec", retryAfter)
+		args.w.Header().Set("Content-Type", "application/json")
+		args.w.Header().Set("Retry-After", fmt.Sprintf("%d", retryAfter))
+		args.w.WriteHeader(http.StatusServiceUnavailable)
+		body := fmt.Sprintf(`{"error":"model n_ctx reload in progress, retry after %d seconds","model":%q,"target_n_ctx":%d,"retry_after":%d}`,
+			retryAfter, meta.ModelName, res.TargetNCtx, retryAfter)
+		_, _ = args.w.Write([]byte(body))
+		return true
 	default: // PreflightNoOp
 		return false
 	}

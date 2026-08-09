@@ -477,6 +477,29 @@ func (p *Proxy) FindBackendByHostPort(host string, cppWorkerPort int) string {
 	return ""
 }
 
+// FindBackendByHostPortExcluding — ищет ID бэкенда по (host, cppWorkerPort),
+// исключая бэкенд с ID == excludeID.
+//
+// Round 30 (2026-08-09): нужен для agent-register dedup. Если есть stale
+// standalone бэкенд с тем же agentId, что и регистрирующийся агент, то
+// FindBackendByHostPort может вернуть его (iteration order Go maps random).
+// В этом случае existingID == req.AgentID → dedup path не срабатывает.
+// Решение: ищем бэкенд с ТЕМИ ЖЕ (host, port), но с ДРУГИМ ID.
+func (p *Proxy) FindBackendByHostPortExcluding(host string, cppWorkerPort int, excludeID string) string {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	for id, state := range p.backends {
+		if id == excludeID {
+			continue
+		}
+		b := state.Backend
+		if b.Host == host && b.CppWorkerPort == cppWorkerPort && b.Type == types.BackendTypeLlamaCpp {
+			return id
+		}
+	}
+	return ""
+}
+
 // AttachAgentToBackend — прикрепляет агента v2 к существующему бэкенду.
 func (p *Proxy) AttachAgentToBackend(backendID, agentID string, agentPort int) {
 	p.mu.Lock()

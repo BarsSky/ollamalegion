@@ -176,21 +176,33 @@ func (s *Server) upsertModelProfile(w http.ResponseWriter, r *http.Request, mode
 	s.proxy.SetModelProfile(modelName, incoming)
 
 	// Persist на диск
+	// Round 31 (2026-08-09): configSaver() может fail в bundled compose (config.json RO mount).
+	// Fallback: SaveProfilesToFile() пишет в /app/data/profiles.json (writable).
+	// Profiles переживают рестарт даже если config.json read-only.
+	persistOK := false
 	if s.configSaver != nil {
 		if err := s.configSaver(); err != nil {
-			log.Errorw("upsertModelProfile: failed to save config to disk",
+			log.Warnw("upsertModelProfile: configSaver failed, trying profiles fallback",
+				"model", modelName, "error", err)
+		} else {
+			persistOK = true
+		}
+	}
+	if !persistOK {
+		// Fallback: profiles.json (всегда writable если dataDir смонтирован)
+		if err := s.proxy.SaveProfilesToFile(); err != nil {
+			log.Errorw("upsertModelProfile: profiles fallback also failed",
 				"model", modelName, "error", err)
 			// Не откатываем in-memory изменение — но сообщаем warning
 			s.writeJSON(w, http.StatusOK, map[string]interface{}{
 				"status":  "ok",
 				"model":   modelName,
 				"profile": incoming,
-				"warning": "profile saved in memory, but config.json write failed: " + err.Error(),
+				"warning": "profile saved in memory, but config.json AND profiles.json write failed: " + err.Error(),
 			})
 			return
 		}
-	} else {
-		log.Warnw("upsertModelProfile: configSaver is nil — profile will NOT be persisted to disk",
+		log.Infow("upsertModelProfile: profile saved to /app/data/profiles.json fallback",
 			"model", modelName)
 	}
 
@@ -222,14 +234,24 @@ func (s *Server) deleteModelProfile(w http.ResponseWriter, r *http.Request, mode
 		return
 	}
 
+	// Round 31: same fallback to profiles.json as upsertModelProfile.
+	persistOK := false
 	if s.configSaver != nil {
 		if err := s.configSaver(); err != nil {
-			log.Errorw("deleteModelProfile: failed to save config to disk",
+			log.Warnw("deleteModelProfile: configSaver failed, trying profiles fallback",
+				"model", modelName, "error", err)
+		} else {
+			persistOK = true
+		}
+	}
+	if !persistOK {
+		if err := s.proxy.SaveProfilesToFile(); err != nil {
+			log.Errorw("deleteModelProfile: profiles fallback also failed",
 				"model", modelName, "error", err)
 			s.writeJSON(w, http.StatusOK, map[string]interface{}{
 				"status":  "ok",
 				"model":   modelName,
-				"warning": "profile deleted in memory, but config.json write failed: " + err.Error(),
+				"warning": "profile deleted in memory, but config.json AND profiles.json write failed: " + err.Error(),
 			})
 			return
 		}
@@ -309,11 +331,20 @@ func (s *Server) applyModelProfile(w http.ResponseWriter, r *http.Request, model
 		return
 	}
 
-	// Шаг 2: сохранить merged профиль в config
+	// Шаг 2: сохранить merged профиль в config + profiles.json fallback
 	s.proxy.SetModelProfile(modelName, merged)
+	persistOK := false
 	if s.configSaver != nil {
 		if err := s.configSaver(); err != nil {
-			log.Errorw("applyModelProfile: failed to save config to disk",
+			log.Warnw("applyModelProfile: configSaver failed, trying profiles fallback",
+				"model", modelName, "error", err)
+		} else {
+			persistOK = true
+		}
+	}
+	if !persistOK {
+		if err := s.proxy.SaveProfilesToFile(); err != nil {
+			log.Errorw("applyModelProfile: profiles fallback also failed",
 				"model", modelName, "error", err)
 		}
 	}
@@ -443,7 +474,17 @@ func (s *Server) reloadModelOnCppWorker(backend types.Backend, modelName string,
 		"numGpuLayers": profile.NumGPULayers,
 	}
 	if profile.FlashAttn != nil {
-		body["flashAttn"] = *profile.FlashAttn
+		// Round 25 (2026-08-06): cppworker's reloadModelRequest expects flashAttn as
+		// *int (matches the C-bridge llama.cpp API: -1=auto, 0=off, 1=on).
+		// The profile struct stores it as *bool for human-readable JSON.
+		// Without this conversion the cppworker returns 400 with
+		// "cannot unmarshal bool into Go struct field reloadModelRequest.flashAttn of type int"
+		// and the apply path silently fails (returns 200 with status:"error" per backend).
+		if *profile.FlashAttn {
+			body["flashAttn"] = 1
+		} else {
+			body["flashAttn"] = 0
+		}
 	}
 	if profile.NUMA != nil {
 		body["numa"] = *profile.NUMA
@@ -477,11 +518,17 @@ func (s *Server) reloadModelOnCppWorker(backend types.Backend, modelName string,
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("X-Real-IP", "balancer")
-	// Round 7 fix: cppworker /api/models/reload защищён authMiddleware,
-	// который ожидает `Authorization: Bearer <token>`. Per-backend token берём
-	// из backend.CppWorkerApiToken (если задан в конфиге). Если пусто — шлём
-	// без Authorization (cppworker пропустит без authMiddleware).
+	// Round 7 (cppworker_api_token) + Round 24 (X-API-Token fix, 2026-08-05):
+	// cppworker authMiddleware (cmd/cppworker/utils.go:64) принимает ОБА варианта:
+	//   1. Authorization: Bearer <token> (canonical)
+	//   2. X-API-Token: <token> (preferred, для консистентности с balancer→cppworker API)
+	// Round 24 fix использовал X-API-Token в nctx_reload.go, но ЭТОТ handler не был обновлён —
+	// в результате POST /api/v1/cppworker/model-profiles/{name}/apply возвращал 401.
+	//
+	// Round 27 (2026-08-06): шлём X-API-Token. Если cppworker старый и не знает этот header
+	// (pre-Round 24), fallback на Authorization: Bearer — для backward compat.
 	if backend.CppWorkerApiToken != "" {
+		req.Header.Set("X-API-Token", backend.CppWorkerApiToken)
 		req.Header.Set("Authorization", "Bearer "+backend.CppWorkerApiToken)
 	}
 

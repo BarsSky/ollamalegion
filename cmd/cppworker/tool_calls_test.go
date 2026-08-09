@@ -855,3 +855,195 @@ func TestParseToolCallsFromOutput_OpenWebUI_RealScenario_QwenWithSpecialChars(t 
 		t.Errorf("expected valid JSON arguments, got '%s'", result[0].Function.Arguments)
 	}
 }
+
+// ============================================================
+// Round 25: gemma-4 native tool_call format + fixGemmaArgs
+// ============================================================
+
+func TestExtractGemmaToolCalls_BasicNoArgs(t *testing.T) {
+	output := `<tool_call>list_files{}</tool_call>`
+	result := extractGemmaToolCalls(output)
+	if len(result) != 1 {
+		t.Fatalf("expected 1 call, got %d", len(result))
+	}
+	if result[0].Function.Name != "list_files" {
+		t.Errorf("expected name 'list_files', got '%s'", result[0].Function.Name)
+	}
+	if result[0].Function.Arguments != "{}" {
+		t.Errorf("expected empty args '{}', got '%s'", result[0].Function.Arguments)
+	}
+	if result[0].ID != "call_list_files" {
+		t.Errorf("expected id 'call_list_files', got '%s'", result[0].ID)
+	}
+}
+
+func TestExtractGemmaToolCalls_UnquotedKeys(t *testing.T) {
+	// Round 25 P2 fix: gemma-4 часто пишет {path: "."} без кавычек.
+	// fixGemmaArgs должен превратить в {"path": "."}.
+	output := `<tool_call>read_file{path: "/foo.txt"}</tool_call>`
+	result := extractGemmaToolCalls(output)
+	if len(result) != 1 {
+		t.Fatalf("expected 1 call, got %d", len(result))
+	}
+	if result[0].Function.Name != "read_file" {
+		t.Errorf("expected name 'read_file', got '%s'", result[0].Function.Name)
+	}
+	// Arguments должен быть валидным JSON.
+	if !json.Valid([]byte(result[0].Function.Arguments)) {
+		t.Fatalf("arguments NOT valid JSON: '%s'", result[0].Function.Arguments)
+	}
+	// Должно содержать правильный path.
+	var args map[string]interface{}
+	if err := json.Unmarshal([]byte(result[0].Function.Arguments), &args); err != nil {
+		t.Fatalf("failed to unmarshal: %v", err)
+	}
+	if args["path"] != "/foo.txt" {
+		t.Errorf("expected path '/foo.txt', got '%v'", args["path"])
+	}
+}
+
+func TestExtractGemmaToolCalls_MultipleUnquotedKeys(t *testing.T) {
+	output := `<tool_call>write_to_file{path: "/bar.txt", content: "baz", overwrite: true}</tool_call>`
+	result := extractGemmaToolCalls(output)
+	if len(result) != 1 {
+		t.Fatalf("expected 1 call, got %d", len(result))
+	}
+	if !json.Valid([]byte(result[0].Function.Arguments)) {
+		t.Fatalf("arguments NOT valid JSON: '%s'", result[0].Function.Arguments)
+	}
+	var args map[string]interface{}
+	if err := json.Unmarshal([]byte(result[0].Function.Arguments), &args); err != nil {
+		t.Fatalf("failed to unmarshal: %v", err)
+	}
+	if args["path"] != "/bar.txt" {
+		t.Errorf("expected path '/bar.txt', got '%v'", args["path"])
+	}
+	if args["content"] != "baz" {
+		t.Errorf("expected content 'baz', got '%v'", args["content"])
+	}
+	// overwrite — bool, должен остаться bool (не оборачивается в кавычки).
+	if args["overwrite"] != true {
+		t.Errorf("expected overwrite=true (bool), got '%v' (type %T)", args["overwrite"], args["overwrite"])
+	}
+}
+
+func TestExtractGemmaToolCalls_AlreadyValidJSON(t *testing.T) {
+	// Если модель уже выдаёт валидный JSON — fixGemmaArgs оставляет как есть.
+	output := `<tool_call>read_file{"path": "/foo"}</tool_call>`
+	result := extractGemmaToolCalls(output)
+	if len(result) != 1 {
+		t.Fatalf("expected 1 call, got %d", len(result))
+	}
+	if result[0].Function.Arguments != `{"path": "/foo"}` {
+		t.Errorf("expected '{\"path\": \"/foo\"}', got '%s'", result[0].Function.Arguments)
+	}
+}
+
+func TestExtractGemmaToolCalls_MultipleCallsInOneOutput(t *testing.T) {
+	output := `Some preamble
+<tool_call>list_files{path: "/"}</tool_call>
+Some text between
+<tool_call>read_file{path: "/foo"}</tool_call>
+Tail`
+	result := extractGemmaToolCalls(output)
+	if len(result) != 2 {
+		t.Fatalf("expected 2 calls, got %d", len(result))
+	}
+	if result[0].Function.Name != "list_files" {
+		t.Errorf("expected first name 'list_files', got '%s'", result[0].Function.Name)
+	}
+	if result[1].Function.Name != "read_file" {
+		t.Errorf("expected second name 'read_file', got '%s'", result[1].Function.Name)
+	}
+	// Оба должны иметь валидный JSON args.
+	for i, c := range result {
+		if !json.Valid([]byte(c.Function.Arguments)) {
+			t.Errorf("call %d: arguments NOT valid JSON: '%s'", i, c.Function.Arguments)
+		}
+	}
+}
+
+func TestExtractGemmaToolCalls_NoMatch(t *testing.T) {
+	output := "Just some text without any tool calls"
+	result := extractGemmaToolCalls(output)
+	if result != nil {
+		t.Errorf("expected nil, got %v", result)
+	}
+}
+
+func TestFixGemmaArgs_EmptyAndEmptyObject(t *testing.T) {
+	if fixGemmaArgs("") != "" {
+		t.Error("empty should stay empty")
+	}
+	if fixGemmaArgs("{}") != "{}" {
+		t.Errorf("'{}' should stay '{}'")
+	}
+}
+
+func TestFixGemmaArgs_AlreadyValid(t *testing.T) {
+	// Уже валидный JSON — оставляем как есть.
+	input := `{"path": "/foo", "count": 5}`
+	if fixGemmaArgs(input) != input {
+		t.Errorf("valid JSON should not be modified: got '%s'", fixGemmaArgs(input))
+	}
+}
+
+func TestFixGemmaArgs_UnquotedSingleKey(t *testing.T) {
+	got := fixGemmaArgs(`{path: "/foo"}`)
+	want := `{"path": "/foo"}`
+	if got != want {
+		t.Errorf("expected '%s', got '%s'", want, got)
+	}
+}
+
+func TestFixGemmaArgs_MixedQuotedAndUnquoted(t *testing.T) {
+	// Модель иногда смешивает: некоторые ключи в кавычках, некоторые нет.
+	got := fixGemmaArgs(`{"path": "/foo", count: 5}`)
+	want := `{"path": "/foo", "count": 5}`
+	if got != want {
+		t.Errorf("expected '%s', got '%s'", want, got)
+	}
+}
+
+func TestFixGemmaArgs_NestedObjects(t *testing.T) {
+	// Вложенные объекты — рекурсивно фиксятся (state machine).
+	got := fixGemmaArgs(`{user: {name: "foo", age: 30}}`)
+	want := `{"user": {"name": "foo", "age": 30}}`
+	if got != want {
+		t.Errorf("expected '%s', got '%s'", want, got)
+	}
+}
+
+func TestFixGemmaArgs_ColonInsideStringValue(t *testing.T) {
+	// Двоеточие внутри string-значения НЕ должно быть распознано как разделитель.
+	got := fixGemmaArgs(`{msg: "hello: world", name: "foo"}`)
+	want := `{"msg": "hello: world", "name": "foo"}`
+	if got != want {
+		t.Errorf("expected '%s', got '%s'", want, got)
+	}
+}
+
+func TestFixGemmaArgs_BoolAndNumberValuesStayUnquoted(t *testing.T) {
+	// Числа/булевы/null НЕ должны оборачиваться в кавычки.
+	got := fixGemmaArgs(`{count: 5, active: true, name: null}`)
+	if got != `{"count": 5, "active": true, "name": null}` {
+		t.Errorf("unexpected result: '%s'", got)
+	}
+}
+
+func TestParseToolCallsFromOutput_GemmaFormat(t *testing.T) {
+	// End-to-end: gemma-4 native format через основной parseToolCallsFromOutput.
+	output := `I'll list the files now.
+<tool_call>list_files{path: "/tmp"}</tool_call>
+Done.`
+	result := parseToolCallsFromOutput(output)
+	if len(result) != 1 {
+		t.Fatalf("expected 1 call, got %d", len(result))
+	}
+	if result[0].Function.Name != "list_files" {
+		t.Errorf("expected name 'list_files', got '%s'", result[0].Function.Name)
+	}
+	if !json.Valid([]byte(result[0].Function.Arguments)) {
+		t.Errorf("arguments should be valid JSON, got '%s'", result[0].Function.Arguments)
+	}
+}

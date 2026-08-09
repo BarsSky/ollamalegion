@@ -60,6 +60,11 @@ func determineErrorType(err error, reqCtx context.Context) string {
 //   - connection refused (cppworker port not yet listening)
 //   - connection reset by peer (cppworker closed keep-alive during restart)
 //   - no such host (DNS не резолвится — редко)
+//   - broken pipe (remote closed during write)
+//
+// Round 29 (2026-08-09): добавлены Windows-specific error markers
+//   - "connectex" (Windows эквивалент connection refused)
+//   - "wsarecv" (Windows эквивалент connection reset)
 //
 // NOT connection-level (HTTP errors handled by other paths):
 //   - EOF (handled by EOF retry/EOF event publisher)
@@ -73,7 +78,10 @@ func isConnectionLevelError(err error) bool {
 	return strings.Contains(s, "connection refused") ||
 		strings.Contains(s, "connection reset") ||
 		strings.Contains(s, "no such host") ||
-		strings.Contains(s, "broken pipe")
+		strings.Contains(s, "broken pipe") ||
+		// Windows-specific markers (Round 29, 2026-08-09)
+		strings.Contains(s, "connectex") || // connection refused on Windows
+		strings.Contains(s, "wsarecv") // connection reset on Windows
 }
 
 // IsConnectionLevelError — экспортированная обёртка для использования в
@@ -585,6 +593,27 @@ func (p *Proxy) proxyRequestOpenAIStreaming(w http.ResponseWriter, r *http.Reque
 		if err != nil {
 			return fmt.Errorf("failed to read non-streaming response: %w", err)
 		}
+		// Round 31 #7 (2026-08-09): record token usage для мониторинга.
+		// Этот branch срабатывает для non-stream ответов на /v1/chat/completions
+		// (когда body не stream=true).
+		if resp.StatusCode < 400 {
+			var openaiResp map[string]interface{}
+			if json.Unmarshal(body, &openaiResp) == nil {
+				if usage, ok := openaiResp["usage"].(map[string]interface{}); ok {
+					var prompt, completion int64
+					if v, ok := usage["prompt_tokens"].(float64); ok {
+						prompt = int64(v)
+					}
+					if v, ok := usage["completion_tokens"].(float64); ok {
+						completion = int64(v)
+					}
+					if prompt > 0 || completion > 0 {
+						modelName, _ := openaiResp["model"].(string)
+						p.recordTokenUsage(modelName, prompt, completion)
+					}
+				}
+			}
+		}
 		if w.Header().Get("Content-Type") == "" {
 			w.Header().Set("Content-Type", "application/json")
 		}
@@ -703,6 +732,27 @@ func (p *Proxy) proxyNonStreamingResponse(w http.ResponseWriter, r *http.Request
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
 		return fmt.Errorf("failed to read response body: %w", err)
+	}
+	// Round 31 #7 (2026-08-09): record token usage для мониторинга.
+	// Парсим OpenAI usage из response body. Не критично если не распарсили —
+	// просто пропускаем (некоторые endpoints не возвращают usage).
+	if resp.StatusCode < 400 {
+		var openaiResp map[string]interface{}
+		if json.Unmarshal(body, &openaiResp) == nil {
+			if usage, ok := openaiResp["usage"].(map[string]interface{}); ok {
+				var prompt, completion int64
+				if v, ok := usage["prompt_tokens"].(float64); ok {
+					prompt = int64(v)
+				}
+				if v, ok := usage["completion_tokens"].(float64); ok {
+					completion = int64(v)
+				}
+				if prompt > 0 || completion > 0 {
+					modelName, _ := openaiResp["model"].(string)
+					p.recordTokenUsage(modelName, prompt, completion)
+				}
+			}
+		}
 	}
 	w.Header().Set("Content-Length", fmt.Sprintf("%d", len(body)))
 	w.WriteHeader(resp.StatusCode)

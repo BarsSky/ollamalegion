@@ -199,16 +199,22 @@ func (p *Proxy) handleNCtxReloadActual(
 }
 
 // newNCtxReloadHTTPClient — factory для HTTP-клиента reload-а (используется в DoReload).
-// Автоматически подхватывает API-токен из конфига балансировщика для аутентификации
-// на cppworker (Authorization: Bearer <token>).
+// Автоматически подхватывает API-токен и имя header'а из конфига балансировщика для
+// аутентификации на cppworker (по умолчанию X-API-Token).
 //
 // ВАЖНО: берём первый токен из Auth.Tokens даже если auth выключен (Auth.Enabled=false).
 // Токен нужен для internal-коммуникации с cppworker (reload модели), и это не связано
 // с тем, требует ли балансер аутентификации от внешних клиентов.
 func (p *Proxy) newNCtxReloadHTTPClient() NCtxReloadHTTPClient {
 	token := ""
-	if p.config != nil && len(p.config.Auth.Tokens) > 0 {
-		token = p.config.Auth.Tokens[0]
+	headerName := "X-API-Token" // default
+	if p.config != nil {
+		if len(p.config.Auth.Tokens) > 0 {
+			token = p.config.Auth.Tokens[0]
+		}
+		if p.config.Auth.HeaderName != "" {
+			headerName = p.config.Auth.HeaderName
+		}
 	}
 	// Override with LB_API_TOKEN env var if set (config.json has placeholder token,
 	// actual token comes from compose env). The cppworker uses the same token from
@@ -219,6 +225,7 @@ func (p *Proxy) newNCtxReloadHTTPClient() NCtxReloadHTTPClient {
 	return &DefaultNCtxReloadHTTPClient{
 		HTTPClient: &http.Client{Timeout: 90 * time.Second},
 		APIToken:   token,
+		HeaderName: headerName,
 	}
 }
 
@@ -802,7 +809,17 @@ func (p *Proxy) executeAsyncReload(backendID, modelName string, requestedNCtx in
 		return
 	}
 	req.Header.Set("Content-Type", "application/json")
-	logger.Get().Warnw("executeAsyncReload DEBUG", "p_config_nil", p.config == nil, "tokens_len", func() int { if p.config == nil { return -1 }; return len(p.config.Auth.Tokens) }(), "first_token_len", func() int { if p.config == nil || len(p.config.Auth.Tokens) == 0 { return -1 }; return len(p.config.Auth.Tokens[0]) }())
+	logger.Get().Warnw("executeAsyncReload DEBUG", "p_config_nil", p.config == nil, "tokens_len", func() int {
+		if p.config == nil {
+			return -1
+		}
+		return len(p.config.Auth.Tokens)
+	}(), "first_token_len", func() int {
+		if p.config == nil || len(p.config.Auth.Tokens) == 0 {
+			return -1
+		}
+		return len(p.config.Auth.Tokens[0])
+	}())
 	// Phase 1 FIX: hardcoded token from CPPWORKER_API_TOKEN env (config.json loading is broken in this build)
 	tok := os.Getenv("CPPWORKER_API_TOKEN")
 	if tok == "" {

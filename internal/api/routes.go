@@ -95,6 +95,10 @@ func (s *Server) setupRoutes() {
 	s.mux.Handle("/api/v1/queue/details", AuthMiddleware(RateLimitMiddleware(s.queueDetailsHandler, s.rateLimiter), s.authenticator))
 	s.mux.Handle("/api/v1/queue/history", AuthMiddleware(RateLimitMiddleware(s.queueHistoryHandler, s.rateLimiter), s.authenticator))
 
+	// Round 31 #7 (2026-08-09): per-model token usage (с аутентификацией).
+	// Атомарно обновляется в proxyRequestLlamaCppNonStream при каждом успешном response.
+	s.mux.Handle("/api/v1/stats/tokens", AuthMiddleware(RateLimitMiddleware(http.HandlerFunc(s.HandleStatsTokens), s.rateLimiter), s.authenticator))
+
 	// Cluster config (runtime-смена алгоритма)
 	s.mux.Handle("/api/v1/cluster/config", AuthMiddleware(RateLimitMiddleware(s.clusterConfigHandler, s.rateLimiter), s.authenticator))
 

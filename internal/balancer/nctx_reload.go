@@ -43,11 +43,6 @@ import (
 	"ollama-loadbalancer/pkg/types"
 )
 
-
-
-
-
-
 type NCtxBridgeError struct {
 	Code         int
 	CurrentNCtx  int
@@ -58,7 +53,6 @@ type NCtxBridgeError struct {
 	MaxVRAMNCtx  int
 	Message      string
 }
-
 
 const (
 	NCtxErrCodeOK              = 0
@@ -73,51 +67,36 @@ const (
 
 // ============================================================
 
-
-
-
-
 type NCtxReloadConfig struct {
-
-
 	AutoReloadNCtx bool `json:"auto_reload_n_ctx" yaml:"auto_reload_n_ctx"`
-
-
-
 
 	AutoReloadMaxNCtx int `json:"auto_reload_max_n_ctx" yaml:"auto_reload_max_n_ctx"`
 
-
-
-
-
 	AutoReloadVRAMSafetyFactor float64 `json:"auto_reload_vram_safety_factor" yaml:"auto_reload_vram_safety_factor"`
-
-
-
 
 	AutoReloadTimeoutSec int `json:"auto_reload_timeout_sec" yaml:"auto_reload_timeout_sec"`
 
-
-
-
-
 	//
-
-
-
-
 
 	AutoReloadAllowTools bool `json:"auto_reload_allow_tools" yaml:"auto_reload_allow_tools"`
 
-
-
-
 	PreflightEnabled bool `json:"preflight_enabled" yaml:"preflight_enabled"`
+
+	// Round 31 #2 (2026-08-09): async reload mode для preflight.
+	// Если true — при решении PreflightReload balancer НЕ блокирует на reload,
+	// а сразу отдаёт клиенту 503 + Retry-After (через PreflightAsync decision),
+	// а reload запускается в фоне. Через Retry-After секунд Cline/OpenWebUI повторяет
+	// запрос, и модель уже загружена с правильным n_ctx. Это убирает "truncated"
+	// ошибки для длинных prompts (Cline 70K символов = ~17K токенов).
+	// Default false для backward compat (старое sync-поведение).
+	PreflightAsyncReload bool `json:"preflight_async_reload" yaml:"preflight_async_reload"`
+
+	// Round 31 #2: сколько секунд balancer рекомендует клиенту подождать
+	// перед retry после 503 async reload. Cline/OpenWebUI обычно это понимают.
+	// Default 5 сек (reload обычно занимает 30-60s, но 5 — это нижняя граница,
+	// иначе клиент будет retry-ить слишком часто).
+	PreflightAsyncRetryAfterSec int `json:"preflight_async_retry_after_sec" yaml:"preflight_async_retry_after_sec"`
 }
-
-
-
 
 func DefaultNCtxReloadConfig() NCtxReloadConfig {
 	return NCtxReloadConfig{
@@ -127,16 +106,14 @@ func DefaultNCtxReloadConfig() NCtxReloadConfig {
 		AutoReloadTimeoutSec:       300,
 		AutoReloadAllowTools:       true,
 		PreflightEnabled:           true,
+		PreflightAsyncReload:       false, // sync по умолчанию (старое поведение)
+		PreflightAsyncRetryAfterSec: 5,
 	}
 }
-
-
-
 
 func (c NCtxReloadConfig) AutoReloadAllowToolsEnabled() bool {
 	return c.AutoReloadNCtx && c.AutoReloadAllowTools
 }
-
 
 func (c NCtxReloadConfig) effectiveSafetyFactor() float64 {
 	v := c.AutoReloadVRAMSafetyFactor
@@ -148,7 +125,6 @@ func (c NCtxReloadConfig) effectiveSafetyFactor() float64 {
 	}
 	return v
 }
-
 
 func (c NCtxReloadConfig) effectiveTimeout() time.Duration {
 	t := c.AutoReloadTimeoutSec
@@ -164,25 +140,35 @@ func (c NCtxReloadConfig) effectiveTimeout() time.Duration {
 	return time.Duration(t) * time.Second
 }
 
-// ============================================================
+// effectiveAsyncRetryAfter — сколько секунд клиенту ждать после 503
+// перед retry. Default 5, clamp [2, 30].
+func (c NCtxReloadConfig) effectiveAsyncRetryAfter() int {
+	r := c.PreflightAsyncRetryAfterSec
+	if r <= 0 {
+		r = 5
+	}
+	if r < 2 {
+		r = 2
+	}
+	if r > 30 {
+		r = 30
+	}
+	return r
+}
 
 // ============================================================
 
+// ============================================================
 
 type ReloadDecision int
 
 const (
-
-
 	DecisionNoOp ReloadDecision = iota
-
 
 	DecisionReload
 
-
 	DecisionReject
 )
-
 
 func (d ReloadDecision) String() string {
 	switch d {
@@ -197,7 +183,6 @@ func (d ReloadDecision) String() string {
 	}
 }
 
-
 type ReloadPlan struct {
 	Decision  ReloadDecision
 	NewNCtx   int
@@ -209,44 +194,25 @@ type ReloadPlan struct {
 
 // ============================================================
 
-
-
-
 // ? llamacpp_transport.go.
 type NCtxReloadCoordinator struct {
 	mu         sync.RWMutex
 	config     NCtxReloadConfig
 	perBackend map[string]*backendReloadState
 
-
 	metricsByBackend sync.Map
-
-
 
 	// ensureModelLoadedOnBackend. nil-safe.
 	reloadDedup *reloadDedupRegistry
 }
 
 type backendReloadState struct {
-
-
-
 	inflightMu sync.Mutex
 	inflight   *reloadInflight
 
-
-
-
 	lastKnownNCtx int
 
-
-
-
-
 	consecutiveCycleFailures int
-
-
-
 
 	lastCycleReset time.Time
 }
@@ -256,7 +222,6 @@ type reloadInflight struct {
 	err  error
 }
 
-
 func NewNCtxReloadCoordinator(cfg NCtxReloadConfig) *NCtxReloadCoordinator {
 	return &NCtxReloadCoordinator{
 		config:      cfg,
@@ -265,17 +230,12 @@ func NewNCtxReloadCoordinator(cfg NCtxReloadConfig) *NCtxReloadCoordinator {
 	}
 }
 
-
-
-
 func (c *NCtxReloadCoordinator) IsReloadPending(backendID, modelName string) bool {
 	if c == nil || c.reloadDedup == nil {
 		return false
 	}
 	return c.reloadDedup.IsReloadPending(backendID, modelName)
 }
-
-
 
 func (c *NCtxReloadCoordinator) WaitReloadDone(backendID, modelName string, timeout time.Duration) error {
 	if c == nil || c.reloadDedup == nil {
@@ -284,11 +244,9 @@ func (c *NCtxReloadCoordinator) WaitReloadDone(backendID, modelName string, time
 	return c.reloadDedup.WaitReloadDone(backendID, modelName, timeout)
 }
 
-
 func (c *NCtxReloadCoordinator) Config() NCtxReloadConfig {
 	return c.config
 }
-
 
 func (c *NCtxReloadCoordinator) SetConfig(cfg NCtxReloadConfig) {
 	c.mu.Lock()
@@ -313,8 +271,6 @@ func (c *NCtxReloadCoordinator) state(backendID string) *backendReloadState {
 	return s
 }
 
-
-
 func (c *NCtxReloadCoordinator) SetLastKnownNCtx(backendID string, nCtx int) {
 	if nCtx <= 0 {
 		return
@@ -325,17 +281,12 @@ func (c *NCtxReloadCoordinator) SetLastKnownNCtx(backendID string, nCtx int) {
 	s.inflightMu.Unlock()
 }
 
-
 func (c *NCtxReloadCoordinator) LastKnownNCtx(backendID string) int {
 	s := c.state(backendID)
 	s.inflightMu.Lock()
 	defer s.inflightMu.Unlock()
 	return s.lastKnownNCtx
 }
-
-
-
-
 
 func (c *NCtxReloadCoordinator) RecordCycleAttempt(backendID string) {
 	s := c.state(backendID)
@@ -345,17 +296,10 @@ func (c *NCtxReloadCoordinator) RecordCycleAttempt(backendID string) {
 	s.lastCycleReset = time.Now()
 }
 
-
-
-
-
-
 func (c *NCtxReloadCoordinator) IsCycleDetected(backendID string, maxAttempts int) bool {
 	s := c.state(backendID)
 	s.inflightMu.Lock()
 	defer s.inflightMu.Unlock()
-
-
 
 	const cycleResetInterval = 5 * time.Minute
 	if !s.lastCycleReset.IsZero() && time.Since(s.lastCycleReset) > cycleResetInterval {
@@ -364,9 +308,6 @@ func (c *NCtxReloadCoordinator) IsCycleDetected(backendID string, maxAttempts in
 	}
 	return s.consecutiveCycleFailures >= maxAttempts
 }
-
-
-
 
 func (c *NCtxReloadCoordinator) ResetCycleCounter(backendID string) {
 	s := c.state(backendID)
@@ -380,15 +321,9 @@ func (c *NCtxReloadCoordinator) ResetCycleCounter(backendID string) {
 
 // ============================================================
 
-
-
-
-
-
 //
 
 //
-
 
 func (c *NCtxReloadCoordinator) DecideReloadBackend(
 	backendID string,
@@ -405,24 +340,13 @@ func (c *NCtxReloadCoordinator) DecideReloadBackend(
 		}
 	}
 
-
-
-
-
-
 	//
 
 	//   current_n_ctx=32768, required_n_ctx=23816, n_ctx_override=16384
 	//   prompt=15623 + n_predict=8192 + 1 = 23816 > 16384 (override) ? code 3
 	//
 
-
-
-
 	//
-
-
-
 
 	if bridgeErr == nil {
 		return &ReloadPlan{Decision: DecisionNoOp, Reason: "nil bridge error"}
@@ -470,14 +394,10 @@ func (c *NCtxReloadCoordinator) DecideReloadBackend(
 		}
 	}
 
-
-
-
 	if bridgeErr.Code != NCtxErrCodeNCtxNeedsReload {
 		return &ReloadPlan{Decision: DecisionNoOp, Reason: "not a n_ctx-reload error"}
-		
-	}
 
+	}
 
 	required := bridgeErr.RequiredNCtx
 	if required <= 0 {
@@ -490,9 +410,6 @@ func (c *NCtxReloadCoordinator) DecideReloadBackend(
 		}
 	}
 
-
-
-
 	if bridgeErr.CurrentNCtx > 0 && required <= bridgeErr.CurrentNCtx {
 		return &ReloadPlan{
 			Decision: DecisionNoOp,
@@ -501,43 +418,20 @@ func (c *NCtxReloadCoordinator) DecideReloadBackend(
 		}
 	}
 
-
 	if cfg.AutoReloadMaxNCtx > 0 && required > cfg.AutoReloadMaxNCtx {
 		return c.makeRejectPlan(backendID, bridgeErr, required,
 			fmt.Sprintf("required n_ctx=%d exceeds configured max=%d", required, cfg.AutoReloadMaxNCtx),
 			"n_ctx_too_large_for_backend")
 	}
 
-
 	//
-
-
-
 
 	//      head_dim = n_embd / n_heads.
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 	//
-
-
 
 	maxVRAMNCtx := bridgeErr.MaxVRAMNCtx
 	if maxVRAMNCtx <= 0 {
-
 
 		if maxVRAMNCtx == 0 && bridgeErr.CurrentNCtx > 0 {
 			return c.makeRejectPlan(backendID, bridgeErr, required,
@@ -546,7 +440,6 @@ func (c *NCtxReloadCoordinator) DecideReloadBackend(
 					"or use a smaller model / increase physical VRAM",
 				"n_ctx_too_large_for_backend")
 		}
-
 
 		return c.makeRejectPlan(backendID, bridgeErr, required,
 			"backend did not report max_vram_n_ctx (CPU-only, unknown GPU, or CUDA-query failed); cannot safely auto-reload",
@@ -585,7 +478,6 @@ func (c *NCtxReloadCoordinator) DecideReloadBackend(
 			"n_ctx_too_large_for_backend")
 	}
 
-
 	// 4096 ? 4096, 5000 ? 8192, 8000 ? 8192, 12000 ? 16384
 	newNCtx := roundUpPow2(required)
 
@@ -609,14 +501,7 @@ func (c *NCtxReloadCoordinator) DecideReloadBackend(
 	}
 }
 
-
 //
-
-
-
-
-
-
 
 //
 
@@ -635,8 +520,6 @@ func (c *NCtxReloadCoordinator) makeRejectPlan(
 	if bridgeErr.MaxVRAMNCtx > 0 {
 		safe = int(float64(bridgeErr.MaxVRAMNCtx) * cfg.effectiveSafetyFactor())
 	}
-
-
 
 	suggestion := "save a model profile with a larger n_ctx and reload manually, or send a smaller options.num_ctx in the request"
 	if errorCode == "prompt_exceeds_context" {
@@ -665,8 +548,6 @@ func (c *NCtxReloadCoordinator) makeRejectPlan(
 	}
 }
 
-
-
 func roundUpPow2(v int) int {
 	if v <= 0 {
 		return 512
@@ -685,23 +566,23 @@ func roundUpPow2(v int) int {
 
 // ============================================================
 
-
-
 type NCtxReloadHTTPClient interface {
 	PostReload(ctx context.Context, endpoint string, payload []byte) (*http.Response, error)
 }
 
-
 type DefaultNCtxReloadHTTPClient struct {
 	HTTPClient *http.Client
 
-
-
+	// APIToken — токен для аутентификации на cppworker.
 	APIToken string
+
+	// HeaderName — имя HTTP-заголовка для токена. Должно совпадать с
+	// cfg.Auth.HeaderName балансера (по умолчанию "X-API-Token").
+	// Round 25 (2026-08-05): раньше код хардкодил "Authorization: Bearer",
+	// что НЕ совпадает с cppworker's auth middleware → reload получал 401
+	// и auto-reload n_ctx для Cline был полностью сломан.
+	HeaderName string
 }
-
-
-
 
 func (c *DefaultNCtxReloadHTTPClient) PostReload(ctx context.Context, endpoint string, payload []byte) (*http.Response, error) {
 	client := c.HTTPClient
@@ -716,11 +597,14 @@ func (c *DefaultNCtxReloadHTTPClient) PostReload(ctx context.Context, endpoint s
 	req.Body = io.NopCloser(bytesReader(payload))
 	req.ContentLength = int64(len(payload))
 	if c.APIToken != "" {
-		req.Header.Set("Authorization", "Bearer "+c.APIToken)
+		headerName := c.HeaderName
+		if headerName == "" {
+			headerName = "X-API-Token" // default для совместимости
+		}
+		req.Header.Set(headerName, c.APIToken)
 	}
 	return client.Do(req)
 }
-
 
 type bytesReaderImpl struct {
 	buf []byte
@@ -738,14 +622,7 @@ func (r *bytesReaderImpl) Read(p []byte) (int, error) {
 	return n, nil
 }
 
-
-
 var ErrReloadInProgress = errors.New("n_ctx reload already in progress on this backend")
-
-
-
-
-
 
 func (c *NCtxReloadCoordinator) DoReload(
 	ctx context.Context,
@@ -837,10 +714,6 @@ func (c *NCtxReloadCoordinator) DoReload(
 
 	body, _ := io.ReadAll(resp.Body)
 
-
-
-
-
 	const maxRetries = 5
 	retryInterval := 5 * time.Second
 	for retry := 0; retry < maxRetries && resp.StatusCode == http.StatusServiceUnavailable &&
@@ -868,7 +741,6 @@ func (c *NCtxReloadCoordinator) DoReload(
 		logger.Get().Errorf("[nctx_reload] backend %s: %v", backendID, cur.err)
 		return cur.err
 	}
-
 
 	var result struct {
 		ContextSize int    `json:"context_size"`
@@ -903,8 +775,6 @@ func (c *NCtxReloadCoordinator) DoReload(
 
 // ============================================================
 
-
-
 type perBackendMetrics struct {
 	mu            sync.Mutex
 	lastReloadAt  time.Time
@@ -915,7 +785,6 @@ type perBackendMetrics struct {
 	durationSumMs int64
 	durationCount int64
 }
-
 
 func (m *perBackendMetrics) Snapshot() map[string]interface{} {
 	m.mu.Lock()
@@ -936,7 +805,6 @@ func (m *perBackendMetrics) Snapshot() map[string]interface{} {
 	}
 }
 
-
 // decision: "noop" / "reject" / "reload-start" / "reloaded" / "reload-failed".
 func (c *NCtxReloadCoordinator) RecordDecision(backendID, decision, reason string) {
 	if c == nil {
@@ -954,8 +822,6 @@ func (c *NCtxReloadCoordinator) RecordDecision(backendID, decision, reason strin
 	}
 }
 
-
-
 func (c *NCtxReloadCoordinator) RecordReloadDuration(backendID string, d time.Duration, err error) {
 	if c == nil {
 		return
@@ -972,7 +838,6 @@ func (c *NCtxReloadCoordinator) RecordReloadDuration(backendID string, d time.Du
 	}
 }
 
-
 func (c *NCtxReloadCoordinator) RecordError(backendID, errMsg string) {
 	if c == nil {
 		return
@@ -986,9 +851,6 @@ func (c *NCtxReloadCoordinator) RecordError(backendID, errMsg string) {
 	}
 }
 
-
-
-
 func (c *NCtxReloadCoordinator) perBackendState(backendID string) *perBackendMetrics {
 	if existing, ok := c.metricsByBackend.Load(backendID); ok {
 		return existing.(*perBackendMetrics)
@@ -997,11 +859,7 @@ func (c *NCtxReloadCoordinator) perBackendState(backendID string) *perBackendMet
 	return actual.(*perBackendMetrics)
 }
 
-
-
 //
-
-
 
 func (c *NCtxReloadCoordinator) Snapshot() map[string]interface{} {
 	if c == nil {
@@ -1045,14 +903,7 @@ func (c *NCtxReloadCoordinator) Snapshot() map[string]interface{} {
 	}
 }
 
-
-
-
-
 //
-
-
-
 
 //
 
@@ -1067,13 +918,7 @@ func (c *NCtxReloadCoordinator) BackendMetricsFromState(backendID string) *types
 	}
 }
 
-
-
-
-
-
 //
-
 
 func (c *NCtxReloadCoordinator) Shutdown() {
 	if c == nil {
@@ -1081,4 +926,3 @@ func (c *NCtxReloadCoordinator) Shutdown() {
 	}
 
 }
-

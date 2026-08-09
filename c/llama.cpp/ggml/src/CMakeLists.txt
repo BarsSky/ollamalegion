@@ -3,6 +3,18 @@ include("../cmake/common.cmake")
 
 add_compile_definitions(GGML_SCHED_MAX_COPIES=${GGML_SCHED_MAX_COPIES})
 
+# Round 25 (2026-08-05): propagate user-supplied GGML_SCHED_MAX_SPLIT_INPUTS to the compiler.
+# Without this, the cmake -DGGML_SCHED_MAX_SPLIT_INPUTS=128 flag is silently dropped
+# (it stays in the cmake cache but never reaches the C preprocessor), and the source's
+# #ifndef fallback in ggml-backend.cpp:756 uses the hard-coded default of 30. That
+# causes GGML_ASSERT(n_inputs < GGML_SCHED_MAX_SPLIT_INPUTS) to fire on models that
+# need more split inputs (e.g. gemma-4-E4B with Gated Delta Net hybrid attention,
+# where the autoregressive fused split exceeds 30). 128 is a safe upper bound for
+# current models and leaves headroom for future ones.
+if(DEFINED GGML_SCHED_MAX_SPLIT_INPUTS)
+    add_compile_definitions(GGML_SCHED_MAX_SPLIT_INPUTS=${GGML_SCHED_MAX_SPLIT_INPUTS})
+endif()
+
 # enable libstdc++ assertions for debug builds
 if (CMAKE_SYSTEM_NAME MATCHES "Linux")
     add_compile_definitions($<$<CONFIG:Debug>:_GLIBCXX_ASSERTIONS>)

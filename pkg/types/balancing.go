@@ -128,6 +128,22 @@ type NCtxReloadSettings struct {
 	// AutoReloadTimeoutSec — таймаут на сам HTTP reload-запрос.
 	// cppworker может грузить модель 30-60 секунд. 0 = default 60.
 	AutoReloadTimeoutSec int `json:"auto_reload_timeout_sec" yaml:"auto_reload_timeout_sec"`
+
+	// PreflightEnabled — включает preflight n_ctx check (Round 14+).
+	// При true balancer ДО отправки запроса проверяет, хватает ли loaded n_ctx,
+	// и при необходимости делает reload (sync или async — см. PreflightAsyncReload).
+	PreflightEnabled bool `json:"preflight_enabled" yaml:"preflight_enabled"`
+
+	// PreflightAsyncReload (Round 31 #2, 2026-08-09): async mode для reload.
+	// При true balancer НЕ блокирует на reload — сразу отдаёт клиенту
+	// 503 + Retry-After, а reload запускается в фоне. Клиент (Cline/OpenWebUI)
+	// повторяет через Retry-After секунд и получает уже готовую модель.
+	// Default false (sync reload — обратная совместимость).
+	PreflightAsyncReload bool `json:"preflight_async_reload" yaml:"preflight_async_reload"`
+
+	// PreflightAsyncRetryAfterSec (Round 31 #2): сколько секунд balancer
+	// рекомендует клиенту ждать перед retry после 503. Default 5.
+	PreflightAsyncRetryAfterSec int `json:"preflight_async_retry_after_sec" yaml:"preflight_async_retry_after_sec"`
 }
 
 // PrewarmConfig - конфигурация превентивной загрузки
@@ -261,6 +277,16 @@ type LlamaCppModelProfile struct {
 	// на KV-cache (7 GB → 3.5 GB) — позволяет загрузить модель с большим n_ctx
 	// на 8GB GPU.
 	KVCacheType string `json:"kvCacheType,omitempty"` // "" = inherit, "f16"/"q8_0"/"q4_0"
+
+	// MaxTokens — верхняя граница output tokens per request (Round 26, 2026-08-06).
+	// 0 = no cap. Если клиент (Cline/OpenWebUI) запрашивает max_tokens=32000,
+	// а профиль говорит 8192, то cppworker ограничит n_predict до 8192
+	// (даже если клиент попросил больше). Это защищает GPU от runaway
+	// generations (Cline иногда генерит 30K+ токенов за раз = 10+ минут).
+	//
+	// Soft cap: применяется в handler'е после env defaults, до AutoTuneNCtx.
+	// Явный max_tokens в запросе с меньшим значением — побеждает (не повышаем).
+	MaxTokens int `json:"maxTokens,omitempty"`
 
 	// Round 7 (2026-07-09): per-tensor override для MoE моделей.
 	// Применяется при load/reload если массивы непустые и согласованы по длине.

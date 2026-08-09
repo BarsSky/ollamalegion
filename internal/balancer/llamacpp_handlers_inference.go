@@ -115,6 +115,24 @@ func (lr *LlamaCppRouter) handleOpenAIChatCompletions(w http.ResponseWriter, r *
 	logger.Get().Infow("handleOpenAIChatCompletions: proxying to cppworker",
 		"backend", backendID, "url", targetURL, "model", model)
 
+	// Round 31 #1 (2026-08-09): auto-stream workaround для non-stream клиентов.
+	// cppworker буферизирует non-stream (ждёт headers до конца генерации) → 120-300s timeout.
+	// Workaround: шлём upstream как stream=true, накапливаем чанки, формируем non-stream JSON.
+	// Клиент получает 200 ОК сразу (chunked transfer) → нет блокировки.
+	// Default disabled (LB_OPENAI_AUTO_STREAM=false) для backward compat.
+	if !isStreamingFromBody(r.URL.Path, bodyBuf) && IsOpenAIAutoStreamEnabled() {
+		logger.Get().Infow("handleOpenAIChatCompletions: using Round 31 #1 auto-stream workaround",
+			"backend", backendID, "model", model)
+		if err := lr.proxy.proxyRequestOpenAIStreamAsNonStream(w, r, bodyBuf, targetURL, backendID); err != nil {
+			logger.Get().Errorw("handleOpenAIChatCompletions: auto-stream workaround failed",
+				"backend", backendID, "error", err)
+			if !isHeadersSent(w) {
+				writeJSON(w, http.StatusBadGateway, map[string]string{"error": err.Error()})
+			}
+		}
+		return
+	}
+
 	// PF-5 fix (2026-06-27): используем per-request client с ResponseHeaderTimeout = FirstByteTimeout.
 	// Иначе upstream, не отправивший HTTP-заголовки за указанное время, держит соединение бесконечно.
 	firstByte := lr.proxy.getModelFirstByteTimeout(model)

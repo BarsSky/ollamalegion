@@ -538,6 +538,26 @@ func (p *Proxy) proxyRequestLlamaCppNonStream(w http.ResponseWriter, r *http.Req
 	w.Header().Set("Content-Length", strconv.Itoa(len(translatedResp)))
 	w.WriteHeader(resp.StatusCode)
 	w.Write(translatedResp)
+
+	// Round 31 #7 (2026-08-09): record token usage для мониторинга.
+	// Парсим raw OpenAI body (respBody) — usage стандартный OpenAI формат.
+	if resp.StatusCode < 400 {
+		var openaiResp map[string]interface{}
+		if json.Unmarshal(respBody, &openaiResp) == nil {
+			if usage, ok := openaiResp["usage"].(map[string]interface{}); ok {
+				var prompt, completion int64
+				if v, ok := usage["prompt_tokens"].(float64); ok {
+					prompt = int64(v)
+				}
+				if v, ok := usage["completion_tokens"].(float64); ok {
+					completion = int64(v)
+				}
+				if prompt > 0 || completion > 0 {
+					p.recordTokenUsage(modelFromCtx, prompt, completion)
+				}
+			}
+		}
+	}
 	return nil
 }
 

@@ -49,6 +49,9 @@ func (s *Server) GetActiveQueriesForModel(backendID, modelName string) (int64, e
 		return 0, fmt.Errorf("build request: %w", err)
 	}
 	if backend := s.proxy.GetBackend(backendID); backend != nil && backend.CppWorkerApiToken != "" {
+		// Round 27 (2026-08-06): X-API-Token preferred, Authorization: Bearer as fallback
+		// (см. handlers_cppworker_profiles.go:494 — Round 24 fix сюда тоже не дошёл).
+		req.Header.Set("X-API-Token", backend.CppWorkerApiToken)
 		req.Header.Set("Authorization", "Bearer "+backend.CppWorkerApiToken)
 	}
 

@@ -14,6 +14,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -35,8 +36,8 @@ import (
 
 // AdaptiveGPUDevice ??????? ?????????? ?? ????? GPU.
 type AdaptiveGPUDevice struct {
-	Index      int    `json:"index"`
-	Name       string `json:"name"`       // ???????? "NVIDIA A10", "NVIDIA GeForce RTX 3070"
+	Index       int    `json:"index"`
+	Name        string `json:"name"` // ???????? "NVIDIA A10", "NVIDIA GeForce RTX 3070"
 	VRAMTotalMB uint64 `json:"vramTotalMb"`
 	VRAMFreeMB  uint64 `json:"vramFreeMb"`
 	CUDACompute string `json:"cudaCompute,omitempty"` // "8.6", "7.5" ? ?.?.
@@ -47,14 +48,14 @@ type AdaptiveGPUDevice struct {
 type EnvironmentProfile struct {
 	mu sync.RWMutex
 
-	GPUCount   int          `json:"gpuCount"`
-	AdaptiveGPUDevices []AdaptiveGPUDevice  `json:"gpuDevices"`
-	TotalVRAM  int64        `json:"totalVramBytes"`  // ? ??????
-	FreeVRAM   int64        `json:"freeVramBytes"`   // ???????? ??????
-	TotalRAM   int64        `json:"totalRamBytes"`
-	FreeRAM    int64        `json:"freeRamBytes"`
-	HasCUDA    bool         `json:"hasCuda"`
-	NVMLReady  bool         `json:"nvmlReady"` // true=bridge, false=nvidia-smi
+	GPUCount           int                 `json:"gpuCount"`
+	AdaptiveGPUDevices []AdaptiveGPUDevice `json:"gpuDevices"`
+	TotalVRAM          int64               `json:"totalVramBytes"` // ? ??????
+	FreeVRAM           int64               `json:"freeVramBytes"`  // ???????? ??????
+	TotalRAM           int64               `json:"totalRamBytes"`
+	FreeRAM            int64               `json:"freeRamBytes"`
+	HasCUDA            bool                `json:"hasCuda"`
+	NVMLReady          bool                `json:"nvmlReady"` // true=bridge, false=nvidia-smi
 
 	// ???????????? ???????
 	OverheadBytes int64 `json:"overheadBytes"` // ??????????? ?? GPU ??????
@@ -131,15 +132,15 @@ func (ep *EnvironmentProfile) Get() EnvironmentProfile {
 	ep.mu.RLock()
 	defer ep.mu.RUnlock()
 	return EnvironmentProfile{
-		GPUCount:      ep.GPUCount,
-		AdaptiveGPUDevices:    append([]AdaptiveGPUDevice{}, ep.AdaptiveGPUDevices...),
-		TotalVRAM:     ep.TotalVRAM,
-		FreeVRAM:      ep.FreeVRAM,
-		TotalRAM:      ep.TotalRAM,
-		FreeRAM:       ep.FreeRAM,
-		HasCUDA:       ep.HasCUDA,
-		NVMLReady:     ep.NVMLReady,
-		OverheadBytes: ep.OverheadBytes,
+		GPUCount:           ep.GPUCount,
+		AdaptiveGPUDevices: append([]AdaptiveGPUDevice{}, ep.AdaptiveGPUDevices...),
+		TotalVRAM:          ep.TotalVRAM,
+		FreeVRAM:           ep.FreeVRAM,
+		TotalRAM:           ep.TotalRAM,
+		FreeRAM:            ep.FreeRAM,
+		HasCUDA:            ep.HasCUDA,
+		NVMLReady:          ep.NVMLReady,
+		OverheadBytes:      ep.OverheadBytes,
 	}
 }
 
@@ -297,16 +298,16 @@ func MoEWeightRatioForSize(archType string, sizeBytes int64) float64 {
 
 // LoadStrategyResult ? ????????? ?????? ?????????.
 type LoadStrategyResult struct {
-	GPULayers    int    `json:"gpuLayers"`    // -1 = ???
-	NCtx         int    `json:"nCtx"`
-	KVCacheType  string `json:"kvCacheType"`  // "f16", "q8_0", "q4_0"
-	UseMmap      bool   `json:"useMmap"`
-	Stage        string `json:"stage"`        // "exact_fit", "partial_offload", "cpu_only", "moe_offload", "auto_retry"
-	KVReduced    bool   `json:"kvReduced"`    // ??? ?? downgrade kvCacheType
-	GPUReduced   bool   `json:"gpuReduced"`   // ???? ?? ????????? gpu_layers
-	NCtxReduced  bool   `json:"nCtxReduced"`  // ??? ?? ???????? n_ctx
-	MaxViableNCtx int   `json:"maxViableNCtx"` // ????. n_ctx ??? cpu-only
-	Explanation  string `json:"explanation"`  // ???????????????? ????????
+	GPULayers     int    `json:"gpuLayers"` // -1 = ???
+	NCtx          int    `json:"nCtx"`
+	KVCacheType   string `json:"kvCacheType"` // "f16", "q8_0", "q4_0"
+	UseMmap       bool   `json:"useMmap"`
+	Stage         string `json:"stage"`         // "exact_fit", "partial_offload", "cpu_only", "moe_offload", "auto_retry"
+	KVReduced     bool   `json:"kvReduced"`     // ??? ?? downgrade kvCacheType
+	GPUReduced    bool   `json:"gpuReduced"`    // ???? ?? ????????? gpu_layers
+	NCtxReduced   bool   `json:"nCtxReduced"`   // ??? ?? ???????? n_ctx
+	MaxViableNCtx int    `json:"maxViableNCtx"` // ????. n_ctx ??? cpu-only
+	Explanation   string `json:"explanation"`   // ???????????????? ????????
 	// Round 7: per-tensor override (parallel arrays).
 	// For MoE: leave attention on GPU, route expert tensors to CPU.
 	OverrideTensors     []string `json:"overrideTensors,omitempty"`
@@ -577,10 +578,14 @@ func SelectStrategy(
 				if weightsOnly+kvCacheBytes > safeVRAM {
 					availForMoE := safeVRAM - overhead - kvCacheBytes
 					if availForMoE > 0 {
-						perLayer := int64(float64(meta.SizeBytes) * moefrac) / int64(meta.NLayers)
-						if perLayer <= 0 { perLayer = weightsPerLayer }
+						perLayer := int64(float64(meta.SizeBytes)*moefrac) / int64(meta.NLayers)
+						if perLayer <= 0 {
+							perLayer = weightsPerLayer
+						}
 						reduced := int(availForMoE / perLayer)
-						if reduced < 1 { reduced = 1 }
+						if reduced < 1 {
+							reduced = 1
+						}
 						gpuL = reduced
 					} else {
 						continue
@@ -591,14 +596,14 @@ func SelectStrategy(
 				gpuL = requestedGPULayers
 			}
 			return LoadStrategyResult{
-				GPULayers:    gpuL,
-				NCtx:         requestedNCtx,
-				KVCacheType:  kvType,
-				UseMmap:      ramWeightsBytes > 0,
-				Stage:        "exact_fit",
-				KVReduced:    kvType != "f16",
+				GPULayers:     gpuL,
+				NCtx:          requestedNCtx,
+				KVCacheType:   kvType,
+				UseMmap:       ramWeightsBytes > 0,
+				Stage:         "exact_fit",
+				KVReduced:     kvType != "f16",
 				MaxViableNCtx: requestedNCtx,
-				Explanation:  fmt.Sprintf("exact_fit: kvType=%s, gpuLayers=%d/%d, vram=%dMB < safe=%dMB",
+				Explanation: fmt.Sprintf("exact_fit: kvType=%s, gpuLayers=%d/%d, vram=%dMB < safe=%dMB",
 					kvType, gpuL, meta.NLayers, totalVRAMNeeded/(1024*1024), safeVRAM/(1024*1024)),
 				OverrideTensors:     moeOverridePatterns,
 				OverrideTensorBufts: moeOverrideBufts,
@@ -608,7 +613,7 @@ func SelectStrategy(
 		// partial_offload: ????????? gpu_layers
 		availForWeights := safeVRAM - overhead - kvCacheBytes
 		if availForWeights > 0 {
-						// Bug fix (Round 5 Fix 4): for MoE, attention-only per-layer
+			// Bug fix (Round 5 Fix 4): for MoE, attention-only per-layer
 			// is much smaller than full per-layer (Qwen3.6-A3B: 60 MB attn vs
 			// 470 MB full with experts). Using effectivePerLayer gives a more
 			// honest count of GPU layers, so partial_offload doesn't load
@@ -622,7 +627,7 @@ func SelectStrategy(
 					effectivePerLayer = attnEstimate
 				}
 			}
-reducedGPULayers := int(availForWeights / effectivePerLayer)
+			reducedGPULayers := int(availForWeights / effectivePerLayer)
 			if reducedGPULayers > meta.NLayers {
 				reducedGPULayers = meta.NLayers
 			}
@@ -631,15 +636,15 @@ reducedGPULayers := int(availForWeights / effectivePerLayer)
 				ramNeeded := int64(meta.NLayers-reducedGPULayers) * weightsPerLayer
 				if env.FreeRAM <= 0 || ramNeeded <= env.FreeRAM {
 					return LoadStrategyResult{
-						GPULayers:    reducedGPULayers,
-						NCtx:         requestedNCtx,
-						KVCacheType:  kvType,
-						UseMmap:      true,
-						Stage:        "partial_offload",
-						KVReduced:    kvType != "f16",
-						GPUReduced:   true,
+						GPULayers:     reducedGPULayers,
+						NCtx:          requestedNCtx,
+						KVCacheType:   kvType,
+						UseMmap:       true,
+						Stage:         "partial_offload",
+						KVReduced:     kvType != "f16",
+						GPUReduced:    true,
 						MaxViableNCtx: requestedNCtx,
-						Explanation:  fmt.Sprintf("partial_offload: kvType=%s, gpuLayers=%d/%d, attn_per_layer=%dMB, ram_needed=%dMB, free_ram=%dMB",
+						Explanation: fmt.Sprintf("partial_offload: kvType=%s, gpuLayers=%d/%d, attn_per_layer=%dMB, ram_needed=%dMB, free_ram=%dMB",
 							kvType, reducedGPULayers, meta.NLayers, effectivePerLayer/(1024*1024), ramNeeded/(1024*1024), env.FreeRAM/(1024*1024)),
 						OverrideTensors:     moeOverridePatterns,
 						OverrideTensorBufts: moeOverrideBufts,
@@ -673,16 +678,16 @@ reducedGPULayers := int(availForWeights / effectivePerLayer)
 				finalNCtx = maxNCtx
 			}
 			return LoadStrategyResult{
-				GPULayers:    0,
-				NCtx:         finalNCtx,
-				KVCacheType:  kvType,
-				UseMmap:      true,
-				Stage:        "cpu_only",
-				KVReduced:    kvType != "f16",
-				GPUReduced:   true,
-				NCtxReduced:  finalNCtx < requestedNCtx,
+				GPULayers:     0,
+				NCtx:          finalNCtx,
+				KVCacheType:   kvType,
+				UseMmap:       true,
+				Stage:         "cpu_only",
+				KVReduced:     kvType != "f16",
+				GPUReduced:    true,
+				NCtxReduced:   finalNCtx < requestedNCtx,
 				MaxViableNCtx: maxNCtx,
-				Explanation:  fmt.Sprintf("cpu_only: kvType=%s, n_ctx=%d/%d, max_viable=%d",
+				Explanation: fmt.Sprintf("cpu_only: kvType=%s, n_ctx=%d/%d, max_viable=%d",
 					kvType, finalNCtx, requestedNCtx, maxNCtx),
 				OverrideTensors:     moeOverridePatterns,
 				OverrideTensorBufts: moeOverrideBufts,
@@ -692,12 +697,12 @@ reducedGPULayers := int(availForWeights / effectivePerLayer)
 
 	// ?????? ?? ??????? ? fallback ?? ??????????? ?????????
 	return LoadStrategyResult{
-		GPULayers:   requestedGPULayers,
-		NCtx:        requestedNCtx,
-		KVCacheType: "f16",
-		UseMmap:     true,
-		Stage:       "fallback_no_fit",
-		Explanation: "no strategy fits available VRAM/RAM at any kvCacheType",
+		GPULayers:           requestedGPULayers,
+		NCtx:                requestedNCtx,
+		KVCacheType:         "f16",
+		UseMmap:             true,
+		Stage:               "fallback_no_fit",
+		Explanation:         "no strategy fits available VRAM/RAM at any kvCacheType",
 		OverrideTensors:     moeOverridePatterns,
 		OverrideTensorBufts: moeOverrideBufts,
 	}
@@ -752,23 +757,37 @@ func (h *NaNHealer) RecordBreak(modelName string, reason string, lastWriteErr st
 	if !h.config.EnableAutoHeal {
 		return false
 	}
-	// ?????????, ??? ????? ????? ?? ???????? ?????? (NaN/OOM/timeout),
-	// ? ?? ?? ?????????? disconnect (???????????? ?????? ???????).
+	// Различаем, что лом идёт от реальной поломки (NaN/OOM/timeout),
+	// а не от обычного disconnect (отвалился клиент или прокси).
+	//
+	// Round 25 (cppworker-gpu reload bug): чистый context.Canceled
+	// на ctx_done_on_write = клиентский аборт (Cline default 120s timeout,
+	// balancer RequestTimeout, user cancel) — НЕ вина модели. Если это считать,
+	// любой длинный стрим вызывает false-positive auto-reload (модель в порядке,
+	// просто клиент не дождался). context.DeadlineExceeded / i/o timeout /
+	// неизвестные ошибки продолжаем считать — это может быть реальный
+	// model/network инцидент.
 	switch reason {
 	case "write_error":
-		// write_error ? broken pipe / connection reset = ?????? ?????????
+		// write_error с broken pipe / connection reset = клиент отвалился
 		if strings.Contains(lastWriteErr, "broken pipe") || strings.Contains(lastWriteErr, "connection reset") {
 			return false
 		}
-		// ?????? write_error (???????? "i/o timeout") ? ???????? ????/???????
+		// другие write_error (например "i/o timeout") = реальная сеть/модель
 	case "ctx_done_on_write":
-		// context canceled ??? broken pipe = ?????? ???????? ?????? (timeout/OOM)
-		// ?? ??????? ?????????? disconnect ? ??? ?????? ?? ??????/?? ?????? ????????
-		if strings.Contains(lastWriteErr, "broken pipe") || strings.Contains(lastWriteErr, "connection reset") {
-			return false // ?????? ?????????
+		// Чистый context.Canceled (Cline timeout / balancer close / user cancel)
+		// = клиентский аборт, НЕ вина модели.
+		if lastWriteErr == "" || lastWriteErr == context.Canceled.Error() {
+			return false
 		}
+		// broken pipe / connection reset — тоже клиент отвалился
+		if strings.Contains(lastWriteErr, "broken pipe") || strings.Contains(lastWriteErr, "connection reset") {
+			return false
+		}
+		// context.DeadlineExceeded / i/o timeout / неизвестное — возможный
+		// server-side timeout или model hang, считаем.
 	default:
-		return false // ?????? ??????? ? ?? ???? ????????
+		return false // неизвестный тип — не трогаем auto-heal
 	}
 
 	h.mu.Lock()
@@ -805,9 +824,9 @@ func (h *NaNHealer) Reset(modelName string) {
 // ============================================================
 
 var (
-	globalEnv      *EnvironmentProfile
-	globalNaNHeal  *NaNHealer
-	envDetectOnce  sync.Once
+	globalEnv     *EnvironmentProfile
+	globalNaNHeal *NaNHealer
+	envDetectOnce sync.Once
 )
 
 // initAdaptiveLoader ?????????????? ?????????? ??????????.
@@ -945,4 +964,3 @@ func RecordStreamBreak(modelName, reason, lastWriteErr string) {
 		}()
 	}
 }
-

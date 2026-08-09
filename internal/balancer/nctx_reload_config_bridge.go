@@ -33,11 +33,19 @@ func loadNCtxReloadConfig(cfg *types.LoadBalancerConfig) NCtxReloadConfig {
 		AutoReloadMaxNCtx:          cfg.Balancing.NCtxReload.AutoReloadMaxNCtx,
 		AutoReloadVRAMSafetyFactor: cfg.Balancing.NCtxReload.AutoReloadVRAMSafetyFactor,
 		AutoReloadTimeoutSec:       cfg.Balancing.NCtxReload.AutoReloadTimeoutSec,
+		// Round 31 #2 (2026-08-09): копируем preflight поля (раньше они терялись
+		// при partial config — bool zero value = false, что выключало preflight).
+		PreflightEnabled:            cfg.Balancing.NCtxReload.PreflightEnabled,
+		PreflightAsyncReload:        cfg.Balancing.NCtxReload.PreflightAsyncReload,
+		PreflightAsyncRetryAfterSec: cfg.Balancing.NCtxReload.PreflightAsyncRetryAfterSec,
 	}
 	// Заполняем дефолты для незаданных полей
-	if !src.AutoReloadNCtx && cfg.Balancing.NCtxReload.AutoReloadMaxNCtx == 0 &&
-		cfg.Balancing.NCtxReload.AutoReloadVRAMSafetyFactor == 0 &&
-		cfg.Balancing.NCtxReload.AutoReloadTimeoutSec == 0 {
+	hasAnyField := src.AutoReloadNCtx || cfg.Balancing.NCtxReload.AutoReloadMaxNCtx > 0 ||
+		cfg.Balancing.NCtxReload.AutoReloadVRAMSafetyFactor > 0 ||
+		cfg.Balancing.NCtxReload.AutoReloadTimeoutSec > 0 ||
+		cfg.Balancing.NCtxReload.PreflightEnabled ||
+		cfg.Balancing.NCtxReload.PreflightAsyncReload
+	if !hasAnyField {
 		// Совсем пустая секция — используем defaults
 		src = def
 	} else {
@@ -47,6 +55,15 @@ func loadNCtxReloadConfig(cfg *types.LoadBalancerConfig) NCtxReloadConfig {
 		}
 		if src.AutoReloadTimeoutSec == 0 {
 			src.AutoReloadTimeoutSec = def.AutoReloadTimeoutSec
+		}
+		// Round 31 #2: preflight должен быть включён по умолчанию если есть
+		// хоть какие-то поля в nctxReload секции (но в config.json не задан явно).
+		// Без этого: preflight_enabled = false zero value → preflight отключён.
+		if !src.PreflightEnabled {
+			src.PreflightEnabled = def.PreflightEnabled
+		}
+		if src.PreflightAsyncRetryAfterSec == 0 {
+			src.PreflightAsyncRetryAfterSec = def.PreflightAsyncRetryAfterSec
 		}
 	}
 	return applyNCtxReloadEnvOverrides(src)
@@ -58,6 +75,8 @@ func loadNCtxReloadConfig(cfg *types.LoadBalancerConfig) NCtxReloadConfig {
 //   - LB_NCTX_RELOAD_MAX_N_CTX (int) → AutoReloadMaxNCtx
 //   - LB_NCTX_RELOAD_VRAM_SAFETY_FACTOR (float) → AutoReloadVRAMSafetyFactor
 //   - LB_NCTX_RELOAD_TIMEOUT_SEC (int) → AutoReloadTimeoutSec
+//   - LB_NCTX_PREFLIGHT_ASYNC_RELOAD (true/false) → PreflightAsyncReload (Round 31 #2)
+//   - LB_NCTX_PREFLIGHT_ASYNC_RETRY_AFTER_SEC (int) → PreflightAsyncRetryAfterSec
 //
 // Приоритет: ENV > config.json. Если ENV не задан — оставляем значение из config.
 func applyNCtxReloadEnvOverrides(cfg NCtxReloadConfig) NCtxReloadConfig {
@@ -79,6 +98,17 @@ func applyNCtxReloadEnvOverrides(cfg NCtxReloadConfig) NCtxReloadConfig {
 	if v, ok := os.LookupEnv("LB_NCTX_RELOAD_TIMEOUT_SEC"); ok {
 		if n, err := strconv.Atoi(v); err == nil {
 			cfg.AutoReloadTimeoutSec = n
+		}
+	}
+	// Round 31 #2 (2026-08-09): async reload mode для preflight.
+	if v, ok := os.LookupEnv("LB_NCTX_PREFLIGHT_ASYNC_RELOAD"); ok {
+		if b, err := strconv.ParseBool(v); err == nil {
+			cfg.PreflightAsyncReload = b
+		}
+	}
+	if v, ok := os.LookupEnv("LB_NCTX_PREFLIGHT_ASYNC_RETRY_AFTER_SEC"); ok {
+		if n, err := strconv.Atoi(v); err == nil {
+			cfg.PreflightAsyncRetryAfterSec = n
 		}
 	}
 	return cfg

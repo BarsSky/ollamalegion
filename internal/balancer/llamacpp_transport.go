@@ -449,6 +449,11 @@ func (p *Proxy) proxyRequestLlamaCpp(w http.ResponseWriter, r *http.Request, bac
 	var bytesForwarded int64
 	var firstForwardErr error
 	var lastForwardErr error
+	// Round 31 #4 (2026-08-09): per-stream state — был ли reasoning chunk в этом стриме.
+	// Если да — content (если придёт после reasoning) получит defensive strip от
+	// leading whitespace (gemma-4 после SplitReasoningContent эмитит "\n" перед первым
+	// content токеном как separator после </think>).
+	seenReasoning := false
 
 	// ==== Основной цикл SSE → NDJSON / SSE → SSE ==========
 	scanner := bufio.NewScanner(resp.Body)
@@ -794,7 +799,7 @@ func (p *Proxy) proxyRequestLlamaCpp(w http.ResponseWriter, r *http.Request, bac
 				// финальный NDJSON/SSE если upstream уже отправил finish_reason и нет tool_calls.
 				upstreamHadFinishReason = true
 			}
-			ollamaChunk := translateOpenAISSEDataToOllama(originalPath, []byte(data), modelFromCtx)
+			ollamaChunk := translateOpenAISSEDataToOllama(originalPath, []byte(data), modelFromCtx, &seenReasoning)
 			if len(ollamaChunk) == 0 {
 				continue
 			}

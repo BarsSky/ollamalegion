@@ -46,6 +46,13 @@ type Proxy struct {
 	ollamaRouter           *OllamaRouter   // Маршрутизатор Ollama API endpoint'ов
 	llamaCppRouter         *LlamaCppRouter // Маршрутизатор llama.cpp API endpoint'ов
 
+	// Round 31 #7 (2026-08-09): token usage tracking.
+	// Atomic counters для агрегации prompt/completion tokens по моделям.
+	// Используется для мониторинга через /api/v1/stats/tokens endpoint.
+	// Ключ = model name, value = ModelTokenUsage.
+	tokensByModelMu sync.RWMutex
+	tokensByModel   map[string]*ModelTokenUsage
+
 	// llamaCppMetricsPoller синхронизирует metricsMgr.llamaMetrics[].LoadedModels
 	// с фактическим состоянием cppworker через периодический poll /api/models.
 	// Нужен для отображения загруженных моделей в WebUI (страница GGUF) и
@@ -184,6 +191,7 @@ func NewProxy(config *types.LoadBalancerConfig) *Proxy {
 	p := &Proxy{
 		config:        config,
 		backends:      make(map[string]*BackendState),
+		tokensByModel: make(map[string]*ModelTokenUsage),
 		sessionMgr:    NewSessionManagerWithTTL(sessionTTL, sessionIdleTTL),
 		metricsMgr:    NewMetricsManager(),
 		predictor:     NewPredictor(),

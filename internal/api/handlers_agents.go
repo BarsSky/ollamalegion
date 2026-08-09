@@ -103,14 +103,41 @@ func (s *Server) agentRegisterHandler(w http.ResponseWriter, r *http.Request) {
 	// provider), а не создавать второй бэкенд с тем же host:cppWorkerPort.
 	// Lookup по (host, CppWorkerPort) → если найден cppworker-бэкенд →
 	// attach через AttachAgentToBackend, не создаём новый.
+	//
+	// Round 30 (2026-08-09):
+	//   1. Используем FindBackendByHostPortExcluding(req.AgentID) — иначе
+	//      FindBackendByHostPort может вернуть stale standalone (с тем же
+	//      ID что и req.AgentID, Go maps iteration order is random) →
+	//      existingID == req.AgentID → dedup не сработает.
+	//   2. После успешного attach — удаляем stale standalone бэкенд с
+	//      ID == req.AgentID, если он был создан до введения dedup-логики
+	//      (например, на 2026-08-06 когда cppworker ещё не был зарегистрирован).
+	//      Иначе в /api/v1/backends висят 2 записи на один физический endpoint.
 	if req.CppWorkerPort > 0 {
-		if existingID := s.proxy.FindBackendByHostPort(host, req.CppWorkerPort); existingID != "" && existingID != req.AgentID {
+		if existingID := s.proxy.FindBackendByHostPortExcluding(host, req.CppWorkerPort, req.AgentID); existingID != "" {
 			logger.Get().Infow("agentRegisterHandler: attaching to existing cppworker backend (dedup)",
 				"agentId", req.AgentID,
 				"existingBackendId", existingID,
 				"host", host,
 				"cppWorkerPort", req.CppWorkerPort)
 			s.proxy.AttachAgentToBackend(existingID, req.AgentID, agentPort)
+
+			// Удаляем stale standalone бэкенд с тем же agentId (если есть).
+			// Это нужно когда агент ранее был зарегистрирован как standalone
+			// (когда dedup ещё не было), а потом cppworker зарегистрировался
+			// отдельно. Теперь агент attach'ится к правильному бэкенду и
+			// старый standalone должен быть удалён, чтобы избежать дублей.
+			if s.proxy.BackendExists(req.AgentID) {
+				logger.Get().Infow("agentRegisterHandler: removing stale standalone backend with same agentId",
+					"staleBackendId", req.AgentID,
+					"attachedTo", existingID)
+				if err := s.proxy.RemoveBackend(req.AgentID); err != nil {
+					logger.Get().Warnw("agentRegisterHandler: failed to remove stale standalone backend",
+						"staleBackendId", req.AgentID, "error", err)
+					// Не блокируем attach — просто warning.
+				}
+			}
+
 			existing := s.proxy.GetBackend(existingID)
 			s.writeJSON(w, http.StatusOK, map[string]interface{}{
 				"success":         true,

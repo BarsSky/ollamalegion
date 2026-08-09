@@ -6,10 +6,60 @@ import (
 	"bytes"
 	"encoding/json"
 	"strconv"
+	"strings"
 	"time"
 
 	"ollama-loadbalancer/pkg/logger"
 )
+
+
+// stripReasoningTags — убирает opening/closing reasoning tags из content.
+// Используется как defensive cleanup для gemma-4, который иногда leak'ит
+// `` теги в content (cppworker's SplitReasoningContent разделяет
+// правильно, но close tag `</think>` может остаться в content).
+//
+// Round 31 (2026-08-09).
+func stripReasoningTags(content string) string {
+	// Поддерживаем все 4 типа тегов из thinkTagPairs (cppworker/cmd/cppworker/reasoning_content.go).
+	// Также включаем "<think" (без ">") — gemma-4 иногда эмитит его неполным.
+	openTags := []string{"<think>", "<thinking>", "<reasoning>", "<analysis>", "<think"}
+	closeTags := []string{"</think>", "</thinking>", "</reasoning>", "</analysis>", ""}
+
+	for i, open := range openTags {
+		close := closeTags[i]
+		// Сначала удаляем пары открытие+закрытие (если close не пустой).
+		if close != "" {
+			for {
+				openIdx := strings.Index(content, open)
+				if openIdx < 0 {
+					break
+				}
+				closeIdx := strings.Index(content[openIdx+len(open):], close)
+				if closeIdx < 0 {
+					break
+				}
+				// Удаляем пару (без самих тегов).
+				absClose := openIdx + len(open) + closeIdx + len(close)
+				content = content[:openIdx] + content[absClose:]
+			}
+		}
+		// Затем удаляем одиночные opening tags (с close="", не нашло пары).
+		content = strings.ReplaceAll(content, open, "")
+		if close != "" {
+			content = strings.ReplaceAll(content, close, "")
+		}
+	}
+	// Collapse multiple newlines/spaces в один (после удаления тегов
+	// могут остаться "\n\n" или "  ").
+	for strings.Contains(content, "\n\n") {
+		content = strings.ReplaceAll(content, "\n\n", "\n")
+	}
+	// Trim leading newlines/tabs (gemma-4 часто эмитит "\n" между </think> и answer).
+	// НЕ тримим space — легитимный контент может начинаться с пробела (list, code block).
+	// Round 31 #4 (2026-08-09): only "\n\r\t", без " ".
+	content = strings.TrimLeft(content, "\n\r\t")
+	return content
+}
 
 
 // buildErrorOllamaResponse — строит корректный Ollama-ответ с ошибкой для случаев,
@@ -150,9 +200,25 @@ func translateOpenAIChatToOllama(body []byte, modelName string) ([]byte, error) 
 			if role == nil || role == "" {
 				role = "assistant"
 			}
+			// Round 31 (2026-08-09): cppworker's SplitReasoningContent иногда
+			// leak'ит `` теги в content для gemma-4 (model emits
+			// "<think\n...answer..." — close tag `</think>` остаётся в content).
+			// Защитный strip: если `reasoning_content` заполнен, считаем что
+			// cppworker split'ил, но могут быть остатки тегов.
+			contentStr, _ := message["content"].(string)
+			if msgReasoning, hasReasoning := message["reasoning_content"].(string); hasReasoning && msgReasoning != "" {
+				// Есть reasoning — strip opening/closing tags из content.
+				contentStr = stripReasoningTags(contentStr)
+			}
 			msgMap := map[string]interface{}{
 				"role":    role,
-				"content": message["content"],
+				"content": contentStr,
+			}
+			// Round 29 (2026-08-09): reasoning_content → message.reasoning
+			// (Ollama API). cppworker эмитит reasoning_content для reasoning-моделей
+			// (gemma-4, qwen3.5/qwen3.6, deepseek-r1). OpenWebUI ожидает message.reasoning.
+			if rc, ok := message["reasoning_content"].(string); ok && rc != "" {
+				msgMap["reasoning"] = rc
 			}
 			// Handle tool_calls in the response message
 			if tc, ok := message["tool_calls"].([]interface{}); ok && len(tc) > 0 {
@@ -266,7 +332,12 @@ func translateOpenAIEmbeddingsToOllama(body []byte, modelName string) ([]byte, e
 
 // translateOpenAISSEDataToOllama — переводит OpenAI SSE streaming data в Ollama NDJSON.
 // Если чанк — [DONE], возвращает nil.
-func translateOpenAISSEDataToOllama(ollamaPath string, sseData []byte, modelName string) []byte {
+//
+// seenReasoning — pointer на per-stream state (Round 31 #4): если за всё время стрима
+// уже встречался reasoning chunk, translator тримит leading whitespace у content
+// (gemma-4 после SplitReasoningContent эмитит "\n" перед первым content токеном).
+// nil = stateless (для тестов и non-stream вызовов).
+func translateOpenAISSEDataToOllama(ollamaPath string, sseData []byte, modelName string, seenReasoning *bool) []byte {
 	if len(sseData) == 0 || bytes.Equal(sseData, []byte("[DONE]")) {
 		return nil
 	}
@@ -276,9 +347,9 @@ func translateOpenAISSEDataToOllama(ollamaPath string, sseData []byte, modelName
 	}
 	switch ollamaPath {
 	case "/api/chat":
-		return translateSSEChatToOllama(openaiChunk, modelName)
+		return translateSSEChatToOllama(openaiChunk, modelName, seenReasoning)
 	case "/api/generate":
-		return translateSSEGenerateToOllama(openaiChunk, modelName)
+		return translateSSEGenerateToOllama(openaiChunk, modelName, seenReasoning)
 	default:
 		return sseData
 	}
@@ -292,16 +363,26 @@ func translateOpenAISSEDataToOllama(ollamaPath string, sseData []byte, modelName
 //  3. {"delta": {"content": "tok", "role": "..."}}   — токен с ролью
 //  4. {"delta": {}, "finish_reason": "stop"}         — финальный
 //  5. {"error": "...", "choices":[{"delta":{},"finish_reason":"error"}]} — ошибка от upstream
-func translateSSEChatToOllama(chunk map[string]interface{}, modelName string) []byte {
+//  6. {"delta": {"reasoning_content": "..."}}       — reasoning (gemma-4/qwen3.6/deepseek-r1)
+//  7. {"delta": {"reasoning_content": "...", "content": "..."}} — mixed reasoning+content
+//
+// seenReasoning — pointer на per-stream state (Round 31 #4). Translator обновляет
+// его когда видит reasoning chunk, и тримит leading whitespace content'а
+// если reasoning уже был в этом стриме (gemma-4 после SplitReasoningContent
+// эмитит "\n" перед первым content токеном).
+// nil = stateless mode (для тестов).
+func translateSSEChatToOllama(chunk map[string]interface{}, modelName string, seenReasoning *bool) []byte {
 	ollamaChunk := map[string]interface{}{
 		"model": modelName,
 		"done":  false,
 	}
 	var hasContent bool
+	var hasReasoning bool
 	var hasRoleOnly bool
 	var hasToolCalls bool
 	var roleStr string
 	var contentStr string
+	var reasoningStr string
 	var toolCallsJSON json.RawMessage
 
 	// Проброс ошибки от upstream.
@@ -328,8 +409,20 @@ func translateSSEChatToOllama(chunk map[string]interface{}, modelName string) []
 			if c, ok := delta["content"].(string); ok {
 				contentStr = c
 			}
+			// Round 29 (2026-08-09): extract reasoning_content для reasoning-моделей
+			// (gemma-4, qwen3.5/qwen3.6, deepseek-r1). cppworker эмитит отдельный
+			// chunk с delta.reasoning_content — маппим в message.thinking (Ollama API).
+			if rc, ok := delta["reasoning_content"].(string); ok && rc != "" {
+				reasoningStr = rc
+				// Round 31 #4 (2026-08-09): per-stream state — если в стриме уже был
+				// reasoning, content получит defensive strip от leading whitespace.
+				if seenReasoning != nil {
+					*seenReasoning = true
+				}
+			}
 			hasContent = contentStr != ""
-			hasRoleOnly = !hasContent && roleStr != ""
+			hasReasoning = reasoningStr != ""
+			hasRoleOnly = !hasContent && !hasReasoning && roleStr != ""
 			// Detect delta.tool_calls in SSE chunks from cppworker
 			if tc, ok := delta["tool_calls"]; ok && tc != nil {
 				hasToolCalls = true
@@ -344,8 +437,38 @@ func translateSSEChatToOllama(chunk map[string]interface{}, modelName string) []
 		}
 	}
 
+	// Reasoning-only chunk (cppworker separates reasoning from content for gemma-4 et al).
+	// Emit NDJSON with message.thinking only — content stays empty.
+	// Round 29 (2026-08-09): if reasoning comes WITH tool_calls, merge into single chunk.
+	if hasReasoning && !hasContent {
+		msg := map[string]interface{}{
+			"role":     roleStr,
+			"content":  "",
+			"thinking": reasoningStr,
+		}
+		if msg["role"] == "" {
+			msg["role"] = "assistant"
+		}
+		if hasToolCalls && len(toolCallsJSON) > 0 {
+			var toolCallsArr []interface{}
+			if err := json.Unmarshal(toolCallsJSON, &toolCallsArr); err == nil {
+				msg["tool_calls"] = toolCallsArr
+			}
+		}
+		ollamaChunk["message"] = msg
+		result, _ := json.Marshal(ollamaChunk)
+		return append(result, '\n')
+	}
+
 	// Content-чанк
 	if hasContent {
+		// Round 31 #4 (2026-08-09): defensive strip когда reasoning был в этом стриме.
+		// gemma-4 после SplitReasoningContent эмитит "\n" перед первым content токеном
+		// (как separator после </think>). Если reasoning уже был — strip'аем leading whitespace
+		// чтобы content не начинался с "\n".
+		if seenReasoning != nil && *seenReasoning {
+			contentStr = stripReasoningTags(contentStr)
+		}
 		if shouldFilterLlamaCppContent(contentStr) {
 			logger.Get().Debugw("translateSSEChatToOllama: filtered service token from content",
 				"model", modelName, "filtered_content_len", len(contentStr))
@@ -387,6 +510,11 @@ func translateSSEChatToOllama(chunk map[string]interface{}, modelName string) []
 			msg["role"] = roleStr
 		} else {
 			msg["role"] = "assistant"
+		}
+		// Round 29 (2026-08-09): preserve reasoning_content when emitted in same chunk
+		// as content (some cppworker emit formats include both).
+		if hasReasoning {
+			msg["thinking"] = reasoningStr
 		}
 		ollamaChunk["message"] = msg
 		result, _ := json.Marshal(ollamaChunk)
@@ -454,7 +582,9 @@ func translateSSEChatToOllama(chunk map[string]interface{}, modelName string) []
 
 // translateSSEGenerateToOllama — переводит OpenAI /v1/completions streaming чанк
 // в Ollama NDJSON для /api/generate.
-func translateSSEGenerateToOllama(chunk map[string]interface{}, modelName string) []byte {
+//
+// seenReasoning — pointer на per-stream state (Round 31 #4). nil = stateless.
+func translateSSEGenerateToOllama(chunk map[string]interface{}, modelName string, seenReasoning *bool) []byte {
 	ollamaChunk := map[string]interface{}{
 		"model": modelName,
 		"done":  false,
@@ -473,19 +603,49 @@ func translateSSEGenerateToOllama(chunk map[string]interface{}, modelName string
 	}
 
 	hasContent := false
+	// Round 29 (2026-08-09): reasoning_content в /v1/completions streaming.
+	// cppworker может эмитить reasoning_content в choice (legacy) или top-level (новый формат).
+	var reasoningStr string
 	if choices, ok := chunk["choices"].([]interface{}); ok && len(choices) > 0 {
 		choice := choices[0].(map[string]interface{})
 		if text, ok := choice["text"].(string); ok && text != "" {
 			ollamaChunk["response"] = text
 			hasContent = true
 		}
+		if rc, ok := choice["reasoning_content"].(string); ok && rc != "" {
+			reasoningStr = rc
+		}
 		if finishReason, ok := choice["finish_reason"].(string); ok && finishReason != "" {
 			ollamaChunk["done"] = true
 			ollamaChunk["done_reason"] = finishReason
 		}
 	}
+	// Также проверяем top-level reasoning_content (новый формат cppworker)
+	if rc, ok := chunk["reasoning_content"].(string); ok && rc != "" {
+		reasoningStr = rc
+	}
+	// Round 31 #4 (2026-08-09): per-stream state — reasoning seen?
+	if reasoningStr != "" && seenReasoning != nil {
+		*seenReasoning = true
+	}
+	// Round 31 #4 (2026-08-09): defensive strip когда reasoning был в этом стриме.
+	if hasContent && seenReasoning != nil && *seenReasoning {
+		if s, ok := ollamaChunk["response"].(string); ok {
+			ollamaChunk["response"] = stripReasoningTags(s)
+		}
+	}
+
+	if reasoningStr != "" {
+		ollamaChunk["thinking"] = reasoningStr
+	}
 	if !hasContent {
 		if ollamaChunk["done"] == true {
+			ollamaChunk["response"] = ""
+			result, _ := json.Marshal(ollamaChunk)
+			return append(result, '\n')
+		}
+		// Если есть reasoning без content — всё равно эмитим (иначе thinking потеряется)
+		if reasoningStr != "" {
 			ollamaChunk["response"] = ""
 			result, _ := json.Marshal(ollamaChunk)
 			return append(result, '\n')

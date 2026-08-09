@@ -150,6 +150,15 @@ func main() {
 	// Подключаем сохранение конфига на диск для авто-загрузки моделей (AutoPull)
 	apiServer.SetConfigSaver(cfg.Save)
 
+	// Round 31 (2026-08-09): load model profiles из /app/data/profiles.json (writable).
+	// config.json может быть read-only (bundled compose), поэтому профили persist'ятся
+	// отдельно. На старте мержим с config.json (config wins при коллизиях).
+	if loaded, err := proxy.LoadProfilesFromFile(); err != nil {
+		log.Printf("Warning: failed to load profiles from disk: %v", err)
+	} else if loaded > 0 {
+		log.Printf("Loaded %d model profile(s) from /app/data/profiles.json", loaded)
+	}
+
 	// Session 17 (2026-07-27): persistent runtime overrides для llamaCpp.
 	// В bundled compose config.json монтируется :ro, поэтому WebUI-изменения
 	// llamaCpp пишутся в sidecar-файл /app/data/runtime-overrides/llama-cpp.json

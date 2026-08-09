@@ -74,9 +74,31 @@ target_include_directories(test_batched_batch PRIVATE
 target_link_libraries(test_batched_batch PRIVATE ${COMMON_LIB})
 target_compile_features(test_batched_batch PRIVATE C99)
 
-# Smoke test target (alias для удобства) — обновлён для запуска обоих тестов
+# ============================================================
+# test_abort_api — Round 31 #6: standalone unit tests для abort API.
+#
+# Standalone (без libllama): gcc -DTEST_ABORT_STANDALONE -o test_abort_api test_abort_api.c -lpthread
+# Покрывает T1, T2, T7, T8, T9, T10, T11 (не требует libllama).
+#
+# С libllama (для T3-T6 — abort during long gen, abort+retry, 10 concurrent,
+# 100 goroutines race): линковать с bridge.c + libllama-common.a.
+# В standalone-режиме T3-T6 помечены как #if 0.
+# ============================================================
+add_executable(test_abort_api
+    test_abort_api.c
+)
+target_include_directories(test_abort_api PRIVATE
+    ${CMAKE_SOURCE_DIR}/..
+    ${CMAKE_CURRENT_SOURCE_DIR}/../..
+)
+# Standalone build (по умолчанию). T3-T6 требуют libllama.
+target_compile_definitions(test_abort_api PRIVATE TEST_ABORT_STANDALONE)
+target_link_libraries(test_abort_api PRIVATE pthread)
+target_compile_features(test_abort_api PRIVATE C99)
+
+# Smoke test target (alias для удобства) — обновлён для запуска ВСЕХ тестов
 add_custom_target(bridge-tests
-    COMMAND test_batch_n_tokens && test_batched_batch
+    COMMAND test_batch_n_tokens && test_batched_batch && test_abort_api
     DEPENDS test_batch_n_tokens test_batched_batch
     WORKING_DIRECTORY ${CMAKE_BINARY_DIR}
     COMMENT "Running bridge regression tests"

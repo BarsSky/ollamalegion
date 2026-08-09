@@ -1,4 +1,4 @@
-package balancer
+﻿package balancer
 
 // Этот файл содержит экспортированные обёртки для unit-тестов в internal/balancer/...
 // и внешних тестах в tests/multiclient/... (Phase 9 regression для OpenWebUI бага).
@@ -9,7 +9,7 @@ package balancer
 // TranslateOpenAISSEDataToOllamaExportedForTest — публичная обёртка для тестов.
 // Не использовать в production-коде.
 func TranslateOpenAISSEDataToOllamaExportedForTest(ollamaPath string, sseData []byte, modelName string) []byte {
-	return translateOpenAISSEDataToOllama(ollamaPath, sseData, modelName)
+	return translateOpenAISSEDataToOllama(ollamaPath, sseData, modelName, nil)
 }
 
 // TranslateOpenAIResponseToOllamaExportedForTest — публичная обёртка для тестов.
@@ -32,3 +32,4 @@ func TranslateOllamaChatToOpenAIExportedForTest(body []byte) ([]byte, error) {
 func BuildErrorOllamaResponseExportedForTest(ollamaPath, modelName, errMsg string) []byte {
 	return buildErrorOllamaResponse(ollamaPath, modelName, errMsg)
 }
+

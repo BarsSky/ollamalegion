@@ -51,7 +51,7 @@ services:
     build:
       context: ..
       dockerfile: docker/balancer/Dockerfile
-    image: ollama-legion/balancer:cppworker-bundled-full
+    image: ollama-legion/balancer:cppworker-bundled-full-v31r5
     container_name: ol-bundled-full-balancer
     restart: unless-stopped
     ports:
@@ -87,7 +87,9 @@ services:
       dockerfile: docker/cppworker/Dockerfile.gpu
       args:
         CUDA_ARCH: ${CUDA_ARCH:-all}
-    image: ollama-legion/cppworker:gpu-${CPPWORKER_GPU_TAG:-arch_all}
+    # Round 31 #6 (2026-08-09): default cppworker image — `gpu-86-abort-v2` (with Abort API).
+    # Override через .env: CPPWORKER_GPU_TAG=arch_all (legacy, без abort).
+    image: ollama-legion/cppworker:gpu-${CPPWORKER_GPU_TAG:-86-abort-v2}
     container_name: ol-bundled-full-cppworker-gpu
     restart: unless-stopped
     runtime: nvidia
@@ -278,6 +280,7 @@ networks:
   ol-bundled-net:
     driver: bridge
     name: ollama-legion-bundled-net
+    external: true
 
 volumes:
   balancer_data:

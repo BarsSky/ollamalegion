@@ -181,16 +181,19 @@ type PreflightDecision int
 const (
 	// PreflightNoOp — preflight не нужен (current_n_ctx покрывает).
 	PreflightNoOp PreflightDecision = iota
-	// PreflightReload — выполнить reload на бэкенде и подождать.
+	// PreflightReload — выполнить reload на бэкенде и подождать (sync mode).
 	PreflightReload
 	// PreflightReject — даже reload не поможет (VRAM/model_max потолок).
 	PreflightReject
+	// Round 31 #2 (2026-08-09): PreflightAsyncReload — async mode.
+	// Reload запущен в фоне, balancer отдаёт 503+Retry-After клиенту.
+	PreflightAsyncReload
 )
 
 // PreflightResult — результат работы preflight.
 type PreflightResult struct {
 	Decision     PreflightDecision
-	TargetNCtx   int    // n_ctx, до которого reload'ить (для PreflightReload)
+	TargetNCtx   int    // n_ctx, до которого reload'ить (для PreflightReload / PreflightAsyncReload)
 	RejectStatus int    // HTTP статус для отказа (обычно 413)
 	RejectBody   string // тело JSON для отказа
 }
@@ -369,6 +372,46 @@ func (c *NCtxReloadCoordinator) RunPreflight(
 			Reason: fmt.Sprintf("preflight: target=%d (current=%d, max_vram=%d, model_max=%d)",
 				decision.TargetNCtx, state.CurrentNCtx, state.MaxVRAMNCtx, state.ModelMaxContext),
 		}
+
+		// Round 31 #2 (2026-08-09): async mode — не блокируем на reload.
+		// Запускаем reload в goroutine и возвращаем PreflightAsyncReload.
+		// Balancer отдаст клиенту 503 + Retry-After, а reload доделается в фоне.
+		// Через Retry-After секунд клиент повторит, и модель уже будет готова.
+		if cfg.PreflightAsyncReload {
+			modelName := ""
+			if meta != nil {
+				modelName = meta.ModelName
+			}
+			logger.Get().Infow("preflight: triggering ASYNC reload (Round 31 #2)",
+				"backend_id", backendID,
+				"current_n_ctx", state.CurrentNCtx,
+				"target_n_ctx", decision.TargetNCtx,
+				"max_vram_n_ctx", state.MaxVRAMNCtx,
+				"model_max_context", state.ModelMaxContext,
+				"has_tools", meta != nil && meta.HasTools,
+				"retry_after_sec", cfg.effectiveAsyncRetryAfter())
+
+			// Async reload — НЕ ждём завершения. DoReload имеет внутренний
+			// singleflight-like lock, так что параллельные reload'ы коалесцируются.
+			go func() {
+				reloadCtx, cancel := context.WithTimeout(context.Background(), cfg.effectiveTimeout())
+				defer cancel()
+				if err := c.DoReload(reloadCtx, backendID, backendAddr, modelName, plan, loader); err != nil {
+					logger.Get().Errorw("preflight: async reload failed",
+						"backend_id", backendID, "error", err)
+					return
+				}
+				// Reload успешен — обновляем lastKnownNCtx.
+				c.SetLastKnownNCtx(backendID, decision.TargetNCtx)
+				logger.Get().Infow("preflight: async reload succeeded",
+					"backend_id", backendID, "new_n_ctx", decision.TargetNCtx)
+				c.ResetCycleCounter(backendID)
+			}()
+
+			return &PreflightResult{Decision: PreflightAsyncReload, TargetNCtx: decision.TargetNCtx}, nil
+		}
+
+		// Sync mode (default, обратно совместимо со старым поведением).
 		logger.Get().Infow("preflight: triggering reload",
 			"backend_id", backendID,
 			"current_n_ctx", state.CurrentNCtx,

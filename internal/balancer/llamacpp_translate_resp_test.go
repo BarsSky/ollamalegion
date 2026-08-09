@@ -1,4 +1,4 @@
-// llamacpp_translate_resp_test.go — Unit tests for response translation
+﻿// llamacpp_translate_resp_test.go — Unit tests for response translation
 // functions in llamacpp_translate_resp.go.
 package balancer
 
@@ -141,7 +141,7 @@ func TestTranslateSSEChatToOllama_ToolCalls(t *testing.T) {
 	}
 
 	sseData, _ := json.Marshal(sseChunk)
-	result := translateOpenAISSEDataToOllama("/api/chat", sseData, "test-model")
+	result := translateOpenAISSEDataToOllama("/api/chat", sseData, "test-model", nil)
 	if result == nil {
 		t.Fatal("expected non-nil result from SSE translation")
 	}
@@ -182,7 +182,7 @@ func TestTranslateSSEChatToOllama_FinishReasonToolCalls(t *testing.T) {
 	}
 
 	sseData, _ := json.Marshal(sseChunk)
-	result := translateOpenAISSEDataToOllama("/api/chat", sseData, "test-model")
+	result := translateOpenAISSEDataToOllama("/api/chat", sseData, "test-model", nil)
 	if result == nil {
 		t.Fatal("expected non-nil result from SSE translation")
 	}
@@ -216,7 +216,7 @@ func TestTranslateSSEChatToOllama_NormalContent(t *testing.T) {
 	}
 
 	sseData, _ := json.Marshal(sseChunk)
-	result := translateOpenAISSEDataToOllama("/api/chat", sseData, "test-model")
+	result := translateOpenAISSEDataToOllama("/api/chat", sseData, "test-model", nil)
 	if result == nil {
 		t.Fatal("expected non-nil result")
 	}
@@ -234,7 +234,7 @@ func TestTranslateSSEChatToOllama_NormalContent(t *testing.T) {
 }
 
 func TestTranslateSSEChatToOllama_DONE(t *testing.T) {
-	result := translateOpenAISSEDataToOllama("/api/chat", []byte("[DONE]"), "test-model")
+	result := translateOpenAISSEDataToOllama("/api/chat", []byte("[DONE]"), "test-model", nil)
 	if result != nil {
 		t.Error("expected nil for [DONE] marker")
 	}
@@ -453,3 +453,4 @@ func buildOpenAIErrorResp() []byte {
 func strContains(s, substr string) bool {
 	return strings.Contains(strings.ToLower(s), strings.ToLower(substr))
 }
+

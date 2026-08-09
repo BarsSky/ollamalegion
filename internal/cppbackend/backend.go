@@ -1498,6 +1498,39 @@ func (b *Backend) GetModel(name string) (*ModelInfo, error) {
 	return &info, nil
 }
 
+// GetHandle — Round 31 #6 (2026-08-09): возвращает *bridge.ModelHandle
+// для загруженной модели. Используется abort_watcher (cmd/cppworker/abort_watcher.go)
+// для проброса в bridge.RequestAbort при ctx.Done.
+//
+// Возвращает (handle, true) если модель загружена, (nil, false) иначе.
+// Thread-safe: RLock на короткое время. Callers не должны мутировать
+// полученный handle (он shared с C-bridge).
+func (b *Backend) GetHandle(name string) (*bridge.ModelHandle, bool) {
+	b.mu.RLock()
+	defer b.mu.RUnlock()
+	inst, exists := b.models[name]
+	if !exists {
+		return nil, false
+	}
+	return inst.handle, true
+}
+
+// GetAllHandles — Round 31 #6 (2026-08-09): возвращает snapshot всех
+// загруженных handles. Используется при cppworker shutdown для
+// итеративного вызова bridge.RequestAbort (см. PLAN.md §2.8 DECISION Q1).
+//
+// Возвращает slice в произвольном порядке (Go map iteration order).
+// Если backend пуст — возвращает empty slice (не nil).
+func (b *Backend) GetAllHandles() []*bridge.ModelHandle {
+	b.mu.RLock()
+	defer b.mu.RUnlock()
+	handles := make([]*bridge.ModelHandle, 0, len(b.models))
+	for _, inst := range b.models {
+		handles = append(handles, inst.handle)
+	}
+	return handles
+}
+
 // AutoEnableReasoning — Round 17 Layer 3 (2026-07-31): LAZY AUTO-DETECT.
 //
 // Парсер в writeOpenAIChatStream / handleV1ChatCompletions вызывает этот

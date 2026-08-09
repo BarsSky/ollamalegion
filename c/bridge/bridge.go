@@ -25,6 +25,11 @@ package bridge
 
 // extern-прототип для Go-функции, экспортируемой в C через //export
 extern int streamCallbackGo(char* token, int token_len, void* user_data);
+
+// Round 31 #6 (2026-08-09): Abort API — см. c/bridge/ABORT_API_C_PATCH.md
+extern int  bridge_request_abort(ModelHandle model);
+extern void bridge_request_abort_all(void);
+extern bool bridge_is_aborted(ModelHandle model);
 */
 import "C"
 import (
@@ -216,7 +221,18 @@ const (
 	// и балансером не считается reloadable — проброс клиенту как HTTP 413
 	// с actionable details (см. docs/runbook-tools.md сценарий G).
 	ErrCodeInsufficientResources = 6
+	// ErrCodeAborted (-100) — Round 31 #6 (2026-08-09): soft cancel от Go-стороны
+	// через bridge.RequestAbort (ctx.Done, user Stop, balancer shutdown). Отрицательное
+	// значение специально — чтобы легко отличить от positive int (token count) и
+	// от других BRIDGE_ERR_* (1..6). Используется для type switch и metrics:
+	// cancelled_count telemetry в cppworker / balancer.
+	ErrCodeAborted = -100
 )
+
+// ErrAborted — sentinel для errors.Is(). Возвращается из bridge.Infer /
+// bridge.InferStream когда C-bridge прервал инференс по bridge_request_abort
+// (Round 31 #6). Не считается ошибкой для retry-логики (cancel ≠ failure).
+var ErrAborted = fmt.Errorf("bridge: inference aborted by user (BRIDGE_ERR_ABORTED)")
 
 // BridgeErrorInfo — Go-представление C BridgeErrorInfo (см. bridge.h).
 // Заполняется C-кодом при любом не-OK-возврате из bridge_infer/bridge_infer_stream.
@@ -435,6 +451,71 @@ func (m *ModelHandle) FreeModel() {
 	m.ptr = nil
 }
 
+// ============================================================
+// Round 31 #6 (2026-08-09): Abort API — Go-side bindings
+// ============================================================
+//
+// Реализация требует C-side патча из c/bridge/ABORT_API_C_PATCH.md
+// (atomic_int abort_requested в InternalModel + 3 export-функции).
+// До применения C-патча эти функции вызовут cgo linker error.
+//
+// Семантика:
+//   - RequestAbort помечает текущий/следующий infer для данной модели как
+//     aborted. C-bridge проверяет atomic flag между llama_decode батчами
+//     и возвращает BRIDGE_ERR_ABORTED (= -100) на ближайшей check point.
+//   - Cancel latency = single batch time (10-200ms для typical моделей).
+//   - Модель НЕ выгружается. После abort флаг сбрасывается в начале
+//     следующего infer, модель пригодна для повторного использования.
+//   - Thread-safe: можно вызывать из любой горутины (включая ctx.Done
+//     watcher goroutine) — atomic_store в C гарантирует memory visibility.
+//   - Idempotent: повторный RequestAbort — no-op (атомарный flag уже = 1).
+//
+// Precondition: model загружен через bridge.LoadModel и не выгружен.
+// Postcondition: после возврата из RequestAbort активный infer (если есть)
+// вернёт ошибку с errors.Is(err, ErrAborted) == true в течение cancel latency.
+
+// RequestAbort помечает текущий/следующий infer для данной модели как aborted.
+// Неблокирующая — atomic_store мгновенный. Сам cancel происходит асинхронно
+// в C-bridge на ближайшей check point.
+//
+// Возвращает error если model == nil или C-bridge вернул -1 (невалидный handle).
+// В нормальной ситуации (model загружен) — возвращает nil.
+func RequestAbort(model *ModelHandle) error {
+	if model == nil {
+		return fmt.Errorf("bridge.RequestAbort: nil model handle")
+	}
+	if model.ptr == nil {
+		return fmt.Errorf("bridge.RequestAbort: model not loaded (ptr is nil)")
+	}
+	rc := C.bridge_request_abort(model.ptr)
+	if rc != 0 {
+		return fmt.Errorf("bridge_request_abort failed: rc=%d", rc)
+	}
+	return nil
+}
+
+// RequestAbortAll помечает ВСЕ активные инференсы как aborted.
+// DECISION Q1 (PLAN.md §8): на данный момент no-op в C-bridge.
+// cppworker shutdown итерирует свой Backend.models registry и вызывает
+// bridge.RequestAbort на каждую. Эта функция оставлена для API
+// completeness и для будущего использования если добавим g_models_list
+// в C. Возвращает nil всегда.
+func RequestAbortAll() error {
+	C.bridge_request_abort_all()
+	return nil
+}
+
+// IsAborted возвращает true если для данной модели был подан abort request.
+// Используется для diagnostics и тестов. После успешного завершения infer
+// (даже если ранее был abort) флаг сбрасывается в 0 — так что возвращает
+// true только если abort активен прямо сейчас.
+func IsAborted(model *ModelHandle) bool {
+	if model == nil || model.ptr == nil {
+		return false
+	}
+	return bool(C.bridge_is_aborted(model.ptr))
+}
+
 // fillAntiprompts — копирует Go-строки params.Antiprompts в C-массив const char*.
 // Возвращает (*C.char, count) — вызывающий обязан освободить каждый элемент
 // через C.free(unsafe.Pointer(...)) после использования.
@@ -506,6 +587,14 @@ func (m *ModelHandle) Infer(prompt string, params GenerationParams) (*InferenceR
 
 	result := C.bridge_infer(m.ptr, cPrompt, &cParams)
 	defer C.bridge_free_inference_result(&result)
+
+	// Round 31 #6: BRIDGE_ERR_ABORTED = -100 обрабатывается отдельно.
+	// Infer — синхронный, поэтому abort обычно приходит из другой горутины
+	// (ctx.Done watcher). Возвращаем ErrAborted sentinel для consistency
+	// с InferStream.
+	if result.status == ErrCodeAborted {
+		return nil, fmt.Errorf("inference cancelled (code %d): %w", result.status, ErrAborted)
+	}
 
 	if result.status != 0 {
 		// C-bridge теперь заполняет структурированный BridgeErrorInfo.
@@ -584,6 +673,13 @@ func (m *ModelHandle) InferStream(prompt string, params GenerationParams, callba
 	)
 
 	if ret != 0 {
+		// Round 31 #6: BRIDGE_ERR_ABORTED = -100 обрабатывается отдельно
+		// от других error codes. Возвращаем ErrAborted sentinel через
+		// errors.Is, чтобы handlerы могли отличить cancelled от failure.
+		// Cancel НЕ считается retryable ошибкой (не пытаемся retry).
+		if ret == ErrCodeAborted {
+			return fmt.Errorf("stream inference cancelled (code %d): %w", ret, ErrAborted)
+		}
 		// C-bridge возвращает структурированный код ошибки:
 		//   0 — OK
 		//   1 — generic
@@ -591,6 +687,7 @@ func (m *ModelHandle) InferStream(prompt string, params GenerationParams, callba
 		//   3 — BRIDGE_ERR_PROMPT_TOO_LONG (hard error)
 		//   4 — BRIDGE_ERR_GPU_OOM
 		//   5 — BRIDGE_ERR_BAD_REQUEST
+		//   -100 — BRIDGE_ERR_ABORTED (Round 31 #6, обработан выше)
 		// До правки ret всегда был 1 на любую ошибку, и balancer не мог
 		// отличить n_ctx-need-reload от других ошибок. Теперь
 		// GetLastErrorInfo() возвращает полную BridgeErrorInfo для

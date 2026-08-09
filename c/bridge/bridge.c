@@ -21,6 +21,7 @@
 #include <string.h>
 #include <stdio.h>
 #include <math.h>
+#include <stdatomic.h>  // Round 31 #6 (2026-08-09): atomic_int abort_requested
 #include <time.h>  // для time() — time-based RNG seed (для seed=0)
 
 // Отключаем буферизацию stdout для Docker-логов — все printf выводятся немедленно.
@@ -51,6 +52,13 @@ typedef struct {
     struct llama_vocab *vocab;
     uint32_t ctx_n_ctx;       // n_ctx, с которым создан context (из llama_context_params)
     uint32_t ctx_n_batch;     // n_batch, с которым создан context
+    // Round 31 #6 (2026-08-09): soft-cancel flag. atomic_int — thread-safe
+    // set из Go cgo thread (bridge_request_abort) и read из C thread
+    // (bridge_infer_stream). Memory ordering: relaxed (default для
+    // atomic_store/load без явного параметра в C11).
+    // 0 = not aborted (или abort отменён / infer завершён нормально),
+    // 1 = abort запрошен, infer должен выйти на ближайшей check point.
+    atomic_int abort_requested;
 } InternalModel;
 
 // ============================================================
@@ -462,6 +470,13 @@ int bridge_batched_decode(
 
     // Шаг 3: ОДИН llama_decode. Locking — на стороне вызывающего (Go BatchedScheduler
     // держит instance.mu, как Round 8 сделал для bridge_infer_stream).
+    // Round 31 #6: abort check в batched path. Закрывает G2 — multi-slot
+    // сценарий (n_parallel > 1) не имел cancel-хука до этого.
+    if (atomic_load(&im->abort_requested)) {
+        set_error("batched decode aborted by user");
+        llama_batch_free(batch);
+        return BRIDGE_ERR_ABORTED;
+    }
     int decode_rc = llama_decode(im->context, batch);
     if (decode_rc != 0) {
         set_error("llama_decode failed in bridge_batched_decode");
@@ -998,6 +1013,10 @@ ModelHandle bridge_load_model(const ModelConfig* config, char** error_msg) {
     // указания на реальную причину (переполнение контекста).
     im->ctx_n_ctx = ctx_params.n_ctx;
     im->ctx_n_batch = ctx_params.n_batch;
+    // Round 31 #6: init abort flag (atomic). Принимает 0 = "не aborted"
+    // по дефолту. atomic_init — единственная функция, которую можно
+    // вызывать на non-initialized atomic (до этого любое обращение — UB).
+    atomic_init(&im->abort_requested, 0);
 
     // ============================================================
     // Оценка максимального n_ctx, доступного текущей VRAM
@@ -1280,6 +1299,9 @@ InferenceResult bridge_infer(
 
     InternalModel *im = (InternalModel *)model;
 
+    // Round 31 #6: сбросить abort флаг перед новым infer.
+    atomic_store(&im->abort_requested, 0);
+
     // Round 13 (2026-07-28): извлекаем seq_id для multi-slot support.
     // seq_id=0 — legacy single-slot (clear all), seq_id>0 — multi-slot
     // (clear only this slot's region).
@@ -1368,6 +1390,15 @@ InferenceResult bridge_infer(
             tokens + n_processed, batch_size, seq_id, (llama_pos)n_processed
         );
 
+        // Round 31 #6: abort check в prompt phase (sync bridge_infer).
+        if (atomic_load(&im->abort_requested)) {
+            free(tokens);
+            free(output);
+            result.error_msg = strdup("generation aborted by user (bridge_infer, prompt phase)");
+            result.status = BRIDGE_ERR_ABORTED;
+            llama_batch_free(batch);
+            return result;
+        }
         if (llama_decode(im->context, batch) != 0) {
             free(tokens);
             free(output);
@@ -1431,6 +1462,15 @@ InferenceResult bridge_infer(
         struct llama_batch gen_batch = build_batch_with_seq(
             &new_token, 1, seq_id, (llama_pos)(n_processed + i)
         );
+        // Round 31 #6: abort check в gen phase (sync bridge_infer).
+        if (atomic_load(&im->abort_requested)) {
+            free(output);
+            result.status = BRIDGE_ERR_ABORTED;
+            result.error_msg = strdup("generation aborted by user (bridge_infer, gen phase)");
+            llama_batch_free(gen_batch);
+            llama_sampler_free(sampler);
+            return result;
+        }
         if (llama_decode(im->context, gen_batch) != 0) {
             free(output);
             result.status = 1;
@@ -1563,6 +1603,14 @@ int bridge_infer_stream(
 
     InternalModel *im = (InternalModel *)model;
 
+    // Round 31 #6: сбросить abort флаг перед новым infer.
+    // Модель переиспользуема после abort (флаг = 1 в im->abort_requested
+    // остался от предыдущего прерванного вызова), так что мы ОБЯЗАНЫ
+    // сбросить его в 0 здесь. atomic_store с relaxed memory ordering —
+    // достаточно, потому что другие поля InternalModel не зависят от
+    // синхронизации с этим флагом.
+    atomic_store(&im->abort_requested, 0);
+
     // Round 13 (2026-07-28): extract seq_id for multi-slot support.
     llama_seq_id seq_id = (llama_seq_id)(params->seq_id > 0 ? params->seq_id : 0);
 
@@ -1627,6 +1675,13 @@ int bridge_infer_stream(
             tokens + n_processed, batch_size, seq_id, (llama_pos)n_processed
         );
 
+        // Round 31 #6: abort check в prompt phase (stream). Закрывает G1.
+        if (atomic_load(&im->abort_requested)) {
+            free(tokens);
+            set_error("generation aborted by user (bridge_infer_stream, prompt phase)");
+            llama_batch_free(batch);
+            return BRIDGE_ERR_ABORTED;
+        }
         if (llama_decode(im->context, batch) != 0) {
             free(tokens);
             // Самая частая причина: n_ctx переполнен (kv-cache overflow),
@@ -1696,9 +1751,12 @@ int bridge_infer_stream(
 
         // Конвенция callback: возврат !=0 (true) — продолжить стриминг,
         // возврат 0 (false) — остановить стриминг (клиент отвалился / ctx.Done).
+        // Round 31 #6: callback cancel → BRIDGE_ERR_ABORTED (а не 0 = success).
+        // Закрывает G3: статус код теперь отличает cancelled от natural end,
+        // что нужно для telemetry и balancer accounting.
         if (callback(token_text, token_len, user_data) == 0) {
             llama_sampler_free(sampler);
-            return 0; // клиент остановил стриминг
+            return BRIDGE_ERR_ABORTED; // CHANGED: 0 → BRIDGE_ERR_ABORTED
         }
 
         // Декодируем следующий шаг
@@ -1706,6 +1764,14 @@ int bridge_infer_stream(
         struct llama_batch gen_batch = build_batch_with_seq(
             &new_token, 1, seq_id, (llama_pos)(n_processed + i)
         );
+        // Round 31 #6: abort check в gen phase (stream). Дополняет callback check —
+        // если токен долго декодируется (large model, large batch), abort даёт
+        // exit point между декодированием. Cancel latency = single batch time.
+        if (atomic_load(&im->abort_requested)) {
+            llama_batch_free(gen_batch);
+            llama_sampler_free(sampler);
+            return BRIDGE_ERR_ABORTED;
+        }
         if (llama_decode(im->context, gen_batch) != 0) {
             // Обычно это переполнение KV-cache при длинной выдаче
             // (n_predict > n_ctx - prompt_len), либо OOM на GPU.
@@ -1988,6 +2054,42 @@ int32_t bridge_token_to_piece(ModelHandle model, int32_t token, char* out_buf, i
 
 const char* bridge_version(void) {
     return "0.2.0 (real llama.cpp linked)";
+}
+
+// ============================================================
+// Round 31 #6 (2026-08-09): Abort API implementation
+// ============================================================
+
+// bridge_request_abort — пометить текущий/следующий infer для данной модели
+// как aborted. Проверяется C-bridge между llama_decode батчами (atomic_load).
+// Модель остаётся загруженной; abort НЕ вызывает UnloadModel.
+//
+// SAFETY: thread-safe. atomic_store с relaxed memory ordering (default).
+// Можно вызывать из любой горутины, включая cgo thread из Go.
+//
+// Возвращает 0 при успехе, -1 если model == NULL.
+int bridge_request_abort(ModelHandle model) {
+    if (model == NULL) return -1;
+    InternalModel *im = (InternalModel *)model;
+    atomic_store(&im->abort_requested, 1);
+    return 0;
+}
+
+// bridge_request_abort_all — DECISION Q1 (см. plans/cppworker-abort-api/PLAN.md §2.8):
+// no-op в C. cppworker shutdown итерирует свой Go-side registry моделей
+// (Backend.models в internal/cppbackend/backend.go) и вызывает
+// bridge_request_abort на каждую. C-функция оставлена для API completeness
+// и для будущего использования если добавим g_models_list в C.
+void bridge_request_abort_all(void) {
+    // No-op by design. См. DECISION Q1 в PLAN.md.
+}
+
+// bridge_is_aborted — диагностика (для тестов и логов).
+// Возвращает true если для данной модели был подан abort request.
+bool bridge_is_aborted(ModelHandle model) {
+    if (model == NULL) return false;
+    InternalModel *im = (InternalModel *)model;
+    return atomic_load(&im->abort_requested) == 1;
 }
 
 #endif // GO_BRIDGE_LLAMA_STUB guard

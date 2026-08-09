@@ -198,7 +198,14 @@ const (
 	ErrCodeGPUOOM               = 4
 	ErrCodeBadRequest           = 5
 	ErrCodeInsufficientResources = 6
+	// ErrCodeAborted (-100) — Round 31 #6: stub не возвращает abort
+	// (нет реального C-bridge), но код должен существовать для совместимости
+	// с bridge.go.
+	ErrCodeAborted = -100
 )
+
+// ErrAborted — stub-sentinel для errors.Is() consistency с bridge.go.
+var ErrAborted = fmt.Errorf("bridge: inference aborted by user (BRIDGE_ERR_ABORTED) [stub]")
 
 // ErrNCtxNeedsReload — stub-sentinel. В stub-режиме не выбрасывается,
 
@@ -287,6 +294,30 @@ func LoadModel(cfg ModelConfig) (*ModelHandle, error) {
 // FreeModel выгружает модель (stub: no-op)
 func (m *ModelHandle) FreeModel() {
 	// no-op
+}
+
+// ============================================================
+// Round 31 #6 (2026-08-09): Abort API — stub-реализации
+// ============================================================
+//
+// В stub-режиме нет реального C-bridge, поэтому abort — no-op.
+// Сигнатуры и sentinel-семантика идентичны bridge.go для совместимости
+// с cppworker кодом, который собирается с обоими build tag.
+
+// RequestAbort — stub: no-op (нет реального C-bridge для пометки).
+// Не возвращает ошибку — handlerы в stub-режиме работают без abort API.
+func RequestAbort(model *ModelHandle) error {
+	return nil
+}
+
+// RequestAbortAll — stub: no-op.
+func RequestAbortAll() error {
+	return nil
+}
+
+// IsAborted — stub: всегда false (нет abort API в stub-режиме).
+func IsAborted(model *ModelHandle) bool {
+	return false
 }
 
 // ============================================================

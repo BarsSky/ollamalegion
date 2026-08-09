@@ -211,6 +211,27 @@ void bridge_free_model_metadata(ModelMetadata* metadata);
 // Освобождение строки (для error_msg и т.д.)
 void bridge_free_string(char* str);
 
+// ============================================================
+// Round 31 #6 (2026-08-09): Abort API
+// ============================================================
+
+// bridge_request_abort — пометить текущий/следующий infer для данной модели
+// как aborted. Проверяется между llama_decode батчами в bridge_infer /
+// bridge_infer_stream / bridge_batched_decode. Модель остаётся загруженной
+// и пригодна для повторного использования. Thread-safe (atomic_store).
+// Возвращает 0 при успехе, -1 если model == NULL.
+int bridge_request_abort(ModelHandle model);
+
+// bridge_request_abort_all — DECISION Q1: no-op в C (см. plans/cppworker-abort-api/PLAN.md §2.8).
+// cppworker shutdown итерирует свой Go-side registry моделей (Backend.models)
+// и вызывает bridge_request_abort на каждую. C-функция оставлена для API
+// completeness.
+void bridge_request_abort_all(void);
+
+// bridge_is_aborted — диагностика (для тестов и логов).
+// Возвращает true если был подан abort request, false иначе.
+bool bridge_is_aborted(ModelHandle model);
+
 // Получение последней ошибки (legacy: только текст, не различает причины)
 const char* bridge_last_error(void);
 
@@ -225,6 +246,12 @@ const char* bridge_last_error(void);
 #define BRIDGE_ERR_PROMPT_TOO_LONG      3  // prompt_tokens + n_predict > n_ctx, и n_ctx_override не помогает (hard error)
 #define BRIDGE_ERR_GPU_OOM              4  // нехватка VRAM при попытке аллокации слоёв модели
 #define BRIDGE_ERR_BAD_REQUEST          5  // некорректные параметры (например, n_ctx <= 0 в override)
+// Round 31 #6 (2026-08-09): soft cancel от Go-стороны (ctx.Done, user Stop,
+// RequestAbort от balancer). ОТРИЦАТЕЛЬНОЕ значение специально — чтобы легко
+// отличить от positive int (token count) и от других BRIDGE_ERR_* (1..5).
+// Используется для type switch и metrics: cancelled_count telemetry в
+// cppworker / balancer.
+#define BRIDGE_ERR_ABORTED              (-100)
 
 // Структурированное описание последней ошибки. Заполняется C-кодом
 // при любом не-OK-возврате из bridge_infer / bridge_infer_stream.

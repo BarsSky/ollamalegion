@@ -565,6 +565,12 @@ func writeChatStreamResponse(w http.ResponseWriter, r *http.Request, modelName, 
 	w.Header().Set("Connection", "keep-alive")
 	flusher.Flush()
 	ctx := r.Context()
+	// Round 31 #6: spawn abort_watcher чтобы дёрнуть C-bridge при ctx.Done().
+	// Закрывает G1 (длинный prompt) и G3 (status code distinction).
+	// Fire-and-forget: handler не ждёт watcher (ctx отменён при возврате).
+	if handle, ok := backend.GetHandle(modelName); ok {
+		_ = NewAbortWatcher(ctx, handle)
+	}
 	var outputBuf strings.Builder
 	start := time.Now()
 	createdAt := time.Now().UTC().Format(time.RFC3339)
@@ -642,6 +648,23 @@ func writeChatStreamResponse(w http.ResponseWriter, r *http.Request, modelName, 
 	streamErr = generateStreamWithRamFallback(modelName, prompt, params, callback, false)
 	if streamErr != nil {
 		maybeRestartOnMemorySlotError(streamErr, modelName)
+		// Round 31 #6 (2026-08-09): если streamErr — это ErrAborted (отменено через
+		// bridge.RequestAbort), выдаём done_reason="cancelled" + cancelled: true
+		// вместо "error" чтобы клиент мог отличить cancel от failure. DECISION Q3.
+		if errors.Is(streamErr, bridge.ErrAborted) {
+			cancelledChunk := map[string]interface{}{
+				"model":       modelName,
+				"created_at":  createdAt,
+				"message":     map[string]string{"role": "assistant", "content": ""},
+				"done":        true,
+				"done_reason": "cancelled",
+				"cancelled":   true,
+			}
+			cancelledJSON, _ := json.Marshal(cancelledChunk)
+			fmt.Fprintf(w, "%s\n", cancelledJSON)
+			flusher.Flush()
+			return
+		}
 		// ??????????? ????????? reload-loop-limit (HTTP 413 ? NDJSON-?????).
 		if rllErr, ok := streamErr.(*ReloadLoopLimitError); ok {
 			errChunk := map[string]interface{}{
@@ -751,6 +774,10 @@ func writeChatStreamResponseWithTools(w http.ResponseWriter, r *http.Request, mo
 	// the connection alive during long generations.
 	flusher.Flush()
 	ctx := r.Context()
+	// Round 31 #6: abort_watcher для tool-buffered path.
+	if handle, ok := backend.GetHandle(modelName); ok {
+		_ = NewAbortWatcher(ctx, handle)
+	}
 	start := time.Now()
 	createdAt := time.Now().UTC().Format(time.RFC3339)
 

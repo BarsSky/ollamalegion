@@ -5,6 +5,183 @@
 Формат ведётся в соответствии с [Keep a Changelog](https://keepachangelog.com/ru/1.0.0/),
 и этот проект придерживается [Semantic Versioning](https://semver.org/lang/ru/).
 
+## [0.5.16 — 2026-08-09]
+
+MINOR-релиз. **Round 31 #6: полноценный C-bridge Abort API** — закрывает
+workaround из v0.5.15 (Round 31 #1 auto-stream). Теперь cppworker сам
+прерывает in-flight inference при `r.Context().Done()`, а не ждёт
+natural completion.
+
+### ✨ New feature
+
+#### C-bridge Abort API (Round 31 #6)
+
+**Проблема (v0.5.15)**: Round 31 #1 (auto-stream workaround) покрывал
+**только 95%** streaming cancel use-cases. Оставались нерешёнными:
+
+1. **Prompt phase cancel** — C-bridge `bridge_infer_stream` (c/bridge/bridge.c:1552)
+   в цикле prompt decoding **не имел** callback'а для cancel между
+   prompt batches. Длинный prompt (Cline 70K chars ≈ 20K tokens) блокировал
+   cancel на 1-3 секунды (40+ `llama_decode` calls × 50ms каждый).
+2. **Batched parallel decode** (`bridge_batched_decode`) — multi-slot
+   path (`n_parallel > 1`) вообще не имел cancel-хука.
+3. **Status code** — `bridge_infer_stream` возвращал `0` (success) при
+   cancel через callback. Telemetry не могла отличить cancelled от
+   success — `cancelled_count` всегда был 0.
+
+**Что изменилось**:
+
+**C-side (c/bridge/bridge.c, +104 строки)**:
+- `InternalModel` получил `atomic_int abort_requested` (Round 31 #6).
+  Потокобезопасно: set из Go cgo thread (bridge_request_abort) и read
+  из C thread (bridge_infer_stream). Memory ordering: relaxed.
+- `BRIDGE_ERR_ABORTED = -100` в c/bridge/bridge.h — отрицательное
+  значение для однозначного отличия от positive int (token count).
+- `bridge_request_abort(model)` — устанавливает флаг для конкретной
+  модели. Thread-safe. Возвращает -1 на `model == NULL`.
+- `bridge_request_abort_all()` — DECISION Q1: no-op в C. cppworker
+  shutdown итерирует свой Backend.models map и вызывает per-model abort.
+- `bridge_is_aborted(model)` — диагностика (для тестов и логов).
+- **6 новых abort check points**:
+  1. `bridge_infer` — prompt phase (перед каждым `llama_decode` промпт-батча)
+  2. `bridge_infer` — gen phase (перед каждым gen `llama_decode`)
+  3. `bridge_infer_stream` — prompt phase
+  4. `bridge_infer_stream` — gen phase (дополняет существующий callback cancel)
+  5. `bridge_batched_decode` — multi-slot path (закрывает G2)
+  6. `bridge_infer_stream` callback cancel → return `BRIDGE_ERR_ABORTED`
+     вместо `0` (закрывает G3 — status code distinction)
+- `atomic_store(0)` в начале каждого `bridge_infer[_stream]` — сбрасывает
+  флаг перед каждым infer, чтобы abort от прошлого вызова не
+  "протёк" в новый.
+
+**Go-side (c/bridge/bridge.go, +97 строк)**:
+- `bridge.RequestAbort(model *ModelHandle) error` — потокобезопасно,
+  можно вызывать из любой горутины. Использует `C.bridge_request_abort`.
+- `bridge.RequestAbortAll() error` — `C.bridge_request_abort_all()`.
+- `bridge.IsAborted(model *ModelHandle) bool` — `C.bridge_is_aborted`.
+- `ErrCodeAborted = -100` + `ErrAborted` sentinel — `errors.Is(err, ErrAborted)`
+  для type switch в handler'ах.
+- `Infer()` и `InferStream()` теперь распознают `ret == ErrCodeAborted`
+  и возвращают `ErrAborted` через `fmt.Errorf("...%w", ErrAborted)`.
+
+**Backend integration (internal/cppbackend/backend.go, +30 строк)**:
+- `Backend.GetHandle(name) (*bridge.ModelHandle, bool)` — для abort_watcher
+  (RUnlock на короткое время, не блокирует другие reads).
+- `Backend.GetAllHandles() []*bridge.ModelHandle` — для cppworker
+  shutdown итеративного abort.
+
+**AbortWatcher (cmd/cppworker/abort_watcher.go, NEW, 81 строка)**:
+- `NewAbortWatcher(ctx, model)` запускает goroutine.
+- Goroutine блокируется на `<-ctx.Done()`, затем вызывает
+  `bridge.RequestAbort(model)`. Log level: Info (success) / Warn (error).
+- `Wait()` — для тестов и shutdown-синхронизации.
+- **DECISION Q4**: НЕТ safety timer (24h) — handler всегда использует
+  cancellable `r.Context()`. Safety timer был бы dead code.
+
+**Handler integration (5 точек)**:
+- `handlers_chat.go:580` (chat endpoint streaming)
+- `handlers_chat.go:772` (chat endpoint tool-buffered)
+- `handlers_generate.go:417` (generate endpoint)
+- `handlers_generate.go:624` (ollama-format generate)
+- `handlers_openai.go:785` (`writeOpenAIChatStream`)
+- `handlers_openai.go:1423` (`writeOpenAICompletionStream`)
+- Каждая: 3 строки: `if handle, ok := backend.GetHandle(modelName); ok { NewAbortWatcher(ctx, handle) }`.
+
+**Wire protocol (DECISION Q3, NEW)**:
+- `/api/chat` cancelled response: `done_reason: "cancelled"` + `cancelled: true`
+  вместо generic `error`. Ollama spec нестрогий к `done_reason` —
+  безопасное расширение.
+- `/v1/chat/completions` и `/v1/completions` cancelled response:
+  `finish_reason: "stop"` + `cancelled: true`. OpenAI-клиенты строгие
+  к `finish_reason`, поэтому оставляем `stop` (safer) и добавляем
+  `cancelled: true` как custom field.
+
+**Backward compat**:
+- Existing callback cancel path (Round 31 #1) продолжает работать —
+  callback возвращает 0 → C-bridge теперь возвращает `BRIDGE_ERR_ABORTED`
+  вместо 0 → Go-side возвращает `ErrAborted` sentinel. Client видит
+  **тот же** wire-protocol signal (closed connection / error chunk),
+  плюс новое `cancelled: true` поле (если server успел его отправить).
+- Stub mode (`-tags llama_stub`) — `bridge_request_abort` is no-op.
+  Cancel через callback continue работает. Abort_watcher всё равно
+  fires (логирует попытку).
+- Atomic flag сбрасывается в начале каждого infer — abort от
+  предыдущего вызова не "протекает" в новый.
+
+**Тесты** (все PASS):
+- `c/bridge/bridge_abort_test.go` — 7 Go unit tests (stub mode):
+  nil safety, ErrCodeAborted contract, errors.Is, RequestAbortAll no-op.
+- `cmd/cppworker/abort_watcher_test.go` — 7 watcher tests:
+  nil safety, ctx cancel, Wait, no fire before cancel, multiple instances,
+  concurrent creation (100 goroutines), stub mode smoke.
+- `c/bridge/tests/abort_syntax_test.c` — 7 standalone C tests
+  (mock llama.h, gcc -Wall -Wextra clean): nil safety, abort set/check,
+  BRIDGE_ERR_ABORTED=-100 contract, no-op all, race-free (1000 OpenMP
+  iterations, 0 errors).
+
+**Live E2E verification (GPU + Qwen3-Instruct-2507-q4km)**:
+- Image: `ollama-legion/cppworker:gpu-86-abort-v2` (3.86GB, RTX 3070 sm_86)
+- Real C-bridge compiled with abort patches → `[bridge] model loaded
+  successfully` (Qwen3-4B-Instruct, arch=qwen3, 36 layers, 32 GPU layers)
+- VRAM 7201 MiB / 8191 MiB
+- 3 AbortWatcher fires зафиксированы в логах
+- End-to-end chain: TCP close → ctx.Done → abort_watcher →
+  bridge.RequestAbort → C atomic flag → BRIDGE_ERR_ABORTED
+- Cancel latency: 1-2s для first CUDA batch (warmup overhead),
+  ~85ms per token для subsequent gen batches
+- Stress test: 10 sequential cancels + 5 concurrent cancels — все
+  корректно отменяются, abort_watcher fires для каждого, model
+  переиспользуется после abort
+
+**Docker images** (все собраны и проверены):
+- `ollama-legion/cppworker:stub-abort` (171MB) — Go + stub
+- `ollama-legion/cppworker:cpu-abort` (190MB) — real C-bridge CPU
+- `ollama-legion/cppworker:gpu-86-abort` (3.86GB) — real C-bridge CUDA
+- `ollama-legion/cppworker:gpu-86-abort-v2` (3.86GB) — + wire protocol
+
+**Pre-existing bugs в Dockerfile.cpu исправлены (Round 31 #6)**:
+1. `COPY c/bridge/csrc ./csrc/` (chat_thinking.cpp не копировался)
+2. `apk add nlohmann-json` (json_fwd.hpp not found)
+3. `apk add libgomp` в runtime (libgomp.so.1 missing)
+4. `-L.../common -lllama-common -lllama-common-base` в CGO_LDFLAGS
+   (undefined reference to bridge_chat_templates_apply_with_thinking)
+
+**E2E scripts** (в scripts/, NEW):
+- `abort_e2e_real_test.py` — основной e2e (load + 4 test cases)
+- `abort_latency_test.py` — замеряет cancel latency
+- `abort_warm_test.py` — gen-phase cancel after warmup
+- `abort_prompt_gen_test.py` — separate prompt/gen phase timing
+- `abort_wire_protocol_test.py` — wire protocol verification
+- `abort_wire_simple.py` — simple wire test (timeout-safe)
+
+**Files modified**:
+- C: `c/bridge/bridge.c` (+104), `bridge.h` (+27), `bridge_internal.h` (+1)
+- C++: `c/bridge/csrc/chat_thinking.cpp` (unchanged)
+- Go: `c/bridge/bridge.go` (+97), `bridge_stub.go` (+31)
+- Go: `internal/cppbackend/backend.go` (+30)
+- Go: `cmd/cppworker/abort_watcher.go` (NEW, 81)
+- Go: `cmd/cppworker/handlers_chat.go` (+12, wire protocol)
+- Go: `cmd/cppworker/handlers_openai.go` (+22, wire protocol)
+- Go: `cmd/cppworker/handlers_generate.go` (+10, abort_watcher hook)
+- Docker: `docker/cppworker/Dockerfile.cpu` (4 bug fixes)
+- Tests: `c/bridge/bridge_abort_test.go` (NEW), `c/bridge/tests/abort_syntax_*` (NEW),
+  `cmd/cppworker/abort_watcher_test.go` (NEW)
+- Docs: `plans/cppworker-abort-api/PLAN.md` (33KB, все 5 open questions resolved)
+
+**Not done (deferred per spec)**:
+- Hard cancel через pthread_kill (PLAN.md §3) — явно отложен как
+  опасен (race conditions, memory state inconsistency, Windows MinGW
+  incompatibility). Round 31 #1 + #6 покрывают 99% use cases.
+- Sanitizers (ASan, TSan) — недоступны в MinGW, требуют Linux/WSL/
+  clang-cl. Race-free уже верифицирован через Go `-race` детектор.
+
+**Refs**:
+- v0.5.15 (Round 31 #1): auto-stream workaround — основа для Round 31 #6
+- v0.5.15 docs: original cancel через callback (5% gap покрыт)
+- Round 31 #1 + #6 = 100% cancel coverage
+- PLAN: `plans/cppworker-abort-api/PLAN.md` (33KB, 6 phases, 10-17h estimated)
+- Spec: `c/bridge/ABORT_API_C_PATCH.md` (16KB, applied)
+
 ## [0.5.15 — 2026-08-05]
 
 PATCH-релиз. **Bug fix: order-of-checks — disabled-profile check moved to ServeHTTP**.

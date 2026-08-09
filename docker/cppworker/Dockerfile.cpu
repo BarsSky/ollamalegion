@@ -41,10 +41,11 @@ RUN mkdir -p build && cd build && \
 # -----------------------------------------------------------------------------
 FROM alpine:latest AS bridge-builder
 
-RUN apk add --no-cache build-base cmake
+RUN apk add --no-cache build-base cmake nlohmann-json
 
 WORKDIR /build/bridge
 COPY c/bridge/bridge.h c/bridge/bridge.c c/bridge/CMakeLists.txt ./
+COPY c/bridge/csrc ./csrc/
 
 # Копируем собранный llama.cpp из предыдущего stage
 COPY --from=llama-builder /build/llama.cpp /build/llama.cpp
@@ -81,7 +82,7 @@ COPY --from=bridge-builder /build/bridge/build /build/c/bridge/build
 
 ENV CGO_ENABLED=1
 ENV CGO_CFLAGS="-DGGML_USE_CPU -I/build/c/llama.cpp/include -I/build/c/llama.cpp/ggml/include -I/build/c/llama.cpp/ggml/src/ggml-cpu -I/build/c/bridge -fopenmp"
-ENV CGO_LDFLAGS="-L/build/c/llama.cpp/build/src -L/build/c/llama.cpp/build/ggml/src -L/build/c/llama.cpp/build/ggml/src/ggml-cpu -L/build/c/bridge/build -lllama -lggml -lggml-cpu -lggml-base -lollamalegion_bridge -lstdc++ -lm -lpthread -fopenmp"
+ENV CGO_LDFLAGS="-L/build/c/llama.cpp/build/src -L/build/c/llama.cpp/build/ggml/src -L/build/c/llama.cpp/build/ggml/src/ggml-cpu -L/build/c/llama.cpp/build/common -L/build/c/bridge/build -lllama -lggml -lggml-cpu -lggml-base -lllama-common -lllama-common-base -lollamalegion_bridge -lstdc++ -lm -lpthread -fopenmp"
 
 # Собираем Go-бинарник с CGo (реальный bridge.c, без тега llama_stub)
 RUN CGO_ENABLED=1 GOOS=linux GOARCH=amd64 \
@@ -95,7 +96,7 @@ FROM alpine:latest AS runtime
 
 WORKDIR /app
 
-RUN apk add --no-cache tzdata ca-certificates curl python3 py3-pip && \
+RUN apk add --no-cache tzdata ca-certificates curl python3 py3-pip libgomp && \
     pip3 install --no-cache-dir --break-system-packages huggingface_hub
 
 COPY docker/cppworker/entrypoint.sh /entrypoint.sh

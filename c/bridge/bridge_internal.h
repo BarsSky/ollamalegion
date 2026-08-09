@@ -12,6 +12,7 @@
 
 #include "llama.h"
 #include <stdint.h>
+#include <stdatomic.h>  // Round 31 #6 (2026-08-09): atomic_int в InternalModel
 
 #ifdef __cplusplus
 extern "C" {

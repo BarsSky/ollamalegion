@@ -415,6 +415,10 @@ func writeStreamResponse(w http.ResponseWriter, r *http.Request, modelName, prom
 	w.Header().Set("Connection", "keep-alive")
 	flusher.Flush()
 	ctx := r.Context()
+	// Round 31 #6: abort_watcher для streaming generate.
+	if handle, ok := backend.GetHandle(modelName); ok {
+		_ = NewAbortWatcher(ctx, handle)
+	}
 	tokens := 0
 	var outputBuf strings.Builder
 	start := time.Now()
@@ -613,6 +617,10 @@ func writeOllamaStream(w http.ResponseWriter, r *http.Request, modelName, prompt
 	w.Header().Set("Cache-Control", "no-cache")
 	w.Header().Set("Connection", "keep-alive")
 	flusher.Flush()
+	// Round 31 #6: abort_watcher для ollama-generate streaming.
+	if handle, ok := backend.GetHandle(modelName); ok {
+		_ = NewAbortWatcher(r.Context(), handle)
+	}
 	tokens := 0
 	var outputBuf strings.Builder
 	start := time.Now()

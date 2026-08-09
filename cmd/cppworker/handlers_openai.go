@@ -774,6 +774,10 @@ func writeOpenAIChatStream(w http.ResponseWriter, r *http.Request, modelName, pr
 	flusher.Flush()
 
 	ctx := r.Context()
+	// Round 31 #6: abort_watcher для OpenAI chat streaming.
+	if handle, ok := backend.GetHandle(modelName); ok {
+		_ = NewAbortWatcher(ctx, handle)
+	}
 	chatID := fmt.Sprintf("chatcmpl-%d", time.Now().UnixNano())
 	created := time.Now().Unix()
 
@@ -1028,6 +1032,30 @@ func writeOpenAIChatStream(w http.ResponseWriter, r *http.Request, modelName, pr
 	streamErr = generateStreamWithRamFallback(modelName, prompt, params, callback, false)
 	if streamErr != nil {
 		maybeRestartOnMemorySlotError(streamErr, modelName)
+		// Round 31 #6 (2026-08-09): cancelled response. OpenAI-compatible клиенты
+		// строгие к finish_reason, поэтому используем "stop" (safer) + cancelled: true.
+		// См. plans/cppworker-abort-api/PLAN.md DECISION Q3.
+		if errors.Is(streamErr, bridge.ErrAborted) {
+			cancelledChunk := map[string]interface{}{
+				"id":      chatID,
+				"object":  "chat.completion.chunk",
+				"created": created,
+				"model":   modelName,
+				"choices": []map[string]interface{}{
+					{
+						"index":         0,
+						"delta":         map[string]string{},
+						"finish_reason": "stop", // backward-compat с OpenAI
+					},
+				},
+				"cancelled": true,
+			}
+			cancelledJSON, _ := json.Marshal(cancelledChunk)
+			sw.Writef("data: %s\n\n", cancelledJSON)
+			sw.Writef("data: [DONE]\n\n")
+			sw.Flush()
+			return
+		}
 		// Специальная обработка reload-disabled-for-tools (HTTP 413 в SSE-чанке).
 		if rdtErr, ok := streamErr.(*ReloadDisabledForToolsError); ok {
 			errChunk := map[string]interface{}{
@@ -1410,6 +1438,10 @@ func writeOpenAICompletionStream(w http.ResponseWriter, r *http.Request, modelNa
 	w.Header().Set("Connection", "keep-alive")
 
 	ctx := r.Context()
+	// Round 31 #6: abort_watcher для OpenAI completion streaming.
+	if handle, ok := backend.GetHandle(modelName); ok {
+		_ = NewAbortWatcher(ctx, handle)
+	}
 	completionID := fmt.Sprintf("cmpl-%d", time.Now().UnixNano())
 	created := time.Now().Unix()
 

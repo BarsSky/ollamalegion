@@ -459,13 +459,64 @@ func (t *ModelLatencyTracker) GetOrComputeRequestTimeout(
 // EstimateStreamTimeoutFromModelSize оценивает разумный таймаут стриминга (первый байт + генерация)
 // на основе размера .gguf файла. Используется как эвристика для моделей без истории генерации.
 //
-// Эвристика:
+// Round 32 #9 (2026-08-10): bumped 2-5GB tier 300s → 900s and 5-12GB tier
+// 600s → 1200s. Reason: reasoning-capable models (gemma-4, Qwen3-Instruct
+// with reasoning=on) can spend 3-5x longer generating due to <|channel>thought
+// blocks. Live evidence: gemma-4-E4B-it-Q4_K_M (4.64GB) generating
+// "describe HTML page about space travel" with reasoning took 16+ min total —
+// 5 min stream cap truncated mid-generation, OpenWebUI retried with non-stream
+// (3m34s) → user saw "model continues to generate" + truncated primary stream.
+// 900s (15 min) headroom for 2-5GB + 1200s (20 min) for 5-12GB covers all
+// reasonable reasoning prompts while still catching truly hung requests via
+// StreamingIdleTimeout (separate signal).
+//
+// Эвристика (Round 32 #9):
 //   - < 2 GB  (Q2_K, 1-3B param):    120s  — маленькие модели, быстрая загрузка
-//   - 2-5 GB  (Q4_K_M, 3-8B param):   300s  — средние модели
-//   - 5-12 GB (Q4_K_M, 8-20B param):  600s  — большие модели (10+ min)
-//   - 12-24 GB (Q4_K_M, 20-40B param): 900s — очень большие (15+ min)
-//   - > 24 GB (> 40B param):           1200s — гигантские (20+ min)
+//   - 2-5 GB  (Q4_K_M, 3-8B param):   900s  — reasoning-capable (gemma-4, Qwen3-8B)
+//   - 5-12 GB (Q4_K_M, 8-20B param): 1200s — большие модели с reasoning (20 min)
+//   - 12-24 GB (Q4_K_M, 20-40B param): 1800s — очень большие (30 min)
+//   - > 24 GB (> 40B param):           2400s — гигантские (40+ min)
 func EstimateStreamTimeoutFromModelSize(sizeBytes int64) time.Duration {
+	gb := float64(sizeBytes) / (1024 * 1024 * 1024)
+	switch {
+	case gb <= 0:
+		return 0
+	case gb < 2.0:
+		return 120 * time.Second
+	case gb < 5.0:
+		return 900 * time.Second
+	case gb < 12.0:
+		return 1200 * time.Second
+	case gb < 24.0:
+		return 1800 * time.Second
+	default:
+		return 2400 * time.Second
+	}
+}
+
+// EstimateIdleTimeoutFromModelSize оценивает разумный idle-таймаут стриминга
+// на основе размера .gguf файла. Используется как эвристика для моделей без истории.
+//
+// Round 32 #9 (2026-08-10): bumped 2-5GB 180s → 300s and 5-12GB 300s → 600s.
+// Reason: reasoning models pause between thinking blocks (sometimes 30-60s
+// on RTX 3070 with partial offload for 4-8B Q4_K_M). 180s cap for 2-5GB was
+// too tight — could truncate mid-thought. 300s (5 min) idle window covers
+// most reasoning pauses; combined with bumped StreamTimeout (900s for 2-5GB),
+// total window is 15+ min — enough for 3-4 reasoning cycles.
+//
+// Проблема (2026-06-23): для больших моделей (12B+ params) на GPU с
+// partial offload (не все слои в VRAM) idle между чанками может быть
+// >120s (default). При модели с tokens/sec ~5-10 (CPU offload части
+// слоёв) max-inter-token-gap достигает 30-60s. С запасом ×2-3 для
+// burst-pause получается 60-180s → дефолт 120s обрывает стрим.
+//
+// Эвристика (Round 32 #9, с запасом для "thinking"-моделей и burst-pauses):
+//   - < 2 GB:   120s — маленькие модели (стабильно быстрые)
+//   - 2-5 GB:   300s — reasoning-capable (gemma-4, Qwen3-8B, 5 min pause window)
+//   - 5-12 GB:  600s — большие модели (8-20B, длинные thinking, 10 min)
+//   - 12-24 GB: 900s — очень большие (20-40B, 15 min pause)
+//   - > 24 GB: 1200s — гигантские (>40B, 20+ min pause)
+func EstimateIdleTimeoutFromModelSize(sizeBytes int64) time.Duration {
 	gb := float64(sizeBytes) / (1024 * 1024 * 1024)
 	switch {
 	case gb <= 0:
@@ -480,39 +531,6 @@ func EstimateStreamTimeoutFromModelSize(sizeBytes int64) time.Duration {
 		return 900 * time.Second
 	default:
 		return 1200 * time.Second
-	}
-}
-
-// EstimateIdleTimeoutFromModelSize оценивает разумный idle-таймаут стриминга
-// на основе размера .gguf файла. Используется как эвристика для моделей без истории.
-//
-// Проблема (2026-06-23): для больших моделей (12B+ params) на GPU с
-// partial offload (не все слои в VRAM) idle между чанками может быть
-// >120s (default). При модели с tokens/sec ~5-10 (CPU offload части
-// слоёв) max-inter-token-gap достигает 30-60s. С запасом ×2-3 для
-// burst-pause получается 60-180s → дефолт 120s обрывает стрим.
-//
-// Эвристика (с запасом для "thinking"-моделей и burst-pauses):
-//   - < 2 GB:   120s — маленькие модели (стабильно быстрые)
-//   - 2-5 GB:   180s — средние модели
-//   - 5-12 GB:  300s — большие модели (8-20B, возможен partial offload)
-//   - 12-24 GB: 600s — очень большие (20-40B, частые pause)
-//   - > 24 GB:  900s — гигантские (>40B, длинные thinking)
-func EstimateIdleTimeoutFromModelSize(sizeBytes int64) time.Duration {
-	gb := float64(sizeBytes) / (1024 * 1024 * 1024)
-	switch {
-	case gb <= 0:
-		return 0
-	case gb < 2.0:
-		return 120 * time.Second
-	case gb < 5.0:
-		return 180 * time.Second
-	case gb < 12.0:
-		return 300 * time.Second
-	case gb < 24.0:
-		return 600 * time.Second
-	default:
-		return 900 * time.Second
 	}
 }
 

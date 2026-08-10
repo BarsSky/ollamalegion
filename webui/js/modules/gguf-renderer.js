@@ -546,11 +546,28 @@ const GgufRenderer = (window.GgufRenderer = (function () {
             // Round 26 v0.5.13: busy badge. Если activeQueries > 0, показываем
             // "🔴 Generating (N active)" inline рядом с именем модели. Это
             // разъясняет пользователю, почему apply может ждать.
+            //
+            // Round 32 #2 (2026-08-10): busy badge теперь имеет встроенную кнопку
+            // "Cancel" — клик вызывает cppworkerCancelGeneration.post(backend.id, name),
+            // что отправляет POST /api/cancel в cppworker → AbortWatcher →
+            // bridge.RequestAbort → C-bridge прерывает текущий llama_decode при
+            // следующей проверке abort флага (каждые ~100ms после Round 32 n_batch=64).
+            // Без этой кнопки пользователь не мог отменить генерацию из WebUI —
+            // приходилось закрывать чат-клиент (Cline/OpenWebUI) чтобы balancer
+            // увидел TCP close.
             const activeCount = (state.activeQueries && state.activeQueries[name]) || 0;
             const busyBadge = activeCount > 0
-                ? '<span class="gguf-loaded-busy-badge" style="display:inline-flex;align-items:center;gap:4px;margin-left:8px;padding:2px 8px;background:rgba(217,83,79,0.15);color:#ff7b76;border-radius:10px;font-size:11px;font-weight:600;" title="' + (_('gguf.busy_badge_title') || 'Active generations') + '">' +
+                ? '<span class="gguf-loaded-busy-badge" style="display:inline-flex;align-items:center;gap:6px;margin-left:8px;padding:2px 8px;background:rgba(217,83,79,0.15);color:#ff7b76;border-radius:10px;font-size:11px;font-weight:600;" title="' + (_('gguf.busy_badge_title') || 'Active generations') + '">' +
                     '<span style="display:inline-block;width:6px;height:6px;background:#ff7b76;border-radius:50%;animation:gguf-pulse 1.2s infinite;"></span>' +
                     (_('gguf.busy_badge') || 'Generating') + ' (' + activeCount + ' ' + (_('gguf.active_short') || 'active') + ')' +
+                    // Round 32 #2: cancel button внутри busy badge.
+                    // data-model-name используется в event handler для определения
+                    // какую модель отменять.
+                    '<button class="btn btn-xs gguf-cancel-gen-btn" data-model-name="' + Utils.escapeHtml(name) + '" ' +
+                            'style="margin-left:4px;padding:1px 8px;font-size:10px;line-height:1.4;background:#d9534f;color:#fff;border:none;border-radius:8px;cursor:pointer;" ' +
+                            'title="' + (_('gguf.cancel_generation') || 'Cancel active generation') + '">' +
+                        '<i class="fas fa-times"></i> ' + (_('common.cancel') || 'Cancel') +
+                    '</button>' +
                   '</span>'
                 : '';
 
@@ -1422,6 +1439,18 @@ const GgufRenderer = (window.GgufRenderer = (function () {
             cancelDownload(cancelDl.getAttribute('data-model-id'), cancelDl.getAttribute('data-filename'));
             return;
         }
+        // Round 32 #2 (2026-08-10): cancel generation button в busy badge.
+        // Клик по кнопке отменяет активную inference-генерацию через cppworker
+        // /api/cancel endpoint (см. cppworkerCancelGeneration в api.js).
+        // AbortWatcher → bridge.RequestAbort → C-bridge прерывает при следующей
+        // проверке abort флага (каждые ~100ms после Round 32 n_batch=64).
+        var cancelGen = e.target.closest('.gguf-cancel-gen-btn');
+        if (cancelGen) {
+            cancelActiveGeneration(cancelGen.getAttribute('data-model-name'));
+            e.preventDefault();
+            e.stopPropagation();
+            return;
+        }
         // Round 17.3 (2026-08-03): Resume кнопка для прерванных загрузок.
         // Re-trigger download — backend обнаружит .download файл и пошлёт Range request.
         var resumeDl = e.target.closest('.gguf-resume-dl-btn');
@@ -2046,6 +2075,64 @@ const GgufRenderer = (window.GgufRenderer = (function () {
     }
 
     /**
+     * Round 32 #2 (2026-08-10): cancelActiveGeneration — отменяет активную
+     * inference-генерацию для указанной модели. Вызывается кнопкой "Cancel"
+     * внутри busy badge на loaded model card.
+     *
+     * Flow:
+     *   1. POST /api/cancel в cppworker (через balancer proxy)
+     *   2. cppworker AbortWatcher → bridge.RequestAbort → C-bridge atomic flag
+     *   3. C-bridge проверяет flag между llama_decode батчами (каждые ~100ms
+     *      после Round 32 n_batch=64) → прерывает генерацию
+     *   4. busy badge автоматически обновится при следующем poll (через 3s)
+     *
+     * Race condition: если generation завершится до того, как cancel дойдёт
+     * (например, модель выдала final token ровно перед cancel), cancelled=0
+     * — это нормально, не error.
+     */
+    function cancelActiveGeneration(modelName) {
+        var backend = currentBackend();
+        if (!backend) return;
+        if (!window.Api || !window.Api.cppworkerCancelGeneration) {
+            showToast('Cancel API not available', 'error');
+            return;
+        }
+        // Visual feedback: disable button пока запрос в полёте
+        var btns = document.querySelectorAll('.gguf-cancel-gen-btn[data-model-name="' + modelName + '"]');
+        for (var i = 0; i < btns.length; i++) {
+            btns[i].disabled = true;
+            btns[i].textContent = '⏳';
+        }
+        window.Api.cppworkerCancelGeneration.post(backend.id, modelName).then(function (result) {
+            showToast(
+                (_('gguf.generation_cancelled') || 'Generation cancelled') +
+                    ' (' + (result.cancelled || 0) + ' ' + (_('gguf.cancelled_short') || 'cancelled') + ')',
+                'info'
+            );
+            // Принудительно обновляем busy badge — следующий poll через 3s
+            // сам подхватит новое состояние, но мы форсируем сейчас для UX.
+            // (опционально — можно trigger refreshActiveQueriesPolling)
+            // Round 32 #2 (2026-08-10): broadcast cancellation к другим вкладкам.
+            // Если у пользователя открыто несколько вкладок webui (например
+            // dashboard + GGUF), cancel в одной должен обновить busy badge
+            // во всех остальных немедленно, а не через 3s polling.
+            if (typeof broadcastCrossTab === 'function') {
+                broadcastCrossTab('generationCancelled', { model: modelName });
+            }
+        }).catch(function (err) {
+            showToast('Cancel error: ' + (err.message || 'unknown error'), 'error');
+        }).finally(function () {
+            // Re-enable button через 1s — polling обновит activeQueries
+            setTimeout(function () {
+                for (var i = 0; i < btns.length; i++) {
+                    btns[i].disabled = false;
+                    btns[i].innerHTML = '<i class="fas fa-times"></i> ' + (_('common.cancel') || 'Cancel');
+                }
+            }, 1000);
+        });
+    }
+
+    /**
      * Round 17.3 (2026-08-03): удаляет скачанный/частичный файл из контейнера
      * через новый endpoint DELETE /api/hf/cleanup. UI: с подтверждением,
      * потому что освобождает диск и необратимо.
@@ -2302,6 +2389,11 @@ const GgufRenderer = (window.GgufRenderer = (function () {
         // Первый tick сразу, потом каждые 3s
         tick();
         state._activeQueriesTimer = setInterval(tick, 3000);
+
+        // Round 32 #2 (2026-08-10): expose tick через state для cross-tab sync.
+        // refreshActiveQueriesPolling (в public API ниже) вызывает tick()
+        // немедленно, чтобы busy badge обновился сразу после broadcast.
+        state._activeQueriesTickFn = tick;
     }
 
     /**
@@ -2459,6 +2551,21 @@ const GgufRenderer = (window.GgufRenderer = (function () {
         // Экспортируем для GgufLoadProgress и тестов:
         markLoadingModel: markLoadingModel,
         markLoadFailed: markLoadFailed,
-        updateBackendsList: updateBackendsList
+        updateBackendsList: updateBackendsList,
+        // Round 32 #2 (2026-08-10): force refresh active-queries polling.
+        // Используется из cross-tab sync (app.js BroadcastChannel handler)
+        // когда другая вкладка отменила generation — мы форсируем refresh
+        // busy badge чтобы увидеть изменения немедленно (вместо 3s polling).
+        refreshActiveQueriesPolling: function () {
+            // Просто вызываем сохранённый tick — он дёргает cppworkerActiveQueries
+            // для всех loaded models и обновляет state.activeQueries. Если
+            // состояние изменилось, refreshDetailPane перерисует busy badge.
+            if (typeof state._activeQueriesTickFn === 'function') {
+                state._activeQueriesTickFn();
+            } else if (typeof startActiveQueriesPolling === 'function') {
+                // Timer не запущен (no backend selected) — start it
+                startActiveQueriesPolling();
+            }
+        }
     };
 })());

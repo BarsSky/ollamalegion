@@ -850,6 +850,85 @@ const ui = (function () {
 
     // ---- WebSocket Events ----
 
+    // Round 32 #2 (2026-08-10): Cross-tab sync через BroadcastChannel API.
+    // Без этого каждая вкладка polls /api/v1/cluster независимо каждые 5s,
+    // и состояние между вкладками может отличаться на 5s. С BroadcastChannel
+    // одна вкладка, получившая cluster state change (через WS event от балансера
+    // или через REST poll), бродкастит "state-changed" в другие вкладки — они
+    // сразу перезагружают своё состояние. UX-выигрыш: когда в одной вкладке
+    // нажали "Load model", в другой вкладке GGUF page через ~100ms (вместо 5s)
+    // показывает новую модель.
+    //
+    // Channel name: "ollama-legion-sync" — все вкладки webui в одном origin
+    // (одно окно браузера на localhost) делят один BroadcastChannel.
+    //
+    // Sender tab: после получения cluster state (WS event или REST poll) → post.
+    // Receiver tabs: onmessage handler → trigger fetchClusterState() +
+    // updateActiveQueries() для GGUF page.
+    let _crossTabChannel = null;
+    function getCrossTabChannel() {
+        if (_crossTabChannel !== null) return _crossTabChannel;
+        if (typeof BroadcastChannel === 'undefined') {
+            // Старые браузеры (или browser extension contexts) без BroadcastChannel
+            // — no-op sync. Tabs обновятся при следующем REST poll (5s).
+            _crossTabChannel = false;
+            return _crossTabChannel;
+        }
+        try {
+            _crossTabChannel = new BroadcastChannel('ollama-legion-sync');
+            _crossTabChannel.onmessage = handleCrossTabMessage;
+            return _crossTabChannel;
+        } catch (e) {
+            // BroadcastChannel может бросить если document не fully loaded,
+            // или в Web Worker context. Fallback: no-op.
+            _crossTabChannel = false;
+            return _crossTabChannel;
+        }
+    }
+
+    function handleCrossTabMessage(event) {
+        // Не обрабатываем свои же сообщения (BroadcastChannel не фильтрует sender).
+        if (!event || !event.data) return;
+        // Игнорируем сообщения от других origins (защита от shared channel).
+        if (event.data.source && event.data.source !== 'ollama-legion-webui') return;
+        const data = event.data;
+        if (data.type === 'clusterStateChanged') {
+            // Cluster state изменился — обновляем локальное состояние.
+            // fetchClusterState() дёргает REST API напрямую (быстрее, чем ждать
+            // следующего 5s poll).
+            fetchClusterState();
+            // GGUF page имеет отдельный polling active-queries (3s) — дёргаем его
+            // тоже, чтобы busy badge обновился немедленно.
+            window.refreshActiveQueriesCrossTab();
+        } else if (data.type === 'generationCancelled') {
+            // Другая вкладка отменила generation — refresh busy badge.
+            window.refreshActiveQueriesCrossTab();
+        }
+    }
+
+    function broadcastCrossTab(type, extra) {
+        const ch = getCrossTabChannel();
+        if (!ch || ch === false) return; // no-op для браузеров без BroadcastChannel
+        try {
+            ch.postMessage(Object.assign({ source: 'ollama-legion-webui', type: type }, extra || {}));
+        } catch (e) {
+            // Пост может бросить если channel closed. Не критично — log и продолжить.
+            console.debug('broadcastCrossTab failed:', e);
+        }
+    }
+
+    // Expose cross-tab helpers в window для доступа из gguf-renderer.js и
+    // других модулей. Single source of truth — broadcastCrossTab определена
+    // здесь, в app.js, и все модули используют window.broadcastCrossTab.
+    window.broadcastCrossTab = broadcastCrossTab;
+    window.refreshActiveQueriesCrossTab = function () {
+        // Helper для cross-tab sync — force refresh busy badge когда
+        // другая вкладка отменила generation.
+        if (window.GgufRenderer && typeof window.GgufRenderer.refreshActiveQueriesPolling === 'function') {
+            window.GgufRenderer.refreshActiveQueriesPolling();
+        }
+    };
+
     function setupWebSocketEvents() {
         window.addEventListener('ws-open', () => {
             updateConnectionStatus(true);
@@ -940,6 +1019,12 @@ const ui = (function () {
         if (backendsEqual(data.backends, newBackends)) return;
         data.backends = newBackends;
         if (currentPage === 'dashboard') scheduleDashboardRender();
+        // Round 32 #2 (2026-08-10): broadcast cluster state change для cross-tab sync.
+        // Если backends действительно изменились (backendsEqual=false), уведомляем
+        // другие вкладки чтобы они перезагрузили своё состояние. Дедупликация
+        // через backendsEqual выше гарантирует что broadcast не шлётся каждый
+        // poll (только при реальных изменениях).
+        broadcastCrossTab('clusterStateChanged');
     }
 
     function applyStatusChange(backendId, newStatus) {

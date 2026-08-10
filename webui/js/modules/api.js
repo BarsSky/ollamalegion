@@ -309,6 +309,43 @@ const Api = (function () {
             }
         },
 
+        // ===== Cancel Active Generation (Round 32 #2) =====
+        // Отменяет активную inference-генерацию для конкретной модели.
+        // Используется кнопкой "Cancel" на busy badge в WebUI (см. gguf-renderer.js).
+        // cppworker AbortWatcher → bridge.RequestAbort → C-bridge прерывает
+        // текущий llama_decode при следующей проверке abort флага (каждые
+        // ~100ms после Round 32 n_batch=64).
+        //
+        // POST /api/cancel
+        // Body: {"model": "...", "request_id": "..."} (request_id опционален)
+        // Response: {"cancelled": N, "by": "model|user_id|all", "request_id": "..."}
+        cppworkerCancelGeneration: {
+            /**
+             * POST /api/v1/gguf/backends/{id}/proxy/api/cancel
+             * Отменяет активные генерации для указанной модели.
+             * @param {string} backendId — ID cppworker'а.
+             * @param {string} modelName — имя модели.
+             * @param {string} [userId] — опционально, отменять только запросы конкретного user.
+             * @returns {Promise<{cancelled: number, by: string, request_id: string}>}
+             */
+            async post(backendId, modelName, userId) {
+                if (!window.GgufApi || !window.GgufApi.requestViaBackend) {
+                    throw new Error('GgufApi.requestViaBackend not available');
+                }
+                const body = { model: modelName };
+                if (userId) body.user_id = userId;
+                const data = await window.GgufApi.requestViaBackend(backendId, '/api/cancel', {
+                    method: 'POST',
+                    body: JSON.stringify(body),
+                });
+                return {
+                    cancelled: data.cancelled || 0,
+                    by: data.by || 'model',
+                    request_id: data.request_id || '',
+                };
+            }
+        },
+
         // ===== Apply Profile Progress (Round 26 v0.5.13) =====
         // Async apply + SSE progress. handleAsyncApply возвращает 202 + applyId,
         // и UI подписывается на /api/v1/cppworker/model-profiles/{name}/apply/progress.

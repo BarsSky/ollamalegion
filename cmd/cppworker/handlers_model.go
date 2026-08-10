@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -243,6 +244,26 @@ func handleLoadModel(w http.ResponseWriter, r *http.Request) {
 	case loadErr := <-loadDone:
 		backend.UnlockLoad(modelName)
 		if loadErr != nil {
+			// Round 32 #8 (2026-08-10): dedicated dedup-by-path error → success
+			// с status=already_loaded. Без этого dedup handler возвращал 500
+			// и 2x VRAM был занят (gemma-4 vs gemma-4.gguf).
+			var dedupErr *cppbackend.AlreadyLoadedAsError
+			if errors.As(loadErr, &dedupErr) {
+				logger.Get().Infow("handleLoadModel: model already loaded (dedup by path)",
+					"requested_name", modelName, "existing_name", dedupErr.ExistingName, "path", dedupErr.Path)
+				model, gErr := backend.GetModel(dedupErr.ExistingName)
+				if gErr != nil {
+					writeError(w, http.StatusInternalServerError, "dedup: "+gErr.Error())
+					return
+				}
+				writeJSON(w, http.StatusOK, map[string]interface{}{
+					"status":  "already_loaded",
+					"model":   model,
+					"dedup":   true,
+					"message": fmt.Sprintf("model already loaded as %q (same file path)", dedupErr.ExistingName),
+				})
+				return
+			}
 			logger.Get().Errorw("failed to load model (sync)", "name", modelName, "error", loadErr)
 			writeError(w, http.StatusInternalServerError, "load failed: "+loadErr.Error())
 			return
@@ -609,6 +630,24 @@ func handleLoadWithParams(w http.ResponseWriter, r *http.Request) {
 	case loadErr := <-loadDone:
 		backend.UnlockLoad(modelName)
 		if loadErr != nil {
+			// Round 32 #8 (2026-08-10): dedup-by-path → success с status=already_loaded.
+			var dedupErr *cppbackend.AlreadyLoadedAsError
+			if errors.As(loadErr, &dedupErr) {
+				logger.Get().Infow("handleLoadWithParams: model already loaded (dedup by path)",
+					"requested_name", modelName, "existing_name", dedupErr.ExistingName, "path", dedupErr.Path)
+				model, gErr := backend.GetModel(dedupErr.ExistingName)
+				if gErr != nil {
+					writeError(w, http.StatusInternalServerError, "dedup: "+gErr.Error())
+					return
+				}
+				writeJSON(w, http.StatusOK, map[string]interface{}{
+					"status":  "already_loaded",
+					"model":   model,
+					"dedup":   true,
+					"message": fmt.Sprintf("model already loaded as %q (same file path)", dedupErr.ExistingName),
+				})
+				return
+			}
 			logger.Get().Errorw("failed to load model (load-with-params sync)", "name", modelName, "error", loadErr)
 			writeError(w, http.StatusInternalServerError, "load failed: "+loadErr.Error())
 			return

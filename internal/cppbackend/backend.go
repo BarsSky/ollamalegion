@@ -41,6 +41,26 @@ const (
 	StateError    LoadState = "error"
 )
 
+// ErrModelAlreadyLoadedAs — sentinel для dedup загрузки по file path.
+//
+// Round 32 #8 (2026-08-10): когда клиент запрашивает загрузку с другим name,
+// но тот же path уже загружен, LoadModelWithOpts возвращает wrapped
+// ErrModelAlreadyLoadedAs{ExistingName: ...} — handler может через
+// errors.As извлечь existing name и вернуть клиенту status=loaded.
+//
+// До этого фикса: возвращался plain fmt.Errorf("model X already loaded") —
+// handler не различал "уже загружено под другим именем" vs "реальный конфликт
+// имён" → 2x VRAM было занято (gemma-4 vs gemma-4.gguf грузились как 2 разные
+// модели), и балансер начинал блокировать inference по VRAM headroom.
+type AlreadyLoadedAsError struct {
+	ExistingName string
+	Path         string
+}
+
+func (e *AlreadyLoadedAsError) Error() string {
+	return fmt.Sprintf("model already loaded as %q (same file path %q)", e.ExistingName, e.Path)
+}
+
 // ModelInfo — информация о загруженной модели
 type ModelInfo struct {
 	Name              string    `json:"name"`
@@ -596,6 +616,29 @@ func (b *Backend) LoadModelWithOpts(name string, path string, opts LoadModelOpts
 	if _, exists := b.models[name]; exists {
 		b.mu.Unlock()
 		return fmt.Errorf("model %s already loaded", name)
+	}
+
+	// Round 32 #8 (2026-08-10): dedup по path, не только по name.
+	// Раньше проверяли только b.models[name] — если тот же .gguf файл уже
+	// загружен под другим именем (например, "gemma-4" vs "gemma-4.gguf"),
+	// LoadModelWithOpts проходил проверку и грузил модель второй раз → 2x
+	// VRAM занято → балансер начинал блокировать по VRAM headroom.
+	// Типичный сценарий: пользователь в OpenWebUI переключается между моделями
+	// с похожими именами, или webui/balancer отправляет name с .gguf vs без.
+	//
+	// Теперь: если path уже загружен — возвращаем *AlreadyLoadedAsError с
+	// existing_name. Handler через errors.As извлечёт existing name и вернёт
+	// клиенту status=loaded (модель уже в памяти, не нужно дублировать).
+	if path != "" {
+		for existingName, existingInst := range b.models {
+			if existingInst.info.Path == path {
+				existingNameCopy := existingName
+				b.mu.Unlock()
+				logger.Get().Infow("LoadModelWithOpts: same path already loaded, dedup by file",
+					"requested_name", name, "existing_name", existingName, "path", path)
+				return &AlreadyLoadedAsError{ExistingName: existingNameCopy, Path: path}
+			}
+		}
 	}
 
 	gpuLayers := opts.GPULayers

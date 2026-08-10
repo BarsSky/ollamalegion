@@ -3,11 +3,12 @@
 // gemma-4-thinking и т.п.).
 //
 // Зачем это нужно:
+//
 //   - llama.cpp (c/llama.cpp/common/chat-peg-parser.cpp) уже умеет парсить
 //     think-блоки встроенным chat template engine. Однако наш cppworker
 //     использует либо bridge_apply_chat_template (если в GGUF есть
 //     tokenizer.chat_template), либо naive fallback, и в обоих случаях
-//     получает от C-моста "сырой" текст, в котором `` остаётся
+//     получает от C-моста "сырой" текст, в котором “ остаётся
 //     встроенным в общий output. Клиенты (OpenWebUI, Cline, Roo Code)
 //     ожидают отдельное поле `reasoning_content` (аналог Deepseek API),
 //     чтобы можно было скрыть/развернуть цепочку рассуждений.
@@ -133,9 +134,9 @@ func IsReasoningModel(modelName string) bool {
 //
 // Source of truth для "эта модель в текущем запросе эмитит reasoning → split'ить".
 // Проверяет ОБА источника:
-//   1. IsReasoningModel(name) — hardcoded whitelist префиксов (legacy).
-//   2. per-model EnableReasoning, resolved в modelInstance.reasoningEnabled
-//      при LoadModel (см. internal/cppbackend/backend.go:LoadModelWithOpts).
+//  1. IsReasoningModel(name) — hardcoded whitelist префиксов (legacy).
+//  2. per-model EnableReasoning, resolved в modelInstance.reasoningEnabled
+//     при LoadModel (см. internal/cppbackend/backend.go:LoadModelWithOpts).
 //
 // Используется парсерами во всех 4 точках:
 //   - handleV1ChatCompletions (non-stream)
@@ -186,7 +187,9 @@ func IsReasoningEnabledForRequest(modelName string) bool {
 // В GGUF токенизаторе gemma-4 (см. dump special tokens) есть токены
 // <|think|>, <|channel>, <channel|>, <|turn>, <turn|>. Chat template
 // gemma-4-E4B рендерит reasoning как:
-//   {{- '<|channel>thought\n' + thinking_text + '\n<channel|>' -}}
+//
+//	{{- '<|channel>thought\n' + thinking_text + '\n<channel|>' -}}
+//
 // ВАЖНО: эти теги — single tokens, при detokenization они эмитятся
 // в output как есть, БЕЗ пробелов между <|channel> и thought.
 // Поддерживаем 2 варианта: с \n (chat-template канонический) и без
@@ -211,6 +214,13 @@ var thinkTagPairs = []struct {
 	{"<|channel>analysis", "<channel|>"},
 	// Round 32: Qwen-style with |...| wrapping (gemma-4 also accepts this).
 	{"<|think>", "<think|>"},
+	// Round 32 #8 (2026-08-10): bare <|channel>...<channel|> вариант.
+	// Модель эмитит без "thought"/"analysis" суффикса. ВАЖНО: pair должен
+	// быть ПОСЛЕДНИМ — openThinkTag() выбирает earliest match, и bare
+	// <|channel> будет ложно сматчен до <|channel>thought если окажется
+	// раньше в списке. Добавляем в конец, чтобы более специфичные теги
+	// проверялись первыми.
+	{"<|channel>", "<channel|>"},
 }
 
 // thinkStart/thinkEnd — backward-compat aliases (используются в тестах и ниже).

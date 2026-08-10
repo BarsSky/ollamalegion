@@ -12,10 +12,9 @@ import (
 	"ollama-loadbalancer/pkg/logger"
 )
 
-
 // stripReasoningTags — убирает opening/closing reasoning tags из content.
 // Используется как defensive cleanup для gemma-4, который иногда leak'ит
-// `` теги в content (cppworker's SplitReasoningContent разделяет
+// “ теги в content (cppworker's SplitReasoningContent разделяет
 // правильно, но close tag `</think>` может остаться в content).
 //
 // Round 31 (2026-08-09).
@@ -51,6 +50,15 @@ func stripReasoningTags(content string) string {
 		"<|think>",
 		// Round 32: message separator (appears inside channel blocks).
 		"<|message|>",
+		// Round 32 #8 (2026-08-10): bare <|channel>...<channel|> variant.
+		// Live test с gemma-4 показал: модель эмитит bare <|channel> (без
+		// "thought"/"analysis" суффикса) — Round 32 patterns не матчили,
+		// и tag leak'ал в content (пользователь видел "<|channel>Думаю..."
+		// в OpenWebUI). ВАЖНО: bare <|channel> добавлен В КОНЕЦ — иначе
+		// он бы сожрал prefix <|channel>thought (openTags итерируется
+		// последовательно, stripWithBoundary не защищает от prefix'а
+		// более длинного тега, начинающегося с того же префикса).
+		"<|channel>",
 	}
 	closeTags := []string{
 		"</think>", "</thinking>", "</reasoning>", "</analysis>",
@@ -58,18 +66,20 @@ func stripReasoningTags(content string) string {
 		"\n<channel|>", "<channel|>",
 		"\n<channel|>", "<channel|>",
 		"<think|>",
-		"", // <|message|> — не используется как парный close
+		"",           // <|message|> — не используется как парный close
+		"<channel|>", // bare <|channel> → <channel|>
 	}
 	// sharedClose: true = НЕ делать ReplaceAll на close после pair-strip
 	// (close используется несколькими open — нужно сохранить для следующего iter).
 	// false = close уникален для этого open, можно безопасно strip'ать orphan close.
 	sharedClose := []bool{
 		false, false, false, false,
-		false, // <think has no close
+		false,      // <think has no close
 		true, true, // \n<channel|> and <channel|> used by both thought and analysis
 		true, true,
 		false, // <think|> is unique
 		false, // <|message|> has no close
+		true,  // <channel|> is shared with thought/analysis pairs
 	}
 
 	for i, open := range openTags {
@@ -172,7 +182,6 @@ func stripWithBoundary(content, needle string) string {
 	return sb.String()
 }
 
-
 // buildErrorOllamaResponse — строит корректный Ollama-ответ с ошибкой для случаев,
 // когда upstream вернул пустое или невалидное тело. Возвращает JSON в Ollama-формате
 // с полями done:true, done_reason:"error", error:"<msg>" и пустым message/response.
@@ -272,7 +281,6 @@ func translateOpenAIResponseToOllama(ollamaPath string, openaiBody []byte, model
 	}
 }
 
-
 // translateOpenAIChatToOllama — маппит OpenAI /v1/chat/completions ответ на Ollama /api/chat.
 func translateOpenAIChatToOllama(body []byte, modelName string) ([]byte, error) {
 	var openaiResp map[string]interface{}
@@ -346,7 +354,7 @@ func translateOpenAIChatToOllama(body []byte, modelName string) ([]byte, error) 
 						"original_content_len", len(contentStr),
 						"remaining_content_len", len(remainingTC))
 					msgMap["tool_calls"] = detectedTC
-						// Clean remaining content: remove service tokens, duplicate tool calls, role markers
+					// Clean remaining content: remove service tokens, duplicate tool calls, role markers
 					cleaned := stripServiceTokens(remainingTC)
 					cleaned = cleanContentAfterToolCallExtraction(cleaned)
 					msgMap["content"] = cleaned

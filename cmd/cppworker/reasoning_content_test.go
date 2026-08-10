@@ -122,6 +122,35 @@ func TestSplitReasoningContent_ReasoningTag(t *testing.T) {
 			wantContent: "text",
 			wantHas:     true,
 		},
+		// Round 32 #8 (2026-08-10): gemma-4 bare <|channel>...<channel|> variant.
+		// Live test показал: модель эмитит bare `<|channel>` (без
+		// "thought"/"analysis" суффикса) с reasoning-текстом. Без этого pattern'а
+		// SplitReasoningContent не находил opener → tag leak в content.
+		// openThinkTag() выбирает earliest match, поэтому bare <|channel>
+		// добавлен В КОНЕЦ thinkTagPairs — иначе он бы сожрал prefix
+		// <|channel>thought.
+		{
+			name:        "gemma-4 bare channel with close (Round 32 #8)",
+			input:       "<|channel>Думаю... planning here<channel|>1. Step one",
+			wantReason:  "Думаю... planning here",
+			wantContent: "1. Step one",
+			wantHas:     true,
+		},
+		{
+			name:        "gemma-4 bare channel orphan open (no close)",
+			input:       "<|channel>no close here",
+			wantReason:  "no close here",
+			wantContent: "",
+			wantHas:     true,
+		},
+		{
+			name: "gemma-4 channel thought takes priority over bare",
+			// Earlier more-specific pattern должен сматчить первым.
+			input:       "<|channel>thought\nreasoning<channel|>answer",
+			wantReason:  "reasoning",
+			wantContent: "answer",
+			wantHas:     true,
+		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

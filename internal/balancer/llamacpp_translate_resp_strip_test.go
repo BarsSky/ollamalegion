@@ -177,6 +177,39 @@ func TestStripReasoningTags_Gemma4ChannelFormat(t *testing.T) {
 			"<|think>Long thinking without close",
 			"Long thinking without close",
 		},
+		// Round 32 #8 (2026-08-10): bare <|channel>...<channel|> variant.
+		// Live test с gemma-4 (reasoning enabled) показал: модель иногда
+		// эмитит bare `<|channel>` (без "thought"/"analysis" суффикса) с
+		// reasoning-текстом и не закрывает канал. Без этого pattern'а tag
+		// leak'ал в content (пользователь видел "<|channel>Думаю..." в OpenWebUI).
+		{
+			"gemma4_bare_channel_with_close",
+			// Точная репродукция бага из user report (2026-08-10).
+			"<|channel>Думаю... planning here<channel|>1. Step one",
+			"1. Step one",
+		},
+		{
+			"gemma4_bare_channel_no_close_orphan_open",
+			// Без close — orphan open должен быть strip'нут через stripWithBoundary.
+			// (close = <channel|> остаётся на случай если это часть другой пары.)
+			"<|channel>no close here — orphan open stripped",
+			"no close here — orphan open stripped",
+		},
+		{
+			"gemma4_bare_channel_with_only_close_orphan",
+			// Только close без open — orphan close НЕ strip'ается
+			// (close shared между thought/analysis/bare — опасно трогать).
+			"incomplete<channel|>actual content",
+			"incomplete<channel|>actual content",
+		},
+		{
+			"gemma4_thought_takes_priority_over_bare",
+			// Если есть и <|channel>thought и bare <|channel>, более
+			// специфичный паттерн (thought) должен сработать первым.
+			// Iter order: thought, analysis, think|>, bare.
+			"<|channel>thought\nthinking<channel|>answer",
+			"answer",
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

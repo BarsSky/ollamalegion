@@ -155,6 +155,19 @@ func (p *Proxy) proxyRequestOpenAIStreamingHijacked(
 
 	// 3. SSE-стрим через bufrw.
 	// Write HTTP/1.1 status + headers manually.
+	//
+	// Round 32 #10 (2026-08-10): removed `Transfer-Encoding: chunked` header.
+	// Original code declared chunked but wrote raw SSE events (`data: ...\n\n`)
+	// without proper chunked framing (hex size + CRLF + body + CRLF). Client-side
+	// chunked decoders (OpenWebUI aiohttp, Cline fetch, etc.) tried to interpret
+	// `data: {` lines as hex chunk sizes — `d`=13 → expected 13 bytes after,
+	// but got an SSE event instead → "TransferEncodingError: 400, message=
+	// 'Not enough data to satisfy transfer length header'".
+	//
+	// SSE standard: keep connection open, write events, EOF (or [DONE] marker)
+	// signals end. NO chunked encoding, NO Content-Length needed. Client reads
+	// until EOF. This is what OpenAI, Anthropic, Ollama all do for /v1/chat
+	// streaming responses.
 	statusText := http.StatusText(resp.StatusCode)
 	if statusText == "" {
 		statusText = "OK"
@@ -164,7 +177,6 @@ func (p *Proxy) proxyRequestOpenAIStreamingHijacked(
 	bufrw.WriteString("Cache-Control: no-cache\r\n")
 	bufrw.WriteString("Connection: keep-alive\r\n")
 	bufrw.WriteString("X-Accel-Buffering: no\r\n")
-	bufrw.WriteString("Transfer-Encoding: chunked\r\n")
 	// Copy selected upstream headers.
 	for key, values := range resp.Header {
 		keyLower := strings.ToLower(key)

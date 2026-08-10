@@ -49,6 +49,44 @@
     const TIMEOUT_MIN = 0;
     const TIMEOUT_MAX = 24 * 3600; // 24ч максимум
 
+    // Round 32 #10 (2026-08-10): JS port of balancer's EstimateStreamTimeoutFromModelSize
+    // / EstimateIdleTimeoutFromModelSize (internal/balancer/model_latency_tracker.go,
+    // Round 32 #9 bumps). Used for placeholder hints in the wizard.
+    // ДЕРЖИТЕ В СИНХРОНЕ с Go-кодом — при изменении tier'ов в Go менять и здесь.
+    function estimateStreamTimeoutGB(gb) {
+        if (gb <= 0) return 0;
+        if (gb < 2.0) return 120;
+        if (gb < 5.0) return 900;   // reasoning-capable: gemma-4, Qwen3-8B
+        if (gb < 12.0) return 1200; // 8-20B
+        if (gb < 24.0) return 1800; // 20-40B
+        return 2400;                 // >40B
+    }
+    function estimateIdleTimeoutGB(gb) {
+        if (gb <= 0) return 0;
+        if (gb < 2.0) return 120;
+        if (gb < 5.0) return 300;
+        if (gb < 12.0) return 600;
+        if (gb < 24.0) return 900;
+        return 1200;
+    }
+
+    // Достаём размер модели из window.CPPWORKER_LOADED_MODELS (если уже загружена)
+    // или возвращаем 0 — fallback на "typical 2-5GB" в openWizard.
+    function getModelSizeBytesForName(modelName) {
+        if (!modelName) return 0;
+        try {
+            const models = (window.CPPWORKER_LOADED_MODELS && window.CPPWORKER_LOADED_MODELS.models) || [];
+            for (const m of models) {
+                if (m.name === modelName || (m.path && m.path.indexOf(modelName) >= 0)) {
+                    return m.sizeBytes || m.size || 0;
+                }
+            }
+        } catch (e) {
+            // ignore — fallback к typical
+        }
+        return 0;
+    }
+
     // Max gpu layers (верхний предел для slider/number).
     // -2 = AUTO (Round 23, 2026-08-04): cppworker auto-рассчитывает на основе
     //      modelSize, availableVRAM, requestedNCtx. Подробнее cmd/cppworker/inference.go.
@@ -213,7 +251,10 @@
             streamingTimeoutSec: profile.streamingTimeoutSec || 0,
             streamingIdleTimeoutSec: profile.streamingIdleTimeoutSec || 0,
             requestTimeoutSec: profile.requestTimeoutSec || 0,
-            firstByteTimeoutSec: profile.firstByteTimeoutSec || 0
+            firstByteTimeoutSec: profile.firstByteTimeoutSec || 0,
+            // Round 32 #10 (2026-08-10): reasoning mode toggle. UI-only — не
+            // отправляется в API. На save конвертируется в ×3 таймауты.
+            reasoningMode: false
         };
     }
 
@@ -246,6 +287,25 @@
     function openWizard(modelName, profile) {
         const isNew = !profile;
         const state = profileToWizardState(profile || {});
+
+        // Round 32 #10 (2026-08-10): heuristic-based placeholder text для таймаутов.
+        // JS port of EstimateStreamTimeoutFromModelSize / EstimateIdleTimeoutFromModelSize
+        // (см. internal/balancer/model_latency_tracker.go — Round 32 #9 bumps).
+        // Если modelName есть — пробуем достать реальный size из ранее загруженных
+        // моделей. Иначе используем "typical 2-5GB" (наиболее частый случай).
+        const ggufSizeBytes = getModelSizeBytesForName(modelName);
+        const ggufSizeGB = ggufSizeBytes > 0 ? ggufSizeBytes / (1024 * 1024 * 1024) : 3.5;  // default 3.5GB ≈ 2-5GB tier
+        const reasoningMult = state.reasoningMode ? 3 : 1;
+        const streamAuto = estimateStreamTimeoutGB(ggufSizeGB) * reasoningMult;
+        const idleAuto = estimateIdleTimeoutGB(ggufSizeGB) * reasoningMult;
+        const streamingTimeoutPlaceholder = state.reasoningMode
+            ? '0 = auto (2700s × 3 reasoning) или задайте явно'
+            : '0 = auto (heuristic 900s для 2-5GB, stats)';
+        const streamingIdleTimeoutPlaceholder = state.reasoningMode
+            ? '0 = auto (900s × 3 reasoning) или задайте явно'
+            : '0 = auto (heuristic 300s для 2-5GB, stats)';
+        const requestTimeoutPlaceholder = '0 = global (default 600s)';
+        const firstByteTimeoutPlaceholder = '0 = global (default 120s)';
 
         const overlay = document.createElement('div');
         overlay.className = 'mode-wizard-overlay cpp-profile-wizard';
@@ -340,26 +400,33 @@
                         </div>
                         <div class="wizard-field">
                             <label>${escapeHtml(I18N.t('settings.profiles.timeouts_section', 'Per-model таймауты (сек, 0 = глобальные)'))}</label>
-                            <div class="ctx-help">${escapeHtml(I18N.t('settings.profiles.timeout_help', '0 = использовать глобальное значение из BalancingSettings балансировщика. > 0 переопределяет только для этой модели.'))}</div>
+                            <div class="ctx-help">${escapeHtml(I18N.t('settings.profiles.timeout_help', '0 = auto (3-tier resolver: per-model profile → stats из истории → heuristic по размеру GGUF → global config). После 1-й успешной генерации автоподстройка включится и заменит heuristic. > 0 переопределяет только для этой модели.'))}</div>
+                        </div>
+                        <div class="wizard-field">
+                            <label class="checkbox-label">
+                                <input type="checkbox" id="wizReasoningMode" ${state.reasoningMode ? 'checked' : ''}>
+                                <span>${escapeHtml(I18N.t('settings.profiles.reasoning_mode', 'Reasoning mode (×3 таймаут для thinking моделей)'))}</span>
+                            </label>
+                            <div class="ctx-help">${escapeHtml(I18N.t('settings.profiles.reasoning_mode_help', 'Включите для моделей с reasoning (gemma-4, Qwen3-Instruct с thinking): эвристический таймаут автоматически умножается на 3 (например, 900s → 2700s). Не трогайте поля ниже — они заполнятся автоматически. Можно потом переопределить вручную.'))}</div>
                         </div>
                         <div class="wizard-field wizard-field-row">
                             <div class="wizard-field-col">
                                 <label>${escapeHtml(I18N.t('settings.profiles.streaming_timeout', 'Общий таймаут streaming'))}</label>
-                                <input type="number" id="wizStreamingTimeout" value="${state.streamingTimeoutSec}" min="${TIMEOUT_MIN}" max="${TIMEOUT_MAX}" placeholder="0 = глобальный">
+                                <input type="number" id="wizStreamingTimeout" value="${state.streamingTimeoutSec}" min="${TIMEOUT_MIN}" max="${TIMEOUT_MAX}" placeholder="${streamingTimeoutPlaceholder}">
                             </div>
                             <div class="wizard-field-col">
                                 <label>${escapeHtml(I18N.t('settings.profiles.streaming_idle_timeout', 'Таймаут простоя streaming'))}</label>
-                                <input type="number" id="wizStreamingIdleTimeout" value="${state.streamingIdleTimeoutSec}" min="${TIMEOUT_MIN}" max="${TIMEOUT_MAX}" placeholder="0 = глобальный">
+                                <input type="number" id="wizStreamingIdleTimeout" value="${state.streamingIdleTimeoutSec}" min="${TIMEOUT_MIN}" max="${TIMEOUT_MAX}" placeholder="${streamingIdleTimeoutPlaceholder}">
                             </div>
                         </div>
                         <div class="wizard-field wizard-field-row">
                             <div class="wizard-field-col">
                                 <label>${escapeHtml(I18N.t('settings.profiles.request_timeout', 'Таймаут non-streaming запроса'))}</label>
-                                <input type="number" id="wizRequestTimeout" value="${state.requestTimeoutSec}" min="${TIMEOUT_MIN}" max="${TIMEOUT_MAX}" placeholder="0 = глобальный">
+                                <input type="number" id="wizRequestTimeout" value="${state.requestTimeoutSec}" min="${TIMEOUT_MIN}" max="${TIMEOUT_MAX}" placeholder="${requestTimeoutPlaceholder}">
                             </div>
                             <div class="wizard-field-col">
                                 <label>${escapeHtml(I18N.t('settings.profiles.first_byte_timeout', 'Таймаут первого байта'))}</label>
-                                <input type="number" id="wizFirstByteTimeout" value="${state.firstByteTimeoutSec}" min="${TIMEOUT_MIN}" max="${TIMEOUT_MAX}" placeholder="0 = глобальный">
+                                <input type="number" id="wizFirstByteTimeout" value="${state.firstByteTimeoutSec}" min="${TIMEOUT_MIN}" max="${TIMEOUT_MAX}" placeholder="${firstByteTimeoutPlaceholder}">
                             </div>
                         </div>
                     </div>
@@ -421,6 +488,52 @@
         // Handlers кнопок
         overlay.querySelector('#wizCancel').addEventListener('click', closeWizard);
         overlay.querySelector('#wizSave').addEventListener('click', () => onWizardSave(overlay, isNew));
+
+        // Round 32 #10 (2026-08-10): Reasoning mode toggle handler.
+        // При включении — обновляем placeholder'ы и автоматически заполняем поля
+        // значениями ×3 от heuristic (если они пустые). Пользователь может потом
+        // переопределить вручную. Это UX-улучшение для reasoning моделей, которые
+        // генерят в 3-5x дольше (gemma-4, Qwen3-Instruct с thinking).
+        const reasoningToggle = overlay.querySelector('#wizReasoningMode');
+        const streamInput = overlay.querySelector('#wizStreamingTimeout');
+        const idleInput = overlay.querySelector('#wizStreamingIdleTimeout');
+        function updateReasoningPlaceholders() {
+            const isReasoning = reasoningToggle.checked;
+            const mult = isReasoning ? 3 : 1;
+            const curGb = getModelSizeBytesForName(modelNameInput.value) / (1024*1024*1024) || 3.5;
+            const sAuto = estimateStreamTimeoutGB(curGb) * mult;
+            const iAuto = estimateIdleTimeoutGB(curGb) * mult;
+            streamInput.placeholder = isReasoning
+                ? '0 = auto (' + sAuto + 's = heuristic × 3 reasoning) или задайте явно'
+                : '0 = auto (heuristic 900s для 2-5GB, stats)';
+            idleInput.placeholder = isReasoning
+                ? '0 = auto (' + iAuto + 's = heuristic × 3 reasoning) или задайте явно'
+                : '0 = auto (heuristic 300s для 2-5GB, stats)';
+        }
+        reasoningToggle.addEventListener('change', () => {
+            const wasChecked = !reasoningToggle.checked;
+            const isNowChecked = reasoningToggle.checked;
+            // Если тогглим ON — и поля пустые — заполняем ×3 значениями.
+            if (isNowChecked) {
+                const curGb = getModelSizeBytesForName(modelNameInput.value) / (1024*1024*1024) || 3.5;
+                if (!streamInput.value || parseInt(streamInput.value, 10) === 0) {
+                    streamInput.value = String(estimateStreamTimeoutGB(curGb) * 3);
+                }
+                if (!idleInput.value || parseInt(idleInput.value, 10) === 0) {
+                    idleInput.value = String(estimateIdleTimeoutGB(curGb) * 3);
+                }
+            } else if (wasChecked) {
+                // Тогглим OFF — очищаем поля (пользователь может заново задать).
+                streamInput.value = '';
+                idleInput.value = '';
+            }
+            updateReasoningPlaceholders();
+        });
+        // При смене имени модели в isNew-режиме — обновляем placeholder с новым размером.
+        if (isNew) {
+            modelNameInput.addEventListener('change', updateReasoningPlaceholders);
+        }
+        updateReasoningPlaceholders();  // initial render
 
         // Сохранение по Enter
         overlay.addEventListener('keydown', e => {

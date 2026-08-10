@@ -1259,6 +1259,7 @@ window.I18N_EN = {
   // ===== gguf Settings tab — backend options (per-backend cppworker) =====
   "gguf.backend_options_title": "Backend load options (this cppworker)",
   "gguf.backend_options_desc": "Default llama.cpp load options for the selected backend. Saved to the worker's .env file. Per-model profiles (below) override n_ctx for specific models.",
+  "gguf.backend_options_global_hint": "These parameters are global defaults for all models on this backend. Per-model overrides live in the 'Per-Model Profiles' section below. Available even with no model loaded.",
   "gguf.reload_backend_options": "Reload",
   "gguf.save_backend_options": "Save",
   "gguf.backend_options_loaded": "Backend options loaded",

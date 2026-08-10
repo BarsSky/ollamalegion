@@ -62,6 +62,15 @@ const GgufRenderer = (window.GgufRenderer = (function () {
             autoGpuDistribution: true,
             strategy: 'vram-ratio'
         },
+        // Round 32 #6 (2026-08-10): cache отрендеренного HTML формы Settings.
+        // Без этого фикса refreshDetailPane() (вызывается из active-queries polling
+        // каждые 3 секунды) пересоздавал весь .gguf-detail-content innerHTML,
+        // затирая форму на spinner-плейсхолдер. Пользователь видел форму
+        // на краткий миг, потом она исчезала ("идёт в перезагрузку"). Теперь
+        // renderSettingsPane() использует кэш вместо placeholder, если форма
+        // уже отрендерена для текущего бэкенда. Ключ — backendId, чтобы при
+        // переключении между бэкендами показывалась форма нового бэкенда.
+        _settingsFormHtmlByBackend: {}, // { backendId: { html, cfg } }
         // Reference на текущую DOM-панель для делегированного обработчика кликов.
         // Нужно, чтобы onDetailPanelClick() работал даже после refreshDetailPanel(),
         // который пересоздаёт содержимое панели (но не сам узел #ggufDetailPanel —
@@ -900,6 +909,15 @@ const GgufRenderer = (window.GgufRenderer = (function () {
         const backend = currentBackend();
         const backendId = backend ? Utils.escapeHtml(backend.id) : '';
         const isRegistered = !!(backend && backend.url && backend.url.indexOf('http') === 0 && backend.id && /^(?:[a-z0-9_-]+)$/i.test(backend.id));
+        // Round 32 #6 (2026-08-10): используем кэшированный HTML формы вместо
+        // spinner-плейсхолдера, если форма уже отрендерена для этого бэкенда.
+        // Без этого refreshDetailPane() (вызывается из active-queries polling
+        // каждые 3s) затирал форму на «Loading…», и пользователь видел её
+        // на краткий миг, потом она исчезала.
+        const cached = backend && state._settingsFormHtmlByBackend[backend.id];
+        const backendOptionsInner = cached
+            ? cached.html
+            : '<div class="loading"><i class="fas fa-spinner fa-spin"></i> ' + (window.I18N ? I18N.t('common.loading', 'Loading…') : 'Loading…') + '</div>';
         return '' +
             '<div class="gguf-settings-form">' +
 
@@ -909,11 +927,20 @@ const GgufRenderer = (window.GgufRenderer = (function () {
                     '<i class="fas fa-sliders-h"></i> ' +
                     '<span>' + _('gguf.backend_options_title') + '</span>' +
                 '</h4>' +
-                '<p style="color:var(--text-muted);margin:0 0 12px 0;font-size:12px;">' +
+                '<p style="color:var(--text-muted);margin:0 0 6px 0;font-size:12px;">' +
                     _('gguf.backend_options_desc') +
                 '</p>' +
+                // Round 32 #6 (2026-08-10): disclaimer что это ГЛОБАЛЬНЫЕ дефолты,
+                // которые применяются при загрузке ЛЮБОЙ модели на этом бэкенде.
+                // Per-model overrides — в Per-Model Profiles ниже. Без этого
+                // disclaimer'а пользователи думали что settings «привязаны к
+                // модели» или «не работают без загруженной модели».
+                '<p style="color:var(--text-muted);margin:0 0 12px 0;font-size:11px;font-style:italic;">' +
+                    '<i class="fas fa-info-circle"></i> ' +
+                    Utils.escapeHtml(_('gguf.backend_options_global_hint', 'Эти параметры — глобальные дефолты для всех моделей на бэкенде. Per-model overrides — в секции «Per-Model Profiles» ниже. Доступны даже без загруженной модели.')) +
+                '</p>' +
                 '<div id="ggufBackendOptionsContainer" data-backend-id="' + backendId + '">' +
-                    '<div class="loading"><i class="fas fa-spinner fa-spin"></i> ' + (window.I18N ? I18N.t('common.loading', 'Loading…') : 'Loading…') + '</div>' +
+                    backendOptionsInner +
                 '</div>' +
             '</div>' +
 
@@ -995,7 +1022,13 @@ const GgufRenderer = (window.GgufRenderer = (function () {
             if (!state._loadOptionsCustom[backend.id]) {
                 syncLoadOptionsFromConfig(cfg);
             }
-            container.innerHTML = renderBackendOptionsForm(cfg, backend);
+            // Round 32 #6 (2026-08-10): кэшируем отрендеренный HTML формы, чтобы
+            // он не затирался на spinner-плейсхолдер при последующих
+            // refreshDetailPane() (active-queries polling каждые 3s).
+            const formHtml = renderBackendOptionsForm(cfg, backend);
+            if (!state._settingsFormHtmlByBackend) state._settingsFormHtmlByBackend = {};
+            state._settingsFormHtmlByBackend[backend.id] = { html: formHtml, cfg: cfg, ts: Date.now() };
+            container.innerHTML = formHtml;
             // Привязываем handlers
             const reloadBtn = container.querySelector('#ggufBackendOptionsReload');
             if (reloadBtn) reloadBtn.addEventListener('click', loadAndRenderBackendOptions);

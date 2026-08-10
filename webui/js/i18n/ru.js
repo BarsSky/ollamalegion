@@ -1137,6 +1137,7 @@ window.I18N_RU = {
   // ===== gguf Settings tab — backend options (per-backend cppworker) =====
   "gguf.backend_options_title": "Параметры загрузки бэкенда (этот cppworker)",
   "gguf.backend_options_desc": "Дефолтные параметры llama.cpp для выбранного бэкенда. Сохраняются в .env этого воркера. Per-model профили (ниже) переопределяют n_ctx для конкретных моделей.",
+  "gguf.backend_options_global_hint": "Эти параметры — глобальные дефолты для всех моделей на бэкенде. Per-model overrides — в секции «Per-Model Profiles» ниже. Доступны даже без загруженной модели.",
   "gguf.reload_backend_options": "Перезагрузить",
   "gguf.save_backend_options": "Сохранить",
   "gguf.backend_options_loaded": "Параметры бэкенда загружены",

@@ -375,9 +375,28 @@ const GgufApi = (function () {
         /**
          * Manage model on a registered backend via the balancer API.
          * @param {string} backendId — backend ID (e.g., 'llama_gpu')
-         * @param {string} operation — 'load' or 'unload'
+         * @param {string} operation — 'load' | 'unload' | 'delete' | 'pull' | 'push'
          * @param {string} modelName — model name/path
          * @param {object} [options] — load options (gpuLayers, ctxSize, etc.)
+         * @returns {Promise<object>} — {success, ...} OR raw backend response
+         *
+         * Round 32 #3 fix (2026-08-10): timeout 30s → 5 min for load operation.
+         *
+         * БАГ (до фикса): hardcoded 30s timeout в `setTimeout(controller.abort, 30000)`.
+         * При load крупной модели (gemma-4 5GB → 60-90s, Qwen3-A3B 21GB → 5-10 min)
+         * balancer ждёт ответа от cppworker, потом poll'ит /api/models/load/progress.
+         * Webui таймаутился ЧЕРЕЗ 30s → "aborted" error в UI → пользователь видел
+         * "ошибка загрузки", хотя на cppworker загрузка шла успешно.
+         *
+         * ФИКС: per-operation timeout. Load — 5 min (покрывает gemma-4 + poll loop).
+         * Unload/Delete/Pull — 30s (быстрые операции, 30s достаточно).
+         *
+         * Альтернатива (не выбрана): переход на async ?wait=false endpoint
+         * /api/v1/gguf/backends/{id}/proxy/api/models/load-with-params?wait=false
+         * + SSE progress polling. Реализация сложнее и дублирует уже работающий
+         * progress polling через markLoadingModel/GgufLoadProgress. Поэтому простой
+         * bump timeout — pragmatic fix, согласующийся с balancer'ским pollLoadTimeout
+         * (10 min max) и cppworker'ским async path (возвращает 202 + poll).
          */
         async manageModel(backendId, operation, modelName, options = {}) {
             var balancerUrl = (window.WEBUI_CONFIG && (window.WEBUI_CONFIG.API_BASE_URL || window.WEBUI_CONFIG.API_BASE)) ||
@@ -390,7 +409,9 @@ const GgufApi = (function () {
                 ...options
             };
             const controller = new AbortController();
-            const timer = setTimeout(function () { controller.abort(); }, 30000);
+            // Per-operation timeout: load — 5 min, остальное — 30s.
+            const timeoutMs = (operation === 'load') ? 300000 : 30000;
+            const timer = setTimeout(function () { controller.abort(); }, timeoutMs);
             try {
                 const headers = { 'Content-Type': 'application/json' };
                 if (apiToken) {

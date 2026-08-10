@@ -947,6 +947,13 @@ const GgufRenderer = (window.GgufRenderer = (function () {
     /**
      * Загрузить текущие llama.cpp-дефолты выбранного cppworker'а и отрендерить
      * редактируемую форму внутри #ggufBackendOptionsContainer.
+     *
+     * Round 32 #3 fix (2026-08-10): при успешной загрузке конфига — также
+     * синхронизировать `state.loadOptions` с бэкенд-дефолтами. Без этого фикса
+     * `loadOnSelectedBackend` использовал хардкод `state.loadOptions = {ctxSize:2048,
+     * gpuLayers:-1, batchSize:512}` (см. state-initialization вверху файла),
+     * НЕЗАВИСИМО от того, что показано в форме Settings. После Save пользователь
+     * видел форму с 4096, но клик Load применял 2048 → путаница + silent override.
      */
     async function loadAndRenderBackendOptions() {
         const container = document.getElementById('ggufBackendOptionsContainer');
@@ -960,6 +967,14 @@ const GgufRenderer = (window.GgufRenderer = (function () {
         try {
             const data = await GgufApi.requestViaBackend(backend.id, '/api/v1/cppworker/config');
             const cfg = (data && data.config) || {};
+            // === Round 32 #3: sync state.loadOptions с бэкенд-дефолтами ===
+            // Только если пользователь ещё не настраивал loadOptions для этого backend
+            // (state._loadOptionsCustom[backendId] = true после Save в Settings).
+            // Иначе перезатрём пользовательские настройки при каждом заходе на Settings.
+            if (!state._loadOptionsCustom) state._loadOptionsCustom = {};
+            if (!state._loadOptionsCustom[backend.id]) {
+                syncLoadOptionsFromConfig(cfg);
+            }
             container.innerHTML = renderBackendOptionsForm(cfg, backend);
             // Привязываем handlers
             const reloadBtn = container.querySelector('#ggufBackendOptionsReload');
@@ -982,6 +997,56 @@ const GgufRenderer = (window.GgufRenderer = (function () {
             const retry = document.getElementById('ggufBackendOptionsReload');
             if (retry) retry.addEventListener('click', loadAndRenderBackendOptions);
         }
+    }
+
+    /**
+     * Round 32 #3 (2026-08-10): скопировать значения из бэкенд-конфига в
+     * `state.loadOptions`, чтобы клик "Загрузить модель" использовал актуальные
+     * дефолты, а не хардкод 2048/-1/512.
+     *
+     * Маппинг: cfg.defaultXxx → state.loadOptions.xxx (для loadOnSelectedBackend).
+     * Только те поля, которые реально используются в loadOnSelectedBackend:
+     *   gpuLayers, ctxSize, batchSize, flashAttn, numa, useMmap, autoGpuDistribution, tensorSplit.
+     * Поля вроде defaultNuma/defaultUseMmap (bool) маппятся отдельно от flashAttn (int).
+     */
+    function syncLoadOptionsFromConfig(cfg) {
+        if (!cfg) return;
+        if (cfg.defaultGpuLayers !== undefined && cfg.defaultGpuLayers !== null) {
+            state.loadOptions.gpuLayers = cfg.defaultGpuLayers;
+        }
+        if (cfg.defaultCtxSize !== undefined && cfg.defaultCtxSize !== null) {
+            state.loadOptions.ctxSize = cfg.defaultCtxSize;
+        }
+        if (cfg.defaultBatchSize !== undefined && cfg.defaultBatchSize !== null) {
+            state.loadOptions.batchSize = cfg.defaultBatchSize;
+        }
+        if (cfg.defaultFlashAttnType !== undefined && cfg.defaultFlashAttnType !== null) {
+            // cppworker flash_attn_type: -1=auto, 0=disabled, 1=enabled.
+            // webui loadOptions.flashAttn: bool. Конвертим: 0=false, ≠0=true.
+            state.loadOptions.flashAttn = (cfg.defaultFlashAttnType !== 0);
+        }
+        if (cfg.defaultNuma !== undefined && cfg.defaultNuma !== null) {
+            state.loadOptions.numa = !!cfg.defaultNuma;
+        }
+        if (cfg.defaultUseMmap !== undefined && cfg.defaultUseMmap !== null) {
+            state.loadOptions.useMmap = !!cfg.defaultUseMmap;
+        }
+        if (cfg.autoGpuDistribution !== undefined && cfg.autoGpuDistribution !== null) {
+            state.loadOptions.autoGpuDistribution = !!cfg.autoGpuDistribution;
+        }
+        if (Array.isArray(cfg.defaultTensorSplit) && cfg.defaultTensorSplit.length > 0) {
+            state.loadOptions.tensorSplit = cfg.defaultTensorSplit.join(',');
+        }
+    }
+
+    /**
+     * Round 32 #3 (2026-08-10): пометить, что пользователь явно настроил
+     * loadOptions через Settings.Save. После этого syncLoadOptionsFromConfig
+     * не будет перезатирать пользовательские значения при следующем заходе.
+     */
+    function markLoadOptionsCustom(backendId) {
+        if (!state._loadOptionsCustom) state._loadOptionsCustom = {};
+        state._loadOptionsCustom[backendId] = true;
     }
 
     function renderBackendOptionsForm(cfg, backend) {
@@ -1277,8 +1342,25 @@ const GgufRenderer = (window.GgufRenderer = (function () {
             enableReasoning: !!document.getElementById('ggufOptEnableReasoning').checked,
             reasoningBudget: parseIntOr(document.getElementById('ggufOptReasoningBudget').value, 0)
         };
-        // state.loadOptions для совместимости с локальным кэшем (loadModelAt)
-        state.loadOptions.autoGpuDistribution = !!document.getElementById('ggufOptAutoGpu').checked;
+        // === Round 32 #3 (2026-08-10): полное обновление state.loadOptions ===
+        // Раньше (до фикса) обновлялся только autoGpuDistribution — остальные поля
+        // (gpuLayers/ctxSize/batchSize/flashAttn/numa/useMmap) оставались в state
+        // хардкодными (2048/-1/512), независимо от того, что ввёл пользователь.
+        // Теперь: читаем все поля из формы + помечаем backend как "custom"
+        // (syncLoadOptionsFromConfig не будет их перезатирать при следующем заходе).
+        state.loadOptions.gpuLayers = payload.defaultGpuLayers;
+        state.loadOptions.ctxSize = payload.defaultCtxSize;
+        state.loadOptions.batchSize = payload.defaultBatchSize;
+        // cppworker flash_attn_type: -1=auto, 0=disabled, 1=enabled.
+        // webui loadOptions.flashAttn: bool. Конвертим: 0=false, ≠0=true.
+        state.loadOptions.flashAttn = (payload.defaultFlashAttnType !== 0);
+        state.loadOptions.numa = payload.defaultNuma;
+        state.loadOptions.useMmap = payload.defaultUseMmap;
+        state.loadOptions.autoGpuDistribution = payload.autoGpuDistribution;
+        if (Array.isArray(payload.defaultTensorSplit) && payload.defaultTensorSplit.length > 0) {
+            state.loadOptions.tensorSplit = payload.defaultTensorSplit.join(',');
+        }
+        markLoadOptionsCustom(backend.id);
         const saveBtn = document.getElementById('ggufBackendOptionsSave');
         if (saveBtn) saveBtn.disabled = true;
         try {

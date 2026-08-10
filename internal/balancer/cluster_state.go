@@ -167,6 +167,33 @@ func (p *Proxy) GetClusterState() *types.ClusterState {
 			metrics.LlamaCpp = *lm
 		}
 
+		// --- Round 32 #4 fix (2026-08-10): append LlamaCpp.LoadedModels в metrics.Models ---
+		// До этого фикса `metrics.Models` (используется WebUI Monitor как `b.models`)
+		// строился ТОЛЬКО из `Ollama.RunningModels` (line 127-130). Но для cppworker-бэкенда
+		// (type=llama_cpp) реальные загруженные модели лежат в `LlamaCpp.LoadedModels`,
+		// которые приходят из llamaCppMetricsPoller. Без этого merge — WebUI monitor
+		// показывал "0 models" для cppworker, даже когда Qwen3-Instruct-2507 был загружен
+		// с ctx=4096. Пользователь не мог ни увидеть модель, ни выгрузить её через UI
+		// (action buttons в monitor читали `b.models`).
+		//
+		// Fix: добавляем имена из LlamaCpp.LoadedModels в metrics.Models (с dedup по имени,
+		// на случай если одна и та же модель в обоих списках — например, если cppworker
+		// и Ollama-agent оба видят её). Metrics.Models становится объединённым списком
+		// загруженных моделей из всех источников, что соответствует UX-ожиданию "что
+		// реально загружено на бэкенде".
+		if len(metrics.LlamaCpp.LoadedModels) > 0 {
+			seen := make(map[string]bool, len(metrics.Models))
+			for _, m := range metrics.Models {
+				seen[m] = true
+			}
+			for _, m := range metrics.LlamaCpp.LoadedModels {
+				if m.Name != "" && !seen[m.Name] {
+					metrics.Models = append(metrics.Models, m.Name)
+					seen[m.Name] = true
+				}
+			}
+		}
+
 		// --- WarmingUpModels для монитора ---
 		backendState.mu.Lock()
 		if len(backendState.WarmingUpModels) > 0 {

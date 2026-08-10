@@ -279,8 +279,20 @@ func (r *balancerRegistration) unregister(ctx context.Context, log *zap.SugaredL
 //	"contextSize": 4096, "gpuLayers": -1}
 //
 // Вызывается fire-and-forget; ошибки логируются и не влияют на основной поток.
+//
+// Round 32 #4 fix (2026-08-10): убрал проверку `!r.registered.Load()` (раньше
+// callback слался ТОЛЬКО если cppworker сам зарегистрировался в балансировщике).
+// В bundled-конфиге CPPWORKER_REGISTER_DISABLE=true, cppworker не регистрируется
+// сам — за него это делает Ollama-agent (`cppworker-gpu-bundled-agent` backend).
+// Без этого фикса callback никогда не отправлялся → WebUI monitor ждал 30s
+// poll'а от llamaCppMetricsPoller'а чтобы увидеть новую загруженную модель.
+//
+// Теперь callback шлётся когда указан balancerURL (независимо от
+// CPPWORKER_REGISTER_DISABLE). Backend ID в payload'е (`r.backendID`)
+// совпадает с ID agent-registered backend'а (тот же env var CPPWORKER_BACKEND_ID),
+// так что балансировщик корректно мерджит callback в metrics.
 func (r *balancerRegistration) notifyModelLoaded(modelName string, sizeBytes uint64, contextSize, gpuLayers int) {
-	if r == nil || !r.registered.Load() {
+	if r == nil || r.balancerURL == "" {
 		return
 	}
 	go func() {

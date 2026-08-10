@@ -374,6 +374,10 @@
     if (window.BackendTypeBadges) {
         BackendTypeBadges.enhanceBackendsTable();
     }
+    // Round 32 #4 (2026-08-10): bind delegated click handler для inline Unload buttons
+    // в таблице backends. handler attached ОДИН раз (через _ggufUnloadBound флаг)
+    // чтобы не утекали listeners при каждом refresh'е таблицы.
+    bindUnloadHandlers();
     renderDiskNetwork(bk);
     // B-12: Render backend type switcher on first load
     renderBackendTypeSwitcher();
@@ -546,6 +550,48 @@
 
   }
 
+  // ===== Unload handler (Round 32 #4, 2026-08-10) =====
+  // Delegated click handler для inline Unload buttons в таблице backends.
+  // При клике — вызывает GgufApi.manageModel(backendId, 'unload', modelName)
+  // (тот же path что GGUF page использует) и показывает toast о результате.
+  // При успехе — force refresh монитора (30s poll слишком медленный).
+  function bindUnloadHandlers() {
+    var tbody = document.querySelector('#backendsTable tbody');
+    if (!tbody || tbody._ggufUnloadBound) return;
+    tbody._ggufUnloadBound = true;
+    tbody.addEventListener('click', function(e) {
+      var btn = e.target.closest('.monitor-unload-btn');
+      if (!btn) return;
+      e.preventDefault();
+      e.stopPropagation();
+      var backendId = btn.getAttribute('data-backend');
+      var modelName = btn.getAttribute('data-model');
+      if (!backendId || !modelName) return;
+      if (!window.GgufApi || !window.GgufApi.manageModel) {
+        if (window.showToast) window.showToast('GgufApi not available', 'error');
+        return;
+      }
+      btn.disabled = true;
+      var origHtml = btn.innerHTML;
+      btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i>';
+      if (window.showToast) window.showToast('Unloading ' + modelName + '...', 'info');
+      window.GgufApi.manageModel(backendId, 'unload', modelName).then(function(result) {
+        if (result && result.success === false) {
+          if (window.showToast) window.showToast('Unload failed: ' + (result.error || 'unknown'), 'error');
+        } else {
+          if (window.showToast) window.showToast('Unloaded ' + modelName, 'success');
+          // Force refresh — 30s poll слишком медленный.
+          if (MA && typeof MA.refresh === 'function') MA.refresh();
+        }
+      }).catch(function(err) {
+        if (window.showToast) window.showToast('Unload error: ' + (err && err.message || err), 'error');
+      }).finally(function() {
+        btn.disabled = false;
+        btn.innerHTML = origHtml;
+      });
+    });
+  }
+
   function renderBackends(bk, modelOps) {
     document.getElementById('backendCount').textContent = bk.length;
     var tb = document.querySelector('#backendsTable tbody');
@@ -617,7 +663,24 @@
           return window.Sparkline.render(bid, key, color);
         } catch (e) { return ''; }
       }
-      return '<tr data-backend-type="' + MA.esc(btType) + '"><td><strong>' + MA.esc(b.id) + '</strong>' + typeBadge + '</td><td><span class="badge ' + scs + '">' + b.status + '</span></td><td>' + MA.bar(gu) + ' ' + gu.toFixed(0) + '%' + gpuHidden + '<div class="sl-cell">' + sl(b.id, 'gpu', 'var(--accent)') + '</div></td><td>' + MA.bar(vu) + ' ' + vu.toFixed(0) + '%<div class="sl-cell">' + sl(b.id, 'vram', 'var(--purple-accent)') + '</div></td><td title="' + cpuHint + '">' + MA.bar(cu) + ' ' + cu.toFixed(0) + '%<div class="sl-cell">' + sl(b.id, 'cpu', 'var(--success)') + '</div></td><td>' + MA.bar(ru) + ' ' + ru.toFixed(0) + '%<div class="sl-cell">' + sl(b.id, 'ram', 'var(--warning)') + '</div></td><td class="col-right">' + a + '/' + mr + '</td><td class="col-right">' + (rps > 0 ? rps.toFixed(1) : '-') + '<div class="sl-cell">' + sl(b.id, 'rps', 'var(--info)') + '</div></td><td class="col-right">' + avgRT + '<div class="sl-cell">' + sl(b.id, 'avgRt', 'var(--text-secondary)') + '</div></td><td class="col-right">' + reqCap + '</td><td class="col-right">' + sc + '</td><td style="font-size:11px">' + loadingCell + '</td><td>' + (b.models || []).slice(0, 3).map(function(m) { return '<span class="badge" style="background:rgba(168,85,247,0.12);color:var(--purple-accent);border-color:rgba(168,85,247,0.2)">' + MA.esc(m) + '</span>'; }).join(' ') + '</td><td class="col-right">' + up + '</td></tr>';
+      // === Round 32 #4 (2026-08-10): inline Unload button в Models cell ===
+      // Раньше (до фикса) Monitor показывал бэйджи с именами моделей но без action
+      // buttons — пользователь видел "загружено N моделей" но не мог ничего с этим
+      // сделать прямо из Monitor'а. Приходилось идти на GGUF page → выбирать backend →
+      // кликать Unload там. Теперь inline кнопка ✕ рядом с каждым именем.
+      //
+      // Использует GgufApi.manageModel(backendId, 'unload', modelName) — тот же
+      // path что GGUF page (per-operation timeout, 30s для unload).
+      var modelsCell = (b.models || []).slice(0, 3).map(function(m) {
+        return '<span class="badge" style="background:rgba(168,85,247,0.12);color:var(--purple-accent);border-color:rgba(168,85,247,0.2)">' +
+          MA.esc(m) +
+          ' <button class="monitor-unload-btn" data-backend="' + MA.esc(b.id) + '" data-model="' + MA.esc(m) + '" ' +
+          'title="Unload ' + MA.esc(m) + '" ' +
+          'style="background:transparent;border:none;color:inherit;cursor:pointer;padding:0 2px;font-size:11px;line-height:1;opacity:0.7;">' +
+          '<i class="fas fa-times"></i></button>' +
+        '</span>';
+      }).join(' ');
+      return '<tr data-backend-type="' + MA.esc(btType) + '"><td><strong>' + MA.esc(b.id) + '</strong>' + typeBadge + '</td><td><span class="badge ' + scs + '">' + b.status + '</span></td><td>' + MA.bar(gu) + ' ' + gu.toFixed(0) + '%' + gpuHidden + '<div class="sl-cell">' + sl(b.id, 'gpu', 'var(--accent)') + '</div></td><td>' + MA.bar(vu) + ' ' + vu.toFixed(0) + '%<div class="sl-cell">' + sl(b.id, 'vram', 'var(--purple-accent)') + '</div></td><td title="' + cpuHint + '">' + MA.bar(cu) + ' ' + cu.toFixed(0) + '%<div class="sl-cell">' + sl(b.id, 'cpu', 'var(--success)') + '</div></td><td>' + MA.bar(ru) + ' ' + ru.toFixed(0) + '%<div class="sl-cell">' + sl(b.id, 'ram', 'var(--warning)') + '</div></td><td class="col-right">' + a + '/' + mr + '</td><td class="col-right">' + (rps > 0 ? rps.toFixed(1) : '-') + '<div class="sl-cell">' + sl(b.id, 'rps', 'var(--info)') + '</div></td><td class="col-right">' + avgRT + '<div class="sl-cell">' + sl(b.id, 'avgRt', 'var(--text-secondary)') + '</div></td><td class="col-right">' + reqCap + '</td><td class="col-right">' + sc + '</td><td style="font-size:11px">' + loadingCell + '</td><td>' + modelsCell + '</td><td class="col-right">' + up + '</td></tr>';
     }).join('');
   }
 

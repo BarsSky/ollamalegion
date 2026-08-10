@@ -138,6 +138,28 @@ const MonitorBackends = (() => {
         const netInfo = b.system && b.system.networkRX != null ? `Net: ↓${formatBytes(b.system.networkRX)}/s ↑${formatBytes(b.system.networkTX)}/s` : '';
         const tooltip = [powerLimit, gpuClock, memClock, diskInfo, netInfo].filter(Boolean).join(' | ');
 
+        // === Round 32 #4 (2026-08-10): actions cell с кнопкой Unload ===
+        // Раньше (до фикса) в monitor не было action buttons — пользователь видел
+        // бэйджи с именами моделей но не мог их выгрузить. Теперь для каждой
+        // загруженной модели показывается inline кнопка "✕" (compact variant,
+        // не занимает много места) с data-атрибутами для delegated handler'а.
+        //
+        // Клик вызывает MonitorApp.unloadModel(backendId, modelName) →
+        // GgufApi.manageModel(backendId, 'unload', modelName) → POST /api/v1/backends/{id}/models
+        // (тот же путь что GGUF page использует для unload, но 30s timeout — достаточно).
+        const modelsArr = (b.models || []).slice(0, 3);
+        const modelBadges = modelsArr.map(function(m) {
+            return '<span class="badge" style="background:rgba(168,85,247,0.12);color:var(--purple-accent);border-color:rgba(168,85,247,0.2)">' +
+                MA.esc(m) +
+                // Compact unload button: ✕ (8px шрифт, hover-effect через CSS)
+                ' <button class="monitor-unload-btn" data-backend="' + MA.esc(b.id) + '" data-model="' + MA.esc(m) + '" ' +
+                'title="' + MA.esc((window.I18N ? I18N.t('gguf.unload_model', 'Unload') : 'Unload')) + ' ' + MA.esc(m) + '" ' +
+                'style="background:transparent;border:none;color:inherit;cursor:pointer;padding:0 2px;font-size:11px;line-height:1;opacity:0.7;">' +
+                '<i class="fas fa-times"></i></button>' +
+            '</span>';
+        }).join(' ');
+        const moreModels = (b.models || []).length > 3 ? (' +' + ((b.models || []).length - 3)) : '';
+
         return `<tr data-backend="${MA.esc(b.id)}" title="${MA.esc(tooltip)}">
             <td><strong>${MA.esc(b.id)}</strong> ${hasAgent}</td>
             <td><span class="badge ${scs}">${b.status}</span></td>
@@ -148,7 +170,7 @@ const MonitorBackends = (() => {
             <td class="col-right">${a}/${mr}</td>
             <td class="col-right">${rps > 0 ? rps.toFixed(1) : '-'}</td>
             <td class="col-right">${sc}</td>
-            <td>${(b.models || []).slice(0, 3).map(m => `<span class="badge" style="background:rgba(168,85,247,0.12);color:var(--purple-accent);border-color:rgba(168,85,247,0.2)">${MA.esc(m)}</span>`).join(' ')}</td>
+            <td>${modelBadges}${moreModels}</td>
             <td class="col-right">${up}</td>
             ${loadingCell}
         </tr>`;
@@ -200,12 +222,60 @@ const MonitorBackends = (() => {
         });
     }
 
+    // ===== Unload Handler (Round 32 #4, 2026-08-10) =====
+    // Delegated click handler для кнопок .monitor-unload-btn в таблице.
+    // При клике — вызывает GgufApi.manageModel(backendId, 'unload', modelName)
+    // (тот же path что GGUF page использует) и показывает toast о результате.
+    //
+    // Round 32 #4 fix: раньше (до этого fix'а) в Monitor'е НЕ БЫЛО кнопок unload
+    // — пользователь видел бэйджи с именами моделей но не мог их выгрузить, приходилось
+    // идти на GGUF page → выбрать backend → клик Unload там. Теперь unload доступен
+    // прямо из Monitor'а одним кликом.
+    function bindUnloadHandlers() {
+        const tbody = document.querySelector('#backendsTable tbody');
+        if (!tbody || tbody._ggufUnloadBound) return;
+        tbody._ggufUnloadBound = true;
+        tbody.addEventListener('click', function(e) {
+            const btn = e.target.closest('.monitor-unload-btn');
+            if (!btn) return;
+            e.preventDefault();
+            e.stopPropagation();
+            const backendId = btn.getAttribute('data-backend');
+            const modelName = btn.getAttribute('data-model');
+            if (!backendId || !modelName) return;
+            if (!window.GgufApi || !window.GgufApi.manageModel) {
+                if (window.showToast) window.showToast('GgufApi not available', 'error');
+                return;
+            }
+            // Visual feedback: disable + show spinner пока запрос в полёте
+            btn.disabled = true;
+            const origHtml = btn.innerHTML;
+            btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i>';
+            if (window.showToast) window.showToast('Unloading ' + modelName + '...', 'info');
+            window.GgufApi.manageModel(backendId, 'unload', modelName).then(function(result) {
+                if (result && result.success === false) {
+                    if (window.showToast) window.showToast('Unload failed: ' + (result.error || 'unknown'), 'error');
+                } else {
+                    if (window.showToast) window.showToast('Unloaded ' + modelName, 'success');
+                    // Force refresh монитора — 30s poll слишком медленный.
+                    if (MA && typeof MA.refresh === 'function') MA.refresh();
+                }
+            }).catch(function(err) {
+                if (window.showToast) window.showToast('Unload error: ' + (err && err.message || err), 'error');
+            }).finally(function() {
+                btn.disabled = false;
+                btn.innerHTML = origHtml;
+            });
+        });
+    }
+
     // ===== Public API =====
     return {
         renderTable,
         sort,
         filter,
         setupFilter,
+        bindUnloadHandlers,
         getCurrentSort: () => currentSort,
         getCurrentFilter: () => currentFilter
     };

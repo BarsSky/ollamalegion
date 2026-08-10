@@ -16,7 +16,15 @@ NGINX_CONF="/etc/nginx/conf.d/default.conf"
 : "${LB_PORT:=18080}"
 : "${CPPWORKER_HOST:=cppworker-gpu}"
 : "${CPPWORKER_PORT:=18092}"
-: "${API_TOKEN:=}"
+# === API_TOKEN fallback chain (Round 32 #7, 2026-08-10) ===
+# Исторически compose files используют `API_TOKEN`, но некоторые операторы
+# (и я сам при ручном docker run) задают `WEBUI_API_TOKEN` — оба варианта
+# должны работать. Приоритет: API_TOKEN > WEBUI_API_TOKEN (для обратной
+# совместимости с compose-файлами, которые уже передают API_TOKEN).
+# Без этого fallback'а webui стартует с пустым токеном и все proxy-запросы
+# (load/save/unload/config update) получают HTTP 401 от balancer'а, и
+# пользователь видит "ошибка при сохранении настроек".
+: "${API_TOKEN:=${WEBUI_API_TOKEN:=$LB_API_TOKEN:=$BALANCER_API_TOKEN:=}}"
 : "${REFRESH_INTERVAL:=5000}"
 : "${MAX_RECONNECT_ATTEMPTS:=10}"
 : "${RECONNECT_INTERVAL_BASE:=3000}"
@@ -75,6 +83,22 @@ echo "  REFRESH_INTERVAL=$REFRESH_INTERVAL"
 echo "  VERSION=$VERSION"
 echo "  GIT_COMMIT=$GIT_COMMIT"
 echo "  BUILD_DATE=$BUILD_DATE"
+
+# === Sanity check: предупредить если API_TOKEN пустой ===
+# Без токена все proxy-запросы к balancer'у возвращают HTTP 401
+# (см. Round 32 #7). Запуск webui с пустым токеном — типичный
+# операционный баг, лучше показать warning сразу в логах контейнера.
+if [ -z "$API_TOKEN" ]; then
+    echo ""
+    echo "============================================================"
+    echo "  WARNING: API_TOKEN is EMPTY"
+    echo "  Все запросы к balancer'у (load/save/unload/config update)"
+    echo "  будут возвращать HTTP 401 'invalid or missing API token'."
+    echo "  Передай -e API_TOKEN=<value> при docker run или установи"
+    echo "  в .env / compose. Entrypoint также принимает WEBUI_API_TOKEN"
+    echo "  и BALANCER_API_TOKEN как fallback."
+    echo "============================================================"
+fi
 
 # 3. Запуск nginx (передаём аргументы CMD)
 exec "$@"

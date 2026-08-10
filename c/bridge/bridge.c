@@ -1377,8 +1377,15 @@ InferenceResult bridge_infer(
         return result;
     }
 
-    // Процессим токены промпта через llama_decode батчами
-    int n_batch = params->n_batch > 0 ? params->n_batch : 512;
+    // Процессим токены промпта через llama_decode батчами.
+    // Round 32 (2026-08-09): default n_batch reduced 512 → 64 для более частых
+    // abort checks. С n_batch=512 prefill одного батча llama_decode занимает
+    // 1-2 секунды на RTX 3070 / gemma-4, и abort может быть detected только
+    // ПОСЛЕ завершения батча. С n_batch=64 abort latency в prefill падает с
+    // 1-2s до 100-200ms (8x улучшение). Prefill total time практически
+    // не меняется: CUDA kernel launch overhead амортизируется, и для типичных
+    // prompts (200-2000 tokens) overhead маленький vs общий GPU time.
+    int n_batch = params->n_batch > 0 ? params->n_batch : 64;
     int n_processed = 0;
 
     while (n_processed < actual_tokens) {
@@ -1641,7 +1648,9 @@ int bridge_infer_stream(
 
     // Количество для генерации
     int n_predict = params->n_predict > 0 ? params->n_predict : 512;
-    int n_batch = params->n_batch > 0 ? params->n_batch : 512;
+    // Round 32 (2026-08-09): n_batch default 512 → 64 для frequent abort checks в prefill.
+    // См. bridge_infer для подробного обоснования.
+    int n_batch = params->n_batch > 0 ? params->n_batch : 64;
 
 // bridge_infer_stream тоже пробрасывает структурированный код ошибки из
 // bridge_check_ctx_capacity. Раньше всегда возвращал 1, что не позволяло

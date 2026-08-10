@@ -79,7 +79,8 @@ func DefaultGenerationParams() GenerationParams {
 	return GenerationParams{
 		NPredict:         2048, // уменьшен с 4096 (Phase D.6): см. c/bridge/bridge.go
 		NKeep:            0,
-		NBatch:           512,
+		// Round 32 (2026-08-09): n_batch default 512 → 64. См. c/bridge/bridge.go.
+		NBatch:           64,
 		Temperature:      0.7,
 		TopP:             0.9,
 		TopK:             40.0,

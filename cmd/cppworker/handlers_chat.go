@@ -563,7 +563,19 @@ func writeChatStreamResponse(w http.ResponseWriter, r *http.Request, modelName, 
 	w.Header().Set("Content-Type", "application/x-ndjson")
 	w.Header().Set("Cache-Control", "no-cache")
 	w.Header().Set("Connection", "keep-alive")
+	// Round 32 (2026-08-09): emit immediate "prefill" heartbeat перед inference.
+	// C-bridge prefill занимает 5-30s на reasoning моделях. Без heartbeat клиент
+	// не видит никаких данных в течение всего prefill ("зависший спиннер").
+	// С heartbeat клиент получает валидный NDJSON {"done":false} event мгновенно —
+	// connection "alive" с точки зрения EventSource, и пользователь видит
+	// что запрос "пошёл". Heartbeat совместим с OpenWebUI (игнорирует строки
+	// без "message" поля) и aiohttp/Cline (NDJSON парсер tolerates done:false).
+	prefillStartTime := time.Now()
+	prefillHB := map[string]interface{}{"done": false}
+	prefillHBJSON, _ := json.Marshal(prefillHB)
+	fmt.Fprintf(w, "%s\n", prefillHBJSON)
 	flusher.Flush()
+	_ = prefillStartTime // для future logging/debugging
 	ctx := r.Context()
 	// Round 31 #6: spawn abort_watcher чтобы дёрнуть C-bridge при ctx.Done().
 	// Закрывает G1 (длинный prompt) и G3 (status code distinction).

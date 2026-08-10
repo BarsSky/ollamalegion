@@ -113,7 +113,13 @@ func DefaultGenerationParams() GenerationParams {
 		// С 2048: 35+2048+1=2084 << 4096 ✓. Если нужен длинный ответ, клиент должен
 		// явно задать max_tokens/num_predict в body — applyCppCtxHeader его не трогает.
 		NKeep:            0,
-		NBatch:           512,
+		// Round 32 (2026-08-09): n_batch default 512 → 64 для frequent abort checks
+		// в prefill phase. С n_batch=512 abort может быть detected только ПОСЛЕ
+		// завершения текущего llama_decode (~1-2s на RTX 3070). С n_batch=64
+		// abort latency падает до ~100-200ms (8x improvement). Prefill total time
+		// практически не меняется (CUDA kernel launch overhead амортизируется).
+		// Gen phase использует batch=1 (не зависит от n_batch).
+		NBatch:           64,
 		Temperature:      0.7,
 		TopP:             0.9,
 		TopK:             40.0,

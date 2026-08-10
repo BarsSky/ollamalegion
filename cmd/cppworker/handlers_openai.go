@@ -771,6 +771,17 @@ func writeOpenAIChatStream(w http.ResponseWriter, r *http.Request, modelName, pr
 	w.Header().Set("Cache-Control", "no-cache")
 	w.Header().Set("Connection", "keep-alive")
 	w.WriteHeader(http.StatusOK)
+	// Round 32 (2026-08-09): emit "thinking" SSE comment immediately после headers.
+	// C-bridge prefill (особенно для reasoning моделей типа gemma-4) занимает 5-30s
+	// на больших prompts. Без этой строки клиент получает headers + 0 байт данных
+	// в течение всего prefill. С этой строкой клиент получает валидный SSE event
+	// сразу — connection "alive" с точки зрения EventSource клиента (Cline/OpenWebUI).
+	// Это не ускоряет сам prefill, но РАДИКАЛЬНО улучшает UX: пользователь видит
+	// что запрос "пошёл" вместо "зависшего спиннера на 8+ секунд".
+	// SSE comments (lines starting with `:`) per RFC spec §4.4 — клиенты игнорируют
+	// но используют как keep-alive signal.
+	prefillStartTime := time.Now()
+	fmt.Fprintf(w, ": prefill_started_at=%s\n\n", prefillStartTime.Format(time.RFC3339Nano))
 	flusher.Flush()
 
 	ctx := r.Context()

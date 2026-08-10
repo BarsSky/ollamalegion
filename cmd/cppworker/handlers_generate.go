@@ -616,6 +616,12 @@ func writeOllamaStream(w http.ResponseWriter, r *http.Request, modelName, prompt
 	w.Header().Set("Content-Type", "application/x-ndjson")
 	w.Header().Set("Cache-Control", "no-cache")
 	w.Header().Set("Connection", "keep-alive")
+	// Round 32 (2026-08-09): emit immediate prefill heartbeat для /api/generate.
+	// NDJSON {"done":false} — клиент видит что запрос "пошёл" сразу,
+	// не дожидаясь 5-30s C-bridge prefill. См. handlers_chat.go для подробностей.
+	prefillHB := map[string]interface{}{"done": false}
+	prefillHBJSON, _ := json.Marshal(prefillHB)
+	fmt.Fprintf(w, "%s\n", prefillHBJSON)
 	flusher.Flush()
 	// Round 31 #6: abort_watcher для ollama-generate streaming.
 	if handle, ok := backend.GetHandle(modelName); ok {

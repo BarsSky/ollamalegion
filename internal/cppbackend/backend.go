@@ -1541,6 +1541,32 @@ func (b *Backend) GetModel(name string) (*ModelInfo, error) {
 	return &info, nil
 }
 
+// GetModelByPath — Round 32 #8 (2026-08-10): ищет загруженную модель по file path.
+// Используется handler'ом для dedup ПЕРЕД async load — чтобы вернуть
+// "already_loaded" пользователю, а не 202 + background error.
+//
+// Раньше: handler возвращал 202 + spawn'ил background load. LoadModelWithOpts
+// внутри goroutine делал dedup check (если path уже загружен) — НО response
+// уже был отправлен, и dedup просто логировался как error в фоне. Пользователь
+// не знал, что его запрос был dedup'нут, и видел "loading" статус на UI
+// (который никогда не становился "loaded", потому что реально load не шёл).
+func (b *Backend) GetModelByPath(path string) (existingName string, info *ModelInfo, found bool) {
+	if path == "" {
+		return "", nil, false
+	}
+	b.mu.RLock()
+	defer b.mu.RUnlock()
+	for name, inst := range b.models {
+		if inst.info.Path == path {
+			infoCopy := inst.info
+			infoCopy.ActiveQueries = b.getActiveQueries(inst)
+			infoCopy.LastUsedAt = b.getLastUsedAt(inst)
+			return name, &infoCopy, true
+		}
+	}
+	return "", nil, false
+}
+
 // GetHandle — Round 31 #6 (2026-08-09): возвращает *bridge.ModelHandle
 // для загруженной модели. Используется abort_watcher (cmd/cppworker/abort_watcher.go)
 // для проброса в bridge.RequestAbort при ctx.Done.

@@ -209,6 +209,24 @@ func handleLoadModel(w http.ResponseWriter, r *http.Request) {
 	// Это решает проблему gemma-4 (5GB, 60-90s load): клиент больше не
 	// отваливается по таймауту, т.к. HTTP-запрос завершается за <100ms.
 	if !waitSync {
+		// Round 32 #8 (2026-08-10): dedup-by-path check ПЕРЕД writeLoadAccepted.
+		// Без этого async path возвращал 202 + spawn'ил background goroutine
+		// которая делала dedup check — но response уже отправлен, dedup
+		// логировался как error в фоне. Пользователь видел "loading" статус
+		// в UI, который никогда не становился "loaded" (потому что реально
+		// load не шёл). Теперь: если same path уже загружен — return 200 OK
+		// с status=already_loaded сразу, без spawn'а background goroutine.
+		if existingName, existingInfo, found := backend.GetModelByPath(modelPath); found {
+			logger.Get().Infow("handleLoadModel: dedup by path (async path, pre-check)",
+				"requested_name", modelName, "existing_name", existingName, "path", modelPath)
+			writeJSON(w, http.StatusOK, map[string]interface{}{
+				"status":  "already_loaded",
+				"model":   existingInfo,
+				"dedup":   true,
+				"message": fmt.Sprintf("model already loaded as %q (same file path)", existingName),
+			})
+			return
+		}
 		var sizeBytes int64
 		if fi, statErr := os.Stat(modelPath); statErr == nil {
 			sizeBytes = fi.Size()
@@ -598,6 +616,19 @@ func handleLoadWithParams(w http.ResponseWriter, r *http.Request) {
 
 	// Round 24 (2026-08-04): динамический timeout (async по умолчанию).
 	if !waitSync {
+		// Round 32 #8 (2026-08-10): dedup-by-path check ПЕРЕД writeLoadAccepted.
+		// См. handleLoadModel для деталей.
+		if existingName, existingInfo, found := backend.GetModelByPath(modelPath); found {
+			logger.Get().Infow("handleLoadWithParams: dedup by path (async path, pre-check)",
+				"requested_name", modelName, "existing_name", existingName, "path", modelPath)
+			writeJSON(w, http.StatusOK, map[string]interface{}{
+				"status":  "already_loaded",
+				"model":   existingInfo,
+				"dedup":   true,
+				"message": fmt.Sprintf("model already loaded as %q (same file path)", existingName),
+			})
+			return
+		}
 		var sizeBytes int64
 		if fi, statErr := os.Stat(modelPath); statErr == nil {
 			sizeBytes = fi.Size()

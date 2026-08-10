@@ -49,25 +49,25 @@
     const TIMEOUT_MIN = 0;
     const TIMEOUT_MAX = 24 * 3600; // 24ч максимум
 
-    // Round 32 #10 (2026-08-10): JS port of balancer's EstimateStreamTimeoutFromModelSize
+    // Round 32 #11 (2026-08-10): JS port of balancer's EstimateStreamTimeoutFromModelSize
     // / EstimateIdleTimeoutFromModelSize (internal/balancer/model_latency_tracker.go,
-    // Round 32 #9 bumps). Used for placeholder hints in the wizard.
+    // Round 32 #9 + #11 bumps). Used for placeholder hints in the wizard.
     // ДЕРЖИТЕ В СИНХРОНЕ с Go-кодом — при изменении tier'ов в Go менять и здесь.
     function estimateStreamTimeoutGB(gb) {
         if (gb <= 0) return 0;
         if (gb < 2.0) return 120;
-        if (gb < 5.0) return 900;   // reasoning-capable: gemma-4, Qwen3-8B
-        if (gb < 12.0) return 1200; // 8-20B
-        if (gb < 24.0) return 1800; // 20-40B
-        return 2400;                 // >40B
+        if (gb < 5.0) return 1800;  // reasoning-capable 4-8B (gemma-4, Qwen3-8B), 30 min
+        if (gb < 12.0) return 2400; // reasoning 8-20B, 40 min
+        if (gb < 24.0) return 3600; // 20-40B, 60 min
+        return 5400;                 // >40B, 90 min
     }
     function estimateIdleTimeoutGB(gb) {
         if (gb <= 0) return 0;
         if (gb < 2.0) return 120;
-        if (gb < 5.0) return 300;
-        if (gb < 12.0) return 600;
-        if (gb < 24.0) return 900;
-        return 1200;
+        if (gb < 5.0) return 600;   // reasoning 4-8B, 10 min pause
+        if (gb < 12.0) return 1200; // 8-20B, 20 min
+        if (gb < 24.0) return 1800; // 20-40B, 30 min
+        return 2400;                 // >40B, 40 min
     }
 
     // Достаём размер модели из window.CPPWORKER_LOADED_MODELS (если уже загружена)
@@ -299,11 +299,11 @@
         const streamAuto = estimateStreamTimeoutGB(ggufSizeGB) * reasoningMult;
         const idleAuto = estimateIdleTimeoutGB(ggufSizeGB) * reasoningMult;
         const streamingTimeoutPlaceholder = state.reasoningMode
-            ? '0 = auto (2700s × 3 reasoning) или задайте явно'
-            : '0 = auto (heuristic 900s для 2-5GB, stats)';
+            ? '0 = auto (5400s × 3 reasoning) или задайте явно'
+            : '0 = auto (heuristic 1800s для 2-5GB, stats)';
         const streamingIdleTimeoutPlaceholder = state.reasoningMode
-            ? '0 = auto (900s × 3 reasoning) или задайте явно'
-            : '0 = auto (heuristic 300s для 2-5GB, stats)';
+            ? '0 = auto (1800s × 3 reasoning) или задайте явно'
+            : '0 = auto (heuristic 600s для 2-5GB, stats)';
         const requestTimeoutPlaceholder = '0 = global (default 600s)';
         const firstByteTimeoutPlaceholder = '0 = global (default 120s)';
 
@@ -505,10 +505,10 @@
             const iAuto = estimateIdleTimeoutGB(curGb) * mult;
             streamInput.placeholder = isReasoning
                 ? '0 = auto (' + sAuto + 's = heuristic × 3 reasoning) или задайте явно'
-                : '0 = auto (heuristic 900s для 2-5GB, stats)';
+                : '0 = auto (heuristic 1800s для 2-5GB, stats)';
             idleInput.placeholder = isReasoning
                 ? '0 = auto (' + iAuto + 's = heuristic × 3 reasoning) или задайте явно'
-                : '0 = auto (heuristic 300s для 2-5GB, stats)';
+                : '0 = auto (heuristic 600s для 2-5GB, stats)';
         }
         reasoningToggle.addEventListener('change', () => {
             const wasChecked = !reasoningToggle.checked;

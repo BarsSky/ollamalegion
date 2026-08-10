@@ -14,6 +14,8 @@ func errorsAs(err error, target interface{}) bool {
 }
 
 // TestEstimateIdleTimeoutFromModelSize — эвристика idle timeout по размеру модели.
+// Round 32 #11 (2026-08-10): bumped 2-5GB 300s → 600s and 5-12GB 600s → 1200s
+// (30-40 min reasoning prompts на 4-8B Q4_K_M).
 // Round 32 #9 (2026-08-10): bumped 2-5GB 180s → 300s and 5-12GB 300s → 600s
 // (reasoning-capable models: gemma-4, Qwen3-Instruct with reasoning=on).
 func TestEstimateIdleTimeoutFromModelSize(t *testing.T) {
@@ -26,11 +28,11 @@ func TestEstimateIdleTimeoutFromModelSize(t *testing.T) {
 		{"zero size", 0, 0, true},
 		{"negative size", -1, 0, true},
 		{"tiny 1GB", 1, 120 * time.Second, false},
-		{"small 3GB Q4_K_M 7B", 3.5, 300 * time.Second, false},
-		{"medium 8GB Q4_K_M 13B", 8, 600 * time.Second, false},
-		{"large 16GB Q4_K_M 27B", 16, 900 * time.Second, false},
-		{"xl 40GB Q4_K_M 70B", 40, 1200 * time.Second, false},
-		{"huge 100GB Q2_K 200B", 100, 1200 * time.Second, false},
+		{"small 3GB Q4_K_M 7B", 3.5, 600 * time.Second, false},
+		{"medium 8GB Q4_K_M 13B", 8, 1200 * time.Second, false},
+		{"large 16GB Q4_K_M 27B", 16, 1800 * time.Second, false},
+		{"xl 40GB Q4_K_M 70B", 40, 2400 * time.Second, false},
+		{"huge 100GB Q2_K 200B", 100, 2400 * time.Second, false},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -49,6 +51,9 @@ func TestEstimateIdleTimeoutFromModelSize(t *testing.T) {
 }
 
 // TestEstimateStreamTimeoutFromModelSize — эвристика общего stream timeout.
+// Round 32 #11 (2026-08-10): bumped 2-5GB 900s → 1800s (30 min) and 5-12GB
+// 1200s → 2400s (40 min). Live test показал что gemma-4 с длинным
+// reasoning + HTML output требует 30+ мин на 4B Q4_K_M @ RTX 3070.
 // Round 32 #9 (2026-08-10): bumped 2-5GB 300s → 900s and 5-12GB 600s → 1200s
 // for reasoning-capable models. gemma-4 4.64GB was generating 16+ min on
 // reasoning prompts; 5 min cap truncated mid-stream.
@@ -59,10 +64,10 @@ func TestEstimateStreamTimeoutFromModelSize(t *testing.T) {
 		wantMin time.Duration
 	}{
 		{"small 1GB", 1, 120 * time.Second},
-		{"reasoning 4.6GB gemma-4", 4.6, 900 * time.Second},
-		{"medium 8GB", 8, 1200 * time.Second},
-		{"large 16GB", 16, 1800 * time.Second},
-		{"xl 40GB", 40, 2400 * time.Second},
+		{"reasoning 4.6GB gemma-4", 4.6, 1800 * time.Second},
+		{"medium 8GB", 8, 2400 * time.Second},
+		{"large 16GB", 16, 3600 * time.Second},
+		{"xl 40GB", 40, 5400 * time.Second},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -76,21 +81,21 @@ func TestEstimateStreamTimeoutFromModelSize(t *testing.T) {
 
 // TestGetOrComputeIdleTimeout_Heuristic — Tier 3 (эвристика по размеру)
 // для моделей без per-model profile и без истории генерации.
-// Round 32 #9 (2026-08-10): bumped 8GB tier from ≥300s to ≥600s.
+// Round 32 #11 (2026-08-10): bumped 20GB from ≥900s to ≥1800s, 8GB from ≥600s to ≥1200s.
 func TestGetOrComputeIdleTimeout_Heuristic(t *testing.T) {
 	tracker := NewModelLatencyTracker()
 
-	// 20GB модель без profile → должна получить ≥900s по эвристике (Round 32 #9).
+	// 20GB модель без profile → должна получить ≥1800s по эвристике (Round 32 #11).
 	modelSize := int64(20 * 1024 * 1024 * 1024)
 	got := tracker.GetOrComputeIdleTimeout("big-model", 0, 120, modelSize)
-	if got < 900*time.Second {
-		t.Errorf("20GB model heuristic idle timeout: got %v, want >= 900s", got)
+	if got < 1800*time.Second {
+		t.Errorf("20GB model heuristic idle timeout: got %v, want >= 1800s", got)
 	}
 
-	// 8GB модель → ≥600s (Round 32 #9: 300s → 600s).
+	// 8GB модель → ≥1200s (Round 32 #11: 600s → 1200s).
 	got = tracker.GetOrComputeIdleTimeout("medium-model", 0, 120, int64(8*1024*1024*1024))
-	if got < 600*time.Second {
-		t.Errorf("8GB model heuristic: got %v, want >= 600s", got)
+	if got < 1200*time.Second {
+		t.Errorf("8GB model heuristic: got %v, want >= 1200s", got)
 	}
 
 	// 1GB модель → ≥120s (default).

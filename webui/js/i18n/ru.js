@@ -1143,6 +1143,8 @@ window.I18N_RU = {
   "gguf.backend_options_saved": "Параметры бэкенда сохранены",
   "gguf.backend_options_load_error": "Не удалось загрузить параметры бэкенда",
   "gguf.backend_options_save_error": "Не удалось сохранить параметры бэкенда",
+  "gguf.config_load_failed": "Не удалось загрузить параметры бэкенда",
+  "gguf.config_check_cppworker": "Проверьте: docker ps (cppworker запущен?), CppWorker endpoint доступен через balancer proxy.",
   "gguf.flash_attn_type": "Тип Flash Attention",
   "gguf.flash_attn_type_desc": "0=выкл, 1=авто, 2=вкл. cppworker пишет это как LLAMA_FLASH_ATTN_TYPE.",
   "gguf.n_threads": "Потоки (n_threads)",

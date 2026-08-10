@@ -954,6 +954,15 @@ const GgufRenderer = (window.GgufRenderer = (function () {
      * gpuLayers:-1, batchSize:512}` (см. state-initialization вверху файла),
      * НЕЗАВИСИМО от того, что показано в форме Settings. После Save пользователь
      * видел форму с 4096, но клик Load применял 2048 → путаница + silent override.
+     *
+     * Round 32 #5 fix (2026-08-10): добавлен elapsed-time в loading spinner
+     * и более информативный error message. Без этого пользователь видел
+     * "infinite loading" когда cppworker был недоступен (10s+ balancer retry
+     * с backoff 1+2+4=7s + сам connect timeout 90s) — общий fetch timeout
+     * webui (10s) не успевал abort'ить запрос, и спиннер крутился пока
+     * balancer не возвращал 502 (10-12s). Теперь показывается "(прошло Xs)"
+     * каждые 2 секунды + понятное сообщение об ошибке с подсказкой проверить
+     * статус cppworker контейнера.
      */
     async function loadAndRenderBackendOptions() {
         const container = document.getElementById('ggufBackendOptionsContainer');
@@ -963,14 +972,25 @@ const GgufRenderer = (window.GgufRenderer = (function () {
             container.innerHTML = '<div class="gguf-empty-state">' + (window.I18N ? I18N.t('gguf.no_backend_selected') : '') + '</div>';
             return;
         }
-        container.innerHTML = '<div class="loading"><i class="fas fa-spinner fa-spin"></i> ' + (window.I18N ? I18N.t('common.loading', 'Loading…') : 'Loading…') + '</div>';
+        const t0 = Date.now();
+        // Spinner с elapsed-time обновлением каждые 2s. Если load >5s — пользователь
+        // видит "Loading... (5s)" вместо "вечно крутящегося спиннера".
+        let elapsedTimer = null;
+        function updateSpinner() {
+            const elapsed = ((Date.now() - t0) / 1000).toFixed(1);
+            container.innerHTML = '<div class="loading"><i class="fas fa-spinner fa-spin"></i> ' +
+                Utils.escapeHtml(_('common.loading', 'Loading…')) + ' (' + elapsed + 's)' +
+                '<div style="margin-top:4px;font-size:11px;color:var(--text-muted);">' +
+                Utils.escapeHtml(backend.id) +
+                '</div></div>';
+        }
+        updateSpinner();
+        elapsedTimer = setInterval(updateSpinner, 2000);
         try {
             const data = await GgufApi.requestViaBackend(backend.id, '/api/v1/cppworker/config');
+            if (elapsedTimer) clearInterval(elapsedTimer);
             const cfg = (data && data.config) || {};
             // === Round 32 #3: sync state.loadOptions с бэкенд-дефолтами ===
-            // Только если пользователь ещё не настраивал loadOptions для этого backend
-            // (state._loadOptionsCustom[backendId] = true после Save в Settings).
-            // Иначе перезатрём пользовательские настройки при каждом заходе на Settings.
             if (!state._loadOptionsCustom) state._loadOptionsCustom = {};
             if (!state._loadOptionsCustom[backend.id]) {
                 syncLoadOptionsFromConfig(cfg);
@@ -981,18 +1001,36 @@ const GgufRenderer = (window.GgufRenderer = (function () {
             if (reloadBtn) reloadBtn.addEventListener('click', loadAndRenderBackendOptions);
             const saveBtn = container.querySelector('#ggufBackendOptionsSave');
             if (saveBtn) saveBtn.addEventListener('click', saveBackendOptions);
-            showToast(_('gguf.backend_options_loaded'), 'success');
+            const elapsedSec = ((Date.now() - t0) / 1000).toFixed(1);
+            showToast(_('gguf.backend_options_loaded') + ' (' + elapsedSec + 's)', 'success');
         } catch (e) {
+            if (elapsedTimer) clearInterval(elapsedTimer);
+            const elapsedSec = ((Date.now() - t0) / 1000).toFixed(1);
+            const errMsg = e && e.message ? e.message : String(e);
+            // Расширенный error message: показываем что случилось + подсказку.
+            // До этого фикса пользователь видел "aborted/timeout" без объяснений
+            // и думал что это "infinite loading" (спиннер висел до timeout).
             container.innerHTML =
-                '<div class="gguf-empty-state" style="color:var(--danger);">' +
-                    '<i class="fas fa-exclamation-triangle"></i> ' +
-                    Utils.escapeHtml(e.message || String(e)) +
-                    '<br><small>' + Utils.escapeHtml(_('gguf.config_unavailable')) + '</small>' +
-                '</div>' +
-                '<div style="margin-top:8px;">' +
-                    '<button class="btn btn-secondary btn-sm" id="ggufBackendOptionsReload">' +
-                        '<i class="fas fa-sync"></i> ' + Utils.escapeHtml(_('gguf.reload_backend_options')) +
-                    '</button>' +
+                '<div class="gguf-empty-state" style="color:var(--danger);padding:12px;">' +
+                    '<div style="display:flex;align-items:center;gap:8px;margin-bottom:8px;">' +
+                        '<i class="fas fa-exclamation-triangle"></i>' +
+                        '<strong>' + Utils.escapeHtml(_('gguf.config_load_failed', 'Не удалось загрузить параметры бэкенда')) + '</strong>' +
+                    '</div>' +
+                    '<div style="font-family:monospace;font-size:11px;background:rgba(0,0,0,0.2);padding:8px;border-radius:4px;margin-bottom:8px;word-break:break-all;">' +
+                        Utils.escapeHtml(errMsg) +
+                    '</div>' +
+                    '<div style="font-size:12px;color:var(--text-muted);margin-bottom:8px;">' +
+                        Utils.escapeHtml(_('gguf.config_unavailable')) + '<br>' +
+                        Utils.escapeHtml(_('gguf.config_check_cppworker', 'Проверьте: docker ps (cppworker запущен?), CppWorker endpoint доступен через balancer proxy.')) +
+                    '</div>' +
+                    '<div style="display:flex;gap:6px;">' +
+                        '<button class="btn btn-secondary btn-sm" id="ggufBackendOptionsReload">' +
+                            '<i class="fas fa-sync"></i> ' + Utils.escapeHtml(_('gguf.reload_backend_options')) +
+                        '</button>' +
+                        '<span style="font-size:11px;color:var(--text-muted);align-self:center;">' +
+                            '(' + elapsedSec + 's)' +
+                        '</span>' +
+                    '</div>' +
                 '</div>';
             const retry = document.getElementById('ggufBackendOptionsReload');
             if (retry) retry.addEventListener('click', loadAndRenderBackendOptions);

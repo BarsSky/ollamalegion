@@ -1265,6 +1265,8 @@ window.I18N_EN = {
   "gguf.backend_options_saved": "Backend options saved",
   "gguf.backend_options_load_error": "Failed to load backend options",
   "gguf.backend_options_save_error": "Failed to save backend options",
+  "gguf.config_load_failed": "Failed to load backend options",
+  "gguf.config_check_cppworker": "Check: docker ps (is cppworker running?), CppWorker endpoint reachable via balancer proxy.",
   "gguf.flash_attn_type": "Flash Attention Type",
   "gguf.flash_attn_type_desc": "0=disabled, 1=auto, 2=enabled. The cppworker writes this as LLAMA_FLASH_ATTN_TYPE.",
   "gguf.n_threads": "Threads (n_threads)",

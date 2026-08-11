@@ -162,7 +162,23 @@ func ApplyCppCtxHeaderWithOptions(r *http.Request, params *bridge.GenerationPara
 func defaultAntipromptsForModel(modelName string) []string {
 	ml := strings.ToLower(modelName)
 	switch {
+	case strings.Contains(ml, "gemma-4") || strings.Contains(ml, "gemma4"):
+		// Round 32 #27 (2026-08-11): gemma-4 в reasoning mode может emit'ить
+		// литерал "<end_of_turn>" как часть reasoning (например, когда
+		// модель обсуждает stop-токены в своих мыслях). Это вызывало
+		// преждевременную остановку gen на ~85 токенах (вместо ожидаемых
+		// 4K), finish_reason="stop" + пустой content. User видел обрыв
+		// ответа посередине code block.
+		//
+		// Решение: убрать "<end_of_turn>" из antiprompts для gemma-4.
+		// Оставляем только "<start_of_turn>user/model" — это **точно**
+		// означает что ход ассистента завершён и пошёл следующий turn.
+		// На "<end_of_turn>" модель остановится через n_predict лимит
+		// или явный EOG token в C-bridge.
+		return []string{"<start_of_turn>user", "<start_of_turn>model"}
 	case strings.Contains(ml, "gemma"):
+		// gemma-2 и более старые (без reasoning) — оставляем "<end_of_turn>"
+		// для нормальной остановки хода ассистента.
 		return []string{"<end_of_turn>", "<start_of_turn>user", "<start_of_turn>model"}
 	case strings.Contains(ml, "qwen3"), strings.Contains(ml, "qwen35"),
 		strings.Contains(ml, "qwen2"):

@@ -1002,6 +1002,11 @@ func writeOpenAIChatStream(w http.ResponseWriter, r *http.Request, modelName, pr
 		// корректно отображать think-блок и видимый ответ раздельно.
 		if rsIsReasoning {
 			reasoningDelta, contentDelta := rsParser.Feed(token)
+			// Round 32 #18 (2026-08-11): workaround для gemma-4 Q4_K_M detokenizer.
+			// C-bridge отдаёт literal `\\n` (2 chars) вместо LF (1 char).
+			// Заменяем ДО эмита в SSE для правильного отображения.
+			reasoningDelta = strings.ReplaceAll(reasoningDelta, `\\n`, "\n")
+			contentDelta = strings.ReplaceAll(contentDelta, `\\n`, "\n")
 
 			// Header-chunk: первый чанк содержит role=assistant. Отправляется ОДИН раз
 			// до первого reasoning/content delta. Это упрощает клиент-парсер.

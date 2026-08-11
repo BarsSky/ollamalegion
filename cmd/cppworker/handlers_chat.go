@@ -596,6 +596,17 @@ func writeChatStreamResponse(w http.ResponseWriter, r *http.Request, modelName, 
 		// ?????? ??????????? NDJSON-????? ? message.reasoning / message.content.
 		if rcIsReasoning {
 			reasoningDelta, contentDelta := rcParser.Feed(token)
+			// Round 32 #18 (2026-08-11): workaround для gemma-4 Q4_K_M detokenizer.
+			// C-bridge detokenize'ит токены line break (`\n`) как literal `\\n`
+			// (2 chars: backslash + n) вместо LF (1 char). Без этой замены
+			// content приходит в JSON output как escaped `\\\\n` (4 source chars),
+			// что после parsing даёт literal backslash + n (НЕ real newline).
+			// В UI это видно как "весь markdown идёт сплошной линией".
+			// Post-process: заменяем literal `\\n` на real `\n` ДО json.Marshal.
+			// Безопасно — real newlines остаются нетронутыми (только 2-char
+			// backslash+n конвертируются).
+			reasoningDelta = strings.ReplaceAll(reasoningDelta, `\\n`, "\n")
+			contentDelta = strings.ReplaceAll(contentDelta, `\\n`, "\n")
 			if reasoningDelta != "" {
 				rcChunk := map[string]interface{}{
 					"model":      modelName,
@@ -627,6 +638,9 @@ func writeChatStreamResponse(w http.ResponseWriter, r *http.Request, modelName, 
 			return true
 		}
 
+		// Round 32 #18 (2026-08-11): workaround для gemma-4 Q4_K_M detokenizer.
+		// Заменяем literal `\\n` на real `\n` для content чанков.
+		token = strings.ReplaceAll(token, `\\n`, "\n")
 		chunk := map[string]interface{}{
 			"model":      modelName,
 			"created_at": createdAt,

@@ -103,7 +103,12 @@ func detectPrimaryLanguage(msgs []chatMessage) LangCode {
 
 // thinkingInstructionFor — language-specific thinking instruction.
 //
-// Round 32 #12 (2026-08-11): добавлены Russian и universal versions.
+// Round 32 #13 (2026-08-11): добавлены explicit code block rules
+// во все версии. Live test с gemma-4 (Round 32 #12) показал что
+// модель путает структуру code block'ов: explanations внутри
+// ```code```, HTML/CSS смешаны, иногда только close без open.
+// Добавление явного правила "ВСЕГДА в fenced blocks, НИКОГДА inline"
+// решает это на уровне instruction.
 //
 // Структура каждой инструкции:
 //  1. Краткое указание "think step by step" на языке диалога
@@ -111,6 +116,8 @@ func detectPrimaryLanguage(msgs []chatMessage) LangCode {
 //     инструкции, а не на языке вопроса)
 //  3. Требование обернуть рассуждение в <reasoning>...</reasoning>
 //  4. Указание что финальный ответ ВНЕ тега
+//  5. (Round 32 #13) Explicit code block rules: fenced blocks
+//     only, language specified, never inline
 //
 // Universal ("other") version — минимальная, на английском (token
 // efficient). Используется для CJK/арабского/etc. где перевод
@@ -123,17 +130,32 @@ func thinkingInstructionFor(lang LangCode) string {
 			"покажи свою работу, затем дай чёткий финальный ответ. " +
 			"Отвечай на русском языке. " +
 			"ВАЖНО: Оберни пошаговое рассуждение в теги <reasoning>...</reasoning>. " +
-			"Твой финальный ответ должен быть ВНЕ тега </reasoning>."
+			"Твой финальный ответ должен быть ВНЕ тега </reasoning>. " +
+			"ПРАВИЛА ДЛЯ КОДА: Весь многострочный код (HTML, CSS, JavaScript, Python и т.д.) " +
+			"ОБЯЗАТЕЛЬНО оборачивай в fenced code blocks с указанием языка: " +
+			"```html\\n[код]\\n``` или ```css\\n[код]\\n```. " +
+			"ЗАПРЕЩЕНО использовать inline backticks (`code`) для многострочного кода. " +
+			"ЗАПРЕЩЕНО смешивать explanations с кодом внутри code block — " +
+			"explanations ВСЕГДА снаружи, code ВСЕГДА внутри ```."
 	case LangEN:
 		return "Before answering, use detailed step-by-step thinking. " +
 			"Reason about the problem carefully, consider different angles, " +
 			"show your work, then provide a clear final answer. " +
 			"IMPORTANT: Wrap your step-by-step reasoning inside <reasoning>...</reasoning> tags. " +
-			"Your final answer (the user-facing response) should be OUTSIDE the </reasoning> tag."
+			"Your final answer (the user-facing response) should be OUTSIDE the </reasoning> tag. " +
+			"CODE RULES: ALL multi-line code (HTML, CSS, JavaScript, Python, etc.) " +
+			"MUST be wrapped in fenced code blocks with the language specified: " +
+			"```html\\n[code]\\n``` or ```css\\n[code]\\n```. " +
+			"NEVER use inline backticks (`code`) for multi-line code. " +
+			"NEVER mix explanations with code inside a code block — " +
+			"explanations ALWAYS outside, code ALWAYS inside ```."
 	default: // LangOther — universal short
 		return "Think step by step before answering. " +
 			"Wrap your step-by-step reasoning in <reasoning>...</reasoning> tags. " +
 			"Your final answer must be OUTSIDE the </reasoning> tag. " +
+			"CODE RULES: All multi-line code MUST be in fenced blocks (```lang\\ncode\\n```). " +
+			"NEVER use inline backticks for multi-line code. " +
+			"Explanations outside, code inside. " +
 			"Respond in the same language as the user's question."
 	}
 }

@@ -103,6 +103,7 @@ func TestDetectPrimaryLanguage_OnlyEmojis(t *testing.T) {
 
 // TestThinkingInstructionFor_RU — Russian instruction содержит
 // "Перед ответом" и явное указание отвечать на русском.
+// Round 32 #13 (2026-08-11): также проверяет наличие CODE RULES.
 func TestThinkingInstructionFor_RU(t *testing.T) {
 	inst := thinkingInstructionFor(LangRU)
 	if !strings.Contains(inst, "Перед ответом") {
@@ -117,10 +118,21 @@ func TestThinkingInstructionFor_RU(t *testing.T) {
 	if !strings.Contains(inst, "</reasoning>") {
 		t.Error("RU instruction missing </reasoning> tag instruction")
 	}
+	// Round 32 #13: code block rules
+	if !strings.Contains(inst, "fenced") {
+		t.Error("RU instruction missing 'fenced' (code block rule)")
+	}
+	if !strings.Contains(inst, "html") {
+		t.Error("RU instruction missing 'html' (example language)")
+	}
+	if !strings.Contains(inst, "ЗАПРЕЩЕНО") {
+		t.Error("RU instruction missing 'ЗАПРЕЩЕНО' (anti-pattern rule)")
+	}
 }
 
 // TestThinkingInstructionFor_EN — English instruction содержит
 // "Before answering" и tag wrapper.
+// Round 32 #13: также проверяет наличие CODE RULES.
 func TestThinkingInstructionFor_EN(t *testing.T) {
 	inst := thinkingInstructionFor(LangEN)
 	if !strings.Contains(inst, "Before answering") {
@@ -129,9 +141,17 @@ func TestThinkingInstructionFor_EN(t *testing.T) {
 	if !strings.Contains(inst, "<reasoning>") {
 		t.Error("EN instruction missing <reasoning> tag instruction")
 	}
+	// Round 32 #13: code block rules
+	if !strings.Contains(inst, "fenced") {
+		t.Error("EN instruction missing 'fenced' (code block rule)")
+	}
+	if !strings.Contains(inst, "MUST be") {
+		t.Error("EN instruction missing 'MUST be' (emphasis on code block requirement)")
+	}
 }
 
 // TestThinkingInstructionFor_Other — universal short version.
+// Round 32 #13: также проверяет наличие CODE RULES в universal version.
 func TestThinkingInstructionFor_Other(t *testing.T) {
 	inst := thinkingInstructionFor(LangOther)
 	if !strings.Contains(inst, "<reasoning>") {
@@ -140,9 +160,13 @@ func TestThinkingInstructionFor_Other(t *testing.T) {
 	if !strings.Contains(inst, "OUTSIDE") {
 		t.Error("Other instruction missing 'OUTSIDE' (final answer outside tag)")
 	}
+	// Round 32 #13: code block rules even in universal short
+	if !strings.Contains(inst, "fenced") {
+		t.Error("Other instruction missing 'fenced' (code block rule)")
+	}
 	// Universal НЕ должен быть слишком длинным (efficient token use)
-	if len(inst) > 400 {
-		t.Errorf("Universal instruction too long: %d chars (max 400)", len(inst))
+	if len(inst) > 600 {
+		t.Errorf("Universal instruction too long: %d chars (max 600 after Round 32 #13 additions)", len(inst))
 	}
 }
 

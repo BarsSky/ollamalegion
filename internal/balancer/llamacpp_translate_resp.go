@@ -114,15 +114,18 @@ func stripReasoningTags(content string) string {
 			content = stripWithBoundary(content, close)
 		}
 	}
-	// Collapse multiple newlines/spaces в один (после удаления тегов
-	// могут остаться "\n\n" или "  ").
-	for strings.Contains(content, "\n\n") {
-		content = strings.ReplaceAll(content, "\n\n", "\n")
-	}
-	// Trim leading newlines/tabs (gemma-4 часто эмитит "\n" между </think> и answer).
-	// НЕ тримим space — легитимный контент может начинаться с пробела (list, code block).
-	// Round 31 #4 (2026-08-09): only "\n\r\t", без " ".
-	content = strings.TrimLeft(content, "\n\r\t")
+	// Round 32 #20 (2026-08-11): НЕ делаем collapse "\n\n" → "\n" и НЕ trim'аем
+	// leading newlines. Round 31 #4 (2026-08-09) добавил эти операции для
+	// defensive cleanup (gemma-4 эмитила "\n" перед первым content токеном
+	// после </think>). НО эти операции **уничтожали markdown formatting**:
+	// - Collapse "\n\n" → "\n" съедала двойные newlines между параграфами/функциями
+	//   в code blocks, делая markdown одной линией.
+	// - Trim leading "\n" съедала leading newlines в нормальном контенте.
+	//
+	// Round 32 #19 (cppworker fix) теперь detokenize'ит `\\n` в `\n` правильно,
+	// и SplitReasoningContent корректно отделяет reasoning от content (без
+	// утечки тегов). Поэтому collapse и trim больше НЕ нужны — они только
+	// вредят. Оставляем только strip реальных reasoning tags.
 	return content
 }
 

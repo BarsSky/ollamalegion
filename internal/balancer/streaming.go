@@ -143,27 +143,13 @@ func (p *Proxy) handleStreamingResponse(w http.ResponseWriter, r *http.Request, 
 				if isSSE {
 					heartbeatBytes = []byte(":heartbeat\n\n")
 				} else {
-					// Round 32 #25 (2026-08-11): heartbeat теперь = полный Ollama chunk
-					// с `model` + `created_at` + `done:false` (без `message`).
-					//
-					// Round 31 #3 (2026-08-09) делал `{"done":false}` — без `model`.
-					// Это **тоже** ломало ассемблирование в Open WebUI: chunk без
-					// обязательных Ollama-полей (`model`, `created_at`) парсился как
-					// "новый stream chunk" → UI сбрасывал reasoning+content ассемблирование
-					// каждые 15 секунд → user видел "stream оборвался на середине".
-					//
-					// Текущий формат:
-					//   {"model":"<name>","created_at":"<rfc3339nano>","done":false}
-					//
-					// Это валидный Ollama chunk **без message поля**. Open WebUI видит
-					// model + created_at (как у normal chunk'а), нет message — это
-					// технический chunk, ассемблирование reasoning+content **сохраняется**.
-					// Nginx send_timeout 30s не срабатывает (heartbeat каждые 15s).
-					hb := map[string]interface{}{
-						"model":      modelFromCtx,
-						"created_at": time.Now().UTC().Format(time.RFC3339Nano),
-						"done":       false,
-					}
+					// Round 31 (2026-08-09): минимальный NDJSON heartbeat — только {"done":false}.
+					// Без полей "model" и "message" (раньше они были) — OpenWebUI мог
+					// интерпретировать "message":{"role":"assistant"} как начало нового
+					// сообщения и сбрасывать ассемблирование reasoning секции.
+					// {"done":false} — JSON-line валидный для Ollama-parser'а,
+					// который игнорирует строки без "message" поля.
+					hb := map[string]interface{}{"done": false}
 					hbJSON, _ := json.Marshal(hb)
 					heartbeatBytes = append(hbJSON, '\n')
 				}

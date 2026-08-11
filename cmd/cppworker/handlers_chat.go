@@ -291,9 +291,11 @@ func buildChatPrompt(msgs []chatMessage, modelName string) (string, error) {
 			}
 			// Native API works but template doesn't support enable_thinking.
 			// Fallback: re-apply legacy + soft prompt in system.
+			// Round 32 #12 (2026-08-11): use language-aware instruction
+			// чтобы модель не отвечала на языке инструкции (mixed RU/EN).
 			logger.Get().Debugw("buildChatPrompt: native enable_thinking not supported by template, using soft prompt",
-				"model", modelName, "prompt_len", len(nativePrompt))
-			system = injectThinkingInstruction(system)
+				"model", modelName, "prompt_len", len(nativePrompt), "lang", detectPrimaryLanguage(msgs).String())
+			system = injectThinkingInstructionWithLang(system, detectPrimaryLanguage(msgs))
 			prompt2, err2 := backend.ApplyChatTemplate(modelName, system, msgsToBridge(msgs), true)
 			if err2 == nil && prompt2 != "" {
 				return prompt2, nil
@@ -309,8 +311,9 @@ func buildChatPrompt(msgs []chatMessage, modelName string) (string, error) {
 	// или когда EnableReasoning=false): добавляем "thinking instruction"
 	// к system промпту. Работает универсально для ЛЮБОЙ instruction-tuned
 	// модели (включая gemma-4-it, который не эмитит нативные <think> блоки).
+	// Round 32 #12 (2026-08-11): use language-aware version.
 	if currentConfig != nil && currentConfig.EnableReasoning {
-		system = injectThinkingInstruction(system)
+		system = injectThinkingInstructionWithLang(system, detectPrimaryLanguage(msgs))
 	}
 
 	// Применяем chat template из GGUF
@@ -340,8 +343,9 @@ func buildChatPrompt(msgs []chatMessage, modelName string) (string, error) {
 	// instruction сработал, модель должна получить system промпт через
 	// buildChatPromptFromMessages. Это делает prepended system message
 	// в msgs (если её ещё нет). См. injectThinkingIntoMessages.
+	// Round 32 #12 (2026-08-11): use language-aware version.
 	if currentConfig != nil && currentConfig.EnableReasoning {
-		msgs = injectThinkingIntoMessages(msgs)
+		msgs = injectThinkingIntoMessagesWithLang(msgs, detectPrimaryLanguage(msgs))
 	}
 	return buildChatPromptFromMessages(msgs, modelName), nil
 }
@@ -370,17 +374,12 @@ func buildChatPrompt(msgs []chatMessage, modelName string) (string, error) {
 //   - Soft prompt просит `<reasoning>` напрямую (более широкая совместимость)
 //   - Parser (cmd/cppworker/reasoning_content.go) поддерживает ОБА варианта
 //     (плюс `<thinking>`, `<analysis>`) для других custom fine-tunes
+// Round 32 #12 (2026-08-11): DEPRECATED thin wrapper — use
+// injectThinkingInstructionWithLang instead. This keeps backward
+// compat for external callers; all internal cppworker callsites
+// have been switched to the language-aware version.
 func injectThinkingInstruction(system string) string {
-	const thinkingInstruction = "Before answering, use detailed step-by-step thinking. " +
-		"Reason about the problem carefully, consider different angles, " +
-		"show your work, then provide a clear final answer. " +
-		"Structure your response: first explain your reasoning, then give the answer. " +
-		"IMPORTANT: Wrap your step-by-step reasoning inside <reasoning>...</reasoning> tags. " +
-		"Your final answer (the user-facing response) should be OUTSIDE the </reasoning> tag."
-	if system == "" {
-		return thinkingInstruction
-	}
-	return thinkingInstruction + "\n\n" + system
+	return injectThinkingInstructionWithLang(system, LangEN)
 }
 
 // injectThinkingIntoMessages prepended system message с thinking
@@ -390,24 +389,11 @@ func injectThinkingInstruction(system string) string {
 //
 // Round 17.1 fix (2026-07-31): добавлена инструкция "Wrap your reasoning
 // in `<reasoning>...</reasoning>` tags" (см. injectThinkingInstruction).
+// Round 32 #12 (2026-08-11): DEPRECATED thin wrapper — use
+// injectThinkingIntoMessagesWithLang instead. Backward compat
+// для external callers; internal callsites переведены на WithLang.
 func injectThinkingIntoMessages(msgs []chatMessage) []chatMessage {
-	thinking := "Before answering, use detailed step-by-step thinking. " +
-		"Reason about the problem carefully, consider different angles, " +
-		"show your work, then provide a clear final answer. " +
-		"Structure your response: first explain your reasoning, then give the answer. " +
-		"IMPORTANT: Wrap your step-by-step reasoning inside <reasoning>...</reasoning> tags. " +
-		"Your final answer (the user-facing response) should be OUTSIDE the </reasoning> tag."
-
-	// Ищем существующий system message
-	for i, m := range msgs {
-		if m.Role == "system" {
-			msgs[i].Content = thinking + "\n\n" + m.Content
-			return msgs
-		}
-	}
-	// Нет system — prepended
-	systemMsg := chatMessage{Role: "system", Content: thinking}
-	return append([]chatMessage{systemMsg}, msgs...)
+	return injectThinkingIntoMessagesWithLang(msgs, LangEN)
 }
 
 // extractSystemFromMessages ????????? system ????????? ?? ?????? ?????????.

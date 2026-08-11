@@ -333,6 +333,27 @@ func (p *Proxy) proxyRequestOpenAIStreamingHijacked(
 				}
 			}
 
+			// Round 32 #17 (2026-08-11): SSE event boundary fix.
+			//
+			// cppworker шлёт каждую SSE event как `data: {...}\n\n` (double newline —
+			// стандарт SSE spec). ReadBytes('\n') в main loop возвращает только
+			// `data: {...}\n` (одна строка с trailing \n), оставляя второй \n
+			// в буфере на следующий ReadBytes. Если писать только `data: {...}\n`
+			// в chunked frame, клиент получает события склеенными
+			// `data: {...}data: {...}data: {...}` без двойного newline между ними.
+			//
+			// OpenWebUI aiohttp и другие strict SSE-парсеры интерпретируют
+			// такое как **одну строку без разделителей** — поэтому в UI
+			// виден "код в линию без пробелов" (fences не отделяются,
+			// \n внутри code block тоже).
+			//
+			// Fix: дописываем \n к data: строкам перед chunked-framing,
+			// восстанавливая SSE event boundary `data: {...}\n\n`.
+			// Heartbeat `:` lines не трогаем — это SSE-комментарии без
+			// content, не нуждаются в \n\n boundary.
+			if isOpenAISSEDataLine(lineToWrite) {
+				lineToWrite = append(lineToWrite, '\n')
+			}
 			// Round 32 #16: chunked-framed write.
 			if werr := writeChunkedFrame(bufrw, lineToWrite); werr != nil {
 				logger.Get().Warnw("hijack streaming: write to client failed",

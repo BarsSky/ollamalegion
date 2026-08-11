@@ -35,6 +35,15 @@ func handleLoadModel(w http.ResponseWriter, r *http.Request) {
 	modelPath := req.Path
 	modelName := req.Name
 
+	// Round 32 #14 (2026-08-11): strip .gguf extension from model name.
+	// User screenshot showed две одинаковых модели в webui:
+	//   gemma-4-E4B-it-Q4_K_M
+	//   gemma-4-E4B-it-Q4_K_M.gguf
+	// Root cause: balancer (or webui) отправляет name с .gguf, cppworker
+	// сохраняет as-is. Fix: TrimSuffix ВСЕГДА — basename без .gguf
+	// это canonical model name для inference / dedup / metrics.
+	modelName = strings.TrimSuffix(modelName, ".gguf")
+
 	// ???????? ???? ??? HF-????????? ??????? (??????? hf:)
 	if strings.HasPrefix(modelName, "hf:") && backend.HFDownloader() != nil {
 		parts := strings.TrimPrefix(modelName, "hf:")
@@ -359,6 +368,15 @@ func handleLoadWithParams(w http.ResponseWriter, r *http.Request) {
 
 	modelPath := req.Path
 	modelName := req.Name
+
+	// Round 32 #14 (2026-08-11): strip .gguf extension from model name.
+	// User screenshot showed две одинаковых модели в webui:
+	//   gemma-4-E4B-it-Q4_K_M
+	//   gemma-4-E4B-it-Q4_K_M.gguf
+	// Root cause: balancer (or webui) отправляет name с .gguf, cppworker
+	// сохраняет as-is. Fix: TrimSuffix ВСЕГДА — basename без .gguf
+	// это canonical model name для inference / dedup / metrics.
+	modelName = strings.TrimSuffix(modelName, ".gguf")
 
 	// ???????? ???? ??? HF-????????? ??????? (??????? hf:)
 	if strings.HasPrefix(modelName, "hf:") && backend.HFDownloader() != nil {

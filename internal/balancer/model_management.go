@@ -893,18 +893,30 @@ func (mm *ModelManager) executeLlamaCppLoad(host string, port int, backendID str
 				}
 				_ = json.Unmarshal(respBody, &loadResp)
 				if loadResp.Status == "loading" || loadResp.Status == "loading_after_timeout" {
-					// Use estimated load time as max wait, with sane bounds.
-					// Default min 30s (in case estimate is 0), max 5min.
+					// Round 32 #15 (2026-08-11): user report "model not ready after
+					// 1m26.4475s" — balancer сдался слишком рано, модель
+					// догрузилась через несколько секунд после timeout.
+					// Root cause: maxWait = est*1.5 + 10s — слишком оптимистично
+					// для gemma-4 (5GB) на RTX 3070. Реальная загрузка занимает
+					// 1m30s+ (VRAM alloc + llama.cpp init + warmup), а cppworker
+					// estimated = ~50s → maxWait = 85s = 1m25s. Балансер polling
+					// истёк за 3-5 секунд ДО завершения load.
+					//
+					// Fix: 2x estimated + 60s buffer, min 3min, max 15min.
+					// Это даёт 1m40s + 60s = 2m40s для 50s estimated
+					// (раньше было 85s). Достаточно для RTX 3070.
+					//
+					// На медленных GPU (ноутбук, A10) gemma-4 может грузиться
+					// 3-5 минут. maxWait = 15min покрывает.
 					maxWait := 5 * time.Minute
 					if loadResp.EstimatedLoadTimeMs > 0 {
-						// 1.5x estimated + 10s buffer
 						est := time.Duration(loadResp.EstimatedLoadTimeMs) * time.Millisecond
-						maxWait = est + est/2 + 10*time.Second
-						if maxWait < 30*time.Second {
-							maxWait = 30 * time.Second
+						maxWait = 2*est + 60*time.Second
+						if maxWait < 3*time.Minute {
+							maxWait = 3 * time.Minute
 						}
-						if maxWait > 10*time.Minute {
-							maxWait = 10 * time.Minute
+						if maxWait > 15*time.Minute {
+							maxWait = 15 * time.Minute
 						}
 					}
 					logger.Get().Infow("executeLlamaCppLoad: 202 Accepted (async load), polling for completion",

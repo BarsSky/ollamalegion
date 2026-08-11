@@ -40,6 +40,30 @@ import (
 	"ollama-loadbalancer/pkg/logger"
 )
 
+// writeChunkedFrame — пишет один chunked-framed HTTP/1.1 chunk в bufrw.
+// Round 32 #16 (2026-08-11): правильный chunked framing для SSE через
+// hijack. Формат: "{hex_size}\r\n{data}\r\n". Для terminator (size=0)
+// выводится "0\r\n\r\n".
+func writeChunkedFrame(bufrw *bufio.ReadWriter, data []byte) error {
+	if _, err := fmt.Fprintf(bufrw, "%x\r\n", len(data)); err != nil {
+		return err
+	}
+	if len(data) > 0 {
+		if _, err := bufrw.Write(data); err != nil {
+			return err
+		}
+	}
+	if _, err := bufrw.WriteString("\r\n"); err != nil {
+		return err
+	}
+	return bufrw.Flush()
+}
+
+// writeChunkedString — chunked-framed write для строки.
+func writeChunkedString(bufrw *bufio.ReadWriter, s string) error {
+	return writeChunkedFrame(bufrw, []byte(s))
+}
+
 // proxyRequestOpenAIStreamingHijacked — hijack-based version для streaming
 // ответов где нужна <1s client disconnect detection.
 //
@@ -156,18 +180,24 @@ func (p *Proxy) proxyRequestOpenAIStreamingHijacked(
 	// 3. SSE-стрим через bufrw.
 	// Write HTTP/1.1 status + headers manually.
 	//
-	// Round 32 #10 (2026-08-10): removed `Transfer-Encoding: chunked` header.
-	// Original code declared chunked but wrote raw SSE events (`data: ...\n\n`)
-	// without proper chunked framing (hex size + CRLF + body + CRLF). Client-side
-	// chunked decoders (OpenWebUI aiohttp, Cline fetch, etc.) tried to interpret
-	// `data: {` lines as hex chunk sizes — `d`=13 → expected 13 bytes after,
-	// but got an SSE event instead → "TransferEncodingError: 400, message=
-	// 'Not enough data to satisfy transfer length header'".
+	// Round 32 #16 (2026-08-11): chunked-framed SSE — fix для OpenWebUI aiohttp
+	// TransferEncodingError. Round 32 #10 (2026-08-10) удалил Transfer-Encoding:
+	// chunked header, и curl/raw socket парсили OK (они не проверяют HTTP/1.1
+	// framing), НО OpenWebUI aiohttp строго требует либо Transfer-Encoding:
+	// chunked С правильным фреймингом, либо Content-Length. Без обоих aiohttp
+	// ругается "Not enough data to satisfy transfer length header" при обрыве
+	// стрима (cancel/EOF без terminator).
 	//
-	// SSE standard: keep connection open, write events, EOF (or [DONE] marker)
-	// signals end. NO chunked encoding, NO Content-Length needed. Client reads
-	// until EOF. This is what OpenAI, Anthropic, Ollama all do for /v1/chat
-	// streaming responses.
+	// Правильный SSE через raw HTTP/1.1:
+	//   1. Headers: Transfer-Encoding: chunked
+	//   2. Каждый chunk данных фреймится как "{hex_size}\r\n{data}\r\n"
+	//   3. Финальный chunk: "0\r\n\r\n" (terminator)
+	//
+	// Это то, что делает Go net/http автоматически для w.Write (в streaming.go).
+	// Здесь в hijack mode Go не вмешивается — мы сами фреймим.
+	//
+	// Cancel detection (Round 31 #6): polling goroutine читает SetReadDeadline(0)
+	// параллельно — работает независимо от chunked framing.
 	statusText := http.StatusText(resp.StatusCode)
 	if statusText == "" {
 		statusText = "OK"
@@ -175,6 +205,7 @@ func (p *Proxy) proxyRequestOpenAIStreamingHijacked(
 	bufrw.WriteString(fmt.Sprintf("HTTP/1.1 %d %s\r\n", resp.StatusCode, statusText))
 	bufrw.WriteString("Content-Type: text/event-stream\r\n")
 	bufrw.WriteString("Cache-Control: no-cache\r\n")
+	bufrw.WriteString("Transfer-Encoding: chunked\r\n")
 	bufrw.WriteString("Connection: keep-alive\r\n")
 	bufrw.WriteString("X-Accel-Buffering: no\r\n")
 	// Copy selected upstream headers.
@@ -273,13 +304,9 @@ func (p *Proxy) proxyRequestOpenAIStreamingHijacked(
 
 		case <-time.After(heartbeatInterval):
 			// SSE-heartbeat: ": keepalive\r\n" — comment, игнорируется клиентом.
-			if _, werr := bufrw.WriteString(": keepalive\r\n"); werr != nil {
+			// Round 32 #16: chunked-framed (был raw WriteString).
+			if werr := writeChunkedString(bufrw, ": keepalive\r\n"); werr != nil {
 				logger.Get().Warnw("hijack streaming: heartbeat write failed",
-					"backend", backendID, "error", werr)
-				return nil
-			}
-			if werr := bufrw.Flush(); werr != nil {
-				logger.Get().Warnw("hijack streaming: heartbeat flush failed",
 					"backend", backendID, "error", werr)
 				return nil
 			}
@@ -293,8 +320,7 @@ func (p *Proxy) proxyRequestOpenAIStreamingHijacked(
 				logger.Get().Warnw("hijack streaming: read from backend error",
 					"backend", backendID, "error", res.err)
 				// Send final SSE done marker to client.
-				_, _ = bufrw.WriteString("data: {\"error\":\"upstream read error\"}\n\n")
-				_ = bufrw.Flush()
+				_ = writeChunkedString(bufrw, "data: {\"error\":\"upstream read error\"}\n\n")
 				return nil
 			}
 
@@ -307,20 +333,22 @@ func (p *Proxy) proxyRequestOpenAIStreamingHijacked(
 				}
 			}
 
-			if _, werr := bufrw.Write(lineToWrite); werr != nil {
+			// Round 32 #16: chunked-framed write.
+			if werr := writeChunkedFrame(bufrw, lineToWrite); werr != nil {
 				logger.Get().Warnw("hijack streaming: write to client failed",
-					"backend", backendID, "error", werr)
-				return nil
-			}
-			if werr := bufrw.Flush(); werr != nil {
-				logger.Get().Warnw("hijack streaming: flush failed",
 					"backend", backendID, "error", werr)
 				return nil
 			}
 		}
 	}
 
-	// Final flush.
-	_ = bufrw.Flush()
+	// Round 32 #16 (2026-08-11): chunked terminator ("0\r\n\r\n") — ОБЯЗАТЕЛЕН
+	// для strict clients (OpenWebUI aiohttp). Без него aiohttp ругается
+	// "Not enough data to satisfy transfer length header" при чтении после EOF.
+	// writeChunkedFrame с пустым data пишет "0\r\n\r\n" согласно HTTP/1.1 spec.
+	if err := writeChunkedFrame(bufrw, nil); err != nil {
+		logger.Get().Debugw("hijack streaming: chunked terminator write failed (client may have closed)",
+			"backend", backendID, "error", err)
+	}
 	return nil
 }

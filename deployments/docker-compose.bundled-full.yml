@@ -65,7 +65,14 @@ services:
       - LB_NCTX_RELOAD_ENABLED=${LB_NCTX_RELOAD_ENABLED:-true}
       - LB_NCTX_RELOAD_MAX_N_CTX=${LB_NCTX_RELOAD_MAX_N_CTX:-131072}
       - LB_NCTX_RELOAD_VRAM_SAFETY_FACTOR=${LB_NCTX_RELOAD_VRAM_SAFETY_FACTOR:-0.95}
-      - LB_NCTX_RELOAD_TIMEOUT_SEC=${LB_NCTX_RELOAD_TIMEOUT_SEC:-120}
+      - LB_NCTX_RELOAD_TIMEOUT_SEC=${LB_NCTX_RELOAD_TIMEOUT_SEC:-300}
+      # Round 31 #2 (2026-08-09): async preflight reload — НЕ блокируем клиента
+      # на долгой перезагрузке, отдаём 503+Retry-After. Cline/OpenWebUI retry'ят.
+      # Round 34 (2026-08-12): MUST be in compose env block — docker compose
+      # НЕ подхватывает env_file автоматически для переменных, которых нет
+      # в environment: ниже. Без этого async mode выключен и клиент получает 413.
+      - LB_NCTX_PREFLIGHT_ASYNC_RELOAD=${LB_NCTX_PREFLIGHT_ASYNC_RELOAD:-true}
+      - LB_NCTX_PREFLIGHT_ASYNC_RETRY_AFTER_SEC=${LB_NCTX_PREFLIGHT_ASYNC_RETRY_AFTER_SEC:-30}
     volumes:
       - ../config:/app/config:ro
       - balancer_data:/app/data

@@ -161,6 +161,10 @@ func (s *Server) setupRoutes() {
 	// POST /api/v1/internal/llama-model-loaded — callback при успешной загрузке модели.
 	// Endpoint требует X-API-Token (если в config задан API_TOKEN). Не публичный.
 	s.mux.Handle("/api/v1/internal/llama-model-loaded", AuthMiddleware(RateLimitMiddleware(http.HandlerFunc(s.handleLlamaModelLoaded), s.rateLimiter), s.authenticator))
+	// Round 34 (2026-08-12) Phase 3: callback при выгрузке модели.
+	// Сбрасывает lastKnownNCtx в coordinator чтобы preflight не использовал
+	// stale значение после `idle_unload_after` 10m.
+	s.mux.Handle("/api/v1/internal/llama-model-unloaded", AuthMiddleware(RateLimitMiddleware(http.HandlerFunc(s.handleLlamaModelUnloaded), s.rateLimiter), s.authenticator))
 
 	// Model Replication endpoints (Variant A) — с аутентификацией и rate limiting
 	s.mux.Handle("/api/v1/replication/groups", AuthMiddleware(RateLimitMiddleware(s.replicationGroupsHandler, s.rateLimiter), s.authenticator))

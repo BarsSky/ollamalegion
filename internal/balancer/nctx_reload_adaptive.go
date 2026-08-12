@@ -18,6 +18,10 @@ type AdaptiveStrategy struct {
 	GPULayers    int    `json:"gpuLayers"`
 	NCtx         int    `json:"nCtx"`
 	KVCacheType  string `json:"kvCacheType"`
+	// Round 34 (2026-08-12) Phase 4: flash attention hint. -1=auto (default),
+	// 0=off, 1=on. cppworker может рекомендовать 0 для CPU-only partial offload
+	// (flash_attn требует GPU) или 1 для полного GPU. 0 = use cppworker's default.
+	FlashAttnType int    `json:"flashAttnType"`
 	UseMmap      bool   `json:"useMmap"`
 	Stage        string `json:"stage"` // "exact_fit", "partial_offload", "cpu_only", "moe_offload"
 	KVReduced    bool   `json:"kvReduced"`
@@ -90,7 +94,10 @@ func queryAdaptiveStrategy(backendAddr, modelName string, targetNCtx int, httpCl
 }
 
 // enrichReloadPayload добавляет параметры из AdaptiveStrategy в payload reload-запроса.
-// Возвращает модифицированный payload (gpuLayers, kvCacheType, contextSize, useMmap).
+// Возвращает модифицированный payload (gpuLayers, kvCacheType, contextSize, useMmap, flashAttn).
+//
+// Round 34 (2026-08-12) Phase 4: добавлен flashAttn (auto-detect для reasoning моделей
+// в Q4_K_M; off для CPU-only partial offload).
 func enrichReloadPayload(payload map[string]interface{}, strategy *AdaptiveStrategy) map[string]interface{} {
 	if strategy == nil {
 		return payload
@@ -98,6 +105,12 @@ func enrichReloadPayload(payload map[string]interface{}, strategy *AdaptiveStrat
 	// gpuLayers: используем из стратегии
 	payload["gpuLayers"] = strategy.GPULayers
 	payload["useMmap"] = strategy.UseMmap
+
+	// Round 34 Phase 4: flash attention — передаём рекомендацию strategy в cppworker.
+	// 0 = не задано (cppworker's default -1=auto), -1 = auto, 1 = on.
+	if strategy.FlashAttnType != 0 {
+		payload["flashAttn"] = strategy.FlashAttnType
+	}
 
 	// kvCacheType: передаём cppworker'у
 	if strategy.KVCacheType != "" && strategy.KVCacheType != "f16" {
@@ -124,6 +137,7 @@ func enrichReloadPayload(payload map[string]interface{}, strategy *AdaptiveStrat
 	logger.Get().Infow("enrichReloadPayload: payload enriched with adaptive strategy",
 		"gpuLayers", strategy.GPULayers,
 		"kvCacheType", strategy.KVCacheType,
+		"flashAttn", strategy.FlashAttnType,
 		"contextSize", payload["contextSize"],
 		"stage", strategy.Stage)
 

@@ -42,22 +42,25 @@ type runInferencePreflightArgs struct {
 
 // runInferencePreflight — единая точка входа для роутеров. Возвращает:
 //
-//   - handled=false: preflight не сработал или успешен, роутер продолжает.
-//   - handled=true:  preflight вернул Reject, ответ уже записан в w.
-func (lr *LlamaCppRouter) runInferencePreflight(args runInferencePreflightArgs) bool {
+//   - (handled=false, decision=PreflightNoOp): preflight не сработал или успешен, роутер продолжает.
+//   - (handled=false, decision=PreflightReload): sync reload успешен, роутер продолжает.
+//   - (handled=true, decision=PreflightReject): 413, ответ уже записан в w.
+//   - (handled=true, decision=PreflightAsyncReload): либо 503+Retry-After (non-streaming),
+//     либо stream dialog с keepalives (streaming clients, Round 34 Phase 1).
+func (lr *LlamaCppRouter) runInferencePreflight(args runInferencePreflightArgs) (bool, *PreflightResult) {
 	if lr == nil || lr.proxy == nil {
-		return false
+		return false, nil
 	}
 	coord := lr.proxy.nctxReload
 	if coord == nil {
-		return false
+		return false, nil
 	}
 	cfg := coord.Config()
 	if !cfg.PreflightEnabled {
-		return false
+		return false, nil
 	}
 	if args.r == nil || args.backendURL == "" {
-		return false
+		return false, nil
 	}
 
 	path := args.r.URL.Path
@@ -65,12 +68,12 @@ func (lr *LlamaCppRouter) runInferencePreflight(args runInferencePreflightArgs) 
 	if meta == nil {
 		// Не смогли распарсить body (например, нестандартный формат).
 		// Пропускаем preflight — пусть роутер проксирует как обычно.
-		return false
+		return false, nil
 	}
 
 	state := lr.collectPreflightState(args.backendID, args.model)
 	if state == nil {
-		return false
+		return false, nil
 	}
 
 	backendURL := args.backendURL
@@ -78,7 +81,7 @@ func (lr *LlamaCppRouter) runInferencePreflight(args runInferencePreflightArgs) 
 		backendURL = lr.proxy.backendHTTPAddrByID(args.backendID)
 	}
 	if backendURL == "" {
-		return false
+		return false, nil
 	}
 
 	res, err := coord.RunPreflight(
@@ -95,7 +98,7 @@ func (lr *LlamaCppRouter) runInferencePreflight(args runInferencePreflightArgs) 
 		// существующий DecideReloadBackend среагирует.
 		logger.Get().Warnw("preflight helper: RunPreflight failed (continuing without preflight)",
 			"backend", args.backendID, "error", err)
-		return false
+		return false, nil
 	}
 	switch res.Decision {
 	case PreflightReject:
@@ -105,16 +108,21 @@ func (lr *LlamaCppRouter) runInferencePreflight(args runInferencePreflightArgs) 
 		args.w.Header().Set("Content-Type", "application/json")
 		args.w.WriteHeader(res.RejectStatus)
 		_, _ = args.w.Write([]byte(res.RejectBody))
-		return true
+		return true, res
 	case PreflightReload:
 		logger.Get().Infow("preflight: model reloaded before proxy (round-trip one)",
 			"backend", args.backendID, "model", meta.ModelName,
 			"new_n_ctx", res.TargetNCtx, "has_tools", meta.HasTools)
-		return false
+		return false, res
 	case PreflightAsyncReload:
-		// Round 31 #2 (2026-08-09): async mode — модель reload'ится в фоне,
-		// клиенту сразу отдаём 503 + Retry-After. Cline/OpenWebUI автоматически
-		// повторяют запрос через указанное время, и модель уже будет готова.
+		// Round 34 (2026-08-12) Phase 1: stream dialog с keepalives для streaming
+		// клиентов (Cline/OpenWebUI). Держим connection open пока async reload
+		// в фоне завершается, шлём heartbeats каждые 5 сек. Клиент не таймаутится.
+		if lr.runInferencePreflightStreamDialog(args, res.Decision, res) {
+			return true, res
+		}
+		// Round 31 #2 (2026-08-09): async mode — non-streaming fallback.
+		// Модель reload'ится в фоне, клиенту сразу отдаём 503 + Retry-After.
 		retryAfter := coord.Config().effectiveAsyncRetryAfter()
 		logger.Get().Infow("preflight: HTTP 503 + Retry-After (async reload in progress)",
 			"backend", args.backendID, "model", meta.ModelName,
@@ -125,9 +133,9 @@ func (lr *LlamaCppRouter) runInferencePreflight(args runInferencePreflightArgs) 
 		body := fmt.Sprintf(`{"error":"model n_ctx reload in progress, retry after %d seconds","model":%q,"target_n_ctx":%d,"retry_after":%d}`,
 			retryAfter, meta.ModelName, res.TargetNCtx, retryAfter)
 		_, _ = args.w.Write([]byte(body))
-		return true
+		return true, res
 	default: // PreflightNoOp
-		return false
+		return false, res
 	}
 }
 
@@ -135,6 +143,10 @@ func (lr *LlamaCppRouter) runInferencePreflight(args runInferencePreflightArgs) 
 // currentNCtx из NCtxReloadCoordinator; modelMaxContext из per-model
 // profile в config. Возвращает nil, если currentNCtx неизвестен
 // и preflight вырождается в NoOp.
+//
+// Round 34 (2026-08-12) Phase 2: также читает currentKvCacheType /
+// currentFlashAttnType / currentUseMmap из llamaMetrics.LoadedModels
+// (заполняется cppworker callback'ом UpdateLlamaCppModelLoaded).
 func (lr *LlamaCppRouter) collectPreflightState(backendID, model string) *NCtxBackendState {
 	if lr == nil || lr.proxy == nil {
 		return nil
@@ -161,10 +173,27 @@ func (lr *LlamaCppRouter) collectPreflightState(backendID, model string) *NCtxBa
 			modelMaxContext = mp.ContextLength
 		}
 	}
-	return &NCtxBackendState{
+	// Round 34 Phase 2: current runtime params (kv_cache_type/flash_attn/use_mmap)
+	// из llamaMetrics.LoadedModels. cppworker callback'ом UpdateLlamaCppModelLoaded
+	// заполняет эти поля; poller'ы их тоже читают из /api/models.
+	state := &NCtxBackendState{
 		BackendID:       backendID,
 		CurrentNCtx:     currentNCtx,
 		MaxVRAMNCtx:     lr.proxy.getMaxVRAMNCtxFromMetrics(backendID), // из /api/models poller (ранее было 0 — не доступен)
 		ModelMaxContext: modelMaxContext,
 	}
+	// Заполняем current runtime params из LoadedModels (Round 34 Phase 2).
+	if mm := lr.proxy.GetMetricsManager(); mm != nil {
+		if lm := mm.GetLlamaCppMetrics(backendID); lm != nil {
+			for _, m := range lm.LoadedModels {
+				if m.Name == model || containsFold(m.Name, model) || containsFold(model, m.Name) {
+					state.CurrentKvCacheType = m.KvCacheType
+					state.CurrentFlashAttnType = m.FlashAttnType
+					state.CurrentUseMmap = m.UseMmap
+					break
+				}
+			}
+		}
+	}
+	return state
 }

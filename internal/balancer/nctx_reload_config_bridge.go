@@ -75,14 +75,29 @@ func loadNCtxReloadConfig(cfg *types.LoadBalancerConfig) NCtxReloadConfig {
 //   - LB_NCTX_RELOAD_MAX_N_CTX (int) → AutoReloadMaxNCtx
 //   - LB_NCTX_RELOAD_VRAM_SAFETY_FACTOR (float) → AutoReloadVRAMSafetyFactor
 //   - LB_NCTX_RELOAD_TIMEOUT_SEC (int) → AutoReloadTimeoutSec
+//   - LB_NCTX_PREFLIGHT_ENABLED (true/false) → PreflightEnabled (Round 34 Phase 0 fix)
 //   - LB_NCTX_PREFLIGHT_ASYNC_RELOAD (true/false) → PreflightAsyncReload (Round 31 #2)
 //   - LB_NCTX_PREFLIGHT_ASYNC_RETRY_AFTER_SEC (int) → PreflightAsyncRetryAfterSec
 //
 // Приоритет: ENV > config.json. Если ENV не задан — оставляем значение из config.
+//
+// Round 34 follow-up: добавил LB_NCTX_PREFLIGHT_ENABLED override. Раньше
+// preflight был выключен в config.json (нет поля preflight_enabled) →
+// bool zero value = false → preflight helper сразу возвращался
+// (runInferencePreflight проверяет PreflightEnabled ДО PreflightAsyncReload).
+// С `LB_NCTX_PREFLIGHT_ENABLED=true` в compose + этот override,
+// preflight действительно работает (Round 34 Phase 0 фикс изначально
+// не запускался — Cline 65K → 413 sync вместо 503+Retry-After).
 func applyNCtxReloadEnvOverrides(cfg NCtxReloadConfig) NCtxReloadConfig {
 	if v, ok := os.LookupEnv("LB_NCTX_RELOAD_ENABLED"); ok {
 		if b, err := strconv.ParseBool(v); err == nil {
 			cfg.AutoReloadNCtx = b
+		}
+	}
+	// Round 34 follow-up: allow overriding PreflightEnabled via env.
+	if v, ok := os.LookupEnv("LB_NCTX_PREFLIGHT_ENABLED"); ok {
+		if b, err := strconv.ParseBool(v); err == nil {
+			cfg.PreflightEnabled = b
 		}
 	}
 	if v, ok := os.LookupEnv("LB_NCTX_RELOAD_MAX_N_CTX"); ok {

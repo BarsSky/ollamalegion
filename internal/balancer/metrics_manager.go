@@ -105,10 +105,19 @@ func (mm *MetricsManager) ListRunningModels(backendID string, engine types.Backe
 // Действия:
 //  1. Добавляет модель в llamaMetrics[backendID].LoadedModels (если её там ещё нет).
 //  2. Удаляет модель из llamaMetrics[backendID].LoadingModels (если она там была).
+//  3. Обновляет runtime params (kvCacheType/flashAttnType/useMmap) для profile
+//     mismatch detection в preflight_nctx.go (Phase 2).
 //
 // Это позволяет UI сразу увидеть загруженную модель, не дожидаясь
 // 30-секундного poll'а от llamaCppMetricsPoller.
-func (mm *MetricsManager) UpdateLlamaCppModelLoaded(backendID, model string, sizeBytes uint64, contextSize, gpuLayers int) {
+func (mm *MetricsManager) UpdateLlamaCppModelLoaded(
+	backendID, model string,
+	sizeBytes uint64,
+	contextSize, gpuLayers int,
+	kvCacheType string,
+	flashAttnType int,
+	useMmap bool,
+) {
 	mm.mu.Lock()
 	defer mm.mu.Unlock()
 
@@ -133,6 +142,18 @@ func (mm *MetricsManager) UpdateLlamaCppModelLoaded(backendID, model string, siz
 			if gpuLayers != 0 {
 				lm.LoadedModels[i].NumGPULayers = gpuLayers
 			}
+			// Round 34 (2026-08-12): runtime params для preflight profile mismatch.
+			if kvCacheType != "" {
+				lm.LoadedModels[i].KvCacheType = kvCacheType
+			}
+			// flashAttnType: cppworker шлёт -1/0/1. -1 = auto (default). Любое != 0
+			// означает что-то конкретное. -1 не перезаписываем если клиент
+			// явно прислал.
+			if flashAttnType != 0 {
+				lm.LoadedModels[i].FlashAttnType = flashAttnType
+			}
+			// useMmap bool — обновляем всегда (дефолт true, явный false = signal).
+			lm.LoadedModels[i].UseMmap = useMmap
 			lm.LoadedModels[i].State = "loaded"
 			lm.LoadedModels[i].LoadingStartedAt = nil
 			lm.LoadedModels[i].LoadingError = ""
@@ -142,11 +163,14 @@ func (mm *MetricsManager) UpdateLlamaCppModelLoaded(backendID, model string, siz
 	}
 	if !found {
 		lm.LoadedModels = append(lm.LoadedModels, types.LlamaCppModel{
-			Name:          model,
-			Size:          sizeBytes,
-			ContextLength: contextSize,
-			NumGPULayers:  gpuLayers,
-			State:         "loaded",
+			Name:           model,
+			Size:           sizeBytes,
+			ContextLength:  contextSize,
+			NumGPULayers:   gpuLayers,
+			KvCacheType:    kvCacheType,
+			FlashAttnType:  flashAttnType,
+			UseMmap:        useMmap,
+			State:          "loaded",
 		})
 	}
 
@@ -158,6 +182,33 @@ func (mm *MetricsManager) UpdateLlamaCppModelLoaded(backendID, model string, siz
 		}
 	}
 	lm.LoadingModels = filtered
+}
+
+// UpdateLlamaCppModelUnloaded — обработчик callback'а от cppworker'а при
+// выгрузке модели (POST /api/v1/internal/llama-model-unloaded). Удаляет
+// модель из LoadedModels, чтобы:
+//   1. UI не показывал unloaded модель как загруженную.
+//   2. preflight_nctx не использовал stale lastKnownNCtx (Phase 3 fix).
+//
+// Round 34 (2026-08-12): без этого callback'а lastKnownNCtx остаётся
+// в NCtxReloadCoordinator после `idle_unload_after` (10m) → preflight думает
+// модель загружена с большим n_ctx, не триггерит reload → пользователь получает
+// 502 connection refused от cppworker (модель не загружена).
+func (mm *MetricsManager) UpdateLlamaCppModelUnloaded(backendID, model string) {
+	mm.mu.Lock()
+	defer mm.mu.Unlock()
+
+	lm, ok := mm.llamaMetrics[backendID]
+	if !ok {
+		return
+	}
+	filtered := lm.LoadedModels[:0]
+	for _, m := range lm.LoadedModels {
+		if m.Name != model {
+			filtered = append(filtered, m)
+		}
+	}
+	lm.LoadedModels = filtered
 }
 
 // UpdateLlamaCppLoadingModels — обновляет LoadingModels в кэше (вызывается

@@ -257,8 +257,12 @@ func runAsyncLoad(modelName, modelPath string, opts cppbackend.LoadModelOpts,
 		// Notify balancer so the model becomes "ready" for routing.
 		if balancerReg != nil {
 			if info, err := backend.GetModel(modelName); err == nil {
+				// Round 34 (2026-08-12): передаём runtime params (kvCacheType,
+				// flashAttnType, useMmap) для profile mismatch detection в
+				// balancer preflight_nctx (Phase 2).
 				balancerReg.notifyModelLoaded(modelName, info.SizeBytes,
-					info.ContextSize, info.GPULayers)
+					info.ContextSize, info.GPULayers,
+					info.KVCacheType, info.FlashAttnType, info.UseMmap)
 			}
 		}
 	}
@@ -345,8 +349,11 @@ func runAsyncReload(modelName, modelPath string, opts cppbackend.LoadModelOpts,
 
 	if balancerReg != nil {
 		if info, err := backend.GetModel(modelName); err == nil {
+			// Round 34 (2026-08-12): передаём runtime params для profile
+			// mismatch detection.
 			balancerReg.notifyModelLoaded(modelName, info.SizeBytes,
-				info.ContextSize, info.GPULayers)
+				info.ContextSize, info.GPULayers,
+				info.KVCacheType, info.FlashAttnType, info.UseMmap)
 		}
 	}
 	backend.UnlockLoad(modelName)
@@ -357,9 +364,13 @@ func runAsyncReload(modelName, modelPath string, opts cppbackend.LoadModelOpts,
 // либо настоящий регистратор, либо nil в тестах.
 //
 // Сигнатура соответствует (*balancerRegistration).notifyModelLoaded в
-// balancer_register.go: (string, uint64, int, int).
+// balancer_register.go: (string, uint64, int, int, string, int, bool).
+// Round 34 (2026-08-12): добавлены runtime params (kvCacheType, flashAttnType,
+// useMmap) для profile mismatch detection в balancer preflight (Phase 2).
+// Добавлен notifyModelUnloaded (Phase 3) для сброса stale state в coordinator.
 type balancerRegNotifier interface {
-	notifyModelLoaded(name string, sizeBytes uint64, ctxSize, gpuLayers int)
+	notifyModelLoaded(name string, sizeBytes uint64, ctxSize, gpuLayers int, kvCacheType string, flashAttnType int, useMmap bool)
+	notifyModelUnloaded(name string)
 }
 
 // derefIntPtr — маленький хелпер чтобы не писать if x != nil { *x } else 0.

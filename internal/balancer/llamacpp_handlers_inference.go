@@ -64,14 +64,14 @@ func (lr *LlamaCppRouter) handleOpenAIChatCompletions(w http.ResponseWriter, r *
 	}
 
 	// Preflight n_ctx check.
-	if lr.runInferencePreflight(runInferencePreflightArgs{
+	if handled, _ := lr.runInferencePreflight(runInferencePreflightArgs{
 		w:          w,
 		r:          r,
 		body:       bodyBuf,
 		model:      model,
 		backendID:  backendID,
 		backendURL: lr.proxy.backendHTTPAddrByID(backendID),
-	}) {
+	}); handled {
 		return
 	}
 
@@ -102,6 +102,24 @@ func (lr *LlamaCppRouter) handleOpenAIChatCompletions(w http.ResponseWriter, r *
 	}
 
 	r.Body = io.NopCloser(bytes.NewReader(bodyBuf))
+
+	// Round 34 follow-up: preflight n_ctx check для OpenAI path.
+	// Раньше (Round 34 Phase 0) preflight был добавлен ТОЛЬКО для Ollama путей
+	// (handleChat, handleGenerate). Cline использует OpenAI /v1/chat/completions,
+	// поэтому preflight skip'ался → запрос напрямую шёл в cppworker → cppworker
+	// возвращал 400 "n_ctx too large" → балансер конвертировал в 413 → Cline
+	// получал 413 sync вместо 503+Retry-After.
+	// Fix: добавляем preflight ДО ApplyCppCtxHeader и proxying.
+	if handled, _ := lr.runInferencePreflight(runInferencePreflightArgs{
+		w:          w,
+		r:          r,
+		body:       bodyBuf,
+		model:      model,
+		backendID:  backendID,
+		backendURL: lr.proxy.backendHTTPAddrByID(backendID),
+	}); handled {
+		return
+	}
 
 	resolved := lr.proxy.ApplyCppCtxHeader(r, model, bodyBuf, backendID)
 	if resolved.Value > 0 {
@@ -262,14 +280,14 @@ func (lr *LlamaCppRouter) handleOpenAICompletion(w http.ResponseWriter, r *http.
 	}
 
 	// Preflight n_ctx check.
-	if lr.runInferencePreflight(runInferencePreflightArgs{
+	if handled, _ := lr.runInferencePreflight(runInferencePreflightArgs{
 		w:          w,
 		r:          r,
 		body:       bodyBuf,
 		model:      model,
 		backendID:  backendID,
 		backendURL: lr.proxy.backendHTTPAddrByID(backendID),
-	}) {
+	}); handled {
 		return
 	}
 
@@ -539,14 +557,14 @@ func (lr *LlamaCppRouter) handleChat(w http.ResponseWriter, r *http.Request) {
 	r.Body = io.NopCloser(bytes.NewReader(bodyBuf))
 
 	// Preflight n_ctx check.
-	if lr.runInferencePreflight(runInferencePreflightArgs{
+	if handled, _ := lr.runInferencePreflight(runInferencePreflightArgs{
 		w:          w,
 		r:          r,
 		body:       bodyBuf,
 		model:      model,
 		backendID:  backendID,
 		backendURL: lr.proxy.backendHTTPAddrByID(backendID),
-	}) {
+	}); handled {
 		return
 	}
 
@@ -643,14 +661,14 @@ func (lr *LlamaCppRouter) handleGenerate(w http.ResponseWriter, r *http.Request)
 	r.Body = io.NopCloser(bytes.NewReader(bodyBuf))
 
 	// Preflight n_ctx check.
-	if lr.runInferencePreflight(runInferencePreflightArgs{
+	if handled, _ := lr.runInferencePreflight(runInferencePreflightArgs{
 		w:          w,
 		r:          r,
 		body:       bodyBuf,
 		model:      model,
 		backendID:  backendID,
 		backendURL: lr.proxy.backendHTTPAddrByID(backendID),
-	}) {
+	}); handled {
 		return
 	}
 

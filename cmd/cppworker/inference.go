@@ -900,7 +900,10 @@ func tryRamFallbackReload(modelName string, requestedNCtx int, hasTools bool) (b
 
 	if balancerReg != nil {
 		if info, err := backend.GetModel(modelName); err == nil {
-			balancerReg.notifyModelLoaded(modelName, info.SizeBytes, info.ContextSize, info.GPULayers)
+			// Round 34 (2026-08-12): runtime params (kvCacheType, flashAttnType,
+			// useMmap) для profile mismatch detection в balancer preflight (Phase 2).
+			balancerReg.notifyModelLoaded(modelName, info.SizeBytes, info.ContextSize, info.GPULayers,
+				info.KVCacheType, info.FlashAttnType, info.UseMmap)
 		}
 	}
 	return true, nil

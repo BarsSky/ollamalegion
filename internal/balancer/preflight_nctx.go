@@ -49,6 +49,23 @@ type RequestMeta struct {
 	ModelName string
 	// HasTools — true, если запрос содержит tool definitions.
 	HasTools bool
+	// === Round 34 (2026-08-12) Phase 2: profile mismatch detection ===
+	// Параметры, которые клиент явно запросил в options.*:
+	//   - kv_cache_type: "f16" | "q8_0" | "q4_0" — тип KV-cache квантизации
+	//   - flash_attn: -1 (auto) | 0 (off) | 1 (on) — flash attention
+	//   - use_mmap: bool — memory-map model file
+	//
+	// nil pointer = клиент не задал (использовать default / auto).
+	// Непустое / ненулевое = клиент явно требует — должно совпадать с текущей
+	// загруженной моделью, иначе → reload.
+	//
+	// NB: только Ollama /api/chat (через ollamaChatRequestRaw.options) реально
+	// парсит эти поля. OpenAI /v1/chat/completions использует отдельный
+	// path без options.* — для OpenAI эти поля всегда nil → match detection
+	// не триггерит reload по params mismatch (только по n_ctx).
+	RequestedKvCacheType   string
+	RequestedFlashAttnType int    // -1/0/1, 0 = не задано
+	RequestedUseMmap       *bool  // nil = не задано
 }
 
 // EstimatePromptTokens — простая эвристика: 1 токен ≈ 4 символа.
@@ -82,8 +99,11 @@ type ollamaChatRequestRaw struct {
 	} `json:"messages"`
 	Tools   []json.RawMessage `json:"tools"`
 	Options struct {
-		NumCtx     int `json:"num_ctx"`
-		NumPredict int `json:"num_predict"`
+		NumCtx     int    `json:"num_ctx"`
+		NumPredict int    `json:"num_predict"`
+		KVCacheType string `json:"kv_cache_type"` // Round 34: profile mismatch
+		FlashAttn   *int   `json:"flash_attn"`     // -1=auto, 0=off, 1=on
+		UseMmap     *bool  `json:"use_mmap"`       // Round 34: profile mismatch
 	} `json:"options"`
 	Stream bool `json:"stream"`
 }
@@ -109,6 +129,12 @@ type openAIChatRequestRaw struct {
 	} `json:"messages"`
 	Tools    []json.RawMessage `json:"tools"`
 	MaxTokens int             `json:"max_tokens"`
+	// Round 34 follow-up: добавил OpenAI num_ctx (top-level). Без этого
+	// preflight не видел requested n_ctx для OpenAI клиентов (Cline,
+	// Open WebUI OpenAI-compat mode) → проксировал напрямую в cppworker →
+	// cppworker возвращал 400 "n_ctx too large" → балансер конвертировал
+	// в 413 → клиент получал 413 sync вместо 503+Retry-After.
+	NumCtx int `json:"num_ctx"`
 }
 
 // ExtractRequestMeta пытается распарсить body как Ollama / OpenAI chat
@@ -130,6 +156,13 @@ func ExtractRequestMeta(body []byte, path string) *RequestMeta {
 		meta.RequestedNCtxOverride = req.Options.NumCtx
 		meta.RequestedNPredict = req.Options.NumPredict
 		meta.HasTools = len(req.Tools) > 0
+		// Round 34 (2026-08-12) Phase 2: profile mismatch detection.
+		// Только Ollama /api/chat парсит options.* — для OpenAI эти поля остаются нулевыми.
+		meta.RequestedKvCacheType = req.Options.KVCacheType
+		if req.Options.FlashAttn != nil {
+			meta.RequestedFlashAttnType = *req.Options.FlashAttn
+		}
+		meta.RequestedUseMmap = req.Options.UseMmap
 		// Конкатенируем все messages content.
 		var sb strings.Builder
 		for _, m := range req.Messages {
@@ -155,6 +188,7 @@ func ExtractRequestMeta(body []byte, path string) *RequestMeta {
 			return nil
 		}
 		meta.ModelName = req.Model
+		meta.RequestedNCtxOverride = req.NumCtx // Round 34 follow-up
 		meta.RequestedNPredict = req.MaxTokens
 		meta.HasTools = len(req.Tools) > 0
 		var sb strings.Builder
@@ -205,6 +239,13 @@ type NCtxBackendState struct {
 	CurrentNCtx     int // lastKnownNCtx из координатора
 	MaxVRAMNCtx     int // из cppworker metrics (0 = unknown)
 	ModelMaxContext int // из GGUF metadata (0 = unknown)
+	// === Round 34 (2026-08-12) Phase 2: profile mismatch detection ===
+	// Текущие параметры загруженной модели (из cppworker /api/models callback
+	// + llamaCppMetricsPoller). Используются в DecidePreflight для проверки
+	// совпадения с requested* полями в RequestMeta.
+	CurrentKvCacheType   string // "f16"/"q8_0"/"q4_0" — "" = unknown
+	CurrentFlashAttnType int    // -1/0/1, 0 = unknown
+	CurrentUseMmap       bool
 }
 
 // DecidePreflight решает, нужен ли reload ДО отправки запроса.
@@ -215,6 +256,16 @@ type NCtxBackendState struct {
 //  3. Если required > modelMaxContext (если известен) → Reject
 //  4. Если required > MaxVRAMNCtx*safety → trigger Reload (partial offload)
 //  5. Иначе → Reload (target = roundUpPow2(required), capped по modelMax)
+//
+// Round 34 follow-up: добавлен шаг 1.5 — если клиент ЯВНО указал num_ctx
+// в body (RequestedNCtxOverride > 0) и это больше loaded n_ctx → trigger
+// reload с target = RequestedNCtxOverride, НЕЗАВИСИМО от фактического
+// размера prompt. Раньше (Round 14) считалось только по estimated
+// prompt + n_predict, что для маленьких prompt'ов возвращало NoOp даже
+// когда клиент явно запрашивал большее окно (например Cline с
+// num_ctx=65536 на пустой prompt "hi") → запрос проксировался в
+// cppworker → cppworker возвращал 400 "n_ctx too large" → 413 sync
+// вместо 503+Retry-After.
 //
 // ВАЖНО (2026-06-24): при required > MaxVRAMNCtx*safety мы БОЛЬШЕ НЕ reject,
 // а trigger reload. Причина: max_vram_n_ctx рассчитывается C-bridge для
@@ -237,6 +288,36 @@ func DecidePreflight(meta *RequestMeta, state *NCtxBackendState, cfg NCtxReloadC
 		nPredict = 2048 // default из bridge
 	}
 	required := meta.EstimatedPromptTokens + nPredict + 1 + reserveSlack
+
+	// Round 34 follow-up: если клиент ЯВНО запросил больше n_ctx чем
+	// загружено → нужен reload, НЕЗАВИСИМО от фактического размера prompt.
+	// Cline/OpenWebUI шлют num_ctx=65536 даже для маленьких prompts.
+	if meta.RequestedNCtxOverride > 0 && state.CurrentNCtx > 0 &&
+		meta.RequestedNCtxOverride > state.CurrentNCtx {
+		target := meta.RequestedNCtxOverride
+		if state.ModelMaxContext > 0 && target > state.ModelMaxContext {
+			// Запрошено больше чем модель поддерживает — reject.
+			return makePreflightReject(state, required, fmt.Sprintf(
+				"requested n_ctx=%d exceeds model max context=%d",
+				target, state.ModelMaxContext))
+		}
+		if cfg.AutoReloadMaxNCtx > 0 && target > cfg.AutoReloadMaxNCtx {
+			return makePreflightReject(state, required, fmt.Sprintf(
+				"requested n_ctx=%d exceeds configured auto_reload_max_n_ctx=%d",
+				target, cfg.AutoReloadMaxNCtx))
+		}
+		logger.Get().Infow("preflight: client requested n_ctx > loaded, triggering reload",
+			"backend_id", state.BackendID,
+			"requested_n_ctx", target, "current_n_ctx", state.CurrentNCtx,
+			"estimated_tokens", meta.EstimatedPromptTokens, "n_predict", nPredict)
+		// Сразу возвращаем Reload (RunPreflight конвертирует в AsyncReload если
+		// включён PreflightAsyncReload). Возвращать PreflightAsyncReload здесь
+		// НЕЛЬЗЯ — switch в RunPreflight его не обрабатывает и фолбэчит на NoOp.
+		return &PreflightResult{
+			Decision:   PreflightReload,
+			TargetNCtx: roundUpPow2(target),
+		}
+	}
 
 	// Уже помещается — NoOp.
 	if state.CurrentNCtx > 0 && required <= state.CurrentNCtx {
@@ -300,10 +381,106 @@ func DecidePreflight(meta *RequestMeta, state *NCtxBackendState, cfg NCtxReloadC
 		rounded = target
 	}
 
+	// Round 34 (2026-08-12) Phase 2: profile mismatch detection.
+	// User's expectation: "если клиент присылает запрос с окном большим или
+	// с включением отличных флагов от тех с которыми загружена модель то вот
+	// теперь необходимо эту модель выгрузить если она загружена и загрузить
+	// с новыми параметрами". Если client прислал options.kv_cache_type="q4_0",
+	// а модель загружена с "f16" — reload на нужный params (не только n_ctx).
+	// Если n_ctx уже fits (required <= currentNCtx), но params различаются —
+	// всё равно reload.
+	// NB: target n_ctx вычислен выше для n_ctx mismatch; params mismatch
+	// просто форсирует Reload с тем же target (current n_ctx не меняется).
+	if currentFits := state.CurrentNCtx > 0 && required <= state.CurrentNCtx; currentFits {
+		if !paramsMatch(state, meta) {
+			logger.Get().Infow("preflight: params mismatch with currently loaded model, triggering reload",
+				"backend_id", state.BackendID,
+				"current_kv_cache_type", state.CurrentKvCacheType,
+				"requested_kv_cache_type", meta.RequestedKvCacheType,
+				"current_flash_attn_type", state.CurrentFlashAttnType,
+				"requested_flash_attn_type", meta.RequestedFlashAttnType,
+				"current_use_mmap", state.CurrentUseMmap,
+				"requested_use_mmap", reqStr(meta.RequestedUseMmap),
+				"current_n_ctx", state.CurrentNCtx,
+			)
+			// Fall through to Reload decision (params mismatch forces reload).
+		} else {
+			return &PreflightResult{Decision: PreflightNoOp}
+		}
+	}
+
 	return &PreflightResult{
 		Decision:   PreflightReload,
 		TargetNCtx: rounded,
 	}
+}
+
+// paramsMatch — сравнивает текущие параметры модели с запрошенными клиентом.
+//
+// Round 34 (2026-08-12) Phase 2: profile mismatch detection.
+//
+//   - kv_cache_type: пустая строка = unknown → считаем совпадающим (не reload'им
+//     на основе неизвестного current). Непустая requested vs непустая current
+//     → сравниваем строки.
+
+// preflightDecisionFromCfg — выбирает между Reload и AsyncReload
+// в зависимости от конфигурации.
+//
+// Round 34 follow-up: helper для early-return path когда клиент
+// явно запросил num_ctx > loaded (см. RequestedNCtxOverride check
+// в DecidePreflight).
+func preflightDecisionFromCfg(cfg NCtxReloadConfig) PreflightDecision {
+	if cfg.PreflightAsyncReload {
+		return PreflightAsyncReload
+	}
+	return PreflightReload
+}
+//   - flash_attn: 0 = не задано. -1=auto, 0=off, 1=on. Сравниваем числа.
+//   - use_mmap: nil = не задано. Сравниваем bool'ы.
+//
+// Возвращает true если все явно заданные поля совпадают (либо current неизвестно
+// и мы не можем судить).
+func paramsMatch(state *NCtxBackendState, meta *RequestMeta) bool {
+	// kv_cache_type: оба пустые → match. Один задан, другой нет → mismatch.
+	if meta.RequestedKvCacheType != "" {
+		if state.CurrentKvCacheType == "" {
+			// current unknown, не можем судить — assume match (avoid unnecessary reload)
+			// (cppworker ещё не сообщил callback, или preflight пришёл до метрик)
+		} else if meta.RequestedKvCacheType != state.CurrentKvCacheType {
+			return false
+		}
+	}
+	// flash_attn: 0 = не задано (default в Go). Реальные значения -1, 0, 1.
+	// Проверяем только если client явно прислал.
+	if meta.RequestedFlashAttnType != 0 {
+		if state.CurrentFlashAttnType == 0 {
+			// current unknown, assume match
+		} else if meta.RequestedFlashAttnType != state.CurrentFlashAttnType {
+			return false
+		}
+	}
+	// use_mmap: nil = не задано.
+	if meta.RequestedUseMmap != nil {
+		// current may be true OR false (bool default в Go = false).
+		// Не можем отличить "false реальное" от "unknown" по default. Полагаемся
+		// на то, что cppworker callback'а (Round 34 Phase 3) установит CurrentUseMmap
+		// явно через UpdateLlamaCppModelLoaded(..., useMmap).
+		if *meta.RequestedUseMmap != state.CurrentUseMmap {
+			return false
+		}
+	}
+	return true
+}
+
+// reqStr — formatter для optional bool в логах.
+func reqStr(b *bool) string {
+	if b == nil {
+		return "<not set>"
+	}
+	if *b {
+		return "true"
+	}
+	return "false"
 }
 
 // makePreflightReject формирует PreflightResult с HTTP 413 и JSON-телом,

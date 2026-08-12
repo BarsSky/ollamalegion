@@ -276,7 +276,8 @@ func (r *balancerRegistration) unregister(ctx context.Context, log *zap.SugaredL
 // Endpoint: POST /api/v1/internal/llama-model-loaded
 // Body: {"backendId": "...", "model": "...", "sizeBytes": 12345,
 //
-//	"contextSize": 4096, "gpuLayers": -1}
+//	"contextSize": 4096, "gpuLayers": -1, "kvCacheType": "f16",
+//	"flashAttnType": -1, "useMmap": true}
 //
 // Вызывается fire-and-forget; ошибки логируются и не влияют на основной поток.
 //
@@ -287,11 +288,20 @@ func (r *balancerRegistration) unregister(ctx context.Context, log *zap.SugaredL
 // Без этого фикса callback никогда не отправлялся → WebUI monitor ждал 30s
 // poll'а от llamaCppMetricsPoller'а чтобы увидеть новую загруженную модель.
 //
+// Round 34 (2026-08-12) Phase 2: добавлены runtime params (kvCacheType,
+// flashAttnType, useMmap) для profile mismatch detection в balancer preflight.
 // Теперь callback шлётся когда указан balancerURL (независимо от
 // CPPWORKER_REGISTER_DISABLE). Backend ID в payload'е (`r.backendID`)
 // совпадает с ID agent-registered backend'а (тот же env var CPPWORKER_BACKEND_ID),
 // так что балансировщик корректно мерджит callback в metrics.
-func (r *balancerRegistration) notifyModelLoaded(modelName string, sizeBytes uint64, contextSize, gpuLayers int) {
+func (r *balancerRegistration) notifyModelLoaded(
+	modelName string,
+	sizeBytes uint64,
+	contextSize, gpuLayers int,
+	kvCacheType string,
+	flashAttnType int,
+	useMmap bool,
+) {
 	if r == nil || r.balancerURL == "" {
 		return
 	}
@@ -300,11 +310,14 @@ func (r *balancerRegistration) notifyModelLoaded(modelName string, sizeBytes uin
 		defer cancel()
 
 		payload := map[string]interface{}{
-			"backendId":   r.backendID,
-			"model":       modelName,
-			"sizeBytes":   sizeBytes,
-			"contextSize": contextSize,
-			"gpuLayers":   gpuLayers,
+			"backendId":     r.backendID,
+			"model":         modelName,
+			"sizeBytes":     sizeBytes,
+			"contextSize":   contextSize,
+			"gpuLayers":     gpuLayers,
+			"kvCacheType":   kvCacheType,
+			"flashAttnType": flashAttnType,
+			"useMmap":       useMmap,
 		}
 		body, err := json.Marshal(payload)
 		if err != nil {
@@ -335,6 +348,61 @@ func (r *balancerRegistration) notifyModelLoaded(modelName string, sizeBytes uin
 				"model", modelName, "sizeBytes", sizeBytes)
 		} else {
 			packageLogger().Debugw("notifyModelLoaded: non-2xx",
+				"model", modelName, "status", resp.StatusCode)
+		}
+	}()
+}
+
+// notifyModelUnloaded — best-effort callback в балансировщик после выгрузки
+// модели. Без этого lastKnownNCtx в NCtxReloadCoordinator остаётся прежним
+// (после `idle_unload_after` 10m), preflight думает модель загружена с
+// большим n_ctx, не триггерит reload → пользователь получает 502 connection
+// refused от cppworker (модель на самом деле не загружена).
+//
+// Round 34 (2026-08-12) Phase 3.
+//
+// Endpoint: POST /api/v1/internal/llama-model-unloaded
+// Body: {"backendId": "...", "model": "..."}
+func (r *balancerRegistration) notifyModelUnloaded(modelName string) {
+	if r == nil || r.balancerURL == "" {
+		return
+	}
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+
+		payload := map[string]interface{}{
+			"backendId": r.backendID,
+			"model":     modelName,
+		}
+		body, err := json.Marshal(payload)
+		if err != nil {
+			packageLogger().Warnw("notifyModelUnloaded: marshal failed", "error", err)
+			return
+		}
+
+		url := r.balancerURL + "/api/v1/internal/llama-model-unloaded"
+		req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
+		if err != nil {
+			return
+		}
+		req.Header.Set("Content-Type", "application/json")
+		if r.balancerToken != "" {
+			req.Header.Set("X-API-Token", r.balancerToken)
+		}
+
+		resp, err := r.client.Do(req)
+		if err != nil {
+			packageLogger().Debugw("notifyModelUnloaded: request failed",
+				"model", modelName, "error", err)
+			return
+		}
+		resp.Body.Close()
+		if resp.StatusCode >= 200 && resp.StatusCode < 300 {
+			packageLogger().Debugw("notifyModelUnloaded: ok",
+				"model", modelName)
+		} else {
+			packageLogger().Debugw("notifyModelUnloaded: non-2xx",
 				"model", modelName, "status", resp.StatusCode)
 		}
 	}()

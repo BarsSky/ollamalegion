@@ -196,6 +196,11 @@ func (p *llamaCppMetricsPoller) pollBackend(b backendInfo) {
 			VRAMUsage        uint64 `json:"vramUsage,omitempty"`
 			RAMUsage         uint64 `json:"ramUsage,omitempty"`
 			LoadedAt         string `json:"loadedAt,omitempty"`
+			// Round 34 (2026-08-12) Phase 2: runtime params (kvCacheType, flashAttnType,
+			// useMmap) для profile mismatch detection в preflight_nctx.go.
+			KvCacheType     string `json:"kvCacheType,omitempty"`
+			FlashAttnType   int    `json:"flashAttnType,omitempty"`
+			UseMmap         bool   `json:"useMmap,omitempty"`
 			// Round 18 P0.1 (2026-08-03): capabilities (reasoning/vision/tools).
 			// cppworker теперь возвращает готовый capabilities объект в /api/models.
 			Capabilities      *types.ModelCapabilities `json:"capabilities,omitempty"`
@@ -255,6 +260,13 @@ func (p *llamaCppMetricsPoller) pollBackend(b backendInfo) {
 			HeadDimV:     m.HeadDimV,
 			MaxContext:   m.GGUFContextLength,
 			LoadedAt:     m.LoadedAt,
+			// Round 34 (2026-08-12) Phase 2: runtime params из /api/models.
+			// Используются preflight_nctx.go для paramsMatch() — если клиент
+			// запрашивает другой kv_cache_type/flash_attn/use_mmap, чем
+			// текущая загруженная модель, preflight trigger'ит reload.
+			KvCacheType:   m.KvCacheType,
+			FlashAttnType: m.FlashAttnType,
+			UseMmap:       m.UseMmap,
 			// Round 18 P0.1 (2026-08-03): capabilities. Если cppworker не вернул
 			// (старая версия), вычисляем по имени как fallback.
 			Capabilities: capabilitiesOrFallback(m.Capabilities, m.Name, m.Architecture, m.GGUFContextLength, m.ReasoningEnabled),

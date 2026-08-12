@@ -304,7 +304,10 @@ func handleLoadModel(w http.ResponseWriter, r *http.Request) {
 		}
 
 		if balancerReg != nil {
-			balancerReg.notifyModelLoaded(modelName, model.SizeBytes, model.ContextSize, model.GPULayers)
+			// Round 34 (2026-08-12): добавили runtime params (kvCacheType,
+			// flashAttnType, useMmap) для profile mismatch detection в balancer.
+			balancerReg.notifyModelLoaded(modelName, model.SizeBytes, model.ContextSize, model.GPULayers,
+				model.KVCacheType, model.FlashAttnType, model.UseMmap)
 		}
 
 		writeJSON(w, http.StatusOK, map[string]interface{}{
@@ -710,7 +713,10 @@ func handleLoadWithParams(w http.ResponseWriter, r *http.Request) {
 		}
 
 		if balancerReg != nil {
-			balancerReg.notifyModelLoaded(modelName, model.SizeBytes, model.ContextSize, model.GPULayers)
+			// Round 34 (2026-08-12): добавили runtime params (kvCacheType,
+			// flashAttnType, useMmap) для profile mismatch detection в balancer.
+			balancerReg.notifyModelLoaded(modelName, model.SizeBytes, model.ContextSize, model.GPULayers,
+				model.KVCacheType, model.FlashAttnType, model.UseMmap)
 		}
 
 		writeJSON(w, http.StatusOK, map[string]interface{}{
@@ -809,6 +815,14 @@ func handleUnloadModel(w http.ResponseWriter, r *http.Request) {
 	if err := backend.UnloadModel(name); err != nil {
 		writeError(w, http.StatusNotFound, err.Error())
 		return
+	}
+	// Round 34 (2026-08-12) Phase 3: notify balancer что модель unloaded.
+	// Без этого lastKnownNCtx в NCtxReloadCoordinator остаётся прежним (после
+	// `idle_unload_after` 10m), preflight думает модель загружена с большим
+	// n_ctx, не триггерит reload → пользователь получает 502 connection refused
+	// (модель не загружена). Cline-сессии ломаются.
+	if balancerReg != nil {
+		balancerReg.notifyModelUnloaded(name)
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"status": "unloaded", "name": name})
 }

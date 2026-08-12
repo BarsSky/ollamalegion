@@ -58,6 +58,15 @@ type LlamaCppModel struct {
 	// Прокидывается клиенту через X-Model-Capabilities, X-Model-Max-Context,
 	// X-Model-Architecture headers.
 	Capabilities *ModelCapabilities `json:"capabilities,omitempty"`
+	// === Runtime params (Round 34, 2026-08-12) — для profile mismatch detection ===
+	// cppworker сообщает в /api/models актуальные параметры загруженной модели
+	// (Round 26 profile sync). Balancer использует для сравнения с client request
+	// в preflight: если client просит kvCacheType=q8_0, а модель загружена с
+	// f16, → reload на нужный params (как в n_ctx случае).
+	// Пустая строка / 0 = неизвестно.
+	KvCacheType     string `json:"kvCacheType,omitempty"`
+	FlashAttnType   int    `json:"flashAttnType,omitempty"` // -1=auto, 0=off, 1=on
+	UseMmap         bool   `json:"useMmap,omitempty"`
 	// === Loading state (Шаг «отображение загрузки в мониторе и вкладке бэкендов») ===
 	// Заполняются только пока State == "loading" / "error". После успешной
 	// загрузки поля обнуляются (omitempty).

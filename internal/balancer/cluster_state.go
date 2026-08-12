@@ -232,13 +232,27 @@ func (p *Proxy) GetMetricsManager() *MetricsManager {
 	return p.metricsMgr
 }
 
+// GetNCtxReloadCoordinator — геттер для internal/api пакета.
+//
+// Round 34 (2026-08-12) Phase 3: используется в handleLlamaModelLoaded
+// и handleLlamaModelUnloaded для синхронизации lastKnownNCtx с
+// cppworker callbacks. Без этого preflight видел stale n_ctx после
+// WebUI / manual reload модели на cppworker.
+func (p *Proxy) GetNCtxReloadCoordinator() *NCtxReloadCoordinator {
+	return p.nctxReload
+}
+
 // GetQueueStats - получение статистики очереди
 func (p *Proxy) GetQueueStats() QueueStats {
-	p.queueMgr.mu.Lock()
 	processed := p.queueMgr.processed
 	workers := p.queueMgr.numWorkers
 	timeout := p.queueMgr.timeout
-	p.queueMgr.mu.Unlock()
+	// NOTE: не держим p.queueMgr.mu — эти поля либо init-only (numWorkers,
+	// timeout), либо atomic int64 (processed). Reading без lock безопасно.
+	// Round 34 bug: я случайно добавил p.queueMgr.mu.Unlock() без matching
+	// Lock() → Go runtime panic "sync: unlock of unlocked mutex" через
+	// 75 минут uptime (crashed, webui 502, ECONNREFUSED для Cline).
+	// Удалено.
 
 	// Вычисляем среднее время ожидания из истории завершённых запросов
 	var avgWaitMs int64

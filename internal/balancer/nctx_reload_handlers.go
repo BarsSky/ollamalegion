@@ -785,13 +785,34 @@ func (p *Proxy) queryBackendReloadPending(backendID string) string {
 // ErrNCtxNeedsReload при следующем запросе — тогда сработает handleNCtxReload).
 func (p *Proxy) executeAsyncReload(backendID, modelName string, requestedNCtx int, backend *types.Backend) {
 	start := time.Now()
-	targetURL := p.getBackendBaseURL(backend) + "/api/models/reload"
+	// Round 35 (2026-08-12) bugfix: prefer /api/models/load over /api/models/reload.
+	//
+	// PROBLEM: cppworker /api/models/reload returns 404 "model not currently
+	// loaded" if the model is not yet in VRAM (e.g. just after cppworker restart,
+	// before lazy-load triggered by first request). In that case the cached
+	// "loaded" state in balancer's llamaCppMetricsPoller is stale (from previous
+	// cppworker instance), preflight triggers reload based on stale cache, reload
+	// fails with 404, model stays unloaded, Cline gets 503+Retry-After loop until
+	// its 120s timeout → ECONNREFUSED (after balancer restart from earlier crash).
+	//
+	// FIX: /api/models/load already handles both cases:
+	//   - Model not loaded: starts load (202 + progressUrl)
+	//   - Model loaded with different params: unload + reload
+	//   - Model loaded with same params: returns 200 "already_loaded" (dedup)
+	// So we can safely use /api/models/load for both preflight (loaded<requested)
+	// and recovery (model gone after restart) without a separate fallback path.
+	//
+	// Trade-off: /api/models/load writes a "dedup by path" log when model is
+	// already loaded with same options. That's fine — it confirms the model
+	// is ready and metrics_poller will pick up the state on next 30s poll.
+	targetURL := p.getBackendBaseURL(backend) + "/api/models/load"
 
 	reloadPayload, _ := json.Marshal(map[string]interface{}{
 		"name":        modelName,
 		"contextSize": requestedNCtx,
-		"force":       true,
-		"reason":      "balancer preflight async auto-reload (loaded<requested)",
+		// "force" removed: /api/models/load doesn't have this field.
+		// The "reason" field is also load-specific (it triggers profile re-apply).
+		"reason": "balancer preflight async auto-load-or-reload (loaded<requested or cppworker restart)",
 		// Phase 1 (2026-07-06): RAM fallback to maximize n_ctx in 8GB VRAM.
 		// Without q4_0 KV-cache + GPU-offload=-2, gemma-4 maxes at ~17K n_ctx.
 		"kvCacheType": "q4_0",

@@ -536,6 +536,22 @@ func (m *IdleUnloadManager) checkAndUnload() {
 		if referenceTime.IsZero() {
 			referenceTime = model.LoadedAt
 		}
+		// Round 35 (2026-08-12) bugfix: SIGSEGV-safe guard. Если ОБА LastUsedAt
+		// и LoadedAt — zero values (паника в ListModels / race с LoadModelWithOpts,
+		// или cppworker только что стартовал), не трогаем модель. Раньше
+		// now.Sub(zeroTime) = now = огромное значение (миллиарды наносекунд с 0001-01-01),
+		// idleTime > idleTimeout = true → UnloadModel → SIGSEGV в llama_free
+		// (use-after-free: handle ещё не инициализирован полностью).
+		//
+		// Это был один из источников "model loaded then immediately reset" —
+		// cppworker SIGSEGV'ился в IdleUnloadManager.Start.func1 сразу после
+		// load complete, потому что load только что завершился и временно
+		// model.LastUsedAt мог быть zero, а LoadedAt мог быть не обновлён.
+		if referenceTime.IsZero() {
+			logger.Get().Debugw("idle unload: skip — reference time is zero (model just loaded or in transient state)",
+				"model", model.Name, "state", model.State)
+			continue
+		}
 		idleTime := now.Sub(referenceTime)
 		// ВАЖНО (2026-06-22): убрано условие `&& model.TotalQueries == 0`.
 		// Раньше модель, загруженная через ensureModelLoaded, но не получившая

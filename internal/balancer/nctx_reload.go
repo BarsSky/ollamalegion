@@ -692,6 +692,12 @@ func (c *NCtxReloadCoordinator) DoReload(
 		"force":       true,
 		"reason":      "auto-reload: client request exceeded current n_ctx",
 		"gpuLayers":   -2,
+		// Round 34 (2026-08-12) Phase 4: default flashAttn=-1 (auto) для optimal
+		// performance. User's expectation: "балансер всегда использует настройки
+		// заточенные под оптимальную скорость и производительность - это mmap,
+		// flash_attention и настраивает gpu_layers -2". AdaptiveStrategy может
+		// переопределить (см. enrichReloadPayload).
+		"flashAttn":   -1,
 		"useMmap":     true,
 	}
 	if strategy != nil {
@@ -754,6 +760,62 @@ func (c *NCtxReloadCoordinator) DoReload(
 		// Подменяем body и status — дальнейший код ожидает StatusOK + JSON.
 		body = pollBody
 		resp.StatusCode = http.StatusOK
+	}
+
+	// Round 35 (2026-08-12) bugfix: fallback to /api/models/load if reload returns
+	// 404 "model not currently loaded". This happens when cppworker was just
+	// restarted but balancer's metrics cache still says the model is loaded
+	// (stale data from previous cppworker instance). Without this fallback,
+	// preflight triggers reload → 404 → client gets 503+Retry-After loop until
+	// its 120s timeout → ECONNREFUSED.
+	if resp.StatusCode == http.StatusNotFound && strings.Contains(string(body), "not currently loaded") {
+		loadEndpoint := backendAddr + "/api/models/load?wait=true&waitTimeoutSec=300"
+		logger.Get().Warnw("[nctx_reload] backend: reload returned 404 (model not currently loaded), falling back to /api/models/load",
+			"backend_id", backendID, "model", modelName, "target_n_ctx", plan.NewNCtx)
+		// Reuse the same payload, but /api/models/load doesn't support
+		// "force" field — it handles unload-then-load internally.
+		loadPayload, _ := json.Marshal(map[string]interface{}{
+			"name":         modelName,
+			"contextSize":  plan.NewNCtx,
+			"reason":       "balancer nctx_reload fallback (cppworker restart detected)",
+			"kvCacheType":  payloadMap["kvCacheType"],
+			"gpuLayers":    payloadMap["gpuLayers"],
+			"useMmap":      payloadMap["useMmap"],
+			"flashAttn":    payloadMap["flashAttn"],
+		})
+		resp.Body.Close()
+		resp, err = loader.PostReload(rctx, loadEndpoint, loadPayload)
+		if err != nil {
+			cur.err = fmt.Errorf("load fallback HTTP request failed: %w", err)
+			logger.Get().Errorf("[nctx_reload] backend %s: %v", backendID, cur.err)
+			return cur.err
+		}
+		body, _ = io.ReadAll(resp.Body)
+		// Same 202 → poll handling as above
+		if resp.StatusCode == http.StatusAccepted {
+			progressURL, perr := extractProgressURL(body, backendAddr)
+			if perr != nil {
+				cur.err = fmt.Errorf("load fallback returned 202 but progressUrl parse failed: %w (body: %s)", perr, string(body))
+				logger.Get().Errorf("[nctx_reload] backend %s: %v", backendID, cur.err)
+				return cur.err
+			}
+			deadline, hasDeadline := rctx.Deadline()
+			maxWait := 10 * time.Minute
+			if hasDeadline {
+				remaining := time.Until(deadline) + 60*time.Second
+				if remaining < maxWait {
+					maxWait = remaining
+				}
+			}
+			pollBody, pollErr := pollLoadProgress(rctx, loader, backendAddr, progressURL, maxWait, backendID)
+			if pollErr != nil {
+				cur.err = pollErr
+				logger.Get().Errorf("[nctx_reload] backend %s: %v", backendID, cur.err)
+				return cur.err
+			}
+			body = pollBody
+			resp.StatusCode = http.StatusOK
+		}
 	}
 
 	const maxRetries = 5

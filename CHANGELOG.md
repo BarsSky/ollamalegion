@@ -5,6 +5,319 @@
 Формат ведётся в соответствии с [Keep a Changelog](https://keepachangelog.com/ru/1.0.0/),
 и этот проект придерживается [Semantic Versioning](https://semver.org/lang/ru/).
 
+## [Unreleased — 0.5.21 (Round 35)]
+
+### 🐛 Bug fix
+
+#### "Model loaded then immediately reset" — preflight triggers reload 404 (Round 35, 2026-08-12)
+
+**Проблема (v0.5.20)**: пользователь сообщил "проверил через Cline — модель
+загрузилась и тут же сбросилась". Логи cppworker показали:
+- HTTP 200 OK для `/v1/chat/completions` (1m20s duration) — `clamping n_predict
+  to fit n_ctx`, `n_ctx=65536`, `prompt_tokens=20302`
+- `AbortWatcher: abort requested via C-bridge` (context canceled — Cline 120s timeout)
+- `SIGSEGV: segmentation violation` в `IdleUnloadManager.Start.func1`
+- container exit code 2 (Go panic, не graceful shutdown)
+- Docker auto-restart → container up 1m → опять SIGSEGV в IdleUnloadManager
+
+После рестарта: балансер polling показывает `loaded_models: 0` (cppworker правда
+пустой), но при Cline 65K request — preflight triggers `POST /api/models/reload`,
+cppworker отвечает `404 "model not currently loaded: model gemma-4-E4B-it-Q4_K_M
+not found"`, reload не происходит, Cline получает `503 + Retry-After` loop до
+120s timeout → `ECONNREFUSED` (после краха балансера в Round 34 mutex race).
+
+WebUI монитор в это время засыпан `502 Bad Gateway` на `/api/v1/cluster`,
+`/api/v1/queue`, `/api/v1/candidates` и т.д. — stale ошибки от crash loop
+балансера, который сам не перезапускался.
+
+**Root cause (3 связанных бага)**:
+
+1. **`/api/models/reload` не работает для не загруженной модели** (cppworker
+   `handlers_model.go:1085-1086`): handleReloadModel вызывает
+   `backend.GetModel(req.Name)` и возвращает 404 если модель не загружена. Это
+   КОРРЕКТНО для reload (перезагрузка = unload + load, требует loaded state),
+   но НЕПРАВИЛЬНО для preflight, который может срабатывать на stale cache
+   (балансер думает "loaded", а cppworker только что стартовал и ничего не
+   загружено).
+
+2. **Балансер preflight использует только `/api/models/reload`** (как sync, так
+   и async path): `nctx_reload_handlers.go:788` и `nctx_reload.go:719`. Когда
+   cppworker был перезапущен (например после SIGSEGV), балансер всё ещё верит
+   stale кэшу "loaded" из llamaCppMetricsPoller (который обновляется раз в 30s,
+   первое обновление — `loaded_models: 0`, но stale состояние из *предыдущего*
+   cppworker instance могло остаться в метриках). Preflight триггерит reload →
+   404 → клиент в loop.
+
+3. **IdleUnloadManager может SIGSEGV'нуть** в `bridge_free_model` если
+   reference time is zero: `cppbackend/model_manager.go:539`. Условие
+   `now.Sub(zeroTime) = now` → `idleTime > idleTimeout` → UnloadModel →
+   `llama_free` / `llama_model_free` → SIGSEGV в C-bridge. Причина zero
+   reference time: race в ListModels во время `LoadModelWithOpts`, или cppworker
+   только что стартовал и state не успел заполниться.
+
+**Fix (3 файла, 1 compose + 1 config)**:
+
+**`internal/balancer/nctx_reload_handlers.go:786`** — async reload path
+(используется из preflight): переключил с `/api/models/reload` на
+`/api/models/load`. `handleLoadModel` уже умеет все 3 случая:
+- model not loaded: 202 + start background load
+- model loaded with different params: unload + reload
+- model loaded with same params: 200 "already_loaded" (dedup)
+
+Так что preflight теперь работает для cppworker-just-restarted state без 404.
+
+**`internal/balancer/nctx_reload.go:765-825`** — sync reload path
+(используется из bridge_err → DecideReloadBackend): добавил fallback в конце
+существующего 202 → poll handling. Если reload возвращает 404 "not currently
+loaded" — переключаемся на `/api/models/load?wait=true&waitTimeoutSec=300` с тем
+же payload (но без `force: true` — load сам делает unload если нужно). Также
+использует extractProgressURL + pollLoadProgress для 202 → load complete
+polling.
+
+**`internal/cppbackend/model_manager.go:538-549`** — `checkAndUnload` SIGSEGV
+guard: если `referenceTime` (LastUsedAt или LoadedAt) is zero — skip unload
+(debug log). Раньше `now.Sub(zeroTime) = огромное значение` → unload
+немедленно → use-after-free в C-bridge.
+
+**`config/cppworker-defaults.json:41`** — `idleUnloadMinutes: 120` → `0`
+(off). Дефолт был 2h, но cppworker-ы с долгоживущими моделями (типичный
+bundled use case) не должны выгружать по таймеру — выгрузка по `keep_alive`
+от клиента достаточно. IdleUnloadManager остаётся в коде, но не запускается
+по дефолту. Можно включить через `LB_CPPWORKER_IDLE_UNLOAD_MINUTES` env или
+`idleUnloadMinutes` в config.
+
+**`deployments/docker-compose.cppworker-bundled-with-agent.yml:40`** —
+обновил image tag: `cppworker-bundled-r34` → `cppworker-bundled-r35`.
+
+**Verified live (Cline 65K scenario, 2026-08-12 18:46-18:54 UTC)**:
+1. ✅ Unloaded model + Cline 65K → load → 200 OK (6.9s, 101 completion tokens)
+2. ✅ 32K loaded + Cline 65K → reload (503+Retry-After: 5) → wait → 200 OK
+3. ✅ 65K loaded + Cline 65K → быстрый 200 OK (2.8s)
+4. ✅ Model now stable (no SIGSEGV in IdleUnloadManager — manager disabled)
+5. ✅ Cline больше не получает ECONNREFUSED
+
+**Files changed**:
+- `internal/balancer/nctx_reload_handlers.go` (1 hunk, ~20 lines)
+- `internal/balancer/nctx_reload.go` (1 hunk, ~60 lines — fallback block)
+- `internal/cppbackend/model_manager.go` (1 hunk, ~10 lines — SIGSEGV guard)
+- `config/cppworker-defaults.json` (1 line: 120 → 0)
+- `deployments/docker-compose.cppworker-bundled-with-agent.yml` (1 line:
+  image tag r34 → r35)
+
+**New image**: `ollama-legion/balancer:cppworker-bundled-r35` (built and
+deployed, healthy).
+
+**Reusable patterns (cross-project)**:
+
+1. **Reload vs Load endpoint selection** в preflight: для cppworker (и
+   любого backend где есть lazy-load) — `handleLoadModel` всегда правильный
+   выбор, потому что он сам разруливает все 3 случая (load/reload/dedup).
+   `handleReloadModel` имеет precondition "model must be loaded" — не
+   используй его для preflight, только для явного reload от admin/UI.
+   Балансеры и API-шлюзы должны вызывать `load` (идемпотентный), а не
+   `reload` (требует precondition).
+
+2. **Stale cache в poller** vs **fresh state в backend**: при рестарте
+   backend'а его in-memory state сбрасывается, но poller в балансере/мониторе
+   ещё держит stale данные до следующего poll (30s по умолчанию). В это
+   окно preflight может триггернуть операцию на основе stale данных. Решение:
+   endpoint должен быть толерантен к "не загружено" состоянию (т.е. уметь
+   load-from-zero). Альтернатива: poller должен сразу очищать cache при
+   health-check failure (более invasive, ломает graceful restart).
+
+3. **Zero reference time в idle-unload manager** — классическая SIGSEGV-ловушка.
+   `now.Sub(time.Time{})` = ~631139040000000000 ns (год 0001 до 2026 = 2025 лет
+   * 365 дней * 86400 сек * 1e9). Это всегда > idleTimeout → unload немедленно.
+   Всегда проверяй `IsZero()` ПЕРЕД `Sub()`. Особенно важно для time.Time
+   полей которые инициализируются atomic.Value.Load() (который может вернуть
+   nil).
+
+## [Unreleased — 0.5.20 (Round 34)]
+
+### 🐛 Bug fix
+
+#### Preflight async reload env vars не доходили до контейнера (Phase 0, commit `r34`)
+
+**Проблема (v0.5.19)**: после Round 33 413 error fix пользователь продолжал
+получать `preflight: prompt + n_predict exceeds n_ctx for this backend` от
+Cline. Live-диагностика показала: balancer использует SYNC режим
+reload-а (блокирует 30–120 сек), хотя `.env.bundled-with-agent` содержит
+`LB_NCTX_PREFLIGHT_ASYNC_RELOAD=true`.
+
+**Root cause**: в `deployments/docker-compose.cppworker-bundled-with-agent.yml`
+(и `bundled-full.yml`) `environment:` блок `loadbalancer:` НЕ содержал
+`LB_NCTX_PREFLIGHT_ASYNC_RELOAD` и `LB_NCTX_PREFLIGHT_ASYNC_RETRY_AFTER_SEC`.
+Docker compose **НЕ** подхватывает env из `.env`-файла автоматически —
+только явно перечисленные в `environment:` блоке переменные. Без них
+async preflight mode был выключен.
+
+**Fix** (`deployments/docker-compose.cppworker-bundled-with-agent.yml` +
+`deployments/docker-compose.bundled-full.yml`): добавлены 3 env var в
+loadbalancer environment:
+- `LB_NCTX_RELOAD_TIMEOUT_SEC=${LB_NCTX_RELOAD_TIMEOUT_SEC:-300}`
+  (default 300 сек для 5GB моделей на RTX 3070 — было 120)
+- `LB_NCTX_PREFLIGHT_ASYNC_RELOAD=${LB_NCTX_PREFLIGHT_ASYNC_RELOAD:-true}`
+- `LB_NCTX_PREFLIGHT_ASYNC_RETRY_AFTER_SEC=${LB_NCTX_PREFLIGHT_ASYNC_RETRY_AFTER_SEC:-30}`
+
+**Правило (reusable)**: docker compose НЕ подхватывает переменные
+автоматически — каждый env, который должен попасть в контейнер,
+должен быть **явно** указан в `environment:`. `.env` файл — это
+**только** источник значений, не магия. Проверяйте
+`docker inspect <container> --format '{{range .Config.Env}}{{println .}}{{end}}'`
+чтобы убедиться что env реально дошли.
+
+---
+
+#### Profile mismatch detection (Phase 2, commit `r34`)
+
+**Проблема (v0.5.19)**: preflight проверял **только** n_ctx. Если клиент
+запрашивал `options.kv_cache_type=q8_0`, а модель была загружена с
+`f16` (или наоборот), preflight возвращал NoOp → proxy → cppworker
+либо ОК (если параметры совместимы), либо 502 от cppworker.
+
+**User expectation (2026-08-12)**: «если клиент присылает запрос с
+включением отличных флагов от тех с которыми загружена модель то вот
+теперь необходимо эту модель выгрузить если она загружена и загрузить
+с новыми параметрами».
+
+**Fix** (`internal/balancer/preflight_nctx.go` + `preflight_helper.go`):
+
+1. `RequestMeta` расширен полями `RequestedKvCacheType` (string),
+   `RequestedFlashAttnType` (int), `RequestedUseMmap` (*bool).
+2. `ollamaChatRequestRaw` парсит `options.kv_cache_type`,
+   `options.flash_attn`, `options.use_mmap` из Ollama body.
+3. `NCtxBackendState` расширен `CurrentKvCacheType`,
+   `CurrentFlashAttnType`, `CurrentUseMmap` (из llamaMetrics.LoadedModels
+   через `GetLlamaCppMetrics`).
+4. `DecidePreflight` после n_ctx-проверки вызывает `paramsMatch(state, meta)`:
+   - если current пустое (`""`/`0`/`nil`) — assume match (избегаем ложных reload
+     до получения callback'а от cppworker)
+   - если current известно и не совпадает с requested — force reload
+     с **тем же target n_ctx** (params не меняют n_ctx)
+5. `paramsMatch` helper вынесен в отдельную функцию для unit-тестирования.
+
+**Правило (reusable)**: preflight системы должны сравнивать **все**
+параметры, которые влияют на runtime behavior, а не только n_ctx.
+«Match» на n_ctx + mismatch на kv_cache_type = бессмысленный reload.
+
+---
+
+#### Stale `lastKnownNCtx` после `idle_unload_after` (Phase 3, commit `r34`)
+
+**Проблема (v0.5.19)**: `NCtxReloadCoordinator.LastKnownNCtx` обновлялся
+только при `handleChat` / `handleGenerate` (inference path). Когда
+cppworker сам выгружал модель по `idle_unload_after` (10 минут) или
+WebUI/CLI вызывал `POST /api/models/unload`, balancer продолжал
+считать модель загруженной с большим n_ctx. Preflight возвращал NoOp →
+proxy → cppworker → 502 (connection refused, модель не загружена).
+
+**Live repro** (Round 33): пользователь сделал запрос → preflight NoOp
+(32K fits) → proxy → cppworker EOF → retry → auto-load (ещё 84 сек)
+→ final 502. Каждое соединение = 1.5+ минуты. Cline жалуется «обрыв».
+
+**Fix** (3 уровня):
+
+1. **cppworker → balancer callbacks** (`cmd/cppworker/balancer_register.go`):
+   - `notifyModelLoaded` расширен параметрами `kvCacheType`, `flashAttnType`,
+     `useMmap` (Phase 2 метрики).
+   - `notifyModelUnloaded` — **новый** callback, fires на `handleUnloadModel`
+     и async reload'ах (`cmd/cppworker/handlers_model.go`,
+     `handlers_model_async.go`).
+
+2. **Balancer handlers** (`internal/api/handlers_internal.go`):
+   - `handleLlamaModelLoaded` дополнительно вызывает
+     `nctxReload.SetLastKnownNCtx(backendID, contextSize)` при `contextSize > 0`.
+   - **Новый** `handleLlamaModelUnloaded` — POST
+     `/api/v1/internal/llama-model-unloaded` — удаляет модель из
+     `LoadedModels` + сбрасывает `lastKnownNCtx` в 0.
+
+3. **Proxy getter** (`internal/balancer/cluster_state.go`):
+   - `GetNCtxReloadCoordinator()` — геттер чтобы `internal/api` пакет мог
+     дотянуться до coordinator'а без импорта `internal/balancer`.
+
+**Правило (reusable)**: any distributed state cache должен синхронизироваться
+на ВСЕ операции, которые его меняют (load, unload, reload, manual edit),
+а не только на одну (inference). "Coordinator state" в одном компоненте
+без callbacks от других = stale data = bugs.
+
+---
+
+### ✨ New feature
+
+#### Stream dialog с keepalives во время async reload (Phase 1, commit `r34`)
+
+**User expectation (2026-08-12)**: «балансер должен иметь
+соответствующий корректный диалог с клиентом поддерживая сним обмен
+пока модель не готова».
+
+**Проблема (v0.5.19)**: async preflight reload возвращал
+`HTTP 503 + Retry-After: 30` для **всех** клиентов. Cline получал
+503, прерывал stream, ретраил — 30+ сек потеряно на каждый reload.
+Open WebUI аналогично.
+
+**Fix** (`internal/balancer/preflight_stream_dialog.go`, NEW file):
+при `PreflightAsyncReload` И `isStreamingFromBody`:
+
+1. Hijack HTTP-соединение (`http.Hijacker` interface).
+2. Открыть chunked SSE response (200, `Content-Type: text/event-stream`,
+   `X-Round-34-Stream-Dialog: keepalive-during-reload` header).
+3. Spawn goroutine которая пишет `data: {...}\n\n` keepalive каждые
+   `LB_PREFLIGHT_STREAM_DIALOG_KEEPALIVE_SEC` (default 5).
+   Формат OpenAI-compatible + custom `x_round_34_keepalive` поле с
+   target_n_ctx / elapsed_ms / phase.
+4. Sync ждать `NCtxReloadCoordinator.WaitReloadDone(backend, model, timeout)`
+   (Round 31 dedup уже есть — параллельные reload'ы коалесцируются).
+5. По завершении reload'а — стоп keepalive goroutine, write
+   `x_round_34_reload_done` + `[DONE]` marker, close connection.
+6. Клиент ретраит (state теперь NoOp, заходит в обычный proxy flow).
+
+**Env vars** (новые):
+- `LB_PREFLIGHT_STREAM_DIALOG` (default `true`) — opt-out flag для
+  тестов / постепенного rollout'а.
+- `LB_PREFLIGHT_STREAM_DIALOG_KEEPALIVE_SEC` (default `5`).
+
+**Fallback** (если hijack недоступен — HTTP/2, etc):
+`runInferencePreflightStreamDialogPlain` использует Go's standard
+ResponseWriter + `http.Flusher` для plain flush keepalives (тоже работает,
+чуть менее эффективно).
+
+**Правило (reusable)**: для long-running operations (reload, deploy,
+training) отдавать 503+Retry-After = потеря времени на client retry.
+Stream с keepalives = клиент держит connection, видит «alive»,
+retry происходит по факту готовности. Стоит ~5 строк кода,
+экономит секунды на каждом reload.
+
+---
+
+#### Adaptive strategy → reload payload (Phase 4, commit `r34`)
+
+**User expectation (2026-08-12)**: «балансер всегда использует настройки
+заточенные под оптимальную скорость и производительность - это
+mmap, flash_attention и настраивает gpu_layers -2».
+
+**Что уже было**: `enrichReloadPayload` в `internal/balancer/nctx_reload_adaptive.go`
+добавлял `gpuLayers`, `kvCacheType`, `useMmap` в reload payload из
+`AdaptiveStrategy`. НО: `flashAttn` НЕ передавался → cppworker
+использовал свой default (который на Q4_K_M + f16 KV cache = 0/off,
+что ухудшает speed).
+
+**Fix** (`internal/balancer/nctx_reload_adaptive.go` + `nctx_reload.go`):
+
+1. `AdaptiveStrategy` расширен `FlashAttnType int` (Round 34 Phase 4).
+2. `enrichReloadPayload` теперь передаёт `payload["flashAttn"]`
+   из strategy (если != 0).
+3. `nctx_reload.go:689-696` (default payload) — `flashAttn: -1`
+   (auto), `gpuLayers: -2` (auto-fit), `useMmap: true`. Это
+   optimal combo для любых reasoning моделей (gemma-4, qwen3-thinking,
+   deepseek-r1, kimi-k2).
+
+**Правило (reusable)**: explicit "auto" values (-1, -2) дают cppworker'у
+возможность выбрать лучший вариант для конкретной модели/VRAM. Hard-coded
+значения (например `gpuLayers=42`) могут OOM'ить на слабых GPU или
+быть sub-optimal на сильных.
+
+---
+
 ## [0.5.19 — 2026-08-10]
 
 MINOR-релиз. **Round 32: полный Bug 2 fix end-to-end** — закрывает три

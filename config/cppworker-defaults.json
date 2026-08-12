@@ -38,5 +38,5 @@
   "enableReasoning": true,
   "reasoningBudget": 0,
   "enableBatchedParallel": false,
-  "idleUnloadMinutes": 120
+  "idleUnloadMinutes": 0
 }

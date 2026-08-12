@@ -11,7 +11,71 @@
 
 ## Что нового
 
-**v0.5.19 — 2026-08-10** (последний релиз, [полный CHANGELOG](CHANGELOG.md)):
+**v0.5.22 — 2026-08-13** (последний релиз, [полный CHANGELOG](CHANGELOG.md)):
+
+Round 35 (коммиты `6140a59` + `df7962e` + `f22dc13`) — crash-loop "model
+loaded then immediately reset" полностью закрыт. CppWorker bundled-with-agent
+r35 image deployed, no SIGSEGV в логах 26+ минут uptime.
+
+- 🐛 **Cline 65K → reload→load fallback** — раньше cppworker
+  `/api/models/reload` возвращал 404 "model not currently loaded"
+  когда cppworker только что стартовал (после SIGSEGV auto-restart) и
+  ещё не успел загрузить модель, а балансер уже верил в stale
+  `loaded: true` от llamaCppMetricsPoller. Cline получал 503+Retry-After
+  loop до 120s → ECONNREFUSED. Fix: async reload path переключён с
+  `/api/models/reload` (требует loaded state) на `/api/models/load`
+  (идемпотентный, handles all 3 cases: not-loaded → load,
+  different params → unload+load, same params → 200 dedup).
+  Sync reload path получил 404 → load fallback после existing
+  202→poll handling. Reuses same payload minus "force" field.
+
+- 🐛 **C++ chat template cgo SIGSEGV** — `common_chat_templates_apply`
+  (c/bridge/csrc/chat_thinking.cpp) периодически SIGSEGV'ит в cgo
+  execution → exit code 2 → crash-loop. Stack trace: `runtime.cgocall`
+  → `bridge_apply_chat_template` в `bridge.go:834`. SIGSEGV-в-cgo
+  catchable через `defer recover()` в том же goroutine (Go runtime
+  конвертирует через `runtime.sigpanic`). Fix: `func() { defer
+  recover() }()` wrapper в `cmd/cppworker/handlers_chat.go:281-310`
+  → при cgo SIGSEGV fallback на простой C API `llama_chat_apply_template`
+  (стабильный, без C++ common::chat). Для gemma-4 нативный путь
+  всё равно ничего не даёт (template не поддерживает enable_thinking),
+  так что C++ путь создавал crash opportunities без пользы.
+
+- 🐛 **IdleUnloadManager SIGSEGV** — `checkAndUnload` падал в
+  `bridge_free_model` если `LastUsedAt.IsZero()` (модель только что
+  загружена). `now.Sub(time.Time{})` = 631 трлн наносекунд
+  (2025 лет) → idleTime > idleTimeout → unload сразу →
+  use-after-free в C-bridge. Fix: `IsZero()` guard ПЕРЕД `Sub()` в
+  `internal/cppbackend/model_manager.go:538-549` (skip unload + debug
+  log). Также `config/cppworker-defaults.json:41` `idleUnloadMinutes:
+  120 → 0` (off по дефолту; client `keep_alive` достаточно для bundled
+  use case).
+
+- 🐛 **4-phase preflight (Round 34 follow-up, commit `6140a59`)** —
+  реализация была в working tree с прошлой сессии, восстановлена
+  отдельным коммитом. Phase 0: compose env vars (`LB_NCTX_*`) для
+  async reload mode. Phase 1: stream dialog с SSE/NDJSON keepalives
+  во время async reload (Cline не таймаутит). Phase 2: profile
+  mismatch detection (kv_cache_type, flash_attn, use_mmap, не только
+  n_ctx). Phase 3: SetLastKnownNCtx on cppworker load/unload
+  callbacks. Phase 4: optimal auto-tune params (gpuLayers=-2,
+  flashAttn=-1, useMmap=true) в reload payload. Plus 5 cascading
+  bug fixes: orphan `mu.Unlock()` (Balancer crash через 75 min),
+  `LB_NCTX_PREFLIGHT_ENABLED` env override, preflight для OpenAI
+  path (Cline bypass'ил Ollama preflight), `NumCtx` field в
+  `openAIChatRequestRaw`, `RequestedNCtxOverride` check в
+  `DecidePreflight`.
+
+- 🏗️ **Cppworker image `gpu-86-abort-r35`** (3.86GB, ~18 мин CUDA
+  build, deployed 2026-08-12 22:54 UTC). Cppworker bundled r35
+  image. Деплой через `docker compose up -d --no-build --no-deps`
+  (compose пытается rebuild из source если `build:` секция есть в
+  compose, нужно `--no-build` для использования freshly-tagged
+  image). Env override в BOTH `deployments/.env` AND
+  `deployments/.env.bundled-with-agent` (compose auto-loads `.env`
+  без суффикса).
+
+**v0.5.19 — 2026-08-10** ([полный CHANGELOG](CHANGELOG.md)):
 
 - 🐛 **Gemma-4 `<|channel>thought` reasoning tag leak** — при включённой настройке «применять размышления» через балансировщик в ответе приходил смешанный поток `thought\n[text]\n<channel|>` без отделённого reasoning. Gemma-4 GGUF tokenizer содержит special tokens `<|channel>`, `<channel|>`, `<|think|>`, `<think|>` (найдены через `python -c "data.find(b'<|channel|>')"`); gemma-4 chat template рендерит reasoning как `<|channel>thought\n[text]\n<channel|>` **только когда `message.get('tool_calls')`**. cppworker `thinkTagPairs` содержал только 4 стандартных пары (`<think>`/`<thinking>`/`<reasoning>`/`<analysis>`) — `SplitReasoningContent` не split'ил channel format. Fix: добавлены 5 новых tag pairs в **обоих** местах — `cmd/cppworker/reasoning_content.go:thinkTagPairs` + `internal/balancer/llamacpp_translate_resp.go:stripReasoningTags` (defensive double-coverage). balancer получил `stripWithBoundary()` helper (prefix-safe orphan strip, иначе `<think` сожрал бы `<think|>`) + `sharedClose[]` boolean array (root cause первой попытки фикса: `closeTags` для thought и analysis одинаковые `\n<channel|>`, `ReplaceAll` для iter 1 сжирал close, нужный для iter 2 → analysis пара не split'алась). 33 новых test case'а (7 cppworker + 8 standalone pkg + 12 balancer strip + 6 cppworker split standalone). Live verify: gemma-4 с plain-text prompt НЕ эмитит channel format (модель использует plain text reasoning для обычного chat) — это ожидаемо, фикс активируется через Cline с tools или Qwen3.x с native thinking mode.
 - ⚡ **Cancel latency 8× faster + prefill heartbeat** — Round 31 #6 (v0.5.16) детектил cancel за 8 секунд на Windows из-за FIN-only close. Fix: **C-bridge n_batch 512 → 64** (8x чаще abort check в prefill loop, ~100-250ms вместо 1-2s; prefill total time не меняется, CUDA amortizes kernel launch overhead; gen phase не зависит от n_batch, использует batch=1). 3 точки: `c/bridge/bridge.c:1381, 1644` + `c/bridge/bridge.go:108-117` + `c/bridge/bridge_stub.go:82-83`. Plus **prefill heartbeat** (immediate client feedback пока C-bridge обрабатывает 5-30s prompt phase): SSE comment `: prefill_started_at=...` сразу после `WriteHeader(200)` в `cmd/cppworker/handlers_openai.go:770-785` (RFC §4.4 keep-alive, клиенты игнорируют но connection alive) + NDJSON `{"done":false}` в `handlers_chat.go:562-577` + `handlers_generate.go:412-419` (Ollama-формат, OpenWebUI tolerates строки без "message" поля). Live verify: heartbeat emitted BEFORE first data token (5K-token prompt, gemma-4), cancel latency **0ms** (с 8s на v0.5.16), TTFB 2-4s на gemma-4 reasoning (prefill-bound, не cancel bug).
@@ -136,10 +200,19 @@ docker compose -f deployments/docker-compose.cppworker-bundled-with-agent.yml \
 ```
 Клиент (Cline/OpenWebUI)
   → Balancer (:18080) — routing, session affinity, n_ctx auto-reload
-    → CppWorker (:18092) — llama.cpp inference
+    ├── Preflight (Round 35) — 4-phase n_ctx + profile mismatch detection
+    │   ├── Phase 0: env vars (LB_NCTX_*)
+    │   ├── Phase 1: stream dialog with SSE/NDJSON keepalives
+    │   ├── Phase 2: kv_cache_type / flash_attn / use_mmap mismatch
+    │   ├── Phase 3: SetLastKnownNCtx on cppworker load/unload
+    │   └── Phase 4: optimal auto-tune params in reload payload
+    ├── Reload→Load fallback — if /api/models/reload returns 404
+    │   (model not currently loaded), use /api/models/load (idempotent)
+    └── CppWorker (:18092) — llama.cpp inference
       ├── Adaptive Loader — SelectStrategy: f16→q8_0→q4_0, MoE, partial offload
       ├── KV-cache fallback — работает без GGUF metadata
-      └── Auto-reload API — /api/models/reload с адаптивными параметрами
+      ├── Auto-reload API — /api/models/reload + /api/models/load
+      └── Chat template — native C++ path wrapped in recover() (Round 35)
     → Agent (:18032) — NVML GPU/CPU/RAM метрики, health check
   → WebUI (:18083) — дашборд, мониторинг, sparkline
 ```

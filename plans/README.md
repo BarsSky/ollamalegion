@@ -1,9 +1,10 @@
 # OllamaLegion — Roadmap (живой документ)
 
-> **Дата обновления:** 2026-07-11 (Phase 8 final)
+> **Дата обновления:** 2026-08-13 (Round 35 deployed)
 > **Назначение:** единственный источник правды по реализованному и оставшемуся в проекте OllamaLegion.
 > Все устаревшие/завершённые планы — в `plans/archive/`.
-> **HEAD:** `4c706b0` on branch `centurion` (v1.0-rc1 released).
+> **HEAD:** `f22dc13` on branch `centurion` (v0.5.22 — Round 35 fixes).
+> **Live binary:** `ol-bundled-cppworker-gpu:gpu-86-abort-r35` + `ol-bundled-balancer:cppworker-bundled-r35` (5 healthy containers).
 
 ---
 
@@ -15,8 +16,12 @@
 | **[7.1a — Self-hosted CI runner](2026-q3-roadmap.md#7-cicd-и-тестирование)** | `scripts/setup-runner.ps1` + `scripts/check-runner.ps1` + `docs/ci/self-hosted-runner.md` | Месяц 1 (июль 2026) | ✅ DONE 2026-06-28 (commit `01b2afc`) |
 | **[7.1 — GitHub Actions CI workflow](2026-q3-roadmap.md#7-cicd-и-тестирование)** | `.github/workflows/ci.yml` + `.golangci.yml` | Месяц 1 (июль 2026) | ✅ DONE 2026-06-28 (commit `64e100d`) |
 | [Production-ready (P.1-P.4)](2026-q3-production-ready-plan.md) | `plans/2026-q3-production-ready-plan.md` | Phase 8 (июль 2026) | ✅ **DONE 2026-07-11**: P.1 ✅ P.2 ✅ P.3 ✅ (research) P.4 ✅ |
+| **[Round 35 — CppWorker bundled-with-agent r35 (2026-08-12)](round-35-cppworker-bundled-r35.md)** | `plans/round-35-cppworker-bundled-r35.md` | Round 35 (август 2026) | ✅ **DONE 2026-08-13**: 4-phase preflight + reload→load fallback + cgo SIGSEGV recover + idleUnload SIGSEGV guard |
 
-**Все планы Q3 W3-4 + Phase 8 реализованы.** Проект готов к 1.0 release (требуется manual hardware smoke).
+**Все планы Q3 W3-4 + Phase 8 + Round 35 реализованы.** Round 35 закрывает
+crash-loop "Cline 65K → balancer preflight → cppworker SIGSEGV".
+Текущая цель — следующие раунды (Round 36+) с дополнительными
+bugfix и фичами (см. `CHANGELOG.md`).
 
 ### Phase 8 deliverables (полный список, 2026-07-11)
 
@@ -153,20 +158,22 @@
 
 ---
 
-## 4. Quality metrics (Phase 8 final)
+## 4. Quality metrics (Phase 8 final + Round 35)
 
 | Метрика | Значение |
 |---------|----------|
-| **Coverage: balancer** | 53.3% |
+| **Coverage: balancer** | 53.3% (Phase 8) → TBD (post Round 35) |
 | **Coverage: rpccoordinator** | 71.1% |
 | **Coverage: rptensor** | 89.0% |
-| **Total scenario tests** | 231 (3.2s runtime) |
+| **Total scenario tests** | 231+ (Round 35 added preflight_nctx, nctx_reload, cppworker SIGSEGV tests) |
 | **Total test files** | 153+ (across 10 packages) |
-| **Build OK** | ✅ all 3 binaries (balancer, cppworker, agent) |
+| **Build OK** | ✅ all 3 binaries (balancer, cppworker, agent) — Round 35 builds verified |
 | **Lint OK** | ✅ (em-dash, i18n parity) |
 | **EN docs** | 19 (parity with RU) |
 | **i18n keys** | 1072 (en.js / ru.js perfect parity) |
 | **WebUI pages** | 7 (Dashboard, Backends, Models, Sessions, Queue, Logs, Settings, Monitor, Virtual Models) |
+| **Live binary** | `cppworker:gpu-86-abort-r35` (3.86GB) + `balancer:cppworker-bundled-r35` (61.6MB) |
+| **Uptime after Round 35 deploy** | 26+ min, no SIGSEGV/panic |
 
 ---
 
@@ -174,5 +181,8 @@
 
 1. ✅ Phase 8 complete (P.1-P.4 + smoke + i18n + tests) — 2026-07-11
 2. ✅ Tag `v1.0-rc1` released
-3. ⏳ Manual hardware smoke (A10 + Qwen3-A3B) — user
-4. ⏳ Tag `v1.0` final — after smoke
+3. ✅ Round 35 (4-phase preflight + 5 cascading bug fixes + cgo
+   SIGSEGV recover + idleUnload SIGSEGV guard) — 2026-08-13
+4. ⏳ Manual hardware smoke (A10 + Qwen3-A3B) — user
+5. ⏳ Tag `v1.0` final — after smoke
+6. ⏳ Real ggml/NCCL TP fix (P.3 post-1.0) — Q4 2026+

@@ -190,3 +190,8 @@ internal/**/*.backup-*/
 /tests/visual/**/*-actual.png
 /tests/visual/**/*-diff.png
 
+# Round 35 (2026-08-13) cleanup: one-off archive of files moved out of
+# repo root (old round backup dirs, stale logs, scratch scripts).
+# User can `mv .cleanup_archive_20260812 /tmp/` to permanently delete.
+.cleanup_archive_*/
+

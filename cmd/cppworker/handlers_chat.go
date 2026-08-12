@@ -279,10 +279,38 @@ func buildChatPrompt(msgs []chatMessage, modelName string) (string, error) {
 	// soft prompt НЕ нужен, template сам эмитит <think> блоки.
 	// Иначе fallback на soft prompt.
 	if currentConfig != nil && currentConfig.EnableReasoning {
-		nativePrompt, supportsThinking, err := backend.ApplyChatTemplateWithThinking(
-			modelName, "" /* override */, msgsToBridge(msgs),
-			true /* enableThinking */, true, /* addGenerationPrompt */
-		)
+		// Round 35 (2026-08-12) CRITICAL bugfix: wrap C++ native chat template
+		// in recover() to catch cgo SIGSEGV. The native path calls
+		// common_chat_templates_apply (c/bridge/csrc/chat_thinking.cpp) which
+		// periodically SIGSEGV'ится в cgo execution (signal arrived during cgo),
+		// leading to crashloop (exit code 2). Confirmed live: 5+ crashes in 1h
+		// on gemma-4 with Cline 65K requests after async reload.
+		//
+		// SIGSEGV в cgo конвертируется в Go panic через runtime.sigpanic, и
+		// этот panic CATCHABLE в том же goroutine через recover(). После catch
+		// fallback на простой C API (line 320) — llama_chat_apply_template, не
+		// использует C++ common::chat и стабилен.
+		//
+		// Trade-off: recover() в той же goroutine что и cgo — но Go runtime
+		// гарантирует что panic от cgo SIGSEGV всегда recoverable. C-state
+		// после SIGSEGV может быть corrupted, но следующий cgo-вызов (если он
+		// будет) — уже будет проверять handles через Go-уровневые проверки.
+		var nativePrompt string
+		var supportsThinking bool
+		var err error
+		func() {
+			defer func() {
+				if r := recover(); r != nil {
+					logger.Get().Errorw("buildChatPrompt: cgo SIGSEGV in ApplyChatTemplateWithThinking — recovered, falling back to C API",
+						"model", modelName, "panic", fmt.Sprintf("%v", r))
+					err = fmt.Errorf("native cgo panic: %v", r)
+				}
+			}()
+			nativePrompt, supportsThinking, err = backend.ApplyChatTemplateWithThinking(
+				modelName, "" /* override */, msgsToBridge(msgs),
+				true /* enableThinking */, true, /* addGenerationPrompt */
+			)
+		}()
 		if err == nil && nativePrompt != "" {
 			if supportsThinking {
 				logger.Get().Debugw("buildChatPrompt: used native enable_thinking path",

@@ -271,7 +271,7 @@ func (p *Proxy) handleStreamingResponse(w http.ResponseWriter, r *http.Request, 
 					"elapsed_sec", time.Since(startTime).Seconds())
 				if isSSE {
 					p.SendSSEErrorSafe(w, flusher, "loop_detected",
-						"Model produced a repeating pattern, aborting stream to prevent infinite output", backendID)
+						"Model produced a repeating pattern, aborting stream to prevent infinite output", backendID, startTime)
 				} else if isNDJSON {
 					p.SendNDJSONErrorSafe(w, flusher,
 						"Model produced a repeating pattern, aborting stream to prevent infinite output", backendID)
@@ -319,7 +319,7 @@ func (p *Proxy) handleStreamingResponse(w http.ResponseWriter, r *http.Request, 
 				if !clientDisconnected.Load() {
 					if isSSE {
 						p.SendSSEErrorSafe(w, flusher, "idle_timeout",
-							"Backend did not produce a chunk within idle_timeout ("+strconv.FormatFloat(idleTimeout.Seconds(), 'f', 0, 64)+"s). Increase LB_STREAMING_IDLE_TIMEOUT_SEC or model profile StreamingIdleTimeoutSec.", backendID)
+							"Backend did not produce a chunk within idle_timeout ("+strconv.FormatFloat(idleTimeout.Seconds(), 'f', 0, 64)+"s). Increase LB_STREAMING_IDLE_TIMEOUT_SEC or model profile StreamingIdleTimeoutSec.", backendID, startTime)
 					} else if isNDJSON {
 						p.SendNDJSONErrorSafe(w, flusher,
 							"Backend did not produce a chunk within idle_timeout. Increase LB_STREAMING_IDLE_TIMEOUT_SEC.", backendID)
@@ -370,7 +370,7 @@ func (p *Proxy) handleStreamingResponse(w http.ResponseWriter, r *http.Request, 
 						"bytes_streamed", bytesStreamed,
 						"chunk_count", chunkCount,
 					)
-					p.SendSSEErrorSafe(w, flusher, "backend_read_error", "Connection lost during streaming", backendID)
+					p.SendSSEErrorSafe(w, flusher, "backend_read_error", "Connection lost during streaming", backendID, startTime)
 				} else if isNDJSON {
 					// Для NDJSON — отправляем done:true с ошибкой в том же формате,
 					// чтобы клиент корректно завершил парсинг и не получил TransferEncodingError
@@ -395,12 +395,23 @@ func (p *Proxy) handleStreamingResponse(w http.ResponseWriter, r *http.Request, 
 
 // sendSSEDone — отправляет клиенту финальное SSE-событие с done:true.
 // Вызывается из sendSSEErrorSafe для завершения потока.
-func sendSSEDone(w http.ResponseWriter, flusher http.Flusher) {
+//
+// Round 35c+ (2026-08-13): real duration вместо hardcoded 0.
+// streamStart — время начала запроса (для total_duration).
+// Если streamStart.IsZero() (legacy callers), total_duration=0 (fallback).
+func sendSSEDone(w http.ResponseWriter, flusher http.Flusher, streamStart time.Time) {
+	totalDuration := int64(0)
+	if !streamStart.IsZero() {
+		totalDuration = time.Since(streamStart).Nanoseconds()
+		if totalDuration < 0 {
+			totalDuration = 0
+		}
+	}
 	donePayload, _ := json.Marshal(map[string]interface{}{
-		"done":               true,
-		"total_duration":     0,
-		"prompt_eval_count":  0,
-		"eval_count":         0,
+		"done":              true,
+		"total_duration":    totalDuration,
+		"prompt_eval_count": 0,
+		"eval_count":        0,
 	})
 	_, err := w.Write([]byte("data: " + string(donePayload) + "\n\n"))
 	if err != nil {
@@ -435,7 +446,10 @@ func (p *Proxy) SendNDJSONErrorSafe(w http.ResponseWriter, flusher http.Flusher,
 // SendSSEErrorSafe — отправляет клиенту SSE-событие с ошибкой и завершающим done.
 // Единый вызов, предотвращающий TransferEncodingError у клиента (OpenWebUI/aiohttp).
 // Формат: сначала error событие, затем data с done:true.
-func (p *Proxy) SendSSEErrorSafe(w http.ResponseWriter, flusher http.Flusher, code, message, backendID string) {
+//
+// Round 35c+ (2026-08-13): streamStart параметр для real total_duration в done-чанке.
+// Если streamStart.IsZero() (legacy callers), total_duration=0.
+func (p *Proxy) SendSSEErrorSafe(w http.ResponseWriter, flusher http.Flusher, code, message, backendID string, streamStart time.Time) {
 	// Отправляем корректное SSE событие ошибки с done:false — информируем о проблеме
 	errorPayload, _ := json.Marshal(map[string]interface{}{
 		"error":     code,
@@ -457,7 +471,7 @@ func (p *Proxy) SendSSEErrorSafe(w http.ResponseWriter, flusher http.Flusher, co
 
 	// Отправляем done:true в формате data (как обычный завершающий чанк Ollama),
 	// чтобы клиент получил корректный done и завершил поток без ошибок протокола.
-	sendSSEDone(w, flusher)
+	sendSSEDone(w, flusher, streamStart)
 
 	// Явный flush после done — гарантирует что все данные ушли в сокет
 	// до того как Go отправит финальный chunked terminator (0\r\n\r\n).

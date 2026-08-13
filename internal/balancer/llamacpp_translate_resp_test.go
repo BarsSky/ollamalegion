@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"strings"
 	"testing"
+	"time"
 )
 
 // ============================================================
@@ -141,7 +142,7 @@ func TestTranslateSSEChatToOllama_ToolCalls(t *testing.T) {
 	}
 
 	sseData, _ := json.Marshal(sseChunk)
-	result := translateOpenAISSEDataToOllama("/api/chat", sseData, "test-model", nil)
+	result := translateOpenAISSEDataToOllama("/api/chat", sseData, "test-model", nil, time.Time{})
 	if result == nil {
 		t.Fatal("expected non-nil result from SSE translation")
 	}
@@ -182,7 +183,7 @@ func TestTranslateSSEChatToOllama_FinishReasonToolCalls(t *testing.T) {
 	}
 
 	sseData, _ := json.Marshal(sseChunk)
-	result := translateOpenAISSEDataToOllama("/api/chat", sseData, "test-model", nil)
+	result := translateOpenAISSEDataToOllama("/api/chat", sseData, "test-model", nil, time.Time{})
 	if result == nil {
 		t.Fatal("expected non-nil result from SSE translation")
 	}
@@ -216,7 +217,7 @@ func TestTranslateSSEChatToOllama_NormalContent(t *testing.T) {
 	}
 
 	sseData, _ := json.Marshal(sseChunk)
-	result := translateOpenAISSEDataToOllama("/api/chat", sseData, "test-model", nil)
+	result := translateOpenAISSEDataToOllama("/api/chat", sseData, "test-model", nil, time.Time{})
 	if result == nil {
 		t.Fatal("expected non-nil result")
 	}
@@ -234,7 +235,7 @@ func TestTranslateSSEChatToOllama_NormalContent(t *testing.T) {
 }
 
 func TestTranslateSSEChatToOllama_DONE(t *testing.T) {
-	result := translateOpenAISSEDataToOllama("/api/chat", []byte("[DONE]"), "test-model", nil)
+	result := translateOpenAISSEDataToOllama("/api/chat", []byte("[DONE]"), "test-model", nil, time.Time{})
 	if result != nil {
 		t.Error("expected nil for [DONE] marker")
 	}

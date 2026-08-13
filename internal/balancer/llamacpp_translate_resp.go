@@ -459,7 +459,7 @@ func translateOpenAIEmbeddingsToOllama(body []byte, modelName string) ([]byte, e
 // уже встречался reasoning chunk, translator тримит leading whitespace у content
 // (gemma-4 после SplitReasoningContent эмитит "\n" перед первым content токеном).
 // nil = stateless (для тестов и non-stream вызовов).
-func translateOpenAISSEDataToOllama(ollamaPath string, sseData []byte, modelName string, seenReasoning *bool) []byte {
+func translateOpenAISSEDataToOllama(ollamaPath string, sseData []byte, modelName string, seenReasoning *bool, streamStart time.Time) []byte {
 	if len(sseData) == 0 || bytes.Equal(sseData, []byte("[DONE]")) {
 		return nil
 	}
@@ -481,7 +481,7 @@ func translateOpenAISSEDataToOllama(ollamaPath string, sseData []byte, modelName
 	// Streaming fix: детектим usage chunk (есть usage + пустые choices) и эмитим
 	// Ollama done-чанк с token counts.
 	if usage, hasUsage := openaiChunk["usage"].(map[string]interface{}); hasUsage && !hasNonEmptyChoices(openaiChunk) {
-		return translateUsageChunkToOllama(ollamaPath, modelName, usage, openaiChunk)
+		return translateUsageChunkToOllama(ollamaPath, modelName, usage, openaiChunk, streamStart)
 	}
 	switch ollamaPath {
 	case "/api/chat":
@@ -502,10 +502,13 @@ func hasNonEmptyChoices(chunk map[string]interface{}) bool {
 
 // translateUsageChunkToOllama — конвертирует OpenAI usage-only chunk в Ollama done-чанк.
 // usage содержит: prompt_tokens, completion_tokens, total_tokens.
-// Ollama поля: prompt_eval_count, eval_count, total_duration (нс не вычисляется на streaming — 0).
+// Ollama поля: prompt_eval_count, eval_count, total_duration (нс) и др.
 //
-// Параметр openaiChunk — нужен чтобы извлечь finish_reason если есть.
-func translateUsageChunkToOllama(ollamaPath, modelName string, usage map[string]interface{}, openaiChunk map[string]interface{}) []byte {
+// Параметры:
+//   - openaiChunk — нужен чтобы извлечь finish_reason если есть
+//   - streamStart — время начала запроса (для real total_duration). Round 35c+
+//     передан caller'ом из proxyRequestLlamaCpp. Zero value = legacy (test), total_duration=0.
+func translateUsageChunkToOllama(ollamaPath, modelName string, usage map[string]interface{}, openaiChunk map[string]interface{}, streamStart time.Time) []byte {
 	promptTokens := intFromUsage(usage, "prompt_tokens")
 	completionTokens := intFromUsage(usage, "completion_tokens")
 
@@ -525,12 +528,46 @@ func translateUsageChunkToOllama(ollamaPath, modelName string, usage map[string]
 		"done_reason":       doneReason,
 		"prompt_eval_count": promptTokens,
 		"eval_count":        completionTokens,
-		// Ollama-специфичные поля. Не все есть в OpenAI usage; ставим 0.
-		// Open WebUI умеет их интерполировать (приблизительно из request time).
-		"total_duration":       0,
-		"load_duration":        0,
-		"prompt_eval_duration": 0,
-		"eval_duration":        0,
+	}
+
+	// Round 35c+ (2026-08-13): real duration tracking.
+	// Ollama-формат ожидает durations в наносекундах (Unix epoch ns).
+	// cppworker НЕ отдаёт durations в OpenAI usage chunk (только token counts),
+	// поэтому мы вычисляем их сами из start of request time, переданного caller'ом.
+	//
+	// - total_duration: полное время запроса (startRequest → usage chunk arrived)
+	// - load_duration: 0 (cppworker не возвращает эту инфу, cppworker loaded
+	//   model async до usage chunk; Open WebUI интерполирует)
+	// - prompt_eval_duration: 0 (cppworker не возвращает, Open WebUI
+	//   интерполирует из ttft / total_duration)
+	// - eval_duration: 0 (cppworker не возвращает, Open WebUI интерполирует
+	//   из total_duration - ttft)
+	//
+	// ВАЖНО: даже если values 0, Open WebUI UI показывает "..." а не "0h0m0s"
+	// если поле присутствует в chunk (визуально лучше чем "0h0m0s" из missing).
+	if !streamStart.IsZero() {
+		totalNs := time.Since(streamStart).Nanoseconds()
+		if totalNs < 0 {
+			totalNs = 0
+		}
+		ollamaChunk["total_duration"] = totalNs
+		// load_duration остаётся 0 — cppworker loaded модель до того как мы получили
+		// usage chunk (в preflight async reload). Реальное значение было бы полезно,
+		// но cppworker не предоставляет его через SSE usage chunk.
+		ollamaChunk["load_duration"] = int64(0)
+		// prompt_eval_duration и eval_duration — cppworker не различает их в usage
+		// chunk (только token counts). Можем аппроксимировать через ttft, но это
+		// требует дополнительного tracking. Для MVP ставим 0 — Open WebUI
+		// интерполирует из total_duration + ttft.
+		ollamaChunk["prompt_eval_duration"] = int64(0)
+		ollamaChunk["eval_duration"] = int64(0)
+	} else {
+		// streamStart не передан (legacy callers, tests) — оставляем поля,
+		// но 0. Round 35c+ все callers передают streamStart.
+		ollamaChunk["total_duration"] = int64(0)
+		ollamaChunk["load_duration"] = int64(0)
+		ollamaChunk["prompt_eval_duration"] = int64(0)
+		ollamaChunk["eval_duration"] = int64(0)
 	}
 
 	// Для /api/chat добавляем message с role/content (пустой content).

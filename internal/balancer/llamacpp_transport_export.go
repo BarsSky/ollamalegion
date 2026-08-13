@@ -1,5 +1,7 @@
 ﻿package balancer
 
+import "time"
+
 // Этот файл содержит экспортированные обёртки для unit-тестов в internal/balancer/...
 // и внешних тестах в tests/multiclient/... (Phase 9 regression для OpenWebUI бага).
 //
@@ -9,7 +11,7 @@
 // TranslateOpenAISSEDataToOllamaExportedForTest — публичная обёртка для тестов.
 // Не использовать в production-коде.
 func TranslateOpenAISSEDataToOllamaExportedForTest(ollamaPath string, sseData []byte, modelName string) []byte {
-	return translateOpenAISSEDataToOllama(ollamaPath, sseData, modelName, nil)
+	return translateOpenAISSEDataToOllama(ollamaPath, sseData, modelName, nil, time.Time{})
 }
 
 // TranslateOpenAIResponseToOllamaExportedForTest — публичная обёртка для тестов.

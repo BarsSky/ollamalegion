@@ -799,7 +799,7 @@ func (p *Proxy) proxyRequestLlamaCpp(w http.ResponseWriter, r *http.Request, bac
 				// финальный NDJSON/SSE если upstream уже отправил finish_reason и нет tool_calls.
 				upstreamHadFinishReason = true
 			}
-			ollamaChunk := translateOpenAISSEDataToOllama(originalPath, []byte(data), modelFromCtx, &seenReasoning)
+			ollamaChunk := translateOpenAISSEDataToOllama(originalPath, []byte(data), modelFromCtx, &seenReasoning, llamaStartTime)
 			if len(ollamaChunk) == 0 {
 				continue
 			}

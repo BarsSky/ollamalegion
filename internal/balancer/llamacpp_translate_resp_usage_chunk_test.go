@@ -15,6 +15,7 @@ import (
 	"encoding/json"
 	"strings"
 	"testing"
+	"time"
 )
 
 // ============================================================
@@ -24,7 +25,7 @@ import (
 func TestTranslateUsageChunkToOllama_ChatPath(t *testing.T) {
 	usageChunk := []byte(`{"id":"chatcmpl-123","object":"chat.completion.chunk","created":1786626000,"model":"gemma-4","choices":[],"usage":{"prompt_tokens":1234,"completion_tokens":567,"total_tokens":1801}}`)
 
-	result := translateOpenAISSEDataToOllama("/api/chat", usageChunk, "gemma-4", nil)
+	result := translateOpenAISSEDataToOllama("/api/chat", usageChunk, "gemma-4", nil, time.Time{})
 	if result == nil {
 		t.Fatal("expected non-nil result for usage chunk, got nil (Round 35c+ regression!)")
 	}
@@ -76,7 +77,7 @@ func TestTranslateUsageChunkToOllama_ChatPath(t *testing.T) {
 func TestTranslateUsageChunkToOllama_GeneratePath(t *testing.T) {
 	usageChunk := []byte(`{"id":"cmpl-789","object":"chat.completion.chunk","created":1786626000,"model":"qwen3","choices":[],"usage":{"prompt_tokens":50,"completion_tokens":100,"total_tokens":150}}`)
 
-	result := translateOpenAISSEDataToOllama("/api/generate", usageChunk, "qwen3", nil)
+	result := translateOpenAISSEDataToOllama("/api/generate", usageChunk, "qwen3", nil, time.Time{})
 	if result == nil {
 		t.Fatal("expected non-nil result for usage chunk, got nil")
 	}
@@ -109,7 +110,7 @@ func TestTranslateUsageChunkToOllama_ToolCallsFinishReason(t *testing.T) {
 	// если был вызван tools path. Должны извлечь finish_reason.
 	usageChunk := []byte(`{"id":"cmpl-tc","object":"chat.completion.chunk","created":1786626000,"model":"gemma-4","choices":[{"finish_reason":"tool_calls","index":0}],"usage":{"prompt_tokens":100,"completion_tokens":20,"total_tokens":120}}`)
 
-	result := translateOpenAISSEDataToOllama("/api/chat", usageChunk, "gemma-4", nil)
+	result := translateOpenAISSEDataToOllama("/api/chat", usageChunk, "gemma-4", nil, time.Time{})
 	if result == nil {
 		t.Fatal("expected non-nil result for usage chunk with tool_calls finish_reason")
 	}
@@ -136,7 +137,7 @@ func TestTranslateUsageChunkToOllama_ToolCallsFinishReason(t *testing.T) {
 func TestTranslateUsageChunkToOllama_ContentChunkRegression(t *testing.T) {
 	contentChunk := []byte(`{"id":"cmpl-1","object":"chat.completion.chunk","created":1786626000,"model":"gemma-4","choices":[{"delta":{"content":"hello"},"finish_reason":null,"index":0}]}`)
 
-	result := translateOpenAISSEDataToOllama("/api/chat", contentChunk, "gemma-4", nil)
+	result := translateOpenAISSEDataToOllama("/api/chat", contentChunk, "gemma-4", nil, time.Time{})
 	if result == nil {
 		t.Fatal("content chunk should NOT return nil")
 	}
@@ -171,7 +172,7 @@ func TestTranslateUsageChunkToOllama_IntUsageValues(t *testing.T) {
 	// должен обработать оба варианта.
 	usageChunk := []byte(`{"id":"cmpl-2","object":"chat.completion.chunk","created":1786626000,"model":"gemma-4","choices":[],"usage":{"prompt_tokens":100,"completion_tokens":50,"total_tokens":150}}`)
 
-	result := translateOpenAISSEDataToOllama("/api/chat", usageChunk, "gemma-4", nil)
+	result := translateOpenAISSEDataToOllama("/api/chat", usageChunk, "gemma-4", nil, time.Time{})
 	if result == nil {
 		t.Fatal("expected non-nil result")
 	}

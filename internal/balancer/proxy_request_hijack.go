@@ -325,6 +325,22 @@ func (p *Proxy) proxyRequestOpenAIStreamingHijacked(
 			}
 
 			lineToWrite, _ := filterOpenAIStreamingLine(res.line)
+			// Round 35e (2026-08-13): skip empty SSE lines.
+			//
+			// cppworker (и другие SSE backends) разделяют data: events парой \n\n.
+			// ReadBytes('\n') отдаёт каждую строку отдельно, включая пустые строки
+			// (одиночный \n) между событиями. Раньше код писал пустую строку
+			// через writeChunkedFrame как отдельный 1-байт chunk — это ломает
+			// strict chunked-парсеры (Open WebUI aiohttp кидает
+			// "TransferEncodingError: 400, message='Not enough data to satisfy
+			// transfer length header.'") на длинных стримах с thinking tokens.
+			//
+			// Фикс: пропускаем пустые строки (ReadBytes для разделителя между
+			// SSE events). SSE-комментарии (строки начинающиеся с ':') пишутся
+			// нормально — они не пустые.
+			if len(lineToWrite) == 0 || (len(lineToWrite) == 1 && lineToWrite[0] == '\n') {
+				continue
+			}
 			if isOpenAISSEDataLine(lineToWrite) {
 				if payload := extractSSEDataPayload(lineToWrite); payload != nil {
 					if modified := extractToolCallsFromSSEContent(payload); modified != nil {

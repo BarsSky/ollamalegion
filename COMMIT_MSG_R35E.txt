@@ -1,0 +1,48 @@
+fix(balancer): skip empty SSE lines in hijack streaming (Round 35e)
+
+Open WebUI aiohttp client (and other strict chunked parsers) was throwing
+`Response payload is not completed: <TransferEncodingError: 400, message='Not
+enough data to satisfy transfer length header.'>` on long streaming responses
+with thinking tokens (Qwen3.6, gemma-4 with reasoning).
+
+Root cause (proxy_request_hijack.go, hijack streaming path):
+- cppworker sends SSE events as `data: {...}\n\n` (standard SSE double-newline)
+- `bufio.NewReader(resp.Body).ReadBytes('\n')` returns each line separately
+- The empty `\n` line between events was passed to `writeChunkedFrame` as-is
+- That wrote a separate 1-byte chunked chunk for each empty separator
+- Result: N SSE events = 2N chunks (N proper + N garbage 1-byte `\n` chunks)
+- Open WebUI aiohttp with `iter_chunks` (strict) sees malformed chunked encoding
+
+Raw TCP trace before fix (Qwen3.6 16 SSE events):
+  Chunk 0 (52b): ": prefill_started_at=...Z\n"
+  Chunk 1 (1b):  "\n"                    ← garbage
+  Chunk 2 (209b): "data: {...role...}\n\n"
+  Chunk 3 (1b):  "\n"                    ← garbage
+  ... (32 chunks total for 16 SSE events)
+
+Raw TCP trace after fix:
+  Chunk 0 (52b): ": prefill_started_at=...Z\n"
+  Chunk 1 (209b): "data: {...role...}\n\n"
+  Chunk 2 (215b): "data: {...reasoning...}\n\n"
+  ... (16 chunks = 1:1 with SSE events, no garbage)
+
+Fix: skip empty lines (ReadBytes result for the `\n` between events) BEFORE
+calling `writeChunkedFrame`. SSE comments (lines starting with `:`) are NOT
+empty so they pass through.
+
+```go
+if len(lineToWrite) == 0 || (len(lineToWrite) == 1 && lineToWrite[0] == '\n') {
+    continue
+}
+```
+
+Verification:
+- Raw TCP trace: 16 chunks (was 32), no 1-byte garbage
+- aiohttp `iter_chunks` (strict): NO TransferEncodingError, 16 chunks 3001 bytes
+- 3 new unit tests + all existing TestProxyRequestOpenAIStreaming_* tests PASS
+
+Files:
+- internal/balancer/proxy_request_hijack.go: +16 lines (skip empty lines)
+- internal/balancer/proxy_request_openai_test.go: +127 lines (3 new unit tests
+  + TestWriteChunkedFrame_EmptyData, TestWriteChunkedFrame_NonEmptyData,
+  TestProxyOpenAIStreamingEmptySSELinesBypass)

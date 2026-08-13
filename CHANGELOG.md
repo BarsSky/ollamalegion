@@ -5,6 +5,70 @@
 Формат ведётся в соответствии с [Keep a Changelog](https://keepachangelog.com/ru/1.0.0/),
 и этот проект придерживается [Semantic Versioning](https://semver.org/lang/ru/).
 
+## [0.5.23 — Round 35c (2026-08-13)]
+
+### 🐛 Bug fix
+
+#### 22GB Qwen3.6-35B-A3B MoE model: 8m7s async load timeout fixed
+
+Пользователь сообщил (2026-08-13 11:01): 22GB Qwen3.6-35B-A3B-UD-Q4_K_M
+(3B active, 35B total, Mamba2 hybrid attention) на RTX 3070 (8GB VRAM)
+получал `async load (202) on cppworker: model not ready after 8m7.182s`.
+
+**Root cause**: hardcoded formula `maxWait = 2*est + 60s, max 15min`
+(Round 32 #15). cppworker estimation 3.5min (210s) → `maxWait = 8m0s`.
+Реальная загрузка 6-12 мин (cppworker off by 1.9x из-за CUDA_Host pinned
+memory alloc для 19GB+ весов, не учитывается в estimation).
+
+**Fix** (Round 35c, commit `b178216`): env-tunable polling timeout.
+Hardcoded `2*est + 60s` → `multiplier*est + buffer` capped at `max_wait`,
+все три компонента env-конфигурируемые:
+
+- `LB_NCTX_PREFLIGHT_MAX_WAIT_SEC` (5-3600, default 900) — hard cap
+- `LB_NCTX_PREFLIGHT_WAIT_MULTIPLIER` (1-6, default 2) — multiplier для est
+- `LB_NCTX_PREFLIGHT_WAIT_BUFFER_SEC` (0-600, default 60) — extra buffer
+
+Min floor = `cap/10` (вместо hardcoded 3min) — позволяет unit-тестам
+с маленьким cap через `t.Setenv` работать.
+
+**Files** (8 files, +329/-10):
+- `pkg/types/balancing.go`: +3 поля в `NCtxReloadSettings`
+- `internal/balancer/nctx_reload.go`: +3 effective* helpers
+- `internal/balancer/nctx_reload_config_bridge.go`: +LB_NCTX_PREFLIGHT_*
+  ENV overrides + `resolvePreflightWaitTuning()` для nil proxy
+- `internal/balancer/model_management.go`: использует новые helpers
+- `internal/balancer/*_test.go`: +2 теста + ENV override для быстрого
+  unit-теста
+- `deployments/.env.bundled-with-agent.example`: +3 ENV + Round 35c notes
+- `deployments/docker-compose.cppworker-bundled-with-agent.yml`:
+  +3 env vars + image tag r35 → r35c
+- `plans/round-35c-env-tunable-polling.md` (NEW, 12KB): полный план
+
+**Image**: `ollama-legion/balancer:cppworker-bundled-r35c` (61.6MB, SHA
+`b5d19ab5759b`). Built 2026-08-13 11:00 UTC.
+
+**Live verified 2026-08-13 11:30 UTC**:
+- 5 containers healthy (balancer r35c + cppworker r35 + agent + webui + buildx)
+- gemma-4-E4B-it-Q4_K_M @ 32K context, 157.6s load
+- gemma-4 chat: "OK" in 2.17s, 2 completion tokens
+- **Qwen3.6-35B-A3B-UD-Q4_K_M @ 32K context, 526.3s (8m46s) load → 200 OK**,
+  response 5.3s after load (vs 8m0s timeout раньше)
+- Env: MAX_WAIT=1800, MULT=4, BUFFER=120 (3070 stress values)
+
+**A10 deploy (sm_120, 24GB VRAM)**: defaults хватают. 22GB Qwen3.6 на
+A10 (full GPU offload) загружается ~3-5 мин, `2*3+60=7.2 min` < 900s
+default cap. Для 70B+ моделей поднять `MAX_WAIT=1800`.
+
+**Caveats / Open issues** (НЕ покрыты Round 35c):
+- JSON parse error "Expecting value: line 2 column 1 (char 2)" после
+  успешной загрузки — pre-existing, расследуется отдельно
+- Reload loop после загрузки — pre-existing, возможно из-за
+  different ctx size per request
+- cppworker estimation off by 1.9x для MoE+auto-offload (CUDA_Host
+  alloc + KV cache не учитываются) — long-term fix в cppworker
+- Pre-existing test `TestHandleOpenAIChatCompletions_Cline_NonNormalizationRegression`
+  hangs на 60s timeout (проверено на master, не связано с этим fix)
+
 ## [0.5.22 — Round 35 (2026-08-13)]
 
 ### 🐛 Bug fix

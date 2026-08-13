@@ -467,6 +467,22 @@ func translateOpenAISSEDataToOllama(ollamaPath string, sseData []byte, modelName
 	if err := json.Unmarshal(sseData, &openaiChunk); err != nil {
 		return sseData
 	}
+	// Round 35c+ (2026-08-13): USAGE CHUNK passthrough — critical для Open WebUI.
+	// cppworker (Round 15) эмитит финальный SSE-чанк с `usage: {prompt_tokens,
+	// completion_tokens, total_tokens}` и пустым `choices: []` (OpenAI streaming
+	// spec). Без явной обработки этот чанк ТЕРЯЛСЯ при трансляции в Ollama
+	// формат → Open WebUI показывал "input_tokens: 0, output_tokens: 0,
+	// total_duration: 0" (скриншот bug-report 2026-08-13).
+	//
+	// Раньше (pre-Round 35c+): translator просто возвращал nil для чанков без
+	// `choices`, usage блок пропадал. Non-streaming путь (llamacpp_translate_resp.go:388-396)
+	// уже корректно маппит usage → eval_count/prompt_eval_count.
+	//
+	// Streaming fix: детектим usage chunk (есть usage + пустые choices) и эмитим
+	// Ollama done-чанк с token counts.
+	if usage, hasUsage := openaiChunk["usage"].(map[string]interface{}); hasUsage && !hasNonEmptyChoices(openaiChunk) {
+		return translateUsageChunkToOllama(ollamaPath, modelName, usage, openaiChunk)
+	}
 	switch ollamaPath {
 	case "/api/chat":
 		return translateSSEChatToOllama(openaiChunk, modelName, seenReasoning)
@@ -475,6 +491,71 @@ func translateOpenAISSEDataToOllama(ollamaPath string, sseData []byte, modelName
 	default:
 		return sseData
 	}
+}
+
+// hasNonEmptyChoices — true если чанк содержит НЕпустой массив choices[0]
+// (используется для отличия обычных content/reasoning/tool_call чанков от usage-only чанка).
+func hasNonEmptyChoices(chunk map[string]interface{}) bool {
+	choices, ok := chunk["choices"].([]interface{})
+	return ok && len(choices) > 0
+}
+
+// translateUsageChunkToOllama — конвертирует OpenAI usage-only chunk в Ollama done-чанк.
+// usage содержит: prompt_tokens, completion_tokens, total_tokens.
+// Ollama поля: prompt_eval_count, eval_count, total_duration (нс не вычисляется на streaming — 0).
+//
+// Параметр openaiChunk — нужен чтобы извлечь finish_reason если есть.
+func translateUsageChunkToOllama(ollamaPath, modelName string, usage map[string]interface{}, openaiChunk map[string]interface{}) []byte {
+	promptTokens := intFromUsage(usage, "prompt_tokens")
+	completionTokens := intFromUsage(usage, "completion_tokens")
+
+	doneReason := "stop"
+	// extract finish_reason from openaiChunk choices if present (на всякий случай)
+	if choices, ok := openaiChunk["choices"].([]interface{}); ok && len(choices) > 0 {
+		if ch, ok := choices[0].(map[string]interface{}); ok {
+			if fr, ok := ch["finish_reason"].(string); ok && fr != "" {
+				doneReason = fr
+			}
+		}
+	}
+
+	ollamaChunk := map[string]interface{}{
+		"model":             modelName,
+		"done":              true,
+		"done_reason":       doneReason,
+		"prompt_eval_count": promptTokens,
+		"eval_count":        completionTokens,
+		// Ollama-специфичные поля. Не все есть в OpenAI usage; ставим 0.
+		// Open WebUI умеет их интерполировать (приблизительно из request time).
+		"total_duration":       0,
+		"load_duration":        0,
+		"prompt_eval_duration": 0,
+		"eval_duration":        0,
+	}
+
+	// Для /api/chat добавляем message с role/content (пустой content).
+	// Ollama /api/chat ожидает NDJSON с `message: {role, content}` даже в done-чанке.
+	if ollamaPath == "/api/chat" {
+		ollamaChunk["message"] = map[string]interface{}{
+			"role":    "assistant",
+			"content": "",
+		}
+	}
+	// totalTokens сейчас НЕ отдаём в Ollama-чанк (Ollama его не ожидает, total = prompt+eval).
+
+	result, _ := json.Marshal(ollamaChunk)
+	return append(result, '\n')
+}
+
+// intFromUsage safely extracts int from usage map (handles float64 vs int).
+func intFromUsage(usage map[string]interface{}, key string) int {
+	if v, ok := usage[key].(float64); ok {
+		return int(v)
+	}
+	if v, ok := usage[key].(int); ok {
+		return v
+	}
+	return 0
 }
 
 // translateSSEChatToOllama — переводит OpenAI streaming чанк в Ollama NDJSON.

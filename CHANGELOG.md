@@ -5,6 +5,59 @@
 Формат ведётся в соответствии с [Keep a Changelog](https://keepachangelog.com/ru/1.0.0/),
 и этот проект придерживается [Semantic Versioning](https://semver.org/lang/ru/).
 
+## [0.5.22 — Round 35 (2026-08-13)]
+
+### 🐛 Bug fix
+
+#### Crash-loop "Cline 65K → balancer preflight → cppworker SIGSEGV" closed
+
+Три связанных бага, все исправлены в cppworker image
+`gpu-86-abort-r35` (3.86GB) + balancer image
+`cppworker-bundled-r35` (61.6MB). Полный план — в
+[`plans/round-35-cppworker-bundled-r35.md`](plans/round-35-cppworker-bundled-r35.md).
+
+1. **Reload→Load fallback** (Round 35 main, commit `df7962e`):
+   - `internal/balancer/nctx_reload_handlers.go:786` — async reload path
+     переключён с `/api/models/reload` (404 для not-loaded модели) на
+     `/api/models/load` (идемпотентный, handles all 3 cases)
+   - `internal/balancer/nctx_reload.go:765-825` — sync reload path
+     с 404 → load fallback после existing 202→poll handling
+2. **C++ chat template cgo SIGSEGV recover** (Round 35b, commit `f22dc13`):
+   - `cmd/cppworker/handlers_chat.go:281-310` — обернул
+     `backend.ApplyChatTemplateWithThinking` в `func() { defer recover() }()`.
+     SIGSEGV-в-cgo catchable в том же goroutine, fallback на стабильный
+     C API `llama_chat_apply_template`. Для gemma-4 нативный путь ничего
+     не давал (template не поддерживает enable_thinking), так что
+     создавал crash opportunities без пользы.
+3. **IdleUnloadManager SIGSEGV guard** (commit `df7962e`):
+   - `internal/cppbackend/model_manager.go:538-549` — `IsZero()` check
+     перед `Sub()` (classic SIGSEGV trap: `now.Sub(zeroTime) = 631 трлн ns`)
+   - `config/cppworker-defaults.json:41` — `idleUnloadMinutes: 120 → 0`
+     (off по дефолту; client `keep_alive` достаточно для bundled use case)
+4. **Round 34 follow-up recovered** (commit `6140a59`):
+   - 4-phase preflight (env vars + SSE keepalives + profile mismatch + 
+     SetLastKnownNCtx + auto-tune params) + 5 cascading bug fixes
+     (orphan mu.Unlock, preflight env override, OpenAI preflight path,
+     NumCtx struct field, RequestedNCtxOverride check)
+
+### 🔧 Build & deploy
+
+- `ollama-legion/balancer:cppworker-bundled-r35` (61.6MB)
+- `ollama-legion/cppworker:gpu-86-abort-r35` (3.86GB, ~18 мин CUDA build)
+- 5 контейнеров healthy, no SIGSEGV в логах 26+ мин uptime
+- Live verified: Cline 65K во всех 3 сценариях работает (unloaded → load,
+  32K → reload → wait, 65K → fast)
+
+### 📚 Документация
+
+- `plans/round-35-cppworker-bundled-r35.md` (NEW) — полный план с 9
+  reusable cross-project patterns
+- `plans/README.md` (UPDATED) — Round 35 row добавлен, roadmap обновлён
+- `README.md` (UPDATED) — v0.5.22 entry в "Что нового" + architecture diagram
+- `deployments/.env.bundled-with-agent.example` (UPDATED) — Round 34/35
+  env vars (LB_NCTX_PREFLIGHT_*, CPPWORKER_GPU_TAG=86-abort-r35)
+- `CHANGELOG.md` (this file) — v0.5.22 section
+
 ## [Unreleased — 0.5.21 (Round 35)]
 
 ### 🐛 Bug fix

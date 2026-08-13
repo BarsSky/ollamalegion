@@ -1065,7 +1065,7 @@ window.I18N_EN = {
   "gguf.numa": "NUMA",
   "gguf.use_mmap": "Use mmap",
   "gguf.tensor_split_placeholder": "e.g. 0.5,0.5",
-  "gguf.gpu_layers_desc": "Number of model layers to offload to GPU. -1 = all layers (max speed), 0 = CPU only.",
+  "gguf.gpu_layers_desc": "Number of model layers to offload to GPU. -2 = AUTO (cppworker decides from VRAM/model size), -1 = all layers (max speed), 0 = CPU only.",
   "gguf.ctx_size_desc": "Context window size in tokens. Larger = longer conversations, but more VRAM/RAM usage.",
   "gguf.batch_size_desc": "Batch size for inference. Larger = faster on GPU, but more memory usage.",
   "gguf.tensor_split_desc": "Tensor fractions per GPU separated by commas (e.g. 0.5,0.5). Sum must equal 1.0. Used only with Manual strategy.",

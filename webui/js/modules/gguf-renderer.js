@@ -1198,8 +1198,8 @@ const GgufRenderer = (window.GgufRenderer = (function () {
             '<div class="form-row" style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:12px;">' +
                 '<div class="form-group">' +
                     '<label>' + Utils.escapeHtml(_('gguf.gpu_layers')) + '</label>' +
-                    '<input type="number" id="ggufOptGpuLayers" class="form-control" value="' + gpu + '" min="-1" max="200">' +
-                    '<small style="color:var(--text-muted);">-1 = all layers</small>' +
+                    '<input type="number" id="ggufOptGpuLayers" class="form-control" value="' + gpu + '" min="-2" max="200">' +
+                    '<small style="color:var(--text-muted);">-2 = AUTO (cppworker decides), -1 = all layers, 0 = CPU only</small>' +
                 '</div>' +
                 '<div class="form-group">' +
                     '<label>' + Utils.escapeHtml(_('gguf.flash_attn_type')) + '</label>' +

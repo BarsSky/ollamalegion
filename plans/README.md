@@ -1,10 +1,10 @@
 # OllamaLegion — Roadmap (живой документ)
 
-> **Дата обновления:** 2026-08-13 (Round 35 deployed)
+> **Дата обновления:** 2026-08-13 (Round 35c deployed)
 > **Назначение:** единственный источник правды по реализованному и оставшемуся в проекте OllamaLegion.
 > Все устаревшие/завершённые планы — в `plans/archive/`.
-> **HEAD:** `f22dc13` on branch `centurion` (v0.5.22 — Round 35 fixes).
-> **Live binary:** `ol-bundled-cppworker-gpu:gpu-86-abort-r35` + `ol-bundled-balancer:cppworker-bundled-r35` (5 healthy containers).
+> **HEAD:** `b178216` on branch `centurion` (Round 35c — env-tunable async load polling).
+> **Live binary:** `ol-bundled-cppworker-gpu:gpu-86-abort-r35` + `ol-bundled-balancer:cppworker-bundled-r35c` (5 healthy containers).
 
 ---
 
@@ -17,6 +17,7 @@
 | **[7.1 — GitHub Actions CI workflow](2026-q3-roadmap.md#7-cicd-и-тестирование)** | `.github/workflows/ci.yml` + `.golangci.yml` | Месяц 1 (июль 2026) | ✅ DONE 2026-06-28 (commit `64e100d`) |
 | [Production-ready (P.1-P.4)](2026-q3-production-ready-plan.md) | `plans/2026-q3-production-ready-plan.md` | Phase 8 (июль 2026) | ✅ **DONE 2026-07-11**: P.1 ✅ P.2 ✅ P.3 ✅ (research) P.4 ✅ |
 | **[Round 35 — CppWorker bundled-with-agent r35 (2026-08-12)](round-35-cppworker-bundled-r35.md)** | `plans/round-35-cppworker-bundled-r35.md` | Round 35 (август 2026) | ✅ **DONE 2026-08-13**: 4-phase preflight + reload→load fallback + cgo SIGSEGV recover + idleUnload SIGSEGV guard |
+| **[Round 35c — env-tunable async load polling (2026-08-13)](round-35c-env-tunable-polling.md)** | `plans/round-35c-env-tunable-polling.md` | Round 35c (август 2026) | ✅ **DONE 2026-08-13**: 22GB Qwen3.6 на 3070 hit 8m7s timeout. Fix: `LB_NCTX_PREFLIGHT_MAX_WAIT_SEC` / `_WAIT_MULTIPLIER` / `_WAIT_BUFFER_SEC` env vars. Image r35c. |
 
 **Все планы Q3 W3-4 + Phase 8 + Round 35 реализованы.** Round 35 закрывает
 crash-loop "Cline 65K → balancer preflight → cppworker SIGSEGV".

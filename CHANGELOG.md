@@ -55,9 +55,12 @@ Min floor = `cap/10` (вместо hardcoded 3min) — позволяет unit-�
   response 5.3s after load (vs 8m0s timeout раньше)
 - Env: MAX_WAIT=1800, MULT=4, BUFFER=120 (3070 stress values)
 
-**A10 deploy (sm_120, 24GB VRAM)**: defaults хватают. 22GB Qwen3.6 на
-A10 (full GPU offload) загружается ~3-5 мин, `2*3+60=7.2 min` < 900s
+**A10 deploy (sm_86, 24GB VRAM, та же Ampere что у RTX 3070 — image `gpu-86-abort-r35` подходит
+БЕЗ пересборки)**: defaults хватают. 22GB Qwen3.6 на A10 (full GPU offload,
+`CPPWORKER_GPU_LAYERS=99`) загружается ~3-5 мин, `2*3+60=7.2 min` < 900s
 default cap. Для 70B+ моделей поднять `MAX_WAIT=1800`.
+(Примечание: до commit `9125fdb` в notes была ошибка «A10 = sm_120» — это
+НЕ так, A10 это Ampere GA102, sm_86. Blackwell = sm_120 = RTX 50xx / B100 / B200.)
 
 **Caveats / Open issues** (НЕ покрыты Round 35c):
 - JSON parse error "Expecting value: line 2 column 1 (char 2)" после

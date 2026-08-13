@@ -451,14 +451,43 @@ func (p *Proxy) preflightNCtxReloadIfNeeded(
 	// гарантирует first-load с правильным ctx (32768 из profile, не 8192 из
 	// body default клиента).
 	requestedNCtx := ExtractNumCtxFromBody(bodyBuf)
+	profileNCtx := p.GetModelProfileNumCtx(modelName)
+	backendDefaultNCtx := 0
+	if backendID != "" {
+		backendDefaultNCtx = p.GetBackendDefaultNumCtx(backendID)
+	}
+	// Round 35c+ (2026-08-13): diagnostic logging для отладки "num_ctx downgrade
+	// 32768 → 8192". Логируем ВСЕГДА на preflight (Info уровень), чтобы можно
+	// было увидеть в balancer-логах что реально приходит от клиента:
+	//   - body_num_ctx: что прислал клиент (0 если молчит)
+	//   - profile_num_ctx: что в профиле модели
+	//   - backend_default_num_ctx: что в default конфиге бэкенда
+	//   - chosen_source: откуда взяли requestedNCtx (body/profile/backend/none)
+	var chosenSource string
+	switch {
+	case requestedNCtx > 0:
+		chosenSource = "body"
+	case profileNCtx > 0:
+		chosenSource = "profile"
+	case backendDefaultNCtx > 0:
+		chosenSource = "backend_default"
+	default:
+		chosenSource = "none"
+	}
+	logger.Get().Infow("preflightNCtxReload: num_ctx decision",
+		"backend", backendID, "model", modelName,
+		"body_num_ctx", requestedNCtx,
+		"profile_num_ctx", profileNCtx,
+		"backend_default_num_ctx", backendDefaultNCtx,
+		"chosen_source", chosenSource)
 	if requestedNCtx <= 0 {
 		// Body не задал num_ctx → fallback на profile → backend default.
 		// Это Round 35c+ fix для "Open WebUI шлёт num_ctx=8192 по дефолту,
 		// даже если profile говорит 32768". First-load preflight теперь reload
 		// в profile.ContextLength (32768) вместо body num_ctx (8192).
-		requestedNCtx = p.GetModelProfileNumCtx(modelName)
-		if requestedNCtx <= 0 && backendID != "" {
-			requestedNCtx = p.GetBackendDefaultNumCtx(backendID)
+		requestedNCtx = profileNCtx
+		if requestedNCtx <= 0 {
+			requestedNCtx = backendDefaultNCtx
 		}
 		if requestedNCtx <= 0 {
 			return bodyBuf, true, "", http.StatusOK

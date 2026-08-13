@@ -279,6 +279,26 @@ func DecidePreflight(meta *RequestMeta, state *NCtxBackendState, cfg NCtxReloadC
 	if meta == nil || state == nil {
 		return &PreflightResult{Decision: PreflightNoOp}
 	}
+	// Round 35c+ (2026-08-13): diagnostic logging для отладки "num_ctx downgrade
+	// 32768 → 8192" на A10. Логируем на Info уровне чтобы видеть что реально
+	// приходит от клиента в OpenAI /v1/chat/completions path (Cline использует
+	// этот path). Показывает:
+	//   - body_n_ctx: что прислал клиент (RequestedNCtxOverride)
+	//   - loaded_n_ctx: что в данный момент загружено в cppworker
+	//   - model_max_n_ctx: что профиль говорит (modelMaxContext)
+	//   - estimated_prompt_tokens: расчётная длина prompt
+	//   - n_predict: max tokens to generate (default 2048)
+	//   - required: estimated + n_predict + reserve (что реально нужно)
+	logger.Get().Infow("preflight: DecidePreflight inputs",
+		"backend_id", state.BackendID,
+		"model", meta.ModelName,
+		"body_n_ctx", meta.RequestedNCtxOverride,
+		"loaded_n_ctx", state.CurrentNCtx,
+		"model_max_n_ctx", state.ModelMaxContext,
+		"max_vram_n_ctx", state.MaxVRAMNCtx,
+		"estimated_prompt_tokens", meta.EstimatedPromptTokens,
+		"n_predict", meta.RequestedNPredict,
+		"has_tools", meta.HasTools)
 	// Резерв 10% + 1 токен под EOS. Cline может дослать токены в
 	// function-call парсинге, поэтому reserveSlack обязателен.
 	const reserveSlackPercent = 10

@@ -96,7 +96,14 @@ maxWait = min(
 
 ## 2. Deployment values
 
-### A10 (sm_120, 24GB VRAM, full GPU offload)
+### A10 (sm_86, 24GB VRAM, full GPU offload)
+
+IMPORTANT (Round 35c fix, 2026-08-13): NVIDIA A10 = sm_86 (compute
+capability 8.6), та же архитектура Ampere что и RTX 3070. **Image
+`gpu-86-abort-r35` подходит БЕЗ пересборки**. A10 это Ampere (GA102),
+НЕ Blackwell (sm_120 = RTX 50xx / B100 / B200).
+
+С 24GB VRAM все 22GB Qwen3.6 влезают на GPU целиком (`CPPWORKER_GPU_LAYERS=99`).
 
 22GB Qwen3.6 на A10: 3-5 мин load time.
 `2 * 3 + 60 = 7.2 min < 900s (15 min) cap` → **defaults хватают**.
@@ -278,9 +285,20 @@ hangs на 60s timeout. Проверено на `master` (git stash) — там 
 
 ## 7. A10 deploy update
 
-Для A10 (sm_120, 24GB VRAM) defaults хватают (22GB Qwen3.6 за 3-5
-мин, 2*3+60=7.2 мин < 15 мин cap). Если тестируете 70B+ модели на
-A10, поднимите `MAX_WAIT=1800` для safety margin.
+Для A10 (sm_86, 24GB VRAM) defaults хватают (22GB Qwen3.6 за 3-5
+мин, 2*3+60=7.2 мин < 15 мин cap). **Текущий image `gpu-86-abort-r35`
+подходит БЕЗ пересборки** (A10 = sm_86, та же архитектура Ampere что
+и 3070). Если тестируете 70B+ модели на A10, поднимите
+`MAX_WAIT=1800` для safety margin.
 
 См. также: `deployments/.env.bundled-with-agent.example` секции 3
 (NCTX reload) и 6 (Round 35c notes).
+
+**Правильный процесс для A10** (Round 35c fix):
+1. Copy project + `.env.bundled-with-agent` (как раньше)
+2. `CUDA_ARCH=86` (НЕ 120 — это была моя ошибка)
+3. `CPPWORKER_GPU_TAG=86-abort-r35` (готовый image с Docker Hub)
+4. `docker compose up -d --no-build` (НЕ пересобирать, image уже подходит)
+5. С 24GB VRAM поднять `CPPWORKER_GPU_LAYERS=99` — все layers on GPU
+6. Тест: gemma-4 + qwen3 стабильно работают (verified на 3070, тот же
+   compute capability)

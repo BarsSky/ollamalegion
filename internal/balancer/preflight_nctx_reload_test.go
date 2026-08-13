@@ -64,6 +64,31 @@ func makeMockCppWorkerWithReload(t *testing.T, modelName string, initialNCtx int
 		})
 	})
 
+	// Round 35+ (2026-08-12): executeAsyncReload uses /api/models/load instead
+	// of /api/models/reload (load works for both unloaded and loaded cases).
+	// Mock handler для совместимости с новым кодом.
+	mux.HandleFunc("/api/models/load", func(w http.ResponseWriter, r *http.Request) {
+		var payload map[string]interface{}
+		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		newNCtx, _ := payload["contextSize"].(float64)
+		if newNCtx > 0 {
+			currentNCtx.Store(int64(newNCtx))
+		}
+		muReloadCalls.Lock()
+		reloadCalls = append(reloadCalls, fmt.Sprintf("%v", payload))
+		muReloadCalls.Unlock()
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusAccepted)
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{
+			"status":      "loading",
+			"context_size": int(newNCtx),
+			"progress_url": "/api/models/load/progress?name=" + modelName,
+		})
+	})
+
 	mux.HandleFunc("/v1/chat/completions", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream")
 		w.Header().Set("Cache-Control", "no-cache")

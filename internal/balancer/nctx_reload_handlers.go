@@ -432,10 +432,39 @@ func (p *Proxy) preflightNCtxReloadIfNeeded(
 		return bodyBuf, true, "", http.StatusOK
 	}
 
-	// 1. Извлекаем num_ctx из body (если задан).
+	// 1. Извлекаем requested n_ctx: body > profile > backend.
+	//
+	// Round 35c+ (2026-08-13): раньше использовался только ExtractNumCtxFromBody
+	// который читал num_ctx ТОЛЬКО из body. Это приводило к reload на 8192 если
+	// клиент (Open WebUI) слал num_ctx=8192 по дефолту, даже если profile говорил
+	// 32768 — потому что first-load preflight не видел fallback'а на profile.
+	//
+	// НОВАЯ ЛОГИКА (Round 35c+, исправленная): мы НЕ используем ResolveNumCtx
+	// напрямую, потому что он clamping'ит body num_ctx к maxNumCtxForModel.
+	// Это ломает smart-skip (см. баг cdae3e4 → 7b50 commit): если body=16384
+	// и loaded=4096, resolver возвращает 4096 (clamped), preflight видит
+	// loaded >= requested, НЕ patching body — и cppworker получает body с
+	// num_ctx=16384 при загруженной модели с 4096 → error code 2 → reload loop.
+	//
+	// Вместо этого: body имеет АБСОЛЮТНЫЙ приоритет (клиент знает что хочет).
+	// Fallback на profile/backend только если body НЕ задал num_ctx — это
+	// гарантирует first-load с правильным ctx (32768 из profile, не 8192 из
+	// body default клиента).
 	requestedNCtx := ExtractNumCtxFromBody(bodyBuf)
 	if requestedNCtx <= 0 {
-		return bodyBuf, true, "", http.StatusOK
+		// Body не задал num_ctx → fallback на profile → backend default.
+		// Это Round 35c+ fix для "Open WebUI шлёт num_ctx=8192 по дефолту,
+		// даже если profile говорит 32768". First-load preflight теперь reload
+		// в profile.ContextLength (32768) вместо body num_ctx (8192).
+		requestedNCtx = p.GetModelProfileNumCtx(modelName)
+		if requestedNCtx <= 0 && backendID != "" {
+			requestedNCtx = p.GetBackendDefaultNumCtx(backendID)
+		}
+		if requestedNCtx <= 0 {
+			return bodyBuf, true, "", http.StatusOK
+		}
+		logger.Get().Debugw("preflightNCtxReload: using profile/backend fallback (body had no num_ctx)",
+			"backend", backendID, "model", modelName, "requested_n_ctx", requestedNCtx)
 	}
 
 	// 2. Получаем loaded n_ctx из метрик.

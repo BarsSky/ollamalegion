@@ -144,6 +144,39 @@ type NCtxReloadSettings struct {
 	// PreflightAsyncRetryAfterSec (Round 31 #2): сколько секунд balancer
 	// рекомендует клиенту ждать перед retry после 503. Default 5.
 	PreflightAsyncRetryAfterSec int `json:"preflight_async_retry_after_sec" yaml:"preflight_async_retry_after_sec"`
+
+	// PreflightMaxWaitSec (Round 35c, 2026-08-13): верхняя граница polling
+	// таймаута для async load (cppworker вернул 202 Accepted, balancer
+	// опрашивает /api/models пока state != "loaded"). По умолчанию 900 (15 min).
+	//
+	// Раньше был hardcoded cap=15min в internal/balancer/model_management.go
+	// (`maxWait = 2*est + 60s`, max 15min). Для моделей с auto-offload
+	// (например, Qwen3.6-35B-A3B ~22GB на 8GB VRAM 3070) фактическая
+	// загрузка занимает 12-15 min из-за CUDA_Host pinned memory allocation
+	// для 19GB+ весов. 2*est (3.5min) + 60s = 8min — слишком короткий.
+	// Пользователь увидит `async load (202) on cppworker: model not ready
+	// after 8m7s` хотя модель догружается через 1-2 минуты.
+	//
+	// Пример: на A10 (24GB VRAM, full GPU offload) 22GB Qwen3.6 грузится
+	// ~3-5 мин, 2*est + 60s = ~5-6 min — fits в 15min cap. Поэтому
+	// 900s default покрывает A10. Для 3070 или больших моделей (70B+)
+	// поднимите через LB_NCTX_PREFLIGHT_MAX_WAIT_SEC=1800 (30 min) или
+	// даже 3600 (1 hour). Hard cap = 3600s (1 hour) для защиты от
+	// зависших загрузок.
+	PreflightMaxWaitSec int `json:"preflight_max_wait_sec" yaml:"preflight_max_wait_sec"`
+
+	// PreflightWaitMultiplier (Round 35c): множитель для оценки времени
+	// загрузки (`maxWait = multiplier*est + buffer`). Default 2.
+	//
+	// При 2x оценка cppworker'а (est) часто слишком оптимистична для
+	// моделей с auto-offload (CUDA_Host alloc занимает 5-10 min на 19GB).
+	// Поднимите до 3-4 для больших моделей через LB_NCTX_PREFLIGHT_WAIT_MULTIPLIER.
+	PreflightWaitMultiplier int `json:"preflight_wait_multiplier" yaml:"preflight_wait_multiplier"`
+
+	// PreflightWaitBufferSec (Round 35c): дополнительный буфер после
+	// `multiplier*est`. Default 60s. Увеличьте для очень тяжёлых моделей
+	// или медленного I/O.
+	PreflightWaitBufferSec int `json:"preflight_wait_buffer_sec" yaml:"preflight_wait_buffer_sec"`
 }
 
 // PrewarmConfig - конфигурация превентивной загрузки

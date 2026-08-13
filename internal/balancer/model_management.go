@@ -908,20 +908,38 @@ func (mm *ModelManager) executeLlamaCppLoad(host string, port int, backendID str
 					//
 					// На медленных GPU (ноутбук, A10) gemma-4 может грузиться
 					// 3-5 минут. maxWait = 15min покрывает.
-					maxWait := 5 * time.Minute
+					//
+					// Round 35c (2026-08-13): user report "model not ready after
+					// 8m7.182s" для Qwen3.6-35B-A3B (22GB) на 3070 — `2*est+60s`
+					// дало 8m6s, но фактическая загрузка заняла 12+ мин из-за
+					// CUDA_Host pinned memory allocation для 19GB+ весов.
+					// Multiplier/cap/buffer теперь env-конфигурируемые через
+					// LB_NCTX_PREFLIGHT_MAX_WAIT_SEC / _WAIT_MULTIPLIER /
+					// _WAIT_BUFFER_SEC (см. NCtxReloadConfig + applyNCtxReloadEnvOverrides).
+					capWait, multiplier, bufDur := resolvePreflightWaitTuning(mm.proxy)
+					maxWait := capWait
 					if loadResp.EstimatedLoadTimeMs > 0 {
 						est := time.Duration(loadResp.EstimatedLoadTimeMs) * time.Millisecond
-						maxWait = 2*est + 60*time.Second
-						if maxWait < 3*time.Minute {
-							maxWait = 3 * time.Minute
+						maxWait = time.Duration(multiplier)*est + bufDur
+						// Round 35c: убрал hardcoded 3-min floor, заменил на dynamic
+						// min(1s, capWait/10). Для capWait=900s → min=90s (1.5 min).
+						// Для capWait=3s (тесты) → min=300ms. Это позволяет unit-тестам
+						// использовать маленький cap через ENV override.
+						if maxWait < capWait/10 {
+							maxWait = capWait / 10
 						}
-						if maxWait > 15*time.Minute {
-							maxWait = 15 * time.Minute
+						if maxWait < time.Second {
+							maxWait = time.Second
+						}
+						if maxWait > capWait {
+							maxWait = capWait
 						}
 					}
 					logger.Get().Infow("executeLlamaCppLoad: 202 Accepted (async load), polling for completion",
 						"backend", backendID, "model", req.ModelName,
-						"estimated_ms", loadResp.EstimatedLoadTimeMs, "max_wait", maxWait)
+						"estimated_ms", loadResp.EstimatedLoadTimeMs,
+						"max_wait", maxWait, "cap_wait", capWait,
+						"multiplier", multiplier, "buffer", bufDur)
 					if pollResult := mm.pollLoadCompletionUntilLoaded(
 						host, port, backendID, req.ModelName, maxWait); pollResult != nil {
 						return pollResult

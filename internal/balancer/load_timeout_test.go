@@ -328,7 +328,9 @@ func TestExecuteLlamaCppLoad_202NeverLoads(t *testing.T) {
 			w.WriteHeader(http.StatusAccepted)
 			_ = json.NewEncoder(w).Encode(map[string]interface{}{
 				"status":              "loading",
-				"estimatedLoadTimeMs": 1000, // 1s estimate → maxWait ~11.5s + 10s = 11.5s
+				"estimatedLoadTimeMs": 100, // 100ms estimate → maxWait = 2*100ms + 60s = 60.2s,
+				// capped at 5min (Round 35c default for tests with nil proxy).
+				// Реально используем 3s cap через preflightMaxWaitSec.
 			})
 			return
 		case "/api/models":
@@ -344,6 +346,13 @@ func TestExecuteLlamaCppLoad_202NeverLoads(t *testing.T) {
 	}))
 	defer server.Close()
 	host, port := parseTestHostPort(t, server.URL)
+
+	// Round 35c: используем ENV override для быстрого maxWait в тестах.
+	// Без proxy (nil) применяется hardcoded capWait=5min, что слишком долго
+	// для unit-теста. Устанавливаем ENV чтобы cap был 3s (clamped до 5s min).
+	t.Setenv("LB_NCTX_PREFLIGHT_MAX_WAIT_SEC", "3")
+	t.Setenv("LB_NCTX_PREFLIGHT_WAIT_BUFFER_SEC", "0")
+	t.Setenv("LB_NCTX_PREFLIGHT_WAIT_MULTIPLIER", "1")
 	mm := NewModelManager(nil)
 
 	result := mm.executeLlamaCppLoad(host, port, "test-backend", ModelOpRequest{

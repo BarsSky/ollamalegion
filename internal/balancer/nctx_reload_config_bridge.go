@@ -12,6 +12,7 @@ package balancer
 import (
 	"os"
 	"strconv"
+	"time"
 
 	"ollama-loadbalancer/pkg/types"
 )
@@ -38,6 +39,10 @@ func loadNCtxReloadConfig(cfg *types.LoadBalancerConfig) NCtxReloadConfig {
 		PreflightEnabled:            cfg.Balancing.NCtxReload.PreflightEnabled,
 		PreflightAsyncReload:        cfg.Balancing.NCtxReload.PreflightAsyncReload,
 		PreflightAsyncRetryAfterSec: cfg.Balancing.NCtxReload.PreflightAsyncRetryAfterSec,
+		// Round 35c (2026-08-13): polling timeout tuning для async load.
+		PreflightMaxWaitSec:     cfg.Balancing.NCtxReload.PreflightMaxWaitSec,
+		PreflightWaitMultiplier: cfg.Balancing.NCtxReload.PreflightWaitMultiplier,
+		PreflightWaitBufferSec:  cfg.Balancing.NCtxReload.PreflightWaitBufferSec,
 	}
 	// Заполняем дефолты для незаданных полей
 	hasAnyField := src.AutoReloadNCtx || cfg.Balancing.NCtxReload.AutoReloadMaxNCtx > 0 ||
@@ -65,6 +70,16 @@ func loadNCtxReloadConfig(cfg *types.LoadBalancerConfig) NCtxReloadConfig {
 		if src.PreflightAsyncRetryAfterSec == 0 {
 			src.PreflightAsyncRetryAfterSec = def.PreflightAsyncRetryAfterSec
 		}
+		// Round 35c: тоже мерджим новые поля с defaults.
+		if src.PreflightMaxWaitSec == 0 {
+			src.PreflightMaxWaitSec = def.PreflightMaxWaitSec
+		}
+		if src.PreflightWaitMultiplier == 0 {
+			src.PreflightWaitMultiplier = def.PreflightWaitMultiplier
+		}
+		if src.PreflightWaitBufferSec == 0 {
+			src.PreflightWaitBufferSec = def.PreflightWaitBufferSec
+		}
 	}
 	return applyNCtxReloadEnvOverrides(src)
 }
@@ -78,6 +93,9 @@ func loadNCtxReloadConfig(cfg *types.LoadBalancerConfig) NCtxReloadConfig {
 //   - LB_NCTX_PREFLIGHT_ENABLED (true/false) → PreflightEnabled (Round 34 Phase 0 fix)
 //   - LB_NCTX_PREFLIGHT_ASYNC_RELOAD (true/false) → PreflightAsyncReload (Round 31 #2)
 //   - LB_NCTX_PREFLIGHT_ASYNC_RETRY_AFTER_SEC (int) → PreflightAsyncRetryAfterSec
+//   - LB_NCTX_PREFLIGHT_MAX_WAIT_SEC (int) → PreflightMaxWaitSec (Round 35c)
+//   - LB_NCTX_PREFLIGHT_WAIT_MULTIPLIER (int) → PreflightWaitMultiplier (Round 35c)
+//   - LB_NCTX_PREFLIGHT_WAIT_BUFFER_SEC (int) → PreflightWaitBufferSec (Round 35c)
 //
 // Приоритет: ENV > config.json. Если ENV не задан — оставляем значение из config.
 //
@@ -88,6 +106,11 @@ func loadNCtxReloadConfig(cfg *types.LoadBalancerConfig) NCtxReloadConfig {
 // С `LB_NCTX_PREFLIGHT_ENABLED=true` в compose + этот override,
 // preflight действительно работает (Round 34 Phase 0 фикс изначально
 // не запускался — Cline 65K → 413 sync вместо 503+Retry-After).
+//
+// Round 35c (2026-08-13): polling timeout tuning для async load. Hardcoded
+// `maxWait = 2*est + 60s, max 15min` в model_management.go был слишком
+// короткий для моделей с auto-offload (Qwen3.6-35B на 8GB VRAM занимает
+// 12-15 min из-за CUDA_Host alloc). Теперь cap/multiplier/buffer env-tweakable.
 func applyNCtxReloadEnvOverrides(cfg NCtxReloadConfig) NCtxReloadConfig {
 	if v, ok := os.LookupEnv("LB_NCTX_RELOAD_ENABLED"); ok {
 		if b, err := strconv.ParseBool(v); err == nil {
@@ -126,5 +149,50 @@ func applyNCtxReloadEnvOverrides(cfg NCtxReloadConfig) NCtxReloadConfig {
 			cfg.PreflightAsyncRetryAfterSec = n
 		}
 	}
+	// Round 35c: env-конфигурируемые polling timeouts для async load.
+	if v, ok := os.LookupEnv("LB_NCTX_PREFLIGHT_MAX_WAIT_SEC"); ok {
+		if n, err := strconv.Atoi(v); err == nil {
+			cfg.PreflightMaxWaitSec = n
+		}
+	}
+	if v, ok := os.LookupEnv("LB_NCTX_PREFLIGHT_WAIT_MULTIPLIER"); ok {
+		if n, err := strconv.Atoi(v); err == nil {
+			cfg.PreflightWaitMultiplier = n
+		}
+	}
+	if v, ok := os.LookupEnv("LB_NCTX_PREFLIGHT_WAIT_BUFFER_SEC"); ok {
+		if n, err := strconv.Atoi(v); err == nil {
+			cfg.PreflightWaitBufferSec = n
+		}
+	}
 	return cfg
+}
+
+// resolvePreflightWaitTuning — Round 35c: возвращает (cap, multiplier, buffer)
+// для polling timeout в executeLlamaCppLoad. Приоритет:
+//   1. proxy.nctxReload.Config() (если proxy доступен)
+//   2. ENV overrides (LB_NCTX_PREFLIGHT_MAX_WAIT_SEC, _WAIT_MULTIPLIER, _WAIT_BUFFER_SEC)
+//   3. hardcoded defaults (5min cap, 2x multiplier, 60s buffer) для unit-тестов
+//
+// Шаг 2 (ENV fallback) важен для unit-тестов с NewModelManager(nil) — позволяет
+// тестам сокращать maxWait через t.Setenv без поднятия реального proxy.
+func resolvePreflightWaitTuning(proxy *Proxy) (time.Duration, int, time.Duration) {
+	capWait := 5 * time.Minute
+	multiplier := 2
+	bufDur := 60 * time.Second
+
+	if proxy != nil && proxy.nctxReload != nil {
+		ncCfg := proxy.nctxReload.Config()
+		capWait = ncCfg.effectivePreflightMaxWait()
+		multiplier = ncCfg.effectivePreflightWaitMultiplier()
+		bufDur = ncCfg.effectivePreflightWaitBuffer()
+		return capWait, multiplier, bufDur
+	}
+
+	// ENV fallback для случая nil proxy (unit-тесты).
+	envCfg := applyNCtxReloadEnvOverrides(DefaultNCtxReloadConfig())
+	capWait = envCfg.effectivePreflightMaxWait()
+	multiplier = envCfg.effectivePreflightWaitMultiplier()
+	bufDur = envCfg.effectivePreflightWaitBuffer()
+	return capWait, multiplier, bufDur
 }

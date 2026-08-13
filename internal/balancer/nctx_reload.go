@@ -96,6 +96,14 @@ type NCtxReloadConfig struct {
 	// Default 5 сек (reload обычно занимает 30-60s, но 5 — это нижняя граница,
 	// иначе клиент будет retry-ить слишком часто).
 	PreflightAsyncRetryAfterSec int `json:"preflight_async_retry_after_sec" yaml:"preflight_async_retry_after_sec"`
+
+	// Round 35c (2026-08-13): см. pkg/types.BalancingSettings.PreflightMaxWaitSec
+	// и PreflightWaitMultiplier. Эти поля читаются из config.json
+	// (Balancing.NCtxReload.PreflightMaxWaitSec) или из ENV overrides
+	// (LB_NCTX_PREFLIGHT_MAX_WAIT_SEC / LB_NCTX_PREFLIGHT_WAIT_MULTIPLIER).
+	PreflightMaxWaitSec     int `json:"preflight_max_wait_sec" yaml:"preflight_max_wait_sec"`
+	PreflightWaitMultiplier int `json:"preflight_wait_multiplier" yaml:"preflight_wait_multiplier"`
+	PreflightWaitBufferSec  int `json:"preflight_wait_buffer_sec" yaml:"preflight_wait_buffer_sec"`
 }
 
 func DefaultNCtxReloadConfig() NCtxReloadConfig {
@@ -108,6 +116,12 @@ func DefaultNCtxReloadConfig() NCtxReloadConfig {
 		PreflightEnabled:           true,
 		PreflightAsyncReload:       false, // sync по умолчанию (старое поведение)
 		PreflightAsyncRetryAfterSec: 5,
+		// Round 35c: env-конфигурируемые polling timeouts для async load.
+		// Default 900s (15 min) cap + 2x multiplier покрывает A10 с 22GB Qwen3.6
+		// (est ~3min, 2*3+60=7.2min). Для 3070 / 70B+ моделей поднимите через ENV.
+		PreflightMaxWaitSec:     900,
+		PreflightWaitMultiplier: 2,
+		PreflightWaitBufferSec:  60,
 	}
 }
 
@@ -154,6 +168,61 @@ func (c NCtxReloadConfig) effectiveAsyncRetryAfter() int {
 		r = 30
 	}
 	return r
+}
+
+// effectivePreflightMaxWait — максимальное время polling для async load.
+// Default 900s (15 min), clamp [5, 3600]. Round 35c: env-конфигурируемый
+// cap чтобы покрыть медленные GPU / 70B+ модели.
+//
+// Специально: min снижен до 5s (раньше был 60s) чтобы unit-тесты могли
+// использовать маленький cap через ENV override (LB_NCTX_PREFLIGHT_MAX_WAIT_SEC=3
+// например). Production значения по умолчанию 900s всё равно покрывают A10.
+func (c NCtxReloadConfig) effectivePreflightMaxWait() time.Duration {
+	t := c.PreflightMaxWaitSec
+	if t <= 0 {
+		t = 900
+	}
+	if t < 5 {
+		t = 5
+	}
+	if t > 3600 {
+		t = 3600
+	}
+	return time.Duration(t) * time.Second
+}
+
+// effectivePreflightWaitMultiplier — множитель для оценки load time.
+// Default 2, clamp [1, 6]. Round 35c: для медленных моделей с auto-offload
+// (22GB Qwen3.6 на 8GB VRAM) cppworker estimation слишком оптимистичен,
+// 3-4 даёт надёжный запас.
+func (c NCtxReloadConfig) effectivePreflightWaitMultiplier() int {
+	m := c.PreflightWaitMultiplier
+	if m <= 0 {
+		m = 2
+	}
+	if m < 1 {
+		m = 1
+	}
+	if m > 6 {
+		m = 6
+	}
+	return m
+}
+
+// effectivePreflightWaitBuffer — доп. буфер после `multiplier*est`.
+// Default 60s (если поле <= 0 и не задано явно). Clamp [0, 600]. Round 35c.
+//
+// Специально: явное 0 сохраняется (тест может установить 0 через ENV), а
+// не заменяется на default. Используем проверку < 0 для default.
+func (c NCtxReloadConfig) effectivePreflightWaitBuffer() time.Duration {
+	b := c.PreflightWaitBufferSec
+	if b < 0 {
+		b = 60
+	}
+	if b > 600 {
+		b = 600
+	}
+	return time.Duration(b) * time.Second
 }
 
 // ============================================================

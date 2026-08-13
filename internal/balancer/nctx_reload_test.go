@@ -424,6 +424,95 @@ func TestLoadNCtxReloadConfig_EnvOverridesConfig(t *testing.T) {
 	}
 }
 
+// TestLoadNCtxReloadConfig_Round35c_EnvTunables — Round 35c: проверяет
+// что новые env vars (LB_NCTX_PREFLIGHT_MAX_WAIT_SEC / _WAIT_MULTIPLIER /
+// _WAIT_BUFFER_SEC) правильно читаются и применяются.
+func TestLoadNCtxReloadConfig_Round35c_EnvTunables(t *testing.T) {
+	for _, k := range []string{
+		"LB_NCTX_PREFLIGHT_MAX_WAIT_SEC",
+		"LB_NCTX_PREFLIGHT_WAIT_MULTIPLIER",
+		"LB_NCTX_PREFLIGHT_WAIT_BUFFER_SEC",
+	} {
+		os.Unsetenv(k)
+	}
+	t.Run("defaults", func(t *testing.T) {
+		got := loadNCtxReloadConfig(nil)
+		if got.PreflightMaxWaitSec != 900 {
+			t.Errorf("default PreflightMaxWaitSec = %d, want 900", got.PreflightMaxWaitSec)
+		}
+		if got.PreflightWaitMultiplier != 2 {
+			t.Errorf("default PreflightWaitMultiplier = %d, want 2", got.PreflightWaitMultiplier)
+		}
+		if got.PreflightWaitBufferSec != 60 {
+			t.Errorf("default PreflightWaitBufferSec = %d, want 60", got.PreflightWaitBufferSec)
+		}
+	})
+	t.Run("env overrides defaults", func(t *testing.T) {
+		os.Setenv("LB_NCTX_PREFLIGHT_MAX_WAIT_SEC", "1800")
+		os.Setenv("LB_NCTX_PREFLIGHT_WAIT_MULTIPLIER", "4")
+		os.Setenv("LB_NCTX_PREFLIGHT_WAIT_BUFFER_SEC", "120")
+		defer func() {
+			os.Unsetenv("LB_NCTX_PREFLIGHT_MAX_WAIT_SEC")
+			os.Unsetenv("LB_NCTX_PREFLIGHT_WAIT_MULTIPLIER")
+			os.Unsetenv("LB_NCTX_PREFLIGHT_WAIT_BUFFER_SEC")
+		}()
+		got := loadNCtxReloadConfig(nil)
+		if got.PreflightMaxWaitSec != 1800 {
+			t.Errorf("PreflightMaxWaitSec = %d, want 1800 (from ENV)", got.PreflightMaxWaitSec)
+		}
+		if got.PreflightWaitMultiplier != 4 {
+			t.Errorf("PreflightWaitMultiplier = %d, want 4 (from ENV)", got.PreflightWaitMultiplier)
+		}
+		if got.PreflightWaitBufferSec != 120 {
+			t.Errorf("PreflightWaitBufferSec = %d, want 120 (from ENV)", got.PreflightWaitBufferSec)
+		}
+	})
+}
+
+// TestNCtxReloadConfig_PreflightTunables_Clamping — Round 35c: clamp-логика
+// для effective* хелперов. Защищает от crazy значений (0, отрицательные,
+// слишком большие).
+//
+// Round 35c fix: `effectivePreflightWaitBuffer` теперь сохраняет явный 0
+// (для тестов с ENV override), а default 60s применяется в
+// `loadNCtxReloadConfig` (config bridge) — не в самом helper. Поэтому
+// здесь `bufSec=0` → effective 0, а не 60.
+func TestNCtxReloadConfig_PreflightTunables_Clamping(t *testing.T) {
+	tests := []struct {
+		name                       string
+		maxSec, mul, bufSec        int
+		wantMax, wantMul, wantBuf  int // expected effective values
+	}{
+		// Note: defaults 0/0/0 — для multiplier и maxWait есть min-клампинг
+		// (1 и 5 соотв.). Buffer 0 сохраняется (явный 0).
+		{"defaults", 0, 0, 0, 900, 2, 0},
+		// min max_wait = 5 (снижен с 60 для ENV-override unit-тестов).
+		{"too_small_clamped_up", 3, 0, -1, 5, 2, 60},
+		// multiplier clamp [1, 6], buffer clamp [0, 600].
+		{"too_large_clamped_down", 10000, 99, 9999, 3600, 6, 600},
+		{"explicit_in_range", 1800, 4, 120, 1800, 4, 120},
+		{"explicit_zero_buffer_preserved", 900, 2, 0, 900, 2, 0},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := NCtxReloadConfig{
+				PreflightMaxWaitSec:     tt.maxSec,
+				PreflightWaitMultiplier: tt.mul,
+				PreflightWaitBufferSec:  tt.bufSec,
+			}
+			if got := cfg.effectivePreflightMaxWait().Seconds(); int(got) != tt.wantMax {
+				t.Errorf("effectivePreflightMaxWait() = %v, want %d sec", got, tt.wantMax)
+			}
+			if got := cfg.effectivePreflightWaitMultiplier(); got != tt.wantMul {
+				t.Errorf("effectivePreflightWaitMultiplier() = %d, want %d", got, tt.wantMul)
+			}
+			if got := cfg.effectivePreflightWaitBuffer().Seconds(); int(got) != tt.wantBuf {
+				t.Errorf("effectivePreflightWaitBuffer() = %v, want %d sec", got, tt.wantBuf)
+			}
+		})
+	}
+}
+
 func TestRoundUpPow2(t *testing.T) {
 	tests := []struct {
 		in, want int

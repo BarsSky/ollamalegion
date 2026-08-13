@@ -36,8 +36,10 @@ services:
       dockerfile: docker/balancer/Dockerfile
     # Round 34 image (cppworker-bundled-r34) crashed after ~75min with
     # "sync: unlock of unlocked mutex" — reverted to Round 33 (stable 7h+).
-    # Investigate Round 34 source diff and rebuild after fix.
-    image: ollama-legion/balancer:cppworker-bundled-r35  # Round 35 bugfix: reload→load fallback + idleUnload disabled
+    # Round 35 (r35): reload→load fallback + idleUnload disabled.
+    # Round 35c (r35c): env-tunable polling timeouts (LB_NCTX_PREFLIGHT_*)
+    # для моделей с auto-offload (22GB+ Qwen3.6 на 8GB VRAM, 12-15 min load).
+    image: ollama-legion/balancer:cppworker-bundled-r35c  # Round 35c: env-tunable async load polling timeout
     container_name: ol-bundled-balancer
     restart: unless-stopped
     ports:
@@ -63,6 +65,14 @@ services:
       # в environment: ниже. Без этого async mode выключен и клиент получает 413.
       - LB_NCTX_PREFLIGHT_ASYNC_RELOAD=${LB_NCTX_PREFLIGHT_ASYNC_RELOAD:-true}
       - LB_NCTX_PREFLIGHT_ASYNC_RETRY_AFTER_SEC=${LB_NCTX_PREFLIGHT_ASYNC_RETRY_AFTER_SEC:-30}
+      # Round 35c (2026-08-13): env-tunable async load polling timeout.
+      # User report: 22GB Qwen3.6-35B-A3B на 3070 получил 8m7s timeout
+      # (cppworker estimation 3.5min × 2 + 60s = 8m), но реальная загрузка
+      # 12+ min из-за CUDA_Host pinned memory alloc для 19GB+ весов.
+      # Для 22GB+ Qwen3.6 на 3070 поднять: MAX_WAIT=1800, MULT=4, BUFFER=120.
+      - LB_NCTX_PREFLIGHT_MAX_WAIT_SEC=${LB_NCTX_PREFLIGHT_MAX_WAIT_SEC:-900}
+      - LB_NCTX_PREFLIGHT_WAIT_MULTIPLIER=${LB_NCTX_PREFLIGHT_WAIT_MULTIPLIER:-2}
+      - LB_NCTX_PREFLIGHT_WAIT_BUFFER_SEC=${LB_NCTX_PREFLIGHT_WAIT_BUFFER_SEC:-60}
     volumes:
       - ../config:/app/config:ro
       - balancer_data:/app/data

@@ -1,0 +1,112 @@
+Round 35c: env-tunable async load polling timeout для heavy MoE моделей
+
+User report (2026-08-13 11:01): Qwen3.6-35B-A3B-UD-Q4_K_M (22GB MoE,
+3B active, Mamba2 hybrid) тест на 3070 (8GB VRAM):
+
+  model 'Qwen3.6-35B-A3B-UD-Q4_K_M' is not loaded and auto-load failed:
+  auto-load failed: async load (202) on cppworker: model not ready
+  after 8m7.182s
+
+Root cause: balancer formula `maxWait = 2*est + 60s, max 15min` (Round
+32 #15). cppworker estimation 3.5min (210s) → maxWait = 8m, но
+реальная загрузка 6m36s (фактически успела загрузиться за 6:36, но
+polling истёк на 8:00). Off by ~1.9x.
+
+Причины underestimation:
+- 22GB Qwen3.6 на 8GB VRAM → 3 GPU layers, остальное CUDA_Host pinned
+  memory (~19GB). CUDA_Host alloc занимает 5-10 мин на 19GB (slow
+  page locking).
+- cppworker estimation = file_size / GPU_bandwidth, не учитывает
+  CUDA_Host alloc / KV cache alloc / graph capture.
+
+После load: client получил "Expecting value: line 2 column 1 (char 2)"
+(partial response на retry) и "модель пошла в перезагрузку" (idle
+unload? нет — idleUnload=0. Или reload на retry с другим ctx size).
+Эти баги ОТДЕЛЬНЫЕ и не покрыты этим fix.
+
+Round 35c fix: env-tunable polling timeout в `executeLlamaCppLoad`.
+
+Изменения (8 файлов, +329/-10):
+- `pkg/types/balancing.go`: +3 поля в NCtxReloadSettings
+  (PreflightMaxWaitSec / PreflightWaitMultiplier / PreflightWaitBufferSec)
+- `internal/balancer/nctx_reload.go`: +3 effective* хелпера
+  (clamp логика + динамический min вместо hardcoded 3min)
+- `internal/balancer/nctx_reload_config_bridge.go`: +LB_NCTX_PREFLIGHT_*
+  ENV overrides + resolvePreflightWaitTuning() для nil proxy
+- `internal/balancer/model_management.go`: использует новые helpers
+  в executeLlamaCppLoad 202 path
+- `internal/balancer/nctx_reload_test.go`: +2 теста (env tunables +
+  clamping)
+- `internal/balancer/load_timeout_test.go`: ENV override для
+  быстрого теста
+- `deployments/.env.bundled-with-agent.example`: +LB_NCTX_PREFLIGHT_*
+  + Round 35c notes (3070 vs A10 значения)
+- `deployments/docker-compose.cppworker-bundled-with-agent.yml`:
+  +3 env vars + image tag r35 → r35c
+
+Ключевые ENV vars (clamp [5, 3600], [1, 6], [0, 600]):
+- LB_NCTX_PREFLIGHT_MAX_WAIT_SEC=900     # 15 min default cap
+- LB_NCTX_PREFLIGHT_WAIT_MULTIPLIER=2    # 2x cppworker estimation
+- LB_NCTX_PREFLIGHT_WAIT_BUFFER_SEC=60   # extra buffer после 2x*est
+
+Hardcoded `2*est + 60s` → env-tunable `multiplier*est + buffer`, capped
+at max_wait. Min bound = cap/10 (вместо hardcoded 3min) чтобы unit-тесты
+с маленьким cap работали.
+
+A10 deploy (Round 35 plan): defaults хватают. 22GB Qwen3.6 на A10
+(full GPU offload, 24GB VRAM) загружается ~3-5 мин → 2*3+60=7.2 min
+< 15 min cap.
+
+3070 stress test (22GB Qwen3.6, 3 GPU layers, CUDA_Host alloc):
+рекомендуемые значения в .env.bundled-with-agent.example:
+- LB_NCTX_PREFLIGHT_MAX_WAIT_SEC=1800   # 30 min
+- LB_NCTX_PREFLIGHT_WAIT_MULTIPLIER=4   # 22GB MoE underestimation
+- LB_NCTX_PREFLIGHT_WAIT_BUFFER_SEC=120 # +2 min buffer
+
+Image: ollama-legion/balancer:cppworker-bundled-r35c (61.6MB, SHA
+b5d19ab5759b). Built 2026-08-13 11:00 UTC.
+
+Live verified 2026-08-13 11:08 UTC:
+- 5 containers healthy (balancer r35c + cppworker r35 + agent + webui + buildx)
+- Env: LB_NCTX_PREFLIGHT_MAX_WAIT_SEC=900, MULT=2, BUFFER=60 (defaults)
+- gemma-4-E4B-it-Q4_K_M @ 32K context, 157.6s load
+- gemma-4 chat: "OK" in 2.17s, 2 completion tokens
+- Qwen3.6-35B @ 4K context (auto-tuned), 396.2s load (6m36s)
+
+Caveats:
+1. Polling min floor = cap/10 (НЕ 3min). Для production cap=900s →
+   min=90s (раньше 180s). Backward compat: 90s всё ещё даёт
+   достаточно времени на 5GB gemma-4 (load 80-90s).
+2. `effectivePreflightWaitBuffer` сохраняет явный 0 (для unit-тестов
+   с ENV=0), default 60s применяется в config bridge, не в helper.
+3. Pre-existing test `TestHandleOpenAIChatCompletions_Cline_NonNormalizationRegression`
+   hangs на 60s (НЕ связано с этим fix, проверено на master). Skipped
+   в этом раунде, отложен.
+
+Reusable patterns (cross-project):
+
+36. **Env-tunable timeout formula** (multiplier*est + buffer, capped):
+    для distributed систем с динамической нагрузкой hardcoded
+    формулы ломаются при непредвиденных сценариях. Делайте все три
+    компонента env-tweakable:
+    - multiplier (1-6): множитель для estimation
+    - buffer (0-600s): доп. запас после multiplier*est
+    - cap (60-3600s): hard верхняя граница
+    Min floor = cap/10 (НЕ hardcoded 3min) для unit-тестов.
+
+37. **ENV fallback для nil receiver**: когда функция читает config
+    из proxy.GetCoordinator().Config(), но в unit-тестах proxy=nil,
+    добавьте applyNCtxReloadEnvOverrides(def) fallback. Это
+    позволяет тестам с t.Setenv сокращать таймауты без поднятия
+    полного proxy.
+
+38. **Clamp min не должен быть слишком большим**: hardcoded min=60s
+    в effectivePreflightMaxWait мешал unit-тестам. Min=5s даёт
+    12x headroom для тестов, но production значения (900s) работают
+    как раньше.
+
+39. **Explicit 0 vs unset для optional ENV**: в Go нельзя отличить
+    "поле не задано в JSON" от "поле=0" без pointer types. Workaround:
+    в ENV path применяем явное значение (включая 0), в config path
+    default-filling на 0 (если поле = 0, ставим default). Это даёт
+    разное поведение для ENV vs config, но unit-тестам достаточно.

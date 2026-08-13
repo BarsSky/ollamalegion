@@ -39,7 +39,7 @@ services:
     # Round 35 (r35): reload→load fallback + idleUnload disabled.
     # Round 35c (r35c): env-tunable polling timeouts (LB_NCTX_PREFLIGHT_*)
     # для моделей с auto-offload (22GB+ Qwen3.6 на 8GB VRAM, 12-15 min load).
-    image: ollama-legion/balancer:cppworker-bundled-r35d-diag2  # Round 35d: duration tracking (df9573e) + preflight num_ctx diagnostic on Ollama AND OpenAI paths (R35d-diag2)
+    image: ollama-legion/balancer:cppworker-bundled-r35e-fix1  # Round 35e: skip empty SSE lines in hijack streaming (beb2e11) → fixes Open WebUI aiohttp TransferEncodingError on long thinking streams
     container_name: ol-bundled-balancer
     restart: unless-stopped
     ports:

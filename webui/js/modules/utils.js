@@ -205,5 +205,79 @@ const Utils = {
     setStyle(id, prop, value) {
         const el = document.getElementById(id);
         if (el) el.style[prop] = value;
+    },
+
+    /**
+     * gpu_layers live badge + quick-set helpers (Round 35c+, 2026-08-13).
+     *
+     * Backend magic values for numGpuLayers:
+     *   -2 = AUTO (cppworker decides по VRAM/размеру, рекомендуется)
+     *   -1 = all layers (max speed, нужно VRAM ≥ размера модели)
+     *    0 = CPU only (медленно, через mmap в RAM)
+     *    N = явное число слоёв на GPU (1..200)
+     *
+     * Использование в HTML:
+     *   <label>GPU Layers <span id="badgeId" class="gpu-layers-badge is-auto">AUTO</span></label>
+     *   <input type="number" id="inputId" value="-2" min="-2" max="200"
+     *          oninput="Utils.updateGpuLayersBadge('inputId','badgeId')">
+     *   <div class="gpu-layers-quick-row">
+     *     <button type="button" class="btn btn-secondary" onclick="Utils.setGpuLayers(-2,'inputId','badgeId')">AUTO (-2)</button>
+     *     ...
+     *   </div>
+     */
+    updateGpuLayersBadge(inputId, badgeId) {
+        const input = document.getElementById(inputId);
+        const badge = document.getElementById(badgeId);
+        if (!input || !badge) return;
+        const val = parseInt(input.value, 10);
+        let label, cls;
+        if (Number.isNaN(val)) {
+            label = '?';
+            cls = 'is-invalid';
+        } else if (val === -2) {
+            label = (window.I18N && I18N.t)
+                ? I18N.t('gguf.gpu_layers_badge_auto', 'AUTO')
+                : 'AUTO';
+            cls = 'is-auto';
+        } else if (val === -1) {
+            label = (window.I18N && I18N.t)
+                ? I18N.t('gguf.gpu_layers_badge_all', 'All')
+                : 'All';
+            cls = 'is-all';
+        } else if (val === 0) {
+            label = (window.I18N && I18N.t)
+                ? I18N.t('gguf.gpu_layers_badge_cpu', 'CPU')
+                : 'CPU';
+            cls = 'is-cpu';
+        } else if (val < -2 || val > 200) {
+            label = '?';
+            cls = 'is-invalid';
+        } else {
+            // Custom N layers. Use plural-friendly format with simple int substitution.
+            const tpl = (window.I18N && I18N.t)
+                ? I18N.t('gguf.gpu_layers_badge_custom', '{n} layers')
+                : '{n} layers';
+            label = tpl.replace('{n}', String(val));
+            cls = 'is-custom';
+        }
+        badge.textContent = label;
+        badge.className = 'gpu-layers-badge ' + cls;
+
+        // Update is-active state on quick-set buttons within the same group.
+        const group = badge.closest('.form-group, .form-row, .wizard-field');
+        if (group) {
+            const btns = group.querySelectorAll('.gpu-layers-quick-row [data-gpu-value]');
+            btns.forEach(function (b) {
+                const v = parseInt(b.getAttribute('data-gpu-value'), 10);
+                if (v === val) b.classList.add('is-active');
+                else b.classList.remove('is-active');
+            });
+        }
+    },
+    setGpuLayers(value, inputId, badgeId) {
+        const input = document.getElementById(inputId);
+        if (!input) return;
+        input.value = value;
+        this.updateGpuLayersBadge(inputId, badgeId);
     }
 };

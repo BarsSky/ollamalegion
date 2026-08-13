@@ -977,11 +977,22 @@
 
                                 <div class="form-row">
                                     <div class="form-group">
-                                        <label data-i18n="gguf.gpu_layers">GPU Layers</label>
+                                        <label data-i18n="gguf.gpu_layers">GPU Layers
+                                            <span id="gpuLayersBadge" class="gpu-layers-badge is-auto">AUTO</span>
+                                        </label>
                                         <span class="tooltip-trigger">?<span class="tooltip-content" data-i18n="gguf.gpu_layers_desc">
-Число слоёв модели для выгрузки на GPU. -1 = все слои (максимальное ускорение), 0 = только CPU.
+Число слоёв модели для выгрузки на GPU. -2 = AUTO (cppworker решает по VRAM/размеру), -1 = все слои, 0 = только CPU.
                                         </span></span>
-                                        <input type="number" id="gpuLayers" class="form-control" value="-1" min="-2" max="200">
+                                        <input type="number" id="gpuLayers" class="form-control" value="-2" min="-2" max="200"
+                                               oninput="Utils.updateGpuLayersBadge('gpuLayers','gpuLayersBadge')">
+                                        <div class="gpu-layers-quick-row">
+                                            <button type="button" class="btn btn-secondary" data-gpu-value="-2"
+                                                    onclick="Utils.setGpuLayers(-2,'gpuLayers','gpuLayersBadge')">AUTO (-2)</button>
+                                            <button type="button" class="btn btn-secondary" data-gpu-value="-1"
+                                                    onclick="Utils.setGpuLayers(-1,'gpuLayers','gpuLayersBadge')">All (-1)</button>
+                                            <button type="button" class="btn btn-secondary" data-gpu-value="0"
+                                                    onclick="Utils.setGpuLayers(0,'gpuLayers','gpuLayersBadge')">CPU (0)</button>
+                                        </div>
                                     </div>
                                     <div class="form-group">
                                         <label data-i18n="gguf.ctx_size">Context Size</label>

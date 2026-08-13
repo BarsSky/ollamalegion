@@ -1029,6 +1029,11 @@ const GgufRenderer = (window.GgufRenderer = (function () {
             if (!state._settingsFormHtmlByBackend) state._settingsFormHtmlByBackend = {};
             state._settingsFormHtmlByBackend[backend.id] = { html: formHtml, cfg: cfg, ts: Date.now() };
             container.innerHTML = formHtml;
+            // Round 35c+ (2026-08-13): init gpu_layers live badge (после render, чтобы
+            // badge отражал текущее значение gpu, а не дефолт "AUTO" в HTML).
+            if (Utils.updateGpuLayersBadge) {
+                Utils.updateGpuLayersBadge('ggufOptGpuLayers', 'ggufOptGpuLayersBadge');
+            }
             // Привязываем handlers
             const reloadBtn = container.querySelector('#ggufBackendOptionsReload');
             if (reloadBtn) reloadBtn.addEventListener('click', loadAndRenderBackendOptions);
@@ -1197,9 +1202,27 @@ const GgufRenderer = (window.GgufRenderer = (function () {
             '</div>' +
             '<div class="form-row" style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:12px;">' +
                 '<div class="form-group">' +
-                    '<label>' + Utils.escapeHtml(_('gguf.gpu_layers')) + '</label>' +
-                    '<input type="number" id="ggufOptGpuLayers" class="form-control" value="' + gpu + '" min="-2" max="200">' +
-                    '<small style="color:var(--text-muted);">-2 = AUTO (cppworker decides), -1 = all layers, 0 = CPU only</small>' +
+                    '<label>' + Utils.escapeHtml(_('gguf.gpu_layers')) +
+                        ' <span id="ggufOptGpuLayersBadge" class="gpu-layers-badge is-auto">AUTO</span>' +
+                    '</label>' +
+                    '<input type="number" id="ggufOptGpuLayers" class="form-control" value="' + gpu + '" min="-2" max="200" ' +
+                        'oninput="Utils.updateGpuLayersBadge(\'ggufOptGpuLayers\',\'ggufOptGpuLayersBadge\')">' +
+                    '<div class="gpu-layers-quick-row">' +
+                        '<button type="button" class="btn btn-secondary" data-gpu-value="-2" ' +
+                            'onclick="Utils.setGpuLayers(-2,\'ggufOptGpuLayers\',\'ggufOptGpuLayersBadge\')">' +
+                            Utils.escapeHtml(_('gguf.gpu_layers_btn_auto', 'AUTO (-2)')) + '</button>' +
+                        '<button type="button" class="btn btn-secondary" data-gpu-value="-1" ' +
+                            'onclick="Utils.setGpuLayers(-1,\'ggufOptGpuLayers\',\'ggufOptGpuLayersBadge\')">' +
+                            Utils.escapeHtml(_('gguf.gpu_layers_btn_all', 'All layers (-1)')) + '</button>' +
+                        '<button type="button" class="btn btn-secondary" data-gpu-value="0" ' +
+                            'onclick="Utils.setGpuLayers(0,\'ggufOptGpuLayers\',\'ggufOptGpuLayersBadge\')">' +
+                            Utils.escapeHtml(_('gguf.gpu_layers_btn_cpu', 'CPU only (0)')) + '</button>' +
+                    '</div>' +
+                    '<small style="color:var(--text-muted);display:block;margin-top:6px;">' +
+                        Utils.escapeHtml(_('gguf.gpu_layers_desc')) + ' ' +
+                        '<strong style="color:var(--success);">' +
+                        Utils.escapeHtml(_('gguf.gpu_layers_recommended', 'AUTO is recommended.')) + '</strong>' +
+                    '</small>' +
                 '</div>' +
                 '<div class="form-group">' +
                     '<label>' + Utils.escapeHtml(_('gguf.flash_attn_type')) + '</label>' +

@@ -1366,6 +1366,12 @@ const ui = (function () {
         // Session 17: показать/скрыть panel "Runtime overrides active" в зависимости
         // от наличия sidecar-файла. Делаем ПОСЛЕ setVal чтобы DOM был готов.
         updateLlamaCppOverridesPanel();
+        // Round 35c+ (2026-08-13): обновляем gpu_layers live badge после setVal.
+        // Без этого badge показывает "AUTO" (HTML default) даже если value=-1
+        // или custom число, что вводит пользователя в заблуждение.
+        if (Utils && Utils.updateGpuLayersBadge) {
+            Utils.updateGpuLayersBadge('gpuLayers', 'gpuLayersBadge');
+        }
     }
 
     /**

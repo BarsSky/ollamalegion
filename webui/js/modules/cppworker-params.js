@@ -338,8 +338,20 @@
                         <input type="number" id="wizBatchSize" value="${state.batchSize}" min="${BATCH_SIZE_MIN}" max="${BATCH_SIZE_MAX}" placeholder="0 = не задано">
                     </div>
                     <div class="wizard-field">
-                        <label>${escapeHtml(I18N.t('settings.profiles.num_gpu_layers', 'Num GPU Layers (опционально)'))}</label>
-                        <input type="number" id="wizNumGpuLayers" value="${state.numGpuLayers}" min="${GPU_LAYERS_MIN}" max="${GPU_LAYERS_MAX}" placeholder="-2=AUTO, -1=все, 0=CPU only">
+                        <label>${escapeHtml(I18N.t('settings.profiles.num_gpu_layers', 'Num GPU Layers (опционально)'))}
+                            <span id="wizNumGpuLayersBadge" class="gpu-layers-badge is-auto">AUTO</span>
+                        </label>
+                        <input type="number" id="wizNumGpuLayers" value="${state.numGpuLayers}" min="${GPU_LAYERS_MIN}" max="${GPU_LAYERS_MAX}"
+                               placeholder="-2=AUTO, -1=все, 0=CPU only"
+                               oninput="Utils.updateGpuLayersBadge('wizNumGpuLayers','wizNumGpuLayersBadge')">
+                        <div class="gpu-layers-quick-row">
+                            <button type="button" class="btn btn-secondary" data-gpu-value="-2"
+                                    onclick="Utils.setGpuLayers(-2,'wizNumGpuLayers','wizNumGpuLayersBadge')">AUTO (-2)</button>
+                            <button type="button" class="btn btn-secondary" data-gpu-value="-1"
+                                    onclick="Utils.setGpuLayers(-1,'wizNumGpuLayers','wizNumGpuLayersBadge')">All (-1)</button>
+                            <button type="button" class="btn btn-secondary" data-gpu-value="0"
+                                    onclick="Utils.setGpuLayers(0,'wizNumGpuLayers','wizNumGpuLayersBadge')">CPU (0)</button>
+                        </div>
                     </div>
                     <div class="wizard-field">
                         <label>${escapeHtml(I18N.t('settings.profiles.notes', 'Заметки'))}</label>
@@ -438,6 +450,11 @@
             </div>
         `;
         document.body.appendChild(overlay);
+        // Round 35c+ (2026-08-13): init gpu_layers live badge в wizard.
+        // Без этого badge показывает "AUTO" (HTML default) даже если state.numGpuLayers = 0.
+        if (typeof Utils !== 'undefined' && Utils.updateGpuLayersBadge) {
+            Utils.updateGpuLayersBadge('wizNumGpuLayers', 'wizNumGpuLayersBadge');
+        }
         // Закрытие по клику на оверлей
         overlay.addEventListener('click', e => {
             if (e.target === overlay) closeWizard();

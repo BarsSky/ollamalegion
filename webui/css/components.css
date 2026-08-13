@@ -341,6 +341,51 @@
 .badge-danger  { background: var(--danger-bg-soft); color: var(--danger); }
 .badge-info    { background: var(--info-soft); color: var(--info); }
 
+/* ===== gpu_layers form (Round 35c+, 2026-08-13) ===== */
+/* Live badge + quick-set buttons for the -2=AUTO magic value.
+   -2 = AUTO (cppworker decides)        — зелёный, рекомендуется
+   -1 = all layers                      — accent-soft (info)
+    0 = CPU only                        — secondary (серый)
+    N = explicit layer count            — warning (жёлтый, кастом) */
+.gpu-layers-badge {
+    display: inline-block;
+    padding: 2px 8px;
+    border-radius: 4px;
+    font-size: 10px;
+    font-weight: 700;
+    margin-left: 6px;
+    vertical-align: middle;
+    letter-spacing: 0.3px;
+    text-transform: uppercase;
+    transition: background-color 0.2s ease, color 0.2s ease;
+}
+.gpu-layers-badge.is-auto    { background: var(--success-soft); color: var(--success); border: 1px solid var(--success-soft); }
+.gpu-layers-badge.is-all     { background: var(--accent-soft);  color: var(--info);     border: 1px solid var(--accent-soft); }
+.gpu-layers-badge.is-cpu     { background: var(--bg-hover);      color: var(--text-secondary); border: 1px solid var(--border-color); }
+.gpu-layers-badge.is-custom  { background: var(--warning-soft);  color: var(--warning); border: 1px solid var(--warning-soft); }
+.gpu-layers-badge.is-invalid { background: var(--danger-bg-soft); color: var(--danger); border: 1px solid var(--danger-bg-soft); }
+
+.gpu-layers-quick-row {
+    display: flex;
+    gap: 4px;
+    margin-top: 6px;
+    flex-wrap: wrap;
+}
+.gpu-layers-quick-row .btn {
+    padding: 3px 9px !important;
+    font-size: 11px !important;
+    font-weight: 600;
+    line-height: 1.4;
+    border-radius: 4px;
+    cursor: pointer;
+    transition: all 0.15s ease;
+}
+.gpu-layers-quick-row .btn.is-active {
+    font-weight: 700;
+    box-shadow: 0 0 0 2px var(--accent);
+    border-color: var(--accent);
+}
+
 /* Backend type badges */
 .badge.backend-type-ollama {
     background: var(--accent-soft);

@@ -824,9 +824,15 @@ ModelHandle bridge_load_model(const ModelConfig* config, char** error_msg) {
     if (config->main_gpu >= 0) {
         model_params.main_gpu = config->main_gpu;
     }
-    model_params.use_mmap = config->use_mmap;
-    model_params.use_mlock = config->use_mlock;
-    model_params.use_mlock = config->use_mlock;
+    // Round 35d (2026-08-13): upstream llama.cpp УДАЛИЛ use_mmap/use_mlock
+    // из struct llama_model_params. Теперь mmap/mlock — runtime auto-detected
+    // через llama_supports_mmap() / llama_supports_mlock(). Configurable
+    // через load_mode (LLAMA_LOAD_MODE_USE_MMAP) или env vars.
+    // Для backward-compat: config->use_mmap/use_mlock сохранены в Config
+    // (см. cppworker-defaults.json), но здесь НЕ применяются к struct.
+    // To force mmap OFF вручную: use load_mode=LLAMA_LOAD_MODE_LOW или
+    // установить LLAMA_LOAD_MODE в env (см. upstream llama.h).
+    // (config->use_mmap / use_mlock ignored — см. comment)
 
     // Phase 8 P.4 (2026-07-11): multi-GPU tensor_split wiring.
     //
@@ -1282,7 +1288,7 @@ void bridge_free_model(ModelHandle model) {
 // но используется в bridge_infer И bridge_infer_stream — оба используют
 // per-request sampler chain). C требует forward declaration до первого
 // использования.
-struct llama_sampler* build_sampler_chain_from_params(const GenerationParams* params);
+struct llama_sampler* build_sampler_chain_from_params(const GenerationParams* params, int32_t n_vocab);
 
 InferenceResult bridge_infer(
     ModelHandle model,
@@ -1369,7 +1375,10 @@ InferenceResult bridge_infer(
     size_t output_len = 0;
 
     // Round 15.2d: per-request sampler chain (было im->sampler = greedy).
-    struct llama_sampler* sampler = build_sampler_chain_from_params(params);
+    // Round 35d (2026-08-13): передаём n_vocab для новой сигнатуры
+    // llama_sampler_init_penalties.
+    int32_t sampler_n_vocab = bridge_get_n_vocab(model);
+    struct llama_sampler* sampler = build_sampler_chain_from_params(params, sampler_n_vocab);
     if (sampler == NULL) {
         free(output);
         result.status = 1;
@@ -1527,11 +1536,26 @@ InferenceResult bridge_infer(
 //
 // Создаёт НОВЫЙ sampler chain. Caller ответственен за llama_sampler_free.
 // Если params NULL или все параметры дефолтные — возвращает обычный greedy.
-struct llama_sampler* build_sampler_chain_from_params(const GenerationParams* params) {
+// Round 35d (2026-08-13): upstream llama_sampler_init_penalties теперь требует
+// n_vocab первым аргументом. Достаём vocab size из model через
+// llama_model_get_vocab + llama_vocab_n_tokens.
+//
+// use_mmap/use_mlock удалены из llama_model_params (см. выше) — управление
+// mmap/mlock теперь через llama_supports_*() runtime checks или
+// LLAMA_LOAD_MODE env var.
+//
+// Forward declaration: n_vocab передаётся из caller (bridge_infer/stream)
+// который имеет доступ к im (InternalModel*).
+struct llama_sampler* build_sampler_chain_from_params(const GenerationParams* params, int32_t n_vocab) {
     struct llama_sampler_chain_params chain_params = llama_sampler_chain_default_params();
     struct llama_sampler* sampler = llama_sampler_chain_init(chain_params);
     if (sampler == NULL) {
         return NULL;
+    }
+    if (n_vocab <= 0) {
+        // Defensive: если n_vocab не передан (legacy caller), используем 0 —
+        // sampler penalties (если есть) skip'нутся, остальное работает.
+        n_vocab = 0;
     }
 
     // Если params NULL — fallback на greedy (для случаев когда params не заданы).
@@ -1549,6 +1573,7 @@ struct llama_sampler* build_sampler_chain_from_params(const GenerationParams* pa
         // last_n = 64 (default для большинства моделей), параметры penalties
         // из GenerationParams.
         struct llama_sampler* penalties = llama_sampler_init_penalties(
+            n_vocab,
             64,
             params->repeat_penalty,
             params->frequency_penalty,
@@ -1666,7 +1691,10 @@ int bridge_infer_stream(
     }
 
     // Round 15.2d: per-request sampler chain (было im->sampler = greedy).
-    struct llama_sampler* sampler = build_sampler_chain_from_params(params);
+    // Round 35d (2026-08-13): передаём n_vocab для новой сигнатуры
+    // llama_sampler_init_penalties.
+    int32_t sampler_n_vocab = bridge_get_n_vocab(model);
+    struct llama_sampler* sampler = build_sampler_chain_from_params(params, sampler_n_vocab);
     if (sampler == NULL) {
         free(tokens);
         set_error("failed to build sampler chain");

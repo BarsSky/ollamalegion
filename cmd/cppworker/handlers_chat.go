@@ -11,6 +11,7 @@ import (
 
 	"ollama-loadbalancer/c/bridge"
 	"ollama-loadbalancer/pkg/logger"
+	"ollama-loadbalancer/pkg/types"
 )
 
 // ============================================================
@@ -58,8 +59,18 @@ func handleChat(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var req chatRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid JSON: "+err.Error())
+	// Round 36 Phase 2 (2026-08-17): strict JSON decoder. Rejects unknown
+	// fields per the contract. Use MaxStreamingBodyBytes because chat
+	// messages can be large (long history, system prompts with examples).
+	if err := types.DecodeJSONRequest(r.Body, types.MaxStreamingBodyBytes, &req); err != nil {
+		switch {
+		case errors.Is(err, types.ErrBodyEmpty):
+			writeError(w, http.StatusBadRequest, "empty request body")
+		case errors.Is(err, types.ErrBodyTooLarge):
+			writeError(w, http.StatusRequestEntityTooLarge, "request body too large")
+		default:
+			writeError(w, http.StatusBadRequest, "invalid JSON: "+err.Error())
+		}
 		return
 	}
 	if req.Model == "" {

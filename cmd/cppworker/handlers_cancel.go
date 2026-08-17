@@ -1,11 +1,12 @@
 package main
 
 import (
-	"encoding/json"
+	"errors"
 	"net/http"
 
 	"ollama-loadbalancer/internal/cppbackend"
 	"ollama-loadbalancer/pkg/logger"
+	"ollama-loadbalancer/pkg/types"
 )
 
 // handleCancel — отменяет активную генерацию (Round 18 P0.2).
@@ -33,8 +34,16 @@ func handleCancel(w http.ResponseWriter, r *http.Request) {
 		UserID    string `json:"user_id"`
 		Model     string `json:"model"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid JSON: "+err.Error())
+	// Round 36 Phase 2: strict JSON decoder.
+	if err := types.DecodeJSONRequest(r.Body, types.MaxRequestBodyBytes, &req); err != nil {
+		switch {
+		case errors.Is(err, types.ErrBodyEmpty):
+			writeError(w, http.StatusBadRequest, "empty request body")
+		case errors.Is(err, types.ErrBodyTooLarge):
+			writeError(w, http.StatusRequestEntityTooLarge, "request body too large")
+		default:
+			writeError(w, http.StatusBadRequest, "invalid JSON: "+err.Error())
+		}
 		return
 	}
 

@@ -11,6 +11,7 @@ import (
 
 	"ollama-loadbalancer/c/bridge"
 	"ollama-loadbalancer/pkg/logger"
+	"ollama-loadbalancer/pkg/types"
 )
 
 // ============================================================
@@ -286,8 +287,16 @@ func isEmptyInferenceResult(result *bridge.InferenceResult) bool {
 
 func handleGenerate(w http.ResponseWriter, r *http.Request) {
 	var req generateRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid JSON: "+err.Error())
+	// Round 36 Phase 2: strict JSON decoder (rejects unknown fields).
+	if err := types.DecodeJSONRequest(r.Body, types.MaxStreamingBodyBytes, &req); err != nil {
+		switch {
+		case errors.Is(err, types.ErrBodyEmpty):
+			writeError(w, http.StatusBadRequest, "empty request body")
+		case errors.Is(err, types.ErrBodyTooLarge):
+			writeError(w, http.StatusRequestEntityTooLarge, "request body too large")
+		default:
+			writeError(w, http.StatusBadRequest, "invalid JSON: "+err.Error())
+		}
 		return
 	}
 	modelName := req.Model

@@ -14,6 +14,7 @@ import (
 
 	"ollama-loadbalancer/c/bridge"
 	"ollama-loadbalancer/pkg/logger"
+	"ollama-loadbalancer/pkg/types"
 )
 
 // ============================================================
@@ -217,8 +218,17 @@ func handleV1ChatCompletions(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var req openAIChatCompletionRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid JSON: "+err.Error())
+	// Round 36 Phase 2: strict JSON decoder. Rejects unknown fields per
+	// the contract — catches client bugs like `max_tokens` vs `maxTokens`.
+	if err := types.DecodeJSONRequest(r.Body, types.MaxStreamingBodyBytes, &req); err != nil {
+		switch {
+		case errors.Is(err, types.ErrBodyEmpty):
+			writeError(w, http.StatusBadRequest, "empty request body")
+		case errors.Is(err, types.ErrBodyTooLarge):
+			writeError(w, http.StatusRequestEntityTooLarge, "request body too large")
+		default:
+			writeError(w, http.StatusBadRequest, "invalid JSON: "+err.Error())
+		}
 		return
 	}
 	if req.Model == "" {
@@ -1238,8 +1248,16 @@ func handleV1Completions(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var req openAICompletionRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid JSON: "+err.Error())
+	// Round 36 Phase 2: strict JSON decoder.
+	if err := types.DecodeJSONRequest(r.Body, types.MaxStreamingBodyBytes, &req); err != nil {
+		switch {
+		case errors.Is(err, types.ErrBodyEmpty):
+			writeError(w, http.StatusBadRequest, "empty request body")
+		case errors.Is(err, types.ErrBodyTooLarge):
+			writeError(w, http.StatusRequestEntityTooLarge, "request body too large")
+		default:
+			writeError(w, http.StatusBadRequest, "invalid JSON: "+err.Error())
+		}
 		return
 	}
 	if req.Model == "" {
@@ -1675,8 +1693,16 @@ func handleV1Embeddings(w http.ResponseWriter, r *http.Request) {
 		Model string      `json:"model"`
 		Input interface{} `json:"input"` // string OR []string
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid JSON: "+err.Error())
+	// Round 36 Phase 2: strict JSON decoder.
+	if err := types.DecodeJSONRequest(r.Body, types.MaxRequestBodyBytes, &req); err != nil {
+		switch {
+		case errors.Is(err, types.ErrBodyEmpty):
+			writeError(w, http.StatusBadRequest, "empty request body")
+		case errors.Is(err, types.ErrBodyTooLarge):
+			writeError(w, http.StatusRequestEntityTooLarge, "request body too large")
+		default:
+			writeError(w, http.StatusBadRequest, "invalid JSON: "+err.Error())
+		}
 		return
 	}
 	if req.Model == "" || req.Input == nil {

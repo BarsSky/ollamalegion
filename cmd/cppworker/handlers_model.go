@@ -23,6 +23,11 @@ import (
 
 // handleLoadModel ? POST /api/models/load (? /load). ????????? ?????? ? VRAM.
 func handleLoadModel(w http.ResponseWriter, r *http.Request) {
+	// Round 36 Phase 3: method check per contract Section 9.2.
+	if r.Method != http.MethodPost {
+		writeError(w, http.StatusMethodNotAllowed, "use POST")
+		return
+	}
 	var req loadModelRequest
 	// Round 36 Phase 2: strict JSON decoder.
 	if err := types.DecodeJSONRequest(r.Body, types.MaxRequestBodyBytes, &req); err != nil {

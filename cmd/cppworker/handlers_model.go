@@ -1301,7 +1301,12 @@ func handleReloadModel(w http.ResponseWriter, r *http.Request) {
 					calculated = -2
 				} else {
 					calculated = strategy.GPULayers
-					opts.KVCacheType = strategy.KVCacheType
+					// Round 40 #2 (2026-08-18): respect user-explicit kvCacheType
+					// (from reload body or profile). Previously this was an
+					// unconditional override `opts.KVCacheType = strategy.KVCacheType`
+					// which silently discarded user q4_0/q8_0 choices. See
+					// reload_kv_cache_override.go for the full precedence contract.
+					applyStrategyKVCacheOverride(&opts, strategy, req.Name)
 					opts.UseMmap = strategy.UseMmap
 				}
 				// Round 7: apply MoE override-tensors from strategy. For Qwen3-A3B

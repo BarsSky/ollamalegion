@@ -524,7 +524,7 @@ func TestSendSSEErrorSafe_Format(t *testing.T) {
 
 	// Прямой вызов метода для проверки формата
 	recorder := httptest.NewRecorder()
-	proxy.SendSSEErrorSafe(recorder, &nopFlusher{}, "TEST_ERROR", "Test message", "test-backend")
+	proxy.SendSSEErrorSafe(recorder, &nopFlusher{}, "TEST_ERROR", "Test message", "test-backend", time.Time{})
 
 	body := recorder.Body.String()
 	t.Logf("sendSSEErrorSafe output:\n%s", body)

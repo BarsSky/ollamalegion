@@ -107,6 +107,10 @@ Thumbs.db
 # Эти паттерны экономят ~70% context size и ускоряют COPY layer.
 c/llama.cpp/build/
 c/llama.cpp/build-*/
+c/llama.cpp.local-bak*/
+c/llama.cpp.local*/
+c/**/*.bak/
+c/**/.bak/
 c/llama.cpp/models/
 c/llama.cpp/examples/
 c/llama.cpp/tests/

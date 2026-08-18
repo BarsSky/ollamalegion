@@ -1,151 +1,264 @@
 {
-  "backendEngine": "llama_cpp",
-  "loadBalancer": {
-    "host": "0.0.0.0",
-    "port": 18080,
-    "apiPort": 18081,
-    "statePath": "data/state.json",
-    "tlsHost": "",
-    "tlsPort": 8443,
-    "trustedProxies": [
-      "127.0.0.1/8",
-      "172.17.0.0/16",
-      "172.18.0.0/16",
-      "172.28.0.0/16",
-      "10.0.0.0/8",
-      "192.168.0.0/16"
-    ],
-    "clientIPHeaders": ["X-Forwarded-For", "X-Real-IP", "CF-Connecting-IP"]
-  },
-  "backends": [],
-  "balancing": {
-    "algorithm": "resource-aware",
-    "modelAffinity": true,
-    "sessionStickiness": true,
-    "healthCheckInterval": 10,
-    "metricsInterval": 5,
-    "requestTimeout": 600,
-    "firstByteTimeout": 600,
-    "streamingIdleTimeout": 1800,
-    "streamTimeout": 1800,
-    "queueTimeout": 900,
-
-    "queueMaxSize": 100,
-    "queueWorkers": 4,
-    "sessionTTL": 900,
-    "prewarm": {
-      "enabled": true,
-      "triggerLoadThreshold": 0.70,
-      "maxPrewarmPerCycle": 2,
-      "checkIntervalSec": 10
+    "_comment": "Ollama Legion — bundled config для стека cppworker-gpu + balancer + webui",
+    "_note": "backends: [] — cppworker-gpu зарегистрирует себя сам через POST /api/v1/backends при старте. Если этого не произошло — проверьте ENV CPPWORKER_BALANCER_URL в docker-compose.cppworker-bundled.yml.",
+    "loadBalancer": {
+        "host": "0.0.0.0",
+        "port": 18080,
+        "apiPort": 18081,
+        "statePath": "data/state.json",
+        "trustedProxies": [
+            "127.0.0.1/8",
+            "172.17.0.0/16",
+            "172.18.0.0/16",
+            "172.28.0.0/16",
+            "10.0.0.0/8",
+            "192.168.0.0/16"
+        ],
+        "clientIPHeaders": [
+            "X-Forwarded-For",
+            "X-Real-IP",
+            "CF-Connecting-IP"
+        ]
     },
-    "modelInstances": {
-      "defaultMinInstances": 1,
-      "defaultMaxInstances": 3,
-      "idleUnloadAfter": "10m"
+    "backends": [],
+    "balancing": {
+        "algorithm": "resource-aware",
+        "modelAffinity": true,
+        "sessionStickiness": true,
+        "healthCheckInterval": 10,
+        "metricsInterval": 5,
+        "requestTimeout": 600,
+        "firstByteTimeout": 300,
+        "_note_streaming": "streamingIdleTimeout 600 (а не 120) — для 20GB GPU с большими моделями (>12B params, partial offload) default 120s обрывает стрим без диагностики. ModelLatencyTracker.GetOrComputeIdleTimeout() также использует эвристику по размеру GGUF файла (EstimateIdleTimeoutFromModelSize) для моделей без истории: 12-24GB → 600s, >24GB → 900s. На малых моделях работает быстрее — реальный deadline продлевается после каждого чанка. ENV override: LB_STREAMING_IDLE_TIMEOUT_SEC. Дополнительная защита: streaming.go детектирует net.Error.Timeout() и шлёт STREAMING_IDLE_TIMEOUT с подсказкой вместо тихого обрыва.",
+        "streamingIdleTimeout": 600,
+        "queueTimeout": 300,
+        "queueMaxSize": 100,
+        "queueWorkers": 4,
+        "sessionTTL": 900,
+        "useEnhancedScoring": true,
+        "modelLoadTimeout": 900,
+        "streamingMaxDuration": 0,
+        "autoPull": {
+            "enabled": false,
+            "maxConcurrent": 1,
+            "pullTimeout": "5m",
+            "retryCount": 1
+        },
+        "prewarm": {
+            "enabled": false,
+            "interval": "10m",
+            "minIdleMinutes": 5
+        },
+        "unload": {
+            "enabled": false,
+            "idleMinutes": 30
+        },
+        "backpressure": {
+            "enabled": true,
+            "highWatermark": 0.85,
+            "lowWatermark": 0.6
+        },
+        "operatingMode": "standard",
+        "_note_operatingMode": "standard — валидный режим (standard/replication/rpc_coordinator/virtual_router/distributed_inference). 'llama_cpp' НЕ является валидным operatingMode (это BackendType). Для llama_cpp-only стека используется standard, cppworker регистрируется через auto-registration.",
+        "nctxReload": {
+            "_note": "Адаптивный auto-reload n_ctx при prompt_too_long (code 3) / n_ctx_needed (code 2). Safety 0.95 вместо дефолтного 0.85 — для Gemma-4 (max_vram_n_ctx=40K, required=52K) при 0.85 отвергается reload, при 0.95 влезает. ENV overrides: LB_NCTX_RELOAD_*",
+            "auto_reload_n_ctx": true,
+            "auto_reload_max_n_ctx": 131072,
+            "auto_reload_vram_safety_factor": 0.95,
+            "auto_reload_timeout_sec": 300
+        },
+        "resourceReservation": {
+            "_note": "Round 38.1 (2026-08-18): VRAM/RAM headroom thresholds for slot manager. gpuHeadroomPercent — резерв VRAM, ниже которого slot manager НЕ блокирует бэкенд (при 100% - headroom% VRAM). ramHeadroomPercent — то же для RAM. ENV override: LB_GPU_HEADROOM_PERCENT, LB_RAM_HEADROOM_PERCENT (default 5.0/10.0 если не задано). Default 5% подобран для 8GB VRAM + 22GB Q4_K_M MoE (Q36): 92% VRAM occupied + 5% headroom = 97% threshold, allows operation. Если profile в bundled.json не пропускает preflight из-за слишком агрессивного headroom — зашить сюда меньшее значение или 0 (disable).",
+            "gpuHeadroomPercent": 5.0,
+            "ramHeadroomPercent": 10.0
+        }
     },
-    "scoring": {
-      "modelAlreadyLoaded": 0.15,
-      "modelLoadingCost": 0.10,
-      "queueDepthPenalty": 0.05,
-      "errorRatePenalty": 0.05,
-      "predictionBonus": 0.10
+    "rateLimit": {
+        "enabled": false,
+        "requestsPerMinute": 600,
+        "burstSize": 100,
+        "trustForwardedFor": false
     },
-    "syncModelLoad": {
-      "enabled": true,
-      "timeout": "30s"
+    "auth": {
+        "enabled": true,
+        "tokens": [
+            {
+                "name": "bundled-default",
+                "_note": "Должен совпадать с CPPWORKER_API_TOKEN в .env.bundled. В проде замените!"
+            }
+        ]
     },
-    "resourceReservation": {
-      "gpuHeadroomPercent": 15,
-      "ramHeadroomPercent": 10
+    "logging": {
+        "level": "debug",
+        "format": "json",
+        "output": "stdout"
     },
-    "useEnhancedScoring": true,
-    "modelLoadTimeout": 120,
-    "streamingMaxDuration": 0,
-    "autoPull": {
-      "enabled": true,
-      "maxConcurrent": 2,
-      "pullTimeout": "5m",
-      "retryCount": 1
+    "defaultModelProfile": {
+        "_note": "Единый источник истины: config/cppworker-defaults.json. Значение здесь — fallback если cppworker не ответил. 32768 покрывает длинные диалоги (system+history ~7000 токенов) + ответ (~25000 токенов).",
+        "contextLength": 32768,
+        "batchSize": 512,
+        "numGpuLayers": 30,
+        "useMmap": true,
+        "flashAttn": true
     },
-    "modelReplication": {
-      "enabled": false,
-      "defaultMinInstances": 1,
-      "defaultMaxInstances": 3,
-      "idleUnloadAfter": "10m",
-      "groups": []
-    },
-    "rpcCoordinator": {
-      "enabled": false,
-      "coordinatorURL": "",
-      "workerPort": 18050,
-      "timeout": "30s",
-      "protocol": "http",
-      "maxRetries": 3
-    },
-    "virtualModels": {
-      "enabled": false,
-      "models": []
-    },
-    "distInference": {
-      "enabled": false,
-      "grpcPort": 19000,
-      "workers": []
-    },
-    "nctxReload": {
-      "_note": "Auto-reload n_ctx when model's context is too small for request. Relies on cppworker RAM fallback if VRAM insufficient.",
-      "auto_reload_n_ctx": true,
-      "auto_reload_max_n_ctx": 131072,
-      "auto_reload_vram_safety_factor": 0.85,
-      "auto_reload_timeout_sec": 120
+    "llamaCppModelProfiles": {
+        "Qwen3.6-35B-A3B-Uncensored-HauhauCS-Aggressive-Q4_K_M": {
+            "_note": "2026-06-26: 35B MoE, ~18-20GB Q4_K_M. На 8GB VRAM обязателен numGpuLayers=-2 (auto offload) — иначе partial offload генерирует мусор или NaN, которые cppworker интерпретирует как stop-токен и закрывает стрим на середине. На 20GB VRAM можно numGpuLayers=20. Per-model профиль критичен для стабильной работы — defaultModelProfile.numGpuLayers=30 не подходит для этой модели.\n2026-07-10: добавлены overrideTensors/overrideTensorBufts для MoE offload (routed-experts → CPU) и kvCacheType=q8_0 для экономии VRAM на KV-cache (6.4GB → 3.2GB @ 32K). Без этого 21GB модель не влезает в 24GB A10 с 32K ctx.",
+            "contextLength": 32768,
+            "batchSize": 256,
+            "numGpuLayers": -2,
+            "flashAttn": true,
+            "useMmap": true,
+            "overrideTensors": [
+                "blk\\.\\d+\\.ffn_.*_exps\\.weight",
+                "blk\\.\\d+\\.ffn_.*_exps\\.bias"
+            ],
+            "overrideTensorBufts": [
+                "CPU",
+                "CPU"
+            ],
+            "kvCacheType": "q8_0"
+        },
+        "Qwen3.6-35B-A3B-UD-Q4_K_M": {
+            "_note": "2026-08-17: Qwen3.6-35B-A3B-UD-Q4_K_M (UD variant без Uncensored-HauhauCS-Aggressive суффикса, файл на диске). 22GB Q4_K_M MoE 35B/3B active. На 8GB VRAM обязателен numGpuLayers=-2 (auto offload) + overrideTensors для routed-experts → CPU. kvCacheType=q4_0 критичен для 64K ctx: KV cache Q4_K_M = 8GB vs FP16 = 32GB. С q4_0: 35B MoE + 64K ctx влезает в 8GB VRAM через full CPU offload (cppworker). БЕЗ правильного profile (например при использовании UD вместо Uncensored-HauhauCS) — cppworker defaults: ctx=32768, и client (Cline) с 64K запросом → 503+Retry-After loop, бесконечный reload. Audit 2026-08-17 fix: добавлен правильный alias.\n\n2026-08-18 Round 36.2: contextLength 32768 → 65536. balancer's resolveModelMaxContext использовал profile.contextLength (32768) для preflight, что вызывало REJECT для Cline (который шлёт num_ctx=65536 в body). GGUF metadata поддерживает 262144, profile ставил слишком жёсткий лимит. C 65536 модель помещается в RAM (~5GB Q4_0 KV cache для 40 слоёв × 2 KV heads × 128 head_dim).\n\n2026-08-18 Round 37: contextLengthAuto=true + contextLengthMax=131072. Архитектурный фикс — profile становится HINT (а не hard cap), balancer читает feasibleMax от cppworker и auto-relaxes up. Это страховка от future regression когда profile окажется conservative а feasible больше. contextLengthMax=131072 = soft cap (не даём hardware решать больше 128K даже если feasible).",
+            "contextLength": 65536,
+            "contextLengthAuto": true,
+            "contextLengthMax": 131072,
+            "batchSize": 256,
+            "numGpuLayers": -2,
+            "flashAttn": true,
+            "useMmap": true,
+            "overrideTensors": [
+                "blk\\.\\d+\\.ffn_.*_exps\\.weight",
+                "blk\\.\\d+\\.ffn_.*_exps\\.bias"
+            ],
+            "overrideTensorBufts": [
+                "CPU",
+                "CPU"
+            ],
+            "kvCacheType": "q4_0"
+        },
+        "gemma-4": {
+            "_note": "2026-06-25: numCtx снижен 131072 → 32768 для стабильной работы на 8GB VRAM. При 131072 cppworker зависал в KV-cache allocation (deadlock) — для gemma-4-E4B-it (n_embd=2560, 42 layers, FP16 KV) нужно ~13GB под KV-cache, что не влезает в 8GB VRAM даже с mmap в RAM. 32768 — помещается с auto_offload + partial GPU offload (gemma-4 numCtx=32768, gpuLayers=-2/AUTO, flash_attn=1, mmap=true). При необходимости большего контекста Cline должен задать меньший n_ctx в body или использовать ollama-native (без этого профиля).",
+            "contextLength": 32768,
+            "batchSize": 256,
+            "numGpuLayers": 30,
+            "flashAttn": true,
+            "useMmap": true
+        },
+        "gemma-4-large": {
+            "_note": "Профиль для 19GB+ моделей на A10 (24GB VRAM). numCtx=32768 + KV-cache (~2.6GB) + reserve. gpuLayers=10 — остальные слои в RAM через mmap (CPPWORKER_AUTO_OFFLOAD=true).",
+            "contextLength": 32768,
+            "batchSize": 512,
+            "numGpuLayers": 10,
+            "flashAttn": true,
+            "useMmap": true
+        },
+        "Qwen3.8-27B": {
+            "_note": "2026-08-17: Qwen3.8-27B dense (huggingface.co/Qwen/Qwen3.8-27B), SWE-bench Pro 61.7, GPQA Diamond 89.2, Claw-Eval Multimodal 57.4. Q4_K_M ~14-16GB. numGpuLayers=-2 (auto offload) — на 8GB VRAM обязателен, иначе partial offload генерирует мусор/NaN. 32K ctx как баланс между reasoning-trace (thinking) и обычным чатом. kvCacheType=q8_0 — экономия ~40% VRAM на KV-cache.",
+            "contextLength": 32768,
+            "batchSize": 512,
+            "numGpuLayers": -2,
+            "flashAttn": true,
+            "useMmap": true,
+            "kvCacheType": "q8_0"
+        },
+        "Qwen3-4B-Instruct-2507": {
+            "_note": "2026-08-17: Qwen3 dense 4B, Q4_K_M ~2.5GB. Загружается за 99s (Qwen3-Instruct-2507-q4km.gguf). Все слои на GPU (-1) — помещается в любую 4GB+ VRAM. Thinking mode через chat template enable_thinking=true (Round 14).",
+            "contextLength": 32768,
+            "batchSize": 512,
+            "numGpuLayers": -1,
+            "flashAttn": true,
+            "useMmap": true
+        },
+        "Qwen3-8B-Instruct-2507": {
+            "_note": "2026-08-17: Qwen3 dense 8B, Q4_K_M ~5GB. Все слои на GPU (-1) на 8GB+ VRAM. На 6GB — переключить на numGpuLayers=20 (частичный offload).",
+            "contextLength": 32768,
+            "batchSize": 512,
+            "numGpuLayers": -1,
+            "flashAttn": true,
+            "useMmap": true
+        },
+        "Qwen3-14B-Instruct-2507": {
+            "_note": "2026-08-17: Qwen3 dense 14B, Q4_K_M ~9GB. На 8GB VRAM — partial offload (numGpuLayers=20 из ~40 слоёв). На 16GB+ — все слои (-1). batchSize снижен до 256 для 14B (больше activation memory).",
+            "contextLength": 32768,
+            "batchSize": 256,
+            "numGpuLayers": 20,
+            "flashAttn": true,
+            "useMmap": true
+        },
+        "Qwen3-32B-Instruct-2507": {
+            "_note": "2026-08-17: Qwen3 dense 32B, Q4_K_M ~20GB. contextLength снижен 32768→16384: при 32K на 32B dense KV-cache ~6.4GB FP16, не влезает в 24GB A10 + модель. kvCacheType=q8_0 экономит ~3.2GB.",
+            "contextLength": 16384,
+            "batchSize": 256,
+            "numGpuLayers": -2,
+            "flashAttn": true,
+            "useMmap": true,
+            "kvCacheType": "q8_0"
+        },
+        "DeepSeek-R1-Distill-Qwen-7B": {
+            "_note": "2026-08-17: DeepSeek R1 distilled в Qwen2.5-7B. Q4_K_M ~5GB. Reasoning trace длинный — flash_attn критичен для скорости. tool_calls формат: Qwen2.5 native (Hermes-compatible, поддержан в llamacpp_toolcall_detector.go:detectHermesToolCallsInContent).",
+            "contextLength": 32768,
+            "batchSize": 256,
+            "numGpuLayers": -1,
+            "flashAttn": true,
+            "useMmap": true
+        },
+        "DeepSeek-R1-Distill-Qwen-14B": {
+            "_note": "2026-08-17: DeepSeek R1 distilled в Qwen2.5-14B. Q4_K_M ~9GB. Partial offload на 8GB VRAM.",
+            "contextLength": 32768,
+            "batchSize": 256,
+            "numGpuLayers": 20,
+            "flashAttn": true,
+            "useMmap": true
+        },
+        "DeepSeek-R1-Distill-Qwen-32B": {
+            "_note": "2026-08-17: DeepSeek R1 distilled в Qwen2.5-32B. Q4_K_M ~20GB. 16K ctx для VRAM. kvCacheType=q8_0.",
+            "contextLength": 16384,
+            "batchSize": 256,
+            "numGpuLayers": -2,
+            "flashAttn": true,
+            "useMmap": true,
+            "kvCacheType": "q8_0"
+        },
+        "DeepSeek-Coder-V2-Lite-Instruct": {
+            "_note": "2026-08-17: DeepSeek-Coder-V2-Lite 16B MoE / 2.4B active. Q4_K_M ~9GB. overrideTensors для routed-experts → CPU (как в Qwen3.6-35B-A3B). Кодогенерация + 16K input для IDE-плагинов (Cline/Roo/Continue). tool_calls: native через chat template.",
+            "contextLength": 32768,
+            "batchSize": 256,
+            "numGpuLayers": -2,
+            "flashAttn": true,
+            "useMmap": true,
+            "overrideTensors": [
+                "blk\\.\\d+\\.ffn_.*_exps\\.weight"
+            ],
+            "overrideTensorBufts": [
+                "CPU"
+            ],
+            "kvCacheType": "q8_0"
+        },
+        "Llama-3.1-8B-Instruct": {
+            "_note": "2026-08-17: Llama-3.1-8B-Instruct Q4_K_M ~5GB. Все слои на GPU (-1) на 8GB+ VRAM. tool_calls: Llama-3 python_tag формат (поддержан в llamacpp_toolcall_detector.go:detectLlamaPythonTagInContent).",
+            "contextLength": 32768,
+            "batchSize": 512,
+            "numGpuLayers": -1,
+            "flashAttn": true,
+            "useMmap": true
+        },
+        "Mistral-Nemo-Instruct-2407": {
+            "_note": "2026-08-17: Mistral-Nemo 12B Q4_K_M ~7GB. tool_calls: [TOOL_CALLS] формат (поддержан в llamacpp_toolcall_detector.go:detectMistralToolCallsInContent).",
+            "contextLength": 32768,
+            "batchSize": 256,
+            "numGpuLayers": -1,
+            "flashAttn": true,
+            "useMmap": true
+        },
+        "Phi-4-14B-Instruct": {
+            "_note": "2026-08-17: Phi-4 14B Q4_K_M ~9GB. 16K ctx — Phi-4 native 16K (не 32K). 14B показывает лучше math/reasoning чем 8B. tool_calls: native (зависит от GGUF).",
+            "contextLength": 16384,
+            "batchSize": 256,
+            "numGpuLayers": 20,
+            "flashAttn": true,
+            "useMmap": true
+        }
     }
-  },
-
-  "resources": {
-    "gpu": {
-      "maxUsagePercent": 90,
-      "maxVramUsagePercent": 85,
-      "maxTemperature": 85
-    },
-    "cpu": {
-      "maxUsagePercent": 80
-    },
-    "memory": {
-      "maxUsagePercent": 85
-    },
-    "disk": {
-      "minFreeMB": 10240
-    }
-  },
-  "logging": {
-    "level": "info",
-    "format": "json"
-  },
-  "api": {
-    "rateLimit": 100,
-    "rateBurst": 200
-  },
-  "tls": {
-    "enabled": false,
-    "certFile": "certs/server.crt",
-    "keyFile": "certs/server.key",
-    "minVersion": "TLS12",
-    "autoCert": true
-  },
-  "auth": {
-    "enabled": false,
-    "tokens": [
-      "changeme-bundled-with-agent-token-please-change"
-    ],
-    "headerName": "X-API-Token"
-  },
-  "defaultModelProfile": {
-    "_note": "Phase D.3-fix fallback for clamping when per-model profile missing. contextLength=0 means no clamping — cppworker uses its own n_ctx or loaded model metrics.",
-    "contextLength": 0,
-    "batchSize": 512,
-    "numGpuLayers": 30,
-    "flashAttention": true,
-    "useMmap": true
-  }
 }
-

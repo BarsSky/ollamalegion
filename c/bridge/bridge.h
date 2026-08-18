@@ -563,6 +563,33 @@ int bridge_batched_decode(
 // Возвращает -1 при ошибке.
 int32_t bridge_get_n_vocab(void* model);
 
+// Round 39 (2026-08-18): embeddings mode constants for bridge_set_embeddings_mode.
+//   BRIDGE_MODE_CHAT      = 0 — chat path (cparams.embeddings=false)
+//   BRIDGE_MODE_EMBEDDING = 1 — embedding path (cparams.embeddings=true)
+#define BRIDGE_MODE_CHAT      0
+#define BRIDGE_MODE_EMBEDDING 1
+
+// bridge_set_embeddings_mode — Round 39: dynamic embeddings mode toggle.
+//
+// Used by C-bridge chat and embedding paths to flip cparams.embeddings
+// per-request, eliminating the "embeddings required but some input tokens
+// were not marked as outputs -> overriding" warning that fires per
+// llama_decode() when cparams.embeddings=true and chat batch has logits=1
+// only on last token.
+//
+// Cost: O(1) — just flips ctx->cparams.embeddings bool (verified in
+// c/llama.cpp/src/llama-context.cpp:1153-1160, "set_embeddings" body is
+// "cparams.embeddings = value;"). No memory ops, no KV cache impact,
+// safe per-request under model mutex (which the C-bridge already holds
+// during Infer/Embeddings calls).
+//
+// Parameters:
+//   model — loaded ModelHandle
+//   mode  — BRIDGE_MODE_CHAT (0) or BRIDGE_MODE_EMBEDDING (1)
+//
+// Returns 0 on success, -1 if handle is NULL or context is NULL.
+int bridge_set_embeddings_mode(ModelHandle model, int mode);
+
 // bridge_sample_token — Round 15.2 (2026-07-30): temperature sampling.
 //
 // Простой single-token sampler для batched path (используется после

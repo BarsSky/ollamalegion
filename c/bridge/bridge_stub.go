@@ -28,12 +28,12 @@ type ModelHandle struct {
 
 // GPUDevice — информация о GPU (заглушка: CPU только)
 type GPUDevice struct {
-	Index                int
-	VRAMTotalMB          uint64
-	VRAMFreeMB           uint64
-	Name                 string
-	ComputeCapMajor      int
-	ComputeCapMinor      int
+	Index           int
+	VRAMTotalMB     uint64
+	VRAMFreeMB      uint64
+	Name            string
+	ComputeCapMajor int
+	ComputeCapMinor int
 }
 
 // GenerationParams — параметры генерации
@@ -77,8 +77,8 @@ type GenerationParams struct {
 // DefaultGenerationParams возвращает параметры по умолчанию
 func DefaultGenerationParams() GenerationParams {
 	return GenerationParams{
-		NPredict:         2048, // уменьшен с 4096 (Phase D.6): см. c/bridge/bridge.go
-		NKeep:            0,
+		NPredict: 2048, // уменьшен с 4096 (Phase D.6): см. c/bridge/bridge.go
+		NKeep:    0,
 		// Round 32 (2026-08-09): n_batch default 512 → 64. См. c/bridge/bridge.go.
 		NBatch:           64,
 		Temperature:      0.7,
@@ -126,10 +126,10 @@ type ModelConfig struct {
 	// Session 16 (2026-06-27): число параллельных sequences (n_parallel в llama.cpp).
 	// В stub-режиме не используется, но должен присутствовать для совместимости
 	// типов между bridge.go (build tag !llama_stub) и bridge_stub.go (build tag llama_stub).
-	NParallel int
-	RMSNormEps        float32
-	NoMemoryMap       bool
-	RPCBackend        string
+	NParallel   int
+	RMSNormEps  float32
+	NoMemoryMap bool
+	RPCBackend  string
 	// Round 7: override-tensors (parallel slices; ignored in stub).
 	OverrideTensors     []string
 	OverrideTensorBufts []string
@@ -192,12 +192,12 @@ var ErrNoChatTemplate = fmt.Errorf("chat template not available in stub mode")
 // ErrCode — коды структурированных ошибок (см. bridge.go). В stub-режиме
 // C-bridge недоступен, но коды должны существовать для совместимости.
 const (
-	ErrCodeOK              = 0
-	ErrCodeGeneric         = 1
-	ErrCodeNCtxNeedsReload      = 2
-	ErrCodePromptTooLong        = 3
-	ErrCodeGPUOOM               = 4
-	ErrCodeBadRequest           = 5
+	ErrCodeOK                    = 0
+	ErrCodeGeneric               = 1
+	ErrCodeNCtxNeedsReload       = 2
+	ErrCodePromptTooLong         = 3
+	ErrCodeGPUOOM                = 4
+	ErrCodeBadRequest            = 5
 	ErrCodeInsufficientResources = 6
 	// ErrCodeAborted (-100) — Round 31 #6: stub не возвращает abort
 	// (нет реального C-bridge), но код должен существовать для совместимости
@@ -295,6 +295,26 @@ func LoadModel(cfg ModelConfig) (*ModelHandle, error) {
 // FreeModel выгружает модель (stub: no-op)
 func (m *ModelHandle) FreeModel() {
 	// no-op
+}
+
+// BridgeMode — Round 39 (2026-08-18): embeddings mode для cparams.embeddings
+// toggle. В stub-режиме нет реальной llama.cpp, поэтому SetEmbeddingsMode — no-op.
+//
+// В реальном bridge.go этот тип используется в ModelHandle.SetEmbeddingsMode().
+// Здесь определён заново, чтобы stub-build компилировался.
+type BridgeMode int
+
+const (
+	ModeChat      BridgeMode = 0
+	ModeEmbedding BridgeMode = 1
+)
+
+// SetEmbeddingsMode — Round 39: stub-реализация. В llama_stub-build нет
+// реального llama.cpp контекста, поэтому просто возвращаем nil. Сигнатура
+// совпадает с реальной bridge.go реализацией, чтобы callers не менялись.
+func (m *ModelHandle) SetEmbeddingsMode(mode BridgeMode) error {
+	_ = mode
+	return nil
 }
 
 // ============================================================

@@ -50,19 +50,19 @@ type ModelHandle struct {
 
 // GPUDevice — информация о GPU
 type GPUDevice struct {
-	Index                int
-	VRAMTotalMB          uint64
-	VRAMFreeMB           uint64
-	Name                 string
-	ComputeCapMajor      int
-	ComputeCapMinor      int
+	Index           int
+	VRAMTotalMB     uint64
+	VRAMFreeMB      uint64
+	Name            string
+	ComputeCapMajor int
+	ComputeCapMinor int
 }
 
 // GenerationParams — параметры генерации
 type GenerationParams struct {
-	NPredict         int     // max tokens (-1 = auto)
-	NKeep            int     // keep tokens from prompt
-	NBatch           int     // batch size
+	NPredict         int // max tokens (-1 = auto)
+	NKeep            int // keep tokens from prompt
+	NBatch           int // batch size
 	Temperature      float32
 	TopP             float32
 	TopK             float32
@@ -108,11 +108,11 @@ type GenerationParams struct {
 // DefaultGenerationParams возвращает параметры по умолчанию
 func DefaultGenerationParams() GenerationParams {
 	return GenerationParams{
-		NPredict:         2048, // уменьшен с 4096 (Phase D.6): иначе при n_ctx=4096 короткий prompt
+		NPredict: 2048, // уменьшен с 4096 (Phase D.6): иначе при n_ctx=4096 короткий prompt
 		// (типа 35 токенов OpenWebUI) + 4096 = 4131 > 4096 → code 3: prompt too long.
 		// С 2048: 35+2048+1=2084 << 4096 ✓. Если нужен длинный ответ, клиент должен
 		// явно задать max_tokens/num_predict в body — applyCppCtxHeader его не трогает.
-		NKeep:            0,
+		NKeep: 0,
 		// Round 32 (2026-08-09): n_batch default 512 → 64 для frequent abort checks
 		// в prefill phase. С n_batch=512 abort может быть detected только ПОСЛЕ
 		// завершения текущего llama_decode (~1-2s на RTX 3070). С n_batch=64
@@ -139,25 +139,25 @@ func DefaultGenerationParams() GenerationParams {
 
 // ModelConfig — конфигурация загрузки модели
 type ModelConfig struct {
-	ModelPath      string   // путь к GGUF файлу
-	NContext       int      // размер контекста (4096)
-	NBatch         int      // размер батча (512)
-	NThreads       int      // потоков CPU (0 = auto)
-	NThreadsBatch  int      // потоков для батча (0 = auto)
-	NGPULayers     int      // слоёв на GPU (-1 = все, 0 = CPU)
-	MainGPU        int      // индекс главного GPU
-	FlashAttnType  int      // llama_flash_attn_type: -1=auto, 0=disabled, 1=enabled
-	NUMA           bool     // NUMA оптимизация
-	TensorSplit    []float32 // пропорции multi-GPU
+	ModelPath     string    // путь к GGUF файлу
+	NContext      int       // размер контекста (4096)
+	NBatch        int       // размер батча (512)
+	NThreads      int       // потоков CPU (0 = auto)
+	NThreadsBatch int       // потоков для батча (0 = auto)
+	NGPULayers    int       // слоёв на GPU (-1 = все, 0 = CPU)
+	MainGPU       int       // индекс главного GPU
+	FlashAttnType int       // llama_flash_attn_type: -1=auto, 0=disabled, 1=enabled
+	NUMA          bool      // NUMA оптимизация
+	TensorSplit   []float32 // пропорции multi-GPU
 	// SplitMode (Phase 8 P.4, 2026-07-11):
 	//   -1 = use llama.cpp default (LLAMA_SPLIT_MODE_LAYER)
 	//    0 = LLAMA_SPLIT_MODE_NONE (single GPU)
 	//    1 = LLAMA_SPLIT_MODE_LAYER (pipeline parallel, stable)
 	//    2 = LLAMA_SPLIT_MODE_ROW (deprecated)
 	//    3 = LLAMA_SPLIT_MODE_TENSOR (experimental, requires NCCL)
-	SplitMode      int
-	UseMmap        bool     // mmap (true)
-	UseMlock       bool     // mlock
+	SplitMode int
+	UseMmap   bool // mmap (true)
+	UseMlock  bool // mlock
 	// RoPE параметры контекста
 	RopeFreqBase      float32
 	RopeFreqScale     float32
@@ -185,21 +185,21 @@ type ModelConfig struct {
 	// Patterns are POSIX regex (e.g. `blk\\..*\\.ffn_.*_exps\\.weight`),
 	// buft names resolve to ggml_backend_buffer_type_t internally in C.
 	// Supported buft names: "CPU", "CUDA0", "CUDA1", ...
-	OverrideTensors      []string // nil = no override
-	OverrideTensorBufts  []string // parallel slice, len == len(OverrideTensors)
+	OverrideTensors     []string // nil = no override
+	OverrideTensorBufts []string // parallel slice, len == len(OverrideTensors)
 }
 
 // DefaultModelConfig возвращает конфигурацию по умолчанию
 func DefaultModelConfig(path string) ModelConfig {
 	return ModelConfig{
-		ModelPath:  path,
-		NContext:   4096,
-		NBatch:     512,
-		NThreads:   0,
-		NGPULayers: -1, // все слои на GPU
-		MainGPU:    0,
-		FlashAttnType:  -1, // auto
-		UseMmap:    true,
+		ModelPath:     path,
+		NContext:      4096,
+		NBatch:        512,
+		NThreads:      0,
+		NGPULayers:    -1, // все слои на GPU
+		MainGPU:       0,
+		FlashAttnType: -1, // auto
+		UseMmap:       true,
 	}
 }
 
@@ -210,16 +210,38 @@ type InferenceResult struct {
 	ErrorMsg string
 }
 
+// BridgeMode — Round 39 (2026-08-18): embeddings mode for cparams.embeddings toggle.
+//
+// Passed to ModelHandle.SetEmbeddingsMode() to flip cparams.embeddings on the
+// loaded context. Cheap (single bool write in llama.cpp's cparams), safe to
+// call per-request under the model mutex.
+//
+//	ModeChat      (0) — cparams.embeddings=false. Use for /v1/chat/completions
+//	                    and /v1/completions. Prevents the "embeddings required
+//	                    but some input tokens were not marked as outputs ->
+//	                    overriding" warning that fires per llama_decode call
+//	                    when cparams.embeddings=true and chat batch has
+//	                    logits=1 only on last token.
+//	ModeEmbedding (1) — cparams.embeddings=true. Use for /v1/embeddings and
+//	                    /api/embed. Required for llama_get_embeddings() to
+//	                    return non-NULL.
+type BridgeMode int
+
+const (
+	ModeChat      BridgeMode = 0
+	ModeEmbedding BridgeMode = 1
+)
+
 // ErrCode — коды структурированных ошибок из C-моста. Эти значения
 // мапятся на одноимённые BRIDGE_ERR_* #define в c/bridge/bridge.h.
 // Используются для type switch в Go-стороне (см. internal/balancer/nctx_reload.go).
 const (
-	ErrCodeOK                 = 0
-	ErrCodeGeneric            = 1
-	ErrCodeNCtxNeedsReload    = 2 // n_ctx_override > загруженного n_ctx; возможен auto-reload
-	ErrCodePromptTooLong      = 3 // prompt+n_predict > n_ctx и override не помогает
-	ErrCodeGPUOOM             = 4 // нехватка VRAM при попытке аллокации
-	ErrCodeBadRequest         = 5 // некорректные параметры
+	ErrCodeOK              = 0
+	ErrCodeGeneric         = 1
+	ErrCodeNCtxNeedsReload = 2 // n_ctx_override > загруженного n_ctx; возможен auto-reload
+	ErrCodePromptTooLong   = 3 // prompt+n_predict > n_ctx и override не помогает
+	ErrCodeGPUOOM          = 4 // нехватка VRAM при попытке аллокации
+	ErrCodeBadRequest      = 5 // некорректные параметры
 	// ErrCodeInsufficientResources (6) — недостаточно VRAM+RAM для загрузки
 	// модели с запрошенным n_ctx, даже после каскадного auto-fallback
 	// (RAM mmap → partial offload → cpu-only + auto_tune n_ctx).
@@ -244,14 +266,14 @@ var ErrAborted = fmt.Errorf("bridge: inference aborted by user (BRIDGE_ERR_ABORT
 // Заполняется C-кодом при любом не-OK-возврате из bridge_infer/bridge_infer_stream.
 // Доступно через GetLastErrorInfo() сразу после такого возврата.
 type BridgeErrorInfo struct {
-	Code          int    // один из ErrCode* выше
-	CurrentNCtx   int    // фактический n_ctx загруженной модели
-	RequiredNCtx  int    // минимальный n_ctx, который нужен для запроса
-	ActualTokens  int    // размер prompt в токенах
-	NPredict      int    // запрошенное число генерируемых токенов
-	NCtxOverride  int    // значение n_ctx_override из params (0 если не задан)
-	MaxVRAMNCtx   int    // оценочный максимум n_ctx для текущей VRAM (0 если неизвестно)
-	Message       string // человекочитаемое описание ошибки
+	Code         int    // один из ErrCode* выше
+	CurrentNCtx  int    // фактический n_ctx загруженной модели
+	RequiredNCtx int    // минимальный n_ctx, который нужен для запроса
+	ActualTokens int    // размер prompt в токенах
+	NPredict     int    // запрошенное число генерируемых токенов
+	NCtxOverride int    // значение n_ctx_override из params (0 если не задан)
+	MaxVRAMNCtx  int    // оценочный максимум n_ctx для текущей VRAM (0 если неизвестно)
+	Message      string // человекочитаемое описание ошибки
 }
 
 // GetLastErrorInfo возвращает структурированную информацию о последней ошибке
@@ -295,9 +317,9 @@ type ModelMetadata struct {
 	ContextLength  int
 	NLayers        int
 	NHeads         int
-	NKvHeads       int  // NEW: GQA kv heads
-	HeadDimK       int  // NEW: K head dim
-	HeadDimV       int  // NEW: V head dim
+	NKvHeads       int // NEW: GQA kv heads
+	HeadDimK       int // NEW: K head dim
+	HeadDimV       int // NEW: V head dim
 	NEmbd          int
 	NVocab         int
 	SizeTotalBytes uint64
@@ -457,6 +479,34 @@ func (m *ModelHandle) FreeModel() {
 	m.ptr = nil
 }
 
+// SetEmbeddingsMode — Round 39 (2026-08-18): toggle cparams.embeddings on the
+// loaded context. Cheap (single bool write in llama.cpp's cparams, no memory
+// ops, no KV cache impact — verified in c/llama.cpp/src/llama-context.cpp:1153-1160).
+//
+// Used by the C-bridge chat and embedding paths internally (chat → ModeChat
+// before each llama_decode, embedding → ModeEmbedding at function entry).
+// Exposed here for observability and external callers (tests, custom
+// integrations).
+//
+// Returns error only if handle is nil or C-bridge rejects (e.g., model
+// unloaded, context is NULL).
+func (m *ModelHandle) SetEmbeddingsMode(mode BridgeMode) error {
+	if m == nil || m.ptr == nil {
+		return fmt.Errorf("SetEmbeddingsMode: model not loaded")
+	}
+	rc := C.bridge_set_embeddings_mode(m.ptr, C.int(mode))
+	if rc != 0 {
+		// Pull last error from C-bridge for diagnostics.
+		errInfo := C.bridge_get_last_error_info()
+		msg := "unknown error"
+		if errInfo != nil {
+			msg = C.GoString(&errInfo.message[0])
+		}
+		return fmt.Errorf("bridge_set_embeddings_mode failed (mode=%d): %s", mode, msg)
+	}
+	return nil
+}
+
 // ============================================================
 // Round 31 #6 (2026-08-09): Abort API — Go-side bindings
 // ============================================================
@@ -572,23 +622,33 @@ func (m *ModelHandle) Infer(prompt string, params GenerationParams) (*InferenceR
 	cApArr, cApN := fillAntiprompts(params.Antiprompts)
 	defer freeAntiprompts(cApArr, cApN)
 
+	// Round 36.1 (2026-08-17) BUGFIX: c/bridge/bridge.c hardcodes n_predict=512 when
+	// params->n_predict <= 0 (the C-bridge fallback). When the user/UI sends
+	// max_tokens=0 (= "no limit" in WebUI semantics) and Go-side ResolveNPredict
+	// returns 0, C-bridge would silently truncate generation to 512 tokens.
+	// Defensive: substitute the Go-side default here so the C-bridge fallback
+	// never triggers in production code paths.
+	if params.NPredict <= 0 {
+		params.NPredict = DefaultGenerationParams().NPredict
+	}
+
 	cParams := C.GenerationParams{
-		n_predict:        C.int(params.NPredict),
-		n_keep:           C.int(params.NKeep),
-		n_batch:          C.int(params.NBatch),
-		temperature:      C.float(params.Temperature),
-		top_p:            C.float(params.TopP),
-		top_k:            C.float(params.TopK),
-		repeat_penalty:   C.float(params.RepeatPenalty),
+		n_predict:         C.int(params.NPredict),
+		n_keep:            C.int(params.NKeep),
+		n_batch:           C.int(params.NBatch),
+		temperature:       C.float(params.Temperature),
+		top_p:             C.float(params.TopP),
+		top_k:             C.float(params.TopK),
+		repeat_penalty:    C.float(params.RepeatPenalty),
 		frequency_penalty: C.float(params.FrequencyPenalty),
-		presence_penalty: C.float(params.PresencePenalty),
-		seed:             C.int(params.Seed),
-		antiprompts:      cApArr,
-		n_antiprompts:    cApN,
-		n_ctx_override:   C.int(params.NCtxOverride),
+		presence_penalty:  C.float(params.PresencePenalty),
+		seed:              C.int(params.Seed),
+		antiprompts:       cApArr,
+		n_antiprompts:     cApN,
+		n_ctx_override:    C.int(params.NCtxOverride),
 		// Round 13: seq_id для multi-slot.
 		// params.SeqId 0 = legacy single-slot, > 0 = use slot region.
-		seq_id:           C.int(params.SeqId),
+		seq_id: C.int(params.SeqId),
 	}
 
 	result := C.bridge_infer(m.ptr, cPrompt, &cParams)
@@ -646,22 +706,29 @@ func (m *ModelHandle) InferStream(prompt string, params GenerationParams, callba
 	cApArr, cApN := fillAntiprompts(params.Antiprompts)
 	defer freeAntiprompts(cApArr, cApN)
 
+	// Round 36.1 (2026-08-17) BUGFIX: see Infer() above. Substitute Go-side default
+	// when caller passes n_predict=0 to avoid C-bridge hardcoded 512-token fallback
+	// (which truncates Qwen3-Instruct and other long-output models mid-response).
+	if params.NPredict <= 0 {
+		params.NPredict = DefaultGenerationParams().NPredict
+	}
+
 	cParams := C.GenerationParams{
-		n_predict:        C.int(params.NPredict),
-		n_keep:           C.int(params.NKeep),
-		n_batch:          C.int(params.NBatch),
-		temperature:      C.float(params.Temperature),
-		top_p:            C.float(params.TopP),
-		top_k:            C.float(params.TopK),
-		repeat_penalty:   C.float(params.RepeatPenalty),
+		n_predict:         C.int(params.NPredict),
+		n_keep:            C.int(params.NKeep),
+		n_batch:           C.int(params.NBatch),
+		temperature:       C.float(params.Temperature),
+		top_p:             C.float(params.TopP),
+		top_k:             C.float(params.TopK),
+		repeat_penalty:    C.float(params.RepeatPenalty),
 		frequency_penalty: C.float(params.FrequencyPenalty),
-		presence_penalty: C.float(params.PresencePenalty),
-		seed:             C.int(params.Seed),
-		antiprompts:      cApArr,
-		n_antiprompts:    cApN,
-		n_ctx_override:   C.int(params.NCtxOverride),
+		presence_penalty:  C.float(params.PresencePenalty),
+		seed:              C.int(params.Seed),
+		antiprompts:       cApArr,
+		n_antiprompts:     cApN,
+		n_ctx_override:    C.int(params.NCtxOverride),
 		// Round 13: seq_id для multi-slot.
-		seq_id:           C.int(params.SeqId),
+		seq_id: C.int(params.SeqId),
 	}
 
 	// Используем cgo.Handle для безопасной передачи Go-контекста в C.
@@ -872,15 +939,17 @@ func (m *ModelHandle) GetChatTemplate() (string, error) {
 // GLM-Z1 и др.).
 //
 // Параметры:
-//   chatTemplateOverride  — кастомный Jinja template ("" = use GGUF default)
-//   messages              — список chat-сообщений (включая system если нужно)
-//   enableThinking        — true = native thinking mode
-//   addGenerationPrompt   — true = добавить assistant turn tokens в конец
+//
+//	chatTemplateOverride  — кастомный Jinja template ("" = use GGUF default)
+//	messages              — список chat-сообщений (включая system если нужно)
+//	enableThinking        — true = native thinking mode
+//	addGenerationPrompt   — true = добавить assistant turn tokens в конец
 //
 // Возвращает:
-//   prompt               — formatted prompt
-//   supportsThinking     — true если template поддерживает thinking (Jinja variable)
-//   error                — nil / ErrNoChatTemplate / generic
+//
+//	prompt               — formatted prompt
+//	supportsThinking     — true если template поддерживает thinking (Jinja variable)
+//	error                — nil / ErrNoChatTemplate / generic
 //
 // Round 14b (next session): интеграция в cmd/cppworker/handlers_chat.go
 // — заменить soft prompt injection из Round 11 на этот native вызов.
@@ -1097,9 +1166,10 @@ func (m *ModelHandle) TokenToPiece(token int32) string {
 //   - temperature scaling + softmax + multinomial sampling при temperature > 0
 //
 // Параметры:
-//   logits      — []float32 размера n_vocab (raw logits из BatchedDecode)
-//   temperature — 0 или negative = greedy. > 0 = softmax(temp) + multinomial
-//   seed        — 0 = time-based (для production), != 0 = reproducible
+//
+//	logits      — []float32 размера n_vocab (raw logits из BatchedDecode)
+//	temperature — 0 или negative = greedy. > 0 = softmax(temp) + multinomial
+//	seed        — 0 = time-based (для production), != 0 = reproducible
 //
 // Round 15.3+ TODO: top_p/top_k/rep_penalty через common_sampler с
 // per-session state (для rep_penalty нужно знать сгенерированные токены).
@@ -1181,9 +1251,9 @@ func (m *ModelHandle) GetMetadata() (*ModelMetadata, error) {
 // Round 15.1 (true batched parallel inference): см. дизайн-доку
 // docs/plans/round-15-batched-parallel.md.
 type BatchedSequence struct {
-	Tokens   []int32  // токены этой sequence (borrowed, не копируется)
-	SeqID    int32    // llama_seq_id (уникальный в пределах batch)
-	StartPos int32    // llama_pos для первого токена (для prompt = 0)
+	Tokens   []int32 // токены этой sequence (borrowed, не копируется)
+	SeqID    int32   // llama_seq_id (уникальный в пределах batch)
+	StartPos int32   // llama_pos для первого токена (для prompt = 0)
 }
 
 // BatchedDecode — Round 15.1: ОДИН llama_decode call для N sequences.
@@ -1195,7 +1265,7 @@ type BatchedSequence struct {
 // Параметры:
 //   - sequences: массив BatchedSequence, каждая со своими tokens + seq_id
 //   - возвращает: [][]float32 (len = len(sequences), inner len = n_vocab)
-//                 — logits для ПОСЛЕДНЕГО токена каждой sequence
+//     — logits для ПОСЛЕДНЕГО токена каждой sequence
 //
 // Caller (BatchedScheduler) держит instance.mu на время вызова —
 // lock-семантика на стороне Go (как Round 8 для BridgeInferStream).
@@ -1330,9 +1400,10 @@ func streamCallbackGo(token *C.char, tokenLen C.int, userData unsafe.Pointer) C.
 // и c/bridge/bridge.h::ModelConfig.kv_cache_type).
 //
 // Схема (согласована с bridge.h и cppworker):
-//   "" / "f16" / неизвестное → 0  (default = llama.cpp F16, наследуется из default_params)
-//   "q8_0"                  → 1  (GGML_TYPE_Q8_0 = -50% VRAM)
-//   "q4_0"                  → 2  (GGML_TYPE_Q4_0 = -75% VRAM)
+//
+//	"" / "f16" / неизвестное → 0  (default = llama.cpp F16, наследуется из default_params)
+//	"q8_0"                  → 1  (GGML_TYPE_Q8_0 = -50% VRAM)
+//	"q4_0"                  → 2  (GGML_TYPE_Q4_0 = -75% VRAM)
 //
 // Возвращает 0 для пустой или неизвестной строки — это safe default
 // (F16, то есть наиболее точный и совместимый режим).

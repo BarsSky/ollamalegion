@@ -66,6 +66,11 @@
             "auto_reload_max_n_ctx": 131072,
             "auto_reload_vram_safety_factor": 0.95,
             "auto_reload_timeout_sec": 300
+        },
+        "resourceReservation": {
+            "_note": "Round 38.1 (2026-08-18): VRAM/RAM headroom thresholds for slot manager. gpuHeadroomPercent — резерв VRAM, ниже которого slot manager НЕ блокирует бэкенд (при 100% - headroom% VRAM). ramHeadroomPercent — то же для RAM. ENV override: LB_GPU_HEADROOM_PERCENT, LB_RAM_HEADROOM_PERCENT (default 5.0/10.0 если не задано). Default 5% подобран для 8GB VRAM + 22GB Q4_K_M MoE (Q36): 92% VRAM occupied + 5% headroom = 97% threshold, allows operation. Если profile в bundled.json не пропускает preflight из-за слишком агрессивного headroom — зашить сюда меньшее значение или 0 (disable).",
+            "gpuHeadroomPercent": 5.0,
+            "ramHeadroomPercent": 10.0
         }
     },
     "rateLimit": {

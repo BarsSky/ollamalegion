@@ -59,6 +59,12 @@ typedef struct {
     // 0 = not aborted (или abort отменён / infer завершён нормально),
     // 1 = abort запрошен, infer должен выйти на ближайшей check point.
     atomic_int abort_requested;
+    // Round 39 (2026-08-18): embeddings mode for cparams.embeddings toggle.
+    //   0 = chat (cparams.embeddings=false, no per-decode override warning)
+    //   1 = embedding (cparams.embeddings=true, llama_get_embeddings works)
+    // Initialized to 1 in bridge_load_model (matches ctx_params.embeddings=true at load).
+    // Setter: bridge_set_embeddings_mode(). Cheap (single bool write in cparams).
+    int embeddings_mode;
 } InternalModel;
 
 // ============================================================
@@ -260,6 +266,34 @@ int32_t bridge_get_n_vocab(void* model) {
         return -1;
     }
     return (int32_t)llama_vocab_n_tokens(vocab);
+}
+
+// bridge_set_embeddings_mode — Round 39 (2026-08-18): dynamic embeddings toggle.
+//
+// Реализация: один вызов llama_set_embeddings() + обновление im->embeddings_mode
+// для observability. Потокобезопасно под instance.mu (который C-bridge уже держит
+// во время Infer/InferStream/Embeddings).
+//
+//   mode == BRIDGE_MODE_EMBEDDING (1) → cparams.embeddings = true
+//                                         (для /v1/embeddings, llama_get_embeddings работает)
+//   mode == BRIDGE_MODE_CHAT (0)      → cparams.embeddings = false
+//                                         (для /v1/chat/completions, нет override warning)
+//
+// Любое другое значение mode трактуется как BRIDGE_MODE_CHAT (defensive).
+int bridge_set_embeddings_mode(ModelHandle model, int mode) {
+    if (model == NULL) {
+        set_error("bridge_set_embeddings_mode: NULL model handle");
+        return -1;
+    }
+    InternalModel* im = (InternalModel*)model;
+    if (im->context == NULL) {
+        set_error("bridge_set_embeddings_mode: NULL context (model not loaded?)");
+        return -1;
+    }
+    bool emb_on = (mode == BRIDGE_MODE_EMBEDDING);
+    llama_set_embeddings(im->context, emb_on);
+    im->embeddings_mode = emb_on ? BRIDGE_MODE_EMBEDDING : BRIDGE_MODE_CHAT;
+    return 0;
 }
 
 // bridge_sample_token — Round 15.2 (2026-07-30): temperature sampling.
@@ -477,6 +511,13 @@ int bridge_batched_decode(
         llama_batch_free(batch);
         return BRIDGE_ERR_ABORTED;
     }
+    // Round 39: ensure chat mode (cparams.embeddings=false) so llama.cpp
+    // doesn't override logits on last-token-only chat batches. Free op
+    // (single bool write in cparams). Idempotent — chat path always
+    // sets this before decode, so even after a prior embedding call the
+    // mode is back to chat.
+    llama_set_embeddings(im->context, false);
+    im->embeddings_mode = BRIDGE_MODE_CHAT;
     int decode_rc = llama_decode(im->context, batch);
     if (decode_rc != 0) {
         set_error("llama_decode failed in bridge_batched_decode");
@@ -1019,6 +1060,9 @@ ModelHandle bridge_load_model(const ModelConfig* config, char** error_msg) {
     // указания на реальную причину (переполнение контекста).
     im->ctx_n_ctx = ctx_params.n_ctx;
     im->ctx_n_batch = ctx_params.n_batch;
+    // Round 39: start in embedding mode (matches ctx_params.embeddings=true).
+    // The C-bridge switches to chat mode (0) before each chat decode call.
+    im->embeddings_mode = 1;
     // Round 31 #6: init abort flag (atomic). Принимает 0 = "не aborted"
     // по дефолту. atomic_init — единственная функция, которую можно
     // вызывать на non-initialized atomic (до этого любое обращение — UB).
@@ -1415,6 +1459,9 @@ InferenceResult bridge_infer(
             llama_batch_free(batch);
             return result;
         }
+        // Round 39: chat mode for prompt decode (last-token-only logits).
+        llama_set_embeddings(im->context, false);
+        im->embeddings_mode = BRIDGE_MODE_CHAT;
         if (llama_decode(im->context, batch) != 0) {
             free(tokens);
             free(output);
@@ -1487,6 +1534,9 @@ InferenceResult bridge_infer(
             llama_sampler_free(sampler);
             return result;
         }
+        // Round 39: chat mode for gen-step decode.
+        llama_set_embeddings(im->context, false);
+        im->embeddings_mode = BRIDGE_MODE_CHAT;
         if (llama_decode(im->context, gen_batch) != 0) {
             free(output);
             result.status = 1;
@@ -1719,6 +1769,9 @@ int bridge_infer_stream(
             llama_batch_free(batch);
             return BRIDGE_ERR_ABORTED;
         }
+        // Round 39: chat mode for stream prompt decode.
+        llama_set_embeddings(im->context, false);
+        im->embeddings_mode = BRIDGE_MODE_CHAT;
         if (llama_decode(im->context, batch) != 0) {
             free(tokens);
             // Самая частая причина: n_ctx переполнен (kv-cache overflow),
@@ -1809,6 +1862,9 @@ int bridge_infer_stream(
             llama_sampler_free(sampler);
             return BRIDGE_ERR_ABORTED;
         }
+        // Round 39: chat mode for stream gen-step decode.
+        llama_set_embeddings(im->context, false);
+        im->embeddings_mode = BRIDGE_MODE_CHAT;
         if (llama_decode(im->context, gen_batch) != 0) {
             // Обычно это переполнение KV-cache при длинной выдаче
             // (n_predict > n_ctx - prompt_len), либо OOM на GPU.
@@ -1841,6 +1897,13 @@ InferenceResult bridge_get_embeddings(
     }
 
     InternalModel *im = (InternalModel *)model;
+
+    // Round 39: ensure embedding mode (cparams.embeddings=true) so
+    // llama_get_embeddings() returns non-NULL after this decode. The
+    // chat path may have flipped the mode to false since load, so we
+    // re-enable here. Idempotent and safe.
+    llama_set_embeddings(im->context, true);
+    im->embeddings_mode = BRIDGE_MODE_EMBEDDING;
 
     // Токенизируем текст
     int n_tokens = -llama_tokenize(im->vocab, text, (int)strlen(text), NULL, 0, true, true);

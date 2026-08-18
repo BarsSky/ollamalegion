@@ -95,6 +95,16 @@ func LoadFromEnv() (*Config, error) {
 	config.Resources.Memory.MaxUsagePercent = env.GetFloat("LB_MEMORY_MAX_USAGE", 85.0)
 	
 	config.Resources.Disk.MinFreeMB = uint64(env.GetInt("LB_DISK_MIN_FREE_MB", 10240))
+
+	// Round 38 (2026-08-18): Resource reservation headroom.
+	// LB_GPU_HEADROOM_PERCENT: slot manager reserves this % of VRAM as
+	// headroom. Below this, backend is treated as "no headroom" and
+	// blocked from new dispatches. 5% = threshold 95% (allows near-full
+	// GPU for 22GB Qwen3.6 on 8GB). Default 5% (was 15% hardcoded in
+	// config.json — caused admin PUT to fail when VRAM=91.5%).
+	// LB_RAM_HEADROOM_PERCENT: same for RAM (10% default).
+	config.Balancing.ResourceReservation.GPUHeadroomPercent = env.GetFloat("LB_GPU_HEADROOM_PERCENT", 5.0)
+	config.Balancing.ResourceReservation.RAMHeadroomPercent = env.GetFloat("LB_RAM_HEADROOM_PERCENT", 10.0)
 	
 	// Logging
 	config.Logging.Level = env.Get("LB_LOG_LEVEL", "info")
@@ -287,6 +297,18 @@ func setDefaults(config *types.LoadBalancerConfig) {
 	}
 	if config.Resources.Disk.MinFreeMB == 0 {
 		config.Resources.Disk.MinFreeMB = 10240 // 10GB
+	}
+
+	// Round 38: resourceReservation defaults (when not set by file or env).
+	// Note: 0 = "no headroom check" (slot manager skips). We want a default
+	// when config has no value but env has set the value. The env path
+	// (LoadFromEnv) sets these directly. For Load() from file, defaults
+	// are 5% / 10% to match LB defaults.
+	if config.Balancing.ResourceReservation.GPUHeadroomPercent == 0 {
+		config.Balancing.ResourceReservation.GPUHeadroomPercent = 5.0
+	}
+	if config.Balancing.ResourceReservation.RAMHeadroomPercent == 0 {
+		config.Balancing.ResourceReservation.RAMHeadroomPercent = 10.0
 	}
 	
 	// Logging defaults

@@ -114,6 +114,25 @@
             ],
             "kvCacheType": "q8_0"
         },
+        "Qwen3.6-35B-A3B-UD-Q4_K_M": {
+            "_note": "2026-08-17: Qwen3.6-35B-A3B-UD-Q4_K_M (UD variant без Uncensored-HauhauCS-Aggressive суффикса, файл на диске). 22GB Q4_K_M MoE 35B/3B active. На 8GB VRAM обязателен numGpuLayers=-2 (auto offload) + overrideTensors для routed-experts → CPU. kvCacheType=q4_0 критичен для 64K ctx: KV cache Q4_K_M = 8GB vs FP16 = 32GB. С q4_0: 35B MoE + 64K ctx влезает в 8GB VRAM через full CPU offload (cppworker). БЕЗ правильного profile (например при использовании UD вместо Uncensored-HauhauCS) — cppworker defaults: ctx=32768, и client (Cline) с 64K запросом → 503+Retry-After loop, бесконечный reload. Audit 2026-08-17 fix: добавлен правильный alias.\n\n2026-08-18 Round 36.2: contextLength 32768 → 65536. balancer's resolveModelMaxContext использовал profile.contextLength (32768) для preflight, что вызывало REJECT для Cline (который шлёт num_ctx=65536 в body). GGUF metadata поддерживает 262144, profile ставил слишком жёсткий лимит. C 65536 модель помещается в RAM (~5GB Q4_0 KV cache для 40 слоёв × 2 KV heads × 128 head_dim).\n\n2026-08-18 Round 37: contextLengthAuto=true + contextLengthMax=131072. Архитектурный фикс — profile становится HINT (а не hard cap), balancer читает feasibleMax от cppworker и auto-relaxes up. Это страховка от future regression когда profile окажется conservative а feasible больше. contextLengthMax=131072 = soft cap (не даём hardware решать больше 128K даже если feasible).",
+            "contextLength": 65536,
+            "contextLengthAuto": true,
+            "contextLengthMax": 131072,
+            "batchSize": 256,
+            "numGpuLayers": -2,
+            "flashAttn": true,
+            "useMmap": true,
+            "overrideTensors": [
+                "blk\\.\\d+\\.ffn_.*_exps\\.weight",
+                "blk\\.\\d+\\.ffn_.*_exps\\.bias"
+            ],
+            "overrideTensorBufts": [
+                "CPU",
+                "CPU"
+            ],
+            "kvCacheType": "q4_0"
+        },
         "gemma-4": {
             "_note": "2026-06-25: numCtx снижен 131072 → 32768 для стабильной работы на 8GB VRAM. При 131072 cppworker зависал в KV-cache allocation (deadlock) — для gemma-4-E4B-it (n_embd=2560, 42 layers, FP16 KV) нужно ~13GB под KV-cache, что не влезает в 8GB VRAM даже с mmap в RAM. 32768 — помещается с auto_offload + partial GPU offload (gemma-4 numCtx=32768, gpuLayers=-2/AUTO, flash_attn=1, mmap=true). При необходимости большего контекста Cline должен задать меньший n_ctx в body или использовать ollama-native (без этого профиля).",
             "contextLength": 32768,
@@ -127,6 +146,112 @@
             "contextLength": 32768,
             "batchSize": 512,
             "numGpuLayers": 10,
+            "flashAttn": true,
+            "useMmap": true
+        },
+        "Qwen3.8-27B": {
+            "_note": "2026-08-17: Qwen3.8-27B dense (huggingface.co/Qwen/Qwen3.8-27B), SWE-bench Pro 61.7, GPQA Diamond 89.2, Claw-Eval Multimodal 57.4. Q4_K_M ~14-16GB. numGpuLayers=-2 (auto offload) — на 8GB VRAM обязателен, иначе partial offload генерирует мусор/NaN. 32K ctx как баланс между reasoning-trace (thinking) и обычным чатом. kvCacheType=q8_0 — экономия ~40% VRAM на KV-cache.",
+            "contextLength": 32768,
+            "batchSize": 512,
+            "numGpuLayers": -2,
+            "flashAttn": true,
+            "useMmap": true,
+            "kvCacheType": "q8_0"
+        },
+        "Qwen3-4B-Instruct-2507": {
+            "_note": "2026-08-17: Qwen3 dense 4B, Q4_K_M ~2.5GB. Загружается за 99s (Qwen3-Instruct-2507-q4km.gguf). Все слои на GPU (-1) — помещается в любую 4GB+ VRAM. Thinking mode через chat template enable_thinking=true (Round 14).",
+            "contextLength": 32768,
+            "batchSize": 512,
+            "numGpuLayers": -1,
+            "flashAttn": true,
+            "useMmap": true
+        },
+        "Qwen3-8B-Instruct-2507": {
+            "_note": "2026-08-17: Qwen3 dense 8B, Q4_K_M ~5GB. Все слои на GPU (-1) на 8GB+ VRAM. На 6GB — переключить на numGpuLayers=20 (частичный offload).",
+            "contextLength": 32768,
+            "batchSize": 512,
+            "numGpuLayers": -1,
+            "flashAttn": true,
+            "useMmap": true
+        },
+        "Qwen3-14B-Instruct-2507": {
+            "_note": "2026-08-17: Qwen3 dense 14B, Q4_K_M ~9GB. На 8GB VRAM — partial offload (numGpuLayers=20 из ~40 слоёв). На 16GB+ — все слои (-1). batchSize снижен до 256 для 14B (больше activation memory).",
+            "contextLength": 32768,
+            "batchSize": 256,
+            "numGpuLayers": 20,
+            "flashAttn": true,
+            "useMmap": true
+        },
+        "Qwen3-32B-Instruct-2507": {
+            "_note": "2026-08-17: Qwen3 dense 32B, Q4_K_M ~20GB. contextLength снижен 32768→16384: при 32K на 32B dense KV-cache ~6.4GB FP16, не влезает в 24GB A10 + модель. kvCacheType=q8_0 экономит ~3.2GB.",
+            "contextLength": 16384,
+            "batchSize": 256,
+            "numGpuLayers": -2,
+            "flashAttn": true,
+            "useMmap": true,
+            "kvCacheType": "q8_0"
+        },
+        "DeepSeek-R1-Distill-Qwen-7B": {
+            "_note": "2026-08-17: DeepSeek R1 distilled в Qwen2.5-7B. Q4_K_M ~5GB. Reasoning trace длинный — flash_attn критичен для скорости. tool_calls формат: Qwen2.5 native (Hermes-compatible, поддержан в llamacpp_toolcall_detector.go:detectHermesToolCallsInContent).",
+            "contextLength": 32768,
+            "batchSize": 256,
+            "numGpuLayers": -1,
+            "flashAttn": true,
+            "useMmap": true
+        },
+        "DeepSeek-R1-Distill-Qwen-14B": {
+            "_note": "2026-08-17: DeepSeek R1 distilled в Qwen2.5-14B. Q4_K_M ~9GB. Partial offload на 8GB VRAM.",
+            "contextLength": 32768,
+            "batchSize": 256,
+            "numGpuLayers": 20,
+            "flashAttn": true,
+            "useMmap": true
+        },
+        "DeepSeek-R1-Distill-Qwen-32B": {
+            "_note": "2026-08-17: DeepSeek R1 distilled в Qwen2.5-32B. Q4_K_M ~20GB. 16K ctx для VRAM. kvCacheType=q8_0.",
+            "contextLength": 16384,
+            "batchSize": 256,
+            "numGpuLayers": -2,
+            "flashAttn": true,
+            "useMmap": true,
+            "kvCacheType": "q8_0"
+        },
+        "DeepSeek-Coder-V2-Lite-Instruct": {
+            "_note": "2026-08-17: DeepSeek-Coder-V2-Lite 16B MoE / 2.4B active. Q4_K_M ~9GB. overrideTensors для routed-experts → CPU (как в Qwen3.6-35B-A3B). Кодогенерация + 16K input для IDE-плагинов (Cline/Roo/Continue). tool_calls: native через chat template.",
+            "contextLength": 32768,
+            "batchSize": 256,
+            "numGpuLayers": -2,
+            "flashAttn": true,
+            "useMmap": true,
+            "overrideTensors": [
+                "blk\\.\\d+\\.ffn_.*_exps\\.weight"
+            ],
+            "overrideTensorBufts": [
+                "CPU"
+            ],
+            "kvCacheType": "q8_0"
+        },
+        "Llama-3.1-8B-Instruct": {
+            "_note": "2026-08-17: Llama-3.1-8B-Instruct Q4_K_M ~5GB. Все слои на GPU (-1) на 8GB+ VRAM. tool_calls: Llama-3 python_tag формат (поддержан в llamacpp_toolcall_detector.go:detectLlamaPythonTagInContent).",
+            "contextLength": 32768,
+            "batchSize": 512,
+            "numGpuLayers": -1,
+            "flashAttn": true,
+            "useMmap": true
+        },
+        "Mistral-Nemo-Instruct-2407": {
+            "_note": "2026-08-17: Mistral-Nemo 12B Q4_K_M ~7GB. tool_calls: [TOOL_CALLS] формат (поддержан в llamacpp_toolcall_detector.go:detectMistralToolCallsInContent).",
+            "contextLength": 32768,
+            "batchSize": 256,
+            "numGpuLayers": -1,
+            "flashAttn": true,
+            "useMmap": true
+        },
+        "Phi-4-14B-Instruct": {
+            "_note": "2026-08-17: Phi-4 14B Q4_K_M ~9GB. 16K ctx — Phi-4 native 16K (не 32K). 14B показывает лучше math/reasoning чем 8B. tool_calls: native (зависит от GGUF).",
+            "contextLength": 16384,
+            "batchSize": 256,
+            "numGpuLayers": 20,
             "flashAttn": true,
             "useMmap": true
         }

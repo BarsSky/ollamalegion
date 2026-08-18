@@ -2379,6 +2379,10 @@ func getSystemRAMGB() uint64 {
 }
 
 // GGUFHeaderInfo — метаданные, извлекаемые из GGUF header ДО загрузки модели.
+//
+// Round 37 (2026-08-18): добавлено ContextLength — GGUF training context.
+// Используется feasible.go для ComputeFeasible и balancer для 3-tier
+// resolveModelMaxContext: profile.contextLength <= GGUFContextLength <= feasibleMax.
 type GGUFHeaderInfo struct {
 	Architecture string `json:"architecture"`
 	NLayers      int    `json:"nLayers"`
@@ -2388,17 +2392,26 @@ type GGUFHeaderInfo struct {
 	HeadDimV     int    `json:"headDimV"`
 	KVCacheType  string `json:"kvCacheType"`
 	NEmbd        int    `json:"nEmbd"`
-	FileSize     int64  `json:"fileSize"`
+	// ContextLength — max training context из GGUF metadata (*.context_length).
+	// Пример: Qwen3.6-35B-A3B-UD-Q4_K_M → 262144 (262K токенов).
+	// 0 = unknown (файл не GGUF или архитектура не из ggufModelArchs).
+	ContextLength int   `json:"contextLength"`
+	FileSize      int64 `json:"fileSize"`
 }
 
 // ggufFieldSuffixes — суффиксы ключей метаданных для параметров модели.
 // Каждый параметр имеет вид <architecture>.<suffix>.
 // Используется для генерации всех возможных ключей из ggufModelArchs.
+//
+// Round 37 (2026-08-18): added .context_length — это GGUF max training context.
+// КРИТИЧНО для auto-adapt n_ctx: профиль может быть консервативным (32K),
+// а GGUF max = 262K. Без него balancer не знает, что модель может больше.
 var ggufFieldSuffixes = []string{
 	".block_count",
 	".attention.head_count",
 	".attention.head_count_kv",
 	".embedding_length",
+	".context_length",
 }
 
 // ggufModelArchs — известные архитектуры GGUF.
@@ -2639,7 +2652,14 @@ func readGGUFHeaderInfo(path string) (*GGUFHeaderInfo, error) {
 	return info, nil
 }
 
-// ggufSetField устанавливает поле GGUFHeaderInfo по field index (0-3).
+// ggufSetField устанавливает поле GGUFHeaderInfo по field index (0-4).
+//
+// Field index (должен соответствовать ggufFieldSuffixes):
+//   0 = NLayers        (.block_count)
+//   1 = NHeads         (.attention.head_count)
+//   2 = NKvHeads       (.attention.head_count_kv)
+//   3 = NEmbd          (.embedding_length)
+//   4 = ContextLength  (.context_length)  // Round 37: training context
 func ggufSetField(info *GGUFHeaderInfo, fieldIndex, value int) {
 	switch fieldIndex {
 	case 0:
@@ -2650,6 +2670,8 @@ func ggufSetField(info *GGUFHeaderInfo, fieldIndex, value int) {
 		info.NKvHeads = value
 	case 3:
 		info.NEmbd = value
+	case 4:
+		info.ContextLength = value
 	}
 }
 

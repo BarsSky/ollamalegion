@@ -875,6 +875,13 @@ func handleListModels(w http.ResponseWriter, r *http.Request) {
 	maxRAMNCtx := 0
 	modelMaxContext := 0
 
+	// Round 37 (2026-08-18): per-model feasible tracking for conservative-profile detection.
+	type feasibleAgg struct {
+		feasibleMax int
+		ggufMax     int
+	}
+	perModelFeasible := make(map[string]feasibleAgg, len(models))
+
 	for _, m := range models {
 		if m.State != cppbackend.StateLoaded {
 			continue
@@ -900,6 +907,19 @@ func handleListModels(w http.ResponseWriter, r *http.Request) {
 		}
 		if modelMaxContext == 0 || limits.ModelMaxContext > modelMaxContext {
 			modelMaxContext = limits.ModelMaxContext
+		}
+
+		// Round 37: per-model feasible calc. feasible_i = min(VRAM ctx, RAM ctx, GGUFMax).
+		feasibleI := limits.MaxVRAMNCtx
+		if limits.MaxRAMNCtx > 0 && (feasibleI == 0 || limits.MaxRAMNCtx < feasibleI) {
+			feasibleI = limits.MaxRAMNCtx
+		}
+		if m.GGUFContextLength > 0 && (feasibleI == 0 || m.GGUFContextLength < feasibleI) {
+			feasibleI = m.GGUFContextLength
+		}
+		perModelFeasible[m.Name] = feasibleAgg{
+			feasibleMax: feasibleI,
+			ggufMax:     m.GGUFContextLength,
 		}
 	}
 
@@ -934,13 +954,49 @@ func handleListModels(w http.ResponseWriter, r *http.Request) {
 	// 3. ???? ?????? ???????? 0 (??? ??????????? ??????, ??? VRAM), ???????
 	// ??????? ????? ?????? GGUF ? ???????? ? ?? ??? cppworker ??? ???????
 	// ???????? ??????? ????, ? ??? ????????? (preflight ????? ????????).
+	// Round 37 (2026-08-18): build per-model enriched list with feasible_max_context.
+	enrichedModels := make([]map[string]interface{}, 0, len(models))
+	for _, m := range models {
+		entry := map[string]interface{}{
+			"name":                m.Name,
+			"path":                m.Path,
+			"state":               m.State,
+			"architecture":        m.Architecture,
+			"n_layers":            m.NLayers,
+			"n_embd":              m.NEmbd,
+			"n_vocab":             m.NVocab,
+			"context_size":        m.ContextSize,
+			"gguf_context_length": m.GGUFContextLength,
+			"size_bytes":          m.SizeBytes,
+			"loaded_at":           m.LoadedAt,
+			"gpu_count":           m.GPUCount,
+			"kv_cache_type":       m.KVCacheType,
+		}
+		if fa, ok := perModelFeasible[m.Name]; ok {
+			entry["gguf_max_context"] = fa.ggufMax
+			entry["feasible_max_context"] = fa.feasibleMax
+		} else {
+			entry["gguf_max_context"] = m.GGUFContextLength
+			entry["feasible_max_context"] = 0
+		}
+		enrichedModels = append(enrichedModels, entry)
+	}
+
+	// Round 37 (2026-08-18): top-level feasible/GGUF — min across loaded models.
+	topFeasible := 0
+	topGGUF := 0
+	for _, fa := range perModelFeasible {
+		if topFeasible == 0 || (fa.feasibleMax > 0 && fa.feasibleMax < topFeasible) {
+			topFeasible = fa.feasibleMax
+		}
+		if fa.ggufMax > topGGUF {
+			topGGUF = fa.ggufMax
+		}
+	}
+
 	writeJSON(w, http.StatusOK, map[string]interface{}{
-		"models": models,
+		"models": enrichedModels,
 		"count":  len(models),
-		// ==== Resource limits (2026-06-26 BUGFIX) ====
-		// ??? ???? ???????? ??????????????? ? preflight_nctx.go ??? ???????
-		// target_n_ctx. ??? ??? preflight ?????? target=8192 (???????) ?
-		// reload ???????? ?? ??????? ???????.
 		"max_vram_n_ctx":    maxVRAMNCtx,
 		"max_ram_n_ctx":     maxRAMNCtx,
 		"available_vram_mb": availableVRAMMB,
@@ -949,6 +1005,11 @@ func handleListModels(w http.ResponseWriter, r *http.Request) {
 		"total_ram_mb":      totalRAMMB,
 		"model_max_context": modelMaxContext,
 		"gpu_count":         backend.GetGPUCount(),
+		// Round 37 (2026-08-18): auto-adapt fields.
+		// feasible_max_context = min(VRAM, RAM, GGUF) — recommended max n_ctx.
+		// gguf_max_context     = max GGUF training context — hard upper bound.
+		"feasible_max_context": topFeasible,
+		"gguf_max_context":     topGGUF,
 	})
 }
 

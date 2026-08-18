@@ -171,6 +171,10 @@ func (p *llamaCppMetricsPoller) pollBackend(b backendInfo) {
 		Count           int    `json:"count"`
 		MaxVRAMNCtx     int    `json:"max_vram_n_ctx"`
 		ModelMaxContext int    `json:"model_max_context"`
+		// Round 37 (2026-08-18): feasible + GGUF top-level fields from cppworker.
+		// cppworker exposes them since Round 37 in /api/models.
+		FeasibleMaxContext int `json:"feasible_max_context"`
+		GGUFMaxContext     int `json:"gguf_max_context"`
 		AvailableVRAMMB uint64 `json:"available_vram_mb"`
 		TotalVRAMMB     uint64 `json:"total_vram_mb"`
 		Models []struct {
@@ -283,6 +287,22 @@ func (p *llamaCppMetricsPoller) pollBackend(b backendInfo) {
 	lm.LoadedModels = loadedModels
 	lm.MaxVRAMNCtx = data.MaxVRAMNCtx
 	lm.ModelMaxContext = data.ModelMaxContext
+	// Round 37 (2026-08-18): per-model feasible/GGUF для 3-tier resolution.
+	// Per-model: prefer per-model feasible (если загружена хоть одна модель).
+	// Top-level: fallback.
+	if len(loadedModels) > 0 {
+		for _, m := range loadedModels {
+			if m.FeasibleMaxContext > lm.MaxFeasibleContext {
+				lm.MaxFeasibleContext = m.FeasibleMaxContext
+			}
+			if m.GGUFMaxContext > lm.GGUFMaxContext {
+				lm.GGUFMaxContext = m.GGUFMaxContext
+			}
+		}
+	} else {
+		lm.MaxFeasibleContext = data.FeasibleMaxContext
+		lm.GGUFMaxContext = data.GGUFMaxContext
+	}
 	lm.AvailableVRAMMB = data.AvailableVRAMMB
 	lm.TotalVRAMMB = data.TotalVRAMMB
 	p.proxy.metricsMgr.mu.Unlock()

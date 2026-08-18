@@ -247,6 +247,29 @@ type LlamaCppModelProfile struct {
 	UseMmap       *bool  `json:"useMmap,omitempty"`   // nil = не менять
 	Notes         string `json:"notes,omitempty"`     // человеческое описание (для WebUI/API)
 
+	// Round 37 (2026-08-18): auto-adapt n_ctx profile schema.
+	//
+	// ПРЕДОТВРАЩАЕТ 2026-08-18 production bug:
+	//   - profile.contextLength = 32768 (консервативный)
+	//   - Cline шлёт num_ctx=65536
+	//   - preflight 413 "exceeds model max context=32768"
+	//   - Qwen3.6-35B на 8GB VRAM реально тянет 65536 через RAM + q4_0 KV
+	//
+	// ContextLengthAuto — true = auto-adapt (profile = HINT, feasible = real cap).
+	//   Default false для backward compat (existing profiles continue to behave as hard caps).
+	//   Round 37 fix: добавь `"contextLengthAuto": true` к профилю для auto-relax.
+	//
+	// ContextLengthMax — soft upper bound (operator policy) для auto-adapt mode.
+	//   0 = unlimited up to GGUFMax.
+	//   Example: `"contextLengthMax": 131072` — "я не хочу больше 128K даже если feasible".
+	//
+	// Precedence (resolveModelMaxContext v2):
+	//   1. profile.contextLengthAuto=false → profile.contextLength (hard cap, old behavior)
+	//   2. profile.contextLengthAuto=true  → min(profile.contextLength, profile.contextLengthMax, feasible)
+	//   3. fallback → metrics (cppworker ModelMaxContext)
+	ContextLengthAuto bool `json:"contextLengthAuto,omitempty"` // Round 37: opt-in auto-relax
+	ContextLengthMax  int  `json:"contextLengthMax,omitempty"`  // Round 37: soft cap для auto mode (0=unlimited)
+
 	// Disabled — Round 27 follow-up: помечает модель как сломанную (например, gemma-4
 	// с upstream GGML_ASSERT на любом n_ctx >= 8192). Балансер ОТКАЗЫВАЕТСЯ авто-грузить
 	// такие модели — executeLlamaCppLoad возвращает ошибку с объяснением, чтобы клиент

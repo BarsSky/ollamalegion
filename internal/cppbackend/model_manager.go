@@ -36,6 +36,17 @@ type GGUFModelMeta struct {
 	NEmbd    int `json:"nEmbd,omitempty"`
 	NHeads   int `json:"nHeads,omitempty"`
 	NKvHeads int `json:"nKvHeads,omitempty"`
+
+	// Round 37 (2026-08-18): ContextLength — GGUF training context (*.context_length).
+	// Lazy-loaded в GetModelMeta через ReadGGUFHeader. КРИТИЧНО для auto-adapt:
+	// balancer может спросить "what's GGUF max для этой модели?" и НЕ читать файл
+	// заново (cache hit).
+	ContextLength int `json:"contextLength,omitempty"`
+
+	// Round 37 (2026-08-18): KVCacheType — профильный override из per-model profile
+	// (config.bundled.json). НЕ из GGUF (его там нет) — задаётся через
+	// profile-syncer pull. Используется feasible.go для расчёта kv_per_token.
+	KVCacheType string `json:"kvCacheType,omitempty"`
 }
 
 // ModelManager — управляет модельками
@@ -210,7 +221,7 @@ func (m *ModelManager) GetModelMeta(filename string) (*GGUFModelMeta, error) {
 	}
 
 	// Lazy-load архитектурных параметров из GGUF header.
-	if meta.NLayers == 0 || meta.NEmbd == 0 || meta.NHeads == 0 {
+	if meta.NLayers == 0 || meta.NEmbd == 0 || meta.NHeads == 0 || meta.ContextLength == 0 {
 		if hdr, err := ReadGGUFHeader(meta.Path); err == nil && hdr != nil {
 			m.mu.Lock()
 			if meta.NLayers == 0 {
@@ -224,6 +235,12 @@ func (m *ModelManager) GetModelMeta(filename string) (*GGUFModelMeta, error) {
 			}
 			if meta.NKvHeads == 0 && hdr.NKvHeads > 0 {
 				meta.NKvHeads = hdr.NKvHeads
+			}
+			// Round 37 (2026-08-18): ContextLength lazy-load.
+			// ReadGGUFHeader парсит *.context_length (см. backend.go:ggufSetField case 4).
+			// Qwen3.6-35B-A3B-UD-Q4_K_M → 262144 (262K токенов).
+			if meta.ContextLength == 0 && hdr.ContextLength > 0 {
+				meta.ContextLength = hdr.ContextLength
 			}
 			if meta.Architecture == "" {
 				meta.Architecture = hdr.Architecture

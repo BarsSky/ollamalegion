@@ -166,13 +166,37 @@ func (lr *LlamaCppRouter) collectPreflightState(backendID, model string) *NCtxBa
 	if currentNCtx <= 0 {
 		return nil
 	}
-	// modelMaxContext — из per-model profile в config (опционально).
-	var modelMaxContext int
+	// Round 37 (2026-08-18): per-model profile (3-tier resolution).
+	// Сначала читаем profile, потом применяем resolveModelMaxContext v2
+	// (profile.contextLengthAuto → min(profile, feasible)).
+	var profileMaxContext int
+	var profileContextLengthAuto bool
 	if lr.proxy.config != nil {
-		if mp, ok := lr.proxy.config.LlamaCppModelProfiles[model]; ok && mp.ContextLength > 0 {
-			modelMaxContext = mp.ContextLength
+		if mp, ok := lr.proxy.config.LlamaCppModelProfiles[model]; ok {
+			if mp.ContextLength > 0 {
+				profileMaxContext = mp.ContextLength
+			}
+			// contextLengthAuto — opt-in (default false для backward compat).
+			// Round 37 schema extension: config profiles get
+			// contextLengthAuto + contextLengthMax. См. config.bundled.json.
+			profileContextLengthAuto = mp.ContextLengthAuto
 		}
 	}
+	// Round 37: per-model feasible (приоритетнее top-level metrics).
+	// Сначала заглядываем в LoadedModels, чтобы достать per-model feasible.
+	var perModelFeasible int
+	if mm := lr.proxy.GetMetricsManager(); mm != nil {
+		if lm := mm.GetLlamaCppMetrics(backendID); lm != nil {
+			for _, m := range lm.LoadedModels {
+				if m.Name == model || containsFold(m.Name, model) || containsFold(model, m.Name) {
+					perModelFeasible = m.FeasibleMaxContext
+					break
+				}
+			}
+		}
+	}
+	// 3-tier resolution: profile (auto или hard) → feasible → metrics fallback.
+	modelMaxContext := lr.proxy.resolveModelMaxContext(backendID, model, profileMaxContext, profileContextLengthAuto, perModelFeasible)
 	// Round 34 Phase 2: current runtime params (kv_cache_type/flash_attn/use_mmap)
 	// из llamaMetrics.LoadedModels. cppworker callback'ом UpdateLlamaCppModelLoaded
 	// заполняет эти поля; poller'ы их тоже читают из /api/models.
@@ -182,18 +206,41 @@ func (lr *LlamaCppRouter) collectPreflightState(backendID, model string) *NCtxBa
 		MaxVRAMNCtx:     lr.proxy.getMaxVRAMNCtxFromMetrics(backendID), // из /api/models poller (ранее было 0 — не доступен)
 		ModelMaxContext: modelMaxContext,
 	}
-	// Заполняем current runtime params из LoadedModels (Round 34 Phase 2).
+	// Round 37 (2026-08-18): заполняем feasible + GGUF из metrics (cppworker Round 37).
 	if mm := lr.proxy.GetMetricsManager(); mm != nil {
 		if lm := mm.GetLlamaCppMetrics(backendID); lm != nil {
+			state.MaxFeasibleContext = lm.MaxFeasibleContext
+			state.GGUFMaxContext = lm.GGUFMaxContext
+			// Заполняем current runtime params из LoadedModels (Round 34 Phase 2).
 			for _, m := range lm.LoadedModels {
 				if m.Name == model || containsFold(m.Name, model) || containsFold(model, m.Name) {
 					state.CurrentKvCacheType = m.KvCacheType
 					state.CurrentFlashAttnType = m.FlashAttnType
 					state.CurrentUseMmap = m.UseMmap
+					// Round 37: per-model feasible/GGUF (приоритетнее top-level)
+					if m.FeasibleMaxContext > 0 {
+						state.MaxFeasibleContext = m.FeasibleMaxContext
+					}
+					if m.GGUFMaxContext > 0 {
+						state.GGUFMaxContext = m.GGUFMaxContext
+					}
 					break
 				}
 			}
 		}
+	}
+	// Round 37 (2026-08-18): diagnostic log для 3-tier resolution.
+	// Помогает оператору понять почему preflight выбрал именно этот n_ctx.
+	if state.MaxFeasibleContext > 0 || state.GGUFMaxContext > 0 {
+		logger.Get().Debugw("collectPreflightState: Round 37 3-tier resolution",
+			"backend", backendID, "model", model,
+			"profile_n_ctx", profileMaxContext,
+			"context_length_auto", profileContextLengthAuto,
+			"feasible_n_ctx", state.MaxFeasibleContext,
+			"gguf_max_n_ctx", state.GGUFMaxContext,
+			"resolved_model_max_n_ctx", state.ModelMaxContext,
+			"current_n_ctx", state.CurrentNCtx,
+		)
 	}
 	return state
 }

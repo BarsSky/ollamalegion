@@ -10,6 +10,13 @@ type LlamaCppMetrics struct {
 	AvailableVRAMMB uint64 `json:"availableVramMb"`
 	TotalVRAMMB     uint64 `json:"totalVramMb"`
 	ModelMaxContext int    `json:"modelMaxContext"`
+	// === Round 37 (2026-08-18): auto-adapt n_ctx 3-tier fields ===
+	// Populated from /api/models → feasible_max_context / gguf_max_context.
+	// 0 = unknown (cppworker didn't report — pre-Round 37 build).
+	// Used by preflight resolveModelMaxContext v2 for auto-relax when
+	// profile is conservative.
+	MaxFeasibleContext int `json:"maxFeasibleContext"`
+	GGUFMaxContext     int `json:"ggufMaxContext"`
 	LoadedModels []LlamaCppModel `json:"loadedModels"`
 	// LoadingModels — модели, которые сейчас в процессе загрузки (State="loading").
 	// Заполняется из cppworker /api/models/load/progress (либо из notifyModelLoaded callback).
@@ -67,6 +74,12 @@ type LlamaCppModel struct {
 	KvCacheType     string `json:"kvCacheType,omitempty"`
 	FlashAttnType   int    `json:"flashAttnType,omitempty"` // -1=auto, 0=off, 1=on
 	UseMmap         bool   `json:"useMmap,omitempty"`
+	// === Round 37 (2026-08-18): per-model feasible/GGUF max context ===
+	// Заполняется из enriched /api/models per-model `feasible_max_context` /
+	// `gguf_max_context` (см. cmd/cppworker/handlers_model.go Round 37 changes).
+	// Используется balancer'ом для 3-tier resolution: profile vs feasible vs GGUF.
+	FeasibleMaxContext int `json:"feasibleMaxContext,omitempty"`
+	GGUFMaxContext     int `json:"ggufMaxContext,omitempty"`
 	// === Loading state (Шаг «отображение загрузки в мониторе и вкладке бэкендов») ===
 	// Заполняются только пока State == "loading" / "error". После успешной
 	// загрузки поля обнуляются (omitempty).

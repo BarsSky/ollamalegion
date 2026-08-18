@@ -239,6 +239,17 @@ type NCtxBackendState struct {
 	CurrentNCtx     int // lastKnownNCtx из координатора
 	MaxVRAMNCtx     int // из cppworker metrics (0 = unknown)
 	ModelMaxContext int // из GGUF metadata (0 = unknown)
+	// === Round 37 (2026-08-18): auto-adapt n_ctx 3-tier state ===
+	// Дополнительные поля для 3-tier resolution (profile / feasible / GGUF).
+	// Заполняются из /api/models response (cppworker exposes since Round 37).
+	// 0 = unknown (fallback to ModelMaxContext, который раньше назывался max_vram).
+	//
+	// 3-tier precedence в resolveModelMaxContext v2 (см. nctx_reload_handlers.go):
+	//   1. profile.contextLengthAuto=false → profile (жёсткий cap)
+	//   2. profile.contextLengthAuto=true  → min(profileMaxContext, MaxFeasibleContext)
+	//   3. fallback → ModelMaxContext (старое поведение, обратная совместимость)
+	MaxFeasibleContext int // min(VRAM, RAM, GGUF) для конкретной модели
+	GGUFMaxContext     int // GGUF training context (hard upper bound, e.g. 262144)
 	// === Round 34 (2026-08-12) Phase 2: profile mismatch detection ===
 	// Текущие параметры загруженной модели (из cppworker /api/models callback
 	// + llamaCppMetricsPoller). Используются в DecidePreflight для проверки

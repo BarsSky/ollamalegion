@@ -980,14 +980,103 @@ func (p *Proxy) getMaxVRAMNCtxFromMetrics(backendID string) int {
 	return 0
 }
 
-// resolveModelMaxContext выбирает modelMaxContext для preflight:
-// приоритет per-model profile > метрики poller'а.
-func (p *Proxy) resolveModelMaxContext(backendID, model string, profileMaxContext int) int {
-	// Per-model profile имеет приоритет
+// resolveModelMaxContext выбирает modelMaxContext для preflight v2 (Round 37).
+//
+// 3-tier resolution (по убыванию строгости):
+//
+//  1. profile.contextLengthAuto == false (default для backward compat):
+//     profile.contextLength — жёсткий cap. НЕ смотрим на feasible.
+//     Это старое поведение pre-Round 37.
+//  2. profile.contextLengthAuto == true (новый auto-adapt):
+//     profile — HINT (не cap). Реальный cap = MIN(feasible, ContextLengthMax, GGUFMax).
+//     Если profile=32768, feasible=65536, auto=true → 65536 (auto-relax up).
+//     Если profile=131072, feasible=65536, auto=true → 65536 (feasible is tighter).
+//     Если ContextLengthMax=131072 задан → берём MIN(feasible, ContextLengthMax).
+//  3. Fallback (нет profile, нет feasible):
+//     state.ModelMaxContext (из cppworker /api/models) — старое fallback поведение.
+//
+// Round 37 (2026-08-18) PRODUCTION BUG FIX:
+//
+//	Pre-bug: profile.contextLength (32768) использовался как жёсткий cap
+//	без учёта feasibleMax (65536). Cline с num_ctx=65536 → 413 preflight.
+//	Post-fix: feasibleMax даёт auto-relax path, и 3-tier учитывает оба источника.
+//
+// Параметр profileMaxContext — contextLength из per-model profile (0 = no profile).
+// Параметр contextLengthAuto — true если profile разрешает auto-adapt.
+// Параметр perModelFeasible — per-model feasible (из LoadedModels), приоритетнее top-level.
+func (p *Proxy) resolveModelMaxContext(backendID, model string, profileMaxContext int, contextLengthAuto bool, perModelFeasible int) int {
+	// Tier 1+2: profile present, decide based on auto flag
 	if profileMaxContext > 0 {
-		return profileMaxContext
+		if !contextLengthAuto {
+			// Tier 1: hard cap (старое поведение, backward compat)
+			// Round 37: warn если feasibleMax > profile*1.5 (явно conservative).
+			feasible := perModelFeasible
+			if feasible == 0 {
+				feasible = p.getFeasibleMaxContext(backendID)
+			}
+			if feasible > 0 && feasible > profileMaxContext*3/2 {
+				logger.Get().Warnw("resolveModelMaxContext: profile conservative (no auto-adaptation enabled)",
+					"backend", backendID, "model", model,
+					"profile_n_ctx", profileMaxContext,
+					"feasible_n_ctx", feasible,
+					"headroom_ratio", float64(feasible)/float64(profileMaxContext),
+					"recommendation", "Add contextLengthAuto:true к profile для auto-relax",
+				)
+			}
+			return profileMaxContext
+		}
+		// Tier 2: auto-adapt. profile — HINT, real cap = MIN(feasible, GGUFMax).
+		// Profile is IGNORED here (operator who set auto=true explicitly said "don't cap me at profile").
+		cap := perModelFeasible
+		if cap == 0 {
+			cap = p.getFeasibleMaxContext(backendID)
+		}
+		// Optional: also cap by GGUFMax (hard upper bound from training).
+		ggufMax := p.getGGUFMaxContext(backendID)
+		if ggufMax > 0 && (cap == 0 || ggufMax < cap) {
+			cap = ggufMax
+		}
+		// If feasible unknown, fallback to profile (conservative: respect operator's stated value)
+		if cap == 0 {
+			return profileMaxContext
+		}
+		return cap
 	}
-	// Fallback на метрики из poller'а (/api/models → model_max_context)
+	// Tier 3: fallback to metrics
+	return p.getMetricsModelMaxContext(backendID)
+}
+
+// getFeasibleMaxContext — возвращает MaxFeasibleContext из llamaMetrics
+// (заполняется из cppworker /api/models response, поле feasible_max_context).
+// 0 = unknown (cppworker не сообщил).
+func (p *Proxy) getFeasibleMaxContext(backendID string) int {
+	if p == nil || p.metricsMgr == nil {
+		return 0
+	}
+	p.metricsMgr.mu.RLock()
+	defer p.metricsMgr.mu.RUnlock()
+	if lm, ok := p.metricsMgr.llamaMetrics[backendID]; ok && lm != nil {
+		return lm.MaxFeasibleContext // Round 37: 0 если не заполнено
+	}
+	return 0
+}
+
+// getGGUFMaxContext — возвращает GGUFMaxContext из llamaMetrics (top-level).
+// Per-model override передаётся явно через resolveModelMaxContext parameter.
+func (p *Proxy) getGGUFMaxContext(backendID string) int {
+	if p == nil || p.metricsMgr == nil {
+		return 0
+	}
+	p.metricsMgr.mu.RLock()
+	defer p.metricsMgr.mu.RUnlock()
+	if lm, ok := p.metricsMgr.llamaMetrics[backendID]; ok && lm != nil {
+		return lm.GGUFMaxContext
+	}
+	return 0
+}
+
+// getMetricsModelMaxContext — старое fallback (ModelMaxContext из poller'а).
+func (p *Proxy) getMetricsModelMaxContext(backendID string) int {
 	if p == nil || p.metricsMgr == nil {
 		return 0
 	}

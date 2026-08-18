@@ -55,6 +55,12 @@ var (
 	// prompt ?? Cline/OpenWebUI. ?????? ????????? (reload off ??? tools) ?????
 	// ??????? ????? --ram-fallback-allow-tools=false ??? CPPWORKER_RAM_FALLBACK_ALLOW_TOOLS=false.
 	ramFallbackAllowTools = flag.Bool("ram-fallback-allow-tools", true, "Allow RAM-fallback reload for tools-requests (works with balancer preflight to dynamically resize n_ctx). Default true.")
+	// Round 37 (2026-08-18): -feasible / -autoLoad flags for auto-adapt n_ctx.
+	// Production bug: profile 32768 + GGUF 262144 → balancer 413 без объяснения.
+	// -feasible: print feasible n_ctx для модели и exit (no load, no HTTP server).
+	// -autoLoad: auto-detect best n_ctx, load model, exit (calls /api/models/load).
+	feasibleModel = flag.String("feasible", "", "Print feasible n_ctx for model and exit (Round 37: use BEFORE -load to validate profile vs hardware). Implies -no-server.")
+	autoLoadModel = flag.String("auto-load", "", "Auto-detect best n_ctx via ComputeFeasible and load model. Implies -no-server.")
 	// autoOffload ? ????-?????? ????? GPU-????? ?? ?????? ??????? .gguf ?????
 	// ? ????????? VRAM. ???????????? ??? ram-fallback-gpu-layers=-2 ??? ???
 	// handleLoadModel/handleCppWorkerUpdateConfig, ???? ?????? ?? ???????.
@@ -104,6 +110,7 @@ var balancerReg *balancerRegistration
 // через CPPWORKER_REGISTER_DISABLE, а sync профилей всё равно нужен).
 // nil, если balancer URL не задан или sync отключён.
 var profileSyncer *profileSyncerT
+var feasibleSync *feasibleSyncT
 
 var backend *cppbackend.Backend
 var uptimeStart = time.Now()
@@ -321,7 +328,20 @@ func main() {
 	if err := backend.Init(); err != nil {
 		log.Fatalw("failed to initialize backend", "error", err)
 	}
+	// Round 37 (2026-08-18): register backend for CLI tools (-feasible, -auto-load).
+	cppbackend.SetGlobalBackend(backend)
 	log.Infow("Backend initialized", "version", backend.Version(), "gpuCount", backend.GetGPUCount())
+
+	// Round 37 (2026-08-18): CLI mode — exit BEFORE starting HTTP server.
+	// -feasible <model>: print feasible n_ctx and exit.
+	// -auto-load <model>: auto-detect n_ctx, load model, exit.
+	// Оба используют GetBackend() → SetGlobalBackend выше обязателен.
+	if *feasibleModel != "" {
+		os.Exit(runFeasible(*feasibleModel, os.Stdout))
+	}
+	if *autoLoadModel != "" {
+		os.Exit(runAutoLoad(*autoLoadModel, os.Stdout))
+	}
 
 	// Round 17 (2026-07-31): startup self-test для reasoning routing.
 	// Логируем какие модели БУДУТ иметь reasoning routing при LoadModel —
@@ -405,8 +425,18 @@ func main() {
 		profileSyncer.start(balancerRegCtx)
 		log.Infow("profileSyncer started (pull-based profile sync from balancer)",
 			"balancerURL", balancerURL, "backendID", backendID)
+
+		// Round 37 (2026-08-18): feasibleSync — background warning when
+		// profile.contextLength is conservative vs hardware. Detects the
+		// 2026-08-18 production bug class (profile 32768 vs feasible 65536).
+		// Works only if profileSyncer is active (need profile.contextLength to compare).
+		feasibleSync = newFeasibleSync(5*time.Minute, 1*time.Hour, balancerURL)
+		feasibleSync.logger = log
+		feasibleSync.start(balancerRegCtx)
+		log.Infow("feasibleSync started (background conservative-profile detector)",
+			"interval", 5*time.Minute, "warnThrottle", 1*time.Hour)
 	} else {
-		log.Infow("profileSyncer disabled (no balancer URL env)")
+		log.Infow("profileSyncer disabled (no balancer URL env) — feasibleSync also disabled (needs profile to compare)")
 	}
 
 	<-quit

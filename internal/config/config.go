@@ -2,7 +2,9 @@ package config
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
+	"log"
 	"os"
 	"path/filepath"
 	"strings"
@@ -44,6 +46,84 @@ func Load(path string) (*Config, error) {
 		path: absPath,
 		data: &config,
 	}, nil
+}
+
+// LoadOrFail — Round 40 (2026-08-18): Loud config-fail.
+//
+// Проблема, которую решает: balancer ранее при ЛЮБОЙ ошибке config.Load()
+// (включая parse error) silently падал в LoadFromEnv(). Это скрывало баги
+// вроде auth.tokens schema mismatch (список объектов vs []string) —
+// balancer "успешно" стартовал с 0 профилями, 0 бэкендами, default tokens,
+// а реальный симптом проявлялся только у клиента (Cline UND_ERR_SOCKET,
+// profileSyncer count:0, и т.д.).
+//
+// Новое поведение:
+//   - File doesn't exist  → log WARN, fallback на LoadFromEnv() (greenfield)
+//   - File exists but unparseable/unreadable → REFUSE to start (no fallback)
+//   - LoadFromEnv yields empty config → log ERROR warning (no silent death)
+//
+// Управление через env vars:
+//   - LB_ALLOW_ENV_FALLBACK (default "true" для dev): разрешает fallback
+//     на env когда файла нет. В production ставить "false" чтобы требовать
+//     явный config.json.
+//   - LB_FAIL_ON_EMPTY_CONFIG (default "false"): если true и LoadFromEnv
+//     даёт 0 бэкендов и 0 профилей — FATAL exit (используется в тестах
+//     и для принудительной валидации в CI/CD).
+func LoadOrFail(path string) (*Config, error) {
+	cfg, err := Load(path)
+	if err == nil {
+		// Validate the loaded config: in-memory "LlamaCppModelProfiles" must
+		// exist (even if empty array) when LoadBalancer is configured for
+		// llamacpp engine. Empty profiles are OK (none registered yet), but
+		// the field must be present so the profileSyncer doesn't fallback
+		// to defaults.
+		return cfg, nil
+	}
+
+	isNotExist := errors.Is(err, os.ErrNotExist)
+	allowFallback := env.GetBool("LB_ALLOW_ENV_FALLBACK", true)
+
+	if isNotExist {
+		if !allowFallback {
+			return nil, fmt.Errorf(
+				"CONFIG_REQUIRED: file %q not found and LB_ALLOW_ENV_FALLBACK=false (refusing to start with env-only config): %w",
+				path, err)
+		}
+		// Greenfield: file doesn't exist, fallback is allowed.
+		log.Printf("[CONFIG] WARN: config file %q not found, falling back to env vars. "+
+			"To disable this fallback in production, set LB_ALLOW_ENV_FALLBACK=false.", path)
+
+		envCfg, envErr := LoadFromEnv()
+		if envErr != nil {
+			return nil, fmt.Errorf(
+				"CONFIG_BOTH_FAILED: file %q not found AND env load failed: file_err=%w env_err=%v",
+				path, err, envErr)
+		}
+
+		// Loud warning: env config is dangerous (no backends, no profiles by default).
+		ec := envCfg.Get()
+		log.Printf("[CONFIG] WARN: ENV_FALLBACK_ACTIVE: balancer running with env-only config. "+
+			"Backends=%d, Profiles=%d, Tokens=%d. This is intended for dev/greenfield only — "+
+			"production deployments MUST mount a config.json.",
+			len(ec.Backends), len(ec.LlamaCppModelProfiles), len(ec.Auth.Tokens))
+
+		// Optional hard fail when env config is empty (for tests / strict prod).
+		if env.GetBool("LB_FAIL_ON_EMPTY_CONFIG", false) {
+			if len(ec.Backends) == 0 && len(ec.LlamaCppModelProfiles) == 0 {
+				return nil, fmt.Errorf(
+					"CONFIG_EMPTY: env fallback yielded 0 backends and 0 profiles (LB_FAIL_ON_EMPTY_CONFIG=true)")
+			}
+		}
+		return envCfg, nil
+	}
+
+	// File EXISTS but cannot be read/parsed — NEVER silently fall back.
+	// This is the silent-fallback bug that hid the auth.tokens schema mismatch.
+	return nil, fmt.Errorf(
+		"CONFIG_INVALID: file %q exists but cannot be loaded. "+
+			"Refusing to fall back to env to surface the underlying bug. "+
+			"Fix the config file or remove it to use env-only mode. Underlying error: %w",
+		path, err)
 }
 
 // LoadFromEnv - загрузка конфигурации из переменных окружения

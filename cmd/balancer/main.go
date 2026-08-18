@@ -31,16 +31,19 @@ var (
 func main() {
 	flag.Parse()
 	
-	// Загрузка конфигурации
-	cfg, err := config.Load(*configPath)
+	// Round 40 (2026-08-18): Loud config-fail via config.LoadOrFail().
+	// Раньше: при ЛЮБОЙ ошибке Load() silently падали в LoadFromEnv() —
+	// это маскировало баги вроде auth.tokens schema mismatch (balancer
+	// "стартовал" с 0 профилями, 0 бэкендами → Cline UND_ERR_SOCKET).
+	// Теперь:
+	//   - file not found → log WARN, fallback на env (если LB_ALLOW_ENV_FALLBACK=true)
+	//   - file exists but parse error → FATAL exit (без silent fallback)
+	cfg, err := config.LoadOrFail(*configPath)
 	if err != nil {
-		log.Printf("Warning: Failed to load config file: %v", err)
-		log.Println("Trying to load from environment...")
-		
-		cfg, err = config.LoadFromEnv()
-		if err != nil {
-			log.Fatalf("Failed to load configuration: %v", err)
-		}
+		// CONFIG_INVALID: file exists but unparseable — fail loud.
+		// CONFIG_REQUIRED: file not found AND LB_ALLOW_ENV_FALLBACK=false — fail loud.
+		// CONFIG_BOTH_FAILED: both file and env failed — fail loud.
+		log.Fatalf("[CONFIG] FATAL: cannot start balancer: %v", err)
 	}
 	
 	conf := cfg.Get()

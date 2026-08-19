@@ -166,11 +166,13 @@ func (lr *LlamaCppRouter) collectPreflightState(backendID, model string) *NCtxBa
 	if currentNCtx <= 0 {
 		return nil
 	}
-	// Round 37 (2026-08-18): per-model profile (3-tier resolution).
-	// Сначала читаем profile, потом применяем resolveModelMaxContext v2
-	// (profile.contextLengthAuto → min(profile, feasible)).
+	// Round 37 (2026-08-18) + Round 43 (2026-08-19): per-model profile (3-tier).
+	// Сначала читаем profile, потом применяем resolveModelMaxContext v3
+	// (profile.contextLengthAuto → min(ggufMax, contextLengthMax, feasible).
+	//  feasible — HINT в auto mode (current state), не cap.
 	var profileMaxContext int
 	var profileContextLengthAuto bool
+	var profileContextLengthMax int
 	if lr.proxy.config != nil {
 		if mp, ok := lr.proxy.config.LlamaCppModelProfiles[model]; ok {
 			if mp.ContextLength > 0 {
@@ -180,6 +182,9 @@ func (lr *LlamaCppRouter) collectPreflightState(backendID, model string) *NCtxBa
 			// Round 37 schema extension: config profiles get
 			// contextLengthAuto + contextLengthMax. См. config.bundled.json.
 			profileContextLengthAuto = mp.ContextLengthAuto
+			// R43 (2026-08-19): contextLengthMax теперь пробрасывается в resolver.
+			// Pre-R43: schema field был, но resolver его ИГНОРИРОВАЛ → silent bug.
+			profileContextLengthMax = mp.ContextLengthMax
 		}
 	}
 	// Round 37: per-model feasible (приоритетнее top-level metrics).
@@ -195,8 +200,8 @@ func (lr *LlamaCppRouter) collectPreflightState(backendID, model string) *NCtxBa
 			}
 		}
 	}
-	// 3-tier resolution: profile (auto или hard) → feasible → metrics fallback.
-	modelMaxContext := lr.proxy.resolveModelMaxContext(backendID, model, profileMaxContext, profileContextLengthAuto, perModelFeasible)
+	// 3-tier resolution: profile (auto или hard) → ggufMax (R43) → metrics fallback.
+	modelMaxContext := lr.proxy.resolveModelMaxContext(backendID, model, profileMaxContext, profileContextLengthAuto, profileContextLengthMax, perModelFeasible)
 	// Round 34 Phase 2: current runtime params (kv_cache_type/flash_attn/use_mmap)
 	// из llamaMetrics.LoadedModels. cppworker callback'ом UpdateLlamaCppModelLoaded
 	// заполняет эти поля; poller'ы их тоже читают из /api/models.

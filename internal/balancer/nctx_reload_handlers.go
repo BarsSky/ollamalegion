@@ -980,69 +980,111 @@ func (p *Proxy) getMaxVRAMNCtxFromMetrics(backendID string) int {
 	return 0
 }
 
-// resolveModelMaxContext выбирает modelMaxContext для preflight v2 (Round 37).
+// resolveModelMaxContext выбирает modelMaxContext для preflight v3 (Round 43).
 //
-// 3-tier resolution (по убыванию строгости):
+// 3-tier resolution с conceptual fix (R43, 2026-08-19):
 //
 //  1. profile.contextLengthAuto == false (default для backward compat):
-//     profile.contextLength — жёсткий cap. НЕ смотрим на feasible.
-//     Это старое поведение pre-Round 37.
-//  2. profile.contextLengthAuto == true (новый auto-adapt):
-//     profile — HINT (не cap). Реальный cap = MIN(feasible, ContextLengthMax, GGUFMax).
-//     Если profile=32768, feasible=65536, auto=true → 65536 (auto-relax up).
-//     Если profile=131072, feasible=65536, auto=true → 65536 (feasible is tighter).
-//     Если ContextLengthMax=131072 задан → берём MIN(feasible, ContextLengthMax).
-//  3. Fallback (нет profile, нет feasible):
-//     state.ModelMaxContext (из cppworker /api/models) — старое fallback поведение.
+//     profile.contextLength — жёсткий cap, но min(profile, contextLengthMax) —
+//     operator cap всегда уважается. Pre-R43: contextLengthMax в schema
+//     был задекларирован, но resolver его ИГНОРИРОВАЛ. R43 fix: применён.
+//  2. profile.contextLengthAuto == true (auto-adapt, opt-in per profile):
+//     profile — HINT (не cap). Реальный cap = MIN(ggufMax, contextLengthMax).
+//     perModelFeasible — HINT (current-state), не cap. Причина: feasible
+//     отражает "что влезает с ТЕКУЩИМИ gpu_layers". После auto-tune (partial
+//     offload в RAM) feasible вырастет. Если использовать feasible как cap,
+//     preflight будет reject'ить запросы которые cppworker фактически может
+//     обработать после reload с auto-offload. R43 fix: feasible — HINT, не cap.
+//     Round 37 PRODUCTION BUG: pre-bug balancer reject'ил Cline num_ctx=65536
+//     потому что feasible=32719 (max_vram_n_ctx при gpu_layers=-1) < 65536.
+//     Post-R43: feasible игнорируется в auto mode, cap = min(ggufMax=262144,
+//     contextLengthMax=131072) = 131072 → 65536 проходит.
+//  3. Fallback (нет profile): ggufMax (hard upper bound from training).
+//     Pre-R43: fallback на default profile (32768) — это conservative HINT
+//     которая блокировала 65536 даже для моделей без явного profile. R43 fix:
+//     fall through to ggufMax; если и его нет — to metrics.
 //
-// Round 37 (2026-08-18) PRODUCTION BUG FIX:
-//
-//	Pre-bug: profile.contextLength (32768) использовался как жёсткий cap
-//	без учёта feasibleMax (65536). Cline с num_ctx=65536 → 413 preflight.
-//	Post-fix: feasibleMax даёт auto-relax path, и 3-tier учитывает оба источника.
+// КЛЮЧЕВОЙ ПРИНЦИП R43: "балансер должен автоматом все определят и выделять
+// под нужды модели". Никаких hardcoded n_ctx в resolver chain. Все значения
+// либо auto-derived (ggufMax from training), либо явный operator policy
+// (contextLengthMax). profile.contextLength — HINT для initial load, не cap.
 //
 // Параметр profileMaxContext — contextLength из per-model profile (0 = no profile).
 // Параметр contextLengthAuto — true если profile разрешает auto-adapt.
-// Параметр perModelFeasible — per-model feasible (из LoadedModels), приоритетнее top-level.
-func (p *Proxy) resolveModelMaxContext(backendID, model string, profileMaxContext int, contextLengthAuto bool, perModelFeasible int) int {
+// Параметр contextLengthMax — operator soft cap (0 = unlimited up to ggufMax).
+// Параметр perModelFeasible — per-model feasible (из LoadedModels), HINT в auto mode.
+func (p *Proxy) resolveModelMaxContext(backendID, model string, profileMaxContext int, contextLengthAuto bool, contextLengthMax int, perModelFeasible int) int {
 	// Tier 1+2: profile present, decide based on auto flag
 	if profileMaxContext > 0 {
 		if !contextLengthAuto {
-			// Tier 1: hard cap (старое поведение, backward compat)
-			// Round 37: warn если feasibleMax > profile*1.5 (явно conservative).
+			// Tier 1: hard cap (backward compat). R43 fix: respect contextLengthMax
+			// as operator cap EVEN в hard mode (schema field was previously ignored).
+			cap := profileMaxContext
+			if contextLengthMax > 0 && cap > contextLengthMax {
+				logger.Get().Warnw("resolveModelMaxContext: profile exceeds contextLengthMax operator cap, clamping",
+					"backend", backendID, "model", model,
+					"profile_n_ctx", profileMaxContext,
+					"context_length_max", contextLengthMax,
+				)
+				cap = contextLengthMax
+			}
+			// Diagnostic: warn если feasible >> profile (явно conservative profile).
 			feasible := perModelFeasible
 			if feasible == 0 {
 				feasible = p.getFeasibleMaxContext(backendID)
 			}
-			if feasible > 0 && feasible > profileMaxContext*3/2 {
+			if feasible > 0 && feasible > cap*3/2 {
 				logger.Get().Warnw("resolveModelMaxContext: profile conservative (no auto-adaptation enabled)",
 					"backend", backendID, "model", model,
-					"profile_n_ctx", profileMaxContext,
+					"profile_n_ctx", cap,
 					"feasible_n_ctx", feasible,
-					"headroom_ratio", float64(feasible)/float64(profileMaxContext),
+					"headroom_ratio", float64(feasible)/float64(cap),
 					"recommendation", "Add contextLengthAuto:true к profile для auto-relax",
 				)
 			}
-			return profileMaxContext
+			return cap
 		}
-		// Tier 2: auto-adapt. profile — HINT, real cap = MIN(feasible, GGUFMax).
-		// Profile is IGNORED here (operator who set auto=true explicitly said "don't cap me at profile").
-		cap := perModelFeasible
-		if cap == 0 {
-			cap = p.getFeasibleMaxContext(backendID)
-		}
-		// Optional: also cap by GGUFMax (hard upper bound from training).
+		// Tier 2: auto-adapt. profile — HINT. Real cap = MIN(ggufMax, contextLengthMax).
+		// CRITICAL R43 CHANGE: perModelFeasible is HINT, not cap. After cppworker
+		// auto-tunes gpu_layers, feasible grows. Using it as cap blocks legit requests.
+		cap := contextLengthMax // operator policy (soft cap, default 0 = unlimited)
 		ggufMax := p.getGGUFMaxContext(backendID)
 		if ggufMax > 0 && (cap == 0 || ggufMax < cap) {
 			cap = ggufMax
 		}
-		// If feasible unknown, fallback to profile (conservative: respect operator's stated value)
+		// If both contextLengthMax and ggufMax are 0, we have NO data.
+		// Return 0 (no cap) and let cppworker decide. This is the
+		// "trust the model" path: if operator set auto=true, they trust
+		// the system to figure it out. cppworker will validate against
+		// its own context_size (computed from GGUF header).
 		if cap == 0 {
-			return profileMaxContext
+			return 0
+		}
+		// If perModelFeasible is reported AND is BIGGER than profileMaxContext,
+		// that's a confirmation that auto-relax is right. We don't use it as
+		// a cap, but we can validate against it (warn if operator's cap is
+		// more permissive than current achievable).
+		if perModelFeasible > 0 && cap > perModelFeasible*4 {
+			// Operator cap (e.g. 131072) is way more than current feasible
+			// (e.g. 32719). After auto-tune, feasible will grow. Don't reject.
+			// Just info-log so operator knows.
+			logger.Get().Infow("resolveModelMaxContext: operator cap > 4x current feasible, will rely on cppworker auto-tune",
+				"backend", backendID, "model", model,
+				"resolved_cap", cap,
+				"current_feasible", perModelFeasible,
+				"note", "cppworker will reduce gpu_layers on reload to grow feasible via RAM offload")
 		}
 		return cap
 	}
-	// Tier 3: fallback to metrics
+	// Tier 3: no profile. R43 fix: fall through to ggufMax (model's hard upper
+	// bound from training) instead of default profile (conservative 32768).
+	// Pre-R43: Tier 3 returned getMetricsModelMaxContext() which is also
+	// conservative (cppworker reports max_vram_n_ctx, not GGUFMax).
+	ggufMax := p.getGGUFMaxContext(backendID)
+	if ggufMax > 0 {
+		return ggufMax
+	}
+	// Final fallback: metrics ModelMaxContext (preserved for backward compat).
 	return p.getMetricsModelMaxContext(backendID)
 }
 

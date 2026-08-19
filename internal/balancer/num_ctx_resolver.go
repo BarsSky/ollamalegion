@@ -188,33 +188,62 @@ func (p *Proxy) GetBackendDefaultNumCtx(backendID string) int {
 	return 0
 }
 
-// maxNumCtxForModel — эффективный потолок для модели:
-//  1. per-model profile из config.LlamaCppModelProfiles[modelName]
-//  2. fallback на config.DefaultModelProfile (Phase D.3-fix)
-//  3. fallback на реальный n_ctx загруженной модели на бэкенде (из metrics)
-//     — cppworker отдаёт contextSize через /api/models, poller сохраняет в
-//     LoadedModels[].ContextLength. Это динамический потолок, который
-//     обновляется при каждой загрузке модели.
+// maxNumCtxForModel — эффективный потолок для модели ДЛЯ CLAMPING (Round 43).
 //
-// Возвращает 0 если ни один из источников не задан — в этом случае
-// clamping не производится и num_ctx из body пройдёт без ограничения
-// (cppworker сам отклонит, если превышает effective n_ctx модели).
+// Round 43 (2026-08-19) CONCEPTUAL FIX:
+//
+//	Pre-R43: возвращал profile.contextLength как hard cap. Cline с num_ctx=65536
+//	на профиле contextLength=32768 → CLAMP до 32768 → cppworker reload с 32768
+//	→ prompt overflow → 400. Это был hidden hardcode в resolver chain.
+//
+//	Post-R43: использует ту же resolveModelMaxContext v3 что и preflight.
+//	contextLengthAuto=true → return 0 (NO clamp, let cppworker decide via
+//	auto-tune). profile — HINT, не cap. Cline 65536 → проходит как есть →
+//	cppworker auto-tunes gpu_layers → reload с feasible value.
+//
+// Приоритет (3-tier, identical to resolveModelMaxContext v3):
+//  1. per-model profile (respecting contextLengthAuto + contextLengthMax)
+//  2. fallback to config.DefaultModelProfile (Phase D.3-fix, backward compat)
+//  3. fallback to GGUFMax (R43, was: loaded model contextSize from metrics)
+//
+// Возвращает 0 если ни один из источников не даёт значения — в этом случае
+// clamping НЕ производится (cppworker сам решит, что делать с n_ctx из body).
+//
+// CRITICAL: This function MUST stay in sync with resolveModelMaxContext (in
+// nctx_reload_handlers.go). The R43 fix unifies both call sites to use the
+// same 3-tier logic. If you change one, change the other.
 func (p *Proxy) maxNumCtxForModel(modelName string, backendID string) int {
-	// Tier 1: per-model profile из config (явная ручная конфигурация)
-	if v := p.GetModelProfileNumCtx(modelName); v > 0 {
-		return v
+	if p == nil || p.config == nil {
+		return 0
 	}
 
-	// Tier 2: default profile из config (Phase D.3-fix)
-	if v := p.GetDefaultModelProfileNumCtx(); v > 0 {
-		return v
+	// Tier 1: per-model profile (auto-aware via resolveModelMaxContext v3)
+	if mp, ok := p.config.LlamaCppModelProfiles[modelName]; ok && mp.ContextLength > 0 {
+		return p.resolveModelMaxContext(backendID, modelName, mp.ContextLength, mp.ContextLengthAuto, mp.ContextLengthMax, 0)
+	}
+	// Case-insensitive substring match (для профиля "gemma-4" → модель "gemma-4-E4B-it-Q4_K_M")
+	for name, mp := range p.config.LlamaCppModelProfiles {
+		if containsFold(name, modelName) || containsFold(modelName, name) {
+			if mp.ContextLength > 0 {
+				return p.resolveModelMaxContext(backendID, modelName, mp.ContextLength, mp.ContextLengthAuto, mp.ContextLengthMax, 0)
+			}
+		}
 	}
 
-	// Tier 3: реальный n_ctx загруженной модели на бэкенде (из llamaMetrics).
-	// CppWorker каждые 30с отдаёт contextSize через /api/models →
-	// llamaMetrics[backendID].LoadedModels[].ContextLength.
-	// Это наиболее точный потолок, т.к. отражает фактическое состояние модели.
+	// Tier 2: default profile (Phase D.3-fix). R43: also auto-aware.
+	if p.config.DefaultModelProfile != nil && p.config.DefaultModelProfile.ContextLength > 0 {
+		dp := p.config.DefaultModelProfile
+		return p.resolveModelMaxContext(backendID, modelName, dp.ContextLength, dp.ContextLengthAuto, dp.ContextLengthMax, 0)
+	}
+
+	// Tier 3: GGUFMax from metrics (R43 fix: was loaded model contextSize).
+	// Loaded-model contextSize is current state (conservative if no auto-tune yet).
+	// GGUFMax is the model's hard upper bound from training metadata.
 	if backendID != "" {
+		if v := p.getGGUFMaxContext(backendID); v > 0 {
+			return v
+		}
+		// Final fallback: loaded model contextSize from metrics.
 		if v := p.getModelLoadedCtxFromMetrics(backendID, modelName); v > 0 {
 			return v
 		}

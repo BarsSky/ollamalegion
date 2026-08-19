@@ -17,12 +17,18 @@ func TestStripReasoningTags_AllPairs(t *testing.T) {
 		{
 			"gemma4_leak_closetag",
 			"\n7 * 8 = 56.\n</think>\n<start_of_turn>56",
-			"7 * 8 = 56.\n<start_of_turn>56",
+			// R48: leading "\n" preserved per Round 32 #20 (was stripped in
+			// Round 31 #4, but that broke markdown formatting). The
+			// streaming path applies its own 1-char leading "\n" strip
+			// AFTER stripReasoningTags for the cppworker separator pattern.
+			"\n7 * 8 = 56.\n\n<start_of_turn>56",
 		},
 		{
 			"gemma4_just_opentag",
 			"<think\nThe answer is 42.",
-			"The answer is 42.",
+			// R48: leading "\n" preserved per Round 32 #20 (strip would
+			// break markdown — see comment in stripReasoningTags).
+			"\nThe answer is 42.",
 		},
 		{
 			"qwen3_standard",
@@ -62,7 +68,11 @@ func TestStripReasoningTags_AllPairs(t *testing.T) {
 		{
 			"leading_whitespace",
 			"\n\n\nhello",
-			"hello",
+			// R48: leading whitespace preserved per Round 32 #20
+			// (strip would break markdown — see comment in
+			// stripReasoningTags). Caller must apply its own leading
+			// "\n" strip if it wants cppworker's separator handling.
+			"\n\n\nhello",
 		},
 		{
 			"trailing_tags",
@@ -90,7 +100,8 @@ func TestStripReasoningTags_AllPairs(t *testing.T) {
 // Realistic gemma-4 output with leaked close tag.
 func TestStripReasoningTags_Gemma4RealisticOutput(t *testing.T) {
 	input := "\nThe answer is 42.\n</think>\n<start_of_turn>model\n42"
-	want := "The answer is 42.\n<start_of_turn>model\n42"
+	// R48: leading "\n" preserved per Round 32 #20.
+	want := "\nThe answer is 42.\n\n<start_of_turn>model\n42"
 	got := stripReasoningTags(input)
 	if got != want {
 		t.Errorf("got %q, want %q", got, want)
@@ -129,11 +140,11 @@ func TestStripReasoningTags_Gemma4ChannelFormat(t *testing.T) {
 		},
 		{
 			"gemma4_only_opening_no_close",
-			// open tag `<|channel>thought\n` (19 chars) consumes \n after thought.
-			// stripWithBoundary strips the full 19-char open, content starts
-			// directly with "Incomplete thinking..." (no leading \n).
+			// open tag `<|channel>thought` is 19 chars, followed by \n.
+			// Round 32 #20 preserves the leading "\n" (strip would break
+			// markdown — see comment in stripReasoningTags).
 			"<|channel>thought\nIncomplete thinking, no closing tag",
-			"Incomplete thinking, no closing tag",
+			"\nIncomplete thinking, no closing tag",
 		},
 		{
 			"gemma4_only_closing_no_open",

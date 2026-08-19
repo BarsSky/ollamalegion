@@ -702,12 +702,19 @@ func translateSSEChatToOllama(chunk map[string]interface{}, modelName string, se
 
 	// Content-чанк
 	if hasContent {
-		// Round 31 #4 (2026-08-09): defensive strip когда reasoning был в этом стриме.
-		// gemma-4 после SplitReasoningContent эмитит "\n" перед первым content токеном
-		// (как separator после </think>). Если reasoning уже был — strip'аем leading whitespace
-		// чтобы content не начинался с "\n".
-		if seenReasoning != nil && *seenReasoning {
-			contentStr = stripReasoningTags(contentStr)
+		// R48 (2026-08-19): Round 31 #4 (2026-08-09) defensive strip когда reasoning
+		// был в этом стриме. gemma-4 после SplitReasoningContent эмитит "\n"
+		// ПЕРЕД первым content токеном (как separator после </think>). Если
+		// reasoning уже был — strip'аем только ОДИН leading "\n" (не любой
+		// whitespace — это бы сожрало leading space в " is the answer.").
+		//
+		// Прежний код вызывал stripReasoningTags (которая убирает ТЕГИ типа
+		// <think>, <|channel|>thought, и т.д.) — неправильная функция для
+		// этой задачи. 4 теста в
+		// llamacpp_translate_resp_strip_streaming_test.go были FAIL начиная
+		// с момента написания Round 31 #4. R48 фиксит.
+		if seenReasoning != nil && *seenReasoning && strings.HasPrefix(contentStr, "\n") {
+			contentStr = contentStr[1:]
 		}
 		if shouldFilterLlamaCppContent(contentStr) {
 			logger.Get().Debugw("translateSSEChatToOllama: filtered service token from content",
@@ -868,10 +875,14 @@ func translateSSEGenerateToOllama(chunk map[string]interface{}, modelName string
 	if reasoningStr != "" && seenReasoning != nil {
 		*seenReasoning = true
 	}
-	// Round 31 #4 (2026-08-09): defensive strip когда reasoning был в этом стриме.
+	// R48 (2026-08-19): Round 31 #4 (2026-08-09) defensive strip когда
+	// reasoning был в этом стриме. Same fix as translateSSEChatToOllama —
+	// strip'аем только ОДИН leading "\n" (cppworker эмитит separator
+		// после </think>), а не все whitespace. Иначе сожрёт leading
+	// space в " is the answer.".
 	if hasContent && seenReasoning != nil && *seenReasoning {
-		if s, ok := ollamaChunk["response"].(string); ok {
-			ollamaChunk["response"] = stripReasoningTags(s)
+		if s, ok := ollamaChunk["response"].(string); ok && strings.HasPrefix(s, "\n") {
+			ollamaChunk["response"] = s[1:]
 		}
 	}
 

@@ -10,6 +10,8 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"net/http/httputil"
+	"net/url"
 	"sort"
 	"strings"
 	"sync"
@@ -68,6 +70,14 @@ type Proxy struct {
 
 	// EventBus (вынесен в eventbus.go)
 	eventBus *EventBus
+
+	// Round 40 #3 (2026-08-18): apiReverseProxy пересылает /api/v1/*
+	// запросы с proxy-порта (18080) на локальный API-сервер (18081).
+	// Без этого balancer не знает про /api/v1/* пути и они падают
+	// в основной flow proxyRequest → queueRequest → зависают на 30s
+	// timeout (Round 22 BUG #7). Теперь balancer сразу forward'ит
+	// на API сервер, который знает про эти endpoint'ы.
+	apiReverseProxy *httputil.ReverseProxy
 
 	// Background controllers
 	AutoPull        *AutoPullManager     // Менеджер автоматической загрузки моделей (Pull-on-Demand)
@@ -250,6 +260,31 @@ func NewProxy(config *types.LoadBalancerConfig) *Proxy {
 
 	// Инициализация LlamaCppRouter для llama.cpp бэкендов
 	p.llamaCppRouter = NewLlamaCppRouter(p)
+
+	// Round 40 #3 (2026-08-18): инициализация reverse proxy для /api/v1/*.
+	// Endpoint'ы под /api/v1/ обслуживаются API-сервером (cmd/balancer/api,
+	// порт 18081), а не proxy flow. Сюда входят: /api/v1/cluster/*,
+	// /api/v1/cppworker/*, /api/v1/events (SSE), /api/v1/rpc/tp/* и др.
+	// Без этого клиент, отправивший POST /api/v1/cppworker/config на proxy
+	// 18080, получает 30s timeout (Round 22 BUG #7) вместо ответа.
+	apiHost := config.LoadBalancer.Host
+	if apiHost == "" || apiHost == "0.0.0.0" {
+		apiHost = "127.0.0.1"
+	}
+	apiPort := config.LoadBalancer.APIPort
+	if apiPort == 0 {
+		apiPort = 18081
+	}
+	apiURL := &url.URL{
+		Scheme: "http",
+		Host:   fmt.Sprintf("%s:%d", apiHost, apiPort),
+	}
+	p.apiReverseProxy = httputil.NewSingleHostReverseProxy(apiURL)
+	// Director (default): keep original Host header (don't override to 127.0.0.1).
+	// API server uses Host header for SNI/reverse-proxy detection in WebUI.
+	// Round 40 #3 (2026-08-18): flush interval 100ms — same as default,
+	// but explicit для forward-compat с streaming endpoints.
+	p.apiReverseProxy.FlushInterval = 100 * time.Millisecond
 
 	// Запуск фонового poll llama.cpp бэкендов для синхронизации LoadedModels
 	// с фактическим состоянием cppworker. Нужен для корректного отображения

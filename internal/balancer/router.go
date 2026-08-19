@@ -8,6 +8,41 @@ import (
 	"ollama-loadbalancer/pkg/types"
 )
 
+// isAPIv1Path — Round 40 #3 (2026-08-18): проверяет, является ли путь
+// admin / management endpoint'ом, обслуживаемым API-сервером (порт 18081).
+// Все пути под /api/v1/ (cluster/*, cppworker/*, events SSE, rpc/tp/*, gguf/*,
+// llama-cpp/overrides, и т.д.) живут на API сервере, не на proxy flow.
+//
+// Без этой проверки balancer проксирует /api/v1/* на backend → 404 (cppworker
+// не знает /api/v1/cluster/* и т.п.) → 30s timeout (Round 22 BUG #7).
+func isAPIv1Path(path string) bool {
+	return strings.HasPrefix(path, "/api/v1/")
+}
+
+// serveAPIv1Request — Round 40 #3 (2026-08-18): forward /api/v1/* запросы
+// на локальный API-сервер. Использует cached httputil.ReverseProxy
+// (initialized в NewProxy) — не делает DNS lookup на каждый запрос.
+//
+// Авторизация: API сервер применяет свой AuthMiddleware к /api/v1/* routes
+// (см. internal/api/routes.go). Мы только пробрасываем оригинальные
+// заголовки (X-API-Token / Authorization: Bearer) без изменений —
+// default Director в httputil.NewSingleHostReverseProxy это делает.
+func (p *Proxy) serveAPIv1Request(w http.ResponseWriter, r *http.Request) bool {
+	if p.apiReverseProxy == nil {
+		// Defensive: NewProxy должен был инициализировать. Не должно случаться
+		// в production, но если API port не настроен — лучше 503 чем panic.
+		logger.Get().Errorw("apiReverseProxy not initialized, returning 503",
+			"path", r.URL.Path)
+		http.Error(w, `{"error":"api_server_not_configured","message":"API server not configured in balancer"}`,
+			http.StatusServiceUnavailable)
+		return true
+	}
+	logger.Get().Debugw("forwarding /api/v1/* to API server",
+		"path", r.URL.Path, "method", r.Method)
+	p.apiReverseProxy.ServeHTTP(w, r)
+	return true
+}
+
 // routeRequest — маршрутизация входящего HTTP запроса.
 // Возвращает true если запрос обработан (health или Ollama/llama.cpp API), false для основного flow.
 func (p *Proxy) routeRequest(w http.ResponseWriter, r *http.Request) bool {
@@ -17,6 +52,14 @@ func (p *Proxy) routeRequest(w http.ResponseWriter, r *http.Request) bool {
 		w.WriteHeader(http.StatusOK)
 		w.Write([]byte("{\"status\":\"healthy\"}"))
 		return true
+	}
+
+	// Round 40 #3 (2026-08-18): /api/v1/* пути — admin / management endpoints
+	// обслуживаемые API-сервером на порту 18081, а не backend'ами.
+	// Forward'им напрямую — иначе balancer проксирует на cppworker →
+	// 404 → 30s timeout (Round 22 BUG #7).
+	if isAPIv1Path(r.URL.Path) {
+		return p.serveAPIv1Request(w, r)
 	}
 
 	// Round 22 (2026-08-03): early 404 для OpenAI endpoints, которые мы НЕ

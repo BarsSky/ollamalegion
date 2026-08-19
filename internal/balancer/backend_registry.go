@@ -385,6 +385,15 @@ func (p *Proxy) UpdateBackendStatus(backendID string, status types.BackendStatus
 		if oldStatus != status {
 			state.Backend.Status = status
 		}
+		// R46 (2026-08-19): фикс — LastHealthCheck обновлялся только
+		// при restore из saved state (state.go:79), но никогда при
+		// реальном health-check. В результате поле оставалось zero
+		// value (`0001-01-01T00:00:00Z`) всегда, что ломало
+		// /api/v1/backends и любую логику, проверяющую
+		// "когда последний раз был health check". Теперь
+		// UpdateBackendStatus (вызывается из health.checkBackend
+		// после каждой проверки) обновляет timestamp тоже.
+		state.Backend.LastHealthCheck = time.Now().UTC()
 		state.mu.Unlock()
 
 		if oldStatus != status {

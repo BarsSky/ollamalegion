@@ -2641,6 +2641,29 @@ func readGGUFHeaderInfo(path string) (*GGUFHeaderInfo, error) {
 				if _, err := f.Seek(skipBytes, 1); err != nil {
 					return nil, fmt.Errorf("skip array key[%q]: %w", key, err)
 				}
+			} else if elemType == 8 {
+				// R47 (2026-08-19): array of strings (elemType=8). ggufTypeSize
+				// returns 0 for strings (variable length), so the fixed-size
+				// skip above is a no-op. We have to skip each string
+				// individually: uint64 length + N bytes payload.
+				// Qwen3.6-35B-A3B-UD-Q4_K_M.gguf has `general.tags = ["qwen3_5_moe",
+				// "qwen", "image-text-to-text"]` and similar — without this fix,
+				// the parser reads past the array, gets garbage as the next
+				// keyLen, hits the "key length > 8192" guard, and returns
+				// error. As a result, info.Architecture stays "" and
+				// /api/show returns "unknown" for Qwen3.6.
+				for j := uint64(0); j < arrLen; j++ {
+					var strLen uint64
+					if err := binary.Read(f, binary.LittleEndian, &strLen); err != nil {
+						return nil, fmt.Errorf("read key[%q] string[%d] length: %w", key, j, err)
+					}
+					if strLen > 8192 {
+						return nil, fmt.Errorf("read key[%q] string[%d] length %d exceeds maximum 8192", key, j, strLen)
+					}
+					if _, err := f.Seek(int64(strLen), 1); err != nil {
+						return nil, fmt.Errorf("skip key[%q] string[%d]: %w", key, j, err)
+					}
+				}
 			}
 
 		default:

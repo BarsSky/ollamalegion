@@ -425,7 +425,12 @@ func (t *ModelLatencyTracker) GetOrComputeFirstByteTimeout(
 	}
 
 	// Эвристика по размеру GGUF файла (для моделей без истории)
-	if len(modelSizeBytes) > 0 && modelSizeBytes[0] > 0 {
+	// Round 42 (2026-08-19): ВСЕГДА вызываем estimator, даже при size=0 —
+	// EstimateFirstByteTimeoutFromModelSize возвращает 900s default для
+	// size=0 (Round 42 fix), не 0. Это гарантирует что batched inference
+	// модели с неизвестным размером получат разумный 15-мин timeout вместо
+	// fallthrough к global default 120s (что убивает Cline через 2 мин).
+	if len(modelSizeBytes) > 0 {
 		if estimated := EstimateFirstByteTimeoutFromModelSize(modelSizeBytes[0]); estimated > 0 {
 			return estimated
 		}
@@ -543,30 +548,44 @@ func EstimateIdleTimeoutFromModelSize(sizeBytes int64) time.Duration {
 }
 
 // EstimateFirstByteTimeoutFromModelSize оценивает таймаут ожидания первого байта (HTTP-заголовков)
-// на основе размера .gguf файла. Учитывает время загрузки модели в VRAM + prompt processing.
+// на основе размера .gguf файла. Учитывает время загрузки модели в VRAM + prompt processing
+// для batched inference (prefill 32K токенов на MoE модели с partial offload может занимать 15+ мин).
 // Используется как эвристика для моделей без истории генерации.
 //
-// Эвристика:
-//   - < 2 GB:   60s  — маленькие модели
-//   - 2-5 GB:   120s — средние модели
-//   - 5-12 GB:  300s — большие модели
-//   - 12-24 GB: 600s — очень большие
-//   - > 24 GB:  900s — гигантские
+// Round 42 (2026-08-19): bump всех tiers для batched inference моделей.
+// Префилл Qwen3.6-35B (22GB, 32K prompt) на 8GB VRAM с partial offload занимает 10-15 мин.
+// Round 32 #11 и #9 бампали только stream/idle timeouts, но firstByteTimeout остался
+// консервативным → Cline/Balancer "висит" 5 мин на большой prefill → 500 ошибка → retry →
+// restart loop. Round 42 даёт достаточно headroom для реальных MoE моделей.
+//
+// Эвристика (Round 42, 2026-08-19):
+//   - < 2 GB:    300s (5 min)  — Q4_K_M, 1-3B param (Qwen3-Instruct-2507 2.5GB)
+//   - 2-5 GB:    600s (10 min) — Q4_K_M, 3-8B param (gemma-4 4.6GB)
+//   - 5-12 GB:   1200s (20 min) — Q4_K_M, 8-20B param
+//   - 12-24 GB:  1800s (30 min) — Q4_K_M, 20-40B param (Qwen3.6-35B-A3B 22GB)
+//   - > 24 GB:   2400s (40 min) — > 40B param
+//
+// Причины: batched prefill 32K токенов с 22GB MoE = 10-15 мин на 8GB VRAM с
+// partial offload. Меньшие таймауты обрывают stream до первого токена.
 func EstimateFirstByteTimeoutFromModelSize(sizeBytes int64) time.Duration {
 	gb := float64(sizeBytes) / (1024 * 1024 * 1024)
 	switch {
 	case gb <= 0:
-		return 0
-	case gb < 2.0:
-		return 60 * time.Second
-	case gb < 5.0:
-		return 120 * time.Second
-	case gb < 12.0:
-		return 300 * time.Second
-	case gb < 24.0:
-		return 600 * time.Second
-	default:
+		// Round 42 (2026-08-19): ВАЖНО — НЕ возвращать 0 для неизвестного размера!
+		// Возврат 0 → caller falls through to global default 120s → Cline aborts
+		// через 2 мин на любом slow prefill. Для "size unknown" случая используем
+		// 900s (15 мин) как безопасный default для batched inference.
 		return 900 * time.Second
+	case gb < 2.0:
+		return 300 * time.Second
+	case gb < 5.0:
+		return 600 * time.Second
+	case gb < 12.0:
+		return 1200 * time.Second
+	case gb < 24.0:
+		return 1800 * time.Second
+	default:
+		return 2400 * time.Second
 	}
 }
 

@@ -39,7 +39,7 @@ services:
     # Round 35 (r35): reload→load fallback + idleUnload disabled.
     # Round 35c (r35c): env-tunable polling timeouts (LB_NCTX_PREFLIGHT_*)
     # для моделей с auto-offload (22GB+ Qwen3.6 на 8GB VRAM, 12-15 min load).
-    image: ollama-legion/balancer:cppworker-bundled-r40-3-api-v1-forward  # Round 40 #3 (2026-08-18): /api/v1/* forward — proxy 18080 → API server 18081 (single source of truth, was: 30s timeout on /api/v1/*)
+    image: ollama-legion/balancer:cppworker-bundled-r42-first-byte-timeout  # Round 42 (2026-08-19): firstByteTimeout 300s→900s + 12-24GB tier 600s→1800s — Cline на RTX 3070 + Qwen3.6-35B (22GB, 32K prompt prefill) требует 10-15 мин до первого токена, старый 5-мин cap обрывал stream → 500 → retry loop
     container_name: ol-bundled-balancer
     restart: unless-stopped
     ports:

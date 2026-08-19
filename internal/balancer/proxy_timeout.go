@@ -207,11 +207,21 @@ func (p *Proxy) getGlobalRequestTimeout() time.Duration {
 	return time.Duration(sec) * time.Second
 }
 
-// getGlobalFirstByteTimeout — глобальный таймаут первого байта (или дефолт 120s).
+// getGlobalFirstByteTimeout — глобальный таймаут первого байта (или дефолт 900s).
+//
+// Round 42 (2026-08-19): bump default 120s → 900s для batched inference моделей.
+// Cline на RTX 3070 с Qwen3.6-35B (22GB, 32K prompt prefill) требует 10-15 мин до
+// первого токена. Старый default 120s приводил к 500 ошибке через 2 мин → Cline
+// retry → restart loop. Новый default 900s = 15 мин покрывает:
+//   - Q4_K_M 1-3B (быстрые): 10-30 сек prefill
+//   - Q4_K_M 3-8B (средние): 1-3 мин prefill
+//   - Q4_K_M 8-20B (большие): 3-7 мин prefill
+//   - Q4_K_M 20-40B (MoE + partial offload): 10-15 мин prefill
+// 15 мин = worst case + safety margin.
 func (p *Proxy) getGlobalFirstByteTimeout() time.Duration {
 	sec := p.config.Balancing.FirstByteTimeout
 	if sec <= 0 {
-		return 120 * time.Second
+		return 900 * time.Second
 	}
 	return time.Duration(sec) * time.Second
 }

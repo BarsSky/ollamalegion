@@ -117,6 +117,13 @@ type loadModelRequest struct {
 	OverrideTensor  *string  `json:"overrideTensor,omitempty"`  // legacy: "blk\\..*=CPU"
 	OverrideTensors     []string `json:"overrideTensors,omitempty"`
 	OverrideTensorBufts []string `json:"overrideTensorBufts,omitempty"`
+	// Round 44.1 (2026-08-19) R43 regression fix #2: balancer's reload
+	// payload (nctx_reload_handlers.go:868) sends a "reason" string for
+	// observability ("balancer preflight async auto-load-or-reload ...").
+	// Before this, the strict decoder rejected it with
+	// "unknown field reason" → 400 → reload loop. The field is recorded
+	// for log correlation but not used to alter behavior.
+	Reason *string `json:"reason,omitempty"`
 }
 
 type embeddingsRequest struct {

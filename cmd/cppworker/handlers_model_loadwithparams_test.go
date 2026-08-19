@@ -421,3 +421,25 @@ func TestHandleLoadModel_R44_BackwardCompatible(t *testing.T) {
 		t.Errorf("OverrideTensors should be empty for legacy request, got %v", req.OverrideTensors)
 	}
 }
+
+// TestHandleLoadModel_R44_1_ReasonFieldAccepted — Round 44.1 (2026-08-19)
+// R43 regression fix #2: balancer's reload payload (nctx_reload_handlers.go:868)
+// sends a "reason" string field for observability. Before this, the strict
+// JSON decoder rejected it with "unknown field reason" → 400 → reload loop.
+// The field is recorded for log correlation but not used to alter behavior.
+func TestHandleLoadModel_R44_1_ReasonFieldAccepted(t *testing.T) {
+	body := `{"name":"test","contextSize":32768,"reason":"balancer preflight auto-reload"}`
+	var req loadModelRequest
+	if err := json.Unmarshal([]byte(body), &req); err != nil {
+		t.Fatalf("failed to decode request with reason: %v", err)
+	}
+	if req.Name != "test" {
+		t.Errorf("Name: got %q", req.Name)
+	}
+	if req.Reason == nil {
+		t.Fatalf("Reason: got nil, want pointer to string")
+	}
+	if *req.Reason != "balancer preflight auto-reload" {
+		t.Errorf("Reason: got %q, want %q", *req.Reason, "balancer preflight auto-reload")
+	}
+}

@@ -39,7 +39,7 @@ services:
     # Round 35 (r35): reload→load fallback + idleUnload disabled.
     # Round 35c (r35c): env-tunable polling timeouts (LB_NCTX_PREFLIGHT_*)
     # для моделей с auto-offload (22GB+ Qwen3.6 на 8GB VRAM, 12-15 min load).
-    image: ollama-legion/balancer:cppworker-bundled-r43-auto-n-ctx-resolver  # Round 43 (2026-08-19): auto-n-ctx-resolver — contextLengthMax schema field теперь применяется (pre-R43: schema field был, но resolver ИГНОРИРОВАЛ); profile.contextLengthAuto=true теперь default для всех production profiles; perModelFeasible — HINT (current state, grows after cppworker auto-tune), не cap. Cline 65536 теперь проходит на ЛЮБОЙ профиль с auto=true (gemma-4, Qwen3-32B-Instruct-2507 и т.д.), а не только Qwen3.6-35B.
+    image: ollama-legion/balancer:cppworker-bundled-r45-preflight-cache-staleness  # Round 45 (2026-08-19): fix JSON tag mismatch in llamacpp_metrics_poller.go. Pre-R45, per-model fields used camelCase tags (`contextSize`, `nLayers`, ...) but cppworker returns snake_case (`context_size`, `n_layers`, ...). As a result, LoadedModels[].ContextLength was always 0, breaking preflightNCtxReloadIfNeeded which checks `loaded_n_ctx >= requested_n_ctx`. Every /api/chat triggered a spurious 503 + reload loop. R45 also wires per-model feasible_max_context / gguf_max_context (Round 37 wire was incomplete — struct held them but the loop never copied them out).
     container_name: ol-bundled-balancer
     restart: unless-stopped
     ports:

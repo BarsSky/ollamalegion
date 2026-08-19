@@ -167,6 +167,20 @@ func (p *llamaCppMetricsPoller) pollBackend(b backendInfo) {
 		return
 	}
 
+	// Round 45 (2026-08-19): JSON tags changed from camelCase to snake_case
+	// to match cppworker's actual /api/models response. Previous tags caused
+	// ALL per-model fields to silently decode to zero values (ContextSize, SizeBytes,
+	// NLayers, NEmbd, etc.) because cppworker returns snake_case keys. This broke
+	// preflightNCtxReloadIfNeeded which reads LoadedModels[].ContextLength from
+	// this cache to decide whether to trigger an async reload. With the bug, the
+	// cache always reported loaded_n_ctx=0, causing every /api/chat to trigger
+	// a spurious 503 + reload loop.
+	//
+	// Note: each tag below is "snake,camel" — but Go's encoding/json only
+	// honors the FIRST name, so this is effectively snake_case only. The
+	// second name is documentation, not a real fallback. If a future cppworker
+	// reverts to camelCase, the right fix is a custom UnmarshalJSON, not
+	// relying on the comma-list (which doesn't work as expected).
 	var data struct {
 		Count           int    `json:"count"`
 		MaxVRAMNCtx     int    `json:"max_vram_n_ctx"`
@@ -181,34 +195,47 @@ func (p *llamaCppMetricsPoller) pollBackend(b backendInfo) {
 			Name             string `json:"name"`
 			Path             string `json:"path,omitempty"`
 			State            string `json:"state,omitempty"`
-			SizeBytes        int64  `json:"sizeBytes,omitempty"`
-			LoadingSizeBytes int64  `json:"loadingSizeBytes,omitempty"` // Round 18: cppworker reports this for loaded models (sizeBytes=0)
-			NLayers          int    `json:"nLayers,omitempty"`
-			NHeads           int    `json:"nHeads,omitempty"`
-			NKvHeads         int    `json:"nKvHeads,omitempty"`     // Round 18: для оценки KV cache
-			HeadDimK         int    `json:"headDimK,omitempty"`      // Round 18: для оценки KV cache
-			HeadDimV         int    `json:"headDimV,omitempty"`      // Round 18: для оценки KV cache
-			NEmbd            int    `json:"nEmbd,omitempty"`
-			NVocab           int    `json:"nVocab,omitempty"`
-			ContextSize      int    `json:"contextSize,omitempty"`
-			GGUFContextLength int   `json:"ggufContextLength,omitempty"` // Round 18: макс n_ctx для модели
-			GPULayers        int    `json:"gpuLayers,omitempty"`
-			ActiveQueries    int    `json:"activeQueries,omitempty"`
-			TotalQueries     int    `json:"totalQueries,omitempty"`
+			SizeBytes        int64  `json:"size_bytes,sizeBytes,omitempty"`
+			LoadingSizeBytes int64  `json:"loading_size_bytes,loadingSizeBytes,omitempty"`
+			NLayers          int    `json:"n_layers,nLayers,omitempty"`
+			NHeads           int    `json:"n_heads,nHeads,omitempty"`
+			NKvHeads         int    `json:"n_kv_heads,nKvHeads,omitempty"`
+			HeadDimK         int    `json:"head_dim_k,headDimK,omitempty"`
+			HeadDimV         int    `json:"head_dim_v,headDimV,omitempty"`
+			NEmbd            int    `json:"n_embd,nEmbd,omitempty"`
+			NVocab           int    `json:"n_vocab,nVocab,omitempty"`
+			// R45: ContextSize was the smoking gun. cppworker returns
+			// "context_size" but the previous tag was "contextSize", so
+			// LoadedModels[].ContextLength was always 0, breaking
+			// preflightNCtxReloadIfNeeded's loaded >= requested check.
+			ContextSize      int    `json:"context_size,contextSize,omitempty"`
+			GGUFContextLength int   `json:"gguf_context_length,ggufContextLength,omitempty"`
+			GPULayers        int    `json:"gpu_layers,gpuLayers,omitempty"`
+			ActiveQueries    int    `json:"active_queries,activeQueries,omitempty"`
+			TotalQueries     int    `json:"total_queries,totalQueries,omitempty"`
 			Architecture     string `json:"architecture,omitempty"`
 			Quantization     string `json:"quantization,omitempty"`
-			VRAMUsage        uint64 `json:"vramUsage,omitempty"`
-			RAMUsage         uint64 `json:"ramUsage,omitempty"`
-			LoadedAt         string `json:"loadedAt,omitempty"`
+			VRAMUsage        uint64 `json:"vram_usage,vramUsage,omitempty"`
+			RAMUsage         uint64 `json:"ram_usage,ramUsage,omitempty"`
+			LoadedAt         string `json:"loaded_at,loadedAt,omitempty"`
 			// Round 34 (2026-08-12) Phase 2: runtime params (kvCacheType, flashAttnType,
 			// useMmap) для profile mismatch detection в preflight_nctx.go.
-			KvCacheType     string `json:"kvCacheType,omitempty"`
-			FlashAttnType   int    `json:"flashAttnType,omitempty"`
-			UseMmap         bool   `json:"useMmap,omitempty"`
+			KvCacheType     string `json:"kv_cache_type,kvCacheType,omitempty"`
+			FlashAttnType   int    `json:"flash_attn_type,flashAttnType,omitempty"`
+			UseMmap         bool   `json:"use_mmap,useMmap,omitempty"`
+			// R45 (2026-08-19): per-model feasible + GGUF max context for 3-tier
+			// resolution in preflight_helper.go. cppworker has reported these
+			// per-model since Round 37 (2026-08-18). The poller used to copy
+			// them out of the per-model struct but the struct itself didn't have
+			// the fields — they were silently 0. Top-level fallback (line 303)
+			// masked the bug, but per-model priority is the whole point of the
+			// Round 37 work, so this completes the wire.
+			FeasibleMaxContext int `json:"feasible_max_context,omitempty"`
+			GGUFMaxContext     int `json:"gguf_max_context,omitempty"`
 			// Round 18 P0.1 (2026-08-03): capabilities (reasoning/vision/tools).
 			// cppworker теперь возвращает готовый capabilities объект в /api/models.
 			Capabilities      *types.ModelCapabilities `json:"capabilities,omitempty"`
-			ReasoningEnabled  bool                     `json:"reasoningEnabled,omitempty"`
+			ReasoningEnabled  bool                     `json:"reasoning_enabled,reasoningEnabled,omitempty"`
 		} `json:"models"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&data); err != nil {
@@ -271,6 +298,13 @@ func (p *llamaCppMetricsPoller) pollBackend(b backendInfo) {
 			KvCacheType:   m.KvCacheType,
 			FlashAttnType: m.FlashAttnType,
 			UseMmap:       m.UseMmap,
+			// R45 (2026-08-19): wire per-model feasible + GGUF max into the
+			// LoadedModels entry so preflight_helper.collectPreflightState can
+			// prefer per-model values over top-level (see preflight_helper.go
+			// Round 37 per-model block). Without this, the struct held them
+			// but the loop never copied them out.
+			FeasibleMaxContext: m.FeasibleMaxContext,
+			GGUFMaxContext:     m.GGUFMaxContext,
 			// Round 18 P0.1 (2026-08-03): capabilities. Если cppworker не вернул
 			// (старая версия), вычисляем по имени как fallback.
 			Capabilities: capabilitiesOrFallback(m.Capabilities, m.Name, m.Architecture, m.GGUFContextLength, m.ReasoningEnabled),
@@ -342,14 +376,16 @@ func (p *llamaCppMetricsPoller) pollLoadingProgress(b backendInfo) {
 		return
 	}
 
+	// Round 45 (2026-08-19): same JSON tag fix as pollBackend — see comment above.
+	// LoadingStartedAt/LoadingSizeBytes/ElapsedMs are all snake_case in cppworker.
 	var data struct {
 		Count  int `json:"count"`
 		Models []struct {
 			Name             string `json:"name"`
 			State            string `json:"state"`
-			LoadingStartedAt string `json:"loadingStartedAt"`
-			LoadingSizeBytes int64  `json:"loadingSizeBytes"`
-			ElapsedMs        int64  `json:"elapsedMs"`
+			LoadingStartedAt string `json:"loading_started_at,loadingStartedAt"`
+			LoadingSizeBytes int64  `json:"loading_size_bytes,loadingSizeBytes"`
+			ElapsedMs        int64  `json:"elapsed_ms,elapsedMs"`
 			Error            string `json:"error"`
 		} `json:"models"`
 	}

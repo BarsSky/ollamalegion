@@ -610,16 +610,38 @@ ctest --output-on-failure
 
 Реализация считается complete, когда **ВСЕ** пункты выполнены:
 
-- [ ] **AC1**: C unit tests (T1-T9) PASS
-- [ ] **AC2**: Go integration tests PASS
+- [x] **AC1**: C unit tests (T1-T9) PASS
+  - `c/bridge/tests/test_abort_api.c`: T1, T2, T7, T8, T9 + extras (T10, T11) = 13 tests, 13/13 PASS (2026-08-09, gcc -std=c99 -DTEST_ABORT_STANDALONE)
+  - T3-T6 помечены `#if 0` (требуют libllama + real model для full integration)
+- [x] **AC2**: Go integration tests PASS
+  - 7 tests в `c/bridge/bridge_abort_test.go` + 7 в `cmd/cppworker/abort_watcher_test.go` = 14 tests, all PASS
+  - `go test -tags llama_stub -race` — no data races (verified 2026-08-09)
 - [ ] **AC3**: Live test (5.3) — VRAM released в течение 3s после cancel
+  - Live E2E проверен вручную на Qwen3-Instruct-2507-q4km + GPU v2 image, abort fires confirmed в логах
+  - Автоматизированный test не написан (deferred — требует setup с реальной GPU + model в CI)
 - [ ] **AC4**: ASan clean (no memory leaks в abort path)
+  - **DEFERRED**: ASan недоступен на MinGW (Windows). Нужен Linux/WSL/clang-cl для проверки.
 - [ ] **AC5**: TSan clean (no data race на atomic flag)
-- [ ] **AC6**: Stub mode (`-tags llama_stub`) собирается без warnings
-- [ ] **AC7**: Round 25-31 regression tests PASS (reasoning translation, profile sync, batched decode)
-- [ ] **AC8**: Cancel latency в prompt phase < 500ms (long prompt + abort = exit в течение 500ms)
-- [ ] **AC9**: Status code `BRIDGE_ERR_ABORTED` корректно проброшен в Go-side error (не маскируется как success)
-- [ ] **AC10**: Документация обновлена: `CHANGELOG.md`, `c/bridge/README.md` (если есть), `docs/BRIDGE_API.md`
+  - **DEFERRED**: TSan недоступен на MinGW. Race-free verified через Go `-race` (atomic pattern identical).
+- [x] **AC6**: Stub mode (`-tags llama_stub`) собирается без warnings
+  - `go build -tags llama_stub ./c/bridge/ ./cmd/cppworker/` — clean (no warnings)
+- [ ] **AC7**: Round 25-31 regression tests PASS
+  - **Частично**: `c/bridge`, `cmd/cppworker` (abort-related) — все PASS
+  - **Pre-existing fail (R29/R32)**: `TestSplitReasoningContent_Gemma4ChannelFormat` в `cmd/cppworker/reasoning_qwen36_test.go` (НЕ связан с R31 #6)
+- [ ] **AC8**: Cancel latency в prompt phase < 500ms
+  - **Round 31 #6 fixed (partial)**: 100ms-8s latency в зависимости от платформы и способа close
+  - **ef34a79 fix**: Windows FIN-only close detected через hijack+polling, latency ~8s (vs 25-30s baseline)
+  - **Не достигнуто <500ms** на Windows (FIN-only не detect'нется <1s без syscall.Select)
+  - На Linux ожидается <100ms (RST мгновенный), но не верифицировано
+- [x] **AC9**: Status code `BRIDGE_ERR_ABORTED` корректно проброшен в Go-side error
+  - `bridge.ErrAborted` sentinel в `c/bridge/bridge.go`
+  - Проверка через `errors.Is(streamErr, bridge.ErrAborted)` в handlers_chat.go / handlers_openai.go
+  - Live E2E verified (GPU v2 + Qwen3)
+- [x] **AC10**: Документация обновлена
+  - `CHANGELOG.md` v0.5.16 entry
+  - `README.md` v0.5.16 entry
+  - `c/bridge/README.md` (NEW, 4.4KB) — purpose, build, quick example, links
+  - `docs/BRIDGE_API.md` (NEW, 11.6KB) — full C API reference, error codes, Abort API semantics
 
 ---
 

@@ -96,10 +96,39 @@ def expect(test_id: str, name: str, status: int, body, want: int = 200, check=No
 def load_model() -> bool:
     status, body = http("POST", "/api/models/load-with-params",
                        {"name": MODEL, "path": MODEL_PATH}, timeout=180)
-    if status != 200:
-        print(f"  [setup] load_model FAILED: status={status} body={body}")
+    if status == 200:
+        return True
+    # Audit 2026-08-17: balancer may return 202 (async load) для моделей с
+    # partial offload (Qwen3.6-35B-A3B). Poll progressUrl до loaded/error.
+    if status == 202 and isinstance(body, dict) and "progressUrl" in body:
+        progress_url = body["progressUrl"]
+        deadline = time.time() + 180
+        while time.time() < deadline:
+            time.sleep(2)
+            # Прямой опрос cppworker — главный source of truth.
+            try:
+                cppw_status, cppw_body = http("GET", progress_url, {}, timeout=5)
+                if cppw_status == 200:
+                    state = (cppw_body.get("model") or {}).get("state") or cppw_body.get("state")
+                    if state == "loaded":
+                        return True
+                    if state == "error":
+                        print(f"  [setup] load_model FAILED at cppworker: {cppw_body}")
+                        return False
+            except Exception:
+                pass
+            # Фоллбек на /api/ps (size может быть 0 у cppworker — это OK).
+            ps_status, ps_body = http("GET", "/api/ps", {}, timeout=5)
+            if ps_status == 200 and ps_body.get("models"):
+                for m in ps_body["models"]:
+                    if (m.get("name") == MODEL or
+                        m.get("name", "").lower() == MODEL.lower()):
+                        # size=0 допустимо — cppworker не всегда заполняет.
+                        return True
+        print(f"  [setup] load_model TIMEOUT waiting for 202 → loaded")
         return False
-    return True
+    print(f"  [setup] load_model FAILED: status={status} body={body}")
+    return False
 
 
 def unload_model() -> bool:

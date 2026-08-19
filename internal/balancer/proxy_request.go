@@ -241,7 +241,6 @@ func (p *Proxy) proxyRequest(w http.ResponseWriter, r *http.Request, backendID s
 		defer cancel()
 	}
 
-
 	req, err := http.NewRequestWithContext(reqCtx, r.Method, targetURL+r.URL.String(), r.Body)
 	if err != nil {
 		err = fmt.Errorf("failed to create request: %v", err)
@@ -942,7 +941,6 @@ func (p *Proxy) warmupModel(backendID, host string, port int, model string, extr
 	}
 }
 
-
 // warmupOllamaModel — загрузка модели через Ollama API.
 func (p *Proxy) warmupOllamaModel(backendID, host string, port int, model string) {
 	tagsURL := fmt.Sprintf("http://%s:%d/api/tags", host, port)
@@ -1048,6 +1046,16 @@ func (p *Proxy) warmupLlamaCppModel(backendID, host string, port int, model stri
 	loadBody := map[string]interface{}{
 		"name": model,
 	}
+	// Audit 2026-08-17 P0.1 fix: lookup path через /api/models/files ПЕРЕД load.
+	// Если нашли matching file — передаём explicit path в body. Это:
+	//   1) faster (cppworker не делает disk scan resolveModelPath)
+	//   2) correct (no ambiguity если 2+ .gguf в директории)
+	// Fallback: если lookup fail'нет — старое поведение (cppworker resolveModelPath).
+	if resolvedPath, ok := p.resolveLlamaCppModelPath(baseURL, model); ok {
+		loadBody["path"] = resolvedPath
+		logger.Get().Debugw("warmupLlamaCppModel: resolved model path via /api/models/files",
+			"backend", backendID, "model", model, "path", resolvedPath)
+	}
 	// Передаём contextSize (num_ctx) если задан
 	if opts.NumCtx > 0 {
 		loadBody["contextSize"] = opts.NumCtx
@@ -1093,7 +1101,6 @@ func (p *Proxy) warmupLlamaCppModel(backendID, host string, port int, model stri
 		}
 	}()
 }
-
 
 // updateRunningModelInMetrics — обновляет RunningModels в метриках бэкенда
 // после успешного warmup, чтобы не ждать следующего heartbeat от агента.
@@ -1150,4 +1157,103 @@ func (p *Proxy) updateLlamaCppRunningModelInMetrics(backendID, model string) {
 	})
 	logger.Get().Debugw("updateLlamaCppRunningModelInMetrics: added model to llama.cpp metrics",
 		"backend", backendID, "model", model)
+}
+
+// resolveLlamaCppModelPath — Audit 2026-08-17 P0.1 fix.
+// Lookup model path через cppworker's /api/models/files endpoint.
+//
+// Проблема (P0.1 в round-20-ollama-api-coverage-audit.md):
+//
+//	warmupLlamaCppModel отправлял POST /load с {name: "qwen3-4b"} без path.
+//	cppworker делал resolveModelPath() = disk scan models/<name>.gguf.
+//	При 2+ .gguf в директории alias qwen3-4b НЕ резолвился → 500 →
+//	все inference падали кроме первого цикла.
+//
+// Fix: GET /api/models/files, ищем matching file (по canonical name
+// и по .gguf basename), возвращаем path. Caller передаёт path explicit
+// в load body — cppworker использует его без disk scan.
+//
+// Возвращает (path, true) если найден, ("", false) если нет/ошибка.
+// Caller должен fallback к поведению без path (cppworker resolveModelPath).
+//
+// Примеры matching:
+//
+//	modelName="qwen3-4b" → fileName="Qwen3-Instruct-2507-q4km.gguf"
+//	  → match если modelName содержится в basename (case-insensitive).
+//	modelName="gemma-4"  → fileName="gemma-4-E4B-it-Q4_K_M.gguf"
+//	  → match если modelName == basename minus .gguf minus quant suffix
+//	  (heuristic: модель == "gemma-4-E4B-it" не сработает без heuristic,
+//	  но обычно nameHistory от Round 22 fix #2 покроет).
+func (p *Proxy) resolveLlamaCppModelPath(baseURL, modelName string) (string, bool) {
+	if p.client == nil || modelName == "" {
+		return "", false
+	}
+	filesURL := baseURL + "/api/models/files"
+	resp, err := p.client.Get(filesURL)
+	if err != nil {
+		logger.Get().Debugw("resolveLlamaCppModelPath: cannot reach /api/models/files",
+			"model", modelName, "error", err)
+		return "", false
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return "", false
+	}
+	var filesResp struct {
+		Files []struct {
+			Name string `json:"name"`
+			Path string `json:"path"`
+		} `json:"files"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&filesResp); err != nil {
+		return "", false
+	}
+	modelLower := strings.ToLower(modelName)
+	// First pass: exact match (with or without .gguf)
+	for _, f := range filesResp.Files {
+		baseName := strings.TrimSuffix(f.Name, ".gguf")
+		if strings.EqualFold(baseName, modelName) || strings.EqualFold(f.Name, modelName) {
+			if f.Path != "" {
+				return f.Path, true
+			}
+		}
+	}
+	// Second pass: substring match (modelName is alias, fileName is full)
+	for _, f := range filesResp.Files {
+		baseName := strings.TrimSuffix(f.Name, ".gguf")
+		if strings.Contains(strings.ToLower(baseName), modelLower) {
+			if f.Path != "" {
+				return f.Path, true
+			}
+		}
+	}
+	// Third pass: modelName contains fileName (e.g. "qwen3-4b" contains "qwen3")
+	for _, f := range filesResp.Files {
+		baseName := strings.TrimSuffix(f.Name, ".gguf")
+		if strings.Contains(modelLower, strings.ToLower(baseName)) {
+			if f.Path != "" {
+				return f.Path, true
+			}
+		}
+	}
+	// Fourth pass: prefix-part match (e.g. "qwen3-4b" → "qwen3" matches "Qwen3-Instruct-2507-q4km").
+	// Это критично для Round 21 use case: alias qwen3-4b ссылается на файл с другим именем,
+	// но общий префикс (qwen3) есть. Split modelName по '-'/'_' и проверяем что
+	// ПЕРВАЯ непустая часть содержится в basename (lower-case).
+	for _, f := range filesResp.Files {
+		baseName := strings.TrimSuffix(f.Name, ".gguf")
+		baseLower := strings.ToLower(baseName)
+		for _, sep := range []string{"-", "_", "/"} {
+			if idx := strings.Index(modelLower, sep); idx > 0 {
+				prefix := modelLower[:idx]
+				if prefix != "" && strings.Contains(baseLower, prefix) && len(prefix) >= 3 {
+					if f.Path != "" {
+						return f.Path, true
+					}
+				}
+				break // only check first separator
+			}
+		}
+	}
+	return "", false
 }

@@ -259,9 +259,25 @@ func (s *cppworkerSimulator) handleHealth(w http.ResponseWriter, r *http.Request
 
 func (s *cppworkerSimulator) handleListModels(w http.ResponseWriter, r *http.Request) {
 	s.mu.Lock()
-	models := make([]*cppworkerModelState, 0, len(s.loadedModels))
+	models := make([]map[string]interface{}, 0, len(s.loadedModels))
 	for _, m := range s.loadedModels {
-		models = append(models, m)
+		// Audit 2026-08-17: добавляем State="loaded" и Path — balancer poll
+		// для auto-load ищет `state=="loaded"` в /api/models, без этого
+		// poll бесконечный и balancer возвращает 503 после 5min deadline.
+		models = append(models, map[string]interface{}{
+			"name":          m.Name,
+			"size":          m.Size,
+			"contextLength": m.ContextLen,
+			"numGpuLayers":  m.GPULayers,
+			"batchSize":     m.BatchSize,
+			"loadedAt":      m.LoadedAt,
+			"family":        m.Family,
+			"format":        m.Format,
+			"parameterSize": m.ParameterSize,
+			"quantization":  m.Quantization,
+			"state":         "loaded",
+			"path":          "/" + m.Name + ".gguf",
+		})
 	}
 	s.mu.Unlock()
 
@@ -573,6 +589,42 @@ func (s *cppworkerSimulator) handleOpenAIChat(w http.ResponseWriter, r *http.Req
 	_ = json.NewDecoder(r.Body).Decode(&req)
 
 	flusher, _ := w.(http.Flusher)
+
+	// Audit 2026-08-17: respect `stream` field properly. Non-streaming
+	// requests should get JSON response (not SSE), иначе OpenAI client
+	// получает "invalid character 'd' looking for beginning of value"
+	// при попытке json.Unmarshal SSE.
+	if !req.Stream {
+		w.Header().Set("Content-Type", "application/json")
+		// Соберём "content" из streamingChunks chunks для realism.
+		var content string
+		for i := 0; i < s.streamingChunks; i++ {
+			content += fmt.Sprintf("chunk%d ", i)
+		}
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{
+			"id":      "chatcmpl-1",
+			"object":  "chat.completion",
+			"model":   req.Model,
+			"choices": []map[string]interface{}{
+				{
+					"index": 0,
+					"message": map[string]interface{}{
+						"role":    "assistant",
+						"content": content,
+					},
+					"finish_reason": "stop",
+				},
+			},
+			"usage": map[string]interface{}{
+				"prompt_tokens":     10,
+				"completion_tokens": s.streamingChunks * 2,
+				"total_tokens":      10 + s.streamingChunks*2,
+			},
+		})
+		return
+	}
+
+	// Streaming response.
 	w.Header().Set("Content-Type", "text/event-stream")
 
 	// First chunk: role.
@@ -581,24 +633,20 @@ func (s *cppworkerSimulator) handleOpenAIChat(w http.ResponseWriter, r *http.Req
 		flusher.Flush()
 	}
 
-	if req.Stream {
-		for i := 0; i < s.streamingChunks; i++ {
-			chunk := fmt.Sprintf(`data: {"id":"chatcmpl-1","object":"chat.completion.chunk","model":"%s","choices":[{"delta":{"content":"chunk%d "}}]}%s`,
-				req.Model, i, "\n\n")
-			fmt.Fprint(w, chunk)
-			if flusher != nil {
-				flusher.Flush()
-			}
-		}
-		// [DONE] terminator.
-		fmt.Fprint(w, "data: [DONE]\n\n")
+	for i := 0; i < s.streamingChunks; i++ {
+		chunk := fmt.Sprintf(`data: {"id":"chatcmpl-1","object":"chat.completion.chunk","model":"%s","choices":[{"delta":{"content":"chunk%d "}}]}%s`,
+			req.Model, i, "\n\n")
+		fmt.Fprint(w, chunk)
 		if flusher != nil {
 			flusher.Flush()
 		}
-	} else {
-		// Non-streaming: return full response.
-		_, _ = w.Write([]byte(`data: {"id":"chatcmpl-1","object":"chat.completion","model":"` + req.Model + `","choices":[{"message":{"role":"assistant","content":"response"}}]}` + "\n\n"))
-		_, _ = w.Write([]byte("data: [DONE]\n\n"))
+	}
+	// Final chunk: finish_reason.
+	fmt.Fprintf(w, "data: {\"id\":\"chatcmpl-1\",\"object\":\"chat.completion.chunk\",\"model\":\"%s\",\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n", req.Model)
+	// [DONE] terminator.
+	fmt.Fprint(w, "data: [DONE]\n\n")
+	if flusher != nil {
+		flusher.Flush()
 	}
 }
 

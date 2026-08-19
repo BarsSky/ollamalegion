@@ -513,7 +513,13 @@ func ResolveNPredict(nPredictFromRequest int, modelName string) int {
 		return nPredictFromRequest
 	}
 	if !IsReasoningModel(modelName) {
-		return nPredictFromRequest // 0 = оставить как есть (C-bridge default = 2048)
+		// Round 36.1 (2026-08-17) BUGFIX: c/bridge/bridge.go now substitutes
+		// DefaultGenerationParams().NPredict (= 2048) when params.NPredict <= 0
+		// (defensive, in c/bridge/bridge.go Infer and InferStream). So returning
+		// 0 here is safe — the bridge layer will fill in 2048 before calling
+		// C.bridge_infer*. (Previously the C-bridge fallback was hardcoded 512,
+		// which silently truncated Qwen3-Instruct mid-response.)
+		return nPredictFromRequest // 0 = bridge layer substitutes default (2048)
 	}
 	if raw := strings.TrimSpace(os.Getenv("CPPWORKER_DEFAULT_N_PREDICT_REASONING")); raw != "" {
 		if v, err := strconv.Atoi(raw); err == nil && v > 0 {

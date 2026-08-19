@@ -616,8 +616,16 @@ func validateModelProfile(p types.LlamaCppModelProfile) error {
 	if p.BatchSize != 0 && p.BatchSize < 1 {
 		return fmt.Errorf("batchSize must be >= 1, got %d", p.BatchSize)
 	}
-	if p.NumGPULayers < -1 {
-		return fmt.Errorf("numGpuLayers must be >= -1 (-1 = all layers), got %d", p.NumGPULayers)
+	// Audit 2026-08-17 fix: было "> -1" — блокировало numGpuLayers=-2 (AUTO).
+	// Cppworker `handlers_model.go:1117` принимает gpuLayers >= -2:
+	//   -2 = AUTO (балансер решает, сколько влезет в VRAM с учётом KV-cache)
+	//   -1 = all layers (full GPU)
+	//    0 = CPU only
+	//    N>0 = N слоёв на GPU
+	// Config.bundled.json использует -2 для MoE моделей (Qwen3.6-35B-A3B-UD и др.),
+	// и без этого fix нельзя применить profile из config через API.
+	if p.NumGPULayers < -2 {
+		return fmt.Errorf("numGpuLayers must be >= -2 (-2 = AUTO, -1 = all layers), got %d", p.NumGPULayers)
 	}
 	if p.NumGPULayers > 200 {
 		return fmt.Errorf("numGpuLayers must be <= 200, got %d", p.NumGPULayers)

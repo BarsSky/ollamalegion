@@ -299,14 +299,11 @@ func (a *Agent) sendMetrics(data []byte) {
 		metricsURL = fmt.Sprintf("%s/api/v1/agents/metrics", a.balancerURL)
 	}
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, metricsURL, bytes.NewReader(data))
+	req, err := a.authedRequest(ctx, http.MethodPost, metricsURL, bytes.NewReader(data))
 	if err != nil {
 		fmt.Printf("[%s] Failed to create request: %v\n", time.Now().Format(time.RFC3339), err)
 		return
 	}
-
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("X-Agent-ID", a.config.AgentID)
 
 	resp, err := a.httpClient.Do(req)
 	if err != nil {
@@ -320,10 +317,8 @@ func (a *Agent) sendMetrics(data []byte) {
 		fmt.Printf("[%s] New metrics endpoint returned 404, falling back to legacy /agents/metrics\n",
 			time.Now().Format(time.RFC3339))
 		legacyURL := fmt.Sprintf("%s/api/v1/agents/metrics", a.balancerURL)
-		req2, reqErr := http.NewRequestWithContext(ctx, http.MethodPost, legacyURL, bytes.NewReader(data))
+		req2, reqErr := a.authedRequest(ctx, http.MethodPost, legacyURL, bytes.NewReader(data))
 		if reqErr == nil {
-			req2.Header.Set("Content-Type", "application/json")
-			req2.Header.Set("X-Agent-ID", a.config.AgentID)
 			resp2, err2 := a.httpClient.Do(req2)
 			if err2 == nil {
 				resp = resp2
@@ -444,14 +439,11 @@ func (a *Agent) sendHeartbeat() {
 		heartbeatURL = fmt.Sprintf("%s/api/v1/agents/heartbeat", a.balancerURL)
 	}
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, heartbeatURL, bytes.NewReader(data))
+	req, err := a.authedRequest(ctx, http.MethodPost, heartbeatURL, bytes.NewReader(data))
 	if err != nil {
 		fmt.Printf("[%s] Failed to create heartbeat request: %v\n", time.Now().Format(time.RFC3339), err)
 		return
 	}
-
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("X-Agent-ID", a.config.AgentID)
 
 	resp, err := a.httpClient.Do(req)
 	if err != nil {
@@ -464,10 +456,8 @@ func (a *Agent) sendHeartbeat() {
 		fmt.Printf("[%s] New heartbeat endpoint returned 404, falling back to legacy /agents/heartbeat\n",
 			time.Now().Format(time.RFC3339))
 		legacyURL := fmt.Sprintf("%s/api/v1/agents/heartbeat", a.balancerURL)
-		req2, reqErr := http.NewRequestWithContext(ctx, http.MethodPost, legacyURL, bytes.NewReader(data))
+		req2, reqErr := a.authedRequest(ctx, http.MethodPost, legacyURL, bytes.NewReader(data))
 		if reqErr == nil {
-			req2.Header.Set("Content-Type", "application/json")
-			req2.Header.Set("X-Agent-ID", a.config.AgentID)
 			resp2, err2 := a.httpClient.Do(req2)
 			if err2 == nil {
 				resp = resp2

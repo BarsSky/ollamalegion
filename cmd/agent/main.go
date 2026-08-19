@@ -58,6 +58,10 @@ func main() {
 		Weight:                env.GetInt("AGENT_WEIGHT", *weight),
 		BackendType:           types.BackendType(env.Get("BACKEND_TYPE", "ollama")),
 		NodeLabels:            env.Get("NODE_LABELS", ""),
+		// Round 41 (2026-08-19): X-API-Token для auth на балансере. Передаётся
+		// в каждом защищённом запросе (register/metrics/heartbeat). Если пусто —
+		// agent не шлёт заголовок (dev-режим с отключённым auth на балансере).
+		BalancerToken:         env.Get("BALANCER_TOKEN", ""),
 		// 2026-06-30: CppWorkerHost/Port используются в register() как host/cppWorkerPort,
 		// чтобы de-dup по (host, port) в /api/v1/gguf/backends корректно склеивал
 		// cppworker-gpu и cppworker-gpu-bundled-agent (агент — observer физического cppworker).
@@ -128,6 +132,13 @@ func main() {
 	fmt.Printf("╚═══════════════════════════════════════════════════════════╝\n")
 	
 	// Создание и запуск агента
+	// Round 41 (2026-08-19): предупреждаем, если токен не задан — все защищённые
+	// запросы к балансеру получат 401 в продакшен-конфиге (auth: enabled).
+	if cfg.BalancerToken == "" {
+		fmt.Printf("[Agent]  WARNING: BALANCER_TOKEN is empty — agent will NOT send X-API-Token header.\n")
+		fmt.Printf("[Agent]  This is fine for dev (auth disabled on balancer), but will fail with 401 in production.\n")
+	}
+
 	agentInstance := agent.NewAgent(cfg)
 	
 	if err := agentInstance.Start(); err != nil {

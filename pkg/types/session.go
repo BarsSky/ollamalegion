@@ -58,4 +58,12 @@ type AgentConfig struct {
 	// POST /api/v1/backends/{BackendID}/agent/heartbeat — это правильный ID,
 	// а не agentID (который при attached режиме отличается от backendID).
 	BackendID             string       `json:"backendId,omitempty"`
+
+	// Round 41 (2026-08-19): BalancerToken — общий static-токен для аутентификации
+	// на балансировщике. Передаётся через env BALANCER_TOKEN (compose), agent
+	// шлёт его как X-API-Token во всех защищённых запросах: /api/v1/agents/register,
+	// /api/v1/backends/{id}/agent/metrics, /api/v1/backends/{id}/agent/heartbeat.
+	// Пустая строка = agent не шлёт заголовок (для dev-режима с выключенным
+	// auth на балансере; в проде пустой токен при включённом auth → 401, как и раньше).
+	BalancerToken         string       `json:"balancerToken"`
 }

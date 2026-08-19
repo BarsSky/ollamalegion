@@ -193,7 +193,7 @@ services:
       target: agent-gpu
       args:
         ENABLE_NVML: "true"
-    image: ollama-legion/agent:gpu-llamacpp
+    image: ollama-legion/agent:cppworker-bundled-r41-agent-x-api-token  # Round 41 (2026-08-19): X-API-Token auth header — agent шлёт BALANCER_TOKEN в register/metrics/heartbeat (was: 401 restart loop)
     container_name: ol-bundled-cppworker-gpu-agent
     restart: unless-stopped
     # 2026-06-30: критично для GPU-метрик.

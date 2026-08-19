@@ -2,6 +2,7 @@ package agent
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -68,14 +69,15 @@ func (a *Agent) register() error {
 		return fmt.Errorf("failed to marshal registration: %w", err)
 	}
 
-	httpReq, err := http.NewRequest(http.MethodPost,
-		fmt.Sprintf("%s/api/v1/agents/register", a.balancerURL),
-		bytes.NewReader(data))
+	// Round 41 (2026-08-19): authedRequest устанавливает Content-Type, X-Agent-ID,
+	// и (опционально) X-API-Token. Раньше header X-API-Token не выставлялся
+	// вообще → 401 на /api/v1/agents/register → restart loop. Теперь
+	// cfg.BalancerToken (из env BALANCER_TOKEN) используется для auth.
+	registerURL := fmt.Sprintf("%s/api/v1/agents/register", a.balancerURL)
+	httpReq, err := a.authedRequest(context.Background(), http.MethodPost, registerURL, bytes.NewReader(data))
 	if err != nil {
 		return err
 	}
-	httpReq.Header.Set("Content-Type", "application/json")
-	httpReq.Header.Set("X-Agent-ID", a.config.AgentID)
 
 	resp, err := a.httpClient.Do(httpReq)
 	if err != nil {

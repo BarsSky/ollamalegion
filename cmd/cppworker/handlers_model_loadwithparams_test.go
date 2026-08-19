@@ -338,3 +338,86 @@ func TestHandleLoadWithParams_OverrideTensorsValidation(t *testing.T) {
         })
     }
 }
+
+// TestHandleLoadModel_R44_KVCacheTypeAccepted — Round 44 (2026-08-19) R43
+// regression fix: kvCacheType field is now accepted on the legacy
+// /api/models/load endpoint.
+//
+// Background: balancer's nctx_reload_handlers.go:866 issues POST
+// /api/models/load (not /load-with-params) with a payload that includes
+// kvCacheType. Before R44, the strict JSON decoder rejected the request
+// with "unknown field kvCacheType" → 400 → reload failed → preflight
+// returned 503 to the client (R44 stuck-state symptom).
+func TestHandleLoadModel_R44_KVCacheTypeAccepted(t *testing.T) {
+	for _, kvType := range []string{"f16", "q8_0", "q4_0"} {
+		body := `{"name":"test","kvCacheType":"` + kvType + `","contextSize":32768}`
+		var req loadModelRequest
+		if err := json.Unmarshal([]byte(body), &req); err != nil {
+			t.Errorf("kvCacheType=%s: failed to decode: %v", kvType, err)
+			continue
+		}
+		if req.KVCacheType == nil {
+			t.Errorf("kvCacheType=%s: pointer should be set, got nil", kvType)
+			continue
+		}
+		if *req.KVCacheType != kvType {
+			t.Errorf("kvCacheType=%s: got %q", kvType, *req.KVCacheType)
+		}
+	}
+}
+
+// TestHandleLoadModel_R44_ParallelOverrideTensors — Round 44 (2026-08-19):
+// legacy /api/models/load now also accepts the extended runtime fields
+// (parallel, overrideTensors) that load-with-params already had. Mirrors
+// Session 16 (2026-06-27) Per-Model Profile semantics.
+func TestHandleLoadModel_R44_ParallelOverrideTensors(t *testing.T) {
+	body := `{
+		"name": "qwen3-moe",
+		"parallel": 2,
+		"overrideTensors": ["blk\\..*\\.ffn_.*_exps\\.weight", "blk\\..*\\.ffn_.*_exps\\.bias"],
+		"overrideTensorBufts": ["CPU", "CPU"]
+	}`
+	var req loadModelRequest
+	if err := json.Unmarshal([]byte(body), &req); err != nil {
+		t.Fatalf("failed to decode: %v", err)
+	}
+	if req.Parallel == nil || *req.Parallel != 2 {
+		t.Errorf("Parallel: got %v, want 2", req.Parallel)
+	}
+	if len(req.OverrideTensors) != 2 {
+		t.Errorf("OverrideTensors: got %d entries, want 2", len(req.OverrideTensors))
+	}
+	if len(req.OverrideTensorBufts) != 2 {
+		t.Errorf("OverrideTensorBufts: got %d entries, want 2", len(req.OverrideTensorBufts))
+	}
+}
+
+// TestHandleLoadModel_R44_BackwardCompatible — Round 44 (2026-08-19):
+// расширение loadModelRequest НЕ ломает старые клиенты. Базовый load
+// без kvCacheType/parallel/overrideTensors продолжает работать.
+func TestHandleLoadModel_R44_BackwardCompatible(t *testing.T) {
+	body := `{"name":"test","contextSize":32768,"gpuLayers":30}`
+	var req loadModelRequest
+	if err := json.Unmarshal([]byte(body), &req); err != nil {
+		t.Fatalf("failed to decode legacy request: %v", err)
+	}
+	if req.Name != "test" {
+		t.Errorf("Name: got %q", req.Name)
+	}
+	if req.ContextSize == nil || *req.ContextSize != 32768 {
+		t.Errorf("ContextSize: got %v, want 32768", req.ContextSize)
+	}
+	if req.GPULayers == nil || *req.GPULayers != 30 {
+		t.Errorf("GPULayers: got %v, want 30", req.GPULayers)
+	}
+	// Расширенные поля остаются nil.
+	if req.KVCacheType != nil {
+		t.Errorf("KVCacheType should be nil for legacy request, got %v", *req.KVCacheType)
+	}
+	if req.Parallel != nil {
+		t.Errorf("Parallel should be nil for legacy request, got %v", *req.Parallel)
+	}
+	if len(req.OverrideTensors) > 0 {
+		t.Errorf("OverrideTensors should be empty for legacy request, got %v", req.OverrideTensors)
+	}
+}

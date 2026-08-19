@@ -135,6 +135,31 @@ func handleLoadModel(w http.ResponseWriter, r *http.Request) {
 		TensorSplit:   defTensorSplit,
 		SplitMode:     defSplitMode,
 	}
+	// Round 44 (2026-08-19) R43 regression fix: apply extended runtime params
+	// (kvCacheType, parallel, override-tensors) the same way handleLoadWithParams
+	// does. Without this, the legacy /api/models/load endpoint silently drops
+	// kvCacheType in the auto-reload path triggered by the balancer.
+	if req.KVCacheType != nil && *req.KVCacheType != "" {
+		if isValidKVCacheType(*req.KVCacheType) {
+			opts.KVCacheType = *req.KVCacheType
+		} else {
+			logger.Get().Warnw("handleLoadModel: ignoring invalid kvCacheType",
+				"name", modelName, "kvCacheType", *req.KVCacheType,
+				"validValues", []string{"f16", "q8_0", "q4_0"})
+		}
+	}
+	if req.Parallel != nil && *req.Parallel > 0 {
+		opts.Parallel = *req.Parallel
+	}
+	if req.OverrideTensor != nil && *req.OverrideTensor != "" {
+		opts.OverrideTensor = *req.OverrideTensor
+	}
+	if len(req.OverrideTensors) > 0 && len(req.OverrideTensors) == len(req.OverrideTensorBufts) {
+		opts.OverrideTensors = req.OverrideTensors
+		opts.OverrideTensorBufts = req.OverrideTensorBufts
+		logger.Get().Infow("handleLoadModel: override-tensors (parallel arrays) applied",
+			"name", modelName, "count", len(req.OverrideTensors))
+	}
 
 	logger.Get().Infow("loading model",
 		"name", modelName, "path", modelPath,
@@ -1623,6 +1648,42 @@ func handleOllamaPS(w http.ResponseWriter, r *http.Request) {
 }
 
 // handleOllamaShow ? Ollama /api/show.
+//
+// Round 44 (2026-08-19) variant 4 structural fix: when the requested model is
+// NOT yet loaded into memory, return metadata directly from the GGUF header
+// instead of triggering a full llama.cpp model load.
+//
+// Why this matters
+//
+// R31-R43 retained the historical "lazy-load on /api/show" behavior for
+// compatibility with Ollama tooling that polls /api/show to discover
+// capabilities. The hidden cost is that a 22GB model (Qwen3.6-35B) takes
+// 6+ minutes to cold-load on RTX 3070 8GB VRAM, while 5GB gemma-4 takes
+// 77s. Real Cline/Codegen clients with hard 5-minute HTTP timeouts
+// (claude/claude#12829 reference; Cline CLI OLLAMA_DEFAULT_TIMEOUT_MS=300000)
+// cancel the request mid-load. With the old code, cancellation left the
+// cppworker still holding the single-flight load slot, blocking every
+// subsequent /api/chat for the same backend (the R44 stuck-state symptom).
+//
+// New flow
+//
+//   1. If the model is already loaded in memory → return full info from
+//      backend.GetModel (state="loaded"; n_vocab/gpu_layers present).
+//   2. Otherwise, look up the on-disk path via ModelManager and read
+//      metadata-only via mm.GetModelMeta (which parses the GGUF header in
+//      <100ms, no model load). Return header-derived fields with
+//      state="unloaded" and context_size=0 (load is required to populate
+//      runtime-only fields like n_vocab and gpu_layers).
+//   3. If neither loaded nor on disk → 404.
+//
+// Behavior preserved
+//   - `/api/show` still answers in well under 1s even for the largest model.
+//   - `state` field always set: "loaded" / "unloaded" / "not loaded".
+//   - Ollama / OpenWebUI render correctly: they only inspect the family and
+//     parameter_size fields for UI hints, both available from the header.
+//   - The lazy-load path (ensureModelLoaded) is no longer triggered by
+//     /api/show. Clients that actually need inference hit /api/chat or
+//     /api/generate, which DO load the model (this is unchanged).
 func handleOllamaShow(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		writeError(w, http.StatusMethodNotAllowed, "use POST")
@@ -1645,49 +1706,36 @@ func handleOllamaShow(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := ensureModelLoaded(name); err != nil {
-		if isModelLoadingError(err) {
-			writeLoadingResponse(w, name, err)
-			return
-		}
-		writeError(w, http.StatusInternalServerError, "model load failed: "+err.Error())
-		return
-	}
-
+	// Path 1: model already in memory → return full info (state=loaded).
 	if info, err := backend.GetModel(name); err == nil {
-		writeJSON(w, http.StatusOK, map[string]interface{}{
-			"license": "unknown", "modelfile": "",
-			"parameters": fmt.Sprintf("%.1fB", float64(info.NLayers*info.NEmbd)/1e9),
-			"template":   "", "system": "",
-			"details": map[string]interface{}{
-				"parent_model": "", "format": "gguf", "family": info.Architecture,
-				"families":           []string{info.Architecture},
-				"parameter_size":     fmt.Sprintf("%.1fB", float64(info.NLayers*info.NEmbd)/1e9),
-				"quantization_level": "unknown",
-			},
-			"model_info": map[string]interface{}{
-				"architecture": info.Architecture, "n_layers": info.NLayers,
-				"n_heads": info.NHeads, "n_embd": info.NEmbd,
-				"n_kv_heads": info.NKvHeads, "head_dim_k": info.HeadDimK, "head_dim_v": info.HeadDimV,
-				"n_vocab": info.NVocab, "context_size": info.ContextSize,
-				"gpu_layers": info.GPULayers, "kv_cache_type": info.KVCacheType, "state": info.State,
-			},
-		})
+		writeOllamaShowLoadedResponse(w, info)
 		return
 	}
 
+	// Path 2: model NOT loaded → metadata-only via GGUF header (no load).
+	// This is the R44 structural fix.
 	mm := backend.ModelManager()
 	if mm == nil {
 		writeError(w, http.StatusServiceUnavailable, "model manager not available")
 		return
 	}
-	filename := name
-	if !strings.HasSuffix(strings.ToLower(filename), ".gguf") {
-		filename = filename + ".gguf"
+	meta, metaErr := mm.GetModelMeta(name)
+	if metaErr != nil || meta == nil {
+		// Fallback: try with .gguf suffix (Ollama clients often send basename).
+		if meta2, err2 := mm.GetModelMeta(name + ".gguf"); err2 == nil && meta2 != nil {
+			meta = meta2
+			metaErr = nil
+		}
 	}
-	path, err := mm.FindModelByPath(filename)
+	if metaErr == nil && meta != nil && meta.Path != "" {
+		writeOllamaShowMetadataResponse(w, meta)
+		return
+	}
+
+	// Path 3: not on disk either → 404 (not changed from previous behavior).
+	path, err := mm.FindModelByPath(strings.TrimSuffix(name, ".gguf") + ".gguf")
 	if err != nil {
-		writeError(w, http.StatusNotFound, "model not found: "+err.Error())
+		writeError(w, http.StatusNotFound, "model not found: "+name)
 		return
 	}
 	info, err := os.Stat(path)
@@ -1708,6 +1756,79 @@ func handleOllamaShow(w http.ResponseWriter, r *http.Request) {
 			"name": modelName, "filename": filepath.Base(path),
 			"size_bytes": info.Size(), "modified_at": info.ModTime().Format(time.RFC3339),
 			"state": "not loaded", "architecture": "unknown",
+		},
+	})
+}
+
+// writeOllamaShowLoadedResponse — Path 1 of /api/show: model is in memory.
+// Same response shape as R43 and earlier; n_vocab and gpu_layers present,
+// state=loaded.
+func writeOllamaShowLoadedResponse(w http.ResponseWriter, info *cppbackend.ModelInfo) {
+	writeJSON(w, http.StatusOK, map[string]interface{}{
+		"license": "unknown", "modelfile": "",
+		"parameters": fmt.Sprintf("%.1fB", float64(info.NLayers*info.NEmbd)/1e9),
+		"template":   "", "system": "",
+		"details": map[string]interface{}{
+			"parent_model": "", "format": "gguf", "family": info.Architecture,
+			"families":           []string{info.Architecture},
+			"parameter_size":     fmt.Sprintf("%.1fB", float64(info.NLayers*info.NEmbd)/1e9),
+			"quantization_level": "unknown",
+		},
+		"model_info": map[string]interface{}{
+			"architecture": info.Architecture, "n_layers": info.NLayers,
+			"n_heads": info.NHeads, "n_embd": info.NEmbd,
+			"n_kv_heads": info.NKvHeads, "head_dim_k": info.HeadDimK, "head_dim_v": info.HeadDimV,
+			"n_vocab": info.NVocab, "context_size": info.ContextSize,
+			"gpu_layers": info.GPULayers, "kv_cache_type": info.KVCacheType, "state": info.State,
+		},
+	})
+}
+
+// writeOllamaShowMetadataResponse — Path 2 of /api/show: header-only metadata
+// (model NOT in memory; no load triggered).
+//
+// R44 (2026-08-19) NEW: this is the variant-4 fix. The response shape is
+// compatible with Ollama clients that only inspect family / parameter_size
+// for UI rendering. n_vocab and gpu_layers are runtime-only fields and are
+// zeroed; the state field is "unloaded" so the client knows the model is
+// not yet ready for inference (it should call /api/chat or /api/generate
+// to actually load and use it).
+func writeOllamaShowMetadataResponse(w http.ResponseWriter, meta *cppbackend.GGUFModelMeta) {
+	// GGUF header may be missing NEmbd/NLayers for non-llama.cpp-arch files
+	// or when ReadGGUFHeader failed silently. Use safe zero defaults.
+	nLayers := meta.NLayers
+	nEmbd := meta.NEmbd
+	paramSize := "unknown"
+	if nLayers > 0 && nEmbd > 0 {
+		paramSize = fmt.Sprintf("%.1fB", float64(nLayers*nEmbd)/1e9)
+	}
+	family := meta.Architecture
+	if family == "" {
+		family = "unknown"
+	}
+	writeJSON(w, http.StatusOK, map[string]interface{}{
+		"license": "unknown", "modelfile": "",
+		"parameters": paramSize,
+		"template":   "", "system": "",
+		"details": map[string]interface{}{
+			"parent_model": "", "format": "gguf", "family": family,
+			"families":           []string{family},
+			"parameter_size":     paramSize,
+			"quantization_level": "unknown",
+		},
+		"model_info": map[string]interface{}{
+			"architecture":  family,
+			"n_layers":      nLayers,
+			"n_heads":       meta.NHeads,
+			"n_embd":        nEmbd,
+			"n_kv_heads":    meta.NKvHeads,
+			"head_dim_k":    0, // не из GGUF header
+			"head_dim_v":    0, // не из GGUF header
+			"n_vocab":       0, // runtime-only (load required)
+			"context_size":  0, // runtime-only (load required)
+			"gpu_layers":    0, // runtime-only (load required)
+			"kv_cache_type": "",
+			"state":         "unloaded",
 		},
 	})
 }

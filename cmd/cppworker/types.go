@@ -100,6 +100,23 @@ type loadModelRequest struct {
 	FlashAttnType *int      `json:"flashAttn,omitempty"`
 	NUMA          *bool     `json:"numa,omitempty"`
 	UseMmap       *bool     `json:"useMmap,omitempty"`
+
+	// Round 44 (2026-08-19) R43 regression fix:
+	//
+	// Balancer's nctx_reload_handlers.go:866 issues POST /api/models/load
+	// (not /load-with-params) with a payload that includes kvCacheType and
+	// other runtime params. Before R44, the strict JSON decoder rejected
+	// these fields with "unknown field kvCacheType" → 400 → reload failed →
+	// preflight returned 503 to the client (R44 stuck-state symptom).
+	//
+	// Fix: accept the same extended runtime fields on the legacy endpoint
+	// that loadWithParamsRequest already accepts. Mirrors Session 16
+	// (2026-06-27) Per-Model Profile semantics.
+	Parallel        *int     `json:"parallel,omitempty"`        // 0 = inherit (1)
+	KVCacheType     *string  `json:"kvCacheType,omitempty"`     // "f16"/"q8_0"/"q4_0"
+	OverrideTensor  *string  `json:"overrideTensor,omitempty"`  // legacy: "blk\\..*=CPU"
+	OverrideTensors     []string `json:"overrideTensors,omitempty"`
+	OverrideTensorBufts []string `json:"overrideTensorBufts,omitempty"`
 }
 
 type embeddingsRequest struct {

@@ -37,6 +37,44 @@ servers:
         default: "18081"
         description: API port
 
+# R50 (2026-08-19): Per-Backend API Style.
+# Каждый бэкенд при регистрации указывает api_style: ollama-native | openai-compatible.
+# Балансер маршрутизирует и (опционально) конвертит API-стиль между клиентом и бэкендом.
+# Детали: docs/superpowers/specs/2026-08-19-balancer-api-routing-design.md
+x-backend-api-style:
+  description: |
+    When a backend is registered (via config.json or /api/v1/backends/register),
+    the operator selects the API style the backend speaks:
+      - ollama-native: backend speaks Ollama API (/api/* paths)
+      - openai-compatible: backend speaks OpenAI-compatible API (/v1/* paths)
+    Translation contract:
+      | client → backend | translation |
+      |------------------|------------|
+      | ollama → ollama  | none (passthrough) |
+      | ollama → openai  | required (Ollama→OpenAI conversion in translate_req/resp) |
+      | openai → ollama  | required (OpenAI→Ollama conversion) |
+      | openai → openai  | none (passthrough) |
+    R50 current state: api_style is INFERRED from `type` field
+    (llama_cpp → openai-compatible, ollama → ollama-native).
+    R51+ plan: add explicit `api_style` field to Backend struct.
+  enum:
+    - ollama-native
+    - openai-compatible
+  default: inferred from type field
+  examples:
+    ollama-native:
+      id: qwen3-bundled
+      type: ollama
+      api_style: ollama-native
+      host: ollama-host
+      ollamaPort: 11434
+    openai-compatible:
+      id: cppworker-gpu-bundled
+      type: llama_cpp
+      api_style: openai-compatible
+      host: cppworker-gpu
+      cppWorkerPort: 18092
+
 tags:
   - name: Health
     description: Health check endpoints

@@ -2156,6 +2156,42 @@ docker run -d -p 8080:8080 -e SWAGGER_JSON=/api/swagger.json \
 
 ---
 
+## Per-Backend API Style (R50)
+
+**Концепция:** При добавлении бэкенда в `config.json` (или через `/api/v1/backends/register`) пользователь выбирает, в каком API-стиле бэкенд будет работать с балансером:
+
+```json
+{
+  "id": "cppworker-gpu-bundled",
+  "type": "llama_cpp",              // engine type
+  "api_style": "ollama-native",     // ← R51+ explicit, R50 inferred from type
+  "host": "cppworker-gpu",
+  "cppWorkerPort": 18092
+}
+```
+
+**Допустимые значения `api_style`:**
+
+| Значение | Бэкенд общается через | Клиент может подключаться через | Translation |
+|----------|------------------------|----------------------------------|-------------|
+| `ollama-native` | `/api/*` (Ollama API) | `/api/*` (Ollama) — passthrough | Нет |
+| `ollama-native` | `/api/*` (Ollama API) | `/v1/*` (OpenAI) — request/response | ДА — OpenAI↔Ollama конверсия |
+| `openai-compatible` | `/v1/*` (OpenAI) | `/v1/*` (OpenAI) — passthrough | Нет |
+| `openai-compatible` | `/v1/*` (OpenAI) | `/api/*` (Ollama) — request/response | ДА — Ollama↔OpenAI конверсия |
+
+**R50 текущее поведение (inferred, не explicit):**
+- `type: "llama_cpp"` → `api_style: openai-compatible` (используется `llamacpp_router.go`)
+- `type: "ollama"` → `api_style: ollama-native` (используется `ollama_router.go`)
+
+**R51+ план:** добавить явное поле `api_style` в `Backend` struct, убрать привязку type→api_style. Это даст возможность:
+- Один engine type обслуживать в обоих API-стилях (два бэкенд-entry'и)
+- Гибкая translation между клиентом и бэкендом
+- Single source of truth для роутинга (по `api_style`, а не по URL prefix)
+
+**Дизайн-документ:** [docs/superpowers/specs/2026-08-19-balancer-api-routing-design.md](superpowers/specs/2026-08-19-balancer-api-routing-design.md)
+
+---
+
 ## Следующие шаги
 
 - [Troubleshooting](troubleshooting.md) — Решение проблем

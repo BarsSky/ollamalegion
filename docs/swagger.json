@@ -35,6 +35,27 @@
       }
     }
   ],
+  "x-backend-api-style": {
+    "description": "Per-Backend API Style (R50, 2026-08-19). Backend speaks either Ollama API (/api/*) or OpenAI-compat API (/v1/*). Translation required when client and backend use different styles. R50: inferred from `type` field (llama_cpp → openai-compatible, ollama → ollama-native). R51+: explicit `api_style` field. Details: docs/superpowers/specs/2026-08-19-balancer-api-routing-design.md",
+    "enum": ["ollama-native", "openai-compatible"],
+    "default": "inferred from type field",
+    "examples": {
+      "ollama-native": {
+        "id": "qwen3-bundled",
+        "type": "ollama",
+        "api_style": "ollama-native",
+        "host": "ollama-host",
+        "ollamaPort": 11434
+      },
+      "openai-compatible": {
+        "id": "cppworker-gpu-bundled",
+        "type": "llama_cpp",
+        "api_style": "openai-compatible",
+        "host": "cppworker-gpu",
+        "cppWorkerPort": 18092
+      }
+    }
+  },
   "tags": [
     {
       "name": "Health",

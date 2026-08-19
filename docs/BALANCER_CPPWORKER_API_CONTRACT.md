@@ -29,6 +29,42 @@ The contract is identified by a semantic version `MAJOR.MINOR.PATCH` (e.g. `1.4.
 | 1.4.0 | 2026-08-17 | Initial formal contract (Round 36, Phase 1) |
 | pre-1.4 | 2026-08-13 | Ad-hoc contract via 35+ rounds of bugfixes |
 
+### 0.5 Per-Backend API Style (R50)
+
+When a backend is registered with the balancer (via `config.json` or `/api/v1/backends/register`), the operator selects the API style the backend will speak:
+
+```json
+{
+  "id": "cppworker-gpu-bundled",
+  "type": "llama_cpp",              // engine type (informational)
+  "api_style": "ollama-native",     // ← R51+ explicit; R50 inferred from type
+  "host": "cppworker-gpu",
+  "cppWorkerPort": 18092
+}
+```
+
+**Allowed `api_style` values:**
+
+| Value | Backend speaks | Client may speak | Translation required? |
+|-------|----------------|------------------|-----------------------|
+| `ollama-native` | `/api/*` (Ollama API) | `/api/*` (Ollama) | No (passthrough) |
+| `ollama-native` | `/api/*` (Ollama API) | `/v1/*` (OpenAI-compat) | YES — OpenAI→Ollama on request, reverse on response |
+| `openai-compatible` | `/v1/*` (OpenAI API) | `/v1/*` (OpenAI-compat) | No (passthrough) |
+| `openai-compatible` | `/v1/*` (OpenAI API) | `/api/*` (Ollama) | YES — Ollama→OpenAI on request, reverse on response |
+
+**R50 current behavior (inferred, not explicit):**
+- `type: "llama_cpp"` ⇒ `api_style: openai-compatible` → routed to `llamacpp_router.go` → `/v1/*` paths
+- `type: "ollama"` ⇒ `api_style: ollama-native` → routed to `ollama_router.go` → `/api/*` paths
+
+**R51+ plan:** add explicit `api_style` field to `Backend` struct. Routing layer chooses router by `api_style`, not by inferred `type`. See [docs/superpowers/specs/2026-08-19-balancer-api-routing-design.md](../superpowers/specs/2026-08-19-balancer-api-routing-design.md) §2 for the model and §8 for the phased migration plan.
+
+**Translation contract:**
+- Ollama→OpenAI request conversion: maps `Ollama ChatRequest` fields to `OpenAI ChatRequest` (model, messages, options → messages, max_tokens, temperature, etc.)
+- OpenAI→Ollama request conversion: reverse
+- Response conversion: maps streaming/non-streaming response format, preserving `finish_reason` semantics
+
+The translation layer is in `internal/balancer/llamacpp_translate_req.go` and `llamacpp_translate_resp.go`. Currently it converts only when client uses `/v1/*` and backend uses Ollama-native; the reverse (Ollama client → OpenAI backend) is not yet implemented but the design supports it.
+
 ---
 
 ## 1. Streaming byte format (CRITICAL)

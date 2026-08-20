@@ -250,8 +250,18 @@ func (s *Server) listBackends(w http.ResponseWriter, r *http.Request) {
 			}
 
 			// === Шаг «отображение загрузки в мониторе и вкладке бэкендов» ===
-			// Если бэкенд — llama_cpp, передаём loadingModels напрямую из LlamaCppMetrics
-			// (UI использует это для отображения спиннера и elapsed-времени).
+			// Если бэкенд — llama_cpp, передаём loadingModels и loadedModels напрямую
+			// из LlamaCppMetrics (UI использует это для отображения спиннера и
+			// elapsed-времени loading, а loadedModels — для отображения текущего
+			// состояния загруженных моделей в WebUI/Monitor).
+			//
+			// Round 51.6.1 (2026-08-20): добавлен loadedModels + loadedModelCount.
+			// До этого фикса API возвращал ТОЛЬКО loadingModels, и UI никогда
+			// не видел загруженные модели (хотя callback UpdateLlamaCppModelLoaded
+			// обновлял lm.LoadedModels в памяти при успешной загрузке).
+			// Симптом для пользователя: "гонка за отображение состояния загруженной
+			// модели — информация не обновляется даже через 30s polling".
+			// Реальная причина: loadedModels в response отсутствовало.
 			if backend.Type == types.BackendTypeLlamaCpp {
 				if lm := s.proxy.GetMetricsManager().GetLlamaCppMetrics(backend.ID); lm != nil {
 					loading := lm.LoadingModels
@@ -260,9 +270,18 @@ func (s *Server) listBackends(w http.ResponseWriter, r *http.Request) {
 					}
 					backendData["loadingModels"] = loading
 					backendData["loadingModelCount"] = len(loading)
+
+					loaded := lm.LoadedModels
+					if loaded == nil {
+						loaded = []types.LlamaCppModel{}
+					}
+					backendData["loadedModels"] = loaded
+					backendData["loadedModelCount"] = len(loaded)
 				} else {
 					backendData["loadingModels"] = []types.LlamaCppModel{}
 					backendData["loadingModelCount"] = 0
+					backendData["loadedModels"] = []types.LlamaCppModel{}
+					backendData["loadedModelCount"] = 0
 				}
 			}
 

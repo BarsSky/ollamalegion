@@ -473,11 +473,14 @@ func (p *Proxy) proxyRequestLlamaCppNonStream(w http.ResponseWriter, r *http.Req
 		}
 		var ollamaBody []byte
 		if originalPath == "/api/generate" {
+			// Round 51.3 (2026-08-20): done:true для ЛЮБОГО непустого finish_reason.
+			// Раньше done:true только для "stop" и "tool_calls" → Cline (ollama npm)
+			// валился с "Did not receive done or success response" для finish_reason="length".
 			resp := map[string]interface{}{
 				"model":       modelName,
 				"created_at":  time.Now().UTC().Format(time.RFC3339),
 				"response":    fullContent,
-				"done":        finishReason == "stop" || finishReason == "tool_calls",
+				"done":        finishReason != "",
 				"done_reason": finishReason,
 			}
 			// 2026-07-01: для reasoning-моделей (qwen3.5/qwen3.6/deepseek-r1/gemma-4) добавляем
@@ -514,10 +517,12 @@ func (p *Proxy) proxyRequestLlamaCppNonStream(w http.ResponseWriter, r *http.Req
 				}
 				msgMap["tool_calls"] = toolCallsArr
 			}
+			// Round 51.3 (2026-08-20): done:true для ЛЮБОГО непустого finish_reason.
+			// См. комментарий выше для /api/generate — та же логика для /api/chat.
 			resp := map[string]interface{}{
 				"model":       modelName,
 				"created_at":  time.Now().UTC().Format(time.RFC3339),
-				"done":        finishReason == "stop" || finishReason == "tool_calls",
+				"done":        finishReason != "",
 				"done_reason": finishReason,
 				"message":     msgMap,
 			}

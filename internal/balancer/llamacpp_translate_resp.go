@@ -367,8 +367,13 @@ func translateOpenAIChatToOllama(body []byte, modelName string) ([]byte, error) 
 				}
 			}
 			ollamaResp["message"] = msgMap
+			// Round 51.3 (2026-08-20): any non-empty finish_reason means done (non-stream path).
+			// Раньше done:true ставился только для "stop" и "tool_calls" → клиенты
+			// (Cline/ollama npm) валились с "Did not receive done or success response"
+			// когда backend возвращал finish_reason="length" (max_tokens hit) или "".
+			// Корректная семантика Ollama: done:true независимо от причины остановки.
 			if finishReason, ok := choice["finish_reason"].(string); ok {
-				ollamaResp["done"] = finishReason == "stop" || finishReason == "tool_calls"
+				ollamaResp["done"] = true
 				ollamaResp["done_reason"] = finishReason
 			}
 		}
@@ -413,8 +418,11 @@ func translateOpenAICompletionToOllama(body []byte, modelName string) ([]byte, e
 		if text, ok := choice["text"].(string); ok {
 			ollamaResp["response"] = text
 		}
+		// Round 51.3 (2026-08-20): any non-empty finish_reason means done.
+		// Раньше done:true только для "stop" → Cline валился с "Did not receive done
+		// or success response" для finish_reason="length" (max_tokens hit).
 		if finishReason, ok := choice["finish_reason"].(string); ok {
-			ollamaResp["done"] = finishReason == "stop"
+			ollamaResp["done"] = true
 			ollamaResp["done_reason"] = finishReason
 		}
 	}
@@ -671,8 +679,16 @@ func translateSSEChatToOllama(chunk map[string]interface{}, modelName string, se
 				}
 			}
 		}
+		// Round 51.3 (2026-08-20): любой непустой finish_reason означает конец стрима,
+		// не только "stop" и "tool_calls". Cline (через ollama npm package / langchain)
+		// валит с "Did not receive done or success response in stream" если в финальном
+		// чанке done=false, что случалось для finish_reason="length" (max_tokens hit),
+		// "" (пустая строка) или "content_filter".
+		//
+		// Корректная семантика Ollama: done:true ставится на ПОСЛЕДНЕМ чанке независимо
+		// от причины остановки; done_reason отражает причину.
 		if finishReason, ok := choice["finish_reason"].(string); ok && finishReason != "" {
-			ollamaChunk["done"] = finishReason == "stop" || finishReason == "tool_calls"
+			ollamaChunk["done"] = true
 			ollamaChunk["done_reason"] = finishReason
 		}
 	}

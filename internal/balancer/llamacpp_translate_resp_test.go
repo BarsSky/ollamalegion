@@ -242,6 +242,165 @@ func TestTranslateSSEChatToOllama_DONE(t *testing.T) {
 }
 
 // ============================================================
+// Round 51.3 (2026-08-20): regression tests for finish_reason
+// handling. Cline (через ollama npm / langchain) валит с
+// "Did not receive done or success response in stream" если
+// финальный чанк имеет done=false. Прежний код ставил done:true
+// только для finish_reason="stop" или "tool_calls" — для
+// "length" (max_tokens hit) или "" (пустая) done оставался false.
+// ============================================================
+
+// TestTranslateSSEChatToOllama_FinishReasonLength — finish_reason="length"
+// в streaming /api/chat → done:true. Cline path.
+func TestTranslateSSEChatToOllama_FinishReasonLength(t *testing.T) {
+	sseChunk := map[string]interface{}{
+		"id":      "chatcmpl-length",
+		"object":  "chat.completion.chunk",
+		"created": 1234567890,
+		"model":   "test-model",
+		"choices": []map[string]interface{}{
+			{
+				"index":         0,
+				"delta":         map[string]interface{}{},
+				"finish_reason": "length",
+			},
+		},
+	}
+	sseData, _ := json.Marshal(sseChunk)
+	result := translateOpenAISSEDataToOllama("/api/chat", sseData, "test-model", nil, time.Time{})
+	if result == nil {
+		t.Fatal("expected non-nil result for finish_reason=length chunk")
+	}
+	var ollamaChunk map[string]interface{}
+	json.Unmarshal(result, &ollamaChunk)
+	if done, ok := ollamaChunk["done"].(bool); !ok || !done {
+		t.Errorf("expected done=true for finish_reason=length, got done=%v (ok=%v) — Cline will throw 'Did not receive done'",
+			ollamaChunk["done"], ok)
+	}
+	if ollamaChunk["done_reason"] != "length" {
+		t.Errorf("expected done_reason='length', got '%v'", ollamaChunk["done_reason"])
+	}
+}
+
+// TestTranslateSSEChatToOllama_FinishReasonContentFilter — finish_reason="content_filter"
+// → done:true (Cline/ollama npm).
+func TestTranslateSSEChatToOllama_FinishReasonContentFilter(t *testing.T) {
+	sseChunk := map[string]interface{}{
+		"id":      "chatcmpl-cf",
+		"object":  "chat.completion.chunk",
+		"created": 1234567890,
+		"model":   "test-model",
+		"choices": []map[string]interface{}{
+			{
+				"index":         0,
+				"delta":         map[string]interface{}{},
+				"finish_reason": "content_filter",
+			},
+		},
+	}
+	sseData, _ := json.Marshal(sseChunk)
+	result := translateOpenAISSEDataToOllama("/api/chat", sseData, "test-model", nil, time.Time{})
+	if result == nil {
+		t.Fatal("expected non-nil result for finish_reason=content_filter chunk")
+	}
+	var ollamaChunk map[string]interface{}
+	json.Unmarshal(result, &ollamaChunk)
+	if done, ok := ollamaChunk["done"].(bool); !ok || !done {
+		t.Errorf("expected done=true for finish_reason=content_filter, got %v", ollamaChunk["done"])
+	}
+}
+
+// TestTranslateSSEChatToOllama_FinishReasonNull — in-progress chunk (no finish_reason yet)
+// → done:false. Sanity check that fix didn't break in-progress case.
+func TestTranslateSSEChatToOllama_FinishReasonNull(t *testing.T) {
+	sseChunk := map[string]interface{}{
+		"id":      "chatcmpl-progress",
+		"object":  "chat.completion.chunk",
+		"created": 1234567890,
+		"model":   "test-model",
+		"choices": []map[string]interface{}{
+			{
+				"index":         0,
+				"delta":         map[string]interface{}{"content": "tok"},
+				"finish_reason": nil,
+			},
+		},
+	}
+	sseData, _ := json.Marshal(sseChunk)
+	result := translateOpenAISSEDataToOllama("/api/chat", sseData, "test-model", nil, time.Time{})
+	if result == nil {
+		t.Fatal("expected non-nil result for in-progress chunk")
+	}
+	var ollamaChunk map[string]interface{}
+	json.Unmarshal(result, &ollamaChunk)
+	if done, ok := ollamaChunk["done"].(bool); !ok || done {
+		t.Errorf("expected done=false for in-progress chunk (finish_reason=null), got %v", ollamaChunk["done"])
+	}
+}
+
+// TestTranslateOpenAIChatToOllama_FinishReasonLength — non-streaming /api/chat
+// translation: finish_reason="length" → done:true.
+func TestTranslateOpenAIChatToOllama_FinishReasonLength(t *testing.T) {
+	resp := map[string]interface{}{
+		"id":      "chatcmpl-length",
+		"object":  "chat.completion",
+		"created": 1234567890,
+		"model":   "test-model",
+		"choices": []map[string]interface{}{
+			{
+				"index": 0,
+				"message": map[string]interface{}{
+					"role":    "assistant",
+					"content": "truncated...",
+				},
+				"finish_reason": "length",
+			},
+		},
+	}
+	body, _ := json.Marshal(resp)
+	result, err := translateOpenAIChatToOllama(body, "test-model")
+	if err != nil {
+		t.Fatalf("translateOpenAIChatToOllama: %v", err)
+	}
+	var ollamaResp map[string]interface{}
+	json.Unmarshal(result, &ollamaResp)
+	if done, ok := ollamaResp["done"].(bool); !ok || !done {
+		t.Errorf("expected done=true for finish_reason=length, got %v — Cline will throw", ollamaResp["done"])
+	}
+	if ollamaResp["done_reason"] != "length" {
+		t.Errorf("expected done_reason='length', got '%v'", ollamaResp["done_reason"])
+	}
+}
+
+// TestTranslateOpenAICompletionToOllama_FinishReasonLength — non-streaming /v1/completions
+// translation: finish_reason="length" → done:true.
+func TestTranslateOpenAICompletionToOllama_FinishReasonLength(t *testing.T) {
+	resp := map[string]interface{}{
+		"id":      "cmpl-length",
+		"object":  "text_completion",
+		"created": 1234567890,
+		"model":   "test-model",
+		"choices": []map[string]interface{}{
+			{
+				"index":         0,
+				"text":          "truncated...",
+				"finish_reason": "length",
+			},
+		},
+	}
+	body, _ := json.Marshal(resp)
+	result, err := translateOpenAICompletionToOllama(body, "test-model")
+	if err != nil {
+		t.Fatalf("translateOpenAICompletionToOllama: %v", err)
+	}
+	var ollamaResp map[string]interface{}
+	json.Unmarshal(result, &ollamaResp)
+	if done, ok := ollamaResp["done"].(bool); !ok || !done {
+		t.Errorf("expected done=true for finish_reason=length, got %v", ollamaResp["done"])
+	}
+}
+
+// ============================================================
 // Test: translateOllamaChatToOpenAI with tools
 // ============================================================
 

@@ -697,7 +697,7 @@ const GgufRenderer = (window.GgufRenderer = (function () {
         return '' +
             '<div class="gguf-search-form">' +
                 '<div class="gguf-search-row">' +
-                    '<input type="text" id="ggufHfDetailSearch" class="form-control gguf-search-input" value="' + Utils.escapeHtml(state.hfSearchQuery) + '" placeholder="' + _('gguf.search_placeholder') + '">' +
+                    '<input type="text" id="ggufHfDetailSearch" data-focus-key="hf-search" class="form-control gguf-search-input" value="' + Utils.escapeHtml(state.hfSearchQuery) + '" placeholder="' + _('gguf.search_placeholder') + '">' +
                     '<button class="btn btn-primary" id="ggufHfDetailSearchBtn">' + _('gguf.search_btn') + '</button>' +
                 '</div>' +
             '</div>' +
@@ -1995,13 +1995,29 @@ const GgufRenderer = (window.GgufRenderer = (function () {
         if (!confirm(_('gguf.confirm_unload') || 'Unload this model from memory?')) return;
         GgufApi.manageModel(backend.id, 'unload', handle).then(function (data) {
             if (data && data.success === false) {
-                showToast(_('gguf.unload_error') + ': ' + (data.error || 'unknown'), 'error');
+                // Round 51.6 (2026-08-20): handle 409 Conflict от cppworker.
+                // Если модель занята active inference requests — показываем
+                // конкретное сообщение с hint (use ?force=true) вместо generic
+                // "Failed to unload model". Без этого пользователь не знает
+                // что retry с force=true или ожидание может помочь.
+                var errMsg = data.error || 'unknown';
+                var hint = data.hint || '';
+                var toastMsg = hint
+                    ? _('gguf.unload_busy') + ' ' + hint
+                    : _('gguf.unload_error') + ': ' + errMsg;
+                showToast(toastMsg, 'error', 8000);  // longer timeout для busy
                 return;
             }
             showToast(_('gguf.unload_success'), 'success');
             refreshDetail();
         }).catch(function (err) {
-            showToast(_('gguf.unload_error') + ': ' + err.message, 'error');
+            // 409 Conflict от cppworker (с 4xx status) — body содержит hint
+            var msg = err.message;
+            if (msg && msg.indexOf('busy') >= 0) {
+                showToast(_('gguf.unload_busy'), 'error', 8000);
+            } else {
+                showToast(_('gguf.unload_error') + ': ' + msg, 'error');
+            }
         });
     }
 
@@ -2010,7 +2026,22 @@ const GgufRenderer = (window.GgufRenderer = (function () {
         if (!backend) return;
         var name = model.name || model.filename || model.path || '';
         if (!name) return;
-        if (!confirm(_('gguf.confirm_delete'))) return;
+        // Round 51.6 (2026-08-20): delete safety — require typing exact model
+        // name (не просто click confirm). До этого fix'а случайный клик
+        // "OK" в confirm() удалял файл с диска безвозвратно (R51.4 user report:
+        // модель gemma-4-E4B-it-Q4_K_M была удалена одним click'ом, потому
+        // что confirm text был generic "Delete this model file from disk?").
+        //
+        // Теперь: показываем prompt с model name + size, требуем exact match.
+        // Случайный click на "Cancel" или неправильный ввод = безопасный отказ.
+        var sizeMB = model.sizeBytes ? ' (' + (model.sizeBytes / (1024*1024)).toFixed(1) + ' MB)' : '';
+        var promptText = (_('gguf.confirm_delete_typed') || 'To permanently delete "{name}"{size} from disk, type the model name exactly:').replace('{name}', name).replace('{size}', sizeMB);
+        var typed = window.prompt(promptText, '');
+        if (typed === null) return;  // cancelled
+        if (typed.trim() !== name) {
+            showToast((_('gguf.delete_typed_mismatch') || 'Typed name does not match — delete cancelled for safety.') + ' (expected: ' + name + ')', 'error', 6000);
+            return;
+        }
         GgufApi.deleteModelViaBackend(backend.id, name).then(function () {
             showToast(_('gguf.delete_success'), 'success');
             refreshDetail();
@@ -2525,7 +2556,16 @@ const GgufRenderer = (window.GgufRenderer = (function () {
 
     /**
      * Запустить polling /api/models/active-queries для текущего выбранного бэкенда.
-     * Polling каждые 3 секунды. Авто-cleanup при смене бэкенда.
+     * Polling каждые 3 секунды в idle, 1 секунда при active inference.
+     * Авто-cleanup при смене бэкенда.
+     *
+     * Round 51.6 (2026-08-20): adaptive interval — пользователь жаловался
+     * "гонка за отображение состояния загруженной модели в бэкенде,
+     * информация обновляется долго (особенно если модель производит генерацию)".
+     * Причина была в фиксированном 3s polling: во время inference UI показывал
+     * stale state (busy badge появлялся с задержкой до 3s). Теперь: если
+     * хотя бы одна модель имеет active_queries > 0, опрашиваем каждые 1s.
+     * Когда все модели idle — возвращаемся к 3s (экономим трафик).
      */
     function startActiveQueriesPolling() {
         // Очищаем предыдущий таймер, если был
@@ -2533,6 +2573,29 @@ const GgufRenderer = (window.GgufRenderer = (function () {
         const backend = currentBackend();
         if (!backend) return;
         if (!window.Api || !window.Api.cppworkerActiveQueries) return;
+
+        const FAST_INTERVAL_MS = 1000;  // active generation
+        const SLOW_INTERVAL_MS = 3000;  // idle
+
+        // Текущий режим (отслеживаем чтобы не сбрасывать таймер на каждом tick)
+        let currentMode = null;  // 'fast' | 'slow'
+
+        const scheduleNext = function () {
+            // Выбираем интервал исходя из текущего state (ДО следующего tick)
+            const hasActive = Object.values(state.activeQueries || {})
+                .some(function (n) { return n > 0; });
+            const wantMode = hasActive ? 'fast' : 'slow';
+            if (wantMode !== currentMode) {
+                currentMode = wantMode;
+                if (state._activeQueriesTimer) {
+                    clearTimeout(state._activeQueriesTimer);
+                }
+                state._activeQueriesTimer = setTimeout(function tick() {
+                    tick();
+                    scheduleNext();
+                }, wantMode === 'fast' ? FAST_INTERVAL_MS : SLOW_INTERVAL_MS);
+            }
+        };
 
         const tick = function () {
             // Polling всех загруженных моделей параллельно
@@ -2562,9 +2625,13 @@ const GgufRenderer = (window.GgufRenderer = (function () {
             });
         };
 
-        // Первый tick сразу, потом каждые 3s
+        // Первый tick сразу, потом адаптивно
         tick();
-        state._activeQueriesTimer = setInterval(tick, 3000);
+        currentMode = 'slow';  // начальное состояние
+        state._activeQueriesTimer = setTimeout(function tick() {
+            tick();
+            scheduleNext();
+        }, SLOW_INTERVAL_MS);
 
         // Round 32 #2 (2026-08-10): expose tick через state для cross-tab sync.
         // refreshActiveQueriesPolling (в public API ниже) вызывает tick()
@@ -2621,7 +2688,48 @@ const GgufRenderer = (window.GgufRenderer = (function () {
     function refreshDetailPane() {
         var content = document.querySelector('#ggufDetailPanel .gguf-detail-content');
         if (!content) return;
+
+        // Round 51.6 (2026-08-20): focus preservation при polling-refresh.
+        // До этого fix'а каждые 3с (startActiveQueriesPolling tick) пересоздавался
+        // весь .gguf-detail-content, что теряло focus + cursor position на
+        // input полях (особенно болезненно для HF search input где пользователь
+        // набирает запрос — каждое нажатие клавиши могло быть потеряно).
+        //
+        // Сохраняем state: (1) id сфокусированного элемента, (2) selectionStart/End
+        // для input/textarea, (3) scrollTop контейнера. После innerHTML=
+        // восстанавливаем focus + cursor position.
+        var active = document.activeElement;
+        var focusKey = null;
+        var selStart = 0, selEnd = 0;
+        var scrollTop = content.scrollTop;
+        if (active && content.contains(active)) {
+            // Используем data-focus-key если есть (мы добавим в рендере),
+            // иначе fallback на id.
+            focusKey = active.getAttribute('data-focus-key') || active.id || null;
+            if (focusKey && (active.tagName === 'INPUT' || active.tagName === 'TEXTAREA')) {
+                try {
+                    selStart = active.selectionStart || 0;
+                    selEnd = active.selectionEnd || 0;
+                } catch (e) { /* не все input поддерживают selectionStart */ }
+            }
+        }
+
         content.innerHTML = renderDetailPane();
+
+        // Восстанавливаем focus + cursor position
+        if (focusKey) {
+            var sel = '[data-focus-key="' + focusKey + '"]';
+            var target = content.querySelector(sel) || (focusKey.indexOf('-') < 0 ? content.querySelector('#' + focusKey) : null);
+            if (target) {
+                try {
+                    target.focus({ preventScroll: true });
+                    if ((target.tagName === 'INPUT' || target.tagName === 'TEXTAREA') && typeof target.setSelectionRange === 'function') {
+                        target.setSelectionRange(selStart, selEnd);
+                    }
+                } catch (e) { /* fail silent */ }
+            }
+        }
+        content.scrollTop = scrollTop;
         // Round 15 (2026-07-29): обновляем класс .active на кнопках вкладок —
         // без этого после клика на таб контент переключался, но визуальный
         // highlight оставался на ПРЕДЫДУЩЕЙ вкладке (пользователь видел

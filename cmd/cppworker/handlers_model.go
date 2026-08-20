@@ -858,7 +858,56 @@ func handleUnloadModel(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "name query parameter is required")
 		return
 	}
-	logger.Get().Infow("unloading model", "name", name)
+
+	// Round 51.6 (2026-08-20): safety check — refuse unload если есть активные
+	// inference-запросы (use-after-free в C-bridge: in-flight generate вызов
+	// продолжает использовать handle который UnloadModel уже освободил).
+	//
+	// Без этого check (предыдущее поведение) unload посреди генерации мог
+	// вызвать:
+	//   - crash в C-bridge (SIGABRT) — handle double-free
+	//   - 502 connection refused для клиента посреди SSE стрима
+	//   - WebUI показывал "успешная выгрузка" хотя клиент получил EOF
+	//
+	// Теперь возвращаем 409 Conflict с деталями, либо принимаем ?force=true
+	// override (логируется как WARN для последующего postmortem).
+	force := r.URL.Query().Get("force") == "true"
+	if !force {
+		if inflight := backend.InFlight(); inflight != nil {
+			if n := inflight.Get(name); n > 0 {
+				// Собираем детали активных запросов для user_id list
+				var userIDs []string
+				if gen := backend.ActiveGenerations(); gen != nil {
+					for _, e := range gen.Snapshot() {
+						if e.Model == name {
+							userIDs = append(userIDs, e.UserID)
+						}
+					}
+				}
+				logger.Get().Warnw("unload refused: model has active requests",
+					"name", name, "active_queries", n, "user_ids", userIDs)
+				writeJSON(w, http.StatusConflict, map[string]interface{}{
+					"error":          "model is busy with active inference requests",
+					"name":           name,
+					"active_queries": n,
+					"user_ids":       userIDs,
+					"hint":           "wait for in-flight requests to complete, or retry with ?force=true to cancel them (will disconnect active clients)",
+				})
+				return
+			}
+		}
+	} else {
+		// force=true: отменяем все активные генерации для этой модели
+		if gen := backend.ActiveGenerations(); gen != nil {
+			cancelled := gen.CancelByModel("", name)
+			if cancelled > 0 {
+				logger.Get().Warnw("unload force=true: cancelled active generations",
+					"name", name, "cancelled", cancelled)
+			}
+		}
+	}
+
+	logger.Get().Infow("unloading model", "name", name, "force", force)
 	if err := backend.UnloadModel(name); err != nil {
 		writeError(w, http.StatusNotFound, err.Error())
 		return
@@ -996,6 +1045,13 @@ func handleListModels(w http.ResponseWriter, r *http.Request) {
 			"loaded_at":           m.LoadedAt,
 			"gpu_count":           m.GPUCount,
 			"kv_cache_type":       m.KVCacheType,
+		}
+		// Round 51.6 (2026-08-20): per-model active_queries counter. WebUI
+		// показывает "Generating N requests" badge чтобы оператор не выгружал
+		// модель посреди inference (R51.6: handleUnloadModel теперь возвращает
+		// 409 если active_queries > 0, см. handleUnloadModel).
+		if inflight := backend.InFlight(); inflight != nil {
+			entry["active_queries"] = inflight.Get(m.Name)
 		}
 		if fa, ok := perModelFeasible[m.Name]; ok {
 			entry["gguf_max_context"] = fa.ggufMax

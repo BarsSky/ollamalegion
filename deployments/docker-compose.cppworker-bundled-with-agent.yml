@@ -7,13 +7,25 @@
 # балансере как отдельный backend с id "cppworker-gpu-bundled-agent"
 # (hasAgent=true) — чтобы WebUI показывал реальные метрики на странице GGUF.
 #
-# Использование:
+# Использование (Round 51.6, 2026-08-20):
 #   cd deployments
 #   cp .env.bundled-with-agent.example .env.bundled-with-agent
 #   # отредактируйте .env.bundled-with-agent: выставьте CPPWORKER_API_TOKEN
 #   # (тот же, что и в bundled-сборке) и остальные параметры.
-#   docker compose -f docker-compose.cppworker-bundled-with-agent.yml \
-#     --env-file .env.bundled-with-agent up -d --build
+#   docker compose -f docker-compose.cppworker-bundled-with-agent.yml up -d --build
+#
+# ⚠️ Round 51.6: ВСЕ сервисы используют `env_file: .env.bundled-with-agent`.
+# Это АВТОМАТИЧЕСКИ загружает .env.bundled-with-agent в контейнеры — флаг
+# `--env-file` БОЛЬШЕ НЕ НУЖЕН. До R51.6 docker compose auto-loads только
+# `.env` (без суффикса), и если в нём нет `CPPWORKER_API_TOKEN` — WebUI
+# получал HTTP 401 от балансера (env-значения в контейнерах расходились).
+# Теперь: даже если `.env` содержит старые/чужие значения, .env.bundled-with-agent
+# переопределяет их на уровне контейнера через env_file (приоритет env_file
+# > .env в compose >= 2.24).
+#
+# ⚠️ Если .env.bundled-with-agent НЕ существует — `docker compose up` упадёт
+# с понятной ошибкой ("env_file: .env.bundled-with-agent not found").
+# Скопируйте его из примера (см. выше).
 #
 # Проверка:
 #   curl -H "X-API-Token: $CPPWORKER_API_TOKEN" http://localhost:18081/api/v1/backends
@@ -79,6 +91,12 @@ services:
       - LB_NCTX_PREFLIGHT_MAX_WAIT_SEC=${LB_NCTX_PREFLIGHT_MAX_WAIT_SEC:-900}
       - LB_NCTX_PREFLIGHT_WAIT_MULTIPLIER=${LB_NCTX_PREFLIGHT_WAIT_MULTIPLIER:-2}
       - LB_NCTX_PREFLIGHT_WAIT_BUFFER_SEC=${LB_NCTX_PREFLIGHT_WAIT_BUFFER_SEC:-60}
+    # Round 51.6 (2026-08-20): env_file — auto-loads .env.bundled-with-agent
+    # в контейнер. Раньше приходилось передавать --env-file явно, и при
+    # свежем деплое docker compose подхватывал старый .env (без
+    # CPPWORKER_API_TOKEN) → 401 от балансера.
+    env_file:
+      - .env.bundled-with-agent
     volumes:
       - ../config:/app/config:ro
       - balancer_data:/app/data
@@ -156,6 +174,9 @@ services:
       - CPPWORKER_REGISTER_DISABLE=false
       - HF_AUTO_DOWNLOAD_REPO=
       - HF_AUTO_DOWNLOAD_FILE=
+    # Round 51.6: env_file — auto-loads .env.bundled-with-agent.
+    env_file:
+      - .env.bundled-with-agent
     volumes:
       - ../models:/app/models:rw
       - ../config:/app/config:rw
@@ -245,6 +266,9 @@ services:
       - AGENT_BACKEND_ID=cppworker-gpu-bundled-agent
       - AGENT_CPPWORKER_PORT=18092
       - AGENT_REGISTER_GPU_MODE=gpu
+    # Round 51.6: env_file — auto-loads .env.bundled-with-agent.
+    env_file:
+      - .env.bundled-with-agent
     networks:
       - ol-bundled-net
     healthcheck:
@@ -285,6 +309,14 @@ services:
       # шлёт X-API-Token: "" → cppworker возвращает 401 на per-backend save
       # (config update). Используем тот же токен что у cppworker и balancer.
       - API_TOKEN=${CPPWORKER_API_TOKEN:-changeme-bundled-with-agent-token}
+    # Round 51.6: env_file — auto-loads .env.bundled-with-agent. Без этого
+    # на свежем деплое WebUI получает 401 от балансера, потому что
+    # .env (auto-loaded) не содержит CPPWORKER_API_TOKEN, и все падают
+    # на дефолт `changeme-bundled-with-agent-token`. Если пользователь
+    # сменил токен в .env.bundled-with-agent — старый путь без --env-file
+    # приводил к расхождению токенов и 401.
+    env_file:
+      - .env.bundled-with-agent
     networks:
       - ol-bundled-net
     depends_on:

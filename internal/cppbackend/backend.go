@@ -1456,6 +1456,47 @@ func (b *Backend) CalculateResourceLimits(name string) ResourceLimits {
 	return limits
 }
 
+// InjectLoadedModelForTest — test helper, помечает model как loaded
+// в in-memory map без реальной C-bridge загрузки. Используется в
+// handlers_unload_safety_test.go для тестирования inflight safety check
+// без необходимости загружать реальную GGUF.
+//
+// Round 51.6 (2026-08-20): добавлен для тестов R51.6 (handleUnloadModel
+// safety). Вызывает handle.FreeModel() в init — но handle == nil (мы
+// создаём modelInstance вручную, без C-bridge), см. обёртку.
+func (b *Backend) InjectLoadedModelForTest(name string) error {
+	if b == nil {
+		return fmt.Errorf("nil backend")
+	}
+	if name == "" {
+		return fmt.Errorf("empty name")
+	}
+	// Инициализируем счётчики если не были
+	if b.inFlight == nil {
+		b.inFlight = NewInFlightCounter()
+	}
+	if b.activeGenerations == nil {
+		b.activeGenerations = NewActiveGenerations()
+	}
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if _, exists := b.models[name]; exists {
+		return fmt.Errorf("model %s already injected", name)
+	}
+	// modelInstance.handle = nil — это ОК потому что UnloadModel() проверяет
+	// `if inst.handle != nil` перед FreeModel() (backend.go:1506-1509).
+	b.models[name] = &modelInstance{
+		info: ModelInfo{
+			Name:        name,
+			Path:        "/test/" + name,
+			State:       StateLoaded,
+			ContextSize: 4096,
+		},
+		handle: nil,
+	}
+	return nil
+}
+
 // UnloadModel выгружает модель
 func (b *Backend) UnloadModel(name string) error {
 	b.mu.Lock()

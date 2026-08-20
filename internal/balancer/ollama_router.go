@@ -255,19 +255,7 @@ func (or *OllamaRouter) proxyHTTP(r *http.Request, backendID string) (*http.Resp
 	return client.Do(req)
 }
 
-func copyResponse(w http.ResponseWriter, resp *http.Response) {
-	defer resp.Body.Close()
-	for key, values := range resp.Header {
-		for _, value := range values {
-			w.Header().Add(key, value)
-		}
-	}
-	w.WriteHeader(resp.StatusCode)
-	io.Copy(w, resp.Body)
-}
-
-func writeJSON(w http.ResponseWriter, status int, data interface{}) {
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(status)
-	json.NewEncoder(w).Encode(data)
-}
+// NOTE: writeJSON and copyResponse moved to proxy_helpers.go in R51.1.
+// This file used to define them (lines 258-273 of R48) but the placement
+// was fragile — R49 audit tried to remove them as "dead code" and broke
+// the build. See docs/superpowers/specs/2026-08-19-balancer-api-routing-design.md §4.1.

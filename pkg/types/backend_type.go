@@ -17,6 +17,60 @@ const (
 	EngineAuto      BackendEngine = "auto"       // автоопределение
 )
 
+// APIStyle — API-стиль, который бэкенд говорит с балансером.
+// Round 51.2 (2026-08-20): явное поле в Backend struct (вместо inference по Type).
+// Когда явно не задан, EffectiveAPIStyle() выводит из Type:
+//   - BackendTypeOllama   → APIStyleOllamaNative
+//   - BackendTypeLlamaCpp → APIStyleOpenAICompatible (сохраняем R50 поведение)
+type APIStyle string
+
+const (
+	// APIStyleOllamaNative — бэкенд говорит нативный Ollama API (/api/*).
+	APIStyleOllamaNative APIStyle = "ollama-native"
+
+	// APIStyleOpenAICompatible — бэкенд говорит OpenAI-совместимый API (/v1/*).
+	APIStyleOpenAICompatible APIStyle = "openai-compatible"
+)
+
+// IsValidAPIStyle — true, если стиль известен балансеру (ollama-native или openai-compatible).
+// Прочие значения (включая пустую строку) считаются невалидными — caller должен
+// использовать EffectiveAPIStyle() для fallback на вывод по Type.
+func (s APIStyle) IsValidAPIStyle() bool {
+	switch s {
+	case APIStyleOllamaNative, APIStyleOpenAICompatible:
+		return true
+	default:
+		return false
+	}
+}
+
+// EffectiveAPIStyle — возвращает API-стиль, который бэкенд фактически будет говорить.
+//
+// Приоритет:
+//  1. Если Backend.ApiStyle валиден (ollama-native / openai-compatible) —
+//     возвращает его. Это явный выбор оператора при регистрации.
+//  2. Иначе выводит из Backend.Type:
+//     - BackendTypeLlamaCpp → APIStyleOpenAICompatible (R50 поведение, маршрут через llamacpp_router.go → /v1/*)
+//     - BackendTypeOllama (или пусто) → APIStyleOllamaNative (безопасный default: balancer is Ollama-first)
+//
+// Round 51.2 (2026-08-20): новая логика для R51.2. R50 вывод по Type (Type→Style) жёстко
+// зашит в proxy_request.go:isLlamaCppBackend. R51.3+ — миграция роутинга на EffectiveAPIStyle().
+//
+// Безопасен при nil-получателе: возвращает APIStyleOllamaNative (default).
+func (b *Backend) EffectiveAPIStyle() APIStyle {
+	if b == nil {
+		return APIStyleOllamaNative
+	}
+	if b.ApiStyle.IsValidAPIStyle() {
+		return b.ApiStyle
+	}
+	// Fallback: inference from Type (сохраняет R50 поведение по умолчанию).
+	if b.Type == BackendTypeLlamaCpp {
+		return APIStyleOpenAICompatible
+	}
+	return APIStyleOllamaNative
+}
+
 // LlamaCppConfig — конфигурация llama.cpp бэкенда
 type LlamaCppConfig struct {
 	GrpcPort            int       `json:"grpcPort"`

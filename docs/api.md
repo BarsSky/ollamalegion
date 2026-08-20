@@ -2156,21 +2156,21 @@ docker run -d -p 8080:8080 -e SWAGGER_JSON=/api/swagger.json \
 
 ---
 
-## Per-Backend API Style (R50)
+## Per-Backend API Style (R50 + R51.2)
 
-**Концепция:** При добавлении бэкенда в `config.json` (или через `/api/v1/backends/register`) пользователь выбирает, в каком API-стиле бэкенд будет работать с балансером:
+**Концепция:** При добавлении бэкенда в `config.json` (или через `/api/v1/backends` POST) пользователь выбирает, в каком API-стиле бэкенд будет работать с балансером:
 
 ```json
 {
   "id": "cppworker-gpu-bundled",
   "type": "llama_cpp",              // engine type
-  "api_style": "ollama-native",     // ← R51+ explicit, R50 inferred from type
+  "apiStyle": "ollama-native",      // ← R51.2 explicit (JSON-тег camelCase), R50 inferred from type
   "host": "cppworker-gpu",
   "cppWorkerPort": 18092
 }
 ```
 
-**Допустимые значения `api_style`:**
+**Допустимые значения `apiStyle`:**
 
 | Значение | Бэкенд общается через | Клиент может подключаться через | Translation |
 |----------|------------------------|----------------------------------|-------------|
@@ -2179,14 +2179,29 @@ docker run -d -p 8080:8080 -e SWAGGER_JSON=/api/swagger.json \
 | `openai-compatible` | `/v1/*` (OpenAI) | `/v1/*` (OpenAI) — passthrough | Нет |
 | `openai-compatible` | `/v1/*` (OpenAI) | `/api/*` (Ollama) — request/response | ДА — Ollama↔OpenAI конверсия |
 
-**R50 текущее поведение (inferred, не explicit):**
-- `type: "llama_cpp"` → `api_style: openai-compatible` (используется `llamacpp_router.go`)
-- `type: "ollama"` → `api_style: ollama-native` (используется `ollama_router.go`)
+**Поведение по умолчанию (R51.2):**
 
-**R51+ план:** добавить явное поле `api_style` в `Backend` struct, убрать привязку type→api_style. Это даст возможность:
-- Один engine type обслуживать в обоих API-стилях (два бэкенд-entry'и)
-- Гибкая translation между клиентом и бэкендом
-- Single source of truth для роутинга (по `api_style`, а не по URL prefix)
+- `apiStyle` не задан, `type: "llama_cpp"` → `EffectiveAPIStyle() = openai-compatible` (R50 поведение, маршрут через `llamacpp_router.go`)
+- `apiStyle` не задан, `type: "ollama"` → `EffectiveAPIStyle() = ollama-native` (R50 поведение, маршрут через `ollama_router.go`)
+- `apiStyle: "..."` (любой валидный) → `EffectiveAPIStyle() = apiStyle` (явный override)
+- `apiStyle` содержит невалидное значение → HTTP 400 от `/api/v1/backends` POST/PUT. Внутренний helper `EffectiveAPIStyle()` падает обратно на inference (для state.json resilience)
+
+**API contract (R51.2):**
+
+- `POST /api/v1/backends` принимает `apiStyle` в JSON-теле (camelCase, `omitempty`)
+- `PUT /api/v1/backends/{id}` принимает `apiStyle` (пустая строка = preserve existing)
+- `GET /api/v1/backends` возвращает оба: `apiStyle` (raw, оператор-установленный) и `effectiveApiStyle` (resolved)
+
+**Code locations:**
+
+- Type + constants: `pkg/types/backend_type.go:14-44`
+- Method: `(*Backend).EffectiveAPIStyle()` — `pkg/types/backend_type.go:69-87`
+- Field: `Backend.ApiStyle` — `pkg/types/backend.go:53-58`
+- Handlers: `internal/api/handlers_backends.go` — `addBackend`, `updateBackend`, `listBackends`
+- Tests: `pkg/types/backend_type_test.go` — 21 unit test cases
+- Example: `config/backends.example.json`
+
+**R51.3+ план:** миграция routing layer (`proxy_request.go:isLlamaCppBackend`) на `EffectiveAPIStyle()`. Добавляет Ollama-client → OpenAI-backend path (R52+).
 
 **Дизайн-документ:** [docs/superpowers/specs/2026-08-19-balancer-api-routing-design.md](superpowers/specs/2026-08-19-balancer-api-routing-design.md)
 

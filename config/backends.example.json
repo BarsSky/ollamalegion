@@ -7,16 +7,22 @@
     "agentPort": 18032,
     "weight": 1,
     "maxConcurrentRequests": 10,
-    "labels": ["nvidia", "rtx4090"]
+    "labels": ["nvidia", "rtx4090"],
+    "type": "ollama",
+    "engine": "ollama_api",
+    "apiStyle": "ollama-native"
   },
   {
-    "id": "gpu-2",
-    "name": "GPU Server 2",
+    "id": "cppworker-gpu",
+    "name": "llama.cpp GPU",
     "host": "192.0.2.70",
-    "ollamaPort": 11434,
+    "cppWorkerPort": 18092,
     "agentPort": 18032,
     "weight": 1,
     "maxConcurrentRequests": 10,
-    "labels": ["nvidia", "rtx4090"]
+    "labels": ["nvidia", "rtx4090", "llama.cpp"],
+    "type": "llama_cpp",
+    "engine": "llama_cpp",
+    "apiStyle": "openai-compatible"
   }
 ]

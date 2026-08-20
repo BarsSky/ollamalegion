@@ -1079,6 +1079,18 @@
           "status": {
             "$ref": "#/components/schemas/BackendStatus"
           },
+          "apiStyle": {
+            "type": "string",
+            "enum": ["ollama-native", "openai-compatible"],
+            "description": "API-стиль, явно установленный оператором при регистрации бэкенда. Если пусто — см. effectiveApiStyle (resolved из type).",
+            "example": "ollama-native"
+          },
+          "effectiveApiStyle": {
+            "type": "string",
+            "enum": ["ollama-native", "openai-compatible"],
+            "description": "Фактический API-стиль после разрешения: apiStyle если задан, иначе inference из type (llama_cpp → openai-compatible, ollama → ollama-native).",
+            "example": "openai-compatible"
+          },
           "lastHealthCheck": {
             "type": "string",
             "format": "date-time"
@@ -1135,6 +1147,12 @@
               "type": "string"
             },
             "example": ["nvidia", "a100"]
+          },
+          "apiStyle": {
+            "type": "string",
+            "enum": ["ollama-native", "openai-compatible"],
+            "description": "API-стиль бэкенда. Если пусто — выводится из type. ollama-native: бэкенд говорит /api/* (Ollama API). openai-compatible: бэкенд говорит /v1/* (OpenAI-compatible).",
+            "example": "ollama-native"
           }
         }
       },

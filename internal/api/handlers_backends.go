@@ -201,6 +201,11 @@ func (s *Server) listBackends(w http.ResponseWriter, r *http.Request) {
 			"status":                       backend.Status,
 			"type":                         backend.Type,
 			"engine":                       backend.Engine,
+			// Round 51.2 (2026-08-20): явный API-стиль бэкенда. Если пусто — клиент
+			// (WebUI) видит только effective-значение из Type. Возвращаем ОБА:
+			// apiStyle (raw, оператор-установленный) + effectiveApiStyle (resolved).
+			"apiStyle":         backend.ApiStyle,
+			"effectiveApiStyle": backend.EffectiveAPIStyle(),
 			// Round 13 (2026-07-10): expose agent attachment info для WebUI.
 			"hasAgent":       backend.HasAgent,
 			"agentId":        backend.AgentID,
@@ -331,6 +336,9 @@ func (s *Server) addBackend(w http.ResponseWriter, r *http.Request) {
 		Labels            []string `json:"labels"`
 		BackendType       string   `json:"backendType"`
 		BackendEngine     string   `json:"backendEngine"`
+		// Round 51.2 (2026-08-20): явный API-стиль бэкенда (ollama-native/openai-compatible).
+		// Если пусто — Backend.EffectiveAPIStyle() выводит из Type.
+		ApiStyle string `json:"apiStyle"`
 		// Round 7 (2026-07-09): cppworker пробрасывает свой API_TOKEN при
 		// регистрации, чтобы balancer мог авторизоваться на /api/models/reload
 		// (authMiddleware). В bundled-режиме устраняет необходимость ручной
@@ -398,6 +406,19 @@ func (s *Server) addBackend(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Round 51.2 (2026-08-20): валидация apiStyle на HTTP-границе.
+	// Пустое значение допустимо (EffectiveAPIStyle() выведет из Type автоматически).
+	// Явное невалидное значение — 400, чтобы оператор увидел ошибку сразу, а не
+	// после тихого fallback'а. Внутренний helper остаётся tolerant для state.json,
+	// который мог быть записан с опечаткой до R51.2.
+	if req.ApiStyle != "" && !types.APIStyle(req.ApiStyle).IsValidAPIStyle() {
+		s.writeJSON(w, http.StatusBadRequest, map[string]interface{}{
+			"success": false,
+			"error":   fmt.Sprintf("Invalid apiStyle: '%s'. Allowed: ollama-native, openai-compatible (or empty for auto-inference from type)", req.ApiStyle),
+		})
+		return
+	}
+
 	// Проверка совместимости типа бэкенда с OperatingMode
 	opMode := s.config.Balancing.OperatingMode
 	if !types.IsModeCompatibleWithBackendType(opMode, backendType) {
@@ -448,6 +469,9 @@ func (s *Server) addBackend(w http.ResponseWriter, r *http.Request) {
 		Type:              backendType,
 		CppWorkerApiToken: req.CppWorkerApiToken,
 		Engine:            types.ResolveEngine(types.BackendEngine(req.BackendEngine), backendType),
+		// Round 51.2 (2026-08-20): если req.ApiStyle непусто и валидно — используем как есть.
+		// Иначе Backend.EffectiveAPIStyle() выведет из Type автоматически.
+		ApiStyle: types.APIStyle(req.ApiStyle),
 	}
 
 	// Добавление бэкенда в прокси
@@ -510,6 +534,11 @@ func (s *Server) updateBackend(w http.ResponseWriter, r *http.Request, backendID
 		Labels            []string `json:"labels"`
 		BackendType       string   `json:"backendType"`
 		BackendEngine     string   `json:"backendEngine"`
+		// Round 51.2 (2026-08-20): явный API-стиль. Семантика:
+		//   - непустое значение → устанавливается
+		//   - пустая строка → сохраняется существующее значение (для сброса
+		//     потребуется явный "manual reset" в state.json; см. R51.3+)
+		ApiStyle string `json:"apiStyle"`
 		// Round 7 (2026-07-09): см. addBackend — обновление тоже должно
 		// принимать CppWorkerApiToken, иначе при re-registration (PUT update)
 		// после первого запуска cppworker теряет свой токен в backend state.
@@ -589,6 +618,21 @@ func (s *Server) updateBackend(w http.ResponseWriter, r *http.Request, backendID
 		cppWorkerPort = req.CppWorkerPort
 	}
 
+	// Round 51.2 (2026-08-20): применяем apiStyle если передан, иначе сохраняем.
+	// Если оператор явно прислал невалидное значение — 400 (тот же контракт, что
+	// в addBackend, для консистентности).
+	if req.ApiStyle != "" && !types.APIStyle(req.ApiStyle).IsValidAPIStyle() {
+		s.writeJSON(w, http.StatusBadRequest, map[string]interface{}{
+			"success": false,
+			"error":   fmt.Sprintf("Invalid apiStyle: '%s'. Allowed: ollama-native, openai-compatible (or empty to preserve existing)", req.ApiStyle),
+		})
+		return
+	}
+	apiStyle := existing.ApiStyle
+	if req.ApiStyle != "" {
+		apiStyle = types.APIStyle(req.ApiStyle)
+	}
+
 	updated := types.Backend{
 		ID:                           backendID,
 		Name:                         req.Name,
@@ -611,6 +655,7 @@ func (s *Server) updateBackend(w http.ResponseWriter, r *http.Request, backendID
 		RuntimeMaxConcurrentRequests: existing.RuntimeMaxConcurrentRequests,
 		GPUMode:                      gpuMode,
 		Type:                         backendType,
+		ApiStyle:                     apiStyle,
 	}
 
 	// Обновление бэкенда в прокси

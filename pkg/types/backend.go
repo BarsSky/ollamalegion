@@ -49,6 +49,13 @@ type Backend struct {
 	// Если auto — определяется по Type бэкенда.
 	Engine BackendEngine `json:"engine"`
 
+	// ApiStyle — явный API-стиль, который бэкенд говорит с балансером
+	// (ollama-native / openai-compatible). Round 51.2 (2026-08-20):
+	// если пусто — EffectiveAPIStyle() выводит из Type. R51.3+ routing
+	// будет использовать EffectiveAPIStyle() вместо isLlamaCppBackend.
+	// См. docs/superpowers/specs/2026-08-19-balancer-api-routing-design.md §2.
+	ApiStyle APIStyle `json:"apiStyle,omitempty"`
+
 	// GPU Mode (auto / gpu / cpu)
 	GPUMode PlatformMode `json:"gpuMode"`
 

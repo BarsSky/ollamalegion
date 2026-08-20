@@ -29,21 +29,21 @@ The contract is identified by a semantic version `MAJOR.MINOR.PATCH` (e.g. `1.4.
 | 1.4.0 | 2026-08-17 | Initial formal contract (Round 36, Phase 1) |
 | pre-1.4 | 2026-08-13 | Ad-hoc contract via 35+ rounds of bugfixes |
 
-### 0.5 Per-Backend API Style (R50)
+### 0.5 Per-Backend API Style (R50 + R51.2)
 
-When a backend is registered with the balancer (via `config.json` or `/api/v1/backends/register`), the operator selects the API style the backend will speak:
+When a backend is registered with the balancer (via `config.json` or `/api/v1/backends` POST), the operator selects the API style the backend will speak:
 
 ```json
 {
   "id": "cppworker-gpu-bundled",
   "type": "llama_cpp",              // engine type (informational)
-  "api_style": "ollama-native",     // ← R51+ explicit; R50 inferred from type
+  "apiStyle": "ollama-native",      // ← R51.2 explicit field; optional (auto-inferred from type)
   "host": "cppworker-gpu",
   "cppWorkerPort": 18092
 }
 ```
 
-**Allowed `api_style` values:**
+**Allowed `apiStyle` values:**
 
 | Value | Backend speaks | Client may speak | Translation required? |
 |-------|----------------|------------------|-----------------------|
@@ -52,11 +52,25 @@ When a backend is registered with the balancer (via `config.json` or `/api/v1/ba
 | `openai-compatible` | `/v1/*` (OpenAI API) | `/v1/*` (OpenAI-compat) | No (passthrough) |
 | `openai-compatible` | `/v1/*` (OpenAI API) | `/api/*` (Ollama) | YES — Ollama→OpenAI on request, reverse on response |
 
-**R50 current behavior (inferred, not explicit):**
-- `type: "llama_cpp"` ⇒ `api_style: openai-compatible` → routed to `llamacpp_router.go` → `/v1/*` paths
-- `type: "ollama"` ⇒ `api_style: ollama-native` → routed to `ollama_router.go` → `/api/*` paths
+**R50 (inferred) → R51.2 (explicit field):**
 
-**R51+ plan:** add explicit `api_style` field to `Backend` struct. Routing layer chooses router by `api_style`, not by inferred `type`. See [docs/superpowers/specs/2026-08-19-balancer-api-routing-design.md](../superpowers/specs/2026-08-19-balancer-api-routing-design.md) §2 for the model and §8 for the phased migration plan.
+| Field state | R50 behavior | R51.2 behavior |
+|-------------|--------------|----------------|
+| `apiStyle` not set, `type: "ollama"` | Inferred → `ollama-native` | `Backend.EffectiveAPIStyle()` returns `ollama-native` (same) |
+| `apiStyle` not set, `type: "llama_cpp"` | Inferred → `openai-compatible` | `Backend.EffectiveAPIStyle()` returns `openai-compatible` (same) |
+| `apiStyle: "ollama-native"` (any type) | NOT supported | Explicit override; used as-is |
+| `apiStyle: "openai-compatible"` (any type) | NOT supported | Explicit override; used as-is |
+| `apiStyle` set to invalid value | NOT supported | HTTP 400 from `/api/v1/backends` POST/PUT. Internal helper `EffectiveAPIStyle()` falls back to inference (for state.json resilience) |
+
+**Code locations (R51.2):**
+- Type + constants: `pkg/types/backend_type.go:14-44` — `APIStyle`, `APIStyleOllamaNative`, `APIStyleOpenAICompatible`, `IsValidAPIStyle()`
+- Method: `pkg/types/backend_type.go:69-87` — `(*Backend).EffectiveAPIStyle()`
+- Field: `pkg/types/backend.go:53-58` — `Backend.ApiStyle` (JSON tag `apiStyle,omitempty`)
+- HTTP handlers: `internal/api/handlers_backends.go` — `addBackend` (~line 320), `updateBackend` (~line 528), `listBackends` (~line 188)
+- Tests: `pkg/types/backend_type_test.go` — 21 cases covering constant values, validation, inference priority, JSON round-trip, `omitempty`
+- Example: `config/backends.example.json` — both ollama-native and openai-compatible entries
+
+**R51.3+ plan:** migrate routing layer (`proxy_request.go:isLlamaCppBackend`) to choose router by `EffectiveAPIStyle()`, not by `Type`. Adds Ollama-client → OpenAI-backend path (R52+). See [docs/superpowers/specs/2026-08-19-balancer-api-routing-design.md](../superpowers/specs/2026-08-19-balancer-api-routing-design.md) §2 for the model and §8 for the phased migration plan.
 
 **Translation contract:**
 - Ollama→OpenAI request conversion: maps `Ollama ChatRequest` fields to `OpenAI ChatRequest` (model, messages, options → messages, max_tokens, temperature, etc.)

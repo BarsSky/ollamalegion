@@ -122,8 +122,13 @@ func enrichReloadPayload(payload map[string]interface{}, strategy *AdaptiveStrat
 		payload["contextSize"] = strategy.NCtx
 	}
 
-	// Отмечаем что стратегия подобрана адаптивно
-	payload["adaptiveStage"] = strategy.Stage
+	// Round 51.4 (2026-08-20): REMOVED `payload["adaptiveStage"] = strategy.Stage`.
+	// cppworker's reloadModelRequest struct (cmd/cppworker/types.go:134) does NOT
+	// have an "adaptiveStage" field — Go's json.Decoder rejects unknown fields
+	// with "invalid JSON: unknown field 'adaptiveStage'" → 400 response.
+	// adaptiveStage is balancer-internal metadata for logging/tracking; it must
+	// NOT be sent to cppworker. The log line below still includes it for ops
+	// visibility without polluting the wire payload.
 
 	// Round 7: forward MoE override-tensors to /api/models/reload payload.
 	// cppworker handler accepts parallel arrays via overrideTensors / overrideTensorBufts.

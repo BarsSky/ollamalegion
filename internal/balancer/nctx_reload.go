@@ -759,7 +759,6 @@ func (c *NCtxReloadCoordinator) DoReload(
 		"name":        modelName,
 		"contextSize": targetNCtx,
 		"force":       true,
-		"reason":      "auto-reload: client request exceeded current n_ctx",
 		"gpuLayers":   -2,
 		// Round 34 (2026-08-12) Phase 4: default flashAttn=-1 (auto) для optimal
 		// performance. User's expectation: "балансер всегда использует настройки
@@ -768,6 +767,11 @@ func (c *NCtxReloadCoordinator) DoReload(
 		// переопределить (см. enrichReloadPayload).
 		"flashAttn":   -1,
 		"useMmap":     true,
+		// Round 51.4 (2026-08-20): REMOVED `reason` field. cppworker's
+		// reloadModelRequest struct (cmd/cppworker/types.go:134) does NOT have
+		// a "reason" field. Go's json.Decoder rejects unknown fields with HTTP
+		// 400 "invalid JSON: unknown field 'reason'" → reload always failed.
+		// The reason is for balancer logs only — moved to the Infow below.
 	}
 	if strategy != nil {
 		payloadMap = enrichReloadPayload(payloadMap, strategy)

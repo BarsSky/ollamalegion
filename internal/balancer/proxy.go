@@ -400,11 +400,20 @@ func (p *Proxy) SetHealthChecker(hc *HealthChecker) {
 }
 
 // Shutdown — graceful shutdown с завершением активных SSE-сессий и сохранением состояния.
-// Порядок остановки:
-//  1. Запрет новых запросов (возврат 503)
-//  2. Остановка приёма очереди
-//  3. Остановка background контроллеров
-//  4. Завершение активных SSE-сессий с done:true
+//
+// Порядок остановки (R52.5, 2026-08-24: расширен per-component Stop):
+//  1. Запрет новых запросов (возврат 503) — p.shuttingDown
+//  2. Остановка приёма очереди — QueueManager.Stop
+//  3. Остановка background controllers:
+//     - UnloadScheduler (auto-unload idle models)
+//     - AdaptiveWeightTuner (per-backend weights)
+//     - AgentTimeoutChecker (agent health)
+//     - SessionManager (session stickiness)
+//     - LlamaCppMetricsPoller (cppworker metrics poll)
+//     - GroupController (replication group) — R52.5 NEW
+//     - NCtxReloadCoordinator (n_ctx async reload) — R52.5 NEW
+//     - EventBus (subscriber channels) — R52.5 NEW
+//  4. Завершение активных SSE-сессий с таймаутом
 //  5. Сохранение состояния
 func (p *Proxy) Shutdown(ctx context.Context) error {
 	logger.Get().Infow("shutdown initiated, stopping new requests")
@@ -438,6 +447,24 @@ func (p *Proxy) Shutdown(ctx context.Context) error {
 	if p.llamaCppMetricsPoller != nil {
 		logger.Get().Infow("stopping llama.cpp metrics poller...")
 		p.llamaCppMetricsPoller.Stop()
+	}
+	// R52.5 (2026-08-24): per-component Stop for graceful shutdown.
+	// Pre-R52.5 эти контроллеры НЕ останавливались → goroutine-leak при shutdown.
+	// Покрытие: replicationCtrl (modelreplication.GroupController),
+	// nctxReload (n_ctx async reload), eventBus (subscriber channels).
+	if p.replicationCtrl != nil {
+		logger.Get().Infow("stopping replication controller...")
+		if err := p.replicationCtrl.Stop(); err != nil {
+			logger.Get().Warnw("replication controller stop error", "error", err)
+		}
+	}
+	if p.nctxReload != nil {
+		logger.Get().Infow("stopping nctx reload coordinator...")
+		p.nctxReload.Shutdown()
+	}
+	if p.eventBus != nil {
+		logger.Get().Infow("stopping event bus...")
+		p.eventBus.Stop()
 	}
 
 	// 4. Ожидаем завершения активных SSE-сессий с таймаутом

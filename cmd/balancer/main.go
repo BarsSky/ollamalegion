@@ -457,9 +457,18 @@ func main() {
 		fmt.Printf("\nReceived signal %v, shutting down gracefully...\n", sig)
 	}
 
-	// Graceful shutdown sequence:
-	// 1. Proxy.Shutdown (запрет новых запросов, завершение активных SSE, сохранение state)
-	// 2. HTTP-серверы (Shutdown с таймаутом для активных keep-alive соединений)
+	// Graceful shutdown sequence (R52.5, 2026-08-24: расширен per-component Stop):
+	//  1. Proxy.Shutdown — запрет новых запросов, завершение активных SSE,
+	//     остановка background controllers (R52.5: replication, nctxReload, EventBus),
+	//     сохранение state.
+	//  2. HTTP-серверы (Shutdown с таймаутом для активных keep-alive соединений).
+	//  3. PrewarmController.Stop (R52.5 NEW — main.go-launched, не в proxy).
+	//  4. HealthChecker.Stop (R52.5 NEW — main.go-launched, не в proxy).
+	//  5. ModelInstanceController.Stop (R52.5 NEW — main.go-launched, не в proxy).
+	//
+	// HTTP servers идут ПОСЛЕ proxy.Shutdown чтобы отдать финальные SSE-события
+	// (done:true) до закрытия keep-alive соединений. Prewarm/Health/ModelInstance
+	// идут последними — они зависят от proxy state который уже заморожен.
 
 	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer shutdownCancel()
@@ -485,6 +494,21 @@ func main() {
 		if err := apiTLSServer.Shutdown(shutdownCtx); err != nil {
 			log.Printf("[Shutdown] API TLS server shutdown error: %v", err)
 		}
+	}
+
+	// R52.5 (2026-08-24): main.go-launched controllers, не покрытые proxy.Shutdown.
+	// Раньше эти горутины висели после exit → goroutine-leak, 50s watchdog kill в тестах.
+	if prewarmCtrl != nil {
+		fmt.Println("[Shutdown] Stopping prewarm controller...")
+		prewarmCtrl.Stop()
+	}
+	if healthChecker != nil {
+		fmt.Println("[Shutdown] Stopping health checker...")
+		healthChecker.Stop()
+	}
+	if modelInstanceCtrl != nil {
+		fmt.Println("[Shutdown] Stopping model instance controller...")
+		modelInstanceCtrl.Stop()
 	}
 	fmt.Println("[Shutdown] Completed. Goodbye!")
 }

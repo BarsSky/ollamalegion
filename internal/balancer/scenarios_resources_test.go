@@ -47,7 +47,7 @@ func TestResources_Scenario_GPULimit_BackendExcluded(t *testing.T) {
 			GPU: types.GPULimits{MaxUsagePercent: 50}, // 50% max
 		},
 	}
-	proxy := NewProxy(conf)
+	proxy := newProxyWithCleanup(t, conf)
 	proxy.SetQueueManagerProxy()
 	defer proxy.queueMgr.Stop()
 
@@ -93,7 +93,7 @@ func TestResources_Scenario_QueueOverflow(t *testing.T) {
 			GPU: types.GPULimits{MaxUsagePercent: 90},
 		},
 	}
-	proxy := NewProxy(conf)
+	proxy := newProxyWithCleanup(t, conf)
 	proxy.SetQueueManagerProxy()
 	defer proxy.queueMgr.Stop()
 
@@ -140,7 +140,7 @@ func TestResources_Scenario_MaxConcurrentReqs(t *testing.T) {
 			GPU: types.GPULimits{MaxUsagePercent: 90},
 		},
 	}
-	proxy := NewProxy(conf)
+	proxy := newProxyWithCleanup(t, conf)
 	proxy.SetQueueManagerProxy()
 	defer proxy.queueMgr.Stop()
 
@@ -178,7 +178,7 @@ func TestResources_Scenario_ZeroMaxConcurrentReqs_Unlimited(t *testing.T) {
 			{ID: "b1", MaxConcurrentReqs: 0},
 		},
 	}
-	proxy := NewProxy(conf)
+	proxy := newProxyWithCleanup(t, conf)
 	proxy.SetQueueManagerProxy()
 	defer proxy.queueMgr.Stop()
 
@@ -198,7 +198,7 @@ func TestResources_Scenario_RequestTimeout(t *testing.T) {
 	conf := &types.LoadBalancerConfig{
 		Balancing: types.BalancingSettings{RequestTimeout: 45},
 	}
-	proxy := NewProxy(conf)
+	proxy := newProxyWithCleanup(t, conf)
 	proxy.SetQueueManagerProxy()
 	defer proxy.queueMgr.Stop()
 
@@ -227,7 +227,7 @@ func TestResources_Scenario_SlowBackend_Timeout(t *testing.T) {
 			GPU: types.GPULimits{MaxUsagePercent: 90},
 		},
 	}
-	proxy := NewProxy(conf)
+	proxy := newProxyWithCleanup(t, conf)
 	proxy.SetQueueManagerProxy()
 	defer proxy.queueMgr.Stop()
 
@@ -257,7 +257,7 @@ func TestResources_Scenario_QueueTimeout(t *testing.T) {
 			QueueTimeout: 5, // 5 seconds
 		},
 	}
-	proxy := NewProxy(conf)
+	proxy := newProxyWithCleanup(t, conf)
 	proxy.SetQueueManagerProxy()
 	defer proxy.queueMgr.Stop()
 
@@ -288,7 +288,7 @@ func TestResources_Scenario_AdaptiveTimeout_Recalculate(t *testing.T) {
 			GPU: types.GPULimits{MaxUsagePercent: 90},
 		},
 	}
-	proxy := NewProxy(conf)
+	proxy := newProxyWithCleanup(t, conf)
 	proxy.SetQueueManagerProxy()
 	defer proxy.queueMgr.Stop()
 
@@ -325,7 +325,7 @@ func TestResources_Scenario_WeightBased_Distribution(t *testing.T) {
 			GPU: types.GPULimits{MaxUsagePercent: 90},
 		},
 	}
-	proxy := NewProxy(conf)
+	proxy := newProxyWithCleanup(t, conf)
 	proxy.SetQueueManagerProxy()
 	defer proxy.queueMgr.Stop()
 
@@ -368,7 +368,7 @@ func TestResources_Scenario_MultipleLimits(t *testing.T) {
 			GPU: types.GPULimits{MaxUsagePercent: 75},
 		},
 	}
-	proxy := NewProxy(conf)
+	proxy := newProxyWithCleanup(t, conf)
 	proxy.SetQueueManagerProxy()
 	defer proxy.queueMgr.Stop()
 
@@ -392,7 +392,7 @@ func TestResources_Scenario_NegativeConfigValues(t *testing.T) {
 		Balancing: types.BalancingSettings{Algorithm: types.AlgorithmRoundRobin},
 	}
 	require.NotPanics(t, func() {
-		proxy := NewProxy(conf)
+		proxy := newProxyWithCleanup(t, conf)
 		proxy.SetQueueManagerProxy()
 		defer proxy.queueMgr.Stop()
 	})

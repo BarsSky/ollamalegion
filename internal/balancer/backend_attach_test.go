@@ -11,7 +11,7 @@ import (
 // бэкенд, а AttachAgentToBackend корректно прикрепляет к нему агента.
 
 func TestFindBackendByHostPort(t *testing.T) {
-	p := NewProxy(&types.LoadBalancerConfig{})
+	p := newProxyWithCleanup(t, &types.LoadBalancerConfig{})
 
 	// Add a cppworker backend
 	p.AddBackend(types.Backend{
@@ -87,7 +87,7 @@ func TestFindBackendByHostPort(t *testing.T) {
 }
 
 func TestAttachAgentToBackend(t *testing.T) {
-	p := NewProxy(&types.LoadBalancerConfig{})
+	p := newProxyWithCleanup(t, &types.LoadBalancerConfig{})
 	p.AddBackend(types.Backend{
 		ID:              "cppworker-gpu-bundled",
 		Host:            "cppworker-gpu",
@@ -121,7 +121,7 @@ func TestAttachAgentToBackend(t *testing.T) {
 }
 
 func TestAttachAgentToBackend_NonExistent(t *testing.T) {
-	p := NewProxy(&types.LoadBalancerConfig{})
+	p := newProxyWithCleanup(t, &types.LoadBalancerConfig{})
 
 	// Attach to non-existent backend — should not panic
 	p.AttachAgentToBackend("nonexistent", "agent-1", 18032)
@@ -136,7 +136,7 @@ func TestAttachAgentToBackend_NonExistent(t *testing.T) {
 //   1. cppworker registers first (canonical backend)
 //   2. agent registers second → should attach, not create
 func TestAgentAttach_EndToEnd(t *testing.T) {
-	p := NewProxy(&types.LoadBalancerConfig{})
+	p := newProxyWithCleanup(t, &types.LoadBalancerConfig{})
 
 	// Step 1: cppworker registers
 	p.AddBackend(types.Backend{
@@ -187,7 +187,7 @@ func TestAgentAttach_EndToEnd(t *testing.T) {
 // exists, agent can still register its own (standalone mode — agent without
 // bundled cppworker, e.g. legacy Ollama setup).
 func TestAgentAttach_StandaloneMode(t *testing.T) {
-	p := NewProxy(&types.LoadBalancerConfig{})
+	p := newProxyWithCleanup(t, &types.LoadBalancerConfig{})
 
 	// No cppworker backend exists. Agent tries to register with CppWorkerPort=0.
 	existing := p.FindBackendByHostPort("agent-standalone", 0)

@@ -93,7 +93,7 @@ func makeTestLlamaProxy(t *testing.T, upstreamURL string) (*Proxy, *LlamaCppRout
 		API:  types.APISettings{RateLimit: 100, RateBurst: 200},
 		Auth: types.AuthConfig{Enabled: false},
 	}
-	p := NewProxy(cfg)
+	p := newProxyWithCleanup(t, cfg)
 	if p.GetBackend("llama_test") == nil {
 		t.Fatal("backend not registered in proxy")
 	}
@@ -268,7 +268,7 @@ func TestHandleChat_503WhenNoBackends(t *testing.T) {
 		API:  types.APISettings{RateLimit: 100, RateBurst: 200},
 		Auth: types.AuthConfig{Enabled: false},
 	}
-	p := NewProxy(cfg)
+	p := newProxyWithCleanup(t, cfg)
 	router := NewLlamaCppRouter(p)
 
 	req := httptest.NewRequest("POST", "/api/chat",

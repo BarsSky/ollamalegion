@@ -29,7 +29,7 @@ func TestR46_UpdateBackendStatus_StampsLastHealthCheck(t *testing.T) {
 			{ID: "r46-1", Type: types.BackendTypeLlamaCpp, Status: types.StatusUnhealthy},
 		},
 	}
-	p := NewProxy(cfg)
+	p := newProxyWithCleanup(t, cfg)
 
 	// pre-R46 zero value
 	before := p.backends["r46-1"].Backend.LastHealthCheck
@@ -66,7 +66,7 @@ func TestR46_UpdateBackendStatus_StampsOnNoOpStatusChange(t *testing.T) {
 			{ID: "r46-2", Type: types.BackendTypeLlamaCpp, Status: types.StatusHealthy},
 		},
 	}
-	p := NewProxy(cfg)
+	p := newProxyWithCleanup(t, cfg)
 
 	// Set timestamp to a stale value (pre-R46 simulated state).
 	first := time.Now().UTC().Add(-time.Hour)
@@ -90,7 +90,7 @@ func TestR46_UpdateBackendStatus_StampsOnNoOpStatusChange(t *testing.T) {
 // behaviour).
 func TestR46_UpdateBackendStatus_UnknownBackend(t *testing.T) {
 	cfg := &types.LoadBalancerConfig{}
-	p := NewProxy(cfg)
+	p := newProxyWithCleanup(t, cfg)
 	// Should not panic.
 	p.UpdateBackendStatus("does-not-exist", types.StatusHealthy)
 }

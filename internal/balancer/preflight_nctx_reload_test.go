@@ -138,7 +138,7 @@ func makeMockCppWorkerWithReload(t *testing.T, modelName string, initialNCtx int
 func buildProxyWithCppWorkerBackend(t *testing.T, cppWorkerURL string, modelName string) *Proxy {
 	t.Helper()
 	cfg := &types.LoadBalancerConfig{}
-	p := NewProxy(cfg)
+	p := newProxyWithCleanup(t, cfg)
 	// Используем internal API для добавления backend.
 	hostPort := strings.TrimPrefix(cppWorkerURL, "http://")
 	parts := strings.Split(hostPort, ":")

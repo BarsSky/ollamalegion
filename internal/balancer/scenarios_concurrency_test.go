@@ -168,7 +168,7 @@ func TestConcurrency_Scenario_Selector_RoundRobin_Distributes(t *testing.T) {
 			GPU: types.GPULimits{MaxUsagePercent: 90},
 		},
 	}
-	proxy := NewProxy(conf)
+	proxy := newProxyWithCleanup(t, conf)
 	proxy.SetQueueManagerProxy()
 	defer proxy.queueMgr.Stop()
 
@@ -409,7 +409,7 @@ func TestConcurrency_Scenario_HealthCheck_Concurrent(t *testing.T) {
 			HealthCheckInterval: 60,
 		},
 	}
-	proxy := NewProxy(conf)
+	proxy := newProxyWithCleanup(t, conf)
 	proxy.SetQueueManagerProxy()
 	defer proxy.queueMgr.Stop()
 

@@ -77,7 +77,7 @@ func TestE2E_VirtualRouter_FullFlow(t *testing.T) {
 	addr2 := backend2.URL[7:]
 	host2, port2, _ := parseBackendHostPort(addr2)
 
-	proxy := NewProxy(createE2EConfig())
+	proxy := newProxyWithCleanup(t, createE2EConfig())
 	proxy.SetQueueManagerProxy()
 	defer proxy.queueMgr.Stop()
 	proxy.config.Balancing.OperatingMode = string(types.OperatingModeVirtualRouter)
@@ -165,7 +165,7 @@ func TestE2E_VirtualRouter_FullFlow(t *testing.T) {
 func TestE2E_VirtualRouter_HealthCheck_NotAffected(t *testing.T) {
 	t.Parallel()
 
-	proxy := NewProxy(createE2EConfig())
+	proxy := newProxyWithCleanup(t, createE2EConfig())
 	proxy.SetQueueManagerProxy()
 	defer proxy.queueMgr.Stop()
 	proxy.config.Balancing.OperatingMode = string(types.OperatingModeVirtualRouter)
@@ -229,7 +229,7 @@ func TestE2E_VirtualRouter_StreamingResponse(t *testing.T) {
 	addr := backend.URL[7:]
 	host, port, _ := parseBackendHostPort(addr)
 
-	proxy := NewProxy(createE2EConfig())
+	proxy := newProxyWithCleanup(t, createE2EConfig())
 	proxy.SetQueueManagerProxy()
 	defer proxy.queueMgr.Stop()
 	proxy.config.Balancing.OperatingMode = string(types.OperatingModeVirtualRouter)

@@ -81,7 +81,7 @@ func r45BuildProxyWithFakeCppWorker(t *testing.T, fake *r45FakeCppWorker) (*Prox
 			Status:        types.StatusHealthy,
 		},
 	}
-	proxy := NewProxy(cfg)
+	proxy := newProxyWithCleanup(t, cfg)
 	proxy.llamaCppRouter = &LlamaCppRouter{proxy: proxy}
 	proxy.backends["fake-1"] = &BackendState{Backend: &cfg.Backends[0]}
 	// R45 fix test scaffolding: NewProxy auto-starts llamaCppMetricsPoller
@@ -341,7 +341,7 @@ func TestR45_Poller_BackendUnreachable(t *testing.T) {
 			Status:        types.StatusHealthy,
 		},
 	}
-	proxy := NewProxy(cfg)
+	proxy := newProxyWithCleanup(t, cfg)
 	proxy.llamaCppRouter = &LlamaCppRouter{proxy: proxy}
 	proxy.backends["dead-1"] = &BackendState{Backend: &cfg.Backends[0]}
 

@@ -146,7 +146,7 @@ func TestDispatcherE2E_OllamaGenerate_Success(t *testing.T) {
 	h := startDispatcherWorker(t, "worker-1", nil)
 	coord := buildCoordinatorWithWorker(t, h)
 
-	proxy := NewProxy(createTestConfig())
+	proxy := newProxyWithCleanup(t, createTestConfig())
 	proxy.SetQueueManagerProxy()
 	defer proxy.queueMgr.Stop()
 
@@ -190,7 +190,7 @@ func TestDispatcherE2E_OllamaChat_Success(t *testing.T) {
 	h := startDispatcherWorker(t, "worker-1", nil)
 	coord := buildCoordinatorWithWorker(t, h)
 
-	proxy := NewProxy(createTestConfig())
+	proxy := newProxyWithCleanup(t, createTestConfig())
 	proxy.SetQueueManagerProxy()
 	defer proxy.queueMgr.Stop()
 
@@ -238,7 +238,7 @@ func TestDispatcherE2E_OpenAIChat_Success(t *testing.T) {
 	h := startDispatcherWorker(t, "worker-1", nil)
 	coord := buildCoordinatorWithWorker(t, h)
 
-	proxy := NewProxy(createTestConfig())
+	proxy := newProxyWithCleanup(t, createTestConfig())
 	proxy.SetQueueManagerProxy()
 	defer proxy.queueMgr.Stop()
 
@@ -293,7 +293,7 @@ func TestDispatcherE2E_OpenAICompletion_Success(t *testing.T) {
 	h := startDispatcherWorker(t, "worker-1", nil)
 	coord := buildCoordinatorWithWorker(t, h)
 
-	proxy := NewProxy(createTestConfig())
+	proxy := newProxyWithCleanup(t, createTestConfig())
 	proxy.SetQueueManagerProxy()
 	defer proxy.queueMgr.Stop()
 
@@ -341,7 +341,7 @@ func TestDispatcherE2E_ModelNotDistributed(t *testing.T) {
 	_ = coord.RegisterWorker(types.RpcWorkerConfig{WorkerID: h.workerID, Host: h.host, Port: h.port})
 	// НЕ регистрируем distributed model.
 
-	proxy := NewProxy(createTestConfig())
+	proxy := newProxyWithCleanup(t, createTestConfig())
 	proxy.SetQueueManagerProxy()
 	defer proxy.queueMgr.Stop()
 
@@ -374,7 +374,7 @@ func TestDispatcherE2E_BodyParseError(t *testing.T) {
 		{StartLayer: 1, EndLayer: 32, WorkerID: h.workerID},
 	})
 
-	proxy := NewProxy(createTestConfig())
+	proxy := newProxyWithCleanup(t, createTestConfig())
 	proxy.SetQueueManagerProxy()
 	defer proxy.queueMgr.Stop()
 
@@ -409,7 +409,7 @@ func TestDispatcherE2E_EmptyModel(t *testing.T) {
 		{StartLayer: 1, EndLayer: 32, WorkerID: h.workerID},
 	})
 
-	proxy := NewProxy(createTestConfig())
+	proxy := newProxyWithCleanup(t, createTestConfig())
 	proxy.SetQueueManagerProxy()
 	defer proxy.queueMgr.Stop()
 
@@ -437,7 +437,7 @@ func TestDispatcherE2E_InferNonStreaming_Real(t *testing.T) {
 	h := startDispatcherWorker(t, "worker-1", nil)
 	coord := buildCoordinatorWithWorker(t, h)
 
-	proxy := NewProxy(createTestConfig())
+	proxy := newProxyWithCleanup(t, createTestConfig())
 	proxy.SetQueueManagerProxy()
 	defer proxy.queueMgr.Stop()
 
@@ -492,7 +492,7 @@ func TestDispatcherE2E_DisabledCoordinator(t *testing.T) {
 			{StartLayer: 1, EndLayer: 32, WorkerID: h.workerID},
 		})
 
-	proxy := NewProxy(createTestConfig())
+	proxy := newProxyWithCleanup(t, createTestConfig())
 	proxy.SetQueueManagerProxy()
 	defer proxy.queueMgr.Stop()
 
@@ -526,7 +526,7 @@ func TestDispatcherE2E_CircuitBreaker_AllWorkersOpen(t *testing.T) {
 	h := startDispatcherWorker(t, "worker-1", nil)
 	coord := buildCoordinatorWithWorker(t, h)
 
-	proxy := NewProxy(createTestConfig())
+	proxy := newProxyWithCleanup(t, createTestConfig())
 	proxy.SetQueueManagerProxy()
 	defer proxy.queueMgr.Stop()
 
@@ -574,7 +574,7 @@ func TestDispatcherE2E_CircuitBreaker_SuccessRecorded(t *testing.T) {
 	h := startDispatcherWorker(t, "worker-1", nil)
 	coord := buildCoordinatorWithWorker(t, h)
 
-	proxy := NewProxy(createTestConfig())
+	proxy := newProxyWithCleanup(t, createTestConfig())
 	proxy.SetQueueManagerProxy()
 	defer proxy.queueMgr.Stop()
 
@@ -611,7 +611,7 @@ func TestDispatcherE2E_CircuitBreaker_CustomConfig(t *testing.T) {
 	h := startDispatcherWorker(t, "worker-1", nil)
 	coord := buildCoordinatorWithWorker(t, h)
 
-	proxy := NewProxy(createTestConfig())
+	proxy := newProxyWithCleanup(t, createTestConfig())
 	proxy.SetQueueManagerProxy()
 	defer proxy.queueMgr.Stop()
 
@@ -657,7 +657,7 @@ func TestDispatcherE2E_Auth_NoToken_Rejected(t *testing.T) {
 	h := startDispatcherWorker(t, "worker-1", nil)
 	coord := buildCoordinatorWithWorker(t, h)
 
-	proxy := NewProxy(createTestConfig())
+	proxy := newProxyWithCleanup(t, createTestConfig())
 	proxy.SetQueueManagerProxy()
 	defer proxy.queueMgr.Stop()
 
@@ -685,7 +685,7 @@ func TestDispatcherE2E_Auth_ValidToken_Allowed(t *testing.T) {
 	h := startDispatcherWorker(t, "worker-1", nil)
 	coord := buildCoordinatorWithWorker(t, h)
 
-	proxy := NewProxy(createTestConfig())
+	proxy := newProxyWithCleanup(t, createTestConfig())
 	proxy.SetQueueManagerProxy()
 	defer proxy.queueMgr.Stop()
 
@@ -711,7 +711,7 @@ func TestDispatcherE2E_Auth_InvalidToken_Rejected(t *testing.T) {
 	h := startDispatcherWorker(t, "worker-1", nil)
 	coord := buildCoordinatorWithWorker(t, h)
 
-	proxy := NewProxy(createTestConfig())
+	proxy := newProxyWithCleanup(t, createTestConfig())
 	proxy.SetQueueManagerProxy()
 	defer proxy.queueMgr.Stop()
 
@@ -737,7 +737,7 @@ func TestDispatcherE2E_Auth_Disabled_NoCheck(t *testing.T) {
 	h := startDispatcherWorker(t, "worker-1", nil)
 	coord := buildCoordinatorWithWorker(t, h)
 
-	proxy := NewProxy(createTestConfig())
+	proxy := newProxyWithCleanup(t, createTestConfig())
 	proxy.SetQueueManagerProxy()
 	defer proxy.queueMgr.Stop()
 
@@ -760,7 +760,7 @@ func TestDispatcherE2E_Auth_NilChecker_NoCheck(t *testing.T) {
 	h := startDispatcherWorker(t, "worker-1", nil)
 	coord := buildCoordinatorWithWorker(t, h)
 
-	proxy := NewProxy(createTestConfig())
+	proxy := newProxyWithCleanup(t, createTestConfig())
 	proxy.SetQueueManagerProxy()
 	defer proxy.queueMgr.Stop()
 
@@ -782,7 +782,7 @@ func TestDispatcherE2E_Auth_QueryToken_Allowed(t *testing.T) {
 	h := startDispatcherWorker(t, "worker-1", nil)
 	coord := buildCoordinatorWithWorker(t, h)
 
-	proxy := NewProxy(createTestConfig())
+	proxy := newProxyWithCleanup(t, createTestConfig())
 	proxy.SetQueueManagerProxy()
 	defer proxy.queueMgr.Stop()
 
@@ -808,7 +808,7 @@ func TestDispatcherE2E_Auth_OpenAIFormat_Rejected(t *testing.T) {
 	h := startDispatcherWorker(t, "worker-1", nil)
 	coord := buildCoordinatorWithWorker(t, h)
 
-	proxy := NewProxy(createTestConfig())
+	proxy := newProxyWithCleanup(t, createTestConfig())
 	proxy.SetQueueManagerProxy()
 	defer proxy.queueMgr.Stop()
 
@@ -851,7 +851,7 @@ func TestDispatcherE2E_Streaming_OllamaGenerate(t *testing.T) {
 	h := startDispatcherWorker(t, "worker-1", nil)
 	coord := buildCoordinatorWithWorker(t, h)
 
-	proxy := NewProxy(createTestConfig())
+	proxy := newProxyWithCleanup(t, createTestConfig())
 	proxy.SetQueueManagerProxy()
 	defer proxy.queueMgr.Stop()
 
@@ -922,7 +922,7 @@ func TestDispatcherE2E_Streaming_OpenAIChat(t *testing.T) {
 	h := startDispatcherWorker(t, "worker-1", nil)
 	coord := buildCoordinatorWithWorker(t, h)
 
-	proxy := NewProxy(createTestConfig())
+	proxy := newProxyWithCleanup(t, createTestConfig())
 	proxy.SetQueueManagerProxy()
 	defer proxy.queueMgr.Stop()
 

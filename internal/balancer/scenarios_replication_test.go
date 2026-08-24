@@ -55,7 +55,7 @@ func TestReplication_Scenario_GroupRegistered(t *testing.T) {
 			GPU: types.GPULimits{MaxUsagePercent: 90},
 		},
 	}
-	proxy := NewProxy(conf)
+	proxy := newProxyWithCleanup(t, conf)
 	proxy.SetQueueManagerProxy()
 	defer proxy.queueMgr.Stop()
 
@@ -124,7 +124,7 @@ func TestAutoPull_Scenario_EnabledInConfig(t *testing.T) {
 			AutoPull: types.AutoPullConfig{Enabled: true},
 		},
 	}
-	proxy := NewProxy(conf)
+	proxy := newProxyWithCleanup(t, conf)
 	proxy.SetQueueManagerProxy()
 	defer proxy.queueMgr.Stop()
 
@@ -156,7 +156,7 @@ func TestAutoPull_Scenario_ProxyInitializesWithAutoPull(t *testing.T) {
 		},
 	}
 	require.NotPanics(t, func() {
-		proxy := NewProxy(conf)
+		proxy := newProxyWithCleanup(t, conf)
 		proxy.SetQueueManagerProxy()
 		defer proxy.queueMgr.Stop()
 	})
@@ -180,7 +180,7 @@ func TestAutoPull_Scenario_RemainingModels_Listed(t *testing.T) {
 			GPU: types.GPULimits{MaxUsagePercent: 90},
 		},
 	}
-	proxy := NewProxy(conf)
+	proxy := newProxyWithCleanup(t, conf)
 	proxy.SetQueueManagerProxy()
 	defer proxy.queueMgr.Stop()
 
@@ -210,7 +210,7 @@ func TestReplication_Scenario_LiveRequestReplicated(t *testing.T) {
 			GPU: types.GPULimits{MaxUsagePercent: 90},
 		},
 	}
-	proxy := NewProxy(conf)
+	proxy := newProxyWithCleanup(t, conf)
 	proxy.SetQueueManagerProxy()
 	defer proxy.queueMgr.Stop()
 
@@ -251,7 +251,7 @@ func TestReplication_Scenario_OneBackendDown_StillWorks(t *testing.T) {
 			GPU: types.GPULimits{MaxUsagePercent: 90},
 		},
 	}
-	proxy := NewProxy(conf)
+	proxy := newProxyWithCleanup(t, conf)
 	proxy.SetQueueManagerProxy()
 	defer proxy.queueMgr.Stop()
 
@@ -299,7 +299,7 @@ func TestReplication_Scenario_ConcurrentRequests_Replicated(t *testing.T) {
 			GPU: types.GPULimits{MaxUsagePercent: 90},
 		},
 	}
-	proxy := NewProxy(conf)
+	proxy := newProxyWithCleanup(t, conf)
 	proxy.SetQueueManagerProxy()
 	defer proxy.queueMgr.Stop()
 
@@ -350,7 +350,7 @@ func TestReplication_Scenario_BackendRecovery(t *testing.T) {
 			GPU: types.GPULimits{MaxUsagePercent: 90},
 		},
 	}
-	proxy := NewProxy(conf)
+	proxy := newProxyWithCleanup(t, conf)
 	proxy.SetQueueManagerProxy()
 	defer proxy.queueMgr.Stop()
 

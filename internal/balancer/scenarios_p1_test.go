@@ -77,7 +77,7 @@ func newRpcTestRig(t *testing.T) *rpcTestRig {
 			Memory: types.MemoryLimits{MaxUsagePercent: 90},
 		},
 	}
-	r.proxy = NewProxy(conf)
+	r.proxy = newProxyWithCleanup(t, conf)
 	r.proxy.SetQueueManagerProxy()
 	t.Cleanup(func() { r.proxy.queueMgr.Stop() })
 

@@ -181,7 +181,7 @@ func TestVirtualRouter_HeavyModel_70B_Across3Backends(t *testing.T) {
 			GPU: types.GPULimits{MaxUsagePercent: 90},
 		},
 	}
-	proxy := NewProxy(conf)
+	proxy := newProxyWithCleanup(t, conf)
 	proxy.SetQueueManagerProxy()
 	defer proxy.queueMgr.Stop()
 
@@ -254,7 +254,7 @@ func TestVirtualRouter_HeavyModel_LeastLoaded_RespectsLoad(t *testing.T) {
 			GPU: types.GPULimits{MaxUsagePercent: 90},
 		},
 	}
-	proxy := NewProxy(conf)
+	proxy := newProxyWithCleanup(t, conf)
 	proxy.SetQueueManagerProxy()
 	defer proxy.queueMgr.Stop()
 
@@ -353,7 +353,7 @@ func TestRpcCoordinator_70B_Across2Backends(t *testing.T) {
 			GPU: types.GPULimits{MaxUsagePercent: 90},
 		},
 	}
-	proxy := NewProxy(conf)
+	proxy := newProxyWithCleanup(t, conf)
 	proxy.SetQueueManagerProxy()
 	defer proxy.queueMgr.Stop()
 
@@ -424,7 +424,7 @@ func TestRpcCoordinator_Streaming_ChunkedResponse(t *testing.T) {
 			GPU: types.GPULimits{MaxUsagePercent: 90},
 		},
 	}
-	proxy := NewProxy(conf)
+	proxy := newProxyWithCleanup(t, conf)
 	proxy.SetQueueManagerProxy()
 	defer proxy.queueMgr.Stop()
 	coord := proxy.GetRpcCoordinator()
@@ -480,7 +480,7 @@ func TestToolCall_OllamaFormat_RealCppworker(t *testing.T) {
 			GPU: types.GPULimits{MaxUsagePercent: 90},
 		},
 	}
-	proxy := NewProxy(conf)
+	proxy := newProxyWithCleanup(t, conf)
 	proxy.SetQueueManagerProxy()
 	defer proxy.queueMgr.Stop()
 	registry := proxy.GetVirtualModelRegistry()
@@ -548,7 +548,7 @@ func TestToolCall_HermesQwenXML_RealCppworker(t *testing.T) {
 			GPU: types.GPULimits{MaxUsagePercent: 90},
 		},
 	}
-	proxy := NewProxy(conf)
+	proxy := newProxyWithCleanup(t, conf)
 	proxy.SetQueueManagerProxy()
 	defer proxy.queueMgr.Stop()
 	registry := proxy.GetVirtualModelRegistry()
@@ -609,7 +609,7 @@ func TestToolCall_OpenAIFormat_SSE(t *testing.T) {
 			GPU: types.GPULimits{MaxUsagePercent: 90},
 		},
 	}
-	proxy := NewProxy(conf)
+	proxy := newProxyWithCleanup(t, conf)
 	proxy.SetQueueManagerProxy()
 	defer proxy.queueMgr.Stop()
 	registry := proxy.GetVirtualModelRegistry()
@@ -664,7 +664,7 @@ func TestCPPWorker_Failure_NetworkDrop(t *testing.T) {
 			GPU: types.GPULimits{MaxUsagePercent: 90},
 		},
 	}
-	proxy := NewProxy(conf)
+	proxy := newProxyWithCleanup(t, conf)
 	proxy.SetQueueManagerProxy()
 	defer proxy.queueMgr.Stop()
 
@@ -703,7 +703,7 @@ func TestCPPWorker_Failure_SlowBackend_Timeout(t *testing.T) {
 			GPU: types.GPULimits{MaxUsagePercent: 90},
 		},
 	}
-	proxy := NewProxy(conf)
+	proxy := newProxyWithCleanup(t, conf)
 	proxy.SetQueueManagerProxy()
 	defer proxy.queueMgr.Stop()
 
@@ -808,7 +808,7 @@ func TestCPPWorker_Streaming_NDJSON_RealChunks(t *testing.T) {
 			GPU: types.GPULimits{MaxUsagePercent: 90},
 		},
 	}
-	proxy := NewProxy(conf)
+	proxy := newProxyWithCleanup(t, conf)
 	proxy.SetQueueManagerProxy()
 	defer proxy.queueMgr.Stop()
 
@@ -853,7 +853,7 @@ func TestCPPWorker_Streaming_SSE_OpenAI(t *testing.T) {
 			GPU: types.GPULimits{MaxUsagePercent: 90},
 		},
 	}
-	proxy := NewProxy(conf)
+	proxy := newProxyWithCleanup(t, conf)
 	proxy.SetQueueManagerProxy()
 	defer proxy.queueMgr.Stop()
 
@@ -907,7 +907,7 @@ func TestCPPWorker_Stress_ConcurrentHeavyLoad(t *testing.T) {
 			GPU: types.GPULimits{MaxUsagePercent: 90},
 		},
 	}
-	proxy := NewProxy(conf)
+	proxy := newProxyWithCleanup(t, conf)
 	proxy.SetQueueManagerProxy()
 	defer proxy.queueMgr.Stop()
 	registry := proxy.GetVirtualModelRegistry()

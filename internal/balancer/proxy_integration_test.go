@@ -62,7 +62,7 @@ func TestFirstByteTimeout_RetryOnHungStream(t *testing.T) {
 		},
 	}
 
-	proxy := NewProxy(cfg)
+	proxy := newProxyWithCleanup(t, cfg)
 	defer proxy.queueMgr.Stop()
 	proxy.UpdateMetrics("a", mkMetrics("a"))
 	proxy.UpdateMetrics("b", mkMetrics("b"))
@@ -115,7 +115,7 @@ func TestTwoClientsSameIP_DifferentSessions(t *testing.T) {
 		},
 	}
 
-	proxy := NewProxy(cfg)
+	proxy := newProxyWithCleanup(t, cfg)
 	defer proxy.queueMgr.Stop()
 	proxy.UpdateMetrics("a", mkMetrics("a"))
 	// Тест проверяет Ollama-flow (SessionStickiness, два клиента с одним IP).
@@ -185,7 +185,7 @@ func TestLoadBalancing_MultipleClients(t *testing.T) {
 		},
 	}
 
-	proxy := NewProxy(cfg)
+	proxy := newProxyWithCleanup(t, cfg)
 	defer proxy.queueMgr.Stop()
 	proxy.UpdateMetrics("a", mkMetrics("a"))
 	proxy.UpdateMetrics("b", mkMetrics("b"))

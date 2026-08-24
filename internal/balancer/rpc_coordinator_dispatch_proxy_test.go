@@ -37,7 +37,7 @@ func TestProxyServeHTTP_RpcCoordinatorIntercepts(t *testing.T) {
 		config := createTestConfig()
 		// OperatingMode не задан → "standard" (legacy) → IsRpcCoordinatorMode == false
 		config.Balancing.OperatingMode = string(types.OperatingModeStandard)
-		proxy := NewProxy(config)
+		proxy := newProxyWithCleanup(t, config)
 		proxy.SetQueueManagerProxy()
 		defer proxy.queueMgr.Stop()
 
@@ -72,7 +72,7 @@ func TestProxyServeHTTP_RpcCoordinatorIntercepts(t *testing.T) {
 	t.Run("rpc_coordinator_mode_dispatcher_nil_does_not_intercept", func(t *testing.T) {
 		config := createTestConfig()
 		config.Balancing.OperatingMode = string(types.OperatingModeRpcCoordinator)
-		proxy := NewProxy(config)
+		proxy := newProxyWithCleanup(t, config)
 		proxy.SetQueueManagerProxy()
 		defer proxy.queueMgr.Stop()
 
@@ -94,7 +94,7 @@ func TestProxyServeHTTP_RpcCoordinatorIntercepts(t *testing.T) {
 	t.Run("rpc_coordinator_mode_non_rpc_path_does_not_intercept", func(t *testing.T) {
 		config := createTestConfig()
 		config.Balancing.OperatingMode = string(types.OperatingModeRpcCoordinator)
-		proxy := NewProxy(config)
+		proxy := newProxyWithCleanup(t, config)
 		proxy.SetQueueManagerProxy()
 		defer proxy.queueMgr.Stop()
 
@@ -118,7 +118,7 @@ func TestProxyServeHTTP_RpcCoordinatorIntercepts(t *testing.T) {
 	t.Run("rpc_coordinator_mode_rpc_path_intercepts", func(t *testing.T) {
 		config := createTestConfig()
 		config.Balancing.OperatingMode = string(types.OperatingModeRpcCoordinator)
-		proxy := NewProxy(config)
+		proxy := newProxyWithCleanup(t, config)
 		proxy.SetQueueManagerProxy()
 		defer proxy.queueMgr.Stop()
 
@@ -146,7 +146,7 @@ func TestProxySetGetRpcCoordinatorDispatcher(t *testing.T) {
 	t.Parallel()
 
 	config := createTestConfig()
-	proxy := NewProxy(config)
+	proxy := newProxyWithCleanup(t, config)
 	proxy.SetQueueManagerProxy()
 	defer proxy.queueMgr.Stop()
 

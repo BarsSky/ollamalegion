@@ -129,7 +129,7 @@ func TestHandleOpenAIChatCompletions_Cline_NormalizesContent(t *testing.T) {
 		API: types.APISettings{RateLimit: 100, RateBurst: 200},
 		Auth: types.AuthConfig{Enabled: false},
 	}
-	p := NewProxy(cfg)
+	p := newProxyWithCleanup(t, cfg)
 	// ВАЖНО: handleOpenAIChatCompletions выбирает бэкенд через
 	// proxy.getBackendPort(state.Backend) — для этого state.Backend должен быть
 	// в proxy.backends. NewProxy уже должен это делать, но убедимся:
@@ -245,7 +245,7 @@ func TestHandleOpenAIChatCompletions_Cline_NoNormalizationRegression(t *testing.
 		API:  types.APISettings{RateLimit: 100, RateBurst: 200},
 		Auth: types.AuthConfig{Enabled: false},
 	}
-	p := NewProxy(cfg)
+	p := newProxyWithCleanup(t, cfg)
 	router := NewLlamaCppRouter(p)
 
 	body := `{"model":"x","messages":[{"role":"user","content":"plain string"}]}` //nolint:gofmt

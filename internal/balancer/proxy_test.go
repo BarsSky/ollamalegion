@@ -142,7 +142,7 @@ func TestQueueManagerProcess(t *testing.T) {
 	t.Parallel()
 
 	config := createTestConfig()
-	proxy := NewProxy(config)
+	proxy := newProxyWithCleanup(t, config)
 	proxy.SetQueueManagerProxy()
 	defer proxy.queueMgr.Stop()
 
@@ -220,7 +220,7 @@ func TestProxyNew(t *testing.T) {
 	t.Parallel()
 
 	config := createTestConfig()
-	proxy := NewProxy(config)
+	proxy := newProxyWithCleanup(t, config)
 	proxy.SetQueueManagerProxy()
 	defer proxy.queueMgr.Stop()
 
@@ -237,7 +237,7 @@ func TestProxySelectBackend(t *testing.T) {
 	t.Parallel()
 
 	config := createTestConfig()
-	proxy := NewProxy(config)
+	proxy := newProxyWithCleanup(t, config)
 	proxy.SetQueueManagerProxy()
 	defer proxy.queueMgr.Stop()
 
@@ -275,7 +275,7 @@ func TestSelectBackend_WithReplicationGroup(t *testing.T) {
 		},
 	}
 
-	proxy := NewProxy(config)
+	proxy := newProxyWithCleanup(t, config)
 	proxy.SetQueueManagerProxy()
 	defer proxy.queueMgr.Stop()
 
@@ -355,7 +355,7 @@ func TestProxyGetClusterState(t *testing.T) {
 	t.Parallel()
 
 	config := createTestConfig()
-	proxy := NewProxy(config)
+	proxy := newProxyWithCleanup(t, config)
 	proxy.SetQueueManagerProxy()
 	defer proxy.queueMgr.Stop()
 
@@ -372,7 +372,7 @@ func TestProxyUpdateMetrics(t *testing.T) {
 	t.Parallel()
 
 	config := createTestConfig()
-	proxy := NewProxy(config)
+	proxy := newProxyWithCleanup(t, config)
 	proxy.SetQueueManagerProxy()
 	defer proxy.queueMgr.Stop()
 
@@ -399,7 +399,7 @@ func TestProxyUpdateBackendStatus(t *testing.T) {
 	t.Parallel()
 
 	config := createTestConfig()
-	proxy := NewProxy(config)
+	proxy := newProxyWithCleanup(t, config)
 	proxy.SetQueueManagerProxy()
 	defer proxy.queueMgr.Stop()
 
@@ -419,7 +419,7 @@ func TestProxyBackendExists(t *testing.T) {
 	t.Parallel()
 
 	config := createTestConfig()
-	proxy := NewProxy(config)
+	proxy := newProxyWithCleanup(t, config)
 	proxy.SetQueueManagerProxy()
 	defer proxy.queueMgr.Stop()
 
@@ -433,7 +433,7 @@ func TestProxyGetBackend(t *testing.T) {
 	t.Parallel()
 
 	config := createTestConfig()
-	proxy := NewProxy(config)
+	proxy := newProxyWithCleanup(t, config)
 	proxy.SetQueueManagerProxy()
 	defer proxy.queueMgr.Stop()
 
@@ -448,7 +448,7 @@ func TestProxyGetAllBackends(t *testing.T) {
 	t.Parallel()
 
 	config := createTestConfig()
-	proxy := NewProxy(config)
+	proxy := newProxyWithCleanup(t, config)
 	proxy.SetQueueManagerProxy()
 	defer proxy.queueMgr.Stop()
 
@@ -461,7 +461,7 @@ func TestProxyAddBackend(t *testing.T) {
 	t.Parallel()
 
 	config := createTestConfig()
-	proxy := NewProxy(config)
+	proxy := newProxyWithCleanup(t, config)
 	proxy.SetQueueManagerProxy()
 	defer proxy.queueMgr.Stop()
 
@@ -482,7 +482,7 @@ func TestProxyAddBackendDuplicate(t *testing.T) {
 	t.Parallel()
 
 	config := createTestConfig()
-	proxy := NewProxy(config)
+	proxy := newProxyWithCleanup(t, config)
 	proxy.SetQueueManagerProxy()
 	defer proxy.queueMgr.Stop()
 
@@ -499,7 +499,7 @@ func TestProxyRemoveBackend(t *testing.T) {
 	t.Parallel()
 
 	config := createTestConfig()
-	proxy := NewProxy(config)
+	proxy := newProxyWithCleanup(t, config)
 	proxy.SetQueueManagerProxy()
 	defer proxy.queueMgr.Stop()
 
@@ -513,7 +513,7 @@ func TestProxyRemoveBackendNotFound(t *testing.T) {
 	t.Parallel()
 
 	config := createTestConfig()
-	proxy := NewProxy(config)
+	proxy := newProxyWithCleanup(t, config)
 	proxy.SetQueueManagerProxy()
 	defer proxy.queueMgr.Stop()
 
@@ -527,7 +527,7 @@ func TestProxyUpdateBackend(t *testing.T) {
 	t.Parallel()
 
 	config := createTestConfig()
-	proxy := NewProxy(config)
+	proxy := newProxyWithCleanup(t, config)
 	proxy.SetQueueManagerProxy()
 	defer proxy.queueMgr.Stop()
 
@@ -551,7 +551,7 @@ func TestProxyUpdateBackendNotFound(t *testing.T) {
 	t.Parallel()
 
 	config := createTestConfig()
-	proxy := NewProxy(config)
+	proxy := newProxyWithCleanup(t, config)
 	proxy.SetQueueManagerProxy()
 	defer proxy.queueMgr.Stop()
 
@@ -649,7 +649,7 @@ func TestCalculateScore(t *testing.T) {
 	t.Parallel()
 
 	config := createTestConfig()
-	proxy := NewProxy(config)
+	proxy := newProxyWithCleanup(t, config)
 	proxy.SetQueueManagerProxy()
 	defer proxy.queueMgr.Stop()
 
@@ -675,7 +675,7 @@ func TestCheckResourceLimits(t *testing.T) {
 	t.Parallel()
 
 	config := createTestConfig()
-	proxy := NewProxy(config)
+	proxy := newProxyWithCleanup(t, config)
 	proxy.SetQueueManagerProxy()
 	defer proxy.queueMgr.Stop()
 
@@ -704,7 +704,7 @@ func TestCheckResourceLimitsExceeded(t *testing.T) {
 	t.Parallel()
 
 	config := createTestConfig()
-	proxy := NewProxy(config)
+	proxy := newProxyWithCleanup(t, config)
 	proxy.SetQueueManagerProxy()
 	defer proxy.queueMgr.Stop()
 
@@ -734,7 +734,7 @@ func TestFindBackendWithModel(t *testing.T) {
 
 	config := createTestConfig()
 	config.Balancing.ModelAffinity = true
-	proxy := NewProxy(config)
+	proxy := newProxyWithCleanup(t, config)
 	proxy.SetQueueManagerProxy()
 	defer proxy.queueMgr.Stop()
 
@@ -767,7 +767,7 @@ func TestSelectByResourcesWithLimits(t *testing.T) {
 	t.Parallel()
 
 	config := createTestConfig()
-	proxy := NewProxy(config)
+	proxy := newProxyWithCleanup(t, config)
 	proxy.SetQueueManagerProxy()
 	defer proxy.queueMgr.Stop()
 
@@ -823,7 +823,7 @@ func TestSelectBackendAllBusy(t *testing.T) {
 	t.Parallel()
 
 	config := createTestConfig()
-	proxy := NewProxy(config)
+	proxy := newProxyWithCleanup(t, config)
 	proxy.SetQueueManagerProxy()
 	defer proxy.queueMgr.Stop()
 
@@ -845,7 +845,7 @@ func TestGetQueueStats(t *testing.T) {
 	t.Parallel()
 
 	config := createTestConfig()
-	proxy := NewProxy(config)
+	proxy := newProxyWithCleanup(t, config)
 	proxy.SetQueueManagerProxy()
 	defer proxy.queueMgr.Stop()
 

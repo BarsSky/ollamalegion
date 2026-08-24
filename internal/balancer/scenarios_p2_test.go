@@ -66,7 +66,7 @@ func newVRTestRig(t *testing.T) *vrTestRig {
 			Memory: types.MemoryLimits{MaxUsagePercent: 90},
 		},
 	}
-	r.proxy = NewProxy(conf)
+	r.proxy = newProxyWithCleanup(t, conf)
 	r.proxy.SetQueueManagerProxy()
 	t.Cleanup(func() { r.proxy.queueMgr.Stop() })
 

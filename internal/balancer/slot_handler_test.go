@@ -13,7 +13,7 @@ func TestAcquireSlotWithRetry_EmptyTarget(t *testing.T) {
 	t.Parallel()
 
 	config := createTestConfig()
-	proxy := NewProxy(config)
+	proxy := newProxyWithCleanup(t, config)
 	proxy.SetQueueManagerProxy()
 	defer proxy.queueMgr.Stop()
 
@@ -28,7 +28,7 @@ func TestAcquireSlotWithRetry_Success(t *testing.T) {
 	t.Parallel()
 
 	config := createTestConfig()
-	proxy := NewProxy(config)
+	proxy := newProxyWithCleanup(t, config)
 	proxy.SetQueueManagerProxy()
 	defer proxy.queueMgr.Stop()
 
@@ -54,7 +54,7 @@ func TestAcquireSlotWithRetry_Fallback(t *testing.T) {
 	t.Parallel()
 
 	config := createTestConfig()
-	proxy := NewProxy(config)
+	proxy := newProxyWithCleanup(t, config)
 	proxy.SetQueueManagerProxy()
 	defer proxy.queueMgr.Stop()
 
@@ -104,7 +104,7 @@ func TestAcquireSlotWithRetry_AllBusy(t *testing.T) {
 	t.Parallel()
 
 	config := createTestConfig()
-	proxy := NewProxy(config)
+	proxy := newProxyWithCleanup(t, config)
 	proxy.SetQueueManagerProxy()
 	defer proxy.queueMgr.Stop()
 
@@ -129,7 +129,7 @@ func TestAcquireSlotWithRetry_SessionBinding(t *testing.T) {
 
 	config := createTestConfig()
 	config.Balancing.SessionStickiness = true
-	proxy := NewProxy(config)
+	proxy := newProxyWithCleanup(t, config)
 	proxy.SetQueueManagerProxy()
 	defer proxy.queueMgr.Stop()
 

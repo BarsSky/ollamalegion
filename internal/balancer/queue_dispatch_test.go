@@ -73,7 +73,7 @@ func TestModelManagerGetLoadTimeout(t *testing.T) {
 }
 
 func TestCanAcceptRequest(t *testing.T) {
-	p := NewProxy(&types.LoadBalancerConfig{
+	p := newProxyWithCleanup(t, &types.LoadBalancerConfig{
 		Balancing: types.BalancingSettings{
 			Algorithm:            "resource-aware",
 			ModelAffinity:        true,
@@ -140,7 +140,7 @@ func TestCanAcceptRequest(t *testing.T) {
 }
 
 func TestDispatchRequestAffinity(t *testing.T) {
-	p := NewProxy(&types.LoadBalancerConfig{
+	p := newProxyWithCleanup(t, &types.LoadBalancerConfig{
 		Balancing: types.BalancingSettings{
 			Algorithm:            "resource-aware",
 			ModelAffinity:        true,
@@ -196,7 +196,7 @@ func TestDispatchRequestAffinity(t *testing.T) {
 }
 
 func TestDispatchRequestNoBackendAvailable(t *testing.T) {
-	p := NewProxy(&types.LoadBalancerConfig{
+	p := newProxyWithCleanup(t, &types.LoadBalancerConfig{
 		Balancing: types.BalancingSettings{
 			Algorithm:            "resource-aware",
 			ModelAffinity:        true,
@@ -243,7 +243,7 @@ func TestDispatchRequestNoBackendAvailable(t *testing.T) {
 }
 
 func TestWaitForModelReady(t *testing.T) {
-	p := NewProxy(&types.LoadBalancerConfig{
+	p := newProxyWithCleanup(t, &types.LoadBalancerConfig{
 		Balancing: types.BalancingSettings{
 			QueueMaxSize:         10,
 			QueueWorkers:         2,

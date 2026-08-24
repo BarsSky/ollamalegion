@@ -7,7 +7,7 @@ import (
 )
 
 func TestResolveNumCtx_BodyOnly(t *testing.T) {
-	p := NewProxy(&types.LoadBalancerConfig{})
+	p := newProxyWithCleanup(t, &types.LoadBalancerConfig{})
 	body := []byte(`{"model":"test-model","messages":[{"role":"user","content":"test"}],"options":{"num_ctx":16384}}`)
 	resolved := p.ResolveNumCtx("test-model", body, "test-backend")
 	t.Logf("resolved: value=%d source=%s", resolved.Value, resolved.Source)

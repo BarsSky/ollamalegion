@@ -59,7 +59,7 @@ func newAuthRig(t *testing.T, authTokens []string) *authRig {
 		},
 	}
 	r := &authRig{}
-	r.proxy = NewProxy(conf)
+	r.proxy = newProxyWithCleanup(t, conf)
 	r.proxy.SetQueueManagerProxy()
 	t.Cleanup(func() { r.proxy.queueMgr.Stop() })
 

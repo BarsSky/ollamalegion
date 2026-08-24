@@ -15,7 +15,7 @@ func TestResolveSessionBackend_NoSession(t *testing.T) {
 
 	config := createTestConfig()
 	config.Balancing.SessionStickiness = true
-	proxy := NewProxy(config)
+	proxy := newProxyWithCleanup(t, config)
 	proxy.SetQueueManagerProxy()
 	defer proxy.queueMgr.Stop()
 
@@ -30,7 +30,7 @@ func TestResolveSessionBackend_NewSession(t *testing.T) {
 
 	config := createTestConfig()
 	config.Balancing.SessionStickiness = true
-	proxy := NewProxy(config)
+	proxy := newProxyWithCleanup(t, config)
 	proxy.SetQueueManagerProxy()
 	defer proxy.queueMgr.Stop()
 
@@ -45,7 +45,7 @@ func TestResolveSessionBackend_HealthySession(t *testing.T) {
 
 	config := createTestConfig()
 	config.Balancing.SessionStickiness = true
-	proxy := NewProxy(config)
+	proxy := newProxyWithCleanup(t, config)
 	proxy.SetQueueManagerProxy()
 	defer proxy.queueMgr.Stop()
 
@@ -64,7 +64,7 @@ func TestResolveSessionBackend_UnhealthySession(t *testing.T) {
 
 	config := createTestConfig()
 	config.Balancing.SessionStickiness = true
-	proxy := NewProxy(config)
+	proxy := newProxyWithCleanup(t, config)
 	proxy.SetQueueManagerProxy()
 	defer proxy.queueMgr.Stop()
 
@@ -84,7 +84,7 @@ func TestRebalanceIfNeeded_LowLoad(t *testing.T) {
 
 	config := createTestConfig()
 	config.Balancing.SessionStickiness = true
-	proxy := NewProxy(config)
+	proxy := newProxyWithCleanup(t, config)
 	proxy.SetQueueManagerProxy()
 	defer proxy.queueMgr.Stop()
 
@@ -107,7 +107,7 @@ func TestRebalanceIfNeeded_HighLoad(t *testing.T) {
 
 	config := createTestConfig()
 	config.Balancing.SessionStickiness = true
-	proxy := NewProxy(config)
+	proxy := newProxyWithCleanup(t, config)
 	proxy.SetQueueManagerProxy()
 	defer proxy.queueMgr.Stop()
 
@@ -137,7 +137,7 @@ func TestBindSession(t *testing.T) {
 
 	config := createTestConfig()
 	config.Balancing.SessionStickiness = true
-	proxy := NewProxy(config)
+	proxy := newProxyWithCleanup(t, config)
 	proxy.SetQueueManagerProxy()
 	defer proxy.queueMgr.Stop()
 
@@ -157,7 +157,7 @@ func TestBindSession_Disabled(t *testing.T) {
 
 	config := createTestConfig()
 	config.Balancing.SessionStickiness = false
-	proxy := NewProxy(config)
+	proxy := newProxyWithCleanup(t, config)
 	proxy.SetQueueManagerProxy()
 	defer proxy.queueMgr.Stop()
 

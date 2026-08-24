@@ -51,7 +51,7 @@ func setupBalancerScenario(t *testing.T) *Proxy {
 		Auth: types.AuthConfig{Enabled: false},
 	}
 
-	proxy := NewProxy(config)
+	proxy := newProxyWithCleanup(t, config)
 	proxy.SetQueueManagerProxy()
 
 	// Инициализируем метрики: оба бэкенда healthy, VRAM 24GB, GPU ~10%

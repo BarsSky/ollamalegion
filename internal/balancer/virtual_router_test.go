@@ -2,6 +2,7 @@ package balancer
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -83,9 +84,18 @@ func newRegistryWithVMs(t *testing.T, vms ...types.VirtualModelConfig) *virtualm
 
 func newTestProxy(t *testing.T) *Proxy {
 	t.Helper()
-	proxy := NewProxy(createTestConfig())
+	proxy := newProxyWithCleanup(t, createTestConfig())
 	proxy.SetQueueManagerProxy()
-	t.Cleanup(func() { proxy.queueMgr.Stop() })
+	// Round 52.4 (2026-08-24): используем proxy.Shutdown чтобы остановить
+	// ВСЕ background goroutines (queueMgr, unloadScheduler, weightTuner,
+	// agentChecker, sessionMgr, llamaCppMetricsPoller, и т.д.).
+	// Раньше cleanup делал только queueMgr.Stop() — все остальные goroutine
+	// leaked → 1000+ leaked goroutine по всему test-suite → timeout через 60s.
+	t.Cleanup(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		_ = proxy.Shutdown(ctx)
+	})
 	return proxy
 }
 
@@ -763,7 +773,7 @@ func TestProxy_GetBackendFreeSlots(t *testing.T) {
 		{ID: "b1", Name: "b1", Host: "localhost", OllamaPort: 11434, MaxConcurrentReqs: 10, Status: types.StatusHealthy},
 		{ID: "b2", Name: "b2", Host: "localhost", OllamaPort: 11435, MaxConcurrentReqs: 5, Status: types.StatusHealthy},
 	}
-	proxy := NewProxy(conf)
+	proxy := newProxyWithCleanup(t, conf)
 	proxy.SetQueueManagerProxy()
 	defer proxy.queueMgr.Stop()
 

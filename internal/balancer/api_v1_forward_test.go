@@ -97,7 +97,7 @@ func TestServeAPIv1Request_Forward(t *testing.T) {
 		Backends: []types.Backend{},
 	}
 
-	proxy := NewProxy(conf)
+	proxy := newProxyWithCleanup(t, conf)
 	defer proxy.queueMgr.Stop()
 
 	// Переписываем apiReverseProxy чтобы он указывал на тестовый сервер
@@ -137,7 +137,7 @@ func TestServeAPIv1Request_NotConfigured(t *testing.T) {
 		},
 		Backends: []types.Backend{},
 	}
-	proxy := NewProxy(conf)
+	proxy := newProxyWithCleanup(t, conf)
 	defer proxy.queueMgr.Stop()
 	proxy.apiReverseProxy = nil // force unconfigured
 
@@ -169,7 +169,7 @@ func TestRouteRequest_APIv1ShortCircuits(t *testing.T) {
 		},
 		Backends: []types.Backend{},
 	}
-	proxy := NewProxy(conf)
+	proxy := newProxyWithCleanup(t, conf)
 	defer proxy.queueMgr.Stop()
 	proxy.apiReverseProxy = mustNewSingleHost(mustParseURL(t, apiServer.URL))
 
@@ -204,7 +204,7 @@ func TestRouteRequest_APIv1_VsUnsupportedOpenAI(t *testing.T) {
 		},
 		Backends: []types.Backend{},
 	}
-	proxy := NewProxy(conf)
+	proxy := newProxyWithCleanup(t, conf)
 	defer proxy.queueMgr.Stop()
 	proxy.apiReverseProxy = mustNewSingleHost(mustParseURL(t, apiServer.URL))
 
@@ -231,7 +231,7 @@ func TestNewProxy_InitializesAPIReverseProxy(t *testing.T) {
 		},
 		Backends: []types.Backend{},
 	}
-	proxy := NewProxy(conf)
+	proxy := newProxyWithCleanup(t, conf)
 	defer proxy.queueMgr.Stop()
 	if proxy.apiReverseProxy == nil {
 		t.Fatal("apiReverseProxy not initialized after NewProxy")
@@ -247,7 +247,7 @@ func TestNewProxy_DefaultAPIPort(t *testing.T) {
 		},
 		Backends: []types.Backend{},
 	}
-	proxy := NewProxy(conf)
+	proxy := newProxyWithCleanup(t, conf)
 	defer proxy.queueMgr.Stop()
 	if proxy.apiReverseProxy == nil {
 		t.Fatal("apiReverseProxy not initialized with default APIPort")

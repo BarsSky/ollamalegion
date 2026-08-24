@@ -73,7 +73,7 @@ func createTestHealthChecker(t *testing.T) (*HealthChecker, *Proxy) {
 		},
 	}
 
-	proxy := NewProxy(config)
+	proxy := newProxyWithCleanup(t, config)
 	healthChecker := NewHealthChecker(proxy, time.Second, 2)
 
 	return healthChecker, proxy
@@ -337,7 +337,7 @@ func TestHealthChecker_Threshold(t *testing.T) {
 		},
 	}
 
-	proxy := NewProxy(config)
+	proxy := newProxyWithCleanup(t, config)
 	hc := NewHealthChecker(proxy, time.Millisecond*50, 3)
 
 	// Начальный статус - healthy

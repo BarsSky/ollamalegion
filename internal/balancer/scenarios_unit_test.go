@@ -152,7 +152,7 @@ func TestAgent_Scenario_RegisterNew(t *testing.T) {
 			GPU: types.GPULimits{MaxUsagePercent: 90},
 		},
 	}
-	proxy := NewProxy(conf)
+	proxy := newProxyWithCleanup(t, conf)
 	proxy.SetQueueManagerProxy()
 	defer proxy.queueMgr.Stop()
 
@@ -179,7 +179,7 @@ func TestAgent_Scenario_HeartbeatUpdate(t *testing.T) {
 		},
 		Balancing: types.BalancingSettings{Algorithm: types.AlgorithmRoundRobin},
 	}
-	proxy := NewProxy(conf)
+	proxy := newProxyWithCleanup(t, conf)
 	proxy.SetQueueManagerProxy()
 	defer proxy.queueMgr.Stop()
 
@@ -212,7 +212,7 @@ func TestAgent_Scenario_AgentMismatch_Ignored(t *testing.T) {
 		},
 		Balancing: types.BalancingSettings{Algorithm: types.AlgorithmRoundRobin},
 	}
-	proxy := NewProxy(conf)
+	proxy := newProxyWithCleanup(t, conf)
 	proxy.SetQueueManagerProxy()
 	defer proxy.queueMgr.Stop()
 
@@ -237,7 +237,7 @@ func TestAgent_Scenario_AgentPortChange(t *testing.T) {
 		},
 		Balancing: types.BalancingSettings{Algorithm: types.AlgorithmRoundRobin},
 	}
-	proxy := NewProxy(conf)
+	proxy := newProxyWithCleanup(t, conf)
 	proxy.SetQueueManagerProxy()
 	defer proxy.queueMgr.Stop()
 
@@ -263,7 +263,7 @@ func TestAgent_Scenario_AgentTimeout(t *testing.T) {
 			HealthCheckInterval: 60,
 		},
 	}
-	proxy := NewProxy(conf)
+	proxy := newProxyWithCleanup(t, conf)
 	proxy.SetQueueManagerProxy()
 	defer proxy.queueMgr.Stop()
 
@@ -289,7 +289,7 @@ func TestUnit_Scenario_BackendState_GetBackendState(t *testing.T) {
 		},
 		Balancing: types.BalancingSettings{Algorithm: types.AlgorithmRoundRobin},
 	}
-	proxy := NewProxy(conf)
+	proxy := newProxyWithCleanup(t, conf)
 	proxy.SetQueueManagerProxy()
 	defer proxy.queueMgr.Stop()
 
@@ -310,7 +310,7 @@ func TestUnit_Scenario_BackendState_GetBackendStates(t *testing.T) {
 		},
 		Balancing: types.BalancingSettings{Algorithm: types.AlgorithmRoundRobin},
 	}
-	proxy := NewProxy(conf)
+	proxy := newProxyWithCleanup(t, conf)
 	proxy.SetQueueManagerProxy()
 	defer proxy.queueMgr.Stop()
 
@@ -328,7 +328,7 @@ func TestUnit_Scenario_BackendState_ActiveReqs(t *testing.T) {
 		},
 		Balancing: types.BalancingSettings{Algorithm: types.AlgorithmRoundRobin},
 	}
-	proxy := NewProxy(conf)
+	proxy := newProxyWithCleanup(t, conf)
 	proxy.SetQueueManagerProxy()
 	defer proxy.queueMgr.Stop()
 
@@ -360,7 +360,7 @@ func TestUnit_Scenario_BackendState_TotalRequests(t *testing.T) {
 		},
 		Balancing: types.BalancingSettings{Algorithm: types.AlgorithmRoundRobin},
 	}
-	proxy := NewProxy(conf)
+	proxy := newProxyWithCleanup(t, conf)
 	proxy.SetQueueManagerProxy()
 	defer proxy.queueMgr.Stop()
 
@@ -393,7 +393,7 @@ func TestUnit_Scenario_BackendState_MetricsHistory(t *testing.T) {
 		},
 		Balancing: types.BalancingSettings{Algorithm: types.AlgorithmRoundRobin},
 	}
-	proxy := NewProxy(conf)
+	proxy := newProxyWithCleanup(t, conf)
 	proxy.SetQueueManagerProxy()
 	defer proxy.queueMgr.Stop()
 
@@ -427,7 +427,7 @@ func TestUnit_Scenario_BackendState_Prediction(t *testing.T) {
 		},
 		Balancing: types.BalancingSettings{Algorithm: types.AlgorithmRoundRobin},
 	}
-	proxy := NewProxy(conf)
+	proxy := newProxyWithCleanup(t, conf)
 	proxy.SetQueueManagerProxy()
 	defer proxy.queueMgr.Stop()
 
@@ -461,7 +461,7 @@ func TestUnit_Scenario_BackendState_RequestHistory(t *testing.T) {
 		},
 		Balancing: types.BalancingSettings{Algorithm: types.AlgorithmRoundRobin},
 	}
-	proxy := NewProxy(conf)
+	proxy := newProxyWithCleanup(t, conf)
 	proxy.SetQueueManagerProxy()
 	defer proxy.queueMgr.Stop()
 
@@ -495,7 +495,7 @@ func TestUnit_Scenario_BackendState_CalculatedRPS(t *testing.T) {
 		},
 		Balancing: types.BalancingSettings{Algorithm: types.AlgorithmRoundRobin},
 	}
-	proxy := NewProxy(conf)
+	proxy := newProxyWithCleanup(t, conf)
 	proxy.SetQueueManagerProxy()
 	defer proxy.queueMgr.Stop()
 
@@ -526,7 +526,7 @@ func TestUnit_Scenario_BackendState_ErrorCount(t *testing.T) {
 		},
 		Balancing: types.BalancingSettings{Algorithm: types.AlgorithmRoundRobin},
 	}
-	proxy := NewProxy(conf)
+	proxy := newProxyWithCleanup(t, conf)
 	proxy.SetQueueManagerProxy()
 	defer proxy.queueMgr.Stop()
 
@@ -557,7 +557,7 @@ func TestUnit_Scenario_BackendState_AdaptiveTimeout(t *testing.T) {
 		},
 		Balancing: types.BalancingSettings{Algorithm: types.AlgorithmRoundRobin},
 	}
-	proxy := NewProxy(conf)
+	proxy := newProxyWithCleanup(t, conf)
 	proxy.SetQueueManagerProxy()
 	defer proxy.queueMgr.Stop()
 
@@ -593,7 +593,7 @@ func TestUnit_Scenario_BackendState_WarmingUpModels(t *testing.T) {
 		},
 		Balancing: types.BalancingSettings{Algorithm: types.AlgorithmRoundRobin},
 	}
-	proxy := NewProxy(conf)
+	proxy := newProxyWithCleanup(t, conf)
 	proxy.SetQueueManagerProxy()
 	defer proxy.queueMgr.Stop()
 
@@ -626,7 +626,7 @@ func TestUnit_Scenario_BackendState_LastUsed(t *testing.T) {
 		},
 		Balancing: types.BalancingSettings{Algorithm: types.AlgorithmRoundRobin},
 	}
-	proxy := NewProxy(conf)
+	proxy := newProxyWithCleanup(t, conf)
 	proxy.SetQueueManagerProxy()
 	defer proxy.queueMgr.Stop()
 
@@ -657,7 +657,7 @@ func TestUnit_Scenario_BackendState_TotalAttempts(t *testing.T) {
 		},
 		Balancing: types.BalancingSettings{Algorithm: types.AlgorithmRoundRobin},
 	}
-	proxy := NewProxy(conf)
+	proxy := newProxyWithCleanup(t, conf)
 	proxy.SetQueueManagerProxy()
 	defer proxy.queueMgr.Stop()
 
@@ -690,7 +690,7 @@ func TestUnit_Scenario_BackendState_AgentID(t *testing.T) {
 		},
 		Balancing: types.BalancingSettings{Algorithm: types.AlgorithmRoundRobin},
 	}
-	proxy := NewProxy(conf)
+	proxy := newProxyWithCleanup(t, conf)
 	proxy.SetQueueManagerProxy()
 	defer proxy.queueMgr.Stop()
 

@@ -91,7 +91,7 @@ func buildProxyWithStub(t *testing.T, files []stubFileEntry, loadedModels []type
 			Status:        types.StatusHealthy,
 		},
 	}
-	proxy := NewProxy(cfg)
+	proxy := newProxyWithCleanup(t, cfg)
 	proxy.llamaCppRouter = &LlamaCppRouter{proxy: proxy}
 	proxy.backends["stub-1"] = &BackendState{Backend: &cfg.Backends[0]}
 

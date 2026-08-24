@@ -174,7 +174,7 @@ func TestSmoke_1_0Release_FullFlow(t *testing.T) {
 			Memory: types.MemoryLimits{MaxUsagePercent: 90},
 		},
 	}
-	proxy := NewProxy(conf)
+	proxy := newProxyWithCleanup(t, conf)
 	proxy.SetQueueManagerProxy()
 	defer proxy.queueMgr.Stop()
 
@@ -389,7 +389,7 @@ func TestSmoke_1_0Release_GracefulShutdown(t *testing.T) {
 			GPU: types.GPULimits{MaxUsagePercent: 90},
 		},
 	}
-	proxy := NewProxy(conf)
+	proxy := newProxyWithCleanup(t, conf)
 	proxy.SetQueueManagerProxy()
 
 	// Дайте goroutines шанс стартовать.

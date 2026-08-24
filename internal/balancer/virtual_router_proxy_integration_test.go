@@ -50,7 +50,7 @@ func TestProxyServeHTTP_VirtualRouter_Intercepts(t *testing.T) {
 	host, port, _ := parseBackendHostPort(addr)
 
 	// Set up Proxy with virtual_router mode + VirtualRouter.
-	proxy := NewProxy(createTestConfig())
+	proxy := newProxyWithCleanup(t, createTestConfig())
 	proxy.SetQueueManagerProxy()
 	defer proxy.queueMgr.Stop()
 	proxy.config.Balancing.OperatingMode = string(types.OperatingModeVirtualRouter)
@@ -91,7 +91,7 @@ func TestProxyServeHTTP_VirtualRouter_StandardMode_DoesNotIntercept(t *testing.T
 	host, port, _ := parseBackendHostPort(addr)
 
 	// Standard mode (default) — interceptor should NOT fire.
-	proxy := NewProxy(createTestConfig())
+	proxy := newProxyWithCleanup(t, createTestConfig())
 	proxy.SetQueueManagerProxy()
 	defer proxy.queueMgr.Stop()
 	// OperatingMode остаётся пустым (default = standard).
@@ -139,7 +139,7 @@ func TestProxyServeHTTP_VirtualRouter_NonVirtualModel_FallsThrough(t *testing.T)
 	host, port, _ := parseBackendHostPort(addr)
 
 	// virtual_router mode + VirtualRouter set, но model не в registry.
-	proxy := NewProxy(createTestConfig())
+	proxy := newProxyWithCleanup(t, createTestConfig())
 	proxy.SetQueueManagerProxy()
 	defer proxy.queueMgr.Stop()
 	proxy.config.Balancing.OperatingMode = string(types.OperatingModeVirtualRouter)
@@ -184,7 +184,7 @@ func TestProxyServeHTTP_VirtualRouter_NonVirtualModel_FallsThrough(t *testing.T)
 func TestProxyServeHTTP_VirtualRouter_NonRpcPath_DoesNotIntercept(t *testing.T) {
 	t.Parallel()
 
-	proxy := NewProxy(createTestConfig())
+	proxy := newProxyWithCleanup(t, createTestConfig())
 	proxy.SetQueueManagerProxy()
 	defer proxy.queueMgr.Stop()
 	proxy.config.Balancing.OperatingMode = string(types.OperatingModeVirtualRouter)

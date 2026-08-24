@@ -299,7 +299,7 @@ func TestAutoPullExecutePullSuccess(t *testing.T) {
 	config.Backends[0].Host = "127.0.0.1"
 	config.Backends[0].OllamaPort = mustParsePort(ollamaServer.URL)
 	config.Backends[0].Status = types.StatusHealthy
-	proxy := NewProxy(config)
+	proxy := newProxyWithCleanup(t, config)
 
 	apm := NewAutoPullManager(proxy, types.AutoPullConfig{Enabled: true})
 
@@ -336,7 +336,7 @@ func TestAutoPullExecutePullError(t *testing.T) {
 	config.Backends[0].Host = "127.0.0.1"
 	config.Backends[0].OllamaPort = mustParsePort(ollamaServer.URL)
 	config.Backends[0].Status = types.StatusHealthy
-	proxy := NewProxy(config)
+	proxy := newProxyWithCleanup(t, config)
 
 	apm := NewAutoPullManager(proxy, types.AutoPullConfig{Enabled: true})
 
@@ -589,7 +589,7 @@ func createTestProxy(t *testing.T) *Proxy {
 		RetryCount:    1,
 	}
 
-	proxy := NewProxy(config)
+	proxy := newProxyWithCleanup(t, config)
 	require.NotNil(t, proxy)
 
 	// Оба бэкенда healthy
@@ -653,7 +653,7 @@ func TestAutoPullFullScenario(t *testing.T) {
 	// Убираем второй бэкенд, чтобы не было альтернатив
 	config.Backends = config.Backends[:1]
 
-	proxy := NewProxy(config)
+	proxy := newProxyWithCleanup(t, config)
 	require.NotNil(t, proxy)
 	require.NotNil(t, proxy.AutoPull, "AutoPullManager should be initialized")
 

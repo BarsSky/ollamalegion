@@ -27,7 +27,7 @@ import (
 func TestAddBackend_LlamaCpp_DefaultMaxConcurrent1(t *testing.T) {
 	t.Parallel()
 	config := createTestConfig()
-	proxy := NewProxy(config)
+	proxy := newProxyWithCleanup(t, config)
 	proxy.SetQueueManagerProxy()
 	defer proxy.queueMgr.Stop()
 
@@ -51,7 +51,7 @@ func TestAddBackend_LlamaCpp_DefaultMaxConcurrent1(t *testing.T) {
 func TestAddBackend_Ollama_DefaultMaxConcurrent10(t *testing.T) {
 	t.Parallel()
 	config := createTestConfig()
-	proxy := NewProxy(config)
+	proxy := newProxyWithCleanup(t, config)
 	proxy.SetQueueManagerProxy()
 	defer proxy.queueMgr.Stop()
 
@@ -75,7 +75,7 @@ func TestAddBackend_Ollama_DefaultMaxConcurrent10(t *testing.T) {
 func TestAddBackend_ExplicitMaxConcurrent_Respected(t *testing.T) {
 	t.Parallel()
 	config := createTestConfig()
-	proxy := NewProxy(config)
+	proxy := newProxyWithCleanup(t, config)
 	proxy.SetQueueManagerProxy()
 	defer proxy.queueMgr.Stop()
 
@@ -114,7 +114,7 @@ func TestWarmupModel_EmptyModel_NoOp(t *testing.T) {
 	// после добавления model=="" состояние не меняется.
 
 	config := createTestConfig()
-	proxy := NewProxy(config)
+	proxy := newProxyWithCleanup(t, config)
 	proxy.SetQueueManagerProxy()
 	defer proxy.queueMgr.Stop()
 

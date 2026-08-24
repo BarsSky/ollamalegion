@@ -31,6 +31,10 @@ type QueueManager struct {
 	cancel           context.CancelFunc
 	wg               sync.WaitGroup
 	proxy            *Proxy
+	// Round 52.4 (2026-08-24): sync.Once для idempotent Stop().
+	// Без этого второй вызов (например, defer + t.Cleanup) → panic
+	// "close of closed channel" на qm.queue.
+	stopOnce         sync.Once
 	pendingMu        sync.RWMutex
 	pending          []*QueuedRequest
 	processingMu     sync.RWMutex
@@ -346,17 +350,24 @@ func (qm *QueueManager) processRequest(req *QueuedRequest, workerID int) {
 	}
 }
 
-// Stop - остановка всех workers
+// Stop - остановка всех workers.
+//
+// Round 52.4 (2026-08-24): idempotent — multiple calls don't panic on
+// double-close of qm.queue channel. До этого паника
+// `close of closed channel` при втором вызове (e.g., тест делает
+// `defer proxy.queueMgr.Stop()` + t.Cleanup -> Shutdown -> queueMgr.Stop).
 func (qm *QueueManager) Stop() {
-	qm.cancel()
-	qm.wg.Wait()
-	close(qm.queue)
-	for req := range qm.queue {
-		select {
-		case req.Done <- false:
-		default:
+	qm.stopOnce.Do(func() {
+		qm.cancel()
+		qm.wg.Wait()
+		close(qm.queue)
+		for req := range qm.queue {
+			select {
+			case req.Done <- false:
+			default:
+			}
 		}
-	}
+	})
 }
 
 // addPending - добавление запроса в pending список

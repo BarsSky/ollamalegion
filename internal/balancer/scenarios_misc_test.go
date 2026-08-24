@@ -139,7 +139,7 @@ func newToolCallRig(t *testing.T) *toolCallRig {
 			Memory: types.MemoryLimits{MaxUsagePercent: 90},
 		},
 	}
-	r.proxy = NewProxy(conf)
+	r.proxy = newProxyWithCleanup(t, conf)
 	r.proxy.SetQueueManagerProxy()
 	t.Cleanup(func() { r.proxy.queueMgr.Stop() })
 	r.registry = r.proxy.GetVirtualModelRegistry()
@@ -328,7 +328,7 @@ func TestInterop_Scenario_BothModesActive(t *testing.T) {
 			GPU: types.GPULimits{MaxUsagePercent: 90},
 		},
 	}
-	proxy := NewProxy(conf)
+	proxy := newProxyWithCleanup(t, conf)
 	proxy.SetQueueManagerProxy()
 	defer proxy.queueMgr.Stop()
 
@@ -394,7 +394,7 @@ func TestInterop_Scenario_ModePrecedence(t *testing.T) {
 			RpcCoordinator: types.RpcCoordinatorConfig{Enabled: true, Embedded: true},
 		},
 	}
-	proxy := NewProxy(conf)
+	proxy := newProxyWithCleanup(t, conf)
 	proxy.SetQueueManagerProxy()
 	defer proxy.queueMgr.Stop()
 	coord := proxy.GetRpcCoordinator()
@@ -466,7 +466,7 @@ func TestHealth_Scenario_QueueStats(t *testing.T) {
 			OperatingMode: string(types.OperatingModeStandard),
 		},
 	}
-	proxy := NewProxy(conf)
+	proxy := newProxyWithCleanup(t, conf)
 	proxy.SetQueueManagerProxy()
 	defer proxy.queueMgr.Stop()
 	_ = proxy
@@ -512,7 +512,7 @@ func TestBackend_Scenario_SessionStickiness(t *testing.T) {
 			GPU: types.GPULimits{MaxUsagePercent: 90},
 		},
 	}
-	proxy := NewProxy(conf)
+	proxy := newProxyWithCleanup(t, conf)
 	proxy.SetQueueManagerProxy()
 	defer proxy.queueMgr.Stop()
 
@@ -556,7 +556,7 @@ func TestMisc_Scenario_UnknownPath(t *testing.T) {
 			OperatingMode: string(types.OperatingModeStandard),
 		},
 	}
-	proxy := NewProxy(conf)
+	proxy := newProxyWithCleanup(t, conf)
 	proxy.SetQueueManagerProxy()
 	defer proxy.queueMgr.Stop()
 
@@ -585,7 +585,7 @@ func TestMisc_Scenario_LargeBody_NotCrashed(t *testing.T) {
 			OperatingMode: string(types.OperatingModeStandard),
 		},
 	}
-	proxy := NewProxy(conf)
+	proxy := newProxyWithCleanup(t, conf)
 	proxy.SetQueueManagerProxy()
 	defer proxy.queueMgr.Stop()
 

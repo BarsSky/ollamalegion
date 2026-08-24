@@ -1417,7 +1417,32 @@ Beta-slow параметр YaRN. Стандарт: 1. Низкое = более 
                         </div>
 
                         <!-- ==================== Section: Help ==================== -->
-                        <div class="settings-section" id="section-help">
+                        <div class="settings-section" id="section-autotune">
+                    <div class="settings-section-header" data-section="autotune">
+                        <span class="section-toggle">▼</span>
+                        <i class="fas fa-magic"></i>
+                        <span>AutoTune (R54.1)</span>
+                    </div>
+                    <div class="settings-section-body open">
+                        <div class="autotune-settings">
+                            <div class="form-group">
+                                <label class="checkbox-label">
+                                    <input type="checkbox" id="autotune-global-enabled">
+                                    <span>AutoTune master switch</span>
+                                </label>
+                                <div class="hint">Балансер автоматически определяет sub-optimal state (q4_0 KV cache, over-allocated n_ctx) и применяет fix. По умолчанию ON.</div>
+                            </div>
+                            <div class="form-group">
+                                <h4>Per-model overrides</h4>
+                                <div id="autotune-per-model-list">
+                                    <div class="hint">Loading models...</div>
+                                </div>
+                                <button type="button" class="btn btn-secondary" id="autotune-refresh-btn">Refresh</button>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+                <div class="settings-section" id="section-help">
                             <div class="settings-section-header" data-section="help">
                                 <span class="section-toggle">▼</span>
                                 <i class="fas fa-circle-question"></i>
@@ -1731,6 +1756,8 @@ Beta-slow параметр YaRN. Стандарт: 1. Низкое = более 
     <script src="js/modules/renderers.js?v=16"></script>
     <!-- R54.5 (2026-08-24): AutoTune visibility (Phase 1: read-only badge) -->
     <script src="js/modules/autotune.js?v=18"></script>
+    <!-- R54.7 (2026-08-24): AutoTune Settings page handler -->
+    <script src="js/modules/autotune_settings.js?v=19"></script>
     <script src="js/modules/gguf-load-progress.js?v=16"></script>
     <script src="js/modules/gguf-renderer.js?v=17"></script>
     <script src="js/modules/settings-ui.js?v=16"></script>

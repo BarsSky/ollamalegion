@@ -480,6 +480,83 @@
     margin-left: 18px;
 }
 
+/* ===== AutoTune Settings page (R54.7, 2026-08-24) ===== */
+.autotune-settings {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-4);
+    padding: var(--space-3);
+}
+.autotune-settings .checkbox-label {
+    display: flex;
+    align-items: center;
+    gap: var(--space-2);
+    cursor: pointer;
+    font-weight: 600;
+}
+.autotune-settings .checkbox-label input[type="checkbox"] {
+    width: 18px;
+    height: 18px;
+    cursor: pointer;
+}
+.autotune-settings .hint {
+    font-size: var(--font-size-sm);
+    color: var(--text-secondary);
+    margin-top: var(--space-1);
+    line-height: 1.4;
+}
+.autotune-settings h4 {
+    margin: 0 0 var(--space-2) 0;
+    font-size: var(--font-size-base);
+    color: var(--text-primary);
+}
+.autotune-per-model-item {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: var(--space-2);
+    margin-bottom: var(--space-1);
+    background: var(--bg-secondary);
+    border-radius: var(--radius-sm);
+    gap: var(--space-2);
+}
+.autotune-per-model-item .model-name {
+    font-family: monospace;
+    font-size: var(--font-size-sm);
+    flex: 1;
+    word-break: break-all;
+}
+.autotune-per-model-item .override-toggle {
+    display: flex;
+    gap: var(--space-1);
+    align-items: center;
+}
+.autotune-per-model-item select {
+    padding: 4px 6px;
+    border-radius: var(--radius-xs);
+    background: var(--bg-primary);
+    color: var(--text-primary);
+    border: 1px solid var(--border);
+    font-size: var(--font-size-sm);
+}
+.autotune-save-status {
+    font-size: var(--font-size-sm);
+    margin-top: var(--space-2);
+    padding: var(--space-2);
+    border-radius: var(--radius-sm);
+    display: none;
+}
+.autotune-save-status.success {
+    display: block;
+    background: var(--success-soft, rgba(40, 200, 64, 0.15));
+    color: var(--success, #28c840);
+}
+.autotune-save-status.error {
+    display: block;
+    background: var(--danger-soft);
+    color: var(--danger);
+}
+
 /* ===== Backend Capacity ===== */
 .capacity-section {
     display: grid;

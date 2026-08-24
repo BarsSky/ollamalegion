@@ -465,6 +465,10 @@ const ui = (function () {
             case 'settings':
                 loadSettings();
                 setTimeout(function() { loadBackendLimits(); }, 100);
+                // R54.7 (2026-08-24): init AutoTune Settings
+                if (window.AutoTuneSettings) {
+                    window.AutoTuneSettings.init();
+                }
                 break;
         }
     }

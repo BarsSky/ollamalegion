@@ -300,6 +300,133 @@ func (s *Server) routeAdminAutotuneByID(w http.ResponseWriter, r *http.Request) 
 	http.Error(w, "Method not allowed or unknown endpoint", http.StatusMethodNotAllowed)
 }
 
+// handleAdminAutotuneConfigDispatcher — R54.7 (2026-08-24): диспетчер для /config.
+//
+// GET → handleAdminAutotuneConfigGet
+// PUT/POST → handleAdminAutotuneConfigUpdate
+func (s *Server) handleAdminAutotuneConfigDispatcher(w http.ResponseWriter, r *http.Request) {
+	switch r.Method {
+	case http.MethodGet:
+		s.handleAdminAutotuneConfig(w, r)
+	case http.MethodPut, http.MethodPost:
+		s.handleAdminAutotuneConfigUpdate(w, r)
+	default:
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+	}
+}
+
+// handleAdminAutotuneConfig — R54.7 (2026-08-24): GET /api/v1/admin/autotune/config
+//
+// Возвращает текущее состояние AutoTune (global + per-model overrides).
+// Используется Settings page для отображения текущей конфигурации.
+func (s *Server) handleAdminAutotuneConfig(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if s.config == nil {
+		http.Error(w, "config not initialized", http.StatusInternalServerError)
+		return
+	}
+
+	cfg := s.config
+	resp := map[string]interface{}{
+		"globalEnabled": cfg.Balancing.AutoTune,
+		"perModel":      map[string]interface{}{},
+	}
+
+	// Per-model overrides
+	profiles := cfg.LlamaCppModelProfiles
+	if profiles != nil {
+		perModel := make(map[string]interface{})
+		for name, prof := range profiles {
+			if prof.AutoTune != nil {
+				perModel[name] = *prof.AutoTune
+			}
+		}
+		resp["perModel"] = perModel
+	}
+
+	s.writeJSON(w, http.StatusOK, resp)
+}
+
+// handleAdminAutotuneConfigUpdate — R54.7 (2026-08-24): PUT /api/v1/admin/autotune/config
+//
+// Body:
+//   {
+//     "globalEnabled": true|false,
+//     "perModel": { "model-name": true|false|null }
+//   }
+//
+// null для per-model удаляет override (наследование global).
+// Persists через s.configSaver (если установлен).
+func (s *Server) handleAdminAutotuneConfigUpdate(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPut && r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if s.config == nil {
+		http.Error(w, "config not initialized", http.StatusInternalServerError)
+		return
+	}
+
+	var req struct {
+		GlobalEnabled *bool                  `json:"globalEnabled"`
+		PerModel      map[string]interface{} `json:"perModel"` // true/false/null
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		s.writeJSON(w, http.StatusBadRequest, map[string]interface{}{
+			"success": false,
+			"error":   "invalid request body: " + err.Error(),
+		})
+		return
+	}
+
+	cfg := s.config
+
+	// Update global
+	if req.GlobalEnabled != nil {
+		cfg.Balancing.AutoTune = *req.GlobalEnabled
+	}
+
+	// Update per-model
+	if req.PerModel != nil {
+		if cfg.LlamaCppModelProfiles == nil {
+			cfg.LlamaCppModelProfiles = make(map[string]types.LlamaCppModelProfile)
+		}
+		for modelName, val := range req.PerModel {
+			prof := cfg.LlamaCppModelProfiles[modelName]
+			if val == nil {
+				// null → clear override
+				prof.AutoTune = nil
+			} else if b, ok := val.(bool); ok {
+				prof.AutoTune = &b
+			}
+			cfg.LlamaCppModelProfiles[modelName] = prof
+		}
+	}
+
+	// Persist via configSaver (установлен из main.go, best-effort)
+	if s.configSaver != nil {
+		if err := s.configSaver(); err != nil {
+			logger.Get().Warnw("admin: failed to persist AutoTune config",
+				"error", err)
+		} else {
+			logger.Get().Info("admin: persisted AutoTune config")
+		}
+	}
+
+	logger.Get().Infow("admin: AutoTune config updated",
+		"global_enabled", cfg.Balancing.AutoTune,
+		"per_model_count", len(req.PerModel))
+
+	s.writeJSON(w, http.StatusOK, map[string]interface{}{
+		"success":       true,
+		"globalEnabled": cfg.Balancing.AutoTune,
+		"message":       "AutoTune config updated (in-memory; reload balancer для персистенции в bundled config.json если не через runtime overrides)",
+	})
+}
+
 // handleAdminAutotuneByID — GET /api/v1/admin/autotune/{backendID}
 //
 // Возвращает AutoTune state для конкретного бэкенда.

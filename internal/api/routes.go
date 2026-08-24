@@ -159,8 +159,11 @@ func (s *Server) setupRoutes() {
 
 	// R54.6 (2026-08-24): AutoTune admin endpoints.
 	// GET /api/v1/admin/autotune — все бэкенды с AutoTune state и circuit.
+	// GET /api/v1/admin/autotune/config — global + per-model AutoTune config.
+	// PUT /api/v1/admin/autotune/config — update config.
 	// GET /api/v1/admin/autotune/{backendID} — детально для одного.
 	// POST /api/v1/admin/autotune/{backendID}/apply — применить рекомендации.
+	s.mux.HandleFunc("/api/v1/admin/autotune/config", s.handleAdminAutotuneConfigDispatcher)
 	s.mux.Handle("/api/v1/admin/autotune", AuthMiddleware(RateLimitMiddleware(http.HandlerFunc(s.handleAdminAutotune), s.rateLimiter), s.authenticator))
 	// Apply endpoint — отдельный handler с явной обработкой POST /apply suffix.
 	s.mux.Handle("/api/v1/admin/autotune/", AuthMiddleware(RateLimitMiddleware(http.HandlerFunc(s.routeAdminAutotuneByID), s.rateLimiter), s.authenticator))

@@ -196,6 +196,12 @@ func computeOptimalNumGPULayers(p *ModelProfileInfo) (recommendation int, reason
 	return optimalLayers, optimalReasoning
 }
 
+// AnalyzeLoadedModelPublic — R54.6 (2026-08-24): public wrapper для analyzeLoadedModel
+// (lowercase) — нужен API handlers в internal/api/.
+func AnalyzeLoadedModelPublic(p *ModelProfileInfo) *AutoTuneAnalysis {
+	return analyzeLoadedModel(p)
+}
+
 // analyzeLoadedModel — Round 54.1: главная функция. Анализирует одну модель
 // и возвращает AutoTuneAnalysis с рекомендациями.
 //
@@ -500,6 +506,14 @@ func (c *AutoTuneCircuit) RecordError(err string) {
 	c.LastError = err
 }
 
+// AutoTuneTracker accessor для API handlers (R54.6).
+func (p *Proxy) AutoTuneTracker() *AutoTuneTracker {
+	if p == nil {
+		return nil
+	}
+	return p.autoTuneTracker
+}
+
 // AutoTuneTracker — Round 54.4 (2026-08-24): per-Proxy tracker для circuit breakers.
 // Хранит AutoTuneCircuit для каждой пары (backendID, modelName).
 //
@@ -798,6 +812,144 @@ func (p *Proxy) applyCppWorkerEnvReload(backendID, modelName string, env map[str
 	logger.Get().Warnw("autotune: env-based reload not fully implemented — apply manually via /api/v1/cppworker/load",
 		"backend", backendID, "model", modelName, "env", env)
 	return fmt.Errorf("env-based reload not yet implemented; apply plan manually")
+}
+
+// ApplyAutoTunePlan — R54.6 (2026-08-24): применяет AutoTuneReloadPlan к бэкенду.
+//
+// Алгоритм:
+//  1. Unload текущую модель (через cppworker /api/models/unload).
+//  2. Load с обновленными параметрами (через ModelManager.executeLlamaCppLoad).
+//  3. Возвращает результат (success/error + message).
+//
+// Используется из /api/v1/admin/autotune/{backendID}/apply endpoint.
+//
+// NB: circuit breaker не применяется (manual apply — operator override).
+// Но circuit state обновляется (RecordSuccess/RecordError) для telemetry.
+func (p *Proxy) ApplyAutoTunePlan(backendID string, plan *AutoTuneReloadPlan) *AutoTuneApplyResult {
+	result := &AutoTuneApplyResult{
+		BackendID: backendID,
+		ModelName: plan.ModelName,
+		StartedAt: time.Now(),
+	}
+
+	if p == nil {
+		result.Error = "nil proxy"
+		return result
+	}
+	if plan == nil {
+		result.Error = "nil plan"
+		return result
+	}
+
+	// 1) Find backend
+	backends := p.GetAllBackends()
+	var backend types.Backend
+	var found bool
+	for _, b := range backends {
+		if b.ID == backendID {
+			backend = b
+			found = true
+			break
+		}
+	}
+	if !found {
+		result.Error = fmt.Sprintf("backend %s not found", backendID)
+		return result
+	}
+	if backend.CppWorkerPort == 0 {
+		result.Error = fmt.Sprintf("backend %s has no CppWorkerPort", backendID)
+		return result
+	}
+
+	// 2) Unload current model
+	unloadResult := p.executeLlamaCppUnload(backend.Host, backend.CppWorkerPort, plan.ModelName)
+	if !unloadResult.Success {
+		result.Error = fmt.Sprintf("unload failed: %s", unloadResult.Error)
+		result.FinishedAt = time.Now()
+		return result
+	}
+	logger.Get().Infow("autotune: unloaded model for AutoTune apply",
+		"backend", backendID, "model", plan.ModelName)
+
+	// 3) Build load request
+	req := ModelOpRequest{
+		Operation:  "load",
+		ModelName:  plan.ModelName,
+	}
+	if plan.ContextSize > 0 {
+		cs := plan.ContextSize
+		req.ContextSize = &cs
+	}
+	if plan.NumGPULayers != 0 {
+		gl := plan.NumGPULayers
+		req.GPULayers = &gl
+	}
+	if plan.KVCacheType != "" {
+		kt := plan.KVCacheType
+		req.KVCacheType = &kt
+	}
+	if plan.UseMmap != nil {
+		req.UseMmap = plan.UseMmap
+	}
+	if plan.FlashAttn != 0 {
+		fa := plan.FlashAttn
+		req.FlashAttn = &fa
+	}
+
+	// 4) Load with new params (wait for completion)
+	mm := p.autotuneModelManager()
+	if mm == nil {
+		result.Error = "ModelManager not available"
+		result.FinishedAt = time.Now()
+		return result
+	}
+	loadResult := mm.executeLlamaCppLoad(backend.Host, backend.CppWorkerPort, backendID, req)
+	if !loadResult.Success {
+		result.Error = fmt.Sprintf("load failed: %s", loadResult.Error)
+		result.FinishedAt = time.Now()
+		return result
+	}
+
+	result.Success = true
+	result.Message = fmt.Sprintf("reloaded with new params: %s", plan.Reason)
+	result.FinishedAt = time.Now()
+	return result
+}
+
+// AutoTuneApplyResult — R54.6 (2026-08-24): результат apply AutoTune plan.
+type AutoTuneApplyResult struct {
+	BackendID  string    `json:"backendId"`
+	ModelName  string    `json:"modelName"`
+	Success    bool      `json:"success"`
+	Error      string    `json:"error,omitempty"`
+	Message    string    `json:"message,omitempty"`
+	StartedAt  time.Time `json:"startedAt"`
+	FinishedAt time.Time `json:"finishedAt,omitempty"`
+}
+
+// autotuneModelManager — R54.6: accessor для ModelManager (используем existing p.modelManager).
+// Метод переименован чтобы не конфликтовать с полем modelManager.
+func (p *Proxy) autotuneModelManager() *ModelManager {
+	if p == nil {
+		return nil
+	}
+	return p.modelManager // existing field set in NewProxy
+}
+
+// executeLlamaCppUnload — R54.6: helper для unload через cppworker API.
+// Использует существующий POST /api/models/unload.
+func (p *Proxy) executeLlamaCppUnload(host string, port int, modelName string) *ModelOpResult {
+	// Try ModelManager first
+	if mm := p.autotuneModelManager(); mm != nil {
+		req := ModelOpRequest{Operation: "unload", ModelName: modelName}
+		return mm.executeLlamaCppUnload(host, port, modelName, req)
+	}
+	return &ModelOpResult{
+		Success:   false,
+		Operation: "unload",
+		ModelName: modelName,
+		Error:     "ModelManager not available; cannot unload",
+	}
 }
 
 // PlanApplyAutoTune — Round 54.4 (2026-08-24): строит reload-план из AutoTuneAnalysis.

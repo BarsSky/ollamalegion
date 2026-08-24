@@ -157,6 +157,14 @@ func (s *Server) setupRoutes() {
 	// Restart endpoint (c аутентификацией и rate limiting, только от webui)
 	s.mux.Handle("/api/v1/admin/restart", AuthMiddleware(RateLimitMiddleware(s.restartHandler, s.rateLimiter), s.authenticator))
 
+	// R54.6 (2026-08-24): AutoTune admin endpoints.
+	// GET /api/v1/admin/autotune — все бэкенды с AutoTune state и circuit.
+	// GET /api/v1/admin/autotune/{backendID} — детально для одного.
+	// POST /api/v1/admin/autotune/{backendID}/apply — применить рекомендации.
+	s.mux.Handle("/api/v1/admin/autotune", AuthMiddleware(RateLimitMiddleware(http.HandlerFunc(s.handleAdminAutotune), s.rateLimiter), s.authenticator))
+	// Apply endpoint — отдельный handler с явной обработкой POST /apply suffix.
+	s.mux.Handle("/api/v1/admin/autotune/", AuthMiddleware(RateLimitMiddleware(http.HandlerFunc(s.routeAdminAutotuneByID), s.rateLimiter), s.authenticator))
+
 	// Internal callbacks от cppworker (Шаг «отображение загрузки в мониторе»).
 	// POST /api/v1/internal/llama-model-loaded — callback при успешной загрузке модели.
 	// Endpoint требует X-API-Token (если в config задан API_TOKEN). Не публичный.

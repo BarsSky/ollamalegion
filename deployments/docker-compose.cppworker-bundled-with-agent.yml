@@ -51,7 +51,7 @@ services:
     # Round 35 (r35): reload→load fallback + idleUnload disabled.
     # Round 35c (r35c): env-tunable polling timeouts (LB_NCTX_PREFLIGHT_*)
     # для моделей с auto-offload (22GB+ Qwen3.6 на 8GB VRAM, 12-15 min load).
-    image: ollama-legion/balancer:cppworker-bundled-r54.4-r53  # Round 54.4 (2026-08-24): AutoTune autonomous reload + circuit breaker.
+    image: ollama-legion/balancer:cppworker-bundled-r54.6-r53  # Round 54.6 (2026-08-24): AutoTune Apply endpoint + circuit state.
     #   R54.2: AutoTune master switch (Balancing.AutoTune, default true) +
     #          per-model "autoTune": false override (LlamaCppModelProfile.AutoTune).
     #          Manual control: user can disable AutoTune globally or per-model.

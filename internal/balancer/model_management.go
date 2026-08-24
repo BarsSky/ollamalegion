@@ -59,6 +59,14 @@ type ModelOpRequest struct {
 	// Если заданы и согласованы по длине — load через /api/models/load-with-params.
 	OverrideTensors     []string `json:"overrideTensors,omitempty"`
 	OverrideTensorBufts []string `json:"overrideTensorBufts,omitempty"`
+
+	// R54.6 (2026-08-24): дополнительные параметры для AutoTune apply.
+	// cppworker /api/models/load принимает эти поля; если nil — cppworker
+	// использует default (model profile из cppworker-defaults.json).
+	KVCacheType *string `json:"kvCacheType,omitempty"` // f16 | q8_0 | q4_0
+	UseMmap     *bool   `json:"useMmap,omitempty"`     // default true
+	FlashAttn   *int    `json:"flashAttn,omitempty"`   // -1=auto, 0=off, 1=on
+	BatchSize   *int    `json:"batchSize,omitempty"`
 }
 
 // ModelOpResult — результат операции с моделью
@@ -784,6 +792,19 @@ func (mm *ModelManager) executeLlamaCppLoad(host string, port int, backendID str
 	}
 	if req.GPULayers != nil {
 		body["gpuLayers"] = *req.GPULayers
+	}
+	// R54.6 (2026-08-24): AutoTune fields — apply to /api/models/load body.
+	if req.KVCacheType != nil {
+		body["kvCacheType"] = *req.KVCacheType
+	}
+	if req.UseMmap != nil {
+		body["useMmap"] = *req.UseMmap
+	}
+	if req.FlashAttn != nil {
+		body["flashAttn"] = *req.FlashAttn
+	}
+	if req.BatchSize != nil {
+		body["batchSize"] = *req.BatchSize
 	}
 	if useLoadWithParams {
 		body["overrideTensors"] = overrideTensors

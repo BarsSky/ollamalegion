@@ -88,6 +88,41 @@ func (p *Proxy) proxyRequestLlamaCpp(w http.ResponseWriter, r *http.Request, bac
 		return nil
 	}
 
+	// R54.4 (2026-08-24): AutoTune autonomous reload hook.
+	// Срабатывает ПОСЛЕ n_ctx preflight (который уже сделал свой reload если нужно).
+	// AutoTune ловит ДРУГИЕ sub-optimal state'ы: kv_cache mismatch, over-allocated n_ctx
+	// (если n_ctx reload не сработал), sub-optimal num_gpu_layers.
+	//
+	// Не блокирует запрос — reload в фоне. Circuit breaker защищает от storm.
+	// ApplyAutoTune plan берёт freeVRAM из metrics.
+	if modelFromCtx != "" {
+		var freeVRAM, freeRAM, totalVRAM uint64
+		if p.metricsMgr != nil {
+			// Берём hardware info из cluster state
+			clusterState := p.GetClusterState()
+			for _, b := range clusterState.Backends {
+				if b.ID == backendID {
+					totalVRAM = b.GPU.MemoryTotal
+					if b.GPU.MemoryFree > 0 {
+						freeVRAM = b.GPU.MemoryFree
+					}
+					freeRAM = b.System.MemoryFree
+					break
+				}
+			}
+		}
+		autoTuneRes := p.triggerAutoTuneReload(backendID, modelFromCtx, freeVRAM, freeRAM, totalVRAM)
+		if autoTuneRes != nil && autoTuneRes.Triggered {
+			logger.Get().Infow("proxyRequestLlamaCpp: AutoTune async reload triggered",
+				"backend", backendID, "model", modelFromCtx,
+				"reason", autoTuneRes.Plan.Reason)
+		} else if autoTuneRes != nil && autoTuneRes.SkippedReason != "" {
+			logger.Get().Debugw("proxyRequestLlamaCpp: AutoTune check",
+				"backend", backendID, "model", modelFromCtx,
+				"skipped_reason", autoTuneRes.SkippedReason)
+		}
+	}
+
 	fullURL := targetURL + llamacppPath
 	logger.Get().Infow("proxyRequestLlamaCpp: sending request",
 		"backend", backendID, "url", fullURL, "stream", isStreaming)

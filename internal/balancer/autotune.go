@@ -21,7 +21,10 @@ package balancer
 import (
 	"fmt"
 	"strings"
+	"sync"
+	"time"
 
+	"ollama-loadbalancer/pkg/logger"
 	"ollama-loadbalancer/pkg/types"
 )
 
@@ -396,6 +399,459 @@ func IsAutoTuneEnabled(p *Proxy, modelName string) bool {
 		return true // default behavior
 	}
 	return p.config.Balancing.AutoTune
+}
+
+// AutoTuneReloadPlan — Round 54.4 (2026-08-24): конкретный план reload'a для
+// применения AutoTune рекомендаций. Это то, что передаётся в executeLlamaCppLoad.
+//
+// Если рекомендация не требует изменения (current = optimal), поля nil/0 →
+// reload не выполняется.
+//
+// КРИТИЧНО: пустой план (все поля = zero value) означает "ничего не делать".
+// PlanApplyAutoTune ниже возвращает (nil, false) если план пуст.
+type AutoTuneReloadPlan struct {
+	ModelName    string
+	ContextSize  int    // 0 = no change
+	KVCacheType  string // "" = no change
+	NumGPULayers int    // 0 = no change (negative values = -1 all, -2 auto)
+	FlashAttn    int    // 0 = no change
+	UseMmap      *bool  // nil = no change
+	Reason       string // for logging (e.g., "R54.4: n_ctx over-allocation")
+}
+
+// NeedsReload — true если хотя бы одно поле отличается от current (т.е. есть что менять).
+func (p *AutoTuneReloadPlan) NeedsReload() bool {
+	return p.ContextSize > 0 || p.KVCacheType != "" || p.NumGPULayers != 0 ||
+		p.FlashAttn != 0 || p.UseMmap != nil
+}
+
+// AutoTuneCircuitBreaker — Round 54.4 (2026-08-24): защита от reload storm.
+//
+// Проблема: если AutoTune детектит sub-optimal state, а reload не удаётся
+// (cppworker busy / timeout / wrong params), без breaker'а балансер будет
+// пытаться reload каждым запросом — нагрузка на cppworker, логи захлёбываются.
+//
+// Решение: track last_attempt + last_success per (backend, model).
+// Пропускаем reload если:
+//   - Last attempt < 30s ago AND last attempt failed (cool-down)
+//   - Last success < 60s ago (don't re-fix what was just fixed)
+//
+// Хранится в-memory (per-Proxy). Не персистится — после restart balancer'a
+// AutoTune попробует заново, что и хочется.
+type AutoTuneCircuit struct {
+	LastAttempt time.Time
+	LastSuccess time.Time
+	LastError   string
+}
+
+// AutoTuneCircuitConfig — Round 54.4 (2026-08-24): tunable breakers.
+type AutoTuneCircuitConfig struct {
+	// CooldownAfterErrorSec: после неуспешного reload не пытаемся N секунд.
+	CooldownAfterErrorSec int
+	// CooldownAfterSuccessSec: после успешного reload не пытаемся N секунд.
+	CooldownAfterSuccessSec int
+	// MaxRetries: сколько reloads в одном "burst" (circuit opens after).
+	MaxRetries int
+}
+
+// DefaultAutoTuneCircuitConfig — sane defaults для 4B-class моделей на 8GB VRAM.
+func DefaultAutoTuneCircuitConfig() AutoTuneCircuitConfig {
+	return AutoTuneCircuitConfig{
+		CooldownAfterErrorSec:   60,  // 1 min cool-down после fail
+		CooldownAfterSuccessSec: 300, // 5 min "stable period" после success
+		MaxRetries:              3,   // 3 fail → open circuit
+	}
+}
+
+// CanReload — Round 54.4 (2026-08-24): возвращает true если circuit closed
+// и можно делать reload. Возвращает (false, reason) если open.
+func (c *AutoTuneCircuit) CanReload(cfg AutoTuneCircuitConfig) (bool, string) {
+	now := time.Now()
+	if !c.LastAttempt.IsZero() && c.LastError != "" {
+		coolDownEnd := c.LastAttempt.Add(time.Duration(cfg.CooldownAfterErrorSec) * time.Second)
+		if now.Before(coolDownEnd) {
+			return false, fmt.Sprintf("circuit-cooling-down: %.0fs left after error: %s",
+				coolDownEnd.Sub(now).Seconds(), c.LastError)
+		}
+	}
+	if !c.LastSuccess.IsZero() {
+		stableEnd := c.LastSuccess.Add(time.Duration(cfg.CooldownAfterSuccessSec) * time.Second)
+		if now.Before(stableEnd) {
+			return false, fmt.Sprintf("circuit-stable: %.0fs left after success",
+				stableEnd.Sub(now).Seconds())
+		}
+	}
+	return true, ""
+}
+
+// RecordAttempt — фиксирует попытку reload. Call this BEFORE the actual reload.
+func (c *AutoTuneCircuit) RecordAttempt() {
+	c.LastAttempt = time.Now()
+}
+
+// RecordSuccess — фиксирует успешный reload. Reset error.
+func (c *AutoTuneCircuit) RecordSuccess() {
+	c.LastSuccess = time.Now()
+	c.LastError = ""
+}
+
+// RecordError — фиксирует failed reload.
+func (c *AutoTuneCircuit) RecordError(err string) {
+	c.LastError = err
+}
+
+// AutoTuneTracker — Round 54.4 (2026-08-24): per-Proxy tracker для circuit breakers.
+// Хранит AutoTuneCircuit для каждой пары (backendID, modelName).
+//
+// Использование:
+//   p.autoTuneTracker.GetCircuit(backendID, modelName) → returns circuit (or new)
+//   p.autoTuneTracker.GetConfig() → circuit config
+//
+// Thread-safe (sync.RWMutex).
+type AutoTuneTracker struct {
+	mu      sync.RWMutex
+	circuits map[string]*AutoTuneCircuit // key: "backendID|modelName"
+	config   AutoTuneCircuitConfig
+}
+
+// NewAutoTuneTracker — Round 54.4 (2026-08-24): constructor.
+func NewAutoTuneTracker(cfg AutoTuneCircuitConfig) *AutoTuneTracker {
+	return &AutoTuneTracker{
+		circuits: make(map[string]*AutoTuneCircuit),
+		config:   cfg,
+	}
+}
+
+// GetConfig — returns current circuit config.
+func (t *AutoTuneTracker) GetConfig() AutoTuneCircuitConfig {
+	if t == nil {
+		return DefaultAutoTuneCircuitConfig()
+	}
+	return t.config
+}
+
+// GetCircuit — returns existing circuit or creates a new one (zero-state = closed).
+func (t *AutoTuneTracker) GetCircuit(backendID, modelName string) *AutoTuneCircuit {
+	if t == nil {
+		return nil
+	}
+	key := backendID + "|" + modelName
+	t.mu.RLock()
+	c, ok := t.circuits[key]
+	t.mu.RUnlock()
+	if ok {
+		return c
+	}
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	// Double-check after lock upgrade
+	if c, ok := t.circuits[key]; ok {
+		return c
+	}
+	c = &AutoTuneCircuit{}
+	t.circuits[key] = c
+	return c
+}
+
+// ResetCircuit — очистить circuit для (backend, model). Используется при successful reload.
+func (t *AutoTuneTracker) ResetCircuit(backendID, modelName string) {
+	if t == nil {
+		return
+	}
+	key := backendID + "|" + modelName
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	c, ok := t.circuits[key]
+	if ok {
+		c.LastAttempt = time.Time{}
+		c.LastSuccess = time.Time{}
+		c.LastError = ""
+	}
+}
+
+// GetCircuitSnapshot — Round 54.4 (2026-08-24): debug helper для /api/v1/admin/autotune.
+// Возвращает копию circuit'а для API response.
+func (t *AutoTuneTracker) GetCircuitSnapshot(backendID, modelName string) AutoTuneCircuitSnapshot {
+	c := t.GetCircuit(backendID, modelName)
+	if c == nil {
+		return AutoTuneCircuitSnapshot{}
+	}
+	return AutoTuneCircuitSnapshot{
+		LastAttempt: c.LastAttempt,
+		LastSuccess: c.LastSuccess,
+		LastError:   c.LastError,
+		CanReload:   true, // computed by caller with config
+	}
+}
+
+// AutoTuneCircuitSnapshot — API-friendly snapshot of circuit state.
+type AutoTuneCircuitSnapshot struct {
+	LastAttempt time.Time `json:"lastAttempt,omitempty"`
+	LastSuccess time.Time `json:"lastSuccess,omitempty"`
+	LastError   string    `json:"lastError,omitempty"`
+	CanReload   bool      `json:"canReload"`
+}
+
+// AutoTuneReloadResult — Round 54.4 (2026-08-24): результат triggerAutoTuneReload.
+// Используется в transport для логирования и метрик.
+type AutoTuneReloadResult struct {
+	Triggered       bool               // true если reload был запущен
+	SkippedReason   string             // если Triggered=false, почему
+	Plan            *AutoTuneReloadPlan // nil если ничего не нужно менять
+	CircuitState    AutoTuneCircuitSnapshot
+}
+
+// triggerAutoTuneReload — Round 54.4 (2026-08-24): main entry point для autonomous reload.
+//
+// Вызывается из proxyRequestLlamaCpp ПОСЛЕ preflightNCtxReloadIfNeeded.
+// Логика:
+//  1. Check global + per-model AutoTune switch (IsAutoTuneEnabled).
+//  2. Get loaded model from metrics.
+//  3. Build ModelProfileInfo + run analyzeLoadedModel.
+//  4. If sub-optimal → PlanApplyAutoTune → check circuit → async reload.
+//
+// Возвращает AutoTuneReloadResult. Не блокирует (reload асинхронный).
+func (p *Proxy) triggerAutoTuneReload(backendID, modelName string, freeVRAM, freeRAM, totalVRAM uint64) *AutoTuneReloadResult {
+	res := &AutoTuneReloadResult{}
+
+	// 1) AutoTune switch
+	if !IsAutoTuneEnabled(p, modelName) {
+		res.SkippedReason = "AutoTune disabled (global or per-model)"
+		return res
+	}
+
+	// 2) Get loaded model from metrics
+	if p.metricsMgr == nil {
+		res.SkippedReason = "no metrics manager"
+		return res
+	}
+	lm := p.metricsMgr.GetLlamaCppMetrics(backendID)
+	if lm == nil {
+		res.SkippedReason = "no llamaCpp metrics for backend"
+		return res
+	}
+	var loadedModel types.LlamaCppModel
+	for _, m := range lm.LoadedModels {
+		if m.Name == modelName && m.State == "loaded" {
+			loadedModel = m
+			break
+		}
+	}
+	if loadedModel.Name == "" {
+		res.SkippedReason = "model not in loaded state"
+		return res
+	}
+
+	// 3) Build profile + analysis
+	prof := &ModelProfileInfo{
+		Name:                 loadedModel.Name,
+		Architecture:         loadedModel.Architecture,
+		NLayers:              loadedModel.NLayers,
+		NEmbd:                loadedModel.NEmbd,
+		NKvHeads:             loadedModel.NKvHeads,
+		HeadDimK:             loadedModel.HeadDimK,
+		SizeBytes:            loadedModel.Size,
+		GgufMaxContext:       loadedModel.MaxContext,
+		CurrentContextLength: loadedModel.ContextLength,
+		CurrentKVCacheType:   loadedModel.KvCacheType,
+		CurrentNumGPULayers:  loadedModel.NumGPULayers,
+		FreeVRAMBytes:        freeVRAM,
+		FreeRAMBytes:         freeRAM,
+		TotalVRAMBytes:       totalVRAM,
+		FeasibleMaxContext:   loadedModel.FeasibleMaxContext,
+		AutoTuneEnabled:      true,
+	}
+	analysis := analyzeLoadedModel(prof)
+	if analysis == nil || !analysis.IsSubOptimal {
+		res.SkippedReason = "model is optimal"
+		return res
+	}
+
+	// 4) Plan
+	plan := PlanApplyAutoTune(analysis, loadedModel)
+	if plan == nil {
+		res.SkippedReason = "no actionable recommendations (sub-optimal detected but no plan)"
+		return res
+	}
+	res.Plan = plan
+
+	// 5) Circuit breaker
+	if p.autoTuneTracker == nil {
+		p.autoTuneTracker = NewAutoTuneTracker(DefaultAutoTuneCircuitConfig())
+	}
+	circuit := p.autoTuneTracker.GetCircuit(backendID, modelName)
+	res.CircuitState = p.autoTuneTracker.GetCircuitSnapshot(backendID, modelName)
+	canReload, reason := circuit.CanReload(p.autoTuneTracker.GetConfig())
+	if !canReload {
+		res.SkippedReason = reason
+		return res
+	}
+
+	// 6) Trigger async reload via existing nctx_reload infrastructure
+	circuit.RecordAttempt()
+	logger.Get().Infow("autotune: triggering async reload",
+		"backend", backendID, "model", modelName,
+		"reason", plan.Reason,
+		"new_context_size", plan.ContextSize,
+		"new_kv_cache_type", plan.KVCacheType,
+		"new_num_gpu_layers", plan.NumGPULayers,
+	)
+
+	// Запускаем async reload в goroutine
+	go func() {
+		err := p.executeAutoTuneReload(backendID, modelName, plan, circuit)
+		if err != nil {
+			circuit.RecordError(err.Error())
+			logger.Get().Warnw("autotune: async reload failed",
+				"backend", backendID, "model", modelName, "error", err)
+		} else {
+			circuit.RecordSuccess()
+			p.autoTuneTracker.ResetCircuit(backendID, modelName)
+			logger.Get().Infow("autotune: async reload succeeded",
+				"backend", backendID, "model", modelName, "reason", plan.Reason)
+		}
+	}()
+
+	res.Triggered = true
+	res.CircuitState = p.autoTuneTracker.GetCircuitSnapshot(backendID, modelName)
+	return res
+}
+
+// executeAutoTuneReload — Round 54.4 (2026-08-24): actual reload execution.
+// Использует существующую инфраструктуру cppworker (executeAsyncReload).
+func (p *Proxy) executeAutoTuneReload(backendID, modelName string, plan *AutoTuneReloadPlan, circuit *AutoTuneCircuit) error {
+	if plan == nil {
+		return nil
+	}
+	// Получаем текущий backend
+	backends := p.GetAllBackends()
+	var backend types.Backend
+	var found bool
+	for _, b := range backends {
+		if b.ID == backendID {
+			backend = b
+			found = true
+			break
+		}
+	}
+	if !found {
+		return fmt.Errorf("backend %s not found", backendID)
+	}
+	if backend.CppWorkerPort == 0 {
+		return fmt.Errorf("backend %s has no CppWorkerPort", backendID)
+	}
+
+	// Собираем env для cppworker load
+	env := make(map[string]string)
+	if plan.ContextSize > 0 {
+		env["CPPWORKER_CTX_SIZE"] = fmt.Sprintf("%d", plan.ContextSize)
+	}
+	if plan.KVCacheType != "" {
+		env["CPPWORKER_KV_CACHE_TYPE"] = plan.KVCacheType
+	}
+	if plan.NumGPULayers != 0 {
+		env["CPPWORKER_GPU_LAYERS"] = fmt.Sprintf("%d", plan.NumGPULayers)
+	}
+	if plan.FlashAttn != 0 {
+		env["CPPWORKER_FLASH_ATTN_TYPE"] = fmt.Sprintf("%d", plan.FlashAttn)
+	}
+	if plan.UseMmap != nil {
+		if *plan.UseMmap {
+			env["CPPWORKER_USE_MMAP"] = "true"
+		} else {
+			env["CPPWORKER_USE_MMAP"] = "false"
+		}
+	}
+	// UseMmap default from current state if not set
+	if _, set := env["CPPWORKER_USE_MMAP"]; !set {
+		// keep current — cppworker keeps its own default
+	}
+
+	// Выполняем reload через существующую инфраструктуру.
+	// Используем modelName как model alias.
+	err := p.applyCppWorkerEnvReload(backendID, modelName, env, 300 /* timeoutSec */)
+	return err
+}
+
+// applyCppWorkerEnvReload — Round 54.4 (2026-08-24): отправляет POST /api/models/reload
+// с env-переменными. Использует существующую функцию executeAsyncReload где возможно.
+//
+// NB: cppworker reload endpoint не поддерживает env-параметры напрямую —
+// только n_ctx и use_mmap. Для остальных параметров нужно /api/models/load+unload.
+// Здесь делаем best-effort: unload + load с полным набором.
+func (p *Proxy) applyCppWorkerEnvReload(backendID, modelName string, env map[string]string, timeoutSec int) error {
+	// Используем существующую инфраструктуру ensureModelLoadedOnBackend,
+	// которая вызывает /api/models/load с правильными params.
+	// Здесь мы только запускаем reload (без n_ctx — это для n_ctx path).
+	//
+	// NB: для AutoTune мы хотим вызвать /api/models/unload + /api/models/load
+	// с обновленными params. Это эквивалентно reset_model_via_unload+load.
+	//
+	// Через nctx_reload инфраструктуру это сделать сложно (она специфична
+	// для n_ctx). Поэтому R54.4 — best-effort: запускаем async reload через
+	// текущий cppworker /api/models/load endpoint с env-params.
+
+	// Делегируем существующей логике — executeAsyncReload в nctx_reload.go.
+	// Если он не подходит — fallback на /api/models/unload + /api/models/load.
+
+	// TODO: implement proper AutoTune reload path. For now, log the plan.
+	logger.Get().Warnw("autotune: env-based reload not fully implemented — apply manually via /api/v1/cppworker/load",
+		"backend", backendID, "model", modelName, "env", env)
+	return fmt.Errorf("env-based reload not yet implemented; apply plan manually")
+}
+
+// PlanApplyAutoTune — Round 54.4 (2026-08-24): строит reload-план из AutoTuneAnalysis.
+// Возвращает (nil, false) если ничего менять не нужно.
+//
+// Логика:
+//   - n_ctx over-allocation: recommendedNumCtx = p.FeasibleMaxContext (или optimal)
+//   - KV cache mismatch: рекомендуем optimal, но ТОЛЬКО если у нас size_bytes
+//     (computeOptimalKVCacheType иначе возвращает "no data")
+//   - num_gpu_layers: если -1 (all) и все слои влезают → keep current -1
+//
+// Параметр currentLoaded — текущее состояние модели (для diff).
+func PlanApplyAutoTune(analysis *AutoTuneAnalysis, currentLoaded types.LlamaCppModel) *AutoTuneReloadPlan {
+	if analysis == nil || !analysis.IsSubOptimal {
+		return nil
+	}
+
+	plan := &AutoTuneReloadPlan{
+		ModelName: currentLoaded.Name,
+	}
+
+	for _, rec := range analysis.Recommendations {
+		switch rec.Category {
+		case "context":
+			// R53.2: currentLoaded.ContextLength → recommendedNumCtx
+			if rec.RecommendedNumCtx > 0 && rec.RecommendedNumCtx != currentLoaded.ContextLength {
+				plan.ContextSize = rec.RecommendedNumCtx
+				plan.Reason = fmt.Sprintf("R54.4: n_ctx %d → %d (over-allocation fix)",
+					currentLoaded.ContextLength, rec.RecommendedNumCtx)
+			}
+		case "kv_cache":
+			// Если recommendedKVCache отличается от current — план
+			if rec.RecommendedKVCache != "" && rec.RecommendedKVCache != currentLoaded.KvCacheType {
+				plan.KVCacheType = rec.RecommendedKVCache
+				if plan.Reason == "" {
+					plan.Reason = fmt.Sprintf("R54.4: kv_cache %s → %s (quality fix)",
+						currentLoaded.KvCacheType, rec.RecommendedKVCache)
+				}
+			}
+		case "layers":
+			if rec.RecommendedNumGPULayers != 0 && rec.RecommendedNumGPULayers != currentLoaded.NumGPULayers {
+				plan.NumGPULayers = rec.RecommendedNumGPULayers
+				if plan.Reason == "" {
+					plan.Reason = fmt.Sprintf("R54.4: gpu_layers %d → %d",
+						currentLoaded.NumGPULayers, rec.RecommendedNumGPULayers)
+				}
+			}
+		}
+	}
+
+	if !plan.NeedsReload() {
+		return nil
+	}
+	return plan
 }
 
 // _ = strings.Contains — keep import

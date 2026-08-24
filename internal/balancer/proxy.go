@@ -68,6 +68,11 @@ type Proxy struct {
 	// когда upstream (cppworker) возвращает ErrNCtxNeedsReload.
 	nctxReload *NCtxReloadCoordinator
 
+	// R54.4 (2026-08-24): AutoTune tracker — circuit breakers per (backend, model).
+	// Защищает от reload storm когда AutoTune fix не удаётся.
+	// Инициализируется lazily в triggerAutoTuneReload (нулевый указатель = default cfg).
+	autoTuneTracker *AutoTuneTracker
+
 	// EventBus (вынесен в eventbus.go)
 	eventBus *EventBus
 

@@ -83,6 +83,36 @@ func (p *Proxy) proxyRequestLlamaCppNonStream(w http.ResponseWriter, r *http.Req
 		return nil
 	}
 
+	// R54.4 (2026-08-24): AutoTune autonomous reload hook (non-stream path).
+	// Тот же hook что и в proxyRequestLlamaCpp — AutoTune ловит ДРУГИЕ
+	// sub-optimal state'ы которые n_ctx preflight пропускает (kv_cache, layers).
+	if modelFromCtx != "" {
+		var freeVRAM, freeRAM, totalVRAM uint64
+		if p.metricsMgr != nil {
+			clusterState := p.GetClusterState()
+			for _, b := range clusterState.Backends {
+				if b.ID == backendID {
+					totalVRAM = b.GPU.MemoryTotal
+					if b.GPU.MemoryFree > 0 {
+						freeVRAM = b.GPU.MemoryFree
+					}
+					freeRAM = b.System.MemoryFree
+					break
+				}
+			}
+		}
+		autoTuneRes := p.triggerAutoTuneReload(backendID, modelFromCtx, freeVRAM, freeRAM, totalVRAM)
+		if autoTuneRes != nil && autoTuneRes.Triggered {
+			logger.Get().Infow("proxyRequestLlamaCppNonStream: AutoTune async reload triggered",
+				"backend", backendID, "model", modelFromCtx,
+				"reason", autoTuneRes.Plan.Reason)
+		} else if autoTuneRes != nil && autoTuneRes.SkippedReason != "" {
+			logger.Get().Debugw("proxyRequestLlamaCppNonStream: AutoTune check",
+				"backend", backendID, "model", modelFromCtx,
+				"skipped_reason", autoTuneRes.SkippedReason)
+		}
+	}
+
 	translatedBody, err := translateOllamaBodyToOpenAI(originalPath, bodyNoStream)
 	if err != nil {
 		translatedBody = bodyNoStream

@@ -249,3 +249,165 @@ func TestIsAutoTuneEnabled_NilProxy(t *testing.T) {
 		t.Error("expected false for nil proxy with empty model")
 	}
 }
+
+// === R54.4 (2026-08-24): AutoTuneReloadPlan + CircuitBreaker tests ===
+
+// TestAutoTuneReloadPlan_NeedsReload — verifies NeedsReload() boolean logic.
+func TestAutoTuneReloadPlan_NeedsReload(t *testing.T) {
+	// Empty plan → no reload
+	p := &AutoTuneReloadPlan{}
+	if p.NeedsReload() {
+		t.Error("empty plan should not need reload")
+	}
+
+	// Only ContextSize
+	p.ContextSize = 4096
+	if !p.NeedsReload() {
+		t.Error("plan with ContextSize should need reload")
+	}
+
+	// Only KVCacheType
+	p2 := &AutoTuneReloadPlan{KVCacheType: "f16"}
+	if !p2.NeedsReload() {
+		t.Error("plan with KVCacheType should need reload")
+	}
+
+	// Only NumGPULayers (positive)
+	p3 := &AutoTuneReloadPlan{NumGPULayers: 36}
+	if !p3.NeedsReload() {
+		t.Error("plan with NumGPULayers=36 should need reload")
+	}
+
+	// Only NumGPULayers (negative — semantically means "all" or "auto")
+	p4 := &AutoTuneReloadPlan{NumGPULayers: -1}
+	if !p4.NeedsReload() {
+		t.Error("plan with NumGPULayers=-1 should need reload")
+	}
+
+	// UseMmap via pointer
+	b := true
+	p5 := &AutoTuneReloadPlan{UseMmap: &b}
+	if !p5.NeedsReload() {
+		t.Error("plan with UseMmap pointer should need reload")
+	}
+}
+
+// TestPlanApplyAutoTune_NoAction — returns nil when no actionable recommendations.
+func TestPlanApplyAutoTune_NoAction(t *testing.T) {
+	// Optimal model → no plan
+	a := &AutoTuneAnalysis{IsSubOptimal: false}
+	plan := PlanApplyAutoTune(a, types.LlamaCppModel{Name: "test"})
+	if plan != nil {
+		t.Errorf("optimal model should return nil plan, got %+v", plan)
+	}
+
+	// Sub-optimal but recommendations don't suggest changes
+	a2 := &AutoTuneAnalysis{
+		IsSubOptimal: true,
+		Recommendations: []AutoTuneRecommendation{
+			// Current == recommended, no change needed
+			{Category: "context", CurrentNumCtx: 4096, RecommendedNumCtx: 4096},
+		},
+	}
+	plan2 := PlanApplyAutoTune(a2, types.LlamaCppModel{Name: "test", ContextLength: 4096})
+	if plan2 != nil {
+		t.Errorf("no-op recommendation should return nil plan, got %+v", plan2)
+	}
+}
+
+// TestPlanApplyAutoTune_ContextReload — returns plan with new ContextSize.
+func TestPlanApplyAutoTune_ContextReload(t *testing.T) {
+	a := &AutoTuneAnalysis{
+		IsSubOptimal: true,
+		Recommendations: []AutoTuneRecommendation{
+			{Category: "context", CurrentNumCtx: 65536, RecommendedNumCtx: 24337},
+		},
+	}
+	loaded := types.LlamaCppModel{Name: "test", ContextLength: 65536}
+	plan := PlanApplyAutoTune(a, loaded)
+	if plan == nil {
+		t.Fatal("expected non-nil plan")
+	}
+	if plan.ContextSize != 24337 {
+		t.Errorf("expected ContextSize=24337, got %d", plan.ContextSize)
+	}
+	if !plan.NeedsReload() {
+		t.Error("plan should need reload")
+	}
+	if plan.Reason == "" {
+		t.Error("expected Reason to be set")
+	}
+}
+
+// TestPlanApplyAutoTune_KVCacheReload — returns plan with new KVCacheType.
+func TestPlanApplyAutoTune_KVCacheReload(t *testing.T) {
+	a := &AutoTuneAnalysis{
+		IsSubOptimal: true,
+		Recommendations: []AutoTuneRecommendation{
+			{Category: "kv_cache", CurrentKVCache: "q4_0", RecommendedKVCache: "f16"},
+		},
+	}
+	loaded := types.LlamaCppModel{Name: "test", KvCacheType: "q4_0"}
+	plan := PlanApplyAutoTune(a, loaded)
+	if plan == nil {
+		t.Fatal("expected non-nil plan")
+	}
+	if plan.KVCacheType != "f16" {
+		t.Errorf("expected KVCacheType=f16, got %s", plan.KVCacheType)
+	}
+}
+
+// TestAutoTuneCircuit_CoolDown — circuit blocks reloads during cool-down.
+func TestAutoTuneCircuit_CoolDown(t *testing.T) {
+	cfg := AutoTuneCircuitConfig{CooldownAfterErrorSec: 60, CooldownAfterSuccessSec: 300, MaxRetries: 3}
+	c := &AutoTuneCircuit{}
+
+	// Fresh circuit — should allow reload
+	if ok, _ := c.CanReload(cfg); !ok {
+		t.Error("fresh circuit should allow reload")
+	}
+
+	// After successful reload — should block during stable period
+	c.RecordAttempt()
+	c.RecordSuccess()
+	if ok, reason := c.CanReload(cfg); ok {
+		t.Errorf("circuit should be stable after success, got ok=true (reason: %s)", reason)
+	}
+
+	// After error — should block during cool-down
+	c2 := &AutoTuneCircuit{}
+	c2.RecordAttempt()
+	c2.RecordError("test error")
+	if ok, reason := c2.CanReload(cfg); ok {
+		t.Errorf("circuit should be cooling down after error, got ok=true (reason: %s)", reason)
+	}
+}
+
+// TestAutoTuneTracker_GetCircuit — returns same circuit for same key.
+func TestAutoTuneTracker_GetCircuit(t *testing.T) {
+	tr := NewAutoTuneTracker(DefaultAutoTuneCircuitConfig())
+	c1 := tr.GetCircuit("backend1", "model1")
+	c2 := tr.GetCircuit("backend1", "model1")
+	if c1 != c2 {
+		t.Error("GetCircuit should return same instance for same key")
+	}
+	c3 := tr.GetCircuit("backend1", "model2")
+	if c1 == c3 {
+		t.Error("different models should have different circuits")
+	}
+}
+
+// TestAutoTuneTracker_ResetCircuit — clears state.
+func TestAutoTuneTracker_ResetCircuit(t *testing.T) {
+	tr := NewAutoTuneTracker(DefaultAutoTuneCircuitConfig())
+	c := tr.GetCircuit("b1", "m1")
+	c.RecordAttempt()
+	c.RecordError("err")
+	c.RecordSuccess()
+
+	tr.ResetCircuit("b1", "m1")
+
+	if !c.LastAttempt.IsZero() || !c.LastSuccess.IsZero() || c.LastError != "" {
+		t.Errorf("ResetCircuit should clear all state, got: %+v", c)
+	}
+}

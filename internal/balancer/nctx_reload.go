@@ -847,14 +847,20 @@ func (c *NCtxReloadCoordinator) DoReload(
 			"backend_id", backendID, "model", modelName, "target_n_ctx", plan.NewNCtx)
 		// Reuse the same payload, but /api/models/load doesn't support
 		// "force" field — it handles unload-then-load internally.
+		//
+		// R53.4 (2026-08-24) HOTFIX: REMOVED "reason" field. R51.4 (2026-08-20)
+		// removed it from the primary reload payload (cppworker rejects unknown
+		// fields with HTTP 400), but the fallback below kept it. Without this
+		// fix, fallback path always returns "invalid JSON: unknown field 'reason'"
+		// → reload effectively never succeeds via fallback → cascading retries
+		// → "Did not receive done" errors in Cline clients.
 		loadPayload, _ := json.Marshal(map[string]interface{}{
-			"name":         modelName,
-			"contextSize":  plan.NewNCtx,
-			"reason":       "balancer nctx_reload fallback (cppworker restart detected)",
-			"kvCacheType":  payloadMap["kvCacheType"],
-			"gpuLayers":    payloadMap["gpuLayers"],
-			"useMmap":      payloadMap["useMmap"],
-			"flashAttn":    payloadMap["flashAttn"],
+			"name":        modelName,
+			"contextSize": plan.NewNCtx,
+			"kvCacheType": payloadMap["kvCacheType"],
+			"gpuLayers":   payloadMap["gpuLayers"],
+			"useMmap":     payloadMap["useMmap"],
+			"flashAttn":   payloadMap["flashAttn"],
 		})
 		resp.Body.Close()
 		resp, err = loader.PostReload(rctx, loadEndpoint, loadPayload)

@@ -51,7 +51,10 @@ services:
     # Round 35 (r35): reload→load fallback + idleUnload disabled.
     # Round 35c (r35c): env-tunable polling timeouts (LB_NCTX_PREFLIGHT_*)
     # для моделей с auto-offload (22GB+ Qwen3.6 на 8GB VRAM, 12-15 min load).
-    image: ollama-legion/balancer:cppworker-bundled-r53-r51r52  # Round 53 (2026-08-24): regression audit + fixes.
+    image: ollama-legion/balancer:cppworker-bundled-r53.4-r53  # Round 53.4 (2026-08-24): HOTFIX balancer crash.
+    #   R53.4: defer recover() in async + sync reload paths (nil pointer panic protection).
+    #          Also: removed `reason` field from /api/models/load fallback payload
+    #          (R51.4 missed this — cppworker returned 400 "unknown field 'reason'" on fallback).
     #   R53.1: R51.3 double-done:true fix — wrapper chunk (empty delta+finish_reason)
     #          suppressed, canonical done:true only from usage chunk / writeStreamingSSEDone
     #          fallback. Fixes Cline "Did not receive done or success response in stream".

@@ -568,7 +568,20 @@ func (c *NCtxReloadCoordinator) RunPreflight(
 
 			// Async reload — НЕ ждём завершения. DoReload имеет внутренний
 			// singleflight-like lock, так что параллельные reload'ы коалесцируются.
+			//
+			// R53.4 (2026-08-24) HOTFIX: defer recover() защищает balancer от
+			// crash при любом nil pointer в goroutine body. Без этого — nil deref
+			// (например, в c.state() или DoReload internal path) валит весь
+			// balancer → in-flight Cline клиенты получают "Did not receive done".
+			// Корень: cascading reload requests (Cline retries пока cppworker
+			// busy) → multiple async goroutines + race conditions.
 			go func() {
+				defer func() {
+					if r := recover(); r != nil {
+						logger.Get().Errorw("preflight: PANIC in async reload goroutine — RECOVERED",
+							"backend_id", backendID, "panic", r)
+					}
+				}()
 				reloadCtx, cancel := context.WithTimeout(context.Background(), cfg.effectiveTimeout())
 				defer cancel()
 				if err := c.DoReload(reloadCtx, backendID, backendAddr, modelName, plan, loader); err != nil {
@@ -594,6 +607,16 @@ func (c *NCtxReloadCoordinator) RunPreflight(
 			"max_vram_n_ctx", state.MaxVRAMNCtx,
 			"model_max_context", state.ModelMaxContext,
 			"has_tools", meta != nil && meta.HasTools)
+
+		// R53.4 (2026-08-24) HOTFIX: sync reload path also can panic from
+		// nil deref in c.state() or DoReload internal path. Defer recover
+		// returns reject result instead of crashing the whole balancer.
+		defer func() {
+			if r := recover(); r != nil {
+				logger.Get().Errorw("preflight: PANIC in sync reload — RECOVERED, returning reject",
+					"backend_id", backendID, "panic", r)
+			}
+		}()
 
 		reloadCtx, cancel := context.WithTimeout(ctx, cfg.effectiveTimeout())
 		defer cancel()

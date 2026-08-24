@@ -9,7 +9,9 @@ package api
 import (
 	"encoding/json"
 	"net/http"
+	"strconv"
 	"strings"
+	"time"
 
 	"ollama-loadbalancer/internal/balancer"
 	"ollama-loadbalancer/pkg/logger"
@@ -280,6 +282,21 @@ func (s *Server) handleAdminAutotune(w http.ResponseWriter, r *http.Request) {
 			}
 			backendResp["workloads"] = workloads
 		}
+		// R55.2 (2026-08-24): recent history events for this backend
+		// (filtered from global history log by backendId).
+		if h := proxy.AutoTuneHistory(); h != nil {
+			all := h.Recent(0)
+			recent := make([]balancer.AutoTuneHistoryEntry, 0, len(all))
+			for _, e := range all {
+				if e.BackendID == b.ID {
+					recent = append(recent, e)
+				}
+			}
+			if len(recent) > 50 {
+				recent = recent[:50]
+			}
+			backendResp["recentHistory"] = recent
+		}
 		resp["backends"] = append(resp["backends"].([]map[string]interface{}), backendResp)
 	}
 	s.writeJSON(w, http.StatusOK, resp)
@@ -312,6 +329,82 @@ func (s *Server) routeAdminAutotuneByID(w http.ResponseWriter, r *http.Request) 
 	}
 
 	http.Error(w, "Method not allowed or unknown endpoint", http.StatusMethodNotAllowed)
+}
+
+// handleAdminAutotuneHistory — R55.2 (2026-08-24): GET /api/v1/admin/autotune/history
+//
+// Возвращает ring buffer последних AutoTune events (newest first).
+// Query params:
+//   - limit=N — max entries to return (default 100, max 500)
+//   - since=<RFC3339> — только entries после этой timestamp
+//   - backend=<id> — filter по backendId
+//
+// Используется WebUI для timeline visualization: оператор видит "что
+// AutoTune делал за последние N часов". EventBus (R54.8) даёт live
+// WebSocket updates, history log даёт replay для новых HTTP clients.
+func (s *Server) handleAdminAutotuneHistory(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	proxy := s.proxy
+	if proxy == nil {
+		http.Error(w, "balancer proxy not initialized", http.StatusInternalServerError)
+		return
+	}
+	h := proxy.AutoTuneHistory()
+	if h == nil {
+		http.Error(w, "AutoTuneHistory not initialized", http.StatusInternalServerError)
+		return
+	}
+
+	// Parse query params
+	q := r.URL.Query()
+	limit := 100
+	if v := q.Get("limit"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			limit = n
+			if limit > 500 {
+				limit = 500
+			}
+		}
+	}
+	backendFilter := q.Get("backend")
+
+	// Fetch entries
+	var entries []balancer.AutoTuneHistoryEntry
+	if sinceStr := q.Get("since"); sinceStr != "" {
+		if since, err := time.Parse(time.RFC3339, sinceStr); err == nil {
+			entries = h.Since(since)
+		} else {
+			http.Error(w, "invalid 'since' timestamp (use RFC3339)", http.StatusBadRequest)
+			return
+		}
+	} else {
+		entries = h.Recent(0) // all
+	}
+
+	// Filter by backend (if specified)
+	if backendFilter != "" {
+		filtered := make([]balancer.AutoTuneHistoryEntry, 0, len(entries))
+		for _, e := range entries {
+			if e.BackendID == backendFilter {
+				filtered = append(filtered, e)
+			}
+		}
+		entries = filtered
+	}
+
+	// Apply limit
+	if limit > 0 && limit < len(entries) {
+		entries = entries[:limit]
+	}
+
+	resp := map[string]interface{}{
+		"entries": entries,
+		"stats":   h.Stats(),
+	}
+	s.writeJSON(w, http.StatusOK, resp)
 }
 
 // handleAdminAutotuneConfigDispatcher — R54.7 (2026-08-24): диспетчер для /config.

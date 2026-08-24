@@ -158,11 +158,19 @@ func (s *Server) setupRoutes() {
 	s.mux.Handle("/api/v1/admin/restart", AuthMiddleware(RateLimitMiddleware(s.restartHandler, s.rateLimiter), s.authenticator))
 
 	// R54.6 (2026-08-24): AutoTune admin endpoints.
+	// R55.2 (2026-08-24): /history — ring buffer последних AutoTune events.
 	// GET /api/v1/admin/autotune — все бэкенды с AutoTune state и circuit.
+	// GET /api/v1/admin/autotune/history — ring buffer событий (newest first).
+	//   Query: ?limit=N&since=RFC3339&backend=<id>
 	// GET /api/v1/admin/autotune/config — global + per-model AutoTune config.
 	// PUT /api/v1/admin/autotune/config — update config.
 	// GET /api/v1/admin/autotune/{backendID} — детально для одного.
 	// POST /api/v1/admin/autotune/{backendID}/apply — применить рекомендации.
+	//
+	// NB: /history must be registered BEFORE the catch-all /api/v1/admin/autotune
+	// so the mux doesn't match it as /api/v1/admin/autotune/{id} (where "history"
+	// becomes backendID и возвращает "backend not found").
+	s.mux.HandleFunc("/api/v1/admin/autotune/history", s.handleAdminAutotuneHistory)
 	s.mux.HandleFunc("/api/v1/admin/autotune/config", s.handleAdminAutotuneConfigDispatcher)
 	s.mux.Handle("/api/v1/admin/autotune", AuthMiddleware(RateLimitMiddleware(http.HandlerFunc(s.handleAdminAutotune), s.rateLimiter), s.authenticator))
 	// Apply endpoint — отдельный handler с явной обработкой POST /apply suffix.

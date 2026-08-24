@@ -73,6 +73,11 @@ type Proxy struct {
 	// Инициализируется lazily в triggerAutoTuneReload (нулевый указатель = default cfg).
 	autoTuneTracker *AutoTuneTracker
 
+	// R55.2 (2026-08-24): AutoTune history log - ring buffer последних N=500 events.
+	// Используется для operator visibility: "что AutoTune делал за последние 24h?"
+	// Инициализируется lazily в AutoTuneHistory() getter.
+	autoTuneHistory *AutoTuneHistory
+
 	// R54.9 (2026-08-24): Workload tracker — per-(backend, model) sliding window
 	// num_ctx samples. Используется AutoTune для workload-aware KV cache
 	// selection (light workload → f16, heavy → q4_0).

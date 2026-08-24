@@ -577,6 +577,34 @@ func (p *Proxy) WorkloadTracker() *WorkloadTracker {
 	return p.workloadTracker
 }
 
+// AutoTuneHistory accessor для API handlers (R55.2).
+// Lazy init с default config (500 entries max).
+// Используется для ring buffer последних AutoTune events.
+func (p *Proxy) AutoTuneHistory() *AutoTuneHistory {
+	if p == nil {
+		return nil
+	}
+	if p.autoTuneHistory == nil {
+		p.autoTuneHistory = NewAutoTuneHistory(500) // R55.2 default
+	}
+	return p.autoTuneHistory
+}
+
+// publishAutoTuneEvent — R55.2: helper для двойной записи event
+// (EventBus для live WebSocket + AutoTuneHistory ring buffer для HTTP poll).
+// Убирает boilerplate в 4 publish call-sites triggerAutoTuneReload.
+func (p *Proxy) publishAutoTuneEvent(ev types.Event) {
+	if p == nil {
+		return
+	}
+	if p.EventBus() != nil {
+		p.EventBus().Publish(ev)
+	}
+	if h := p.AutoTuneHistory(); h != nil {
+		h.Record(ev)
+	}
+}
+
 // AutoTuneTracker — Round 54.4 (2026-08-24): per-Proxy tracker для circuit breakers.
 // Хранит AutoTuneCircuit для каждой пары (backendID, modelName).
 //
@@ -776,22 +804,21 @@ func (p *Proxy) triggerAutoTuneReload(backendID, modelName string, freeVRAM, fre
 		// Это НЕ новый circuit-open логика (cool-down уже работает), а visibility
 		// в UI, чтобы не приходилось лезть в логи чтобы понять почему
 		// AutoTune не срабатывает.
-		if p.EventBus() != nil {
-			p.EventBus().Publish(types.Event{
-				Type:      types.EventAutoTuneCircuitOpen,
-				Timestamp: time.Now(),
-				BackendID: backendID,
-				Model:     modelName,
-				Severity:  types.SeverityWarning,
-				Source:    "autotune",
-				Message:   "AutoTune circuit cooling down: " + reason,
-				Data: map[string]interface{}{
-					"reason":      reason,
-					"lastError":   circuit.LastError,
-					"lastAttempt": circuit.LastAttempt,
+		// R55.2: используем publishAutoTuneEvent helper — пишет в EventBus + history log.
+		p.publishAutoTuneEvent(types.Event{
+			Type:      types.EventAutoTuneCircuitOpen,
+			Timestamp: time.Now(),
+			BackendID: backendID,
+			Model:     modelName,
+			Severity:  types.SeverityWarning,
+			Source:    "autotune",
+			Message:   "AutoTune circuit cooling down: " + reason,
+			Data: map[string]interface{}{
+				"reason":      reason,
+				"lastError":   circuit.LastError,
+				"lastAttempt": circuit.LastAttempt,
 				},
 			})
-		}
 		return res
 	}
 
@@ -808,68 +835,63 @@ func (p *Proxy) triggerAutoTuneReload(backendID, modelName string, freeVRAM, fre
 	// Запускаем async reload в goroutine
 	go func() {
 		// R54.8 (2026-08-24): publish autotune_reload_triggered event
-		if p.EventBus() != nil {
-			p.EventBus().Publish(types.Event{
-				Type:      types.EventAutoTuneReloadTriggered,
-				Timestamp: time.Now(),
-				BackendID: backendID,
-				Model:     modelName,
-				Severity:  types.SeverityInfo,
-				Source:    "autotune",
-				Message:   "AutoTune async reload triggered: " + plan.Reason,
-				Data: map[string]interface{}{
-					"contextSize":   plan.ContextSize,
-					"kvCacheType":   plan.KVCacheType,
-					"numGpuLayers":  plan.NumGPULayers,
-					"reason":        plan.Reason,
-				},
-			})
-		}
+		// R55.2: publishAutoTuneEvent пишет в EventBus + history log.
+		p.publishAutoTuneEvent(types.Event{
+			Type:      types.EventAutoTuneReloadTriggered,
+			Timestamp: time.Now(),
+			BackendID: backendID,
+			Model:     modelName,
+			Severity:  types.SeverityInfo,
+			Source:    "autotune",
+			Message:   "AutoTune async reload triggered: " + plan.Reason,
+			Data: map[string]interface{}{
+				"contextSize":  plan.ContextSize,
+				"kvCacheType":  plan.KVCacheType,
+				"numGpuLayers": plan.NumGPULayers,
+				"reason":       plan.Reason,
+			},
+		})
 
 		err := p.executeAutoTuneReload(backendID, modelName, plan, circuit)
 		if err != nil {
 			circuit.RecordError(err.Error())
 			logger.Get().Warnw("autotune: async reload failed",
 				"backend", backendID, "model", modelName, "error", err)
-			// R54.8: publish failure event
-			if p.EventBus() != nil {
-				p.EventBus().Publish(types.Event{
-					Type:      types.EventAutoTuneReloadFailed,
-					Timestamp: time.Now(),
-					BackendID: backendID,
-					Model:     modelName,
-					Severity:  types.SeverityWarning,
-					Source:    "autotune",
-					Message:   "AutoTune reload failed: " + err.Error(),
-					Data: map[string]interface{}{
-						"error":         err.Error(),
-						"circuitErrors": circuit.LastError,
-					},
-				})
-			}
+			// R54.8: publish failure event (R55.2: also record to history)
+			p.publishAutoTuneEvent(types.Event{
+				Type:      types.EventAutoTuneReloadFailed,
+				Timestamp: time.Now(),
+				BackendID: backendID,
+				Model:     modelName,
+				Severity:  types.SeverityWarning,
+				Source:    "autotune",
+				Message:   "AutoTune reload failed: " + err.Error(),
+				Data: map[string]interface{}{
+					"error":         err.Error(),
+					"circuitErrors": circuit.LastError,
+				},
+			})
 		} else {
 			circuit.RecordSuccess()
 			p.autoTuneTracker.ResetCircuit(backendID, modelName)
 			logger.Get().Infow("autotune: async reload succeeded",
 				"backend", backendID, "model", modelName, "reason", plan.Reason)
-			// R54.8: publish success event
-			if p.EventBus() != nil {
-				p.EventBus().Publish(types.Event{
-					Type:      types.EventAutoTuneReloadSucceeded,
-					Timestamp: time.Now(),
-					BackendID: backendID,
-					Model:     modelName,
-					Severity:  types.SeverityInfo,
-					Source:    "autotune",
-					Message:   "AutoTune reload succeeded: " + plan.Reason,
-					Data: map[string]interface{}{
-						"contextSize":  plan.ContextSize,
-						"kvCacheType":  plan.KVCacheType,
-						"numGpuLayers": plan.NumGPULayers,
-						"reason":       plan.Reason,
-					},
-				})
-			}
+			// R54.8: publish success event (R55.2: also record to history)
+			p.publishAutoTuneEvent(types.Event{
+				Type:      types.EventAutoTuneReloadSucceeded,
+				Timestamp: time.Now(),
+				BackendID: backendID,
+				Model:     modelName,
+				Severity:  types.SeverityInfo,
+				Source:    "autotune",
+				Message:   "AutoTune reload succeeded: " + plan.Reason,
+				Data: map[string]interface{}{
+					"contextSize":  plan.ContextSize,
+					"kvCacheType":  plan.KVCacheType,
+					"numGpuLayers": plan.NumGPULayers,
+					"reason":       plan.Reason,
+				},
+			})
 		}
 	}()
 

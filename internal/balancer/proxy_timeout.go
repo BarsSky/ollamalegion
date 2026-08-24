@@ -3,6 +3,8 @@
 package balancer
 
 import (
+	"os"
+	"strconv"
 	"time"
 
 	"ollama-loadbalancer/pkg/types"
@@ -78,6 +80,14 @@ func (p *Proxy) getStreamingIdleTimeout() time.Duration {
 //  4. Глобальный config.Balancing.StreamTimeout
 //  5. Дефолт 600 секунд
 func (p *Proxy) getModelStreamTimeout(modelName string) time.Duration {
+	// R53.6 (2026-08-24): ENV override LB_LLAMACPP_STREAM_TIMEOUT_SEC takes
+	// highest priority (allows fail-fast in production without config.json edit).
+	if envSec := os.Getenv("LB_LLAMACPP_STREAM_TIMEOUT_SEC"); envSec != "" {
+		if n, parseErr := strconv.Atoi(envSec); parseErr == nil && n > 0 {
+			return time.Duration(n) * time.Second
+		}
+	}
+
 	if modelName == "" || p.modelLatencyTracker == nil {
 		return p.getGlobalStreamTimeout()
 	}
@@ -181,7 +191,18 @@ func (p *Proxy) getModelFirstByteTimeout(modelName string) time.Duration {
 }
 
 // getGlobalStreamTimeout — глобальный таймаут стриминга из конфига (или дефолт 600s).
+//
+// R53.6 (2026-08-24): ENV override LB_LLAMACPP_STREAM_TIMEOUT_SEC.
+// Позволяет установить таймаут без перезапуска config.json — полезно когда
+// cppworker зависает на длинных контекстах и нужно ускорить fail-fast
+// (например 90s вместо дефолтных 600s).
 func (p *Proxy) getGlobalStreamTimeout() time.Duration {
+	// ENV override (R53.6)
+	if envSec := os.Getenv("LB_LLAMACPP_STREAM_TIMEOUT_SEC"); envSec != "" {
+		if n, parseErr := strconv.Atoi(envSec); parseErr == nil && n > 0 {
+			return time.Duration(n) * time.Second
+		}
+	}
 	sec := p.config.Balancing.StreamTimeout
 	if sec <= 0 {
 		return 600 * time.Second

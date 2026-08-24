@@ -480,6 +480,13 @@ func (p *Proxy) proxyRequestLlamaCpp(w http.ResponseWriter, r *http.Request, bac
 		// (OpenWebUI), /api/generate (Ollama CLI). При срабатывании — закрываем
 		// upstream body (cppworker прекратит генерацию после текущего token'а)
 		// и выходим из loop.
+		//
+		// R53.6 (2026-08-24): добавлен case <-reqCtx.Done() — streamTimeout (per-model
+		// profile, default 600s). Без этого case balancer зависает на генерации
+		// длинного контекста (cppworker генерирует 0 токенов, балансер ждёт [DONE]).
+		// При срабатывании reqCtx балансер сам отменяет cppworker раньше client timeout
+		// → R53.5 writeStreamErrorChunk эмитит done:true chunk клиенту → клиент
+		// получает "stream proxy error" вместо "Did not receive done" (TCP close).
 		select {
 		case <-r.Context().Done():
 			logger.Get().Infow("proxyRequestLlamaCpp: client cancelled, aborting stream",
@@ -490,6 +497,20 @@ func (p *Proxy) proxyRequestLlamaCpp(w http.ResponseWriter, r *http.Request, bac
 				_ = resp.Body.Close()
 			}
 			return nil
+		case <-reqCtx.Done():
+			// R53.6: streamTimeout сработал (cppworker hang / slow generation).
+			// Закрываем upstream body, возвращаем error — R53.5 эмитит
+			// error chunk клиенту.
+			logger.Get().Warnw("proxyRequestLlamaCpp: streamTimeout fired, aborting stream",
+				"backend", backendID, "model", modelFromCtx,
+				"context_error", reqCtx.Err(),
+				"stream_timeout_sec", getEffectiveStreamTimeoutSec(p, modelFromCtx, isStreaming),
+				"bytes_forwarded", bytesForwarded)
+			if resp.Body != nil {
+				_ = resp.Body.Close()
+			}
+			return fmt.Errorf("proxyRequestLlamaCpp: stream timeout after %v (model=%s, backend=%s, bytes_forwarded=%d)",
+				time.Since(llamaStartTime), modelFromCtx, backendID, bytesForwarded)
 		default:
 		}
 
@@ -1023,4 +1044,15 @@ func extractUpstreamGenerateDoneChunk(data string, plainContent *string) bool {
 		*plainContent += t
 	}
 	return true
+}
+
+// getEffectiveStreamTimeoutSec — R53.6 (2026-08-24) helper для логирования.
+// Возвращает фактический stream timeout в секундах, который будет применён
+// к upstream запросу. Используется только в logging при streamTimeout firing
+// (см. SSE read loop select case). Возвращает 0 если streaming disabled.
+func getEffectiveStreamTimeoutSec(p *Proxy, modelName string, isStreaming bool) int {
+	if !isStreaming {
+		return 0
+	}
+	return int(p.getModelStreamTimeout(modelName).Seconds())
 }

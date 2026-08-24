@@ -377,6 +377,109 @@
     border-color: var(--danger-soft);
 }
 
+/* ===== AutoTune (R54.5, 2026-08-24) ===== */
+/* Severity color classes — used by .autotune-badge and .autotune-card */
+.autotune-severity-ok {
+    background: var(--success-soft, rgba(40, 200, 64, 0.15));
+    color: var(--success, #28c840);
+    border-color: var(--success, #28c840);
+}
+.autotune-severity-info {
+    background: var(--accent-soft);
+    color: var(--accent);
+    border-color: var(--accent-soft);
+}
+.autotune-severity-warning {
+    background: var(--warning-soft);
+    color: var(--warning);
+    border-color: var(--warning-soft);
+}
+.autotune-severity-critical {
+    background: var(--danger-soft);
+    color: var(--danger);
+    border-color: var(--danger-soft);
+}
+
+/* Compact inline badge (next to loadedModel card) */
+.autotune-badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    padding: 2px 6px;
+    border-radius: var(--radius-xs);
+    font-size: var(--font-size-xs);
+    font-weight: var(--font-weight-semibold);
+    border: 1px solid transparent;
+    cursor: help;
+}
+.autotune-badge-icon { font-size: 0.9em; }
+.autotune-badge-text { font-weight: var(--font-weight-bold); }
+.autotune-badge-count {
+    background: rgba(0, 0, 0, 0.2);
+    border-radius: 8px;
+    padding: 0 4px;
+    font-size: 0.85em;
+}
+.autotune-badge-manual {
+    font-style: italic;
+    opacity: 0.7;
+    font-size: 0.85em;
+    margin-left: 4px;
+}
+
+/* Full card (per backend) */
+.autotune-card {
+    border: 1px solid;
+    border-radius: var(--radius-md);
+    padding: var(--space-3);
+    margin-top: var(--space-3);
+}
+.autotune-header {
+    display: flex;
+    align-items: center;
+    gap: var(--space-2);
+    margin-bottom: var(--space-2);
+}
+.autotune-icon { font-size: 1.1em; }
+.autotune-enabled { color: var(--success, #28c840); }
+.autotune-disabled { color: var(--warning); font-style: italic; }
+.autotune-summary { color: var(--text-secondary); font-size: var(--font-size-sm); }
+.autotune-models { display: flex; flex-direction: column; gap: var(--space-2); }
+.autotune-model {
+    padding: var(--space-2);
+    background: var(--bg-secondary);
+    border-radius: var(--radius-sm);
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-1);
+}
+.autotune-rec-count {
+    font-size: var(--font-size-xs);
+    color: var(--text-secondary);
+    margin-left: var(--space-2);
+}
+.autotune-recs { display: flex; flex-direction: column; gap: 4px; }
+.autotune-rec {
+    display: flex;
+    align-items: flex-start;
+    gap: 4px;
+    padding: 4px 6px;
+    border-left: 3px solid;
+    border-radius: 2px;
+    font-size: var(--font-size-xs);
+}
+.autotune-rec-icon { flex-shrink: 0; }
+.autotune-rec-cat {
+    color: var(--text-secondary);
+    font-family: monospace;
+}
+.autotune-rec-msg { flex: 1; }
+.autotune-rec-sugg {
+    color: var(--text-secondary);
+    font-style: italic;
+    margin-left: 18px;
+}
+
 /* ===== Backend Capacity ===== */
 .capacity-section {
     display: grid;

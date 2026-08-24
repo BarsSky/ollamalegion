@@ -200,6 +200,9 @@ const Renderers = (function () {
                     </div>
                     ${contextBadges ? `<div style="margin-top:0.5rem;">${contextBadges}</div>` : ''}
                     ${cppContextBadges ? `<div style="margin-top:0.5rem;">${cppContextBadges}</div>` : ''}
+                    ${(window.AutoTuneUI && (backend.llamaCpp?.autoTune || backend.autoTune))
+                        ? `<div style="margin-top:0.5rem;">${window.AutoTuneUI.renderBackendAutoTune(backend)}</div>`
+                        : ''}
                 </div>
             `;
         }).join('');
@@ -1267,6 +1270,9 @@ const Renderers = (function () {
                     </label>
                     <div class="model-card-header">
                         <span class="model-name">${escapeHtml(m.name)}</span>
+                        ${(window.AutoTuneUI && m.isSubOptimal)
+                            ? window.AutoTuneUI.renderModelAutoTuneBadge(m)
+                            : ''}
                         ${getBackendTypeBadge(backend)} ${badge(m.backend, m.backendStatus === 'healthy' ? 'success' : 'danger')}
                     </div>
                     <div class="model-size">${sizeGB === null ? '—' : sizeGB.toFixed(1) + ' GB'}</div>

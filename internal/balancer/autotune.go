@@ -698,6 +698,27 @@ func (p *Proxy) triggerAutoTuneReload(backendID, modelName string, freeVRAM, fre
 	canReload, reason := circuit.CanReload(p.autoTuneTracker.GetConfig())
 	if !canReload {
 		res.SkippedReason = reason
+		// R54.8 (2026-08-24): publish circuit_cool_down event — оператор видит
+		// в WebUI что AutoTune временно приостановлен после серии неудач.
+		// Это НЕ новый circuit-open логика (cool-down уже работает), а visibility
+		// в UI, чтобы не приходилось лезть в логи чтобы понять почему
+		// AutoTune не срабатывает.
+		if p.EventBus() != nil {
+			p.EventBus().Publish(types.Event{
+				Type:      types.EventAutoTuneCircuitOpen,
+				Timestamp: time.Now(),
+				BackendID: backendID,
+				Model:     modelName,
+				Severity:  types.SeverityWarning,
+				Source:    "autotune",
+				Message:   "AutoTune circuit cooling down: " + reason,
+				Data: map[string]interface{}{
+					"reason":      reason,
+					"lastError":   circuit.LastError,
+					"lastAttempt": circuit.LastAttempt,
+				},
+			})
+		}
 		return res
 	}
 
@@ -713,16 +734,69 @@ func (p *Proxy) triggerAutoTuneReload(backendID, modelName string, freeVRAM, fre
 
 	// Запускаем async reload в goroutine
 	go func() {
+		// R54.8 (2026-08-24): publish autotune_reload_triggered event
+		if p.EventBus() != nil {
+			p.EventBus().Publish(types.Event{
+				Type:      types.EventAutoTuneReloadTriggered,
+				Timestamp: time.Now(),
+				BackendID: backendID,
+				Model:     modelName,
+				Severity:  types.SeverityInfo,
+				Source:    "autotune",
+				Message:   "AutoTune async reload triggered: " + plan.Reason,
+				Data: map[string]interface{}{
+					"contextSize":   plan.ContextSize,
+					"kvCacheType":   plan.KVCacheType,
+					"numGpuLayers":  plan.NumGPULayers,
+					"reason":        plan.Reason,
+				},
+			})
+		}
+
 		err := p.executeAutoTuneReload(backendID, modelName, plan, circuit)
 		if err != nil {
 			circuit.RecordError(err.Error())
 			logger.Get().Warnw("autotune: async reload failed",
 				"backend", backendID, "model", modelName, "error", err)
+			// R54.8: publish failure event
+			if p.EventBus() != nil {
+				p.EventBus().Publish(types.Event{
+					Type:      types.EventAutoTuneReloadFailed,
+					Timestamp: time.Now(),
+					BackendID: backendID,
+					Model:     modelName,
+					Severity:  types.SeverityWarning,
+					Source:    "autotune",
+					Message:   "AutoTune reload failed: " + err.Error(),
+					Data: map[string]interface{}{
+						"error":         err.Error(),
+						"circuitErrors": circuit.LastError,
+					},
+				})
+			}
 		} else {
 			circuit.RecordSuccess()
 			p.autoTuneTracker.ResetCircuit(backendID, modelName)
 			logger.Get().Infow("autotune: async reload succeeded",
 				"backend", backendID, "model", modelName, "reason", plan.Reason)
+			// R54.8: publish success event
+			if p.EventBus() != nil {
+				p.EventBus().Publish(types.Event{
+					Type:      types.EventAutoTuneReloadSucceeded,
+					Timestamp: time.Now(),
+					BackendID: backendID,
+					Model:     modelName,
+					Severity:  types.SeverityInfo,
+					Source:    "autotune",
+					Message:   "AutoTune reload succeeded: " + plan.Reason,
+					Data: map[string]interface{}{
+						"contextSize":  plan.ContextSize,
+						"kvCacheType":  plan.KVCacheType,
+						"numGpuLayers": plan.NumGPULayers,
+						"reason":       plan.Reason,
+					},
+				})
+			}
 		}
 	}()
 

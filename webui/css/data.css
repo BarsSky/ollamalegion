@@ -378,7 +378,7 @@
 }
 
 /* ===== AutoTune (R54.5, 2026-08-24) ===== */
-/* Severity color classes — used by .autotune-badge and .autotune-card */
+/* Severity color classes - used by .autotune-badge and .autotune-card */
 .autotune-severity-ok {
     background: var(--success-soft, rgba(40, 200, 64, 0.15));
     color: var(--success, #28c840);

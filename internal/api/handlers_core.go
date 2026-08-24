@@ -168,11 +168,19 @@ func (s *Server) wsMetricsHandler(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 			// Отправляем событие клиенту с eventType wrapper + write deadline
+			// R54.8 (2026-08-24): добавлены model/severity/source/message — раньше
+			// клиенты получали только eventType+timestamp+backendId+data, что
+			// заставляло их парсить human-readable строку из ev.Data. Теперь WebUI
+			// toast handler может показать конкретный model + severity.
 			conn.SetWriteDeadline(time.Now().Add(30 * time.Second))
 			wrapper := map[string]interface{}{
 				"eventType": string(ev.Type),
 				"timestamp": ev.Timestamp,
 				"backendId": ev.BackendID,
+				"model":     ev.Model,
+				"severity":  string(ev.Severity),
+				"source":    ev.Source,
+				"message":   ev.Message,
 				"data":      ev.Data,
 			}
 			if err := conn.WriteJSON(wrapper); err != nil {

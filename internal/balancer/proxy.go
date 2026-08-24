@@ -73,6 +73,10 @@ type Proxy struct {
 	// Инициализируется lazily в triggerAutoTuneReload (нулевый указатель = default cfg).
 	autoTuneTracker *AutoTuneTracker
 
+	// R54.6 (2026-08-24): ModelManager reference для AutoTune apply (load+unload).
+	// Использует existing p.modelManager (set в NewProxy). SetModelManager() — alias
+	// для совместимости с R54.6 handler'ами.
+
 	// EventBus (вынесен в eventbus.go)
 	eventBus *EventBus
 

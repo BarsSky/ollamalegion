@@ -5,6 +5,7 @@ package balancer
 import (
 	"strings"
 	"testing"
+	"time"
 
 	"ollama-loadbalancer/pkg/types"
 )
@@ -409,5 +410,151 @@ func TestAutoTuneTracker_ResetCircuit(t *testing.T) {
 
 	if !c.LastAttempt.IsZero() || !c.LastSuccess.IsZero() || c.LastError != "" {
 		t.Errorf("ResetCircuit should clear all state, got: %+v", c)
+	}
+}
+
+// === R54.8 (2026-08-24): AutoTune event publishing tests ===
+
+// TestTriggerAutoTuneReload_CircuitCoolDown_PublishesEvent — когда circuit
+// блокирует reload из-за cool-down после ошибки, должен быть опубликован
+// EventAutoTuneCircuitOpen в EventBus чтобы WebUI показал toast.
+func TestTriggerAutoTuneReload_CircuitCoolDown_PublishesEvent(t *testing.T) {
+	// Arrange: прокси с AutoTune enabled и подоптимальной моделью в метриках.
+	config := createTestConfig()
+	config.Balancing.AutoTune = true
+	proxy := newProxyWithCleanup(t, config)
+
+	// Подоптимальная модель: Q4 KV cache при 6GB free VRAM (f16 рекомендован).
+	proxy.metricsMgr.mu.Lock()
+	proxy.metricsMgr.llamaMetrics["backend-1"] = &types.LlamaCppMetrics{
+		LoadedModels: []types.LlamaCppModel{
+			{
+				Name:              "qwen3-4b",
+				State:             "loaded",
+				ContextLength:     65536, // over-allocated
+				KvCacheType:       "q4_0", // sub-optimal
+				NumGPULayers:      36,
+				NLayers:           36,
+				NEmbd:             2560,
+				NKvHeads:          8,
+				HeadDimK:          80,
+				Size:              2_500_000_000,
+				MaxContext:        131072,
+				FeasibleMaxContext: 30000, // way below loaded 65536
+			},
+		},
+	}
+	proxy.metricsMgr.mu.Unlock()
+
+	// Pre-poison the circuit: имитация прошлой неудачи → cool-down активен.
+	proxy.autoTuneTracker = NewAutoTuneTracker(DefaultAutoTuneCircuitConfig())
+	circuit := proxy.autoTuneTracker.GetCircuit("backend-1", "qwen3-4b")
+	circuit.RecordAttempt()
+	circuit.RecordError("previous reload failed: OOM")
+
+	// Subscribe to EventBus to capture published events.
+	subID, eventCh := proxy.EventBus().Subscribe()
+	defer proxy.EventBus().Unsubscribe(subID)
+
+	// Act: вызываем triggerAutoTuneReload — должен задетектить cool-down
+	// и опубликовать EventAutoTuneCircuitOpen.
+	res := proxy.triggerAutoTuneReload("backend-1", "qwen3-4b",
+		6_000_000_000, 16_000_000_000, 8_000_000_000)
+
+	// Assert: результат содержит "skipped" reason
+	if res == nil {
+		t.Fatal("expected non-nil result")
+	}
+	if res.SkippedReason == "" {
+		t.Error("expected SkippedReason to be set on cool-down")
+	}
+	if !strings.Contains(res.SkippedReason, "circuit-cooling-down") &&
+		!strings.Contains(res.SkippedReason, "stable period") {
+		t.Errorf("expected circuit-related skip reason, got: %s", res.SkippedReason)
+	}
+
+	// Проверяем что событие EventAutoTuneCircuitOpen было опубликовано.
+	// EventBus неблокирующий (drop-on-full), поэтому event приходит сразу
+	// или не приходит если канал переполнен. Используем polling с timeout.
+	var circuitEvent *types.Event
+	deadline := time.After(2 * time.Second)
+	for circuitEvent == nil {
+		select {
+		case ev := <-eventCh:
+			if ev.Type == types.EventAutoTuneCircuitOpen {
+				circuitEvent = &ev
+			}
+		case <-deadline:
+			t.Fatal("timeout waiting for EventAutoTuneCircuitOpen event")
+		}
+	}
+
+	if circuitEvent.BackendID != "backend-1" {
+		t.Errorf("expected backendId=backend-1, got %s", circuitEvent.BackendID)
+	}
+	if circuitEvent.Model != "qwen3-4b" {
+		t.Errorf("expected model=qwen3-4b, got %s", circuitEvent.Model)
+	}
+	if circuitEvent.Severity != types.SeverityWarning {
+		t.Errorf("expected severity=warning, got %s", circuitEvent.Severity)
+	}
+	if !strings.Contains(circuitEvent.Message, "circuit") {
+		t.Errorf("expected message to mention 'circuit', got: %s", circuitEvent.Message)
+	}
+	if circuitEvent.Source != "autotune" {
+		t.Errorf("expected source=autotune, got %s", circuitEvent.Source)
+	}
+}
+
+// TestTriggerAutoTuneReload_Disabled_NoEvent — если AutoTune выключен,
+// EventAutoTuneCircuitOpen не должен публиковаться.
+func TestTriggerAutoTuneReload_Disabled_NoCircuitEvent(t *testing.T) {
+	config := createTestConfig()
+	config.Balancing.AutoTune = false
+	proxy := newProxyWithCleanup(t, config)
+
+	proxy.metricsMgr.mu.Lock()
+	proxy.metricsMgr.llamaMetrics["backend-1"] = &types.LlamaCppMetrics{
+		LoadedModels: []types.LlamaCppModel{
+			{
+				Name:              "qwen3-4b",
+				State:             "loaded",
+				ContextLength:     65536,
+				KvCacheType:       "q4_0",
+				NumGPULayers:      36,
+				NLayers:           36,
+				NEmbd:             2560,
+				NKvHeads:          8,
+				HeadDimK:          80,
+				Size:              2_500_000_000,
+				MaxContext:        131072,
+				FeasibleMaxContext: 30000,
+			},
+		},
+	}
+	proxy.metricsMgr.mu.Unlock()
+
+	subID, eventCh := proxy.EventBus().Subscribe()
+	defer proxy.EventBus().Unsubscribe(subID)
+
+	// AutoTune disabled → должно вернуть "disabled" и НЕ публиковать circuit event.
+	res := proxy.triggerAutoTuneReload("backend-1", "qwen3-4b",
+		6_000_000_000, 16_000_000_000, 8_000_000_000)
+	if res == nil || !strings.Contains(res.SkippedReason, "disabled") {
+		t.Errorf("expected 'disabled' SkippedReason, got: %+v", res)
+	}
+
+	// Drain any events briefly — verify NO circuit event arrives.
+	deadline := time.After(200 * time.Millisecond)
+drain:
+	for {
+		select {
+		case ev := <-eventCh:
+			if ev.Type == types.EventAutoTuneCircuitOpen {
+				t.Errorf("did not expect circuit event when AutoTune disabled")
+			}
+		case <-deadline:
+			break drain
+		}
 	}
 }

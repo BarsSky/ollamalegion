@@ -14,6 +14,11 @@ const (
 	EventReconfigure   EventType = "reconfigure_request"   // запрос на переформирование бэкенда
 	EventProxyLog      EventType = "proxy_log"             // запись лога прокси-запроса
 	EventNotification  EventType = "notification"          // F.α: нотификация для WebUI bell icon
+	// R54.8 (2026-08-24): AutoTune events — автономный reload триггеры.
+	EventAutoTuneReloadTriggered EventType = "autotune_reload_triggered" // async reload начат
+	EventAutoTuneReloadSucceeded EventType = "autotune_reload_succeeded" // reload OK
+	EventAutoTuneReloadFailed    EventType = "autotune_reload_failed"    // reload ERROR
+	EventAutoTuneCircuitOpen     EventType = "autotune_circuit_open"     // circuit breaker open (3 fails)
 )
 
 // EventSeverity — severity уровень нотификации (для WebUI badge color).

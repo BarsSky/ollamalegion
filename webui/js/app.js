@@ -5,6 +5,58 @@
 const ui = (function () {
     const { dashboard, backendsPage, modelsPage, sessionsPage, queuePage, logs: renderLogs, predictionAlerts, proxyLogs: renderProxyLogs, copyProxyLogs: renderCopyProxyLogs, agentsPage: renderAgentsPage, renderAgentDetails } = Renderers;
 
+    // R54.8 (2026-08-24): AutoTune WebSocket handler — toast notifications
+    // when autonomous reload triggers/succeeds/fails. Слушает ws-message события
+    // (WebSocketManager в modules/websocket.js диспатчит их после JSON.parse).
+    // Wire format: payload.eventType (string), payload.backendId, payload.model,
+    // payload.severity, payload.message, payload.data (object).
+    function initAutoTuneEventHandlers() {
+        window.addEventListener('ws-message', function(e) {
+            const ev = e.detail || {};
+            if (!ev || !ev.eventType) return;
+            const modelLabel = ev.model || (ev.data && ev.data.model) || 'model';
+            const msgText = ev.message || (ev.data && ev.data.reason) || '';
+            if (ev.eventType === 'autotune_reload_triggered') {
+                showToast(`🔄 AutoTune: reloading ${modelLabel}...`, 'info', 5000);
+            } else if (ev.eventType === 'autotune_reload_succeeded') {
+                showToast(`✅ AutoTune: ${modelLabel} reloaded — ${msgText}`, 'success', 8000);
+            } else if (ev.eventType === 'autotune_reload_failed') {
+                showToast(`⚠️ AutoTune: ${modelLabel} reload failed — ${msgText}`, 'error', 12000);
+            } else if (ev.eventType === 'autotune_circuit_open') {
+                showToast(`🛑 AutoTune: circuit breaker OPEN (3 fails). Manual apply required.`, 'warning', 30000);
+            }
+        });
+    }
+
+    // Toast helper (uses Notifications API if available, fallback to console).
+    function showToast(message, severity, timeoutMs) {
+        // Try existing Notifications module
+        if (window.Notifications && typeof window.Notifications.show === 'function') {
+            window.Notifications.show({
+                type: 'autotune',
+                message: message,
+                severity: severity,
+                timeoutMs: timeoutMs || 8000
+            });
+            return;
+        }
+        // Fallback: simple toast div (created on first call)
+        let container = document.getElementById('autotune-toast-container');
+        if (!container) {
+            container = document.createElement('div');
+            container.id = 'autotune-toast-container';
+            container.style.cssText = 'position:fixed;top:80px;right:24px;z-index:10000;display:flex;flex-direction:column;gap:8px;max-width:400px;';
+            document.body.appendChild(container);
+        }
+        const toast = document.createElement('div');
+        toast.className = 'autotune-toast autotune-toast-' + severity;
+        toast.style.cssText = 'padding:12px 16px;border-radius:8px;box-shadow:0 2px 8px rgba(0,0,0,0.3);background:var(--bg-secondary);color:var(--text-primary);font-size:14px;border-left:4px solid ' +
+            (severity === 'success' ? 'var(--success, #28c840)' : severity === 'error' ? 'var(--danger)' : 'var(--accent)');
+        toast.textContent = message;
+        container.appendChild(toast);
+        setTimeout(() => toast.remove(), timeoutMs || 8000);
+    }
+
     // State
     const data = {
         backends: [],
@@ -962,6 +1014,10 @@ const ui = (function () {
         });
 
         WebSocketManager.connect();
+        // R54.8: init AutoTune event handlers (toast notifications)
+        if (typeof initAutoTuneEventHandlers === 'function') {
+            initAutoTuneEventHandlers();
+        }
     }
 
     function handleWebSocketData(payload) {

@@ -401,3 +401,85 @@ body *::after {
     --glass-soft-2: rgba(255,255,255,0.04);
     --glass-soft-3: rgba(255,255,255,0.08);
 }
+
+/* ============================================================
+   THEME: Sentry (dark purple, lime accent)
+   R55.5 (2026-08-24): applied from skygate themes.css.
+   Skygate defines: --bg:#1f1633, --accent:#c2ef4e (lime).
+   ============================================================ */
+[data-theme="sentry"] {
+    --bg-primary: #1f1633;
+    --bg-secondary: #2a1f44;
+    --bg-card: #2a1f44;
+    --bg-tertiary: #362d59;
+    --bg-hover: #3d3361;
+    --text-primary: #ffffff;
+    --text-secondary: #b8b0c8;
+    --text-muted: #8a8198;
+    --accent: #c2ef4e;
+    --accent-hover: #d4f77a;
+    --accent-soft:        color-mix(in srgb, var(--accent) 15%, transparent);
+    --accent-glow-soft:   color-mix(in srgb, var(--accent)  8%, transparent);
+    --accent-glow-ring:   color-mix(in srgb, var(--accent) 20%, transparent);
+    --accent-glow-shadow: color-mix(in srgb, var(--accent) 30%, transparent);
+    --success: #4ade80;
+    --warning: #fbbf24;
+    --danger: #fa7faa;
+    --info: #79628c;
+    --border: #3a2f5e;
+    --border-strong: #4d3f7a;
+    --border-subtle: rgba(255,255,255,0.04);
+    --glass-bg: rgba(31, 22, 51, 0.55);
+    --glass-border: rgba(255,255,255,0.08);
+    --glass-shadow: 0 8px 32px rgba(22,15,36,0.6);
+    --glass-highlight: rgba(255,255,255,0.06);
+    --glass-glow: radial-gradient(ellipse at 50% 0%, rgba(194,239,78,0.06) 0%, transparent 70%);
+    --glass-soft: rgba(255,255,255,0.02);
+    --glass-soft-2: rgba(255,255,255,0.04);
+    --glass-soft-3: rgba(255,255,255,0.08);
+    --warning-soft: rgba(251,191,36,0.15);
+    --success-soft: rgba(74,222,128,0.12);
+    --danger-soft: rgba(250,127,170,0.12);
+    --info-soft: rgba(121,98,140,0.18);
+}
+
+/* ============================================================
+   THEME: Mint (light, silver bg, mint-green accent)
+   R55.5 (2026-08-24): applied from skygate themes.css.
+   Skygate defines: --bg:#f5f7f6, --accent:#10b981 (emerald).
+   ============================================================ */
+[data-theme="mint"] {
+    --bg-primary: #f5f7f6;
+    --bg-secondary: #ffffff;
+    --bg-card: #ffffff;
+    --bg-tertiary: #eef1ef;
+    --bg-hover: #e0e6e3;
+    --text-primary: #1a2520;
+    --text-secondary: #5e6a64;
+    --text-muted: #8a938f;
+    --accent: #10b981;
+    --accent-hover: #059669;
+    --accent-soft:        color-mix(in srgb, var(--accent) 10%, transparent);
+    --accent-glow-soft:   color-mix(in srgb, var(--accent)  6%, transparent);
+    --accent-glow-ring:   color-mix(in srgb, var(--accent) 15%, transparent);
+    --accent-glow-shadow: color-mix(in srgb, var(--accent) 20%, transparent);
+    --success: #10b981;
+    --warning: #d97706;
+    --danger: #dc2626;
+    --info: #0891b2;
+    --border: #d4dad6;
+    --border-strong: #a8b3ad;
+    --border-subtle: rgba(0,0,0,0.04);
+    --glass-bg: rgba(255, 255, 255, 0.55);
+    --glass-border: rgba(0,0,0,0.06);
+    --glass-shadow: 0 1px 2px rgba(0,0,0,0.04), 0 8px 24px rgba(0,0,0,0.08);
+    --glass-highlight: rgba(255,255,255,0.6);
+    --glass-glow: radial-gradient(ellipse at 50% 0%, rgba(16,185,129,0.05) 0%, transparent 70%);
+    --glass-soft: rgba(0,0,0,0.02);
+    --glass-soft-2: rgba(0,0,0,0.04);
+    --glass-soft-3: rgba(0,0,0,0.08);
+    --warning-soft: rgba(217,119,6,0.08);
+    --success-soft: rgba(16,185,129,0.1);
+    --danger-soft: rgba(220,38,38,0.08);
+    --info-soft: rgba(8,145,178,0.08);
+}

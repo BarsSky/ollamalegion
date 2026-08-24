@@ -181,7 +181,7 @@ const ui = (function () {
             broadcastThemeChange(next);
         }
 
-        var THEMES = ['dark', 'light', 'linear', 'nvidia', 'vercel'];
+        var THEMES = ['dark', 'light', 'linear', 'nvidia', 'vercel', 'sentry', 'mint'];
         var toggleBtn = document.getElementById('themeToggle');
         if (toggleBtn) {
             toggleBtn.addEventListener('click', function () {
@@ -201,7 +201,7 @@ const ui = (function () {
             if (tag === 'INPUT' || tag === 'TEXTAREA' || (e.target && e.target.isContentEditable)) return;
             e.preventDefault();
             var cur = document.documentElement.getAttribute('data-theme') || 'dark';
-            var idx2 = ['dark','light','linear','nvidia','vercel'].indexOf(cur); var next2 = ['dark','light','linear','nvidia','vercel'][(idx2 + 1) % 5]; switchTheme(next2);
+            var idx2 = ['dark','light','linear','nvidia','vercel','sentry','mint'].indexOf(cur); var next2 = ['dark','light','linear','nvidia','vercel','sentry','mint'][(idx2 + 1) % 7]; switchTheme(next2);
         });
 
         // Слушаем изменения system preference (только если пользователь явно не выбрал тему).

@@ -36,7 +36,7 @@ type authRig struct {
 func newAuthRig(t *testing.T, authTokens []string) *authRig {
 	t.Helper()
 	conf := &types.LoadBalancerConfig{
-		LoadBalancer: types.LoadBalancerSettings{Host: "localhost", Port: 18080, APIPort: 18081},
+		LoadBalancer: types.LoadBalancerSettings{Host: "localhost", Port: 18080, APIPort: 0},
 		Backends: []types.Backend{
 			{ID: "b1", Name: "b1", Host: "127.0.0.1", OllamaPort: 11434, Weight: 1, Status: types.StatusHealthy},
 		},
@@ -64,6 +64,25 @@ func newAuthRig(t *testing.T, authTokens []string) *authRig {
 	t.Cleanup(func() { r.proxy.queueMgr.Stop() })
 
 	r.vmRegistry = r.proxy.GetVirtualModelRegistry()
+
+	// Round 40 #3 + R52.2: start a fake API server на ephemeral port и
+	// перенаправить apiReverseProxy туда. Без этого /api/v1/* запросы
+	// уходили в apiReverseProxy → 18081 → connection refused / timeout,
+	// или (если что-то слушает 18081 в тестах) → 401 от чужого API сервера.
+	// Round 52.2 (2026-08-24): fake API просто возвращает 200 OK,
+	// test'ы auth только проверяют что proxy НЕ возвращает 401 при disabled.
+	apiServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"backends":[],"total":0}`))
+	}))
+	t.Cleanup(func() { apiServer.Close() })
+	apiURL := mustParseURL(t, apiServer.URL)
+	// Override APIPort на ephemeral port
+	conf.LoadBalancer.APIPort = mustPortToInt(t, apiURL)
+	// Recreate proxy с правильным APIPort (NewProxy читает его)
+	// — к сожалению, NewProxy уже вызван. Переписываем apiReverseProxy напрямую:
+	r.proxy.apiReverseProxy = mustNewSingleHost(apiURL)
 
 	r.balancer = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
 		r.proxy.ServeHTTP(w, req)

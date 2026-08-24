@@ -483,3 +483,47 @@ body *::after {
     --danger-soft: rgba(220,38,38,0.08);
     --info-soft: rgba(8,145,178,0.08);
 }
+
+/* ============================================================
+   R55.6 (2026-08-24): Custom scrollbar applied from skygate themes.css.
+   Browser default scrollbar в dark themes (e.g. Linear #0c0d10 bg с
+   bright white scrollbar) is visually jarring — 15-17px wide block
+   of light gray breaks visual flow. Решение: thin (8px), theme-aware
+   scrollbar, blends with background.
+
+   - Firefox: scrollbar-width: thin + scrollbar-color (track + thumb)
+   - WebKit (Chrome/Safari/Edge): -webkit-scrollbar rules, thumb с
+     2px border inset (visible thumb = 4px), hover uses --border-strong.
+
+   Все 7 тем (dark, light, linear, nvidia, vercel, sentry, mint) уже
+   определяют --border, --border-strong, --text-muted, --bg — scrollbar
+   автоматически picks up правильные shades per theme. */
+
+/* Firefox */
+* {
+    scrollbar-width: thin;
+    scrollbar-color: var(--border-strong) transparent;
+}
+
+/* WebKit/Blink (Chrome, Safari, Edge) */
+*::-webkit-scrollbar {
+    width: 8px;
+    height: 8px;
+}
+*::-webkit-scrollbar-track {
+    background: transparent;
+}
+*::-webkit-scrollbar-thumb {
+    background: var(--border);
+    border-radius: 8px;
+    border: 2px solid var(--bg);
+}
+*::-webkit-scrollbar-thumb:hover {
+    background: var(--border-strong);
+}
+*::-webkit-scrollbar-thumb:active {
+    background: var(--text-muted);
+}
+*::-webkit-scrollbar-corner {
+    background: transparent;
+}

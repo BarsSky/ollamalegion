@@ -1821,6 +1821,154 @@ Access-Control-Allow-Headers: Content-Type, Authorization, X-Agent-ID, X-API-Tok
 
 ---
 
+## AutoTune API (R54.1 — R55.2, 2026-08-24)
+
+AutoTune — автономный механизм оптимизации параметров загруженных моделей:
+  - Детектит sub-optimal состояния (n_ctx over-allocation, q4_0 KV cache
+    при достаточном VRAM, num_gpu_layers mismatch).
+  - Вычисляет optimal params с учётом workload (R54.9, p95 num_ctx).
+  - Auto-применяет через async reload (R54.4) если AutoTune enabled
+    (R54.2 global + per-model override).
+  - Защищён circuit breaker (R54.4: 60s cool-down / 300s stable).
+  - Live updates через WebSocket (R54.8) + history log для replay (R55.2).
+
+### `GET /api/v1/admin/autotune` — global state
+
+Возвращает AutoTune state для всех бэкендов: sub-optimal models, circuit
+state, recent history (R55.2). Требует аутентификации.
+
+**Query params:** нет.
+
+**Ответ (фрагмент):**
+
+```json
+{
+  "backends": [
+    {
+      "id": "cppworker-gpu-bundled-agent",
+      "plan": {
+        "modelName": "Qwen3-Instruct-2507-q4km",
+        "contextSize": 46592,
+        "kvCacheType": "f16",
+        "numGpuLayers": -1,
+        "reason": "R54.4: n_ctx 131072 → 46592 (over-allocation fix)"
+      },
+      "circuits": {
+        "Qwen3-Instruct-2507-q4km": {
+          "lastAttempt": "2026-08-24T22:00:00Z",
+          "lastSuccess": "2026-08-24T22:00:30Z",
+          "canReload": true
+        }
+      },
+      "workloads": {
+        "Qwen3-Instruct-2507-q4km": {
+          "sampleCount": 23,
+          "avgNumCtx": 1850,
+          "p95NumCtx": 4096,
+          "maxNumCtx": 8192
+        }
+      },
+      "recentHistory": [
+        {
+          "timestamp": "2026-08-24T22:00:30Z",
+          "type": "autotune_reload_succeeded",
+          "backendId": "cppworker-gpu-bundled-agent",
+          "model": "Qwen3-Instruct-2507-q4km",
+          "severity": "info",
+          "message": "AutoTune reload succeeded: n_ctx 131072 → 46592",
+          "data": {"contextSize": 46592, "kvCacheType": "f16"}
+        }
+      ]
+    }
+  ]
+}
+```
+
+### `POST /api/v1/admin/autotune/{backendID}/apply` — manual apply
+
+Применяет AutoTune recommendations для конкретного бэкенда. Async — 202
+accepted, реальный reload происходит в фоне. Требует аутентификации.
+
+**Body:**
+
+```json
+{
+  "modelName": "Qwen3-Instruct-2507-q4km",
+  "forceApply": false
+}
+```
+
+**Ответ (200/202):**
+
+```json
+{
+  "backendId": "cppworker-gpu-bundled-agent",
+  "result": {
+    "triggered": true,
+    "skippedReason": "",
+    "circuitState": {"canReload": true}
+  },
+  "message": "AutoTune apply scheduled for Qwen3-Instruct-2507-q4km"
+}
+```
+
+### `GET /api/v1/admin/autotune/history` — event log (R55.2)
+
+Ring buffer последних 500 AutoTune событий (triggered / succeeded /
+failed / circuit_open). Newest first. Используется WebUI для
+timeline visualization — "что AutoTune делал за последние N часов".
+Требует аутентификации.
+
+**Query params:**
+  - `limit=N` — max entries (default 100, max 500)
+  - `since=<RFC3339>` — только entries с timestamp > since
+  - `backend=<id>` — filter по backendId
+
+**Пример:**
+
+```bash
+curl -H "X-API-Token: changeme-bundled-with-agent-token" \
+  "http://localhost:18081/api/v1/admin/autotune/history?limit=10&backend=cppworker-gpu-bundled-agent"
+```
+
+**Ответ:**
+
+```json
+{
+  "entries": [
+    {
+      "timestamp": "2026-08-24T22:00:30Z",
+      "type": "autotune_reload_succeeded",
+      "backendId": "cppworker-gpu-bundled-agent",
+      "model": "Qwen3-Instruct-2507-q4km",
+      "severity": "info",
+      "reason": "autotune",
+      "message": "AutoTune reload succeeded: n_ctx 131072 → 46592",
+      "data": {"contextSize": 46592, "kvCacheType": "f16", "numGpuLayers": -1}
+    }
+  ],
+  "stats": {"size": 1, "maxSize": 500, "droppedCount": 0}
+}
+```
+
+### `GET /api/v1/admin/autotune/config` — config (R54.7)
+
+Возвращает текущее состояние AutoTune: global switch + per-model
+overrides. Используется Settings page.
+
+### `PUT /api/v1/admin/autotune/config` — update config
+
+Обновляет AutoTune config. Body:
+
+```json
+{
+  "globalEnabled": true,
+  "perModel": { "qwen3-4b": false }
+}
+```
+
+---
+
 ## WebSocket API
 
 ### GET /ws/metrics

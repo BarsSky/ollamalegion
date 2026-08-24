@@ -9,6 +9,29 @@
 
 Интеллектуальный балансировщик нагрузки для llama.cpp inference с адаптивной загрузкой моделей, авто-подбором параметров под доступные ресурсы и мониторингом GPU/CPU/RAM.
 
+## AutoTune (R54–R55.2, 2026-08-24)
+
+Автономный оптимизатор параметров загруженных моделей. Детектит
+sub-optimal состояния, вычисляет optimal params, auto-применяет через
+async reload. Ручное управление сохранено (per-model `autoTune: false`).
+
+**Что умеет:**
+- R54.1: Detect sub-optimal n_ctx, KV cache (q4_0→f16), num_gpu_layers.
+- R54.2 + R54.7: Global + per-model toggle (Settings page).
+- R54.4: Autonomous reload + circuit breaker (60s cool-down, 300s stable).
+- R54.6: Manual apply endpoint (`POST /api/v1/admin/autotune/{id}/apply`).
+- R54.8: WebSocket live updates + toast notifications.
+- R54.9: Workload-aware KV cache (p95 num_ctx → f16/q4_0).
+- R55.2: Event history log (ring buffer 500 entries) + WebUI timeline.
+
+**Endpoints:**
+- `GET /api/v1/admin/autotune` — global state per backend.
+- `POST /api/v1/admin/autotune/{backendID}/apply` — manual apply.
+- `GET /api/v1/admin/autotune/history` — recent events.
+- `GET/PUT /api/v1/admin/autotune/config` — global + per-model toggles.
+
+См. [docs/api.md](docs/api.md#autotune-api-r541--r552-2026-08-24) для деталей.
+
 ## Что нового
 
 **v0.5.22 — 2026-08-13** (последний релиз, [полный CHANGELOG](CHANGELOG.md)):

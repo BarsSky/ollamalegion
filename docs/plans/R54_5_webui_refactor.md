@@ -11,7 +11,11 @@ R54.1-R54.4 (commits 6706206, 5e9c9b3, 02be852) добавили:
 
 ## Phased rollout
 
-### R54.5 — AutoTuneBadge (Phase 1, visibility)
+> **Status: R54.5–R54.8 delivered (2026-08-24)**, R55.2 (Phase 5: history
+> timeline) added beyond original scope. Phase 6+ (Predictive prefetching,
+> Multi-backend intelligence) deferred — out of current sprint.
+
+### R54.5 — AutoTuneBadge (Phase 1, visibility) ✅ DELIVERED
 **Цель**: только показать. Без кнопок, без действий.
 
 Что сделать:
@@ -25,7 +29,7 @@ R54.1-R54.4 (commits 6706206, 5e9c9b3, 02be852) добавили:
 
 Manual: нет действий — это read-only visibility.
 
-### R54.6 — ApplyButton (Phase 2, manual control)
+### R54.6 — ApplyButton (Phase 2, manual control) ✅ DELIVERED
 **Цель**: оператор может применить рекомендации одной кнопкой.
 
 Backend changes:
@@ -38,7 +42,7 @@ Frontend changes:
 - Показать circuit state (cooling down / ready)
 - Disable кнопку если circuit open
 
-### R54.7 — Settings page integration (Phase 3, full control)
+### R54.7 — Settings page integration (Phase 3, full control) ✅ DELIVERED
 **Цель**: AutoTune в Settings, per-model toggle в Model Profile editor.
 
 Frontend changes:
@@ -46,7 +50,7 @@ Frontend changes:
 - Model Profile editor (если есть): per-model `autoTune: true|false|nil` field
 - Индикатор "last AutoTune reload: 5 min ago, successful" на backend page
 
-### R54.8 — Live monitoring (Phase 4, observability)
+### R54.8 — Live monitoring (Phase 4, observability) ✅ DELIVERED
 **Цель**: real-time visibility в AutoTune state через WebSocket.
 
 Backend changes:
@@ -57,6 +61,33 @@ Frontend changes:
 - Subscribe to autotune events
 - Toast notification "AutoTune: reloaded cppworker-gpu-bundled-agent with f16 KV cache"
 - Live circuit state indicator (cooling down / ready / open)
+
+### R55.2 — AutoTune History (Phase 5, replay) ✅ DELIVERED
+**Цель**: timeline view для "что AutoTune делал за последние N часов".
+Дополнение к Phase 4 (live) — для replay при новом HTTP client.
+
+Backend (R55.2):
+- `AutoTuneHistory` ring buffer (500 entries, drop-oldest, in-memory)
+- `GET /api/v1/admin/autotune/history?limit=N&since=RFC3339&backend=<id>`
+- `publishAutoTuneEvent` helper — пишет и в EventBus (live), и в history log
+- 4 event types уже в R54.8 (triggered/succeeded/failed/circuit_open)
+
+Frontend (R55.2b):
+- `autotune_history.js`: timeline modal с severity colors + params (n_ctx/kv/layers)
+- "View History" button в AutoTune card per-backend
+- Refresh button + filter by backend
+- Empty state: "No AutoTune events yet"
+
+Manual: в перспективе live WebSocket integration (auto-refresh на new events) — R55.2c.
+
+### Beyond original scope (delivered)
+
+- **R54.9 — Workload-aware KV cache**: AutoTune учитывает p95 num_ctx
+  (историю запросов) при выборе KV cache type. Light workload → f16
+  (quality), heavy → q4_0 (max context).
+- **R52.5 — Per-component Stop for graceful shutdown**: EventBus.Stop,
+  GroupController.Stop, NCtxReloadCoordinator.Shutdown, etc. Закрывает
+  goroutine-leak при exit.
 
 ## Design principles
 

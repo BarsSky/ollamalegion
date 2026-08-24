@@ -47,7 +47,7 @@ func main() {
 	}
 	
 	conf := cfg.Get()
-	
+
 	// Применение переопределений из командной строки
 	if *port > 0 {
 		conf.LoadBalancer.Port = *port
@@ -58,7 +58,7 @@ func main() {
 	if *logLevel != "" {
 		conf.Logging.Level = *logLevel
 	}
-	
+
 	// ==== Environment переменные (приоритет: flag > env > config) ====
 	// LOG_LEVEL — переопределение уровня логгирования.
 	// Позволяет включить debug через docker-compose environment без правки config.json.
@@ -66,6 +66,26 @@ func main() {
 		conf.Logging.Level = envLevel
 		log.Printf("[ENV]  LOG_LEVEL=%s overrides config level", envLevel)
 	}
+
+	// Round 52 (2026-08-24): LB_API_TOKEN env override.
+	//
+	// User-reported bug: config.bundled.json has "auth.tokens": ["bundled-default"]
+	// hardcoded (no env hint in the file). cppworker, agent и webui читают свои
+	// токены из .env.bundled-with-agent (через CPPWORKER_API_TOKEN / API_TOKEN /
+	// BALANCER_TOKEN) — поэтому при свежем деплое с одним и тем же .env файлом
+	// WebUI/agent шлют правильный X-API-Token, но балансер ОТКЛОНЯЕТ запрос
+	// (auth.tokens = ["bundled-default"], а не из env → 401 Unauthorized).
+	//
+	// Симптом: при одинаковом .env.bundled-with-agent у всех сервисов
+	// кроме балансера — "valid token not accepted" на /api/v1/backends.
+	//
+	// Fix: env var LB_API_TOKEN (или совместимый LB_AUTH_TOKENS через запятую
+	// для нескольких) ПОЛНОСТЬЮ ЗАМЕНЯЕТ conf.Auth.Tokens. Если env var
+	// пустая, остаётся config.json (обратная совместимость с pre-R52).
+	//
+	// Также включаем auth.Enabled=true если env задан и config.json был
+	// выключен — иначе фикс не сработает.
+	applyEnvAuthTokens(&conf.Auth)
 	
 	// Инициализация structured logger (после всех переопределений)
 	logger.Init(conf.Logging.Level)

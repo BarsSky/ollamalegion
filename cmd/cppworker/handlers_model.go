@@ -719,15 +719,35 @@ func handleLoadWithParams(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Sync mode: блокируем до waitTimeoutMs, потом 202.
+	//
+	// Round 52 (2026-08-24) BUGFIX: inline goroutine ОБЯЗАНА вызвать
+	// UnlockLoad через defer после LoadModelWithOpts (success OR error).
+	// До этого фикса в timeout-ветке lock утекал — request timeout'ился,
+	// background goroutine продолжал грузить, channel в b.loading[name]
+	// оставался незакрытым. Следующие load-запросы с тем же именем видели
+	// `lockOk=false` от TryLockLoad и уходили в "model is already being
+	// loaded; waiting" — до полного завершения background goroutine (60+ сек).
+	//
+	// Async path (выше, `go runAsyncLoad(...)`) не затрагивается —
+	// runAsyncLoad сам вызывает UnlockLoad в конце.
 	loadDone := make(chan error, 1)
 	go func() {
+		// defer UnlockLoad здесь, не в select: select может не
+		// выполниться полностью (timeout wins), loadErr не придёт
+		// в основной goroutine. defer гарантирует освобождение
+		// lock когда LoadModelWithOpts ВЕРНЁТСЯ (успех или ошибка).
+		defer func() {
+			backend.UnlockLoad(modelName)
+		}()
 		loadDone <- backend.LoadModelWithOpts(modelName, modelPath, opts)
 	}()
 	timeout := time.NewTimer(time.Duration(waitTimeoutMs) * time.Millisecond)
 	defer timeout.Stop()
 	select {
 	case loadErr := <-loadDone:
-		backend.UnlockLoad(modelName)
+		// background goroutine уже вызвал UnlockLoad через defer
+		// (см. R52 fix выше). Дополнительный вызов здесь был бы
+		// идемпотентен (delete-if-exists) — оставляем однократный вызов.
 		if loadErr != nil {
 			// Round 32 #8 (2026-08-10): dedup-by-path → success с status=already_loaded.
 			var dedupErr *cppbackend.AlreadyLoadedAsError

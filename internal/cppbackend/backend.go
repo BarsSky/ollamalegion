@@ -1080,8 +1080,37 @@ func (b *Backend) CalculateOptimalGPULayers(modelSizeBytes int64, totalLayers, n
 
 	// Проверяем, влезает ли остаток в RAM
 	cpuLayers := totalLayers - bestLayers
-	// CPU-часть модели: слои на CPU + KV cache (KV cache всегда на GPU/CPU вместе с моделью)
-	cpuMemoryMB := uint64(modelSizeMB*0.7*float64(cpuLayers)/float64(totalLayers) + float64(kvCacheMB)*0.5)
+	// CPU-часть модели: слои на CPU + KV cache (KV cache всегда на GPU/CPU вместе с моделью).
+	//
+	// Round 52 (2026-08-24) BUGFIX: формула использовала 0.5*kvCacheMB для
+	// CPU-порции KV, что занижало требования к RAM. Когда все слои на CPU
+	// (gpuLayers=0), 100% KV cache тоже идёт в RAM — должно быть 1.0*kvCacheMB.
+	// Старая формула для gpuLayers=0 давала cpuMemoryMB ~ 13.6GB для 19GB модели
+	// с 32K контекстом, что влезало в 16.4GB (80% от 20GB) → success. Но
+	// добавление 0.5*kvCacheMB = 4GB (256KB/tok estimate) ИЛИ 1.0*kvCacheMB =
+	// 8GB для 32K → cpuMemoryMB = 17.6GB / 21.6GB → отказ.
+	//
+	// Реальный per-token KV для Q4_K_M Qwen3.6-35B = 2 * 48 * 8 * 80 * 2 / 1024
+	// = 120 KB. Функция estimateKVCacheMB использует 256 KB/tok (overestimate
+	// для safety). Для 32K = 8GB. Реально = 3.84GB.
+	//
+	// Фикс: при gpuLayers=0 (all CPU) используем 1.0*kvCacheMB. Плюс
+	// учитываем useMmap — если включён, model weight bytes через mmap
+	// можно не считать против RAM (OS page-cache). Только KV cache
+	// должна реально влезть в RAM.
+	kvCPUFraction := 0.5
+	if bestLayers == 0 {
+		// All layers on CPU → KV cache entirely on CPU too.
+		kvCPUFraction = 1.0
+	}
+	cpuWeightsMB := float64(modelSizeMB) * 0.7 * float64(cpuLayers) / float64(totalLayers)
+	// useMmap: model weights можно не считать против RAM (mmap page-cache).
+	// Только KV cache занимает реальную RAM.
+	ramNeededMB := float64(kvCacheMB) * kvCPUFraction
+	if !useMmap {
+		ramNeededMB += cpuWeightsMB
+	}
+	cpuMemoryMB := uint64(ramNeededMB)
 
 	diag2.OptimalGPULayers = bestLayers
 	diag2.VRAMRequiredForOptimal = EstimateGPUMemoryForModel(modelSizeBytes, bestLayers, totalLayers, requestedCtxSize) + kvCacheMB
@@ -1094,7 +1123,9 @@ func (b *Backend) CalculateOptimalGPULayers(modelSizeBytes int64, totalLayers, n
 			"cpuLayers", cpuLayers,
 			"cpuMemoryMB", cpuMemoryMB,
 			"ramAvailableMB", totalRAM,
-			"kvCacheMB", kvCacheMB)
+			"kvCacheMB", kvCacheMB,
+			"useMmap", useMmap,
+			"kvCPUFraction", kvCPUFraction)
 		return bestLayers, true, nil
 	}
 

@@ -261,17 +261,25 @@ func openThinkTag(s string, from int) (int, int, int) {
 }
 
 // closeThinkTag ищет соответствующий закрывающий тег в позиции ≥ from
-// для пары, найденной openThinkTag (kindIdx).
+// для пары, найденной openThinkTag (kindIdx). Возвращает (endPos, closeTagLen)
+// — endPos это индекс после закрывающего тега, closeTagLen — длина
+// тега, который фактически был найден (может отличаться от pair.close
+// если сработал fallback).
 //
 // Round 17.1: принимает kindIdx, ищет соответствующий close из thinkTagPairs.
-func closeThinkTag(s string, from int, kindIdx int) int {
+// Round 52.3 (2026-08-24): возвращаем closeTagLen — нужно caller'у
+// чтобы правильно вычислить bodyEnd когда сработал fallback (например,
+// `<|channel>thought\n...<channel|>` — открывающий тег ожидает close
+// `\n<channel|>` длиной 10, но реально находится `<channel|>` длиной 9).
+// Без этого возврата bodyEnd обрезал последний символ reasoning.
+func closeThinkTag(s string, from int, kindIdx int) (endPos int, closeTagLen int) {
 	if kindIdx < 0 || kindIdx >= len(thinkTagPairs) {
-		return -1
+		return -1, 0
 	}
 	// Ищем соответствующий close tag (тот же kind).
 	pair := thinkTagPairs[kindIdx]
 	if i := strings.Index(s[from:], pair.close); i >= 0 {
-		return from + i + len(pair.close)
+		return from + i + len(pair.close), len(pair.close)
 	}
 	// Fallback: для обратной совместимости — может закрываться тегом из другой пары
 	// (например, кто-то открыл <think> а закрыл </thinking>). На практике не встречается,
@@ -281,10 +289,10 @@ func closeThinkTag(s string, from int, kindIdx int) int {
 			continue
 		}
 		if i := strings.Index(s[from:], alt.close); i >= 0 {
-			return from + i + len(alt.close)
+			return from + i + len(alt.close), len(alt.close)
 		}
 	}
-	return -1
+	return -1, 0
 }
 
 // backward-compat wrapper для кода, использующего bool isThinking.
@@ -337,7 +345,7 @@ func SplitReasoningContent(s string) (reasoning, content string, hasReasoning bo
 		// Текст до открывающего тега → content.
 		sbContent.WriteString(s[pos:tagStart])
 		// Ищем закрывающий тег после tagEnd (используем тот же kindIdx).
-		closePos := closeThinkTag(s, tagEnd, kindIdx)
+		closePos, closeTagLen := closeThinkTag(s, tagEnd, kindIdx)
 		if closePos < 0 {
 			// Незакрытый блок: только тело (от tagEnd до конца) → reasoning.
 			// Сам `<think>` в reasoning не включаем (это технический маркер).
@@ -345,8 +353,9 @@ func SplitReasoningContent(s string) (reasoning, content string, hasReasoning bo
 			foundAny = true
 			break
 		}
-		// Длина close-тега для расчёта bodyEnd.
-		closeTagLen := len(thinkTagPairs[kindIdx].close)
+		// Round 52.3 (2026-08-24): используем closeTagLen возвращённый из
+		// closeThinkTag (а не len(thinkTagPairs[kindIdx].close)) — может
+		// отличаться при fallback. Без этого bodyEnd обрезал последний символ.
 		bodyStart := tagEnd
 		bodyEnd := closePos - closeTagLen
 		sbReasoning.WriteString(s[bodyStart:bodyEnd])

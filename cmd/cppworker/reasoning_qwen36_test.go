@@ -108,14 +108,14 @@ func TestSplitReasoningContent_Gemma4ChannelFormat(t *testing.T) {
 		{
 			name:        "gemma4_with_message_separator",
 			input:       "<|channel>thought<|message|>\nMy reasoning\n<channel|>My answer",
-			wantReason:  "<|message|>\nMy reasoning",
+			wantReason:  "<|message|>\nMy reasoning\n",
 			wantContent: "My answer",
 			wantHas:     true,
 		},
 		{
 			name:        "gemma4_unclosed_channel",
 			input:       "<|channel>thought\nLong thinking without close",
-			wantReason:  "\nLong thinking without close",
+			wantReason:  "Long thinking without close",
 			wantContent: "",
 			wantHas:     true,
 		},
@@ -130,7 +130,7 @@ func TestSplitReasoningContent_Gemma4ChannelFormat(t *testing.T) {
 			name:        "gemma4_mixed_qwen_and_channel",
 			input:       "<think>Some qwen-style thinking</think><|channel>thought\nChannel thinking\n<channel|>Final answer",
 			wantReason:  "Some qwen-style thinkingChannel thinking",
-			wantContent: "\nFinal answer",
+			wantContent: "Final answer",
 			wantHas:     true,
 		},
 	}

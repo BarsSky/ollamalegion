@@ -109,6 +109,36 @@ type ModelProfileInfo struct {
 //
 // Возвращает рекомендацию и булеан "isBetter" (true если отличается от текущего).
 func computeOptimalKVCacheType(p *ModelProfileInfo) (recommendation string, reasoning string) {
+	return computeOptimalKVCacheTypeWithWorkload(p, WorkloadStats{}, DefaultWorkloadTrackerConfig().MinSamplesForRecommendation)
+}
+
+// computeOptimalKVCacheTypeWithWorkload — Round 54.9: workload-aware KV cache selection.
+//
+// Логика поверх R54.1:
+//   - Если workload.IsLight(loadedNCtx, minSamples) → f16 (high quality, low mem usage)
+//     Типичный случай: 4B модель с n_ctx=65536, но реально используется p95=4096 → f16
+//     сохраняет memory и улучшает качество (precision loss = 0).
+//   - Если workload.IsHeavy(loadedNCtx, minSamples) → q4_0 (max context)
+//     Типичный случай: burst workloads (long RAG context), p95 близко к loaded n_ctx.
+//   - Иначе → R54.1 logic (model size + free VRAM).
+//
+// minSamples защищает от cold start: без samples workload неопределён,
+// fallback к R54.1 logic.
+func computeOptimalKVCacheTypeWithWorkload(p *ModelProfileInfo, workload WorkloadStats, minSamples int) (recommendation string, reasoning string) {
+	// R54.9: workload-aware overrides только если есть loaded n_ctx и достаточно samples
+	loadedNCtx := p.CurrentContextLength
+	if loadedNCtx > 0 {
+		if workload.IsLight(loadedNCtx, minSamples) {
+			return "f16", fmt.Sprintf("R54.9 workload-light: p95=%d < 25%% of loaded=%d → f16 (high quality)",
+				workload.P95NumCtx, loadedNCtx)
+		}
+		if workload.IsHeavy(loadedNCtx, minSamples) {
+			return "q4_0", fmt.Sprintf("R54.9 workload-heavy: p95=%d > 75%% of loaded=%d → q4_0 (max context)",
+				workload.P95NumCtx, loadedNCtx)
+		}
+	}
+
+	// R54.1: model-size-based logic (fallback если workload unknown)
 	// Estimate KV cache size per token (in bytes)
 	// KV cache = 2 (K+V) * NLayers * NKvHeads * HeadDimK * dtype_bytes
 	// dtype_bytes: f16=2, q8_0=1, q4_0=0.5
@@ -206,7 +236,16 @@ func AnalyzeLoadedModelPublic(p *ModelProfileInfo) *AutoTuneAnalysis {
 // и возвращает AutoTuneAnalysis с рекомендациями.
 //
 // Возвращает nil если данных недостаточно.
+//
+// R54.9: backward-compat wrapper. Без workload → R54.1 logic.
 func analyzeLoadedModel(p *ModelProfileInfo) *AutoTuneAnalysis {
+	return analyzeLoadedModelWithWorkload(p, WorkloadStats{}, DefaultWorkloadTrackerConfig().MinSamplesForRecommendation)
+}
+
+// analyzeLoadedModelWithWorkload — R54.9: workload-aware version.
+// Использует WorkloadStats для workload-based KV cache selection.
+// minSamples защищает от cold start: без samples fallback к R54.1 logic.
+func analyzeLoadedModelWithWorkload(p *ModelProfileInfo, workload WorkloadStats, minSamples int) *AutoTuneAnalysis {
 	if p == nil {
 		return nil
 	}
@@ -217,9 +256,9 @@ func analyzeLoadedModel(p *ModelProfileInfo) *AutoTuneAnalysis {
 		AutoTuneEnabled: p.AutoTuneEnabled,
 	}
 
-	// 1) Analyze KV cache type
+	// 1) Analyze KV cache type (R54.9: workload-aware)
 	if p.CurrentKVCacheType != "" {
-		optimalKV, reasoningKV := computeOptimalKVCacheType(p)
+		optimalKV, reasoningKV := computeOptimalKVCacheTypeWithWorkload(p, workload, minSamples)
 		if optimalKV != "" && optimalKV != p.CurrentKVCacheType {
 			// Severity: f16 < q4_0 (closer to f16 = better quality)
 			severity := "info"
@@ -324,7 +363,19 @@ func AnalyzeBackend(proxy *Proxy, backendID, backendType string, models []types.
 			// R54.2: per-model AutoTune switch (after inheritance).
 			AutoTuneEnabled: IsAutoTuneEnabled(proxy, m.Name),
 		}
-		analysis := analyzeLoadedModel(prof)
+		// R54.9: workload-aware analysis (if tracker available)
+		var analysis *AutoTuneAnalysis
+		if proxy != nil {
+			tracker := proxy.WorkloadTracker()
+			if tracker != nil {
+				workload := tracker.Stats(backendID, m.Name)
+				cfg := DefaultWorkloadTrackerConfig()
+				analysis = analyzeLoadedModelWithWorkload(prof, workload, cfg.MinSamplesForRecommendation)
+			}
+		}
+		if analysis == nil {
+			analysis = analyzeLoadedModel(prof) // fallback
+		}
 		if analysis == nil {
 			continue
 		}
@@ -514,6 +565,18 @@ func (p *Proxy) AutoTuneTracker() *AutoTuneTracker {
 	return p.autoTuneTracker
 }
 
+// WorkloadTracker accessor для API handlers (R54.9).
+// Lazy init с default config — same pattern as AutoTuneTracker.
+func (p *Proxy) WorkloadTracker() *WorkloadTracker {
+	if p == nil {
+		return nil
+	}
+	if p.workloadTracker == nil {
+		p.workloadTracker = NewWorkloadTracker(DefaultWorkloadTrackerConfig())
+	}
+	return p.workloadTracker
+}
+
 // AutoTuneTracker — Round 54.4 (2026-08-24): per-Proxy tracker для circuit breakers.
 // Хранит AutoTuneCircuit для каждой пары (backendID, modelName).
 //
@@ -675,7 +738,17 @@ func (p *Proxy) triggerAutoTuneReload(backendID, modelName string, freeVRAM, fre
 		FeasibleMaxContext:   loadedModel.FeasibleMaxContext,
 		AutoTuneEnabled:      true,
 	}
-	analysis := analyzeLoadedModel(prof)
+	// R54.9: workload-aware analysis — если есть WorkloadTracker, используем
+	// реальную статистику num_ctx чтобы выбрать KV cache type оптимально.
+	var analysis *AutoTuneAnalysis
+	if p.workloadTracker != nil {
+		workload := p.workloadTracker.Stats(backendID, modelName)
+		cfg := DefaultWorkloadTrackerConfig()
+		analysis = analyzeLoadedModelWithWorkload(prof, workload, cfg.MinSamplesForRecommendation)
+	}
+	if analysis == nil {
+		analysis = analyzeLoadedModel(prof) // fallback
+	}
 	if analysis == nil || !analysis.IsSubOptimal {
 		res.SkippedReason = "model is optimal"
 		return res

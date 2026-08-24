@@ -73,6 +73,12 @@ type Proxy struct {
 	// Инициализируется lazily в triggerAutoTuneReload (нулевый указатель = default cfg).
 	autoTuneTracker *AutoTuneTracker
 
+	// R54.9 (2026-08-24): Workload tracker — per-(backend, model) sliding window
+	// num_ctx samples. Используется AutoTune для workload-aware KV cache
+	// selection (light workload → f16, heavy → q4_0).
+	// Инициализируется lazily в WorkloadTracker() getter.
+	workloadTracker *WorkloadTracker
+
 	// R54.6 (2026-08-24): ModelManager reference для AutoTune apply (load+unload).
 	// Использует existing p.modelManager (set в NewProxy). SetModelManager() — alias
 	// для совместимости с R54.6 handler'ами.

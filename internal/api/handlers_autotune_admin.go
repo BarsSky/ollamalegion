@@ -266,6 +266,20 @@ func (s *Server) handleAdminAutotune(w http.ResponseWriter, r *http.Request) {
 			}
 			backendResp["circuits"] = circuits
 		}
+		// R54.9 (2026-08-24): workload stats per loaded model
+		// Используется AutoTune для workload-aware KV cache selection.
+		if proxy.WorkloadTracker() != nil {
+			workloads := map[string]balancer.WorkloadStats{}
+			metrics := proxy.GetMetricsManager()
+			if metrics != nil {
+				if lm := metrics.GetLlamaCppMetrics(b.ID); lm != nil {
+					for _, m := range lm.LoadedModels {
+						workloads[m.Name] = proxy.WorkloadTracker().Stats(b.ID, m.Name)
+					}
+				}
+			}
+			backendResp["workloads"] = workloads
+		}
 		resp["backends"] = append(resp["backends"].([]map[string]interface{}), backendResp)
 	}
 	s.writeJSON(w, http.StatusOK, resp)

@@ -88,6 +88,16 @@ func (p *Proxy) proxyRequestLlamaCpp(w http.ResponseWriter, r *http.Request, bac
 		return nil
 	}
 
+	// R54.9 (2026-08-24): Workload tracking — record num_ctx from request body
+	// for future AutoTune decisions. Неблокирующий, in-memory, sliding window.
+	// Использует existing ExtractNumCtxFromBody (num_ctx_resolver.go) — уже
+	// покрывает Ollama options.num_ctx + OpenAI top-level + JSON float decoding.
+	if modelFromCtx != "" && p.WorkloadTracker() != nil {
+		if numCtx := ExtractNumCtxFromBody(bodyBuf); numCtx > 0 {
+			p.WorkloadTracker().Record(backendID, modelFromCtx, numCtx)
+		}
+	}
+
 	// R54.4 (2026-08-24): AutoTune autonomous reload hook.
 	// Срабатывает ПОСЛЕ n_ctx preflight (который уже сделал свой reload если нужно).
 	// AutoTune ловит ДРУГИЕ sub-optimal state'ы: kv_cache mismatch, over-allocated n_ctx

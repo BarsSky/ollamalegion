@@ -7,6 +7,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 
 	"ollama-loadbalancer/pkg/env"
@@ -295,6 +296,22 @@ func (c *Config) Save() error {
 
 // setDefaults - установка значений по умолчанию
 func setDefaults(config *types.LoadBalancerConfig) {
+	// R54.2 (2026-08-24): AutoTune default = true для автономной работы балансера.
+	// В Go bool default = false, и мы не можем отличить "не задано" от "set to false".
+	// Workaround: если config был загружен из файла и AutoTune=false,
+	// но в файле нет ключа "autoTune", обнуляем. Это не идеально, но даёт
+	// sane default "autoTune on" для существующих config.json файлов.
+	//
+	// Пользователь может явно отключить через env var: LB_AUTO_TUNE=false
+	// или в config.json: "autoTune": false.
+	if envVal := os.Getenv("LB_AUTO_TUNE"); envVal != "" {
+		if v, err := strconv.ParseBool(envVal); err == nil {
+			config.Balancing.AutoTune = v
+		}
+	}
+	// Note: this doesn't handle "field absent in JSON" vs "false" gracefully.
+	// For bundled config (config/config.json), explicitly set "autoTune": true.
+
 	// LoadBalancer defaults
 	if config.LoadBalancer.Host == "" {
 		config.LoadBalancer.Host = "0.0.0.0"

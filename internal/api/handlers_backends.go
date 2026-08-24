@@ -299,7 +299,7 @@ func (s *Server) listBackends(w http.ResponseWriter, r *http.Request) {
 						}
 					}
 					autoTuneReport := balancer.AnalyzeBackend(
-						backend.ID, string(backend.Type), loaded, freeVRAM, freeRAM, totalVRAM)
+						s.proxy, backend.ID, string(backend.Type), loaded, freeVRAM, freeRAM, totalVRAM)
 					backendData["autoTune"] = autoTuneReport
 				} else {
 					backendData["loadingModels"] = []types.LlamaCppModel{}

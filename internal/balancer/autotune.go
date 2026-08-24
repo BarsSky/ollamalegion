@@ -46,6 +46,9 @@ type AutoTuneRecommendation struct {
 type AutoTuneAnalysis struct {
 	ModelName       string                    `json:"modelName"`
 	IsSubOptimal    bool                      `json:"isSubOptimal"`
+	// R54.2: AutoTuneEnabled — per-model switch (after inheritance).
+	// false = AutoTune отключён для этой модели (manual control).
+	AutoTuneEnabled bool                      `json:"autoTuneEnabled"`
 	Recommendations []AutoTuneRecommendation `json:"recommendations"`
 	// Optional: computed optimal params (nil если current is already optimal)
 	OptimalContextLength   int    `json:"optimalContextLength,omitempty"`
@@ -58,6 +61,9 @@ type AutoTuneAnalysis struct {
 type AutoTuneReport struct {
 	BackendID  string             `json:"backendId"`
 	BackendType string            `json:"backendType"`
+	// AutoTuneEnabled (R54.2) — глобальный switch. Per-model override
+	// отражается в каждой AutoTuneAnalysis.AutoTuneEnabled ниже.
+	AutoTuneEnabled bool             `json:"autoTuneEnabled"`
 	Models     []AutoTuneAnalysis `json:"models"`
 	OverallSeverity string        `json:"overallSeverity"` // worst severity
 	OverallSummary string         `json:"overallSummary"`
@@ -86,6 +92,9 @@ type ModelProfileInfo struct {
 	FreeRAMBytes  uint64
 	TotalVRAMBytes uint64
 	FeasibleMaxContext int  // from cppworker
+	// R54.2: AutoTune switch (после per-model override resolution).
+	// UI показывает это как badge: "AutoTune ON" / "AutoTune OFF (manual)".
+	AutoTuneEnabled bool
 }
 
 // computeOptimalKVCacheType — Round 54.1: вычисляет optimal KV cache type.
@@ -194,8 +203,9 @@ func analyzeLoadedModel(p *ModelProfileInfo) *AutoTuneAnalysis {
 	}
 
 	analysis := &AutoTuneAnalysis{
-		ModelName:    p.Name,
-		IsSubOptimal: false,
+		ModelName:       p.Name,
+		IsSubOptimal:    false,
+		AutoTuneEnabled: p.AutoTuneEnabled,
 	}
 
 	// 1) Analyze KV cache type
@@ -260,14 +270,19 @@ func analyzeLoadedModel(p *ModelProfileInfo) *AutoTuneAnalysis {
 	return analysis
 }
 
-// AnalyzeBackend — Round 54.1: анализирует все loaded models бэкенда.
-// Возвращает AutoTuneReport с recommendations для UI.
-func AnalyzeBackend(backendID, backendType string, models []types.LlamaCppModel, freeVRAMBytes, freeRAMBytes, totalVRAMBytes uint64) *AutoTuneReport {
+// AnalyzeBackend — Round 54.1+R54.2: анализирует все loaded models бэкенда.
+// Возвращает AutoTuneReport с recommendations и AutoTuneEnabled flag.
+//
+// R54.2: AutoTuneEnabled рассчитывается per-model (через IsAutoTuneEnabled),
+// учитывает per-model profile override. Если proxy == nil, AutoTuneEnabled=false
+// (defensive default).
+func AnalyzeBackend(proxy *Proxy, backendID, backendType string, models []types.LlamaCppModel, freeVRAMBytes, freeRAMBytes, totalVRAMBytes uint64) *AutoTuneReport {
 	report := &AutoTuneReport{
-		BackendID:   backendID,
-		BackendType: backendType,
-		Models:      []AutoTuneAnalysis{},
+		BackendID:      backendID,
+		BackendType:    backendType,
+		Models:         []AutoTuneAnalysis{},
 		OverallSeverity: "ok",
+		AutoTuneEnabled: proxy != nil && proxy.config.Balancing.AutoTune,
 	}
 
 	if len(models) == 0 {
@@ -297,6 +312,8 @@ func AnalyzeBackend(backendID, backendType string, models []types.LlamaCppModel,
 			FreeRAMBytes:         freeRAMBytes,
 			TotalVRAMBytes:       totalVRAMBytes,
 			FeasibleMaxContext:   m.FeasibleMaxContext,
+			// R54.2: per-model AutoTune switch (after inheritance).
+			AutoTuneEnabled: IsAutoTuneEnabled(proxy, m.Name),
 		}
 		analysis := analyzeLoadedModel(prof)
 		if analysis == nil {
@@ -350,6 +367,35 @@ func countSubOptimal(models []AutoTuneAnalysis) int {
 // FormatRecommendationShort — краткая однострочная рекомендация для логов.
 func FormatRecommendationShort(r AutoTuneRecommendation) string {
 	return fmt.Sprintf("[%s/%s] %s", r.Severity, r.Category, r.Message)
+}
+
+// IsAutoTuneEnabled — Round 54.2 (2026-08-24): resolves AutoTune master switch
+// for a specific model. Returns false if global AutoTune is off OR per-model
+// profile has AutoTune=false (explicit manual override).
+//
+// Resolution order (highest priority first):
+//  1. Per-model profile.AutoTune (if non-nil) — explicit override
+//  2. BalancingSettings.AutoTune (default true)
+//
+// Использование:
+//   p.config.Balancing.AutoTune — global switch (default true)
+//   profile.AutoTune = &false — manual override для этой модели
+func IsAutoTuneEnabled(p *Proxy, modelName string) bool {
+	if p == nil {
+		return false
+	}
+	// 1) Per-model profile override (highest priority)
+	if modelName != "" {
+		profile, ok := p.GetModelProfile(modelName)
+		if ok && profile.AutoTune != nil {
+			return *profile.AutoTune
+		}
+	}
+	// 2) Global default (defensive nil check)
+	if p.config == nil {
+		return true // default behavior
+	}
+	return p.config.Balancing.AutoTune
 }
 
 // _ = strings.Contains — keep import

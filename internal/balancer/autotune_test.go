@@ -166,7 +166,7 @@ func TestAnalyzeBackend_MultipleModels(t *testing.T) {
 			ContextLength:      0,
 		},
 	}
-	report := AnalyzeBackend("test-backend", "llama_cpp", models, 6_000_000_000, 16_000_000_000, 8_000_000_000)
+	report := AnalyzeBackend(nil, "test-backend", "llama_cpp", models, 6_000_000_000, 16_000_000_000, 8_000_000_000)
 	if report == nil {
 		t.Fatal("expected non-nil report")
 	}
@@ -207,5 +207,45 @@ func TestFormatRecommendationShort(t *testing.T) {
 	}
 	if !strings.Contains(s, "test message") {
 		t.Errorf("expected message in %s", s)
+	}
+}
+
+// TestIsAutoTuneEnabled_GlobalDefault — R54.2: without per-model override,
+// global BalancingSettings.AutoTune is used.
+func TestIsAutoTuneEnabled_GlobalDefault(t *testing.T) {
+	// Test 1: global ON, no profile override → ON
+	pp := &Proxy{}
+	pp.config = &types.LoadBalancerConfig{}
+	pp.config.Balancing.AutoTune = true
+	if !IsAutoTuneEnabled(pp, "test-model") {
+		t.Error("expected AutoTune enabled when global=true")
+	}
+
+	// Test 2: global OFF, no profile override → OFF
+	pp.config.Balancing.AutoTune = false
+	if IsAutoTuneEnabled(pp, "test-model") {
+		t.Error("expected AutoTune disabled when global=false")
+	}
+
+	// Test 3: empty model name → fall back to global
+	pp.config.Balancing.AutoTune = true
+	if !IsAutoTuneEnabled(pp, "") {
+		t.Error("expected AutoTune enabled with empty model name (global=true)")
+	}
+
+	// Test 4: nil config → defaults to true
+	ppNilConfig := &Proxy{}
+	if !IsAutoTuneEnabled(ppNilConfig, "test-model") {
+		t.Error("expected default true when config is nil")
+	}
+}
+
+// TestIsAutoTuneEnabled_NilProxy — defensive: nil proxy → false (no panics).
+func TestIsAutoTuneEnabled_NilProxy(t *testing.T) {
+	if IsAutoTuneEnabled(nil, "test") {
+		t.Error("expected false for nil proxy")
+	}
+	if IsAutoTuneEnabled(nil, "") {
+		t.Error("expected false for nil proxy with empty model")
 	}
 }

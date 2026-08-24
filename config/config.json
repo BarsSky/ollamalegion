@@ -59,6 +59,8 @@
             "lowWatermark": 0.6
         },
         "operatingMode": "standard",
+        "_note_autoTune": "Round 54.2 (2026-08-24): AutoTune master switch. default true. balancer детектит sub-optimal state (q4_0 KV cache, over-allocated n_ctx) и рекомендует/применяет fix. Per-model override: в llamaCppModelProfiles добавить \"autoTune\": false.",
+        "autoTune": true,
         "_note_operatingMode": "standard — валидный режим (standard/replication/rpc_coordinator/virtual_router/distributed_inference). 'llama_cpp' НЕ является валидным operatingMode (это BackendType). Для llama_cpp-only стека используется standard, cppworker регистрируется через auto-registration.",
         "nctxReload": {
             "_note": "Адаптивный auto-reload n_ctx при prompt_too_long (code 3) / n_ctx_needed (code 2). Safety 0.95 вместо дефолтного 0.85 — для Gemma-4 (max_vram_n_ctx=40K, required=52K) при 0.85 отвергается reload, при 0.95 влезает. ENV overrides: LB_NCTX_RELOAD_*",

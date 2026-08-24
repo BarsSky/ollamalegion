@@ -42,6 +42,11 @@ type BalancingSettings struct {
 	FirstByteTimeout     int                `json:"firstByteTimeout"`     // таймаут первого байта streaming (сек, 0=дефолт 30)
 	StreamingIdleTimeout int                `json:"streamingIdleTimeout"` // таймаут простоя между чанками streaming (сек, 0=дефолт 120)
 	StreamTimeout        int                `json:"streamTimeout"`        // общий таймаут streaming запроса (сек, 0=дефолт 600)
+	// R54.2 (2026-08-24): AutoTune master switch. Если true (default), balancer
+	// auto-detects sub-optimal state (q4_0 KV cache on small model, over-allocated
+	// n_ctx) и рекомендует fix. R54.4 добавит авто-применение. Manual override:
+	// per-model profile "autoTune": false отключает для конкретной модели.
+	AutoTune             bool               `json:"autoTune"`             // default true
 	QueueTimeout         int                `json:"queueTimeout"`         // секунды
 	QueueMaxSize         int                `json:"queueMaxSize"`         // макс. размер очереди
 	QueueWorkers         int                `json:"queueWorkers"`         // количество workers очереди
@@ -298,6 +303,14 @@ type LlamaCppModelProfile struct {
 	// FirstByteTimeoutSec — таймаут ожидания первого байта ответа (сек).
 	//   Если 0 — используется BalancingSettings.FirstByteTimeout (default 120).
 	//   Для CPU-моделей с partial offload / RAM fallback рекомендуется 600+.
+
+	// R54.2 (2026-08-24): AutoTune override на per-model уровне.
+	//   false = отключить AutoTune для этой модели (manual params).
+	//   true или nil = наследовать global BalancingSettings.AutoTune.
+	// Полезно для моделей где пользователь явно знает optimal params
+	// (например, после ручной настройки и тестирования) и не хочет
+	// авто-reload от AutoTune. Default nil = inherit global.
+	AutoTune *bool `json:"autoTune,omitempty"`
 	//   Учитывает время загрузки модели в VRAM + prompt processing.
 	FirstByteTimeoutSec int `json:"firstByteTimeoutSec,omitempty"`
 

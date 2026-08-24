@@ -93,6 +93,8 @@
     "requestTimeout": 120,
     "firstByteTimeout": 30,
     "streamingIdleTimeout": 600,
+    "_note_autoTune": "Round 54.2 (2026-08-24): AutoTune master switch. default true. balancer детектит sub-optimal state (q4_0 KV cache, over-allocated n_ctx) и рекомендует/применяет fix. Per-model override: в llamaCppModelProfiles добавить \"autoTune\": false. ENV override: LB_AUTO_TUNE.",
+    "autoTune": true,
     "queueTimeout": 300,
     "queueMaxSize": 100,
     "queueWorkers": 4,

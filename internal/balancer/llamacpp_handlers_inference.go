@@ -144,7 +144,10 @@ func (lr *LlamaCppRouter) handleOpenAIChatCompletions(w http.ResponseWriter, r *
 		if err := lr.proxy.proxyRequestOpenAIStreamAsNonStream(w, r, bodyBuf, targetURL, backendID); err != nil {
 			logger.Get().Errorw("handleOpenAIChatCompletions: auto-stream workaround failed",
 				"backend", backendID, "error", err)
-			if !isHeadersSent(w) {
+			// R53.5 (2026-08-24): mid-stream error → emit final SSE done-чанк
+			if isHeadersSent(w) {
+				writeStreamErrorChunk(w, "/v1/chat/completions", model, err.Error())
+			} else {
 				writeJSON(w, http.StatusBadGateway, map[string]string{"error": err.Error()})
 			}
 		}
@@ -607,7 +610,13 @@ func (lr *LlamaCppRouter) handleChat(w http.ResponseWriter, r *http.Request) {
 	}
 	if err != nil {
 		logger.Get().Errorw("handleChat: proxy failed", "backend", backendID, "error", err)
-		if !isHeadersSent(w) {
+		// R53.5 (2026-08-24): mid-stream error path. If headers were already sent
+		// (streaming started), MUST emit final done-чанк with error info,
+		// otherwise client (Cline/OpenWebUI/Flowise) gets connection drop without
+		// done:true → "Did not receive done or success response in stream" error.
+		if isHeadersSent(w) {
+			writeStreamErrorChunk(w, "/api/chat", model, err.Error())
+		} else {
 			writeJSON(w, http.StatusBadGateway, map[string]string{"error": err.Error()})
 		}
 	}
@@ -711,7 +720,12 @@ func (lr *LlamaCppRouter) handleGenerate(w http.ResponseWriter, r *http.Request)
 	}
 	if err != nil {
 		logger.Get().Errorw("handleGenerate: proxy failed", "backend", backendID, "error", err)
-		if !isHeadersSent(w) {
+		// R53.5 (2026-08-24): см. handleChat — mid-stream error path
+		// должен эмитить final done-чанк клиенту, иначе Cline/OpenWebUI
+		// валятся с "Did not receive done or success response in stream".
+		if isHeadersSent(w) {
+			writeStreamErrorChunk(w, "/api/generate", model, err.Error())
+		} else {
 			writeJSON(w, http.StatusBadGateway, map[string]string{"error": err.Error()})
 		}
 	}
@@ -723,4 +737,97 @@ func isHeadersSent(w http.ResponseWriter) bool {
 		_ = flusher
 	}
 	return w.Header().Get("Content-Type") != ""
+}
+
+// writeStreamErrorChunk — Round 53.5 (2026-08-24) HOTFIX.
+//
+// При ошибке proxyRequest*_Stream() mid-stream (cppworker timeout / hang / network blip)
+// заголовки клиенту уже отправлены (200 OK, Content-Type, chunked transfer).
+// Без этого фикса: balancer возвращает управление, connection закрывается,
+// клиент (Cline, OpenWebUI, Flowise) никогда не получает done:true чанк →
+// "Did not receive done or success response in stream" ошибка.
+//
+// Функция эмитит финальный Ollama NDJSON / OpenAI SSE чанк с done:true +
+// done_reason:"error" + error message, чтобы клиент корректно завершил стрим.
+//
+// Параметры:
+//   - w: ResponseWriter
+//   - originalPath: "/api/chat" | "/api/generate" | "/v1/chat/completions" | "/v1/completions"
+//   - modelFromCtx: имя модели (для Ollama-чанка; OpenAI получает из chunk)
+//   - errorMsg: текст ошибки
+func writeStreamErrorChunk(w http.ResponseWriter, originalPath, modelFromCtx, errorMsg string) {
+	switch originalPath {
+	case "/v1/chat/completions":
+		// OpenAI SSE: финальный чанк с finish_reason="error" + data: [DONE]
+		errChunk := map[string]interface{}{
+			"id":      fmt.Sprintf("err-%d", time.Now().UnixNano()),
+			"object":  "chat.completion.chunk",
+			"created": time.Now().Unix(),
+			"model":   modelFromCtx,
+			"choices": []interface{}{
+				map[string]interface{}{
+					"index":         0,
+					"delta":         map[string]interface{}{},
+					"finish_reason": "error",
+				},
+			},
+			"error": map[string]interface{}{
+				"message": errorMsg,
+				"type":    "stream_proxy_error",
+			},
+		}
+		out, _ := json.Marshal(errChunk)
+		_, _ = fmt.Fprintf(w, "data: %s\n\n", string(out))
+		_, _ = fmt.Fprintf(w, "data: [DONE]\n\n")
+		Flush(w)
+	case "/v1/completions":
+		// OpenAI /v1/completions: тот же формат
+		errChunk := map[string]interface{}{
+			"id":      fmt.Sprintf("err-%d", time.Now().UnixNano()),
+			"object":  "text_completion",
+			"created": time.Now().Unix(),
+			"model":   modelFromCtx,
+			"choices": []interface{}{
+				map[string]interface{}{
+					"index":         0,
+					"text":          "",
+					"finish_reason": "error",
+				},
+			},
+			"error": map[string]interface{}{
+				"message": errorMsg,
+				"type":    "stream_proxy_error",
+			},
+		}
+		out, _ := json.Marshal(errChunk)
+		_, _ = fmt.Fprintf(w, "data: %s\n\n", string(out))
+		_, _ = fmt.Fprintf(w, "data: [DONE]\n\n")
+		Flush(w)
+	case "/api/generate":
+		// Ollama /api/generate: NDJSON done-чанк
+		msg := map[string]interface{}{
+			"model":      modelFromCtx,
+			"created_at": time.Now().UTC().Format(time.RFC3339),
+			"done":       true,
+			"done_reason": "error",
+			"error":      errorMsg,
+			"response":   "",
+		}
+		out, _ := json.Marshal(msg)
+		_, _ = fmt.Fprintf(w, "%s\n", string(out))
+		Flush(w)
+	default:
+		// /api/chat + fallback: Ollama NDJSON done-чанк
+		msg := map[string]interface{}{
+			"model":      modelFromCtx,
+			"created_at": time.Now().UTC().Format(time.RFC3339),
+			"done":       true,
+			"done_reason": "error",
+			"error":      errorMsg,
+			"message":    map[string]interface{}{"role": "assistant", "content": ""},
+		}
+		out, _ := json.Marshal(msg)
+		_, _ = fmt.Fprintf(w, "%s\n", string(out))
+		Flush(w)
+	}
 }

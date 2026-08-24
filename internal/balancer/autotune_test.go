@@ -558,3 +558,146 @@ drain:
 		}
 	}
 }
+
+// === R55.1 (2026-08-24): num_gpu_layers AutoTune tests ===
+
+// TestPlanApplyAutoTune_LayersReload — returns plan with new NumGPULayers.
+func TestPlanApplyAutoTune_LayersReload(t *testing.T) {
+	a := &AutoTuneAnalysis{
+		IsSubOptimal: true,
+		Recommendations: []AutoTuneRecommendation{
+			{Category: "layers", CurrentNumGPULayers: 36, RecommendedNumGPULayers: -2},
+		},
+	}
+	currentLoaded := types.LlamaCppModel{Name: "test", NumGPULayers: 36}
+	plan := PlanApplyAutoTune(a, currentLoaded)
+	if plan == nil {
+		t.Fatal("expected non-nil plan with layers reload")
+	}
+	if plan.NumGPULayers != -2 {
+		t.Errorf("expected NumGPULayers=-2, got %d", plan.NumGPULayers)
+	}
+	if plan.ContextSize != 0 || plan.KVCacheType != "" {
+		t.Errorf("expected only layers change, got ContextSize=%d KVCache=%s",
+			plan.ContextSize, plan.KVCacheType)
+	}
+	if plan.Reason == "" {
+		t.Error("expected Reason to be set")
+	}
+}
+
+// TestPlanApplyAutoTune_LayersAlreadyOptimal — current == recommended, no plan.
+func TestPlanApplyAutoTune_LayersAlreadyOptimal(t *testing.T) {
+	a := &AutoTuneAnalysis{
+		IsSubOptimal: true,
+		Recommendations: []AutoTuneRecommendation{
+			{Category: "layers", CurrentNumGPULayers: 36, RecommendedNumGPULayers: 36},
+		},
+	}
+	currentLoaded := types.LlamaCppModel{Name: "test", NumGPULayers: 36}
+	plan := PlanApplyAutoTune(a, currentLoaded)
+	if plan != nil {
+		t.Errorf("expected nil plan (current == recommended), got %+v", plan)
+	}
+}
+
+// TestPlanApplyAutoTune_LayersZeroRecommended — RecommendedNumGPULayers==0
+// означает "нет рекомендации" — должно быть проигнорировано.
+func TestPlanApplyAutoTune_LayersZeroRecommended(t *testing.T) {
+	a := &AutoTuneAnalysis{
+		IsSubOptimal: true,
+		Recommendations: []AutoTuneRecommendation{
+			{Category: "layers", CurrentNumGPULayers: 36, RecommendedNumGPULayers: 0},
+		},
+	}
+	currentLoaded := types.LlamaCppModel{Name: "test", NumGPULayers: 36}
+	plan := PlanApplyAutoTune(a, currentLoaded)
+	if plan != nil {
+		t.Errorf("expected nil plan (recommended=0 means no change), got %+v", plan)
+	}
+}
+
+// TestPlanApplyAutoTune_LayersAllSemantic — current=N (all) vs recommended=-1 (all)
+// семантически одинаковы, но численно разные. PlanApplyAutoTune сравнивает
+// численно, поэтому создаст план — это OK, cppworker примет -1 так же как N.
+func TestPlanApplyAutoTune_LayersAllSemantic(t *testing.T) {
+	a := &AutoTuneAnalysis{
+		IsSubOptimal: true,
+		Recommendations: []AutoTuneRecommendation{
+			{Category: "layers", CurrentNumGPULayers: 36, RecommendedNumGPULayers: -1},
+		},
+	}
+	currentLoaded := types.LlamaCppModel{Name: "test", NumGPULayers: 36, NLayers: 36}
+	plan := PlanApplyAutoTune(a, currentLoaded)
+	// Plan создастся (численно 36 != -1), но это OK: apply to cppworker
+	// отправит n_gpu_layers=-1 что для cppworker = all layers (semantically same).
+	if plan == nil {
+		t.Error("expected non-nil plan (numerical 36 != -1 triggers plan)")
+	}
+	if plan != nil && plan.NumGPULayers != -1 {
+		t.Errorf("expected NumGPULayers=-1 in plan, got %d", plan.NumGPULayers)
+	}
+}
+
+// TestComputeOptimalNumGPULayers_AllLayersSemantic — current = NLayers (all),
+// optimal = -1 (all). Должны матчиться семантически → no recommendation.
+func TestComputeOptimalNumGPULayers_AllLayersSemantic(t *testing.T) {
+	p := &ModelProfileInfo{
+		SizeBytes:   2_500_000_000,
+		FreeVRAMBytes: 6_000_000_000,
+		NLayers:     36,
+	}
+	// Current = 36 (all layers explicitly). Optimal = -1 (all).
+	// Both mean "all layers" → return current, no change needed.
+	rec, _ := computeOptimalNumGPULayers(p)
+	// Optimal returns p.CurrentNumGPULayers, which we haven't set
+	// (zero value 0). So computeOptimalNumGPULayers returns 0, but
+	// p.CurrentNumGPULayers wasn't set. Let me set it.
+	p.CurrentNumGPULayers = 36
+	rec, _ = computeOptimalNumGPULayers(p)
+	if rec != 36 {
+		t.Errorf("expected 36 (all layers semantic match), got %d", rec)
+	}
+}
+
+// TestComputeOptimalNumGPULayers_AutoOffload — current = -2 (auto), optimal = -2 (auto).
+// Должны матчиться → no change needed.
+func TestComputeOptimalNumGPULayers_AutoOffload(t *testing.T) {
+	p := &ModelProfileInfo{
+		SizeBytes:   12_000_000_000, // 12GB — не влезает в 6GB free
+		FreeVRAMBytes: 6_000_000_000,
+		NLayers:     60,
+	}
+	p.CurrentNumGPULayers = -2 // auto offload
+	rec, _ := computeOptimalNumGPULayers(p)
+	if rec != -2 {
+		t.Errorf("expected -2 (auto offload semantic match), got %d", rec)
+	}
+}
+
+// TestNeedsReload_LayersOnly — план с только NumGPULayers (без context/kv_cache)
+// должен NeedsReload() == true.
+func TestNeedsReload_LayersOnly(t *testing.T) {
+	plan := &AutoTuneReloadPlan{NumGPULayers: -2}
+	if !plan.NeedsReload() {
+		t.Error("plan with NumGPULayers should need reload")
+	}
+}
+
+// TestPlanApplyAutoTune_LayersModelName — план должен содержать model name.
+func TestPlanApplyAutoTune_LayersModelName(t *testing.T) {
+	a := &AutoTuneAnalysis{
+		IsSubOptimal: true,
+		Recommendations: []AutoTuneRecommendation{
+			{Category: "layers", CurrentNumGPULayers: 36, RecommendedNumGPULayers: -2},
+		},
+	}
+	currentLoaded := types.LlamaCppModel{Name: "qwen3-4b", NumGPULayers: 36}
+	plan := PlanApplyAutoTune(a, currentLoaded)
+	if plan == nil {
+		t.Fatal("expected non-nil plan")
+	}
+	if plan.ModelName != "qwen3-4b" {
+		t.Errorf("expected ModelName=qwen3-4b, got %s", plan.ModelName)
+	}
+}

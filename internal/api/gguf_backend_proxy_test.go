@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -467,12 +468,20 @@ func TestGgufBackendProxy_wrong_backend_type(t *testing.T) {
 }
 
 func TestGgufBackendProxy_unreachable_target(t *testing.T) {
-	// Создаём сервер с бэкендом, указывающим на закрытый порт
+	// Создаём сервер с бэкендом, указывающим на закрытый порт.
+	// Используем непривилегированный порт (1 на Windows может фильтроваться
+	// firewall'ом и вызывать таймауты вместо немедленного ECONNREFUSED).
+	// Закрываем заранее listener на порту 0 чтобы получить guaranteed-closed port.
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	require.NoError(t, err)
+	closedPort := ln.Addr().(*net.TCPAddr).Port
+	require.NoError(t, ln.Close())
+
 	config := &types.LoadBalancerConfig{
 		LoadBalancer: types.LoadBalancerSettings{Host: "localhost", Port: 8080, APIPort: 8081},
 		Backends: []types.Backend{
 			{ID: "llama_unreachable", Name: "Unreachable", Host: "127.0.0.1", OllamaPort: 11434,
-				AgentPort: 9090, CppWorkerPort: 1, Type: types.BackendTypeLlamaCpp,
+				AgentPort: 9090, CppWorkerPort: closedPort, Type: types.BackendTypeLlamaCpp,
 				Weight: 1, MaxConcurrentReqs: 10, Status: types.StatusHealthy},
 		},
 		Balancing: types.BalancingSettings{Algorithm: types.AlgorithmResourceAware},
@@ -484,9 +493,10 @@ func TestGgufBackendProxy_unreachable_target(t *testing.T) {
 	testServer := httptest.NewServer(srv)
 	defer testServer.Close()
 
-	// Таймаут прокси — 90s, но на закрытом порту получим connection refused сразу.
-	// Используем клиент с маленьким таймаутом.
-	client := &http.Client{Timeout: 5 * time.Second}
+	// Используем клиент с большим таймаутом — на разных OS закрытый порт
+	// может давать ECONNREFUSED мгновенно (Linux) или после таймаута
+	// (Windows firewall, за NAT). 10s покрывает оба случая.
+	client := &http.Client{Timeout: 10 * time.Second}
 	resp, err := client.Get(testServer.URL + "/api/v1/gguf/backends/llama_unreachable/proxy/info")
 	require.NoError(t, err)
 	defer resp.Body.Close()
@@ -496,7 +506,7 @@ func TestGgufBackendProxy_unreachable_target(t *testing.T) {
 	var info map[string]string
 	require.NoError(t, json.Unmarshal(body, &info))
 	assert.Equal(t, "cppworker unreachable", info["error"])
-	assert.Contains(t, info["message"], "127.0.0.1:1")
+	assert.Contains(t, info["message"], fmt.Sprintf("127.0.0.1:%d", closedPort))
 }
 
 func TestGgufBackendProxy_invalid_path(t *testing.T) {

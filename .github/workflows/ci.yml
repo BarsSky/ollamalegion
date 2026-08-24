@@ -15,9 +15,9 @@ name: CI
 
 on:
   push:
-    branches: [main, integration/**, feature/**]
+    branches: [centurion, main, integration/**, feature/**]
   pull_request:
-    branches: [main, integration/**]
+    branches: [centurion, main, integration/**]
   workflow_dispatch:  # ручной запуск через UI
 
 # Отмена in-progress для одного и того же workflow (новые push отменяют старые)

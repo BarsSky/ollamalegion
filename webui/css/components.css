@@ -343,10 +343,10 @@
 
 /* ===== gpu_layers form (Round 35c+, 2026-08-13) ===== */
 /* Live badge + quick-set buttons for the -2=AUTO magic value.
-   -2 = AUTO (cppworker decides)        — зелёный, рекомендуется
-   -1 = all layers                      — accent-soft (info)
-    0 = CPU only                        — secondary (серый)
-    N = explicit layer count            — warning (жёлтый, кастом) */
+   -2 = AUTO (cppworker decides)        - зелёный, рекомендуется
+   -1 = all layers                      - accent-soft (info)
+    0 = CPU only                        - secondary (серый)
+    N = explicit layer count            - warning (жёлтый, кастом) */
 .gpu-layers-badge {
     display: inline-block;
     padding: 2px 8px;
@@ -826,7 +826,7 @@
    Setup Wizard Modal
    ================================================ */
 .wizard-modal {
-    /* Session 18 Round 15 (2026-07-29): FIX — `var(--card-bg)` (missing token)
+    /* Session 18 Round 15 (2026-07-29): FIX - `var(--card-bg)` (missing token)
        приводил к полностью прозрачному фону модалки → текст и поля сливались
        с body background. Заменяем на `var(--bg-card)` (реальный токен из
        themes.css:93-94 / 191-192 / 320-321) + явный цвет для light theme. */
@@ -897,7 +897,7 @@
     font-size: 10px;
     /* Round 15 (2026-07-29): --text-muted (#6e6e8a) слишком тусклый на фоне
        --bg-card (#16213e), подписи шагов "сливаются". Повышаем до
-       --text-secondary (#a8a8c0) — заметно, но не агрессивно. */
+       --text-secondary (#a8a8c0) - заметно, но не агрессивно. */
     color: var(--text-secondary, #a8a8c0);
     white-space: nowrap;
     text-align: center;
@@ -1060,7 +1060,7 @@
 }
 
 .mode-wizard-modal {
-    /* Round 15 (2026-07-29): same fix as .wizard-modal — `var(--card-bg)` это
+    /* Round 15 (2026-07-29): same fix as .wizard-modal - `var(--card-bg)` это
        несуществующий токен, нужен `var(--bg-card)`. */
     background: var(--bg-card, #16213e);
     border: 1px solid var(--border, #2a2a4a);
@@ -1129,9 +1129,9 @@
 .wizard-field select {
     padding: 8px 12px;
     border-radius: var(--radius-md);
-    /* Round 15 (2026-07-29): `var(--glass-border)` это rgba(255,255,255,0.10) —
+    /* Round 15 (2026-07-29): `var(--glass-border)` это rgba(255,255,255,0.10) -
        граница практически невидима, поле «сливается» с body. Используем
-       `var(--border)` (#2a2a4a dark / #d1d5db light) — solid, контрастный. */
+       `var(--border)` (#2a2a4a dark / #d1d5db light) - solid, контрастный. */
     border: 1px solid var(--border, #2a2a4a);
     background: var(--bg-primary, #0f0f23);
     color: var(--text-primary, #e6e6f0);
@@ -1145,7 +1145,7 @@
     box-shadow: 0 0 0 3px var(--accent-glow-ring, rgba(74,158,255,0.20));
 }
 
-/* Round 15 (2026-07-29): generic form-control внутри wizard-modal — твёрдый
+/* Round 15 (2026-07-29): generic form-control внутри wizard-modal - твёрдый
    фон вместо полупрозрачного glass-bg, чтобы поля не «сливались» с body. */
 .wizard-modal .form-control,
 .wizard-modal input[type="text"],

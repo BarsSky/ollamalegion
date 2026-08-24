@@ -913,3 +913,163 @@
 .log-time-cell { color: var(--text-secondary); font-family: monospace; font-size: var(--font-size-xs); }
 .log-path-cell { font-family: monospace; font-size: var(--font-size-xs); max-width: 280px; overflow: hidden; text-overflow: ellipsis; }
 /* === /Proxy Logs toolbar ============================================== */
+
+/* ===== AutoTune History (R55.2, 2026-08-24) ===== */
+.autotune-history-btn {
+    margin-left: 8px;
+    padding: 4px 10px;
+    background: var(--bg-elevated);
+    color: var(--text-primary);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    font-size: var(--font-size-xs);
+    cursor: pointer;
+    transition: background 0.15s;
+}
+.autotune-history-btn:hover {
+    background: var(--accent-soft);
+}
+
+.autotune-history-modal-backdrop {
+    position: fixed;
+    inset: 0;
+    background: rgba(0, 0, 0, 0.6);
+    z-index: 9999;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 24px;
+}
+.autotune-history-modal {
+    background: var(--bg-primary, #1a1a1a);
+    color: var(--text-primary);
+    border-radius: var(--radius-md);
+    box-shadow: 0 8px 32px rgba(0, 0, 0, 0.4);
+    max-width: 720px;
+    width: 100%;
+    max-height: 80vh;
+    display: flex;
+    flex-direction: column;
+}
+.autotune-history-modal-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 16px 20px;
+    border-bottom: 1px solid var(--border);
+}
+.autotune-history-modal-header h3 {
+    margin: 0;
+    font-size: var(--font-size-md);
+    font-weight: 600;
+}
+.autotune-history-modal-close {
+    background: none;
+    border: none;
+    color: var(--text-secondary);
+    font-size: 24px;
+    cursor: pointer;
+    padding: 0 8px;
+    line-height: 1;
+}
+.autotune-history-modal-close:hover {
+    color: var(--text-primary);
+}
+.autotune-history-modal-body {
+    padding: 16px 20px;
+    overflow-y: auto;
+    flex: 1;
+}
+.autotune-history-loading,
+.autotune-history-empty,
+.autotune-history-error {
+    padding: 24px;
+    text-align: center;
+    color: var(--text-secondary);
+    font-size: var(--font-size-sm);
+}
+.autotune-history-error {
+    color: var(--danger);
+}
+
+.autotune-history-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 12px;
+    padding-bottom: 8px;
+    border-bottom: 1px solid var(--border);
+}
+.autotune-history-stats {
+    font-size: var(--font-size-xs);
+    color: var(--text-secondary);
+}
+.autotune-history-refresh {
+    padding: 2px 8px;
+    background: transparent;
+    color: var(--accent);
+    border: 1px solid var(--accent);
+    border-radius: var(--radius-sm);
+    font-size: var(--font-size-xs);
+    cursor: pointer;
+}
+.autotune-history-refresh:hover {
+    background: var(--accent-soft);
+}
+
+.autotune-history-timeline {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+}
+.autotune-history-entry {
+    display: grid;
+    grid-template-columns: 80px 32px 1fr;
+    gap: 8px;
+    padding: 8px 12px;
+    background: var(--bg-elevated, rgba(255, 255, 255, 0.03));
+    border-left: 3px solid var(--border);
+    border-radius: var(--radius-sm);
+    font-size: var(--font-size-sm);
+}
+.autotune-history-entry.autotune-history-ok      { border-left-color: var(--success, #28c840); }
+.autotune-history-entry.autotune-history-info    { border-left-color: var(--accent); }
+.autotune-history-entry.autotune-history-warning { border-left-color: var(--warning); }
+.autotune-history-entry.autotune-history-error   { border-left-color: var(--danger); }
+.autotune-history-entry.autotune-history-critical { border-left-color: var(--danger); }
+
+.autotune-history-time {
+    color: var(--text-secondary);
+    font-family: monospace;
+    font-size: var(--font-size-xs);
+    padding-top: 2px;
+}
+.autotune-history-icon {
+    font-size: 18px;
+    padding-top: 0;
+}
+.autotune-history-body {
+    min-width: 0;
+}
+.autotune-history-title {
+    font-weight: 500;
+    margin-bottom: 2px;
+}
+.autotune-history-model {
+    color: var(--text-secondary);
+    font-weight: normal;
+    font-size: var(--font-size-xs);
+    margin-left: 4px;
+}
+.autotune-history-message {
+    color: var(--text-secondary);
+    font-size: var(--font-size-xs);
+    word-wrap: break-word;
+}
+.autotune-history-params {
+    color: var(--accent);
+    font-size: var(--font-size-xs);
+    font-family: monospace;
+    margin-top: 2px;
+}
+/* === /AutoTune History ============================================== */

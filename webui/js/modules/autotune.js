@@ -94,12 +94,17 @@
             ? '<span class="autotune-enabled">AutoTune: ON</span>'
             : '<span class="autotune-disabled">AutoTune: OFF (manual)</span>';
 
+        const historyBtn = window.AutoTuneHistory
+            ? window.AutoTuneHistory.renderHistoryButton(backend.id || backend.ID || '')
+            : '';
+
         return `
             <div class="autotune-card ${cssClass}">
                 <div class="autotune-header">
                     <span class="autotune-icon">${icon}</span>
                     <strong>${statusLabel}</strong>
                     <span class="autotune-summary">${escapeHtml(summary)}</span>
+                    ${historyBtn}
                 </div>
                 ${modelsHtml}
             </div>

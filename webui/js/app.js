@@ -1018,6 +1018,10 @@ const ui = (function () {
         if (typeof initAutoTuneEventHandlers === 'function') {
             initAutoTuneEventHandlers();
         }
+        // R55.2: init AutoTune history buttons (modal timeline)
+        if (window.AutoTuneHistory && typeof window.AutoTuneHistory.initHistoryButtons === 'function') {
+            window.AutoTuneHistory.initHistoryButtons();
+        }
     }
 
     function handleWebSocketData(payload) {

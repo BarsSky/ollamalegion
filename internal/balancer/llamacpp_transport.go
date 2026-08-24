@@ -446,6 +446,14 @@ func (p *Proxy) proxyRequestLlamaCpp(w http.ResponseWriter, r *http.Request, bac
 	// с error/done:true, чтобы клиент корректно отобразил сбой вместо "успеха".
 	streamCompleted := false
 	upstreamHadFinishReason := false
+	// Round 53.1 (2026-08-24): per-stream tracking — был ли в этом стриме usage чанк
+	// (cppworker эмитит его ПОСЛЕ finish_reason чанка с prompt_tokens/completion_tokens/
+	// total_tokens и пустыми choices). Если да — translateUsageChunkToOllama уже
+	// эмитил canonical done:true с полным набором статов, и writeStreamingSSEDone
+	// должен SKIP. Если нет (cppworker не прислал usage чанк) — writeStreamingSSEDone
+	// пишет done-чанк с накопленным content как fallback, иначе клиент (Cline/ollama npm)
+	// зависнет без done.
+	usageChunkSeen := false
 	var bytesForwarded int64
 	var firstForwardErr error
 	var lastForwardErr error
@@ -499,7 +507,7 @@ func (p *Proxy) proxyRequestLlamaCpp(w http.ResponseWriter, r *http.Request, bac
 			// с done:true и content. writeStreamingSSEDone должен пропустить запись
 			// дублирующего финального чанка, чтобы клиент не увидел два done:true.
 			errFwd := writeStreamingSSEDone(w, originalPath, modelFromCtx, toolAccum,
-				accumulatedPlainContent, upstreamDoneContent, upstreamHadFinishReason)
+				accumulatedPlainContent, upstreamDoneContent, upstreamHadFinishReason, usageChunkSeen)
 			if errFwd != nil {
 				logger.Get().Warnw("proxyRequestLlamaCpp: writeStreamingSSEDone error",
 					"backend", backendID, "error", errFwd)
@@ -773,7 +781,7 @@ func (p *Proxy) proxyRequestLlamaCpp(w http.ResponseWriter, r *http.Request, bac
 				if !streamCompleted {
 					streamCompleted = true
 					errFwd := writeStreamingSSEDone(w, originalPath, modelFromCtx, toolAccum,
-						accumulatedPlainContent, upstreamDoneContent, false)
+						accumulatedPlainContent, upstreamDoneContent, false, usageChunkSeen)
 					if errFwd != nil {
 						logger.Get().Warnw("proxyRequestLlamaCpp: writeStreamingSSEDone on tool_calls error",
 							"backend", backendID, "error", errFwd)
@@ -802,6 +810,23 @@ func (p *Proxy) proxyRequestLlamaCpp(w http.ResponseWriter, r *http.Request, bac
 			ollamaChunk := translateOpenAISSEDataToOllama(originalPath, []byte(data), modelFromCtx, &seenReasoning, llamaStartTime)
 			if len(ollamaChunk) == 0 {
 				continue
+			}
+			// Round 53.1 (2026-08-24): detect usage chunk for writeStreamingSSEDone fallback logic.
+			// translateOpenAISSEDataToOllama уже эмитил canonical done:true с полными статами
+			// из usage чанка — writeStreamingSSEDone на [DONE] должен skip чтобы избежать
+			// double-done. Способ детекта: usage чанк всегда имеет eval_count + done:true
+			// (translateUsageChunkToOllama эмитит prompt_eval_count и eval_count).
+			// Не-usage чанки с done:true (safety net для length/content_filter в одном
+			// чанке с content) тоже считаем — но это OK, writeStreamingSSEDone skip безопасен.
+			if !usageChunkSeen {
+				var ollamaParsed map[string]interface{}
+				if err := json.Unmarshal(ollamaChunk[:len(ollamaChunk)-1], &ollamaParsed); err == nil {
+					if done, _ := ollamaParsed["done"].(bool); done {
+						// Любой done:true chunk = canonical done (translator эмитил).
+						// writeStreamingSSEDone должен skip.
+						usageChunkSeen = true
+					}
+				}
 			}
 			n, errFwd := w.Write(ollamaChunk)
 			bytesForwarded += int64(n)

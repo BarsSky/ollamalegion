@@ -126,6 +126,15 @@ func cleanFinalContent(s string) string {
 // message.content / response. В этом случае writeStreamingSSEDone НЕ пишет второй
 // чанк с тем же content, иначе клиент увидит дубликат ответа.
 //
+// Round 53.1 (2026-08-24): параметр usageChunkSeen разделяет два случая:
+//   1. upstream ПРИСЛАЛ usage чанк (после finish_reason) — translateUsageChunkToOllama
+//      уже записал canonical done:true с полным набором статов. writeStreamingSSEDone
+//      ПРОПУСКАЕТ запись (skip).
+//   2. upstream ПРИСЛАЛ finish_reason, но usage чанк НЕ пришёл — writeStreamingSSEDone
+//      ПИШЕТ финальный done-чанк с накопленным content как fallback. Без этого
+//      клиент (Cline/ollama npm) зависнет без done (regression из-за подавления
+//      R51.3 wrapper-чанка в R53.1).
+//
 // Если upstream НЕ прислал finish_reason (только [DONE] без завершающего чанка),
 // writeStreamingSSEDone пишет финальный NDJSON с накопленным content — это
 // спасает от пустого content в клиенте.
@@ -140,6 +149,7 @@ func writeStreamingSSEDone(
 	accumulatedContent string,
 	upstreamContent string,
 	upstreamSentFinishReason bool,
+	usageChunkSeen bool,
 ) error {
 	if originalPath == "/v1/chat/completions" {
 		// SSE→SSE passthrough — просто завершаем [DONE]
@@ -164,16 +174,28 @@ func writeStreamingSSEDone(
 
 	hasToolCalls := len(toolAccum) > 0
 
-	// Bug #12 fix (2026-06-30): если upstream уже прислал finish_reason
-	// (т.е. translateOpenAISSEDataToOllama записал финальный NDJSON с done:true
-	// и message.content), мы НЕ должны писать второй финальный чанк с тем же
-	// content — это дубль. Единственное исключение — наличие tool_calls,
-	// которые translate не формирует в финальном чанке.
-	if upstreamSentFinishReason && !hasToolCalls {
-		// Translate уже записал финальный done-чанк с content. Просто flush.
+	// Round 53.1 (2026-08-24): if translateUsageChunkToOllama already emitted the
+	// canonical done:true chunk (with full stats), we MUST skip here — otherwise
+	// the client sees TWO done:true chunks (R51.3 regression).
+	if usageChunkSeen {
 		Flush(w)
 		return nil
 	}
+
+	// Round 53.1: if upstreamSentFinishReason=true (wrapper-чанк был, но мы его
+	// подавили в R53.1) и usage чанка не было — writeStreamingSSEDone пишет
+	// финальный done-чанк как fallback, иначе клиент зависнет.
+	// (До R53.1 этот блок был: if upstreamSentFinishReason && !hasToolCalls { skip } —
+	// что приводило к double-done в случае usage чанка.)
+	_ = upstreamSentFinishReason // used implicitly: если false, всё равно пишем done ниже
+
+	// Round 53.1: убран старый skip-блок "if upstreamSentFinishReason && !hasToolCalls { skip }".
+	// Pre-R53.1 wrapper-чанк эмитил done:true (R51.3 fix), и writeStreamingSSEDone
+	// пропускал повторную запись. Post-R53.1 wrapper подавлен, canonical done
+	// эмитится ТОЛЬКО из translateUsageChunkToOllama (если usage чанк пришёл) или
+	// из writeStreamingSSEDone как fallback (если usage чанка не было).
+	// Случай usageChunkSeen уже обработан выше. Случай !usageChunkSeen —
+	// writeStreamingSSEDone ПИШЕТ финальный done-чанк с накопленным content.
 
 	// Для /api/chat и /api/generate пишем NDJSON
 	if originalPath == "/api/chat" {

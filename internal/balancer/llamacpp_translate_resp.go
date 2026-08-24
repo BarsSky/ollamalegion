@@ -501,11 +501,38 @@ func translateOpenAISSEDataToOllama(ollamaPath string, sseData []byte, modelName
 	}
 }
 
-// hasNonEmptyChoices — true если чанк содержит НЕпустой массив choices[0]
-// (используется для отличия обычных content/reasoning/tool_call чанков от usage-only чанка).
+// hasNonEmptyChoices — true если чанк содержит НЕпустой массив choices с
+// "реальным" содержимым (delta с content/reasoning/tool_calls или text для
+// /v1/completions). Используется для отличия обычных content/reasoning/tool_call
+// чанков от usage-only чанка.
+//
+// Round 53.1 (2026-08-24): cppworker может прислать usage chunk с
+// `choices: [{finish_reason: "tool_calls", index: 0}]` (без delta) — это
+// всё ещё usage chunk (canonical done-чанк), а НЕ content chunk. Старая
+// логика (len > 0) ошибочно считала его content чанком и шла в
+// translateSSEChatToOllama, который с R53.1 подавляет wrapper-чанки
+// (empty delta + finish_reason) → клиент терял done-чанк.
 func hasNonEmptyChoices(chunk map[string]interface{}) bool {
 	choices, ok := chunk["choices"].([]interface{})
-	return ok && len(choices) > 0
+	if !ok || len(choices) == 0 {
+		return false
+	}
+	// Проверяем что ХОТЯ БЫ один choice имеет "реальное" содержимое:
+	// delta.content, delta.reasoning_content, delta.tool_calls, delta.role
+	// (для /api/chat) или text (для /v1/completions).
+	for _, c := range choices {
+		ch, ok := c.(map[string]interface{})
+		if !ok {
+			continue
+		}
+		if delta, ok := ch["delta"].(map[string]interface{}); ok && len(delta) > 0 {
+			return true
+		}
+		if text, ok := ch["text"].(string); ok && text != "" {
+			return true
+		}
+	}
+	return false
 }
 
 // translateUsageChunkToOllama — конвертирует OpenAI usage-only chunk в Ollama done-чанк.
@@ -578,13 +605,20 @@ func translateUsageChunkToOllama(ollamaPath, modelName string, usage map[string]
 		ollamaChunk["eval_duration"] = int64(0)
 	}
 
-	// Для /api/chat добавляем message с role/content (пустой content).
-	// Ollama /api/chat ожидает NDJSON с `message: {role, content}` даже в done-чанке.
-	if ollamaPath == "/api/chat" {
+	// Ollama schema compliance (Round 53.1): оба endpoint'а должны иметь
+	// канонические поля в done-чанке.
+	//   - /api/chat: message.{role, content} (Ollama NDJSON spec)
+	//   - /api/generate: response (string, даже если пустая)
+	// Без этого OpenWebUI показывает пустой response на 2-м запросе (regression
+	// из TestTranslateSSEGenerateToOllama_DoneHasModel).
+	switch ollamaPath {
+	case "/api/chat":
 		ollamaChunk["message"] = map[string]interface{}{
 			"role":    "assistant",
 			"content": "",
 		}
+	case "/api/generate":
+		ollamaChunk["response"] = ""
 	}
 	// totalTokens сейчас НЕ отдаём в Ollama-чанк (Ollama его не ожидает, total = prompt+eval).
 
@@ -683,13 +717,53 @@ func translateSSEChatToOllama(chunk map[string]interface{}, modelName string, se
 		// не только "stop" и "tool_calls". Cline (через ollama npm package / langchain)
 		// валит с "Did not receive done or success response in stream" если в финальном
 		// чанке done=false, что случалось для finish_reason="length" (max_tokens hit),
-		// "" (пустая строка) или "content_filter".
+		// "content_filter" или "" (пустая строка).
 		//
-		// Корректная семантика Ollama: done:true ставится на ПОСЛЕДНЕМ чанке независимо
-		// от причины остановки; done_reason отражает причину.
+		// Round 53.1 (2026-08-24): уточнение R51.3 — НЕ помечать done:true на
+		// "wrapper"-чанке (no content/tool_calls + finish_reason), потому что
+		// cppworker шлёт ЭТОТ чанк ПЕРЕД usage-чанком. Если пометить оба как done:true,
+		// клиент (Cline / ollama npm) получает "phantom done" (без total_duration,
+		// без eval_count), затем usage-чанк (тоже done:true, со статами) →
+		// парсер Ollama видит ДВА done:true подряд и ругается "Did not receive
+		// done or success response in stream" (Cline) или показывает stats из
+		// первого done-чанка (там их нет) и теряет реальные (OpenWebUI).
+		//
+		// ВАЖНО: cppworker шлёт wrapper как
+		//   {"choices":[{"delta":{"content":null,"role":"assistant"},"finish_reason":"stop"}]}
+		// — content=null, role="assistant" (т.е. hasRoleOnly=true). Мой R53.1
+		// первоначальный фикс проверял isEmptyDelta через !hasRoleOnly, что
+		// ошибочно НЕ подавляло wrapper. Правильный критерий wrapper'а —
+		// "нет полезной нагрузки" = !hasContent && !hasToolCalls. role/reasoning
+		// в delta — это служебные поля, не контент.
+		//
+		// Корректная семантика Ollama: ровно ОДИН done:true чанк на стрим, с
+		// полным набором статов. Этот done:true эмитится:
+		//   1. translateUsageChunkToOllama — когда cppworker шлёт usage-чанк
+		//      ПОСЛЕ finish_reason-чанка (нормальный случай)
+		//   2. writeStreamingSSEDone — fallback на [DONE] SSE маркере, если
+		//      cppworker не прислал usage-чанк
+		//
+		// Для редкого случая когда finish_reason="length"/"content_filter"
+		// приходит В ТОМ ЖЕ чанке что и последний content (некоторые upstreams
+		// комбинируют) — ставим done:true здесь как safety net, чтобы клиент
+		// не завис без done.
 		if finishReason, ok := choice["finish_reason"].(string); ok && finishReason != "" {
-			ollamaChunk["done"] = true
-			ollamaChunk["done_reason"] = finishReason
+			// wrapper chunk (cppworker pattern) = empty content, no tool_calls,
+			// no reasoning, just role+finish_reason or just finish_reason.
+			// Этот чанк ПРЕДШЕСТВУЕТ usage-чанку — не помечаем done:true, чтобы
+			// не было double-done.
+			//
+			// Не-wrapper сценарии когда помечаем done:true:
+			//   1. content + finish_reason (последний токен + finish в одном чанке)
+			//   2. tool_calls + finish_reason
+			//   3. reasoning_content + finish_reason (gemma-4 final reasoning chunk —
+			//      последний reasoning + finish в одном чанке, БЕЗ последующего
+			//      usage-чанка, иначе бы R51.3 R53.1 ошибочно подавил)
+			isWrapper := !hasContent && !hasToolCalls && !hasReasoning
+			if !isWrapper {
+				ollamaChunk["done"] = true
+				ollamaChunk["done_reason"] = finishReason
+			}
 		}
 	}
 
@@ -878,11 +952,21 @@ func translateSSEGenerateToOllama(chunk map[string]interface{}, modelName string
 		if rc, ok := choice["reasoning_content"].(string); ok && rc != "" {
 			reasoningStr = rc
 		}
+		// Round 51.3 (2026-08-20) + Round 53.1 (2026-08-24): см. translateSSEChatToOllama.
+		// Аналогичная защита от double-done: пустой text + finish_reason — это wrapper-чанк
+		// ПЕРЕД usage-чанком. Не помечаем done:true здесь, чтобы translateUsageChunkToOllama
+		// (или writeStreamingSSEDone как fallback) эмитил единственный канонический done.
+		// Исключение: если text непустой + finish_reason в одном чанке (safety net).
 		if finishReason, ok := choice["finish_reason"].(string); ok && finishReason != "" {
-			ollamaChunk["done"] = true
-			ollamaChunk["done_reason"] = finishReason
+			if hasContent {
+				ollamaChunk["done"] = true
+				ollamaChunk["done_reason"] = finishReason
+			}
 		}
 	}
+	// Round 53.1: R51.3 для /api/generate — аналогичная логика: только
+	// non-wrapper (text непустой) chunk с finish_reason помечает done:true.
+	// cppworker шлёт wrapper как {"text":"","finish_reason":"stop"}.
 	// Также проверяем top-level reasoning_content (новый формат cppworker)
 	if rc, ok := chunk["reasoning_content"].(string); ok && rc != "" {
 		reasoningStr = rc

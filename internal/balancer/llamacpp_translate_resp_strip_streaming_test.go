@@ -163,8 +163,12 @@ func TestTranslateSSEChatToOllama_FullGemmaStreamSimulation(t *testing.T) {
 	allContents := []string{}
 	for i, raw := range chunks {
 		r := translateOpenAISSEDataToOllama("/api/chat", []byte(raw), "gemma-4", &seenReasoning, time.Time{})
+		// Round 53.1: chunk 6 (wrapper, empty delta + finish_reason="stop") is
+		// suppressed (returns nil). Допустимо — canonical done придёт из usage чанка
+		// или writeStreamingSSEDone fallback. Для этого теста важна только аккумуляция
+		// content из chunks 1-5.
 		if r == nil {
-			t.Fatalf("chunk %d returned nil", i+1)
+			continue
 		}
 		var parsed map[string]interface{}
 		if err := json.Unmarshal(r, &parsed); err != nil {

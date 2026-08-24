@@ -163,6 +163,69 @@ func TestDecidePreflight_NoOp_CurrentNCtxCovers(t *testing.T) {
 	}
 }
 
+// TestDecidePreflight_NoOp_ParamsMismatchButCtxCovers — Round 53.2
+// (2026-08-24) regression test. До R53.2: если клиент прислал options.kv_cache_type="q4_0",
+// а модель загружена с "f16" → reload, даже если n_ctx покрывает. R53.2:
+// флаговые различия ИГНОРИРУЮТСЯ, решение только по n_ctx.
+//
+// Сценарий: модель загружена с CurrentNCtx=8192, kv_cache_type="f16".
+// Клиент присылает запрос с n_ctx=4096 (fits), но с requested kv_cache_type="q4_0"
+// (mismatch). Post-R53.2: PreflightNoOp — reload НЕ нужен.
+// Pre-R53.2: PreflightReload — избыточный reload модели.
+func TestDecidePreflight_NoOp_ParamsMismatchButCtxCovers(t *testing.T) {
+	meta := &RequestMeta{
+		EstimatedPromptTokens:   1000,
+		RequestedNPredict:       512,
+		RequestedNCtxOverride:   0, // не указан
+		RequestedKvCacheType:    "q4_0", // MISMATCH с current f16
+		RequestedFlashAttnType:  1,      // MISMATCH с current -1
+		RequestedUseMmap:        testBoolPtr(false), // MISMATCH с current true
+	}
+	state := &NCtxBackendState{
+		BackendID:          "cppworker-1",
+		CurrentNCtx:        8192, // 1000 + 512 + 100 + 1 = 1613 < 8192, fits
+		MaxVRAMNCtx:        32768,
+		CurrentKvCacheType: "f16",
+		CurrentFlashAttnType: -1,
+		CurrentUseMmap:     true,
+	}
+	cfg := DefaultNCtxReloadConfig()
+	res := DecidePreflight(meta, state, cfg)
+	if res.Decision != PreflightNoOp {
+		t.Errorf("Round 53.2: expected PreflightNoOp (ctx covers, params mismatch IGNORED), got %v — R53.2 regression",
+			res.Decision)
+	}
+}
+
+// TestDecidePreflight_Reload_NCtxTooSmall_IgnoresParams — Round 53.2 sanity check.
+// Если n_ctx не хватает, reload срабатывает независимо от того, совпадают ли
+// флаги (потому что target n_ctx вычисляется из required, не из params).
+func TestDecidePreflight_Reload_NCtxTooSmall_IgnoresParams(t *testing.T) {
+	meta := &RequestMeta{
+		EstimatedPromptTokens: 100000, // огромный prompt
+		RequestedNPredict:     4096,
+		RequestedKvCacheType:  "f16", // matches current
+		RequestedFlashAttnType: -1,   // matches current
+	}
+	state := &NCtxBackendState{
+		BackendID:            "cppworker-1",
+		CurrentNCtx:          8192, // 100000 + 4096 + 10000 (slack) + 1 > 8192
+		MaxVRAMNCtx:          65536,
+		ModelMaxContext:      262144,
+		CurrentKvCacheType:   "f16",
+		CurrentFlashAttnType: -1,
+	}
+	cfg := DefaultNCtxReloadConfig()
+	res := DecidePreflight(meta, state, cfg)
+	if res.Decision != PreflightReload {
+		t.Errorf("expected PreflightReload (n_ctx too small), got %v", res.Decision)
+	}
+}
+
+// testBoolPtr — local helper для optional *bool в RequestMeta.RequestedUseMmap.
+// Конфликтует с boolPtr из profiles_persistence_test.go, поэтому префикс test.
+func testBoolPtr(b bool) *bool { return &b }
+
 func TestDecidePreflight_Reload_FitsInVRAM(t *testing.T) {
 	meta := &RequestMeta{
 		EstimatedPromptTokens: 50000, // ~200KB символов

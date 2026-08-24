@@ -51,7 +51,12 @@ services:
     # Round 35 (r35): reload→load fallback + idleUnload disabled.
     # Round 35c (r35c): env-tunable polling timeouts (LB_NCTX_PREFLIGHT_*)
     # для моделей с auto-offload (22GB+ Qwen3.6 на 8GB VRAM, 12-15 min load).
-    image: ollama-legion/balancer:cppworker-bundled-r51.4-r48r49r49b  # Round 45 (2026-08-19): fix JSON tag mismatch in llamacpp_metrics_poller.go. Pre-R45, per-model fields used camelCase tags (`contextSize`, `nLayers`, ...) but cppworker returns snake_case (`context_size`, `n_layers`, ...). As a result, LoadedModels[].ContextLength was always 0, breaking preflightNCtxReloadIfNeeded which checks `loaded_n_ctx >= requested_n_ctx`. Every /api/chat triggered a spurious 503 + reload loop. R45 also wires per-model feasible_max_context / gguf_max_context (Round 37 wire was incomplete — struct held them but the loop never copied them out).
+    image: ollama-legion/balancer:cppworker-bundled-r53-r51r52  # Round 53 (2026-08-24): regression audit + fixes.
+    #   R53.1: R51.3 double-done:true fix — wrapper chunk (empty delta+finish_reason)
+    #          suppressed, canonical done:true only from usage chunk / writeStreamingSSEDone
+    #          fallback. Fixes Cline "Did not receive done or success response in stream".
+    #   R53.2: Round 34 flag-based reload REMOVED — n_ctx only (per user request 2026-08-24).
+    #   R53.3: Wire-format compliance tests (9 structural tests for all Ollama API endpoints).
     container_name: ol-bundled-balancer
     restart: unless-stopped
     ports:

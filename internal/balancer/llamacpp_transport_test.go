@@ -3,6 +3,7 @@
 import (
 	"encoding/json"
 	"testing"
+	"time"
 )
 
 // Тесты для translateSSEChatToOllama — проверяем корректность трансляции
@@ -96,8 +97,12 @@ func TestTranslateSSEChatToOllama_RoleOnly(t *testing.T) {
 	}
 }
 
+// TestTranslateSSEChatToOllama_FinishOnly — Round 53.1 regression test.
+// Empty-delta + finish_reason="stop" wrapper chunk (precedes usage chunk in
+// OpenAI streaming) MUST be suppressed (returns nil). Canonical done-чанк
+// is emitted by translateUsageChunkToOllama (when usage follows) or by
+// writeStreamingSSEDone (fallback on [DONE]).
 func TestTranslateSSEChatToOllama_FinishOnly(t *testing.T) {
-	// Финальный чанк: пустая delta + finish_reason="stop"
 	chunk := map[string]interface{}{
 		"choices": []interface{}{
 			map[string]interface{}{
@@ -107,18 +112,8 @@ func TestTranslateSSEChatToOllama_FinishOnly(t *testing.T) {
 		},
 	}
 	got := translateSSEChatToOllama(chunk, "gemma-4", nil)
-	if got == nil {
-		t.Fatal("finish-only chunk must return done marker (NOT nil)")
-	}
-	var obj map[string]interface{}
-	if err := json.Unmarshal(got[:len(got)-1], &obj); err != nil {
-		t.Fatalf("invalid JSON: %v: %s", err, got)
-	}
-	if obj["done"] != true {
-		t.Errorf("expected done=true: %s", got)
-	}
-	if obj["done_reason"] != "stop" {
-		t.Errorf("expected done_reason=stop: %v", obj["done_reason"])
+	if got != nil {
+		t.Errorf("Round 53.1: expected nil (wrapper chunk suppressed), got: %s", got)
 	}
 }
 
@@ -196,6 +191,11 @@ func TestTranslateSSEGenerateToOllama_EmptyText(t *testing.T) {
 	}
 }
 
+// TestTranslateSSEGenerateToOllama_FinishOnly — Round 53.1 regression test.
+// Empty-text + finish_reason="length" wrapper chunk (the OpenAI final chunk
+// for /v1/completions) MUST be suppressed (returns nil) — same reasoning as
+// for /api/chat wrapper. Canonical done-чанк is emitted by translateUsageChunkToOllama
+// (when usage follows) or by writeStreamingSSEDone (fallback on [DONE]).
 func TestTranslateSSEGenerateToOllama_FinishOnly(t *testing.T) {
 	chunk := map[string]interface{}{
 		"choices": []interface{}{
@@ -206,15 +206,8 @@ func TestTranslateSSEGenerateToOllama_FinishOnly(t *testing.T) {
 		},
 	}
 	got := translateSSEGenerateToOllama(chunk, "gemma-4", nil)
-	if got == nil {
-		t.Fatal("finish-only should still emit done marker")
-	}
-	var obj map[string]interface{}
-	if err := json.Unmarshal(got[:len(got)-1], &obj); err != nil {
-		t.Fatalf("invalid JSON: %v: %s", err, got)
-	}
-	if obj["done"] != true {
-		t.Errorf("expected done=true: %s", got)
+	if got != nil {
+		t.Errorf("Round 53.1: expected nil (wrapper chunk suppressed), got %s", string(got))
 	}
 }
 
@@ -289,32 +282,39 @@ func TestIsStreamingFromBody(t *testing.T) {
 }
 
 // TestTranslateSSEChatToOllama_DoneHasModel — регрессионный тест для бага
-// «пустой второй ответ в OpenWebUI»: финальный done-чанк, который отдаёт
-// балансер когда cppworker прислал только `data: [DONE]` без отдельного
-// finish_reason-чанка, ОБЯЗАН содержать `model` и `message.role` — иначе
-// OpenWebUI на втором запросе в той же сессии сбрасывает ассемблирование
-// контента и рендерит пустое сообщение.
+// «пустой второй ответ в OpenWebUI»: канонический финальный done-чанк (тот
+// что с реальными статами eval_count/total_duration), который отдаёт балансер
+// когда cppworker прислал usage-чанк ПОСЛЕ finish_reason-чанка, ОБЯЗАН
+// содержать `model` и `message.role` — иначе OpenWebUI на втором запросе в
+// той же сессии сбрасывает ассемблирование контента и рендерит пустое
+// сообщение.
+//
+// Round 53.1 (2026-08-24) UPDATE: до R53.1 wrapper-чанк (empty delta +
+// finish_reason) был источником done:true (R51.3 fix) — тест ниже проверял
+// что ОН содержит model. Post-R53.1 wrapper подавлен (returns nil), done:true
+// приходит из translateUsageChunkToOllama. Теперь проверяем ИМЕННО usage-чанк
+// (canonical done) на наличие model + message.role.
 func TestTranslateSSEChatToOllama_DoneHasModel(t *testing.T) {
-	// Чанк с явным finish_reason: stop и без content (как присылает OpenAI
-	// при корректном завершении).
+	// Usage-чанк — канонический источник done:true после R53.1.
 	chunk := map[string]interface{}{
-		"choices": []interface{}{
-			map[string]interface{}{
-				"delta":         map[string]interface{}{},
-				"finish_reason": "stop",
-			},
+		"choices": []interface{}{},
+		"usage": map[string]interface{}{
+			"prompt_tokens":     10,
+			"completion_tokens": 5,
+			"total_tokens":      15,
 		},
 	}
-	got := translateSSEChatToOllama(chunk, "gemma-4-E4B-it-Q4_K_M", nil)
+	sseData, _ := json.Marshal(chunk)
+	got := translateOpenAISSEDataToOllama("/api/chat", sseData, "gemma-4-E4B-it-Q4_K_M", nil, time.Time{})
 	if got == nil {
-		t.Fatal("finish-only chunk must NOT return nil (done-marker required)")
+		t.Fatal("usage chunk must NOT return nil (canonical done-marker required)")
 	}
 	var obj map[string]interface{}
 	if err := json.Unmarshal(got[:len(got)-1], &obj); err != nil {
 		t.Fatalf("invalid JSON: %v: %s", err, got)
 	}
 	if obj["done"] != true {
-		t.Errorf("expected done=true, got: %s", got)
+		t.Errorf("expected done=true on usage chunk, got: %s", got)
 	}
 	if obj["model"] != "gemma-4-E4B-it-Q4_K_M" {
 		t.Errorf("expected model field preserved, got: %s", got)
@@ -329,24 +329,27 @@ func TestTranslateSSEChatToOllama_DoneHasModel(t *testing.T) {
 }
 
 // TestTranslateSSEGenerateToOllama_DoneHasModel — то же для /api/generate.
+// Post-R53.1: канонический done — usage-чанк.
 func TestTranslateSSEGenerateToOllama_DoneHasModel(t *testing.T) {
 	chunk := map[string]interface{}{
-		"choices": []interface{}{
-			map[string]interface{}{
-				"finish_reason": "stop",
-			},
+		"choices": []interface{}{},
+		"usage": map[string]interface{}{
+			"prompt_tokens":     10,
+			"completion_tokens": 5,
+			"total_tokens":      15,
 		},
 	}
-	got := translateSSEGenerateToOllama(chunk, "gemma-4-E4B-it-Q4_K_M", nil)
+	sseData, _ := json.Marshal(chunk)
+	got := translateOpenAISSEDataToOllama("/api/generate", sseData, "gemma-4-E4B-it-Q4_K_M", nil, time.Time{})
 	if got == nil {
-		t.Fatal("finish-only chunk must NOT return nil")
+		t.Fatal("usage chunk must NOT return nil")
 	}
 	var obj map[string]interface{}
 	if err := json.Unmarshal(got[:len(got)-1], &obj); err != nil {
 		t.Fatalf("invalid JSON: %v: %s", err, got)
 	}
 	if obj["done"] != true {
-		t.Errorf("expected done=true, got: %s", got)
+		t.Errorf("expected done=true on usage chunk, got: %s", got)
 	}
 	if obj["model"] != "gemma-4-E4B-it-Q4_K_M" {
 		t.Errorf("expected model field preserved, got: %s", got)
@@ -358,8 +361,12 @@ func TestTranslateSSEGenerateToOllama_DoneHasModel(t *testing.T) {
 
 // TestTranslateSSEChatToOllama_FullSequenceDoneHasModel —
 // полный сценарий: chat со множеством токенов и финальным done.
-// Проверяем, что ВСЕ чанки содержат `model` — раньше первый done-чанк
-// иногда терял `model`, и это ломало OpenWebUI на 2-м запросе.
+// Проверяем, что все ЭМИТИРОВАННЫЕ чанки содержат `model` — раньше первый
+// done-чанк иногда терял `model`, и это ломало OpenWebUI на 2-м запросе.
+//
+// Round 53.1 UPDATE: wrapper-чанк (empty delta + finish_reason) подавлен
+// (returns nil). Тест проверяет что для каждого эмитированного чанка model
+// поле присутствует и равно ожидаемому значению.
 func TestTranslateSSEChatToOllama_FullSequenceDoneHasModel(t *testing.T) {
 	chunks := []map[string]interface{}{
 		{"choices": []interface{}{map[string]interface{}{"delta": map[string]interface{}{"role": "assistant"}}}},
@@ -367,11 +374,14 @@ func TestTranslateSSEChatToOllama_FullSequenceDoneHasModel(t *testing.T) {
 		{"choices": []interface{}{map[string]interface{}{"delta": map[string]interface{}{"content": " мир"}}}},
 		{"choices": []interface{}{map[string]interface{}{"delta": map[string]interface{}{}, "finish_reason": "stop"}}},
 	}
+	emittedCount := 0
 	for i, c := range chunks {
 		b := translateSSEChatToOllama(c, "test-model", nil)
 		if b == nil {
-			t.Fatalf("chunk %d: returned nil (non-content chunks must be skipped, but role-only and done MUST be emitted)", i)
+			// R53.1: wrapper chunk (i=3) returns nil. Допустимо.
+			continue
 		}
+		emittedCount++
 		var obj map[string]interface{}
 		if err := json.Unmarshal(b[:len(b)-1], &obj); err != nil {
 			t.Fatalf("chunk %d: invalid JSON: %v: %s", i, err, b)
@@ -379,6 +389,10 @@ func TestTranslateSSEChatToOllama_FullSequenceDoneHasModel(t *testing.T) {
 		if obj["model"] != "test-model" {
 			t.Errorf("chunk %d: missing model field, got: %s", i, b)
 		}
+	}
+	// Должны быть эмитированы: role-only, content, content. Wrapper (finish_reason) подавлен.
+	if emittedCount != 3 {
+		t.Errorf("expected 3 emitted chunks (role + 2 content), got %d (R53.1: wrapper should be suppressed)", emittedCount)
 	}
 }
 

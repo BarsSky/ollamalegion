@@ -15,7 +15,7 @@ func TestWriteStreamingSSEDone_SSE_Passthrough(t *testing.T) {
 	w := &flushingResponseWriter{ResponseWriter: rec}
 
 	// tool_calls нет
-	err := writeStreamingSSEDone(w, "/v1/chat/completions", "gemma-4", nil, "Hello", "", true)
+	err := writeStreamingSSEDone(w, "/v1/chat/completions", "gemma-4", nil, "Hello", "", true, false)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -30,7 +30,7 @@ func TestWriteStreamingSSEDone_SSE_Passthrough(t *testing.T) {
 	toolAccum := map[int]*accumulatedToolCall{
 		0: {id: "call_1", function: map[string]interface{}{"name": "search", "arguments": "{}"}},
 	}
-	err = writeStreamingSSEDone(w2, "/v1/chat/completions", "gemma-4", toolAccum, "Hello", "", true)
+	err = writeStreamingSSEDone(w2, "/v1/chat/completions", "gemma-4", toolAccum, "Hello", "", true, false)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -49,7 +49,7 @@ func TestWriteStreamingSSEDone_Chat_NoToolCalls_NoDuplicate(t *testing.T) {
 	rec := httptest.NewRecorder()
 	w := &flushingResponseWriter{ResponseWriter: rec}
 
-	err := writeStreamingSSEDone(w, "/api/chat", "gemma-4", nil, "Hello from llama.cpp!", "", true)
+	err := writeStreamingSSEDone(w, "/api/chat", "gemma-4", nil, "Hello from llama.cpp!", "", true, true /* usageChunkSeen → skip */)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -73,7 +73,7 @@ func TestWriteStreamingSSEDone_Chat_WithToolCalls(t *testing.T) {
 	toolAccum := map[int]*accumulatedToolCall{
 		0: {id: "call_1", function: map[string]interface{}{"name": "search", "arguments": "{\"q\":\"test\"}"}},
 	}
-	err := writeStreamingSSEDone(w, "/api/chat", "gemma-4", toolAccum, "Hello", "World", false)
+	err := writeStreamingSSEDone(w, "/api/chat", "gemma-4", toolAccum, "Hello", "World", false, false)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -107,7 +107,7 @@ func TestWriteStreamingSSEDone_Generate_NoToolCalls_NoDuplicate(t *testing.T) {
 	rec := httptest.NewRecorder()
 	w := &flushingResponseWriter{ResponseWriter: rec}
 
-	err := writeStreamingSSEDone(w, "/api/generate", "gemma-4", nil, "Hello from llama.cpp!", "", true)
+	err := writeStreamingSSEDone(w, "/api/generate", "gemma-4", nil, "Hello from llama.cpp!", "", true, true /* usageChunkSeen → skip */)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -126,7 +126,7 @@ func TestWriteStreamingSSEDone_Generate_WithToolCalls(t *testing.T) {
 	toolAccum := map[int]*accumulatedToolCall{
 		0: {id: "call_1", function: map[string]interface{}{"name": "search", "arguments": "{}"}},
 	}
-	err := writeStreamingSSEDone(w, "/api/generate", "gemma-4", toolAccum, "Hello", "World", false)
+	err := writeStreamingSSEDone(w, "/api/generate", "gemma-4", toolAccum, "Hello", "World", false, false)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -155,7 +155,7 @@ func TestWriteStreamingSSEDone_Chat_UpstreamContentIgnored(t *testing.T) {
 
 	// upstreamContent = "Hello from upstream" — НЕ должно попасть в output
 	err := writeStreamingSSEDone(w, "/api/chat", "gemma-4", nil,
-		"accumulated", "Hello from upstream", true)
+		"accumulated", "Hello from upstream", true, true /* usageChunkSeen → skip */)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}

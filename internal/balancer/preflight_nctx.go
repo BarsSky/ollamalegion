@@ -412,32 +412,31 @@ func DecidePreflight(meta *RequestMeta, state *NCtxBackendState, cfg NCtxReloadC
 		rounded = target
 	}
 
-	// Round 34 (2026-08-12) Phase 2: profile mismatch detection.
-	// User's expectation: "если клиент присылает запрос с окном большим или
-	// с включением отличных флагов от тех с которыми загружена модель то вот
-	// теперь необходимо эту модель выгрузить если она загружена и загрузить
-	// с новыми параметрами". Если client прислал options.kv_cache_type="q4_0",
-	// а модель загружена с "f16" — reload на нужный params (не только n_ctx).
-	// Если n_ctx уже fits (required <= currentNCtx), но params различаются —
-	// всё равно reload.
-	// NB: target n_ctx вычислен выше для n_ctx mismatch; params mismatch
-	// просто форсирует Reload с тем же target (current n_ctx не меняется).
-	if currentFits := state.CurrentNCtx > 0 && required <= state.CurrentNCtx; currentFits {
-		if !paramsMatch(state, meta) {
-			logger.Get().Infow("preflight: params mismatch with currently loaded model, triggering reload",
-				"backend_id", state.BackendID,
-				"current_kv_cache_type", state.CurrentKvCacheType,
-				"requested_kv_cache_type", meta.RequestedKvCacheType,
-				"current_flash_attn_type", state.CurrentFlashAttnType,
-				"requested_flash_attn_type", meta.RequestedFlashAttnType,
-				"current_use_mmap", state.CurrentUseMmap,
-				"requested_use_mmap", reqStr(meta.RequestedUseMmap),
-				"current_n_ctx", state.CurrentNCtx,
-			)
-			// Fall through to Reload decision (params mismatch forces reload).
-		} else {
-			return &PreflightResult{Decision: PreflightNoOp}
-		}
+	// Round 53.2 (2026-08-24): Round 34 (2026-08-12) Phase 2 flag-based reload
+	// REMOVED. Решение о reload теперь опирается ТОЛЬКО на n_ctx (контекстное
+	// окно), а НЕ на флаги (kv_cache_type, flash_attn, use_mmap).
+	//
+	// Pre-R53.2 (Round 34 follow-up): если client прислал options.kv_cache_type="q4_0",
+	// а модель загружена с "f16" — balancer выгружал модель и перезагружал
+	// с новыми params, даже если n_ctx уже подходил. Это ИЗБЫТОЧНО:
+	//   - Клиент (Cline/OpenWebUI) часто не указывает эти флаги явно — get
+	//     defaults от backend.
+	//   - Модель с kv_cache=f16 корректно обслуживает запросы с options.kv_cache=q4_0
+	//     (настройка KV-cache применяется к запросу, не к загруженной модели).
+	//   - Reload занимает 5-15 сек и блокирует другие запросы.
+	//   - Параллелизм (n_parallel) и так встроен в backend — клиенту не нужно
+	//     это контролировать.
+	//
+	// User feedback (2026-08-24): "определять в каком состоянии надо перезагружать
+	// модель еще опиралось на наличие флагов, то это избыточно сейчас требуется
+	// оставить решение по перезагрузки модели только по контекстному окну".
+	//
+	// Post-R53.2: n_ctx mismatch (required > currentNCtx) → reload, иначе NoOp.
+	// Клиент может менять флаги в options — backend обрабатывает per-request.
+
+	// Если n_ctx уже fits (required <= currentNCtx) — NoOp, перезагрузка НЕ нужна.
+	if state.CurrentNCtx > 0 && required <= state.CurrentNCtx {
+		return &PreflightResult{Decision: PreflightNoOp}
 	}
 
 	return &PreflightResult{
@@ -445,14 +444,6 @@ func DecidePreflight(meta *RequestMeta, state *NCtxBackendState, cfg NCtxReloadC
 		TargetNCtx: rounded,
 	}
 }
-
-// paramsMatch — сравнивает текущие параметры модели с запрошенными клиентом.
-//
-// Round 34 (2026-08-12) Phase 2: profile mismatch detection.
-//
-//   - kv_cache_type: пустая строка = unknown → считаем совпадающим (не reload'им
-//     на основе неизвестного current). Непустая requested vs непустая current
-//     → сравниваем строки.
 
 // preflightDecisionFromCfg — выбирает между Reload и AsyncReload
 // в зависимости от конфигурации.
@@ -466,42 +457,18 @@ func preflightDecisionFromCfg(cfg NCtxReloadConfig) PreflightDecision {
 	}
 	return PreflightReload
 }
-//   - flash_attn: 0 = не задано. -1=auto, 0=off, 1=on. Сравниваем числа.
-//   - use_mmap: nil = не задано. Сравниваем bool'ы.
+
+// paramsMatch — Round 34 (2026-08-12) Phase 2 helper для флаговой
+// profile mismatch detection. УДАЛЁН в Round 53.2 (2026-08-24) — флаговая
+// логика признана избыточной. Reload теперь ТОЛЬКО по n_ctx.
 //
-// Возвращает true если все явно заданные поля совпадают (либо current неизвестно
-// и мы не можем судить).
-func paramsMatch(state *NCtxBackendState, meta *RequestMeta) bool {
-	// kv_cache_type: оба пустые → match. Один задан, другой нет → mismatch.
-	if meta.RequestedKvCacheType != "" {
-		if state.CurrentKvCacheType == "" {
-			// current unknown, не можем судить — assume match (avoid unnecessary reload)
-			// (cppworker ещё не сообщил callback, или preflight пришёл до метрик)
-		} else if meta.RequestedKvCacheType != state.CurrentKvCacheType {
-			return false
-		}
-	}
-	// flash_attn: 0 = не задано (default в Go). Реальные значения -1, 0, 1.
-	// Проверяем только если client явно прислал.
-	if meta.RequestedFlashAttnType != 0 {
-		if state.CurrentFlashAttnType == 0 {
-			// current unknown, assume match
-		} else if meta.RequestedFlashAttnType != state.CurrentFlashAttnType {
-			return false
-		}
-	}
-	// use_mmap: nil = не задано.
-	if meta.RequestedUseMmap != nil {
-		// current may be true OR false (bool default в Go = false).
-		// Не можем отличить "false реальное" от "unknown" по default. Полагаемся
-		// на то, что cppworker callback'а (Round 34 Phase 3) установит CurrentUseMmap
-		// явно через UpdateLlamaCppModelLoaded(..., useMmap).
-		if *meta.RequestedUseMmap != state.CurrentUseMmap {
-			return false
-		}
-	}
-	return true
-}
+// Поля остались в RequestMeta (RequestedKvCacheType, RequestedFlashAttnType,
+// RequestedUseMmap) для совместимости с parser — они парсятся из request body
+// но НЕ влияют на решение о reload. Backend обрабатывает их per-request
+// (cppworker применяет kv_cache_type/flash_attn к контексту при inference).
+//
+// State поля (CurrentKvCacheType, CurrentFlashAttnType, CurrentUseMmap) тоже
+// остаются — они нужны для отображения в WebUI (/api/v1/backends.loadedModels).
 
 // reqStr — formatter для optional bool в логах.
 func reqStr(b *bool) string {

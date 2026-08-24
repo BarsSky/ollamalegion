@@ -227,7 +227,13 @@ func TestHasNonEmptyChoices(t *testing.T) {
 		chunk    map[string]interface{}
 		expected bool
 	}{
-		{"non-empty", map[string]interface{}{"choices": []interface{}{map[string]interface{}{}}}, true},
+		// Round 53.1: "non-empty" теперь означает "с реальным контентом" (delta с
+		// content/reasoning/tool_calls или text для /v1/completions). Голый
+		// {"choices":[{}]} больше не считается non-empty — это usage chunk marker.
+		{"empty choice object", map[string]interface{}{"choices": []interface{}{map[string]interface{}{}}}, false},
+		{"with delta content", map[string]interface{}{"choices": []interface{}{map[string]interface{}{"delta": map[string]interface{}{"content": "hi"}}}}, true},
+		{"with text (completions)", map[string]interface{}{"choices": []interface{}{map[string]interface{}{"text": "hi"}}}, true},
+		{"with finish_reason only (usage chunk)", map[string]interface{}{"choices": []interface{}{map[string]interface{}{"finish_reason": "stop"}}}, false},
 		{"empty array", map[string]interface{}{"choices": []interface{}{}}, false},
 		{"missing key", map[string]interface{}{}, false},
 		{"wrong type", map[string]interface{}{"choices": "not-array"}, false},

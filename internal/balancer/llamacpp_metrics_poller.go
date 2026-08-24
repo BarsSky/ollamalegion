@@ -291,10 +291,13 @@ func (p *llamaCppMetricsPoller) pollBackend(b backendInfo) {
 			HeadDimV:     m.HeadDimV,
 			MaxContext:   m.GGUFContextLength,
 			LoadedAt:     m.LoadedAt,
-			// Round 34 (2026-08-12) Phase 2: runtime params из /api/models.
-			// Используются preflight_nctx.go для paramsMatch() — если клиент
-			// запрашивает другой kv_cache_type/flash_attn/use_mmap, чем
-			// текущая загруженная модель, preflight trigger'ит reload.
+			// Round 34 (2026-08-12) Phase 2 + Round 53.2 (2026-08-24):
+			// runtime params из /api/models. Pre-R53.2 использовались
+			// preflight_nctx.go::paramsMatch() для trigger reload при флаговом
+			// mismatch. R53.2 убрал флаговую логику — теперь ТОЛЬКО по n_ctx.
+			// Поля остаются в state для отображения в WebUI (/api/v1/backends.loadedModels)
+			// и для совместимости с parser (RequestedKvCacheType и т.д. парсятся,
+			// но не влияют на reload decision).
 			KvCacheType:   m.KvCacheType,
 			FlashAttnType: m.FlashAttnType,
 			UseMmap:       m.UseMmap,

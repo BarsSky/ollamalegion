@@ -51,18 +51,15 @@ services:
     # Round 35 (r35): reload→load fallback + idleUnload disabled.
     # Round 35c (r35c): env-tunable polling timeouts (LB_NCTX_PREFLIGHT_*)
     # для моделей с auto-offload (22GB+ Qwen3.6 на 8GB VRAM, 12-15 min load).
-    image: ollama-legion/balancer:cppworker-bundled-r53.6-r53  # Round 53.6 (2026-08-24): HOTFIX streamTimeout abort.
-    #   R53.6: SSE read loop checks reqCtx.Done() (streamTimeout), not just r.Context().
-    #          When streamTimeout fires (default 600s, override via
-    #          LB_LLAMACPP_STREAM_TIMEOUT_SEC), loop closes upstream body and
-    #          returns error → R53.5 writeStreamErrorChunk emits done:true
-    #          to client. Prevents "Did not receive done" when cppworker hangs
-    #          on long contexts (e.g., Qwen3 q4km + 16K prompt stalls at 0 tokens).
+    image: ollama-legion/balancer:cppworker-bundled-r54.1-r53  # Round 54.1 (2026-08-24): AutoTune sub-optimal detection.
+    #   R54.1: balancer detects sub-optimal state (q4_0 KV on small model, over-allocated
+    #          n_ctx, etc.) and exposes "autoTune" report in /api/v1/backends response.
+    #          Foundation for autonomous tuning (R54.4). Manual control preserved:
+    #          per-model profile, env overrides (LB_LLAMACPP_STREAM_TIMEOUT_SEC).
+    #   R53.6: streamTimeout abort in SSE loop.
     #   R53.5: when proxyRequest* fails mid-stream, emit final done:true chunk.
     #   R53.4: defer recover() for cascading reload panic.
     #   R53.1: R51.3 double-done fix.
-    #   R53.2: Round 34 flag-based reload REMOVED.
-    #   R53.3: Wire-format compliance tests.
     container_name: ol-bundled-balancer
     restart: unless-stopped
     ports:

@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"ollama-loadbalancer/internal/balancer"
 	"ollama-loadbalancer/pkg/logger"
 	"ollama-loadbalancer/pkg/types"
 )
@@ -277,6 +278,29 @@ func (s *Server) listBackends(w http.ResponseWriter, r *http.Request) {
 					}
 					backendData["loadedModels"] = loaded
 					backendData["loadedModelCount"] = len(loaded)
+
+					// Round 54.1 (2026-08-24): AutoTune report — рекомендации
+					// по оптимизации загруженных моделей (KV cache, num_ctx, layers).
+					// WebUI может показать badge "sub-optimal" и предложить fix.
+					var freeVRAM, freeRAM, totalVRAM uint64
+					if m := metricsMap[backend.ID]; m != nil {
+						totalVRAM = m.GPU.MemoryTotal
+						if m.GPU.MemoryFree > 0 {
+							freeVRAM = m.GPU.MemoryFree
+						} else if m.GPU.MemoryTotal > 0 {
+							// estimate: total - used
+							freeVRAM = m.GPU.MemoryTotal
+							if used := m.GPU.MemoryUsed; used < freeVRAM {
+								freeVRAM -= used
+							}
+						}
+						if m.System.MemoryFree > 0 {
+							freeRAM = m.System.MemoryFree
+						}
+					}
+					autoTuneReport := balancer.AnalyzeBackend(
+						backend.ID, string(backend.Type), loaded, freeVRAM, freeRAM, totalVRAM)
+					backendData["autoTune"] = autoTuneReport
 				} else {
 					backendData["loadingModels"] = []types.LlamaCppModel{}
 					backendData["loadingModelCount"] = 0

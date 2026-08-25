@@ -31,6 +31,15 @@ func TestIsConnectionLevelError(t *testing.T) {
 			err:  errors.New(`dial tcp: lookup nonexistent.example.com: no such host`),
 			want: true,
 		},
+		// R55.11 (2026-08-25): Docker embedded DNS hiccup — "server misbehaving"
+		// returned by 127.0.0.11:53 during container recreate. Previously fell
+		// through to error_type=unknown and skipped retry. CLine-usecase on
+		// offline A10 machine.
+		{
+			name: "dns_server_misbehaving",
+			err:  errors.New(`Post "http://cppworker-gpu:18092/v1/chat/completions": dial tcp: lookup cppworker-gpu on 127.0.0.11:53: server misbehaving`),
+			want: true,
+		},
 		{
 			name: "broken_pipe",
 			err:  errors.New(`write tcp 127.0.0.1:18092: write: broken pipe`),
@@ -99,6 +108,18 @@ func TestDetermineErrorType_Compatibility(t *testing.T) {
 	got := determineErrorType(err, context.Background())
 	if got != "connection_refused" {
 		t.Errorf("determineErrorType(connection refused) = %q, want connection_refused", got)
+	}
+}
+
+// R55.11 (2026-08-25): determineErrorType must classify "server misbehaving"
+// as a connection-level DNS error so that llama.cpp_transport triggers the
+// 3-retry-with-backoff path. Otherwise the request fails immediately
+// (duration_ms≈1) with error_type=unknown, breaking transient Docker DNS hiccups.
+func TestDetermineErrorType_DNSServerMisbehaving(t *testing.T) {
+	err := errors.New(`Post "http://cppworker-gpu:18092/v1/chat/completions": dial tcp: lookup cppworker-gpu on 127.0.0.11:53: server misbehaving`)
+	got := determineErrorType(err, context.Background())
+	if got != "dns_server_misbehaving" {
+		t.Errorf("determineErrorType(server misbehaving) = %q, want dns_server_misbehaving", got)
 	}
 }
 

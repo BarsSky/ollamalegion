@@ -40,6 +40,13 @@ func determineErrorType(err error, reqCtx context.Context) string {
 	if strings.Contains(errDetail, "no such host") {
 		return "dns_resolution_failed"
 	}
+	// R55.11 (2026-08-25): "server misbehaving" — Docker embedded DNS
+	// (127.0.0.11:53) returned a malformed/truncated response. Транзиентная
+	// DNS-ошибка, обычно во время recreate / restart контейнера. Без
+	// этого ветка падает в "unknown" и запрос НЕ ретраится (duration_ms≈1).
+	if strings.Contains(errDetail, "server misbehaving") {
+		return "dns_server_misbehaving"
+	}
 	if strings.Contains(errDetail, "timeout") || strings.Contains(errDetail, "deadline") {
 		return "timeout"
 	}
@@ -60,11 +67,17 @@ func determineErrorType(err error, reqCtx context.Context) string {
 //   - connection refused (cppworker port not yet listening)
 //   - connection reset by peer (cppworker closed keep-alive during restart)
 //   - no such host (DNS не резолвится — редко)
+//   - server misbehaving (Docker embedded DNS 127.0.0.11:53 hiccup,
+//     R55.11 2026-08-25) — транзиентный DNS failure во время recreate
 //   - broken pipe (remote closed during write)
 //
 // Round 29 (2026-08-09): добавлены Windows-specific error markers
 //   - "connectex" (Windows эквивалент connection refused)
 //   - "wsarecv" (Windows эквивалент connection reset)
+//
+// R55.11 (2026-08-25): добавлен "server misbehaving" — DNS-ошибка от Docker
+// embedded DNS. Без неё request падает с error_type=unknown и duration_ms≈1
+// без retry (CLine-юзкейс на оффлайн-машине с A10 2026-08-25).
 //
 // NOT connection-level (HTTP errors handled by other paths):
 //   - EOF (handled by EOF retry/EOF event publisher)
@@ -78,6 +91,7 @@ func isConnectionLevelError(err error) bool {
 	return strings.Contains(s, "connection refused") ||
 		strings.Contains(s, "connection reset") ||
 		strings.Contains(s, "no such host") ||
+		strings.Contains(s, "server misbehaving") || // R55.11
 		strings.Contains(s, "broken pipe") ||
 		// Windows-specific markers (Round 29, 2026-08-09)
 		strings.Contains(s, "connectex") || // connection refused on Windows

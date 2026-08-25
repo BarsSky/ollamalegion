@@ -215,6 +215,13 @@ window.I18N_RU = {
   "settings.theme": "Тема",
   "settings.theme_dark": "Темная",
   "settings.theme_light": "Светлая",
+  // R55.10 (2026-08-25): 5 новых меток тем (Linear, NVIDIA, Vercel, Sentry, Mint).
+  "settings.theme_linear": "Linear",
+  "settings.theme_nvidia": "NVIDIA",
+  "settings.theme_vercel": "Vercel",
+  "settings.theme_sentry": "Sentry",
+  "settings.theme_mint": "Mint",
+  "settings.theme_picker_desc": "Выберите цветовую схему. Применяется мгновенно (без сохранения), синхронизируется с кнопкой в header и горячей клавишей Ctrl+Shift+T.",
   "settings.theme_toggle_title": "Переключить тему (Ctrl+Shift+T)",
 
   // Уведомления

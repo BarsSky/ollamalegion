@@ -527,3 +527,85 @@ body *::after {
 *::-webkit-scrollbar-corner {
     background: transparent;
 }
+
+/* ============================================================
+   R55.10 (2026-08-25): Theme picker — 7 swatch buttons в Settings.
+   Каждый swatch превьюит bg + accent своей темы через inline
+   --swatch-bg / --swatch-accent (выставлены прямо в HTML на
+   .theme-swatch-preview, чтобы цвета не зависели от текущей
+   активной темы). Active state подсвечивается --accent рамкой
+   + --accent-soft glow (Phase 7 color-mix). На mobile
+   (max-width: 720px) сетка переходит с 7 columns на 4
+   (остаётся 3 строки: 4+3).
+   ============================================================ */
+.theme-picker {
+    display: grid;
+    grid-template-columns: repeat(7, 1fr);
+    gap: 8px;
+    margin-top: 6px;
+    /* R55.10: min-width 0 на grid child иначе 7 columns
+       переполняют узкий form-group (overflow). */
+    min-width: 0;
+}
+.theme-swatch {
+    cursor: pointer;
+    background: none;
+    border: 2px solid var(--border);
+    border-radius: 8px;
+    padding: 4px;
+    min-width: 0;
+    transition: border-color var(--transition-fast),
+                transform var(--transition-fast),
+                box-shadow var(--transition-fast);
+    font-family: inherit;
+    color: var(--text-secondary);
+}
+.theme-swatch:hover {
+    transform: translateY(-1px);
+    border-color: var(--border-strong);
+}
+.theme-swatch:focus-visible {
+    outline: none;
+    border-color: var(--accent);
+    box-shadow: 0 0 0 3px var(--accent-soft);
+}
+.theme-swatch.active {
+    border-color: var(--accent);
+    box-shadow: 0 0 0 3px var(--accent-soft);
+}
+.theme-swatch-preview {
+    aspect-ratio: 4 / 3;
+    border-radius: 5px;
+    overflow: hidden;
+    display: flex;
+    flex-direction: column;
+    border: 1px solid rgba(0, 0, 0, 0.12);
+}
+.theme-swatch-bg {
+    flex: 1;
+    background: var(--swatch-bg);
+}
+.theme-swatch-accent {
+    height: 5px;
+    background: var(--swatch-accent);
+}
+.theme-swatch-label {
+    text-align: center;
+    font-size: 11px;
+    margin-top: 4px;
+    color: var(--text-secondary);
+    line-height: 1.2;
+    /* R55.10: ellipsis если label шире swatch (на узких viewport). */
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+.theme-swatch.active .theme-swatch-label {
+    color: var(--text-primary);
+    font-weight: 600;
+}
+@media (max-width: 720px) {
+    .theme-picker {
+        grid-template-columns: repeat(4, 1fr);
+    }
+}

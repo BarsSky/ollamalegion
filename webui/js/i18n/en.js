@@ -231,6 +231,13 @@ window.I18N_EN = {
   "settings.theme": "Theme",
   "settings.theme_dark": "Dark",
   "settings.theme_light": "Light",
+  // R55.10 (2026-08-25): 5 new theme labels (Linear, NVIDIA, Vercel, Sentry, Mint).
+  "settings.theme_linear": "Linear",
+  "settings.theme_nvidia": "NVIDIA",
+  "settings.theme_vercel": "Vercel",
+  "settings.theme_sentry": "Sentry",
+  "settings.theme_mint": "Mint",
+  "settings.theme_picker_desc": "Pick a color scheme. Applies instantly (no Save), syncs with the header button and the Ctrl+Shift+T shortcut.",
   "settings.theme_toggle_title": "Toggle theme (Ctrl+Shift+T)",
 
   // Notifications

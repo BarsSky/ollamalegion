@@ -49,7 +49,7 @@
     <link rel="icon" type="image/png" sizes="16x16" href="favicon-16x16.png">
     <link rel="shortcut icon" href="favicon.ico">
     <link rel="stylesheet" href="css/font-awesome.min.css?v=11">
-    <link rel="stylesheet" href="css/themes.css?v=11">
+    <link rel="stylesheet" href="css/themes.css?v=12">
     <link rel="stylesheet" href="css/base.css?v=11">
     <link rel="stylesheet" href="css/icons.css?v=11">
     <link rel="stylesheet" href="css/components.css?v=11">
@@ -840,6 +840,70 @@
                                         <input type="checkbox" id="predictionFiltering" checked>
                                         <span class="toggle-slider"></span>
                                     </label>
+                                </div>
+                                <!-- R55.10 (2026-08-25): Theme picker — 7 swatch buttons (dark, light,
+                                     linear, nvidia, vercel, sentry, mint). Каждый swatch превьюит
+                                     bg + accent своей темы через inline --swatch-bg / --swatch-accent.
+                                     Клик сразу применяет тему (без Save) — синхронизирует header
+                                     toggle button через window.ollamalegion_switchTheme (выставлен
+                                     в app.js initTheme). Active state синхронизируется через
+                                     существующий 'theme:changed' event. -->
+                                <div class="form-group">
+                                    <label data-i18n="settings.theme">Theme</label>
+                                    <span class="tooltip-trigger">?<span class="tooltip-content" data-i18n="settings.theme_picker_desc">
+                                        Выберите цветовую схему. Применяется мгновенно (без сохранения), синхронизируется с кнопкой в header и горячей клавишей Ctrl+Shift+T.
+                                    </span></span>
+                                    <div class="theme-picker" id="themePicker" role="radiogroup" aria-label="Theme picker">
+                                        <button type="button" class="theme-swatch" data-theme="dark" role="radio" aria-checked="false" title="Dark">
+                                            <div class="theme-swatch-preview" style="--swatch-bg:#0f0f23;--swatch-accent:#4a9eff">
+                                                <div class="theme-swatch-bg"></div>
+                                                <div class="theme-swatch-accent"></div>
+                                            </div>
+                                            <div class="theme-swatch-label" data-i18n="settings.theme_dark">Dark</div>
+                                        </button>
+                                        <button type="button" class="theme-swatch" data-theme="light" role="radio" aria-checked="false" title="Light">
+                                            <div class="theme-swatch-preview" style="--swatch-bg:#f5f6fa;--swatch-accent:#2563eb">
+                                                <div class="theme-swatch-bg"></div>
+                                                <div class="theme-swatch-accent"></div>
+                                            </div>
+                                            <div class="theme-swatch-label" data-i18n="settings.theme_light">Light</div>
+                                        </button>
+                                        <button type="button" class="theme-swatch" data-theme="linear" role="radio" aria-checked="false" title="Linear">
+                                            <div class="theme-swatch-preview" style="--swatch-bg:#08090a;--swatch-accent:#5e6ad2">
+                                                <div class="theme-swatch-bg"></div>
+                                                <div class="theme-swatch-accent"></div>
+                                            </div>
+                                            <div class="theme-swatch-label" data-i18n="settings.theme_linear">Linear</div>
+                                        </button>
+                                        <button type="button" class="theme-swatch" data-theme="nvidia" role="radio" aria-checked="false" title="NVIDIA">
+                                            <div class="theme-swatch-preview" style="--swatch-bg:#0f0f23;--swatch-accent:#76b900">
+                                                <div class="theme-swatch-bg"></div>
+                                                <div class="theme-swatch-accent"></div>
+                                            </div>
+                                            <div class="theme-swatch-label" data-i18n="settings.theme_nvidia">NVIDIA</div>
+                                        </button>
+                                        <button type="button" class="theme-swatch" data-theme="vercel" role="radio" aria-checked="false" title="Vercel">
+                                            <div class="theme-swatch-preview" style="--swatch-bg:#000000;--swatch-accent:#fafafa">
+                                                <div class="theme-swatch-bg"></div>
+                                                <div class="theme-swatch-accent"></div>
+                                            </div>
+                                            <div class="theme-swatch-label" data-i18n="settings.theme_vercel">Vercel</div>
+                                        </button>
+                                        <button type="button" class="theme-swatch" data-theme="sentry" role="radio" aria-checked="false" title="Sentry">
+                                            <div class="theme-swatch-preview" style="--swatch-bg:#1f1633;--swatch-accent:#c2ef4e">
+                                                <div class="theme-swatch-bg"></div>
+                                                <div class="theme-swatch-accent"></div>
+                                            </div>
+                                            <div class="theme-swatch-label" data-i18n="settings.theme_sentry">Sentry</div>
+                                        </button>
+                                        <button type="button" class="theme-swatch" data-theme="mint" role="radio" aria-checked="false" title="Mint">
+                                            <div class="theme-swatch-preview" style="--swatch-bg:#f5f7f6;--swatch-accent:#10b981">
+                                                <div class="theme-swatch-bg"></div>
+                                                <div class="theme-swatch-accent"></div>
+                                            </div>
+                                            <div class="theme-swatch-label" data-i18n="settings.theme_mint">Mint</div>
+                                        </button>
+                                    </div>
                                 </div>
                             </div>
                         </div>

@@ -515,6 +515,67 @@
         syncBackendEngineCards(currentType);
     }
 
+    // ---- Theme Picker (R55.10) ----
+
+    /**
+     * R55.10 (2026-08-25): Theme picker — 7 swatch buttons в Settings → General.
+     *
+     * Поведение:
+     * - Клик по swatch → window.ollamalegion_switchTheme(theme) (выставлен
+     *   в app.js initTheme). Это та же функция, что используется header
+     *   toggle button и Ctrl+Shift+T, поэтому header иконка
+     *   автоматически синхронизируется через updateThemeToggleIcon внутри.
+     * - Active state (рамка + glow) подсвечивается .active классом.
+     * - Слушаем window 'theme:changed' event (broadcast из switchTheme)
+     *   чтобы подсветка следовала за сменой темы из ЛЮБОГО источника
+     *   (header toggle, keyboard shortcut, этот picker).
+     *
+     * Не дублируем setAttribute / localStorage / icon update — идём
+     * через общий код-path. R55.9 validThemes list в index.html уже
+     * включает все 7 тем, так что FOUC-guard на reload не откатит выбор.
+     */
+    function setupThemePicker() {
+        var picker = document.getElementById('themePicker');
+        if (!picker) return;
+        var swatches = picker.querySelectorAll('.theme-swatch');
+
+        function setActive(theme) {
+            swatches.forEach(function (s) {
+                var isActive = s.dataset.theme === theme;
+                if (isActive) {
+                    s.classList.add('active');
+                    s.setAttribute('aria-checked', 'true');
+                } else {
+                    s.classList.remove('active');
+                    s.setAttribute('aria-checked', 'false');
+                }
+            });
+        }
+
+        // Initial state: подсветить текущий data-theme.
+        setActive(document.documentElement.getAttribute('data-theme') || 'dark');
+
+        // Click handler — вызываем общий switchTheme.
+        swatches.forEach(function (sw) {
+            sw.addEventListener('click', function () {
+                var t = sw.dataset.theme;
+                if (!t) return;
+                if (typeof window.ollamalegion_switchTheme === 'function') {
+                    window.ollamalegion_switchTheme(t);
+                }
+                // setActive + ARIA обновятся через 'theme:changed' listener
+                // ниже (broadcast из switchTheme), не дублируем здесь.
+            });
+        });
+
+        // Sync с внешними сменами темы (header toggle, Ctrl+Shift+T).
+        window.addEventListener('theme:changed', function (e) {
+            if (e && e.detail && e.detail.theme) {
+                setActive(e.detail.theme);
+            }
+        });
+    }
+
     // ---- Public API ----
 
     window.SettingsUI = {
@@ -530,6 +591,8 @@
         setupBackendEngineSwitch: setupBackendEngineSwitch,
         initBackendEngineCards: initBackendEngineCards,
         syncBackendEngineCards: syncBackendEngineCards,
+        // R55.10 (2026-08-25): Theme picker.
+        setupThemePicker: setupThemePicker,
         MODES: MODES
     };
 

@@ -107,6 +107,12 @@ const ui = (function () {
             SettingsUI.setupModeSelector();
             SettingsUI.setupBackendEngineSwitch();
             SettingsUI.initBackendEngineCards();
+            // R55.10 (2026-08-25): Theme picker — 7 swatch buttons в Settings
+            // → General. Использует window.ollamalegion_switchTheme
+            // (выставлен выше в initTheme).
+            if (SettingsUI.setupThemePicker) {
+                SettingsUI.setupThemePicker();
+            }
         }
 
         // ---- Notifications (F.α — SSE EventBus) ----
@@ -180,6 +186,10 @@ const ui = (function () {
             updateThemeToggleIcon(next);
             broadcastThemeChange(next);
         }
+        // R55.10 (2026-08-25): expose switchTheme globally so theme picker
+        // (Settings → General) can reuse the same code path instead of
+        // duplicating setAttribute / localStorage / icon update logic.
+        window.ollamalegion_switchTheme = switchTheme;
 
         var THEMES = ['dark', 'light', 'linear', 'nvidia', 'vercel', 'sentry', 'mint'];
         var toggleBtn = document.getElementById('themeToggle');

@@ -63,6 +63,20 @@ func (lr *LlamaCppRouter) handleOpenAIChatCompletions(w http.ResponseWriter, r *
 		return
 	}
 
+	// R55.8 (2026-08-25): bind session для OpenAI-совместимых клиентов.
+	// Pre-R55.8: sessions создавались только в proxyRequest.go для /api/generate + /api/chat.
+	// OpenAI пути шли через proxyRequestOpenAIStreamAsNonStream/proxyRequestLlamaCpp
+	// и НЕ создавали sessions -> WebUI показывал "0 сессий" под нагрузкой.
+	{
+		clientName := lr.proxy.getClientName(r)
+		sessionID := lr.proxy.getSessionIDWithModel(r, clientName, model)
+		if sessionID != "" {
+			lr.proxy.sessionMgr.Set(sessionID, backendID, model, clientName, lr.proxy.getClientRealIP(r), r.UserAgent())
+			w.Header().Set("X-Session-ID", sessionID)
+		}
+		w.Header().Set("X-Backend-ID", backendID)
+	}
+
 	// Preflight n_ctx check.
 	if handled, _ := lr.runInferencePreflight(runInferencePreflightArgs{
 		w:          w,
@@ -280,6 +294,20 @@ func (lr *LlamaCppRouter) handleOpenAICompletion(w http.ResponseWriter, r *http.
 	if !ok {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "backend state not found"})
 		return
+	}
+
+	// R55.8 (2026-08-25): bind session для OpenAI-совместимых клиентов.
+	// Pre-R55.8: sessions создавались только в proxyRequest.go для /api/generate + /api/chat.
+	// OpenAI пути шли через proxyRequestOpenAIStreamAsNonStream/proxyRequestLlamaCpp
+	// и НЕ создавали sessions -> WebUI показывал "0 сессий" под нагрузкой.
+	{
+		clientName := lr.proxy.getClientName(r)
+		sessionID := lr.proxy.getSessionIDWithModel(r, clientName, model)
+		if sessionID != "" {
+			lr.proxy.sessionMgr.Set(sessionID, backendID, model, clientName, lr.proxy.getClientRealIP(r), r.UserAgent())
+			w.Header().Set("X-Session-ID", sessionID)
+		}
+		w.Header().Set("X-Backend-ID", backendID)
 	}
 
 	// Preflight n_ctx check.
@@ -559,6 +587,17 @@ func (lr *LlamaCppRouter) handleChat(w http.ResponseWriter, r *http.Request) {
 		"model", model, "backend", backendID)
 	r.Body = io.NopCloser(bytes.NewReader(bodyBuf))
 
+	// R55.8 (2026-08-25): bind session для Ollama native /api/chat клиентов.
+	{
+		clientName := lr.proxy.getClientName(r)
+		sessionID := lr.proxy.getSessionIDWithModel(r, clientName, model)
+		if sessionID != "" {
+			lr.proxy.sessionMgr.Set(sessionID, backendID, model, clientName, lr.proxy.getClientRealIP(r), r.UserAgent())
+			w.Header().Set("X-Session-ID", sessionID)
+		}
+		w.Header().Set("X-Backend-ID", backendID)
+	}
+
 	// Preflight n_ctx check.
 	if handled, _ := lr.runInferencePreflight(runInferencePreflightArgs{
 		w:          w,
@@ -668,6 +707,17 @@ func (lr *LlamaCppRouter) handleGenerate(w http.ResponseWriter, r *http.Request)
 	logger.Get().Debugw("handleGenerate: selected backend",
 		"model", model, "backend", backendID)
 	r.Body = io.NopCloser(bytes.NewReader(bodyBuf))
+
+	// R55.8 (2026-08-25): bind session для Ollama native /api/generate клиентов.
+	{
+		clientName := lr.proxy.getClientName(r)
+		sessionID := lr.proxy.getSessionIDWithModel(r, clientName, model)
+		if sessionID != "" {
+			lr.proxy.sessionMgr.Set(sessionID, backendID, model, clientName, lr.proxy.getClientRealIP(r), r.UserAgent())
+			w.Header().Set("X-Session-ID", sessionID)
+		}
+		w.Header().Set("X-Backend-ID", backendID)
+	}
 
 	// Preflight n_ctx check.
 	if handled, _ := lr.runInferencePreflight(runInferencePreflightArgs{

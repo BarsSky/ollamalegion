@@ -366,9 +366,15 @@ retrySucceeded:
 		}
 	}
 
-	// Сессии создаются только для реальных клиентских запросов chat/generate.
+	// R55.8 (2026-08-25): Сессии создаются для всех клиентских chat/generate запросов,
+	// включая OpenAI-совместимые /v1/chat/completions и /v1/completions.
+	// Pre-R55.8: sessions создавались только для /api/generate + /api/chat (native Ollama).
+	// OpenAI-совместимые клиенты (Cline, OpenWebUI, Roo Code, Continue.dev) посылают
+	// /v1/chat/completions → session НЕ создавалась → WebUI показывал "0 сессий"
+	// даже под нагрузкой (user'ский feedback 2026-08-25).
 	path := r.URL.Path
-	isClientRequest := (path == "/api/generate" || path == "/api/chat")
+	isClientRequest := (path == "/api/generate" || path == "/api/chat" ||
+		path == "/v1/chat/completions" || path == "/v1/completions")
 	if isClientRequest {
 		clientNameForSession := p.getClientName(r)
 		modelFromCtx := ""

@@ -51,7 +51,7 @@ services:
     # Round 35 (r35): reload→load fallback + idleUnload disabled.
     # Round 35c (r35c): env-tunable polling timeouts (LB_NCTX_PREFLIGHT_*)
     # для моделей с auto-offload (22GB+ Qwen3.6 на 8GB VRAM, 12-15 min load).
-    image: ollama-legion/balancer:cppworker-bundled-r55.8-r54.9  # Round 55.8 (2026-08-25): Sessions for OpenAI-compatible paths.
+    image: ollama-legion/balancer:cppworker-bundled-r55.11-r54.9  # Round 55.11 (2026-08-25): classify "server misbehaving" as retryable DNS error.
     #   R54.2: AutoTune master switch (Balancing.AutoTune, default true) +
     #          per-model "autoTune": false override (LlamaCppModelProfile.AutoTune).
     #          Manual control: user can disable AutoTune globally or per-model.

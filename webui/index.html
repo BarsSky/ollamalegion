@@ -14,7 +14,9 @@
         (function() {
             try {
                 var stored = localStorage.getItem('ollamalegion_theme');
-                var validThemes = ['dark','light','linear','nvidia','vercel']; if (stored && validThemes.indexOf(stored) >= 0) {
+                // R55.5 (2026-08-24): добавил sentry + mint (skygate themes).
+                // R55.9 (2026-08-25): перенесён из app.js THEMES array.
+                var validThemes = ['dark','light','linear','nvidia','vercel','sentry','mint']; if (stored && validThemes.indexOf(stored) >= 0) {
                     document.documentElement.setAttribute('data-theme', stored);
                 } else {
                     // auto-detect system preference

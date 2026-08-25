@@ -304,7 +304,7 @@ services:
         VERSION: ${WEBUI_VERSION:-dev}
         GIT_COMMIT: ${WEBUI_GIT_COMMIT:-unknown}
         BUILD_DATE: ${WEBUI_BUILD_DATE:-unknown}
-    image: ollama-legion/webui:cppworker-bundled
+    image: ollama-legion/webui:cppworker-bundled-r55.8  # Round 55.8 (2026-08-25): R55.5 skygate themes (sentry/mint), R55.6 theme-aware scrollbar, R55.2b history modal.
     container_name: ol-bundled-webui
     restart: unless-stopped
     ports:

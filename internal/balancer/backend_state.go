@@ -92,9 +92,22 @@ func (p *Proxy) backendHTTPAddrByID(backendID string) string {
 	return p.getBackendBaseURL(state.Backend)
 }
 
-// isLlamaCppBackend — проверяет, является ли конкретный бэкенд llama.cpp.
-// Проверяем по BackendType (не по Engine), чтобы бэкенды с EngineAuto тоже корректно
-// обрабатывались через proxyRequestLlamaCpp с трансляцией форматов.
+// isLlamaCppBackend — проверяет, общается ли бэкенд по OpenAI-compat API.
+//
+// R56 (2026-09-03): мигрировано с `backend.Type == BackendTypeLlamaCpp` на
+// `backend.EffectiveAPIStyle() == APIStyleOpenAICompatible`. Причина:
+// R51.2 добавил поле Backend.ApiStyle + метод EffectiveAPIStyle(), но routing
+// продолжал смотреть только на Type. Это значило, что явное переопределение
+// ApiStyle=ollama-native на llama_cpp бэкенде (легитимный кейс: cppworker
+// говорит нативный Ollama API) шло в OpenAI-compat path с бессмысленной
+// трансляцией.
+//
+// Семантика для существующих конфигов НЕ меняется: EffectiveAPIStyle()
+// при пустом ApiStyle выводит из Type (см. backend_type.go:67-71), что
+// для текущих деплоев = ollama→ollama-native, llama_cpp→openai-compatible.
+// Bit-identical для всех существующих тестов (см. backend_state_test.go).
+//
+// Reference: docs/superpowers/specs/2026-09-03-routing-apistyle-migration.md
 func (p *Proxy) isLlamaCppBackend(backend *types.Backend) bool {
-	return normalizeBackendType(backend.Type) == types.BackendTypeLlamaCpp
+	return backend.EffectiveAPIStyle() == types.APIStyleOpenAICompatible
 }

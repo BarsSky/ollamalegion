@@ -98,8 +98,22 @@ target_compile_features(test_abort_api PRIVATE C99)
 
 # Smoke test target (alias для удобства) — обновлён для запуска ВСЕХ тестов
 add_custom_target(bridge-tests
-    COMMAND test_batch_n_tokens && test_batched_batch && test_abort_api
-    DEPENDS test_batch_n_tokens test_batched_batch
+    COMMAND test_batch_n_tokens && test_batched_batch && test_abort_api && test_embeddings_mode
+    DEPENDS test_batch_n_tokens test_batched_batch test_embeddings_mode
     WORKING_DIRECTORY ${CMAKE_BINARY_DIR}
     COMMENT "Running bridge regression tests"
 )
+
+# ============================================================
+# test_embeddings_mode — R60/Round 39: standalone unit tests для
+# bridge_set_embeddings_mode API.
+#
+# Standalone (без libllama): gcc -o test_embeddings_mode test_embeddings_mode.c
+# Покрывает T1 (NULL handle), T2 (defensive: NULL+valid mode). Реальный
+# toggle chat↔embedding покрыт e2e test tests/cppworker_embeddings_mode_e2e.py
+# (требует running cppworker + log scraping).
+# ============================================================
+add_executable(test_embeddings_mode
+    test_embeddings_mode.c
+)
+target_compile_features(test_embeddings_mode PRIVATE C99)

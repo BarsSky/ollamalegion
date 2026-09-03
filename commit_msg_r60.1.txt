@@ -1,0 +1,46 @@
+test(bridge): R60.1 — add standalone C unit test for bridge_set_embeddings_mode
+
+Context
+-------
+The embeddings mode toggle (commit 3a2901c, R39, 2026-08-18)
+implemented `bridge_set_embeddings_mode()` in c/bridge/bridge.c plus
+the corresponding Go wrapper in c/bridge/bridge.go and stub in
+c/bridge/bridge_stub.go. The C-bridge code itself was tested in
+production deployments.
+
+What was missing was a standalone C unit test — see
+`docs/superpowers/plans/2026-08-18-embeddings-mode-toggle.md` Task 5
+(marked "optional but recommended").
+
+This commit adds that test.
+
+What
+----
+c/bridge/tests/test_embeddings_mode.c — 2 standalone tests:
+  1. NULL handle + BRIDGE_MODE_CHAT → returns -1.
+  2. NULL handle + BRIDGE_MODE_EMBEDDING → also returns -1
+     (defensive: even "valid" mode with NULL handle must fail).
+
+Tests 3-5 (real chat→embedding→chat toggle on a loaded model) require
+libllama + a real model load and are covered by the e2e test
+`tests/cppworker_embeddings_mode_e2e.py` (already committed in R39).
+
+The test uses a `bridge_set_embeddings_mode_mock` (verbatim copy of the
+real setter's NULL check) so it can be built standalone without
+libllama. If the real bridge.c setter's NULL check ever changes, the
+mock and the real code will diverge → caught at next manual review.
+
+c/bridge/tests/CMakeLists.txt — added the executable target and
+included it in the `bridge-tests` smoke target.
+
+Build
+-----
+  cd c/bridge/tests
+  gcc -std=c99 -Wall -Wextra -o test_embeddings_mode.exe test_embeddings_mode.c
+  ./test_embeddings_mode.exe
+  → 3/3 PASS, exit 0
+
+Files
+-----
+  c/bridge/tests/test_embeddings_mode.c    +73 (new)
+  c/bridge/tests/CMakeLists.txt            +18/-2  (target + bridge-tests list)

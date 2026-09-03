@@ -1,0 +1,55 @@
+{
+  "_comment": "R58.2 (2026-09-03): Phase 1.3 hardware preset for RTX 50xx 32GB VRAM (RTX 5090). NEWEST arch (sm_120, Blackwell). Requires CUDA 12.8+ and image rebuild — bundled sm_86 image WON'T work.",
+  "_hardware": {
+    "name": "RTX 50xx 32GB",
+    "examples": ["RTX 5090 32GB"],
+    "vram_mb": 32768,
+    "sm_arch": "120",
+    "cuda_arch": "120",
+    "_rebuild_required_note": "sm_120 (Blackwell) requires CUDA 12.8+ and image rebuild. Set CUDA_ARCH=120 and rebuild cppworker image with tag like 120-abort-r35."
+  },
+  "_model_recommendations": {
+    "_comment": "At 32GB, full GPU offload works for 7B-30B (Q4_K_M). 70B fits with partial offload (fast).",
+    "fits_vram": ["qwen2.5-7b through 32b", "llama-3.1-8b through 70b (Q4)", "gemma-4-27b (F16)", "mixtral-8x22b (Q4)"],
+    "partial_offload": ["llama-3.1-405b (Q4) — possible but slow"],
+    "_recommendation": "32GB enables 70B Q4 with full KV cache. RTX 5090 is fastest single-GPU card as of 2026."
+  },
+
+  "docker": {
+    "CUDA_ARCH": "120",
+    "CPPWORKER_GPU_TAG": "120-abort-r35",
+    "_tag_note": "You need to BUILD the cppworker image with this tag (no upstream image yet). Use docker compose build with CUDA_ARCH=120."
+  },
+
+  "cppworker": {
+    "CPPWORKER_CTX_SIZE": 65536,
+    "_ctx_note": "32GB enables 65K context for most 13B models without OOM",
+    "CPPWORKER_BATCH_SIZE": 1024,
+    "_batch_note": "Bigger batch = better throughput on RTX 5090 (more SMs, more VRAM bandwidth)",
+    "CPPWORKER_GPU_LAYERS": 99,
+    "CPPWORKER_FLASH_ATTN_TYPE": -1,
+    "CPPWORKER_N_THREADS": 0,
+    "CPPWORKER_NUMA": true,
+    "CPPWORKER_USE_MMAP": true,
+    "CPPWORKER_USE_MLOCK": false,
+    "CPPWORKER_KV_CACHE_TYPE": "f16"
+  },
+
+  "ram_fallback": {
+    "CPPWORKER_RAM_FALLBACK_N_CTX": true,
+    "CPPWORKER_RAM_FALLBACK_GPU_LAYERS": -2,
+    "CPPWORKER_RAM_FALLBACK_MAX_N_CTX": 262144
+  },
+
+  "auto": {
+    "CPPWORKER_AUTO_OFFLOAD": true,
+    "CPPWORKER_AUTO_TUNE_NCTX": true
+  },
+
+  "balancer": {
+    "_comment": "RTX 5090 is fast — short first-byte timeouts, large n_ctx allowed.",
+    "LB_NCTX_RELOAD_ENABLED": true,
+    "LB_NCTX_RELOAD_MAX_N_CTX": 131072,
+    "LB_NCTX_RELOAD_VRAM_SAFETY_FACTOR": 0.92
+  }
+}

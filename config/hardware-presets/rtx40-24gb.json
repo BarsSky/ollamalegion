@@ -1,0 +1,55 @@
+{
+  "_comment": "R58.2 (2026-09-03): Phase 1.3 hardware preset for RTX 40xx 24GB VRAM (RTX 4080/4090). Large VRAM enables full GPU offload for most 7B-13B models. 70B partial offload possible but slow.",
+  "_hardware": {
+    "name": "RTX 40xx 24GB",
+    "examples": ["RTX 4080 16GB", "RTX 4080 SUPER 16GB", "RTX 4090 24GB", "RTX 4090 D 24GB"],
+    "vram_mb": 16384,
+    "_4080_note": "RTX 4080 has 16GB (not 24GB). 24GB tier is for 4090/4090 D only.",
+    "sm_arch": "89",
+    "cuda_arch": "89"
+  },
+  "_model_recommendations": {
+    "_comment": "At 24GB VRAM, full offload works for 7B-13B (Q4_K_M). 70B fits with partial offload (slow).",
+    "fits_vram": ["qwen2.5-7b", "qwen2.5-14b", "llama-3.1-8b", "llama-3.1-13b", "gemma-4-27b (Q4)", "mistral-7b", "mixtral-8x7b (Q3)"],
+    "partial_offload": ["qwen3-14b (Q8)", "llama-3.1-70b (Q4) — 30+ tok/s on RTX 4090"],
+    "_recommendation": "Q4_K_M or Q5_K_M for 7B-13B, Q4_K_M for 70B+."
+  },
+
+  "docker": {
+    "CUDA_ARCH": "89",
+    "CPPWORKER_GPU_TAG": "89-abort-r35"
+  },
+
+  "cppworker": {
+    "CPPWORKER_CTX_SIZE": 32768,
+    "CPPWORKER_BATCH_SIZE": 512,
+    "CPPWORKER_GPU_LAYERS": 99,
+    "_gpu_layers_note": "99 = all layers on GPU (no CPU offload for typical 7B-13B)",
+    "CPPWORKER_FLASH_ATTN_TYPE": -1,
+    "CPPWORKER_N_THREADS": 0,
+    "CPPWORKER_NUMA": true,
+    "CPPWORKER_USE_MMAP": true,
+    "CPPWORKER_USE_MLOCK": false,
+    "CPPWORKER_KV_CACHE_TYPE": "f16",
+    "_kv_cache_note": "F16 KV cache at 24GB — 7B-13B fits comfortably. 70B+ may need Q8 KV."
+  },
+
+  "ram_fallback": {
+    "_comment": "Less aggressive than 8GB preset — most models fit at 24GB.",
+    "CPPWORKER_RAM_FALLBACK_N_CTX": true,
+    "CPPWORKER_RAM_FALLBACK_GPU_LAYERS": -2,
+    "CPPWORKER_RAM_FALLBACK_MAX_N_CTX": 128000
+  },
+
+  "auto": {
+    "CPPWORKER_AUTO_OFFLOAD": true,
+    "CPPWORKER_AUTO_TUNE_NCTX": true
+  },
+
+  "balancer": {
+    "_comment": "Default balancer settings work — large VRAM means prefill is fast (~30-60s for 7B).",
+    "LB_NCTX_RELOAD_ENABLED": true,
+    "LB_NCTX_RELOAD_MAX_N_CTX": 131072,
+    "LB_NCTX_RELOAD_VRAM_SAFETY_FACTOR": 0.90
+  }
+}

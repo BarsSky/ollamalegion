@@ -1,0 +1,54 @@
+{
+  "_comment": "R58.2 (2026-09-03): Phase 1.3 hardware preset for RTX 30xx 8GB VRAM (RTX 3050/3060/3070/3080 8GB). Aggressive RAM fallback — most large models (>8GB) won't fit VRAM and will use partial offload or CPU-only.",
+  "_hardware": {
+    "name": "RTX 30xx 8GB",
+    "examples": ["RTX 3050 8GB", "RTX 3060 8GB", "RTX 3070 8GB", "RTX 3080 8GB"],
+    "vram_mb": 8192,
+    "sm_arch": "86",
+    "cuda_arch": "86"
+  },
+  "_model_recommendations": {
+    "_comment": "Models that comfortably fit at 8GB VRAM (Q4_K_M quant):",
+    "fits_vram": ["qwen2.5-3b", "qwen2.5-7b", "llama-3.1-8b", "gemma-4-9b (4-bit)", "phi-3-mini-4k", "mistral-7b"],
+    "needs_offload": ["qwen3-14b (slow)", "llama-3.1-70b (impossible)"],
+    "_recommendation": "Use Q4_K_M or lower for anything >7B parameters. Q5/Q6/Q8 will OOM."
+  },
+
+  "docker": {
+    "CUDA_ARCH": "86",
+    "CPPWORKER_GPU_TAG": "86-abort-r35"
+  },
+
+  "cppworker": {
+    "CPPWORKER_CTX_SIZE": 32768,
+    "CPPWORKER_BATCH_SIZE": 512,
+    "CPPWORKER_GPU_LAYERS": 20,
+    "CPPWORKER_FLASH_ATTN_TYPE": -1,
+    "CPPWORKER_N_THREADS": 0,
+    "CPPWORKER_NUMA": false,
+    "CPPWORKER_USE_MMAP": true,
+    "CPPWORKER_USE_MLOCK": false,
+    "CPPWORKER_KV_CACHE_TYPE": "q4_0",
+    "_kv_cache_note": "Q4 KV cache is critical at 8GB — F16 KV would push small models OOM"
+  },
+
+  "ram_fallback": {
+    "_comment": "3-tier cascade: full VRAM → partial offload → CPU-only. Aggressive at 8GB since most models won't fit.",
+    "CPPWORKER_RAM_FALLBACK_N_CTX": true,
+    "CPPWORKER_RAM_FALLBACK_GPU_LAYERS": -2,
+    "CPPWORKER_RAM_FALLBACK_MAX_N_CTX": 64000,
+    "_max_n_ctx_note": "Lowered to 64K (vs 128K default) — large contexts blow up KV cache"
+  },
+
+  "auto": {
+    "CPPWORKER_AUTO_OFFLOAD": true,
+    "CPPWORKER_AUTO_TUNE_NCTX": true
+  },
+
+  "balancer": {
+    "_comment": "Balancer tuning for 8GB target. First-byte timeout shorter than default because 30B+ models will take 10+ min to prefill.",
+    "LB_NCTX_RELOAD_ENABLED": true,
+    "LB_NCTX_RELOAD_MAX_N_CTX": 65536,
+    "LB_NCTX_RELOAD_VRAM_SAFETY_FACTOR": 0.85
+  }
+}

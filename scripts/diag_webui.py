@@ -136,6 +136,28 @@ async def main():
         )
         print(f"\n[+] Full diagnostic data: {OUT / 'diag.json'}")
 
+        # R59.4 (2026-09-03): hard fail on any page error so this script can
+        # be used in CI / pre-commit. Previously we only logged page_errors,
+        # which let the R57.3 leftover call (`setupLogsTabNavigation is not
+        # defined`) ship undetected — the R59.3 round fixed WebSocket +
+        # monitor auth but missed this because the smoke test only asserted
+        # connectionStatus + 200/200 API responses, not init() success.
+        if page_errors:
+            print()
+            print("=" * 60)
+            print(f"[FAIL] {len(page_errors)} uncaught page error(s) — WebUI init() is broken")
+            for e in page_errors:
+                print(f"  - {e[:200]}")
+            await browser.close()
+            sys.exit(1)
+
+        if not api_resps or any(r['status'] >= 500 for r in api_resps):
+            print()
+            print("=" * 60)
+            print(f"[FAIL] no API responses or 5xx seen — backend not reachable")
+            await browser.close()
+            sys.exit(1)
+
         await browser.close()
 
 

@@ -1773,21 +1773,21 @@ Beta-slow параметр YaRN. Стандарт: 1. Низкое = более 
     <div class="toast-container" id="toastContainer"></div>
 
     <!-- i18n Language Packs -->
-    <script src="js/i18n/ru.js?v=17"></script>
-    <script src="js/i18n/en.js?v=17"></script>
-    <script src="js/i18n/index.js?v=16"></script>
-    <script src="js/modules/backend-type-filter.js?v=16"></script>
+    <script defer src="js/i18n/ru.js?v=17"></script>
+    <script defer src="js/i18n/en.js?v=17"></script>
+    <script defer src="js/i18n/index.js?v=16"></script>
+    <script defer src="js/modules/backend-type-filter.js?v=16"></script>
 
     <!-- Runtime config injected by entrypoint for Docker / local nginx -->
-    <script>window.WEBUI_CONFIG = window.WEBUI_CONFIG || {};</script>
+    <script defer>window.WEBUI_CONFIG = window.WEBUI_CONFIG || {};</script>
     <!-- Modules -->
-    <script src="js/modules/config.js?v=16"></script>
+    <script defer src="js/modules/config.js?v=16"></script>
     <!-- Sprint 30 (2026-07-30): привязка version display к build tag.
          Читает VERSION / GIT_COMMIT / BUILD_DATE из WEBUI_CONFIG (заполняется
          entrypoint.sh из Docker --build-arg VERSION=...) и обновляет
          #appVersion в sidebar footer + .app-footer-version в page footer
          + ставит title с дополнительной инфой (commit + build date). -->
-    <script>
+    <script defer>
     (function() {
         try {
             var cfg = window.WEBUI_CONFIG || {};
@@ -1815,27 +1815,27 @@ Beta-slow параметр YaRN. Стандарт: 1. Низкое = более 
         } catch (e) { /* keep 'dev' fallback */ }
     })();
     </script>
-    <script src="js/modules/utils.js?v=16"></script>
-    <script src="js/modules/api.js?v=16"></script>
-    <script src="js/modules/gguf-api.js?v=16"></script>
-    <script src="js/modules/websocket.js?v=16"></script>
-    <script src="js/modules/renderers.js?v=16"></script>
+    <script defer src="js/modules/utils.js?v=16"></script>
+    <script defer src="js/modules/api.js?v=16"></script>
+    <script defer src="js/modules/gguf-api.js?v=16"></script>
+    <script defer src="js/modules/websocket.js?v=16"></script>
+    <script defer src="js/modules/renderers.js?v=16"></script>
     <!-- R54.5 (2026-08-24): AutoTune visibility (Phase 1: read-only badge) -->
-    <script src="js/modules/autotune.js?v=18"></script>
+    <script defer src="js/modules/autotune.js?v=18"></script>
     <!-- R54.7 (2026-08-24): AutoTune Settings page handler -->
-    <script src="js/modules/autotune_settings.js?v=19"></script>
+    <script defer src="js/modules/autotune_settings.js?v=19"></script>
     <!-- R55.2 (2026-08-24): AutoTune history timeline modal -->
-    <script src="js/modules/autotune_history.js?v=20"></script>
-    <script src="js/modules/gguf-load-progress.js?v=16"></script>
-    <script src="js/modules/gguf-renderer.js?v=17"></script>
-    <script src="js/modules/settings-ui.js?v=16"></script>
-    <script src="js/modules/config-io.js?v=16"></script>
-    <script src="js/modules/mode-wizard.js?v=16"></script>
-    <script src="js/modules/setup-wizard.js?v=16"></script>
-    <script src="js/modules/cppworker-params.js?v=16"></script>
-    <script src="js/modules/bulk-models.js?v=16"></script>
-    <script src="js/modules/notifications.js?v=16"></script>
-    <script src="js/modules/logs-stream.js?v=16"></script>
-    <script src="js/app.js?v=16"></script>
+    <script defer src="js/modules/autotune_history.js?v=20"></script>
+    <script defer src="js/modules/gguf-load-progress.js?v=16"></script>
+    <script defer src="js/modules/gguf-renderer.js?v=17"></script>
+    <script defer src="js/modules/settings-ui.js?v=16"></script>
+    <script defer src="js/modules/config-io.js?v=16"></script>
+    <script defer src="js/modules/mode-wizard.js?v=16"></script>
+    <script defer src="js/modules/setup-wizard.js?v=16"></script>
+    <script defer src="js/modules/cppworker-params.js?v=16"></script>
+    <script defer src="js/modules/bulk-models.js?v=16"></script>
+    <script defer src="js/modules/notifications.js?v=16"></script>
+    <script defer src="js/modules/logs-stream.js?v=16"></script>
+    <script defer src="js/app.js?v=16"></script>
 </body>
 </html>

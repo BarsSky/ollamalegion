@@ -13,7 +13,6 @@ import (
 	"time"
 
 	"ollama-loadbalancer/internal/balancer"
-	"ollama-loadbalancer/pkg/logger"
 	"ollama-loadbalancer/pkg/types"
 )
 
@@ -160,12 +159,11 @@ func (s *Server) handleAdminAutosuggestApply(w http.ResponseWriter, r *http.Requ
 	// Re-compute suggestions (don't trust client — always derive from current state)
 	allSuggestions := proxy.ComputeAutosuggestions(loadedByBackend)
 
-	// Apply via injected function. R59.1: stubbed (just logs).
-	// R59.2 will wire to GgufApi.loadModel / unloadModel with proper HTTP calls.
+	// Apply via injected function. R59.2: real wire to cppworker
+	// (POST /api/models/unload on source, POST /api/models/load on destination,
+	// rollback on load failure).
 	applyFn := func(from, to, model string) error {
-		logger.Get().Infow("autosuggest.apply: would move model",
-			"from", from, "to", to, "model", model)
-		return nil
+		return proxy.AutoDistributeMove(from, to, model)
 	}
 
 	requested := body.SuggestionIDs

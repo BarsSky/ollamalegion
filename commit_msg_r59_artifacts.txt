@@ -1,0 +1,37 @@
+docs+scripts: commit R57.5/R56.5/R59.x artifacts that were left untracked
+
+Scope
+-----
+After R59.14–R59.17 wrap-up, several artifacts from R56.5/R57.5/R59.x work
+sitting in working tree but never committed. Group them into a single
+"tracking" commit so they appear in git history.
+
+Files
+-----
+  docs/superpowers/specs/2026-09-03-webui-split-gguf-renderer.md
+      R57.5 design doc for splitting the 172KB gguf-renderer.js monolith
+      into per-pane modules (detail / refresh / actions / detail-render).
+      Splits themselves were implemented in R57.5a-f; this is the design
+      rationale. Sister spec to 2026-09-03-webui-split-app-js.md (R57,
+      already tracked).
+
+  scripts/baseline.spec.js                 R56.5 playwright baseline
+  scripts/playwright_smoke.js              R56.5 live-baseline with screenshots
+  scripts/check_braces.js                  R56.5 JS lint helper
+  scripts/check_braces.py                  R56.5 Python lint helper
+      Smoke + lint infrastructure for the R56.5 baseline that informed
+      the R57 webui split. Referenced from 2026-09-03-webui-split-app-js.md
+      "Pre-existing test" line.
+
+  scripts/diag_gguf_select.py              R59.8 (DELETED)
+  scripts/diag_gguf_tab.py                 R59.9 (DELETED)
+      Single-purpose diagnostic scripts superseded by
+      scripts/diag_webui_interactions.py (R59.10) which covers the
+      same scenarios plus many more. Were not committed when R59.10
+      landed; removing them now to avoid two parallel diagnostic tools
+      rotting at different rates.
+
+Skipped
+-------
+  scripts/test_apply_endpoint.ps1 — 25-byte placeholder ("# smoke test
+  placeholder"), zero value. Left untracked.

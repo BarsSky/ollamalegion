@@ -826,6 +826,51 @@ LB_STREAMING_NEVER_TIMEOUT=1
 Default behavior preserved (bit-identical for existing deployments).
 Opt-in via single ENV toggle.
 
+### `LB_NCTX_RELOAD_*` (Round 34-37, 2026-08-12)
+
+Adaptive auto-reload of `n_ctx` on `prompt_too_long` (code 3) /
+`n_ctx_needed` (code 2) from cppworker.
+
+| ENV | Default | Purpose |
+|---|---|---|
+| `LB_NCTX_RELOAD_ENABLED` | `true` | Enable adaptive reload |
+| `LB_NCTX_RELOAD_MAX_N_CTX` | `131072` | Max n_ctx for reload (128K) |
+| `LB_NCTX_RELOAD_VRAM_SAFETY_FACTOR` | `0.95` | VRAM safety margin (0.85 = rejected Gemma-4, 0.95 = OK) |
+| `LB_NCTX_RELOAD_TIMEOUT_SEC` | `300` | Reload operation timeout |
+
+See `deployments/.env.bundled-with-agent.example:44-50`.
+
+### `LB_NCTX_PREFLIGHT_*` (Round 35, 2026-08-12)
+
+Preflight check of `n_ctx` BEFORE synchronous model load. Without
+`LB_NCTX_PREFLIGHT_ENABLED=true` the preflight short-circuits → Cline 65K
+gets 413 sync instead of 503+Retry-After (infinite retry loop).
+
+| ENV | Default | Purpose |
+|---|---|---|
+| `LB_NCTX_PREFLIGHT_ENABLED` | `true` | Master switch |
+| `LB_NCTX_PREFLIGHT_ASYNC_RELOAD` | `true` | Async instead of blocking reload |
+| `LB_NCTX_PREFLIGHT_ASYNC_RETRY_AFTER_SEC` | `30` | `Retry-After` header in 503 |
+| `LB_NCTX_PREFLIGHT_MAX_WAIT_SEC` | `900` (15 min) | Max polling time for load. **22GB Qwen3.6 on 3070** needs `1800` (30 min) — see Round 35c |
+| `LB_NCTX_PREFLIGHT_WAIT_MULTIPLIER` | `2` | Multiplier for cppworker estimate |
+| `LB_NCTX_PREFLIGHT_WAIT_BUFFER_SEC` | `60` | Additional buffer |
+
+See `deployments/.env.bundled-with-agent.example:54-74`.
+
+### `CPPWORKER_RAM_FALLBACK_*` (Round 38, 2026-08-17)
+
+3-tier cascade for models that don't fit in VRAM: full VRAM → partial
+offload → CPU-only. With `8GB VRAM` (RTX 3070) most large models don't
+fit — partial offload or CPU-only is required.
+
+| ENV | Default | Purpose |
+|---|---|---|
+| `CPPWORKER_RAM_FALLBACK_N_CTX` | `true` | Enable cascade |
+| `CPPWORKER_RAM_FALLBACK_GPU_LAYERS` | `-2` (auto offload) | Layers under RAM fallback |
+| `CPPWORKER_RAM_FALLBACK_MAX_N_CTX` | `64000` (8GB) / `128000` (16-24GB) | Max n_ctx in CPU-only mode |
+
+See `config/hardware-presets/*.json` for presets.
+
 ### `Backend.ApiStyle` (R56, EffectiveAPIStyle)
 
 New field `Backend.ApiStyle` (`ollama-native` / `openai-compatible`).

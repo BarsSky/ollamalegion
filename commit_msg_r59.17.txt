@@ -1,0 +1,36 @@
+docs: R59.17 — mirror LB_NCTX_* / RAM_FALLBACK tables in EN config + R56-R59 index in EN README
+
+Context
+-------
+R59.2 audit identified two P0 gaps for English users:
+  1. `LB_NCTX_RELOAD_*`, `LB_NCTX_PREFLIGHT_*`, `CPPWORKER_RAM_FALLBACK_*`
+     ENV tables existed only in `docs/ru/configuration.md`. EN users had
+     no reference.
+  2. R56-R59 operational features (Cluster AutoDistribute, n_ctx auto-
+     reload, hardware presets, etc.) were not discoverable from
+     `docs/en/README.md` — the EN README's last update was Phase 8
+     (2026-07-11), predating all of R56-R59.
+
+This commit fixes both.
+
+Files
+-----
+  docs/en/configuration.md  +47  3 new ENV tables (English), placed
+                                between LB_STREAMING_NEVER_TIMEOUT
+                                and Backend.ApiStyle to match the
+                                Russian ordering.
+  docs/en/README.md         +19  "Recent additions (R56-R59)" table
+                                cross-linking the new docs and the R59
+                                API endpoints.
+
+Notes
+-----
+  • Anchor format in table cells uses `## Round 56-59` parent section
+    with a parenthetical "look for X" hint, because GitHub's anchor
+    generator is fragile for headings with backticks, asterisks and
+    round numbers (e.g. `### \`LB_NCTX_RELOAD_*\` (Round 34-37, ...)`).
+  • Russian `docs/ru/` is unchanged — it already had all the tables.
+  • `docs/configuration.md` (bilingual index) is unchanged — its R59
+    references go through `en/configuration.md` already.
+  • Cross-link to api.md uses `#cluster` anchor which is stable (the
+    `### Cluster` heading has no special chars).

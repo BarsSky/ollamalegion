@@ -102,3 +102,22 @@ Major deliverables:
 - **Tag v1.0-rc1** — released 2026-07-11. Final `v1.0` pending manual hardware smoke (A10 + Qwen3-A3B).
 
 See [`CHANGELOG.md`](../../CHANGELOG.md) for full Phase 8 changelog.
+
+---
+
+## Recent additions (R56-R59, 2026-08-24 → 2026-09-03)
+
+Operational features added on top of v1.0-rc1:
+
+| Feature | Doc | Notes |
+|---|---|---|
+| **Cluster AutoDistribute** (R59, R59.1) | [`api.md` §Cluster](api.md#cluster) (rows 1951-1952) | `GET /api/v1/admin/cluster/autosuggest` + `POST .../apply` for moving models between backends |
+| **Adaptive n_ctx auto-reload** (R34-37) | [`configuration.md` §Round 56-59](configuration.md#round-56-59-2026-09-03-new-env-vars-and-endpoints) (look for `LB_NCTX_RELOAD_*`) | `LB_NCTX_RELOAD_*` — auto-bump n_ctx on `prompt_too_long` |
+| **n_ctx preflight check** (R35) | same section (look for `LB_NCTX_PREFLIGHT_*`) | `LB_NCTX_PREFLIGHT_*` — short-circuit 413 instead of 503+retry loop |
+| **RAM fallback cascade** (R38) | same section (look for `CPPWORKER_RAM_FALLBACK_*`) | `CPPWORKER_RAM_FALLBACK_*` — full VRAM → partial offload → CPU-only |
+| **Hardware presets** (R58.2) | [`hardware-presets.md`](hardware-presets.md) | 4 ready-made configs (RTX 30xx/40xx/50xx, A10) + `apply-hardware-preset.py` |
+| **Streaming never-timeout** (R58.1) | same section (look for `LB_STREAMING_NEVER_TIMEOUT`) | `LB_STREAMING_NEVER_TIMEOUT=1` for long-running inference (10+ min) |
+| **Backend.ApiStyle** (R56) | same section (look for `Backend.ApiStyle`) | Operator-overridable API style (ollama-native / openai-compatible) |
+| **EffectiveAPIStyle helper** (R56) | same as above | Replaces `isLlamaCppBackend()` in routing |
+
+R59.11 added a docs cleanup pass (configuration.md index + 4 broken links fixed + 6 ENV tables). R59.16 added the English translation of `hardware-presets.md`. R59.17 mirrors the 3 LB_NCTX_* / CPPWORKER_RAM_FALLBACK_* tables that were only in the Russian configuration.md.

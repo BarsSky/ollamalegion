@@ -121,8 +121,12 @@ const ui = (function () {
             });
         }
 
-        // Setup logs tab navigation (System / Proxy sub-tabs)
-        setupLogsTabNavigation();
+        // R59.4 (2026-09-03): removed leftover call `setupLogsTabNavigation()` —
+        // function moved to app-listeners.js in R57.3 (exposed as
+        // App.setupLogsTabNavigation, called at line 68 above). The bare call
+        // here crashed init() with `ReferenceError: setupLogsTabNavigation is not
+        // defined`, killing the whole init() before fetchClusterState ran.
+
         // Load proxy logs from REST API on startup
         fetchProxyLogs();
 
@@ -655,7 +659,10 @@ const ui = (function () {
     async function fetchClusterState() {
         try {
             const state = await Api.cluster();
-            updateBackends(state.backends || []);
+            // R59.4 (2026-09-03): updateBackends moved to app-listeners.js in R57.3;
+            // call via App.* instead of local ref (which was left behind by the
+            // extract and silently produced ReferenceError on every refresh).
+            if (App.updateBackends) App.updateBackends(state.backends || []);
             // Successful REST request — balancer is reachable
             updateConnectionStatus(true);
             // Синхронизация типа бэкенда (Ollama vs llama.cpp) — скрывает/показывает вкладку GGUF и режимы

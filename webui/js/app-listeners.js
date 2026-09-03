@@ -164,6 +164,11 @@
         if (ctx.currentPage === 'dashboard') scheduleDashboardRender();
         broadcastCrossTab('clusterStateChanged');
     }
+    // R59.4 (2026-09-03): expose to App.* so app.js's fetchClusterState()
+    // can call App.updateBackends(). After R57.3 extract, updateBackends
+    // became a local helper in this file; app.js kept the bare call from
+    // before the split → ReferenceError on every cluster-state refresh.
+    App.updateBackends = updateBackends;
 
     function applyStatusChange(backendId, newStatus) {
         const ctx = App.context;

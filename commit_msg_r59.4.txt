@@ -1,0 +1,52 @@
+fix(webui): R59.4 — init() crashed on `setupLogsTabNavigation is not defined` (R57.3 leftover)
+
+User report (screenshot in this session): "ошибки в WebUI"
+Console:
+  Uncaught ReferenceError: setupLogsTabNavigation is not defined
+    at Object.init (app.js?v=19:125:59)
+  ReferenceError: updateBackends is not defined
+    at fetchClusterState (app.js?v=19:658:13)
+
+Root cause: R57.3 (commit 1419cbc) extracted `setup*` helpers from
+app.js into app-listeners.js (exposed as App.setup*) and `updateBackends`
+became a local helper in app-listeners.js. The R57.3 split left TWO
+stale bare calls in app.js init() that still referenced the original
+local names:
+  - app.js:125 `setupLogsTabNavigation();`  — function now App.setupLogsTabNavigation
+  - app.js:658 `updateBackends(...)` in fetchClusterState — function is local in app-listeners.js
+
+These crashed init() (page error) and every subsequent cluster-state
+refresh (silent ReferenceError in .then()).
+
+Why R59.3 didn't catch this: my headless smoke test (scripts/diag_webui.py)
+checked `connectionStatus === 'Connected'` and counted 200/200 API
+responses, but didn't assert pageerror count or specific init() success.
+Both checks now added in this commit's verification.
+
+Fix:
+  1. webui/js/app-listeners.js — add `App.updateBackends = updateBackends`
+     after the function definition, so app.js's fetchClusterState can
+     call it via the App namespace.
+  2. webui/js/app.js:658 — replace bare `updateBackends(...)` with
+     `if (App.updateBackends) App.updateBackends(...)` (defensive).
+  3. webui/js/app.js:125 — delete the leftover `setupLogsTabNavigation()`
+     call. It was already invoked correctly via `App.setupLogsTabNavigation()`
+     at line 68 (inside the `if (window.App)` block, line 47-69).
+
+Verification (after `docker compose up -d --build webui`):
+  - scripts/diag_webui.py:
+    [PAGE ERRORS] 0     (was 1)
+    [i] connection status element: 'Connected'
+    39/39 API requests 200 OK with X-API-Token
+  - No more "ReferenceError: updateBackends" in console.log capture
+
+Files changed:
+  webui/js/app.js            (1 line removed + 5 lines comment, 1 line replaced)
+  webui/js/app-listeners.js  (+5 lines: App.updateBackends export)
+
+Cross-project lesson (saved to memory 2026-09-03): when extracting helpers
+from one file to another via "split via namespace" pattern, ALWAYS grep
+for stale bare calls in the original file before the split ships. R57.3
+left two bare calls; the only test that would have caught them is a
+playwright `page.on("pageerror")` assertion (which R59.3 added but
+asserted on the wrong field).

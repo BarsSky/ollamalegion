@@ -1,0 +1,56 @@
+test(webui): R59.10 — interaction-based smoke test (catches R59.7/8/9-class bugs)
+
+`scripts/diag_webui_pages.py` (R59.5) only checks INITIAL RENDER.
+That's how R59.7 (backends list empty), R59.8 (selectBackend no-op),
+and R59.9 (tab switch no-op) all shipped undetected: each page
+rendered without page errors, but the first user interaction hit a
+silent failure. This script closes that gap by DRIVING interactions
+and asserting state + DOM after each click.
+
+Pattern:
+- Per-page list of async step functions (label, fn(page))
+- For each page: navigate → wait for data → run steps
+- After each step: assert (a) state changed, (b) DOM updated
+- Hard-fail on first broken step per page (so a broken page doesn't
+  mask later ones, but we exit 1 and report precisely)
+- Exit 0 = all interactions OK, exit 1 = at least one failed
+
+Current coverage: GGUF page has 2 interaction steps (the only page
+with primary interactive elements in the current UI):
+  1. select backend item → state.selectedBackendId set, panel HTML
+     length >= 1500, #ggufDetailContent id present
+  2. click "Models" tab → state.detailPane === "models", DOM active
+     class on Models tab, content div shows models info
+
+All other pages return early with "(no interactions tested)" — the
+framework is in place, more steps can be added per page as the UI
+grows. To add coverage for backends (e.g. edit/create), models
+(load/unload), settings (toggle), just add an async fn + entry
+in INTERACTIONS.
+
+Verification (after `docker compose up -d --build webui`):
+
+  $ python scripts/diag_webui_interactions.py
+  [i] initial connectionStatus: Connected
+  --- Page: gguf ---
+    [OK] select backend: selected=cppworker-gpu-bundled-agent, panel=2529b
+    [OK] switch to Models tab: detailPane=models, active=models,
+                                content='-Size: -Quantization: - Load Model'
+  [PASS] all interactions OK
+  exit 0
+
+If R59.7's silent failure were reintroduced, the "select backend"
+step would now fail with a precise diagnostic (e.g. "selectedBackendId
+matches but panel HTML length=417 (expected >= 1500)") instead of
+silently passing.
+
+File added:
+  scripts/diag_webui_interactions.py   (~190 lines, framework + GGUF
+                                       step definitions)
+
+Cross-project lesson: smoke tests for interactive frontends must
+**drive interactions**, not just verify initial renders. The
+"navigate + assert one selector visible" pattern is a
+necessary-but-not-sufficient condition for "page works" — most
+real bugs surface on the first user click (R59.7-R59.9 series is
+three examples in a row).

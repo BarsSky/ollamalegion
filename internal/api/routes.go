@@ -181,6 +181,11 @@ func (s *Server) setupRoutes() {
 	// model moves. Does NOT apply (apply = R59.1, future).
 	s.mux.Handle("/api/v1/admin/cluster/autosuggest", AuthMiddleware(RateLimitMiddleware(http.HandlerFunc(s.handleAdminAutosuggest), s.rateLimiter), s.authenticator))
 
+	// R59.1 (2026-09-03): Apply selected suggestions (operator-approved).
+	// POST /api/v1/admin/cluster/autosuggest/apply with {"suggestion_ids": [...]}.
+	// Re-validates and returns per-suggestion apply result.
+	s.mux.Handle("/api/v1/admin/cluster/autosuggest/apply", AuthMiddleware(RateLimitMiddleware(http.HandlerFunc(s.handleAdminAutosuggestApply), s.rateLimiter), s.authenticator))
+
 	// Internal callbacks от cppworker (Шаг «отображение загрузки в мониторе»).
 	// POST /api/v1/internal/llama-model-loaded — callback при успешной загрузке модели.
 	// Endpoint требует X-API-Token (если в config задан API_TOKEN). Не публичный.

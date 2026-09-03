@@ -19,6 +19,13 @@ const GgufRenderer = (window.GgufRenderer = (function () {
     // keep using bare `stripGGUF(...)`, `showToast(...)` etc. — they resolve
     // to M.* which is set by gguf-renderer-helpers.js loaded before this file.
     var stripGGUF = M.stripGGUF;
+    // State and helpers (from gguf-renderer-state.js loaded BEFORE this file).
+    // 80+ call sites in this file use bare `state` and `isHealthyBackend(b)` — these
+    // aliases preserve backward compat without renaming.
+    var state = M.state;
+    var isHealthyBackend = M.isHealthyBackend;
+    var visibleBackends = M.visibleBackends;
+
     var formatFileSize = M.formatFileSize;
     var showToast = M.showToast;
 
@@ -26,76 +33,8 @@ const GgufRenderer = (window.GgufRenderer = (function () {
         return window.I18N ? I18N.t(key, vars) : key;
     };
 
-    // ---- State ----
-    let state = {
-        registeredBackends: [],
-        backendDataLoaded: false,
-        selectedBackendId: null,
-        // Показывать нерабочие (unhealthy/offline/draining) бэкенды в GGUF-списке.
-        // По умолчанию скрываем, чтобы не отображались заглушки/недоступные ноды.
-        showUnhealthy: false,
-        // Detail data for selected backend
-        detailPane: 'about', // 'about' | 'models' | 'downloads' | 'hf' | 'settings'
-        detailLoading: false,
-        detailError: null,
-        workerInfo: null,
-        gpuInfo: null,
-        localModels: [],
-        loadedModels: [],
-        // Runtime-параметры (n_ctx, gpu_layers, batch_size, flash_attn, n_layers, n_embd,
-        // gguf_context_length) реально загруженных моделей. Загружаются параллельно
-        // с loadedModels из /api/v1/cppworker/config/runtime. Используются в
-        // renderLoadedPane() чтобы показать «default: 8192, runtime: 32768».
-        runtimeModels: {},
-        // === Round 26 v0.5.13: Active queries per model ===
-        // Polling /api/models/active-queries каждые 3s для отображения
-        // busy badge "🔴 Generating (N active)" на loaded model card.
-        // Помогает UX: пользователь видит, почему apply ждёт, и не
-        // путает это с "настройки заблокированы".
-        activeQueries: {}, // key: model name, value: number
-        _activeQueriesTimer: null,
-        activeDownloads: [],
-        downloadProgress: {},
-        // HF search within the detail view
-        hfSearchQuery: '',
-        hfSearchResults: [],
-        hfSearchSelected: null,
-        hfModelFiles: [],
-        hfSearching: false,
-        // Settings (load options) — per-backend but stored globally
-        loadOptions: {
-            gpuLayers: -1,
-            ctxSize: 2048,
-            batchSize: 512,
-            flashAttn: false,
-            numa: false,
-            useMmap: true,
-            tensorSplit: null,
-            autoGpuDistribution: true,
-            strategy: 'vram-ratio'
-        },
-        // Round 32 #6 (2026-08-10): cache отрендеренного HTML формы Settings.
-        // Без этого фикса refreshDetailPane() (вызывается из active-queries polling
-        // каждые 3 секунды) пересоздавал весь .gguf-detail-content innerHTML,
-        // затирая форму на spinner-плейсхолдер. Пользователь видел форму
-        // на краткий миг, потом она исчезала ("идёт в перезагрузку"). Теперь
-        // renderSettingsPane() использует кэш вместо placeholder, если форма
-        // уже отрендерена для текущего бэкенда. Ключ — backendId, чтобы при
-        // переключении между бэкендами показывалась форма нового бэкенда.
-        _settingsFormHtmlByBackend: {}, // { backendId: { html, cfg } }
-        // Reference на текущую DOM-панель для делегированного обработчика кликов.
-        // Нужно, чтобы onDetailPanelClick() работал даже после refreshDetailPanel(),
-        // который пересоздаёт содержимое панели (но не сам узел #ggufDetailPanel —
-        // в данный момент узел не пересоздаётся, но на будущее держим ссылку).
-        _detailPanel: null
-    };
 
     // Статусы, которые считаем «нерабочими» и по умолчанию скрываем в GGUF.
-    var UNHEALTHY_STATUSES = { unhealthy: true, offline: true, draining: true, ollama_unavailable: true };
-
-    function isHealthyBackend(b) {
-        return !UNHEALTHY_STATUSES[b.status];
-    }
 
     function visibleBackends() {
         if (state.showUnhealthy) return state.registeredBackends;

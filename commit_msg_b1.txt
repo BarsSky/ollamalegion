@@ -1,0 +1,46 @@
+fix(pkg/logger): update logger_test.go for atomic.Pointer (Round 52.2 rename)
+
+Symptom
+-------
+`go test ./pkg/logger/` and `go test ./...` both fail with:
+  pkg/logger/logger_test.go:20:16: undefined: log
+  pkg/logger/logger_test.go:21:2: undefined: log
+  pkg/logger/logger_test.go:22:2: undefined: once
+  ... (20+ similar errors)
+
+Root cause
+----------
+Round 52.2 (commit 29b5465, 2026-08-24) replaced the old double-checked
+locking:
+  var log *zap.SugaredLogger
+  var once sync.Once
+with lock-free atomic.Pointer to fix a -race data race:
+  var logPtr atomic.Pointer[zap.SugaredLogger]
+
+The production code was fully migrated. The test file was NOT updated,
+and has been broken for 4+ months.
+
+Fix
+---
+- `log = nil` / `log = origLogger` → `logPtr.Store(nil)` / `logPtr.Store(origLogger)`
+- `origLogger := log` / `log == nil` → `origLogger := logPtr.Load()` / `logPtr.Load() == nil`
+- `assert.Equal(t, log, Get())` → `assert.Equal(t, logPtr.Load(), Get())`
+- Removed `once = sync.Once{}` (no replacement — `atomic.Pointer.Store`
+  replaces both the assignment and the once-gate)
+- Removed `"sync"` import (only used for `once`, which is gone)
+- Removed `"sync/atomic"` reference (unused after rewrite)
+
+Bonus: added `TestInit_StoreConcurrent` smoke test that calls Init()
+from 8 goroutines simultaneously. Validates the atomic.Pointer-based
+replacement preserves the original "safe concurrent init" property
+under -race.
+
+Verification
+------------
+  • `go test -count=1 ./pkg/logger/` → `ok 1.130s` (was build-failing
+    for 4+ months)
+  • `go build -tags llama_stub ./...` clean (whole project still builds)
+
+Files
+-----
+  pkg/logger/logger_test.go  rewrite to use logPtr; +TestInit_StoreConcurrent

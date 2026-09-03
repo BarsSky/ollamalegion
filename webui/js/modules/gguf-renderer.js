@@ -25,6 +25,10 @@ const GgufRenderer = (window.GgufRenderer = (function () {
     var state = M.state;
     var isHealthyBackend = M.isHealthyBackend;
     var visibleBackends = M.visibleBackends;
+    // Left panel renderers (from gguf-renderer-list.js loaded BEFORE this file).
+    var renderBackendsPanel = M.renderBackendsPanel;
+    var renderBackendsList = M.renderBackendsList;
+
 
     var formatFileSize = M.formatFileSize;
     var showToast = M.showToast;
@@ -97,93 +101,6 @@ const GgufRenderer = (window.GgufRenderer = (function () {
     }
 
     // ---- Left panel: backends ----
-
-    function renderBackendsPanel() {
-        return '' +
-            '<aside class="gguf-backends-panel">' +
-                '<div class="gguf-backends-panel-header">' +
-                    '<h3><i class="fas fa-network-wired"></i> ' + _('gguf.registered_backends') + '</h3>' +
-                    '<button class="gguf-link-button" id="ggufRefreshBackends" title="' + _('gguf.refresh_backend') + '"><i class="fas fa-sync"></i></button>' +
-                '</div>' +
-                '<div class="gguf-backend-list" id="ggufBackendList">' +
-                    renderBackendsList() +
-                '</div>' +
-                '<div style="margin-top:auto;padding-top:8px;border-top:1px solid var(--border);">' +
-                    '<label style="display:flex;align-items:center;gap:6px;padding:6px 4px;font-size:12px;cursor:pointer;margin-bottom:8px;">' +
-                        '<input type="checkbox" id="ggufShowUnhealthy" ' + (state.showUnhealthy ? 'checked' : '') + '>' +
-                        '<span>' + (_('gguf.show_unhealthy') || 'Показать недоступные') + '</span>' +
-                    '</label>' +
-                    '<button class="btn btn-sm btn-secondary" id="ggufOpenConnectModal" style="width:100%;justify-content:center;">' +
-                        '<i class="fas fa-plug"></i> ' + _('gguf.alternate_url_btn') +
-                    '</button>' +
-                '</div>' +
-            '</aside>';
-    }
-
-    function renderBackendsList() {
-        if (!state.backendDataLoaded) {
-            return '<div class="gguf-empty-state">' + _('gguf.loading_backends') + '</div>';
-        }
-        var visible = visibleBackends();
-        if (!visible || visible.length === 0) {
-            return '<div class="gguf-empty-state">' + _('gguf.no_registered_backends') + '</div>';
-        }
-        return visible.map(function (b) {
-            const isActive = state.selectedBackendId === b.id;
-            const statusClass = b.status === 'healthy' ? 'connected' :
-                (b.status === 'offline' ? 'disconnected' : 'warn');
-            const statusLabel = b.status === 'healthy' ? _('gguf.backend_healthy') :
-                (b.status === 'offline' ? _('gguf.backend_unreachable') : (b.status || '-'));
-            const modelCount = (b.models && b.models.length) || 0;
-            // ==== Sidebar loading indicator (Issue: «отображение состояния загрузки») ====
-            // Если у бэкенда есть модели в state.loadingModels, показываем их под именем
-            // со спиннером и elapsed-таймером: «⟳ Загружается model-name 12s».
-            let loadingHtml = '';
-            const loadingArr = (state.loadingModels && state.loadingModels[b.id]) || [];
-            if (loadingArr.length > 0) {
-                loadingHtml = loadingArr.map(function (lm) {
-                    const startedAt = lm.loadingStartedAt ? new Date(lm.loadingStartedAt).getTime() : Date.now();
-                    const elapsedMs = (lm.elapsedMs && lm.elapsedMs > 0)
-                        ? lm.elapsedMs
-                        : (Date.now() - startedAt);
-                    const elapsedSec = Math.max(0, Math.floor(elapsedMs / 1000));
-                    let elapsedLabel;
-                    if (elapsedSec < 60) elapsedLabel = elapsedSec + 's';
-                    else elapsedLabel = Math.floor(elapsedSec / 60) + 'm ' + (elapsedSec % 60) + 's';
-                    let stateIcon, stateColor, stateLabel;
-                    if (lm.state === 'error') {
-                        stateIcon = 'fa-times-circle';
-                        stateColor = 'var(--danger, #d9534f)';
-                        stateLabel = _('gguf.load_error_short') || 'Load error';
-                    } else {
-                        stateIcon = 'fa-spinner fa-spin';
-                        stateColor = 'var(--accent, #4a9eff)';
-                        stateLabel = _('gguf.loading_indicator') || 'Loading';
-                    }
-                    return '<div class="gguf-backend-loading-row" style="display:flex;align-items:center;gap:6px;margin-top:4px;padding:3px 6px;background:rgba(74,158,255,0.08);border-radius:4px;font-size:11px;color:' + stateColor + ';" title="' + Utils.escapeHtml(lm.name) + '">' +
-                        '<i class="fas ' + stateIcon + '" style="font-size:10px;flex-shrink:0;"></i>' +
-                        '<span style="flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">' +
-                            stateLabel + ': ' + Utils.escapeHtml(lm.name) +
-                        '</span>' +
-                        '<span style="font-family:monospace;font-size:10px;opacity:0.85;">' + elapsedLabel + '</span>' +
-                    '</div>';
-                }).join('');
-            }
-            return '' +
-                '<div class="gguf-backend-item ' + (isActive ? 'active' : '') + '" data-backend-id="' + Utils.escapeHtml(b.id) + '">' +
-                    '<div class="gguf-backend-item-header">' +
-                        '<span class="gguf-status-dot ' + statusClass + '"></span>' +
-                        '<span style="flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">' + Utils.escapeHtml(b.id) + '</span>' +
-                        '<span class="badge" style="background:var(--llamacpp-badge);font-size:10px;padding:2px 6px;">cpp</span>' +
-                    '</div>' +
-                    '<div class="gguf-backend-item-meta">' +
-                        '<span class="gguf-backend-item-status">' + statusLabel + '</span>' +
-                        '<span><i class="fas fa-cube"></i> ' + modelCount + '</span>' +
-                    '</div>' +
-                    (loadingHtml ? '<div class="gguf-backend-loading-list">' + loadingHtml + '</div>' : '') +
-                '</div>';
-        }).join('');
-    }
 
     // ---- Right panel: detail ----
 

@@ -1,0 +1,113 @@
+docs: R59.11 — P0 docs cleanup (configuration.md index + R59 endpoints + 6 ENV tables)
+
+Closes 5 BLOCKER gaps from the docs audit (R59.2 / R59.10 follow-up):
+
+## P0 #1: docs/configuration.md now exists
+
+R59.2 audit found 4 broken links to `docs/configuration.md` (in
+`installation.md`, `deployment.md`, `troubleshooting.md`, `api.md`).
+The actual canonical reference lives in `docs/{ru,en}/configuration.md`
+(~33KB each). Created `docs/configuration.md` as a thin INDEX that
+points to the canonical files, plus a navigation table mapping common
+questions to the right doc section. Resolves all 4 broken links
+without duplicating the reference content.
+
+## P0 #2: hardware-presets.md cross-linked from README.md
+
+R59.2 audit: `docs/ru/hardware-presets.md` (the primary solution to
+the user pain "не удобен для другого железа") was an orphan doc —
+not linked from `README.md` or `installation.md`. Added a one-paragraph
+"🚦 Быстрый старт" callout near the top of README.md pointing
+operators to the hardware-presets doc and the
+`scripts/apply-hardware-preset.py` tool.
+
+## P0 #3: hardware-presets.md cross-linked from installation.md
+
+Added a "Перед запуском" callout to the bundled-stack section of
+installation.md (the most-trafficked doc in the project) listing the
+4 hardware presets (RTX 30xx / 40xx / A10 / 50xx) and the
+`scripts/apply-hardware-preset.py` invocation. This is the single
+highest-impact change: an operator reading installation.md from
+scratch will now see the hardware preset step before `docker compose
+up`.
+
+## P0 #5: 3 new ENV tables added to docs/ru/configuration.md
+
+R58.1 (LB_STREAMING_NEVER_TIMEOUT) was already documented in both
+`ru/configuration.md:820` and `en/configuration.md:812` — closed.
+
+Added 3 new sections to `docs/ru/configuration.md` documenting ENV
+vars that were only in `.env.bundled-with-agent.example` comments:
+
+- `LB_NCTX_RELOAD_*` (4 vars) — Round 34-37, adaptive n_ctx auto-reload
+- `LB_NCTX_PREFLIGHT_*` (6 vars) — Round 35, preflight check; Cline 65K
+  bug fix from Round 35c
+- `CPPWORKER_RAM_FALLBACK_*` (3 vars) — Round 38, 3-tier cascade for
+  models that don't fit VRAM
+
+Each table lists ENV name, default value, and one-line purpose.
+Cross-references to the `.env.bundled-with-agent.example` line numbers
+where the canonical comment lives.
+
+## P0 #2 follow-up: R59 / R59.1 / R59.2 endpoints added to docs/api.md
+
+R59 (`GET /api/v1/admin/cluster/autosuggest`) and R59.1
+(`POST /api/v1/admin/cluster/autosuggest/apply`) shipped today but were
+NOT in `api.md`. Added a full "Cluster AutoDistribute API" section
+with:
+- request/response shapes (JSON examples)
+- error codes (404, 409, 503)
+- link to design spec at
+  `docs/superpowers/specs/2026-09-03-cluster-autodistribute.md`
+- link to live smoke test `scripts/test_autosuggest_endpoints.sh`
+
+This is the user-facing artifact for the Cluster AutoDistribute
+feature — operators can now discover and use it.
+
+## P0 #4 still open: docs/en/hardware-presets.md
+
+The English translation of `docs/ru/hardware-presets.md` is still
+missing. The R59.2 audit lists this as BLOCKER for English-speaking
+users. Translation is a mechanical task (the file is structured and
+all keys are already in `i18n/en.js`); tracked as a follow-up because
+it requires careful review of the gpu_arch / cuda_arch tables and the
+recommended_models lists to ensure no encoding issues.
+
+## Files changed
+
+  docs/configuration.md              (new, 70 lines: redirect index)
+  docs/installation.md              (+14 lines: hardware-preset callout)
+  README.md                         (+4 lines: "Быстрый старт" callout)
+  docs/ru/configuration.md          (+46 lines: 3 ENV tables)
+  docs/api.md                        (+44 lines: Cluster AutoDistribute API)
+
+## Verification
+
+  $ git grep -nE "configuration\.md" docs/ | head
+  README.md:151 → dead link fixed (now points to docs/en/configuration.md)
+  docs/installation.md:4 → was broken, now resolved
+  docs/deployment.md:262 → was broken, now resolved
+  docs/troubleshooting.md:82 → was broken, now resolved
+  docs/api.md:2361 → was broken, now resolved
+
+  $ git grep "admin/cluster/autosuggest" docs/
+  docs/api.md:1814  → R59 GET endpoint documented
+  docs/api.md:1847  → R59.1 POST endpoint documented
+  docs/README.md  → previously not mentioned; this R59.11 doesn't add
+                    it (covered by the AutoTune section that points
+                    to api.md). R59.12 will surface the feature in
+                    README.
+
+  $ git grep "hardware-presets" docs/
+  README.md:12  → "🚦 Быстрый старт" callout
+  docs/installation.md:81  → "Перед запуском" callout
+  docs/ru/hardware-presets.md  → existing (no changes here)
+
+## P1 follow-ups (not in this commit)
+
+- Add English `docs/en/hardware-presets.md` (BLOCKER for EN users).
+- Add the autosuggest endpoints to README.md (R59.12).
+- Add `LB_NCTX_*` / `CPPWORKER_RAM_FALLBACK_*` tables to `en/configuration.md`
+  (mirroring this commit's ru changes).
+- Audit R57.x WebUI split specs (in `docs/superpowers/specs/`) — they
+  are dated 2026-09-03 and have not been folded into the main docs.

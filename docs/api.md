@@ -1821,6 +1821,85 @@ Access-Control-Allow-Headers: Content-Type, Authorization, X-Agent-ID, X-API-Tok
 
 ---
 
+## Cluster AutoDistribute API (R59 — R59.2, 2026-09-03)
+
+Автоматическое распределение моделей между бэкендами на основе текущей
+утилизации (`busyScore = ActiveRequests/MaxConcurrentReqs`,
+`modelCountScore = loaded/MaxModels`). Suggestion = пара (overloaded,
+underloaded) одного типа, max 3 на source.
+
+Спека: `docs/superpowers/specs/2026-09-03-cluster-autodistribute.md`,
+`docs/superpowers/specs/2026-09-03-cluster-autosuggest-apply.md`.
+
+### GET /api/v1/admin/cluster/autosuggest
+
+Получить suggestions (read-only, без side effects).
+
+**Ответ 200 OK:**
+
+```json
+{
+  "timestamp": "2026-09-03T16:30:00Z",
+  "backends": [
+    {"id": "b1", "host": "...", "port": 18092, "type": "llama_cpp",
+     "status": "healthy", "activeRequests": 3, "maxConcurrentRequests": 4,
+     "loadedModelCount": 3, "maxModels": 3, "busyScore": 0.75, "modelCountScore": 1.0,
+     "isOverloaded": false, "isUnderloaded": false},
+    ...
+  ],
+  "suggestions": [
+    {"id": "sug-1", "type": "move", "fromBackend": "b1", "toBackend": "b2",
+     "model": "gemma-4-9b", "priority": 1,
+     "reason": "b1 overloaded (busy=0.85), b2 underloaded (busy=0.10)"}
+  ],
+  "summary": {"totalBackends": 3, "overloadedCount": 1, "underloadedCount": 1, "suggestionCount": 1}
+}
+```
+
+### POST /api/v1/admin/cluster/autosuggest/apply
+
+Применить suggestions (operator-confirmed). R59.2 — реальный wire с
+`unload` на source + `load` на destination + rollback reload при failure.
+
+**Request:**
+
+```json
+{
+  "suggestion_ids": ["sug-1", "sug-3"]
+}
+```
+
+**Ответ 200 OK:**
+
+```json
+{
+  "applied": 2,
+  "failed": 0,
+  "details": [
+    {"id": "sug-1", "status": "ok", "movedModel": "gemma-4-9b",
+     "fromBackend": "b1", "toBackend": "b2"},
+    ...
+  ],
+  "errors": []
+}
+```
+
+Errors:
+- `404 Not Found` — suggestion_id не существует или уже применён.
+- `409 Conflict` — source/dest backend стал unhealthy между suggest и apply.
+- `503 Service Unavailable` — load/unload операция не удалась, rollback применён.
+
+### Live test
+
+`scripts/test_autosuggest_endpoints.sh` — bash smoke test (R59.2):
+```bash
+bash scripts/test_autosuggest_endpoints.sh
+# → GET /api/v1/admin/cluster/autosuggest → 200 OK with valid JSON
+# → POST /api/v1/admin/cluster/autosuggest/apply → 200 OK
+```
+
+---
+
 ## AutoTune API (R54.1 — R55.2, 2026-08-24)
 
 AutoTune — автономный механизм оптимизации параметров загруженных моделей:

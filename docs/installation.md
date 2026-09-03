@@ -78,6 +78,16 @@ cp deployments/.env.bundled.example deployments/.env.bundled  # опционал
 
 ### 2.3 Запуск bundled-стека
 
+> **Перед запуском** выберите hardware preset под вашу GPU. Это влияет
+> на CUDA_ARCH, тюнинг балансера и параметры cppworker.
+>
+> **RTX 3070/3080/3090 (sm_86, 8GB):** дефолтные параметры подходят.
+> **RTX 4080/4090 (sm_89, 16-24GB):** запустите `python scripts/apply-hardware-preset.py rtx40-24gb`
+> **A10/A10G (sm_86, 24GB):** `python scripts/apply-hardware-preset.py a10-24gb`
+> **RTX 5090 (sm_120, 32GB, Blackwell):** `python scripts/apply-hardware-preset.py rtx50-32gb` (требует rebuild образа)
+>
+> Подробности: [`ru/hardware-presets.md`](ru/hardware-presets.md).
+
 **Вариант A: с sidecar-агентом метрик (рекомендуется для production)**
 
 Это вариант, который используется по умолчанию. Sidecar-агент отдаёт в WebUI

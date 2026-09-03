@@ -1890,3 +1890,15 @@ const Renderers = (function () {
         renderGgufCardsInto
     };
 })();
+
+// R59.12 (2026-09-03): expose to window. Same pattern as R59.3/5/6/7
+// — `app-listeners.js:309` does `const Renderers = window.Renderers;`
+// and relies on Renderers.proxyLogs being callable. Before this export,
+// that line returned `undefined` and the proxy-logs tab stayed
+// empty (R59.10 interaction smoke test doesn't cover the proxy tab
+// yet, so this slipped through the regression net). Now Renderers
+// is available as a window global for any module that destructures
+// or wraps it.
+if (typeof window !== 'undefined') {
+    window.Renderers = Renderers;
+}

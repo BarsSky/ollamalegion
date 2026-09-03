@@ -1021,3 +1021,15 @@ const GgufApi = (function () {
         }
     };
 })();
+
+// R59.7 (2026-09-03): expose to window so legacy consumers (e.g. the
+// refreshBackends fallback in gguf-renderer-refresh.js) can reach the
+// GgufApi surface. Same pattern as R59.3 (window.WebSocketManager),
+// R59.5 (Api.getAuthHeaders), R59.6 (window.showToast). Without this,
+// `window.GgufApi` is undefined and any module that uses it silently
+// breaks. The IIFE itself returns a per-cppworker surface (loadModel,
+// unloadModel, hfSearch, etc.); adding the window export is purely
+// additive — it doesn't change the public API.
+if (typeof window !== 'undefined') {
+    window.GgufApi = GgufApi;
+}

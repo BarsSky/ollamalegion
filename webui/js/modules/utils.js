@@ -281,3 +281,15 @@ const Utils = {
         this.updateGpuLayersBadge(inputId, badgeId);
     }
 };
+
+// R59.7 (2026-09-03): expose to window so gguf-renderer-list.js and any
+// other module that uses `window.Utils.escapeHtml(...)` (and similar)
+// actually finds Utils. Same pattern as R59.3 (window.WebSocketManager),
+// R59.5 (Api.getAuthHeaders), R59.6 (window.showToast), R59.7 fix
+// (window.GgufApi). Without this, `gguf-renderer-list.js:99` calls
+// `window.Utils.escapeHtml(b.id)` and gets "Cannot read properties of
+// undefined (reading 'escapeHtml')" — silent failure that drops the
+// whole backends list render.
+if (typeof window !== 'undefined') {
+    window.Utils = Utils;
+}

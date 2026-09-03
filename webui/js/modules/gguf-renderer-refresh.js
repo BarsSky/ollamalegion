@@ -31,14 +31,31 @@
         const state = M.state;
         if (_refreshInProgress) return Promise.resolve();
         _refreshInProgress = true;
-        var api = window.GgufApi || window.Api;
-        if (typeof api.listBackends !== 'function') {
+        // R59.7 (2026-09-03): gguf-renderer.js used to fall back to `window.GgufApi`
+        // here, but `GgufApi` (gguf-api.js) only exposes a per-cppworker surface
+        // (setUrl / loadModel / etc.) — it has no `listBackends()` method, and
+        // the IIFE never assigned itself to `window.GgufApi` (same R59.3 / R59.6
+        // pattern: `const X = (function(){...})()` без trailing `window.X = X`).
+        // Result: `api.listBackends` was always undefined → `refreshBackends`
+        // returned `Promise.resolve()` silently → `state.registeredBackends`
+        // stayed empty → GGUF page rendered "no registered backends" even
+        // though dashboard/monitor showed the same backend fine. The dashboard
+        // works because it uses `Api.cluster()` which has the `window.Api =
+        // Api` export (api.js:544).
+        //
+        // Fix: call `Api.fetchGgufBackends()` directly. The `/api/v1/gguf/backends`
+        // endpoint is a public admin endpoint (proxied by nginx → balancer
+        // admin) and already does the per-backend dedup that the GGUF page
+        // wants to display.
+        if (typeof window.Api === 'undefined' || typeof window.Api.fetchGgufBackends !== 'function') {
             _refreshInProgress = false;
             return Promise.resolve();
         }
-        return api.listBackends()
-            .then(function (backends) {
-                state.registeredBackends = backends || [];
+        return window.Api.fetchGgufBackends()
+            .then(function (resp) {
+                // Endpoint returns { backends: [...] } per api.md §GGUF
+                var backends = (resp && resp.backends) || resp || [];
+                state.registeredBackends = Array.isArray(backends) ? backends : [];
                 state.backendDataLoaded = true;
                 _refreshInProgress = false;
                 if (typeof M.updateBackendsList === 'function') M.updateBackendsList();

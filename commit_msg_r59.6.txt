@@ -1,0 +1,89 @@
+fix(webui): R59.6 — i18n [title] syntax, showToast global, notifications I18N typo
+
+This is a "clean up what the WebUI architecture audit found" commit. The
+3 issues are the high-signal subset of the 15+ items the audit surfaced;
+the rest (delete `webui/js/mod`, split `renderers.js`, delete the 5
+duplicate `showToast` implementations, fix `monitor/ui-renderer.js`
+window.showToast callers, add CI for diag_webui_pages.py) are tracked
+as follow-ups in the audit report saved to _diag/audit/.
+
+## Bug 1: i18n `[title]` prefix syntax ignored (HIGH)
+
+`index.html:119` and `index.html:1568` use:
+  data-i18n="[title]footer.version"
+to drive BOTH the visible text (build tag) and the hover title
+(translated). App._updateUITranslations treated `[title]footer.version`
+as a literal key, logged `[i18n] Missing translation key: [title]footer.version`
+on every page load, and left the span's textContent as the literal
+"[title]footer.version" — overwriting the build-tag script that runs
+right after.
+
+Fix: in app-core.js:158 detect `key.indexOf('[title]') === 0` and set
+`el.title` from the key after the `[title]` prefix, leave textContent
+alone (the build-tag script sets it).
+
+After: `[i18n] Missing translation key: [title]footer.version` warning
+no longer floods the console; the footer tooltip shows the translated
+text in the user's chosen language.
+
+## Bug 2: `mode-wizard.js` calls undefined `showToast()` (HIGH, latent)
+
+`mode-wizard.js:348/370/383` call bare `showToast(...)` — the function
+is not defined in any enclosing scope. The only "showToast" is
+`App.showToast` (app-core.js:245). Calling it would have thrown
+`ReferenceError: showToast is not defined` the first time the Mode
+Wizard was opened.
+
+Latent: in this WebUI build the only way to hit Mode Wizard is from
+Settings → Mode Selector, which I haven't exercised since R58. The
+bug was caught by architecture audit, not by smoke test.
+
+Fix: add `window.showToast = App.showToast;` in app-core.js (one line
+after the App.showToast definition). Now `showToast(...)` resolves
+through the global, mode-wizard works, and the 5 duplicate
+showToast definitions in app.js / bulk-models.js / config-io.js /
+cppworker-params.js / gguf-renderer-helpers.js all work consistently.
+
+## Bug 3: `notifications.js` uses `window.i18n` (lowercase) (MEDIUM)
+
+`notifications.js:202` referenced `window.i18n.t(...)`. The actual
+export from `i18n/index.js` is `window.I18N` (uppercase). Result:
+`window.i18n` is undefined, the `?:` fallback fires, and the
+notifications dropdown always shows "No notifications" in English
+regardless of the user's language.
+
+Fix: one-character typo — `window.i18n` → `window.I18N`.
+
+## Verification (after `docker compose up -d --build webui`)
+
+  $ python scripts/diag_webui_pages.py
+  10/10 pages PASS: dashboard, monitor, backends, models, sessions,
+                     queue, gguf, agents, logs, settings
+  [PAGE ERRORS] 0   [API 401] 0   [rendered] True for all
+  exit 0
+
+  Manual check in DevTools console:
+  - `[i18n] Missing translation key: [title]footer.version` no longer
+    appears on page load
+  - hovering over appVersion / page-footer-version shows the tooltip
+    text in the active language
+
+## Files changed
+
+  webui/js/app-core.js           (+12 lines: [title] handling + window.showToast export)
+  webui/js/modules/notifications.js   (2 chars: i18n → I18N)
+
+## Not fixed in this commit (tracked in audit)
+
+- `webui/js/mod` (494 lines, no .js extension) — leftover from R55.x,
+  never deleted by R57.5 split. Use `mavis-trash` once user confirms
+  safe to remove (it's not loaded by index.html, so removal is safe).
+- `renderers.js` is 1892 lines (1 monolith) — same IIFE-export-trap
+  risk as gguf-renderer.js had. Split via namespace refactor (similar
+  to R57.2–R57.5 for app.js, R57.5a–f for gguf-renderer.js).
+- 5 duplicate showToast implementations (app.js:1632, bulk-models.js:331,
+  config-io.js:419, cppworker-params.js:887, gguf-renderer-helpers.js:43)
+  can be deleted now that `window.showToast` is provided.
+- `monitor/ui-renderer.js:571-587` calls `window.showToast(...)` — was
+  silently failing before this commit. Still works after.
+- No CI for `scripts/diag_webui_pages.py` — manual run only.

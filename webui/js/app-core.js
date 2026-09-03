@@ -159,7 +159,18 @@
         document.querySelectorAll('[data-i18n]').forEach(function (el) {
             var key = el.getAttribute('data-i18n');
             if (key && window.I18N) {
-                if (el.tagName === 'INPUT' && el.hasAttribute('data-i18n-placeholder')) {
+                // R59.6 (2026-09-03): support combined "[title]key" syntax so
+                // index.html can declare a single attribute that drives BOTH
+                // the visible text (key) and the hover title (key). Used by
+                // appVersion / page-footer-version. Without this, [i18n]
+                // logs "Missing translation key: [title]footer.version" and
+                // leaves the literal text "[title]footer.version" in the DOM.
+                if (key.indexOf('[title]') === 0) {
+                    var titleKey = key.slice('[title]'.length);
+                    el.title = I18N.t(titleKey);
+                    // textContent is set by the version-display script later
+                    // (it carries the build tag, not an i18n key).
+                } else if (el.tagName === 'INPUT' && el.hasAttribute('data-i18n-placeholder')) {
                     el.placeholder = I18N.t(el.getAttribute('data-i18n-placeholder'));
                 } else {
                     el.textContent = I18N.t(key);
@@ -245,6 +256,17 @@
             setTimeout(function() { toast.remove(); }, 300);
         }, timeoutMs || 4000);
     };
+    // R59.6 (2026-09-03): expose canonical showToast as window.showToast so
+    // modules that haven't been refactored to use App.* (monitor/ui-renderer,
+    // bulk-models, etc.) don't ReferenceError. Without this, monitor page
+    // status badges would log "ReferenceError: showToast is not defined"
+    // on every backend-state change. The 5 duplicate showToast definitions
+    // in app.js / bulk-models.js / config-io.js / cppworker-params.js /
+    // gguf-renderer-helpers.js can be deleted in a follow-up commit; for
+    // now this single line makes them all work consistently.
+    if (typeof window !== 'undefined') {
+        window.showToast = App.showToast;
+    }
 
     // Aliases для backward compat (старое имя без подчёркивания для публичного API,
     // с подчёркиванием — internal helpers, вызываемые из event handlers).

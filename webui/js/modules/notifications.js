@@ -199,7 +199,7 @@
                 const empty = document.createElement('li');
                 empty.className = 'notifications-empty';
                 empty.dataset = { i18n: 'notifications.empty' };
-                empty.textContent = window.i18n ? window.i18n.t('notifications.empty') : 'No notifications';
+                empty.textContent = window.I18N ? window.I18N.t('notifications.empty') : 'No notifications';
                 container.appendChild(empty);
                 return;
             }

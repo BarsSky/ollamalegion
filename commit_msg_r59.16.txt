@@ -1,0 +1,32 @@
+docs: R59.16 — translate hardware-presets.md to English (BLOCKER for EN users per R59.2 audit)
+
+Context
+-------
+R59.2 audit (docs/configuration.md review) flagged `hardware-presets.md`
+as a P0 BLOCKER for English users: it only existed in `docs/ru/`. Every
+EN reference in `docs/en/configuration.md`, `docs/configuration.md` and
+`README.md` had to point back to the Russian file.
+
+This commit adds the English translation and updates cross-references.
+
+Files
+-----
+  docs/en/hardware-presets.md        +128  new (English translation)
+  docs/configuration.md              ±2    "RTX 4090" + "migrating GPU"
+                                          table rows now point to en/
+  docs/en/configuration.md           ±1    bottom of "Hardware Presets"
+                                          § now points to en/ not ru/
+  README.md                          ±1    quick-start callout: bilingual
+                                          link (EN | RU)
+
+Notes
+-----
+  • `docs/installation.md` and `docs/ru/configuration.md` continue to
+    link to the Russian version (they are themselves in Russian).
+  • Content is a faithful translation. Env var names, code blocks, file
+    paths and JSON keys are kept in their original form. Russian
+    comments in code samples translated, code itself untouched.
+  • The Russian `docs/ru/hardware-presets.md` is the source of truth
+    for content; future updates should be applied to both files in
+    lockstep (or, ideally, the build system should generate both from
+    a single source — but that's a future refactor).

@@ -901,7 +901,7 @@ python scripts/apply-hardware-preset.py rtx40-24gb
 # → auto-fills vramMaxUsage/gpuMaxUsage + hint with CPPWORKER_* env
 ```
 
-See: [docs/ru/hardware-presets.md](../ru/hardware-presets.md).
+See: [hardware-presets.md](hardware-presets.md).
 
 ### Parallel LlamaCollector (R58)
 

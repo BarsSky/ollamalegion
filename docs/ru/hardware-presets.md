@@ -113,3 +113,13 @@ A: Скопируйте `rtx40-24gb.json`, переименуйте, обнов�
 
 Если preset работает плохо на вашем железе — откройте issue с логами
 `cppworker-load.log` + `balancer.log`, мы обновим preset на основе данных.
+
+---
+
+## R58.3: Setup Wizard dropdown (WebUI)
+
+В R58.3 добавлен hardware preset dropdown в Setup Wizard → Step 4
+(General Settings). При выборе preset'а (RTX 4090 / A10 / RTX 5090)
+автозаполняются 4 поля (vramMaxUsage / gpuMaxUsage / cpuMaxUsage / ramMaxUsage)
+и показывается hint с CPPWORKER_* env vars для ручного применения к
+cppworker.

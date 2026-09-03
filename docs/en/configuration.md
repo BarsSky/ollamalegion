@@ -804,3 +804,115 @@ Virtual models as pipelines from multiple physical models.
 - [Развертывание](deployment.md) — Docker Compose и production deployment
 - [API документация](api.md) — Использование REST API и WebSocket
 - [Troubleshooting](troubleshooting.md) — Решение проблем
+
+---
+
+## Round 56-59 (2026-09-03): New ENV vars and endpoints
+
+### `LB_STREAMING_NEVER_TIMEOUT` (R58.1)
+
+Disables ALL streaming timeouts (idle, first-byte, request, total).
+Balancer does NOT abort streaming connections by its own timeout — waits for
+client cancel (r.Context().Done()) or backend EOF. Useful for long-running
+inference (Qwen3.6-35B prefill 10+ min) or when the client manages cancel via ctx.
+
+```bash
+# Enable
+LB_STREAMING_NEVER_TIMEOUT=1
+# Accepts: "1", "true", "yes" (case-insensitive)
+# "0" / unset = defaults (120s idle, 600s total, etc.)
+```
+
+Default behavior preserved (bit-identical for existing deployments).
+Opt-in via single ENV toggle.
+
+### `Backend.ApiStyle` (R56, EffectiveAPIStyle)
+
+New field `Backend.ApiStyle` (`ollama-native` / `openai-compatible`).
+Previously routing used `Backend.Type` directly, blocking operators from
+overriding API style (e.g. cppworker with native Ollama API was still
+routed through OpenAI-compat path).
+
+EffectiveAPIStyle (R56) helper:
+- If `ApiStyle` is explicitly set → use it
+- Otherwise inferred from `Type` (llama_cpp → openai-compatible, else ollama-native)
+
+Routing now uses `EffectiveAPIStyle()` instead of `isLlamaCppBackend()`.
+Backward compat: bit-identical for existing deployments without ApiStyle.
+
+### Cluster AutoDistribute (R59, R59.1)
+
+New endpoints for automatic model redistribution across backends:
+
+```bash
+# R59: get suggestions (read-only)
+GET /api/v1/admin/cluster/autosuggest
+→ 200 OK {
+    "timestamp": "...",
+    "backends": [...],
+    "suggestions": [
+      {"id": "sug-1", "type": "move", "fromBackend": "b1",
+       "toBackend": "b2", "model": "gemma-4-9b", "priority": 1, ...}
+    ],
+    "summary": {"totalBackends": 3, "overloadedCount": 1, ...}
+  }
+
+# R59.1: apply suggestions (operator-confirmed)
+POST /api/v1/admin/cluster/autosuggest/apply
+Body: {"suggestion_ids": ["sug-1", "sug-3"]}
+→ 200 OK {
+    "applied": 1,
+    "failed": 1,
+    "details": [
+      {"suggestionId": "sug-1", "status": "applied", ...},
+      {"suggestionId": "sug-99", "status": "failed", "error": "unknown suggestion id"}
+    ]
+  }
+```
+
+Algorithm:
+- Identify overloaded backends (busyScore > 0.8 OR modelCount > 0.9)
+- Find underloaded backends (busyScore < 0.3 AND modelCount < 0.5)
+- Suggest moving loaded models from overloaded → underloaded (same Type)
+- Cross-type moves forbidden (ollama ↔ llama_cpp breaks load format)
+- Max 3 suggestions per source (don't flood operator)
+
+Validation (R59.1):
+- Re-computes suggestions from current state (doesn't trust client)
+- Verifies suggestion_id exists
+- Verifies source/dest healthy
+- Verifies cross-type
+- Verifies model loaded on source
+
+### Hardware Presets (R58.2)
+
+`config/hardware-presets/{rtx30-8gb,rtx40-24gb,a10-24gb,rtx50-32gb}.json` —
+4 ready-made presets for different GPUs. Apply:
+
+```bash
+# List presets
+python scripts/apply-hardware-preset.py --list
+
+# Apply (prints KEY=VALUE for copy-paste)
+python scripts/apply-hardware-preset.py rtx40-24gb
+
+# Setup Wizard UI (R58.3): Settings → Setup Wizard → step 4
+# "Hardware Preset" dropdown → select RTX 4090 / A10 / RTX 5090
+# → auto-fills vramMaxUsage/gpuMaxUsage + hint with CPPWORKER_* env
+```
+
+See: [docs/ru/hardware-presets.md](../ru/hardware-presets.md).
+
+### Parallel LlamaCollector (R58)
+
+`internal/agent/llama_collector.go::Collect()` — 3 sequential HTTP calls
+to cppworker (/api/gpu, /api/models, /api/info) converted to parallel
+via `sync.WaitGroup`. ~3x speedup (603ms → 210ms on typical endpoints).
+Closes user pain: «agent waits for main thread cppworker».
+
+### Setup Wizard Hardware Preset Dropdown (R58.3)
+
+WebUI: Settings → Setup Wizard → Step 4 (General Settings) →
+new "Hardware Preset" dropdown. When a preset is selected (RTX 4090 / A10
+/ RTX 5090), 4 fields are auto-filled (vramMaxUsage / gpuMaxUsage /
+cpuMaxUsage / ramMaxUsage) and a hint displays the CPPWORKER_* env vars.

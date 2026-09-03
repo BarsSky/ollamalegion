@@ -1813,6 +1813,8 @@ docker run -d -p 8080:8080 -e SWAGGER_JSON=/api/swagger.json \
 | `PUT` | `/api/v1/autopull` | Обновить конфигурацию автопулла | ✅ |
 | `GET` | `/api/v1/autopull/status` | Статус загрузок автопулла | ✅ |
 | `GET` | `/ws/metrics?token=xxx` | WebSocket метрики | ✅ (token в query) |
+| `GET` | `/api/v1/admin/cluster/autosuggest` | R59: cluster autosuggest (read-only) | ✅ (token) |
+| `POST` | `/api/v1/admin/cluster/autosuggest/apply` | R59.1: apply suggestions | ✅ (token) |
 
 ---
 

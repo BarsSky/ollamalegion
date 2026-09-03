@@ -1948,6 +1948,8 @@ docker run -p 8080:8080 -v $(pwd)/docs/openapi.yaml:/openapi.yaml \
 | `PUT` | `/api/v1/autopull` | Update autopull configuration | Yes |
 | `GET` | `/api/v1/autopull/status` | Autopull status | Yes |
 | `GET` | `/ws/metrics?token=xxx` | Metrics WebSocket | Yes (token in query) |
+| `GET` | `/api/v1/admin/cluster/autosuggest` | R59: cluster autosuggest (read-only) | Yes (token) |
+| `POST` | `/api/v1/admin/cluster/autosuggest/apply` | R59.1: apply suggestions | Yes (token) |
 
 ---
 

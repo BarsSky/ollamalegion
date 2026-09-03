@@ -8,10 +8,18 @@ package balancer
 
 import (
 	"encoding/json"
+	neturl "net/url"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"testing"
+	"time"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+
+	"ollama-loadbalancer/pkg/types"
 )
 
 // TestProxyHelpers_WriteJSON_Basic — minimal happy path: simple struct → JSON.
@@ -164,4 +172,78 @@ func TestProxyHelpers_CopyResponse_PreservesMultipleHeaders(t *testing.T) {
 	if len(cookies) != 2 {
 		t.Errorf("Set-Cookie values = %d, want 2", len(cookies))
 	}
+}
+
+// TestProxyRequestToBackend_R59_15c — verifies the shared proxy helper
+// used by both OllamaRouter.proxyHTTP (30s) and LlamaCppRouter.proxyHTTP
+// (120s). The router wrappers are thin and the only difference is timeout.
+func TestProxyRequestToBackend_R59_15c(t *testing.T) {
+	t.Run("returns backend-not-found for unknown ID", func(t *testing.T) {
+		p := &Proxy{
+			backends: map[string]*BackendState{},
+		}
+		req := httptest.NewRequest(http.MethodGet, "/api/tags", nil)
+		_, err := p.proxyRequestToBackend(req, "nonexistent", 30*time.Second)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "backend not found")
+	})
+
+	t.Run("forwards request to backend with correct URL and headers", func(t *testing.T) {
+		var capturedPath string
+		var capturedAuth string
+		var capturedMethod string
+		upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			capturedPath = r.URL.Path
+			capturedAuth = r.Header.Get("Authorization")
+			capturedMethod = r.Method
+			w.WriteHeader(http.StatusOK)
+			w.Write([]byte(`{"ok":true}`))
+		}))
+		defer upstream.Close()
+
+		// Parse upstream.URL → Backend. Используем OllamaPort потому что
+		// getBackendPort() по умолчанию возвращает OllamaPort для EngineOllamaAPI.
+		port, _ := strconv.Atoi(upstreamURLPort(upstream.URL))
+		backend := &types.Backend{
+			ID:         "b1",
+			Host:       upstreamURLHost(upstream.URL),
+			OllamaPort: port,
+			Status:     types.StatusHealthy,
+			Type:       types.BackendTypeOllama,
+			Engine:     types.EngineOllamaAPI,
+		}
+		p := &Proxy{
+			backends: map[string]*BackendState{
+				"b1": {Backend: backend},
+			},
+		}
+
+		req := httptest.NewRequest(http.MethodPost, "/api/show", nil)
+		req.Header.Set("Authorization", "Bearer test-token")
+		resp, err := p.proxyRequestToBackend(req, "b1", 30*time.Second)
+		require.NoError(t, err)
+		defer resp.Body.Close()
+
+		assert.Equal(t, "/api/show", capturedPath)
+		assert.Equal(t, "Bearer test-token", capturedAuth)
+		assert.Equal(t, http.MethodPost, capturedMethod)
+		assert.Equal(t, http.StatusOK, resp.StatusCode)
+	})
+}
+
+// upstreamURLHost/Port — парсим httptest.Server URL (http://127.0.0.1:NNNN).
+func upstreamURLHost(rawURL string) string {
+	u, err := neturl.Parse(rawURL)
+	if err != nil {
+		return ""
+	}
+	return u.Hostname()
+}
+
+func upstreamURLPort(rawURL string) string {
+	u, err := neturl.Parse(rawURL)
+	if err != nil {
+		return ""
+	}
+	return u.Port()
 }

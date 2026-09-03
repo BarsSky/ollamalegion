@@ -34,8 +34,10 @@ package balancer
 
 import (
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
+	"time"
 )
 
 // writeJSON — write a JSON response with the given HTTP status and payload.
@@ -81,4 +83,41 @@ func copyResponse(w http.ResponseWriter, resp *http.Response) {
 	}
 	w.WriteHeader(resp.StatusCode)
 	_, _ = io.Copy(w, resp.Body)
+}
+
+// proxyRequestToBackend — R59.15c (2026-09-03): shared HTTP proxy helper
+// used by both OllamaRouter.proxyHTTP and LlamaCppRouter.proxyHTTP.
+//
+// Replaces two near-identical implementations that differed only in HTTP
+// client timeout:
+//   • OllamaRouter: 30s (Ollama is fast, no long-poll endpoints)
+//   • LlamaCppRouter: 120s (Round 21 — /api/show, /api/pull, /api/create
+//     trigger cppworker lazy-load which can take 50-70s for 5GB models)
+//
+// Each router's proxyHTTP is now a thin wrapper that calls this with the
+// appropriate timeout. The caller (handler) is unchanged.
+//
+// Returns the raw upstream http.Response. The caller is responsible for
+// closing resp.Body.
+func (p *Proxy) proxyRequestToBackend(r *http.Request, backendID string, timeout time.Duration) (*http.Response, error) {
+	backend := p.GetBackend(backendID)
+	if backend == nil {
+		return nil, fmt.Errorf("backend not found: %s", backendID)
+	}
+
+	port := p.getBackendPort(backend)
+	targetURL := fmt.Sprintf("http://%s:%d%s", backend.Host, port, r.URL.String())
+	client := &http.Client{Timeout: timeout}
+
+	req, err := http.NewRequestWithContext(r.Context(), r.Method, targetURL, r.Body)
+	if err != nil {
+		return nil, err
+	}
+	for key, values := range r.Header {
+		for _, value := range values {
+			req.Header.Add(key, value)
+		}
+	}
+
+	return client.Do(req)
 }

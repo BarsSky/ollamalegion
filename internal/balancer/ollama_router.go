@@ -3,7 +3,6 @@ package balancer
 import (
 	"bytes"
 	"encoding/json"
-	"fmt"
 	"io"
 	"net/http"
 	"time"
@@ -242,27 +241,11 @@ func (or *OllamaRouter) readBody(r *http.Request) []byte {
 	return body
 }
 
+// proxyHTTP — R59.15c: thin wrapper over Proxy.proxyRequestToBackend.
+// 30s timeout: Ollama endpoints are fast, no long-poll operations.
+// Previously this was a 22-line copy of the same logic in llamacpp_router.
 func (or *OllamaRouter) proxyHTTP(r *http.Request, backendID string) (*http.Response, error) {
-	backend := or.proxy.GetBackend(backendID)
-	if backend == nil {
-		return nil, fmt.Errorf("backend not found")
-	}
-
-	port := or.proxy.getBackendPort(backend)
-	url := fmt.Sprintf("http://%s:%d%s", backend.Host, port, r.URL.String())
-	client := &http.Client{Timeout: 30 * time.Second}
-
-	req, err := http.NewRequestWithContext(r.Context(), r.Method, url, r.Body)
-	if err != nil {
-		return nil, err
-	}
-	for key, values := range r.Header {
-		for _, value := range values {
-			req.Header.Add(key, value)
-		}
-	}
-
-	return client.Do(req)
+	return or.proxy.proxyRequestToBackend(r, backendID, 30*time.Second)
 }
 
 // NOTE: writeJSON and copyResponse moved to proxy_helpers.go in R51.1.

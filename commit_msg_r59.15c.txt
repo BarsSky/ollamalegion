@@ -1,0 +1,57 @@
+refactor(balancer): R59.15c — extract shared proxyRequestToBackend helper
+
+Refactor
+--------
+OllamaRouter.proxyHTTP (ollama_router.go:245) and LlamaCppRouter.proxyHTTP
+(llamacpp_backend_helpers.go:545) were near-duplicate 22-line implementations
+of the same logic:
+  • resolve backend by ID
+  • resolve port via getBackendPort()
+  • build target URL
+  • create http.Client with timeout
+  • build request with context + body
+  • copy headers
+  • do the request
+
+The only meaningful difference was the HTTP client timeout:
+  • OllamaRouter: 30s (Ollama endpoints are fast)
+  • LlamaCppRouter: 120s (Round 21 — /api/show, /api/pull, /api/create
+    trigger cppworker lazy-load which can take 50-70s for 5GB models)
+
+Extracted to Proxy.proxyRequestToBackend(r, backendID, timeout) in
+proxy_helpers.go. Both router methods are now 3-line thin wrappers:
+  func (or *OllamaRouter) proxyHTTP(r, id) (*http.Response, error) {
+      return or.proxy.proxyRequestToBackend(r, id, 30*time.Second)
+  }
+  func (lr *LlamaCppRouter) proxyHTTP(r, id) (*http.Response, error) {
+      return lr.proxy.proxyRequestToBackend(r, id, 120*time.Second)
+  }
+
+No call sites change — the 7 callers (6 in llamacpp_handlers_admin.go,
+1 in ollama_router_admin.go) continue to use lr.proxyHTTP / or.proxyHTTP.
+
+Tests
+-----
+Added `TestProxyRequestToBackend_R59_15c` (2 subtests):
+  • `returns_backend-not-found for unknown ID` — error path.
+  • `forwards_request_to_backend_with_correct_URL_and_headers` —
+    spins up httptest upstream, exercises full request/header forwarding.
+
+Verification
+------------
+  • `go vet -tags llama_stub ./internal/balancer/...` clean.
+  • New tests: 2/2 PASS in 0.19s.
+  • Full `-short` suite: only the pre-existing
+    `TestE2E_VirtualRouter_StreamingResponse` flake fails (passes in
+    isolation; order-dependent; predates R59.15).
+  • All 7 callers continue to work via the thin wrapper.
+
+Files
+-----
+  internal/balancer/proxy_helpers.go             +36  new helper
+  internal/balancer/proxy_helpers_test.go        +78  new test
+  internal/balancer/ollama_router.go             −21 +4  wrapper
+  internal/balancer/llamacpp_backend_helpers.go  −25 +7  wrapper
+
+Net: −44 lines of duplication eliminated, +36 lines of single-source
+shared helper, +78 lines of regression-guard tests.

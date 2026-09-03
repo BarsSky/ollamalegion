@@ -541,30 +541,11 @@ func (lr *LlamaCppRouter) ensureModelLoadedOnBackend(backendID, modelName string
 	}
 }
 
-// proxyHTTP проксирует запрос к конкретному бэкенду
+// proxyHTTP — R59.15c: thin wrapper over Proxy.proxyRequestToBackend.
+// 120s timeout (Round 21): /api/show, /api/pull, /api/create могут вызывать
+// lazy load модели (50-70s для 5GB qwen3-4b). 30s было слишком мало —
+// клиент получал 502 timeout, а cppworker продолжал грузить в фоне (теряя slot).
+// Раньше здесь была 22-строчная копия логики OllamaRouter.proxyHTTP.
 func (lr *LlamaCppRouter) proxyHTTP(r *http.Request, backendID string) (*http.Response, error) {
-	backend := lr.proxy.GetBackend(backendID)
-	if backend == nil {
-		return nil, fmt.Errorf("backend not found")
-	}
-
-	port := lr.proxy.getBackendPort(backend)
-	url := fmt.Sprintf("http://%s:%d%s", backend.Host, port, r.URL.String())
-	// Round 21: увеличил timeout с 30s до 120s. /api/show, /api/pull, /api/create
-	// могут вызывать lazy load модели (50-70s для 5GB qwen3-4b). 30s было
-	// слишком мало — клиент получал 502 timeout, а cppworker продолжал
-	// грузить в фоне (теряя slot).
-	client := &http.Client{Timeout: 120 * time.Second}
-
-	req, err := http.NewRequestWithContext(r.Context(), r.Method, url, r.Body)
-	if err != nil {
-		return nil, err
-	}
-	for key, values := range r.Header {
-		for _, value := range values {
-			req.Header.Add(key, value)
-		}
-	}
-
-	return client.Do(req)
+	return lr.proxy.proxyRequestToBackend(r, backendID, 120*time.Second)
 }

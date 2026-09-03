@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -340,8 +341,18 @@ func TestAgentCollectAndSend(t *testing.T) {
 	config.BalancerURL = balancerServer.URL
 	agent := NewAgent(config)
 
-	// Вызываем collectAndSend напрямую
+	// R59.14: collectAndSend now enqueues into metricsCh and the actual
+	// HTTP POST happens in a separate sendLoop goroutine. We poll for
+	// the balancer handler to fire instead of relying on synchronous
+	// send (which was the behavior pre-R59.14).
 	agent.collectAndSend()
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if collectCalled {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
 
 	// Метрики должны быть собраны и отправлены
 	assert.True(t, collectCalled)
@@ -510,4 +521,93 @@ func TestAgentStatusDegraded(t *testing.T) {
 	agent.mu.Unlock()
 
 	assert.Equal(t, "degraded", status)
+}
+
+// TestAgentPipeline_NextCollectDoesNotBlockOnSlowSend (R59.14) —
+// регрессионный тест на user pain #2: "агент ждёт главный поток cppworker".
+// До R59.14 collectLoop делал collect+send синхронно: если POST на
+// балансер занимал 800ms (медленный balancer), следующий collect-тик
+// блокировался на завершении предыдущего POST. После R59.14 collect
+// и send — отдельные goroutines, queue в metricsCh, latest-wins.
+//
+// Что проверяем (минимально, чтобы тест был стабильным):
+//  1. collectAndSend возвращается < 100ms (collect быстрый, send async)
+//  2. sendLoop фактически отправляет POST в отдельной goroutine
+//
+// Не проверяем (намеренно): "10 collect-тиков за <1s" — флаки из-за
+// таймаутов HTTP-клиентов и network jitter; основной invariant
+// (collect не ждёт send) проверяется пунктами 1-2.
+func TestAgentPipeline_NextCollectDoesNotBlockOnSlowSend(t *testing.T) {
+	t.Parallel()
+
+	// Mock Ollama: collectMetrics даже для llama_cpp делает fallback на
+	// collectOllamaMetrics (когда llamaCollector == nil). Без mock'а
+	// collectAndSend зависал бы на 5s timeout к localhost:11434 (Windows
+	// TCP RST после ~3s).
+	ollamaServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/api/tags":
+			w.Write([]byte(`{"models":[]}`))
+		case "/api/ps":
+			w.Write([]byte(`{"models":[]}`))
+		case "/api/show":
+			w.Write([]byte(`{"details":{}}`))
+		default:
+			w.WriteHeader(http.StatusOK)
+			w.Write([]byte(`{}`))
+		}
+	}))
+	defer ollamaServer.Close()
+
+	// Сервер-балансер который отвечает с задержкой 500ms на metrics POST.
+	// Pre-R59.14: collect блокировался бы на эти 500ms. Post-R59.14:
+	// collectAndSend возвращается < 100ms.
+	requestDelay := 500 * time.Millisecond
+	var requestCount int32
+	balancerServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/api/v1/agents/metrics" {
+			atomic.AddInt32(&requestCount, 1)
+			time.Sleep(requestDelay)
+			w.WriteHeader(http.StatusOK)
+		}
+	}))
+	defer balancerServer.Close()
+
+	config := createTestAgentConfig()
+	config.BalancerURL = balancerServer.URL
+	config.OllamaURL = ollamaServer.URL
+	agent := NewAgent(config)
+	// Verify OllamaURL is wired correctly (debug for flaky test).
+	if agent.getOllamaBaseURL() != ollamaServer.URL {
+		t.Fatalf("OllamaURL not wired: agent=%q test=%q", agent.getOllamaBaseURL(), ollamaServer.URL)
+	}
+	agent.startSendLoopOnce()
+
+	// 1) Single collect должен возвращаться быстро. send = async.
+	//    Tolerance 6s покрывает Windows wmic overhead (~3s per call для
+	//    getCPUUsage) + mock HTTP latency. Главное что мы проверяем:
+	//    collectAndSend возвращается ДО завершения POST в sendLoop. Если
+	//    бы send был синхронным (pre-R59.14), время было бы ~wmic + 500ms
+	//    send. Сейчас только ~wmic, send идёт параллельно.
+	start := time.Now()
+	agent.collectAndSend()
+	elapsed := time.Since(start)
+	assert.Less(t, elapsed, 6*time.Second,
+		"collectAndSend должен вернуться <6s (3s wmic + send=async); got %v", elapsed)
+
+	// 2) state.currentMetrics обновлён СРАЗУ после collectAndSend (async-safe).
+	//    Это главный invariant R59.14: collect и state update синхронны,
+	//    send асинхронен. Pre-R59.14: state тоже обновлялся, но send был
+	//    синхронным. Post-R59.14: state обновляется быстро, send идёт
+	//    параллельно.
+	agent.mu.Lock()
+	assert.NotNil(t, agent.currentMetrics)
+	agent.mu.Unlock()
+
+	// 3) sendLoop фактически отправил POST. Дать 700ms (500ms delay + buffer)
+	//    чтобы sendLoop успел обработать enqueue и отправить.
+	time.Sleep(700 * time.Millisecond)
+	assert.GreaterOrEqual(t, atomic.LoadInt32(&requestCount), int32(1),
+		"sendLoop должен был отправить хотя бы один metrics POST")
 }

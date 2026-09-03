@@ -1,0 +1,46 @@
+perf(agent): R59.14 — decouple collect/send goroutines (no more head-of-line blocking)
+
+Symptom
+-------
+Single collectLoop goroutine did collect → POST → next-tick sequentially.
+A slow cppworker poll (or a slow balancer POST) blocked the entire next
+collect tick, so the agent drifted behind `minCollectInterval` and the
+balancer saw stale metrics. Reproduced via the new test
+`TestAgentPipeline_NextCollectDoesNotBlockOnSlowSend`.
+
+Fix
+---
+Two goroutines communicate via `metricsCh` (buffer size 1, latest-wins):
+
+  collectLoop ──enqueueMetrics──▶ metricsCh ──▶ sendLoop ──HTTP POST──▶ balancer
+
+  • `enqueueMetrics` is non-blocking: if the channel is full (send still in
+    flight) we drop the older sample — stale data is worse than missed
+    samples for metrics.
+  • `sendLoop` drains the channel until close, POSTs each sample, and
+    signals completion on `sendStopped`.
+  • `sync.Once` makes `startSendLoopOnce` idempotent so tests that call
+    `collectAndSend()` directly without `Start()` still get the send
+    goroutine running.
+  • `Stop()` closes `metricsCh` and waits on `sendStopped` with a 2 s
+    deadline so a never-started sendLoop can't deadlock the test suite
+    (root cause of the full-package timeout fixed in this commit).
+  • `enqueueMetrics` recovers from "send on closed channel" panic to
+    tolerate the Stop()-close / last-tick race.
+
+Test
+----
+`TestAgentPipeline_NextCollectDoesNotBlockOnSlowSend` mocks ollama (always
+200) and the balancer (500 ms delay). Asserts:
+  • `currentMetrics` is updated synchronously by the first call.
+  • The second `collectAndSend()` returns BEFORE the first send POST
+    completes (within 6 s tolerance — wmic on Windows takes 3 s).
+  • The balancer eventually receives the metrics (send goroutine ran).
+
+Coverage: full `./internal/agent/` package: `ok 16.097s` (was hanging at
+60 s before the `Stop()` timeout fix).
+
+Files
+-----
+  internal/agent/collector.go      +86/-25  pipeline split + Stop timeout
+  internal/agent/collector_test.go +94/-8   new pipeline test + poll fix

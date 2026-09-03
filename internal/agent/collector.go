@@ -56,6 +56,20 @@ type Agent struct {
 	logBufMu    sync.Mutex
 	logBuffer   []string
 	maxLogLines int
+
+	// Pipeline decoupling: collect (CPU/IO-bound) and send (HTTP IO to
+	// balancer) run in separate goroutines. R59.14 (2026-09-03) replaces
+	// the previous single-goroutine model where a slow cppworker poll
+	// blocked the next collect tick (and vice versa, a slow balancer
+	// POST delayed the next collect). Buffer size = 1: if send is slow
+	// the next collect tick drops its result (latest-wins), which is the
+	// right policy for metrics — we don't want to queue stale data.
+	metricsCh   chan *types.BackendMetrics
+	sendStopped chan struct{}
+	// R59.14: sendLoop is normally started by Start(), but tests call
+	// collectAndSend() directly without Start(). sync.Once makes the
+	// lazy start safe and idempotent.
+	sendLoopOnce sync.Once
 }
 
 // requestRecord - запись о запросе для подсчета RPS
@@ -78,6 +92,15 @@ func NewAgent(config *types.AgentConfig) *Agent {
 		versionCacheTTL: 5 * time.Minute,
 		logBuffer:       make([]string, 0, 1000),
 		maxLogLines:     1000,
+		// R59.14: pipeline decoupling. Buffer size 1 means "drop oldest if
+		// send is slow" — we always want the freshest metrics, not a queue
+		// of stale ones. sendStopped signals the send goroutine to exit
+		// when Stop() is called and the channel is closed.
+		metricsCh:   make(chan *types.BackendMetrics, 1),
+		sendStopped: make(chan struct{}),
+		// sendLoopOnce: zero value (sync.Once{}), first call wins. Used
+		// by collectAndSend() to lazy-start the send goroutine for tests
+		// that don't go through Start().
 	}
 	// Инициализация llama-коллектора для llama.cpp бэкендов
 	if config.BackendType == types.BackendTypeLlamaCpp {
@@ -104,8 +127,14 @@ func (a *Agent) Start() error {
 
 	a.registered = true
 
-	// Запуск сбора метрик
+	// Запуск pipeline: collect (CPU-bound) + send (HTTP IO) — две горутины,
+	// общающиеся через metricsCh (R59.14). Раньше был один collectLoop
+	// который делал collect + send последовательно; при медленном cppworker
+	// или балансере следующий tick блокировался на завершении предыдущего.
+	// sendLoop is also lazy-started by collectAndSend via sync.Once, so
+	// it's safe even if a test calls collectAndSend() before Start().
 	go a.collectLoop()
+	a.startSendLoopOnce()
 
 	// Запуск heartbeat
 	go a.heartbeatLoop()
@@ -119,6 +148,23 @@ func (a *Agent) Start() error {
 // Stop - остановка агента
 func (a *Agent) Stop() {
 	close(a.stopChan)
+	// R59.14: close metricsCh to signal sendLoop to drain and exit.
+	// Drain semantics: any value currently buffered is sent before
+	// sendLoop returns. After close, enqueueMetrics's non-blocking
+	// select will panic on send-to-closed-channel — but the recover()
+	// in enqueueMetrics swallows that, and we never enqueue after
+	// Stop() returns, so the call sites are safe.
+	close(a.metricsCh)
+	// Wait for sendLoop to finish its last POST, with timeout. If
+	// sendLoop was never started (e.g. test called Stop() without
+	// Start()) this would deadlock; the timeout makes Stop() safe to
+	// call without that prerequisite.
+	select {
+	case <-a.sendStopped:
+		// sendLoop exited cleanly
+	case <-time.After(2 * time.Second):
+		// sendLoop was never started or stuck — don't block forever
+	}
 	// Остановка health-сервера
 	if a.healthServer != nil {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -232,6 +278,9 @@ func (a *Agent) collectLoop() {
 	for {
 		select {
 		case <-ticker.C:
+			// R59.14: collect is now decoupled from send. Slow cppworker
+			// doesn't block the next tick — the send loop is in its own
+			// goroutine and reads from a.metricsCh.
 			a.collectAndSend()
 		case <-a.stopChan:
 			return
@@ -239,8 +288,78 @@ func (a *Agent) collectLoop() {
 	}
 }
 
-// collectAndSend - сбор и отправка метрик
+// sendLoop is the consumer half of the R59.14 pipeline. Runs in its
+// own goroutine; reads *types.BackendMetrics from a.metricsCh, marshals
+// to JSON, and POSTs to the balancer. Slow balancer doesn't block the
+// next collect (the next tick drops the oldest value via the buffered
+// channel's non-blocking send in enqueueMetrics below).
+func (a *Agent) sendLoop() {
+	for m := range a.metricsCh {
+		a.sendOneMetrics(m)
+	}
+	close(a.sendStopped)
+}
+
+// startSendLoopOnce is called by collectAndSend() so that test code
+// (which doesn't go through Start()) still gets the send goroutine
+// running. sync.Once ensures the goroutine is spawned at most once
+// per Agent, even with concurrent collectAndSend calls.
+func (a *Agent) startSendLoopOnce() {
+	a.sendLoopOnce.Do(func() { go a.sendLoop() })
+}
+
+// enqueueMetrics pushes a freshly-collected metrics into a.metricsCh
+// with a non-blocking send. If the channel is full (send is still busy
+// with the previous tick), we drop the previous value and queue the
+// freshest one. This is the "latest-wins" policy: stale metrics are
+// worse than missed metrics because they show the wrong "now".
+func (a *Agent) enqueueMetrics(m *types.BackendMetrics) {
+	// R59.14: защита от send-on-closed-channel panic. После Stop() канал
+	// закрыт, но collectLoop может вызвать enqueueMetrics из последнего
+	// тика (race между ticker.C и <-stopChan). Просто drop в этом случае.
+	defer func() {
+		_ = recover() // swallow "send on closed channel"
+	}()
+	select {
+	case a.metricsCh <- m:
+		// queued successfully
+	default:
+		// Channel full → previous value is being sent, drop it and
+		// queue ours. This is the only place where we lose data, and
+		// it's the right tradeoff: the next tick (in <CollectInterval)
+		// will queue its own value.
+		select {
+		case <-a.metricsCh: // drain the old
+		default:
+		}
+		select {
+		case a.metricsCh <- m:
+		default:
+			// extremely unlikely (a goroutine just freed a slot between
+			// the two selects); drop this value
+		}
+	}
+}
+
+// sendOneMetrics — POST one metrics payload to the balancer. Caller
+// (sendLoop) is responsible for reading from the channel. This is the
+// extracted "send a single metrics object" step.
+func (a *Agent) sendOneMetrics(metrics *types.BackendMetrics) {
+	data, err := json.Marshal(metrics)
+	if err != nil {
+		fmt.Printf("[%s] Failed to marshal metrics: %v\n", time.Now().Format(time.RFC3339), err)
+		return
+	}
+	a.sendMetrics(data)
+}
+
+// collectAndSend - сбор и отправка метрик (R59.14: enqueue в pipeline,
+// см. sendLoop).
 func (a *Agent) collectAndSend() {
+	// R59.14: lazy-start sendLoop if it hasn't been started yet. Test
+	// code that calls collectAndSend() directly (without Start()) needs
+	// the send goroutine running too. Use sync.Once for thread-safety.
+	a.startSendLoopOnce()
 	metrics := a.collectMetrics()
 
 	// Логирование собранных метрик для диагностики
@@ -273,14 +392,9 @@ func (a *Agent) collectAndSend() {
 
 	_ = protocol.NewMetricsMessage(a.config.AgentID, seq, metrics)
 
-	// Отправляем метрики напрямую как BackendMetrics (без wrapper)
-	data, err := json.Marshal(metrics)
-	if err != nil {
-		fmt.Printf("[%s] Failed to marshal metrics: %v\n", time.Now().Format(time.RFC3339), err)
-		return
-	}
-
-	a.sendMetrics(data)
+	// R59.14: enqueue для sendLoop (non-blocking, latest-wins). Раньше
+	// здесь был синхронный sendMetrics(data).
+	a.enqueueMetrics(metrics)
 }
 
 // sendMetrics - отправка метрик на балансировщик

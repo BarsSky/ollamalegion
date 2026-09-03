@@ -93,55 +93,69 @@ func (p *Proxy) routeRequest(w http.ResponseWriter, r *http.Request) bool {
 		return false
 	}
 
-	// Смешанный режим (bt == ""): read-only/админ endpoint'ы /api/*.
-	// Выбираем порядок роутеров на основе фактических типов бэкендов:
-	// если Ollama-бэкендов нет, а llama.cpp есть — пробуем LlamaCppRouter
-	// первым, чтобы не получить пустой ответ от OllamaRouter.
-	if bt == "" {
-		counts := p.countBackendsByType()
-		hasOllama := counts[types.BackendTypeOllama] > 0
-		hasLlama := counts[types.BackendTypeLlamaCpp] > 0
+	// R59.15b (2026-09-03): build priority-ordered list of routers and
+	// dispatch through a single helper. Replaces three repeated `if X != nil
+	// && X.Route(w, r)` ladders. The order is what matters:
+	//   • mixed mode with Ollama backends → Ollama first, then llama.cpp
+	//     (Ollama has the most native /api/* support)
+	//   • mixed mode with only llama.cpp → llama.cpp first, then Ollama
+	//     fallback (avoid empty aggregate responses)
+	//   • no backends registered → Ollama first as default
+	//   • locked llama.cpp mode → only llama.cpp router
+	//   • locked Ollama mode → only Ollama router
+	routers := p.buildRoutersForDispatch(bt)
+	if p.dispatchRouters(routers, w, r) {
+		return true
+	}
+	return false
+}
 
-		if hasOllama {
-			if p.ollamaRouter != nil && p.ollamaRouter.Route(w, r) {
-				return true
-			}
-			if p.llamaCppRouter != nil && p.llamaCppRouter.Route(w, r) {
-				return true
-			}
-		} else if hasLlama {
-			if p.llamaCppRouter != nil && p.llamaCppRouter.Route(w, r) {
-				return true
-			}
-			if p.ollamaRouter != nil && p.ollamaRouter.Route(w, r) {
-				return true
-			}
-		} else {
-			// Нет бэкендов — стандартный fallback: OllamaRouter, затем llama.cpp
-			if p.ollamaRouter != nil && p.ollamaRouter.Route(w, r) {
-				return true
-			}
-			if p.llamaCppRouter != nil && p.llamaCppRouter.Route(w, r) {
-				return true
-			}
-		}
-		return false
+// buildRoutersForDispatch — R59.15b: returns the priority-ordered list of
+// BackendRouter instances to try for the given request backend type. nil
+// routers are preserved in the list so dispatchRouters can skip them
+// uniformly (instead of inlining nil checks at each call site).
+func (p *Proxy) buildRoutersForDispatch(bt types.BackendType) []BackendRouter {
+	// Locked modes: only one router is relevant.
+	switch bt {
+	case types.BackendTypeLlamaCpp:
+		return []BackendRouter{p.llamaCppRouter}
+	case types.BackendTypeOllama:
+		return []BackendRouter{p.ollamaRouter}
 	}
 
-	// Режим жёстко привязан к llama.cpp
-	if bt == types.BackendTypeLlamaCpp && p.llamaCppRouter != nil {
-		if p.llamaCppRouter.Route(w, r) {
+	// Mixed mode (bt == ""): order by which backend types are registered.
+	counts := p.countBackendsByType()
+	hasOllama := counts[types.BackendTypeOllama] > 0
+	hasLlama := counts[types.BackendTypeLlamaCpp] > 0
+
+	switch {
+	case hasOllama:
+		// Ollama-приоритет: большинство /api/* endpoint'ов нативные.
+		return []BackendRouter{p.ollamaRouter, p.llamaCppRouter}
+	case hasLlama:
+		// Только llama.cpp: пробуем его первым, иначе OllamaRouter вернёт
+		// пустой aggregate (нельзя делать aggregation без Ollama backends).
+		return []BackendRouter{p.llamaCppRouter, p.ollamaRouter}
+	default:
+		// Нет зарегистрированных бэкендов — стандартный fallback: Ollama,
+		// затем llama.cpp (для случая когда router инициализирован, но
+		// backends ещё не подключились).
+		return []BackendRouter{p.ollamaRouter, p.llamaCppRouter}
+	}
+}
+
+// dispatchRouters — R59.15b: единая диспетчеризация по приоритетному списку
+// BackendRouter. Возвращает true если любой router в списке обработал запрос.
+// nil-элементы пропускаются.
+func (p *Proxy) dispatchRouters(routers []BackendRouter, w http.ResponseWriter, r *http.Request) bool {
+	for _, router := range routers {
+		if router == nil {
+			continue
+		}
+		if router.Route(w, r) {
 			return true
 		}
 	}
-
-	// Режим жёстко привязан к Ollama
-	if bt == types.BackendTypeOllama && p.ollamaRouter != nil {
-		if p.ollamaRouter.Route(w, r) {
-			return true
-		}
-	}
-
 	return false
 }
 

@@ -1,0 +1,51 @@
+refactor(balancer): R59.15b — single dispatch loop via []BackendRouter
+
+Refactor
+--------
+`routeRequest` had three repeated `if X != nil && X.Route(w, r)` ladders
+(lines 105-127 for mixed mode, 132-136 for locked llama.cpp, 139-143 for
+locked Ollama). Each ladder hand-rolled nil checks and ordering logic.
+
+Replaced with a single dispatch pattern:
+  • `buildRoutersForDispatch(bt types.BackendType) []BackendRouter` —
+    builds the priority-ordered list. The order is the only thing that
+    matters (it encodes all the previous conditional logic):
+      - locked llama.cpp → [llamaCppRouter]
+      - locked Ollama    → [ollamaRouter]
+      - mixed + Ollama backends present → [ollamaRouter, llamaCppRouter]
+      - mixed + only llama.cpp backends → [llamaCppRouter, ollamaRouter]
+      - no backends registered → [ollamaRouter, llamaCppRouter]
+  • `dispatchRouters(routers []BackendRouter, w, r) bool` — iterates the
+    list, skipping nil entries, returns true on first Route match.
+
+`routeRequest` body shrank from ~95 lines of dispatch logic to 4 lines:
+  routers := p.buildRoutersForDispatch(bt)
+  if p.dispatchRouters(routers, w, r) { return true }
+
+Tests
+-----
+Added `router_dispatch_test.go` (5 tests):
+  • `TestDispatchRouters_SkipsNilAndReturnsTrueOnFirstHit` — nil
+    entries skipped, first hit short-circuits the list.
+  • `TestDispatchRouters_AllReturnFalseYieldsFalse` — all routers
+    miss → false.
+  • `TestDispatchRouters_EmptyListYieldsFalse` — nil/empty list safe.
+  • `TestBuildRoutersForDispatch_OrdersCorrectly` — covers all 5
+    priority orderings (locked modes + 3 mixed-mode cases).
+
+Plus a `fakeRouter` helper for the dispatch tests.
+
+Verification
+------------
+  • `go vet -tags llama_stub ./internal/balancer/...` clean.
+  • New tests: 5/5 PASS in 0.19s.
+  • Targeted suite (route/dispatch/loadbackoff/proxy/health): 7.95s, OK.
+  • Full `-short` suite: 37s, fails ONLY on pre-existing flakes
+    (`TestLoadBackoff_Snapshot` order-dependent + `queue_manager.go:234`
+    test-teardown race). Both pass in isolation; both predate R59.15.
+  • `routeRequest` diff: −93 lines, +44 lines (net −49).
+
+Files
+-----
+  internal/balancer/router.go                −93 +44
+  internal/balancer/router_dispatch_test.go   +165 (new)

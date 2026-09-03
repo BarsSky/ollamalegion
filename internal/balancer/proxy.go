@@ -1199,6 +1199,21 @@ func (p *Proxy) getRecentClients() []types.RecentClient {
 	return result
 }
 
+// R59 (2026-09-03): ComputeAutosuggestions — pure delegation to ComputeSuggestions.
+// Accepts loadedByBackend (map backendId → []modelName) and returns ordered suggestions.
+func (p *Proxy) ComputeAutosuggestions(loadedByBackend map[string][]string) []Suggestion {
+	backends := p.GetAllBackends()
+	if len(backends) == 0 {
+		return nil
+	}
+	// GetAllBackends returns []types.Backend; ComputeSuggestions expects []*types.Backend
+	ptrs := make([]*types.Backend, len(backends))
+	for i := range backends {
+		ptrs[i] = &backends[i]
+	}
+	return ComputeSuggestions(ptrs, loadedByBackend)
+}
+
 // parsedRequest — результат однократного разбора тела запроса.
 // Используется чтобы избежать тройного чтения тела (recordRecentClient + extractModel + proxyRequest).
 type parsedRequest struct {

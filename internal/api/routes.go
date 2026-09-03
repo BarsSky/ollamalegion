@@ -176,6 +176,11 @@ func (s *Server) setupRoutes() {
 	// Apply endpoint — отдельный handler с явной обработкой POST /apply suffix.
 	s.mux.Handle("/api/v1/admin/autotune/", AuthMiddleware(RateLimitMiddleware(http.HandlerFunc(s.routeAdminAutotuneByID), s.rateLimiter), s.authenticator))
 
+	// R59 (2026-09-03): Cluster AutoDistribute — read-only autosuggest.
+	// GET /api/v1/admin/cluster/autosuggest — returns cluster state + suggested
+	// model moves. Does NOT apply (apply = R59.1, future).
+	s.mux.Handle("/api/v1/admin/cluster/autosuggest", AuthMiddleware(RateLimitMiddleware(http.HandlerFunc(s.handleAdminAutosuggest), s.rateLimiter), s.authenticator))
+
 	// Internal callbacks от cppworker (Шаг «отображение загрузки в мониторе»).
 	// POST /api/v1/internal/llama-model-loaded — callback при успешной загрузке модели.
 	// Endpoint требует X-API-Token (если в config задан API_TOKEN). Не публичный.

@@ -11,7 +11,20 @@
   }
 
   function api(path) {
-    var token = new URLSearchParams(location.search).get('token') || localStorage.getItem('apiToken') || '';
+    // R59.3 (2026-09-03): fallback chain для токена. Раньше chain был
+    //   ?token=... → localStorage.apiToken → ''
+    // Когда monitor.html загружается как iframe из index.html, ни ?token=,
+    // ни localStorage не заполнены (iframe в том же origin, но localStorage
+    // ещё не выставлен при первой загрузке). Результат: все запросы идут
+    // БЕЗ X-API-Token → 401 от балансера → monitor UI показывает ошибки.
+    // Добавляем 3-й fallback: window.WEBUI_CONFIG.API_TOKEN (entrypoint.sh
+    // инжектит реальный токен в config.js при старте контейнера).
+    // Standalone-сценарий (открыли monitor.html напрямую) продолжает
+    // работать через ?token= / localStorage.
+    var token = new URLSearchParams(location.search).get('token')
+             || localStorage.getItem('apiToken')
+             || (window.WEBUI_CONFIG && window.WEBUI_CONFIG.API_TOKEN)
+             || '';
     var ctrl = new AbortController();
     var tid = setTimeout(function() { ctrl.abort(); }, 15000);
     return fetch(MA.API_BASE + path, {

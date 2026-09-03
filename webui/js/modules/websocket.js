@@ -149,3 +149,15 @@ const WebSocketManager = (function () {
         }
     };
 })();
+
+// R59.3 (2026-09-03): `const WebSocketManager = ...` был локальной
+// переменной IIFE — app-listeners.js setupWebSocketEvents() вызывает
+// `window.WebSocketManager.connect()`, и без этого экспорта получается
+// `Cannot read properties of undefined (reading 'connect')` в app.js
+// init(). Симптом: connection status badge застревает на "Connecting..."
+// (висело с момента 9d12d6a "recretae api / refactor webui", 28 апреля;
+// до R57.x split никто не замечал, потому что ошибка падала молча и
+// инициализация WebUI всё равно доходила до конца).
+if (typeof window !== 'undefined') {
+    window.WebSocketManager = WebSocketManager;
+}

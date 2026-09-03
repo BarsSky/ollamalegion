@@ -1,0 +1,46 @@
+fix(webui): R59.3 — WebUI не подключается к балансеру (monitor iframe 401 + WebSocket crash)
+
+User report: "WebUI не подключается к балансеру и не определяет свое поведение"
+
+Headless диагностика (Playwright + scripts/diag_webui.py) нашла 2 независимых бага:
+
+1) monitor.html iframe шлёт все API запросы БЕЗ X-API-Token → 401
+   - webui/js/monitor/api.js:14 имел fallback chain: ?token= → localStorage.apiToken → ''
+   - Когда monitor.html загружается как iframe из index.html, ни ?token=,
+     ни localStorage не заполнены → токен пустой → 401
+   - 11/27 запросов в логе (cluster, queue, sessions, autopull, candidates,
+     virtualmodels, models/operations) → все 401
+   - fix: добавить 3-й fallback (window.WEBUI_CONFIG.API_TOKEN) в api.js
+   - fix: загрузить config.js в monitor.html (<script defer> в <head>)
+   - fix: добавить defer на все script src в monitor.html, чтобы config.js
+     выполнился ДО init.js (sync init.js вызывает fetchAll() сразу,
+     который читает токен — без defer defer config.js не успевал)
+
+2) app.js init() падает: "Cannot read properties of undefined (reading 'connect')"
+   - webui/js/modules/websocket.js создавал const WebSocketManager = (function(){...})()
+     но НЕ присваивал window.WebSocketManager = WebSocketManager
+   - app-listeners.js:274 вызывает window.WebSocketManager.connect() → crash
+   - Симптом: connection status badge застревает на "Connecting..."
+   - Стало падать молча с момента 9d12d6a "recretae api / refactor webui"
+     (28 апреля); до R57.x split ошибка тоже была, но не замечали
+     (WebUI доходил до конца init)
+   - fix: добавить `if (typeof window !== 'undefined') { window.WebSocketManager = WebSocketManager; }`
+     в конец websocket.js (по аналогии с api.js:441-443)
+
+Verification (после пересборки webui:cppworker-bundled-r55.10):
+- Headless smoke test scripts/diag_webui.py:
+  - 39/39 API запросов 200 OK (включая /api/v1/events SSE)
+  - 38/39 с X-API-Token=changeme-bundled-with-agent-token
+  - 1/39 (SSE) передаёт токен в query ?token=... — это нормально
+    (EventSource API не поддерживает custom headers)
+  - connection status: 'Connected' (WebSocket работает)
+  - screenshot сохранён в _diag/webui-dashboard.png
+- index.html / monitor.html / app.js / monitor/api.js без изменений в API
+
+Files changed:
+  webui/js/modules/websocket.js  (1 export block, ~12 lines)
+  webui/js/monitor/api.js         (1 fallback chain, ~13 lines)
+  webui/monitor.html              (2 defer scripts in head, 11 defer in body)
+  scripts/diag_webui.py           (new: Playwright smoke test)
+  _diag/diag_webui{2,3,4,5,6}.py + _diag/diag_workaround.py
+                                (new: diagnostic scratch — kept locally only)

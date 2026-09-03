@@ -18,6 +18,12 @@
   <script src="js/i18n/en.js?v=12"></script>
   <script src="js/i18n/index.js?v=12"></script>
   <script src="js/monitor/backend-type-badges.js?v=12"></script>
+  <!-- R59.3 (2026-09-03): WEBUI_CONFIG содержит API_TOKEN, инжектированный
+       entrypoint.sh из Docker --env API_TOKEN. Нужен для monitor/api.js
+       fallback (когда monitor.html загружается как iframe из index.html
+       без ?token= и без localStorage.apiToken). -->
+  <script defer>window.WEBUI_CONFIG = window.WEBUI_CONFIG || {};</script>
+  <script defer src="js/modules/config.js?v=16"></script>
 </head>
 <body>
 <header>
@@ -471,17 +477,26 @@
     </div>
   </div>
 </main>
-  <script src="js/modules/monitor-charts.js?v=12"></script>
-  <script src="js/modules/monitor-metrics.js?v=12"></script>
-  <script src="js/modules/monitor-backends.js?v=12"></script>
-  <script src="js/monitor/state.js?v=12"></script>
-  <script src="js/monitor/api.js?v=12"></script>
-  <script src="js/monitor/ui-renderer.js?v=12"></script>
-  <script src="js/monitor/sparkline.js?v=1"></script>
-  <script src="js/monitor/canvas-topology.js?v=12"></script>
-  <script src="js/monitor/canvas-conveyor.js?v=12"></script>
-  <script src="js/monitor/i18n-theme.js?v=12"></script>
-  <script src="js/monitor/init.js?v=12"></script>
+  <!-- R59.3 (2026-09-03): all scripts below are defer so they execute AFTER
+       the defer scripts in <head> (window.WEBUI_CONFIG = {} and
+       config.js?v=16) populate window.WEBUI_CONFIG.API_TOKEN. Without
+       defer, init.js's setInterval(fetchAllSafe, 2000) + immediate
+       fetchAll() call would fire BEFORE config.js (also defer) loads,
+       so api.js's WEBUI_CONFIG.API_TOKEN fallback would be empty
+       on first tick → 401 from balancer. With defer, all scripts
+       execute in document order, and config.js (defer) runs before
+       init.js (defer) before any api() call. -->
+  <script defer src="js/modules/monitor-charts.js?v=12"></script>
+  <script defer src="js/modules/monitor-metrics.js?v=12"></script>
+  <script defer src="js/modules/monitor-backends.js?v=12"></script>
+  <script defer src="js/monitor/state.js?v=12"></script>
+  <script defer src="js/monitor/api.js?v=12"></script>
+  <script defer src="js/monitor/ui-renderer.js?v=12"></script>
+  <script defer src="js/monitor/sparkline.js?v=1"></script>
+  <script defer src="js/monitor/canvas-topology.js?v=12"></script>
+  <script defer src="js/monitor/canvas-conveyor.js?v=12"></script>
+  <script defer src="js/monitor/i18n-theme.js?v=12"></script>
+  <script defer src="js/monitor/init.js?v=12"></script>
 
   <!-- Fallback API base + theme + lang sync (when opened directly, not via iframe) -->
   <script>

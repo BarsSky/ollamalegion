@@ -1843,6 +1843,11 @@ Beta-slow параметр YaRN. Стандарт: 1. Низкое = более 
          restart handler, WebSocket events, API events, logs tab navigation).
          Reads from window.App.context populated by app.js. -->
     <script defer src="js/app-listeners.js?v=1"></script>
-    <script defer src="js/app.js?v=18"></script>
+    <!-- R57.4 (2026-09-03): app-modals.js provides Backend CRUD (openBackendModal,
+         fillForm, closeModal, saveBackend, deleteBackend, editBackend,
+         confirmDeleteBackend) via window.BackendCRUD. Loaded BEFORE app.js
+         so window.ui public API can reference these at IIFE return time. -->
+    <script defer src="js/app-modals.js?v=1"></script>
+    <script defer src="js/app.js?v=19"></script>
 </body>
 </html>

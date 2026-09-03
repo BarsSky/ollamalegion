@@ -22,6 +22,16 @@ func NewOllamaRouter(proxy *Proxy) *OllamaRouter {
 	return &OllamaRouter{proxy: proxy}
 }
 
+// BackendType — R59.15a: реализация BackendRouter.
+func (or *OllamaRouter) BackendType() types.BackendType {
+	return types.BackendTypeOllama
+}
+
+// Name — R59.15a: реализация BackendRouter.
+func (or *OllamaRouter) Name() string {
+	return "OllamaRouter"
+}
+
 // Route — диспетчеризация запроса по URL.Path.
 // Возвращает true если запрос был обработан.
 func (or *OllamaRouter) Route(w http.ResponseWriter, r *http.Request) bool {

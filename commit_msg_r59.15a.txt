@@ -1,0 +1,41 @@
+refactor(balancer): R59.15a — introduce BackendRouter interface (no behavior change)
+
+Goal
+----
+Prepare the hot-path dispatch (`routeRequest` in `router.go`) for
+extraction into a priority-ordered iteration over a list of routers.
+Currently three repeated ladders:
+
+  if p.ollamaRouter != nil && p.ollamaRouter.Route(w, r) { return true }
+  if p.llamaCppRouter != nil && p.llamaCppRouter.Route(w, r) { return true }
+
+…with ordering conditioned on `countBackendsByType()`. The full refactor
+(R59.15: 1-2 days) replaces those ladders with a single loop.
+
+This commit (R59.15a) does ONLY the interface introduction:
+  • `BackendRouter` interface in new `router_interface.go`.
+  • `BackendType()` and `Name()` methods on both `OllamaRouter` and
+    `LlamaCppRouter`.
+  • Compile-time `var _ BackendRouter = (*OllamaRouter)(nil)` and
+    `(*LlamaCppRouter)(nil)` so a future method removal breaks the
+    build at a clear location instead of at the dispatch site.
+
+R59.15b will convert `routeRequest` to iterate a `[]BackendRouter` in
+priority order. R59.15c will extract the duplicated `proxyHTTP` helper.
+
+Risk
+----
+Zero behavior change — dispatch still uses concrete fields. The new
+methods are pure metadata. Verified:
+  • `go vet -tags llama_stub ./internal/balancer/...` clean.
+  • `go build -tags llama_stub ./internal/balancer/...` clean.
+  • Targeted dispatch tests pass (`TestRoute|TestOllamaRouter|TestLlamaCpp`).
+  • Full `-short` test suite: only the pre-existing
+    `TestE2E_VirtualRouter_StreamingResponse` flake fails
+    (order-dependent, passes in isolation; predates R59.15).
+
+Files
+-----
+  internal/balancer/router_interface.go   +37  new
+  internal/balancer/ollama_router.go      +9   BackendType() + Name()
+  internal/balancer/llamacpp_router.go    +10  import + BackendType() + Name()

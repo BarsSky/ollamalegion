@@ -5,6 +5,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"ollama-loadbalancer/pkg/types"
 )
 
 // LlamaCppRouter — маршрутизатор для llama.cpp backend endpoint'ов.
@@ -34,6 +36,16 @@ func NewLlamaCppRouter(proxy *Proxy) *LlamaCppRouter {
 		lastKnownModelsAt: make(map[string]time.Time),
 		loadBackoff:       newLoadBackoff(),
 	}
+}
+
+// BackendType — R59.15a: реализация BackendRouter.
+func (lr *LlamaCppRouter) BackendType() types.BackendType {
+	return types.BackendTypeLlamaCpp
+}
+
+// Name — R59.15a: реализация BackendRouter.
+func (lr *LlamaCppRouter) Name() string {
+	return "LlamaCppRouter"
 }
 
 // Route — диспетчеризация запроса по URL.Path.

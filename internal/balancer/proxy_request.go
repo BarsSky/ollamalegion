@@ -241,18 +241,33 @@ func (p *Proxy) proxyRequest(w http.ResponseWriter, r *http.Request, backendID s
 		//   2. ModelLatencyTracker (автоматический расчёт на основе истории генерации)
 		//   3. Глобальный конфиг StreamTimeout (дефолт 600s)
 		// Для CPU-моделей с partial offload автоматически вычисляет 1800+ секунд.
+		//
+		// R58.1: если getModelStreamTimeout вернул 0 (LB_STREAMING_NEVER_TIMEOUT=1),
+		// НЕ устанавливаем context.WithTimeout — стрим живёт пока клиент не
+		// отменит (r.Context().Done()) или backend не закроет соединение.
 		streamTimeout := p.getModelStreamTimeout(modelFromCtx)
 		var streamCancel context.CancelFunc
-		reqCtx, streamCancel = context.WithTimeout(r.Context(), streamTimeout)
-		defer streamCancel()
-		logger.Get().Debugw("proxyRequest: using per-model stream timeout",
-			"backend", backendID, "model", modelFromCtx,
-			"stream_timeout_sec", streamTimeout.Seconds())
+		if streamTimeout > 0 {
+			reqCtx, streamCancel = context.WithTimeout(r.Context(), streamTimeout)
+			defer streamCancel()
+			logger.Get().Debugw("proxyRequest: using per-model stream timeout",
+				"backend", backendID, "model", modelFromCtx,
+				"stream_timeout_sec", streamTimeout.Seconds())
+		} else {
+			reqCtx = r.Context()
+			logger.Get().Debugw("proxyRequest: LB_STREAMING_NEVER_TIMEOUT=1 — no stream timeout",
+				"backend", backendID, "model", modelFromCtx)
+		}
 	} else if effectiveTimeout > 0 {
 		// Non-streaming: контекст с адаптивным таймаутом
+		// R58.1: effectiveTimeout=0 → no timeout (LB_STREAMING_NEVER_TIMEOUT)
 		var cancel context.CancelFunc
-		reqCtx, cancel = context.WithTimeout(r.Context(), time.Duration(effectiveTimeout)*time.Second)
-		defer cancel()
+		if effectiveTimeout > 0 {
+			reqCtx, cancel = context.WithTimeout(r.Context(), time.Duration(effectiveTimeout)*time.Second)
+			defer cancel()
+		} else {
+			reqCtx = r.Context()
+		}
 	}
 
 	req, err := http.NewRequestWithContext(reqCtx, r.Method, targetURL+r.URL.String(), r.Body)

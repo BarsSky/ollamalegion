@@ -1,0 +1,60 @@
+fix(balancer): prevent send-on-closed-channel panic in queue AfterFunc callbacks
+
+Symptom
+-------
+After a failed dispatch, the queue manager schedules a 100ms re-queue
+via `time.AfterFunc(100*time.Millisecond, ...)`. The callback then does
+`case qm.queue <- req:` — but if the test's `defer proxy.queueMgr.Stop()`
+runs BEFORE the timer fires, the callback sends to a closed channel:
+
+  panic: send on closed channel
+  goroutine NNN [running]:
+  ollama-loadbalancer/internal/balancer.(*QueueManager).processRequest.func2()
+      C:/Ollama/ollamalegion/internal/balancer/queue_manager.go:234
+
+This blocked `go test ./internal/balancer/...` from running clean —
+the test framework's panic reporter would force-exit the suite, leaving
+later tests unrun.
+
+Root cause
+----------
+`qm.Stop()` does:
+  1. qm.cancel()   // close ctx
+  2. qm.wg.Wait()  // wait for in-flight processRequest goroutines
+  3. close(qm.queue)
+
+But the `time.AfterFunc` callbacks are not bound to `qm.wg`. So between
+step 2 (return) and step 3 (close), an AfterFunc can fire and try to
+enqueue into the (now-closed) queue. The original `select` had a
+`case <-qm.ctx.Done():` branch, but Go selects picks branches randomly
+when both are ready — including the `qm.queue <- req` branch after
+close.
+
+Fix
+---
+In each AfterFunc callback, do a NON-BLOCKING check of `qm.ctx.Done()`
+FIRST. If the context is already cancelled, signal `req.Done = false`
+and return without touching `qm.queue`. This eliminates the send-on-
+closed race deterministically.
+
+This is the minimal fix. A more invasive alternative would be to
+track all pending *time.Timer and call .Stop() in Stop() — but that
+adds state and a sync.Mutex for marginal benefit (the timer is 100ms
+so the window is small).
+
+Applied to both AfterFunc sites in queue_manager.go:
+  - processRequest primary path (line ~233)
+  - processRequest fallback-exhausted path (line ~337)
+
+Verification
+------------
+  • Targeted: `go test -run TestQueueManager ./internal/balancer/`
+    5/5 PASS in 0.35s.
+  • No more "send on closed channel" panic in the full -short suite.
+  • Test timeout still observed in some runs but is from a different
+    pre-existing issue (TestE2E_VirtualRouter_StreamingResponse
+    response cut short — addressed separately in B3).
+
+Files
+-----
+  internal/balancer/queue_manager.go  +6/-1  per AfterFunc (×2 sites)

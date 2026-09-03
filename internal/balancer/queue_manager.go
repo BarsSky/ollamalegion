@@ -231,6 +231,19 @@ func (qm *QueueManager) processRequest(req *QueuedRequest, workerID int) {
 				"error", result.Error,
 			)
 			time.AfterFunc(100*time.Millisecond, func() {
+				// Non-blocking check: если Stop() уже вызван (ctx.Done), то
+				// qm.queue будет закрыт через мгновение. Не пытаемся отправлять
+				// в закрытый канал → паника "send on closed channel". Вместо
+				// этого просто сигналим req.Done = false.
+				select {
+				case <-qm.ctx.Done():
+					select {
+					case req.Done <- false:
+					default:
+					}
+					return
+				default:
+				}
 				select {
 				case qm.queue <- req:
 				case <-qm.ctx.Done():
@@ -322,6 +335,19 @@ func (qm *QueueManager) processRequest(req *QueuedRequest, workerID int) {
 			"model", req.Model,
 		)
 		time.AfterFunc(100*time.Millisecond, func() {
+			// Non-blocking check: если Stop() уже вызван (ctx.Done), то
+			// qm.queue будет закрыт через мгновение. Не пытаемся отправлять
+			// в закрытый канал → паника "send on closed channel". Вместо
+			// этого просто сигналим req.Done = false.
+			select {
+			case <-qm.ctx.Done():
+				select {
+				case req.Done <- false:
+				default:
+				}
+				return
+			default:
+			}
 			select {
 			case qm.queue <- req:
 			case <-qm.ctx.Done():

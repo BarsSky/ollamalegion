@@ -483,8 +483,24 @@
 
     function renderGeneralSettingsStep() {
         var sc = wizardState;
+        // R58.3 (2026-09-03): Hardware preset dropdown — applies sensible defaults
+        // for vram/gpu/cpu/ram max + показывает hint для CPPWORKER_* params.
+        var presetOptions = '';
+        if (window.HardwarePresets) {
+            window.HardwarePresets.list().forEach(function (p) {
+                presetOptions += '<option value="' + p.key + '">' + p.label + '</option>';
+            });
+        }
         return '<div class="wizard-step-content general-step">' +
             '<h3>' + (window.I18N ? I18N.t('wizard.step4') : 'General Settings') + '</h3>' +
+            // R58.3: Hardware preset selector
+            '<div class="form-group hardware-preset-group">' +
+            '<label>' + t_label('wizard.hardware_preset', 'Hardware Preset', 'wizard.tooltip.hardware_preset', 'Apply tuned defaults for your GPU. For CPPWORKER params (n_ctx, gpu_layers, etc.) see the hint below.') + '</label>' +
+            '<select id="hardwarePreset" class="form-control">' +
+            '<option value="">— Custom (no preset) —</option>' +
+            presetOptions +
+            '</select></div>' +
+            '<div id="hardwarePresetHint" class="hardware-preset-hint" style="display:none;"></div>' +
             '<div class="form-group">' +
             '<label>' + t_label('settings.balancing_mode', 'Balancing Algorithm', 'wizard.tooltip.balancing_algorithm', 'Algorithm for routing requests to backends.') + '</label>' +
             '<select id="balancingAlgorithm" class="form-control">' +
@@ -632,6 +648,57 @@
                 }
             }
         });
+
+        // R58.3 (2026-09-03): Hardware preset dropdown change handler.
+        // When user selects a preset, fill in the balancer tuning fields
+        // (vramMaxUsage, gpuMaxUsage, etc.) and show cppworker hint.
+        var presetDropdown = modal.querySelector('#hardwarePreset');
+        if (presetDropdown) {
+            presetDropdown.addEventListener('change', function () {
+                applyHardwarePreset(presetDropdown.value);
+            });
+        }
+    }
+
+    // applyHardwarePreset — R58.3: fill in balancer tuning fields from a preset.
+    // Empty value (or unknown preset) clears the hint and leaves fields untouched.
+    function applyHardwarePreset(presetKey) {
+        var hintEl = document.getElementById('hardwarePresetHint');
+        if (!presetKey || !window.HardwarePresets) {
+            if (hintEl) hintEl.style.display = 'none';
+            return;
+        }
+        var p = window.HardwarePresets.get(presetKey);
+        if (!p) {
+            if (hintEl) hintEl.style.display = 'none';
+            return;
+        }
+        // Apply balancer tuning values
+        if (typeof p.vramMaxUsage === 'number') setFieldValue('vramMaxUsage', p.vramMaxUsage);
+        if (typeof p.gpuMaxUsage === 'number') setFieldValue('gpuMaxUsage', p.gpuMaxUsage);
+        if (typeof p.cpuMaxUsage === 'number') setFieldValue('cpuMaxUsage', p.cpuMaxUsage);
+        if (typeof p.ramMaxUsage === 'number') setFieldValue('ramMaxUsage', p.ramMaxUsage);
+        // Show hint
+        if (hintEl && p.cppworkerHint) {
+            var rows = Object.keys(p.cppworkerHint).map(function (k) {
+                return '<code>' + k + '=' + p.cppworkerHint[k] + '</code>';
+            }).join('<br>');
+            hintEl.innerHTML =
+                '<div class="preset-hint-box">' +
+                '<div class="preset-hint-title"><i class="fas fa-microchip"></i> ' +
+                (window.I18N ? I18N.t('wizard.cppworker_hint_title') : 'Apply to cppworker env (separate step):') + '</div>' +
+                rows +
+                '<div class="preset-hint-footer">' +
+                (window.I18N ? I18N.t('wizard.cppworker_hint_footer') :
+                    'Run: <code>python scripts/apply-hardware-preset.py ' + presetKey + '</code>') +
+                '</div>' +
+                '<div class="preset-hint-models">' +
+                (window.I18N ? I18N.t('wizard.recommended_models') : 'Recommended models: ') +
+                '<em>' + p.recommendedModels + '</em>' +
+                '</div>' +
+                '</div>';
+            hintEl.style.display = 'block';
+        }
     }
 
     function validateWizardModeParams() {

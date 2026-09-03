@@ -1,0 +1,52 @@
+
+/* R58.3 (2026-09-03): Hardware preset selector in setup-wizard. */
+.hardware-preset-group {
+    margin-bottom: 8px;
+    padding-bottom: 12px;
+    border-bottom: 1px dashed var(--border, #2a2a2a);
+}
+.hardware-preset-group label {
+    font-weight: 600;
+}
+.hardware-preset-hint {
+    margin-top: 8px;
+    margin-bottom: 16px;
+}
+.preset-hint-box {
+    background: var(--bg-secondary, #1a1a1a);
+    border: 1px solid var(--accent, #3b82f6);
+    border-radius: 6px;
+    padding: 12px 14px;
+    font-size: 12px;
+    line-height: 1.6;
+}
+.preset-hint-title {
+    color: var(--accent, #3b82f6);
+    font-weight: 600;
+    margin-bottom: 8px;
+    font-size: 13px;
+}
+.preset-hint-box code {
+    background: rgba(0, 0, 0, 0.3);
+    padding: 1px 6px;
+    border-radius: 3px;
+    font-family: 'Consolas', 'Monaco', monospace;
+    font-size: 11px;
+    color: #f0f0f0;
+}
+.preset-hint-footer {
+    margin-top: 8px;
+    padding-top: 8px;
+    border-top: 1px solid var(--border, #333);
+    color: var(--text-muted, #888);
+    font-size: 11px;
+}
+.preset-hint-models {
+    margin-top: 6px;
+    color: var(--text-secondary, #aaa);
+    font-size: 11px;
+}
+.preset-hint-models em {
+    color: #f0f0f0;
+    font-style: normal;
+}

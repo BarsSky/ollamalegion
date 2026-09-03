@@ -1,0 +1,28 @@
+build+test: commit R51.6 incremental rebuild Dockerfile + R56.5 baseline config
+
+Two artifacts from R51.6 / R56.5 work that were left untracked.
+
+Files
+-----
+  docker/cppworker/Dockerfile.gpu-r51.6
+      R51.6 incremental rebuild strategy: extract /build/ + /go/ from a
+      previous working cppworker image, recompile just the Go binary, then
+      re-assemble the runtime image with the same /app layout. Avoids
+      full CUDA/llama.cpp rebuild for Go-only changes. Documented in
+      R51.6 notes; was referenced in deployment scripts but never
+      committed.
+
+  playwright.baseline.config.js
+      R56.5 standalone Playwright config for the smoke baseline test
+      (scripts/baseline.spec.js, R60 commit 728f5c6). Separate from
+      tests/visual/density.spec.js (which needs snapshot mode). Config
+      is referenced in the spec file's comments but was never committed.
+
+Skipped
+-------
+  scripts/test_apply_endpoint.ps1 (25-byte "# smoke test placeholder",
+  zero value — deliberately left untracked, see 728f5c6 commit msg).
+
+  _diag/ (output artifacts from R59.7-9 diagnostic scripts), apply_test.json
+  (empty test file), commit_msg_r59.3.txt .. r59.13.txt (deleted tracked
+  files) — all transient/output state, not part of source tree.

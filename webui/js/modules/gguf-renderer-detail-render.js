@@ -1,4 +1,4 @@
-/**
+﻿/**
  * gguf-renderer-detail-render.js — Right panel render functions for gguf-renderer.
  *
  * R57.5f (2026-09-03): extracted from webui/js/modules/gguf-renderer.js.
@@ -47,7 +47,7 @@
         if (!state.selectedBackendId) {
             return renderEmptyDetail();
         }
-        const backend = currentBackend();
+        const backend = M.currentBackend();
         if (!backend) {
             return renderEmptyDetail();
         }
@@ -137,7 +137,7 @@
     }
 
     function renderAboutPane() {
-        const backend = currentBackend();
+        const backend = M.currentBackend();
         if (!backend) return '';
         const gpus = renderGpuInfoCards();
         const worker = renderWorkerInfoCard();
@@ -713,7 +713,7 @@
      *      на балансировщике). Использует уже существующий модуль window.CppWorkerParams.
      */
     function renderSettingsPane() {
-        const backend = currentBackend();
+        const backend = M.currentBackend();
         const backendId = backend ? Utils.escapeHtml(backend.id) : '';
         const isRegistered = !!(backend && backend.url && backend.url.indexOf('http') === 0 && backend.id && /^(?:[a-z0-9_-]+)$/i.test(backend.id));
         // Round 32 #6 (2026-08-10): используем кэшированный HTML формы вместо
@@ -801,7 +801,7 @@
     async function loadAndRenderBackendOptions() {
         const container = document.getElementById('ggufBackendOptionsContainer');
         if (!container) return;
-        const backend = currentBackend();
+        const backend = M.currentBackend();
         if (!backend) {
             container.innerHTML = '<div class="gguf-empty-state">' + (window.I18N ? I18N.t('gguf.no_backend_selected') : '') + '</div>';
             return;
@@ -1189,7 +1189,7 @@
     }
 
     async function saveBackendOptions() {
-        const backend = currentBackend();
+        const backend = M.currentBackend();
         if (!backend) return;
         // Парсим значения из формы. Хелперы parseIntOr/parseFloatOr/strVal
         // (определены ниже) устойчивы к NaN/пустым полям.
@@ -1390,3 +1390,4 @@
 })();
 
 })();
+

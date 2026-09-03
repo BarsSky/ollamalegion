@@ -42,7 +42,14 @@
         // Invalidate cached Settings form (R32 #6) для нового бэкенда
         // (cache живёт до явной очистки, но renderSettingsPane() перерисует
         // когда панель будет открыта).
-        if (typeof M.refreshBackends === 'function') M.refreshBackends();
+        // R59.8 (2026-09-03): trigger refreshDetail so the right panel actually
+        // loads workerInfo / gpuInfo / loadedModels for the new backend.
+        // Before this, the detail panel was stuck on the empty state because
+        // refreshBackends only redraws the LEFT (backends list), and no one
+        // called refreshDetail. Now: redraw list (so the `.active` class
+        // moves to the new item) + load backend metrics.
+        if (typeof M.updateBackendsList === 'function') M.updateBackendsList();
+        if (typeof M.refreshDetail === 'function') M.refreshDetail();
     };
 
     M.currentBackend = function() {

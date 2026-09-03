@@ -1,0 +1,147 @@
+fix(webui): R59.8 — GGUF selectBackend now opens backend info (panel re-render + detail shape)
+
+User report (this turn): "при выборе доступного бэкенда в WEBUI на странице
+GGUF модели не произошло открытие его настроек и информации о нем, только
+выделилась кнопка".
+
+Symptom: clicking a backend on the GGUF page would only highlight the
+button (move the `.active` class) but the right-side detail panel
+stayed on "No backend selected". R59.7 fixed the backends list — but
+selecting one didn't actually open the backend's settings.
+
+Three independent bugs in the click → render path:
+
+## Bug 1: `selectBackend` never called `refreshDetail`
+
+`webui/js/modules/gguf-renderer-actions.js:38-46`:
+```js
+M.selectBackend = function(backendId) {
+    const state = M.state;
+    if (state.selectedBackendId === backendId) return;
+    state.selectedBackendId = backendId;
+    if (typeof M.refreshBackends === 'function') M.refreshBackends();
+};
+```
+
+It set `state.selectedBackendId` and re-fetched the *list* of backends,
+but never loaded the selected backend's metrics. So state.workerInfo
+and state.gpuInfo stayed `null` and `renderDetailPanel()` rendered the
+empty state.
+
+Fix: replace `M.refreshBackends()` with `M.updateBackendsList()` (redraws
+the list to move the `.active` class) + add `M.refreshDetail()` (loads
+workerInfo / gpuInfo / loadedModels for the new selection).
+
+## Bug 2: `refreshDetail` shape mismatch
+
+`webui/js/modules/gguf-renderer-refresh.js:78-107` expected a response
+shape `{worker, gpu, localModels, loadedModels, runtimeModels}` — but
+the actual `/api/v1/backends/{id}` endpoint returns a `BackendMetrics`
+struct with `gpu`, `system`, `llamaCpp.loadedModels`, `models`, and a
+dozen other fields. Every field access (`data.worker`, `data.localModels`,
+`data.loadedModels`, `data.runtimeModels`) returned `undefined` →
+state.workerInfo became an empty object, state.gpuInfo became `null`,
+state.loadedModels became `[]`. The renderers then rendered "no data".
+
+Fix: map the real BackendMetrics shape into the renderer's expected
+state shape:
+- `state.workerInfo` = synthesised from `id/name/host/cppWorkerPort/
+  ollamaPort/backendType/engine/status/hasAgent/labels/...`
+- `state.gpuInfo` = `data.gpu`
+- `state.localModels` = `data.models` (array of names)
+- `state.loadedModels` = `data.llamaCpp.loadedModels` (llama_cpp) or
+  `data.ollama.runningModels` (ollama)
+- `state.runtimeModels` = `{gpu, system, prediction, score, llamaCpp,
+  ollama}` (the dynamic signals)
+
+Also: removed the `window.GgufApi || window.Api` fallback since
+GgufApi has no `getBackend` (R57.5d-2 fall-through that always lost
+to the `typeof` check on line 89). Direct `Api.getBackend(id)` call.
+
+## Bug 3: `refreshDetail` updated only pane, not panel
+
+The end of `refreshDetail` called `M.refreshDetailPane()` which only
+re-renders `#ggufDetailContent` (the active tab's body). It never
+called `M.refreshDetailPanel()` which re-renders the whole
+`#ggufDetailPanel` (header + tabs + content). The header's status pills
+and tab counts depend on workerInfo, so they would never refresh.
+
+Fix: call `M.refreshDetailPanel()` first; fall back to
+`M.refreshDetailPane()` if the panel renderer is missing.
+
+## Bug 4: `currentBackend()` undefined in detail-render.js
+
+After R59.7 made the panel re-render actually run, it crashed:
+```
+refreshDetail failed: ReferenceError: currentBackend is not defined
+    at Object.renderDetailPanel (gguf-renderer-detail-render.js:50)
+```
+
+The detail-render.js file (R57.5f) was wrapped in TWO IIFEs (outer
+provides the `M` namespace, inner defines the render functions and
+adds them to M). `currentBackend` was defined in
+gguf-renderer-actions.js and assigned to `M.currentBackend`. The
+inner IIFE was calling the bare `currentBackend()` instead of
+`M.currentBackend()` — closed-over scope didn't have it.
+
+This is the same class of bug R59.5 fixed for renderDetailPanel et
+al., but R59.5 missed these 5 call sites.
+
+Fix: replace 5 instances of `const backend = currentBackend();` with
+`const backend = M.currentBackend();` (lines 50, 140, 716, 804, 1192).
+
+## Verification (after `docker compose up -d --build webui`)
+
+  $ python scripts/diag_gguf_select.py
+
+  === AFTER click ===
+  selectedBackendId: "cppworker-gpu-bundled-agent"
+  detailPanelHTML_length: 2536    (was 417 — empty state)
+  detailPanelText: "cppworker-gpu-bundled-agent
+                    http://cppworker-gpu:18092
+                    Инфо Модели Загружено Загрузки HuggingFace Настройки
+                    Информация о GPU-8.0 KB Свободно 3.6 KB GPU Утилизация 20%
+                    Информация о Worker Версия - GPU 1 Загруженные модели 1
+                    Модели на диске 1 Всего загружено моделей"
+  workerInfo: present
+  gpuInfo: present
+  page_errors: 0
+  API 401: 0
+
+  $ python scripts/diag_webui_pages.py
+  10/10 pages PASS, exit 0
+
+## Files changed
+
+  webui/js/modules/gguf-renderer-actions.js    (+4/-1: refreshDetail call)
+  webui/js/modules/gguf-renderer-refresh.js   (+50/-15: shape map + refreshDetailPanel)
+  webui/js/modules/gguf-renderer-detail-render.js  (+0/-0: 5 `currentBackend` → `M.currentBackend`)
+  scripts/diag_gguf_select.py                 (new: 110 lines click diagnostic)
+
+## Pattern: 3 layered bugs in the click path
+
+This R59.8 fix is a textbook example of "smoke test only checks the
+first failure". R59.7's diag_gguf_render.py asserted `backends.length
+=== 1` (which is the smoke check we needed to add), but it didn't
+click the backend — so the silent-failure of "list rendered but
+selection did nothing" wasn't caught. To catch this class, the
+follow-up test addition (mentioned in the R59.7 commit) needs to be:
+
+```python
+await page.click('.gguf-backend-item')
+await asyncio.sleep(2)
+assert selectedBackendId is not None
+assert detailPanelHTML_length > 1000  # panel actually rendered
+```
+
+Tracked as R59.9 follow-up (extend diag_webui_pages.py to click each
+page's primary interactive element and verify the result).
+
+## 6th IIFE export trap avoided
+
+While fixing the click path I confirmed `M.currentBackend` is set in
+gguf-renderer-actions.js:48 (with `M.currentBackend = function() { ... }`).
+If R59.7's pattern check had been applied here too, the bare
+`currentBackend()` calls in detail-render.js would have been caught
+on the first audit pass — the file's inner IIFE structure (R57.5f
++ R59.5) makes it especially prone to this class of bug.

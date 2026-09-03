@@ -85,20 +85,74 @@
             _detailRefreshInProgress = false;
             return Promise.resolve();
         }
-        var api = window.GgufApi || window.Api;
-        if (typeof api.getBackend !== 'function') {
+        // R59.8 (2026-09-03): call Api.getBackend directly. R57.5d-2 used
+        // `window.GgufApi || window.Api` but (a) GgufApi has no getBackend
+        // method (its surface is per-cppworker loadModel/unloadModel/etc.),
+        // (b) the response shape it expected — {worker, gpu, localModels,
+        // loadedModels, runtimeModels} — doesn't match what
+        // /api/v1/backends/{id} actually returns. The endpoint
+        // returns a full `BackendMetrics` with `gpu`, `system`,
+        // `llamaCpp.loadedModels`, `models` (and a list of other fields);
+        // we map those into the state shape the renderers expect.
+        if (typeof window.Api === 'undefined' || typeof window.Api.getBackend !== 'function') {
             _detailRefreshInProgress = false;
             return Promise.resolve();
         }
-        return api.getBackend(backend.id)
+        return window.Api.getBackend(backend.id)
             .then(function (data) {
-                state.workerInfo = data && data.worker || null;
-                state.gpuInfo = data && data.gpu || null;
-                state.localModels = (data && data.localModels) || [];
-                state.loadedModels = (data && data.loadedModels) || [];
-                state.runtimeModels = (data && data.runtimeModels) || {};
+                data = data || {};
+                // workerInfo: synthesised from the metric's host/port/type/status
+                // — there is no separate "worker" field on the backend metrics.
+                state.workerInfo = {
+                    id: data.id,
+                    name: data.name || data.id,
+                    host: data.host,
+                    cppWorkerPort: data.cppWorkerPort,
+                    ollamaPort: data.ollamaPort,
+                    type: data.backendType || data.type,
+                    engine: data.engine,
+                    status: data.status,
+                    hasAgent: data.hasAgent,
+                    labels: data.labels,
+                    maxConcurrentRequests: data.maxConcurrentRequests,
+                    vramUsagePercent: data.vramUsagePercent,
+                    vramTotalGB: data.vramTotalGB,
+                    vramUsedGB: data.vramUsedGB,
+                    memoryUsagePercent: data.memoryUsagePercent,
+                };
+                // gpuInfo is at top level (BackendMetrics.GPU).
+                state.gpuInfo = data.gpu || null;
+                // localModels: list of model names that exist on the backend
+                // (BackendMetrics.models — for llama_cpp this is the same as
+                // the loaded model names; for ollama it's the pulled library).
+                state.localModels = Array.isArray(data.models) ? data.models : [];
+                // loadedModels: detailed objects (BackendMetrics.llamaCpp.loadedModels).
+                // For non-llama_cpp backends this is `ollama.runningModels` shape.
+                if (data.backendType === 'llama_cpp' && data.llamaCpp && Array.isArray(data.llamaCpp.loadedModels)) {
+                    state.loadedModels = data.llamaCpp.loadedModels;
+                } else if (data.ollama && Array.isArray(data.ollama.runningModels)) {
+                    state.loadedModels = data.ollama.runningModels;
+                } else {
+                    state.loadedModels = [];
+                }
+                // runtimeModels: bundle of dynamic runtime signals
+                // (gpu usage, system metrics, prediction score).
+                state.runtimeModels = {
+                    gpu: data.gpu || null,
+                    system: data.system || null,
+                    prediction: data.prediction || null,
+                    score: data.score || 0,
+                    llamaCpp: data.llamaCpp || null,
+                    ollama: data.ollama || null,
+                };
                 _detailRefreshInProgress = false;
-                if (typeof M.refreshDetailPane === 'function') M.refreshDetailPane();
+                // R59.8: refresh BOTH the panel (header + tabs + content)
+                // and the pane (just the active tab's content). The
+                // header shows status pills that depend on workerInfo,
+                // and tabs may need to recompute their counts from
+                // loadedModels/localModels.
+                if (typeof M.refreshDetailPanel === 'function') M.refreshDetailPanel();
+                else if (typeof M.refreshDetailPane === 'function') M.refreshDetailPane();
             })
             .catch(function (err) {
                 _detailRefreshInProgress = false;

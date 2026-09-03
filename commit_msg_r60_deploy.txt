@@ -1,0 +1,43 @@
+deploy: R60 — bump image tags to emb-toggle builds (cppworker + balancer)
+
+Verification (live, 2026-09-04, RTX 3070 sm_86, Qwen3-Instruct-2507-q4km):
+
+  [1/4] Sending chat completion (model=Qwen3-Instruct-2507-q4km, max_tokens=10)...
+        Status: 200  Elapsed: 0.32s
+        Content: 'OK'
+  [2/4] Counting 'embeddings required' warnings in cppworker log since chat start...
+        Warnings emitted during chat request: 0
+        OK — chat path produced zero warnings.
+  [3/4] Sending embeddings request to verify /v1/embeddings still works...
+        Status: 200  Embedding dim: 2560
+        OK — /v1/embeddings still works.
+  [4/4] Sending second chat to confirm toggle is stable...
+        Status: 200  Elapsed: 0.46s
+        Total warnings (all 3 requests): 0
+
+  ✅ Round 39 e2e: PASSED — 0 warnings across 2 chat + 1 embedding call.
+
+Acceptance criteria met:
+  ✅ /v1/chat/completions → 0 "embeddings required" warnings
+  ✅ /v1/embeddings → still works (dim 2560 = n_embd for Qwen3-Instruct-2507)
+  ✅ 2 chat + 1 embedding call → 0 warnings total
+  ✅ Mode toggle stable across calls
+
+Files
+-----
+  deployments/docker-compose.cppworker-bundled-with-agent.yml
+    Bump balancer image: r55.11-r54.9 → r60-emb-toggle
+    (cppworker uses $CPPWORKER_GPU_TAG env var — set to 86-r60-emb-toggle
+     in local .env.bundled-with-agent; not tracked in git by design)
+
+Image tags:
+  ollama-legion/cppworker:gpu-86-r60-emb-toggle          (3.86GB)
+  ollama-legion/balancer:cppworker-bundled-r60-emb-toggle (62.6MB)
+
+Build:
+  Task 7 cppworker: 23 min (CUDA build 1374s + image assembly 19s)
+  Task 8 balancer:  ~1 min (Go-only build, no CUDA)
+
+Note: deployments/.env.bundled-with-agent contains the
+CPPWORKER_GPU_TAG update locally (in .gitignore by design — local env
+files with tokens are not in git). Operator must keep these in sync.

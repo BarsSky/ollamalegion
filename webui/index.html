@@ -1836,6 +1836,9 @@ Beta-slow параметр YaRN. Стандарт: 1. Низкое = более 
     <script defer src="js/modules/bulk-models.js?v=16"></script>
     <script defer src="js/modules/notifications.js?v=16"></script>
     <script defer src="js/modules/logs-stream.js?v=16"></script>
-    <script defer src="js/app.js?v=16"></script>
+    <!-- R57.2 (2026-09-03): app-core.js provides theme/density/i18n/AutoTune/showToast
+         via window.App namespace. MUST be loaded BEFORE app.js (app.js init() calls App.*). -->
+    <script defer src="js/app-core.js?v=1"></script>
+    <script defer src="js/app.js?v=17"></script>
 </body>
 </html>

@@ -2,6 +2,13 @@
  * OllamaLegion WebUI — Orchestrator
  * Imports: Utils, Api, WebSocketManager, Renderers (loaded before this file)
  */
+
+// R57.2 (2026-09-03): theme/density/i18n/AutoTune/showToast перенесены
+// в webui/js/app-core.js (window.App namespace). В этом файле остались:
+// state, init() (вызывает App.*), data fetching, navigation, event listeners,
+// settings apply, page render dispatch, backend CRUD, model management,
+// agents, logs, export — всё что внутри IIFE.
+
 const ui = (function () {
     const { dashboard, backendsPage, modelsPage, sessionsPage, queuePage, logs: renderLogs, predictionAlerts, proxyLogs: renderProxyLogs, copyProxyLogs: renderCopyProxyLogs, agentsPage: renderAgentsPage, renderAgentDetails } = Renderers;
 
@@ -10,53 +17,6 @@ const ui = (function () {
     // (WebSocketManager в modules/websocket.js диспатчит их после JSON.parse).
     // Wire format: payload.eventType (string), payload.backendId, payload.model,
     // payload.severity, payload.message, payload.data (object).
-    function initAutoTuneEventHandlers() {
-        window.addEventListener('ws-message', function(e) {
-            const ev = e.detail || {};
-            if (!ev || !ev.eventType) return;
-            const modelLabel = ev.model || (ev.data && ev.data.model) || 'model';
-            const msgText = ev.message || (ev.data && ev.data.reason) || '';
-            if (ev.eventType === 'autotune_reload_triggered') {
-                showToast(`🔄 AutoTune: reloading ${modelLabel}...`, 'info', 5000);
-            } else if (ev.eventType === 'autotune_reload_succeeded') {
-                showToast(`✅ AutoTune: ${modelLabel} reloaded — ${msgText}`, 'success', 8000);
-            } else if (ev.eventType === 'autotune_reload_failed') {
-                showToast(`⚠️ AutoTune: ${modelLabel} reload failed — ${msgText}`, 'error', 12000);
-            } else if (ev.eventType === 'autotune_circuit_open') {
-                showToast(`🛑 AutoTune: circuit breaker OPEN (3 fails). Manual apply required.`, 'warning', 30000);
-            }
-        });
-    }
-
-    // Toast helper (uses Notifications API if available, fallback to console).
-    function showToast(message, severity, timeoutMs) {
-        // Try existing Notifications module
-        if (window.Notifications && typeof window.Notifications.show === 'function') {
-            window.Notifications.show({
-                type: 'autotune',
-                message: message,
-                severity: severity,
-                timeoutMs: timeoutMs || 8000
-            });
-            return;
-        }
-        // Fallback: simple toast div (created on first call)
-        let container = document.getElementById('autotune-toast-container');
-        if (!container) {
-            container = document.createElement('div');
-            container.id = 'autotune-toast-container';
-            container.style.cssText = 'position:fixed;top:80px;right:24px;z-index:10000;display:flex;flex-direction:column;gap:8px;max-width:400px;';
-            document.body.appendChild(container);
-        }
-        const toast = document.createElement('div');
-        toast.className = 'autotune-toast autotune-toast-' + severity;
-        toast.style.cssText = 'padding:12px 16px;border-radius:8px;box-shadow:0 2px 8px rgba(0,0,0,0.3);background:var(--bg-secondary);color:var(--text-primary);font-size:14px;border-left:4px solid ' +
-            (severity === 'success' ? 'var(--success, #28c840)' : severity === 'error' ? 'var(--danger)' : 'var(--accent)');
-        toast.textContent = message;
-        container.appendChild(toast);
-        setTimeout(() => toast.remove(), timeoutMs || 8000);
-    }
-
     // State
     const data = {
         backends: [],
@@ -77,14 +37,16 @@ const ui = (function () {
     // ---- Initialization ----
 
     function init() {
-        initTheme();
-        initDensity();
-        setupI18n();
-        setupNavigation();
-        setupEventListeners();
-        setupRestartHandler();
-        setupApiEvents();
-        setupWebSocketEvents();
+        // R57.2 (2026-09-03): theme/density/i18n/AutoTune moved to webui/js/app-core.js.
+        // app.js must be loaded AFTER app-core.js (see webui/index.html).
+        if (window.App) {
+            App.initTheme();
+            App.initDensity();
+            App.setupI18n();
+            App.initAutoTuneEventHandlers();
+        } else {
+            console.error('app.js: window.App not defined — app-core.js must be loaded BEFORE app.js');
+        }
 
         // Initial data load — cluster state first, drives connection status
         fetchClusterState().then(function () {
@@ -149,208 +111,6 @@ const ui = (function () {
         initLogsStream();
 
         addLog(window.I18N ? I18N.t('app.webui_initialized') : 'WebUI initialized', 'info');
-    }
-
-    // ---- Theme ----
-
-    /**
-     * Инициализация темы (Session C — Theme toggle).
-     *
-     * Логика:
-     * 1. Anti-FOIT inline скрипт в <head> уже установил data-theme до загрузки CSS
-     *    (приоритет: localStorage > system preference > dark).
-     * 2. Здесь мы только синхронизируем UI (иконка toggle).
-     * 3. Кнопка переключения → toggle + broadcast события.
-     * 4. Keyboard shortcut Ctrl+Shift+T → toggle.
-     * 5. Слушаем изменения system preference (prefers-color-scheme) если пользователь
-     *    явно не выбрал тему (нет ключа в localStorage).
-     *
-     * Broadcast: window event 'theme:changed' с detail={theme: 'dark'|'light'}
-     * позволяет другим модулям (например, Chart.js, монитору) реагировать на смену темы.
-     */
-    function initTheme() {
-        var current = document.documentElement.getAttribute('data-theme') || 'dark';
-        updateThemeToggleIcon(current);
-
-        // Broadcast theme change — позволяет модулям реагировать на смену.
-        function broadcastThemeChange(theme) {
-            try {
-                window.dispatchEvent(new CustomEvent('theme:changed', { detail: { theme: theme } }));
-            } catch (e) { /* CustomEvent может не поддерживаться в очень старых браузерах */ }
-        }
-
-        // Switch theme — вызывается из button click и из keyboard shortcut.
-        function switchTheme(next) {
-            document.documentElement.setAttribute('data-theme', next);
-            try { localStorage.setItem('ollamalegion_theme', next); } catch (e) { /* ignore */ }
-            updateThemeToggleIcon(next);
-            broadcastThemeChange(next);
-        }
-        // R55.10 (2026-08-25): expose switchTheme globally so theme picker
-        // (Settings → General) can reuse the same code path instead of
-        // duplicating setAttribute / localStorage / icon update logic.
-        window.ollamalegion_switchTheme = switchTheme;
-
-        var THEMES = ['dark', 'light', 'linear', 'nvidia', 'vercel', 'sentry', 'mint'];
-        var toggleBtn = document.getElementById('themeToggle');
-        if (toggleBtn) {
-            toggleBtn.addEventListener('click', function () {
-                var cur = document.documentElement.getAttribute('data-theme') || 'dark';
-                var idx = THEMES.indexOf(cur);
-                var next = THEMES[(idx + 1) % THEMES.length];
-                switchTheme(next);
-            });
-        }
-
-        // Keyboard shortcut: Ctrl+Shift+T (Windows/Linux), Cmd+Shift+T (macOS).
-        document.addEventListener('keydown', function (e) {
-            var isToggleShortcut = (e.ctrlKey || e.metaKey) && e.shiftKey && (e.key === 'T' || e.key === 't' || e.key === 'Е' || e.key === 'е');
-            if (!isToggleShortcut) return;
-            // Не перехватываем если фокус в input/textarea (даём работать обычному вводу).
-            var tag = (e.target && e.target.tagName) || '';
-            if (tag === 'INPUT' || tag === 'TEXTAREA' || (e.target && e.target.isContentEditable)) return;
-            e.preventDefault();
-            var cur = document.documentElement.getAttribute('data-theme') || 'dark';
-            var idx2 = ['dark','light','linear','nvidia','vercel','sentry','mint'].indexOf(cur); var next2 = ['dark','light','linear','nvidia','vercel','sentry','mint'][(idx2 + 1) % 7]; switchTheme(next2);
-        });
-
-        // Слушаем изменения system preference (только если пользователь явно не выбрал тему).
-        if (window.matchMedia) {
-            try {
-                var mq = window.matchMedia('(prefers-color-scheme: light)');
-                var onMqChange = function (ev) {
-                    // Не перезаписываем если пользователь явно выбрал тему.
-                    try {
-                        if (localStorage.getItem('ollamalegion_theme')) return;
-                    } catch (e) { /* ignore */ }
-                    var next = ev.matches ? 'light' : 'dark';
-                    document.documentElement.setAttribute('data-theme', next);
-                    updateThemeToggleIcon(next);
-                    broadcastThemeChange(next);
-                };
-                // addEventListener / addListener — старые браузеры используют addListener.
-                if (mq.addEventListener) mq.addEventListener('change', onMqChange);
-                else if (mq.addListener) mq.addListener(onMqChange);
-            } catch (e) { /* matchMedia недоступно — ignore */ }
-        }
-    }
-
-    /**
-     * initDensity — Sprint 1 data-dense variant (2026-06-29).
-     * Переключает body[data-density] между "normal" и "dense".
-     * Состояние сохраняется в localStorage["ollamalegion_density"].
-     * Применяется ДО загрузки CSS через inline-скрипт в index.html (early-load).
-     */
-    function initDensity() {
-        var stored = 'normal';
-        try { stored = localStorage.getItem('ollamalegion_density') || 'normal'; } catch (e) { /* ignore */ }
-        if (stored !== 'dense' && stored !== 'normal') stored = 'normal';
-        document.body.setAttribute('data-density', stored);
-        updateDensityToggleIcon(stored);
-
-        var toggleBtn = document.getElementById('densityToggle');
-        if (toggleBtn) {
-            toggleBtn.addEventListener('click', function () {
-                var cur = document.body.getAttribute('data-density') || 'normal';
-                var next = cur === 'dense' ? 'normal' : 'dense';
-                document.body.setAttribute('data-density', next);
-                try { localStorage.setItem('ollamalegion_density', next); } catch (e) { /* ignore */ }
-                updateDensityToggleIcon(next);
-                try {
-                    window.dispatchEvent(new CustomEvent('density:changed', { detail: { density: next } }));
-                } catch (e) { /* ignore */ }
-            });
-        }
-    }
-
-    function updateDensityToggleIcon(density) {
-        var btn = document.getElementById('densityToggle');
-        if (!btn) return;
-        var icon = btn.querySelector('.density-icon');
-        if (icon) {
-            // Меняем FA-class: fa-table-cells-large (dense) / fa-table-cells (normal).
-            icon.className = 'density-icon ' + (density === 'dense' ? 'fas fa-table-cells-large' : 'fas fa-table-cells');
-        }
-        btn.classList.toggle('is-dense', density === 'dense');
-        btn.setAttribute('data-density-current', density);
-    }
-
-    // 2026-06-30: заменили ☀️/🌙 эмодзи (жёлтые/белые системные, расходились со стилем)
-    // на Font Awesome fa-moon (в dark) / fa-sun (в light) — цвет наследуется от .btn-theme-toggle
-    // через var(--text-secondary) и больше не зависит от emoji-рендера ОС.
-    var THEME_ICONS = { dark: 'fa-moon', light: 'fa-sun', linear: 'fa-circle', nvidia: 'fa-bold', vercel: 'fa-arrow-up' };
-    var THEME_LETTERS = { dark: '', light: '', linear: 'L', nvidia: 'N', vercel: 'V' };
-    var THEME_LABELS = { dark: 'Dark', light: 'Light', linear: 'Linear', nvidia: 'NVIDIA', vercel: 'Vercel' };
-    function updateThemeToggleIcon(theme) {
-        var btn = document.getElementById('themeToggle');
-        if (!btn) return;
-        var icon = document.getElementById('themeToggleIcon');
-        if (icon) {
-            if (theme === 'dark' || theme === 'light') {
-                icon.className = (theme === 'dark' ? 'fas fa-moon' : 'fas fa-sun');
-                icon.textContent = '';
-            } else {
-                icon.className = '';
-                icon.textContent = (THEME_LETTERS[theme] || '?');
-                icon.style.cssText = 'font-weight:700;font-size:14px;font-style:normal;';
-            }
-            icon.setAttribute('aria-hidden', 'true');
-        }
-        btn.title = THEME_LABELS[theme] || theme;
-    }
-
-    // ---- i18n ----
-
-    function updateUITranslations() {
-        document.querySelectorAll('[data-i18n]').forEach(function (el) {
-            var key = el.getAttribute('data-i18n');
-            if (key && window.I18N) {
-                if (el.tagName === 'INPUT' && el.hasAttribute('data-i18n-placeholder')) {
-                    el.placeholder = I18N.t(el.getAttribute('data-i18n-placeholder'));
-                } else {
-                    el.textContent = I18N.t(key);
-                }
-            }
-        });
-        // Process data-i18n-title
-        document.querySelectorAll('[data-i18n-title]').forEach(function (el) {
-            var key = el.getAttribute('data-i18n-title');
-            if (key && window.I18N) {
-                el.title = I18N.t(key);
-            }
-        });
-        // Update page title
-        if (currentPage && window.I18N) {
-            var titleKey = 'header.' + currentPage;
-            var h1 = document.getElementById('pageTitle');
-            if (h1) h1.textContent = I18N.t(titleKey);
-        }
-    }
-
-    function setupI18n() {
-        var langSelect = document.getElementById('langSelect');
-        if (langSelect && window.I18N) {
-            var currentLang = I18N.getLang();
-            langSelect.value = currentLang;
-            langSelect.addEventListener('change', function () {
-                I18N.setLang(this.value);
-                updateUITranslations();
-                updateThemeToggleIcon(document.documentElement.getAttribute('data-theme') || 'dark');
-                showToast(window.I18N ? I18N.t('app.lang_changed') : 'Language changed', 'success');
-            });
-        }
-        window.addEventListener('i18n:changed', function () {
-            updateUITranslations();
-            updateThemeToggleIcon(document.documentElement.getAttribute('data-theme') || 'dark');
-        });
-        // Process data-i18n-placeholder on initial load
-        document.querySelectorAll('[data-i18n-placeholder]').forEach(function (el) {
-            var key = el.getAttribute('data-i18n-placeholder');
-            if (key && window.I18N) {
-                el.placeholder = I18N.t(key);
-            }
-        });
-        updateUITranslations();
     }
 
     // ---- Restart Handler ----

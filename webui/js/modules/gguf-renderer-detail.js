@@ -33,7 +33,17 @@
             var id = tab.getAttribute('data-detail-tab');
             if (id) {
                 state.detailPane = id;
-                if (typeof M.refreshDetailPane === 'function') M.refreshDetailPane();
+                // R59.9 (2026-09-03): call refreshDetailPanel (not just
+                // refreshDetailPane) so the tab row itself re-renders
+                // with the new `active` class. Before this, content
+                // updated but the active tab highlight stayed on the
+                // old tab. refreshDetailPanel re-runs renderDetailPanel
+                // which re-emits the tab row + the active-tab content.
+                if (typeof M.refreshDetailPanel === 'function') {
+                    M.refreshDetailPanel();
+                } else if (typeof M.refreshDetailPane === 'function') {
+                    M.refreshDetailPane();
+                }
                 if (id === 'downloads') {
                     if (typeof M.refreshActiveDownloads === 'function') M.refreshActiveDownloads();
                     if (state.activeDownloads && state.activeDownloads.length > 0) {

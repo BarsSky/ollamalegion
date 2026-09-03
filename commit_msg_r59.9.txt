@@ -1,0 +1,99 @@
+fix(webui): R59.9 — GGUF detail tabs now switch (id/class mismatch + tab refresh)
+
+User report (this turn, with screenshot): "теперь не переключаются внутри
+вкладке плашки с информацией" — on the GGUF backend page, clicking
+Инфо/Модели/Загружено/Загрузки/HuggingFace/Настройки did nothing.
+
+Two related bugs in the tab click → render path:
+
+## Bug 1: `refreshDetailPane` couldn't find its target
+
+`gguf-renderer-detail-render.js:57` (renderDetailPanel) emits:
+```html
+<div class="gguf-detail-content">  ← only a class, no id
+```
+
+`gguf-renderer-refresh.js:235` (M.refreshDetailPane) does:
+```js
+const pane = document.getElementById('ggufDetailContent');  ← id lookup
+if (!pane) return;  // ← returns immediately
+```
+
+`getElementById('ggufDetailContent')` returns `null` because the div
+only has a class. So every tab click updated `state.detailPane` but
+the panel content never re-rendered.
+
+The state updated, but the DOM didn't — classic "works in the model,
+silent in the view" failure.
+
+Fix: `<div id="ggufDetailContent" class="gguf-detail-content">` — add
+the id so the pane lookup works. (renderEmptyDetail at line 67 also
+emits a class-only div, but that path is reached only when there's
+no selected backend — refreshDetailPane isn't called there.)
+
+## Bug 2: tab clicks didn't refresh the tab row itself
+
+`onDetailPanelClick` (gguf-renderer-detail.js:36) only called
+`M.refreshDetailPane()`. But the tab row `<div class="gguf-detail-tabs">`
+is emitted by `renderDetailPanel`, not by `renderDetailPane`. So the
+content updated (after Bug 1 fix) but the `active` class stayed on the
+old tab.
+
+Fix: prefer `M.refreshDetailPanel()` (re-renders the whole panel
+including the tab row) with fallback to `M.refreshDetailPane()`.
+
+## Why R59.5 and R59.8 page-coverage tests didn't catch this
+
+`scripts/diag_webui_pages.py` (R59.5) iterates over nav items and
+checks page_errors / api_401 / rendered. It doesn't click on anything
+within a page. R59.7 added a `backends.length === 1` check but only
+checked the list, not the tab switching.
+
+`scripts/diag_gguf_select.py` (R59.8) clicks the backend to verify
+panel re-render, but stops there. To catch the tab switch bug we need
+a follow-up click on a non-default tab.
+
+Tracked as R59.10 follow-up: extend `diag_webui_pages.py` to click
+primary interactive elements per page (backend item → tab → etc.)
+and verify state transitions. Or create a per-page `diag_*_click.py`
+suite. Either way, the smoke test needs to **drive interactions**,
+not just verify initial renders.
+
+## Verification (after `docker compose up -d --build webui`)
+
+  $ python scripts/diag_gguf_tab.py
+
+  === Click result: {clicked: True, text: 'Models', dataset: {detailTab: 'models'}}
+  === State after click ===
+  state.detailPane: "models"          (was "about")
+  detailPaneText:  "-Size: -Quantization: - Load Model"   (Models content)
+  activeTabInDOM:  "Models"          (active class moved to Models tab)
+  page_errors: 0
+
+  $ python scripts/diag_webui_pages.py
+  10/10 pages PASS, exit 0
+
+## Files changed
+
+  webui/js/modules/gguf-renderer-detail-render.js  (+2/-1: id on detail-content div)
+  webui/js/modules/gguf-renderer-detail.js        (+4/-1: refreshDetailPanel call)
+  scripts/diag_gguf_tab.py                       (new: 110 lines tab-click diagnostic)
+
+## Pattern: ID vs class in dynamic re-render targets
+
+This is the same class of bug as the "IIFE without window export" series
+(R59.3, R59.5, R59.6, R59.7) — a tiny inconsistency in the rendering
+target that compiles fine but breaks a runtime contract:
+- Renderer emits `<div class="gguf-detail-content">`
+- Updater looks up `getElementById('ggufDetailContent')`
+- Mismatch → silent failure
+
+General rule: for any DOM element that is dynamically re-rendered AND
+must be addressable by another piece of code, give it a stable `id`
+in addition to any classes. Or: in a structured frontend, use
+data-attributes (`data-detail-pane-target="..."`) instead of ids
+so renaming doesn't break.
+
+For now, R59.9 just adds the id. The broader refactor (eliminate
+id/class dual lookup, use data-attributes throughout) is a R60+
+follow-up tracked in the architecture audit at _diag/audit/.

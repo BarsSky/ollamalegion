@@ -54,7 +54,13 @@
         return '' +
             renderDetailHeader(backend) +
             renderDetailTabs() +
-            '<div class="gguf-detail-content">' +
+            // R59.9 (2026-09-03): added id="ggufDetailContent" so
+            // M.refreshDetailPane() can find the target via
+            // getElementById('ggufDetailContent'). Before this, the
+            // class-only div was unreachable by id, so tab clicks
+            // updated state.detailPane but the panel content never
+            // re-rendered. Symptom: clicking tabs did nothing visually.
+            '<div id="ggufDetailContent" class="gguf-detail-content">' +
                 renderDetailPane() +
             '</div>';
     }

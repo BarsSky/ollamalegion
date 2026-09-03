@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"sync"
 	"time"
 )
 
@@ -56,34 +57,68 @@ func NewLlamaCollector(cppWorkerURL string) *LlamaCollector {
 	}
 }
 
-// Collect собирает метрики с CppWorker
+// Collect собирает метрики с CppWorker.
+//
+// R58 (2026-09-03): 3 endpoint calls (gpu / models / info) теперь в ПАРАЛЛЕЛЬ
+// (sync.WaitGroup) вместо последовательного. Ускоряет collect cycle в ~3x
+// (раньше: t_gpu + t_models + t_info; теперь: max(t_gpu, t_models, t_info)).
+//
+// Каждый call best-effort — ошибка одного endpoint не прерывает остальные
+// (поведение сохранено с pre-R58). Если все 3 упадут, Collect вернёт
+// (zero-value metrics, nil error) — это документировано в тестах.
+//
+// Context cancellation работает: ctx.Done() приходит во все 3 горутины
+// одновременно (через NewRequestWithContext в каждой).
 func (lc *LlamaCollector) Collect(ctx context.Context) (*LlamaMetrics, error) {
 	metrics := &LlamaMetrics{}
 
-	// Сбор GPU метрик
-	gpuMetrics, err := lc.collectGPUMetrics(ctx)
-	if err != nil {
-		// GPU-метрики опциональны — продолжаем без них
-		metrics.GPUCount = 0
-	} else {
-		metrics.GPUMetrics = gpuMetrics.Devices
-		metrics.GPUCount = gpuMetrics.GPUCount
-	}
+	// Параллельный запуск 3 endpoint calls.
+	var (
+		wg     sync.WaitGroup
+		gpuR   *gpuResponse
+		modR   *modelsResponse
+		infoR  *infoResponse
+	)
 
-	// Сбор моделей
-	models, err := lc.collectModels(ctx)
-	if err != nil {
+	wg.Add(3)
+	go func() {
+		defer wg.Done()
+		// GPU-метрики опциональны — продолжаем без них при ошибке
+		r, err := lc.collectGPUMetrics(ctx)
+		if err == nil {
+			gpuR = r
+		}
+	}()
+	go func() {
+		defer wg.Done()
 		// Модели опциональны
-	} else {
-		metrics.Models = models.Models
-		metrics.ModelCount = models.Count
-	}
+		r, err := lc.collectModels(ctx)
+		if err == nil {
+			modR = r
+		}
+	}()
+	go func() {
+		defer wg.Done()
+		// Info — version + uptime
+		r, err := lc.collectInfo(ctx)
+		if err == nil {
+			infoR = r
+		}
+	}()
+	wg.Wait()
 
-	// Сбор информации
-	info, err := lc.collectInfo(ctx)
-	if err == nil {
-		metrics.Uptime = info.Uptime
-		metrics.Version = info.Version
+	// Сбор результатов (каждый optional).
+	if gpuR != nil {
+		metrics.GPUMetrics = gpuR.Devices
+		metrics.GPUCount = gpuR.GPUCount
+	}
+	if modR != nil {
+		metrics.Models = modR.Models
+		metrics.ModelCount = modR.Count
+	}
+	if infoR != nil {
+		metrics.Uptime = infoR.Uptime
+		metrics.Version = infoR.Version
 	}
 
 	lc.lastMetrics = metrics

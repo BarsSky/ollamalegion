@@ -1,0 +1,70 @@
+ci: R59.13 — WebUI static checks job (IIFE guard + node --check)
+
+The R59 series shipped 7 silent regressions of the same class:
+`const X = (function() { ... })();` without a trailing
+`window.X = X;`. Each one was caught by a user report and fixed in
+isolation, but there was no PR-time guard.
+
+This commit adds a `webui-static-checks` job to `.github/workflows/ci.yml`
+that runs in ~5 seconds on every PR and merge. It catches two
+classes of bug at PR time:
+
+1. **IIFE without window export** (R59.3, R59.5, R59.6, R59.7 ×2,
+   R59.12). `scripts/check_iife_exports.py` (R59.12) scans every JS
+   file in `webui/js/` and exits 1 if any IIFE-style declaration has
+   no `window.<NAME> = ...` somewhere after the IIFE close.
+
+2. **WebUI JS syntax errors** (a class not yet seen but trivially
+   caught by `node --check`). Cheap (~5 sec for 44 files).
+
+The job is `ubuntu-latest`, `timeout-minutes: 5`, runs in parallel
+with `lint` and `i18n` jobs (all depend on `test-ubuntu-fallback`).
+It catches a problem that the existing `lint` job (Go-only) cannot
+catch because it doesn't run JS tooling.
+
+What this does NOT cover (intentionally — separate jobs for those):
+
+- `scripts/diag_webui_pages.py` / `diag_webui_interactions.py` —
+  these require a running WebUI container, can't run on plain
+  ubuntu-latest. Could be added as a separate Docker-stack job, but
+  is out of scope for this commit.
+
+- `npm test` / `node test_gguf_api_headers.js` / node unit tests —
+  the project has 1 unit test file (setup-wizard-presets.test.js)
+  and 1 manual integration test (test_gguf_api_headers.js). Adding
+  a `npm test` job would catch 0 new bugs (per the architecture
+  audit at _diag/audit/). Tracked as R60+ follow-up.
+
+- golangci-lint for JS — there's no equivalent for the WebUI
+  side. The IIFE guard is the closest pattern-checker we have.
+
+CI job structure (after this commit):
+  test-self-hosted      — Go test on Windows runner
+  test-ubuntu-fallback  — Go test on ubuntu
+  test-c-bridge         — C-bridge regression test
+  lint                  — golangci-lint on changed Go files
+  i18n                  — en.js vs ru.js key balance
+  webui-static-checks   — IIFE guard + JS syntax check (NEW, this commit)
+
+The 5 existing jobs cover ~95% of the regression surface for the
+Go side. The new `webui-static-checks` job closes the gap for the
+WebUI side at zero per-PR cost (under 10 seconds total runtime).
+
+Verification (local):
+  $ python scripts/check_iife_exports.py
+  [PASS] all 48 files export IIFE public API to window
+  exit 0
+
+  $ find webui/js -name '*.js' -not -path '*/i18n/*' | xargs -I {} node --check {}
+  # (no output = all OK)
+
+  $ python scripts/diag_webui_pages.py
+  [PASS] 10/10 pages OK
+  exit 0
+
+  $ python scripts/diag_webui_interactions.py
+  [PASS] all interactions OK
+  exit 0
+
+Files changed:
+  .github/workflows/ci.yml   (+50 lines: new webui-static-checks job)

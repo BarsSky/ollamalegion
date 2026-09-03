@@ -461,3 +461,46 @@ jobs:
       - name: Check i18n balance (en.js vs ru.js)
         run: |
           node scripts/i18n_diff.js webui/js/i18n/en.js webui/js/i18n/ru.js --strict
+
+  # ---------------------------------------------------------------------------
+  # Job 5: WebUI static checks (lightweight, no Docker).
+  # Catches the "const X = (function(){...})() без window.X = X" pattern
+  # which caused 7 silent regressions in the R59 series (websocket.js,
+  # gguf-renderer-detail-render.js, app-core.js/showToast, gguf-api.js,
+  # utils.js, renderers.js). Without this guard, the same bug class
+  # would ship every time someone extracts a new module.
+  # ---------------------------------------------------------------------------
+  webui-static-checks:
+    name: WebUI static checks (IIFE guard)
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    needs: [test-ubuntu-fallback]
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          submodules: false
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: IIFE-export guard (catches missing window.X = X)
+        run: |
+          python scripts/check_iife_exports.py
+
+      - name: WebUI JS syntax check
+        run: |
+          # node --check verifies syntax of each .js file without running
+          # it. Cheap (~5 sec for 44 files). Catches the R59.3 "closing
+          # IIFE dropped entirely" class of bug (where a file ends
+          # without `})();` because the closing brace was missed during
+          # split). Node is preinstalled on ubuntu-latest.
+          for f in $(find webui/js -name '*.js' -not -path '*/i18n/*'); do
+            node --check "$f" || { echo "SYNTAX ERROR in $f"; exit 1; }
+          done
+          echo "All WebUI JS files pass syntax check"
+        # Note: webui/js/i18n/* is a separate i18n pack and uses a
+        # slightly different ES syntax; syntax check is optional.

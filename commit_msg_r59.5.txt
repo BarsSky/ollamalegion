@@ -1,0 +1,94 @@
+fix(webui): R59.5 — GGUF TypeError, settings 401, and page-coverage smoke test
+
+User report (screenshot this session): "WebUI не загружает gguf model...
+в планах должны были быть тесты по тому как WEBUI все должен отображать
+то есть проверки что метрики доходят и поступают чтобы не возникало
+таких ошибок в будущем".
+
+Two real bugs + a regression test for the whole SPA.
+
+## Bug 1: GGUF page — `renderDetailPanel is not a function`
+
+`webui/js/modules/gguf-renderer-detail-render.js` was extracted in R57.5f
+(commit 0e0cc36) but the file has TWO IIFEs (outer at line 30 sets up the
+`M` namespace, inner at line 42 defines the render functions), and the
+inner IIFE never exported the functions to `M`. So all 14 functions
+expected by `gguf-renderer.js:67-81` (renderDetailPanel, renderEmptyDetail,
+renderDetailHeader, renderDetailTabs, renderDetailPane, renderAboutPane,
+renderModelsPane, renderLoadedPane, renderDownloadsPane,
+renderHuggingFacePane, renderSettingsPane, loadAndRenderBackendOptions,
+mountProfilesInSettings, renderConnectModal) were `undefined` in
+`window.GgufModule`, and `var renderDetailPanel = M.renderDetailPanel;`
+silently captured `undefined`. First switch to GGUF page →
+`TypeError: renderDetailPanel is not a function` in `buildPageHtml`.
+
+Same root cause as R59.3 / R59.4: split-via-namespace left the export
+side unwired.
+
+## Bug 2: Settings page — 401 on /api/v1/admin/autotune
+
+`webui/js/modules/autotune_settings.js:18,38` referenced
+`window.API?.getAuthHeaders?.() || {}` — but the api.js module exports
+`window.Api` (lowercase `pi`), not `window.API`. `window.API` is
+undefined → fallback to `{}` → no `X-API-Token` header → 401.
+Bug went unnoticed because `fetchConfig` errors are caught and the
+Settings page silently shows "Failed to load AutoTune config" in the
+status line; users see the rest of the Settings UI fine.
+
+Fix: typo `API` → `Api`, plus add `Api.getAuthHeaders()` to api.js so
+other modules that do raw `fetch()` (not via `Api.request()`) can reuse
+the central auth header builder. Self-contained change: any module that
+needs raw fetch + auth can call `window.Api.getAuthHeaders()`.
+
+## Test: scripts/diag_webui_pages.py
+
+The user explicitly asked for tests that verify "метрики доходят и
+поступают" — i.e. the whole page coverage, not just the dashboard
+init that R59.3 / R59.4 covered. This script:
+
+  1. Opens /  and waits for connectionStatus === 'Connected'.
+  2. Iterates over every in-page nav-item (`data-page` on .nav-item with
+     href starting with #) — so the test auto-extends if new pages are
+     added (dashboard, monitor, backends, models, sessions, queue, gguf,
+     agents, logs, settings).
+  3. For each page, after switching via `window.ui.switchPage(name)`,
+     asserts:
+       [a] page_errors = 0         (no uncaught TypeError/ReferenceError)
+       [b] api_401 = 0             (no 401 on /api/* during the page)
+       [c] rendered = True         (at least one expected selector appears
+                                    in the live DOM — e.g. #ggufDetailPanel
+                                    for gguf, .model-card for models, table
+                                    for sessions, etc.)
+       [d] metrics_ok for dashboard: connectionStatus === 'Connected'
+  4. Saves per-page screenshots to _diag/page_<name>.png and a JSON
+     summary to _diag/diag_pages.json.
+  5. Exits 1 if any check fails — suitable for CI / pre-commit.
+
+The page-coverage test would have caught Bug 1 here (no `rendered=True`
+for gguf) AND Bug 2 (api_401 > 0 for settings) on the first run.
+
+Verification (after `docker compose up -d --build webui`):
+  $ python scripts/diag_webui_pages.py
+  [PASS] all pages OK
+  exit 0
+
+  All 10 pages: page_errors=0  api_401=0  rendered=True
+  dashboard / monitor / backends / models / sessions / queue /
+  gguf / agents / logs / settings
+
+## Files changed
+
+  webui/js/modules/gguf-renderer-detail-render.js   (+30 lines:
+    M.renderDetailPanel, M.renderEmptyDetail, ... M.renderConnectModal)
+  webui/js/modules/api.js                            (+10 lines:
+    getAuthHeaders() helper)
+  webui/js/modules/autotune_settings.js              (2 lines: API→Api)
+  scripts/diag_webui_pages.py                        (new, +163 lines:
+    headless page coverage test)
+
+Cross-project lesson (saved to memory): page-coverage smoke tests
+should iterate over `data-page` nav items and assert that AT LEAST ONE
+expected selector renders for each — this catches both "function
+not defined" errors (rendered=False on the affected page) AND silent
+401s (api_401 > 0 on the affected page) that a single-dashboard
+init test would miss.

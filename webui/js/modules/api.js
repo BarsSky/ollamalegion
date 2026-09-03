@@ -532,6 +532,19 @@ const Api = (function () {
                 method: 'DELETE',
             });
             return response.json();
+        },
+
+        // R59.5 (2026-09-03): shared auth header builder. Returns headers
+        // suitable for raw `fetch()` calls in modules that don't go through
+        // the `request()` helper (autotune_settings.js, gguf-renderer.js
+        // backend CRUD, etc.). Includes X-API-Token when WEBUI_CONFIG has
+        // one; empty object otherwise (e.g. when token is not yet loaded).
+        getAuthHeaders() {
+            const headers = { 'Content-Type': 'application/json' };
+            if (CFG.API_TOKEN) {
+                headers['X-API-Token'] = CFG.API_TOKEN;
+            }
+            return headers;
         }
     };
 })();

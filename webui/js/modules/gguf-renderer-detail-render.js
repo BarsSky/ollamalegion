@@ -1360,6 +1360,33 @@
             '</div>';
     }
 
+    // R59.5 (2026-09-03): export to GgufModule namespace so gguf-renderer.js
+    // can capture them as `var renderDetailPanel = M.renderDetailPanel;`.
+    // The whole file is wrapped in TWO IIFEs (outer at line 30 sets up `M`,
+    // inner at line 42 defines functions), and the inner IIFE was never
+    // exporting them — so M.renderDetailPanel etc. were all `undefined` at
+    // the moment gguf-renderer.js tried to grab them. Symptom: TypeError
+    // "renderDetailPanel is not a function" on first switch to GGUF page.
+    //
+    // We export the 14 names that gguf-renderer.js (lines 68-81) expects,
+    // plus a couple of internals (loadAndRenderBackendOptions) that are
+    // also referenced from elsewhere. Internal-only helpers (formatBytesShort,
+    // parseIntOr, hfFileName, etc.) stay private to this file.
+    M.renderDetailPanel = renderDetailPanel;
+    M.renderEmptyDetail = renderEmptyDetail;
+    M.renderDetailHeader = renderDetailHeader;
+    M.renderDetailTabs = renderDetailTabs;
+    M.renderDetailPane = renderDetailPane;
+    M.renderAboutPane = renderAboutPane;
+    M.renderModelsPane = renderModelsPane;
+    M.renderLoadedPane = renderLoadedPane;
+    M.renderDownloadsPane = renderDownloadsPane;
+    M.renderHuggingFacePane = renderHuggingFacePane;
+    M.renderSettingsPane = renderSettingsPane;
+    M.loadAndRenderBackendOptions = loadAndRenderBackendOptions;
+    M.mountProfilesInSettings = mountProfilesInSettings;
+    M.renderConnectModal = renderConnectModal;
+
 })();
 
 })();

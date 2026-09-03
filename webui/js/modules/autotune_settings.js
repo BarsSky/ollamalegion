@@ -15,7 +15,10 @@
     async function fetchConfig() {
         try {
             const r = await fetch(CONFIG_ENDPOINT, {
-                headers: window.API?.getAuthHeaders?.() || {}
+                // R59.5 (2026-09-03): window.API → window.Api (correct namespace
+                // exported from api.js:544). Old code returned undefined →
+                // empty headers → 401 from /api/v1/admin/autotune/config.
+                headers: window.Api?.getAuthHeaders?.() || {}
             });
             if (!r.ok) throw new Error(`HTTP ${r.status}`);
             const data = await r.json();
@@ -35,7 +38,8 @@
         // Pull model names from /api/v1/admin/autotune (which lists loaded models per backend)
         try {
             const r = await fetch(AUTOTUNE_LIST_ENDPOINT, {
-                headers: window.API?.getAuthHeaders?.() || {}
+                // R59.5: see comment in fetchConfig above
+                headers: window.Api?.getAuthHeaders?.() || {}
             });
             if (!r.ok) return [];
             const data = await r.json();

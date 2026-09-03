@@ -39,13 +39,33 @@ const ui = (function () {
     function init() {
         // R57.2 (2026-09-03): theme/density/i18n/AutoTune moved to webui/js/app-core.js.
         // app.js must be loaded AFTER app-core.js (see webui/index.html).
-        if (window.App) {
+        // R57.3: populate App.context for app-listeners.js setup functions.
+        // Each function reads from App.context to access app.js state and helpers.
+        if (!window.App) {
+            console.error('app.js: window.App not defined — app-core.js must be loaded BEFORE app.js');
+        } else {
+            App.context = {
+                data: data,
+                currentPage: currentPage,
+                dashboardRenderTimer: dashboardRenderTimer,
+                addLog: addLog,
+                addProxyLog: addProxyLog,
+                updateConnectionStatus: updateConnectionStatus,
+                fetchClusterState: fetchClusterState,
+                fetchProxyLogs: fetchProxyLogs,
+                refreshPage: refreshPage,
+                switchPage: switchPage,
+                autoDetectCppWorkerPort: autoDetectCppWorkerPort
+            };
             App.initTheme();
             App.initDensity();
             App.setupI18n();
             App.initAutoTuneEventHandlers();
-        } else {
-            console.error('app.js: window.App not defined — app-core.js must be loaded BEFORE app.js');
+            App.setupNavigation();
+            App.setupRestartHandler();
+            App.setupWebSocketEvents();
+            App.setupApiEvents();
+            App.setupLogsTabNavigation();
         }
 
         // Initial data load — cluster state first, drives connection status
@@ -113,52 +133,6 @@ const ui = (function () {
         addLog(window.I18N ? I18N.t('app.webui_initialized') : 'WebUI initialized', 'info');
     }
 
-    // ---- Restart Handler ----
-
-    function setupRestartHandler() {
-        var restartBtn = document.getElementById('restartBalancerBtn');
-        var restartModal = document.getElementById('restartConfirmModal');
-        var modalConfirm = document.getElementById('restartModalConfirm');
-        var modalCancel = document.getElementById('restartModalCancel');
-        var modalClose = document.getElementById('restartModalClose');
-        var indicator = document.getElementById('restartIndicator');
-
-        function showRestartModal() { if (restartModal) restartModal.classList.add('active'); }
-        function hideRestartModal() { if (restartModal) restartModal.classList.remove('active'); }
-
-        if (restartBtn) restartBtn.addEventListener('click', showRestartModal);
-        if (modalClose) modalClose.addEventListener('click', hideRestartModal);
-        if (modalCancel) modalCancel.addEventListener('click', hideRestartModal);
-        if (restartModal) restartModal.addEventListener('click', function (e) { if (e.target.id === 'restartConfirmModal') hideRestartModal(); });
-
-        if (modalConfirm) {
-            modalConfirm.addEventListener('click', function () {
-                hideRestartModal();
-                if (indicator) {
-                    indicator.style.display = 'block';
-                    indicator.innerHTML = '<div class="restart-indicator"><div class="restart-spinner"></div><span>' + (window.I18N ? I18N.t('settings.restarting') : 'Restarting balancer...') + '</span></div>';
-                }
-                Api.post('/api/v1/admin/restart').then(function () {
-                    if (indicator) indicator.innerHTML = '<div style="color: var(--success); padding: 8px;">' + (window.I18N ? I18N.t('settings.restarted') : 'Balancer restarted successfully') + '</div>';
-                    showToast(window.I18N ? I18N.t('settings.restarted') : 'Balancer restarted successfully', 'success');
-                }).catch(function (err) {
-                    if (indicator) indicator.innerHTML = '<div style="color: var(--danger); padding: 8px;">' + (window.I18N ? I18N.t('settings.restart_error') : 'Balancer restart failed') + '</div>';
-                    showToast((window.I18N ? I18N.t('common.error') : 'Error') + ': ' + (err.message || err), 'error');
-                });
-            });
-        }
-    }
-
-    // ---- Navigation ----
-
-    function setupNavigation() {
-        document.querySelectorAll('.nav-item').forEach(item => {
-            item.addEventListener('click', (e) => {
-                e.preventDefault();
-                switchPage(item.dataset.page);
-            });
-        });
-    }
 
     function switchPage(page) {
         document.querySelectorAll('.page').forEach(p => p.classList.remove('active'));
@@ -674,224 +648,7 @@ const ui = (function () {
         }
     }
 
-    // ---- WebSocket Events ----
 
-    // Round 32 #2 (2026-08-10): Cross-tab sync через BroadcastChannel API.
-    // Без этого каждая вкладка polls /api/v1/cluster независимо каждые 5s,
-    // и состояние между вкладками может отличаться на 5s. С BroadcastChannel
-    // одна вкладка, получившая cluster state change (через WS event от балансера
-    // или через REST poll), бродкастит "state-changed" в другие вкладки — они
-    // сразу перезагружают своё состояние. UX-выигрыш: когда в одной вкладке
-    // нажали "Load model", в другой вкладке GGUF page через ~100ms (вместо 5s)
-    // показывает новую модель.
-    //
-    // Channel name: "ollama-legion-sync" — все вкладки webui в одном origin
-    // (одно окно браузера на localhost) делят один BroadcastChannel.
-    //
-    // Sender tab: после получения cluster state (WS event или REST poll) → post.
-    // Receiver tabs: onmessage handler → trigger fetchClusterState() +
-    // updateActiveQueries() для GGUF page.
-    let _crossTabChannel = null;
-    function getCrossTabChannel() {
-        if (_crossTabChannel !== null) return _crossTabChannel;
-        if (typeof BroadcastChannel === 'undefined') {
-            // Старые браузеры (или browser extension contexts) без BroadcastChannel
-            // — no-op sync. Tabs обновятся при следующем REST poll (5s).
-            _crossTabChannel = false;
-            return _crossTabChannel;
-        }
-        try {
-            _crossTabChannel = new BroadcastChannel('ollama-legion-sync');
-            _crossTabChannel.onmessage = handleCrossTabMessage;
-            return _crossTabChannel;
-        } catch (e) {
-            // BroadcastChannel может бросить если document не fully loaded,
-            // или в Web Worker context. Fallback: no-op.
-            _crossTabChannel = false;
-            return _crossTabChannel;
-        }
-    }
-
-    function handleCrossTabMessage(event) {
-        // Не обрабатываем свои же сообщения (BroadcastChannel не фильтрует sender).
-        if (!event || !event.data) return;
-        // Игнорируем сообщения от других origins (защита от shared channel).
-        if (event.data.source && event.data.source !== 'ollama-legion-webui') return;
-        const data = event.data;
-        if (data.type === 'clusterStateChanged') {
-            // Cluster state изменился — обновляем локальное состояние.
-            // fetchClusterState() дёргает REST API напрямую (быстрее, чем ждать
-            // следующего 5s poll).
-            fetchClusterState();
-            // GGUF page имеет отдельный polling active-queries (3s) — дёргаем его
-            // тоже, чтобы busy badge обновился немедленно.
-            window.refreshActiveQueriesCrossTab();
-        } else if (data.type === 'generationCancelled') {
-            // Другая вкладка отменила generation — refresh busy badge.
-            window.refreshActiveQueriesCrossTab();
-        }
-    }
-
-    function broadcastCrossTab(type, extra) {
-        const ch = getCrossTabChannel();
-        if (!ch || ch === false) return; // no-op для браузеров без BroadcastChannel
-        try {
-            ch.postMessage(Object.assign({ source: 'ollama-legion-webui', type: type }, extra || {}));
-        } catch (e) {
-            // Пост может бросить если channel closed. Не критично — log и продолжить.
-            console.debug('broadcastCrossTab failed:', e);
-        }
-    }
-
-    // Expose cross-tab helpers в window для доступа из gguf-renderer.js и
-    // других модулей. Single source of truth — broadcastCrossTab определена
-    // здесь, в app.js, и все модули используют window.broadcastCrossTab.
-    window.broadcastCrossTab = broadcastCrossTab;
-    window.refreshActiveQueriesCrossTab = function () {
-        // Helper для cross-tab sync — force refresh busy badge когда
-        // другая вкладка отменила generation.
-        if (window.GgufRenderer && typeof window.GgufRenderer.refreshActiveQueriesPolling === 'function') {
-            window.GgufRenderer.refreshActiveQueriesPolling();
-        }
-    };
-
-    function setupWebSocketEvents() {
-        window.addEventListener('ws-open', () => {
-            updateConnectionStatus(true);
-            addLog(window.I18N ? I18N.t('app.ws_connected') : 'WebSocket connected', 'info');
-        });
-
-        window.addEventListener('ws-status', (e) => {
-            updateConnectionStatus(e.detail.connected);
-        });
-
-        window.addEventListener('ws-error', () => {
-            updateConnectionStatus(false);
-            addLog(window.I18N ? I18N.t('app.ws_error') : 'WebSocket error', 'error');
-        });
-
-        window.addEventListener('ws-reconnecting', (e) => {
-            const { attempt, max, delay } = e.detail;
-            addLog(window.I18N ? I18N.t('app.ws_reconnect', { attempt: attempt, max: max, delay: Math.round(delay / 1000) }) : `Reconnecting... (${attempt}/${max}) in ${Math.round(delay / 1000)}s`, 'warn');
-        });
-
-        window.addEventListener('ws-max-reconnect', () => {
-            addLog(window.I18N ? I18N.t('app.ws_max_reconnect') : 'Max reconnection attempts reached', 'error');
-        });
-
-        window.addEventListener('ws-message', (e) => {
-            handleWebSocketData(e.detail);
-        });
-
-        WebSocketManager.connect();
-        // R54.8: init AutoTune event handlers (toast notifications)
-        if (typeof initAutoTuneEventHandlers === 'function') {
-            initAutoTuneEventHandlers();
-        }
-        // R55.2: init AutoTune history buttons (modal timeline)
-        if (window.AutoTuneHistory && typeof window.AutoTuneHistory.initHistoryButtons === 'function') {
-            window.AutoTuneHistory.initHistoryButtons();
-        }
-    }
-
-    function handleWebSocketData(payload) {
-        const eventType = payload.eventType || 'legacy';
-
-        switch (eventType) {
-            case 'clusterState':
-                updateBackends(payload.data?.backends || []);
-                break;
-            case 'backendAdd':
-                addLog(window.I18N ? I18N.t('app.backend_added', { name: payload.data?.name || payload.backendId }) : `Backend added: ${payload.data?.name || payload.backendId}`, 'info');
-                fetchClusterState();
-                break;
-            case 'backendRemove':
-                addLog(window.I18N ? I18N.t('app.backend_removed', { id: payload.backendId }) : `Backend removed: ${payload.backendId}`, 'info');
-                fetchClusterState();
-                break;
-            case 'statusChange':
-                addLog(window.I18N ? I18N.t('app.status_changed', { id: payload.backendId, old: payload.data?.oldStatus, new: payload.data?.newStatus }) : `Status ${payload.backendId}: ${payload.data?.oldStatus} \u2192 ${payload.data?.newStatus}`, 'warning');
-                applyStatusChange(payload.backendId, payload.data?.newStatus);
-                break;
-            case 'limitsChange':
-                addLog(window.I18N ? I18N.t('app.limits_changed', { id: payload.backendId }) : `Limits ${payload.backendId} updated`, 'info');
-                fetchClusterState();
-                break;
-            case 'proxy_log':
-                if (payload.data?.entry) {
-                    addProxyLog(payload.data.entry);
-                }
-                break;
-            case 'ping':
-                break;
-            case 'legacy':
-            default:
-                if (payload.backends) {
-                    updateBackends(payload.backends || []);
-                }
-                break;
-        }
-    }
-
-    function backendsEqual(a, b) {
-        if (a.length !== b.length) return false;
-        const normalize = arr => JSON.stringify(arr.map(x => ({
-            id: x.id,
-            status: x.status,
-            activeRequests: x.activeRequests,
-            'gpu.usagePercent': x.gpu?.usagePercent,
-            'gpu.memoryUsed': x.gpu?.memoryUsed,
-            'system.cpuUsagePercent': x.system?.cpuUsagePercent,
-            'system.memoryUsed': x.system?.memoryUsed,
-            'prediction.secondsToCritical': x.prediction?.secondsToCritical
-        })).sort((m, n) => m.id.localeCompare(n.id)));
-        return normalize(a) === normalize(b);
-    }
-
-    function updateBackends(newBackends) {
-        newBackends = [...newBackends].sort((a, b) => (a.id || '').localeCompare(b.id || ''));
-        if (backendsEqual(data.backends, newBackends)) return;
-        data.backends = newBackends;
-        if (currentPage === 'dashboard') scheduleDashboardRender();
-        // Round 32 #2 (2026-08-10): broadcast cluster state change для cross-tab sync.
-        // Если backends действительно изменились (backendsEqual=false), уведомляем
-        // другие вкладки чтобы они перезагрузили своё состояние. Дедупликация
-        // через backendsEqual выше гарантирует что broadcast не шлётся каждый
-        // poll (только при реальных изменениях).
-        broadcastCrossTab('clusterStateChanged');
-    }
-
-    function applyStatusChange(backendId, newStatus) {
-        const b = data.backends.find(x => x.id === backendId);
-        if (b && b.status !== newStatus) {
-            b.status = newStatus;
-            if (currentPage === 'dashboard') scheduleDashboardRender();
-        } else if (!b) {
-            fetchClusterState();
-        }
-    }
-
-    function scheduleDashboardRender() {
-        if (dashboardRenderTimer) clearTimeout(dashboardRenderTimer);
-        dashboardRenderTimer = setTimeout(() => {
-            dashboardRenderTimer = null;
-            refreshPage('dashboard');
-        }, 250);
-    }
-
-    // ---- API Events ----
-
-    function setupApiEvents() {
-        window.addEventListener('api-error', (e) => {
-            const { message, error } = e.detail;
-            showToast(message, 'error');
-            addLog(message, 'error');
-            // If it's a network error or the balancer is unreachable, mark as disconnected
-            if (message && (message.includes('Network error') || message.includes('Failed to fetch') || message.includes('NetworkError'))) {
-                updateConnectionStatus(false);
-            }
-        });
-    }
 
     // ---- Data Fetching ----
 
@@ -2404,22 +2161,6 @@ const ui = (function () {
         });
     }
 
-    function setupLogsTabNavigation() {
-        document.querySelectorAll('.logs-tab').forEach(function(tab) {
-            tab.addEventListener('click', function() {
-                document.querySelectorAll('.logs-tab').forEach(function(t) { t.classList.remove('active'); });
-                document.querySelectorAll('.logs-panel').forEach(function(p) { p.classList.remove('active'); });
-                this.classList.add('active');
-                var tabName = this.dataset.logsTab;
-                var panelName = 'logsPanel' + tabName.charAt(0).toUpperCase() + tabName.slice(1);
-                var panel = document.getElementById(panelName);
-                if (panel) panel.classList.add('active');
-                if (tabName === 'proxy') {
-                    renderProxyLogs(data.proxyLogs);
-                }
-            });
-        });
-    }
 
     // ---- Model Management ----
 

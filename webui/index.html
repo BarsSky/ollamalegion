@@ -1839,6 +1839,10 @@ Beta-slow параметр YaRN. Стандарт: 1. Низкое = более 
     <!-- R57.2 (2026-09-03): app-core.js provides theme/density/i18n/AutoTune/showToast
          via window.App namespace. MUST be loaded BEFORE app.js (app.js init() calls App.*). -->
     <script defer src="js/app-core.js?v=1"></script>
-    <script defer src="js/app.js?v=17"></script>
+    <!-- R57.3 (2026-09-03): app-listeners.js provides setup* functions (navigation,
+         restart handler, WebSocket events, API events, logs tab navigation).
+         Reads from window.App.context populated by app.js. -->
+    <script defer src="js/app-listeners.js?v=1"></script>
+    <script defer src="js/app.js?v=18"></script>
 </body>
 </html>

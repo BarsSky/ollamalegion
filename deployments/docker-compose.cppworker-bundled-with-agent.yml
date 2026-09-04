@@ -304,7 +304,7 @@ services:
         VERSION: ${WEBUI_VERSION:-dev}
         GIT_COMMIT: ${WEBUI_GIT_COMMIT:-unknown}
         BUILD_DATE: ${WEBUI_BUILD_DATE:-unknown}
-    image: ollama-legion/webui:cppworker-bundled-r55.10  # Round 55.10 (2026-08-25): R55.10 theme picker in Settings (7 swatch buttons). Bumps R55.8 (themes + scrollbar + history modal).
+    image: ollama-legion/webui:cppworker-bundled-r60.2-webui-nginx-fix  # Round 60.2 (2026-09-04): webui nginx — 6 main-proxy locations для /api/models*, /api/hf*, /api/cancel, /api/delete, /api/show, /api/gpu (до фикса catchall /api/ уводил их на admin 18081 → 404). Также /ws/ proxy_send_timeout 60s → 86400s.
     container_name: ol-bundled-webui
     restart: unless-stopped
     ports:

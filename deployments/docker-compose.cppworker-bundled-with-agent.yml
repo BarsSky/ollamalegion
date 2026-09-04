@@ -123,7 +123,7 @@ services:
       dockerfile: docker/cppworker/Dockerfile.gpu
       args:
         CUDA_ARCH: ${CUDA_ARCH:-all}
-    image: ollama-legion/cppworker:gpu-${CPPWORKER_GPU_TAG:-arch_all}
+    image: ollama-legion/cppworker:gpu-${CPPWORKER_GPU_TAG:-86-r60.3-files-meta}
     container_name: ol-bundled-cppworker-gpu
     restart: unless-stopped
     runtime: nvidia

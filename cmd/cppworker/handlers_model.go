@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"time"
 
@@ -1129,16 +1130,21 @@ func handleGetModel(w http.ResponseWriter, r *http.Request) {
 }
 
 // handleListModelsDir ? GET /api/models/files: ?????? .gguf ?????? ? modelsDir.
+// === R60.3 (2026-09-04): per-file meta ===
+// До R60.3 API возвращал только {name, sizeBytes, modifiedAt} — webui рисовал
+// карточку модели с пустыми полями «Размер: -» и «Квантизация: -», потому что
+// gguf-renderer-detail.js:232-234 ожидает `m.size` и `m.quantization`. Теперь
+// добавляем алиас `size` (равно sizeBytes, для обратной совместимости с webui)
+// и `quantization` (парсится из имени файла: `q4km` → `Q4_K_M`, `Q8_0` → `Q8_0`).
+// Cppworker's /api/models/files теперь содержит ВСЮ meta для UI, webui больше
+// не нужен fallback на filename parsing.
 func handleListModelsDir(w http.ResponseWriter, r *http.Request) {
 	mm := backend.ModelManager()
 	if mm != nil {
 		models := mm.ListModels()
 		files := make([]map[string]interface{}, 0, len(models))
 		for _, m := range models {
-			files = append(files, map[string]interface{}{
-				"name": m.Filename, "sizeBytes": m.SizeBytes,
-				"modifiedAt": m.ModifiedAt.Format(time.RFC3339),
-			})
+			files = append(files, ggufFileMeta(m.Filename, m.SizeBytes, m.ModifiedAt))
 		}
 		writeJSON(w, http.StatusOK, map[string]interface{}{
 			"files": files, "dir": mm.GetModelsDir(), "count": len(files),
@@ -1165,14 +1171,115 @@ func handleListModelsDir(w http.ResponseWriter, r *http.Request) {
 		if err != nil {
 			continue
 		}
-		files = append(files, map[string]interface{}{
-			"name": name, "sizeBytes": info.Size(),
-			"modifiedAt": info.ModTime().Format(time.RFC3339),
-		})
+		files = append(files, ggufFileMeta(name, info.Size(), info.ModTime()))
 	}
 	writeJSON(w, http.StatusOK, map[string]interface{}{
 		"files": files, "dir": *modelsDir, "count": len(files),
 	})
+}
+
+// ggufFileMeta — собирает meta для одной записи /api/models/files.
+// Используется в обоих циклах handleListModelsDir (через ModelManager и через
+// прямой ReadDir). Возвращает map с алиасами: name + size (alias sizeBytes) +
+// quantization (parse из имени) + modifiedAt.
+func ggufFileMeta(filename string, size int64, modifiedAt time.Time) map[string]interface{} {
+	return map[string]interface{}{
+		"name":        filename,
+		"size":        size,        // alias for sizeBytes — webui reads m.size
+		"sizeBytes":   size,        // canonical name, kept for API stability
+		"quantization": parseQuantization(filename),
+		"modifiedAt":  modifiedAt.Format(time.RFC3339),
+	}
+}
+
+// === R60.3: parseQuantization — extract quantization level from filename ===
+// Поддерживает llama.cpp naming conventions:
+//   - Q4_K_M, Q4_K_S, Q4_0, Q4_1, Q5_K_M, Q8_0, Q2_K, F16, F32, BF16
+//   - compressed aliases: q4km → Q4_K_M, q4ks → Q4_K_S, q5_1, q8_0
+//   - I-quants (llama.cpp IQ series): IQ1_S, IQ2_XXS, IQ3_S, IQ4_XS
+// Returns "" if no recognizable quantization level found.
+//
+// Strategy: try multiple "candidates" derived from the last dash-separated
+// segments of the filename. Filenames like "Qwen3-Instruct-2507-q4km" have
+// `q4km` as a single trailing token. "Llama-3-8B-Q4_K_M" has `Q4_K_M` split
+// into 3 trailing tokens. We try single-token, 2-token-joined, 3-token-joined
+// variants, each against three regexes (standard underscore, compressed, F-quant).
+func parseQuantization(filename string) string {
+	base := filename
+	if idx := strings.LastIndex(base, "/"); idx >= 0 {
+		base = base[idx+1:]
+	}
+	if idx := strings.LastIndex(base, `\`); idx >= 0 {
+		base = base[idx+1:]
+	}
+	base = strings.TrimSuffix(base, ".gguf")
+	base = strings.TrimSuffix(base, ".GGUF")
+	if base == "" {
+		return ""
+	}
+	parts := strings.Split(base, "-")
+	n := len(parts)
+
+	// Build candidates: try longest match first.
+	candidates := make([]string, 0, 5)
+	if n >= 3 {
+		candidates = append(candidates, parts[n-3]+"_"+parts[n-2]+"_"+parts[n-1]) // "Q4_K_M"
+		candidates = append(candidates, parts[n-3]+parts[n-2]+parts[n-1])          // "Q4KM"
+	}
+	if n >= 2 {
+		candidates = append(candidates, parts[n-2]+"_"+parts[n-1]) // "Q6_K"
+		candidates = append(candidates, parts[n-2]+parts[n-1])     // "Q6K"
+	}
+	candidates = append(candidates, parts[n-1]) // "q4km", "F16", etc.
+
+	// Standard: Q4_K_M, Q4_0, IQ4_XS, Q4 (kind optional).
+	stdRe := regexp.MustCompile(`^(I?Q)(\d+)(_(K_[SML]|K|0|1|S|M|L|XS|XXS))?$`)
+	// Compressed: Q4KM, Q6K, Q4K (no underscore between bits and kind).
+	cmpRe := regexp.MustCompile(`^(I?Q)(\d+)(KM|KS|KL|KM|KS|KL|0|1|S|M|L|XS|XXS|K)$`)
+	// F-quant: F16, BF16, FP16.
+	fRe := regexp.MustCompile(`^(F|BF|FP)(\d+)$`)
+
+	for _, cand := range candidates {
+		up := strings.ToUpper(cand)
+		if m := fRe.FindStringSubmatch(up); m != nil {
+			if m[1] == "FP" {
+				return "F" + m[2]
+			}
+			return m[1] + m[2] // F16, BF16
+		}
+		if m := stdRe.FindStringSubmatch(up); m != nil {
+			prefix := m[1] // "Q" or "IQ"
+			bits := m[2]
+			kind := m[3]
+			if kind == "" {
+				return prefix + bits
+			}
+			return prefix + bits + kind
+		}
+		if m := cmpRe.FindStringSubmatch(up); m != nil {
+			prefix := m[1]
+			bits := m[2]
+			suffix := m[3]
+			// Normalize compressed → canonical form.
+			switch suffix {
+			case "KM":
+				return prefix + bits + "_K_M"
+			case "KS":
+				return prefix + bits + "_K_S"
+			case "KL":
+				return prefix + bits + "_K_L"
+			case "K":
+				return prefix + bits + "_K"
+			case "XS":
+				return prefix + bits + "_XS"
+			case "XXS":
+				return prefix + bits + "_XXS"
+			default:
+				return prefix + bits + "_" + suffix
+			}
+		}
+	}
+	return ""
 }
 
 // handleDeleteModel ? ???????? .gguf ????? ? ????? (DELETE /api/models/delete, /api/delete).

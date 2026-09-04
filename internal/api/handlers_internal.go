@@ -26,7 +26,9 @@ import (
 type llamaModelLoadedRequest struct {
 	BackendID     string `json:"backendId"`
 	Model         string `json:"model"`
+	Path          string `json:"path,omitempty"`         // R60.4
 	SizeBytes     uint64 `json:"sizeBytes,omitempty"`
+	Quantization  string `json:"quantization,omitempty"` // R60.4
 	ContextSize   int    `json:"contextSize,omitempty"`
 	GPULayers     int    `json:"gpuLayers,omitempty"`
 	KVCacheType   string `json:"kvCacheType,omitempty"`
@@ -86,8 +88,8 @@ func (s *Server) handleLlamaModelLoaded(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	mm.UpdateLlamaCppModelLoaded(req.BackendID, req.Model, req.SizeBytes, req.ContextSize, req.GPULayers,
-		req.KVCacheType, req.FlashAttnType, req.UseMmap)
+	mm.UpdateLlamaCppModelLoaded(req.BackendID, req.Model, req.Path, req.SizeBytes, req.ContextSize, req.GPULayers,
+		req.KVCacheType, req.FlashAttnType, req.UseMmap, req.Quantization)
 
 	// Round 34 Phase 3: обновляем nctxReload coordinator с актуальным contextSize
 	// (если известен). Это устраняет stale state когда cppworker reload'ит модель
@@ -103,7 +105,9 @@ func (s *Server) handleLlamaModelLoaded(w http.ResponseWriter, r *http.Request) 
 	logger.Get().Debugw("internal/llama-model-loaded: processed",
 		"backend", req.BackendID,
 		"model", req.Model,
+		"path", req.Path,
 		"sizeBytes", req.SizeBytes,
+		"quantization", req.Quantization,
 		"contextSize", req.ContextSize,
 		"gpuLayers", req.GPULayers,
 		"kvCacheType", req.KVCacheType,

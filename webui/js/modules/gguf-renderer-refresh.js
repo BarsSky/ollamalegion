@@ -122,10 +122,21 @@
                 };
                 // gpuInfo is at top level (BackendMetrics.GPU).
                 state.gpuInfo = data.gpu || null;
-                // localModels: list of model names that exist on the backend
-                // (BackendMetrics.models — for llama_cpp this is the same as
-                // the loaded model names; for ollama it's the pulled library).
-                state.localModels = Array.isArray(data.models) ? data.models : [];
+                // localModels: list of model objects that exist on the backend.
+                // R60.4 (2026-09-04): switch source from `data.models` (array of strings,
+                // just names) to `data.llamaCpp.loadedModels` (array of objects with
+                // full meta: name, path, size, quantization, state, contextLength, etc.).
+                // Before R60.4, webui gguf-renderer-detail.js:232-234 read m.size and
+                // m.quantization on strings, which always returned undefined — UI showed
+                // empty "Размер: -" and "Квантизация: -" even though the model was loaded.
+                // For ollama backends, fall back to `data.ollama.runningModels` shape.
+                if (data.backendType === 'llama_cpp' && data.llamaCpp && Array.isArray(data.llamaCpp.loadedModels)) {
+                    state.localModels = data.llamaCpp.loadedModels;
+                } else if (data.ollama && Array.isArray(data.ollama.runningModels)) {
+                    state.localModels = data.ollama.runningModels;
+                } else {
+                    state.localModels = [];
+                }
                 // loadedModels: detailed objects (BackendMetrics.llamaCpp.loadedModels).
                 // For non-llama_cpp backends this is `ollama.runningModels` shape.
                 if (data.backendType === 'llama_cpp' && data.llamaCpp && Array.isArray(data.llamaCpp.loadedModels)) {

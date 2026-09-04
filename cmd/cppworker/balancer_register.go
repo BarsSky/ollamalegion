@@ -276,6 +276,7 @@ func (r *balancerRegistration) unregister(ctx context.Context, log *zap.SugaredL
 // Endpoint: POST /api/v1/internal/llama-model-loaded
 // Body: {"backendId": "...", "model": "...", "sizeBytes": 12345,
 //
+//	"path": "/app/models/foo.gguf", "quantization": "Q4_K_M",
 //	"contextSize": 4096, "gpuLayers": -1, "kvCacheType": "f16",
 //	"flashAttnType": -1, "useMmap": true}
 //
@@ -294,8 +295,15 @@ func (r *balancerRegistration) unregister(ctx context.Context, log *zap.SugaredL
 // CPPWORKER_REGISTER_DISABLE). Backend ID в payload'е (`r.backendID`)
 // совпадает с ID agent-registered backend'а (тот же env var CPPWORKER_BACKEND_ID),
 // так что балансировщик корректно мерджит callback в metrics.
+//
+// R60.4 (2026-09-04): webui meta — добавлены path (полный путь к .gguf, чтобы
+// webui знал имя файла) и quantization (parseQuantization(path) — Q4_K_M и т.д.).
+// До R60.4 webui карточка модели показывала пустые "Размер: -" и "Квантизация: -"
+// потому что notifyModelLoaded не передавал эти поля, а /api/models (который
+// balancer poll'ит) тоже их не отдавал.
 func (r *balancerRegistration) notifyModelLoaded(
 	modelName string,
+	modelPath string,
 	sizeBytes uint64,
 	contextSize, gpuLayers int,
 	kvCacheType string,
@@ -305,6 +313,14 @@ func (r *balancerRegistration) notifyModelLoaded(
 	if r == nil || r.balancerURL == "" {
 		return
 	}
+	// R60.4 fallback: sizeBytes иногда 0 (cppbackend берёт из gguf meta).
+	// os.Stat на path даёт реальный file size.
+	effectiveSize := sizeBytes
+	if effectiveSize == 0 && modelPath != "" {
+		if fi, statErr := os.Stat(modelPath); statErr == nil {
+			effectiveSize = uint64(fi.Size())
+		}
+	}
 	go func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
@@ -312,7 +328,10 @@ func (r *balancerRegistration) notifyModelLoaded(
 		payload := map[string]interface{}{
 			"backendId":     r.backendID,
 			"model":         modelName,
-			"sizeBytes":     sizeBytes,
+			"path":          modelPath,
+			"sizeBytes":     effectiveSize,
+			"size":          effectiveSize, // R60.4: alias for webui gguf-renderer-detail.js:232
+			"quantization":  parseQuantization(modelPath), // R60.4
 			"contextSize":   contextSize,
 			"gpuLayers":     gpuLayers,
 			"kvCacheType":   kvCacheType,

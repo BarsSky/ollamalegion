@@ -110,13 +110,21 @@ func (mm *MetricsManager) ListRunningModels(backendID string, engine types.Backe
 //
 // Это позволяет UI сразу увидеть загруженную модель, не дожидаясь
 // 30-секундного poll'а от llamaCppMetricsPoller.
+//
+// R60.4 (2026-09-04): webui meta — добавлены modelPath и quantization параметры.
+// До R60.4 LoadedModels[i].Path и Quantization оставались пустыми (cppworker
+// не передавал их в notify callback), и webui gguf-renderer-detail.js:232-234
+// показывал карточку модели с пустыми "Размер: -" и "Квантизация: -".
+// Cppworker теперь парсит quantization из path через parseQuantization (R60.3).
 func (mm *MetricsManager) UpdateLlamaCppModelLoaded(
 	backendID, model string,
+	modelPath string,
 	sizeBytes uint64,
 	contextSize, gpuLayers int,
 	kvCacheType string,
 	flashAttnType int,
 	useMmap bool,
+	quantization string,
 ) {
 	mm.mu.Lock()
 	defer mm.mu.Unlock()
@@ -136,6 +144,13 @@ func (mm *MetricsManager) UpdateLlamaCppModelLoaded(
 		if m.Name == model {
 			// Обновляем меты.
 			lm.LoadedModels[i].Size = sizeBytes
+			// R60.4: path и quantization (если присланы, не затираем).
+			if modelPath != "" {
+				lm.LoadedModels[i].Path = modelPath
+			}
+			if quantization != "" {
+				lm.LoadedModels[i].Quantization = quantization
+			}
 			if contextSize > 0 {
 				lm.LoadedModels[i].ContextLength = contextSize
 			}
@@ -164,12 +179,14 @@ func (mm *MetricsManager) UpdateLlamaCppModelLoaded(
 	if !found {
 		lm.LoadedModels = append(lm.LoadedModels, types.LlamaCppModel{
 			Name:           model,
+			Path:           modelPath,
 			Size:           sizeBytes,
 			ContextLength:  contextSize,
 			NumGPULayers:   gpuLayers,
 			KvCacheType:    kvCacheType,
 			FlashAttnType:  flashAttnType,
 			UseMmap:        useMmap,
+			Quantization:   quantization,
 			State:          "loaded",
 		})
 	}

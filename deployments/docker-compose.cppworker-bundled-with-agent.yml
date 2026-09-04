@@ -51,7 +51,7 @@ services:
     # Round 35 (r35): reload→load fallback + idleUnload disabled.
     # Round 35c (r35c): env-tunable polling timeouts (LB_NCTX_PREFLIGHT_*)
     # для моделей с auto-offload (22GB+ Qwen3.6 на 8GB VRAM, 12-15 min load).
-    image: ollama-legion/balancer:cppworker-bundled-r60-emb-toggle  # Round 60 (2026-09-04): embeddings mode toggle (5-15% TTFT win on chat).
+    image: ollama-legion/balancer:cppworker-bundled-r60.4-webui-meta  # Round 60.4 (2026-09-04): webui meta — UpdateLlamaCppModelLoaded now accepts modelPath + quantization; LoadedModels сохраняет path/size/quantization для UI.
     #   R54.2: AutoTune master switch (Balancing.AutoTune, default true) +
     #          per-model "autoTune": false override (LlamaCppModelProfile.AutoTune).
     #          Manual control: user can disable AutoTune globally or per-model.
@@ -123,7 +123,7 @@ services:
       dockerfile: docker/cppworker/Dockerfile.gpu
       args:
         CUDA_ARCH: ${CUDA_ARCH:-all}
-    image: ollama-legion/cppworker:gpu-${CPPWORKER_GPU_TAG:-86-r60.3-files-meta}
+    image: ollama-legion/cppworker:gpu-${CPPWORKER_GPU_TAG:-86-r60.4-webui-meta}
     container_name: ol-bundled-cppworker-gpu
     restart: unless-stopped
     runtime: nvidia
@@ -304,7 +304,7 @@ services:
         VERSION: ${WEBUI_VERSION:-dev}
         GIT_COMMIT: ${WEBUI_GIT_COMMIT:-unknown}
         BUILD_DATE: ${WEBUI_BUILD_DATE:-unknown}
-    image: ollama-legion/webui:cppworker-bundled-r60.2-webui-nginx-fix  # Round 60.2 (2026-09-04): webui nginx — 6 main-proxy locations для /api/models*, /api/hf*, /api/cancel, /api/delete, /api/show, /api/gpu (до фикса catchall /api/ уводил их на admin 18081 → 404). Также /ws/ proxy_send_timeout 60s → 86400s.
+    image: ollama-legion/webui:cppworker-bundled-r60.4-webui-meta  # Round 60.4 (2026-09-04): gguf-renderer-refresh.js — state.localModels теперь берётся из data.llamaCpp.loadedModels (объекты с size/quantization/path) вместо data.models (строки).
     container_name: ol-bundled-webui
     restart: unless-stopped
     ports:

@@ -346,7 +346,7 @@ func handleLoadModel(w http.ResponseWriter, r *http.Request) {
 		if balancerReg != nil {
 			// Round 34 (2026-08-12): добавили runtime params (kvCacheType,
 			// flashAttnType, useMmap) для profile mismatch detection в balancer.
-			balancerReg.notifyModelLoaded(modelName, model.SizeBytes, model.ContextSize, model.GPULayers,
+			balancerReg.notifyModelLoaded(modelName, model.Path, model.SizeBytes, model.ContextSize, model.GPULayers,
 				model.KVCacheType, model.FlashAttnType, model.UseMmap)
 		}
 
@@ -783,7 +783,7 @@ func handleLoadWithParams(w http.ResponseWriter, r *http.Request) {
 		if balancerReg != nil {
 			// Round 34 (2026-08-12): добавили runtime params (kvCacheType,
 			// flashAttnType, useMmap) для profile mismatch detection в balancer.
-			balancerReg.notifyModelLoaded(modelName, model.SizeBytes, model.ContextSize, model.GPULayers,
+			balancerReg.notifyModelLoaded(modelName, model.Path, model.SizeBytes, model.ContextSize, model.GPULayers,
 				model.KVCacheType, model.FlashAttnType, model.UseMmap)
 		}
 
@@ -1050,8 +1050,25 @@ func handleListModels(w http.ResponseWriter, r *http.Request) {
 	// ??????? ????? ?????? GGUF ? ???????? ? ?? ??? cppworker ??? ???????
 	// ???????? ??????? ????, ? ??? ????????? (preflight ????? ????????).
 	// Round 37 (2026-08-18): build per-model enriched list with feasible_max_context.
+	// R60.4 (2026-09-04): webui meta — добавлены size (alias для size_bytes,
+	// webui-совместимость) и quantization (parse из path через parseQuantization).
+	// До R60.4 webui получал size=0/quantization="" потому что notifyModelLoaded
+	// callback не передавал их, а /api/models (который balancer poll'ит) тоже не
+	// отдавал. Карточка модели в webui показывала пустые "Размер: -" и
+	// "Квантизация: -".
+	//
+	// R60.4 fallback: m.SizeBytes иногда 0 (cppbackend берёт из llama.cpp gguf meta,
+	// которая для некоторых моделей не заполнена). Делаем os.Stat на m.Path —
+	// получаем реальный file size.
 	enrichedModels := make([]map[string]interface{}, 0, len(models))
 	for _, m := range models {
+		// R60.4: fallback для size — реальный file size через os.Stat.
+		effectiveSize := m.SizeBytes
+		if effectiveSize == 0 && m.Path != "" {
+			if fi, statErr := os.Stat(m.Path); statErr == nil {
+				effectiveSize = uint64(fi.Size())
+			}
+		}
 		entry := map[string]interface{}{
 			"name":                m.Name,
 			"path":                m.Path,
@@ -1062,7 +1079,9 @@ func handleListModels(w http.ResponseWriter, r *http.Request) {
 			"n_vocab":             m.NVocab,
 			"context_size":        m.ContextSize,
 			"gguf_context_length": m.GGUFContextLength,
-			"size_bytes":          m.SizeBytes,
+			"size_bytes":          effectiveSize,
+			"size":                effectiveSize, // R60.4: alias (webui gguf-renderer-detail.js:232)
+			"quantization":        parseQuantization(m.Path), // R60.4
 			"loaded_at":           m.LoadedAt,
 			"gpu_count":           m.GPUCount,
 			"kv_cache_type":       m.KVCacheType,

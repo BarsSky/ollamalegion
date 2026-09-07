@@ -24,6 +24,58 @@
 
     const M = (window.GgufModule = window.GgufModule || {});
 
+    // ---- Disk-models fallback (R60.5) ----
+    // Асинхронная догрузка списка .gguf файлов на диске через /api/models/files
+    // (R60.3 endpoint). Используется когда state.localModels пуст (нет загруженных
+    // моделей), чтобы вкладка «Модели» не выглядела пустой.
+    let _diskFetchInFlight = new Set(); // debounce: backendId, чтобы не спамить
+    function fetchDiskModelsAsync(backendId, state) {
+        if (_diskFetchInFlight.has(backendId)) return;
+        _diskFetchInFlight.add(backendId);
+        const tick = (state && state._diskFetchTick) || 0;
+        if (state) state._diskFetchTick = tick + 1;
+        if (typeof window.GgufApi === 'undefined' || typeof window.GgufApi.listLocalModelsViaBackend !== 'function') {
+            _diskFetchInFlight.delete(backendId);
+            return;
+        }
+        window.GgufApi.listLocalModelsViaBackend(backendId)
+            .then(function (filesBody) {
+                // R60.3 /api/models/files: {count, dir, files: [{name, size, quantization, ...}]}
+                const files = (filesBody && Array.isArray(filesBody.files)) ? filesBody.files : [];
+                if (files.length === 0) {
+                    // No disk files either — leave localModels as []
+                    return;
+                }
+                // Normalize: webui renderModelsPane ожидает объекты с полями
+                // {name, size, quantization, state}. У файлов state всегда
+                // "available" (не загружен).
+                const normalized = files.map(function (f) {
+                    return {
+                        name: f.name || '-',
+                        size: typeof f.size === 'number' ? f.size : (f.sizeBytes || 0),
+                        quantization: f.quantization || '',
+                        state: 'available', // не загружена
+                        path: f.path || '',
+                    };
+                });
+                // Replace localModels на нормализованный список файлов.
+                // Не мерджим с loadedModels — рендерер сам матчит isLoaded.
+                if (state.localModels.length === 0 || state._diskFetchTick > tick) {
+                    state.localModels = normalized;
+                    // Force re-render detail pane.
+                    if (typeof M.refreshDetailPanel === 'function') {
+                        M.refreshDetailPanel(backendId);
+                    }
+                }
+            })
+            .catch(function (err) {
+                console.warn('[gguf-renderer] fetchDiskModelsAsync failed for', backendId, err);
+            })
+            .finally(function () {
+                _diskFetchInFlight.delete(backendId);
+            });
+    }
+
     // ---- Data refresh ----
 
     let _refreshInProgress = false;
@@ -136,6 +188,13 @@
                     state.localModels = data.ollama.runningModels;
                 } else {
                     state.localModels = [];
+                }
+                // R60.5 (2026-09-07): fallback на /api/models/files (R60.3 endpoint) когда
+                // нет загруженных моделей. Иначе вкладка "Модели" пустая если ни одна
+                // модель не загружена, хотя файлы .gguf есть на диске. Догружаем
+                // асинхронно, не блокируем основной refresh.
+                if (state.localModels.length === 0 && data.backendType === 'llama_cpp' && state.selectedBackendId) {
+                    fetchDiskModelsAsync(backend.id, state);
                 }
                 // loadedModels: detailed objects (BackendMetrics.llamaCpp.loadedModels).
                 // For non-llama_cpp backends this is `ollama.runningModels` shape.

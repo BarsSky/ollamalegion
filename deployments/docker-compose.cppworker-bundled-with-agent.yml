@@ -51,7 +51,7 @@ services:
     # Round 35 (r35): reload→load fallback + idleUnload disabled.
     # Round 35c (r35c): env-tunable polling timeouts (LB_NCTX_PREFLIGHT_*)
     # для моделей с auto-offload (22GB+ Qwen3.6 на 8GB VRAM, 12-15 min load).
-    image: ollama-legion/balancer:cppworker-bundled-r60.4-webui-meta  # Round 60.4 (2026-09-04): webui meta — UpdateLlamaCppModelLoaded now accepts modelPath + quantization; LoadedModels сохраняет path/size/quantization для UI.
+    image: ollama-legion/balancer:cppworker-bundled-r60.5-webui-nginx  # Round 60.5 (2026-09-07): re-deployed clean-slate after R60.4 webui fixes (same balancer code, R60.4 image was lost in docker prune).
     #   R54.2: AutoTune master switch (Balancing.AutoTune, default true) +
     #          per-model "autoTune": false override (LlamaCppModelProfile.AutoTune).
     #          Manual control: user can disable AutoTune globally or per-model.
@@ -304,7 +304,7 @@ services:
         VERSION: ${WEBUI_VERSION:-dev}
         GIT_COMMIT: ${WEBUI_GIT_COMMIT:-unknown}
         BUILD_DATE: ${WEBUI_BUILD_DATE:-unknown}
-    image: ollama-legion/webui:cppworker-bundled-r60.4-webui-meta  # Round 60.4 (2026-09-04): gguf-renderer-refresh.js — state.localModels теперь берётся из data.llamaCpp.loadedModels (объекты с size/quantization/path) вместо data.models (строки).
+    image: ollama-legion/webui:cppworker-bundled-r60.5-webui-nginx  # Round 60.5 (2026-09-07): loadAndRenderBackendOptions hard timeout 15s + try/catch в renderBackendOptionsForm; fetchDiskModelsAsync fallback на /api/models/files.
     container_name: ol-bundled-webui
     restart: unless-stopped
     ports:

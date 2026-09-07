@@ -826,9 +826,38 @@
         }
         updateSpinner();
         elapsedTimer = setInterval(updateSpinner, 2000);
+        // R60.5 (2026-09-07): Hard timeout 15s. requestViaBackend имеет 10s
+        // AbortController, но если fetch зависает (например, не отвечает balancer
+        // proxy), спиннер может крутиться вечно. Дополнительный внешний таймаут
+        // гарантирует что пользователь увидит ошибку.
+        const hardTimeout = setTimeout(() => {
+            if (elapsedTimer) clearInterval(elapsedTimer);
+            const elapsedSec = ((Date.now() - t0) / 1000).toFixed(1);
+            container.innerHTML =
+                '<div class="gguf-empty-state" style="color:var(--danger);padding:12px;">' +
+                    '<div style="display:flex;align-items:center;gap:8px;margin-bottom:8px;">' +
+                        '<i class="fas fa-exclamation-triangle"></i>' +
+                        '<strong>' + Utils.escapeHtml(_('gguf.config_load_failed', 'Не удалось загрузить параметры бэкенда')) + '</strong>' +
+                    '</div>' +
+                    '<div style="font-family:monospace;font-size:11px;background:rgba(0,0,0,0.2);padding:8px;border-radius:4px;margin-bottom:8px;word-break:break-all;">' +
+                        'R60.5 hard timeout 15s — fetch завис, проверьте balancer proxy' +
+                    '</div>' +
+                    '<div style="display:flex;gap:6px;">' +
+                        '<button class="btn btn-secondary btn-sm" id="ggufBackendOptionsReload">' +
+                            '<i class="fas fa-sync"></i> ' + Utils.escapeHtml(_('gguf.reload_backend_options')) +
+                        '</button>' +
+                        '<span style="font-size:11px;color:var(--text-muted);align-self:center;">' +
+                            '(' + elapsedSec + 's)' +
+                        '</span>' +
+                    '</div>' +
+                '</div>';
+            const retry = document.getElementById('ggufBackendOptionsReload');
+            if (retry) retry.addEventListener('click', loadAndRenderBackendOptions);
+        }, 15000);
         try {
             const data = await GgufApi.requestViaBackend(backend.id, '/api/v1/cppworker/config');
             if (elapsedTimer) clearInterval(elapsedTimer);
+            clearTimeout(hardTimeout);
             const cfg = (data && data.config) || {};
             // === Round 32 #3: sync state.loadOptions с бэкенд-дефолтами ===
             if (!state._loadOptionsCustom) state._loadOptionsCustom = {};
@@ -838,7 +867,36 @@
             // Round 32 #6 (2026-08-10): кэшируем отрендеренный HTML формы, чтобы
             // он не затирался на spinner-плейсхолдер при последующих
             // refreshDetailPane() (active-queries polling каждые 3s).
-            const formHtml = renderBackendOptionsForm(cfg, backend);
+            // R60.5 (2026-09-07): try/catch вокруг render — если Utils.escapeHtml
+            // или другое выражение throws, показываем ошибку вместо вечного спиннера.
+            let formHtml;
+            try {
+                formHtml = renderBackendOptionsForm(cfg, backend);
+            } catch (renderErr) {
+                if (elapsedTimer) clearInterval(elapsedTimer);
+                const elapsedSec = ((Date.now() - t0) / 1000).toFixed(1);
+                const renderMsg = renderErr && renderErr.message ? renderErr.message : String(renderErr);
+                console.error('[gguf-renderer] renderBackendOptionsForm failed:', renderErr);
+                container.innerHTML =
+                    '<div class="gguf-empty-state" style="color:var(--danger);padding:12px;">' +
+                        '<div style="display:flex;align-items:center;gap:8px;margin-bottom:8px;">' +
+                            '<i class="fas fa-exclamation-triangle"></i>' +
+                            '<strong>Ошибка рендера формы (R60.5)</strong>' +
+                        '</div>' +
+                        '<div style="font-family:monospace;font-size:11px;background:rgba(0,0,0,0.2);padding:8px;border-radius:4px;margin-bottom:8px;word-break:break-all;">' +
+                            Utils.escapeHtml(renderMsg) +
+                        '</div>' +
+                        '<div style="font-size:12px;color:var(--text-muted);margin-bottom:8px;">' +
+                            'Config получен: ' + Object.keys(cfg).length + ' полей. См. console.error для stack trace.' +
+                        '</div>' +
+                        '<button class="btn btn-secondary btn-sm" id="ggufBackendOptionsReload">' +
+                            '<i class="fas fa-sync"></i> Retry' +
+                        '</button>' +
+                    '</div>';
+                const retry = document.getElementById('ggufBackendOptionsReload');
+                if (retry) retry.addEventListener('click', loadAndRenderBackendOptions);
+                return;
+            }
             if (!state._settingsFormHtmlByBackend) state._settingsFormHtmlByBackend = {};
             state._settingsFormHtmlByBackend[backend.id] = { html: formHtml, cfg: cfg, ts: Date.now() };
             container.innerHTML = formHtml;
@@ -856,6 +914,7 @@
             showToast(_('gguf.backend_options_loaded') + ' (' + elapsedSec + 's)', 'success');
         } catch (e) {
             if (elapsedTimer) clearInterval(elapsedTimer);
+            clearTimeout(hardTimeout);
             const elapsedSec = ((Date.now() - t0) / 1000).toFixed(1);
             const errMsg = e && e.message ? e.message : String(e);
             // Расширенный error message: показываем что случилось + подсказку.

@@ -4,6 +4,7 @@ package balancer
 
 import (
 	"encoding/json"
+	"strings"
 )
 
 
@@ -182,8 +183,37 @@ func isStreamingFromBody(path string, body []byte) bool {
 }
 
 // stripStreamFlag — принудительно отключает streaming в теле запроса.
+//
+// R60.5 (2026-09-07) fix: skip для management endpoints (load/unload/delete/copy/show).
+// cppworker использует strict JSON decoder (DisallowUnknownFields, см.
+// pkg/types/contract_validation.go) и отвергает поле "stream" в /api/models/load
+// (и других management endpoints) с 400 "unknown field 'stream'". До R60.5 это
+// не проявлялось потому что webui напрямую ходил к cppworker'у, минуя balancer.
+// После R60.4 webui ходит через balancer proxy для всех /api/* — баг стал видимым.
+//
+// Список management endpoints (cppworker не принимает "stream" в них):
+//   - /api/models/load
+//   - /api/models/load-with-params
+//   - /api/models/unload
+//   - /api/models/delete
+//   - /api/copy
+//   - /api/delete
+//   - /api/pull
+//   - /api/push
+//   - /api/create
+//   - /api/blobs/* (если есть)
 func stripStreamFlag(body []byte) []byte {
+	return stripStreamFlagForPath(body, "")
+}
+
+// stripStreamFlagForPath — версия с явным указанием path.
+// Если path — management endpoint, body не модифицируется.
+func stripStreamFlagForPath(body []byte, path string) []byte {
 	if len(body) == 0 {
+		return body
+	}
+	// Management endpoints не принимают поле "stream" (cppworker strict decoder).
+	if isManagementEndpoint(path) {
 		return body
 	}
 	var req map[string]interface{}
@@ -193,4 +223,32 @@ func stripStreamFlag(body []byte) []byte {
 	req["stream"] = false
 	out, _ := json.Marshal(req)
 	return out
+}
+
+// isManagementEndpoint — возвращает true для путей, которые НЕ принимают
+// поле "stream" в теле запроса (cppworker DisallowUnknownFields).
+func isManagementEndpoint(path string) bool {
+	if path == "" {
+		return false
+	}
+	// Нормализуем trailing slash для сравнения.
+	normalized := strings.TrimSuffix(path, "/")
+	managementPaths := []string{
+		"/api/models/load",
+		"/api/models/load-with-params",
+		"/api/models/unload",
+		"/api/models/delete",
+		"/api/copy",
+		"/api/delete",
+		"/api/pull",
+		"/api/push",
+		"/api/create",
+		"/api/blobs",
+	}
+	for _, p := range managementPaths {
+		if normalized == p || strings.HasPrefix(normalized, p+"/") {
+			return true
+		}
+	}
+	return false
 }

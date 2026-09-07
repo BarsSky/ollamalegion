@@ -32,7 +32,9 @@ func (p *Proxy) proxyRequestLlamaCppNonStream(w http.ResponseWriter, r *http.Req
 
 	originalPath := r.URL.Path
 	llamacppPath := translatePathForLlamaCpp(originalPath)
-	bodyNoStream := stripStreamFlag(bodyBuf)
+	// R60.5 (2026-09-07): stripStreamFlagForPath с explicit path — management
+	// endpoints (load/unload/delete/copy) не принимают поле "stream" в cppworker.
+	bodyNoStream := stripStreamFlagForPath(bodyBuf, originalPath)
 
 	// PREFLIGHT n_ctx auto-reload: если клиент задал options.num_ctx,
 	// а loaded n_ctx на бэкенде меньше — перезагружаем модель на нужный n_ctx

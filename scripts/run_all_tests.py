@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-run_all_tests.py — Master test runner. Runs all R60.5 tests in sequence
+run_all_tests.py — Master test runner. Runs all R60.5+ tests in sequence
 and reports overall pass/fail.
 
 Includes:
@@ -10,15 +10,21 @@ Includes:
   4. smoke_webui_r60_4.py (regression guard for R60.2-R60.4 fixes)
   5. R60.5 critical: management endpoint tests (load/unload/copy/delete)
   6. R60.5 critical: webui proxy endpoint reachable (no infinite loading)
+  7. R60.7: SSE long-running test (150s) — verifies SetWriteDeadline bypass
+     prevents /api/v1/events from dropping at 60s server WriteTimeout.
+     Set SKIP_SSE_LONG=1 to skip in CI; SSE_DURATION_SEC=60 for shorter run.
 
 Exit code 0 = ALL PASS, 1 = any FAIL.
 
 Запуск:
     python scripts/run_all_tests.py
     python scripts/run_all_tests.py --base http://localhost:18080
+    SKIP_SSE_LONG=1 python scripts/run_all_tests.py   # skip 150s SSE test
+    SSE_DURATION_SEC=60 python scripts/run_all_tests.py  # shorter SSE test
 """
 import argparse
 import json
+import os
 import sys
 import time
 from typing import List, Tuple
@@ -194,6 +200,54 @@ def run_r60_5_critical(base: str, webui: str, model: str, token: str) -> bool:
     return all_ok
 
 
+def run_r60_7_sse_long_running(webui: str) -> bool:
+    """R60.7 (2026-09-07): SSE /api/v1/events survives past server WriteTimeout.
+
+    Before fix: API server (port 18081) had WriteTimeout=60s. Go's WriteTimeout
+    is the absolute deadline for the response lifetime, NOT reset on each
+    Write. SSE died at 60s exactly (5 pings × 10s + headers ≈ 60s).
+
+    After fix: http.NewResponseController(w).SetWriteDeadline(time.Time{}) in
+    handleEvents removes the per-response deadline. Stream lives until client
+    disconnect or TCP keepalive.
+
+    This test runs for 150s (default) and verifies at least one ping arrives
+    after the 65s mark. Set SKIP_SSE_LONG=1 to skip in CI.
+    """
+    section("Phase H: R60.7 — SSE long-running (no WriteTimeout kill at 60s)")
+    import subprocess
+    env = os.environ.copy()
+    # Allow override via env, but ensure we honor the user's choice
+    if "SSE_DURATION_SEC" not in env and "SKIP_SSE_LONG" not in env:
+        env["SSE_DURATION_SEC"] = "150"
+    env["WEBUI_BASE"] = webui
+    print(f"  Running: scripts/test_sse_long_running.py")
+    print(f"  Env: SSE_DURATION_SEC={env.get('SSE_DURATION_SEC', '150')} SKIP_SSE_LONG={env.get('SKIP_SSE_LONG', '0')}")
+    try:
+        result = subprocess.run(
+            ["python", "scripts/test_sse_long_running.py"],
+            env=env,
+            capture_output=True,
+            text=True,
+            timeout=300,  # hard cap at 5 min (in case of hangs)
+        )
+        ok = result.returncode == 0
+        # Show last few lines of output for context
+        stdout_lines = result.stdout.strip().split("\n")
+        for line in stdout_lines[-8:]:
+            print(f"    {line}")
+        if not ok:
+            print(f"  stderr: {result.stderr[-500:] if result.stderr else '(empty)'}")
+        record("SSE /api/v1/events survives past 60s WriteTimeout (R60.7 fix)", ok)
+        return ok
+    except subprocess.TimeoutExpired:
+        record("SSE /api/v1/events long-running", False, "subprocess timeout (>5 min)")
+        return False
+    except Exception as e:
+        record("SSE /api/v1/events long-running", False, f"{type(e).__name__}: {e}")
+        return False
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="R60.5 master test runner")
     parser.add_argument("--base", default=DEFAULT_BASE, help="Balancer main proxy base URL")
@@ -210,6 +264,7 @@ def main() -> int:
         "C (OpenAI)": run_openai_compliance(args.base, args.model),
         "D (Generative)": run_generative_dialogue(args.base, args.model),
         "F (R60.5 critical)": run_r60_5_critical(args.base, args.webui, args.model, args.token),
+        "H (R60.7 SSE long-running)": run_r60_7_sse_long_running(args.webui),
     }
     elapsed = time.time() - start
 

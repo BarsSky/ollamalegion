@@ -224,6 +224,15 @@ func (s *Server) proxyToCppWorker(w http.ResponseWriter, r *http.Request, backen
 	// Дополнительно сбрасываем Content-Length (т.к. длина неизвестна заранее)
 	// и X-Accel-Buffering=no для nginx (запрет буферизации на proxy).
 	if isSSEResponse(resp.Header) {
+		// R60.7 (2026-09-07): снимаем WriteDeadline per-handler. SSE stream
+		// от cppworker (load progress, gguf-load-progress) может идти 60-120s,
+		// а WriteTimeout=60s на apiHTTPServer убил бы stream на 60s. Подробно
+		// см. handleEvents в handlers_events.go.
+		rc := http.NewResponseController(w)
+		if err := rc.SetWriteDeadline(time.Time{}); err != nil {
+			log.Warnw("cppworker proxy: SetWriteDeadline failed for SSE",
+				"error", err, "backend", backendID, "path", path)
+		}
 		w.Header().Set("Content-Length", "")
 		w.Header().Set("X-Accel-Buffering", "no")
 		w.WriteHeader(resp.StatusCode)

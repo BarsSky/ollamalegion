@@ -346,9 +346,20 @@ func (s *Server) handleApplyProfileProgress(w http.ResponseWriter, r *http.Reque
 		return
 	}
 
+	// R60.7 (2026-09-07): снимаем WriteDeadline per-handler (см. handleEvents).
+	// Apply job может занимать 30-60+ сек при занятом бэкенде, и 60s
+	// WriteTimeout обрезал бы stream ровно на 60s — клиент не дождался бы
+	// финального terminal event.
+	rc := http.NewResponseController(w)
+	if err := rc.SetWriteDeadline(time.Time{}); err != nil {
+		logger.Get().Warnw("handleApplyProfileProgress: SetWriteDeadline failed",
+			"error", err, "remote", r.RemoteAddr)
+	}
+
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-cache")
-	w.Header().Set("Connection", "keep-alive")
+	// R60.7: убран "Connection: keep-alive" — HTTP/2 запрещает (RFC 7540 §8.1.2.2),
+	// Go's chunked encoding уже подразумевает keep-alive.
 	w.Header().Set("X-Accel-Buffering", "no")
 	w.WriteHeader(http.StatusOK)
 

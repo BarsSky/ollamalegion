@@ -22,13 +22,27 @@ import (
 // Auth: token через query param (т.к. EventSource API браузера не поддерживает
 // custom headers). Это та же схема что и для /ws/metrics.
 //
-// События шлются сразу (snapshot) + live-stream. Heartbeat : ping каждые 30 сек
+// События шлются сразу (snapshot) + live-stream. Heartbeat : ping каждые 10 сек
 // для поддержания соединения через прокси.
 
 const (
 	eventsBufferCapacity  = 100
 	eventsHeartbeatPeriod = 10 * time.Second
 )
+
+// R60.7: переменная для override heartbeat period в unit-тестах.
+// Default = eventsHeartbeatPeriod. Тесты могут установить 100ms для
+// быстрой проверки long-running SSE без 10-секундного ожидания.
+var eventsHeartbeatPeriodOverride time.Duration
+
+// getHeartbeatPeriod возвращает eventsHeartbeatPeriodOverride если он
+// задан (используется в unit-тестах для ускорения), иначе default.
+func getHeartbeatPeriod() time.Duration {
+	if eventsHeartbeatPeriodOverride > 0 {
+		return eventsHeartbeatPeriodOverride
+	}
+	return eventsHeartbeatPeriod
+}
 
 // eventsBuffer — thread-safe ring buffer последних событий (для snapshot при reconnect).
 type eventsBuffer struct {
@@ -78,16 +92,43 @@ func newEventsHub() *eventsHub {
 // GET /api/v1/events?token=<X-API-Token>
 // Content-Type: text/event-stream
 // Cache-Control: no-cache
-// Connection: keep-alive
 // X-Accel-Buffering: no (отключает nginx buffering)
 //
 // Формат: data: {json}\n\n
-// Heartbeat: : ping\n\n каждые 30 сек (SSE comment, игнорируется клиентом).
+// Heartbeat: : ping\n\n каждые 10 сек (SSE comment, игнорируется клиентом).
+//
+// R60.7 (2026-09-07): cmd/balancer/main.go apiHTTPServer.WriteTimeout=60s
+// принудительно ставит SetWriteDeadline ровно на 60s от старта response.
+// Go НЕ reset'ит deadline на каждой Write (deadlines — это absolute time,
+// не timeouts). Без bypass SSE ровно через 60s получает EOF. Фикс:
+// http.NewResponseController(w).SetWriteDeadline(time.Time{}) В НАЧАЛЕ
+// handler снимает deadline, stream живёт до client disconnect.
+//
+// R60.7 также: убран заголовок "Connection: keep-alive" — HTTP/2 его
+// запрещает (RFC 7540 §8.1.2.2), Go's chunked transfer-encoding уже
+// подразумевает keep-alive для HTTP/1.1.
 func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
-	// SSE headers (стандартный набор).
+	// R60.7: снимаем WriteDeadline на per-handler уровне. Без этого
+	// http.Server.WriteTimeout=60s убивает SSE stream ровно через 60s,
+	// независимо от частоты heartbeat (Go ставит SetWriteDeadline ОДИН раз
+	// при старте response и не сбрасывает на каждом Write — это documented
+	// поведение net/http: "Deadlines are not timeouts. Once set they stay
+	// in force forever.").
+	//
+	// time.Time{} (zero value) означает "no deadline" — connection будет
+	// жить пока client не отвалится или TCP keepalive не сработает.
+	rc := http.NewResponseController(w)
+	if err := rc.SetWriteDeadline(time.Time{}); err != nil {
+		// Не критично — продолжим с server-level WriteTimeout, но логируем.
+		// На старых Go (<1.20) или на http.ResponseWriter без underlying
+		// net.Conn доступа http.NewResponseController вернёт error.
+		logger.Get().Warnw("handleEvents: SetWriteDeadline failed (SSE may drop at server WriteTimeout)",
+			"error", err, "remote", r.RemoteAddr)
+	}
+
+	// SSE headers (стандартный набор, R60.7: убран "Connection: keep-alive").
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-cache")
-	w.Header().Set("Connection", "keep-alive")
 	w.Header().Set("X-Accel-Buffering", "no")
 
 	flusher, ok := w.(http.Flusher)
@@ -112,7 +153,7 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 
 	// Без eventBus — только heartbeat, чтобы клиент не висел.
 	if s.eventBus == nil {
-		ticker := time.NewTicker(eventsHeartbeatPeriod)
+		ticker := time.NewTicker(getHeartbeatPeriod())
 		defer ticker.Stop()
 		for {
 			select {
@@ -131,7 +172,7 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 	subID, subCh := s.eventBus.Subscribe()
 	defer s.eventBus.Unsubscribe(subID)
 
-	ticker := time.NewTicker(eventsHeartbeatPeriod)
+	ticker := time.NewTicker(getHeartbeatPeriod())
 	defer ticker.Stop()
 
 	for {

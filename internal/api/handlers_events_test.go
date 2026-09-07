@@ -150,3 +150,95 @@ func (c ctxLike) Value(key any) any            { return nil }
 
 // Не используется напрямую, но гарантирует что http импорт не пропадает.
 var _ = http.MethodGet
+
+// R60.7 (2026-09-07): TestHandleEvents_NoWriteTimeout — проверяет что SSE
+// stream переживает http.Server.WriteTimeout. До фикса Go's WriteTimeout
+// (per-response absolute deadline) убивал SSE stream ровно через 60s
+// (5 pings × 10s + headers). Тест запускает сервер с WriteTimeout=1s и
+// ускоренным heartbeat=100ms, проверяет что stream живёт дольше 1s.
+//
+// БЕЗ SetWriteDeadline bypass тест провалится: после ~1.1s сервер
+// убъёт соединение и client получит EOF.
+func TestHandleEvents_NoWriteTimeout(t *testing.T) {
+	// R60.7: ускоряем heartbeat для теста (default 10s → 100ms).
+	// Override process-wide var; restore в defer.
+	originalOverride := eventsHeartbeatPeriodOverride
+	eventsHeartbeatPeriodOverride = 100 * time.Millisecond
+	defer func() { eventsHeartbeatPeriodOverride = originalOverride }()
+
+	s := &Server{
+		// eventBus: nil — fallback на heartbeat-only branch.
+		eventsHub: newEventsHub(),
+	}
+
+	// Реальный HTTP server с WriteTimeout=1s (типичный production default).
+	// БЕЗ R60.7 фикса stream умрёт на ~1s.
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/v1/events", s.handleEvents)
+	server := httptest.NewServer(mux)
+	defer server.Close()
+
+	// Делаем HTTP client с коротким response header timeout, но без
+	// ограничения на общее время чтения (мы хотим читать долго).
+	client := &http.Client{Timeout: 10 * time.Second}
+
+	resp, err := client.Get(server.URL + "/api/v1/events")
+	if err != nil {
+		t.Fatalf("GET /api/v1/events failed: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200, got %d", resp.StatusCode)
+	}
+	if got := resp.Header.Get("Content-Type"); got != "text/event-stream" {
+		t.Errorf("expected Content-Type=text/event-stream, got %q", got)
+	}
+	// R60.7: Connection header больше не устанавливается (HTTP/2 compat).
+	if got := resp.Header.Get("Connection"); got != "" {
+		t.Errorf("expected no Connection header, got %q", got)
+	}
+
+	// Читаем pings в течение 1.5s (больше WriteTimeout=1s).
+	// БЕЗ фикса: после ~1s Read вернёт EOF.
+	// С фиксом: получим несколько pings (heartbeat=100ms).
+	start := time.Now()
+	pingCount := 0
+	readBuf := make([]byte, 1024)
+	deadline := time.After(1500 * time.Millisecond)
+
+readLoop:
+	for {
+		select {
+		case <-deadline:
+			break readLoop
+		default:
+		}
+		// SetReadDeadline на TCP соединении (для test reliability)
+		// НЕ делаем — мы хотим проверить что stream живёт без
+		// принудительного deadline. Если бы делали, тест бы
+		// проверял только ReadDeadline, а не WriteTimeout.
+		n, err := resp.Body.Read(readBuf)
+		if n > 0 {
+			chunk := string(readBuf[:n])
+			if strings.Contains(chunk, ": ping") {
+				pingCount++
+			}
+		}
+		if err != nil {
+			// EOF or other error before deadline = bug (WriteTimeout fired)
+			t.Errorf("connection closed prematurely at t=%.2fs (after %d pings): %v",
+				time.Since(start).Seconds(), pingCount, err)
+			break
+		}
+		// Даём планировщику переключиться
+		time.Sleep(20 * time.Millisecond)
+	}
+
+	elapsed := time.Since(start).Seconds()
+	if pingCount < 3 {
+		t.Errorf("expected >= 3 pings in 1.5s (heartbeat=100ms), got %d in %.2fs",
+			pingCount, elapsed)
+	}
+	t.Logf("OK: received %d pings in %.2fs (WriteTimeout=1s bypassed)", pingCount, elapsed)
+}

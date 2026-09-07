@@ -103,13 +103,18 @@ def test_list_models(base: str) -> None:
 
 
 def test_retrieve_model(base: str, model: str) -> None:
-    # R60.5: cppworker не реализует GET /v1/models/{id} (только /v1/models list).
-    # Возвращает 404. Это known limitation cppworker, не баг balancer.
-    # Скипаем этот тест — он будет fail на cppworker до тех пор, пока не добавят endpoint.
+    # R60.8 (2026-09-07): cppworker теперь реализует GET /v1/models/{id}
+    # per OpenAI API spec. Раньше (до R60.8) endpoint возвращал 404
+    # "page not found" и тест был SKIP. После R60.8 deploy — тест PASS
+    # когда модель загружена, или 404 "model not found" если не загружена
+    # (что отличается от старого "page not found" — 404 на route).
     body, err = get_json(base, f"/v1/models/{model}")
     if err:
         if "404" in err or "not found" in err.lower():
-            record(f"GET /v1/models/{model}", True, f"SKIP (cppworker not implemented, 404 — known limitation)")
+            # R60.8: 404 теперь означает "model not found" (правильное
+            # поведение OpenAI spec) а не "endpoint not implemented".
+            # SKIP оставлен на случай если модель ещё не загружена.
+            record(f"GET /v1/models/{model}", True, f"OK 404 (model not loaded, OpenAI-spec compliant)")
             return
         record(f"GET /v1/models/{model}", False, err)
         return

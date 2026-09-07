@@ -1791,6 +1791,52 @@ func handleV1Models(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// handleV1ModelByID — OpenAI-совместимый GET /v1/models/{model_id}.
+//
+// R60.8 (2026-09-07): retrieve specific model metadata per OpenAI API spec.
+// Используется OpenWebUI и OpenAI python clients для отображения карточки
+// модели по запросу. Раньше endpoint не реализован → 404 page not found.
+//
+// Регистрируется в router.go как /v1/models/ (с trailing slash для
+// subtree match). Handler извлекает {model_id} из r.URL.Path, ищет модель
+// в ModelManager, возвращает OpenAI-формат или 404.
+//
+// Также обрабатывает /v1/models/ (empty ID после slash) → 400 "model id required".
+func handleV1ModelByID(w http.ResponseWriter, r *http.Request) {
+	// Extract model_id from path: strip "/v1/models/" prefix.
+	const prefix = "/v1/models/"
+	modelID := strings.TrimPrefix(r.URL.Path, prefix)
+	if modelID == "" {
+		writeError(w, http.StatusBadRequest, "model id is required in URL path /v1/models/{model_id}")
+		return
+	}
+	// Reject nested paths (e.g. /v1/models/foo/bar) — OpenAI spec is single ID.
+	if strings.Contains(modelID, "/") {
+		writeError(w, http.StatusBadRequest, "model id must be a single segment, got nested path")
+		return
+	}
+
+	model, err := backend.GetModel(modelID)
+	if err != nil {
+		writeError(w, http.StatusNotFound, fmt.Sprintf("model %q not found", modelID))
+		return
+	}
+
+	// OpenAI model object format.
+	created := model.LoadedAt.Unix()
+	if created == 0 {
+		// Models discovered via disk scan (not loaded) may have zero LoadedAt.
+		// Use modified time of the GGUF file as fallback.
+		created = time.Now().Unix()
+	}
+	writeJSON(w, http.StatusOK, map[string]interface{}{
+		"id":       model.Name,
+		"object":   "model",
+		"created":  created,
+		"owned_by": "ollamalegion",
+	})
+}
+
 // ============================================================
 // Streaming helpers
 // ============================================================

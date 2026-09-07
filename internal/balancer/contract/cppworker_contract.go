@@ -198,6 +198,18 @@ var AllEndpoints = []Endpoint{
 		PayloadBuilder: func() map[string]interface{} { return nil },
 		Description:   "cppworker version info.",
 	},
+	{
+		// R60.8 (2026-09-07): OpenAI-compatible GET /v1/models/{model_id}.
+		// Path uses {model_id} placeholder (handled in router.go with
+		// subtree match "/v1/models/"). Pre-R60.8: 404 page not found.
+		Name:           "v1_model_by_id",
+		Method:         "GET",
+		Path:           "/v1/models/{model_id}",
+		RequestStruct:  nil,
+		PayloadBuilder: func() map[string]interface{} { return nil },
+		Description:    "Retrieve specific model metadata per OpenAI spec.",
+	},
+	},
 	// Proxy passthrough endpoints — balancer doesn't construct payload,
 	// but proxyRequest must NOT mutate the body. Covered separately by
 	// TestProxyPassthrough_NoMutation in proxy_request_test.go.

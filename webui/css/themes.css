@@ -487,7 +487,7 @@ body *::after {
 /* ============================================================
    R55.6 (2026-08-24): Custom scrollbar applied from skygate themes.css.
    Browser default scrollbar в dark themes (e.g. Linear #0c0d10 bg с
-   bright white scrollbar) is visually jarring — 15-17px wide block
+   bright white scrollbar) is visually jarring - 15-17px wide block
    of light gray breaks visual flow. Решение: thin (8px), theme-aware
    scrollbar, blends with background.
 
@@ -496,7 +496,7 @@ body *::after {
      2px border inset (visible thumb = 4px), hover uses --border-strong.
 
    Все 7 тем (dark, light, linear, nvidia, vercel, sentry, mint) уже
-   определяют --border, --border-strong, --text-muted, --bg — scrollbar
+   определяют --border, --border-strong, --text-muted, --bg - scrollbar
    автоматически picks up правильные shades per theme. */
 
 /* Firefox */
@@ -529,7 +529,7 @@ body *::after {
 }
 
 /* ============================================================
-   R55.10 (2026-08-25): Theme picker — 7 swatch buttons в Settings.
+   R55.10 (2026-08-25): Theme picker - 7 swatch buttons в Settings.
    Каждый swatch превьюит bg + accent своей темы через inline
    --swatch-bg / --swatch-accent (выставлены прямо в HTML на
    .theme-swatch-preview, чтобы цвета не зависели от текущей

@@ -209,7 +209,6 @@ var AllEndpoints = []Endpoint{
 		PayloadBuilder: func() map[string]interface{} { return nil },
 		Description:    "Retrieve specific model metadata per OpenAI spec.",
 	},
-	},
 	// Proxy passthrough endpoints — balancer doesn't construct payload,
 	// but proxyRequest must NOT mutate the body. Covered separately by
 	// TestProxyPassthrough_NoMutation in proxy_request_test.go.

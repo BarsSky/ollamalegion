@@ -145,6 +145,13 @@
         <button id="pauseBtn" onclick="togglePause()" data-i18n="health.pause">⏸ Pause</button>
         <button id="refreshBtn" onclick="loadNow()" class="primary" data-i18n="health.refresh">🔄 Refresh</button>
         <a href="/" style="padding:6px 12px;border-radius:6px;border:1px solid var(--border-color);background:var(--bg-secondary);color:var(--text-primary);text-decoration:none;font-size:13px" data-i18n="health.back">← Dashboard</a>
+        <!-- R60.14 (2026-09-07): language picker. health.html uses its own
+             inline I18N system (line 122) so we wire onchange to I18N.setLang.
+             Same ollamalegion_lang localStorage key — synced with index.html + monitor.html. -->
+        <select class="lang-select" id="langSelect" title="Язык / Language" data-i18n-title="settings.language">
+          <option value="ru">🇷🇺 RU</option>
+          <option value="en">🇬🇧 EN</option>
+        </select>
       </div>
     </div>
 
@@ -241,6 +248,29 @@
         if (text) els[i].textContent = text;
       }
     }
+
+    // R60.14 (2026-09-07): wire up #langSelect for health.html standalone
+    // (uses inline I18N, not window.I18N.setLang). On change, update
+    // inline I18N dict and re-apply to all data-i18n elements.
+    (function() {
+      var sel = document.getElementById('langSelect');
+      if (!sel) return;
+      // Sync initial value from localStorage (or current I18N.lang)
+      try {
+        var saved = localStorage.getItem('ollamalegion_lang');
+        if (saved === 'ru' || saved === 'en') sel.value = saved;
+        else if (window.I18N && window.I18N.lang) sel.value = window.I18N.lang;
+      } catch (e) {}
+      sel.addEventListener('change', function() {
+        var l = this.value;
+        if (l !== 'ru' && l !== 'en') return;
+        try { localStorage.setItem('ollamalegion_lang', l); } catch (e) {}
+        if (window.I18N && window.I18N.setLang) {
+          window.I18N.setLang(l);
+        }
+        applyI18n(document);
+      });
+    })();
 
     function fmtTime(iso) {
       if (!iso) return '—';

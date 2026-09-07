@@ -60,6 +60,13 @@
     <span id="connBadge" class="badge badge-yellow" data-i18n="monitor.header.connecting">Connecting…</span>
     <button id="resetZoomBtn" onclick="MonitorApp.resetViewport()" title="Reset Zoom" style="font-size:12px;padding:2px 8px;border-radius:4px;cursor:pointer;background:var(--bg-secondary);color:var(--text-primary);border:1px solid var(--border-color);margin-left:2px">🔍 1:1</button>
     <button id="helpBtn" onclick="event.stopPropagation(); toggleHelp();" title="Help" style="font-weight:bold;font-size:14px;padding:2px 10px;border-radius:50%;width:30px;height:30px;line-height:1;cursor:pointer">?</button>
+    <!-- R60.14 (2026-09-07): language picker. Same component as index.html
+         (app-core.js:194-204 listens for #langSelect change and calls I18N.setLang()).
+         localStorage key: ollamalegion_lang, synced across pages. -->
+    <select class="lang-select" id="langSelect" title="Язык / Language" data-i18n-title="settings.language">
+      <option value="ru">🇷🇺 RU</option>
+      <option value="en">🇬🇧 EN</option>
+    </select>
   </div>
   <!-- Help Modal -->
   <div id="helpModal" style="display:none;position:fixed;inset:0;z-index:2000;background:rgba(0,0,0,0.6);backdrop-filter:blur(6px);-webkit-backdrop-filter:blur(6px);align-items:center;justify-content:center" onclick="toggleHelp()">
@@ -514,6 +521,36 @@
     // Lang sync from localStorage
     var savedLang = localStorage.getItem('ollamalegion_lang');
     if (savedLang && window.I18N) I18N.setLang(savedLang);
+
+    // R60.14 (2026-09-07): wire up #langSelect picker. index.html uses
+    // app-core.js setupI18n() for the same — that's auto-invoked on
+    // DOMContentLoaded. monitor.html doesn't load app-core.js, so we
+    // handle the change event directly here.
+    (function() {
+      var sel = document.getElementById('langSelect');
+      if (!sel || !window.I18N) return;
+      // Sync initial value (savedLang already applied above)
+      sel.value = window.I18N.getLang ? window.I18N.getLang() : (window.I18N.lang || savedLang || 'ru');
+      sel.addEventListener('change', function() {
+        var l = this.value;
+        if (l !== 'ru' && l !== 'en') return;
+        try { localStorage.setItem('ollamalegion_lang', l); } catch (e) {}
+        if (window.I18N.setLang) window.I18N.setLang(l);
+        // Re-apply all data-i18n attributes on the page.
+        document.querySelectorAll('[data-i18n]').forEach(function(el) {
+          var key = el.getAttribute('data-i18n');
+          if (key && window.I18N.t) {
+            var idx = key.indexOf('[title]');
+            if (idx === 0) el.title = window.I18N.t(key.slice(7));
+            else el.textContent = window.I18N.t(key);
+          }
+        });
+        document.querySelectorAll('[data-i18n-title]').forEach(function(el) {
+          var key = el.getAttribute('data-i18n-title');
+          if (key && window.I18N.t) el.title = window.I18N.t(key);
+        });
+      });
+    })();
   })();
   </script>
 </body>

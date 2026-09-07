@@ -304,7 +304,7 @@ services:
         VERSION: ${WEBUI_VERSION:-dev}
         GIT_COMMIT: ${WEBUI_GIT_COMMIT:-unknown}
         BUILD_DATE: ${WEBUI_BUILD_DATE:-unknown}
-    image: ollama-legion/webui:cppworker-bundled-r60.5-webui-nginx  # Round 60.5 (2026-09-07): loadAndRenderBackendOptions hard timeout 15s + try/catch в renderBackendOptionsForm; fetchDiskModelsAsync fallback на /api/models/files.
+    image: ollama-legion/webui:cppworker-bundled-r60.14-lang-picker  # Round 60.14 (2026-09-07): language picker UI added to index.html, monitor.html, health.html headers. I18N.setLang() synced via localStorage 'ollamalegion_lang'. Wire-up via app-core.js (index) + inline scripts (monitor/health).
     container_name: ol-bundled-webui
     restart: unless-stopped
     ports:

@@ -368,24 +368,70 @@ func (p *Proxy) proxyRequestLlamaCppNonStream(w http.ResponseWriter, r *http.Req
 		}
 	}
 
-	// Если upstream вернул НЕ-200 — пробрасываем как Ollama-ошибку с done:true.
-	// Без этого OpenWebUI получает "пустой ответ" с done:true и рендерит пустое
-	// сообщение ассистента. С этой правкой клиент видит error в NDJSON-чанке
-	// и может корректно показать диагностику.
-	// ВАЖНО: устанавливаем Content-Length явно, чтобы aiohttp/OpenWebUI не получили
-	// chunked transfer encoding для plain JSON — иначе TransferEncodingError.
+	// R60.10 (2026-09-07): upstream 4xx — pass through AS-IS.
+	//
+	// Pre-R60.10: balancer ALWAYS wrapped upstream errors in 502 + Ollama format.
+	// OpenAI clients (openai-python, OpenWebUI OpenAI mode) calling
+	// /v1/models/{id} etc. получали 502 + `{"done":true,"done_reason":"error",...}`
+	// что ломает их retry-логику (OpenAI клиент retry-ит на 502 но не на 404).
+	//
+	// Post-R60.10:
+	//   - 4xx (400/404/413/etc) → preserve upstream status + body AS-IS
+	//     (upstream уже отдаёт OpenAI-формат `{"error":{"message":...}}` для /v1/*)
+	//   - 5xx (500/502/503) → wrap in 502 with format matching originalPath
+	//     (OpenAI format for /v1/*, Ollama format for /api/*)
+	//
+	// 408/429 (transient) pass through too — client should retry.
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		errBody, _ := json.Marshal(map[string]interface{}{
-			"model":       modelFromCtx,
-			"created_at":  time.Now().UTC().Format(time.RFC3339),
-			"done":        true,
-			"done_reason": "error",
-			"error":       fmt.Sprintf("upstream returned HTTP %d: %s", resp.StatusCode, string(respBody)),
-			"message": map[string]interface{}{
-				"role":    "assistant",
-				"content": "",
-			},
-		})
+		isTransient4xx := resp.StatusCode == http.StatusRequestTimeout ||
+			resp.StatusCode == http.StatusTooManyRequests
+		if resp.StatusCode < 500 && (resp.StatusCode >= 400 || isTransient4xx) {
+			// Pass through upstream body AS-IS.
+			ct := resp.Header.Get("Content-Type")
+			if ct == "" {
+				ct = "application/json"
+			}
+			w.Header().Set("Content-Type", ct)
+			w.Header().Set("Content-Length", strconv.Itoa(len(respBody)))
+			// Pass through key headers (X-Request-Id from upstream cppworker).
+			if upstreamReqID := resp.Header.Get("X-Request-Id"); upstreamReqID != "" {
+				w.Header().Set("X-Upstream-Request-Id", upstreamReqID)
+			}
+			w.WriteHeader(resp.StatusCode)
+			w.Write(respBody)
+			logger.Get().Debugw("proxyRequestLlamaCppNonStream: passed through upstream 4xx (R60.10)",
+				"backend", backendID, "status", resp.StatusCode,
+				"original_path", originalPath, "body_len", len(respBody))
+			return nil
+		}
+
+		// 5xx (or other non-2xx): wrap in 502 with format matching originalPath.
+		var errBody []byte
+		if isOpenAIPath(originalPath) {
+			// OpenAI-style error: {"error": {"message": ..., "type": "upstream_error", "code": N}}
+			errBody, _ = json.Marshal(map[string]interface{}{
+				"error": map[string]interface{}{
+					"message": fmt.Sprintf("upstream returned HTTP %d: %s",
+						resp.StatusCode, string(respBody)),
+					"type": "upstream_error",
+					"code": resp.StatusCode,
+				},
+			})
+		} else {
+			// Ollama-style error: {model, created_at, done, done_reason:error, error, message}
+			errBody, _ = json.Marshal(map[string]interface{}{
+				"model":       modelFromCtx,
+				"created_at":  time.Now().UTC().Format(time.RFC3339),
+				"done":        true,
+				"done_reason": "error",
+				"error":       fmt.Sprintf("upstream returned HTTP %d: %s",
+					resp.StatusCode, string(respBody)),
+				"message": map[string]interface{}{
+					"role":    "assistant",
+					"content": "",
+				},
+			})
+		}
 		w.Header().Set("Content-Type", "application/json")
 		w.Header().Set("Content-Length", strconv.Itoa(len(errBody)))
 		w.WriteHeader(http.StatusBadGateway)

@@ -40,6 +40,15 @@ func translateOllamaBodyToOpenAI(ollamaPath string, body []byte) ([]byte, error)
 	}
 }
 
+// isOpenAIPath — R60.10 (2026-09-07): true для /v1/* paths (OpenAI-compatible).
+// Используется для выбора формата error body при wrap upstream 5xx ответов.
+// OpenAI clients (openai-python, OpenWebUI OpenAI mode) ждут
+// `{"error":{"message":...,"type":...,"code":N}}` формат, а Ollama ждёт
+// `{"error":"...","done":true,"done_reason":"error"}`.
+func isOpenAIPath(path string) bool {
+	return strings.HasPrefix(path, "/v1/")
+}
+
 // extractNameFromBody — извлекает поле "name" из JSON body.
 // Возвращает (name, modifiedBody) где modifiedBody — body без поля "name"
 // (для случая когда name должно быть передано как query param).

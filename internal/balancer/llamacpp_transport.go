@@ -10,6 +10,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 	"time"
 
@@ -433,6 +434,28 @@ func (p *Proxy) proxyRequestLlamaCpp(w http.ResponseWriter, r *http.Request, bac
 					return nil
 				}
 			}
+		}
+
+		// R60.10 (2026-09-07): upstream 4xx — pass through body AS-IS, no SSE wrap.
+		// Client hasn't started streaming yet, so returning 4xx + JSON body is
+		// semantically correct (HTTP-level error, not stream-level). This fixes
+		// OpenAI clients getting 502 SSE errors for things like 404 model not found.
+		if resp.StatusCode < 500 {
+			ct := resp.Header.Get("Content-Type")
+			if ct == "" {
+				ct = "application/json"
+			}
+			w.Header().Set("Content-Type", ct)
+			w.Header().Set("Content-Length", strconv.Itoa(len(respBody)))
+			if upstreamReqID := resp.Header.Get("X-Request-Id"); upstreamReqID != "" {
+				w.Header().Set("X-Upstream-Request-Id", upstreamReqID)
+			}
+			w.WriteHeader(resp.StatusCode)
+			w.Write(respBody)
+			logger.Get().Debugw("proxyRequestLlamaCpp: passed through upstream 4xx (R60.10)",
+				"backend", backendID, "status", resp.StatusCode,
+				"original_path", originalPath, "body_len", len(respBody))
+			return nil
 		}
 
 		if originalPath == "/v1/chat/completions" {

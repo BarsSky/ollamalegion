@@ -263,6 +263,12 @@ func (s *Server) setupRoutes() {
 	// после превышения лимита). Без этого нужен `docker restart`.
 	s.mux.Handle("/api/v1/cppworker/reset-reload-counter", AuthMiddleware(RateLimitMiddleware(http.HandlerFunc(s.handleResetCppWorkerReloadCounter), s.rateLimiter), s.authenticator))
 
+	// R60.11 (2026-09-07): balancer loadBackoff circuit breaker admin endpoints.
+	// GET для diagnostics, POST для manual reset (TTL 60s default было только
+	// way сбросить до R60.11, теперь operator может reset сразу).
+	s.mux.Handle("/api/v1/balancer/load-backoff", AuthMiddleware(http.HandlerFunc(s.handleGetLoadBackoffSnapshot), s.authenticator))
+	s.mux.Handle("/api/v1/balancer/load-backoff/reset", AuthMiddleware(http.HandlerFunc(s.handleResetLoadBackoff), s.authenticator))
+
 	// RPC Coordinator management endpoints (B2 — Session 5, 2026-06-26).
 	// Управление worker'ами и distributed моделями через балансировщик,
 	// без прямого доступа к worker'ам.

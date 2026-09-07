@@ -168,6 +168,15 @@ func (p *Proxy) EventBus() *EventBus {
 	return p.eventBus
 }
 
+// GetLlamaCppRouter — R60.11 (2026-09-07): expose LlamaCppRouter
+// для admin endpoint /api/v1/balancer/load-backoff (нужен доступ к loadBackoff).
+func (p *Proxy) GetLlamaCppRouter() *LlamaCppRouter {
+	if p == nil {
+		return nil
+	}
+	return p.llamaCppRouter
+}
+
 // NewProxy - создание нового прокси
 
 func NewProxy(config *types.LoadBalancerConfig) *Proxy {

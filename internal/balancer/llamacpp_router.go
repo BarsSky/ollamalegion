@@ -28,6 +28,15 @@ type LlamaCppRouter struct {
 	loadBackoff *loadBackoff
 }
 
+// GetLoadBackoff — R60.11 (2026-09-07): expose loadBackoff для admin endpoints
+// (GET /api/v1/balancer/load-backoff, POST .../reset). Thread-safe.
+func (lr *LlamaCppRouter) GetLoadBackoff() *loadBackoff {
+	if lr == nil {
+		return nil
+	}
+	return lr.loadBackoff
+}
+
 // NewLlamaCppRouter — создание маршрутизатора для llama.cpp
 func NewLlamaCppRouter(proxy *Proxy) *LlamaCppRouter {
 	return &LlamaCppRouter{

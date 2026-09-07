@@ -51,7 +51,7 @@ services:
     # Round 35 (r35): reload→load fallback + idleUnload disabled.
     # Round 35c (r35c): env-tunable polling timeouts (LB_NCTX_PREFLIGHT_*)
     # для моделей с auto-offload (22GB+ Qwen3.6 на 8GB VRAM, 12-15 min load).
-    image: ollama-legion/balancer:cppworker-bundled-r60.10-error-format  # Round 60.10 (2026-09-07): upstream 4xx passthrough (no more 502 for 404). OpenAI/Ollama error format based on originalPath.
+    image: ollama-legion/balancer:cppworker-bundled-r60.11-circuit-reset  # Round 60.11 (2026-09-07): loadBackoff circuit breaker manual reset endpoints. GET /api/v1/balancer/load-backoff (snapshot), POST .../reset (instant reset, no 60s TTL wait).
     #   R54.2: AutoTune master switch (Balancing.AutoTune, default true) +
     #          per-model "autoTune": false override (LlamaCppModelProfile.AutoTune).
     #          Manual control: user can disable AutoTune globally or per-model.

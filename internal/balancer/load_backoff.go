@@ -153,6 +153,45 @@ func (lb *loadBackoff) recordSuccess(backendID, modelName string) {
 	}
 }
 
+// Reset — R60.11 (2026-09-07): manual reset of circuit breaker for (backend, model).
+//
+// Use case: after operator has manually fixed the underlying issue (e.g.
+// `docker restart cppworker`, fixed config, etc.) they want the balancer
+// to retry immediately without waiting for the TTL (60s default).
+// Without this, the only way to clear the breaker was to wait 60s
+// or restart the balancer container.
+//
+// Returns true if state was actually cleared (or didn't exist), false if
+// the (backend, model) wasn't tracked.
+func (lb *loadBackoff) Reset(backendID, modelName string) bool {
+	lb.mu.Lock()
+	defer lb.mu.Unlock()
+
+	k := key(backendID, modelName)
+	if _, ok := lb.states[k]; !ok {
+		return false // no state to reset
+	}
+	delete(lb.states, k)
+	logger.Get().Infow("loadBackoff: manual reset (R60.11)",
+		"backend", backendID, "model", modelName)
+	return true
+}
+
+// ResetAll — R60.11: reset all circuit breaker states. Used by admin
+// endpoint `POST /api/v1/balancer/load-backoff/reset` without query params.
+// Returns count of states that were cleared.
+func (lb *loadBackoff) ResetAll() int {
+	lb.mu.Lock()
+	defer lb.mu.Unlock()
+	count := len(lb.states)
+	if count > 0 {
+		logger.Get().Infow("loadBackoff: manual reset all (R60.11)",
+			"states_cleared", count)
+	}
+	lb.states = make(map[string]*loadBackoffState)
+	return count
+}
+
 // state — snapshot для diagnostics.
 type loadBackoffSnapshot struct {
 	BackendID       string `json:"backendId"`
@@ -161,6 +200,9 @@ type loadBackoffSnapshot struct {
 	LastFailureAt   string `json:"lastFailureAt,omitempty"`
 	BreakerOpenUntil string `json:"breakerOpenUntil,omitempty"`
 }
+
+// LoadBackoffSnapshot — R60.11 (2026-09-07): public alias для admin endpoint.
+type LoadBackoffSnapshot = loadBackoffSnapshot
 
 // snapshot — список всех backoff states.
 func (lb *loadBackoff) snapshot() []loadBackoffSnapshot {
@@ -194,4 +236,10 @@ func splitKey(k string) []string {
 		}
 	}
 	return []string{k, ""}
+}
+
+// Snapshot — R60.11 (2026-09-07): public API для admin endpoint
+// (GET /api/v1/balancer/load-backoff). Returns all current states.
+func (lb *loadBackoff) Snapshot() []loadBackoffSnapshot {
+	return lb.snapshot()
 }

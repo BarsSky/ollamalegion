@@ -90,6 +90,25 @@ func queryAdaptiveStrategy(backendAddr, modelName string, targetNCtx int, httpCl
 		"maxViableNCtx", strategy.MaxViableNCtx,
 		"explanation", strategy.Explanation)
 
+	// R60.12 (2026-09-07): explicit warning when adaptive strategy chooses
+	// cpu_only. Это значит что VRAM не хватает даже с partial offload, и
+	// cppworker будет грузить KV-cache в RAM. На типичном 8GB VRAM железе
+	// (RTX 3070/A10) reload 5GB модели с 131072 n_ctx занимает 60-180 сек.
+	// Оператор видит это в логах и понимает почему 503 Retry-After такой большой.
+	//
+	// Рекомендация для 8GB VRAM (RTX 3070/A10): используйте n_ctx <= 65536
+	// с kvCacheType=q4_0 для больших моделей. Для 131072+ — нужно >= 24GB VRAM
+	// или модель с < 3B параметрами.
+	if strategy.Stage == "cpu_only" {
+		logger.Get().Warnw("queryAdaptiveStrategy: CPU-only strategy selected (R60.12)",
+			"model", modelName,
+			"target_n_ctx", strategy.NCtx,
+			"gpu_layers", strategy.GPULayers,
+			"kv_cache_type", strategy.KVCacheType,
+			"warning", "reload will be slow (60-180s) due to RAM fallback",
+			"recommendation", "for 8GB VRAM, use n_ctx <= 65536 with kvCacheType=q4_0")
+	}
+
 	return &strategy
 }
 

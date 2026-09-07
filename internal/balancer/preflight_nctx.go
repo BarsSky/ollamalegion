@@ -230,6 +230,11 @@ type PreflightResult struct {
 	TargetNCtx   int    // n_ctx, до которого reload'ить (для PreflightReload / PreflightAsyncReload)
 	RejectStatus int    // HTTP статус для отказа (обычно 413)
 	RejectBody   string // тело JSON для отказа
+	// R60.6 (2026-09-07): EstimatedRetryAfter — рекомендуемое клиенту время
+	// ожидания в секундах (для Retry-After header). 0 = use cfg default.
+	// Для PreflightAsyncReload: derived from cppworker estimatedLoadTimeMs
+	// (или fallback на heuristic если model size неизвестен).
+	EstimatedRetryAfter int
 }
 
 // NCtxBackendState — состояние n_ctx на бэкенде (для preflight-расчётов).
@@ -239,6 +244,10 @@ type NCtxBackendState struct {
 	CurrentNCtx     int // lastKnownNCtx из координатора
 	MaxVRAMNCtx     int // из cppworker metrics (0 = unknown)
 	ModelMaxContext int // из GGUF metadata (0 = unknown)
+	// R60.6 (2026-09-07): размер файла модели в байтах (из cppworker metrics).
+	// Используется EstimateReloadTimeMs для расчёта Retry-After.
+	// 0 = unknown (fallback на cfg.effectiveAsyncRetryAfter).
+	ModelSizeBytes int64
 	// === Round 37 (2026-08-18): auto-adapt n_ctx 3-tier state ===
 	// Дополнительные поля для 3-tier resolution (profile / feasible / GGUF).
 	// Заполняются из /api/models response (cppworker exposes since Round 37).
@@ -557,14 +566,49 @@ func (c *NCtxReloadCoordinator) RunPreflight(
 			if meta != nil {
 				modelName = meta.ModelName
 			}
-			logger.Get().Infow("preflight: triggering ASYNC reload (Round 31 #2)",
+
+			// R60.6 (2026-09-07): рассчитываем estimatedRetryAfter на основе
+			// (model_size + target_n_ctx) формулы, mirror cppworker's
+			// estimateLoadTimeMs. Это даст клиенту адекватное время retry
+			// (60-180s для 5GB+131072 n_ctx на RTX 3070 8GB) вместо hardcoded
+			// 30s. Cppworker's actual estimatedLoadTimeMs появится только
+			// после успешного load (200 body), а нам нужна оценка ДО запуска reload.
+			//
+			// Coordinator doesn't have direct access to Proxy's metrics manager.
+			// Caller (preflight_helper.go) reads model size and passes via state.
+			// For now we use 0 (size unknown) — caller can override EstimatedRetryAfter
+			// after RunPreflight returns. Future: extend state to carry SizeBytes.
+			var modelSizeBytes int64
+			if state != nil && state.ModelSizeBytes > 0 {
+				modelSizeBytes = state.ModelSizeBytes
+			}
+			estimatedMs := EstimateReloadTimeMs(modelSizeBytes, decision.TargetNCtx)
+			// R60.6: clamp по operator config (default 120s). 0 = use cfg default.
+			estimatedRetryAfter := cfg.effectiveAsyncRetryAfter()
+			if estimatedMs > 0 {
+				estSec := int((estimatedMs + 999) / 1000) // round up to seconds
+				if estSec > estimatedRetryAfter {
+					estimatedRetryAfter = estSec
+				}
+				maxRA := cfg.PreflightAsyncRetryAfterMaxSec
+				if maxRA <= 0 {
+					maxRA = 120
+				}
+				if estimatedRetryAfter > maxRA {
+					estimatedRetryAfter = maxRA
+				}
+			}
+
+			logger.Get().Infow("preflight: triggering ASYNC reload (Round 31 #2, R60.6)",
 				"backend_id", backendID,
 				"current_n_ctx", state.CurrentNCtx,
 				"target_n_ctx", decision.TargetNCtx,
 				"max_vram_n_ctx", state.MaxVRAMNCtx,
 				"model_max_context", state.ModelMaxContext,
+				"model_size_bytes", modelSizeBytes,
+				"estimated_load_time_ms", estimatedMs,
 				"has_tools", meta != nil && meta.HasTools,
-				"retry_after_sec", cfg.effectiveAsyncRetryAfter())
+				"retry_after_sec", estimatedRetryAfter)
 
 			// Async reload — НЕ ждём завершения. DoReload имеет внутренний
 			// singleflight-like lock, так что параллельные reload'ы коалесцируются.
@@ -575,28 +619,67 @@ func (c *NCtxReloadCoordinator) RunPreflight(
 			// balancer → in-flight Cline клиенты получают "Did not receive done".
 			// Корень: cascading reload requests (Cline retries пока cppworker
 			// busy) → multiple async goroutines + race conditions.
-			go func() {
-				defer func() {
-					if r := recover(); r != nil {
-						logger.Get().Errorw("preflight: PANIC in async reload goroutine — RECOVERED",
-							"backend_id", backendID, "panic", r)
+			//
+			// R60.6 fix: регистрируем reload в reloadDedupRegistry ДО старта
+			// goroutine, чтобы subsequent preflight calls видели IsReloadPending=true
+			// и не триггерили ещё один reload (double-trigger cascade).
+			if c.reloadDedup != nil {
+				_, startedNew := c.reloadDedup.StartReloadIfNotPending(backendID, modelName, decision.TargetNCtx, func(entry *reloadEntry) {
+					defer func() {
+						if r := recover(); r != nil {
+							logger.Get().Errorw("preflight: PANIC in async reload goroutine — RECOVERED",
+								"backend_id", backendID, "panic", r)
+						}
+					}()
+					reloadCtx, cancel := context.WithTimeout(context.Background(), cfg.effectiveTimeout())
+					defer cancel()
+					if err := c.DoReload(reloadCtx, backendID, backendAddr, modelName, plan, loader); err != nil {
+						logger.Get().Errorw("preflight: async reload failed",
+							"backend_id", backendID, "error", err)
+						entry.err = err
+						return
 					}
-				}()
-				reloadCtx, cancel := context.WithTimeout(context.Background(), cfg.effectiveTimeout())
-				defer cancel()
-				if err := c.DoReload(reloadCtx, backendID, backendAddr, modelName, plan, loader); err != nil {
-					logger.Get().Errorw("preflight: async reload failed",
-						"backend_id", backendID, "error", err)
-					return
+					// Reload успешен — обновляем lastKnownNCtx.
+					c.SetLastKnownNCtx(backendID, decision.TargetNCtx)
+					logger.Get().Infow("preflight: async reload succeeded",
+						"backend_id", backendID, "new_n_ctx", decision.TargetNCtx)
+					c.ResetCycleCounter(backendID)
+				})
+				if !startedNew {
+					// R60.6: reload уже в процессе для этой модели — возвращаем
+					// PreflightAsyncReload БЕЗ новой goroutine (dedup hits).
+					logger.Get().Infow("preflight: reload already pending, returning 503 (dedup)",
+						"backend_id", backendID, "model", modelName,
+						"target_n_ctx", decision.TargetNCtx)
 				}
-				// Reload успешен — обновляем lastKnownNCtx.
-				c.SetLastKnownNCtx(backendID, decision.TargetNCtx)
-				logger.Get().Infow("preflight: async reload succeeded",
-					"backend_id", backendID, "new_n_ctx", decision.TargetNCtx)
-				c.ResetCycleCounter(backendID)
-			}()
+			} else {
+				// fallback: no dedup registry, fire-and-forget как раньше
+				go func() {
+					defer func() {
+						if r := recover(); r != nil {
+							logger.Get().Errorw("preflight: PANIC in async reload goroutine — RECOVERED",
+								"backend_id", backendID, "panic", r)
+						}
+					}()
+					reloadCtx, cancel := context.WithTimeout(context.Background(), cfg.effectiveTimeout())
+					defer cancel()
+					if err := c.DoReload(reloadCtx, backendID, backendAddr, modelName, plan, loader); err != nil {
+						logger.Get().Errorw("preflight: async reload failed",
+							"backend_id", backendID, "error", err)
+						return
+					}
+					c.SetLastKnownNCtx(backendID, decision.TargetNCtx)
+					logger.Get().Infow("preflight: async reload succeeded",
+						"backend_id", backendID, "new_n_ctx", decision.TargetNCtx)
+					c.ResetCycleCounter(backendID)
+				}()
+			}
 
-			return &PreflightResult{Decision: PreflightAsyncReload, TargetNCtx: decision.TargetNCtx}, nil
+			return &PreflightResult{
+				Decision:            PreflightAsyncReload,
+				TargetNCtx:          decision.TargetNCtx,
+				EstimatedRetryAfter: estimatedRetryAfter,
+			}, nil
 		}
 
 		// Sync mode (default, обратно совместимо со старым поведением).
@@ -647,4 +730,40 @@ func (c *NCtxReloadCoordinator) RunPreflight(
 // Вынесен из nctx_reload.go:roundUpPow2 для использования в preflight.
 func RoundUpPow2(v int) int {
 	return roundUpPow2(v)
+}
+
+// R60.6 (2026-09-07): EstimateReloadTimeMs — оценочное время reload в мс.
+// Mirrors cppworker cmd/cppworker/handlers_model_async.go:estimateLoadTimeMs
+// (тот же formula, тот же fallback). Используется как fallback когда
+// cppworker 200 body с estimatedLoadTimeMs недоступен (e.g. модель ещё
+// не загружена и metricsMgr не имеет size info).
+//
+// Формула: max(1000, size_MB / 100 + ctx/4K*500 + 2000) мс
+// - base 1000ms minimum (модель не может грузиться мгновенно)
+// - size/speed 100MB/s fallback для cold load
+// - ctxInit 500ms per 4K tokens (KV-cache init, q4_0/q8_0 typical)
+// - overhead 2000ms (mmap, metadata parse, locks)
+func EstimateReloadTimeMs(modelSizeBytes int64, targetNCtx int) int64 {
+	const baseSpeed = 100 * 1024 * 1024 // 100 MB/s fallback
+	const baseMinMs = 1000
+	const overheadMs = 2000
+	const ctxInitMsPer4K = 500
+	if modelSizeBytes <= 0 && targetNCtx <= 0 {
+		return 0 // unknown, caller должен fall back на cfg default
+	}
+	var baseMs int64
+	if modelSizeBytes > 0 {
+		baseMs = modelSizeBytes * 1000 / baseSpeed
+		if baseMs < baseMinMs {
+			baseMs = baseMinMs
+		}
+	} else {
+		baseMs = baseMinMs
+	}
+	var ctxMs int64
+	if targetNCtx > 0 {
+		blocksOf4K := int64((targetNCtx + 4095) / 4096)
+		ctxMs = blocksOf4K * ctxInitMsPer4K
+	}
+	return baseMs + ctxMs + overheadMs
 }

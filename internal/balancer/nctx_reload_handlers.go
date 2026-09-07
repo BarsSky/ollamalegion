@@ -205,6 +205,14 @@ func (p *Proxy) handleNCtxReloadActual(
 // ВАЖНО: берём первый токен из Auth.Tokens даже если auth выключен (Auth.Enabled=false).
 // Токен нужен для internal-коммуникации с cppworker (reload модели), и это не связано
 // с тем, требует ли балансер аутентификации от внешних клиентов.
+//
+// R60.6 (2026-09-07): http.Client.Timeout теперь derived from
+// cfg.effectiveTimeout() вместо hardcoded 90s. Иначе http.Client убьёт
+// reload на 90s, даже если cppworker получил ?waitTimeoutSec=300.
+// Симптом: на RTX 3070 8GB reload 5GB модели + 131072 n_ctx занимает
+// 60-180s, http.Client.Timeout=90s отменяет request с "Client.Timeout
+// exceeded while awaiting headers", reload fails, LastKnownNCtx не
+// обновляется, следующий preflight снова триггерит reload (cascading).
 func (p *Proxy) newNCtxReloadHTTPClient() NCtxReloadHTTPClient {
 	token := ""
 	headerName := "X-API-Token" // default
@@ -222,8 +230,19 @@ func (p *Proxy) newNCtxReloadHTTPClient() NCtxReloadHTTPClient {
 	if envToken := os.Getenv("LB_API_TOKEN"); envToken != "" {
 		token = envToken
 	}
+	// R60.6: derive http.Client.Timeout from nctxReload config. Default 300s,
+	// max 600s (clamped). +30s buffer для HTTP overhead (cppworker шлёт headers
+	// после завершения reload, balancer должен успеть их прочитать).
+	timeout := 300 * time.Second // R60.6: was 90s
+	if p.nctxReload != nil {
+		cfg := p.nctxReload.Config()
+		timeout = cfg.effectiveTimeout() + 30*time.Second
+		if timeout > 600*time.Second {
+			timeout = 600 * time.Second
+		}
+	}
 	return &DefaultNCtxReloadHTTPClient{
-		HTTPClient: &http.Client{Timeout: 90 * time.Second},
+		HTTPClient: &http.Client{Timeout: timeout},
 		APIToken:   token,
 		HeaderName: headerName,
 	}
@@ -418,6 +437,20 @@ func (p *Proxy) preflightNCtxReloadIfNeeded(
 ) (modifiedBody []byte, needsProxy bool, errMsg string, statusCode int) {
 	if p.nctxReload == nil || len(bodyBuf) == 0 {
 		return bodyBuf, true, "", http.StatusOK
+	}
+
+	// R60.6 (2026-09-07): IsReloadPending guard. Если reload для этой модели
+	// уже в процессе (через новый coordinator dedup path в RunPreflight),
+	// НЕ запускаем второй reload — просто возвращаем 503. Без этого
+	// stream-запросы (которые идут через этот OLD path) триггерят cascading
+	// reload goroutines, каждая из которых отменяется http.Client.Timeout
+	// на 90s. Client видит 503 → retry → 503 → retry → 5 reloads в логе.
+	if p.nctxReload.IsReloadPending(backendID, modelName) {
+		logger.Get().Infow("preflightNCtxReloadIfNeeded: reload already pending (R60.6 dedup)",
+			"backend", backendID, "model", modelName, "request_path", requestPath)
+		return bodyBuf, false,
+			fmt.Sprintf("model %q reload already in progress, retry later", modelName),
+			http.StatusServiceUnavailable
 	}
 
 	// Не делаем preflight-reload для streaming-запросов.

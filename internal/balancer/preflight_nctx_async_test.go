@@ -172,24 +172,75 @@ func TestNCtxReloadConfig_DefaultAsyncValues(t *testing.T) {
 	}
 }
 
-// TestNCtxReloadConfig_EffectiveAsyncRetryAfter — clamp в [2, 30].
+// TestNCtxReloadConfig_EffectiveAsyncRetryAfter — clamp в [2, PreflightAsyncRetryAfterMaxSec].
+//
+// R60.6 (2026-09-07): max clamp 30 → 120s (default). 30s было слишком мало
+// для realistic hardware (5GB+131072 n_ctx load = 60-180s на RTX 3070 8GB).
 func TestNCtxReloadConfig_EffectiveAsyncRetryAfter(t *testing.T) {
 	tests := []struct {
-		in   int
-		want int
+		in             int
+		maxOverride    int
+		want           int
 	}{
-		{0, 5},   // default
-		{-1, 5},  // default
-		{1, 2},   // clamp min
-		{2, 2},   // min
-		{5, 5},   // normal
-		{30, 30}, // max
-		{50, 30}, // clamp max
+		{0, 0, 5},    // default
+		{-1, 0, 5},   // default
+		{1, 0, 2},    // clamp min
+		{2, 0, 2},    // min
+		{5, 0, 5},    // normal
+		{30, 0, 30},  // old max
+		{50, 0, 50},  // R60.6: under new max=120, no clamp
+		{120, 0, 120}, // R60.6: new max (default)
+		{200, 0, 120}, // R60.6: clamp at new max
+		{50, 30, 30},  // R60.6: operator override max=30 (backward compat)
+		{200, 200, 200}, // R60.6: operator override max=200 (custom)
 	}
 	for _, tt := range tests {
-		cfg := NCtxReloadConfig{PreflightAsyncRetryAfterSec: tt.in}
-		if got := cfg.effectiveAsyncRetryAfter(); got != tt.want {
-			t.Errorf("effectiveAsyncRetryAfter(%d) = %d, want %d", tt.in, got, tt.want)
+		cfg := NCtxReloadConfig{
+			PreflightAsyncRetryAfterSec:    tt.in,
+			PreflightAsyncRetryAfterMaxSec: tt.maxOverride,
 		}
+		if got := cfg.effectiveAsyncRetryAfter(); got != tt.want {
+			t.Errorf("effectiveAsyncRetryAfter(in=%d, maxOverride=%d) = %d, want %d",
+				tt.in, tt.maxOverride, got, tt.want)
+		}
+	}
+}
+
+// R60.6 (2026-09-07): TestEstimateReloadTimeMs — verify formula matches
+// cppworker's estimateLoadTimeMs (cmd/cppworker/handlers_model_async.go:110).
+// Formula: max(1000, size_MB / 100 + ctx/4K*500 + 2000) ms.
+// Critical: 5GB model + 131072 n_ctx должно дать ~60-90s (достаточно для
+// realistic 8GB GPU hardware без cascading retries).
+func TestEstimateReloadTimeMs(t *testing.T) {
+	tests := []struct {
+		name        string
+		modelSize   int64
+		targetNCtx  int
+		minExpected int64 // ms
+		maxExpected int64 // ms
+	}{
+		{"empty", 0, 0, 0, 0},  // unknown → 0
+		{"size_only_5GB", 5 * 1024 * 1024 * 1024, 0, 47000, 55000},  // 5GB/100MB/s + 2000ms overhead
+		{"size_only_2GB", 2 * 1024 * 1024 * 1024, 0, 22000, 24000},
+		{"ctx_only_131K", 0, 131072, 14000, 20000},                  // 131072/4K*500 + 2000 + 1000 (baseMin)
+		{"ctx_only_32K", 0, 32768, 4000, 7000},
+		{"qwen3_5GB_131K", 5 * 1024 * 1024 * 1024, 131072, 62000, 90000},  // realistic: 60-90s
+		{"qwen3_5GB_32K", 5 * 1024 * 1024 * 1024, 32768, 51000, 60000},
+		{"tiny_1MB_4K", 1024 * 1024, 4096, 1000, 4000},  // baseMin
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := EstimateReloadTimeMs(tt.modelSize, tt.targetNCtx)
+			if tt.minExpected == 0 && tt.maxExpected == 0 {
+				if got != 0 {
+					t.Errorf("expected 0 (unknown), got %d", got)
+				}
+				return
+			}
+			if got < tt.minExpected || got > tt.maxExpected {
+				t.Errorf("EstimateReloadTimeMs(size=%d, ctx=%d) = %d, want [%d, %d]",
+					tt.modelSize, tt.targetNCtx, got, tt.minExpected, tt.maxExpected)
+			}
+		})
 	}
 }

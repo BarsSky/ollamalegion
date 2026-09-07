@@ -150,6 +150,14 @@ type NCtxReloadSettings struct {
 	// рекомендует клиенту ждать перед retry после 503. Default 5.
 	PreflightAsyncRetryAfterSec int `json:"preflight_async_retry_after_sec" yaml:"preflight_async_retry_after_sec"`
 
+	// R60.6 (2026-09-07): max clamp для PreflightAsyncRetryAfterSec.
+	// Раньше было hardcoded 30s в effectiveAsyncRetryAfter balancer'а.
+	// 30s мало для больших моделей (5GB+131072 n_ctx load = 60-180s),
+	// client retry-ил раньше чем reload заканчивался → cascading reloads.
+	// Default 120s покрывает realistic hardware. Operator может
+	// переопределить через config.json или ENV.
+	PreflightAsyncRetryAfterMaxSec int `json:"preflight_async_retry_after_max_sec" yaml:"preflight_async_retry_after_max_sec"`
+
 	// PreflightMaxWaitSec (Round 35c, 2026-08-13): верхняя граница polling
 	// таймаута для async load (cppworker вернул 202 Accepted, balancer
 	// опрашивает /api/models пока state != "loaded"). По умолчанию 900 (15 min).

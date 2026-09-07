@@ -123,10 +123,20 @@ func (lr *LlamaCppRouter) runInferencePreflight(args runInferencePreflightArgs) 
 		}
 		// Round 31 #2 (2026-08-09): async mode — non-streaming fallback.
 		// Модель reload'ится в фоне, клиенту сразу отдаём 503 + Retry-After.
-		retryAfter := coord.Config().effectiveAsyncRetryAfter()
+		//
+		// R60.6 (2026-09-07): используем res.EstimatedRetryAfter (из cppworker
+		// estimateLoadTimeMs или local EstimateReloadTimeMs heuristic) вместо
+		// hardcoded cfg.effectiveAsyncRetryAfter(). Так client (OpenWebUI) retry-ит
+		// не раньше чем реально закончится reload, и не триггерит cascading
+		// reload requests пока первая ещё в процессе.
+		retryAfter := res.EstimatedRetryAfter
+		if retryAfter <= 0 {
+			retryAfter = coord.Config().effectiveAsyncRetryAfter()
+		}
 		logger.Get().Infow("preflight: HTTP 503 + Retry-After (async reload in progress)",
 			"backend", args.backendID, "model", meta.ModelName,
-			"target_n_ctx", res.TargetNCtx, "retry_after_sec", retryAfter)
+			"target_n_ctx", res.TargetNCtx, "retry_after_sec", retryAfter,
+			"source", map[bool]string{true: "estimated", false: "config"}[res.EstimatedRetryAfter > 0])
 		args.w.Header().Set("Content-Type", "application/json")
 		args.w.Header().Set("Retry-After", fmt.Sprintf("%d", retryAfter))
 		args.w.WriteHeader(http.StatusServiceUnavailable)
@@ -228,6 +238,11 @@ func (lr *LlamaCppRouter) collectPreflightState(backendID, model string) *NCtxBa
 					}
 					if m.GGUFMaxContext > 0 {
 						state.GGUFMaxContext = m.GGUFMaxContext
+					}
+					// R60.6 (2026-09-07): model size для EstimateReloadTimeMs.
+					// Из cppworker metrics (Round 60.4 уже заполняет Size).
+					if m.Size > 0 {
+						state.ModelSizeBytes = int64(m.Size)
 					}
 					break
 				}

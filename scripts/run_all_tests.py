@@ -10,7 +10,8 @@ Includes:
   4. smoke_webui_r60_4.py (regression guard for R60.2-R60.4 fixes)
   5. R60.5 critical: management endpoint tests (load/unload/copy/delete)
   6. R60.5 critical: webui proxy endpoint reachable (no infinite loading)
-  7. R60.7: SSE long-running test (150s) — verifies SetWriteDeadline bypass
+  7. R60.6: load timeout + dedup (test_load_timeout_dedup.py)
+  8. R60.7: SSE long-running test (150s) — verifies SetWriteDeadline bypass
      prevents /api/v1/events from dropping at 60s server WriteTimeout.
      Set SKIP_SSE_LONG=1 to skip in CI; SSE_DURATION_SEC=60 for shorter run.
 
@@ -200,6 +201,46 @@ def run_r60_5_critical(base: str, webui: str, model: str, token: str) -> bool:
     return all_ok
 
 
+def run_r60_6_load_timeout_dedup(base: str) -> bool:
+    """R60.6 (2026-09-07): load timeout + double-load fix.
+
+    Critical checks:
+      1. POST /api/chat with 131072 num_ctx → 503 with Retry-After derived
+         from cppworker estimatedLoadTimeMs (or EstimateReloadTimeMs heuristic),
+         NOT hardcoded 30s.
+      2. Second request immediately → 503 with dedup (no new reload goroutine).
+      3. Wait + third request → eventually 200 OK.
+    """
+    section("Phase G: R60.6 — load timeout + dedup")
+    import subprocess
+    env = os.environ.copy()
+    env["BALANCER_BASE"] = base
+    print(f"  Running: scripts/test_load_timeout_dedup.py")
+    print(f"  Env: TEST_N_CTX={env.get('TEST_N_CTX', '131072')} SKIP_WAIT={env.get('SKIP_WAIT', '0')}")
+    try:
+        result = subprocess.run(
+            ["python", "scripts/test_load_timeout_dedup.py"],
+            env=env,
+            capture_output=True,
+            text=True,
+            timeout=300,
+        )
+        ok = result.returncode == 0
+        stdout_lines = result.stdout.strip().split("\n")
+        for line in stdout_lines[-12:]:
+            print(f"    {line}")
+        if not ok:
+            print(f"  stderr: {result.stderr[-500:] if result.stderr else '(empty)'}")
+        record("Load timeout + dedup (R60.6 fix)", ok)
+        return ok
+    except subprocess.TimeoutExpired:
+        record("Load timeout + dedup", False, "subprocess timeout (>5 min)")
+        return False
+    except Exception as e:
+        record("Load timeout + dedup", False, f"{type(e).__name__}: {e}")
+        return False
+
+
 def run_r60_7_sse_long_running(webui: str) -> bool:
     """R60.7 (2026-09-07): SSE /api/v1/events survives past server WriteTimeout.
 
@@ -264,6 +305,7 @@ def main() -> int:
         "C (OpenAI)": run_openai_compliance(args.base, args.model),
         "D (Generative)": run_generative_dialogue(args.base, args.model),
         "F (R60.5 critical)": run_r60_5_critical(args.base, args.webui, args.model, args.token),
+        "G (R60.6 load timeout+dedup)": run_r60_6_load_timeout_dedup(args.base),
         "H (R60.7 SSE long-running)": run_r60_7_sse_long_running(args.webui),
     }
     elapsed = time.time() - start

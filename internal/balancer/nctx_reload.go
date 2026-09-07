@@ -97,6 +97,15 @@ type NCtxReloadConfig struct {
 	// иначе клиент будет retry-ить слишком часто).
 	PreflightAsyncRetryAfterSec int `json:"preflight_async_retry_after_sec" yaml:"preflight_async_retry_after_sec"`
 
+	// R60.6 (2026-09-07): max clamp для PreflightAsyncRetryAfterSec.
+	// Раньше было hardcoded 30s (в effectiveAsyncRetryAfter). 30s мало для
+	// 5GB+131072 n_ctx load (60-180s на RTX 3070 8GB) — client retry-ил
+	// раньше чем reload заканчивался, triggering cascading reloads.
+	// Default 120s покрывает realistic hardware. Operator может переопределить
+	// через config.json: Balancing.NCtxReload.PreflightAsyncRetryAfterMaxSec
+	// или ENV LB_NCTX_RELOAD_PREFLIGHT_ASYNC_RETRY_AFTER_MAX_SEC.
+	PreflightAsyncRetryAfterMaxSec int `json:"preflight_async_retry_after_max_sec" yaml:"preflight_async_retry_after_max_sec"`
+
 	// Round 35c (2026-08-13): см. pkg/types.BalancingSettings.PreflightMaxWaitSec
 	// и PreflightWaitMultiplier. Эти поля читаются из config.json
 	// (Balancing.NCtxReload.PreflightMaxWaitSec) или из ENV overrides
@@ -155,7 +164,13 @@ func (c NCtxReloadConfig) effectiveTimeout() time.Duration {
 }
 
 // effectiveAsyncRetryAfter — сколько секунд клиенту ждать после 503
-// перед retry. Default 5, clamp [2, 30].
+// перед retry. Default 5, clamp [2, PreflightAsyncRetryAfterMaxSec (default 120)].
+//
+// R60.6 (2026-09-07): max clamp 30 → 120s. Иначе client (OpenWebUI) делал
+// retry через 30s пока cppworker ещё грузил 5GB+131072 n_ctx (60-180s).
+// Cascading retries → несколько reload goroutines → 503 spam в логах.
+// 120s покрывает realistic hardware load (даже RTX 3070 8GB с partial
+// offload в RAM — 5GB модель + 131072 n_ctx = ~60-90s).
 func (c NCtxReloadConfig) effectiveAsyncRetryAfter() int {
 	r := c.PreflightAsyncRetryAfterSec
 	if r <= 0 {
@@ -164,8 +179,15 @@ func (c NCtxReloadConfig) effectiveAsyncRetryAfter() int {
 	if r < 2 {
 		r = 2
 	}
-	if r > 30 {
-		r = 30
+	// R60.6: max clamp = PreflightAsyncRetryAfterMaxSec (default 120s).
+	// Operator может переопределить в config.json: Balancing.NCtxReload.
+	// PreflightAsyncRetryAfterMaxSec или env LB_NCTX_RELOAD_PREFLIGHT_ASYNC_RETRY_AFTER_MAX_SEC.
+	maxRA := c.PreflightAsyncRetryAfterMaxSec
+	if maxRA <= 0 {
+		maxRA = 120 // R60.6: was 30
+	}
+	if r > maxRA {
+		r = maxRA
 	}
 	return r
 }

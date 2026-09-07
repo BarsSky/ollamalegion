@@ -40,6 +40,35 @@ func translateOllamaBodyToOpenAI(ollamaPath string, body []byte) ([]byte, error)
 	}
 }
 
+// extractNameFromBody — извлекает поле "name" из JSON body.
+// Возвращает (name, modifiedBody) где modifiedBody — body без поля "name"
+// (для случая когда name должно быть передано как query param).
+// Если body невалидный JSON или name отсутствует — возвращает ("", body) без изменений.
+//
+// R60.9 (2026-09-07): для /api/models/unload cppworker требует ?name=...
+// в QUERY STRING, а не в body. Ollama-стиль клиенты (включая OpenWebUI
+// и webui) шлют name в body. Без этого helper'а balancer передаёт
+// `{"name":"foo"}` в body и получает 400 "name query parameter is required".
+func extractNameFromBody(body []byte) (name string, modifiedBody []byte) {
+	if len(body) == 0 {
+		return "", body
+	}
+	var req map[string]interface{}
+	if err := json.Unmarshal(body, &req); err != nil {
+		return "", body // невалидный JSON — не трогаем, cppworker сам разберётся
+	}
+	nameVal, ok := req["name"].(string)
+	if !ok || nameVal == "" {
+		return "", body
+	}
+	delete(req, "name")
+	modifiedBody, err := json.Marshal(req)
+	if err != nil {
+		return nameVal, body // marshal failed — return name but keep body
+	}
+	return nameVal, modifiedBody
+}
+
 // translateOllamaChatToOpenAI — маппит Ollama /api/chat на OpenAI /v1/chat/completions.
 // Ollama использует более простой формат: model + messages + options.stop/temperature/top_p.
 // OpenAI — тот же формат, но без вложенного options блока.

@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 	"time"
@@ -120,7 +121,20 @@ func (p *Proxy) proxyRequestLlamaCppNonStream(w http.ResponseWriter, r *http.Req
 		translatedBody = bodyNoStream
 	}
 
+	// R60.9 (2026-09-07): для /api/models/unload cppworker требует ?name= в
+	// QUERY STRING, не в body. Ollama-стиль клиенты (OpenWebUI, webui) шлют
+	// `{"name":"foo"}` в body → cppworker возвращает 400 "name query parameter
+	// is required". Извлекаем name из body и добавляем в query string.
 	fullURL := targetURL + llamacppPath
+	if originalPath == "/api/models/unload" {
+		name, modBody := extractNameFromBody(translatedBody)
+		if name != "" {
+			translatedBody = modBody
+			fullURL = fullURL + "?name=" + url.QueryEscape(name)
+			logger.Get().Debugw("proxyRequestLlamaCppNonStream: moved name to query (R60.9 unload fix)",
+				"backend", backendID, "model", name)
+		}
+	}
 	logger.Get().Debugw("proxyRequestLlamaCppNonStream",
 		"backend", backendID, "url", fullURL,
 		"translated_body", string(translatedBody)[:min(300, len(translatedBody))])

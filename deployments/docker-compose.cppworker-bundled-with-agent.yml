@@ -51,7 +51,7 @@ services:
     # Round 35 (r35): reload→load fallback + idleUnload disabled.
     # Round 35c (r35c): env-tunable polling timeouts (LB_NCTX_PREFLIGHT_*)
     # для моделей с auto-offload (22GB+ Qwen3.6 на 8GB VRAM, 12-15 min load).
-    image: ollama-legion/balancer:cppworker-bundled-r60.6-load-timeout  # Round 60.6 (2026-09-07): load timeout + double-load fix. http.Client.Timeout derived from cfg.effectiveTimeout (was: hardcoded 90s). effectiveAsyncRetryAfter max 30→120s. EstimatedRetryAfter from cppworker estimatedLoadTimeMs (or local heuristic). IsReloadPending guard in old preflight path; reloadDedup in async path.
+    image: ollama-legion/balancer:cppworker-bundled-r60.9-unload-fix  # Round 60.9 (2026-09-07): /api/models/unload via balancer now works. cppworker requires ?name= in QUERY (Ollama clients send in body). extractNameFromBody helper moves name from body to query. Fix in internal/balancer/llamacpp_translate_req.go + llamacpp_transport{,_nonstream}.go.
     #   R54.2: AutoTune master switch (Balancing.AutoTune, default true) +
     #          per-model "autoTune": false override (LlamaCppModelProfile.AutoTune).
     #          Manual control: user can disable AutoTune globally or per-model.

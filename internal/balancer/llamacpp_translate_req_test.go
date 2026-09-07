@@ -127,6 +127,55 @@ func TestTranslateOllamaChatToOpenAI_NoToolsNoToolChoice(t *testing.T) {
 	}
 }
 
+// TestExtractNameFromBody — R60.9 (2026-09-07): для /api/models/unload
+// cppworker требует ?name= в query string. Ollama-style клиенты шлют
+// `{"name":"foo"}` в body. Helper извлекает name и удаляет его из body.
+//
+// Критичные кейсы:
+//   - name в body + extra fields → extract name, body без name
+//   - name в body только → extract name, body = `{}`
+//   - body без name → return ("", body) no change
+//   - невалидный JSON → return ("", body) no change
+//   - name non-string (число, bool) → return ("", body) no change
+func TestExtractNameFromBody(t *testing.T) {
+	tests := []struct {
+		name        string
+		input       string
+		wantName    string
+		wantBodyHasName bool // true if "name" still in body (unchanged)
+	}{
+		// Cases where name IS extracted: body should have "name" removed
+		{"with_name_and_extra", `{"name":"gemma-4","force":true}`, "gemma-4", false},
+		{"with_name_only", `{"name":"qwen3"}`, "qwen3", false},
+		{"nested_with_name", `{"name":"foo","options":{"num_ctx":8192}}`, "foo", false},
+		// Cases where name is NOT extracted: body unchanged
+		// (no "name" key in body OR "name" was invalid → body untouched)
+		{"no_name", `{"force":true}`, "", false}, // body never had "name"
+		{"empty_body", ``, "", false},
+		{"invalid_json", `not json`, "", false}, // cannot parse, body unchanged
+		{"name_empty_string", `{"name":""}`, "", true}, // body has "name"="" but invalid → unchanged
+		{"name_non_string", `{"name":123}`, "", true}, // body has "name"=123 (non-string) → unchanged
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			gotName, gotBody := extractNameFromBody([]byte(tt.input))
+			if gotName != tt.wantName {
+				t.Errorf("name = %q, want %q", gotName, tt.wantName)
+			}
+			var req map[string]interface{}
+			if len(gotBody) > 0 {
+				if err := json.Unmarshal(gotBody, &req); err == nil {
+					_, hasName := req["name"]
+					if hasName != tt.wantBodyHasName {
+						t.Errorf("body has 'name' = %v, want %v. body = %s",
+							hasName, tt.wantBodyHasName, gotBody)
+					}
+				}
+			}
+		})
+	}
+}
+
 // TestTranslateOllamaChatToOpenAI_PromptToMessages — Ollama-native /api/chat с prompt
 // (не messages) должен быть сконвертирован в messages.
 func TestTranslateOllamaChatToOpenAI_PromptToMessages(t *testing.T) {

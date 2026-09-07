@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 
@@ -134,6 +135,17 @@ func (p *Proxy) proxyRequestLlamaCpp(w http.ResponseWriter, r *http.Request, bac
 	}
 
 	fullURL := targetURL + llamacppPath
+	// R60.9 (2026-09-07): для /api/models/unload cppworker требует ?name= в
+	// QUERY STRING, не в body. Извлекаем name из body и добавляем в query.
+	if originalPath == "/api/models/unload" {
+		name, modBody := extractNameFromBody(translatedBody)
+		if name != "" {
+			translatedBody = modBody
+			fullURL = fullURL + "?name=" + url.QueryEscape(name)
+			logger.Get().Debugw("proxyRequestLlamaCpp: moved name to query (R60.9 unload fix)",
+				"backend", backendID, "model", name)
+		}
+	}
 	logger.Get().Infow("proxyRequestLlamaCpp: sending request",
 		"backend", backendID, "url", fullURL, "stream", isStreaming)
 

@@ -677,6 +677,43 @@ func SelectStrategy(
 			if finalNCtx > maxNCtx {
 				finalNCtx = maxNCtx
 			}
+			// R60.13 (2026-09-07): smart-skip safety clamp for cpu_only.
+			//
+			// Pre-R60.13: the theoretical maxNCtx from safeVRAM + safeRAM could be
+			// 200K+ on 8GB VRAM + 16GB RAM. The model would load with cpu_only
+			// strategy (KV-cache in RAM) but take 60-180s because touching
+			// 48GB of RAM takes time. Client sees 503 + Retry-After: 90-120s
+			// and retries — triggering cascading reloads.
+			//
+			// R60.13: cap cpu_only n_ctx at a practical limit that loads in
+			// < 60s on typical hardware. Default 65536 (64K) — for 5GB Qwen3-4B
+			// this means ~30-60s reload time vs 60-180s at 131K.
+			//
+			// Override via env: CPPWORKER_CPU_ONLY_MAX_NCTX (operator tunable).
+			// Set to 0 to disable clamp (legacy behavior).
+			cpuOnlyMaxNCtx := int64(65536)
+			if envMax := os.Getenv("CPPWORKER_CPU_ONLY_MAX_NCTX"); envMax != "" {
+				if v, err := strconv.ParseInt(envMax, 10, 64); err == nil {
+					cpuOnlyMaxNCtx = v
+				}
+			}
+			wasClamped := false
+			if cpuOnlyMaxNCtx > 0 && int64(finalNCtx) > cpuOnlyMaxNCtx {
+				logger.Get().Warnw("SelectStrategy: cpu_only n_ctx clamped (R60.13)",
+					"model", modelName,
+					"requested_n_ctx", requestedNCtx,
+					"theoretical_max", maxNCtx,
+					"clamped_to", cpuOnlyMaxNCtx,
+					"reason", "prevent slow cpu_only reload (5+ min at high n_ctx)",
+					"override_env", "CPPWORKER_CPU_ONLY_MAX_NCTX")
+				finalNCtx = int(cpuOnlyMaxNCtx)
+				wasClamped = true
+			}
+			explanation := fmt.Sprintf("cpu_only: kvType=%s, n_ctx=%d/%d, max_viable=%d",
+				kvType, finalNCtx, requestedNCtx, maxNCtx)
+			if wasClamped {
+				explanation += fmt.Sprintf(", cpu_only_clamped_to=%d (R60.13)", cpuOnlyMaxNCtx)
+			}
 			return LoadStrategyResult{
 				GPULayers:     0,
 				NCtx:          finalNCtx,
@@ -687,8 +724,7 @@ func SelectStrategy(
 				GPUReduced:    true,
 				NCtxReduced:   finalNCtx < requestedNCtx,
 				MaxViableNCtx: maxNCtx,
-				Explanation: fmt.Sprintf("cpu_only: kvType=%s, n_ctx=%d/%d, max_viable=%d",
-					kvType, finalNCtx, requestedNCtx, maxNCtx),
+				Explanation: explanation,
 				OverrideTensors:     moeOverridePatterns,
 				OverrideTensorBufts: moeOverrideBufts,
 			}

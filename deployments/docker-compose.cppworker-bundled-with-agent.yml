@@ -51,7 +51,7 @@ services:
     # Round 35 (r35): reload→load fallback + idleUnload disabled.
     # Round 35c (r35c): env-tunable polling timeouts (LB_NCTX_PREFLIGHT_*)
     # для моделей с auto-offload (22GB+ Qwen3.6 на 8GB VRAM, 12-15 min load).
-    image: ollama-legion/balancer:cppworker-bundled-r60.12-cpu-only-warn  # Round 60.12 (2026-09-07): explicit Warnw log when AutoTune picks cpu_only strategy. Operator sees 60-180s reload warning. Docs: docs/R60.12-cpu-only-strategy.md.
+    image: ollama-legion/balancer:cppworker-bundled-r60.15-xrequestid-dedup  # Round 60.15 (2026-09-07): X-Request-Id deduplication in copyResponse (rename upstream X-Request-Id to X-Upstream-Request-Id). Fixes duplicate header in 200 OK responses.
     #   R54.2: AutoTune master switch (Balancing.AutoTune, default true) +
     #          per-model "autoTune": false override (LlamaCppModelProfile.AutoTune).
     #          Manual control: user can disable AutoTune globally or per-model.

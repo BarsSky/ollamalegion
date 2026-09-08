@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"ollama-loadbalancer/c/bridge"
+	"ollama-loadbalancer/internal/cppbackend"
 	"ollama-loadbalancer/pkg/logger"
 	"ollama-loadbalancer/pkg/types"
 )
@@ -1797,6 +1798,23 @@ func handleV1Models(w http.ResponseWriter, r *http.Request) {
 // Используется OpenWebUI и OpenAI python clients для отображения карточки
 // модели по запросу. Раньше endpoint не реализован → 404 page not found.
 //
+// R60.16 (2026-09-08): disk-known unloaded models теперь возвращают 200 OK.
+// Pre-R60.16: только loaded модели (через backend.GetModel); disk-known
+// unloaded → 404, что ломает OpenWebUI model picker для скачанных, но
+// ещё не загруженных моделей.
+//
+// Lookup path (NO file I/O on request goroutine):
+//   1. backend.GetModel(modelID) — loaded models (in-memory map).
+//   2. mm.ListModels() cache — disk-known .gguf files (populated by
+//      ScanModels at startup; only os.Stat, no GGUF header read).
+//   3. → 404.
+//
+// R60.15 Fix C (rolled back due to production hangs) tried path 2
+// via mm.GetModelMeta which lazy-reads the GGUF header on the request
+// goroutine — that blocked the bridge call queue under load. R60.16
+// uses pure cache lookup instead, so disk-known lookups are O(N)
+// cache iteration with no syscalls.
+//
 // Регистрируется в router.go как /v1/models/ (с trailing slash для
 // subtree match). Handler извлекает {model_id} из r.URL.Path, ищет модель
 // в ModelManager, возвращает OpenAI-формат или 404.
@@ -1816,25 +1834,102 @@ func handleV1ModelByID(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	model, err := backend.GetModel(modelID)
-	if err != nil {
-		writeError(w, http.StatusNotFound, fmt.Sprintf("model %q not found", modelID))
+	// Path 1: loaded models (in-memory).
+	if model, err := backend.GetModel(modelID); err == nil {
+		created := model.LoadedAt.Unix()
+		if created == 0 {
+			created = time.Now().Unix()
+		}
+		writeJSON(w, http.StatusOK, map[string]interface{}{
+			"id":       model.Name,
+			"object":   "model",
+			"created":  created,
+			"owned_by": "ollamalegion",
+		})
 		return
 	}
 
-	// OpenAI model object format.
-	created := model.LoadedAt.Unix()
-	if created == 0 {
-		// Models discovered via disk scan (not loaded) may have zero LoadedAt.
-		// Use modified time of the GGUF file as fallback.
-		created = time.Now().Unix()
+	// Path 2: disk-known unloaded models (cache only, no file I/O).
+	// Matches by exact filename or stripped .gguf suffix.
+	mm := backend.ModelManager()
+	if mm == nil {
+		writeError(w, http.StatusNotFound, fmt.Sprintf("model %q not found", modelID))
+		return
 	}
-	writeJSON(w, http.StatusOK, map[string]interface{}{
-		"id":       model.Name,
-		"object":   "model",
-		"created":  created,
-		"owned_by": "ollamalegion",
-	})
+	if meta := lookupDiskKnownNoIO(mm, modelID); meta != nil {
+		// Return the bare model name (strip .gguf) — Ollama convention.
+		// The user may have requested either "name" or "name.gguf";
+		// the canonical response id is the bare name.
+		canonicalID := strings.TrimSuffix(meta.Filename, ".gguf")
+		writeJSON(w, http.StatusOK, map[string]interface{}{
+			"id":       canonicalID,
+			"object":   "model",
+			"created":  meta.ModifiedAt.Unix(),
+			"owned_by": "ollamalegion",
+		})
+		return
+	}
+
+	writeError(w, http.StatusNotFound, fmt.Sprintf("model %q not found", modelID))
+}
+
+// lookupDiskKnownNoIO — pure cache lookup for a disk-known .gguf file
+// by name. NO file I/O, NO GGUF header read. Returns nil if not found.
+//
+// Match priority:
+//   1. exact match in ggufFiles (with or without .gguf suffix)
+//   2. case-insensitive match on filename
+//
+// R60.16 (2026-09-08): replaces the original R60.15 Fix C path that
+// called mm.GetModelMeta (which triggers ReadGGUFHeader) and caused
+// production hangs under concurrent bridge usage.
+func lookupDiskKnownNoIO(mm *cppbackend.ModelManager, modelID string) *cppbackend.GGUFModelMeta {
+	if mm == nil || modelID == "" {
+		return nil
+	}
+	models := mm.ListModels()
+
+	// 1. exact match (with or without .gguf)
+	if meta := findExactMatch(models, modelID); meta != nil {
+		return meta
+	}
+
+	// 2. case-insensitive match on filename
+	idLower := strings.ToLower(modelID)
+	for i := range models {
+		if strings.ToLower(models[i].Filename) == idLower {
+			meta := models[i]
+			return &meta
+		}
+		// also try stripped-suffix form
+		baseLower := strings.ToLower(strings.TrimSuffix(models[i].Filename, ".gguf"))
+		if baseLower == idLower || baseLower == strings.ToLower(strings.TrimSuffix(modelID, ".gguf")) {
+			meta := models[i]
+			return &meta
+		}
+	}
+	return nil
+}
+
+// findExactMatch — try the modelID directly, then with .gguf appended.
+// Returns pointer to the meta (stable for the test caller) or nil.
+func findExactMatch(models []cppbackend.GGUFModelMeta, modelID string) *cppbackend.GGUFModelMeta {
+	for i := range models {
+		if models[i].Filename == modelID {
+			meta := models[i]
+			return &meta
+		}
+	}
+	// also try with .gguf if the caller didn't include it
+	if !strings.HasSuffix(modelID, ".gguf") {
+		for i := range models {
+			if models[i].Filename == modelID+".gguf" {
+				meta := models[i]
+				return &meta
+			}
+		}
+	}
+	return nil
 }
 
 // ============================================================

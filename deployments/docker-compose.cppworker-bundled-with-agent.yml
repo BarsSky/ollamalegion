@@ -51,7 +51,7 @@ services:
     # Round 35 (r35): reload→load fallback + idleUnload disabled.
     # Round 35c (r35c): env-tunable polling timeouts (LB_NCTX_PREFLIGHT_*)
     # для моделей с auto-offload (22GB+ Qwen3.6 на 8GB VRAM, 12-15 min load).
-    image: ollama-legion/balancer:cppworker-bundled-r60.16-retry-after  # Round 60.16 (2026-09-08): Retry-After header on 503 auto-load errors (5 sites in llamacpp_handlers_inference.go). Pre-R60.16: 503 with empty Retry-After caused client busy-loops.
+    image: ollama-legion/balancer:r60.21-auto-continue  # Round 60.21 (2026-09-08): Auto-Continue on Truncation — balancer detects unclosed code block / mid-line cutoff in done_reason:stop responses (R60.20 pattern) and automatically sends "Continue from where you left off" request. Opt-in via LB_AUTO_CONTINUE_ON_TRUNCATION=1. Fixes Qwen3-Instruct-2507-q4km mid-code truncation (50% rate). Round 60.16 (2026-09-08): Retry-After header on 503 auto-load errors (5 sites in llamacpp_handlers_inference.go). Pre-R60.16: 503 with empty Retry-After caused client busy-loops.
     #   R54.2: AutoTune master switch (Balancing.AutoTune, default true) +
     #          per-model "autoTune": false override (LlamaCppModelProfile.AutoTune).
     #          Manual control: user can disable AutoTune globally or per-model.
@@ -304,7 +304,7 @@ services:
         VERSION: ${WEBUI_VERSION:-dev}
         GIT_COMMIT: ${WEBUI_GIT_COMMIT:-unknown}
         BUILD_DATE: ${WEBUI_BUILD_DATE:-unknown}
-    image: ollama-legion/webui:cppworker-bundled-r60.14-lang-picker  # Round 60.14 (2026-09-07): language picker UI added to index.html, monitor.html, health.html headers. I18N.setLang() synced via localStorage 'ollamalegion_lang'. Wire-up via app-core.js (index) + inline scripts (monitor/health).
+    image: ollama-legion/webui:cppworker-bundled-r60.16.1-api-fallback-v2  # Round 60.14 (2026-09-07): language picker UI added to index.html, monitor.html, health.html headers. I18N.setLang() synced via localStorage 'ollamalegion_lang'. Wire-up via app-core.js (index) + inline scripts (monitor/health).
     container_name: ol-bundled-webui
     restart: unless-stopped
     ports:

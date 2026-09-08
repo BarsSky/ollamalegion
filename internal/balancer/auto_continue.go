@@ -28,6 +28,8 @@ package balancer
 
 import (
 	"encoding/json"
+	"fmt"
+	"io"
 	"net/http"
 	"os"
 	"strconv"
@@ -281,21 +283,23 @@ func PerformAutoContinue(
 	// Stream was true for original; we want to read the full response
 	// before returning, since we already streamed the original to client.
 	reqBody.Stream = false
-	// If model accepts "max_tokens" / "num_predict", use the configured limit
-	// to prevent runaway continuation.
+	// Limit continuation size to prevent runaway.
+	//
+	// R60.21: cppworker's /v1/chat/completions strict decoder REJECTS
+	// unknown fields. Ollama-specific `num_predict` is NOT in the OpenAI
+	// spec, so cppworker returns 400 "invalid JSON: unknown field
+	// \"num_predict\"". Use only `max_tokens` (OpenAI standard).
 	maxTokens := GetAutoContinueMaxTokens()
 	newBody, err := json.Marshal(struct {
-		Model      string        `json:"model"`
-		Messages   []chatMessage `json:"messages"`
-		Stream     bool          `json:"stream"`
-		MaxTokens  int           `json:"max_tokens,omitempty"`
-		NumPredict int           `json:"num_predict,omitempty"`
+		Model     string        `json:"model"`
+		Messages  []chatMessage `json:"messages"`
+		Stream    bool          `json:"stream"`
+		MaxTokens int           `json:"max_tokens,omitempty"`
 	}{
-		Model:      reqBody.Model,
-		Messages:   reqBody.Messages,
-		Stream:     false,
-		MaxTokens:  maxTokens,
-		NumPredict: maxTokens,
+		Model:     reqBody.Model,
+		Messages:  reqBody.Messages,
+		Stream:    false,
+		MaxTokens: maxTokens,
 	})
 	if err != nil {
 		return "", 0, err
@@ -322,7 +326,9 @@ func PerformAutoContinue(
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		return "", 0, errUpstreamNonOK
+		// Read error body for diagnostics
+		errBody, _ := io.ReadAll(io.LimitReader(resp.Body, 1024))
+		return "", 0, fmt.Errorf("upstream status %d: %s", resp.StatusCode, string(errBody))
 	}
 
 	// 5. Read response, extract content

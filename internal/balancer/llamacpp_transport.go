@@ -1001,7 +1001,8 @@ func (p *Proxy) proxyRequestLlamaCpp(w http.ResponseWriter, r *http.Request, bac
 			} else {
 				logger.Get().Warnw("proxyRequestLlamaCpp: R60.21 auto-continue failed (emitting truncated as-is)",
 					"backend", backendID, "model", modelFromCtx,
-					"reason", reason, "error", contErr)
+					"reason", reason, "error", contErr,
+					"url", fullURL)
 			}
 		}
 	}

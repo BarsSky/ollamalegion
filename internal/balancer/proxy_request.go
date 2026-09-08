@@ -373,12 +373,26 @@ retrySucceeded:
 	// - Transfer-Encoding, Content-Length, Connection (управляются Go/http)
 	// - CORS-заголовки (уже установлены в ServeHTTP, дублирование ломает браузеры)
 	// - Vary: Origin (связан с CORS, тоже исключаем)
+	// - X-Request-Id (R60.15: balancer УЖЕ выставил свой через requestIDHeader;
+	//   upstream X-Request-Id перенесём в X-Upstream-Request-Id для трейсинга)
 	for key, values := range resp.Header {
 		keyLower := strings.ToLower(key)
 		if keyLower == "transfer-encoding" || keyLower == "content-length" || keyLower == "connection" {
 			continue
 		}
 		if strings.HasPrefix(keyLower, "access-control-") {
+			continue
+		}
+		// R60.15 (2026-09-07): preserve upstream request ID for distributed
+		// tracing, but as a separate header (X-Upstream-Request-Id) to
+		// avoid duplicate X-Request-Id (balancer already set its own
+		// in proxy.go:524 with the request ID it generated/forwarded).
+		if keyLower == "x-request-id" {
+			for _, value := range values {
+				if existing := w.Header().Get("X-Upstream-Request-Id"); existing == "" {
+					w.Header().Set("X-Upstream-Request-Id", value)
+				}
+			}
 			continue
 		}
 		if keyLower == "vary" {
@@ -611,6 +625,16 @@ func (p *Proxy) proxyRequestOpenAIStreaming(w http.ResponseWriter, r *http.Reque
 			continue
 		}
 		if strings.HasPrefix(keyLower, "access-control-") {
+			continue
+		}
+		// R60.15: preserve upstream X-Request-Id as X-Upstream-Request-Id
+		// (avoid duplicate X-Request-Id — balancer sets its own).
+		if keyLower == "x-request-id" {
+			for _, value := range values {
+				if existing := w.Header().Get("X-Upstream-Request-Id"); existing == "" {
+					w.Header().Set("X-Upstream-Request-Id", value)
+				}
+			}
 			continue
 		}
 		if keyLower == "vary" {

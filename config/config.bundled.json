@@ -67,7 +67,10 @@
             "auto_reload_n_ctx": true,
             "auto_reload_max_n_ctx": 131072,
             "auto_reload_vram_safety_factor": 0.95,
-            "auto_reload_timeout_sec": 300
+            "auto_reload_timeout_sec": 300,
+            "_note_r60_6": "R60.6 (2026-09-07): Retry-After derived from cppworker estimatedLoadTimeMs (or local heuristic). preflight_async_retry_after_sec = default Retry-After (5s). preflight_async_retry_after_max_sec = max clamp (120s, was 30s pre-R60.6). 0 = disable clamp (legacy 30s). On 8GB VRAM 5GB model + 131072 n_ctx, Retry-After now 60-90s (from estimate) instead of hardcoded 30s. See internal/balancer/EstimateReloadTimeMs for heuristic. CPPWORKER_GPU side: cpu_only n_ctx safety clamp in adaptive_loader.go (R60.13, env CPPWORKER_CPU_ONLY_MAX_NCTX, default 65536).",
+            "preflight_async_retry_after_sec": 5,
+            "preflight_async_retry_after_max_sec": 120
         },
         "resourceReservation": {
             "_note": "Round 38.1 (2026-08-18): VRAM/RAM headroom thresholds for slot manager. gpuHeadroomPercent — резерв VRAM, ниже которого slot manager НЕ блокирует бэкенд (при 100% - headroom% VRAM). ramHeadroomPercent — то же для RAM. ENV override: LB_GPU_HEADROOM_PERCENT, LB_RAM_HEADROOM_PERCENT (default 5.0/10.0 если не задано). Default 5% подобран для 8GB VRAM + 22GB Q4_K_M MoE (Q36): 92% VRAM occupied + 5% headroom = 97% threshold, allows operation. Если profile в bundled.json не пропускает preflight из-за слишком агрессивного headroom — зашить сюда меньшее значение или 0 (disable).",

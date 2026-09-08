@@ -389,6 +389,14 @@ func (r *VirtualRouter) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 				if k == "Content-Length" || k == "Connection" {
 					continue
 				}
+				// R60.15: preserve upstream X-Request-Id as X-Upstream-Request-Id
+				// (avoid duplicate X-Request-Id — balancer set its own).
+				if strings.EqualFold(k, "X-Request-Id") {
+					if existing := w.Header().Get("X-Upstream-Request-Id"); existing == "" {
+						w.Header().Set("X-Upstream-Request-Id", v[0])
+					}
+					continue
+				}
 				w.Header()[k] = v
 			}
 			w.Header().Set("X-Original-Backend", candidateID)

@@ -37,6 +37,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strings"
 	"time"
 )
 
@@ -74,9 +75,24 @@ func writeJSON(w http.ResponseWriter, status int, data interface{}) {
 //
 // Pre-R51.1: defined in ollama_router.go:258.
 // R51.1: moved here. No signature change.
+//
+// R60.15 (2026-09-07): preserve upstream X-Request-Id as X-Upstream-Request-Id
+// (balancer already set its own X-Request-Id at proxy.go:524). Avoids
+// duplicate X-Request-Id header in response.
 func copyResponse(w http.ResponseWriter, resp *http.Response) {
 	defer resp.Body.Close()
 	for key, values := range resp.Header {
+		keyLower := strings.ToLower(key)
+		// R60.15: rename upstream X-Request-Id to X-Upstream-Request-Id
+		// to avoid duplicate headers.
+		if keyLower == "x-request-id" {
+			for _, value := range values {
+				if existing := w.Header().Get("X-Upstream-Request-Id"); existing == "" {
+					w.Header().Set("X-Upstream-Request-Id", value)
+				}
+			}
+			continue
+		}
 		for _, value := range values {
 			w.Header().Add(key, value)
 		}

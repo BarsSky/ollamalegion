@@ -356,4 +356,65 @@ type simpleError string
 
 func (e simpleError) Error() string { return string(e) }
 
+// EmitContinuationNDJSON — write the continuation content to client
+// as a final NDJSON chunk (or series of chunks for very long continuations).
+// This is for /api/chat (Ollama) and /api/generate paths.
+//
+// Caller passes the original accumulated content + continuation content.
+// The combined content goes into message.content of the final chunk.
+func EmitContinuationNDJSON(
+	w http.ResponseWriter,
+	apiPath string,
+	modelName string,
+	originalContent string,
+	continuationContent string,
+	totalEvalCount int,
+	flusher http.Flusher,
+) error {
+	combined := originalContent + continuationContent
+	// Strip antiprompt-like artifacts that may appear at the boundary.
+	// Common: "Sure, here's the continuation:\n\n" — model often prepends
+	// acknowledgment text. We don't try to strip it (too aggressive);
+	// we just emit combined as-is and let client handle.
+	var ollamaChunk map[string]interface{}
+	if apiPath == "/api/chat" {
+		ollamaChunk = map[string]interface{}{
+			"model":       modelName,
+			"created_at":  time.Now().UTC().Format(time.RFC3339),
+			"done":        true,
+			"done_reason": "stop",
+			"message": map[string]interface{}{
+				"role":    "assistant",
+				"content": combined,
+			},
+			"total_duration": 0,
+			"eval_count":     totalEvalCount,
+		}
+	} else if apiPath == "/api/generate" {
+		ollamaChunk = map[string]interface{}{
+			"model":          modelName,
+			"created_at":     time.Now().UTC().Format(time.RFC3339),
+			"done":           true,
+			"done_reason":    "stop",
+			"response":       combined,
+			"total_duration": 0,
+			"eval_count":     totalEvalCount,
+		}
+	} else {
+		return simpleError("unsupported api path for EmitContinuationNDJSON: " + apiPath)
+	}
+	out, err := json.Marshal(ollamaChunk)
+	if err != nil {
+		return err
+	}
+	out = append(out, '\n')
+	if _, err := w.Write(out); err != nil {
+		return err
+	}
+	if flusher != nil {
+		flusher.Flush()
+	}
+	return nil
+}
+
 // Sanitize for utf8RuneCount — no-op removed, no extra imports needed.

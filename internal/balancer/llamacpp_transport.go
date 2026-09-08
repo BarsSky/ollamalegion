@@ -381,9 +381,9 @@ func (p *Proxy) proxyRequestLlamaCpp(w http.ResponseWriter, r *http.Request, bac
 				w.Header().Set("Retry-After", "5")
 				w.Header().Set("X-Model-Loading-Retry", "exhausted")
 				errBody, _ := json.Marshal(map[string]interface{}{
-					"error":      fmt.Sprintf("model is still loading after %ds: %s", loadingRetryMaxAttempts*int(loadingRetryInterval.Seconds()), loadingModelName),
-					"loading":    true,
-					"model":      loadingModelName,
+					"error":        fmt.Sprintf("model is still loading after %ds: %s", loadingRetryMaxAttempts*int(loadingRetryInterval.Seconds()), loadingModelName),
+					"loading":      true,
+					"model":        loadingModelName,
 					"retryAfterMs": 5000,
 				})
 				w.Header().Set("Content-Length", fmt.Sprintf("%d", len(errBody)))
@@ -945,6 +945,67 @@ func (p *Proxy) proxyRequestLlamaCpp(w http.ResponseWriter, r *http.Request, bac
 		}
 	}
 
+	// ==== R60.21 Auto-Continue on Truncation (2026-09-08) ====
+	// After the main streaming loop ends cleanly (streamCompleted=true),
+	// check if the accumulated content looks truncated. If so AND
+	// LB_AUTO_CONTINUE_ON_TRUNCATION=1, send a "continue" request to
+	// upstream and emit the continuation to client.
+	//
+	// Default: OFF (opt-in). See docs/ENV_VARS.md.
+	// For Qwen3-Instruct-2507-q4km which has a tendency to emit
+	// ChatML-EOS <|im_end|> mid-code (R60.20), this auto-recovers
+	// from unclosed code blocks and mid-line cutoffs.
+	if streamCompleted && IsAutoContinueOnTruncationEnabled() {
+		finalContent := accumulatedPlainContent
+		if upstreamDoneContent != "" {
+			// If cppworker sent full content in the done chunk (not chunked),
+			// use that as the source of truth.
+			finalContent = upstreamDoneContent
+		}
+		if reason := TruncateReason(finalContent); reason != "" {
+			logger.Get().Infow("proxyRequestLlamaCpp: R60.21 detected truncation, auto-continuing",
+				"backend", backendID, "model", modelFromCtx,
+				"api_path", originalPath,
+				"reason", reason,
+				"content_chars", len(finalContent))
+			continuation, contEval, contErr := PerformAutoContinue(
+				fullURL, translatedBody, finalContent, reason,
+				&http.Client{Timeout: 60 * time.Second}, 60*time.Second)
+			if contErr == nil && continuation != "" {
+				logger.Get().Infow("proxyRequestLlamaCpp: R60.21 auto-continue succeeded",
+					"backend", backendID, "model", modelFromCtx,
+					"api_path", originalPath,
+					"continuation_chars", len(continuation),
+					"cont_eval", contEval)
+				// Emit continuation as a single final done-chunk with
+				// combined content. This is the safest approach — the client
+				// gets one coherent response (no double done-chunks).
+				var flusher http.Flusher
+				if f, ok := w.(http.Flusher); ok {
+					flusher = f
+				}
+				totalEval := 0
+				if contEval > 0 {
+					totalEval = contEval
+				}
+				emitErr := EmitContinuationNDJSON(
+					w, originalPath, modelFromCtx,
+					finalContent, continuation, totalEval, flusher)
+				if emitErr != nil {
+					logger.Get().Warnw("proxyRequestLlamaCpp: R60.21 emit continuation error",
+						"backend", backendID, "error", emitErr)
+				}
+				// Mark stream as completed so downstream truncation
+				// detection doesn't fire.
+				streamCompleted = true
+			} else {
+				logger.Get().Warnw("proxyRequestLlamaCpp: R60.21 auto-continue failed (emitting truncated as-is)",
+					"backend", backendID, "model", modelFromCtx,
+					"reason", reason, "error", contErr)
+			}
+		}
+	}
+
 	// ==== Stream-truncation detection (2026-06-26) ====
 	// Если мы вышли из цикла for без streamCompleted (т.е. cppworker оборвал
 	// стрим до того, как прислал финальный [DONE] маркер), явно логируем это
@@ -997,11 +1058,11 @@ func (p *Proxy) proxyRequestLlamaCpp(w http.ResponseWriter, r *http.Request, bac
 		} else {
 			// Для /api/chat и /api/generate (NDJSON): финальный done-чанк с error.
 			truncatedChunk := map[string]interface{}{
-				"model":      modelFromCtx,
-				"created_at": time.Now().UTC().Format(time.RFC3339),
-				"done":       true,
+				"model":       modelFromCtx,
+				"created_at":  time.Now().UTC().Format(time.RFC3339),
+				"done":        true,
 				"done_reason": "truncated",
-				"error":      "stream truncated by upstream before completion",
+				"error":       "stream truncated by upstream before completion",
 			}
 			out, _ := json.Marshal(truncatedChunk)
 			_, _ = fmt.Fprintf(w, "%s\n", string(out))

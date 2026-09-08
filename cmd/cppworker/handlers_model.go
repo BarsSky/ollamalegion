@@ -1313,7 +1313,7 @@ func handleDeleteModel(w http.ResponseWriter, r *http.Request) {
 		var req struct {
 			Name string `json:"name"`
 		}
-		if err := json.NewDecoder(r.Body).Decode(&req); err == nil {
+		if err := decodeJSONRequest(r, &req, 0); err == nil {
 			name = strings.TrimSpace(req.Name)
 		}
 	}
@@ -1895,7 +1895,7 @@ func handleOllamaShow(w http.ResponseWriter, r *http.Request) {
 		Name  string `json:"name"`
 		Model string `json:"model"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := decodeJSONRequest(r, &req, 0); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid JSON: "+err.Error())
 		return
 	}
@@ -2045,7 +2045,7 @@ func handleOllamaCopy(w http.ResponseWriter, r *http.Request) {
 		Source      string `json:"source"`
 		Destination string `json:"destination"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := decodeJSONRequest(r, &req, 0); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid JSON: "+err.Error())
 		return
 	}
@@ -2115,7 +2115,7 @@ func handleOllamaCreate(w http.ResponseWriter, r *http.Request) {
 		ModelFile string `json:"modelfile"`
 		From      string `json:"from"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := decodeJSONRequest(r, &req, 0); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid JSON: "+err.Error())
 		return
 	}

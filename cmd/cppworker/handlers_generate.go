@@ -512,7 +512,9 @@ func writeStreamResponse(w http.ResponseWriter, r *http.Request, modelName, prom
 // handleOllamaGenerate — Ollama /api/ollama/generate и /api/generate (Ollama-формат).
 func handleOllamaGenerate(w http.ResponseWriter, r *http.Request) {
 	var req generateRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	// R60.16 (2026-09-08): use BOM-stripping decoder (Windows PowerShell
+	// Out-File default adds EF BB BF BOM → 400 without this).
+	if err := decodeJSONRequest(r, &req, 0); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid JSON: "+err.Error())
 		return
 	}

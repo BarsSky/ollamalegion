@@ -3,8 +3,7 @@ package main
 
 import (
 	"context"
-	"encoding/json"
-	"net/http"
+		"net/http"
 	"strings"
 	"time"
 
@@ -101,7 +100,7 @@ func handleHFDownload(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var req cppbackend.HFDownloadRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := decodeJSONRequest(r, &req, 0); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid JSON: "+err.Error())
 		return
 	}
@@ -173,7 +172,7 @@ func handleHFCancel(w http.ResponseWriter, r *http.Request) {
 		ModelID  string `json:"modelId"`
 		Filename string `json:"filename"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := decodeJSONRequest(r, &req, 0); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid JSON: "+err.Error())
 		return
 	}
@@ -205,7 +204,7 @@ func handleHFCleanup(w http.ResponseWriter, r *http.Request) {
 			ModelID  string `json:"modelId"`
 			Filename string `json:"filename"`
 		}
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		if err := decodeJSONRequest(r, &req, 0); err != nil {
 			writeError(w, http.StatusBadRequest, "invalid JSON: "+err.Error())
 			return
 		}
@@ -256,7 +255,7 @@ func handlePull(w http.ResponseWriter, r *http.Request) {
 		Model  string `json:"model"`
 		Stream bool   `json:"stream"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := decodeJSONRequest(r, &req, 0); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid JSON: "+err.Error())
 		return
 	}

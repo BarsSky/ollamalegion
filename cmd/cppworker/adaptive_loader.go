@@ -15,8 +15,7 @@ package main
 
 import (
 	"context"
-	"encoding/json"
-	"fmt"
+		"fmt"
 	"net/http"
 	"os"
 	"os/exec"
@@ -961,7 +960,7 @@ func handleAdaptiveHealConfig(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, cfg)
 	case http.MethodPost:
 		var cfg NaNHealingConfig
-		if err := json.NewDecoder(r.Body).Decode(&cfg); err != nil {
+		if err := decodeJSONRequest(r, &cfg, 0); err != nil {
 			writeError(w, http.StatusBadRequest, "invalid JSON: "+err.Error())
 			return
 		}

@@ -1,8 +1,7 @@
 package main
 
 import (
-	"encoding/json"
-	"net/http"
+		"net/http"
 
 	"ollama-loadbalancer/pkg/logger"
 )
@@ -14,7 +13,7 @@ import (
 // handleEmbeddings — внутренний endpoint /api/embeddings.
 func handleEmbeddings(w http.ResponseWriter, r *http.Request) {
 	var req embeddingsRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := decodeJSONRequest(r, &req, 0); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid JSON: "+err.Error())
 		return
 	}
@@ -45,7 +44,7 @@ func handleOllamaEmbeddings(w http.ResponseWriter, r *http.Request) {
 		Input  string `json:"input"`
 		Prompt string `json:"prompt"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := decodeJSONRequest(r, &req, 0); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid JSON: "+err.Error())
 		return
 	}
@@ -105,7 +104,7 @@ func handleOllamaEmbed(w http.ResponseWriter, r *http.Request) {
 		Truncate *bool         `json:"truncate,omitempty"`
 		Options  *map[string]interface{} `json:"options,omitempty"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := decodeJSONRequest(r, &req, 0); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid JSON: "+err.Error())
 		return
 	}

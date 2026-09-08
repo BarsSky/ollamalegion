@@ -13,8 +13,7 @@
 package main
 
 import (
-	"encoding/json"
-	"net/http"
+		"net/http"
 
 	"ollama-loadbalancer/pkg/logger"
 )
@@ -40,7 +39,7 @@ func handleResetReloadCounter(w http.ResponseWriter, r *http.Request) {
 
 	// Body опционален — если нет, оставляем req.Model = "" и сбрасываем все.
 	if r.Body != nil && r.ContentLength > 0 {
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		if err := decodeJSONRequest(r, &req, 0); err != nil {
 			writeError(w, http.StatusBadRequest, "invalid JSON body: "+err.Error())
 			return
 		}

@@ -158,7 +158,7 @@ func handleCppWorkerUpdateConfig(w http.ResponseWriter, r *http.Request) {
 	// Декодируем в generic map — так WebUI может слать partial update
 	// (только изменённые поля), а мы знаем точный список валидных ключей.
 	var updates map[string]interface{}
-	if err := json.NewDecoder(r.Body).Decode(&updates); err != nil {
+	if err := decodeJSONRequest(r, &updates, 0); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid JSON: "+err.Error())
 		return
 	}

@@ -1,4 +1,4 @@
-﻿// llamacpp_translate_resp_reasoning_test.go — tests for reasoning_content translation
+// llamacpp_translate_resp_reasoning_test.go — tests for reasoning_content translation
 // between OpenAI (cppworker) and Ollama (OpenWebUI) formats.
 //
 // Bug context (2026-08-09):
@@ -51,7 +51,7 @@ func TestTranslateSSEChatToOllama_ReasoningContent(t *testing.T) {
 	}
 
 	sseData, _ := json.Marshal(sseChunk)
-	result := translateOpenAISSEDataToOllama("/api/chat", sseData, "test-model", nil, time.Time{})
+	result := translateOpenAISSEDataToOllama("/api/chat", sseData, "test-model", nil, time.Time{}, time.Time{}, time.Time{})
 	if result == nil {
 		t.Fatal("expected non-nil result for reasoning_content chunk")
 	}
@@ -106,7 +106,7 @@ func TestTranslateSSEChatToOllama_ReasoningAndContentSeparate(t *testing.T) {
 
 	// Chunk 1
 	sseData1, _ := json.Marshal(chunk1)
-	r1 := translateOpenAISSEDataToOllama("/api/chat", sseData1, "gemma-4", nil, time.Time{})
+	r1 := translateOpenAISSEDataToOllama("/api/chat", sseData1, "gemma-4", nil, time.Time{}, time.Time{}, time.Time{})
 	if r1 == nil {
 		t.Fatal("chunk 1 (reasoning) returned nil")
 	}
@@ -122,7 +122,7 @@ func TestTranslateSSEChatToOllama_ReasoningAndContentSeparate(t *testing.T) {
 
 	// Chunk 2
 	sseData2, _ := json.Marshal(chunk2)
-	r2 := translateOpenAISSEDataToOllama("/api/chat", sseData2, "gemma-4", nil, time.Time{})
+	r2 := translateOpenAISSEDataToOllama("/api/chat", sseData2, "gemma-4", nil, time.Time{}, time.Time{}, time.Time{})
 	if r2 == nil {
 		t.Fatal("chunk 2 (content) returned nil")
 	}
@@ -157,7 +157,7 @@ func TestTranslateSSEChatToOllama_ReasoningAndContentSameChunk(t *testing.T) {
 	}
 
 	sseData, _ := json.Marshal(sseChunk)
-	result := translateOpenAISSEDataToOllama("/api/chat", sseData, "gemma-4", nil, time.Time{})
+	result := translateOpenAISSEDataToOllama("/api/chat", sseData, "gemma-4", nil, time.Time{}, time.Time{}, time.Time{})
 	if result == nil {
 		t.Fatal("expected non-nil for combined reasoning+content chunk")
 	}
@@ -202,7 +202,7 @@ func TestTranslateSSEChatToOllama_ReasoningWithToolCalls(t *testing.T) {
 	}
 
 	sseData, _ := json.Marshal(sseChunk)
-	result := translateOpenAISSEDataToOllama("/api/chat", sseData, "gemma-4", nil, time.Time{})
+	result := translateOpenAISSEDataToOllama("/api/chat", sseData, "gemma-4", nil, time.Time{}, time.Time{}, time.Time{})
 	if result == nil {
 		t.Fatal("expected non-nil for reasoning+tool_calls chunk")
 	}
@@ -239,14 +239,14 @@ func TestTranslateSSEGenerateToOllama_ReasoningContent(t *testing.T) {
 		"model":   "gemma-4",
 		"choices": []map[string]interface{}{
 			{
-				"text":             "Some text",
+				"text":              "Some text",
 				"reasoning_content": "thinking...",
-				"index":            0,
+				"index":             0,
 			},
 		},
 	}
 	sseDataA, _ := json.Marshal(sseChunkA)
-	rA := translateOpenAISSEDataToOllama("/api/generate", sseDataA, "gemma-4", nil, time.Time{})
+	rA := translateOpenAISSEDataToOllama("/api/generate", sseDataA, "gemma-4", nil, time.Time{}, time.Time{}, time.Time{})
 	if rA == nil {
 		t.Fatal("variant A returned nil")
 	}
@@ -278,8 +278,8 @@ func TestTranslateOpenAIChatToOllama_ReasoningContent(t *testing.T) {
 			{
 				"index": 0,
 				"message": map[string]interface{}{
-					"role":             "assistant",
-					"content":          "The answer is 42",
+					"role":              "assistant",
+					"content":           "The answer is 42",
 					"reasoning_content": "Let me think step by step...",
 				},
 				"finish_reason": "stop",
@@ -419,7 +419,7 @@ func TestTranslateSSEChatToOllama_EmptyReasoning(t *testing.T) {
 	}
 
 	sseData, _ := json.Marshal(sseChunk)
-	result := translateOpenAISSEDataToOllama("/api/chat", sseData, "gemma-4", nil, time.Time{})
+	result := translateOpenAISSEDataToOllama("/api/chat", sseData, "gemma-4", nil, time.Time{}, time.Time{}, time.Time{})
 	// Empty reasoning alone is not useful — translator may emit empty chunk or nil.
 	// Either is acceptable, but if it emits, the message should not have content.
 	if result != nil {
@@ -451,7 +451,7 @@ func TestTranslateSSEChatToOllama_FinalReasoningChunk(t *testing.T) {
 	}
 
 	sseData, _ := json.Marshal(sseChunk)
-	result := translateOpenAISSEDataToOllama("/api/chat", sseData, "gemma-4", nil, time.Time{})
+	result := translateOpenAISSEDataToOllama("/api/chat", sseData, "gemma-4", nil, time.Time{}, time.Time{}, time.Time{})
 	if result == nil {
 		t.Fatal("final reasoning chunk returned nil")
 	}
@@ -479,7 +479,7 @@ func TestTranslateSSEChatToOllama_ReasoningMultipleChunksAccumulation(t *testing
 
 	var fullThinking string
 	for _, rawChunk := range chunks {
-		r := translateOpenAISSEDataToOllama("/api/chat", []byte(rawChunk), "gemma-4", nil, time.Time{})
+		r := translateOpenAISSEDataToOllama("/api/chat", []byte(rawChunk), "gemma-4", nil, time.Time{}, time.Time{})
 		if r == nil {
 			t.Fatalf("chunk %q returned nil", rawChunk)
 		}
@@ -494,6 +494,5 @@ func TestTranslateSSEChatToOllama_ReasoningMultipleChunksAccumulation(t *testing
 	if fullThinking != "I think therefore ..." {
 		t.Errorf("accumulated thinking=%q, want %q", fullThinking, "I think therefore ...")
 	}
-	_ = strings.Join  // silence unused import warning
+	_ = strings.Join // silence unused import warning
 }
-

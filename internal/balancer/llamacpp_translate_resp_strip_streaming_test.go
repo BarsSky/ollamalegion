@@ -1,4 +1,4 @@
-﻿// llamacpp_translate_resp_strip_streaming_test.go — tests for stateful strip
+// llamacpp_translate_resp_strip_streaming_test.go — tests for stateful strip
 // в streaming path (Round 31 #4).
 //
 // cppworker (gemma-4) после SplitReasoningContent эмитит "\n" перед первым
@@ -19,13 +19,13 @@ func TestTranslateSSEChatToOllama_StripLeadingNewlineAfterReasoning(t *testing.T
 	seenReasoning := false
 	// 1. Reasoning chunk
 	reasoningChunk := `{"choices":[{"delta":{"reasoning_content":"The user asks 2+2."}}]}`
-	r1 := translateOpenAISSEDataToOllama("/api/chat", []byte(reasoningChunk), "gemma-4", &seenReasoning, time.Time{})
+	r1 := translateOpenAISSEDataToOllama("/api/chat", []byte(reasoningChunk), "gemma-4", &seenReasoning, time.Time{}, time.Time{})
 	if r1 == nil {
 		t.Fatal("reasoning chunk returned nil")
 	}
 	// 2. Content chunk с leading "\n" (cppworker pattern после SplitReasoningContent)
 	contentChunk := `{"choices":[{"delta":{"content":"\n4"}}]}`
-	r2 := translateOpenAISSEDataToOllama("/api/chat", []byte(contentChunk), "gemma-4", &seenReasoning, time.Time{})
+	r2 := translateOpenAISSEDataToOllama("/api/chat", []byte(contentChunk), "gemma-4", &seenReasoning, time.Time{}, time.Time{})
 	if r2 == nil {
 		t.Fatal("content chunk returned nil")
 	}
@@ -53,7 +53,7 @@ func TestTranslateSSEChatToOllama_StripLeadingNewlineAfterReasoning(t *testing.T
 func TestTranslateSSEChatToOllama_NoStripWithoutReasoning(t *testing.T) {
 	contentChunk := `{"choices":[{"delta":{"content":"hello world"}}]}`
 	seenReasoning := false
-	r := translateOpenAISSEDataToOllama("/api/chat", []byte(contentChunk), "test-model", &seenReasoning, time.Time{})
+	r := translateOpenAISSEDataToOllama("/api/chat", []byte(contentChunk), "test-model", &seenReasoning, time.Time{}, time.Time{})
 	if r == nil {
 		t.Fatal("content chunk returned nil")
 	}
@@ -78,10 +78,10 @@ func TestTranslateSSEChatToOllama_StripMultiChunkContent(t *testing.T) {
 	seenReasoning := false
 	// Reasoning first
 	rc := `{"choices":[{"delta":{"reasoning_content":"thinking..."}}]}`
-	_ = translateOpenAISSEDataToOllama("/api/chat", []byte(rc), "gemma-4", &seenReasoning, time.Time{})
+	_ = translateOpenAISSEDataToOllama("/api/chat", []byte(rc), "gemma-4", &seenReasoning, time.Time{}, time.Time{})
 	// Content chunk 1: just "\n"
 	c1 := `{"choices":[{"delta":{"content":"\n"}}]}`
-	r1 := translateOpenAISSEDataToOllama("/api/chat", []byte(c1), "gemma-4", &seenReasoning, time.Time{})
+	r1 := translateOpenAISSEDataToOllama("/api/chat", []byte(c1), "gemma-4", &seenReasoning, time.Time{}, time.Time{})
 	if r1 == nil {
 		t.Fatal("content chunk 1 returned nil")
 	}
@@ -94,7 +94,7 @@ func TestTranslateSSEChatToOllama_StripMultiChunkContent(t *testing.T) {
 	}
 	// Content chunk 2: "4"
 	c2 := `{"choices":[{"delta":{"content":"4"}}]}`
-	r2 := translateOpenAISSEDataToOllama("/api/chat", []byte(c2), "gemma-4", &seenReasoning, time.Time{})
+	r2 := translateOpenAISSEDataToOllama("/api/chat", []byte(c2), "gemma-4", &seenReasoning, time.Time{}, time.Time{})
 	if r2 == nil {
 		t.Fatal("content chunk 2 returned nil")
 	}
@@ -112,10 +112,10 @@ func TestTranslateSSEGenerateToOllama_StripAfterReasoning(t *testing.T) {
 	seenReasoning := false
 	// Reasoning first
 	rc := `{"choices":[{"reasoning_content":"thinking..."}]}`
-	_ = translateOpenAISSEDataToOllama("/api/generate", []byte(rc), "gemma-4", &seenReasoning, time.Time{})
+	_ = translateOpenAISSEDataToOllama("/api/generate", []byte(rc), "gemma-4", &seenReasoning, time.Time{}, time.Time{})
 	// Content with leading \n
 	cc := `{"choices":[{"text":"\nanswer"}]}`
-	r := translateOpenAISSEDataToOllama("/api/generate", []byte(cc), "gemma-4", &seenReasoning, time.Time{})
+	r := translateOpenAISSEDataToOllama("/api/generate", []byte(cc), "gemma-4", &seenReasoning, time.Time{}, time.Time{})
 	if r == nil {
 		t.Fatal("content chunk returned nil")
 	}
@@ -134,7 +134,7 @@ func TestTranslateSSEGenerateToOllama_StripAfterReasoning(t *testing.T) {
 func TestTranslateSSEChatToOllama_NilStateIsStateless(t *testing.T) {
 	// Без state, без reasoning — content не трогаем
 	cc := `{"choices":[{"delta":{"content":"\nhello"}}]}`
-	r := translateOpenAISSEDataToOllama("/api/chat", []byte(cc), "test-model", nil, time.Time{})
+	r := translateOpenAISSEDataToOllama("/api/chat", []byte(cc), "test-model", nil, time.Time{}, time.Time{})
 	if r == nil {
 		t.Fatal("content chunk returned nil")
 	}
@@ -153,16 +153,16 @@ func TestTranslateSSEChatToOllama_NilStateIsStateless(t *testing.T) {
 func TestTranslateSSEChatToOllama_FullGemmaStreamSimulation(t *testing.T) {
 	seenReasoning := false
 	chunks := []string{
-		`{"choices":[{"delta":{"role":"assistant"}}]}`,                                     // 1: role
-		`{"choices":[{"delta":{"reasoning_content":"The user asks 2+2=?"}}]}`,             // 2: reasoning
-		`{"choices":[{"delta":{"reasoning_content":" It's simple math."}}]}`,              // 3: reasoning more
-		`{"choices":[{"delta":{"content":"\n4"}}]}`,                                        // 4: content with leading \n
-		`{"choices":[{"delta":{"content":" is the answer."}}]}`,                            // 5: content more
-		`{"choices":[{"finish_reason":"stop"}]}`,                                            // 6: final
+		`{"choices":[{"delta":{"role":"assistant"}}]}`,                        // 1: role
+		`{"choices":[{"delta":{"reasoning_content":"The user asks 2+2=?"}}]}`, // 2: reasoning
+		`{"choices":[{"delta":{"reasoning_content":" It's simple math."}}]}`,  // 3: reasoning more
+		`{"choices":[{"delta":{"content":"\n4"}}]}`,                           // 4: content with leading \n
+		`{"choices":[{"delta":{"content":" is the answer."}}]}`,               // 5: content more
+		`{"choices":[{"finish_reason":"stop"}]}`,                              // 6: final
 	}
 	allContents := []string{}
 	for i, raw := range chunks {
-		r := translateOpenAISSEDataToOllama("/api/chat", []byte(raw), "gemma-4", &seenReasoning, time.Time{})
+		r := translateOpenAISSEDataToOllama("/api/chat", []byte(raw), "gemma-4", &seenReasoning, time.Time{}, time.Time{})
 		// Round 53.1: chunk 6 (wrapper, empty delta + finish_reason="stop") is
 		// suppressed (returns nil). Допустимо — canonical done придёт из usage чанка
 		// или writeStreamingSSEDone fallback. Для этого теста важна только аккумуляция

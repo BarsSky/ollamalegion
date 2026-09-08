@@ -33,7 +33,8 @@ func (f *flusherRecorder) Header() http.Header {
 	return http.Header{}
 }
 func (f *flusherRecorder) WriteHeader(statusCode int) {}
-func (f *flusherRecorder) Flush()                      {}
+func (f *flusherRecorder) Flush()                     {}
+
 // Реализация остальных методов http.ResponseWriter — не нужна для тестов.
 
 // readBody — helper для получения body из flusherRecorder.
@@ -102,7 +103,7 @@ func TestTranslateUsageChunkToOllama_RealTotalDuration(t *testing.T) {
 	usageChunk := []byte(`{"id":"chatcmpl-test","object":"chat.completion.chunk","created":1786626000,"model":"gemma-4","choices":[],"usage":{"prompt_tokens":100,"completion_tokens":50,"total_tokens":150}}`)
 
 	streamStart := time.Now().Add(-200 * time.Millisecond)
-	result := translateOpenAISSEDataToOllama("/api/chat", usageChunk, "gemma-4", nil, streamStart)
+	result := translateOpenAISSEDataToOllama("/api/chat", usageChunk, "gemma-4", nil, streamStart, time.Time{}, time.Time{}, time.Time{})
 
 	if result == nil {
 		t.Fatal("expected non-nil result for usage chunk")
@@ -137,7 +138,7 @@ func TestTranslateUsageChunkToOllama_RealTotalDuration(t *testing.T) {
 func TestTranslateUsageChunkToOllama_ZeroStreamStart(t *testing.T) {
 	usageChunk := []byte(`{"id":"chatcmpl-test","object":"chat.completion.chunk","created":1786626000,"model":"gemma-4","choices":[],"usage":{"prompt_tokens":100,"completion_tokens":50,"total_tokens":150}}`)
 
-	result := translateOpenAISSEDataToOllama("/api/chat", usageChunk, "gemma-4", nil, time.Time{})
+	result := translateOpenAISSEDataToOllama("/api/chat", usageChunk, "gemma-4", nil, time.Time{}, time.Time{}, time.Time{})
 
 	if result == nil {
 		t.Fatal("expected non-nil result for usage chunk")

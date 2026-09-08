@@ -1,4 +1,4 @@
-﻿package balancer
+package balancer
 
 import "time"
 
@@ -11,7 +11,7 @@ import "time"
 // TranslateOpenAISSEDataToOllamaExportedForTest — публичная обёртка для тестов.
 // Не использовать в production-коде.
 func TranslateOpenAISSEDataToOllamaExportedForTest(ollamaPath string, sseData []byte, modelName string) []byte {
-	return translateOpenAISSEDataToOllama(ollamaPath, sseData, modelName, nil, time.Time{})
+	return translateOpenAISSEDataToOllama(ollamaPath, sseData, modelName, nil, time.Time{}, time.Time{})
 }
 
 // TranslateOpenAIResponseToOllamaExportedForTest — публичная обёртка для тестов.
@@ -34,4 +34,3 @@ func TranslateOllamaChatToOpenAIExportedForTest(body []byte) ([]byte, error) {
 func BuildErrorOllamaResponseExportedForTest(ollamaPath, modelName, errMsg string) []byte {
 	return buildErrorOllamaResponse(ollamaPath, modelName, errMsg)
 }
-

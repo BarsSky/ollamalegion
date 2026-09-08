@@ -537,6 +537,11 @@ func (p *Proxy) proxyRequestLlamaCpp(w http.ResponseWriter, r *http.Request, bac
 	var bytesForwarded int64
 	var firstForwardErr error
 	var lastForwardErr error
+	// R60.22 (2026-09-08): track time of FIRST non-empty content chunk for
+	// accurate prompt_eval_duration (TTFT) and eval_duration. Without
+	// this, both stay 0 and OpenWebUI shows "N/A" for tokens/sec
+	// (response_token/s, prompt_t/s).
+	var firstContentTime time.Time
 	// Round 31 #4 (2026-08-09): per-stream state — был ли reasoning chunk в этом стриме.
 	// Если да — content (если придёт после reasoning) получит defensive strip от
 	// leading whitespace (gemma-4 после SplitReasoningContent эмитит "\n" перед первым
@@ -713,6 +718,11 @@ func (p *Proxy) proxyRequestLlamaCpp(w http.ResponseWriter, r *http.Request, bac
 							accumulateToolCallsFromDelta(delta, toolAccum)
 							if c, ok := delta["content"].(string); ok {
 								deltaContent = c
+								// R60.22: capture time of first non-empty content
+								// chunk (TTFT) for accurate prompt_eval_duration.
+								if c != "" && firstContentTime.IsZero() {
+									firstContentTime = time.Now()
+								}
 							}
 						}
 					}
@@ -723,6 +733,14 @@ func (p *Proxy) proxyRequestLlamaCpp(w http.ResponseWriter, r *http.Request, bac
 				if upstreamHasDone, msgMap, _ := extractUpstreamDoneChunk(data); upstreamHasDone {
 					if c, ok := msgMap["content"].(string); ok {
 						upstreamDoneContent = c
+						// R60.22: capture time of first non-empty content (TTFT).
+						// cppworker иногда посылает весь ответ в одном done-чанке
+						// (final chunk has both content and finish_reason). В этом
+						// случае firstContentTime отражает время получения первого
+						// значимого content, даже если он пришёл в done-чанке.
+						if c != "" && firstContentTime.IsZero() {
+							firstContentTime = time.Now()
+						}
 					}
 				}
 
@@ -908,7 +926,7 @@ func (p *Proxy) proxyRequestLlamaCpp(w http.ResponseWriter, r *http.Request, bac
 				// финальный NDJSON/SSE если upstream уже отправил finish_reason и нет tool_calls.
 				upstreamHadFinishReason = true
 			}
-			ollamaChunk := translateOpenAISSEDataToOllama(originalPath, []byte(data), modelFromCtx, &seenReasoning, llamaStartTime)
+			ollamaChunk := translateOpenAISSEDataToOllama(originalPath, []byte(data), modelFromCtx, &seenReasoning, llamaStartTime, firstContentTime)
 			if len(ollamaChunk) == 0 {
 				continue
 			}

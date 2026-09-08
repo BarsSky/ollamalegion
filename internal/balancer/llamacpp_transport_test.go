@@ -1,4 +1,4 @@
-﻿package balancer
+package balancer
 
 import (
 	"encoding/json"
@@ -305,7 +305,7 @@ func TestTranslateSSEChatToOllama_DoneHasModel(t *testing.T) {
 		},
 	}
 	sseData, _ := json.Marshal(chunk)
-	got := translateOpenAISSEDataToOllama("/api/chat", sseData, "gemma-4-E4B-it-Q4_K_M", nil, time.Time{})
+	got := translateOpenAISSEDataToOllama("/api/chat", sseData, "gemma-4-E4B-it-Q4_K_M", nil, time.Time{}, time.Time{}, time.Time{})
 	if got == nil {
 		t.Fatal("usage chunk must NOT return nil (canonical done-marker required)")
 	}
@@ -340,7 +340,7 @@ func TestTranslateSSEGenerateToOllama_DoneHasModel(t *testing.T) {
 		},
 	}
 	sseData, _ := json.Marshal(chunk)
-	got := translateOpenAISSEDataToOllama("/api/generate", sseData, "gemma-4-E4B-it-Q4_K_M", nil, time.Time{})
+	got := translateOpenAISSEDataToOllama("/api/generate", sseData, "gemma-4-E4B-it-Q4_K_M", nil, time.Time{}, time.Time{}, time.Time{})
 	if got == nil {
 		t.Fatal("usage chunk must NOT return nil")
 	}
@@ -496,5 +496,3 @@ func TestTranslateSSEChatToOllama_PreservesValidContent(t *testing.T) {
 		})
 	}
 }
-
-

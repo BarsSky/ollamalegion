@@ -467,7 +467,20 @@ func translateOpenAIEmbeddingsToOllama(body []byte, modelName string) ([]byte, e
 // уже встречался reasoning chunk, translator тримит leading whitespace у content
 // (gemma-4 после SplitReasoningContent эмитит "\n" перед первым content токеном).
 // nil = stateless (для тестов и non-stream вызовов).
-func translateOpenAISSEDataToOllama(ollamaPath string, sseData []byte, modelName string, seenReasoning *bool, streamStart time.Time) []byte {
+// translateOpenAISSEDataToOllama — converts OpenAI-format SSE chunk to Ollama NDJSON.
+//
+// Parameters:
+//   - ollamaPath — target Ollama endpoint path ("/api/chat" or "/api/generate")
+//   - sseData    — raw SSE data line bytes (e.g. {"id":"...","choices":[...]})
+//   - modelName  — model name to embed in ollamaChunk
+//   - seenReasoning — per-stream flag for reasoning-then-content whitespace strip
+//     (gemma-4 после SplitReasoningContent эмитит "\n" перед первым content токеном).
+//     nil = stateless (для тестов и non-stream вызовов).
+//   - streamStart — request start time (for total_duration in usage chunk)
+//   - firstContentTime — R60.22: time of FIRST non-empty content chunk arrival
+//     (for prompt_eval_duration = TTFT and eval_duration = total - TTFT).
+//     Zero value = no content yet (usage chunk would have eval_duration=total).
+func translateOpenAISSEDataToOllama(ollamaPath string, sseData []byte, modelName string, seenReasoning *bool, streamStart time.Time, firstContentTime time.Time) []byte {
 	if len(sseData) == 0 || bytes.Equal(sseData, []byte("[DONE]")) {
 		return nil
 	}
@@ -489,7 +502,7 @@ func translateOpenAISSEDataToOllama(ollamaPath string, sseData []byte, modelName
 	// Streaming fix: детектим usage chunk (есть usage + пустые choices) и эмитим
 	// Ollama done-чанк с token counts.
 	if usage, hasUsage := openaiChunk["usage"].(map[string]interface{}); hasUsage && !hasNonEmptyChoices(openaiChunk) {
-		return translateUsageChunkToOllama(ollamaPath, modelName, usage, openaiChunk, streamStart)
+		return translateUsageChunkToOllama(ollamaPath, modelName, usage, openaiChunk, streamStart, firstContentTime)
 	}
 	switch ollamaPath {
 	case "/api/chat":
@@ -543,7 +556,11 @@ func hasNonEmptyChoices(chunk map[string]interface{}) bool {
 //   - openaiChunk — нужен чтобы извлечь finish_reason если есть
 //   - streamStart — время начала запроса (для real total_duration). Round 35c+
 //     передан caller'ом из proxyRequestLlamaCpp. Zero value = legacy (test), total_duration=0.
-func translateUsageChunkToOllama(ollamaPath, modelName string, usage map[string]interface{}, openaiChunk map[string]interface{}, streamStart time.Time) []byte {
+//   - firstContentTime — R60.22: time of first non-empty content chunk arrival.
+//     Zero value = no content yet (e.g. all response was in done-chunk, or
+//     never came). If non-zero, we use it to split total_duration into
+//     prompt_eval_duration (TTFT) and eval_duration (rest).
+func translateUsageChunkToOllama(ollamaPath, modelName string, usage map[string]interface{}, openaiChunk map[string]interface{}, streamStart time.Time, firstContentTime time.Time) []byte {
 	promptTokens := intFromUsage(usage, "prompt_tokens")
 	completionTokens := intFromUsage(usage, "completion_tokens")
 
@@ -570,13 +587,15 @@ func translateUsageChunkToOllama(ollamaPath, modelName string, usage map[string]
 	// cppworker НЕ отдаёт durations в OpenAI usage chunk (только token counts),
 	// поэтому мы вычисляем их сами из start of request time, переданного caller'ом.
 	//
+	// R60.22 (2026-09-08): вычисляем prompt_eval_duration (TTFT) и eval_duration
+	// (rest) на основе firstContentTime. Без этого OpenWebUI показывает
+	// "N/A" для tokens_per_second / response_token/s / prompt_t/s.
+	//
 	// - total_duration: полное время запроса (startRequest → usage chunk arrived)
 	// - load_duration: 0 (cppworker не возвращает эту инфу, cppworker loaded
 	//   model async до usage chunk; Open WebUI интерполирует)
-	// - prompt_eval_duration: 0 (cppworker не возвращает, Open WebUI
-	//   интерполирует из ttft / total_duration)
-	// - eval_duration: 0 (cppworker не возвращает, Open WebUI интерполирует
-	//   из total_duration - ttft)
+	// - prompt_eval_duration: TTFT (time to first content chunk) = firstContentTime - streamStart
+	// - eval_duration: total_duration - prompt_eval_duration
 	//
 	// ВАЖНО: даже если values 0, Open WebUI UI показывает "..." а не "0h0m0s"
 	// если поле присутствует в chunk (визуально лучше чем "0h0m0s" из missing).
@@ -586,16 +605,35 @@ func translateUsageChunkToOllama(ollamaPath, modelName string, usage map[string]
 			totalNs = 0
 		}
 		ollamaChunk["total_duration"] = totalNs
-		// load_duration остаётся 0 — cppworker loaded модель до того как мы получили
-		// usage chunk (в preflight async reload). Реальное значение было бы полезно,
-		// но cppworker не предоставляет его через SSE usage chunk.
 		ollamaChunk["load_duration"] = int64(0)
-		// prompt_eval_duration и eval_duration — cppworker не различает их в usage
-		// chunk (только token counts). Можем аппроксимировать через ttft, но это
-		// требует дополнительного tracking. Для MVP ставим 0 — Open WebUI
-		// интерполирует из total_duration + ttft.
-		ollamaChunk["prompt_eval_duration"] = int64(0)
-		ollamaChunk["eval_duration"] = int64(0)
+
+		// R60.22: split total_duration by firstContentTime
+		// (TTFT = prompt_eval_duration, rest = eval_duration).
+		if !firstContentTime.IsZero() && firstContentTime.After(streamStart) {
+			ttftNs := firstContentTime.Sub(streamStart).Nanoseconds()
+			if ttftNs < 0 {
+				ttftNs = 0
+			}
+			evalNs := totalNs - ttftNs
+			if evalNs < 0 {
+				evalNs = 0
+			}
+			ollamaChunk["prompt_eval_duration"] = ttftNs
+			ollamaChunk["eval_duration"] = evalNs
+			// R60.22: tokens_per_second — OpenWebUI / Ollama webui показывают
+			// "tokens/sec" в stats panel. Без этого поля OpenWebUI показывает N/A.
+			if evalNs > 0 && completionTokens > 0 {
+				tps := float64(completionTokens) / (float64(evalNs) / 1e9)
+				ollamaChunk["tokens_per_second"] = tps
+			}
+		} else {
+			// firstContentTime не зафиксирован (legacy path / response в одном
+			// done-чанке без streaming content). Аппроксимируем: всё время
+			// относим к prompt_eval_duration, eval_duration = 0. OpenWebUI
+			// покажет t/s только для prompt (нормально для short response).
+			ollamaChunk["prompt_eval_duration"] = totalNs
+			ollamaChunk["eval_duration"] = int64(0)
+		}
 	} else {
 		// streamStart не передан (legacy callers, tests) — оставляем поля,
 		// но 0. Round 35c+ все callers передают streamStart.
@@ -978,7 +1016,7 @@ func translateSSEGenerateToOllama(chunk map[string]interface{}, modelName string
 	// R48 (2026-08-19): Round 31 #4 (2026-08-09) defensive strip когда
 	// reasoning был в этом стриме. Same fix as translateSSEChatToOllama —
 	// strip'аем только ОДИН leading "\n" (cppworker эмитит separator
-		// после </think>), а не все whitespace. Иначе сожрёт leading
+	// после </think>), а не все whitespace. Иначе сожрёт leading
 	// space в " is the answer.".
 	if hasContent && seenReasoning != nil && *seenReasoning {
 		if s, ok := ollamaChunk["response"].(string); ok && strings.HasPrefix(s, "\n") {

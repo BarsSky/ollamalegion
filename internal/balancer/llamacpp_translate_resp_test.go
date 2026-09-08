@@ -1,4 +1,4 @@
-﻿// llamacpp_translate_resp_test.go — Unit tests for response translation
+// llamacpp_translate_resp_test.go — Unit tests for response translation
 // functions in llamacpp_translate_resp.go.
 package balancer
 
@@ -143,7 +143,7 @@ func TestTranslateSSEChatToOllama_ToolCalls(t *testing.T) {
 	}
 
 	sseData, _ := json.Marshal(sseChunk)
-	result := translateOpenAISSEDataToOllama("/api/chat", sseData, "test-model", nil, time.Time{})
+	result := translateOpenAISSEDataToOllama("/api/chat", sseData, "test-model", nil, time.Time{}, time.Time{}, time.Time{})
 	if result == nil {
 		t.Fatal("expected non-nil result from SSE translation")
 	}
@@ -193,7 +193,7 @@ func TestTranslateSSEChatToOllama_FinishReasonToolCallsWrapper(t *testing.T) {
 	}
 
 	sseData, _ := json.Marshal(sseChunk)
-	result := translateOpenAISSEDataToOllama("/api/chat", sseData, "test-model", nil, time.Time{})
+	result := translateOpenAISSEDataToOllama("/api/chat", sseData, "test-model", nil, time.Time{}, time.Time{}, time.Time{})
 
 	// Round 53.1: wrapper chunk is suppressed entirely (returns nil).
 	// Done:true is emitted by the usage chunk (or writeStreamingSSEDone fallback),
@@ -221,7 +221,7 @@ func TestTranslateSSEChatToOllama_NormalContent(t *testing.T) {
 	}
 
 	sseData, _ := json.Marshal(sseChunk)
-	result := translateOpenAISSEDataToOllama("/api/chat", sseData, "test-model", nil, time.Time{})
+	result := translateOpenAISSEDataToOllama("/api/chat", sseData, "test-model", nil, time.Time{}, time.Time{}, time.Time{})
 	if result == nil {
 		t.Fatal("expected non-nil result")
 	}
@@ -239,7 +239,7 @@ func TestTranslateSSEChatToOllama_NormalContent(t *testing.T) {
 }
 
 func TestTranslateSSEChatToOllama_DONE(t *testing.T) {
-	result := translateOpenAISSEDataToOllama("/api/chat", []byte("[DONE]"), "test-model", nil, time.Time{})
+	result := translateOpenAISSEDataToOllama("/api/chat", []byte("[DONE]"), "test-model", nil, time.Time{}, time.Time{})
 	if result != nil {
 		t.Error("expected nil for [DONE] marker")
 	}
@@ -279,7 +279,7 @@ func TestTranslateSSEChatToOllama_FinishReasonLengthWrapper(t *testing.T) {
 		},
 	}
 	sseData, _ := json.Marshal(sseChunk)
-	result := translateOpenAISSEDataToOllama("/api/chat", sseData, "test-model", nil, time.Time{})
+	result := translateOpenAISSEDataToOllama("/api/chat", sseData, "test-model", nil, time.Time{}, time.Time{}, time.Time{})
 
 	if result != nil {
 		t.Errorf("Round 53.1: expected nil (wrapper chunk suppressed), got %s", string(result))
@@ -304,7 +304,7 @@ func TestTranslateSSEChatToOllama_FinishReasonContentFilterWrapper(t *testing.T)
 		},
 	}
 	sseData, _ := json.Marshal(sseChunk)
-	result := translateOpenAISSEDataToOllama("/api/chat", sseData, "test-model", nil, time.Time{})
+	result := translateOpenAISSEDataToOllama("/api/chat", sseData, "test-model", nil, time.Time{}, time.Time{}, time.Time{})
 
 	if result != nil {
 		t.Errorf("Round 53.1: expected nil (wrapper chunk suppressed), got %s", string(result))
@@ -334,7 +334,7 @@ func TestTranslateSSEChatToOllama_FinishReasonLengthWithContent(t *testing.T) {
 		},
 	}
 	sseData, _ := json.Marshal(sseChunk)
-	result := translateOpenAISSEDataToOllama("/api/chat", sseData, "test-model", nil, time.Time{})
+	result := translateOpenAISSEDataToOllama("/api/chat", sseData, "test-model", nil, time.Time{}, time.Time{}, time.Time{})
 	if result == nil {
 		t.Fatal("expected non-nil result for combined content+finish_reason=length chunk")
 	}
@@ -366,7 +366,7 @@ func TestTranslateSSEChatToOllama_FinishReasonNull(t *testing.T) {
 		},
 	}
 	sseData, _ := json.Marshal(sseChunk)
-	result := translateOpenAISSEDataToOllama("/api/chat", sseData, "test-model", nil, time.Time{})
+	result := translateOpenAISSEDataToOllama("/api/chat", sseData, "test-model", nil, time.Time{}, time.Time{}, time.Time{})
 	if result == nil {
 		t.Fatal("expected non-nil result for in-progress chunk")
 	}
@@ -510,7 +510,7 @@ func TestTranslateSSEChatToOllama_FullStream_SingleDone(t *testing.T) {
 
 	for i, chunk := range []map[string]interface{}{contentChunk, wrapperChunk, usageChunk} {
 		sseData, _ := json.Marshal(chunk)
-		result := translateOpenAISSEDataToOllama("/api/chat", sseData, "test-model", &seenReasoning, streamStart)
+		result := translateOpenAISSEDataToOllama("/api/chat", sseData, "test-model", &seenReasoning, streamStart, time.Time{}, time.Time{}, time.Time{})
 		if result == nil {
 			continue
 		}
@@ -581,15 +581,15 @@ func TestTranslateSSEChatToOllama_FullStream_SingleDone(t *testing.T) {
 func TestTranslateSSEChatToOllama_NoUsageChunk_WrapperSuppressed(t *testing.T) {
 	// cppworker: content + finish_reason wrapper + [DONE] (no usage chunk)
 	contentChunk := map[string]interface{}{
-		"id":      "chatcmpl-nofallback",
-		"object":  "chat.completion.chunk",
+		"id":     "chatcmpl-nofallback",
+		"object": "chat.completion.chunk",
 		"choices": []map[string]interface{}{
 			{"index": 0, "delta": map[string]interface{}{"content": "abc"}},
 		},
 	}
 	wrapperChunk := map[string]interface{}{
-		"id":      "chatcmpl-nofallback",
-		"object":  "chat.completion.chunk",
+		"id":     "chatcmpl-nofallback",
+		"object": "chat.completion.chunk",
 		"choices": []map[string]interface{}{
 			{"index": 0, "delta": map[string]interface{}{}, "finish_reason": "stop"},
 		},
@@ -600,7 +600,7 @@ func TestTranslateSSEChatToOllama_NoUsageChunk_WrapperSuppressed(t *testing.T) {
 	var ndjsonChunks []map[string]interface{}
 	for _, chunk := range []map[string]interface{}{contentChunk, wrapperChunk} {
 		sseData, _ := json.Marshal(chunk)
-		result := translateOpenAISSEDataToOllama("/api/chat", sseData, "test-model", &seenReasoning, streamStart)
+		result := translateOpenAISSEDataToOllama("/api/chat", sseData, "test-model", &seenReasoning, streamStart, time.Time{}, time.Time{}, time.Time{})
 		if result == nil {
 			continue
 		}
@@ -625,14 +625,14 @@ func TestTranslateSSEChatToOllama_NoUsageChunk_WrapperSuppressed(t *testing.T) {
 // подавляется, чтобы избежать double-done с usage-чанком.
 func TestTranslateSSEGenerateToOllama_FinishReasonWrapper(t *testing.T) {
 	wrapperChunk := map[string]interface{}{
-		"id":      "cmpl-gen",
-		"object":  "text_completion",
+		"id":     "cmpl-gen",
+		"object": "text_completion",
 		"choices": []map[string]interface{}{
 			{"index": 0, "delta": map[string]interface{}{}, "finish_reason": "stop"},
 		},
 	}
 	sseData, _ := json.Marshal(wrapperChunk)
-	result := translateOpenAISSEDataToOllama("/api/generate", sseData, "test-model", nil, time.Time{})
+	result := translateOpenAISSEDataToOllama("/api/generate", sseData, "test-model", nil, time.Time{}, time.Time{}, time.Time{})
 	if result != nil {
 		t.Errorf("Round 53.1: expected nil (wrapper chunk suppressed for /api/generate), got %s", string(result))
 	}
@@ -766,9 +766,9 @@ func TestTranslateOllamaChatToOpenAI_ExtractsOptions(t *testing.T) {
 		},
 		"options": map[string]interface{}{
 			"temperature": 0.7,
-			"top_p":      0.9,
+			"top_p":       0.9,
 			"num_predict": 100,
-			"stop":       []string{"\n"},
+			"stop":        []string{"\n"},
 		},
 		"stream": true,
 	}
@@ -861,4 +861,3 @@ func buildOpenAIErrorResp() []byte {
 func strContains(s, substr string) bool {
 	return strings.Contains(strings.ToLower(s), strings.ToLower(substr))
 }
-

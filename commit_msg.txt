@@ -1,0 +1,38 @@
+feat(balancer): R60.22 — proper duration metrics + tokens_per_second in done chunk
+
+User reported: OpenWebUI shows "N/A" for response_token/s, prompt_t/s,
+prompt_eval_duration=0, eval_duration=0 (only total_duration is real).
+
+Root cause: balancer never tracked Time-To-First-Token (TTFT). The
+usage chunk from cppworker only has token counts, not duration breakdown.
+So balancer had to compute prompt_eval_duration and eval_duration itself
+from streamStart and... nothing else. Both fields ended up as 0.
+
+R60.22 fix: track firstContentTime when first non-empty content delta
+arrives. Then split total_duration:
+  prompt_eval_duration = firstContentTime - streamStart  (TTFT)
+  eval_duration         = total_duration - prompt_eval_duration
+
+Plus: added tokens_per_second (eval_count / eval_duration) so OpenWebUI
+shows real token/s rate instead of "N/A".
+
+After fix (live test on R60.22-metrics image):
+  Done chunk now contains:
+    prompt_eval_count: 25
+    eval_count: 60
+    prompt_eval_duration: 1465871886  (1.47s — was 0)
+    eval_duration: 723294708         (0.72s — was 0)
+    total_duration: 2189166594       (2.19s — real)
+    tokens_per_second: 82.95         (NEW — was N/A)
+
+Files changed:
+- llamacpp_translate_resp.go: signature update for
+  translateOpenAISSEDataToOllama + translateUsageChunkToOllama
+  (added firstContentTime time.Time parameter)
+- llamacpp_transport.go: capture firstContentTime at first non-empty
+  content delta, pass to translator
+- 8 test files: updated call sites to pass new firstContentTime arg
+- llamacpp_transport_export.go: fix wrapper (had 7 args, should be 6)
+
+Auto-continue (R60.21) still works alongside R60.22: live test
+diag_auto_continue_live.py shows Chars: 2621, Backticks: 2, Incomplete: False.

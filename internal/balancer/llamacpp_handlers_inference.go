@@ -108,9 +108,12 @@ func (lr *LlamaCppRouter) handleOpenAIChatCompletions(w http.ResponseWriter, r *
 		if _, loadErr := lr.ensureModelLoadedOnBackend(backendID, model, loadOpts); loadErr != nil {
 			logger.Get().Errorw("handleOpenAIChatCompletions: auto-load failed",
 				"backend", backendID, "model", model, "error", loadErr)
-			writeJSON(w, http.StatusServiceUnavailable, map[string]string{
-				"error": fmt.Sprintf("model '%s' is not loaded and auto-load failed: %v", model, loadErr),
-			})
+			// R60.16: include Retry-After so clients (Cline/Roo/openai-python)
+			// back off instead of busy-looping. Default 30s matches R60.6
+			// async-reload Retry-After.
+			writeServiceUnavailable(w,
+				fmt.Sprintf("model '%s' is not loaded and auto-load failed: %v", model, loadErr),
+				0)
 			return
 		}
 	}
@@ -341,9 +344,10 @@ func (lr *LlamaCppRouter) handleOpenAICompletion(w http.ResponseWriter, r *http.
 		if _, loadErr := lr.ensureModelLoadedOnBackend(backendID, model, loadOpts); loadErr != nil {
 			logger.Get().Errorw("handleOpenAICompletion: auto-load failed",
 				"backend", backendID, "model", model, "error", loadErr)
-			writeJSON(w, http.StatusServiceUnavailable, map[string]string{
-				"error": fmt.Sprintf("model '%s' is not loaded and auto-load failed: %v", model, loadErr),
-			})
+			// R60.16: include Retry-After so clients back off (see chat completions).
+			writeServiceUnavailable(w,
+				fmt.Sprintf("model '%s' is not loaded and auto-load failed: %v", model, loadErr),
+				0)
 			return
 		}
 	}
@@ -495,9 +499,10 @@ func (lr *LlamaCppRouter) handleOpenAIEmbeddings(w http.ResponseWriter, r *http.
 		if _, loadErr := lr.ensureModelLoadedOnBackend(backendID, model, warmupOptions{}); loadErr != nil {
 			logger.Get().Errorw("handleOpenAIEmbeddings: auto-load failed",
 				"backend", backendID, "model", model, "error", loadErr)
-			writeJSON(w, http.StatusServiceUnavailable, map[string]string{
-				"error": fmt.Sprintf("model '%s' is not loaded and auto-load failed: %v", model, loadErr),
-			})
+			// R60.16: include Retry-After so clients back off (see chat completions).
+			writeServiceUnavailable(w,
+				fmt.Sprintf("model '%s' is not loaded and auto-load failed: %v", model, loadErr),
+				0)
 			return
 		}
 	}
@@ -619,9 +624,10 @@ func (lr *LlamaCppRouter) handleChat(w http.ResponseWriter, r *http.Request) {
 	if _, loadErr := lr.ensureModelLoadedOnBackend(backendID, model, loadOpts); loadErr != nil {
 		logger.Get().Errorw("handleChat: auto-load failed",
 			"backend", backendID, "model", model, "error", loadErr)
-		writeJSON(w, http.StatusServiceUnavailable, map[string]string{
-			"error": fmt.Sprintf("model '%s' is not loaded and auto-load failed: %v", model, loadErr),
-		})
+		// R60.16: include Retry-After so clients back off (see chat completions).
+		writeServiceUnavailable(w,
+			fmt.Sprintf("model '%s' is not loaded and auto-load failed: %v", model, loadErr),
+			0)
 		return
 	}
 
@@ -740,9 +746,10 @@ func (lr *LlamaCppRouter) handleGenerate(w http.ResponseWriter, r *http.Request)
 	if _, loadErr := lr.ensureModelLoadedOnBackend(backendID, model, loadOpts); loadErr != nil {
 		logger.Get().Errorw("handleGenerate: auto-load failed",
 			"backend", backendID, "model", model, "error", loadErr)
-		writeJSON(w, http.StatusServiceUnavailable, map[string]string{
-			"error": fmt.Sprintf("model '%s' is not loaded and auto-load failed: %v", model, loadErr),
-		})
+		// R60.16: include Retry-After so clients back off (see chat completions).
+		writeServiceUnavailable(w,
+			fmt.Sprintf("model '%s' is not loaded and auto-load failed: %v", model, loadErr),
+			0)
 		return
 	}
 

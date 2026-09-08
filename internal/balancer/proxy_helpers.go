@@ -37,6 +37,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -61,6 +62,34 @@ func writeJSON(w http.ResponseWriter, status int, data interface{}) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
 	_ = json.NewEncoder(w).Encode(data)
+}
+
+// writeServiceUnavailable — write a 503 response with a Retry-After
+// header (in seconds). Use this for any 503 that tells the client to
+// retry later (e.g. auto-load in progress, async reload pending).
+//
+// R60.16 (2026-09-08): prior to this, the auto-load-failed paths in
+// llamacpp_handlers_inference.go (5 sites) returned 503 with NO
+// Retry-After header, so clients (Cline/Roo/openai-python) saw an
+// empty Retry-After and either retried immediately (busy-loop) or
+// gave up. The fix: always set Retry-After on 503 for the auto-load
+// path. 30s is a reasonable default — matches the async-reload
+// Retry-After used elsewhere in R60.6.
+//
+// retryAfterSec: seconds the client should wait before retrying.
+// Pass 0 to use the default (30s).
+//
+// Used by:
+//   - llamacpp_handlers_inference.go (5 sites: chat/completions,
+//     completions, embeddings, /api/chat, /api/generate)
+func writeServiceUnavailable(w http.ResponseWriter, errMsg string, retryAfterSec int) {
+	if retryAfterSec <= 0 {
+		retryAfterSec = 30
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Retry-After", strconv.Itoa(retryAfterSec))
+	w.WriteHeader(http.StatusServiceUnavailable)
+	_ = json.NewEncoder(w).Encode(map[string]string{"error": errMsg})
 }
 
 // copyResponse — copy headers + status + body from an upstream http.Response

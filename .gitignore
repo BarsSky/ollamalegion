@@ -195,3 +195,10 @@ internal/**/*.backup-*/
 # User can `mv .cleanup_archive_20260812 /tmp/` to permanently delete.
 .cleanup_archive_*/
 
+# Round 60.17 (2026-09-08) cleanup: diagnostic scratch
+# (operator-side debug dumps, one-off snapshots, not for commit).
+/_diag/
+/apply_test.json
+/scripts/diag_openwebui_2nd_question.ps1
+/scripts/diag_*.ps1
+

@@ -51,6 +51,22 @@ func NewStrictDecoder(r io.Reader, maxBytes int64) (*StrictDecoder, error) {
 	if n == 0 {
 		return nil, ErrBodyEmpty
 	}
+	// R60.16 (2026-09-08): strip leading UTF-8 BOM (EF BB BF) if present.
+	// PowerShell Out-File default, Notepad, and some older curl builds
+	// add BOM → 400 "invalid character ï" without this. After the
+	// body is fully in our buffer, this is a stateless in-place strip.
+	body := buf.Bytes()
+	if len(body) >= 3 && body[0] == 0xEF && body[1] == 0xBB && body[2] == 0xBF {
+		body = body[3:]
+		n -= 3
+		if n == 0 {
+			// BOM-only body (e.g. 0xEF 0xBB 0xBF and nothing else)
+			// is treated as empty — same as `n == 0` before the strip.
+			return nil, ErrBodyEmpty
+		}
+		buf.Reset()
+		buf.Write(body)
+	}
 	dec := json.NewDecoder(&buf)
 	dec.DisallowUnknownFields()
 	return &StrictDecoder{dec: dec, maxBytes: maxBytes, bodyBytes: n}, nil

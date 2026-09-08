@@ -6,6 +6,9 @@
 //   - Empty body rejected
 //   - Type mismatches reported cleanly
 //   - Field name and header name constants match expected values
+//
+// R60.16 (2026-09-08): UTF-8 BOM (EF BB BF) is stripped before decoding.
+// Pre-R60.16: PowerShell Out-File default adds BOM → 400 invalid character.
 package types
 
 import (
@@ -331,5 +334,64 @@ func TestDecodeJSONRequest_BodyAtLimitPlus1(t *testing.T) {
 	err := DecodeJSONRequest(body, int64(len(payload)-1), &got)
 	if !errors.Is(err, ErrBodyTooLarge) {
 		t.Errorf("got %v, want ErrBodyTooLarge", err)
+	}
+}
+
+// TestDecodeJSONRequest_StripsBOM — R60.16 (2026-09-08):
+// UTF-8 BOM (EF BB BF) at the start of the body must be stripped
+// before JSON decoding. Pre-R60.16: BOM caused 400 "invalid
+// character ï looking for beginning of value" because
+// json.NewDecoder sees EF BB BF as part of the JSON stream.
+func TestDecodeJSONRequest_StripsBOM(t *testing.T) {
+	bom := []byte{0xEF, 0xBB, 0xBF}
+	body := append(bom, []byte(`{"model":"gemma-4","max_tokens":42}`)...)
+	dec, err := NewStrictDecoder(bytes.NewReader(body), 4096)
+	if err != nil {
+		t.Fatalf("NewStrictDecoder: %v", err)
+	}
+	type req struct {
+		Model     string `json:"model"`
+		MaxTokens int    `json:"max_tokens"`
+	}
+	var got req
+	if err := dec.Decode(&got); err != nil {
+		t.Fatalf("decode with BOM: %v", err)
+	}
+	if got.Model != "gemma-4" {
+		t.Errorf("model: got %q, want gemma-4 (BOM should be stripped)", got.Model)
+	}
+	if got.MaxTokens != 42 {
+		t.Errorf("max_tokens: got %d, want 42 (BOM should be stripped)", got.MaxTokens)
+	}
+}
+
+// TestDecodeJSONRequest_NoBOM_Regression — non-BOM body still works.
+func TestDecodeJSONRequest_NoBOM_Regression(t *testing.T) {
+	body := []byte(`{"model":"gemma-4","max_tokens":42}`)
+	dec, err := NewStrictDecoder(bytes.NewReader(body), 4096)
+	if err != nil {
+		t.Fatalf("NewStrictDecoder: %v", err)
+	}
+	type req struct {
+		Model     string `json:"model"`
+		MaxTokens int    `json:"max_tokens"`
+	}
+	var got req
+	if err := dec.Decode(&got); err != nil {
+		t.Fatalf("decode without BOM: %v", err)
+	}
+	if got.Model != "gemma-4" {
+		t.Errorf("model: got %q, want gemma-4", got.Model)
+	}
+}
+
+// TestDecodeJSONRequest_OnlyBOM_Empty — body that is JUST the BOM
+// (3 bytes) should be treated as empty (after strip → 0 bytes).
+func TestDecodeJSONRequest_OnlyBOM_Empty(t *testing.T) {
+	body := []byte{0xEF, 0xBB, 0xBF}
+	var got map[string]interface{}
+	err := DecodeJSONRequest(bytes.NewReader(body), 4096, &got)
+	if !errors.Is(err, ErrBodyEmpty) {
+		t.Errorf("got %v, want ErrBodyEmpty (BOM-only should be empty after strip)", err)
 	}
 }

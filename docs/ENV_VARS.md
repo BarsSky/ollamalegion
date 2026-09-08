@@ -41,6 +41,8 @@
 | `LOG_LEVEL` | string | — | `conf.Logging.Level` | Только если `--log-level` flag НЕ задан | |
 | `LB_STREAMING_NEVER_TIMEOUT` | bool | `false` | Все streaming таймауты = 0 | **ВЫСШИЙ** (выше env и config) | `1/true/yes` → disable. Для OpenWebUI multi-turn. |
 | `LB_STREAMING_IDLE_TIMEOUT_SEC` | int | — | `streamingIdleTimeout` (per-model + global) | Выше config (break-glass) | **R60.18 F1**: до этого был phantom — документирован, но не реализован. Теперь работает. |
+| `LB_AUTO_CONTINUE_ON_TRUNCATION` | bool | `false` | feature flag | Высший | **R60.21**: auto-continue при truncation. Детектирует unclosed code block / mid-line cutoff в `done_reason:stop` ответах и автоматически посылает "Continue from where you left off" запрос к upstream. Default: OFF (opt-in). |
+| `LB_AUTO_CONTINUE_MAX_TOKENS` | int | `1024` | `max_tokens` / `num_predict` для continue запроса | — | Лимит на размер continuation. Если continuation тоже truncated — обрезаем. |
 | `LB_OPENAI_AUTO_STREAM` | bool | `false` | feature flag | Высший | OpenAI auto-stream conversion. |
 | `LB_NCTX_RELOAD_ENABLED` | bool | — | `cfg.AutoReloadNCtx` | Выше config | |
 | `LB_NCTX_RELOAD_MAX_N_CTX` | int | — | `cfg.AutoReloadMaxNCtx` | Выше config | |

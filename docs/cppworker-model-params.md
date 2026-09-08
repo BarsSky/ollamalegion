@@ -160,6 +160,12 @@ cppworker в `cmd/cppworker/main.go:applyCppCtxHeader` читает этот hea
 Когда моель запрашивает `n_ctx`, превышающий VRAM, cppworker пытается:
 1. Проверить флаг `ramFallbackNCtx` (env `CPPWORKER_RAM_FALLBACK_N_CTX=true` или `--ram-fallback-n-ctx`).
 2. Сверить с `ramFallbackMaxNCtx` (env `CPPWORKER_RAM_FALLBACK_MAX_N_CTX`, default без лимита).
+
+> **R60.18 F4 (2026-09-08)**: приоритет flag > env для всех `CPPWORKER_RAM_FALLBACK_*`
+> переменных, единый в startup и reload path. До R60.18 на POST `/config/reload`
+> env перезаписывал CLI flag без лога (silent state divergence). Сейчас обе
+> пути вызывают `applyRAMFallbackFromEnvWithSkip()` helper с одинаковым
+> `isFlagSet()` check. Подробнее: `docs/R60.18-env-flags-audit.md`.
 3. `UnloadModel()` текущей модели.
 4. `LoadModelWithOpts(n_ctx=requestedNCtx, use_mmap=true, gpu_layers=ramFallbackGpuLayers)`.
 5. Если успех — retry inference.

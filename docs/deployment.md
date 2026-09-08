@@ -132,8 +132,8 @@ cp .env.bundled.example .env.bundled
 | `CPPWORKER_API_TOKEN` | токен для auto-registration | обязательно |
 | `CUDA_ARCH` | архитектура GPU (86 для RTX 3070/3080/3090, 89 для 4090) | 86 |
 | `CPPWORKER_GPU_LAYERS` | -1 (все), 0 (CPU), N | -1 |
-| `CPPWORKER_RAM_FALLBACK_N_CTX` | reload в RAM при OOM | true |
-| `CPPWORKER_RAM_FALLBACK_MAX_N_CTX` | верхняя граница | 128000 |
+| `CPPWORKER_RAM_FALLBACK_N_CTX` | reload в RAM при OOM | true | CLI flag `--ram-fallback-n-ctx` имеет приоритет (R60.18 F4) |
+| `CPPWORKER_RAM_FALLBACK_MAX_N_CTX` | верхняя граница | 128000 | CLI flag `--ram-fallback-max-n-ctx` имеет приоритет (R60.18 F4) |
 | `LB_NCTX_RELOAD_ENABLED` | auto-reload на балансировщике | true |
 | `BALANCER_URL` | для cppworker auto-registration | http://loadbalancer:18081 |
 | `CPPWORKER_ADVERTISE_HOST` | DNS-имя для регистрации | cppworker-gpu |

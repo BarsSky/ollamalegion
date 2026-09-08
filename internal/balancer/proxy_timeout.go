@@ -12,7 +12,6 @@ import (
 )
 
 // isStreamingNeverTimeout — ENV override для полного отключения streaming-таймаутов.
-//
 // R58.1 (2026-09-03): user pain — «балансер по жёстким таймаутам рубил
 // работу клиентам, хотя по идее это не требуется так как если будет в
 // этом необходимость пользователь сам передаст ответ через клиент по
@@ -29,6 +28,34 @@ func isStreamingNeverTimeout() bool {
 		return true
 	}
 	return false
+}
+
+// getEnvIdleTimeoutSec — R60.18 F1: helper для чтения LB_STREAMING_IDLE_TIMEOUT_SEC.
+//
+// До R60.18 этот env var был phantom — документирован в
+// config/config.bundled.json:32 и упомянут в error message streaming.go:322/325,
+// но НЕ читался кодом (silent no-op для оператора).
+//
+// Семантика: парсит целое число секунд из env. Возвращает (0, false) если:
+//   - env пуст / невалидный / ноль
+//   - LB_STREAMING_NEVER_TIMEOUT=1 (NEVER_TIMEOUT отключает всё — выше приоритет)
+//
+// Caller (getGlobalStreamingIdleTimeout, getModelStreamingIdleTimeout)
+// использует (n, true) как break-glass override перед per-model profile и
+// глобальным config (по симметрии с R60.17 LB_LLAMACPP_STREAM_TIMEOUT_SEC).
+func getEnvIdleTimeoutSec() (int, bool) {
+	if isStreamingNeverTimeout() {
+		return 0, false
+	}
+	raw := strings.TrimSpace(os.Getenv("LB_STREAMING_IDLE_TIMEOUT_SEC"))
+	if raw == "" {
+		return 0, false
+	}
+	n, err := strconv.Atoi(raw)
+	if err != nil || n <= 0 {
+		return 0, false
+	}
+	return n, true
 }
 
 // maxConcurrentWarmups — пакетная функция для использования до создания Proxy.
@@ -105,19 +132,22 @@ func (p *Proxy) getStreamingIdleTimeout() time.Duration {
 //  3. Эвристика по размеру GGUF файла (для моделей без истории)
 //  4. Глобальный config.Balancing.StreamTimeout
 //  5. Дефолт 600 секунд
+//
+// R58.1 (2026-09-03): LB_STREAMING_NEVER_TIMEOUT=1 → 0 (= "no total stream timeout").
+// Highest priority, overrides per-model profile and config.
+//
+// R60.18 F3 (2026-09-08): REMOVED LB_LLAMACPP_STREAM_TIMEOUT_SEC env override.
+// Архитектурно total stream timeout — wrong abstraction для LLM streaming
+// (см. docs/R60.18-env-flags-audit.md). Use:
+//   - streamingIdleTimeout — hang detection (no chunks for N sec)
+//   - firstByteTimeout — prefill hang (no first chunk for N sec)
+//   - n_predict per-request/per-model — explicit response length cap
+//
+// Total stream timeout оставлен только как safety net для
+// "process sending garbage chunks forever" (через ModelLatencyTracker).
 func (p *Proxy) getModelStreamTimeout(modelName string) time.Duration {
-	// R58.1 (2026-09-03): LB_STREAMING_NEVER_TIMEOUT=1 → 0 (= "no total stream timeout").
-	// Highest priority, overrides per-model profile and config.
 	if isStreamingNeverTimeout() {
 		return 0
-	}
-
-	// R53.6 (2026-08-24): ENV override LB_LLAMACPP_STREAM_TIMEOUT_SEC takes
-	// highest priority (allows fail-fast in production without config.json edit).
-	if envSec := os.Getenv("LB_LLAMACPP_STREAM_TIMEOUT_SEC"); envSec != "" {
-		if n, parseErr := strconv.Atoi(envSec); parseErr == nil && n > 0 {
-			return time.Duration(n) * time.Second
-		}
 	}
 
 	if modelName == "" || p.modelLatencyTracker == nil {
@@ -141,32 +171,40 @@ func (p *Proxy) getModelStreamTimeout(modelName string) time.Duration {
 
 // getModelStreamingIdleTimeout возвращает per-model idle-таймаут стриминга.
 // Приоритет:
-//  1. Per-model profile (config.LlamaCppModelProfiles[modelName].StreamingIdleTimeoutSec)
-//  2. ModelLatencyTracker (автоматический расчёт на основе истории)
-//  3. Эвристика по размеру GGUF файла (для моделей без истории)
-//  4. Глобальный config.Balancing.StreamingIdleTimeout
-//  5. Дефолт 120 секунд
+//  1. ENV override LB_STREAMING_IDLE_TIMEOUT_SEC (break-glass, R60.18 F1)
+//  2. Per-model profile (config.LlamaCppModelProfiles[modelName].StreamingIdleTimeoutSec)
+//  3. ModelLatencyTracker (автоматический расчёт на основе истории)
+//  4. Эвристика по размеру GGUF файла (для моделей без истории)
+//  5. Глобальный config.Balancing.StreamingIdleTimeout
+//  6. Дефолт 120 секунд
 //
-// modelSizeBytes используется для tier-3 (эвристика по размеру). Для больших
+// modelSizeBytes используется для tier-4 (эвристика по размеру). Для больших
 // моделей на GPU с partial offload (не все слои в VRAM) idle между чанками
 // может быть >120s → без эвристики стрим обрывался бы без диагностики.
 //
 // R58.1: LB_STREAMING_NEVER_TIMEOUT=1 → 0 (= "no idle deadline").
+// R60.18 F1: LB_STREAMING_IDLE_TIMEOUT_SEC → break-glass override
+// (по симметрии с LB_LLAMACPP_STREAM_TIMEOUT_SEC — env побеждает per-model
+// profile для incident response, но НЕ для production defaults).
 func (p *Proxy) getModelStreamingIdleTimeout(modelName string) time.Duration {
 	if isStreamingNeverTimeout() {
 		return 0
+	}
+	// R60.18 F1: env override (break-glass). Tier 1.
+	if n, ok := getEnvIdleTimeoutSec(); ok {
+		return time.Duration(n) * time.Second
 	}
 	if modelName == "" || p.modelLatencyTracker == nil {
 		return p.getGlobalStreamingIdleTimeout()
 	}
 
-	// Tier 1: per-model profile
+	// Tier 2: per-model profile
 	profile, ok := p.GetModelProfile(modelName)
 	if ok && profile.StreamingIdleTimeoutSec > 0 {
 		return time.Duration(profile.StreamingIdleTimeoutSec) * time.Second
 	}
 
-	// Tier 2 + 3: ModelLatencyTracker (с modelSizeBytes для tier-3 fallback)
+	// Tier 3 + 4: ModelLatencyTracker (с modelSizeBytes для tier-4 fallback)
 	globalIdleSec := p.config.Balancing.StreamingIdleTimeout
 	if globalIdleSec <= 0 {
 		globalIdleSec = 120
@@ -239,23 +277,18 @@ func (p *Proxy) getModelFirstByteTimeout(modelName string) time.Duration {
 
 // getGlobalStreamTimeout — глобальный таймаут стриминга из конфига (или дефолт 600s).
 //
-// R53.6 (2026-08-24): ENV override LB_LLAMACPP_STREAM_TIMEOUT_SEC.
-// Позволяет установить таймаут без перезапуска config.json — полезно когда
-// cppworker зависает на длинных контекстах и нужно ускорить fail-fast
-// (например 90s вместо дефолтных 600s).
+// R53.6 (2026-08-24): ENV override LB_LLAMACPP_STREAM_TIMEOUT_SEC. REMOVED R60.18 F3.
 //
 // R58.1 (2026-09-03): ENV override LB_STREAMING_NEVER_TIMEOUT=1
 // отключает стриминг-таймаут полностью (returns 0). Caller (proxy_request.go)
 // интерпретирует 0 как "skip context.WithTimeout".
+//
+// R60.18 F3: REMOVED LB_LLAMACPP_STREAM_TIMEOUT_SEC. Total stream timeout —
+// wrong abstraction для LLM streaming (см. docs/R60.18-env-flags-audit.md).
+// Используйте streamingIdleTimeout + firstByteTimeout + n_predict per-model.
 func (p *Proxy) getGlobalStreamTimeout() time.Duration {
 	if isStreamingNeverTimeout() {
 		return 0
-	}
-	// ENV override (R53.6)
-	if envSec := os.Getenv("LB_LLAMACPP_STREAM_TIMEOUT_SEC"); envSec != "" {
-		if n, parseErr := strconv.Atoi(envSec); parseErr == nil && n > 0 {
-			return time.Duration(n) * time.Second
-		}
 	}
 	sec := p.config.Balancing.StreamTimeout
 	if sec <= 0 {
@@ -267,9 +300,15 @@ func (p *Proxy) getGlobalStreamTimeout() time.Duration {
 // getGlobalStreamingIdleTimeout — глобальный idle-таймаут стриминга (или дефолт 120s).
 //
 // R58.1: LB_STREAMING_NEVER_TIMEOUT=1 → 0 (= "no idle deadline").
+// R60.18 F1: LB_STREAMING_IDLE_TIMEOUT_SEC — break-glass env override
+// (документирован в config.bundled.json:32 и streaming.go error message;
+// до R60.18 был phantom — silent no-op).
 func (p *Proxy) getGlobalStreamingIdleTimeout() time.Duration {
 	if isStreamingNeverTimeout() {
 		return 0
+	}
+	if n, ok := getEnvIdleTimeoutSec(); ok {
+		return time.Duration(n) * time.Second
 	}
 	sec := p.config.Balancing.StreamingIdleTimeout
 	if sec <= 0 {
@@ -302,6 +341,7 @@ func (p *Proxy) getGlobalRequestTimeout() time.Duration {
 //   - Q4_K_M 3-8B (средние): 1-3 мин prefill
 //   - Q4_K_M 8-20B (большие): 3-7 мин prefill
 //   - Q4_K_M 20-40B (MoE + partial offload): 10-15 мин prefill
+//
 // 15 мин = worst case + safety margin.
 //
 // R58.1: LB_STREAMING_NEVER_TIMEOUT=1 → 0 (= "no first-byte timeout").

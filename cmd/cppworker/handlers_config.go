@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"net/http"
 	"os"
-	"strconv"
 	"time"
 
 	"ollama-loadbalancer/internal/cppbackend"
@@ -59,29 +58,29 @@ func handleCppWorkerRuntimeConfig(w http.ResponseWriter, r *http.Request) {
 	models := make([]map[string]interface{}, 0, len(loaded))
 	for _, m := range loaded {
 		models = append(models, map[string]interface{}{
-			"name":               m.Name,
-			"path":               m.Path,
-			"state":              m.State,
-			"architecture":       m.Architecture,
-			"n_layers":           m.NLayers,
-			"n_heads":            m.NHeads,
-			"n_kv_heads":         m.NKvHeads,
-			"n_embd":             m.NEmbd,
-			"n_vocab":            m.NVocab,
-			"context_size":       m.ContextSize,
+			"name":                m.Name,
+			"path":                m.Path,
+			"state":               m.State,
+			"architecture":        m.Architecture,
+			"n_layers":            m.NLayers,
+			"n_heads":             m.NHeads,
+			"n_kv_heads":          m.NKvHeads,
+			"n_embd":              m.NEmbd,
+			"n_vocab":             m.NVocab,
+			"context_size":        m.ContextSize,
 			"gguf_context_length": m.GGUFContextLength,
-			"size_bytes":         m.SizeBytes,
-			"loaded_at":          m.LoadedAt,
-			"gpu_count":          m.GPUCount,
-			"gpu_layers":         m.GPULayers,
-			"tensor_split":       m.TensorSplit,
-			"batch_size":         m.BatchSize,
-			"flash_attn_type":    m.FlashAttnType,
-			"numa":               m.NUMA,
-			"use_mmap":           m.UseMmap,
-			"active_queries":     m.ActiveQueries,
-			"total_queries":      m.TotalQueries,
-			"last_used_at":       m.LastUsedAt,
+			"size_bytes":          m.SizeBytes,
+			"loaded_at":           m.LoadedAt,
+			"gpu_count":           m.GPUCount,
+			"gpu_layers":          m.GPULayers,
+			"tensor_split":        m.TensorSplit,
+			"batch_size":          m.BatchSize,
+			"flash_attn_type":     m.FlashAttnType,
+			"numa":                m.NUMA,
+			"use_mmap":            m.UseMmap,
+			"active_queries":      m.ActiveQueries,
+			"total_queries":       m.TotalQueries,
+			"last_used_at":        m.LastUsedAt,
 		})
 	}
 	writeJSON(w, http.StatusOK, map[string]interface{}{
@@ -485,14 +484,14 @@ func hasReloadedDefaults(applied []string) bool {
 		"defaultKvCacheType": true,
 		"defaultNoKvOffload": true,
 		// RoPE/YaRN (меняются на лету, но reload безопаснее и явнее)
-		"defaultRopeFreqBase":     true,
-		"defaultRopeFreqScale":    true,
-		"defaultRopeScalingType":  true,
+		"defaultRopeFreqBase":      true,
+		"defaultRopeFreqScale":     true,
+		"defaultRopeScalingType":   true,
 		"defaultRopeScalingFactor": true,
-		"defaultYarnExtFactor":    true,
-		"defaultYarnAttnFactor":   true,
-		"defaultYarnBetaFast":     true,
-		"defaultYarnBetaSlow":     true,
+		"defaultYarnExtFactor":     true,
+		"defaultYarnAttnFactor":    true,
+		"defaultYarnBetaFast":      true,
+		"defaultYarnBetaSlow":      true,
 	}
 	for _, k := range applied {
 		if loadAffecting[k] {
@@ -635,21 +634,13 @@ func handleCppWorkerReloadConfig(w http.ResponseWriter, r *http.Request) {
 			newCfg.DefaultUseMmap = !*noMmap
 		}
 	})
-	// RAM fallback flags ?? ??????????? ? cppbackend.Config, ?? ??? reload
-	// ?? .env ?? ???????????? ??, ????? runtime-?????? ?????????????? env.
-	if envVal := os.Getenv("CPPWORKER_RAM_FALLBACK_N_CTX"); envVal != "" {
-		*ramFallbackNCtx = parseBoolEnv(envVal)
-	}
-	if envVal := os.Getenv("CPPWORKER_RAM_FALLBACK_GPU_LAYERS"); envVal != "" {
-		if v, err := strconv.Atoi(envVal); err == nil && v >= -1 {
-			*ramFallbackGpuLayers = v
-		}
-	}
-	if envVal := os.Getenv("CPPWORKER_RAM_FALLBACK_MAX_N_CTX"); envVal != "" {
-		if v, err := strconv.Atoi(envVal); err == nil && v >= 512 {
-			*ramFallbackMaxNCtx = v
-		}
-	}
+	// RAM fallback flags НЕ сохраняются в cppbackend.Config, но при reload
+	// из .env мы перечитываем их, чтобы runtime-конфиг соответствовал env.
+	// R60.18 F4: единый helper с тем же приоритетом CLI flag > env > default,
+	// что и на startup (main.go). Без этого CLI flag был бы silent-overwritten
+	// на /config/reload.
+	applyRAMFallbackFromEnvWithSkip(ramFallbackNCtx, ramFallbackGpuLayers, ramFallbackMaxNCtx,
+		isFlagSet("ram-fallback-n-ctx"), isFlagSet("ram-fallback-gpu-layers"), isFlagSet("ram-fallback-max-n-ctx"))
 	*currentConfig = newCfg
 	writeJSON(w, http.StatusOK, map[string]interface{}{"status": "reloaded", "config": currentConfig})
 }
@@ -665,4 +656,3 @@ func saveConfigToDefaultsFile(cfg *cppbackend.Config) error {
 	}
 	return os.WriteFile(defaultsPath, data, 0644)
 }
-

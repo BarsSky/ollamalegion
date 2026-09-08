@@ -37,7 +37,6 @@
         "sessionTTL": 900,
         "useEnhancedScoring": true,
         "modelLoadTimeout": 900,
-        "streamingMaxDuration": 0,
         "autoPull": {
             "enabled": false,
             "maxConcurrent": 1,

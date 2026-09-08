@@ -132,7 +132,7 @@ func createNoAgentProxy(t *testing.T, mocks []*noAgentMockOllama, algorithm type
 			QueueMaxSize:           100,
 			QueueWorkers:           4,
 			UseEnhancedScoring:     false, // Отключаем — требует GPU метрик
-			StreamingMaxDuration:   0,
+			// R60.18 F2: StreamingMaxDuration removed (dead field, see docs/R60.18-env-flags-audit.md)
 			// Все агент-зависимые модули отключены по умолчанию
 		},
 		Resources: types.ResourceLimits{

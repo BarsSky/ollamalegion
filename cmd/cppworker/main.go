@@ -33,9 +33,9 @@ import (
 // ============================================================
 
 var (
-	startupTime          = time.Now() // ???????????? ??? /api/diagnostics uptime.
-	port                 = flag.Int("port", 18092, "HTTP server port (default 18092; 18091 is legacy)")
-	modelsDir            = flag.String("models-dir", "./models", "Directory with GGUF model files")
+	startupTime = time.Now() // ???????????? ??? /api/diagnostics uptime.
+	port        = flag.Int("port", 18092, "HTTP server port (default 18092; 18091 is legacy)")
+	modelsDir   = flag.String("models-dir", "./models", "Directory with GGUF model files")
 	// DefaultCtxSize = 32768 (? ?? 8192): 8192 ? ??????? ??? OpenWebUI ? tools,
 	// ?? ??? production-????????????? ? ???????? ???????? ????? ????????????.
 	// 32768 ????????? system + history ~7000 ??????? + user message + ????? ~25000.
@@ -74,13 +74,13 @@ var (
 	// cppworker ????????????? ?????? ? gpu_layers=0 (????? mmap ? RAM) ?
 	// n_ctx=??????????? ????????? (???????? 32K), ????? inference ??????
 	// ??? ???? 3 ?prompt too long?.
-	autoTuneNCtx = flag.Bool("auto-tune-nctx", false, "Auto-tune n_ctx + gpu_layers on RAM-fallback reload based on available VRAM/RAM (solves 'prompt too long' when VRAM is insufficient)")
-	allowedOrigin        = flag.String("cors-origin", "*", "CORS allowed origin")
-	envFile              = flag.String("env", "", "Path to .env configuration file (optional)")
-	preloadModels        = flag.Bool("preload-models", false, "Preload all .gguf models at startup (disabled by default ? use with care, may exhaust VRAM)")
-	writeTimeout         = flag.Duration("write-timeout", 30*time.Minute, "HTTP WriteTimeout for streaming inference (use 0 for no timeout)")
-	healthCheck          = flag.Bool("healthcheck", false, "Run a one-shot health probe against /health and exit")
-	verbose              = flag.Bool("verbose", false, "Enable verbose (debug) logging")
+	autoTuneNCtx  = flag.Bool("auto-tune-nctx", false, "Auto-tune n_ctx + gpu_layers on RAM-fallback reload based on available VRAM/RAM (solves 'prompt too long' when VRAM is insufficient)")
+	allowedOrigin = flag.String("cors-origin", "*", "CORS allowed origin")
+	envFile       = flag.String("env", "", "Path to .env configuration file (optional)")
+	preloadModels = flag.Bool("preload-models", false, "Preload all .gguf models at startup (disabled by default ? use with care, may exhaust VRAM)")
+	writeTimeout  = flag.Duration("write-timeout", 30*time.Minute, "HTTP WriteTimeout for streaming inference (use 0 for no timeout)")
+	healthCheck   = flag.Bool("healthcheck", false, "Run a one-shot health probe against /health and exit")
+	verbose       = flag.Bool("verbose", false, "Enable verbose (debug) logging")
 )
 
 // ============================================================
@@ -172,25 +172,10 @@ func main() {
 		}
 	}
 	// RAM fallback feature flags ?? env (???? ????? ?? ???????? ????).
-	if !isFlagSet("ram-fallback-n-ctx") {
-		if envVal := os.Getenv("CPPWORKER_RAM_FALLBACK_N_CTX"); envVal != "" {
-			*ramFallbackNCtx = parseBoolEnv(envVal)
-		}
-	}
-	if !isFlagSet("ram-fallback-gpu-layers") {
-		if envVal := os.Getenv("CPPWORKER_RAM_FALLBACK_GPU_LAYERS"); envVal != "" {
-			if v, err := strconv.Atoi(envVal); err == nil && v >= -1 {
-				*ramFallbackGpuLayers = v
-			}
-		}
-	}
-	if !isFlagSet("ram-fallback-max-n-ctx") {
-		if envVal := os.Getenv("CPPWORKER_RAM_FALLBACK_MAX_N_CTX"); envVal != "" {
-			if v, err := strconv.Atoi(envVal); err == nil && v >= 512 {
-				*ramFallbackMaxNCtx = v
-			}
-		}
-	}
+	// R60.18 F4: единый helper — вызывается и на startup, и на /config/reload
+	// (handlers_config.go) с одинаковым приоритетом CLI flag > env > default.
+	applyRAMFallbackFromEnvWithSkip(ramFallbackNCtx, ramFallbackGpuLayers, ramFallbackMaxNCtx,
+		isFlagSet("ram-fallback-n-ctx"), isFlagSet("ram-fallback-gpu-layers"), isFlagSet("ram-fallback-max-n-ctx"))
 	// ram-fallback-allow-tools ?? env (???? ???? ?? ??????? ????).
 	if !isFlagSet("ram-fallback-allow-tools") {
 		if envVal := os.Getenv("CPPWORKER_RAM_FALLBACK_ALLOW_TOOLS"); envVal != "" {
@@ -457,4 +442,3 @@ func main() {
 	}
 	log.Infow("CppBackend Worker stopped")
 }
-

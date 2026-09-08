@@ -46,12 +46,12 @@ type BalancingSettings struct {
 	// auto-detects sub-optimal state (q4_0 KV cache on small model, over-allocated
 	// n_ctx) и рекомендует fix. R54.4 добавит авто-применение. Manual override:
 	// per-model profile "autoTune": false отключает для конкретной модели.
-	AutoTune             bool               `json:"autoTune"`             // default true
-	QueueTimeout         int                `json:"queueTimeout"`         // секунды
-	QueueMaxSize         int                `json:"queueMaxSize"`         // макс. размер очереди
-	QueueWorkers         int                `json:"queueWorkers"`         // количество workers очереди
-	SessionTTL           int                `json:"sessionTTL"`           // секунды (0 = дефолт 900)
-	SessionIdleTTL       int                `json:"sessionIdleTTL"`       // секунды простоя до удаления сессии (0 = дефолт 300 / 5 мин)
+	AutoTune       bool `json:"autoTune"`       // default true
+	QueueTimeout   int  `json:"queueTimeout"`   // секунды
+	QueueMaxSize   int  `json:"queueMaxSize"`   // макс. размер очереди
+	QueueWorkers   int  `json:"queueWorkers"`   // количество workers очереди
+	SessionTTL     int  `json:"sessionTTL"`     // секунды (0 = дефолт 900)
+	SessionIdleTTL int  `json:"sessionIdleTTL"` // секунды простоя до удаления сессии (0 = дефолт 300 / 5 мин)
 
 	// Новые поля оптимизации балансировки
 	Prewarm             PrewarmConfig             `json:"prewarm"`
@@ -64,8 +64,12 @@ type BalancingSettings struct {
 	UseEnhancedScoring bool `json:"useEnhancedScoring"` // Расширенный скоринг v2 (полная формула)
 	ModelLoadTimeout   int  `json:"modelLoadTimeout"`   // Таймаут ожидания загрузки модели (сек, default 120)
 
-	// Streaming защита
-	StreamingMaxDuration int `json:"streamingMaxDuration"` // Макс. длительность streaming-запроса (сек, 0=без ограничения)
+	// R60.18 F2 (2026-09-08): REMOVED StreamingMaxDuration. Was dead config
+	// field — declared in BalancingSettings but never read by any code in
+	// internal/balancer/*. Операторы, которые писали streamingMaxDuration: 1800
+	// в config.json, получали silent no-op. Архитектурно total stream timeout —
+	// wrong abstraction для LLM streaming. Используйте streamingIdleTimeout +
+	// firstByteTimeout + n_predict per-model. См. docs/R60.18-env-flags-audit.md.
 
 	// AutoPull - автоматическая загрузка модели при запросе (Pull-on-Demand)
 	AutoPull AutoPullConfig `json:"autoPull"`
@@ -246,11 +250,11 @@ type AutoPullConfig struct {
 //  3. Per-backend default (cppworker CppWorkerConfig.ContextLength)
 //
 // Таймауты (поля StreamingTimeoutSec / StreamingIdleTimeoutSec / RequestTimeoutSec):
-//  - Если значение > 0 — используется для этой модели (override глобального).
-//  - Если 0 — используется глобальное значение из BalancingSettings.
-//  - autoAdjust=true: если таймауты не заданы (0), балансировщик вычисляет
-//    их автоматически на основе NumGPULayers, SizeBytes и истории генерации
-//    (через ModelLatencyTracker).
+//   - Если значение > 0 — используется для этой модели (override глобального).
+//   - Если 0 — используется глобальное значение из BalancingSettings.
+//   - autoAdjust=true: если таймауты не заданы (0), балансировщик вычисляет
+//     их автоматически на основе NumGPULayers, SizeBytes и истории генерации
+//     (через ModelLatencyTracker).
 type LlamaCppModelProfile struct {
 	ContextLength int    `json:"contextLength"`       // n_ctx ∈ [256, 262144]
 	BatchSize     int    `json:"batchSize"`           // n_batch ∈ [1, 2048]

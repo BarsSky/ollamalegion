@@ -143,7 +143,6 @@
 | `sessionStickiness` | bool | `true` | Включить привязку сессии |
 | `useEnhancedScoring` | bool | `true` | Использовать расширенное скорингование с весами |
 | `modelLoadTimeout` | int | `120` | Таймаут загрузки модели на бэкенд (сек) |
-| `streamingMaxDuration` | int | `0` | Макс. длительность streaming-запроса (0 = без лимита, сек) |
 | `healthCheckInterval` | int | `10` | Интервал проверки здоровья (сек) |
 | `metricsInterval` | int | `5` | Интервал обновления метрик (сек) |
 | `requestTimeout` | int | `120` | Таймаут запроса (сек) |

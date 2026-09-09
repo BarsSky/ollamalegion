@@ -439,6 +439,39 @@ func (p *Proxy) preflightNCtxReloadIfNeeded(
 		return bodyBuf, true, "", http.StatusOK
 	}
 
+	// R60.23 (2026-09-09): empty-model guard. Без этой проверки OLD preflight
+	// отправлял POST /api/models/load с `"name": ""` → cppworker возвращал
+	// 400 "name is required" → state-машина coordinator зависала в
+	// "reloading" → ВСЕ последующие запросы получали 503 "retry in 30s"
+	// даже после того как реальные /api/chat запросы с правильным model
+	// приходили (те попадали на IsReloadPending check с пустым model и
+	// пропускались, но profile=65536 mismatch detection в новом
+	// runInferencePreflight триггерил ещё одну попытку reload — и тоже
+	// падал с 400 "name is required").
+	//
+	// Корень бага: кто-то отправляет POST /api/load на balancer с пустым
+	// body (например, OpenWebUI preload probe или webui ping). parseRequestBody
+	// возвращает пустой model, контекст пустой, preflight срабатывает,
+	// executeAsyncReload отправляет cppworker'у "name": "" → 400.
+	//
+	// Защита: при пустом modelName — пропускаем preflight, проксируем
+	// запрос как есть. cppworker сам ответит 400/404 на /api/load если
+	// endpoint не поддерживается, и это правильное поведение.
+	if modelName == "" {
+		// R60.23: расширенный лог для диагностики — оператор должен видеть
+		// что именно прислал клиент (truncated до 200 символов чтобы не
+		// раздувать логи при больших body). Это помогает понять источник
+		// (OpenWebUI preload probe, custom integration, webui ping).
+		bodyPreview := string(bodyBuf)
+		if len(bodyPreview) > 200 {
+			bodyPreview = bodyPreview[:200] + "...(truncated)"
+		}
+		logger.Get().Debugw("preflightNCtxReloadIfNeeded: empty modelName, skipping preflight (R60.23)",
+			"backend", backendID, "request_path", requestPath, "body_len", len(bodyBuf),
+			"body_preview", bodyPreview)
+		return bodyBuf, true, "", http.StatusOK
+	}
+
 	// R60.6 (2026-09-07): IsReloadPending guard. Если reload для этой модели
 	// уже в процессе (через новый coordinator dedup path в RunPreflight),
 	// НЕ запускаем второй reload — просто возвращаем 503. Без этого
@@ -876,6 +909,19 @@ func (p *Proxy) queryBackendReloadPending(backendID string) string {
 // ErrNCtxNeedsReload при следующем запросе — тогда сработает handleNCtxReload).
 func (p *Proxy) executeAsyncReload(backendID, modelName string, requestedNCtx int, backend *types.Backend) {
 	start := time.Now()
+
+	// R60.23 (2026-09-09): defensive guard — двойная защита на случай если
+	// какой-то caller забудет проверить modelName. Без этого cppworker
+	// получает POST /api/models/load с `"name": ""` и возвращает 400
+	// "name is required" — reload фактически не происходит, но state-машина
+	// coordinator'а может зависнуть в "reloading" если логика обработки
+	// статуса опирается только на success/failure без проверки body.
+	if modelName == "" {
+		logger.Get().Warnw("executeAsyncReload: empty modelName, skipping (R60.23 defensive guard)",
+			"backend", backendID, "target_n_ctx", requestedNCtx)
+		return
+	}
+
 	// Round 35 (2026-08-12) bugfix: prefer /api/models/load over /api/models/reload.
 	//
 	// PROBLEM: cppworker /api/models/reload returns 404 "model not currently

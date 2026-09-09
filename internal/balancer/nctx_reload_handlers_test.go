@@ -22,14 +22,14 @@ import (
 
 func TestNewNCtxReloadHTTPClient_TimeoutFromConfig(t *testing.T) {
 	tests := []struct {
-		name             string
-		autoReloadTO     int
-		wantMin          time.Duration
-		wantMax          time.Duration
+		name         string
+		autoReloadTO int
+		wantMin      time.Duration
+		wantMax      time.Duration
 	}{
 		{"no_nctxReload", 0, 300 * time.Second, 300 * time.Second},
 		{"default_300s", 300, 320 * time.Second, 340 * time.Second}, // 300+30
-		{"short_120s", 120, 140 * time.Second, 160 * time.Second},  // 120+30
+		{"short_120s", 120, 140 * time.Second, 160 * time.Second},   // 120+30
 		{"max_600s", 600, 600 * time.Second, 600 * time.Second},     // 600+30=630 → clamped to 600
 		{"zero_uses_default", 0, 300 * time.Second, 300 * time.Second},
 	}

@@ -48,18 +48,18 @@
     <link rel="icon" type="image/png" sizes="32x32" href="favicon-32x32.png">
     <link rel="icon" type="image/png" sizes="16x16" href="favicon-16x16.png">
     <link rel="shortcut icon" href="favicon.ico">
-    <link rel="stylesheet" href="css/font-awesome.min.css?v=11">
-    <link rel="stylesheet" href="css/themes.css?v=12">
-    <link rel="stylesheet" href="css/base.css?v=11">
-    <link rel="stylesheet" href="css/icons.css?v=11">
-    <link rel="stylesheet" href="css/components.css?v=11">
+    <link rel="stylesheet" href="css/font-awesome.min.css?v=R60.24">
+    <link rel="stylesheet" href="css/themes.css?v=R60.24">
+    <link rel="stylesheet" href="css/base.css?v=R60.24">
+    <link rel="stylesheet" href="css/icons.css?v=R60.24">
+    <link rel="stylesheet" href="css/components.css?v=R60.24">
     <!-- R58.3 (2026-09-03): Hardware preset selector CSS for setup-wizard. -->
-    <link rel="stylesheet" href="css/components-presets.css?v=1">
-    <link rel="stylesheet" href="css/metrics.css?v=11">
-    <link rel="stylesheet" href="css/data.css?v=11">
-    <link rel="stylesheet" href="css/pages.css?v=11">
-    <link rel="stylesheet" href="css/layout.css?v=11">
-    <link rel="stylesheet" href="css/responsive.css?v=11">
+    <link rel="stylesheet" href="css/components-presets.css?v=R60.24">
+    <link rel="stylesheet" href="css/metrics.css?v=R60.24">
+    <link rel="stylesheet" href="css/data.css?v=R60.24">
+    <link rel="stylesheet" href="css/pages.css?v=R60.24">
+    <link rel="stylesheet" href="css/layout.css?v=R60.24">
+    <link rel="stylesheet" href="css/responsive.css?v=R60.24">
 </head>
 <body>
     <div class="app">
@@ -585,7 +585,7 @@
 
             <!-- Monitor Page -->
             <div class="page" id="monitor-page">
-                <iframe id="monitorFrame" src="monitor.html?v=16" class="monitor-iframe"></iframe>
+                <iframe id="monitorFrame" src="monitor.html?v=R60.24" class="monitor-iframe"></iframe>
             </div>
 
             <!-- Logs Page -->
@@ -1775,15 +1775,15 @@ Beta-slow параметр YaRN. Стандарт: 1. Низкое = более 
     <div class="toast-container" id="toastContainer"></div>
 
     <!-- i18n Language Packs -->
-    <script defer src="js/i18n/ru.js?v=17"></script>
-    <script defer src="js/i18n/en.js?v=17"></script>
-    <script defer src="js/i18n/index.js?v=16"></script>
-    <script defer src="js/modules/backend-type-filter.js?v=16"></script>
+    <script defer src="js/i18n/ru.js?v=R60.24"></script>
+    <script defer src="js/i18n/en.js?v=R60.24"></script>
+    <script defer src="js/i18n/index.js?v=R60.24"></script>
+    <script defer src="js/modules/backend-type-filter.js?v=R60.24"></script>
 
     <!-- Runtime config injected by entrypoint for Docker / local nginx -->
     <script defer>window.WEBUI_CONFIG = window.WEBUI_CONFIG || {};</script>
     <!-- Modules -->
-    <script defer src="js/modules/config.js?v=16"></script>
+    <script defer src="js/modules/config.js?v=R60.24"></script>
     <!-- Sprint 30 (2026-07-30): привязка version display к build tag.
          Читает VERSION / GIT_COMMIT / BUILD_DATE из WEBUI_CONFIG (заполняется
          entrypoint.sh из Docker --build-arg VERSION=...) и обновляет
@@ -1817,55 +1817,55 @@ Beta-slow параметр YaRN. Стандарт: 1. Низкое = более 
         } catch (e) { /* keep 'dev' fallback */ }
     })();
     </script>
-    <script defer src="js/modules/utils.js?v=16"></script>
-    <script defer src="js/modules/api.js?v=16"></script>
-    <script defer src="js/modules/gguf-api.js?v=16"></script>
-    <script defer src="js/modules/websocket.js?v=16"></script>
-    <script defer src="js/modules/renderers.js?v=16"></script>
+    <script defer src="js/modules/utils.js?v=R60.24"></script>
+    <script defer src="js/modules/api.js?v=R60.24"></script>
+    <script defer src="js/modules/gguf-api.js?v=R60.24"></script>
+    <script defer src="js/modules/websocket.js?v=R60.24"></script>
+    <script defer src="js/modules/renderers.js?v=R60.24"></script>
     <!-- R54.5 (2026-08-24): AutoTune visibility (Phase 1: read-only badge) -->
-    <script defer src="js/modules/autotune.js?v=18"></script>
+    <script defer src="js/modules/autotune.js?v=R60.24"></script>
     <!-- R54.7 (2026-08-24): AutoTune Settings page handler -->
-    <script defer src="js/modules/autotune_settings.js?v=19"></script>
+    <script defer src="js/modules/autotune_settings.js?v=R60.24"></script>
     <!-- R55.2 (2026-08-24): AutoTune history timeline modal -->
-    <script defer src="js/modules/autotune_history.js?v=20"></script>
-    <script defer src="js/modules/gguf-load-progress.js?v=16"></script>
+    <script defer src="js/modules/autotune_history.js?v=R60.24"></script>
+    <script defer src="js/modules/gguf-load-progress.js?v=R60.24"></script>
     <!-- R57.5a (2026-09-03): pure helpers (stripGGUF / formatFileSize / showToast). -->
-    <script defer src="js/modules/gguf-renderer-helpers.js?v=1"></script>
+    <script defer src="js/modules/gguf-renderer-helpers.js?v=R60.24"></script>
     <!-- R57.5b (2026-09-03): state object + health helpers. MUST be loaded
          BEFORE gguf-renderer.js (which references state.* in 80+ call sites). -->
-    <script defer src="js/modules/gguf-renderer-state.js?v=1"></script>
+    <script defer src="js/modules/gguf-renderer-state.js?v=R60.24"></script>
     <!-- R57.5c (2026-09-03): left panel renderers (renderBackendsPanel / renderBackendsList). -->
-    <script defer src="js/modules/gguf-renderer-list.js?v=1"></script>
+    <script defer src="js/modules/gguf-renderer-list.js?v=R60.24"></script>
     <!-- R57.5d-1 (2026-09-03): action handlers (load/unload/cancel/download/HF search). -->
-    <script defer src="js/modules/gguf-renderer-actions.js?v=1"></script>
+    <script defer src="js/modules/gguf-renderer-actions.js?v=R60.24"></script>
     <!-- R57.5d-2 (2026-09-03): data refresh + active queries polling + downloads polling. -->
-    <script defer src="js/modules/gguf-renderer-refresh.js?v=1"></script>
+    <script defer src="js/modules/gguf-renderer-refresh.js?v=R60.24"></script>
     <!-- R57.5e (2026-09-03): delegated click handler + bindEvents + bindSettingsChange. -->
-    <script defer src="js/modules/gguf-renderer-detail.js?v=1"></script>
+    <script defer src="js/modules/gguf-renderer-detail.js?v=R60.24"></script>
     <!-- R57.5f (2026-09-03): right panel render functions (renderDetailPanel, 4 sub-panes, settings, backend options). -->
-    <script defer src="js/modules/gguf-renderer-detail-render.js?v=1"></script>
-    <script defer src="js/modules/gguf-renderer.js?v=24"></script>
-    <script defer src="js/modules/settings-ui.js?v=16"></script>
-    <script defer src="js/modules/config-io.js?v=16"></script>
-    <script defer src="js/modules/mode-wizard.js?v=16"></script>
-    <script defer src="js/modules/setup-wizard-presets.js?v=1"></script>
-    <script defer src="js/modules/setup-wizard.js?v=16"></script>
-    <script defer src="js/modules/cppworker-params.js?v=16"></script>
-    <script defer src="js/modules/bulk-models.js?v=16"></script>
-    <script defer src="js/modules/notifications.js?v=16"></script>
-    <script defer src="js/modules/logs-stream.js?v=16"></script>
+    <script defer src="js/modules/gguf-renderer-detail-render.js?v=R60.24"></script>
+    <script defer src="js/modules/gguf-renderer.js?v=R60.24"></script>
+    <script defer src="js/modules/settings-ui.js?v=R60.24"></script>
+    <script defer src="js/modules/config-io.js?v=R60.24"></script>
+    <script defer src="js/modules/mode-wizard.js?v=R60.24"></script>
+    <script defer src="js/modules/setup-wizard-presets.js?v=R60.24"></script>
+    <script defer src="js/modules/setup-wizard.js?v=R60.24"></script>
+    <script defer src="js/modules/cppworker-params.js?v=R60.24"></script>
+    <script defer src="js/modules/bulk-models.js?v=R60.24"></script>
+    <script defer src="js/modules/notifications.js?v=R60.24"></script>
+    <script defer src="js/modules/logs-stream.js?v=R60.24"></script>
     <!-- R57.2 (2026-09-03): app-core.js provides theme/density/i18n/AutoTune/showToast
          via window.App namespace. MUST be loaded BEFORE app.js (app.js init() calls App.*). -->
-    <script defer src="js/app-core.js?v=1"></script>
+    <script defer src="js/app-core.js?v=R60.24"></script>
     <!-- R57.3 (2026-09-03): app-listeners.js provides setup* functions (navigation,
          restart handler, WebSocket events, API events, logs tab navigation).
          Reads from window.App.context populated by app.js. -->
-    <script defer src="js/app-listeners.js?v=1"></script>
+    <script defer src="js/app-listeners.js?v=R60.24"></script>
     <!-- R57.4 (2026-09-03): app-modals.js provides Backend CRUD (openBackendModal,
          fillForm, closeModal, saveBackend, deleteBackend, editBackend,
          confirmDeleteBackend) via window.BackendCRUD. Loaded BEFORE app.js
          so window.ui public API can reference these at IIFE return time. -->
-    <script defer src="js/app-modals.js?v=1"></script>
-    <script defer src="js/app.js?v=19"></script>
+    <script defer src="js/app-modals.js?v=R60.24"></script>
+    <script defer src="js/app.js?v=R60.24"></script>
 </body>
 </html>

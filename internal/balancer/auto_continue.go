@@ -220,6 +220,26 @@ func GetAutoContinueMaxTokens() int {
 	return 1024
 }
 
+// GetAutoContinueTimeout — env override for the auto-continue
+// request's http.Client.Timeout. R60.25 fix: bumped default from
+// 60s to 10 minutes because long-form generation (code, math
+// articles, RAG-context) routinely exceeds 60s, and the original
+// main request's timeout has already expired by the time we get
+// here (so the model's load is fresh + warm but slow to first
+// byte). Set LB_AUTO_CONTINUE_TIMEOUT_SEC=600 to raise to 10min.
+// Set LB_AUTO_CONTINUE_TIMEOUT_SEC=0 to fall back to the previous
+// 60s default (NOT recommended for long code).
+func GetAutoContinueTimeout() time.Duration {
+	v := strings.TrimSpace(os.Getenv("LB_AUTO_CONTINUE_TIMEOUT_SEC"))
+	if v == "" {
+		return 600 * time.Second // R60.25 default: 10 minutes
+	}
+	if n, err := strconv.Atoi(v); err == nil && n >= 0 {
+		return time.Duration(n) * time.Second
+	}
+	return 600 * time.Second
+}
+
 // chatMessage — minimal struct for chat message. Both Ollama and
 // OpenAI APIs use this format for the "messages" field.
 type chatMessage struct {
@@ -257,7 +277,11 @@ func PerformAutoContinue(
 		httpClient = http.DefaultClient
 	}
 	if timeout <= 0 {
-		timeout = 60 * time.Second
+		// R60.25: default auto-continue timeout raised to 10 minutes
+		// (env override LB_AUTO_CONTINUE_TIMEOUT_SEC). 60s was the
+		// old default and too short for long-form code/RAG that the
+		// main request also took >60s to produce.
+		timeout = GetAutoContinueTimeout()
 	}
 
 	// 1. Parse original body

@@ -986,9 +986,16 @@ func (p *Proxy) proxyRequestLlamaCpp(w http.ResponseWriter, r *http.Request, bac
 				"api_path", originalPath,
 				"reason", reason,
 				"content_chars", len(finalContent))
+			// R60.25: use env-configured timeout (default 10 min, was
+			// hardcoded 60s which timed out on long code generation).
+			// The 60s default was the failure mode for "model emits
+			// unclosed code block, auto-continue triggers, but the
+			// continue request itself hits the same time limit and
+			// times out before the model finishes the continuation".
+			autoContTimeout := GetAutoContinueTimeout()
 			continuation, contEval, contErr := PerformAutoContinue(
 				fullURL, translatedBody, finalContent, reason,
-				&http.Client{Timeout: 60 * time.Second}, 60*time.Second)
+				&http.Client{Timeout: autoContTimeout}, autoContTimeout)
 			if contErr == nil && continuation != "" {
 				logger.Get().Infow("proxyRequestLlamaCpp: R60.21 auto-continue succeeded",
 					"backend", backendID, "model", modelFromCtx,

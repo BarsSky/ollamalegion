@@ -34,7 +34,7 @@ const modelOpTTL = 10 * time.Minute
 // NewModelManager — создание менеджера моделей
 func NewModelManager(proxy *Proxy) *ModelManager {
 	return &ModelManager{
-		proxy:     proxy,
+		proxy: proxy,
 		client: &http.Client{
 			Timeout: 10 * time.Minute, // pull/push могут быть долгими
 			Transport: &http.Transport{
@@ -49,12 +49,12 @@ func NewModelManager(proxy *Proxy) *ModelManager {
 
 // ModelOpRequest — запрос на выполнение операции с моделью
 type ModelOpRequest struct {
-	Operation  string `json:"operation"` // pull, push, delete, load, unload
-	ModelName  string `json:"modelName"`
-	ContextSize *int  `json:"contextSize,omitempty"` // optional: override n_ctx для загрузки
-	GPULayers   *int  `json:"gpuLayers,omitempty"`   // optional: override gpu_layers для загрузки
-	Insecure   bool   `json:"insecure,omitempty"`
-	Stream     bool   `json:"stream,omitempty"`
+	Operation   string `json:"operation"` // pull, push, delete, load, unload
+	ModelName   string `json:"modelName"`
+	ContextSize *int   `json:"contextSize,omitempty"` // optional: override n_ctx для загрузки
+	GPULayers   *int   `json:"gpuLayers,omitempty"`   // optional: override gpu_layers для загрузки
+	Insecure    bool   `json:"insecure,omitempty"`
+	Stream      bool   `json:"stream,omitempty"`
 	// Round 7: per-tensor override (parallel arrays) для MoE.
 	// Если заданы и согласованы по длине — load через /api/models/load-with-params.
 	OverrideTensors     []string `json:"overrideTensors,omitempty"`
@@ -94,16 +94,16 @@ type ModelInfo struct {
 	// Используются WebUI Models tab для корректных метрик в карточках
 	// (раньше показывались нули/прочерки потому что aggregator endpoint
 	// не пробрасывал эти поля из cppworker).
-	ContextLength  int    `json:"contextLength,omitempty"` // n_ctx
-	NumGPULayers   int    `json:"numGpuLayers,omitempty"`  // -1 = all, 0 = cpu only
-	BatchSize      int    `json:"batchSize,omitempty"`
-	Quantization   string `json:"quantization,omitempty"`
-	GGUFPath       string `json:"ggufPath,omitempty"`
-	State          string `json:"state,omitempty"` // loaded | loading | unloaded | error
-	Architecture   string `json:"architecture,omitempty"`
-	VRAMUsage      uint64 `json:"vramUsage,omitempty"` // MB (cppworker returns 0 — not tracked)
-	RAMUsage       uint64 `json:"ramUsage,omitempty"`  // MB (cppworker returns 0 — not tracked)
-	LoadedAt       string `json:"loadedAt,omitempty"`
+	ContextLength int    `json:"contextLength,omitempty"` // n_ctx
+	NumGPULayers  int    `json:"numGpuLayers,omitempty"`  // -1 = all, 0 = cpu only
+	BatchSize     int    `json:"batchSize,omitempty"`
+	Quantization  string `json:"quantization,omitempty"`
+	GGUFPath      string `json:"ggufPath,omitempty"`
+	State         string `json:"state,omitempty"` // loaded | loading | unloaded | error
+	Architecture  string `json:"architecture,omitempty"`
+	VRAMUsage     uint64 `json:"vramUsage,omitempty"` // MB (cppworker returns 0 — not tracked)
+	RAMUsage      uint64 `json:"ramUsage,omitempty"`  // MB (cppworker returns 0 — not tracked)
+	LoadedAt      string `json:"loadedAt,omitempty"`
 	// Architecture metadata (для VRAM/RAM split estimation на frontend).
 	// cppworker /api/models reports эти поля — пробрасываем в API.
 	NLayers    int `json:"nLayers,omitempty"`
@@ -328,27 +328,27 @@ func (mm *ModelManager) listLlamaCppModels(backend *types.Backend) ([]ModelInfo,
 	// Round 17+18: читаем /api/models (НЕ /api/models/loaded — он не реализован в cppworker).
 	// Используем для определения loaded state И для пробрасывания runtime полей.
 	type runtimeModel struct {
-		Name              string `json:"name"`
-		State             string `json:"state"`
-		Path              string `json:"path,omitempty"`
-		SizeBytes         int64  `json:"sizeBytes,omitempty"`
-		LoadingSizeBytes  int64  `json:"loadingSizeBytes,omitempty"` // cppworker: real file size (sizeBytes=0 для loaded)
-		ContextSize       int    `json:"contextSize,omitempty"`
-		GPULayers         int    `json:"gpuLayers,omitempty"`
-		BatchSize         int    `json:"batchSize,omitempty"`
-		Quantization      string `json:"quantization,omitempty"`
-		Architecture      string `json:"architecture,omitempty"`
-		VRAMUsage         uint64 `json:"vramUsage,omitempty"`
-		RAMUsage          uint64 `json:"ramUsage,omitempty"`
-		LoadedAt          string `json:"loadedAt,omitempty"`
+		Name             string `json:"name"`
+		State            string `json:"state"`
+		Path             string `json:"path,omitempty"`
+		SizeBytes        int64  `json:"sizeBytes,omitempty"`
+		LoadingSizeBytes int64  `json:"loadingSizeBytes,omitempty"` // cppworker: real file size (sizeBytes=0 для loaded)
+		ContextSize      int    `json:"contextSize,omitempty"`
+		GPULayers        int    `json:"gpuLayers,omitempty"`
+		BatchSize        int    `json:"batchSize,omitempty"`
+		Quantization     string `json:"quantization,omitempty"`
+		Architecture     string `json:"architecture,omitempty"`
+		VRAMUsage        uint64 `json:"vramUsage,omitempty"`
+		RAMUsage         uint64 `json:"ramUsage,omitempty"`
+		LoadedAt         string `json:"loadedAt,omitempty"`
 		// Round 18+: architecture metadata для оценки VRAM/RAM на frontend.
-		NLayers           int    `json:"nLayers,omitempty"`
-		NHeads            int    `json:"nHeads,omitempty"`
-		NKvHeads          int    `json:"nKvHeads,omitempty"`
-		HeadDimK          int    `json:"headDimK,omitempty"`
-		HeadDimV          int    `json:"headDimV,omitempty"`
-		NEmbd             int    `json:"nEmbd,omitempty"`
-		GGUFContextLength int    `json:"ggufContextLength,omitempty"`
+		NLayers           int `json:"nLayers,omitempty"`
+		NHeads            int `json:"nHeads,omitempty"`
+		NKvHeads          int `json:"nKvHeads,omitempty"`
+		HeadDimK          int `json:"headDimK,omitempty"`
+		HeadDimV          int `json:"headDimV,omitempty"`
+		NEmbd             int `json:"nEmbd,omitempty"`
+		GGUFContextLength int `json:"ggufContextLength,omitempty"`
 	}
 	loadedSet := make(map[string]bool)
 	// runtimeMap: ключ — basename (с .gguf и без), значение — runtime данные.
@@ -567,10 +567,10 @@ func (mm *ModelManager) executeLoad(host string, port int, backendID string, req
 	url := fmt.Sprintf("http://%s:%d/api/generate", host, port)
 
 	body := map[string]interface{}{
-		"model":     req.ModelName,
+		"model":      req.ModelName,
 		"keep_alive": "5m",
-		"prompt":    "", // пустой промпт для загрузки без генерации
-		"stream":    false,
+		"prompt":     "", // пустой промпт для загрузки без генерации
+		"stream":     false,
 	}
 
 	resp, err := mm.sendRawRequest("POST", url, body)
@@ -609,8 +609,8 @@ func (mm *ModelManager) executeLoad(host string, port int, backendID string, req
 // Параметры retry при 503 "model is loading" от cppworker — чтобы не отдавать
 // клиенту ошибку, если параллельный запрос уже инициировал загрузку.
 const (
-	llamaCppLoadMaxRetries     = 10               // ~30 секунд при retryInterval=3s
-	llamaCppLoadRetryInterval  = 3 * time.Second
+	llamaCppLoadMaxRetries    = 10 // ~30 секунд при retryInterval=3s
+	llamaCppLoadRetryInterval = 3 * time.Second
 	// Round 8 (2026-07-10): bumped default to 10 minutes. 21GB Qwen3-A3B takes
 	// ~7 min на A10, плюс пользовательские модели могут быть больше.
 	// Если клиент отвалится по timeout, graceful poll завершения
@@ -672,10 +672,10 @@ func isTimeoutError(err error) bool {
 // nil если polling превысил maxWait.
 //
 // Round 8 (2026-07-10): решает проблему "model loaded but client got timeout":
-//   1. cppworker начинает загружать 21GB модель (5-10 мин).
-//   2. balancer HTTP client timeout (default 120s) срабатывает.
-//   3. НО cppworker всё ещё грузит — polling показывает state="loading".
-//   4. По завершении cppworker state="loaded" — мы возвращаем success клиенту.
+//  1. cppworker начинает загружать 21GB модель (5-10 мин).
+//  2. balancer HTTP client timeout (default 120s) срабатывает.
+//  3. НО cppworker всё ещё грузит — polling показывает state="loading".
+//  4. По завершении cppworker state="loaded" — мы возвращаем success клиенту.
 //
 // Без этой логики клиент получал ошибку даже при успешной загрузке.
 func (mm *ModelManager) pollLoadCompletionUntilLoaded(
@@ -1041,6 +1041,15 @@ func (mm *ModelManager) executeLlamaCppLoad(host string, port int, backendID str
 
 // executeLlamaCppUnload — выгрузка модели из памяти на cppworker-бэкенде.
 // cppworker принимает POST /api/models/unload с ?name=... в query string.
+//
+// R60.32 (2026-09-10): после успешного unload ОБЯЗАТЕЛЬНО инвалидировать
+// state в balancer (NCtxReloadCoordinator.lastKnownNCtx=0 +
+// MetricsManager.UpdateLlamaCppModelUnloaded). Иначе R60.31 stickiness
+// (preflight_nctx.go:335-360) думает что модель ещё загружена с
+// n_ctx=4096, не триггерит reload → следующий запрос получает 502
+// от cppworker (модель не загружена). cppworker callback
+// /api/v1/internal/llama-model-unloaded НЕ вызывается автоматически
+// при unload — balancer должен явно инвалидировать state.
 func (mm *ModelManager) executeLlamaCppUnload(host string, port int, backendID string, req ModelOpRequest) *ModelOpResult {
 	safeName := urlPathEscape(req.ModelName)
 	url := fmt.Sprintf("http://%s:%d/api/models/unload?name=%s", host, port, safeName)
@@ -1058,6 +1067,16 @@ func (mm *ModelManager) executeLlamaCppUnload(host string, port int, backendID s
 	respBody, _ := io.ReadAll(resp.Body)
 
 	if resp.StatusCode >= 200 && resp.StatusCode < 300 {
+		// R60.32: invalidate balancer state so R60.31 stickiness knows
+		// the model is no longer loaded.
+		if mm.proxy != nil {
+			if coord := mm.proxy.GetNCtxReloadCoordinator(); coord != nil {
+				coord.SetLastKnownNCtx(backendID, 0)
+			}
+			if mmgr := mm.proxy.GetMetricsManager(); mmgr != nil {
+				mmgr.UpdateLlamaCppModelUnloaded(backendID, req.ModelName)
+			}
+		}
 		return &ModelOpResult{
 			Success:   true,
 			Operation: req.Operation,

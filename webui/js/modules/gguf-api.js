@@ -533,12 +533,20 @@ const GgufApi = (function () {
             });
         },
 
-        /** Unload a model */
-        async unloadModel(modelHandle) {
-            return request('/api/models/unload', {
-                method: 'POST',
-                body: JSON.stringify({ modelHandle: modelHandle })
-            });
+        /**
+         * Unload a model.
+         * R60.32 (2026-09-10): перенаправлено через balancer `manageModel`
+         * вместо прямого вызова cppworker `/api/models/unload`. cppworker
+         * ждёт `?name=...` query param, не JSON body `{modelHandle}`,
+         * что давало 400 "name query parameter is required".
+         *
+         * @param {string} backendId — backend ID (из current backend selector)
+         * @param {string} modelHandle — model name/path
+         */
+        async unloadModel(backendId, modelHandle) {
+            // R60.32: используем manageModel → POST /api/v1/backends/{id}/models
+            // вместо прямого вызова cppworker (который ждёт ?name=... query param).
+            return this.manageModel(backendId, 'unload', modelHandle);
         },
 
         /** List loaded models */
@@ -733,12 +741,25 @@ const GgufApi = (function () {
             });
         },
 
-        /** Unload a model on a specific backend cppworker */
+        /**
+         * Unload a model on a specific backend cppworker.
+         * R60.32 (2026-09-10): DEPRECATED — шёл напрямую к cppworker, что давало
+         * 400 "name query parameter is required" (cppworker ждёт ?name= query param,
+         * не JSON body {modelHandle}). Все admin-операции должны идти через
+         * balancer `/api/v1/backends/{id}/models`. Используйте `manageModel`
+         * или `unloadModel(backendId, modelHandle)` вместо этого.
+         *
+         * @deprecated R60.32 — use manageModel / unloadModel через balancer
+         */
         async unloadModelAt(baseUrl, modelHandle) {
-            return this.requestAt(baseUrl, '/api/models/unload', {
-                method: 'POST',
-                body: JSON.stringify({ modelHandle: modelHandle })
-            });
+            // R60.32: fallback на manageModel, но baseUrl извлекаем нельзя
+            // (нет маппинга url→backendId). Логируем warning, чтобы разработчики
+            // перешли на правильный API.
+            console.warn('R60.32: unloadModelAt is deprecated, use manageModel(backendId, "unload", name) instead');
+            // Если caller передал явный backendId в baseUrl (например /api/v1/gguf/backends/X),
+            // мы НЕ знаем backendId. Возвращаем 501 (Not Implemented) — caller должен
+            // перейти на manageModel.
+            return Promise.reject(new Error('R60.32: unloadModelAt deprecated, use manageModel(backendId, "unload", name)'));
         },
 
         /**

@@ -59,10 +59,13 @@ func TestNCtxReloadCoordinator_SetLastKnownNCtx(t *testing.T) {
 		t.Errorf("LastKnownNCtx after set = %d, want 8192", got)
 	}
 
-	// SetLastKnownNCtx игнорирует <= 0 (защита от garbage значений)
+	// R60.32 (2026-09-10): SetLastKnownNCtx(0) теперь СБРАСЫВАЕТ state
+	// в 0 (раньше был no-op). Это нужно для R60.31 stickiness
+	// чтобы при unload state инвалидировался и preflight триггерил
+	// reload. До R60.32 pre-existing bug — set 0 был silent no-op.
 	coord.SetLastKnownNCtx("backend-A", 0)
-	if got := coord.LastKnownNCtx("backend-A"); got != 8192 {
-		t.Errorf("LastKnownNCtx after set 0 = %d, want 8192 (unchanged)", got)
+	if got := coord.LastKnownNCtx("backend-A"); got != 0 {
+		t.Errorf("LastKnownNCtx after set 0 = %d, want 0 (R60.32 reset semantics)", got)
 	}
 }
 
@@ -479,9 +482,9 @@ func TestLoadNCtxReloadConfig_Round35c_EnvTunables(t *testing.T) {
 // здесь `bufSec=0` → effective 0, а не 60.
 func TestNCtxReloadConfig_PreflightTunables_Clamping(t *testing.T) {
 	tests := []struct {
-		name                       string
-		maxSec, mul, bufSec        int
-		wantMax, wantMul, wantBuf  int // expected effective values
+		name                      string
+		maxSec, mul, bufSec       int
+		wantMax, wantMul, wantBuf int // expected effective values
 	}{
 		// Note: defaults 0/0/0 — для multiplier и maxWait есть min-клампинг
 		// (1 и 5 соотв.). Buffer 0 сохраняется (явный 0).

@@ -117,13 +117,13 @@ type NCtxReloadConfig struct {
 
 func DefaultNCtxReloadConfig() NCtxReloadConfig {
 	return NCtxReloadConfig{
-		AutoReloadNCtx:             true,
-		AutoReloadMaxNCtx:          0,
-		AutoReloadVRAMSafetyFactor: 0.85,
-		AutoReloadTimeoutSec:       300,
-		AutoReloadAllowTools:       true,
-		PreflightEnabled:           true,
-		PreflightAsyncReload:       false, // sync по умолчанию (старое поведение)
+		AutoReloadNCtx:              true,
+		AutoReloadMaxNCtx:           0,
+		AutoReloadVRAMSafetyFactor:  0.85,
+		AutoReloadTimeoutSec:        300,
+		AutoReloadAllowTools:        true,
+		PreflightEnabled:            true,
+		PreflightAsyncReload:        false, // sync по умолчанию (старое поведение)
 		PreflightAsyncRetryAfterSec: 5,
 		// Round 35c: env-конфигурируемые polling timeouts для async load.
 		// Default 900s (15 min) cap + 2x multiplier покрывает A10 с 22GB Qwen3.6
@@ -362,10 +362,15 @@ func (c *NCtxReloadCoordinator) state(backendID string) *backendReloadState {
 	return s
 }
 
+// SetLastKnownNCtx — устанавливает lastKnownNCtx для бэкенда.
+//
+// R60.32 (2026-09-10): ранний возврат на nCtx <= 0 был БАГОМ —
+// R60.31 stickiness check (preflight_nctx.go:335-360) опирается на
+// state.CurrentNCtx, и при unload (nCtx=0) state оставался stale
+// (предыдущее loaded значение) → preflight думал "модель загружена"
+// → NoOp → следующий запрос получал 502 от cppworker (модель
+// реально не загружена). Теперь nCtx=0 сбрасывает state явно.
 func (c *NCtxReloadCoordinator) SetLastKnownNCtx(backendID string, nCtx int) {
-	if nCtx <= 0 {
-		return
-	}
 	s := c.state(backendID)
 	s.inflightMu.Lock()
 	s.lastKnownNCtx = nCtx
@@ -787,8 +792,8 @@ func (c *NCtxReloadCoordinator) DoReload(
 		// заточенные под оптимальную скорость и производительность - это mmap,
 		// flash_attention и настраивает gpu_layers -2". AdaptiveStrategy может
 		// переопределить (см. enrichReloadPayload).
-		"flashAttn":   -1,
-		"useMmap":     true,
+		"flashAttn": -1,
+		"useMmap":   true,
 		// Round 51.4 (2026-08-20): REMOVED `reason` field. cppworker's
 		// reloadModelRequest struct (cmd/cppworker/types.go:134) does NOT have
 		// a "reason" field. Go's json.Decoder rejects unknown fields with HTTP

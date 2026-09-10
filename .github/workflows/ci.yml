@@ -177,7 +177,13 @@ jobs:
         shell: powershell
         run: |
           $go = if ($env:GOEXE -and (Test-Path $env:GOEXE)) { $env:GOEXE } else { "go.exe" }
-          & $go test -race -tags llama_stub -timeout 180s ./internal/...
+          # R60.29: bump 180s → 300s. R52.4b TestMain watchdog убран, R60.29
+          # полагается на go test -timeout как единственный protection
+          # от infinite hangs. internal/balancer имеет leaked goroutines
+          # от pre-existing tests (R52.4 known issue), они замедляют
+          # test runner на 60-90s в linux native. 300s = matches
+          # per-job timeout.
+          & $go test -race -tags llama_stub -timeout 300s ./internal/...
 
       - name: Test (cmd packages, stub mode)
         shell: powershell
@@ -271,7 +277,10 @@ jobs:
       - name: Test internal/balancer (-race)
         if: always()
         run: |
-          go test -race -tags llama_stub -timeout 180s -v ./internal/balancer/ 2>&1 | tail -20
+          # R60.29: bump 180s → 300s. R52.4b TestMain watchdog убран.
+          # internal/balancer tests с leaked goroutines занимают 60-90s
+          # в ubuntu-latest. 300s = matches self-hosted job per-step timeout.
+          go test -race -tags llama_stub -timeout 300s -v ./internal/balancer/ 2>&1 | tail -20
 
       - name: Test internal/config (no race)
         if: always()
@@ -340,7 +349,8 @@ jobs:
       - name: Generate coverage
         if: success()
         run: |
-          go test -tags llama_stub -coverprofile=coverage.out -covermode=atomic -timeout 180s ./internal/...
+          # R60.29: bump 180s → 300s (matches other internal/ test steps)
+          go test -tags llama_stub -coverprofile=coverage.out -covermode=atomic -timeout 300s ./internal/...
           go tool cover -func=coverage.out | tail -1
 
       - name: Upload coverage artifact

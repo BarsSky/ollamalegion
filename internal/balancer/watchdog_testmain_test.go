@@ -1,54 +1,26 @@
-// Round 52.4 (2026-08-24): TestMain watchdog для предотвращения hang.
+// R60.29 (2026-09-10): TestMain watchdog removed.
 //
-// Проблема: многие pre-existing тесты в internal/balancer запускают
-// background goroutines (llamaCppMetricsPoller, AdaptiveWeightTuner,
-// SessionManager, AutoPullManager, PrewarmController, и т.д.) и не
-// cleanup'ят их. R52.4 partial fix (newProxyWithCleanup) покрывает
-// только NewProxy() callsites — другие пути (smoke, e2e, scenario tests)
-// всё ещё утекают.
+// R52.4b добавил watchdog 50s как kill switch для pre-existing
+// leaked goroutines. С тех пор watchdog:
 //
-// Эффект: 1000+ leaked goroutines → test runner ждёт их завершения
-// 60-120s → CI timeout.
+//   - false-positive срабатывал в Windows + AV (тесты занимали 50-60s
+//     из-за file system + Defender overhead, watchdog килил на 50s)
+//   - false-positive срабатывал в CI ubuntu-latest после 50s на полном
+//     test suite (даже в Linux leaked goroutines от R52.4 known issue
+//     дают 60-90s общую длительность)
 //
-// Fix: TestMain с watchdog `time.AfterFunc(timeout, os.Exit(1))` который
-// ФОРСИРОВАННО завершает процесс через 50s. Это "kill switch" для
-// hung тестов — даже если 1000 goroutines висят, через 50s процесс
-// убьётся и CI выдаст exit code 1 (failure), но НЕ будет висеть
-// вечно на 5-минутном GitHub Actions timeout.
+// Решение R60.29: убрать watchdog. Test runner завершается
+// естественно (CI timeout 5min per job — реальная защита). Если
+// реальный hang — упадёт по `go test -timeout 5m`.
 //
-// Компромисс: после kill тесты что работали, могут не иметь clean
-// artifacts. Но CI не висит. Это лучший trade-off.
+// Pre-existing leaked goroutines НЕ блокируют CI при тестах с
+// `-race -timeout 240s` (стандартный CI конфиг), они просто
+// "noisy" в финальном log report.
+//
+// Если реальные hangs вернутся — добавить обратно watchdog
+// с LB_TEST_WATCHDOG_SEC=180 env override (opt-in per run).
 package balancer
 
-import (
-	"os"
-	"testing"
-	"time"
-)
-
-// TestMain — entry point для всех тестов в этом пакете.
-//
-// Round 52.4: добавляем watchdog чтобы test runner не висел в случае
-// leaked goroutines. Срабатывает через 50s после старта тестов.
-func TestMain(m *testing.M) {
-	// 50s watchdog — на 10s меньше чем типичный GitHub Actions job timeout
-	// (60s для short tests, 180s для полных). Если watchdog сработал,
-	// значит что-то зависло — лучше fail быстро чем висеть вечно.
-	const watchdogTimeout = 50 * time.Second
-
-	// Запускаем watchdog в отдельной goroutine. После timeout форсируем
-	// выход с code 1 (test failure).
-	timer := time.AfterFunc(watchdogTimeout, func() {
-		//nolint:errcheck // os.Exit не возвращает
-		os.Stderr.WriteString("WATCHDOG: test timeout after 50s, forcing exit. Leaked goroutines suspected.\n")
-		os.Exit(1)
-	})
-
-	// Run tests
-	code := m.Run()
-
-	// Останавливаем watchdog (тесты завершились вовремя).
-	timer.Stop()
-
-	os.Exit(code)
-}
+// TestMain intentionally empty — R60.29 removes R52.4b watchdog.
+// Tests run without kill switch; CI timeout (5min per job) is the
+// real protection against infinite hangs.

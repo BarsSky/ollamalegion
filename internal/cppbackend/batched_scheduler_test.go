@@ -18,7 +18,6 @@ import (
 	"math"
 	"testing"
 	"time"
-	"unsafe"
 
 	"ollama-loadbalancer/c/bridge"
 	"ollama-loadbalancer/pkg/logger"
@@ -237,8 +236,13 @@ func TestBatchedSessionParams_Round15_2(t *testing.T) {
 	// в NewBatchedScheduler. Для unit-теста RegisterSession нам не нужен
 	// реальный model — мы только проверяем что state заполняется правильно.
 	// NewBatchedScheduler не вызывает model методы при RegisterSession.
+	// R60.30 (2026-09-10): используем реальный non-nil указатель на
+	// dummy struct вместо unsafe.Pointer(uintptr(1)) — это убирает
+	// vet warning "possible misuse of unsafe.Pointer" (uintptr не
+	// гарантирует что указатель валиден после GC).
+	var dummyModel bridge.ModelHandle
 	bs, _ := NewBatchedScheduler(BatchedSchedulerConfig{
-		Model:     (*bridge.ModelHandle)(unsafe.Pointer(uintptr(1))), // non-nil dummy
+		Model:     &dummyModel, // non-nil dummy (zero-value ModelHandle)
 		NParallel: 2,
 		WindowMs:  5,
 	})

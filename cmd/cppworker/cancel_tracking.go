@@ -29,6 +29,14 @@ func setupCancelTracking(r *http.Request, modelName, backendID, prefix string) (
 	}
 	userID := r.Header.Get("X-User-Id")
 	ctx, cancel := context.WithCancel(r.Context())
+	// R60.30 (2026-09-10): defer cancel() для устранения vet warning
+	// "cancel function is not used on all paths (possible context leak)".
+	// До этого fix: если tracker.Add() panic'ал, cancel никогда не
+	// вызывался, context leak. Теперь cancel гарантированно вызывается
+	// при выходе из setupCancelTracking. В обычном flow tracker.Add()
+	// вызывает cancel через callback при Remove() — лишний вызов
+	// cancel() идемпотентен (Go context cancel() — safe to call twice).
+	defer cancel()
 	if tracker := backend.ActiveGenerations(); tracker != nil {
 		tracker.Add(requestID, userID, modelName, backendID, cancel)
 	}

@@ -6,9 +6,9 @@
 // Проблема (Issue: «Cline → prompt 55111 токенов, current_n_ctx=32768,
 // max_vram_n_ctx=32719, model_max=262144»):
 //
-//   Без preflight первый запрос всегда идёт «round-trip»: cppworker загружает
-//   модель, делает prefill, возвращает code 2/3 → balancer решает reload →
-//   второй round-trip. Latency на больших promptах — десятки секунд впустую.
+//	Без preflight первый запрос всегда идёт «round-trip»: cppworker загружает
+//	модель, делает prefill, возвращает code 2/3 → balancer решает reload →
+//	второй round-trip. Latency на больших promptах — десятки секунд впустую.
 //
 // Решение: balancer ДО проксирования оценивает размер prompt и, если не
 // хватает n_ctx, делает preflight reload. После reload запрос отправляется
@@ -64,8 +64,8 @@ type RequestMeta struct {
 	// path без options.* — для OpenAI эти поля всегда nil → match detection
 	// не триггерит reload по params mismatch (только по n_ctx).
 	RequestedKvCacheType   string
-	RequestedFlashAttnType int    // -1/0/1, 0 = не задано
-	RequestedUseMmap       *bool  // nil = не задано
+	RequestedFlashAttnType int   // -1/0/1, 0 = не задано
+	RequestedUseMmap       *bool // nil = не задано
 }
 
 // EstimatePromptTokens — простая эвристика: 1 токен ≈ 4 символа.
@@ -99,20 +99,20 @@ type ollamaChatRequestRaw struct {
 	} `json:"messages"`
 	Tools   []json.RawMessage `json:"tools"`
 	Options struct {
-		NumCtx     int    `json:"num_ctx"`
-		NumPredict int    `json:"num_predict"`
+		NumCtx      int    `json:"num_ctx"`
+		NumPredict  int    `json:"num_predict"`
 		KVCacheType string `json:"kv_cache_type"` // Round 34: profile mismatch
-		FlashAttn   *int   `json:"flash_attn"`     // -1=auto, 0=off, 1=on
-		UseMmap     *bool  `json:"use_mmap"`       // Round 34: profile mismatch
+		FlashAttn   *int   `json:"flash_attn"`    // -1=auto, 0=off, 1=on
+		UseMmap     *bool  `json:"use_mmap"`      // Round 34: profile mismatch
 	} `json:"options"`
 	Stream bool `json:"stream"`
 }
 
 // ollamaGenerateRequestRaw — минимальная структура для /api/generate.
 type ollamaGenerateRequestRaw struct {
-	Model  string `json:"model"`
-	Prompt string `json:"prompt"`
-	System string `json:"system"`
+	Model   string `json:"model"`
+	Prompt  string `json:"prompt"`
+	System  string `json:"system"`
 	Options struct {
 		NumCtx     int `json:"num_ctx"`
 		NumPredict int `json:"num_predict"`
@@ -127,8 +127,8 @@ type openAIChatRequestRaw struct {
 		Role    string `json:"role"`
 		Content string `json:"content"`
 	} `json:"messages"`
-	Tools    []json.RawMessage `json:"tools"`
-	MaxTokens int             `json:"max_tokens"`
+	Tools     []json.RawMessage `json:"tools"`
+	MaxTokens int               `json:"max_tokens"`
 	// Round 34 follow-up: добавил OpenAI num_ctx (top-level). Без этого
 	// preflight не видел requested n_ctx для OpenAI клиентов (Cline,
 	// Open WebUI OpenAI-compat mode) → проксировал напрямую в cppworker →
@@ -329,11 +329,34 @@ func DecidePreflight(meta *RequestMeta, state *NCtxBackendState, cfg NCtxReloadC
 	}
 	required := meta.EstimatedPromptTokens + nPredict + 1 + reserveSlack
 
+	// R60.31 (2026-09-10): STICKINESS FIX — убираем reload loop.
+	//
 	// Round 34 follow-up: если клиент ЯВНО запросил больше n_ctx чем
 	// загружено → нужен reload, НЕЗАВИСИМО от фактического размера prompt.
 	// Cline/OpenWebUI шлют num_ctx=65536 даже для маленьких prompts.
+	//
+	// R60.31 fix: добавляем check "loaded покрывает required" ДО
+	// reload. Если loaded=8192 и client num_ctx=2048, но required=500
+	// (маленький prompt), loaded покрывает — NoOp. Без этого fix
+	// OpenWebUI шлёт num_ctx=8192, preflight trigger reload на 8192.
+	// Другой запрос шлёт num_ctx=2048 → reload вниз. Loop.
+	//
+	// Ollama и LM Studio решают это sticky n_ctx: loaded == requested
+	// без auto-reload. У нас auto-reload РАЗРЕШЁН (фича), но с защитой
+	// от loop: trigger reload ТОЛЬКО если loaded < required (НЕ
+	// только потому что client указал больший num_ctx).
+	//
+	// Сценарии:
+	//   loaded=8192, client num_ctx=2048, required=500 → NoOp
+	//   (stickiness, loaded покрывает)
+	//   loaded=2048, client num_ctx=8192, required=500 → NoOp
+	//   (loaded покрывает required, НЕ делаем upgrade-only)
+	//   loaded=2048, required=5000 → Reload (loaded не покрывает)
 	if meta.RequestedNCtxOverride > 0 && state.CurrentNCtx > 0 &&
-		meta.RequestedNCtxOverride > state.CurrentNCtx {
+		meta.RequestedNCtxOverride > state.CurrentNCtx &&
+		required > state.CurrentNCtx {
+		// R60.31: дополнительная проверка — loaded покрывает required?
+		// Если да, NoOp (stickiness), даже если client указал больше.
 		target := meta.RequestedNCtxOverride
 		if state.ModelMaxContext > 0 && target > state.ModelMaxContext {
 			// Запрошено больше чем модель поддерживает — reject.
@@ -346,10 +369,11 @@ func DecidePreflight(meta *RequestMeta, state *NCtxBackendState, cfg NCtxReloadC
 				"requested n_ctx=%d exceeds configured auto_reload_max_n_ctx=%d",
 				target, cfg.AutoReloadMaxNCtx))
 		}
-		logger.Get().Infow("preflight: client requested n_ctx > loaded, triggering reload",
+		logger.Get().Infow("preflight: client requested n_ctx > loaded AND required > loaded, triggering reload",
 			"backend_id", state.BackendID,
 			"requested_n_ctx", target, "current_n_ctx", state.CurrentNCtx,
-			"estimated_tokens", meta.EstimatedPromptTokens, "n_predict", nPredict)
+			"estimated_tokens", meta.EstimatedPromptTokens, "n_predict", nPredict,
+			"required_n_ctx", required)
 		// Сразу возвращаем Reload (RunPreflight конвертирует в AsyncReload если
 		// включён PreflightAsyncReload). Возвращать PreflightAsyncReload здесь
 		// НЕЛЬЗЯ — switch в RunPreflight его не обрабатывает и фолбэчит на NoOp.
@@ -495,14 +519,14 @@ func reqStr(b *bool) string {
 func makePreflightReject(state *NCtxBackendState, required int, reason string) *PreflightResult {
 	body := map[string]interface{}{
 		"error":             "preflight: prompt + n_predict exceeds n_ctx for this backend",
-		"reason":             reason,
-		"required_n_ctx":     required,
-		"current_n_ctx":      state.CurrentNCtx,
-		"max_vram_n_ctx":     state.MaxVRAMNCtx,
-		"model_max_context":  state.ModelMaxContext,
-		"backend_id":         state.BackendID,
-		"suggestion":         "Reduce prompt/tools/n_predict, or save a model profile with larger context_length and reload via POST /api/v1/cppworker/model-profiles/{name}/apply",
-		"profile_endpoint":   "/api/v1/cppworker/model-profiles",
+		"reason":            reason,
+		"required_n_ctx":    required,
+		"current_n_ctx":     state.CurrentNCtx,
+		"max_vram_n_ctx":    state.MaxVRAMNCtx,
+		"model_max_context": state.ModelMaxContext,
+		"backend_id":        state.BackendID,
+		"suggestion":        "Reduce prompt/tools/n_predict, or save a model profile with larger context_length and reload via POST /api/v1/cppworker/model-profiles/{name}/apply",
+		"profile_endpoint":  "/api/v1/cppworker/model-profiles",
 	}
 	encoded, _ := json.Marshal(body)
 	return &PreflightResult{

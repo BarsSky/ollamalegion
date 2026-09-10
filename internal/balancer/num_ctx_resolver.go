@@ -24,11 +24,11 @@ import (
 type NumCtxSource string
 
 const (
-	NumCtxSourceRequest      NumCtxSource = "request"       // из body (options.num_ctx или top-level num_ctx)
-	NumCtxSourceProfile      NumCtxSource = "profile"       // из per-model profile в config
-	NumCtxSourceBackend      NumCtxSource = "backend"       // из per-backend default CppWorkerConfig.ContextLength
-	NumCtxSourceLoadedModel  NumCtxSource = "loaded_model"  // из реально загруженной модели на бэкенде (metrics)
-	NumCtxSourceNone         NumCtxSource = "none"          // ничего не найдено (cppworker использует свой defaultCtxSize)
+	NumCtxSourceRequest     NumCtxSource = "request"      // из body (options.num_ctx или top-level num_ctx)
+	NumCtxSourceProfile     NumCtxSource = "profile"      // из per-model profile в config
+	NumCtxSourceBackend     NumCtxSource = "backend"      // из per-backend default CppWorkerConfig.ContextLength
+	NumCtxSourceLoadedModel NumCtxSource = "loaded_model" // из реально загруженной модели на бэкенде (metrics)
+	NumCtxSourceNone        NumCtxSource = "none"         // ничего не найдено (cppworker использует свой defaultCtxSize)
 )
 
 // ResolvedNumCtx — результат resolver'а.
@@ -309,6 +309,26 @@ func (p *Proxy) getModelLoadedCtxFromMetrics(backendID, modelName string) int {
 func (p *Proxy) ResolveNumCtx(modelName string, body []byte, backendID string) ResolvedNumCtx {
 	// Tier 1: из request body (наивысший приоритет)
 	if n := ExtractNumCtxFromBody(body); n > 0 {
+		// R60.37 (2026-09-10): если loaded n_ctx покрывает required
+		// (prompt + n_predict), patch body num_ctx до loaded чтобы
+		// cppworker не использовал меньшее значение. Без этого fix
+		// OpenWebUI шлёт options.num_ctx=2048, balancer ставит
+		// X-Cpp-Ctx: 2048 header, cppworker применяет 2048 при loaded=4096.
+		// Если required (prompt + n_predict) > 2048, overflow → 400.
+		//
+		// Stickiness: используем max(body_n_ctx, loaded_n_ctx) — НЕ
+		// downgrade к body n_ctx когда loaded уже >= required.
+		if p.nctxReload != nil {
+			loadedNCtx := p.nctxReload.LastKnownNCtx(backendID)
+			if loadedNCtx > 0 && loadedNCtx > n {
+				// R60.37: loaded > body — patch body к loaded.
+				// Это предотвращает cppworker overflow (loaded=4096, body=2048, prompt overflow).
+				logger.Get().Infow("ResolveNumCtx: R60.37 — body num_ctx < loaded, upgrading",
+					"model", modelName, "backend", backendID,
+					"body_n_ctx", n, "loaded_n_ctx", loadedNCtx)
+				n = loadedNCtx
+			}
+		}
 		// Clamp к потолку из profile (если задан).
 		// profile.ContextLength — это максимум, который поддерживает модель
 		// после partial GPU offload (зависит от VRAM).

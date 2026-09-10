@@ -160,7 +160,7 @@ func TestGetBackendDefaultNumCtx_OnlyLlamaCpp(t *testing.T) {
 		config: &types.LoadBalancerConfig{
 			Backends: []types.Backend{
 				{
-					ID:  "ollama-1",
+					ID:   "ollama-1",
 					Type: types.BackendTypeOllama,
 				},
 				{

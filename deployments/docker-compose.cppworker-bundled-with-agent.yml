@@ -96,9 +96,12 @@ services:
       # (cppworker estimation 3.5min × 2 + 60s = 8m), но реальная загрузка
       # 12+ min из-за CUDA_Host pinned memory alloc для 19GB+ весов.
       # Для 22GB+ Qwen3.6 на 3070 поднять: MAX_WAIT=1800, MULT=4, BUFFER=120.
-      - LB_NCTX_PREFLIGHT_MAX_WAIT_SEC=${LB_NCTX_PREFLIGHT_MAX_WAIT_SEC:-900}
-      - LB_NCTX_PREFLIGHT_WAIT_MULTIPLIER=${LB_NCTX_PREFLIGHT_WAIT_MULTIPLIER:-2}
-      - LB_NCTX_PREFLIGHT_WAIT_BUFFER_SEC=${LB_NCTX_PREFLIGHT_WAIT_BUFFER_SEC:-60}
+      # R60.28 (2026-09-10): bump max_wait formula для 22GB+ Q4_K_M MoE
+      # на CPU offload. До: 2*est+60s = 1m59s (failed load 22GB @ 146s).
+      # После: 3*est+300s = 5+ мин, cap 1800s. См. R60.28 commit message.
+      - LB_NCTX_PREFLIGHT_MAX_WAIT_SEC=${LB_NCTX_PREFLIGHT_MAX_WAIT_SEC:-1800}
+      - LB_NCTX_PREFLIGHT_WAIT_MULTIPLIER=${LB_NCTX_PREFLIGHT_WAIT_MULTIPLIER:-3}
+      - LB_NCTX_PREFLIGHT_WAIT_BUFFER_SEC=${LB_NCTX_PREFLIGHT_WAIT_BUFFER_SEC:-300}
     # Round 51.6 (2026-08-20): env_file — auto-loads .env.bundled-with-agent
     # в контейнер. Раньше приходилось передавать --env-file явно, и при
     # свежем деплое docker compose подхватывал старый .env (без

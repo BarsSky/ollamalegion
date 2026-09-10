@@ -138,9 +138,20 @@ func recordLatency(state *BackendState, latencyMs int64, model string, success b
 	}
 
 	// Пересчитываем adaptiveTimeout
-	baseTimeout := state.Backend.RequestTimeout
+	//
+	// R60.26 (2026-09-10): baseTimeout теперь берётся из getRequestTimeout()
+	// (ENV override или 0 = no timeout) вместо state.Backend.RequestTimeout
+	// (per-backend legacy, default 600 из config.json). Без этого фикса
+	// AdaptiveTimeout вычислялся бы на основе старого 600s, и
+	// getEffectiveTimeout(state, 0) вернул бы state.AdaptiveTimeout = 600
+	// → context.WithTimeout(600s) → старый timeout behavior.
+	baseTimeout := int(getRequestTimeout().Seconds())
 	if baseTimeout <= 0 {
-		baseTimeout = 120 // fallback — будет заменён глобальным в getEffectiveTimeout
+		// R60.26: default = 0 (no timeout). computeAdaptiveTimeout
+		// min/max зависят от baseTimeout — если base=0, math.Ceil(0*0.5)=0
+		// и adaptiveSec=0 → state.AdaptiveTimeout не обновится
+		// (newTimeout <= 0 → skip). Это и хотим: никакого adaptive cap.
+		baseTimeout = 1 // sentinel: computeAdaptiveTimeout min=1, max=1 → returns 0..1
 	}
 	newTimeout := computeAdaptiveTimeout(state.LatencyHistory, baseTimeout)
 	if newTimeout > 0 {
@@ -204,4 +215,3 @@ func ResetTimeNowForTest() {
 func timeSince(t time.Time) int64 {
 	return int64(timeNow().Sub(t).Seconds())
 }
-

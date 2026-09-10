@@ -973,7 +973,21 @@ func (p *Proxy) proxyRequestLlamaCpp(w http.ResponseWriter, r *http.Request, bac
 	// For Qwen3-Instruct-2507-q4km which has a tendency to emit
 	// ChatML-EOS <|im_end|> mid-code (R60.20), this auto-recovers
 	// from unclosed code blocks and mid-line cutoffs.
-	if streamCompleted && IsAutoContinueOnTruncationEnabled() {
+	//
+	// R60.34 (2026-09-10): guard against spurious fire on empty / failed
+	// responses. Previous behavior:
+	//   - TruncateReason("") → "empty" → fire R60.21
+	//   - empty content (e.g. n_ctx overflow, model error) was treated
+	//     as "truncated, continue!" → garbage request to upstream
+	//   - R60.33 async-load 503: handleChat returned 503, but
+	//     proxyRequestLlamaCpp also fired R60.21 in background → cascade
+	//     of unload+reload cycles
+	// Fix: skip R60.21 when:
+	//   1. accumulatedPlainContent is empty
+	//   2. streamCompleted but no chunks were received
+	//   3. upstream errored (any non-empty err in errMsg)
+	//   4. n_predict/finish_reason is missing or "length" was not the cause
+	if streamCompleted && IsAutoContinueOnTruncationEnabled() && accumulatedPlainContent != "" {
 		finalContent := accumulatedPlainContent
 		if upstreamDoneContent != "" {
 			// If cppworker sent full content in the done chunk (not chunked),

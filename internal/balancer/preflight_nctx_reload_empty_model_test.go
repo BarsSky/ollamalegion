@@ -55,7 +55,7 @@ func TestPreflightNCtxReload_EmptyModel_SkipsPreflight(t *testing.T) {
 	// Reload НЕ должен был вызваться (даже через 200ms wait).
 	time.Sleep(200 * time.Millisecond)
 	if got := len(*reloadCalls); got != 0 {
-		t.Errorf("expected 0 reload calls (empty modelName → skip preflight), got %d", got, *reloadCalls)
+		t.Errorf("expected 0 reload calls (empty modelName → skip preflight), got %d", got)
 	}
 }
 

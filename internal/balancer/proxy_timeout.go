@@ -30,6 +30,43 @@ func isStreamingNeverTimeout() bool {
 	return false
 }
 
+// getRequestTimeout — R60.26 (2026-09-10): ENV-configurable request timeout.
+//
+// Принцип R60.26: timeout — это opt-in через ENV, default = 0 (no timeout).
+// Убираем "magic number" поведение из config.json: даже если
+// config.Balancing.RequestTimeout=600 явно стоит, без ENV balancer
+// НЕ применяет его. Это гарантирует что long-running генерация
+// (Qwen3-7B на CPU offload, 4-5 tok/s, 4096 tokens = 14 мин) не
+// обрывается по "мы ждали 10 мин и нам надоело".
+//
+// Семантика (приоритеты):
+//  1. LB_STREAMING_NEVER_TIMEOUT=1 → 0 (highest priority, disables all)
+//  2. LB_REQUEST_TIMEOUT_SEC=N>0 → N seconds (explicit opt-in)
+//  3. LB_REQUEST_TIMEOUT_SEC=0 / "" / invalid / negative → 0 (default disabled)
+//
+// Caller: getGlobalRequestTimeout (через effectiveTimeout для non-streaming
+// path в proxy_request.go:209). config.json: requestTimeout остаётся
+// для backward compat, но в R60.26 ИГНОРИРУЕТСЯ без явного ENV.
+//
+// Use case:
+//   - Default deployment: работает без таймаутов, ждёт реальной работы
+//   - LB_REQUEST_TIMEOUT_SEC=1800: hard cap 30 мин (escape hatch)
+//   - LB_STREAMING_NEVER_TIMEOUT=1: ВСЕ таймауты выключены (highest)
+func getRequestTimeout() time.Duration {
+	if isStreamingNeverTimeout() {
+		return 0
+	}
+	v := strings.TrimSpace(os.Getenv("LB_REQUEST_TIMEOUT_SEC"))
+	if v == "" {
+		return 0 // R60.26: default disabled (no magic number)
+	}
+	n, err := strconv.Atoi(v)
+	if err != nil || n < 0 {
+		return 0 // invalid / negative → default disabled
+	}
+	return time.Duration(n) * time.Second
+}
+
 // getEnvIdleTimeoutSec — R60.18 F1: helper для чтения LB_STREAMING_IDLE_TIMEOUT_SEC.
 //
 // До R60.18 этот env var был phantom — документирован в
@@ -317,18 +354,25 @@ func (p *Proxy) getGlobalStreamingIdleTimeout() time.Duration {
 	return time.Duration(sec) * time.Second
 }
 
-// getGlobalRequestTimeout — глобальный таймаут non-streaming (или дефолт 120s).
+// getGlobalRequestTimeout — глобальный таймаут non-streaming.
 //
 // R58.1: LB_STREAMING_NEVER_TIMEOUT=1 → 0 (= "no request timeout").
+//
+// R60.26 (2026-09-10): убираем "magic number" default. Вместо hardcoded
+// 120s → R60.26 default = 0 (no timeout). config.json: requestTimeout
+// ИГНОРИРУЕТСЯ без явного ENV (LB_REQUEST_TIMEOUT_SEC). Приоритет:
+//  1. LB_STREAMING_NEVER_TIMEOUT=1 → 0
+//  2. LB_REQUEST_TIMEOUT_SEC=N → N seconds
+//  3. (default) → 0 (R60.26: no magic number, no timeout)
+//
+// config.json: requestTimeout остаётся для backward compat, но если
+// оператор хочет 600s — должен поставить LB_REQUEST_TIMEOUT_SEC=600 явно.
+// Это и есть "ожидание реальной работы а не надежда что за выделенное
+// время все успеет пройти" (R60.26 design).
 func (p *Proxy) getGlobalRequestTimeout() time.Duration {
-	if isStreamingNeverTimeout() {
-		return 0
-	}
-	sec := p.config.Balancing.RequestTimeout
-	if sec <= 0 {
-		return 120 * time.Second
-	}
-	return time.Duration(sec) * time.Second
+	// R60.26: ENV override (через getRequestTimeout) — ВЫШЕ чем config.json.
+	// Возвращает 0 если не задан. config.RequestTimeout ИГНОРИРУЕТСЯ.
+	return getRequestTimeout()
 }
 
 // getGlobalFirstByteTimeout — глобальный таймаут первого байта (или дефолт 900s).

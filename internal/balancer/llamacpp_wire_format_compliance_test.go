@@ -43,7 +43,7 @@ func TestWireFormat_ChatStreaming_FullSchema(t *testing.T) {
 	var ndjsonChunks []map[string]interface{}
 
 	for _, raw := range chunks {
-		result := translateOpenAISSEDataToOllama("/api/chat", []byte(raw), "test-model", &seenReasoning, streamStart, time.Time{}, time.Time{})
+		result := translateOpenAISSEDataToOllama("/api/chat", []byte(raw), "test-model", &seenReasoning, streamStart, time.Time{})
 		if result == nil {
 			continue
 		}

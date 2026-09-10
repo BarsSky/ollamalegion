@@ -205,8 +205,14 @@ func (p *Proxy) proxyRequest(w http.ResponseWriter, r *http.Request, backendID s
 		"backend", backendID, "method", r.Method, "path", r.URL.Path,
 		"model", modelFromCtx, "is_streaming", isStreamingRequest)
 
-	// Вычисляем эффективный таймаут для этого бэкенда (адаптивный / per-backend / глобальный)
-	effectiveTimeout := getEffectiveTimeout(state, p.config.Balancing.RequestTimeout)
+	// Вычисляем эффективный таймаут для этого бэкенда (адаптивный / per-backend / глобальный).
+	//
+	// R60.26 (2026-09-10): вместо config.Balancing.RequestTimeout (legacy, 600s)
+	// используем getRequestTimeout() — ENV override или 0 (disabled).
+	// Это убирает "magic number" поведение: timeout только если оператор
+	// явно поставил LB_REQUEST_TIMEOUT_SEC. config.json: requestTimeout
+	// остаётся для backward compat, но ИГНОРИРУЕТСЯ без ENV.
+	effectiveTimeout := getEffectiveTimeout(state, int(getRequestTimeout().Seconds()))
 	logger.Get().Debugw("proxyRequest: effective timeout",
 		"backend", backendID, "timeout_sec", effectiveTimeout, "model", modelFromCtx)
 

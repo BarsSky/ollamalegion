@@ -31,8 +31,14 @@ func newTestProxyForTimeout() *Proxy {
 }
 
 // TestProxy_LBStreamingNeverTimeout_Defaults — без ENV возвращаются defaults.
+//
+// R60.26 (2026-09-10): getGlobalRequestTimeout default изменён с 120s на 0
+// (no timeout). Это убирает "magic number" поведение из config.json:
+// timeout — opt-in через ENV, default disabled. Остальные 3 функции
+// сохранили defaults (stream=600, idle=120, firstByte=900).
 func TestProxy_LBStreamingNeverTimeout_Defaults(t *testing.T) {
 	os.Unsetenv("LB_STREAMING_NEVER_TIMEOUT")
+	os.Unsetenv("LB_REQUEST_TIMEOUT_SEC")
 	p := newTestProxyForTimeout()
 
 	if got := p.getGlobalStreamTimeout(); got != 600*time.Second {
@@ -41,8 +47,9 @@ func TestProxy_LBStreamingNeverTimeout_Defaults(t *testing.T) {
 	if got := p.getGlobalStreamingIdleTimeout(); got != 120*time.Second {
 		t.Errorf("getGlobalStreamingIdleTimeout() = %v, want 120s (default)", got)
 	}
-	if got := p.getGlobalRequestTimeout(); got != 120*time.Second {
-		t.Errorf("getGlobalRequestTimeout() = %v, want 120s (default)", got)
+	// R60.26: requestTimeout default = 0 (was 120s). Timeout — opt-in через ENV.
+	if got := p.getGlobalRequestTimeout(); got != 0 {
+		t.Errorf("getGlobalRequestTimeout() = %v, want 0 (R60.26 default disabled)", got)
 	}
 	if got := p.getGlobalFirstByteTimeout(); got != 900*time.Second {
 		t.Errorf("getGlobalFirstByteTimeout() = %v, want 900s (default)", got)
@@ -80,12 +87,12 @@ func TestProxy_LBStreamingNeverTimeout_PerModel(t *testing.T) {
 		config: &types.LoadBalancerConfig{
 			Balancing: types.BalancingSettings{
 				StreamTimeout:        600, // 10m global default
-				StreamingIdleTimeout:  120, // 2m
+				StreamingIdleTimeout: 120, // 2m
 			},
 			LlamaCppModelProfiles: map[string]types.LlamaCppModelProfile{
 				"qwen3-8b": {
 					StreamingTimeoutSec:     3600, // 1h per-model override
-					StreamingIdleTimeoutSec:  600, // 10m per-model override
+					StreamingIdleTimeoutSec: 600,  // 10m per-model override
 				},
 			},
 		},

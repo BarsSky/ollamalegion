@@ -206,6 +206,23 @@ func IsAutoContinueOnTruncationEnabled() bool {
 	return v == "1" || v == "true" || v == "yes"
 }
 
+// IsAutoLoadAsyncEnabled — R60.33 (2026-09-10): если true (default),
+// auto-load запускается в goroutine и balancer сразу возвращает
+// 503+Retry-After (вместо sync wait 3 мин). Это решает проблему
+// OpenWebUI/Cline timeout 60-120s на cold start (sync load = 3 мин
+// → connection aborted → JSON parse error).
+//
+// Set LB_AUTO_LOAD_ASYNC=0 для legacy sync поведения (long-running
+// requests, debug).
+func IsAutoLoadAsyncEnabled() bool {
+	v := strings.ToLower(strings.TrimSpace(os.Getenv("LB_AUTO_LOAD_ASYNC")))
+	// Default = true. Только explicit "0"/"false"/"no" отключают.
+	if v == "0" || v == "false" || v == "no" {
+		return false
+	}
+	return true
+}
+
 // GetAutoContinueMaxTokens — env override for max tokens in the
 // continue request. Default 1024 (enough for code completion).
 // Set LB_AUTO_CONTINUE_MAX_TOKENS=2048 to allow longer continuations.

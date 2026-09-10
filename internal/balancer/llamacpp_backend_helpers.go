@@ -435,12 +435,40 @@ func (lr *LlamaCppRouter) ensureModelLoadedOnBackend(backendID, modelName string
 	ridLog(lr_recentCtx()).Infow("ensureModelLoadedOnBackend: auto-loading model",
 		"backend", backendID, "model", modelName, "step", "execute_op=load",
 		"numCtx", ctxSize, "gpuLayers", gpuLayers)
-	result := mm.ExecuteOperation(backendID, ModelOpRequest{
+
+	// R60.33 (2026-09-10): async auto-load. По умолчанию auto-load
+	// запускается в goroutine и balancer сразу возвращает 503+Retry-After
+	// (вместо sync wait 3 мин). OpenWebUI/Cline timeout 60-120s → JSON parse
+	// error на sync пути. Клиент retry-ит → следующий запрос видит
+	// загруженную модель → 200.
+	//
+	// Sync mode (LB_AUTO_LOAD_ASYNC=0) для debug / long-running клиентов.
+	opReq := ModelOpRequest{
 		Operation:   "load",
 		ModelName:   modelName,
 		ContextSize: ctxSize,
 		GPULayers:   gpuLayers,
-	})
+	}
+	if lr.proxy.lbAutoLoadAsync {
+		// Async mode: kick off load in goroutine, return immediately.
+		// mm.ExecuteOperation handles dedup (mm.activeOps), state update (R60.32),
+		// and the load_unload / circuit-breaker logic. The caller gets a
+		// sentinel error that the HTTP handler maps to 503+Retry-After.
+		ridLog(lr_recentCtx()).Infow("ensureModelLoadedOnBackend: async auto-load (R60.33)",
+			"backend", backendID, "model", modelName, "mode", "async")
+		go func() {
+			result := mm.ExecuteOperation(backendID, opReq)
+			if !result.Success {
+				ridLog(lr_recentCtx()).Warnw("ensureModelLoadedOnBackend: async load failed",
+					"backend", backendID, "model", modelName, "error", result.Error)
+			} else {
+				ridLog(lr_recentCtx()).Infow("ensureModelLoadedOnBackend: async load complete",
+					"backend", backendID, "model", modelName)
+			}
+		}()
+		return false, fmt.Errorf("model %q auto-load in progress, retry in 30s", modelName)
+	}
+	result := mm.ExecuteOperation(backendID, opReq)
 
 	if !result.Success {
 		errStr := strings.ToLower(result.Error)

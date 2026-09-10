@@ -68,6 +68,12 @@ type Proxy struct {
 	// когда upstream (cppworker) возвращает ErrNCtxNeedsReload.
 	nctxReload *NCtxReloadCoordinator
 
+	// lbAutoLoadAsync — R60.33 (2026-09-10): если true, auto-load
+	// запускается в goroutine и balancer сразу возвращает 503+Retry-After
+	// (вместо sync wait 3 мин). default=true. env LB_AUTO_LOAD_ASYNC=0
+	// → legacy sync.
+	lbAutoLoadAsync bool
+
 	// R54.4 (2026-08-24): AutoTune tracker — circuit breakers per (backend, model).
 	// Защищает от reload storm когда AutoTune fix не удаётся.
 	// Инициализируется lazily в triggerAutoTuneReload (нулевый указатель = default cfg).
@@ -240,6 +246,11 @@ func NewProxy(config *types.LoadBalancerConfig) *Proxy {
 		recentClients: make(map[string]*types.RecentClient),
 		trustedNets:   parseTrustedProxyCIDRs(config.LoadBalancer.TrustedProxies),
 		warmupSem:     make(chan struct{}, maxConcurrentWarmups(config)),
+		// R60.33 (2026-09-10): default async auto-load. Sync mode (legacy)
+		// доступен через env LB_AUTO_LOAD_ASYNC=0. Async mode решает
+		// проблему OpenWebUI timeout 60-120s на cold start (sync load = 3 мин
+		// → connection aborted → JSON parse error).
+		lbAutoLoadAsync: true,
 
 		// Клиент для обычных запросов: Timeout=0 (без глобального), т.к. таймаут
 		// задаётся per-request через context.WithTimeout в proxyRequest

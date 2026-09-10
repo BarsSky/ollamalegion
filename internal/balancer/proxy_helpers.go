@@ -92,6 +92,35 @@ func writeServiceUnavailable(w http.ResponseWriter, errMsg string, retryAfterSec
 	_ = json.NewEncoder(w).Encode(map[string]string{"error": errMsg})
 }
 
+// writeAutoLoadRetryAfter — R60.33 (2026-09-10): вычисляет правильный
+// Retry-After в зависимости от причины auto-load failure. Если load
+// идёт async (R60.33) — 30s (модель загрузится). Если failed
+// (circuit breaker и т.д.) — больше.
+//
+// ВСЕГДА возвращает >=1 (writeServiceUnavailable default 30s, но
+// мы explicit ставим правильное значение для ясности).
+func writeAutoLoadRetryAfter(loadErr error) int {
+	if loadErr == nil {
+		return 30
+	}
+	errStr := loadErr.Error()
+	// R60.33 async mode: модель в процессе загрузки. Клиент retry
+	// через 30s (типичное время load Qwen3-7B).
+	if strings.Contains(errStr, "auto-load in progress") {
+		return 30
+	}
+	// R60.6 async-reload: n_ctx reload. 30s.
+	if strings.Contains(errStr, "n_ctx reload") {
+		return 30
+	}
+	// R60.26 circuit breaker: 60s (backoff).
+	if strings.Contains(errStr, "circuit breaker open") {
+		return 60
+	}
+	// Default 30s.
+	return 30
+}
+
 // copyResponse — copy headers + status + body from an upstream http.Response
 // to the client ResponseWriter. Closes the upstream body when done. Used for
 // proxying raw responses from cppworker / llama.cpp backends when no body
@@ -135,8 +164,8 @@ func copyResponse(w http.ResponseWriter, resp *http.Response) {
 //
 // Replaces two near-identical implementations that differed only in HTTP
 // client timeout:
-//   • OllamaRouter: 30s (Ollama is fast, no long-poll endpoints)
-//   • LlamaCppRouter: 120s (Round 21 — /api/show, /api/pull, /api/create
+//   - OllamaRouter: 30s (Ollama is fast, no long-poll endpoints)
+//   - LlamaCppRouter: 120s (Round 21 — /api/show, /api/pull, /api/create
 //     trigger cppworker lazy-load which can take 50-70s for 5GB models)
 //
 // Each router's proxyHTTP is now a thin wrapper that calls this with the

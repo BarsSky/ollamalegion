@@ -113,7 +113,7 @@ func (lr *LlamaCppRouter) handleOpenAIChatCompletions(w http.ResponseWriter, r *
 			// async-reload Retry-After.
 			writeServiceUnavailable(w,
 				fmt.Sprintf("model '%s' is not loaded and auto-load failed: %v", model, loadErr),
-				0)
+				writeAutoLoadRetryAfter(loadErr))
 			return
 		}
 	}
@@ -863,12 +863,12 @@ func writeStreamErrorChunk(w http.ResponseWriter, originalPath, modelFromCtx, er
 	case "/api/generate":
 		// Ollama /api/generate: NDJSON done-чанк
 		msg := map[string]interface{}{
-			"model":      modelFromCtx,
-			"created_at": time.Now().UTC().Format(time.RFC3339),
-			"done":       true,
+			"model":       modelFromCtx,
+			"created_at":  time.Now().UTC().Format(time.RFC3339),
+			"done":        true,
 			"done_reason": "error",
-			"error":      errorMsg,
-			"response":   "",
+			"error":       errorMsg,
+			"response":    "",
 		}
 		out, _ := json.Marshal(msg)
 		_, _ = fmt.Fprintf(w, "%s\n", string(out))
@@ -876,12 +876,12 @@ func writeStreamErrorChunk(w http.ResponseWriter, originalPath, modelFromCtx, er
 	default:
 		// /api/chat + fallback: Ollama NDJSON done-чанк
 		msg := map[string]interface{}{
-			"model":      modelFromCtx,
-			"created_at": time.Now().UTC().Format(time.RFC3339),
-			"done":       true,
+			"model":       modelFromCtx,
+			"created_at":  time.Now().UTC().Format(time.RFC3339),
+			"done":        true,
 			"done_reason": "error",
-			"error":      errorMsg,
-			"message":    map[string]interface{}{"role": "assistant", "content": ""},
+			"error":       errorMsg,
+			"message":     map[string]interface{}{"role": "assistant", "content": ""},
 		}
 		out, _ := json.Marshal(msg)
 		_, _ = fmt.Fprintf(w, "%s\n", string(out))

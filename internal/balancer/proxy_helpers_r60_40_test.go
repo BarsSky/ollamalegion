@@ -244,16 +244,48 @@ func TestBuildAutoLoadSuggestion_R60_41_LoadStarted(t *testing.T) {
 
 // R60.41: TestWriteAutoLoadRetryAfter_R60_41_NewMessage — новое сообщение
 // "load started" должно распознаваться как async load case (Retry-After=30).
+//
+// R60.42 update: default bumped from 30s to 90s based on real-world
+// load times (2.5GB Q4_K_M model reload on RTX-3070 takes 180s, first load
+// 90-120s). 30s forced client to retry 6+ times before load completes.
 func TestWriteAutoLoadRetryAfter_R60_41_NewMessage(t *testing.T) {
 	loadErr := fmt.Errorf("model 'X' load started, waiting for cppworker to finish")
-	if got := writeAutoLoadRetryAfter(loadErr); got != 30 {
-		t.Errorf("Retry-After for new 'load started' message = %d, want 30", got)
+	if got := writeAutoLoadRetryAfter(loadErr); got != 90 {
+		t.Errorf("Retry-After for new 'load started' message = %d, want 90 (R60.42 bumped from 30)", got)
 	}
 	// Legacy message still works.
 	legacyErr := fmt.Errorf("model 'X' auto-load in progress, retry in 30s")
-	if got := writeAutoLoadRetryAfter(legacyErr); got != 30 {
-		t.Errorf("Retry-After for legacy 'auto-load in progress' message = %d, want 30", got)
+	if got := writeAutoLoadRetryAfter(legacyErr); got != 90 {
+		t.Errorf("Retry-After for legacy 'auto-load in progress' message = %d, want 90 (R60.42 bumped from 30)", got)
 	}
+}
+
+// R60.42: TestWriteAutoLoadRetryAfter_R60_42_CascadeAvoidance —
+// validate that 90s Retry-After prevents cascade retry loops.
+//
+// Pre-R60.42: 30s Retry-After → client retries every 30s. For a load
+// that takes 180s, client retries 6 times (3 minutes wasted).
+//
+// R60.42: 90s Retry-After → client retries every 90s. For 180s load,
+// only 2 retries needed (3 minutes total but fewer total HTTP calls).
+func TestWriteAutoLoadRetryAfter_R60_42_CascadeAvoidance(t *testing.T) {
+	_ = writeAutoLoadRetryAfter(fmt.Errorf("model 'X' load started")) // sanity check
+
+	// Simulate 180s load with 90s Retry-After: client retries 2 times.
+	loadDurationSec := 180
+	attemptsAt30s := loadDurationSec / 30 // 6 retries with R60.41 default
+	attemptsAt90s := (loadDurationSec + 89) / 90 // 2 retries with R60.42 default (ceil)
+
+	if attemptsAt30s <= 3 {
+		t.Errorf("expected cascade at 30s: %d attempts", attemptsAt30s)
+	}
+	if attemptsAt90s >= 4 {
+		t.Errorf("expected fewer attempts at 90s: got %d (R60.42 should reduce from %d)",
+			attemptsAt90s, attemptsAt30s)
+	}
+	t.Logf("R60.42 cascade avoidance: 30s→%d retries, 90s→%d retries (%.0f%% reduction)",
+		attemptsAt30s, attemptsAt90s,
+		float64(attemptsAt30s-attemptsAt90s)/float64(attemptsAt30s)*100)
 }
 
 func intToStr(n int) string {

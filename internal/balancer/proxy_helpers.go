@@ -151,13 +151,13 @@ func writeServiceUnavailableWithDiagnostics(w http.ResponseWriter, diag ServiceU
 	// Вычисляем Retry-After:
 	//   1. diag.RetryAfterSec > 0 → use it
 	//   2. diag.EstimatedLoadMs > 0 → use EstimatedLoadMs / 1000 (capped)
-	//   3. default → 30
+	//   3. default → 90 (R60.42: bumped from 30s based on real load times)
 	retryAfterSec := diag.RetryAfterSec
 	if retryAfterSec <= 0 && diag.EstimatedLoadMs > 0 {
 		retryAfterSec = clampEstimatedMsToRetryAfter(diag.EstimatedLoadMs)
 	}
 	if retryAfterSec <= 0 {
-		retryAfterSec = 30
+		retryAfterSec = 90
 	}
 
 	// Build JSON body with omitempty (только заполненные поля попадают в ответ).
@@ -222,8 +222,15 @@ func clampEstimatedMsToRetryAfter(ms int) int {
 
 // writeAutoLoadRetryAfter — R60.33 (2026-09-10): вычисляет правильный
 // Retry-After в зависимости от причины auto-load failure. Если load
-// идёт async (R60.33) — 30s (модель загрузится). Если failed
+// идёт async (R60.33) — возвращает 30s (модель загрузится). Если failed
 // (circuit breaker и т.д.) — больше.
+//
+// R60.42 (2026-09-11): **Bumped default to 90s** based on real-world data:
+// 2.5GB Q4_K_M модель на RTX-3070 с reload n_ctx=2048→4096 занимает ~180s
+// (см. комментарии R60.42). Hardcoded 30s вызывал cascade: client retry-ил
+// 6 раз подряд (каждые 30s = 3 минуты), а load ещё не завершился.
+// 90s — conservative middle: большинство loads укладываются, worst case
+// = 2 retries = 3 минуты вместо 6.
 //
 // ВСЕГДА возвращает >=1 (writeServiceUnavailable default 30s, но
 // мы explicit ставим правильное значение для ясности).
@@ -232,25 +239,25 @@ func clampEstimatedMsToRetryAfter(ms int) int {
 // for cppworker" в error message. Функция всё ещё находит по substring.
 func writeAutoLoadRetryAfter(loadErr error) int {
 	if loadErr == nil {
-		return 30
+		return 90
 	}
 	errStr := loadErr.Error()
 	// R60.33 async mode: модель в процессе загрузки. Клиент retry
-	// через 30s (типичное время load Qwen3-7B).
+	// через 90s (realistic для 2-3GB моделей).
 	// R60.41: matches both old "auto-load in progress" и new "load started".
 	if strings.Contains(errStr, "auto-load in progress") || strings.Contains(errStr, "load started") {
-		return 30
+		return 90
 	}
-	// R60.6 async-reload: n_ctx reload. 30s.
+	// R60.6 async-reload: n_ctx reload. 90s.
 	if strings.Contains(errStr, "n_ctx reload") {
-		return 30
+		return 90
 	}
 	// R60.26 circuit breaker: 60s (backoff).
 	if strings.Contains(errStr, "circuit breaker open") {
 		return 60
 	}
-	// Default 30s.
-	return 30
+	// Default 90s.
+	return 90
 }
 
 // buildAutoLoadDiagnostic — R60.40 (2026-09-11) helper: формирует
@@ -323,7 +330,7 @@ func buildAutoLoadDiagnosticWithProxy(
 // причины auto-load failure.
 func buildAutoLoadSuggestion(diag ServiceUnavailableDiagnostic, loadErr error) string {
 	if loadErr == nil {
-		return "Model is loading. Please retry in a few seconds."
+		return "Model is loading. Please retry in 60-120 seconds."
 	}
 	errStr := loadErr.Error()
 	// R60.41: matches both R60.33 "auto-load in progress" (legacy) и
@@ -332,7 +339,8 @@ func buildAutoLoadSuggestion(diag ServiceUnavailableDiagnostic, loadErr error) s
 	if strings.Contains(errStr, "auto-load in progress") || strings.Contains(errStr, "load started") {
 		return fmt.Sprintf(
 			"Model '%s' load has been triggered on cppworker (target n_ctx=%d). "+
-				"cppworker is loading the model into VRAM — this typically takes 30-180 seconds for 2-3GB models. "+
+				"cppworker is loading the model into VRAM — this typically takes 30-180 seconds for 2-3GB models "+
+				"(observed on RTX-3070: 180s for 2048→4096 n_ctx reload, 90-120s for first load). "+
 				"Please wait %d seconds and retry. "+
 				"If you see this error repeatedly, reduce num_predict in your client "+
 				"to avoid the wait on future requests.",
@@ -348,7 +356,9 @@ func buildAutoLoadSuggestion(diag ServiceUnavailableDiagnostic, loadErr error) s
 				diag.TargetNCtx, diag.FeasibleMaxContext)
 		}
 		return fmt.Sprintf(
-			"Model is being reloaded to n_ctx=%d. Please retry in %d seconds.",
+			"Model is being reloaded to n_ctx=%d. "+
+				"cppworker needs to reload model with new context size — "+
+				"this typically takes 30-180 seconds. Please retry in %d seconds.",
 			diag.TargetNCtx, diag.RetryAfterSec)
 	}
 	// Circuit breaker open

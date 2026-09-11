@@ -16,6 +16,11 @@ import (
 )
 
 // TestWriteServiceUnavailable_Default — 0 retryAfterSec → uses default 30s.
+//
+// R60.48 (2026-09-11): body format расширен — теперь включает retry_after_seconds
+// как number (не string) для consistency с OpenAPI-style errors. Также
+// добавлен explicit Content-Length header (предыдущий код использовал
+// json.NewEncoder() без CL → chunked encoding → TransferEncodingError в aiohttp).
 func TestWriteServiceUnavailable_Default(t *testing.T) {
 	rec := httptest.NewRecorder()
 	writeServiceUnavailable(rec, "auto-load failed: model is loading", 0)
@@ -29,12 +34,22 @@ func TestWriteServiceUnavailable_Default(t *testing.T) {
 	if got := rec.Header().Get("Content-Type"); got != "application/json" {
 		t.Errorf("Content-Type = %q, want application/json", got)
 	}
-	var body map[string]string
+	// R60.48: explicit Content-Length header.
+	if cl := rec.Header().Get("Content-Length"); cl == "" {
+		t.Errorf("Content-Length header not set (R60.48 fix)")
+	}
+	var body map[string]interface{}
 	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
 		t.Fatalf("body not JSON: %v. body = %s", err, rec.Body.String())
 	}
 	if body["error"] == "" {
 		t.Errorf("body.error = empty, want non-empty error message")
+	}
+	// R60.48: retry_after_seconds is now in body too (number, not string).
+	if rfs, ok := body["retry_after_seconds"]; !ok {
+		t.Errorf("body.retry_after_seconds missing")
+	} else if rfs != float64(30) {
+		t.Errorf("body.retry_after_seconds = %v, want 30", rfs)
 	}
 }
 

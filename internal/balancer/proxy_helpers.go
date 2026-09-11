@@ -58,10 +58,32 @@ import (
 //
 // Pre-R51.1: defined in ollama_router.go:269.
 // R51.1: moved here. No signature change.
+//
+// R60.48 (2026-09-11): EXPLICIT Content-Length перед WriteHeader. Pre-R60.48
+// использовался json.NewEncoder(w).Encode() который НЕ устанавливает
+// Content-Length → Go auto-использует Transfer-Encoding: chunked для больших
+// body. aiohttp (Python HTTP клиент в OpenWebUI) плохо обрабатывает chunked
+// на error responses → "TransferEncodingError: 400, message='Not enough data
+// to satisfy transfer length header.'".
+//
+// Post-R60.48: explicit Content-Length → consistent framing, no chunked
+// ambiguity. Используем json.Marshal (сразу bytes) → set CL → WriteHeader → Write.
 func writeJSON(w http.ResponseWriter, status int, data interface{}) {
+	body, err := json.Marshal(data)
+	if err != nil {
+		// Marshal failed — fall back to generic error. Set Content-Length
+		// based on the fallback body length.
+		fallback := []byte(`{"error":"failed to encode response"}`)
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("Content-Length", strconv.Itoa(len(fallback)))
+		w.WriteHeader(http.StatusInternalServerError)
+		_, _ = w.Write(fallback)
+		return
+	}
 	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Content-Length", strconv.Itoa(len(body)))
 	w.WriteHeader(status)
-	_ = json.NewEncoder(w).Encode(data)
+	_, _ = w.Write(body)
 }
 
 // writeServiceUnavailable — write a 503 response with a Retry-After
@@ -82,14 +104,23 @@ func writeJSON(w http.ResponseWriter, status int, data interface{}) {
 // Used by:
 //   - llamacpp_handlers_inference.go (5 sites: chat/completions,
 //     completions, embeddings, /api/chat, /api/generate)
+// writeServiceUnavailable — write a 503 response with a Retry-After
+// header (in seconds). Use this for any 503 that tells the client to
+// retry later (e.g. auto-load in progress, async reload pending).
+//
+// R60.48 (2026-09-11): explicit Content-Length для предотвращения
+// TransferEncodingError (chunked encoding плохо обрабатывается aiohttp
+// на error responses).
 func writeServiceUnavailable(w http.ResponseWriter, errMsg string, retryAfterSec int) {
 	if retryAfterSec <= 0 {
 		retryAfterSec = 30
 	}
+	body := []byte(fmt.Sprintf(`{"error":%q,"retry_after_seconds":%d}`, errMsg, retryAfterSec))
 	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Content-Length", strconv.Itoa(len(body)))
 	w.Header().Set("Retry-After", strconv.Itoa(retryAfterSec))
 	w.WriteHeader(http.StatusServiceUnavailable)
-	_ = json.NewEncoder(w).Encode(map[string]string{"error": errMsg})
+	_, _ = w.Write(body)
 }
 
 // ServiceUnavailableDiagnostic — структурированные данные для ответа 503/502.
@@ -193,10 +224,29 @@ func writeServiceUnavailableWithDiagnostics(w http.ResponseWriter, diag ServiceU
 	}
 	body["retry_after"] = retryAfterSec
 
+	// R60.48 (2026-09-11): explicit Content-Length перед WriteHeader.
+	// Pre-R60.48 использовался json.NewEncoder(w).Encode() который НЕ
+	// устанавливает Content-Length → Go auto-использует chunked encoding.
+	// aiohttp (Python клиент OpenWebUI) иногда падает на chunked с
+	// "TransferEncodingError: 400, message='Not enough data to satisfy
+	// transfer length header.'". Explicit Content-Length устраняет проблему.
+	bodyBytes, marshalErr := json.Marshal(body)
+	if marshalErr != nil {
+		// Fallback: minimal error response. Marshal обычно не fails для
+		// map[string]interface{}, но safety net.
+		fallback := []byte(fmt.Sprintf(`{"error":%q,"retry_after":%d}`, diag.Error, retryAfterSec))
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("Content-Length", strconv.Itoa(len(fallback)))
+		w.Header().Set("Retry-After", strconv.Itoa(retryAfterSec))
+		w.WriteHeader(http.StatusServiceUnavailable)
+		_, _ = w.Write(fallback)
+		return
+	}
 	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Content-Length", strconv.Itoa(len(bodyBytes)))
 	w.Header().Set("Retry-After", strconv.Itoa(retryAfterSec))
 	w.WriteHeader(http.StatusServiceUnavailable)
-	_ = json.NewEncoder(w).Encode(body)
+	_, _ = w.Write(bodyBytes)
 }
 
 // clampEstimatedMsToRetryAfter — конвертирует estimated_load_time_ms в

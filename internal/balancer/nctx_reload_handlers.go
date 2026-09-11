@@ -591,21 +591,37 @@ func (p *Proxy) preflightNCtxReloadIfNeeded(
 	// "smart reload skip" (lines 586+), он работает для n_predict=0
 	// (Ollama streaming с default = unlimited), но НЕ для n_predict>0.
 	// Исправляем здесь тоже: если required > loaded, всё равно reload.
+	//
+	// R60.46 (2026-09-11) FIX: НЕ reload если user не указал n_predict.
+	// Pre-R60.46: n_predict=0 → assumed cppworker default 2048 → required=2050
+	// > loaded=2048 → trigger reload to 4096. Это FALSE POSITIVE:
+	// 1) User не просил 2048 токенов output, может ему хватит 100
+	// 2) Reload 2048→4096 занимает 90-180s (cascade timeout)
+	// 3) User застрял в reload loop
+	// Post-R60.46: n_predict=0 → не assume, skip reload check.
+	// Если действительно overflow — cppworker вернёт 400, user retry с proper n_predict.
 	if loadedNCtx >= requestedNCtx {
 		// R60.35: дополнительно проверяем required (с учётом n_predict).
 		// OpenAI /v1/chat/completions: max_tokens=0 → cppworker default 2048.
 		// Ollama /api/chat: num_predict=0 → cppworker default 2048.
 		// Реальный required = prompt + 2048 + 1 = может превысить loaded.
+		//
+		// R60.46: только check required если user ЯВНО указал n_predict > 0.
+		// Иначе (n_predict=0 = default) — НЕ reload, пусть cppworker сам
+		// отдаст 400 если overflow.
 		meta := ExtractRequestMeta(bodyBuf, requestPath)
 		if meta == nil {
+			return bodyBuf, true, "", http.StatusOK
+		}
+		// R60.46: skip reload check если user не указал n_predict.
+		// (Иначе false positive: user не просил 2048 токенов, но R60.35
+		// assumes cppworker default и triggers reload 2048→4096.)
+		if meta.RequestedNPredict <= 0 {
 			return bodyBuf, true, "", http.StatusOK
 		}
 		const reserveSlackPercent = 10
 		reserveSlack := meta.EstimatedPromptTokens * reserveSlackPercent / 100
 		nPredict := meta.RequestedNPredict
-		if nPredict <= 0 {
-			nPredict = 2048 // cppworker default
-		}
 		required := meta.EstimatedPromptTokens + nPredict + 1 + reserveSlack
 		if required > loadedNCtx {
 			// R60.35: prompt не влезает → trigger reload на larger n_ctx.

@@ -467,6 +467,20 @@ func DecidePreflight(meta *RequestMeta, state *NCtxBackendState, cfg NCtxReloadC
 	// Post-R53.2: n_ctx mismatch (required > currentNCtx) → reload, иначе NoOp.
 	// Клиент может менять флаги в options — backend обрабатывает per-request.
 
+	// R60.46 (2026-09-11): НЕ trigger reload если user не указал n_predict
+	// AND loaded >= requested. Иначе false-positive cascade:
+	//   user sent num_ctx=2048, n_predict не указан → cppworker default 2048
+	//   required(1 + 2048 + 0.1) = 2050 > loaded(2048) → reload 2048→4096
+	//   User ждёт 90s, retry, опять reload, опять ждёт — застрял.
+	//
+	// Skip reload check если:
+	//   1. n_predict не указан (user хочет default behavior)
+	//   2. loaded >= requested (user's num_ctx satisfied, no need to upgrade)
+	if meta != nil && meta.RequestedNPredict <= 0 && state.CurrentNCtx > 0 &&
+		meta.RequestedNCtxOverride > 0 && meta.RequestedNCtxOverride <= state.CurrentNCtx {
+		return &PreflightResult{Decision: PreflightNoOp}
+	}
+
 	// Если n_ctx уже fits (required <= currentNCtx) — NoOp, перезагрузка НЕ нужна.
 	if state.CurrentNCtx > 0 && required <= state.CurrentNCtx {
 		return &PreflightResult{Decision: PreflightNoOp}

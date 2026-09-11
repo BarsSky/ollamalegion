@@ -578,9 +578,74 @@ func (p *Proxy) preflightNCtxReloadIfNeeded(
 	}
 	p.metricsMgr.mu.RUnlock()
 
-	// 3. Если loaded >= requested — перезагрузка не нужна.
+	// 3. R60.35: stickiness check с учётом `required` (prompt + n_predict).
+	//
+	// Симптом (R60.35): OpenWebUI шлёт num_ctx=2048 в body, модель loaded
+	// с n_ctx=2048 (default), prompt=33 + n_predict=2048 (cppworker
+	// default) = 2082 > 2048 → 400 "prompt too long". Старый preflight
+	// видел `loaded (2048) >= requested (2048)` → NoOp. Не учитывал что
+	// `required (prompt + n_predict + slack) > loaded` → reload бы
+	// помог. Дубликат R60.31 bug, но в OLD preflight path.
+	//
+	// R60.31 fix был только в DecidePreflight. Этот path — старый
+	// "smart reload skip" (lines 586+), он работает для n_predict=0
+	// (Ollama streaming с default = unlimited), но НЕ для n_predict>0.
+	// Исправляем здесь тоже: если required > loaded, всё равно reload.
 	if loadedNCtx >= requestedNCtx {
-		return bodyBuf, true, "", http.StatusOK
+		// R60.35: дополнительно проверяем required (с учётом n_predict).
+		// OpenAI /v1/chat/completions: max_tokens=0 → cppworker default 2048.
+		// Ollama /api/chat: num_predict=0 → cppworker default 2048.
+		// Реальный required = prompt + 2048 + 1 = может превысить loaded.
+		meta := ExtractRequestMeta(bodyBuf, requestPath)
+		if meta == nil {
+			return bodyBuf, true, "", http.StatusOK
+		}
+		const reserveSlackPercent = 10
+		reserveSlack := meta.EstimatedPromptTokens * reserveSlackPercent / 100
+		nPredict := meta.RequestedNPredict
+		if nPredict <= 0 {
+			nPredict = 2048 // cppworker default
+		}
+		required := meta.EstimatedPromptTokens + nPredict + 1 + reserveSlack
+		if required > loadedNCtx {
+			// R60.35: prompt не влезает → trigger reload на larger n_ctx.
+			// Сначала patch'нем body чтобы убрать body num_ctx (чтобы
+			// после reload cppworker не получал n_ctx=2048 опять).
+			// Новый target n_ctx: max(required, loadedNCtx*2) rounded up.
+			newTarget := required
+			if newTarget < loadedNCtx*2 {
+				newTarget = loadedNCtx * 2
+			}
+			// Round up to power of 2
+			roundedTarget := roundUpPow2(newTarget)
+			patchedBody := patchNumCtxInBody(bodyBuf, roundedTarget)
+			if patchedBody == nil {
+				patchedBody = bodyBuf
+			}
+			logger.Get().Infow("preflightNCtxReload: R60.35 — required > loaded, triggering reload",
+				"backend", backendID, "model", modelName,
+				"loaded_n_ctx", loadedNCtx,
+				"requested_n_ctx", requestedNCtx,
+				"required_n_ctx", required,
+				"new_target_n_ctx", roundedTarget,
+				"estimated_prompt_tokens", meta.EstimatedPromptTokens,
+				"n_predict", nPredict)
+			// Fall through to reload path (don't return early)
+			bodyBuf = patchedBody
+			requestedNCtx = roundedTarget
+			// Continue to the reload logic below
+		} else {
+			// Smart skip: patch body to use loaded_n_ctx, no reload needed.
+			patchedBody := patchNumCtxInBody(bodyBuf, loadedNCtx)
+			if patchedBody != nil {
+				logger.Get().Debugw("preflightNCtxReload: R60.35 — required ≤ loaded, no reload",
+					"backend", backendID, "model", modelName,
+					"loaded_n_ctx", loadedNCtx,
+					"required_n_ctx", required)
+				return patchedBody, true, "", http.StatusOK
+			}
+			return bodyBuf, true, "", http.StatusOK
+		}
 	}
 
 	// 3.1 Round 23 (2026-08-04): SMART RELOAD SKIP.
@@ -599,7 +664,23 @@ func (p *Proxy) preflightNCtxReloadIfNeeded(
 	// Стоимость: +1 JSON parse на preflight (≈50µs). Эвристика 1 token ≈ 4 chars
 	// даёт ~25% точности; для коротких промптов это перестраховка, для длинных —
 	// clamp'нем n_predict в cppworker (clampNPredictToFitContext).
-	if requestedNCtx > 0 && loadedNCtx > 0 {
+	// R60.44 (2026-09-11) FIX: smart-skip ТОЛЬКО если requested_n_ctx <= loadedNCtx.
+	// До фикса: smart-skip firing когда prompt помещается в loaded, даже если
+	// user явно просил num_ctx > loaded (например body=16384, loaded=8192).
+	// Patch body до loadedNCtx (8192), но X-Cpp-Ctx header ставился от
+	// ОРИГИНАЛЬНОГО body (16384). cppworker получал body с num_ctx=8192 +
+	// header n_ctx=16384, отвергал 400 "exceeds model's effective n_ctx".
+	// Затем balancer auto-reload триггерился → unload → reload → 3+ минуты.
+	// User видел "empty response / timeout" (exactly user's complaint).
+	//
+	// Правильная логика: smart-skip ТОЛЬКО когда requested_n_ctx <= loadedNCtx.
+	// В этом случае patch body (downgrade к loadedNCtx — same value anyway,
+	// noop) И не триггерим reload.
+	//
+	// Когда requested_n_ctx > loadedNCtx: skip the smart-skip и fallthrough
+	// к reload path (line 692+). Preflight запустит async reload, user
+	// получит 503 + Retry-After, через retry получит успех с новым n_ctx.
+	if requestedNCtx > 0 && loadedNCtx > 0 && requestedNCtx <= loadedNCtx {
 		meta := ExtractRequestMeta(bodyBuf, requestPath)
 		if meta != nil {
 			required := meta.EstimatedPromptTokens + meta.RequestedNPredict + 1

@@ -1,4 +1,4 @@
-﻿//go:build llama_stub
+//go:build llama_stub
 
 package balancer
 
@@ -34,7 +34,7 @@ func makeMockCppWorkerWithReload(t *testing.T, modelName string, initialNCtx int
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(map[string]interface{}{
 			"models": []map[string]interface{}{},
-			"data": []map[string]interface{}{},
+			"data":   []map[string]interface{}{},
 			"loaded_models": []map[string]interface{}{
 				{
 					"id":            modelName,
@@ -59,7 +59,7 @@ func makeMockCppWorkerWithReload(t *testing.T, modelName string, initialNCtx int
 		muReloadCalls.Unlock()
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(map[string]interface{}{
-			"status":      "reloaded",
+			"status":       "reloaded",
 			"context_size": int(newNCtx),
 		})
 	})
@@ -83,7 +83,7 @@ func makeMockCppWorkerWithReload(t *testing.T, modelName string, initialNCtx int
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusAccepted)
 		_ = json.NewEncoder(w).Encode(map[string]interface{}{
-			"status":      "loading",
+			"status":       "loading",
 			"context_size": int(newNCtx),
 			"progress_url": "/api/models/load/progress?name=" + modelName,
 		})
@@ -199,52 +199,25 @@ func TestPreflightNCtxReload_LoadedLessThanRequested(t *testing.T) {
 
 	newBody, ok, msg, status := p.preflightNCtxReloadIfNeeded(nil, "test-backend", modelName, body, "/api/chat")
 
-	// Round 23 (2026-08-04) FIX: SMART-SKIP RELOAD.
-	// Для prompt "test" (1 токен) + default n_predict=2048:
-	//   required = 1 + 2048 + 1 + slack ≈ 2050
-	//   loaded = 4096
-	//   2050 < 4096 → smart-skip (NO reload, body patched down to 4096)
-	if !ok {
-		t.Fatalf("preflight SHOULD succeed (smart-skip reload: prompt fits in current n_ctx); msg=%q status=%d", msg, status)
+	// R60.44 (2026-09-11) FIX: smart-skip НЕ ДОЛЖЕН firing когда
+	// requested_n_ctx > loaded_n_ctx. Иначе cppworker получает 400 "exceeds
+	// model's effective n_ctx" → auto-reload → unload → 3+ минуты.
+	//
+	// Сейчас (R60.44): requested(16384) > loaded(4096) → smart-skip DOESN'T fire
+	// → preflight returns 503 (or triggers reload).
+	if ok && status == http.StatusOK {
+		t.Fatalf("preflight should NOT succeed with smart-skip when requested > loaded; "+
+			"this was the R60.44 bug (cppworker got body num_ctx=4096 + X-Cpp-Ctx=16384 → 400 → reload cascade). "+
+			"got ok=true status=%d body=%s", status, newBody)
 	}
-	if status != http.StatusOK {
-		t.Errorf("preflight status=%d, want 200 (smart-skip)", status)
-	}
-	// Body должен быть patched: options.num_ctx=16384 → 4096 (downgrade).
-	if bytes.Equal(newBody, body) {
-		t.Errorf("smart-skip SHOULD modify body (num_ctx should be downgraded from 16384 to 4096)")
-	}
-	// Проверяем что num_ctx в patched body = 4096.
-	if nctx := ExtractNumCtxFromBody(newBody); nctx != 4096 {
-		t.Errorf("patched body num_ctx=%d, want 4096", nctx)
-	}
-	// Reload НЕ должен был вызваться.
+	// Reload должен был быть запущен.
 	time.Sleep(200 * time.Millisecond)
-	if got := currentNCtx.Load(); got != 4096 {
-		t.Errorf("currentNCtx=%d, want 4096 (reload should NOT fire)", got)
+	if len(*reloadCalls) == 0 {
+		t.Errorf("expected reload to be triggered when requested > loaded, got 0 reload calls")
 	}
-	if len(*reloadCalls) != 0 {
-		t.Errorf("expected 0 reload calls (smart-skip), got %d", len(*reloadCalls))
-	}
-
-	// Round 23 (2026-08-04) FIX: SMART-SKIP — кэш НЕ обновляется (reload не было).
-	// Раньше: ожидалось что cache обновляется до 16384 (чтобы предотвратить retry-цикл).
-	// Теперь: smart-skip не трогает cache — модель остаётся на 4096, request проксируется
-	// с patched body (num_ctx=4096). На следующем запросе с тем же num_ctx=16384 —
-	// опять smart-skip. Никакого reload нет.
-	p.metricsMgr.mu.RLock()
-	lm, hasLm := p.metricsMgr.llamaMetrics["test-backend"]
-	p.metricsMgr.mu.RUnlock()
-	if !hasLm || lm == nil {
-		t.Fatalf("llamaMetrics cache missing for test-backend")
-	}
-	for _, m := range lm.LoadedModels {
-		if strings.Contains(m.Name, modelName) {
-			if m.ContextLength != 4096 {
-				t.Errorf("llamaMetrics LoadedModels ContextLength=%d, want 4096 (smart-skip — no reload)", m.ContextLength)
-			}
-		}
-	}
+	// currentNCtx проверять нельзя — mock может быть sync (reload завершается мгновенно).
+	_ = currentNCtx
+	_ = msg
 }
 
 // TestPreflightNCtxReload_LoadedAlreadyEnough — если loaded >= requested,
@@ -334,4 +307,3 @@ func TestPreflightNCtxReload_ReloadFailureFallsBackToProxyAsIs(t *testing.T) {
 	// Даём фоновой горутине время упасть с 500 и залогировать.
 	time.Sleep(500 * time.Millisecond)
 }
-

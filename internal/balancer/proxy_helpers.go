@@ -227,6 +227,9 @@ func clampEstimatedMsToRetryAfter(ms int) int {
 //
 // ВСЕГДА возвращает >=1 (writeServiceUnavailable default 30s, но
 // мы explicit ставим правильное значение для ясности).
+//
+// R60.41 (2026-09-11): renamed "auto-load in progress" → "load started, waiting
+// for cppworker" в error message. Функция всё ещё находит по substring.
 func writeAutoLoadRetryAfter(loadErr error) int {
 	if loadErr == nil {
 		return 30
@@ -234,7 +237,8 @@ func writeAutoLoadRetryAfter(loadErr error) int {
 	errStr := loadErr.Error()
 	// R60.33 async mode: модель в процессе загрузки. Клиент retry
 	// через 30s (типичное время load Qwen3-7B).
-	if strings.Contains(errStr, "auto-load in progress") {
+	// R60.41: matches both old "auto-load in progress" и new "load started".
+	if strings.Contains(errStr, "auto-load in progress") || strings.Contains(errStr, "load started") {
 		return 30
 	}
 	// R60.6 async-reload: n_ctx reload. 30s.
@@ -322,12 +326,16 @@ func buildAutoLoadSuggestion(diag ServiceUnavailableDiagnostic, loadErr error) s
 		return "Model is loading. Please retry in a few seconds."
 	}
 	errStr := loadErr.Error()
-	// Async load in progress
-	if strings.Contains(errStr, "auto-load in progress") {
+	// R60.41: matches both R60.33 "auto-load in progress" (legacy) и
+	// "load started, waiting for cppworker" (new). R60.41 message
+	// change is to clarify что load был УСПЕШНО kickнутый, не failed.
+	if strings.Contains(errStr, "auto-load in progress") || strings.Contains(errStr, "load started") {
 		return fmt.Sprintf(
-			"Model '%s' is being loaded with n_ctx=%d. "+
+			"Model '%s' load has been triggered on cppworker (target n_ctx=%d). "+
+				"cppworker is loading the model into VRAM — this typically takes 30-180 seconds for 2-3GB models. "+
 				"Please wait %d seconds and retry. "+
-				"Reduce num_predict in your client to avoid this wait on future requests.",
+				"If you see this error repeatedly, reduce num_predict in your client "+
+				"to avoid the wait on future requests.",
 			diag.Model, diag.TargetNCtx, diag.RetryAfterSec)
 	}
 	// n_ctx reload (target n_ctx different from current)
@@ -348,9 +356,9 @@ func buildAutoLoadSuggestion(diag ServiceUnavailableDiagnostic, loadErr error) s
 		return "Backend is temporarily unavailable due to repeated failures. " +
 			"Please wait 60 seconds and retry."
 	}
-	// Generic fallback
+	// Generic fallback (R60.41: "Auto-load failed" → "Model load failed")
 	return fmt.Sprintf(
-		"Auto-load failed: %v. Please retry in %d seconds.",
+		"Model load failed: %v. Please retry in %d seconds.",
 		loadErr, diag.RetryAfterSec)
 }
 

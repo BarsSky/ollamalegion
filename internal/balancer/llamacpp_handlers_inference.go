@@ -622,11 +622,18 @@ func (lr *LlamaCppRouter) handleChat(w http.ResponseWriter, r *http.Request) {
 		loadOpts.NumCtx = resolvedLoad.Value
 	}
 	if _, loadErr := lr.ensureModelLoadedOnBackend(backendID, model, loadOpts); loadErr != nil {
-		logger.Get().Errorw("handleChat: auto-load failed",
-			"backend", backendID, "model", model, "error", loadErr)
+		// R60.41: downgraded to Info — это не "error" в обычном смысле, это
+		// просто "load стартовал async, клиенту надо подождать". Реальная
+		// ошибка была бы только если load полностью провалился (sync path,
+		// circuit breaker open и т.д.). Async path в R60.33+ всегда
+		// возвращает loadErr даже при успешном kick'е.
+		logger.Get().Infow("handleChat: model load started (R60.33 async, R60.41 message)",
+			"backend", backendID, "model", model, "loadErr", loadErr)
 		// R60.16: include Retry-After so clients back off.
 		// R60.40: include actionable diagnostics — OpenWebUI can show the
 		// user what to fix instead of just "auto-load failed".
+		// R60.41: error message itself is more accurate (no "failed" when
+		// load was actually kicked off successfully).
 		diag := buildAutoLoadDiagnosticWithProxy(lr.proxy, backendID, model, resolvedLoad.Value, loadErr)
 		writeServiceUnavailableWithDiagnostics(w, diag)
 		return

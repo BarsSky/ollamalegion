@@ -28,6 +28,7 @@ package balancer
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -212,6 +213,46 @@ func TestWriteServiceUnavailableWithDiagnostics_NCtxOverflowSuggestion(t *testin
 	}
 	if body["target_n_ctx"].(float64) != 8192 {
 		t.Errorf("target_n_ctx = %v, want 8192", body["target_n_ctx"])
+	}
+}
+
+// R60.41: TestBuildAutoLoadSuggestion_R60_41_LoadStarted — новое сообщение
+// "load started" не должно содержать "failed" в suggestion. Клиент должен
+// понимать что load был kicked successfully, не failed.
+func TestBuildAutoLoadSuggestion_R60_41_LoadStarted(t *testing.T) {
+	diag := ServiceUnavailableDiagnostic{
+		Error:         "model 'Qwen3-Instruct-2507-q4km' load started, waiting for cppworker to finish (~30-180s depending on n_ctx)",
+		RetryAfterSec: 30,
+		Model:         "Qwen3-Instruct-2507-q4km",
+		TargetNCtx:    131072,
+	}
+	loadErr := fmt.Errorf("model 'Qwen3-Instruct-2507-q4km' load started, waiting for cppworker to finish (~30-180s depending on n_ctx)")
+	suggestion := buildAutoLoadSuggestion(diag, loadErr)
+	// Suggestion should NOT contain "failed" — load was actually kicked successfully.
+	if strings.Contains(strings.ToLower(suggestion), "failed") {
+		t.Errorf("suggestion contains 'failed' but load was actually kicked: %q", suggestion)
+	}
+	// Suggestion should mention cppworker is loading the model.
+	if !strings.Contains(suggestion, "load has been triggered") {
+		t.Errorf("suggestion doesn't explain load was triggered: %q", suggestion)
+	}
+	// Suggestion should mention the wait time.
+	if !strings.Contains(suggestion, "30-180 seconds") {
+		t.Errorf("suggestion doesn't mention expected load time: %q", suggestion)
+	}
+}
+
+// R60.41: TestWriteAutoLoadRetryAfter_R60_41_NewMessage — новое сообщение
+// "load started" должно распознаваться как async load case (Retry-After=30).
+func TestWriteAutoLoadRetryAfter_R60_41_NewMessage(t *testing.T) {
+	loadErr := fmt.Errorf("model 'X' load started, waiting for cppworker to finish")
+	if got := writeAutoLoadRetryAfter(loadErr); got != 30 {
+		t.Errorf("Retry-After for new 'load started' message = %d, want 30", got)
+	}
+	// Legacy message still works.
+	legacyErr := fmt.Errorf("model 'X' auto-load in progress, retry in 30s")
+	if got := writeAutoLoadRetryAfter(legacyErr); got != 30 {
+		t.Errorf("Retry-After for legacy 'auto-load in progress' message = %d, want 30", got)
 	}
 }
 

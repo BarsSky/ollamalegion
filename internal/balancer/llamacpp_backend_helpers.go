@@ -466,7 +466,24 @@ func (lr *LlamaCppRouter) ensureModelLoadedOnBackend(backendID, modelName string
 					"backend", backendID, "model", modelName)
 			}
 		}()
-		return false, fmt.Errorf("model %q auto-load in progress, retry in 30s", modelName)
+		// R60.41 (2026-09-11): не говорим "failed" — мы только что kickнули
+		// load, не дождавшись результата. Сообщение "auto-load in progress,
+		// retry in 30s" вводит пользователя в заблуждение: он видит "failed"
+		// и смотрит на GPU (которая пуста потому что load ещё не успел
+		// дойти до cppworker) и думает "что-то сломалось".
+		//
+		// Реальный сценарий: наш goroutine только что отправил POST /api/models/load
+		// в cppworker. cppworker принял его (или нет — если lock, то нет).
+		// Модель будет готова через ~30-180s (зависит от n_ctx).
+		//
+		// Используем другую формулировку: "Model load has been started, please
+		// wait N seconds" — это не "failed", это progress.
+		//
+		// Retry-After 30s — conservative default. Реально load может занять
+		// 30-180s для 2.5B Q4_K_M модели. Клиент увидит retry и подождёт
+		// ещё. Если load провалится — следующий запрос покажет actionable
+		// error (R60.40 suggestion включает feasible_max_context).
+		return false, fmt.Errorf("model %q load started, waiting for cppworker to finish (~30-180s depending on n_ctx)", modelName)
 	}
 	result := mm.ExecuteOperation(backendID, opReq)
 

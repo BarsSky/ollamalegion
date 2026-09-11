@@ -106,7 +106,21 @@ func (p *Proxy) handleNCtxReload(
 	}
 }
 
-// handleNCtxReloadActual — выполняет reload на бэкенде и повторяет запрос.
+// handleNCtxReloadActual — выполняет reload на бэкенде.
+//
+// R60.47 (2026-09-11): async mode (default) — kick off reload в goroutine,
+// return 503+Retry-After immediately. Client retry-ит после reload.
+//
+// Pre-R60.47 (sync mode, legacy): ждал завершения reload синхронно
+// (cppworker ?wait=true&waitTimeoutSec=300, до 5 мин), потом retry'ил
+// original request в том же HTTP handler. Это anti-pattern: HTTP handler
+// blocked → OpenWebUI/Cline timeout 30-60s → cancel → "empty response"
+// / EOF / "Unexpected token '<html>'".
+//
+// Post-R60.47: balancer отвечает за <50ms с 503+Retry-After+digestive
+// diagnostics. Client retry-ит через Retry-After → к этому моменту
+// reload завершён → 200 OK.
+//
 // bridgeErr — оригинальная n_ctx ошибка (нужна для writeNCtxRejectResponse при цикле).
 func (p *Proxy) handleNCtxReloadActual(
 	ctx context.Context,
@@ -129,7 +143,16 @@ func (p *Proxy) handleNCtxReloadActual(
 	backend := backendState.Backend
 	backendAddr := fmt.Sprintf("http://%s:%d", backend.Host, p.getBackendPort(backend))
 
-	// 2. Выполняем reload синхронно.
+	// R60.47: ASYNC MODE (default). Kick off reload в goroutine, return
+	// 503+Retry-After immediately. Это решает "empty response" — клиент
+	// получает JSON ошибку за миллисекунды вместо зависания на минуты.
+	if p.lbNCtxReloadAsync {
+		p.handleNCtxReloadActualAsync(backendID, modelName, plan, backendAddr, bridgeErr, w)
+		return
+	}
+
+	// LEGACY SYNC MODE (LB_NCTX_RELOAD_ASYNC=0). Только для debug / long-running
+	// клиентов. Single round-trip: balancer reload+retry синхронно.
 	start := time.Now()
 	p.nctxReload.RecordDecision(backendID, "reload-start", plan.Reason)
 	reloadErr := p.nctxReload.DoReload(ctx, backendID, backendAddr, modelName, plan, p.newNCtxReloadHTTPClient())
@@ -196,6 +219,95 @@ func (p *Proxy) handleNCtxReloadActual(
 	} else {
 		_ = p.proxyRequestLlamaCppNonStream(w, r, backendID, bodyBuf)
 	}
+}
+
+// handleNCtxReloadActualAsync — R60.47 async mode: kick off reload в
+// goroutine, return 503+Retry-After+digestive immediately.
+//
+// Используется когда lbNCtxReloadAsync=true (default). HTTP handler
+// завершается за <50ms, клиент получает actionable JSON ошибку.
+//
+// Reload запускается с detached context.Background() — мы не хотим
+// чтобы client cancellation убивал наш reload (user cancel после 30s
+// timeout не должен abort reload на 60-180s).
+func (p *Proxy) handleNCtxReloadActualAsync(
+	backendID, modelName string,
+	plan *ReloadPlan,
+	backendAddr string,
+	bridgeErr *NCtxBridgeError,
+	w http.ResponseWriter,
+) {
+	// Estimated load time (cppworker возвращает это в /api/models/load response).
+	// Если неизвестно — используем default 60s (realistic для 5GB модели).
+	estimatedLoadMs := 60000
+	if bridgeErr != nil && bridgeErr.RequiredNCtx > 0 {
+		// Эвристика: пропорционально required/current ratio + базовый load.
+		if bridgeErr.CurrentNCtx > 0 && bridgeErr.RequiredNCtx > bridgeErr.CurrentNCtx {
+			ratio := float64(bridgeErr.RequiredNCtx) / float64(bridgeErr.CurrentNCtx)
+			// reload 2048→8192 (4x) занимает ~30s на RTX 3070 8GB
+			// reload 2048→32768 (16x) занимает ~90s
+			estimatedLoadMs = int(float64(estimatedLoadMs) * (ratio / 4.0))
+			if estimatedLoadMs < 30000 {
+				estimatedLoadMs = 30000
+			}
+			if estimatedLoadMs > 180000 {
+				estimatedLoadMs = 180000
+			}
+		}
+	}
+	retryAfter := clampEstimatedMsToRetryAfter(estimatedLoadMs)
+
+	// Формируем 503 response с diagnostics (R60.40 pattern).
+	diag := ServiceUnavailableDiagnostic{
+		Error:           fmt.Sprintf("model '%s' n_ctx auto-reload in progress, retry in %ds (target n_ctx=%d)", modelName, retryAfter, plan.NewNCtx),
+		Model:           modelName,
+		BackendID:       backendID,
+		TargetNCtx:      plan.NewNCtx,
+		RetryAfterSec:   retryAfter,
+		EstimatedLoadMs: estimatedLoadMs,
+	}
+	if bridgeErr != nil {
+		diag.FeasibleMaxContext = bridgeErr.MaxVRAMNCtx
+		diag.CurrentNCtx = bridgeErr.CurrentNCtx
+		diag.RequiredNCtx = bridgeErr.RequiredNCtx
+		diag.Suggestion = fmt.Sprintf("n_ctx auto-reload from %d to %d is in progress; reduce num_predict OR wait %ds and retry", bridgeErr.CurrentNCtx, plan.NewNCtx, retryAfter)
+	}
+
+	logger.Get().Infow("nctx_reload: R60.47 async reload kicked off, returning 503+Retry-After",
+		"backend", backendID, "model", modelName,
+		"current_n_ctx", diag.CurrentNCtx,
+		"target_n_ctx", plan.NewNCtx,
+		"retry_after_sec", retryAfter,
+		"estimated_load_ms", estimatedLoadMs)
+
+	// Kick off reload in detached goroutine. Используем context.Background()
+	// чтобы client cancellation не abort'ил наш reload (user cancel после
+	// timeout не должен отменять многоминутный reload).
+	p.nctxReload.RecordDecision(backendID, "reload-async-start", plan.Reason)
+	go func() {
+		start := time.Now()
+		// detached context — НЕ cancel-ится при client disconnect
+		reloadErr := p.nctxReload.DoReload(context.Background(), backendID, backendAddr, modelName, plan, p.newNCtxReloadHTTPClient())
+		duration := time.Since(start)
+		p.nctxReload.RecordReloadDuration(backendID, duration, reloadErr)
+		if reloadErr != nil {
+			logger.Get().Errorw("nctx_reload: async reload failed",
+				"backend", backendID, "model", modelName,
+				"target_n_ctx", plan.NewNCtx,
+				"duration_ms", duration.Milliseconds(),
+				"error", reloadErr)
+			p.nctxReload.RecordError(backendID, reloadErr.Error())
+		} else {
+			logger.Get().Infow("nctx_reload: async reload complete",
+				"backend", backendID, "model", modelName,
+				"new_n_ctx", plan.NewNCtx,
+				"duration_ms", duration.Milliseconds())
+		}
+	}()
+
+	// Write 503+Retry-After immediately. Это главное отличие R60.47:
+	// handler завершается за <50ms с actionable JSON.
+	writeServiceUnavailableWithDiagnostics(w, diag)
 }
 
 // newNCtxReloadHTTPClient — factory для HTTP-клиента reload-а (используется в DoReload).

@@ -29,17 +29,21 @@ import (
 
 // TestWriteAutoLoadRetryAfter — таблица тестов для разных типов
 // auto-load failures.
+//
+// R60.42 (2026-09-11): bumped default 30s → 90s based on real load times
+// (load 5GB модели на RTX 3070 занимает 30-180s; 30s Retry-After вызывал
+// 6-retry cascade до failure). 90s = realistic wait для async load.
 func TestWriteAutoLoadRetryAfter(t *testing.T) {
 	cases := []struct {
 		name     string
 		err      error
 		wantSec  int
 	}{
-		{"async in progress (R60.33)", errors.New("model 'q' auto-load in progress, retry in 30s"), 30},
-		{"n_ctx reload in progress", errors.New("model 'q' n_ctx reload in progress"), 30},
-		{"circuit breaker open", errors.New("circuit breaker open for backend=b model=m"), 60},
-		{"generic failure", errors.New("auto-load failed: 502 bad gateway"), 30},
-		{"nil error", nil, 30},
+		{"async in progress (R60.33, R60.42 90s default)", errors.New("model 'q' auto-load in progress, retry in 30s"), 90},
+		{"n_ctx reload in progress (R60.42 90s default)", errors.New("model 'q' n_ctx reload in progress"), 90},
+		{"circuit breaker open (R60.26 backoff 60s)", errors.New("circuit breaker open for backend=b model=m"), 60},
+		{"generic failure (R60.42 default 90s)", errors.New("auto-load failed: 502 bad gateway"), 90},
+		{"nil error (R60.42 default 90s)", nil, 90},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

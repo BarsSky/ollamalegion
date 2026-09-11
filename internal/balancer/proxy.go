@@ -74,6 +74,16 @@ type Proxy struct {
 	// → legacy sync.
 	lbAutoLoadAsync bool
 
+	// lbNCtxReloadAsync — R60.47 (2026-09-11): если true, n_ctx auto-reload
+	// (triggered by cppworker 400 prompt_too_long) запускается в goroutine и
+	// balancer СРАЗУ возвращает 503+Retry-After. default=true. env
+	// LB_NCTX_RELOAD_ASYNC=0 → legacy sync reload+retry (single round-trip).
+	//
+	// Pre-R60.47: handleNCtxReloadActual блокировал HTTP handler до 5 мин
+	// (cppworker waitTimeoutSec=300), клиенты (OpenWebUI 30-60s timeout)
+	// cancel-или → "empty response". Retry приводил к cascade.
+	lbNCtxReloadAsync bool
+
 	// R54.4 (2026-08-24): AutoTune tracker — circuit breakers per (backend, model).
 	// Защищает от reload storm когда AutoTune fix не удаётся.
 	// Инициализируется lazily в triggerAutoTuneReload (нулевый указатель = default cfg).
@@ -251,6 +261,13 @@ func NewProxy(config *types.LoadBalancerConfig) *Proxy {
 		// проблему OpenWebUI timeout 60-120s на cold start (sync load = 3 мин
 		// → connection aborted → JSON parse error).
 		lbAutoLoadAsync: true,
+
+		// R60.47 (2026-09-11): default async n_ctx reload. Sync mode (legacy)
+		// доступен через env LB_NCTX_RELOAD_ASYNC=0. Async mode решает
+		// проблему "empty response" в OpenWebUI когда cppworker возвращает
+		// 400 prompt_too_long → balancer sync reload (waitTimeoutSec=300) →
+		// HTTP handler blocked → client 30-60s timeout → empty body.
+		lbNCtxReloadAsync: true,
 
 		// Клиент для обычных запросов: Timeout=0 (без глобального), т.к. таймаут
 		// задаётся per-request через context.WithTimeout в proxyRequest

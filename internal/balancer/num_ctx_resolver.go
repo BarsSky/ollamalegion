@@ -349,6 +349,25 @@ func (p *Proxy) ResolveNumCtx(modelName string, body []byte, backendID string) R
 	// Tier 3: из per-backend default
 	if backendID != "" {
 		if n := p.GetBackendDefaultNumCtx(backendID); n > 0 {
+			// R60.47b (2026-09-11): если loaded_n_ctx > backend_default, используем
+			// loaded. Иначе balancer поставит X-Cpp-Ctx=backend_default (< loaded),
+			// cppworker увидит "request asked for n_ctx=X but model loaded with n_ctx=Y"
+			// → 400 prompt_too_long → balancer async/sync reload → cascade/empty.
+			//
+			// Симметрично R60.37 (Tier 1): если body < loaded → upgrade до loaded.
+			// Здесь: если backend_default < loaded → upgrade до loaded.
+			//
+			// Когда loaded=0 (cold start, balancer ещё не знает) → возвращаем
+			// backend_default как есть. После auto-load (R60.33) loaded обновится.
+			if p.nctxReload != nil {
+				loadedNCtx := p.nctxReload.LastKnownNCtx(backendID)
+				if loadedNCtx > 0 && loadedNCtx > n {
+					logger.Get().Infow("ResolveNumCtx: R60.47b — backend_default < loaded, upgrading",
+						"model", backendID, "backend", backendID,
+						"backend_default_n_ctx", n, "loaded_n_ctx", loadedNCtx)
+					return ResolvedNumCtx{Value: loadedNCtx, Source: NumCtxSourceBackend}
+				}
+			}
 			return ResolvedNumCtx{Value: n, Source: NumCtxSourceBackend}
 		}
 	}

@@ -107,23 +107,30 @@ func TestWriteServiceUnavailableWithDiagnostics_FullDiagnostics(t *testing.T) {
 	}
 }
 
-// TestWriteServiceUnavailableWithDiagnostics_DefaultRetryAfter — без retry_after → default 30s.
+// TestWriteServiceUnavailableWithDiagnostics_DefaultRetryAfter — без retry_after → default 90s.
+//
+// R60.42 (2026-09-11): bumped default 30s → 90s based on real load times (30-180s).
+// R60.47 (2026-09-11): async n_ctx reload использует эту функцию для возврата
+// 503+Retry-After+digestive. 90s default даёт клиенту достаточно времени на reload.
 func TestWriteServiceUnavailableWithDiagnostics_DefaultRetryAfter(t *testing.T) {
 	rec := httptest.NewRecorder()
 	diag := ServiceUnavailableDiagnostic{
 		Error: "load failed",
-		// RetryAfterSec = 0 → default 30
+		// RetryAfterSec = 0 → default 90 (R60.42 cascade fix)
 	}
 	writeServiceUnavailableWithDiagnostics(rec, diag)
 
-	if got := rec.Header().Get("Retry-After"); got != "30" {
-		t.Errorf("Retry-After = %q, want 30 (default)", got)
+	if got := rec.Header().Get("Retry-After"); got != "90" {
+		t.Errorf("Retry-After = %q, want 90 (R60.42 default)", got)
 	}
 }
 
 // TestWriteServiceUnavailableWithDiagnostics_EstimatedMsToRetryAfter —
 // если EstimatedLoadMs > 0, Retry-After должен быть EstimatedLoadMs / 1000
 // (округление вверх, минимум 5s, максимум 600s).
+//
+// R60.42 (2026-09-11): zero → default 90 (cascade avoidance). R60.47:
+// async n_ctx reload использует эту функцию для возврата 503+Retry-After.
 func TestWriteServiceUnavailableWithDiagnostics_EstimatedMsToRetryAfter(t *testing.T) {
 	tests := []struct {
 		name     string
@@ -136,7 +143,7 @@ func TestWriteServiceUnavailableWithDiagnostics_EstimatedMsToRetryAfter(t *testi
 		{"180s", 180000, 180},
 		{"600s capped", 700000, 600},  // cap at 10 min
 		{"min 5s", 1000, 5},           // floor at 5s
-		{"zero = default 30", 0, 30},   // 0 means use 30
+		{"zero = default 90 (R60.42)", 0, 90}, // 0 → 90 (was 30 pre-R60.42)
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {

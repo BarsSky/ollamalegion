@@ -223,6 +223,29 @@ func IsAutoLoadAsyncEnabled() bool {
 	return true
 }
 
+// IsNCtxReloadAsyncEnabled — R60.47 (2026-09-11): если true (default),
+// n_ctx auto-reload (triggered when cppworker returns 400 prompt_too_long)
+// запускается в goroutine и balancer СРАЗУ возвращает 503+Retry-After.
+//
+// Pre-R60.47: handleNCtxReloadActual делал sync DoReload с
+// `?wait=true&waitTimeoutSec=300` — блокировал HTTP handler до 5 минут.
+// OpenWebUI/Cline timeout 30-60s → клиент cancel-ил соединение → "empty
+// response" / "Unexpected token" / EOF. Retry приводил к cascade.
+//
+// Post-R60.47: balancer возвращает 503+Retry-After за <50ms, клиент
+// retry-ит через Retry-After, к этому моменту reload обычно завершён.
+//
+// Set LB_NCTX_RELOAD_ASYNC=0 для legacy sync reload+retry поведения
+// (single round-trip, клиент получает финальный ответ за один запрос).
+func IsNCtxReloadAsyncEnabled() bool {
+	v := strings.ToLower(strings.TrimSpace(os.Getenv("LB_NCTX_RELOAD_ASYNC")))
+	// Default = true. Только explicit "0"/"false"/"no" отключают.
+	if v == "0" || v == "false" || v == "no" {
+		return false
+	}
+	return true
+}
+
 // GetAutoContinueMaxTokens — env override for max tokens in the
 // continue request. Default 1024 (enough for code completion).
 // Set LB_AUTO_CONTINUE_MAX_TOKENS=2048 to allow longer continuations.

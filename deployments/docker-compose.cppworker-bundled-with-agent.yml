@@ -307,7 +307,7 @@ services:
         VERSION: ${WEBUI_VERSION:-dev}
         GIT_COMMIT: ${WEBUI_GIT_COMMIT:-unknown}
         BUILD_DATE: ${WEBUI_BUILD_DATE:-unknown}
-    image: ollama-legion/webui:cppworker-bundled-r60.16.1-api-fallback-v2  # Round 60.14 (2026-09-07): language picker UI added to index.html, monitor.html, health.html headers. I18N.setLang() synced via localStorage 'ollamalegion_lang'. Wire-up via app-core.js (index) + inline scripts (monitor/health).
+    image: ollama-legion/webui:r60.43-v1-route  # Round 60.43 (2026-09-11): добавил location /v1/ в webui/nginx.conf — раньше OpenWebUI получал 405 HTML при /v1/chat/completions, теперь проксируется на balancer OpenAI-совместимый endpoint (18080). Round 60.14 (2026-09-07): language picker UI added to index.html, monitor.html, health.html headers.
     container_name: ol-bundled-webui
     restart: unless-stopped
     ports:

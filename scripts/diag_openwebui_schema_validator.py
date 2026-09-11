@@ -284,7 +284,17 @@ def run_ollama_request(
             ) as r:
                 verdict.http_status = r.status_code
                 if r.status_code != 200:
-                    verdict.anomalies.append(f"HTTP {r.status_code}: {r.text[:300]}")
+                    body_text = r.text[:300]
+                    # R60.39: nginx returns HTML on upstream timeout/error.
+                    # This is what OpenWebUI sees: 502 Bad Gateway с HTML body
+                    # "Unexpected token '<', '<html>'... is not valid JSON".
+                    if body_text.lstrip().startswith("<"):
+                        verdict.anomalies.append(
+                            f"HTTP {r.status_code} with HTML body (likely nginx upstream timeout/error): {body_text[:200]}"
+                        )
+                        verdict.response_format = "nginx_html_error"
+                    else:
+                        verdict.anomalies.append(f"HTTP {r.status_code}: {body_text}")
                     verdict.elapsed_sec = time.time() - start
                     return verdict
                 chunks: list[dict] = []
@@ -322,12 +332,31 @@ def run_ollama_request(
             verdict.http_status = r.status_code
             verdict.elapsed_sec = time.time() - start
             if r.status_code != 200:
-                verdict.anomalies.append(f"HTTP {r.status_code}: {r.text[:300]}")
+                body_text = r.text[:300]
+                # R60.39: nginx returns HTML on upstream timeout/error.
+                # This is what OpenWebUI sees: 502 Bad Gateway с HTML body
+                # "Unexpected token '<', '<html>'... is not valid JSON".
+                if body_text.lstrip().startswith("<"):
+                    verdict.anomalies.append(
+                        f"HTTP {r.status_code} with HTML body (likely nginx upstream timeout/error): {body_text[:200]}"
+                    )
+                    verdict.response_format = "nginx_html_error"
+                else:
+                    verdict.anomalies.append(f"HTTP {r.status_code}: {body_text}")
                 return verdict
             try:
                 body_resp = r.json()
             except json.JSONDecodeError as e:
-                verdict.anomalies.append(f"non-stream JSON decode error: {e}: {r.text[:200]}")
+                # Если ответ не парсится как JSON — это критично (R60.39:
+                # именно это происходит когда nginx возвращает HTML 502).
+                snippet = r.text[:300]
+                if snippet.lstrip().startswith("<"):
+                    verdict.anomalies.append(
+                        f"non-stream response is HTML, not JSON (nginx upstream timeout/error): {snippet[:200]}"
+                    )
+                    verdict.response_format = "nginx_html_error"
+                else:
+                    verdict.anomalies.append(f"non-stream JSON decode error: {e}: {snippet}")
                 return verdict
             validate_ollama_nonstream(body_resp, verdict, model_name)
     except requests.exceptions.Timeout:

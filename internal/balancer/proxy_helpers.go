@@ -92,6 +92,134 @@ func writeServiceUnavailable(w http.ResponseWriter, errMsg string, retryAfterSec
 	_ = json.NewEncoder(w).Encode(map[string]string{"error": errMsg})
 }
 
+// ServiceUnavailableDiagnostic — структурированные данные для ответа 503/502.
+// R60.40 (2026-09-11): actionable diagnostics для клиента.
+//
+// OpenWebUI раньше получал `{"error": "..."}` без какой-либо информации
+// о том:
+//   - Что произошло (model loading? n_ctx overflow? prompt too long?)
+//   - Сколько ждать (Retry-After мог быть hardcoded 30s даже для reload
+//     который займёт 95s+)
+//   - Какие оптимальные настройки для этой модели на этом железе
+//
+// R60.40 заполняет все эти поля из:
+//   - cppworker's last bridge_info (current_n_ctx, required_n_ctx, etc.)
+//   - cppworker /api/models metrics (feasible_max_context, gguf_max_context)
+//   - preflight decision (target_n_ctx, estimated_load_time_ms)
+//   - heuristic suggestion text
+type ServiceUnavailableDiagnostic struct {
+	// Error — короткое человекочитаемое сообщение (обязательно).
+	Error string
+	// RetryAfterSec — клиент должен подождать столько секунд (0 = default 30).
+	RetryAfterSec int
+
+	// Optional diagnostics — все поля опциональны. Пустые не попадают в JSON.
+	Model              string // имя модели
+	BackendID          string // для multi-backend debug
+	TargetNCtx         int    // n_ctx который мы загружаем / перезагружаем
+	EstimatedLoadMs    int    // estimated_load_time_ms от cppworker load response
+	FeasibleMaxContext int    // max_vram_n_ctx из cppworker /api/models
+	GGUFMaxContext     int    // gguf_max_context из cppworker /api/models
+	CurrentNCtx        int    // загруженный сейчас (для overflow errors)
+	RequiredNCtx       int    // требуемый (для overflow errors)
+	Suggestion         string // actionable совет ("Reduce num_predict to 1024 OR...")
+}
+
+// writeServiceUnavailableWithDiagnostics — R60.40 enhanced version.
+// Возвращает 503 с Retry-After header + JSON body с actionable diagnostics.
+//
+// Используется вместо writeServiceUnavailable когда:
+//   - auto-load triggered и мы знаем target_n_ctx
+//   - cppworker вернул n_ctx overflow и мы знаем feasible/required
+//   - есть estimated_load_time_ms от cppworker load API
+//
+// Response JSON пример:
+//
+//	{
+//	  "error": "model 'X' auto-load in progress, retry in 30s",
+//	  "model": "X",
+//	  "target_n_ctx": 8192,
+//	  "estimated_load_time_ms": 95000,
+//	  "feasible_max_context": 25884,
+//	  "gguf_max_context": 262144,
+//	  "current_n_ctx": 2048,
+//	  "required_n_ctx": 8500,
+//	  "retry_after": 95,
+//	  "suggestion": "Reduce num_predict to 1024 OR save a model profile with contextLength=8192 and reload"
+//	}
+func writeServiceUnavailableWithDiagnostics(w http.ResponseWriter, diag ServiceUnavailableDiagnostic) {
+	// Вычисляем Retry-After:
+	//   1. diag.RetryAfterSec > 0 → use it
+	//   2. diag.EstimatedLoadMs > 0 → use EstimatedLoadMs / 1000 (capped)
+	//   3. default → 30
+	retryAfterSec := diag.RetryAfterSec
+	if retryAfterSec <= 0 && diag.EstimatedLoadMs > 0 {
+		retryAfterSec = clampEstimatedMsToRetryAfter(diag.EstimatedLoadMs)
+	}
+	if retryAfterSec <= 0 {
+		retryAfterSec = 30
+	}
+
+	// Build JSON body with omitempty (только заполненные поля попадают в ответ).
+	body := map[string]interface{}{
+		"error": diag.Error,
+	}
+	if diag.Model != "" {
+		body["model"] = diag.Model
+	}
+	if diag.BackendID != "" {
+		body["backend_id"] = diag.BackendID
+	}
+	if diag.TargetNCtx > 0 {
+		body["target_n_ctx"] = diag.TargetNCtx
+	}
+	if diag.EstimatedLoadMs > 0 {
+		body["estimated_load_time_ms"] = diag.EstimatedLoadMs
+	}
+	if diag.FeasibleMaxContext > 0 {
+		body["feasible_max_context"] = diag.FeasibleMaxContext
+	}
+	if diag.GGUFMaxContext > 0 {
+		body["gguf_max_context"] = diag.GGUFMaxContext
+	}
+	if diag.CurrentNCtx > 0 {
+		body["current_n_ctx"] = diag.CurrentNCtx
+	}
+	if diag.RequiredNCtx > 0 {
+		body["required_n_ctx"] = diag.RequiredNCtx
+	}
+	if diag.Suggestion != "" {
+		body["suggestion"] = diag.Suggestion
+	}
+	body["retry_after"] = retryAfterSec
+
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Retry-After", strconv.Itoa(retryAfterSec))
+	w.WriteHeader(http.StatusServiceUnavailable)
+	_ = json.NewEncoder(w).Encode(body)
+}
+
+// clampEstimatedMsToRetryAfter — конвертирует estimated_load_time_ms в
+// Retry-After секунды с разумными границами:
+//   - floor: 5s (чтобы клиент не retry-ил слишком часто)
+//   - ceiling: 600s (10 мин — чтоб не висели вечно)
+//
+// Округление: ceil(ms / 1000) — минимум 1 секунда сверх floor.
+// Например: 95000ms → 95s, 1000ms → 5s (floor), 700000ms → 600s (cap).
+func clampEstimatedMsToRetryAfter(ms int) int {
+	if ms <= 0 {
+		return 0
+	}
+	sec := (ms + 999) / 1000 // ceil division
+	if sec < 5 {
+		sec = 5
+	}
+	if sec > 600 {
+		sec = 600
+	}
+	return sec
+}
+
 // writeAutoLoadRetryAfter — R60.33 (2026-09-10): вычисляет правильный
 // Retry-After в зависимости от причины auto-load failure. Если load
 // идёт async (R60.33) — 30s (модель загрузится). Если failed
@@ -119,6 +247,111 @@ func writeAutoLoadRetryAfter(loadErr error) int {
 	}
 	// Default 30s.
 	return 30
+}
+
+// buildAutoLoadDiagnostic — R60.40 (2026-09-11) helper: формирует
+// ServiceUnavailableDiagnostic для auto-load failure cases с actionable
+// info для клиента.
+//
+// Что кладём в диагностику:
+//   - error: human-readable message
+//   - retry_after_sec: from writeAutoLoadRetryAfter() (R60.33 logic)
+//   - target_n_ctx: что пытаемся загрузить (resolved.Value из ResolveNumCtx)
+//   - feasible_max_context: max_vram_n_ctx из cppworker /api/models metrics
+//   - gguf_max_context: gguf_max_context из metrics (модель's hard upper bound)
+//   - suggestion: человекочитаемый совет ("Reduce num_predict" или "wait")
+//
+// Что НЕ кладём (нет инфы):
+//   - estimated_load_time_ms — cppworker не возвращает в async mode
+//     (только в initial /api/models/load response). Для async load
+//     retry_after_sec остаётся 30s (default).
+//
+// Caller: handleChat (R60.40).
+func buildAutoLoadDiagnostic(
+	backendID, model string,
+	targetNCtx int,
+	loadErr error,
+) ServiceUnavailableDiagnostic {
+	diag := ServiceUnavailableDiagnostic{
+		Error: fmt.Sprintf("model '%s' is not loaded and auto-load failed: %v", model, loadErr),
+		Model: model,
+		BackendID: backendID,
+		RetryAfterSec: writeAutoLoadRetryAfter(loadErr),
+	}
+	if targetNCtx > 0 {
+		diag.TargetNCtx = targetNCtx
+	}
+	// Fetch metrics если Proxy доступен — через p.getMaxVRAMNCtxFromMetrics +
+	// getGGUFMaxContext (вызывающий передаёт *Proxy или мы делаем lookup).
+	// Чтобы не плодить циклы импорта, оставляем вызов через p proxy — см.
+	// buildAutoLoadDiagnosticWithProxy ниже.
+	return diag
+}
+
+// buildAutoLoadDiagnosticWithProxy — R60.40 (2026-09-11) full version
+// с доступом к Proxy для получения feasible_max_context / gguf_max_context.
+//
+// Используется в handler'ах где есть доступ к *Proxy.
+func buildAutoLoadDiagnosticWithProxy(
+	p *Proxy,
+	backendID, model string,
+	targetNCtx int,
+	loadErr error,
+) ServiceUnavailableDiagnostic {
+	diag := buildAutoLoadDiagnostic(backendID, model, targetNCtx, loadErr)
+	if p == nil {
+		return diag
+	}
+	// Fetch cppworker /api/models metrics.
+	diag.FeasibleMaxContext = p.getMaxVRAMNCtxFromMetrics(backendID)
+	// GGUFMaxContext — из llamaMetrics[backendID].GGUFMaxContext.
+	if mm := p.GetMetricsManager(); mm != nil {
+		if lm := mm.GetLlamaCppMetrics(backendID); lm != nil {
+			diag.GGUFMaxContext = lm.GGUFMaxContext
+		}
+	}
+	// Suggestion: actionable text based on what we know.
+	diag.Suggestion = buildAutoLoadSuggestion(diag, loadErr)
+	return diag
+}
+
+// buildAutoLoadSuggestion — формирует человекочитаемый совет на основе
+// причины auto-load failure.
+func buildAutoLoadSuggestion(diag ServiceUnavailableDiagnostic, loadErr error) string {
+	if loadErr == nil {
+		return "Model is loading. Please retry in a few seconds."
+	}
+	errStr := loadErr.Error()
+	// Async load in progress
+	if strings.Contains(errStr, "auto-load in progress") {
+		return fmt.Sprintf(
+			"Model '%s' is being loaded with n_ctx=%d. "+
+				"Please wait %d seconds and retry. "+
+				"Reduce num_predict in your client to avoid this wait on future requests.",
+			diag.Model, diag.TargetNCtx, diag.RetryAfterSec)
+	}
+	// n_ctx reload (target n_ctx different from current)
+	if strings.Contains(errStr, "n_ctx reload") {
+		if diag.FeasibleMaxContext > 0 && diag.TargetNCtx > diag.FeasibleMaxContext {
+			return fmt.Sprintf(
+				"Requested n_ctx=%d exceeds feasible_max_context=%d for this model on this hardware. "+
+					"Reduce num_predict to fit within feasible_max_context, "+
+					"or save a model profile with smaller contextLength.",
+				diag.TargetNCtx, diag.FeasibleMaxContext)
+		}
+		return fmt.Sprintf(
+			"Model is being reloaded to n_ctx=%d. Please retry in %d seconds.",
+			diag.TargetNCtx, diag.RetryAfterSec)
+	}
+	// Circuit breaker open
+	if strings.Contains(errStr, "circuit breaker open") {
+		return "Backend is temporarily unavailable due to repeated failures. " +
+			"Please wait 60 seconds and retry."
+	}
+	// Generic fallback
+	return fmt.Sprintf(
+		"Auto-load failed: %v. Please retry in %d seconds.",
+		loadErr, diag.RetryAfterSec)
 }
 
 // copyResponse — copy headers + status + body from an upstream http.Response

@@ -624,10 +624,11 @@ func (lr *LlamaCppRouter) handleChat(w http.ResponseWriter, r *http.Request) {
 	if _, loadErr := lr.ensureModelLoadedOnBackend(backendID, model, loadOpts); loadErr != nil {
 		logger.Get().Errorw("handleChat: auto-load failed",
 			"backend", backendID, "model", model, "error", loadErr)
-		// R60.16: include Retry-After so clients back off (see chat completions).
-		writeServiceUnavailable(w,
-			fmt.Sprintf("model '%s' is not loaded and auto-load failed: %v", model, loadErr),
-			0)
+		// R60.16: include Retry-After so clients back off.
+		// R60.40: include actionable diagnostics — OpenWebUI can show the
+		// user what to fix instead of just "auto-load failed".
+		diag := buildAutoLoadDiagnosticWithProxy(lr.proxy, backendID, model, resolvedLoad.Value, loadErr)
+		writeServiceUnavailableWithDiagnostics(w, diag)
 		return
 	}
 

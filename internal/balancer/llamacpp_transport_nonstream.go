@@ -311,10 +311,10 @@ func (p *Proxy) proxyRequestLlamaCppNonStream(w http.ResponseWriter, r *http.Req
 				w.Header().Set("Retry-After", "5")
 				w.Header().Set("X-Model-Loading-Retry", "exhausted")
 				errBody, _ := json.Marshal(map[string]interface{}{
-					"error":         fmt.Sprintf("model is still loading after %ds: %s", loadingRetryMaxAttempts*int(loadingRetryInterval.Seconds()), loadingModelName),
-					"loading":       true,
-					"model":         loadingModelName,
-					"retryAfterMs":  5000,
+					"error":        fmt.Sprintf("model is still loading after %ds: %s", loadingRetryMaxAttempts*int(loadingRetryInterval.Seconds()), loadingModelName),
+					"loading":      true,
+					"model":        loadingModelName,
+					"retryAfterMs": 5000,
 				})
 				w.Header().Set("Content-Length", strconv.Itoa(len(errBody)))
 				w.WriteHeader(http.StatusServiceUnavailable)
@@ -424,7 +424,7 @@ func (p *Proxy) proxyRequestLlamaCppNonStream(w http.ResponseWriter, r *http.Req
 				"created_at":  time.Now().UTC().Format(time.RFC3339),
 				"done":        true,
 				"done_reason": "error",
-				"error":       fmt.Sprintf("upstream returned HTTP %d: %s",
+				"error": fmt.Sprintf("upstream returned HTTP %d: %s",
 					resp.StatusCode, string(respBody)),
 				"message": map[string]interface{}{
 					"role":    "assistant",
@@ -442,23 +442,86 @@ func (p *Proxy) proxyRequestLlamaCppNonStream(w http.ResponseWriter, r *http.Req
 	// Если body пустой и статус 200 — это обычно означает, что cppworker ещё
 	// загружает модель (или вернул мусор). Возвращаем 502 с явной диагностикой,
 	// чтобы OpenWebUI не рендерил "пустое сообщение ассистента".
+	//
+	// R60.40 (2026-09-11): empty body — это именно случай когда OpenWebUI
+	// показывает "Unexpected token '<html>'" потому что upstream молча
+	// вернул 200 OK с пустым телом. Теперь добавляем:
+	//   - bridge_info (если cppworker имел last error с n_ctx overflow)
+	//   - feasible_max_context / gguf_max_context (для actionable suggestion)
+	//   - Retry-After header (отсутствие его вызывало cascade retry loops)
+	//   - suggestion: "Reduce num_predict OR save profile with larger n_ctx"
+	//
 	// ВАЖНО: устанавливаем Content-Length явно — предотвращает TransferEncodingError.
 	if len(respBody) == 0 {
 		logger.Get().Warnw("proxyRequestLlamaCppNonStream: empty body from upstream",
 			"backend", backendID, "model", modelFromCtx)
-		errBody, _ := json.Marshal(map[string]interface{}{
-			"model":       modelFromCtx,
-			"created_at":  time.Now().UTC().Format(time.RFC3339),
-			"done":        true,
-			"done_reason": "error",
-			"error":       "upstream returned empty response (model may still be loading)",
+		// Build diagnostic response.
+		diag := ServiceUnavailableDiagnostic{
+			Error:         "upstream returned empty response (model may still be loading or n_ctx too small for prompt)",
+			RetryAfterSec: 30,
+			Model:         modelFromCtx,
+			BackendID:     backendID,
+		}
+		if p != nil {
+			diag.FeasibleMaxContext = p.getMaxVRAMNCtxFromMetrics(backendID)
+		}
+		if mm := p.GetMetricsManager(); mm != nil {
+			if lm := mm.GetLlamaCppMetrics(backendID); lm != nil {
+				diag.GGUFMaxContext = lm.GGUFMaxContext
+			}
+		}
+		diag.Suggestion = fmt.Sprintf(
+			"Model '%s' returned empty response. This usually means: "+
+				"(1) model is still loading after a reload (wait %d sec); "+
+				"(2) prompt exceeds n_ctx (reduce num_predict or set higher n_ctx in your request); "+
+				"(3) feasible_max_context=%d, gguf_max_context=%d — pick n_ctx within these limits.",
+			modelFromCtx, diag.RetryAfterSec, diag.FeasibleMaxContext, diag.GGUFMaxContext)
+
+		// OpenAI-compatible format (для /v1/chat/completions) и Ollama-format (для /api/chat).
+		if isOpenAIPath(originalPath) {
+			// OpenAI-style: {"error": {"message": ..., "type": "upstream_error"}}
+			openAI := map[string]interface{}{
+				"error": map[string]interface{}{
+					"message":     diag.Error,
+					"type":        "upstream_error",
+					"code":        http.StatusBadGateway,
+					"model":       modelFromCtx,
+					"target_n_ctx": diag.TargetNCtx,
+					"feasible_max_context": diag.FeasibleMaxContext,
+					"gguf_max_context":     diag.GGUFMaxContext,
+					"retry_after":          diag.RetryAfterSec,
+					"suggestion":           diag.Suggestion,
+				},
+			}
+			errBody, _ := json.Marshal(openAI)
+			w.Header().Set("Content-Type", "application/json")
+			w.Header().Set("Content-Length", strconv.Itoa(len(errBody)))
+			w.Header().Set("Retry-After", strconv.Itoa(diag.RetryAfterSec))
+			w.WriteHeader(http.StatusBadGateway)
+			w.Write(errBody)
+			return nil
+		}
+		// Ollama-style: {model, created_at, done, done_reason:error, error, message, suggestion}
+		ollama := map[string]interface{}{
+			"model":                 modelFromCtx,
+			"created_at":            time.Now().UTC().Format(time.RFC3339),
+			"done":                  true,
+			"done_reason":           "error",
+			"error":                 diag.Error,
+			"target_n_ctx":          diag.TargetNCtx,
+			"feasible_max_context":  diag.FeasibleMaxContext,
+			"gguf_max_context":      diag.GGUFMaxContext,
+			"retry_after":           diag.RetryAfterSec,
+			"suggestion":            diag.Suggestion,
 			"message": map[string]interface{}{
 				"role":    "assistant",
 				"content": "",
 			},
-		})
+		}
+		errBody, _ := json.Marshal(ollama)
 		w.Header().Set("Content-Type", "application/json")
 		w.Header().Set("Content-Length", strconv.Itoa(len(errBody)))
+		w.Header().Set("Retry-After", strconv.Itoa(diag.RetryAfterSec))
 		w.WriteHeader(http.StatusBadGateway)
 		w.Write(errBody)
 		return nil
@@ -507,9 +570,9 @@ func (p *Proxy) proxyRequestLlamaCppNonStream(w http.ResponseWriter, r *http.Req
 								logger.Get().Infow("proxyRequestLlamaCppNonStream: detected tool_calls in content",
 									"tool_calls_count", len(detectedTC))
 								// Clean remaining: remove service tokens, duplicate tool calls, role markers
-							cleanedTC := stripServiceTokens(remainingTC)
-							cleanedTC = cleanContentAfterToolCallExtraction(cleanedTC)
-							fullContent += cleanedTC
+								cleanedTC := stripServiceTokens(remainingTC)
+								cleanedTC = cleanContentAfterToolCallExtraction(cleanedTC)
+								fullContent += cleanedTC
 								// Конвертируем детектированные tool_calls в accumulatedToolCall формат
 								for i, rawTC := range detectedTC {
 									if tcMap, ok := rawTC.(map[string]interface{}); ok {

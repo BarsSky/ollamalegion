@@ -13,7 +13,10 @@
 
 name: CI
 
-on:
+# R60.51 (2026-09-12): "on" must be quoted — без кавычек YAML парсер
+# (включая GitHub Actions strict parser) трактует `on:` как boolean `True:`
+# и workflow валится с "Invalid workflow file" на любом push.
+"on":
   push:
     branches: [centurion, main, integration/**, feature/**]
   pull_request:
@@ -55,7 +58,7 @@ jobs:
       #
       # Все операции с GITHUB_PATH/GITHUB_ENV обёрнуты в try/catch и используют
       # Add-Content -Encoding ASCII (без BOM, критично для PowerShell 5.1).
-      - name: Init Go env (dual propagation: GITHUB_PATH + GITHUB_ENV)
+      - name: "Init Go env (dual propagation: GITHUB_PATH + GITHUB_ENV)"
         shell: powershell
         run: |
           # ---- helpers: пишем в GITHUB_PATH / GITHUB_ENV (ASCII, без BOM) ----

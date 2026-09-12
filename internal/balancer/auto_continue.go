@@ -23,6 +23,15 @@
 //  3. Concatenate the continuation to original content
 //  4. Return combined response to client
 //
+// R60.50 fix (2026-09-12): original PerformAutoContinue included the full
+// original conversation history (User: "Привет распиши..." + Assistant: truncated).
+// This caused Qwen3-Instruct to RESTART with "Привет! Конечно, вот..." instead
+// of continuing from the truncation point. The model interprets the original
+// user message as a fresh prompt and greets back.
+//
+// R60.50 fix: the continuation request contains ONLY a single user message
+// with the truncated content embedded + explicit "continue from here" instruction.
+// The model has no original user context to "restart" from, so it MUST continue.
 // Operator opt-in via LB_AUTO_CONTINUE_ON_TRUNCATION env var (default: off).
 package balancer
 
@@ -130,20 +139,26 @@ func endsWithCompleteStatement(line string) bool {
 	return false
 }
 
-// buildContinuePrompt — construct the "continue" user message
-// sent to model in auto-retry. Must:
+// buildContinuePrompt — construct the FULL "continue" user message
+// sent to model in auto-retry. R60.50: this is the ONLY message in the
+// continuation request (we don't include original user/assistant history
+// to prevent the model from "restarting" with a greeting).
+//
+// Must:
 //  1. Reference the partial content (so model knows where to resume)
 //  2. Explicitly ask to complete the code block
-//  3. Be short (don't confuse the model with verbose instructions)
+//  3. Forbid greeting/restarting (R60.50 fix)
+//  4. Include the truncated text so the model can resume
 //
-// Returns the user message content (not the full request body).
-// Caller wraps it in an assistant message + user message pair.
+// Returns the user message content. Caller wraps it in a single user
+// message — no other messages in the request body.
 func BuildContinuePrompt(partialContent string, reason string) string {
 	var sb strings.Builder
-	sb.WriteString("Продолжи точно с того места, где остановился. ")
+	sb.WriteString("Ты — ассистент, который пишет ответ. Твой предыдущий ответ был прерван на середине. ")
+	sb.WriteString("Продолжи ТОЧНО с того места, где остановился. ")
 	switch reason {
 	case truncateReasonUnclosedCodeBlock:
-		sb.WriteString("Кодовый блок остался незакрытым (нет финальной строки ```). ")
+		sb.WriteString("Кодовый блок остался незазакрытым (нет финальной строки ```). ")
 		sb.WriteString("Сгенерируй ТОЛЬКО продолжение кода, начиная с последнего выведенного символа. ")
 		sb.WriteString("ОБЯЗАТЕЛЬНО закрой блок тремя обратными апострофами (```) в конце.")
 	case truncateReasonMidLineCutoff:
@@ -154,14 +169,21 @@ func BuildContinuePrompt(partialContent string, reason string) string {
 		sb.WriteString("Сгенерируй ТОЛЬКО продолжение с места обрыва. ")
 		sb.WriteString("Не повторяй уже написанное.")
 	}
-	// Include last 200 chars of partial content as context anchor.
+	// R60.50: explicit anti-greeting / anti-restart.
+	sb.WriteString("\n\nВАЖНО:\n")
+	sb.WriteString("- НЕ здоровайся заново (\"Привет\", \"Конечно\", и т.п.).\n")
+	sb.WriteString("- НЕ повторяй уже написанное.\n")
+	sb.WriteString("- Сразу продолжай с места обрыва.\n")
+
+	// Include last 400 chars of partial content as context anchor.
+	// Increased from 200 to 400 for better resumption context.
 	anchor := partialContent
-	if len(anchor) > 200 {
-		anchor = anchor[len(anchor)-200:]
+	if len(anchor) > 400 {
+		anchor = anchor[len(anchor)-400:]
 	}
-	sb.WriteString("\n\nПоследние 200 символов твоего ответа (для контекста):\n```\n...")
+	sb.WriteString("\n\nПоследние символы твоего ответа (для контекста):\n```\n...")
 	sb.WriteString(anchor)
-	sb.WriteString("\n```")
+	sb.WriteString("\n```\n\nСгенерируй ТОЛЬКО продолжение:")
 	return sb.String()
 }
 
@@ -291,13 +313,20 @@ type chatMessage struct {
 // truncation is detected. Returns the continuation content (string)
 // and the new eval_count (if known).
 //
-// Algorithm:
-//  1. Parse originalBody as a JSON object with "messages" field.
-//     (Works for both /api/chat (Ollama) and /v1/chat/completions (OpenAI).)
-//  2. Append assistant message with accumulatedContent.
-//  3. Append user message with BuildContinuePrompt(accumulatedContent, reason).
-//  4. Re-marshal and POST non-streaming request to upstream.
-//  5. Read response, extract content, return.
+// Algorithm (R60.50 — fixed from R60.21):
+//  1. Parse originalBody just to extract the model name.
+//  2. Build a SINGLE-MESSAGE user request containing:
+//     - The truncated content as context anchor (last 400 chars)
+//     - Explicit "continue from here, don't greet/restart" instruction
+//  3. Re-marshal and POST non-streaming request to upstream.
+//  4. Read response, extract content, return.
+//
+// R60.50 fix: original implementation sent FULL conversation history
+// (User: original + Assistant: truncated + User: continue). The model
+// saw the original user message ("Привет распиши...") and RESTARTED with
+// a greeting instead of continuing. The fix sends ONLY a single user
+// message with the truncated content embedded — the model has no original
+// user context to "restart" from.
 //
 // Returns ("", 0, nil) on any error — caller treats as "no continuation".
 // This means failed auto-continue doesn't break the response, just
@@ -324,29 +353,27 @@ func PerformAutoContinue(
 		timeout = GetAutoContinueTimeout()
 	}
 
-	// 1. Parse original body
+	// 1. Parse original body — only need model name.
 	var reqBody struct {
-		Model    string        `json:"model"`
-		Messages []chatMessage `json:"messages"`
-		Stream   bool          `json:"stream"`
+		Model string `json:"model"`
 	}
 	if err := json.Unmarshal(originalBody, &reqBody); err != nil {
 		return "", 0, err
 	}
-	if len(reqBody.Messages) == 0 {
+	if reqBody.Model == "" {
 		return "", 0, errEmptyMessages
 	}
 
-	// 2-3. Append assistant + user messages
+	// R60.50: build a SINGLE user message with truncated content embedded
+	// + explicit continue instruction. NO original conversation history.
 	continuationPrompt := BuildContinuePrompt(accumulatedContent, truncationReason)
-	reqBody.Messages = append(reqBody.Messages,
-		chatMessage{Role: "assistant", Content: accumulatedContent},
-		chatMessage{Role: "user", Content: continuationPrompt},
-	)
+	continuationMessages := []chatMessage{
+		{Role: "user", Content: continuationPrompt},
+	}
+
 	// Force non-streaming for the continue request (simpler to handle).
 	// Stream was true for original; we want to read the full response
 	// before returning, since we already streamed the original to client.
-	reqBody.Stream = false
 	// Limit continuation size to prevent runaway.
 	//
 	// R60.21: cppworker's /v1/chat/completions strict decoder REJECTS
@@ -361,7 +388,7 @@ func PerformAutoContinue(
 		MaxTokens int           `json:"max_tokens,omitempty"`
 	}{
 		Model:     reqBody.Model,
-		Messages:  reqBody.Messages,
+		Messages:  continuationMessages,
 		Stream:    false,
 		MaxTokens: maxTokens,
 	})

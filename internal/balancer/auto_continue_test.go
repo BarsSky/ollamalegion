@@ -22,8 +22,13 @@
 package balancer
 
 import (
+	"encoding/json"
+	"io"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 )
 
 // TestDetectIncompleteResponse_UnclosedCodeBlock — primary detector.
@@ -223,8 +228,7 @@ func TestDetectIncompleteResponse_RealisticR60_20Cases(t *testing.T) {
 }
 
 // TestBuildContinuePrompt — sanity check for the prompt template used
-// in auto-continue. Should explicitly say "complete the code block" so
-// the model knows what to do.
+// in auto-continue. Should explicitly say "continue" + reference partial content.
 func TestBuildContinuePrompt(t *testing.T) {
 	prompt := BuildContinuePrompt(
 		"```python\nimport numpy as np\nv0 = 50.0\n",
@@ -233,10 +237,105 @@ func TestBuildContinuePrompt(t *testing.T) {
 	if !strings.Contains(prompt, "```") {
 		t.Error("continue prompt should mention code blocks")
 	}
-	if !strings.Contains(prompt, "complete") {
-		t.Error("continue prompt should ask to complete")
+	if !strings.Contains(prompt, "Продолжи") {
+		t.Error("continue prompt should ask to continue (R60.21)")
 	}
 	if !strings.Contains(prompt, "```python\nimport numpy as np") {
 		t.Error("continue prompt should include partial content for context")
+	}
+}
+
+// TestR6050_BuildContinuePrompt_NoGreetingInstructions — R60.50 fix.
+// The continuation prompt must EXPLICITLY forbid the model from greeting
+// or restarting, because Qwen3-Instruct tends to restart with "Привет! Конечно..."
+// when it sees the original user message in conversation history.
+func TestR6050_BuildContinuePrompt_NoGreetingInstructions(t *testing.T) {
+	prompt := BuildContinuePrompt(
+		"```python\nimport numpy as np\nv0 = 50.0\n",
+		"unclosed_code_block",
+	)
+	// Must explicitly tell the model NOT to greet.
+	if !strings.Contains(prompt, "здоровайся") {
+		t.Error("R60.50: continue prompt must forbid greeting (model tends to restart with 'Привет')")
+	}
+	// Must explicitly tell the model NOT to repeat.
+	if !strings.Contains(prompt, "повторяй") {
+		t.Error("R60.50: continue prompt must forbid repeating (avoid duplicate content)")
+	}
+	// Must explicitly tell the model to continue from where it stopped.
+	if !strings.Contains(prompt, "Продолжи ТОЧНО") {
+		t.Error("R60.50: continue prompt must explicitly say 'continue exactly from here'")
+	}
+}
+
+// TestR6050_BuildContinuePrompt_IncludesAnchor — R60.50: anchor is now 400 chars (was 200).
+func TestR6050_BuildContinuePrompt_IncludesAnchor(t *testing.T) {
+	longPartial := strings.Repeat("a", 1000) + "let xPoints ="
+	prompt := BuildContinuePrompt(longPartial, "mid_line_cutoff")
+	// Must include the last 400 chars as anchor.
+	expectedAnchor := longPartial[len(longPartial)-400:]
+	if !strings.Contains(prompt, expectedAnchor) {
+		t.Error("R60.50: continue prompt should include last 400 chars of partial content")
+	}
+}
+
+// TestR6050_PerformAutoContinue_SingleUserMessage — R60.50 invariant:
+// The continuation request body must contain ONLY a single user message,
+// NOT the original conversation. Qwen3-Instruct tends to restart with
+// "Привет! Конечно..." when it sees the original user message in history,
+// which is the user-visible bug R60.50 fixes.
+func TestR6050_PerformAutoContinue_SingleUserMessage(t *testing.T) {
+	// Spin up a fake upstream that records the request body.
+	var capturedBody []byte
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		capturedBody, _ = io.ReadAll(r.Body)
+		// Return a minimal valid OpenAI response so PerformAutoContinue succeeds.
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{"choices":[{"message":{"content":"continuation ok"}}],"usage":{"completion_tokens":10}}`))
+	}))
+	defer srv.Close()
+
+	// Original request body: user said "Привет распиши..." — MUST NOT appear in continuation.
+	originalBody := []byte(`{"model":"Qwen3","messages":[{"role":"user","content":"Привет распиши красивый сайт на html css"}],"stream":true}`)
+
+	_, _, err := PerformAutoContinue(
+		srv.URL, originalBody,
+		"```html\n<html><body>partial</body></html>\nlet xPoints =",
+		truncateReasonUnclosedCodeBlock,
+		nil, 30*time.Second,
+	)
+	if err != nil {
+		t.Fatalf("PerformAutoContinue: %v", err)
+	}
+
+	// Verify captured body has only 1 message.
+	var parsed struct {
+		Model    string `json:"model"`
+		Messages []struct {
+			Role    string `json:"role"`
+			Content string `json:"content"`
+		} `json:"messages"`
+	}
+	if err := json.Unmarshal(capturedBody, &parsed); err != nil {
+		t.Fatalf("parse captured body: %v\nbody=%s", err, capturedBody)
+	}
+	if len(parsed.Messages) != 1 {
+		t.Errorf("R60.50: continuation request must have exactly 1 message (was %d). Multiple messages caused model to restart with greeting.", len(parsed.Messages))
+	}
+	if parsed.Model != "Qwen3" {
+		t.Errorf("model name lost: %q", parsed.Model)
+	}
+	if len(parsed.Messages) >= 1 {
+		if parsed.Messages[0].Role != "user" {
+			t.Errorf("single message must be 'user', got %q", parsed.Messages[0].Role)
+		}
+		// The original user prompt "Привет распиши..." MUST NOT appear in continuation.
+		if strings.Contains(parsed.Messages[0].Content, "Привет распиши") {
+			t.Error("R60.50: original user prompt leaked into continuation request body — this causes the model to restart with greeting")
+		}
+		// But the truncated content MUST be referenced (so model can resume).
+		if !strings.Contains(parsed.Messages[0].Content, "let xPoints =") {
+			t.Error("R60.50: continuation message must include anchor (last 400 chars of truncated content)")
+		}
 	}
 }

@@ -174,6 +174,10 @@ func BuildContinuePrompt(partialContent string, reason string) string {
 	sb.WriteString("- НЕ здоровайся заново (\"Привет\", \"Конечно\", и т.п.).\n")
 	sb.WriteString("- НЕ повторяй уже написанное.\n")
 	sb.WriteString("- Сразу продолжай с места обрыва.\n")
+	// R60.50: forbid emitting literal ``` inside code blocks (Qwen3-Instruct antipattern
+	// that breaks OpenWebUI markdown rendering). Use \\\` instead, or skip.
+	sb.WriteString("- НЕ используй символы ``` внутри кода — они закрывают markdown блок раньше времени.\n")
+	sb.WriteString("  Если нужен обратный апостроф внутри кода, замени на одинарный ` или экранируй.\n")
 
 	// Include last 400 chars of partial content as context anchor.
 	// Increased from 200 to 400 for better resumption context.
@@ -469,6 +473,9 @@ func EmitContinuationNDJSON(
 	flusher http.Flusher,
 ) error {
 	combined := originalContent + continuationContent
+	// R60.50: strip interior ``` that break markdown rendering (Qwen3-Instruct
+	// antipattern — emits ``` inside JS code which prematurely closes outer fence).
+	combined = FixMarkdownCodeFences(combined)
 	// Strip antiprompt-like artifacts that may appear at the boundary.
 	// Common: "Sure, here's the continuation:\n\n" — model often prepends
 	// acknowledgment text. We don't try to strip it (too aggressive);
@@ -515,3 +522,35 @@ func EmitContinuationNDJSON(
 }
 
 // Sanitize for utf8RuneCount — no-op removed, no extra imports needed.
+
+// FixMarkdownCodeFences — R60.50 (2026-09-12): keep the FIRST ``` (for syntax
+// highlighting) and replace ALL subsequent ``` with non-fence representation.
+// Qwen3-Instruct reflexively emits ``` inside JavaScript template literals /
+// comments / strings, which prematurely closes the outer markdown code block
+// and breaks OpenWebUI rendering.
+//
+// Strategy:
+//  1. Find first ``` — keep it (preserves code-block syntax highlighting)
+//  2. Replace all subsequent ``` with ` ` (single backtick + space +
+//     backtick, which is NOT a valid markdown fence)
+//
+// Trade-off: response still has ONE nice code block (the first one) for
+// syntax highlighting. Any additional ``` (which are model antipatterns)
+// are converted to non-fences, preserving the character content but
+// preventing rendering breaks.
+//
+// Returns the cleaned content.
+func FixMarkdownCodeFences(content string) string {
+	if !strings.Contains(content, "```") {
+		return content
+	}
+	firstFence := strings.Index(content, "```")
+	if firstFence == -1 {
+		return content
+	}
+	// Keep the first ```, replace all subsequent ones.
+	before := content[:firstFence+3]
+	after := content[firstFence+3:]
+	after = strings.ReplaceAll(after, "```", "` `")
+	return before + after
+}

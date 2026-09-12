@@ -339,3 +339,48 @@ func TestR6050_PerformAutoContinue_SingleUserMessage(t *testing.T) {
 		}
 	}
 }
+
+// TestR6050_FixMarkdownCodeFences — R60.50: keep first ``` (for syntax
+// highlighting), replace all subsequent ``` with non-fence representation.
+// Qwen3-Instruct emits ``` inside JS code, breaking markdown rendering.
+func TestR6050_FixMarkdownCodeFences(t *testing.T) {
+	cases := []struct {
+		name  string
+		input string
+		want  string
+	}{
+		{
+			name:  "no fences — unchanged",
+			input: "no code blocks here",
+			want:  "no code blocks here",
+		},
+		{
+			name:  "single fence — unchanged (no subsequent fences to replace)",
+			input: "before ```html\nfoo",
+			want:  "before ```html\nfoo",
+		},
+		{
+			name:  "two fences — first kept, second replaced (the closing fence becomes non-fence — code block has no closer)",
+			input: "before ```html\nfoo\n``` after",
+			want:  "before ```html\nfoo\n` ` after",
+		},
+		{
+			name:  "Qwen3-Instruct antipattern (the user bug)",
+			input: "```html\nconst height = value```\n) || 0;\n``` end",
+			want:  "```html\nconst height = value` `\n) || 0;\n` ` end",
+		},
+		{
+			name:  "multiple interior fences all replaced (only first kept)",
+			input: "```html\n```\nfoo\n```\nbar\n``` end",
+			want:  "```html\n` `\nfoo\n` `\nbar\n` ` end",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := FixMarkdownCodeFences(tc.input)
+			if got != tc.want {
+				t.Errorf("FixMarkdownCodeFences:\n got: %q\nwant: %q", got, tc.want)
+			}
+		})
+	}
+}

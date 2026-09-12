@@ -461,6 +461,25 @@ func translateOpenAIEmbeddingsToOllama(body []byte, modelName string) ([]byte, e
 }
 
 // translateOpenAISSEDataToOllama — переводит OpenAI SSE streaming data в Ollama NDJSON.
+//
+// R60.49 (2026-09-12): добавлен параметр accumulatedContent для финального done-чанка.
+// Без него usage-чанк эмитил message.content: "" (пустой), и OpenWebUI показывал
+// только то, что накопилось из streaming чанков. Если OpenWebUI перезаписывал
+// content из done-чанка, user видел пустой/обрезанный ответ. Теперь usage-чанк
+// получает накопленный content и эмитит его в message.content.
+//
+// Параметры:
+//   - accumulatedContent — текст накопленный из streaming data:-чанков до этого момента.
+//     Передаётся в translateUsageChunkToOllama для done-чанка message.content.
+//
+// Вызывается из proxyRequestLlamaCpp в цикле чтения SSE-чанков.
+//
+// Round 35c+ USAGE CHUNK passthrough: cppworker шлёт финальный SSE-чанк с usage +
+// пустые choices (OpenAI streaming spec). Без явной обработки usage пропадал и
+// OpenWebUI показывал N/A для token counts (R35c bug-report 2026-08-13).
+//
+// R60.49 fix: usage-чанк теперь ВКЛЮЧАЕТ accumulated content (не ""),
+// чтобы OpenWebUI показывал полный ответ (а не обрезанный).
 // Если чанк — [DONE], возвращает nil.
 //
 // seenReasoning — pointer на per-stream state (Round 31 #4): если за всё время стрима
@@ -480,7 +499,7 @@ func translateOpenAIEmbeddingsToOllama(body []byte, modelName string) ([]byte, e
 //   - firstContentTime — R60.22: time of FIRST non-empty content chunk arrival
 //     (for prompt_eval_duration = TTFT and eval_duration = total - TTFT).
 //     Zero value = no content yet (usage chunk would have eval_duration=total).
-func translateOpenAISSEDataToOllama(ollamaPath string, sseData []byte, modelName string, seenReasoning *bool, streamStart time.Time, firstContentTime time.Time) []byte {
+func translateOpenAISSEDataToOllama(ollamaPath string, sseData []byte, modelName string, seenReasoning *bool, streamStart time.Time, firstContentTime time.Time, accumulatedContent string) []byte {
 	if len(sseData) == 0 || bytes.Equal(sseData, []byte("[DONE]")) {
 		return nil
 	}
@@ -501,8 +520,12 @@ func translateOpenAISSEDataToOllama(ollamaPath string, sseData []byte, modelName
 	//
 	// Streaming fix: детектим usage chunk (есть usage + пустые choices) и эмитим
 	// Ollama done-чанк с token counts.
+	//
+	// R60.49 (2026-09-12): передаём accumulatedContent в translateUsageChunkToOllama
+	// чтобы done-чанк имел реальный message.content (= accumulatedContent),
+	// а не "" (пустой). Без этого OpenWebUI показывал обрезанный/пустой ответ.
 	if usage, hasUsage := openaiChunk["usage"].(map[string]interface{}); hasUsage && !hasNonEmptyChoices(openaiChunk) {
-		return translateUsageChunkToOllama(ollamaPath, modelName, usage, openaiChunk, streamStart, firstContentTime)
+		return translateUsageChunkToOllama(ollamaPath, modelName, usage, openaiChunk, streamStart, firstContentTime, accumulatedContent)
 	}
 	switch ollamaPath {
 	case "/api/chat":
@@ -560,7 +583,11 @@ func hasNonEmptyChoices(chunk map[string]interface{}) bool {
 //     Zero value = no content yet (e.g. all response was in done-chunk, or
 //     never came). If non-zero, we use it to split total_duration into
 //     prompt_eval_duration (TTFT) and eval_duration (rest).
-func translateUsageChunkToOllama(ollamaPath, modelName string, usage map[string]interface{}, openaiChunk map[string]interface{}, streamStart time.Time, firstContentTime time.Time) []byte {
+//   - accumulatedContent — R60.49: текст, накопленный из streaming чанков
+//     до момента, когда пришёл usage-чанк. Используется для message.content
+//     в Ollama done-чанке. Без этого content был "" (пустой), и OpenWebUI
+//     показывал обрезанный ответ если перезаписывал streaming content.
+func translateUsageChunkToOllama(ollamaPath, modelName string, usage map[string]interface{}, openaiChunk map[string]interface{}, streamStart time.Time, firstContentTime time.Time, accumulatedContent string) []byte {
 	promptTokens := intFromUsage(usage, "prompt_tokens")
 	completionTokens := intFromUsage(usage, "completion_tokens")
 
@@ -651,12 +678,17 @@ func translateUsageChunkToOllama(ollamaPath, modelName string, usage map[string]
 	// из TestTranslateSSEGenerateToOllama_DoneHasModel).
 	switch ollamaPath {
 	case "/api/chat":
+		// R60.49 (2026-09-12): используем накопленный content из streaming
+		// чанков вместо "" (пустого). До этого фикса OpenWebUI показывал
+		// обрезанный/пустой content когда брал message.content из done-чанка
+		// вместо accumulated content из streaming чанков.
 		ollamaChunk["message"] = map[string]interface{}{
 			"role":    "assistant",
-			"content": "",
+			"content": accumulatedContent,
 		}
 	case "/api/generate":
-		ollamaChunk["response"] = ""
+		// Same fix: accumulatedContent вместо "".
+		ollamaChunk["response"] = accumulatedContent
 	}
 	// totalTokens сейчас НЕ отдаём в Ollama-чанк (Ollama его не ожидает, total = prompt+eval).
 

@@ -43,7 +43,7 @@ func TestWireFormat_ChatStreaming_FullSchema(t *testing.T) {
 	var ndjsonChunks []map[string]interface{}
 
 	for _, raw := range chunks {
-		result := translateOpenAISSEDataToOllama("/api/chat", []byte(raw), "test-model", &seenReasoning, streamStart, time.Time{})
+		result := translateOpenAISSEDataToOllama("/api/chat", []byte(raw), "test-model", &seenReasoning, streamStart, time.Time{}, "")
 		if result == nil {
 			continue
 		}
@@ -117,7 +117,7 @@ func TestWireFormat_ChatStreaming_ToolCallsSchema(t *testing.T) {
 	seenReasoning := false
 	var ndjsonChunks []map[string]interface{}
 	for _, raw := range chunks {
-		result := translateOpenAISSEDataToOllama("/api/chat", []byte(raw), "test-model", &seenReasoning, time.Time{}, time.Time{})
+		result := translateOpenAISSEDataToOllama("/api/chat", []byte(raw), "test-model", &seenReasoning, time.Time{}, time.Time{}, "")
 		if result == nil {
 			continue
 		}
@@ -209,7 +209,7 @@ func TestWireFormat_GenerateStreaming_FullSchema(t *testing.T) {
 	seenReasoning := false
 	var ndjsonChunks []map[string]interface{}
 	for _, raw := range chunks {
-		result := translateOpenAISSEDataToOllama("/api/generate", []byte(raw), "test-model", &seenReasoning, time.Time{}, time.Time{})
+		result := translateOpenAISSEDataToOllama("/api/generate", []byte(raw), "test-model", &seenReasoning, time.Time{}, time.Time{}, "")
 		if result == nil {
 			continue
 		}
@@ -394,7 +394,7 @@ func TestWireFormat_Ollama_AllClients_OneDonePerStream(t *testing.T) {
 			seenReasoning := false
 			doneCount := 0
 			for _, raw := range sc.chunks {
-				result := translateOpenAISSEDataToOllama(sc.path, []byte(raw), "test-model", &seenReasoning, time.Time{}, time.Time{})
+				result := translateOpenAISSEDataToOllama(sc.path, []byte(raw), "test-model", &seenReasoning, time.Time{}, time.Time{}, "")
 				if result == nil {
 					continue
 				}
@@ -432,7 +432,7 @@ func TestWireFormat_StreamTruncation_TranslateDoesntEmitDone(t *testing.T) {
 	seenReasoning := false
 	doneCount := 0
 	for _, raw := range chunks {
-		result := translateOpenAISSEDataToOllama("/api/chat", []byte(raw), "test-model", &seenReasoning, time.Time{}, time.Time{})
+		result := translateOpenAISSEDataToOllama("/api/chat", []byte(raw), "test-model", &seenReasoning, time.Time{}, time.Time{}, "")
 		if result == nil {
 			continue
 		}
@@ -466,7 +466,7 @@ func TestWireFormat_NDJSON_LineDelimiters(t *testing.T) {
 	seenReasoning := false
 	var lines []string
 	for _, raw := range chunks {
-		result := translateOpenAISSEDataToOllama("/api/chat", []byte(raw), "test-model", &seenReasoning, time.Time{}, time.Time{})
+		result := translateOpenAISSEDataToOllama("/api/chat", []byte(raw), "test-model", &seenReasoning, time.Time{}, time.Time{}, "")
 		if result == nil {
 			continue
 		}

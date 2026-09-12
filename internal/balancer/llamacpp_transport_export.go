@@ -10,8 +10,10 @@ import "time"
 
 // TranslateOpenAISSEDataToOllamaExportedForTest — публичная обёртка для тестов.
 // Не использовать в production-коде.
-func TranslateOpenAISSEDataToOllamaExportedForTest(ollamaPath string, sseData []byte, modelName string) []byte {
-	return translateOpenAISSEDataToOllama(ollamaPath, sseData, modelName, nil, time.Time{}, time.Time{})
+//
+// R60.49: добавлен параметр accumulatedContent для тестов R60.49 (regression).
+func TranslateOpenAISSEDataToOllamaExportedForTest(ollamaPath string, sseData []byte, modelName string, accumulatedContent string) []byte {
+	return translateOpenAISSEDataToOllama(ollamaPath, sseData, modelName, nil, time.Time{}, time.Time{}, accumulatedContent)
 }
 
 // TranslateOpenAIResponseToOllamaExportedForTest — публичная обёртка для тестов.

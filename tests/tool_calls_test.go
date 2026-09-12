@@ -183,7 +183,7 @@ func TestTranslateSSEChatToOllama_ToolCalls(t *testing.T) {
 	}
 
 	body, _ := json.Marshal(openAISSEChunk)
-	result := balancer.TranslateOpenAISSEDataToOllamaExportedForTest("/api/chat", body, "test-model")
+	result := balancer.TranslateOpenAISSEDataToOllamaExportedForTest("/api/chat", body, "test-model", "")
 	if result == nil {
 		t.Fatal("expected non-nil result from SSE translation")
 	}
@@ -226,7 +226,7 @@ func TestConvertOpenAIStreamResponseToOllama_FinishReason(t *testing.T) {
 	}
 
 	body, _ := json.Marshal(openAISSEChunk)
-	result := balancer.TranslateOpenAISSEDataToOllamaExportedForTest("/api/chat", body, "test-model")
+	result := balancer.TranslateOpenAISSEDataToOllamaExportedForTest("/api/chat", body, "test-model", "")
 	if result == nil {
 		t.Fatal("expected non-nil result from SSE translation")
 	}

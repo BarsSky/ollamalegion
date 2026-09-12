@@ -926,7 +926,10 @@ func (p *Proxy) proxyRequestLlamaCpp(w http.ResponseWriter, r *http.Request, bac
 				// финальный NDJSON/SSE если upstream уже отправил finish_reason и нет tool_calls.
 				upstreamHadFinishReason = true
 			}
-			ollamaChunk := translateOpenAISSEDataToOllama(originalPath, []byte(data), modelFromCtx, &seenReasoning, llamaStartTime, firstContentTime)
+			// R60.49 (2026-09-12): передаём accumulatedPlainContent в translator —
+			// при получении usage-чанка message.content/response теперь заполняется
+			// накопленным content (а не ""), чтобы OpenWebUI показывал полный ответ.
+			ollamaChunk := translateOpenAISSEDataToOllama(originalPath, []byte(data), modelFromCtx, &seenReasoning, llamaStartTime, firstContentTime, accumulatedPlainContent)
 			if len(ollamaChunk) == 0 {
 				continue
 			}

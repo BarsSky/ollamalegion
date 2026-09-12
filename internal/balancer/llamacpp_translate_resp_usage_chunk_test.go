@@ -25,7 +25,7 @@ import (
 func TestTranslateUsageChunkToOllama_ChatPath(t *testing.T) {
 	usageChunk := []byte(`{"id":"chatcmpl-123","object":"chat.completion.chunk","created":1786626000,"model":"gemma-4","choices":[],"usage":{"prompt_tokens":1234,"completion_tokens":567,"total_tokens":1801}}`)
 
-	result := translateOpenAISSEDataToOllama("/api/chat", usageChunk, "gemma-4", nil, time.Time{}, time.Time{})
+	result := translateOpenAISSEDataToOllama("/api/chat", usageChunk, "gemma-4", nil, time.Time{}, time.Time{}, "")
 	if result == nil {
 		t.Fatal("expected non-nil result for usage chunk, got nil (Round 35c+ regression!)")
 	}
@@ -56,8 +56,11 @@ func TestTranslateUsageChunkToOllama_ChatPath(t *testing.T) {
 		if role, _ := msg["role"].(string); role != "assistant" {
 			t.Errorf("expected message.role='assistant', got %q", role)
 		}
+		// R60.49 (2026-09-12): message.content now reflects accumulatedContent.
+		// Without accumulatedContent passed (test sends ""), content is "".
+		// See TestR6049_UsageChunkIncludesAccumulatedContent for non-empty case.
 		if content, _ := msg["content"].(string); content != "" {
-			t.Errorf("expected message.content='', got %q", content)
+			t.Errorf("expected message.content='' (no accumulatedContent passed), got %q", content)
 		}
 	}
 
@@ -77,7 +80,7 @@ func TestTranslateUsageChunkToOllama_ChatPath(t *testing.T) {
 func TestTranslateUsageChunkToOllama_GeneratePath(t *testing.T) {
 	usageChunk := []byte(`{"id":"cmpl-789","object":"chat.completion.chunk","created":1786626000,"model":"qwen3","choices":[],"usage":{"prompt_tokens":50,"completion_tokens":100,"total_tokens":150}}`)
 
-	result := translateOpenAISSEDataToOllama("/api/generate", usageChunk, "qwen3", nil, time.Time{}, time.Time{})
+	result := translateOpenAISSEDataToOllama("/api/generate", usageChunk, "qwen3", nil, time.Time{}, time.Time{}, "")
 	if result == nil {
 		t.Fatal("expected non-nil result for usage chunk, got nil")
 	}
@@ -110,7 +113,7 @@ func TestTranslateUsageChunkToOllama_ToolCallsFinishReason(t *testing.T) {
 	// если был вызван tools path. Должны извлечь finish_reason.
 	usageChunk := []byte(`{"id":"cmpl-tc","object":"chat.completion.chunk","created":1786626000,"model":"gemma-4","choices":[{"finish_reason":"tool_calls","index":0}],"usage":{"prompt_tokens":100,"completion_tokens":20,"total_tokens":120}}`)
 
-	result := translateOpenAISSEDataToOllama("/api/chat", usageChunk, "gemma-4", nil, time.Time{}, time.Time{})
+	result := translateOpenAISSEDataToOllama("/api/chat", usageChunk, "gemma-4", nil, time.Time{}, time.Time{}, "")
 	if result == nil {
 		t.Fatal("expected non-nil result for usage chunk with tool_calls finish_reason")
 	}
@@ -137,7 +140,7 @@ func TestTranslateUsageChunkToOllama_ToolCallsFinishReason(t *testing.T) {
 func TestTranslateUsageChunkToOllama_ContentChunkRegression(t *testing.T) {
 	contentChunk := []byte(`{"id":"cmpl-1","object":"chat.completion.chunk","created":1786626000,"model":"gemma-4","choices":[{"delta":{"content":"hello"},"finish_reason":null,"index":0}]}`)
 
-	result := translateOpenAISSEDataToOllama("/api/chat", contentChunk, "gemma-4", nil, time.Time{}, time.Time{})
+	result := translateOpenAISSEDataToOllama("/api/chat", contentChunk, "gemma-4", nil, time.Time{}, time.Time{}, "")
 	if result == nil {
 		t.Fatal("content chunk should NOT return nil")
 	}
@@ -172,7 +175,7 @@ func TestTranslateUsageChunkToOllama_IntUsageValues(t *testing.T) {
 	// должен обработать оба варианта.
 	usageChunk := []byte(`{"id":"cmpl-2","object":"chat.completion.chunk","created":1786626000,"model":"gemma-4","choices":[],"usage":{"prompt_tokens":100,"completion_tokens":50,"total_tokens":150}}`)
 
-	result := translateOpenAISSEDataToOllama("/api/chat", usageChunk, "gemma-4", nil, time.Time{}, time.Time{})
+	result := translateOpenAISSEDataToOllama("/api/chat", usageChunk, "gemma-4", nil, time.Time{}, time.Time{}, "")
 	if result == nil {
 		t.Fatal("expected non-nil result")
 	}
@@ -191,8 +194,112 @@ func TestTranslateUsageChunkToOllama_IntUsageValues(t *testing.T) {
 }
 
 // ============================================================
-// Test 6: intFromUsage unit tests (both int and float64 inputs)
+// Test 5b (R60.49): usage chunk MUST include accumulated content
+//
+// User bug-report (2026-09-12): OpenWebUI showed truncated/empty content
+// for long responses with reasoning_content. Root cause: usage chunk
+// (last SSE chunk from cppworker with token counts) emitted message.content=""
+// instead of accumulated content from streaming chunks. Some clients
+// (notably OpenWebUI when chat is closed/opened in mid-generation, or
+// R60.21 auto-continue triggers) overwrite streaming content with the
+// done-чанк's message.content — leading to truncated/empty display.
+//
+// R60.49 fix: translateOpenAISSEDataToOllama now accepts accumulatedContent
+// from proxyRequestLlamaCpp and passes it to translateUsageChunkToOllama,
+// which sets message.content/response to the accumulated text instead of "".
+//
+// This test verifies the fix: when accumulatedContent is provided, usage
+// chunk's message.content MUST equal it (not "").
 // ============================================================
+
+func TestR6049_UsageChunkIncludesAccumulatedContent_ChatPath(t *testing.T) {
+	// Симулируем реальный сценарий: модель вернула reasoning + content,
+	// затем usage чанк. accumulatedContent = полный контент из streaming чанков.
+	const accumulated = "```html\n<html><body><h1>Красивый сайт</h1>\n<p>Математика полёта</p>\n</body></html>\n```"
+
+	usageChunk := []byte(`{"id":"chatcmpl-r6049","object":"chat.completion.chunk","created":1786626000,"model":"gemma-4","choices":[],"usage":{"prompt_tokens":1234,"completion_tokens":567,"total_tokens":1801}}`)
+
+	// Передаём accumulatedContent через новый параметр (R60.49).
+	result := translateOpenAISSEDataToOllama("/api/chat", usageChunk, "gemma-4", nil, time.Time{}, time.Time{}, accumulated)
+	if result == nil {
+		t.Fatal("expected non-nil result for usage chunk, got nil")
+	}
+
+	raw := strings.TrimRight(string(result), "\n")
+	var ollama map[string]interface{}
+	if err := json.Unmarshal([]byte(raw), &ollama); err != nil {
+		t.Fatalf("failed to parse: %v\nraw=%s", err, raw)
+	}
+
+	// ГЛАВНАЯ проверка: message.content == accumulated (НЕ "")
+	msg, ok := ollama["message"].(map[string]interface{})
+	if !ok {
+		t.Fatal("expected 'message' field for /api/chat path")
+	}
+	content, _ := msg["content"].(string)
+	if content != accumulated {
+		t.Errorf("R60.49: expected message.content to equal accumulatedContent.\nGot %q\nWant %q", content, accumulated)
+	}
+
+	// Token counts всё ещё работают (regression check)
+	if v, ok := ollama["prompt_eval_count"].(float64); !ok || int(v) != 1234 {
+		t.Errorf("expected prompt_eval_count=1234, got %v", ollama["prompt_eval_count"])
+	}
+	if v, ok := ollama["eval_count"].(float64); !ok || int(v) != 567 {
+		t.Errorf("expected eval_count=567, got %v", ollama["eval_count"])
+	}
+	if done, _ := ollama["done"].(bool); !done {
+		t.Errorf("expected done=true, got %v", ollama["done"])
+	}
+}
+
+func TestR6049_UsageChunkIncludesAccumulatedContent_GeneratePath(t *testing.T) {
+	const accumulated = "```html\n<html><body><h1>Generate</h1></body></html>\n```"
+
+	usageChunk := []byte(`{"id":"cmpl-r6049","object":"chat.completion.chunk","created":1786626000,"model":"qwen3","choices":[],"usage":{"prompt_tokens":50,"completion_tokens":100,"total_tokens":150}}`)
+
+	result := translateOpenAISSEDataToOllama("/api/generate", usageChunk, "qwen3", nil, time.Time{}, time.Time{}, accumulated)
+	if result == nil {
+		t.Fatal("expected non-nil result for usage chunk, got nil")
+	}
+
+	raw := strings.TrimRight(string(result), "\n")
+	var ollama map[string]interface{}
+	if err := json.Unmarshal([]byte(raw), &ollama); err != nil {
+		t.Fatalf("failed to parse: %v\nraw=%s", err, raw)
+	}
+
+	// ГЛАВНАЯ проверка: response == accumulated
+	response, _ := ollama["response"].(string)
+	if response != accumulated {
+		t.Errorf("R60.49: expected response to equal accumulatedContent.\nGot %q\nWant %q", response, accumulated)
+	}
+
+	if v, ok := ollama["eval_count"].(float64); !ok || int(v) != 100 {
+		t.Errorf("expected eval_count=100, got %v", ollama["eval_count"])
+	}
+}
+
+func TestR6049_UsageChunkWithEmptyAccumulatedContent_StillWorks(t *testing.T) {
+	// Edge case: no streaming content accumulated (rare but possible)
+	usageChunk := []byte(`{"id":"cmpl-empty","object":"chat.completion.chunk","created":1786626000,"model":"gemma-4","choices":[],"usage":{"prompt_tokens":10,"completion_tokens":20,"total_tokens":30}}`)
+
+	result := translateOpenAISSEDataToOllama("/api/chat", usageChunk, "gemma-4", nil, time.Time{}, time.Time{}, "")
+	if result == nil {
+		t.Fatal("expected non-nil result")
+	}
+
+	raw := strings.TrimRight(string(result), "\n")
+	var ollama map[string]interface{}
+	if err := json.Unmarshal([]byte(raw), &ollama); err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	msg, _ := ollama["message"].(map[string]interface{})
+	content, _ := msg["content"].(string)
+	if content != "" {
+		t.Errorf("expected empty message.content when accumulatedContent='', got %q", content)
+	}
+}
 
 func TestIntFromUsage(t *testing.T) {
 	tests := []struct {

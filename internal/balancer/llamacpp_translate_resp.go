@@ -186,6 +186,87 @@ func stripWithBoundary(content, needle string) string {
 }
 
 // buildErrorOllamaResponse — строит корректный Ollama-ответ с ошибкой для случаев,
+// deduplicateResponseContent — R60.54 (2026-09-13): убирает дубликаты секций
+// в ответах моделей, которые после antiprompt mid-generation рестартуют
+// ответ с нового приветствия.
+//
+// Проблема (user bug-report 2026-09-13): Qwen3-Instruct-2507-q4km при генерации
+// длинных HTML+CSS+JS ответов эмитит антипромпт после ~500-800 токенов. cppworker
+// возвращает ответ со status=200, но модель УЖЕ в этом ответе успевает:
+//   1. Сгенерировать первую секцию (приветствие + intro + начало кода)
+//   2. Хит antiprompt → рестартует ответ
+//   3. Снова генерирует приветствие + intro + повтор кода
+//   4. ... повторяет 2-3 раза
+//
+// В итоге OpenWebUI получает ответ 2-3x длиннее нормы с 2-3 дублями одного
+// и того же кода. С greeting-текстом "Привет! Конечно,..." посреди
+// `<div class...` (модель эмитит его как часть HTML атрибута).
+//
+// Стратегия дедупа:
+//   1. Берём "anchor" — первые 80 символов ответа (там обычно приветствие + intro)
+//   2. Ищем ВСЕ вхождения этого anchor в тексте
+//   3. Если вхождений ≥ 2 — обрезаем response с позиции ВТОРОГО вхождения
+//      до конца (оставляем только первую секцию)
+//
+// Trade-offs:
+//   - Агрессивно: может удалить легитимный повтор если юзер сам дублирует текст
+//     в промпте (но это редкий случай).
+//   - Безопасно: anchor 80 chars → должно быть достаточно специфично чтобы не
+//     сматчиться случайно.
+//   - Язык-агностично: работает с любым языком т.к. anchor берётся из самого ответа.
+//
+// Возвращает trimmed content и число удалённых байт для телеметрии.
+func deduplicateResponseContent(content string) (string, int) {
+	if len(content) < 200 {
+		return content, 0 // too short to have meaningful duplicates
+	}
+
+	// Anchor: первые 80 chars. Если ответ начинается с whitespace/markdown,
+	// берём первую "значимую" фразу.
+	anchorLen := 80
+	if len(content) < anchorLen {
+		anchorLen = len(content)
+	}
+	anchor := content[:anchorLen]
+
+	// Найти ВСЕ вхождения anchor. Если anchor короче 20 chars — слишком рискованно.
+	if len(anchor) < 20 {
+		return content, 0
+	}
+
+	// Ищем вхождения anchor начиная со 2-й позиции (1-я = сам anchor).
+	firstDuplicatePos := -1
+	searchStart := anchorLen
+	for searchStart < len(content) {
+		pos := strings.Index(content[searchStart:], anchor)
+		if pos == -1 {
+			break
+		}
+		absPos := searchStart + pos
+		if firstDuplicatePos == -1 {
+			firstDuplicatePos = absPos
+			break // нам нужно только первое дублирующее вхождение
+		}
+	}
+
+	if firstDuplicatePos == -1 {
+		return content, 0
+	}
+
+	// Trim trailing whitespace/partial code fence before cut point.
+	cutPos := firstDuplicatePos
+	// Walk back to find a natural break (newline)
+	for cutPos > 0 && content[cutPos-1] != '\n' && cutPos > firstDuplicatePos-100 {
+		cutPos--
+	}
+
+	trimmed := content[:cutPos]
+	trimmed = strings.TrimRight(trimmed, " \t\n\r") // trailing whitespace
+	removed := len(content) - len(trimmed)
+
+	return trimmed, removed
+}
+
 // когда upstream вернул пустое или невалидное тело. Возвращает JSON в Ollama-формате
 // с полями done:true, done_reason:"error", error:"<msg>" и пустым message/response.
 func buildErrorOllamaResponse(ollamaPath, modelName, errMsg string) []byte {
@@ -682,13 +763,23 @@ func translateUsageChunkToOllama(ollamaPath, modelName string, usage map[string]
 		// чанков вместо "" (пустого). До этого фикса OpenWebUI показывал
 		// обрезанный/пустой content когда брал message.content из done-чанка
 		// вместо accumulated content из streaming чанков.
+		//
+		// R60.54 (2026-09-13): deduplicateResponseContent — убираем дубли секций
+		// (Qwen3-Instruct antipattern restart). Без этого OpenWebUI получал
+		// ответ 2-3x длиннее нормы с greeting-текстом посреди кода.
+		dedupedContent, removedBytes := deduplicateResponseContent(accumulatedContent)
+		if removedBytes > 0 {
+			// TBD: log dedup stats — помогает мониторить Qwen3 antipattern частоту
+		}
 		ollamaChunk["message"] = map[string]interface{}{
 			"role":    "assistant",
-			"content": accumulatedContent,
+			"content": dedupedContent,
 		}
 	case "/api/generate":
 		// Same fix: accumulatedContent вместо "".
-		ollamaChunk["response"] = accumulatedContent
+		// R60.54: dedup применяется так же.
+		dedupedContent, _ := deduplicateResponseContent(accumulatedContent)
+		ollamaChunk["response"] = dedupedContent
 	}
 	// totalTokens сейчас НЕ отдаём в Ollama-чанк (Ollama его не ожидает, total = prompt+eval).
 

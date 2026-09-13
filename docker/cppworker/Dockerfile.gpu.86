@@ -38,6 +38,7 @@ RUN --mount=type=cache,id=ccache,target=/root/.ccache,mode=0755,uid=0,gid=0 \
       -DLLAMA_CURL=OFF \
       -DLLAMA_BUILD_TESTS=OFF \
       -DLLAMA_BUILD_EXAMPLES=OFF \
+      -DLLAMA_BUILD_MTMD=OFF \
       -DBUILD_SHARED_LIBS=OFF \
       -DLLAMA_BUILD_COMMON=ON \
       # v0.5.16: gemma-4 workaround — её compute-graph с Gated Delta Net hybrid

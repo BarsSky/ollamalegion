@@ -159,12 +159,23 @@ func (p *Proxy) proxyRequestLlamaCpp(w http.ResponseWriter, r *http.Request, bac
 	if isStreaming {
 		// Per-model адаптивный таймаут для streaming inference.
 		streamTimeout := p.getModelStreamTimeout(modelFromCtx)
-		var cancel context.CancelFunc
-		reqCtx, cancel = context.WithTimeout(r.Context(), streamTimeout)
-		defer cancel()
-		logger.Get().Debugw("proxyRequestLlamaCpp: using per-model stream timeout",
-			"backend", backendID, "model", modelFromCtx,
-			"stream_timeout_sec", streamTimeout.Seconds())
+		if streamTimeout > 0 {
+			var cancel context.CancelFunc
+			reqCtx, cancel = context.WithTimeout(r.Context(), streamTimeout)
+			defer cancel()
+			logger.Get().Debugw("proxyRequestLlamaCpp: using per-model stream timeout",
+				"backend", backendID, "model", modelFromCtx,
+				"stream_timeout_sec", streamTimeout.Seconds())
+		} else {
+			// R60.55 follow-up: streamTimeout=0 means "no timeout" (LB_STREAMING_NEVER_TIMEOUT=1).
+			// R60.55-pre bug: context.WithTimeout(parent, 0) creates an immediately-expired
+			// context (deadline = time.Now()), causing every request to fail with
+			// "context deadline exceeded" before reaching upstream. Fix: skip WithTimeout
+			// entirely when streamTimeout<=0 — reqCtx stays as r.Context() (inherits client
+			// cancel only, no artificial deadline).
+			logger.Get().Debugw("proxyRequestLlamaCpp: stream timeout disabled (0)",
+				"backend", backendID, "model", modelFromCtx)
+		}
 	}
 
 	req, err := http.NewRequestWithContext(reqCtx, r.Method, fullURL, bytes.NewReader(translatedBody))

@@ -351,6 +351,11 @@ func main() {
 		WriteTimeout: time.Duration(conf.Balancing.RequestTimeout+30) * time.Second,
 		IdleTimeout:  120 * time.Second,
 	}
+	logger.Get().Infow("balancer proxy HTTP server timeouts",
+		"read_timeout_sec", proxyServer.ReadTimeout.Seconds(),
+		"write_timeout_sec", proxyServer.WriteTimeout.Seconds(),
+		"idle_timeout_sec", proxyServer.IdleTimeout.Seconds(),
+		"balancing_request_timeout", conf.Balancing.RequestTimeout)
 
 	// Создание API сервера
 	apiHTTPServer := &http.Server{

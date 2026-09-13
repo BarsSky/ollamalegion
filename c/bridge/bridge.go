@@ -462,7 +462,11 @@ func LoadModel(cfg ModelConfig) (*ModelHandle, error) {
 	}
 
 	var errMsg *C.char
-	handle := C.bridge_load_model(&cCfg, &errMsg)
+	// R60.57 follow-up (2026-09-13): bridge_load_model теперь принимает
+	// out_handle* для early handle exposure. Legacy LoadModel (этот путь)
+	// передаёт NULL — handle доступен только после возврата C-функции.
+	// Для cancellable load используйте LoadModelWithEarlyHandle.
+	handle := C.bridge_load_model(&cCfg, &errMsg, nil)
 	if handle == nil {
 		errStr := ""
 		if errMsg != nil {
@@ -470,6 +474,137 @@ func LoadModel(cfg ModelConfig) (*ModelHandle, error) {
 			C.bridge_free_string(errMsg)
 		}
 		return nil, fmt.Errorf("load model failed: %s", errStr)
+	}
+
+	return &ModelHandle{ptr: handle, path: cfg.ModelPath}, nil
+}
+
+// LoadModelWithEarlyHandle загружает GGUF модель и ЗАРАНЕЕ (до blocking
+// llama_model_load_from_file) записывает C-уровневый handle в
+// earlyHandle.ptr. Это позволяет отдельной горутине (например,
+// ctx.Done watcher в cppworker's LoadModelWithOpts) видеть handle
+// во время load и вызывать bridge.RequestLoadAbort(handle) для
+// отмены.
+//
+// Семантика:
+//
+//   - earlyHandle != nil: caller должен pre-allocate ModelHandle (или взять
+//     из существующего modelInstance). C записывает (ModelHandle)im в
+//     earlyHandle.ptr СРАЗУ после malloc+atomic_init, до llama_model_load_from_file.
+//     В error paths earlyHandle.ptr сбрасывается в NULL.
+//   - earlyHandle == nil: ошибка (earlyHandle обязателен).
+//
+// Возвращаемый *ModelHandle — копия, указывающая на тот же C-уровневый
+// handle. Caller может использовать любой из них.
+//
+// Thread-safety: caller обязан синхронизировать доступ к earlyHandle.ptr
+// в своей горутине (atomic.Pointer или mutex). C writes to *out_handle —
+// pointer-sized write, naturally atomic на платформах Go (x86-64, ARM64).
+//
+// ВНИМАНИЕ: используется runtime.Pinner для earlyHandle.ptr чтобы GC
+// не переместил поле во время C-вызова.
+//
+// R60.57 follow-up: см. bridge.h:bridge_load_model для детального
+// контракта и комментарии в bridge.c (C-bridge implementation).
+func LoadModelWithEarlyHandle(cfg ModelConfig, earlyHandle *ModelHandle) (*ModelHandle, error) {
+	if earlyHandle == nil {
+		return nil, fmt.Errorf("LoadModelWithEarlyHandle: earlyHandle is nil")
+	}
+
+	cCfg := C.ModelConfig{}
+
+	modelPathC := C.CString(cfg.ModelPath)
+	defer C.free(unsafe.Pointer(modelPathC))
+	cCfg.model_path = modelPathC
+
+	cCfg.n_ctx = C.int(cfg.NContext)
+	cCfg.n_batch = C.int(cfg.NBatch)
+	cCfg.n_threads = C.int(cfg.NThreads)
+	cCfg.n_threads_batch = C.int(cfg.NThreadsBatch)
+	cCfg.n_gpu_layers = C.int(cfg.NGPULayers)
+	cCfg.main_gpu = C.int(cfg.MainGPU)
+
+	cCfg.flash_attn_type = C.int(cfg.FlashAttnType)
+	if cfg.NUMA {
+		cCfg.numa = 1
+	}
+	if cCfg.n_threads <= 0 {
+		cCfg.n_threads = C.int(runtime.NumCPU())
+	}
+
+	// Tensor split (Phase 8 P.4): array + split_mode.
+	if len(cfg.TensorSplit) > 0 {
+		ts := make([]C.float, len(cfg.TensorSplit))
+		for i, v := range cfg.TensorSplit {
+			ts[i] = C.float(v)
+		}
+		cCfg.tensor_split = &ts[0]
+		cCfg.tensor_split_len = C.int(len(cfg.TensorSplit))
+	}
+	cCfg.split_mode = C.int(cfg.SplitMode)
+
+	if cfg.UseMmap {
+		cCfg.use_mmap = 1
+	}
+	if cfg.UseMlock {
+		cCfg.use_mlock = 1
+	}
+
+	// Session 16 (2026-06-27): Parallel + KVCacheType.
+	cCfg.n_parallel = C.int(cfg.NParallel)
+	cCfg.kv_cache_type = C.int(kvCacheTypeToBridgeInt(cfg.KVCacheType))
+
+	// Round 7: pack OverrideTensors parallel arrays to C.
+	if len(cfg.OverrideTensors) > 0 && len(cfg.OverrideTensors) == len(cfg.OverrideTensorBufts) {
+		pinnedPats := make([]*C.char, len(cfg.OverrideTensors))
+		pinnedBufts := make([]*C.char, len(cfg.OverrideTensorBufts))
+		for i, p := range cfg.OverrideTensors {
+			pinnedPats[i] = C.CString(p)
+			defer C.free(unsafe.Pointer(pinnedPats[i]))
+		}
+		for i, b := range cfg.OverrideTensorBufts {
+			pinnedBufts[i] = C.CString(b)
+			defer C.free(unsafe.Pointer(pinnedBufts[i]))
+		}
+		cCfg.override_tensor_count = C.int(len(cfg.OverrideTensors))
+		var pinner runtime.Pinner
+		defer pinner.Unpin()
+		pinner.Pin(&pinnedPats[0])
+		pinner.Pin(&pinnedBufts[0])
+		cCfg.override_tensor_patterns = &pinnedPats[0]
+		cCfg.override_tensor_buft_names = &pinnedBufts[0]
+	}
+
+	// CRITICAL: pin earlyHandle.ptr чтобы GC не переместил поле во время
+	// blocking C-вызова. C пишет (ModelHandle)im в &earlyHandle.ptr
+	// СРАЗУ после malloc, до llama_model_load_from_file.
+	var ptrPinner runtime.Pinner
+	defer ptrPinner.Unpin()
+	ptrPinner.Pin(&earlyHandle.ptr)
+
+	// Установим path сразу (до C-вызова) — caller уже знает путь.
+	earlyHandle.path = cfg.ModelPath
+
+	var errMsg *C.char
+	handle := C.bridge_load_model(&cCfg, &errMsg, &earlyHandle.ptr)
+	if handle == nil {
+		// C-bridge в error path сбрасывает *out_handle в NULL — watcher
+		// не будет видеть dangling pointer. Здесь — defensive copy
+		// earlyHandle.ptr = nil (на случай если C не сбросил).
+		earlyHandle.ptr = nil
+		errStr := ""
+		if errMsg != nil {
+			errStr = C.GoString(errMsg)
+			C.bridge_free_string(errMsg)
+		}
+		return nil, fmt.Errorf("load model failed: %s", errStr)
+	}
+
+	// Sanity-check: handle returned by C == *out_handle (early pointer).
+	// Если нет — C переаллоцировал im (теоретически не должно быть),
+	// defensive copy использует final handle.
+	if handle != earlyHandle.ptr {
+		earlyHandle.ptr = handle
 	}
 
 	return &ModelHandle{ptr: handle, path: cfg.ModelPath}, nil

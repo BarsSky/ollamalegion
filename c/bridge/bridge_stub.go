@@ -292,6 +292,32 @@ func LoadModel(cfg ModelConfig) (*ModelHandle, error) {
 	return &ModelHandle{path: cfg.ModelPath}, nil
 }
 
+// LoadModelWithEarlyHandle — R60.57 follow-up (2026-09-13): stub-аналог
+// реальной bridge.go функции. В stub-режиме нет реального C-bridge и
+// нет блокирующей загрузки, но семантика API идентична для совместимости
+// с cppworker's LoadModelWithOpts watcher pattern.
+//
+// Поведение:
+//   - earlyHandle != nil: earlyHandle.path = cfg.ModelPath сразу (имитация
+//     «early expose»). earlyHandle.ptr остаётся nil — в stub нет C-уровневого
+//     handle для записи. Watcher в cppworker's stub-режиме увидит nil ptr
+//     и skip'нет RequestLoadAbort (как и раньше).
+//   - earlyHandle == nil: возвращает ошибку (идентично bridge.go).
+//
+// В stub-build tag нет реальной отмены load (он мгновенный), поэтому
+// early handle фактически no-op. Но API-контракт и сигнатура должны
+// совпадать с bridge.go для type-safety при сборке cppworker с обоими
+// build tags.
+func LoadModelWithEarlyHandle(cfg ModelConfig, earlyHandle *ModelHandle) (*ModelHandle, error) {
+	if earlyHandle == nil {
+		return nil, fmt.Errorf("LoadModelWithEarlyHandle: earlyHandle is nil")
+	}
+	// Stub: «expose early» = earlyHandle.path. ptr остаётся nil —
+	// в stub нет C-уровневого handle.
+	earlyHandle.path = cfg.ModelPath
+	return &ModelHandle{path: cfg.ModelPath}, nil
+}
+
 // FreeModel выгружает модель (stub: no-op)
 func (m *ModelHandle) FreeModel() {
 	// no-op

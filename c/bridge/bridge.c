@@ -850,16 +850,18 @@ struct ggml_backend_buffer_type * resolve_buft_by_name(const char *name) {
 
 // 
 
-ModelHandle bridge_load_model(const ModelConfig* config, char** error_msg) {
+ModelHandle bridge_load_model(const ModelConfig* config, char** error_msg, ModelHandle* out_handle) {
     if (!initialized) {
         set_error("bridge not initialized");
         if (error_msg) *error_msg = strdup(last_error);
+        if (out_handle) *out_handle = NULL;  // R60.57 follow-up: safety, не оставляем stale
         return NULL;
     }
 
     if (config == NULL || config->model_path == NULL) {
         set_error("model_path is required");
         if (error_msg) *error_msg = strdup(last_error);
+        if (out_handle) *out_handle = NULL;
         return NULL;
     }
 
@@ -881,6 +883,7 @@ ModelHandle bridge_load_model(const ModelConfig* config, char** error_msg) {
     if (im == NULL) {
         set_error("out of memory (InternalModel)");
         if (error_msg) *error_msg = strdup(last_error);
+        if (out_handle) *out_handle = NULL;
         return NULL;
     }
     memset(im, 0, sizeof(InternalModel));
@@ -890,6 +893,23 @@ ModelHandle bridge_load_model(const ModelConfig* config, char** error_msg) {
     // перед первым atomic_load/atomic_store.
     atomic_init(&im->abort_requested, 0);
     atomic_init(&im->load_abort_requested, 0);
+
+    // R60.57 follow-up (2026-09-13): expose early-allocated handle to caller
+    // BEFORE any blocking C call. Это критично для Go-side watcher pattern:
+    // cppworker spawn goroutine которая на ctx.Done() вызывает
+    // bridge_request_load_abort(handle). Без early expose handle доступен
+    // Go только ПОСЛЕ возврата bridge_load_model — что делает abort
+    // фактически no-op во время load.
+    //
+    // Семантика:
+    //   - out_handle != NULL: *out_handle = (ModelHandle)im сразу после init
+    //   - out_handle == NULL: legacy behaviour (handle доступен после return)
+    //
+    // В error paths где im освобождается — *out_handle сбрасывается в NULL
+    // ПЕРЕД free(), чтобы watcher не держал dangling pointer.
+    if (out_handle != NULL) {
+        *out_handle = (ModelHandle)im;
+    }
 
     // Параметры загрузки модели
     struct llama_model_params model_params = llama_model_default_params();
@@ -984,6 +1004,9 @@ ModelHandle bridge_load_model(const ModelConfig* config, char** error_msg) {
         snprintf(buf, sizeof(buf), "failed to load model from %s", config->model_path);
         set_error(buf);
         if (error_msg) *error_msg = strdup(buf);
+        // R60.57 follow-up: clear *out_handle ПЕРЕД free, чтобы watcher
+        // не держал dangling pointer.
+        if (out_handle) *out_handle = NULL;
         // R60.57: free early-allocated InternalModel (load failed before model).
         free(im);
         return NULL;
@@ -1000,6 +1023,8 @@ ModelHandle bridge_load_model(const ModelConfig* config, char** error_msg) {
     // после free, поэтому Go-сторона должна прекратить вызывать RequestLoadAbort
     // на этом handle (в Phase 3-4 — после bridge_load_model return NULL).
     if (atomic_load(&im->load_abort_requested)) {
+        // R60.57 follow-up: clear *out_handle ПЕРЕД free.
+        if (out_handle) *out_handle = NULL;
         llama_model_free(model);
         free(im);
         set_error("model load aborted by user (R60.57 checkpoint A: after llama_model_load_from_file)");
@@ -1079,6 +1104,8 @@ ModelHandle bridge_load_model(const ModelConfig* config, char** error_msg) {
         char buf[512];
         snprintf(buf, sizeof(buf), "failed to create context for %s", config->model_path);
         set_error(buf);
+        // R60.57 follow-up: clear *out_handle ПЕРЕД free.
+        if (out_handle) *out_handle = NULL;
         llama_model_free(model);
         // R60.57: free early-allocated InternalModel (context creation failed).
         free(im);
@@ -1094,6 +1121,8 @@ ModelHandle bridge_load_model(const ModelConfig* config, char** error_msg) {
     // Cancel latency от Checkpoint A до Checkpoint B = время llama_init_from_model
     // (в основном KV-cache alloc + scratch buffers, ~100-500ms на RTX 3070).
     if (atomic_load(&im->load_abort_requested)) {
+        // R60.57 follow-up: clear *out_handle ПЕРЕД free.
+        if (out_handle) *out_handle = NULL;
         llama_free(context);
         llama_model_free(model);
         free(im);
@@ -1132,6 +1161,8 @@ ModelHandle bridge_load_model(const ModelConfig* config, char** error_msg) {
     // cleanup (context free ПЕРЕД model free). Cancel latency от Checkpoint B
     // до Checkpoint C = sub-millisecond (просто populate struct fields).
     if (atomic_load(&im->load_abort_requested)) {
+        // R60.57 follow-up: clear *out_handle ПЕРЕД free.
+        if (out_handle) *out_handle = NULL;
         llama_free(im->context);
         llama_model_free(im->model);
         free(im);

@@ -157,8 +157,28 @@ int bridge_get_gpu_count(void);
 // Получение информации о GPU
 int bridge_get_gpu_info(int gpu_index, GPUDeviceInfo* info);
 
-// Загрузка GGUF модели
-ModelHandle bridge_load_model(const ModelConfig* config, char** error_msg);
+// Загрузка GGUF модели.
+//
+// R60.57 follow-up (2026-09-13): параметр out_handle — optional output
+// pointer, который (если non-NULL) заполняется Early-allocated InternalModel*
+// pointer'ом СРАЗУ после malloc+atomic_init, ДО любого blocking C call
+// (llama_model_load_from_file / llama_init_from_model). Это позволяет
+// Go-side watcher goroutine вызвать bridge_request_load_abort(handle)
+// во время load — handle уже валиден с момента вызова bridge_load_model.
+//
+// Контракт out_handle:
+//   - NULL = legacy behaviour, handle доступен только после возврата функции
+//   - non-NULL = *out_handle устанавливается в (ModelHandle)im ДО первого
+//     blocking call. В error paths, где im освобождается, *out_handle
+//     сбрасывается в NULL ПЕРЕД free() — чтобы dangling pointer не
+//     привёл к UB если watcher читает handle во время teardown.
+//
+// Семантика thread-safety: out_handle — это pointer на caller-owned memory.
+// Go-binding использует runtime.Pinner чтобы предотвратить GC relocation.
+// C writes to *out_handle в одном thread (C bridge caller thread); reads
+// от watcher goroutine — естественно atomic для pointer-sized writes на
+// платформах Go (x86-64, ARM64). На других платформах Go не работает.
+ModelHandle bridge_load_model(const ModelConfig* config, char** error_msg, ModelHandle* out_handle);
 
 // Выгрузка модели
 void bridge_free_model(ModelHandle model);

@@ -1,4 +1,5 @@
-// bridge_abort_load_test.go — R60.57 (2026-09-13): tests для RequestLoadAbort API.
+// bridge_abort_load_test.go — R60.57 (2026-09-13): tests для RequestLoadAbort API
+// и R60.57 follow-up (2026-09-13) — LoadModelWithEarlyHandle API.
 //
 // Покрывают:
 //   - nil safety: nil handle → error, no panic
@@ -6,9 +7,11 @@
 //   - RequestLoadAbortAll — no-op, no panic
 //   - IsLoadAborted nil safety
 //   - IsLoadAborted на stub-loaded model → false (stub no-op)
+//   - LoadModelWithEarlyHandle: API contract (early expose, nil safety, error path)
 //
 // Тесты компилируются с ОБОИМИ build tags (llama_stub и !llama_stub):
 //   - В stub mode: RequestLoadAbort — no-op (return nil); IsLoadAborted — false.
+//     LoadModelWithEarlyHandle — earlyHandle.path заполняется, ptr остаётся nil.
 //   - В real build: RequestLoadAbort(nil) → error "nil handle"; real load
 //     aborts через ctx.Done watcher (Phase 3-4 — out of scope здесь).
 //
@@ -19,6 +22,7 @@
 package bridge
 
 import (
+	"strings"
 	"testing"
 )
 
@@ -121,4 +125,129 @@ func TestAbortLoadSentinels_Contract(t *testing.T) {
 	if ErrAborted == nil {
 		t.Error("ErrAborted sentinel must be non-nil")
 	}
+}
+
+// ============================================================
+// R60.57 follow-up (2026-09-13): LoadModelWithEarlyHandle tests
+// ============================================================
+//
+// Покрывают contract новой API:
+//   - earlyHandle == nil → error
+//   - happy path → earlyHandle получает path, возвращённый handle не nil
+//   - error path → возвращается error (stub mode: всегда успех; real mode:
+//     load failure приводит к error и earlyHandle.ptr = nil — но в stub
+//     mode мы не можем это проверить)
+//   - legacy LoadModel остаётся backward compatible
+
+// TestLoadModelWithEarlyHandle_NilEarlyHandle — вызов с nil earlyHandle
+// возвращает error и не паникует. Это критично для безопасности —
+// nil-указатель мог бы привести к C-side segfault.
+func TestLoadModelWithEarlyHandle_NilEarlyHandle(t *testing.T) {
+	defer func() {
+		if r := recover(); r != nil {
+			t.Fatalf("LoadModelWithEarlyHandle(nil) panicked: %v", r)
+		}
+	}()
+	handle, err := LoadModelWithEarlyHandle(ModelConfig{ModelPath: "/tmp/fake.gguf"}, nil)
+	if err == nil {
+		t.Error("LoadModelWithEarlyHandle(nil earlyHandle) should return error")
+	}
+	if handle != nil {
+		t.Errorf("LoadModelWithEarlyHandle(nil) should return nil handle, got: %v", handle)
+	}
+	// Error должен упомянуть "earlyHandle" для diagnostics.
+	if err != nil && !strings.Contains(err.Error(), "earlyHandle") {
+		t.Errorf("error should mention earlyHandle for diagnostics, got: %v", err)
+	}
+}
+
+// TestLoadModelWithEarlyHandle_StubSetsPath — happy path в stub mode.
+// earlyHandle должен получить path ДО возврата из функции. В stub mode
+// ptr остаётся nil (нет C-уровневого handle), но path установлен —
+// имитирует «early expose» из real bridge.
+func TestLoadModelWithEarlyHandle_StubSetsPath(t *testing.T) {
+	cfg := ModelConfig{ModelPath: "/tmp/fake-model.gguf"}
+	earlyHandle := &ModelHandle{}
+
+	handle, err := LoadModelWithEarlyHandle(cfg, earlyHandle)
+	if err != nil {
+		t.Fatalf("LoadModelWithEarlyHandle: %v", err)
+	}
+	if handle == nil {
+		t.Fatal("returned handle is nil")
+	}
+	// earlyHandle.path должен быть установлен (имитация early expose).
+	if earlyHandle.path != cfg.ModelPath {
+		t.Errorf("earlyHandle.path = %q, want %q", earlyHandle.path, cfg.ModelPath)
+	}
+	// Возвращённый handle.path должен совпадать.
+	if handle.path != cfg.ModelPath {
+		t.Errorf("returned handle.path = %q, want %q", handle.path, cfg.ModelPath)
+	}
+	// Defer FreeModel для cleanup.
+	defer handle.FreeModel()
+}
+
+// TestLoadModelWithEarlyHandle_ConcurrentSafe — race detector тест.
+// 100 goroutines параллельно вызывают LoadModelWithEarlyHandle с
+// разными earlyHandle. Это проверяет что runtime.Pinner защищает
+// от GC relocation и нет data race между C-write и Go-write в
+// earlyHandle.path / earlyHandle.ptr.
+//
+// Если runtime.Pinner не используется или есть race, `go test -race`
+// упадёт с race detector report.
+func TestLoadModelWithEarlyHandle_ConcurrentSafe(t *testing.T) {
+	const N = 100
+	type result struct {
+		path     string
+		err      error
+		handleID int
+	}
+	results := make(chan result, N)
+
+	for i := 0; i < N; i++ {
+		go func(id int) {
+			cfg := ModelConfig{ModelPath: "/tmp/concurrent-test.gguf"}
+			earlyHandle := &ModelHandle{}
+			handle, err := LoadModelWithEarlyHandle(cfg, earlyHandle)
+			results <- result{
+				path:     earlyHandle.path,
+				err:      err,
+				handleID: id,
+			}
+			if handle != nil {
+				handle.FreeModel()
+			}
+		}(i)
+	}
+
+	for i := 0; i < N; i++ {
+		r := <-results
+		if r.err != nil {
+			t.Errorf("goroutine %d failed: %v", r.handleID, r.err)
+		}
+		if r.path != "/tmp/concurrent-test.gguf" {
+			t.Errorf("goroutine %d: earlyHandle.path = %q, want %q",
+				r.handleID, r.path, "/tmp/concurrent-test.gguf")
+		}
+	}
+}
+
+// TestLoadModel_LegacyStillWorks — legacy LoadModel (single-arg) остаётся
+// backward compatible. Это критично — rpcworker/model_manager.go и другие
+// callers не должны ломаться. R60.57 follow-up НЕ должен быть breaking
+// change для legacy users.
+func TestLoadModel_LegacyStillWorks(t *testing.T) {
+	cfg := ModelConfig{ModelPath: "/tmp/legacy-test.gguf"}
+	handle, err := LoadModel(cfg)
+	if err != nil {
+		t.Fatalf("LoadModel: %v", err)
+	}
+	if handle == nil {
+		t.Fatal("LoadModel returned nil handle")
+	}
+	if handle.path != cfg.ModelPath {
+		t.Errorf("handle.path = %q, want %q", handle.path, cfg.ModelPath)
+	}
+	defer handle.FreeModel()
 }

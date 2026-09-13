@@ -94,10 +94,68 @@ rc = bridge_infer_stream(model, next_prompt, &params, callback, userdata);
 ```go
 import "ollama-loadbalancer/c/bridge"
 
+// Legacy: handle доступен только после возврата LoadModel.
+// Подходит для кода без cancellable load (rpcworker, startup preload).
 handle, err := bridge.LoadModel(config)
 // ...
 err = bridge.RequestAbort(handle)  // → ErrAborted
 if errors.Is(err, bridge.ErrAborted) { /* cancelled */ }
+```
+
+### R60.57 follow-up: cancellable load (early handle exposure)
+
+```go
+import "ollama-loadbalancer/c/bridge"
+
+// New API для cancellable load (cppworker's LoadModelWithOpts + ctx.Done watcher).
+// C-bridge экспонирует early-allocated handle в earlyHandle.ptr СРАЗУ после
+// malloc + atomic_init, ДО blocking llama_model_load_from_file.
+// Это позволяет watcher goroutine вызвать bridge.RequestLoadAbort(handle)
+// во время load — handle уже валиден.
+earlyHandle := &bridge.ModelHandle{path: cfg.ModelPath}
+handle, err := bridge.LoadModelWithEarlyHandle(cfg, earlyHandle)
+// В другой горутине (например, ctx.Done watcher):
+if earlyHandle.ptr != nil {
+    bridge.RequestLoadAbort(earlyHandle)  // atomic flag → cancel at next checkpoint
+}
+```
+
+**Семантика:**
+
+- `LoadModelWithEarlyHandle(cfg, earlyHandle)` — caller pre-allocates `earlyHandle`,
+  C writes `(ModelHandle)im` to `earlyHandle.ptr` BEFORE blocking load.
+- В error paths C сбрасывает `*out_handle = NULL` ПЕРЕД free() — watcher не
+  держит dangling pointer.
+- `earlyHandle` обязателен (non-nil). Используется runtime.Pinner для
+  защиты от GC relocation во время C-вызова.
+- Thread-safety: caller синхронизирует доступ к `earlyHandle.ptr`
+  (atomic.Pointer или mutex). C writes — pointer-sized, naturally atomic.
+
+**См. также:** `internal/cppbackend/backend.go:LoadModelWithOpts` — reference
+implementation watcher pattern (Phase 3-5, commit 4682f2f).
+
+## Quick example (load-cancel API)
+
+```c
+#include "bridge.h"
+
+// Caller-provided slot для early handle exposure:
+ModelHandle *early_slot = ...;  // pointer на ModelHandle variable
+
+struct llama_model_params mp = llama_model_default_params();
+ModelConfig cfg = { .model_path = "model.gguf", .n_ctx = 4096, ... };
+
+// C пишет (ModelHandle)im в early_slot СРАЗУ после malloc+init,
+// ДО llama_model_load_from_file. Watcher goroutine может abort'нуть load.
+ModelHandle model = bridge_load_model(&cfg, NULL, early_slot);
+
+// В watcher goroutine (например, после ctx.Done):
+if (*early_slot != NULL) {
+    bridge_request_load_abort(*early_slot);  // atomic flag → cancel at checkpoint
+}
+
+// Free когда load завершён (success или abort):
+bridge_free_model(model);
 ```
 
 ## Tests
@@ -121,6 +179,17 @@ go test -tags llama_stub ./c/bridge/ ./cmd/cppworker/ -run "Abort|IsAborted|Abor
 
 ## Changelog
 
+- **R60.57 follow-up (2026-09-13)** — `bridge_load_model` принимает
+  `ModelHandle* out_handle` для early handle exposure. C-bridge пишет
+  `(ModelHandle)im` в `*out_handle` СРАЗУ после malloc+init, ДО blocking
+  load. Это позволяет Go-side watcher goroutine вызвать
+  `bridge_request_load_abort(handle)` во время load. В error paths
+  `*out_handle` сбрасывается в NULL ПЕРЕД free(). Go-биндинг: новая
+  функция `LoadModelWithEarlyHandle(cfg, earlyHandle)` (legacy
+  `LoadModel` остаётся backward compatible).
+- **R60.57 (2026-09-13)** — Load-cancel API (mirror Round 31 #6 для фазы
+  model load): `bridge_request_load_abort`, `bridge_request_load_abort_all`,
+  `bridge_is_load_aborted`, 3 checkpoints в `bridge_load_model`.
 - **Round 31 #6 (2026-08-09)** — Abort API (3 функции, BRIDGE_ERR_ABORTED=-100,
   atomic flag per InternalModel).
 - **Round 25-31** — tokenize/token-to-piece, batched_decode, chat template,

@@ -315,6 +315,17 @@ func LoadModelWithEarlyHandle(cfg ModelConfig, earlyHandle *ModelHandle) (*Model
 	// Stub: «expose early» = earlyHandle.path. ptr остаётся nil —
 	// в stub нет C-уровневого handle.
 	earlyHandle.path = cfg.ModelPath
+
+	// R60.57 follow-up: если тест задал stubLoadDelay через SetStubLoadDelay —
+	// имитируем долгий load. Это позволяет тестам watcher pattern запустить
+	// Load в goroutine, cancel ctx в середине load, и проверить, что
+	// RequestLoadAbort был вызван ДО возврата Load.
+	//
+	// Mirror существующего паттерна stubInferDelay (Round 8 BUGFIX tests).
+	if d := getStubLoadDelay(); d > 0 {
+		time.Sleep(d)
+	}
+
 	return &ModelHandle{path: cfg.ModelPath}, nil
 }
 
@@ -376,12 +387,16 @@ func IsAborted(model *ModelHandle) bool {
 // Сигнатуры и sentinel-семантика идентичны bridge.go для совместимости
 // с cppworker кодом, который собирается с обоими build tag.
 
-// RequestLoadAbort — stub: no-op. Возвращает nil всегда (нет реального
-// C-bridge для пометки). В Phase 3-4 Go-сторона интегрирует ctx.Done
-// watcher, но в stub-режиме load немедленный (нет задержки), поэтому
-// abort API не имеет смысла — но сигнатура нужна для совместимости
-// типов между bridge.go (build tag !llama_stub) и bridge_stub.go.
+// RequestLoadAbort — stub: no-op для реальной C-bridge, но Record'ит
+// вызовы для тестов. Возвращает nil всегда (нет реального C-bridge для
+// пометки).
+//
+// R60.57 follow-up: counter (RecordStubLoadAbort) позволяет тестам
+// watcher pattern проверить, что watcher действительно вызвал abort
+// (не только log'нул). В stub-режиме abort сам по себе no-op, но факт
+// вызова RequestLoadAbort — это verification что wiring корректный.
 func RequestLoadAbort(model *ModelHandle) error {
+	RecordStubLoadAbort()
 	return nil
 }
 
@@ -509,6 +524,65 @@ var defaultStubTokens = []string{
 	"no ",
 	"real ",
 	"llama.cpp\n\n",
+}
+
+// ============================================================
+// R60.57 follow-up (2026-09-13): Load test hooks
+// ============================================================
+//
+// В stub-режиме LoadModelWithEarlyHandle возвращается мгновенно, но для
+// тестирования watcher pattern (ctx.Done → RequestLoadAbort) нужна
+// возможность симулировать "долгий load", чтобы тест мог:
+//   1. Запустить Load в goroutine
+//   2. Cancel ctx в середине load
+//   3. Проверить, что watcher успел вызвать RequestLoadAbort до возврата Load
+//
+// stubLoadDelay / SetStubLoadDelay — искусственная задержка в
+// stub.LoadModelWithEarlyHandle (аналогично stubInferDelay для Infer).
+//
+// stubLoadAbortCount / RecordStubLoadAbort / GetStubLoadAbortCount /
+// ResetStubLoadAbortCount — counter вызовов stub.RequestLoadAbort, чтобы
+// тесты могли assert "watcher действительно вызвал abort, а не только
+// логировал".
+
+// stubLoadDelay — задержка для stub.LoadModelWithEarlyHandle.
+// Используется ТОЛЬКО в тестах (build tag llama_stub).
+// Доступ через SetStubLoadDelay/getStubLoadDelay (atomic.Int64 наносекунды).
+var stubLoadDelay atomic.Int64
+
+// SetStubLoadDelay — устанавливает задержку для stub.LoadModelWithEarlyHandle.
+// Возвращает предыдущее значение для восстановления через defer.
+func SetStubLoadDelay(d time.Duration) time.Duration {
+	prev := stubLoadDelay.Swap(int64(d))
+	return time.Duration(prev)
+}
+
+// getStubLoadDelay — текущее значение задержки (thread-safe).
+func getStubLoadDelay() time.Duration {
+	return time.Duration(stubLoadDelay.Load())
+}
+
+// stubLoadAbortCount — counter вызовов stub.RequestLoadAbort.
+// Используется ТОЛЬКО в тестах (build tag llama_stub).
+// Доступ через RecordStubLoadAbort (write) / GetStubLoadAbortCount (read)
+// / ResetStubLoadAbortCount (zero).
+var stubLoadAbortCount atomic.Int64
+
+// RecordStubLoadAbort — инкрементирует counter при вызове RequestLoadAbort.
+// В тестах: проверять через GetStubLoadAbortCount после cancel.
+func RecordStubLoadAbort() {
+	stubLoadAbortCount.Add(1)
+}
+
+// GetStubLoadAbortCount — текущее значение counter (thread-safe).
+func GetStubLoadAbortCount() int64 {
+	return stubLoadAbortCount.Load()
+}
+
+// ResetStubLoadAbortCount — сбрасывает counter в 0. Используется в тестах
+// для подготовки к новому test case (изолирует от предыдущих вызовов).
+func ResetStubLoadAbortCount() {
+	stubLoadAbortCount.Store(0)
 }
 
 // InferStream выполняет стриминг-инференс (stub)

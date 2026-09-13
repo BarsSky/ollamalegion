@@ -611,76 +611,30 @@ func (b *Backend) LoadModel(name string, path string) error {
 // LoadModelWithOpts загружает GGUF модель с указанными параметрами.
 //
 // R60.57 (2026-09-13): принимает context.Context для отмены загрузки.
+// R60.57 follow-up (2026-09-13): использует bridge.LoadModelWithEarlyHandle
+// для early-expose C-уровневого handle в inst.handle.ptr СРАЗУ после
+// malloc+atomic_init (в bridge_load_model), ДО blocking llama_model_load_from_file.
+// Это позволяет watcher goroutine вызвать bridge.RequestLoadAbort(handle)
+// в реальном времени — handle уже валиден к моменту ctx.Done.
 //
 // Семантика ctx cancellation:
 //   - ctx.Done() → spawn watcher goroutine вызывает bridge.RequestLoadAbort
-//     на in-flight handle (если доступен через b.GetHandle).
+//     на in-flight handle (читает inst.handle.ptr напрямую, без polling).
 //   - Cancel возвращает ошибку с errors.Is(err, ErrAborted) == true если
 //     C-bridge успел отменить load в checkpoint; иначе — обычная load error.
-//   - В текущем (Phase 3) виде watcher использует b.GetHandle(name) для
-//     polling'а за in-flight handle. Без C-side изменения (см. PLAN.md §3.1,
-//     Approach b — out_handle parameter) handle не появляется в b.models
-//     до возврата из bridge.LoadModel, поэтому watcher фактически no-op
-//     для C-side abort во время самой загрузки. Он ловит только race window
-//     когда C-side вот-вот вернёт handle.
+//   - Если ctx отменён ДО того, как C-bridge успел early-expose ptr
+//     (race window в первые микросекунды load), watcher видит ptr==nil
+//     и логирует warning — load продолжается до completion. Это
+//     edge case (cancel до load started) — приемлемая degradation.
 //
 // ВНИМАНИЕ: для полноценной cancellable load требуется C-side fix
-// (Approach b — out_handle parameter). Без него R60.57 обеспечивает:
-//   - ctx propagation через цепочку ensureModelLoaded → HTTP handler
-//   - structured error (ErrAborted) при успешной cancel race
-//   - cleanup через defer UnlockLoad (race-free)
-//   - watcher pattern готов к работе сразу после C-side fix
+// (Approach b — out_handle parameter). R60.57 follow-up (commit a62853e)
+// завершает эту работу: bridge.LoadModelWithEarlyHandle + раннее
+// заполнение inst.handle.ptr в bridge_load_model.
 func (b *Backend) LoadModelWithOpts(ctx context.Context, name string, path string, opts LoadModelOpts) error {
-	// R60.57: watcher goroutine для ctx.Done() → bridge.RequestLoadAbort.
-	// Запускается ПОСЛЕ валидации (checkVRAMForModel) и проверки duplicates —
-	// иначе watcher может вызвать abort на handle, который никогда не появится.
-	//
-	// NOTE: текущий C-side НЕ возвращает early-allocated im pointer Go-стороне
-	// до конца bridge_load_model. Поэтому в race-window watcher находит nil
-	// handle и RequestLoadAbort no-op'ит. Полная cancellable load требует
-	// C-side fix (Approach b — out_handle parameter, см. PLAN.md §3.1).
-	// Watcher pattern готов и активируется автоматически после C-side fix.
-
-	// Канал для сигнала watcher'у что load завершён (success или error).
-	// deferred close() гарантирует, что watcher выйдет даже при панике.
-	watcherDone := make(chan struct{})
-	defer close(watcherDone)
-
-	if ctx != nil && ctx.Done() != nil {
-		go func() {
-			select {
-			case <-ctx.Done():
-				// ctx отменён — пробуем отменить C-side load через bridge.RequestLoadAbort.
-				//
-				// R60.57 ограничение: b.GetHandle(name) возвращает inst.handle,
-				// который устанавливается ПОСЛЕ возврата из bridge.LoadModel.
-				// Поэтому в текущем (pre-C-fix) виде watcher не может abort'нуть
-				// C-side load во время выполнения. Он ловит только brief race
-				// window в конце (когда C-side вот-вот вернёт handle, но Go
-				// ещё не успел его скопировать в inst.handle).
-				//
-				// Watcher полезен сразу после C-side fix (Approach b —
-				// out_handle parameter в bridge_load_model): тогда Go-side
-				// получит early-allocated im и RequestLoadAbort будет работать.
-				if handle, ok := b.GetHandle(name); ok && handle != nil {
-					// bridge.RequestLoadAbort nil-safe — вернёт error если ptr == nil.
-					if abortErr := bridge.RequestLoadAbort(handle); abortErr != nil {
-						logger.Get().Debugw("LoadModelWithOpts: RequestLoadAbort no-op or already aborted",
-							"model", name, "error", abortErr)
-					}
-				} else {
-					logger.Get().Warnw("LoadModelWithOpts: ctx cancelled but C-side handle not yet available — watcher cannot abort in-flight load (will rely on C-side fix for full cancel support)",
-						"model", name, "path", path)
-				}
-			case <-watcherDone:
-				// load завершился нормально (success или error) — watcher выходит.
-				return
-			}
-		}()
-	}
-
-
-	// Валидация VRAM перед загрузкой и авто-подбор оптимальных gpuLayers
+	// Валидация VRAM перед загрузкой и авто-подбор оптимальных gpuLayers.
+	// Выполняется ДО pre-allocation inst, чтобы не плодить phantom entries
+	// в b.models при ошибке валидации.
 	var err error
 	if opts, err = b.checkVRAMForModel(name, path, opts); err != nil {
 		return err
@@ -725,6 +679,20 @@ func (b *Backend) LoadModelWithOpts(ctx context.Context, name string, path strin
 		loadingSizeBytes = fi.Size()
 	}
 
+	// R60.57 follow-up: pre-allocate inst.handle ДО вызова C-bridge.
+	// C-bridge (LoadModelWithEarlyHandle) использует out_handle parameter
+	// для записи early-allocated C handle в inst.handle.ptr СРАЗУ после
+	// malloc + atomic_init, ДО blocking llama_model_load_from_file.
+	// Это позволяет watcher goroutine (ниже) вызвать bridge.RequestLoadAbort
+	// на этом handle в реальном времени.
+	//
+	// handle.path будет установлен bridge.LoadModelWithEarlyHandle внутри
+	// (earlyHandle.path = cfg.ModelPath) ДО C-вызова. handle.ptr остаётся
+	// nil до момента early-expose внутри bridge_load_model.
+	//
+	// NOTE: ModelHandle struct fields (ptr, path) не экспортированы — мы
+	// не можем pre-set path напрямую из этого пакета. bridge.go сам
+	// устанавливает path первым делом в LoadModelWithEarlyHandle.
 	inst := &modelInstance{
 		info: ModelInfo{
 			Name:             name,
@@ -739,9 +707,50 @@ func (b *Backend) LoadModelWithOpts(ctx context.Context, name string, path strin
 			LoadingStartedAt: time.Now(),
 			LoadingSizeBytes: loadingSizeBytes,
 		},
+		handle: &bridge.ModelHandle{},
 	}
 	b.models[name] = inst
 	b.mu.Unlock()
+
+	// R60.57 follow-up: watcher goroutine для ctx.Done() → bridge.RequestLoadAbort.
+	// Запускается ПОСЛЕ pre-allocation inst.handle (нужен для direct access),
+	// но ДО bridge.LoadModelWithEarlyHandle (чтобы watcher мог прервать load).
+	//
+	// В отличие от pre-R60.57-follow-up (Phase 3-5, commit 4682f2f), watcher
+	// НЕ polling'ает b.GetHandle(name) — он читает inst.handle.ptr напрямую.
+	// C-bridge экспонирует early-allocated handle в inst.handle.ptr почти
+	// сразу после malloc+atomic_init (микросекунды), поэтому race window
+	// минимальна. Если ctx отменён ДО early-expose — watcher видит ptr==nil
+	// и логирует warning (load продолжается до completion).
+	watcherDone := make(chan struct{})
+	defer close(watcherDone)
+
+	if ctx != nil && ctx.Done() != nil {
+		go func() {
+			select {
+			case <-ctx.Done():
+				// ctx отменён — пробуем отменить C-side load через bridge.RequestLoadAbort.
+				//
+				// R60.57 follow-up: handle уже pre-allocated (inst.handle.path != ""),
+				// ptr будет заполнен C-bridge'ом в первые микросекунды load.
+				// bridge.RequestLoadAbort nil-safe — вернёт informative error
+				// если ptr ещё nil (cancel пришёл слишком рано).
+				if abortErr := bridge.RequestLoadAbort(inst.handle); abortErr != nil {
+					// ptr==nil → cancel пришёл ДО early-expose (теоретически
+					// возможно только при pre-cancelled ctx — race window
+					// в норме <1ms). Логируем как Debug (не Warn), т.к.
+					// это benign edge case.
+					// Также: RequestLoadAbort уже aborted / no-op cases
+					// (idempotent, atomic flag уже = 1).
+					logger.Get().Debugw("LoadModelWithOpts: RequestLoadAbort no-op or ptr not yet exposed",
+						"model", name, "path", path, "error", abortErr)
+				}
+			case <-watcherDone:
+				// load завершился нормально (success или error) — watcher выходит.
+				return
+			}
+		}()
+	}
 
 	// Логгируем старт загрузки (UI может полагаться на наличие этой записи).
 	logger.Get().Infow("model load started",
@@ -853,11 +862,19 @@ func (b *Backend) LoadModelWithOpts(ctx context.Context, name string, path strin
 		}
 	}
 
-	handle, err := bridge.LoadModel(cfg)
+	// R60.57 follow-up: используем LoadModelWithEarlyHandle вместо LoadModel.
+	// C-bridge (commit a62853e) теперь принимает out_handle parameter и
+	// экспонирует early-allocated C handle в inst.handle.ptr СРАЗУ после
+	// malloc+atomic_init. Это позволяет watcher goroutine (выше) вызвать
+	// bridge.RequestLoadAbort на этом handle в реальном времени.
+	//
+	// inst.handle уже pre-allocated (path установлен). LoadModelWithEarlyHandle
+	// заполнит ptr во время выполнения.
+	handle, err := bridge.LoadModelWithEarlyHandle(cfg, inst.handle)
 	// Round 25 (2026-08-04): замеряем реальное время load'а для истории.
-	// bridge.LoadModel — blocking CGo, возвращает после успешной загрузки.
-	// Эта метрика используется cppworker'ом для динамической оценки
-	// estimatedLoadTimeMs (вместо хардкода 100 MB/s).
+	// bridge.LoadModelWithEarlyHandle — blocking CGo, возвращает после
+	// успешной загрузки. Эта метрика используется cppworker'ом для
+	// динамической оценки estimatedLoadTimeMs (вместо хардкода 100 MB/s).
 	loadStartTime := time.Now()
 	if err != nil {
 		// Сохраняем LoadingError на короткое время, чтобы UI мог показать
@@ -886,8 +903,15 @@ func (b *Backend) LoadModelWithOpts(ctx context.Context, name string, path strin
 	}
 
 	// Обновляем информацию
+	//
+	// R60.57 follow-up: НЕ переприсваиваем inst.handle — handle уже
+	// pre-allocated (см. выше, перед watcher'ом) и содержит финальный
+	// ptr после LoadModelWithEarlyHandle. Переприсвоение здесь создаёт
+	// data race с watcher goroutine (которая читает inst.handle при
+	// ctx.Done → bridge.RequestLoadAbort). Используем `handle` только
+	// локально — он идентичен *inst.handle (тот же C-level ptr).
 	b.mu.Lock()
-	inst.handle = handle
+	_ = handle // R60.57 follow-up: handle уже в inst.handle (pre-allocated)
 	inst.metadata = meta
 	inst.info.State = StateLoaded
 	inst.info.Architecture = meta.Architecture

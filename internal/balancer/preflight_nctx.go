@@ -92,32 +92,36 @@ func EstimatePromptTokens(prompt string) int {
 // ollamaChatRequestRaw — минимальная структура для парсинга Ollama chat body.
 // Не импортируем openai_types, чтобы не плодить зависимости.
 type ollamaChatRequestRaw struct {
-	Model    string `json:"model"`
-	Messages []struct {
+	Model     string `json:"model"`
+	Messages  []struct {
 		Role    string `json:"role"`
 		Content string `json:"content"`
 	} `json:"messages"`
-	Tools   []json.RawMessage `json:"tools"`
-	Options struct {
+	Tools     []json.RawMessage `json:"tools"`
+	Options   struct {
 		NumCtx      int    `json:"num_ctx"`
 		NumPredict  int    `json:"num_predict"`
 		KVCacheType string `json:"kv_cache_type"` // Round 34: profile mismatch
 		FlashAttn   *int   `json:"flash_attn"`    // -1=auto, 0=off, 1=on
 		UseMmap     *bool  `json:"use_mmap"`      // Round 34: profile mismatch
 	} `json:"options"`
-	Stream bool `json:"stream"`
+	// R60.55 (2026-09-13): top-level max_tokens (OpenAI-style alias for num_predict).
+	MaxTokens int  `json:"max_tokens"`
+	Stream    bool `json:"stream"`
 }
 
 // ollamaGenerateRequestRaw — минимальная структура для /api/generate.
 type ollamaGenerateRequestRaw struct {
-	Model   string `json:"model"`
-	Prompt  string `json:"prompt"`
-	System  string `json:"system"`
-	Options struct {
+	Model     string `json:"model"`
+	Prompt    string `json:"prompt"`
+	System    string `json:"system"`
+	Options   struct {
 		NumCtx     int `json:"num_ctx"`
 		NumPredict int `json:"num_predict"`
 	} `json:"options"`
-	Tools []json.RawMessage `json:"tools"`
+	Tools     []json.RawMessage `json:"tools"`
+	// R60.55 (2026-09-13): top-level max_tokens (OpenAI-style alias for num_predict).
+	MaxTokens int `json:"max_tokens"`
 }
 
 // openAIChatRequestRaw — для /v1/chat/completions.
@@ -154,7 +158,12 @@ func ExtractRequestMeta(body []byte, path string) *RequestMeta {
 		}
 		meta.ModelName = req.Model
 		meta.RequestedNCtxOverride = req.Options.NumCtx
+		// R60.55 (2026-09-13): top-level max_tokens имеет приоритет над options.num_predict.
+		// OpenWebUI в Ollama-режиме шлёт max_tokens на верхнем уровне body.
 		meta.RequestedNPredict = req.Options.NumPredict
+		if meta.RequestedNPredict <= 0 {
+			meta.RequestedNPredict = req.MaxTokens
+		}
 		meta.HasTools = len(req.Tools) > 0
 		// Round 34 (2026-08-12) Phase 2: profile mismatch detection.
 		// Только Ollama /api/chat парсит options.* — для OpenAI эти поля остаются нулевыми.
@@ -178,7 +187,11 @@ func ExtractRequestMeta(body []byte, path string) *RequestMeta {
 		}
 		meta.ModelName = req.Model
 		meta.RequestedNCtxOverride = req.Options.NumCtx
+		// R60.55 (2026-09-13): top-level max_tokens имеет приоритет над options.num_predict.
 		meta.RequestedNPredict = req.Options.NumPredict
+		if meta.RequestedNPredict <= 0 {
+			meta.RequestedNPredict = req.MaxTokens
+		}
 		meta.HasTools = len(req.Tools) > 0
 		meta.EstimatedPromptTokens = EstimatePromptTokens(req.Prompt + req.System)
 

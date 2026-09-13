@@ -581,6 +581,29 @@ func translateOpenAIEmbeddingsToOllama(body []byte, modelName string) ([]byte, e
 //     (for prompt_eval_duration = TTFT and eval_duration = total - TTFT).
 //     Zero value = no content yet (usage chunk would have eval_duration=total).
 func translateOpenAISSEDataToOllama(ollamaPath string, sseData []byte, modelName string, seenReasoning *bool, streamStart time.Time, firstContentTime time.Time, accumulatedContent string) []byte {
+	return translateOpenAISSEDataToOllamaWithDoneFlag(ollamaPath, sseData, modelName, seenReasoning, streamStart, firstContentTime, accumulatedContent, nil)
+}
+
+// translateOpenAISSEDataToOllamaWithDoneFlag — R60.55 (2026-09-13) variant that
+// accepts a *bool "priorDoneEmitted" flag. When priorDoneEmitted is non-nil
+// and points to true, AND this chunk is a usage chunk (canonical done:true),
+// the function returns nil to suppress emitting a SECOND done:true chunk.
+//
+// Why this matters: R51.3 / R53.1 safety-net emits done:true on a non-wrapper
+// finish_reason+content chunk (e.g. content+finish_reason="length" combined
+// chunk from cppworker). If a usage chunk follows (canonical Ollama done
+// chunk with eval_count + total_duration), translateUsageChunkToOllama
+// ALSO emits done:true → client receives TWO done:true chunks → OpenWebUI
+// displays as "duplicate response".
+//
+// Qwen3-Instruct antipattern: model emits greeting+code, then finish_reason
+// + content in one chunk, then usage chunk. Without this flag, balancer
+// emits 2 done-chunks (R60.54 dedup catches it inside one chunk's
+// message.content, but CAN'T help when there are 2 distinct done-chunks).
+//
+// The flag is passed as a pointer so callers can mutate it after each
+// emission to track state across the stream.
+func translateOpenAISSEDataToOllamaWithDoneFlag(ollamaPath string, sseData []byte, modelName string, seenReasoning *bool, streamStart time.Time, firstContentTime time.Time, accumulatedContent string, priorDoneEmitted *bool) []byte {
 	if len(sseData) == 0 || bytes.Equal(sseData, []byte("[DONE]")) {
 		return nil
 	}
@@ -606,6 +629,13 @@ func translateOpenAISSEDataToOllama(ollamaPath string, sseData []byte, modelName
 	// чтобы done-чанк имел реальный message.content (= accumulatedContent),
 	// а не "" (пустой). Без этого OpenWebUI показывал обрезанный/пустой ответ.
 	if usage, hasUsage := openaiChunk["usage"].(map[string]interface{}); hasUsage && !hasNonEmptyChoices(openaiChunk) {
+		// R60.55 (2026-09-13): если предыдущий чанк уже эмитил done:true
+		// (например, finish_reason+content safety-net от R51.3) — подавляем
+		// usage чанк, иначе клиент увидит ДВА done:true. usage чанк после
+		// finish_reason+content — избыточен, canonical done уже эмитился.
+		if priorDoneEmitted != nil && *priorDoneEmitted {
+			return nil
+		}
 		return translateUsageChunkToOllama(ollamaPath, modelName, usage, openaiChunk, streamStart, firstContentTime, accumulatedContent)
 	}
 	switch ollamaPath {

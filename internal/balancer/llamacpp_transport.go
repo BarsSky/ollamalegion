@@ -526,6 +526,10 @@ func (p *Proxy) proxyRequestLlamaCpp(w http.ResponseWriter, r *http.Request, bac
 	// с error/done:true, чтобы клиент корректно отобразил сбой вместо "успеха".
 	streamCompleted := false
 	upstreamHadFinishReason := false
+	// R60.55 (2026-09-13): defer writing done-chunk until AFTER truncation
+	// check. If auto-continue fires, we want to emit ONE done-chunk with
+	// combined content (not two done-chunks showing as duplicates).
+	deferredDoneChunk := false
 	// Round 53.1 (2026-08-24): per-stream tracking — был ли в этом стриме usage чанк
 	// (cppworker эмитит его ПОСЛЕ finish_reason чанка с prompt_tokens/completion_tokens/
 	// total_tokens и пустыми choices). Если да — translateUsageChunkToOllama уже
@@ -534,6 +538,12 @@ func (p *Proxy) proxyRequestLlamaCpp(w http.ResponseWriter, r *http.Request, bac
 	// пишет done-чанк с накопленным content как fallback, иначе клиент (Cline/ollama npm)
 	// зависнет без done.
 	usageChunkSeen := false
+	// R60.55 (2026-09-13): флаг "предыдущий эмитированный chunk имел done:true".
+	// Используется внутри translateOpenAISSEDataToOllamaWithDoneFlag для
+	// подавления последующего usage чанка, который иначе эмитил бы ВТОРОЙ done:true
+	// (R51.3/R53.1 safety-net для finish_reason+content уже отправил canonical
+	// done до usage чанка). Без этого — клиент видит 2 done-чанка.
+	priorDoneEmitted := false
 	var bytesForwarded int64
 	var firstForwardErr error
 	var lastForwardErr error
@@ -608,28 +618,12 @@ func (p *Proxy) proxyRequestLlamaCpp(w http.ResponseWriter, r *http.Request, bac
 		data := strings.TrimSpace(strings.TrimPrefix(line, "data:"))
 		if data == "[DONE]" {
 			streamCompleted = true
-			// Передаём upstreamHadFinishReason — если cppworker уже прислал чанк с
-			// finish_reason (внутри for-цикла), translate записал финальный NDJSON
-			// с done:true и content. writeStreamingSSEDone должен пропустить запись
-			// дублирующего финального чанка, чтобы клиент не увидел два done:true.
-			errFwd := writeStreamingSSEDone(w, originalPath, modelFromCtx, toolAccum,
-				accumulatedPlainContent, upstreamDoneContent, upstreamHadFinishReason, usageChunkSeen)
-			if errFwd != nil {
-				logger.Get().Warnw("proxyRequestLlamaCpp: writeStreamingSSEDone error",
-					"backend", backendID, "error", errFwd)
-				lastForwardErr = errFwd
-				if firstForwardErr == nil {
-					firstForwardErr = errFwd
-				}
-			}
-			// writeStreamingSSEDone flush'ит только для SSE→SSE passthrough.
-			// Для /api/chat и /api/generate (NDJSON) делаем явный flush —
-			// иначе на быстрых моделях (Qwen3.6-35B-A3B) финальный done-чанк
-			// может остаться в Go HTTP буфере и клиент получит EOF без последнего чанка.
-			// Видно как TransferEncodingError на стороне aiohttp / httpx.
-			if originalPath != "/v1/chat/completions" {
-				Flush(w)
-			}
+			// R60.55 (2026-09-13): DEFER writing the done-chunk until AFTER
+			// we check for truncation. Otherwise OpenWebUI receives done=true
+			// for the original truncated content, then sees ANOTHER done=true
+			// for the combined content (after auto-continue) → displays as
+			// duplicate response. We mark `deferredDoneChunk` and emit later.
+			deferredDoneChunk = true
 			break
 		}
 
@@ -929,7 +923,12 @@ func (p *Proxy) proxyRequestLlamaCpp(w http.ResponseWriter, r *http.Request, bac
 			// R60.49 (2026-09-12): передаём accumulatedPlainContent в translator —
 			// при получении usage-чанка message.content/response теперь заполняется
 			// накопленным content (а не ""), чтобы OpenWebUI показывал полный ответ.
-			ollamaChunk := translateOpenAISSEDataToOllama(originalPath, []byte(data), modelFromCtx, &seenReasoning, llamaStartTime, firstContentTime, accumulatedPlainContent)
+			//
+			// R60.55 (2026-09-13): передаём priorDoneEmitted — если предыдущий
+			// чанк уже эмитил done:true (например finish_reason+content safety-net
+			// от R51.3), usage чанк подавляется внутри translate чтобы избежать
+			// двойного done:true.
+			ollamaChunk := translateOpenAISSEDataToOllamaWithDoneFlag(originalPath, []byte(data), modelFromCtx, &seenReasoning, llamaStartTime, firstContentTime, accumulatedPlainContent, &priorDoneEmitted)
 			if len(ollamaChunk) == 0 {
 				continue
 			}
@@ -940,6 +939,9 @@ func (p *Proxy) proxyRequestLlamaCpp(w http.ResponseWriter, r *http.Request, bac
 			// (translateUsageChunkToOllama эмитит prompt_eval_count и eval_count).
 			// Не-usage чанки с done:true (safety net для length/content_filter в одном
 			// чанке с content) тоже считаем — но это OK, writeStreamingSSEDone skip безопасен.
+			//
+			// R60.55: трекаем priorDoneEmitted для ВСЕХ done:true чанков (не только
+			// usage) — это позволяет следующему usage чанку быть suppressed.
 			if !usageChunkSeen {
 				var ollamaParsed map[string]interface{}
 				if err := json.Unmarshal(ollamaChunk[:len(ollamaChunk)-1], &ollamaParsed); err == nil {
@@ -947,6 +949,7 @@ func (p *Proxy) proxyRequestLlamaCpp(w http.ResponseWriter, r *http.Request, bac
 						// Любой done:true chunk = canonical done (translator эмитил).
 						// writeStreamingSSEDone должен skip.
 						usageChunkSeen = true
+						priorDoneEmitted = true
 					}
 				}
 			}
@@ -1062,6 +1065,24 @@ func (p *Proxy) proxyRequestLlamaCpp(w http.ResponseWriter, r *http.Request, bac
 					"backend", backendID, "model", modelFromCtx,
 					"reason", reason, "error", contErr,
 					"url", fullURL)
+			}
+		} else if deferredDoneChunk && streamCompleted {
+			// R60.55 (2026-09-13): no truncation OR auto-continue didn't fire
+			// (e.g., continuation was suppressed as regen). Emit the deferred
+			// done-chunk now with accumulated content. This is the standard
+			// happy-path case where the model completed normally.
+			errFwd := writeStreamingSSEDone(w, originalPath, modelFromCtx, toolAccum,
+				accumulatedPlainContent, upstreamDoneContent, upstreamHadFinishReason, usageChunkSeen)
+			if errFwd != nil {
+				logger.Get().Warnw("proxyRequestLlamaCpp: deferred writeStreamingSSEDone error",
+					"backend", backendID, "error", errFwd)
+				lastForwardErr = errFwd
+				if firstForwardErr == nil {
+					firstForwardErr = errFwd
+				}
+			}
+			if originalPath != "/v1/chat/completions" {
+				Flush(w)
 			}
 		}
 	}

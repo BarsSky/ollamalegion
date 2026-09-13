@@ -236,35 +236,27 @@ func IsAutoContinueOnTruncationEnabled() bool {
 // model's "continuation" is actually a regeneration of the original
 // response from scratch (chat-model antipattern).
 //
-// Heuristic: if the continuation content's first 200 chars (after
-// stripping leading whitespace) appear WITHIN the original content,
-// it's almost certainly a regenerated greeting/restart, not actual
-// continuation. We strip the leading "Sure, here's the continuation:"
-// type artifacts that chat models often prepend before regenerating.
+// Models like Qwen3-Instruct / Gemma-4 emit a "continue" prompt → they
+// respond with a FRESH greeting + intro + (duplicate) code, starting
+// with the same text as the original response.
+//
+// Heuristic (R60.55 v2): check if the continuation STARTS with a greeting
+// pattern (Russian "Привет! Конечно" / English "Sure, here's..."). Real
+// continuations start with code/text (e.g., "  const x = ..."). This
+// is more reliable than substring matching (which falsely flagged real
+// continuations that share substrings with original).
 //
 // Returns true if the continuation looks like a regeneration (should be
 // suppressed to avoid duplicate responses in OpenWebUI).
-//
-// False positives (legitimate continuations that happen to start with
-// similar text) are rare — chat models that truly continue don't echo
-// their previous intro text.
 func IsContinuationARegeneration(originalContent, continuationContent string) bool {
 	if continuationContent == "" || originalContent == "" {
 		return false
 	}
-	// R60.55 (2026-09-13): detect chat-model regeneration pattern.
-	// Models like Qwen3-Instruct / Gemma-4 emit a "continue" prompt →
-	// they respond with a FRESH greeting + intro + (duplicate) code,
-	// starting with the same text as the original response.
-	//
-	// Heuristic: take first 30 chars of continuation (after stripping
-	// chat-model preambles like "Sure, here's the continuation:"), then
-	// check if the same anchor appears anywhere in the original. If yes,
-	// it's almost certainly a regeneration.
 	trimmed := strings.TrimLeft(continuationContent, " \t\n\r")
-	if len(trimmed) < 20 {
-		return false // too short to detect
+	if len(trimmed) < 10 {
+		return false
 	}
+	// Strip common chat-model preamble patterns first.
 	preambles := []string{
 		"Sure, here's the continuation:",
 		"Continuing from where I left off:",
@@ -276,21 +268,34 @@ func IsContinuationARegeneration(originalContent, continuationContent string) bo
 	for _, p := range preambles {
 		if strings.HasPrefix(trimmed, p) {
 			trimmed = strings.TrimLeft(trimmed[len(p):], " \t\n\r")
-			if len(trimmed) < 20 {
-				return false
-			}
 			break
 		}
 	}
-	// Anchor: first 30 chars of (post-preamble) continuation.
-	// 30 chars is short enough to match even when the regen adds extra
-	// content (like new code) past the original's first 30 chars.
-	anchorLen := 30
-	if len(trimmed) < anchorLen {
-		anchorLen = len(trimmed)
+	// Check first 80 chars for greeting markers.
+	// Russian: "Привет! Конечно" / "Привет!" / "Конечно,"
+	// English: "Sure!" / "Of course" / "Certainly"
+	// These are the typical chat-model "yes, I'll help" patterns
+	// that appear at the start of regenerated responses.
+	prefix := trimmed
+	if len(prefix) > 80 {
+		prefix = prefix[:80]
 	}
-	anchor := trimmed[:anchorLen]
-	return strings.Contains(originalContent, anchor)
+	greetingPatterns := []string{
+		"Привет! Конечно",
+		"Привет! С удовольствием",
+		"Здравствуйте",
+		"Привет! Хорошо",
+		"Sure!",
+		"Of course,",
+		"Certainly,",
+		"Here's",
+	}
+	for _, g := range greetingPatterns {
+		if strings.HasPrefix(prefix, g) {
+			return true
+		}
+	}
+	return false
 }
 
 // IsAutoLoadAsyncEnabled — R60.33 (2026-09-10): если true (default),
@@ -441,9 +446,20 @@ func PerformAutoContinue(
 		timeout = GetAutoContinueTimeout()
 	}
 
-	// 1. Parse original body — only need model name.
+	// 1. Parse original body to extract model name AND user's first message.
+	// R60.55 root-cause fix (2026-09-13): instead of single-user-message continuation
+	// (which caused the model to restart with greeting "Привет! Конечно..." — the
+	// antiprompt restart antipattern), use MULTI-TURN CHAT continuation: send
+	// [user: original_prompt, assistant: partial_content, user: continue instruction].
+	// The model sees this as a mid-conversation continuation → no greeting → no
+	// duplicate "Привет!" in the response. Eliminates the need for R60.55 smart-policy
+	// filter (which was a band-aid hiding the real bug).
+	//
+	// Parsing strategy: try Ollama /api/chat format first, then OpenAI /v1/chat/completions
+	// format, then fall back to single-user-message (legacy) for unknown formats.
 	var reqBody struct {
-		Model string `json:"model"`
+		Model    string        `json:"model"`
+		Messages []chatMessage `json:"messages"`
 	}
 	if err := json.Unmarshal(originalBody, &reqBody); err != nil {
 		return "", 0, err
@@ -452,11 +468,34 @@ func PerformAutoContinue(
 		return "", 0, errEmptyMessages
 	}
 
-	// R60.50: build a SINGLE user message with truncated content embedded
-	// + explicit continue instruction. NO original conversation history.
-	continuationPrompt := BuildContinuePrompt(accumulatedContent, truncationReason)
-	continuationMessages := []chatMessage{
-		{Role: "user", Content: continuationPrompt},
+	// Find the user's last message (most recent "user" role in original conversation).
+	// This is what we want the model to continue responding to.
+	var originalUserPrompt string
+	for i := len(reqBody.Messages) - 1; i >= 0; i-- {
+		if reqBody.Messages[i].Role == "user" {
+			originalUserPrompt = reqBody.Messages[i].Content
+			break
+		}
+	}
+
+	var continuationMessages []chatMessage
+	if originalUserPrompt != "" {
+		// R60.55 proper fix: multi-turn chat continuation.
+		// Model sees: [user: original prompt, assistant: my partial response,
+		//              user: "continue from where you stopped"]
+		// → model treats as mid-conversation, continues without greeting.
+		continuationMessages = []chatMessage{
+			{Role: "user", Content: originalUserPrompt},
+			{Role: "assistant", Content: accumulatedContent},
+			{Role: "user", Content: "Продолжи с того места, где остановился. Без приветствий, без повторов, без перезапуска. Сразу продолжай код/текст."},
+		}
+	} else {
+		// Fallback: no user message found (unusual). Use legacy single-user-message
+		// with embedded partial content. R60.55 smart-policy will catch regen if any.
+		continuationPrompt := BuildContinuePrompt(accumulatedContent, truncationReason)
+		continuationMessages = []chatMessage{
+			{Role: "user", Content: continuationPrompt},
+		}
 	}
 
 	// Force non-streaming for the continue request (simpler to handle).

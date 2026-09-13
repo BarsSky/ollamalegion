@@ -59,6 +59,14 @@ typedef struct {
     // 0 = not aborted (или abort отменён / infer завершён нормально),
     // 1 = abort запрошен, infer должен выйти на ближайшей check point.
     atomic_int abort_requested;
+    // R60.57 (2026-09-13): load-cancel flag. Семантика идентична abort_requested,
+    // но checkpoints находятся в bridge_load_model (после llama_model_load_from_file,
+    // после llama_init_from_model, после population InternalModel). Go-сторона
+    // вызывает bridge_request_load_abort из ctx.Done watcher (Phase 3-4).
+    // После завершения load флаг остаётся в InternalModel; моdel уже не
+    // находится в load-фазе, поэтому flag остаётся no-op (idempotent —
+    // повторный RequestLoadAbort на loaded model безвреден).
+    atomic_int load_abort_requested;
     // Round 39 (2026-08-18): embeddings mode for cparams.embeddings toggle.
     //   0 = chat (cparams.embeddings=false, no per-decode override warning)
     //   1 = embedding (cparams.embeddings=true, llama_get_embeddings works)
@@ -859,6 +867,30 @@ ModelHandle bridge_load_model(const ModelConfig* config, char** error_msg) {
            config->model_path, config->n_ctx, config->n_batch,
            config->n_threads, config->n_gpu_layers);
 
+    // R60.57 (2026-09-13): allocate InternalModel EARLY so its load_abort_requested
+    // atomic flag is reachable via bridge_request_load_abort throughout the entire
+    // load. Без ранней аллокации checkpoints могут проверять флаг только ПОСЛЕ
+    // populate im — а это уже после VRAM estimation (то есть не отменяет
+    // зависший llama_model_load_from_file).
+    //
+    // malloc + memset вместо calloc — чтобы atomic_init был вызван на
+    // формально-uninitialized atomic (C11: "atomic_init ... shall not be applied
+    // to an atomic object initialized other than by means of the atomic_init").
+    // calloc заполняет нулями, но это не эквивалентно C11-init для atomic типов.
+    InternalModel *im = (InternalModel *)malloc(sizeof(InternalModel));
+    if (im == NULL) {
+        set_error("out of memory (InternalModel)");
+        if (error_msg) *error_msg = strdup(last_error);
+        return NULL;
+    }
+    memset(im, 0, sizeof(InternalModel));
+    // R60.57: init atomic flags. 0 = "не aborted" по дефолту. atomic_init —
+    // единственная функция, которую можно вызывать на uninitialized atomic
+    // (до этого любое обращение — UB). Должна быть вызвана ровно один раз
+    // перед первым atomic_load/atomic_store.
+    atomic_init(&im->abort_requested, 0);
+    atomic_init(&im->load_abort_requested, 0);
+
     // Параметры загрузки модели
     struct llama_model_params model_params = llama_model_default_params();
     model_params.n_gpu_layers = config->n_gpu_layers;
@@ -952,6 +984,26 @@ ModelHandle bridge_load_model(const ModelConfig* config, char** error_msg) {
         snprintf(buf, sizeof(buf), "failed to load model from %s", config->model_path);
         set_error(buf);
         if (error_msg) *error_msg = strdup(buf);
+        // R60.57: free early-allocated InternalModel (load failed before model).
+        free(im);
+        return NULL;
+    }
+
+    // R60.57: CHECKPOINT A — model loaded into memory, но context ещё не создан.
+    // Самое ценное место для отмены: после того как тензоры и метаданные
+    // уже загружены (большая часть времени load), но до выделения KV-cache
+    // и рабочих буферов контекста.
+    //
+    // Free partial state: llama_model_free (освобождает тензоры + vocab +
+    // buft_overrides которые llama.cpp забрал через model_params.tensor_buft_overrides),
+    // плюс наш im. Atomic flag остаётся в im до free — но im больше не валиден
+    // после free, поэтому Go-сторона должна прекратить вызывать RequestLoadAbort
+    // на этом handle (в Phase 3-4 — после bridge_load_model return NULL).
+    if (atomic_load(&im->load_abort_requested)) {
+        llama_model_free(model);
+        free(im);
+        set_error("model load aborted by user (R60.57 checkpoint A: after llama_model_load_from_file)");
+        if (error_msg) *error_msg = strdup(last_error);
         return NULL;
     }
 
@@ -1028,7 +1080,25 @@ ModelHandle bridge_load_model(const ModelConfig* config, char** error_msg) {
         snprintf(buf, sizeof(buf), "failed to create context for %s", config->model_path);
         set_error(buf);
         llama_model_free(model);
+        // R60.57: free early-allocated InternalModel (context creation failed).
+        free(im);
         if (error_msg) *error_msg = strdup(buf);
+        return NULL;
+    }
+
+    // R60.57: CHECKPOINT B — context создан (KV-cache аллоцирован внутри llama.cpp),
+    // но InternalModel ещё не populated. Отмена здесь освобождает context + model
+    // через их собственные free-функции (порядок важен: context ДО model, иначе
+    // context_free может обращаться к уже-освобождённому model state).
+    //
+    // Cancel latency от Checkpoint A до Checkpoint B = время llama_init_from_model
+    // (в основном KV-cache alloc + scratch buffers, ~100-500ms на RTX 3070).
+    if (atomic_load(&im->load_abort_requested)) {
+        llama_free(context);
+        llama_model_free(model);
+        free(im);
+        set_error("model load aborted by user (R60.57 checkpoint B: after llama_init_from_model)");
+        if (error_msg) *error_msg = strdup(last_error);
         return NULL;
     }
 
@@ -1041,16 +1111,9 @@ ModelHandle bridge_load_model(const ModelConfig* config, char** error_msg) {
     // top_k, seed, penalties. Default sampler на уровне модели был бы либо
     // всегда-greedy (старый баг), либо просто проигнорирован бы.
 
-    // Выделяем память под InternalModel
-    InternalModel *im = (InternalModel *)malloc(sizeof(InternalModel));
-    if (im == NULL) {
-        set_error("out of memory");
-        llama_free(context);
-        llama_model_free(model);
-        if (error_msg) *error_msg = strdup("out of memory");
-        return NULL;
-    }
-
+    // R60.57: im уже allocated в начале bridge_load_model (нужно для
+    // load_abort_requested atomic flag доступного во время всего load).
+    // populate fields (abort_requested уже init в начале).
     im->model = model;
     im->context = context;
     im->vocab = (struct llama_vocab *)vocab;
@@ -1063,10 +1126,19 @@ ModelHandle bridge_load_model(const ModelConfig* config, char** error_msg) {
     // Round 39: start in embedding mode (matches ctx_params.embeddings=true).
     // The C-bridge switches to chat mode (0) before each chat decode call.
     im->embeddings_mode = 1;
-    // Round 31 #6: init abort flag (atomic). Принимает 0 = "не aborted"
-    // по дефолту. atomic_init — единственная функция, которую можно
-    // вызывать на non-initialized atomic (до этого любое обращение — UB).
-    atomic_init(&im->abort_requested, 0);
+
+    // R60.57: CHECKPOINT C — InternalModel полностью populated, im->model и
+    // im->context валидны. Отмена здесь использует bridge_free_model-equivalent
+    // cleanup (context free ПЕРЕД model free). Cancel latency от Checkpoint B
+    // до Checkpoint C = sub-millisecond (просто populate struct fields).
+    if (atomic_load(&im->load_abort_requested)) {
+        llama_free(im->context);
+        llama_model_free(im->model);
+        free(im);
+        set_error("model load aborted by user (R60.57 checkpoint C: post-init)");
+        if (error_msg) *error_msg = strdup(last_error);
+        return NULL;
+    }
 
     // ============================================================
     // Оценка максимального n_ctx, доступного текущей VRAM
@@ -2190,6 +2262,71 @@ bool bridge_is_aborted(ModelHandle model) {
     if (model == NULL) return false;
     InternalModel *im = (InternalModel *)model;
     return atomic_load(&im->abort_requested) == 1;
+}
+
+// ============================================================
+// R60.57 (2026-09-13): Load-cancel API
+// ============================================================
+//
+// Зеркало Round 31 #6 inference abort API, но для фазы model load.
+// bridge_request_load_abort устанавливает atomic flag в InternalModel.
+// bridge_load_model проверяет его в 3 checkpoints (после llama_model_load_from_file,
+// после llama_init_from_model, после population InternalModel) и освобождает
+// partial state + возвращает NULL с BRIDGE_ERR_ABORTED-style ошибкой.
+//
+// Контракт (как у bridge_request_abort):
+//   - Thread-safe (atomic_store с relaxed memory ordering)
+//   - Idempotent: повторные вызовы безопасны (atomic flag уже = 1)
+//   - Можно вызывать из любой горутины (включая cgo thread из Go watcher)
+//   - Если model == NULL — return -1
+//
+// Отличия от inference abort:
+//   - Handle выдаётся Go-стороне ДО возврата из bridge_load_model
+//     (Phase 3-4 — отдельный plumbing, см. plans/cppworker-cancellable-load/PLAN.md).
+//     В Phase 1 Go-binding просто предоставляет примитивы; интеграция с
+//     ctx.Done watcher — Phase 3.
+//   - При срабатывании bridge_load_model возвращает NULL (не BRIDGE_ERR_ABORTED
+//     через int — тип возврата ModelHandle уже NULL). Go-binding маппит
+//     NULL → error с errors.Is(err, ErrAborted) == true.
+
+// bridge_request_load_abort — пометить in-progress model load как aborted.
+// Проверяется C-bridge в checkpoints внутри bridge_load_model (atomic_load).
+// Если abort сработал — bridge_load_model освобождает partial state и
+// возвращает NULL с informative error_msg. Если abort приходит после
+// завершения load — flag остаётся в im, но никаких checkpoints не осталось
+// (load уже finished), поэтому effect = no-op. Idempotent.
+//
+// SAFETY: thread-safe. atomic_store с relaxed memory ordering (default).
+// Можно вызывать из любой горутины, включая cgo thread из Go-стороны.
+//
+// Возвращает 0 при успехе, -1 если model == NULL.
+int bridge_request_load_abort(ModelHandle model) {
+    if (model == NULL) return -1;
+    InternalModel *im = (InternalModel *)model;
+    atomic_store(&im->load_abort_requested, 1);
+    return 0;
+}
+
+// bridge_request_load_abort_all — DECISION Q1 (mirror bridge_request_abort_all):
+// no-op в C. cppworker shutdown итерирует свой Go-side registry моделей
+// (Backend.models в internal/cppbackend/backend.go) и вызывает
+// bridge_request_load_abort на каждую in-progress загрузку. C-функция
+// оставлена для API completeness и для будущего использования если
+// добавим g_models_list в C.
+void bridge_request_load_abort_all(void) {
+    // No-op by design. См. DECISION Q1 в plans/cppworker-abort-api/PLAN.md.
+}
+
+// bridge_is_load_aborted — диагностика (для тестов и логов).
+// Возвращает true если для данной модели был подан load abort request.
+// В отличие от bridge_is_aborted, после успешного завершения load флаг
+// НЕ сбрасывается автоматически (нет post-load resetter). Это OK —
+// load завершился, дальнейшие проверки флага не релевантны (checkpoints
+// в bridge_load_model уже отработали).
+bool bridge_is_load_aborted(ModelHandle model) {
+    if (model == NULL) return false;
+    InternalModel *im = (InternalModel *)model;
+    return atomic_load(&im->load_abort_requested) == 1;
 }
 
 #endif // GO_BRIDGE_LLAMA_STUB guard

@@ -342,6 +342,34 @@ func IsAborted(model *ModelHandle) bool {
 }
 
 // ============================================================
+// R60.57 (2026-09-13): Load-cancel API — stub-реализации
+// ============================================================
+//
+// В stub-режиме нет реального C-bridge и настоящего load, поэтому
+// RequestLoadAbort / RequestLoadAbortAll / IsLoadAborted — no-op.
+// Сигнатуры и sentinel-семантика идентичны bridge.go для совместимости
+// с cppworker кодом, который собирается с обоими build tag.
+
+// RequestLoadAbort — stub: no-op. Возвращает nil всегда (нет реального
+// C-bridge для пометки). В Phase 3-4 Go-сторона интегрирует ctx.Done
+// watcher, но в stub-режиме load немедленный (нет задержки), поэтому
+// abort API не имеет смысла — но сигнатура нужна для совместимости
+// типов между bridge.go (build tag !llama_stub) и bridge_stub.go.
+func RequestLoadAbort(model *ModelHandle) error {
+	return nil
+}
+
+// RequestLoadAbortAll — stub: no-op.
+func RequestLoadAbortAll() error {
+	return nil
+}
+
+// IsLoadAborted — stub: всегда false (нет abort API в stub-режиме).
+func IsLoadAborted(model *ModelHandle) bool {
+	return false
+}
+
+// ============================================================
 // Inference (stub)
 // ============================================================
 

@@ -232,6 +232,46 @@ void bridge_request_abort_all(void);
 // Возвращает true если был подан abort request, false иначе.
 bool bridge_is_aborted(ModelHandle model);
 
+// ============================================================
+// R60.57 (2026-09-13): Load-cancel API
+// ============================================================
+//
+// Зеркало inference abort API для фазы model load. bridge_request_load_abort
+// устанавливает atomic flag в InternalModel; bridge_load_model проверяет его
+// в 3 checkpoints (после llama_model_load_from_file, после llama_init_from_model,
+// после population InternalModel) и освобождает partial state + возвращает
+// NULL с informative error_msg.
+//
+// При срабатывании Go-binding маппит NULL → error с errors.Is(err, ErrAborted).
+//
+// Контракт (mirror bridge_request_abort):
+//   - Thread-safe (atomic_store, relaxed memory ordering)
+//   - Idempotent
+//   - Из любой горутины (включая cgo thread от Go watcher goroutine)
+//   - Возвращает 0 при успехе, -1 если model == NULL
+//
+// Phase 3-4 (Go-side integration, см. plans/cppworker-cancellable-load/PLAN.md):
+// backend.LoadModelWithOpts принимает context.Context, spawn watcher goroutine
+// которая вызывает bridge.RequestLoadAbort(model) на ctx.Done().
+
+// bridge_request_load_abort — пометить in-progress model load как aborted.
+// Проверяется C-bridge в checkpoints внутри bridge_load_model. При abort
+// load освобождает partial state (model/context) и возвращает NULL.
+// Thread-safe. Idempotent. Возвращает 0 при успехе, -1 если model == NULL.
+int bridge_request_load_abort(ModelHandle model);
+
+// bridge_request_load_abort_all — DECISION Q1: no-op в C (mirror
+// bridge_request_abort_all). cppworker shutdown итерирует свой Go-side
+// registry моделей (Backend.models) и вызывает bridge_request_load_abort
+// на каждую in-progress загрузку. C-функция оставлена для API completeness.
+void bridge_request_load_abort_all(void);
+
+// bridge_is_load_aborted — диагностика (для тестов и логов).
+// Возвращает true если для данной модели был подан load abort request.
+// После успешного завершения load флаг остаётся в InternalModel (не
+// сбрасывается автоматически — load уже completed, проверки не релевантны).
+bool bridge_is_load_aborted(ModelHandle model);
+
 // Получение последней ошибки (legacy: только текст, не различает причины)
 const char* bridge_last_error(void);
 

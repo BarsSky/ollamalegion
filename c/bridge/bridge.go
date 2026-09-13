@@ -30,6 +30,11 @@ extern int streamCallbackGo(char* token, int token_len, void* user_data);
 extern int  bridge_request_abort(ModelHandle model);
 extern void bridge_request_abort_all(void);
 extern bool bridge_is_aborted(ModelHandle model);
+
+// R60.57 (2026-09-13): Load-cancel API — mirror Round 31 #6 для фазы model load
+extern int  bridge_request_load_abort(ModelHandle model);
+extern void bridge_request_load_abort_all(void);
+extern bool bridge_is_load_aborted(ModelHandle model);
 */
 import "C"
 import (
@@ -570,6 +575,84 @@ func IsAborted(model *ModelHandle) bool {
 		return false
 	}
 	return bool(C.bridge_is_aborted(model.ptr))
+}
+
+// ============================================================
+// R60.57 (2026-09-13): Load-cancel API — Go-side bindings
+// ============================================================
+//
+// Зеркало Round 31 #6 inference abort API для фазы model load.
+// bridge_request_load_abort устанавливает atomic flag в InternalModel;
+// bridge_load_model проверяет его в 3 checkpoints и возвращает NULL
+// при abort. Go-binding ниже предоставляет примитивы; интеграция с
+// ctx.Done watcher (Phase 3) — отдельная задача в internal/cppbackend
+// (LoadModelWithOpts принимает context.Context, spawn watcher goroutine).
+//
+// Семантика (mirror bridge.RequestAbort):
+//   - RequestLoadAbort помечает in-progress load как aborted.
+//   - C-bridge проверяет atomic flag в checkpoints bridge_load_model
+//     и возвращает NULL + informative error_msg на ближайшей check point.
+//   - Cancel latency = время до ближайшего checkpoint (sub-second для
+//     normal load, зависит от фазы: после llama_model_load_from_file
+//     ~sub-second, после llama_init_from_model ~100-500ms).
+//   - Thread-safe: можно вызывать из любой горутины.
+//   - Idempotent: повторный RequestLoadAbort — no-op.
+//
+// Precondition: handle выдан bridge.LoadModel ИЛИ bridge_load_model ещё
+// в процессе выполнения (Phase 3-4 — отдельный plumbing для доступа
+// к handle во время load). После bridge_load_model return с abort error
+// handle больше не валиден — НЕ вызывайте RequestLoadAbort на нём.
+//
+// Postcondition: после возврата из RequestLoadAbort активный load (если
+// есть) вернёт error с errors.Is(err, ErrAborted) == true в течение
+// cancel latency.
+
+// RequestLoadAbort помечает in-progress model load для данной модели как
+// aborted. Неблокирующая — atomic_store мгновенный. Сам cancel происходит
+// асинхронно в C-bridge на ближайшем checkpoint внутри bridge_load_model.
+//
+// Используется в Phase 3-4: backend.LoadModelWithOpts spawn watcher
+// goroutine которая вызывает bridge.RequestLoadAbort(model) на ctx.Done().
+//
+// В Phase 1 (текущая): Go-binding просто предоставляет API; реальная
+// интеграция с HTTP-handler / WaitForLoad — Phase 3-4 (orchestrator).
+//
+// Возвращает error если model == nil или C-bridge вернул -1.
+// В нормальной ситуации (model handle валиден) — возвращает nil.
+func RequestLoadAbort(model *ModelHandle) error {
+	if model == nil {
+		return fmt.Errorf("bridge.RequestLoadAbort: nil model handle")
+	}
+	if model.ptr == nil {
+		return fmt.Errorf("bridge.RequestLoadAbort: model handle ptr is nil (load not started or already finished)")
+	}
+	rc := C.bridge_request_load_abort(model.ptr)
+	if rc != 0 {
+		return fmt.Errorf("bridge_request_load_abort failed: rc=%d", rc)
+	}
+	return nil
+}
+
+// RequestLoadAbortAll помечает ВСЕ активные загрузки как aborted.
+// DECISION Q1 (mirror bridge.RequestAbortAll): на данный момент no-op в C-bridge.
+// cppworker shutdown итерирует свой Backend.models registry и вызывает
+// bridge.RequestLoadAbort на каждую. Эта функция оставлена для API
+// completeness. Возвращает nil всегда.
+func RequestLoadAbortAll() error {
+	C.bridge_request_load_abort_all()
+	return nil
+}
+
+// IsLoadAborted возвращает true если для данной модели был подан
+// load abort request. Используется для diagnostics и тестов.
+// После успешного завершения load флаг НЕ сбрасывается автоматически
+// (нет post-load resetter) — это OK, поскольку checkpoints в
+// bridge_load_model уже отработали, и дальнейшие проверки не релевантны.
+func IsLoadAborted(model *ModelHandle) bool {
+	if model == nil || model.ptr == nil {
+		return false
+	}
+	return bool(C.bridge_is_load_aborted(model.ptr))
 }
 
 // fillAntiprompts — копирует Go-строки params.Antiprompts в C-массив const char*.

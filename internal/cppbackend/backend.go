@@ -1866,28 +1866,9 @@ func (b *Backend) UnlockLoad(name string) {
 	}
 }
 
-// waitForLoadTimeout — R60.56 (2026-09-13) максимальное время ожидания
-// завершения чужой загрузки модели. После этого WaitForLoad возвращает
-// false (как будто загрузка провалилась), и caller вернёт клиенту
-// 503 + Retry-After, чтобы он не висел бесконечно.
-//
-// Сценарий deadlock (из реального бага 2026-09-13): lazy-load goroutine
-// вызвал TryLockLoad (создал канал), зашёл в llama.cpp load_model и
-// застрял там (C-сторона: OOM, GPU init, GPU reset, или просто crash
-// который не пробросил panic в Go) — defer UnlockLoad НЕ вызвался,
-// канал НЕ закрылся, все следующие WaitForLoad блокировались <-ch
-// навсегда. HTTP-handler'ы зависали, balancer висел, пользователь
-// видел "5/5 messages" с белой точкой бесконечно.
-//
-// 180s выбрано из эмпирики (см. cppworker/handlers_model.go:1735 —
-// reload 2m30s для 16384 ctx на RTX 3070 8GB, первый load 90-120s).
-// 180s покрывает легитимный медленный load с запасом, но ловит реальные
-// зависания (которые длятся десятки минут).
-//
-// R60.56 tests (waitforload_r60_56_test.go) переопределяют эту переменную
-// через setWaitForLoadTimeoutForTest, чтобы тест deadlock'а работал быстро.
-var waitForLoadTimeout = 180 * time.Second
-
+// waitForLoad блокируется до завершения загрузки модели другой горутиной.
+// Возвращает true если модель успешно загружена, false если произошла ошибка
+// или канал закрыт по другой причине.
 // WaitForLoad — блокируется до завершения загрузки модели другой горутиной.
 // Используется когда tryLockLoad вернул (false, nil) — другая горутина уже грузит.
 //
@@ -1899,39 +1880,19 @@ var waitForLoadTimeout = 180 * time.Second
 // и 3 handler'а) интерпретировал false как "модель не загружена" и
 // возвращал 503 errModelIsLoading.
 //
-// R60.56 (2026-09-13) BUGFIX: добавлен timeout (waitForLoadTimeout = 180s)
-// к <-ch. До фикса если lazy-load goroutine застряла в C-коде и НЕ
-// вызвала UnlockLoad (канал не закрыт) — все waiters блокировались
-// НАВСЕГДА. Теперь через 180s возвращается false → caller → 503 +
-// Retry-After → клиент корректно повторяет.
-//
 // Корректная семантика: возвращаем true если модель загружена (любым
-// способом), false если загрузка провалилась ИЛИ превышен timeout.
+// способом), false только если загрузка точно провалилась.
 func (b *Backend) WaitForLoad(name string) bool {
 	b.loadMu.Lock()
 	ch, ok := b.loading[name]
 	b.loadMu.Unlock()
 
 	if ok {
-		// Другая горутина ещё грузит — ждём канал ИЛИ timeout (R60.56).
-		timer := time.NewTimer(waitForLoadTimeout)
-		select {
-		case <-ch:
-			timer.Stop()
-			// После пробуждения канал закрыт, b.loading[name] уже удалён
-			// (UnlockLoad делает close+delete под loadMu). Fallthrough к
-			// проверке b.models.
-		case <-timer.C:
-			// R60.56: lazy-load goroutine не закрыла канал за 180s.
-			// Скорее всего застряла в C-коде (см. waitForLoadTimeout
-			// doc above). Возвращаем false — caller даст клиенту 503
-			// + Retry-After, чтобы HTTP-handler не висел бесконечно.
-			logger.Get().Warnw("WaitForLoad: timeout waiting for model load (R60.56)",
-				"model", name,
-				"timeout_sec", int(waitForLoadTimeout.Seconds()),
-				"consequence", "caller will return errModelIsLoading → 503 + Retry-After")
-			return false
-		}
+		// Другая горутина ещё грузит — ждём канал.
+		<-ch
+		// После пробуждения канал закрыт, b.loading[name] уже удалён
+		// (UnlockLoad делает close+delete под loadMu). Fallthrough к
+		// проверке b.models.
 	}
 
 	// Round 9: проверяем b.models — модель может быть уже загружена

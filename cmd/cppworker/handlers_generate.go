@@ -237,7 +237,7 @@ func runGenerateCore(w http.ResponseWriter, r *http.Request, req generateRequest
 		return bridge.GenerationParams{}, "", false
 	}
 
-	if err := ensureModelLoaded(req.Model); err != nil {
+	if err := ensureModelLoaded(r.Context(), req.Model); err != nil {
 		if isModelLoadingError(err) {
 			writeLoadingResponse(w, req.Model, err)
 			return bridge.GenerationParams{}, "", false

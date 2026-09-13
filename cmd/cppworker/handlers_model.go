@@ -301,9 +301,13 @@ func handleLoadModel(w http.ResponseWriter, r *http.Request) {
 	// Sync mode (?wait=true): блокируем на загрузку, но не дольше waitTimeoutMs.
 	// CGo-вызов не отменяется, поэтому при таймауте возвращаем 202 — load
 	// продолжится в background и клиент сможет дополлить progress.
+	//
+	// R60.57: передаём r.Context() в LoadModelWithOpts. Если клиент отвалится
+	// по timeout/close — watcher в LoadModelWithOpts попытается abort load
+	// через C-bridge (полная cancellable load требует C-side fix — см. PLAN.md §3.1).
 	loadDone := make(chan error, 1)
 	go func() {
-		loadDone <- backend.LoadModelWithOpts(modelName, modelPath, opts)
+		loadDone <- backend.LoadModelWithOpts(r.Context(), modelName, modelPath, opts)
 	}()
 	timeout := time.NewTimer(time.Duration(waitTimeoutMs) * time.Millisecond)
 	defer timeout.Stop()
@@ -740,7 +744,10 @@ func handleLoadWithParams(w http.ResponseWriter, r *http.Request) {
 		defer func() {
 			backend.UnlockLoad(modelName)
 		}()
-		loadDone <- backend.LoadModelWithOpts(modelName, modelPath, opts)
+		// R60.57: r.Context() — client disconnect → ctx.Done() → watcher в
+		// LoadModelWithOpts попытается abort load. C-side fix нужен для
+		// full cancel; см. PLAN.md §3.1.
+		loadDone <- backend.LoadModelWithOpts(r.Context(), modelName, modelPath, opts)
 	}()
 	timeout := time.NewTimer(time.Duration(waitTimeoutMs) * time.Millisecond)
 	defer timeout.Stop()
@@ -1713,7 +1720,8 @@ func handleReloadModel(w http.ResponseWriter, r *http.Request) {
 		"name", req.Name, "unload_ms", time.Since(unloadStart).Milliseconds())
 
 	loadStart := time.Now()
-	if err := backend.LoadModelWithOpts(req.Name, modelPath, opts); err != nil {
+	// R60.57: r.Context() — HTTP client disconnect → ctx.Done() → abort load.
+	if err := backend.LoadModelWithOpts(r.Context(), req.Name, modelPath, opts); err != nil {
 		logger.Get().Errorw("reload: load with new params failed",
 			"name", req.Name, "error", err)
 		oldOpts := cppbackend.LoadModelOpts{
@@ -1725,7 +1733,8 @@ func handleReloadModel(w http.ResponseWriter, r *http.Request) {
 			UseMmap:       current.UseMmap,
 			TensorSplit:   current.TensorSplit,
 		}
-		if rollbackErr := backend.LoadModelWithOpts(req.Name, modelPath, oldOpts); rollbackErr != nil {
+		// Rollback тоже cancellable через r.Context().
+		if rollbackErr := backend.LoadModelWithOpts(r.Context(), req.Name, modelPath, oldOpts); rollbackErr != nil {
 			logger.Get().Errorw("reload rollback failed (model is no longer loaded!)",
 				"name", req.Name, "rollback_error", rollbackErr)
 		}

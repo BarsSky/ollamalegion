@@ -18,6 +18,7 @@
 package cppbackend
 
 import (
+	"context"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -61,7 +62,7 @@ func TestGenerate_ConcurrentSameModel_NotPanic(t *testing.T) {
 		GPULayers:   0,
 		UseMmap:     false,
 	}
-	if err := backend.LoadModelWithOpts("test_model", fakePath, loadOpts); err != nil {
+	if err := backend.LoadModelWithOpts(context.Background(), "test_model", fakePath, loadOpts); err != nil {
 		t.Fatalf("LoadModelWithOpts: %v", err)
 	}
 
@@ -129,7 +130,7 @@ func TestGenerate_ConcurrentSameModel_Serialized(t *testing.T) {
 	if err := writeMinimalFile(fakePath, 1024); err != nil {
 		t.Fatalf("writeMinimalFile: %v", err)
 	}
-	if err := backend.LoadModelWithOpts("test_model", fakePath, LoadModelOpts{
+	if err := backend.LoadModelWithOpts(context.Background(), "test_model", fakePath, LoadModelOpts{
 		ContextSize: 512, BatchSize: 64, GPULayers: 0,
 	}); err != nil {
 		t.Fatalf("LoadModelWithOpts: %v", err)

@@ -1,5 +1,7 @@
 package main
 
+import "context"
+
 // ============================================================
 // Dynamic / async model loading (Round 24, 2026-08-04)
 //
@@ -243,7 +245,11 @@ func runAsyncLoad(modelName, modelPath string, opts cppbackend.LoadModelOpts,
 		"ctxSize", opts.ContextSize,
 		"gpuLayers", opts.GPULayers)
 
-	loadErr := backend.LoadModelWithOpts(modelName, modelPath, opts)
+	// R60.57: async load uses context.Background() — фоновая горутина,
+	// не привязанная к HTTP request (HTTP запрос уже вернул 202 Accepted).
+	// ctx.Done() не сработает; abort возможен только через explicit Cancel
+	// (если будет добавлен в будущем) или через cppworker shutdown.
+	loadErr := backend.LoadModelWithOpts(context.Background(), modelName, modelPath, opts)
 	duration := time.Since(start)
 
 	if loadErr != nil {
@@ -320,7 +326,8 @@ func runAsyncReload(modelName, modelPath string, opts cppbackend.LoadModelOpts,
 	}
 
 	// Load with new opts.
-	loadErr := backend.LoadModelWithOpts(modelName, modelPath, opts)
+	// R60.57: async reload — context.Background() (фон, не привязан к request).
+	loadErr := backend.LoadModelWithOpts(context.Background(), modelName, modelPath, opts)
 	duration := time.Since(start)
 
 	if loadErr != nil {
@@ -336,7 +343,7 @@ func runAsyncReload(modelName, modelPath string, opts cppbackend.LoadModelOpts,
 			UseMmap:       current.UseMmap,
 			TensorSplit:   current.TensorSplit,
 		}
-		if rollbackErr := backend.LoadModelWithOpts(modelName, modelPath, oldOpts); rollbackErr != nil {
+		if rollbackErr := backend.LoadModelWithOpts(context.Background(), modelName, modelPath, oldOpts); rollbackErr != nil {
 			logger.Get().Errorw("runAsyncReload: rollback failed (model is no longer loaded!)",
 				"name", modelName, "rollback_error", rollbackErr)
 		}

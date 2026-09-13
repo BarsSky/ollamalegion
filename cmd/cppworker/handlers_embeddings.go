@@ -62,7 +62,7 @@ func handleOllamaEmbeddings(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Ленивая загрузка модели для embeddings
-	if err := ensureModelLoaded(req.Model); err != nil {
+	if err := ensureModelLoaded(r.Context(), req.Model); err != nil {
 		if isModelLoadingError(err) {
 			writeLoadingResponse(w, req.Model, err)
 			return
@@ -141,7 +141,7 @@ func handleOllamaEmbed(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Ленивая загрузка модели для embeddings
-	if err := ensureModelLoaded(req.Model); err != nil {
+	if err := ensureModelLoaded(r.Context(), req.Model); err != nil {
 		if isModelLoadingError(err) {
 			writeLoadingResponse(w, req.Model, err)
 			return

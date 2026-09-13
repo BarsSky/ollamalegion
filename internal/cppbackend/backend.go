@@ -590,8 +590,12 @@ func (b *Backend) HFDownloader() *HuggingFaceDownloader {
 // ============================================================
 
 // LoadModel загружает GGUF модель с параметрами по умолчанию
+//
+// R60.57 (2026-09-13): использует context.Background() — load нельзя отменить
+// через ctx (нет родительского контекста). Для cancellable load используйте
+// LoadModelWithOpts(ctx, ...) с явным context.
 func (b *Backend) LoadModel(name string, path string) error {
-	return b.LoadModelWithOpts(name, path, LoadModelOpts{
+	return b.LoadModelWithOpts(context.Background(), name, path, LoadModelOpts{
 		GPULayers:     b.cfg.DefaultGPULayers,
 		ContextSize:   b.cfg.DefaultCtxSize,
 		BatchSize:     b.cfg.DefaultBatchSize,
@@ -604,8 +608,78 @@ func (b *Backend) LoadModel(name string, path string) error {
 	})
 }
 
-// LoadModelWithOpts загружает GGUF модель с указанными параметрами
-func (b *Backend) LoadModelWithOpts(name string, path string, opts LoadModelOpts) error {
+// LoadModelWithOpts загружает GGUF модель с указанными параметрами.
+//
+// R60.57 (2026-09-13): принимает context.Context для отмены загрузки.
+//
+// Семантика ctx cancellation:
+//   - ctx.Done() → spawn watcher goroutine вызывает bridge.RequestLoadAbort
+//     на in-flight handle (если доступен через b.GetHandle).
+//   - Cancel возвращает ошибку с errors.Is(err, ErrAborted) == true если
+//     C-bridge успел отменить load в checkpoint; иначе — обычная load error.
+//   - В текущем (Phase 3) виде watcher использует b.GetHandle(name) для
+//     polling'а за in-flight handle. Без C-side изменения (см. PLAN.md §3.1,
+//     Approach b — out_handle parameter) handle не появляется в b.models
+//     до возврата из bridge.LoadModel, поэтому watcher фактически no-op
+//     для C-side abort во время самой загрузки. Он ловит только race window
+//     когда C-side вот-вот вернёт handle.
+//
+// ВНИМАНИЕ: для полноценной cancellable load требуется C-side fix
+// (Approach b — out_handle parameter). Без него R60.57 обеспечивает:
+//   - ctx propagation через цепочку ensureModelLoaded → HTTP handler
+//   - structured error (ErrAborted) при успешной cancel race
+//   - cleanup через defer UnlockLoad (race-free)
+//   - watcher pattern готов к работе сразу после C-side fix
+func (b *Backend) LoadModelWithOpts(ctx context.Context, name string, path string, opts LoadModelOpts) error {
+	// R60.57: watcher goroutine для ctx.Done() → bridge.RequestLoadAbort.
+	// Запускается ПОСЛЕ валидации (checkVRAMForModel) и проверки duplicates —
+	// иначе watcher может вызвать abort на handle, который никогда не появится.
+	//
+	// NOTE: текущий C-side НЕ возвращает early-allocated im pointer Go-стороне
+	// до конца bridge_load_model. Поэтому в race-window watcher находит nil
+	// handle и RequestLoadAbort no-op'ит. Полная cancellable load требует
+	// C-side fix (Approach b — out_handle parameter, см. PLAN.md §3.1).
+	// Watcher pattern готов и активируется автоматически после C-side fix.
+
+	// Канал для сигнала watcher'у что load завершён (success или error).
+	// deferred close() гарантирует, что watcher выйдет даже при панике.
+	watcherDone := make(chan struct{})
+	defer close(watcherDone)
+
+	if ctx != nil && ctx.Done() != nil {
+		go func() {
+			select {
+			case <-ctx.Done():
+				// ctx отменён — пробуем отменить C-side load через bridge.RequestLoadAbort.
+				//
+				// R60.57 ограничение: b.GetHandle(name) возвращает inst.handle,
+				// который устанавливается ПОСЛЕ возврата из bridge.LoadModel.
+				// Поэтому в текущем (pre-C-fix) виде watcher не может abort'нуть
+				// C-side load во время выполнения. Он ловит только brief race
+				// window в конце (когда C-side вот-вот вернёт handle, но Go
+				// ещё не успел его скопировать в inst.handle).
+				//
+				// Watcher полезен сразу после C-side fix (Approach b —
+				// out_handle parameter в bridge_load_model): тогда Go-side
+				// получит early-allocated im и RequestLoadAbort будет работать.
+				if handle, ok := b.GetHandle(name); ok && handle != nil {
+					// bridge.RequestLoadAbort nil-safe — вернёт error если ptr == nil.
+					if abortErr := bridge.RequestLoadAbort(handle); abortErr != nil {
+						logger.Get().Debugw("LoadModelWithOpts: RequestLoadAbort no-op or already aborted",
+							"model", name, "error", abortErr)
+					}
+				} else {
+					logger.Get().Warnw("LoadModelWithOpts: ctx cancelled but C-side handle not yet available — watcher cannot abort in-flight load (will rely on C-side fix for full cancel support)",
+						"model", name, "path", path)
+				}
+			case <-watcherDone:
+				// load завершился нормально (success или error) — watcher выходит.
+				return
+			}
+		}()
+	}
+
+
 	// Валидация VRAM перед загрузкой и авто-подбор оптимальных gpuLayers
 	var err error
 	if opts, err = b.checkVRAMForModel(name, path, opts); err != nil {

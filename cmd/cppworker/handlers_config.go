@@ -2,6 +2,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"flag"
 	"fmt"
@@ -570,7 +571,8 @@ func reloadAllLoadedWithDefaults() ([]string, []string) {
 					"model", name, "error", err)
 				return
 			}
-			if err := backend.LoadModelWithOpts(name, modelPath, loadOpts); err != nil {
+			// R60.57: config-update reload — context.Background() (не HTTP-triggered).
+			if err := backend.LoadModelWithOpts(context.Background(), name, modelPath, loadOpts); err != nil {
 				logger.Get().Warnw("handleCppWorkerUpdateConfig: reload with new defaults failed",
 					"model", name, "error", err)
 			} else {

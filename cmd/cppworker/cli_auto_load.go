@@ -17,6 +17,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -100,7 +101,8 @@ func runAutoLoad(modelName string, out io.Writer) int {
 			loadResult <- fmt.Errorf("ModelManager not initialized")
 			return
 		}
-		loadResult <- b.LoadModelWithOpts(modelName, modelPath, loadOpts)
+		// R60.57: CLI auto-load — context.Background() (нет HTTP request ctx).
+		loadResult <- b.LoadModelWithOpts(context.Background(), modelName, modelPath, loadOpts)
 	}()
 
 	fmt.Fprintf(out, "Loading %s in background (n_ctx=%d)...\n", modelName, nCtx)

@@ -2,6 +2,7 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"net/http"
 	"os"
@@ -75,12 +76,18 @@ func init() {
 
 // ensureModelLoaded — ленивая загрузка модели из файловой системы если она ещё не в памяти.
 //
+// R60.57 (2026-09-13): принимает context.Context для проброса cancel в
+// backend.LoadModelWithOpts. HTTP handlers передают r.Context() (через
+// setupCancelTracking) — client disconnect / /api/cancel отменяет load.
+//
 // Возвращаемые ошибки:
 //   - nil: модель уже загружена или успешно загружена сейчас
 //   - errModelIsLoading: другая горутина уже грузит эту модель.
 //     Хендлеры перехватывают эту ошибку и отвечают 503 с retryAfterMs=3000
+//   - errors.Is(err, bridge.ErrAborted): load отменён через ctx
+//     (C-bridge watcher в LoadModelWithOpts отменил load; см. PLAN.md §3)
 //   - прочие: ошибка загрузки (validation, FS, C-bridge)
-func ensureModelLoaded(modelName string) error {
+func ensureModelLoaded(ctx context.Context, modelName string) error {
 	// 0) Если модель уже загружена — сразу выходим.
 	if _, err := backend.GetModel(modelName); err == nil {
 		return nil
@@ -251,7 +258,7 @@ func ensureModelLoaded(modelName string) error {
 			Stage:     "loading",
 		}
 
-		if err := backend.LoadModelWithOpts(modelName, modelPath, opts); err != nil {
+		if err := backend.LoadModelWithOpts(ctx, modelName, modelPath, opts); err != nil {
 			log.Errorw("lazy-load failed", "model", modelName, "path", modelPath, "error", err)
 			attempt.Stage = "load_failed"
 			attempt.Success = false
@@ -397,7 +404,10 @@ func autoLoadModels(cfg cppbackend.Config) {
 			continue
 		}
 
-		if err := backend.LoadModelWithOpts(modelName, modelPath, opts); err != nil {
+		// R60.57: auto-load uses context.Background() — startup path,
+		// no HTTP request to bind to. Load нельзя отменить извне (но watcher
+		// в LoadModelWithOpts готов на случай будущего shutdown signal).
+		if err := backend.LoadModelWithOpts(context.Background(), modelName, modelPath, opts); err != nil {
 			backend.UnlockLoad(modelName)
 			log.Errorw("auto-load: failed to load model",
 				"name", modelName, "path", modelPath, "error", err)

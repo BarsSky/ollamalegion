@@ -114,7 +114,7 @@ func handleChat(w http.ResponseWriter, r *http.Request) {
 		"request_id", requestID, "model", req.Model, "user_id", userID)
 
 	// ??????? ???????? ??????
-	if err := ensureModelLoaded(req.Model); err != nil {
+	if err := ensureModelLoaded(r.Context(), req.Model); err != nil {
 		if isModelLoadingError(err) {
 			writeLoadingResponse(w, req.Model, err)
 			return

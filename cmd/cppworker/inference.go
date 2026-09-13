@@ -2,6 +2,7 @@
 package main
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"sync"
@@ -784,7 +785,9 @@ func tryRamFallbackReload(modelName string, requestedNCtx int, hasTools bool) (b
 		"model", modelName, "unload_ms", time.Since(unloadStart).Milliseconds())
 
 	loadStart := time.Now()
-	loadErr := backend.LoadModelWithOpts(modelName, modelPath, opts)
+	// R60.57: RAM fallback — context.Background() (auto-triggered по inference error,
+	// не привязан к HTTP request ctx).
+	loadErr := backend.LoadModelWithOpts(context.Background(), modelName, modelPath, opts)
 	if loadErr != nil {
 		logger.Get().Errorw("RAM fallback: reload failed",
 			"model", modelName,
@@ -808,7 +811,8 @@ func tryRamFallbackReload(modelName string, requestedNCtx int, hasTools bool) (b
 			// Keep KVCacheType=q4_0 from initial opts (set above) — bridge needs it on 2nd cascade too
 			cpuOnlyOpts.GPULayers = 0
 			cpuOnlyOpts.UseMmap = true
-			retryErr := backend.LoadModelWithOpts(modelName, modelPath, cpuOnlyOpts)
+			// R60.57: 2nd cascade — context.Background().
+			retryErr := backend.LoadModelWithOpts(context.Background(), modelName, modelPath, cpuOnlyOpts)
 			if retryErr == nil {
 				logger.Get().Infow("RAM fallback: cpu-only load succeeded",
 					"model", modelName,
@@ -828,7 +832,8 @@ func tryRamFallbackReload(modelName string, requestedNCtx int, hasTools bool) (b
 					UseMmap:       current.UseMmap,
 					TensorSplit:   current.TensorSplit,
 				}
-				if rollbackErr := backend.LoadModelWithOpts(modelName, modelPath, oldOpts); rollbackErr != nil {
+				// R60.57: rollback — context.Background() (auto-triggered).
+				if rollbackErr := backend.LoadModelWithOpts(context.Background(), modelName, modelPath, oldOpts); rollbackErr != nil {
 					logger.Get().Errorw("RAM fallback: rollback failed (model no longer loaded!)",
 						"model", modelName, "rollback_error", rollbackErr)
 				}
@@ -867,7 +872,8 @@ func tryRamFallbackReload(modelName string, requestedNCtx int, hasTools bool) (b
 				UseMmap:       current.UseMmap,
 				TensorSplit:   current.TensorSplit,
 			}
-			if rollbackErr := backend.LoadModelWithOpts(modelName, modelPath, oldOpts); rollbackErr != nil {
+			// R60.57: rollback — context.Background().
+			if rollbackErr := backend.LoadModelWithOpts(context.Background(), modelName, modelPath, oldOpts); rollbackErr != nil {
 				logger.Get().Errorw("RAM fallback: rollback failed (model no longer loaded!)",
 					"model", modelName, "rollback_error", rollbackErr)
 			}

@@ -269,7 +269,7 @@ func handleV1ChatCompletions(w http.ResponseWriter, r *http.Request) {
 	logger.Get().Debugw("handleV1ChatCompletions: cancel tracking enabled",
 		"request_id", requestID, "model", req.Model, "user_id", userID)
 
-	if err := ensureModelLoaded(req.Model); err != nil {
+	if err := ensureModelLoaded(r.Context(), req.Model); err != nil {
 		if isModelLoadingError(err) {
 			writeLoadingResponse(w, req.Model, err)
 			return
@@ -1298,7 +1298,7 @@ func handleV1Completions(w http.ResponseWriter, r *http.Request) {
 	logger.Get().Debugw("handleV1Completions: cancel tracking enabled",
 		"request_id", requestID, "model", req.Model, "user_id", userID)
 
-	if err := ensureModelLoaded(req.Model); err != nil {
+	if err := ensureModelLoaded(r.Context(), req.Model); err != nil {
 		if isModelLoadingError(err) {
 			writeLoadingResponse(w, req.Model, err)
 			return
@@ -1735,7 +1735,7 @@ func handleV1Embeddings(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Round 22: lazy model load (раньше handler возвращал 500 без load).
-	if err := ensureModelLoaded(req.Model); err != nil {
+	if err := ensureModelLoaded(r.Context(), req.Model); err != nil {
 		if isModelLoadingError(err) {
 			writeLoadingResponse(w, req.Model, err)
 			return

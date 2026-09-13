@@ -7,7 +7,6 @@ import (
 	"strings"
 )
 
-
 // translatePathForLlamaCpp — преобразует Ollama API путь в llama.cpp (OpenAI-совместимый)
 func translatePathForLlamaCpp(ollamaPath string) string {
 	switch ollamaPath {
@@ -100,6 +99,13 @@ func translateOllamaChatToOpenAI(body []byte) ([]byte, error) {
 	} else {
 		openaiReq["stream"] = true
 	}
+	// R60.55 (2026-09-13): top-level `max_tokens` тоже учитываем.
+	// OpenAI-style клиенты (Cline, OpenWebUI в OpenAI mode) часто шлют
+	// max_tokens на верхнем уровне body, а не в options.num_predict. Раньше
+	// balancer игнорировал это поле и использовал cppworker default 2048.
+	if mt, ok := ollamaReq["max_tokens"]; ok {
+		openaiReq["max_tokens"] = mt
+	}
 	// Пробрасываем tools и tool_choice для function calling (OpenAI-формат в Ollama
 	// /api/chat — это часть сообщения "options.tools" или прямой ключ "tools").
 	//
@@ -169,6 +175,10 @@ func translateOllamaGenerateToOpenAI(body []byte) ([]byte, error) {
 		openaiReq["stream"] = stream
 	} else {
 		openaiReq["stream"] = false
+	}
+	// R60.55: top-level `max_tokens` тоже учитываем.
+	if mt, ok := ollamaReq["max_tokens"]; ok {
+		openaiReq["max_tokens"] = mt
 	}
 	if options, ok := ollamaReq["options"].(map[string]interface{}); ok {
 		if temp, ok := options["temperature"]; ok {

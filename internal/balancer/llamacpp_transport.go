@@ -1014,11 +1014,27 @@ func (p *Proxy) proxyRequestLlamaCpp(w http.ResponseWriter, r *http.Request, bac
 				fullURL, translatedBody, finalContent, reason,
 				&http.Client{Timeout: autoContTimeout}, autoContTimeout)
 			if contErr == nil && continuation != "" {
-				logger.Get().Infow("proxyRequestLlamaCpp: R60.21 auto-continue succeeded",
-					"backend", backendID, "model", modelFromCtx,
-					"api_path", originalPath,
-					"continuation_chars", len(continuation),
-					"cont_eval", contEval)
+				// R60.55 (2026-09-13): if "smart" chat-policy and continuation
+				// looks like a regeneration (model restarted with greeting),
+				// SUPPRESS the continuation. Sending it would create a duplicate
+				// response in OpenWebUI.
+				if GetAutoContinueChatPolicy() == "smart" && IsContinuationARegeneration(finalContent, continuation) {
+					logger.Get().Warnw("proxyRequestLlamaCpp: R60.55 continuation looks like regeneration (chat model antipattern); suppressing duplicate",
+						"backend", backendID, "model", modelFromCtx,
+						"api_path", originalPath,
+						"policy", "smart",
+						"original_chars", len(finalContent),
+						"continuation_chars", len(continuation))
+					// Don't emit continuation. Client already received done-chunk
+					// with truncated original content. Set flag to skip downstream
+					// truncation alert (we did our best).
+					streamCompleted = true
+				} else {
+					logger.Get().Infow("proxyRequestLlamaCpp: R60.21 auto-continue succeeded",
+						"backend", backendID, "model", modelFromCtx,
+						"api_path", originalPath,
+						"continuation_chars", len(continuation),
+						"cont_eval", contEval)
 				// Emit continuation as a single final done-chunk with
 				// combined content. This is the safest approach — the client
 				// gets one coherent response (no double done-chunks).
@@ -1040,6 +1056,7 @@ func (p *Proxy) proxyRequestLlamaCpp(w http.ResponseWriter, r *http.Request, bac
 				// Mark stream as completed so downstream truncation
 				// detection doesn't fire.
 				streamCompleted = true
+				}
 			} else {
 				logger.Get().Warnw("proxyRequestLlamaCpp: R60.21 auto-continue failed (emitting truncated as-is)",
 					"backend", backendID, "model", modelFromCtx,

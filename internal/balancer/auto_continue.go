@@ -232,6 +232,67 @@ func IsAutoContinueOnTruncationEnabled() bool {
 	return v == "1" || v == "true" || v == "yes"
 }
 
+// IsContinuationARegeneration — R60.55 (2026-09-13): detects when the
+// model's "continuation" is actually a regeneration of the original
+// response from scratch (chat-model antipattern).
+//
+// Heuristic: if the continuation content's first 200 chars (after
+// stripping leading whitespace) appear WITHIN the original content,
+// it's almost certainly a regenerated greeting/restart, not actual
+// continuation. We strip the leading "Sure, here's the continuation:"
+// type artifacts that chat models often prepend before regenerating.
+//
+// Returns true if the continuation looks like a regeneration (should be
+// suppressed to avoid duplicate responses in OpenWebUI).
+//
+// False positives (legitimate continuations that happen to start with
+// similar text) are rare — chat models that truly continue don't echo
+// their previous intro text.
+func IsContinuationARegeneration(originalContent, continuationContent string) bool {
+	if continuationContent == "" || originalContent == "" {
+		return false
+	}
+	// R60.55 (2026-09-13): detect chat-model regeneration pattern.
+	// Models like Qwen3-Instruct / Gemma-4 emit a "continue" prompt →
+	// they respond with a FRESH greeting + intro + (duplicate) code,
+	// starting with the same text as the original response.
+	//
+	// Heuristic: take first 30 chars of continuation (after stripping
+	// chat-model preambles like "Sure, here's the continuation:"), then
+	// check if the same anchor appears anywhere in the original. If yes,
+	// it's almost certainly a regeneration.
+	trimmed := strings.TrimLeft(continuationContent, " \t\n\r")
+	if len(trimmed) < 20 {
+		return false // too short to detect
+	}
+	preambles := []string{
+		"Sure, here's the continuation:",
+		"Continuing from where I left off:",
+		"Of course, here's the continuation:",
+		"Продолжаю:",
+		"Конечно, продолжаю:",
+		"Sure! Here's the continuation:",
+	}
+	for _, p := range preambles {
+		if strings.HasPrefix(trimmed, p) {
+			trimmed = strings.TrimLeft(trimmed[len(p):], " \t\n\r")
+			if len(trimmed) < 20 {
+				return false
+			}
+			break
+		}
+	}
+	// Anchor: first 30 chars of (post-preamble) continuation.
+	// 30 chars is short enough to match even when the regen adds extra
+	// content (like new code) past the original's first 30 chars.
+	anchorLen := 30
+	if len(trimmed) < anchorLen {
+		anchorLen = len(trimmed)
+	}
+	anchor := trimmed[:anchorLen]
+	return strings.Contains(originalContent, anchor)
+}
+
 // IsAutoLoadAsyncEnabled — R60.33 (2026-09-10): если true (default),
 // auto-load запускается в goroutine и balancer сразу возвращает
 // 503+Retry-After (вместо sync wait 3 мин). Это решает проблему
@@ -284,6 +345,29 @@ func GetAutoContinueMaxTokens() int {
 		return n
 	}
 	return 1024
+}
+
+// GetAutoContinueChatPolicy — R60.55 (2026-09-13): controls whether to
+// auto-continue when the upstream is a chat model (Qwen3-Instruct,
+// Gemma-4, etc.). Chat models can't truly "continue" — when given a
+// continue prompt, they regenerate a full response with greeting.
+//
+// Options:
+//   - "always" — always auto-continue (legacy behavior; produces duplicates
+//     for chat models)
+//   - "never" — never auto-continue (user gets incomplete response)
+//   - "smart" — auto-continue, but suppress the continuation if it's >85%
+//     similar to the original (treats as regeneration)
+//
+// Default: "smart" (R60.55). Set LB_AUTO_CONTINUE_CHAT_POLICY=always
+// to restore legacy behavior, =never to disable entirely.
+func GetAutoContinueChatPolicy() string {
+	v := strings.ToLower(strings.TrimSpace(os.Getenv("LB_AUTO_CONTINUE_CHAT_POLICY")))
+	switch v {
+	case "always", "never", "smart":
+		return v
+	}
+	return "smart"
 }
 
 // GetAutoContinueTimeout — env override for the auto-continue

@@ -400,6 +400,95 @@ func TestR6052_TranslateOllamaEmbeddingsToOpenAI(t *testing.T) {
 	}
 }
 
+// TestR6055_TranslateOllamaChatToOpenAI_MaxTokens — R60.55: top-level
+// `max_tokens` (OpenAI-style, sent by Cline/OpenWebUI) must be honored,
+// not only `options.num_predict` (Ollama-style).
+func TestR6055_TranslateOllamaChatToOpenAI_MaxTokens(t *testing.T) {
+	cases := []struct {
+		name           string
+		input          string
+		expectedMaxTok int
+	}{
+		{
+			"openai_style_max_tokens_top_level",
+			`{"model":"qwen3","messages":[],"stream":true,"max_tokens":8192}`,
+			8192,
+		},
+		{
+			"ollama_style_options_num_predict",
+			`{"model":"qwen3","messages":[],"stream":true,"options":{"num_predict":4096}}`,
+			4096,
+		},
+		{
+			"both_set_last_wins",
+			// options.num_predict is processed AFTER max_tokens, so it overrides.
+			// This is last-write-wins behavior — acceptable for our use case
+			// (clients usually send only one or the other).
+			`{"model":"qwen3","messages":[],"stream":true,"max_tokens":8192,"options":{"num_predict":1024}}`,
+			1024,
+		},
+		{
+			"neither_set_no_max_tokens",
+			`{"model":"qwen3","messages":[],"stream":true}`,
+			0, // expect absence (json.Unmarshal on nil → 0 default)
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			out, err := translateOllamaChatToOpenAI([]byte(tc.input))
+			if err != nil {
+				t.Fatalf("translation failed: %v", err)
+			}
+			var req map[string]interface{}
+			if err := json.Unmarshal(out, &req); err != nil {
+				t.Fatalf("invalid JSON: %v", err)
+			}
+			mt, hasMaxTokens := req["max_tokens"]
+			if tc.expectedMaxTok == 0 {
+				if hasMaxTokens {
+					t.Errorf("expected no max_tokens, got %v", mt)
+				}
+				return
+			}
+			if !hasMaxTokens {
+				t.Errorf("expected max_tokens=%d, field missing. output: %s", tc.expectedMaxTok, out)
+				return
+			}
+			// max_tokens may be unmarshalled as int or float64 depending on JSON
+			mtInt := 0
+			switch v := mt.(type) {
+			case int:
+				mtInt = v
+			case float64:
+				mtInt = int(v)
+			}
+			if mtInt != tc.expectedMaxTok {
+				t.Errorf("max_tokens = %v (%T), want %d", mt, mt, tc.expectedMaxTok)
+			}
+		})
+	}
+}
+
+// TestR6055_TranslateOllamaGenerateToOpenAI_MaxTokens — same fix for /api/generate.
+func TestR6055_TranslateOllamaGenerateToOpenAI_MaxTokens(t *testing.T) {
+	body := []byte(`{"model":"qwen3","prompt":"hello","stream":false,"max_tokens":4096}`)
+	out, err := translateOllamaGenerateToOpenAI(body)
+	if err != nil {
+		t.Fatalf("translation failed: %v", err)
+	}
+	var req map[string]interface{}
+	json.Unmarshal(out, &req)
+
+	mt, hasMaxTokens := req["max_tokens"]
+	if !hasMaxTokens {
+		t.Errorf("max_tokens missing in /api/generate output: %s", out)
+		return
+	}
+	if v, _ := mt.(float64); int(v) != 4096 {
+		t.Errorf("max_tokens = %v, want 4096", mt)
+	}
+}
+
 // TestR6052_TranslatePathForLlamaCpp — path translation table.
 func TestR6052_TranslatePathForLlamaCpp(t *testing.T) {
 	tests := []struct {

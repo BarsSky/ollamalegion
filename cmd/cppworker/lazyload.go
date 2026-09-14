@@ -119,16 +119,57 @@ func ensureModelLoaded(ctx context.Context, modelName string) error {
 	if mm != nil {
 		modelPath, err := mm.FindModelByPath(modelName)
 		if err != nil {
-			// Fallback: конструируем путь из modelsDir
-			modelPath = filepath.Join(*modelsDir, modelName)
-			if !strings.HasSuffix(modelPath, ".gguf") {
-				matches, globErr := filepath.Glob(modelPath + "*.gguf")
-				if globErr == nil && len(matches) > 0 {
-					modelPath = matches[0]
-				} else {
-					modelPath += ".gguf"
+			// R60.61 (2026-09-14): если FindModelByPath failed (алиас OpenWebUI
+			// не совпадает с filename на диске) И в modelsDir ровно один .gguf —
+			// используем его как fallback. Это решает случай с закешированным
+			// алиасом (например "qwen3-instruct" при файле
+			// "Qwen3-Instruct-2507-q4km.gguf") без явного рестарта OpenWebUI.
+			if singlePath, ok := mm.SingleGGUFPath(); ok {
+				log.Warnw("lazy-load: FindModelByPath failed, auto-picking single .gguf (R60.61)",
+					"requested_name", modelName,
+					"resolved_path", singlePath,
+					"hint", "check OpenWebUI model DB — alias may be stale")
+				modelPath = singlePath
+			} else {
+				// Fallback: конструируем путь из modelsDir
+				modelPath = filepath.Join(*modelsDir, modelName)
+				if !strings.HasSuffix(modelPath, ".gguf") {
+					matches, globErr := filepath.Glob(modelPath + "*.gguf")
+					if globErr == nil && len(matches) > 0 {
+						modelPath = matches[0]
+					} else {
+						modelPath += ".gguf"
+					}
 				}
 			}
+		}
+
+		// R60.61 (2026-09-14): early-fail если файла нет. Без этого
+		// LoadModelWithOpts уходит в C-bridge → llama.cpp пытается mmap
+		// несуществующий файл → висит (внутренний retry в llama.cpp)
+		// → lock channel остаётся занят → WaitForLoad для параллельных
+		// запросов блокируется навсегда. С явной ошибкой горутина
+		// возвращается быстро → defer UnlockLoad → channel сигналится.
+		if _, statErr := os.Stat(modelPath); statErr != nil {
+			log.Errorw("lazy-load: model file not found",
+				"model", modelName, "path", modelPath, "error", statErr)
+			failAttempt := LoadAttempt{
+				Timestamp: loadStart,
+				Model:     modelName,
+				Path:      modelPath,
+				Stage:     "file_not_found",
+				Success:   false,
+				Error:     statErr.Error(),
+				DurationMs: time.Since(loadStart).Milliseconds(),
+				Diagnostics: map[string]interface{}{
+					"modelPath":   modelPath,
+					"modelsDir":   derefString(modelsDir),
+					"vramTotalMB": backendGPUVRAMTotal(),
+					"vramFreeMB":  backendGPUVRAMFree(),
+				},
+			}
+			RecordLoadAttempt(failAttempt)
+			return fmt.Errorf("model file not found: %s", modelPath)
 		}
 
 		// === Auto-tune на LOAD (2026-06-26 BUGFIX) ===

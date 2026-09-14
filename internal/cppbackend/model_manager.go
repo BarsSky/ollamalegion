@@ -8,6 +8,7 @@
 package cppbackend
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -74,11 +75,69 @@ type ModelManager struct {
 
 // NewModelManager создаёт новый ModelManager
 func NewModelManager(modelsDir string, cfg Config) *ModelManager {
-	return &ModelManager{
+	m := &ModelManager{
 		modelsDir:   modelsDir,
 		config:      cfg,
 		ggufFiles:   make(map[string]*GGUFModelMeta),
 		nameHistory: make(map[string]string),
+	}
+	// R60.61 (2026-09-14): restore persisted nameHistory (alias → path map).
+	// До этого фикса history терялся при рестарте → OpenWebUI с закешированным
+	// алиасом (например "qwen3-instruct" при файле "Qwen3-Instruct-2507-q4km.gguf")
+	// получал 503 до первой успешной загрузки с тем же алиасом ("курица и яйцо").
+	if err := m.loadNameHistory(); err != nil && !os.IsNotExist(err) {
+		logger.Get().Warnw("ModelManager: failed to load persisted nameHistory",
+			"path", m.nameHistoryPath(), "error", err)
+	}
+	return m
+}
+
+// nameHistoryPath возвращает путь к persisted файлу nameHistory.
+// По умолчанию — рядом с gguf файлами в modelsDir (упрощает cleanup
+// при тестах с TempDir и удалении всей директории). В проде —
+// /app/models/.name_history.json.
+func (m *ModelManager) nameHistoryPath() string {
+	return filepath.Join(m.modelsDir, ".name_history.json")
+}
+
+// loadNameHistory восстанавливает nameHistory из persisted файла.
+// Вызывается из NewModelManager; os.IsNotExist — норма (первый запуск).
+func (m *ModelManager) loadNameHistory() error {
+	f := m.nameHistoryPath()
+	data, err := os.ReadFile(f)
+	if err != nil {
+		return err
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if err := json.Unmarshal(data, &m.nameHistory); err != nil {
+		return fmt.Errorf("nameHistory: invalid JSON: %w", err)
+	}
+	logger.Get().Infow("ModelManager: restored persisted nameHistory",
+		"path", f, "entries", len(m.nameHistory))
+	return nil
+}
+
+// saveNameHistory персистит nameHistory в файл. Вызывается из RecordModelLoad.
+// Best-effort: ошибка записи → warn-лог, но load не блокируется.
+func (m *ModelManager) saveNameHistory() {
+	f := m.nameHistoryPath()
+	if err := os.MkdirAll(filepath.Dir(f), 0o755); err != nil {
+		logger.Get().Warnw("ModelManager: failed to mkdir for nameHistory",
+			"path", filepath.Dir(f), "error", err)
+		return
+	}
+	m.mu.RLock()
+	data, err := json.MarshalIndent(m.nameHistory, "", "  ")
+	m.mu.RUnlock()
+	if err != nil {
+		logger.Get().Warnw("ModelManager: failed to marshal nameHistory",
+			"error", err)
+		return
+	}
+	if err := os.WriteFile(f, data, 0o644); err != nil {
+		logger.Get().Warnw("ModelManager: failed to write nameHistory",
+			"path", f, "error", err)
 	}
 }
 
@@ -87,6 +146,9 @@ func NewModelManager(modelsDir string, cfg Config) *ModelManager {
 // чтобы resolveModelPath мог найти alias после idle-unload.
 //
 // Round 22 (2026-08-03).
+//
+// R60.61 (2026-09-14): persist в /app/data/name_history.json чтобы history
+// переживал рестарт.
 func (m *ModelManager) RecordModelLoad(name, path string) {
 	if name == "" || path == "" {
 		return
@@ -94,6 +156,7 @@ func (m *ModelManager) RecordModelLoad(name, path string) {
 	m.mu.Lock()
 	m.nameHistory[name] = path
 	m.mu.Unlock()
+	go m.saveNameHistory() // async — не блокируем hot path
 	logger.Get().Infow("ModelManager.RecordModelLoad: recorded",
 		"name", name, "path", path)
 }
@@ -108,6 +171,35 @@ func (m *ModelManager) LookupNameHistory(name string) (string, bool) {
 	defer m.mu.RUnlock()
 	path, ok := m.nameHistory[name]
 	return path, ok
+}
+
+// SingleGGUFPath возвращает путь к единственному .gguf файлу в modelsDir,
+// если он один, и ""+false в противном случае.
+//
+// R60.61 (2026-09-14): defensive fallback для случая когда OpenWebUI
+// (или другой клиент) присылает имя, отличное от filename на диске.
+// Пример: на диске только Qwen3-Instruct-2507-q4km.gguf, а OpenWebUI
+// шлёт "qwen3-instruct" (закэшированный алиас). FindModelByPath не находит,
+// но мы знаем что других вариантов нет → используем единственный файл.
+//
+// Используется в lazyload.go как fallback после FindModelByPath failure.
+func (m *ModelManager) SingleGGUFPath() (string, bool) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	var only string
+	for _, meta := range m.ggufFiles {
+		if only != "" {
+			return "", false // 2+ файлов — неоднозначно
+		}
+		only = meta.Path
+	}
+	if only == "" {
+		return "", false
+	}
+	if _, err := os.Stat(only); err != nil {
+		return "", false
+	}
+	return only, true
 }
 
 // ScanModels сканирует директорию на предмет .gguf файлов

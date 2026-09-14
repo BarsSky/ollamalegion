@@ -555,6 +555,8 @@ func (p *Proxy) proxyRequestLlamaCpp(w http.ResponseWriter, r *http.Request, bac
 	// (R51.3/R53.1 safety-net для finish_reason+content уже отправил canonical
 	// done до usage чанка). Без этого — клиент видит 2 done-чанка.
 	priorDoneEmitted := false
+	// R60.58: bytesForwarded объявлен ДО watcher goroutine чтобы избежать
+	// race condition (горутина читает эту переменную в log statement).
 	var bytesForwarded int64
 	var firstForwardErr error
 	var lastForwardErr error
@@ -575,6 +577,45 @@ func (p *Proxy) proxyRequestLlamaCpp(w http.ResponseWriter, r *http.Request, bac
 
 	lastData := ""
 
+	// R60.58 watcher goroutine: разблокирует блокирующий scanner.Scan() при cancel/timeout.
+	//
+	// БЕЗ ЭТОГО (R60.58 bug): bufio.Scanner.Scan() — блокирующий вызов. Если upstream
+	// (cppworker) застрял на llama_decode/OOM/deadlock — balancer тоже застрянет на чтении.
+	// Select с default внутри loop БЕСПОЛЕЗЕН потому что мы застряли внутри Scan(),
+	// до select. Клиент получает бесконечный hang до тех пор пока upstream не вернётся
+	// сам (что может быть никогда при deadlock) или connection не умрёт по network timeout.
+	//
+	// РЕШЕНИЕ: отдельная горутина следит за ctx.Done() и закрывает resp.Body при
+	// cancel/timeout. Close прерывает блокирующий Read() в scanner → scanner.Scan()
+	// возвращает false → loop выходит → emit error chunk клиенту.
+	//
+	// Применяется ко всем путям: /v1/chat/completions (Cline), /api/chat (OpenWebUI),
+	// /api/generate (Ollama CLI).
+	watcherStop := make(chan struct{})
+	defer close(watcherStop)
+	go func() {
+		select {
+		case <-r.Context().Done():
+			logger.Get().Infow("proxyRequestLlamaCpp: client cancelled, aborting stream",
+				"backend", backendID, "model", modelFromCtx,
+				"context_error", r.Context().Err(),
+				"bytes_forwarded", bytesForwarded)
+		case <-reqCtx.Done():
+			// R60.58: streamTimeout сработал ИЛИ cancel — в обоих случаях
+			// закрываем upstream чтобы разблокировать scanner.Scan().
+			logger.Get().Warnw("proxyRequestLlamaCpp: streamTimeout fired, aborting stream",
+				"backend", backendID, "model", modelFromCtx,
+				"context_error", reqCtx.Err(),
+				"stream_timeout_sec", getEffectiveStreamTimeoutSec(p, modelFromCtx, isStreaming),
+				"bytes_forwarded", bytesForwarded)
+		case <-watcherStop:
+			return
+		}
+		if resp.Body != nil {
+			_ = resp.Body.Close()
+		}
+	}()
+
 	for scanner.Scan() {
 		// Round 23 (2026-08-04): проверяем отмену клиента ПЕРЕД чтением следующего чанка.
 		// Без этого streaming-прокси ждёт [DONE] от upstream (cppworker генерирует
@@ -593,25 +634,18 @@ func (p *Proxy) proxyRequestLlamaCpp(w http.ResponseWriter, r *http.Request, bac
 		// При срабатывании reqCtx балансер сам отменяет cppworker раньше client timeout
 		// → R53.5 writeStreamErrorChunk эмитит done:true chunk клиенту → клиент
 		// получает "stream proxy error" вместо "Did not receive done" (TCP close).
+		//
+		// R60.58: select с default БОЛЬШЕ не нужен внутри loop — watcher goroutine
+		// (см. выше) закрывает resp.Body при cancel/timeout, scanner.Scan() возвращает
+		// false, loop выходит естественно. Здесь оставлен только для обратной совместимости
+		// и для early-detect cancel между чанками (быстрее чем ждать Close).
 		select {
 		case <-r.Context().Done():
-			logger.Get().Infow("proxyRequestLlamaCpp: client cancelled, aborting stream",
-				"backend", backendID, "model", modelFromCtx,
-				"context_error", r.Context().Err(),
-				"bytes_forwarded", bytesForwarded)
 			if resp.Body != nil {
 				_ = resp.Body.Close()
 			}
 			return nil
 		case <-reqCtx.Done():
-			// R53.6: streamTimeout сработал (cppworker hang / slow generation).
-			// Закрываем upstream body, возвращаем error — R53.5 эмитит
-			// error chunk клиенту.
-			logger.Get().Warnw("proxyRequestLlamaCpp: streamTimeout fired, aborting stream",
-				"backend", backendID, "model", modelFromCtx,
-				"context_error", reqCtx.Err(),
-				"stream_timeout_sec", getEffectiveStreamTimeoutSec(p, modelFromCtx, isStreaming),
-				"bytes_forwarded", bytesForwarded)
 			if resp.Body != nil {
 				_ = resp.Body.Close()
 			}

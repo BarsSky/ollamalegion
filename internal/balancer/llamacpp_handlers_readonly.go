@@ -427,11 +427,25 @@ func (lr *LlamaCppRouter) handlePS(w http.ResponseWriter, r *http.Request) {
 			continue
 		}
 		for _, m := range lm.LoadedModels {
+			// R60.58 fix (2026-09-14): было hardcoded Size=0/SizeVRAM=0 — OpenWebUI
+			// видел пустой /api/ps, считал модель не загруженной и зависал на auto-load.
+			// LlamaCppModel уже имеет Size (bytes) и VRAMUsage (MB).
+			details := map[string]interface{}{}
+			if m.Architecture != "" {
+				details["family"] = m.Architecture
+			}
+			if m.NLayers > 0 {
+				details["parameter_size"] = ""
+				details["quantization_level"] = m.Quantization
+			}
 			allProcesses = append(allProcesses, OllamaProcess{
 				Name:     m.Name,
 				Model:    m.Name,
-				Size:     0,
-				SizeVRAM: 0,
+				Size:     int64(m.Size),
+				Digest:   "",
+				Details:  details,
+				ExpiresAt: time.Time{},
+				SizeVRAM: int64(m.VRAMUsage) * 1024 * 1024,
 			})
 		}
 	}

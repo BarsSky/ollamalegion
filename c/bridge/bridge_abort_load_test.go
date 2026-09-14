@@ -22,6 +22,7 @@
 package bridge
 
 import (
+	"errors"
 	"strings"
 	"testing"
 )
@@ -250,4 +251,85 @@ func TestLoadModel_LegacyStillWorks(t *testing.T) {
 		t.Errorf("handle.path = %q, want %q", handle.path, cfg.ModelPath)
 	}
 	defer handle.FreeModel()
+}
+
+// TestWrapLoadError_R60_59 — R60.59 (2026-09-14): wrapLoadError должен
+// оборачивать C-bridge "aborted by user" error в ErrAborted sentinel
+// чтобы backend.LoadModelWithOpts и balancer proxy могли отличить
+// user-initiated cancel от generic load failure через errors.Is.
+//
+// До R60.59: ошибка возвращалась как plain string → balancer не знал что
+// это abort → OpenWebUI retry cascade до timeout → клиент зависал.
+func TestWrapLoadError_R60_59(t *testing.T) {
+	tests := []struct {
+		name         string
+		errStr       string
+		wantAbort    bool
+		wantNonEmpty bool
+	}{
+		{
+			name:         "checkpoint_A_abort",
+			errStr:       "model load aborted by user (R60.57 checkpoint A: after llama_model_load_from_file)",
+			wantAbort:    true,
+			wantNonEmpty: true,
+		},
+		{
+			name:         "checkpoint_B_abort",
+			errStr:       "model load aborted by user (R60.57 checkpoint B: after llama_init_from_model)",
+			wantAbort:    true,
+			wantNonEmpty: true,
+		},
+		{
+			name:         "checkpoint_C_abort",
+			errStr:       "model load aborted by user (R60.57 checkpoint C: after populate im)",
+			wantAbort:    true,
+			wantNonEmpty: true,
+		},
+		{
+			name:         "generic_error_no_abort",
+			errStr:       "invalid model file format",
+			wantAbort:    false,
+			wantNonEmpty: true,
+		},
+		{
+			name:         "out_of_memory_no_abort",
+			errStr:       "out of memory (InternalModel)",
+			wantAbort:    false,
+			wantNonEmpty: true,
+		},
+		{
+			name:         "empty_errStr",
+			errStr:       "",
+			wantAbort:    false,
+			wantNonEmpty: true,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			err := wrapLoadError(tc.errStr)
+			if err == nil && tc.wantNonEmpty {
+				t.Fatal("wrapLoadError returned nil")
+			}
+			if err == nil && !tc.wantNonEmpty {
+				return
+			}
+			gotAbort := errors.Is(err, ErrAborted)
+			if gotAbort != tc.wantAbort {
+				t.Errorf("errors.Is(err, ErrAborted) = %v, want %v (err = %v)",
+					gotAbort, tc.wantAbort, err)
+			}
+		})
+	}
+}
+
+// TestWrapLoadError_EmptyDoesNotReturnNil — defensive check.
+func TestWrapLoadError_EmptyDoesNotReturnNil(t *testing.T) {
+	err := wrapLoadError("")
+	if err == nil {
+		t.Fatal("wrapLoadError(\"\") returned nil — должен вернуть informative error")
+	}
+	if errors.Is(err, ErrAborted) {
+		t.Errorf("empty errStr should NOT be ErrAborted, got %v", err)
+	}
 }

@@ -744,6 +744,14 @@ func (b *Backend) LoadModelWithOpts(ctx context.Context, name string, path strin
 					// (idempotent, atomic flag уже = 1).
 					logger.Get().Debugw("LoadModelWithOpts: RequestLoadAbort no-op or ptr not yet exposed",
 						"model", name, "path", path, "error", abortErr)
+				} else {
+					// R60.59 (2026-09-14): log successful abort — без этого оператор
+					// не видит в логах что client cancel реально прервал load, и
+					// при балансер-side retry cascade нельзя отличить abort от
+					// generic load failure.
+					logger.Get().Infow("LoadModelWithOpts: load aborted via watcher",
+						"model", name, "path", path,
+						"ctx_err", ctx.Err().Error())
 				}
 			case <-watcherDone:
 				// load завершился нормально (success или error) — watcher выходит.

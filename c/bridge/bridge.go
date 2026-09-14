@@ -264,7 +264,11 @@ const (
 
 // ErrAborted — sentinel для errors.Is(). Возвращается из bridge.Infer /
 // bridge.InferStream когда C-bridge прервал инференс по bridge_request_abort
-// (Round 31 #6). Не считается ошибкой для retry-логики (cancel ≠ failure).
+// (Round 31 #6). Также используется в R60.59 для load abort — bridge.LoadModel /
+// bridge.LoadModelWithEarlyHandle оборачивают C-bridge abort error в этот
+// sentinel через wrapLoadError (определена в bridge_load_error.go — отдельный
+// файл без CGO dependency, чтобы тестироваться в stub mode). Не считается
+// ошибкой для retry-логики (cancel ≠ failure).
 var ErrAborted = fmt.Errorf("bridge: inference aborted by user (BRIDGE_ERR_ABORTED)")
 
 // BridgeErrorInfo — Go-представление C BridgeErrorInfo (см. bridge.h).
@@ -473,7 +477,8 @@ func LoadModel(cfg ModelConfig) (*ModelHandle, error) {
 			errStr = C.GoString(errMsg)
 			C.bridge_free_string(errMsg)
 		}
-		return nil, fmt.Errorf("load model failed: %s", errStr)
+		// R60.59 (2026-09-14): use wrapLoadError helper to wrap abort in ErrAborted.
+		return nil, wrapLoadError(errStr)
 	}
 
 	return &ModelHandle{ptr: handle, path: cfg.ModelPath}, nil
@@ -597,7 +602,11 @@ func LoadModelWithEarlyHandle(cfg ModelConfig, earlyHandle *ModelHandle) (*Model
 			errStr = C.GoString(errMsg)
 			C.bridge_free_string(errMsg)
 		}
-		return nil, fmt.Errorf("load model failed: %s", errStr)
+		// R60.59 (2026-09-14): wrap load-abort error in ErrAborted sentinel so
+		// callers (backend.LoadModelWithOpts, balancer proxy) can distinguish
+		// user-initiated cancel from generic load failure via errors.Is.
+		// R60.59 (2026-09-14): use wrapLoadError helper (same as LoadModel).
+		return nil, wrapLoadError(errStr)
 	}
 
 	// Sanity-check: handle returned by C == *out_handle (early pointer).

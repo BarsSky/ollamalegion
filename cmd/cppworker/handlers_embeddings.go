@@ -62,7 +62,8 @@ func handleOllamaEmbeddings(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Ленивая загрузка модели для embeddings
-	if err := ensureModelLoaded(r.Context(), req.Model); err != nil {
+	actualModel, err := ensureModelLoaded(r.Context(), req.Model)
+	if err != nil {
 		if isModelLoadingError(err) {
 			writeLoadingResponse(w, req.Model, err)
 			return
@@ -71,6 +72,7 @@ func handleOllamaEmbeddings(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "model load failed: "+err.Error())
 		return
 	}
+	_ = actualModel
 
 	embeddings, err := backend.GetEmbeddings(req.Model, text)
 	if err != nil {
@@ -141,7 +143,8 @@ func handleOllamaEmbed(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Ленивая загрузка модели для embeddings
-	if err := ensureModelLoaded(r.Context(), req.Model); err != nil {
+	actualModel, err := ensureModelLoaded(r.Context(), req.Model)
+	if err != nil {
 		if isModelLoadingError(err) {
 			writeLoadingResponse(w, req.Model, err)
 			return
@@ -150,6 +153,7 @@ func handleOllamaEmbed(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "model load failed: "+err.Error())
 		return
 	}
+	_ = actualModel
 
 	// GetEmbeddings поддерживает только 1 input за раз. Для batch — вызываем
 	// в цикле. (В будущем можно оптимизировать через batched API cppworker'а.)

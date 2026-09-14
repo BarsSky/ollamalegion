@@ -80,31 +80,37 @@ func init() {
 // backend.LoadModelWithOpts. HTTP handlers передают r.Context() (через
 // setupCancelTracking) — client disconnect / /api/cancel отменяет load.
 //
+// R62 (2026-09-14): возвращает (actualName, err) — actualName это имя под
+// которым модель РЕАЛЬНО загружена в памяти. Если R60.60 dedup-pre-check
+// обнаружил что файл уже загружен под alias (existingName != modelName),
+// actualName = existingName. Handlers используют actualName для дальнейших
+// операций (chat template lookup, Infer call), иначе получат "model not found".
+//
 // Возвращаемые ошибки:
-//   - nil: модель уже загружена или успешно загружена сейчас
-//   - errModelIsLoading: другая горутина уже грузит эту модель.
+//   - nil, modelName: модель уже загружена или успешно загружена сейчас
+//   - "", errModelIsLoading: другая горутина уже грузит эту модель.
 //     Хендлеры перехватывают эту ошибку и отвечают 503 с retryAfterMs=3000
-//   - errors.Is(err, bridge.ErrAborted): load отменён через ctx
+//   - "", errors.Is(err, bridge.ErrAborted): load отменён через ctx
 //     (C-bridge watcher в LoadModelWithOpts отменил load; см. PLAN.md §3)
-//   - прочие: ошибка загрузки (validation, FS, C-bridge)
-func ensureModelLoaded(ctx context.Context, modelName string) error {
+//   - "", прочие: ошибка загрузки (validation, FS, C-bridge)
+func ensureModelLoaded(ctx context.Context, modelName string) (string, error) {
 	// 0) Если модель уже загружена — сразу выходим.
 	if _, err := backend.GetModel(modelName); err == nil {
-		return nil
+		return modelName, nil
 	}
 
 	// 1) Используем TryLockLoad для постановки в очередь загрузки.
 	lockOk, lockErr := backend.TryLockLoad(modelName)
 	if lockErr != nil {
 		// Модель уже загружена (успели загрузить между нашей проверкой и TryLockLoad).
-		return nil
+		return modelName, nil
 	}
 	if !lockOk {
 		// Другая горутина уже грузит эту модель — ждём завершения.
 		if backend.WaitForLoad(modelName) {
-			return nil
+			return modelName, nil
 		}
-		return errModelIsLoading
+		return "", errModelIsLoading
 	}
 
 	// lockOk == true — мы отвечаем за загрузку.
@@ -169,7 +175,7 @@ func ensureModelLoaded(ctx context.Context, modelName string) error {
 				},
 			}
 			RecordLoadAttempt(failAttempt)
-			return fmt.Errorf("model file not found: %s", modelPath)
+			return "", fmt.Errorf("model file not found: %s", modelPath)
 		}
 
 		// === Auto-tune на LOAD (2026-06-26 BUGFIX) ===
@@ -312,7 +318,7 @@ func ensureModelLoaded(ctx context.Context, modelName string) error {
 				"requested_name", modelName,
 				"existing_name", existingName,
 				"path", modelPath)
-			return nil
+			return existingName, nil
 		}
 
 		if err := backend.LoadModelWithOpts(ctx, modelName, modelPath, opts); err != nil {
@@ -332,7 +338,7 @@ func ensureModelLoaded(ctx context.Context, modelName string) error {
 				"vramFreeMB":  backendGPUVRAMFree(),
 			}
 			RecordLoadAttempt(attempt)
-			return fmt.Errorf("failed to load model %s: %w", modelName, err)
+			return "", fmt.Errorf("failed to load model %s: %w", modelName, err)
 		}
 
 		log.Infow("lazy-load successful", "model", modelName, "path", modelPath,
@@ -344,7 +350,7 @@ func ensureModelLoaded(ctx context.Context, modelName string) error {
 			"modelPath": modelPath,
 		}
 		RecordLoadAttempt(attempt)
-		return nil
+		return modelName, nil
 	}
 
 	// mm == nil — ModelManager не инициализирован.
@@ -356,7 +362,7 @@ func ensureModelLoaded(ctx context.Context, modelName string) error {
 		Error:     "model manager not initialized",
 	}
 	RecordLoadAttempt(attempt)
-	return fmt.Errorf("model %s not found in filesystem", modelName)
+	return "", fmt.Errorf("model %s not found in filesystem", modelName)
 }
 
 // backendGPUVRAMTotal возвращает суммарную VRAM по всем GPU (для диагностики).

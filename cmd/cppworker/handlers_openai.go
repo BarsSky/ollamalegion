@@ -269,7 +269,8 @@ func handleV1ChatCompletions(w http.ResponseWriter, r *http.Request) {
 	logger.Get().Debugw("handleV1ChatCompletions: cancel tracking enabled",
 		"request_id", requestID, "model", req.Model, "user_id", userID)
 
-	if err := ensureModelLoaded(r.Context(), req.Model); err != nil {
+	actualModel, err := ensureModelLoaded(r.Context(), req.Model)
+	if err != nil {
 		if isModelLoadingError(err) {
 			writeLoadingResponse(w, req.Model, err)
 			return
@@ -277,6 +278,7 @@ func handleV1ChatCompletions(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "model load failed: "+err.Error())
 		return
 	}
+	_ = actualModel // R62: chat handlers (handlers_chat.go) use actualModel for buildChatPrompt. OpenAI handlers only need err.
 
 	// Конвертируем openAIChatMessage → chatMessage и инжектим определения tools
 	chatMsgs := openAIToChatMessage(req.Messages)
@@ -1298,7 +1300,8 @@ func handleV1Completions(w http.ResponseWriter, r *http.Request) {
 	logger.Get().Debugw("handleV1Completions: cancel tracking enabled",
 		"request_id", requestID, "model", req.Model, "user_id", userID)
 
-	if err := ensureModelLoaded(r.Context(), req.Model); err != nil {
+	actualModel, err := ensureModelLoaded(r.Context(), req.Model)
+	if err != nil {
 		if isModelLoadingError(err) {
 			writeLoadingResponse(w, req.Model, err)
 			return
@@ -1306,6 +1309,7 @@ func handleV1Completions(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "model load failed: "+err.Error())
 		return
 	}
+	_ = actualModel // R62: chat handlers (handlers_chat.go) use actualModel for buildChatPrompt. OpenAI handlers only need err.
 
 	params := bridge.DefaultGenerationParams()
 	// Round 16 follow-up fix (2026-07-30): *float64 — nil = use default, *0.0 = explicit 0.
@@ -1735,7 +1739,10 @@ func handleV1Embeddings(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Round 22: lazy model load (раньше handler возвращал 500 без load).
-	if err := ensureModelLoaded(r.Context(), req.Model); err != nil {
+	// R62: возвращает actualModel (может быть alias) — handlers_embeddings.go использует его
+	// в tokensToBridge / Embed call ниже.
+	actualModel, err := ensureModelLoaded(r.Context(), req.Model)
+	if err != nil {
 		if isModelLoadingError(err) {
 			writeLoadingResponse(w, req.Model, err)
 			return
@@ -1744,6 +1751,7 @@ func handleV1Embeddings(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "model load failed: "+err.Error())
 		return
 	}
+	_ = actualModel
 
 	// GetEmbeddings поддерживает только 1 input за раз. Для batch — вызываем
 	// в цикле. (В будущем можно оптимизировать через batched API.)

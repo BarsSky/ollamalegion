@@ -529,7 +529,7 @@ func handleDiagnosticsLoad(w http.ResponseWriter, r *http.Request) {
 	diagMap["step4_freeVRAM_MB"] = freeVRAM
 
 	// 5. Загружаем через ensureModelLoaded
-	if err := ensureModelLoaded(r.Context(), modelName); err != nil {
+	if _, err := ensureModelLoaded(r.Context(), modelName); err != nil {
 		diagMap["step5_load"] = fmt.Sprintf("FAIL: %v", err)
 		attempt.Stage = "ensure_model_loaded"
 		attempt.Success = false

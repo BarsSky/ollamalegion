@@ -237,7 +237,8 @@ func runGenerateCore(w http.ResponseWriter, r *http.Request, req generateRequest
 		return bridge.GenerationParams{}, "", false
 	}
 
-	if err := ensureModelLoaded(r.Context(), req.Model); err != nil {
+	actualModel, err := ensureModelLoaded(r.Context(), req.Model)
+	if err != nil {
 		if isModelLoadingError(err) {
 			writeLoadingResponse(w, req.Model, err)
 			return bridge.GenerationParams{}, "", false
@@ -245,6 +246,7 @@ func runGenerateCore(w http.ResponseWriter, r *http.Request, req generateRequest
 		writeError(w, http.StatusInternalServerError, "model load failed: "+err.Error())
 		return bridge.GenerationParams{}, "", false
 	}
+	_ = actualModel
 
 	params := buildGenerationParams(req)
 	ApplyCppCtxHeader(r, &params)

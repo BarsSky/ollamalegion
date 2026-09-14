@@ -278,7 +278,11 @@ func handleV1ChatCompletions(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "model load failed: "+err.Error())
 		return
 	}
-	_ = actualModel // R62: chat handlers (handlers_chat.go) use actualModel for buildChatPrompt. OpenAI handlers only need err.
+	// R62 (2026-09-14): use actualModel для всех downstream calls (chat template,
+	// Infer, antiprompts, etc). Если dedup-pre-check загрузил модель под alias
+	// (например requested="Qwen3-Instruct-2507-q4km" → loaded="qwen3-instruct"),
+	// все эти функции ищут модель по имени в backend.GetModel() — нужен actual name.
+	modelName := actualModel
 
 	// Конвертируем openAIChatMessage → chatMessage и инжектим определения tools
 	chatMsgs := openAIToChatMessage(req.Messages)
@@ -287,12 +291,12 @@ func handleV1ChatCompletions(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Собираем промпт из сообщений с применением chat template из GGUF.
-	prompt, err := buildChatPrompt(chatMsgs, req.Model)
+	prompt, err := buildChatPrompt(chatMsgs, actualModel)
 	var usedNaive bool
 	if err != nil {
 		logger.Get().Warnw("chat template bridge failed, falling back to naive prompt",
-			"model", req.Model, "error", err)
-		prompt = buildNaiveChatPrompt(req.Messages, req.Model)
+			"model", modelName, "error", err)
+		prompt = buildNaiveChatPrompt(req.Messages, actualModel)
 		if prompt == "" {
 			writeError(w, http.StatusInternalServerError, "build prompt failed: "+err.Error())
 			return
@@ -314,11 +318,11 @@ func handleV1ChatCompletions(w http.ResponseWriter, r *http.Request) {
 		// 2026-07-01: для reasoning-моделей (qwen3.5, deepseek-r1, gemma-4) поднимаем
 		// дефолт n_predict до DefaultNPredictReasoning, иначе модель обрывает генерацию
 		// сразу после <think>...</think> (completion_tokens=0).
-		params.NPredict = ResolveNPredict(req.MaxTokens, req.Model)
+		params.NPredict = ResolveNPredict(req.MaxTokens, actualModel)
 	} else {
 		// 2026-07-01: req.MaxTokens==0 → используем дефолт cppworker (2048), но для
 		// reasoning-моделей повышаем до DefaultNPredictReasoning (8192).
-		params.NPredict = ResolveNPredict(0, req.Model)
+		params.NPredict = ResolveNPredict(0, actualModel)
 	}
 	if req.Seed != 0 {
 		params.Seed = req.Seed
@@ -335,12 +339,12 @@ func handleV1ChatCompletions(w http.ResponseWriter, r *http.Request) {
 	})
 
 	// Antiprompts: дефолтные для формата промпта + пользовательские req.Stop.
-	defaultAP := defaultAntipromptsForModel(req.Model)
+	defaultAP := defaultAntipromptsForModel(actualModel)
 	if len(defaultAP) > 0 {
 		params.Antiprompts = append(params.Antiprompts, defaultAP...)
 	}
 	if !usedNaive {
-		if isGemmaModel(req.Model) {
+		if isGemmaModel(actualModel) {
 			params.Antiprompts = append(params.Antiprompts, []string{"<end_of_turn>", "<start_of_turn>user"}...)
 		}
 	}
@@ -350,7 +354,7 @@ func handleV1ChatCompletions(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	logger.Get().Debugw("handleV1ChatCompletions: antiprompts",
-		"model", req.Model, "used_naive", usedNaive,
+		"model", modelName, "used_naive", usedNaive,
 		"antiprompts_count", len(params.Antiprompts),
 		"antiprompts", params.Antiprompts)
 
@@ -358,10 +362,10 @@ func handleV1ChatCompletions(w http.ResponseWriter, r *http.Request) {
 	// Cutoff-bug: длинная беседа через OpenAI-совместимый API (Cline, Roo Code, IDE plugins, Hermes)
 	// → prompt > n_ctx → reload loop → 413 abrupt stop. Pre-emptive: проверяем и
 	// clamp n_predict + ставим warning header.
-	openaiWarning, _ := ComputeContextWarning(req.Model, prompt, params.NPredict, params.NCtxOverride)
+	openaiWarning, _ := ComputeContextWarning(modelName, prompt, params.NPredict, params.NCtxOverride)
 	if openaiWarning.NPredict != params.NPredict {
 		logger.Get().Warnw("handleV1ChatCompletions: clamping n_predict to fit n_ctx",
-			"model", req.Model, "old_n_predict", params.NPredict,
+			"model", modelName, "old_n_predict", params.NPredict,
 			"new_n_predict", openaiWarning.NPredict, "n_ctx", openaiWarning.NCtx,
 			"prompt_tokens", openaiWarning.PromptTokens, "used_pct", openaiWarning.UsedPercent)
 		params.NPredict = openaiWarning.NPredict
@@ -377,7 +381,7 @@ func handleV1ChatCompletions(w http.ResponseWriter, r *http.Request) {
 			// перед отправкой SSE. Это trade-off: теряем real-time streaming,
 			// но получаем корректные tool_calls + finish_reason.
 			hasTools := len(req.Tools) > 0
-			result, err := generateWithRamFallback(req.Model, prompt, params, hasTools)
+			result, err := generateWithRamFallback(actualModel, prompt, params, hasTools)
 			// 2026-06-25: snapshot для /v1/chat/completions (tools path).
 			// Round 16 P2 fix (2026-07-30): closure pattern (consistent с streaming
 			// path line 686). Раньше `defer recordLastPromptFromError(... err)`
@@ -385,7 +389,7 @@ func handleV1ChatCompletions(w http.ResponseWriter, r *http.Request) {
 			// кто-то переставит defer выше err, тихо получит nil всегда).
 			// Closure form гарантирует что err захватывается при return.
 			defer func() {
-				recordLastPromptFromError(req.Model, "/v1/chat/completions", prompt, &params, hasTools, err)
+				recordLastPromptFromError(modelName, "/v1/chat/completions", prompt, &params, hasTools, err)
 			}()
 			if err != nil {
 				// 2026-06-24: PromptExceedsNCtxError → HTTP 413 (см. inference.go).
@@ -421,17 +425,17 @@ func handleV1ChatCompletions(w http.ResponseWriter, r *http.Request) {
 				// на локальной машине. Совместимость: клиент может явно opt-out
 				// через "stream_options": {"include_usage": false}.
 				includeUsage := req.StreamOptions == nil || req.StreamOptions.IncludeUsage
-				writeToolCallsStream(w, req.Model, chatID(), time.Now().Unix(), calls, prompt, includeUsage)
+				writeToolCallsStream(w, actualModel, chatID(), time.Now().Unix(), calls, prompt, includeUsage)
 			} else {
 				// Нет tool_calls — стримим как обычный текст
 				includeUsage := req.StreamOptions == nil || req.StreamOptions.IncludeUsage
-				writeStaticTextStream(w, req.Model, chatID(), time.Now().Unix(), result.Output, prompt, includeUsage)
+				writeStaticTextStream(w, actualModel, chatID(), time.Now().Unix(), result.Output, prompt, includeUsage)
 			}
 			return
 		}
 		// Без tools — обычный real-time streaming
 		includeUsage := req.StreamOptions == nil || req.StreamOptions.IncludeUsage
-		writeOpenAIChatStream(w, r, req.Model, prompt, params, includeUsage)
+		writeOpenAIChatStream(w, r, actualModel, prompt, params, includeUsage)
 		return
 	}
 
@@ -443,11 +447,11 @@ func handleV1ChatCompletions(w http.ResponseWriter, r *http.Request) {
 	created := time.Now().Unix()
 
 	hasTools := len(req.Tools) > 0
-	result, err := generateWithRamFallback(req.Model, prompt, params, hasTools)
+	result, err := generateWithRamFallback(actualModel, prompt, params, hasTools)
 	// 2026-06-25: snapshot для /v1/chat/completions (non-stream path).
 	// Round 16 P2 fix (2026-07-30): closure form (см. tools path выше).
 	defer func() {
-		recordLastPromptFromError(req.Model, "/v1/chat/completions", prompt, &params, hasTools, err)
+		recordLastPromptFromError(modelName, "/v1/chat/completions", prompt, &params, hasTools, err)
 	}()
 	if err != nil {
 		// 2026-06-24: PromptExceedsNCtxError → HTTP 413 (см. inference.go).
@@ -490,7 +494,7 @@ func handleV1ChatCompletions(w http.ResponseWriter, r *http.Request) {
 		// reasoning_content alongside tool_calls. SplitReasoningContent
 		// peels off ``...`` block from output; remaining content goes
 		// into tool_calls via parser above.
-		if IsReasoningEnabledForRequest(req.Model) {
+		if IsReasoningEnabledForRequest(modelName) {
 			r, c, has := SplitReasoningContent(result.Output)
 			if has {
 				message["reasoning_content"] = r
@@ -518,10 +522,10 @@ func handleV1ChatCompletions(w http.ResponseWriter, r *http.Request) {
 					message["content"] = nil
 				}
 				if backend != nil {
-					if backend.AutoEnableReasoning(req.Model) {
+					if backend.AutoEnableReasoning(modelName) {
 						logger.Get().Warnw("reasoning auto-detected (non-stream tools)",
 							"handler", "handleV1ChatCompletions",
-							"model", req.Model,
+							"model", modelName,
 							"reasoning_chars", len(r),
 							"hint", "model emits <think> but not in reasoning whitelist; "+
 								"auto-enabled routing for future requests. "+
@@ -535,7 +539,7 @@ func handleV1ChatCompletions(w http.ResponseWriter, r *http.Request) {
 		}
 		message["tool_calls"] = toolCalls
 	} else {
-		if IsReasoningEnabledForRequest(req.Model) {
+		if IsReasoningEnabledForRequest(modelName) {
 			r, c, has := SplitReasoningContent(result.Output)
 			if has {
 				message["content"] = c
@@ -555,10 +559,10 @@ func handleV1ChatCompletions(w http.ResponseWriter, r *http.Request) {
 				message["content"] = c
 				message["reasoning_content"] = r
 				if backend != nil {
-					if backend.AutoEnableReasoning(req.Model) {
+					if backend.AutoEnableReasoning(modelName) {
 						logger.Get().Warnw("reasoning auto-detected (non-stream)",
 							"handler", "handleV1ChatCompletions",
-							"model", req.Model,
+							"model", modelName,
 							"reasoning_chars", len(r),
 							"hint", "model emits <think> but not in reasoning whitelist; "+
 								"auto-enabled routing for future requests. "+
@@ -581,7 +585,7 @@ func handleV1ChatCompletions(w http.ResponseWriter, r *http.Request) {
 		"id":      chatID,
 		"object":  "chat.completion",
 		"created": created,
-		"model":   req.Model,
+		"model":   modelName,
 		"choices": []map[string]interface{}{
 			{
 				"index":         0,
@@ -589,7 +593,7 @@ func handleV1ChatCompletions(w http.ResponseWriter, r *http.Request) {
 				"finish_reason": finishReason,
 			},
 		},
-		"usage":       buildUsage(prompt, result.Output, req.Model),
+		"usage":       buildUsage(prompt, result.Output, modelName),
 		"duration_ms": durationMs,
 	})
 }
@@ -1309,7 +1313,7 @@ func handleV1Completions(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "model load failed: "+err.Error())
 		return
 	}
-	_ = actualModel // R62: chat handlers (handlers_chat.go) use actualModel for buildChatPrompt. OpenAI handlers only need err.
+	modelName := actualModel
 
 	params := bridge.DefaultGenerationParams()
 	// Round 16 follow-up fix (2026-07-30): *float64 — nil = use default, *0.0 = explicit 0.
@@ -1323,11 +1327,11 @@ func handleV1Completions(w http.ResponseWriter, r *http.Request) {
 		// 2026-07-01: для reasoning-моделей (qwen3.5, deepseek-r1, gemma-4) поднимаем
 		// дефолт n_predict до DefaultNPredictReasoning, иначе модель обрывает генерацию
 		// сразу после <think>...</think> (completion_tokens=0).
-		params.NPredict = ResolveNPredict(req.MaxTokens, req.Model)
+		params.NPredict = ResolveNPredict(req.MaxTokens, modelName)
 	} else {
 		// 2026-07-01: req.MaxTokens==0 → дефолт cppworker (2048), для reasoning-моделей
 		// повышаем до DefaultNPredictReasoning (8192).
-		params.NPredict = ResolveNPredict(0, req.Model)
+		params.NPredict = ResolveNPredict(0, modelName)
 	}
 	if req.PresencePenalty != nil {
 		params.PresencePenalty = float32(*req.PresencePenalty)
@@ -1348,18 +1352,18 @@ func handleV1Completions(w http.ResponseWriter, r *http.Request) {
 		// комментарий в /v1/chat/completions handler). Cline и другие
 		// IDE-агенты ВСЕГДА хотят usage chunk для tracking контекстного окна.
 		includeUsage := req.StreamOptions == nil || req.StreamOptions.IncludeUsage
-		writeOpenAICompletionStream(w, r, req.Model, req.Prompt, params, includeUsage)
+		writeOpenAICompletionStream(w, r, actualModel, req.Prompt, params, includeUsage)
 		return
 	}
 
 	start := time.Now()
 	// /v1/completions (legacy text completions) — tools не поддерживаются,
 	// reload разрешён при n_ctx overflow.
-	result, err := generateWithRamFallback(req.Model, req.Prompt, params, false)
+	result, err := generateWithRamFallback(actualModel, req.Prompt, params, false)
 	// 2026-06-25: snapshot для /v1/completions.
 	// Round 16 P2 fix (2026-07-30): closure form (consistent со всеми другими).
 	defer func() {
-		recordLastPromptFromError(req.Model, "/v1/completions", req.Prompt, &params, false, err)
+		recordLastPromptFromError(actualModel, "/v1/completions", req.Prompt, &params, false, err)
 	}()
 	if err != nil {
 		// 2026-06-24: PromptExceedsNCtxError → HTTP 413 (см. inference.go).
@@ -1386,7 +1390,7 @@ func handleV1Completions(w http.ResponseWriter, r *http.Request) {
 	// Round 17 Layer 3: post-hoc auto-detect (см. handleV1ChatCompletions).
 	textValue := result.Output
 	reasoningValue := ""
-	if IsReasoningEnabledForRequest(req.Model) {
+	if IsReasoningEnabledForRequest(modelName) {
 		r, c, has := SplitReasoningContent(result.Output)
 		if has {
 			textValue = c
@@ -1400,10 +1404,10 @@ func handleV1Completions(w http.ResponseWriter, r *http.Request) {
 			textValue = c
 			reasoningValue = r
 			if backend != nil {
-				if backend.AutoEnableReasoning(req.Model) {
+				if backend.AutoEnableReasoning(modelName) {
 					logger.Get().Warnw("reasoning auto-detected (non-stream /v1/completions)",
 						"handler", "handleV1Completions",
-						"model", req.Model,
+						"model", modelName,
 						"reasoning_chars", len(r),
 						"hint", "model emits <think> but not in reasoning whitelist; "+
 							"auto-enabled routing for future requests.")
@@ -1416,7 +1420,7 @@ func handleV1Completions(w http.ResponseWriter, r *http.Request) {
 		"id":      fmt.Sprintf("cmpl-%d", time.Now().UnixNano()),
 		"object":  "text_completion",
 		"created": time.Now().Unix(),
-		"model":   req.Model,
+		"model":   modelName,
 		"choices": []map[string]interface{}{
 			{
 				"text":          textValue,
@@ -1424,7 +1428,7 @@ func handleV1Completions(w http.ResponseWriter, r *http.Request) {
 				"finish_reason": "stop",
 			},
 		},
-		"usage":       buildUsage(req.Prompt, result.Output, req.Model),
+		"usage":       buildUsage(req.Prompt, result.Output, modelName),
 		"duration_ms": durationMs,
 	}
 	if reasoningValue != "" {
@@ -1751,14 +1755,14 @@ func handleV1Embeddings(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "model load failed: "+err.Error())
 		return
 	}
-	_ = actualModel
+	modelName := actualModel
 
 	// GetEmbeddings поддерживает только 1 input за раз. Для batch — вызываем
 	// в цикле. (В будущем можно оптимизировать через batched API.)
 	data := make([]map[string]interface{}, 0, len(inputs))
 	totalTokens := 0
 	for idx, text := range inputs {
-		vec, err := backend.GetEmbeddings(req.Model, text)
+		vec, err := backend.GetEmbeddings(modelName, text)
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, "embeddings failed: "+err.Error())
 			return
@@ -1768,13 +1772,13 @@ func handleV1Embeddings(w http.ResponseWriter, r *http.Request) {
 			"index":     idx,
 			"embedding": vec,
 		})
-		totalTokens += buildPromptTokens(req.Model, text)
+		totalTokens += buildPromptTokens(modelName, text)
 	}
 
 	writeJSON(w, http.StatusOK, map[string]interface{}{
 		"object": "list",
 		"data":   data,
-		"model":  req.Model,
+		"model":  modelName,
 		"usage": map[string]interface{}{
 			"prompt_tokens": totalTokens,
 			"total_tokens":  totalTokens,

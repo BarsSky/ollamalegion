@@ -258,6 +258,22 @@ func ensureModelLoaded(ctx context.Context, modelName string) error {
 			Stage:     "loading",
 		}
 
+		// R60.60 (2026-09-14): dedup-by-path pre-check ДО LoadModelWithOpts.
+		// Если другая goroutine (или предыдущий trigger) уже загрузила этот
+		// файл под другим именем — return success сразу, defer UnlockLoad
+		// (line 128) release lock. Без этого LoadModelWithOpts сам сделает
+		// dedup и вернёт *AlreadyLoadedAsError — но мы потеряем время на
+		// запуск C-bridge llama_model_load_from_file + повторную проверку.
+		// В RACE case (модель ещё загружается под другим именем) WaitForLoad
+		// возвращает false → errModelIsLoading → 503 → OpenWebUI retry cascade.
+		if existingName, _, found := backend.GetModelByPath(modelPath); found && existingName != modelName {
+			log.Infow("ensureModelLoaded: dedup-by-path pre-check (R60.60)",
+				"requested_name", modelName,
+				"existing_name", existingName,
+				"path", modelPath)
+			return nil
+		}
+
 		if err := backend.LoadModelWithOpts(ctx, modelName, modelPath, opts); err != nil {
 			log.Errorw("lazy-load failed", "model", modelName, "path", modelPath, "error", err)
 			attempt.Stage = "load_failed"

@@ -1019,7 +1019,6 @@ func (m *ModelHandle) InferStream(prompt string, params GenerationParams, callba
 		C.StreamCallback(C.streamCallbackGo),
 		unsafe.Pointer(&handle),
 		&abortFlag)
-	)
 
 	if ret != 0 {
 		// Round 31 #6: BRIDGE_ERR_ABORTED = -100 обрабатывается отдельно

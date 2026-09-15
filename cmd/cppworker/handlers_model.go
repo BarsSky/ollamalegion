@@ -1609,22 +1609,59 @@ func handleReloadModel(w http.ResponseWriter, r *http.Request) {
 	// ????? ????????????? ????????????? ?????? ? ?????? ???????????.
 	forceReload := req.Force != nil && *req.Force
 
-	if !forceReload &&
-		opts.ContextSize <= current.ContextSize &&
-		opts.BatchSize <= current.BatchSize &&
-		opts.GPULayers <= current.GPULayers &&
-		opts.FlashAttnType == current.FlashAttnType &&
-		opts.NUMA == current.NUMA &&
-		opts.UseMmap == current.UseMmap {
-		logger.Get().Infow("reload: skipping ? current params already sufficient",
+	// R64 (2026-09-15): include KVCacheType in skip-check AND log diagnostics
+	// on each skip miss. Pre-R64:
+	//   - applyStrategyKVCacheOverride forces opts.KVCacheType = strategy.KVCacheType (f16)
+	//     when strategy wants f16 but user profile says q4_0.
+	//   - Skip-check compared opts.KVCacheType (f16 after override) vs current.KVCacheType
+	//     (q4_0 from previous reload that honored user) — NOT equal — reload loop.
+	//
+	// Also normalize empty KVCacheType to current.KVCacheType so that "user didn't specify"
+	// is treated as "user wants what current has" (inherit semantics).
+	if opts.KVCacheType == "" {
+		opts.KVCacheType = current.KVCacheType
+	}
+
+	skipReason := ""
+	if !forceReload {
+		switch {
+		case !(opts.ContextSize <= current.ContextSize):
+			skipReason = fmt.Sprintf("ctx: requested=%d current=%d", opts.ContextSize, current.ContextSize)
+		case !(opts.BatchSize <= current.BatchSize):
+			skipReason = fmt.Sprintf("batch: requested=%d current=%d", opts.BatchSize, current.BatchSize)
+		case !(opts.GPULayers <= current.GPULayers):
+			skipReason = fmt.Sprintf("gpuLayers: requested=%d current=%d", opts.GPULayers, current.GPULayers)
+		case opts.FlashAttnType != current.FlashAttnType:
+			skipReason = fmt.Sprintf("flashAttn: requested=%d current=%d", opts.FlashAttnType, current.FlashAttnType)
+		case opts.NUMA != current.NUMA:
+			skipReason = fmt.Sprintf("numa: requested=%v current=%v", opts.NUMA, current.NUMA)
+		case opts.UseMmap != current.UseMmap:
+			skipReason = fmt.Sprintf("useMmap: requested=%v current=%v", opts.UseMmap, current.UseMmap)
+		case opts.KVCacheType != current.KVCacheType:
+			skipReason = fmt.Sprintf("kvCacheType: requested=%q current=%q", opts.KVCacheType, current.KVCacheType)
+		}
+	}
+
+	if !forceReload && skipReason == "" {
+		logger.Get().Infow("reload: skipping - current params already sufficient",
 			"name", req.Name,
-			"current_ctx", current.ContextSize, "requested_ctx", opts.ContextSize)
+			"current_ctx", current.ContextSize, "requested_ctx", opts.ContextSize,
+			"current_kv", current.KVCacheType, "requested_kv", opts.KVCacheType,
+			"current_useMmap", current.UseMmap, "requested_useMmap", opts.UseMmap)
 		writeJSON(w, http.StatusOK, map[string]interface{}{
 			"status":              "already_loaded",
 			"model":               current,
 			"estimatedLoadTimeMs": estimatedMs,
 		})
 		return
+	}
+	if !forceReload && skipReason != "" {
+		logger.Get().Infow("reload: skip-check FAILED, proceeding with reload",
+			"name", req.Name,
+			"reason", skipReason,
+			"requested_ctx", opts.ContextSize, "current_ctx", current.ContextSize,
+			"requested_kv", opts.KVCacheType, "current_kv", current.KVCacheType,
+			"requested_useMmap", opts.UseMmap, "current_useMmap", current.UseMmap)
 	}
 
 	// Round 24 (2026-08-04) Bug #1 fix: async reload by default.

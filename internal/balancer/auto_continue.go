@@ -264,12 +264,29 @@ func IsContinuationARegeneration(originalContent, continuationContent string) bo
 		"Продолжаю:",
 		"Конечно, продолжаю:",
 		"Sure! Here's the continuation:",
+		// R65b (2026-09-15): more preamble patterns found in Qwen3-Instruct
+		// generation after auto-continue prompt.
+		"Хочешь добавить",
+		"Продолжим",
+		"Давайте продолжим",
+		"Let's continue",
 	}
 	for _, p := range preambles {
 		if strings.HasPrefix(trimmed, p) {
-			trimmed = strings.TrimLeft(trimmed[len(p):], " \t\n\r")
-			break
+			// R65b: any preamble match is itself a sign of regeneration.
+			// The model wouldn't emit "Sure, here's the continuation:" if it
+			// were truly continuing mid-stream — it's restarting the response.
+			return true
 		}
+	}
+	// R65b (2026-09-15): Detect ChatML token leak — a strong signal that
+	// the model entered role-play mode (assistant simulating a multi-turn
+	// conversation in its own output). Symptom: "<|im_start|>assistant"
+	// or "<|im_end|>" appears as LITERAL TEXT inside the continuation
+	// content. Real continuations never contain these tokens.
+	if strings.Contains(continuationContent, "<|im_start|>") ||
+		strings.Contains(continuationContent, "<|im_end|>") {
+		return true
 	}
 	// Check first 80 chars for greeting markers.
 	// Russian: "Привет! Конечно" / "Привет!" / "Конечно,"
@@ -289,6 +306,13 @@ func IsContinuationARegeneration(originalContent, continuationContent string) bo
 		"Of course,",
 		"Certainly,",
 		"Here's",
+		// R65b (2026-09-15): common Qwen3-Instruct chat-model restart
+		// patterns observed when continuation prompt included original
+		// user message context.
+		"Конечно!",
+		"Ниже —",
+		"Ниже представлен",
+		"Below is",
 	}
 	for _, g := range greetingPatterns {
 		if strings.HasPrefix(prefix, g) {
@@ -580,12 +604,27 @@ type simpleError string
 
 func (e simpleError) Error() string { return string(e) }
 
-// EmitContinuationNDJSON — write the continuation content to client
-// as a final NDJSON chunk (or series of chunks for very long continuations).
-// This is for /api/chat (Ollama) and /api/generate paths.
+// EmitContinuationNDJSON — write the continuation content to client as
+// SEPARATE streaming NDJSON chunks (NOT a combined done-chunk with the
+// original content concatenated).
 //
-// Caller passes the original accumulated content + continuation content.
-// The combined content goes into message.content of the final chunk.
+// R65a (2026-09-15) BUGFIX: original implementation concatenated
+//   combined := originalContent + continuationContent
+// and emitted that as ONE final done-chunk. This caused content
+// DUPLICATION in OpenWebUI: the client already received originalContent
+// via streaming chunks (done:false each), then received a final
+// done:chunk with message.content = originalContent + continuationContent.
+// OpenWebUI's parser does not consistently replace accumulated content
+// with the done-chunk's message.content — many implementations APPEND,
+// producing A + (A+B) = "duplicated text" symptom where the model
+// response appears twice.
+//
+// Correct fix: emit continuation as additional done:false streaming
+// chunks, then a final done:true chunk. Client accumulates all chunks
+// naturally: A1 + A2 + ... + An + B1 + B2 + ... + Bn (final) = correct.
+// No duplication, regardless of client's done-chunk handling.
+//
+// If continuationContent is empty, only the final done-chunk is emitted.
 func EmitContinuationNDJSON(
 	w http.ResponseWriter,
 	apiPath string,
@@ -595,51 +634,75 @@ func EmitContinuationNDJSON(
 	totalEvalCount int,
 	flusher http.Flusher,
 ) error {
-	combined := originalContent + continuationContent
 	// R60.50: strip interior ``` that break markdown rendering (Qwen3-Instruct
 	// antipattern — emits ``` inside JS code which prematurely closes outer fence).
-	combined = FixMarkdownCodeFences(combined)
-	// Strip antiprompt-like artifacts that may appear at the boundary.
-	// Common: "Sure, here's the continuation:\n\n" — model often prepends
-	// acknowledgment text. We don't try to strip it (too aggressive);
-	// we just emit combined as-is and let client handle.
-	var ollamaChunk map[string]interface{}
-	if apiPath == "/api/chat" {
-		ollamaChunk = map[string]interface{}{
-			"model":       modelName,
-			"created_at":  time.Now().UTC().Format(time.RFC3339),
-			"done":        true,
-			"done_reason": "stop",
-			"message": map[string]interface{}{
-				"role":    "assistant",
-				"content": combined,
-			},
-			"total_duration": 0,
-			"eval_count":     totalEvalCount,
+	continuationContent = FixMarkdownCodeFences(continuationContent)
+
+	writeChunk := func(contentField string, done bool) error {
+		var ollamaChunk map[string]interface{}
+		if apiPath == "/api/chat" {
+			msg := map[string]string{"role": "assistant"}
+			if done {
+				msg["content"] = ""
+			} else {
+				msg["content"] = contentField
+			}
+			ollamaChunk = map[string]interface{}{
+				"model":      modelName,
+				"created_at": time.Now().UTC().Format(time.RFC3339Nano),
+				"done":       done,
+				"message":    msg,
+			}
+			if done {
+				ollamaChunk["done_reason"] = "stop"
+				ollamaChunk["total_duration"] = int64(0)
+				ollamaChunk["eval_count"] = totalEvalCount
+			}
+		} else if apiPath == "/api/generate" {
+			resp := ""
+			if !done {
+				resp = contentField
+			}
+			ollamaChunk = map[string]interface{}{
+				"model":      modelName,
+				"created_at": time.Now().UTC().Format(time.RFC3339Nano),
+				"done":       done,
+				"response":   resp,
+			}
+			if done {
+				ollamaChunk["done_reason"] = "stop"
+				ollamaChunk["total_duration"] = int64(0)
+				ollamaChunk["eval_count"] = totalEvalCount
+			}
+		} else {
+			return simpleError("unsupported api path for EmitContinuationNDJSON: " + apiPath)
 		}
-	} else if apiPath == "/api/generate" {
-		ollamaChunk = map[string]interface{}{
-			"model":          modelName,
-			"created_at":     time.Now().UTC().Format(time.RFC3339),
-			"done":           true,
-			"done_reason":    "stop",
-			"response":       combined,
-			"total_duration": 0,
-			"eval_count":     totalEvalCount,
+		out, err := json.Marshal(ollamaChunk)
+		if err != nil {
+			return err
 		}
-	} else {
-		return simpleError("unsupported api path for EmitContinuationNDJSON: " + apiPath)
+		out = append(out, '\n')
+		if _, err := w.Write(out); err != nil {
+			return err
+		}
+		if flusher != nil {
+			flusher.Flush()
+		}
+		return nil
 	}
-	out, err := json.Marshal(ollamaChunk)
-	if err != nil {
+
+	// Emit continuation as ONE additional streaming chunk (done:false) —
+	// if non-empty. This way the client appends it to already-streamed content.
+	if continuationContent != "" {
+		if err := writeChunk(continuationContent, false); err != nil {
+			return err
+		}
+	}
+
+	// Emit final done:chunk to signal stream completion. Empty content
+	// (since the full content has already been streamed + sent as continuation).
+	if err := writeChunk("", true); err != nil {
 		return err
-	}
-	out = append(out, '\n')
-	if _, err := w.Write(out); err != nil {
-		return err
-	}
-	if flusher != nil {
-		flusher.Flush()
 	}
 	return nil
 }

@@ -279,12 +279,12 @@ func TestR6050_BuildContinuePrompt_IncludesAnchor(t *testing.T) {
 	}
 }
 
-// TestR6050_PerformAutoContinue_SingleUserMessage — R60.50 invariant:
-// The continuation request body must contain ONLY a single user message,
-// NOT the original conversation. Qwen3-Instruct tends to restart with
-// "Привет! Конечно..." when it sees the original user message in history,
-// which is the user-visible bug R60.50 fixes.
-func TestR6050_PerformAutoContinue_SingleUserMessage(t *testing.T) {
+// TestR6055_PerformAutoContinue_MultiTurnContinuation — R60.55 invariant:
+// Continuation request must use MULTI-TURN chat format [user, assistant, user]
+// so the model treats it as a mid-conversation continuation rather than
+// restarting with a greeting. Updated from R60.50 (single-user-message) which
+// caused similar greeting-restart failures.
+func TestR6055_PerformAutoContinue_MultiTurnContinuation(t *testing.T) {
 	// Spin up a fake upstream that records the request body.
 	var capturedBody []byte
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -295,8 +295,8 @@ func TestR6050_PerformAutoContinue_SingleUserMessage(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	// Original request body: user said "Привет распиши..." — MUST NOT appear in continuation.
-	originalBody := []byte(`{"model":"Qwen3","messages":[{"role":"user","content":"Привет распиши красивый сайт на html css"}],"stream":true}`)
+	// Original request body: user said "Распиши красивый сайт..." — will be in continuation history.
+	originalBody := []byte(`{"model":"Qwen3","messages":[{"role":"user","content":"Распиши красивый сайт на html css"}],"stream":true}`)
 
 	_, _, err := PerformAutoContinue(
 		srv.URL, originalBody,
@@ -308,7 +308,7 @@ func TestR6050_PerformAutoContinue_SingleUserMessage(t *testing.T) {
 		t.Fatalf("PerformAutoContinue: %v", err)
 	}
 
-	// Verify captured body has only 1 message.
+	// R60.55: verify captured body has 3 messages: [user, assistant, user]
 	var parsed struct {
 		Model    string `json:"model"`
 		Messages []struct {
@@ -319,24 +319,214 @@ func TestR6050_PerformAutoContinue_SingleUserMessage(t *testing.T) {
 	if err := json.Unmarshal(capturedBody, &parsed); err != nil {
 		t.Fatalf("parse captured body: %v\nbody=%s", err, capturedBody)
 	}
-	if len(parsed.Messages) != 1 {
-		t.Errorf("R60.50: continuation request must have exactly 1 message (was %d). Multiple messages caused model to restart with greeting.", len(parsed.Messages))
-	}
 	if parsed.Model != "Qwen3" {
 		t.Errorf("model name lost: %q", parsed.Model)
 	}
-	if len(parsed.Messages) >= 1 {
-		if parsed.Messages[0].Role != "user" {
-			t.Errorf("single message must be 'user', got %q", parsed.Messages[0].Role)
+	if len(parsed.Messages) != 3 {
+		t.Errorf("R60.55: continuation request must have exactly 3 messages (was %d). Multi-turn chat format eliminates the greeting-restart antipattern.", len(parsed.Messages))
+	}
+	if len(parsed.Messages) == 3 {
+		// [user, assistant, user]
+		if parsed.Messages[0].Role != "user" || parsed.Messages[1].Role != "assistant" || parsed.Messages[2].Role != "user" {
+			t.Errorf("R60.55: expected [user, assistant, user] role sequence, got [%s, %s, %s]",
+				parsed.Messages[0].Role, parsed.Messages[1].Role, parsed.Messages[2].Role)
 		}
-		// The original user prompt "Привет распиши..." MUST NOT appear in continuation.
-		if strings.Contains(parsed.Messages[0].Content, "Привет распиши") {
-			t.Error("R60.50: original user prompt leaked into continuation request body — this causes the model to restart with greeting")
+		// 1st message: original user prompt
+		if !strings.Contains(parsed.Messages[0].Content, "Распиши красивый сайт") {
+			t.Error("R60.55: first message must be original user prompt")
 		}
-		// But the truncated content MUST be referenced (so model can resume).
-		if !strings.Contains(parsed.Messages[0].Content, "let xPoints =") {
-			t.Error("R60.50: continuation message must include anchor (last 400 chars of truncated content)")
+		// 2nd message: assistant partial content (anchor)
+		if !strings.Contains(parsed.Messages[1].Content, "let xPoints =") {
+			t.Error("R60.55: second message must be the assistant's partial content (anchor for continuation)")
 		}
+		// 3rd message: continue instruction
+		if !strings.Contains(parsed.Messages[2].Content, "Продолжи") {
+			t.Error("R60.55: third message must be the continue instruction")
+		}
+	}
+}
+
+// TestR65_EmitContinuation_NoDuplication — R65a regression test:
+// EmitContinuationNDJSON must NOT duplicate originalContent in its output.
+//
+// Pre-R65 (bug): EmitContinuationNDJSON concatenated originalContent +
+// continuationContent into one final done-chunk. If client already received
+// originalContent via streaming chunks (done:false each), the done-chunk's
+// message.content was appended to the client's already-displayed content —
+// resulting in user-visible duplication where the model response appears
+// twice in OpenWebUI.
+//
+// Post-R65 (fix): EmitContinuationNDJSON emits continuationContent as ONE
+// additional done:false chunk, then a final done:true chunk (empty content).
+// Client accumulates done:false content naturally; final done:true just
+// signals completion. No duplication.
+func TestR65_EmitContinuation_NoDuplication(t *testing.T) {
+	original := "const x = 1;\nlet y = 2"
+	continuation := "\nconst z = 3;\nconsole.log(x + y + z)"
+
+	// Use httptest.ResponseRecorder (real http.ResponseWriter) for capture.
+	rec := httptest.NewRecorder()
+	var flusher *httptestFlusher
+
+	if err := EmitContinuationNDJSON(
+		rec, "/api/chat", "test-model",
+		original, continuation, 100, flusher,
+	); err != nil {
+		t.Fatalf("EmitContinuationNDJSON: %v", err)
+	}
+
+	captured := rec.Body.Bytes()
+	lines := strings.Split(strings.TrimRight(string(captured), "\n"), "\n")
+	if len(lines) < 2 {
+		t.Fatalf("expected at least 2 NDJSON chunks (continuation + done), got %d:\n%s", len(lines), captured)
+	}
+
+	var chunks []map[string]interface{}
+	for i, line := range lines {
+		if line == "" {
+			continue
+		}
+		var c map[string]interface{}
+		if err := json.Unmarshal([]byte(line), &c); err != nil {
+			t.Fatalf("chunk %d is not valid JSON: %v\nline=%s", i, err, line)
+		}
+		chunks = append(chunks, c)
+	}
+
+	// R65a: there must be exactly ONE done:true chunk (final).
+	doneCount := 0
+	var doneChunk map[string]interface{}
+	for _, c := range chunks {
+		if done, _ := c["done"].(bool); done {
+			doneCount++
+			doneChunk = c
+		}
+	}
+	if doneCount != 1 {
+		t.Errorf("expected exactly 1 done:true chunk, got %d", doneCount)
+	}
+
+	// R65a: the continuation chunk (done:false) MUST contain the
+	// continuation content, NOT the originalContent (no concatenation).
+	continuationChunkFound := false
+	for _, c := range chunks {
+		if done, _ := c["done"].(bool); done {
+			continue
+		}
+		msg, _ := c["message"].(map[string]interface{})
+		if msg == nil {
+			continue
+		}
+		content, _ := msg["content"].(string)
+		if content == continuation {
+			continuationChunkFound = true
+		}
+		if strings.Contains(content, original) {
+			t.Errorf("R65a BUG: continuation chunk contains original content (duplication!). Got chunk: %q", content)
+		}
+		if strings.Contains(content, "const x = 1") {
+			t.Errorf("R65a BUG: original content (const x = 1) leaked into continuation chunk")
+		}
+	}
+	if !continuationChunkFound {
+		t.Errorf("expected at least one chunk with content == continuation text, got:\n%s", captured)
+	}
+
+	if doneChunk != nil {
+		if msg, ok := doneChunk["message"].(map[string]interface{}); ok {
+			if content, _ := msg["content"].(string); content != "" {
+				t.Errorf("R65a BUG: done-chunk has non-empty message.content (would cause duplication): %q", content)
+			}
+		}
+	}
+
+	for i, c := range chunks {
+		if done, _ := c["done"].(bool); done {
+			continue
+		}
+		if _, ok := c["created_at"].(string); !ok {
+			t.Errorf("chunk %d missing created_at (R65 compliance)", i)
+		}
+	}
+}
+
+// httptestFlusher — minimal flusher for EmitContinuationNDJSON signature.
+type httptestFlusher struct{}
+
+func (h *httptestFlusher) Flush() {}
+
+// TestR65_EmitContinuation_EmptyContinuation — EmitContinuationNDJSON
+// should still emit a valid done:true chunk even if continuation is empty.
+func TestR65_EmitContinuation_EmptyContinuation(t *testing.T) {
+	rec := httptest.NewRecorder()
+	var flusher *httptestFlusher
+
+	if err := EmitContinuationNDJSON(
+		rec, "/api/chat", "test-model",
+		"some original", "", 50, flusher,
+	); err != nil {
+		t.Fatalf("EmitContinuationNDJSON: %v", err)
+	}
+
+	captured := rec.Body.Bytes()
+	lines := strings.Split(strings.TrimRight(string(captured), "\n"), "\n")
+	if len(lines) < 1 {
+		t.Fatalf("expected at least 1 chunk for done, got 0:\n%s", captured)
+	}
+
+	var c map[string]interface{}
+	if err := json.Unmarshal([]byte(lines[0]), &c); err != nil {
+		t.Fatalf("chunk not valid JSON: %v\nline=%s", err, lines[0])
+	}
+	if done, _ := c["done"].(bool); !done {
+		t.Errorf("expected done:true in final chunk, got done:false")
+	}
+}
+
+// TestR65b_IsContinuationARegeneration_ChatMLTokenLeak — R65b regression
+// test: continuation containing <|im_start|> or <|im_end|> tokens is a
+// strong sign of model degeneracy (it generated ChatML scaffolding in its
+// own output). We MUST treat such continuations as regeneration and
+// suppress them to prevent user-visible artifacts in OpenWebUI.
+func TestR65b_IsContinuationARegeneration_ChatMLTokenLeak(t *testing.T) {
+	cases := []struct {
+		name    string
+		content string
+		want    bool
+	}{
+		{
+			name:    "im_start assistant token leak",
+			content: "<|im_start|>assistant\nHi again!",
+			want:    true,
+		},
+		{
+			name:    "im_end token leak",
+			content: "Some text<|im_end|>more text",
+			want:    true,
+		},
+		{
+			name:    "no leak — pure code continuation",
+			content: "  const x = 5;\n  return x;",
+			want:    false,
+		},
+		{
+			name:    "Хочешь добавить preamble",
+			content: "Хочешь добавить **фактическую физику** или **графики**?",
+			want:    true,
+		},
+		{
+			name:    "Конечно! prefix",
+			content: "Конечно! Ниже представлен полный код...",
+			want:    true,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := IsContinuationARegeneration("original partial content", tc.content)
+			if got != tc.want {
+				t.Errorf("IsContinuationARegeneration(%q) = %v, want %v", tc.content, got, tc.want)
+			}
+		})
 	}
 }
 

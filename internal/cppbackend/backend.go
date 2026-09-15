@@ -2105,10 +2105,16 @@ func (b *Backend) Generate(modelName string, prompt string, params bridge.Genera
 // Round 15.1 (2026-07-30): если BatchedScheduler активен для этой модели,
 // маршрутизируем через BatchedInferStream (true parallel inference).
 // Greedy argmax sampling (temp/top_p ignored). Иначе — legacy Round 13 path.
-func (b *Backend) GenerateStream(modelName string, prompt string, params bridge.GenerationParams, callback bridge.StreamCallback) error {
+//
+// R63 (2026-09-15): возвращает (abortFlag, error). abortFlag — per-infer
+// atomic int от C-bridge; caller (handler) использует его для ctx.Done
+// cancel watcher через NewAbortWatcher. Per-infer flag решает R60.58
+// per-model race (любая отмена одной горутины сбрасывала все infers для
+// той же модели).
+func (b *Backend) GenerateStream(modelName string, prompt string, params bridge.GenerationParams, callback bridge.StreamCallback) (unsafe.Pointer, error) {
 	inst, err := b.getModelInstance(modelName)
 	if err != nil {
-		return err
+		return nil, err
 	}
 
 	// Round 15.1: если BatchedScheduler активен, маршрутизируем в batched path.
@@ -2123,7 +2129,7 @@ func (b *Backend) GenerateStream(modelName string, prompt string, params bridge.
 	}
 	slot, release, err := inst.slots.Acquire(context.Background())
 	if err != nil {
-		return err
+		return nil, err
 	}
 	// ВАЖНО: defer release() ДО defer mu.Unlock() — defer LIFO:
 	// сначала Unlock, потом Release (без deadlock).
@@ -2151,6 +2157,11 @@ func (b *Backend) GenerateStream(modelName string, prompt string, params bridge.
 	return inst.handle.InferStream(prompt, params, callback)
 }
 
+// Suppress unused-import warning for unsafe — нужно для новой сигнатуры
+// GenerateStream (R63). Используется в unsafe.Pointer(nil) выше для batched
+// path (batched scheduler пока не возвращает abortFlag — TODO R63.x).
+var _ = unsafe.Pointer(nil)
+
 // batchedInferStream — Round 15.1: streaming inference через BatchedScheduler.
 //
 // Контракт:
@@ -2170,14 +2181,16 @@ func (b *Backend) GenerateStream(modelName string, prompt string, params bridge.
 // при capacity overflow. Caller (HTTP handler) перехватывает и возвращает
 // 503 клиенту. Round 15.1 НЕ блокирует на capacity — opt-in флаг для
 // workloads где caller знает лимит.
-func (b *Backend) batchedInferStream(inst *modelInstance, modelName string, prompt string, params bridge.GenerationParams, callback bridge.StreamCallback) error {
+func (b *Backend) batchedInferStream(inst *modelInstance, modelName string, prompt string, params bridge.GenerationParams, callback bridge.StreamCallback) (unsafe.Pointer, error) {
+	// R63: возвращаем (nil, error) — batched path пока не использует per-infer
+	// abort flag (TODO R63.x: добавить когда BatchedScheduler научится cancel).
 	// 1. Tokenize prompt.
 	tokens, err := inst.handle.Tokenize(prompt)
 	if err != nil {
-		return fmt.Errorf("batched stream: tokenize failed: %w", err)
+		return nil, fmt.Errorf("batched stream: tokenize failed: %w", err)
 	}
 	if len(tokens) == 0 {
-		return errors.New("batched stream: empty prompt after tokenize")
+		return nil, errors.New("batched stream: empty prompt after tokenize")
 	}
 
 	// 2. Determine MaxTokens.
@@ -2203,7 +2216,7 @@ func (b *Backend) batchedInferStream(inst *modelInstance, modelName string, prom
 		Seed:        uint32(params.Seed),
 	})
 	if err != nil {
-		return fmt.Errorf("batched stream: register session: %w", err)
+		return nil, fmt.Errorf("batched stream: register session: %w", err)
 	}
 	defer inst.batchedScheduler.UnregisterSession(id)
 
@@ -2255,15 +2268,15 @@ streamLoop:
 				// Caller попросил остановиться (return false из callback).
 				// Это primary cancellation path — safeStreamWriter callback
 				// ловит ctx.Done() внутри Writef/Flush и возвращает false.
-				return nil
+				return nil, nil
 			}
 		}
 	}
 	// TokenCh закрыт scheduler'ом. Проверяем session.Err.
 	if state.Err != nil {
-		return state.Err
+		return nil, state.Err
 	}
-	return nil
+	return nil, nil
 }
 
 // GetEmbeddings получает эмбеддинги текста

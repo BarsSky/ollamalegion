@@ -511,14 +511,36 @@ func generateWithRamFallback(modelName, prompt string, params bridge.GenerationP
 // ???????? hasTools=true ????????? reload (??. generateWithRamFallback).
 // ????? (2026-06-22): ???????? clampNPredictToFitContext ????? ??????? ? ????? bridge
 // ?????? ? ?????? ?? prefill-?????? ??? tools/long-prompt ????????.
-func generateStreamWithRamFallback(modelName, prompt string, params bridge.GenerationParams, callback bridge.StreamCallback, hasTools bool) error {
+
+// streamWithAbort wraps backend.GenerateStream with R63 per-infer AbortWatcher.
+// Returns error from GenerateStream. AbortWatcher is fire-and-forget goroutine
+// that calls bridge.SetInferAbort(abortFlag, 1) when ctx.Done() fires.
+//
+// Precondition: ctx must be cancellable (handler context). abortFlag == nil is safe
+// (no watcher created).
+func streamWithAbort(ctx context.Context, modelName, prompt string, params bridge.GenerationParams, callback bridge.StreamCallback) error {
+	abortFlag, err := backend.GenerateStream(modelName, prompt, params, callback)
+	if err != nil {
+		return err
+	}
+	// R63 (2026-09-15): per-infer AbortWatcher через unsafe.Pointer на
+	// C atomic_int, возвращённый из GenerateStream. При ctx.Done() ставит
+	// atomic.StoreInt32(flag, 1) → C-bridge aborts ТОЛЬКО этот infer на
+	// ближайшем checkpoint, не per-model.
+	if abortFlag != nil {
+		_ = NewAbortWatcher(ctx, abortFlag)
+	}
+	return nil
+}
+
+func generateStreamWithRamFallback(ctx context.Context, modelName, prompt string, params bridge.GenerationParams, callback bridge.StreamCallback, hasTools bool) error {
 	// ???????????? ???????? n_predict (??? streaming ???? ???????? ? ????? bridge
 	// ?????? ? ?????? ?? prefill-??????).
 	// 2026-06-24: ???? prompt>n_ctx ???? ? ?????? min floor ? ?????????? ??????.
 	if clampErr := clampNPredictToFitContext(modelName, prompt, &params); clampErr != nil {
 		return clampErr
 	}
-	err := backend.GenerateStream(modelName, prompt, params, callback)
+	err := streamWithAbort(ctx, modelName, prompt, params, callback)
 	if err == nil {
 		// ???????? ????? ??? n_ctx ?????? ? ?????????? ??????? reload-???????.
 		resetReloadAttempts(modelName)
@@ -528,7 +550,7 @@ func generateStreamWithRamFallback(modelName, prompt string, params bridge.Gener
 	if waitReloadInProgress(modelName) {
 		logger.Get().Debugw("RAM fallback: waiting for concurrent reload to complete before stream retry",
 			"model", modelName)
-		err = backend.GenerateStream(modelName, prompt, params, callback)
+		err = streamWithAbort(ctx, modelName, prompt, params, callback)
 		if err == nil {
 			resetReloadAttempts(modelName)
 		}
@@ -543,7 +565,7 @@ func generateStreamWithRamFallback(modelName, prompt string, params bridge.Gener
 		logger.Get().Warnw("RAM fallback declined", "model", modelName, "error", fbErr)
 		return err
 	}
-	err = backend.GenerateStream(modelName, prompt, params, callback)
+	err = streamWithAbort(ctx, modelName, prompt, params, callback)
 	if err == nil {
 		// ???????? retry ????? reload ? ???? ?????????? ???????.
 		resetReloadAttempts(modelName)

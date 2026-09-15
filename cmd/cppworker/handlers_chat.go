@@ -202,10 +202,10 @@ func handleChat(w http.ResponseWriter, r *http.Request) {
 		// ?????? ????? ??? bug: cppworker ????????? non-streaming JSON ????? writeJSON,
 		// ??? ?????? OpenWebUI (?? ???? NDJSON ?????).
 		if len(req.Tools) > 0 {
-			writeChatStreamResponseWithTools(w, r, req.Model, prompt, params)
+			writeChatStreamResponseWithTools(w, r, actualModel, prompt, params)
 			return
 		}
-		writeChatStreamResponse(w, r, req.Model, prompt, params)
+		writeChatStreamResponse(w, r, actualModel, prompt, params)
 		return
 	}
 
@@ -603,12 +603,10 @@ func writeChatStreamResponse(w http.ResponseWriter, r *http.Request, modelName, 
 	flusher.Flush()
 	_ = prefillStartTime // для future logging/debugging
 	ctx := r.Context()
-	// Round 31 #6: spawn abort_watcher чтобы дёрнуть C-bridge при ctx.Done().
-	// Закрывает G1 (длинный prompt) и G3 (status code distinction).
-	// Fire-and-forget: handler не ждёт watcher (ctx отменён при возврате).
-	if handle, ok := backend.GetHandle(modelName); ok {
-		_ = NewAbortWatcher(ctx, handle)
-	}
+	// R63 (2026-09-15): per-infer AbortWatcher создаётся внутри GenerateStream
+	// (inference.go:521), там где доступен abortFlag от C-bridge. Удаляем
+	// старый per-model watcher (R60.58) — был race condition для
+	// параллельных infers одной модели.
 	var outputBuf strings.Builder
 	start := time.Now()
 	createdAt := time.Now().UTC().Format(time.RFC3339)
@@ -697,7 +695,7 @@ func writeChatStreamResponse(w http.ResponseWriter, r *http.Request, modelName, 
 	}
 
 	// /api/chat endpoint: tools ?? ?????????????? (Ollama-???), reload ???????? ??? n_ctx overflow.
-	streamErr = generateStreamWithRamFallback(modelName, prompt, params, callback, false)
+	streamErr = generateStreamWithRamFallback(ctx, modelName, prompt, params, callback, false)
 	if streamErr != nil {
 		maybeRestartOnMemorySlotError(streamErr, modelName)
 		// Round 31 #6 (2026-08-09): если streamErr — это ErrAborted (отменено через
@@ -826,10 +824,8 @@ func writeChatStreamResponseWithTools(w http.ResponseWriter, r *http.Request, mo
 	// the connection alive during long generations.
 	flusher.Flush()
 	ctx := r.Context()
-	// Round 31 #6: abort_watcher для tool-buffered path.
-	if handle, ok := backend.GetHandle(modelName); ok {
-		_ = NewAbortWatcher(ctx, handle)
-	}
+	// R63 (2026-09-15): per-infer AbortWatcher создаётся внутри GenerateStream
+	// (inference.go:521), там где доступен abortFlag от C-bridge.
 	start := time.Now()
 	createdAt := time.Now().UTC().Format(time.RFC3339)
 
@@ -897,7 +893,7 @@ func writeChatStreamResponseWithTools(w http.ResponseWriter, r *http.Request, mo
 	}
 
 	// /api/chat streaming with tools: full buffer, single final response.
-	streamErr = generateStreamWithRamFallback(modelName, prompt, params, callback, false)
+	streamErr = generateStreamWithRamFallback(ctx, modelName, prompt, params, callback, false)
 
 	// ???? ?? ????? streaming ????????? ?????? ? ?????? ????????? chunk ? error,
 	// ??? ? writeChatStreamResponse. Tool calls ? ???? ?????? ?? ???????????.

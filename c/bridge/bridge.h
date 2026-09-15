@@ -184,10 +184,20 @@ ModelHandle bridge_load_model(const ModelConfig* config, char** error_msg, Model
 void bridge_free_model(ModelHandle model);
 
 // Инференс (синхронный)
+//
+// R63 (2026-09-15): параметр out_abort_flag (optional) — указатель на
+// per-inference atomic int, который C-bridge создаёт на стеке внутри вызова.
+// Go-side получает unsafe.Pointer(flag) и может делать atomic.StoreInt32(flag, 1)
+// чтобы отменить ТОЛЬКО этот infer (не per-model — что ломало параллельные
+// streaming-запросы под R60.58 per-model race).
+//
+// До R63 был только per-model abort flag (im->abort_requested), и любая отмена
+// одной горутины сбрасывала ВСЕ активные infers для той же модели.
 InferenceResult bridge_infer(
     ModelHandle model,
     const char* prompt,
-    const GenerationParams* params
+    const GenerationParams* params,
+    int32_t** out_abort_flag  // R63: optional out-параметр, может быть NULL
 );
 
 // Стриминг инференс (через callback)
@@ -197,8 +207,18 @@ int bridge_infer_stream(
     const char* prompt,
     const GenerationParams* params,
     StreamCallback callback,
-    void* user_data
+    void* user_data,
+    int32_t** out_abort_flag  // R63: optional out-параметр (NULL = legacy)
 );
+
+// R63: установить abort flag для конкретного infer.
+// Go-side вызывает из cancel-watcher goroutine при r.Context().Done().
+// Безопасно вызывать после того как infer завершился — atomic store на int32
+// безопасен даже после free (не деферenced).
+void bridge_set_infer_abort(int32_t* abort_flag, int32_t value);
+
+// R63: прочитать текущее значение abort flag (для диагностики / тестов).
+int32_t bridge_get_infer_abort(int32_t* abort_flag);
 
 // Получение эмбеддингов
 InferenceResult bridge_get_embeddings(

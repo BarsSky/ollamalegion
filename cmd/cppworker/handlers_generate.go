@@ -426,10 +426,10 @@ func writeStreamResponse(w http.ResponseWriter, r *http.Request, modelName, prom
 	w.Header().Set("Connection", "keep-alive")
 	flusher.Flush()
 	ctx := r.Context()
-	// Round 31 #6: abort_watcher для streaming generate.
-	if handle, ok := backend.GetHandle(modelName); ok {
-		_ = NewAbortWatcher(ctx, handle)
-	}
+	// R63 (2026-09-15): per-infer AbortWatcher создаётся внутри GenerateStream
+	// (inference.go:521), там где доступен abortFlag от C-bridge. Удаляем
+	// старый per-model watcher (R60.58) — был race condition для
+	// параллельных infers одной модели.
 	tokens := 0
 	var outputBuf strings.Builder
 	start := time.Now()
@@ -458,7 +458,7 @@ func writeStreamResponse(w http.ResponseWriter, r *http.Request, modelName, prom
 		return true
 	}
 	// /api/generate streaming: tools не поддерживаются.
-	streamErr = generateStreamWithRamFallback(modelName, prompt, params, callback, false)
+	streamErr = generateStreamWithRamFallback(ctx, modelName, prompt, params, callback, false)
 	if streamErr != nil {
 		maybeRestartOnMemorySlotError(streamErr, modelName)
 		errChunk := map[string]interface{}{
@@ -636,10 +636,7 @@ func writeOllamaStream(w http.ResponseWriter, r *http.Request, modelName, prompt
 	prefillHBJSON, _ := json.Marshal(prefillHB)
 	fmt.Fprintf(w, "%s\n", prefillHBJSON)
 	flusher.Flush()
-	// Round 31 #6: abort_watcher для ollama-generate streaming.
-	if handle, ok := backend.GetHandle(modelName); ok {
-		_ = NewAbortWatcher(r.Context(), handle)
-	}
+	// R63: per-infer AbortWatcher создаётся внутри GenerateStream (inference.go:521).
 	tokens := 0
 	var outputBuf strings.Builder
 	start := time.Now()
@@ -684,8 +681,10 @@ func writeOllamaStream(w http.ResponseWriter, r *http.Request, modelName, prompt
 		tokens++
 		return true
 	}
+	// R63 (2026-09-15): ctx нужен для streamWithAbort → NewAbortWatcher.
+	ctx := r.Context()
 	// /api/generate streaming: tools не поддерживаются.
-	streamErr = generateStreamWithRamFallback(modelName, prompt, params, callback, false)
+	streamErr = generateStreamWithRamFallback(ctx, modelName, prompt, params, callback, false)
 	if streamErr != nil {
 		maybeRestartOnMemorySlotError(streamErr, modelName)
 		errJSON, _ := json.Marshal(map[string]interface{}{

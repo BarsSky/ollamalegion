@@ -683,6 +683,9 @@ func (m *ModelHandle) SetEmbeddingsMode(mode BridgeMode) error {
 // Неблокирующая — atomic_store мгновенный. Сам cancel происходит асинхронно
 // в C-bridge на ближайшей check point.
 //
+// DEPRECATED (R63, 2026-09-15): per-model abort — race condition. Используй
+// SetInferAbort(*int32, 1) с per-infer flag из Infer/InferStream.
+//
 // Возвращает error если model == nil или C-bridge вернул -1 (невалидный handle).
 // В нормальной ситуации (model загружен) — возвращает nil.
 func RequestAbort(model *ModelHandle) error {
@@ -697,6 +700,33 @@ func RequestAbort(model *ModelHandle) error {
 		return fmt.Errorf("bridge_request_abort failed: rc=%d", rc)
 	}
 	return nil
+}
+
+// R63 (2026-09-15): SetInferAbort — установить per-inference abort flag.
+//
+// flag — указатель на C atomic_int, полученный через out_abort_flag параметр
+// bridge_infer / bridge_infer_stream. Можно безопасно вызывать:
+//
+//   - из любой горутины (atomic операция)
+//   - с NULL flag (no-op)
+//   - ПОСЛЕ завершения infer (atomic_store на int32 безопасен; но не
+//     деферenced самим C-bridge после free)
+//
+// Используется AbortWatcher в Go-side для cancel-on-ctx-done.
+func SetInferAbort(flag unsafe.Pointer, value int32) {
+	if flag == nil {
+		return
+	}
+	C.bridge_set_infer_abort((*C.int32_t)(flag), C.int32_t(value))
+}
+
+// R63 (2026-09-15): GetInferAbort — прочитать текущее значение per-infer abort flag.
+// Используется для диагностики и тестов. Безопасно с NULL flag (returns 0).
+func GetInferAbort(flag unsafe.Pointer) int32 {
+	if flag == nil {
+		return 0
+	}
+	return int32(C.bridge_get_infer_abort((*C.int32_t)(flag)))
 }
 
 // RequestAbortAll помечает ВСЕ активные инференсы как aborted.
@@ -878,7 +908,12 @@ func (m *ModelHandle) Infer(prompt string, params GenerationParams) (*InferenceR
 		seq_id: C.int(params.SeqId),
 	}
 
-	result := C.bridge_infer(m.ptr, cPrompt, &cParams)
+	// R63 (2026-09-15): per-inference abort flag вместо per-model. C-bridge
+	// создаёт локальный atomic_int и возвращает указатель через out_abort_flag.
+	// Используем atomic.Int32 через unsafe.Pointer — Go atomic совместим
+	// с C11 atomic при условии same memory layout и aligned access.
+	var abortFlag unsafe.Pointer
+	result := C.bridge_infer(m.ptr, cPrompt, &cParams, &abortFlag)
 	defer C.bridge_free_inference_result(&result)
 
 	// Round 31 #6: BRIDGE_ERR_ABORTED = -100 обрабатывается отдельно.
@@ -921,10 +956,19 @@ func (m *ModelHandle) Infer(prompt string, params GenerationParams) (*InferenceR
 	}, nil
 }
 
-// InferStream выполняет стриминг-инференс
-func (m *ModelHandle) InferStream(prompt string, params GenerationParams, callback StreamCallback) error {
+// InferStream выполняет стриминг-инференс.
+//
+// R63 (2026-09-15): возвращает (abortFlag, error) — abortFlag это unsafe.Pointer
+// на C atomic_int, который Go-side должен использовать для отмены ТОЛЬКО этого
+// infer (per-inference cancel). Caller обычно оборачивает abortFlag в
+// NewAbortWatcher(ctx, abortFlag), который слушает ctx.Done и вызывает
+// bridge.SetInferAbort(abortFlag, 1).
+//
+// Per-infer abort flag решает R60.58 per-model race, где любая отмена одной
+// горутины сбрасывала ВСЕ параллельные infers для той же модели.
+func (m *ModelHandle) InferStream(prompt string, params GenerationParams, callback StreamCallback) (unsafe.Pointer, error) {
 	if m == nil || m.ptr == nil {
-		return fmt.Errorf("model not loaded")
+		return nil, fmt.Errorf("model not loaded")
 	}
 
 	cPrompt := C.CString(prompt)
@@ -966,10 +1010,15 @@ func (m *ModelHandle) InferStream(prompt string, params GenerationParams, callba
 	handle := cgo.NewHandle(cbData)
 	defer handle.Delete()
 
+	// R63 (2026-09-15): per-inference abort flag вместо per-model.
+	// unsafe.Pointer для C atomic_int — Go sync/atomic гарантирует
+	// cross-language memory consistency при условии aligned access.
+	var abortFlag unsafe.Pointer
 	ret := C.bridge_infer_stream(
 		m.ptr, cPrompt, &cParams,
 		C.StreamCallback(C.streamCallbackGo),
 		unsafe.Pointer(&handle),
+		&abortFlag)
 	)
 
 	if ret != 0 {
@@ -978,7 +1027,7 @@ func (m *ModelHandle) InferStream(prompt string, params GenerationParams, callba
 		// errors.Is, чтобы handlerы могли отличить cancelled от failure.
 		// Cancel НЕ считается retryable ошибкой (не пытаемся retry).
 		if ret == ErrCodeAborted {
-			return fmt.Errorf("stream inference cancelled (code %d): %w", ret, ErrAborted)
+			return abortFlag, fmt.Errorf("stream inference cancelled (code %d): %w", ret, ErrAborted)
 		}
 		// C-bridge возвращает структурированный код ошибки:
 		//   0 — OK
@@ -1005,13 +1054,13 @@ func (m *ModelHandle) InferStream(prompt string, params GenerationParams, callba
 			ret, detail, info.CurrentNCtx, info.RequiredNCtx, info.MaxVRAMNCtx)
 		switch info.Code {
 		case ErrCodeNCtxNeedsReload:
-			return fmt.Errorf("%w: %w", base, ErrNCtxNeedsReload)
+			return abortFlag, fmt.Errorf("%w: %w", base, ErrNCtxNeedsReload)
 		case ErrCodePromptTooLong:
-			return fmt.Errorf("%w: %w", base, ErrPromptTooLong)
+			return abortFlag, fmt.Errorf("%w: %w", base, ErrPromptTooLong)
 		}
-		return base
+		return abortFlag, base
 	}
-	return nil
+	return abortFlag, nil
 }
 
 // GetEmbeddings получает эмбеддинги текста

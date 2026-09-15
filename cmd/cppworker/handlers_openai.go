@@ -802,10 +802,9 @@ func writeOpenAIChatStream(w http.ResponseWriter, r *http.Request, modelName, pr
 	flusher.Flush()
 
 	ctx := r.Context()
-	// Round 31 #6: abort_watcher для OpenAI chat streaming.
-	if handle, ok := backend.GetHandle(modelName); ok {
-		_ = NewAbortWatcher(ctx, handle)
-	}
+	// R63 (2026-09-15): AbortWatcher per-infer flag теперь создаётся внутри
+	// GenerateStream (inference.go:521) — там где доступен abortFlag
+	// возвращаемый C-bridge. Удаляем старый per-model watcher.
 	chatID := fmt.Sprintf("chatcmpl-%d", time.Now().UnixNano())
 	created := time.Now().Unix()
 
@@ -1062,7 +1061,7 @@ func writeOpenAIChatStream(w http.ResponseWriter, r *http.Request, modelName, pr
 		return true
 	}
 	// writeOpenAIChatStream вызывается только когда tools НЕ заданы (для tools идёт буферизированный путь в handleV1ChatCompletions). Поэтому reload при n_ctx overflow разрешён.
-	streamErr = generateStreamWithRamFallback(modelName, prompt, params, callback, false)
+	streamErr = generateStreamWithRamFallback(ctx, modelName, prompt, params, callback, false)
 	if streamErr != nil {
 		maybeRestartOnMemorySlotError(streamErr, modelName)
 		// Round 31 #6 (2026-08-09): cancelled response. OpenAI-compatible клиенты
@@ -1481,10 +1480,7 @@ func writeOpenAICompletionStream(w http.ResponseWriter, r *http.Request, modelNa
 	w.Header().Set("Connection", "keep-alive")
 
 	ctx := r.Context()
-	// Round 31 #6: abort_watcher для OpenAI completion streaming.
-	if handle, ok := backend.GetHandle(modelName); ok {
-		_ = NewAbortWatcher(ctx, handle)
-	}
+	// R63: per-infer AbortWatcher создаётся внутри GenerateStream (inference.go:521).
 	completionID := fmt.Sprintf("cmpl-%d", time.Now().UnixNano())
 	created := time.Now().Unix()
 
@@ -1588,7 +1584,7 @@ func writeOpenAICompletionStream(w http.ResponseWriter, r *http.Request, modelNa
 		return writeCompletionChunk(token, "")
 	}
 	// writeOpenAICompletionStream — /v1/completions, tools не поддерживаются.
-	streamErr = generateStreamWithRamFallback(modelName, prompt, params, callback, false)
+	streamErr = generateStreamWithRamFallback(ctx, modelName, prompt, params, callback, false)
 	if streamErr != nil {
 		maybeRestartOnMemorySlotError(streamErr, modelName)
 		// Специальная обработка reload-loop-limit.

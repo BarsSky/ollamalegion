@@ -16,6 +16,7 @@ package bridge
 import (
 	"fmt"
 	"runtime"
+	"unsafe"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -586,13 +587,17 @@ func ResetStubLoadAbortCount() {
 }
 
 // InferStream выполняет стриминг-инференс (stub)
-func (m *ModelHandle) InferStream(prompt string, params GenerationParams, callback StreamCallback) error {
+//
+// R63 (2026-09-15): возвращает (abortFlag, error). Stub не использует abortFlag
+// (atomic.Int32 — всегда nil), но сигнатура должна совпадать с non-stub
+// реализацией в bridge.go.
+func (m *ModelHandle) InferStream(prompt string, params GenerationParams, callback StreamCallback) (unsafe.Pointer, error) {
 	// Режим «пустой output» для тестов: callback не вызывается ни разу,
 	// ошибка не возвращается — это имитирует случай, когда модель
 	// успешно завершила генерацию (Status=0), но не выдала ни одного
 	// токена (например, antiprompt сработал на первом же шаге).
 	if stubEmptyOutput.Load() {
-		return nil
+		return nil, nil
 	}
 
 	// Если тест задал специфичные токены через SetStubEmitTokens — эмитим их.
@@ -604,10 +609,10 @@ func (m *ModelHandle) InferStream(prompt string, params GenerationParams, callba
 
 	for _, tok := range tokens {
 		if !callback(tok) {
-			return nil // cancelled
+			return nil, nil // cancelled
 		}
 	}
-	return nil
+	return nil, nil
 }
 
 // GetEmbeddings получает эмбеддинги (stub)

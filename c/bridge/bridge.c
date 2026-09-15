@@ -1440,7 +1440,8 @@ struct llama_sampler* build_sampler_chain_from_params(const GenerationParams* pa
 InferenceResult bridge_infer(
     ModelHandle model,
     const char* prompt,
-    const GenerationParams* params
+    const GenerationParams* params,
+    int32_t** out_abort_flag  // R63: per-infer atomic flag (optional)
 ) {
     InferenceResult result = {0};
 
@@ -1452,8 +1453,14 @@ InferenceResult bridge_infer(
 
     InternalModel *im = (InternalModel *)model;
 
-    // Round 31 #6: сбросить abort флаг перед новым infer.
-    atomic_store(&im->abort_requested, 0);
+    // R63 (2026-09-15): per-inference abort flag вместо per-model.
+    // Локальный atomic_int на стеке — каждый bridge_infer call имеет свой
+    // НЕЗАВИСИМЫЙ abort flag. bridge_set_infer_abort(flag, 1) от Go-side
+    // cancel-watcher отменяет ТОЛЬКО этот конкретный infer, не все
+    // параллельные infers для той же модели (R60.58 per-model race bug).
+    atomic_int local_abort;
+    atomic_init(&local_abort, 0);
+    if (out_abort_flag) *out_abort_flag = (int32_t*)&local_abort;
 
     // Round 13 (2026-07-28): извлекаем seq_id для multi-slot support.
     // seq_id=0 — legacy single-slot (clear all), seq_id>0 — multi-slot
@@ -1553,8 +1560,10 @@ InferenceResult bridge_infer(
             tokens + n_processed, batch_size, seq_id, (llama_pos)n_processed
         );
 
-        // Round 31 #6: abort check в prompt phase (sync bridge_infer).
-        if (atomic_load(&im->abort_requested)) {
+        // Round 31 #6 + R63: abort check в prompt phase (sync bridge_infer).
+        // R63: per-infer flag (local_abort) вместо per-model — fixes race
+        // where concurrent stream cancel breaks unrelated infers.
+        if (atomic_load(&local_abort)) {
             free(tokens);
             free(output);
             result.error_msg = strdup("generation aborted by user (bridge_infer, prompt phase)");
@@ -1628,8 +1637,9 @@ InferenceResult bridge_infer(
         struct llama_batch gen_batch = build_batch_with_seq(
             &new_token, 1, seq_id, (llama_pos)(n_processed + i)
         );
-        // Round 31 #6: abort check в gen phase (sync bridge_infer).
-        if (atomic_load(&im->abort_requested)) {
+        // Round 31 #6 + R63: abort check в gen phase (sync bridge_infer).
+        // R63: per-infer flag (local_abort).
+        if (atomic_load(&local_abort)) {
             free(output);
             result.status = BRIDGE_ERR_ABORTED;
             result.error_msg = strdup("generation aborted by user (bridge_infer, gen phase)");
@@ -1779,7 +1789,8 @@ int bridge_infer_stream(
     const char* prompt,
     const GenerationParams* params,
     StreamCallback callback,
-    void* user_data
+    void* user_data,
+    int32_t** out_abort_flag  // R63: per-infer atomic flag (optional)
 ) {
     if (model == NULL || prompt == NULL || callback == NULL) {
         set_error("invalid arguments to bridge_infer_stream (model/prompt/callback is NULL)");
@@ -1788,13 +1799,19 @@ int bridge_infer_stream(
 
     InternalModel *im = (InternalModel *)model;
 
-    // Round 31 #6: сбросить abort флаг перед новым infer.
-    // Модель переиспользуема после abort (флаг = 1 в im->abort_requested
-    // остался от предыдущего прерванного вызова), так что мы ОБЯЗАНЫ
-    // сбросить его в 0 здесь. atomic_store с relaxed memory ordering —
-    // достаточно, потому что другие поля InternalModel не зависят от
-    // синхронизации с этим флагом.
-    atomic_store(&im->abort_requested, 0);
+    // R63 (2026-09-15): per-inference abort flag вместо per-model.
+    // Локальный atomic_int на стеке — каждый bridge_infer_stream call имеет
+    // свой НЕЗАВИСИМЫЙ abort flag. bridge_set_infer_abort(flag, 1) от Go-side
+    // cancel-watcher отменяет ТОЛЬКО этот конкретный stream, не все
+    // параллельные streams для той же модели.
+    //
+    // Round 31 #6 per-model abort (atomic_store(&im->abort_requested, 0))
+    // был RACE CONDITION: любая горутина, делающая bridge_request_abort,
+    // отменяла ВСЕ активные infers для модели — что ломало OpenWebUI
+    // streaming при многопользовательской нагрузке.
+    atomic_int local_abort;
+    atomic_init(&local_abort, 0);
+    if (out_abort_flag) *out_abort_flag = (int32_t*)&local_abort;
 
     // Round 13 (2026-07-28): extract seq_id for multi-slot support.
     llama_seq_id seq_id = (llama_seq_id)(params->seq_id > 0 ? params->seq_id : 0);
@@ -1865,8 +1882,9 @@ int bridge_infer_stream(
             tokens + n_processed, batch_size, seq_id, (llama_pos)n_processed
         );
 
-        // Round 31 #6: abort check в prompt phase (stream). Закрывает G1.
-        if (atomic_load(&im->abort_requested)) {
+        // Round 31 #6 + R63: abort check в prompt phase (stream).
+        // R63: per-infer flag (local_abort) вместо per-model.
+        if (atomic_load(&local_abort)) {
             free(tokens);
             set_error("generation aborted by user (bridge_infer_stream, prompt phase)");
             llama_batch_free(batch);
@@ -1958,9 +1976,11 @@ int bridge_infer_stream(
             &new_token, 1, seq_id, (llama_pos)(n_processed + i)
         );
         // Round 31 #6: abort check в gen phase (stream). Дополняет callback check —
-        // если токен долго декодируется (large model, large batch), abort даёт
+        // Round 31 #6 + R63: abort check в gen phase (stream).
+        // R63: per-infer flag (local_abort) вместо per-model.
+        // Если токен долго декодируется (large model, large batch), abort даёт
         // exit point между декодированием. Cancel latency = single batch time.
-        if (atomic_load(&im->abort_requested)) {
+        if (atomic_load(&local_abort)) {
             llama_batch_free(gen_batch);
             llama_sampler_free(sampler);
             return BRIDGE_ERR_ABORTED;
@@ -2276,6 +2296,37 @@ int bridge_request_abort(ModelHandle model) {
     InternalModel *im = (InternalModel *)model;
     atomic_store(&im->abort_requested, 1);
     return 0;
+}
+
+// R63 (2026-09-15): bridge_set_infer_abort — установить per-inference abort flag.
+//
+// Эта функция заменяет bridge_request_abort(model) для streaming cancel.
+// Per-model abort (atomic_store(&im->abort_requested, 1)) отменял ВСЕ активные
+// infers для модели — что ломало OpenWebUI streaming при многопользовательской
+// нагрузке (race condition R60.58).
+//
+// Per-infer flag — atomic_int на стеке внутри bridge_infer / bridge_infer_stream.
+// Указатель на этот flag возвращается через out_abort_flag параметр.
+// Go-side получает unsafe.Pointer и использует sync/atomic для store/load.
+//
+// SAFETY:
+//   - thread-safe (atomic_store с relaxed memory ordering)
+//   - safe to call with NULL flag (no-op)
+//   - safe to call AFTER infer завершился — atomic store на int32 безопасен
+//     даже после выхода из scope (не деферenced C, просто значение в стеке
+//     вызывающего thread'а уже неактуально, но store не UB)
+//   - safe to call из любой горутины (включая ctx.Done watcher)
+void bridge_set_infer_abort(int32_t* abort_flag, int32_t value) {
+    if (abort_flag == NULL) return;
+    atomic_store((atomic_int*)abort_flag, value);
+}
+
+// R63 (2026-09-15): bridge_get_infer_abort — прочитать текущее значение
+// per-inference abort flag. Используется для диагностики и тестов.
+// thread-safe (atomic_load с relaxed memory ordering).
+int32_t bridge_get_infer_abort(int32_t* abort_flag) {
+    if (abort_flag == NULL) return 0;
+    return atomic_load((atomic_int*)abort_flag);
 }
 
 // bridge_request_abort_all — DECISION Q1 (см. plans/cppworker-abort-api/PLAN.md §2.8):

@@ -71,6 +71,23 @@ func TestWireFormat_ChatStreaming_FullSchema(t *testing.T) {
 		t.Fatal("no done:true chunk in stream")
 	}
 
+	// === STRUCTURAL ASSERTION: каждый NDJSON чанк имеет created_at (Ollama spec) ===
+	// Реальная Ollama API требует created_at в КАЖДОМ chunk'е (RFC3339Nano),
+	// не только в финальном done-чанке. R65 (2026-09-15) фикс: balancer
+	// translateSSEChatToOllama и translateSSEGenerateToOllama теперь
+	// добавляют created_at ко всем чанкам (раньше отсутствовало — клиенты
+	// типа OpenWebUI могли получить неполные данные).
+	for i, c := range ndjsonChunks {
+		if createdAt, ok := c["created_at"].(string); !ok || createdAt == "" {
+			t.Errorf("compliance: NDJSON chunk[%d] (done=%v) missing 'created_at' (Ollama API spec — must be RFC3339Nano in EVERY chunk)", i, c["done"])
+		} else if _, err := time.Parse(time.RFC3339Nano, createdAt); err != nil {
+			// Также принимаем RFC3339 (без nanos) — это всё ещё валидный формат
+			if _, err2 := time.Parse(time.RFC3339, createdAt); err2 != nil {
+				t.Errorf("compliance: NDJSON chunk[%d] 'created_at' is not valid RFC3339/RFC3339Nano: %q (err: %v)", i, createdAt, err)
+			}
+		}
+	}
+
 	// === STRUCTURAL ASSERTION: канонический done-чанк имеет ВСЕ Ollama-поля ===
 	// Ollama /api/chat streaming schema:
 	//   model, created_at, message:{role, content}, done, done_reason,

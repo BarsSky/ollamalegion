@@ -714,6 +714,7 @@ func translateUsageChunkToOllama(ollamaPath, modelName string, usage map[string]
 
 	ollamaChunk := map[string]interface{}{
 		"model":             modelName,
+		"created_at":        time.Now().UTC().Format(time.RFC3339Nano),
 		"done":              true,
 		"done_reason":       doneReason,
 		"prompt_eval_count": promptTokens,
@@ -846,8 +847,9 @@ func intFromUsage(usage map[string]interface{}, key string) int {
 // nil = stateless mode (для тестов).
 func translateSSEChatToOllama(chunk map[string]interface{}, modelName string, seenReasoning *bool) []byte {
 	ollamaChunk := map[string]interface{}{
-		"model": modelName,
-		"done":  false,
+		"model":      modelName,
+		"created_at": time.Now().UTC().Format(time.RFC3339Nano),
+		"done":       false,
 	}
 	var hasContent bool
 	var hasReasoning bool
@@ -1114,8 +1116,9 @@ func translateSSEChatToOllama(chunk map[string]interface{}, modelName string, se
 // seenReasoning — pointer на per-stream state (Round 31 #4). nil = stateless.
 func translateSSEGenerateToOllama(chunk map[string]interface{}, modelName string, seenReasoning *bool) []byte {
 	ollamaChunk := map[string]interface{}{
-		"model": modelName,
-		"done":  false,
+		"model":      modelName,
+		"created_at": time.Now().UTC().Format(time.RFC3339Nano),
+		"done":       false,
 	}
 
 	// Проброс ошибки от upstream.

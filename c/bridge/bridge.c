@@ -1460,7 +1460,7 @@ InferenceResult bridge_infer(
     // параллельные infers для той же модели (R60.58 per-model race bug).
     atomic_int local_abort;
     atomic_init(&local_abort, 0);
-    if (out_abort_flag) *out_abort_flag = (int32_t*)&local_abort;
+    if (out_abort_flag) *out_abort_flag = (void*)&local_abort;
 
     // Round 13 (2026-07-28): извлекаем seq_id для multi-slot support.
     // seq_id=0 — legacy single-slot (clear all), seq_id>0 — multi-slot
@@ -1811,7 +1811,7 @@ int bridge_infer_stream(
     // streaming при многопользовательской нагрузке.
     atomic_int local_abort;
     atomic_init(&local_abort, 0);
-    if (out_abort_flag) *out_abort_flag = (int32_t*)&local_abort;
+    if (out_abort_flag) *out_abort_flag = (void*)&local_abort;
 
     // Round 13 (2026-07-28): extract seq_id for multi-slot support.
     llama_seq_id seq_id = (llama_seq_id)(params->seq_id > 0 ? params->seq_id : 0);

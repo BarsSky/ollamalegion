@@ -197,7 +197,7 @@ InferenceResult bridge_infer(
     ModelHandle model,
     const char* prompt,
     const GenerationParams* params,
-    int32_t** out_abort_flag  // R63: optional out-параметр, может быть NULL
+    void** out_abort_flag   // R63: optional out-param. Caller passes unsafe.Pointer*; C stores &local_atomic_flag here.
 );
 
 // Стриминг инференс (через callback)
@@ -208,7 +208,7 @@ int bridge_infer_stream(
     const GenerationParams* params,
     StreamCallback callback,
     void* user_data,
-    int32_t** out_abort_flag  // R63: optional out-параметр (NULL = legacy)
+    void** out_abort_flag   // R63: optional out-param. Caller passes unsafe.Pointer*; C stores &local_atomic_flag here.
 );
 
 // R63: установить abort flag для конкретного infer.

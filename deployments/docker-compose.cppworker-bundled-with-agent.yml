@@ -51,7 +51,7 @@ services:
     # Round 35 (r35): reload→load fallback + idleUnload disabled.
     # Round 35c (r35c): env-tunable polling timeouts (LB_NCTX_PREFLIGHT_*)
     # для моделей с auto-offload (22GB+ Qwen3.6 на 8GB VRAM, 12-15 min load).
-    image: ollama-legion/balancer:r60.48-explicit-content-length  # Round 60.48 (2026-09-11): explicit Content-Length на всех error response paths (writeJSON, writeServiceUnavailable, writeServiceUnavailableWithDiagnostics). Pre-R60.48 использовался json.NewEncoder(w).Encode() который НЕ устанавливает Content-Length → Go auto-uses Transfer-Encoding: chunked. aiohttp (Python клиент OpenWebUI) падает на chunked с "TransferEncodingError: 400, message='Not enough data to satisfy transfer length header.'". Round 60.47 (2026-09-11): async n_ctx reload.
+    image: ollama-legion/balancer:r60.58-r65-created-at-v1  # Round 65 (2026-09-15): добавляет created_at (RFC3339Nano) в КАЖДЫЙ streaming NDJSON chunk (/api/chat, /api/generate). Pre-R65 balancer генерил chunks БЕЗ created_at, что расходится с Ollama API spec (где created_at required в каждом chunk'е). Strict-клиенты (OpenWebUI aiohttp, Cline) могли получить warnings/errors на missing field. Round 60.48 (2026-09-11): explicit Content-Length на всех error response paths. Round 60.47 (2026-09-11): async n_ctx reload.
     #   R54.2: AutoTune master switch (Balancing.AutoTune, default true) +
     #          per-model "autoTune": false override (LlamaCppModelProfile.AutoTune).
     #          Manual control: user can disable AutoTune globally or per-model.
@@ -342,5 +342,6 @@ networks:
 volumes:
   balancer_data:
   cppworker_cache:
+
 
 

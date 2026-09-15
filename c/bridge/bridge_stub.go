@@ -78,7 +78,7 @@ type GenerationParams struct {
 // DefaultGenerationParams возвращает параметры по умолчанию
 func DefaultGenerationParams() GenerationParams {
 	return GenerationParams{
-		NPredict: 2048, // уменьшен с 4096 (Phase D.6): см. c/bridge/bridge.go
+		NPredict: 4096, // R64 (2026-09-15): bumped 2048 → 4096 — см. c/bridge/bridge.go
 		NKeep:    0,
 		// Round 32 (2026-08-09): n_batch default 512 → 64. См. c/bridge/bridge.go.
 		NBatch:           64,

@@ -8,9 +8,12 @@
 // mid-response with done_reason="stop" at 512 tokens.
 //
 // Fix: bridge.go Infer() and InferStream() substitute
-// DefaultGenerationParams().NPredict (= 2048) before passing to C-bridge when
+// DefaultGenerationParams().NPredict (= 4096) before passing to C-bridge when
 // params.NPredict <= 0. This is defensive — covers any caller that forgets
 // to set n_predict explicitly.
+//
+// R64 (2026-09-15): bumped 2048 → 4096 — OpenWebUI long HTML/code-gen ответы
+// обрезались на полпути. См. c/bridge/bridge.go:DefaultGenerationParams.
 
 package bridge
 

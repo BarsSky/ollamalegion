@@ -113,10 +113,17 @@ type GenerationParams struct {
 // DefaultGenerationParams возвращает параметры по умолчанию
 func DefaultGenerationParams() GenerationParams {
 	return GenerationParams{
-		NPredict: 2048, // уменьшен с 4096 (Phase D.6): иначе при n_ctx=4096 короткий prompt
-		// (типа 35 токенов OpenWebUI) + 4096 = 4131 > 4096 → code 3: prompt too long.
-		// С 2048: 35+2048+1=2084 << 4096 ✓. Если нужен длинный ответ, клиент должен
-		// явно задать max_tokens/num_predict в body — applyCppCtxHeader его не трогает.
+		// R64 (2026-09-15): bumped 2048 → 4096. OpenWebUI long HTML/CSS/JS ответы
+		// (типа "расчёт движения полёта" — 4000+ токенов на полный сайт) обрезались
+		// на полпути с eval_count=2048 и клиент видел truncated ответ с дублированием
+		// (markdown prose + синтаксис-highlighted блок рендерились отдельно).
+		//
+		// Безопасность: cppworker по умолчанию грузит модель с n_ctx=32768 (compose env
+		// CPPWORKER_CTX_SIZE=${CPPWORKER_CTX_SIZE:-32768}), так что 4096 << 32768.
+		// Даже при n_ctx=8192: 35 (prompt) + 4096 + 1 (EOS) = 4132 < 8192 ✓.
+		//
+		// Если клиент хочет длиннее — задаёт max_tokens/num_predict в body явно.
+		NPredict: 4096,
 		NKeep: 0,
 		// Round 32 (2026-08-09): n_batch default 512 → 64 для frequent abort checks
 		// в prefill phase. С n_batch=512 abort может быть detected только ПОСЛЕ

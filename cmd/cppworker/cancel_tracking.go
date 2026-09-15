@@ -29,20 +29,27 @@ func setupCancelTracking(r *http.Request, modelName, backendID, prefix string) (
 	}
 	userID := r.Header.Get("X-User-Id")
 	ctx, cancel := context.WithCancel(r.Context())
-	// R60.30 (2026-09-10): defer cancel() для устранения vet warning
-	// "cancel function is not used on all paths (possible context leak)".
-	// До этого fix: если tracker.Add() panic'ал, cancel никогда не
-	// вызывался, context leak. Теперь cancel гарантированно вызывается
-	// при выходе из setupCancelTracking. В обычном flow tracker.Add()
-	// вызывает cancel через callback при Remove() — лишний вызов
-	// cancel() идемпотентен (Go context cancel() — safe to call twice).
-	defer cancel()
+	// R63 (2026-09-15): REMOVED `defer cancel()`. Round 60.30 fix ставил defer
+	// cancel здесь, что ГАСИЛО контекст сразу после возврата — стрим-фильтр
+	// (safeStreamWriter) сразу видел ctx.Done() и ни одного токена не уходило.
+	// См. regression: "ctx_done_on_write", tokens_sent=0.
+	//
+	// Теперь cancel вызывается в cleanup: один источник правды, ровно один
+	// раз при выходе handler'а. Если tracker.Add ниже panic'ал — cleanup всё
+	// равно вызовет cancel. Контекст-leak fix перенесён с defer-в-setup на
+	// defer-via-cleanup (если cleanup забыли — fixed в deferred cancel в
+	// handler через cancelCleanup()).
 	if tracker := backend.ActiveGenerations(); tracker != nil {
 		tracker.Add(requestID, userID, modelName, backendID, cancel)
 	}
 	cleanup := func() {
-		// Всегда вызываем Remove, даже если tracker nil-safe.
-		backend.ActiveGenerations().Remove(requestID)
+		// Гарантированно отменяем child ctx при выходе handler'а —
+		// это и бывший defer cancel, и новый leak-fix.
+		cancel()
+		// Всегда вызываем Remove.
+		if tracker := backend.ActiveGenerations(); tracker != nil {
+			tracker.Remove(requestID)
+		}
 	}
 	return r.WithContext(ctx), requestID, cleanup
 }

@@ -1441,7 +1441,7 @@ InferenceResult bridge_infer(
     ModelHandle model,
     const char* prompt,
     const GenerationParams* params,
-    int32_t** out_abort_flag  // R63: per-infer atomic flag (optional)
+    void** out_abort_flag  // R63: per-infer atomic flag (optional)
 ) {
     InferenceResult result = {0};
 
@@ -1790,7 +1790,7 @@ int bridge_infer_stream(
     const GenerationParams* params,
     StreamCallback callback,
     void* user_data,
-    int32_t** out_abort_flag  // R63: per-infer atomic flag (optional)
+    void** out_abort_flag  // R63: per-infer atomic flag (optional)
 ) {
     if (model == NULL || prompt == NULL || callback == NULL) {
         set_error("invalid arguments to bridge_infer_stream (model/prompt/callback is NULL)");

@@ -14,7 +14,7 @@
  *     M.deleteOnSelectedBackend, M.cancelDownload, M.cancelActiveGeneration,
  *     M.startDownload, M.deleteDownloadedFile, M.viewHfFiles, M.quickDownloadHf,
  *     M.doHfSearch, M.showToast, M._
- *   - window.GgufApi (loadAndRenderBackendOptions, mountProfilesInSettings)
+ *   - window.GgufModule (loadAndRenderBackendOptions, mountProfilesInSettings — set by gguf-renderer-detail-render.js)
  *
  * Загружается ДО gguf-renderer.js (в defer-цепочке).
  */
@@ -52,8 +52,17 @@
                 } else if (id === 'settings') {
                     // Settings tab: подгружаем реальные llama.cpp-дефолты выбранного
                     // cppworker'а и монтируем Per-Model Profiles (cppworker-params.js).
-                    if (typeof loadAndRenderBackendOptions === 'function') loadAndRenderBackendOptions();
-                    if (typeof mountProfilesInSettings === 'function') mountProfilesInSettings();
+                    // R60.46 (2026-09-16): fix JS loading-order bug. Bare references
+                    // `loadAndRenderBackendOptions` / `mountProfilesInSettings` были
+                    // undefined because gguf-renderer-detail.js загружается ДО
+                    // gguf-renderer-detail-render.js (который определяет функции
+                    // через M.loadAndRenderBackendOptions = ...). typeof check
+                    // проходил (typeof undefined === 'undefined'), но call никогда
+                    // не выполнялся → Settings tab показывал "Loading..." вечно.
+                    // Fix: используем M.* namespace (работает всегда — функции
+                    // появляются в M.* до того как пользователь кликнет на таб).
+                    if (typeof M.loadAndRenderBackendOptions === 'function') M.loadAndRenderBackendOptions();
+                    if (typeof M.mountProfilesInSettings === 'function') M.mountProfilesInSettings();
                 }
             }
             return;

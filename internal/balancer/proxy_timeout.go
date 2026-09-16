@@ -312,24 +312,36 @@ func (p *Proxy) getModelFirstByteTimeout(modelName string) time.Duration {
 	return p.modelLatencyTracker.GetOrComputeFirstByteTimeout(modelName, 0, globalFbSec, modelSize)
 }
 
-// getGlobalStreamTimeout — глобальный таймаут стриминга из конфига (или дефолт 600s).
+// getGlobalStreamTimeout — глобальный total-таймаут стриминга.
 //
-// R53.6 (2026-08-24): ENV override LB_LLAMACPP_STREAM_TIMEOUT_SEC. REMOVED R60.18 F3.
+// R65c (2026-09-16): default = 0 (NO TIMEOUT).
 //
-// R58.1 (2026-09-03): ENV override LB_STREAMING_NEVER_TIMEOUT=1
-// отключает стриминг-таймаут полностью (returns 0). Caller (proxy_request.go)
-// интерпретирует 0 как "skip context.WithTimeout".
+// Pre-R65c этот default был 600 секунд, что на слабых машинах (CPU offload,
+// partial offload на RTX-3070 с 9 GPU layers + 32k ctx) приводил к обрыву
+// стримов на 22-минутной генерации 4096 токенов — пользователь никогда не
+// получал полный ответ.
 //
-// R60.18 F3: REMOVED LB_LLAMACPP_STREAM_TIMEOUT_SEC. Total stream timeout —
-// wrong abstraction для LLM streaming (см. docs/R60.18-env-flags-audit.md).
-// Используйте streamingIdleTimeout + firstByteTimeout + n_predict per-model.
+// Теперь default 0 = balancer НЕ обрывает стрим по таймауту. Stream
+// заканчивается когда:
+//   - cppworker отправляет [DONE] (нормальное завершение)
+//   - клиент отключается (r.Context().Done → watcher goroutine → close resp.Body)
+//   - процесс умирает (OOM/segfault)
+//
+// Если хочется explicit timeout — поставить config.Balancing.StreamTimeout=N>0
+// или ENV LB_STREAMING_NEVER_TIMEOUT=0 (legacy positive). Per-model profile
+// (config.LlamaCppModelProfiles[modelName].StreamingTimeoutSec) перебивает
+// default.
+//
+// Альтернативные timeouts остаются для hang-detection:
+//   - streamingIdleTimeout (по умолчанию 120s) — между чанками
+//   - firstByteTimeout (по умолчанию 900s = 15 мин) — prefill hang
 func (p *Proxy) getGlobalStreamTimeout() time.Duration {
 	if isStreamingNeverTimeout() {
 		return 0
 	}
 	sec := p.config.Balancing.StreamTimeout
 	if sec <= 0 {
-		return 600 * time.Second
+		return 0 // R65c: default NO TIMEOUT (слабые машины должны успевать)
 	}
 	return time.Duration(sec) * time.Second
 }

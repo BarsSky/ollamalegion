@@ -644,13 +644,28 @@ func (p *Proxy) proxyRequestLlamaCpp(w http.ResponseWriter, r *http.Request, bac
 			if resp.Body != nil {
 				_ = resp.Body.Close()
 			}
+			// R65c (2026-09-16): client cancelled mid-stream — emit truncated
+			// done chunk so the client's chunked parser (aiohttp) sees terminator
+			// before connection tear-down. Without this, OpenWebUI gets
+			// TransferEncodingError "Not enough data to satisfy transfer length header".
+			streamCompleted = true
+			emitTruncatedChunk(w, originalPath, modelFromCtx, time.Since(llamaStartTime))
 			return nil
 		case <-reqCtx.Done():
 			if resp.Body != nil {
 				_ = resp.Body.Close()
 			}
-			return fmt.Errorf("proxyRequestLlamaCpp: stream timeout after %v (model=%s, backend=%s, bytes_forwarded=%d)",
-				time.Since(llamaStartTime), modelFromCtx, backendID, bytesForwarded)
+			// R65c (2026-09-16): stream timeout — emit truncated done chunk and
+			// return nil so handleChat doesn't write ANOTHER error chunk on top.
+			// Pre-R65c: function returned error here, which caused handleChat's
+			// writeStreamErrorChunk to fail silently (data already buffered in
+			// Go's http.ResponseWriter but never flushed because connection was
+			// being torn down). Result: client sees chunked stream without done
+			// chunk + without terminator → TransferEncodingError "Not enough data
+			// to satisfy transfer length header" в aiohttp/OpenWebUI.
+			streamCompleted = true
+			emitTruncatedChunk(w, originalPath, modelFromCtx, time.Since(llamaStartTime))
+			return nil
 		default:
 		}
 
@@ -1224,6 +1239,59 @@ func errString(err error) string {
 		return ""
 	}
 	return err.Error()
+}
+
+// emitTruncatedChunk — R65c (2026-09-16) helper. Эмитит финальный done-чанк
+// когда stream был прерван по timeout или cancellation ДО [DONE] от upstream.
+//
+// Используется из двух мест:
+//   1. case <-reqCtx.Done() в main loop (streamTimeout) — пишет immediately,
+//      return nil чтобы handleChat не слал ещё одну error chunk поверх.
+//   2. case <-r.Context().Done() в main loop (client cancelled) — аналогично.
+//
+// Формат:
+//   - /v1/chat/completions: SSE event with finish_reason="truncated" + data: [DONE]
+//   - /api/chat | /api/generate: NDJSON {"done":true, "done_reason":"truncated", ...}
+//
+// После этой записи Go HTTP server должен автоматически отправить
+// chunked terminator (`0\r\n\r\n`) при return handler.
+func emitTruncatedChunk(w http.ResponseWriter, originalPath, modelName string, duration time.Duration) {
+	truncatedMsg := fmt.Sprintf("stream truncated after %v (timeout or cancellation)", duration)
+	if originalPath == "/v1/chat/completions" {
+		// OpenAI SSE format
+		truncatedChunk := map[string]interface{}{
+			"id":      fmt.Sprintf("trunc-%d", time.Now().UnixNano()),
+			"object":  "chat.completion.chunk",
+			"created": time.Now().Unix(),
+			"model":   modelName,
+			"choices": []interface{}{
+				map[string]interface{}{
+					"index":         0,
+					"delta":         map[string]interface{}{},
+					"finish_reason": "truncated",
+				},
+			},
+			"error": map[string]interface{}{
+				"message": truncatedMsg,
+				"type":    "stream_truncated",
+			},
+		}
+		out, _ := json.Marshal(truncatedChunk)
+		_, _ = fmt.Fprintf(w, "data: %s\n\n", string(out))
+		_, _ = fmt.Fprintf(w, "data: [DONE]\n\n")
+	} else {
+		// Ollama NDJSON format (/api/chat, /api/generate)
+		truncatedChunk := map[string]interface{}{
+			"model":       modelName,
+			"created_at":  time.Now().UTC().Format(time.RFC3339),
+			"done":        true,
+			"done_reason": "truncated",
+			"error":       truncatedMsg,
+		}
+		out, _ := json.Marshal(truncatedChunk)
+		_, _ = fmt.Fprintf(w, "%s\n", string(out))
+	}
+	Flush(w)
 }
 
 // hasFinishReason — проверяет, содержит ли SSE data-чанк finish_reason (done:true).

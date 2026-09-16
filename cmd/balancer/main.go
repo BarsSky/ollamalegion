@@ -347,8 +347,25 @@ func main() {
 		// 5s достаточно для chat completions body (< 1MB обычно) и даёт
 		// быстрый cancel detection (< 5s). Long uploads (>5s) нужно
 		// передавать через chunked transfer с явным keepalive.
-		ReadTimeout:  30 * time.Second,
-		WriteTimeout: time.Duration(conf.Balancing.RequestTimeout+30) * time.Second,
+		ReadTimeout: 30 * time.Second,
+		// R65d (2026-09-16): REMOVED WriteTimeout. Pre-R65d было
+		// `time.Duration(conf.Balancing.RequestTimeout+30) * time.Second`
+		// что давало 630s (default RequestTimeout=600 + 30). На слабых
+		// машинах (Qwen3-22B partial offload, 4-5 tok/s, 4096 tokens = 14 мин)
+		// это ОБРЫВАЛО длинные стримы через 10.5 мин — пользователь не
+		// получал полный ответ.
+		//
+		// Streaming response timeout управляется application-level через
+		// proxyRequestLlamaCpp (per-model streamTimeout + R65c fallback
+		// truncated chunk emission). Go HTTP server не должен иметь
+		// свой WriteTimeout — он срабатывает ДО application-level и не
+		// пишет done chunk, что приводит к TransferEncodingError в OpenWebUI.
+		//
+		// Если хочется explicit hard limit (например для защиты от buggy
+		// upstream) — поставить conf.Balancing.RequestTimeout=0 (отключить
+		// совсем) или очень большое значение (1 час = 3600s).
+		// WriteTimeout: time.Duration(conf.Balancing.RequestTimeout+30) * time.Second,
+		WriteTimeout: 0, // 0 = no timeout (R65d). Слабые машины должны успевать.
 		IdleTimeout:  120 * time.Second,
 	}
 	logger.Get().Infow("balancer proxy HTTP server timeouts",

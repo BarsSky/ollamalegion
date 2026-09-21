@@ -15,7 +15,7 @@
     async function fetchConfig() {
         try {
             const r = await fetch(CONFIG_ENDPOINT, {
-                // R59.5 (2026-09-03): window.API → window.Api (correct namespace
+                // R59.5 (2026-09-03): window.Api → window.Api (correct namespace
                 // exported from api.js:544). Old code returned undefined →
                 // empty headers → 401 from /api/v1/admin/autotune/config.
                 headers: window.Api?.getAuthHeaders?.() || {}
@@ -71,7 +71,7 @@
                 method: 'PUT',
                 headers: {
                     'Content-Type': 'application/json',
-                    ...(window.API?.getAuthHeaders?.() || {})
+                    ...(window.Api?.getAuthHeaders?.() || {})
                 },
                 body: JSON.stringify({ globalEnabled, perModel })
             });
@@ -179,3 +179,4 @@
         refresh: render
     };
 })();
+

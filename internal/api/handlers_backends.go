@@ -205,11 +205,11 @@ func (s *Server) listBackends(w http.ResponseWriter, r *http.Request) {
 			// Round 51.2 (2026-08-20): явный API-стиль бэкенда. Если пусто — клиент
 			// (WebUI) видит только effective-значение из Type. Возвращаем ОБА:
 			// apiStyle (raw, оператор-установленный) + effectiveApiStyle (resolved).
-			"apiStyle":         backend.ApiStyle,
+			"apiStyle":          backend.ApiStyle,
 			"effectiveApiStyle": backend.EffectiveAPIStyle(),
 			// Round 13 (2026-07-10): expose agent attachment info для WebUI.
-			"hasAgent":       backend.HasAgent,
-			"agentId":        backend.AgentID,
+			"hasAgent":         backend.HasAgent,
+			"agentId":          backend.AgentID,
 			"lastAgentContact": backend.LastAgentContact,
 		}
 
@@ -356,7 +356,13 @@ func (s *Server) getBackend(w http.ResponseWriter, r *http.Request, backendID st
 	// Если нет метрик, возвращаем конфигурацию бэкенда
 	backend := s.proxy.GetBackend(backendID)
 	if backend != nil {
-		s.writeJSON(w, http.StatusOK, backend)
+		// R65e: НЕ отдаём секрет наружу. GetBackend возвращает живой указатель,
+		// поэтому сначала делаем копию — мутировать оригинал нельзя (сломает
+		// авторизацию балансера на cppworker). Раньше клиент получал
+		// cppWorkerApiToken открытым текстом в теле ответа.
+		safe := *backend
+		safe.CppWorkerApiToken = ""
+		s.writeJSON(w, http.StatusOK, &safe)
 		return
 	}
 
@@ -676,19 +682,90 @@ func (s *Server) updateBackend(w http.ResponseWriter, r *http.Request, backendID
 		apiStyle = types.APIStyle(req.ApiStyle)
 	}
 
+	// R65d (2026-09-20): fallback для cppWorkerApiToken — как у cppWorkerPort
+	// и apiStyle выше.
+	//
+	// Найденный дефект: поле присваивалось напрямую из запроса
+	// (`CppWorkerApiToken: req.CppWorkerApiToken`), а WebUI его НЕ отправляет
+	// (app-modals.js формирует payload без токена — оператор не должен видеть
+	// секрет). Поэтому любое редактирование бэкенда через UI стирало токен, и
+	// последующие вызовы балансер→cppworker, требующие авторизации
+	// (POST /api/models/reload из per-model profiles,
+	// internal/api/gguf_backend_proxy.go) начинали получать 401.
+	//
+	// Защита от случайного стирания: пустая строка = «не менять».
+	// Осознанно очистить токен можно, прислав явный маркер "-" (сервер не сможет
+	// отличить "поле не прислано" от "прислано пустым" иначе).
+	cppWorkerAPIToken := existing.CppWorkerApiToken
+	if req.CppWorkerApiToken != "" {
+		if req.CppWorkerApiToken == "-" {
+			cppWorkerAPIToken = ""
+		} else {
+			cppWorkerAPIToken = req.CppWorkerApiToken
+		}
+	}
+
+	// R65d (2026-09-20): MERGE-семантика вместо «поле-в-поле».
+	//
+	// Было: структура собиралась из req целиком, поэтому ЛЮБОЙ частичный PUT
+	// уничтожал не переданные поля. Практический сценарий поломки — кнопка
+	// «Auto-detect cppworker port» в WebUI (app-modals.js): она отправляет
+	// `{cppWorkerPort: <detected>}` без остальных полей, и бэкенд получал
+	// host="", name="", weight=0, labels=nil, maxConcurrentReqs=0 — то есть
+	// становился нероутируемым (пустой host).
+	//
+	// Теперь: база — existingConfig, поверх применяются только реально
+	// переданные значения. Для строк/слайсов признак «передано» — непустое
+	// значение (очистить их через эту ручку нельзя, что и правильно: host и name
+	// обязательны для работающего бэкенда).
+	name := existing.Name
+	if req.Name != "" {
+		name = req.Name
+	}
+	host := existing.Host
+	if req.Host != "" {
+		host = req.Host
+	}
+	ollamaPort := existing.OllamaPort
+	if req.OllamaPort > 0 {
+		ollamaPort = req.OllamaPort
+	}
+	agentPort := existing.AgentPort
+	if req.AgentPort > 0 {
+		agentPort = req.AgentPort
+	}
+	// weight/maxConcurrentReqs/maxModels: 0 = «не задано» (значение 0 смысла не
+	// имеет — это отсутствие лимита, которое выражается -1).
+	weight := existing.Weight
+	if req.Weight > 0 {
+		weight = req.Weight
+	}
+	maxConcurrent := existing.MaxConcurrentReqs
+	if req.MaxConcurrentReqs != 0 {
+		maxConcurrent = req.MaxConcurrentReqs
+	}
+	maxModels := existing.MaxModels
+	if req.MaxModels != 0 {
+		maxModels = req.MaxModels
+	}
+	labels := existing.Labels
+	if req.Labels != nil {
+		labels = req.Labels
+	}
+
 	updated := types.Backend{
 		ID:                           backendID,
-		Name:                         req.Name,
-		Host:                         req.Host,
-		OllamaPort:                   req.OllamaPort,
-		AgentPort:                    req.AgentPort,
+		Name:                         name,
+		Host:                         host,
+		OllamaPort:                   ollamaPort,
+		AgentPort:                    agentPort,
 		CppWorkerPort:                cppWorkerPort,
-		Weight:                       req.Weight,
-		MaxConcurrentReqs:            req.MaxConcurrentReqs,
-		MaxModels:                    req.MaxModels,
-		Labels:                       req.Labels,
+		Weight:                       weight,
+		MaxConcurrentReqs:            maxConcurrent,
+		MaxModels:                    maxModels,
+		Labels:                       labels,
 		Status:                       existing.Status,
-		CppWorkerApiToken:            req.CppWorkerApiToken,
+		CppWorkerApiToken:            cppWorkerAPIToken,
 		HasAgent:                     existing.HasAgent,
 		LastAgentContact:             existing.LastAgentContact,
 		LastHealthCheck:              existing.LastHealthCheck,
@@ -699,6 +776,10 @@ func (s *Server) updateBackend(w http.ResponseWriter, r *http.Request, backendID
 		GPUMode:                      gpuMode,
 		Type:                         backendType,
 		ApiStyle:                     apiStyle,
+		// Engine тоже не отправляется из WebUI (в request-структуре его нет).
+		// Без этого он обнулялся при каждом сохранении, и бэкенд терял признак
+		// движка (используется в /api/v1/backends и при выборе стратегии запуска).
+		Engine: existing.Engine,
 	}
 
 	// Обновление бэкенда в прокси

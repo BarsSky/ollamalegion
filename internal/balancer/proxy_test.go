@@ -268,9 +268,9 @@ func TestSelectBackend_WithReplicationGroup(t *testing.T) {
 	config.Balancing.ModelReplication.Enabled = true
 	config.Balancing.ModelReplication.Groups = []types.ModelGroupConfig{
 		{
-			ModelName:    "llama3",
-			MinInstances: 1,
-			MaxInstances: 2,
+			ModelName:      "llama3",
+			MinInstances:   1,
+			MaxInstances:   2,
 			TargetBackends: []string{"backend-1", "backend-2"},
 		},
 	}
@@ -332,9 +332,9 @@ func TestSelectBackend_WithReplicationGroup(t *testing.T) {
 
 	// Добавляем инстансы вручную для проверки selectInstance
 	proxy.modelReplication.CreateGroup(types.ModelGroupConfig{
-		ModelName:    "llama3-test",
-		MinInstances: 1,
-		MaxInstances: 2,
+		ModelName:      "llama3-test",
+		MinInstances:   1,
+		MaxInstances:   2,
 		TargetBackends: []string{"backend-1", "backend-2"},
 	})
 	// Удаляем старую группу и создаём новую с корректными instances
@@ -532,10 +532,10 @@ func TestProxyUpdateBackend(t *testing.T) {
 	defer proxy.queueMgr.Stop()
 
 	updated := types.Backend{
-		ID:       "backend-1",
-		Name:     "Updated Backend 1",
-		Host:     "localhost",
-		Weight:   5,
+		ID:     "backend-1",
+		Name:   "Updated Backend 1",
+		Host:   "localhost",
+		Weight: 5,
 	}
 
 	err := proxy.UpdateBackend("backend-1", updated)

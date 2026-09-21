@@ -307,7 +307,40 @@ func (p *Proxy) UpdateBackend(backendID string, updated types.Backend) error {
 
 	updated.ID = backendID
 	updated.Status = currentStatus
-	state.Backend = &updated
+
+	// R65d (2026-09-20): записываем и в p.config.Backends — источник истины.
+	//
+	// Найденный дефект: здесь обновлялся ТОЛЬКО state.Backend, а
+	// p.config.Backends оставался со старыми значениями. При этом именно
+	// p.config.Backends — источник истины: в него пишут AddBackend (state.go:106),
+	// RemoveBackend (state.go:148) и UpdateBackendStatus, а LoadState
+	// восстанавливает состоян��е ИЗ него (state.go:76-92, перезаписывая
+	// state.Backend указателем на элемент config). Из-за этого правки бэкенда
+	// через PUT /api/v1/backends/{id} (в т.ч. host, port, token, лимиты и
+	// только что добавленный merge-семантикой cppWorkerApiToken) терялись при
+	// любом FlushState → LoadState: state.json содержал старые значения, и
+	// указатель state.Backend переводился на них.
+	//
+	// Теперь ведём обе структуры согласованно: сначала config, затем
+	// state.Backend указывает на актуальный элемент config — та же схема, что
+	// в LoadState.
+	configIdx := -1
+	for i := range p.config.Backends {
+		if p.config.Backends[i].ID == backendID {
+			configIdx = i
+			break
+		}
+	}
+	if configIdx >= 0 {
+		p.config.Backends[configIdx] = updated
+		state.Backend = &p.config.Backends[configIdx]
+	} else {
+		// Бэкенд есть в runtime-состоянии, но отсутствует в config (например,
+		// добавлен только через state). Сохраняем прежнее поведение и добавляем
+		// его в config, чтобы дальнейшие FlushState/LoadState не теряли правки.
+		p.config.Backends = append(p.config.Backends, updated)
+		state.Backend = &p.config.Backends[len(p.config.Backends)-1]
+	}
 	state.ActiveReqs = currentActiveReqs
 
 	p.scheduleSave()

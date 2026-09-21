@@ -207,17 +207,17 @@ func (p *Proxy) proxyRequestOpenAIStreamAsNonStream(
 // openAIStreamAccumulator — собирает SSE чанки от cppworker для финального
 // non-stream OpenAI JSON.
 type openAIStreamAccumulator struct {
-	model       string
-	created     int64
-	role        string
-	content     strings.Builder
-	reasoning   strings.Builder
-	toolCalls   []map[string]interface{}
-	finishReason string
-	usage       map[string]interface{}
-	id          string
-	object      string
-	startedAt   time.Time
+	model           string
+	created         int64
+	role            string
+	content         strings.Builder
+	reasoning       strings.Builder
+	toolCalls       []map[string]interface{}
+	finishReason    string
+	usage           map[string]interface{}
+	id              string
+	object          string
+	startedAt       time.Time
 	chunksProcessed int
 }
 

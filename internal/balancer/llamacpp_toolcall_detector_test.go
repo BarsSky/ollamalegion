@@ -121,18 +121,18 @@ func TestExtractToolCallsFromSSEContent(t *testing.T) {
 		wantDelta bool // expect tool_calls in delta after processing
 	}{
 		{
-			name: "SSE chunk with tool call in content",
-			sseData: `{"choices":[{"delta":{"content":"[{\"id\":\"call_test\",\"type\":\"function\",\"function\":{\"name\":\"search\",\"arguments\":\"{}\"}}]","role":"assistant"},"finish_reason":null,"index":0}],"model":"gemma-4"}`,
+			name:      "SSE chunk with tool call in content",
+			sseData:   `{"choices":[{"delta":{"content":"[{\"id\":\"call_test\",\"type\":\"function\",\"function\":{\"name\":\"search\",\"arguments\":\"{}\"}}]","role":"assistant"},"finish_reason":null,"index":0}],"model":"gemma-4"}`,
 			wantDelta: true,
 		},
 		{
-			name: "SSE chunk without tool call",
-			sseData: `{"choices":[{"delta":{"content":"Hello","role":"assistant"},"finish_reason":null,"index":0}],"model":"gemma-4"}`,
+			name:      "SSE chunk without tool call",
+			sseData:   `{"choices":[{"delta":{"content":"Hello","role":"assistant"},"finish_reason":null,"index":0}],"model":"gemma-4"}`,
 			wantDelta: false,
 		},
 		{
-			name: "SSE chunk with tool call + service token",
-			sseData: `{"choices":[{"delta":{"content":"[{\"id\":\"call_svc\",\"type\":\"function\",\"function\":{\"name\":\"search\",\"arguments\":\"{\\\"q\\\":\\\"weather\\\"}\"}}]\u003c/start_of_turn\u003e","role":"assistant"},"finish_reason":null,"index":0}],"model":"gemma-4"}`,
+			name:      "SSE chunk with tool call + service token",
+			sseData:   `{"choices":[{"delta":{"content":"[{\"id\":\"call_svc\",\"type\":\"function\",\"function\":{\"name\":\"search\",\"arguments\":\"{\\\"q\\\":\\\"weather\\\"}\"}}]\u003c/start_of_turn\u003e","role":"assistant"},"finish_reason":null,"index":0}],"model":"gemma-4"}`,
 			wantDelta: true,
 		},
 	}

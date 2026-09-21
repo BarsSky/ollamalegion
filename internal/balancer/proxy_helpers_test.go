@@ -8,9 +8,9 @@ package balancer
 
 import (
 	"encoding/json"
-	neturl "net/url"
 	"net/http"
 	"net/http/httptest"
+	neturl "net/url"
 	"strconv"
 	"strings"
 	"testing"

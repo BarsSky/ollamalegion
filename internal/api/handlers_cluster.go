@@ -1,4 +1,4 @@
-﻿package api
+package api
 
 import (
 	"encoding/json"
@@ -147,13 +147,28 @@ func configDefaults(cfg *types.LoadBalancerConfig) {
 // buildVirtualModelsResponse собирает плоский ответ для VirtualModels
 // (фронтенд ожидает coordMode/timeout на верхнем уровне, а не в Models[].Coordination)
 func buildVirtualModelsResponse(vm types.VirtualModelsConfig) map[string]interface{} {
+	// R65d (2026-09-20): отдаём СОХРАНЁННЫЕ значения, а не хардкод.
+	//
+	// Было: "coordMode" и "timeout" всегда были "sequential"/30000, если у
+	// первой модели не было m.Coordination. Из-за этого PUT формы Virtual Models
+	// (coordMode/timeout) не проходил клиентский verifySync — сервер возвращал
+	// дефолты, и UI откатывался.
+	coordMode := vm.CoordMode
+	if coordMode == "" {
+		coordMode = "sequential"
+	}
+	timeout := vm.Timeout
+	if timeout == 0 {
+		timeout = 30000
+	}
 	resp := map[string]interface{}{
 		"enabled":   vm.Enabled,
-		"coordMode": "sequential",
-		"timeout":   30000,
+		"coordMode": coordMode,
+		"timeout":   timeout,
 	}
 	if len(vm.Models) > 0 {
 		m := vm.Models[0]
+		// Per-model настройки приоритетнее глобальных.
 		if m.Coordination.Mode != "" {
 			resp["coordMode"] = m.Coordination.Mode
 		}
@@ -175,6 +190,20 @@ func (s *Server) clusterHandler(w http.ResponseWriter, r *http.Request) {
 
 	s.writeJSON(w, http.StatusOK, state)
 }
+
+// Секция "agent" в PUT /api/v1/cluster/config НЕ поддерживается (R65d).
+//
+// Изначально здесь планировалось принимать её. Проверка показала, что это
+// невозможно реализовать корректно: types.AgentConfig (pkg/types/session.go:33)
+// описывает конфигурацию САМОГО процесса agent'а — отдельного бинаря cmd/agent,
+// который читает свои env/флаги (BalancerURL, OllamaURL, MetricsPort,
+// NVMLEnabled, ...). У types.LoadBalancerConfig нет поля Agent, и балансер не
+// может «применить» чужие тайминги: он лишь отдаёт их агенту при регистрации
+// через pkg/protocol.RegisterRequest.Config.
+//
+// Правильное поведение — не создавать видимость управления: WebUI больше не
+// отправляет секцию "agent" (см. app.js saveSettings), а сервер её не
+// принимает. Тайминги задаются в окружении agent-контейнера.
 
 // clusterConfigHandler - runtime конфигурация кластера (смена алгоритма и т.д.)
 func (s *Server) clusterConfigHandler(w http.ResponseWriter, r *http.Request) {
@@ -241,6 +270,26 @@ func (s *Server) clusterConfigHandler(w http.ResponseWriter, r *http.Request) {
 			// profile и per-backend CppWorkerConfig имеют приоритет). Pointer
 			// чтобы отличить "не прислано" от "прислано как zero value".
 			LlamaCpp *types.LlamaCppConfig `json:"llamaCpp,omitempty"`
+
+			// ===== R65d (2026-09-20): секции, которые WebUI УЖЕ отправлял =====
+			//
+			// Аудит 2026-09-20: webui/js/app.js:1295-1310 формирует эти блоки и
+			// шлёт их в PUT, но в этой структуре их не было → json.Decoder молча
+			// их отбрасывал (unknown keys игнорируются), затем verifySync
+			// перечитывал серверные значения и откатывал форму, показывая при
+			// этом «Settings saved». То есть тумблеры Replication / RPC
+			// Coordinator / Virtual Models / Distributed Inference и параметры
+			// agent'а были чисто декоративными.
+			//
+			// Pointer-типы на вложенных структурах: если WebUI не прислал секцию
+			// (например, старый клиент), её настройки не трогаем.
+			//
+			// Секции "agent" здесь НЕТ намеренно: см. комментарий выше
+			// clusterConfigHandler — тайминги agent'а задаются в его окружении.
+			ModelReplication *types.ModelReplicationConfig `json:"modelReplication,omitempty"`
+			RpcCoordinator   *types.RpcCoordinatorConfig   `json:"rpcCoordinator,omitempty"`
+			VirtualModels    *types.VirtualModelsConfig    `json:"virtualModels,omitempty"`
+			DistInference    *types.DistInferenceConfig    `json:"distInference,omitempty"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 			s.writeJSON(w, http.StatusBadRequest, map[string]interface{}{
@@ -413,6 +462,47 @@ func (s *Server) clusterConfigHandler(w http.ResponseWriter, r *http.Request) {
 			)
 		}
 
+		// R65d (2026-09-20): применяем секции, которые WebUI уже отправлял,
+		// но бэкенд игнорировал (их не было в структуре запроса выше).
+		//
+		// Без этого тумблеры Replication / RPC Coordinator / Virtual Models /
+		// Distributed Inference и тайминги agent'а были декоративными: PUT
+		// отвечал success, verifySync перечитывал прежние значения и откатывал
+		// форму — оператор видел «Settings saved» и неизменившуюся настройку.
+		if req.ModelReplication != nil {
+			// Groups не приходят из этой формы (они управляются отдельными
+			// endpoint'ами /api/v1/replication/*), поэтому сохраняем текущие,
+			// чтобы не потерять их при перезаписи структуры.
+			req.ModelReplication.Groups = s.config.Balancing.ModelReplication.Groups
+			s.config.Balancing.ModelReplication = *req.ModelReplication
+			updatedFields = append(updatedFields, "modelReplication")
+		}
+
+		if req.RpcCoordinator != nil {
+			// Workers для Embedded-режима тоже задаются отдельно
+			// (/api/v1/rpc/workers) — сохраняем существующие.
+			req.RpcCoordinator.Workers = s.config.Balancing.RpcCoordinator.Workers
+			// Embedded выставляется деплоем (in-process coordinator); UI его не
+			// присылает, поэтому не затираем текущее значение.
+			req.RpcCoordinator.Embedded = s.config.Balancing.RpcCoordinator.Embedded
+			s.config.Balancing.RpcCoordinator = *req.RpcCoordinator
+			updatedFields = append(updatedFields, "rpcCoordinator")
+		}
+
+		if req.VirtualModels != nil {
+			// Список VirtualModel'ов управляется через /api/v1/virtual-models;
+			// сохраняем его, чтобы PUT формы не удалил зарегистрированные модели.
+			req.VirtualModels.Models = s.config.Balancing.VirtualModels.Models
+			s.config.Balancing.VirtualModels = *req.VirtualModels
+			updatedFields = append(updatedFields, "virtualModels")
+		}
+
+		if req.DistInference != nil {
+			req.DistInference.Workers = s.config.Balancing.DistInference.Workers
+			s.config.Balancing.DistInference = *req.DistInference
+			updatedFields = append(updatedFields, "distInference")
+		}
+
 		// Сохраняем конфигурацию на диск при ЛЮБОМ изменении
 		if s.configSaver != nil {
 			if err := s.configSaver(); err != nil {
@@ -533,18 +623,18 @@ func (s *Server) configResetHandler(w http.ResponseWriter, r *http.Request) {
 	response := map[string]interface{}{
 		"success": true,
 		"config": map[string]interface{}{
-			"algorithm":           s.config.Balancing.Algorithm,
-			"modelAffinity":       s.config.Balancing.ModelAffinity,
-			"sessionStickiness":   s.config.Balancing.SessionStickiness,
-			"useEnhancedScoring":  s.config.Balancing.UseEnhancedScoring,
-			"gpuMaxUsage":         s.config.Resources.GPU.MaxUsagePercent,
-			"vramMaxUsage":        s.config.Resources.GPU.MaxVRAMUsagePercent,
-			"cpuMaxUsage":         s.config.Resources.CPU.MaxUsagePercent,
-			"ramMaxUsage":         s.config.Resources.Memory.MaxUsagePercent,
-			"minFreeDisk":         s.config.Resources.Disk.MinFreeMB,
-			"operatingMode":       s.config.Balancing.OperatingMode,
-			"initialized":         s.config.Initialized,
-			"backendEngine":       s.config.BackendEngine,
+			"algorithm":          s.config.Balancing.Algorithm,
+			"modelAffinity":      s.config.Balancing.ModelAffinity,
+			"sessionStickiness":  s.config.Balancing.SessionStickiness,
+			"useEnhancedScoring": s.config.Balancing.UseEnhancedScoring,
+			"gpuMaxUsage":        s.config.Resources.GPU.MaxUsagePercent,
+			"vramMaxUsage":       s.config.Resources.GPU.MaxVRAMUsagePercent,
+			"cpuMaxUsage":        s.config.Resources.CPU.MaxUsagePercent,
+			"ramMaxUsage":        s.config.Resources.Memory.MaxUsagePercent,
+			"minFreeDisk":        s.config.Resources.Disk.MinFreeMB,
+			"operatingMode":      s.config.Balancing.OperatingMode,
+			"initialized":        s.config.Initialized,
+			"backendEngine":      s.config.BackendEngine,
 		},
 		"message": "Configuration reset to default values successfully",
 	}
@@ -553,6 +643,7 @@ func (s *Server) configResetHandler(w http.ResponseWriter, r *http.Request) {
 	}
 	s.writeJSON(w, http.StatusOK, response)
 }
+
 // applyLlamaCppPartialUpdate применяет non-zero поля из src в dst.
 //   - int/float скаляры: применяются только если src > 0 (защита от случайного
 //     обнуления при partial-формах WebUI).
@@ -622,6 +713,33 @@ func applyLlamaCppPartialUpdate(dst *types.LlamaCppConfig, src *types.LlamaCppCo
 	if src.MaxConcurrentReqs != 0 {
 		dst.MaxConcurrentReqs = src.MaxConcurrentReqs
 	}
+
+	// R65d (2026-09-20): поля, добавленные в LlamaCppConfig, чтобы WebUI-форма
+	// «Performance / lifecycle» и «Reasoning» реально сохранялась (раньше
+	// json.Decoder их игнорировал, а verifySync откатывал UI).
+	//
+	// FlashAttnType/SplitMode: -1 = auto, поэтому применяем только если задано
+	// конкретное значение (>= 0). 0 — валидное («off»/«none»), поэтому условие
+	// именно >= 0, а не != 0.
+	if src.FlashAttnType >= 0 {
+		dst.FlashAttnType = src.FlashAttnType
+	}
+	if src.SplitMode >= 0 {
+		dst.SplitMode = src.SplitMode
+	}
+	if src.IdleUnloadMinutes != 0 {
+		dst.IdleUnloadMinutes = src.IdleUnloadMinutes
+	}
+	if src.MetricsRetentionSeconds != 0 {
+		dst.MetricsRetentionSeconds = src.MetricsRetentionSeconds
+	}
+	if src.ReasoningBudget != 0 {
+		dst.ReasoningBudget = src.ReasoningBudget
+	}
+	// bool-поля применяем всегда (WebUI шлёт актуальное состояние формы) —
+	// иначе выключение AutoTune/metrics/reasoning через UI не сохранялось бы.
+	dst.EnableMetrics = src.EnableMetrics
+	dst.EnableReasoning = src.EnableReasoning
 }
 
 // persistLlamaCppOverride сохраняет in-memory LlamaCppConfig в sidecar-файл.

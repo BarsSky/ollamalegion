@@ -250,7 +250,7 @@
      * но для простоты сначала делаем последовательный цикл по всем парам.
      */
     async function execute(operation) {
-        if (!window.API) {
+        if (!window.Api) {
             console.error('[bulkModels] Api module not loaded');
             return;
         }
@@ -274,7 +274,7 @@
         };
 
         try {
-            const resp = await window.API.clusterModels.bulk(body);
+            const resp = await window.Api.clusterModels.bulk(body);
             showToast('succeeded=' + (resp.succeeded || 0) + ' failed=' + (resp.failed || 0));
             // После успешной операции — очищаем выбор и обновляем список моделей.
             selectNone();
@@ -284,8 +284,8 @@
         } catch (err) {
             const msg = (err && err.message) ? err.message : String(err);
             showToast('Error: ' + msg, true);
-            if (window.API && typeof window.API.handleError === 'function') {
-                window.API.handleError(err, 'Bulk operation failed');
+            if (window.Api && typeof window.Api.handleError === 'function') {
+                window.Api.handleError(err, 'Bulk operation failed');
             }
         }
     }
@@ -295,13 +295,13 @@
      * Api.backendModelOperation возвращает json с success/error.
      */
     async function executeDelete(pairs) {
-        if (!window.API) return;
+        if (!window.Api) return;
         let succeeded = 0;
         let failed = 0;
         const errors = [];
         for (const p of pairs) {
             try {
-                const result = await window.API.backendModelOperation(p.backendId, 'delete', p.modelName);
+                const result = await window.Api.backendModelOperation(p.backendId, 'delete', p.modelName);
                 if (result && result.success !== false) {
                     succeeded++;
                 } else {

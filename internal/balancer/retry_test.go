@@ -42,10 +42,10 @@ func retryBackoff(attempt int) time.Duration {
 // TestAttemptedBackendsExclusion verifies that attempted backends are correctly excluded
 func TestAttemptedBackendsExclusion(t *testing.T) {
 	tc := []struct {
-		name          string
-		attemptedIDs  []string
-		availableIDs  []string
-		wantExcluded  int
+		name         string
+		attemptedIDs []string
+		availableIDs []string
+		wantExcluded int
 	}{
 		{
 			name:         "one_attempted_excluded",

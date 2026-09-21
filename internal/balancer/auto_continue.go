@@ -44,6 +44,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 )
 
 // truncateReasons — why we think response is truncated.
@@ -213,14 +214,43 @@ func TruncateReason(content string) string {
 	if endsWithCompleteStatement(lastLine) {
 		return ""
 	}
-	for _, ch := range lastLine {
+	// R65d (2026-09-20): раньше здесь стоял `break` ПОСЛЕ switch, то есть
+	// безусловный выход из for на ПЕРВОЙ итерации. Проверялся только первый
+	// символ строки: для "function(" (первый символ 'f') функция возвращала "",
+	// хотя последний символ '(' — явный признак обрыва. Из-за этого детектор
+	// обрыва (и авто-продолжение R60.21, и метрика «ответ обрезан») срабатывал
+	// только когда строка НАЧИНАЛАСЬ с '=' '(' '{' '[' ',' ':'.
+	//
+	// Правильная проверка — последний значимый символ строки. Именно он
+	// показывает, оборвана ли генерация на середине конструкции.
+	//
+	// Покрываем и незакрытые кавычки/бэктики: модель оборвалась внутри строки.
+	//
+	// ВАЖНО: '>' СОЗНАТЕЛЬНО не входит в набор. Символ '>' завершает корректные
+	// конструкции — "</html>", "<div>", "std::vector<int>" — и добавление его
+	// сюда давало false positive на каждом HTML/XML/шаблоне (тест
+	// TestTruncateReason_MidLineCutoff_StillTriggers/html_closing ловит это).
+	// Незакрытая конструкция вида "vector<" остаётся невидимой — это цена
+	// отсутствия false positive на легитимных ответах.
+	if ch := lastRune(lastLine); ch != 0 {
 		switch ch {
-		case '=', '(', '{', '[', ',', ':':
+		case '=', '(', '{', '[', ',', ':', '+', '-', '*', '/', '&', '|', '<',
+			'"', '\'', '`', '\\':
 			return truncateReasonMidLineCutoff
 		}
-		break
 	}
 	return ""
+}
+
+// lastRune возвращает последний rune строки или 0, если строка пуста.
+// Нужен отдельный хелпер, потому что range по строке даёт индексы байтов,
+// а нам важен последний СИМВОЛ (UTF-8-безопасно, без аллокации среза).
+func lastRune(s string) rune {
+	if s == "" {
+		return 0
+	}
+	r, _ := utf8.DecodeLastRuneInString(s)
+	return r
 }
 
 // IsAutoContinueOnTruncationEnabled — checks if LB_AUTO_CONTINUE_ON_TRUNCATION
@@ -609,7 +639,9 @@ func (e simpleError) Error() string { return string(e) }
 // original content concatenated).
 //
 // R65a (2026-09-15) BUGFIX: original implementation concatenated
-//   combined := originalContent + continuationContent
+//
+//	combined := originalContent + continuationContent
+//
 // and emitted that as ONE final done-chunk. This caused content
 // DUPLICATION in OpenWebUI: the client already received originalContent
 // via streaming chunks (done:false each), then received a final

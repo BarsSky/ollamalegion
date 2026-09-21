@@ -67,6 +67,13 @@ type ModelManager struct {
 	// когда в директории 2+ файла (Round 22 BUG #2).
 	nameHistory map[string]string // name → resolved file path
 
+	// R65d (2026-09-20): сериализация персистенции nameHistory.
+	// См. RecordModelLoad — без этого параллельные записи затирали друг друга,
+	// а незавершённая запись ломала удаление каталога модели в тестах.
+	persistMu      sync.Mutex
+	persistDirty   bool
+	persistRunning bool
+
 	// Статистика
 	totalScans   int64
 	lastScanTime time.Time
@@ -149,6 +156,24 @@ func (m *ModelManager) saveNameHistory() {
 //
 // R60.61 (2026-09-14): persist в /app/data/name_history.json чтобы history
 // переживал рестарт.
+//
+// R65d (2026-09-20) — ИСПРАВЛЕНИЕ ГОНКИ.
+//
+// Было: `go m.saveNameHistory()` на каждый вызов. Два последствия:
+//
+//  1. ПОТЕРЯ ДАННЫХ. Две параллельные записи читают nameHistory и пишут файл
+//     независимо; побеждает последняя завершившаяся. Загрузка двух моделей
+//     подряд (обычный warmup) могла сохранить только один alias. После
+//     рестарта второй alias терялся, и OpenWebUI/Cline, присылающие имя без
+//     расширения (R60.61 кейс), получали "модель не найдена".
+//
+//  2. ФЛАКИ ТЕСТОВ. Незавершённая запись держала файл в каталоге модели, а
+//     t.TempDir() cleanup падал с "directory is not empty" (Windows). Именно
+//     так проявлялся баг в TestR60_57_LoadModelWithOpts_*.
+//
+// Теперь записи сериализованы: dirty-флаг + один writer-goroutine, который
+// перечитывает актуальное состояние под блокировкой. Это coalescing —
+// N вызовов RecordModelLoad подряд дают минимум записей без потери данных.
 func (m *ModelManager) RecordModelLoad(name, path string) {
 	if name == "" || path == "" {
 		return
@@ -156,9 +181,58 @@ func (m *ModelManager) RecordModelLoad(name, path string) {
 	m.mu.Lock()
 	m.nameHistory[name] = path
 	m.mu.Unlock()
-	go m.saveNameHistory() // async — не блокируем hot path
+
+	m.persistMu.Lock()
+	m.persistDirty = true
+	if !m.persistRunning {
+		m.persistRunning = true
+		go m.persistLoop()
+	}
+	m.persistMu.Unlock()
+
 	logger.Get().Infow("ModelManager.RecordModelLoad: recorded",
 		"name", name, "path", path)
+}
+
+// persistLoop — единственный writer nameHistory. Работает пока есть dirty-флаг,
+// затем завершается (не держит горутину постоянно).
+func (m *ModelManager) persistLoop() {
+	for {
+		m.persistMu.Lock()
+		if !m.persistDirty {
+			m.persistRunning = false
+			m.persistMu.Unlock()
+			return
+		}
+		m.persistDirty = false
+		m.persistMu.Unlock()
+
+		// saveNameHistory берёт m.mu.RLock на время маршалинга, поэтому
+		// конкурентный RecordModelLoad безопасен и не теряется: он поднимет
+		// dirty снова, и цикл выполнит ещё одну итерацию.
+		m.saveNameHistory()
+	}
+}
+
+// WaitForPendingWrites блокирует до завершения всех незавершённых записей
+// nameHistory. Нужен для детерминированного teardown: без ожидания фоновый
+// writer может дописать файл ПОСЛЕ удаления каталога модели.
+//
+// Возвращает, когда персистенция завершена или истёк timeout.
+func (m *ModelManager) WaitForPendingWrites(timeout time.Duration) bool {
+	deadline := time.Now().Add(timeout)
+	for {
+		m.persistMu.Lock()
+		running := m.persistRunning
+		m.persistMu.Unlock()
+		if !running {
+			return true
+		}
+		if time.Now().After(deadline) {
+			return false
+		}
+		time.Sleep(2 * time.Millisecond)
+	}
 }
 
 // LookupNameHistory — проверяет, был ли name ранее загружен с каким-то path.

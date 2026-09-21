@@ -289,11 +289,11 @@ func TestWaitForBackendModelLoaded_ImmediateSuccess(t *testing.T) {
 
 	p := &Proxy{}
 	backend := &types.Backend{
-		ID:           "test",
-		Host:         "127.0.0.1",
+		ID:            "test",
+		Host:          "127.0.0.1",
 		CppWorkerPort: parsePortFromURL(server.URL),
-		Engine:       types.EngineLlamaCPP,
-		Type:         types.BackendTypeLlamaCpp,
+		Engine:        types.EngineLlamaCPP,
+		Type:          types.BackendTypeLlamaCpp,
 	}
 
 	loaded, err := p.waitForBackendModelLoaded(context.Background(), backend, "m", "test")
@@ -324,11 +324,11 @@ func TestWaitForBackendModelLoaded_RetryUntilLoaded(t *testing.T) {
 
 	p := &Proxy{}
 	backend := &types.Backend{
-		ID:           "test",
-		Host:         "127.0.0.1",
+		ID:            "test",
+		Host:          "127.0.0.1",
 		CppWorkerPort: parsePortFromURL(server.URL),
-		Engine:       types.EngineLlamaCPP,
-		Type:         types.BackendTypeLlamaCpp,
+		Engine:        types.EngineLlamaCPP,
+		Type:          types.BackendTypeLlamaCpp,
 	}
 
 	// Используем короткий interval для ускорения теста.
@@ -358,11 +358,11 @@ func TestWaitForBackendModelLoaded_ContextCancel(t *testing.T) {
 
 	p := &Proxy{}
 	backend := &types.Backend{
-		ID:           "test",
-		Host:         "127.0.0.1",
+		ID:            "test",
+		Host:          "127.0.0.1",
 		CppWorkerPort: parsePortFromURL(server.URL),
-		Engine:       types.EngineLlamaCPP,
-		Type:         types.BackendTypeLlamaCpp,
+		Engine:        types.EngineLlamaCPP,
+		Type:          types.BackendTypeLlamaCpp,
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
@@ -402,11 +402,11 @@ func TestWaitForBackendModelLoaded_BackendUnreachable(t *testing.T) {
 	// Бэкенд закрыт → первая же попытка poll даст network error.
 	p := &Proxy{}
 	backend := &types.Backend{
-		ID:           "test",
-		Host:         "127.0.0.1",
+		ID:            "test",
+		Host:          "127.0.0.1",
 		CppWorkerPort: 1, // порт 1 обычно закрыт
-		Engine:       types.EngineLlamaCPP,
-		Type:         types.BackendTypeLlamaCpp,
+		Engine:        types.EngineLlamaCPP,
+		Type:          types.BackendTypeLlamaCpp,
 	}
 
 	loaded, err := p.waitForBackendModelLoaded(context.Background(), backend, "m", "test")

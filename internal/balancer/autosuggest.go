@@ -39,18 +39,18 @@ type Suggestion struct {
 
 // BackendUtilization — utilization metrics for a single backend.
 type BackendUtilization struct {
-	BackendID        string
-	Status           types.BackendStatus
-	ActiveRequests   int
-	MaxConcurrent    int
-	BusyScore        float64 // activeRequests / maxConcurrent
-	LoadedModels     []string
-	ModelCount       int
-	MaxModels        int
-	ModelCountScore  float64 // modelCount / maxModels
-	IsOverloaded     bool
-	IsUnderloaded    bool
-	Unhealthy        bool
+	BackendID       string
+	Status          types.BackendStatus
+	ActiveRequests  int
+	MaxConcurrent   int
+	BusyScore       float64 // activeRequests / maxConcurrent
+	LoadedModels    []string
+	ModelCount      int
+	MaxModels       int
+	ModelCountScore float64 // modelCount / maxModels
+	IsOverloaded    bool
+	IsUnderloaded   bool
+	Unhealthy       bool
 }
 
 // ComputeBackendUtilization — pure function, computes util metrics for one backend.

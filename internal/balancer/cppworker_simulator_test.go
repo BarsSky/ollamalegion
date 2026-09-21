@@ -38,35 +38,35 @@ import (
 // cppworkerSimulator — sophisticated mock of a cppworker backend.
 // Поддерживает все endpoints из docs/api.md §CppWorker API.
 type cppworkerSimulator struct {
-	server  *httptest.Server
-	host    string
-	port    int
+	server   *httptest.Server
+	host     string
+	port     int
 	workerID string
 
 	// Lifecycle state.
-	mu              sync.Mutex
-	loadedModels    map[string]*cppworkerModelState // name → state
-	health          atomic.Bool
-	reloadPending   atomic.Bool // true during reload
-	reloadAttempts  atomic.Int64 // for ReloadLoopLimit
-	lastReloadTime  time.Time
+	mu             sync.Mutex
+	loadedModels   map[string]*cppworkerModelState // name → state
+	health         atomic.Bool
+	reloadPending  atomic.Bool  // true during reload
+	reloadAttempts atomic.Int64 // for ReloadLoopLimit
+	lastReloadTime time.Time
 
 	// Stats.
-	calls           atomic.Int64
-	loadCalls       atomic.Int64
-	unloadCalls     atomic.Int64
-	reloadCalls     atomic.Int64
-	inferCalls      atomic.Int64
-	streamChunks    atomic.Int64
+	calls        atomic.Int64
+	loadCalls    atomic.Int64
+	unloadCalls  atomic.Int64
+	reloadCalls  atomic.Int64
+	inferCalls   atomic.Int64
+	streamChunks atomic.Int64
 
 	// Configurable behavior (for tests).
-	loadDelay       time.Duration  // simulated load time
-	inferDelay      time.Duration  // simulated inference latency
-	reloadDelay     time.Duration  // simulated reload time
-	streamingChunks int            // chunks per stream response
-	oomOnLoad       atomic.Bool    // simulate OOM on next load
-	networkDrop     atomic.Bool    // simulate network drop on next request
-	corruptResponse atomic.Bool    // return malformed JSON
+	loadDelay       time.Duration // simulated load time
+	inferDelay      time.Duration // simulated inference latency
+	reloadDelay     time.Duration // simulated reload time
+	streamingChunks int           // chunks per stream response
+	oomOnLoad       atomic.Bool   // simulate OOM on next load
+	networkDrop     atomic.Bool   // simulate network drop on next request
+	corruptResponse atomic.Bool   // return malformed JSON
 
 	// Cached model definitions (simulates loaded GGUF files).
 	modelLibrary map[string]*cppworkerModelDef
@@ -78,26 +78,26 @@ type cppworkerSimulator struct {
 
 // cppworkerModelState — состояние загруженной модели.
 type cppworkerModelState struct {
-	Name        string `json:"name"`
-	Size        int64  `json:"size"`         // bytes
-	ContextLen  int    `json:"contextLen"`   // n_ctx
-	GPULayers   int    `json:"numGpuLayers"` // -ngl
-	BatchSize   int    `json:"batchSize"`
-	LoadedAt    time.Time `json:"loadedAt"`
-	Family      string    `json:"family"`
-	Format      string    `json:"format"`
-	ParameterSize string  `json:"parameterSize"`
-	Quantization string   `json:"quantization"`
+	Name          string    `json:"name"`
+	Size          int64     `json:"size"`         // bytes
+	ContextLen    int       `json:"contextLen"`   // n_ctx
+	GPULayers     int       `json:"numGpuLayers"` // -ngl
+	BatchSize     int       `json:"batchSize"`
+	LoadedAt      time.Time `json:"loadedAt"`
+	Family        string    `json:"family"`
+	Format        string    `json:"format"`
+	ParameterSize string    `json:"parameterSize"`
+	Quantization  string    `json:"quantization"`
 }
 
 // cppworkerModelDef — описание модели в library.
 type cppworkerModelDef struct {
-	Name         string
-	Size         int64
-	Family       string
-	Format       string
+	Name          string
+	Size          int64
+	Family        string
+	Format        string
 	ParameterSize string
-	Quantization string
+	Quantization  string
 }
 
 // newCPPWorkerSimulator — создаёт симулятор с реалистичными defaults.
@@ -324,9 +324,9 @@ func (s *cppworkerSimulator) handleLoad(w http.ResponseWriter, r *http.Request) 
 
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(map[string]interface{}{
-		"status":    "loaded",
-		"model":     req.Model,
-		"contextLength": req.ContextLen,
+		"status":         "loaded",
+		"model":          req.Model,
+		"contextLength":  req.ContextLen,
 		"loadDurationMs": int(s.loadDelay.Milliseconds()),
 	})
 }
@@ -427,10 +427,10 @@ func (s *cppworkerSimulator) handleInfer(w http.ResponseWriter, r *http.Request)
 
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(map[string]interface{}{
-		"worker_id":  s.workerID,
-		"slice_id":   fmt.Sprintf("%d-%d", req.StartLayer, req.EndLayer),
-		"output":     fmt.Sprintf("[%s] %s", s.workerID, req.Prompt),
-		"tokens":     10,
+		"worker_id":   s.workerID,
+		"slice_id":    fmt.Sprintf("%d-%d", req.StartLayer, req.EndLayer),
+		"output":      fmt.Sprintf("[%s] %s", s.workerID, req.Prompt),
+		"tokens":      10,
 		"duration_ms": int(s.inferDelay.Milliseconds()),
 	})
 }
@@ -487,7 +487,7 @@ func (s *cppworkerSimulator) streamOllamaGenerate(w http.ResponseWriter, model, 
 				"model":    model,
 				"response": "",
 				"message": map[string]interface{}{
-					"role": "assistant",
+					"role":    "assistant",
 					"content": "",
 					"tool_calls": []map[string]interface{}{
 						{"function": map[string]interface{}{"name": "get_weather", "arguments": map[string]string{"city": "SF"}}},
@@ -512,10 +512,10 @@ func (s *cppworkerSimulator) streamOllamaGenerate(w http.ResponseWriter, model, 
 func (s *cppworkerSimulator) handleChat(w http.ResponseWriter, r *http.Request) {
 	s.inferCalls.Add(1)
 	var req struct {
-		Model    string `json:"model"`
+		Model    string              `json:"model"`
 		Messages []map[string]string `json:"messages"`
-		Stream   bool   `json:"stream"`
-		Tools    []interface{} `json:"tools"`
+		Stream   bool                `json:"stream"`
+		Tools    []interface{}       `json:"tools"`
 	}
 	_ = json.NewDecoder(r.Body).Decode(&req)
 	hasTools := len(req.Tools) > 0
@@ -533,16 +533,16 @@ func (s *cppworkerSimulator) nonStreamOllamaChat(w http.ResponseWriter, model st
 	}
 	w.Header().Set("Content-Type", "application/json")
 	resp := map[string]interface{}{
-		"model":    model,
-		"message":  map[string]interface{}{"role": "assistant", "content": fmt.Sprintf("[%s] response", s.workerID)},
-		"done":     true,
+		"model":      model,
+		"message":    map[string]interface{}{"role": "assistant", "content": fmt.Sprintf("[%s] response", s.workerID)},
+		"done":       true,
 		"eval_count": 10,
 	}
 	// Check both: tools in request OR trigger flag set.
 	if hasTools || s.toolCallTrigger.Load() {
 		s.toolCallTrigger.Store(false)
 		resp["message"] = map[string]interface{}{
-			"role": "assistant",
+			"role":    "assistant",
 			"content": "",
 			"tool_calls": []map[string]interface{}{
 				{"function": map[string]interface{}{"name": "get_weather", "arguments": map[string]string{"city": "SF"}}},
@@ -557,14 +557,14 @@ func (s *cppworkerSimulator) streamOllamaChat(w http.ResponseWriter, model strin
 	w.Header().Set("Content-Type", "application/x-ndjson")
 	for i := 0; i < s.streamingChunks; i++ {
 		chunk := map[string]interface{}{
-			"model":    model,
-			"message":  map[string]interface{}{"role": "assistant", "content": fmt.Sprintf("chunk%d ", i)},
-			"done":     i == s.streamingChunks-1,
+			"model":   model,
+			"message": map[string]interface{}{"role": "assistant", "content": fmt.Sprintf("chunk%d ", i)},
+			"done":    i == s.streamingChunks-1,
 		}
 		if i == s.streamingChunks-1 && (hasTools || s.toolCallTrigger.Load()) {
 			s.toolCallTrigger.Store(false)
 			chunk["message"] = map[string]interface{}{
-				"role": "assistant",
+				"role":    "assistant",
 				"content": "",
 				"tool_calls": []map[string]interface{}{
 					{"function": map[string]interface{}{"name": "get_weather", "arguments": map[string]string{"city": "SF"}}},
@@ -581,10 +581,10 @@ func (s *cppworkerSimulator) streamOllamaChat(w http.ResponseWriter, model strin
 
 func (s *cppworkerSimulator) handleOpenAIChat(w http.ResponseWriter, r *http.Request) {
 	var req struct {
-		Model    string `json:"model"`
+		Model    string              `json:"model"`
 		Messages []map[string]string `json:"messages"`
-		Stream   bool   `json:"stream"`
-		Tools    []interface{} `json:"tools"`
+		Stream   bool                `json:"stream"`
+		Tools    []interface{}       `json:"tools"`
 	}
 	_ = json.NewDecoder(r.Body).Decode(&req)
 
@@ -602,9 +602,9 @@ func (s *cppworkerSimulator) handleOpenAIChat(w http.ResponseWriter, r *http.Req
 			content += fmt.Sprintf("chunk%d ", i)
 		}
 		_ = json.NewEncoder(w).Encode(map[string]interface{}{
-			"id":      "chatcmpl-1",
-			"object":  "chat.completion",
-			"model":   req.Model,
+			"id":     "chatcmpl-1",
+			"object": "chat.completion",
+			"model":  req.Model,
 			"choices": []map[string]interface{}{
 				{
 					"index": 0,
@@ -681,11 +681,11 @@ func (s *cppworkerSimulator) handleTags(w http.ResponseWriter, r *http.Request) 
 	models := make([]map[string]interface{}, 0, len(s.modelLibrary))
 	for _, def := range s.modelLibrary {
 		models = append(models, map[string]interface{}{
-			"name":            def.Name,
-			"size":            def.Size,
-			"family":          def.Family,
-			"format":          def.Format,
-			"parameter_size":  def.ParameterSize,
+			"name":               def.Name,
+			"size":               def.Size,
+			"family":             def.Family,
+			"format":             def.Format,
+			"parameter_size":     def.ParameterSize,
 			"quantization_level": def.Quantization,
 		})
 	}

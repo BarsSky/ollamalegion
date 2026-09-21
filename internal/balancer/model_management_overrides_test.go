@@ -20,8 +20,8 @@ func TestResolveOverrideTensors(t *testing.T) {
 
 	profiles := map[string]types.LlamaCppModelProfile{
 		"qwen3-a3b": {
-			ContextLength:      16384,
-			OverrideTensors:    profileOverride,
+			ContextLength:       16384,
+			OverrideTensors:     profileOverride,
 			OverrideTensorBufts: profileBufts,
 		},
 		"gemma-4": {
@@ -37,17 +37,17 @@ func TestResolveOverrideTensors(t *testing.T) {
 	mm := &ModelManager{proxy: proxy}
 
 	tests := []struct {
-		name        string
-		req         ModelOpRequest
-		wantPat     string
-		wantBuft    string
-		wantEmpty   bool
+		name      string
+		req       ModelOpRequest
+		wantPat   string
+		wantBuft  string
+		wantEmpty bool
 	}{
 		{
 			name: "explicit_request_overrides_profile",
 			req: ModelOpRequest{
-				ModelName: "qwen3-a3b",
-				OverrideTensors: []string{`blk\.\d+\.attn_.*\.weight`},
+				ModelName:           "qwen3-a3b",
+				OverrideTensors:     []string{`blk\.\d+\.attn_.*\.weight`},
 				OverrideTensorBufts: []string{"CUDA0"},
 			},
 			wantPat:  `blk\.\d+\.attn_.*\.weight`,
@@ -131,8 +131,8 @@ func TestResolveOverrideTensors_MismatchedExplicitFallbackToProfile(t *testing.T
 	// Explicit mismatched (2 pats, 1 buft) — resolveOverrideTensors returns
 	// only if len(pats) == len(bufts), so this should fall through to profile.
 	req := ModelOpRequest{
-		ModelName:          "qwen3-a3b",
-		OverrideTensors:    []string{"a", "b"},
+		ModelName:           "qwen3-a3b",
+		OverrideTensors:     []string{"a", "b"},
 		OverrideTensorBufts: []string{"CPU"},
 	}
 	pats, bufts := mm.resolveOverrideTensors(req)

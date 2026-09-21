@@ -134,6 +134,27 @@
             (backend && (backend.maxModels || backend.runtimeMaxModels)) || 0;
         document.getElementById('formBackendLabels').value = ((backend && backend.labels) || []).join(',');
 
+        // R65d (2026-09-20): заполняем cppWorkerPort и grpcPort.
+        //
+        // Их НЕ заполняли, а в HTML у formBackendCppWorkerPort стоит
+        // value="18092" (index.html). Поэтому редактирование бэкенда, который
+        // реально слушает 18091/18093, и нажатие Save отправляли
+        // cppWorkerPort=18092 — все последующие вызовы балансер→cppworker уходили
+        // на закрытый порт, и бэкенд выглядел «недоступным» без видимой причины.
+        var cppPortEl = document.getElementById('formBackendCppWorkerPort');
+        if (cppPortEl) {
+            cppPortEl.value = (backend && backend.cppWorkerPort) || 18092;
+        }
+        var grpcPortEl = document.getElementById('formBackendCppGrpcPort');
+        if (grpcPortEl) {
+            // grpcPort приходит из /api/v1/backends (поле engine-конфига) либо из
+            // llamaCpp-секции конфига; для нового бэкенда — дефолт из HTML.
+            var grpcPort = (backend && (backend.grpcPort || (backend.llamaCpp && backend.llamaCpp.grpcPort))) || 0;
+            if (grpcPort > 0) {
+                grpcPortEl.value = grpcPort;
+            }
+        }
+
         // Синхронизируем селектор типа бэкенда с BackendTypeFilter
         const formBackendType = document.getElementById('formBackendType');
         if (formBackendType) {
@@ -196,10 +217,17 @@
         //   2. Иначе пробуем auto-detect (probe 18092/18091/18093/18090 на /info)
         //   3. Fallback: 18092 (актуальный default для современных llama.cpp-инсталляций).
         var cppWorkerPortInput = _getInt('formBackendCppWorkerPort', 0);
-        var cppGrpcPort = _getInt('formBackendCppGrpcPort', 19000);
+        // cppGrpcPort читается для валидации/подсказки в UI, но в payload не
+        // уходит: серверная структура updateBackendRequest его не принимает
+        // (порт gRPC относится к llamaCpp-конфигу, а не к CRUD бэкенда).
+        void _getInt('formBackendCppGrpcPort', 19000);
 
         var payload = {
-            id: id, name: name || id, host: host,
+            // R65d: `id` намеренно НЕ отправляется — серверный
+            // updateBackendRequest его не содержит (ID берётся из URL), а
+            // лишние ключи молча игнорируются. Раньше это создавало иллюзию,
+            // что поле участвует в запросе.
+            name: name || id, host: host,
             ollamaPort: ollamaPort, agentPort: agentPort,
             weight: weight, maxConcurrentRequests: maxConcurrent, maxModels: maxModels,
             gpuMode: gpuMode, labels: labels, backendType: backendType
@@ -208,7 +236,9 @@
         // Для llama.cpp-бэкенда гарантируем корректный cppWorkerPort.
         if (backendType === 'llama_cpp') {
             payload.cppWorkerPort = cppWorkerPortInput > 0 ? cppWorkerPortInput : 18092;
-            payload.grpcPort = cppGrpcPort;
+            // grpcPort серверная структура тоже не принимает (R65d): он часть
+            // llamaCpp-конфига и задаётся через настройки llama.cpp, а не через
+            // CRUD бэкенда. Не отправляем, чтобы не создавать видимость. 
 
             if (cppWorkerPortInput <= 0) {
                 if (ctx.autoDetectCppWorkerPort) {

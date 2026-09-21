@@ -89,16 +89,47 @@ func TestParseLoadWaitParams_InvalidTimeout(t *testing.T) {
 // makeSparseFile создаёт файл нужного размера БЕЗ записи данных
 // (sparse file на Windows: SetFileValidData / Seek+Truncate).
 // Это позволяет тестам с 5GB файлами работать за миллисекунды, не минуты.
+//
+// R65d: Truncate на NTFS без поддержки sparse перераспределяет кластеры и
+// требует реального места на томе. На раннерах с небольшим свободным
+// объёмом это давало "There is not enough space on the disk" → FAIL вместо
+// skip. Теперь нехватка места — это skip, а не падение: сама формула
+// estimateLoadTimeMs проверяется на меньших файлах
+// (TestEstimateLoadTimeMs_FormulaConsistency).
+//
+// Платформо-независимо: не спрашиваем свободное место заранее (syscall.Statfs_t
+// есть только на Unix, GetDiskFreeSpaceEx — только на Windows), а пытаемся
+// создать файл и различаем "нет места" по ошибке ОС.
 func makeSparseFile(t *testing.T, path string, sizeBytes int64) {
 	t.Helper()
 	f, err := os.Create(path)
 	if err != nil {
+		if isOutOfSpaceError(err) {
+			t.Skipf("skipping: no disk space to create %d-byte file: %v", sizeBytes, err)
+		}
 		t.Fatalf("create: %v", err)
 	}
 	defer f.Close()
 	if err := f.Truncate(sizeBytes); err != nil {
+		if isOutOfSpaceError(err) {
+			t.Skipf("skipping: no disk space to truncate to %d bytes: %v", sizeBytes, err)
+		}
 		t.Fatalf("truncate: %v", err)
 	}
+}
+
+// isOutOfSpaceError — определяет ENOSPC / ERROR_DISK_FULL по тексту ошибки.
+// Строковое сравнение, потому что коды разные на Unix и Windows, а тянуть
+// golang.org/x/sys в зависимости ради одного теста не хочется.
+func isOutOfSpaceError(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "not enough space") ||
+		strings.Contains(msg, "no space left") ||
+		strings.Contains(msg, "disk full") ||
+		strings.Contains(msg, "enospc")
 }
 
 // TestEstimateLoadTimeMs_NoFile — путь пустой / не существует → 0.

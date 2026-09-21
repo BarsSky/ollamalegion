@@ -9,6 +9,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/gorilla/websocket"
+
 	"ollama-loadbalancer/internal/balancer"
 	"ollama-loadbalancer/pkg/logger"
 	"ollama-loadbalancer/pkg/types"
@@ -84,6 +86,12 @@ func (s *Server) healthHandler(w http.ResponseWriter, r *http.Request) {
 }
 
 // wsMetricsHandler - WebSocket для real-time метрик (event-driven + гибридный ping)
+// wsReadDeadline — окно, в течение которого отсутствие любых кадров от
+// клиента считается разрывом. Продлевается control-pong'ом (см. ping ниже)
+// и любым входящим сообщением.
+const wsReadDeadline = 90 * time.Second
+
+// wsMetricsHandler — WebSocket handler для live-метрик.
 func (s *Server) wsMetricsHandler(w http.ResponseWriter, r *http.Request) {
 	// Проверяем токен ДО WebSocket upgrade, но только если auth включена
 	if s.authenticator != nil && s.authenticator.IsEnabled() {
@@ -127,14 +135,30 @@ func (s *Server) wsMetricsHandler(w http.ResponseWriter, r *http.Request) {
 	// Канал для ошибок чтения
 	errChan := make(chan error, 1)
 
-	// Настраиваем read deadline и pong handler
-	conn.SetReadDeadline(time.Now().Add(90 * time.Second))
+	// Настраиваем read deadline и pong handler.
+	//
+	// R65d (2026-09-20) — ИСПРАВЛЕНИЕ ОБРЫВА WS КАЖДЫЕ 90 СЕКУНД.
+	//
+	// Было: deadline ставился один раз, и обновлялся ТОЛЬКО в SetPongHandler.
+	// Но сервер не отправлял control-frame ping — вместо него уходил
+	// ТЕКСТОВЫЙ JSON {"eventType":"ping"} (case <-pingTicker.C ниже). Браузер
+	// на текстовый кадр control-pong'ом не отвечает, поэтому pong handler не
+	// вызывался, deadline истекал ровно через 90s, ReadMessage падал с
+	// i/o timeout → handler возвращался → сокет закрывался. Клиент переподключался
+	// (счётчик попыток сбрасывается на onopen), и цикл повторялся бесконечно:
+	// «WebSocket error» в консоли каждые ~90 секунд и подвисания дашборда.
+	//
+	// Теперь: (1) настоящий control-ping через WriteControl — на него браузер
+	// отвечает pong автоматически, что и продлевает deadline; (2) deadline
+	// обновляется на каждом успешном ReadMessage — клиентский текстовый
+	// keep-alive (websocket.js:107-113) тоже продлевает соединение.
+	conn.SetReadDeadline(time.Now().Add(wsReadDeadline))
 	conn.SetPongHandler(func(string) error {
-		conn.SetReadDeadline(time.Now().Add(90 * time.Second))
+		conn.SetReadDeadline(time.Now().Add(wsReadDeadline))
 		return nil
 	})
 
-	// Goroutine для чтения сообщений от клиента (ping/pong/close)
+	// Goroutine для чтения сообщений от клиента (ping/pong/close).
 	go func() {
 		for {
 			_, _, err := conn.ReadMessage()
@@ -142,11 +166,19 @@ func (s *Server) wsMetricsHandler(w http.ResponseWriter, r *http.Request) {
 				errChan <- err
 				return
 			}
+			// Любой входящий кадр = клиент жив → продлеваем deadline.
+			conn.SetReadDeadline(time.Now().Add(wsReadDeadline))
 		}
 	}()
 
-	// Ping ticker (каждые 15 секунд для быстрого обнаружения разрывов)
-	pingTicker := time.NewTicker(15 * time.Second)
+	// Ping ticker.
+	//
+	// R65d (2026-09-20): 15s → 2s. Control-ping продлевает read deadline на
+	// СТОРОНЕ КЛИЕНТА; интервал 15s был слишком близок к 30-60s idle-таймаутам
+	// промежуточных прокси, а также делал keep-alive трудно проверяемым в
+	// тестах. 2s — стандартная практика для WS heartbeat (RFC 6455 §5.5.2
+	// рекомендует периодические ping при простое).
+	pingTicker := time.NewTicker(2 * time.Second)
 	defer pingTicker.Stop()
 
 	// Отправка начального состояния кластера
@@ -210,8 +242,20 @@ func (s *Server) wsMetricsHandler(w http.ResponseWriter, r *http.Request) {
 			}
 
 		case <-pingTicker.C:
-			// Ping для поддержания соединения с write deadline
+			// R65d (2026-09-20): отправляем НАСТОЯЩИЙ control-ping.
+			//
+			// Раньше здесь уходил текстовый JSON {"eventType":"ping"}, который
+			// НЕ продлевал read deadline на сервере (браузер отвечает pong'ом
+			// только на control-frame ping). Именно из-за этого соединение
+			// гарантированно умирало через 90 секунд — см. комментарий выше.
+			//
+			// control-ping нужен и как keep-alive для промежуточных прокси.
 			conn.SetWriteDeadline(time.Now().Add(10 * time.Second))
+			if err := conn.WriteControl(websocket.PingMessage, nil, time.Now().Add(10*time.Second)); err != nil {
+				return
+			}
+			// Текстовый ping оставляем: WebUI использует его как heartbeat для
+			// UI-индикатора связи (app-listeners.js case 'ping').
 			if err := conn.WriteJSON(map[string]interface{}{
 				"eventType": "ping",
 				"timestamp": time.Now().UTC(),

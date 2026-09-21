@@ -40,13 +40,13 @@ type LlamaCppChatResponse struct {
 	Choices []struct {
 		Index int `json:"index"`
 		Delta struct {
-			Content   string             `json:"content,omitempty"`
-			Role      string             `json:"role,omitempty"`
+			Content   string            `json:"content,omitempty"`
+			Role      string            `json:"role,omitempty"`
 			ToolCalls []json.RawMessage `json:"tool_calls,omitempty"`
 		} `json:"delta,omitempty"`
 		Message struct {
-			Content   string             `json:"content,omitempty"`
-			Role      string             `json:"role,omitempty"`
+			Content   string            `json:"content,omitempty"`
+			Role      string            `json:"role,omitempty"`
 			ToolCalls []json.RawMessage `json:"tool_calls,omitempty"`
 		} `json:"message,omitempty"`
 		FinishReason string `json:"finish_reason,omitempty"`

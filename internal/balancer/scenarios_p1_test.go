@@ -1,4 +1,4 @@
-﻿// Package balancer — scenario tests for Phase 8 P.1 (rpc_coordinator).
+// Package balancer — scenario tests for Phase 8 P.1 (rpc_coordinator).
 //
 // Эти тесты покрывают все documented behaviors из docs/rpc-coordinator.md и
 // plans/2026-q3-production-ready-plan.md §2, особенно в части:
@@ -39,10 +39,10 @@ import (
 // dispatcher + distributed model "llama" с 2 slices.
 // Используется всеми сценариями ниже.
 type rpcTestRig struct {
-	proxy   *Proxy
-	balancer *httptest.Server
-	w1, w2  *cppworkerFakeServer
-	dispatcher *RpcCoordinatorDispatcher
+	proxy       *Proxy
+	balancer    *httptest.Server
+	w1, w2      *cppworkerFakeServer
+	dispatcher  *RpcCoordinatorDispatcher
 	coordinator *rpccoordinator.ModelCoordinator
 }
 

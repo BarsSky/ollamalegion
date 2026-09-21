@@ -20,10 +20,10 @@ type ApplyFn func(fromBackendID, toBackendID, modelName string) error
 
 // ApplyResult — summary of apply operation.
 type ApplyResult struct {
-	Applied  int                  `json:"applied"`
-	Failed   int                  `json:"failed"`
-	Details  []ApplyDetailResult  `json:"details"`
-	Errors   []string             `json:"errors,omitempty"`
+	Applied int                 `json:"applied"`
+	Failed  int                 `json:"failed"`
+	Details []ApplyDetailResult `json:"details"`
+	Errors  []string            `json:"errors,omitempty"`
 }
 
 // ApplyDetailResult — per-suggestion apply result.

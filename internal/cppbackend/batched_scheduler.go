@@ -35,6 +35,7 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"sort"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -55,17 +56,18 @@ type BatchedSessionID uint64
 // (но в Round 15.1 — инкрементный counter без reuse).
 //
 // State machine:
-//   registering → prefill (ingest prompt tokens, 1 per tick)
-//   → generating (1 token per tick via BatchedDecode + greedy sample)
-//   → finished (close TokenCh + DoneCh)
+//
+//	registering → prefill (ingest prompt tokens, 1 per tick)
+//	→ generating (1 token per tick via BatchedDecode + greedy sample)
+//	→ finished (close TokenCh + DoneCh)
 type BatchedSessionState struct {
-	ID         BatchedSessionID
-	SeqID      int32         // llama_seq_id для KV-cache routing
-	Prompt     []int32       // начальные токены prompt'а
-	Generated  []int32       // сгенерированные токены (excluding prompt)
-	MaxTokens  int           // max tokens to generate
-	NextToken  int32         // следующий токен для feed'а в decode
-	NextPos    int32         // позиция в KV-cache для следующего токена
+	ID        BatchedSessionID
+	SeqID     int32   // llama_seq_id для KV-cache routing
+	Prompt    []int32 // начальные токены prompt'а
+	Generated []int32 // сгенерированные токены (excluding prompt)
+	MaxTokens int     // max tokens to generate
+	NextToken int32   // следующий токен для feed'а в decode
+	NextPos   int32   // позиция в KV-cache для следующего токена
 	// PrefillDone — true когда ВСЕ prompt токены ingested в KV-cache.
 	// Round 15.1 fix: без prefill модель видит только 1 токен и генерирует
 	// бессмыслицу (e.g. "What is 2+2?" → "Okay, the user asked...").
@@ -77,11 +79,11 @@ type BatchedSessionState struct {
 	// Seed для RNG (0 = time-based, non-zero = reproducible).
 	Temperature float32
 	Seed        uint32
-	TokenCh    chan int32    // stream output (sampled tokens)
-	DoneCh     chan struct{} // closed when session finishes
-	Finished   bool          // true after EOG or MaxTokens
-	Err        error         // non-nil if inference failed
-	mu         sync.Mutex    // protects session state from concurrent reads
+	TokenCh     chan int32    // stream output (sampled tokens)
+	DoneCh      chan struct{} // closed when session finishes
+	Finished    bool          // true after EOG or MaxTokens
+	Err         error         // non-nil if inference failed
+	mu          sync.Mutex    // protects session state from concurrent reads
 }
 
 // BatchedScheduler — single-goroutine scheduler для multi-session parallel
@@ -122,14 +124,14 @@ type BatchedScheduler struct {
 	// без видимой причины. Сейчас логируем + атомарный счётчик для
 	// observability (можно экспортировать через /metrics).
 	sampleFallbackCount atomic.Int64
-	sampleOKCount      atomic.Int64
+	sampleOKCount       atomic.Int64
 }
 
 // BatchedSchedulerConfig — параметры конструктора.
 type BatchedSchedulerConfig struct {
 	Model     *bridge.ModelHandle
-	NParallel int32         // должно совпадать с n_parallel в ModelConfig
-	WindowMs  int32         // batching window (default 5ms; range 1-50)
+	NParallel int32 // должно совпадать с n_parallel в ModelConfig
+	WindowMs  int32 // batching window (default 5ms; range 1-50)
 	// ModelLock — external lock, держится scheduler'ом на время llama_decode
 	// (Round 8 BUGFIX: serialize access к llama.cpp context). nil → scheduler
 	// НЕ лочит (deprecated, только для unit-тестов).
@@ -171,16 +173,37 @@ func NewBatchedScheduler(cfg BatchedSchedulerConfig) (*BatchedScheduler, error) 
 //
 // BatchedSessionParams — параметры для RegisterSession.
 // Round 15.2 (2026-07-30): добавлены Temperature/Seed для sampling.
+//
+// R65d (2026-09-20): добавлены sampler-поля, которые batched-режим НЕ
+// поддерживает. Они нужны не для применения (sampleFromLogits учитывает только
+// Temperature и Seed), а чтобы ЗАЛОГИРОВАТЬ факт их игнорирования — раньше это
+// происходило полностью молча (см. unsupportedBatchedSamplerParams).
 type BatchedSessionParams struct {
 	Prompt      []int32
 	MaxTokens   int
 	Temperature float32 // 0 = greedy argmax. > 0 = softmax(temp) + multinomial.
 	Seed        uint32  // 0 = time-based. != 0 = reproducible для тестов.
+
+	// Поля ниже batched-режимом игнорируются (только для диагностики).
+	TopP             float32
+	TopK             float32
+	MinP             float32
+	TypicalP         float32
+	TfsZ             float32
+	RepeatPenalty    float32
+	FrequencyPenalty float32
+	PresencePenalty  float32
+	RepeatLastN      int
+	Mirostat         int
+	MirostatTau      float32
+	MirostatEta      float32
+	Antiprompts      []string
+	StopSequences    []string
 }
 
 // Caller обязан:
-//   1. Читать TokenCh пока не закроется.
-//   2. После close проверить session.Err.
+//  1. Читать TokenCh пока не закроется.
+//  2. После close проверить session.Err.
 //
 // Неблокирующий: возвращает управление сразу. Scheduler начнёт
 // обрабатывать session на следующем tick'е (latency = 1 batching window).
@@ -198,13 +221,13 @@ func (bs *BatchedScheduler) RegisterSession(params BatchedSessionParams) (Batche
 	bs.nextSeq++
 
 	state := &BatchedSessionState{
-		ID:        bs.nextID,
-		SeqID:     seqID,
-		Prompt:    params.Prompt,
-		Generated: make([]int32, 0, params.MaxTokens),
-		MaxTokens: params.MaxTokens,
-		NextToken: params.Prompt[0], // первый токен = первый токен prompt'а
-		NextPos:   0,                 // начинаем с prefill pos 0
+		ID:          bs.nextID,
+		SeqID:       seqID,
+		Prompt:      params.Prompt,
+		Generated:   make([]int32, 0, params.MaxTokens),
+		MaxTokens:   params.MaxTokens,
+		NextToken:   params.Prompt[0],        // первый токен = первый токен prompt'а
+		NextPos:     0,                       // начинаем с prefill pos 0
 		PrefillDone: len(params.Prompt) == 0, // edge case: пустой prompt = prefilled
 		Temperature: params.Temperature,
 		Seed:        params.Seed,
@@ -228,15 +251,76 @@ func (bs *BatchedScheduler) RegisterSession(params BatchedSessionParams) (Batche
 		//   - (b) drop counter становится более точным health-сигналом
 		//       (если счётчик всё ещё растёт — у нас фундаментальная проблема
 		//        с consumer throughput, надо чинить не buffer).
-		TokenCh:   make(chan int32, 4096),
-		DoneCh:    make(chan struct{}),
+		TokenCh: make(chan int32, 4096),
+		DoneCh:  make(chan struct{}),
 	}
 	bs.sessions[bs.nextID] = state
 	logger.Get().Infow("BatchedScheduler: session registered",
 		"id", bs.nextID, "seq_id", seqID, "prompt_tokens", len(params.Prompt),
 		"max_tokens", params.MaxTokens, "temperature", params.Temperature,
 		"seed", params.Seed, "active", len(bs.sessions))
+
+	// R65d (2026-09-20): предупреждаем, если запрос задал sampler-параметры,
+	// которые batched-режим НЕ поддерживает.
+	//
+	// Почему это важно: batched_scheduler сэмплит через
+	// sampleFromLogits(model, logits, Temperature, Seed), то есть учитывает
+	// ТОЛЬКО temperature и seed. top_p / top_k / min_p / typical_p / tfs_z /
+	// repeat_penalty / frequency_penalty / presence_penalty / mirostat* и
+	// antiprompts/stop-последовательности молча игнорируются.
+	//
+	// Раньше это происходило БЕЗ единого сообщения: клиент (OpenWebUI/Cline)
+	// задавал, например, top_p=0.5 и stop=["</s>"], а получал иное
+	// распределение и отсутствие ранней остановки — без единого следа в логах.
+	// Диагностировать такое поведение было практически невозможно.
+	//
+	// Теперь при входе в batched-режим с такими параметрами пишем WARN с
+	// перечнем проигнорированных полей. Отключается через
+	// `enableBatchedParallel: false` в профиле модели.
+	if ignored := unsupportedBatchedSamplerParams(params); len(ignored) > 0 {
+		logger.Get().Warnw("BatchedScheduler: запрос задал sampler-параметры, "+
+			"которые batched-режим не поддерживает (они БУДУТ проигнорированы; "+
+			"отключите enableBatchedParallel для этой модели, если это критично)",
+			"id", bs.nextID, "ignored_params", ignored)
+	}
+
 	return bs.nextID, state, nil
+}
+
+// unsupportedBatchedSamplerParams возвращает список sampler-параметров запроса,
+// которые batched_scheduler не умеет применять.
+//
+// Значения сравниваются с дефолтами bridge.DefaultGenerationParams(): если поле
+// отличается от дефолта, значит клиент его задал осознанно, и его игнорирование
+// стоит залогировать.
+func unsupportedBatchedSamplerParams(params BatchedSessionParams) []string {
+	def := bridge.DefaultGenerationParams()
+	var ignored []string
+	add := func(name string, differs bool) {
+		if differs {
+			ignored = append(ignored, name)
+		}
+	}
+	add("top_p", params.TopP != 0 && params.TopP != def.TopP)
+	// top_k: 0 = «клиент не задал» (bridge подставит дефолт 40), поэтому 0 НЕ
+	// считаем переопределением. Ненулевое значение, отличное от дефолта,
+	// означает явный выбор клиента, который batched-режим не применит.
+	add("top_k", params.TopK != 0 && params.TopK != def.TopK)
+	add("min_p", params.MinP != 0 && params.MinP != def.MinP)
+	add("typical_p", params.TypicalP != 0 && params.TypicalP != def.TypicalP)
+	add("tfs_z", params.TfsZ != 0 && params.TfsZ != def.TfsZ)
+	add("repeat_penalty", params.RepeatPenalty != 0 && params.RepeatPenalty != def.RepeatPenalty)
+	add("frequency_penalty", params.FrequencyPenalty != 0 && params.FrequencyPenalty != def.FrequencyPenalty)
+	add("presence_penalty", params.PresencePenalty != 0 && params.PresencePenalty != def.PresencePenalty)
+	add("repeat_last_n", params.RepeatLastN != 0 && params.RepeatLastN != def.RepeatLastN)
+	add("mirostat", params.Mirostat != 0 && params.Mirostat != def.Mirostat)
+	add("mirostat_tau", params.MirostatTau != 0 && params.MirostatTau != def.MirostatTau)
+	add("mirostat_eta", params.MirostatEta != 0 && params.MirostatEta != def.MirostatEta)
+	add("stop/antiprompts", len(params.StopSequences) > 0 || len(params.Antiprompts) > 0)
+	// Стабильный порядок: список попадёт в лог/метрику, а нестабильный вывод
+	// затрудняет сравнение записей и тестов.
+	sort.Strings(ignored)
+	return ignored
 }
 
 // UnregisterSession — удаляет session. НЕ дожидается завершения (caller
@@ -297,12 +381,12 @@ func (bs *BatchedScheduler) ActiveSessions() []BatchedSessionID {
 // Run — главный цикл scheduler'а. Блокирует до ctx.Done() или Stop().
 //
 // Tick loop:
-//   1. Собрать active sessions (filter Finished).
-//   2. Для каждой session подготовить BatchedSequence (1 token, pos = NextPos).
-//   3. Вызвать model.BatchedDecode (ОДИН llama_decode для всех sessions).
-//   4. Для каждой session сэмплировать next token (greedy argmax пока).
-//   5. Отправить token в session.TokenCh, инкрементировать NextPos/NextToken.
-//   6. Если EOG (или MaxTokens) — пометить Finished, close DoneCh + TokenCh.
+//  1. Собрать active sessions (filter Finished).
+//  2. Для каждой session подготовить BatchedSequence (1 token, pos = NextPos).
+//  3. Вызвать model.BatchedDecode (ОДИН llama_decode для всех sessions).
+//  4. Для каждой session сэмплировать next token (greedy argmax пока).
+//  5. Отправить token в session.TokenCh, инкрементировать NextPos/NextToken.
+//  6. Если EOG (или MaxTokens) — пометить Finished, close DoneCh + TokenCh.
 func (bs *BatchedScheduler) Run(ctx context.Context) {
 	defer close(bs.done)
 
@@ -345,18 +429,20 @@ func (bs *BatchedScheduler) markAllSessionsFinished(err error) {
 // tick — один цикл batched inference.
 //
 // Phase 1: PREFILL (Round 15.2 — multi-token).
-//   Каждая session ингестит ВСЕ оставшиеся prompt токены за ОДИН call
-//   (через bridge_batched_decode с n_tokens>1). Round 15.1 делал
-//   1 токен за call — медленно (80 calls для 4 sessions × 20 prompt tokens).
-//   Round 15.2: 4 calls для тех же 4 sessions (по 1 call на session).
-//   Logits копируются для ПОСЛЕДНЕГО токена каждой sequence —
-//   используем их для первого sampled token (это эффективнее чем
-//   отдельный generation tick с prompt[last]).
+//
+//	Каждая session ингестит ВСЕ оставшиеся prompt токены за ОДИН call
+//	(через bridge_batched_decode с n_tokens>1). Round 15.1 делал
+//	1 токен за call — медленно (80 calls для 4 sessions × 20 prompt tokens).
+//	Round 15.2: 4 calls для тех же 4 sessions (по 1 call на session).
+//	Logits копируются для ПОСЛЕДНЕГО токена каждой sequence —
+//	используем их для первого sampled token (это эффективнее чем
+//	отдельный generation tick с prompt[last]).
 //
 // Phase 2: GENERATION.
-//   Когда PrefillDone=true — каждая session предоставляет NextToken
-//   (последний сгенерированный) для BatchedDecode (1 token за call).
-//   После decode делаем greedy argmax и диспатчим в TokenCh.
+//
+//	Когда PrefillDone=true — каждая session предоставляет NextToken
+//	(последний сгенерированный) для BatchedDecode (1 token за call).
+//	После decode делаем greedy argmax и диспатчим в TokenCh.
 func (bs *BatchedScheduler) tick(ctx context.Context) {
 	// Шаг 1: собираем active sessions.
 	bs.mu.Lock()
@@ -544,8 +630,9 @@ func (bs *BatchedScheduler) tick(ctx context.Context) {
 // sampleFromLogits — Round 15.2 (2026-07-30): temperature sampling.
 //
 // Использует C-bridge bridge_sample_token (см. c/bridge/bridge.h + bridge.c):
-//   temperature <= 0  → greedy argmax (быстро, deterministic)
-//   temperature > 0   → softmax с temperature, multinomial sampling с std::mt19937
+//
+//	temperature <= 0  → greedy argmax (быстро, deterministic)
+//	temperature > 0   → softmax с temperature, multinomial sampling с std::mt19937
 //
 // При ошибке C-вызова (например n_vocab=0 или malloc OOM) fallback на
 // argmax — лучше плохой ответ чем паника.
@@ -585,12 +672,12 @@ func sampleFromLogits(model *bridge.ModelHandle, logits []float32, temperature f
 // или /status endpoint для production observability.
 var (
 	sampleFallbackCounter atomic.Int64
-	sampleOKCounter      atomic.Int64
+	sampleOKCounter       atomic.Int64
 )
 
 // SampleStats — snapshot для /metrics endpoint.
 type SampleStats struct {
-	OKCount      int64 `json:"sample_ok_count"`
+	OKCount       int64 `json:"sample_ok_count"`
 	FallbackCount int64 `json:"sample_fallback_count"`
 	TickDropCount int64 `json:"tick_drop_count"` // HoL: tokens dropped because consumer slow
 }
@@ -599,7 +686,7 @@ type SampleStats struct {
 // + tick drop counter для HoL observability.
 func GetSampleStats() SampleStats {
 	return SampleStats{
-		OKCount:      sampleOKCounter.Load(),
+		OKCount:       sampleOKCounter.Load(),
 		FallbackCount: sampleFallbackCounter.Load(),
 		TickDropCount: tickDropCounter.Load(),
 	}

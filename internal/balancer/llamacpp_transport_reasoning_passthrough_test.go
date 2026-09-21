@@ -2,11 +2,12 @@
 // preservation of reasoning_content.
 //
 // Bug context (2026-08-09):
-//   proxyRequestLlamaCpp делает SSE→SSE passthrough для /v1/chat/completions
-//   (используется Cline/Roo Code). Должен сохранять delta.reasoning_content
-//   при:
-//     - filterOpenAIStreamingLine не должен его резать
-//     - extractToolCallsFromSSEContent не должен его терять
+//
+//	proxyRequestLlamaCpp делает SSE→SSE passthrough для /v1/chat/completions
+//	(используется Cline/Roo Code). Должен сохранять delta.reasoning_content
+//	при:
+//	  - filterOpenAIStreamingLine не должен его резать
+//	  - extractToolCallsFromSSEContent не должен его терять
 //
 // Round 29: добавлены тесты, проверяющие что reasoning_content
 // пробрасывается через passthrough без потерь.

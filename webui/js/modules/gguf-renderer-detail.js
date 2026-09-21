@@ -45,7 +45,10 @@
                     M.refreshDetailPane();
                 }
                 if (id === 'downloads') {
+                    // R66.4 (2026-09-16): подтягиваем orphan .download файлы тоже,
+                    // чтобы UI мог показать "residual files" с кнопкой Delete.
                     if (typeof M.refreshActiveDownloads === 'function') M.refreshActiveDownloads();
+                    if (typeof M.refreshOrphanDownloads === 'function') M.refreshOrphanDownloads();
                     if (state.activeDownloads && state.activeDownloads.length > 0) {
                         if (typeof M.startDownloadPolling === 'function') M.startDownloadPolling();
                     }
@@ -124,6 +127,23 @@
             if (typeof M.deleteDownloadedFile === 'function') M.deleteDownloadedFile(dmi, dfn);
             return;
         }
+        // R66.4 (2026-09-16): Delete кнопка для orphan файла — modelId неизвестен,
+        // cleanup endpoint ищет только по filename.
+        var deleteOrphan = e.target.closest('.gguf-delete-orphan-btn');
+        if (deleteOrphan) {
+            var ofn = deleteOrphan.getAttribute('data-filename');
+            if (typeof M.deleteDownloadedFile === 'function') {
+                // Пустой modelId — backend игнорирует, ищет только filename.
+                M.deleteDownloadedFile('', ofn);
+            }
+            return;
+        }
+        // R66.4 (2026-09-16): "Clear all residual files" — батч-удаление всех orphan.
+        var cleanupAll = e.target.closest('#ggufCleanupAllOrphans,.gguf-cleanup-all-orphans-btn');
+        if (cleanupAll) {
+            if (typeof M.cleanupAllOrphans === 'function') M.cleanupAllOrphans();
+            return;
+        }
         var viewHf = e.target.closest('.gguf-view-hf-files-btn');
         if (viewHf) {
             var vi = parseInt(viewHf.getAttribute('data-model-idx'));
@@ -189,6 +209,34 @@
             }
             return;
         }
+        // R66 (2026-09-16): Suggestion chips / direct-id chips in empty state.
+        // Клик по чипу заполняет поле и триггерит search или сразу viewHfFiles.
+        var sugg = e.target.closest('.gguf-suggestion-chip');
+        if (sugg) {
+            var q = sugg.getAttribute('data-suggestion') || '';
+            var inputEl = document.getElementById('ggufHfDetailSearch');
+            if (inputEl) {
+                inputEl.value = q;
+                state.hfSearchQuery = q;
+                if (typeof M.refreshDetail === 'function') M.refreshDetail();
+                if (typeof M.doHfSearch === 'function') M.doHfSearch();
+            }
+            return;
+        }
+        var directChip = e.target.closest('.gguf-direct-chip');
+        if (directChip) {
+            var dq = directChip.getAttribute('data-direct') || '';
+            var dInputEl = document.getElementById('ggufHfDetailSearch');
+            if (dInputEl) dInputEl.value = dq;
+            state.hfSearchQuery = dq;
+            if (typeof M.refreshDetail === 'function') M.refreshDetail();
+            if (dq.indexOf('/') >= 0 && typeof M.viewHfFiles === 'function') {
+                M.viewHfFiles({ id: dq });
+            } else if (typeof M.doHfSearch === 'function') {
+                M.doHfSearch();
+            }
+            return;
+        }
         var copyBtn = e.target.closest('#ggufCopyUrl');
         if (copyBtn) {
             if (window.GgufApi && typeof M.currentBackend === 'function') {
@@ -208,6 +256,61 @@
             }
             return;
         }
+        // R66-FIX (2026-09-16): кнопка «Найти» (#ggufHfDetailSearchBtn).
+        // До этого биндили напрямую — терялся после первого refreshDetail().
+        // Через делегацию на #ggufDetailPanel — переживает любые перерисовки.
+        var hfBtn = e.target.closest('#ggufHfDetailSearchBtn');
+        if (hfBtn) {
+            var inp = document.getElementById('ggufHfDetailSearch');
+            if (inp && M.state) M.state.hfSearchQuery = inp.value;
+            if (typeof M.doHfSearch === 'function') M.doHfSearch();
+            return;
+        }
+    };
+
+    // ---- Delegated input/keydown for HF search ----
+    // R66-FIX (2026-09-16): биндим ОДИН раз на #ggufDetailPanel (в bindEvents),
+    // а не напрямую на input/button. refreshDetail() пересоздаёт input,
+    // и addEventListener на старой ноде теряется.
+    //
+    // R66.1 (2026-09-16): убрал debounced live-search. Пользователь жаловался,
+    // что автопоиск на 300мс срабатывал посреди ввода «qwen3.8» и не давал
+    // допечатать запрос. Теперь search запускается ТОЛЬКО:
+    //   - кликом по «Найти»
+    //   - нажатием Enter в поле
+    //   - кликом по suggestion-chip / direct-chip
+    //   - вводом «org/model» (с `/`) → сразу открываем файлы без search
+    //
+    // Input listener теперь только синхронизирует state.hfSearchQuery
+    // (нужно для случаев, когда «Найти» кликают ПОСЛЕ набора текста).
+    M.onDetailPanelInput = function(e) {
+        var input = e.target;
+        if (!input || input.id !== 'ggufHfDetailSearch') return;
+        var state = M.state;
+        if (!state) return;
+        // Только синхронизация value → state. Никаких API-вызовов.
+        state.hfSearchQuery = input.value;
+        // Если пользователь стирает поле до <2 chars — очищаем результаты.
+        var q = input.value.trim();
+        if (q.length < 2 && state.hfSearchResults && state.hfSearchResults.length) {
+            state.hfSearchResults = [];
+            state.hfLastError = null;
+            if (typeof M.refreshDetail === 'function') M.refreshDetail();
+        }
+    };
+
+    M.onDetailPanelKeydown = function(e) {
+        if (e.key !== 'Enter') return;
+        var input = e.target;
+        if (!input || input.id !== 'ggufHfDetailSearch') return;
+        var state = M.state;
+        if (state) state.hfSearchQuery = input.value;
+        var q = input.value.trim();
+        if (q.length >= 2 && q.indexOf('/') >= 0) {
+            if (typeof M.viewHfFiles === 'function') M.viewHfFiles({ id: q });
+            return;
+        }
+        if (typeof M.doHfSearch === 'function') M.doHfSearch();
     };
 
     // ---- Event binding ----
@@ -258,6 +361,12 @@
             detailPanel._ggufDetailClickBound = true;
             state._detailPanel = detailPanel;
             detailPanel.addEventListener('click', M.onDetailPanelClick);
+            // R66-FIX (2026-09-16): input/keydown тоже делегируем на панель.
+            // Раньше биндили напрямую на hfInput — но refreshDetail() пересоздаёт
+            // #ggufHfDetailSearch, и addEventListener терялся. После первого же
+            // клика по «Найти» новый input/button оставались без обработчиков.
+            detailPanel.addEventListener('input', M.onDetailPanelInput);
+            detailPanel.addEventListener('keydown', M.onDetailPanelKeydown);
         } else if (detailPanel) {
             state._detailPanel = detailPanel;
         }
@@ -274,19 +383,10 @@
             M.bindSettingsChange(detailPanel, 'ggufDetailUseMmap', 'useMmap', 'checked');
             M.bindSettingsChange(detailPanel, 'ggufDetailTensorSplit', 'tensorSplit', 'valueOrNull');
 
-            // HF search
-            var hfSearchBtn = detailPanel.querySelector('#ggufHfDetailSearchBtn');
-            if (hfSearchBtn) {
-                hfSearchBtn.addEventListener('click', function () {
-                    if (typeof M.doHfSearch === 'function') M.doHfSearch();
-                });
-            }
-            var hfInput = detailPanel.querySelector('#ggufHfDetailSearch');
-            if (hfInput) {
-                hfInput.addEventListener('keydown', function (e) {
-                    if (e.key === 'Enter' && typeof M.doHfSearch === 'function') M.doHfSearch();
-                });
-            }
+            // Кнопка «Найти» обрабатывается в onDetailPanelClick (там же, где
+            // suggestion-chip / direct-chip / file-row / и т.д.).
+            // Прямой addEventListener НЕ вешаем — refreshDetail() пересоздаёт DOM,
+            // и обработчик теряется (R66, 2026-09-16).
         }
 
         // HF token

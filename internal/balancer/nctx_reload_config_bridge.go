@@ -170,9 +170,9 @@ func applyNCtxReloadEnvOverrides(cfg NCtxReloadConfig) NCtxReloadConfig {
 
 // resolvePreflightWaitTuning — Round 35c: возвращает (cap, multiplier, buffer)
 // для polling timeout в executeLlamaCppLoad. Приоритет:
-//   1. proxy.nctxReload.Config() (если proxy доступен)
-//   2. ENV overrides (LB_NCTX_PREFLIGHT_MAX_WAIT_SEC, _WAIT_MULTIPLIER, _WAIT_BUFFER_SEC)
-//   3. hardcoded defaults (5min cap, 2x multiplier, 60s buffer) для unit-тестов
+//  1. proxy.nctxReload.Config() (если proxy доступен)
+//  2. ENV overrides (LB_NCTX_PREFLIGHT_MAX_WAIT_SEC, _WAIT_MULTIPLIER, _WAIT_BUFFER_SEC)
+//  3. hardcoded defaults (5min cap, 2x multiplier, 60s buffer) для unit-тестов
 //
 // Шаг 2 (ENV fallback) важен для unit-тестов с NewModelManager(nil) — позволяет
 // тестам сокращать maxWait через t.Setenv без поднятия реального proxy.

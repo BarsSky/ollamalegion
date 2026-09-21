@@ -78,7 +78,7 @@ func TestApplySuggestions_ModelNotLoaded(t *testing.T) {
 		makeSuggestion("sug-1", "b1", "b2", "m1", 1),
 	}
 	loadedByBackend := map[string][]string{
-		"b1": {"m2"},  // m1 not loaded
+		"b1": {"m2"}, // m1 not loaded
 		"b2": {},
 	}
 	requested := []string{"sug-1"}

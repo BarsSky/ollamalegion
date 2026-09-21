@@ -15,20 +15,20 @@ import (
 
 // AdaptiveStrategy — ответ от /api/v1/cppworker/adaptive/strategy.
 type AdaptiveStrategy struct {
-	GPULayers    int    `json:"gpuLayers"`
-	NCtx         int    `json:"nCtx"`
-	KVCacheType  string `json:"kvCacheType"`
+	GPULayers   int    `json:"gpuLayers"`
+	NCtx        int    `json:"nCtx"`
+	KVCacheType string `json:"kvCacheType"`
 	// Round 34 (2026-08-12) Phase 4: flash attention hint. -1=auto (default),
 	// 0=off, 1=on. cppworker может рекомендовать 0 для CPU-only partial offload
 	// (flash_attn требует GPU) или 1 для полного GPU. 0 = use cppworker's default.
 	FlashAttnType int    `json:"flashAttnType"`
-	UseMmap      bool   `json:"useMmap"`
-	Stage        string `json:"stage"` // "exact_fit", "partial_offload", "cpu_only", "moe_offload"
-	KVReduced    bool   `json:"kvReduced"`
-	GPUReduced   bool   `json:"gpuReduced"`
-	NCtxReduced  bool   `json:"nCtxReduced"`
-	MaxViableNCtx int   `json:"maxViableNCtx"`
-	Explanation  string `json:"explanation"`
+	UseMmap       bool   `json:"useMmap"`
+	Stage         string `json:"stage"` // "exact_fit", "partial_offload", "cpu_only", "moe_offload"
+	KVReduced     bool   `json:"kvReduced"`
+	GPUReduced    bool   `json:"gpuReduced"`
+	NCtxReduced   bool   `json:"nCtxReduced"`
+	MaxViableNCtx int    `json:"maxViableNCtx"`
+	Explanation   string `json:"explanation"`
 	// Round 7: parallel arrays for MoE override-tensors.
 	// Each pair is (regex-pattern, buft-name). Forwarded to cppworker reload
 	// via the load-with-params handler so expert tensors are routed to CPU

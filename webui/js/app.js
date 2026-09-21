@@ -277,9 +277,15 @@ const ui = (function () {
         const frame = document.getElementById('monitorFrame');
         if (!frame || !frame.contentWindow) return;
         const CFG = window.WEBUI_CONFIG || {};
+        // R60.16.1 (2026-09-08): API base fallback chain for the monitor iframe.
+        // If WEBUI_CONFIG.API_BASE is empty (entrypoint.sh default), fall back to
+        // window.location.origin so the iframe's fetch() calls resolve to the
+        // same origin (which nginx proxies to loadbalancer). This makes the
+        // monitor work in BOTH docker-network and host-browser contexts.
+        const apiBase = CFG.API_BASE || (window.location && window.location.origin) || '';
         frame.contentWindow.postMessage({
             type: 'ollamalegion-config',
-            apiBase: CFG.API_BASE || '',
+            apiBase: apiBase,
             apiToken: CFG.API_TOKEN || '',
             refreshInterval: 2000,
             lang: localStorage.getItem('ollamalegion_lang') || 'ru'
@@ -656,13 +662,96 @@ const ui = (function () {
 
     // ---- Data Fetching ----
 
+    /**
+     * enrichBackendsWithConfig — R65d (2026-09-20).
+     *
+     * Мержит конфигурационные поля бэкенда (weight, labels, maxModels,
+     * runtimeMaxModels, autoTune, apiStyle, engine, gpuMode, lastAgentContact)
+     * из GET /api/v1/backends в массив, полученный из GET /api/v1/cluster.
+     *
+     * Почему так, а не «просто взять /api/v1/backends»: страница использует
+     * МЕТРИКИ из cluster state (GPU/System/Prediction), а /api/v1/backends их
+     * отдаёт не всегда (зависит от наличия agent metrics для бэкенда).
+     * Поэтому берём объединение: база — cluster state, конфиг — добавляем.
+     *
+     * Fail-safe: если /api/v1/backends недоступен (401/500/сеть), возвращаем
+     * исходный список без изменений — страница продолжает работать на метриках,
+     * просто без колонок конфигурации (как было до R65d).
+     */
+    async function enrichBackendsWithConfig(clusterBackends) {
+        if (!Array.isArray(clusterBackends) || clusterBackends.length === 0) {
+            return clusterBackends;
+        }
+        if (!Api.backends) {
+            return clusterBackends;
+        }
+        var configs = {};
+        try {
+            const resp = await Api.backends();
+            var list = (resp && resp.backends) || (Array.isArray(resp) ? resp : []);
+            for (var i = 0; i < list.length; i++) {
+                if (list[i] && list[i].id) configs[list[i].id] = list[i];
+            }
+        } catch (e) {
+            // Конфиг недоступен — не ломаем страницу, просто нет доп. полей.
+            console.warn('[fetchClusterState] /api/v1/backends unavailable, ' +
+                'weight/labels/maxModels/autoTune will be missing:', e && e.message);
+            return clusterBackends;
+        }
+
+        return clusterBackends.map(function (b) {
+            var cfg = configs[b.id];
+            if (!cfg) return b;
+            // Копия, чтобы не мутировать состояние, пришедшее из API.
+            var merged = Object.assign({}, cfg, b);
+            // Явно переносим поля, которых в metrics-типе нет вообще
+            // (Object.assign их бы взял из cfg, но список фиксируем, чтобы
+            // поведение не зависело от порядка аргументов).
+            merged.weight = cfg.weight;
+            merged.labels = cfg.labels || [];
+            merged.maxModels = cfg.maxModels;
+            merged.runtimeMaxModels = cfg.runtimeMaxModels;
+            merged.maxConcurrentRequests = (b.maxConcurrentRequests !== undefined && b.maxConcurrentRequests !== null)
+                ? b.maxConcurrentRequests
+                : cfg.maxConcurrentRequests;
+            merged.autoTune = cfg.autoTune;
+            merged.apiStyle = cfg.apiStyle;
+            merged.effectiveApiStyle = cfg.effectiveApiStyle;
+            merged.engine = cfg.engine;
+            merged.cppWorkerPort = cfg.cppWorkerPort;
+            merged.ollamaPort = cfg.ollamaPort;
+            merged.agentPort = cfg.agentPort;
+            merged.host = cfg.host || b.host;
+            merged.name = cfg.name || b.name;
+            merged.type = cfg.type || b.type;
+            merged.hasAgent = (cfg.hasAgent !== undefined) ? cfg.hasAgent : b.hasAgent;
+            merged.agentId = cfg.agentId || b.agentId;
+            merged.lastAgentContact = cfg.lastAgentContact || b.lastAgentContact;
+            return merged;
+        });
+    }
+
     async function fetchClusterState() {
         try {
             const state = await Api.cluster();
+            // R65d (2026-09-20): обогащаем бэкенды их КОНФИГУРАЦИЕЙ.
+            //
+            // GET /api/v1/cluster отдаёт []types.BackendMetrics — там нет
+            // weight, labels, maxModels, autoTune, apiStyle, gpuMode.
+            // renderers.js:203,839,841,899 и utils.js:37-40 эти поля читают,
+            // поэтому колонки Weight/Labels/MaxModels всегда показывали
+            // 1/-/-, карточка AutoTune не рисовалась, а детект cloud-режима по
+            // labels не работал.
+            //
+            // GET /api/v1/backends отдаёт тип types.Backend + метрики
+            // (handlers_backends.go:189-214), то есть НАДМНОЖЕСТВО нужных полей.
+            // Мержим их в state.backends, метрики из /cluster имеют приоритет.
+            state.backends = await enrichBackendsWithConfig(state.backends || []);
+
             // R59.4 (2026-09-03): updateBackends moved to app-listeners.js in R57.3;
             // call via App.* instead of local ref (which was left behind by the
             // extract and silently produced ReferenceError on every refresh).
-            if (App.updateBackends) App.updateBackends(state.backends || []);
+            if (App.updateBackends) App.updateBackends(state.backends);
             // Successful REST request — balancer is reachable
             updateConnectionStatus(true);
             // Синхронизация типа бэкенда (Ollama vs llama.cpp) — скрывает/показывает вкладку GGUF и режимы
@@ -1094,7 +1183,10 @@ const ui = (function () {
         var cpuMax = parseInt((document.getElementById('cpuMaxUsage') && document.getElementById('cpuMaxUsage').value)) || 80;
         var ramMax = parseInt((document.getElementById('ramMaxUsage') && document.getElementById('ramMaxUsage').value)) || 85;
         var minDisk = parseInt((document.getElementById('minFreeDisk') && document.getElementById('minFreeDisk').value)) || 10240;
-        var apiToken = (document.getElementById('apiToken') && document.getElementById('apiToken').value) || '';
+        // R65d: apiToken больше не читается и не отправляется — сервер его не
+        // принимает (нет поля в PUT-структуре). Смена API-токена на лету
+        // заблокировала бы текущего оператора, поэтому токены задаются в
+        // конфиге/окружении балансера.
 
         // RPC settings
         var modelReplicationEnabled = document.getElementById('modelReplicationEnabled') ? document.getElementById('modelReplicationEnabled').checked : false;
@@ -1115,12 +1207,13 @@ const ui = (function () {
         var distInferenceEnabled = document.getElementById('distInferenceEnabled') ? document.getElementById('distInferenceEnabled').checked : false;
         var distInferenceGrpcPort = parseInt((document.getElementById('distInferenceGrpcPort') && document.getElementById('distInferenceGrpcPort').value)) || 19000;
 
-        // Agent settings
-        var agentCollectInterval = parseInt((document.getElementById('agentCollectInterval') && document.getElementById('agentCollectInterval').value)) || 15;
-        var agentHeartbeatInterval = parseInt((document.getElementById('agentHeartbeatInterval') && document.getElementById('agentHeartbeatInterval').value)) || 30;
-        var agentMaxConcurrent = parseInt((document.getElementById('agentMaxConcurrent') && document.getElementById('agentMaxConcurrent').value)) || 10;
-        var agentMaxModels = parseInt((document.getElementById('agentMaxModels') && document.getElementById('agentMaxModels').value)) || 5;
-        var agentTimeout = parseInt((document.getElementById('agentTimeout') && document.getElementById('agentTimeout').value)) || 10;
+        // R65d (2026-09-20): здесь раньше читались agentCollectInterval /
+        // agentHeartbeatInterval / agentMaxConcurrent / agentMaxModels /
+        // agentTimeout и отправлялись в секции `agent`. Секция убрана из
+        // payload: эти значения описывают конфигурацию ОТДЕЛЬНОГО процесса
+        // cmd/agent, и применить их через PUT /api/v1/cluster/config
+        // невозможно (у types.LoadBalancerConfig нет поля Agent). Задаются в
+        // окружении agent-контейнера.
 
         // llama.cpp / GGUF settings (имена полей соответствуют Go-структуре LlamaCppConfig)
         // Хелпер: безопасный int (0 = валидное значение, NaN → fallback).
@@ -1204,13 +1297,16 @@ const ui = (function () {
 
         var config = {
             operatingMode: operatingMode,
-            agent: {
-                collectInterval: agentCollectInterval,
-                heartbeatInterval: agentHeartbeatInterval,
-                maxConcurrentRequests: agentMaxConcurrent,
-                maxModels: agentMaxModels,
-                timeout: agentTimeout
-            },
+            // R65d (2026-09-20): секция `agent` УБРАНА из payload.
+            //
+            // Она отправлялась (collectInterval/heartbeatInterval/
+            // maxConcurrentRequests/maxModels/timeout), но применить её сервер
+            // не может: types.AgentConfig описывает конфигурацию отдельного
+            // процесса cmd/agent, а не балансера (у LoadBalancerConfig нет поля
+            // Agent). Сервер молча игнорировал блок, verifySync откатывал форму —
+            // оператор видел «Settings saved» при неизменившихся значениях.
+            // Тайминги агента задаются в окружении agent-контейнера
+            // (AGENT_COLLECT_INTERVAL и т.п.).
             algorithm: algorithm,
             useEnhancedScoring: useEnhancedScoring,
             modelAffinity: modelAffinity,
@@ -1221,7 +1317,6 @@ const ui = (function () {
             cpuMaxUsage: cpuMax,
             ramMaxUsage: ramMax,
             minFreeDisk: minDisk,
-            apiToken: apiToken,
             modelReplication: {
                 enabled: modelReplicationEnabled,
                 defaultMinInstances: modelReplicationMinInstances,
@@ -1305,6 +1400,18 @@ const ui = (function () {
     /**
      * SERVER-FIRST verify: после PUT делаем GET и сравниваем критические поля.
      * При расхождении перезагружаем UI из сервера (источник истины).
+     *
+     * R65d (2026-09-20): добавлена проверка СЕКЦИЙ (modelReplication,
+     * rpcCoordinator, virtualModels, distInference) и полей llamaCpp, которые
+     * раньше молча терялись. До этого verifySync сравнивал только algorithm /
+     * operatingMode / useEnhancedScoring / backendEngine, поэтому когда PUT
+     * игнорировал, например, modelReplication (поля не было в серверной
+     * структуре), проверка проходила успешно, показывался тост «Settings saved»,
+     * а applyServerConfig откатывал форму. Оператор видел успех при
+     * неизменившейся настройке.
+     *
+     * Теперь такие расхождения возвращают ошибку → пользователь видит, что
+     * настройка не применилась, а не «тихий» откат.
      */
     function verifySync(expectedConfig) {
         return Api.config().then(function (serverConfig) {
@@ -1323,6 +1430,47 @@ const ui = (function () {
             }
             if (expectedConfig.backendEngine && serverConfig.backendEngine !== expectedConfig.backendEngine) {
                 mismatches.push('backendEngine: expected ' + expectedConfig.backendEngine + ', got ' + serverConfig.backendEngine);
+            }
+
+            // Секции: сравниваем только те поля, которые форма реально
+            // редактирует. groups/workers/models задаются отдельными
+            // endpoint'ами и намеренно не участвуют.
+            var sectionFields = {
+                modelReplication: ['enabled', 'defaultMinInstances', 'defaultMaxInstances', 'idleUnloadAfter'],
+                rpcCoordinator: ['enabled', 'coordinatorURL', 'workerPort', 'protocol', 'timeout'],
+                virtualModels: ['enabled', 'coordMode', 'timeout'],
+                distInference: ['enabled', 'grpcPort']
+            };
+            Object.keys(sectionFields).forEach(function (section) {
+                var expected = expectedConfig[section];
+                var actual = serverConfig[section];
+                if (!expected) return;
+                if (!actual) {
+                    mismatches.push(section + ': сервер не вернул секцию');
+                    return;
+                }
+                sectionFields[section].forEach(function (field) {
+                    if (expected[field] === undefined) return;
+                    if (actual[field] !== expected[field]) {
+                        mismatches.push(section + '.' + field + ': expected ' + expected[field] + ', got ' + actual[field]);
+                    }
+                });
+            });
+
+            // llamaCpp: поля, которые WebUI редактирует и которые до R65d
+            // отсутствовали в Go-структуре (молча игнорировались). Теперь они
+            // есть в types.LlamaCppConfig, поэтому расхождение — реальная ошибка.
+            if (expectedConfig.llamaCpp && serverConfig.llamaCpp) {
+                ['numGpuLayers', 'contextLength', 'batchSize', 'kvCacheType',
+                 'flashAttnType', 'splitMode', 'idleUnloadMinutes',
+                 'enableMetrics', 'metricsRetentionSeconds',
+                 'enableReasoning', 'reasoningBudget'].forEach(function (field) {
+                    if (expectedConfig.llamaCpp[field] === undefined) return;
+                    if (serverConfig.llamaCpp[field] !== expectedConfig.llamaCpp[field]) {
+                        mismatches.push('llamaCpp.' + field + ': expected ' +
+                            expectedConfig.llamaCpp[field] + ', got ' + serverConfig.llamaCpp[field]);
+                    }
+                });
             }
 
             if (mismatches.length > 0) {
@@ -2757,3 +2905,4 @@ function renderModelDetailsBackendsList(backends, onlyIssues) {
     html += '</ul>';
     return html;
 }
+

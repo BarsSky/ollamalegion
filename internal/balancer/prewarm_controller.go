@@ -101,9 +101,9 @@ func (pc *PrewarmController) evaluate() {
 	pc.proxy.mu.RUnlock()
 
 	// Собираем статистику: какие модели загружены на каких бэкендах и их загрузка
-	modelOnBackends := make(map[string][]string)    // model -> []backendID
-	backendLoad := make(map[string]float64)         // backendID -> load ratio
-	modelQueueDepth := make(map[string]int)         // model -> pending requests
+	modelOnBackends := make(map[string][]string) // model -> []backendID
+	backendLoad := make(map[string]float64)      // backendID -> load ratio
+	modelQueueDepth := make(map[string]int)      // model -> pending requests
 
 	// Анализируем очередь
 	pc.proxy.queueMgr.pendingMu.RLock()

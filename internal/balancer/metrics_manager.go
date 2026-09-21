@@ -178,16 +178,16 @@ func (mm *MetricsManager) UpdateLlamaCppModelLoaded(
 	}
 	if !found {
 		lm.LoadedModels = append(lm.LoadedModels, types.LlamaCppModel{
-			Name:           model,
-			Path:           modelPath,
-			Size:           sizeBytes,
-			ContextLength:  contextSize,
-			NumGPULayers:   gpuLayers,
-			KvCacheType:    kvCacheType,
-			FlashAttnType:  flashAttnType,
-			UseMmap:        useMmap,
-			Quantization:   quantization,
-			State:          "loaded",
+			Name:          model,
+			Path:          modelPath,
+			Size:          sizeBytes,
+			ContextLength: contextSize,
+			NumGPULayers:  gpuLayers,
+			KvCacheType:   kvCacheType,
+			FlashAttnType: flashAttnType,
+			UseMmap:       useMmap,
+			Quantization:  quantization,
+			State:         "loaded",
 		})
 	}
 
@@ -204,8 +204,8 @@ func (mm *MetricsManager) UpdateLlamaCppModelLoaded(
 // UpdateLlamaCppModelUnloaded — обработчик callback'а от cppworker'а при
 // выгрузке модели (POST /api/v1/internal/llama-model-unloaded). Удаляет
 // модель из LoadedModels, чтобы:
-//   1. UI не показывал unloaded модель как загруженную.
-//   2. preflight_nctx не использовал stale lastKnownNCtx (Phase 3 fix).
+//  1. UI не показывал unloaded модель как загруженную.
+//  2. preflight_nctx не использовал stale lastKnownNCtx (Phase 3 fix).
 //
 // Round 34 (2026-08-12): без этого callback'а lastKnownNCtx остаётся
 // в NCtxReloadCoordinator после `idle_unload_after` (10m) → preflight думает

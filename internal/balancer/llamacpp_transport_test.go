@@ -402,21 +402,28 @@ func TestTranslateSSEChatToOllama_FullSequenceDoneHasModel(t *testing.T) {
 //
 // Без фильтрации ollama-js (используется в Cline) получает «мусорный»
 // content в message.content и падает с ошибкой "Invalid API Response".
-// Тест проверяет, что чанки со служебными токенами заменяются на
-// валидный Ollama NDJSON-чанк с пустым content.
+// Тест проверяет, что служебные токены ВЫРЕЗАЮТСЯ из message.content,
+// а окружающий текст сохраняется.
+//
+// R65d (2026-09-20): семантика изменена. Раньше при любом вхождении токена
+// content обнулялся целиком, из-за чего "hello<end_of_turn>world" превращался
+// в пустую строку — пользователь терял оба слова. Теперь ожидаем "helloworld".
 func TestTranslateSSEChatToOllama_FilterServiceTokens(t *testing.T) {
 	cases := []struct {
 		name    string
 		content string
+		want    string // ожидаемый content после вырезания токенов
 	}{
-		{"gemma_end_of_turn", "<end_of_turn>"},
-		{"gemma_end_of_turn_whitespace", "  <end_of_turn>  "},
-		{"gemma_start_of_turn", "<start_of_turn>"},
-		{"llama_eot_id", "<|eot_id|>"},
-		{"llama_im_end", "<|im_end|>"},
-		{"mixed_with_text", "hello<end_of_turn>world"},
-		{"gemma_prefix", "<end_of_turn>hello"},
-		{"gemma_suffix", "hello<end_of_turn>"},
+		{"gemma_end_of_turn", "<end_of_turn>", ""},
+		{"gemma_end_of_turn_whitespace", "  <end_of_turn>  ", ""},
+		{"gemma_start_of_turn", "<start_of_turn>", ""},
+		{"llama_eot_id", "<|eot_id|>", ""},
+		{"llama_im_end", "<|im_end|>", ""},
+		// R65d: окружающий текст сохраняется
+		{"mixed_with_text", "hello<end_of_turn>world", "helloworld"},
+		{"gemma_prefix", "<end_of_turn>hello", "hello"},
+		{"gemma_suffix", "hello<end_of_turn>", "hello"},
+		{"multiple_tokens", "<|eot_id|>hello<end_of_turn>world<eos>", "helloworld"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -431,7 +438,7 @@ func TestTranslateSSEChatToOllama_FilterServiceTokens(t *testing.T) {
 			}
 			got := translateSSEChatToOllama(chunk, "gemma-3-4b-it", nil)
 			if got == nil {
-				t.Fatalf("expected non-nil result for filtered service token")
+				t.Fatalf("expected non-nil result for service token chunk")
 			}
 			var obj map[string]interface{}
 			if err := json.Unmarshal(got[:len(got)-1], &obj); err != nil {
@@ -442,8 +449,8 @@ func TestTranslateSSEChatToOllama_FilterServiceTokens(t *testing.T) {
 				t.Fatalf("missing or invalid message field: %s", got)
 			}
 			content, _ := msg["content"].(string)
-			if content != "" {
-				t.Errorf("expected empty content for service token, got %q", content)
+			if content != tc.want {
+				t.Errorf("content = %q, want %q (input %q)", content, tc.want, tc.content)
 			}
 			if obj["done"] != false {
 				t.Errorf("expected done=false for filtered content chunk, got %v", obj["done"])

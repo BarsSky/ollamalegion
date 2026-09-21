@@ -823,7 +823,7 @@ func TestVirtualRouter_Failover_PrimaryDown_RetryNext(t *testing.T) {
 		// NB: round-robin counter might pick either; we use a single test
 		// scenario where selector returns b2 first.
 		BackendPool: []string{
-			fmt.Sprintf("%s:%d", b2Host, b2Port),    // primary — will fail
+			fmt.Sprintf("%s:%d", b2Host, b2Port),   // primary — will fail
 			fmt.Sprintf("%s:%d", b1.host, b1.port), // failover — succeeds
 		},
 		ModelName: "physical",

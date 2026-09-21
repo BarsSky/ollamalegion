@@ -45,11 +45,21 @@
         if (window.GgufApi && typeof window.GgufApi.buildBackendProxyUrl === 'function') {
             return window.GgufApi.buildBackendProxyUrl(backendId, '/api/models/load/progress');
         }
-        // Fallback: balancer API base
+        // Fallback: balancer API base.
+        //
+        // R65d (2026-09-20): прокси-путь /api/v1/gguf/backends/ защищён
+        // AuthMiddleware, поэтому добавляем ?token= — как это делает
+        // GgufApi.buildBackendProxyUrl. Без этого fallback (когда GgufApi ещё
+        // не загружен) получал бы 401, и прогресс загрузки молча не работал.
         const balancerUrl = (window.WEBUI_CONFIG && window.WEBUI_CONFIG.API_BASE_URL) ||
             (typeof window !== 'undefined' && window.location && window.location.origin) ||
             '/';
-        return balancerUrl.replace(/\/+$/, '') + '/api/v1/gguf/backends/' + encodeURIComponent(backendId) + '/proxy/api/models/load/progress';
+        var url = balancerUrl.replace(/\/+$/, '') + '/api/v1/gguf/backends/' + encodeURIComponent(backendId) + '/proxy/api/models/load/progress';
+        var apiToken = (window.WEBUI_CONFIG && window.WEBUI_CONFIG.API_TOKEN) || '';
+        if (apiToken && url.indexOf('token=') === -1) {
+            url += (url.indexOf('?') === -1 ? '?' : '&') + 'token=' + encodeURIComponent(apiToken);
+        }
+        return url;
     }
 
     /**

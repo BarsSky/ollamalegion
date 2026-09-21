@@ -220,8 +220,8 @@ func TestWriteSuccessResponse_OpenAIChat(t *testing.T) {
 		Object  string `json:"object"`
 		Model   string `json:"model"`
 		Choices []struct {
-			Index        int `json:"index"`
-			Message      struct {
+			Index   int `json:"index"`
+			Message struct {
 				Role    string `json:"role"`
 				Content string `json:"content"`
 			} `json:"message"`
@@ -441,7 +441,7 @@ func TestServeHTTP_NotInitialized(t *testing.T) {
 var (
 	errCoordinatorDisabledForTest = dispatcherTestErr("rpc coordinator is disabled")
 	errModelNotFoundForTest       = dispatcherTestErr(`distributed model "qwen3-a3b" not found`)
-	errGenericUpstream             = dispatcherTestErr("upstream worker error: connection refused")
+	errGenericUpstream            = dispatcherTestErr("upstream worker error: connection refused")
 )
 
 type dispatcherTestErr string

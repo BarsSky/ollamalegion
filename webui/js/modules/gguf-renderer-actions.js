@@ -177,6 +177,60 @@
 
     // ---- HF search actions ----
 
+    /**
+     * Translate GgufApi error → user-friendly title + hint.
+     * Использует err.code, который ставит и request(), и requestViaBackend().
+     * Возвращает {title, hint, toastKind}.
+     */
+    function formatHfError(err) {
+        const code = err && err.code;
+        const baseHint = err && err.message ? String(err.message) : '';
+        switch (code) {
+            case 'auth_required':
+                return {
+                    title: 'HuggingFace token required',
+                    hint: 'Save your HF token in the bar above (gated or private repo).',
+                    toastKind: 'warn'
+                };
+            case 'not_found':
+                return {
+                    title: 'Model or repo not found',
+                    hint: baseHint || 'No such repository on HuggingFace Hub.',
+                    toastKind: 'warn'
+                };
+            case 'rate_limited':
+                return {
+                    title: 'HuggingFace rate limit',
+                    hint: 'Add an HF token (free account lifts limits) and try again in a minute.',
+                    toastKind: 'warn'
+                };
+            case 'timeout':
+                return {
+                    title: 'cppworker is not responding',
+                    hint: baseHint,
+                    toastKind: 'error'
+                };
+            case 'server_error':
+                return {
+                    title: 'cppworker error',
+                    hint: baseHint || 'Backend returned 5xx. Check cppworker logs.',
+                    toastKind: 'error'
+                };
+            case 'network':
+                return {
+                    title: 'Network error',
+                    hint: baseHint || 'Check connection to cppworker.',
+                    toastKind: 'error'
+                };
+            default:
+                return {
+                    title: 'HF search failed',
+                    hint: baseHint,
+                    toastKind: 'error'
+                };
+        }
+    }
+
     M.doHfSearch = function() {
         const state = M.state;
         if (state.hfSearching) return;
@@ -188,25 +242,50 @@
         if (typeof M.refreshDetail === 'function') M.refreshDetail();
         var api = window.GgufApi || window.Api;
         var q = state.hfSearchQuery.trim();
-        if (typeof api.hfSearch !== 'function') {
+        // R65-FIX (2026-09-16): GgufApi называет метод searchModels, не hfSearch.
+        // Старое имя заставляло всегда срабатывать guard "API not available".
+        if (typeof api.searchModels !== 'function') {
             state.hfSearching = false;
-            M.showToast('hfSearch API not available', 'error');
+            M.showToast('GgufApi.searchModels is not available', 'error');
             return;
         }
-        api.hfSearch(q, 10)
-            .then(function (results) {
-                state.hfSearchResults = results || [];
+        api.searchModels(q, 20)
+            .then(function (resp) {
+                // R66.2 (2026-09-16): cppworker возвращает {count, query, results: [...]}.
+                // Если записать весь объект в state.hfSearchResults, .filter() падает
+                // с TypeError "filter is not a function" → "infinite loading".
+                // Берём только массив results (или пустой массив если формат неожиданный).
+                var arr = (resp && Array.isArray(resp.results)) ? resp.results :
+                          (Array.isArray(resp) ? resp : []);
+                state.hfSearchResults = arr;
                 state.hfSearching = false;
+                state.hfLastError = null;
                 if (typeof M.refreshDetail === 'function') M.refreshDetail();
             })
             .catch(function (err) {
                 state.hfSearching = false;
-                M.showToast('HF search failed: ' + ((err && err.message) || err), 'error');
+                const formatted = formatHfError(err);
+                state.hfLastError = { title: formatted.title, hint: formatted.hint };
+                if (typeof M.showToast === 'function') {
+                    M.showToast(formatted.title + ': ' + formatted.hint, formatted.toastKind);
+                }
                 if (typeof M.refreshDetail === 'function') M.refreshDetail();
             });
     };
 
     M.quickDownloadHf = function(model) {
+        // R66.3 (2026-09-16): раньше вызов "Скачать рекомендуемое" просто открывал
+        // список файлов (viewHfFiles). Это вводило в заблуждение — кнопка с молнией
+        // намекает на немедленное скачивание, а на деле требовала ещё один клик.
+        // Теперь: если у модели есть recommended файл (cppworker возвращает поле
+        // recommended в результатах search), сразу стартуем скачивание. Иначе —
+        // fallback на список файлов (например, для моделей без GGUF-тегов).
+        if (model && model.recommended) {
+            if (typeof M.startDownload === 'function') {
+                M.startDownload(model.id, model.recommended);
+                return;
+            }
+        }
         if (typeof M.viewHfFiles === 'function') M.viewHfFiles(model);
     };
 
@@ -220,13 +299,17 @@
         state.hfModelFiles = [];
         if (typeof M.refreshDetail === 'function') M.refreshDetail();
         var api = window.GgufApi || window.Api;
-        if (typeof api.hfListFiles !== 'function') {
-            M.showToast('hfListFiles API not available', 'error');
+        // R65-FIX (2026-09-16): GgufApi.listModelFiles, не hfListFiles.
+        if (typeof api.listModelFiles !== 'function') {
+            M.showToast('GgufApi.listModelFiles is not available', 'error');
             return;
         }
-        api.hfListFiles(model.id)
-            .then(function (files) {
-                state.hfModelFiles = files || [];
+        api.listModelFiles(model.id)
+            .then(function (resp) {
+                // R66.2 (2026-09-16): cppworker возвращает {count, modelId, files: [...]}.
+                var arr = (resp && Array.isArray(resp.files)) ? resp.files :
+                          (Array.isArray(resp) ? resp : []);
+                state.hfModelFiles = arr;
                 if (typeof M.refreshDetail === 'function') M.refreshDetail();
             })
             .catch(function (err) {
@@ -240,11 +323,12 @@
         state.activeDownloads.push({ modelId: modelId, filename: filename, startedAt: Date.now() });
         if (typeof M.startDownloadPolling === 'function') M.startDownloadPolling();
         var api = window.GgufApi || window.Api;
-        if (typeof api.hfDownload !== 'function') {
-            M.showToast('hfDownload API not available', 'error');
+        // R65-FIX (2026-09-16): GgufApi.startDownload, не hfDownload.
+        if (typeof api.startDownload !== 'function') {
+            M.showToast('GgufApi.startDownload is not available', 'error');
             return;
         }
-        api.hfDownload(modelId, filename)
+        api.startDownload(modelId, filename)
             .then(function () {
                 M.showToast(M._('gguf.download_started') || 'Download started: ' + filename, 'success');
                 if (typeof M.refreshActiveDownloads === 'function') M.refreshActiveDownloads();
@@ -279,17 +363,92 @@
         if (!confirm(M._('gguf.confirm_delete_file', { name: filename }) ||
                       'Delete ' + filename + '?')) return;
         var api = window.GgufApi || window.Api;
-        if (typeof api.hfDelete !== 'function') {
-            M.showToast('hfDelete API not available', 'error');
+        // R66.4 (2026-09-16): правильное имя метода — deleteDownload, не hfDelete.
+        if (typeof api.deleteDownload !== 'function') {
+            M.showToast('GgufApi.deleteDownload is not available', 'error');
             return;
         }
-        api.hfDelete(modelId, filename)
-            .then(function () {
-                M.showToast(M._('gguf.file_deleted') || 'File deleted', 'success');
-                if (typeof M.refreshActiveDownloads === 'function') M.refreshActiveDownloads();
+        api.deleteDownload(modelId, filename)
+            .then(function (resp) {
+                if (resp && resp.status === 'noop') {
+                    M.showToast(M._('gguf.file_not_found') || 'File not found (already deleted?)', 'info');
+                } else {
+                    var freed = (resp && resp.result && resp.result.bytesFreed) || 0;
+                    var msg = M._('gguf.file_deleted') || 'File deleted';
+                    if (freed > 0) {
+                        msg += '. ' + (M._('gguf.disk_freed', { size: formatBytesShort(freed) }) || ('Disk freed: ' + formatBytesShort(freed)));
+                    }
+                    M.showToast(msg, 'success');
+                }
+                // Удаляем из обоих списков — activeDownloads + downloadHistory + orphanDownloads
+                state.activeDownloads = (state.activeDownloads || []).filter(function (d) {
+                    return !(d.modelId === modelId && d.filename === filename);
+                });
+                state.downloadHistory = (state.downloadHistory || []).filter(function (d) {
+                    return !(d.modelId === modelId && d.filename === filename);
+                });
+                state.orphanDownloads = (state.orphanDownloads || []).filter(function (d) {
+                    return d.filename !== filename;
+                });
+                if (typeof M.refreshDetailPane === 'function') M.refreshDetailPane();
             })
             .catch(function (err) {
                 M.showToast('Delete failed: ' + ((err && err.message) || err), 'error');
             });
     };
+
+    // R66.4 (2026-09-16): пакетное удаление всех orphan .download файлов.
+    // Полезно когда на диске скопилось несколько недокачанных файлов и пользователь
+    // хочет разом всё почистить. Последовательно вызывает deleteDownload для каждого.
+    M.cleanupAllOrphans = function() {
+        const state = M.state;
+        var orphans = state.orphanDownloads || [];
+        if (orphans.length === 0) {
+            M.showToast(M._('gguf.no_orphans_to_cleanup') || 'No residual files', 'info');
+            return;
+        }
+        var totalSize = orphans.reduce(function (s, o) { return s + (o.size || 0); }, 0);
+        var msg = (M._('gguf.confirm_cleanup_all_orphans', { count: orphans.length, size: formatBytesShort(totalSize) }) ||
+                  ('Delete ' + orphans.length + ' residual files (' + formatBytesShort(totalSize) + ')?'));
+        if (!confirm(msg)) return;
+        var api = window.GgufApi || window.Api;
+        if (typeof api.deleteDownload !== 'function') {
+            M.showToast('GgufApi.deleteDownload is not available', 'error');
+            return;
+        }
+        // Последовательно — параллельные DELETE могут нагрузить cppworker.
+        // Каждый callback уменьшает state.orphanDownloads и обновляет UI.
+        var totalFreed = 0;
+        var i = 0;
+        function next() {
+            if (i >= orphans.length) {
+                M.showToast(M._('gguf.disk_freed', { size: formatBytesShort(totalFreed) }) ||
+                            ('Freed ' + formatBytesShort(totalFreed)), 'success');
+                if (typeof M.refreshDetailPane === 'function') M.refreshDetailPane();
+                return;
+            }
+            var o = orphans[i++];
+            api.deleteDownload('', o.filename)
+                .then(function (resp) {
+                    if (resp && resp.result && resp.result.bytesFreed) totalFreed += resp.result.bytesFreed;
+                    state.orphanDownloads = (state.orphanDownloads || []).filter(function (d) {
+                        return d.filename !== o.filename;
+                    });
+                    if (typeof M.refreshDetailPane === 'function') M.refreshDetailPane();
+                })
+                .catch(function () {
+                    // Продолжаем даже если один файл не удалился
+                })
+                .then(next);
+        }
+        next();
+    };
+
+    // Local helper для красивого показа freed size
+    function formatBytesShort(b) {
+        if (!b || b === 0) return '0 B';
+        var u = ['B', 'KB', 'MB', 'GB', 'TB'];
+        var i = Math.floor(Math.log(b) / Math.log(1024));
+        return (b / Math.pow(1024, i)).toFixed(i > 0 ? 1 : 0) + ' ' + u[i];
+    }
 })();

@@ -71,12 +71,38 @@ func (lr *LlamaCppRouter) getLlamaCppBackends() []backendInfo {
 	return result
 }
 
-// findModelOnLlamaCppBackend ищет модель только среди llama.cpp бэкендов
+// findModelOnLlamaCppBackend ищет модель только среди llama.cpp бэкендов.
+//
+// R65d (2026-09-20) — ИСПРАВЛЕНИЕ ИСТОЧНИКА ДАННЫХ.
+//
+// Было: чтение из metricsMgr.metrics[id].LlamaCpp.LoadedModels. Но этот кэш
+// НИКОГДА не заполняется загруженными моделями: все записи идут в
+// metricsMgr.llamaMetrics (llamacpp_metrics_poller.go:324,
+// metrics_manager.go:180,228, nctx_reload_handlers.go:884,
+// proxy_request.go:1219), а metrics[id].LlamaCpp только ЧИТАЕТСЯ
+// (cluster_state.go:110,167). Проверено: `grep -rn "LlamaCpp.LoadedModels ="` —
+// ни одного присваивания.
+//
+// Следствие бага: функция ВСЕГДА возвращала "" (модель «не найдена»), поэтому
+// вызывающий код падал в selectAnyLlamaCppHealthy() — то есть в мульти-бэкенд
+// кластере запрос уходил на ПРОИЗВОЛЬНЫЙ здоровый узел, а не на тот, где модель
+// уже загружена. Это вызывало лишние unload+load циклы (минуты на модель).
+// На одном бэкенде баг маскировался: любой узел = нужный узел.
+//
+// Теперь читаем llamaMetrics — тот же источник, что уже используют handlePS
+// (llamacpp_handlers_readonly.go:425) и handleTags (:50).
 func (lr *LlamaCppRouter) findModelOnLlamaCppBackend(model string) string {
+	if model == "" {
+		return ""
+	}
+
 	lr.proxy.metricsMgr.mu.RLock()
 	defer lr.proxy.metricsMgr.mu.RUnlock()
 
-	for id, metrics := range lr.proxy.metricsMgr.metrics {
+	for id, lm := range lr.proxy.metricsMgr.llamaMetrics {
+		if lm == nil {
+			continue
+		}
 		lr.proxy.mu.RLock()
 		state, ok := lr.proxy.backends[id]
 		lr.proxy.mu.RUnlock()
@@ -86,8 +112,11 @@ func (lr *LlamaCppRouter) findModelOnLlamaCppBackend(model string) string {
 		if normalizeBackendType(state.Backend.Type) != types.BackendTypeLlamaCpp {
 			continue
 		}
-		for _, m := range metrics.LlamaCpp.LoadedModels {
-			if m.Name == model {
+		for _, m := range lm.LoadedModels {
+			// Точное совпадение имени ИЛИ совпадение без расширения .gguf:
+			// клиенты (и /api/tags) отдают имя без расширения, а cppworker в
+			// некоторых путях — с ним.
+			if m.Name == model || strings.TrimSuffix(m.Name, ".gguf") == model {
 				return id
 			}
 		}

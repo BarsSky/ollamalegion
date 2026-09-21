@@ -9,13 +9,13 @@ import (
 
 // EventBus — подписка/публикация событий кластера
 type EventBus struct {
-	subs     map[string]chan types.Event
-	mu       sync.RWMutex
-	stopped  bool
-	stopCh   chan struct{}
-	nextID   uint64 // R52.5 (2026-08-24): atomic counter for unique subscription IDs
-	         // (replaces time.Now().UnixNano() который мог дать дубликаты
-	         // при Subscribe() в одной nanosecond — тест это поймал)
+	subs    map[string]chan types.Event
+	mu      sync.RWMutex
+	stopped bool
+	stopCh  chan struct{}
+	nextID  uint64 // R52.5 (2026-08-24): atomic counter for unique subscription IDs
+	// (replaces time.Now().UnixNano() который мог дать дубликаты
+	// при Subscribe() в одной nanosecond — тест это поймал)
 }
 
 // NewEventBus — создание нового EventBus

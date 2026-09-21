@@ -177,31 +177,32 @@ func TestParseCppWorkerError_NotJSON(t *testing.T) {
 // TestParseCppWorkerError_PromptExceedsNCtx_2026_06_24 —
 // Регрессионный тест для production bug (2026-06-24):
 //
-//   Cline на gemma-4-E4B-it-Q4_K_M получал пустой ответ с done_reason="stop"
-//   потому что cppworker молча клампил n_predict до 512 и возвращал
-//   {code: "prompt_exceeds_n_ctx"} (string). Балансер ParseCppWorkerError
-//   не распознавал string-код, поэтому не триггерил auto-reload — клиент
-//   оставался с n_ctx=32768, а hardware может n_ctx=131072.
+//	Cline на gemma-4-E4B-it-Q4_K_M получал пустой ответ с done_reason="stop"
+//	потому что cppworker молча клампил n_predict до 512 и возвращал
+//	{code: "prompt_exceeds_n_ctx"} (string). Балансер ParseCppWorkerError
+//	не распознавал string-код, поэтому не триггерил auto-reload — клиент
+//	оставался с n_ctx=32768, а hardware может n_ctx=131072.
 //
 // После фикса cppworker возвращает:
-//   {
-//     "code": 3,                                  ← int=ErrPromptTooLong
-//     "code_str": "prompt_exceeds_n_ctx",
-//     "bridge_info": {
-//       "code": 3,
-//       "current_n_ctx": 32768,
-//       "required_n_ctx": 65536,                  ← roundUpPow2(55111+512+1)
-//       "actual_tokens": 55111,
-//       "n_predict": 512,
-//       "n_ctx_override": 32768,
-//       "max_vram_n_ctx": 131072,
-//       ...
-//     }
-//   }
+//
+//	{
+//	  "code": 3,                                  ← int=ErrPromptTooLong
+//	  "code_str": "prompt_exceeds_n_ctx",
+//	  "bridge_info": {
+//	    "code": 3,
+//	    "current_n_ctx": 32768,
+//	    "required_n_ctx": 65536,                  ← roundUpPow2(55111+512+1)
+//	    "actual_tokens": 55111,
+//	    "n_predict": 512,
+//	    "n_ctx_override": 32768,
+//	    "max_vram_n_ctx": 131072,
+//	    ...
+//	  }
+//	}
 //
 // Балансер должен:
-//   1. Распарсить через ParseCppWorkerError → *NCtxError с errors.Is(ErrPromptTooLong).
-//   2. BridgeInfo должен содержать все поля для DecideReloadBackend.
+//  1. Распарсить через ParseCppWorkerError → *NCtxError с errors.Is(ErrPromptTooLong).
+//  2. BridgeInfo должен содержать все поля для DecideReloadBackend.
 func TestParseCppWorkerError_PromptExceedsNCtx_2026_06_24(t *testing.T) {
 	body := []byte(`{
 		"error": "prompt exceeds n_ctx even with minimum n_predict floor",

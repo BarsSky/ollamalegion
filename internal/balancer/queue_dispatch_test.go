@@ -75,14 +75,14 @@ func TestModelManagerGetLoadTimeout(t *testing.T) {
 func TestCanAcceptRequest(t *testing.T) {
 	p := newProxyWithCleanup(t, &types.LoadBalancerConfig{
 		Balancing: types.BalancingSettings{
-			Algorithm:            "resource-aware",
-			ModelAffinity:        true,
-			Prewarm:              types.PrewarmConfig{TriggerLoadThreshold: 0.80},
-			SyncModelLoad:        types.SyncModelLoadConfig{Enabled: true, Timeout: "30s"},
-			QueueMaxSize:         10,
-			QueueWorkers:         2,
-			QueueTimeout:         60,
-			ResourceReservation:  types.ResourceReservationConfig{GPUHeadroomPercent: 0.10},
+			Algorithm:           "resource-aware",
+			ModelAffinity:       true,
+			Prewarm:             types.PrewarmConfig{TriggerLoadThreshold: 0.80},
+			SyncModelLoad:       types.SyncModelLoadConfig{Enabled: true, Timeout: "30s"},
+			QueueMaxSize:        10,
+			QueueWorkers:        2,
+			QueueTimeout:        60,
+			ResourceReservation: types.ResourceReservationConfig{GPUHeadroomPercent: 0.10},
 		},
 		Resources: types.ResourceLimits{
 			GPU:    types.GPULimits{MaxUsagePercent: 99, MaxVRAMUsagePercent: 99},
@@ -142,15 +142,15 @@ func TestCanAcceptRequest(t *testing.T) {
 func TestDispatchRequestAffinity(t *testing.T) {
 	p := newProxyWithCleanup(t, &types.LoadBalancerConfig{
 		Balancing: types.BalancingSettings{
-			Algorithm:            "resource-aware",
-			ModelAffinity:        true,
-			Prewarm:              types.PrewarmConfig{TriggerLoadThreshold: 0.80},
-			SyncModelLoad:        types.SyncModelLoadConfig{Enabled: true, Timeout: "30s"},
-			UseEnhancedScoring:   true,
-			QueueMaxSize:         10,
-			QueueWorkers:         2,
-			QueueTimeout:         60,
-			ResourceReservation:  types.ResourceReservationConfig{GPUHeadroomPercent: 0.10},
+			Algorithm:           "resource-aware",
+			ModelAffinity:       true,
+			Prewarm:             types.PrewarmConfig{TriggerLoadThreshold: 0.80},
+			SyncModelLoad:       types.SyncModelLoadConfig{Enabled: true, Timeout: "30s"},
+			UseEnhancedScoring:  true,
+			QueueMaxSize:        10,
+			QueueWorkers:        2,
+			QueueTimeout:        60,
+			ResourceReservation: types.ResourceReservationConfig{GPUHeadroomPercent: 0.10},
 		},
 		Resources: types.ResourceLimits{
 			GPU:    types.GPULimits{MaxUsagePercent: 99, MaxVRAMUsagePercent: 99},
@@ -198,15 +198,15 @@ func TestDispatchRequestAffinity(t *testing.T) {
 func TestDispatchRequestNoBackendAvailable(t *testing.T) {
 	p := newProxyWithCleanup(t, &types.LoadBalancerConfig{
 		Balancing: types.BalancingSettings{
-			Algorithm:            "resource-aware",
-			ModelAffinity:        true,
-			Prewarm:              types.PrewarmConfig{TriggerLoadThreshold: 0.80},
-			SyncModelLoad:        types.SyncModelLoadConfig{Enabled: false}, // выключено
-			UseEnhancedScoring:   true,
-			QueueMaxSize:         10,
-			QueueWorkers:         2,
-			QueueTimeout:         60,
-			ResourceReservation:  types.ResourceReservationConfig{GPUHeadroomPercent: 0.10},
+			Algorithm:           "resource-aware",
+			ModelAffinity:       true,
+			Prewarm:             types.PrewarmConfig{TriggerLoadThreshold: 0.80},
+			SyncModelLoad:       types.SyncModelLoadConfig{Enabled: false}, // выключено
+			UseEnhancedScoring:  true,
+			QueueMaxSize:        10,
+			QueueWorkers:        2,
+			QueueTimeout:        60,
+			ResourceReservation: types.ResourceReservationConfig{GPUHeadroomPercent: 0.10},
 		},
 		Resources: types.ResourceLimits{
 			GPU:    types.GPULimits{MaxUsagePercent: 99, MaxVRAMUsagePercent: 99},
@@ -245,10 +245,10 @@ func TestDispatchRequestNoBackendAvailable(t *testing.T) {
 func TestWaitForModelReady(t *testing.T) {
 	p := newProxyWithCleanup(t, &types.LoadBalancerConfig{
 		Balancing: types.BalancingSettings{
-			QueueMaxSize:         10,
-			QueueWorkers:         2,
-			QueueTimeout:         60,
-			ResourceReservation:  types.ResourceReservationConfig{GPUHeadroomPercent: 0.10},
+			QueueMaxSize:        10,
+			QueueWorkers:        2,
+			QueueTimeout:        60,
+			ResourceReservation: types.ResourceReservationConfig{GPUHeadroomPercent: 0.10},
 		},
 		Resources: types.ResourceLimits{
 			GPU:    types.GPULimits{MaxUsagePercent: 99, MaxVRAMUsagePercent: 99},

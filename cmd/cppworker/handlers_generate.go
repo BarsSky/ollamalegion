@@ -311,7 +311,7 @@ func handleGenerate(w http.ResponseWriter, r *http.Request) {
 
 	// Round 18 P0.3 (2026-08-04): per-user parallel admission (fair-share).
 	userID := getUserID(r)
-	if max := currentConfig.MaxParallelPerUser; max > 0 {
+	if max := maxParallelPerUser(); max > 0 {
 		if !backend.UserTracker().TryAcquire(userID, max) {
 			logger.Get().Warnw("handleGenerate: user exceeded MaxParallelPerUser",
 				"user_id", userID, "max", max, "model", modelName, "remote", r.RemoteAddr)

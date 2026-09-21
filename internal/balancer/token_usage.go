@@ -5,9 +5,9 @@
 // Балансер пробрасывает их в response клиенту (translateOpenAIChatToOllama и т.д.),
 // но НЕ агрегирует для мониторинга. Этот файл добавляет:
 //
-//   1. ModelTokenUsage — struct для хранения per-model aggregates.
-//   2. recordTokenUsage(model, prompt, completion) — вызывается из response translator'ов.
-//   3. GetTokenUsageSnapshot() / ResetTokenUsage() — для /api/v1/stats/tokens endpoint.
+//  1. ModelTokenUsage — struct для хранения per-model aggregates.
+//  2. recordTokenUsage(model, prompt, completion) — вызывается из response translator'ов.
+//  3. GetTokenUsageSnapshot() / ResetTokenUsage() — для /api/v1/stats/tokens endpoint.
 //
 // Atomic инкремент под RLock для минимизации contention.
 package balancer

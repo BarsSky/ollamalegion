@@ -94,18 +94,18 @@ func (p *Proxy) LoadState() error {
 		}
 	}
 
-		for _, saved := range state.Backends {
-			if _, exists := p.backends[saved.ID]; !exists {
-				backend := saved
-				p.backends[backend.ID] = &BackendState{
-					Backend:         &backend,
-					ActiveReqs:      0,
-					LastUsed:        time.Time{},
-					WarmingUpModels: make(map[string]*types.WarmupState),
-				}
-				p.config.Backends = append(p.config.Backends, backend)
+	for _, saved := range state.Backends {
+		if _, exists := p.backends[saved.ID]; !exists {
+			backend := saved
+			p.backends[backend.ID] = &BackendState{
+				Backend:         &backend,
+				ActiveReqs:      0,
+				LastUsed:        time.Time{},
+				WarmingUpModels: make(map[string]*types.WarmupState),
 			}
+			p.config.Backends = append(p.config.Backends, backend)
 		}
+	}
 
 	// Round 13 (2026-07-10): migration — drop orphan legacy "agent-only" backends
 	// (created by old /agents/register when cppworker had its own backend).

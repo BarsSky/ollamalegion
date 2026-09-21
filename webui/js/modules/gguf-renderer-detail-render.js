@@ -411,6 +411,7 @@
     function renderDownloadsPane() {
         const dls = state.activeDownloads || [];
         const history = state.downloadHistory || [];
+        const orphans = state.orphanDownloads || [];
         const activeHtml = dls.length === 0
             ? ('<div class="gguf-empty-state" style="margin-bottom:16px;">' +
                 '<div class="empty-icon"><i class="fas fa-download"></i></div>' +
@@ -434,7 +435,53 @@
                 historyItems.map(renderDownloadItem).join('') +
                '</div>');
 
-        return activeHtml + historyHtml;
+        // R66.4 (2026-09-16): orphan .download файлы — то, что осталось после сбоев.
+        // cppworker возвращает filename+size, но НЕ modelId (нельзя восстановить
+        // из имени файла). UI показывает "Residual files" отдельным блоком.
+        const orphanHtml = orphans.length === 0
+            ? ''
+            : ('<div class="gguf-downloads-section gguf-orphans-section" style="margin-top:16px;padding-top:16px;border-top:1px solid var(--warning);">' +
+                '<h5 style="margin:0 0 8px 0;font-size:13px;color:var(--warning);text-transform:uppercase;letter-spacing:0.5px;">' +
+                    '<i class="fas fa-exclamation-triangle"></i> ' +
+                    (_('gguf.residual_downloads') || 'Residual files (orphans)') +
+                '</h5>' +
+                '<div style="font-size:11px;color:var(--text-muted);margin-bottom:8px;">' +
+                    Utils.escapeHtml(_('gguf.orphans_hint') || 'Partial .download files left from interrupted downloads. They take disk space but are not associated with any active download.') +
+                '</div>' +
+                orphans.map(renderOrphanItem).join('') +
+                '<div style="margin-top:8px;text-align:right;">' +
+                    '<button class="btn btn-sm btn-warning gguf-cleanup-all-orphans-btn" id="ggufCleanupAllOrphans">' +
+                        '<i class="fas fa-broom"></i> ' +
+                        Utils.escapeHtml(_('gguf.cleanup_all_orphans') || 'Clear all residual files') +
+                    '</button>' +
+                '</div>' +
+               '</div>');
+
+        return activeHtml + historyHtml + orphanHtml;
+    }
+
+    function renderOrphanItem(o) {
+        const sizeLabel = o.size > 0 ? formatBytesShort(o.size) : '?';
+        const ageLabel = o.modified
+            ? new Date(o.modified * 1000).toLocaleString()
+            : '-';
+        // modelId неизвестен (filename не кодирует репо), поэтому для cleanup
+        // передаём пустую строку. Cppworker cleanup ищет файл ТОЛЬКО по filename,
+        // modelId игнорируется при поиске temp/final файлов.
+        return '<div class="gguf-orphan-item" style="display:flex;align-items:center;gap:8px;padding:6px 8px;background:var(--bg-secondary);border-radius:6px;margin-bottom:4px;">' +
+            '<i class="fas fa-file-archive" style="color:var(--warning);"></i>' +
+            '<div style="flex:1;min-width:0;">' +
+                '<div style="font-family:monospace;font-size:12px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="' + Utils.escapeHtml(o.path || o.filename) + '">' +
+                    Utils.escapeHtml(o.filename) +
+                '</div>' +
+                '<div style="font-size:10px;color:var(--text-muted);">' +
+                    Utils.escapeHtml(sizeLabel) + ' · ' + Utils.escapeHtml(ageLabel) +
+                '</div>' +
+            '</div>' +
+            '<button class="btn btn-sm btn-danger gguf-delete-orphan-btn" data-filename="' + Utils.escapeHtml(o.filename) + '" title="' + Utils.escapeHtml(_('gguf.delete_from_disk') || 'Delete downloaded file from disk') + '">' +
+                '<i class="fas fa-trash"></i>' +
+            '</button>' +
+        '</div>';
     }
 
     function renderDownloadItem(dl) {
@@ -533,6 +580,56 @@
     }
 
     /**
+     * Empty-state hints shown before the user types anything.
+     * Suggestion chips are clickable — handler in gguf-renderer-detail.js sets
+     * the input value and triggers a search.
+     */
+    function renderHfEmptyHints() {
+        var suggestions = [
+            { label: 'Qwen3', q: 'Qwen3' },
+            { label: 'Llama-3', q: 'Llama-3' },
+            { label: 'gemma-2', q: 'gemma-2' },
+            { label: 'Mistral', q: 'Mistral' },
+            { label: 'deepseek', q: 'deepseek' }
+        ];
+        var direct = [
+            { label: 'Qwen/Qwen3-8B-Instruct', q: 'Qwen/Qwen3-8B-Instruct' },
+            { label: 'google/gemma-2-9b-it-GGUF', q: 'google/gemma-2-9b-it-GGUF' }
+        ];
+        var suggHtml = suggestions.map(function (s) {
+            return '<button class="gguf-suggestion-chip" data-suggestion="' + Utils.escapeHtml(s.q) + '" ' +
+                'style="margin:4px 4px 0 0;padding:4px 10px;border-radius:14px;border:1px solid var(--border);background:var(--bg-secondary);cursor:pointer;font-size:12px;">' +
+                Utils.escapeHtml(s.label) + '</button>';
+        }).join('');
+        var directHtml = direct.map(function (d) {
+            return '<button class="gguf-direct-chip" data-direct="' + Utils.escapeHtml(d.q) + '" ' +
+                'style="display:block;width:100%;text-align:left;margin:4px 0;padding:6px 10px;border-radius:6px;border:1px solid var(--border);background:var(--bg-secondary);cursor:pointer;font-family:monospace;font-size:12px;">' +
+                Utils.escapeHtml(d.label) + '</button>';
+        }).join('');
+        return '<div class="gguf-empty-state gguf-search-empty" style="padding:12px 4px;">' +
+            '<div style="display:flex;align-items:center;gap:8px;margin-bottom:6px;">' +
+                '<i class="fab fa-huggingface" style="font-size:18px;color:#ff9a00;"></i>' +
+                '<span style="font-weight:500;">' + Utils.escapeHtml(_('gguf.search_title') || 'HuggingFace Hub') + '</span>' +
+            '</div>' +
+            '<div style="color:var(--text-muted);font-size:12px;margin-bottom:8px;">' +
+                Utils.escapeHtml(_('gguf.search_hint') || 'Type 2+ chars to search, or paste an org/model id (with "/") to jump straight to its files.') +
+            '</div>' +
+            '<div style="margin-top:10px;">' +
+                '<div style="font-size:11px;color:var(--text-muted);text-transform:uppercase;letter-spacing:0.5px;margin-bottom:4px;">' +
+                    Utils.escapeHtml(_('gguf.popular') || 'Popular') +
+                '</div>' +
+                '<div>' + suggHtml + '</div>' +
+            '</div>' +
+            '<div style="margin-top:12px;">' +
+                '<div style="font-size:11px;color:var(--text-muted);text-transform:uppercase;letter-spacing:0.5px;margin-bottom:4px;">' +
+                    Utils.escapeHtml(_('gguf.direct_link') || 'Or paste org/model id') +
+                '</div>' +
+                '<div>' + directHtml + '</div>' +
+            '</div>' +
+        '</div>';
+    }
+
+    /**
      * Universal field extractors for HF file records.
      * CppWorker API returns {path, sizeBytes, isGGUF, quantization};
      * raw HF API returns {rfilename, size, ...}.
@@ -575,24 +672,59 @@
 
     function renderHfSearchResults() {
         if (state.hfSearching) {
-            return '<div class="gguf-empty-state"><i class="fas fa-spinner fa-spin"></i> ' + _('common.loading') + '</div>';
+            return '<div class="gguf-empty-state"><i class="fas fa-spinner fa-spin"></i> ' +
+                (_('gguf.searching_for', { q: state.hfSearchQuery }) || ('Searching for "' + Utils.escapeHtml(state.hfSearchQuery) + '"...')) +
+                '</div>';
         }
-        if (!state.hfSearchResults || state.hfSearchResults.length === 0) {
-            return '<div class="gguf-empty-state">' + (state.hfSearchQuery ? _('gguf.no_results') : '') + '</div>';
+        // Show structured error if the last search failed
+        if (state.hfLastError) {
+            return '<div class="gguf-empty-state gguf-search-error">' +
+                '<i class="fas fa-exclamation-triangle" style="color:var(--warning,#e0a030);font-size:18px;"></i>' +
+                '<div style="margin-top:6px;font-weight:500;">' + Utils.escapeHtml(state.hfLastError.title) + '</div>' +
+                '<div style="margin-top:4px;color:var(--text-muted);font-size:12px;">' + Utils.escapeHtml(state.hfLastError.hint) + '</div>' +
+            '</div>';
         }
-        var filtered = state.hfSearchResults.filter(function (m) {
+        // R66.2 (2026-09-16): на случай если state.hfSearchResults стал не-массивом
+        // (старый код приводил к TypeError "filter is not a function" — infinite loading).
+        // Защищаемся: если пришло что-то не-array, считаем пустым.
+        var resultsArr = Array.isArray(state.hfSearchResults) ? state.hfSearchResults : [];
+        if (!resultsArr.length) {
+            // No results yet — different message depending on whether the user typed something
+            if (!state.hfSearchQuery || state.hfSearchQuery.trim().length < 2) {
+                return renderHfEmptyHints();
+            }
+            return '<div class="gguf-empty-state">' +
+                '<i class="fas fa-search" style="opacity:0.4;"></i> ' +
+                '<div style="margin-top:6px;">' + Utils.escapeHtml(_('gguf.no_results_for', { q: state.hfSearchQuery }) || ('No results for "' + state.hfSearchQuery + '"')) + '</div>' +
+                '<div style="margin-top:4px;color:var(--text-muted);font-size:12px;">' + Utils.escapeHtml(_('gguf.try_short_query') || 'Try a shorter query, e.g. "Qwen", "Llama-3", "gemma-2-9b"') + '</div>' +
+            '</div>';
+        }
+        var filtered = resultsArr.filter(function (m) {
             return m && m.files && Array.isArray(m.files) && m.files.length > 0;
         });
         if (filtered.length === 0) {
-            return '<div class="gguf-empty-state">' + (state.hfSearchQuery ? _('gguf.no_gguf_files_found') : _('gguf.no_results')) + '</div>';
+            return '<div class="gguf-empty-state">' +
+                '<i class="fas fa-box-open" style="opacity:0.4;"></i> ' +
+                '<div style="margin-top:6px;">' + Utils.escapeHtml(_('gguf.no_gguf_files_found')) + '</div>' +
+                '<div style="margin-top:4px;color:var(--text-muted);font-size:12px;">' +
+                Utils.escapeHtml(_('gguf.no_gguf_files_hint') || 'Repository exists but contains no .gguf files (maybe GGUF is in a different repo or branch).') +
+                '</div>' +
+            '</div>';
         }
         var toolbar = filtered.length > 1
-            ? '<div class="gguf-results-toolbar" style="display:flex;justify-content:flex-end;margin-bottom:8px;">' +
+            ? '<div class="gguf-results-toolbar" style="display:flex;justify-content:space-between;align-items:center;gap:8px;margin-bottom:8px;">' +
+                '<span class="gguf-results-count" style="font-size:12px;color:var(--text-muted);">' +
+                    Utils.escapeHtml(_('gguf.results_count', { n: filtered.length }) || (filtered.length + ' models')) +
+                '</span>' +
                 '<button class="btn btn-sm btn-secondary gguf-collapse-all-btn" title="' + (_('gguf.collapse_all') || 'Collapse all') + '">' +
                     '<i class="fas fa-compress-arrows-alt"></i> ' + (_('gguf.collapse_all') || 'Collapse all') +
                 '</button>' +
               '</div>'
-            : '';
+            : '<div class="gguf-results-toolbar" style="display:flex;justify-content:flex-end;margin-bottom:8px;">' +
+                '<span class="gguf-results-count" style="font-size:12px;color:var(--text-muted);margin-right:auto;">' +
+                    Utils.escapeHtml(_('gguf.results_count', { n: filtered.length }) || (filtered.length + ' model')) +
+                '</span>' +
+              '</div>';
         return toolbar + '<div class="gguf-results-list">' +
             filtered.map(function (model, idx) {
                 const downloads = model.downloads || 0;
@@ -666,7 +798,9 @@
     function renderHfModelFiles() {
         if (!state.hfSearchSelected) return '';
         const modelId = state.hfSearchSelected.id || state.hfSearchSelected.modelId || '';
-        const files = state.hfModelFiles || [];
+        // R66.2 (2026-09-16): cppworker оборачивает files в {count, modelId, files: [...]} —
+        // || [] ловит только falsy, объект пройдёт как truthy → .map() упадёт. Защищаемся.
+        const files = Array.isArray(state.hfModelFiles) ? state.hfModelFiles : [];
         function fileName(f) { return f.path || f.rfilename || f.filename || f.name || ''; }
         function fileSize(f) { return f.sizeBytes || f.size || 0; }
         function isGgufFile(f) {

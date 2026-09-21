@@ -6,6 +6,21 @@ import (
 	"ollama-loadbalancer/pkg/logger"
 )
 
+// maxParallelPerUser — безопасный доступ к currentConfig.MaxParallelPerUser.
+//
+// R65d (2026-09-20): в нескольких обработчиках (handleV1ChatCompletions,
+// handleV1Completions, handleChat, handleGenerate) это поле читалось напрямую
+// через currentConfig, из-за чего при неинициализированном конфиге
+// (unit-тесты, ранний старт) происходил nil-pointer panic → HTTP 500.
+// Правильный образец защиты уже был в handleInferUsers (строки ниже);
+// хелпер делает его единым для всех вызовов.
+func maxParallelPerUser() int {
+	if currentConfig == nil {
+		return 0
+	}
+	return currentConfig.MaxParallelPerUser
+}
+
 // handleInferUsers — список per-user parallel counters.
 //
 // Round 18 P0.3 (2026-08-04). Admin endpoint для мониторинга.
@@ -24,10 +39,7 @@ func handleInferUsers(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	maxPerUser := 0
-	if currentConfig != nil {
-		maxPerUser = currentConfig.MaxParallelPerUser
-	}
+	maxPerUser := maxParallelPerUser()
 
 	snap := backend.UserTracker().Snapshot()
 	users := make([]map[string]interface{}, 0, len(snap))

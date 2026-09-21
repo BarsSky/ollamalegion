@@ -34,10 +34,10 @@ import (
 
 // vrTestRig — balancer + 2 ollama backends + VirtualRouter + registry.
 type vrTestRig struct {
-	proxy   *Proxy
+	proxy    *Proxy
 	balancer *httptest.Server
-	o1, o2  *ollamaFakeServer
-	router  *VirtualRouter
+	o1, o2   *ollamaFakeServer
+	router   *VirtualRouter
 	registry *virtualmodel.Registry
 }
 

@@ -178,20 +178,20 @@ func TestNCtxReloadConfig_DefaultAsyncValues(t *testing.T) {
 // для realistic hardware (5GB+131072 n_ctx load = 60-180s на RTX 3070 8GB).
 func TestNCtxReloadConfig_EffectiveAsyncRetryAfter(t *testing.T) {
 	tests := []struct {
-		in             int
-		maxOverride    int
-		want           int
+		in          int
+		maxOverride int
+		want        int
 	}{
-		{0, 0, 5},    // default
-		{-1, 0, 5},   // default
-		{1, 0, 2},    // clamp min
-		{2, 0, 2},    // min
-		{5, 0, 5},    // normal
-		{30, 0, 30},  // old max
-		{50, 0, 50},  // R60.6: under new max=120, no clamp
-		{120, 0, 120}, // R60.6: new max (default)
-		{200, 0, 120}, // R60.6: clamp at new max
-		{50, 30, 30},  // R60.6: operator override max=30 (backward compat)
+		{0, 0, 5},       // default
+		{-1, 0, 5},      // default
+		{1, 0, 2},       // clamp min
+		{2, 0, 2},       // min
+		{5, 0, 5},       // normal
+		{30, 0, 30},     // old max
+		{50, 0, 50},     // R60.6: under new max=120, no clamp
+		{120, 0, 120},   // R60.6: new max (default)
+		{200, 0, 120},   // R60.6: clamp at new max
+		{50, 30, 30},    // R60.6: operator override max=30 (backward compat)
 		{200, 200, 200}, // R60.6: operator override max=200 (custom)
 	}
 	for _, tt := range tests {
@@ -219,14 +219,14 @@ func TestEstimateReloadTimeMs(t *testing.T) {
 		minExpected int64 // ms
 		maxExpected int64 // ms
 	}{
-		{"empty", 0, 0, 0, 0},  // unknown → 0
-		{"size_only_5GB", 5 * 1024 * 1024 * 1024, 0, 47000, 55000},  // 5GB/100MB/s + 2000ms overhead
+		{"empty", 0, 0, 0, 0}, // unknown → 0
+		{"size_only_5GB", 5 * 1024 * 1024 * 1024, 0, 47000, 55000}, // 5GB/100MB/s + 2000ms overhead
 		{"size_only_2GB", 2 * 1024 * 1024 * 1024, 0, 22000, 24000},
-		{"ctx_only_131K", 0, 131072, 14000, 20000},                  // 131072/4K*500 + 2000 + 1000 (baseMin)
+		{"ctx_only_131K", 0, 131072, 14000, 20000}, // 131072/4K*500 + 2000 + 1000 (baseMin)
 		{"ctx_only_32K", 0, 32768, 4000, 7000},
-		{"qwen3_5GB_131K", 5 * 1024 * 1024 * 1024, 131072, 62000, 90000},  // realistic: 60-90s
+		{"qwen3_5GB_131K", 5 * 1024 * 1024 * 1024, 131072, 62000, 90000}, // realistic: 60-90s
 		{"qwen3_5GB_32K", 5 * 1024 * 1024 * 1024, 32768, 51000, 60000},
-		{"tiny_1MB_4K", 1024 * 1024, 4096, 1000, 4000},  // baseMin
+		{"tiny_1MB_4K", 1024 * 1024, 4096, 1000, 4000}, // baseMin
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

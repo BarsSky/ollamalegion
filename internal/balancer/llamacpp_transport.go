@@ -38,12 +38,31 @@ func (p *Proxy) proxyRequestLlamaCpp(w http.ResponseWriter, r *http.Request, bac
 	}
 
 	originalPath := r.URL.Path
-	llamacppPath := translatePathForLlamaCpp(originalPath)
+
+	// R65d (2026-09-20): Ollama-пути идут в cppworker НАТИВНО (без трансляции
+	// в OpenAI-формат). См. llamacpp_native_path.go для полного обоснования:
+	// транслятор терял options.* / keep_alive / format / think / images, а
+	// перенесённые поля без пары в cppworker-структурах (например top_k)
+	// отвергались строгим декодером с HTTP 400.
+	//
+	// При нативном пути:
+	//   - путь НЕ переписывается (остаётся /api/chat, а не /v1/chat/completions);
+	//   - тело НЕ транслируется (options.* остаются на месте);
+	//   - ответ уже приходит в Ollama-формате (NDJSON), поэтому passthrough-ветка
+	//     цикла ниже отдаёт строки клиенту как есть — без SSE→NDJSON перевода.
+	nativePath := shouldRouteOllamaNative(originalPath)
+
+	llamacppPath := originalPath
+	if !nativePath {
+		llamacppPath = translatePathForLlamaCpp(originalPath)
+	}
 	isStreaming := isStreamingFromBody(originalPath, bodyBuf)
 
-	translatedBody, err := translateOllamaBodyToOpenAI(originalPath, bodyBuf)
-	if err != nil {
-		translatedBody = bodyBuf
+	translatedBody := bodyBuf
+	if !nativePath {
+		if tb, err := translateOllamaBodyToOpenAI(originalPath, bodyBuf); err == nil {
+			translatedBody = tb
+		}
 	}
 
 	// F.0.4 (2026-06-28): session F — диагностика EOF.
@@ -489,6 +508,9 @@ func (p *Proxy) proxyRequestLlamaCpp(w http.ResponseWriter, r *http.Request, bac
 		w.Header().Set("Connection", "keep-alive")
 		// Round 18 P0.1: capabilities headers (X-Model-*)
 		p.addModelCapabilitiesHeaders(w, modelFromCtx)
+		// R65d: переносим предупреждения cppworker (context warning / adjusted
+		// n_predict / Retry-After). Без этого урезание n_predict было невидимым.
+		forwardUpstreamWarningHeaders(w, resp)
 		w.WriteHeader(resp.StatusCode)
 		errNDJSON := buildDoneResponse(originalPath, modelFromCtx, 0)
 		fmt.Fprintf(w, "%s\n", string(errNDJSON))
@@ -498,6 +520,12 @@ func (p *Proxy) proxyRequestLlamaCpp(w http.ResponseWriter, r *http.Request, bac
 
 	w.Header().Set("X-Accel-Buffering", "no")
 	w.Header().Set("Cache-Control", "no-cache")
+	// R65d (2026-09-20): проброс заголовков предупреждений ДО WriteHeader.
+	// cppworker урезает n_predict, чтобы ответ поместился в n_ctx, и сообщает
+	// об этом заголовками (nctx_clamp.go:360-388); без проброса клиент получает
+	// короткий ответ без объяснения причины. Заголовки обязаны быть выставлены
+	// строго до WriteHeader — после него они уже не уйдут.
+	forwardUpstreamWarningHeaders(w, resp)
 	if originalPath == "/v1/chat/completions" {
 		w.Header().Set("Content-Type", "text/event-stream")
 	} else {
@@ -570,6 +598,19 @@ func (p *Proxy) proxyRequestLlamaCpp(w http.ResponseWriter, r *http.Request, bac
 	// leading whitespace (gemma-4 после SplitReasoningContent эмитит "\n" перед первым
 	// content токеном как separator после </think>).
 	seenReasoning := false
+
+	// R65d (2026-09-20): per-stream флаг «статистика токенов уже учтена».
+	//
+	// Зачем: recordTokenUsage раньше вызывался ТОЛЬКО из non-streaming путей
+	// (llamacpp_transport_nonstream.go:716, proxy_request.go:686,826,
+	// proxy_request_hijack.go:155). Основной streaming-цикл его не вызывал
+	// вообще, поэтому /api/v1/stats/tokens показывал нули для всего реального
+	// трафика (OpenWebUI/Cline всегда стримят).
+	//
+	// Флаг защищает от двойного учёта одного запроса: на нативном пути
+	// статистика приходит в финальном done-чанке, в SSE — в отдельном
+	// usage-чанке, и оба могут присутствовать в одном стриме.
+	tokenUsageRecorded := false
 
 	// ==== Основной цикл SSE → NDJSON / SSE → SSE ==========
 	scanner := bufio.NewScanner(resp.Body)
@@ -671,6 +712,110 @@ func (p *Proxy) proxyRequestLlamaCpp(w http.ResponseWriter, r *http.Request, bac
 
 		line := scanner.Text()
 
+		// ==== R65d (2026-09-20): нативный путь — Ollama NDJSON passthrough ====
+		//
+		// cppworker's нативные обработчики (/api/chat, /api/generate) отдают
+		// application/x-ndjson: одна JSON-строка на строку, БЕЗ префикса "data:".
+		// Формат уже тот, который ждёт Ollama-клиент, поэтому перевод не нужен —
+		// отдаём строку как есть (плюс '\n', он же был в исходной строке).
+		//
+		// Что здесь отслеживаем (для диагностики, не для преобразования):
+		//   - streamCompleted: встретили done:true → стрим завершён штатно,
+		//     downstream truncation-detection не должен срабатывать;
+		//   - accumulatedPlainContent: накапливаем message.content / response
+		//     для R60.21 auto-continue и для логов;
+		//   - usageChunkSeen: нативный done-чанк уже содержит eval_count /
+		//     total_duration, поэтому writeStreamingSSEDone не должен писать
+		//     второй done-чанк.
+		//
+		// ВАЖНО: keepalive-строки {"keepalive":true} проходят насквозь — это
+		// валидный NDJSON для Ollama-клиентов (см. handlers_chat.go:861).
+		if nativePath {
+			trimmed := strings.TrimSpace(line)
+			if trimmed == "" {
+				continue
+			}
+			// Терпимость к SSE-фреймингу: нативный обработчик cppworker отдаёт
+			// «голый» NDJSON, но при смешанных версиях (или когда путь был
+			// переписан апстримом) строка может прийти как `data: {...}`.
+			// Снимаем префикс, чтобы разбор ниже работал единообразно.
+			if strings.HasPrefix(trimmed, "data:") {
+				trimmed = strings.TrimSpace(strings.TrimPrefix(trimmed, "data:"))
+				if trimmed == "" || trimmed == "[DONE]" {
+					// [DONE] — терминатор SSE-стрима; в NDJSON-мире его нет,
+					// поэтому просто фиксируем завершение и не пересылаем
+					// клиенту невалидную для NDJSON строку.
+					if trimmed == "[DONE]" {
+						streamCompleted = true
+					}
+					continue
+				}
+			}
+			var nativeChunk map[string]interface{}
+			if err := json.Unmarshal([]byte(trimmed), &nativeChunk); err != nil {
+				// Не JSON (например, SSE-комментарий от старой версии
+				// cppworker) — отдаём как есть, клиент сам решит.
+				logger.Get().Debugw("proxyRequestLlamaCpp[native]: non-JSON NDJSON line passed through",
+					"backend", backendID, "line", trimmed)
+			} else {
+				if modelFromCtx == "" {
+					if m, ok := nativeChunk["model"].(string); ok && m != "" {
+						modelFromCtx = m
+					}
+				}
+				// Накапливаем видимый пользователю текст.
+				//   /api/chat     → message.content (reasoning идёт в message.reasoning)
+				//   /api/generate → response
+				if msg, ok := nativeChunk["message"].(map[string]interface{}); ok {
+					if c, ok := msg["content"].(string); ok && c != "" {
+						accumulatedPlainContent += c
+						if firstContentTime.IsZero() {
+							firstContentTime = time.Now()
+						}
+					}
+				}
+				if rsp, ok := nativeChunk["response"].(string); ok && rsp != "" {
+					accumulatedPlainContent += rsp
+					if firstContentTime.IsZero() {
+						firstContentTime = time.Now()
+					}
+				}
+				if done, ok := nativeChunk["done"].(bool); ok && done {
+					streamCompleted = true
+					usageChunkSeen = true
+					priorDoneEmitted = true
+					upstreamHadFinishReason = true
+					if c, ok := nativeChunk["error"].(string); ok && c != "" {
+						logger.Get().Warnw("proxyRequestLlamaCpp[native]: upstream done-chunk carries error",
+							"backend", backendID, "model", modelFromCtx, "error", c)
+					}
+					// R65d: агрегируем статистику токенов для /api/v1/stats/tokens.
+					// Нативный формат Ollama: prompt_eval_count / eval_count.
+					if !tokenUsageRecorded {
+						promptTokens := int64(intFromMap(nativeChunk, "prompt_eval_count"))
+						evalTokens := int64(intFromMap(nativeChunk, "eval_count"))
+						if promptTokens > 0 || evalTokens > 0 {
+							tokenUsageRecorded = true
+							p.recordTokenUsage(modelFromCtx, promptTokens, evalTokens)
+						}
+					}
+				}
+			}
+			n, errFwd := fmt.Fprintf(w, "%s\n", trimmed)
+			bytesForwarded += int64(n)
+			if errFwd != nil {
+				lastForwardErr = errFwd
+				if firstForwardErr == nil {
+					firstForwardErr = errFwd
+				}
+				return fmt.Errorf("write native NDJSON: %v", errFwd)
+			}
+			if flusher, ok := w.(http.Flusher); ok {
+				flusher.Flush()
+			}
+			continue
+		}
+
 		if !strings.HasPrefix(line, "data:") {
 			continue
 		}
@@ -699,6 +844,24 @@ func (p *Proxy) proxyRequestLlamaCpp(w http.ResponseWriter, r *http.Request, bac
 		if modelFromCtx == "" {
 			if m, ok := chunk["model"].(string); ok && m != "" {
 				modelFromCtx = m
+			}
+		}
+
+		// R65d (2026-09-20): агрегируем статистику токенов со streaming-пути.
+		//
+		// До R65d recordTokenUsage вызывался только из non-streaming путей,
+		// поэтому /api/v1/stats/tokens был пуст для всего реального трафика.
+		// cppworker присылает OpenAI usage-чанк ({prompt_tokens,
+		// completion_tokens}) при stream_options.include_usage (по умолчанию
+		// включено, handlers_openai.go:427-438).
+		if !tokenUsageRecorded {
+			if usage, ok := chunk["usage"].(map[string]interface{}); ok {
+				promptTokens := int64(intFromMap(usage, "prompt_tokens"))
+				completionTokens := int64(intFromMap(usage, "completion_tokens"))
+				if promptTokens > 0 || completionTokens > 0 {
+					tokenUsageRecorded = true
+					p.recordTokenUsage(modelFromCtx, promptTokens, completionTokens)
+				}
 			}
 		}
 
@@ -963,6 +1126,18 @@ func (p *Proxy) proxyRequestLlamaCpp(w http.ResponseWriter, r *http.Request, bac
 							firstForwardErr = errFwd
 						}
 					}
+					// R65d (2026-09-20): помечаем canonical done как отправленный.
+					//
+					// БЕЗ ЭТОГО: writeStreamingSSEDone уже отдал клиенту done:true
+					// (с tool_calls), но priorDoneEmitted/usageChunkSeen оставались
+					// false. Далее cppworker присылает свой wrapper-чанк
+					// (finish_reason без content) и usage-чанк — и
+					// translateUsageChunkToOllama, не видя priorDoneEmitted,
+					// эмитил ВТОРОЙ done:true. Ollama-клиенты (Cline, ollama npm)
+					// на два done-чанка отвечают
+					// "Did not receive done or success response in stream".
+					usageChunkSeen = true
+					priorDoneEmitted = true
 					Flush(w)
 				}
 				continue
@@ -1098,27 +1273,27 @@ func (p *Proxy) proxyRequestLlamaCpp(w http.ResponseWriter, r *http.Request, bac
 						"api_path", originalPath,
 						"continuation_chars", len(continuation),
 						"cont_eval", contEval)
-				// Emit continuation as a single final done-chunk with
-				// combined content. This is the safest approach — the client
-				// gets one coherent response (no double done-chunks).
-				var flusher http.Flusher
-				if f, ok := w.(http.Flusher); ok {
-					flusher = f
-				}
-				totalEval := 0
-				if contEval > 0 {
-					totalEval = contEval
-				}
-				emitErr := EmitContinuationNDJSON(
-					w, originalPath, modelFromCtx,
-					finalContent, continuation, totalEval, flusher)
-				if emitErr != nil {
-					logger.Get().Warnw("proxyRequestLlamaCpp: R60.21 emit continuation error",
-						"backend", backendID, "error", emitErr)
-				}
-				// Mark stream as completed so downstream truncation
-				// detection doesn't fire.
-				streamCompleted = true
+					// Emit continuation as a single final done-chunk with
+					// combined content. This is the safest approach — the client
+					// gets one coherent response (no double done-chunks).
+					var flusher http.Flusher
+					if f, ok := w.(http.Flusher); ok {
+						flusher = f
+					}
+					totalEval := 0
+					if contEval > 0 {
+						totalEval = contEval
+					}
+					emitErr := EmitContinuationNDJSON(
+						w, originalPath, modelFromCtx,
+						finalContent, continuation, totalEval, flusher)
+					if emitErr != nil {
+						logger.Get().Warnw("proxyRequestLlamaCpp: R60.21 emit continuation error",
+							"backend", backendID, "error", emitErr)
+					}
+					// Mark stream as completed so downstream truncation
+					// detection doesn't fire.
+					streamCompleted = true
 				}
 			} else {
 				logger.Get().Warnw("proxyRequestLlamaCpp: R60.21 auto-continue failed (emitting truncated as-is)",
@@ -1245,9 +1420,9 @@ func errString(err error) string {
 // когда stream был прерван по timeout или cancellation ДО [DONE] от upstream.
 //
 // Используется из двух мест:
-//   1. case <-reqCtx.Done() в main loop (streamTimeout) — пишет immediately,
-//      return nil чтобы handleChat не слал ещё одну error chunk поверх.
-//   2. case <-r.Context().Done() в main loop (client cancelled) — аналогично.
+//  1. case <-reqCtx.Done() в main loop (streamTimeout) — пишет immediately,
+//     return nil чтобы handleChat не слал ещё одну error chunk поверх.
+//  2. case <-r.Context().Done() в main loop (client cancelled) — аналогично.
 //
 // Формат:
 //   - /v1/chat/completions: SSE event with finish_reason="truncated" + data: [DONE]

@@ -117,16 +117,16 @@ func TestHandleOpenAIChatCompletions_Cline_NormalizesContent(t *testing.T) {
 			},
 		},
 		Balancing: types.BalancingSettings{
-			Algorithm:           types.AlgorithmResourceAware,
-			ModelAffinity:       false,
-			HealthCheckInterval: 60,
-			MetricsInterval:     60,
+			Algorithm:            types.AlgorithmResourceAware,
+			ModelAffinity:        false,
+			HealthCheckInterval:  60,
+			MetricsInterval:      60,
 			StreamingIdleTimeout: 30,
 			AdvancedTiming: types.AdvancedTimingConfig{
 				HeartbeatIntervalSec: 5,
 			},
 		},
-		API: types.APISettings{RateLimit: 100, RateBurst: 200},
+		API:  types.APISettings{RateLimit: 100, RateBurst: 200},
 		Auth: types.AuthConfig{Enabled: false},
 	}
 	p := newProxyWithCleanup(t, cfg)
@@ -241,7 +241,7 @@ func TestHandleOpenAIChatCompletions_Cline_NoNormalizationRegression(t *testing.
 		},
 		Balancing: types.BalancingSettings{Algorithm: types.AlgorithmResourceAware,
 			StreamingIdleTimeout: 30,
-			AdvancedTiming:      types.AdvancedTimingConfig{HeartbeatIntervalSec: 5}},
+			AdvancedTiming:       types.AdvancedTimingConfig{HeartbeatIntervalSec: 5}},
 		API:  types.APISettings{RateLimit: 100, RateBurst: 200},
 		Auth: types.AuthConfig{Enabled: false},
 	}

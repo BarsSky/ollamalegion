@@ -11,22 +11,21 @@ import (
 
 // DispatchResult - результат dispatch-операции
 type DispatchResult struct {
-	BackendID string
+	BackendID    string
 	DispatchType string // "affinity", "warming", "sync_load", "fallback"
-	Error     error
+	Error        error
 }
 
 // dispatchRequest - централизованная логика выбора бэкенда с загрузкой модели.
 // 3-ступенчатая стратегия:
-//   1. Group A (loaded) - модель уже загружена, проверяем loadRatio
-//   2. Group B (config, not loaded) - инициируем загрузку, ждём готовности
-//   3. Fallback (P4) - выбор по ресурсам без учёта модели
+//  1. Group A (loaded) - модель уже загружена, проверяем loadRatio
+//  2. Group B (config, not loaded) - инициируем загрузку, ждём готовности
+//  3. Fallback (P4) - выбор по ресурсам без учёта модели
 func (p *Proxy) dispatchRequest(req *QueuedRequest) DispatchResult {
 	model := req.Model
 	queueWaitMs := time.Since(req.Enqueued).Milliseconds()
 	logger.Get().Debugw("dispatchRequest: starting dispatch",
 		"model", model, "queue_wait_ms", queueWaitMs)
-
 
 	// Получаем кандидатов с 4 приоритетами
 	candidates := p.expandCandidates(model, nil)

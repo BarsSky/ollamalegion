@@ -19,7 +19,8 @@
 //     (state fits после reload).
 //
 // Env: LB_PREFLIGHT_STREAM_DIALOG (default true) — opt-out для тестов.
-//      LB_PREFLIGHT_STREAM_DIALOG_KEEPALIVE_SEC (default 5) — период keepalive.
+//
+//	LB_PREFLIGHT_STREAM_DIALOG_KEEPALIVE_SEC (default 5) — период keepalive.
 package balancer
 
 import (
@@ -329,8 +330,8 @@ func writeStreamDialogReloadDone(bufrw *bufio.ReadWriter, targetNCtx int) {
 		"created": time.Now().Unix(),
 		"choices": []interface{}{},
 		"x_round_34_reload_done": map[string]interface{}{
-			"target_n_ctx": targetNCtx,
-			"phase":        "ready",
+			"target_n_ctx":  targetNCtx,
+			"phase":         "ready",
 			"client_action": "retry",
 		},
 	}

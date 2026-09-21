@@ -21,9 +21,12 @@
 package main
 
 import (
+	"bytes"
 	"os"
 	"strings"
 	"testing"
+
+	"ollama-loadbalancer/pkg/logger"
 )
 
 // TestApplyRAMFallbackFromEnv_AllThree — все 3 vars применяются.
@@ -131,18 +134,22 @@ func TestApplyRAMFallbackFromEnv_SkipFlagsRespected(t *testing.T) {
 	}
 }
 
-// captureLogs — captures log output during fn execution.
-// Returns concatenated log lines.
+// captureLogs — runs fn and returns captured log output.
+//
+// ИСТОРИЯ: до R65d этот хелпер был no-op заглушкой (`logs := ""`, env
+// LOG_BUFFER ни на что не влиял), поэтому проверка лога в
+// TestApplyRAMFallbackFromEnv_AllThree никогда не могла пройти. Тест не был
+// виден в CI, потому что пакет cmd/cppworker не компилировался со старыми
+// сигнатурами (ensureModelLoaded / NewAbortWatcher).
+//
+// Теперь: временно перенаправляем пакетный логгер в буфер через
+// logger.Init (cfg.OutputPaths = ["stdout"] → zap.AddSync(buf)),
+// выполняем fn, возвращаем накопленный вывод.
 func captureLogs(t *testing.T, fn func()) string {
 	t.Helper()
-	// В cppworker используется zap через ollama-loadbalancer/pkg/logger.
-	// Для теста перенаправляем вывод в буфер через SetLogger hook.
-	// Если хелпер не доступен — возвращаем пустую строку (тест всё равно проверит
-	// значения переменных, а логи проверяются только в одном smoke-test).
-	logs := ""
-	prev := os.Getenv("LOG_BUFFER")
-	os.Setenv("LOG_BUFFER", "1")
-	defer os.Setenv("LOG_BUFFER", prev)
+	var buf bytes.Buffer
+	restore := logger.CaptureTo(&buf)
+	defer restore()
 	fn()
-	return logs
+	return buf.String()
 }

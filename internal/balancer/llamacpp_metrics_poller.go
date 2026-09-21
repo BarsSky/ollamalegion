@@ -182,16 +182,16 @@ func (p *llamaCppMetricsPoller) pollBackend(b backendInfo) {
 	// reverts to camelCase, the right fix is a custom UnmarshalJSON, not
 	// relying on the comma-list (which doesn't work as expected).
 	var data struct {
-		Count           int    `json:"count"`
-		MaxVRAMNCtx     int    `json:"max_vram_n_ctx"`
-		ModelMaxContext int    `json:"model_max_context"`
+		Count           int `json:"count"`
+		MaxVRAMNCtx     int `json:"max_vram_n_ctx"`
+		ModelMaxContext int `json:"model_max_context"`
 		// Round 37 (2026-08-18): feasible + GGUF top-level fields from cppworker.
 		// cppworker exposes them since Round 37 in /api/models.
-		FeasibleMaxContext int `json:"feasible_max_context"`
-		GGUFMaxContext     int `json:"gguf_max_context"`
-		AvailableVRAMMB uint64 `json:"available_vram_mb"`
-		TotalVRAMMB     uint64 `json:"total_vram_mb"`
-		Models []struct {
+		FeasibleMaxContext int    `json:"feasible_max_context"`
+		GGUFMaxContext     int    `json:"gguf_max_context"`
+		AvailableVRAMMB    uint64 `json:"available_vram_mb"`
+		TotalVRAMMB        uint64 `json:"total_vram_mb"`
+		Models             []struct {
 			Name             string `json:"name"`
 			Path             string `json:"path,omitempty"`
 			State            string `json:"state,omitempty"`
@@ -208,21 +208,21 @@ func (p *llamaCppMetricsPoller) pollBackend(b backendInfo) {
 			// "context_size" but the previous tag was "contextSize", so
 			// LoadedModels[].ContextLength was always 0, breaking
 			// preflightNCtxReloadIfNeeded's loaded >= requested check.
-			ContextSize      int    `json:"context_size,contextSize,omitempty"`
-			GGUFContextLength int   `json:"gguf_context_length,ggufContextLength,omitempty"`
-			GPULayers        int    `json:"gpu_layers,gpuLayers,omitempty"`
-			ActiveQueries    int    `json:"active_queries,activeQueries,omitempty"`
-			TotalQueries     int    `json:"total_queries,totalQueries,omitempty"`
-			Architecture     string `json:"architecture,omitempty"`
-			Quantization     string `json:"quantization,omitempty"`
-			VRAMUsage        uint64 `json:"vram_usage,vramUsage,omitempty"`
-			RAMUsage         uint64 `json:"ram_usage,ramUsage,omitempty"`
-			LoadedAt         string `json:"loaded_at,loadedAt,omitempty"`
+			ContextSize       int    `json:"context_size,contextSize,omitempty"`
+			GGUFContextLength int    `json:"gguf_context_length,ggufContextLength,omitempty"`
+			GPULayers         int    `json:"gpu_layers,gpuLayers,omitempty"`
+			ActiveQueries     int    `json:"active_queries,activeQueries,omitempty"`
+			TotalQueries      int    `json:"total_queries,totalQueries,omitempty"`
+			Architecture      string `json:"architecture,omitempty"`
+			Quantization      string `json:"quantization,omitempty"`
+			VRAMUsage         uint64 `json:"vram_usage,vramUsage,omitempty"`
+			RAMUsage          uint64 `json:"ram_usage,ramUsage,omitempty"`
+			LoadedAt          string `json:"loaded_at,loadedAt,omitempty"`
 			// Round 34 (2026-08-12) Phase 2: runtime params (kvCacheType, flashAttnType,
 			// useMmap) для profile mismatch detection в preflight_nctx.go.
-			KvCacheType     string `json:"kv_cache_type,kvCacheType,omitempty"`
-			FlashAttnType   int    `json:"flash_attn_type,flashAttnType,omitempty"`
-			UseMmap         bool   `json:"use_mmap,useMmap,omitempty"`
+			KvCacheType   string `json:"kv_cache_type,kvCacheType,omitempty"`
+			FlashAttnType int    `json:"flash_attn_type,flashAttnType,omitempty"`
+			UseMmap       bool   `json:"use_mmap,useMmap,omitempty"`
 			// R45 (2026-08-19): per-model feasible + GGUF max context for 3-tier
 			// resolution in preflight_helper.go. cppworker has reported these
 			// per-model since Round 37 (2026-08-18). The poller used to copy
@@ -234,8 +234,8 @@ func (p *llamaCppMetricsPoller) pollBackend(b backendInfo) {
 			GGUFMaxContext     int `json:"gguf_max_context,omitempty"`
 			// Round 18 P0.1 (2026-08-03): capabilities (reasoning/vision/tools).
 			// cppworker теперь возвращает готовый capabilities объект в /api/models.
-			Capabilities      *types.ModelCapabilities `json:"capabilities,omitempty"`
-			ReasoningEnabled  bool                     `json:"reasoning_enabled,reasoningEnabled,omitempty"`
+			Capabilities     *types.ModelCapabilities `json:"capabilities,omitempty"`
+			ReasoningEnabled bool                     `json:"reasoning_enabled,reasoningEnabled,omitempty"`
 		} `json:"models"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&data); err != nil {
@@ -379,17 +379,38 @@ func (p *llamaCppMetricsPoller) pollLoadingProgress(b backendInfo) {
 		return
 	}
 
-	// Round 45 (2026-08-19): same JSON tag fix as pollBackend — see comment above.
-	// LoadingStartedAt/LoadingSizeBytes/ElapsedMs are all snake_case in cppworker.
+	// R65d (2026-09-20) — ИСПРАВЛЕНИЕ ИМЁН ПОЛЕЙ.
+	//
+	// Было: snake_case-теги (loading_started_at / loading_size_bytes / elapsed_ms)
+	// с комментарием «are all snake_case in cppworker». Это НЕВЕРНО: cppworker
+	// отдаёт эти поля в camelCase — см. handlers_model.go:838-845:
+	//   "loadingStartedAt", "loadingSizeBytes", "elapsedMs"
+	// Из-за расхождения ВСЕ три поля декодировались в нули, поэтому:
+	//   - balancer не видел реального размера/времени загрузки;
+	//   - lastLoadingSeen не обновлялся → поллер не переключался на fastInterval
+	//     (2s) и прогресс в мониторе не обновлялся в реальном времени.
+	//
+	// WebUI-страница GGUF спасалась тем, что ходит напрямую через
+	// /api/v1/gguf/backends/{id}/proxy/... и читает camelCase (см.
+	// webui/js/modules/gguf-load-progress.js:94-96).
+	//
+	// Go не поддерживает несколько имён в одном теге, поэтому указываем
+	// camelCase (фактический формат) и дополнительно пробуем snake_case через
+	// custom fallback ниже — на случай будущего перехода cppworker.
 	var data struct {
 		Count  int `json:"count"`
 		Models []struct {
 			Name             string `json:"name"`
 			State            string `json:"state"`
-			LoadingStartedAt string `json:"loading_started_at,loadingStartedAt"`
-			LoadingSizeBytes int64  `json:"loading_size_bytes,loadingSizeBytes"`
-			ElapsedMs        int64  `json:"elapsed_ms,elapsedMs"`
+			LoadingStartedAt string `json:"loadingStartedAt"`
+			LoadingSizeBytes int64  `json:"loadingSizeBytes"`
+			ElapsedMs        int64  `json:"elapsedMs"`
 			Error            string `json:"error"`
+
+			// snake_case-алиасы (старые версии / другой сериализатор).
+			LoadingStartedAtSnake string `json:"loading_started_at"`
+			LoadingSizeBytesSnake int64  `json:"loading_size_bytes"`
+			ElapsedMsSnake        int64  `json:"elapsed_ms"`
 		} `json:"models"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&data); err != nil {
@@ -404,12 +425,21 @@ func (p *llamaCppMetricsPoller) pollLoadingProgress(b backendInfo) {
 		if state == "" {
 			state = "loading"
 		}
+		// Приоритет camelCase (фактический формат), fallback на snake_case.
+		startedAt := m.LoadingStartedAt
+		if startedAt == "" {
+			startedAt = m.LoadingStartedAtSnake
+		}
+		sizeBytes := m.LoadingSizeBytes
+		if sizeBytes == 0 {
+			sizeBytes = m.LoadingSizeBytesSnake
+		}
 		loading = append(loading, types.LlamaCppModel{
 			Name:             m.Name,
 			State:            state,
-			Size:             uint64(m.LoadingSizeBytes),
-			LoadingStartedAt: &m.LoadingStartedAt,
-			LoadingSizeBytes: m.LoadingSizeBytes,
+			Size:             uint64(sizeBytes),
+			LoadingStartedAt: &startedAt,
+			LoadingSizeBytes: sizeBytes,
 			LoadingError:     m.Error,
 		})
 	}

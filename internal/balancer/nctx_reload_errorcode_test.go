@@ -111,10 +111,10 @@ func TestMakeRejectPlan_NCtxTooLargeForBackend_2026_06_25(t *testing.T) {
 func TestMakeRejectPlan_DefaultErrorCode(t *testing.T) {
 	c := makeTestCoordinator()
 	bridgeErr := &NCtxBridgeError{
-		Code:        NCtxErrCodeNCtxNeedsReload,
-		CurrentNCtx: 4096,
+		Code:         NCtxErrCodeNCtxNeedsReload,
+		CurrentNCtx:  4096,
 		RequiredNCtx: 10000,
-		MaxVRAMNCtx: 5000,
+		MaxVRAMNCtx:  5000,
 	}
 	plan := c.makeRejectPlan("test", bridgeErr, 10000, "test reason", "")
 

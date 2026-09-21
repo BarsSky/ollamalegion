@@ -14,6 +14,7 @@ import (
 //   - дубликаты JSON tool calls (через рекурсивный вызов detectAndExtractToolCallsFromContent)
 //   - role-маркеры ("system", "assistant"), оставшиеся после удаления XML-токенов
 //   - лишние пробелы, символы новой строки
+//
 // Возвращает пустую строку, если контента не осталось (желаемое поведение для tool calls).
 func cleanContentAfterToolCallExtraction(s string) string {
 	result := strings.TrimSpace(s)
@@ -109,60 +110,92 @@ func stripServiceTokens(s string) string {
 	return strings.TrimSpace(result)
 }
 
-// shouldFilterLlamaCppContent — определяет, нужно ли отфильтровать строку
-// content из streaming-ответа llama.cpp/cppworker как служебный токен
-// (например Gemma `<end_of_turn>`, Llama3 `<|eot_id|>`, ChatML `<|im_end|>`).
+// llamaCppServiceTokens — канонический список служебных токенов моделей в
+// порядке «длинные раньше коротких».
 //
-// Зачем: cppworker иногда отдаёт служебные токены модели как обычный content
-// (из-за неполного chat template или его отсутствия). OpenAI-клиенты типа
-// Cline интерпретируют такие токены как невалидный tool-call-like вывод
-// и выдают "Invalid API Response: The provider returned an empty or
-// unparsable response". Фильтрация на стороне балансировщика покрывает
-// любые модели с подобными артефактами.
+// Почему порядок важен: без него `ReplaceAll("<eos>", "")` съедает префикс
+// более длинного токена и оставляет мусор от «хвоста». Например, при
+// обработке `<|eos|>` сначала должен сработать длинный вариант.
 //
-// Возвращает true, если строка содержит служебный токен в любом месте
-// (как самостоятельная строка, как префикс, в середине или как суффикс).
-// Это критично для моделей вроде Gemma, которые из-за неполного chat template
-// эмитят служебные токены не только отдельным чанком, но и вкраплениями
-// в обычный текст: "hello<end_of_turn>world", "<|eot_id|>ok" и т.д.
+// Раньше список был продублирован в двух функциях этого файла
+// (shouldFilterLlamaCppContent и stripServiceTokens) с разным составом —
+// это и приводило к расхождению поведения фильтра и очистки.
+var llamaCppServiceTokens = []string{
+	// Llama 3 / ChatML — самые длинные
+	"<|start_header_id|>",
+	"<|end_header_id|>",
+	"<|begin_of_text|>",
+	"<|end_of_text|>",
+	"<|start_of_turn|>",
+	"<|end_of_turn|>",
+	"</start_of_turn>",
+	"</end_of_turn>",
+	"<start_of_turn>",
+	"<end_of_turn>",
+	"<|endoftext|>",
+	"<|im_start|>",
+	"<|im_end|>",
+	"<endoftext>",
+	"<|eot_id|>",
+	"<|eot|>",
+	"<|end|>",
+	"<|eos|>",
+	// Короткие — строго после длинных
+	"<bos>",
+	"<eos>",
+	"<sep>",
+	"<pad>",
+	"<unk>",
+}
+
+// stripLlamaCppServiceTokens вырезает ВСЕ служебные токены из content,
+// оставляя окружающий полезный текст.
+//
+// Возвращает (очищенный текст, сколько токенов вырезано).
+//
+// R65d (2026-09-20): до этого фикса filterOpenAIStreamingLine при обнаружении
+// служебного токена заменял ВЕСЬ delta на {} — то есть выбрасывал не только
+// токен, но и весь легитимный текст чанка. Для ответов, где эти строки
+// упомянуты как текст (документация по chat-шаблонам, код парсеров, разбор
+// спец-токенов), пользователь терял слова и целые предложения.
+func stripLlamaCppServiceTokens(content string) (string, int) {
+	if content == "" {
+		return "", 0
+	}
+	result := content
+	removed := 0
+	for _, tok := range llamaCppServiceTokens {
+		if !strings.Contains(result, tok) {
+			continue
+		}
+		n := strings.Count(result, tok)
+		result = strings.ReplaceAll(result, tok, "")
+		removed += n
+	}
+	return result, removed
+}
+
+// shouldFilterLlamaCppContent — определяет, является ли content настолько
+// «служебным», что его не нужно показывать клиенту: либо это ровно служебный
+// токен, либо после вырезания токенов не осталось значимого текста.
+//
+// Возвращает true, если чанк не несёт полезной для пользователя информации.
+// ВНИМАНИЕ: семантика изменена в R65d. Раньше функция возвращала true при
+// ЛЮБОМ вхождении токена (включая "hello<|eot_id|>world"), и вызывающий код
+// выбрасывал текст целиком. Теперь true означает только «показывать нечего».
 func shouldFilterLlamaCppContent(content string) bool {
 	trimmed := strings.TrimSpace(content)
 	if trimmed == "" {
 		return false
 	}
-	lower := strings.ToLower(trimmed)
-	// Список известных служебных токенов для разных моделей.
-	filteredTokens := []string{
-		"<end_of_turn>",       // Gemma
-		"<start_of_turn>",     // Gemma
-	"</start_of_turn>",    // Gemma (closing tag)
-	"</end_of_turn>",      // Gemma (closing tag)
-		"<bos>",               // Llama, общий
-		"<eos>",               // Llama, общий
-		"<endoftext>",         // GPT-2 / некоторые GGUF
-		"<|endoftext|>",       // Llama2/3 (старый формат)
-		"<|eot_id|>",          // Llama3 instruct
-		"<|eot|>",             // некоторые варианты
-		"<|im_start|>",        // ChatML
-		"<|im_end|>",          // ChatML
-		"<|start_header_id|>", // Llama3 header
-		"<|end_header_id|>",   // Llama3 header
-		"<|begin_of_text|>",   // Llama3 begin
-		"<|end_of_text|>",     // Llama3 end
-		"<sep>",               // BERT, некоторые GGUF
-		"<pad>",               // служебные токены
-		"<unk>",               // unknown token
+	// Служебный токен может прийти в любом месте потока: отдельным чанком,
+	// префиксом, суффиксом или вкраплением в текст. Вырезаем все вхождения и
+	// смотрим, остался ли содержательный текст.
+	stripped, removed := stripLlamaCppServiceTokens(trimmed)
+	if removed == 0 {
+		return false
 	}
-	// Служебные токены могут появляться в любом месте стрима: как самостоятельная
-	// строка ("<end_of_turn>"), как префикс ("<end_of_turn>hello"), в середине
-	// ("hello<|eot_id|>world") или как суффикс. Используем Contains вместо
-	// == / HasPrefix, чтобы ловить их все.
-	for _, tok := range filteredTokens {
-		if strings.Contains(lower, tok) {
-			return true
-		}
-	}
-	return false
+	return strings.TrimSpace(stripped) == ""
 }
 
 // filterOpenAIStreamingLine — фильтрует SSE-строку с OpenAI chunk, удаляя
@@ -205,33 +238,51 @@ func filterOpenAIStreamingLine(line []byte) ([]byte, bool) {
 		return line, false
 	}
 	content := chunk.Choices[0].Delta.Content
-	if !shouldFilterLlamaCppContent(content) {
+	// R65d (2026-09-20): вырезаем ТОЛЬКО служебные токены, сохраняя остальной
+	// текст чанка. Раньше при любом вхождении токена весь delta заменялся на {}
+	// (см. stripLlamaCppServiceTokens) — это удаляло из ответа легитимные
+	// слова и предложения, если модель упоминала спец-токен как текст.
+	stripped, removed := stripLlamaCppServiceTokens(content)
+	if removed == 0 {
+		// Служебных токенов нет — строка не изменяется.
 		return line, false
 	}
-	// content — служебный токен. Заменяем на пустую delta, чтобы чанк
-	// пришёл клиенту, но с пустым content (это валидный OpenAI chunk).
-	filteredChunk := map[string]interface{}{
-		"choices": []map[string]interface{}{
-			{
-				"index": 0,
-				"delta": map[string]interface{}{},
-			},
-		},
-	}
-	// Сохраняем остальные поля (id, model, created, object) из оригинала.
+
+	// Пересобираем чанк, сохранив все поля (id, model, created, object,
+	// finish_reason, role, tool_calls...), меняя ровно одно: content внутри
+	// choices[0].delta. Полезная нагрузка остальных полей не должна теряться.
 	var orig map[string]interface{}
-	if err := json.Unmarshal(jsonData, &orig); err == nil {
-		for k, v := range orig {
-			if k == "choices" {
-				continue
-			}
-			filteredChunk[k] = v
-		}
+	if err := json.Unmarshal(jsonData, &orig); err != nil {
+		// Не смогли разобрать как объект — отдаём как есть, чтобы не потерять
+		// чанк целиком (лучше лишний токен, чем пропавший текст).
+		return line, false
 	}
-	out, err := json.Marshal(filteredChunk)
+	choices, ok := orig["choices"].([]interface{})
+	if !ok || len(choices) == 0 {
+		return line, false
+	}
+	first, ok := choices[0].(map[string]interface{})
+	if !ok {
+		return line, false
+	}
+	delta, ok := first["delta"].(map[string]interface{})
+	if !ok {
+		return line, false
+	}
+	// Если после вырезания не осталось текста — оставляем пустую строку, а не
+	// удаляем ключ: клиенты (Cline/OpenWebUI) ожидают форму чанка, и пустой
+	// content безопаснее отсутствующего.
+	delta["content"] = stripped
+	first["delta"] = delta
+	choices[0] = first
+	orig["choices"] = choices
+
+	out, err := json.Marshal(orig)
 	if err != nil {
 		return line, false
 	}
-	// Возвращаем как `data: {...}\n\n` (с финальным \n для совместимости с SSE-форматом).
-	return append([]byte("data: "+string(out)+"\n\n"), '\n'), true
+	// SSE-кадр: ровно один перевод строки после data-строки плюс пустая строка
+	// — разделитель событий. Раньше здесь был лишний третий '\n'
+	// (append(..., '\n')), который раздувал поток и ломал строгие парсеры.
+	return []byte("data: " + string(out) + "\n\n"), true
 }

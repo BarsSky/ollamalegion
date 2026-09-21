@@ -139,9 +139,9 @@ func TestTranslateOllamaChatToOpenAI_NoToolsNoToolChoice(t *testing.T) {
 //   - name non-string (число, bool) → return ("", body) no change
 func TestExtractNameFromBody(t *testing.T) {
 	tests := []struct {
-		name        string
-		input       string
-		wantName    string
+		name            string
+		input           string
+		wantName        string
 		wantBodyHasName bool // true if "name" still in body (unchanged)
 	}{
 		// Cases where name IS extracted: body should have "name" removed
@@ -152,9 +152,9 @@ func TestExtractNameFromBody(t *testing.T) {
 		// (no "name" key in body OR "name" was invalid → body untouched)
 		{"no_name", `{"force":true}`, "", false}, // body never had "name"
 		{"empty_body", ``, "", false},
-		{"invalid_json", `not json`, "", false}, // cannot parse, body unchanged
+		{"invalid_json", `not json`, "", false},        // cannot parse, body unchanged
 		{"name_empty_string", `{"name":""}`, "", true}, // body has "name"="" but invalid → unchanged
-		{"name_non_string", `{"name":123}`, "", true}, // body has "name"=123 (non-string) → unchanged
+		{"name_non_string", `{"name":123}`, "", true},  // body has "name"=123 (non-string) → unchanged
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

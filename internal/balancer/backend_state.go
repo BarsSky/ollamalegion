@@ -27,16 +27,16 @@ type LatencyRecord struct {
 type BackendState struct {
 	Backend         *types.Backend
 	ActiveReqs      int
-	TotalRequests   int64                   // Atomic: всего запросов на этот бэкенд
+	TotalRequests   int64 // Atomic: всего запросов на этот бэкенд
 	LastUsed        time.Time
-	MetricsHistory  []types.MetricsSnapshot // История метрик для прогнозирования
-	Prediction      types.Prediction        // Последний прогноз
-	RequestHistory  []time.Time             // Таймстемпы запросов для расчёта RPS (окно 60с)
-	CalculatedRPS   float64                 // Вычисленный RPS
+	MetricsHistory  []types.MetricsSnapshot       // История метрик для прогнозирования
+	Prediction      types.Prediction              // Последний прогноз
+	RequestHistory  []time.Time                   // Таймстемпы запросов для расчёта RPS (окно 60с)
+	CalculatedRPS   float64                       // Вычисленный RPS
 	WarmingUpModels map[string]*types.WarmupState // Модели в превентивной загрузке
-	AgentID         string                     // ID агента v2, прикреплённого к этому бэкенду
-	ErrorCount      int                     // Счётчик ошибок
-	TotalAttempts   int                     // Всего попыток
+	AgentID         string                        // ID агента v2, прикреплённого к этому бэкенду
+	ErrorCount      int                           // Счётчик ошибок
+	TotalAttempts   int                           // Всего попыток
 
 	// Адаптивный таймаут
 	LatencyHistory  []LatencyRecord `json:"latencyHistory"`  // История задержек (до 100 записей)

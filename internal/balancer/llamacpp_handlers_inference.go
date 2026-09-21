@@ -27,7 +27,11 @@ func (lr *LlamaCppRouter) handleOpenAIChatCompletions(w http.ResponseWriter, r *
 	var bodyBuf []byte
 	if r.Body != nil {
 		var err error
-		bodyBuf, err = io.ReadAll(r.Body)
+		bodyBuf, err = readRequestBodyLimited(r)
+		if errors.Is(err, errBodyTooLarge) {
+			sendBodyTooLarge(w, r)
+			return
+		}
 		if err != nil {
 			logger.Get().Errorw("handleOpenAIChatCompletions: failed to read body", "error", err)
 			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid request body"})
@@ -267,7 +271,11 @@ func (lr *LlamaCppRouter) handleOpenAICompletion(w http.ResponseWriter, r *http.
 	var bodyBuf []byte
 	if r.Body != nil {
 		var err error
-		bodyBuf, err = io.ReadAll(r.Body)
+		bodyBuf, err = readRequestBodyLimited(r)
+		if errors.Is(err, errBodyTooLarge) {
+			sendBodyTooLarge(w, r)
+			return
+		}
 		if err != nil {
 			logger.Get().Errorw("handleOpenAICompletion: failed to read body", "error", err)
 			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid request body"})
@@ -462,7 +470,11 @@ func (lr *LlamaCppRouter) handleOpenAIEmbeddings(w http.ResponseWriter, r *http.
 	var bodyBuf []byte
 	if r.Body != nil {
 		var err error
-		bodyBuf, err = io.ReadAll(r.Body)
+		bodyBuf, err = readRequestBodyLimited(r)
+		if errors.Is(err, errBodyTooLarge) {
+			sendBodyTooLarge(w, r)
+			return
+		}
 		if err != nil {
 			logger.Get().Errorw("handleOpenAIEmbeddings: failed to read body", "error", err)
 			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid request body"})
@@ -554,7 +566,11 @@ func (lr *LlamaCppRouter) handleChat(w http.ResponseWriter, r *http.Request) {
 	var bodyBuf []byte
 	if r.Body != nil {
 		var err error
-		bodyBuf, err = io.ReadAll(r.Body)
+		bodyBuf, err = readRequestBodyLimited(r)
+		if errors.Is(err, errBodyTooLarge) {
+			sendBodyTooLarge(w, r)
+			return
+		}
 		if err != nil {
 			logger.Get().Errorw("handleChat: failed to read body", "error", err)
 			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid request body"})
@@ -685,7 +701,11 @@ func (lr *LlamaCppRouter) handleGenerate(w http.ResponseWriter, r *http.Request)
 	var bodyBuf []byte
 	if r.Body != nil {
 		var err error
-		bodyBuf, err = io.ReadAll(r.Body)
+		bodyBuf, err = readRequestBodyLimited(r)
+		if errors.Is(err, errBodyTooLarge) {
+			sendBodyTooLarge(w, r)
+			return
+		}
 		if err != nil {
 			logger.Get().Errorw("handleGenerate: failed to read body", "error", err)
 			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid request body"})

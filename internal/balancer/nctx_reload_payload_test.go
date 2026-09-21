@@ -26,17 +26,17 @@ import (
 // (reloadModelRequest). Если в апстриме добавят новое поле — обновить и здесь,
 // иначе тест не сможет отловить drift.
 type cppworkerReloadRequestMirror struct {
-	Name               string   `json:"name"`
-	ContextSize        *int     `json:"contextSize,omitempty"`
-	BatchSize          *int     `json:"batchSize,omitempty"`
-	GPULayers          *int     `json:"gpuLayers,omitempty"`
-	FlashAttn          *int     `json:"flashAttn,omitempty"`
-	NUMA               *bool    `json:"numa,omitempty"`
-	UseMmap            *bool    `json:"useMmap,omitempty"`
-	Force              *bool    `json:"force,omitempty"`
-	Parallel           *int     `json:"parallel,omitempty"`
-	KVCacheType        *string  `json:"kvCacheType,omitempty"`
-	OverrideTensors    []string `json:"overrideTensors,omitempty"`
+	Name                string   `json:"name"`
+	ContextSize         *int     `json:"contextSize,omitempty"`
+	BatchSize           *int     `json:"batchSize,omitempty"`
+	GPULayers           *int     `json:"gpuLayers,omitempty"`
+	FlashAttn           *int     `json:"flashAttn,omitempty"`
+	NUMA                *bool    `json:"numa,omitempty"`
+	UseMmap             *bool    `json:"useMmap,omitempty"`
+	Force               *bool    `json:"force,omitempty"`
+	Parallel            *int     `json:"parallel,omitempty"`
+	KVCacheType         *string  `json:"kvCacheType,omitempty"`
+	OverrideTensors     []string `json:"overrideTensors,omitempty"`
 	OverrideTensorBufts []string `json:"overrideTensorBufts,omitempty"`
 }
 
@@ -56,12 +56,12 @@ func TestNctxReload_PayloadIsCppworkerCompatible(t *testing.T) {
 
 	// Имитируем AdaptiveStrategy (см. enrichReloadPayload)
 	strategy := &AdaptiveStrategy{
-		GPULayers:   -2,
-		UseMmap:     true,
+		GPULayers:     -2,
+		UseMmap:       true,
 		FlashAttnType: 0,
-		KVCacheType: "q4_0",
-		Stage:       "fallback_no_meta",
-		NCtx:        65536,
+		KVCacheType:   "q4_0",
+		Stage:         "fallback_no_meta",
+		NCtx:          65536,
 	}
 	enrichReloadPayload(payloadMap, strategy)
 

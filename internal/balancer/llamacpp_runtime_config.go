@@ -43,30 +43,30 @@ func (lr *LlamaCppRouter) handleRuntimeConfig(w http.ResponseWriter, r *http.Req
 	// Структура одного элемента runtime-конфига (соответствует тому, что
 	// отдаёт cppworker /api/v1/cppworker/config/runtime + добавляем backend).
 	type runtimeModel struct {
-		Name               string                 `json:"name"`
-		Path               string                 `json:"path,omitempty"`
-		State              string                 `json:"state,omitempty"`
-		Architecture       string                 `json:"architecture,omitempty"`
-		NLayers            int                    `json:"n_layers"`
-		NHeads             int                    `json:"n_heads"`
-		NKvHeads           int                    `json:"n_kv_heads"`
-		NEmbd              int                    `json:"n_embd"`
-		NVocab             int                    `json:"n_vocab"`
-		ContextSize        int                    `json:"context_size"`
-		GGUFContextLength  int                    `json:"gguf_context_length,omitempty"`
-		SizeBytes          int64                  `json:"size_bytes"`
-		LoadedAt           string                 `json:"loaded_at,omitempty"`
-		GPUCount           int                    `json:"gpu_count,omitempty"`
-		GPULayers          int                    `json:"gpu_layers"`
-		TensorSplit        map[string]interface{} `json:"tensor_split,omitempty"`
-		BatchSize          int                    `json:"batch_size,omitempty"`
-		FlashAttnType      int                    `json:"flash_attn_type,omitempty"`
-		NUMA               bool                   `json:"numa,omitempty"`
-		UseMmap            bool                   `json:"use_mmap,omitempty"`
-		ActiveQueries      int                    `json:"active_queries,omitempty"`
-		TotalQueries       int64                  `json:"total_queries,omitempty"`
-		LastUsedAt         string                 `json:"last_used_at,omitempty"`
-		Backend            string                 `json:"backend"`
+		Name              string                 `json:"name"`
+		Path              string                 `json:"path,omitempty"`
+		State             string                 `json:"state,omitempty"`
+		Architecture      string                 `json:"architecture,omitempty"`
+		NLayers           int                    `json:"n_layers"`
+		NHeads            int                    `json:"n_heads"`
+		NKvHeads          int                    `json:"n_kv_heads"`
+		NEmbd             int                    `json:"n_embd"`
+		NVocab            int                    `json:"n_vocab"`
+		ContextSize       int                    `json:"context_size"`
+		GGUFContextLength int                    `json:"gguf_context_length,omitempty"`
+		SizeBytes         int64                  `json:"size_bytes"`
+		LoadedAt          string                 `json:"loaded_at,omitempty"`
+		GPUCount          int                    `json:"gpu_count,omitempty"`
+		GPULayers         int                    `json:"gpu_layers"`
+		TensorSplit       map[string]interface{} `json:"tensor_split,omitempty"`
+		BatchSize         int                    `json:"batch_size,omitempty"`
+		FlashAttnType     int                    `json:"flash_attn_type,omitempty"`
+		NUMA              bool                   `json:"numa,omitempty"`
+		UseMmap           bool                   `json:"use_mmap,omitempty"`
+		ActiveQueries     int                    `json:"active_queries,omitempty"`
+		TotalQueries      int64                  `json:"total_queries,omitempty"`
+		LastUsedAt        string                 `json:"last_used_at,omitempty"`
+		Backend           string                 `json:"backend"`
 	}
 
 	// Параллельно опрашиваем все llama.cpp бэкенды.

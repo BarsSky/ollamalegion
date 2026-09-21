@@ -157,9 +157,9 @@ func TestProxyServeHTTP_VirtualRouter_NonVirtualModel_FallsThrough(t *testing.T)
 	// Add a "regular" backend in proxy.backends for the standard flow.
 	proxy.backends["test-backend"] = &BackendState{
 		Backend: &types.Backend{
-			ID:   "test-backend",
-			Name: "test",
-			Host: host,
+			ID:         "test-backend",
+			Name:       "test",
+			Host:       host,
 			OllamaPort: port,
 		},
 		ActiveReqs: 0,

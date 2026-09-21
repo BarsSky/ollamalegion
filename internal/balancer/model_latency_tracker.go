@@ -48,14 +48,14 @@ const (
 
 // ModelSample — один замер генерации модели.
 type ModelSample struct {
-	Timestamp        time.Time `json:"timestamp"`
-	TokensGenerated  int       `json:"tokensGenerated"`
-	DurationMs       int64     `json:"durationMs"`
-	FirstByteLatencyMs int64   `json:"firstByteLatencyMs"`
-	MaxInterTokenGapMs int64   `json:"maxInterTokenGapMs"`
-	Error            bool      `json:"error"`
-	ErrorType        string    `json:"errorType,omitempty"` // "timeout", "oom", "disconnect"
-	NumGPULayers     int       `json:"numGpuLayers"`
+	Timestamp          time.Time `json:"timestamp"`
+	TokensGenerated    int       `json:"tokensGenerated"`
+	DurationMs         int64     `json:"durationMs"`
+	FirstByteLatencyMs int64     `json:"firstByteLatencyMs"`
+	MaxInterTokenGapMs int64     `json:"maxInterTokenGapMs"`
+	Error              bool      `json:"error"`
+	ErrorType          string    `json:"errorType,omitempty"` // "timeout", "oom", "disconnect"
+	NumGPULayers       int       `json:"numGpuLayers"`
 }
 
 // ModelLatencyStats — агрегированная статистика latency для модели.
@@ -93,8 +93,8 @@ type ModelLatencyStats struct {
 
 // ModelLatencyTracker собирает per-model метрики генерации.
 type ModelLatencyTracker struct {
-	mu      sync.RWMutex
-	models  map[string][]ModelSample // modelName → история замеров
+	mu     sync.RWMutex
+	models map[string][]ModelSample // modelName → история замеров
 }
 
 // NewModelLatencyTracker создаёт новый трекер.

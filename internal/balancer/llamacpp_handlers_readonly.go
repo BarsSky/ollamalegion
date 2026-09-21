@@ -1,15 +1,128 @@
 package balancer
 
 import (
+	"crypto/sha256"
 	"encoding/json"
 	"fmt"
 	"net/http"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
 	"ollama-loadbalancer/pkg/logger"
+	"ollama-loadbalancer/pkg/types"
 )
+
+// ---------- Helpers для /api/ps и /api/tags (R65d, 2026-09-20) ----------
+
+// defaultPSExpiresWindow — окно, которое /api/ps показывает как время жизни
+// загруженной модели, если точное значение неизвестно.
+//
+// Точный keep_alive живёт в cppworker (см. applyKeepAlive,
+// handlers_generate.go:267), балансер его не знает. Раньше в это поле
+// подставлялось нулевое time.Time, которое сериализовалось как
+// "0001-01-01T00:00:00Z" — клиенты (OpenWebUI, `ollama ps`) считали модель
+// протухшей. 30 минут совпадает с defaultKeepAliveDuration у cppworker.
+const defaultPSExpiresWindow = 30 * time.Minute
+
+// digestForModel строит стабильный content-addressed digest модели.
+//
+// Раньше /api/ps отдавал Digest="" (а cppworker в /api/tags —
+// fmt.Sprintf("sha256:%x", sizeBytes), то есть байтовый размер под видом хеша,
+// из-за чего две модели одинакового размера получали одинаковый «digest»).
+//
+// Полный SHA256 файла считать нельзя: модели по 5-20 GB, а endpoint
+// read-only и вызывается часто. Для идентичности модели в списке достаточно
+// хеша от (путь + имя + размер) — он стабилен между запросами и различает
+// модели одинакового размера.
+func digestForModel(m types.LlamaCppModel) string {
+	if m.Name == "" && m.Path == "" {
+		return ""
+	}
+	h := sha256.New()
+	h.Write([]byte(m.Path))
+	h.Write([]byte{0})
+	h.Write([]byte(m.Name))
+	h.Write([]byte{0})
+	h.Write([]byte(strconv.FormatUint(m.Size, 10)))
+	return "sha256:" + fmt.Sprintf("%x", h.Sum(nil))
+}
+
+// estimateParameterSize оценивает размер модели в параметрах для поля
+// details.parameter_size ("7.6B").
+// Раньше в /api/ps это поле всегда было пустой строкой (details["parameter_size"]="").
+// Для llama-архитектур число параметров ≈ n_layers × n_embd² × k, где k зависит
+// от наличия gate/up/down и MoE. Точное значение требует чтения GGUF-метаданных,
+// поэтому даём грубую оценку, помечая её как приблизительную — этого достаточно
+// для отображения в UI (OpenWebUI показывает parameter_size в карточке модели).
+//
+// Если данных нет — возвращаем "unknown", а не пустую строку: пустое значение
+// UI рендерит как «-», а "unknown" честно сообщает, что размер неизвестен.
+func estimateParameterSize(m types.LlamaCppModel) string {
+	if m.NLayers <= 0 || m.NEmbd <= 0 {
+		return "unknown"
+	}
+	// Эмпирический коэффициент: для типичного трансформера с SwiGLU
+	// params ≈ 12 × n_layers × n_embd² (attention + MLP с 3 матрицами).
+	// Значение внутри порядка величины, поэтому округляем до 0.1B.
+	const coeff = 12.0
+	params := coeff * float64(m.NLayers) * float64(m.NEmbd) * float64(m.NEmbd)
+	billions := params / 1e9
+	if billions < 0.05 {
+		return "unknown"
+	}
+	return strconv.FormatFloat(billions, 'f', 1, 64) + "B"
+}
+
+// detailsForModel строит Ollama-совместимый блок details для /api/tags.
+//
+// Раньше handleTags создавал записи вообще без Details (nil), поэтому клиенты,
+// читающие details.family / quantization_level (OpenWebUI показывает их в
+// карточке модели; ollama list использует parameter_size), видели пустоту.
+// Набор полей соответствует Ollama API: parent_model, format, family, families,
+// parameter_size, quantization_level.
+func detailsForModel(m types.LlamaCppModel) map[string]interface{} {
+	family := m.Architecture
+	if family == "" {
+		family = "unknown"
+	}
+	d := map[string]interface{}{
+		"parent_model":       "",
+		"format":             "gguf",
+		"family":             family,
+		"families":           []string{family},
+		"parameter_size":     estimateParameterSize(m),
+		"quantization_level": quantizationOrUnknown(m.Quantization),
+	}
+	return d
+}
+
+// quantizationOrUnknown — Ollama отдаёт "unknown" вместо пустой строки.
+func quantizationOrUnknown(q string) string {
+	if strings.TrimSpace(q) == "" {
+		return "unknown"
+	}
+	return q
+}
+
+// digestForOnDiskModel — digest для модели, известной только по имени и размеру
+// (ответ /api/models/files не содержит путь).
+//
+// Раньше в этих записях digest отсутствовал вовсе. Полный SHA256 файла считать
+// нельзя (модели по 5-20 GB, endpoint вызывается часто), поэтому используем
+// стабильный хеш от имени+размера: он различает модели и не меняется между
+// запросами. Префикс "sha256:" сохранён для совместимости с форматом Ollama.
+func digestForOnDiskModel(name string, size int64) string {
+	if name == "" {
+		return ""
+	}
+	h := sha256.New()
+	h.Write([]byte(name))
+	h.Write([]byte{0})
+	h.Write([]byte(strconv.FormatInt(size, 10)))
+	return "sha256:" + fmt.Sprintf("%x", h.Sum(nil))
+}
 
 // ---------- Read-only endpoints ----------
 
@@ -52,12 +165,28 @@ func (lr *LlamaCppRouter) handleTags(w http.ResponseWriter, r *http.Request) {
 			continue
 		}
 		for _, m := range lm.LoadedModels {
-			if _, exists := uniqueModels[m.Name]; !exists {
-				uniqueModels[m.Name] = OllamaTag{
-					Name:  m.Name,
-					Model: m.Name,
-					Size:  0,
+			// R65d (2026-09-20): заполняем Size/Digest/Details/ModifiedAt.
+			//
+			// Было: {Name, Model, Size: 0} без Digest/ModifiedAt/Details, и
+			// благодаря «первый победил» ниже (шаг 2) более богатая on-disk
+			// запись НЕ перезаписывала бедную. Клиенты, читающие
+			// details.family / parameter_size / digest (OpenWebUI, ollama list),
+			// получали пустоту для всех загруженных моделей.
+			entry := OllamaTag{
+				Name:  m.Name,
+				Model: m.Name,
+				Size:  int64(m.Size),
+			}
+			entry.Digest = digestForModel(m)
+			entry.Details = detailsForModel(m)
+			if m.LoadedAt != "" {
+				if t, perr := time.Parse(time.RFC3339, m.LoadedAt); perr == nil {
+					entry.ModifiedAt = t
 				}
+			}
+			// Не перезаписываем уже собранную запись (дедуп по имени).
+			if _, exists := uniqueModels[m.Name]; !exists {
+				uniqueModels[m.Name] = entry
 			}
 		}
 	}
@@ -81,13 +210,35 @@ func (lr *LlamaCppRouter) handleTags(w http.ResponseWriter, r *http.Request) {
 			if strings.HasSuffix(strings.ToLower(name), ".gguf") {
 				name = name[:len(name)-5]
 			}
-			if _, exists := uniqueModels[name]; !exists {
-				uniqueModels[name] = OllamaTag{
-					Name:       name,
-					Model:      name,
-					Size:       f.SizeBytes,
-					ModifiedAt: f.ModifiedAt,
+			// R65d (2026-09-20): «богатая запись побеждает».
+			//
+			// Раньше on-disk данные НЕ применялись к уже существующей записи
+			// (loaded) из-за «первый победил». В результате загруженная модель
+			// показывалась с Size=0 и без ModifiedAt, хотя cppworker знает и
+			// размер файла, и mtime. Теперь дополняем запись недостающими
+			// полями, сохраняя уже известные (digest/details от loaded).
+			if existing, exists := uniqueModels[name]; exists {
+				if existing.Size == 0 && f.SizeBytes > 0 {
+					existing.Size = f.SizeBytes
 				}
+				if existing.ModifiedAt.IsZero() && !f.ModifiedAt.IsZero() {
+					existing.ModifiedAt = f.ModifiedAt
+				}
+				if existing.Model == "" {
+					existing.Model = name
+				}
+				uniqueModels[name] = existing
+				continue
+			}
+			uniqueModels[name] = OllamaTag{
+				Name:       name,
+				Model:      name,
+				Size:       f.SizeBytes,
+				ModifiedAt: f.ModifiedAt,
+				// On-disk запись тоже должна иметь digest: клиенты используют его
+				// для идентификации модели. Считаем от имени+размера (файла под
+				// рукой нет — путь не отдан в files-ответе).
+				Digest: digestForOnDiskModel(name, f.SizeBytes),
 			}
 		}
 	}
@@ -430,22 +581,43 @@ func (lr *LlamaCppRouter) handlePS(w http.ResponseWriter, r *http.Request) {
 			// R60.58 fix (2026-09-14): было hardcoded Size=0/SizeVRAM=0 — OpenWebUI
 			// видел пустой /api/ps, считал модель не загруженной и зависал на auto-load.
 			// LlamaCppModel уже имеет Size (bytes) и VRAMUsage (MB).
+			// R65d (2026-09-20): заполняем поля, которые раньше были заглушками.
+			//
+			// Было: Digest="" и ExpiresAt=time.Time{} (нулевое время → JSON
+			// "0001-01-01T00:00:00Z"). Клиенты, читающие expires_at (OpenWebUI,
+			// `ollama ps`), видели модель «протухшей» с 1-го января года 1, а
+			// digest отсутствовал.
 			details := map[string]interface{}{}
 			if m.Architecture != "" {
 				details["family"] = m.Architecture
+				details["families"] = []string{m.Architecture}
 			}
-			if m.NLayers > 0 {
-				details["parameter_size"] = ""
+			if m.Quantization != "" {
 				details["quantization_level"] = m.Quantization
 			}
+			details["parameter_size"] = estimateParameterSize(m)
+			details["format"] = "gguf"
+
+			// expires_at: Ollama показывает время, когда модель будет выгружена.
+			// Точного значения балансер не знает (keep_alive обрабатывает
+			// cppworker), поэтому отдаём консервативную оценку «сейчас + дефолтное
+			// окно жизни», а при наличии LoadedAt — от него. Главное — НЕ отдавать
+			// нулевое время.
+			expiresAt := time.Now().Add(defaultPSExpiresWindow)
+			if m.LoadedAt != "" {
+				if loadedAt, perr := time.Parse(time.RFC3339, m.LoadedAt); perr == nil {
+					expiresAt = loadedAt.Add(defaultPSExpiresWindow)
+				}
+			}
+
 			allProcesses = append(allProcesses, OllamaProcess{
-				Name:     m.Name,
-				Model:    m.Name,
-				Size:     int64(m.Size),
-				Digest:   "",
-				Details:  details,
-				ExpiresAt: time.Time{},
-				SizeVRAM: int64(m.VRAMUsage) * 1024 * 1024,
+				Name:      m.Name,
+				Model:     m.Name,
+				Size:      int64(m.Size),
+				Digest:    digestForModel(m),
+				Details:   details,
+				ExpiresAt: expiresAt,
+				SizeVRAM:  int64(m.VRAMUsage) * 1024 * 1024,
 			})
 		}
 	}

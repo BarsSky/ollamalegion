@@ -23,9 +23,9 @@ import (
 // с включённым ResponseHeaderTimeout для streaming. Использует shallow copy
 // streamingTransportBase — разделяет с оригинальным Transport'ом:
 //
-//	- idle connection pool (MaxIdleConns*, IdleConnTimeout)
-//	- keepalive настройки
-//	- DisableCompression (важно для SSE)
+//   - idle connection pool (MaxIdleConns*, IdleConnTimeout)
+//   - keepalive настройки
+//   - DisableCompression (важно для SSE)
 //
 // но получает собственное значение ResponseHeaderTimeout (per-request).
 //

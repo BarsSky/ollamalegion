@@ -15,9 +15,9 @@ import (
 // Phase 8 (P.1) rpc_coordinator mode scaffold в Proxy.ServeHTTP.
 //
 // Условия для перехвата request (interceptor block in proxy.go:453-460):
-//   1. IsRpcCoordinatorMode(cfg.Balancing.OperatingMode) == true
-//   2. p.rpcDispatcher != nil
-//   3. p.rpcDispatcher.IsRpcPath(r.URL.Path) == true
+//  1. IsRpcCoordinatorMode(cfg.Balancing.OperatingMode) == true
+//  2. p.rpcDispatcher != nil
+//  3. p.rpcDispatcher.IsRpcPath(r.URL.Path) == true
 //
 // Если все 3 условия true → request маршрутизируется через
 // RpcCoordinatorDispatcher.ServeHTTP (501 streaming stub / 503 not initialized).

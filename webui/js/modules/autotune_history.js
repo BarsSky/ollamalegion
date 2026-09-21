@@ -43,8 +43,8 @@
         if (backendId) params.set('backend', backendId);
         const url = '/api/v1/admin/autotune/history?' + params.toString();
         const resp = await fetch(url, {
-            headers: window.Api && window.Api.authHeaders
-                ? window.Api.authHeaders()
+            headers: window.Api && window.Api.getAuthHeaders
+                ? window.Api.getAuthHeaders()
                 : {}
         });
         if (!resp.ok) {
@@ -240,3 +240,4 @@
         fetchHistory: fetchHistory
     };
 })();
+

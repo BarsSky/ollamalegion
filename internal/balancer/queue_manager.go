@@ -21,16 +21,16 @@ type CompletedRequest struct {
 
 // QueueManager - менеджер очереди с pool workers
 type QueueManager struct {
-	queue            chan *QueuedRequest
-	mu               sync.Mutex
-	maxSize          int
-	numWorkers       int
-	processed        int64
-	timeout          time.Duration
-	ctx              context.Context
-	cancel           context.CancelFunc
-	wg               sync.WaitGroup
-	proxy            *Proxy
+	queue      chan *QueuedRequest
+	mu         sync.Mutex
+	maxSize    int
+	numWorkers int
+	processed  int64
+	timeout    time.Duration
+	ctx        context.Context
+	cancel     context.CancelFunc
+	wg         sync.WaitGroup
+	proxy      *Proxy
 	// Round 52.4 (2026-08-24): sync.Once для idempotent Stop().
 	// Без этого второй вызов (например, defer + t.Cleanup) → panic
 	// "close of closed channel" на qm.queue.
@@ -502,4 +502,3 @@ func (qm *QueueManager) getPendingDTOs() []map[string]interface{} {
 	}
 	return result
 }
-

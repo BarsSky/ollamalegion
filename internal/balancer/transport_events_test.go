@@ -32,21 +32,21 @@ func TestPublishTransportEOF_NoPanic(t *testing.T) {
 		duration  time.Duration
 	}{
 		{
-			name: "EOF with model",
+			name:      "EOF with model",
 			backendID: "cppworker-gpu", model: "gemma-4-E4B-it-Q4_K_M",
-			path: "/v1/chat/completions",
-			err: errors.New("Post http://...: EOF"),
+			path:     "/v1/chat/completions",
+			err:      errors.New("Post http://...: EOF"),
 			duration: 250 * time.Millisecond,
 		},
 		{
-			name: "EOF with empty model",
+			name:      "EOF with empty model",
 			backendID: "cppworker-cpu", model: "",
-			path: "/api/generate",
-			err: io.ErrUnexpectedEOF,
+			path:     "/api/generate",
+			err:      io.ErrUnexpectedEOF,
 			duration: 50 * time.Millisecond,
 		},
 		{
-			name: "nil error — should silently skip",
+			name:      "nil error — should silently skip",
 			backendID: "x", model: "y", path: "/z",
 			err: nil, duration: 0,
 		},

@@ -9,11 +9,11 @@ import (
 
 func TestComputeBaseScoreAndPenalty(t *testing.T) {
 	tests := []struct {
-		name          string
-		metrics       *types.BackendMetrics
-		wantBaseMin   float64
-		wantBaseMax   float64
-		wantPenalty   float64
+		name        string
+		metrics     *types.BackendMetrics
+		wantBaseMin float64
+		wantBaseMax float64
+		wantPenalty float64
 	}{
 		{
 			name: "idle backend",
@@ -171,9 +171,9 @@ func TestCalculateScoreSimple(t *testing.T) {
 		},
 	}
 	p := &Proxy{
-		backends:    backends,
-		metricsMgr:  NewMetricsManager(),
-		config:      &types.LoadBalancerConfig{Balancing: types.BalancingSettings{UseEnhancedScoring: false}},
+		backends:   backends,
+		metricsMgr: NewMetricsManager(),
+		config:     &types.LoadBalancerConfig{Balancing: types.BalancingSettings{UseEnhancedScoring: false}},
 	}
 
 	// Set metrics
@@ -205,10 +205,10 @@ func TestCalculateScoreEnhanced(t *testing.T) {
 		},
 	}
 	p := &Proxy{
-		backends:    backends,
-		metricsMgr:  NewMetricsManager(),
-		config:      &types.LoadBalancerConfig{Balancing: types.BalancingSettings{UseEnhancedScoring: true}},
-		queueMgr:    NewQueueManager(nil, 10, 1, 30),
+		backends:   backends,
+		metricsMgr: NewMetricsManager(),
+		config:     &types.LoadBalancerConfig{Balancing: types.BalancingSettings{UseEnhancedScoring: true}},
+		queueMgr:   NewQueueManager(nil, 10, 1, 30),
 	}
 
 	p.metricsMgr.mu.Lock()

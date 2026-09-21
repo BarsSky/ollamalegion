@@ -4,8 +4,14 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/gorilla/websocket"
+
 	"ollama-loadbalancer/pkg/logger"
 )
+
+// wsLogsReadDeadline — окно тишины от клиента /ws/logs до признания разрыва.
+// Продлевается control-pong'ом и любым входящим кадром (R65d).
+const wsLogsReadDeadline = 120 * time.Second
 
 // ============================================================
 // F.2 (Session F) — Live tail Logs через WebSocket
@@ -75,9 +81,16 @@ func (s *Server) wsLogsHandler(w http.ResponseWriter, r *http.Request) {
 
 	// Write deadline для всех операций.
 	conn.SetWriteDeadline(time.Now().Add(60 * time.Second))
-	conn.SetReadDeadline(time.Now().Add(120 * time.Second))
+	// R65d (2026-09-20): read deadline продлевается ЛЮБЫМ входящим кадром.
+	//
+	// Было: deadline 120s обновлялся только в pong handler, а сервер отправлял
+	// лишь текстовый {"type":"ping"} (см. pingTicker ниже) — на текстовый кадр
+	// браузер control-pong не шлёт, а клиент logs-stream.js вообще ничего не
+	// отправляет. Поэтому /ws/logs гарантированно умирал каждые 2 минуты,
+	// теряя часть лога при переподключении и спамя лог балансера.
+	conn.SetReadDeadline(time.Now().Add(wsLogsReadDeadline))
 	conn.SetPongHandler(func(string) error {
-		conn.SetReadDeadline(time.Now().Add(120 * time.Second))
+		conn.SetReadDeadline(time.Now().Add(wsLogsReadDeadline))
 		return nil
 	})
 
@@ -89,6 +102,7 @@ func (s *Server) wsLogsHandler(w http.ResponseWriter, r *http.Request) {
 				errCh <- err
 				return
 			}
+			conn.SetReadDeadline(time.Now().Add(wsLogsReadDeadline))
 		}
 	}()
 
@@ -121,6 +135,14 @@ func (s *Server) wsLogsHandler(w http.ResponseWriter, r *http.Request) {
 			}
 
 		case <-pingTicker.C:
+			// R65d: настоящий control-ping — он продлевает read deadline на
+			// СТОРОНЕ КЛИЕНТА (браузер отвечает pong'ом автоматически) и
+			// обновляет pong handler на сервере. Текстовый {"type":"ping"}
+			// оставляем для UI-индикатора связи.
+			if err := conn.WriteControl(websocket.PingMessage, nil, time.Now().Add(10*time.Second)); err != nil {
+				logger.Get().Debugw("ws/logs control ping failed", "error", err)
+				return
+			}
 			conn.SetWriteDeadline(time.Now().Add(10 * time.Second))
 			if err := conn.WriteJSON(map[string]string{"type": "ping"}); err != nil {
 				logger.Get().Debugw("ws/logs ping write failed", "error", err)

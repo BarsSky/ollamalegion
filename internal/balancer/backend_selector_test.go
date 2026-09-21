@@ -172,10 +172,10 @@ func TestSelectByResources(t *testing.T) {
 	p.backends["b2"].ActiveReqs = 10
 	p.backends["b2"].mu.Unlock()
 
-// Queueing-aware fallback: при полной загрузке selectByResources возвращает
-// least-loaded backend (для последующей постановки в очередь), а не empty.
-// Решение о реальной доступности слота принимает tryAcquireSlot в dispatchRequest:
-// если слот занят — ErrNoBackendAvailable, queue requeue'ит запрос.
+	// Queueing-aware fallback: при полной загрузке selectByResources возвращает
+	// least-loaded backend (для последующей постановки в очередь), а не empty.
+	// Решение о реальной доступности слота принимает tryAcquireSlot в dispatchRequest:
+	// если слот занят — ErrNoBackendAvailable, queue requeue'ит запрос.
 	got2 := p.selectByResources(nil)
 	if got2 != "b1" && got2 != "b2" {
 		t.Errorf("selectByResources() with full load = %s, want b1 or b2 (queueing-aware fallback)", got2)
@@ -193,7 +193,7 @@ func TestFindLessLoadedBackendWithModel(t *testing.T) {
 			},
 		},
 		metricsMgr: NewMetricsManager(),
-		config: &types.LoadBalancerConfig{},
+		config:     &types.LoadBalancerConfig{},
 	}
 
 	p.metricsMgr.mu.Lock()
@@ -340,23 +340,23 @@ func TestSelectBackendExcluding(t *testing.T) {
 		},
 		metricsMgr: NewMetricsManager(),
 		config: &types.LoadBalancerConfig{Balancing: types.BalancingSettings{
-			ModelAffinity: true,
+			ModelAffinity:      true,
 			UseEnhancedScoring: false,
-			Prewarm:       types.PrewarmConfig{TriggerLoadThreshold: 0.80},
+			Prewarm:            types.PrewarmConfig{TriggerLoadThreshold: 0.80},
 		}},
 		queueMgr: NewQueueManager(nil, 10, 1, 30),
 	}
 
 	p.metricsMgr.mu.Lock()
 	p.metricsMgr.metrics["b1"] = &types.BackendMetrics{
-		ID:     "b1",
+		ID: "b1",
 		Ollama: types.OllamaMetrics{
 			MaxConcurrentRequests: 10, ActiveRequests: 1,
 			RunningModels: []types.RunningModel{{Name: "llama3.1:8b"}},
 		},
 	}
 	p.metricsMgr.metrics["b2"] = &types.BackendMetrics{
-		ID:     "b2",
+		ID: "b2",
 		Ollama: types.OllamaMetrics{
 			MaxConcurrentRequests: 10, ActiveRequests: 1,
 			RunningModels: []types.RunningModel{{Name: "llama3.1:8b"}},
@@ -388,7 +388,7 @@ func TestSelectFreeBackendAny(t *testing.T) {
 			},
 		},
 		metricsMgr: NewMetricsManager(),
-		config: &types.LoadBalancerConfig{},
+		config:     &types.LoadBalancerConfig{},
 		queueMgr:   NewQueueManager(nil, 10, 1, 30),
 	}
 

@@ -257,7 +257,26 @@ func TestE2E_VirtualRouter_StreamingResponse(t *testing.T) {
 	}`))
 	req, _ := http.NewRequest("POST", balancer.URL+"/v1/chat/completions", body)
 	req.Header.Set("Content-Type", "application/json")
-	resp, err := http.DefaultClient.Do(req)
+
+	// R65d (2026-09-20): собственный клиент БЕЗ keep-alive вместо
+	// http.DefaultClient.
+	//
+	// Причина флейка: 335 тестов пакета помечены t.Parallel() и делят
+	// http.DefaultClient. Его Transport переиспользует keep-alive соединения
+	// между httptest-серверами разных тестов; при одновременной работе
+	// ответ мог обрываться после первого чанка, и тест недетерминированно падал
+	// на "does not contain chunk1/chunk2/[DONE]" (изолированно — всегда PASS).
+	// Отдельный клиент с DisableKeepAlives даёт выделенное соединение и
+	// устраняет влияние соседних тестов.
+	client := &http.Client{
+		Timeout: 10 * time.Second,
+		Transport: &http.Transport{
+			DisableKeepAlives: true,
+		},
+	}
+	defer client.CloseIdleConnections()
+
+	resp, err := client.Do(req)
 	require.NoError(t, err)
 	defer resp.Body.Close()
 

@@ -77,8 +77,8 @@ func (s WorkloadStats) IsHeavy(loadedNCtx int, minSamples int) bool {
 //
 // Zero value: valid (lazy init в Stats/Record). nil tracker = no-op.
 type WorkloadTracker struct {
-	mu       sync.RWMutex
-	samples  map[string][]WorkloadSample // key: "backendID|modelName"
+	mu         sync.RWMutex
+	samples    map[string][]WorkloadSample // key: "backendID|modelName"
 	maxSamples int
 }
 

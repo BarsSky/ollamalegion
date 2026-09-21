@@ -48,7 +48,8 @@ func TestR60_57_EnsureModelLoaded_HappyPath(t *testing.T) {
 	// Stub-mode LoadModel создаёт fake handle, не падает на отсутствующем
 	// GGUF файле (в stub нет проверки). Поэтому ensureModelLoaded должен
 	// либо вернуть nil error (model "loaded"), либо errModelIsLoading.
-	err := ensureModelLoaded(context.Background(), modelName)
+	// R60.62: ensureModelLoaded возвращает (actualModel, error).
+	_, err := ensureModelLoaded(context.Background(), modelName)
 	if err != nil {
 		// errModelIsLoading ожидаем — модель не существует в ModelManager
 		// (t.TempDir() пустой). Это OK для теста: главное что ctx
@@ -77,7 +78,8 @@ func TestR60_57_EnsureModelLoaded_CancelledCtx(t *testing.T) {
 
 	done := make(chan error, 1)
 	go func() {
-		done <- ensureModelLoaded(ctx, "r6057-cancelled-ctx-model")
+		_, err := ensureModelLoaded(ctx, "r6057-cancelled-ctx-model")
+		done <- err
 	}()
 
 	select {
@@ -104,7 +106,8 @@ func TestR60_57_EnsureModelLoaded_CancelledMidLoad(t *testing.T) {
 	// Spawn ensureModelLoaded, cancel immediately (race window).
 	done := make(chan error, 1)
 	go func() {
-		done <- ensureModelLoaded(ctx, "r6057-mid-cancel-model")
+		_, err := ensureModelLoaded(ctx, "r6057-mid-cancel-model")
+		done <- err
 	}()
 
 	// Cancel ASAP — race window между "load started" и "load finished".
@@ -127,7 +130,8 @@ func TestR60_57_EnsureModelLoaded_NilCtx(t *testing.T) {
 
 	done := make(chan error, 1)
 	go func() {
-		done <- ensureModelLoaded(nil, "r6057-nil-ctx-model")
+		_, err := ensureModelLoaded(nil, "r6057-nil-ctx-model")
+		done <- err
 	}()
 
 	select {
@@ -151,7 +155,8 @@ func TestR60_57_EnsureModelLoaded_TimeoutCtx(t *testing.T) {
 
 	done := make(chan error, 1)
 	go func() {
-		done <- ensureModelLoaded(ctx, "r6057-timeout-model")
+		_, err := ensureModelLoaded(ctx, "r6057-timeout-model")
+		done <- err
 	}()
 
 	select {

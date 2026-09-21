@@ -149,7 +149,7 @@ func (f *fakeRouter) Name() string {
 func newTestProxyWithBackendsByType(t *testing.T, bt types.BackendType) *Proxy {
 	t.Helper()
 	p := &Proxy{
-		backends: map[string]*BackendState{},
+		backends:       map[string]*BackendState{},
 		ollamaRouter:   NewOllamaRouter(nil),
 		llamaCppRouter: NewLlamaCppRouter(nil),
 	}

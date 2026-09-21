@@ -17,8 +17,8 @@ package balancer
 import (
 	"testing"
 
-	"ollama-loadbalancer/pkg/types"
 	"github.com/stretchr/testify/assert"
+	"ollama-loadbalancer/pkg/types"
 )
 
 // TestAddBackend_LlamaCpp_DefaultMaxConcurrent1 — Round 9 BUGFIX:
@@ -80,11 +80,11 @@ func TestAddBackend_ExplicitMaxConcurrent_Respected(t *testing.T) {
 	defer proxy.queueMgr.Stop()
 
 	err := proxy.AddBackend(types.Backend{
-		ID:                 "cppworker-explicit",
-		Host:               "localhost",
-		CppWorkerPort:      18092,
-		Type:               types.BackendTypeLlamaCpp,
-		MaxConcurrentReqs:  4, // явно задан (например, для n_parallel=4)
+		ID:                "cppworker-explicit",
+		Host:              "localhost",
+		CppWorkerPort:     18092,
+		Type:              types.BackendTypeLlamaCpp,
+		MaxConcurrentReqs: 4, // явно задан (например, для n_parallel=4)
 	})
 	assert.NoError(t, err)
 

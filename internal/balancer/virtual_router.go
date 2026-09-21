@@ -6,15 +6,15 @@
 // определяется при создании.
 //
 // Flow:
-//   1. Proxy.ServeHTTP видит запрос с model="...".
-//   2. Если OperatingMode=virtual_router + model in registry + IsAliasOnPoolMode:
-//      a. router.ServeHTTP(w, r) вызывается ДО основного proxy flow.
-//      b. Парсим body, извлекаем model name.
-//      c. Ищем virtual model в registry → Selector выбирает backend.
-//      d. Rewrite model в body на physical model name.
-//      e. Добавляем X-Original-Backend header (для debug).
-//      f. Proxy на выбранный backend через стандартный proxyRequest flow.
-//   3. Иначе: стандартный flow (без изменений).
+//  1. Proxy.ServeHTTP видит запрос с model="...".
+//  2. Если OperatingMode=virtual_router + model in registry + IsAliasOnPoolMode:
+//     a. router.ServeHTTP(w, r) вызывается ДО основного proxy flow.
+//     b. Парсим body, извлекаем model name.
+//     c. Ищем virtual model в registry → Selector выбирает backend.
+//     d. Rewrite model в body на physical model name.
+//     e. Добавляем X-Original-Backend header (для debug).
+//     f. Proxy на выбранный backend через стандартный proxyRequest flow.
+//  3. Иначе: стандартный flow (без изменений).
 //
 // Activation: cmd/balancer/main.go создаёт VirtualRouter + Registry и
 // вызывает proxy.SetVirtualRouter() если conf.Balancing.OperatingMode ==
@@ -22,6 +22,7 @@
 package balancer
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -94,11 +95,11 @@ func (r *VirtualRouter) checkAuth(w http.ResponseWriter, req *http.Request) bool
 // VirtualRouterMetrics — counter'ы для observability.
 // Phase 8 P.2: Prometheus-style counters.
 type VirtualRouterMetrics struct {
-	InferenceTotal      atomic.Int64 // total inference requests через virtual router
-	BackendSelections   sync.Map     // backendID → *atomic.Int64
-	InferenceErrors     atomic.Int64 // failed inferences
-	StreamPassThrough   atomic.Int64 // streaming requests passed through
-	SelectionSkips      atomic.Int64 // requests where all backends unhealthy
+	InferenceTotal    atomic.Int64 // total inference requests через virtual router
+	BackendSelections sync.Map     // backendID → *atomic.Int64
+	InferenceErrors   atomic.Int64 // failed inferences
+	StreamPassThrough atomic.Int64 // streaming requests passed through
+	SelectionSkips    atomic.Int64 // requests where all backends unhealthy
 }
 
 // IncBackendSelection инкрементит counter для backendID (lazy init).
@@ -378,13 +379,16 @@ func (r *VirtualRouter) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 			continue
 		}
 		targetURL := fmt.Sprintf("http://%s:%d%s", host, port, req.URL.Path)
-		resp, retryable, err := r.proxyToBackend(
+		resp, retryable, cancel, err := r.proxyToBackend(
 			req, targetURL, candidateID, rewrittenBody, origEnv.Model,
 			selector.Name(), timeout,
 		)
 		if err == nil {
 			// Success — copy response to client.
-			defer resp.Body.Close()
+			// R65d: cancel вызываем ПОСЛЕ копирования тела — иначе контекст
+			// отменится и стрим оборвётся после первого чанка.
+			// resp.Body.Close() вызываем явно в конце (defer внутри цикла
+			// копил бы закрытия до выхода из handler'а).
 			for k, v := range resp.Header {
 				if k == "Content-Length" || k == "Connection" {
 					continue
@@ -405,11 +409,39 @@ func (r *VirtualRouter) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 				w.Header().Set("X-Failover-Attempts", fmt.Sprintf("%d", i+1))
 			}
 			w.WriteHeader(resp.StatusCode)
-			if _, copyErr := io.Copy(w, resp.Body); copyErr != nil {
+
+			// Для SSE-ответов проксируем построчно с flush после каждой строки:
+			// io.Copy накапливает данные в буфере Transport'а, и клиент получает
+			// ответ пачками (для стриминга это неприемлемо).
+			if isStreamingContentType(resp.Header) {
+				flusher, _ := w.(http.Flusher)
+				reader := bufio.NewReader(resp.Body)
+				for {
+					line, readErr := reader.ReadBytes('\n')
+					if len(line) > 0 {
+						if _, writeErr := w.Write(line); writeErr != nil {
+							break
+						}
+						if flusher != nil {
+							flusher.Flush()
+						}
+					}
+					if readErr != nil {
+						if readErr != io.EOF {
+							logger.Get().Warnw("virtual_router: SSE read failed",
+								"backend", candidateID, "error", readErr)
+							r.metrics.InferenceErrors.Add(1)
+						}
+						break
+					}
+				}
+			} else if _, copyErr := io.Copy(w, resp.Body); copyErr != nil {
 				logger.Get().Warnw("virtual_router: response copy failed",
 					"backend", candidateID, "error", copyErr)
 				r.metrics.InferenceErrors.Add(1)
 			}
+			resp.Body.Close()
+			cancel()
 			return
 		}
 		lastErr = err
@@ -432,26 +464,55 @@ func (r *VirtualRouter) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 		"all_backends_failed")
 }
 
+// isStreamingContentType — true для потоковых ответов (SSE и NDJSON).
+//
+// R65d: используется в proxyToBackend-caller'е, чтобы для стриминга писать
+// построчно с Flush, а не через io.Copy (тот буферизует и клиент получает
+// ответ пачками).
+func isStreamingContentType(h http.Header) bool {
+	ct := strings.ToLower(h.Get("Content-Type"))
+	return strings.Contains(ct, "text/event-stream") ||
+		strings.Contains(ct, "application/x-ndjson")
+}
+
 // proxyToBackend — single attempt to proxy request to a backend.
 // Returns:
 //   - resp: non-nil on HTTP success (any 2xx/4xx/5xx from backend)
 //   - retryable: true if err is network-level (connection refused, timeout)
 //     → caller should try next candidate. false if err is HTTP-level
 //     (backend returned 5xx) or already written to w.
+//   - cancel: non-nil ТОЛЬКО вместе с resp. Caller ОБЯЗАН вызвать его после
+//     полного чтения resp.Body (обычно defer cancel() в вызывающем коде).
 //   - err: error reason (nil on success)
+//
+// R65d (2026-09-20) — ИСПРАВЛЕНИЕ ОБРЫВА STREAMING.
+//
+// Было: `defer cancel()` внутри этой функции. Контекст запроса отменялся в
+// момент ВОЗВРАТА функции, то есть до того, как вызывающий код прочитает
+// resp.Body. Для streaming-ответов это означало обрыв потока после первого
+// чанка (istream закрывался вместе с отменённым контекстом), а клиент видел
+// «успешно завершённый», но обрезанный ответ.
+//
+// Симптом в тестах: TestE2E_VirtualRouter_StreamingResponse недетерминированно
+// падал на "does not contain chunk1/chunk2/[DONE]" — тело содержало только
+// первый чанк. Изолированно проходил из-за гонки: успевал ли клиент прочитать
+// данные до отмены контекста.
+//
+// Теперь cancel возвращается наружу: контекст живёт ровно столько, сколько
+// читается тело ответа.
 func (r *VirtualRouter) proxyToBackend(
 	req *http.Request,
 	targetURL, backendID string,
 	rewrittenBody []byte,
 	originalModel, strategy string,
 	timeout time.Duration,
-) (*http.Response, bool, error) {
+) (*http.Response, bool, context.CancelFunc, error) {
 	ctx, cancel := context.WithTimeout(req.Context(), timeout)
-	defer cancel()
 
 	proxyReq, err := http.NewRequestWithContext(ctx, req.Method, targetURL, bytes.NewReader(rewrittenBody))
 	if err != nil {
-		return nil, true, fmt.Errorf("create proxy request: %w", err)
+		cancel()
+		return nil, true, nil, fmt.Errorf("create proxy request: %w", err)
 	}
 	// Copy original headers (кроме Host).
 	for k, v := range req.Header {
@@ -468,15 +529,18 @@ func (r *VirtualRouter) proxyToBackend(
 	resp, err := client.Do(proxyReq)
 	if err != nil {
 		// Network error (connection refused, timeout, etc.) — retryable.
-		return nil, true, err
+		cancel()
+		return nil, true, nil, err
 	}
 	// HTTP response from backend. Check status — 5xx = retryable, 4xx = not.
 	if resp.StatusCode >= 500 {
 		resp.Body.Close()
-		return nil, true, fmt.Errorf("backend returned %d", resp.StatusCode)
+		cancel()
+		return nil, true, nil, fmt.Errorf("backend returned %d", resp.StatusCode)
 	}
-	// 2xx/3xx/4xx — return as-is (not retryable).
-	return resp, false, nil
+	// 2xx/3xx/4xx — return as-is (not retryable). Контекст НЕ отменяем: тело
+	// будет читать вызывающий, и отмена оборвала бы стрим.
+	return resp, false, cancel, nil
 }
 
 // buildFailoverCandidates — строит ordered list кандидатов для failover.

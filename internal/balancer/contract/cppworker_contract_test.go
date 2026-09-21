@@ -66,10 +66,10 @@ func TestCppworkerEndpoints_PayloadAcceptance(t *testing.T) {
 // optional поля всё ломается".
 func TestCppworkerEndpoints_NoUnknownFieldsInMinimal(t *testing.T) {
 	minimal := map[string]map[string]interface{}{
-		"reload":            {"name": "x"},
-		"load":              {"name": "x"},
-		"load-with-params":  {"name": "x"},
-		"delete":            {"name": "x"},
+		"reload":           {"name": "x"},
+		"load":             {"name": "x"},
+		"load-with-params": {"name": "x"},
+		"delete":           {"name": "x"},
 	}
 	for _, ep := range AllEndpoints {
 		if ep.RequestStruct == nil {

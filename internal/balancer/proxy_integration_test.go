@@ -4,11 +4,11 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"sync"
-	"io"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -32,7 +32,11 @@ func TestFirstByteTimeout_RetryOnHungStream(t *testing.T) {
 		if flusher, ok := w.(http.Flusher); ok {
 			flusher.Flush()
 		}
-		select { case <-r.Context().Done(): return; case <-time.After(120 * time.Second): }
+		select {
+		case <-r.Context().Done():
+			return
+		case <-time.After(120 * time.Second):
+		}
 	}))
 	defer hungServer.Close()
 
@@ -40,7 +44,8 @@ func TestFirstByteTimeout_RetryOnHungStream(t *testing.T) {
 		w.Header().Set("Content-Type", "text/event-stream")
 		w.WriteHeader(http.StatusOK)
 		flusher, _ := w.(http.Flusher)
-		fmt.Fprintf(w, "data: [DONE]\n\n"); flusher.Flush()
+		fmt.Fprintf(w, "data: [DONE]\n\n")
+		flusher.Flush()
 	}))
 	defer healthyServer.Close()
 
@@ -99,7 +104,8 @@ func TestTwoClientsSameIP_DifferentSessions(t *testing.T) {
 		w.Header().Set("Content-Type", "text/event-stream")
 		w.WriteHeader(http.StatusOK)
 		f, _ := w.(http.Flusher)
-		fmt.Fprintf(w, "data: [DONE]\n\n"); f.Flush()
+		fmt.Fprintf(w, "data: [DONE]\n\n")
+		f.Flush()
 	}))
 	defer srv.Close()
 
@@ -188,13 +194,15 @@ func TestLoadBalancing_MultipleClients(t *testing.T) {
 			if rid := r.Header.Get("X-Request-ID"); rid != "" {
 				w.Header().Set("X-Request-ID-Echo", rid)
 			}
-			fmt.Fprintf(w, "data: [DONE]\n\n"); f.Flush()
+			fmt.Fprintf(w, "data: [DONE]\n\n")
+			f.Flush()
 		}))
 		return srv, &inflight, &maxInflight
 	}
 	sA, _, aMaxInflight := mk("a", 3)
 	sB, _, bMaxInflight := mk("b", 3)
-	defer sA.Close(); defer sB.Close()
+	defer sA.Close()
+	defer sB.Close()
 
 	hA, pA := hostPort(sA.URL)
 	hB, pB := hostPort(sB.URL)
@@ -391,16 +399,16 @@ func TestLoadBalancing_SameClientQueueFIFO(t *testing.T) {
 			{ID: "b1", Host: h, OllamaPort: p, Weight: 1, MaxConcurrentReqs: maxConcurrent, Status: types.StatusHealthy},
 		},
 		Balancing: types.BalancingSettings{
-			Algorithm:         types.AlgorithmResourceAware,
-			ModelAffinity:     true,
-			SessionStickiness: true,
-			FirstByteTimeout:  5,
+			Algorithm:            types.AlgorithmResourceAware,
+			ModelAffinity:        true,
+			SessionStickiness:    true,
+			FirstByteTimeout:     5,
 			StreamingIdleTimeout: 30,
-			RequestTimeout:    30,
-			QueueTimeout:      30, // long enough: 6 reqs × 100ms = 600ms total
-			QueueMaxSize:      50,
-			QueueWorkers:      1, // single worker = strict serial on backend
-			SessionTTL:        900,
+			RequestTimeout:       30,
+			QueueTimeout:         30, // long enough: 6 reqs × 100ms = 600ms total
+			QueueMaxSize:         50,
+			QueueWorkers:         1, // single worker = strict serial on backend
+			SessionTTL:           900,
 		},
 		Resources: types.ResourceLimits{
 			GPU:    types.GPULimits{MaxUsagePercent: 90},
@@ -507,7 +515,11 @@ func TestLoadBalancing_SameClientQueueFIFO(t *testing.T) {
 func hostPort(raw string) (string, int) {
 	s := strings.TrimPrefix(strings.TrimPrefix(raw, "http://"), "https://")
 	hp := strings.Split(s, ":")
-	if len(hp) == 2 { p := 11434; fmt.Sscanf(hp[1], "%d", &p); return hp[0], p }
+	if len(hp) == 2 {
+		p := 11434
+		fmt.Sscanf(hp[1], "%d", &p)
+		return hp[0], p
+	}
 	return s, 11434
 }
 

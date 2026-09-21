@@ -146,7 +146,10 @@ func TestHealthChecker_checkBackend_Healthy(t *testing.T) {
 	assert.Equal(t, 0, status.ConsecutiveFails)
 	assert.NotZero(t, status.LastSuccess)
 	assert.NotZero(t, status.LastCheck)
-	assert.NotZero(t, status.LastLatency)
+	// R65e: LastLatency == 0 — валидный результат на Windows, где таймер имеет
+	// разрешение ~0.5-15 ms, а loopback-ответ уже поднятого httptest-сервера
+	// укладывается в 0 тиков. Раньше здесь стоял NotZero и тест флакал.
+	assert.GreaterOrEqual(t, status.LastLatency, time.Duration(0))
 }
 
 func TestHealthChecker_checkBackend_Unhealthy(t *testing.T) {
@@ -200,7 +203,12 @@ func TestHealthChecker_performCheck_Healthy(t *testing.T) {
 	result := hc.performCheck(backend)
 	assert.NotNil(t, result)
 	assert.True(t, result.Healthy)
-	assert.NotZero(t, result.Latency)
+	// R65e: Latency намеренно НЕ проверяем на NotZero. На Windows таймер имеет
+	// разрешение ~0.5-15 ms, и ответ уже поднятого httptest-сервера на loopback
+	// укладывается в 0 тиков — time.Since(start) честно возвращает 0. Это
+	// валидный результат (мгновенный ответ), а не потеря данных; раньше тест
+	// флакал примерно в 1 запуске из 4-5.
+	assert.GreaterOrEqual(t, result.Latency, time.Duration(0))
 	assert.Empty(t, result.Error)
 }
 

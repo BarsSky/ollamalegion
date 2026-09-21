@@ -2,12 +2,13 @@
 // when the upstream cppworker takes a long time to send response headers.
 //
 // Bug context (2026-08-09):
-//   cppworker для non-streaming /v1/chat/completions requests буферизирует всю
-//   генерацию и отдаёт HTTP-заголовки ТОЛЬКО после завершения. Для reasoning-моделей
-//   (gemma-4, qwen3.6 35B) генерация может занять 60-120+ секунд.
 //
-//   Live-тест 2026-08-09: gemma-4 reasoning prompt, прямой cppworker = 89.4s OK,
-//   через balancer = timeout 180s с "net/http: timeout awaiting response headers".
+//	cppworker для non-streaming /v1/chat/completions requests буферизирует всю
+//	генерацию и отдаёт HTTP-заголовки ТОЛЬКО после завершения. Для reasoning-моделей
+//	(gemma-4, qwen3.6 35B) генерация может занять 60-120+ секунд.
+//
+//	Live-тест 2026-08-09: gemma-4 reasoning prompt, прямой cppworker = 89.4s OK,
+//	через balancer = timeout 180s с "net/http: timeout awaiting response headers".
 //
 // Покрывает:
 //   - isConnectionLevelError корректно классифицирует timeout vs connection errors

@@ -320,25 +320,67 @@
             return;
         }
         var api = window.GgufApi || window.Api;
-        if (typeof api.hfDownloadProgress !== 'function') {
+        // R65-FIX (2026-09-16): GgufApi.getDownloadProgress, не hfDownloadProgress.
+        if (typeof api.getDownloadProgress !== 'function') {
             return;
         }
         // Poll all active downloads
         var promises = state.activeDownloads.map(function (d) {
-            return api.hfDownloadProgress(d.modelId, d.filename)
+            return api.getDownloadProgress(d.modelId, d.filename)
                 .then(function (progress) {
                     state.downloadProgress[d.modelId + '/' + d.filename] = progress;
                 })
-                .catch(function () {
-                    // download probably failed
-                    state.activeDownloads = state.activeDownloads.filter(function (x) {
-                        return !(x.modelId === d.modelId && x.filename === d.filename);
-                    });
+                .catch(function (err) {
+                    // R66.3 (2026-09-16): 404 = race condition (POST ещё не дошёл),
+                    // не удалять из state. Только 3+ подряд network/5xx ошибок
+                    // → запись в history как "failed" + удаление.
+                    if (err && err.code === 'not_found') return;
+                    d._consecutiveErrors = (d._consecutiveErrors || 0) + 1;
+                    if (d._consecutiveErrors >= 3) {
+                        if (!state.downloadHistory) state.downloadHistory = [];
+                        state.downloadHistory.push(Object.assign({}, d, {
+                            status: 'failed',
+                            endedAt: Date.now()
+                        }));
+                        state.activeDownloads = state.activeDownloads.filter(function (x) {
+                            return !(x.modelId === d.modelId && x.filename === d.filename);
+                        });
+                    }
                 });
         });
         Promise.all(promises).then(function () {
             if (typeof M.refreshDetailPane === 'function') M.refreshDetailPane();
         });
+    };
+
+    /**
+     * R66.4 (2026-09-16): подтянуть orphan .download файлы с cppworker.
+     * Это файлы, которые остались на диске после прерванных загрузок
+     * (network timeout, crash, container restart) — занимают место, но
+     * не привязаны ни к одной активной загрузке.
+     *
+     * GET /api/hf/downloads теперь возвращает { active, history, orphans[] }.
+     * Кладём orphans в state, чтобы renderDownloadsPane показал их
+     * отдельным блоком "Residual files" с кнопкой 🗑 Delete.
+     */
+    M.refreshOrphanDownloads = function() {
+        const state = M.state;
+        var api = window.GgufApi || window.Api;
+        if (typeof api.listActiveDownloads !== 'function') return;
+        api.listActiveDownloads()
+            .then(function (resp) {
+                // resp = { active: [], history: [], orphans: [] }
+                var arr = (resp && Array.isArray(resp.orphans)) ? resp.orphans : [];
+                state.orphanDownloads = arr;
+                if (typeof M.refreshDetailPane === 'function') M.refreshDetailPane();
+            })
+            .catch(function () {
+                // Тихо игнорируем — это cosmetic, не критично
+                if (state.orphanDownloads && state.orphanDownloads.length) {
+                    state.orphanDownloads = [];
+                    if (typeof M.refreshDetailPane === 'function') M.refreshDetailPane();
+                }
+            });
     };
 
     M.updateDetailLoading = function(loading) {

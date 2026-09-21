@@ -219,7 +219,7 @@ func TestGetUnloadCandidates_WarmingModel(t *testing.T) {
 	p := &Proxy{
 		backends: map[string]*BackendState{
 			"b1": {
-				Backend:       &types.Backend{ID: "b1", Status: types.StatusHealthy},
+				Backend:         &types.Backend{ID: "b1", Status: types.StatusHealthy},
 				WarmingUpModels: map[string]*types.WarmupState{"m1": {StartedAt: time.Now()}},
 			},
 		},

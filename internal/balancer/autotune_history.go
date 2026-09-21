@@ -35,9 +35,9 @@ type AutoTuneHistoryEntry struct {
 
 // AutoTuneHistory — Round 55.2: ring buffer of AutoTune events.
 type AutoTuneHistory struct {
-	mu        sync.RWMutex
-	entries   []AutoTuneHistoryEntry
-	maxSize   int
+	mu           sync.RWMutex
+	entries      []AutoTuneHistoryEntry
+	maxSize      int
 	droppedCount uint64 // count of events dropped due to overflow (для observability)
 }
 

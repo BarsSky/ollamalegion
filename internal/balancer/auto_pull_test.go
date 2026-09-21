@@ -186,7 +186,7 @@ func TestAutoPullGetPullTimeout(t *testing.T) {
 		{types.AutoPullConfig{Enabled: true, PullTimeout: "5m"}, 5 * time.Minute},
 		{types.AutoPullConfig{Enabled: true, PullTimeout: "10m"}, 10 * time.Minute},
 		{types.AutoPullConfig{Enabled: true, PullTimeout: "30s"}, 30 * time.Second},
-		{types.AutoPullConfig{Enabled: true, PullTimeout: ""}, 5 * time.Minute},   // default
+		{types.AutoPullConfig{Enabled: true, PullTimeout: ""}, 5 * time.Minute},        // default
 		{types.AutoPullConfig{Enabled: true, PullTimeout: "invalid"}, 5 * time.Minute}, // fallback
 	}
 

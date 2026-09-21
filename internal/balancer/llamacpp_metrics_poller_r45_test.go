@@ -274,10 +274,14 @@ func TestR45_Poller_BackwardCompat_CamelCase(t *testing.T) {
 	}
 }
 
-// TestR45_Poller_LoadingProgressFields — same JSON-tag bug applied to
-// /api/models/load/progress: loadingStartedAt, loadingSizeBytes, elapsedMs
-// were all camelCase. Loading-model monitoring in the UI was therefore
-// broken for the same root reason.
+// TestR45_Poller_LoadingProgressFields — R45 починил JSON-теги только в
+// pollBackend, но НЕ в pollLoadingProgress: там остались snake_case-теги
+// (loading_started_at / loading_size_bytes / elapsed_ms), тогда как cppworker
+// отдаёт camelCase (handlers_model.go:838-845). Из-за этого все три поля
+// декодировались в нули и мониторинг загрузки в балансере был нерабочим.
+//
+// R65d (2026-09-20): теги исправлены на camelCase (фактический формат) с
+// fallback на snake_case. Тест обновлён под реальный wire-формат.
 func TestR45_Poller_LoadingProgressFields(t *testing.T) {
 	logger.Init("error")
 	progressJSON := `{
@@ -286,9 +290,9 @@ func TestR45_Poller_LoadingProgressFields(t *testing.T) {
     {
       "name": "loading-model",
       "state": "loading",
-      "loading_started_at": "2026-08-19T17:01:00.000Z",
-      "loading_size_bytes": 5000000000,
-      "elapsed_ms": 12345
+      "loadingStartedAt": "2026-08-19T17:01:00.000Z",
+      "loadingSizeBytes": 5000000000,
+      "elapsedMs": 12345
     }
   ]
 }`
@@ -312,7 +316,7 @@ func TestR45_Poller_LoadingProgressFields(t *testing.T) {
 		t.Errorf("loading entry mismatch: name=%q state=%q", m.Name, m.State)
 	}
 	if m.LoadingSizeBytes != 5000000000 {
-		t.Errorf("LoadingSizeBytes = %d, want 5000000000", m.LoadingSizeBytes)
+		t.Errorf("LoadingSizeBytes = %d, want 5000000000 (camelCase parsing must work)", m.LoadingSizeBytes)
 	}
 	if m.LoadingStartedAt == nil || *m.LoadingStartedAt != "2026-08-19T17:01:00.000Z" {
 		t.Errorf("LoadingStartedAt = %v, want 2026-08-19T17:01:00.000Z", m.LoadingStartedAt)
@@ -320,6 +324,44 @@ func TestR45_Poller_LoadingProgressFields(t *testing.T) {
 	// fastInterval should have been triggered (we observed a loading model).
 	if poller.lastLoadingSeen.IsZero() {
 		t.Error("poller should have set lastLoadingSeen after observing loading model")
+	}
+}
+
+// TestR65d_Poller_LoadingProgressSnakeCaseFallback — если cppworker когда-нибудь
+// вернётся к snake_case (или его отдаст другая сборка), поля всё равно должны
+// декодироваться.
+func TestR65d_Poller_LoadingProgressSnakeCaseFallback(t *testing.T) {
+	logger.Init("error")
+	progressJSON := `{
+  "count": 1,
+  "models": [
+    {
+      "name": "loading-model-snake",
+      "state": "loading",
+      "loading_started_at": "2026-08-19T18:02:00.000Z",
+      "loading_size_bytes": 1234567890,
+      "elapsed_ms": 999
+    }
+  ]
+}`
+	fake := &r45FakeCppWorker{
+		modelsJSON:   `{"count":0,"models":[]}`,
+		progressJSON: progressJSON,
+	}
+	proxy, _ := r45BuildProxyWithFakeCppWorker(t, fake)
+	poller := newLlamaCppMetricsPoller(proxy)
+	poller.pollAll()
+
+	lm := proxy.metricsMgr.llamaMetrics["fake-1"]
+	if lm == nil || len(lm.LoadingModels) != 1 {
+		t.Fatalf("expected 1 loading model, got %+v", lm)
+	}
+	m := lm.LoadingModels[0]
+	if m.LoadingSizeBytes != 1234567890 {
+		t.Errorf("LoadingSizeBytes = %d, want 1234567890 (snake_case fallback)", m.LoadingSizeBytes)
+	}
+	if m.LoadingStartedAt == nil || *m.LoadingStartedAt != "2026-08-19T18:02:00.000Z" {
+		t.Errorf("LoadingStartedAt = %v, want 2026-08-19T18:02:00.000Z", m.LoadingStartedAt)
 	}
 }
 

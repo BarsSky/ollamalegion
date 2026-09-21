@@ -10,7 +10,7 @@ import (
 
 // CandidateGroup — группа бэкендов-кандидатов одного приоритета
 type CandidateGroup struct {
-	Priority   int      // 1=LOADED, 2=WARMING, 3=FREE, 4=FALLBACK
+	Priority   int // 1=LOADED, 2=WARMING, 3=FREE, 4=FALLBACK
 	BackendIDs []string
 }
 

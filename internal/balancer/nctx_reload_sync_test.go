@@ -1,4 +1,4 @@
-﻿//go:build llama_stub
+//go:build llama_stub
 
 // Package balancer — unit-тесты для preflightNCtxReloadIfNeededSync
 // (sync-вариант n_ctx preflight, см. nctx_reload_handlers.go).
@@ -276,4 +276,3 @@ func TestPreflightSync_NilNctxReloadReturnsImmediateOK(t *testing.T) {
 		t.Errorf("должен вернуться мгновенно; elapsed=%v", elapsed)
 	}
 }
-

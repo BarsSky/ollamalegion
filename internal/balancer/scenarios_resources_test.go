@@ -84,9 +84,9 @@ func TestResources_Scenario_QueueOverflow(t *testing.T) {
 			{ID: "o1", Name: "o1", Host: o1.host, OllamaPort: o1.port, Status: types.StatusHealthy},
 		},
 		Balancing: types.BalancingSettings{
-			Algorithm:     types.AlgorithmRoundRobin,
-			QueueMaxSize:  10,
-			QueueTimeout:  1,
+			Algorithm:      types.AlgorithmRoundRobin,
+			QueueMaxSize:   10,
+			QueueTimeout:   1,
 			RequestTimeout: 30,
 		},
 		Resources: types.ResourceLimits{

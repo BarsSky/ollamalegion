@@ -62,14 +62,14 @@ type CppworkerReloadRequest struct {
 // R44.1: HAS "reason" field. R51.4 confirmed this struct differs from
 // reloadModelRequest in this respect.
 type CppworkerLoadRequest struct {
-	Name                string    `json:"name"`
-	ContextSize         *int      `json:"contextSize,omitempty"`
-	GPULayers           *int      `json:"gpuLayers,omitempty"`
-	KVCacheType         *string   `json:"kvCacheType,omitempty"`
-	UseMmap             *bool     `json:"useMmap,omitempty"`
-	OverrideTensors     []string  `json:"overrideTensors,omitempty"`
-	OverrideTensorBufts []string  `json:"overrideTensorBufts,omitempty"`
-	Reason              *string   `json:"reason,omitempty"`
+	Name                string   `json:"name"`
+	ContextSize         *int     `json:"contextSize,omitempty"`
+	GPULayers           *int     `json:"gpuLayers,omitempty"`
+	KVCacheType         *string  `json:"kvCacheType,omitempty"`
+	UseMmap             *bool    `json:"useMmap,omitempty"`
+	OverrideTensors     []string `json:"overrideTensors,omitempty"`
+	OverrideTensorBufts []string `json:"overrideTensorBufts,omitempty"`
+	Reason              *string  `json:"reason,omitempty"`
 }
 
 // CppworkerLoadWithParamsRequest — mirror of cmd/cppworker/types.go:171.
@@ -99,14 +99,14 @@ type CppworkerDeleteModelRequest struct {
 
 // CppworkerInfoResponse — minimal fields from /api/info response.
 type CppworkerInfoResponse struct {
-	Version         string                 `json:"version"`
-	Build           string                 `json:"build"`
-	LoadedModels    []CppworkerLoadedModel `json:"loaded_models"`
-	ReloadPending   map[string]interface{} `json:"reload_pending,omitempty"`
-	MaxContextSize  int                    `json:"max_context_size,omitempty"`
-	MaxVramNCtx     int                    `json:"max_vram_n_ctx,omitempty"`
-	BuildCommit     string                 `json:"build_commit,omitempty"`
-	BuildType       string                 `json:"build_type,omitempty"`
+	Version        string                 `json:"version"`
+	Build          string                 `json:"build"`
+	LoadedModels   []CppworkerLoadedModel `json:"loaded_models"`
+	ReloadPending  map[string]interface{} `json:"reload_pending,omitempty"`
+	MaxContextSize int                    `json:"max_context_size,omitempty"`
+	MaxVramNCtx    int                    `json:"max_vram_n_ctx,omitempty"`
+	BuildCommit    string                 `json:"build_commit,omitempty"`
+	BuildType      string                 `json:"build_type,omitempty"`
 }
 
 type CppworkerLoadedModel struct {
@@ -159,10 +159,10 @@ var AllEndpoints = []Endpoint{
 		Description:    "Load with MoE override-tensors (Round 7).",
 	},
 	{
-		Name:        "unload",
-		Method:      "POST",
-		Path:        "/api/models/unload",
-		RequestStruct: nil, // name is a query param, not body
+		Name:           "unload",
+		Method:         "POST",
+		Path:           "/api/models/unload",
+		RequestStruct:  nil, // name is a query param, not body
 		PayloadBuilder: func() map[string]interface{} { return nil },
 		Description:    "Unload model. name=?name=... in query string.",
 	},
@@ -175,28 +175,28 @@ var AllEndpoints = []Endpoint{
 		Description:    "Delete model from disk (not used by balancer directly).",
 	},
 	{
-		Name:          "info",
-		Method:        "GET",
-		Path:          "/api/info",
-		RequestStruct: nil,
+		Name:           "info",
+		Method:         "GET",
+		Path:           "/api/info",
+		RequestStruct:  nil,
 		PayloadBuilder: func() map[string]interface{} { return nil },
-		Description:   "Heartbeat / version / loaded models.",
+		Description:    "Heartbeat / version / loaded models.",
 	},
 	{
-		Name:          "models",
-		Method:        "GET",
-		Path:          "/api/models",
-		RequestStruct: nil,
+		Name:           "models",
+		Method:         "GET",
+		Path:           "/api/models",
+		RequestStruct:  nil,
 		PayloadBuilder: func() map[string]interface{} { return nil },
-		Description:   "List loaded models.",
+		Description:    "List loaded models.",
 	},
 	{
-		Name:          "version",
-		Method:        "GET",
-		Path:          "/api/version",
-		RequestStruct: nil,
+		Name:           "version",
+		Method:         "GET",
+		Path:           "/api/version",
+		RequestStruct:  nil,
 		PayloadBuilder: func() map[string]interface{} { return nil },
-		Description:   "cppworker version info.",
+		Description:    "cppworker version info.",
 	},
 	{
 		// R60.8 (2026-09-07): OpenAI-compatible GET /v1/models/{model_id}.
@@ -217,14 +217,14 @@ var AllEndpoints = []Endpoint{
 // buildReloadPayload — production payload из nctx_reload.go:758 + enrichReloadPayload.
 func buildReloadPayload() map[string]interface{} {
 	return map[string]interface{}{
-		"name":         "gemma-4-E4B-it-Q4_K_M",
-		"contextSize":  ptrInt(65536),
-		"force":        ptrBool(true),
-		"gpuLayers":    ptrInt(-2),
-		"flashAttn":    ptrInt(-1),
-		"useMmap":      ptrBool(true),
-		"kvCacheType":  ptrStr("q4_0"),
-		"parallel":     ptrInt(1),
+		"name":                "gemma-4-E4B-it-Q4_K_M",
+		"contextSize":         ptrInt(65536),
+		"force":               ptrBool(true),
+		"gpuLayers":           ptrInt(-2),
+		"flashAttn":           ptrInt(-1),
+		"useMmap":             ptrBool(true),
+		"kvCacheType":         ptrStr("q4_0"),
+		"parallel":            ptrInt(1),
 		"overrideTensors":     []string{"blk\\.ffn_.*_exps\\.weight"},
 		"overrideTensorBufts": []string{"CPU"},
 	}

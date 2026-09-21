@@ -37,53 +37,53 @@ type AutoTuneRecommendation struct {
 	Message    string `json:"message"`    // кратко: что не оптимально
 	Suggestion string `json:"suggestion"` // действие: что сделать
 	// Current → Recommended (если есть конкретный fix)
-	CurrentKVCache  string `json:"currentKvCache,omitempty"`
-	RecommendedKVCache string `json:"recommendedKvCache,omitempty"`
-	CurrentNumCtx   int    `json:"currentNumCtx,omitempty"`
-	RecommendedNumCtx int    `json:"recommendedNumCtx,omitempty"`
-	CurrentNumGPULayers int    `json:"currentNumGpuLayers,omitempty"`
+	CurrentKVCache          string `json:"currentKvCache,omitempty"`
+	RecommendedKVCache      string `json:"recommendedKvCache,omitempty"`
+	CurrentNumCtx           int    `json:"currentNumCtx,omitempty"`
+	RecommendedNumCtx       int    `json:"recommendedNumCtx,omitempty"`
+	CurrentNumGPULayers     int    `json:"currentNumGpuLayers,omitempty"`
 	RecommendedNumGPULayers int    `json:"recommendedNumGpuLayers,omitempty"`
 }
 
 // AutoTuneAnalysis — результат анализа одного loadedModel.
 type AutoTuneAnalysis struct {
-	ModelName       string                    `json:"modelName"`
-	IsSubOptimal    bool                      `json:"isSubOptimal"`
+	ModelName    string `json:"modelName"`
+	IsSubOptimal bool   `json:"isSubOptimal"`
 	// R54.2: AutoTuneEnabled — per-model switch (after inheritance).
 	// false = AutoTune отключён для этой модели (manual control).
-	AutoTuneEnabled bool                      `json:"autoTuneEnabled"`
+	AutoTuneEnabled bool                     `json:"autoTuneEnabled"`
 	Recommendations []AutoTuneRecommendation `json:"recommendations"`
 	// Optional: computed optimal params (nil если current is already optimal)
-	OptimalContextLength   int    `json:"optimalContextLength,omitempty"`
-	OptimalKVCacheType     string `json:"optimalKvCacheType,omitempty"`
-	OptimalNumGPULayers    int    `json:"optimalNumGpuLayers,omitempty"`
-	AnalysisReasoning      string `json:"analysisReasoning,omitempty"`
+	OptimalContextLength int    `json:"optimalContextLength,omitempty"`
+	OptimalKVCacheType   string `json:"optimalKvCacheType,omitempty"`
+	OptimalNumGPULayers  int    `json:"optimalNumGpuLayers,omitempty"`
+	AnalysisReasoning    string `json:"analysisReasoning,omitempty"`
 }
 
 // AutoTuneReport — отчёт для одного бэкенда.
 type AutoTuneReport struct {
-	BackendID  string             `json:"backendId"`
-	BackendType string            `json:"backendType"`
+	BackendID   string `json:"backendId"`
+	BackendType string `json:"backendType"`
 	// AutoTuneEnabled (R54.2) — глобальный switch. Per-model override
 	// отражается в каждой AutoTuneAnalysis.AutoTuneEnabled ниже.
-	AutoTuneEnabled bool             `json:"autoTuneEnabled"`
-	Models     []AutoTuneAnalysis `json:"models"`
-	OverallSeverity string        `json:"overallSeverity"` // worst severity
-	OverallSummary string         `json:"overallSummary"`
+	AutoTuneEnabled bool               `json:"autoTuneEnabled"`
+	Models          []AutoTuneAnalysis `json:"models"`
+	OverallSeverity string             `json:"overallSeverity"` // worst severity
+	OverallSummary  string             `json:"overallSummary"`
 }
 
 // ModelProfileInfo — минимальные данные о модели для AutoTune.
 type ModelProfileInfo struct {
 	Name           string
-	Quantization   string  // "Q4_K_M", "Q8_0", etc.
-	Architecture   string  // "qwen3", "gemma-4", etc.
+	Quantization   string // "Q4_K_M", "Q8_0", etc.
+	Architecture   string // "qwen3", "gemma-4", etc.
 	NLayers        int
 	NEmbd          int
 	NKvHeads       int
 	HeadDimK       int
 	HeadDimV       int
 	SizeBytes      uint64
-	GgufMaxContext int     // max n_ctx for this model
+	GgufMaxContext int // max n_ctx for this model
 	// Current loaded state
 	CurrentContextLength int
 	CurrentKVCacheType   string
@@ -91,10 +91,10 @@ type ModelProfileInfo struct {
 	CurrentFlashAttn     int
 	CurrentUseMmap       bool
 	// Hardware constraints
-	FreeVRAMBytes uint64
-	FreeRAMBytes  uint64
-	TotalVRAMBytes uint64
-	FeasibleMaxContext int  // from cppworker
+	FreeVRAMBytes      uint64
+	FreeRAMBytes       uint64
+	TotalVRAMBytes     uint64
+	FeasibleMaxContext int // from cppworker
 	// R54.2: AutoTune switch (после per-model override resolution).
 	// UI показывает это как badge: "AutoTune ON" / "AutoTune OFF (manual)".
 	AutoTuneEnabled bool
@@ -266,12 +266,12 @@ func analyzeLoadedModelWithWorkload(p *ModelProfileInfo, workload WorkloadStats,
 				severity = "warning" // significant quality loss
 			}
 			analysis.Recommendations = append(analysis.Recommendations, AutoTuneRecommendation{
-				Severity:            severity,
-				Category:            "kv_cache",
-				Message:             fmt.Sprintf("KV cache '%s' — sub-optimal, рекомендуется '%s'", p.CurrentKVCacheType, optimalKV),
-				Suggestion:          fmt.Sprintf("Перезагрузить с kvCacheType='%s': %s", optimalKV, reasoningKV),
-				CurrentKVCache:      p.CurrentKVCacheType,
-				RecommendedKVCache:  optimalKV,
+				Severity:           severity,
+				Category:           "kv_cache",
+				Message:            fmt.Sprintf("KV cache '%s' — sub-optimal, рекомендуется '%s'", p.CurrentKVCacheType, optimalKV),
+				Suggestion:         fmt.Sprintf("Перезагрузить с kvCacheType='%s': %s", optimalKV, reasoningKV),
+				CurrentKVCache:     p.CurrentKVCacheType,
+				RecommendedKVCache: optimalKV,
 			})
 			analysis.OptimalKVCacheType = optimalKV
 		}
@@ -298,12 +298,12 @@ func analyzeLoadedModelWithWorkload(p *ModelProfileInfo, workload WorkloadStats,
 		// If loaded n_ctx > 1.5x feasibleMaxContext → over-allocated
 		if p.CurrentContextLength > int(1.5*float64(p.FeasibleMaxContext)) {
 			analysis.Recommendations = append(analysis.Recommendations, AutoTuneRecommendation{
-				Severity:           "info",
-				Category:           "context",
-				Message:            fmt.Sprintf("n_ctx=%d сильно больше feasible_max=%d (over-allocation)", p.CurrentContextLength, p.FeasibleMaxContext),
-				Suggestion:         fmt.Sprintf("Перезагрузить с n_ctx=%d для эффективного использования VRAM", p.FeasibleMaxContext),
-				CurrentNumCtx:      p.CurrentContextLength,
-				RecommendedNumCtx:  p.FeasibleMaxContext,
+				Severity:          "info",
+				Category:          "context",
+				Message:           fmt.Sprintf("n_ctx=%d сильно больше feasible_max=%d (over-allocation)", p.CurrentContextLength, p.FeasibleMaxContext),
+				Suggestion:        fmt.Sprintf("Перезагрузить с n_ctx=%d для эффективного использования VRAM", p.FeasibleMaxContext),
+				CurrentNumCtx:     p.CurrentContextLength,
+				RecommendedNumCtx: p.FeasibleMaxContext,
 			})
 			analysis.OptimalContextLength = p.FeasibleMaxContext
 		}
@@ -326,9 +326,9 @@ func analyzeLoadedModelWithWorkload(p *ModelProfileInfo, workload WorkloadStats,
 // (defensive default).
 func AnalyzeBackend(proxy *Proxy, backendID, backendType string, models []types.LlamaCppModel, freeVRAMBytes, freeRAMBytes, totalVRAMBytes uint64) *AutoTuneReport {
 	report := &AutoTuneReport{
-		BackendID:      backendID,
-		BackendType:    backendType,
-		Models:         []AutoTuneAnalysis{},
+		BackendID:       backendID,
+		BackendType:     backendType,
+		Models:          []AutoTuneAnalysis{},
 		OverallSeverity: "ok",
 		AutoTuneEnabled: proxy != nil && proxy.config.Balancing.AutoTune,
 	}
@@ -438,8 +438,9 @@ func FormatRecommendationShort(r AutoTuneRecommendation) string {
 //  2. BalancingSettings.AutoTune (default true)
 //
 // Использование:
-//   p.config.Balancing.AutoTune — global switch (default true)
-//   profile.AutoTune = &false — manual override для этой модели
+//
+//	p.config.Balancing.AutoTune — global switch (default true)
+//	profile.AutoTune = &false — manual override для этой модели
 func IsAutoTuneEnabled(p *Proxy, modelName string) bool {
 	if p == nil {
 		return false
@@ -609,12 +610,13 @@ func (p *Proxy) publishAutoTuneEvent(ev types.Event) {
 // Хранит AutoTuneCircuit для каждой пары (backendID, modelName).
 //
 // Использование:
-//   p.autoTuneTracker.GetCircuit(backendID, modelName) → returns circuit (or new)
-//   p.autoTuneTracker.GetConfig() → circuit config
+//
+//	p.autoTuneTracker.GetCircuit(backendID, modelName) → returns circuit (or new)
+//	p.autoTuneTracker.GetConfig() → circuit config
 //
 // Thread-safe (sync.RWMutex).
 type AutoTuneTracker struct {
-	mu      sync.RWMutex
+	mu       sync.RWMutex
 	circuits map[string]*AutoTuneCircuit // key: "backendID|modelName"
 	config   AutoTuneCircuitConfig
 }
@@ -700,10 +702,10 @@ type AutoTuneCircuitSnapshot struct {
 // AutoTuneReloadResult — Round 54.4 (2026-08-24): результат triggerAutoTuneReload.
 // Используется в transport для логирования и метрик.
 type AutoTuneReloadResult struct {
-	Triggered       bool               // true если reload был запущен
-	SkippedReason   string             // если Triggered=false, почему
-	Plan            *AutoTuneReloadPlan // nil если ничего не нужно менять
-	CircuitState    AutoTuneCircuitSnapshot
+	Triggered     bool                // true если reload был запущен
+	SkippedReason string              // если Triggered=false, почему
+	Plan          *AutoTuneReloadPlan // nil если ничего не нужно менять
+	CircuitState  AutoTuneCircuitSnapshot
 }
 
 // triggerAutoTuneReload — Round 54.4 (2026-08-24): main entry point для autonomous reload.
@@ -817,8 +819,8 @@ func (p *Proxy) triggerAutoTuneReload(backendID, modelName string, freeVRAM, fre
 				"reason":      reason,
 				"lastError":   circuit.LastError,
 				"lastAttempt": circuit.LastAttempt,
-				},
-			})
+			},
+		})
 		return res
 	}
 
@@ -1042,8 +1044,8 @@ func (p *Proxy) ApplyAutoTunePlan(backendID string, plan *AutoTuneReloadPlan) *A
 
 	// 3) Build load request
 	req := ModelOpRequest{
-		Operation:  "load",
-		ModelName:  plan.ModelName,
+		Operation: "load",
+		ModelName: plan.ModelName,
 	}
 	if plan.ContextSize > 0 {
 		cs := plan.ContextSize

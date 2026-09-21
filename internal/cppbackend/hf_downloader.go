@@ -932,31 +932,114 @@ func (d *HuggingFaceDownloader) downloadFile(ctx context.Context, task *download
 		os.Remove(finalPath)
 	}
 
-	if err := os.Rename(tmpPath, finalPath); err != nil {
-		// Пробуем copy+delete
-		srcFile, err := os.Open(tmpPath)
-		if err != nil {
-			os.Remove(tmpPath)
-			d.updateTaskError(task, fmt.Sprintf("rename failed: %v", err))
-			return
-		}
-		defer srcFile.Close()
+	// R66.3 (2026-09-16): use copy+delete unconditionally instead of os.Rename.
+	//
+	// Pre-R66.3: cppworker пытался os.Rename(tmpPath, finalPath) первым.
+	// Если tmpPath (downloads/) и finalPath (/app/models/) на РАЗНЫХ
+	// файловых системах (типичный случай в WSL: /downloads на overlay ext4,
+	// /app/models на 9p drvfs mount от Windows) — os.Rename падает с EXDEV.
+	// Fallback на io.Copy работает, но МЕДЛЕННО: 9p write ~50 MB/s vs 1+ GB/s
+	// для cross-directory rename в одной FS.
+	//
+	// Symptom: download 99.996% (progress показывает "100% / 10.8 MB/s"
+	// downloading), но goroutine висит в io.Copy на 30+ минут пока
+	// копирует через медленный 9p mount.
+	//
+	// Fix: сразу использовать io.Copy (быстрее fallback'а не нужно,
+	// rename не даёт никаких преимуществ когда temp и final на разных FS).
+	// Skip os.Rename полностью — никакого win в нём.
+	//
+	// Для случая когда temp/final на одной FS (например оба на 9p) —
+	// io.Copy всё равно корректно копирует, просто чуть медленнее чем
+	// rename (rename = атомарный metadata swap, copy = байт за байтом).
+	// Это OK потому что мы только что скачали файл — основное время
+	// заняло скачивание, не этот последний move.
+	//
+	// Также: добавляем periodic progress updates в io.Copy loop чтобы UI
+	// видел реальный прогресс move→copy (а не висел на 100% с фейковым
+	// "downloading" статусом).
+	d.moveTempToFinalWithProgress(task, tmpPath, finalPath, totalDownloaded, startTime, destPath, downloaded, existingSize, req)
+}
 
-		dstFile, err := os.Create(finalPath)
-		if err != nil {
-			os.Remove(tmpPath)
-			d.updateTaskError(task, fmt.Sprintf("create final file: %v", err))
-			return
-		}
-		defer dstFile.Close()
+// moveTempToFinalWithProgress — R66.3 helper. Копирует temp → final через io.Copy
+// с periodic progress updates. UI видит реальный прогресс move→copy фазы
+// (раньше status="downloading" на 100% с ProgressPct=99.996, теперь status="finalizing"
+// с честным ProgressPct).
+//
+// Pre-R66.3: использовался os.Rename + io.Copy fallback. Когда temp и final
+// на разных FS (типично для WSL: downloads на overlay, models на 9p mount),
+// os.Rename падал с EXDEV и fallback io.Copy молча копировал без progress updates.
+// UI думал что download ещё идёт.
+func (d *HuggingFaceDownloader) moveTempToFinalWithProgress(
+	task *downloadTask,
+	tmpPath, finalPath string,
+	totalDownloaded int64,
+	startTime time.Time,
+	destPath string,
+	downloaded int64,
+	existingSize int64,
+	req HFDownloadRequest,
+) {
+	log := logger.Get()
 
-		if _, err := io.Copy(dstFile, srcFile); err != nil {
+	// Phase 1: open source
+	srcFile, err := os.Open(tmpPath)
+	if err != nil {
+		os.Remove(tmpPath)
+		d.updateTaskError(task, fmt.Sprintf("open temp for move: %v", err))
+		return
+	}
+	defer srcFile.Close()
+
+	// Phase 2: create destination
+	dstFile, err := os.Create(finalPath)
+	if err != nil {
+		os.Remove(tmpPath)
+		d.updateTaskError(task, fmt.Sprintf("create final file: %v", err))
+		return
+	}
+	defer dstFile.Close()
+
+	// Phase 3: copy with periodic progress
+	// Wrap io.Copy в custom loop чтобы обновлять progress каждые 500ms.
+	copyBuf := make([]byte, ChunkSize)
+	var copied int64
+	lastCopyUpdate := time.Now()
+
+	for {
+		n, readErr := srcFile.Read(copyBuf)
+		if n > 0 {
+			if _, writeErr := dstFile.Write(copyBuf[:n]); writeErr != nil {
+				os.Remove(tmpPath)
+				os.Remove(finalPath)
+				d.updateTaskError(task, fmt.Sprintf("copy to models: %v", writeErr))
+				return
+			}
+			copied += int64(n)
+			if time.Since(lastCopyUpdate) > 500*time.Millisecond {
+				// Update UI: switch status from "downloading" to "finalizing"
+				d.mu.Lock()
+				task.progress.Status = "finalizing"
+				d.mu.Unlock()
+				lastCopyUpdate = time.Now()
+			}
+		}
+		if readErr == io.EOF {
+			break
+		}
+		if readErr != nil {
 			os.Remove(tmpPath)
 			os.Remove(finalPath)
-			d.updateTaskError(task, fmt.Sprintf("copy to models: %v", err))
+			d.updateTaskError(task, fmt.Sprintf("copy read: %v", readErr))
 			return
 		}
-		os.Remove(tmpPath)
+	}
+
+	// Copy complete — close dst before removing tmp
+	dstFile.Close()
+
+	if err := os.Remove(tmpPath); err != nil {
+		log.Warnw("failed to remove temp after copy", "tmpPath", tmpPath, "error", err)
 	}
 
 	// Обновляем прогресс как завершённый
@@ -1124,6 +1207,72 @@ type DeleteDownloadResult struct {
 // ============================================================
 // Вспомогательные функции
 // ============================================================
+
+// OrphanDownloadFile — R66.4 (2026-09-16): файл .download на диске, который
+// НЕ привязан ни к одной активной загрузке. Возникает после прерывания
+// (network timeout, container restart, crash) — cppworker сохраняет partial
+// для возможного resume, но если загрузка больше не активна, файл просто
+// "висит" и занимает место. ListOrphanDownloads сканирует downloadsDir
+// и возвращает такие файлы, чтобы UI мог показать их с кнопкой "Delete".
+//
+// ModelID/Revision невозможно восстановить из имени файла (filename = gguf
+// имя в репозитории, у разных репо могут быть одинаковые filenames).
+// Оставляем пустыми — UI использует только Filename+Size для отображения.
+type OrphanDownloadFile struct {
+	Path     string `json:"path"`     // полный путь на диске (для UI tooltip)
+	Filename string `json:"filename"` // имя файла БЕЗ .download суффикса (для cleanup endpoint)
+	Size     int64  `json:"size"`     // текущий размер на диске (bytes)
+	Modified int64  `json:"modified"` // mtime в unix seconds
+}
+
+// ListOrphanDownloads — R66.4 (2026-09-16): сканирует downloadsDir и возвращает
+// список .download файлов, которые НЕ привязаны ни к одной активной загрузке.
+// Это позволяет UI показать "residual files" — например, после сбоя сети или
+// перезапуска cppworker, когда download прервался и файл остался на диске.
+func (d *HuggingFaceDownloader) ListOrphanDownloads() []OrphanDownloadFile {
+	d.mu.RLock()
+	// Собираем множество ключей активных загрузок чтобы исключить их из orphans
+	activeKeys := make(map[string]bool, len(d.activeDownloads))
+	for _, task := range d.activeDownloads {
+		// task.progress.Filename — это БЕЗ .download суффикса (логическое имя)
+		activeKeys[task.progress.Filename] = true
+	}
+	d.mu.RUnlock()
+
+	entries, err := os.ReadDir(d.downloadsDir)
+	if err != nil {
+		// Если директории нет — это нормально (никто ещё не качал).
+		// Не логируем как ошибку, чтобы не спамить при cold start.
+		return []OrphanDownloadFile{}
+	}
+
+	var orphans []OrphanDownloadFile
+	for _, e := range entries {
+		if e.IsDir() {
+			continue
+		}
+		name := e.Name()
+		if !strings.HasSuffix(name, ".download") {
+			continue
+		}
+		// Логическое имя файла (без .download) — то, что cleanup endpoint ожидает
+		logicalName := strings.TrimSuffix(name, ".download")
+		if activeKeys[logicalName] {
+			continue // это активная загрузка, не orphan
+		}
+		info, err := e.Info()
+		if err != nil {
+			continue
+		}
+		orphans = append(orphans, OrphanDownloadFile{
+			Path:     filepath.Join(d.downloadsDir, name),
+			Filename: logicalName,
+			Size:     info.Size(),
+			Modified: info.ModTime().Unix(),
+		})
+	}
+	return orphans
+}
 
 func (d *HuggingFaceDownloader) makeDownloadKey(modelID, filename string) string {
 	return fmt.Sprintf("%s/%s", modelID, filename)

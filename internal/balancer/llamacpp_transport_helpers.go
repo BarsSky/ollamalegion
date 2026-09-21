@@ -102,7 +102,7 @@ func accumulateToolCallsFromDelta(delta map[string]interface{}, toolAccum map[in
 }
 
 // cleanFinalContent — пост-обработка накопленного контента перед отправкой
-// в финальном done-чанке. Удаляет служебные токены (``, `</s>`),
+// в финальном done-чанке. Удаляет служебные токены (“, `</s>`),
 // ведущие/завершающие пробелы, и нормализует переносы строк.
 func cleanFinalContent(s string) string {
 	return stripServiceTokens(s)
@@ -127,13 +127,13 @@ func cleanFinalContent(s string) string {
 // чанк с тем же content, иначе клиент увидит дубликат ответа.
 //
 // Round 53.1 (2026-08-24): параметр usageChunkSeen разделяет два случая:
-//   1. upstream ПРИСЛАЛ usage чанк (после finish_reason) — translateUsageChunkToOllama
-//      уже записал canonical done:true с полным набором статов. writeStreamingSSEDone
-//      ПРОПУСКАЕТ запись (skip).
-//   2. upstream ПРИСЛАЛ finish_reason, но usage чанк НЕ пришёл — writeStreamingSSEDone
-//      ПИШЕТ финальный done-чанк с накопленным content как fallback. Без этого
-//      клиент (Cline/ollama npm) зависнет без done (regression из-за подавления
-//      R51.3 wrapper-чанка в R53.1).
+//  1. upstream ПРИСЛАЛ usage чанк (после finish_reason) — translateUsageChunkToOllama
+//     уже записал canonical done:true с полным набором статов. writeStreamingSSEDone
+//     ПРОПУСКАЕТ запись (skip).
+//  2. upstream ПРИСЛАЛ finish_reason, но usage чанк НЕ пришёл — writeStreamingSSEDone
+//     ПИШЕТ финальный done-чанк с накопленным content как fallback. Без этого
+//     клиент (Cline/ollama npm) зависнет без done (regression из-за подавления
+//     R51.3 wrapper-чанка в R53.1).
 //
 // Если upstream НЕ прислал finish_reason (только [DONE] без завершающего чанка),
 // writeStreamingSSEDone пишет финальный NDJSON с накопленным content — это

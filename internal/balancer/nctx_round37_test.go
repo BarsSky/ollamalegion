@@ -104,7 +104,8 @@ func TestResolveModelMaxContext_Tier2_ProfileAutoAdapt(t *testing.T) {
 // Pre-R37: 32768 hard cap → 413.
 // Round 37: cap = min(32768 ignored, 65536 feasible) = 65536 → 65536 OK (но только если feasible >= 65536).
 // Round 43: cap = min(ggufMax=262144, contextLengthMax=131072) = 131072 → 65536 OK
-//           (даже если feasible=32719, что было с gpu_layers=-1 на 8GB VRAM).
+//
+//	(даже если feasible=32719, что было с gpu_layers=-1 на 8GB VRAM).
 func TestResolveModelMaxContext_Tier2_R43_ProductionBugFix(t *testing.T) {
 	p := setupProxyWithMetrics("b1", &types.LlamaCppMetrics{
 		MaxFeasibleContext: 32719, // small! current gpu_layers=-1 на 8GB VRAM
@@ -213,8 +214,8 @@ func TestMaxNumCtxForModel_R43_RespectsAutoFlag(t *testing.T) {
 		config: &types.LoadBalancerConfig{
 			LlamaCppModelProfiles: map[string]types.LlamaCppModelProfile{
 				"Qwen3.6-35B-A3B-UD-Q4_K_M": {
-					ContextLength:     32768, // conservative profile (HINT)
-					ContextLengthAuto: true,  // auto=true → profile IGNORED
+					ContextLength:     32768,  // conservative profile (HINT)
+					ContextLengthAuto: true,   // auto=true → profile IGNORED
 					ContextLengthMax:  131072, // operator soft cap
 				},
 			},
@@ -322,7 +323,7 @@ func TestCollectPreflightState_Round37_3Tier(t *testing.T) {
 					LoadedModels: []types.LlamaCppModel{
 						{
 							Name:               "Qwen3.6-35B-A3B-UD-Q4_K_M",
-							FeasibleMaxContext: 65536, // per-model feasible (HINT in R43)
+							FeasibleMaxContext: 65536,  // per-model feasible (HINT in R43)
 							GGUFMaxContext:     262144, // per-model GGUF (R43 cap)
 						},
 					},
@@ -335,8 +336,8 @@ func TestCollectPreflightState_Round37_3Tier(t *testing.T) {
 		config: &types.LoadBalancerConfig{
 			LlamaCppModelProfiles: map[string]types.LlamaCppModelProfile{
 				"Qwen3.6-35B-A3B-UD-Q4_K_M": {
-					ContextLength:     32768, // conservative profile (HINT in R43)
-					ContextLengthAuto: true,  // auto-adapt enabled
+					ContextLength:     32768,  // conservative profile (HINT in R43)
+					ContextLengthAuto: true,   // auto-adapt enabled
 					ContextLengthMax:  131072, // operator soft cap (R43: applied!)
 				},
 			},

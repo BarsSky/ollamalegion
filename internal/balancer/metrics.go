@@ -184,9 +184,9 @@ var (
 // Round 22 metrics — getter'ы для /metrics endpoint (если будет).
 func (p *Proxy) Round22Metrics() map[string]int64 {
 	return map[string]int64{
-		"skip_warmup_total":         round22SkipWarmupTotal.Load(),
-		"early_404_total":           round22Early404Total.Load(),
-		"alias_resolved_total":      round22AliasResolvedTotal.Load(),
+		"skip_warmup_total":          round22SkipWarmupTotal.Load(),
+		"early_404_total":            round22Early404Total.Load(),
+		"alias_resolved_total":       round22AliasResolvedTotal.Load(),
 		"alias_resolve_failed_total": round22AliasResolveFailedTotal.Load(),
 	}
 }

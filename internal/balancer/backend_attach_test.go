@@ -15,32 +15,32 @@ func TestFindBackendByHostPort(t *testing.T) {
 
 	// Add a cppworker backend
 	p.AddBackend(types.Backend{
-		ID:              "cppworker-gpu-bundled",
-		Host:            "cppworker-gpu",
-		CppWorkerPort:   18092,
-		Type:            types.BackendTypeLlamaCpp,
-		Status:          types.StatusHealthy,
+		ID:                "cppworker-gpu-bundled",
+		Host:              "cppworker-gpu",
+		CppWorkerPort:     18092,
+		Type:              types.BackendTypeLlamaCpp,
+		Status:            types.StatusHealthy,
 		MaxConcurrentReqs: 4,
 	})
 
 	// Add a different host backend (should NOT match)
 	p.AddBackend(types.Backend{
-		ID:              "other-host",
-		Host:            "other-host",
-		CppWorkerPort:   18092,
-		Type:            types.BackendTypeLlamaCpp,
-		Status:          types.StatusHealthy,
+		ID:                "other-host",
+		Host:              "other-host",
+		CppWorkerPort:     18092,
+		Type:              types.BackendTypeLlamaCpp,
+		Status:            types.StatusHealthy,
 		MaxConcurrentReqs: 4,
 	})
 
 	// Add an Ollama backend with cppWorkerPort=0 (should NOT match)
 	p.AddBackend(types.Backend{
-		ID:              "ollama-1",
-		Host:            "ollama-1",
-		OllamaPort:      11434,
-		CppWorkerPort:   0,
-		Type:            types.BackendTypeOllama,
-		Status:          types.StatusHealthy,
+		ID:                "ollama-1",
+		Host:              "ollama-1",
+		OllamaPort:        11434,
+		CppWorkerPort:     0,
+		Type:              types.BackendTypeOllama,
+		Status:            types.StatusHealthy,
 		MaxConcurrentReqs: 4,
 	})
 
@@ -89,12 +89,12 @@ func TestFindBackendByHostPort(t *testing.T) {
 func TestAttachAgentToBackend(t *testing.T) {
 	p := newProxyWithCleanup(t, &types.LoadBalancerConfig{})
 	p.AddBackend(types.Backend{
-		ID:              "cppworker-gpu-bundled",
-		Host:            "cppworker-gpu",
-		CppWorkerPort:   18092,
-		Type:            types.BackendTypeLlamaCpp,
-		Status:          types.StatusHealthy,
-		HasAgent:        false,
+		ID:                "cppworker-gpu-bundled",
+		Host:              "cppworker-gpu",
+		CppWorkerPort:     18092,
+		Type:              types.BackendTypeLlamaCpp,
+		Status:            types.StatusHealthy,
+		HasAgent:          false,
 		MaxConcurrentReqs: 4,
 	})
 
@@ -140,16 +140,16 @@ func TestAgentAttach_EndToEnd(t *testing.T) {
 
 	// Step 1: cppworker registers
 	p.AddBackend(types.Backend{
-		ID:              "cppworker-gpu-bundled",
-		Name:            "cppworker-gpu-bundled",
-		Host:            "cppworker-gpu",
-		CppWorkerPort:   18092,
-		Type:            types.BackendTypeLlamaCpp,
-		GPUMode:         types.ModeGPU,
-		Weight:          100,
-		Status:          types.StatusHealthy,
+		ID:                "cppworker-gpu-bundled",
+		Name:              "cppworker-gpu-bundled",
+		Host:              "cppworker-gpu",
+		CppWorkerPort:     18092,
+		Type:              types.BackendTypeLlamaCpp,
+		GPUMode:           types.ModeGPU,
+		Weight:            100,
+		Status:            types.StatusHealthy,
 		MaxConcurrentReqs: 4,
-		MaxModels:       4,
+		MaxModels:         4,
 	})
 
 	// Step 2: agent registers
@@ -197,12 +197,12 @@ func TestAgentAttach_StandaloneMode(t *testing.T) {
 
 	// Agent should create its own backend (legacy flow).
 	p.AddBackend(types.Backend{
-		ID:              "agent-standalone",
-		Host:            "agent-standalone",
-		OllamaPort:      11434,
-		AgentPort:       18032,
-		Type:            types.BackendTypeOllama,
-		Status:          types.StatusHealthy,
+		ID:                "agent-standalone",
+		Host:              "agent-standalone",
+		OllamaPort:        11434,
+		AgentPort:         18032,
+		Type:              types.BackendTypeOllama,
+		Status:            types.StatusHealthy,
 		MaxConcurrentReqs: 4,
 	})
 

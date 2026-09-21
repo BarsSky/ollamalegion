@@ -10,13 +10,13 @@ import (
 
 // UnloadScheduler — LRU выгрузка неиспользуемых моделей для освобождения VRAM
 type UnloadScheduler struct {
-	proxy          *Proxy
-	mu             sync.RWMutex
-	lastUsed       map[string]time.Time // key: "modelName@backendID" → lastRequest
-	checkInterval  time.Duration
-	idleTimeout    time.Duration
-	stopCh         chan struct{}
-	enabled        bool
+	proxy         *Proxy
+	mu            sync.RWMutex
+	lastUsed      map[string]time.Time // key: "modelName@backendID" → lastRequest
+	checkInterval time.Duration
+	idleTimeout   time.Duration
+	stopCh        chan struct{}
+	enabled       bool
 }
 
 // NewUnloadScheduler — создание планировщика выгрузки.

@@ -122,9 +122,9 @@ func TestR60_57_LoadModelWithOpts_PreCancelledCtx(t *testing.T) {
 //
 // В stub-режиме load завершается до того как cancel успеет подействовать
 // (race window слишком короткий). Поэтому этот test проверяет:
-//   1. После cancel — handle НЕ становится "застрявшим"
-//   2. ctx.Done() обработка не приводит к panic
-//   3. LoadModel возвращает в finite time
+//  1. После cancel — handle НЕ становится "застрявшим"
+//  2. ctx.Done() обработка не приводит к panic
+//  3. LoadModel возвращает в finite time
 //
 // ПОЛНАЯ end-to-end cancel (load отменяется через C-bridge) — Phase 5
 // C-side integration test, см. PLAN.md §5.
@@ -255,7 +255,7 @@ func TestR60_57_LoadModelWithOpts_NoGoroutineLeak(t *testing.T) {
 // integration test (требует CUDA + реальная модель).
 func TestR60_57_LoadAbort_RealCancelViaEarlyHandle(t *testing.T) {
 	const (
-		loadDelay  = 50 * time.Millisecond
+		loadDelay   = 50 * time.Millisecond
 		cancelAfter = 20 * time.Millisecond
 	)
 
@@ -448,12 +448,27 @@ func TestR60_57_LoadAbort_NoAbortWhenLoadSucceeds(t *testing.T) {
 //
 // NOTE: этот helper дублирует логику из concurrent_generate_test.go.
 // Если выносим в shared helpers — делать через internal/cppbackend/testutil/.
+//
+// R65d (2026-09-20): регистрируем t.Cleanup, который дожидается завершения
+// фоновой персистенции nameHistory. До этого RecordModelLoad запускал
+// `go saveNameHistory()` без ожидания, и запись .name_history.json могла идти
+// ПОСЛЕ t.TempDir() cleanup — тест падал с
+// "TempDir RemoveAll cleanup: directory is not empty" (флейк на Windows,
+// проявлялся в TestR60_57_LoadModelWithOpts_ContextBackground и
+// _PreAllocatesHandle).
 func setupTestBackendForR60_57(t *testing.T) *Backend {
 	t.Helper()
 	b := NewBackend(Config{
-		ModelsDir:       t.TempDir(),
-		DefaultCtxSize:  4096,
+		ModelsDir:        t.TempDir(),
+		DefaultCtxSize:   4096,
 		DefaultBatchSize: 64,
+	})
+	t.Cleanup(func() {
+		if mm := b.ModelManager(); mm != nil {
+			if !mm.WaitForPendingWrites(2 * time.Second) {
+				t.Logf("warning: nameHistory persist did not finish within 2s")
+			}
+		}
 	})
 	return b
 }

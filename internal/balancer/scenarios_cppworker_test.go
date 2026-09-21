@@ -173,9 +173,9 @@ func TestVirtualRouter_HeavyModel_70B_Across3Backends(t *testing.T) {
 			{ID: "w3", Name: "w3", Host: w3.host, OllamaPort: w3.port, Status: types.StatusHealthy, Type: types.BackendTypeLlamaCpp},
 		},
 		Balancing: types.BalancingSettings{
-			Algorithm:      types.AlgorithmRoundRobin,
-			OperatingMode:  string(types.OperatingModeVirtualRouter),
-			VirtualModels:  types.VirtualModelsConfig{Enabled: true},
+			Algorithm:     types.AlgorithmRoundRobin,
+			OperatingMode: string(types.OperatingModeVirtualRouter),
+			VirtualModels: types.VirtualModelsConfig{Enabled: true},
 		},
 		Resources: types.ResourceLimits{
 			GPU: types.GPULimits{MaxUsagePercent: 90},
@@ -416,8 +416,8 @@ func TestRpcCoordinator_Streaming_ChunkedResponse(t *testing.T) {
 			{ID: "w1", Name: "w1", Host: w1.host, OllamaPort: w1.port, Status: types.StatusHealthy, Type: types.BackendTypeLlamaCpp},
 		},
 		Balancing: types.BalancingSettings{
-			Algorithm:     types.AlgorithmRoundRobin,
-			OperatingMode: string(types.OperatingModeRpcCoordinator),
+			Algorithm:      types.AlgorithmRoundRobin,
+			OperatingMode:  string(types.OperatingModeRpcCoordinator),
 			RpcCoordinator: types.RpcCoordinatorConfig{Enabled: true, Embedded: true},
 		},
 		Resources: types.ResourceLimits{

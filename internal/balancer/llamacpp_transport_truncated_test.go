@@ -53,14 +53,24 @@ func makeTruncatingUpstream(t *testing.T, numChunks int) *httptest.Server {
 	t.Helper()
 
 	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if !strings.HasSuffix(r.URL.Path, "/v1/chat/completions") {
+		// R65d: балансер теперь отправляет Ollama-пути в cppworker НАТИВНО,
+		// поэтому /api/chat приходит как /api/chat (а не /v1/chat/completions).
+		// Мок обслуживает оба контракта:
+		//   /api/chat              → application/x-ndjson (как реальный cppworker)
+		//   /v1/chat/completions   → text/event-stream
+		isNativeChat := strings.HasSuffix(r.URL.Path, "/api/chat")
+		if !isNativeChat && !strings.HasSuffix(r.URL.Path, "/v1/chat/completions") {
 			w.WriteHeader(http.StatusNotFound)
 			_, _ = w.Write([]byte(`{"error":"not found"}`))
 			return
 		}
 
-		// 1. Reply with valid SSE headers.
-		w.Header().Set("Content-Type", "text/event-stream")
+		// 1. Reply with the headers matching the contract for this path.
+		if isNativeChat {
+			w.Header().Set("Content-Type", "application/x-ndjson")
+		} else {
+			w.Header().Set("Content-Type", "text/event-stream")
+		}
 		w.Header().Set("Cache-Control", "no-cache")
 		w.Header().Set("X-Accel-Buffering", "no")
 		w.WriteHeader(http.StatusOK)
@@ -75,34 +85,56 @@ func makeTruncatingUpstream(t *testing.T, numChunks int) *httptest.Server {
 		//    (Gemma <end_of_turn>, Llama3 etc.) that filterOpenAIStreamingLine
 		//    might filter out.
 		for i := 0; i < numChunks; i++ {
-			chunk := map[string]interface{}{
-				"id":      "chatcmpl-trunc",
-				"object":  "chat.completion.chunk",
-				"created": 1700000000,
-				"model":   "gemma-4-E4B-it-Q4_K_M",
-				"choices": []map[string]interface{}{
-					{
-						"index": 0,
-						"delta": map[string]interface{}{
-							"content": "partial-content-chunk-" + string(rune('0'+i)),
+			text := "partial-content-chunk-" + string(rune('0'+i))
+			var payload []byte
+			var err error
+			if isNativeChat {
+				// Ollama NDJSON chunk: message.content, done=false.
+				payload, err = json.Marshal(map[string]interface{}{
+					"model":      "gemma-4-E4B-it-Q4_K_M",
+					"created_at": "2026-09-20T00:00:00Z",
+					"message":    map[string]interface{}{"role": "assistant", "content": text},
+					"done":       false,
+				})
+			} else {
+				payload, err = json.Marshal(map[string]interface{}{
+					"id":      "chatcmpl-trunc",
+					"object":  "chat.completion.chunk",
+					"created": 1700000000,
+					"model":   "gemma-4-E4B-it-Q4_K_M",
+					"choices": []map[string]interface{}{
+						{
+							"index": 0,
+							"delta": map[string]interface{}{
+								"content": text,
+							},
+							"finish_reason": nil,
 						},
-						"finish_reason": nil,
 					},
-				},
+				})
 			}
-			payload, err := json.Marshal(chunk)
 			if err != nil {
 				t.Fatalf("marshal chunk %d: %v", i, err)
 			}
-			if _, werr := w.Write([]byte("data: ")); werr != nil {
-				return
-			}
-			if _, werr := w.Write(payload); werr != nil {
-				return
-			}
-			// SSE frame ends with two newlines (RFC: empty line).
-			if _, werr := w.Write([]byte("\n\n")); werr != nil {
-				return
+			if isNativeChat {
+				// NDJSON: одна JSON-строка + '\n', без SSE-префикса.
+				if _, werr := w.Write(payload); werr != nil {
+					return
+				}
+				if _, werr := w.Write([]byte("\n")); werr != nil {
+					return
+				}
+			} else {
+				if _, werr := w.Write([]byte("data: ")); werr != nil {
+					return
+				}
+				if _, werr := w.Write(payload); werr != nil {
+					return
+				}
+				// SSE frame ends with two newlines (RFC: empty line).
+				if _, werr := w.Write([]byte("\n\n")); werr != nil {
+					return
+				}
 			}
 			flusher.Flush()
 		}
@@ -173,11 +205,11 @@ func parseNDJSONResponse(t *testing.T, body io.Reader) []map[string]interface{} 
 // SSE chunks and then BREAKS the connection (broken pipe) without the final [DONE].
 //
 // Expected behavior after the fix:
-//   1. Client HTTP status: 200 (headers already sent before proxying).
-//   2. Client body contains NDJSON chunks with partial content (translated
-//      from SSE upstream) AND a final NDJSON chunk with done:true,
-//      done_reason:truncated, error:stream truncated by upstream before completion.
-//   3. proxyRequestLlamaCpp returns nil (no error) since truncation is handled.
+//  1. Client HTTP status: 200 (headers already sent before proxying).
+//  2. Client body contains NDJSON chunks with partial content (translated
+//     from SSE upstream) AND a final NDJSON chunk with done:true,
+//     done_reason:truncated, error:stream truncated by upstream before completion.
+//  3. proxyRequestLlamaCpp returns nil (no error) since truncation is handled.
 func TestProxyRequestLlamaCpp_StreamTruncation_NDJSON(t *testing.T) {
 	upstream := makeTruncatingUpstream(t, 3)
 	defer upstream.Close()
@@ -268,14 +300,14 @@ func TestProxyRequestLlamaCpp_StreamTruncation_NDJSON(t *testing.T) {
 // stream finished - WITHOUT the final chunk it thinks the response was successful.
 //
 // Expected behavior after the fix:
-//   1. Client HTTP status: 200.
-//   2. Content-Type: text/event-stream.
-//   3. Client body contains:
-//      - 3 forwarded SSE chunks from upstream.
-//      - Final data: chunk with choices:[{finish_reason:truncated}],
-//        error:{message:stream truncated by upstream before completion,
-//        type:stream_truncated}.
-//      - Final data: [DONE] marker.
+//  1. Client HTTP status: 200.
+//  2. Content-Type: text/event-stream.
+//  3. Client body contains:
+//     - 3 forwarded SSE chunks from upstream.
+//     - Final data: chunk with choices:[{finish_reason:truncated}],
+//     error:{message:stream truncated by upstream before completion,
+//     type:stream_truncated}.
+//     - Final data: [DONE] marker.
 func TestProxyRequestLlamaCpp_StreamTruncation_SSEPassthrough(t *testing.T) {
 	upstream := makeTruncatingUpstream(t, 3)
 	defer upstream.Close()
@@ -367,30 +399,34 @@ func TestProxyRequestLlamaCpp_StreamTruncation_SSEPassthrough(t *testing.T) {
 
 // TestProxyRequestLlamaCpp_StreamTruncation_NoTruncationWhenDoneSent is a
 // negative test: verifies that the fix does NOT break the happy path. If upstream
-// sends ALL expected chunks + [DONE], the final truncation chunk must NOT be emitted.
+// sends ALL expected chunks + a terminal done:true, the truncation chunk must NOT
+// be emitted.
 //
-// This is important for regression: before the fix, the happy path was working
-// (writeStreamingSSEDone triggered on [DONE]), and the fix must not break it.
+// R65d (2026-09-20): мок обновлён под НАТИВНЫЙ контракт cppworker.
+// Раньше тест слал на `/api/chat`, а мок отвечал SSE и произвольно
+// сломанным JSON (лишняя `}` в каждом чанке) — он «проходил» только потому,
+// что ожидал завершения по [DONE], а не по done:true. Теперь `/api/chat`
+// уходит в cppworker нативно и получает NDJSON, поэтому мок отдаёт
+// канонический Ollama-поток: content-чанки + финальный done:true с eval_count.
 func TestProxyRequestLlamaCpp_StreamTruncation_NoTruncationWhenDoneSent(t *testing.T) {
-	// Mock upstream with a complete SSE stream (3 chunks + [DONE]).
+	// Mock upstream with a complete NDJSON stream (2 content chunks + done:true).
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if !strings.HasSuffix(r.URL.Path, "/v1/chat/completions") {
+		if !strings.HasSuffix(r.URL.Path, "/api/chat") {
 			w.WriteHeader(http.StatusNotFound)
 			return
 		}
-		w.Header().Set("Content-Type", "text/event-stream")
+		w.Header().Set("Content-Type", "application/x-ndjson")
 		w.Header().Set("Cache-Control", "no-cache")
 		w.WriteHeader(http.StatusOK)
 
 		flusher, _ := w.(http.Flusher)
 		chunks := []string{
-			`data: {"id":"chatcmpl-ok","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"content":"hello "}}]}}` + "\n\n",
-			`data: {"id":"chatcmpl-ok","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"content":"world"}}]}}` + "\n\n",
-			`data: {"id":"chatcmpl-ok","object":"chat.completion.chunk","choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}}` + "\n\n",
-			`data: [DONE]` + "\n\n",
+			`{"model":"gemma-4-E4B-it-Q4_K_M","created_at":"2026-09-20T00:00:00Z","message":{"role":"assistant","content":"hello "},"done":false}`,
+			`{"model":"gemma-4-E4B-it-Q4_K_M","created_at":"2026-09-20T00:00:00Z","message":{"role":"assistant","content":"world"},"done":false}`,
+			`{"model":"gemma-4-E4B-it-Q4_K_M","created_at":"2026-09-20T00:00:00Z","message":{"role":"assistant","content":""},"done":true,"done_reason":"stop","eval_count":2,"total_duration":1000}`,
 		}
 		for _, c := range chunks {
-			if _, err := w.Write([]byte(c)); err != nil {
+			if _, err := w.Write([]byte(c + "\n")); err != nil {
 				return
 			}
 			if flusher != nil {

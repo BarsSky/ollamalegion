@@ -1,4 +1,4 @@
-﻿// Package balancer — scenario tests для replication groups + auto-pull.
+// Package balancer — scenario tests для replication groups + auto-pull.
 //
 // Покрывает:
 //   - Replication group CRUD (через proxy config)
@@ -42,9 +42,9 @@ func TestReplication_Scenario_GroupRegistered(t *testing.T) {
 			Algorithm: types.AlgorithmRoundRobin,
 			ModelReplication: types.ModelReplicationConfig{
 				Enabled:             true,
-				DefaultMinInstances:  1,
-				DefaultMaxInstances:  3,
-				IdleUnloadAfter:      "10m",
+				DefaultMinInstances: 1,
+				DefaultMaxInstances: 3,
+				IdleUnloadAfter:     "10m",
 				Groups: []types.ModelGroupConfig{
 					{ModelName: "llama-replicated", MinInstances: 2, MaxInstances: 4,
 						TargetBackends: []string{"o1", "o2"}},
@@ -70,9 +70,9 @@ func TestReplication_Scenario_GroupRegistered(t *testing.T) {
 func TestReplication_Scenario_GroupMinMax(t *testing.T) {
 	t.Parallel()
 	group := types.ModelGroupConfig{
-		ModelName:     "test",
-		MinInstances:  1,
-		MaxInstances:  5,
+		ModelName:      "test",
+		MinInstances:   1,
+		MaxInstances:   5,
 		TargetBackends: []string{"o1", "o2"},
 	}
 	assert.LessOrEqual(t, group.MinInstances, group.MaxInstances,
@@ -83,9 +83,9 @@ func TestReplication_Scenario_GroupMinMax(t *testing.T) {
 func TestReplication_Scenario_EmptyGroup(t *testing.T) {
 	t.Parallel()
 	group := types.ModelGroupConfig{
-		ModelName:     "test",
-		MinInstances:  0,
-		MaxInstances:  0,
+		ModelName:      "test",
+		MinInstances:   0,
+		MaxInstances:   0,
 		TargetBackends: []string{},
 	}
 	assert.Equal(t, 0, group.MinInstances)

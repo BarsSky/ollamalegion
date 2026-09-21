@@ -32,7 +32,16 @@ func (p *Proxy) proxyRequestLlamaCppNonStream(w http.ResponseWriter, r *http.Req
 	}
 
 	originalPath := r.URL.Path
-	llamacppPath := translatePathForLlamaCpp(originalPath)
+
+	// R65d (2026-09-20): нативный путь для Ollama-эндпоинтов — см.
+	// llamacpp_native_path.go. Путь не переписывается, тело не транслируется,
+	// ответ приходит в Ollama-формате и отдаётся как есть.
+	nativePath := shouldRouteOllamaNative(originalPath)
+
+	llamacppPath := originalPath
+	if !nativePath {
+		llamacppPath = translatePathForLlamaCpp(originalPath)
+	}
 	// R60.5 (2026-09-07): stripStreamFlagForPath с explicit path — management
 	// endpoints (load/unload/delete/copy) не принимают поле "stream" в cppworker.
 	bodyNoStream := stripStreamFlagForPath(bodyBuf, originalPath)
@@ -116,9 +125,11 @@ func (p *Proxy) proxyRequestLlamaCppNonStream(w http.ResponseWriter, r *http.Req
 		}
 	}
 
-	translatedBody, err := translateOllamaBodyToOpenAI(originalPath, bodyNoStream)
-	if err != nil {
-		translatedBody = bodyNoStream
+	translatedBody := bodyNoStream
+	if !nativePath {
+		if tb, err := translateOllamaBodyToOpenAI(originalPath, bodyNoStream); err == nil {
+			translatedBody = tb
+		}
 	}
 
 	// R60.9 (2026-09-07): для /api/models/unload cppworker требует ?name= в
@@ -482,11 +493,11 @@ func (p *Proxy) proxyRequestLlamaCppNonStream(w http.ResponseWriter, r *http.Req
 			// OpenAI-style: {"error": {"message": ..., "type": "upstream_error"}}
 			openAI := map[string]interface{}{
 				"error": map[string]interface{}{
-					"message":     diag.Error,
-					"type":        "upstream_error",
-					"code":        http.StatusBadGateway,
-					"model":       modelFromCtx,
-					"target_n_ctx": diag.TargetNCtx,
+					"message":              diag.Error,
+					"type":                 "upstream_error",
+					"code":                 http.StatusBadGateway,
+					"model":                modelFromCtx,
+					"target_n_ctx":         diag.TargetNCtx,
 					"feasible_max_context": diag.FeasibleMaxContext,
 					"gguf_max_context":     diag.GGUFMaxContext,
 					"retry_after":          diag.RetryAfterSec,
@@ -503,16 +514,16 @@ func (p *Proxy) proxyRequestLlamaCppNonStream(w http.ResponseWriter, r *http.Req
 		}
 		// Ollama-style: {model, created_at, done, done_reason:error, error, message, suggestion}
 		ollama := map[string]interface{}{
-			"model":                 modelFromCtx,
-			"created_at":            time.Now().UTC().Format(time.RFC3339),
-			"done":                  true,
-			"done_reason":           "error",
-			"error":                 diag.Error,
-			"target_n_ctx":          diag.TargetNCtx,
-			"feasible_max_context":  diag.FeasibleMaxContext,
-			"gguf_max_context":      diag.GGUFMaxContext,
-			"retry_after":           diag.RetryAfterSec,
-			"suggestion":            diag.Suggestion,
+			"model":                modelFromCtx,
+			"created_at":           time.Now().UTC().Format(time.RFC3339),
+			"done":                 true,
+			"done_reason":          "error",
+			"error":                diag.Error,
+			"target_n_ctx":         diag.TargetNCtx,
+			"feasible_max_context": diag.FeasibleMaxContext,
+			"gguf_max_context":     diag.GGUFMaxContext,
+			"retry_after":          diag.RetryAfterSec,
+			"suggestion":           diag.Suggestion,
 			"message": map[string]interface{}{
 				"role":    "assistant",
 				"content": "",
@@ -683,8 +694,24 @@ func (p *Proxy) proxyRequestLlamaCppNonStream(w http.ResponseWriter, r *http.Req
 			}
 			ollamaBody, _ = json.Marshal(resp)
 		}
+		// R65d (2026-09-20): метрики токенов для нативного non-stream пути.
+		// Нативный /api/chat отдаёт Ollama-поля prompt_eval_count / eval_count
+		// (а не OpenAI usage), поэтому общий блок ниже их не видел.
+		if resp.StatusCode < 400 {
+			var nativeResp map[string]interface{}
+			if json.Unmarshal(ollamaBody, &nativeResp) == nil {
+				prompt := int64(intFromMap(nativeResp, "prompt_eval_count"))
+				completion := int64(intFromMap(nativeResp, "eval_count"))
+				if prompt > 0 || completion > 0 {
+					p.recordTokenUsage(modelFromCtx, prompt, completion)
+				}
+			}
+		}
 		w.Header().Set("Content-Type", "application/json")
 		w.Header().Set("Content-Length", strconv.Itoa(len(ollamaBody)))
+		// R65d: проброс предупреждений cppworker (context warning / adjusted
+		// n_predict / Retry-After) — строго до WriteHeader.
+		forwardUpstreamWarningHeaders(w, resp)
 		w.WriteHeader(resp.StatusCode)
 		w.Write(ollamaBody)
 		return nil
@@ -696,6 +723,8 @@ func (p *Proxy) proxyRequestLlamaCppNonStream(w http.ResponseWriter, r *http.Req
 	}
 	w.Header().Set("Content-Type", "application/json")
 	w.Header().Set("Content-Length", strconv.Itoa(len(translatedResp)))
+	// R65d: проброс предупреждений cppworker (см. выше).
+	forwardUpstreamWarningHeaders(w, resp)
 	w.WriteHeader(resp.StatusCode)
 	w.Write(translatedResp)
 

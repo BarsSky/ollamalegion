@@ -225,8 +225,8 @@ func TestRecordLatency_FailureRecord(t *testing.T) {
 func TestRecordLatency_UpdatesRuntimeRequestTimeout(t *testing.T) {
 	state := &BackendState{
 		Backend: &types.Backend{
-			ID:                   "test-1",
-			RequestTimeout:       120,
+			ID:                    "test-1",
+			RequestTimeout:        120,
 			RuntimeRequestTimeout: 0,
 		},
 	}
@@ -305,7 +305,7 @@ func TestGetEffectiveTimeout_GlobalFallback(t *testing.T) {
 func TestGetRuntimeRequestTimeout_Adaptive(t *testing.T) {
 	state := &BackendState{
 		Backend: &types.Backend{
-			ID:                   "test-1",
+			ID:                    "test-1",
 			RuntimeRequestTimeout: 200,
 		},
 		AdaptiveTimeout: 400,
@@ -320,7 +320,7 @@ func TestGetRuntimeRequestTimeout_Adaptive(t *testing.T) {
 func TestGetRuntimeRequestTimeout_Fallback(t *testing.T) {
 	state := &BackendState{
 		Backend: &types.Backend{
-			ID:                   "test-1",
+			ID:                    "test-1",
 			RuntimeRequestTimeout: 200,
 		},
 		AdaptiveTimeout: 0,

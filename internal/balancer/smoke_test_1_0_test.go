@@ -46,10 +46,10 @@ import (
 // ollamaFakeServer — фейковый ollama endpoint для VirtualRouter.
 // Обрабатывает /api/generate и /api/chat (plain HTTP, не /rpc/*).
 type ollamaFakeServer struct {
-	server *httptest.Server
-	host   string
-	port   int
-	calls  atomic.Int64
+	server  *httptest.Server
+	host    string
+	port    int
+	calls   atomic.Int64
 	healthy atomic.Bool
 }
 
@@ -84,10 +84,10 @@ func newOllamaFake(t *testing.T, workerID string) *ollamaFakeServer {
 }
 
 type cppworkerFakeServer struct {
-	server *httptest.Server
-	host   string
-	port   int
-	calls  atomic.Int64
+	server  *httptest.Server
+	host    string
+	port    int
+	calls   atomic.Int64
 	healthy atomic.Bool
 }
 

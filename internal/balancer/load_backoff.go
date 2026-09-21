@@ -14,6 +14,7 @@
 package balancer
 
 import (
+	"sort"
 	"sync"
 	"time"
 
@@ -48,9 +49,9 @@ type loadBackoffState struct {
 
 // loadBackoff — thread-safe registry backoff'ов.
 type loadBackoff struct {
-	mu      sync.Mutex
-	states  map[string]*loadBackoffState // key: backendID + "|" + modelName
-	config  loadBackoffConfig
+	mu     sync.Mutex
+	states map[string]*loadBackoffState // key: backendID + "|" + modelName
+	config loadBackoffConfig
 }
 
 func newLoadBackoff() *loadBackoff {
@@ -194,17 +195,27 @@ func (lb *loadBackoff) ResetAll() int {
 
 // state — snapshot для diagnostics.
 type loadBackoffSnapshot struct {
-	BackendID       string `json:"backendId"`
-	ModelName       string `json:"modelName"`
-	Failures        int    `json:"failures"`
-	LastFailureAt   string `json:"lastFailureAt,omitempty"`
+	BackendID        string `json:"backendId"`
+	ModelName        string `json:"modelName"`
+	Failures         int    `json:"failures"`
+	LastFailureAt    string `json:"lastFailureAt,omitempty"`
 	BreakerOpenUntil string `json:"breakerOpenUntil,omitempty"`
 }
 
 // LoadBackoffSnapshot — R60.11 (2026-09-07): public alias для admin endpoint.
 type LoadBackoffSnapshot = loadBackoffSnapshot
 
-// snapshot — список всех backoff states.
+// snapshot — список всех backoff states в ДЕТЕРМИНИРОВАННОМ порядке
+// (сортировка по backendID, затем по modelName).
+//
+// R65d (2026-09-20): раньше порядок был случайным — Go итерирует map в
+// произвольном порядке. Из-за этого:
+//   - admin-эндпоинт GET /api/v1/balancer/load-backoff отдавал записи в разном
+//     порядке при каждом запросе (неудобно оператору, ломает diff'ы);
+//   - TestLoadBackoff_Snapshot падал недетерминированно (флейк), ожидая b1,b2.
+//
+// Сортировка именно здесь, а не в тесте: детерминированный вывод — свойство
+// контракта эндпоинта, а не пожелание конкретного теста.
 func (lb *loadBackoff) snapshot() []loadBackoffSnapshot {
 	lb.mu.Lock()
 	defer lb.mu.Unlock()
@@ -225,6 +236,12 @@ func (lb *loadBackoff) snapshot() []loadBackoffSnapshot {
 		}
 		result = append(result, snap)
 	}
+	sort.Slice(result, func(i, j int) bool {
+		if result[i].BackendID != result[j].BackendID {
+			return result[i].BackendID < result[j].BackendID
+		}
+		return result[i].ModelName < result[j].ModelName
+	})
 	return result
 }
 

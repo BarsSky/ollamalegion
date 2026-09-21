@@ -30,7 +30,7 @@ import (
 // profilesFileFormat — структура файла /app/data/profiles.json.
 // v1: исходная версия (Round 31).
 type profilesFileFormat struct {
-	Version  int                                  `json:"version"`
+	Version  int                                   `json:"version"`
 	Profiles map[string]types.LlamaCppModelProfile `json:"profiles"`
 }
 

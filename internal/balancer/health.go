@@ -21,25 +21,25 @@ type HealthCheckResult struct {
 
 // HealthChecker - проверка здоровья бэкендов
 type HealthChecker struct {
-	proxy      *Proxy
-	interval   time.Duration
-	threshold  int
-	mu         sync.Mutex
-	results    map[string]*HealthStatus
-	stopChan   chan struct{}
-	wg         sync.WaitGroup
+	proxy     *Proxy
+	interval  time.Duration
+	threshold int
+	mu        sync.Mutex
+	results   map[string]*HealthStatus
+	stopChan  chan struct{}
+	wg        sync.WaitGroup
 }
 
 // HealthStatus - статус здоровья бэкенда
 type HealthStatus struct {
-	Healthy           bool          `json:"healthy"`
-	ConsecutiveFails  int           `json:"consecutiveFails"`
-	LastCheck         time.Time     `json:"lastCheck"`
-	LastSuccess       time.Time     `json:"lastSuccess"`
-	LastFailure       time.Time     `json:"lastFailure"`
-	AvgLatency        time.Duration `json:"avgLatency"`
-	LastLatency       time.Duration `json:"lastLatency"`
-	LastError         string        `json:"lastError,omitempty"`
+	Healthy          bool          `json:"healthy"`
+	ConsecutiveFails int           `json:"consecutiveFails"`
+	LastCheck        time.Time     `json:"lastCheck"`
+	LastSuccess      time.Time     `json:"lastSuccess"`
+	LastFailure      time.Time     `json:"lastFailure"`
+	AvgLatency       time.Duration `json:"avgLatency"`
+	LastLatency      time.Duration `json:"lastLatency"`
+	LastError        string        `json:"lastError,omitempty"`
 }
 
 // NewHealthChecker - создание проверщика здоровья
@@ -51,14 +51,14 @@ func NewHealthChecker(proxy *Proxy, interval time.Duration, threshold int) *Heal
 		results:   make(map[string]*HealthStatus),
 		stopChan:  make(chan struct{}),
 	}
-	
+
 	// Инициализация статусов
 	for id := range proxy.backends {
 		hc.results[id] = &HealthStatus{
 			Healthy: true,
 		}
 	}
-	
+
 	return hc
 }
 
@@ -80,10 +80,10 @@ func (hc *HealthChecker) checkLoop() {
 
 	ticker := time.NewTicker(hc.interval)
 	defer ticker.Stop()
-	
+
 	// Первая проверка сразу
 	hc.checkAll()
-	
+
 	for {
 		select {
 		case <-ticker.C:
@@ -102,7 +102,7 @@ func (hc *HealthChecker) checkAll() {
 		backendIDs = append(backendIDs, id)
 	}
 	hc.proxy.mu.RUnlock()
-	
+
 	for _, id := range backendIDs {
 		hc.checkBackend(id)
 	}
@@ -116,10 +116,10 @@ func (hc *HealthChecker) checkBackend(backendID string) {
 		hc.proxy.mu.RUnlock()
 		return
 	}
-	
+
 	backend := state.Backend
 	hc.proxy.mu.RUnlock()
-	
+
 	// Выполнение health check
 	result := hc.performCheck(backend)
 
@@ -179,10 +179,10 @@ func (hc *HealthChecker) performCheck(backend *types.Backend) *HealthCheckResult
 		BackendID: backend.ID,
 		Timestamp: time.Now().UTC(),
 	}
-	
+
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	
+
 	// Определяем движок и endpoint для health-check
 	engine := types.ResolveEngine(backend.Engine, backend.Type)
 	var url string
@@ -197,20 +197,20 @@ func (hc *HealthChecker) performCheck(backend *types.Backend) *HealthCheckResult
 	default:
 		url = fmt.Sprintf("http://%s:%d/api/tags", backend.Host, backend.OllamaPort)
 	}
-	
+
 	start := time.Now()
-	
+
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
 		result.Healthy = false
 		result.Error = fmt.Sprintf("request error: %v", err)
 		return result
 	}
-	
+
 	client := &http.Client{
 		Timeout: 5 * time.Second,
 	}
-	
+
 	resp, err := client.Do(req)
 	if err != nil {
 		result.Healthy = false
@@ -218,15 +218,15 @@ func (hc *HealthChecker) performCheck(backend *types.Backend) *HealthCheckResult
 		return result
 	}
 	defer resp.Body.Close()
-	
+
 	result.Latency = time.Since(start)
-	
+
 	if resp.StatusCode != http.StatusOK {
 		result.Healthy = false
 		result.Error = fmt.Sprintf("status code: %d", resp.StatusCode)
 		return result
 	}
-	
+
 	result.Healthy = true
 	return result
 }
@@ -273,7 +273,7 @@ func (hc *HealthChecker) MarkUnhealthy(backendID string, reason string) {
 func (hc *HealthChecker) GetAllStatuses() map[string]*HealthStatus {
 	hc.mu.Lock()
 	defer hc.mu.Unlock()
-	
+
 	result := make(map[string]*HealthStatus)
 	for id, status := range hc.results {
 		result[id] = status
@@ -285,7 +285,7 @@ func (hc *HealthChecker) GetAllStatuses() map[string]*HealthStatus {
 func (hc *HealthChecker) GetHealthyBackends() []string {
 	hc.mu.Lock()
 	defer hc.mu.Unlock()
-	
+
 	var healthy []string
 	for id, status := range hc.results {
 		if status.Healthy {

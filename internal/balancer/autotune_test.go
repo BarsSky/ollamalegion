@@ -162,9 +162,9 @@ func TestAnalyzeBackend_MultipleModels(t *testing.T) {
 			FeasibleMaxContext: 30000,
 		},
 		{
-			Name:               "loading-model",
-			State:              "loading", // should be skipped
-			ContextLength:      0,
+			Name:          "loading-model",
+			State:         "loading", // should be skipped
+			ContextLength: 0,
 		},
 	}
 	report := AnalyzeBackend(nil, "test-backend", "llama_cpp", models, 6_000_000_000, 16_000_000_000, 8_000_000_000)
@@ -429,17 +429,17 @@ func TestTriggerAutoTuneReload_CircuitCoolDown_PublishesEvent(t *testing.T) {
 	proxy.metricsMgr.llamaMetrics["backend-1"] = &types.LlamaCppMetrics{
 		LoadedModels: []types.LlamaCppModel{
 			{
-				Name:              "qwen3-4b",
-				State:             "loaded",
-				ContextLength:     65536, // over-allocated
-				KvCacheType:       "q4_0", // sub-optimal
-				NumGPULayers:      36,
-				NLayers:           36,
-				NEmbd:             2560,
-				NKvHeads:          8,
-				HeadDimK:          80,
-				Size:              2_500_000_000,
-				MaxContext:        131072,
+				Name:               "qwen3-4b",
+				State:              "loaded",
+				ContextLength:      65536,  // over-allocated
+				KvCacheType:        "q4_0", // sub-optimal
+				NumGPULayers:       36,
+				NLayers:            36,
+				NEmbd:              2560,
+				NKvHeads:           8,
+				HeadDimK:           80,
+				Size:               2_500_000_000,
+				MaxContext:         131072,
 				FeasibleMaxContext: 30000, // way below loaded 65536
 			},
 		},
@@ -517,17 +517,17 @@ func TestTriggerAutoTuneReload_Disabled_NoCircuitEvent(t *testing.T) {
 	proxy.metricsMgr.llamaMetrics["backend-1"] = &types.LlamaCppMetrics{
 		LoadedModels: []types.LlamaCppModel{
 			{
-				Name:              "qwen3-4b",
-				State:             "loaded",
-				ContextLength:     65536,
-				KvCacheType:       "q4_0",
-				NumGPULayers:      36,
-				NLayers:           36,
-				NEmbd:             2560,
-				NKvHeads:          8,
-				HeadDimK:          80,
-				Size:              2_500_000_000,
-				MaxContext:        131072,
+				Name:               "qwen3-4b",
+				State:              "loaded",
+				ContextLength:      65536,
+				KvCacheType:        "q4_0",
+				NumGPULayers:       36,
+				NLayers:            36,
+				NEmbd:              2560,
+				NKvHeads:           8,
+				HeadDimK:           80,
+				Size:               2_500_000_000,
+				MaxContext:         131072,
 				FeasibleMaxContext: 30000,
 			},
 		},
@@ -643,9 +643,9 @@ func TestPlanApplyAutoTune_LayersAllSemantic(t *testing.T) {
 // optimal = -1 (all). Должны матчиться семантически → no recommendation.
 func TestComputeOptimalNumGPULayers_AllLayersSemantic(t *testing.T) {
 	p := &ModelProfileInfo{
-		SizeBytes:   2_500_000_000,
+		SizeBytes:     2_500_000_000,
 		FreeVRAMBytes: 6_000_000_000,
-		NLayers:     36,
+		NLayers:       36,
 	}
 	// Current = 36 (all layers explicitly). Optimal = -1 (all).
 	// Both mean "all layers" → return current, no change needed.
@@ -664,9 +664,9 @@ func TestComputeOptimalNumGPULayers_AllLayersSemantic(t *testing.T) {
 // Должны матчиться → no change needed.
 func TestComputeOptimalNumGPULayers_AutoOffload(t *testing.T) {
 	p := &ModelProfileInfo{
-		SizeBytes:   12_000_000_000, // 12GB — не влезает в 6GB free
+		SizeBytes:     12_000_000_000, // 12GB — не влезает в 6GB free
 		FreeVRAMBytes: 6_000_000_000,
-		NLayers:     60,
+		NLayers:       60,
 	}
 	p.CurrentNumGPULayers = -2 // auto offload
 	rec, _ := computeOptimalNumGPULayers(p)

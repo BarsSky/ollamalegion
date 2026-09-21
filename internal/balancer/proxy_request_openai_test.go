@@ -288,9 +288,27 @@ func TestShouldFilterLlamaCppContent(t *testing.T) {
 		{"llama_header_start", "<|start_header_id|>", true},
 		{"llama_header_end", "<|end_header_id|>", true},
 
-		// Префиксы (служебный токен + обычный текст)
-		{"gemma_eot_prefix", "<end_of_turn>hello", true},
-		{"llama_eot_prefix", "<|eot_id|>ok", true},
+		// R65d (2026-09-20): СЕМАНТИКА ИЗМЕНЕНА.
+		//
+		// Раньше shouldFilterLlamaCppContent возвращал true при ЛЮБОМ вхождении
+		// служебного токена, и вызывающий код (filterOpenAIStreamingLine) заменял
+		// весь delta на {} — то есть выбрасывал не только токен, но и весь
+		// легитимный текст чанка. Для ответов, упоминающих спец-токены как текст
+		// (документация по chat-шаблонам, код парсеров), пользователь терял
+		// слова и предложения. Тест закреплял это поведение, поэтому обновлён.
+		//
+		// Теперь true = «в чанке нет ничего, что стоит показывать» (только
+		// служебные токены). Если текст остаётся — false, а сам текст очищается
+		// от токенов внутри filterOpenAIStreamingLine (проверяется в
+		// TestFilterOpenAIStreamingLine).
+		{"gemma_eot_prefix", "<end_of_turn>hello", false}, // текст "hello" сохраняется
+		{"llama_eot_prefix", "<|eot_id|>ok", false},       // текст "ok" сохраняется
+		{"eot_in_middle", "hello<|eot_id|>world", false},  // "helloworld" сохраняется
+
+		// Служебные токены БЕЗ полезного текста — фильтруем (показывать нечего).
+		{"eot_only_prefix", "<end_of_turn>", true},
+		{"eot_multiple_only", "<|eot_id|><end_of_turn><eos>", true},
+		{"eot_only_with_whitespace", "  <|im_end|>  ", true},
 
 		// Обычный текст — НЕ фильтруем
 		{"plain_text", "hello", false},
@@ -300,9 +318,8 @@ func TestShouldFilterLlamaCppContent(t *testing.T) {
 		{"whitespace_only", "   ", false},
 
 		// Угловые случаи
-		{"angle_bracket_text", "<user_input>", false},  // не служебный токен
-		{"partial_token", "<end_of", false},             // неполный токен — не фильтруем
-		{"eot_in_middle", "hello<|eot_id|>world", true}, // служебный токен в середине — фильтруем
+		{"angle_bracket_text", "<user_input>", false}, // не служебный токен
+		{"partial_token", "<end_of", false},           // неполный токен — не фильтруем
 	}
 
 	for _, tt := range tests {
@@ -320,20 +337,20 @@ func TestShouldFilterLlamaCppContent(t *testing.T) {
 // корректно отфильтровывает чанки со служебными токенами.
 func TestFilterOpenAIStreamingLine(t *testing.T) {
 	tests := []struct {
-		name          string
-		input         string
+		name           string
+		input          string
 		mustNotContain []string // строки, которые НЕ должны быть в результате
 		mustContain    []string // строки, которые ДОЛЖНЫ быть в результате (если не пусто)
 	}{
 		{
-			name: "gemma_end_of_turn",
-			input: `data: {"choices":[{"index":0,"delta":{"content":"<end_of_turn>"}}]}` + "\n\n",
+			name:           "gemma_end_of_turn",
+			input:          `data: {"choices":[{"index":0,"delta":{"content":"<end_of_turn>"}}]}` + "\n\n",
 			mustNotContain: []string{"<end_of_turn>", `"content":"<end_of_turn>"`},
 			mustContain:    []string{`"choices"`, `"delta"`},
 		},
 		{
-			name: "llama_eot",
-			input: `data: {"choices":[{"index":0,"delta":{"content":"<|eot_id|>"}}]}` + "\n\n",
+			name:           "llama_eot",
+			input:          `data: {"choices":[{"index":0,"delta":{"content":"<|eot_id|>"}}]}` + "\n\n",
 			mustNotContain: []string{"<|eot_id|>", "eot_id"},
 			mustContain:    []string{`"choices"`},
 		},
@@ -342,48 +359,47 @@ func TestFilterOpenAIStreamingLine(t *testing.T) {
 		// Раньше был ошибочный кейс "gemma_split_chars", который ожидал, что "<"
 		// будет отфильтрован — это приводило бы к потере символа "меньше" в коде.
 		{
-			name: "single_angle_bracket",
-			input: `data: {"choices":[{"index":0,"delta":{"content":"<"}}]}` + "\n\n",
+			name:           "single_angle_bracket",
+			input:          `data: {"choices":[{"index":0,"delta":{"content":"<"}}]}` + "\n\n",
 			mustNotContain: []string{},
 			mustContain:    []string{`"content":"<"`, `"choices"`, `"delta"`},
 		},
-		// Вкрапление служебного токена в середину обычного текста —
-		// весь чанк фильтруется, даже если полезного текста больше, чем мусора.
-		// Это нормальное поведение: одиночные символы Gemma/Llama эмитят
-		// посимвольно, и клиенту всё равно придёт финальный нормальный чанк.
+		// R65d (2026-09-20): служебный токен ВЫРЕЗАЕТСЯ из content, а
+		// окружающий текст СОХРАНЯЕТСЯ. Раньше весь delta заменялся на {} —
+		// "hello" и "world" бесследно исчезали из ответа.
 		{
-			name: "eot_token_embedded_in_text",
-			input: `data: {"choices":[{"index":0,"delta":{"content":"hello<|eot_id|>world"}}]}` + "\n\n",
-			mustNotContain: []string{"<|eot_id|>", `"content":"hello<|eot_id|>world"`},
-			mustContain:    []string{`"choices"`, `"delta"`},
+			name:           "eot_token_embedded_in_text",
+			input:          `data: {"choices":[{"index":0,"delta":{"content":"hello<|eot_id|>world"}}]}` + "\n\n",
+			mustNotContain: []string{"<|eot_id|>"},
+			mustContain:    []string{`"choices"`, `"delta"`, `"content":"helloworld"`},
 		},
 		{
-			name: "normal_text",
-			input: `data: {"choices":[{"index":0,"delta":{"content":"hello"}}]}` + "\n\n",
+			name:           "normal_text",
+			input:          `data: {"choices":[{"index":0,"delta":{"content":"hello"}}]}` + "\n\n",
 			mustNotContain: []string{},
 			mustContain:    []string{`"content":"hello"`},
 		},
 		{
-			name: "done_marker",
-			input: `data: [DONE]` + "\n\n",
+			name:           "done_marker",
+			input:          `data: [DONE]` + "\n\n",
 			mustNotContain: []string{},
 			mustContain:    []string{`[DONE]`},
 		},
 		{
-			name: "role_only_chunk",
-			input: `data: {"choices":[{"index":0,"delta":{"role":"assistant"}}]}` + "\n\n",
+			name:           "role_only_chunk",
+			input:          `data: {"choices":[{"index":0,"delta":{"role":"assistant"}}]}` + "\n\n",
 			mustNotContain: []string{},
 			mustContain:    []string{`"role":"assistant"`},
 		},
 		{
-			name: "comment_line",
-			input: ": keepalive" + "\n\n",
+			name:           "comment_line",
+			input:          ": keepalive" + "\n\n",
 			mustNotContain: []string{},
 			mustContain:    []string{": keepalive"},
 		},
 		{
-			name: "finish_reason",
-			input: `data: {"choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}` + "\n\n",
+			name:           "finish_reason",
+			input:          `data: {"choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}` + "\n\n",
 			mustNotContain: []string{},
 			mustContain:    []string{`"finish_reason":"stop"`},
 		},
@@ -409,7 +425,65 @@ func TestFilterOpenAIStreamingLine(t *testing.T) {
 	}
 }
 
-// TestProxyRequestOpenAIStreaming_FilterGemmaTokens — интеграционный тест:
+// TestR65d_ContentFilter_PreservesMetadataAndFraming — R65d (2026-09-20):
+// при вырезании служебного токена из content должны сохраняться все остальные
+// поля чанка (id/model/object/created/finish_reason/role), а SSE-кадр должен
+// содержать ровно один разделитель событий (не три '\n', как раньше).
+func TestR65d_ContentFilter_PreservesMetadataAndFraming(t *testing.T) {
+	input := `data: {"id":"chatcmpl-x","object":"chat.completion.chunk","created":1700000000,"model":"gemma-4","choices":[{"index":0,"delta":{"role":"assistant","content":"pre<end_of_turn>post"},"finish_reason":null}]}` + "\n\n"
+
+	filtered, wasFiltered := filterOpenAIStreamingLine([]byte(input))
+	if !wasFiltered {
+		t.Fatalf("expected chunk to be filtered (service token present), got unchanged")
+	}
+	out := string(filtered)
+
+	for _, keep := range []string{
+		`"id":"chatcmpl-x"`,
+		`"object":"chat.completion.chunk"`,
+		`"created":1700000000`,
+		`"model":"gemma-4"`,
+		`"role":"assistant"`,
+		`"content":"prepost"`,
+	} {
+		if !strings.Contains(out, keep) {
+			t.Errorf("filtered chunk lost field %s\nGot: %s", keep, out)
+		}
+	}
+	if strings.Contains(out, "<end_of_turn>") {
+		t.Errorf("service token leaked to client: %s", out)
+	}
+
+	// Ровно один пустой строкой-разделителем: "data: {...}\n\n".
+	if !strings.HasSuffix(out, "\n\n") {
+		t.Errorf("SSE frame must end with exactly \\n\\n, got %q", out[len(out)-4:])
+	}
+	if strings.HasSuffix(out, "\n\n\n") {
+		t.Errorf("SSE frame has an extra newline (3 total) — это ломает строгие парсеры: %q", out)
+	}
+}
+
+// TestR65d_ContentFilter_NoServiceTokenUntouched — чанки без служебных токенов
+// должны проходить байт-в-байт, без пересборки JSON.
+func TestR65d_ContentFilter_NoServiceTokenUntouched(t *testing.T) {
+	inputs := []string{
+		`data: {"choices":[{"index":0,"delta":{"content":"hello"}}]}` + "\n\n",
+		// Текст, ПОХОЖИЙ на токен, но им не являющийся — не трогаем.
+		`data: {"choices":[{"index":0,"delta":{"content":"a < b && c > d"}}]}` + "\n\n",
+		`data: {"choices":[{"index":0,"delta":{"content":"<user_input>"}}]}` + "\n\n",
+		`data: {"choices":[{"index":0,"delta":{"content":"<end_of"}}]}` + "\n\n",
+	}
+	for _, in := range inputs {
+		filtered, wasFiltered := filterOpenAIStreamingLine([]byte(in))
+		if wasFiltered {
+			t.Errorf("chunk should not be modified\nInput:  %q\nOutput: %q", in, string(filtered))
+		}
+		if string(filtered) != in {
+			t.Errorf("chunk modified unexpectedly\nInput:  %q\nOutput: %q", in, string(filtered))
+		}
+	}
+}
+
 // upstream возвращает смесь из нормального контента и Gemma-токенов <end_of_turn>.
 // Proxy должен отфильтровать служебные токены, оставив клиенту только нормальный
 // текст "hello world".

@@ -28,8 +28,8 @@ import (
 
 // authRig — упрощённый rig для auth tests.
 type authRig struct {
-	proxy   *Proxy
-	balancer *httptest.Server
+	proxy      *Proxy
+	balancer   *httptest.Server
 	vmRegistry *virtualmodel.Registry
 }
 

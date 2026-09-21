@@ -99,7 +99,6 @@ func (p *Proxy) handleStreamingResponse(w http.ResponseWriter, r *http.Request, 
 			"idle_timeout_sec", idleTimeout.Seconds())
 	}
 
-
 	// Heartbeat goroutine для SSE и NDJSON — предотвращает разрыв соединения nginx/браузером
 	// при длительных паузах между токенами.
 	// Для SSE: отправляется ":heartbeat\n\n" (SSE-комментарий, игнорируется клиентами).
@@ -139,20 +138,20 @@ func (p *Proxy) handleStreamingResponse(w http.ResponseWriter, r *http.Request, 
 					if sessionID != "" && p.config.Balancing.SessionStickiness {
 						p.sessionMgr.HeartbeatStream(sessionID)
 					}
-				var heartbeatBytes []byte
-				if isSSE {
-					heartbeatBytes = []byte(":heartbeat\n\n")
-				} else {
-					// Round 31 (2026-08-09): минимальный NDJSON heartbeat — только {"done":false}.
-					// Без полей "model" и "message" (раньше они были) — OpenWebUI мог
-					// интерпретировать "message":{"role":"assistant"} как начало нового
-					// сообщения и сбрасывать ассемблирование reasoning секции.
-					// {"done":false} — JSON-line валидный для Ollama-parser'а,
-					// который игнорирует строки без "message" поля.
-					hb := map[string]interface{}{"done": false}
-					hbJSON, _ := json.Marshal(hb)
-					heartbeatBytes = append(hbJSON, '\n')
-				}
+					var heartbeatBytes []byte
+					if isSSE {
+						heartbeatBytes = []byte(":heartbeat\n\n")
+					} else {
+						// Round 31 (2026-08-09): минимальный NDJSON heartbeat — только {"done":false}.
+						// Без полей "model" и "message" (раньше они были) — OpenWebUI мог
+						// интерпретировать "message":{"role":"assistant"} как начало нового
+						// сообщения и сбрасывать ассемблирование reasoning секции.
+						// {"done":false} — JSON-line валидный для Ollama-parser'а,
+						// который игнорирует строки без "message" поля.
+						hb := map[string]interface{}{"done": false}
+						hbJSON, _ := json.Marshal(hb)
+						heartbeatBytes = append(hbJSON, '\n')
+					}
 					_, err := w.Write(heartbeatBytes)
 					if err != nil {
 						logger.Get().Warnw("streaming heartbeat write failed, stopping heartbeat",
@@ -225,7 +224,7 @@ func (p *Proxy) handleStreamingResponse(w http.ResponseWriter, r *http.Request, 
 
 		n, err := resp.Body.Read(buf)
 		if n > 0 {
-				// Проверяем, не отменён ли контекст перед записью клиенту.
+			// Проверяем, не отменён ли контекст перед записью клиенту.
 			// Избегаем записи в закрытое соединение (write on closed connection).
 			if r.Context().Err() != nil {
 				logger.Get().Warnw("context cancelled during write, discarding chunk",
@@ -300,7 +299,7 @@ func (p *Proxy) handleStreamingResponse(w http.ResponseWriter, r *http.Request, 
 			var netErr net.Error
 			if errors.As(err, &netErr) && netErr.Timeout() {
 				isIdleTimeout = true
-			} else if err == io.EOF && time.Since(lastActivity) > (idleTimeout * 60 / 100) {
+			} else if err == io.EOF && time.Since(lastActivity) > (idleTimeout*60/100) {
 				// EOF пришёл после >60% idleTimeout с последнего чанка —
 				// вероятно Go-сокет конвертировал timeout в EOF. Помечаем как timeout.
 				isIdleTimeout = true
@@ -348,42 +347,42 @@ func (p *Proxy) handleStreamingResponse(w http.ResponseWriter, r *http.Request, 
 				logger.Get().Errorw("STREAMING_BACKEND_READ_ERROR",
 					"backend", backendID,
 					"model", modelFromCtx,
-				"read_error", err,
-				"read_error_type", fmt.Sprintf("%T", err),
-				"bytes_streamed", bytesStreamed,
-				"chunk_count", chunkCount,
-				"elapsed_ms", time.Since(startTime).Milliseconds(),
-				"idle_ms", time.Since(lastActivity).Milliseconds(),
-				"client_disconnected", clientDisconnected.Load(),
-				"context_error", ctxErr,
+					"read_error", err,
+					"read_error_type", fmt.Sprintf("%T", err),
+					"bytes_streamed", bytesStreamed,
+					"chunk_count", chunkCount,
+					"elapsed_ms", time.Since(startTime).Milliseconds(),
+					"idle_ms", time.Since(lastActivity).Milliseconds(),
+					"client_disconnected", clientDisconnected.Load(),
+					"context_error", ctxErr,
 					"is_sse", isSSE,
 				)
 				if !clientDisconnected.Load() {
-				if isSSE {
-					// Отправляем клиенту явную SSE-ошибку с done:true,
-					// чтобы он корректно завершил поток и не получил TransferEncodingError
-					logger.Get().Warnw("STREAMING_SENDING_SSE_ERROR",
-						"backend", backendID,
-						"model", modelFromCtx,
-						"code", "backend_read_error",
-						"message", "Connection lost during streaming",
-						"bytes_streamed", bytesStreamed,
-						"chunk_count", chunkCount,
-					)
-					p.SendSSEErrorSafe(w, flusher, "backend_read_error", "Connection lost during streaming", backendID, startTime)
-				} else if isNDJSON {
-					// Для NDJSON — отправляем done:true с ошибкой в том же формате,
-					// чтобы клиент корректно завершил парсинг и не получил TransferEncodingError
-					logger.Get().Warnw("STREAMING_SENDING_NDJSON_ERROR",
-						"backend", backendID,
-						"model", modelFromCtx,
-						"code", "backend_read_error",
-						"message", "Connection lost during streaming",
-						"bytes_streamed", bytesStreamed,
-						"chunk_count", chunkCount,
-					)
-					p.SendNDJSONErrorSafe(w, flusher, "Connection lost during streaming", backendID)
-				}
+					if isSSE {
+						// Отправляем клиенту явную SSE-ошибку с done:true,
+						// чтобы он корректно завершил поток и не получил TransferEncodingError
+						logger.Get().Warnw("STREAMING_SENDING_SSE_ERROR",
+							"backend", backendID,
+							"model", modelFromCtx,
+							"code", "backend_read_error",
+							"message", "Connection lost during streaming",
+							"bytes_streamed", bytesStreamed,
+							"chunk_count", chunkCount,
+						)
+						p.SendSSEErrorSafe(w, flusher, "backend_read_error", "Connection lost during streaming", backendID, startTime)
+					} else if isNDJSON {
+						// Для NDJSON — отправляем done:true с ошибкой в том же формате,
+						// чтобы клиент корректно завершил парсинг и не получил TransferEncodingError
+						logger.Get().Warnw("STREAMING_SENDING_NDJSON_ERROR",
+							"backend", backendID,
+							"model", modelFromCtx,
+							"code", "backend_read_error",
+							"message", "Connection lost during streaming",
+							"bytes_streamed", bytesStreamed,
+							"chunk_count", chunkCount,
+						)
+						p.SendNDJSONErrorSafe(w, flusher, "Connection lost during streaming", backendID)
+					}
 				} else {
 					// Клиент отключился — не отправляем done, просто выходим
 				}
@@ -501,9 +500,9 @@ func (p *Proxy) logError(backendID string, err error) {
 //   - температура 0 + degenerate prompt → модель выбирает один и тот же токен.
 //
 // Стратегия: анализируем последние recentChunks (до 16) и ищем признаки цикла.
-//   1. Текущий чанк совпадает с предыдущим ≥3 раза подряд
-//   2. Pattern длиной ≤32 байта встречается в 8+ последних чанках
-//   3. ≥5 из последних 6 чанков одинаковы полностью
+//  1. Текущий чанк совпадает с предыдущим ≥3 раза подряд
+//  2. Pattern длиной ≤32 байта встречается в 8+ последних чанках
+//  3. ≥5 из последних 6 чанков одинаковы полностью
 //
 // Возвращает (true, pattern) если зацикливание обнаружено, иначе (false, "").
 //

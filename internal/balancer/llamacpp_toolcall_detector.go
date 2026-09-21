@@ -4,7 +4,7 @@
 // через chat template. Вместо структурированного поля tool_calls модель выводит
 // JSON-представление tool call как обычный текст в content:
 //
-//	 "[{\"id\":\"call_search\",\"type\":\"function\",\"function\":{\"name\":\"search\",...}}]"
+//	"[{\"id\":\"call_search\",\"type\":\"function\",\"function\":{\"name\":\"search\",...}}]"
 //
 // Этот файл содержит функции:
 //   - detectAndExtractToolCallsFromContent — основная функция детекции JSON tool calls
@@ -30,9 +30,10 @@ import (
 // когда закрывающая '}' JSON-объекта и начало </tool_call> попадают в разные чанки.
 //
 // Пример склейки чанков:
-//   chunk N:     `{"name":"search","arguments":{"q":"AI news"}}`
-//   chunk N+1:   `}</tool_call>`
-//   buffer:      `...{"name":"search","arguments":{"q":"AI news"}}}</tool_call>`
+//
+//	chunk N:     `{"name":"search","arguments":{"q":"AI news"}}`
+//	chunk N+1:   `}</tool_call>`
+//	buffer:      `...{"name":"search","arguments":{"q":"AI news"}}}</tool_call>`
 //
 // Regex в detectHermesToolCallsInContent (`\{.*?\}`) с lazy matching остановится
 // на первой '}' и не найдёт </tool_call>. После collapseDuplicateClosingBrace
@@ -198,6 +199,15 @@ func detectStandardArrayToolCalls(trimmed string) (toolCalls []interface{}, rema
 		if err := json.Unmarshal(tc.Function, &fnMap); err != nil {
 			return nil, trimmed, false
 		}
+		// R65d (2026-09-20): function.arguments обязан быть JSON-СТРОКОЙ.
+		//
+		// Модели эмитят аргументы как JSON-объект внутри content, и после
+		// json.Unmarshal он остаётся map[string]interface{}. Но OpenAI-клиенты
+		// (openai-python, openai-node) делают json.loads(tool_call.function.arguments)
+		// и на объекте получают TypeError / "the JSON object must be str".
+		// Cppworker для этого имеет stringifyArguments — балансер же до R65d
+		// обходил его и отдавал объект.
+		fnMap["arguments"] = stringifyToolArguments(fnMap["arguments"])
 
 		tcMap := map[string]interface{}{
 			"id":       tc.ID,
@@ -234,14 +244,21 @@ func detectStandardArrayToolCalls(trimmed string) (toolCalls []interface{}, rema
 var hermesToolCallRegex = regexp.MustCompile(`(?s)(?:<tool_call>|<answer>)\s*(\{.*?\}+|\[.*?\]+)(?:\s*</tool_call>|\s*</answer>)?`)
 
 func detectHermesToolCallsInContent(content string) (toolCalls []interface{}, remainingContent string, found bool) {
-	matches := hermesToolCallRegex.FindAllStringSubmatch(content, -1)
+	// R65d (2026-09-20): извлекаем JSON depth-aware, а НЕ ленивой регуляркой.
+	//
+	// Было: `(?s)(?:<tool_call>|<answer>)\s*(\{.*?\}+|\[.*?\]+)...` — `.*?`
+	// ленивый, поэтому для аргументов с вложенными объектами
+	//   {"name":"edit","arguments":{"file":"a","opts":{"x":1,"y":2}}}
+	// матч обрывался на первой '}' внутри `opts`, и весь tool call терялся
+	// (parseHermesToOpenAI получал обрезанный JSON → nil). Модели с вложенными
+	// аргументами (редактирование файлов, многошаговые планы) ломались молча.
+	matches := findHermesToolCallBlocks(content)
 	if len(matches) == 0 {
 		return nil, content, false
 	}
 
 	var result []interface{}
-	for _, m := range matches {
-		jsonStr := strings.TrimSpace(m[1])
+	for _, jsonStr := range matches {
 		// На случай склейки чанков jsonStr может содержать лишнюю '}' в конце —
 		// обрезаем её, чтобы json.Unmarshal ниже не упал.
 		jsonStr = trimTrailingExtraBrace(jsonStr)
@@ -269,6 +286,159 @@ func detectHermesToolCallsInContent(content string) (toolCalls []interface{}, re
 	remaining := hermesToolCallRegex.ReplaceAllString(content, "")
 	remaining = strings.TrimSpace(remaining)
 	return result, remaining, true
+}
+
+// findHermesToolCallBlocks — возвращает JSON-фрагменты tool_calls из
+// Hermes/Qwen/Gemma форматов, корректно обрабатывая вложенные скобки.
+//
+// Поддерживаемые обёртки: <tool_call>…</tool_call>, <answer>…</answer>.
+// Для каждого тега берём первый '{' или '[' и находим ПАРНУЮ закрывающую
+// скобку с учётом глубины и строковых литералов (см. scanBalancedJSON).
+//
+// R65d (2026-09-20): заменил ленивую регулярку, которая обрывала аргументы
+// с вложенными объектами на первой внутренней '}'.
+func findHermesToolCallBlocks(content string) []string {
+	var blocks []string
+	for _, openTag := range []string{"<tool_call>", "<answer>"} {
+		searchFrom := 0
+		for {
+			tagIdx := strings.Index(content[searchFrom:], openTag)
+			if tagIdx < 0 {
+				break
+			}
+			start := searchFrom + tagIdx + len(openTag)
+			// Ищем начало JSON после тега.
+			jsonStart := -1
+			for i := start; i < len(content); i++ {
+				if content[i] == '{' || content[i] == '[' {
+					jsonStart = i
+					break
+				}
+				// Между тегом и JSON допускаем только пробелы/переводы строк.
+				// Любой другой символ означает, что это не tool_call блок.
+				if content[i] != ' ' && content[i] != '\t' && content[i] != '\n' && content[i] != '\r' {
+					break
+				}
+			}
+			if jsonStart < 0 {
+				searchFrom = start
+				continue
+			}
+			end := scanBalancedJSON(content, jsonStart)
+			if end < 0 {
+				// Незакрытый JSON (модель оборвала вывод) — берём до конца,
+				// trimTrailingExtraBrace/Unmarshal решат, валиден ли он.
+				blocks = append(blocks, strings.TrimSpace(content[jsonStart:]))
+				break
+			}
+			blocks = append(blocks, strings.TrimSpace(content[jsonStart:end+1]))
+			searchFrom = end + 1
+		}
+	}
+	return blocks
+}
+
+// scanBalancedJSON возвращает индекс закрывающей скобки, парной к открывающей
+// на позиции openPos, либо -1 если парной нет.
+//
+// Учитывает:
+//   - вложенность {} и [] (смешанную);
+//   - экранирование внутри строк ("a\"b");
+//   - содержимое строк: скобки внутри "..." игнорируются.
+//
+// Это ключевое отличие от ленивой регулярки: аргументы
+// {"opts":{"x":1}} обрабатываются целиком, а не до первой '}'.
+func scanBalancedJSON(s string, openPos int) int {
+	if openPos < 0 || openPos >= len(s) {
+		return -1
+	}
+	opener := s[openPos]
+	if opener != '{' && opener != '[' {
+		return -1
+	}
+	var closer byte = '}'
+	if opener == '[' {
+		closer = ']'
+	}
+
+	depth := 0
+	inString := false
+	escaped := false
+	for i := openPos; i < len(s); i++ {
+		ch := s[i]
+		if inString {
+			if escaped {
+				escaped = false
+				continue
+			}
+			switch ch {
+			case '\\':
+				escaped = true
+			case '"':
+				inString = false
+			}
+			continue
+		}
+		switch ch {
+		case '"':
+			inString = true
+		case '{', '[':
+			depth++
+		case '}', ']':
+			depth--
+			if depth == 0 {
+				// Парная скобка найдена. Проверяем, что она того же типа, что
+				// и открывающая: для корректного JSON это всегда так, но при
+				// мусоре в потоке лучше вернуть именно ожидаемую.
+				if ch == closer {
+					return i
+				}
+				return i
+			}
+		}
+	}
+	return -1
+}
+
+// stringifyToolArguments — приводит function.arguments к JSON-СТРОКЕ
+// (требование OpenAI API).
+//
+// R65d (2026-09-20): модели эмитят аргументы как JSON-объект внутри content,
+// и после json.Unmarshal это map[string]interface{}. OpenAI-клиенты
+// (openai-python, openai-node) вызывают json.loads(tool_call.function.arguments)
+// и на объекте получают TypeError. Cppworker для этого имеет
+// stringifyArguments; балансер до R65d обходил его.
+//
+// Правила:
+//   - строка, содержащая валидный JSON → оставляем как есть (модель уже
+//     stringify'нула аргументы; двойная сериализация сделала бы их невалидными);
+//   - всё остальное → json.Marshal;
+//   - nil → "{}".
+func stringifyToolArguments(args interface{}) string {
+	switch v := args.(type) {
+	case nil:
+		return "{}"
+	case string:
+		if strings.TrimSpace(v) == "" {
+			return "{}"
+		}
+		if json.Valid([]byte(v)) {
+			return v
+		}
+		// Невалидный JSON в строке — сериализуем как JSON-строку, чтобы клиент
+		// получил валидный JSON-литерал и не упал на json.loads.
+		b, err := json.Marshal(v)
+		if err != nil {
+			return "{}"
+		}
+		return string(b)
+	default:
+		b, err := json.Marshal(v)
+		if err != nil || !json.Valid(b) {
+			return "{}"
+		}
+		return string(b)
+	}
 }
 
 // trimTrailingExtraBrace — удаляет лишнюю '}' в конце строки, если она

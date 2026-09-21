@@ -170,8 +170,21 @@ func (s *Server) setupRoutes() {
 	// NB: /history must be registered BEFORE the catch-all /api/v1/admin/autotune
 	// so the mux doesn't match it as /api/v1/admin/autotune/{id} (where "history"
 	// becomes backendID и возвращает "backend not found").
-	s.mux.HandleFunc("/api/v1/admin/autotune/history", s.handleAdminAutotuneHistory)
-	s.mux.HandleFunc("/api/v1/admin/autotune/config", s.handleAdminAutotuneConfigDispatcher)
+	//
+	// R65d (2026-09-20) — ИСПРАВЛЕНИЕ АВТОРИЗАЦИИ.
+	//
+	// Было: /history и /config регистрировались через HandleFunc БЕЗ
+	// AuthMiddleware, в отличие от соседних /api/v1/admin/autotune и
+	// /api/v1/admin/autotune/. Literal-паттерн выигрывает у prefix-паттерна в
+	// http.ServeMux, поэтому PUT /api/v1/admin/autotune/config менял
+	// balancing.autoTune и per-model autoTune БЕЗ токена и сохранял конфиг на
+	// диск (s.configSaver()). То есть любой, кто мог достучаться до API-порта
+	// (18081), мог отключить AutoTune или прочитать историю reload'ов.
+	//
+	// Теперь все четыре admin-эндпоинта идут через одну
+	// auth+ratelimit обёртку — консистентно с остальными admin-ручками.
+	s.mux.Handle("/api/v1/admin/autotune/history", AuthMiddleware(RateLimitMiddleware(http.HandlerFunc(s.handleAdminAutotuneHistory), s.rateLimiter), s.authenticator))
+	s.mux.Handle("/api/v1/admin/autotune/config", AuthMiddleware(RateLimitMiddleware(http.HandlerFunc(s.handleAdminAutotuneConfigDispatcher), s.rateLimiter), s.authenticator))
 	s.mux.Handle("/api/v1/admin/autotune", AuthMiddleware(RateLimitMiddleware(http.HandlerFunc(s.handleAdminAutotune), s.rateLimiter), s.authenticator))
 	// Apply endpoint — отдельный handler с явной обработкой POST /apply suffix.
 	s.mux.Handle("/api/v1/admin/autotune/", AuthMiddleware(RateLimitMiddleware(http.HandlerFunc(s.routeAdminAutotuneByID), s.rateLimiter), s.authenticator))
@@ -185,6 +198,16 @@ func (s *Server) setupRoutes() {
 	// POST /api/v1/admin/cluster/autosuggest/apply with {"suggestion_ids": [...]}.
 	// Re-validates and returns per-suggestion apply result.
 	s.mux.Handle("/api/v1/admin/cluster/autosuggest/apply", AuthMiddleware(RateLimitMiddleware(http.HandlerFunc(s.handleAdminAutosuggestApply), s.rateLimiter), s.authenticator))
+
+	// R66 (2026-09-20): счётчики потерь MetricsBroker.
+	// GET /api/v1/admin/metrics-broker/stats — сколько кадров метрик потеряно
+	// на переполнении (broker_drops/client_drops) + текущая загруженность
+	// очередей и число WS-подписчиков.
+	//
+	// Без этого оператор видел в логе только throttled WARN («доставка
+	// отброшена», не чаще раза в 5 с) и не мог понять масштаб потерь и их рост.
+	// Read-only, но под AuthMiddleware: число подписчиков — это топология.
+	s.mux.Handle("/api/v1/admin/metrics-broker/stats", AuthMiddleware(RateLimitMiddleware(http.HandlerFunc(s.handleAdminBrokerStats), s.rateLimiter), s.authenticator))
 
 	// Internal callbacks от cppworker (Шаг «отображение загрузки в мониторе»).
 	// POST /api/v1/internal/llama-model-loaded — callback при успешной загрузке модели.
@@ -246,7 +269,25 @@ func (s *Server) setupRoutes() {
 	// llama.cpp бэкенда. Используется страницей GGUF для скачивания моделей,
 	// списка файлов, прогресса загрузки, загрузки/выгрузки. Префикс /api/v1/gguf/
 	// уже отрезается стандартным mux (см. handleGgufBackendProxy для деталей).
-	s.mux.HandleFunc("/api/v1/gguf/backends/", s.handleGgufBackendProxy)
+	//
+	// R65d (2026-09-20) — ИСПРАВЛЕНИЕ АВТОРИЗАЦИИ.
+	//
+	// Было: HandleFunc БЕЗ AuthMiddleware. Прокси принимает GET/POST/PUT/DELETE и
+	// передаёт ЛЮБОЙ путь+тело в cppworker как есть (gguf_backend_proxy.go:94),
+	// включая POST /api/models/load, /api/models/delete, /api/hf/download,
+	// /api/cancel. То есть любой, кто достучался до API-порта (18081), мог
+	// загружать/выгружать/удалять модели и инициировать загрузки — при том что
+	// все сопоставимые ручки балансера требуют токен.
+	//
+	// Список /api/v1/gguf/backends (без слэша) остаётся публичным: он отдаёт
+	// только метаданные и нужен странице для первичной отрисовки. Прокси-путь
+	// (со слэшем) теперь под auth+ratelimit.
+	//
+	// Клиентская часть обновлена синхронно:
+	//   - fetch-запросы шлют X-API-Token (gguf-api.js requestViaBackend);
+	//   - SSE-прогресс шлёт ?token= (gguf-api.js buildBackendProxyUrl),
+	//     потому что EventSource не поддерживает custom headers.
+	s.mux.Handle("/api/v1/gguf/backends/", AuthMiddleware(RateLimitMiddleware(http.HandlerFunc(s.handleGgufBackendProxy), s.rateLimiter), s.authenticator))
 
 	// Proxy Logs endpoint (с аутентификацией и rate limiting)
 	s.mux.Handle("/api/v1/proxy/logs", AuthMiddleware(RateLimitMiddleware(s.proxyLogsHandler, s.rateLimiter), s.authenticator))

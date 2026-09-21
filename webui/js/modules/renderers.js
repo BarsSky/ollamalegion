@@ -1823,8 +1823,8 @@ const Renderers = (function () {
         var selected = sel ? sel.value : '';
         window._ggufSelectedBackend = selected;
         // Re-fetch data and re-render
-        if (window.API && window.API.fetchGgufBackends) {
-            window.API.fetchGgufBackends().then(function(data) {
+        if (window.Api && window.Api.fetchGgufBackends) {
+            window.Api.fetchGgufBackends().then(function(data) {
                 if (data && data.backends) {
                     var filtered = selected
                         ? data.backends.filter(function(b) { return b.id === selected; })
@@ -1902,3 +1902,4 @@ const Renderers = (function () {
 if (typeof window !== 'undefined') {
     window.Renderers = Renderers;
 }
+

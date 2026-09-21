@@ -1,9 +1,35 @@
 /**
  * API layer with centralized error handling and token auth
+ *
+ * R60.16.1 (2026-09-08): API_BASE fallback chain.
+ * Pre-R60.16.1: CFG.API_BASE || '' (always empty in entrypoint.sh).
+ * This worked when the page was served from inside the docker network
+ * (nginx proxied /api/* to loadbalancer:18081), but failed when the
+ * page was opened from a host browser at http://localhost:18083 where
+ * the same nginx still proxies correctly. The "" value made the JS use
+ * relative URLs that the browser resolved against window.location.origin
+ * (= localhost:18083), which IS the proxy path. So this should have
+ * worked... but the data was still not loading for some clients.
+ *
+ * R60.16.1 adds window.location.origin as an explicit fallback in case
+ * the empty API_BASE doesn't work in some browser/proxy combination.
+ * The order: WEBUI_CONFIG.API_BASE (if non-empty) > same-origin
+ * (window.location.origin) > '' (relative).
  */
 const Api = (function () {
     const CFG = window.WEBUI_CONFIG || {};
-    const API_BASE = CFG.API_BASE || '';
+    // Fallback chain: env-injected > same-origin (works in docker-network
+    // AND host browser via nginx proxy) > relative (legacy).
+    function resolveApiBase() {
+        if (CFG.API_BASE) return CFG.API_BASE;
+        try {
+            if (typeof window !== 'undefined' && window.location && window.location.origin) {
+                return window.location.origin;
+            }
+        } catch (e) { /* ignore SSR / non-browser contexts */ }
+        return '';
+    }
+    const API_BASE = resolveApiBase();
 
     // Internal: build fetch options with auth headers
     function getOptions(options = {}) {
@@ -55,6 +81,28 @@ const Api = (function () {
         // Cluster state
         async cluster() {
             return getJson('/api/v1/cluster');
+        },
+
+        // R65d (2026-09-20): registered backends WITH their configuration.
+        //
+        // Зачем отдельный метод: страница бэкендов берёт данные из
+        // GET /api/v1/cluster, который отдаёт []types.BackendMetrics — там НЕТ
+        // weight, labels, maxModels, autoTune, apiStyle, gpuMode. При этом
+        // renderers.js:203,839,841,899 и utils.js:37-40 эти поля читают, поэтому
+        // колонки Weight/Labels/MaxModels всегда показывали 1/-/-, карточка
+        // AutoTune не рисовалась, а детект cloud-режима по labels не работал.
+        // Перечисленные поля есть только в GET /api/v1/backends
+        // (internal/api/handlers_backends.go:189-214, autoTune на :303), который
+        // до R65d не вызывался из WebUI вообще.
+        //
+        // Returns: { backends: [...], total: N }
+        async backends() {
+            return getJson('/api/v1/backends');
+        },
+
+        // Один бэкенд с полной конфигурацией (weight, labels, limits, token-статус).
+        async backend(id) {
+            return getJson('/api/v1/backends/' + encodeURIComponent(id));
         },
 
         // Queue stats

@@ -30,9 +30,9 @@ func TestOperatingModeCanonical_RpcCoordinator(t *testing.T) {
 	tests := []struct {
 		in, want string
 	}{
-		{"rpc_coordinator", "rpc_coordinator"},   // canonical (Phase 8)
-		{"rpc-coordinator", "rpc_coordinator"},   // legacy hyphenated
-		{"RpcCoordinator", "rpc_coordinator"},   // PascalCase
+		{"rpc_coordinator", "rpc_coordinator"}, // canonical (Phase 8)
+		{"rpc-coordinator", "rpc_coordinator"}, // legacy hyphenated
+		{"RpcCoordinator", "rpc_coordinator"},  // PascalCase
 		{"RPC_COORDINATOR", "rpc_coordinator"}, // SCREAMING
 	}
 	for _, tc := range tests {

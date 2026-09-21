@@ -54,7 +54,7 @@ const (
 //
 // Поддерживаемые форматы:
 //   - cppworker: {"error":"model is loading: <name>","loading":true,
-//                 "model":<name>,"elapsedMs":N,"retryAfterMs":3000}
+//     "model":<name>,"elapsedMs":N,"retryAfterMs":3000}
 //   - ollama:    {"error":"model '<name>' is loading"} (loading:false) — НЕ считаем loading
 //   - fallback:  строка содержит "model is loading" (case-insensitive) и status=503
 func loadingSignalFromBody(statusCode int, body []byte) (bool, string, int) {
@@ -68,10 +68,10 @@ func loadingSignalFromBody(statusCode int, body []byte) (bool, string, int) {
 	}
 
 	var parsed struct {
-		Error       string `json:"error"`
-		Loading     bool   `json:"loading"`
-		Model       string `json:"model"`
-		RetryAfterMs int   `json:"retryAfterMs"`
+		Error        string `json:"error"`
+		Loading      bool   `json:"loading"`
+		Model        string `json:"model"`
+		RetryAfterMs int    `json:"retryAfterMs"`
 	}
 	_ = json.Unmarshal(body, &parsed)
 

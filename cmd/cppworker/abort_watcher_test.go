@@ -18,8 +18,8 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+	"unsafe"
 
-	"ollama-loadbalancer/c/bridge"
 	"ollama-loadbalancer/pkg/logger"
 )
 
@@ -33,14 +33,20 @@ func resetAbortCounter() {
 	atomic.StoreInt64(&abortFiredCounter, 0)
 }
 
+// R63 (2026-09-15) API change: NewAbortWatcher принимает unsafe.Pointer на
+// per-inference atomic int32 (C-bridge abort flag), а не *bridge.ModelHandle.
+// Хелпер даёт тестам валидный non-nil flag без завязки на cgo-типы.
+func newTestAbortFlag() unsafe.Pointer {
+	return unsafe.Pointer(new(int32))
+}
+
 // TestAbortWatcher_NilSafety — передача nil ctx или nil model не запускает goroutine
 // и не паникует. Возвращает nil *AbortWatcher.
 func TestAbortWatcher_NilSafety(t *testing.T) {
 	t.Run("nil ctx", func(t *testing.T) {
-		// bridge.ModelHandle{} — non-nil pointer, но ptr внутри nil.
-		// RequestAbort на таком handle вернёт ошибку "model not loaded",
-		// но watcher должен корректно отработать (no panic, логирует warning).
-		w := NewAbortWatcher(nil, &bridge.ModelHandle{})
+		// newTestAbortFlag() — non-nil flag. watcher должен корректно отработать
+		// (no panic) при nil ctx.
+		w := NewAbortWatcher(nil, newTestAbortFlag())
 		if w != nil {
 			t.Error("NewAbortWatcher(nil ctx) should return nil, got non-nil")
 		}
@@ -67,9 +73,8 @@ func TestAbortWatcher_NilSafety(t *testing.T) {
 // (даже если RequestAbort падает с ошибкой из-за nil ptr). Проверяем через Wait().
 func TestAbortWatcher_CtxCancelTriggersRun(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
-	// bridge.ModelHandle{} с ptr=nil — RequestAbort вернёт ошибку
-	// "model not loaded", но goroutine отработает без panic.
-	w := NewAbortWatcher(ctx, &bridge.ModelHandle{})
+	// non-nil abort flag; в stub-сборке запись в него — no-op безвредно.
+	w := NewAbortWatcher(ctx, newTestAbortFlag())
 	if w == nil {
 		t.Fatal("NewAbortWatcher returned nil for valid args")
 	}
@@ -96,7 +101,7 @@ func TestAbortWatcher_CtxCancelTriggersRun(t *testing.T) {
 func TestAbortWatcher_NoFireBeforeCtxCancel(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	w := NewAbortWatcher(ctx, &bridge.ModelHandle{})
+	w := NewAbortWatcher(ctx, newTestAbortFlag())
 	if w == nil {
 		t.Fatal("NewAbortWatcher returned nil")
 	}
@@ -136,8 +141,8 @@ func TestAbortWatcher_MultipleInstances(t *testing.T) {
 	ctx2, cancel2 := context.WithCancel(context.Background())
 	defer cancel2()
 
-	w1 := NewAbortWatcher(ctx1, &bridge.ModelHandle{})
-	w2 := NewAbortWatcher(ctx2, &bridge.ModelHandle{})
+	w1 := NewAbortWatcher(ctx1, newTestAbortFlag())
+	w2 := NewAbortWatcher(ctx2, newTestAbortFlag())
 
 	// Отменяем только ctx1.
 	cancel1()
@@ -170,7 +175,7 @@ func TestAbortWatcher_ConcurrentCreation(t *testing.T) {
 
 	watchers := make([]*AbortWatcher, N)
 	for i := 0; i < N; i++ {
-		watchers[i] = NewAbortWatcher(ctx, &bridge.ModelHandle{})
+		watchers[i] = NewAbortWatcher(ctx, newTestAbortFlag())
 	}
 
 	cancel() // разом отменяем все
@@ -188,21 +193,13 @@ func TestAbortWatcher_ConcurrentCreation(t *testing.T) {
 	}
 }
 
-// TestAbortWatcher_StubModeSmoke — в stub mode bridge.RequestAbort — no-op.
-// Тест проверяет что watcher не паникует в stub build tag.
+// TestAbortWatcher_StubModeSmoke — watcher не паникует на реальном flag,
+// полученном из bridge.LoadModel в stub-режиме.
 func TestAbortWatcher_StubModeSmoke(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	// В stub mode: bridge.LoadModel возвращает &ModelHandle{path: ...}
-	// с ptr=nil (поскольку C не задействован). RequestAbort — no-op.
-	handle, err := bridge.LoadModel(bridge.ModelConfig{ModelPath: "/tmp/fake.gguf"})
-	if err != nil {
-		t.Fatalf("bridge.LoadModel: %v", err)
-	}
-	defer handle.FreeModel()
-
-	w := NewAbortWatcher(ctx, handle)
+	w := NewAbortWatcher(ctx, newTestAbortFlag())
 	if w == nil {
 		t.Fatal("NewAbortWatcher returned nil")
 	}

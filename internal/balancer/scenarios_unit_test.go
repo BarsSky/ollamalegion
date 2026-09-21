@@ -1,4 +1,4 @@
-﻿// Package balancer — scenario tests для GGUF backend proxy, agent scenarios, и unit tests.
+// Package balancer — scenario tests для GGUF backend proxy, agent scenarios, и unit tests.
 //
 // Разделы:
 //   - gguf: GGUF backend proxy endpoint (proxy к llama_cpp backend'ам)
@@ -407,7 +407,7 @@ func TestUnit_Scenario_BackendState_MetricsHistory(t *testing.T) {
 	// Append a snapshot.
 	state.mu.Lock()
 	state.MetricsHistory = append(state.MetricsHistory, types.MetricsSnapshot{
-		Timestamp: time.Now(),
+		Timestamp:       time.Now(),
 		GPUUsagePercent: 50.0,
 	})
 	state.mu.Unlock()

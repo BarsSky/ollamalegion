@@ -24,6 +24,12 @@ type chatMessage struct {
 	ToolCalls  []openAIToolCall `json:"tool_calls,omitempty"`
 	ToolCallID string           `json:"tool_call_id,omitempty"`
 	Name       string           `json:"name,omitempty"`
+	// R65d (2026-09-20): images в сообщении (Ollama vision-запросы).
+	// До R65d строгий декодер отвечал 400 `unknown field "images"` на любой
+	// vision-запрос из OpenWebUI/ollama run. Текстовая часть обрабатывается
+	// как обычно; сами изображения требуют mmproj в C-bridge, поэтому пока
+	// принимаются и логируются (не падаем — это важнее, чем 400).
+	Images []string `json:"images,omitempty"`
 	// 2026-07-01: reasoning-??????? ??? reasoning-??????? (qwen3.5, deepseek-r1,
 	// gemma-4 ? ?.?.). ? OpenAI-??????????? ??????? ?????????? `reasoning_content`,
 	// ? Ollama ? `reasoning`. ???????????? ??? non-streaming ??????, ????? ???????
@@ -39,6 +45,50 @@ type chatRequest struct {
 	MaxTokens   *int          `json:"max_tokens,omitempty"`
 	NumCtx      *int          `json:"num_ctx,omitempty"`
 	Tools       []openAITool  `json:"tools,omitempty"`
+
+	// ===== R65d (2026-09-20): полный Ollama-набор полей =====================
+	//
+	// Аудит 2026-09-20 (находка 1.1) показал: балансер транслировал /api/chat в
+	// /v1/chat/completions, но Ollama-поля терялись/отвергались. После R65d
+	// Ollama-пути идут в cppworker НАТИВНО (см. internal/balancer/
+	// llamacpp_native_path.go), поэтому этот обработчик обязан принимать всё,
+	// что реально шлют Ollama-клиенты (OpenWebUI, ollama run/python, Cline в
+	// ollama-режиме), — иначе строгий декодер ниже отвечает 400
+	// `unknown field "options"`.
+	//
+	// Options переиспользует generateOptions (types.go:11-30) — единый источник
+	// истины для Ollama options.*. До R65d набор жил только в /api/generate, из-за
+	// чего /api/chat молча терял top_k/repeat_penalty/seed/min_p/mirostat*.
+	Options generateOptions `json:"options"`
+
+	// KeepAlive — Ollama-семантика времени жизни модели ("5m", "0", "-1").
+	// До R65d /api/chat его вообще не принимал → клиент не мог ни выгрузить
+	// модель, ни продлить её жизнь.
+	KeepAlive json.RawMessage `json:"keep_alive,omitempty"`
+
+	// Format — "json", "" (свободный текст) ИЛИ объект JSON-схемы
+	// (structured outputs). RawMessage, потому что Ollama допускает оба типа.
+	Format json.RawMessage `json:"format,omitempty"`
+
+	// Think — включить/выключить reasoning у thinking-моделей (qwen3, gemma-4,
+	// deepseek-r1). Может быть bool или строкой ("low"/"medium"/"high").
+	Think json.RawMessage `json:"think,omitempty"`
+
+	// System/Template/Raw — Ollama-семантика переопределения промпта.
+	System   string `json:"system,omitempty"`
+	Template string `json:"template,omitempty"`
+	Raw      bool   `json:"raw,omitempty"`
+
+	// Truncate — обрезать историю, чтобы влезть в контекст (Ollama >= 0.1.x).
+	Truncate *bool `json:"truncate,omitempty"`
+
+	// Options для logprobs (Ollama 0.9+). Принимаем, чтобы не падать 400;
+	// фактическая выдача logprobs зависит от поддержки в C-bridge.
+	Logprobs    *bool `json:"logprobs,omitempty"`
+	TopLogprobs *int  `json:"top_logprobs,omitempty"`
+
+	// _keepAliveDuration — результат parseKeepAlive(req.KeepAliveRaw); не из JSON.
+	_keepAliveDuration time.Duration `json:"-"`
 }
 
 type chatResponse struct {
@@ -92,7 +142,7 @@ func handleChat(w http.ResponseWriter, r *http.Request) {
 	// 0 = unlimited (default, backward-compat). Слот acquire ДО model load —
 	// иначе 100 параллельных запросов вызовут 100 model load'ов до отказа.
 	userID := getUserID(r)
-	if max := currentConfig.MaxParallelPerUser; max > 0 {
+	if max := maxParallelPerUser(); max > 0 {
 		if !backend.UserTracker().TryAcquire(userID, max) {
 			logger.Get().Warnw("handleChat: user exceeded MaxParallelPerUser",
 				"user_id", userID, "max", max, "model", req.Model, "remote", r.RemoteAddr)
@@ -147,21 +197,7 @@ func handleChat(w http.ResponseWriter, r *http.Request) {
 		"has_tools", len(req.Tools) > 0,
 		"stream", req.Stream)
 
-	genReq := generateRequest{
-		Model:  req.Model,
-		Prompt: prompt,
-		Stream: req.Stream,
-	}
-	if req.Temperature != nil {
-		v := *req.Temperature
-		genReq.Temperature = &v
-	}
-	if req.MaxTokens != nil {
-		genReq.MaxTokens = *req.MaxTokens
-	}
-	if req.NumCtx != nil && *req.NumCtx > 0 {
-		genReq.NumCtx = *req.NumCtx
-	}
+	genReq := buildGenerateRequestFromChat(req, prompt)
 
 	params := buildGenerationParams(genReq)
 	// Round 6 #6: прокидываем HasTools=true чтобы увеличить резерв токенов
@@ -194,6 +230,17 @@ func handleChat(w http.ResponseWriter, r *http.Request) {
 	}
 	_ = adjustedNPredict
 	SetContextWarningHeader(w, warning)
+
+	// R65d (2026-09-20): применяем keep_alive, как это делает /api/generate
+	// (handlers_generate.go:353-355). До R65d /api/chat не принимал keep_alive
+	// вообще, поэтому клиент (OpenWebUI, ollama run) не мог ни выгрузить модель
+	// ("0"), ни продлить её жизнь ("5m") — модель жила по дефолту cppworker.
+	//
+	// req._keepAliveDuration заполняется в buildGenerateRequestFromChat.
+	// Семантика applyKeepAlive: 0 → UnloadModel, >0 → UpdateLastUsed(+dur).
+	defer func() {
+		applyKeepAlive(actualModel, genReq._keepAliveDuration)
+	}()
 
 	if req.Stream {
 		// ??? stream=true && tools!=[] ??????? ?????? ??? ??????, ?? ???????????
@@ -264,6 +311,120 @@ func handleChat(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	writeJSON(w, http.StatusOK, resp)
+}
+
+// buildGenerateRequestFromChat — R65d (2026-09-20): переносит ПОЛНЫЙ набор
+// Ollama-параметров из /api/chat запроса в generateRequest, чтобы
+// buildGenerationParams (handlers_generate.go:130-189) применил их так же, как
+// для /api/generate.
+//
+// До R65d /api/chat переносил только temperature / max_tokens / num_ctx —
+// top_k, repeat_penalty, seed, min_p, typical_p, tfs_z, mirostat*,
+// repeat_last_n, frequency_penalty, presence_penalty, stop и keep_alive
+// молча терялись (аудит 2026-09-20, находка 1.2).
+//
+// Порядок разрешения конфликтов:
+//  1. Значения из Options.* (Ollama-канонический вложенный блок) — база.
+//  2. Top-level поля запроса (temperature/max_tokens/num_ctx) переопределяют
+//     Options.*, если заданы явно — так же, как normalizeGenerateRequest
+//     делает для /api/generate (`req.X == nil && Options.X != 0`).
+//
+// Prompt передаётся уже собранным вызывающим (buildChatPrompt).
+// System/Raw намеренно НЕ прокидываются: /api/chat собирает system из
+// messages[] и не должен повторно префиксовать его к готовому промпту.
+func buildGenerateRequestFromChat(req chatRequest, prompt string) generateRequest {
+	genReq := generateRequest{
+		Model:   req.Model,
+		Prompt:  prompt,
+		Stream:  req.Stream,
+		Options: req.Options,
+	}
+
+	// Шаг 1: разворачиваем Options.* в top-level поля generateRequest.
+	normalizeGenerateRequest(&genReq)
+
+	// Шаг 2: top-level поля /api/chat имеют приоритет над Options.*
+	if req.Temperature != nil {
+		v := *req.Temperature
+		genReq.Temperature = &v
+	}
+	if req.MaxTokens != nil {
+		genReq.MaxTokens = *req.MaxTokens
+	}
+	if req.NumCtx != nil && *req.NumCtx > 0 {
+		genReq.NumCtx = *req.NumCtx
+	} else if genReq.NumCtx == 0 && genReq.Options.NumCtx > 0 {
+		genReq.NumCtx = genReq.Options.NumCtx
+	}
+
+	// Шаг 3: keep_alive — до R65d /api/chat его не принимал вообще, поэтому
+	// клиент не мог ни выгрузить модель, ни продлить её жизнь в VRAM.
+	genReq.KeepAlive = keepAliveFromRaw(req.KeepAlive)
+	genReq._keepAliveDuration = parseKeepAlive(genReq.KeepAlive)
+
+	return genReq
+}
+
+// keepAliveFromRaw нормализует Ollama keep_alive к строке.
+//
+// Ollama допускает как строку ("5m", "0", "-1"), так и число (секунды, -1).
+func keepAliveFromRaw(raw json.RawMessage) string {
+	if len(raw) == 0 {
+		return ""
+	}
+	var s string
+	if err := json.Unmarshal(raw, &s); err == nil {
+		return s
+	}
+	var n json.Number
+	if err := json.Unmarshal(raw, &n); err == nil {
+		if f, ferr := n.Float64(); ferr == nil {
+			if f < 0 {
+				return "-1"
+			}
+			return (time.Duration(f) * time.Second).String()
+		}
+	}
+	return ""
+}
+
+// formatWantsJSON — true если клиент запросил JSON-вывод (format:"json"
+// или объект JSON-схемы). Фактическое ограничение вывода выполняет chat
+// template / грамматика в C-bridge; здесь значение используется для
+// диагностики и для будущего проброса в params.
+func formatWantsJSON(raw json.RawMessage) bool {
+	if len(raw) == 0 {
+		return false
+	}
+	var s string
+	if err := json.Unmarshal(raw, &s); err == nil {
+		return strings.EqualFold(strings.TrimSpace(s), "json")
+	}
+	trimmed := strings.TrimSpace(string(raw))
+	return strings.HasPrefix(trimmed, "{") || strings.HasPrefix(trimmed, "[")
+}
+
+// thinkEnabledFromRaw — true/false/"low"/"medium"/"high" → (enabled, explicit).
+// explicit=false означает «клиент не задавал think» (использовать конфиг).
+func thinkEnabledFromRaw(raw json.RawMessage) (enabled bool, explicit bool) {
+	if len(raw) == 0 {
+		return false, false
+	}
+	var b bool
+	if err := json.Unmarshal(raw, &b); err == nil {
+		return b, true
+	}
+	var s string
+	if err := json.Unmarshal(raw, &s); err == nil {
+		switch strings.ToLower(strings.TrimSpace(s)) {
+		case "", "false", "none", "off":
+			return false, true
+		default:
+			// "true" / "low" / "medium" / "high" — reasoning включён.
+			return true, true
+		}
+	}
+	return false, false
 }
 
 // buildChatPrompt ?????????? ApplyChatTemplate ?? GGUF (???????????????) ???
@@ -769,15 +930,37 @@ func writeChatStreamResponse(w http.ResponseWriter, r *http.Request, modelName, 
 	}
 
 	cleanedOutput := cleanFinalContent(fullOutput)
+	// R65d (2026-09-20): реальные token counts вместо eval_count:0.
+	//
+	// До R65d финальный чанк нативного /api/chat отдавал eval_count=0 и
+	// eval_duration == total_duration (включая prefill). Клиенты (OpenWebUI)
+	// считали tokens/sec от этих полей, поэтому показывали N/A или заниженное
+	// значение. Считаем так же, как OpenAI-путь cppworker
+	// (writeOpenAIUsageChunk → countTokensSafe, handlers_openai.go:2058-2075),
+	// чтобы метрики не расходились между нативным и OpenAI маршрутами.
+	evalTokens := countTokensSafe(modelName, cleanedOutput)
+	promptTokens := countTokensSafe(modelName, prompt)
+	evalNs := duration.Nanoseconds()
+	promptEvalNs := int64(0)
+	// Если зафиксировано время первого контентного чанка — отделяем prefill (TTFT)
+	// от генерации, чтобы eval_duration не включал prefill.
+	if !prefillStartTime.IsZero() && duration > 0 {
+		ttft := time.Since(prefillStartTime).Nanoseconds()
+		if ttft >= 0 && ttft <= evalNs {
+			promptEvalNs = ttft
+		}
+	}
 	doneChunk := map[string]interface{}{
-		"model":          modelName,
-		"created_at":     createdAt,
-		"message":        map[string]string{"role": "assistant", "content": cleanedOutput},
-		"done":           true,
-		"done_reason":    "stop",
-		"total_duration": duration.Nanoseconds(),
-		"eval_count":     0,
-		"eval_duration":  duration.Nanoseconds(),
+		"model":                modelName,
+		"created_at":           createdAt,
+		"message":              map[string]string{"role": "assistant", "content": cleanedOutput},
+		"done":                 true,
+		"done_reason":          "stop",
+		"total_duration":       evalNs,
+		"prompt_eval_count":    promptTokens,
+		"prompt_eval_duration": promptEvalNs,
+		"eval_count":           evalTokens,
+		"eval_duration":        evalNs - promptEvalNs,
 	}
 	doneJSON, _ := json.Marshal(doneChunk)
 	fmt.Fprintf(w, "%s\n", doneJSON)
@@ -959,14 +1142,20 @@ func writeChatStreamResponseWithTools(w http.ResponseWriter, r *http.Request, mo
 		return
 	}
 
+	// R65d (2026-09-20): реальные token counts вместо eval_count:0
+	// (та же причина, что и в writeChatStreamResponse — OpenWebUI считает
+	// tokens/sec из этих полей и показывал N/A).
+	fullOutputCount := countTokensSafe(modelName, fullOutput)
+	promptTokensTools := countTokensSafe(modelName, prompt)
 	finalChunk := map[string]interface{}{
-		"model":          modelName,
-		"created_at":     createdAt,
-		"message":        map[string]interface{}{"role": "assistant"},
-		"done":           true,
-		"total_duration": duration.Nanoseconds(),
-		"eval_count":     0,
-		"eval_duration":  duration.Nanoseconds(),
+		"model":             modelName,
+		"created_at":        createdAt,
+		"message":           map[string]interface{}{"role": "assistant"},
+		"done":              true,
+		"total_duration":    duration.Nanoseconds(),
+		"prompt_eval_count": promptTokensTools,
+		"eval_count":        fullOutputCount,
+		"eval_duration":     duration.Nanoseconds(),
 	}
 
 	if len(toolCalls) > 0 {

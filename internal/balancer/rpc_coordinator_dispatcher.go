@@ -147,12 +147,12 @@ func NewRpcCoordinatorDispatcher(coord *rpccoordinator.ModelCoordinator, p *Prox
 		}
 	}
 	d := &RpcCoordinatorDispatcher{
-		coordinator:       coord,
-		proxy:             p,
-		circuitBreakers:   make(map[string]*rpccoordinator.CircuitBreaker),
-		requestTimeout:    30 * time.Second, // default
-		streamTimeout:     5 * time.Minute, // default
-		failFast:          false,           // default — retry через circuit breaker
+		coordinator:     coord,
+		proxy:           p,
+		circuitBreakers: make(map[string]*rpccoordinator.CircuitBreaker),
+		requestTimeout:  30 * time.Second, // default
+		streamTimeout:   5 * time.Minute,  // default
+		failFast:        false,            // default — retry через circuit breaker
 	}
 	// Store CB defaults на dispatcher; применяются в getOrCreateCircuitBreaker.
 	d.cbDefaults = defaultCBConfig()
@@ -188,9 +188,9 @@ func (d *RpcCoordinatorDispatcher) IsRpcPath(path string) bool {
 // модели. Используется в Phase 9 ServeHTTP для ранней проверки до чтения body.
 //
 // Conditions:
-//   1. Coordinator инициализирован (не nil).
-//   2. Модель зарегистрирована в coordinator (HasDistributedModel).
-//   3. (Phase 8.3) Хотя бы один worker для этой модели имеет CB != Open.
+//  1. Coordinator инициализирован (не nil).
+//  2. Модель зарегистрирована в coordinator (HasDistributedModel).
+//  3. (Phase 8.3) Хотя бы один worker для этой модели имеет CB != Open.
 //
 // Использует State() (без side effects на halfOpenInFlight), а не Allow().
 func (d *RpcCoordinatorDispatcher) ShouldRoute(modelName string) bool {
@@ -314,15 +314,15 @@ func flattenPrompt(env *inferenceRequestEnvelope) string {
 // ServeHTTP — Phase 8 Session 2 full implementation (non-streaming).
 //
 // Flow:
-//   1. Read body
-//   2. Parse JSON envelope
-//   3. ShouldRoute(model) — false → 404 (model not distributed) или
-//      503 если все workers circuit-broken (Phase 8 Session 3.3)
-//   4. stream=true → serveStreaming() (Phase 8 Session 3.2)
-//   5. coordinator.Infer(ctx, req)
-//   6. recordCBFromStats() — обновляет circuit breaker per worker (Session 3.3)
-//   7. Format response by path (Ollama /api/generate, /api/chat; OpenAI
-//      /v1/chat/completions, /v1/completions)
+//  1. Read body
+//  2. Parse JSON envelope
+//  3. ShouldRoute(model) — false → 404 (model not distributed) или
+//     503 если все workers circuit-broken (Phase 8 Session 3.3)
+//  4. stream=true → serveStreaming() (Phase 8 Session 3.2)
+//  5. coordinator.Infer(ctx, req)
+//  6. recordCBFromStats() — обновляет circuit breaker per worker (Session 3.3)
+//  7. Format response by path (Ollama /api/generate, /api/chat; OpenAI
+//     /v1/chat/completions, /v1/completions)
 //
 // Session 3.3: circuit breaker integration per worker slice.
 func (d *RpcCoordinatorDispatcher) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -462,19 +462,19 @@ func (d *RpcCoordinatorDispatcher) writeSuccessResponse(w http.ResponseWriter, p
 	switch path {
 	case "/api/generate", "/api/ollama/generate":
 		_ = json.NewEncoder(w).Encode(map[string]interface{}{
-			"model":         model,
-			"response":      resp.Output,
-			"done":          true,
-			"done_reason":   "stop",
-			"context":       []int{},
+			"model":          model,
+			"response":       resp.Output,
+			"done":           true,
+			"done_reason":    "stop",
+			"context":        []int{},
 			"total_duration": totalNs,
 		})
 	case "/api/chat", "/api/ollama/chat":
 		_ = json.NewEncoder(w).Encode(map[string]interface{}{
-			"model":       model,
-			"message":     map[string]string{"role": "assistant", "content": resp.Output},
-			"done":        true,
-			"done_reason": "stop",
+			"model":          model,
+			"message":        map[string]string{"role": "assistant", "content": resp.Output},
+			"done":           true,
+			"done_reason":    "stop",
 			"total_duration": totalNs,
 		})
 	case "/v1/chat/completions":
@@ -502,8 +502,8 @@ func (d *RpcCoordinatorDispatcher) writeSuccessResponse(w http.ResponseWriter, p
 			"created": now,
 			"model":   model,
 			"choices": []map[string]interface{}{{
-				"text":         resp.Output,
-				"index":        0,
+				"text":          resp.Output,
+				"index":         0,
 				"finish_reason": "stop",
 			}},
 		})
@@ -547,17 +547,17 @@ var (
 //
 // Format per path:
 //   - /api/generate, /api/ollama/generate:
-//       data: {"model":"...","response":"<token>","done":false}\n\n
-//       data: {"model":"...","response":"","done":true,"done_reason":"stop",...}\n\n
+//     data: {"model":"...","response":"<token>","done":false}\n\n
+//     data: {"model":"...","response":"","done":true,"done_reason":"stop",...}\n\n
 //   - /api/chat, /api/ollama/chat:
-//       data: {"model":"...","message":{"role":"assistant","content":"<token>"},"done":false}\n\n
-//       data: {"model":"...","message":{"role":"assistant","content":""},"done":true,...}\n\n
+//     data: {"model":"...","message":{"role":"assistant","content":"<token>"},"done":false}\n\n
+//     data: {"model":"...","message":{"role":"assistant","content":""},"done":true,...}\n\n
 //   - /v1/chat/completions:
-//       data: {"id":"chatcmpl-...","choices":[{"delta":{"content":"<token>"}}]}\n\n
-//       data: [DONE]\n\n
+//     data: {"id":"chatcmpl-...","choices":[{"delta":{"content":"<token>"}}]}\n\n
+//     data: [DONE]\n\n
 //   - /v1/completions:
-//       data: {"id":"cmpl-...","choices":[{"text":"<token>"}]}\n\n
-//       data: [DONE]\n\n
+//     data: {"id":"cmpl-...","choices":[{"text":"<token>"}]}\n\n
+//     data: [DONE]\n\n
 func (d *RpcCoordinatorDispatcher) serveStreaming(
 	w http.ResponseWriter, r *http.Request,
 	ctx context.Context, env inferenceRequestEnvelope,
@@ -634,7 +634,7 @@ func (d *RpcCoordinatorDispatcher) serveStreaming(
 				"model":   env.Model,
 				"choices": []map[string]interface{}{{
 					"index": 0,
-					"text": token,
+					"text":  token,
 				}},
 			}
 		default:

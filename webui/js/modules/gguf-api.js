@@ -241,7 +241,25 @@ const GgufApi = (function () {
             clearTimeout(timer);
             if (!response.ok) {
                 const text = await response.text().catch(function () { return ''; });
-                throw new Error('HTTP ' + response.status + ': ' + (text || response.statusText));
+                const err = new Error('HTTP ' + response.status + ': ' + (text || response.statusText));
+                err.status = response.status;
+                // Структурированный код для UI — UI показывает конкретное сообщение
+                // вместо общего «HTTP 500». Те же коды, что и в requestViaBackend,
+                // чтобы action layer мог использовать единый маппинг.
+                if (response.status === 401 || response.status === 403) {
+                    err.code = 'auth_required';
+                } else if (response.status === 404) {
+                    err.code = 'not_found';
+                } else if (response.status === 409) {
+                    err.code = 'conflict';
+                } else if (response.status === 429) {
+                    err.code = 'rate_limited';
+                } else if (response.status >= 500) {
+                    err.code = 'server_error';
+                } else {
+                    err.code = 'http_' + response.status;
+                }
+                throw err;
             }
             // Handle 204 No Content
             if (response.status === 204) return null;
@@ -250,10 +268,14 @@ const GgufApi = (function () {
         } catch (err) {
             clearTimeout(timer);
             if (err.name === 'AbortError') {
-                throw new Error('Request timeout after ' + (REQUEST_TIMEOUT_MS / 1000) + 's — cppworker unreachable at ' + workerUrl);
+                const err2 = new Error('Request timeout after ' + (REQUEST_TIMEOUT_MS / 1000) + 's — cppworker unreachable at ' + workerUrl);
+                err2.code = 'timeout';
+                err2.status = 0;
+                throw err2;
             }
-            if (!err.message.startsWith('HTTP')) {
-                err.message = 'Network error: ' + err.message;
+            if (!err.code) {
+                // Network / CORS / DNS — нет HTTP статуса
+                err.code = err.code || 'network';
             }
             throw err;
         }
@@ -355,6 +377,19 @@ const GgufApi = (function () {
         /** Get download progress */
         async getDownloadProgress(modelId, filename) {
             return getJson('/api/hf/progress?modelId=' + encodeURIComponent(modelId) + '&filename=' + encodeURIComponent(filename));
+        },
+
+        /**
+         * R66.4 (2026-09-16): удалить скачанный или частичный файл на cppworker.
+         * POST /api/hf/cleanup с body {modelId, filename}.
+         * Используется для очистки мусора после прерванных загрузок.
+         * idempotent — если файла нет, вернёт {status: "noop"}.
+         */
+        async deleteDownload(modelId, filename) {
+            return request('/api/hf/cleanup', {
+                method: 'POST',
+                body: JSON.stringify({ modelId, filename })
+            });
         },
 
         /** List all active downloads */
@@ -807,7 +842,135 @@ const GgufApi = (function () {
             var balancerUrl = (window.WEBUI_CONFIG && (window.WEBUI_CONFIG.API_BASE_URL || window.WEBUI_CONFIG.API_BASE)) ||
                 (typeof window !== 'undefined' && window.location && window.location.origin) ||
                 '/';
-            return balancerUrl.replace(/\/+$/, '') + '/api/v1/gguf/backends/' + encodeURIComponent(backendId) + '/proxy' + path;
+            var url = balancerUrl.replace(/\/+$/, '') + '/api/v1/gguf/backends/' + encodeURIComponent(backendId) + '/proxy' + path;
+            // R65d (2026-09-20): токен в query — нужен для EventSource.
+            //
+            // Прокси-путь /api/v1/gguf/backends/ теперь защищён AuthMiddleware
+            // (раньше был публичным и позволял без токена загружать/удалять модели
+            // на cppworker). Обычные fetch-запросы передают X-API-Token заголовком
+            // (см. requestViaBackend), но EventSource НЕ умеет custom headers —
+            // именно так работает SSE прогресса загрузки
+            // (gguf-load-progress.js:203). AuthMiddleware принимает токен и из
+            // query (?token=, см. internal/api/auth.go:59-61), поэтому дублируем
+            // его здесь — иначе SSE будет получать 401 и молча падать в polling.
+            if (apiToken && url.indexOf('token=') === -1) {
+                url += (url.indexOf('?') === -1 ? '?' : '&') + 'token=' + encodeURIComponent(apiToken);
+            }
+            return url;
+        },
+
+        /**
+         * Cancel активной генерации на конкретном бэкенде.
+         *
+         * R65d (2026-09-20): метод добавлен как обёртка над
+         * Api.cppworkerCancelGeneration. Раньше gguf-renderer-actions.js:163-170
+         * вызывал `api.cancelGeneration(...)` (где api = window.GgufApi ||
+         * window.Api), но НИ у GgufApi, ни у Api такого имени не было
+         * (в Api.js метод назывался cppworkerCancelGeneration.post) — кнопка
+         * Cancel из Round 32 всегда показывала тост
+         * "cancelGeneration API not available" и не работала.
+         *
+         * @param {string} backendId
+         * @param {string} modelName
+         * @param {string} [userId] — опционально, отменить только запросы этого пользователя
+         * @returns {Promise<{cancelled:number, by:string, request_id:string}>}
+         */
+        async cancelGeneration(backendId, modelName, userId) {
+            if (!backendId) throw new Error('cancelGeneration: backendId is required');
+            if (!modelName) throw new Error('cancelGeneration: modelName is required');
+            if (window.Api && window.Api.cppworkerCancelGeneration &&
+                typeof window.Api.cppworkerCancelGeneration.post === 'function') {
+                return window.Api.cppworkerCancelGeneration.post(backendId, modelName, userId);
+            }
+            // Fallback: прямой прокси-вызов, если Api-модуль ещё не загружен.
+            const body = { model: modelName };
+            if (userId) body.user_id = userId;
+            const data = await this.requestViaBackend(backendId, '/api/cancel', {
+                method: 'POST',
+                body: JSON.stringify(body),
+            });
+            return {
+                cancelled: (data && data.cancelled) || 0,
+                by: (data && data.by) || 'model',
+                request_id: (data && data.request_id) || '',
+            };
+        },
+
+        /**
+         * Число активных генераций по моделям для бэкенда.
+         *
+         * Возвращает агрегат `{ queries: { "<model>": <count> } }` — именно в
+         * таком виде его ждёт gguf-renderer-refresh.js:251-264 (`data.queries`).
+         *
+         * R65d (2026-09-20): метод добавлен как обёртка над
+         * Api.cppworkerActiveQueries (per-model endpoint). Раньше
+         * gguf-renderer-refresh.js:247-250 проверял
+         * `typeof api.activeQueries !== 'function'` и немедленно выходил, не
+         * делая запроса, поэтому busy-badge не обновлялся вообще.
+         *
+         * @param {string} backendId
+         * @returns {Promise<{queries: Object<string, number>}>}
+         */
+        async activeQueries(backendId) {
+            if (!backendId) return { queries: {} };
+            // Список моделей бэкенда — из того же эндпоинта, который уже
+            // используется для отрисовки страницы GGUF (/api/v1/gguf/backends).
+            // Раньше здесь был вызов несуществующего this.getBackends(), поэтому
+            // список моделей всегда оставался пустым и агрегат возвращался пустым.
+            var models = [];
+            try {
+                var data = await this.getLlamaCppBackends();
+                var list = (data && data.backends) || (Array.isArray(data) ? data : []);
+                for (var i = 0; i < list.length; i++) {
+                    var b = list[i];
+                    if (!b || b.id !== backendId) continue;
+                    if (Array.isArray(b.models)) {
+                        models = b.models.map(function (m) {
+                            return (m && typeof m === 'object') ? m.name : m;
+                        }).filter(Boolean);
+                    }
+                    break;
+                }
+            } catch (e) { /* бэкенды недоступны — работаем без списка моделей */ }
+
+            var queries = {};
+
+            // Путь 1: один запрос — cppworker отдаёт счётчики всех моделей.
+            // (handleGetActiveQueries без ?model= возвращает агрегат.)
+            try {
+                var agg = await this.requestViaBackend(backendId, '/api/models/active-queries');
+                if (agg) {
+                    if (agg.queries && typeof agg.queries === 'object') {
+                        return { queries: agg.queries };
+                    }
+                    if (Array.isArray(agg.models)) {
+                        agg.models.forEach(function (m) {
+                            if (m && m.name) queries[m.name] = m.activeQueries || m.active_queries || 0;
+                        });
+                        if (Object.keys(queries).length > 0) {
+                            return { queries: queries };
+                        }
+                    }
+                    if (typeof agg.activeQueries === 'number' && agg.model) {
+                        queries[agg.model] = agg.activeQueries;
+                        return { queries: queries };
+                    }
+                }
+            } catch (e) { /* агрегатный режим недоступен — идём по моделям */ }
+
+            // Путь 2 (fallback): per-model запросы через Api.cppworkerActiveQueries.
+            if (window.Api && window.Api.cppworkerActiveQueries &&
+                typeof window.Api.cppworkerActiveQueries.get === 'function') {
+                for (var j = 0; j < models.length; j++) {
+                    try {
+                        var res = await window.Api.cppworkerActiveQueries.get(backendId, models[j]);
+                        if (res && typeof res.activeQueries === 'number') {
+                            queries[models[j]] = res.activeQueries;
+                        }
+                    } catch (e) { /* отдельная модель недоступна — пропускаем */ }
+                }
+            }
+            return { queries: queries };
         },
 
         /**

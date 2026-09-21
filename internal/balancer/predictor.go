@@ -21,9 +21,9 @@ type Predictor struct {
 // NewPredictor - создание предиктора
 func NewPredictor() *Predictor {
 	return &Predictor{
-		historyLimit:   120,                // 10 минут при сборе раз в 5 сек
-		minHistorySize: 6,                  // Минимум 30 секунд истории
-		trendWindow:    2 * time.Minute,    // Окно тренда
+		historyLimit:   120,             // 10 минут при сборе раз в 5 сек
+		minHistorySize: 6,               // Минимум 30 секунд истории
+		trendWindow:    2 * time.Minute, // Окно тренда
 	}
 }
 
@@ -122,8 +122,8 @@ func (pr *Predictor) calculatePrediction(state *BackendState, metrics *types.Bac
 	if len(history) < pr.minHistorySize {
 		return types.Prediction{
 			SecondsToCritical: -1,
-			CriticalReason:      "none",
-			RequestCapacity:     pr.calculateRequestCapacity(metrics, currentFreeSlots),
+			CriticalReason:    "none",
+			RequestCapacity:   pr.calculateRequestCapacity(metrics, currentFreeSlots),
 		}
 	}
 

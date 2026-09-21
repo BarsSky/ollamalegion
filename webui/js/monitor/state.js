@@ -18,13 +18,35 @@
 
   // API configuration
   function detectApiBase() {
-    if (typeof window !== 'undefined' && window.WEBUI_CONFIG && window.WEBUI_CONFIG.apiBase) {
-      return window.WEBUI_CONFIG.apiBase.replace(/\/$/, '');
+    // R60.16.1 (2026-09-08): R60.16.1 fallback chain for API base URL.
+    // Pre-R60.16.1: only checked `WEBUI_CONFIG.apiBase` (lowercase, NOT
+    // matching entrypoint.sh which injects `API_BASE` uppercase), localStorage,
+    // and ?api_base= query. When all empty, fell through to '' (relative),
+    // which works inside docker (nginx proxies) but on a host browser at
+    // http://localhost:18083 the page would 404 because the browser's
+    // resolved URL didn't match a proxy route.
+    //
+    // R60.16.1 chain (in order):
+    //   1. WEBUI_CONFIG.apiBase (legacy lowercase, for backward compat)
+    //   2. WEBUI_CONFIG.API_BASE (current uppercase from entrypoint.sh)
+    //   3. localStorage.monitorApiBase (operator override)
+    //   4. ?api_base= query param
+    //   5. window.location.origin (same-origin — works on host browser
+    //      AND inside docker via nginx proxy)
+    //   6. '' (relative, legacy fallback)
+    function readFromCfg() {
+      if (typeof window === 'undefined' || !window.WEBUI_CONFIG) return '';
+      return window.WEBUI_CONFIG.apiBase || window.WEBUI_CONFIG.API_BASE || '';
     }
+    var cfg = readFromCfg();
+    if (cfg) return cfg.replace(/\/$/, '');
     var s = localStorage.getItem('monitorApiBase');
     if (s) return s.replace(/\/$/, '');
     var q = new URLSearchParams(location.search).get('api_base');
     if (q) return q.replace(/\/$/, '');
+    if (typeof window !== 'undefined' && window.location && window.location.origin) {
+      return window.location.origin;
+    }
     return '';
   }
 
@@ -206,7 +228,12 @@
   // Message listener for config updates
   window.addEventListener('message', function(e) {
     if (e.data && e.data.type === 'ollamalegion-config') {
-      if (e.data.apiBase !== undefined) MonitorApp.API_BASE = e.data.apiBase;
+      // R60.16.1 (2026-09-08): skip empty values so the parent's
+      // postMessage doesn't overwrite our detectApiBase() fallback
+      // (window.location.origin) with ''.
+      if (e.data.apiBase !== undefined && e.data.apiBase) {
+        MonitorApp.API_BASE = e.data.apiBase;
+      }
       if (e.data.apiToken !== undefined) localStorage.setItem('apiToken', e.data.apiToken);
       if (e.data.lang) {
         MonitorApp.SETLANG(e.data.lang);

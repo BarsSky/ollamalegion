@@ -42,7 +42,7 @@ func TestBackend_Scenario_HealthyToUnhealthy(t *testing.T) {
 			{ID: "o1", Name: "o1", Host: o1.host, OllamaPort: o1.port, Weight: 1, Status: types.StatusHealthy},
 		},
 		Balancing: types.BalancingSettings{
-			Algorithm: types.AlgorithmRoundRobin,
+			Algorithm:           types.AlgorithmRoundRobin,
 			HealthCheckInterval: 1, // 1s for fast tests
 		},
 		Resources: types.ResourceLimits{

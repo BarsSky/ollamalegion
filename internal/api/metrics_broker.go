@@ -3,8 +3,10 @@ package api
 import (
 	"encoding/json"
 	"sync"
+	"sync/atomic"
 	"time"
 
+	"ollama-loadbalancer/pkg/logger"
 	"ollama-loadbalancer/pkg/types"
 )
 
@@ -27,6 +29,72 @@ type MetricsBroker struct {
 	metricsChan chan *types.BackendMetrics
 	clusterChan chan *types.ClusterState
 	stopChan    chan struct{}
+
+	// R65d (2026-09-20): счётчики потерянных сообщений.
+	//
+	// Раньше оба `default:` в publish-путях молча отбрасывали данные: при
+	// заполненном канале (медленный WebSocket-клиент, всплеск метрик) клиент
+	// просто переставал получать обновления БЕЗ единого следа в логах и
+	// метриках. Оператор видел «застывший» дашборд и не мог понять, что данные
+	// теряются на стороне балансера.
+	//
+	// Теперь каждое отбрасывание считается, а факт дропа логируется
+	// (с throttle, чтобы не залить лог при длительной перегрузке).
+	brokerDrops   int64 // публикация в переполненный metricsChan/clusterChan
+	clientDrops   int64 // доставка в переполненный канал подписчика
+	lastDropLogNs int64 // для throttle логов
+}
+
+// brokerStatsSnapshot — снимок счётчиков потерь (для admin/метрик и тестов).
+type brokerStatsSnapshot struct {
+	BrokerDrops int64 `json:"broker_drops"`
+	ClientDrops int64 `json:"client_drops"`
+	Subscribers int   `json:"subscribers"`
+	MetricsChan int   `json:"metrics_chan_len"`
+	ClusterChan int   `json:"cluster_chan_len"`
+}
+
+// BrokerStats — R65d: экспорт счётчиков потерь.
+func (mb *MetricsBroker) BrokerStats() brokerStatsSnapshot {
+	if mb == nil {
+		return brokerStatsSnapshot{}
+	}
+	mb.mu.RLock()
+	subs := len(mb.subscribers)
+	mb.mu.RUnlock()
+	return brokerStatsSnapshot{
+		BrokerDrops: atomic.LoadInt64(&mb.brokerDrops),
+		ClientDrops: atomic.LoadInt64(&mb.clientDrops),
+		Subscribers: subs,
+		MetricsChan: len(mb.metricsChan),
+		ClusterChan: len(mb.clusterChan),
+	}
+}
+
+// noteBrokerDrop — инкремент счётчика + throttled лог.
+func (mb *MetricsBroker) noteBrokerDrop(what string) {
+	n := atomic.AddInt64(&mb.brokerDrops, 1)
+	mb.logDropThrottled("MetricsBroker: %s отброшено — канал публикации переполнен", what, n)
+}
+
+// noteClientDrop — потеря при доставке конкретному подписчику.
+func (mb *MetricsBroker) noteClientDrop(clientID string) {
+	n := atomic.AddInt64(&mb.clientDrops, 1)
+	mb.logDropThrottled("MetricsBroker: доставка клиенту "+clientID+
+		" отброшена — канал подписчика переполнен", "client_drop", n)
+}
+
+// logDropThrottled логирует не чаще раза в 5 секунд, чтобы всплеск дропов не
+// превратился в шторм записей в логе (сам счётчик при этом считает всё).
+func (mb *MetricsBroker) logDropThrottled(format, what string, total int64) {
+	const interval = int64(5 * time.Second)
+	now := time.Now().UnixNano()
+	last := atomic.LoadInt64(&mb.lastDropLogNs)
+	if now-last < interval || !atomic.CompareAndSwapInt64(&mb.lastDropLogNs, last, now) {
+		return
+	}
+	logger.Get().Warnw("metrics broker dropped data",
+		"what", what, "format", format, "total_dropped", total)
 }
 
 // NewMetricsBroker - создание нового брокера метрик
@@ -94,7 +162,8 @@ func (mb *MetricsBroker) Publish(metrics *types.BackendMetrics) {
 	select {
 	case mb.metricsChan <- metrics:
 	default:
-		// Канал переполнен, пропускаем метрику
+		// R65d: раньше пропуск был полностью молчаливым.
+		mb.noteBrokerDrop("метрики бэкенда")
 	}
 }
 
@@ -103,7 +172,8 @@ func (mb *MetricsBroker) PublishClusterState(state *types.ClusterState) {
 	select {
 	case mb.clusterChan <- state:
 	default:
-		// Канал переполнен, пропускаем
+		// R65d: раньше пропуск был полностью молчаливым.
+		mb.noteBrokerDrop("состояние кластера")
 	}
 }
 
@@ -124,7 +194,9 @@ func (mb *MetricsBroker) publishMetrics(metrics *types.BackendMetrics) {
 			// Клиент отключился, помечаем для удаления
 			go mb.Unsubscribe(id)
 		default:
-			// Канал клиента переполнен, пропускаем
+			// R65d: раньше пропуск был молчаливым — клиент «застывал» без
+			// диагностики. Теперь считаем и логируем (throttled).
+			mb.noteClientDrop(id)
 		}
 	}
 }
@@ -146,7 +218,9 @@ func (mb *MetricsBroker) publishClusterState(state *types.ClusterState) {
 			// Клиент отключился, помечаем для удаления
 			go mb.Unsubscribe(id)
 		default:
-			// Канал клиента переполнен, пропускаем
+			// R65d: раньше пропуск был молчаливым — клиент «застывал» без
+			// диагностики. Теперь считаем и логируем (throttled).
+			mb.noteClientDrop(id)
 		}
 	}
 }

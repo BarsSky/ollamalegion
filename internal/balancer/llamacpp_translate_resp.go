@@ -999,18 +999,31 @@ func translateSSEChatToOllama(chunk map[string]interface{}, modelName string, se
 		if seenReasoning != nil && *seenReasoning && strings.HasPrefix(contentStr, "\n") {
 			contentStr = contentStr[1:]
 		}
-		if shouldFilterLlamaCppContent(contentStr) {
-			logger.Get().Debugw("translateSSEChatToOllama: filtered service token from content",
-				"model", modelName, "filtered_content_len", len(contentStr))
-			msg := map[string]interface{}{"content": ""}
-			if roleStr != "" {
-				msg["role"] = roleStr
-			} else {
-				msg["role"] = "assistant"
+		// R65d (2026-09-20): вырезаем ТОЛЬКО служебные токены, сохраняя
+		// окружающий текст. Раньше при любом вхождении токена content
+		// обнулялся целиком (shouldFilterLlamaCppContent → msg["content"] = ""),
+		// поэтому ответы, где такой токен упомянут как текст (документация по
+		// chat-шаблонам, код парсеров, разбор спец-токенов), теряли слова и
+		// целые предложения у пользователя.
+		if stripped, removed := stripLlamaCppServiceTokens(contentStr); removed > 0 {
+			logger.Get().Debugw("translateSSEChatToOllama: stripped service tokens from content",
+				"model", modelName, "tokens_removed", removed,
+				"original_len", len(contentStr), "cleaned_len", len(stripped))
+			contentStr = strings.TrimSpace(stripped)
+			if contentStr == "" {
+				// Остались только служебные токены — показывать нечего, но чанк
+				// отдаём (клиенты ожидают валидную форму ответа с done:false).
+				msg := map[string]interface{}{"content": ""}
+				if roleStr != "" {
+					msg["role"] = roleStr
+				} else {
+					msg["role"] = "assistant"
+				}
+				ollamaChunk["message"] = msg
+				result, _ := json.Marshal(ollamaChunk)
+				return append(result, '\n')
 			}
-			ollamaChunk["message"] = msg
-			result, _ := json.Marshal(ollamaChunk)
-			return append(result, '\n')
+			hasContent = true
 		}
 
 		// Детектируем JSON tool calls в content (для моделей без поддержки tool calling)

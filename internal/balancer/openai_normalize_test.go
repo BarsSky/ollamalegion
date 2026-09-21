@@ -38,7 +38,7 @@ func TestNormalizeOpenAIMessages_MultiModalTextAndImage(t *testing.T) {
 						"text": "Опиши картинку",
 					},
 					map[string]interface{}{
-						"type":     "image_url",
+						"type":      "image_url",
 						"image_url": map[string]interface{}{"url": "data:image/png;base64,..."},
 					},
 				},
@@ -142,7 +142,7 @@ func TestNormalizeOpenAIMessages_OnlyImage_EmptyString(t *testing.T) {
 				"role": "user",
 				"content": []interface{}{
 					map[string]interface{}{
-						"type":     "image_url",
+						"type":      "image_url",
 						"image_url": map[string]interface{}{"url": "data:..."},
 					},
 				},

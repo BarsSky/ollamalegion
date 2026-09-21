@@ -1,4 +1,4 @@
-﻿// Package balancer — comprehensive scenario tests покрывающие все
+// Package balancer — comprehensive scenario tests покрывающие все
 // оставшиеся documented features из docs/ и plans/.
 //
 // Разделы:
@@ -85,7 +85,7 @@ func TestProfiles_Scenario_OpenAI_NumCtx(t *testing.T) {
 // Использует ту же логику что и internal/balancer/num_ctx_resolver.go.
 func resolveNumCtxScenario(body []byte, profileCtx, backendDefault int) int {
 	var parsed struct {
-		NumCtx  int `json:"num_ctx"`  // OpenAI
+		NumCtx  int `json:"num_ctx"` // OpenAI
 		Options struct {
 			NumCtx int `json:"num_ctx"` // Ollama
 		} `json:"options"`
@@ -112,11 +112,11 @@ func resolveNumCtxScenario(body []byte, profileCtx, backendDefault int) int {
 // =====================================================================
 
 type toolCallRig struct {
-	proxy   *Proxy
+	proxy    *Proxy
 	balancer *httptest.Server
-	o1      *ollamaFakeServer
+	o1       *ollamaFakeServer
 	registry *virtualmodel.Registry
-	router  *VirtualRouter
+	router   *VirtualRouter
 }
 
 func newToolCallRig(t *testing.T) *toolCallRig {
@@ -129,7 +129,7 @@ func newToolCallRig(t *testing.T) *toolCallRig {
 			{ID: "o1", Name: "o1", Host: r.o1.host, OllamaPort: r.o1.port, Weight: 1, Status: types.StatusHealthy},
 		},
 		Balancing: types.BalancingSettings{
-			Algorithm: types.AlgorithmRoundRobin,
+			Algorithm:     types.AlgorithmRoundRobin,
 			OperatingMode: string(types.OperatingModeVirtualRouter),
 			VirtualModels: types.VirtualModelsConfig{Enabled: true},
 		},
@@ -316,7 +316,7 @@ func TestInterop_Scenario_BothModesActive(t *testing.T) {
 			{ID: "o1", Name: "o1", Host: o1.host, OllamaPort: o1.port, Weight: 1, Status: types.StatusHealthy},
 		},
 		Balancing: types.BalancingSettings{
-			Algorithm: types.AlgorithmRoundRobin,
+			Algorithm:     types.AlgorithmRoundRobin,
 			OperatingMode: string(types.OperatingModeRpcCoordinator), // P.1 primary
 			VirtualModels: types.VirtualModelsConfig{Enabled: true},
 			RpcCoordinator: types.RpcCoordinatorConfig{
@@ -389,8 +389,8 @@ func TestInterop_Scenario_ModePrecedence(t *testing.T) {
 			{ID: "w1", Name: "w1", Host: w1.host, OllamaPort: w1.port, Weight: 1, Status: types.StatusHealthy},
 		},
 		Balancing: types.BalancingSettings{
-			Algorithm: types.AlgorithmRoundRobin,
-			OperatingMode: string(types.OperatingModeRpcCoordinator),
+			Algorithm:      types.AlgorithmRoundRobin,
+			OperatingMode:  string(types.OperatingModeRpcCoordinator),
 			RpcCoordinator: types.RpcCoordinatorConfig{Enabled: true, Embedded: true},
 		},
 	}
@@ -462,7 +462,7 @@ func TestHealth_Scenario_QueueStats(t *testing.T) {
 			{ID: "o1", Name: "o1", Host: o1.host, OllamaPort: o1.port, Weight: 1, Status: types.StatusHealthy},
 		},
 		Balancing: types.BalancingSettings{
-			Algorithm: types.AlgorithmRoundRobin,
+			Algorithm:     types.AlgorithmRoundRobin,
 			OperatingMode: string(types.OperatingModeStandard),
 		},
 	}
@@ -504,8 +504,8 @@ func TestBackend_Scenario_SessionStickiness(t *testing.T) {
 			{ID: "o2", Name: "o2", Host: o2.host, OllamaPort: o2.port, Weight: 1, Status: types.StatusHealthy},
 		},
 		Balancing: types.BalancingSettings{
-			Algorithm: types.AlgorithmRoundRobin,
-			OperatingMode: string(types.OperatingModeStandard),
+			Algorithm:         types.AlgorithmRoundRobin,
+			OperatingMode:     string(types.OperatingModeStandard),
 			SessionStickiness: true,
 		},
 		Resources: types.ResourceLimits{
@@ -552,7 +552,7 @@ func TestMisc_Scenario_UnknownPath(t *testing.T) {
 			{ID: "o1", Name: "o1", Host: o1.host, OllamaPort: o1.port, Weight: 1, Status: types.StatusHealthy},
 		},
 		Balancing: types.BalancingSettings{
-			Algorithm: types.AlgorithmRoundRobin,
+			Algorithm:     types.AlgorithmRoundRobin,
 			OperatingMode: string(types.OperatingModeStandard),
 		},
 	}
@@ -581,7 +581,7 @@ func TestMisc_Scenario_LargeBody_NotCrashed(t *testing.T) {
 			{ID: "o1", Name: "o1", Host: o1.host, OllamaPort: o1.port, Weight: 1, Status: types.StatusHealthy},
 		},
 		Balancing: types.BalancingSettings{
-			Algorithm: types.AlgorithmRoundRobin,
+			Algorithm:     types.AlgorithmRoundRobin,
 			OperatingMode: string(types.OperatingModeStandard),
 		},
 	}

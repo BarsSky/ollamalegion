@@ -2,7 +2,6 @@
 package balancer
 
 import (
-	"strings"
 	"testing"
 )
 
@@ -76,9 +75,44 @@ func TestR6055_IsContinuationARegeneration_EnglishPreambleStripping(t *testing.T
 
 // TestR6055_IsContinuationARegeneration_NoFalsePositiveOnCommonCode — code
 // continuation that happens to share common substrings shouldn't trigger.
+// This was the bug in v1 of R60.55 — substring-matching falsely flagged
+// real continuations whose code happened to overlap with original.
 func TestR6055_IsContinuationARegeneration_NoFalsePositiveOnCommonCode(t *testing.T) {
-	original := strings.Repeat("function calculateTrajectory() {\n  const speed = 50;\n", 100)
-	continuation := "  return results;\n}"
+	original := "const height = parseFloat(document.getElementById('height').value);\n"
+	continuation := "  const height = parseFloat(document.getElementById('height').value);"
+
+	if IsContinuationARegeneration(original, continuation) {
+		t.Errorf("real code continuation wrongly flagged as regen (substring 'const height = parseFloat(' appears in both)")
+	}
+}
+
+// TestR6055_IsContinuationARegeneration_RussianGreetingStart — the canonical
+// Qwen3-Instruct antipattern: continuation starts with "Привет! Конечно".
+func TestR6055_IsContinuationARegeneration_RussianGreetingStart(t *testing.T) {
+	original := "function foo() {"
+	continuation := "Привет! Конечно, продолжаю код:\n  const x = 5;\n"
+
+	if !IsContinuationARegeneration(original, continuation) {
+		t.Errorf("expected regen detected (continuation starts with greeting)")
+	}
+}
+
+// TestR6055_IsContinuationARegeneration_EnglishGreetingStart — English chat
+// model regen: continuation starts with "Sure!" / "Of course".
+func TestR6055_IsContinuationARegeneration_EnglishGreetingStart(t *testing.T) {
+	original := "function foo() {"
+	continuation := "Sure! Here's the rest of the code:\n  const x = 5;\n"
+
+	if !IsContinuationARegeneration(original, continuation) {
+		t.Errorf("expected regen detected (English chat model regen)")
+	}
+}
+
+// TestR6055_IsContinuationARegeneration_RealCodeContinuation — real code
+// continuation that starts with whitespace + code (not greeting).
+func TestR6055_IsContinuationARegeneration_RealCodeContinuation(t *testing.T) {
+	original := "  const speed = 50;\n  const angle = 45;"
+	continuation := "  const gravity = 9.8;\n  return results;"
 
 	if IsContinuationARegeneration(original, continuation) {
 		t.Errorf("real code continuation wrongly flagged as regen")

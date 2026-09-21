@@ -1,6 +1,7 @@
 package main
 
 import (
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -9,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 	"time"
 
@@ -1087,7 +1089,7 @@ func handleListModels(w http.ResponseWriter, r *http.Request) {
 			"context_size":        m.ContextSize,
 			"gguf_context_length": m.GGUFContextLength,
 			"size_bytes":          effectiveSize,
-			"size":                effectiveSize, // R60.4: alias (webui gguf-renderer-detail.js:232)
+			"size":                effectiveSize,             // R60.4: alias (webui gguf-renderer-detail.js:232)
 			"quantization":        parseQuantization(m.Path), // R60.4
 			"loaded_at":           m.LoadedAt,
 			"gpu_count":           m.GPUCount,
@@ -1123,8 +1125,8 @@ func handleListModels(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, http.StatusOK, map[string]interface{}{
-		"models": enrichedModels,
-		"count":  len(models),
+		"models":            enrichedModels,
+		"count":             len(models),
 		"max_vram_n_ctx":    maxVRAMNCtx,
 		"max_ram_n_ctx":     maxRAMNCtx,
 		"available_vram_mb": availableVRAMMB,
@@ -1210,11 +1212,11 @@ func handleListModelsDir(w http.ResponseWriter, r *http.Request) {
 // quantization (parse из имени) + modifiedAt.
 func ggufFileMeta(filename string, size int64, modifiedAt time.Time) map[string]interface{} {
 	return map[string]interface{}{
-		"name":        filename,
-		"size":        size,        // alias for sizeBytes — webui reads m.size
-		"sizeBytes":   size,        // canonical name, kept for API stability
+		"name":         filename,
+		"size":         size, // alias for sizeBytes — webui reads m.size
+		"sizeBytes":    size, // canonical name, kept for API stability
 		"quantization": parseQuantization(filename),
-		"modifiedAt":  modifiedAt.Format(time.RFC3339),
+		"modifiedAt":   modifiedAt.Format(time.RFC3339),
 	}
 }
 
@@ -1223,6 +1225,7 @@ func ggufFileMeta(filename string, size int64, modifiedAt time.Time) map[string]
 //   - Q4_K_M, Q4_K_S, Q4_0, Q4_1, Q5_K_M, Q8_0, Q2_K, F16, F32, BF16
 //   - compressed aliases: q4km → Q4_K_M, q4ks → Q4_K_S, q5_1, q8_0
 //   - I-quants (llama.cpp IQ series): IQ1_S, IQ2_XXS, IQ3_S, IQ4_XS
+//
 // Returns "" if no recognizable quantization level found.
 //
 // Strategy: try multiple "candidates" derived from the last dash-separated
@@ -1250,7 +1253,7 @@ func parseQuantization(filename string) string {
 	candidates := make([]string, 0, 5)
 	if n >= 3 {
 		candidates = append(candidates, parts[n-3]+"_"+parts[n-2]+"_"+parts[n-1]) // "Q4_K_M"
-		candidates = append(candidates, parts[n-3]+parts[n-2]+parts[n-1])          // "Q4KM"
+		candidates = append(candidates, parts[n-3]+parts[n-2]+parts[n-1])         // "Q4KM"
 	}
 	if n >= 2 {
 		candidates = append(candidates, parts[n-2]+"_"+parts[n-1]) // "Q6_K"
@@ -1833,15 +1836,27 @@ func handleOllamaTags(w http.ResponseWriter, r *http.Request) {
 				}
 			}
 		}
-		digest := fmt.Sprintf("sha256:%x", sizeBytes)
+		// R65d (2026-09-20): digest — настоящий content-addressed хеш, а не
+		// байтовый размер под видом хеша.
+		//
+		// Было: fmt.Sprintf("sha256:%x", sizeBytes) — то есть "sha256:" + hex
+		// от ЧИСЛА байт. Две разные модели одинакового размера получали
+		// ОДИНАКОВЫЙ "digest", а клиенты, использующие digest как идентификатор
+		// (кеши, сравнение версий модели), путали их.
+		//
+		// Полный SHA256 файла не считаем: модели по 5-20 GB, а /api/tags
+		// вызывается часто. Стабильный хеш от пути+имени+размера различает
+		// модели и не меняется между запросами.
+		digest := modelDigest(m.Path, m.Name, sizeBytes)
 		modelMap[m.Name] = map[string]interface{}{
 			"name": m.Name, "model": m.Name,
 			"modified_at": m.LoadedAt.Format(time.RFC3339),
 			"size":        sizeBytes, "digest": digest,
 			"details": map[string]interface{}{
 				"format": "gguf", "family": m.Architecture,
-				"parameter_size":     fmt.Sprintf("%.1fB", float64(m.NLayers*m.NEmbd)/1e9),
-				"quantization_level": "unknown",
+				"families":           []string{m.Architecture},
+				"parameter_size":     modelParameterSize(m.NLayers, m.NEmbd),
+				"quantization_level": quantizationOrUnknown(parseQuantization(m.Path)),
 			},
 		}
 	}
@@ -1851,6 +1866,71 @@ func handleOllamaTags(w http.ResponseWriter, r *http.Request) {
 		ollamaModels = append(ollamaModels, v)
 	}
 	writeJSON(w, http.StatusOK, map[string]interface{}{"models": ollamaModels})
+}
+
+// modelDigest — стабильный content-addressed digest модели.
+//
+// R65d (2026-09-20): раньше digest вычислялся как fmt.Sprintf("sha256:%x", sizeBytes),
+// то есть под видом хеша отдавался РАЗМЕР В БАЙТАХ. Две разные модели
+// одинакового размера получали одинаковый digest, и клиенты, использующие
+// digest как идентификатор модели (кеши, сравнение версий), их путали.
+//
+// Полный SHA256 файла считать нельзя: модели по 5-20 GB, а /api/tags и /api/ps
+// вызываются часто. Хеш от (путь + имя + размер) стабилен между запросами
+// и различает модели.
+func modelDigest(path, name string, sizeBytes uint64) string {
+	if path == "" && name == "" {
+		return ""
+	}
+	h := sha256.New()
+	h.Write([]byte(path))
+	h.Write([]byte{0})
+	h.Write([]byte(name))
+	h.Write([]byte{0})
+	h.Write([]byte(strconv.FormatUint(sizeBytes, 10)))
+	return "sha256:" + fmt.Sprintf("%x", h.Sum(nil))
+}
+
+// quantizationForPSModel — квантование для записи /api/ps.
+//
+// LoadedModel в /api/ps может не иметь Path (модель описана только именем),
+// а parseQuantization внутри вызывает filepath.Base, который на пустой строке
+// даёт ".", поэтому пробуем сначала Path, затем Name.
+func quantizationForPSModel(m cppbackend.ModelInfo) string {
+	if q := parseQuantization(m.Path); q != "" && q != "unknown" {
+		return q
+	}
+	if m.Name != "" {
+		return parseQuantization(m.Name + ".gguf")
+	}
+	return "unknown"
+}
+
+// modelParameterSize — оценка числа параметров модели в формате "7.6B".
+//
+// Было: fmt.Sprintf("%.1fB", float64(m.NLayers*m.NEmbd)/1e9) — это произведение
+// слоёв на размер эмбеддинга, а не число параметров. Для 7B-модели
+// (32 слоя × 4096) формула даёт 0.0001B, то есть мусор в UI.
+//
+// Корректная оценка: params ≈ 12 × n_layers × n_embd² (attention + MLP SwiGLU).
+func modelParameterSize(nLayers, nEmbd int) string {
+	if nLayers <= 0 || nEmbd <= 0 {
+		return "unknown"
+	}
+	const coeff = 12.0
+	billions := coeff * float64(nLayers) * float64(nEmbd) * float64(nEmbd) / 1e9
+	if billions < 0.05 {
+		return "unknown"
+	}
+	return fmt.Sprintf("%.1fB", billions)
+}
+
+// quantizationOrUnknown — Ollama отдаёт "unknown" вместо пустой строки.
+func quantizationOrUnknown(q string) string {
+	if strings.TrimSpace(q) == "" {
+		return "unknown"
+	}
+	return q
 }
 
 // handleOllamaPS — Ollama /api/ps (running models in memory).
@@ -1875,7 +1955,7 @@ func handleOllamaPS(w http.ResponseWriter, r *http.Request) {
 		if sizeBytes == 0 && m.LoadingSizeBytes > 0 {
 			sizeBytes = uint64(m.LoadingSizeBytes)
 		}
-		digest := fmt.Sprintf("sha256:%x", sizeBytes)
+		digest := modelDigest(m.Path, m.Name, sizeBytes)
 		psModels = append(psModels, map[string]interface{}{
 			"name":       m.Name,
 			"model":      m.Name,
@@ -1886,8 +1966,9 @@ func handleOllamaPS(w http.ResponseWriter, r *http.Request) {
 			"details": map[string]interface{}{
 				"format":             "gguf",
 				"family":             m.Architecture,
-				"parameter_size":     fmt.Sprintf("%.1fB", float64(m.NLayers*m.NEmbd)/1e9),
-				"quantization_level": "unknown",
+				"families":           []string{m.Architecture},
+				"parameter_size":     modelParameterSize(m.NLayers, m.NEmbd),
+				"quantization_level": quantizationOrUnknown(quantizationForPSModel(m)),
 			},
 		})
 	}
@@ -1901,7 +1982,7 @@ func handleOllamaPS(w http.ResponseWriter, r *http.Request) {
 // NOT yet loaded into memory, return metadata directly from the GGUF header
 // instead of triggering a full llama.cpp model load.
 //
-// Why this matters
+// # Why this matters
 //
 // R31-R43 retained the historical "lazy-load on /api/show" behavior for
 // compatibility with Ollama tooling that polls /api/show to discover
@@ -1915,14 +1996,14 @@ func handleOllamaPS(w http.ResponseWriter, r *http.Request) {
 //
 // New flow
 //
-//   1. If the model is already loaded in memory → return full info from
-//      backend.GetModel (state="loaded"; n_vocab/gpu_layers present).
-//   2. Otherwise, look up the on-disk path via ModelManager and read
-//      metadata-only via mm.GetModelMeta (which parses the GGUF header in
-//      <100ms, no model load). Return header-derived fields with
-//      state="unloaded" and context_size=0 (load is required to populate
-//      runtime-only fields like n_vocab and gpu_layers).
-//   3. If neither loaded nor on disk → 404.
+//  1. If the model is already loaded in memory → return full info from
+//     backend.GetModel (state="loaded"; n_vocab/gpu_layers present).
+//  2. Otherwise, look up the on-disk path via ModelManager and read
+//     metadata-only via mm.GetModelMeta (which parses the GGUF header in
+//     <100ms, no model load). Return header-derived fields with
+//     state="unloaded" and context_size=0 (load is required to populate
+//     runtime-only fields like n_vocab and gpu_layers).
+//  3. If neither loaded nor on disk → 404.
 //
 // Behavior preserved
 //   - `/api/show` still answers in well under 1s even for the largest model.
@@ -2054,6 +2135,43 @@ func writeOllamaShowMetadataResponse(w http.ResponseWriter, meta *cppbackend.GGU
 	if family == "" {
 		family = "unknown"
 	}
+	// R65d (2026-09-20): отдаём РЕАЛЬНЫЙ контекст вместо нулей.
+	//
+	// Было: model_info.context_size = 0 и kv_cache_type = "" для незагруженной
+	// модели, хотя ContextLength из GGUF-заголовка УЖЕ доступен (meta.ContextLength,
+	// cppbackend/model_manager.go:45, заполняется lazy в GetModelMeta). Клиенты
+	// (Cline/Roo) читают context_size / llama.context_length, чтобы подобрать
+	// размер окна; ноль заставлял их недооценивать модель и урезать историю.
+	//
+	// Дополнительно: помимо context_size отдаём ключ "<arch>.context_length" —
+	// именно его читают клиенты, ориентированные на настоящий Ollama
+	// (llama.cpp пишет model_info как "<arch>.context_length").
+	contextSize := meta.ContextLength
+	modelInfo := map[string]interface{}{
+		"architecture": family,
+		"n_layers":     nLayers,
+		"n_heads":      meta.NHeads,
+		"n_embd":       nEmbd,
+		"n_kv_heads":   meta.NKvHeads,
+		"head_dim_k":   0, // не из GGUF header
+		"head_dim_v":   0, // не из GGUF header
+		"n_vocab":      0, // runtime-only (load required)
+		// context_size заполнен, когда GGUF-заголовок прочитан; 0 — только если
+		// метаданные недоступны (тогда поле остаётся честным нулём).
+		"context_size": contextSize,
+		"gpu_layers":   0, // runtime-only (load required)
+		"kv_cache_type": func() string {
+			if meta.KVCacheType != "" {
+				return meta.KVCacheType
+			}
+			return ""
+		}(),
+		"state": "unloaded",
+	}
+	if contextSize > 0 {
+		// Настоящий Ollama кладёт training context под ключом "<arch>.context_length".
+		modelInfo[family+".context_length"] = contextSize
+	}
 	writeJSON(w, http.StatusOK, map[string]interface{}{
 		"license": "unknown", "modelfile": "",
 		"parameters": paramSize,
@@ -2064,20 +2182,7 @@ func writeOllamaShowMetadataResponse(w http.ResponseWriter, meta *cppbackend.GGU
 			"parameter_size":     paramSize,
 			"quantization_level": "unknown",
 		},
-		"model_info": map[string]interface{}{
-			"architecture":  family,
-			"n_layers":      nLayers,
-			"n_heads":       meta.NHeads,
-			"n_embd":        nEmbd,
-			"n_kv_heads":    meta.NKvHeads,
-			"head_dim_k":    0, // не из GGUF header
-			"head_dim_v":    0, // не из GGUF header
-			"n_vocab":       0, // runtime-only (load required)
-			"context_size":  0, // runtime-only (load required)
-			"gpu_layers":    0, // runtime-only (load required)
-			"kv_cache_type": "",
-			"state":         "unloaded",
-		},
+		"model_info": modelInfo,
 	})
 }
 

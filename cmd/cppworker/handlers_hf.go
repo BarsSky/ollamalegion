@@ -154,13 +154,25 @@ func handleHFDownloads(w http.ResponseWriter, r *http.Request) {
 	}
 	active := backend.HFDownloader().ListActiveDownloads()
 	history := backend.HFDownloader().ListDownloadHistory()
+	// R66.4 (2026-09-16): также возвращаем orphan .download файлы, чтобы UI
+	// мог показать "residual files" (например, после сбоя сети / перезапуска
+	// cppworker). Без этого раздела UI показывает "Загрузки пусты", а на диске
+	// висит 14GB partial — пользователь не знает куда нажать чтобы почистить.
+	orphans := backend.HFDownloader().ListOrphanDownloads()
 	if active == nil {
 		active = []cppbackend.HFDownloadProgress{}
 	}
 	if history == nil {
 		history = []cppbackend.HFDownloadProgress{}
 	}
-	writeJSON(w, http.StatusOK, map[string]interface{}{"active": active, "history": history})
+	if orphans == nil {
+		orphans = []cppbackend.OrphanDownloadFile{}
+	}
+	writeJSON(w, http.StatusOK, map[string]interface{}{
+		"active":  active,
+		"history": history,
+		"orphans": orphans,
+	})
 }
 
 func handleHFCancel(w http.ResponseWriter, r *http.Request) {
@@ -215,10 +227,10 @@ func handleHFCleanup(w http.ResponseWriter, r *http.Request) {
 			filename = req.Filename
 		}
 	}
-	if modelID == "" {
-		writeError(w, http.StatusBadRequest, "modelId is required (query param or body)")
-		return
-	}
+	// R66.4 (2026-09-16): modelId теперь опционален — orphan cleanup (удаление
+	// .download файла без привязки к репо) не имеет modelId. Backend DeleteDownload
+	// использует filename для поиска файла, modelId только для history tracking
+	// (orphans в history не попадают).
 	if filename == "" {
 		writeError(w, http.StatusBadRequest, "filename is required (query param or body)")
 		return

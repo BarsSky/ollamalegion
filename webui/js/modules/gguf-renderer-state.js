@@ -58,12 +58,19 @@
         _activeQueriesTimer: null,
         activeDownloads: [],
         downloadProgress: {},
+        // R66.4 (2026-09-16): orphan .download файлы, оставшиеся после сбоев.
+        // cppworker возвращает их в /api/hf/downloads отдельной секцией "orphans".
+        // Array of {filename, size, modified, path}
+        orphanDownloads: [],
         // HF search within the detail view
         hfSearchQuery: '',
         hfSearchResults: [],
         hfSearchSelected: null,
         hfModelFiles: [],
         hfSearching: false,
+        // R66 (2026-09-16): последняя ошибка HF search — {title, hint}
+        // рендерится как блок под полем ввода, не только как toast
+        hfLastError: null,
         // Settings (load options) — per-backend but stored globally
         loadOptions: {
             gpuLayers: -1,

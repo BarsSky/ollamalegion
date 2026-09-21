@@ -49,6 +49,24 @@ func (s *Server) resolveCppWorkerURL(backendID string) (string, int, string, err
 	return host, port, fmt.Sprintf("http://%s:%d", host, port), nil
 }
 
+// cppWorkerAPIToken — токен для авторизации на cppworker для заданного бэкенда.
+//
+// R65d (2026-09-20): нужен, чтобы прокси использовал СЕРВЕРНЫЙ токен бэкенда,
+// а не заголовок клиента (см. proxyToCppWorker).
+//
+// Возвращает "" если бэкенд не найден или токен не сконфигурирован — в этом
+// случае заголовок авторизации удаляется, а не пробрасывается клиентский.
+func (s *Server) cppWorkerAPIToken(backendID string) string {
+	if s.proxy == nil {
+		return ""
+	}
+	backend := s.proxy.GetBackend(backendID)
+	if backend == nil {
+		return ""
+	}
+	return backend.CppWorkerApiToken
+}
+
 // proxyToCppWorker — проксирует HTTP-запрос к CppWorker конкретного бэкенда.
 // path — путь относительно CppWorker (например "/api/hf/download").
 // Возвращает ответ CppWorker клиенту (с прозрачной передачей status, body, headers).
@@ -111,6 +129,26 @@ func (s *Server) proxyToCppWorker(w http.ResponseWriter, r *http.Request, backen
 	}
 	req.Header.Set("X-Forwarded-For", r.Header.Get("X-Forwarded-For"))
 	req.Header.Set("X-Forwarded-Proto", schemeFromRequest(r))
+
+	// R65d (2026-09-20): авторизация к cppworker — ТОЛЬКО серверным токеном бэкенда.
+	//
+	// copyProxyHeaders выше копирует заголовки клиента как есть, включая
+	// X-API-Token. До R65d это означало, что клиентский токен БАЛАНСЕРА
+	// уходил в cppworker как его токен: при разных значениях CPPWORKER_API_TOKEN
+	// и LB_API_TOKEN запросы падали с 401, а при совпадении — работали «случайно».
+	// Кроме того, клиент мог подставить произвольный токен.
+	//
+	// Теперь всегда перезаписываем значение на токен из конфигурации бэкенда
+	// (Backend.CppWorkerApiToken). Если токен не задан — удаляем заголовок,
+	// чтобы не отправлять чужой секрет.
+	if token := s.cppWorkerAPIToken(backendID); token != "" {
+		req.Header.Set(types.HeaderXAPIToken, token)
+	} else {
+		req.Header.Del(types.HeaderXAPIToken)
+		// Некоторые развёртывания используют Authorization: Bearer — тоже чистим,
+		// если он пришёл от клиента, а не задан конфигом cppworker.
+		req.Header.Del(types.HeaderAuthorization)
+	}
 
 	log.Debugw("proxyToCppWorker",
 		"backend", backendID,

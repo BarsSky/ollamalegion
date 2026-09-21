@@ -131,10 +131,10 @@ func TestApproach(t *testing.T) {
 		step    float64
 		want    float64
 	}{
-		{0.10, 0.05, 0.02, 0.08},  // decrease
-		{0.05, 0.10, 0.02, 0.07},  // increase
-		{0.06, 0.05, 0.02, 0.05},  // within step → target
-		{0.05, 0.05, 0.02, 0.05},  // already at target
+		{0.10, 0.05, 0.02, 0.08}, // decrease
+		{0.05, 0.10, 0.02, 0.07}, // increase
+		{0.06, 0.05, 0.02, 0.05}, // within step → target
+		{0.05, 0.05, 0.02, 0.05}, // already at target
 	}
 
 	for _, tt := range tests {

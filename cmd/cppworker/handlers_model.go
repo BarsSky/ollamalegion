@@ -1090,6 +1090,7 @@ func handleListModels(w http.ResponseWriter, r *http.Request) {
 			"gguf_context_length": m.GGUFContextLength,
 			"size_bytes":          effectiveSize,
 			"size":                effectiveSize,             // R60.4: alias (webui gguf-renderer-detail.js:232)
+			"size_vram":           estimateVRAMSize(m.NLayers, m.GPULayers, effectiveSize), // R66.5: VRAM estimate для balancer poller
 			"quantization":        parseQuantization(m.Path), // R60.4
 			"loaded_at":           m.LoadedAt,
 			"gpu_count":           m.GPUCount,

@@ -216,6 +216,7 @@ func (p *llamaCppMetricsPoller) pollBackend(b backendInfo) {
 			Architecture      string `json:"architecture,omitempty"`
 			Quantization      string `json:"quantization,omitempty"`
 			VRAMUsage         uint64 `json:"vram_usage,vramUsage,omitempty"`
+			SizeVRAM          uint64 `json:"size_vram,sizeVram,omitempty"`
 			RAMUsage          uint64 `json:"ram_usage,ramUsage,omitempty"`
 			LoadedAt          string `json:"loaded_at,loadedAt,omitempty"`
 			// Round 34 (2026-08-12) Phase 2: runtime params (kvCacheType, flashAttnType,
@@ -270,11 +271,17 @@ func (p *llamaCppMetricsPoller) pollBackend(b backendInfo) {
 				quant = extractQuantizationFromName(m.Name + ".gguf")
 			}
 		}
+		// R66.5: prefer cppworker's size_vram (bytes), fall back to vram_usage (MB legacy).
+		// LlamaCppModel.VRAMUsage is in MB, so convert size_vram bytes → MB.
+		vram := m.VRAMUsage
+		if m.SizeVRAM > 0 {
+			vram = m.SizeVRAM / (1024 * 1024)
+		}
 		loadedModels = append(loadedModels, types.LlamaCppModel{
 			Name:          m.Name,
 			Path:          m.Path,
 			Size:          size,
-			VRAMUsage:     m.VRAMUsage,
+			VRAMUsage:     vram,
 			RAMUsage:      m.RAMUsage,
 			ContextLength: m.ContextSize,
 			BatchSize:     0, // cppworker reports batchSize too, см. ниже в более широкой структуре

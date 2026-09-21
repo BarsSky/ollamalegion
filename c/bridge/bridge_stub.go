@@ -20,6 +20,8 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"ollama-loadbalancer/pkg/tokencount"
 )
 
 // ModelHandle — заглушка
@@ -621,12 +623,14 @@ func (m *ModelHandle) GetEmbeddings(text string) ([]float32, error) {
 	return make([]float32, 128), nil
 }
 
-// CountTokens возвращает грубую оценку числа токенов в stub-режиме.
+// CountTokens возвращает оценку числа токенов в stub-режиме.
+//
+// R66: использует pkg/tokencount вместо len([]rune)/4. Прежняя формула
+// занижала счёт на любом измеренном словаре (латиница на 63-81%, кириллица
+// до 304%) и возвращала 0 для текста короче 4 символов. См. doc-комментарий
+// пакета tokencount с таблицей измерений.
 func (m *ModelHandle) CountTokens(text string) int {
-	if text == "" {
-		return 0
-	}
-	return len([]rune(text)) / 4
+	return tokencount.Estimate(text)
 }
 
 // Tokenize возвращает ошибку в stub-режиме (нет словаря).

@@ -24,6 +24,7 @@ import (
 
 	"ollama-loadbalancer/c/bridge"
 	"ollama-loadbalancer/pkg/logger"
+	"ollama-loadbalancer/pkg/tokencount"
 	"ollama-loadbalancer/pkg/types"
 )
 
@@ -2209,11 +2210,31 @@ func (b *Backend) batchedInferStream(inst *modelInstance, modelName string, prom
 	// 3. Register session.
 	// Round 15.2: pass Temperature/Seed из params для sampling.
 	// 0 = greedy (default), > 0 = softmax+multinomial.
+	//
+	// R65d (2026-09-20): прокидываем также sampler-поля, которые batched-путь
+	// НЕ применяет (top_p/top_k/min_p/repeat_penalty/mirostat/stop...).
+	// RegisterSession использует их ТОЛЬКО для предупреждения в логе, чтобы
+	// игнорирование перестало быть молчаливым.
 	id, state, err := inst.batchedScheduler.RegisterSession(BatchedSessionParams{
 		Prompt:      tokens,
 		MaxTokens:   maxTokens,
 		Temperature: params.Temperature,
 		Seed:        uint32(params.Seed),
+
+		TopP:             params.TopP,
+		TopK:             params.TopK,
+		MinP:             params.MinP,
+		TypicalP:         params.TypicalP,
+		TfsZ:             params.TfsZ,
+		RepeatPenalty:    params.RepeatPenalty,
+		FrequencyPenalty: params.FrequencyPenalty,
+		PresencePenalty:  params.PresencePenalty,
+		RepeatLastN:      params.RepeatLastN,
+		Mirostat:         params.Mirostat,
+		MirostatTau:      params.MirostatTau,
+		MirostatEta:      params.MirostatEta,
+		Antiprompts:      params.Antiprompts,
+		StopSequences:    params.StopSequences,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("batched stream: register session: %w", err)
@@ -2290,20 +2311,25 @@ func (b *Backend) GetEmbeddings(modelName string, text string) ([]float32, error
 }
 
 // CountTokens возвращает число токенов в тексте для загруженной модели.
-// Использует tokenizer модели через C-bridge; в случае ошибки — грубая оценка.
+// Использует tokenizer модели через C-bridge; если модель не загружена или
+// токенизатор вернул 0 — оценка через pkg/tokencount.
+//
+// R66: раньше фолбэк был len([]rune(text))/4 (недогруженная модель) и
+// len([]rune(text)) (токенизатор вернул 0). Оба варианта неверны: первый
+// занижает на любом измеренном словаре (латиница 63-81%, кириллица до 304%),
+// второй завышает ровно в 4 раза относительно первого. Теперь один
+// обоснованный оценщик на оба случая — см. pkg/tokencount.
 func (b *Backend) CountTokens(modelName string, text string) int {
 	inst, err := b.getModelInstance(modelName)
 	if err != nil {
-		if text == "" {
-			return 0
-		}
-		return len([]rune(text)) / 4
+		// Модель не загружена/выгружена — реального токенизатора нет.
+		return tokencount.Estimate(text)
 	}
 	n := inst.handle.CountTokens(text)
 	if n <= 0 && text != "" {
-		// Fallback to heuristic for gemma-4 and models where
-		// llama_tokenize returns 0 (multilingual / broken tokenizers).
-		n = len([]rune(text))
+		// llama_tokenize вернул 0 (multilingual / сломанный токенизатор) —
+		// оценка вместо нуля, иначе n_predict посчитает prompt пустым.
+		n = tokencount.Estimate(text)
 	}
 	return n
 }
@@ -2462,6 +2488,18 @@ func (b *Backend) Status() map[string]interface{} {
 
 // Close завершает работу backend, выгружая все модели
 func (b *Backend) Close() {
+	// R65e (2026-09-20): сначала дожидаемся завершения отложенных записей
+	// nameHistory. Без этого фоновый persistLoop мог дописать
+	// <ModelsDir>/.name_history.json УЖЕ ПОСЛЕ Close() — и teardown каталога
+	// моделей падал с "directory is not empty" (Windows), а в production
+	// последняя запись могла потеряться при рестарте.
+	if mm := b.modelManager; mm != nil {
+		if !mm.WaitForPendingWrites(5 * time.Second) {
+			logger.Get().Warnw("CppBackend.Close: pending nameHistory writes did not finish",
+				"timeout", "5s")
+		}
+	}
+
 	// Останавливаем idle unloader
 	if b.idleUnloader != nil {
 		b.idleUnloader.Stop()
@@ -2523,13 +2561,19 @@ func (b *Backend) getActiveQueries(inst *modelInstance) int {
 	return inst.info.ActiveQueries
 }
 
-// approximateTokens — грубая оценка количества токенов.
-// DEPRECATED: используйте Backend.CountTokens с реальным tokenizer.
+// approximateTokens — оценка количества токенов для текста.
+//
+// DEPRECATED для точных сценариев: используйте Backend.CountTokens с реальным
+// tokenizer. Эта функция нужна там, где токенизатора заведомо нет.
+//
+// R66: использует pkg/tokencount вместо len([]rune(text))/4.
+//
+// ОГОВОРКА про текущий вызов (backend.go:2089): результат всегда 0, потому что
+// approxResultLen() возвращает "" (в стриме ответ ещё не сформирован на момент
+// его вызова). То есть метрика b.metrics.RecordRequest пишет tokens=0 для всех
+// запросов — это существующее ограничение, а не следствие этой правки.
 func approximateTokens(text string) int {
-	if text == "" {
-		return 0
-	}
-	return len([]rune(text)) / 4
+	return tokencount.Estimate(text)
 }
 
 // approxResultLen — приблизительная длина результата для метрик
@@ -2869,11 +2913,12 @@ func readGGUFHeaderInfo(path string) (*GGUFHeaderInfo, error) {
 // ggufSetField устанавливает поле GGUFHeaderInfo по field index (0-4).
 //
 // Field index (должен соответствовать ggufFieldSuffixes):
-//   0 = NLayers        (.block_count)
-//   1 = NHeads         (.attention.head_count)
-//   2 = NKvHeads       (.attention.head_count_kv)
-//   3 = NEmbd          (.embedding_length)
-//   4 = ContextLength  (.context_length)  // Round 37: training context
+//
+//	0 = NLayers        (.block_count)
+//	1 = NHeads         (.attention.head_count)
+//	2 = NKvHeads       (.attention.head_count_kv)
+//	3 = NEmbd          (.embedding_length)
+//	4 = ContextLength  (.context_length)  // Round 37: training context
 func ggufSetField(info *GGUFHeaderInfo, fieldIndex, value int) {
 	switch fieldIndex {
 	case 0:

@@ -31,6 +31,7 @@ import (
 	"strings"
 
 	"ollama-loadbalancer/pkg/logger"
+	"ollama-loadbalancer/pkg/tokencount"
 )
 
 // ============================================================
@@ -68,21 +69,19 @@ type RequestMeta struct {
 	RequestedUseMmap       *bool // nil = не задано
 }
 
-// EstimatePromptTokens — простая эвристика: 1 токен ≈ 4 символа.
-// Для точного подсчёта нужен tokenizer, но для preflight достаточно оценки
-// (если ошибёмся на 20% — это 5-10К токенов, что всё равно меньше
-// MaxVRAMNCtx*safety в типичных случаях).
+// EstimatePromptTokens — оценка числа токенов в prompt.
+//
+// R66: использует pkg/tokencount вместо эвристики «1 токен ≈ 4 символа».
+// Прежняя формула занижала счёт на любом измеренном словаре (латиница 63-81%,
+// кириллица до 304%), а здесь это особенно опасно: preflight решает, влезает
+// ли prompt в n_ctx, и занижение пропускает запрос за границу контекста —
+// ровно тот сценарий, ради которого preflight и существует.
+//
+// Раньше функцию спасал только ручной порог «минимум 1 токен», который не
+// решал главной проблемы: для prompt в 1000 кириллических символов эвристика
+// давала 250 токенов вместо реальных ~1000.
 func EstimatePromptTokens(prompt string) int {
-	if prompt == "" {
-		return 0
-	}
-	// Используем rune count для корректной работы с unicode.
-	runes := len([]rune(prompt))
-	tokens := runes / 4
-	if tokens < 1 && runes > 0 {
-		tokens = 1
-	}
-	return tokens
+	return tokencount.Estimate(prompt)
 }
 
 // ============================================================

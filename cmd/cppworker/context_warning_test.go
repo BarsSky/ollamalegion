@@ -204,12 +204,19 @@ func computeWarningForTestLoaded(modelName, prompt string, nPredict, nCtxOverrid
 	return computeContextWarningFromLoaded(modelName, prompt, nPredict, nCtxOverride, loadedNCtx, ggufMax)
 }
 
-// makeLongPrompt — создаёт строку длиной N символов для имитации большого prompt.
-// (Token estimation в test-build ~4 chars/token через stub backend.)
+// makeLongPrompt — создаёт prompt, который ОЦЕНИВАЕТСЯ примерно в targetTokens.
+//
+// R66: коэффициент изменён с 4 на 2 символа на токен. Оценщик теперь —
+// pkg/tokencount (см. его doc-комментарий с таблицей измерений): ASCII-буквы
+// считаются по 2 символа на токен, потому что реальные словари упаковывают
+// латиницу в 2.23-2.49 руны на токен, а не в 4.
+//
+// Прежняя константа 4 соответствовала старой (занижающей) эвристике, из-за
+// чего все сценарии в этих тестах внезапно «переезжали» на уровень выше
+// (approaching → impossible): при том же targetTokens реальных токенов
+// становилось вдвое больше.
 func makeLongPrompt(targetTokens int) string {
-	// stub backend: countModelTokensByLoadedInfo returns len([]rune(text)) / 4
-	// = N/4 if loaded, иначе N/4
-	const charsPerToken = 4
+	const charsPerToken = 2
 	chars := targetTokens * charsPerToken
 	s := make([]byte, chars)
 	for i := 0; i < chars; i++ {

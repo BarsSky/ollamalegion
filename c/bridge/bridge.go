@@ -45,6 +45,8 @@ import (
 	"runtime/cgo"
 	"sync"
 	"unsafe"
+
+	"ollama-loadbalancer/pkg/tokencount"
 )
 
 // ModelHandle — Go-представление C ModelHandle
@@ -1345,20 +1347,22 @@ func (m *ModelHandle) ApplyChatTemplateWithThinking(
 var ErrNoChatTemplate = fmt.Errorf("no chat template in GGUF metadata")
 
 // CountTokens возвращает число токенов в тексте для загруженной модели.
-// В fallback-режиме (ошибка токенизации или stub) возвращает грубую оценку
-// по 4 символа на токен.
+//
+// Основной путь — реальный токенизатор модели (`bridge_count_tokens`).
+// Фолбэк (нет handle / токенизация не удалась) — pkg/tokencount, а НЕ
+// len([]rune)/4: прежняя формула занижала счёт на любом измеренном словаре
+// (латиница на 63-81%, кириллица до 304%) и возвращала 0 для текста короче
+// 4 символов. См. doc-комментарий пакета tokencount с таблицей измерений.
 func (m *ModelHandle) CountTokens(text string) int {
 	if m == nil || m.ptr == nil {
-		return len([]rune(text)) / 4
+		return tokencount.Estimate(text)
 	}
 	cText := C.CString(text)
 	defer C.free(unsafe.Pointer(cText))
 	n := C.bridge_count_tokens(m.ptr, cText)
 	if n < 0 {
-		if text == "" {
-			return 0
-		}
-		return len([]rune(text)) / 4
+		// Токенизация недоступна — оценка вместо неё.
+		return tokencount.Estimate(text)
 	}
 	return int(n)
 }

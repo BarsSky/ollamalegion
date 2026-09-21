@@ -39,8 +39,14 @@ import (
 // B1. clampNPredictToFitContext: длинный prompt + tools → n_predict занижается
 // =============================================================================
 
-// makePromptOfLen возвращает строку из N ASCII-символов (грубо 4 символа = 1 токен
-// при оценке в countModelTokensByLoadedInfo, когда модель не загружена).
+// makePromptOfLen возвращает строку из N ASCII-символов.
+//
+// R66: оценщик — pkg/tokencount (см. doc-комментарий пакета с таблицей
+// измерений по реальным словарям). Для ASCII-букв он даёт 2 символа на токен,
+// а не 4: измеренная плотность латиницы — 2.23-2.49 руны на токен, поэтому
+// прежний коэффициент 4 занижал счёт вдвое.
+//
+// Следствие для тестов: чтобы получить N токенов, нужно 2*N символов.
 func makePromptOfLen(n int) string {
 	if n <= 0 {
 		return ""
@@ -53,11 +59,10 @@ func makePromptOfLen(n int) string {
 }
 
 func TestClampNPredictToFitContext_ToolsPromptOverflow(t *testing.T) {
-	// Сценарий: клиент задал n_predict=31744, n_ctx=32768, prompt ~6887 символов
-	// (~1722 грубых токенов). Без клампинга: 6887_символов/4 + 31744 + 1 > 32768.
-	// Реально tokenizer модели отсутствует (мы в stub), поэтому
-	// countModelTokensByLoadedInfo использует fallback len(rune)/4 = 1722.
-	// 2026-06-24: prompt+n_predict_min=1722+512+1=2235 < 32768 → NO overflow → no error.
+	// Сценарий: клиент задал n_predict=31744, n_ctx=32768, prompt 6887 символов.
+	// R66: оценка = 6887/2 ≈ 3444 токена (было 1722 при делении на 4).
+	// Без клампинга: 3444 + 31744 + 1 > 32768 → клампим.
+	// 3444 + 512 + 1 = 3957 < 32768 → жёсткого overflow нет, только кламп.
 	params := bridge.DefaultGenerationParams()
 	params.NCtxOverride = 32768
 	params.NPredict = 31744
@@ -68,14 +73,19 @@ func TestClampNPredictToFitContext_ToolsPromptOverflow(t *testing.T) {
 	}
 
 	// После клампинга NPredict должен быть <= n_ctx - actualTokens - 1
-	// С грубой оценкой 6887/4 = 1722: maxAllowedNPredict ≈ 32768 - 1722 - 1 = 31045.
-	// Ожидаем, что params.NPredict снизилось с 31744 до ~31045.
+	// При оценке 6887/2 = 3444: maxAllowedNPredict = 32768 - 3444 - 1 = 29323.
 	if params.NPredict >= 31744 {
 		t.Errorf("NPredict not clamped: got %d, want < 31744 (n_ctx=32768, prompt=%d chars)",
 			params.NPredict, len(prompt))
 	}
-	if params.NPredict < 30000 {
-		t.Errorf("NPredict over-clamped: got %d, want >= 30000", params.NPredict)
+	// Верхняя граница: не должен клампиться «лишний раз» — значение обязано
+	// быть близко к n_ctx - prompt - 1, а не проваливаться к minNPredictFloor.
+	// Для 6887 символов оценка = ceil(6887/2) = 3444 токена (округление вверх),
+	// поэтому maxAllowed = 32768 - 3444 - 1 = 29323.
+	const wantNPredict = 32768 - (6887+1)/2 - 1
+	if params.NPredict != wantNPredict {
+		t.Errorf("NPredict = %d, want ровно %d (n_ctx - actualTokens - 1)",
+			params.NPredict, wantNPredict)
 	}
 	t.Logf("OK: NPredict clamped from 31744 to %d (n_ctx=32768, prompt=%d chars)",
 		params.NPredict, len(prompt))
@@ -192,7 +202,9 @@ func TestClampNPredictToFitContext_PromptExceedsNCtx_ReturnsError(t *testing.T) 
 	params.NCtxOverride = 8196
 	params.NPredict = 7172
 
-	prompt := makePromptOfLen(37564) // 37564/4 = 9391 токенов по грубой оценке
+	// R66: 2 символа на токен → 18782 символов = 9391 токенов (как в логе),
+	// но при делении на 2 нужно вдвое меньше символов на то же число токенов.
+	prompt := makePromptOfLen(18782) // 18782/2 = 9391 токенов по оценке
 	err := clampNPredictToFitContext("gemma-4-E4B-it-Q4_K_M", prompt, &params)
 
 	if err == nil {
@@ -236,7 +248,8 @@ func TestClampNPredictToFitContext_PromptAtBoundary_NoError(t *testing.T) {
 	params.NCtxOverride = 1024
 	params.NPredict = 1024
 
-	prompt := makePromptOfLen(2040) // 2040/4 = 510 токенов
+	// R66: 2 символа на токен → 1020 символов = 510 токенов.
+	prompt := makePromptOfLen(1020) // 1020/2 = 510 токенов
 	if err := clampNPredictToFitContext("test-model", prompt, &params); err != nil {
 		t.Errorf("expected nil error at boundary (prompt=510, n_ctx=1024, min_floor=512), got: %v", err)
 	}

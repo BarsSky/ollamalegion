@@ -15,6 +15,7 @@ import (
 	"ollama-loadbalancer/c/bridge"
 	"ollama-loadbalancer/internal/cppbackend"
 	"ollama-loadbalancer/pkg/logger"
+	"ollama-loadbalancer/pkg/tokencount"
 	"ollama-loadbalancer/pkg/types"
 )
 
@@ -52,6 +53,21 @@ type openAICompletionRequest struct {
 	// в финальный SSE чанк — требуется Cline/прочим IDE-агентам для трекинга
 	// контекста. По дефолту ВКЛЮЧЕНО (см. includeUsageEffective ниже).
 	StreamOptions *openAIStreamOptions `json:"stream_options,omitempty"`
+
+	// ===== R65d (2026-09-20): те же расширения, что и в chat-структуре =====
+	// См. комментарий к openAIChatCompletionRequest: строгий декодер отвечал
+	// 400 на валидные поля OpenAI/Ollama-клиентов.
+	TopK           *float64           `json:"top_k,omitempty"`
+	NumPredict     *int               `json:"num_predict,omitempty"`
+	Logprobs       *int               `json:"logprobs,omitempty"` // int у completions (не bool)
+	User           string             `json:"user,omitempty"`
+	LogitBias      map[string]float64 `json:"logit_bias,omitempty"`
+	BestOf         *int               `json:"best_of,omitempty"`
+	ResponseFormat json.RawMessage    `json:"response_format,omitempty"`
+	KeepAlive      json.RawMessage    `json:"keep_alive,omitempty"`
+	Format         json.RawMessage    `json:"format,omitempty"`
+	Think          json.RawMessage    `json:"think,omitempty"`
+	Truncate       *bool              `json:"truncate,omitempty"`
 }
 
 // openAIChatCompletionRequest — структура запроса OpenAI /v1/chat/completions
@@ -83,6 +99,43 @@ type openAIChatCompletionRequest struct {
 	ToolChoice json.RawMessage `json:"tool_choice,omitempty"`
 	// StreamOptions — параметры стриминга (include_usage добавляет usage в финальный SSE чанк).
 	StreamOptions *openAIStreamOptions `json:"stream_options,omitempty"`
+
+	// ===== R65d (2026-09-20): поля, которые реально шлют OpenAI-клиенты =====
+	//
+	// Аудит 2026-09-20 (находка 1.1): OpenAI SDK, OpenWebUI (OpenAI mode) и ряд
+	// инструментов отправляют эти поля, а строгий декодер
+	// (types.DecodeJSONRequest → DisallowUnknownFields) отвечал
+	// HTTP 400 `unknown field "..."` — то есть отказ на валидном запросе.
+	// Поля добавлены и проброшены в GenerationParams (см. buildOpenAIChatParams).
+	//
+	// Pointer-типы там, где важно отличить "не задано" от "explicit 0"
+	// (frequency_penalty=0 — валидное значение).
+	FrequencyPenalty *float64 `json:"frequency_penalty,omitempty"`
+	PresencePenalty  *float64 `json:"presence_penalty,omitempty"`
+	// TopK / RepeatPenalty / MinP — Ollama-расширения, которые часть клиентов
+	// (и балансер в mixed-режиме) кладёт в top-level.
+	TopK          *float64 `json:"top_k,omitempty"`
+	RepeatPenalty *float64 `json:"repeat_penalty,omitempty"`
+	MinP          *float64 `json:"min_p,omitempty"`
+	// NumPredict — Ollama-алиас max_tokens на верхнем уровне.
+	NumPredict *int `json:"num_predict,omitempty"`
+	// ResponseFormat — {"type":"json_object"} / {"type":"json_schema",...}.
+	ResponseFormat json.RawMessage `json:"response_format,omitempty"`
+	// ParallelToolCalls — OpenWebUI/OpenAI SDK шлют его вместе с tools.
+	ParallelToolCalls *bool `json:"parallel_tool_calls,omitempty"`
+	// User — OpenAI-идентификатор конечного пользователя (трекинг/лимиты).
+	User string `json:"user,omitempty"`
+	// LogitBias — принимается для совместимости; применяется C-bridge.
+	LogitBias map[string]float64 `json:"logit_bias,omitempty"`
+	// KeepAlive / Format / Think / Truncate / Logprobs — Ollama-поля: клиенты,
+	// использующие один код для обоих API (в т.ч. балансер), могут прислать их
+	// и сюда. Принимаем, чтобы не отвечать 400.
+	KeepAlive   json.RawMessage `json:"keep_alive,omitempty"`
+	Format      json.RawMessage `json:"format,omitempty"`
+	Think       json.RawMessage `json:"think,omitempty"`
+	Truncate    *bool           `json:"truncate,omitempty"`
+	Logprobs    *bool           `json:"logprobs,omitempty"`
+	TopLogprobs *int            `json:"top_logprobs,omitempty"`
 }
 
 // openAIStreamOptions — подмножество OpenAI `stream_options`.
@@ -249,7 +302,7 @@ func handleV1ChatCompletions(w http.ResponseWriter, r *http.Request) {
 
 	// Round 18 P0.3 (2026-08-04): per-user parallel admission (fair-share).
 	userID := getUserID(r)
-	if max := currentConfig.MaxParallelPerUser; max > 0 {
+	if max := maxParallelPerUser(); max > 0 {
 		if !backend.UserTracker().TryAcquire(userID, max) {
 			logger.Get().Warnw("handleV1ChatCompletions: user exceeded MaxParallelPerUser",
 				"user_id", userID, "max", max, "model", req.Model, "remote", r.RemoteAddr)
@@ -330,6 +383,30 @@ func handleV1ChatCompletions(w http.ResponseWriter, r *http.Request) {
 	if req.NumCtx > 0 {
 		params.NCtxOverride = req.NumCtx
 	}
+
+	// R65d (2026-09-20): поля, добавленные для совместимости (аудит, находка 1.1).
+	// Раз структура их принимает, они должны реально влиять на генерацию —
+	// иначе «приняли и забыли» тихо ломает ожидания клиента.
+	if req.TopK != nil {
+		params.TopK = float32(*req.TopK)
+	}
+	if req.RepeatPenalty != nil {
+		params.RepeatPenalty = float32(*req.RepeatPenalty)
+	}
+	if req.MinP != nil {
+		params.MinP = float32(*req.MinP)
+	}
+	if req.FrequencyPenalty != nil {
+		params.FrequencyPenalty = float32(*req.FrequencyPenalty)
+	}
+	if req.PresencePenalty != nil {
+		params.PresencePenalty = float32(*req.PresencePenalty)
+	}
+	// num_predict — Ollama-алиас max_tokens; max_tokens имеет приоритет, если задан.
+	if req.NumPredict != nil && *req.NumPredict > 0 && req.MaxTokens <= 0 {
+		params.NPredict = ResolveNPredict(*req.NumPredict, actualModel)
+	}
+
 	// Bug fix (Round 4): прокидываем HasTools=true чтобы увеличить резерв
 	// токенов под tools-prompt в n_ctx clamp. Без этого tools-запросы
 	// получают 1024 токен резерва (как обычные чаты), и при 5+ tools с
@@ -1283,7 +1360,7 @@ func handleV1Completions(w http.ResponseWriter, r *http.Request) {
 
 	// Round 18 P0.3 (2026-08-04): per-user parallel admission (fair-share).
 	userID := getUserID(r)
-	if max := currentConfig.MaxParallelPerUser; max > 0 {
+	if max := maxParallelPerUser(); max > 0 {
 		if !backend.UserTracker().TryAcquire(userID, max) {
 			logger.Get().Warnw("handleV1Completions: user exceeded MaxParallelPerUser",
 				"user_id", userID, "max", max, "model", req.Model, "remote", r.RemoteAddr)
@@ -1812,10 +1889,10 @@ func handleV1Models(w http.ResponseWriter, r *http.Request) {
 // ещё не загруженных моделей.
 //
 // Lookup path (NO file I/O on request goroutine):
-//   1. backend.GetModel(modelID) — loaded models (in-memory map).
-//   2. mm.ListModels() cache — disk-known .gguf files (populated by
-//      ScanModels at startup; only os.Stat, no GGUF header read).
-//   3. → 404.
+//  1. backend.GetModel(modelID) — loaded models (in-memory map).
+//  2. mm.ListModels() cache — disk-known .gguf files (populated by
+//     ScanModels at startup; only os.Stat, no GGUF header read).
+//  3. → 404.
 //
 // R60.15 Fix C (rolled back due to production hangs) tried path 2
 // via mm.GetModelMeta which lazy-reads the GGUF header on the request
@@ -1885,8 +1962,8 @@ func handleV1ModelByID(w http.ResponseWriter, r *http.Request) {
 // by name. NO file I/O, NO GGUF header read. Returns nil if not found.
 //
 // Match priority:
-//   1. exact match in ggufFiles (with or without .gguf suffix)
-//   2. case-insensitive match on filename
+//  1. exact match in ggufFiles (with or without .gguf suffix)
+//  2. case-insensitive match on filename
 //
 // R60.16 (2026-09-08): replaces the original R60.15 Fix C path that
 // called mm.GetModelMeta (which triggers ReadGGUFHeader) and caused
@@ -2071,18 +2148,19 @@ func buildPromptTokens(modelName, input string) int {
 }
 
 // countTokensSafe считает токены, безопасно обрабатывая backend==nil (в unit-тестах).
-// Fallback: ~4 символа на токен, что соответствует эвристике для
-// BPE-токенизаторов llama.cpp/Gemma. Для CJK и кириллицы это занижает
-// реальный счёт, но лучше чем 0 — клиент хотя бы видит порядок.
+//
+// R66: фолбэк — pkg/tokencount, а не len([]rune)/4. Прежняя формула занижала
+// счёт на любом измеренном словаре (латиница 63-81%, кириллица до 304%) и
+// возвращала 0 для текста короче 4 символов. См. pkg/tokencount.
 func countTokensSafe(modelName, text string) int {
 	if text == "" {
 		return 0
 	}
 	if backend == nil {
-		return len([]rune(text)) / 4
+		return tokencount.Estimate(text)
 	}
 	if _, err := backend.GetModel(modelName); err != nil {
-		return len([]rune(text)) / 4
+		return tokencount.Estimate(text)
 	}
 	return backend.CountTokens(modelName, text)
 }

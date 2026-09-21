@@ -3,7 +3,7 @@ package balancer
 
 import (
 	"context"
-		"net/http"
+	"net/http"
 	"net/http/httptest"
 	"strings"
 	"sync/atomic"
@@ -28,19 +28,36 @@ func TestEstimatePromptTokens_OneRune(t *testing.T) {
 }
 
 func TestEstimatePromptTokens_HundredChars(t *testing.T) {
-	// 100 ASCII chars → 25 токенов (4 chars/token).
+	// R66: 100 ASCII-букв → 50 токенов (2 символа/токен), а не 25.
+	//
+	// Прежнее ожидание (25) фиксировало эвристику «4 символа на токен»,
+	// которая ЗАНИЖАЛА счёт на всех восьми измеренных словарях
+	// (scripts/vocab_bpe_probe.js: реальная плотность латиницы 2.23-2.49
+	// руны/токен). Для preflight занижение означает «prompt влезает», хотя
+	// он не влезает — то есть пропуск запроса за границу n_ctx.
 	prompt := strings.Repeat("a", 100)
-	if got := EstimatePromptTokens(prompt); got != 25 {
-		t.Errorf("expected 25 for 100 chars, got %d", got)
+	if got := EstimatePromptTokens(prompt); got != 50 {
+		t.Errorf("expected 50 for 100 ascii chars, got %d", got)
 	}
 }
 
 func TestEstimatePromptTokens_Cyrillic(t *testing.T) {
-	// 100 cyrillic chars (2 bytes each in UTF-8) → должно работать по rune count.
+	// R66: 100 кириллических рун → 100 токенов (1 символ = 1 токен).
+	//
+	// Измерения: qwen2/llama-bpe/deepseek/command-r/gpt-neox дают 1.21-1.32
+	// руны на токен для кириллицы, gpt-2 — ровно 1.0, и только gemma-4
+	// доходит до 2.12. Оценка берёт худший измеренный случай, чтобы не
+	// занижать (прежнее ожидание 25 занижало вчетверо).
 	prompt := strings.Repeat("я", 100)
 	got := EstimatePromptTokens(prompt)
-	if got != 25 {
-		t.Errorf("expected 25 for 100 cyrillic runes, got %d", got)
+	if got != 100 {
+		t.Errorf("expected 100 for 100 cyrillic runes, got %d", got)
+	}
+	// Инвариант: оценка кириллицы не может быть меньше оценки латиницы той же
+	// длины в рунах (кириллица упаковывается не плотнее).
+	latin := EstimatePromptTokens(strings.Repeat("a", 100))
+	if got < latin {
+		t.Errorf("кириллица (%d) оценена ниже латиницы (%d) при равной длине в рунах", got, latin)
 	}
 }
 
@@ -174,20 +191,20 @@ func TestDecidePreflight_NoOp_CurrentNCtxCovers(t *testing.T) {
 // Pre-R53.2: PreflightReload — избыточный reload модели.
 func TestDecidePreflight_NoOp_ParamsMismatchButCtxCovers(t *testing.T) {
 	meta := &RequestMeta{
-		EstimatedPromptTokens:   1000,
-		RequestedNPredict:       512,
-		RequestedNCtxOverride:   0, // не указан
-		RequestedKvCacheType:    "q4_0", // MISMATCH с current f16
-		RequestedFlashAttnType:  1,      // MISMATCH с current -1
-		RequestedUseMmap:        testBoolPtr(false), // MISMATCH с current true
+		EstimatedPromptTokens:  1000,
+		RequestedNPredict:      512,
+		RequestedNCtxOverride:  0,                  // не указан
+		RequestedKvCacheType:   "q4_0",             // MISMATCH с current f16
+		RequestedFlashAttnType: 1,                  // MISMATCH с current -1
+		RequestedUseMmap:       testBoolPtr(false), // MISMATCH с current true
 	}
 	state := &NCtxBackendState{
-		BackendID:          "cppworker-1",
-		CurrentNCtx:        8192, // 1000 + 512 + 100 + 1 = 1613 < 8192, fits
-		MaxVRAMNCtx:        32768,
-		CurrentKvCacheType: "f16",
+		BackendID:            "cppworker-1",
+		CurrentNCtx:          8192, // 1000 + 512 + 100 + 1 = 1613 < 8192, fits
+		MaxVRAMNCtx:          32768,
+		CurrentKvCacheType:   "f16",
 		CurrentFlashAttnType: -1,
-		CurrentUseMmap:     true,
+		CurrentUseMmap:       true,
 	}
 	cfg := DefaultNCtxReloadConfig()
 	res := DecidePreflight(meta, state, cfg)
@@ -202,10 +219,10 @@ func TestDecidePreflight_NoOp_ParamsMismatchButCtxCovers(t *testing.T) {
 // флаги (потому что target n_ctx вычисляется из required, не из params).
 func TestDecidePreflight_Reload_NCtxTooSmall_IgnoresParams(t *testing.T) {
 	meta := &RequestMeta{
-		EstimatedPromptTokens: 100000, // огромный prompt
-		RequestedNPredict:     4096,
-		RequestedKvCacheType:  "f16", // matches current
-		RequestedFlashAttnType: -1,   // matches current
+		EstimatedPromptTokens:  100000, // огромный prompt
+		RequestedNPredict:      4096,
+		RequestedKvCacheType:   "f16", // matches current
+		RequestedFlashAttnType: -1,    // matches current
 	}
 	state := &NCtxBackendState{
 		BackendID:            "cppworker-1",

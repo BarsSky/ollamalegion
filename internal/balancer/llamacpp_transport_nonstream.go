@@ -540,6 +540,57 @@ func (p *Proxy) proxyRequestLlamaCppNonStream(w http.ResponseWriter, r *http.Req
 
 	// Если пришёл SSE (вдруг), собираем — с поддержкой tool_calls
 	contentType := resp.Header.Get("Content-Type")
+	// R66+ (2026-09-21): native Ollama path passthrough.
+	//
+	// Когда shouldRouteOllamaNative(originalPath) = true (см. R65d,
+	// ll-core/native_path.go), балансер отправил cppworker'у НАТИВНЫЙ запрос
+	// (/api/chat, /api/generate, /api/embed*, без перевода в OpenAI-формат).
+	// cppworker'овский handlers_chat.go / handlers_generate.go отвечает
+	// ОЛЛАМА-форматом JSON, а НЕ OpenAI ({model, message, done, ...}).
+	//
+	// Pre-R66 баг: код ниже всё равно гонял respBody через
+	// translateOpenAIResponseToOllama, который ищет OpenAI-схему
+	// (choices[].message.content). Для Ollama-тела не находил choices
+	// → fallback branch ("no choices and no error") → синтетический
+	// 502 `{"error":"upstream returned empty response",...}` вместо реального
+	// ответа модели. OpenWebUI и ollama-CLI видели пустое сообщение.
+	//
+	// Репро 2026-09-21 на Qwen3.8-27B-UD-Q4_K_M (16 GB, partial offload на
+	// RTX 3070): OpenAI-путь /v1/chat/completions → "Меня зовут Qwen.",
+	// Ollama-путь /api/chat → "upstream returned empty response" с тем же телом.
+	//
+	// Fix: для nativePath просто пробрасываем тело as-is. Content-type upstream
+	// сохраняется (cppworker отдаёт либо application/json для non-stream, либо
+	// application/x-ndjson для streamed). Если уж up прислал SSE несмотря на
+	// native-path — тоже не трогаем, нативный SSE-passthrough уже работает в
+	// streaming-пути (proxyRequestLlamaCpp), и эти байты одинаково валидны для
+	// Ollama-клиента (NDJSON внутри SSE-чанков не бывает для native).
+	if nativePath {
+		ct := resp.Header.Get("Content-Type")
+		if ct == "" {
+			ct = "application/json"
+		}
+		w.Header().Set("Content-Type", ct)
+		w.Header().Set("Content-Length", strconv.Itoa(len(respBody)))
+		forwardUpstreamWarningHeaders(w, resp)
+		w.WriteHeader(resp.StatusCode)
+		_, _ = w.Write(respBody)
+		// Native Ollama token usage (prompt_eval_count / eval_count) — это
+		// единственное место где они парсятся для /api/chat native path; без
+		// этого дашборды показывают нулевой usage для Ollama-клиентов.
+		if resp.StatusCode < 400 {
+			var nativeResp map[string]interface{}
+			if json.Unmarshal(respBody, &nativeResp) == nil {
+				prompt := int64(intFromMap(nativeResp, "prompt_eval_count"))
+				completion := int64(intFromMap(nativeResp, "eval_count"))
+				if prompt > 0 || completion > 0 {
+					p.recordTokenUsage(modelFromCtx, prompt, completion)
+				}
+			}
+		}
+		return nil
+	}
+
 	if strings.Contains(contentType, "text/event-stream") || bytes.HasPrefix(respBody, []byte("data:")) {
 		var fullContent string
 		var fullReasoning string // 2026-07-01: для reasoning-моделей собираем reasoning_content

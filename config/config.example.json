@@ -139,8 +139,8 @@
         "http://rpcworker-1:18080"
       ],
       "failoverPolicy": "circuit_breaker",
-      "requestTimeout": "30s",
-      "streamTimeout": "5m",
+      "requestTimeout": 30000000000,
+      "streamTimeout": 300000000000,
       "workerPort": 18080,
       "timeout": "30s",
       "protocol": "http",

@@ -51,7 +51,7 @@ services:
     # Round 35 (r35): reload→load fallback + idleUnload disabled.
     # Round 35c (r35c): env-tunable polling timeouts (LB_NCTX_PREFLIGHT_*)
     # для моделей с auto-offload (22GB+ Qwen3.6 на 8GB VRAM, 12-15 min load).
-    image: ollama-legion/balancer:r60.58-r65d-no-write-timeout-v1  # Round 65 (2026-09-15): добавляет created_at (RFC3339Nano) в КАЖДЫЙ streaming NDJSON chunk (/api/chat, /api/generate). Pre-R65 balancer генерил chunks БЕЗ created_at, что расходится с Ollama API spec (где created_at required в каждом chunk'е). Strict-клиенты (OpenWebUI aiohttp, Cline) могли получить warnings/errors на missing field. Round 60.48 (2026-09-11): explicit Content-Length на всех error response paths. Round 60.47 (2026-09-11): async n_ctx reload.
+    image: ollama-legion/balancer:r66-submodule-v1  # Round 66 (2026-09-21): R65d consolidated (15ea588) + c/llama.cpp/ converted to submodule @ 1d2869c6e (f645b52) + R65d missing pieces (eee0e3e). Includes /api/show parameter_size fix (120ba02), /api/tags loaded-record enrichment, /api/ps digest+expires_at.
     #   R54.2: AutoTune master switch (Balancing.AutoTune, default true) +
     #          per-model "autoTune": false override (LlamaCppModelProfile.AutoTune).
     #          Manual control: user can disable AutoTune globally or per-model.
@@ -307,7 +307,7 @@ services:
         VERSION: ${WEBUI_VERSION:-dev}
         GIT_COMMIT: ${WEBUI_GIT_COMMIT:-unknown}
         BUILD_DATE: ${WEBUI_BUILD_DATE:-unknown}
-    image: ollama-legion/webui:r66.4-orphans-ui  # Round 60.43 (2026-09-11): добавил location /v1/ в webui/nginx.conf — раньше OpenWebUI получал 405 HTML при /v1/chat/completions, теперь проксируется на balancer OpenAI-совместимый endpoint (18080). Round 60.14 (2026-09-07): language picker UI added to index.html, monitor.html, health.html headers.
+    image: ollama-legion/webui:r66-submodule-v1  # Round 66 (2026-09-21): same static UI as r66.4-orphans-ui, re-tagged to match the r66.official build line (balancer+cppworker+webui all on the same tag).
     container_name: ol-bundled-webui
     restart: unless-stopped
     ports:

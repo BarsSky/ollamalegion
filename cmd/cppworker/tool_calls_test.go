@@ -640,6 +640,36 @@ func TestParseToolCallsFromOutput_MistralNemo_MultipleCalls(t *testing.T) {
 	}
 }
 
+// TestParseToolCallsFromOutput_MistralNemo_WithEqualsSeparator — R66a (2026-09-21).
+//
+// Реальный формат, который эмитит Qwen3-Instruct (и некоторые Mistral-Nemo
+// варианты): между маркером и JSON-блоком вставляется " = ":
+//
+//	[TOOL_CALLS] = [{"id":"call_x","type":"function","function":{"name":"y","arguments":"{}"}}]
+//
+// Pre-R66a баг: extractMistralToolCalls strip'ал "[TOOL_CALLS]" но не "=",
+// и json.Unmarshal на остатке " = [...]" падал с parse error. В результате
+// tool_call попадал в message.content как plain text вместо message.tool_calls,
+// и IDE-агенты (Cline/Roo/Continue) не могли его исполнить.
+//
+// Пост-фикс: парсер strip'ит опциональный " = " между маркером и JSON.
+func TestParseToolCallsFromOutput_MistralNemo_WithEqualsSeparator(t *testing.T) {
+	output := `[TOOL_CALLS] = [{"id":"call_x","type":"function","function":{"name":"write_to_file","arguments":"{\"path\":\"x.html\"}"}}]`
+	result := parseToolCallsFromOutput(output)
+	if len(result) != 1 {
+		t.Fatalf("expected 1 tool call with ' = ' separator, got %d", len(result))
+	}
+	if result[0].Function.Name != "write_to_file" {
+		t.Errorf("expected 'write_to_file', got '%s'", result[0].Function.Name)
+	}
+	if !strings.Contains(result[0].Function.Arguments, "x.html") {
+		t.Errorf("expected arguments to contain 'x.html', got '%s'", result[0].Function.Arguments)
+	}
+	if result[0].ID != "call_x" {
+		t.Errorf("expected ID 'call_x', got '%s'", result[0].ID)
+	}
+}
+
 // ============================================================
 // Tests for Single-object JSON format
 // ============================================================

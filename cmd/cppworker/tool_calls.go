@@ -688,6 +688,15 @@ func extractMistralToolCalls(output string) []openAIToolCall {
 	}
 	rest = strings.TrimSpace(rest)
 
+	// Некоторые модели (Qwen3-Instruct, Mistral-Nemo variant) добавляют
+	// между маркером и JSON-блоком разделитель " = ":
+	//   [TOOL_CALLS] = [{"name":"foo",...}]
+	// Без strip этого префикса json.Unmarshal ниже падает на " =", и tool_call
+	// теряется (становится текстом в content). Strip'им и пробелы, и сам "=".
+	if strings.HasPrefix(rest, "=") {
+		rest = strings.TrimSpace(rest[1:])
+	}
+
 	// Должно начинаться с [
 	if !strings.HasPrefix(rest, "[") {
 		return nil

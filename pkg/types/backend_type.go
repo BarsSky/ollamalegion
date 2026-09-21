@@ -104,7 +104,7 @@ type LlamaCppConfig struct {
 	RMSNormEps float64 `json:"rmsNormEps"`
 
 	// Параметры контекста
-	RopeScalingType   string  `json:"ropeScalingType"`   // none / linear / yarn
+	RopeScalingType   string  `json:"ropeScalingType"` // none / linear / yarn
 	RopeScalingFactor float64 `json:"ropeScalingFactor"`
 	YarnExtFactor     float64 `json:"yarnExtFactor"`
 	YarnAttnFactor    float64 `json:"yarnAttnFactor"`
@@ -112,10 +112,35 @@ type LlamaCppConfig struct {
 	YarnBetaSlow      float64 `json:"yarnBetaSlow"`
 
 	// Дополнительные
-	NoMemoryMap    bool   `json:"noMemoryMap"`    // отключить mmap
-	RPCBackend     string `json:"rpcBackend"`     // backend для RPC (cuda/vulkan/kompute)
-	ModelURL       string `json:"modelUrl"`       // URL для скачивания модели
-	ChatTemplate   string `json:"chatTemplate"`   // шаблон чата
+	NoMemoryMap  bool   `json:"noMemoryMap"`  // отключить mmap
+	RPCBackend   string `json:"rpcBackend"`   // backend для RPC (cuda/vulkan/kompute)
+	ModelURL     string `json:"modelUrl"`     // URL для скачивания модели
+	ChatTemplate string `json:"chatTemplate"` // шаблон чата
+
+	// ===== R65d (2026-09-20): поля, которые WebUI уже отправлял =====
+	//
+	// Аудит 2026-09-20: webui/js/app.js:1253-1292 добавляет эти ключи в payload
+	// PUT /api/v1/cluster/config, но их НЕ БЫЛО в LlamaCppConfig. json.Decoder
+	// молча игнорирует неизвестные ключи, поэтому оператор менял значения в
+	// форме, получал тост «Settings saved», а затем verifySync откатывал поля к
+	// прежним (читая их из GET). То есть эти настройки выглядели рабочими, но
+	// не сохранялись.
+	//
+	// FlashAttnType — новый способ задания flash-attention: -1 = auto,
+	// 0 = off, 1 = on. Legacy bool FlashAttention остаётся для совместимости.
+	FlashAttnType int `json:"flashAttnType"`
+	// SplitMode — режим multi-GPU: -1 = auto, 0 = none, 1 = layer, 2 = row.
+	SplitMode int `json:"splitMode"`
+	// IdleUnloadMinutes — выгрузка простаивающей модели, 0 = отключено.
+	IdleUnloadMinutes int `json:"idleUnloadMinutes"`
+	// EnableMetrics — собирать per-model метрики на cppworker.
+	EnableMetrics bool `json:"enableMetrics"`
+	// MetricsRetentionSeconds — сколько секунд хранить per-model метрики.
+	MetricsRetentionSeconds int `json:"metricsRetentionSeconds"`
+	// EnableReasoning — включать reasoning/thinking по умолчанию для моделей.
+	EnableReasoning bool `json:"enableReasoning"`
+	// ReasoningBudget — лимит токенов на reasoning, 0 = без лимита.
+	ReasoningBudget int `json:"reasoningBudget"`
 }
 
 // ToBackendType преобразует BackendEngine в BackendType.
@@ -135,17 +160,17 @@ func (e BackendEngine) ToBackendType() BackendType {
 // DefaultLlamaCppConfig возвращает конфигурацию llama.cpp по умолчанию
 func DefaultLlamaCppConfig() *LlamaCppConfig {
 	return &LlamaCppConfig{
-		GrpcPort:         19000,
-		NumGPULayers:     -1, // все слои на GPU
-		ContextLength:    2048,
-		BatchSize:        512,
-		FlashAttention:   false,
-		NUMA:             false,
-		UseMMap:          true,
-		UseMLock:         false,
-		MainGPU:          0,
+		GrpcPort:          19000,
+		NumGPULayers:      -1, // все слои на GPU
+		ContextLength:     2048,
+		BatchSize:         512,
+		FlashAttention:    false,
+		NUMA:              false,
+		UseMMap:           true,
+		UseMLock:          false,
+		MainGPU:           0,
 		MaxConcurrentReqs: 10,
-		Strategy:         "vram-ratio",
+		Strategy:          "vram-ratio",
 
 		NThreads:        0, // auto
 		RopeFreqBase:    10000.0,

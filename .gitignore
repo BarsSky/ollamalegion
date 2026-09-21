@@ -77,6 +77,12 @@ __pycache__/
 # R66+ tracks c/llama.cpp/ as a git submodule (see .gitmodules).
 c/llama.cpp.local-bak2/
 
+# Submodule migration scratch dirs (2026-09-21). Created during the
+# regular-tracked-dir → submodule conversion as intermediate rename
+# targets. Safe to delete manually once R66+ submodule migration is
+# stable in main.
+c/llama.cpp.presubmodule-content*/
+
 # ============================================================
 # Local build artifacts / scratch
 # ============================================================

@@ -24,9 +24,12 @@
 package logger
 
 import (
+	"bytes"
+	"io"
 	"sync/atomic"
 
 	"go.uber.org/zap"
+	"go.uber.org/zap/zapcore"
 )
 
 // logPtr — глобальный atomic.Pointer на текущий SugaredLogger.
@@ -95,4 +98,44 @@ func Sync() {
 	if p := logPtr.Load(); p != nil {
 		_ = p.Sync()
 	}
+}
+
+// CaptureTo перенаправляет пакетный логгер в w и возвращает функцию
+// восстановления предыдущего логгера.
+//
+// Назначение: тесты, которым нужно утверждать, что код действительно
+// залогировал событие (раньше такие тесты опирались на несуществующий
+// LOG_BUFFER-хук и молча ничего не проверяли).
+//
+// Реализация: строим zap-логгер с тем же encoder-ом, что и Init (json,
+// time/level/msg/caller), но с AddSync(w) вместо stdout, и подменяем
+// глобальный указатель. Уровень — DebugLevel, чтобы тест видел все записи.
+//
+// Не безопасно вызывать параллельно с другими тестами, которые логируют:
+// подмена глобальная. Вызывающий тест обязан быть последовательным
+// (в cmd/cppworker тесты не помечены t.Parallel()).
+func CaptureTo(w io.Writer) (restore func()) {
+	prev := logPtr.Load()
+
+	encCfg := zap.NewProductionEncoderConfig()
+	encCfg.TimeKey = "time"
+	encCfg.LevelKey = "level"
+	encCfg.MessageKey = "msg"
+	encCfg.CallerKey = "caller"
+
+	core := zapcore.NewCore(
+		zapcore.NewJSONEncoder(encCfg),
+		zapcore.AddSync(w),
+		zap.DebugLevel,
+	)
+	logPtr.Store(zap.New(core, zap.AddStacktrace(zapcore.FatalLevel)).Sugar())
+
+	return func() {
+		logPtr.Store(prev)
+	}
+}
+
+// CaptureToBuffer — удобная обёртка над CaptureTo для *bytes.Buffer.
+func CaptureToBuffer(buf *bytes.Buffer) (restore func()) {
+	return CaptureTo(buf)
 }

@@ -8,11 +8,11 @@ import "time"
 
 // ModelReplicationConfig - конфигурация репликации моделей
 type ModelReplicationConfig struct {
-	Enabled             bool                `json:"enabled"`
-	DefaultMinInstances int                 `json:"defaultMinInstances"`
-	DefaultMaxInstances int                 `json:"defaultMaxInstances"`
-	IdleUnloadAfter     string              `json:"idleUnloadAfter"` // "10m"
-	Groups              []ModelGroupConfig  `json:"groups"`
+	Enabled             bool               `json:"enabled"`
+	DefaultMinInstances int                `json:"defaultMinInstances"`
+	DefaultMaxInstances int                `json:"defaultMaxInstances"`
+	IdleUnloadAfter     string             `json:"idleUnloadAfter"` // "10m"
+	Groups              []ModelGroupConfig `json:"groups"`
 }
 
 // ModelGroupConfig - конфигурация группы моделей
@@ -42,7 +42,7 @@ type ModelInstanceState struct {
 // Phase 8 (2026-07-10): P.1 — rpc_coordinator production mode. Расширено полями:
 //   - Embedded       — true = поднять ModelCoordinator в balancer (in-process)
 //   - Workers        — initial worker URLs для Embedded mode (если coordinator
-//                      не получает их динамически через heartbeat)
+//     не получает их динамически через heartbeat)
 //   - FailoverPolicy — "circuit_breaker" | "retry" | "fail_fast"
 //   - RequestTimeout — non-streaming inference timeout (default 30s)
 //   - StreamTimeout  — streaming inference timeout (default 5min)
@@ -82,10 +82,10 @@ type RpcCoordinatorConfig struct {
 	StreamTimeout time.Duration `json:"streamTimeout"`
 
 	// === Legacy fields (Phase 8: keep для backward compat) ===
-	WorkerPort int    `json:"workerPort"`  // (legacy) port for rpcworker discovery
-	Timeout    string `json:"timeout"`     // (legacy) "30s" — superseded by RequestTimeout
-	Protocol   string `json:"protocol"`    // (legacy) "http" | "grpc"
-	MaxRetries int    `json:"maxRetries"`  // (legacy) для FailoverPolicy="retry"
+	WorkerPort int    `json:"workerPort"` // (legacy) port for rpcworker discovery
+	Timeout    string `json:"timeout"`    // (legacy) "30s" — superseded by RequestTimeout
+	Protocol   string `json:"protocol"`   // (legacy) "http" | "grpc"
+	MaxRetries int    `json:"maxRetries"` // (legacy) для FailoverPolicy="retry"
 
 	// CircuitBreaker — настройки per-worker circuit breaker (Phase 8 Session 3.3).
 	// Применяется в dispatcher'е: накапливает failure/success по каждому worker'у
@@ -121,6 +121,20 @@ type RpcWorkerConfig struct {
 type VirtualModelsConfig struct {
 	Enabled bool                 `json:"enabled"`
 	Models  []VirtualModelConfig `json:"models"`
+
+	// R65d (2026-09-20): CoordMode и Timeout — настройки координации
+	// по умолчанию для virtual models.
+	//
+	// До R65d webui/js/app.js отправлял их в PUT /api/v1/cluster/config
+	// (virtualModels.coordMode / .timeout), но хранить было негде: структура
+	// имела только Enabled и Models. Значения подставлялись хардкодом
+	// ("sequential" / 30000) в buildVirtualModelsResponse, поэтому форма
+	// «Virtual Models» всегда откатывалась к дефолтам.
+	//
+	// Per-model Coordination.Mode/TimeoutMs остаются приоритетнее (см.
+	// buildVirtualModelsResponse): они задаются через CRUD виртуальных моделей.
+	CoordMode string `json:"coordMode,omitempty"`
+	Timeout   int    `json:"timeout,omitempty"`
 }
 
 // VirtualModelConfig - конфигурация виртуальной модели.
@@ -142,10 +156,10 @@ type VirtualModelsConfig struct {
 //   - Если BackendPool != nil && ModelName != "" → alias-on-pool mode.
 //   - Иначе → pipeline mode (legacy, Slices + Coordination).
 type VirtualModelConfig struct {
-	Name         string              `json:"name"`
-	Description  string              `json:"description"`
-	Slices       []ModelSliceConfig  `json:"slices"`
-	Coordination CoordinationConfig  `json:"coordination"`
+	Name         string             `json:"name"`
+	Description  string             `json:"description"`
+	Slices       []ModelSliceConfig `json:"slices"`
+	Coordination CoordinationConfig `json:"coordination"`
 
 	// === Alias-on-pool mode (Phase 8 P.2) ===
 	Selection   SelectionStrategy `json:"selection"`   // "round_robin" | "least_loaded" | "random"
@@ -183,7 +197,7 @@ type ModelSliceConfig struct {
 
 // CoordinationConfig - конфигурация координации pipeline
 type CoordinationConfig struct {
-	Mode         string `json:"mode"`         // "sequential" | "parallel" | "tree"
+	Mode         string `json:"mode"` // "sequential" | "parallel" | "tree"
 	TimeoutMs    int    `json:"timeoutMs"`
 	SyncStrategy string `json:"syncStrategy"` // "http-callback" | "direct-response"
 }
@@ -204,8 +218,8 @@ type DistWorkerConfig struct {
 	WorkerID      string `json:"workerId"`
 	Host          string `json:"host"`
 	GrpcPort      int    `json:"grpcPort"`
-	LayerRange    string `json:"layerRange"`    // "1-40"
-	GPUMode       string `json:"gpuMode"`       // "auto" | "gpu" | "cpu"
+	LayerRange    string `json:"layerRange"` // "1-40"
+	GPUMode       string `json:"gpuMode"`    // "auto" | "gpu" | "cpu"
 	MaxBatchSize  int    `json:"maxBatchSize"`
 	KVCacheSizeMB int    `json:"kvCacheSizeMB"`
 }

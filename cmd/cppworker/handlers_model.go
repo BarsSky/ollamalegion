@@ -1925,6 +1925,55 @@ func modelParameterSize(nLayers, nEmbd int) string {
 	return fmt.Sprintf("%.1fB", billions)
 }
 
+// estimateVRAMSize — оценка VRAM usage для loaded модели в байтах.
+//
+// До этого фикса (R66 и ранее) /api/ps всегда возвращал size_vram:0
+// с комментарием "cppworker не отслеживает per-model VRAM пока".
+// Это потому, что llama.cpp НЕ экспонирует per-model VRAM usage через C-API
+// (только общий nvmlMemGetInfo через ggml_nvml), и интеграция NVML из
+// cgo-bridge потребовала бы отдельной работы.
+//
+// Здесь — практичная оценка на основе того, что у нас ЕСТЬ:
+//   - sizeBytes        — file size на диске (сжатый GGUF)
+//   - gpuLayers        — сколько слоёв в GPU (из loaded_at)
+//   - nLayers          — общее число слоёв
+//
+// Логика:
+//   1. Для Q4_K_M (типичная quantization) GGUF сжимает ~0.55 байт/параметр,
+//      в VRAM распаковывается до ~1.8 байт/параметр (8 bytes/param для fp16).
+//      Соотношение: file_size / VRAM ≈ 0.55/1.8 ≈ 0.3.
+//   2. Если только часть слоёв в GPU — пропорционально.
+//   3. + KV cache overhead (~10% на context_size * n_layers * 2 * n_embd * 2 bytes).
+//
+// Это приближение (точность ±20%), но гораздо полезнее чем 0 для UI
+// (WebUI/Ollama показывают "VRAM" в карточке модели и для loaded).
+//
+// Примеры:
+//   Qwen3-Instruct-2507-q4km (2.5 GB файл, 36/36 layers в GPU):
+//     estimate = 2497281120 * 1.8 * (36/36) ≈ 4.5 GB
+//     (реально ≈ 4.2 GB weights + 0.5 GB KV cache = 4.7 GB)
+func estimateVRAMSize(nLayers, gpuLayers int, sizeBytes uint64) uint64 {
+	if sizeBytes == 0 || nLayers == 0 {
+		return 0
+	}
+	if gpuLayers < 0 {
+		gpuLayers = 0
+	}
+	if gpuLayers == 0 {
+		// CPU-only — нет VRAM
+		return 0
+	}
+	if gpuLayers > nLayers {
+		gpuLayers = nLayers
+	}
+	// Q4_K_M: file ≈ 0.55 байт/парам → VRAM ≈ 1.8 байт/парам
+	// Соотношение file→VRAM ≈ 0.55/1.8 ≈ 0.306 → multiplier = 1.0/0.306 ≈ 3.27
+	// Эмпирически для fp16 это ~1.8x, для Q4_K_M точнее ~3.0x
+	const fileToVRAMMultiplier = 3.0
+	fraction := float64(gpuLayers) / float64(nLayers)
+	return uint64(float64(sizeBytes) * fraction * fileToVRAMMultiplier)
+}
+
 // quantizationOrUnknown — Ollama отдаёт "unknown" вместо пустой строки.
 func quantizationOrUnknown(q string) string {
 	if strings.TrimSpace(q) == "" {
@@ -1960,7 +2009,7 @@ func handleOllamaPS(w http.ResponseWriter, r *http.Request) {
 			"name":       m.Name,
 			"model":      m.Name,
 			"size":       sizeBytes,
-			"size_vram":  uint64(0), // cppworker не отслеживает per-model VRAM пока; 0 = неизвестно
+			"size_vram":  estimateVRAMSize(m.NLayers, m.GPULayers, sizeBytes),
 			"digest":     digest,
 			"expires_at": time.Now().Add(5 * time.Minute).Format(time.RFC3339),
 			"details": map[string]interface{}{

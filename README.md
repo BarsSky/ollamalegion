@@ -179,9 +179,14 @@ r35 image deployed, no SIGSEGV в логах 26+ минут uptime.
 Требуется: Docker 24+ с поддержкой Compose v2, Git, NVIDIA драйвер + NVIDIA Container Toolkit (для GPU-режима).
 
 ```bash
-# 1. Клонировать репозиторий (имя каталога — произвольное)
-git clone https://github.com/BarsSky/ollamalegion.git
+# 1. Клонировать репозиторий (имя каталога — произвольное).
+#    Флаг --recurse-submodules ОБЯЗАТЕЛЕН: c/llama.cpp/ — git submodule
+#    pinned на upstream commit 1d2869c6e (ggml 0.19.0, 2026-08-13).
+git clone --recurse-submodules https://github.com/BarsSky/ollamalegion.git
 cd ollamalegion
+
+# Если уже клонировали без --recurse-submodules:
+#   git submodule update --init --recursive
 
 # 2. Подготовить .env (один раз)
 cp deployments/.env.bundled-with-agent.example deployments/.env.bundled-with-agent

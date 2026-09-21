@@ -2093,14 +2093,18 @@ func handleOllamaShow(w http.ResponseWriter, r *http.Request) {
 // Same response shape as R43 and earlier; n_vocab and gpu_layers present,
 // state=loaded.
 func writeOllamaShowLoadedResponse(w http.ResponseWriter, info *cppbackend.ModelInfo) {
+	// R66 (2026-09-21): use modelParameterSize (12 × n_layers × n_embd² / 1e9) instead
+	// of the broken n_layers × n_embd / 1e9 formula, which gave "0.0B" for 7B models
+	// (e.g. Qwen3-Instruct: 36 × 2560 = 92160 → 9.2e-5B → "0.0B").
+	paramSize := modelParameterSize(info.NLayers, info.NEmbd)
 	writeJSON(w, http.StatusOK, map[string]interface{}{
 		"license": "unknown", "modelfile": "",
-		"parameters": fmt.Sprintf("%.1fB", float64(info.NLayers*info.NEmbd)/1e9),
+		"parameters": paramSize,
 		"template":   "", "system": "",
 		"details": map[string]interface{}{
 			"parent_model": "", "format": "gguf", "family": info.Architecture,
 			"families":           []string{info.Architecture},
-			"parameter_size":     fmt.Sprintf("%.1fB", float64(info.NLayers*info.NEmbd)/1e9),
+			"parameter_size":     paramSize,
 			"quantization_level": "unknown",
 		},
 		"model_info": map[string]interface{}{
@@ -2127,10 +2131,8 @@ func writeOllamaShowMetadataResponse(w http.ResponseWriter, meta *cppbackend.GGU
 	// or when ReadGGUFHeader failed silently. Use safe zero defaults.
 	nLayers := meta.NLayers
 	nEmbd := meta.NEmbd
-	paramSize := "unknown"
-	if nLayers > 0 && nEmbd > 0 {
-		paramSize = fmt.Sprintf("%.1fB", float64(nLayers*nEmbd)/1e9)
-	}
+	// R66 (2026-09-21): use modelParameterSize for accurate parameter estimation.
+	paramSize := modelParameterSize(nLayers, nEmbd)
 	family := meta.Architecture
 	if family == "" {
 		family = "unknown"

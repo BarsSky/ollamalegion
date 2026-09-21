@@ -72,6 +72,11 @@ __pycache__/
 # /c/
 # ============================================================
 
+# Pre-migration backup of c/llama.cpp/ (created 2026-09-13 before vendor
+# upgrade to upstream 1d2869c6e). Kept on disk for offline reference only.
+# R66+ tracks c/llama.cpp/ as a git submodule (see .gitmodules).
+c/llama.cpp.local-bak2/
+
 # ============================================================
 # Local build artifacts / scratch
 # ============================================================

@@ -1814,7 +1814,14 @@ const Renderers = (function () {
         });
         selectorHtml += '</select></div>';
 
-        container.innerHTML = selectorHtml + '<div id="ggufBackendCards" style="display:grid;gap:1rem;grid-template-columns:repeat(auto-fill,minmax(320px,1fr));"></div>';
+        // R66b (2026-09-22): счётчик бэкендов. Utils.setText('ggufTotalBackends', …)
+        // вызывался, но элемента с таким id не существовало ни в index.html, ни в
+        // генерируемой разметке → счётчик в шапке GGUF не отображался.
+        var totalHtml = '<div class="gguf-total-backends-row">' +
+            '<span data-i18n="gguf.total_backends">' + _t('gguf.total_backends') + '</span>: ' +
+            '<span id="ggufTotalBackends">' + data.backends.length + '</span></div>';
+
+        container.innerHTML = totalHtml + selectorHtml + '<div id="ggufBackendCards" style="display:grid;gap:1rem;grid-template-columns:repeat(auto-fill,minmax(320px,1fr));"></div>';
         renderGgufCardsInto(data.backends);
     }
 

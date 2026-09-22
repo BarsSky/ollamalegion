@@ -20,3 +20,26 @@
     .app-footer { flex-direction: column; gap: 12px; }
     .footer-separator { width: 60%; height: 1px; }
 }
+/* ============================================================================
+   R66b (2026-09-22): мастер инициализации на узких экранах.
+   Индикатор шагов (.wizard-steps) и подписи (.wizard-step-label) имеют
+   white-space:nowrap (components.css:896) и overflow:hidden (components.css:842),
+   поэтому при ширине ≲500px последний шаг обрезался без возможности скролла
+   (замер: stepsScrollW=455 > clientW=452). Даём горизонтальный скролл и
+   уменьшаем отступы, чтобы форма не «разъезжалась».
+   ============================================================================ */
+@media (max-width: 640px) {
+    .wizard-steps {
+        overflow-x: auto;
+        -webkit-overflow-scrolling: touch;
+        padding-bottom: 4px;
+    }
+    .wizard-step-label { font-size: 11px; }
+    .wizard-header { padding: 14px 16px; }
+    .wizard-body { padding: 16px 14px; }
+    .wizard-footer { padding: 12px 14px; }
+    .modal-content > .modal-footer { padding: 12px 14px; }
+    .wizard-param-table { font-size: 11px; }
+    .wizard-param-table th,
+    .wizard-param-table td { padding: 4px 6px; }
+}

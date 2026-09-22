@@ -66,6 +66,17 @@ const ui = (function () {
             App.setupWebSocketEvents();
             App.setupApiEvents();
             App.setupLogsTabNavigation();
+
+            // R66b (2026-09-22): setupEventListeners() была определена ниже в этом
+            // файле, но НИКОГДА не вызывалась (единственное упоминание — её
+            // объявление). Из-за этого были мертвы ВСЕ обработчики, которые она
+            // навешивает: #saveSettings, #resetSettings, export/import конфига,
+            // GGUF-пресеты, авто-сохранение 55 полей настроек (autoSaveSettings),
+            // #saveBackendLimitsBtn, #retakeSetupWizardBtn, detect-port бэкенда,
+            // #refreshBtn и кнопки модалок. Внешне это выглядело как «элементы
+            // настроек не отрабатывают» — клик ничего не делал и никакой ошибки
+            // в консоли не было.
+            setupEventListeners();
         }
 
         // Initial data load — cluster state first, drives connection status
@@ -265,6 +276,14 @@ const ui = (function () {
             case 'settings':
                 loadSettings();
                 setTimeout(function() { loadBackendLimits(); }, 100);
+                // R66b (2026-09-22): пересчитать высоты секций аккордеона ПОСЛЕ
+                // того как страница стала видимой. restoreAccordionState()
+                // вызывается при загрузке, когда #settings-page ещё display:none,
+                // поэтому body.scrollHeight == 0 и в inline max-height попадал 0px
+                // (секции выглядели как пустые полоски и требовали двух кликов).
+                if (window.SettingsUI && typeof SettingsUI.reapplyAccordionHeights === 'function') {
+                    SettingsUI.reapplyAccordionHeights();
+                }
                 // R54.7 (2026-08-24): init AutoTune Settings
                 if (window.AutoTuneSettings) {
                     window.AutoTuneSettings.init();
@@ -299,6 +318,22 @@ const ui = (function () {
     // ---- Event Listeners ----
 
     function setupEventListeners() {
+        // R66b (2026-09-22): хелперы модалки Add/Edit Backend объявлены НЕ здесь,
+        // а в app-modals.js и опубликованы как window.BackendCRUD.*. В этом файле
+        // bare-имён openBackendModal/closeModal/saveBackend/deleteBackend нет
+        // (проверено grep: 0 объявлений), поэтому первый же вызов давал
+        // ReferenceError: closeModal is not defined — а поскольку
+        // setupEventListeners() вызывается из init(), падала вся инициализация
+        // (обработчики ниже 331 не навешивались: saveSettings, reset, export/
+        // import, GGUF-пресеты, автосейв, лимиты бэкендов, retake-визард).
+        // Локальные обёртки с проверкой на наличие — чтобы отсутствие
+        // app-modals.js не ломало остальную инициализацию.
+        var CRUD = window.BackendCRUD || {};
+        var openBackendModal = function () { if (CRUD.openBackendModal) CRUD.openBackendModal(); };
+        var closeModal = function () { if (CRUD.closeModal) CRUD.closeModal(); };
+        var saveBackend = function () { if (CRUD.saveBackend) CRUD.saveBackend(); };
+        var deleteBackend = function () { if (CRUD.deleteBackend) CRUD.deleteBackend(); };
+
         document.getElementById('refreshBtn').addEventListener('click', () => {
             refreshCurrentPage();
             showToast(window.I18N ? I18N.t('common.success') : 'Data updated', 'success');
@@ -1189,22 +1224,43 @@ const ui = (function () {
         // конфиге/окружении балансера.
 
         // RPC settings
-        var modelReplicationEnabled = document.getElementById('modelReplicationEnabled') ? document.getElementById('modelReplicationEnabled').checked : false;
+        //
+        // R66b (2026-09-22): чекбоксов #modelReplicationEnabled /
+        // #rpcCoordinatorEnabled / #virtualModelsEnabled / #distInferenceEnabled
+        // в разметке НЕТ (проверено по всем webui/*.html). Режим работы в UI
+        // выбирается radio-кнопками input[name="operatingMode"], а секции
+        // вариантов показываются/скрываются через .variant-section.
+        // До фикса здесь читались несуществующие чекбоксы → в PUT всегда уходило
+        // enabled:false для всех четырёх режимов, т.е. нажатие «Сохранить»
+        // выключало активный режим работы (а после включения обработчиков это
+        // стало бы реальным регрессом). Теперь enabled выводится из текущего
+        // operatingMode — единственного источника истины в UI; если чекбокс
+        // когда-нибудь вернут в разметку, приоритет отдаётся ему.
+        var currentOperatingMode = (function () {
+            var radio = document.querySelector('input[name="operatingMode"]:checked');
+            return radio ? radio.value : 'standard';
+        })();
+        var modeEnabled = function (id, modeName) {
+            var el = document.getElementById(id);
+            if (el) return el.checked === true;
+            return currentOperatingMode === modeName;
+        };
+        var modelReplicationEnabled = modeEnabled('modelReplicationEnabled', 'replication');
         var modelReplicationMinInstances = parseInt((document.getElementById('modelReplicationMinInstances') && document.getElementById('modelReplicationMinInstances').value)) || 1;
         var modelReplicationMaxInstances = parseInt((document.getElementById('modelReplicationMaxInstances') && document.getElementById('modelReplicationMaxInstances').value)) || 3;
         var modelReplicationIdleUnload = (document.getElementById('modelReplicationIdleUnload') && document.getElementById('modelReplicationIdleUnload').value) || '10m';
 
-        var rpcCoordinatorEnabled = document.getElementById('rpcCoordinatorEnabled') ? document.getElementById('rpcCoordinatorEnabled').checked : false;
+        var rpcCoordinatorEnabled = modeEnabled('rpcCoordinatorEnabled', 'rpc_coordinator');
         var rpcCoordinatorURL = (document.getElementById('rpcCoordinatorURL') && document.getElementById('rpcCoordinatorURL').value) || '';
         var rpcCoordinatorWorkerPort = parseInt((document.getElementById('rpcCoordinatorWorkerPort') && document.getElementById('rpcCoordinatorWorkerPort').value)) || 18050;
         var rpcCoordinatorProtocol = (document.getElementById('rpcCoordinatorProtocol') && document.getElementById('rpcCoordinatorProtocol').value) || 'http';
         var rpcCoordinatorTimeout = (document.getElementById('rpcCoordinatorTimeout') && document.getElementById('rpcCoordinatorTimeout').value) || '30s';
 
-        var virtualModelsEnabled = document.getElementById('virtualModelsEnabled') ? document.getElementById('virtualModelsEnabled').checked : false;
+        var virtualModelsEnabled = modeEnabled('virtualModelsEnabled', 'virtual_router');
         var virtualModelsCoordMode = (document.getElementById('virtualModelsCoordMode') && document.getElementById('virtualModelsCoordMode').value) || 'sequential';
         var virtualModelsTimeout = parseInt((document.getElementById('virtualModelsTimeout') && document.getElementById('virtualModelsTimeout').value)) || 30000;
 
-        var distInferenceEnabled = document.getElementById('distInferenceEnabled') ? document.getElementById('distInferenceEnabled').checked : false;
+        var distInferenceEnabled = modeEnabled('distInferenceEnabled', 'distributed_inference');
         var distInferenceGrpcPort = parseInt((document.getElementById('distInferenceGrpcPort') && document.getElementById('distInferenceGrpcPort').value)) || 19000;
 
         // R65d (2026-09-20): здесь раньше читались agentCollectInterval /
@@ -1279,8 +1335,9 @@ const ui = (function () {
         var llamaCppReasoningBudget = intVal('reasoningBudget', 0);
 
         // Определяем текущий operatingMode из radio-кнопок на странице
-        var operatingModeRadio = document.querySelector('input[name="operatingMode"]:checked');
-        var operatingMode = operatingModeRadio ? operatingModeRadio.value : 'standard';
+        // (R66b: значение уже посчитано выше как currentOperatingMode и
+        // используется для вывода enabled-флагов RPC-режимов).
+        var operatingMode = currentOperatingMode;
 
         // Определяем текущий backendEngine из BackendTypeFilter (источник истины после мастера)
         var backendEngine = null;
@@ -1505,6 +1562,14 @@ const ui = (function () {
             fetchQueueDetails();
             fetchQueueHistory();
             fetchSessions();
+            // R66b (2026-09-22): пока открыта вкладка Settings, обновляем таблицу
+            // «Лимиты бэкендов». Раньше единственным триггером был вход на вкладку
+            // (refreshPage → loadBackendLimits), и если в тот момент список бэкендов
+            // был пуст/недоступен, loadBackendLimits() оставлял строку
+            // «Загрузка...» НАВСЕГДА — periodic refresh её не перерисовывал.
+            if (currentPage === 'settings') {
+                loadBackendLimits();
+            }
         }, interval);
     }
 
@@ -2655,6 +2720,24 @@ const ui = (function () {
     }
 
     // ---- Public API ----
+
+    // R66b (2026-09-22): публикуем в window функции, которые другие модули
+    // ищут через `typeof X === 'function'`. Проверки резолвятся в ГЛОБАЛЬНУЮ
+    // область, а функции объявлены внутри этого IIFE, поэтому условия были вечно
+    // ложными и действия молча не выполнялись:
+    //   * config-io.js:400 — после импорта конфига НИКОГДА не вызывался
+    //     autoSaveSettings, т.е. импортированные настройки не сохранялись на
+    //     сервер (пользователь видел «импортировано», а PUT не уходил);
+    //   * mode-wizard.js:373 — после применения режима не перечитывались настройки.
+    //
+    // ВАЖНО: присваивание обязано быть ВНУТРИ IIFE. Снаружи этих идентификаторов
+    // не существует (они объявлены здесь), и попытка обратиться к ним на верхнем
+    // уровне скрипта даёт ReferenceError, который обрывает весь файл — включая
+    // регистрацию DOMContentLoaded → ui.init() (проверено на стенде: приложение
+    // не инициализировалось вообще).
+    window.autoSaveSettings = autoSaveSettings;
+    window.loadSettings = loadSettings;
+
     return {
         init,
         editBackend: window.BackendCRUD.editBackend,
@@ -2681,6 +2764,23 @@ const ui = (function () {
 
 })();
 
+
+// R66b (2026-09-22): публикуем ui в window.
+//
+// `ui` — это const внутри classic-script'а, поэтому в window он НЕ попадал.
+// Между тем на него ссылаются:
+//   * inline-обработчики в генерируемой разметке — onclick="ui.executeModelOperation(...)"
+//     (страница Models, кнопки Load/Unload/Delete, app.js:2225-2226) и
+//     onclick="ui.cancelOperationByKey(...)" (app.js:2428). Без window.ui клик
+//     по этим кнопкам падал с ReferenceError — «выгрузка модели не работает»;
+//   * modules/backend-type-filter.js:344,369 — if (window.ui && window.ui.currentPage…)
+//     ветка никогда не срабатывала, т.е. авто-переход на dashboard при скрытии
+//     текущей страницы не работал;
+//   * modules/config-io.js:32 — if (window.ui && window.ui.data…) не срабатывал,
+//     из-за чего в экспортируемый конфиг не попадал список бэкендов.
+window.ui = ui;
+window.App = window.App || {};
+window.App.ui = ui;
 
 // Auto-init when DOM ready
 document.addEventListener('DOMContentLoaded', () => ui.init());

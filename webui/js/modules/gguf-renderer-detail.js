@@ -181,7 +181,10 @@
             var fname = dlFile.getAttribute('data-filename');
             if (!isNaN(fi) && fname && state.hfSearchResults[fi]) {
                 var modelId = state.hfSearchResults[fi].id || state.hfSearchResults[fi].modelId;
-                if (typeof showInlineHfFileProgress === 'function') showInlineHfFileProgress(fi, fname, 0);
+                // R66b: здесь был вызов showInlineHfFileProgress() под проверкой
+                // `typeof ... === 'function'`, но такой функции в проекте нет —
+                // ветка мертва. Прогресс per-file показывает startDownload()
+                // (gguf-load-progress.js), поэтому мёртвый вызов убран.
                 if (typeof M.startDownload === 'function') M.startDownload(modelId, fname);
             }
             return;

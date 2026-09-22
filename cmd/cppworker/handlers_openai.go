@@ -70,6 +70,21 @@ type openAICompletionRequest struct {
 	Truncate       *bool              `json:"truncate,omitempty"`
 }
 
+// logitBiasWarnOnce — R66b: logit_bias принимается, но НЕ применяется
+// (C-bridge не поддерживает). Предупреждаем один раз за жизнь процесса, чтобы
+// не спамить на каждый запрос клиента, который всегда шлёт это поле.
+var logitBiasWarnOnce sync.Once
+
+// warnLogitBiasOnce — однократное честное предупреждение о том, что
+// logit_bias проигнорирован.
+func warnLogitBiasOnce(field string, count int) {
+	logitBiasWarnOnce.Do(func() {
+		logger.Get().Warnw("logit_bias принят, но НЕ применяется: C-bridge не поддерживает logit-bias/грамматики",
+			"field", field, "entries", count,
+			"hint", "используйте параметры сэмплинга (temperature/top_k/min_p/repeat_penalty) — они реально применяются")
+	})
+}
+
 // openAIChatCompletionRequest — структура запроса OpenAI /v1/chat/completions
 //
 // IMPORTANT (Round 16 follow-up fix, 2026-07-30): поля с optional zero values
@@ -125,7 +140,16 @@ type openAIChatCompletionRequest struct {
 	ParallelToolCalls *bool `json:"parallel_tool_calls,omitempty"`
 	// User — OpenAI-идентификатор конечного пользователя (трекинг/лимиты).
 	User string `json:"user,omitempty"`
-	// LogitBias — принимается для совместимости; применяется C-bridge.
+	// LogitBias — принимается для совместимости с OpenAI-клиентами и
+	// ИГНОРИРУЕТСЯ. C-bridge (c/bridge/bridge.h) не экспонирует ни
+	// llama_sample_logit_bias, ни грамматики: наружу доступен только
+	// SampleToken(logits, temperature, seed). Поле не попадает ни в
+	// bridge.GenerationParams, ни в params из buildGenerationParams.
+	//
+	// Прежний комментарий («применяется C-bridge») был ложным — оператор,
+	// выставив logit_bias, молча не получал эффекта. Теперь при непустом
+	// значении пишем однократное предупреждение в лог (warnLogitBiasOnce),
+	// чтобы это не выглядело как работающая настройка.
 	LogitBias map[string]float64 `json:"logit_bias,omitempty"`
 	// KeepAlive / Format / Think / Truncate / Logprobs — Ollama-поля: клиенты,
 	// использующие один код для обоих API (в т.ч. балансер), могут прислать их
@@ -165,8 +189,7 @@ func openAIToChatMessage(msgs []openAIChatMessage) []chatMessage {
 			Name:       m.Name,
 		}
 		if len(m.ToolCalls) > 0 {
-			cm.ToolCalls = make([]openAIToolCall, len(m.ToolCalls))
-			copy(cm.ToolCalls, m.ToolCalls)
+			cm.ToolCalls = ollamaToolCallsFromOpenAI(m.ToolCalls)
 		}
 		result = append(result, cm)
 	}
@@ -292,6 +315,10 @@ func handleV1ChatCompletions(w http.ResponseWriter, r *http.Request) {
 	if len(req.Messages) == 0 {
 		writeError(w, http.StatusBadRequest, "messages array is required")
 		return
+	}
+	// R66b: logit_bias принимается, но не применяется — предупреждаем один раз.
+	if len(req.LogitBias) > 0 {
+		warnLogitBiasOnce("v1/chat/completions.logit_bias", len(req.LogitBias))
 	}
 
 	// InFlight counter: защищает активные запросы от reload-обрыва.
@@ -1350,6 +1377,10 @@ func handleV1Completions(w http.ResponseWriter, r *http.Request) {
 	if req.Prompt == "" {
 		writeError(w, http.StatusBadRequest, "prompt is required")
 		return
+	}
+	// R66b: logit_bias принимается, но не применяется — предупреждаем один раз.
+	if len(req.LogitBias) > 0 {
+		warnLogitBiasOnce("v1/completions.logit_bias", len(req.LogitBias))
 	}
 
 	// InFlight counter: защищает активные запросы от reload-обрыва.

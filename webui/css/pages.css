@@ -717,9 +717,10 @@
     color: #fff;
     border-color: var(--accent, #3b82f6);
 }
-    font-weight: 600;
-    color: var(--text-primary);
-}
+
+/* R66b (2026-09-22): тут были осиротевшие декларации + лишняя `}` -
+   CSS-парсер выбрасывал следующее правило (.gguf-empty-state ниже).
+   Удалено; само правило .gguf-empty-state осталось нетронутым. */
 
 /* Empty State */
 .gguf-empty-state {

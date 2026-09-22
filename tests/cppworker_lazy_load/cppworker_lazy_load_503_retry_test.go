@@ -160,6 +160,52 @@ func newMockCppWorker503First(failuresBeforeSuccess int32, loadDelay time.Durati
 			})
 			return
 
+		// R66b (2026-09-22): нативный Ollama-путь. Балансер с R65d проксирует
+		// /api/chat напрямую в cppworker (без трансляции в OpenAI-формат),
+		// поэтому мок обязан отвечать и здесь — иначе тест получал
+		// 404 «mock: not found: /api/chat» вместо ответа модели.
+		case "/api/chat":
+			m.chatCalls.Add(1)
+			body, _ := io.ReadAll(r.Body)
+			var chatReq map[string]interface{}
+			_ = json.Unmarshal(body, &chatReq)
+			stream, _ := chatReq["stream"].(bool)
+			createdAt := time.Now().UTC().Format(time.RFC3339)
+			const text = "Привет! Это ответ после retry."
+			if !stream {
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusOK)
+				_ = json.NewEncoder(w).Encode(map[string]interface{}{
+					"model":      "lazy-model",
+					"created_at": createdAt,
+					"message":    map[string]interface{}{"role": "assistant", "content": text},
+					"done":       true, "done_reason": "stop",
+					"prompt_eval_count": 5, "eval_count": 8,
+				})
+				return
+			}
+			w.Header().Set("Content-Type", "application/x-ndjson")
+			w.WriteHeader(http.StatusOK)
+			flusher, _ := w.(http.Flusher)
+			first, _ := json.Marshal(map[string]interface{}{
+				"model": "lazy-model", "created_at": createdAt, "done": false,
+				"message": map[string]interface{}{"role": "assistant", "content": text},
+			})
+			_, _ = fmt.Fprintf(w, "%s\n", first)
+			if flusher != nil {
+				flusher.Flush()
+			}
+			last, _ := json.Marshal(map[string]interface{}{
+				"model": "lazy-model", "created_at": createdAt, "done": true,
+				"done_reason": "stop", "prompt_eval_count": 5, "eval_count": 8,
+				"message": map[string]interface{}{"role": "assistant", "content": ""},
+			})
+			_, _ = fmt.Fprintf(w, "%s\n", last)
+			if flusher != nil {
+				flusher.Flush()
+			}
+			return
+
 		default:
 			http.Error(w, "mock: not found: "+path, http.StatusNotFound)
 		}
@@ -191,6 +237,14 @@ func (m *mockCppWorker503First) waitForLoadComplete(timeout time.Duration) bool 
 // createTestProxyForCppWorker503Retry — обёртка для переиспользования мока.
 func createTestProxyForCppWorker503Retry(t *testing.T, cppWorkerURL string) *balancer.Proxy {
 	t.Helper()
+
+	// R66b (2026-09-22): этот helper используется ТОЛЬКО sync-тестами
+	// («балансер ждёт загрузку и делает retry»). С R60.33 авто-загрузка по
+	// умолчанию асинхронная (balancer отдаёт 503+Retry-After и грузит модель
+	// в фоне), поэтому без явного LB_AUTO_LOAD_ASYNC=0 sync-контракт не
+	// проверяется — тесты падали. Асинхронный контракт проверяется отдельно
+	// в cppworker_lazy_load_async_r6033_test.go.
+	t.Setenv("LB_AUTO_LOAD_ASYNC", "0")
 
 	hostPort := strings.TrimPrefix(cppWorkerURL, "http://")
 	parts := strings.Split(hostPort, ":")

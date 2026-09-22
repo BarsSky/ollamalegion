@@ -142,9 +142,21 @@
     //   <label>{LABEL} <span class="tooltip-trigger">?<span class="tooltip-content">{DESC}</span></span></label>
     // Если перевод не найден, label и desc показываются на английском (fallback).
     // Использует тот же CSS что и settings (pages.css .tooltip-trigger/.tooltip-content).
+    //
+    // R66b (2026-09-22): I18N.t() при отсутствии ключа возвращает САМ КЛЮЧ
+    // (i18n/index.js:95-102), поэтому `|| fallback` не срабатывал и пользователь
+    // видел сырой `wizard.hardware_preset` вместо подписи. Теперь результат,
+    // совпавший с ключом, трактуется как «перевода нет».
+    function tr(key, fallback) {
+        if (!window.I18N) return fallback;
+        var v = window.I18N.t(key, null);
+        if (v === undefined || v === null || v === '' || v === key) return fallback;
+        return v;
+    }
+
     function t_label(labelKey, labelFallback, descKey, descFallback) {
-        var lbl = (window.I18N && window.I18N.t(labelKey, null)) || labelFallback;
-        var desc = (window.I18N && window.I18N.t(descKey, null)) || descFallback;
+        var lbl = tr(labelKey, labelFallback);
+        var desc = tr(descKey, descFallback);
         return '<span class="tooltip-trigger" tabindex="0">?' +
             '<span class="tooltip-content">' + escapeHtml(desc) + '</span>' +
             '</span>' + escapeHtml(lbl);
@@ -228,7 +240,9 @@
         }
         if (step === 4) {
             if (window.SettingsUI) {
-                window.SettingsUI.showModeFields(wizardState.operatingMode);
+                // R66b: скоупим на контейнер мастера — иначе выбор падал на
+                // одноимённый блок страницы Settings и шаг оставался пустым.
+                window.SettingsUI.showModeFields(wizardState.operatingMode, wizardRoot());
             }
             applyWizardStateToModeFields();
         }
@@ -435,48 +449,48 @@
 
         return '<div class="wizard-step-content params-step">' +
             '<h3>' + (window.I18N ? I18N.t('wizard.step3') : 'Mode Parameters') + '</h3>' +
-            '<div id="modeFields-standard" class="mode-fields">' +
+            '<div id="wiz-modeFields-standard" class="mode-fields">' +
             '<p style="color:var(--text-muted);">' + (window.I18N ? I18N.t('wizard.summary_empty') : 'Standard mode — no additional parameters required') + '</p>' +
             '</div>' +
-            '<div id="modeFields-replication" class="mode-fields" style="display:none;">' +
+            '<div id="wiz-modeFields-replication" class="mode-fields" style="display:none;">' +
             '<div class="form-row">' +
             '<div class="form-group"><label>' + t_label('settings.model_replication_min', 'Min Instances', 'wizard.tooltip.replication_min', 'Min number of model instances across backends. 0 = replication disabled.') + '</label>' +
-            '<input type="number" id="modelReplicationMinInstances" class="form-control" value="' + ((sc.replication && sc.replication.defaultMinInstances) || 1) + '" min="0" max="10"></div>' +
+            '<input type="number" id="wiz-modelReplicationMinInstances" class="form-control" value="' + ((sc.replication && sc.replication.defaultMinInstances) || 1) + '" min="0" max="10"></div>' +
             '<div class="form-group"><label>' + t_label('settings.model_replication_max', 'Max Instances', 'wizard.tooltip.replication_max', 'Max number of instances. New replicas spin up to this limit.') + '</label>' +
-            '<input type="number" id="modelReplicationMaxInstances" class="form-control" value="' + ((sc.replication && sc.replication.defaultMaxInstances) || 3) + '" min="0" max="20"></div>' +
+            '<input type="number" id="wiz-modelReplicationMaxInstances" class="form-control" value="' + ((sc.replication && sc.replication.defaultMaxInstances) || 3) + '" min="0" max="20"></div>' +
             '</div>' +
             '<div class="form-group"><label>' + t_label('settings.model_replication_idle_unload', 'Idle Unload After', 'wizard.tooltip.replication_idle_unload', 'How long to keep an idle replica before unloading. Format: 10m, 30m, 1h.') + '</label>' +
-            '<input type="text" id="modelReplicationIdleUnload" class="form-control" value="' + ((sc.replication && sc.replication.idleUnloadAfter) || '10m') + '" placeholder="10m, 30m, 1h"></div>' +
+            '<input type="text" id="wiz-modelReplicationIdleUnload" class="form-control" value="' + ((sc.replication && sc.replication.idleUnloadAfter) || '10m') + '" placeholder="10m, 30m, 1h"></div>' +
             '</div>' +
-            '<div id="modeFields-rpc_coordinator" class="mode-fields" style="display:none;">' +
+            '<div id="wiz-modeFields-rpc_coordinator" class="mode-fields" style="display:none;">' +
             '<div class="form-group"><label>' + t_label('settings.rpc_coordinator_url', 'Coordinator URL', 'wizard.tooltip.rpc_url', 'URL of external RPC coordinator (e.g. http://coordinator:8080).') + '</label>' +
-            '<input type="text" id="rpcCoordinatorURL" class="form-control" value="' + ((sc.rpcCoordinator && sc.rpcCoordinator.coordinatorURL) || '') + '" placeholder="http://coordinator:8080"></div>' +
+            '<input type="text" id="wiz-rpcCoordinatorURL" class="form-control" value="' + ((sc.rpcCoordinator && sc.rpcCoordinator.coordinatorURL) || '') + '" placeholder="http://coordinator:8080"></div>' +
             '<div class="form-row">' +
             '<div class="form-group"><label>' + t_label('settings.rpc_coordinator_port', 'Worker Port', 'wizard.tooltip.rpc_worker_port', 'Port where workers listen for commands. Must match across all workers.') + '</label>' +
-            '<input type="number" id="rpcCoordinatorWorkerPort" class="form-control" value="' + ((sc.rpcCoordinator && sc.rpcCoordinator.workerPort) || 18050) + '"></div>' +
+            '<input type="number" id="wiz-rpcCoordinatorWorkerPort" class="form-control" value="' + ((sc.rpcCoordinator && sc.rpcCoordinator.workerPort) || 18050) + '"></div>' +
             '<div class="form-group"><label>' + t_label('settings.rpc_coordinator_protocol', 'Protocol', 'wizard.tooltip.rpc_protocol', 'HTTP — simple, gRPC — faster for streaming.') + '</label>' +
-            '<select id="rpcCoordinatorProtocol" class="form-control"><option value="http">HTTP</option><option value="grpc">gRPC</option></select></div>' +
+            '<select id="wiz-rpcCoordinatorProtocol" class="form-control"><option value="http">HTTP</option><option value="grpc">gRPC</option></select></div>' +
             '</div>' +
             '<div class="form-row">' +
             '<div class="form-group"><label>' + t_label('settings.rpc_coordinator_timeout', 'Timeout', 'wizard.tooltip.rpc_timeout', 'Timeout for worker response. Format: 30s, 60s, 2m.') + '</label>' +
-            '<input type="text" id="rpcCoordinatorTimeout" class="form-control" value="' + ((sc.rpcCoordinator && sc.rpcCoordinator.timeout) || '30s') + '" placeholder="30s, 60s"></div>' +
+            '<input type="text" id="wiz-rpcCoordinatorTimeout" class="form-control" value="' + ((sc.rpcCoordinator && sc.rpcCoordinator.timeout) || '30s') + '" placeholder="30s, 60s"></div>' +
             '<div class="form-group"><label>' + t_label('settings.rpc_coordinator_retries', 'Max Retries', 'wizard.tooltip.rpc_max_retries', 'How many times to retry on worker failure.') + '</label>' +
-            '<input type="number" id="rpcCoordinatorMaxRetries" class="form-control" value="' + ((sc.rpcCoordinator && sc.rpcCoordinator.maxRetries) || 3) + '" min="0" max="10"></div>' +
+            '<input type="number" id="wiz-rpcCoordinatorMaxRetries" class="form-control" value="' + ((sc.rpcCoordinator && sc.rpcCoordinator.maxRetries) || 3) + '" min="0" max="10"></div>' +
             '</div>' +
             '</div>' +
-            '<div id="modeFields-virtual_router" class="mode-fields" style="display:none;">' +
+            '<div id="wiz-modeFields-virtual_router" class="mode-fields" style="display:none;">' +
             '<div class="form-group"><label>' + t_label('settings.virtual_models_coord_mode', 'Coordination Mode', 'wizard.tooltip.virtual_coord_mode', 'Sequential — chain. Parallel — concurrent. Tree — parent → children.') + '</label>' +
-            '<select id="virtualModelsCoordMode" class="form-control">' +
+            '<select id="wiz-virtualModelsCoordMode" class="form-control">' +
             '<option value="sequential">Sequential</option>' +
             '<option value="parallel">Parallel</option>' +
             '<option value="tree">Tree</option>' +
             '</select></div>' +
             '<div class="form-group"><label>' + t_label('settings.virtual_models_timeout', 'Timeout (ms)', 'wizard.tooltip.virtual_timeout', 'Timeout for virtual model request (ms).') + '</label>' +
-            '<input type="number" id="virtualModelsTimeout" class="form-control" value="' + ((sc.virtualModels && sc.virtualModels.timeout) || 30000) + '" min="1000"></div>' +
+            '<input type="number" id="wiz-virtualModelsTimeout" class="form-control" value="' + ((sc.virtualModels && sc.virtualModels.timeout) || 30000) + '" min="1000"></div>' +
             '</div>' +
-            '<div id="modeFields-distributed_inference" class="mode-fields" style="display:none;">' +
+            '<div id="wiz-modeFields-distributed_inference" class="mode-fields" style="display:none;">' +
             '<div class="form-group"><label>' + t_label('settings.dist_inference_grpc_port', 'gRPC Port', 'wizard.tooltip.dist_grpc_port', 'gRPC server port for custom distributed inference.') + '</label>' +
-            '<input type="number" id="distInferenceGrpcPort" class="form-control" value="' + ((sc.distInference && sc.distInference.grpcPort) || 19000) + '" min="1024" max="65535"></div>' +
+            '<input type="number" id="wiz-distInferenceGrpcPort" class="form-control" value="' + ((sc.distInference && sc.distInference.grpcPort) || 19000) + '" min="1024" max="65535"></div>' +
             '</div>' +
             '</div>';
     }
@@ -496,14 +510,14 @@
             // R58.3: Hardware preset selector
             '<div class="form-group hardware-preset-group">' +
             '<label>' + t_label('wizard.hardware_preset', 'Hardware Preset', 'wizard.tooltip.hardware_preset', 'Apply tuned defaults for your GPU. For CPPWORKER params (n_ctx, gpu_layers, etc.) see the hint below.') + '</label>' +
-            '<select id="hardwarePreset" class="form-control">' +
+            '<select id="wiz-hardwarePreset" class="form-control">' +
             '<option value="">— Custom (no preset) —</option>' +
             presetOptions +
             '</select></div>' +
-            '<div id="hardwarePresetHint" class="hardware-preset-hint" style="display:none;"></div>' +
+            '<div id="wiz-hardwarePresetHint" class="hardware-preset-hint" style="display:none;"></div>' +
             '<div class="form-group">' +
             '<label>' + t_label('settings.balancing_mode', 'Balancing Algorithm', 'wizard.tooltip.balancing_algorithm', 'Algorithm for routing requests to backends.') + '</label>' +
-            '<select id="balancingAlgorithm" class="form-control">' +
+            '<select id="wiz-balancingAlgorithm" class="form-control">' +
             '<option value="resource-aware"' + (sc.algorithm === 'resource-aware' ? ' selected' : '') + '>Resource-Aware</option>' +
             '<option value="least-connections"' + (sc.algorithm === 'least-connections' ? ' selected' : '') + '>Least Connections</option>' +
             '<option value="round-robin"' + (sc.algorithm === 'round-robin' ? ' selected' : '') + '>Round Robin</option>' +
@@ -512,18 +526,18 @@
             '</select></div>' +
             '<div class="form-row">' +
             '<div class="form-group"><label>' + t_label('wizard.gpu_max_label', 'GPU Max %', 'wizard.tooltip.gpu_max', 'Max GPU% before routing elsewhere.') + '</label>' +
-            '<input type="number" id="gpuMaxUsage" class="form-control" value="' + sc.gpuMaxUsage + '" min="50" max="100"></div>' +
+            '<input type="number" id="wiz-gpuMaxUsage" class="form-control" value="' + sc.gpuMaxUsage + '" min="50" max="100"></div>' +
             '<div class="form-group"><label>' + t_label('wizard.vram_max_label', 'VRAM Max %', 'wizard.tooltip.vram_max', 'Max VRAM% before routing. Leave 5-10% margin for KV cache.') + '</label>' +
-            '<input type="number" id="vramMaxUsage" class="form-control" value="' + sc.vramMaxUsage + '" min="50" max="100"></div>' +
+            '<input type="number" id="wiz-vramMaxUsage" class="form-control" value="' + sc.vramMaxUsage + '" min="50" max="100"></div>' +
             '</div>' +
             '<div class="form-row">' +
             '<div class="form-group"><label>' + t_label('wizard.cpu_max_label', 'CPU Max %', 'wizard.tooltip.cpu_max', 'Max CPU% before routing.') + '</label>' +
-            '<input type="number" id="cpuMaxUsage" class="form-control" value="' + sc.cpuMaxUsage + '" min="50" max="100"></div>' +
+            '<input type="number" id="wiz-cpuMaxUsage" class="form-control" value="' + sc.cpuMaxUsage + '" min="50" max="100"></div>' +
             '<div class="form-group"><label>' + t_label('wizard.ram_max_label', 'RAM Max %', 'wizard.tooltip.ram_max', 'Max RAM% (cppworker uses RAM for mmap).') + '</label>' +
-            '<input type="number" id="ramMaxUsage" class="form-control" value="' + sc.ramMaxUsage + '" min="50" max="100"></div>' +
+            '<input type="number" id="wiz-ramMaxUsage" class="form-control" value="' + sc.ramMaxUsage + '" min="50" max="100"></div>' +
             '</div>' +
             '<div class="form-group"><label>' + t_label('wizard.api_token_label', 'API Token', 'wizard.tooltip.api_token', 'Auth token (must match API_TOKEN env).') + '</label>' +
-            '<input type="password" id="apiToken" class="form-control" placeholder="API Token"></div>' +
+            '<input type="password" id="wiz-apiToken" class="form-control" placeholder="API Token"></div>' +
             '</div>';
     }
 
@@ -560,15 +574,44 @@
     }
 
     function getFieldValue(id, fallback) {
-        var el = document.getElementById(id);
+        var el = wizardField(id);
         return el ? (el.value || fallback) : fallback;
     }
 
     function setFieldValue(id, value) {
-        var el = document.getElementById(id);
+        var el = wizardField(id);
         if (el && value !== undefined && value !== null) {
             el.value = value;
         }
+    }
+
+    // ================================================================
+    // FIELD SCOPING (R66b, 2026-09-22)
+    // ================================================================
+    //
+    // id полей мастера получают префикс `wiz-` (id="wiz-gpuMaxUsage" и т.п.),
+    // потому что раньше они ПОЛНОСТЬЮ совпадали с id страницы Settings
+    // (gpuMaxUsage, vramMaxUsage, modelReplicationMinInstances, modeFields-*,
+    // balancingAlgorithm, apiToken, …). Из-за совпадения:
+    //   * document.getElementById() возвращал элемент СТРАНИЦЫ SETTINGS
+    //     (она в DOM раньше) — шаг 4 мастера выглядел пустым, а правки шага 5
+    //     молча терялись (setFieldValue писал в невидимый input страницы);
+    //   * в DOM жили два элемента с одинаковым id — невалидный HTML, и любой
+    //     сторонний код с document.getElementById() попадал не туда.
+    // Теперь id уникальны, а wizardField() сначала ищет префиксованный id внутри
+    // контейнера мастера, затем обычный (для wizard-only элементов вроде
+    // wizardBody) и лишь потом — по документу.
+    function wizardRoot() {
+        return document.getElementById('setupWizardModal') || document;
+    }
+
+    function wizardField(id) {
+        var root = wizardRoot();
+        if (root && typeof root.querySelector === 'function') {
+            var scoped = root.querySelector('[id="wiz-' + id + '"]') || root.querySelector('[id="' + id + '"]');
+            if (scoped) return scoped;
+        }
+        return document.getElementById(id);
     }
 
     // ================================================================
@@ -652,7 +695,7 @@
         // R58.3 (2026-09-03): Hardware preset dropdown change handler.
         // When user selects a preset, fill in the balancer tuning fields
         // (vramMaxUsage, gpuMaxUsage, etc.) and show cppworker hint.
-        var presetDropdown = modal.querySelector('#hardwarePreset');
+        var presetDropdown = modal.querySelector('#wiz-hardwarePreset');
         if (presetDropdown) {
             presetDropdown.addEventListener('change', function () {
                 applyHardwarePreset(presetDropdown.value);
@@ -663,7 +706,7 @@
     // applyHardwarePreset — R58.3: fill in balancer tuning fields from a preset.
     // Empty value (or unknown preset) clears the hint and leaves fields untouched.
     function applyHardwarePreset(presetKey) {
-        var hintEl = document.getElementById('hardwarePresetHint');
+        var hintEl = wizardField('hardwarePresetHint');
         if (!presetKey || !window.HardwarePresets) {
             if (hintEl) hintEl.style.display = 'none';
             return;
@@ -811,11 +854,11 @@
                 console.log('[SetupWizard] Server config after save:', JSON.stringify(cfg));
                 if (cfg && cfg.initialized === true) {
                     closeWizard();
-                    if (typeof startNormalInit === 'function') {
-                        startNormalInit();
-                    } else {
-                        location.reload();
-                    }
+                    // R66b: мёртвая проверка `typeof startNormalInit` убрана —
+                    // функции с таким именем в проекте нет, всегда выполнялся
+                    // location.reload(). Перезагружаемся, чтобы приложение
+                    // стартовало с серверным (только что сохранённым) конфигом.
+                    location.reload();
                 } else {
                     showWizardError('\u0421\u0435\u0440\u0432\u0435\u0440 \u043d\u0435 \u043f\u043e\u0434\u0442\u0432\u0435\u0440\u0434\u0438\u043b \u0438\u043d\u0438\u0446\u0438\u0430\u043b\u0438\u0437\u0430\u0446\u0438\u044e. \u041f\u043e\u043f\u0440\u043e\u0431\u0443\u0439\u0442\u0435 \u0435\u0449\u0451 \u0440\u0430\u0437.');
                 }
@@ -830,11 +873,11 @@
         } else {
             console.log('[SetupWizard] API not available — skipping server save.');
             closeWizard();
-            if (typeof startNormalInit === 'function') {
-                startNormalInit();
-            } else {
-                location.reload();
-            }
+            // R66b: здесь была проверка `typeof startNormalInit === 'function'`,
+            // но такой функции в проекте НЕТ ни в одном файле — условие всегда
+            // ложно, и всегда выполнялся location.reload(). Оставляем явное
+            // поведение и убираем мёртвую ветку.
+            location.reload();
         }
     }
 

@@ -63,7 +63,12 @@
                 try {
                     var xhr = new XMLHttpRequest();
                     xhr.open('GET', (window.WEBUI_CONFIG && window.WEBUI_CONFIG.API_BASE || '') + '/api/v1/config', false);
-                    xhr.timeout = 3000;
+                    // R66b (2026-09-22): НЕ ставим xhr.timeout на синхронный запрос —
+                    // Chrome бросает InvalidAccessError ("Timeouts cannot be set for
+                    // synchronous requests"), из-за чего вся ветка синхронизации
+                    // падала в catch и в консоли появлялся warning на каждой загрузке.
+                    // Таймаут синхронного XHR всё равно не поддерживается — его роль
+                    // выполняет асинхронный путь ниже (_fetchConfigAsync).
                     xhr.send();
                     if (xhr.status >= 200 && xhr.status < 300) {
                         var serverConfig = JSON.parse(xhr.responseText);

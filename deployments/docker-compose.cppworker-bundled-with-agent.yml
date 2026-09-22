@@ -51,7 +51,7 @@ services:
     # Round 35 (r35): reload→load fallback + idleUnload disabled.
     # Round 35c (r35c): env-tunable polling timeouts (LB_NCTX_PREFLIGHT_*)
     # для моделей с auto-offload (22GB+ Qwen3.6 на 8GB VRAM, 12-15 min load).
-    image: ollama-legion/balancer:r66-submodule-v1  # Round 66 (2026-09-21): R65d consolidated (15ea588) + c/llama.cpp/ converted to submodule @ 1d2869c6e (f645b52) + R65d missing pieces (eee0e3e). Includes /api/show parameter_size fix (120ba02), /api/tags loaded-record enrichment, /api/ps digest+expires_at.
+    image: ollama-legion/balancer:r66-submodule-v7  # R66a (2026-09-21, ba2291c): native Ollama /api/chat response passthrough fix (pre-R66a the balancer re-translated the already-native Ollama body → synthetic 502 "upstream returned empty response"). Supersedes r66-submodule-v1 (Round 66 / R65d consolidated, 15ea588 + eee0e3e + 120ba02).
     #   R54.2: AutoTune master switch (Balancing.AutoTune, default true) +
     #          per-model "autoTune": false override (LlamaCppModelProfile.AutoTune).
     #          Manual control: user can disable AutoTune globally or per-model.
@@ -307,7 +307,7 @@ services:
         VERSION: ${WEBUI_VERSION:-dev}
         GIT_COMMIT: ${WEBUI_GIT_COMMIT:-unknown}
         BUILD_DATE: ${WEBUI_BUILD_DATE:-unknown}
-    image: ollama-legion/webui:r66-submodule-v1  # Round 66 (2026-09-21): same static UI as r66.4-orphans-ui, re-tagged to match the r66.official build line (balancer+cppworker+webui all on the same tag).
+    image: ollama-legion/webui:r66-submodule-v7  # R66b: UI-фиксы, уникальные id визарда (wiz-*), мёртвые typeof-ветки убраны. Требует ?v=R66c.
     container_name: ol-bundled-webui
     restart: unless-stopped
     ports:
@@ -335,8 +335,24 @@ services:
         condition: service_healthy
 
 networks:
+  # R66b (2026-09-22): external: true — сеть уже существует и НЕ помечена
+  # лейблом compose (её создал `docker network create` при первом ручном
+  # деплое), поэтому `docker compose up` без external падал с
+  #   "network ollama-legion-bundled-net was found but has incorrect label
+  #    com.docker.compose.network set to \"\" (expected: \"ol-bundled-net\")"
+  # Внешний режим сохраняет сеть (и DNS-имена уже подключённых контейнеров)
+  # вместо попытки пересоздать её.
+  #
+  # ВАЖНО: сервисные DNS-имена (loadbalancer, cppworker-gpu, agent) выдаёт
+  # именно compose при подключении контейнера к этой сети. Поэтому контейнеры
+  # обязательно пересоздавать через compose, а НЕ через `docker run`:
+  # без алиаса `cppworker-gpu` ломается всё сразу —
+  #   webui nginx /api/worker/* → 502 (вкладка GGUF пустая),
+  #   balancer poller http://cppworker-gpu:18092/api/metrics → no such host,
+  #   agent AGENT_CPPWORKER_URL → нет GPU/VRAM-метрик,
+  #   unload/load/delete моделей → 500 no such host.
   ol-bundled-net:
-    driver: bridge
+    external: true
     name: ollama-legion-bundled-net
 
 volumes:

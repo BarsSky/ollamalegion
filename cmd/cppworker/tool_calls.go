@@ -3,10 +3,12 @@
 package main
 
 import (
+	"bytes"
 	"container/list"
 	"crypto/sha1"
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"regexp"
 	"sort"
 	"strings"
@@ -275,12 +277,16 @@ func parseToolCallsFromOutput(output string) []openAIToolCall {
 		return calls
 	}
 
-	// Стратегия 4: Чистый JSON-массив целиком (весь output — tool_calls)
-	var calls []openAIToolCall
-	if err := json.Unmarshal([]byte(output), &calls); err == nil && len(calls) > 0 {
-		if normalizeToolCalls(calls) {
-			return calls
-		}
+	// Стратегия 4: Чистый JSON-массив целиком (весь output — tool_calls).
+	//
+	// R66b (2026-09-22): некоторые модели (Qwen3-Instruct, Mistral-Nemo) эмитят
+	// `arguments` как JSON-объект, а не как JSON-строку (что нарушает OpenAI
+	// стандарт). При прямом json.Unmarshal в []openAIToolCall это падает, потому
+	// что поле `Function.Arguments` имеет тип `string`. Анмаршалим поэлементно
+	// в json.RawMessage и переводим через parseHermesSingleCall — он уже умеет
+	// конвертировать object→string через stringifyArguments.
+	if calls := parseRawArrayAsToolCalls(output); len(calls) > 0 {
+		return calls
 	}
 
 	// Стратегия 4b (2026-07-30, multi-tool recovery): модель может выдать
@@ -296,11 +302,8 @@ func parseToolCallsFromOutput(output string) []openAIToolCall {
 	// Стратегия 5: JSON внутри ```json ... ``` блока
 	re := regexp.MustCompile("```json\n?(.*?)\n?```")
 	if matches := re.FindStringSubmatch(output); len(matches) > 1 {
-		jsonStr := strings.TrimSpace(matches[1])
-		if err := json.Unmarshal([]byte(jsonStr), &calls); err == nil && len(calls) > 0 {
-			if normalizeToolCalls(calls) {
-				return calls
-			}
+		if calls := parseRawArrayAsToolCalls(strings.TrimSpace(matches[1])); len(calls) > 0 {
+			return calls
 		}
 	}
 
@@ -310,11 +313,8 @@ func parseToolCallsFromOutput(output string) []openAIToolCall {
 		idx = strings.Index(output, "[")
 	}
 	if idx >= 0 {
-		jsonCandidate := output[idx:]
-		if err := json.Unmarshal([]byte(jsonCandidate), &calls); err == nil && len(calls) > 0 {
-			if normalizeToolCalls(calls) {
-				return calls
-			}
+		if calls := parseRawArrayAsToolCalls(output[idx:]); len(calls) > 0 {
+			return calls
 		}
 	}
 
@@ -323,7 +323,348 @@ func parseToolCallsFromOutput(output string) []openAIToolCall {
 		return calls
 	}
 
+	// Стратегия 8 (R66b, 2026-09-22): «почти-JSON» OpenAI-массив.
+	//
+	// Реальный кейс (Cline CLI 3.0.63 + Qwen3-Instruct-2507-q4km, 25 tools):
+	// модель выдаёт массив tool_calls, но допускает ровно те дефекты JSON,
+	// которые ломают любой строгий парсер:
+	//   * забывает закрывающую кавычку у значения arguments;
+	//   * ставит лишнюю `}` перед `,{` (следующим элементом);
+	//   * не экранирует обратные слэши в путях Windows (`\O` вместо `\\O`).
+	//
+	// Пример (реальный вывод, см. tool_calls_r66b_test.go):
+	//   [{"id":"call_editor","type":"function","function":{"name":"editor",
+	//     "arguments":"{\"path\":\"C:\\Ollama\\...\",\"new_text\":\"OK\\n\"}}},
+	//    {...}]
+	//
+	// Из-за этого все стратегии выше возвращают nil, tool_calls не находятся,
+	// и клиент (Cline) видит tool call как обычный текст → «Model returned
+	// empty response» / «модель не вызвала инструмент». Здесь мы вытаскиваем
+	// пары name/arguments терпимым сканером и починяем JSON аргументов.
+	if calls := parseLooseOpenAIStyleToolCalls(output); len(calls) > 0 {
+		return calls
+	}
+
 	return nil
+}
+
+// ============================================================
+// R66b: терпимый разбор OpenAI-подобных tool_calls
+// ============================================================
+
+var (
+	looseToolNameRe = regexp.MustCompile(`"name"\s*:\s*"([^"\\]{1,256})"`)
+	looseToolIDRe   = regexp.MustCompile(`"id"\s*:\s*"([^"\\]{1,128})"`)
+)
+
+// parseLooseOpenAIStyleToolCalls — последняя линия обороны парсера.
+//
+// Работает по принципу «найти name, затем arguments, затем достать первое
+// сбалансированное JSON-значение после него, починив типовые дефекты LLM».
+// Требует, чтобы в тексте были и "name", и "arguments" — иначе возвращает nil,
+// чтобы не превращать в tool_calls обычный текст с JSON в прозе.
+func parseLooseOpenAIStyleToolCalls(output string) []openAIToolCall {
+	if !strings.Contains(output, `"arguments"`) || !strings.Contains(output, `"name"`) {
+		return nil
+	}
+
+	// Защита от ложных срабатываний на прозе, в которой просто приведён пример
+	// JSON (например «Вот конфигурация: {"name":"test","arguments":{}}»).
+	// Принимаем только кандидата, который ВЫГЛЯДИТ как ответ целиком или как
+	// хвостовой JSON-блок:
+	//   A) весь ответ — это JSON ([...] / {...}), ЛИБО
+	//   B) ответ заканчивается на ']' / '}' и содержит "type":"function"
+	//      (модель дописала пояснение перед массивом).
+	body := strings.TrimSpace(output)
+	if !strings.HasPrefix(body, "[") && !strings.HasPrefix(body, "{") {
+		trimmed := strings.TrimRight(body, " \t\r\n`")
+		if !strings.HasSuffix(trimmed, "]") && !strings.HasSuffix(trimmed, "}") {
+			return nil
+		}
+		if !strings.Contains(trimmed, `"type"`) || !strings.Contains(trimmed, `"function"`) {
+			return nil
+		}
+		if i := strings.LastIndex(trimmed, "["); i >= 0 {
+			body = trimmed[i:]
+		}
+	}
+	if !strings.Contains(body, `"function"`) {
+		return nil
+	}
+
+	nameLocs := looseToolNameRe.FindAllStringSubmatchIndex(body, -1)
+	if len(nameLocs) == 0 {
+		return nil
+	}
+	idLocs := looseToolIDRe.FindAllStringSubmatch(body, -1)
+
+	var result []openAIToolCall
+	for i, loc := range nameLocs {
+		name := body[loc[2]:loc[3]]
+		searchFrom := loc[1]
+		argRel := strings.Index(body[searchFrom:], `"arguments"`)
+		if argRel < 0 {
+			continue
+		}
+		v := searchFrom + argRel + len(`"arguments"`)
+		v = skipSpaceColon(body, v)
+		if v >= len(body) {
+			continue
+		}
+
+		var args string
+		if body[v] == '"' {
+			// Строковая форма: модель кладёт JSON-текст внутрь JSON-строки
+			// (иногда забывая закрыть её и/или не экранируя `\`).
+			decoded := decodeJSONStringFragment(body[v+1:])
+			args = firstCompleteJSONValue(decoded, true)
+		} else {
+			args = firstCompleteJSONValue(body[v:], true)
+		}
+		if args == "" {
+			continue
+		}
+
+		call := openAIToolCall{
+			Type: "function",
+			Function: openAIFunctionCall{
+				Name:      name,
+				Arguments: args,
+			},
+		}
+		if i < len(idLocs) {
+			call.ID = idLocs[i][1]
+		}
+		result = append(result, call)
+	}
+
+	if len(result) == 0 {
+		return nil
+	}
+	if !normalizeToolCalls(result) {
+		return nil
+	}
+	return result
+}
+
+// skipSpaceColon пропускает пробелы и один ':' начиная с позиции i.
+func skipSpaceColon(s string, i int) int {
+	for i < len(s) && (s[i] == ' ' || s[i] == '\t' || s[i] == '\r' || s[i] == '\n' || s[i] == ':') {
+		i++
+	}
+	return i
+}
+
+// decodeJSONStringFragment декодирует фрагмент JSON-строки (без обрамляющих
+// кавычек) в лучшем виде: понимает \", \\, \/, \b, \f, \n, \r, \t и \uXXXX;
+// невалидные escape-последовательности (например \O в путях Windows)
+// сохраняются как есть — их потом чинит repairJSONText. Сканирование
+// останавливается на первой НЕэкранированной кавычке; если её нет (модель
+// забыла закрыть строку) — берётся весь фрагмент.
+func decodeJSONStringFragment(s string) string {
+	var b strings.Builder
+	b.Grow(len(s))
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		if c == '"' {
+			break
+		}
+		if c != '\\' || i+1 >= len(s) {
+			b.WriteByte(c)
+			continue
+		}
+		next := s[i+1]
+		switch next {
+		case '"':
+			b.WriteByte('"')
+			i++
+		case '\\':
+			b.WriteByte('\\')
+			i++
+		case '/':
+			b.WriteByte('/')
+			i++
+		case 'n':
+			b.WriteByte('\n')
+			i++
+		case 'r':
+			b.WriteByte('\r')
+			i++
+		case 't':
+			b.WriteByte('\t')
+			i++
+		case 'b':
+			b.WriteByte('\b')
+			i++
+		case 'f':
+			b.WriteByte('\f')
+			i++
+		case 'u':
+			if i+5 < len(s) {
+				var code int
+				if _, err := fmt.Sscanf(s[i+2:i+6], "%04x", &code); err == nil {
+					b.WriteRune(rune(code))
+					i += 5
+					continue
+				}
+			}
+			b.WriteByte(c)
+		default:
+			// Невалидный escape (например "\O") — оставляем как есть,
+			// repairJSONText превратит его в "\\O".
+			b.WriteByte(c)
+		}
+	}
+	return b.String()
+}
+
+// firstCompleteJSONValue возвращает первое синтаксически завершённое
+// JSON-значение из текста s (начиная с первого '{', '[' или со строки/числа),
+// применив repairJSONText при repair=true. Возвращает компактный JSON-текст
+// или "" если ничего не нашли.
+func firstCompleteJSONValue(s string, repair bool) string {
+	s = strings.TrimLeft(s, " \t\r\n")
+	if s == "" {
+		return ""
+	}
+	if s[0] != '{' && s[0] != '[' {
+		return ""
+	}
+
+	depth := 0
+	inString := false
+	escaped := false
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		if inString {
+			if escaped {
+				escaped = false
+				continue
+			}
+			switch c {
+			case '\\':
+				escaped = true
+			case '"':
+				inString = false
+			}
+			continue
+		}
+		switch c {
+		case '"':
+			inString = true
+		case '{', '[':
+			depth++
+		case '}', ']':
+			depth--
+			if depth == 0 {
+				cand := s[:i+1]
+				if json.Valid([]byte(cand)) {
+					return compactJSON(cand)
+				}
+				if repair {
+					if fixed := repairJSONText(cand); fixed != "" && json.Valid([]byte(fixed)) {
+						return compactJSON(fixed)
+					}
+				}
+				return ""
+			}
+		}
+	}
+	return ""
+}
+
+// repairJSONText чинит типовые дефекты JSON, которые генерируют LLM внутри
+// arguments, и возвращает валидный компактный JSON (или "" если починить не
+// удалось):
+//  1. невалидные escape-последовательности в строках (\O, \-, \. и т.п.) →
+//     обратный слэш экранируется (\\O). Именно так теряются Windows-пути:
+//     JSON.parse у клиента падал на "C:\Ollama".
+//  2. сырые управляющие символы (перевод строки, таб) внутри строк → \n, \t.
+//  3. незакрытая строка / незакрытые скобки → добавляются закрывающие.
+func repairJSONText(s string) string {
+	var b strings.Builder
+	b.Grow(len(s) + 8)
+
+	// Стек ожидаемых закрывающих символов.
+	var stack []byte
+	inString := false
+
+	validEscapes := `"\/bfnrtu`
+
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		if inString {
+			switch c {
+			case '\\':
+				if i+1 < len(s) && strings.IndexByte(validEscapes, s[i+1]) >= 0 {
+					b.WriteByte(c)
+					b.WriteByte(s[i+1])
+					i++
+					continue
+				}
+				// Невалидный escape → экранируем сам слэш.
+				b.WriteString(`\\`)
+				continue
+			case '"':
+				inString = false
+				b.WriteByte(c)
+			case '\n':
+				b.WriteString(`\n`)
+			case '\r':
+				b.WriteString(`\r`)
+			case '\t':
+				b.WriteString(`\t`)
+			default:
+				if c < 0x20 {
+					fmt.Fprintf(&b, `\u%04x`, c)
+				} else {
+					b.WriteByte(c)
+				}
+			}
+			continue
+		}
+		switch c {
+		case '"':
+			inString = true
+			b.WriteByte(c)
+		case '{':
+			stack = append(stack, '}')
+			b.WriteByte(c)
+		case '[':
+			stack = append(stack, ']')
+			b.WriteByte(c)
+		case '}', ']':
+			if len(stack) > 0 && stack[len(stack)-1] == c {
+				stack = stack[:len(stack)-1]
+				b.WriteByte(c)
+			}
+			// Лишняя закрывающая скобка просто отбрасывается.
+		default:
+			b.WriteByte(c)
+		}
+	}
+
+	if inString {
+		b.WriteByte('"')
+	}
+	for i := len(stack) - 1; i >= 0; i-- {
+		b.WriteByte(stack[i])
+	}
+	return b.String()
+}
+
+// compactJSON переводит JSON-текст в компактный вид (без лишних пробелов).
+// Если компактизация невозможна — возвращает исходный текст.
+func compactJSON(s string) string {
+	var v interface{}
+	if err := json.Unmarshal([]byte(s), &v); err != nil {
+		return s
+	}
+	out, err := json.Marshal(v)
+	if err != nil {
+		return s
+	}
+	return string(out)
 }
 
 // extractHermesToolCalls извлекает tool_calls из Hermes/Qwen 2.5 формата:
@@ -367,7 +708,12 @@ func extractHermesToolCalls(output string) []openAIToolCall {
 
 // parseHermesSingleCall парсит один Hermes-формат tool_call JSON.
 // Поддерживает поля: name/function (имя), arguments/parameters (аргументы),
-// id (опционально).
+// id (опционально). Также OpenAI-формат с вложенным объектом function:
+//
+//	{"id":"x","type":"function","function":{"name":"y","arguments":"{}"}}
+//
+// R66b (2026-09-22): добавлена поддержка вложенного function-объекта — раньше
+// parser искал name только на верхнем уровне, что ломало OpenAI-формат.
 func parseHermesSingleCall(raw json.RawMessage) *openAIToolCall {
 	var obj map[string]interface{}
 	if err := json.Unmarshal(raw, &obj); err != nil {
@@ -381,24 +727,74 @@ func parseHermesSingleCall(raw json.RawMessage) *openAIToolCall {
 		call.ID = id
 	}
 
-	// Имя функции: сначала "name", затем "function" (строка)
-	if name, ok := obj["name"].(string); ok && name != "" {
-		call.Function.Name = name
-	} else if fn, ok := obj["function"].(string); ok && fn != "" {
-		call.Function.Name = fn
+	// R66b: если есть вложенный "function"-объект (OpenAI tool_call format),
+	// поднимаем name/arguments из него на верхний уровень — дальнейшая логика
+	// работает одинаково для обеих схем.
+	if fnObj, ok := obj["function"].(map[string]interface{}); ok {
+		if name, ok := fnObj["name"].(string); ok && name != "" && call.Function.Name == "" {
+			call.Function.Name = name
+		}
+		if args, ok := fnObj["arguments"]; ok && args != nil && call.Function.Arguments == "" {
+			call.Function.Arguments = stringifyArguments(args)
+		}
 	}
 
-	// Аргументы: сначала "arguments", затем "parameters"
-	if args, ok := obj["arguments"]; ok && args != nil {
-		call.Function.Arguments = stringifyArguments(args)
-	} else if params, ok := obj["parameters"]; ok && params != nil {
-		call.Function.Arguments = stringifyArguments(params)
+	// Имя функции: сначала "name" (top-level), затем "function" (как строка)
+	if call.Function.Name == "" {
+		if name, ok := obj["name"].(string); ok && name != "" {
+			call.Function.Name = name
+		} else if fn, ok := obj["function"].(string); ok && fn != "" {
+			call.Function.Name = fn
+		}
+	}
+
+	// Аргументы: сначала "arguments" (top-level), затем "parameters"
+	if call.Function.Arguments == "" {
+		if args, ok := obj["arguments"]; ok && args != nil {
+			call.Function.Arguments = stringifyArguments(args)
+		} else if params, ok := obj["parameters"]; ok && params != nil {
+			call.Function.Arguments = stringifyArguments(params)
+		}
 	}
 
 	if call.Function.Name == "" {
 		return nil
 	}
 	return call
+}
+
+// parseRawArrayAsToolCalls — R66b (2026-09-22) helper.
+//
+// Принимает строку, которая должна быть валидным JSON-массивом tool_call
+// объектов (например, `[{...},{...}]`). Анмаршалит поэлементно в
+// json.RawMessage и для каждого элемента вызывает parseHermesSingleCall,
+// который умеет принимать `arguments` как объект ИЛИ как строку
+// (конвертирует в строку через stringifyArguments).
+//
+// Это замена прямого `json.Unmarshal(&[]openAIToolCall{})` в стратегиях 4/4b/5/6,
+// который падал, когда модель эмитит `arguments` как объект, а не как строку
+// (что нарушает OpenAI-стандарт, но делают Qwen3-Instruct, некоторые Mistral
+// варианты и другие модели, обученные на JSON-mode tools).
+func parseRawArrayAsToolCalls(jsonStr string) []openAIToolCall {
+	jsonStr = strings.TrimSpace(jsonStr)
+	if !strings.HasPrefix(jsonStr, "[") {
+		return nil
+	}
+	var arr []json.RawMessage
+	if err := json.Unmarshal([]byte(jsonStr), &arr); err != nil {
+		return nil
+	}
+	var result []openAIToolCall
+	for _, raw := range arr {
+		if call := parseHermesSingleCall(raw); call != nil {
+			result = append(result, *call)
+		}
+	}
+	if len(result) > 0 {
+		normalizeToolCalls(result)
+		return result
+	}
+	return nil
 }
 
 // extractGemmaToolCalls извлекает tool_calls из gemma-4 native формата.
@@ -834,29 +1230,74 @@ func findMatchingClosingBracket(s string, openPos int) int {
 // stringifyArguments сериализует аргументы в JSON-строку для OpenAI-совместимого формата.
 // Если аргументы уже строкой (валидный JSON) — возвращает как есть.
 // Если объектом/массивом — сериализует в JSON.
+//
+// R66b (2026-09-22): сериализация идёт через marshalNoHTMLEscape. Раньше
+// использовался json.Marshal, который по умолчанию HTML-эскейпит `<`, `>` и `&`
+// в `\u003c`/`\u003e`/`\u0026`. Для transport'а это валидный JSON (клиент после
+// JSON.parse получает исходный текст), НО:
+//   - аргументы tool_call — это прозрачные данные (путь, содержимое файла),
+//     а не HTML-фрагмент, поэтому эскейпить их незачем;
+//   - «сырой» HTML в arguments читается в логах/отладке и совпадает с тем,
+//     что отдаёт настоящий OpenAI API.
 func stringifyArguments(args interface{}) string {
 	if args == nil {
 		return "{}"
 	}
 	switch v := args.(type) {
 	case string:
-		// Если строка уже валидный JSON — возвращаем как есть
-		if json.Valid([]byte(v)) {
-			return v
+		trimmed := strings.TrimSpace(v)
+		// Если строка уже валидный JSON — возвращаем как есть, НО сначала
+		// проверяем двойное кодирование.
+		if json.Valid([]byte(trimmed)) {
+			// R66b: Qwen3-Instruct/Mistral-Nemo часто кладут в arguments
+			// JSON-СТРОКУ, содержимое которой — сам JSON-объект:
+			//   "arguments":"{\"path\":\"a.txt\"}"
+			// После анмаршала outer-JSON это даёт Go-строку
+			// `"{\"path\":\"a.txt\"}"` (с кавычками по краям). Если отдать её
+			// клиенту как есть, Cline сделает JSON.parse и получит СТРОКУ, а не
+			// объект → «tool call без аргументов». Разворачиваем один уровень.
+			var inner string
+			if err := json.Unmarshal([]byte(trimmed), &inner); err == nil {
+				it := strings.TrimSpace(inner)
+				if (strings.HasPrefix(it, "{") || strings.HasPrefix(it, "[")) && json.Valid([]byte(it)) {
+					return compactJSON(it)
+				}
+			}
+			return trimmed
+		}
+		// R66b: невалидный JSON (незакрытая кавычка, лишняя `}`, неэкранированный
+		// `\` в Windows-путях) — пробуем починить, иначе клиент не сможет
+		// разобрать аргументы.
+		if fixed := repairJSONText(trimmed); fixed != "" && json.Valid([]byte(fixed)) &&
+			(strings.HasPrefix(strings.TrimSpace(fixed), "{") || strings.HasPrefix(strings.TrimSpace(fixed), "[")) {
+			return compactJSON(fixed)
 		}
 		// Иначе оборачиваем в JSON-строку
-		b, err := json.Marshal(v)
+		b, err := marshalNoHTMLEscape(v)
 		if err != nil {
 			return "{}"
 		}
 		return string(b)
 	default:
-		b, err := json.Marshal(args)
+		b, err := marshalNoHTMLEscape(args)
 		if err != nil {
 			return "{}"
 		}
 		return string(b)
 	}
+}
+
+// marshalNoHTMLEscape — json.Marshal без HTML-эскейпинга (`<`/`>`/`&` остаются
+// литералами). Trailing "\n" от Encoder отрезается. Используется только для
+// сериализации arguments tool_call'ов (прозрачные данные).
+func marshalNoHTMLEscape(v interface{}) ([]byte, error) {
+	var buf bytes.Buffer
+	enc := json.NewEncoder(&buf)
+	enc.SetEscapeHTML(false)
+	if err := enc.Encode(v); err != nil {
+		return nil, err
+	}
+	return bytes.TrimRight(buf.Bytes(), "\n"), nil
 }
 
 // normalizeToolCalls проверяет и нормализует tool_calls:

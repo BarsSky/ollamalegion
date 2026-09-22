@@ -135,20 +135,23 @@ func newMockCppWorkerLazy(loadDelay time.Duration) *mockCppWorkerLazy {
 			default:
 			}
 
-			// Асинхронно завершаем загрузку через loadDelay
-			go func() {
-				time.Sleep(m.loadDelay)
-				m.mu.Lock()
-				m.state["lazy-model"] = "loaded"
-				m.mu.Unlock()
-			}()
+			// R66b (2026-09-22): БЛОКИРУЕМ ответ до конца «загрузки».
+			//
+			// Раньше мок отвечал мгновенным 200 («loading»), а модель
+			// становилась loaded через loadDelay в горутине. Это не
+			// соответствует реальному cppworker: там POST /api/models/load
+			// синхронный (bridge.LoadModel) и возвращается только когда модель
+			// готова. Из-за мгновенного ack дедупликация параллельных загрузок
+			// в балансере (mm.tryAcquireOp держит операцию всю её длительность)
+			// не проверялась — тест «LoadsOnce» видел 2 загрузки вместо 1.
+			time.Sleep(m.loadDelay)
+			m.mu.Lock()
+			m.state["lazy-model"] = "loaded"
+			m.mu.Unlock()
 
-			// Сразу возвращаем 200 (handleLoadModel в реальном cppworker делает
-			// синхронный bridge.LoadModel — здесь мы имитируем быстрый ack,
-			// а реальная задержка уже идёт в горутине)
 			w.WriteHeader(http.StatusOK)
 			json.NewEncoder(w).Encode(map[string]string{
-				"status": "loading",
+				"status": "loaded",
 				"model":  "lazy-model",
 			})
 			return
@@ -163,12 +166,109 @@ func newMockCppWorkerLazy(loadDelay time.Duration) *mockCppWorkerLazy {
 			m.handleChatCompletion(w, r, false)
 			return
 
+		// R66b (2026-09-22): НАТИВНЫЕ Ollama-эндпоинты cppworker.
+		// Балансер с R65d проксирует /api/chat и /api/generate нативно
+		// (shouldRouteOllamaNative → llamacpp_native_path.go), без трансляции в
+		// OpenAI-формат. Мок их не поддерживал → отвечал 404, и тесты падали на
+		// «expected 200 OK, got 404: mock: not found: /api/chat».
+		case "/api/chat":
+			m.chatCalls.Add(1)
+			m.handleOllamaNative(w, r, true)
+			return
+
+		case "/api/generate":
+			m.generateCalls.Add(1)
+			m.handleOllamaNative(w, r, false)
+			return
+
 		default:
 			http.Error(w, "mock: not found: "+path, http.StatusNotFound)
 		}
 	}))
 
 	return m
+}
+
+// ollamaMockText — текст, который «генерирует» мок (проверяется в тестах).
+const ollamaMockText = "Привет! Это ответ от lazy-loaded модели."
+
+// handleOllamaNative — имитация нативных Ollama-ответов cppworker:
+//
+//	stream=false → один JSON {model, message|response, done:true, ...}
+//	stream=true  → NDJSON: контентный чанк (done:false) + финальный (done:true)
+//
+// Формат соответствует cmd/cppworker/handlers_chat.go (writeChatStreamResponse)
+// и handlers_generate.go, чтобы балансер мог проксировать байты как есть.
+func (m *mockCppWorkerLazy) handleOllamaNative(w http.ResponseWriter, r *http.Request, isChat bool) {
+	body, _ := io.ReadAll(r.Body)
+	var req map[string]interface{}
+	_ = json.Unmarshal(body, &req)
+	stream, _ := req["stream"].(bool)
+	model, _ := req["model"].(string)
+	if model == "" {
+		model = "lazy-model"
+	}
+	createdAt := time.Now().UTC().Format(time.RFC3339)
+
+	if !stream {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		payload := map[string]interface{}{
+			"model":             model,
+			"created_at":        createdAt,
+			"done":              true,
+			"done_reason":       "stop",
+			"prompt_eval_count": 5,
+			"eval_count":        8,
+		}
+		if isChat {
+			payload["message"] = map[string]interface{}{"role": "assistant", "content": ollamaMockText}
+		} else {
+			payload["response"] = ollamaMockText
+		}
+		_ = json.NewEncoder(w).Encode(payload)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/x-ndjson")
+	w.WriteHeader(http.StatusOK)
+	flusher, _ := w.(http.Flusher)
+
+	contentChunk := map[string]interface{}{
+		"model":      model,
+		"created_at": createdAt,
+		"done":       false,
+	}
+	if isChat {
+		contentChunk["message"] = map[string]interface{}{"role": "assistant", "content": ollamaMockText}
+	} else {
+		contentChunk["response"] = ollamaMockText
+	}
+	first, _ := json.Marshal(contentChunk)
+	_, _ = fmt.Fprintf(w, "%s\n", first)
+	if flusher != nil {
+		flusher.Flush()
+	}
+
+	finalChunk := map[string]interface{}{
+		"model":             model,
+		"created_at":        createdAt,
+		"done":              true,
+		"done_reason":       "stop",
+		"prompt_eval_count": 5,
+		"eval_count":        8,
+		"total_duration":    int64(1_000_000),
+	}
+	if isChat {
+		finalChunk["message"] = map[string]interface{}{"role": "assistant", "content": ""}
+	} else {
+		finalChunk["response"] = ""
+	}
+	last, _ := json.Marshal(finalChunk)
+	_, _ = fmt.Fprintf(w, "%s\n", last)
+	if flusher != nil {
+		flusher.Flush()
+	}
 }
 
 // handleChatCompletion — общая имитация ответа на /v1/chat/completions
@@ -345,6 +445,25 @@ func (m *mockCppWorkerLazy) waitForLoadComplete(timeout time.Duration) bool {
 // createTestProxyForCppWorkerLazy — создаёт Proxy с одним cppworker-бэкендом,
 // у которого модель ещё НЕ загружена (state=unloaded).
 func createTestProxyForCppWorkerLazy(t *testing.T, cppWorkerURL string) *balancer.Proxy {
+	t.Helper()
+
+	// R66b (2026-09-22): sync-режим авто-загрузки.
+	//
+	// S R60.33 балансер по умолчанию грузит модель АСИНХРОННО: отвечает
+	// 503 + Retry-After, а загрузку выполняет в горутине. Все тесты этого
+	// файла проверяют СИНХРОННЫЙ контракт (клиент ждёт загрузку и получает 200,
+	// loadCalls ровно один и т.п.), поэтому режим задаётся явно — иначе они
+	// проверяли бы не то, что заявлено (и падали).
+	// Асинхронный контракт — cppworker_lazy_load_async_r6033_test.go.
+	t.Setenv("LB_AUTO_LOAD_ASYNC", "0")
+
+	return newLazyTestProxy(t, cppWorkerURL)
+}
+
+// newLazyTestProxy — конструктор тестового балансера БЕЗ настройки режима
+// авто-загрузки: режим выбирает вызывающий helper через env LB_AUTO_LOAD_ASYNC
+// (R66b: env-переключатель реально читается в NewProxy — см. proxy.go).
+func newLazyTestProxy(t *testing.T, cppWorkerURL string) *balancer.Proxy {
 	t.Helper()
 
 	hostPort := strings.TrimPrefix(cppWorkerURL, "http://")

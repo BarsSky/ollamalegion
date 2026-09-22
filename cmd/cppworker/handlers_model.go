@@ -1940,25 +1940,38 @@ func modelParameterSize(nLayers, nEmbd int) string {
 //   - nLayers          — общее число слоёв
 //
 // Логика:
-//   1. Для Q4_K_M (типичная quantization) GGUF сжимает ~0.55 байт/параметр,
-//      в VRAM распаковывается до ~1.8 байт/параметр (8 bytes/param для fp16).
-//      Соотношение: file_size / VRAM ≈ 0.55/1.8 ≈ 0.3.
-//   2. Если только часть слоёв в GPU — пропорционально.
-//   3. + KV cache overhead (~10% на context_size * n_layers * 2 * n_embd * 2 bytes).
+//   1. GGUF Q4_K_M на диске ≈ 0.55 байт/параметр, а в VRAM те же веса
+//      занимают ≈ 1.8 байт/параметр (fp16) → file→VRAM ≈ 1.8/0.55 ≈ 3.27.
+//      В коде взят консервативный множитель 3.0.
+//   2. Если только часть слоёв в GPU — пропорционально (gpuLayers/nLayers).
+//   3. KV cache здесь НЕ учитывается (в реальном VRAM он добавляет ещё
+//      ~10-30% на больших n_ctx).
 //
-// Это приближение (точность ±20%), но гораздо полезнее чем 0 для UI
-// (WebUI/Ollama показывают "VRAM" в карточке модели и для loaded).
+// Это ГРУБАЯ ВЕРХНЯЯ ОЦЕНКА, а не измерение: NVML не даёт per-model VRAM.
+// Погрешность на практике до +50-60% (пример ниже), поэтому значение годится
+// только для UI/индикации, но НЕ для решений о влезаемости модели.
 //
 // Примеры:
-//   Qwen3-Instruct-2507-q4km (2.5 GB файл, 36/36 layers в GPU):
-//     estimate = 2497281120 * 1.8 * (36/36) ≈ 4.5 GB
-//     (реально ≈ 4.2 GB weights + 0.5 GB KV cache = 4.7 GB)
+//   Qwen3-Instruct-2507-q4km (2.5 GB файл, 36/36 слоёв в GPU):
+//     estimate = 2497281120 * 3.0 * (36/36) ≈ 7.5 GB
+//     (реально ≈ 4.2 GB весов + 0.5 GB KV ≈ 4.7 GB — т.е. переоценка ~1.6x)
 func estimateVRAMSize(nLayers, gpuLayers int, sizeBytes uint64) uint64 {
 	if sizeBytes == 0 || nLayers == 0 {
 		return 0
 	}
+	// R66b (2026-09-22): отрицательный gpuLayers — это НЕ "ноль слоёв на GPU".
+	// Соглашение llama.cpp/cppworker: -1 = все слои на GPU (дефолт
+	// cppbackend.DefaultLlamaCppConfig().DefaultGPULayers = -1), -2 = AUTO
+	// (сколько влезет, считает CalculateOptimalGPULayers). До этого фикса
+	// любой из этих вариантов превращался в 0 → estimateVRAMSize возвращал 0,
+	// и /api/models + /api/ps отдавали size_vram:0 для реально загруженной
+	// на GPU модели (то есть ровно тот баг, который объявили исправленным
+	// в R66.5). Для AUTO точное число слоёв здесь недоступно (inst.info.GPULayers
+	// хранит запрошенное значение, а не резолвед), поэтому берём верхнюю
+	// границу — все слои; это согласуется с CalculateOptimalGPULayers, который
+	// для -1/-2/overflow тоже стартует с totalLayers.
 	if gpuLayers < 0 {
-		gpuLayers = 0
+		gpuLayers = nLayers
 	}
 	if gpuLayers == 0 {
 		// CPU-only — нет VRAM

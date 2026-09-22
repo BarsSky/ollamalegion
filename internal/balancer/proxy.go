@@ -260,14 +260,22 @@ func NewProxy(config *types.LoadBalancerConfig) *Proxy {
 		// доступен через env LB_AUTO_LOAD_ASYNC=0. Async mode решает
 		// проблему OpenWebUI timeout 60-120s на cold start (sync load = 3 мин
 		// → connection aborted → JSON parse error).
-		lbAutoLoadAsync: true,
+		//
+		// R66b (2026-09-22): читаем env через IsAutoLoadAsyncEnabled().
+		// Раньше здесь стояло ЖЁСТКОЕ true, а функция-парсер env вызывалась
+		// только из собственного теста — то есть задокументированный escape
+		// hatch LB_AUTO_LOAD_ASYNC=0 не работал вообще: оператор выставлял
+		// переменную, а балансер всё равно отвечал 503+Retry-After.
+		lbAutoLoadAsync: IsAutoLoadAsyncEnabled(),
 
 		// R60.47 (2026-09-11): default async n_ctx reload. Sync mode (legacy)
 		// доступен через env LB_NCTX_RELOAD_ASYNC=0. Async mode решает
 		// проблему "empty response" в OpenWebUI когда cppworker возвращает
 		// 400 prompt_too_long → balancer sync reload (waitTimeoutSec=300) →
 		// HTTP handler blocked → client 30-60s timeout → empty body.
-		lbNCtxReloadAsync: true,
+		//
+		// R66b: та же ошибка, что и выше — env не читался (жёсткое true).
+		lbNCtxReloadAsync: IsNCtxReloadAsyncEnabled(),
 
 		// Клиент для обычных запросов: Timeout=0 (без глобального), т.к. таймаут
 		// задаётся per-request через context.WithTimeout в proxyRequest

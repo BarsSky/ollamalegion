@@ -690,7 +690,7 @@ func (p *Proxy) proxyRequestLlamaCpp(w http.ResponseWriter, r *http.Request, bac
 			// before connection tear-down. Without this, OpenWebUI gets
 			// TransferEncodingError "Not enough data to satisfy transfer length header".
 			streamCompleted = true
-			emitTruncatedChunk(w, originalPath, modelFromCtx, time.Since(llamaStartTime))
+			emitTruncatedChunk(w, originalPath, modelFromCtx, time.Since(llamaStartTime), "client_cancel")
 			return nil
 		case <-reqCtx.Done():
 			if resp.Body != nil {
@@ -705,7 +705,7 @@ func (p *Proxy) proxyRequestLlamaCpp(w http.ResponseWriter, r *http.Request, bac
 			// chunk + without terminator → TransferEncodingError "Not enough data
 			// to satisfy transfer length header" в aiohttp/OpenWebUI.
 			streamCompleted = true
-			emitTruncatedChunk(w, originalPath, modelFromCtx, time.Since(llamaStartTime))
+			emitTruncatedChunk(w, originalPath, modelFromCtx, time.Since(llamaStartTime), "timeout")
 			return nil
 		default:
 		}
@@ -810,6 +810,21 @@ func (p *Proxy) proxyRequestLlamaCpp(w http.ResponseWriter, r *http.Request, bac
 				}
 				return fmt.Errorf("write native NDJSON: %v", errFwd)
 			}
+			// R66b (2026-09-22): отмечаем, что для нативного пути апстрим уже
+			// отдал хотя бы одну NDJSON-строку. Без этого lastData оставался ""
+			// (он заполняется только в SSE-ветке ниже), и финальный блок
+			//   if lastData == "" && originalPath != "/v1/chat/completions"
+			// в конце функции досылал клиенту ЛИШНИЙ синтетический done-чанк
+			// ({"done":true,"done_reason":"stop","message":{"content":""}}) уже
+			// ПОСЛЕ настоящего done от cppworker.
+			//
+			// Симптом на реальном клиенте: Cline CLI (ollama provider) получал
+			// два done-чанка — первый с tool_calls, второй пустой — и в итоге
+			// сообщал "Model returned empty response"; инструмент не вызывался.
+			// Ollama-клиенты на два done отвечают
+			// "Did not receive done or success response in stream" (тот же класс
+			// дефекта, что чинили в R60.55 для SSE-ветки).
+			lastData = trimmed
 			if flusher, ok := w.(http.Flusher); ok {
 				flusher.Flush()
 			}
@@ -1430,8 +1445,25 @@ func errString(err error) string {
 //
 // После этой записи Go HTTP server должен автоматически отправить
 // chunked terminator (`0\r\n\r\n`) при return handler.
-func emitTruncatedChunk(w http.ResponseWriter, originalPath, modelName string, duration time.Duration) {
-	truncatedMsg := fmt.Sprintf("stream truncated after %v (timeout or cancellation)", duration)
+func emitTruncatedChunk(w http.ResponseWriter, originalPath, modelName string, duration time.Duration, reason string) {
+	// R66b (2026-09-22): диагностика. До этого функция молча писала чанк, а
+	// вызывающий код возвращал nil (чтобы handleChat не дописал ВТОРОЙ error-чанк
+	// поверх уже отправленного) — в итоге таймаут/обрыв стрима не попадал
+	// ни в логи, ни в метрики, и разбираться приходилось по жалобам клиентов.
+	var reasonText string
+	switch reason {
+	case "timeout":
+		reasonText = "stream timeout (reqCtx done: per-model streaming timeout / reload deadline)"
+	case "client_cancel":
+		reasonText = "client cancelled the request"
+	default:
+		reasonText = "truncated"
+	}
+	logger.Get().Warnw("proxyRequestLlamaCpp: stream truncated, emitting terminator chunk",
+		"backend_model", modelName, "api_path", originalPath,
+		"reason", reasonText, "duration_ms", duration.Milliseconds())
+
+	truncatedMsg := fmt.Sprintf("stream truncated after %v (%s)", duration, reasonText)
 	if originalPath == "/v1/chat/completions" {
 		// OpenAI SSE format
 		truncatedChunk := map[string]interface{}{
@@ -1449,7 +1481,11 @@ func emitTruncatedChunk(w http.ResponseWriter, originalPath, modelName string, d
 			"error": map[string]interface{}{
 				"message": truncatedMsg,
 				"type":    "stream_truncated",
+				"reason":  reason,
 			},
+			// reason на верхнем уровне — для симметрии с NDJSON-веткой
+			// (/api/chat, /api/generate): клиенты и логи читают одно и то же поле.
+			"reason": reason,
 		}
 		out, _ := json.Marshal(truncatedChunk)
 		_, _ = fmt.Fprintf(w, "data: %s\n\n", string(out))
@@ -1462,6 +1498,7 @@ func emitTruncatedChunk(w http.ResponseWriter, originalPath, modelName string, d
 			"done":        true,
 			"done_reason": "truncated",
 			"error":       truncatedMsg,
+			"reason":      reason,
 		}
 		out, _ := json.Marshal(truncatedChunk)
 		_, _ = fmt.Fprintf(w, "%s\n", string(out))

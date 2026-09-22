@@ -1,39 +1,76 @@
 #!/usr/bin/env pwsh
-# rebuild_balancer_r66a.ps1 — R66a: фикс translator-bug для native Ollama path
+# rebuild_balancer_r66a.ps1 — пересборка и раскатка balancer-контейнера.
 #
-# Что делает:
-#  1. docker build -t ollama-legion/balancer:r66-submodule-v4 -f docker/balancer/Dockerfile .
-#  2. останавливает старый ol-bundled-balancer, запускает новый с тем же набором флагов
+# ИСТОРИЯ (почему скрипт переписан 2026-09-22, R66b):
+#   Раньше скрипт делал `docker rm` + `docker run ... --network ol-bundled-network`
+#   руками. Это (а) указывало на НЕсуществующую сеть (реальная —
+#   ollama-legion-bundled-net), т.е. после `docker rm` балансер вообще не
+#   стартовал — полный отказ API; (б) теряло DNS-алиас `loadbalancer`, от
+#   которого зависят webui (http://loadbalancer:18081) и agent
+#   (BALANCER_URL=http://loadbalancer:18081); (в) теряло env
+#   LB_API_TOKEN/LB_CONFIG_PATH и подсовывало /app/data/config.json вместо
+#   смонтированного config/config.json (то есть бандл-конфиг с
+#   backendEngine=llama_cpp и профилями моделей не применялся).
+#   Теперь единственный источник истины — docker-compose, скрипт только
+#   собирает образ и просит compose пересоздать сервис.
 #
 # Использование:
-#   pwsh -File scripts/rebuild_balancer_r66a.ps1
+#   pwsh -File scripts/rebuild_balancer_r66a.ps1                 # tag по умолчанию (R66b)
+#   pwsh -File scripts/rebuild_balancer_r66a.ps1 -Tag r66-submodule-v5
+#   pwsh -File scripts/rebuild_balancer_r66a.ps1 -SkipBuild      # только пересоздать
+
+param(
+    [string]$Tag = "r66-submodule-v5",
+    [switch]$SkipBuild
+)
 
 $ErrorActionPreference = "Stop"
-Set-Location C:\Ollama\ollamalegion
+$repoRoot = Split-Path -Parent $PSScriptRoot
+Set-Location $repoRoot
 
-$tag = "r66-submodule-v4"
 $imageName = "ollama-legion/balancer"
+$composeFile = "docker-compose.cppworker-bundled-with-agent.yml"
+$composePath = Join-Path $repoRoot "deployments\$composeFile"
 
-Write-Host "[R66a] Building balancer image $imageName`:$tag ..." -ForegroundColor Cyan
-docker build -t "${imageName}:${tag}" -f docker/balancer/Dockerfile .
+if (-not $SkipBuild) {
+    Write-Host "[balancer] Building ${imageName}:${Tag} ..." -ForegroundColor Cyan
+    docker build -t "${imageName}:${Tag}" -f docker/balancer/Dockerfile .
+    if ($LASTEXITCODE -ne 0) { throw "docker build failed (exit $LASTEXITCODE)" }
+}
 
-Write-Host "[R66a] Stopping current ol-bundled-balancer ..." -ForegroundColor Cyan
-docker stop ol-bundled-balancer 2>$null
-docker rm ol-bundled-balancer 2>$null
+# Образ балансера в compose прописан строкой (не через ${VAR}), поэтому тег
+# обновляем прямо в compose-файле — иначе compose пересоздаст контейнер на
+# СТАРОМ образе и фиксы не доедут.
+Write-Host "[balancer] Pinning image tag in $composeFile ..." -ForegroundColor Cyan
+$content = Get-Content $composePath -Raw
+$pattern = '(?m)^(\s*image:\s*ollama-legion/balancer:)\S+'
+if ($content -notmatch $pattern) { throw "не нашёл строку 'image: ollama-legion/balancer:...' в $composePath" }
+$content = [regex]::Replace($content, $pattern, "`${1}$Tag")
+Set-Content -Path $composePath -Value $content -NoNewline
 
-Write-Host "[R66a] Starting new balancer container ..." -ForegroundColor Cyan
-docker run -d --gpus all --name ol-bundled-balancer --restart unless-stopped `
-  --network ol-bundled-network `
-  -p 18080:18080 -p 18081:18081 `
-  -e OLLAMA_BALANCER_CONFIG=/app/data/config.json `
-  -e GIN_MODE=release `
-  -v ollama-legion-balancer-data:/app/data `
-  -v ollama-legion-config-shared:/app/config-shared:ro `
-  -v ollama-legion-models:/app/models:ro `
-  -v ollama-legion-logs:/app/logs `
-  -v /var/run/docker.sock:/var/run/docker.sock:ro `
-  "${imageName}:${tag}"
+Push-Location (Join-Path $repoRoot "deployments")
+try {
+    Write-Host "[balancer] Recreating service loadbalancer via compose (alias + env + config mount) ..." -ForegroundColor Cyan
+    docker compose -f $composeFile up -d --no-deps --force-recreate loadbalancer
+    if ($LASTEXITCODE -ne 0) { throw "docker compose up failed (exit $LASTEXITCODE)" }
+}
+finally {
+    Pop-Location
+}
 
-Start-Sleep -Seconds 3
+Start-Sleep -Seconds 8
 docker ps --filter name=ol-bundled-balancer --format '{{.Names}}\t{{.Status}}\t{{.Image}}'
-Write-Host "[R66a] DONE." -ForegroundColor Green
+Write-Host "[balancer] Проверка API (нужен X-API-Token из deployments/.env.bundled-with-agent):" -ForegroundColor Cyan
+try {
+    $token = (Select-String -Path (Join-Path $repoRoot "deployments\.env.bundled-with-agent") -Pattern '^CPPWORKER_API_TOKEN=(.*)$').Matches[0].Groups[1].Value
+    $r = Invoke-WebRequest -Uri "http://127.0.0.1:18081/api/v1/cluster/config" -Headers @{ "X-API-Token" = $token } -TimeoutSec 15 -UseBasicParsing
+    $cfg = $r.Content | ConvertFrom-Json
+    Write-Host ("  backendEngine={0} operatingMode={1}" -f $cfg.backendEngine, $cfg.operatingMode)
+    if ($cfg.backendEngine -ne "llama_cpp") {
+        Write-Warning "backendEngine=$($cfg.backendEngine): метрики и read-endpoints (/api/ps) будут пустыми для llama.cpp-бэкендов. Проверь config/config.json."
+    }
+}
+catch {
+    Write-Warning "не удалось проверить /api/v1/cluster/config: $($_.Exception.Message)"
+}
+Write-Host "[balancer] DONE." -ForegroundColor Green

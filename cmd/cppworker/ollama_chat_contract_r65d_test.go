@@ -149,6 +149,34 @@ var ollamaChatClientBodies = []clientOllamaRequest{
 		}`,
 	},
 	{
+		// R66b (2026-09-22): РЕАЛЬНЫЙ payload Cline CLI 3.0.63 (провайдер
+		// "ollama"), захваченный через scripts/mock_capture_server.js.
+		// Ключевое отличие от кейса выше — "tool_choice":"auto". До R66b
+		// строгий декодер отвечал 400 `unknown field "tool_choice"`, и Cline
+		// не мог вызвать ни одного инструмента вообще.
+		client: "Cline CLI 3.0.63 (ollama provider, real payload with tool_choice)",
+		body: `{
+			"model":"dummy",
+			"messages":[{"role":"system","content":"You are Cline."},{"role":"user","content":"run echo hi"}],
+			"options":{"num_ctx":32768},
+			"tools":[{"type":"function","function":{"name":"run_commands","description":"Run commands","parameters":{"type":"object","properties":{"commands":{"type":"array","items":{"type":"string"}}},"required":["commands"]}}}],
+			"tool_choice":"auto",
+			"stream":true
+		}`,
+	},
+	{
+		// R66b: tool_choice:"none" — клиент явно запрещает инструменты.
+		// Должно приниматься (не 400) и НЕ инжектить tools в system prompt.
+		client: "OpenAI-SDK style: tools + tool_choice=none",
+		body: `{
+			"model":"dummy",
+			"messages":[{"role":"user","content":"hi"}],
+			"stream":false,
+			"tools":[{"type":"function","function":{"name":"read_file","parameters":{"type":"object","properties":{}}}}],
+			"tool_choice":"none"
+		}`,
+	},
+	{
 		client: "Ollama raw mode + template override",
 		body: `{"model":"dummy","messages":[{"role":"user","content":"hi"}],"raw":true,"template":"{{ .Prompt }}","system":"sys"}`,
 	},

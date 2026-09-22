@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/http"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"ollama-loadbalancer/c/bridge"
@@ -19,11 +20,27 @@ import (
 // ============================================================
 
 type chatMessage struct {
-	Role       string           `json:"role"`
-	Content    string           `json:"content"`
-	ToolCalls  []openAIToolCall `json:"tool_calls,omitempty"`
+	Role    string `json:"role"`
+	Content string `json:"content"`
+	// R66b (2026-09-22): тип изменён с []openAIToolCall на []ollamaToolCall.
+	// Ollama-нативные клиенты (Cline CLI, ollama-python, ollama run) шлют и
+	// ждут tool_calls[].function.arguments как JSON-ОБЪЕКТ, а не строку
+	// (см. openai_types.go: ollamaToolCall принимает обе формы, отдаёт Ollama-форму).
+	// Со старым типом запрос второго шага (assistant.tool_calls + tool-результат)
+	// падал с 400 `cannot unmarshal object into ... Arguments of type string`.
+	ToolCalls  []ollamaToolCall `json:"tool_calls,omitempty"`
 	ToolCallID string           `json:"tool_call_id,omitempty"`
 	Name       string           `json:"name,omitempty"`
+	// R66b (2026-09-22): `tool_name` — имя инструмента в tool-сообщении.
+	//
+	// Ollama-нативная схема для сообщения с результатом инструмента:
+	//   {"role":"tool","tool_name":"editor","content":"..."}
+	// (OpenAI использует `name` + `tool_call_id`). Реальный Cline CLI 3.0.64 в
+	// провайдере "ollama" шлёт ОБА поля: tool_call_id И tool_name — и на втором
+	// шаге агентского цикла получал 400 `invalid JSON: json: unknown field
+	// "tool_name"`, из-за чего цикл обрывался ровно после первого вызова
+	// инструмента (файл создавался, но ответа клиент не получал).
+	ToolName string `json:"tool_name,omitempty"`
 	// R65d (2026-09-20): images в сообщении (Ollama vision-запросы).
 	// До R65d строгий декодер отвечал 400 `unknown field "images"` на любой
 	// vision-запрос из OpenWebUI/ollama run. Текстовая часть обрабатывается
@@ -87,8 +104,46 @@ type chatRequest struct {
 	Logprobs    *bool `json:"logprobs,omitempty"`
 	TopLogprobs *int  `json:"top_logprobs,omitempty"`
 
+	// ToolChoice — R66b (2026-09-22): управление выбором инструмента в
+	// Ollama-нативном /api/chat ("auto" | "none" | "required" | {"type":"function",...}).
+	//
+	// Это НЕ поле Ollama-протокола, но реальный Cline CLI (провайдер "ollama",
+	// v3.0.63) ВСЕГДА шлёт его вместе с tools[] — зафиксировано захватом payload'а
+	// в scripts/mock_capture_server.js:
+	//
+	//	{"model":..., "messages":[...], "options":{"num_ctx":32768},
+	//	 "tools":[...25 функций...], "tool_choice":"auto", "stream":true}
+	//
+	// До этого фикса строгий декодер отвечал 400 `invalid JSON: json: unknown
+	// field "tool_choice"`, Cline получал "Bad Request" на первой же итерации
+	// (6 ретраев → agent_error) и не мог вызвать НИ ОДИН инструмент, то есть
+	// клиент был полностью неработоспособен против cppworker.
+	//
+	// Семантика: "none" — tools не инжектятся в system prompt и tool_calls не
+	// парсятся (клиент явно просит ответ без инструментов); "auto"/"required"/
+	// конкретная функция — прежнее поведение (llama.cpp сам решает по grammar,
+	// см. c/llama.cpp/common/chat.cpp: common_chat_tool_choice_parse_oaicompat).
+	// OpenAI-путь /v1/chat/completions уже принимал это поле (handlers_openai.go:99).
+	ToolChoice json.RawMessage `json:"tool_choice,omitempty"`
+
 	// _keepAliveDuration — результат parseKeepAlive(req.KeepAliveRaw); не из JSON.
 	_keepAliveDuration time.Duration `json:"-"`
+}
+
+// toolsDisabledByChoice — true, если клиент явно запретил инструменты
+// (`tool_choice:"none"`). Все прочие значения ("auto", "required", объект
+// конкретной функции, отсутствие поля, невалидный JSON) означают «инструменты
+// разрешены» — так же ведёт себя upstream llama.cpp.
+func toolsDisabledByChoice(raw json.RawMessage) bool {
+	if len(raw) == 0 {
+		return false
+	}
+	var s string
+	if err := json.Unmarshal(raw, &s); err != nil {
+		// Объект {"type":"function",...} или что-то ещё — инструменты разрешены.
+		return false
+	}
+	return strings.EqualFold(strings.TrimSpace(s), "none")
 }
 
 type chatResponse struct {
@@ -97,6 +152,16 @@ type chatResponse struct {
 	Message       chatMessage `json:"message"`
 	Done          bool        `json:"done"`
 	TotalDuration int64       `json:"total_duration,omitempty"`
+}
+
+// effectiveToolName — имя инструмента в tool-сообщении: `name` (OpenAI) или
+// `tool_name` (Ollama). R66b: нужно потому, что Ollama-клиенты (Cline CLI,
+// ollama-python) заполняют именно `tool_name`.
+func (m chatMessage) effectiveToolName() string {
+	if m.Name != "" {
+		return m.Name
+	}
+	return m.ToolName
 }
 
 // ============================================================
@@ -175,15 +240,28 @@ func handleChat(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Inject tool definitions into system prompt if tools are provided
+	// (R66b: ...и клиент не запретил инструменты через tool_choice:"none").
+	toolsEnabled := len(req.Tools) > 0 && !toolsDisabledByChoice(req.ToolChoice)
 	msgs := req.Messages
-	if len(req.Tools) > 0 {
+	if toolsEnabled {
 		msgs = augmentSystemWithTools(msgs, req.Tools)
 	}
 
 	// ???????? prompt ????? GGUF chat template (???? ????????)
 	// ApplyChatTemplate ?????????? tokenizer.chat_template ?? GGUF ??????????,
 	// ??? ??????????? ?????????? ??????????? ? ???????? segfault ??? ?????? ??????.
-	prompt, err := buildChatPrompt(msgs, actualModel)
+	//
+	// R66b (2026-09-22): per-request think / format. Раньше оба поля
+	// принимались, но ни на что не влияли: reasoning зависел только от
+	// глобального config.EnableReasoning, а format игнорировался полностью.
+	promptOpts := chatPromptOptions{
+		JSONMode:   formatWantsJSON(req.Format),
+		JSONSchema: jsonSchemaText(req.Format),
+	}
+	if thinkOn, thinkExplicit := thinkEnabledFromRaw(req.Think); thinkExplicit {
+		promptOpts.ReasoningOverride = &thinkOn
+	}
+	prompt, err := buildChatPromptWithOptions(msgs, actualModel, promptOpts)
 	if err != nil {
 		logger.Get().Errorw("handleChat: failed to build prompt", "model", req.Model, "error", err)
 		writeError(w, http.StatusInternalServerError, "chat prompt error: "+err.Error())
@@ -194,7 +272,9 @@ func handleChat(w http.ResponseWriter, r *http.Request) {
 		"model", req.Model,
 		"messages_count", len(msgs),
 		"prompt_len", len(prompt),
-		"has_tools", len(req.Tools) > 0,
+		"has_tools", toolsEnabled,
+		"json_mode", promptOpts.JSONMode,
+		"think_override", promptOpts.ReasoningOverride,
 		"stream", req.Stream)
 
 	genReq := buildGenerateRequestFromChat(req, prompt)
@@ -205,7 +285,7 @@ func handleChat(w http.ResponseWriter, r *http.Request) {
 	// OpenAI handlers. Без этого tools-запросы получают 1024 токен резерва →
 	// n_ctx overflow → reload-loop → 413.
 	ApplyCppCtxHeaderWithOptions(r, &params, CppCtxApplyOptions{
-		HasTools: len(req.Tools) > 0,
+		HasTools: toolsEnabled,
 	})
 	// Antiprompts ??? gemma/non-gemma
 	params.Antiprompts = append(params.Antiprompts, defaultAntipromptsForModel(req.Model)...)
@@ -248,8 +328,14 @@ func handleChat(w http.ResponseWriter, r *http.Request) {
 		// ? ?????? ????????? ???? ? done:true + message.tool_calls ??? ?????????????.
 		// ?????? ????? ??? bug: cppworker ????????? non-streaming JSON ????? writeJSON,
 		// ??? ?????? OpenWebUI (?? ???? NDJSON ?????).
-		if len(req.Tools) > 0 {
-			writeChatStreamResponseWithTools(w, r, actualModel, prompt, params)
+		//
+		// R66b: JSON-режим (format:"json"/схема) идёт через ТОТ ЖЕ буферизованный
+		// путь, что и tools: снять markdown-обёртку ```json ... ``` можно только
+		// зная весь ответ целиком, поэтому для format:json поток отдаётся двумя
+		// чанками (content + done) — это валидный Ollama NDJSON, клиенты
+		// (OpenWebUI, ollama-python, Cline) его принимают.
+		if toolsEnabled || promptOpts.JSONMode {
+			writeChatStreamResponseWithTools(w, r, actualModel, prompt, params, promptOpts.JSONMode)
 			return
 		}
 		writeChatStreamResponse(w, r, actualModel, prompt, params)
@@ -257,7 +343,7 @@ func handleChat(w http.ResponseWriter, r *http.Request) {
 	}
 
 	start := time.Now()
-	hasTools := len(req.Tools) > 0
+	hasTools := toolsEnabled
 	result, err := generateWithRamFallback(req.Model, prompt, params, hasTools)
 	// 2026-06-25: ?????????? snapshot ?????????? inference ??? endpoint /debug/last-prompt.
 	// ??? ???????? ??????????????? ?????? "prompt_exceeds_context" ? Cline/OpenWebUI.
@@ -295,9 +381,9 @@ func handleChat(w http.ResponseWriter, r *http.Request) {
 		Done:          true,
 		TotalDuration: duration.Nanoseconds(),
 	}
-	if len(req.Tools) > 0 {
+	if toolsEnabled {
 		if calls := parseToolCallsFromOutput(result.Output); len(calls) > 0 {
-			resp.Message.ToolCalls = calls
+			resp.Message.ToolCalls = ollamaToolCallsFromOpenAI(calls)
 			resp.Message.Content = ""
 		}
 	} else if IsReasoningModel(req.Model) {
@@ -310,6 +396,25 @@ func handleChat(w http.ResponseWriter, r *http.Request) {
 			resp.Message.Reasoning = r
 		}
 	}
+
+	// R66b: format:"json" — снимаем markdown-обёртку ```json ... ```, иначе
+	// клиент, который делает json.Unmarshal на content, получает ошибку
+	// парсинга (раньше поле format игнорировалось целиком).
+	if promptOpts.JSONMode {
+		resp.Message.Content = stripJSONFence(resp.Message.Content)
+	}
+
+	// R66b: think=false — клиент явно не хочет видеть рассуждения. Модель может
+	// всё равно вернуть <think>/<reasoning> блок (native template), поэтому
+	// вырезаем его из content и НЕ отдаём в message.reasoning.
+	if promptOpts.ReasoningOverride != nil && !*promptOpts.ReasoningOverride {
+		if r, c, has := SplitReasoningContent(resp.Message.Content); has {
+			resp.Message.Content = c
+			resp.Message.Reasoning = ""
+			_ = r
+		}
+	}
+
 	writeJSON(w, http.StatusOK, resp)
 }
 
@@ -407,7 +512,8 @@ func formatWantsJSON(raw json.RawMessage) bool {
 // thinkEnabledFromRaw — true/false/"low"/"medium"/"high" → (enabled, explicit).
 // explicit=false означает «клиент не задавал think» (использовать конфиг).
 func thinkEnabledFromRaw(raw json.RawMessage) (enabled bool, explicit bool) {
-	if len(raw) == 0 {
+	// R66b: `"think": null` — клиент поле не задавал (а не «выключить»).
+	if len(raw) == 0 || strings.EqualFold(strings.TrimSpace(string(raw)), "null") {
 		return false, false
 	}
 	var b bool
@@ -427,12 +533,65 @@ func thinkEnabledFromRaw(raw json.RawMessage) (enabled bool, explicit bool) {
 	return false, false
 }
 
-// buildChatPrompt ?????????? ApplyChatTemplate ?? GGUF (???????????????) ???
-// ?????? ?????? (fallback). ?????????? GGUF chat template ???????????
-// ?????????? ??????????? ? ???????? segfault ??? ?????? ??????.
+// jsonSchemaText — текст JSON-схемы из format-поля ("json" → "" ; объект/массив
+// → его компактный JSON). Используется только для инструкции в system-промпте.
+func jsonSchemaText(raw json.RawMessage) string {
+	if len(raw) == 0 {
+		return ""
+	}
+	trimmed := strings.TrimSpace(string(raw))
+	if strings.HasPrefix(trimmed, "{") || strings.HasPrefix(trimmed, "[") {
+		return trimmed
+	}
+	return ""
+}
+
+// buildChatPrompt — прежняя сигнатура (используется OpenAI-путём и тестами):
+// без per-request переопределений.
 func buildChatPrompt(msgs []chatMessage, modelName string) (string, error) {
+	return buildChatPromptWithOptions(msgs, modelName, chatPromptOptions{})
+}
+
+// buildChatPromptWithOptions — сборка промпта с per-request опциями (R66b):
+// think (reasoning on/off для одного запроса) и format:"json".
+func buildChatPromptWithOptions(msgs []chatMessage, modelName string, opts chatPromptOptions) (string, error) {
 	// Извлекаем system промпт (если есть)
 	system := extractSystemFromMessages(msgs)
+	lang := detectPrimaryLanguage(msgs)
+
+	// R66b: эффективный режим reasoning = per-request think (если клиент задал)
+	// поверх глобального config.EnableReasoning.
+	reasoningEnabled := effectiveReasoningEnabled(opts, currentConfig != nil && currentConfig.EnableReasoning)
+
+	// R66b: format:"json"/схема → инструкция структурированного вывода.
+	// Грамматику C-bridge не поддерживает, поэтому ограничиваем промптом, а
+	// markdown-обёртку снимаем пост-обработкой (stripJSONFence).
+	if opts.JSONMode {
+		system = injectJSONInstruction(system, lang, opts.JSONSchema)
+	}
+
+	// R66b (2026-09-22): инструкции (JSON/thinking) должны попасть и в
+	// Jinja-шаблон. ApplyChatTemplateWithThinking НЕ принимает system отдельным
+	// аргументом — он берёт его ТОЛЬКО из messages. До этого фикса format:"json"
+	// не доходил до модели на native-thinking пути: system собирался, но в
+	// messages не попадал (проверено через /api/v1/cppworker/debug/last-prompt —
+	// prompt_head содержал только user-сообщение без system-блока).
+	//
+	// Legacy C-API путь (ApplyChatTemplate) роль `system` в messages игнорирует
+	// и использует одноимённый аргумент, поэтому дублирования нет.
+	msgs = upsertSystemMessage(msgs, system)
+
+	// thinkingInjected защищает от повторной вставки soft-prompt: native-путь
+	// может поддержать thinking сам, и тогда инструкция не нужна.
+	thinkingInjected := false
+	injectThinking := func() {
+		if thinkingInjected {
+			return
+		}
+		system = injectThinkingInstructionWithLang(system, lang)
+		msgs = upsertSystemMessage(msgs, system)
+		thinkingInjected = true
+	}
 
 	// Round 11 (2026-07-28) SOFT PROMPT Injection для EnableReasoning:
 	// Если config.EnableReasoning=true, добавляем "thinking instruction"
@@ -443,15 +602,12 @@ func buildChatPrompt(msgs []chatMessage, modelName string) (string, error) {
 	// soft prompt и продолжают эмитить <think> блоки — парсер
 	// (cmd/cppworker/reasoning_content.go) корректно их извлекает.
 	//
-	// Native C-bridge enable_thinking требует common::chat миграцию
-	// (см. docs/CHANGELOG.md v0.4.6 P.14) — отложено.
-	//
 	// Round 14b (2026-07-28): native enable_thinking через
 	// common_chat_templates_apply (см. c/bridge/csrc/chat_thinking.cpp).
 	// Если native path работает И template поддерживает thinking —
 	// soft prompt НЕ нужен, template сам эмитит <think> блоки.
 	// Иначе fallback на soft prompt.
-	if currentConfig != nil && currentConfig.EnableReasoning {
+	if reasoningEnabled {
 		// Round 35 (2026-08-12) CRITICAL bugfix: wrap C++ native chat template
 		// in recover() to catch cgo SIGSEGV. The native path calls
 		// common_chat_templates_apply (c/bridge/csrc/chat_thinking.cpp) which
@@ -480,7 +636,7 @@ func buildChatPrompt(msgs []chatMessage, modelName string) (string, error) {
 				}
 			}()
 			nativePrompt, supportsThinking, err = backend.ApplyChatTemplateWithThinking(
-				modelName, "" /* override */, msgsToBridge(msgs),
+				modelName, "" /* chatTemplateOverride */, msgsToBridge(msgs),
 				true /* enableThinking */, true, /* addGenerationPrompt */
 			)
 		}()
@@ -495,8 +651,8 @@ func buildChatPrompt(msgs []chatMessage, modelName string) (string, error) {
 			// Round 32 #12 (2026-08-11): use language-aware instruction
 			// чтобы модель не отвечала на языке инструкции (mixed RU/EN).
 			logger.Get().Debugw("buildChatPrompt: native enable_thinking not supported by template, using soft prompt",
-				"model", modelName, "prompt_len", len(nativePrompt), "lang", detectPrimaryLanguage(msgs).String())
-			system = injectThinkingInstructionWithLang(system, detectPrimaryLanguage(msgs))
+				"model", modelName, "prompt_len", len(nativePrompt), "lang", lang.String())
+			injectThinking()
 			prompt2, err2 := backend.ApplyChatTemplate(modelName, system, msgsToBridge(msgs), true)
 			if err2 == nil && prompt2 != "" {
 				return prompt2, nil
@@ -513,8 +669,8 @@ func buildChatPrompt(msgs []chatMessage, modelName string) (string, error) {
 	// к system промпту. Работает универсально для ЛЮБОЙ instruction-tuned
 	// модели (включая gemma-4-it, который не эмитит нативные <think> блоки).
 	// Round 32 #12 (2026-08-11): use language-aware version.
-	if currentConfig != nil && currentConfig.EnableReasoning {
-		system = injectThinkingInstructionWithLang(system, detectPrimaryLanguage(msgs))
+	if reasoningEnabled {
+		injectThinking()
 	}
 
 	// Применяем chat template из GGUF
@@ -536,18 +692,12 @@ func buildChatPrompt(msgs []chatMessage, modelName string) (string, error) {
 		}
 	}
 
-	// Fallback: ?????? ??????
+	// Fallback: ручная сборка промпта.
 	logger.Get().Debugw("buildChatPrompt: using manual prompt assembly (no GGUF chat template)",
 		"model", modelName)
-	// Round 11: для fallback path — НЕ модифицируем msgs (chat template
-	// здесь не применяется, только ручная сборка). Чтобы thinking
-	// instruction сработал, модель должна получить system промпт через
-	// buildChatPromptFromMessages. Это делает prepended system message
-	// в msgs (если её ещё нет). См. injectThinkingIntoMessages.
-	// Round 32 #12 (2026-08-11): use language-aware version.
-	if currentConfig != nil && currentConfig.EnableReasoning {
-		msgs = injectThinkingIntoMessagesWithLang(msgs, detectPrimaryLanguage(msgs))
-	}
+	// R66b: system-сообщение (с JSON/thinking инструкциями) уже вставлено в msgs
+	// выше через upsertSystemMessage — дополнительная инъекция не нужна и
+	// привела бы к дублированию инструкции в промпте.
 	return buildChatPromptFromMessages(msgs, modelName), nil
 }
 
@@ -702,8 +852,10 @@ func buildChatPromptFromMessages(msgs []chatMessage, modelName string) string {
 		case "tool":
 			// ??????????? tool-?????????: ??? ??????????? : ?????????
 			content := msg.Content
-			if msg.Name != "" {
-				content = "tool_call_result(" + msg.Name + "): " + content
+			// R66b: Ollama-клиенты кладут имя инструмента в `tool_name`,
+			// OpenAI-совместимые — в `name`; поддерживаем оба.
+			if toolName := msg.effectiveToolName(); toolName != "" {
+				content = "tool_call_result(" + toolName + "): " + content
 			} else if msg.ToolCallID != "" {
 				content = "tool_call_result(" + msg.ToolCallID + "): " + content
 			}
@@ -762,7 +914,14 @@ func writeChatStreamResponse(w http.ResponseWriter, r *http.Request, modelName, 
 	prefillHBJSON, _ := json.Marshal(prefillHB)
 	fmt.Fprintf(w, "%s\n", prefillHBJSON)
 	flusher.Flush()
-	_ = prefillStartTime // для future logging/debugging
+	// R66b (2026-09-22): время ПЕРВОГО сгенерированного токена. Раньше
+	// prompt_eval_duration считался как time.Since(prefillStartTime) в самом
+	// конце генерации, то есть равнялся всей длительности запроса: условие
+	// ttft <= total давало prompt_eval_duration == total_duration, а
+	// eval_duration == 0. Клиенты (OpenWebUI) считают tokens/sec из
+	// eval_duration и показывали 0/N/A. Теперь TTFT пишется из callback'а в
+	// момент первого непустого дельта-токена.
+	var firstTokenAt int64 // UnixNano, atomic
 	ctx := r.Context()
 	// R63 (2026-09-15): per-infer AbortWatcher создаётся внутри GenerateStream
 	// (inference.go:521), там где доступен abortFlag от C-bridge. Удаляем
@@ -790,6 +949,10 @@ func writeChatStreamResponse(w http.ResponseWriter, r *http.Request, modelName, 
 		default:
 		}
 		outputBuf.WriteString(token)
+		// R66b: TTFT — время первого непустого токена (см. firstTokenAt выше).
+		if token != "" {
+			atomic.CompareAndSwapInt64(&firstTokenAt, 0, time.Now().UnixNano())
+		}
 
 		// 2026-07-01: ??? reasoning-??????? ????? ????? ?? (reasoning, content) ?
 		// ?????? ??????????? NDJSON-????? ? message.reasoning / message.content.
@@ -942,10 +1105,12 @@ func writeChatStreamResponse(w http.ResponseWriter, r *http.Request, modelName, 
 	promptTokens := countTokensSafe(modelName, prompt)
 	evalNs := duration.Nanoseconds()
 	promptEvalNs := int64(0)
-	// Если зафиксировано время первого контентного чанка — отделяем prefill (TTFT)
-	// от генерации, чтобы eval_duration не включал prefill.
-	if !prefillStartTime.IsZero() && duration > 0 {
-		ttft := time.Since(prefillStartTime).Nanoseconds()
+	// R66b (2026-09-22): TTFT = время от начала запроса до ПЕРВОГО токена.
+	// Раньше здесь было time.Since(prefillStartTime) в конце генерации, из-за
+	// чего prompt_eval_duration совпадал с total_duration, а eval_duration
+	// получался 0 → OpenWebUI показывал tokens/sec = 0/N/A.
+	if deadline := atomic.LoadInt64(&firstTokenAt); deadline > 0 {
+		ttft := deadline - prefillStartTime.UnixNano()
 		if ttft >= 0 && ttft <= evalNs {
 			promptEvalNs = ttft
 		}
@@ -979,7 +1144,11 @@ func writeChatStreamResponse(w http.ResponseWriter, r *http.Request, modelName, 
 //
 // ??? ?????? ???, ??? ??????? OpenWebUI (stream=true + tools) ??????? non-streaming
 // JSON-????? ? ?? ??? ????????? ??? ?????????? (????? "???????? ???????????" ??? ??????).
-func writeChatStreamResponseWithTools(w http.ResponseWriter, r *http.Request, modelName, prompt string, params bridge.GenerationParams) {
+// jsonMode (R66b, 2026-09-22): клиент запросил format:"json". В этом режиме
+// функция вызывается даже БЕЗ tools — потому что снять markdown-обёртку
+// ```json ... ``` можно только имея весь ответ целиком (буферизация). Финал:
+// один content-чанк (без обёртки) + done-чанк.
+func writeChatStreamResponseWithTools(w http.ResponseWriter, r *http.Request, modelName, prompt string, params bridge.GenerationParams, jsonMode bool) {
 	flusher, ok := w.(http.Flusher)
 	if !ok {
 		writeError(w, http.StatusInternalServerError, "streaming not supported")
@@ -1011,6 +1180,8 @@ func writeChatStreamResponseWithTools(w http.ResponseWriter, r *http.Request, mo
 	// (inference.go:521), там где доступен abortFlag от C-bridge.
 	start := time.Now()
 	createdAt := time.Now().UTC().Format(time.RFC3339)
+	// R66b: TTFT для prompt_eval_duration (см. writeChatStreamResponse).
+	var firstTokenAt int64
 
 	// Buffer full output for final tool_calls detection.
 	var outputBuf strings.Builder
@@ -1072,6 +1243,10 @@ func writeChatStreamResponseWithTools(w http.ResponseWriter, r *http.Request, mo
 		default:
 		}
 		outputBuf.WriteString(token)
+		// R66b: TTFT — время первого непустого токена.
+		if token != "" {
+			atomic.CompareAndSwapInt64(&firstTokenAt, 0, time.Now().UnixNano())
+		}
 		return true
 	}
 
@@ -1147,15 +1322,28 @@ func writeChatStreamResponseWithTools(w http.ResponseWriter, r *http.Request, mo
 	// tokens/sec из этих полей и показывал N/A).
 	fullOutputCount := countTokensSafe(modelName, fullOutput)
 	promptTokensTools := countTokensSafe(modelName, prompt)
+
+	// R66b (2026-09-22): отделяем prefill (TTFT) от генерации. До фикса
+	// eval_duration == total_duration включал prefill, а prompt_eval_duration
+	// отсутствовал вовсе — tokens/sec у клиентов считался неверно.
+	totalNs := duration.Nanoseconds()
+	var promptEvalNsTools int64
+	if ts := atomic.LoadInt64(&firstTokenAt); ts > 0 {
+		if ttft := ts - start.UnixNano(); ttft >= 0 && ttft <= totalNs {
+			promptEvalNsTools = ttft
+		}
+	}
+
 	finalChunk := map[string]interface{}{
-		"model":             modelName,
-		"created_at":        createdAt,
-		"message":           map[string]interface{}{"role": "assistant"},
-		"done":              true,
-		"total_duration":    duration.Nanoseconds(),
-		"prompt_eval_count": promptTokensTools,
-		"eval_count":        fullOutputCount,
-		"eval_duration":     duration.Nanoseconds(),
+		"model":                modelName,
+		"created_at":           createdAt,
+		"message":              map[string]interface{}{"role": "assistant"},
+		"done":                 true,
+		"total_duration":       totalNs,
+		"prompt_eval_count":    promptTokensTools,
+		"prompt_eval_duration": promptEvalNsTools,
+		"eval_count":           fullOutputCount,
+		"eval_duration":        totalNs - promptEvalNsTools,
 	}
 
 	if len(toolCalls) > 0 {
@@ -1164,7 +1352,11 @@ func writeChatStreamResponseWithTools(w http.ResponseWriter, r *http.Request, mo
 		// ??? content ??????, ? tool_calls ???????? ?????? ???????.
 		msg := finalChunk["message"].(map[string]interface{})
 		msg["content"] = ""
-		msg["tool_calls"] = toolCalls
+		// R66b (2026-09-22): нативный Ollama-формат — arguments это JSON-ОБЪЕКТ,
+		// а не строка (OpenAI-форма). Cline CLI (провайдер "ollama")/ollama-python
+		// читают именно объект; со строкой клиент повторно сериализовал аргументы
+		// и tool call приезжал «пустым» → "Model returned empty response".
+		msg["tool_calls"] = ollamaToolCallsFromOpenAI(toolCalls)
 		finalChunk["done_reason"] = "tool_calls"
 		logger.Get().Infow("writeChatStreamResponseWithTools: detected tool_calls in streamed output",
 			"model", modelName, "tool_calls_count", len(toolCalls))
@@ -1181,10 +1373,18 @@ func writeChatStreamResponseWithTools(w http.ResponseWriter, r *http.Request, mo
 		// ?????? ??????????? ???????: ??????? ????????? ????????? ??????,
 		// ??????? ?????? ????? ??????? (</tool_call>, [TOOL_CALLS], ? ?.?.).
 		msg := finalChunk["message"].(map[string]interface{})
-		msg["content"] = cleanFinalContent(fullOutput)
+		content := cleanFinalContent(fullOutput)
+		// R66b: format:"json" — снимаем markdown-обёртку ```json ... ```.
+		// Отдельного поля в ответе не добавляем: схема Ollama /api/chat его не
+		// содержит, а лишние поля ломают строгих клиентов (см. историю с
+		// unknown field в R65d).
+		if jsonMode {
+			content = stripJSONFence(content)
+		}
+		msg["content"] = content
 		finalChunk["done_reason"] = "stop"
 		logger.Get().Debugw("writeChatStreamResponseWithTools: text response (no tool_calls)",
-			"model", modelName, "content_len", len(msg["content"].(string)))
+			"model", modelName, "content_len", len(content), "json_mode", jsonMode)
 	}
 
 	doneJSON, _ := json.Marshal(finalChunk)

@@ -32,7 +32,14 @@
                     if (toggle) toggle.textContent = '▶';
                 } else {
                     body.classList.add('open');
-                    body.style.maxHeight = body.scrollHeight + 'px';
+                    // R66b: если страница настроек ещё скрыта (display:none у
+                    // #settings-page), scrollHeight == 0 — не пишем inline
+                    // max-height:0px, иначе секция остаётся схлопнутой, пока
+                    // пользователь не кликнет по заголовку второй раз.
+                    // В этом случае отдаём управление CSS .settings-section-body.open
+                    // (max-height:2000px), а точную высоту подставит
+                    // reapplyAccordionHeights() при показе страницы.
+                    body.style.maxHeight = body.scrollHeight > 0 ? (body.scrollHeight + 'px') : 'none';
                     body.style.opacity = '1';
                     if (toggle) toggle.textContent = '▼';
                 }
@@ -65,7 +72,17 @@
                 if (shouldOpen) {
                     if (body) {
                         body.classList.add('open');
-                        body.style.maxHeight = body.scrollHeight + 'px';
+                        // R66b: НЕ пишем inline max-height, когда высота ещё не
+                        // измерима (страница настроек скрыта на момент init →
+                        // scrollHeight == 0). Раньше сюда попадал '0px', который
+                        // перебивал .settings-section-body.open{max-height:2000px}
+                        // и обрезал содержимое всех 11 секций (в живом UI
+                        // измерялось clientHeight 32px вместо 774px у секции).
+                        if (body.scrollHeight > 0) {
+                            body.style.maxHeight = body.scrollHeight + 'px';
+                        } else {
+                            body.style.maxHeight = 'none';
+                        }
                         body.style.opacity = '1';
                     }
                     if (toggle) toggle.textContent = '▼';
@@ -79,6 +96,20 @@
                 }
             });
         } catch (e) { /* ignore */ }
+    }
+
+    /**
+     * reapplyAccordionHeights — R66b: пересчитать inline max-height у открытых
+     * секций, когда страница настроек УЖЕ видима. Вызывается из app.js при
+     * переходе на settings (switchPage/refreshPage) — без этого схлопнутые
+     * на этапе init секции остаются высотой 0 до ручного клика.
+     */
+    function reapplyAccordionHeights() {
+        document.querySelectorAll('.settings-section').forEach(function (section) {
+            var body = section.querySelector('.settings-section-body');
+            if (!body || !body.classList.contains('open')) return;
+            body.style.maxHeight = body.scrollHeight > 0 ? (body.scrollHeight + 'px') : 'none';
+        });
     }
 
     // ---- Mode Selector ----
@@ -123,14 +154,26 @@
         });
     }
 
-    function showModeFields(mode) {
+    /**
+     * showModeFields(mode, rootEl) — показать набор полей выбранного режима.
+     *
+     * R66b (2026-09-22): id контейнеров мастера были ТАКИМИ ЖЕ, как на странице
+     * Settings (`modeFields-<mode>`), поэтому document.getElementById() выбирал
+     * скрытую копию страницы Settings, а fieldset мастера оставался
+     * display:none — шаг 4 «Параметры режима» выглядел пустой коробкой.
+     * Теперь id мастера уникальны (`wiz-modeFields-<mode>`), а rootEl
+     * позволяет искать строго внутри переданного контейнера.
+     */
+    function showModeFields(mode, rootEl) {
+        var scope = rootEl || document;
         // Hide all mode field containers
-        document.querySelectorAll('.mode-fields').forEach(function (container) {
+        scope.querySelectorAll('.mode-fields').forEach(function (container) {
             container.classList.remove('active');
             container.style.display = 'none';
         });
-        // Show active mode fields
-        var activeFields = document.getElementById('modeFields-' + mode);
+        // Show active mode fields: сначала id мастера (wiz-), затем общий.
+        var activeFields = scope.querySelector('[id="wiz-modeFields-' + mode + '"]') ||
+            scope.querySelector('[id="modeFields-' + mode + '"]');
         if (activeFields) {
             activeFields.classList.add('active');
             activeFields.style.display = 'block';
@@ -581,6 +624,9 @@
     window.SettingsUI = {
         setupAccordion: setupAccordion,
         restoreAccordionState: restoreAccordionState,
+        // R66b (2026-09-22): пересчёт высот открытых секций, когда страница
+        // настроек уже видима (вызывается из app.js при переходе на settings).
+        reapplyAccordionHeights: reapplyAccordionHeights,
         setupModeSelector: setupModeSelector,
         getCurrentMode: getCurrentMode,
         showModeFields: showModeFields,

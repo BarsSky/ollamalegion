@@ -570,7 +570,12 @@ func (lr *LlamaCppRouter) handlePS(w http.ResponseWriter, r *http.Request) {
 	}
 
 	lr.proxy.metricsMgr.mu.RLock()
-	var allProcesses []OllamaProcess
+	// R66b (2026-09-22): инициализируем НЕ nil-слайсом. С nil json.Marshal даёт
+	// `"models":null`, тогда как Ollama всегда отдаёт `"models":[]`. Клиенты,
+	// которые сразу итерируются по списку (ollama-python: `for m in resp["models"]`,
+	// OpenWebUI), на null падают с TypeError — «пустой список процессов» ломал
+	// страницу моделей вместо того, чтобы просто ничего не показать.
+	allProcesses := make([]OllamaProcess, 0, 4)
 	for _, b := range backends {
 		// Round 19 hotfix: читаем из llamaMetrics (cppworker-poller), не metrics[id].LlamaCpp (Ollama-agent).
 		lm, ok := lr.proxy.metricsMgr.llamaMetrics[b.id]

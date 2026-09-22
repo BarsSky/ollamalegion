@@ -387,8 +387,8 @@ func TestBuildChatPromptFromMessages_WithToolMessages(t *testing.T) {
 		{
 			Role:    "assistant",
 			Content: "",
-			ToolCalls: []openAIToolCall{
-				{ID: "call_1", Type: "function", Function: openAIFunctionCall{Name: "search", Arguments: `{"q":"AI news"}`}},
+			ToolCalls: []ollamaToolCall{
+				{ID: "call_1", Type: "function", Function: ollamaToolCallFunction{Name: "search", Arguments: json.RawMessage(`{"q":"AI news"}`)}},
 			},
 		},
 		{Role: "tool", Name: "search", ToolCallID: "call_1", Content: `{"results":["AI advances"]}`},
@@ -414,8 +414,8 @@ func TestMsgsToBridge_WithToolCalls(t *testing.T) {
 		{
 			Role:    "assistant",
 			Content: "",
-			ToolCalls: []openAIToolCall{
-				{ID: "call_1", Type: "function", Function: openAIFunctionCall{Name: "search", Arguments: `{}`}},
+			ToolCalls: []ollamaToolCall{
+				{ID: "call_1", Type: "function", Function: ollamaToolCallFunction{Name: "search", Arguments: json.RawMessage(`{}`)}},
 			},
 		},
 	}
@@ -667,6 +667,65 @@ func TestParseToolCallsFromOutput_MistralNemo_WithEqualsSeparator(t *testing.T) 
 	}
 	if result[0].ID != "call_x" {
 		t.Errorf("expected ID 'call_x', got '%s'", result[0].ID)
+	}
+}
+
+// TestParseToolCallsFromOutput_ObjectArguments — R66b (2026-09-22).
+//
+// Qwen3-Instruct (и некоторые Mistral варианты) часто эмитят `arguments`
+// как JSON-объект, а не как JSON-строку (что нарушает OpenAI-стандарт, но
+// бывает в JSON-mode trained моделях):
+//
+//	[{"id":"call_x","type":"function","function":{"name":"editor","arguments":{"path":"x.html","content":"<html></html>"}}}]
+//
+// Pre-R66b баг: стратегии 4/4b/5/6 делали прямой json.Unmarshal в
+// []openAIToolCall, и когда `arguments` приходит как объект — анмаршал
+// падает (поле `Function.Arguments string` несовместимо с object). В
+// результате tool_call оставался в message.content как plain text.
+//
+// Пост-фикс: parseRawArrayAsToolCalls поэлементно анмаршалит в
+// json.RawMessage и конвертирует через parseHermesSingleCall →
+// stringifyArguments, который принимает object или string.
+func TestParseToolCallsFromOutput_ObjectArguments(t *testing.T) {
+	output := `[{"id":"call_editor","type":"function","function":{"name":"editor","arguments":{"path":"x.html","content":"<h1>hi</h1>"}}}]`
+	result := parseToolCallsFromOutput(output)
+	if len(result) != 1 {
+		t.Fatalf("expected 1 tool call with object arguments, got %d", len(result))
+	}
+	if result[0].Function.Name != "editor" {
+		t.Errorf("expected 'editor', got '%s'", result[0].Function.Name)
+	}
+	// arguments должен быть JSON-строкой (stringifyArguments сериализует object в строку)
+	args := result[0].Function.Arguments
+	if !strings.Contains(args, "x.html") || !strings.Contains(args, "<h1>hi</h1>") {
+		t.Errorf("expected arguments string to contain x.html and <h1>hi</h1>, got '%s'", args)
+	}
+	// Должен быть валидным JSON
+	var parsed map[string]interface{}
+	if err := json.Unmarshal([]byte(args), &parsed); err != nil {
+		t.Errorf("expected arguments to be valid JSON string, got '%s'", args)
+	}
+}
+
+// TestParseToolCallsFromOutput_MixedObjectAndStringArguments — R66b.
+//
+// Qwen3-Instruct может смешивать форматы: один tool_call имеет string
+// arguments, другой — object. parseRawArrayAsToolCalls должен корректно
+// обработать оба.
+func TestParseToolCallsFromOutput_MixedObjectAndStringArguments(t *testing.T) {
+	output := `[
+		{"id":"c1","type":"function","function":{"name":"write_file","arguments":{"path":"a.txt","content":"hi"}}},
+		{"id":"c2","type":"function","function":{"name":"read_file","arguments":"{\"path\":\"b.txt\"}"}}
+	]`
+	result := parseToolCallsFromOutput(output)
+	if len(result) != 2 {
+		t.Fatalf("expected 2 tool calls, got %d", len(result))
+	}
+	if result[0].Function.Name != "write_file" || !strings.Contains(result[0].Function.Arguments, "a.txt") {
+		t.Errorf("first tool_call wrong: %+v", result[0])
+	}
+	if result[1].Function.Name != "read_file" || !strings.Contains(result[1].Function.Arguments, "b.txt") {
+		t.Errorf("second tool_call wrong: %+v", result[1])
 	}
 }
 

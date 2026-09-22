@@ -1177,8 +1177,10 @@
 .wizard-modal small {
     color: var(--text-secondary, #a8a8c0);
 }
-}
 
+/* R66b: здесь была лишняя закрывающая `}` - из-за неё CSS-парсер
+   отбрасывал СЛЕДУЮЩЕЕ правило (.wizard-examples-title ниже). Проверено
+   в живом документе: document.styleSheets не содержал .wizard-examples-title. */
 .wizard-examples-title {
     padding: 0 24px 8px;
     font-size: var(--font-size-sm);
@@ -1952,4 +1954,105 @@
 }
 .gguf-section-header:first-of-type {
     margin-top: 8px;
+}
+/* ============================================================================
+   R66b (2026-09-22): mode-wizard (webui/js/modules/mode-wizard.js) markup.
+
+   mode-wizard.js эмитит .fg / .fc / .field-help / .wizard-section /
+   .wizard-param-docs / .wizard-param-table / .wizard-examples /
+   .wizard-json-example, но правил для этих классов не было НИ В ОДНОМ
+   css-файле (CSS был написан под старую разметку .wizard-field). В живом UI
+   это выглядело как «кривая форма»: подпись наезжала на поле
+   (labelRect.bottom > inputRect.top), input получал дефолтную ширину ~173px
+   (browser size=20), а кнопки «Отмена/Применить» уезжали ниже вьюпорта.
+   ============================================================================ */
+.modal-body .fg,
+.modal-content .fg {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    margin-bottom: var(--space-5, 16px);
+}
+.modal-body .fg > label,
+.modal-content .fg > label {
+    font-weight: 600;
+    font-size: var(--font-size-sm, 13px);
+    color: var(--text-primary);
+}
+.modal-body .fc,
+.modal-content .fc {
+    width: 100%;
+    box-sizing: border-box;
+    padding: 10px 14px;
+    background: var(--glass-bg);
+    border: 1px solid var(--glass-border);
+    border-radius: var(--radius-md);
+    color: var(--text-primary);
+    font-size: var(--font-size-base, 14px);
+    font-family: inherit;
+}
+.modal-body .fc:focus,
+.modal-content .fc:focus {
+    outline: none;
+    border-color: var(--accent, #3b82f6);
+}
+.modal-body .field-help,
+.modal-content .field-help {
+    display: block;
+    margin-top: 2px;
+    color: var(--text-muted);
+    font-size: 12px;
+    line-height: 1.45;
+}
+.wizard-section { margin: 20px 0; }
+.wizard-section > h4 {
+    margin: 0 0 12px;
+    font-size: var(--font-size-base, 14px);
+    color: var(--text-primary);
+}
+.wizard-param-docs,
+.wizard-examples,
+.wizard-json-example,
+.wizard-preview { margin: 20px 0; }
+.wizard-param-docs > h4,
+.wizard-examples > h4,
+.wizard-json-example > h4,
+.wizard-preview > h4 {
+    margin: 0 0 10px;
+    font-size: var(--font-size-base, 14px);
+    color: var(--text-primary);
+}
+.wizard-param-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 12px;
+}
+.wizard-param-table th,
+.wizard-param-table td {
+    border: 1px solid var(--border);
+    padding: 6px 8px;
+    text-align: left;
+    vertical-align: top;
+}
+.wizard-param-table th {
+    background: var(--bg-tertiary);
+    color: var(--text-secondary);
+    font-weight: 600;
+}
+.wizard-param-table code { white-space: nowrap; }
+.wizard-fields { display: flex; flex-direction: column; }
+
+/* Футер визарда остаётся видимым: контент скроллится, кнопки - sticky.
+   Без этого на 900px-вьюпорте кнопка "Применить и сохранить" оказывался на y=1050
+   (за пределами экрана) и до него нужно было доскроллить вслепую. */
+.modal-content > .modal-footer {
+    position: sticky;
+    bottom: 0;
+    z-index: 1;
+    display: flex;
+    justify-content: flex-end;
+    gap: 8px;
+    padding: 14px 20px;
+    background: var(--bg-secondary);
+    border-top: 1px solid var(--border);
 }

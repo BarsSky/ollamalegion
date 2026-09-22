@@ -488,9 +488,38 @@ func (lr *LlamaCppRouter) ensureModelLoadedOnBackend(backendID, modelName string
 		go func() {
 			result := mm.ExecuteOperation(backendID, opReq)
 			if !result.Success {
+				// R66d (2026-09-22): провал async-загрузки теперь попадает в тот
+				// же circuit breaker, что и sync-путь (см. ниже recordFailure).
+				// Раньше здесь было только логирование, поэтому breaker на
+				// async-пути не открывался НИКОГДА: клиент бесконечно получал
+				// 503 «load started, wait ~30-180s» + Retry-After 90, хотя
+				// cppworker падал за миллисекунды. Живой кейс (проверено на
+				// стенде): Cline настроен на gemma-4-E4B-it-Q4_K_M, файла нет →
+				// cppworker: "failed to open GGUF file ... No such file", а
+				// /api/v1/models/operations показывал операцию load в статусе
+				// running 1m18s+ и запросы продолжали получать «подожди 90с».
+				errStr := strings.ToLower(result.Error)
+				isLazyLoadFallback := strings.Contains(errStr, "404") ||
+					strings.Contains(errStr, "not found") ||
+					strings.Contains(errStr, "not implemented") ||
+					strings.Contains(errStr, "501") ||
+					// «already in progress» — не провал загрузки, а дедупликация:
+					// предыдущая async-загрузка ещё идёт (она может завершиться
+					// успешно). Считать это failure нельзя, иначе breaker
+					// откроется на нормально загружающейся модели.
+					strings.Contains(errStr, "already in progress")
+				if !isLazyLoadFallback {
+					breakerOpened, retryAfter := lr.loadBackoff.recordFailure(backendID, modelName, result.Error)
+					if breakerOpened {
+						ridLog(lr_recentCtx()).Errorw("ensureModelLoadedOnBackend: circuit breaker opened after async load failures",
+							"backend", backendID, "model", modelName,
+							"error", result.Error, "retryAfterSec", int(retryAfter.Seconds()))
+					}
+				}
 				ridLog(lr_recentCtx()).Warnw("ensureModelLoadedOnBackend: async load failed",
 					"backend", backendID, "model", modelName, "error", result.Error)
 			} else {
+				lr.loadBackoff.recordSuccess(backendID, modelName)
 				ridLog(lr_recentCtx()).Infow("ensureModelLoadedOnBackend: async load complete",
 					"backend", backendID, "model", modelName)
 			}

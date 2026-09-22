@@ -518,7 +518,12 @@ jobs:
           set -e
           mkdir -p c/bridge/tests/build
           cd c/bridge/tests/build
-          cmake -DCOMMON_LIB=$(realpath ../../../c/llama.cpp/build/common/libllama-common.a) ..
+          # R66c (2026-09-22): путь был `../../../c/llama.cpp/...`, а из
+          # c/bridge/tests/build это резолвится в c/c/llama.cpp (не существует):
+          # realpath падал с "No such file or directory", COMMON_LIB приходил
+          # пустым, и конфигурация CMake валилась следом. Правильный путь —
+          # ../../../llama.cpp/... (= <repo>/c/llama.cpp/...).
+          cmake -DCOMMON_LIB=$(realpath ../../../llama.cpp/build/common/libllama-common.a) ..
           make test_batch_n_tokens
 
       - name: Run test_batch_n_tokens
@@ -535,7 +540,11 @@ jobs:
     name: Lint (golangci-lint)
     runs-on: ubuntu-latest
     timeout-minutes: 10
-    needs: [test-ubuntu-fallback]  # запускаем после того, как хотя бы один test-job прошёл
+    # R66c (2026-09-22): НЕ зависит от test-ubuntu-fallback. Раньше директива
+    # needs означал, что падение любого теста в fallback-job'е отменяло линтер,
+    # i18n и статические проверки WebUI — они не запускались вообще (прогон
+    # 35737009071: три job'а в статусе skipped). Эти проверки независимы от
+    # результатов тестов и должны давать свой сигнал всегда.
 
     steps:
       - name: Checkout
@@ -574,7 +583,6 @@ jobs:
     name: i18n EN/RU balance
     runs-on: ubuntu-latest
     timeout-minutes: 5
-    needs: [test-ubuntu-fallback]
 
     steps:
       - name: Checkout
@@ -603,7 +611,6 @@ jobs:
     name: WebUI static checks (IIFE guard)
     runs-on: ubuntu-latest
     timeout-minutes: 5
-    needs: [test-ubuntu-fallback]
 
     steps:
       - name: Checkout

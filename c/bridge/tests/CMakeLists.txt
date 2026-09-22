@@ -54,7 +54,7 @@ else()
 endif()
 
 # C standard для bridge.c
-target_compile_features(test_batch_n_tokens PRIVATE C99)
+target_compile_features(test_batch_n_tokens PRIVATE c_std_99)
 
 # ============================================================
 # test_batched_batch — Round 15.1 regression test для build_batched_batch
@@ -72,7 +72,7 @@ target_include_directories(test_batched_batch PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/../..
 )
 target_link_libraries(test_batched_batch PRIVATE ${COMMON_LIB})
-target_compile_features(test_batched_batch PRIVATE C99)
+target_compile_features(test_batched_batch PRIVATE c_std_99)
 
 # ============================================================
 # test_abort_api — Round 31 #6: standalone unit tests для abort API.
@@ -94,7 +94,7 @@ target_include_directories(test_abort_api PRIVATE
 # Standalone build (по умолчанию). T3-T6 требуют libllama.
 target_compile_definitions(test_abort_api PRIVATE TEST_ABORT_STANDALONE)
 target_link_libraries(test_abort_api PRIVATE pthread)
-target_compile_features(test_abort_api PRIVATE C99)
+target_compile_features(test_abort_api PRIVATE c_std_99)
 
 # Smoke test target (alias для удобства) — обновлён для запуска ВСЕХ тестов
 add_custom_target(bridge-tests
@@ -116,4 +116,4 @@ add_custom_target(bridge-tests
 add_executable(test_embeddings_mode
     test_embeddings_mode.c
 )
-target_compile_features(test_embeddings_mode PRIVATE C99)
+target_compile_features(test_embeddings_mode PRIVATE c_std_99)

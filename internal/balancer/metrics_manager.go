@@ -44,6 +44,66 @@ func (mm *MetricsManager) GetLlamaCppMetrics(backendID string) *types.LlamaCppMe
 	return mm.llamaMetrics[backendID]
 }
 
+// SnapshotBackendMetrics — КОПИЯ метрик бэкенда (под RLock).
+//
+// R66d (2026-09-22): читатели годами делали так —
+//
+//	mm.mu.RLock()
+//	m := mm.metrics[id]
+//	mm.mu.RUnlock()
+//	for _, rm := range m.Ollama.RunningModels { ... }
+//
+// — и работали с уже разблокированным указателем. Писатели (heartbeat агента,
+// updateRunningModelInMetrics, updateLlamaCppRunningModelInMetrics) мутируют
+// те же срезы под Lock, поэтому такой range — настоящая гонка данных:
+// -race ловил её как
+//
+//	Write at ... updateRunningModelInMetrics proxy_request.go:1210
+//	Previous read at ... backendHasModel backend_selector.go:445
+//
+// Возвращаем копию: types.BackendMetrics не содержит мьютексов (копирование
+// по значению безопасно), срезы копируем отдельно, чтобы append у писателя
+// не менял данные под читателем.
+func (mm *MetricsManager) SnapshotBackendMetrics(backendID string) (*types.BackendMetrics, bool) {
+	mm.mu.RLock()
+	defer mm.mu.RUnlock()
+	m, ok := mm.metrics[backendID]
+	if !ok || m == nil {
+		return nil, false
+	}
+	cp := *m
+	if len(m.Ollama.RunningModels) > 0 {
+		cp.Ollama.RunningModels = append([]types.RunningModel(nil), m.Ollama.RunningModels...)
+	}
+	if len(m.LlamaCpp.LoadedModels) > 0 {
+		cp.LlamaCpp.LoadedModels = append([]types.LlamaCppModel(nil), m.LlamaCpp.LoadedModels...)
+	}
+	if len(m.Models) > 0 {
+		cp.Models = append([]string(nil), m.Models...)
+	}
+	if len(m.WarmingUpModels) > 0 {
+		cp.WarmingUpModels = append([]string(nil), m.WarmingUpModels...)
+	}
+	return &cp, true
+}
+
+// SnapshotLlamaCppMetrics — КОПИЯ llama.cpp-метрик бэкенда (под RLock).
+// См. комментарий к SnapshotBackendMetrics: LoadedModels дописывается
+// писателями на месте, поэтому отдавать наружу живой указатель нельзя.
+func (mm *MetricsManager) SnapshotLlamaCppMetrics(backendID string) (*types.LlamaCppMetrics, bool) {
+	mm.mu.RLock()
+	defer mm.mu.RUnlock()
+	lm, ok := mm.llamaMetrics[backendID]
+	if !ok || lm == nil {
+		return nil, false
+	}
+	cp := *lm
+	if len(lm.LoadedModels) > 0 {
+		cp.LoadedModels = append([]types.LlamaCppModel(nil), lm.LoadedModels...)
+	}
+	return &cp, true
+}
+
 // IsModelRunningOnBackend проверяет, запущена ли модель на бэкенде (учитывая тип бэкенда).
 func (mm *MetricsManager) IsModelRunningOnBackend(backendID, modelName string, engine types.BackendEngine) bool {
 	mm.mu.RLock()

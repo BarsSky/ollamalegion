@@ -4,6 +4,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -197,8 +198,8 @@ func TestQueueManagerProcessedCount(t *testing.T) {
 	queueMgr := NewQueueManager(nil, 10, 0, 5*time.Second)
 	defer queueMgr.Stop()
 
-	// Начальное значение
-	assert.Equal(t, int64(0), queueMgr.processed)
+	// Начальное значение (R66d: processed — atomic int64, читаем атомарно)
+	assert.Equal(t, int64(0), atomic.LoadInt64(&queueMgr.processed))
 }
 
 // TestNewQueueManager - проверка создания QueueManager

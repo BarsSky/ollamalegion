@@ -308,9 +308,7 @@ func (apm *AutoPullManager) findBackendWithModelReady(model string) string {
 		if state.Backend.Status != types.StatusHealthy {
 			continue
 		}
-		apm.proxy.metricsMgr.mu.RLock()
-		metrics, ok := apm.proxy.metricsMgr.metrics[id]
-		apm.proxy.metricsMgr.mu.RUnlock()
+		metrics, ok := apm.proxy.metricsMgr.SnapshotBackendMetrics(id)
 		if !ok {
 			continue
 		}
@@ -374,9 +372,7 @@ func (apm *AutoPullManager) findBestBackendForPull(model string) string {
 			continue
 		}
 
-		apm.proxy.metricsMgr.mu.RLock()
-		metrics, hasMetrics := apm.proxy.metricsMgr.metrics[id]
-		apm.proxy.metricsMgr.mu.RUnlock()
+		metrics, hasMetrics := apm.proxy.metricsMgr.SnapshotBackendMetrics(id)
 
 		score := 0.0
 		if hasMetrics {

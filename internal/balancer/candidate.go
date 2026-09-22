@@ -84,9 +84,7 @@ func (p *Proxy) expandCandidates(modelName string, allowedTypes []types.BackendT
 			loadRatio = float64(active) / float64(maxReqs)
 		}
 
-		p.metricsMgr.mu.RLock()
-		metrics, hasMetrics := p.metricsMgr.metrics[id]
-		p.metricsMgr.mu.RUnlock()
+		metrics, hasMetrics := p.metricsMgr.SnapshotBackendMetrics(id)
 		if !hasMetrics {
 			fallback = append(fallback, id)
 			continue
@@ -155,9 +153,7 @@ func (p *Proxy) dispatchWithModelLoad(model string) (string, time.Time) {
 			if !ok {
 				continue
 			}
-			p.metricsMgr.mu.RLock()
-			metrics, hasMetrics := p.metricsMgr.metrics[backendID]
-			p.metricsMgr.mu.RUnlock()
+			metrics, hasMetrics := p.metricsMgr.SnapshotBackendMetrics(backendID)
 			if !hasMetrics {
 				continue
 			}

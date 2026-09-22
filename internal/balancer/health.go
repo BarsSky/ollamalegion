@@ -64,6 +64,15 @@ func NewHealthChecker(proxy *Proxy, interval time.Duration, threshold int) *Heal
 
 // Start - запуск цикла проверок
 func (hc *HealthChecker) Start() {
+	// R66d (2026-09-22): wg.Add(1) обязан быть ЗДЕСЬ, до запуска горутины.
+	// Раньше он вызывался внутри checkLoop, то есть параллельно с wg.Wait()
+	// в Stop() — это и запрещено в sync.WaitGroup (Add после/во время Wait),
+	// и ловилось детектором гонок как
+	//   Write at ... HealthChecker.Stop health.go:73 (wg.Wait)
+	//   Previous read at ... checkLoop health.go:78 (wg.Add)
+	// Плюс был реальный баг: Stop(), вызванный до того, как горутина успела
+	// стартовать, возвращался мгновенно, не дожидаясь проверки.
+	hc.wg.Add(1)
 	go hc.checkLoop()
 }
 
@@ -75,7 +84,6 @@ func (hc *HealthChecker) Stop() {
 
 // checkLoop - основной цикл проверок
 func (hc *HealthChecker) checkLoop() {
-	hc.wg.Add(1)
 	defer hc.wg.Done()
 
 	ticker := time.NewTicker(hc.interval)
@@ -232,11 +240,24 @@ func (hc *HealthChecker) performCheck(backend *types.Backend) *HealthCheckResult
 }
 
 // GetStatus - получение статуса бэкенда
+// GetStatus возвращает КОПИЮ статуса бэкенда.
+//
+// R66d (2026-09-22): раньше возвращался живой указатель из hc.results, а
+// checkBackend() пишет те же поля (LastCheck/LastLatency/Healthy) под hc.mu уже
+// после того, как вызывающий отпустил мьютекс, — то есть чтение статуса из
+// другого потока было гонкой данных (-race: Write at health.go:135/140 by
+// checkLoop, Previous read at tests/noagent_test.go:601). Копия сохраняет
+// прежний API (указатель) и убирает окно.
 func (hc *HealthChecker) GetStatus(backendID string) *HealthStatus {
 	hc.mu.Lock()
 	defer hc.mu.Unlock()
 
-	return hc.results[backendID]
+	status, ok := hc.results[backendID]
+	if !ok || status == nil {
+		return nil
+	}
+	cp := *status
+	return &cp
 }
 
 // MarkUnhealthy — пометить backend как unhealthy (вызывается из proxy при persistent
@@ -269,14 +290,21 @@ func (hc *HealthChecker) MarkUnhealthy(backendID string, reason string) {
 	}
 }
 
-// GetAllStatuses - получение всех статусов
+// GetAllStatuses - получение всех статусов.
+//
+// R66d (2026-09-22): как и GetStatus, отдаём КОПИИ — иначе вызывающий
+// (WebUI/health-handler) читает поля параллельно с записью из checkBackend.
 func (hc *HealthChecker) GetAllStatuses() map[string]*HealthStatus {
 	hc.mu.Lock()
 	defer hc.mu.Unlock()
 
-	result := make(map[string]*HealthStatus)
+	result := make(map[string]*HealthStatus, len(hc.results))
 	for id, status := range hc.results {
-		result[id] = status
+		if status == nil {
+			continue
+		}
+		cp := *status
+		result[id] = &cp
 	}
 	return result
 }

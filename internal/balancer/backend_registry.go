@@ -183,8 +183,11 @@ func (p *Proxy) findHealthyBackendForModel(model, excludeID string) string {
 			continue
 		}
 
-		// Проверяем, есть ли модель на бэкенде
-		metrics, hasMetrics := p.metricsMgr.metrics[id]
+		// Проверяем, есть ли модель на бэкенде.
+		// R66d (2026-09-22): читаем через снапшот — раньше указатель брался
+		// из карты без блокировки, и range по RunningModels гонял с писателями
+		// (heartbeat агента / updateRunningModelInMetrics).
+		metrics, hasMetrics := p.metricsMgr.SnapshotBackendMetrics(id)
 		if hasMetrics {
 			found := false
 			for _, rm := range metrics.Ollama.RunningModels {

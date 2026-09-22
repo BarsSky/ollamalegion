@@ -217,9 +217,7 @@ func (p *Proxy) findBackendWithModelExcluding(modelName string, exclude map[stri
 			continue
 		}
 
-		p.metricsMgr.mu.RLock()
-		metrics, hasMetrics := p.metricsMgr.metrics[id]
-		p.metricsMgr.mu.RUnlock()
+		metrics, hasMetrics := p.metricsMgr.SnapshotBackendMetrics(id)
 		if !hasMetrics {
 			continue
 		}
@@ -262,9 +260,7 @@ func (p *Proxy) modelIsRunningOnBackendUnsafe(backendID, modelName string) bool 
 	if modelName == "" {
 		return false
 	}
-	p.metricsMgr.mu.RLock()
-	metrics, ok := p.metricsMgr.metrics[backendID]
-	p.metricsMgr.mu.RUnlock()
+	metrics, ok := p.metricsMgr.SnapshotBackendMetrics(backendID)
 	if !ok {
 		return false
 	}
@@ -350,9 +346,7 @@ func (p *Proxy) findLessLoadedBackendWithModel(modelName, excludeBackendID strin
 			continue
 		}
 
-		p.metricsMgr.mu.RLock()
-		metrics, hasMetrics := p.metricsMgr.metrics[id]
-		p.metricsMgr.mu.RUnlock()
+		metrics, hasMetrics := p.metricsMgr.SnapshotBackendMetrics(id)
 		if !hasMetrics {
 			continue
 		}
@@ -425,9 +419,7 @@ func (p *Proxy) findLessLoadedBackendAny(modelName, excludeBackendID string, all
 	if bestBackendID != "" && modelName != "" {
 		state := p.backends[bestBackendID]
 		if state != nil {
-			p.metricsMgr.mu.RLock()
-			metrics, hasMetrics := p.metricsMgr.metrics[bestBackendID]
-			p.metricsMgr.mu.RUnlock()
+			metrics, hasMetrics := p.metricsMgr.SnapshotBackendMetrics(bestBackendID)
 			if hasMetrics && !p.backendHasModel(metrics, modelName) {
 				p.warmupModel(bestBackendID, state.Backend.Host, state.Backend.OllamaPort, modelName)
 				logger.Get().Infow("rebalance: triggering model warmup on new backend",
@@ -510,9 +502,7 @@ func (p *Proxy) findBackendWithModel(modelName string, allowedTypes []types.Back
 			continue
 		}
 
-		p.metricsMgr.mu.RLock()
-		metrics, hasMetrics := p.metricsMgr.metrics[id]
-		p.metricsMgr.mu.RUnlock()
+		metrics, hasMetrics := p.metricsMgr.SnapshotBackendMetrics(id)
 
 		if !hasMetrics {
 			continue
@@ -569,7 +559,7 @@ func (p *Proxy) findFreeBackendForModelUnsafe(model string, allowedTypes []types
 		if active > 0 || (maxReqs > 0 && active >= maxReqs) {
 			continue
 		}
-		metrics, ok := p.metricsMgr.metrics[id]
+		metrics, ok := p.metricsMgr.SnapshotBackendMetrics(id)
 		if !ok || metrics.GPU.MemoryTotal == 0 {
 			continue
 		}
@@ -588,7 +578,7 @@ func (p *Proxy) findFreeBackendForModelUnsafe(model string, allowedTypes []types
 
 // checkModelReadyUnsafe — готова ли модель на бэкенде (без блокировки)
 func (p *Proxy) checkModelReadyUnsafe(backendID, model string) bool {
-	metrics, ok := p.metricsMgr.metrics[backendID]
+	metrics, ok := p.metricsMgr.SnapshotBackendMetrics(backendID)
 	if !ok {
 		return false
 	}

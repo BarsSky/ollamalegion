@@ -75,7 +75,10 @@ func (p *Proxy) GetClusterState() *types.ClusterState {
 			EffectiveTimeout:      effectiveTimeout,
 		}
 
-		if agentMetrics, ok := p.metricsMgr.metrics[id]; ok {
+		// R66d (2026-09-22): снапшот под RLock. Раньше указатель брался из карты
+		// без блокировки, а ниже идёт range по RunningModels — гонка с писателями
+		// (heartbeat/updateRunningModelInMetrics), которую ловил -race.
+		if agentMetrics, ok := p.metricsMgr.SnapshotBackendMetrics(id); ok {
 			// Сохраняем конфигурационные поля из backendConfig до перезаписи agent-метрик
 			savedHost := metrics.Host
 			savedOllamaPort := metrics.OllamaPort
@@ -106,7 +109,10 @@ func (p *Proxy) GetClusterState() *types.ClusterState {
 			// llama.cpp бэкендах (его LoadedModels и т.д.). Без этого merge
 			// в WebUI и API /api/v1/gguf/backends список моделей llama.cpp
 			// бэкенда был бы пустым.
-			if lm, ok := p.metricsMgr.llamaMetrics[id]; ok && lm != nil {
+			// R66d (2026-09-22): и здесь снапшот — LoadedModels дописывается
+			// писателями на месте под metricsMgr.mu, а этот код работает уже
+			// после разблокировки.
+			if lm, ok := p.metricsMgr.SnapshotLlamaCppMetrics(id); ok {
 				metrics.LlamaCpp = *lm
 			} else {
 				metrics.LlamaCpp = savedLlamaCpp
@@ -244,11 +250,15 @@ func (p *Proxy) GetNCtxReloadCoordinator() *NCtxReloadCoordinator {
 
 // GetQueueStats - получение статистики очереди
 func (p *Proxy) GetQueueStats() QueueStats {
-	processed := p.queueMgr.processed
+	// R66d (2026-09-22): processed читаем атомарно — так его пишет
+	// recordCompleted (atomic.AddInt64). Раньше здесь было обычное чтение поля,
+	// которое инкрементировалось под qm.mu, и -race ловил это как гонку
+	// (Read at cluster_state.go:247 vs Write in QueueManager.recordCompleted).
+	processed := atomic.LoadInt64(&p.queueMgr.processed)
 	workers := p.queueMgr.numWorkers
 	timeout := p.queueMgr.timeout
 	// NOTE: не держим p.queueMgr.mu — эти поля либо init-only (numWorkers,
-	// timeout), либо atomic int64 (processed). Reading без lock безопасно.
+	// timeout), либо atomic (processed).
 	// Round 34 bug: я случайно добавил p.queueMgr.mu.Unlock() без matching
 	// Lock() → Go runtime panic "sync: unlock of unlocked mutex" через
 	// 75 минут uptime (crashed, webui 502, ECONNREFUSED для Cline).

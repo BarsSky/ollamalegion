@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/http"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"ollama-loadbalancer/pkg/logger"
@@ -25,7 +26,7 @@ type QueueManager struct {
 	mu         sync.Mutex
 	maxSize    int
 	numWorkers int
-	processed  int64
+	processed  int64 // atomic (R66d): recordCompleted пишет из worker-горутин, GetQueueStats читает
 	timeout    time.Duration
 	ctx        context.Context
 	cancel     context.CancelFunc
@@ -438,10 +439,10 @@ func (qm *QueueManager) removeProcessing(req *QueuedRequest) {
 func (qm *QueueManager) recordCompleted(req *QueuedRequest, dispatchType string, workerID int) {
 	now := time.Now()
 	waitTimeMs := now.Sub(req.Enqueued).Milliseconds()
-	qm.mu.Lock()
-	qm.processed++
-	processed := qm.processed
-	qm.mu.Unlock()
+	// R66d (2026-09-22): счётчик атомарный. Раньше инкремент шёл под qm.mu,
+	// а чтение в GetQueueStats (cluster_state.go) — без блокировки, что давало
+	// DATA RACE при параллельных worker'ах.
+	processed := atomic.AddInt64(&qm.processed, 1)
 
 	qm.historyMu.Lock()
 	qm.completedHistory = append(qm.completedHistory, &CompletedRequest{

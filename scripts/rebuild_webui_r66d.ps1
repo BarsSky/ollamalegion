@@ -32,6 +32,20 @@ $composePath = Join-Path $repoRoot "deployments\$composeFile"
 $gitCommit = (git rev-parse --short HEAD)
 $buildDate = (Get-Date).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ")
 
+# R66c (2026-09-22): тег пиним ДО сборки. Раньше порядок был обратный, и
+# `docker compose build` собирал образ под СТАРЫМ тегом из compose-файла
+# (docker compose build использует image: из файла, а не -t), после чего
+# `up -d` не находил нужный тег локально, пытался его pull'ить (pull access
+# denied для локального имени) и пересобирал образ второй раз. Побочный эффект:
+# старый тег молча начинал указывать на новое содержимое.
+# Образ в compose прописан строкой (не через ${VAR}) — поэтому и правим файл.
+Write-Host "[webui] Pinning image tag in $composeFile ..." -ForegroundColor Cyan
+$content = Get-Content $composePath -Raw
+$pattern = '(?m)^(\s*image:\s*ollama-legion/webui:)\S+'
+if ($content -notmatch $pattern) { throw "не нашёл строку 'image: ollama-legion/webui:...' в $composePath" }
+$content = [regex]::Replace($content, $pattern, "`${1}$Tag")
+Set-Content -Path $composePath -Value $content -NoNewline
+
 if (-not $SkipBuild) {
     Write-Host "[webui] Building ${imageName}:${Tag} (commit $gitCommit) ..." -ForegroundColor Cyan
     $env:WEBUI_VERSION = $Tag
@@ -46,15 +60,6 @@ if (-not $SkipBuild) {
         Pop-Location
     }
 }
-
-# Образ в compose прописан строкой (не через ${VAR}) — обновляем тег в файле,
-# иначе compose пересоздаст контейнер на старом образе.
-Write-Host "[webui] Pinning image tag in $composeFile ..." -ForegroundColor Cyan
-$content = Get-Content $composePath -Raw
-$pattern = '(?m)^(\s*image:\s*ollama-legion/webui:)\S+'
-if ($content -notmatch $pattern) { throw "не нашёл строку 'image: ollama-legion/webui:...' в $composePath" }
-$content = [regex]::Replace($content, $pattern, "`${1}$Tag")
-Set-Content -Path $composePath -Value $content -NoNewline
 
 Push-Location (Join-Path $repoRoot "deployments")
 try {

@@ -322,7 +322,7 @@ services:
         VERSION: ${WEBUI_VERSION:-dev}
         GIT_COMMIT: ${WEBUI_GIT_COMMIT:-unknown}
         BUILD_DATE: ${WEBUI_BUILD_DATE:-unknown}
-    image: ollama-legion/webui:r66-submodule-v8  # R66b: UI-фиксы, уникальные id визарда (wiz-*), мёртвые typeof-ветки убраны. Требует ?v=R66c.
+    image: ollama-legion/webui:r66-submodule-v10  # R66b: UI-фиксы, уникальные id визарда (wiz-*), мёртвые typeof-ветки убраны. Требует ?v=R66c.
     container_name: ol-bundled-webui
     restart: unless-stopped
     ports:

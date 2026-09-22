@@ -17,6 +17,7 @@ package agent
 
 import (
 	"os"
+	"runtime"
 	"testing"
 	"time"
 
@@ -206,6 +207,14 @@ func TestDetectPlatformMode_WithProcNvidiaVersion(t *testing.T) {
 // хотя бы не падает в ModeGPU, если файлы отсутствуют (актуально для CI).
 // Этот тест просто гарантирует graceful fallback.
 func TestDetectPlatformMode_NoGPUOnLinux(t *testing.T) {
+	// R66c (2026-09-22): тест по смыслу — «Linux БЕЗ GPU» (см. имя и
+	// комментарий выше). На self-hosted Windows-раннере CI=true и GPU реально
+	// есть, поэтому detectPlatformMode() возвращает ModeGPU и тест падал
+	// (job test-self-hosted: TestDetectPlatformMode_NoGPUOnLinux).
+	// Ограничиваем проверку Linux — ровно та среда, для которой она написана.
+	if runtime.GOOS != "linux" {
+		t.Skipf("проверка про Linux без GPU, текущая ОС: %s", runtime.GOOS)
+	}
 	if os.Getenv("CI") == "" {
 		// На dev-машине может быть GPU — пропускаем, чтобы не было flaky.
 		t.Skip("Запускаем только в CI (нет GPU в окружении)")

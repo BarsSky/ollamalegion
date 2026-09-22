@@ -61,9 +61,11 @@ target_include_directories(test_batch_n_tokens PRIVATE
 # stdc++ нужен, потому что llama.cpp написан на C++, а тест — на C.
 if(DEFINED COMMON_LIB)
     if(DEFINED LLAMA_LIB)
+        # stdc++ — llama.cpp написан на C++; gomp — ggml-cpu собран с OpenMP
+        # (иначе линковка падает на GOMP_barrier/GOMP_parallel/omp_get_*).
         target_link_libraries(test_batch_n_tokens PRIVATE
             -Wl,--start-group ${COMMON_LIB} ${LLAMA_LIB} ${GGML_LIBS} -Wl,--end-group
-            stdc++ m pthread)
+            stdc++ m pthread gomp)
     else()
         target_link_libraries(test_batch_n_tokens PRIVATE ${COMMON_LIB})
     endif()

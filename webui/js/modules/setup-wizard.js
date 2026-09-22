@@ -365,7 +365,7 @@
             '<div class="wizard-import-box">' +
             '<p>' + (window.I18N ? I18N.t('wizard.import_desc') : 'If you have an existing configuration file, you can import it:') + '</p>' +
             '<button class="btn btn-secondary" id="wizardImportBtn2">' +
-            '📂 ' + (window.I18N ? I18N.t('wizard.import') : 'Import Configuration') + '</button>' +
+            (window.I18N ? I18N.t('wizard.import') : '📂 Import Configuration') + '</button>' +
             '</div>' +
             '</div>';
     }

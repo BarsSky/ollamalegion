@@ -64,8 +64,14 @@ func TestGGUFBackendProxy_HFTokenPropagation(t *testing.T) {
 	defer resp.Body.Close()
 
 	assert.Equal(t, http.StatusOK, resp.StatusCode)
-	assert.Equal(t, "hf_test_token_123", receivedHeaders.Get("X-HF-Token"))
-	assert.Equal(t, "Bearer hf_auth_token_456", receivedHeaders.Get("Authorization"))
+	// R66c (2026-09-22): в сообщениях печатаем ВСЕ полученные заголовки — этот
+	// тест плавал в Linux-CI (падал в ~1 прогоне из 3, проходил локально и в
+	// изоляции) и по обезличенному «expected Bearer ..., actual ""» нельзя
+	// было понять, дошёл ли запрос вообще до стаба и что именно пришло.
+	assert.Equal(t, "hf_test_token_123", receivedHeaders.Get("X-HF-Token"),
+		"стаб получил заголовки: %v", receivedHeaders)
+	assert.Equal(t, "Bearer hf_auth_token_456", receivedHeaders.Get("Authorization"),
+		"стаб получил заголовки: %v", receivedHeaders)
 }
 
 // TestGGUFBackendProxy_RewritesAlreadyInProgress проверяет, что прокси

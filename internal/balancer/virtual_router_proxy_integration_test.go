@@ -139,7 +139,19 @@ func TestProxyServeHTTP_VirtualRouter_NonVirtualModel_FallsThrough(t *testing.T)
 	host, port, _ := parseBackendHostPort(addr)
 
 	// virtual_router mode + VirtualRouter set, но model не в registry.
-	proxy := newProxyWithCleanup(t, createTestConfig())
+	cfg := createTestConfig()
+	// R66c (2026-09-22): «обычный» backend описываем В КОНФИГЕ до NewProxy.
+	// Прямая запись proxy.backends["test-backend"] после NewProxy — гонка с
+	// фоновым llamaCppMetricsPoller, который читает те же структуры через
+	// GetAllBackends под p.mu (DATA RACE: write virtual_router_proxy_integration_test.go:158
+	// vs read backend_registry.go:395).
+	cfg.Backends = append(cfg.Backends, types.Backend{
+		ID:         "test-backend",
+		Name:       "test",
+		Host:       host,
+		OllamaPort: port,
+	})
+	proxy := newProxyWithCleanup(t, cfg)
 	proxy.SetQueueManagerProxy()
 	defer proxy.queueMgr.Stop()
 	proxy.config.Balancing.OperatingMode = string(types.OperatingModeVirtualRouter)
@@ -153,17 +165,6 @@ func TestProxyServeHTTP_VirtualRouter_NonVirtualModel_FallsThrough(t *testing.T)
 		ModelName:   "physical",
 	})
 	proxy.SetVirtualRouter(NewVirtualRouter(registry, proxy))
-
-	// Add a "regular" backend in proxy.backends for the standard flow.
-	proxy.backends["test-backend"] = &BackendState{
-		Backend: &types.Backend{
-			ID:         "test-backend",
-			Name:       "test",
-			Host:       host,
-			OllamaPort: port,
-		},
-		ActiveReqs: 0,
-	}
 
 	// Request with NON-virtual model — должен fall through к стандартному flow.
 	body := bytes.NewReader([]byte(`{"model":"some-regular-model","prompt":"hi","stream":false}`))

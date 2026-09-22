@@ -81,9 +81,11 @@ func r45BuildProxyWithFakeCppWorker(t *testing.T, fake *r45FakeCppWorker) (*Prox
 			Status:        types.StatusHealthy,
 		},
 	}
+	// R66c (2026-09-22): proxy.llamaCppRouter и proxy.backends заполняет сам
+	// NewProxy из cfg. Прямая запись этих полей после NewProxy — гонка с
+	// фоновым llamaCppMetricsPoller (стартует внутри NewProxy и читает
+	// p.llamaCppRouter / p.backends через GetAllBackends под p.mu).
 	proxy := newProxyWithCleanup(t, cfg)
-	proxy.llamaCppRouter = &LlamaCppRouter{proxy: proxy}
-	proxy.backends["fake-1"] = &BackendState{Backend: &cfg.Backends[0]}
 	// R45 fix test scaffolding: NewProxy auto-starts llamaCppMetricsPoller
 	// (see proxy.go:293). Stop it here so the test can drive a single
 	// deterministic pollAll() without racing the auto-started goroutine.
@@ -91,6 +93,27 @@ func r45BuildProxyWithFakeCppWorker(t *testing.T, fake *r45FakeCppWorker) (*Prox
 		proxy.llamaCppMetricsPoller.Stop()
 	}
 	return proxy, ts
+}
+
+// r45LlamaMetrics — снимок llamaMetrics[id] под metricsMgr.mu.
+//
+// R66c (2026-09-22): фоновый llamaCppMetricsPoller пишет
+// metricsMgr.llamaMetrics[id] под metricsMgr.mu (llamacpp_metrics_poller.go),
+// поэтому читать саму структуру можно только под тем же lock'ом. Прямое
+// чтение полей (lm := proxy.metricsMgr.llamaMetrics["fake-1"]) детектор гонок
+// ловил как DATA RACE с pollLoadingProgress/pollBackend. Возвращаем копию,
+// чтобы ассерты дальше работали без удержания lock'а.
+func r45LlamaMetrics(proxy *Proxy, backendID string) (*types.LlamaCppMetrics, bool) {
+	proxy.metricsMgr.mu.RLock()
+	defer proxy.metricsMgr.mu.RUnlock()
+	lm, ok := proxy.metricsMgr.llamaMetrics[backendID]
+	if !ok || lm == nil {
+		return nil, false
+	}
+	cp := *lm
+	cp.LoadedModels = append([]types.LlamaCppModel(nil), lm.LoadedModels...)
+	cp.LoadingModels = append([]types.LlamaCppModel(nil), lm.LoadingModels...)
+	return &cp, true
 }
 
 // r45RealisticCppModelsJSON — actual /api/models response captured from the
@@ -157,7 +180,7 @@ func TestR45_Poller_DecodesContextSize(t *testing.T) {
 	// setup. The cache assertion below is the real R45 regression
 	// check; request count is a debug aid only.
 
-	lm, ok := proxy.metricsMgr.llamaMetrics["fake-1"]
+	lm, ok := r45LlamaMetrics(proxy, "fake-1")
 	if !ok || lm == nil {
 		t.Fatalf("expected metrics for fake-1, got ok=%v lm=%v", ok, lm)
 	}
@@ -256,7 +279,7 @@ func TestR45_Poller_BackwardCompat_CamelCase(t *testing.T) {
 	poller := newLlamaCppMetricsPoller(proxy)
 	poller.pollAll()
 
-	lm := proxy.metricsMgr.llamaMetrics["fake-1"]
+	lm, _ := r45LlamaMetrics(proxy, "fake-1")
 	if lm == nil || len(lm.LoadedModels) != 1 {
 		t.Fatalf("expected 1 loaded model entry, got %v", lm)
 	}
@@ -304,7 +327,7 @@ func TestR45_Poller_LoadingProgressFields(t *testing.T) {
 	poller := newLlamaCppMetricsPoller(proxy)
 	poller.pollAll()
 
-	lm := proxy.metricsMgr.llamaMetrics["fake-1"]
+	lm, _ := r45LlamaMetrics(proxy, "fake-1")
 	if lm == nil {
 		t.Fatal("expected metrics for fake-1")
 	}
@@ -352,7 +375,7 @@ func TestR65d_Poller_LoadingProgressSnakeCaseFallback(t *testing.T) {
 	poller := newLlamaCppMetricsPoller(proxy)
 	poller.pollAll()
 
-	lm := proxy.metricsMgr.llamaMetrics["fake-1"]
+	lm, _ := r45LlamaMetrics(proxy, "fake-1")
 	if lm == nil || len(lm.LoadingModels) != 1 {
 		t.Fatalf("expected 1 loading model, got %+v", lm)
 	}
@@ -383,15 +406,16 @@ func TestR45_Poller_BackendUnreachable(t *testing.T) {
 			Status:        types.StatusHealthy,
 		},
 	}
+	// R66c (2026-09-22): роутер и бэкенд создаёт NewProxy из cfg — прямых
+	// записей в proxy.llamaCppRouter / proxy.backends быть не должно (гонка
+	// с автостартующим llamaCppMetricsPoller).
 	proxy := newProxyWithCleanup(t, cfg)
-	proxy.llamaCppRouter = &LlamaCppRouter{proxy: proxy}
-	proxy.backends["dead-1"] = &BackendState{Backend: &cfg.Backends[0]}
 
 	poller := newLlamaCppMetricsPoller(proxy)
 	// Should not panic, should not block forever (5s HTTP timeout).
 	poller.pollAll()
 
-	lm := proxy.metricsMgr.llamaMetrics["dead-1"]
+	lm, _ := r45LlamaMetrics(proxy, "dead-1")
 	if lm != nil && len(lm.LoadedModels) > 0 {
 		t.Errorf("expected no loaded models when backend unreachable, got %d", len(lm.LoadedModels))
 	}

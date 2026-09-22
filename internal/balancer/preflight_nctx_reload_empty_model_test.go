@@ -54,7 +54,7 @@ func TestPreflightNCtxReload_EmptyModel_SkipsPreflight(t *testing.T) {
 
 	// Reload НЕ должен был вызваться (даже через 200ms wait).
 	time.Sleep(200 * time.Millisecond)
-	if got := len(*reloadCalls); got != 0 {
+	if got := reloadCalls.len(); got != 0 {
 		t.Errorf("expected 0 reload calls (empty modelName → skip preflight), got %d", got)
 	}
 }
@@ -96,8 +96,8 @@ func TestExecuteAsyncReload_EmptyModel_NoCall(t *testing.T) {
 	time.Sleep(200 * time.Millisecond)
 
 	// cppworker НЕ должен был получить POST /api/models/load (мы скипнули).
-	if got := len(*reloadCalls); got != 0 {
-		t.Errorf("executeAsyncReload(empty) должен skip reload, но cppworker получил %d вызов(ов): %v", got, *reloadCalls)
+	if got := reloadCalls.len(); got != 0 {
+		t.Errorf("executeAsyncReload(empty) должен skip reload, но cppworker получил %d вызов(ов): %v", got, reloadCalls.snapshot())
 	}
 }
 

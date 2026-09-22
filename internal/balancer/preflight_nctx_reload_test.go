@@ -17,16 +17,47 @@ import (
 	"ollama-loadbalancer/pkg/types"
 )
 
+// reloadCallLog — потокобезопасный журнал вызовов /api/models/reload|load.
+//
+// R66c (2026-09-22): раньше helper отдавал наружу сырой *[]string, который
+// append'ился из горутины HTTP-хендлера мока и читался из тестовой горутины
+// (reloadCalls.len()) — детектор гонок ловил это как DATA RACE
+// (write makeMockCppWorkerWithReload.func3 vs read в тесте). Теперь и запись,
+// и чтение идут через один mutex.
+type reloadCallLog struct {
+	mu    sync.Mutex
+	calls []string
+}
+
+func (l *reloadCallLog) add(payload map[string]interface{}) {
+	l.mu.Lock()
+	l.calls = append(l.calls, fmt.Sprintf("%v", payload))
+	l.mu.Unlock()
+}
+
+// snapshot — копия журнала (безопасно читать из тестовой горутины).
+func (l *reloadCallLog) snapshot() []string {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return append([]string(nil), l.calls...)
+}
+
+// len — количество вызовов reload (безопасно читать из тестовой горутины).
+func (l *reloadCallLog) len() int {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return len(l.calls)
+}
+
 // makeMockCppWorkerWithReload — создаёт мок cppworker, который:
 //  1. На /api/models возвращает модель с указанным currentNCtx
 //  2. На /api/models/reload записывает новый n_ctx и возвращает success
 //  3. На /v1/chat/completions возвращает фиксированный ответ
-func makeMockCppWorkerWithReload(t *testing.T, modelName string, initialNCtx int) (*httptest.Server, *atomic.Int64, *[]string) {
+func makeMockCppWorkerWithReload(t *testing.T, modelName string, initialNCtx int) (*httptest.Server, *atomic.Int64, *reloadCallLog) {
 	t.Helper()
 	var currentNCtx atomic.Int64
 	currentNCtx.Store(int64(initialNCtx))
-	var muReloadCalls sync.Mutex
-	var reloadCalls []string
+	reloadCalls := &reloadCallLog{}
 
 	mux := http.NewServeMux()
 
@@ -54,9 +85,7 @@ func makeMockCppWorkerWithReload(t *testing.T, modelName string, initialNCtx int
 		}
 		newNCtx, _ := payload["contextSize"].(float64)
 		currentNCtx.Store(int64(newNCtx))
-		muReloadCalls.Lock()
-		reloadCalls = append(reloadCalls, fmt.Sprintf("%v", payload))
-		muReloadCalls.Unlock()
+		reloadCalls.add(payload)
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(map[string]interface{}{
 			"status":       "reloaded",
@@ -77,9 +106,7 @@ func makeMockCppWorkerWithReload(t *testing.T, modelName string, initialNCtx int
 		if newNCtx > 0 {
 			currentNCtx.Store(int64(newNCtx))
 		}
-		muReloadCalls.Lock()
-		reloadCalls = append(reloadCalls, fmt.Sprintf("%v", payload))
-		muReloadCalls.Unlock()
+		reloadCalls.add(payload)
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusAccepted)
 		_ = json.NewEncoder(w).Encode(map[string]interface{}{
@@ -131,15 +158,12 @@ func makeMockCppWorkerWithReload(t *testing.T, modelName string, initialNCtx int
 	t.Cleanup(func() {
 		srv.Close()
 	})
-	return srv, &currentNCtx, &reloadCalls
+	return srv, &currentNCtx, reloadCalls
 }
 
 // buildProxyWithCppWorkerBackend создаёт минимальный Proxy с одним cppworker backend.
 func buildProxyWithCppWorkerBackend(t *testing.T, cppWorkerURL string, modelName string) *Proxy {
 	t.Helper()
-	cfg := &types.LoadBalancerConfig{}
-	p := newProxyWithCleanup(t, cfg)
-	// Используем internal API для добавления backend.
 	hostPort := strings.TrimPrefix(cppWorkerURL, "http://")
 	parts := strings.Split(hostPort, ":")
 	host := parts[0]
@@ -147,21 +171,28 @@ func buildProxyWithCppWorkerBackend(t *testing.T, cppWorkerURL string, modelName
 	if len(parts) > 1 {
 		fmt.Sscanf(parts[1], "%d", &port)
 	}
-	p.backends["test-backend"] = &BackendState{
-		Backend: &types.Backend{
-			ID:            "test-backend",
-			Type:          types.BackendTypeLlamaCpp,
-			Host:          host,
-			CppWorkerPort: port,
-			OllamaPort:    port,
+	// R66c (2026-09-22): бэкенд описываем В КОНФИГЕ до NewProxy, а не прямой
+	// записью p.backends["test-backend"] после. Прямая запись — гонка с
+	// фоновым llamaCppMetricsPoller, который стартует внутри NewProxy и читает
+	// те же структуры через GetAllBackends под p.mu:
+	//   WARNING: DATA RACE
+	//     Write at ... buildProxyWithCppWorkerBackend (preflight_nctx_reload_test.go:150)
+	//     Previous read at ... (*Proxy).GetAllBackends (backend_registry.go:397)
+	cfg := &types.LoadBalancerConfig{
+		Backends: []types.Backend{
+			{
+				ID:            "test-backend",
+				Type:          types.BackendTypeLlamaCpp,
+				Host:          host,
+				CppWorkerPort: port,
+				OllamaPort:    port,
+			},
 		},
 	}
+	p := newProxyWithCleanup(t, cfg)
 	// Заполняем llamaMetrics чтобы preflight видел loaded n_ctx.
 	// Конкретное значение ContextLength выставит buildProxyWithMockInitialCtx,
 	// который использует начальное значение из makeMockCppWorkerWithReload.
-	if p.metricsMgr == nil {
-		p.metricsMgr = NewMetricsManager()
-	}
 	p.metricsMgr.mu.Lock()
 	p.metricsMgr.llamaMetrics["test-backend"] = &types.LlamaCppMetrics{}
 	p.metricsMgr.mu.Unlock()
@@ -212,7 +243,7 @@ func TestPreflightNCtxReload_LoadedLessThanRequested(t *testing.T) {
 	}
 	// Reload должен был быть запущен.
 	time.Sleep(200 * time.Millisecond)
-	if len(*reloadCalls) == 0 {
+	if reloadCalls.len() == 0 {
 		t.Errorf("expected reload to be triggered when requested > loaded, got 0 reload calls")
 	}
 	// currentNCtx проверять нельзя — mock может быть sync (reload завершается мгновенно).
@@ -237,8 +268,8 @@ func TestPreflightNCtxReload_LoadedAlreadyEnough(t *testing.T) {
 	if got := currentNCtx.Load(); got != 16384 {
 		t.Errorf("currentNCtx should not change; got %d, want 16384", got)
 	}
-	if len(*reloadCalls) != 0 {
-		t.Errorf("expected 0 reload calls, got %d", len(*reloadCalls))
+	if reloadCalls.len() != 0 {
+		t.Errorf("expected 0 reload calls, got %d", reloadCalls.len())
 	}
 }
 
@@ -258,8 +289,8 @@ func TestPreflightNCtxReload_NoNumCtxInBody(t *testing.T) {
 	if got := currentNCtx.Load(); got != 4096 {
 		t.Errorf("currentNCtx should not change; got %d, want 4096", got)
 	}
-	if len(*reloadCalls) != 0 {
-		t.Errorf("expected 0 reload calls, got %d", len(*reloadCalls))
+	if reloadCalls.len() != 0 {
+		t.Errorf("expected 0 reload calls, got %d", reloadCalls.len())
 	}
 }
 

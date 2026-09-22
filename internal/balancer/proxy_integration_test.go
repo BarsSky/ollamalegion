@@ -123,15 +123,20 @@ func TestTwoClientsSameIP_DifferentSessions(t *testing.T) {
 		},
 	}
 
-	proxy := newProxyWithCleanup(t, cfg)
-	defer proxy.queueMgr.Stop()
-	proxy.UpdateMetrics("a", mkMetrics("a"))
 	// Тест проверяет Ollama-flow (SessionStickiness, два клиента с одним IP).
 	// При OperatingMode="" routeRequest сначала пробует LlamaCppRouter,
 	// который возвращает 503 "no llama.cpp backend available" — backend 'a'
-	// не имеет Type=llama_cpp. Отключаем llama.cpp роутер в тесте, чтобы
-	// flow шёл через основной Ollama-путь, как и задумывал автор теста.
-	proxy.llamaCppRouter = nil
+	// не имеет Type=llama_cpp. Фиксируем движок Ollama В КОНФИГЕ, чтобы flow
+	// шёл через основной Ollama-путь, как и задумывал автор теста.
+	//
+	// R66c (2026-09-22): раньше здесь стояло `proxy.llamaCppRouter = nil` ПОСЛЕ
+	// NewProxy. Прямая запись поля прокси — гонка с фоновым
+	// llamaCppMetricsPoller (write proxy_integration_test.go:134 vs read
+	// llamacpp_metrics_poller.go:126), детектор гонок ронял тест.
+	cfg.BackendEngine = types.EngineOllamaAPI
+	proxy := newProxyWithCleanup(t, cfg)
+	defer proxy.queueMgr.Stop()
+	proxy.UpdateMetrics("a", mkMetrics("a"))
 
 	b, _ := json.Marshal(map[string]interface{}{"model": "llama3.2:3b", "stream": true})
 
@@ -223,16 +228,17 @@ func TestLoadBalancing_MultipleClients(t *testing.T) {
 		},
 	}
 
+	// Тест нагрузочный (12 клиентов / 2 бэкенда), проверяет Ollama-flow.
+	// При OperatingMode="" routeRequest сначала пробует LlamaCppRouter,
+	// который вернёт 503 "no llama.cpp backend available" — backend'ы 'a','b'
+	// не имеют Type=llama_cpp. Фиксируем движок Ollama В КОНФИГЕ до NewProxy
+	// (R66c 2026-09-22: `proxy.llamaCppRouter = nil` после NewProxy — гонка с
+	// llamaCppMetricsPoller, см. TestTwoClientsSameIP_DifferentSessions).
+	cfg.BackendEngine = types.EngineOllamaAPI
 	proxy := newProxyWithCleanup(t, cfg)
 	defer proxy.queueMgr.Stop()
 	proxy.UpdateMetrics("a", mkMetrics("a"))
 	proxy.UpdateMetrics("b", mkMetrics("b"))
-	// Тест нагрузочный (12 клиентов / 2 бэкенда), проверяет Ollama-flow.
-	// При OperatingMode="" routeRequest сначала пробует LlamaCppRouter,
-	// который вернёт 503 "no llama.cpp backend available" — backend'ы 'a','b'
-	// не имеют Type=llama_cpp. Отключаем llama.cpp роутер, чтобы flow шёл
-	// через основной Ollama-путь, как и задумывал автор теста.
-	proxy.llamaCppRouter = nil
 
 	// R55.3: 12 запросов от 2 разных "клиентов" (Cline + OpenWebUI), по 6 каждый.
 	// Каждый клиент отправляет 6 concurrent — должно попасть в queue на его
@@ -416,10 +422,13 @@ func TestLoadBalancing_SameClientQueueFIFO(t *testing.T) {
 			Memory: types.MemoryLimits{MaxUsagePercent: 85},
 		},
 	}
+	// R66c (2026-09-22): движок Ollama задаём в конфиге до NewProxy вместо
+	// `proxy.llamaCppRouter = nil` после — прямая запись поля прокси гоняет с
+	// фоновым llamaCppMetricsPoller (см. TestTwoClientsSameIP_DifferentSessions).
+	cfg.BackendEngine = types.EngineOllamaAPI
 	proxy := newProxyWithCleanup(t, cfg)
 	defer proxy.queueMgr.Stop()
 	proxy.UpdateMetrics("b1", mkMetrics("b1"))
-	proxy.llamaCppRouter = nil
 
 	type result struct {
 		idx     int

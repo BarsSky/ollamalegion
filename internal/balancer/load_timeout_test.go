@@ -152,14 +152,20 @@ func TestPollLoadCompletionUntilLoaded_NeverLoads(t *testing.T) {
 // Polling should return success when state transitions to "loaded".
 func TestPollLoadCompletionUntilLoaded_TransitionFromLoadingToLoaded(t *testing.T) {
 	// Mock server: state transitions from "loading" to "loaded" after 2 polls.
-	state := "loading"
+	//
+	// R66c (2026-09-22): состояние читается из горутины HTTP-хендлера и
+	// пишется из тестовой горутины — обычная string-переменная давала
+	// DATA RACE (write load_timeout_test.go:177 vs read :162). atomic.Value
+	// даёт нужную happens-before связь и не меняет сценарий теста.
+	var state atomic.Value
+	state.Store("loading")
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/api/models" {
 			body := mockModelsBody{}
 			body.Models = append(body.Models, struct {
 				Name  string `json:"name"`
 				State string `json:"state"`
-			}{"test-model", state})
+			}{"test-model", state.Load().(string)})
 			w.Header().Set("Content-Type", "application/json")
 			json.NewEncoder(w).Encode(body)
 			return
@@ -174,7 +180,7 @@ func TestPollLoadCompletionUntilLoaded_TransitionFromLoadingToLoaded(t *testing.
 	// poll after the flip should succeed).
 	go func() {
 		time.Sleep(3 * time.Second)
-		state = "loaded"
+		state.Store("loaded")
 	}()
 
 	result := mm.pollLoadCompletionUntilLoaded(host, port, "test-backend", "test-model", 8*time.Second)

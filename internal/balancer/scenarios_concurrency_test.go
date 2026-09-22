@@ -323,8 +323,15 @@ func TestConcurrency_Scenario_LoadProvider_Concurrent(t *testing.T) {
 					return
 				default:
 				}
+				// R66c (2026-09-22): захватываем id/j в локальные копии.
+				// LoadProvider вызывается ПОЗЖЕ из другой горутины
+				// (virtualmodel.LeastLoadedSelector.Select → HTTP-хендлер),
+				// а переменные цикла продолжают меняться здесь — детектор
+				// гонок ловил это как DATA RACE
+				// (write scenarios_concurrency_test.go:320 vs read :327).
+				idSnap, jSnap := id, j
 				ll.SetLoadProvider(func(backendID string) (int, bool) {
-					return id*10 + j, true
+					return idSnap*10 + jSnap, true
 				})
 			}
 		}(i)

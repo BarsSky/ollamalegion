@@ -61,16 +61,19 @@ func TestR46_UpdateBackendStatus_StampsLastHealthCheck(t *testing.T) {
 // call updates the timestamp — health checks happen every 10s, so a
 // healthy backend has its LastHealthCheck refreshed each cycle.
 func TestR46_UpdateBackendStatus_StampsOnNoOpStatusChange(t *testing.T) {
+	// Set timestamp to a stale value (pre-R46 simulated state).
+	//
+	// R66c (2026-09-22): значение ставим В КОНФИГЕ до NewProxy, а не прямой
+	// записью p.backends["r46-2"].Backend.LastHealthCheck после. Прямая запись
+	// гоняет с фоновым llamaCppMetricsPoller, который читает те же структуры
+	// через GetAllBackends (backend_registry.go:397) под p.mu.
+	first := time.Now().UTC().Add(-time.Hour)
 	cfg := &types.LoadBalancerConfig{
 		Backends: []types.Backend{
-			{ID: "r46-2", Type: types.BackendTypeLlamaCpp, Status: types.StatusHealthy},
+			{ID: "r46-2", Type: types.BackendTypeLlamaCpp, Status: types.StatusHealthy, LastHealthCheck: first},
 		},
 	}
 	p := newProxyWithCleanup(t, cfg)
-
-	// Set timestamp to a stale value (pre-R46 simulated state).
-	first := time.Now().UTC().Add(-time.Hour)
-	p.backends["r46-2"].Backend.LastHealthCheck = first
 
 	// Same status (StatusHealthy → StatusHealthy). Pre-R46: still first.
 	p.UpdateBackendStatus("r46-2", types.StatusHealthy)

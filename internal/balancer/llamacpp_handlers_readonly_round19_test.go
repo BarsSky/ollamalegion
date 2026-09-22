@@ -7,9 +7,10 @@
 //
 // Uses an in-process cppworker stub (no real network) that serves
 // /api/models/files with the on-disk .gguf list. We test:
-//   T1: 1 loaded + 2 on disk → /api/tags returns 2 (dedup: model-A in both → 1 entry)
-//   T2: 0 loaded + 1 on disk → /api/tags returns 1
-//   T3: 1 loaded + 2 on disk → /v1/models returns 2 (dedup)
+//
+//	T1: 1 loaded + 2 on disk → /api/tags returns 2 (dedup: model-A in both → 1 entry)
+//	T2: 0 loaded + 1 on disk → /api/tags returns 1
+//	T3: 1 loaded + 2 on disk → /v1/models returns 2 (dedup)
 package balancer
 
 import (
@@ -91,9 +92,14 @@ func buildProxyWithStub(t *testing.T, files []stubFileEntry, loadedModels []type
 			Status:        types.StatusHealthy,
 		},
 	}
+	// R66c (2026-09-22): бэкенд и LlamaCppRouter создаёт сам NewProxy из cfg —
+	// писать их после NewProxy нельзя. Такая запись гоняет с фоновым
+	// llamaCppMetricsPoller, который уже стартовал внутри NewProxy и читает
+	// p.llamaCppRouter / p.backends (GetAllBackends под p.mu):
+	//   WARNING: DATA RACE
+	//     Write at ... buildProxyWithStub (write proxy.backends["stub-1"])
+	//     Previous read at ... (*Proxy).GetAllBackends (backend_registry.go:397)
 	proxy := newProxyWithCleanup(t, cfg)
-	proxy.llamaCppRouter = &LlamaCppRouter{proxy: proxy}
-	proxy.backends["stub-1"] = &BackendState{Backend: &cfg.Backends[0]}
 
 	if loadedModels != nil {
 		// Round 19 fix: пишем напрямую в llamaMetrics (где хранит cppworker-poller),

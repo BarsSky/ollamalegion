@@ -86,11 +86,16 @@ func TestLoadBalancing_DetailedStressReport(t *testing.T) {
 			Memory: types.MemoryLimits{MaxUsagePercent: 85},
 		},
 	}
+	// R66c (2026-09-22): движок Ollama задаём в конфиге ДО NewProxy вместо
+	// `proxy.llamaCppRouter = nil` после. Прямая запись поля прокси — гонка с
+	// фоновым llamaCppMetricsPoller (DATA RACE: write session_queue_stress_test.go:93
+	// vs read llamacpp_metrics_poller.go:126). С EngineOllamaAPI dispatch идёт
+	// только через OllamaRouter — то же, чего добивались обнулением роутера.
+	cfg.BackendEngine = types.EngineOllamaAPI
 	proxy := newProxyWithCleanup(t, cfg)
 	defer proxy.queueMgr.Stop()
 	proxy.UpdateMetrics("a", mkMetrics("a"))
 	proxy.UpdateMetrics("b", mkMetrics("b"))
-	proxy.llamaCppRouter = nil // route через Ollama-flow
 
 	// 2 clients × 6 requests = 12 total
 	type client struct {

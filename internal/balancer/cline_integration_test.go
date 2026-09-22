@@ -54,6 +54,23 @@ func TestHandleOpenAIChatCompletions_Cline_NormalizesContent(t *testing.T) {
 		}
 
 		body, _ := io.ReadAll(r.Body)
+
+		// R66c (2026-09-22): записываем тело ТОЛЬКО для inference-запроса.
+		//
+		// Фоновые горутины балансера (health-check, метрики) стучатся в тот же
+		// мок, попадают в эту ветку и перезаписывали receivedBody ПУСТЫМ телом
+		// (у probe нет body). Если такой probe приходит после чат-запроса, тест
+		// падал с «upstream received no body» — плавающее падение, которое
+		// воспроизводилось только в CI/Linux (локально на Windows порядок
+		// успевал сложиться иначе).
+		if !strings.HasPrefix(r.URL.Path, "/v1/chat/completions") &&
+			!strings.HasPrefix(r.URL.Path, "/api/chat") {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(`{"status":"ok"}`))
+			return
+		}
+
 		receivedMu.Lock()
 		receivedBody = body
 		receivedMu.Unlock()
@@ -171,7 +188,11 @@ func TestHandleOpenAIChatCompletions_Cline_NormalizesContent(t *testing.T) {
 	receivedMu.Unlock()
 
 	if len(body) == 0 {
-		t.Fatal("upstream received no body")
+		// R66c (2026-09-22): показываем, что именно ответил роутер. Без этого
+		// сообщение «upstream received no body» не давало понять причину
+		// (в CI на Linux тест падал именно так, а локально на Windows проходил).
+		t.Fatalf("upstream received no body (router: status=%d, handled=%v, body=%s)",
+			rec.Code, handled, rec.Body.String())
 	}
 
 	// Парсим то, что получил upstream

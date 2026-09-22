@@ -179,6 +179,19 @@ func TestHandleChat_NormalizesMultimodalContent(t *testing.T) {
 			return
 		}
 		body, _ := io.ReadAll(r.Body)
+
+		// R66c (2026-09-22): тело записываем только для inference-путей.
+		// Фоновые health/metrics-пробы балансера попадают в этот же мок и
+		// перезаписывали receivedBody пустым телом — из-за этого тест плавал
+		// («upstream received no body») на Linux-CI.
+		if !strings.HasPrefix(r.URL.Path, "/api/chat") &&
+			!strings.HasPrefix(r.URL.Path, "/v1/chat/completions") {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(`{"status":"ok"}`))
+			return
+		}
+
 		mu.Lock()
 		receivedBody = body
 		mu.Unlock()

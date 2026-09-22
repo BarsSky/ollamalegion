@@ -301,24 +301,25 @@ func (s *Server) monitorHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Пути для поиска monitor.html (сначала runtime, потом dev).
+	// Пути для поиска monitor.html.
 	//
 	// R66c (2026-09-22): канонический файл — webui/monitor.html; именно его
 	// копирует docker/balancer/Dockerfile в /app/webui/monitor.html. В списке
 	// его НЕ БЫЛО — handler искал только /app/monitor.html и legacy-копию
 	// cmd/monitor/monitor.html, которых в образе нет, поэтому GET /monitor в
 	// бандле всегда возвращал 404 «Monitor page not found», хотя файл в образе
-	// лежал. Канонический путь теперь первый в списке, а cmd/monitor остаётся
-	// как legacy-fallback для старой self-contained страницы.
-	paths := make([]string, 0, 6)
+	// лежал. Канонический путь теперь первый в списке.
+	//
+	// R66d (2026-09-22): legacy-копия cmd/monitor/monitor.html (55 КБ,
+	// последний раз правилась в v0.5.9, дубликат webui/monitor.html) удалена —
+	// её никто не отдавал и не собирал, а наличие в списке путей только путало:
+	// можно было править не тот файл. Остаётся /app/monitor.html как fallback
+	// для старых образов, куда страницу копировали в корень.
+	paths := make([]string, 0, 3)
 	if dir, ok := webuiStaticDir(); ok {
 		paths = append(paths, filepath.Join(dir, "monitor.html"))
 	}
-	paths = append(paths,
-		"/app/monitor.html",
-		"cmd/monitor/monitor.html",
-		"../cmd/monitor/monitor.html",
-	)
+	paths = append(paths, "/app/monitor.html")
 
 	var data []byte
 	var monitorPath string

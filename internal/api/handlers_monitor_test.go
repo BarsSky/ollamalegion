@@ -53,6 +53,10 @@ func setupTestServerForMonitorUI(t *testing.T) (*httptest.Server, string) {
 // образ канонический webui/monitor.html (/app/webui/monitor.html). В бандле
 // GET /monitor всегда отдавал 404 «Monitor page not found», хотя файл в образе
 // был. Теперь канонический путь ищется первым.
+//
+// R66d: сама legacy-копия cmd/monitor/monitor.html удалена (дубликат
+// webui/monitor.html, который никто не отдавал) — тест проверяет именно
+// каноническую страницу.
 func TestMonitorHandler_ServesCanonicalPage(t *testing.T) {
 	server, url := setupTestServerForMonitorUI(t)
 	defer server.Close()

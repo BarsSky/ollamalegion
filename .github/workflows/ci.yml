@@ -429,7 +429,7 @@ jobs:
 
       - name: Test tests (integration, short)
         if: always()
-        run: scripts/run_go_test.sh "tests/..." -tags llama_stub -timeout 120s -short -v ./tests/...
+        run: scripts/run_go_test.sh "tests/..." -tags llama_stub -timeout 300s -short -v ./tests/...
 
       - name: Go vet
         run: |

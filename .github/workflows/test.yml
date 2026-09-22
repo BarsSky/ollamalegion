@@ -99,7 +99,13 @@ jobs:
       - name: Test tests/... (integration, -short)
         # -short: пропускает e2e тесты, требующие docker-compose stack.
         # На ubuntu без Docker можно прогнать только короткие Go-тесты.
-        run: scripts/run_go_test.sh "tests/..." -tags llama_stub -timeout 120s -short -v ./tests/...
+        #
+        # R66c (2026-09-22): -timeout 120s → 300s. Пакет ./tests/... реально
+        # идёт ~160s (в нём по замыслу есть медленные проверки, например
+        # TestOpenAIChat_SlowFirstToken_HoldsConnection ~50s), поэтому шаг
+        # упирался в таймаут и падал без единого '--- FAIL:' — только
+        # 'FAIL ... 120.019s'. 300s совпадает с бюджетом self-hosted job'а.
+        run: scripts/run_go_test.sh "tests/..." -tags llama_stub -timeout 300s -short -v ./tests/...
 
       - name: go vet
         if: always()

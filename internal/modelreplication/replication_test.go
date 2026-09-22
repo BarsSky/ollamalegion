@@ -1,6 +1,7 @@
 package modelreplication
 
 import (
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -513,12 +514,16 @@ func TestEnsureInstances_ScaleUpAlreadyLoading(t *testing.T) {
 	g.mu.Unlock()
 	mgr.mu.Unlock()
 
-	warmupCount := 0
+	// R66c (2026-09-22): счётчик атомарный. scaleUpGroup вызывает warmup-колбэк
+	// из ОТДЕЛЬНОЙ горутины на каждый бэкенд (model_group.go:373-394), поэтому
+	// `warmupCount++` из нескольких горутин — гонка данных, которую ловил
+	// детектор гонок (TestEnsureInstances_ScaleUpAlreadyLoading).
+	var warmupCount atomic.Int64
 	mgr.SetFreeBackendFn(func(modelName string, targets []string) []string {
 		return []string{"backend-1", "backend-2"}
 	})
 	mgr.SetWarmupFn(func(backendID, modelName string) error {
-		warmupCount++
+		warmupCount.Add(1)
 		return nil
 	})
 
@@ -526,7 +531,7 @@ func TestEnsureInstances_ScaleUpAlreadyLoading(t *testing.T) {
 	time.Sleep(50 * time.Millisecond)
 
 	// Should only warmup 1 more (to reach min 2, but 1 is already loading)
-	assert.GreaterOrEqual(t, warmupCount, 1)
+	assert.GreaterOrEqual(t, warmupCount.Load(), int64(1))
 }
 
 // ============================================================

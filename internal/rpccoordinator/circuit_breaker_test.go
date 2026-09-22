@@ -169,10 +169,16 @@ func TestCircuitBreaker_OnStateChange_Fires(t *testing.T) {
 		SuccessThreshold: 1,
 		ResetTimeout:     10 * time.Millisecond,
 		OnStateChange: func(from, to CBState) {
+			// R66c (2026-09-22): длину читаем ПОД мьютексом. Колбэк вызывается
+			// из горутин advanceState/transition (circuit_breaker.go:218,253),
+			// поэтому `len(transitions)` вне блокировки — гонка данных,
+			// которую ловил детектор гонок
+			// (TestCircuitBreaker_OnStateChange_Fires).
 			mu.Lock()
 			transitions = append(transitions, struct{ From, To CBState }{from, to})
+			count := len(transitions)
 			mu.Unlock()
-			if len(transitions) >= 3 {
+			if count >= 3 {
 				select {
 				case <-done:
 				default:

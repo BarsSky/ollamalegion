@@ -1,10 +1,12 @@
 package tests
 
 import (
+	"context"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"ollama-loadbalancer/internal/balancer"
 	"ollama-loadbalancer/pkg/types"
@@ -705,13 +707,29 @@ func TestServeHTTP_MixedCluster_RoutingByURLPath(t *testing.T) {
 	cfg := proxy.GetConfig()
 	cfg.Balancing.OperatingMode = "standard"
 
+	// R66c (2026-09-22): оба вызова ServeHTTP ниже — диагностический smoke:
+	// их результат только логируется, ассертов на него нет (проверяются
+	// DetermineRequestBackendTypeForTest). Бэкенды mixed cluster заданы
+	// недостижимыми адресами (10.0.0.1/10.0.0.2/10.0.1.1/10.0.1.2, см.
+	// setupMixedCluster), а proxy прокидывает r.Context() в исходящий запрос
+	// (internal/balancer/proxy_request.go:279) с дефолтным requestTimeout.
+	// На Linux dial отваливается быстро, на Windows (self-hosted CI) висит до
+	// таймаута: пакет ./tests/... не укладывался в 300s и падал по таймауту
+	// ЦЕЛИКОМ — вместе со всеми остальными тестами пакета. Ограничиваем
+	// запрос дедлайном: smoke остаётся, зависания нет.
+	requestWithDeadline := func(r *http.Request, d time.Duration) *http.Request {
+		ctx, cancel := context.WithTimeout(context.Background(), d)
+		t.Cleanup(cancel)
+		return r.WithContext(ctx)
+	}
+
 	// Ollama-запрос (/api/generate)
 	ollamaBody := `{"model":"llama3:8b","prompt":"Hello","stream":false}`
 	req := httptest.NewRequest(http.MethodPost, "/api/generate", strings.NewReader(ollamaBody))
 	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()
 
-	proxy.ServeHTTP(w, req)
+	proxy.ServeHTTP(w, requestWithDeadline(req, 2*time.Second))
 
 	// В standard mode с /api/ путём — бэкенды обоих типов допустимы
 	// но т.к. нет реального Ollama/CppWorker сервера, будет 503
@@ -723,7 +741,7 @@ func TestServeHTTP_MixedCluster_RoutingByURLPath(t *testing.T) {
 	req2.Header.Set("Content-Type", "application/json")
 	w2 := httptest.NewRecorder()
 
-	proxy.ServeHTTP(w2, req2)
+	proxy.ServeHTTP(w2, requestWithDeadline(req2, 2*time.Second))
 	t.Logf("/v1/chat/completions response: status=%d", w2.Code)
 
 	// Проверяем что determineRequestBackendType работает корректно:

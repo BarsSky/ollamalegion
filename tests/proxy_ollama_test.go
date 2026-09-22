@@ -253,7 +253,14 @@ func TestProxyOllama_Ps(t *testing.T) {
 
 	models, ok := result["models"].([]interface{})
 	require.True(t, ok)
-	assert.Equal(t, 1, len(models))
+	// R66c (2026-09-22): require, а не assert + guard. Раньше здесь стоял
+	// assert.Equal, и при пустом списке тест шёл дальше и падал на
+	// `models[0].(map[string]interface{})` с
+	// "panic: runtime error: index out of range [0] with length 0".
+	// Паника убивала весь тестовый бинарь пакета ./tests/... — из-за неё
+	// все остальные тесты пакета не выполнялись, а CI показывал только
+	// стектрейс вместо списка реальных падений.
+	require.Equal(t, 1, len(models), "/api/ps должен вернуть одну загруженную модель")
 
 	model0 := models[0].(map[string]interface{})
 	assert.Equal(t, "llama3.1:8b", model0["name"])

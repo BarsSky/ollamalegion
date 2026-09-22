@@ -481,6 +481,12 @@ func TestBackendInitAndVersion(t *testing.T) {
 	if err := b.Init(); err != nil {
 		t.Fatalf("Init failed: %v", err)
 	}
+	// R66c (2026-09-22): Close() обязателен. Init() поднимает фоновый
+	// persistLoop (.name_history.json в ModelsDir). Без Close цикл дописывал
+	// файл ПОСЛЕ teardown'а t.TempDir() и на Windows тест падал с
+	// "TempDir RemoveAll cleanup: ... The directory is not empty"
+	// (на Linux удаление открытого файла проходит, поэтому CI был зелёным).
+	t.Cleanup(b.Close)
 	version := b.Version()
 	if version == "" {
 		t.Error("version should not be empty")
@@ -498,6 +504,7 @@ func TestBackendLoadUnloadModel(t *testing.T) {
 	if err := b.Init(); err != nil {
 		t.Fatalf("Init failed: %v", err)
 	}
+	t.Cleanup(b.Close) // R66c: см. TestBackendInitAndVersion
 
 	err := b.LoadModel("test-model", "dummy-path.gguf")
 	if err != nil {
@@ -536,6 +543,7 @@ func TestBackendDuplicateLoad(t *testing.T) {
 
 	b := cppbackend.NewBackend(cfg)
 	b.Init()
+	t.Cleanup(b.Close) // R66c: см. TestBackendInitAndVersion
 
 	b.LoadModel("dup-model", "dummy.gguf")
 	err := b.LoadModel("dup-model", "dummy.gguf")
@@ -550,6 +558,7 @@ func TestBackendGenerate(t *testing.T) {
 
 	b := cppbackend.NewBackend(cfg)
 	b.Init()
+	t.Cleanup(b.Close) // R66c: см. TestBackendInitAndVersion
 	b.LoadModel("gen-model", "dummy.gguf")
 
 	result, err := b.Generate("gen-model", "Hello, world!", bridge.DefaultGenerationParams())
@@ -576,6 +585,7 @@ func TestBackendGetGPUCount(t *testing.T) {
 
 	b := cppbackend.NewBackend(cfg)
 	b.Init()
+	t.Cleanup(b.Close) // R66c: см. TestBackendInitAndVersion
 
 	count := b.GetGPUCount()
 	if count != 0 {
@@ -593,6 +603,7 @@ func TestBackendStatus(t *testing.T) {
 
 	b := cppbackend.NewBackend(cfg)
 	b.Init()
+	t.Cleanup(b.Close) // R66c: см. TestBackendInitAndVersion
 	b.LoadModel("status-model", "dummy.gguf")
 
 	status := b.Status()

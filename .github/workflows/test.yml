@@ -91,18 +91,15 @@ jobs:
       # cppworker'а шаг бесполезен — build выше уже доказывает, что код линкуется.
 
       - name: Test internal/... (-race)
-        run: |
-          go test -race -tags llama_stub -timeout 180s -v ./internal/... 2>&1 | tail -50
+        run: scripts/run_go_test.sh "internal/..." -race -tags llama_stub -timeout 180s -v ./internal/...
 
       - name: Test cmd/... (no race)
-        run: |
-          go test -tags llama_stub -timeout 60s -v ./cmd/... 2>&1 | tail -50
+        run: scripts/run_go_test.sh "cmd/..." -tags llama_stub -timeout 60s -v ./cmd/...
 
       - name: Test tests/... (integration, -short)
         # -short: пропускает e2e тесты, требующие docker-compose stack.
         # На ubuntu без Docker можно прогнать только короткие Go-тесты.
-        run: |
-          go test -tags llama_stub -timeout 120s -short -v ./tests/... 2>&1 | tail -50
+        run: scripts/run_go_test.sh "tests/..." -tags llama_stub -timeout 120s -short -v ./tests/...
 
       - name: go vet
         if: always()

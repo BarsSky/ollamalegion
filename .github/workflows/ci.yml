@@ -274,17 +274,17 @@ jobs:
           # от pre-existing tests (R52.4 known issue), они замедляют
           # test runner на 60-90s в linux native. 300s = matches
           # per-job timeout.
-          & $go test -race -tags llama_stub -timeout 300s ./internal/...
+          .\scripts\run_go_test.ps1 -Label "internal/... (-race)" -Args @("-race","-tags","llama_stub","-timeout","300s","./internal/...")
 
       - name: Test (cmd packages, stub mode)
         run: |
           $go = if ($env:GOEXE -and (Test-Path $env:GOEXE)) { $env:GOEXE } else { "go.exe" }
-          & $go test -tags llama_stub -timeout 60s ./cmd/...
+          .\scripts\run_go_test.ps1 -Label "cmd/..." -Args @("-tags","llama_stub","-timeout","60s","./cmd/...")
 
       - name: Test (integration, may use Docker)
         run: |
           $go = if ($env:GOEXE -and (Test-Path $env:GOEXE)) { $env:GOEXE } else { "go.exe" }
-          & $go test -tags llama_stub -timeout 300s -short ./tests/...
+          .\scripts\run_go_test.ps1 -Label "tests/... (-short)" -Args @("-tags","llama_stub","-timeout","300s","-short","./tests/...")
         # -short: пропускает e2e тесты, требующие docker-compose stack
 
       - name: Go vet
@@ -369,12 +369,10 @@ jobs:
 
       # Разбивка internal/... на пакеты, чтобы видеть, какой конкретно падает
       - name: Test internal/agent (no race)
-        run: |
-          go test -tags llama_stub -timeout 120s -v ./internal/agent/ 2>&1 | tail -5
+        run: scripts/run_go_test.sh "internal/agent" -tags llama_stub -timeout 120s -v ./internal/agent/
 
       - name: Test internal/api (no race)
-        run: |
-          go test -tags llama_stub -timeout 120s -v ./internal/api/ 2>&1 | tail -5
+        run: scripts/run_go_test.sh "internal/api" -tags llama_stub -timeout 120s -v ./internal/api/
 
       - name: Test internal/balancer (-race)
         if: always()
@@ -386,63 +384,51 @@ jobs:
 
       - name: Test internal/config (no race)
         if: always()
-        run: |
-          go test -tags llama_stub -timeout 60s -v ./internal/config/ 2>&1 | tail -5
+        run: scripts/run_go_test.sh "internal/config" -tags llama_stub -timeout 60s -v ./internal/config/
 
       - name: Test internal/cppbackend (no race)
         if: always()
-        run: |
-          go test -tags llama_stub -timeout 120s -v ./internal/cppbackend/ 2>&1 | tail -10
+        run: scripts/run_go_test.sh "internal/cppbackend" -tags llama_stub -timeout 120s -v ./internal/cppbackend/
 
       - name: Test internal/rpccoordinator (no race)
         if: always()
-        run: |
-          go test -tags llama_stub -timeout 60s -v ./internal/rpccoordinator/ 2>&1 | tail -5
+        run: scripts/run_go_test.sh "internal/rpccoordinator" -tags llama_stub -timeout 60s -v ./internal/rpccoordinator/
 
       - name: Test internal/rpcworker (no race)
         if: always()
-        run: |
-          go test -tags llama_stub -timeout 60s -v ./internal/rpcworker/ 2>&1 | tail -5
+        run: scripts/run_go_test.sh "internal/rpcworker" -tags llama_stub -timeout 60s -v ./internal/rpcworker/
 
       - name: Test internal/virtualmodel (no race)
         if: always()
-        run: |
-          go test -tags llama_stub -timeout 60s -v ./internal/virtualmodel/ 2>&1 | tail -5
+        run: scripts/run_go_test.sh "internal/virtualmodel" -tags llama_stub -timeout 60s -v ./internal/virtualmodel/
 
       - name: Test internal/modelreplication (no race)
         if: always()
-        run: |
-          go test -tags llama_stub -timeout 60s -v ./internal/modelreplication/ 2>&1 | tail -5
+        run: scripts/run_go_test.sh "internal/modelreplication" -tags llama_stub -timeout 60s -v ./internal/modelreplication/
 
       - name: Test cmd/balancer (no race)
         if: always()
-        run: |
-          go test -tags llama_stub -timeout 60s -v ./cmd/balancer/ 2>&1 | tail -10
+        run: scripts/run_go_test.sh "cmd/balancer" -tags llama_stub -timeout 60s -v ./cmd/balancer/
 
       - name: Test cmd/cppworker (no race)
         if: always()
-        run: |
-          go test -tags llama_stub -timeout 60s -v ./cmd/cppworker/ 2>&1 | tail -10
+        run: scripts/run_go_test.sh "cmd/cppworker" -tags llama_stub -timeout 60s -v ./cmd/cppworker/
 
       - name: Test cmd/agent (no race)
         if: always()
-        run: |
-          go test -tags llama_stub -timeout 60s -v ./cmd/agent/ 2>&1 | tail -5
+        run: scripts/run_go_test.sh "cmd/agent" -tags llama_stub -timeout 60s -v ./cmd/agent/
 
       - name: Test cmd/monitor (no race)
         if: always()
-        run: |
-          go test -tags llama_stub -timeout 60s -v ./cmd/monitor/ 2>&1 | tail -5
+        run: scripts/run_go_test.sh "cmd/monitor" -tags llama_stub -timeout 60s -v ./cmd/monitor/
 
       - name: Test cmd/rpcworker (no race)
         if: always()
-        run: |
-          go test -tags llama_stub -timeout 60s -v ./cmd/rpcworker/ 2>&1 | tail -5
+        run: scripts/run_go_test.sh "cmd/rpcworker" -tags llama_stub -timeout 60s -v ./cmd/rpcworker/
 
       - name: Test tests (integration, short)
         if: always()
-        run: |
-          go test -tags llama_stub -timeout 120s -short -v ./tests/... 2>&1 | tail -20
+        run: scripts/run_go_test.sh "tests/..." -tags llama_stub -timeout 120s -short -v ./tests/...
 
       - name: Go vet
         run: |

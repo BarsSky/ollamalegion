@@ -47,25 +47,31 @@ func validateNonStreamingBody(t *testing.T, resp *http.Response) []byte {
 	assert.Empty(t, teHeader,
 		"Transfer-Encoding MUST NOT be present in non-streaming response")
 
-	// 2. Content-Type должен быть application/json
-	assert.Equal(t, "application/json", resp.Header.Get("Content-Type"),
-		"Content-Type should be application/json for non-streaming")
-
-	// 3. Читаем тело целиком
+	// R66c (2026-09-22): читаем тело ДО проверок Content-Type/JSON, чтобы в
+	// сообщении об ошибке был виден сам ответ. Без этого падение выглядело как
+	// «expected application/json, actual text/plain» + «invalid character 'S'»
+	// без единой подсказки, ЧТО именно ответил балансер (именно так падал
+	// step6-llamacpp-non-streaming в Linux-CI, локально на Windows — нет).
 	bodyBytes, err := io.ReadAll(resp.Body)
 	require.NoError(t, err, "Body must be readable without errors")
 	require.NotEmpty(t, bodyBytes, "Body must not be empty")
 
-	// 4. Content-Length (если есть) должен совпадать с длиной тела
+	// 2. Content-Type должен быть application/json
+	assert.Equal(t, "application/json", resp.Header.Get("Content-Type"),
+		"Content-Type should be application/json for non-streaming (status=%d, body=%s)",
+		resp.StatusCode, string(bodyBytes))
+
+	// 3. Content-Length (если есть) должен совпадать с длиной тела
 	if cl := resp.ContentLength; cl > 0 {
 		assert.Equal(t, cl, int64(len(bodyBytes)),
 			"Content-Length (%d) must equal actual body length (%d)", cl, len(bodyBytes))
 	}
 
-	// 5. Ответ — валидный JSON
+	// 4. Ответ — валидный JSON
 	var result map[string]interface{}
 	err = json.Unmarshal(bodyBytes, &result)
-	require.NoError(t, err, "Response must be valid JSON")
+	require.NoError(t, err, "Response must be valid JSON (status=%d, body=%s)",
+		resp.StatusCode, string(bodyBytes))
 
 	return bodyBytes
 }
@@ -749,6 +755,16 @@ func TestOpenWebUI_Sequential_MixedRequests(t *testing.T) {
 		lp, lpx := SetupExpandedProxy(t, llamaMock, func(cfg *types.LoadBalancerConfig) {
 			cfg.Backends[0].Type = types.BackendTypeLlamaCpp
 			cfg.Backends[0].Engine = types.EngineLlamaCPP
+			// R66c (2026-09-22): обязательно указываем CppWorkerPort мока.
+			//
+			// getBackendPort для llama.cpp-бэкенда берёт CppWorkerPort, а при
+			// нуле подставляет дефолт 18092 — то есть балансер уходил бы на
+			// РЕАЛЬНЫЙ cppworker, а не на мок. Локально (Windows) тест проходил
+			// только потому, что на машине разработчика поднят docker-стек и
+			// 18092 действительно слушает; в CI там пусто → 503 «Service
+			// unavailable - all backends failed» через ~7s, и step6 падал
+			// (а с ним весь TestOpenWebUI_Sequential_MixedRequests).
+			cfg.Backends[0].CppWorkerPort = cfg.Backends[0].OllamaPort
 		})
 		defer lp.Close()
 		defer lpx.StopQueue()

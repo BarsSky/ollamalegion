@@ -66,7 +66,12 @@ linters-settings:
       - shadow         # слишком много false-positives в нашем коде
 
   misspell:
-    locale: US,Russian
+    # R66c (2026-09-22): misspell принимает ТОЛЬКО "US" или "UK".
+    # Значение "US,Russian" невалидно и роняло `golangci-lint config verify`
+    # ещё ДО запуска линтера: job lint падал с «the configuration contains
+    # invalid elements» (прогон 35738576072) и не проверял ни одной строки.
+    # Русские опечатки misspell ловит своим словарём, locale к языку не привязан.
+    locale: US
     ignore-words:
       - cancelled      # en-GB вариант, используем в WebUI
 

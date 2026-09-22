@@ -15,6 +15,18 @@
 cmake_minimum_required(VERSION 3.14)
 project(bridge_tests C)
 
+# R66c (2026-09-22): заголовки llama.cpp для таргетов, компилирующих ../bridge.c.
+# bridge_internal.h делает `#include "llama.h"`, а конфигурация запускается из
+# c/bridge/tests/build — относительный путь сам не разрешается, и сборка падала:
+#   bridge_internal.h:13:10: fatal error: llama.h: No such file or directory
+# (прогон 35738576072, job test-c-bridge: путь к libllama-common.a уже починен,
+# после чего компиляция дошла до этой ошибки).
+# От c/bridge/tests до c/llama.cpp — два уровня вверх.
+set(LLAMA_CPP_INCLUDE_DIRS
+    ${CMAKE_CURRENT_SOURCE_DIR}/../../llama.cpp/include
+    ${CMAKE_CURRENT_SOURCE_DIR}/../../llama.cpp/ggml/include
+)
+
 # test_batch_n_tokens — regression test для Round 13 build_batch_with_seq bug
 # (batch.n_tokens не выставлен → llama_decode fails).
 #
@@ -31,6 +43,7 @@ add_executable(test_batch_n_tokens
 target_include_directories(test_batch_n_tokens PRIVATE
     ${CMAKE_SOURCE_DIR}/..
     ${CMAKE_CURRENT_SOURCE_DIR}/../..
+    ${LLAMA_CPP_INCLUDE_DIRS}
 )
 
 # Link libllama-common.a (для llama_batch_init, llama_batch_free)
@@ -70,6 +83,7 @@ add_executable(test_batched_batch
 target_include_directories(test_batched_batch PRIVATE
     ${CMAKE_SOURCE_DIR}/..
     ${CMAKE_CURRENT_SOURCE_DIR}/../..
+    ${LLAMA_CPP_INCLUDE_DIRS}
 )
 target_link_libraries(test_batched_batch PRIVATE ${COMMON_LIB})
 target_compile_features(test_batched_batch PRIVATE c_std_99)

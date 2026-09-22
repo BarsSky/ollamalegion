@@ -33,7 +33,13 @@ param(
     [switch]$SkipBuild
 )
 
-$ErrorActionPreference = "Stop"
+# R66d (2026-09-22): НЕ 'Stop'. В Windows PowerShell 5.1 (pwsh на машине нет)
+# docker пишет прогресс сборки в stderr, каждая строка становится
+# NativeCommandError, и с ErrorActionPreference='Stop' скрипт умирал на первой
+# же строке прогресса — ещё до проверки $LASTEXITCODE, то есть сборка вообще не
+# выполнялась. Та же правка сделана в rebuild_balancer_r66a.ps1 и
+# rebuild_webui_r66d.ps1. Ошибки ловим явными проверками $LASTEXITCODE ниже.
+$ErrorActionPreference = "Continue"
 $repoRoot = Split-Path -Parent $PSScriptRoot
 Set-Location $repoRoot
 

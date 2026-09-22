@@ -48,6 +48,16 @@ deployments/.env.bundled-full
 deployments/.env.bundled-with-agent
 deployments/.env.cocoindex
 deployments/.env.llama
+# R66d (2026-09-22): резервные копии боевых env-файлов (например
+# .env.bundled-with-agent.bak-20260915-112232) содержат те же токены, что и
+# сами .env, и раньше не попадали под правила выше — то есть могли уехать в
+# git вместе с секретами.
+deployments/.env*.bak*
+deployments/.env*.backup*
+
+# R66d: разовые диагностические payload'ы для ручных curl-проверок
+# (scripts/diag_*.json) — не часть продукта, в git им не место.
+scripts/diag_*.json
 deployments/data/
 data/
 

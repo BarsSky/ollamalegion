@@ -1,14 +1,14 @@
 // circuit_breaker_test.go — Phase 8.3: tests for CircuitBreaker.
 //
 // 8 test cases per production plan §P.1 step 4:
-//   1. TestCircuitBreaker_InitialState_Closed
-//   2. TestCircuitBreaker_NFailures_Opens
-//   3. TestCircuitBreaker_AfterTimeout_HalfOpen
-//   4. TestCircuitBreaker_HalfOpen_Success_Closes
-//   5. TestCircuitBreaker_HalfOpen_Failure_Reopens
-//   6. TestCircuitBreaker_ConcurrentAllow_ThreadSafe
-//   7. TestCircuitBreaker_OnStateChange_Fires
-//   8. TestCircuitBreaker_CustomThresholds
+//  1. TestCircuitBreaker_InitialState_Closed
+//  2. TestCircuitBreaker_NFailures_Opens
+//  3. TestCircuitBreaker_AfterTimeout_HalfOpen
+//  4. TestCircuitBreaker_HalfOpen_Success_Closes
+//  5. TestCircuitBreaker_HalfOpen_Failure_Reopens
+//  6. TestCircuitBreaker_ConcurrentAllow_ThreadSafe
+//  7. TestCircuitBreaker_OnStateChange_Fires
+//  8. TestCircuitBreaker_CustomThresholds
 package rpccoordinator
 
 import (

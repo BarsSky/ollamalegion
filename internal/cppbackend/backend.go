@@ -2081,18 +2081,34 @@ func (b *Backend) Generate(modelName string, prompt string, params bridge.Genera
 
 	start := time.Now()
 
+	// R66d (2026-09-22): результат нужен в deferred-метрике, поэтому заводим
+	// переменные заранее и заполняем их вместо прямого return.
+	var (
+		result   *bridge.InferenceResult
+		inferErr error
+	)
+
 	defer func() {
 		inst.info.ActiveQueries--
+		// Токены считаем ПОКА держим inst.mu: CountTokens дёргает tokenizer
+		// модели (llama.cpp) и не переживает параллельный Infer. Раньше здесь
+		// стоял approximateTokens(approxResultLen(...)), а approxResultLen —
+		// заглушка, всегда возвращавшая "" → метрика писала tokens=0 на КАЖДЫЙ
+		// запрос (см. R66-оговорку в доке approxResultLen).
+		var tokens int
+		if b.metrics != nil && result != nil {
+			tokens = completionTokens(inst.handle, result.Output, true)
+		}
 		inst.mu.Unlock()
 		if b.metrics != nil {
 			duration := time.Since(start)
-			tokens := approximateTokens(approxResultLen(inst, prompt, params))
-			b.metrics.RecordRequest(modelName, tokens, duration, true)
+			b.metrics.RecordRequest(modelName, tokens, duration, !isBackendFailure(inferErr))
 		}
 		inst.lastUsedAt.Store(time.Now())
 	}()
 
-	return inst.handle.Infer(prompt, params)
+	result, inferErr = inst.handle.Infer(prompt, params)
+	return result, inferErr
 }
 
 // GenerateStream выполняет стриминг-инференс
@@ -2146,16 +2162,30 @@ func (b *Backend) GenerateStream(modelName string, prompt string, params bridge.
 
 	start := time.Now()
 
+	// R66d (2026-09-22): считаем сгенерированные токены для метрик. C-bridge
+	// вызывает callback ровно один раз на сгенерированный токен
+	// (c/bridge/bridge.c:1968), плюс один дополнительный вызов, когда
+	// сработал antiprompt (bridge.c:1955) — то есть в antiprompt-сценарии
+	// возможен пересчёт на +1 (осознанно: это по-прежнему «сколько кусков
+	// ушло клиенту», а не 0, как было раньше).
+	generated := 0
+	countedCallback := func(piece string) bool {
+		generated++
+		return callback(piece)
+	}
+
+	var streamErr error
 	defer func() {
 		inst.info.ActiveQueries--
 		inst.mu.Unlock()
 		if b.metrics != nil {
-			b.metrics.RecordRequest(modelName, 0, time.Since(start), true)
+			b.metrics.RecordRequest(modelName, generated, time.Since(start), !isBackendFailure(streamErr))
 		}
 		inst.lastUsedAt.Store(time.Now())
 	}()
 
-	return inst.handle.InferStream(prompt, params, callback)
+	abortFlag, streamErr := inst.handle.InferStream(prompt, params, countedCallback)
+	return abortFlag, streamErr
 }
 
 // Suppress unused-import warning for unsafe — нужно для новой сигнатуры
@@ -2247,10 +2277,16 @@ func (b *Backend) batchedInferStream(inst *modelInstance, modelName string, prom
 	inst.info.ActiveQueries++
 	inst.lastUsedAt.Store(time.Now())
 	start := time.Now()
+
+	// R66d (2026-09-22): считаем токены, реально полученные из scheduler'а
+	// (одно сообщение TokenCh = один сгенерированный токен). Раньше в метрику
+	// писался жёсткий 0.
+	generated := 0
+	var opErr error
 	defer func() {
 		inst.info.ActiveQueries--
 		if b.metrics != nil {
-			b.metrics.RecordRequest(modelName, 0, time.Since(start), true)
+			b.metrics.RecordRequest(modelName, generated, time.Since(start), !isBackendFailure(opErr))
 		}
 		inst.lastUsedAt.Store(time.Now())
 	}()
@@ -2279,6 +2315,9 @@ streamLoop:
 				// TokenCh closed by scheduler — normal EOS
 				break streamLoop
 			}
+			// R66d: считаем именно полученные токены (в т.ч. те, что
+			// декодируются в пустую строку и не уходят клиенту).
+			generated++
 			piece := inst.handle.TokenToPiece(tok)
 			if piece == "" {
 				// Некоторые токены (BOS, special) декодируются в пустую строку.
@@ -2295,6 +2334,7 @@ streamLoop:
 	}
 	// TokenCh закрыт scheduler'ом. Проверяем session.Err.
 	if state.Err != nil {
+		opErr = state.Err
 		return nil, state.Err
 	}
 	return nil, nil
@@ -2561,6 +2601,48 @@ func (b *Backend) getActiveQueries(inst *modelInstance) int {
 	return inst.info.ActiveQueries
 }
 
+// completionTokens — число токенов в сгенерированном тексте.
+//
+// R66d (2026-09-22): закрывает «tokens=0 на всех запросах». Причина была в
+// том, что метрика считалась как approximateTokens(approxResultLen(...)), а
+// approxResultLen() — заглушка, всегда возвращавшая "" (её писали, когда
+// результата под рукой ещё не было). Теперь результат есть (Generate его
+// возвращает), поэтому считаем по-настоящему:
+//
+//   - exact=true и handle доступен: точный tokenizer модели (handle.CountTokens);
+//   - иначе (или tokenizer вернул 0 — например, модель без словаря):
+//     оценка pkg/tokencount.
+//
+// exact=true можно передавать ТОЛЬКО когда вызывающий держит inst.mu —
+// CountTokens дёргает tokenizer llama.cpp и не потокобезопасен относительно
+// параллельного Infer.
+func completionTokens(handle *bridge.ModelHandle, text string, exact bool) int {
+	if text == "" {
+		return 0
+	}
+	if exact && handle != nil {
+		if n := handle.CountTokens(text); n > 0 {
+			return n
+		}
+	}
+	return approximateTokens(text)
+}
+
+// isBackendFailure — считать ли ошибку отказом бэкенда для метрик.
+//
+// R66d (2026-09-22): RecordRequest(...) раньше вызывался с success=true
+// безусловно, то есть отказы инференса вообще не попадали в error_rate.
+// Cancel — отдельный случай: C-bridge отдаёт BRIDGE_ERR_ABORTED (→
+// bridge.ErrAborted) когда клиент отвалился/нажал Stop, и сам bridge
+// документирует, что cancel НЕ считается retryable-ошибкой. Если считать его
+// отказом, error_rate в мониторе раздувается остановками пользователя.
+func isBackendFailure(err error) bool {
+	if err == nil {
+		return false
+	}
+	return !errors.Is(err, bridge.ErrAborted)
+}
+
 // approximateTokens — оценка количества токенов для текста.
 //
 // DEPRECATED для точных сценариев: используйте Backend.CountTokens с реальным
@@ -2568,18 +2650,12 @@ func (b *Backend) getActiveQueries(inst *modelInstance) int {
 //
 // R66: использует pkg/tokencount вместо len([]rune(text))/4.
 //
-// ОГОВОРКА про текущий вызов (backend.go:2089): результат всегда 0, потому что
-// approxResultLen() возвращает "" (в стриме ответ ещё не сформирован на момент
-// его вызова). То есть метрика b.metrics.RecordRequest пишет tokens=0 для всех
-// запросов — это существующее ограничение, а не следствие этой правки.
+// R66d: остаётся для внешних вызовов/совместимости; путь метрик
+// (Generate/GenerateStream/batchedInferStream) переведён на completionTokens,
+// который умеет точный tokenizer. Оговорка R66 про «всегда 0» больше не
+// действует — approxResultLen() удалена.
 func approximateTokens(text string) int {
 	return tokencount.Estimate(text)
-}
-
-// approxResultLen — приблизительная длина результата для метрик
-func approxResultLen(inst *modelInstance, prompt string, params bridge.GenerationParams) string {
-	// В стубе возвращаем пустую строку, т.к. результат не известен до вызова
-	return ""
 }
 
 // ============================================================

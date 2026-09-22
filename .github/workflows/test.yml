@@ -42,6 +42,21 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
 
+    # R66c (2026-09-22): pipefail ОБЯЗАТЕЛЕН.
+    #
+    # Шаги ниже намеренно гоняют `go test ... 2>&1 | tail -N` — чтобы лог
+    # шага был читаемым. Но дефолтный shell (`bash -e {0}`, без pipefail)
+    # возвращает код последней команды пайпа, т.е. код `tail` (всегда 0):
+    # падение тестов не роняло шаг, и workflow был ЗЕЛЁНЫМ при полностью
+    # красных тестах — в прогоне 35656811670 шаги `internal/...`, `cmd/...`
+    # и `tests/...` печатали FAIL, а job завершился success.
+    #
+    # `-o pipefail` возвращает первый ненулевой код пайпа, сохраняя краткость
+    # логов. Не полагаться на `tail` для «проглатывания» ошибок.
+    defaults:
+      run:
+        shell: bash -e -o pipefail {0}
+
     steps:
       - name: Checkout
         uses: actions/checkout@v4

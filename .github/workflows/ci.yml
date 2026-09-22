@@ -43,11 +43,37 @@ jobs:
     runs-on: [self-hosted, Windows, ollamalegion-ci]
     timeout-minutes: 30
 
+    # R66c (2026-09-22): self-hosted runner работает под LocalSystem с
+    # ExecutionPolicy Restricted. Runner генерирует временный .ps1 и
+    # запускает его, поэтому падал КАЖДЫЙ шаг этого job'а:
+    #   . : File C:\actions-runner\_work\_temp\<guid>.ps1 cannot be loaded
+    #       because running scripts is disabled on this system.
+    #   + CategoryInfo : SecurityError: (:) [], PSSecurityException
+    # (прогон 35656811334, шаг "Init Go env"; job умирал за 21 секунду,
+    # поэтому ни тесты, ни сборка ни разу не выполнялись).
+    #
+    # `-ExecutionPolicy Bypass` в командной строке процесса перекрывает
+    # политику машины и НЕ требует прав администратора (в отличие от
+    # Set-ExecutionPolicy -Scope LocalMachine).
+    #
+    # ВАЖНО: per-step `shell: powershell` перекрывает этот default, поэтому
+    # в этом job'е он намеренно не указан — иначе Bypass не применится.
+    defaults:
+      run:
+        shell: powershell -NoProfile -ExecutionPolicy Bypass -File {0}
+
     steps:
       - name: Checkout
         uses: actions/checkout@v4
         with:
-          submodules: false  # c/llama.cpp — gitlink без .gitmodules
+          # R66c: `false` здесь корректен и проверен — job собирает и тестирует
+          # ТОЛЬКО stub-режим (`-tags llama_stub`), cgo-мост c/bridge/bridge.go
+          # исключён тегом `!llama_stub`, а llama.h не нужен. Клонировать
+          # llama.cpp (~200 МБ) ради этого не нужно.
+          # Комментарий «gitlink без .gitmodules» устарел с f645b52 (тогда же
+          # c/llama.cpp стал настоящим сабмодулем) и однажды уже стоил красного
+          # job'а test-c-bridge — там `false` был НЕПРАВИЛЬНЫМ.
+          submodules: false
           fetch-depth: 0     # для git log в комментариях
 
       # Init Go env — actions/setup-go@v5 зависает под LocalSystem (SYSTEM account),
@@ -59,7 +85,6 @@ jobs:
       # Все операции с GITHUB_PATH/GITHUB_ENV обёрнуты в try/catch и используют
       # Add-Content -Encoding ASCII (без BOM, критично для PowerShell 5.1).
       - name: "Init Go env (dual propagation: GITHUB_PATH + GITHUB_ENV)"
-        shell: powershell
         run: |
           # ---- helpers: пишем в GITHUB_PATH / GITHUB_ENV (ASCII, без BOM) ----
           function Add-Path($d) {
@@ -164,20 +189,83 @@ jobs:
           }
 
       - name: Build all binaries (stub mode)
-        shell: powershell
         run: |
           $go = if ($env:GOEXE -and (Test-Path $env:GOEXE)) { $env:GOEXE } else { "go.exe" }
           & $go build -tags llama_stub -v -o bin\balancer-stub.exe      .\cmd\balancer\
           & $go build -tags llama_stub -v -o bin\cppworker-stub.exe    .\cmd\cppworker\
           & $go build -tags llama_stub -v -o bin\agent-stub.exe        .\cmd\agent\
 
-      - name: Verify healthcheck (stub)
-        shell: powershell
+      - name: Verify healthcheck (stub) — start server, probe, stop
         run: |
-          .\bin\cppworker-stub.exe -healthcheck
+          # R66c (2026-09-22): раньше шаг состоял из одной строки
+          # `.\bin\cppworker-stub.exe -healthcheck`, но -healthcheck — это
+          # probe ЖИВОГО сервера (cmd/cppworker/utils.go:730-753, GET
+          # http://127.0.0.1:<port>/health, os.Exit(1) при отказе), а никакой
+          # сервер в CI не поднят. Шаг был обречён на падение и ни разу не
+          # выполнился, потому что job умирал раньше (PSSecurityException).
+          # Чтобы починить ExecutionPolicy и не получить красный CI на
+          # следующем шаге, проверяем бинарь по назначению: поднимаем,
+          # ждём /health, гоняем probe, гасим процесс.
+          $go = if ($env:GOEXE -and (Test-Path $env:GOEXE)) { $env:GOEXE } else { "go.exe" }
+
+          # Порт НЕ фиксированный. На self-hosted runner'е (это та же машина,
+          # где обычно поднят docker-стек) 18092 занят опубликованным портом
+          # контейнера ol-bundled-cppworker-gpu — фиксированный порт дал бы
+          # «exited early» вместо честной проверки. Спрашиваем свободный порт
+          # у ОС и сразу его освобождаем.
+          $port = 0
+          try {
+            $probe = New-Object System.Net.Sockets.TcpListener([System.Net.IPAddress]::Loopback, 0)
+            $probe.Start()
+            $port = $probe.LocalEndpoint.Port
+            $probe.Stop()
+          } catch { }
+          if ($port -le 0) { $port = 28092 }
+          Write-Host "using free port $port for the stub server"
+
+          # Контракт №1: probe без поднятого сервера обязан вернуть ненулевой
+          # код (cmd/cppworker/utils.go:742-745). Если вернул 0 — порт занят
+          # чужим процессом, и дальнейшая проверка ничего не значит.
+          & ".\bin\cppworker-stub.exe" -healthcheck -port $port | Out-Null
+          if ($LASTEXITCODE -eq 0) {
+            Write-Host "::error::-healthcheck returned 0 while nothing listens on $port — port is taken, test is meaningless"
+            exit 1
+          }
+          Write-Host "OK: -healthcheck correctly fails when no server is running"
+
+          $proc = Start-Process -FilePath ".\bin\cppworker-stub.exe" `
+                                -ArgumentList "-port", "$port" `
+                                -PassThru -WindowStyle Hidden
+          try {
+            $healthy = $false
+            for ($i = 0; $i -lt 40; $i++) {
+              Start-Sleep -Milliseconds 500
+              if ($proc.HasExited) { break }
+              try {
+                $r = Invoke-WebRequest -Uri "http://127.0.0.1:$port/health" -UseBasicParsing -TimeoutSec 2
+                if ($r.StatusCode -eq 200) { $healthy = $true; break }
+              } catch { }
+            }
+            if (-not $healthy) {
+              if ($proc.HasExited) {
+                Write-Host "::error::stub server exited early with code $($proc.ExitCode)"
+              } else {
+                Write-Host "::error::stub server did not serve /health within 20s on port $port"
+              }
+              exit 1
+            }
+            Write-Host "stub server is healthy, running -healthcheck probe"
+            & ".\bin\cppworker-stub.exe" -healthcheck -port $port
+            if ($LASTEXITCODE -ne 0) {
+              Write-Host "::error::-healthcheck probe failed with exit code $LASTEXITCODE"
+              exit 1
+            }
+            Write-Host "OK: stub binary boots, serves /health and -healthcheck probe passes"
+          } finally {
+            if ($proc -and -not $proc.HasExited) { Stop-Process -Id $proc.Id -Force }
+          }
 
       - name: Test (internal packages, -race)
-        shell: powershell
         run: |
           $go = if ($env:GOEXE -and (Test-Path $env:GOEXE)) { $env:GOEXE } else { "go.exe" }
           # R60.29: bump 180s → 300s. R52.4b TestMain watchdog убран, R60.29
@@ -189,34 +277,29 @@ jobs:
           & $go test -race -tags llama_stub -timeout 300s ./internal/...
 
       - name: Test (cmd packages, stub mode)
-        shell: powershell
         run: |
           $go = if ($env:GOEXE -and (Test-Path $env:GOEXE)) { $env:GOEXE } else { "go.exe" }
           & $go test -tags llama_stub -timeout 60s ./cmd/...
 
       - name: Test (integration, may use Docker)
-        shell: powershell
         run: |
           $go = if ($env:GOEXE -and (Test-Path $env:GOEXE)) { $env:GOEXE } else { "go.exe" }
           & $go test -tags llama_stub -timeout 300s -short ./tests/...
         # -short: пропускает e2e тесты, требующие docker-compose stack
 
       - name: Go vet
-        shell: powershell
         run: |
           $go = if ($env:GOEXE -and (Test-Path $env:GOEXE)) { $env:GOEXE } else { "go.exe" }
           & $go vet -tags llama_stub ./...
 
       - name: Generate coverage (race + atomic)
         if: success()
-        shell: powershell
         run: |
           $go = if ($env:GOEXE -and (Test-Path $env:GOEXE)) { $env:GOEXE } else { "go.exe" }
           & $go test -tags llama_stub -coverprofile=coverage.out -covermode=atomic -timeout 180s ./internal/...
 
       - name: Coverage summary
         if: success()
-        shell: powershell
         run: |
           $go = if ($env:GOEXE -and (Test-Path $env:GOEXE)) { $env:GOEXE } else { "go.exe" }
           & $go tool cover -func=coverage.out | Tee-Object -FilePath coverage-func.txt
@@ -243,11 +326,27 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 25
 
+    # R66c (2026-09-22): pipefail обязателен по той же причине, что и в
+    # test.yml — шаги ниже гоняют `go test ... | tail -N`, а `bash -e` без
+    # pipefail возвращает код tail'а (0) и маскирует падение пакетов.
+    # Этот job был зелёным (6m16s) в прогоне 35656811334 при падающих
+    # internal/balancer и tests/... — сигнала не было.
+    defaults:
+      run:
+        shell: bash -e -o pipefail {0}
+
     steps:
       - name: Checkout
         uses: actions/checkout@v4
         with:
-          submodules: false  # c/llama.cpp — gitlink без .gitmodules
+          # R66c: `false` здесь корректен и проверен — job собирает и тестирует
+          # ТОЛЬКО stub-режим (`-tags llama_stub`), cgo-мост c/bridge/bridge.go
+          # исключён тегом `!llama_stub`, а llama.h не нужен. Клонировать
+          # llama.cpp (~200 МБ) ради этого не нужно.
+          # Комментарий «gitlink без .gitmodules» устарел с f645b52 (тогда же
+          # c/llama.cpp стал настоящим сабмодулем) и однажды уже стоил красного
+          # job'а test-c-bridge — там `false` был НЕПРАВИЛЬНЫМ.
+          submodules: false
           fetch-depth: 0
 
       - name: Setup Go
@@ -380,7 +479,14 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
         with:
-          submodules: false
+          # R66c (2026-09-22): здесь `recursive` ОБЯЗАТЕЛЕН. Раньше стояло
+          # false с комментарием «gitlink без .gitmodules» — комментарий
+          # устарел ещё в f645b52, когда c/llama.cpp стал настоящим
+          # сабмодулем (160000 1d2869c6e, .gitmodules в репозитории).
+          # Без сабмодуля job падал на шаге сборки llama.cpp:
+          #   CMake Error: The source directory ".../c/llama.cpp" does not exist
+          # (прогон 35656811334, job test-c-bridge).
+          submodules: recursive
           fetch-depth: 0
 
       - name: Install build deps
@@ -435,7 +541,10 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
         with:
-          submodules: false   # c/llama.cpp — gitlink без .gitmodules
+          # R66c: `false` корректен — .golangci.yml задаёт build-tags
+          # [llama_stub], поэтому линтер разбирает stub-сборку и cgo-мост
+          # c/bridge/bridge.go (тег `!llama_stub`) не компилируется.
+          submodules: false
           fetch-depth: 0      # для --new-from-rev
 
       - name: Setup Go
@@ -448,7 +557,14 @@ jobs:
         uses: golangci/golangci-lint-action@v6
         with:
           version: v1.61.0
-          args: --timeout=5m --new-from-rev=origin/centurion
+          # R66c (2026-09-22): `--new-from-rev` в args ЗАПРЕЩЁН вместе с
+          # only-new-issues. Action сам добавляет --new-from-rev (вычисляя базу
+          # из события push/PR), а golangci-lint отказывался работать:
+          #   "please, don't specify manually --new* args when requesting
+          #    only new issues" (прогон 35656811334, job lint, 24 секунды).
+          # Т.е. линтер не запускался вообще — ни одного реального замечания
+          # он не проверил. Базу для diff action определяет сам.
+          args: --timeout=5m
           only-new-issues: true  # не падать на pre-existing warnings в main
 
   # ---------------------------------------------------------------------------

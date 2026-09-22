@@ -318,7 +318,19 @@ func NewProxy(config *types.LoadBalancerConfig) *Proxy {
 	}
 
 	// Запуск фоновой проверки таймаута агентов (60 секунд — увеличено для стабильности)
-	go p.StartAgentTimeoutChecker(60 * time.Second)
+	//
+	// R66c (2026-09-22): вызываем СИНХРОННО, без `go`. StartAgentTimeoutChecker
+	// сам поднимает тикер-горутину и сразу возвращает управление, так что
+	// обёртка `go` ничего не давала — зато создавала две проблемы:
+	//   1) `p.agentChecker = checker` писалось из горутины без синхронизации,
+	//      и Shutdown/StopAgentTimeoutChecker читали это поле параллельно
+	//      (DATA RACE, найден детектором гонок в TestNewAutoPullManager:
+	//      Write at StartAgentTimeoutChecker vs Read at Shutdown);
+	//   2) при быстром NewProxy → Shutdown горутина ещё не успевала записать
+	//      указатель, Shutdown его не видел и НЕ закрывал stop-канал —
+	//      тикер-горутина утекала и продолжала править state.Backend.HasAgent
+	//      после остановки прокси.
+	p.StartAgentTimeoutChecker(60 * time.Second)
 
 	// Инициализация OllamaRouter для агрегации и целевой маршрутизации API
 	p.ollamaRouter = NewOllamaRouter(p)

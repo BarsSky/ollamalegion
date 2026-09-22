@@ -418,9 +418,10 @@ jobs:
         if: always()
         run: scripts/run_go_test.sh "cmd/agent" -tags llama_stub -timeout 60s -v ./cmd/agent/
 
-      - name: Test cmd/monitor (no race)
-        if: always()
-        run: scripts/run_go_test.sh "cmd/monitor" -tags llama_stub -timeout 60s -v ./cmd/monitor/
+      # R66c (2026-09-22): шаг для cmd/monitor удалён. В cmd/monitor нет ни
+      # одного .go файла (только config.js, monitor.html, monitor.py), поэтому
+      # `go test ./cmd/monitor/` всегда падал с
+      # "[setup failed] ... no Go files in .../cmd/monitor" и ронял job.
 
       - name: Test cmd/rpcworker (no race)
         if: always()

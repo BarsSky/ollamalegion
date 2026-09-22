@@ -592,9 +592,18 @@ func createTestProxy(t *testing.T) *Proxy {
 	proxy := newProxyWithCleanup(t, config)
 	require.NotNil(t, proxy)
 
-	// Оба бэкенда healthy
-	for _, state := range proxy.backends {
-		state.Backend.Status = types.StatusHealthy
+	// Оба бэкенда healthy.
+	//
+	// R66c (2026-09-22): через UpdateBackendStatus, а НЕ прямой записью в
+	// state.Backend.Status. Прямая запись — гонка с фоновым
+	// llamaCppMetricsPoller, который читает те же структуры через
+	// GetAllBackends под proxy.mu. Детектор гонок из-за этого ронял все
+	// TestAutoPull* (и это единственная причина их падения):
+	//   WARNING: DATA RACE
+	//     Read at ... (*Proxy).GetAllBackends (backend_registry.go:397)
+	//     Previous write at ... createTestProxy (auto_pull_test.go:597)
+	for _, b := range proxy.GetAllBackends() {
+		proxy.UpdateBackendStatus(b.ID, types.StatusHealthy)
 	}
 
 	return proxy
@@ -653,20 +662,22 @@ func TestAutoPullFullScenario(t *testing.T) {
 	// Убираем второй бэкенд, чтобы не было альтернатив
 	config.Backends = config.Backends[:1]
 
+	// R66c (2026-09-22): фиксируем движок на Ollama В КОНФИГЕ, а не обнулением
+	// proxy.llamaCppRouter после NewProxy. Прямая запись в поле прокси — гонка
+	// с фоновым llamaCppMetricsPoller, который читает llamaCppRouter
+	// (DATA RACE: write в auto_pull_test.go:678 vs read в
+	// llamacpp_metrics_poller.go:126). С EngineOllamaAPI dispatch идёт только
+	// через OllamaRouter, и llama.cpp-ветка в этом сценарии не участвует —
+	// ровно то, чего добивались прежним `proxy.llamaCppRouter = nil`.
+	config.BackendEngine = types.EngineOllamaAPI
+
 	proxy := newProxyWithCleanup(t, config)
 	require.NotNil(t, proxy)
 	require.NotNil(t, proxy.AutoPull, "AutoPullManager should be initialized")
 
 	// Этот тест проверяет Ollama-flow: ServeHTTP → proxyRequest →
 	// ModelNotFoundError → AutoPull → executePull → retry → success.
-	// В текущей архитектуре ServeHTTP сначала вызывает routeRequest, который
-	// при OperatingMode="" (default в createTestConfig) допускает оба типа
-	// бэкендов и сначала пробует LlamaCppRouter. Тестовый backend-1 имеет
-	// пустой Type (Ollama по умолчанию), поэтому LlamaCppRouter.handleGenerate
-	// возвращает 503 "no llama.cpp backend available" ещё до того, как мы
-	// дошли до proxyRequest. Отключаем llama.cpp роутер в тесте, чтобы
-	// flow шёл по основной Ollama-ветке, для которой тест и писался.
-	proxy.llamaCppRouter = nil
+	// Ранее здесь стояло `proxy.llamaCppRouter = nil` — см. комментарий выше.
 
 	// Добавляем метрики, чтобы backend прошёл checkResourceLimits.
 	// Модель НЕ указываем в RunningModels — пусть AutoPull сам её загрузит.

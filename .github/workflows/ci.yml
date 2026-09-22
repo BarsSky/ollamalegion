@@ -290,10 +290,16 @@ jobs:
           # per-job timeout.
           .\scripts\run_go_test.ps1 -Label "internal/... (-race)" -Args @("-race","-tags","llama_stub","-timeout","300s","./internal/...")
 
-      - name: Test (cmd packages, stub mode)
+      - name: Test (cmd packages, -race)
         run: |
           $go = if ($env:GOEXE -and (Test-Path $env:GOEXE)) { $env:GOEXE } else { "go.exe" }
-          .\scripts\run_go_test.ps1 -Label "cmd/..." -Args @("-tags","llama_stub","-timeout","60s","./cmd/...")
+          # R66d (2026-09-22): добавлен -race. Пакеты cmd/* раньше гонялись
+          # только без детектора, хотя именно там живут самые горутинные места
+          # (cppworker: batched scheduler, abort-watcher, reasoning-split;
+          # balancer: старт/остановка серверов). Локально прогон
+          # `go test -race -tags llama_stub ./cmd/...` = ok (cmd/balancer 1.8s,
+          # cmd/cppworker 9.4s), поэтому бюджет оставляем 300s с запасом.
+          .\scripts\run_go_test.ps1 -Label "cmd/... (-race)" -Args @("-race","-tags","llama_stub","-timeout","300s","./cmd/...")
 
       - name: Test (integration, may use Docker, -race)
         run: |
@@ -474,9 +480,9 @@ jobs:
         if: always()
         run: scripts/run_go_test.sh "cmd/rpcworker" -tags llama_stub -timeout 60s -v ./cmd/rpcworker/
 
-      - name: Test tests (integration, short)
+      - name: Test tests (integration, short, -race)
         if: always()
-        run: scripts/run_go_test.sh "tests/..." -tags llama_stub -timeout 300s -short -v ./tests/...
+        run: scripts/run_go_test.sh "tests/..." -tags llama_stub -race -timeout 600s -short -v ./tests/...
 
       - name: Go vet
         run: |

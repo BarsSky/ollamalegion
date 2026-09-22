@@ -305,7 +305,13 @@
             ? '0 = auto (1800s × 3 reasoning) или задайте явно'
             : '0 = auto (heuristic 600s для 2-5GB, stats)';
         const requestTimeoutPlaceholder = '0 = global (default 600s)';
-        const firstByteTimeoutPlaceholder = '0 = global (default 120s)';
+        // R66c (2026-09-22): раньше здесь было '0 = global (default 120s)' — это
+        // неверно и вводило в заблуждение. При 0 действует 3-tier резолвер:
+        // профиль → измеренная статистика → эвристика по размеру GGUF (≥300s,
+        // 900s при неизвестном размере, до 2400s для >24GB). Глобальный
+        // firstByteTimeout из Settings — только база, эвристика его перекрывает,
+        // поэтому КОРОТКИЙ таймаут для модели задаётся только здесь, в профиле.
+        const firstByteTimeoutPlaceholder = '0 = авто: профиль → статистика → эвристика по размеру GGUF (300s+). Задайте явно, чтобы ограничить';
 
         const overlay = document.createElement('div');
         overlay.className = 'mode-wizard-overlay cpp-profile-wizard';

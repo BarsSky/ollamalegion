@@ -926,64 +926,43 @@ func (p *Proxy) executeAutoTuneReload(backendID, modelName string, plan *AutoTun
 		return fmt.Errorf("backend %s has no CppWorkerPort", backendID)
 	}
 
-	// Собираем env для cppworker load
-	env := make(map[string]string)
-	if plan.ContextSize > 0 {
-		env["CPPWORKER_CTX_SIZE"] = fmt.Sprintf("%d", plan.ContextSize)
+	// R66c (2026-09-22): применяем план РЕАЛЬНО реализованным путём —
+	// ApplyAutoTunePlan (unload + load с новыми параметрами), тем же, что
+	// использует ручной endpoint /api/v1/admin/autotune/{id}/apply.
+	//
+	// Было: собирался env-map и вызывался applyCppWorkerEnvReload, который
+	// ВСЕГДА возвращал ошибку «env-based reload not yet implemented; apply plan
+	// manually». Последствия: авто-перезагрузка AutoTune не работала никогда,
+	// а ошибка записывалась в circuit breaker (RecordError) и в историю событий
+	// — оператор в UI видел «AutoTune reload failed» и растущий cool-down вместо
+	// применения плана, хотя ручной apply в это же время работал.
+	//
+	// Параметры плана не теряются: ApplyAutoTunePlan прокидывает ContextSize,
+	// NumGPULayers, KVCacheType, UseMmap и FlashAttn (см. ниже) — ровно те же
+	// поля, что раньше складывались в env.
+	applyRes := p.ApplyAutoTunePlan(backendID, plan)
+	if applyRes == nil {
+		return fmt.Errorf("autotune: apply plan returned nil result")
 	}
-	if plan.KVCacheType != "" {
-		env["CPPWORKER_KV_CACHE_TYPE"] = plan.KVCacheType
+	if !applyRes.Success {
+		return fmt.Errorf("autotune: apply plan failed: %s", applyRes.Error)
 	}
-	if plan.NumGPULayers != 0 {
-		env["CPPWORKER_GPU_LAYERS"] = fmt.Sprintf("%d", plan.NumGPULayers)
-	}
-	if plan.FlashAttn != 0 {
-		env["CPPWORKER_FLASH_ATTN_TYPE"] = fmt.Sprintf("%d", plan.FlashAttn)
-	}
-	if plan.UseMmap != nil {
-		if *plan.UseMmap {
-			env["CPPWORKER_USE_MMAP"] = "true"
-		} else {
-			env["CPPWORKER_USE_MMAP"] = "false"
-		}
-	}
-	// UseMmap default from current state if not set
-	if _, set := env["CPPWORKER_USE_MMAP"]; !set {
-		// keep current — cppworker keeps its own default
-	}
-
-	// Выполняем reload через существующую инфраструктуру.
-	// Используем modelName как model alias.
-	err := p.applyCppWorkerEnvReload(backendID, modelName, env, 300 /* timeoutSec */)
-	return err
+	logger.Get().Infow("autotune: plan applied (unload+load)",
+		"backend", backendID, "model", modelName, "reason", plan.Reason,
+		"context_size", plan.ContextSize, "kv_cache_type", plan.KVCacheType,
+		"gpu_layers", plan.NumGPULayers,
+		"duration_ms", applyRes.FinishedAt.Sub(applyRes.StartedAt).Milliseconds())
+	return nil
 }
 
-// applyCppWorkerEnvReload — Round 54.4 (2026-08-24): отправляет POST /api/models/reload
-// с env-переменными. Использует существующую функцию executeAsyncReload где возможно.
+// applyCppWorkerEnvReload удалён в R66c (2026-09-22).
 //
-// NB: cppworker reload endpoint не поддерживает env-параметры напрямую —
-// только n_ctx и use_mmap. Для остальных параметров нужно /api/models/load+unload.
-// Здесь делаем best-effort: unload + load с полным набором.
-func (p *Proxy) applyCppWorkerEnvReload(backendID, modelName string, env map[string]string, timeoutSec int) error {
-	// Используем существующую инфраструктуру ensureModelLoadedOnBackend,
-	// которая вызывает /api/models/load с правильными params.
-	// Здесь мы только запускаем reload (без n_ctx — это для n_ctx path).
-	//
-	// NB: для AutoTune мы хотим вызвать /api/models/unload + /api/models/load
-	// с обновленными params. Это эквивалентно reset_model_via_unload+load.
-	//
-	// Через nctx_reload инфраструктуру это сделать сложно (она специфична
-	// для n_ctx). Поэтому R54.4 — best-effort: запускаем async reload через
-	// текущий cppworker /api/models/load endpoint с env-params.
-
-	// Делегируем существующей логике — executeAsyncReload в nctx_reload.go.
-	// Если он не подходит — fallback на /api/models/unload + /api/models/load.
-
-	// TODO: implement proper AutoTune reload path. For now, log the plan.
-	logger.Get().Warnw("autotune: env-based reload not fully implemented — apply manually via /api/v1/cppworker/load",
-		"backend", backendID, "model", modelName, "env", env)
-	return fmt.Errorf("env-based reload not yet implemented; apply plan manually")
-}
+// Он был заглушкой: всегда логировал «env-based reload not fully implemented»
+// и возвращал ошибку «env-based reload not yet implemented; apply plan
+// manually». Вызывался ТОЛЬКО из executeAutoTuneReload, поэтому авто-применение
+// плана AutoTune гарантированно не работало и вдобавок засоряло circuit
+// breaker и историю событий ошибками. Замена — ApplyAutoTunePlan (ниже):
+// unload + load с новыми параметрами, тот же путь, что у ручного apply.
 
 // ApplyAutoTunePlan — R54.6 (2026-08-24): применяет AutoTuneReloadPlan к бэкенду.
 //

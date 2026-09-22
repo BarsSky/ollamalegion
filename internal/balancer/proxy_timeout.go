@@ -289,6 +289,25 @@ func (p *Proxy) getModelRequestTimeout(modelName string) time.Duration {
 //  5. Дефолт 120 секунд
 //
 // R58.1: LB_STREAMING_NEVER_TIMEOUT=1 → 0 (= "no first-byte timeout").
+// getModelFirstByteTimeout — сколько ждать ПЕРВЫЙ байт от бэкенда.
+//
+// R66c (2026-09-22): здесь важно понимать приоритет, иначе настройка кажется
+// «не работающей». Порядок такой:
+//
+//  1. per-model profile (`llamaCppModelProfiles[m].firstByteTimeoutSec`) —
+//     единственный способ задать ТОЧНОЕ значение, в т.ч. короткое;
+//  2. измеренная статистика модели (ModelLatencyTracker);
+//  3. эвристика по размеру GGUF-файла (EstimateFirstByteTimeoutFromModelSize:
+//     >=300s, 900s при неизвестном размере, до 2400s для >24GB);
+//  4. и только если эвристика не смогла ничего вернуть — глобальный
+//     `balancing.firstByteTimeout` (R42 в config.json прямо ожидает, что
+//     Tier-3 эвристика ПОДНИМАЕТ таймаут для 12-24GB до 1800s и >24GB до
+//     2400s, поэтому глобальное значение — база, а не потолок).
+//
+// Практический вывод: уменьшить first-byte timeout для конкретной модели можно
+// только профилем; глобальное значение ниже эвристики эффекта не даёт.
+// Подробности — docs/R60.18-env-flags-audit.md и _note_streaming_round42 в
+// config/config.json.
 func (p *Proxy) getModelFirstByteTimeout(modelName string) time.Duration {
 	if isStreamingNeverTimeout() {
 		return 0

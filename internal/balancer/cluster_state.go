@@ -40,13 +40,16 @@ func (p *Proxy) GetClusterState() *types.ClusterState {
 		status := backendState.Backend.Status
 		hasAgent := backendState.Backend.HasAgent
 		prediction := backendState.Prediction
+		// R66d (2026-09-22): копию Backend снимаем ЗДЕСЬ, под state.mu.
+		// Раньше она снималась ниже (после Unlock), и детектор гонок ловил
+		// чтение *state.Backend параллельно с записью state.Backend.HasAgent
+		// из фонового agent-timeout-чекера.
+		backendConfig := *backendState.Backend
 		backendState.mu.Unlock()
 
 		if status == types.StatusHealthy {
 			state.HealthyBackends++
 		}
-
-		backendConfig := *backendState.Backend
 
 		// Приоритет: RuntimeMaxConcurrentRequests > MaxConcurrentReqs
 		maxConcurrent := backendConfig.MaxConcurrentReqs

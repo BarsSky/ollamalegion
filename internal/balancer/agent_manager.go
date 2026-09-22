@@ -36,9 +36,21 @@ func (p *Proxy) StartAgentTimeoutChecker(timeout time.Duration) {
 			case <-ticker.C:
 				p.mu.Lock()
 				for _, state := range p.backends {
-					if state.Backend.HasAgent && time.Since(state.Backend.LastAgentContact) > timeout {
+					// R66d (2026-09-22): поля state.Backend читаем и пишем под
+					// state.mu — той же блокировкой, что GetClusterState
+					// (cluster_state.go) и UpdateBackendAgentStatus. Раньше
+					// здесь был только p.mu, и -race ловил:
+					//   Write at agent_manager.go:40 (HasAgent=false)
+					//   Previous read at cluster_state.go:49 (*state.Backend)
+					state.mu.Lock()
+					stale := state.Backend.HasAgent && time.Since(state.Backend.LastAgentContact) > timeout
+					if stale {
 						state.Backend.HasAgent = false
-						logger.Get().Warnw("agent timeout", "backend", state.Backend.ID, "timeout", timeout)
+					}
+					id := state.Backend.ID
+					state.mu.Unlock()
+					if stale {
+						logger.Get().Warnw("agent timeout", "backend", id, "timeout", timeout)
 					}
 				}
 				p.mu.Unlock()

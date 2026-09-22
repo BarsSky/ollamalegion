@@ -571,6 +571,17 @@ func (p *Proxy) FindBackendByHostPortExcluding(host string, cppWorkerPort int, e
 }
 
 // AttachAgentToBackend — прикрепляет агента v2 к существующему бэкенду.
+//
+// R66d (2026-09-22): поля state.Backend пишем под state.mu (а не только под
+// p.mu). Иначе получается разная дисциплина блокировок: GetClusterState
+// копирует *state.Backend под state.mu, UpdateBackendAgentStatus пишет под
+// p.mu+state.mu, а этот метод/agent_manager писали только под p.mu — и
+// детектор гонок ловил
+//
+//	Write at agent_manager.go:40 (state.Backend.HasAgent, под p.mu)
+//	Previous read at cluster_state.go:49 (*state.Backend, под state.mu)
+//
+// Порядок захвата всегда p.mu → state.mu.
 func (p *Proxy) AttachAgentToBackend(backendID, agentID string, agentPort int) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
@@ -578,11 +589,13 @@ func (p *Proxy) AttachAgentToBackend(backendID, agentID string, agentPort int) {
 	if !ok {
 		return
 	}
+	state.mu.Lock()
 	state.Backend.HasAgent = true
 	state.Backend.AgentPort = agentPort
 	state.Backend.AgentID = agentID
 	state.AgentID = agentID
 	state.Backend.LastAgentContact = time.Now()
+	state.mu.Unlock()
 }
 
 // MarkAgentContact — обновляет только LastAgentContact уже прикреплённого агента.
@@ -596,6 +609,8 @@ func (p *Proxy) MarkAgentContact(backendID, agentID string) {
 	if !ok {
 		return
 	}
+	state.mu.Lock()
+	defer state.mu.Unlock()
 	if state.Backend.AgentID != "" && state.Backend.AgentID != agentID {
 		return
 	}
@@ -616,7 +631,9 @@ func (p *Proxy) UpdateAgentPort(backendID string, agentPort int) {
 	if !ok {
 		return
 	}
+	state.mu.Lock()
 	state.Backend.AgentPort = agentPort
+	state.mu.Unlock()
 }
 
 // FindBackendByAgentID — ищет ID бэкенда по agentID (v2).
@@ -639,5 +656,7 @@ func (p *Proxy) TouchAgentContact(backendID string) {
 	if !ok {
 		return
 	}
+	state.mu.Lock()
 	state.Backend.LastAgentContact = time.Now()
+	state.mu.Unlock()
 }

@@ -296,13 +296,24 @@ jobs:
         if: success()
         run: |
           $go = if ($env:GOEXE -and (Test-Path $env:GOEXE)) { $env:GOEXE } else { "go.exe" }
-          & $go test -tags llama_stub -coverprofile=coverage.out -covermode=atomic -timeout 180s ./internal/...
+          # R66c (2026-09-22): аргумент с '=' ОБЯЗАН быть в кавычках.
+          # Windows PowerShell 5.1 разбирает `-coverprofile=coverage.out` так,
+          # что до go доезжает отдельный пакет `.out`:
+          #   # .out
+          #   no required module provides package .out
+          #   FAIL .out [setup failed]
+          # Из-за этого шаг не работал никогда (просто раньше job умирал раньше).
+          # Проверено локально: без кавычек — FAIL .out, в кавычках — ok.
+          # Таймаут 180s → 300s: ./internal/... идёт ~140s, а с инструментацией
+          # покрытия медленнее (у соседнего шага тестов бюджет уже 300s).
+          & $go test -tags llama_stub "-coverprofile=coverage.out" -covermode=atomic -timeout 300s ./internal/...
 
       - name: Coverage summary
         if: success()
         run: |
           $go = if ($env:GOEXE -and (Test-Path $env:GOEXE)) { $env:GOEXE } else { "go.exe" }
-          & $go tool cover -func=coverage.out | Tee-Object -FilePath coverage-func.txt
+          # R66c: кавычки по той же причине, что и выше (PowerShell 5.1 и '=').
+          & $go tool cover "-func=coverage.out" | Tee-Object -FilePath coverage-func.txt
           Get-Content coverage-func.txt | Select-Object -Last 1
 
       - name: Upload coverage artifact

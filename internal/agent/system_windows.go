@@ -210,6 +210,86 @@ func parseWMICValueUint64(output, key string) uint64 {
 }
 
 // getCPUMetrics - сбор расширенных CPU метрик (Windows)
+// parseWMICCPUCSV — разбор вывода
+// `wmic cpu get Name,NumberOfCores,NumberOfLogicalProcessors /format:csv`.
+//
+// R66c (2026-09-22): переписано ради двух реальных дефектов.
+//
+//  1. ПАНИКА. Было `if len(parts) >= 4 { ... parts[4] }` — чтение за границей
+//     среза: "index out of range [4] with length 4". Паника в сборе метрик
+//     роняет ВЕСЬ процесс агента, а значит и метрики, которые он отправляет в
+//     балансер и WebUI. Именно так падал job test-self-hosted
+//     (TestCollectSystemMetrics) — под LocalSystem `wmic /format:csv` работает,
+//     а у интерактивного пользователя он падает с "Invalid XSL format (or) file
+//     name", поэтому локально дефект не воспроизводился.
+//
+//  2. НЕВЕРНЫЕ ИНДЕКСЫ. `/format:csv` печатает колонки в алфавитном порядке и
+//     БЕЗ лишнего поля: Node,Name,NumberOfCores,NumberOfLogicalProcessors — это
+//     4 колонки, то есть Model=parts[1], CoreCount=parts[2], ThreadCount=parts[3].
+//     Прежний код читал parts[2]/[3]/[4], то есть отдавал в метрики
+//     NumberOfCores как имя модели и т.д.
+//
+// Теперь индексы берутся из строки заголовка (порядок колонок не важен), а
+// каждое чтение проверяется на границы. Если заголовка нет — используется
+// документированный позиционный порядок.
+func parseWMICCPUCSV(output string) types.CPUMetrics {
+	metrics := types.CPUMetrics{}
+
+	idxName, idxCores, idxThreads := 1, 2, 3
+	headerSeen := false
+
+	for _, line := range strings.Split(output, "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+
+		raw := strings.Split(line, ",")
+		parts := make([]string, len(raw))
+		for i, p := range raw {
+			parts[i] = strings.TrimSpace(p)
+		}
+
+		if !headerSeen && len(parts) > 0 && strings.EqualFold(parts[0], "Node") {
+			headerSeen = true
+			idxName, idxCores, idxThreads = -1, -1, -1
+			for i, p := range parts {
+				switch p {
+				case "Name":
+					idxName = i
+				case "NumberOfCores":
+					idxCores = i
+				case "NumberOfLogicalProcessors":
+					idxThreads = i
+				}
+			}
+			if idxName < 0 || idxCores < 0 || idxThreads < 0 {
+				// Неожиданный набор колонок — возвращаемся к позиционному разбору.
+				idxName, idxCores, idxThreads = 1, 2, 3
+			}
+			continue
+		}
+
+		at := func(i int) (string, bool) {
+			if i < 0 || i >= len(parts) {
+				return "", false
+			}
+			return parts[i], true
+		}
+		if v, ok := at(idxName); ok {
+			metrics.Model = v
+		}
+		if v, ok := at(idxCores); ok {
+			metrics.CoreCount, _ = strconv.Atoi(v)
+		}
+		if v, ok := at(idxThreads); ok {
+			metrics.ThreadCount, _ = strconv.Atoi(v)
+		}
+	}
+
+	return metrics
+}
+
 func getCPUMetrics() types.CPUMetrics {
 	metrics := types.CPUMetrics{}
 
@@ -217,19 +297,7 @@ func getCPUMetrics() types.CPUMetrics {
 	cmd := exec.Command("wmic", "cpu", "get", "Name,NumberOfCores,NumberOfLogicalProcessors", "/format:csv")
 	output, err := cmd.Output()
 	if err == nil {
-		lines := strings.Split(string(output), "\n")
-		for _, line := range lines {
-			line = strings.TrimSpace(line)
-			if line == "" || strings.HasPrefix(line, "Node") {
-				continue
-			}
-			parts := strings.Split(line, ",")
-			if len(parts) >= 4 {
-				metrics.Model = strings.TrimSpace(parts[2])
-				metrics.CoreCount, _ = strconv.Atoi(strings.TrimSpace(parts[3]))
-				metrics.ThreadCount, _ = strconv.Atoi(strings.TrimSpace(parts[4]))
-			}
-		}
+		metrics = parseWMICCPUCSV(string(output))
 	}
 
 	// Load average через typeperf (performance counter)

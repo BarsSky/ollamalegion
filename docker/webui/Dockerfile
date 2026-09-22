@@ -33,9 +33,14 @@ WORKDIR /usr/share/nginx/html
 RUN rm -rf ./*
 
 # Копирование статических файлов UI
-COPY webui/index.html .
-COPY webui/monitor.html .
-COPY webui/health.html .
+#
+# R66c (2026-09-22): HTML копируем МАСКОЙ, а не поимённо. Раньше здесь были
+# только index.html, monitor.html, health.html, тогда как в webui/ есть ещё
+# virtual-models.html, rpc-status.html, tp-pipeline.html. Навигация в
+# index.html ссылается на virtual-models.html → в образе его не было →
+# /virtual-models.html отдавал 404 и вкладка выглядела пустой. Маска
+# закрывает этот класс расхождений: новый html-файл попадает в образ сам.
+COPY webui/*.html ./
 COPY webui/css/ ./css/
 COPY webui/js/ ./js/
 COPY webui/img/ ./img/

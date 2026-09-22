@@ -24,7 +24,13 @@ param(
     [switch]$SkipBuild
 )
 
-$ErrorActionPreference = "Stop"
+# R66c (2026-09-22): НЕ 'Stop'. В Windows PowerShell 5.1 (в котором этот скрипт
+# и запускается — pwsh на машине нет) docker пишет прогресс сборки в stderr, а
+# каждая такая строка превращается в NativeCommandError. С ErrorActionPreference
+# = 'Stop' скрипт умирал на первой же строке прогресса, ещё до проверки
+# $LASTEXITCODE, то есть сборка не выполнялась вообще. Ошибки ловим явными
+# проверками $LASTEXITCODE (они ниже) и throw'ами.
+$ErrorActionPreference = "Continue"
 $repoRoot = Split-Path -Parent $PSScriptRoot
 Set-Location $repoRoot
 

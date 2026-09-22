@@ -150,7 +150,7 @@ func TestOpenAIChat_HeaderTimeout_StillWorks(t *testing.T) {
 			Algorithm:            types.AlgorithmResourceAware,
 			ModelAffinity:        true,
 			SessionStickiness:    true,
-			FirstByteTimeout:     2, // короткий таймаут для теста
+			FirstByteTimeout:     2, // короткий таймаут (см. профиль ниже)
 			StreamingIdleTimeout: 120,
 			RequestTimeout:       120,
 			QueueTimeout:         300,
@@ -158,6 +158,17 @@ func TestOpenAIChat_HeaderTimeout_StillWorks(t *testing.T) {
 			QueueWorkers:         4,
 			SessionTTL:           900,
 			OperatingMode:        "llama_cpp",
+		},
+		// R66c (2026-09-22): короткий first-byte timeout задаём ПРОФИЛЕМ модели.
+		// По R42 для модели без профиля и без истории генерации действует
+		// эвристика по размеру GGUF (EstimateFirstByteTimeoutFromModelSize:
+		// >=300s, для неизвестного размера 900s), и она перекрывает глобальное
+		// Balancing.FirstByteTimeout — так задумано, чтобы slow prefill не
+		// обрывался. Поддерживаемый способ задать короткий таймаут — профиль
+		// (Tier 1 в getModelFirstByteTimeout); тест проверяет именно механизм
+		// ResponseHeaderTimeout, а не приоритет конфигов.
+		LlamaCppModelProfiles: map[string]types.LlamaCppModelProfile{
+			"gemma-4": {FirstByteTimeoutSec: 2},
 		},
 		Resources: types.ResourceLimits{
 			GPU: types.GPULimits{MaxUsagePercent: 90},

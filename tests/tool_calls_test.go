@@ -208,8 +208,17 @@ func TestTranslateSSEChatToOllama_ToolCalls(t *testing.T) {
 	}
 }
 
-// TestConvertOpenAIStreamResponseToOllama_FinishReason проверяет, что
-// SSE chunk с finish_reason="tool_calls" транслируется корректно.
+// TestConvertOpenAIStreamResponseToOllama_FinishReason — контракт обработки
+// wrapper-чанка (empty delta + finish_reason) в SSE-стриме.
+//
+// R66c (2026-09-22): тест переписан под Round 53.1. Раньше он требовал, чтобы
+// wrapper-чанк САМ возвращал NDJSON с done:true. С Round 53.1 wrapper
+// подавляется: done:true обязан эмититься ровно один раз за стрим — его пишет
+// usage-чанк (translateUsageChunkToOllama) или fallback writeStreamingSSEDone
+// на [DONE]. Если wrapper тоже помечал done, клиент получал ДВА done-чанка, и
+// Cline отвечал "Did not receive done or success response in stream".
+// Внутренний регресс-тест с тем же контрактом:
+// internal/balancer/llamacpp_translate_resp_test.go:180.
 func TestConvertOpenAIStreamResponseToOllama_FinishReason(t *testing.T) {
 	openAISSEChunk := map[string]interface{}{
 		"id":      "chatcmpl-123",
@@ -218,8 +227,8 @@ func TestConvertOpenAIStreamResponseToOllama_FinishReason(t *testing.T) {
 		"model":   "test-model",
 		"choices": []map[string]interface{}{
 			{
-				"index": 0,
-				"delta": map[string]interface{}{},
+				"index":         0,
+				"delta":         map[string]interface{}{},
 				"finish_reason": "tool_calls",
 			},
 		},
@@ -227,16 +236,12 @@ func TestConvertOpenAIStreamResponseToOllama_FinishReason(t *testing.T) {
 
 	body, _ := json.Marshal(openAISSEChunk)
 	result := balancer.TranslateOpenAISSEDataToOllamaExportedForTest("/api/chat", body, "test-model", "")
-	if result == nil {
-		t.Fatal("expected non-nil result from SSE translation")
-	}
 
-	var ollamaChunk map[string]interface{}
-	json.Unmarshal(result, &ollamaChunk)
-
-	// Должен быть done: true
-	if done, ok := ollamaChunk["done"].(bool); !ok || !done {
-		t.Error("expected done=true for finish_reason chunk")
+	// wrapper-чанк подавлен: nil означает «ничего клиенту не отправляем»,
+	// финальный done:true придёт из usage-чанка или из fallback'а на [DONE].
+	if result != nil {
+		t.Fatalf("Round 53.1: wrapper-чанк (empty delta + finish_reason) должен "+
+			"подавляться, иначе клиент получит два done:true; got %s", string(result))
 	}
 }
 

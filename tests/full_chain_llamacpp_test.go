@@ -130,6 +130,17 @@ func (m *mockCppWorker) Close() {
 func createTestProxyForLLamaCpp(t *testing.T, cppWorkerURL string) *balancer.Proxy {
 	t.Helper()
 
+	// R66c (2026-09-22): тесты этого файла проверяют ТРАНСЛЯТОР
+	// Ollama → OpenAI → Ollama: их мок (newMockCppWorker) реализует только
+	// OpenAI-эндпоинты (/v1/chat/completions, /v1/completions), а ожидаемый
+	// ответ описан в терминах Ollama (message.content, done:true).
+	// С R65d балансер по умолчанию идёт НАТИВНЫМ путём (LB_OLLAMA_NATIVE_PATH)
+	// и шлёт /api/chat прямо в cppworker — мок отвечал 404 «not found», и
+	// четыре теста падали, хотя проверяли исправный транслятор.
+	// Нативный путь покрыт отдельно: tests/llamacpp_transport_test.go
+	// (его мок отдаёт NDJSON, как реальный cppworker).
+	t.Setenv("LB_OLLAMA_NATIVE_PATH", "0")
+
 	// Парсим host:port из URL
 	hostPort := strings.TrimPrefix(cppWorkerURL, "http://")
 	parts := strings.Split(hostPort, ":")

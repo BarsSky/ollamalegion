@@ -20,6 +20,12 @@ import (
 
 // TestLlamaCppProxy_Basic проверяет базовое проксирование запроса через балансер к llama.cpp бэкенду
 func TestLlamaCppProxy_Basic(t *testing.T) {
+	// R66c (2026-09-22): мок реализует только OpenAI-эндпоинты
+	// (/v1/chat/completions), а тест проверяет трансляцию Ollama → OpenAI →
+	// Ollama. С R65d балансер по умолчанию идёт нативным путём и слал бы
+	// /api/chat прямо в cppworker (404). Трансляция включена здесь явно.
+	t.Setenv("LB_OLLAMA_NATIVE_PATH", "0")
+
 	// Создаём mock CppWorker сервер с OpenAI-совместимыми эндпоинтами.
 	// Балансер транслирует Ollama /api/chat → /v1/chat/completions.
 	cppServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -28,6 +34,20 @@ func TestLlamaCppProxy_Basic(t *testing.T) {
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusOK)
 			json.NewEncoder(w).Encode(map[string]string{"status": "ok", "version": "llama.cpp-mock"})
+		case r.URL.Path == "/api/models":
+			// R66c: readiness-проверка балансера (queryCppWorkerModels) делает
+			// живой GET /api/models и считает модель готовой только при
+			// state=="loaded". Без этого ответа балансер считал модель
+			// незагруженной, уходил в auto-load и отдавал 503 вместо
+			// проксирования.
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusOK)
+			json.NewEncoder(w).Encode(map[string]interface{}{
+				"count": 1,
+				"models": []map[string]interface{}{
+					{"name": "test-model", "path": "test-model.gguf", "state": "loaded"},
+				},
+			})
 		case r.URL.Path == "/api/tags":
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusOK)
@@ -78,23 +98,23 @@ func TestLlamaCppProxy_Basic(t *testing.T) {
 			APIPort: 18081,
 		},
 		Balancing: types.BalancingSettings{
-			Algorithm:      "resource-aware",
-			ModelAffinity:  true,
+			Algorithm:     "resource-aware",
+			ModelAffinity: true,
 		},
 		BackendEngine: types.EngineLlamaCPP,
 		Initialized:   true,
 		Backends: []types.Backend{
 			{
-				ID:            "llama-test-1",
-				Name:          "Llama Test Node",
-				Host:          strings.Split(cppAddr, ":")[0],
-				Type:          types.BackendTypeLlamaCpp,
-				OllamaPort:    11434,
-				CppWorkerPort: mustParsePortLLama(t, cppAddr),
-				Weight:        1,
+				ID:                "llama-test-1",
+				Name:              "Llama Test Node",
+				Host:              strings.Split(cppAddr, ":")[0],
+				Type:              types.BackendTypeLlamaCpp,
+				OllamaPort:        11434,
+				CppWorkerPort:     mustParsePortLLama(t, cppAddr),
+				Weight:            1,
 				MaxConcurrentReqs: 10,
-				MaxModels:     5,
-				Status:        types.StatusHealthy,
+				MaxModels:         5,
+				Status:            types.StatusHealthy,
 			},
 		},
 	}
@@ -141,10 +161,10 @@ func TestLlamaCppProxy_Basic(t *testing.T) {
 // TestLlamaCppBackendType_Registration проверяет что бэкенд корректно регистрируется с типом llama_cpp
 func TestLlamaCppBackendType_Registration(t *testing.T) {
 	cfg := &types.AgentConfig{
-		AgentID:     "llama-node-1",
-		BackendType: types.BackendTypeLlamaCpp,
+		AgentID:      "llama-node-1",
+		BackendType:  types.BackendTypeLlamaCpp,
 		CppWorkerURL: "http://localhost:18091",
-		BalancerURL: "http://localhost:18081",
+		BalancerURL:  "http://localhost:18081",
 	}
 
 	if cfg.BackendType != types.BackendTypeLlamaCpp {
@@ -239,8 +259,8 @@ func TestLlamaCppProxy_DifferentProxyPort(t *testing.T) {
 			APIPort: 18081,
 		},
 		Balancing: types.BalancingSettings{
-			Algorithm:     "resource-aware",
-			ModelAffinity: true,
+			Algorithm:      "resource-aware",
+			ModelAffinity:  true,
 			RequestTimeout: 10,
 		},
 		BackendEngine: types.EngineLlamaCPP,
@@ -251,7 +271,7 @@ func TestLlamaCppProxy_DifferentProxyPort(t *testing.T) {
 				Name:              "Llama Proxy Test",
 				Host:              cppHost,
 				Type:              types.BackendTypeLlamaCpp,
-				CppWorkerPort:     cppPort,   // куда ДОЛЖНЫ идти запросы
+				CppWorkerPort:     cppPort,    // куда ДОЛЖНЫ идти запросы
 				OllamaPort:        ollamaPort, // куда НЕ должны идти запросы
 				Weight:            1,
 				MaxConcurrentReqs: 10,
@@ -281,7 +301,7 @@ func TestLlamaCppProxy_DifferentProxyPort(t *testing.T) {
 			RunningModels: []types.RunningModel{
 				{Name: "test-model", ParameterSize: "8B", Family: "llama"},
 			},
-			ActiveRequests:      0,
+			ActiveRequests:        0,
 			MaxConcurrentRequests: 10,
 		},
 	})
@@ -380,8 +400,8 @@ func TestLlamaCppProxy_OpenAICompatibleEndpoint(t *testing.T) {
 			APIPort: 18081,
 		},
 		Balancing: types.BalancingSettings{
-			Algorithm:     "resource-aware",
-			ModelAffinity: true,
+			Algorithm:      "resource-aware",
+			ModelAffinity:  true,
 			RequestTimeout: 10,
 		},
 		BackendEngine: types.EngineLlamaCPP,
@@ -420,7 +440,7 @@ func TestLlamaCppProxy_OpenAICompatibleEndpoint(t *testing.T) {
 			RunningModels: []types.RunningModel{
 				{Name: "test-model", ParameterSize: "8B"},
 			},
-			ActiveRequests:      0,
+			ActiveRequests:        0,
 			MaxConcurrentRequests: 10,
 		},
 	})
@@ -462,6 +482,12 @@ func TestLlamaCppProxy_OpenAICompatibleEndpoint(t *testing.T) {
 
 // TestLlamaCppProxy_StreamingResponse проверяет SSE-стриминг через балансер к llama.cpp
 func TestLlamaCppProxy_StreamingResponse(t *testing.T) {
+	// R66c (2026-09-22): мок реализует только OpenAI-эндпоинты, а тест
+	// проверяет трансляцию в Ollama NDJSON ("response":"Hello"). С R65d
+	// балансер по умолчанию идёт нативным путём (/api/generate прямо в
+	// cppworker) и получал бы 404 — поэтому здесь трансляция включена явно.
+	t.Setenv("LB_OLLAMA_NATIVE_PATH", "0")
+
 	cppServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		path := r.URL.Path
 
@@ -470,6 +496,22 @@ func TestLlamaCppProxy_StreamingResponse(t *testing.T) {
 		if strings.Contains(path, "/api/models/load") {
 			w.WriteHeader(http.StatusNotFound)
 			json.NewEncoder(w).Encode(map[string]string{"error": "not found"})
+			return
+		}
+
+		// R66c (2026-09-22): readiness-проверка балансера делает живой
+		// GET /api/models и считает модель готовой только при state=="loaded".
+		// Без этого ответа балансер считал модель незагруженной, уходил в
+		// auto-load и отдавал 503 (JSON с retry_after) вместо стрима.
+		if path == "/api/models" {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusOK)
+			json.NewEncoder(w).Encode(map[string]interface{}{
+				"count": 1,
+				"models": []map[string]interface{}{
+					{"name": "test-model", "path": "test-model.gguf", "state": "loaded"},
+				},
+			})
 			return
 		}
 
@@ -599,8 +641,8 @@ func TestLlamaCppProxy_StreamingResponse(t *testing.T) {
 			"model":   "test-model",
 			"choices": []map[string]interface{}{
 				{
-					"index": 0,
-					"text":  "Hello from llama.cpp!",
+					"index":         0,
+					"text":          "Hello from llama.cpp!",
 					"finish_reason": "stop",
 				},
 			},
@@ -617,8 +659,8 @@ func TestLlamaCppProxy_StreamingResponse(t *testing.T) {
 			APIPort: 18081,
 		},
 		Balancing: types.BalancingSettings{
-			Algorithm:     "resource-aware",
-			ModelAffinity: true,
+			Algorithm:      "resource-aware",
+			ModelAffinity:  true,
 			RequestTimeout: 30,
 		},
 		BackendEngine: types.EngineLlamaCPP,
@@ -657,8 +699,17 @@ func TestLlamaCppProxy_StreamingResponse(t *testing.T) {
 			RunningModels: []types.RunningModel{
 				{Name: "test-model", ParameterSize: "8B"},
 			},
-			ActiveRequests:      0,
+			ActiveRequests:        0,
 			MaxConcurrentRequests: 10,
+		},
+		// R66c (2026-09-22): признак «модель загружена» для llama.cpp-бэкенда
+		// берётся из LlamaCpp.LoadedModels (llamaMetrics), а не из
+		// Ollama.RunningModels: IsModelRunningOnBackend(engine=llama_cpp) смотрит
+		// именно туда. Без этой записи балансер считал модель незагруженной,
+		// уходил в auto-load и отдавал 503 (JSON с retry_after) вместо стрима —
+		// отсюда «Stream response length: 188 bytes».
+		LlamaCpp: types.LlamaCppMetrics{
+			LoadedModels: []types.LlamaCppModel{{Name: "test-model", State: "loaded"}},
 		},
 	})
 
@@ -807,8 +858,8 @@ func TestLlamaCppProxy_ModelListFromCppWorker(t *testing.T) {
 			APIPort: 18081,
 		},
 		Balancing: types.BalancingSettings{
-			Algorithm:     "resource-aware",
-			ModelAffinity: true,
+			Algorithm:      "resource-aware",
+			ModelAffinity:  true,
 			RequestTimeout: 10,
 		},
 		BackendEngine: types.EngineLlamaCPP,
@@ -848,7 +899,7 @@ func TestLlamaCppProxy_ModelListFromCppWorker(t *testing.T) {
 				{Name: "llama3:8b", ParameterSize: "8B"},
 				{Name: "qwen2.5:14b", ParameterSize: "14B"},
 			},
-			ActiveRequests:      0,
+			ActiveRequests:        0,
 			MaxConcurrentRequests: 10,
 		},
 	})
@@ -969,7 +1020,7 @@ func TestLlamaCppProxy_ErrorHandling_CppWorkerUnavailable(t *testing.T) {
 				RunningModels: []types.RunningModel{
 					{Name: "test-model", ParameterSize: "8B", Family: "llama"},
 				},
-				ActiveRequests:      0,
+				ActiveRequests:        0,
 				MaxConcurrentRequests: 10,
 			},
 		})

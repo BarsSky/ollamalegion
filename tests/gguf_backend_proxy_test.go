@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"sync"
 	"testing"
 
 	"ollama-loadbalancer/pkg/types"
@@ -22,9 +23,26 @@ import (
 // X-HF-Token и Authorization прокидываются от клиента к CppWorker через балансер.
 func TestGGUFBackendProxy_HFTokenPropagation(t *testing.T) {
 	// Стартуем локальный CppWorker-заглушку, которая фиксирует входящие заголовки.
-	var receivedHeaders http.Header
+	//
+	// R66c (2026-09-22): две правки, обе — из-за плавающего падения в Linux-CI
+	// (~1 прогон из 3):
+	//  1. Заголовки фиксируем ТОЛЬКО для целевого пути /api/hf/download. Раньше
+	//     стаб записывал их для ЛЮБОГО запроса, а балансер сам стучится в этот
+	//     же стаб health-пробой (setupTestEnvironment задаёт HealthCheckInterval,
+	//     и AddBackend провоцирует проверку) — проба перезаписывала сохранённые
+	//     заголовки пустыми, и тест читал не свой запрос.
+	//  2. Доступ под мьютексом: обработчик httptest и тест-горутина — разные
+	//     горутины, без мьютекса это ещё и гонка данных.
+	var (
+		receivedHeaders http.Header
+		headersMu       sync.Mutex
+	)
 	stub := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		receivedHeaders = r.Header.Clone()
+		if r.URL.Path == "/api/hf/download" {
+			headersMu.Lock()
+			receivedHeaders = r.Header.Clone()
+			headersMu.Unlock()
+		}
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte(`{"status":"ok"}`))
@@ -64,14 +82,21 @@ func TestGGUFBackendProxy_HFTokenPropagation(t *testing.T) {
 	defer resp.Body.Close()
 
 	assert.Equal(t, http.StatusOK, resp.StatusCode)
+	// Снимок заголовков под мьютексом (R66c): их пишет обработчик стаба.
+	headersMu.Lock()
+	gotHeaders := receivedHeaders
+	headersMu.Unlock()
 	// R66c (2026-09-22): в сообщениях печатаем ВСЕ полученные заголовки — этот
 	// тест плавал в Linux-CI (падал в ~1 прогоне из 3, проходил локально и в
 	// изоляции) и по обезличенному «expected Bearer ..., actual ""» нельзя
 	// было понять, дошёл ли запрос вообще до стаба и что именно пришло.
-	assert.Equal(t, "hf_test_token_123", receivedHeaders.Get("X-HF-Token"),
-		"стаб получил заголовки: %v", receivedHeaders)
-	assert.Equal(t, "Bearer hf_auth_token_456", receivedHeaders.Get("Authorization"),
-		"стаб получил заголовки: %v", receivedHeaders)
+	assert.Equal(t, "hf_test_token_123", gotHeaders.Get("X-HF-Token"),
+		"стаб получил заголовки: %v", gotHeaders)
+	assert.Equal(t, "Bearer hf_auth_token_456", gotHeaders.Get("Authorization"),
+		"стаб получил заголовки: %v", gotHeaders)
+	if gotHeaders == nil {
+		t.Fatal("стаб не получил НИ ОДНОГО запроса на /api/hf/download — значит запрос не дошёл до cppworker")
+	}
 }
 
 // TestGGUFBackendProxy_RewritesAlreadyInProgress проверяет, что прокси

@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -696,7 +697,12 @@ func TestIsSSEResponse(t *testing.T) {
 
 // TestProxyToCppWorker_SSE — proxy прозрачно стримит SSE-ответ.
 func TestProxyToCppWorker_SSE(t *testing.T) {
-	var upstreamFlushed int
+	// R66c (2026-09-22): счётчик флашей — атомарный. Его инкрементит
+	// httptest-обработчик (отдельная горутина), а читает тест-горутина:
+	// обычный int здесь — гонка данных, из-за которой под -race тест падал
+	// (в CI: '--- FAIL: TestProxyToCppWorker_SSE' без сообщения, потому что
+	// падение приписывал детектор гонок).
+	var upstreamFlushed atomic.Int64
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream")
 		w.Header().Set("Cache-Control", "no-cache")
@@ -706,7 +712,7 @@ func TestProxyToCppWorker_SSE(t *testing.T) {
 		for i := 0; i < 3; i++ {
 			fmt.Fprintf(w, "data: {\"event\":%d}\n\n", i)
 			flusher.Flush()
-			upstreamFlushed++
+			upstreamFlushed.Add(1)
 		}
 	}))
 	defer upstream.Close()
@@ -738,7 +744,7 @@ func TestProxyToCppWorker_SSE(t *testing.T) {
 		}
 	}
 	assert.GreaterOrEqual(t, events, 3, "expected at least 3 SSE events")
-	assert.GreaterOrEqual(t, upstreamFlushed, 3, "upstream should have flushed 3 times")
+	assert.GreaterOrEqual(t, upstreamFlushed.Load(), int64(3), "upstream should have flushed 3 times")
 }
 
 // TestProxyToCppWorker_NonSSE — обычный JSON-ответ буферизируется (старое поведение).

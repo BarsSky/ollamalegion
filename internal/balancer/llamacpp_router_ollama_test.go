@@ -50,6 +50,22 @@ func makeUpstreamForOllamaTest(t *testing.T, receivedBody *[]byte, mu *sync.Mute
 		}
 		// /v1/chat/completions и /v1/completions — основные inference endpoint'ы.
 		// Записываем тело и возвращаем OpenAI-style streaming ответ.
+		//
+		// R66c (2026-09-22): тело фиксируем ТОЛЬКО для inference-путей. Фоновые
+		// health/metrics-пробы балансера приходят в этот же мок без тела и,
+		// оказавшись после inference-запроса, затирали receivedBody пустотой —
+		// отсюда плавающее «upstream received empty body for /api/generate»
+		// (воспроизводится под -race -cpu=1 -count=8).
+		if !strings.HasPrefix(r.URL.Path, "/v1/chat/completions") &&
+			!strings.HasPrefix(r.URL.Path, "/v1/completions") &&
+			!strings.HasPrefix(r.URL.Path, "/api/generate") &&
+			!strings.HasPrefix(r.URL.Path, "/api/chat") {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(`{"status":"ok"}`))
+			return
+		}
+
 		body, _ := io.ReadAll(r.Body)
 		mu.Lock()
 		*receivedBody = body

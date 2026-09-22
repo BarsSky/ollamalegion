@@ -265,6 +265,20 @@ jobs:
             if ($proc -and -not $proc.HasExited) { Stop-Process -Id $proc.Id -Force }
           }
 
+      - name: Build with -tags nvml (compile-only, Windows fallback)
+        run: |
+          # R66d (2026-09-22): проверка сборки nvml-пути. До этого файлы под
+          # //go:build nvml (internal/agent/nvml_windows.go на Windows,
+          # nvml_unix.go на Linux) не попадали НИ В ОДИН job — тег нигде не
+          # выставлялся, то есть код никогда не компилировался и не проверялся.
+          # На Windows nvml-путь — это fallback через nvidia-smi/WMI (без cgo).
+          $go = if ($env:GOEXE -and (Test-Path $env:GOEXE)) { $env:GOEXE } else { "go.exe" }
+          & $go build -tags "llama_stub nvml" ./internal/agent/ ./cmd/agent/
+          if ($LASTEXITCODE -ne 0) { Write-Host "::error::go build -tags nvml failed (internal/agent, cmd/agent)"; exit 1 }
+          & $go vet -tags "llama_stub nvml" ./internal/agent/
+          if ($LASTEXITCODE -ne 0) { Write-Host "::error::go vet -tags nvml failed"; exit 1 }
+          Write-Host "OK: nvml build tag compiles on Windows (fallback path)"
+
       - name: Test (internal packages, -race)
         run: |
           $go = if ($env:GOEXE -and (Test-Path $env:GOEXE)) { $env:GOEXE } else { "go.exe" }
@@ -387,6 +401,18 @@ jobs:
           go build -tags llama_stub -v -o bin/balancer-stub      ./cmd/balancer/
           go build -tags llama_stub -v -o bin/cppworker-stub    ./cmd/cppworker/
           go build -tags llama_stub -v -o bin/agent-stub        ./cmd/agent/
+
+      - name: Build with -tags nvml (compile-only)
+        run: |
+          # R66d (2026-09-22): nvml-путь (internal/agent/nvml_unix.go — cgo +
+          # github.com/NVIDIA/go-nvml, dlopen libnvidia-ml) не собирался ни в
+          # одном job'е: тег nvml нигде не выставлялся, файлы просто
+          # исключались из сборки. Теперь компиляция проверяется (без запуска —
+          # на раннере нет NVIDIA-драйвера, а nvml.Init() без библиотеки
+          # исторически давал SIGSEGV, см. комментарий в nvml_unix.go).
+          CGO_ENABLED=1 go build -tags "llama_stub nvml" -v ./internal/agent/ ./cmd/agent/
+          CGO_ENABLED=1 go vet  -tags "llama_stub nvml" ./internal/agent/
+          echo "OK: nvml build tag compiles (linux cgo path)"
 
       # Разбивка internal/... на пакеты, чтобы видеть, какой конкретно падает
       - name: Test internal/agent (no race)
@@ -544,14 +570,19 @@ jobs:
           cmake -DCOMMON_LIB="$(realpath "$COMMON_LIB_PATH")" \
                 -DLLAMA_LIB="$(realpath "$LLAMA_LIB_PATH")" \
                 -DGGML_LIBS="$(echo "$GGML_LIBS_PATHS" | tr ';' '\n' | xargs -r realpath | tr '\n' ';' | sed 's/;$//')" ..
-          make test_batch_n_tokens
+          make -j"$(nproc)"
 
-      - name: Run test_batch_n_tokens
+      - name: Run c/bridge regression tests (ctest)
         run: |
           set -e
           cd c/bridge/tests/build
-          ./test_batch_n_tokens
-          echo "--- TEST PASSED: build_batch_with_seq contract holds, Round 13 regression guarded ---"
+          # R66d (2026-09-22): раньше шаг собирал и запускал ТОЛЬКО
+          # test_batch_n_tokens, а test_batched_batch, test_abort_api,
+          # test_embeddings_mode и abort_syntax_test не собирались вообще —
+          # регрессии в batched-батче и в abort API проходили мимо CI.
+          # Цели зарегистрированы через add_test() в c/bridge/tests/CMakeLists.txt.
+          ctest --output-on-failure
+          echo "--- ALL C-BRIDGE TESTS PASSED: batch_n_tokens, batched_batch, abort_api, embeddings_mode, abort_syntax ---"
 
   # ---------------------------------------------------------------------------
   # Job 3: golangci-lint (только ubuntu, чтобы не дублировать)

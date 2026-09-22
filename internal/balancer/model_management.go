@@ -55,6 +55,19 @@ type ModelOpRequest struct {
 	GPULayers   *int   `json:"gpuLayers,omitempty"`   // optional: override gpu_layers для загрузки
 	Insecure    bool   `json:"insecure,omitempty"`
 	Stream      bool   `json:"stream,omitempty"`
+
+	// Force — R66c (2026-09-22): принудительная выгрузка занятой модели.
+	//
+	// cppworker по умолчанию отказывает в unload, если по модели есть активные
+	// inference-запросы: отвечает 409 с "model is busy with active inference
+	// requests" (cmd/cppworker/handlers_model.go:904-929) и принимает
+	// ?force=true, чтобы отменить активные генерации и всё-таки выгрузить.
+	// Балансер этот флаг не прокидывал, а поле отсутствовало — поэтому из WebUI
+	// выгрузить занятую модель было НЕВОЗМОЖНО: пользователь видел только
+	// "Cannot unload: model is busy" без выхода из ситуации.
+	//
+	// nil/false = прежнее поведение (безопасный unload).
+	Force *bool `json:"force,omitempty"`
 	// Round 7: per-tensor override (parallel arrays) для MoE.
 	// Если заданы и согласованы по длине — load через /api/models/load-with-params.
 	OverrideTensors     []string `json:"overrideTensors,omitempty"`
@@ -77,6 +90,14 @@ type ModelOpResult struct {
 	BackendID string `json:"backendId"`
 	Message   string `json:"message,omitempty"`
 	Error     string `json:"error,omitempty"`
+
+	// Busy — R66c (2026-09-22): операция отклонена, потому что модель занята
+	// активными inference-запросами (cppworker ответил 409 Conflict).
+	// RetryWithForce=true означает, что повтор с force=true её выгрузит
+	// (ценой обрыва активных генераций) — WebUI показывает по этому полю
+	// подтверждение и повторяет запрос.
+	Busy           bool `json:"busy,omitempty"`
+	RetryWithForce bool `json:"retryWithForce,omitempty"`
 }
 
 // ModelInfo — информация о модели на бэкенде
@@ -1052,8 +1073,16 @@ func (mm *ModelManager) executeLlamaCppLoad(host string, port int, backendID str
 // при unload — balancer должен явно инвалидировать state.
 func (mm *ModelManager) executeLlamaCppUnload(host string, port int, backendID string, req ModelOpRequest) *ModelOpResult {
 	safeName := urlPathEscape(req.ModelName)
-	url := fmt.Sprintf("http://%s:%d/api/models/unload?name=%s", host, port, safeName)
-	resp, err := mm.sendRawRequest("POST", url, nil)
+	unloadURL := fmt.Sprintf("http://%s:%d/api/models/unload?name=%s", host, port, safeName)
+
+	// R66c (2026-09-22): прокидываем ?force=true, если оператор явно попросил
+	// выгрузить ЗАНЯТУЮ модель. Без этого cppworker отвечает 409 и модель
+	// остаётся в памяти, а у пользователя нет способа её выгрузить.
+	if req.Force != nil && *req.Force {
+		unloadURL += "&force=true"
+	}
+
+	resp, err := mm.sendRawRequest("POST", unloadURL, nil)
 	if err != nil {
 		return &ModelOpResult{
 			Success:   false,
@@ -1065,6 +1094,22 @@ func (mm *ModelManager) executeLlamaCppUnload(host string, port int, backendID s
 	}
 	defer resp.Body.Close()
 	respBody, _ := io.ReadAll(resp.Body)
+
+	// R66c (2026-09-22): 409 Conflict = cppworker отказал, потому что по модели
+	// есть активные inference-запросы (cmd/cppworker/handlers_model.go:902-929).
+	// Отдаём это структурно, а не только текстом: WebUI по полю retryWithForce
+	// предлагает выгрузить модель с force=true, не разбирая строку ошибки.
+	if resp.StatusCode == http.StatusConflict {
+		return &ModelOpResult{
+			Success:        false,
+			Operation:      req.Operation,
+			ModelName:      req.ModelName,
+			BackendID:      backendID,
+			Error:          fmt.Sprintf("model '%s' is busy with active inference requests", req.ModelName),
+			Busy:           true,
+			RetryWithForce: true,
+		}
+	}
 
 	if resp.StatusCode >= 200 && resp.StatusCode < 300 {
 		// R60.32: invalidate balancer state so R60.31 stickiness knows

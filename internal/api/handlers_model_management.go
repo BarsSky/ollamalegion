@@ -90,6 +90,10 @@ func (s *Server) executeBackendModelOp(w http.ResponseWriter, r *http.Request, b
 		OverrideTensorBufts []string `json:"overrideTensorBufts,omitempty"`
 		Insecure           bool     `json:"insecure,omitempty"`
 		Stream             bool     `json:"stream,omitempty"`
+		// Force — R66c (2026-09-22): выгрузка ЗАНЯТОЙ модели (cppworker
+		// ?force=true). Без него unload модели с активными запросами
+		// возвращал 409 и модель оставалась в памяти без выхода из UI.
+		Force *bool `json:"force,omitempty"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		s.writeJSON(w, http.StatusBadRequest, map[string]interface{}{
@@ -133,6 +137,7 @@ func (s *Server) executeBackendModelOp(w http.ResponseWriter, r *http.Request, b
 		OverrideTensorBufts: req.OverrideTensorBufts,
 		Insecure:           req.Insecure,
 		Stream:             req.Stream,
+		Force:              req.Force, // R66c: выгрузка занятой модели
 	}
 
 	result := mm.ExecuteOperation(backendID, opReq)
@@ -140,6 +145,11 @@ func (s *Server) executeBackendModelOp(w http.ResponseWriter, r *http.Request, b
 	statusCode := http.StatusOK
 	if !result.Success {
 		statusCode = http.StatusInternalServerError
+	}
+	// R66c: «модель занята» — это 409 Conflict, а не 500: клиенту нужно
+	// отличить «повтори с force=true» от реальной ошибки сервера.
+	if result.Busy {
+		statusCode = http.StatusConflict
 	}
 
 	logger.Get().Infow("model operation result",

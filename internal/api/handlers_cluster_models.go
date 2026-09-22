@@ -213,6 +213,12 @@ type clusterReloadModelRequest struct {
 	Insecure    bool   `json:"insecure,omitempty"`
 	Stream      bool   `json:"stream,omitempty"`
 	Reason      string `json:"reason,omitempty"` // комментарий для логов
+
+	// Force — R66c (2026-09-22): принудительная выгрузка занятой модели.
+	// Прокидывается в cppworker как ?force=true (обрывает активные генерации).
+	// Без него unload занятой модели возвращал 409 и выгрузить её из WebUI было
+	// невозможно.
+	Force *bool `json:"force,omitempty"`
 }
 
 // clusterReloadModelResponse — результат reload-операции на каждом бэкенде.
@@ -229,6 +235,12 @@ type clusterReloadModelBackendResult struct {
 	Message    string `json:"message,omitempty"`
 	Error      string `json:"error,omitempty"`
 	HTTPStatus int    `json:"httpStatus,omitempty"`
+
+	// R66c: модель занята активными запросами; RetryWithForce=true — повтор
+	// с {"force":true} её выгрузит (оборвав генерации). WebUI показывает по
+	// этим полям подтверждение вместо тупикового "model is busy".
+	Busy           bool `json:"busy,omitempty"`
+	RetryWithForce bool `json:"retryWithForce,omitempty"`
 }
 
 // clusterModelItemDispatcher — единый dispatcher для /api/v1/cluster/models/{name}/*.
@@ -537,6 +549,7 @@ func (s *Server) executeReloadOnBackend(backendID, modelName string, req *cluste
 		GPULayers:   req.GPULayers,
 		Insecure:    req.Insecure,
 		Stream:      req.Stream,
+		Force:       req.Force, // R66c: выгрузка занятой модели (cppworker ?force=true)
 	}
 
 	opResult := mm.ExecuteOperation(backendID, opReq)
@@ -549,6 +562,10 @@ func (s *Server) executeReloadOnBackend(backendID, modelName string, req *cluste
 		if opResult.Message != "" {
 			result.Message = opResult.Message
 		}
+		// R66c: сообщаем клиенту, что модель занята и её можно выгрузить
+		// повтором с force=true. WebUI по этому полю показывает подтверждение.
+		result.Busy = opResult.Busy
+		result.RetryWithForce = opResult.RetryWithForce
 		return result
 	}
 
@@ -647,6 +664,20 @@ type bulkModelItem struct {
 	ContextSize *int   `json:"contextSize,omitempty"` // override глобального ContextSize
 	GPULayers   *int   `json:"gpuLayers,omitempty"`   // override глобального GPUlayers
 	Reason      string `json:"reason,omitempty"`      // комментарий для логов
+	// Force — R66c: per-item override для выгрузки занятой модели (см.
+	// clusterBulkModelsRequest.Force).
+	Force *bool `json:"force,omitempty"`
+}
+
+// forceForItem — R66c: разрешает per-item override force поверх глобального.
+func forceForItem(item *bulkModelItem, req *clusterBulkModelsRequest) *bool {
+	if item != nil && item.Force != nil {
+		return item.Force
+	}
+	if req != nil {
+		return req.Force
+	}
+	return nil
 }
 
 // clusterBulkModelsRequest — тело POST /api/v1/cluster/models/bulk.
@@ -673,6 +704,10 @@ type clusterBulkModelsRequest struct {
 	Insecure    bool            `json:"insecure,omitempty"`
 	Stream      bool            `json:"stream,omitempty"`
 	Reason      string          `json:"reason,omitempty"`
+	// Force — R66c (2026-09-22): принудительная выгрузка занятых моделей
+	// (cppworker ?force=true). Применяется ко всем моделям списка, если у
+	// элемента нет собственного Force.
+	Force *bool `json:"force,omitempty"`
 }
 
 // clusterBulkModelsResponse — агрегированный результат bulk-операции по всем моделям.
@@ -887,6 +922,9 @@ func (s *Server) executeBulkModelItem(targets []string, item *bulkModelItem, req
 		Insecure:    req.Insecure,
 		Stream:      req.Stream,
 		Reason:      reason,
+		// R66c: force выгружает занятую модель (cppworker ?force=true).
+		// Per-item override приоритетнее глобального, как и остальные поля.
+		Force: forceForItem(item, req),
 	}
 
 	// Резолвим фактические targets для этой модели.

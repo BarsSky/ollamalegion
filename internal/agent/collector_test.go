@@ -263,11 +263,13 @@ func TestCollectGPUInfo(t *testing.T) {
 func TestAgentSendHeartbeat(t *testing.T) {
 	t.Parallel()
 
-	// Создаем сервер для проверки heartbeat
-	var heartbeatReceived bool
+	// Создаем сервер для проверки heartbeat.
+	// RACE: handler выполняется в goroutine httptest-сервера, а тест читает
+	// флаг из своей goroutine — используем atomic.Bool вместо обычного bool.
+	var heartbeatReceived atomic.Bool
 	balancerServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/api/v1/agents/heartbeat" {
-			heartbeatReceived = true
+			heartbeatReceived.Store(true)
 			w.WriteHeader(http.StatusOK)
 		}
 	}))
@@ -284,17 +286,19 @@ func TestAgentSendHeartbeat(t *testing.T) {
 	agent.sendHeartbeat()
 
 	// Heartbeat должен быть отправлен
-	assert.True(t, heartbeatReceived)
+	assert.True(t, heartbeatReceived.Load())
 }
 
 // TestAgentSendMetrics - проверка отправки метрик
 func TestAgentSendMetrics(t *testing.T) {
 	t.Parallel()
 
-	var metricsReceived bool
+	// RACE: флаг пишется в handler goroutine, читается в тестовой goroutine —
+	// atomic.Bool даёт корректную синхронизацию.
+	var metricsReceived atomic.Bool
 	balancerServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/api/v1/agents/metrics" {
-			metricsReceived = true
+			metricsReceived.Store(true)
 			w.WriteHeader(http.StatusOK)
 		}
 	}))
@@ -321,17 +325,19 @@ func TestAgentSendMetrics(t *testing.T) {
 	// Отправляем метрики
 	agent.sendMetrics(data)
 
-	assert.True(t, metricsReceived)
+	assert.True(t, metricsReceived.Load())
 }
 
 // TestAgentCollectAndSend - проверка сбора и отправки метрик
 func TestAgentCollectAndSend(t *testing.T) {
 	t.Parallel()
 
-	var collectCalled bool
+	// RACE: handler пишет флаг из goroutine httptest-сервера, тест поллит его
+	// из своей goroutine — обычный bool здесь data race, используем atomic.Bool.
+	var collectCalled atomic.Bool
 	balancerServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/api/v1/agents/metrics" {
-			collectCalled = true
+			collectCalled.Store(true)
 			w.WriteHeader(http.StatusOK)
 		}
 	}))
@@ -348,14 +354,14 @@ func TestAgentCollectAndSend(t *testing.T) {
 	agent.collectAndSend()
 	deadline := time.Now().Add(2 * time.Second)
 	for time.Now().Before(deadline) {
-		if collectCalled {
+		if collectCalled.Load() {
 			break
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
 
 	// Метрики должны быть собраны и отправлены
-	assert.True(t, collectCalled)
+	assert.True(t, collectCalled.Load())
 	assert.NotNil(t, agent.currentMetrics)
 }
 

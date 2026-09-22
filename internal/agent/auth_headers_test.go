@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 
 	"ollama-loadbalancer/pkg/types"
@@ -131,10 +132,8 @@ func TestRegister_SendsAPIToken(t *testing.T) {
 	const wantToken = "shared-bundled-secret-2026"
 
 	// Мок-«балансер» с auth-семантикой
-	var gotToken string
-	var gotAgentID string
-	var registeredOK bool
-	srv := mockAuthBalancer(wantToken, &gotToken, &gotAgentID, &registeredOK)
+	capture := &authCapture{}
+	srv := mockAuthBalancer(wantToken, capture)
 	defer srv.Close()
 
 	cfg := &types.AgentConfig{
@@ -148,6 +147,8 @@ func TestRegister_SendsAPIToken(t *testing.T) {
 	if err := a.register(); err != nil {
 		t.Fatalf("register() failed: %v", err)
 	}
+
+	gotToken, gotAgentID, registeredOK := capture.snapshot()
 
 	if gotToken != wantToken {
 		t.Errorf("balancer did not receive X-API-Token: got %q, want %q", gotToken, wantToken)
@@ -165,7 +166,7 @@ func TestRegister_SendsAPIToken(t *testing.T) {
 // а корректно пробрасывает ошибку наверх (для retry-логики).
 func TestRegister_NoToken_Rejected(t *testing.T) {
 	// Мок-«балансер» БЕЗ токена (auth enabled, но токен в compose не задан)
-	srv := mockAuthBalancer("expected-but-not-sent", new(string), new(string), new(bool))
+	srv := mockAuthBalancer("expected-but-not-sent", &authCapture{})
 	defer srv.Close()
 
 	cfg := &types.AgentConfig{
@@ -186,18 +187,52 @@ func TestRegister_NoToken_Rejected(t *testing.T) {
 	}
 }
 
+// authCapture — потокобезопасный снимок того, что мок-«балансер» увидел в
+// запросе. Handler выполняется в goroutine httptest-сервера, а тест читает
+// значения из своей goroutine, поэтому обычные поля дали бы data race —
+// доступ guarded sync.Mutex.
+type authCapture struct {
+	mu           sync.Mutex
+	token        string
+	agentID      string
+	registeredOK bool
+}
+
+// record — сохранить заголовки, увиденные в очередном запросе.
+func (c *authCapture) record(token, agentID string) {
+	c.mu.Lock()
+	c.token = token
+	c.agentID = agentID
+	c.mu.Unlock()
+}
+
+// markRegistered — отметить успешную регистрацию.
+func (c *authCapture) markRegistered() {
+	c.mu.Lock()
+	c.registeredOK = true
+	c.mu.Unlock()
+}
+
+// snapshot — снять согласованную копию для проверок в тесте.
+func (c *authCapture) snapshot() (token, agentID string, registeredOK bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.token, c.agentID, c.registeredOK
+}
+
 // mockAuthBalancer — мок-сервер, эмулирующий AuthMiddleware семантику
 // балансера из internal/api/auth.go. Возвращает 401 если expectedToken
 // не совпадает с X-API-Token, иначе 200 + success-ответ register-формата.
 //
-// gotToken / gotAgentID / registeredOK — out-параметры для проверки в тесте
-// (что именно «балансер» увидел в запросе).
-func mockAuthBalancer(expectedToken string, gotToken, gotAgentID *string, registeredOK *bool) *httptest.Server {
+// capture — out-параметр для проверки в тесте (что именно «балансер» увидел
+// в запросе); доступ к нему синхронизирован, т.к. handler работает в
+// отдельной goroutine.
+func mockAuthBalancer(expectedToken string, capture *authCapture) *httptest.Server {
 	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		*gotToken = r.Header.Get("X-API-Token")
-		*gotAgentID = r.Header.Get("X-Agent-ID")
+		token := r.Header.Get("X-API-Token")
+		capture.record(token, r.Header.Get("X-Agent-ID"))
 
-		if expectedToken != "" && *gotToken != expectedToken {
+		if expectedToken != "" && token != expectedToken {
 			w.WriteHeader(http.StatusUnauthorized)
 			w.Write([]byte(`{"success":false,"error":"Unauthorized: valid API token required"}`))
 			return
@@ -207,6 +242,6 @@ func mockAuthBalancer(expectedToken string, gotToken, gotAgentID *string, regist
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
 		w.Write([]byte(`{"success":true,"action":"created","agentId":"mock-agent","backendId":"mock-agent","message":"registered"}`))
-		*registeredOK = true
+		capture.markRegistered()
 	}))
 }

@@ -264,7 +264,13 @@ func TestProxyOllama_Ps(t *testing.T) {
 
 	model0 := models[0].(map[string]interface{})
 	assert.Equal(t, "llama3.1:8b", model0["name"])
-	assert.Equal(t, 1, mock.psCount)
+	// R66c (2026-09-22): psCount НЕ 1. Раньше /api/ps ожидал проксирования в
+	// один бэкенд, но балансер обязан АГРЕГИРОВАТЬ загруженные модели по всем
+	// бэкендам (llama.cpp — из llamaMetrics, Ollama — из метрик agent'а), иначе
+	// в кластере видно только случайный узел. Поэтому мок не должен получать
+	// запрос вовсе.
+	assert.Equal(t, 0, mock.psCount,
+		"/api/ps агрегируется балансером из метрик, а не проксируется в один бэкенд")
 }
 
 func TestProxyOllama_Version(t *testing.T) {

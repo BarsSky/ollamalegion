@@ -43,6 +43,101 @@ func newMockCppWorkerOpenAI() *mockCppWorkerOpenAI {
 				},
 			})
 
+		// R66c (2026-09-22): НАТИВНЫЕ Ollama-эндпоинты cppworker.
+		//
+		// Балансер по умолчанию (LB_OLLAMA_NATIVE_PATH, R65d) отправляет
+		// /api/chat и /api/generate на нативные обработчики cppworker, а не
+		// транслирует их в OpenAI-формат. Мок умел только OpenAI-пути, поэтому
+		// эти запросы получали 404 «not found» и тесты падали — при том что
+		// реальный cppworker нативные обработчики имеет (handlers_chat.go,
+		// handlers_generate.go). Формат ответа — NDJSON, по строке на чанк,
+		// завершается строкой с done:true.
+		case path == "/api/chat":
+			body, _ := io.ReadAll(r.Body)
+			var req map[string]interface{}
+			json.Unmarshal(body, &req)
+			stream, _ := req["stream"].(bool)
+			model, _ := req["model"].(string)
+			if model == "" {
+				model = "test-model"
+			}
+
+			w.Header().Set("Content-Type", "application/x-ndjson")
+			w.WriteHeader(http.StatusOK)
+			flusher, _ := w.(http.Flusher)
+			writeNDJSON := func(v map[string]interface{}) {
+				line, _ := json.Marshal(v)
+				fmt.Fprintf(w, "%s\n", line)
+				if flusher != nil {
+					flusher.Flush()
+				}
+			}
+			now := time.Now().Format(time.RFC3339)
+
+			if stream {
+				writeNDJSON(map[string]interface{}{
+					"model": model, "created_at": now,
+					"message": map[string]interface{}{"role": "assistant", "content": "Привет! Я "},
+					"done":    false,
+				})
+				writeNDJSON(map[string]interface{}{
+					"model": model, "created_at": now,
+					"message": map[string]interface{}{"role": "assistant", "content": "работающая модель llama.cpp."},
+					"done":    false,
+				})
+			}
+			writeNDJSON(map[string]interface{}{
+				"model": model, "created_at": now,
+				"message":           map[string]interface{}{"role": "assistant", "content": "Привет! Я работающая модель llama.cpp."},
+				"done":              true,
+				"done_reason":       "stop",
+				"prompt_eval_count": 10,
+				"eval_count":        15,
+				"total_duration":    1500000000,
+			})
+
+		case path == "/api/generate":
+			body, _ := io.ReadAll(r.Body)
+			var req map[string]interface{}
+			json.Unmarshal(body, &req)
+			stream, _ := req["stream"].(bool)
+			model, _ := req["model"].(string)
+			if model == "" {
+				model = "test-model"
+			}
+
+			w.Header().Set("Content-Type", "application/x-ndjson")
+			w.WriteHeader(http.StatusOK)
+			flusher, _ := w.(http.Flusher)
+			writeNDJSON := func(v map[string]interface{}) {
+				line, _ := json.Marshal(v)
+				fmt.Fprintf(w, "%s\n", line)
+				if flusher != nil {
+					flusher.Flush()
+				}
+			}
+			now := time.Now().Format(time.RFC3339)
+
+			if stream {
+				writeNDJSON(map[string]interface{}{
+					"model": model, "created_at": now,
+					"response": "Ответ от ", "done": false,
+				})
+				writeNDJSON(map[string]interface{}{
+					"model": model, "created_at": now,
+					"response": "llama.cpp модели.", "done": false,
+				})
+			}
+			writeNDJSON(map[string]interface{}{
+				"model": model, "created_at": now,
+				"response":          "Ответ от llama.cpp модели.",
+				"done":              true,
+				"done_reason":       "stop",
+				"prompt_eval_count": 10,
+				"eval_count":        8,
+				"total_duration":    1200000000,
+			})
+
 		case path == "/v1/chat/completions":
 			body, _ := io.ReadAll(r.Body)
 			var req map[string]interface{}
@@ -62,7 +157,9 @@ func newMockCppWorkerOpenAI() *mockCppWorkerOpenAI {
 				}
 				data1, _ := json.Marshal(chunk1)
 				fmt.Fprintf(w, "data: %s\n\n", data1)
-				if flusher != nil { flusher.Flush() }
+				if flusher != nil {
+					flusher.Flush()
+				}
 
 				chunk2 := map[string]interface{}{
 					"choices": []map[string]interface{}{
@@ -71,7 +168,9 @@ func newMockCppWorkerOpenAI() *mockCppWorkerOpenAI {
 				}
 				data2, _ := json.Marshal(chunk2)
 				fmt.Fprintf(w, "data: %s\n\n", data2)
-				if flusher != nil { flusher.Flush() }
+				if flusher != nil {
+					flusher.Flush()
+				}
 
 				chunk3 := map[string]interface{}{
 					"choices": []map[string]interface{}{
@@ -80,10 +179,14 @@ func newMockCppWorkerOpenAI() *mockCppWorkerOpenAI {
 				}
 				data3, _ := json.Marshal(chunk3)
 				fmt.Fprintf(w, "data: %s\n\n", data3)
-				if flusher != nil { flusher.Flush() }
+				if flusher != nil {
+					flusher.Flush()
+				}
 
 				fmt.Fprintf(w, "data: [DONE]\n\n")
-				if flusher != nil { flusher.Flush() }
+				if flusher != nil {
+					flusher.Flush()
+				}
 			} else {
 				resp := map[string]interface{}{
 					"id":      "chatcmpl-xxx",
@@ -113,14 +216,20 @@ func newMockCppWorkerOpenAI() *mockCppWorkerOpenAI {
 
 				data1, _ := json.Marshal(map[string]interface{}{"choices": []map[string]interface{}{{"index": 0, "text": "Ответ от "}}})
 				fmt.Fprintf(w, "data: %s\n\n", data1)
-				if flusher != nil { flusher.Flush() }
+				if flusher != nil {
+					flusher.Flush()
+				}
 
 				data2, _ := json.Marshal(map[string]interface{}{"choices": []map[string]interface{}{{"index": 0, "text": "llama.cpp модели.", "finish_reason": "stop"}}})
 				fmt.Fprintf(w, "data: %s\n\n", data2)
-				if flusher != nil { flusher.Flush() }
+				if flusher != nil {
+					flusher.Flush()
+				}
 
 				fmt.Fprintf(w, "data: [DONE]\n\n")
-				if flusher != nil { flusher.Flush() }
+				if flusher != nil {
+					flusher.Flush()
+				}
 			} else {
 				resp := map[string]interface{}{
 					"id":      "cmpl-xxx",
@@ -149,7 +258,9 @@ func createTestProxyForLlamaCppOpenAI(t *testing.T, cppWorkerURL string) *balanc
 	parts := strings.Split(hostPort, ":")
 	host := parts[0]
 	port := 8080
-	if len(parts) > 1 { fmt.Sscanf(parts[1], "%d", &port) }
+	if len(parts) > 1 {
+		fmt.Sscanf(parts[1], "%d", &port)
+	}
 
 	cfg := &types.LoadBalancerConfig{
 		Balancing: types.BalancingSettings{
@@ -193,19 +304,31 @@ func TestLlamaCppTransport_ChatNonStreaming(t *testing.T) {
 	rec := httptest.NewRecorder()
 	proxy.ServeHTTP(rec, req)
 
-	if rec.Code != 200 { t.Fatalf("expected 200, got %d", rec.Code) }
+	if rec.Code != 200 {
+		t.Fatalf("expected 200, got %d", rec.Code)
+	}
 
 	var resp map[string]interface{}
 	json.NewDecoder(rec.Result().Body).Decode(&resp)
 	msg, _ := resp["message"].(map[string]interface{})
 	content, _ := msg["content"].(string)
 	role, _ := msg["role"].(string)
-	if content == "" { t.Fatal("empty content") }
-	if role != "assistant" { t.Errorf("expected role=assistant, got %s", role) }
-	if content == "**" { t.Errorf("response is '**'") }
-	if !strings.Contains(content, "Привет") { t.Errorf("expected Привет, got %s", content) }
+	if content == "" {
+		t.Fatal("empty content")
+	}
+	if role != "assistant" {
+		t.Errorf("expected role=assistant, got %s", role)
+	}
+	if content == "**" {
+		t.Errorf("response is '**'")
+	}
+	if !strings.Contains(content, "Привет") {
+		t.Errorf("expected Привет, got %s", content)
+	}
 	done, _ := resp["done"].(bool)
-	if !done { t.Error("done != true") }
+	if !done {
+		t.Error("done != true")
+	}
 	t.Logf("✅ Chat non-streaming: %q role=%s done=%v", content, role, done)
 }
 
@@ -221,7 +344,9 @@ func TestLlamaCppTransport_ChatStreaming(t *testing.T) {
 	rec := httptest.NewRecorder()
 	proxy.ServeHTTP(rec, req)
 
-	if rec.Code != 200 { t.Fatalf("expected 200, got %d", rec.Code) }
+	if rec.Code != 200 {
+		t.Fatalf("expected 200, got %d", rec.Code)
+	}
 
 	scanner := bufio.NewScanner(rec.Result().Body)
 	var doneFound bool
@@ -229,15 +354,25 @@ func TestLlamaCppTransport_ChatStreaming(t *testing.T) {
 	for scanner.Scan() {
 		var chunk map[string]interface{}
 		if json.Unmarshal([]byte(scanner.Text()), &chunk) == nil {
-			if d, _ := chunk["done"].(bool); d { doneFound = true }
+			if d, _ := chunk["done"].(bool); d {
+				doneFound = true
+			}
 			if msg, ok := chunk["message"].(map[string]interface{}); ok {
-				if c, _ := msg["content"].(string); c != "" { content.WriteString(c) }
+				if c, _ := msg["content"].(string); c != "" {
+					content.WriteString(c)
+				}
 			}
 		}
 	}
-	if !doneFound { t.Error("missing done:true") }
-	if content.Len() == 0 { t.Error("no content") }
-	if content.String() == "**" { t.Errorf("streaming is '**'") }
+	if !doneFound {
+		t.Error("missing done:true")
+	}
+	if content.Len() == 0 {
+		t.Error("no content")
+	}
+	if content.String() == "**" {
+		t.Errorf("streaming is '**'")
+	}
 	t.Logf("✅ Chat streaming: %q", content.String())
 }
 
@@ -253,11 +388,15 @@ func TestLlamaCppTransport_GenerateNonStreaming(t *testing.T) {
 	rec := httptest.NewRecorder()
 	proxy.ServeHTTP(rec, req)
 
-	if rec.Code != 200 { t.Fatalf("expected 200, got %d", rec.Code) }
+	if rec.Code != 200 {
+		t.Fatalf("expected 200, got %d", rec.Code)
+	}
 	var resp map[string]interface{}
 	json.NewDecoder(rec.Result().Body).Decode(&resp)
 	response, _ := resp["response"].(string)
-	if response == "" || response == "**" { t.Errorf("bad generate response: %q", response) }
+	if response == "" || response == "**" {
+		t.Errorf("bad generate response: %q", response)
+	}
 	t.Logf("✅ Generate: %q", response)
 }
 
@@ -271,11 +410,15 @@ func TestLlamaCppTransport_TagsWithFallback(t *testing.T) {
 	rec := httptest.NewRecorder()
 	proxy.ServeHTTP(rec, req)
 
-	if rec.Code != 200 { t.Fatalf("expected 200, got %d", rec.Code) }
+	if rec.Code != 200 {
+		t.Fatalf("expected 200, got %d", rec.Code)
+	}
 	var resp map[string]interface{}
 	json.NewDecoder(rec.Result().Body).Decode(&resp)
 	models, _ := resp["models"].([]interface{})
-	if len(models) == 0 { t.Error("fallback returned 0 models") }
+	if len(models) == 0 {
+		t.Error("fallback returned 0 models")
+	}
 	t.Logf("✅ Tags fallback: %d models", len(models))
 }
 
@@ -300,7 +443,9 @@ func TestLlamaCppTransport_NoStarsInResponse(t *testing.T) {
 				var chunk map[string]interface{}
 				if json.Unmarshal([]byte(scanner.Text()), &chunk) == nil {
 					if msg, ok := chunk["message"].(map[string]interface{}); ok {
-						if c, _ := msg["content"].(string); c != "" { allText.WriteString(c) }
+						if c, _ := msg["content"].(string); c != "" {
+							allText.WriteString(c)
+						}
 					}
 				}
 			}
@@ -308,10 +453,14 @@ func TestLlamaCppTransport_NoStarsInResponse(t *testing.T) {
 			var resp map[string]interface{}
 			json.NewDecoder(rec.Result().Body).Decode(&resp)
 			if msg, ok := resp["message"].(map[string]interface{}); ok {
-				if c, _ := msg["content"].(string); c != "" { allText.WriteString(c) }
+				if c, _ := msg["content"].(string); c != "" {
+					allText.WriteString(c)
+				}
 			}
 		}
-		if allText.String() == "**" { t.Errorf("response is '**' (stream=%v)", stream) }
+		if allText.String() == "**" {
+			t.Errorf("response is '**' (stream=%v)", stream)
+		}
 	}
 	t.Run("non-streaming", func(t *testing.T) { check(t, false) })
 	t.Run("streaming", func(t *testing.T) { check(t, true) })
@@ -328,7 +477,9 @@ func TestLlamaCppTransport_APIChain(t *testing.T) {
 		req := httptest.NewRequest("GET", "/api/tags", nil)
 		rec := httptest.NewRecorder()
 		proxy.ServeHTTP(rec, req)
-		if rec.Code != 200 { t.Fatalf("tags: %d", rec.Code) }
+		if rec.Code != 200 {
+			t.Fatalf("tags: %d", rec.Code)
+		}
 		var resp map[string]interface{}
 		json.NewDecoder(rec.Result().Body).Decode(&resp)
 		t.Logf("✓ tags: %v models", len(resp["models"].([]interface{})))
@@ -340,7 +491,9 @@ func TestLlamaCppTransport_APIChain(t *testing.T) {
 		req.Header.Set("Content-Type", "application/json")
 		rec := httptest.NewRecorder()
 		proxy.ServeHTTP(rec, req)
-		if rec.Code != 200 { t.Fatalf("chat: %d", rec.Code) }
+		if rec.Code != 200 {
+			t.Fatalf("chat: %d", rec.Code)
+		}
 		var resp map[string]interface{}
 		json.NewDecoder(rec.Result().Body).Decode(&resp)
 		msg, _ := resp["message"].(map[string]interface{})
@@ -353,14 +506,18 @@ func TestLlamaCppTransport_APIChain(t *testing.T) {
 		req.Header.Set("Content-Type", "application/json")
 		rec := httptest.NewRecorder()
 		proxy.ServeHTTP(rec, req)
-		if rec.Code != 200 { t.Fatalf("chat stream: %d", rec.Code) }
+		if rec.Code != 200 {
+			t.Fatalf("chat stream: %d", rec.Code)
+		}
 		var collected strings.Builder
 		scanner := bufio.NewScanner(rec.Result().Body)
 		for scanner.Scan() {
 			var chunk map[string]interface{}
 			if json.Unmarshal([]byte(scanner.Text()), &chunk) == nil {
 				if msg, ok := chunk["message"].(map[string]interface{}); ok {
-					if c, _ := msg["content"].(string); c != "" { collected.WriteString(c) }
+					if c, _ := msg["content"].(string); c != "" {
+						collected.WriteString(c)
+					}
 				}
 			}
 		}
@@ -373,7 +530,9 @@ func TestLlamaCppTransport_APIChain(t *testing.T) {
 		req.Header.Set("Content-Type", "application/json")
 		rec := httptest.NewRecorder()
 		proxy.ServeHTTP(rec, req)
-		if rec.Code != 200 { t.Fatalf("generate: %d", rec.Code) }
+		if rec.Code != 200 {
+			t.Fatalf("generate: %d", rec.Code)
+		}
 		var resp map[string]interface{}
 		json.NewDecoder(rec.Result().Body).Decode(&resp)
 		t.Logf("✓ generate: %q", resp["response"])

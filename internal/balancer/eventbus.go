@@ -57,21 +57,29 @@ func (eb *EventBus) Unsubscribe(id string) {
 	}
 }
 
-// Publish — публикация события всем подписчикам (неблокирующая)
+// Publish — публикация события всем подписчикам (неблокирующая).
+//
+// R66c (2026-09-22): read-lock удерживается НА ВСЮ отправку, а не только на
+// снимок карты подписчиков.
+//
+// Было: Publish копировал каналы под RLock, отпускал его и только потом слал;
+// Stop/Unsubscribe закрывают каналы под Lock. То есть отправка и close не
+// исключали друг друга — это и гонка данных (детектор гонок в
+// TestEventBus_Stop_DuringPublish: chansend в Publish vs closechan в Stop), и
+// реальный путь до паники "send on closed channel" при graceful shutdown
+// балансера, когда Stop идёт параллельно с публикацией событий.
+// Отправка неблокирующая (select/default) и каналы буферизованы, поэтому
+// удержание RLock на время рассылки не создаёт deadlock: ни Publish, ни
+// Stop/Unsubscribe не вызываются из-под чужого Lock.
 func (eb *EventBus) Publish(ev types.Event) {
 	eb.mu.RLock()
-	stopped := eb.stopped
-	subs := make([]chan types.Event, 0, len(eb.subs))
-	for _, ch := range eb.subs {
-		subs = append(subs, ch)
-	}
-	eb.mu.RUnlock()
+	defer eb.mu.RUnlock()
 
-	if stopped {
+	if eb.stopped {
 		return // drop events после Stop
 	}
 
-	for _, ch := range subs {
+	for _, ch := range eb.subs {
 		select {
 		case ch <- ev:
 		default:

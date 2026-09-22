@@ -748,13 +748,27 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		// Для всех клиентских запросов (chat, generate) используем session stickiness
 		// Embeddings (/api/embed, /api/embeddings) исключаются — они не требуют привязки к сессии
 		if session := p.sessionMgr.Get(sessionID); session != nil {
-			targetBackend = session.BackendID
+			// R66c (2026-09-22): BackendID читаем через снимок под мьютексом.
+			// Раньше здесь было `targetBackend = session.BackendID` по общему
+			// указателю, который параллельно переписывает SessionManager.Set
+			// (строка ниже) — гонка на каждом кластере с двумя одновременными
+			// запросами от одного клиента (session id общий).
+			targetBackend, _ = p.sessionMgr.GetBackendID(sessionID)
 
 			p.mu.RLock()
 			backendState, exists := p.backends[targetBackend]
 			p.mu.RUnlock()
 
-			if !exists || backendState.Backend.Status != types.StatusHealthy {
+			// R66c: статус бэкенда — под state.mu (его пишут
+			// UpdateBackendStatus/EvacuateBackend/agent_manager).
+			backendHealthy := false
+			if exists && backendState != nil {
+				backendState.mu.Lock()
+				backendHealthy = backendState.Backend.Status == types.StatusHealthy
+				backendState.mu.Unlock()
+			}
+
+			if !exists || !backendHealthy {
 				logger.Get().Warnw("session backend unavailable, selecting new backend",
 					"session_backend", targetBackend,
 					"exists", exists,

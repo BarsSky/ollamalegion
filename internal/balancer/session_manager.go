@@ -143,6 +143,12 @@ func (sm *SessionManager) ForceRemove(id string) bool {
 }
 
 // Get - получение сессии
+//
+// ВНИМАНИЕ (R66c, 2026-09-22): возвращает ОБЩИЙ указатель. Читать его поля
+// без блокировки нельзя — параллельный Set мутирует ту же структуру под sm.mu
+// (гонка, которую ловил детектор на TestLoadBalancing_MultipleClients:
+// SessionManager.Set vs чтение session.BackendID в proxy.go:751).
+// Для чтения полей используйте GetBackendID / GetAllSnapshots.
 func (sm *SessionManager) Get(id string) *types.Session {
 	sm.mu.RLock()
 	defer sm.mu.RUnlock()
@@ -150,7 +156,26 @@ func (sm *SessionManager) Get(id string) *types.Session {
 	return sm.sessions[id]
 }
 
-// GetAll - получение всех сессий
+// GetBackendID — снимок поля BackendID под блокировкой (R66c).
+//
+// Нужен вместо `s := Get(id); s.BackendID`: сессия одна на клиента+модель,
+// поэтому два параллельных запроса от одного клиента делят один *Session, и
+// второй запрос пишет в него через Set, пока первый читает.
+func (sm *SessionManager) GetBackendID(id string) (string, bool) {
+	sm.mu.RLock()
+	defer sm.mu.RUnlock()
+
+	s, ok := sm.sessions[id]
+	if !ok || s == nil {
+		return "", false
+	}
+	return s.BackendID, true
+}
+
+// GetAll - получение всех сессий.
+//
+// ВНИМАНИЕ (R66c): как и Get, возвращает общие указатели — для чтения полей
+// используйте GetAllSnapshots.
 func (sm *SessionManager) GetAll() []*types.Session {
 	sm.mu.RLock()
 	defer sm.mu.RUnlock()
@@ -158,6 +183,24 @@ func (sm *SessionManager) GetAll() []*types.Session {
 	sessions := make([]*types.Session, 0, len(sm.sessions))
 	for _, s := range sm.sessions {
 		sessions = append(sessions, s)
+	}
+	return sessions
+}
+
+// GetAllSnapshots — копии сессий под блокировкой (R66c).
+//
+// types.Session состоит только из value-полей, поэтому копия — полноценный
+// снимок: можно безопасно читать без удержания sm.mu.
+func (sm *SessionManager) GetAllSnapshots() []types.Session {
+	sm.mu.RLock()
+	defer sm.mu.RUnlock()
+
+	sessions := make([]types.Session, 0, len(sm.sessions))
+	for _, s := range sm.sessions {
+		if s == nil {
+			continue
+		}
+		sessions = append(sessions, *s)
 	}
 	return sessions
 }

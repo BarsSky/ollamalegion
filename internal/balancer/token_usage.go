@@ -26,6 +26,13 @@ type ModelTokenUsage struct {
 	RequestCount      int64     `json:"request_count"`
 	LastUpdated       time.Time `json:"last_updated"`
 	firstSeenUnixNano int64     // для отладки; не экспортируется в JSON
+
+	// R66c (2026-09-22): LastUpdated пишется из конкурентных горутин (каждый
+	// завершённый запрос), поэтому метка хранится как atomic int64, а не как
+	// поле time.Time. Раньше здесь было прямое присваивание с комментарием
+	// «допустим небольшой race» — детектор гонок его не принимает
+	// (TestTokenUsage_Concurrent: две горутины пишут в одно поле).
+	lastUpdatedUnixNano int64
 }
 
 // getOrCreateTokenUsage — thread-safe accessor.
@@ -61,8 +68,8 @@ func (p *Proxy) recordTokenUsage(model string, promptTokens, completionTokens in
 	atomic.AddInt64(&u.CompletionTokens, completionTokens)
 	atomic.AddInt64(&u.TotalTokens, promptTokens+completionTokens)
 	atomic.AddInt64(&u.RequestCount, 1)
-	// LastUpdated — non-atomic; допустим небольшой race для метки времени.
-	u.LastUpdated = time.Now()
+	// R66c: метку времени пишем атомарно (см. комментарий в ModelTokenUsage).
+	atomic.StoreInt64(&u.lastUpdatedUnixNano, time.Now().UnixNano())
 }
 
 // GetTokenUsageSnapshot — возвращает snapshot всех моделей.
@@ -75,13 +82,17 @@ func (p *Proxy) GetTokenUsageSnapshot() []ModelTokenUsage {
 	defer p.tokensByModelMu.RUnlock()
 	out := make([]ModelTokenUsage, 0, len(p.tokensByModel))
 	for _, u := range p.tokensByModel {
+		lastSeen := time.Time{}
+		if nanos := atomic.LoadInt64(&u.lastUpdatedUnixNano); nanos > 0 {
+			lastSeen = time.Unix(0, nanos)
+		}
 		out = append(out, ModelTokenUsage{
 			Model:            u.Model,
 			PromptTokens:     atomic.LoadInt64(&u.PromptTokens),
 			CompletionTokens: atomic.LoadInt64(&u.CompletionTokens),
 			TotalTokens:      atomic.LoadInt64(&u.TotalTokens),
 			RequestCount:     atomic.LoadInt64(&u.RequestCount),
-			LastUpdated:      u.LastUpdated,
+			LastUpdated:      lastSeen,
 		})
 	}
 	return out

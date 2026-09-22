@@ -97,8 +97,16 @@ func (p *Proxy) EvacuateBackend(backendID string) (int, error) {
 	}
 
 	// Помечаем как Draining — новые запросы не будут направляться
+	//
+	// R66c (2026-09-22): запись под state.mu. Раньше статус писался вообще без
+	// блокировки, и это гоняло с любым читателем полей бэкенда —
+	// GetAllBackends (в т.ч. фоновый llamaCppMetricsPoller), scoring,
+	// selectBackend. Детектор гонок ловил это в
+	// TestBackend_Scenario_EvacuateBackend.
+	state.mu.Lock()
 	oldStatus := state.Backend.Status
 	state.Backend.Status = types.StatusDraining
+	state.mu.Unlock()
 
 	if oldStatus != types.StatusDraining {
 		p.PublishEvent(types.Event{
@@ -112,8 +120,13 @@ func (p *Proxy) EvacuateBackend(backendID string) (int, error) {
 		})
 	}
 
-	// Находим все сессии, привязанные к этому бэкенду
-	allSessions := p.sessionMgr.GetAll()
+	// Находим все сессии, привязанные к этому бэкенду.
+	//
+	// R66c: берём СНИМКИ сессий, а не общие указатели. GetAll() возвращал
+	// *types.Session, которые параллельно мутирует SessionManager.Set под
+	// своим мьютексом (BackendID/Model/...), поэтому чтение их полей здесь
+	// было гонкой; см. также GetBackendID в session_manager.go.
+	allSessions := p.sessionMgr.GetAllSnapshots()
 	var evacuatedCount int
 
 	for _, session := range allSessions {
@@ -388,13 +401,25 @@ func (p *Proxy) GetBackendFreeSlots(backendID string) (int, bool) {
 }
 
 // GetAllBackends - получение всех бэкендов
+//
+// R66c (2026-09-22): копия структуры снимается под per-backend мьютексом.
+//
+// Было: только p.mu.RLock() вокруг `*state.Backend`. RLock защищает карту
+// p.backends, но НЕ поля самой структуры: их пишут под state.mu
+// (recordLatency в adaptive_timeout.go:159 пишет RuntimeRequestTimeout,
+// agent_manager.go:40 — HasAgent, EvacuateBackend — Status). Из-за этого
+// фоновый llamaCppMetricsPoller, который читает через GetAllBackends, гонял с
+// обработкой запроса и с эвакуацией бэкенда. Порядок блокировок —
+// p.mu → state.mu, как в filterBackendsByType (backend_type_filter.go:6-22).
 func (p *Proxy) GetAllBackends() []types.Backend {
 	p.mu.RLock()
 	defer p.mu.RUnlock()
 
 	backends := make([]types.Backend, 0, len(p.backends))
 	for _, state := range p.backends {
+		state.mu.Lock()
 		backends = append(backends, *state.Backend)
+		state.mu.Unlock()
 	}
 	return backends
 }

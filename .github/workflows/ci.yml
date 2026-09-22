@@ -281,10 +281,20 @@ jobs:
           $go = if ($env:GOEXE -and (Test-Path $env:GOEXE)) { $env:GOEXE } else { "go.exe" }
           .\scripts\run_go_test.ps1 -Label "cmd/..." -Args @("-tags","llama_stub","-timeout","60s","./cmd/...")
 
-      - name: Test (integration, may use Docker)
+      - name: Test (integration, may use Docker, -race)
         run: |
           $go = if ($env:GOEXE -and (Test-Path $env:GOEXE)) { $env:GOEXE } else { "go.exe" }
-          .\scripts\run_go_test.ps1 -Label "tests/... (-short)" -Args @("-tags","llama_stub","-timeout","300s","-short","./tests/...")
+          # R66d (2026-09-22): добавлен -race. Пакет tests/... раньше гонялся
+          # только без детектора, и в нём жили настоящие гонки: счётчики
+          # mockOllamaServer инкрементировались из HTTP-хендлера без атомиков,
+          # HealthChecker.Start делал wg.Add(1) внутри горутины (параллельно с
+          # wg.Wait в Stop), QueueManager.processed читался без lock, а
+          # селекторы бэкендов range'или metrics.Ollama.RunningModels по
+          # разблокированному указателю из MetricsManager. Всё это починено,
+          # поэтому шаг теперь обязан ловить регрессии.
+          # -timeout 600s: локальный прогон tests/... под -race = 162s,
+          # на self-hosted раннере берём двойной запас (раньше было 300s).
+          .\scripts\run_go_test.ps1 -Label "tests/... (-race, -short)" -Args @("-race","-tags","llama_stub","-timeout","600s","-short","./tests/...")
         # -short: пропускает e2e тесты, требующие docker-compose stack
 
       - name: Go vet

@@ -618,6 +618,11 @@ func (p *Proxy) proxyRequestLlamaCpp(w http.ResponseWriter, r *http.Request, bac
 
 	lastData := ""
 
+	// R66c (2026-09-22): режим ответа определяется по первой содержательной
+	// строке (см. ниже), а не только по originalPath. Флаг — чтобы решить это
+	// ровно один раз.
+	nativeModeDecided := false
+
 	// R60.58 watcher goroutine: разблокирует блокирующий scanner.Scan() при cancel/timeout.
 	//
 	// БЕЗ ЭТОГО (R60.58 bug): bufio.Scanner.Scan() — блокирующий вызов. Если upstream
@@ -711,6 +716,30 @@ func (p *Proxy) proxyRequestLlamaCpp(w http.ResponseWriter, r *http.Request, bac
 		}
 
 		line := scanner.Text()
+
+		// R66c (2026-09-22): нативный passthrough валиден ТОЛЬКО если апстрим
+		// реально отвечает Ollama-NDJSON. Если cppworker ответил OpenAI-SSE
+		// (сборка без нативного пути, LB_OLLAMA_NATIVE_PATH=0 или путь был
+		// переписан апстримом), то сырые OpenAI-чанки уходили Ollama-клиенту
+		// КАК NDJSON: вместо message.content приходили choices/delta, а
+		// финального done:true не было вообще — клиент зависает либо считает
+		// ответ пустым ("Model returned empty response").
+		//
+		// Определяем по СТРОКЕ, а не по Content-Type: cppworker исторически
+		// отдаёт NDJSON и с неверным/отсутствующим заголовком, поэтому
+		// заголовку здесь доверять нельзя. Первая же строка с префиксом
+		// "data:" означает SSE — переключаемся на трансляцию SSE→NDJSON ниже.
+		if nativePath && !nativeModeDecided {
+			nativeModeDecided = true
+			firstLine := strings.TrimSpace(line)
+			if strings.HasPrefix(firstLine, "data:") {
+				nativePath = false
+				logger.Get().Warnw("proxyRequestLlamaCpp: upstream answered with OpenAI SSE "+
+					"while request was routed as Ollama-native — switching to SSE→NDJSON translation",
+					"backend", backendID, "model", modelFromCtx, "path", originalPath,
+					"content_type", resp.Header.Get("Content-Type"))
+			}
+		}
 
 		// ==== R65d (2026-09-20): нативный путь — Ollama NDJSON passthrough ====
 		//

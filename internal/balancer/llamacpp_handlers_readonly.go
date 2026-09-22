@@ -264,6 +264,32 @@ func (lr *LlamaCppRouter) handleTags(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// 4) R66c (2026-09-22): последний резерв — OpenAI-совместимый /v1/models.
+	//
+	// fetchLlamaCppModels был написан, но НИКОГДА не вызывался: если бэкенд не
+	// отдаёт ни /api/models/files, ни /api/tags, а умеет только /v1/models
+	// (голый llama.cpp server, vLLM, любой OpenAI-совместимый upstream),
+	// список моделей у клиента оказывался пустым — при том что /api/tags
+	// обязан быть эквивалентом `ollama list`. Теперь это честный fallback.
+	if len(uniqueModels) == 0 {
+		for _, b := range backends {
+			tags, err := lr.fetchLlamaCppModels(b.host, b.port)
+			if err != nil {
+				logger.Get().Warnw("handleTags: /v1/models fallback failed",
+					"backend", b.id, "host", b.host, "port", b.port, "error", err)
+				continue
+			}
+			for _, t := range tags {
+				if _, exists := uniqueModels[t.Name]; !exists {
+					uniqueModels[t.Name] = t
+				}
+			}
+			if len(uniqueModels) > 0 {
+				break
+			}
+		}
+	}
+
 	models := make([]OllamaTag, 0, len(uniqueModels))
 	for _, m := range uniqueModels {
 		models = append(models, m)
@@ -556,15 +582,23 @@ func (lr *LlamaCppRouter) fetchLlamaCppModelsNative(host string, port int) (*cpp
 	return &result, nil
 }
 
-// handlePS — возвращает список запущенных моделей на llama.cpp бэкендах (из метрик).
+// handlePS — возвращает список запущенных моделей (Ollama /api/ps).
+//
+// R66c (2026-09-22): агрегируем ВСЕ типы бэкендов, а не только llama.cpp.
+// Раньше метод смотрел лишь в getLlamaCppBackends(), поэтому в кластере с
+// Ollama-бэкендами (и в смешанном) уже загруженные на них модели в ответ не
+// попадали: `ollama ps`, OpenWebUI и WebUI-страница моделей показывали пустой
+// список, а клиент, проверяя «загружена ли модель», считал её незагруженной и
+// уходил в auto-load. Для llama.cpp источник — llamaMetrics (cppworker-poller),
+// для Ollama — metrics[id].Ollama.RunningModels (данные agent'а).
 func (lr *LlamaCppRouter) handlePS(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
 
-	backends := lr.getLlamaCppBackends()
-	if len(backends) == 0 {
+	allBackends := lr.proxy.GetAllBackends()
+	if len(allBackends) == 0 {
 		writeJSON(w, http.StatusOK, OllamaPSResponse{Models: []OllamaProcess{}})
 		return
 	}
@@ -576,9 +610,63 @@ func (lr *LlamaCppRouter) handlePS(w http.ResponseWriter, r *http.Request) {
 	// OpenWebUI), на null падают с TypeError — «пустой список процессов» ломал
 	// страницу моделей вместо того, чтобы просто ничего не показать.
 	allProcesses := make([]OllamaProcess, 0, 4)
-	for _, b := range backends {
+	for _, b := range allBackends {
+		if b.Status != types.StatusHealthy && string(b.Status) != "degraded" {
+			continue
+		}
+
+		// Ollama-бэкенды: загруженные модели приходят от agent'а.
+		if normalizeBackendType(b.Type) != types.BackendTypeLlamaCpp {
+			bm, ok := lr.proxy.metricsMgr.metrics[b.ID]
+			if !ok || bm == nil {
+				continue
+			}
+			for _, m := range bm.Ollama.RunningModels {
+				if m.Name == "" {
+					continue
+				}
+				details := map[string]interface{}{}
+				if m.Family != "" {
+					details["family"] = m.Family
+					details["families"] = []string{m.Family}
+				}
+				if m.Quantization != "" {
+					details["quantization_level"] = m.Quantization
+				}
+				if m.ParameterSize != "" {
+					details["parameter_size"] = m.ParameterSize
+				} else {
+					details["parameter_size"] = "unknown"
+				}
+				format := m.Format
+				if format == "" {
+					format = "gguf"
+				}
+				details["format"] = format
+
+				// expires_at: НЕ отдаём нулевое время (см. комментарий ниже).
+				expiresAt := m.ExpiresAt
+				if expiresAt.IsZero() {
+					expiresAt = time.Now().Add(defaultPSExpiresWindow)
+				}
+
+				allProcesses = append(allProcesses, OllamaProcess{
+					Name:      m.Name,
+					Model:     m.Name,
+					Size:      int64(m.Size),
+					Digest:    m.Digest,
+					Details:   details,
+					ExpiresAt: expiresAt,
+					SizeVRAM:  int64(m.VRAMUsage) * 1024 * 1024,
+				})
+			}
+			continue
+		}
+
+		// llama.cpp-бэкенды: источник — llamaMetrics (cppworker-poller).
+		//
 		// Round 19 hotfix: читаем из llamaMetrics (cppworker-poller), не metrics[id].LlamaCpp (Ollama-agent).
-		lm, ok := lr.proxy.metricsMgr.llamaMetrics[b.id]
+		lm, ok := lr.proxy.metricsMgr.llamaMetrics[b.ID]
 		if !ok || lm == nil {
 			continue
 		}

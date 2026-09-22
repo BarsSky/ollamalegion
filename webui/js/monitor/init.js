@@ -51,26 +51,68 @@
   });
 
   // Rebalance
+  //
+  // R66c (2026-09-22): кнопка дёргала GET /api/v1/queue/rebalance — такого
+  // эндпоинта в балансере НЕТ (есть только /api/v1/queue/stats|details|history),
+  // поэтому каждое нажатие давало 404 и alert с ошибкой, а сама балансировка
+  // не запускалась. Теперь используется реальный механизм R59:
+  //   GET  /api/v1/admin/cluster/autosuggest        — предложения по перекладке
+  //   POST /api/v1/admin/cluster/autosuggest/apply  — применить их
+  // (см. internal/api/handlers_autosuggest.go).
+  function _showRebalanceBanner(text, ok) {
+    var c = document.getElementById('alertContainer');
+    if (!c) return;
+    var b = document.createElement('div');
+    b.className = 'alert-banner';
+    b.style.cssText = ok
+      ? 'background:rgba(34,197,94,0.08);border:1px solid rgba(34,197,94,0.25);color:var(--success)'
+      : 'background:rgba(234,179,8,0.08);border:1px solid rgba(234,179,8,0.25);color:var(--warning)';
+    b.innerHTML = '<span>' + (ok ? '✅' : 'ℹ️') + '</span><span></span>';
+    b.lastChild.textContent = text; // textContent — без HTML-инъекций из ответа
+    c.insertBefore(b, c.firstChild);
+    setTimeout(function() { if (b.parentNode) b.remove(); }, 6000);
+  }
+
   window.forceRebalance = function() {
     if (MA.demoMode) { alert(MA.T('monitor.rebalance.disabled')); return; }
     var token = new URLSearchParams(location.search).get('token') || localStorage.getItem('apiToken') || '';
     var ctrl = new AbortController();
     var tid = setTimeout(function() { ctrl.abort(); }, 15000);
-    fetch(MA.API_BASE + '/api/v1/queue/rebalance', {
-      headers: token ? { 'X-API-Token': token } : {},
+    var headers = token ? { 'X-API-Token': token } : {};
+
+    fetch(MA.API_BASE + '/api/v1/admin/cluster/autosuggest', {
+      headers: headers,
       signal: ctrl.signal
     }).then(function(r) {
-      clearTimeout(tid);
-      if (!r.ok) throw new Error(r.status + ' ' + r.statusText);
+      if (!r.ok) throw new Error('autosuggest ' + r.status + ' ' + r.statusText);
       return r.json();
     }).then(function(res) {
-      console.log('[monitor] rebalance result:', res);
-      var c = document.getElementById('alertContainer'), b = document.createElement('div');
-      b.className = 'alert-banner';
-      b.style.cssText = 'background:rgba(34,197,94,0.08);border:1px solid rgba(34,197,94,0.25);color:var(--success)';
-      b.innerHTML = '<span>✅</span><span>' + MA.T('monitor.rebalance.success') + '</span>';
-      c.insertBefore(b, c.firstChild);
-      setTimeout(function() { if (b.parentNode) b.remove(); }, 6000);
+      var suggestions = (res && res.suggestions) || [];
+      var ids = suggestions.map(function(s) { return s && s.id; }).filter(Boolean);
+      if (!ids.length) {
+        clearTimeout(tid);
+        _showRebalanceBanner(MA.T('monitor.rebalance.nothing') || 'Балансировка не требуется: предложений нет', false);
+        return null;
+      }
+      return fetch(MA.API_BASE + '/api/v1/admin/cluster/autosuggest/apply', {
+        method: 'POST',
+        headers: Object.assign({ 'Content-Type': 'application/json' }, headers),
+        body: JSON.stringify({ suggestion_ids: ids }),
+        signal: ctrl.signal
+      }).then(function(r2) {
+        if (!r2.ok) throw new Error('apply ' + r2.status + ' ' + r2.statusText);
+        return r2.json().then(function(body) {
+          return { applied: ids.length, body: body };
+        });
+      });
+    }).then(function(out) {
+      clearTimeout(tid);
+      if (!out) return;
+      console.log('[monitor] rebalance applied:', out);
+      _showRebalanceBanner(
+        (MA.T('monitor.rebalance.success') || 'Rebalance started') + ' (' + out.applied + ')',
+        true
+      );
       if (typeof window.fetchAll === 'function') window.fetchAll();
     }).catch(function(e) {
       clearTimeout(tid);

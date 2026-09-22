@@ -461,7 +461,17 @@ const GgufApi = (function () {
                 clearTimeout(timer);
                 const data = await response.json();
                 if (!response.ok) {
-                    return { success: false, error: data.error || 'HTTP ' + response.status };
+                    // R66c (2026-09-22): сохраняем структурные признаки ошибки.
+                    // Раньше здесь оставалось только {success:false, error}, и
+                    // поле retryWithForce терялось — UI показывал тупиковое
+                    // "Unload failed: ... busy" без способа выгрузить модель.
+                    return {
+                        success: false,
+                        error: data.error || 'HTTP ' + response.status,
+                        busy: data.busy === true,
+                        retryWithForce: data.retryWithForce === true,
+                        status: response.status
+                    };
                 }
                 return data;
             } catch (err) {
@@ -575,13 +585,19 @@ const GgufApi = (function () {
          * ждёт `?name=...` query param, не JSON body `{modelHandle}`,
          * что давало 400 "name query parameter is required".
          *
+         * R66c (2026-09-22): options.force=true прокидывается в cppworker как
+         * ?force=true и позволяет выгрузить ЗАНЯТУЮ модель (оборвав активные
+         * генерации). Без этого cppworker отвечает 409 и модель остаётся
+         * в памяти — из WebUI её было не выгрузить.
+         *
          * @param {string} backendId — backend ID (из current backend selector)
          * @param {string} modelHandle — model name/path
+         * @param {object} [options] — { force: true } для выгрузки занятой модели
          */
-        async unloadModel(backendId, modelHandle) {
+        async unloadModel(backendId, modelHandle, options) {
             // R60.32: используем manageModel → POST /api/v1/backends/{id}/models
             // вместо прямого вызова cppworker (который ждёт ?name=... query param).
-            return this.manageModel(backendId, 'unload', modelHandle);
+            return this.manageModel(backendId, 'unload', modelHandle, options || {});
         },
 
         /** List loaded models */

@@ -112,7 +112,7 @@
         if (typeof M.refreshDetail === 'function') M.refreshDetail();
     };
 
-    M.unloadOnSelectedBackend = function(handle) {
+    M.unloadOnSelectedBackend = function(handle, force) {
         const backend = M.currentBackend();
         if (!backend) {
             M.showToast(M._('gguf.no_backend_selected') || 'No backend selected', 'error');
@@ -123,8 +123,26 @@
             M.showToast('unloadModel API not available', 'error');
             return;
         }
-        api.unloadModel(backend.id, handle)
-            .then(function () {
+        // R66c (2026-09-22): force=true выгружает ЗАНЯТУЮ модель.
+        //
+        // cppworker отказывает в unload, если по модели есть активные
+        // inference-запросы: 409 + "model is busy with active inference
+        // requests", и принимает ?force=true (обрывает генерации). Раньше
+        // балансер этот флаг не прокидывал, и в UI не было никакого выхода:
+        // пользователь видел "Unload failed: ... busy" и модель оставалась
+        // в VRAM. Теперь на busy предлагаем подтверждение и повторяем с force.
+        api.unloadModel(backend.id, handle, force ? { force: true } : {})
+            .then(function (result) {
+                if (result && result.success === false) {
+                    if (result.retryWithForce || result.busy || result.status === 409) {
+                        var msg = M._('gguf.confirm_unload_force') ||
+                            'Модель занята активными запросами. Прервать их и выгрузить?';
+                        if (typeof confirm !== 'function' || !confirm(msg)) return;
+                        return M.unloadOnSelectedBackend(handle, true);
+                    }
+                    M.showToast('Unload failed: ' + (result.error || 'unknown error'), 'error');
+                    return;
+                }
                 M.showToast(M._('gguf.model_unloaded') || 'Model unloaded', 'success');
                 if (typeof M.refreshDetail === 'function') M.refreshDetail();
             })

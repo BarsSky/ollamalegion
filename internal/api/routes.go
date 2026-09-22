@@ -154,6 +154,21 @@ func (s *Server) setupRoutes() {
 	// Без аутентификации (как /monitor и /api/v1/health).
 	s.mux.HandleFunc("/health", s.healthUIHandler)
 
+	// R66c (2026-09-22): статика WebUI (css/js/img) для страниц, которые
+	// балансер отдаёт сам — /monitor и /health.
+	//
+	// docker/balancer/Dockerfile копирует webui/css, webui/js, webui/img в образ
+	// (/app/webui), но HTTP-маршрутов для них не существовало: модульная
+	// monitor.html запрашивала /js/modules/*.js и /css/*.css, получала 404 и
+	// выглядела пустой страницей. health.html это не задевало — она
+	// самодостаточна (вся i18n и стили inline).
+	if staticDir, ok := webuiStaticDir(); ok {
+		fileServer := http.FileServer(http.Dir(staticDir))
+		s.mux.Handle("/js/", fileServer)
+		s.mux.Handle("/css/", fileServer)
+		s.mux.Handle("/img/", fileServer)
+	}
+
 	// Restart endpoint (c аутентификацией и rate limiting, только от webui)
 	s.mux.Handle("/api/v1/admin/restart", AuthMiddleware(RateLimitMiddleware(s.restartHandler, s.rateLimiter), s.authenticator))
 

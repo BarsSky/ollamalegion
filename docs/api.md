@@ -2365,7 +2365,7 @@ docker run -d -p 8080:8080 -e SWAGGER_JSON=/api/swagger.json \
 | `POST` | `/api/v1/admin/restart` | Перезапуск балансировщика | ✅ |
 | `GET` | `/api/v1/proxy/logs` | Логи проксированных запросов | ✅ |
 | `GET` | `/api/v1/candidates` | Группы кандидатов по моделям | ✅ |
-| `GET` | `/monitor` | HTML-страница монитора | ✅ |
+| `GET` | `/monitor` | HTML-страница монитора (канонический `webui/monitor.html`; статика `/js`, `/css`, `/img` отдаётся тем же сервером). Данные требуют токена: `?token=<API_TOKEN>`. Основной путь для оператора — WebUI `/monitor.html` | ✅ |
 | `GET` | `/api/v1/ratelimit/status` | Статус rate limiter | ❌ |
 | `GET` | `/api/v1/replication/groups` | Список групп репликации | ✅ |
 | `POST` | `/api/v1/replication/groups` | Создать группу репликации | ✅ |

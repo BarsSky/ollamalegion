@@ -563,6 +563,7 @@ window.I18N_RU = {
   "monitor.rebalance.disabled": "[Demo] Принудительное перераспределение недоступно в демо-режиме.",
   "monitor.rebalance.success": "Перераспределение инициировано. Запросы в очереди будут перенаправлены на свободные бэкенды.",
   "monitor.rebalance.error": "Ошибка перераспределения: ",
+  "monitor.rebalance.nothing": "Перераспределение не требуется: предложений нет.",
 
   // Help modal (monitor)
   "monitor.help.title": "📖 Справка по режимам балансировки",
@@ -1058,6 +1059,7 @@ window.I18N_RU = {
   "gguf.confirm_delete_typed": "Для безвозвратного удаления \"{name}\"{size} с диска введите имя модели точно:",
   "gguf.delete_typed_mismatch": "Введённое имя не совпадает — удаление отменено для безопасности.",
   "gguf.confirm_unload": "Выгрузить эту модель из памяти?",
+  "gguf.confirm_unload_force": "Модель занята активными запросами. Прервать их и выгрузить?",
   "gguf.model_state_loaded": "Загружена",
   "gguf.model_state_unloaded": "Не загружена",
   "gguf.model_state_loading": "Загружается…",

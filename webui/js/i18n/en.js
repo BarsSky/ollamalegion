@@ -450,6 +450,7 @@ window.I18N_EN = {
   "monitor.rebalance.disabled": "[Demo] Force rebalance is unavailable in demo mode.",
   "monitor.rebalance.success": "Rebalance initiated. Queued requests will be redirected to free backends.",
   "monitor.rebalance.error": "Rebalance error: ",
+  "monitor.rebalance.nothing": "Nothing to rebalance: no suggestions.",
 
   // Help modal (monitor)
   "monitor.help.title": "📖 Balancing Modes Help",
@@ -1182,6 +1183,7 @@ window.I18N_EN = {
   "gguf.confirm_delete_typed": "To permanently delete \"{name}\"{size} from disk, type the model name exactly:",
   "gguf.delete_typed_mismatch": "Typed name does not match — delete cancelled for safety.",
   "gguf.confirm_unload": "Unload this model from memory?",
+  "gguf.confirm_unload_force": "The model is busy with active requests. Cancel them and unload?",
   "gguf.model_state_loaded": "Loaded",
   "gguf.model_state_unloaded": "Not loaded",
   "gguf.model_state_loading": "Loading…",

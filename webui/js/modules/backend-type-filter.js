@@ -58,30 +58,44 @@
 
             // 3. ОДИН синхронный запрос к серверу при первой загрузке
             //    (до того как clusterState / async config успели загрузиться)
+            //
+            // R66c (2026-09-22): путь был /api/v1/config — такого эндпоинта в
+            // балансере НЕТ (404 на каждой первой загрузке страницы). Реальный
+            // конфиг кластера: GET /api/v1/cluster/config, и он за
+            // AuthMiddleware — без токена вернёт 401. Поэтому синхронный запрос
+            // делаем только когда токен доступен; иначе тихо пропускаем и
+            // полагаемся на кэш/localStorage и асинхронный путь ниже.
             if (!this._syncAttempted && window.Api && window.Api.config) {
                 this._syncAttempted = true;
-                try {
-                    var xhr = new XMLHttpRequest();
-                    xhr.open('GET', (window.WEBUI_CONFIG && window.WEBUI_CONFIG.API_BASE || '') + '/api/v1/config', false);
-                    // R66b (2026-09-22): НЕ ставим xhr.timeout на синхронный запрос —
-                    // Chrome бросает InvalidAccessError ("Timeouts cannot be set for
-                    // synchronous requests"), из-за чего вся ветка синхронизации
-                    // падала в catch и в консоли появлялся warning на каждой загрузке.
-                    // Таймаут синхронного XHR всё равно не поддерживается — его роль
-                    // выполняет асинхронный путь ниже (_fetchConfigAsync).
-                    xhr.send();
-                    if (xhr.status >= 200 && xhr.status < 300) {
-                        var serverConfig = JSON.parse(xhr.responseText);
-                        window.__lastServerConfig = serverConfig;
-                        if (serverConfig && serverConfig.backendEngine) {
-                            var type = this._engineToType(serverConfig.backendEngine);
-                            localStorage.setItem(STORAGE_KEY, type);
-                            this.updateUI(type);
-                            return type;
+                var syncToken = (window.WEBUI_CONFIG && window.WEBUI_CONFIG.API_TOKEN) ||
+                    localStorage.getItem('apiToken') || '';
+                // Без токена синхронный запрос бессмысленен (401) — сразу
+                // переходим к асинхронному пути ниже.
+                if (syncToken) {
+                    try {
+                        var xhr = new XMLHttpRequest();
+                        xhr.open('GET', (window.WEBUI_CONFIG && window.WEBUI_CONFIG.API_BASE || '') + '/api/v1/cluster/config', false);
+                        xhr.setRequestHeader('X-API-Token', syncToken);
+                        // R66b (2026-09-22): НЕ ставим xhr.timeout на синхронный запрос —
+                        // Chrome бросает InvalidAccessError ("Timeouts cannot be set for
+                        // synchronous requests"), из-за чего вся ветка синхронизации
+                        // падала в catch и в консоли появлялся warning на каждой загрузке.
+                        // Таймаут синхронного XHR всё равно не поддерживается — его роль
+                        // выполняет асинхронный путь ниже (_fetchConfigAsync).
+                        xhr.send();
+                        if (xhr.status >= 200 && xhr.status < 300) {
+                            var serverConfig = JSON.parse(xhr.responseText);
+                            window.__lastServerConfig = serverConfig;
+                            if (serverConfig && serverConfig.backendEngine) {
+                                var type = this._engineToType(serverConfig.backendEngine);
+                                localStorage.setItem(STORAGE_KEY, type);
+                                this.updateUI(type);
+                                return type;
+                            }
                         }
+                    } catch (e) {
+                        console.warn('[BackendTypeFilter] Sync config fetch failed:', e);
                     }
-                } catch (e) {
-                    console.warn('[BackendTypeFilter] Sync config fetch failed:', e);
                 }
             } else {
                 // Помечаем что попытка была (даже если API недоступен)

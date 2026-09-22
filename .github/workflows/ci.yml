@@ -496,21 +496,33 @@ jobs:
             -DLLAMA_BUILD_EXAMPLES=OFF \
             -DLLAMA_BUILD_TOOLS=OFF \
             -DBUILD_SHARED_LIBS=OFF
-          make -j$(nproc) llama-common
-          echo "--- libllama-common.a ---"
-          ls -la common/libllama-common.a
+          # R66c (2026-09-22): собираем и `llama` (ядро), а не только
+          # llama-common — линковка теста требует llama_batch_init/
+          # llama_batch_free/llama_get_memory/... из libllama.a.
+          make -j$(nproc) llama-common llama
+          echo "--- libraries ---"
+          ls -la common/libllama-common.a src/libllama.a
+          find ggml -name 'libggml*.a' | sort
 
       - name: Build c/bridge regression test
         run: |
           set -e
           mkdir -p c/bridge/tests/build
           cd c/bridge/tests/build
-          # R66c (2026-09-22): путь был `../../../c/llama.cpp/...`, а из
-          # c/bridge/tests/build это резолвится в c/c/llama.cpp (не существует):
-          # realpath падал с "No such file or directory", COMMON_LIB приходил
-          # пустым, и конфигурация CMake валилась следом. Правильный путь —
+          # R66c: путь был `../../../c/llama.cpp/...`, а из c/bridge/tests/build
+          # это резолвится в c/c/llama.cpp (не существует): realpath падал с
+          # "No such file or directory", COMMON_LIB приходил пустым, и
+          # конфигурация CMake валилась следом. Правильный путь —
           # ../../../llama.cpp/... (= <repo>/c/llama.cpp/...).
-          cmake -DCOMMON_LIB=$(realpath ../../../llama.cpp/build/common/libllama-common.a) ..
+          COMMON_LIB_PATH=$(find ../../../llama.cpp/build/common -name 'libllama-common.a' | head -1)
+          LLAMA_LIB_PATH=$(find ../../../llama.cpp/build/src -name 'libllama.a' | head -1)
+          GGML_LIBS_PATHS=$(find ../../../llama.cpp/build/ggml -name 'libggml*.a' | sort | tr '\n' ';' | sed 's/;$//')
+          echo "COMMON_LIB=$COMMON_LIB_PATH"
+          echo "LLAMA_LIB=$LLAMA_LIB_PATH"
+          echo "GGML_LIBS=$GGML_LIBS_PATHS"
+          cmake -DCOMMON_LIB="$(realpath "$COMMON_LIB_PATH")" \
+                -DLLAMA_LIB="$(realpath "$LLAMA_LIB_PATH")" \
+                -DGGML_LIBS="$(echo "$GGML_LIBS_PATHS" | tr ';' '\n' | xargs -r realpath | tr '\n' ';' | sed 's/;$//')" ..
           make test_batch_n_tokens
 
       - name: Run test_batch_n_tokens

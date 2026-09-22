@@ -48,8 +48,25 @@ target_include_directories(test_batch_n_tokens PRIVATE
 
 # Link libllama-common.a (для llama_batch_init, llama_batch_free)
 # Передаётся через -DCOMMON_LIB=/path/to/libllama-common.a при cmake
+# Link libllama-common.a + ядро libllama.a + libggml*.a.
+#
+# R66c (2026-09-22): раньше линковалась ТОЛЬКО libllama-common.a, но она не
+# содержит ядра: llama_batch_init/llama_batch_free/llama_get_memory/
+# llama_memory_clear/llama_memory_seq_rm живут в libllama.a (+ libggml*.a).
+# Из-за этого сборка теста падала на линковке:
+#   test_batch_n_tokens.c:(.text+0x597): undefined reference to `llama_batch_free'
+#   bridge.c:(.text+0x12c): undefined reference to `llama_batch_init'
+# Пути к ядру и ggml передаёт CI (LLAMA_LIB / GGML_LIBS), а линкуем их одной
+# группой: у статических библиотек llama.cpp циклические зависимости.
+# stdc++ нужен, потому что llama.cpp написан на C++, а тест — на C.
 if(DEFINED COMMON_LIB)
-    target_link_libraries(test_batch_n_tokens PRIVATE ${COMMON_LIB})
+    if(DEFINED LLAMA_LIB)
+        target_link_libraries(test_batch_n_tokens PRIVATE
+            -Wl,--start-group ${COMMON_LIB} ${LLAMA_LIB} ${GGML_LIBS} -Wl,--end-group
+            stdc++ m pthread)
+    else()
+        target_link_libraries(test_batch_n_tokens PRIVATE ${COMMON_LIB})
+    endif()
 else()
     # Fallback: попробуй auto-detect (для разработки вне Docker)
     find_library(COMMON_LIB_AUTO llama-common

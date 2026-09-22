@@ -25,9 +25,19 @@ func (p *Proxy) DispatchWithModelLoad(model string) (string, time.Time) {
 }
 
 // SetBackendMetrics — установка метрик в MetricsManager для тестов
+//
+// R66c (2026-09-22): синхронизирует llamaMetrics так же, как боевой
+// UpdateMetrics. Без этого тест, который честно помечал модель загруженной
+// через LlamaCpp.LoadedModels, оставлял llamaMetrics пустым, и
+// IsModelRunningOnBackend(engine=llama_cpp) отвечал «не загружена» →
+// балансер уходил в auto-load и отдавал 503 вместо проксирования.
+// (Именно так падал TestLlamaCppProxy_StreamingResponse.)
 func (p *Proxy) SetBackendMetrics(backendID string, metrics *types.BackendMetrics) {
 	p.metricsMgr.mu.Lock()
 	p.metricsMgr.metrics[backendID] = metrics
+	if metrics != nil && len(metrics.LlamaCpp.LoadedModels) > 0 {
+		p.metricsMgr.llamaMetrics[backendID] = &metrics.LlamaCpp
+	}
 	p.metricsMgr.mu.Unlock()
 }
 

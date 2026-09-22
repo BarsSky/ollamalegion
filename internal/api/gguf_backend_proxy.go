@@ -147,7 +147,19 @@ func (s *Server) proxyToCppWorker(w http.ResponseWriter, r *http.Request, backen
 		req.Header.Del(types.HeaderXAPIToken)
 		// Некоторые развёртывания используют Authorization: Bearer — тоже чистим,
 		// если он пришёл от клиента, а не задан конфигом cppworker.
-		req.Header.Del(types.HeaderAuthorization)
+		//
+		// R66c (2026-09-22): НЕ чистим Authorization на HuggingFace-путях.
+		// Там клиент присылает свой HF-токен (`Authorization: Bearer hf_...`),
+		// и cppworker обязан передать его в huggingface.co — иначе скачивание
+		// приватных/лимитированных моделей падает с 401, хотя WebUI форму
+		// токена показывает и пользователь его заполнил.
+		//
+		// Смысл чистки (R65d) — не пустить клиентский токен БАЛАНСЕРА в
+		// cppworker как его собственный; HF-токен к авторизации cppworker
+		// отношения не имеет.
+		if !strings.HasPrefix(path, "/api/hf/") {
+			req.Header.Del(types.HeaderAuthorization)
+		}
 	}
 
 	log.Debugw("proxyToCppWorker",

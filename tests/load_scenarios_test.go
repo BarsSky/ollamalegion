@@ -10,6 +10,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -109,7 +110,7 @@ func TestLoadScenario_ModelLoadDelay(t *testing.T) {
 	assert.Contains(t, totalResponse, "mock", "Response should contain expected tokens")
 
 	// Проверяем, что счётчик запросов увеличился
-	assert.Equal(t, int64(1), mock.GenerateCount, "Mock should have received 1 generate request")
+	assert.Equal(t, int64(1), atomic.LoadInt64(&mock.GenerateCount), "Mock should have received 1 generate request")
 
 	t.Log("✅ СЦЕНАРИЙ 1: Model Load Delay пройден")
 }
@@ -471,13 +472,12 @@ func TestLoadScenario_MultiBackendFailover(t *testing.T) {
 		assert.Equal(t, "Hello world!", result["response"])
 
 		t.Logf("3a: mock1 (crashed) called %d times, mock2 (healthy) called %d times",
-			mock1.GenerateCount, mock2.GenerateCount)
+			atomic.LoadInt64(&mock1.GenerateCount), atomic.LoadInt64(&mock2.GenerateCount))
 
 		// Проверяем, что запрос попал на здоровый бэкенд
-		assert.Greater(t, mock2.GenerateCount, int64(0),
+		assert.Greater(t, atomic.LoadInt64(&mock2.GenerateCount), int64(0),
 			"Healthy backend should receive requests after failover")
 	})
-
 
 	t.Run("3b_AllBackendsDown", func(t *testing.T) {
 		// Все мок-серверы отвечают ошибкой
@@ -590,14 +590,14 @@ func TestLoadScenario_MultiBackendFailover(t *testing.T) {
 
 		t.Logf("3d: Statuses: %v", statuses)
 		t.Logf("3d: mock1 (rate-limited) called %d times, mock2 called %d times",
-			mock1.GenerateCount, mock2.GenerateCount)
+			atomic.LoadInt64(&mock1.GenerateCount), atomic.LoadInt64(&mock2.GenerateCount))
 
 		// Прокси пробрасывает HTTP ошибки как есть (by design)
 		// Запросы идут на mock1 (выбран по балансировке), после 2 запросов возвращается 429
 		// mock2 НЕ получает запросы (failover НЕ срабатывает для HTTP-level ошибок)
-		assert.Greater(t, mock1.GenerateCount, int64(2),
+		assert.Greater(t, atomic.LoadInt64(&mock1.GenerateCount), int64(2),
 			"mock1 should receive at least 3 requests (first 2 succeed, rest get rate-limited)")
-		assert.Equal(t, int64(0), mock2.GenerateCount,
+		assert.Equal(t, int64(0), atomic.LoadInt64(&mock2.GenerateCount),
 			"mock2 should NOT receive requests (HTTP errors are passed through, not failed over)")
 
 		// Проверяем, что после rate-limit приходят 429
@@ -611,7 +611,6 @@ func TestLoadScenario_MultiBackendFailover(t *testing.T) {
 			"At least one request should get 429 rate-limit response (proxy passes through HTTP errors)")
 		t.Logf("3d: %d/%d requests were rate-limited (429)", rateLimitedCount, len(statuses))
 	})
-
 
 	t.Log("✅ СЦЕНАРИЙ 3: Multi-Backend Failover пройден")
 }
@@ -902,10 +901,10 @@ func TestLoadScenario_ErrorHandling(t *testing.T) {
 				QueueTimeout: 60, QueueMaxSize: 100, QueueWorkers: 4,
 			},
 			Resources: types.ResourceLimits{
-				GPU: types.GPULimits{MaxUsagePercent: 90},
-				CPU: types.CPULimits{MaxUsagePercent: 90},
+				GPU:    types.GPULimits{MaxUsagePercent: 90},
+				CPU:    types.CPULimits{MaxUsagePercent: 90},
 				Memory: types.MemoryLimits{MaxUsagePercent: 90},
-				Disk: types.DiskLimits{MinFreeMB: 1024},
+				Disk:   types.DiskLimits{MinFreeMB: 1024},
 			},
 		}
 
@@ -913,8 +912,8 @@ func TestLoadScenario_ErrorHandling(t *testing.T) {
 		proxy.SetQueueManagerProxy()
 
 		proxy.UpdateMetrics("garbage-backend", &types.BackendMetrics{
-			ID: "garbage-backend",
-			GPU: types.GPUMetrics{UsagePercent: 30, MemoryTotal: 24576},
+			ID:     "garbage-backend",
+			GPU:    types.GPUMetrics{UsagePercent: 30, MemoryTotal: 24576},
 			System: types.SystemMetrics{CPUUsagePercent: 20, MemoryTotal: 65536, DiskFree: 20480},
 			Ollama: types.OllamaMetrics{
 				MaxModels: 5, MaxConcurrentRequests: 10, ActiveRequests: 0, OllamaAvailable: true,
@@ -1016,7 +1015,7 @@ func TestLoadScenario_SessionResilience(t *testing.T) {
 		assert.True(t, found, "Session should exist")
 
 		t.Logf("6a: Backend1 count: %d, Backend2 count: %d",
-			mock1.GenerateCount, mock2.GenerateCount)
+			atomic.LoadInt64(&mock1.GenerateCount), atomic.LoadInt64(&mock2.GenerateCount))
 	})
 
 	t.Run("6b_SessionFailover", func(t *testing.T) {
@@ -1190,7 +1189,6 @@ func TestLoadScenario_EdgeCases(t *testing.T) {
 		t.Log("7c: Concurrent updates and requests completed without deadlock")
 	})
 
-
 	t.Log("✅ СЦЕНАРИЙ 7: Edge Cases пройден")
 }
 
@@ -1239,9 +1237,9 @@ func TestLoadScenario_ComplexWorkload(t *testing.T) {
 		go func(id int) {
 			defer wg.Done()
 
-			isStreaming := id%3 == 0                                     // каждый 3-й — streaming
-			sessionID := fmt.Sprintf("complex-session-%d", id%3)         // 3 сессии
-			model := fmt.Sprintf("llama3.1:8b")                          // все к одной модели
+			isStreaming := id%3 == 0                             // каждый 3-й — streaming
+			sessionID := fmt.Sprintf("complex-session-%d", id%3) // 3 сессии
+			model := fmt.Sprintf("llama3.1:8b")                  // все к одной модели
 
 			payload := map[string]interface{}{
 				"model":  model,
@@ -1291,7 +1289,7 @@ func TestLoadScenario_ComplexWorkload(t *testing.T) {
 		numRequests, successCount, successCount*100/numRequests)
 
 	t.Logf("8: Backend counts: mock1=%d, mock2=%d, mock3=%d",
-		mock1.GenerateCount, mock2.GenerateCount, mock3.GenerateCount)
+		atomic.LoadInt64(&mock1.GenerateCount), atomic.LoadInt64(&mock2.GenerateCount), atomic.LoadInt64(&mock3.GenerateCount))
 
 	assert.GreaterOrEqual(t, successCount, numRequests*2/3,
 		"At least 2/3 of requests should succeed under complex workload")

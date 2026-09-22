@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"ollama-loadbalancer/internal/balancer"
@@ -20,19 +21,19 @@ import (
 // mockOllamaServer - мок-сервер Ollama API для тестирования проксирования
 type mockOllamaServer struct {
 	server        *httptest.Server
-	generateCount int
-	chatCount     int
-	embedCount    int
-	embed2Count   int
-	tagsCount     int
-	psCount       int
-	versionCount  int
-	showCount     int
-	createCount   int
-	pullCount     int
-	deleteCount   int
-	copyCount     int
-	pushCount     int
+	generateCount int64
+	chatCount     int64
+	embedCount    int64
+	embed2Count   int64
+	tagsCount     int64
+	psCount       int64
+	versionCount  int64
+	showCount     int64
+	createCount   int64
+	pullCount     int64
+	deleteCount   int64
+	copyCount     int64
+	pushCount     int64
 	mu            struct {
 		sync.Mutex
 		models []types.RunningModel
@@ -51,43 +52,43 @@ func newMockOllamaServer() *mockOllamaServer {
 func (m *mockOllamaServer) handleRequest(w http.ResponseWriter, r *http.Request) {
 	switch r.URL.Path {
 	case "/api/generate":
-		m.generateCount++
+		atomic.AddInt64(&m.generateCount, 1)
 		m.handleGenerate(w, r)
 	case "/api/chat":
-		m.chatCount++
+		atomic.AddInt64(&m.chatCount, 1)
 		m.handleChat(w, r)
 	case "/api/embeddings":
-		m.embedCount++
+		atomic.AddInt64(&m.embedCount, 1)
 		m.handleEmbeddings(w, r)
 	case "/api/embed":
-		m.embed2Count++
+		atomic.AddInt64(&m.embed2Count, 1)
 		m.handleEmbed(w, r)
 	case "/api/tags":
-		m.tagsCount++
+		atomic.AddInt64(&m.tagsCount, 1)
 		m.handleTags(w, r)
 	case "/api/ps":
-		m.psCount++
+		atomic.AddInt64(&m.psCount, 1)
 		m.handlePs(w, r)
 	case "/api/version":
-		m.versionCount++
+		atomic.AddInt64(&m.versionCount, 1)
 		m.handleVersion(w, r)
 	case "/api/show":
-		m.showCount++
+		atomic.AddInt64(&m.showCount, 1)
 		m.handleShow(w, r)
 	case "/api/create":
-		m.createCount++
+		atomic.AddInt64(&m.createCount, 1)
 		m.handleCreate(w, r)
 	case "/api/pull":
-		m.pullCount++
+		atomic.AddInt64(&m.pullCount, 1)
 		m.handlePull(w, r)
 	case "/api/delete":
-		m.deleteCount++
+		atomic.AddInt64(&m.deleteCount, 1)
 		m.handleDelete(w, r)
 	case "/api/copy":
-		m.copyCount++
+		atomic.AddInt64(&m.copyCount, 1)
 		m.handleCopy(w, r)
 	case "/api/push":
-		m.pushCount++
+		atomic.AddInt64(&m.pushCount, 1)
 		m.handlePush(w, r)
 	default:
 		w.WriteHeader(http.StatusNotFound)
@@ -510,13 +511,13 @@ func setupProxyWithMockOllama(t *testing.T, mock *mockOllamaServer) (*httptest.S
 			},
 		},
 		Balancing: types.BalancingSettings{
-			Algorithm:           types.AlgorithmResourceAware,
-			ModelAffinity:       true,
-			SessionStickiness:   true,
-			RequestTimeout:      30,
-			QueueTimeout:        60,
-			QueueMaxSize:        100,
-			QueueWorkers:        4,
+			Algorithm:         types.AlgorithmResourceAware,
+			ModelAffinity:     true,
+			SessionStickiness: true,
+			RequestTimeout:    30,
+			QueueTimeout:      60,
+			QueueMaxSize:      100,
+			QueueWorkers:      4,
 		},
 		Resources: types.ResourceLimits{
 			GPU: types.GPULimits{

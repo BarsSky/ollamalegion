@@ -47,7 +47,7 @@ func TestProxyOllama_Generate_NonStreaming(t *testing.T) {
 	assert.Equal(t, "llama3.1:8b", result["model"])
 	assert.Equal(t, "Hello world!", result["response"])
 	assert.Equal(t, true, result["done"])
-	assert.Equal(t, 1, mock.generateCount)
+	assert.Equal(t, 1, mock.GenerateCalls())
 }
 
 func TestProxyOllama_Generate_Streaming(t *testing.T) {
@@ -90,7 +90,7 @@ func TestProxyOllama_Generate_Streaming(t *testing.T) {
 	lastEvent := events[len(events)-1]
 	assert.Equal(t, true, lastEvent["done"])
 	assert.NotNil(t, lastEvent["total_duration"])
-	assert.Equal(t, 1, mock.generateCount)
+	assert.Equal(t, 1, mock.GenerateCalls())
 }
 
 func TestProxyOllama_Chat_NonStreaming(t *testing.T) {
@@ -125,7 +125,7 @@ func TestProxyOllama_Chat_NonStreaming(t *testing.T) {
 	assert.Equal(t, "assistant", message["role"])
 	assert.Equal(t, "Hi there!", message["content"])
 	assert.Equal(t, true, result["done"])
-	assert.Equal(t, 1, mock.chatCount)
+	assert.Equal(t, 1, mock.ChatCalls())
 }
 
 func TestProxyOllama_Chat_Streaming(t *testing.T) {
@@ -169,7 +169,7 @@ func TestProxyOllama_Chat_Streaming(t *testing.T) {
 
 	lastEvent := events[len(events)-1]
 	assert.Equal(t, true, lastEvent["done"])
-	assert.Equal(t, 1, mock.chatCount)
+	assert.Equal(t, 1, mock.ChatCalls())
 }
 
 func TestProxyOllama_Embeddings(t *testing.T) {
@@ -199,7 +199,7 @@ func TestProxyOllama_Embeddings(t *testing.T) {
 	embeddings, ok := result["embeddings"].([]interface{})
 	require.True(t, ok)
 	assert.Equal(t, 5, len(embeddings))
-	assert.Equal(t, 1, mock.embedCount)
+	assert.Equal(t, 1, mock.EmbedCalls())
 }
 
 func TestProxyOllama_Tags(t *testing.T) {
@@ -227,7 +227,7 @@ func TestProxyOllama_Tags(t *testing.T) {
 
 	model0 := models[0].(map[string]interface{})
 	assert.Equal(t, "llama3.1:8b", model0["name"])
-	assert.Equal(t, 1, mock.tagsCount)
+	assert.Equal(t, 1, mock.TagsCalls())
 }
 
 func TestProxyOllama_Ps(t *testing.T) {
@@ -269,7 +269,7 @@ func TestProxyOllama_Ps(t *testing.T) {
 	// бэкендам (llama.cpp — из llamaMetrics, Ollama — из метрик agent'а), иначе
 	// в кластере видно только случайный узел. Поэтому мок не должен получать
 	// запрос вовсе.
-	assert.Equal(t, 0, mock.psCount,
+	assert.Equal(t, 0, mock.PsCalls(),
 		"/api/ps агрегируется балансером из метрик, а не проксируется в один бэкенд")
 }
 
@@ -291,7 +291,7 @@ func TestProxyOllama_Version(t *testing.T) {
 	require.NoError(t, err)
 
 	assert.Equal(t, "ollamalegion-1.0.0", result["version"])
-	assert.Equal(t, 1, mock.versionCount)
+	assert.Equal(t, 1, mock.VersionCalls())
 }
 
 func TestProxyOllama_Show(t *testing.T) {
@@ -324,7 +324,7 @@ func TestProxyOllama_Show(t *testing.T) {
 	details, ok := result["details"].(map[string]interface{})
 	require.True(t, ok)
 	assert.Equal(t, "llama", details["family"])
-	assert.Equal(t, 1, mock.showCount)
+	assert.Equal(t, 1, mock.ShowCalls())
 }
 
 func TestProxyOllama_Create(t *testing.T) {
@@ -365,7 +365,7 @@ func TestProxyOllama_Create(t *testing.T) {
 
 	lastEvent := events[len(events)-1]
 	assert.Equal(t, "success", lastEvent["status"])
-	assert.Equal(t, 1, mock.createCount)
+	assert.Equal(t, 1, mock.CreateCalls())
 }
 
 func TestProxyOllama_Pull(t *testing.T) {
@@ -405,7 +405,7 @@ func TestProxyOllama_Pull(t *testing.T) {
 
 	lastEvent := events[len(events)-1]
 	assert.Equal(t, "success", lastEvent["status"])
-	assert.Equal(t, 1, mock.pullCount)
+	assert.Equal(t, 1, mock.PullCalls())
 }
 
 func TestProxyOllama_Delete(t *testing.T) {
@@ -439,7 +439,7 @@ func TestProxyOllama_Delete(t *testing.T) {
 
 	assert.Equal(t, true, result["deleted"])
 	assert.Equal(t, "llama3.1:8b", result["model"])
-	assert.Equal(t, 1, mock.deleteCount)
+	assert.Equal(t, 1, mock.DeleteCalls())
 }
 
 func TestProxyOllama_Copy(t *testing.T) {
@@ -468,7 +468,7 @@ func TestProxyOllama_Copy(t *testing.T) {
 	assert.Equal(t, true, result["copied"])
 	assert.Equal(t, "llama3.1:8b", result["source"])
 	assert.Equal(t, "llama3.1:8b-custom", result["destination"])
-	assert.Equal(t, 1, mock.copyCount)
+	assert.Equal(t, 1, mock.CopyCalls())
 }
 
 func TestProxyOllama_Push(t *testing.T) {
@@ -512,7 +512,7 @@ func TestProxyOllama_Push(t *testing.T) {
 
 	lastEvent := events[len(events)-1]
 	assert.Equal(t, "success", lastEvent["status"])
-	assert.Equal(t, 1, mock.pushCount)
+	assert.Equal(t, 1, mock.PushCalls())
 }
 
 // ==================== Тесты Session Stickiness ====================
@@ -570,7 +570,7 @@ func TestProxyOllama_SessionStickiness(t *testing.T) {
 	defer resp2.Body.Close()
 
 	assert.Equal(t, http.StatusOK, resp2.StatusCode)
-	assert.Equal(t, 2, mock.generateCount)
+	assert.Equal(t, 2, mock.GenerateCalls())
 }
 
 func TestProxyOllama_SessionStickiness_CookieFallback(t *testing.T) {
@@ -655,7 +655,7 @@ func TestProxyOllama_ModelAffinity(t *testing.T) {
 	defer resp.Body.Close()
 
 	assert.Equal(t, http.StatusOK, resp.StatusCode)
-	assert.Equal(t, 1, mock.generateCount)
+	assert.Equal(t, 1, mock.GenerateCalls())
 }
 
 // ==================== Тесты Retry / Failover ====================

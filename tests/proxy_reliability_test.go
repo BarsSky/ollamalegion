@@ -33,8 +33,8 @@ func TestProxyEmbed_NewEndpoint(t *testing.T) {
 	defer proxyServer.Close()
 
 	payload := map[string]interface{}{
-		"model":  "nomic-embed-text",
-		"input":  "Hello world",
+		"model": "nomic-embed-text",
+		"input": "Hello world",
 	}
 	body, _ := json.Marshal(payload)
 
@@ -61,8 +61,8 @@ func TestProxyEmbed_NewEndpoint(t *testing.T) {
 	assert.Greater(t, len(firstEmbed), 0, "Embedding vector should not be empty")
 
 	// Проверяем, что мок получил запрос именно на /api/embed
-	assert.Equal(t, 1, mock.embed2Count, "Should hit /api/embed handler")
-	assert.Equal(t, 0, mock.embedCount, "Should NOT hit /api/embeddings handler")
+	assert.Equal(t, 1, mock.Embed2Calls(), "Should hit /api/embed handler")
+	assert.Equal(t, 0, mock.EmbedCalls(), "Should NOT hit /api/embeddings handler")
 }
 
 // TestProxyEmbed_NoSessionStickiness проверяет, что /api/embed не привязывается
@@ -172,18 +172,18 @@ func TestProxyEmbed_ModelNotFoundThenAutoPull(t *testing.T) {
 			SessionStickiness: false,
 		},
 		Resources: types.ResourceLimits{
-			GPU: types.GPULimits{MaxUsagePercent: 90},
-			CPU: types.CPULimits{MaxUsagePercent: 90},
+			GPU:    types.GPULimits{MaxUsagePercent: 90},
+			CPU:    types.CPULimits{MaxUsagePercent: 90},
 			Memory: types.MemoryLimits{MaxUsagePercent: 90},
-			Disk: types.DiskLimits{MinFreeMB: 100},
+			Disk:   types.DiskLimits{MinFreeMB: 100},
 		},
 	}
 
 	proxy := balancer.NewProxy(config)
 	proxy.SetQueueManagerProxy()
 	proxy.UpdateMetrics("embed-backend", &types.BackendMetrics{
-		ID: "embed-backend",
-		GPU: types.GPUMetrics{UsagePercent: 20, MemoryTotal: 16384},
+		ID:     "embed-backend",
+		GPU:    types.GPUMetrics{UsagePercent: 20, MemoryTotal: 16384},
 		System: types.SystemMetrics{CPUUsagePercent: 15, DiskFree: 20480},
 		Ollama: types.OllamaMetrics{
 			MaxModels: 5, MaxConcurrentRequests: 10, OllamaAvailable: true,
@@ -260,8 +260,8 @@ func TestProxyEmbed_MultiBackend(t *testing.T) {
 
 	for i := range mocks {
 		proxy.UpdateMetrics(fmt.Sprintf("backend-%d", i+1), &types.BackendMetrics{
-			ID: fmt.Sprintf("backend-%d", i+1),
-			GPU: types.GPUMetrics{UsagePercent: 30, MemoryTotal: 24576, MemoryFree: 16576},
+			ID:     fmt.Sprintf("backend-%d", i+1),
+			GPU:    types.GPUMetrics{UsagePercent: 30, MemoryTotal: 24576, MemoryFree: 16576},
 			System: types.SystemMetrics{CPUUsagePercent: 20, MemoryTotal: 65536, DiskFree: 20480},
 			Ollama: types.OllamaMetrics{
 				MaxModels: 5, MaxConcurrentRequests: 10, ActiveRequests: 0, OllamaAvailable: true,
@@ -290,9 +290,9 @@ func TestProxyEmbed_MultiBackend(t *testing.T) {
 	}
 
 	// Проверяем, что оба бэкенда получили хотя бы один запрос
-	totalCalls := mock1.embed2Count + mock2.embed2Count
+	totalCalls := mock1.Embed2Calls() + mock2.Embed2Calls()
 	assert.Equal(t, 3, totalCalls, "All 3 embed requests should be processed by backends")
-	t.Logf("Backend1 embed count: %d, Backend2 embed count: %d", mock1.embed2Count, mock2.embed2Count)
+	t.Logf("Backend1 embed count: %d, Backend2 embed count: %d", mock1.Embed2Calls(), mock2.Embed2Calls())
 }
 
 // TestProxyEmbed_ModelNotInRunningModels проверяет сценарий, когда модель
@@ -307,8 +307,8 @@ func TestProxyEmbed_ModelNotInRunningModels(t *testing.T) {
 
 	// Обновляем метрики — nomic-embed-text НЕ в списке running models
 	proxy.UpdateMetrics("ollama-test", &types.BackendMetrics{
-		ID: "ollama-test",
-		GPU: types.GPUMetrics{UsagePercent: 30, MemoryTotal: 24576, MemoryFree: 16576},
+		ID:     "ollama-test",
+		GPU:    types.GPUMetrics{UsagePercent: 30, MemoryTotal: 24576, MemoryFree: 16576},
 		System: types.SystemMetrics{CPUUsagePercent: 20, MemoryTotal: 65536, DiskFree: 20480},
 		Ollama: types.OllamaMetrics{
 			MaxModels: 5, MaxConcurrentRequests: 10, ActiveRequests: 0, OllamaAvailable: true,
@@ -335,7 +335,7 @@ func TestProxyEmbed_ModelNotInRunningModels(t *testing.T) {
 	err = json.NewDecoder(resp.Body).Decode(&result)
 	require.NoError(t, err)
 	assert.Equal(t, "nomic-embed-text", result["model"])
-	assert.Equal(t, 1, mock.embed2Count, "Request should hit /api/embed handler")
+	assert.Equal(t, 1, mock.Embed2Calls(), "Request should hit /api/embed handler")
 }
 
 // =============================================================================
@@ -407,8 +407,8 @@ func TestProxyGenerate_FirstRequestWarmup_Success(t *testing.T) {
 	proxy := balancer.NewProxy(config)
 	proxy.SetQueueManagerProxy()
 	proxy.UpdateMetrics("warmup-backend", &types.BackendMetrics{
-		ID: "warmup-backend",
-		GPU: types.GPUMetrics{UsagePercent: 20, MemoryTotal: 24576, MemoryFree: 16576},
+		ID:     "warmup-backend",
+		GPU:    types.GPUMetrics{UsagePercent: 20, MemoryTotal: 24576, MemoryFree: 16576},
 		System: types.SystemMetrics{CPUUsagePercent: 15, MemoryTotal: 65536, DiskFree: 20480},
 		Ollama: types.OllamaMetrics{
 			MaxModels: 5, MaxConcurrentRequests: 10, ActiveRequests: 0, OllamaAvailable: true,
@@ -453,8 +453,8 @@ func TestProxyGenerate_FirstRequestStreaming_Warmup(t *testing.T) {
 
 	// Убираем модель из running models, чтобы прокси её "искал"
 	proxy.UpdateMetrics("ollama-test", &types.BackendMetrics{
-		ID: "ollama-test",
-		GPU: types.GPUMetrics{UsagePercent: 30, MemoryTotal: 24576, MemoryFree: 16576},
+		ID:     "ollama-test",
+		GPU:    types.GPUMetrics{UsagePercent: 30, MemoryTotal: 24576, MemoryFree: 16576},
 		System: types.SystemMetrics{CPUUsagePercent: 20, MemoryTotal: 65536, DiskFree: 20480},
 		Ollama: types.OllamaMetrics{
 			MaxModels: 5, MaxConcurrentRequests: 10, ActiveRequests: 0, OllamaAvailable: true,
@@ -558,7 +558,7 @@ func TestProxyGenerate_ConcurrentFirstRequestsSynced(t *testing.T) {
 	}
 
 	// Проверяем, что все запросы долетели до бэкенда
-	assert.Equal(t, numRequests, mock.generateCount,
+	assert.Equal(t, numRequests, mock.GenerateCalls(),
 		"All %d concurrent requests should reach backend", numRequests)
 }
 
@@ -622,7 +622,7 @@ func TestProxyGenerate_FirstRequestSessionBind(t *testing.T) {
 	assert.Equal(t, http.StatusOK, resp2.StatusCode)
 
 	// Оба запроса обработаны
-	assert.Equal(t, 2, mock.generateCount)
+	assert.Equal(t, 2, mock.GenerateCalls())
 }
 
 // =============================================================================
@@ -776,24 +776,24 @@ func TestIntegration_BackendFailover(t *testing.T) {
 			RequestTimeout: 5, QueueTimeout: 10, QueueMaxSize: 10, QueueWorkers: 1,
 		},
 		Resources: types.ResourceLimits{
-			GPU: types.GPULimits{MaxUsagePercent: 90},
-			CPU: types.CPULimits{MaxUsagePercent: 90},
+			GPU:    types.GPULimits{MaxUsagePercent: 90},
+			CPU:    types.CPULimits{MaxUsagePercent: 90},
 			Memory: types.MemoryLimits{MaxUsagePercent: 90},
-			Disk: types.DiskLimits{MinFreeMB: 100},
+			Disk:   types.DiskLimits{MinFreeMB: 100},
 		},
 	}
 
 	proxy := balancer.NewProxy(config)
 	proxy.SetQueueManagerProxy()
 	proxy.UpdateMetrics("fail-backend", &types.BackendMetrics{
-		ID: "fail-backend",
-		GPU: types.GPUMetrics{UsagePercent: 50, MemoryTotal: 16384},
+		ID:     "fail-backend",
+		GPU:    types.GPUMetrics{UsagePercent: 50, MemoryTotal: 16384},
 		System: types.SystemMetrics{CPUUsagePercent: 40, DiskFree: 20480},
 		Ollama: types.OllamaMetrics{MaxModels: 2, MaxConcurrentRequests: 5, OllamaAvailable: false},
 	})
 	proxy.UpdateMetrics("working-backend", &types.BackendMetrics{
-		ID: "working-backend",
-		GPU: types.GPUMetrics{UsagePercent: 20, MemoryTotal: 24576},
+		ID:     "working-backend",
+		GPU:    types.GPUMetrics{UsagePercent: 20, MemoryTotal: 24576},
 		System: types.SystemMetrics{CPUUsagePercent: 15, DiskFree: 40960},
 		Ollama: types.OllamaMetrics{
 			MaxModels: 5, MaxConcurrentRequests: 10, ActiveRequests: 0, OllamaAvailable: true,
@@ -1102,8 +1102,8 @@ func TestResponseIntegrity_TimeoutHandling(t *testing.T) {
 	proxy := balancer.NewProxy(config)
 	proxy.SetQueueManagerProxy()
 	proxy.UpdateMetrics("slow-backend", &types.BackendMetrics{
-		ID: "slow-backend",
-		GPU: types.GPUMetrics{UsagePercent: 20, MemoryTotal: 16384},
+		ID:     "slow-backend",
+		GPU:    types.GPUMetrics{UsagePercent: 20, MemoryTotal: 16384},
 		System: types.SystemMetrics{CPUUsagePercent: 15, DiskFree: 20480},
 		Ollama: types.OllamaMetrics{
 			MaxModels: 5, MaxConcurrentRequests: 10, OllamaAvailable: true,

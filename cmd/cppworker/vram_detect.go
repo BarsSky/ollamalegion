@@ -198,10 +198,29 @@ func tryNvidiaSMIFree() int64 {
 // пропустит проверку RAM).
 func availableRAMBytes() int64 {
 	// Стратегия 1: ENV override (тесты, CI, non-standard окружения).
+	//
+	// R66c (2026-09-22): если переменная ЗАДАНА, но значение некорректно —
+	// возвращаем 0 и громко предупреждаем, НЕ проваливаясь в автоопределение.
+	//
+	// Раньше некорректное значение молча игнорировалось и выполнялась стратегия 2:
+	// на Linux подхватывался /proc/meminfo, поэтому явная (но ошибочная)
+	// настройка оператора «не отрабатывала», а заметить это было нечем —
+	// на Windows /proc/meminfo нет, и поведение отличалось от Linux
+	// (именно так расходились локальный прогон и CI:
+	// TestAvailableRAMBytes_InvalidEnv).
+	//
+	// 0 = «достоверно неизвестно» → AutoTuneNCtx пропускает RAM-проверку
+	// (консервативно), вместо того чтобы считать по чужим цифрам.
 	if v := os.Getenv("CPPWORKER_AVAILABLE_RAM_BYTES"); v != "" {
-		if n, err := strconv.ParseInt(v, 10, 64); err == nil && n > 0 {
+		n, err := strconv.ParseInt(v, 10, 64)
+		if err == nil && n > 0 {
 			return n
 		}
+		logger.Get().Warnw("CPPWORKER_AVAILABLE_RAM_BYTES задан, но некорректен — "+
+			"автоопределение RAM пропущено, возвращаем 0 (AutoTune пропустит RAM-проверку). "+
+			"Ожидалось положительное целое число байт.",
+			"value", v, "parse_error", err)
+		return 0
 	}
 
 	// Стратегия 2: Linux /proc/meminfo MemAvailable.

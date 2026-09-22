@@ -93,12 +93,20 @@ func (r *reloadDedupRegistry) StartReloadIfNotPending(
 
 	go func() {
 		callerFn(entry)
-		close(entry.done)
+		// R66d (2026-09-22): сначала удаляем запись из реестра, и только потом
+		// закрываем done. close(done) — это публикация «reload завершён», и тот,
+		// кто проснулся по нему, вправе ожидать, что реестр уже чист
+		// (IsReloadPending == false). В обратном порядке окно между close и
+		// delete наблюдалось как флейк TestReloadDedup_WaitDoneSuccess под -race:
+		// WaitReloadDone возвращал nil, а IsReloadPending ещё секунду был true.
+		// entry.err пишется callerFn'ом до close, поэтому после <-done он
+		// читается без гонки.
 		r.mu.Lock()
 		if cur, ok := r.entries[key]; ok && cur == entry {
 			delete(r.entries, key)
 		}
 		r.mu.Unlock()
+		close(entry.done)
 	}()
 
 	return entry, true

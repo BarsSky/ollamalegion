@@ -1,7 +1,9 @@
 package api
 
 import (
+	"bytes"
 	"encoding/json"
+	"io"
 	"net/http"
 
 	"ollama-loadbalancer/pkg/logger"
@@ -291,12 +293,40 @@ func (s *Server) clusterConfigHandler(w http.ResponseWriter, r *http.Request) {
 			VirtualModels    *types.VirtualModelsConfig    `json:"virtualModels,omitempty"`
 			DistInference    *types.DistInferenceConfig    `json:"distInference,omitempty"`
 		}
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		// R66c (2026-09-22): тело читаем один раз. Нужно и для decode, и чтобы
+		// отличить «секция прислана без ключа enabled» от «enabled: false» —
+		// см. preserveEnabled ниже. Раньше секции ниже делали ПОЛНУЮ замену
+		// структуры по частичному payload'у и затирали флаг Enabled нулевым
+		// значением, обнуляя то, что только что выставил переключатель
+		// operatingMode.
+		bodyBytes, readErr := io.ReadAll(r.Body)
+		if readErr != nil {
+			s.writeJSON(w, http.StatusBadRequest, map[string]interface{}{
+				"success": false,
+				"error":   "Failed to read request body",
+			})
+			return
+		}
+		if err := json.NewDecoder(bytes.NewReader(bodyBytes)).Decode(&req); err != nil {
 			s.writeJSON(w, http.StatusBadRequest, map[string]interface{}{
 				"success": false,
 				"error":   "Invalid request body",
 			})
 			return
+		}
+
+		// Какие ключи реально пришли в каждой секции. Если "enabled" в секции
+		// нет — сохраняем текущее значение (его выставил переключатель режима
+		// выше), а не сбрасываем в false.
+		var rawSections map[string]map[string]json.RawMessage
+		_ = json.Unmarshal(bodyBytes, &rawSections)
+		sectionHasEnabled := func(section string) bool {
+			sec, ok := rawSections[section]
+			if !ok {
+				return false
+			}
+			_, ok = sec["enabled"]
+			return ok
 		}
 
 		// Track which fields were updated (for response)
@@ -474,6 +504,15 @@ func (s *Server) clusterConfigHandler(w http.ResponseWriter, r *http.Request) {
 			// endpoint'ами /api/v1/replication/*), поэтому сохраняем текущие,
 			// чтобы не потерять их при перезаписи структуры.
 			req.ModelReplication.Groups = s.config.Balancing.ModelReplication.Groups
+			// R66c: если ключа "enabled" в payload'е НЕТ — сохраняем текущее
+			// значение. Иначе полная замена структуры обнуляла флаг, который
+			// выставил переключатель operatingMode выше, и получалось
+			// «режим replication выбран, а ModelReplication.Enabled=false» —
+			// т.е. режим выбран, но ничего не реплицируется.
+			// (TestWebUIConfigSyncHardRule, tests/balancer_config_sync_test.go:383)
+			if !sectionHasEnabled("modelReplication") {
+				req.ModelReplication.Enabled = s.config.Balancing.ModelReplication.Enabled
+			}
 			s.config.Balancing.ModelReplication = *req.ModelReplication
 			updatedFields = append(updatedFields, "modelReplication")
 		}
@@ -485,6 +524,11 @@ func (s *Server) clusterConfigHandler(w http.ResponseWriter, r *http.Request) {
 			// Embedded выставляется деплоем (in-process coordinator); UI его не
 			// присылает, поэтому не затираем текущее значение.
 			req.RpcCoordinator.Embedded = s.config.Balancing.RpcCoordinator.Embedded
+			// R66c: см. комментарий в блоке ModelReplication — не обнуляем
+			// Enabled, если ключ не пришёл.
+			if !sectionHasEnabled("rpcCoordinator") {
+				req.RpcCoordinator.Enabled = s.config.Balancing.RpcCoordinator.Enabled
+			}
 			s.config.Balancing.RpcCoordinator = *req.RpcCoordinator
 			updatedFields = append(updatedFields, "rpcCoordinator")
 		}
@@ -493,12 +537,20 @@ func (s *Server) clusterConfigHandler(w http.ResponseWriter, r *http.Request) {
 			// Список VirtualModel'ов управляется через /api/v1/virtual-models;
 			// сохраняем его, чтобы PUT формы не удалил зарегистрированные модели.
 			req.VirtualModels.Models = s.config.Balancing.VirtualModels.Models
+			// R66c: не обнуляем Enabled, если ключ не пришёл.
+			if !sectionHasEnabled("virtualModels") {
+				req.VirtualModels.Enabled = s.config.Balancing.VirtualModels.Enabled
+			}
 			s.config.Balancing.VirtualModels = *req.VirtualModels
 			updatedFields = append(updatedFields, "virtualModels")
 		}
 
 		if req.DistInference != nil {
 			req.DistInference.Workers = s.config.Balancing.DistInference.Workers
+			// R66c: не обнуляем Enabled, если ключ не пришёл.
+			if !sectionHasEnabled("distInference") {
+				req.DistInference.Enabled = s.config.Balancing.DistInference.Enabled
+			}
 			s.config.Balancing.DistInference = *req.DistInference
 			updatedFields = append(updatedFields, "distInference")
 		}

@@ -574,17 +574,34 @@ retrySucceeded:
 //   - Если тело ответа не-SSE (Content-Type отличается) — проксируется как
 //     обычный JSON с заданным Content-Length, без heartbeat.
 func (p *Proxy) proxyRequestOpenAIStreaming(w http.ResponseWriter, r *http.Request, resp *http.Response, backendID string) error {
-	defer resp.Body.Close()
-
 	// Round 31 #6 real fix (2026-08-09): hijack-based client disconnect detection.
 	// Если w поддерживает http.Hijacker — используем hijack path для <1s detection.
 	// Иначе (HTTP/2, wrapped writer) — fallback к legacy w.Write + ReadTimeout=30s.
 	if hj, ok := w.(http.Hijacker); ok {
 		logger.Get().Infow("Round 31 #6 hijack: using hijack path", "backend", backendID)
 		return p.proxyRequestOpenAIStreamingHijacked(w, r, resp, backendID, hj)
-	} else {
-		logger.Get().Infow("Round 31 #6 hijack: NOT supported, using fallback", "backend", backendID, "w_type", fmt.Sprintf("%T", w))
 	}
+	logger.Get().Infow("Round 31 #6 hijack: NOT supported, using fallback", "backend", backendID, "w_type", fmt.Sprintf("%T", w))
+
+	return p.proxyRequestOpenAIStreamingLegacy(w, r, resp, backendID)
+}
+
+// proxyRequestOpenAIStreamingLegacy — SSE-стриминг БЕЗ hijack'а: пишет в
+// обычный http.ResponseWriter и полагается на отмену через r.Context().
+//
+// R66c (2026-09-22): ВЫДЕЛЕНО из proxyRequestOpenAIStreaming в отдельную
+// функцию, потому что раньше fallback при ОШИБКЕ hijack'а звал обратно
+// диспетчер — `p.proxyRequestOpenAIStreaming(w, ...)`
+// (proxy_request_hijack.go:119). Диспетчер снова видел, что w реализует
+// http.Hijacker (динамический тип не меняется), снова звал Hijacked, тот
+// снова получал ошибку и снова звал диспетчер — бесконечная взаимная
+// рекурсия, `fatal error: stack overflow` и падение всего процесса
+// балансера (не паники в горутине, а именно смерть процесса).
+// Воспроизводилось локально: `go test -short ./tests/...` падал со stack
+// overflow. Теперь оба входа (нет Hijacker'а / hijack не удался) ведут
+// сюда напрямую, без повторной проверки интерфейса.
+func (p *Proxy) proxyRequestOpenAIStreamingLegacy(w http.ResponseWriter, r *http.Request, resp *http.Response, backendID string) error {
+	defer resp.Body.Close()
 
 	// 0. Проверка статус-кода: если upstream вернул не-2xx, не начинаем SSE-стрим,
 	// а возвращаем структурированную ошибку. Без этой проверки клиент получает

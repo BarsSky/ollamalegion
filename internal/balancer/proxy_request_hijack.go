@@ -64,6 +64,64 @@ func writeChunkedString(bufrw *bufio.ReadWriter, s string) error {
 	return writeChunkedFrame(bufrw, []byte(s))
 }
 
+// hijackReservedHeaders — заголовки, которые hijack-путь пишет вручную
+// (content-length считается по фактически записанному телу, поэтому значение
+// upstream'а использовать нельзя).
+var hijackReservedHeaders = map[string]bool{
+	"content-type":      true,
+	"content-length":    true,
+	"transfer-encoding": true,
+	"connection":        true,
+}
+
+// hijackSSEReservedHeaders — то же + заголовки, которые SSE-ветка пишет
+// вручную до вызова хелпера.
+var hijackSSEReservedHeaders = map[string]bool{
+	"content-type":      true,
+	"content-length":    true,
+	"transfer-encoding": true,
+	"connection":        true,
+	"cache-control":     true,
+	"x-accel-buffering": true,
+}
+
+// writeHijackedHeaders — пишет заголовки вручную собранного HTTP/1.1 ответа
+// (hijack-путь) в порядке приоритета:
+//
+//  1. всё, что балансер уже положил в w.Header() — X-Backend-ID, X-Session-ID,
+//     X-Model-* (addModelCapabilitiesHeaders), CORS (выставляется в ServeHTTP);
+//  2. заголовки upstream-ответа, которых ещё нет (кроме access-control-*:
+//     CORS должен остаться тем, что выставил балансер).
+//
+// R66c (2026-09-22): РАНЬШЕ hijack-путь копировал только resp.Header и
+// полностью игнорировал w.Header(). Из-за этого на всех hijack'нутых ответах
+// клиент не получал ни X-Backend-ID (какой бэкенд обслужил запрос), ни
+// X-Session-ID, ни X-Model-*, ни CORS — хотя обычный (не-hijack) путь их
+// отдаёт, а в ServeHTTP CORS выставляется для всех ответов. Нашлось через
+// tests/TestServeHTTP_LlamaCppRequest_RoutedToLlamaCppBackend: запрос
+// обслуживался успешно (200), но X-Backend-ID в ответе отсутствовал.
+func writeHijackedHeaders(bufrw *bufio.ReadWriter, w http.ResponseWriter, upstream http.Header, skip map[string]bool) {
+	written := make(map[string]bool, 24)
+
+	add := func(key string, values []string, skipKey func(string) bool) {
+		lk := strings.ToLower(key)
+		if written[lk] || skip[lk] || (skipKey != nil && skipKey(lk)) {
+			return
+		}
+		written[lk] = true
+		for _, v := range values {
+			bufrw.WriteString(fmt.Sprintf("%s: %s\r\n", key, v))
+		}
+	}
+
+	for key, values := range w.Header() {
+		add(key, values, nil)
+	}
+	for key, values := range upstream {
+		add(key, values, func(lk string) bool { return strings.HasPrefix(lk, "access-control-") })
+	}
+}
+
 // proxyRequestOpenAIStreamingHijacked — hijack-based version для streaming
 // ответов где нужна <1s client disconnect detection.
 //
@@ -116,7 +174,13 @@ func (p *Proxy) proxyRequestOpenAIStreamingHijacked(
 	if hijackErr != nil {
 		logger.Get().Warnw("hijack failed, using fallback path",
 			"backend", backendID, "error", hijackErr)
-		return p.proxyRequestOpenAIStreaming(w, r, resp, backendID)
+		// R66c (2026-09-22): звать отсюда p.proxyRequestOpenAIStreaming НЕЛЬЗЯ.
+		// w по-прежнему реализует http.Hijacker (динамический тип не изменился),
+		// поэтому диспетчер снова уйдёт в hijack-ветку, снова получит ошибку и
+		// снова попадёт сюда — бесконечная взаимная рекурсия и
+		// `fatal error: stack overflow` (падение процесса балансера).
+		// Идём сразу в legacy-реализацию, минуя повторную проверку интерфейса.
+		return p.proxyRequestOpenAIStreamingLegacy(w, r, resp, backendID)
 	}
 	defer clientConn.Close()
 
@@ -171,6 +235,10 @@ func (p *Proxy) proxyRequestOpenAIStreamingHijacked(
 		bufrw.WriteString(fmt.Sprintf("Content-Type: %s\r\n", contentType))
 		bufrw.WriteString(fmt.Sprintf("Content-Length: %d\r\n", len(body)))
 		bufrw.WriteString("Connection: close\r\n")
+		// R66c: заголовки балансера (X-Backend-ID / X-Session-ID / X-Model-* /
+		// CORS) + заголовки upstream'а, которых ещё нет. Раньше здесь не
+		// отдавалось ни то, ни другое.
+		writeHijackedHeaders(bufrw, w, resp.Header, hijackReservedHeaders)
 		bufrw.WriteString("\r\n")
 		bufrw.Write(body)
 		bufrw.Flush()
@@ -208,18 +276,10 @@ func (p *Proxy) proxyRequestOpenAIStreamingHijacked(
 	bufrw.WriteString("Transfer-Encoding: chunked\r\n")
 	bufrw.WriteString("Connection: keep-alive\r\n")
 	bufrw.WriteString("X-Accel-Buffering: no\r\n")
-	// Copy selected upstream headers.
-	for key, values := range resp.Header {
-		keyLower := strings.ToLower(key)
-		if keyLower == "content-type" || keyLower == "transfer-encoding" ||
-			keyLower == "content-length" || keyLower == "connection" ||
-			strings.HasPrefix(keyLower, "access-control-") {
-			continue
-		}
-		for _, value := range values {
-			bufrw.WriteString(fmt.Sprintf("%s: %s\r\n", key, value))
-		}
-	}
+	// Copy selected headers: сначала заголовки балансера из w.Header()
+	// (X-Backend-ID / X-Session-ID / X-Model-* / CORS), затем upstream'а.
+	// R66c: раньше w.Header() здесь терялся целиком (см. writeHijackedHeaders).
+	writeHijackedHeaders(bufrw, w, resp.Header, hijackSSEReservedHeaders)
 	bufrw.WriteString("\r\n")
 	bufrw.Flush()
 

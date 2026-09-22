@@ -321,16 +321,35 @@
     </div>
   </div>
 
+  <!-- R66c (2026-09-22): страница не подключала config.js, поэтому
+       window.WEBUI_CONFIG на ней не существовал, и токен взять было негде —
+       GET /api/v1/virtual-models закрыт AuthMiddleware, страница получала 401
+       и выглядела пустой. config.js генерируется entrypoint'ом контейнера
+       WebUI и содержит API_TOKEN. -->
+  <script src="js/modules/config.js?v=R66d"></script>
   <script>
     const API_BASE = '/api/v1/virtual-models';
     let autoRefreshInterval = null;
     let editingName = null;
 
+    // R66c (2026-09-22): страница не отправляла X-API-Token вообще, а
+    // /api/v1/virtual-models закрыт AuthMiddleware — браузер получал 401, и
+    // вкладка выглядела пустой (в списке моделей ничего не отображалось).
+    // Порядок источников токена как в остальном WebUI: WEBUI_CONFIG.API_TOKEN
+    // (инжектится entrypoint'ом WebUI), затем localStorage.apiToken.
+    function apiHeaders(extra) {
+      const token = (window.WEBUI_CONFIG && window.WEBUI_CONFIG.API_TOKEN) ||
+        localStorage.getItem('apiToken') || '';
+      const h = Object.assign({}, extra || {});
+      if (token) h['X-API-Token'] = token;
+      return h;
+    }
+
     // ==== Data loading ====
 
     async function loadAll() {
       try {
-        const resp = await fetch(API_BASE);
+        const resp = await fetch(API_BASE, { headers: apiHeaders() });
         if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
         const data = await resp.json();
 
@@ -443,7 +462,7 @@
       try {
         const resp = await fetch(API_BASE, {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
+          headers: apiHeaders({ 'Content-Type': 'application/json' }),
           body: JSON.stringify(body),
         });
         if (!resp.ok) {
@@ -465,6 +484,7 @@
       try {
         const resp = await fetch(`${API_BASE}/${encodeURIComponent(name)}`, {
           method: 'DELETE',
+          headers: apiHeaders(),
         });
         if (!resp.ok) {
           const errText = await resp.text();

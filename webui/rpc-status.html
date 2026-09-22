@@ -194,16 +194,29 @@
     <pre class="metrics" id="raw-metrics">Loading...</pre>
   </div>
 
+  <!-- R66c (2026-09-22): страница не подключала config.js, поэтому
+       window.WEBUI_CONFIG отсутствовал и токен взять было негде —
+       /api/v1/rpc/metrics закрыт AuthMiddleware → 401 и пустая страница.
+       config.js генерируется entrypoint'ом контейнера WebUI (API_TOKEN). -->
+  <script src="js/modules/config.js?v=R66d"></script>
   <script>
-    const API_TOKEN = localStorage.getItem('apiToken') || '';
+    // R66c (2026-09-22): токен берём из того же источника, что и остальной
+    // WebUI. Раньше читался только localStorage.apiToken: если токен
+    // инжектится entrypoint'ом в WEBUI_CONFIG (штатный путь для контейнера),
+    // страница уходила на /api/v1/rpc/metrics без заголовка и получала 401.
+    function authToken() {
+      return (window.WEBUI_CONFIG && window.WEBUI_CONFIG.API_TOKEN) ||
+        localStorage.getItem('apiToken') || '';
+    }
     const API_BASE = window.location.origin + '/api/v1';
 
     let autoTimer = null;
 
     async function loadMetrics() {
       const url = API_BASE + '/rpc/metrics';
+      const token = authToken();
       const resp = await fetch(url, {
-        headers: API_TOKEN ? { 'X-API-Token': API_TOKEN } : {}
+        headers: token ? { 'X-API-Token': token } : {}
       });
       if (resp.status === 503) {
         showDisabled();

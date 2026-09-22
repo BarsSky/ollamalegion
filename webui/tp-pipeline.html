@@ -161,13 +161,30 @@
   <div class="tp-grid" id="tp-grid"></div>
   <div id="result"></div>
 
+<!-- R66c (2026-09-22): без config.js на странице нет window.WEBUI_CONFIG, а
+     значит и API_TOKEN — /api/v1/rpc/tp/* закрыт AuthMiddleware, и страница
+     получала 401. config.js генерируется entrypoint'ом контейнера WebUI. -->
+<script src="js/modules/config.js?v=R66d"></script>
 <script>
 const API = '/api/v1/rpc/tp';
 
+// R66c (2026-09-22): токен читался из localStorage под ключом 'api_token',
+// которого в WebUI НИКТО не пишет (везде используется 'apiToken', см.
+// monitor/init.js, rpc-status.html, js/modules/api.js). Из-за этого страница
+// уходила на /api/v1/rpc/tp/* без заголовка X-API-Token, получала 401 и
+// выглядела пустой. Тот же порядок источников, что и в остальном UI:
+// сначала WEBUI_CONFIG.API_TOKEN (его инжектит entrypoint WebUI), затем
+// localStorage.apiToken.
+function authToken() {
+  return (window.WEBUI_CONFIG && window.WEBUI_CONFIG.API_TOKEN) ||
+    localStorage.getItem('apiToken') || '';
+}
+
 async function fetchJSON(url, opts = {}) {
-  const token = localStorage.getItem('api_token') || '';
+  const token = authToken();
   const headers = Object.assign(
-    { 'X-API-Token': token, 'Content-Type': 'application/json' },
+    token ? { 'X-API-Token': token, 'Content-Type': 'application/json' }
+          : { 'Content-Type': 'application/json' },
     opts.headers || {}
   );
   const r = await fetch(url, Object.assign({}, opts, { headers }));

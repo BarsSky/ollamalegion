@@ -4,6 +4,9 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 
@@ -11,6 +14,48 @@ import (
 	"ollama-loadbalancer/internal/balancer"
 	"ollama-loadbalancer/pkg/types"
 )
+
+// monitorPageWithScripts — текст страницы монитора ВМЕСТЕ с её локальными
+// скриптами.
+//
+// R66d (2026-09-22): каноническая страница webui/monitor.html модульная —
+// эндпоинты (api/v1/cluster|sessions|queue), обработка ошибок (showError,
+// demoData, updateUI, updateTopology, try/catch, fallback, offline, retry) и
+// polling живут в js/monitor/*.js и js/modules/monitor-*.js. Раньше эти тесты
+// искали маркеры в inline-HTML self-contained legacy-страницы
+// cmd/monitor/monitor.html: она удалена, а проверять надо то, что реально
+// отдаётся клиенту — страницу вместе с её скриптами.
+func monitorPageWithScripts(t *testing.T, pageHTML string) string {
+	t.Helper()
+
+	var b strings.Builder
+	b.WriteString(pageHTML)
+
+	// Корни, откуда тест (cwd = tests/) может достать статику WebUI.
+	roots := []string{"../webui", "webui", "../../webui"}
+	re := regexp.MustCompile(`src="([^"]+\.js)(?:\?[^"]*)?"`)
+
+	found := 0
+	for _, m := range re.FindAllStringSubmatch(pageHTML, -1) {
+		src := filepath.ToSlash(m[1])
+		for _, root := range roots {
+			data, err := os.ReadFile(filepath.Join(root, filepath.FromSlash(src)))
+			if err != nil {
+				continue
+			}
+			found++
+			b.WriteString("\n/* " + src + " */\n")
+			b.WriteString(string(data))
+			break
+		}
+	}
+	if found == 0 {
+		wd, _ := os.Getwd()
+		t.Fatalf("в /monitor не найдено ни одного локального скрипта (cwd=%s) — "+
+			"проверка контента страницы бессмысленна", wd)
+	}
+	return b.String()
+}
 
 // TestMonitorEndpointExists проверяет что endpoint /monitor доступен
 func TestMonitorEndpointExists(t *testing.T) {
@@ -61,6 +106,9 @@ func TestMonitorEndpointExists(t *testing.T) {
 		t.Error("Response does not contain HTML content")
 	}
 
+	// R66d: маркеры ищем в странице + её скриптах (каноническая страница модульная).
+	assets := monitorPageWithScripts(t, body)
+
 	// Проверяем наличие ключевых элементов монитора
 	requiredElements := []string{
 		"api/v1/cluster",
@@ -69,13 +117,13 @@ func TestMonitorEndpointExists(t *testing.T) {
 	}
 
 	for _, elem := range requiredElements {
-		if !strings.Contains(body, elem) {
+		if !strings.Contains(assets, elem) {
 			t.Errorf("Monitor HTML missing required API endpoint: %s", elem)
 		}
 	}
 
 	// Проверяем что есть polling через fetch или WebSocket
-	hasPolling := strings.Contains(body, "setInterval") || strings.Contains(body, "fetchAll") || strings.Contains(body, "WebSocket") || strings.Contains(body, "ws")
+	hasPolling := strings.Contains(assets, "setInterval") || strings.Contains(assets, "fetchAll") || strings.Contains(assets, "WebSocket") || strings.Contains(assets, "ws")
 	if !hasPolling {
 		t.Error("Monitor HTML does not contain data polling mechanism")
 	}
@@ -185,31 +233,34 @@ func TestMonitorHTMLHasErrorHandling(t *testing.T) {
 
 	body := w.Body.String()
 
+	// R66d: маркеры ищем в странице + её скриптах (каноническая страница модульная).
+	assets := monitorPageWithScripts(t, body)
+
 	// Проверяем наличие обработки ошибок
 	errorHandlingElements := []string{
-		"catch",           // try/catch blocks
-		"error",           // error handling
-		"fallback",        // fallback UI
-		"offline",         // offline mode
-		"retry",           // retry logic
+		"catch",    // try/catch blocks
+		"error",    // error handling
+		"fallback", // fallback UI
+		"offline",  // offline mode
+		"retry",    // retry logic
 	}
 
 	for _, elem := range errorHandlingElements {
-		if !strings.Contains(strings.ToLower(body), elem) {
+		if !strings.Contains(strings.ToLower(assets), elem) {
 			t.Errorf("Monitor HTML missing error handling element: %s", elem)
 		}
 	}
 
 	// Проверяем наличие fallback UI (чтобы не было пустого экрана)
 	fallbackElements := []string{
-		"demoData",        // демо-данные при ошибках
-		"showError",       // функция показа ошибки
-		"updateUI",        // обновление UI
-		"updateTopology",  // обновление топологии
+		"demoData",       // демо-данные при ошибках
+		"showError",      // функция показа ошибки
+		"updateUI",       // обновление UI
+		"updateTopology", // обновление топологии
 	}
 
 	for _, elem := range fallbackElements {
-		if !strings.Contains(body, elem) {
+		if !strings.Contains(assets, elem) {
 			t.Errorf("Monitor HTML missing fallback UI element: %s", elem)
 		}
 	}

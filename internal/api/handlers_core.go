@@ -279,6 +279,14 @@ func (s *Server) wsMetricsHandler(w http.ResponseWriter, r *http.Request) {
 // R66c (2026-09-22): тот же набор кандидатов, что у healthUIHandler.
 // docker/balancer/Dockerfile копирует webui/{monitor,health}.html + css/js/img
 // в образ (/app/webui), поэтому в Docker каталог всегда есть.
+//
+// R66d (2026-09-22): кандидат принимается только если в нём реально лежит
+// monitor.html. Раньше проверялось лишь существование каталога с подходящим
+// именем, и при cwd = tests/ выигрывал tests/webui (там фикстура
+// tests/webui/sparkline.test.js): monitor.html в нём нет, поэтому GET /monitor
+// отдавал 404 «Monitor page not found», а тот же путь использовался для раздачи
+// /js//css//img в routes.go. Симптом был скрыт legacy-копией
+// cmd/monitor/monitor.html, которая подхватывалась следующим кандидатом.
 func webuiStaticDir() (string, bool) {
 	for _, d := range []string{
 		"/app/webui",  // Docker: WORKDIR /app
@@ -287,9 +295,15 @@ func webuiStaticDir() (string, bool) {
 		"../../webui", // go test из internal/api
 		"../../../webui",
 	} {
-		if st, err := os.Stat(d); err == nil && st.IsDir() {
-			return d, true
+		st, err := os.Stat(d)
+		if err != nil || !st.IsDir() {
+			continue
 		}
+		if _, err := os.Stat(filepath.Join(d, "monitor.html")); err != nil {
+			// Одноимённый каталог без страницы монитора (например tests/webui).
+			continue
+		}
+		return d, true
 	}
 	return "", false
 }
@@ -310,10 +324,11 @@ func (s *Server) monitorHandler(w http.ResponseWriter, r *http.Request) {
 	// бандле всегда возвращал 404 «Monitor page not found», хотя файл в образе
 	// лежал. Канонический путь теперь первый в списке.
 	//
-	// R66d (2026-09-22): legacy-копия cmd/monitor/monitor.html (55 КБ,
-	// последний раз правилась в v0.5.9, дубликат webui/monitor.html) удалена —
-	// её никто не отдавал и не собирал, а наличие в списке путей только путало:
-	// можно было править не тот файл. Остаётся /app/monitor.html как fallback
+	// R66d (2026-09-22): legacy-копия cmd/monitor/monitor.html удалена (55 КБ,
+	// дубликат webui/monitor.html, последний раз правилась в v0.5.9) — её никто
+	// не отдавал и не собирал, а в списке путей она маскировала баг: при cwd с
+	// одноимённым каталогом без страницы (tests/webui) handler молча отдавал
+	// legacy-файл вместо канонического. Остаётся /app/monitor.html как fallback
 	// для старых образов, куда страницу копировали в корень.
 	paths := make([]string, 0, 3)
 	if dir, ok := webuiStaticDir(); ok {

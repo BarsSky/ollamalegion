@@ -10,6 +10,15 @@
 #ifndef BRIDGE_INTERNAL_H
 #define BRIDGE_INTERNAL_H
 
+// R66d (2026-09-22): bridge.h нужен ПЕРВЫМ — ниже объявлен
+// build_batched_batch(const struct CBridgeBatchedSeq*, int32_t), а сам
+// struct CBridgeBatchedSeq определён именно в bridge.h. Без этого включения
+// тип оставался incomplete, и любой потребитель, который создаёт массив
+// sequences (c/bridge/tests/test_batched_batch.c), падал на компиляции:
+//   error: array type has incomplete element type 'struct CBridgeBatchedSeq'
+// Тест не собирался НИКОГДА: CI запускал только test_batch_n_tokens
+// (см. c/bridge/tests/CMakeLists.txt).
+#include "bridge.h"
 #include "llama.h"
 #include <stdint.h>
 #include <stdatomic.h>  // Round 31 #6 (2026-08-09): atomic_int в InternalModel

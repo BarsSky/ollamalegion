@@ -4,16 +4,20 @@
 # enable_testing() и add_subdirectory(common/tests) — но c/bridge — отдельный
 # subproject со своим CMakeLists.txt.
 #
-# Сейчас тесты нужно запускать вручную из c/bridge/build/:
-#   cmake ../.. -DCOMMON_LIB=$(realpath ../../llama.cpp/build/common/libllama-common.a)
-#   make test_batch_n_tokens
-#   ./test_batch_n_tokens
+# R66d (2026-09-22): теперь все тесты зарегистрированы через add_test(), и CI
+# (job test-c-bridge) запускает их ОДНОЙ командой `ctest --output-on-failure`.
+# Раньше job собирал и запускал только test_batch_n_tokens, а test_batched_batch,
+# test_abort_api, test_embeddings_mode и abort_syntax_test не запускались вообще —
+# регрессии в abort API и в batched-батче проходили мимо CI.
 #
-# TODO (Round 5c): integrate в c/llama.cpp/tests/CMakeLists.txt или в CI workflow
-# чтобы они запускались автоматически при каждом build.
+# Локальный запуск:
+#   cmake -DCOMMON_LIB=... -DLLAMA_LIB=... -DGGML_LIBS=... ..
+#   make && ctest --output-on-failure
 
 cmake_minimum_required(VERSION 3.14)
 project(bridge_tests C)
+
+enable_testing()
 
 # R66c (2026-09-22): заголовки llama.cpp для таргетов, компилирующих ../bridge.c.
 # bridge_internal.h делает `#include "llama.h"`, а конфигурация запускается из
@@ -27,49 +31,31 @@ set(LLAMA_CPP_INCLUDE_DIRS
     ${CMAKE_CURRENT_SOURCE_DIR}/../../llama.cpp/ggml/include
 )
 
-# test_batch_n_tokens — regression test для Round 13 build_batch_with_seq bug
-# (batch.n_tokens не выставлен → llama_decode fails).
+# bridge_link_llama — линковка теста, который дергает llama.cpp.
 #
-# Этот тест линкуется против libllama-common.a (которая содержит llama_batch_init,
-# llama_batch_free, и т.д.) и против c/bridge/bridge.c напрямую (для доступа к
-# build_batch_with_seq через bridge_internal.h).
-
-add_executable(test_batch_n_tokens
-    test_batch_n_tokens.c
-    ../bridge.c
-)
-
-# Headers: bridge.h, bridge_internal.h, llama.h, и internal llama.cpp headers
-target_include_directories(test_batch_n_tokens PRIVATE
-    ${CMAKE_SOURCE_DIR}/..
-    ${CMAKE_CURRENT_SOURCE_DIR}/../..
-    ${LLAMA_CPP_INCLUDE_DIRS}
-)
-
-# Link libllama-common.a (для llama_batch_init, llama_batch_free)
-# Передаётся через -DCOMMON_LIB=/path/to/libllama-common.a при cmake
-# Link libllama-common.a + ядро libllama.a + libggml*.a.
+# R66c (2026-09-22): libllama-common.a НЕ содержит ядра: llama_batch_init/
+# llama_batch_free/llama_get_memory/llama_memory_clear живут в libllama.a
+# (+ libggml*.a). Линкуем их одной группой — у статических библиотек llama.cpp
+# циклические зависимости. stdc++ нужен, потому что llama.cpp написан на C++,
+# а тест — на C; gomp — потому что ggml-cpu собран с OpenMP
+# (иначе undefined reference на GOMP_barrier/GOMP_parallel/omp_get_*).
 #
-# R66c (2026-09-22): раньше линковалась ТОЛЬКО libllama-common.a, но она не
-# содержит ядра: llama_batch_init/llama_batch_free/llama_get_memory/
-# llama_memory_clear/llama_memory_seq_rm живут в libllama.a (+ libggml*.a).
-# Из-за этого сборка теста падала на линковке:
-#   test_batch_n_tokens.c:(.text+0x597): undefined reference to `llama_batch_free'
-#   bridge.c:(.text+0x12c): undefined reference to `llama_batch_init'
-# Пути к ядру и ggml передаёт CI (LLAMA_LIB / GGML_LIBS), а линкуем их одной
-# группой: у статических библиотек llama.cpp циклические зависимости.
-# stdc++ нужен, потому что llama.cpp написан на C++, а тест — на C.
-if(DEFINED COMMON_LIB)
-    if(DEFINED LLAMA_LIB)
-        # stdc++ — llama.cpp написан на C++; gomp — ggml-cpu собран с OpenMP
-        # (иначе линковка падает на GOMP_barrier/GOMP_parallel/omp_get_*).
-        target_link_libraries(test_batch_n_tokens PRIVATE
-            -Wl,--start-group ${COMMON_LIB} ${LLAMA_LIB} ${GGML_LIBS} -Wl,--end-group
-            stdc++ m pthread gomp)
-    else()
-        target_link_libraries(test_batch_n_tokens PRIVATE ${COMMON_LIB})
+# R66d (2026-09-22): вынесено в функцию, потому что test_batched_batch линковался
+# только с ${COMMON_LIB} — при первом же прогоне в CI (после включения всех
+# тестов) это дало бы тот же класс ошибок, что раньше у test_batch_n_tokens:
+# undefined reference to `llama_batch_free', `ggml_*', `GOMP_*'.
+function(bridge_link_llama target)
+    if(DEFINED COMMON_LIB)
+        if(DEFINED LLAMA_LIB)
+            target_link_libraries(${target} PRIVATE
+                -Wl,--start-group ${COMMON_LIB} ${LLAMA_LIB} ${GGML_LIBS} -Wl,--end-group
+                stdc++ m pthread gomp)
+        else()
+            target_link_libraries(${target} PRIVATE ${COMMON_LIB})
+        endif()
+        return()
     endif()
-else()
+
     # Fallback: попробуй auto-detect (для разработки вне Docker)
     find_library(COMMON_LIB_AUTO llama-common
         PATHS
@@ -78,23 +64,37 @@ else()
         NO_DEFAULT_PATH
     )
     if(COMMON_LIB_AUTO)
-        target_link_libraries(test_batch_n_tokens PRIVATE ${COMMON_LIB_AUTO})
-        message(STATUS "test_batch_n_tokens: auto-detected libllama-common.a at ${COMMON_LIB_AUTO}")
+        target_link_libraries(${target} PRIVATE ${COMMON_LIB_AUTO})
+        message(STATUS "${target}: auto-detected libllama-common.a at ${COMMON_LIB_AUTO}")
     else()
-        message(WARNING "test_batch_n_tokens: libllama-common.a not found, link may fail")
+        message(WARNING "${target}: libllama-common.a not found, link may fail")
     endif()
-endif()
+endfunction()
 
-# C standard для bridge.c
+# ============================================================
+# test_batch_n_tokens — regression test для Round 13 build_batch_with_seq bug
+# (batch.n_tokens не выставлен → llama_decode fails).
+#
+# Линкуется против libllama-common.a + libllama.a + ggml и против
+# c/bridge/bridge.c напрямую (для доступа к build_batch_with_seq через
+# bridge_internal.h).
+# ============================================================
+add_executable(test_batch_n_tokens
+    test_batch_n_tokens.c
+    ../bridge.c
+)
+target_include_directories(test_batch_n_tokens PRIVATE
+    ${CMAKE_SOURCE_DIR}/..
+    ${CMAKE_CURRENT_SOURCE_DIR}/../..
+    ${LLAMA_CPP_INCLUDE_DIRS}
+)
+bridge_link_llama(test_batch_n_tokens)
 target_compile_features(test_batch_n_tokens PRIVATE c_std_99)
 
 # ============================================================
 # test_batched_batch — Round 15.1 regression test для build_batched_batch
 # (true batched parallel inference — N sequences в ОДНОМ llama_batch).
 # ============================================================
-# Аналогично test_batch_n_tokens, линкуется против bridge.c напрямую
-# (для доступа к internal build_batched_batch через bridge_internal.h)
-# и против libllama-common.a (для llama_batch_init, llama_batch_free).
 add_executable(test_batched_batch
     test_batched_batch.c
     ../bridge.c
@@ -104,7 +104,7 @@ target_include_directories(test_batched_batch PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/../..
     ${LLAMA_CPP_INCLUDE_DIRS}
 )
-target_link_libraries(test_batched_batch PRIVATE ${COMMON_LIB})
+bridge_link_llama(test_batched_batch)
 target_compile_features(test_batched_batch PRIVATE c_std_99)
 
 # ============================================================
@@ -129,14 +129,6 @@ target_compile_definitions(test_abort_api PRIVATE TEST_ABORT_STANDALONE)
 target_link_libraries(test_abort_api PRIVATE pthread)
 target_compile_features(test_abort_api PRIVATE c_std_99)
 
-# Smoke test target (alias для удобства) — обновлён для запуска ВСЕХ тестов
-add_custom_target(bridge-tests
-    COMMAND test_batch_n_tokens && test_batched_batch && test_abort_api && test_embeddings_mode
-    DEPENDS test_batch_n_tokens test_batched_batch test_embeddings_mode
-    WORKING_DIRECTORY ${CMAKE_BINARY_DIR}
-    COMMENT "Running bridge regression tests"
-)
-
 # ============================================================
 # test_embeddings_mode — R60/Round 39: standalone unit tests для
 # bridge_set_embeddings_mode API.
@@ -150,3 +142,40 @@ add_executable(test_embeddings_mode
     test_embeddings_mode.c
 )
 target_compile_features(test_embeddings_mode PRIVATE c_std_99)
+
+# ============================================================
+# abort_syntax_test — Round 5c: standalone-проверка, что abort API
+# (bridge_request_abort / bridge_is_aborted / BRIDGE_ERR_ABORTED) объявлен
+# ровно так, как ожидает Go-сторона (abort_syntax_check.h — шим-объявление).
+#
+# R66d (2026-09-22): раньше файл лежал в tests/ БЕЗ цели в CMake, то есть не
+# собирался и не запускался ни разу (ни локально, ни в CI).
+# ============================================================
+add_executable(abort_syntax_test
+    abort_syntax_test.c
+)
+target_include_directories(abort_syntax_test PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}
+    ${CMAKE_SOURCE_DIR}/..
+)
+target_compile_features(abort_syntax_test PRIVATE c_std_99)
+
+# ============================================================
+# Регистрация в ctest — единая точка входа для CI.
+# ============================================================
+add_test(NAME test_batch_n_tokens COMMAND test_batch_n_tokens)
+add_test(NAME test_batched_batch COMMAND test_batched_batch)
+add_test(NAME test_abort_api COMMAND test_abort_api)
+add_test(NAME test_embeddings_mode COMMAND test_embeddings_mode)
+add_test(NAME abort_syntax_test COMMAND abort_syntax_test)
+
+# Smoke target: собрать и прогнать всё одной командой `make bridge-tests`.
+# R66d: в DEPENDS раньше не было test_abort_api — при параллельной сборке
+# (`make -j`) бинарь мог не успеть собраться до запуска.
+add_custom_target(bridge-tests
+    COMMAND ${CMAKE_CTEST_COMMAND} --output-on-failure
+    DEPENDS test_batch_n_tokens test_batched_batch test_abort_api
+            test_embeddings_mode abort_syntax_test
+    WORKING_DIRECTORY ${CMAKE_BINARY_DIR}
+    COMMENT "Running bridge regression tests (ctest)"
+)

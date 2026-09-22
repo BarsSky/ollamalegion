@@ -25,8 +25,22 @@ try {
     }
 
     Write-Host "=== ${Label}: FAILED (exit $status) ==="
-    Write-Host "--- упавшие пакеты и тесты ---"
-    Get-Content $out | Select-String -Pattern '^(FAIL|--- FAIL:|panic:|# )' | Select-Object -First 100 | ForEach-Object { $_.Line }
+    # Печатаем не только строки FAIL/--- FAIL:, но и следующие за ними
+    # отступленные строки — это t.Errorf/t.Fatalf-сообщения и фреймы детектора
+    # гонок. Без них по логу не понять, ЧТО упало.
+    Write-Host "--- упавшие пакеты и тесты (с сообщениями об ошибках) ---"
+    $lines = Get-Content $out
+    for ($i = 0; $i -lt $lines.Count; $i++) {
+        $line = $lines[$i]
+        if ($line -match '^(FAIL|--- FAIL:|panic:|# )') {
+            Write-Host $line
+            $j = $i + 1
+            while ($j -lt $lines.Count -and $lines[$j] -match '^\s') {
+                Write-Host $lines[$j]
+                $j++
+            }
+        }
+    }
     Write-Host "--- последние 60 строк вывода ---"
     Get-Content $out -Tail 60
     exit $status

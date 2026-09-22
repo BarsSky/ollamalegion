@@ -38,8 +38,17 @@ if [ "$status" -eq 0 ]; then
 fi
 
 echo "=== ${label}: FAILED (exit ${status}) ==="
-echo "--- упавшие пакеты и тесты ---"
-grep -E '^(FAIL|--- FAIL:|panic:|# )' "$out" | head -100 || true
+echo "--- упавшие пакеты и тесты (с сообщениями об ошибках) ---"
+# Печатаем не только строки FAIL/--- FAIL:, но и следующие за ними
+# отступленные строки — это и есть t.Errorf/t.Fatalf-сообщения и фреймы
+# детектора гонок. Без них по логу нельзя понять, ЧТО именно упало
+# (в прогоне 35746620782 от internal/balancer остались только два
+# '--- FAIL:' без единого сообщения).
+awk '
+  /^(FAIL|--- FAIL:|panic:|# )/ { show=1; print; next }
+  show && /^[[:space:]]/        { print; next }
+  { show=0 }
+' "$out" | head -150
 echo "--- последние 60 строк вывода ---"
 tail -60 "$out"
 exit "$status"

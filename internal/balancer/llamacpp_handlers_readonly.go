@@ -198,11 +198,35 @@ func (lr *LlamaCppRouter) handleTags(w http.ResponseWriter, r *http.Request) {
 	//    возвращался ТОЛЬКО когда loaded=0, скрывая остальные модели от клиента.
 	//    Дедупликация по имени сохраняется (map).
 	for _, b := range backends {
-		files, err := lr.fetchLlamaCppFiles(b.host, b.port)
+		files, aliases, err := lr.fetchLlamaCppFilesWithAliases(b.host, b.port)
 		if err != nil {
 			logger.Get().Debugw("handleTags: /api/models/files fetch failed (non-fatal)",
 				"backend", b.id, "host", b.host, "port", b.port, "error", err)
 			continue
+		}
+		// R66d (2026-09-23): алиасы моделей (POST /api/create) — отдельные записи,
+		// указывающие на существующий .gguf. Клиент должен видеть модель под именем
+		// алиаса (details.parent_model = исходная модель), иначе «создали — не видно».
+		for _, a := range aliases {
+			if a.Name == "" {
+				continue
+			}
+			if _, exists := uniqueModels[a.Name]; exists {
+				continue // загруженная/файловая запись с тем же именем точнее
+			}
+			uniqueModels[a.Name] = OllamaTag{
+				Name:       a.Name,
+				Model:      a.Name,
+				Size:       a.SourceSizeBytes,
+				ModifiedAt: a.CreatedAt,
+				Digest:     digestForOnDiskModel(a.Name, a.SourceSizeBytes),
+				Details: map[string]interface{}{
+					"format":         "gguf",
+					"parent_model":   a.ParentModel,
+					"parameter_size": "unknown",
+					"families":       []string{},
+				},
+			}
 		}
 		for _, f := range files {
 			// f.Name includes .gguf extension, strip for Ollama convention
@@ -355,17 +379,32 @@ type llamaCppFileEntry struct {
 	ModifiedAt time.Time
 }
 
-func (lr *LlamaCppRouter) fetchLlamaCppFiles(host string, port int) ([]llamaCppFileEntry, error) {
+// llamaCppAliasEntry — алиас модели (<name>.gguf.json, POST /api/create).
+//
+// R66d (2026-09-23): cppworker отдаёт их в том же ответе /api/models/files
+// (поле aliases), и /api/tags балансера собирается именно из этого ответа —
+// без слияния алиасов созданная модель не доезжала до клиентов (Cline/OpenWebUI
+// её просто не видели в списке моделей).
+type llamaCppAliasEntry struct {
+	Name            string
+	Source          string
+	ParentModel     string
+	SourceSizeBytes int64
+	CreatedAt       time.Time
+}
+
+// fetchLlamaCppFilesWithAliases — файлы + алиасы с бэкенда одним запросом.
+func (lr *LlamaCppRouter) fetchLlamaCppFilesWithAliases(host string, port int) ([]llamaCppFileEntry, []llamaCppAliasEntry, error) {
 	url := fmt.Sprintf("http://%s:%d/api/models/files", host, port)
 	client := &http.Client{Timeout: 10 * time.Second}
 	resp, err := client.Get(url)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("status %d", resp.StatusCode)
+		return nil, nil, fmt.Errorf("status %d", resp.StatusCode)
 	}
 
 	var result struct {
@@ -374,9 +413,16 @@ func (lr *LlamaCppRouter) fetchLlamaCppFiles(host string, port int) ([]llamaCppF
 			SizeBytes  int64  `json:"sizeBytes"`
 			ModifiedAt string `json:"modifiedAt"`
 		} `json:"files"`
+		Aliases []struct {
+			Name            string `json:"name"`
+			Source          string `json:"source"`
+			ParentModel     string `json:"parentModel"`
+			SourceSizeBytes int64  `json:"sourceSizeBytes"`
+			CreatedAt       string `json:"createdAt"`
+		} `json:"aliases"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 
 	entries := make([]llamaCppFileEntry, 0, len(result.Files))
@@ -393,7 +439,33 @@ func (lr *LlamaCppRouter) fetchLlamaCppFiles(host string, port int) ([]llamaCppF
 			ModifiedAt: modTime,
 		})
 	}
-	return entries, nil
+
+	aliases := make([]llamaCppAliasEntry, 0, len(result.Aliases))
+	for _, a := range result.Aliases {
+		var createdAt time.Time
+		if a.CreatedAt != "" {
+			if t, err := time.Parse(time.RFC3339, a.CreatedAt); err == nil {
+				createdAt = t
+			}
+		}
+		parent := a.ParentModel
+		if parent == "" {
+			parent = strings.TrimSuffix(a.Source, ".gguf")
+		}
+		aliases = append(aliases, llamaCppAliasEntry{
+			Name:            a.Name,
+			Source:          a.Source,
+			ParentModel:     parent,
+			SourceSizeBytes: a.SourceSizeBytes,
+			CreatedAt:       createdAt,
+		})
+	}
+	return entries, aliases, nil
+}
+
+func (lr *LlamaCppRouter) fetchLlamaCppFiles(host string, port int) ([]llamaCppFileEntry, error) {
+	entries, _, err := lr.fetchLlamaCppFilesWithAliases(host, port)
+	return entries, err
 }
 
 // fetchLlamaCppTags — запрашивает Ollama-совместимый /api/tags у cppworker.

@@ -1198,8 +1198,30 @@ func handleListModelsDir(w http.ResponseWriter, r *http.Request) {
 		for _, m := range models {
 			files = append(files, ggufFileMeta(m.Filename, m.SizeBytes, m.ModifiedAt))
 		}
+		// R66d (2026-09-23): отдаём и алиасы моделей (<name>.gguf.json из
+		// POST /api/create). Балансер собирает /api/tags именно из этого ответа,
+		// поэтому без поля aliases созданная модель не доезжала до клиентов.
+		aliases := make([]map[string]interface{}, 0)
+		for _, a := range mm.ListAliases() {
+			if !a.SourceExists {
+				// Незагружаемый алиас клиенту не показываем (в /api/tags его
+				// тоже нет) — только в лог.
+				logger.Get().Warnw("handleListModelsDir: alias source missing, skipping",
+					"alias", a.Name, "source", a.Source)
+				continue
+			}
+			aliases = append(aliases, map[string]interface{}{
+				"name":            a.Name,
+				"source":          a.Source,
+				"sourceSizeBytes": a.SourceSizeBytes,
+				"sourceExists":    a.SourceExists,
+				"parentModel":     strings.TrimSuffix(filepath.Base(a.Source), ".gguf"),
+				"createdAt":       a.CreatedAt.UTC().Format(time.RFC3339),
+			})
+		}
 		writeJSON(w, http.StatusOK, map[string]interface{}{
-			"files": files, "dir": mm.GetModelsDir(), "count": len(files),
+			"files": files, "aliases": aliases, "dir": mm.GetModelsDir(),
+			"count": len(files), "aliasCount": len(aliases),
 		})
 		return
 	}

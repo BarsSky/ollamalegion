@@ -31,6 +31,7 @@ import (
 type fileStub struct {
 	mu       sync.Mutex
 	files    []stubFileEntry
+	aliases  []stubAliasEntry
 	failNext bool
 }
 
@@ -38,6 +39,15 @@ type stubFileEntry struct {
 	Name       string `json:"name"`
 	SizeBytes  int64  `json:"sizeBytes"`
 	ModifiedAt string `json:"modifiedAt"`
+}
+
+// stubAliasEntry — алиас модели в ответе /api/models/files (R66d).
+type stubAliasEntry struct {
+	Name            string `json:"name"`
+	Source          string `json:"source"`
+	ParentModel     string `json:"parentModel"`
+	SourceSizeBytes int64  `json:"sourceSizeBytes"`
+	CreatedAt       string `json:"createdAt"`
 }
 
 func (f *fileStub) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -52,8 +62,10 @@ func (f *fileStub) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(map[string]interface{}{
-			"files": f.files,
-			"count": len(f.files),
+			"files":      f.files,
+			"aliases":    f.aliases,
+			"count":      len(f.files),
+			"aliasCount": len(f.aliases),
 		})
 	case "/health":
 		w.WriteHeader(http.StatusOK)
@@ -67,7 +79,13 @@ func (f *fileStub) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 // на /api/models/files. Поддерживает опциональный список preloaded моделей.
 func buildProxyWithStub(t *testing.T, files []stubFileEntry, loadedModels []types.LlamaCppModel) (*Proxy, *httptest.Server) {
 	t.Helper()
-	stub := &fileStub{files: files}
+	return buildProxyWithStubAndAliases(t, files, nil, loadedModels)
+}
+
+// buildProxyWithStubAndAliases — то же, но с алиасами моделей (R66d).
+func buildProxyWithStubAndAliases(t *testing.T, files []stubFileEntry, aliases []stubAliasEntry, loadedModels []types.LlamaCppModel) (*Proxy, *httptest.Server) {
+	t.Helper()
+	stub := &fileStub{files: files, aliases: aliases}
 	ts := httptest.NewServer(stub)
 	t.Cleanup(ts.Close)
 
@@ -198,5 +216,73 @@ func TestRound19_HandleTags_NoLoaded_StillReturnsOnDisk(t *testing.T) {
 	}
 	if len(tagsResp.Models) > 0 && tagsResp.Models[0].Name != "model-X" {
 		t.Errorf("handleTags: expected name=model-X (without .gguf), got %q", tagsResp.Models[0].Name)
+	}
+}
+
+// TestR66d_HandleTags_IncludesAliases — алиас модели (POST /api/create,
+// <name>.gguf.json) должен попадать в /api/tags балансера.
+//
+// Раньше /api/tags собирался только из loaded-моделей и .gguf-файлов
+// (/api/models/files), а алиасы не отдавались ни там, ни там — клиент
+// (Cline/OpenWebUI) не видел созданную модель вообще.
+func TestR66d_HandleTags_IncludesAliases(t *testing.T) {
+	proxy, _ := buildProxyWithStubAndAliases(t,
+		[]stubFileEntry{
+			{Name: "Qwen3-Instruct-2507-q4km.gguf", SizeBytes: 2_497_281_120, ModifiedAt: "2026-07-30T12:15:43Z"},
+		},
+		[]stubAliasEntry{
+			{
+				Name:            "my-short-name",
+				Source:          "Qwen3-Instruct-2507-q4km.gguf",
+				ParentModel:     "Qwen3-Instruct-2507-q4km",
+				SourceSizeBytes: 2_497_281_120,
+				CreatedAt:       "2026-09-23T06:00:00Z",
+			},
+		},
+		nil,
+	)
+
+	req := httptest.NewRequest("GET", "/api/tags", nil)
+	w := httptest.NewRecorder()
+	proxy.llamaCppRouter.handleTags(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("handleTags: статус %d, body=%s", w.Code, w.Body.String())
+	}
+
+	var resp struct {
+		Models []struct {
+			Name    string                 `json:"name"`
+			Size    int64                  `json:"size"`
+			Digest  string                 `json:"digest"`
+			Details map[string]interface{} `json:"details"`
+		} `json:"models"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("handleTags: bad JSON: %v", err)
+	}
+
+	var aliasFound, sourceFound bool
+	for _, m := range resp.Models {
+		switch m.Name {
+		case "my-short-name":
+			aliasFound = true
+			if m.Size != 2_497_281_120 {
+				t.Errorf("size алиаса = %d, want размер источника", m.Size)
+			}
+			if m.Digest == "" {
+				t.Error("у алиаса нет digest")
+			}
+			if got, _ := m.Details["parent_model"].(string); got != "Qwen3-Instruct-2507-q4km" {
+				t.Errorf("details.parent_model = %q, want Qwen3-Instruct-2507-q4km", got)
+			}
+		case "Qwen3-Instruct-2507-q4km":
+			sourceFound = true
+		}
+	}
+	if !aliasFound {
+		t.Errorf("алиас отсутствует в /api/tags: %+v", resp.Models)
+	}
+	if !sourceFound {
+		t.Errorf("исходная модель пропала из /api/tags: %+v", resp.Models)
 	}
 }

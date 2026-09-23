@@ -234,3 +234,57 @@ func TestHandleOllamaCreate_ThenTags_R66d(t *testing.T) {
 	}
 	t.Fatalf("после /api/create алиас не виден в /api/tags: %+v", body.Models)
 }
+
+// TestHandleListModelsDir_IncludesAliases_R66d — контракт для балансера:
+// /api/models/files должен отдавать поле aliases (балансер собирает из него
+// /api/tags, см. TestR66d_HandleTags_IncludesAliases в internal/balancer).
+func TestHandleListModelsDir_IncludesAliases_R66d(t *testing.T) {
+	_, aliasName, sourceFile := setupAliasTestBackend(t)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/models/files", nil)
+	rr := httptest.NewRecorder()
+	handleListModelsDir(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rr.Code)
+	}
+	var body struct {
+		Files []struct {
+			Name string `json:"name"`
+		} `json:"files"`
+		Aliases []struct {
+			Name            string `json:"name"`
+			Source          string `json:"source"`
+			ParentModel     string `json:"parentModel"`
+			SourceSizeBytes int64  `json:"sourceSizeBytes"`
+			SourceExists    bool   `json:"sourceExists"`
+		} `json:"aliases"`
+		AliasCount int `json:"aliasCount"`
+	}
+	if err := json.Unmarshal(rr.Body.Bytes(), &body); err != nil {
+		t.Fatalf("ответ не JSON: %v (%s)", err, rr.Body.String())
+	}
+
+	var found bool
+	for _, a := range body.Aliases {
+		if a.Name != aliasName {
+			continue
+		}
+		found = true
+		if a.Source != sourceFile {
+			t.Errorf("source = %q, want %q", a.Source, sourceFile)
+		}
+		if a.ParentModel != strings.TrimSuffix(sourceFile, ".gguf") {
+			t.Errorf("parentModel = %q", a.ParentModel)
+		}
+		if a.SourceSizeBytes != 8192 || !a.SourceExists {
+			t.Errorf("sourceSizeBytes=%d sourceExists=%v, want 8192/true", a.SourceSizeBytes, a.SourceExists)
+		}
+	}
+	if !found {
+		t.Fatalf("в /api/models/files нет алиаса %q (aliases=%+v)", aliasName, body.Aliases)
+	}
+	if body.AliasCount != len(body.Aliases) {
+		t.Errorf("aliasCount=%d, want %d", body.AliasCount, len(body.Aliases))
+	}
+}

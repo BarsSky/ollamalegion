@@ -1067,6 +1067,13 @@ window.I18N_EN = {
   "gguf.reasoning_budget_desc": "Maximum tokens the model can spend on reasoning before answering. 0 = no limit. Recommended 1024-8192 for most reasoning models.",
   "gguf.busy_badge": "Generating",
   "gguf.busy_badge_title": "Active generations (click Cancel to stop)",
+  // R66d (2026-09-23): CPU-offload indication for a loaded model.
+  // Direct cause of "slow despite free VRAM": in auto mode (gpu_layers=-2)
+  // cppworker lowers the number of GPU layers to fit available VRAM.
+  "gguf.cpu_only": "CPU only",
+  "gguf.cpu_only_title": "The model is loaded entirely on CPU (gpu_layers=0) — generation will be very slow. Lower n_ctx/kv-cache or free VRAM and reload the model.",
+  "gguf.partial_offload": "CPU offload",
+  "gguf.partial_offload_title": "Some layers stayed on CPU (not enough VRAM on GPU for the chosen n_ctx). This is the main reason generation is slow while VRAM looks free: reduce context/kv-cache or parallel slots.",
   "gguf.active_short": "active",
   "gguf.cancel_generation": "Cancel active generation",
   "gguf.generation_cancelled": "Generation cancelled",

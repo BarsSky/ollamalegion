@@ -1,4 +1,4 @@
-﻿/**
+/**
  * gguf-renderer-detail-render.js — Right panel render functions for gguf-renderer.
  *
  * R57.5f (2026-09-03): extracted from webui/js/modules/gguf-renderer.js.
@@ -38,6 +38,43 @@
     const stripGGUF = M.stripGGUF;
     const formatFileSize = M.formatFileSize;
     const showToast = M.showToast;
+
+    /**
+     * R66d (2026-09-23): найти runtime-параметры модели в карте
+     * state.runtimeModels.
+     *
+     * Карта приходит из cppworker (/api/v1/cppworker/config/runtime) с ключом
+     * m.name — обычно БЕЗ расширения .gguf. А список загруженных моделей в
+     * балансере может содержать и имя файла, и полный путь. Перебираем варианты:
+     * точное имя, basename пути, имя без .gguf, basename без .gguf.
+     *
+     * @param {Object} map — state.runtimeModels
+     * @param {string} name — имя из loadedModels
+     * @param {string} [path] — путь модели, если есть
+     * @returns {Object|null}
+     */
+    function lookupRuntimeModel(map, name, path) {
+        if (!map || typeof map !== 'object') return null;
+        var base = path ? String(path).split(/[\\/]/).pop() : '';
+        var candidates = [name, base];
+        if (typeof stripGGUF === 'function') {
+            candidates.push(stripGGUF(name || ''));
+            if (base) candidates.push(stripGGUF(base));
+        }
+        for (var i = 0; i < candidates.length; i++) {
+            var key = candidates[i];
+            if (key && map[key]) return map[key];
+        }
+        // Последний шанс: сравнение без учёта регистра и расширения.
+        var wanted = (typeof stripGGUF === 'function' ? stripGGUF(name || '') : String(name || '')).toLowerCase();
+        if (!wanted) return null;
+        var keys = Object.keys(map);
+        for (var j = 0; j < keys.length; j++) {
+            var norm = (typeof stripGGUF === 'function' ? stripGGUF(keys[j]) : keys[j]).toLowerCase();
+            if (norm === wanted) return map[keys[j]];
+        }
+        return null;
+    }
 
 (function() {
     'use strict';
@@ -333,7 +370,12 @@
             // Ищем runtime-параметры (n_ctx, gpu_layers) этой модели.
             // Ключ ищем по имени или по path, потому что cppworker может вернуть
             // «gemma-4.gguf» а loadedModels — «gemma-4» (без расширения).
-            const rt = (state.runtimeModels && (state.runtimeModels[name] || state.runtimeModels[(m.path || '').split(/[\\/]/).pop()] || state.runtimeModels[m.path])) || null;
+            //
+            // R66d (2026-09-23): добавлен поиск без расширения .gguf и по basename,
+            // потому что карта runtimeModels приходит из
+            // /api/v1/cppworker/config/runtime с ключом m.name (без .gguf), а
+            // список загруженных моделей балансера может содержать имя файла.
+            const rt = lookupRuntimeModel(state.runtimeModels, name, m.path);
             const ctx = m.ctxSize || m.contextSize || '-';
             const vram = m.vramBytes ? formatFileSize(m.vramBytes) : (m.vramUsage ? m.vramUsage + ' MB' : '-');
             // Runtime-блок (показываем рядом с default если rt есть).
@@ -359,9 +401,31 @@
                 if (rt.gguf_context_length && rt.gguf_context_length !== rtCtx) {
                     meta.push('<span title="Max n_ctx per GGUF metadata">gguf_max=' + Utils.escapeHtml(String(rt.gguf_context_length)) + '</span>');
                 }
-                if (meta.length > 0) {
+                if (rt.use_mmap !== undefined && rt.use_mmap !== null) {
+                    meta.push('<span title="use_mmap">mmap=' + (rt.use_mmap ? 'on' : 'off') + '</span>');
+                }
+                // R66d: CPU-offload — прямая причина «модель работает медленно,
+                // хотя VRAM свободна». cppworker в auto-режиме (gpu_layers=-2)
+                // сам уменьшает число слоёв на GPU, если не хватает VRAM под
+                // KV-cache. В UI это было не видно: показывались только
+                // запрошенные/default-значения, поэтому пользователь не понимал,
+                // почему генерация медленная.
+                let offloadBadge = '';
+                if (rtGpu !== null && rtGpu !== undefined && rtLayers > 0) {
+                    if (rtGpu === 0) {
+                        offloadBadge = '<span class="badge" style="background:rgba(217,83,79,0.2);color:#ff7b76;margin-left:6px;" ' +
+                            'title="' + Utils.escapeHtml(_('gguf.cpu_only_title') || 'Модель загружена целиком на CPU (gpu_layers=0) — генерация будет очень медленной') + '">' +
+                            (Utils.escapeHtml(_('gguf.cpu_only') || 'CPU only')) + '</span>';
+                    } else if (rtGpu > 0 && rtGpu < rtLayers) {
+                        const missed = rtLayers - rtGpu;
+                        offloadBadge = '<span class="badge" style="background:rgba(240,173,78,0.2);color:#f0ad4e;margin-left:6px;" ' +
+                            'title="' + Utils.escapeHtml(_('gguf.partial_offload_title') || 'Часть слоёв на CPU: слотов на GPU не хватило под выбранный n_ctx/VRAM. Уменьшите n_ctx или kv-cache, чтобы ускорить генерацию') + '">' +
+                            (Utils.escapeHtml(_('gguf.partial_offload') || 'CPU offload')) + ': ' + rtGpu + '/' + rtLayers + '</span>';
+                    }
+                }
+                if (meta.length > 0 || offloadBadge) {
                     rtHtml = '<div class="gguf-loaded-model-info" style="margin-top:4px;display:flex;gap:12px;flex-wrap:wrap;font-family:monospace;font-size:11px;">' +
-                        meta.join('') +
+                        meta.join('') + offloadBadge +
                         '</div>';
                 }
             }

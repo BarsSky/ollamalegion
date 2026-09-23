@@ -58,6 +58,35 @@
         return state.registeredBackends.find(function (b) { return b.id === state.selectedBackendId; }) || null;
     };
 
+    /**
+     * R66d (2026-09-23): параметры загрузки для balancer API из формы Settings.
+     *
+     * Раньше этого не было вообще: `loadOnSelectedBackend` вызывал
+     * `api.loadModel(handle, model.name, {path})`, то есть НЕ использовал
+     * `state.loadOptions`. Весь код синхронизации настроек
+     * (`bindSettingsChange`, `syncLoadOptionsFromConfig`, `saveBackendOptions`,
+     * `markLoadOptionsCustom`) писал в `state.loadOptions`, но при загрузке
+     * значение игнорировалось — модель всегда грузилась с дефолтами cppworker
+     * (ctxSize=2048). Симптом: «не могу изменить контекстное окно на большое
+     * значение» — в форме 32768, а в VRAM модель с 2048.
+     *
+     * Ключи — как в balancer.ModelOpRequest (internal/balancer/model_management.go)
+     * и в cppworker /api/models/load: contextSize, gpuLayers, batchSize,
+     * flashAttn (-1/0/1), useMmap, kvCacheType.
+     */
+    M.buildLoadOptions = function() {
+        const lo = (M.state && M.state.loadOptions) || {};
+        var opts = {};
+        if (typeof lo.ctxSize === 'number' && lo.ctxSize > 0) opts.contextSize = lo.ctxSize;
+        if (typeof lo.gpuLayers === 'number') opts.gpuLayers = lo.gpuLayers;
+        if (typeof lo.batchSize === 'number' && lo.batchSize > 0) opts.batchSize = lo.batchSize;
+        // В форме flashAttn — bool, cppworker/балансер ждут *int (-1=auto, 0=off, 1=on).
+        if (typeof lo.flashAttn === 'boolean') opts.flashAttn = lo.flashAttn ? 1 : 0;
+        if (typeof lo.useMmap === 'boolean') opts.useMmap = lo.useMmap;
+        if (typeof lo.kvCacheType === 'string' && lo.kvCacheType !== '') opts.kvCacheType = lo.kvCacheType;
+        return opts;
+    };
+
     M.loadOnSelectedBackend = function(model) {
         const state = M.state;
         const backend = M.currentBackend();
@@ -65,24 +94,79 @@
             M.showToast(M._('gguf.no_backend_selected') || 'No backend selected', 'error');
             return;
         }
-        var handle = backend.id;
-        // Mark as loading immediately
-        M.markLoadingModel(handle, model.name || model, model.path);
-        // Используем GgufApi (loader endpoint) или Api (fallback)
-        var api = window.GgufApi || window.Api;
-        if (typeof api.loadModel !== 'function') {
-            M.showToast('loadModel API not available', 'error');
-            M.markLoadFailed(handle, model.name || model, 'API not available');
+        // Модель может прийти объектом (карточка локального файла) или строкой.
+        var modelName = '';
+        var modelPath = null;
+        if (model && typeof model === 'object') {
+            modelName = model.name || model.model || model.path || '';
+            modelPath = model.path || null;
+        } else if (typeof model === 'string') {
+            modelName = model;
+        }
+        if (!modelName) {
+            M.showToast('loadOnSelectedBackend: model name is empty', 'error');
             return;
         }
-        api.loadModel(handle, model.name, { path: model.path || null })
+        var handle = backend.id;
+        // Mark as loading immediately
+        M.markLoadingModel(handle, modelName, modelPath);
+
+        var api = window.GgufApi || window.Api;
+        var opts = (typeof M.buildLoadOptions === 'function') ? M.buildLoadOptions() : {};
+
+        var onFail = function (errMsg) {
+            M.markLoadFailed(handle, modelName, errMsg);
+            M.showToast('Load failed: ' + errMsg, 'error');
+        };
+
+        // === Основной путь: через балансер ===
+        // manageModel → POST /api/v1/backends/{id}/models
+        //   * применяет per-model профиль (override-tensors) и переданные параметры,
+        //   * сам поллит /api/models/load/progress и корректно переживает
+        //     длинную холодную загрузку (per-op timeout 5 мин),
+        //   * возвращает {success:false, error} вместо throw — сообщение об
+        //     ошибке попадает в UI как есть.
+        if (api && typeof api.manageModel === 'function') {
+            api.manageModel(handle, 'load', modelName, opts)
+                .then(function (result) {
+                    if (result && result.success === false) {
+                        onFail(result.error || 'unknown error');
+                        return;
+                    }
+                    var detail = (result && (result.message || result.status)) ? ' (' + (result.message || result.status) + ')' : '';
+                    M.showToast((M._('gguf.model_loaded') || 'Model loaded: ' + modelName) + detail, 'success');
+                    if (typeof M.refreshDetail === 'function') M.refreshDetail();
+                    if (typeof M.refreshBackends === 'function') M.refreshBackends();
+                })
+                .catch(function (err) {
+                    onFail((err && err.message) || String(err));
+                });
+            return;
+        }
+
+        // === Fallback: прямой cppworker (старые сборки без balancer-API) ===
+        // ВАЖНО: сигнатура GgufApi.loadModel(modelName, options) — раньше сюда
+        // передавали (backendId, modelName, {path}), поэтому в cppworker уходило
+        // имя бэкенда вместо модели и ctxSize по умолчанию.
+        if (typeof api.loadModel !== 'function') {
+            M.showToast('loadModel API not available', 'error');
+            M.markLoadFailed(handle, modelName, 'API not available');
+            return;
+        }
+        api.loadModel(modelName, {
+            path: modelPath || '',
+            ctxSize: opts.contextSize,
+            batchSize: opts.batchSize,
+            gpuLayers: opts.gpuLayers,
+            flashAttn: opts.flashAttn === undefined ? undefined : (opts.flashAttn !== 0),
+            useMmap: opts.useMmap
+        })
             .then(function () {
-                M.showToast(M._('gguf.model_loaded') || 'Model loaded: ' + model.name, 'success');
+                M.showToast(M._('gguf.model_loaded') || 'Model loaded: ' + modelName, 'success');
                 if (typeof M.refreshDetail === 'function') M.refreshDetail();
             })
             .catch(function (err) {
-                M.markLoadFailed(handle, model.name || model, (err && err.message) || String(err));
-                M.showToast('Load failed: ' + ((err && err.message) || err), 'error');
+                onFail((err && err.message) || String(err));
             });
     };
 
@@ -157,17 +241,31 @@
             M.showToast(M._('gguf.no_backend_selected') || 'No backend selected', 'error');
             return;
         }
-        if (!confirm(M._('gguf.confirm_delete_model', { name: model.name || model }) ||
-                      'Delete model ' + (model.name || model) + '?')) return;
-        var api = window.GgufApi || window.Api;
-        if (typeof api.deleteModel !== 'function') {
-            M.showToast('deleteModel API not available', 'error');
+        var modelName = (model && typeof model === 'object') ? (model.name || model.path) : model;
+        if (!modelName) {
+            M.showToast('deleteOnSelectedBackend: model name is empty', 'error');
             return;
         }
-        api.deleteModel(backend.id, model.name || model)
-            .then(function () {
+        if (!confirm(M._('gguf.confirm_delete_model', { name: modelName }) ||
+                      'Delete model ' + modelName + '?')) return;
+        var api = window.GgufApi || window.Api;
+        // R66d (2026-09-23): БАГ — здесь проверялось `api.deleteModel`, которого у
+        // GgufApi НЕТ (есть deleteModelOnBackend / deleteModelAt /
+        // deleteModelViaBackend). Кнопка удаления модели всегда показывала тост
+        // "deleteModel API not available" и ничего не удаляла.
+        if (typeof api.deleteModelOnBackend !== 'function') {
+            M.showToast('GgufApi.deleteModelOnBackend is not available', 'error');
+            return;
+        }
+        api.deleteModelOnBackend(backend.id, modelName)
+            .then(function (result) {
+                if (result && result.success === false) {
+                    M.showToast('Delete failed: ' + (result.error || 'unknown error'), 'error');
+                    return;
+                }
                 M.showToast(M._('gguf.model_deleted') || 'Model deleted', 'success');
                 if (typeof M.refreshDetail === 'function') M.refreshDetail();
+                if (typeof M.refreshBackends === 'function') M.refreshBackends();
             })
             .catch(function (err) {
                 M.showToast('Delete failed: ' + ((err && err.message) || err), 'error');
@@ -362,11 +460,15 @@
 
     M.cancelDownload = function(modelId, filename) {
         var api = window.GgufApi || window.Api;
-        if (typeof api.hfCancel !== 'function') {
-            M.showToast('hfCancel API not available', 'error');
+        // R66d (2026-09-23): БАГ — проверялось `api.hfCancel`, которого нет
+        // (метод называется cancelDownload, см. gguf-api.js:401). Кнопка Cancel у
+        // загрузки всегда показывала "hfCancel API not available", и отменить
+        // скачивание из UI было нельзя.
+        if (typeof api.cancelDownload !== 'function') {
+            M.showToast('GgufApi.cancelDownload is not available', 'error');
             return;
         }
-        api.hfCancel(modelId, filename)
+        api.cancelDownload(modelId, filename)
             .then(function () {
                 M.showToast(M._('gguf.download_cancelled') || 'Download cancelled', 'info');
                 if (typeof M.refreshActiveDownloads === 'function') M.refreshActiveDownloads();

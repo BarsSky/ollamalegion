@@ -311,22 +311,23 @@ const Api = (function () {
              *                                ИЛИ 202 + {applyId, progressUrl, ...} (async path при занятом бэкенде).
              */
             async apply(modelName, profile) {
+                // R66d (2026-09-23): БАГ — здесь был raw fetch с
+                // `request._getAuthHeaders ? ... : {}`, а такой функции у
+                // `request` НЕТ (она нигде в проекте не определена). В итоге
+                // заголовок X-API-Token не отправлялся вообще, и кнопка
+                // «Применить» в Per-Model Profiles стабильно получала
+                //   401 {"error":"Unauthorized: valid API token required"}
+                // (балансер: AuthMiddleware на /api/v1/cppworker/model-profiles/).
+                // Теперь используется общий `request()`, который добавляет
+                // X-API-Token из WEBUI_CONFIG.API_TOKEN (см. getOptions).
+                // 202 Accepted не считается ошибкой: request() пропускает любой
+                // 2xx, а статус отдаём наружу через _status (async apply path).
+                const url = `${API_BASE}/api/v1/cppworker/model-profiles/${encodeURIComponent(modelName)}/apply`;
                 const options = { method: 'POST' };
                 if (profile && Object.keys(profile).length > 0) {
                     options.body = JSON.stringify(profile);
                 }
-                const response = await fetch(
-                    `${API_BASE}/api/v1/cppworker/model-profiles/${encodeURIComponent(modelName)}/apply`,
-                    {
-                        method: 'POST',
-                        credentials: 'include',
-                        headers: Object.assign(
-                            { 'Content-Type': 'application/json' },
-                            request._getAuthHeaders ? request._getAuthHeaders() : {}
-                        ),
-                        body: options.body || null
-                    }
-                );
+                const response = await request(url, options);
                 const data = await response.json();
                 // Attach status to result so caller can distinguish sync (200) vs async (202)
                 data._status = response.status;
@@ -411,7 +412,16 @@ const Api = (function () {
                     // Fallback для старых браузеров
                     throw new Error('EventSource not supported');
                 }
-                const url = `${API_BASE}/api/v1/cppworker/model-profiles/${encodeURIComponent(modelName)}/apply/progress?applyId=${encodeURIComponent(applyId)}`;
+                // R66d (2026-09-23): EventSource НЕ умеет custom headers, поэтому
+                // токен передаём query-параметром ?token= — балансерный
+                // AuthMiddleware принимает его (internal/api/auth.go:59-61).
+                // Без этого SSE прогресса apply получал 401 и молча падал в
+                // polling (а если и status-эндпоинт недоступен — в вечное
+                // «Применение профиля…»).
+                let url = `${API_BASE}/api/v1/cppworker/model-profiles/${encodeURIComponent(modelName)}/apply/progress?applyId=${encodeURIComponent(applyId)}`;
+                if (CFG.API_TOKEN) {
+                    url += '&token=' + encodeURIComponent(CFG.API_TOKEN);
+                }
                 const es = new EventSource(url, { withCredentials: true });
                 es.addEventListener('progress', (e) => {
                     try {

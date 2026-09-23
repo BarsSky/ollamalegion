@@ -205,9 +205,25 @@
                 } else {
                     state.loadedModels = [];
                 }
-                // runtimeModels: bundle of dynamic runtime signals
-                // (gpu usage, system metrics, prediction score).
-                state.runtimeModels = {
+                // runtimeModels: R66d (2026-09-23) — ИСПРАВЛЕНО.
+                //
+                // БАГ: сюда писался «бандл» {gpu, system, prediction, score,
+                // llamaCpp, ollama}, а renderLoadedPane() читает это поле как
+                // КАРТУ ПО ИМЕНИ МОДЕЛИ:
+                //   state.runtimeModels[name] || ...basename(m.path)...
+                // Из-за несовпадения форм rt всегда был null, и блок runtime-
+                // параметров (ctx=, gpu_layers=, batch=, fa=, layers=,
+                // gguf_max=) НИКОГДА не отрисовывался на вкладке загруженных
+                // моделей. Пользователь видел только default-значения и не мог
+                // понять, с какой конфигурацией модель реально загружена
+                // (= «не видно информации о моделях / трудно понять
+                // конфигурацию, поэтому работа медленная»).
+                //
+                // Теперь: бандл кладём в state.backendRuntime (для метрик
+                // бэкенда), а state.runtimeModels остаётся картой имя→runtime,
+                // которую асинхронно наполняем из
+                // GET /api/v1/cppworker/config/runtime.
+                state.backendRuntime = {
                     gpu: data.gpu || null,
                     system: data.system || null,
                     prediction: data.prediction || null,
@@ -215,7 +231,14 @@
                     llamaCpp: data.llamaCpp || null,
                     ollama: data.ollama || null,
                 };
+                if (!state.runtimeModels || typeof state.runtimeModels !== 'object') {
+                    state.runtimeModels = {};
+                }
                 _detailRefreshInProgress = false;
+                // Подтягиваем реальные runtime-параметры загруженных моделей
+                // (n_ctx/gpu_layers/batch/flash_attn/n_layers) — без этого
+                // вкладка «Загруженные» показывает только defaults из метрик.
+                fetchRuntimeModelsAsync(backend.id, state);
                 // R59.8: refresh BOTH the panel (header + tabs + content)
                 // and the pane (just the active tab's content). The
                 // header shows status pills that depend on workerInfo,
@@ -229,6 +252,46 @@
                 console.warn('refreshDetail failed:', err);
             });
     };
+
+    /**
+     * R66d: асинхронно загрузить runtime-конфигурацию загруженных моделей
+     * (реальные n_ctx / gpu_layers / batch / flash_attn / n_layers) и разложить
+     * её по именам в state.runtimeModels.
+     *
+     * Источник — GgufApi.getRuntimeConfigViaBackend(backendId) →
+     * GET /api/v1/cppworker/runtime-config через прокси балансера. Ошибки
+     * игнорируем: без runtime-данных вкладка просто покажет defaults (как
+     * раньше), а не сломается.
+     */
+    function fetchRuntimeModelsAsync(backendId, state) {
+        if (!backendId) return;
+        if (!window.GgufApi || typeof window.GgufApi.getRuntimeConfigViaBackend !== 'function') return;
+        // Защита от параллельных запросов на один и тот же бэкенд.
+        state._runtimeFetchFor = state._runtimeFetchFor || {};
+        if (state._runtimeFetchFor[backendId]) return;
+        state._runtimeFetchFor[backendId] = true;
+        window.GgufApi.getRuntimeConfigViaBackend(backendId)
+            .then(function (rtData) {
+                state._runtimeFetchFor[backendId] = false;
+                var list = (rtData && rtData.loaded_models) || [];
+                var map = {};
+                list.forEach(function (m) {
+                    if (m && m.name) map[m.name] = m;
+                });
+                state.runtimeModels = map;
+                // Перерисовываем только активную вкладку — не запускаем
+                // refreshDetail (иначе получим цикл запросов).
+                if (state.detailPane === 'models' && typeof M.refreshDetailPane === 'function') {
+                    M.refreshDetailPane();
+                }
+            })
+            .catch(function (err) {
+                state._runtimeFetchFor[backendId] = false;
+                if (window.console && console.debug) {
+                    console.debug('[gguf] runtime config fetch failed:', err && err.message);
+                }
+            });
+    }
 
     M.startActiveQueriesPolling = function() {
         const state = M.state;

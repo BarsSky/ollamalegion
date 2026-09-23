@@ -49,6 +49,13 @@
         // с loadedModels из /api/v1/cppworker/config/runtime. Используются в
         // renderLoadedPane() чтобы показать «default: 8192, runtime: 32768».
         runtimeModels: {},
+        // R66d (2026-09-23): бандл метрик бэкенда (gpu/system/prediction/score/
+        // llamaCpp/ollama) из GET /api/v1/backends/{id}. РАНЬШЕ это лежало в
+        // state.runtimeModels — том же поле, которое renderLoadedPane() читает
+        // как карту «имя модели → runtime-параметры». Из-за конфликта форм блок
+        // runtime-параметров (ctx/gpu_layers/batch/fa/layers) никогда не
+        // отрисовывался. Теперь это отдельное поле.
+        backendRuntime: null,
         // === Round 26 v0.5.13: Active queries per model ===
         // Polling /api/models/active-queries каждые 3s для отображения
         // busy badge "🔴 Generating (N active)" на loaded model card.

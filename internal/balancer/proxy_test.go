@@ -1,6 +1,7 @@
 package balancer
 
 import (
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -13,7 +14,43 @@ import (
 )
 
 // createTestConfig - создание тестовой конфигурации
+// freeTestPorts — R69 (2026-09-23): свободные порты, выделенные у ОС.
+//
+// Зачем: тестовые бэкенды раньше жёстко указывали на 11434/11435 — стандартный
+// порт Ollama. Если на машине разработчика на 11434 что-то слушает
+// (например scripts/forward_11434.js → балансер, который запускают для проверки
+// реального Cline), тесты, ожидающие мгновенный "connection refused", уходили в
+// proxyRequest к живому стенду и висели минутами: пакет internal/balancer
+// падал по -timeout 400s на TestProxyServeHTTP_VirtualRouter_*.
+//
+// Порты выделяем пачкой (все listener'ы держим открытыми до конца), чтобы
+// значения гарантированно различались, затем закрываем — «свободный, но
+// никем не слушаемый» порт.
+func freeTestPorts(n int) []int {
+	listeners := make([]net.Listener, 0, n)
+	ports := make([]int, 0, n)
+	for i := 0; i < n; i++ {
+		ln, err := net.Listen("tcp", "127.0.0.1:0")
+		if err != nil {
+			break
+		}
+		listeners = append(listeners, ln)
+		if addr, ok := ln.Addr().(*net.TCPAddr); ok {
+			ports = append(ports, addr.Port)
+		}
+	}
+	for _, ln := range listeners {
+		_ = ln.Close()
+	}
+	// Fallback (listener не удался): порт из заведомо нестандартного диапазона.
+	for len(ports) < n {
+		ports = append(ports, 21434+len(ports))
+	}
+	return ports
+}
+
 func createTestConfig() *types.LoadBalancerConfig {
+	ports := freeTestPorts(2)
 	return &types.LoadBalancerConfig{
 		LoadBalancer: types.LoadBalancerSettings{
 			Host:    "localhost",
@@ -25,7 +62,7 @@ func createTestConfig() *types.LoadBalancerConfig {
 				ID:                  "backend-1",
 				Name:                "Backend 1",
 				Host:                "localhost",
-				OllamaPort:          11434,
+				OllamaPort:          ports[0],
 				AgentPort:           9090,
 				Weight:              1,
 				MaxConcurrentReqs:   10,
@@ -36,7 +73,7 @@ func createTestConfig() *types.LoadBalancerConfig {
 				ID:                  "backend-2",
 				Name:                "Backend 2",
 				Host:                "localhost",
-				OllamaPort:          11435,
+				OllamaPort:          ports[1],
 				AgentPort:           9091,
 				Weight:              2,
 				MaxConcurrentReqs:   20,

@@ -542,34 +542,45 @@ func reloadAllLoadedWithDefaults() ([]string, []string) {
 		if !currentConfig.AutoGPUDistribution && len(currentConfig.DefaultTensorSplit) > 0 {
 			opts.TensorSplit = currentConfig.DefaultTensorSplit
 		}
-		// Use adaptive SelectStrategy if available (tries f16→q8_0→q4_0)
-		if *autoOffload {
-			if globalEnv != nil {
-				env := globalEnv.Get()
-				ggufMeta := cppbackend.GGUFModelMeta{
-					Architecture: m.Architecture,
-					NLayers:      m.NLayers,
-					NEmbd:        m.NEmbd,
-					NHeads:       m.NHeads,
-					NKvHeads:     m.NKvHeads,
-					SizeBytes:    int64(m.SizeBytes),
-				}
-				strategy := SelectStrategy(&env, "", ggufMeta, m.ContextSize, -2, currentConfig)
-				opts.GPULayers = strategy.GPULayers
-				opts.KVCacheType = strategy.KVCacheType
-				opts.UseMmap = strategy.UseMmap
-			} else {
-				opts.GPULayers = calculateOptimalGPULayersForModel(m, "")
-			}
-		}
+		// R66d (2026-09-23): расчёт стратегии по VRAM перенесён ВНУТРЬ горутины,
+		// после выгрузки старой копии модели (см. комментарий ниже). Здесь только
+		// фиксируем снимок ModelInfo — `m` это переменная цикла, а в Go 1.21 она
+		// переиспользуется между итерациями, поэтому передаём копию параметром.
+		modelInfo := m
 		// ????????? reload ? ???????? ? ?? ????????? ????? WebUI ?? ??????.
-		go func(name string, modelPath string, loadOpts cppbackend.LoadModelOpts) {
+		go func(name string, modelPath string, info cppbackend.ModelInfo, loadOpts cppbackend.LoadModelOpts) {
 			_, cancel := contextWithTimeout(120 * time.Second)
 			defer cancel()
 			if err := backend.UnloadModel(name); err != nil {
 				logger.Get().Warnw("handleCppWorkerUpdateConfig: unload failed",
 					"model", name, "error", err)
 				return
+			}
+			// R66d: стратегию (число GPU-слоёв, kv-cache, mmap) считаем ПОСЛЕ
+			// выгрузки. Раньше SelectStrategy/calculateOptimalGPULayersForModel
+			// вызывались ДО неё, и оценка видела VRAM, занятую этой же моделью,
+			// занижая результат. Живой случай: Settings Save (reload с defaults)
+			// поставил gpu_layers=27/42, хотя следом cppworker сам писал
+			// "VRAM sufficient (vramFreeMB=7069, требуется 6537)" — 15 слоёв
+			// остались на CPU и генерация шла медленно при свободной VRAM.
+			if *autoOffload {
+				ggufMeta := cppbackend.GGUFModelMeta{
+					Architecture: info.Architecture,
+					NLayers:      info.NLayers,
+					NEmbd:        info.NEmbd,
+					NHeads:       info.NHeads,
+					NKvHeads:     info.NKvHeads,
+					SizeBytes:    int64(info.SizeBytes),
+				}
+				if globalEnv != nil {
+					env := globalEnv.Get()
+					strategy := SelectStrategy(&env, "", ggufMeta, info.ContextSize, -2, currentConfig)
+					loadOpts.GPULayers = strategy.GPULayers
+					loadOpts.KVCacheType = strategy.KVCacheType
+					loadOpts.UseMmap = strategy.UseMmap
+				} else {
+					loadOpts.GPULayers = calculateOptimalGPULayersForModel(info, "")
+				}
 			}
 			// R60.57: config-update reload — context.Background() (не HTTP-triggered).
 			if err := backend.LoadModelWithOpts(context.Background(), name, modelPath, loadOpts); err != nil {
@@ -581,7 +592,7 @@ func reloadAllLoadedWithDefaults() ([]string, []string) {
 					"context_size", loadOpts.ContextSize,
 					"gpu_layers", loadOpts.GPULayers)
 			}
-		}(m.Name, m.Path, opts)
+		}(m.Name, m.Path, modelInfo, opts)
 		started = append(started, m.Name)
 	}
 	return started, failed

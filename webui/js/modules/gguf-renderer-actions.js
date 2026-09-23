@@ -66,17 +66,38 @@
      * `state.loadOptions`. Весь код синхронизации настроек
      * (`bindSettingsChange`, `syncLoadOptionsFromConfig`, `saveBackendOptions`,
      * `markLoadOptionsCustom`) писал в `state.loadOptions`, но при загрузке
-     * значение игнорировалось — модель всегда грузилась с дефолтами cppworker
-     * (ctxSize=2048). Симптом: «не могу изменить контекстное окно на большое
-     * значение» — в форме 32768, а в VRAM модель с 2048.
+     * значение игнорировалось — модель всегда грузилась с дефолтами cppworker.
+     * Симптом: «не могу изменить контекстное окно на большое значение» — в форме
+     * 32768, а в VRAM модель с 2048.
      *
      * Ключи — как в balancer.ModelOpRequest (internal/balancer/model_management.go)
      * и в cppworker /api/models/load: contextSize, gpuLayers, batchSize,
      * flashAttn (-1/0/1), useMmap, kvCacheType.
+     *
+     * ВАЖНО (R66d, вторая итерация): параметры отправляются ТОЛЬКО если
+     * пользователь их явно сохранил в Settings — `state._loadOptionsCustom[backendId]`
+     * (этот флаг ставит saveBackendOptions при нажатии Save). Иначе возвращаем
+     * пустой набор и решение отдаём серверной цепочке
+     * «явный запрос > per-model профиль > дефолт cppworker».
+     *
+     * Почему: `state.loadOptions` инициализируется хардкодом ctxSize=2048
+     * (gguf-renderer-state.js), а синхронизация с дефолтами бэкенда происходит
+     * только при открытии вкладки Settings. На свежей странице кнопка
+     * «Загрузить» отправляла contextSize=2048 и грузила модель с крошечным
+     * контекстом вместо дефолта стека (CPPWORKER_CTX_SIZE=32768) — это и
+     * выглядело как «контекст не тот / настройки не применяются».
+     *
+     * @param {string} [backendId] — id бэкенда (ключ для _loadOptionsCustom)
      */
-    M.buildLoadOptions = function() {
-        const lo = (M.state && M.state.loadOptions) || {};
+    M.buildLoadOptions = function(backendId) {
+        const st = M.state || {};
+        const lo = st.loadOptions || {};
         var opts = {};
+        var custom = !!(st._loadOptionsCustom && backendId && st._loadOptionsCustom[backendId]);
+        if (!custom) {
+            // Пользователь ничего не сохранял — не навязываем хардкод-дефолты.
+            return opts;
+        }
         if (typeof lo.ctxSize === 'number' && lo.ctxSize > 0) opts.contextSize = lo.ctxSize;
         if (typeof lo.gpuLayers === 'number') opts.gpuLayers = lo.gpuLayers;
         if (typeof lo.batchSize === 'number' && lo.batchSize > 0) opts.batchSize = lo.batchSize;
@@ -112,7 +133,7 @@
         M.markLoadingModel(handle, modelName, modelPath);
 
         var api = window.GgufApi || window.Api;
-        var opts = (typeof M.buildLoadOptions === 'function') ? M.buildLoadOptions() : {};
+        var opts = (typeof M.buildLoadOptions === 'function') ? M.buildLoadOptions(handle) : {};
 
         var onFail = function (errMsg) {
             M.markLoadFailed(handle, modelName, errMsg);

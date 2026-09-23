@@ -67,7 +67,20 @@ const M = window.GgufModule;
 M.showToast = function (msg, kind) { calls.toasts.push({ msg: msg, kind: kind }); };
 
 // --- 1. buildLoadOptions: настройки формы → параметры balancer API -----------
-const opts = M.buildLoadOptions();
+// R66d (вторая итерация): параметры уходят ТОЛЬКО если пользователь явно сохранил
+// их в Settings (state._loadOptionsCustom[backendId]). Иначе набор пустой и
+// решение принимает серверная цепочка «профиль модели > дефолт cppworker».
+// Без этого «просто Загрузить» на свежей странице отправляло ctxSize=2048
+// (хардкод state) вместо дефолта стека 32768.
+
+// 1a. Свежая страница: пользователь ничего не сохранял → параметры не навязываем.
+const freshOpts = M.buildLoadOptions('cppworker-gpu-bundled-agent');
+assert.deepStrictEqual(freshOpts, {},
+    'без явного Save в Settings параметры загрузки отправлять нельзя (иначе ctxSize=2048 вместо дефолта); got ' + JSON.stringify(freshOpts));
+
+// 1b. После Save в Settings — отправляем ровно то, что в форме.
+M.state._loadOptionsCustom = { 'cppworker-gpu-bundled-agent': true };
+const opts = M.buildLoadOptions('cppworker-gpu-bundled-agent');
 
 assert.strictEqual(opts.contextSize, 32768,
     'ctxSize из формы должен уходить как contextSize (иначе «не меняется контекстное окно»); got ' + JSON.stringify(opts));
@@ -79,11 +92,11 @@ assert.strictEqual(opts.kvCacheType, undefined, 'пустой kvCacheType не �
 
 // flashAttn=false → 0 (явное выключение, не «не задано»)
 M.state.loadOptions.flashAttn = false;
-assert.strictEqual(M.buildLoadOptions().flashAttn, 0, 'flashAttn=false должен стать 0, а не отсутствовать');
+assert.strictEqual(M.buildLoadOptions('cppworker-gpu-bundled-agent').flashAttn, 0, 'flashAttn=false должен стать 0, а не отсутствовать');
 
 // ctxSize=0/NaN не должен превращаться в «contextSize: 0» (сброс контекста)
 M.state.loadOptions.ctxSize = 0;
-assert.strictEqual(M.buildLoadOptions().contextSize, undefined, 'ctxSize=0 не передаём');
+assert.strictEqual(M.buildLoadOptions('cppworker-gpu-bundled-agent').contextSize, undefined, 'ctxSize=0 не передаём');
 M.state.loadOptions.ctxSize = 32768;
 M.state.loadOptions.flashAttn = true;
 

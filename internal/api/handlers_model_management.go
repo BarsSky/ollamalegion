@@ -34,6 +34,70 @@ func (s *Server) modelManageHandler(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+// backendModelOpRequest — тело POST /api/v1/backends/{id}/models.
+//
+// R66d (2026-09-23): вынесено из executeBackendModelOp в тип уровня пакета,
+// чтобы можно было протестировать маппинг JSON → balancer.ModelOpRequest.
+//
+// ЗАЧЕМ ТЕСТ: balancer.ModelOpRequest умеет BatchSize/FlashAttn/UseMmap/
+// KVCacheType (их прокидывает executeLlamaCppLoad в cppworker), но HTTP-слой
+// их НЕ декодировал — поля молча терялись. Из-за этого из WebUI нельзя было
+// применить ни batch, ни flash_attn, ни mmap, ни kv-cache: форма «настройки
+// модели» сохранялась, но при загрузке на cppworker уходили только
+// contextSize/gpuLayers. Такой тест ловит именно этот класс расхождений
+// (поле добавлено в ModelOpRequest, но не в HTTP-слой).
+type backendModelOpRequest struct {
+	Operation string `json:"operation"` // pull, push, delete, load, unload
+	ModelName string `json:"modelName"`
+	// Round 19 (2026-07-10): WebUI GGUF tab sends these fields when the user
+	// sets gpuLayers/ctxSize/overrideTensors in the load dialog. Before this
+	// change they were silently dropped here, then resolveOverrideTensors()
+	// (which prefers explicit > profile > none) couldn't see them — only the
+	// saved profile (which was a dead config block until Round 19 fix #2) was
+	// consulted. For MoE models with override-tensors profiles this caused
+	// /api/models/load to be used (no per-tensor routing) instead of
+	// /api/models/load-with-params, which OOM'd the 21GB Qwen3-A3B on 24GB A10.
+	ContextSize         *int     `json:"contextSize,omitempty"`
+	GPULayers           *int     `json:"gpuLayers,omitempty"`
+	OverrideTensors     []string `json:"overrideTensors,omitempty"`
+	OverrideTensorBufts []string `json:"overrideTensorBufts,omitempty"`
+	Insecure            bool     `json:"insecure,omitempty"`
+	Stream              bool     `json:"stream,omitempty"`
+	// Force — R66c (2026-09-22): выгрузка ЗАНЯТОЙ модели (cppworker
+	// ?force=true). Без него unload модели с активными запросами
+	// возвращал 409 и модель оставалась в памяти без выхода из UI.
+	Force *bool `json:"force,omitempty"`
+	// R66d (2026-09-23): расширенные параметры загрузки. Раньше здесь их не
+	// было — WebUI отправлял их (loadOnSelectedBackend → manageModel), а
+	// cppworker до них не доходил: значения сбрасывались при декодировании.
+	// Ключи совпадают с balancer.ModelOpRequest и cppworker /api/models/load.
+	KVCacheType *string `json:"kvCacheType,omitempty"` // f16 | q8_0 | q4_0
+	UseMmap     *bool   `json:"useMmap,omitempty"`
+	FlashAttn   *int    `json:"flashAttn,omitempty"` // -1=auto, 0=off, 1=on
+	BatchSize   *int    `json:"batchSize,omitempty"`
+}
+
+// toModelOpRequest — маппинг тела HTTP-запроса в ModelOpRequest.
+// Отдельная функция (а не инлайн-литерал), чтобы её покрывал unit-тест:
+// каждое поле ModelOpRequest должно иметь соответствующий JSON-ключ выше.
+func (req backendModelOpRequest) toModelOpRequest() balancer.ModelOpRequest {
+	return balancer.ModelOpRequest{
+		Operation:           req.Operation,
+		ModelName:           req.ModelName,
+		ContextSize:         req.ContextSize,
+		GPULayers:           req.GPULayers,
+		OverrideTensors:     req.OverrideTensors,
+		OverrideTensorBufts: req.OverrideTensorBufts,
+		Insecure:            req.Insecure,
+		Stream:              req.Stream,
+		Force:               req.Force,
+		KVCacheType:         req.KVCacheType,
+		UseMmap:             req.UseMmap,
+		FlashAttn:           req.FlashAttn,
+		BatchSize:           req.BatchSize,
+	}
+}
+
 // listBackendModels — GET /api/v1/backends/{id}/models — получить список моделей на бэкенде
 func (s *Server) listBackendModels(w http.ResponseWriter, r *http.Request, backendID string) {
 	mm := s.proxy.GetModelManager()
@@ -64,6 +128,11 @@ func (s *Server) listBackendModels(w http.ResponseWriter, r *http.Request, backe
 
 // executeBackendModelOp — POST /api/v1/backends/{id}/models — выполнить операцию с моделью
 func (s *Server) executeBackendModelOp(w http.ResponseWriter, r *http.Request, backendID string) {
+	// R66d: load может занять минуты (холодная загрузка GGUF), а серверный
+	// WriteTimeout=60s (cmd/balancer/main.go:383) обрывает ответ — клиент
+	// получает HTTP 000 без тела и WebUI показывает "Load failed" при успешной
+	// загрузке. Снимаем deadline на время операции.
+	extendWriteDeadline(w)
 	mm := s.proxy.GetModelManager()
 	if mm == nil {
 		s.writeJSON(w, http.StatusInternalServerError, map[string]interface{}{
@@ -73,28 +142,7 @@ func (s *Server) executeBackendModelOp(w http.ResponseWriter, r *http.Request, b
 		return
 	}
 
-	var req struct {
-		Operation string `json:"operation"` // pull, push, delete, load, unload
-		ModelName string `json:"modelName"`
-		// Round 19 (2026-07-10): WebUI GGUF tab sends these fields when the user
-		// sets gpuLayers/ctxSize/overrideTensors in the load dialog. Before this
-		// change they were silently dropped here, then resolveOverrideTensors()
-		// (which prefers explicit > profile > none) couldn't see them — only the
-		// saved profile (which was a dead config block until Round 19 fix #2) was
-		// consulted. For MoE models with override-tensors profiles this caused
-		// /api/models/load to be used (no per-tensor routing) instead of
-		// /api/models/load-with-params, which OOM'd the 21GB Qwen3-A3B on 24GB A10.
-		ContextSize        *int     `json:"contextSize,omitempty"`
-		GPULayers          *int     `json:"gpuLayers,omitempty"`
-		OverrideTensors    []string `json:"overrideTensors,omitempty"`
-		OverrideTensorBufts []string `json:"overrideTensorBufts,omitempty"`
-		Insecure           bool     `json:"insecure,omitempty"`
-		Stream             bool     `json:"stream,omitempty"`
-		// Force — R66c (2026-09-22): выгрузка ЗАНЯТОЙ модели (cppworker
-		// ?force=true). Без него unload модели с активными запросами
-		// возвращал 409 и модель оставалась в памяти без выхода из UI.
-		Force *bool `json:"force,omitempty"`
-	}
+	var req backendModelOpRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		s.writeJSON(w, http.StatusBadRequest, map[string]interface{}{
 			"success": false,
@@ -128,17 +176,7 @@ func (s *Server) executeBackendModelOp(w http.ResponseWriter, r *http.Request, b
 		return
 	}
 
-	opReq := balancer.ModelOpRequest{
-		Operation:          req.Operation,
-		ModelName:          req.ModelName,
-		ContextSize:        req.ContextSize,
-		GPULayers:          req.GPULayers,
-		OverrideTensors:    req.OverrideTensors,
-		OverrideTensorBufts: req.OverrideTensorBufts,
-		Insecure:           req.Insecure,
-		Stream:             req.Stream,
-		Force:              req.Force, // R66c: выгрузка занятой модели
-	}
+	opReq := req.toModelOpRequest()
 
 	result := mm.ExecuteOperation(backendID, opReq)
 

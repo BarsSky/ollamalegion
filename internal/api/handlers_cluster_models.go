@@ -219,6 +219,34 @@ type clusterReloadModelRequest struct {
 	// Без него unload занятой модели возвращал 409 и выгрузить её из WebUI было
 	// невозможно.
 	Force *bool `json:"force,omitempty"`
+
+	// R66d (2026-09-23): расширенные параметры загрузки — те же, что принимает
+	// balancer.ModelOpRequest и cppworker /api/models/load. Раньше HTTP-слой их
+	// не декодировал, поэтому reload «с новыми настройками» терял batch/flash/
+	// mmap/kv-cache и применял только contextSize+gpuLayers.
+	KVCacheType *string `json:"kvCacheType,omitempty"` // f16 | q8_0 | q4_0
+	UseMmap     *bool   `json:"useMmap,omitempty"`
+	FlashAttn   *int    `json:"flashAttn,omitempty"` // -1=auto, 0=off, 1=on
+	BatchSize   *int    `json:"batchSize,omitempty"`
+}
+
+// toModelOpRequest — маппинг reload-запроса в ModelOpRequest.
+// operation переопределяется вызывающей стороной (у reload после unload это
+// "load"), поэтому передаётся параметром.
+func (req clusterReloadModelRequest) toModelOpRequest(modelName, operation string) balancer.ModelOpRequest {
+	return balancer.ModelOpRequest{
+		Operation:           operation,
+		ModelName:           modelName,
+		ContextSize:         req.ContextSize,
+		GPULayers:           req.GPULayers,
+		Insecure:            req.Insecure,
+		Stream:              req.Stream,
+		Force:               req.Force,
+		KVCacheType:         req.KVCacheType,
+		UseMmap:             req.UseMmap,
+		FlashAttn:           req.FlashAttn,
+		BatchSize:           req.BatchSize,
+	}
 }
 
 // clusterReloadModelResponse — результат reload-операции на каждом бэкенде.
@@ -315,6 +343,9 @@ func (s *Server) clusterReloadModelHandler(w http.ResponseWriter, r *http.Reques
 		})
 		return
 	}
+	// R66d: reload = unload + load, может длиться минуты; серверный
+	// WriteTimeout=60s (cmd/balancer/main.go:383) обрывает ответ. Снимаем deadline.
+	extendWriteDeadline(w)
 
 	// Извлекаем имя модели из URL: /api/v1/cluster/models/{name}/reload
 	name, ok := splitClusterModelPath(r.URL.Path)
@@ -542,15 +573,7 @@ func (s *Server) executeReloadOnBackend(backendID, modelName string, req *cluste
 		}
 	}
 
-	opReq := balancer.ModelOpRequest{
-		Operation:   req.Operation,
-		ModelName:   modelName,
-		ContextSize: req.ContextSize,
-		GPULayers:   req.GPULayers,
-		Insecure:    req.Insecure,
-		Stream:      req.Stream,
-		Force:       req.Force, // R66c: выгрузка занятой модели (cppworker ?force=true)
-	}
+	opReq := req.toModelOpRequest(modelName, req.Operation)
 
 	opResult := mm.ExecuteOperation(backendID, opReq)
 

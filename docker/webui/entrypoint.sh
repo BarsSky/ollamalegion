@@ -36,10 +36,35 @@ NGINX_CONF="/etc/nginx/conf.d/default.conf"
 : "${GIT_COMMIT:=unknown}"
 : "${BUILD_DATE:=unknown}"
 
-# 1. Генерация nginx.conf через envsubst (надёжнее, чем awk)
+# 1. Генерация nginx.conf из шаблона (подстановка ${VAR} — см. ниже).
+#
+# R67a (2026-09-23): вместо envsubst используем busybox sed.
+#
+# Почему: envsubst входит в пакет gettext, которого нет в nginx:alpine, и
+# Dockerfile ставил его через `apk add --no-cache gettext` — то есть СБОРКА
+# образа требовала сети. На машинах без интернета сборка падала, и WebUI нельзя
+# было пересобрать/развернуть (стили и иконки при этом уже лежат в образе:
+# css/, js/, img/, webfonts/ копируются из репозитория и внешних CDN не
+# используют — см. scripts/check_webui_assets.py). Теперь образ собирается без
+# единого сетевого запроса (нужен только заранее загруженный базовый образ).
+#
+# Подставляем РОВНО те же 6 переменных, что раньше перечислялись в envsubst:
+# остальные ${...} в шаблоне (если появятся, например $host nginx) не трогаем.
 echo "[entrypoint] Generating nginx config..."
 export NGINX_PORT API_HOST API_PORT LB_PORT CPPWORKER_HOST CPPWORKER_PORT
-envsubst '${NGINX_PORT} ${API_HOST} ${API_PORT} ${LB_PORT} ${CPPWORKER_HOST} ${CPPWORKER_PORT}' \
+
+# Экранирование значений для sed (значение может содержать & | \).
+escape_sed_repl() {
+    printf '%s' "$1" | sed -e 's/[&|\\]/\\&/g'
+}
+
+sed \
+    -e "s|\${NGINX_PORT}|$(escape_sed_repl "$NGINX_PORT")|g" \
+    -e "s|\${API_HOST}|$(escape_sed_repl "$API_HOST")|g" \
+    -e "s|\${API_PORT}|$(escape_sed_repl "$API_PORT")|g" \
+    -e "s|\${LB_PORT}|$(escape_sed_repl "$LB_PORT")|g" \
+    -e "s|\${CPPWORKER_HOST}|$(escape_sed_repl "$CPPWORKER_HOST")|g" \
+    -e "s|\${CPPWORKER_PORT}|$(escape_sed_repl "$CPPWORKER_PORT")|g" \
     < "$NGINX_TEMPLATE" > "$NGINX_CONF"
 
 # 2. Генерация config.js для рантайм параметров

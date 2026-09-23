@@ -1,10 +1,18 @@
 # Web UI Dockerfile
-# Сборка статического Web UI на nginx с поддержкой envsubst
+# Сборка статического Web UI на nginx с подстановкой ${VAR} в nginx.conf
+#
+# R67a (2026-09-23): образ собирается БЕЗ сетевых запросов (offline-build),
+# кроме заранее загруженного базового образа:
+#   * все статические ассеты (css/, js/, img/, webfonts/ — включая шрифты
+#     Font Awesome) копируются из репозитория, внешних CDN нет;
+#   * `apk add gettext` УБРАН: envsubst больше не нужен, подстановку делает
+#     busybox sed в entrypoint.sh (см. комментарий там). Раньше этот RUN
+#     требовал интернета, и на машине без сети WebUI нельзя было пересобрать.
+# Регресс-проверка ассетов: scripts/check_webui_assets.py (в CI-джобе
+# webui-static-checks) — падает, если страница ссылается на внешний CDN или на
+# несуществующий локальный файл.
 
 FROM dockerhub.timeweb.cloud/library/nginx:alpine
-
-# Установка gettext для envsubst
-RUN apk add --no-cache gettext
 
 # === Build args: пробрасываем git tag / commit / build date в рантайм ===
 # Используются entrypoint.sh для подстановки в js/modules/config.js

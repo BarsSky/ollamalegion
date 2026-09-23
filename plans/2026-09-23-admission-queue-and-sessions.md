@@ -1,7 +1,28 @@
 # Admission-очередь и per-user сессии в балансере (R67b)
 
-Статус: **план к исполнению** (R67a закрыл пункты 1, 2 и 5 жалобы; этот документ —
-пункты 3 и 4).
+Статус: **РЕАЛИЗОВАНО** (R67b, коммит `R67b: admission-очередь вместо 503 +
+различение пользователей OpenWebUI`, образ `ollama-legion/balancer:r67-submodule-v1`).
+
+## Что сделано (кратко)
+
+* `internal/balancer/admission_queue.go` — очередь ожидания слотов:
+  `LB_ADMISSION_WAIT_SEC` (default 300, 0 = прежнее «сразу 503»),
+  `X-Queue-Position` / `X-Queue-Wait-Ms` / `X-Queue-Wait-Max-Sec`, 503 только
+  как последний рубеж (+ `Retry-After`), `releaseSlot` будит очередь
+  broadcast'ом, per-session inflight + окно справедливости 30 c.
+* Интеграция: `acquireInferenceAdmission` в трёх inference-хендлерах llama.cpp
+  (`handleChat`, `handleGenerate`, `handleOpenAIChatCompletions`) — слот берётся
+  на всё время запроса и освобождается в defer.
+* Идентичность: `requestUserIdentity` (X-User-Id / X-OpenWebUI-User-Id /
+  X-User-Email), `requestBodyIdentity` (user/user_id, chat_id/session_id, в т.ч.
+  вложенный `metadata` — так помечает запросы OpenWebUI), `getSessionIDWithModel`
+  строит `usr:<user>::<model>[::chat:<chat>]`, `RequestSessionKey` расширен.
+* Наблюдаемость: `/api/v1/queue/stats` → блок `admission` (`enabled`, `waiting`,
+  `sessions`, `waiting_by_backend`, `served_total`, `timeout_total`,
+  `avg_wait_ms`, `wait_max_sec`, `active_sessions`).
+* Тесты: `internal/balancer/admission_queue_r67b_test.go` (7 тестов, включая
+  HTTP-уровень) + `TestMain` в `./tests` выключает ожидания для интеграционных
+  тестов.
 
 ## Жалобы (R67, дословно)
 
@@ -14,84 +35,50 @@
 
 ## Диагноз (подтверждён чтением кода, R67a)
 
-1. **Слоты без очереди.** `acquireSlotWithRetry` (`slot_handler.go:13`) делает
-   `tryAcquireSlot(target)` и до 10 попыток на альтернативных бэкендах
-   (`slot_manager.go:15`). Бэкенд «занят», если
-   `ActiveReqs >= MaxConcurrentReqs` (в живом стеке `maxConcurrentReqs=4`,
-   для cppworker default 1). Все заняты → `("", false)` → хендлер отвечает
-   **503 «no llama.cpp backend available»** немедленно. Ожидания/очереди нет.
-2. **QueueManager — мёртвая инфраструктура.** `internal/balancer/queue_manager.go`
-   содержит worker'ов, pending/processing, timeout, историю, статистику
-   (`GetQueueStats`, `/api/v1/queue/stats`), но в inference-путь НЕ включён:
-   `QueueManager.Enqueue` не вызывается ниоткуда (снаружи файла только
-   `NewQueueManager`, счётчики dispatch-аффинности и статистика).
-3. **Нет идентичности пользователя для admission.** Есть `sessionMgr` (affinity
-   по session-id), но admission решается глобальным счётчиком слотов; запросы
-   разных пользователей OpenWebUI неразличимы, справедливости между ними нет.
-   R67a добавил `RequestSessionKey(r, body)` (X-User-Id / X-OpenWebUI-User-Id /
-   X-Session-Id / X-Chat-Id / body user|session_id) — задел под очередь и
-   видимость в логах (`session=...` уже пишется при ожидании авто-загрузки).
-4. **Слоты и n_parallel.** `MaxConcurrentReqs` не связан с реальным
-   `n_parallel` cppworker'а: при `n_parallel=4` один бэкенд честно держит 4
-   одновременные генерации, но значение задаётся вручную в конфиге бэкенда.
+1. **Слоты без очереди.** Inference-хендлеры llama.cpp выбирали бэкенд и сразу
+   проксировали запрос, НЕ беря слот: `tryAcquireSlot` вызывался только из
+   общего flow `Proxy.ServeHTTP` и частично из `QueueManager`. Поэтому
+   `maxConcurrentReqs` (в живом стеке 4) на llama.cpp-путь не влиял вообще:
+   `activeRequests` оставался 0 при шести параллельных генерациях, а всё лишнее
+   ждало ВНУТРИ cppworker без очереди и видимости у балансера.
+2. **Пользователь не различался.** `getClientFingerprint` шёл по цепочке
+   X-Client-ID → Authorization → X-Session-ID → IP+UA. OpenWebUI проксирует всех
+   пользователей с одного IP, с одним User-Agent и ОДНИМ API-токеном, поэтому
+   fingerprint совпадал. Замер на живом стенде: три запроса от трёх разных
+   `X-User-Id` дали ОДНУ сессию (`fp:…::curl/8.21.0::<model>::chat`,
+   `requestCount=3`).
+3. **n_parallel не согласован** с `maxConcurrentReqs` бэкенда (см. «Осталось»).
 
-## План
+## Проверено на живом стенде (образ r67-submodule-v1)
 
-### 1. Admission-очередь (пункт 3)
-* Новый файл `internal/balancer/admission_queue.go`:
-  * `Proxy.admission` — реестр ожидающих: FIFO по сессиям (по одному активному
-    ожидающему на сессию; несколько сессий не блокируют друг друга),
-    broadcast-канал на освобождение слота;
-  * `acquireSlotQueued(ctx, model, sessionKey, ...) (backendID string, waited time.Duration, err error)`:
-    быстрый путь `acquireSlotWithRetry` → если не вышло, встаём в очередь и ждём
-    `LB_ADMISSION_WAIT_SEC` (default 120; 0 = прежнее поведение «сразу 503»);
-  * позиция в очереди наружу: заголовки `X-Queue-Position`, `X-Queue-Wait-Ms`,
-    и `Retry-After` только при таймауте (503 остаётся как последний рубеж).
-* `releaseSlot` будит очередь (неблокирующий сигнал).
-* Подключить в `slot_handler.go` (используется всеми inference-хендлерами
-  llama.cpp) — одна точка входа, минимум изменений.
-* Метрики/наблюдаемость: `GetQueueStats` дополнить полями ожидающих и их
-  сессий; отдавать в `/api/v1/queue/stats` (уже есть) + в WebUI (карточка
-  очереди) — чтобы оператор видел, кто ждёт.
+* 3 параллельных `/api/chat` с разными `X-User-Id` → **3 отдельные сессии**
+  (`usr:<hash>::gemma-4-E4B-it-Q4_K_M`, `count=1` каждая) вместо одной с count=3.
+* 10 параллельных запросов при `maxConcurrentRequests=4` →
+  `admission.waiting=2`, `sessions=[X-User-Id:r67b-q-user-6,
+  X-User-Id:r67b-q-user-8]`, оба получили **200** с `X-Queue-Position` 1/2 и
+  `X-Queue-Wait-Ms` 2526/5502; `served=2`, `avg_wait_ms=4014`;
+  `activeRequests` доходил до 4 (до R67b — всегда 0).
+* `LB_ADMISSION_WAIT_SEC=2` → один из 10 запросов получил
+  `503 + Retry-After: 15 + X-Queue-Position: 3 + X-Queue-Wait-Max-Sec: 2 +
+  X-Queue-Wait-Ms: 2000`, `timeouts=1`.
 
-### 2. Keepalive для streaming-клиентов во время ожидания (пункт 3)
-* Пока запрос ждёт слот, клиент (OpenWebUI) не должен таймаутиться: переиспользовать
-  приём из `preflight_stream_dialog.go` (hijack + заголовки стрима + keepalive
-  каждые ~5 с; для SSE — `: keepalive`, для NDJSON Ollama — пустая строка).
-* Для non-stream запросов — ждать молча (клиенту всё равно нужен ответ), но
-  ограничить ожидание таймаутом рантайма клиента.
-* Конфиг: `LB_ADMISSION_KEEPALIVE_SEC` (default 5, 0 = выключить).
+## Осталось (не входит в жалобу R67, отдельные задачи)
 
-### 3. Per-user справедливость и «новая сессия» (пункт 4)
-* Ключ сессии = `RequestSessionKey` (R67a). Правила:
-  * максимум один ожидающий на сессию (повторный запрос той же сессии, пока
-    предыдущий ждёт, не занимает два места) — это и есть «новый запрос того же
-    пользователя»: он либо получает слот, либо встаёт в очередь ОДИН раз;
-  * если сессия уже обслуживается (есть активный запрос) и ждёт ещё один — он
-    получает более низкий приоритет, чем сессии, которые ещё не обслуживались
-    (защита от «один пользователь забил все слоты»);
-  * анонимные клиенты (Cline без user id) — общая FIFO-очередь.
-* Аффинность: `bindSession` при выдаче слота (уже есть), чтобы одна сессия
-  оставалась на одном бэкенде (важно для KV-cache и n_parallel).
+1. **Keepalive для streaming-клиентов во время ожидания** (`LB_ADMISSION_KEEPALIVE_SEC`).
+   Сейчас ожидающий запрос молчит до получения слота (максимум
+   `LB_ADMISSION_WAIT_SEC`). Для очередей длиннее клиентского таймаута
+   (OpenWebUI 300 с) нужен hijack + SSE-комментарии/пустые строки NDJSON —
+   реализация отложена: сначала нужно понять, что важнее для Cline/Roo (они
+   переиспользуют соединение и не любят преамбулу).
+2. **Связь `maxConcurrentReqs` ↔ `n_parallel` cppworker.** Сейчас значение
+   приходит из конфига бэкенда (default 1 для llama_cpp, в живом стеке 4 от
+   агента). План: если cppworker сообщает `parallel`/`slots` в метриках —
+   использовать его как default `maxConcurrentReqs`, чтобы очередь балансера
+   совпадала с реальной вместимостью модели.
+3. **Карточка очереди в WebUI** (monitor): блок `admission` уже отдаётся API,
+   осталось отрисовать ожидающих и их сессии в `/monitor` (`renderDispatchStats`
+   рядом) — вместе с i18n-ключами и `scripts/check_webui_assets.py`.
+4. **Единая очередь для Ollama-пути**: `Proxy.ServeHTTP` использует старый
+   `QueueManager` (workers + pending/processing). Он работает, но это вторая
+   независимая очередь; имеет смысл свести обе к admission-очереди.
 
-### 4. Согласование с n_parallel
-* Проверить/задокументировать связь `maxConcurrentReqs` бэкенда и
-  `n_parallel` cppworker: для llama.cpp разумный default — `n_parallel`
-  (сейчас в `backend_registry.go:36` жёстко 1). Предложение: если cppworker
-  сообщает `parallel` в метриках — использовать его как default.
-
-### 5. Тесты
-* Юнит: очередь FIFO; таймаут → ошибка (хендлер → 503 + Retry-After);
-  `LB_ADMISSION_WAIT_SEC=0` → прежнее поведение; один ожидающий на сессию;
-  приоритет необслуживавшихся сессий; `releaseSlot` будит ровно одного.
-* HTTP-уровень: бэкенд с `maxConcurrentReqs=1`, два параллельных запроса —
-  оба получают 200 (второй ждёт), а не 503; третий с коротким таймаутом
-  получает 503 + `X-Queue-Position`.
-* Наблюдаемость: `/api/v1/queue/stats` показывает ожидающих с их сессиями.
-
-### 6. Проверка на живом стенде
-* `maxConcurrentReqs=1` на бэкенде, два одновременных `curl /api/chat` →
-  оба 200, в логах видно «queued, waiting for slot … session=X-User-Id:u1/u2».
-* Три запроса от одного пользователя + один от другого → второй пользователь
-  не голодает (попадает в очередь выше повторных запросов первого).
-* Streaming-клиент во время ожидания получает keepalive и не отваливается.

@@ -1,9 +1,98 @@
-﻿# Changelog
+# Changelog
 
 Все заметные изменения в проекте Ollama Legion будут задокументированы в этом файле.
 
 Формат ведётся в соответствии с [Keep a Changelog](https://keepachangelog.com/ru/1.0.0/),
 и этот проект придерживается [Semantic Versioning](https://semver.org/lang/ru/).
+
+## [0.5.24 — Round 66d (2026-09-23)]
+
+### 🐛 Bug fix
+
+#### WebUI: загрузка модели, смена настроек и применение профиля из UI
+
+Пользователь сообщил (2026-09-23): «через форму WebUI не работает ни загрузка
+модели на llama.cpp-бэкенд, ни смена настроек модели (для preload или для
+change)», «нет способа выбрать целевую модель — уже загруженную или ту, что
+будет загружена в VRAM», «не могу изменить контекстное окно на большое значение
+и применить профиль из WebUI — ни из Settings, ни из настроек GGUF Models»,
+«WebUI неправильно отображает загрузку бэкенда, из-за чего трудно понять
+конфигурацию модели, поэтому работа очень медленная при свободной VRAM/RAM»,
+«на qwen3.8 без reasoning ответ клиенту OpenWebUI пришёл продублированным
+слово-в-слово», «токен задан в нескольких местах, после смены часто
+HTTP 401 invalid or missing API token».
+
+**Root causes** (девять независимых дефектов, каждый подтверждён на живом стеке):
+
+1. **WriteTimeout=60s обрывал ответ на загрузку модели.** apiHTTPServer
+   (18081) имел `WriteTimeout: 60 * time.Second`, а холодная загрузка
+   4.2 GB gemma-4-E4B-it занимает 88-90 с. Клиент не получал ни одного байта
+   (`HTTP 000`), хотя в логах балансера `success:true` → WebUI показывал
+   "Load failed". Фикс: `extendWriteDeadline(w)` в длинных хендлерах
+   (`/api/v1/backends/{id}/models`, apply профиля, reload кластера).
+2. **HTTP-слой терял batchSize/flashAttn/useMmap/kvCacheType.** Поля есть в
+   `balancer.ModelOpRequest`, но inline-структура хендлера их не декодировала.
+3. **`loadOnSelectedBackend` вызывал `api.loadModel(handle, model.name, {path})`
+   при сигнатуре `loadModel(modelName, options)`** → в cppworker уходило
+   `name=<backendId>`, а `state.loadOptions` (ctx/batch/gpu) не читался вовсе.
+4. **Профиль не применялся при первой загрузке.** `executeLlamaCppLoad` брал из
+   профиля только override-tensors. Фикс: `profileForLoad()` + подстановка
+   contextLength/batchSize/numGpuLayers/flashAttn/useMmap/kvCacheType
+   (приоритет: запрос > профиль > дефолт cppworker).
+5. **apply профиля: 401 → 400 → skip.** Токен брался только из
+   `backend.CppWorkerApiToken` (в bundled-стеке пуст после дедупликации
+   бэкендов) → fallback на `LB_API_TOKEN`; тело содержало `numGpuLayers` вместо
+   `gpuLayers` (cppworker с `DisallowUnknownFields` → 400); при меньшем n_ctx
+   cppworker отвечал `already_loaded` и ничего не менял → `force: true` для
+   явного «Применить профиль» + честный статус в ответе.
+6. **WebUI-вызовы без токена:** `apply()` использовал несуществующий
+   `request._getAuthHeaders`, а SSE прогресса создавался без `?token=`
+   (EventSource не умеет headers) → 401.
+7. **Мёртвые имена методов в UI:** `api.deleteModel` (есть
+   `deleteModelOnBackend`) и `api.hfCancel` (есть `cancelDownload`).
+8. **Runtime-параметры загруженной модели не отображались:**
+   `state.runtimeModels` заполнялся «бандлом» метрик, а рендер читал его как
+   карту «имя модели → runtime» → блок `ctx=/gpu_layers=/batch=/fa=/layers=`
+   не рисовался никогда. Добавлен бейдж CPU-offload (частичная выгрузка слоёв).
+9. **Reload уходил в CPU-offload из-за устаревшего снимка VRAM.**
+   `CalculateOptimalGPULayers` читал `gpuDevices[].VRAMFreeMB`, снятый при
+   инициализации backend'а: старая копия модели ещё числилась в VRAM, эстиматор
+   решал «не хватает» и грузил 18 слоёв на GPU + 24 на CPU (медленно), хотя
+   свободной VRAM было 5.3 GB. Фикс: `refreshGPUDeviceVRAM()` из C-bridge перед
+   решением.
+
+Плюс: **auto-continue «smart»** обещал подавление перегенерации («>85%
+similar), но similarity-проверки не было — модель, перегенерировавшая ответ без
+приветствия, детектилась не всегда → дубликат ответа в OpenWebUI. Добавлена
+проверка общего префикса / повторённого фрагмента / «A → A+B» (порог 120 рун
+оригинала, чтобы не терять настоящие продолжения коротких фрагментов кода).
+
+И **единый источник токена**: `deployments/.env` (`CPPWORKER_API_TOKEN`)
+подставляется во все 5 мест compose (balancer/cppworker×2/agent/webui);
+`env_file: .env.bundled-with-agent` не может переопределить `environment:`;
+`config.js` отдаётся с `Cache-Control: no-store` (раньше браузер держал старый
+токен до года); entrypoint WebUI проверяет токен против балансера при старте и
+печатает `API token check: OK` либо ERROR с инструкцией.
+
+**Files** (main): `internal/api/write_deadline.go`,
+`internal/api/handlers_model_management.go`,
+`internal/api/handlers_cppworker_profiles.go`,
+`internal/api/handlers_cluster_models.go`,
+`internal/balancer/model_management.go`, `internal/balancer/auto_continue.go`,
+`internal/cppbackend/backend.go`,
+`webui/js/modules/{api,gguf-renderer-actions,gguf-renderer-refresh,gguf-renderer-detail-render,gguf-renderer-state}.js`,
+`docker/webui/entrypoint.sh`, `webui/nginx.conf`,
+`deployments/{.env.example,.env.bundled-with-agent.example,docker-compose.cppworker-bundled-with-agent.yml}`.
+
+**Verify** (живой стек): load через nginx 18083 →
+`HTTP 200 {"success":true}` за 90 с (было `HTTP 000`, пустое тело);
+cppworker runtime после load с явными настройками:
+`ctx=32768 batch=1024 fa=1 mmap=true kv=q8_0 gpu_layers=42/42`;
+apply профиля → `status=reloaded`, `ctx=8192 batch=512 gpu_layers=42/42`,
+лог решения `VRAM sufficient (vramFreeMB=8191) → optimalGPULayers=42`;
+DOM вкладки «Загруженные»: `ctx=8192 gpu_layers=42 batch=512 fa=1 layers=42
+gguf_max=131072 mmap=on`; смена токена только в `.env` → все 4 контейнера
+совпадают, старый токен → 401, новый → 200, `config.js` с `no-store`.
 
 ## [0.5.23 — Round 35c (2026-08-13)]
 

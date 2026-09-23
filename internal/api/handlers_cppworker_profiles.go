@@ -18,7 +18,9 @@ package api
 import (
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
+	"os"
 	"sort"
 	"strings"
 
@@ -283,6 +285,10 @@ func (s *Server) deleteModelProfile(w http.ResponseWriter, r *http.Request, mode
 // Если модель не загружена ни на одном бэкенде — это не ошибка, просто
 // в ответе будет "skipped" с reason "not loaded".
 func (s *Server) applyModelProfile(w http.ResponseWriter, r *http.Request, modelName string) {
+	// R66d: apply делает unload+load на бэкендах — это минуты для крупных
+	// моделей, а серверный WriteTimeout=60s (cmd/balancer/main.go:383) обрывает
+	// ответ (клиент видит HTTP 000 и «Apply failed»). Снимаем deadline.
+	extendWriteDeadline(w)
 	log := logger.Get()
 
 	if modelName == "" {
@@ -423,7 +429,8 @@ func (s *Server) applyModelProfile(w http.ResponseWriter, r *http.Request, model
 		}
 
 		// Reload через cppworker
-		if err := s.reloadModelOnCppWorker(backend, modelName, merged); err != nil {
+		status, err := s.reloadModelOnCppWorker(backend, modelName, merged)
+		if err != nil {
 			log.Warnw("applyModelProfile: reload failed on backend",
 				"backend", backendID, "model", modelName, "error", err)
 			results = append(results, modelProfileApplyBackendResult{
@@ -433,9 +440,22 @@ func (s *Server) applyModelProfile(w http.ResponseWriter, r *http.Request, model
 			})
 			continue
 		}
+		// R66d: сообщаем реальный итог cppworker'а. Раньше всегда писалось
+		// "reloaded", даже когда cppworker отвечал already_loaded и НЕ менял
+		// параметры — UI показывал успех, а n_ctx оставался прежним.
+		if status == "already_loaded" {
+			results = append(results, modelProfileApplyBackendResult{
+				BackendID: backendID,
+				Status:    "skipped",
+				Message: "cppworker reported already_loaded: " +
+					"текущие параметры модели не изменились (см. runtime-параметры на вкладке загруженных моделей)",
+			})
+			continue
+		}
 		results = append(results, modelProfileApplyBackendResult{
 			BackendID: backendID,
 			Status:    "reloaded",
+			Message:   status,
 		})
 	}
 
@@ -457,9 +477,13 @@ func (s *Server) applyModelProfile(w http.ResponseWriter, r *http.Request, model
 }
 
 // reloadModelOnCppWorker — POST /api/models/reload на конкретном бэкенде.
-// Принимает modelName и profile. Применяет contextLength/batchSize/numGpuLayers
+// Принимает modelName и profile. Применяет contextLength/batchSize/gpuLayers
 // к cppworker при reload.
-func (s *Server) reloadModelOnCppWorker(backend types.Backend, modelName string, profile types.LlamaCppModelProfile) error {
+//
+// Возвращает статус, который вернул cppworker ("reloaded" / "already_loaded" / …),
+// чтобы вызывающий код мог честно отчитаться в UI: без этого любой 2xx
+// превращался в «reloaded», даже когда cppworker пропустил reload.
+func (s *Server) reloadModelOnCppWorker(backend types.Backend, modelName string, profile types.LlamaCppModelProfile) (string, error) {
 	host := backend.Host
 	port := backend.CppWorkerPort
 	if port <= 0 {
@@ -468,10 +492,29 @@ func (s *Server) reloadModelOnCppWorker(backend types.Backend, modelName string,
 	target := fmt.Sprintf("http://%s:%d/api/models/reload", host, port)
 
 	body := map[string]interface{}{
-		"name":         modelName,
-		"contextSize":  profile.ContextLength,
-		"batchSize":    profile.BatchSize,
-		"numGpuLayers": profile.NumGPULayers,
+		"name":        modelName,
+		"contextSize": profile.ContextLength,
+		"batchSize":   profile.BatchSize,
+		// R66d (2026-09-23): ключ ДОЛЖЕН быть "gpuLayers", а не "numGpuLayers".
+		//
+		// cppworker декодирует reload-запрос в reloadModelRequest
+		// (cmd/cppworker/types.go:138) с DisallowUnknownFields, где поле называется
+		// `gpuLayers`. С "numGpuLayers" (так было) cppworker отвечал
+		//   400 {"error":"invalid JSON: json: unknown field \"numGpuLayers\""}
+		// и apply профиля из WebUI не срабатывал вообще:
+		//   {"backends":[{"status":"error","message":"cppworker reload returned 400: ..."}]}
+		// Та же ошибка была бы у любого профиля, потому что поле отправлялось всегда.
+		"gpuLayers": profile.NumGPULayers,
+		// R66d: force=true — «Применить профиль» это ЯВНОЕ действие пользователя,
+		// поэтому cppworker не должен пропускать reload по эвристике
+		// «current params already sufficient» (cmd/cppworker/handlers_model.go:1695).
+		//
+		// Живой случай: профиль gemma-4-E4B-it-Q4_K_M требует n_ctx=8192 (обход
+		// upstream GGML_ASSERT), модель была загружена с 32768. Без force
+		// cppworker отвечал 200 + status="already_loaded", НЕ меняя n_ctx, а
+		// балансер всё равно писал "reloaded" → в UI «профиль применён», по факту
+		// ничего не изменилось («не могу применить профиль из WebUI»).
+		"force": true,
 	}
 	if profile.FlashAttn != nil {
 		// Round 25 (2026-08-06): cppworker's reloadModelRequest expects flashAttn as
@@ -514,7 +557,7 @@ func (s *Server) reloadModelOnCppWorker(backend types.Backend, modelName string,
 
 	req, err := http.NewRequest(http.MethodPost, target, strings.NewReader(string(bodyBytes)))
 	if err != nil {
-		return fmt.Errorf("build reload request: %w", err)
+		return "", fmt.Errorf("build reload request: %w", err)
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("X-Real-IP", "balancer")
@@ -527,24 +570,63 @@ func (s *Server) reloadModelOnCppWorker(backend types.Backend, modelName string,
 	//
 	// Round 27 (2026-08-06): шлём X-API-Token. Если cppworker старый и не знает этот header
 	// (pre-Round 24), fallback на Authorization: Bearer — для backward compat.
-	if backend.CppWorkerApiToken != "" {
-		req.Header.Set("X-API-Token", backend.CppWorkerApiToken)
-		req.Header.Set("Authorization", "Bearer "+backend.CppWorkerApiToken)
+	//
+	// R66d (2026-09-23): FALLBACK на токен балансера, если в записи бэкенда
+	// CppWorkerApiToken пуст.
+	//
+	// Живой баг (bundled-стек): POST .../model-profiles/{name}/apply возвращал
+	//   200 {"backends":[{"status":"error","message":"cppworker reload returned
+	//        401: {\"error\":\"invalid or missing API token\"}"}]}
+	// потому что токен брался ТОЛЬКО из backend.CppWorkerApiToken. Поле приходит
+	// от cppworker при auto-registration (balancer_register.go:201), но в
+	// bundled-стеке тот же бэкенд регистрируют ещё shell-скрипт и sidecar-агент:
+	// их запросы идут без токена, и после дедупликации по host:port в живой
+	// записи поле пустое. Итог: «применить профиль из WebUI» невозможно —
+	// cppworker отвечает 401 (authMiddleware защищает /api/models/reload).
+	//
+	// Стек использует ОДИН токен (deployments/.env → LB_API_TOKEN во всех
+	// сервисах), поэтому токен балансера гарантированно подходит cppworker'у.
+	// Тот же порядок поиска уже применяется в nctx_reload_handlers.go:1083-1089.
+	cppToken := backend.CppWorkerApiToken
+	if cppToken == "" {
+		cppToken = strings.TrimSpace(os.Getenv("CPPWORKER_API_TOKEN"))
+	}
+	if cppToken == "" {
+		cppToken = strings.TrimSpace(os.Getenv("LB_API_TOKEN"))
+	}
+	if cppToken != "" {
+		req.Header.Set("X-API-Token", cppToken)
+		req.Header.Set("Authorization", "Bearer "+cppToken)
 	}
 
 	httpClient := &http.Client{}
 	resp, err := httpClient.Do(req)
 	if err != nil {
-		return fmt.Errorf("reload request failed: %w", err)
+		return "", fmt.Errorf("reload request failed: %w", err)
 	}
 	defer resp.Body.Close()
 
+	respBody, _ := io.ReadAll(resp.Body)
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		buf := make([]byte, 2048)
-		n, _ := resp.Body.Read(buf)
-		return fmt.Errorf("cppworker reload returned %d: %s", resp.StatusCode, string(buf[:n]))
+		msg := string(respBody)
+		if len(msg) > 2048 {
+			msg = msg[:2048]
+		}
+		return "", fmt.Errorf("cppworker reload returned %d: %s", resp.StatusCode, msg)
 	}
-	return nil
+
+	// R66d: cppworker отвечает {"status":"reloaded"} либо
+	// {"status":"already_loaded"} (пропуск по эвристике «параметры уже
+	// достаточны»). Возвращаем статус вызывающему, чтобы UI не показывал
+	// «reloaded» там, где ничего не изменилось.
+	var parsed struct {
+		Status string `json:"status"`
+	}
+	if err := json.Unmarshal(respBody, &parsed); err == nil && parsed.Status != "" {
+		return parsed.Status, nil
+	}
+	// Тело не JSON или без status — считаем, что операция выполнена.
+	return "reloaded", nil
 }
 
 // mergeModelProfile — мерж body update поверх existing. Zero-value поля

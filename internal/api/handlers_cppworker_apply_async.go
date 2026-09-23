@@ -249,7 +249,7 @@ func (s *Server) runAsyncApplyJob(job *applyJob, busyBackends []string) {
 			})
 			continue
 		}
-		if err := s.reloadModelOnCppWorker(backend, job.Model, job.Profile); err != nil {
+		if _, err := s.reloadModelOnCppWorker(backend, job.Model, job.Profile); err != nil {
 			log.Warnw("async apply: reload failed",
 				"applyId", job.ApplyID, "backend", bID, "error", err)
 			updateApplyJob(job.ApplyID, func(j *applyJob) {

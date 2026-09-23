@@ -51,7 +51,7 @@ services:
     # Round 35 (r35): reload→load fallback + idleUnload disabled.
     # Round 35c (r35c): env-tunable polling timeouts (LB_NCTX_PREFLIGHT_*)
     # для моделей с auto-offload (22GB+ Qwen3.6 на 8GB VRAM, 12-15 min load).
-    image: ollama-legion/balancer:r66-submodule-v12  # R66a (2026-09-21, ba2291c): native Ollama /api/chat response passthrough fix (pre-R66a the balancer re-translated the already-native Ollama body → synthetic 502 "upstream returned empty response"). Supersedes r66-submodule-v1 (Round 66 / R65d consolidated, 15ea588 + eee0e3e + 120ba02).
+    image: ollama-legion/balancer:r66-submodule-v14  # R66a (2026-09-21, ba2291c): native Ollama /api/chat response passthrough fix (pre-R66a the balancer re-translated the already-native Ollama body → synthetic 502 "upstream returned empty response"). Supersedes r66-submodule-v1 (Round 66 / R65d consolidated, 15ea588 + eee0e3e + 120ba02).
     #   R54.2: AutoTune master switch (Balancing.AutoTune, default true) +
     #          per-model "autoTune": false override (LlamaCppModelProfile.AutoTune).
     #          Manual control: user can disable AutoTune globally or per-model.

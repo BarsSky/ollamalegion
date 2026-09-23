@@ -661,6 +661,10 @@ type profileUpdate struct {
 	types.LlamaCppModelProfile
 	ContextLengthAuto *bool `json:"contextLengthAuto"`
 	ContextLengthMax  *int  `json:"contextLengthMax"`
+	// Disabled — указатель, чтобы можно было ЯВНО снять флаг disabled
+	// (`"disabled": false`), а не только выставить: при мерж-семантике
+	// отсутствующее поле сохраняет текущее значение.
+	Disabled *bool `json:"disabled"`
 }
 
 // mergeProfileUpdate — R67a: полный мерж обновления профиля.
@@ -688,6 +692,9 @@ func mergeProfileUpdate(existing types.LlamaCppModelProfile, upd profileUpdate) 
 	}
 	if upd.ContextLengthMax != nil {
 		out.ContextLengthMax = *upd.ContextLengthMax
+	}
+	if upd.Disabled != nil {
+		out.Disabled = *upd.Disabled
 	}
 	return out
 }
@@ -728,6 +735,34 @@ func mergeModelProfile(existing, update types.LlamaCppModelProfile) types.LlamaC
 	}
 	if update.KVCacheType != "" {
 		out.KVCacheType = update.KVCacheType
+	}
+	// R67a (2026-09-23): per-model таймауты, maxTokens, AutoTune, Disabled и
+	// SizeBytes. Раньше mergeModelProfile их НЕ знал, а upsert теперь работает
+	// через мерж — без этого создание/обновление профиля молча теряло таймауты
+	// (живая проверка: profile с streamingTimeoutSec=1800 после PUT отдавал 0).
+	// Семантика как у BatchSize/Parallel: 0/"" = «не менять», указатели — nil =
+	// «не менять».
+	if update.StreamingTimeoutSec != 0 {
+		out.StreamingTimeoutSec = update.StreamingTimeoutSec
+	}
+	if update.StreamingIdleTimeoutSec != 0 {
+		out.StreamingIdleTimeoutSec = update.StreamingIdleTimeoutSec
+	}
+	if update.RequestTimeoutSec != 0 {
+		out.RequestTimeoutSec = update.RequestTimeoutSec
+	}
+	if update.FirstByteTimeoutSec != 0 {
+		out.FirstByteTimeoutSec = update.FirstByteTimeoutSec
+	}
+	if update.MaxTokens != 0 {
+		out.MaxTokens = update.MaxTokens
+	}
+	if update.AutoTune != nil {
+		v := *update.AutoTune
+		out.AutoTune = &v
+	}
+	if update.SizeBytes != 0 {
+		out.SizeBytes = update.SizeBytes
 	}
 	// Round 7 (2026-07-09): override-tensors (parallel arrays).
 	// nil в update означает "не менять"; [] в update (явно пустой массив)

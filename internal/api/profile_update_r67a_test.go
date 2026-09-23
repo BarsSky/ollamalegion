@@ -87,6 +87,21 @@ func TestProfileUpdateJSON_AbsentAutoMaxAreNil(t *testing.T) {
 // сохранение из UI (только ctx/batch/gpu/notes) не должно обнулять
 // contextLengthAuto/Max, kvCacheType, flashAttn, numa, useMmap и таймауты.
 func TestMergeProfileUpdate_WebUISaveKeepsEverythingElse(t *testing.T) {
+	// Отдельно проверяем СОЗДАНИЕ (existing — нулевой): раньше create шёл через
+	// mergeModelProfile, который не знал про таймауты/maxTokens, и они терялись
+	// (живая проверка: streamingTimeoutSec=1800 после PUT отдавал 0).
+	if created := mergeProfileUpdate(types.LlamaCppModelProfile{}, profileUpdate{
+		LlamaCppModelProfile: types.LlamaCppModelProfile{
+			ContextLength:       32768,
+			StreamingTimeoutSec: 1800,
+			MaxTokens:           4096,
+			FirstByteTimeoutSec: 300,
+		},
+	}); created.StreamingTimeoutSec != 1800 || created.MaxTokens != 4096 || created.FirstByteTimeoutSec != 300 {
+		t.Fatalf("создание профиля теряет таймауты/maxTokens: %d/%d/%d",
+			created.StreamingTimeoutSec, created.MaxTokens, created.FirstByteTimeoutSec)
+	}
+
 	existing := types.LlamaCppModelProfile{
 		ContextLength:           32768,
 		BatchSize:               512,

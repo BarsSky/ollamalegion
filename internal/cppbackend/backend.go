@@ -9,10 +9,12 @@
 package cppbackend
 
 import (
+	"bufio"
 	"context"
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"io"
 	"math"
 	"os"
 	"runtime"
@@ -2805,6 +2807,15 @@ func readGGUFHeaderInfo(path string) (*GGUFHeaderInfo, error) {
 	}
 	defer f.Close()
 
+	// R66d (2026-09-23): читаем GGUF-заголовок через буфер. Разбор делает тысячи
+	// мелких чтений (в gemma-4 только tokenizer.ggml.tokens — 262144 строки), и на
+	// bind-mount Docker Desktop (Windows → WSL2) каждое чтение/seek идёт через
+	// границу ФС: поштучный пропуск строк растягивал загрузку модели на минуты,
+	// goroutine застревала в readGGUFHeaderInfo, операция load вечно висела в
+	// статусе running, GPU простаивала. Теперь чтения идут через bufio, а
+	// пропуски — через io.CopyN(io.Discard, ...).
+	br := bufio.NewReaderSize(f, 1<<20)
+
 	// Определяем размер файла
 	fi, err := f.Stat()
 	if err != nil {
@@ -2813,7 +2824,7 @@ func readGGUFHeaderInfo(path string) (*GGUFHeaderInfo, error) {
 
 	// Читаем magic (4 байта)
 	var magic [4]byte
-	if _, err := f.Read(magic[:]); err != nil {
+	if _, err := io.ReadFull(br, magic[:]); err != nil {
 		return nil, fmt.Errorf("read magic: %w", err)
 	}
 	if magic[0] != 'G' || magic[1] != 'G' || magic[2] != 'U' || magic[3] != 'F' {
@@ -2822,7 +2833,7 @@ func readGGUFHeaderInfo(path string) (*GGUFHeaderInfo, error) {
 
 	// Читаем версию (uint32)
 	var version uint32
-	if err := binary.Read(f, binary.LittleEndian, &version); err != nil {
+	if err := binary.Read(br, binary.LittleEndian, &version); err != nil {
 		return nil, fmt.Errorf("read version: %w", err)
 	}
 	if version < 1 || version > 3 {
@@ -2831,14 +2842,14 @@ func readGGUFHeaderInfo(path string) (*GGUFHeaderInfo, error) {
 
 	// Читаем tensor count (uint64)
 	var tensorCount uint64
-	if err := binary.Read(f, binary.LittleEndian, &tensorCount); err != nil {
+	if err := binary.Read(br, binary.LittleEndian, &tensorCount); err != nil {
 		return nil, fmt.Errorf("read tensor count: %w", err)
 	}
 	_ = tensorCount
 
 	// Читаем metadata KV count (uint64)
 	var kvCount uint64
-	if err := binary.Read(f, binary.LittleEndian, &kvCount); err != nil {
+	if err := binary.Read(br, binary.LittleEndian, &kvCount); err != nil {
 		return nil, fmt.Errorf("read metadata KV count: %w", err)
 	}
 
@@ -2850,7 +2861,7 @@ func readGGUFHeaderInfo(path string) (*GGUFHeaderInfo, error) {
 	for i := uint64(0); i < kvCount; i++ {
 		// Читаем длину ключа
 		var keyLen uint64
-		if err := binary.Read(f, binary.LittleEndian, &keyLen); err != nil {
+		if err := binary.Read(br, binary.LittleEndian, &keyLen); err != nil {
 			return nil, fmt.Errorf("read key[%d] length: %w", i, err)
 		}
 
@@ -2862,14 +2873,14 @@ func readGGUFHeaderInfo(path string) (*GGUFHeaderInfo, error) {
 		// Читаем ключ
 		keyBuf := make([]byte, keyLen)
 
-		if _, err := f.Read(keyBuf); err != nil {
+		if _, err := io.ReadFull(br, keyBuf); err != nil {
 			return nil, fmt.Errorf("read key[%d]: %w", i, err)
 		}
 		key := string(keyBuf)
 
 		// Читаем тип значения (uint32)
 		var valType uint32
-		if err := binary.Read(f, binary.LittleEndian, &valType); err != nil {
+		if err := binary.Read(br, binary.LittleEndian, &valType); err != nil {
 			return nil, fmt.Errorf("read key[%q] value type: %w", key, err)
 		}
 
@@ -2882,11 +2893,11 @@ func readGGUFHeaderInfo(path string) (*GGUFHeaderInfo, error) {
 		switch valType {
 		case 8: // string
 			var strLen uint64
-			if err := binary.Read(f, binary.LittleEndian, &strLen); err != nil {
+			if err := binary.Read(br, binary.LittleEndian, &strLen); err != nil {
 				return nil, fmt.Errorf("read key[%q] string length: %w", key, err)
 			}
 			strBuf := make([]byte, strLen)
-			if _, err := f.Read(strBuf); err != nil {
+			if _, err := io.ReadFull(br, strBuf); err != nil {
 				return nil, fmt.Errorf("read key[%q] string value: %w", key, err)
 			}
 			strVal := string(strBuf)
@@ -2897,7 +2908,7 @@ func readGGUFHeaderInfo(path string) (*GGUFHeaderInfo, error) {
 
 		case 4: // uint32
 			var val uint32
-			if err := binary.Read(f, binary.LittleEndian, &val); err != nil {
+			if err := binary.Read(br, binary.LittleEndian, &val); err != nil {
 				return nil, fmt.Errorf("read key[%q] uint32: %w", key, err)
 			}
 			if fi, ok := ggufKeyMap[key]; ok {
@@ -2906,7 +2917,7 @@ func readGGUFHeaderInfo(path string) (*GGUFHeaderInfo, error) {
 
 		case 10: // uint64
 			var val uint64
-			if err := binary.Read(f, binary.LittleEndian, &val); err != nil {
+			if err := binary.Read(br, binary.LittleEndian, &val); err != nil {
 				return nil, fmt.Errorf("read key[%q] uint64: %w", key, err)
 			}
 			if fi, ok := ggufKeyMap[key]; ok {
@@ -2915,7 +2926,7 @@ func readGGUFHeaderInfo(path string) (*GGUFHeaderInfo, error) {
 
 		case 5: // int32
 			var val int32
-			if err := binary.Read(f, binary.LittleEndian, &val); err != nil {
+			if err := binary.Read(br, binary.LittleEndian, &val); err != nil {
 				return nil, fmt.Errorf("read key[%q] int32: %w", key, err)
 			}
 			if fi, ok := ggufKeyMap[key]; ok {
@@ -2924,7 +2935,7 @@ func readGGUFHeaderInfo(path string) (*GGUFHeaderInfo, error) {
 
 		case 11: // int64
 			var val int64
-			if err := binary.Read(f, binary.LittleEndian, &val); err != nil {
+			if err := binary.Read(br, binary.LittleEndian, &val); err != nil {
 				return nil, fmt.Errorf("read key[%q] int64: %w", key, err)
 			}
 			if fi, ok := ggufKeyMap[key]; ok {
@@ -2933,39 +2944,39 @@ func readGGUFHeaderInfo(path string) (*GGUFHeaderInfo, error) {
 
 		case 6: // float32
 			var val float32
-			if err := binary.Read(f, binary.LittleEndian, &val); err != nil {
+			if err := binary.Read(br, binary.LittleEndian, &val); err != nil {
 				return nil, fmt.Errorf("read key[%q] float32: %w", key, err)
 			}
 			_ = val // не используем, пропускаем
 
 		case 0: // uint8
 			var val uint8
-			if err := binary.Read(f, binary.LittleEndian, &val); err != nil {
+			if err := binary.Read(br, binary.LittleEndian, &val); err != nil {
 				return nil, fmt.Errorf("read key[%q] uint8: %w", key, err)
 			}
 			_ = val
 
 		case 7: // bool
 			var val uint8
-			if err := binary.Read(f, binary.LittleEndian, &val); err != nil {
+			if err := binary.Read(br, binary.LittleEndian, &val); err != nil {
 				return nil, fmt.Errorf("read key[%q] bool: %w", key, err)
 			}
 			_ = val
 
 		case 9: // array — пропускаем, зная тип элемента и количество
 			var elemType uint32
-			if err := binary.Read(f, binary.LittleEndian, &elemType); err != nil {
+			if err := binary.Read(br, binary.LittleEndian, &elemType); err != nil {
 				return nil, fmt.Errorf("read key[%q] array elem type: %w", key, err)
 			}
 			var arrLen uint64
-			if err := binary.Read(f, binary.LittleEndian, &arrLen); err != nil {
+			if err := binary.Read(br, binary.LittleEndian, &arrLen); err != nil {
 				return nil, fmt.Errorf("read key[%q] array len: %w", key, err)
 			}
 			// Пропускаем элементы массива
 			elemSize := ggufTypeSize(elemType)
 			if elemSize > 0 {
 				skipBytes := int64(arrLen) * int64(elemSize)
-				if _, err := f.Seek(skipBytes, 1); err != nil {
+				if _, err := io.CopyN(io.Discard, br, skipBytes); err != nil {
 					return nil, fmt.Errorf("skip array key[%q]: %w", key, err)
 				}
 			} else if elemType == 8 {
@@ -2981,13 +2992,13 @@ func readGGUFHeaderInfo(path string) (*GGUFHeaderInfo, error) {
 				// /api/show returns "unknown" for Qwen3.6.
 				for j := uint64(0); j < arrLen; j++ {
 					var strLen uint64
-					if err := binary.Read(f, binary.LittleEndian, &strLen); err != nil {
+					if err := binary.Read(br, binary.LittleEndian, &strLen); err != nil {
 						return nil, fmt.Errorf("read key[%q] string[%d] length: %w", key, j, err)
 					}
 					if strLen > 8192 {
 						return nil, fmt.Errorf("read key[%q] string[%d] length %d exceeds maximum 8192", key, j, strLen)
 					}
-					if _, err := f.Seek(int64(strLen), 1); err != nil {
+					if _, err := io.CopyN(io.Discard, br, int64(strLen)); err != nil {
 						return nil, fmt.Errorf("skip key[%q] string[%d]: %w", key, j, err)
 					}
 				}

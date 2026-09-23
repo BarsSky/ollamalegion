@@ -1367,6 +1367,26 @@ func handleDeleteModel(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// R66d (2026-09-23): удаление алиаса (<name>.gguf.json) удаляет ТОЛЬКО сам
+	// алиас, а не файл-источник. Это отдельная ветка намеренно: иначе (если
+	// когда-нибудь delete начнёт ходить через resolveModelPath, который умеет
+	// резолвить алиасы) удаление алиаса снесло бы сам .gguf модели.
+	if alias, isAlias := mm.AliasByName(name); isAlias {
+		logger.Get().Infow("delete: removing model alias (source file is kept)",
+			"alias", alias.Name, "source", alias.Source, "alias_path", alias.AliasPath)
+		if err := os.Remove(alias.AliasPath); err != nil {
+			writeError(w, http.StatusInternalServerError, "failed to delete alias: "+err.Error())
+			return
+		}
+		if _, scanErr := mm.ScanModels(); scanErr != nil {
+			logger.Get().Warnw("delete: rescan after alias removal failed", "error", scanErr)
+		}
+		writeJSON(w, http.StatusOK, map[string]interface{}{
+			"status": "deleted", "name": alias.Name, "alias": true, "source": alias.Source,
+		})
+		return
+	}
+
 	modelPath, err := mm.FindModelByPath(filename)
 	if err != nil {
 		writeError(w, http.StatusNotFound, "model not found: "+err.Error())
@@ -1882,6 +1902,45 @@ func handleOllamaTags(w http.ResponseWriter, r *http.Request) {
 				"parameter_size":     modelParameterSize(m.NLayers, m.NEmbd),
 				"quantization_level": quantizationOrUnknown(parseQuantization(m.Path)),
 			},
+		}
+	}
+
+	// R66d (2026-09-23): алиасы моделей (<name>.gguf.json из POST /api/create).
+	// Раньше их не было в /api/tags, поэтому созданная модель не появлялась в
+	// выборе модели у клиентов (Cline/OpenWebUI) — «создали и не видно».
+	// Алиасы без файла-источника не показываем (загрузить их нельзя), но пишем
+	// предупреждение в лог.
+	for _, a := range mm.ListAliases() {
+		if !a.SourceExists {
+			logger.Get().Warnw("handleOllamaTags: alias source file is missing, skipping",
+				"alias", a.Name, "source", a.Source, "source_path", a.SourcePath)
+			continue
+		}
+		if _, already := modelMap[a.Name]; already {
+			continue // загруженная модель с тем же именем — метаданные точнее
+		}
+		srcName := strings.TrimSuffix(filepath.Base(a.Source), ".gguf")
+		details := map[string]interface{}{
+			"format":         "gguf",
+			"parent_model":   srcName,
+			"families":       []string{},
+			"parameter_size": "unknown",
+		}
+		if meta, err := mm.GetModelMeta(filepath.Base(a.Source)); err == nil && meta != nil {
+			if meta.Architecture != "" {
+				details["family"] = meta.Architecture
+				details["families"] = []string{meta.Architecture}
+			}
+			if meta.FileType != "" {
+				details["quantization_level"] = meta.FileType
+			}
+		}
+		modelMap[a.Name] = map[string]interface{}{
+			"name": a.Name, "model": a.Name,
+			"modified_at": a.CreatedAt.Format(time.RFC3339),
+			"size":        a.SourceSizeBytes,
+			"digest":      modelDigest(a.SourcePath, a.Name, uint64(a.SourceSizeBytes)),
+			"details":     details,
 		}
 	}
 
@@ -2432,6 +2491,7 @@ func handleOllamaPush(w http.ResponseWriter, r *http.Request) {
 //
 // Стратегия поиска (от точного к приблизительному):
 //  1. ModelManager.FindModelByPath — прямое совпадение имени или пути
+//     1.5 Алиас модели (<name>.gguf.json, POST /api/create) — путь к источнику
 //  2. Glob "modelsDir/<name>*.gguf" — wildcards (qwen3-4b → qwen3-4b-it.gguf)
 //  3. ModelManager library scan — если в директории РОВНО ОДИН .gguf, берём его
 //     (auto-pick the only model — пользователь загрузил одну модель с коротким именем)
@@ -2441,11 +2501,29 @@ func handleOllamaPush(w http.ResponseWriter, r *http.Request) {
 // файле `Qwen3-Instruct-2507-q4km.gguf` в директории — балансер не мог auto-load
 // модель (имя не совпадало с файлом), и все inference-эндпоинты после idle-unload
 // падали с HTTP 500 "load failed". Теперь single-model dirs auto-pick'аются.
+//
+// R66d (2026-09-23): добавлен шаг 1.5. POST /api/create создаёт алиас
+// <name>.gguf.json, но load-путь про него не знал и пытался открыть
+// models/<name>.gguf → «model load failed» (живой кейс: алиас
+// gemma-4-E4B-it-Q4_K_M на скачанный gemma-4-E4B-it-qat-UD-Q4_K_XL.gguf).
 func resolveModelPath(modelName string) string {
 	mm := backend.ModelManager()
 	if mm != nil {
 		if foundPath, err := mm.FindModelByPath(modelName); err == nil {
 			return foundPath
+		}
+		// Шаг 1.5: алиас модели (Ollama-совместимый /api/create).
+		if srcPath, ok := mm.AliasSourcePath(modelName); ok {
+			logger.Get().Infow("resolveModelPath: resolved via model alias",
+				"requested_name", modelName, "resolved_path", srcPath)
+			return srcPath
+		} else if srcPath != "" {
+			// Алиас есть, но файл-источник пропал: возвращаем путь как есть —
+			// cppworker ответит понятной ошибкой загрузки, а /api/models/load/progress
+			// покажет state=failed с причиной (R66d), вместо «модель не найдена».
+			logger.Get().Warnw("resolveModelPath: alias source file is missing",
+				"requested_name", modelName, "source_path", srcPath)
+			return srcPath
 		}
 		// Шаг 2: glob
 		modelPath := filepath.Join(*modelsDir, modelName)

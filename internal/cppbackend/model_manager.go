@@ -21,6 +21,23 @@ import (
 	"ollama-loadbalancer/pkg/logger"
 )
 
+// GGUFAlias — алиас модели, созданный Ollama-совместимым POST /api/create.
+//
+// R66d (2026-09-23): лежит рядом с моделями как <name>.gguf.json и указывает на
+// реальный .gguf через поле source. До этой правки алиасы не попадали ни в
+// ListModels/ListAliases, ни в /api/tags, ни в resolveModelPath — созданная
+// «модель» была невидимой и незагружаемой.
+type GGUFAlias struct {
+	Name            string    `json:"name"`            // имя модели для клиента
+	Source          string    `json:"source"`          // как записано в modelfile (обычно <file>.gguf)
+	SourcePath      string    `json:"sourcePath"`      // абсолютный путь к .gguf
+	SourceExists    bool      `json:"sourceExists"`    // файл-источник на месте?
+	SourceSizeBytes int64     `json:"sourceSizeBytes"` // размер источника (для /api/tags)
+	Modelfile       string    `json:"modelfile,omitempty"`
+	CreatedAt       time.Time `json:"createdAt,omitempty"`
+	AliasPath       string    `json:"aliasPath"` // путь к самому .gguf.json
+}
+
 // GGUFModelMeta — информация о GGUF файле (извлекается из header)
 type GGUFModelMeta struct {
 	Filename     string    `json:"filename"`
@@ -58,6 +75,10 @@ type ModelManager struct {
 	mu        sync.RWMutex
 	ggufFiles map[string]*GGUFModelMeta // filename → meta
 
+	// R66d (2026-09-23): алиасы моделей (<name>.gguf.json), заполняются в
+	// ScanModels вместе с ggufFiles. Ключ — имя алиаса (то, что видит клиент).
+	aliases map[string]GGUFAlias
+
 	// Round 22 (2026-08-03): history успешных load-операций (name → path).
 	// Нужно для resolveModelPath после idle-unload: имя, под которым модель
 	// загружалась (например "qwen3-4b"), больше не в ggufFiles (т.к. это alias,
@@ -86,6 +107,7 @@ func NewModelManager(modelsDir string, cfg Config) *ModelManager {
 		modelsDir:   modelsDir,
 		config:      cfg,
 		ggufFiles:   make(map[string]*GGUFModelMeta),
+		aliases:     make(map[string]GGUFAlias),
 		nameHistory: make(map[string]string),
 	}
 	// R60.61 (2026-09-14): restore persisted nameHistory (alias → path map).
@@ -338,19 +360,191 @@ func (m *ModelManager) ScanModels() ([]GGUFModelMeta, error) {
 		found++
 	}
 
+	// R66d (2026-09-23): сканируем алиасы моделей (<name>.gguf.json, создаются
+	// через Ollama-совместимый POST /api/create). Раньше они не попадали ни в
+	// ListModels, ни в /api/tags, ни в resolveModelPath — то есть «создали
+	// модель, а её нигде нет и загрузить нельзя».
+	newAliases := make(map[string]GGUFAlias)
+	aliasFound := 0
+	for _, entry := range entries {
+		if entry.IsDir() {
+			continue
+		}
+		name := entry.Name()
+		if !strings.HasSuffix(strings.ToLower(name), ".gguf.json") {
+			continue
+		}
+		raw, readErr := os.ReadFile(filepath.Join(m.modelsDir, name))
+		if readErr != nil {
+			continue
+		}
+		var rec struct {
+			Name      string `json:"name"`
+			Source    string `json:"source"`
+			Modelfile string `json:"modelfile"`
+			CreatedAt string `json:"created_at"`
+		}
+		if json.Unmarshal(raw, &rec) != nil {
+			continue
+		}
+		aliasName := rec.Name
+		if aliasName == "" {
+			aliasName = strings.TrimSuffix(name, ".gguf.json")
+		}
+		src := rec.Source
+		if src == "" {
+			continue
+		}
+		srcPath := src
+		if !filepath.IsAbs(srcPath) {
+			if !strings.HasSuffix(strings.ToLower(srcPath), ".gguf") {
+				srcPath += ".gguf"
+			}
+			srcPath = filepath.Join(m.modelsDir, filepath.Base(srcPath))
+		}
+		a := GGUFAlias{
+			Name:       aliasName,
+			Source:     src,
+			SourcePath: srcPath,
+			Modelfile:  rec.Modelfile,
+		}
+		if fi, statErr := os.Stat(srcPath); statErr == nil {
+			a.SourceSizeBytes = fi.Size()
+			a.SourceExists = true
+		}
+		if ts, tsErr := time.Parse(time.RFC3339, rec.CreatedAt); tsErr == nil {
+			a.CreatedAt = ts
+		}
+		a.AliasPath = filepath.Join(m.modelsDir, name)
+		newAliases[aliasName] = a
+		aliasFound++
+	}
+
+	// R66d: после сбора всех алиасов считаем эффективный источник с учётом
+	// цепочек (alias → alias → .gguf) — SourceExists/SourceSizeBytes нужны
+	// /api/tags, чтобы не показывать клиенту незагружаемые модели.
+	for name, a := range newAliases {
+		resolved, exists := resolveAliasChain(newAliases, newFiles, name)
+		if resolved != "" {
+			a.SourcePath = resolved
+		}
+		a.SourceExists = exists && a.SourcePath != ""
+		if a.SourceExists {
+			if fi, statErr := os.Stat(a.SourcePath); statErr == nil {
+				a.SourceSizeBytes = fi.Size()
+			}
+		}
+		newAliases[name] = a
+	}
+
 	// Обновляем кэш
 	m.mu.Lock()
 	m.ggufFiles = newFiles
+	m.aliases = newAliases
 	m.lastScanTime = time.Now()
 	m.scanDuration = time.Since(start)
 	m.mu.Unlock()
 
 	log.Infow("model scan complete",
 		"found", found,
+		"aliases", aliasFound,
 		"dir", m.modelsDir,
 		"duration", m.scanDuration)
 
 	return m.ListModels(), nil
+}
+
+// ListAliases возвращает все алиасы моделей (отсортированы по имени).
+//
+// R66d (2026-09-23): алиасы создаются Ollama-совместимым POST /api/create и
+// лежат как <name>.gguf.json. Используется /api/tags, /api/models/files и
+// resolveModelPath, чтобы созданная модель была видна и загружаема.
+func (m *ModelManager) ListAliases() []GGUFAlias {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+
+	result := make([]GGUFAlias, 0, len(m.aliases))
+	for _, a := range m.aliases {
+		result = append(result, a)
+	}
+	sort.Slice(result, func(i, j int) bool { return result[i].Name < result[j].Name })
+	return result
+}
+
+// AliasSourcePath резолвит имя модели как алиас и возвращает путь к .gguf.
+//
+// Поддерживает цепочки алиас → алиас (например "short" → "gemma-alias" →
+// "gemma-4-E4B-it-Q4_K_M.gguf") с ограничением глубины, чтобы цикл не повесил
+// resolveModelPath. Возвращает false, если это не алиас или файл-источник
+// отсутствует (тогда клиент получит честную ошибку, а не «модель не найдена»).
+func (m *ModelManager) AliasSourcePath(name string) (string, bool) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return resolveAliasChain(m.aliases, m.ggufFiles, name)
+}
+
+// resolveAliasChain — общая логика резолва алиасов (используется и в ScanModels,
+// чтобы заранее посчитать SourcePath/SourceExists для цепочек).
+//
+// Возвращает (путь-источника, существует-ли-файл). Путь возвращается даже если
+// файла нет — вызывающий покажет его в логах/ошибке.
+func resolveAliasChain(
+	aliases map[string]GGUFAlias,
+	files map[string]*GGUFModelMeta,
+	name string,
+) (string, bool) {
+	const maxDepth = 4
+	seen := make(map[string]bool, maxDepth)
+
+	current := strings.TrimSpace(name)
+	if strings.HasSuffix(strings.ToLower(current), ".gguf") {
+		current = current[:len(current)-5]
+	}
+
+	var lastPath string
+	for depth := 0; depth < maxDepth; depth++ {
+		if current == "" || seen[current] {
+			return lastPath, false
+		}
+		seen[current] = true
+
+		a, ok := aliases[current]
+		if !ok {
+			return lastPath, false
+		}
+		srcBase := filepath.Base(a.Source)
+		lastPath = a.SourcePath
+
+		// 1. Источник — обычный .gguf, который видит скан.
+		if meta, has := files[srcBase]; has {
+			return meta.Path, true
+		}
+		// 2. Файл есть на диске (скан мог его ещё не увидеть).
+		if _, err := os.Stat(a.SourcePath); err == nil {
+			return a.SourcePath, true
+		}
+		// 3. Источник сам является алиасом — идём по цепочке.
+		next := strings.TrimSuffix(srcBase, ".gguf")
+		if _, isAlias := aliases[next]; isAlias {
+			current = next
+			continue
+		}
+		// 4. Ни файла, ни алиаса — битый алиас.
+		return a.SourcePath, false
+	}
+	return lastPath, false
+}
+
+// AliasByName возвращает запись алиаса по имени модели (без .gguf).
+func (m *ModelManager) AliasByName(name string) (GGUFAlias, bool) {
+	current := strings.TrimSpace(name)
+	if strings.HasSuffix(strings.ToLower(current), ".gguf") {
+		current = current[:len(current)-5]
+	}
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	a, ok := m.aliases[current]
+	return a, ok
 }
 
 // ListModels возвращает список всех .gguf файлов в директории

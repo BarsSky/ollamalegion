@@ -32,54 +32,85 @@ import (
 func boolPtrR67a(b bool) *bool { return &b }
 func intPtrR67a(i int) *int    { return &i }
 
-// TestProfileUpdateJSON_DecodesAutoMaxPointers — profileUpdate различает
-// «не передано» (nil) и «передано false/0» для auto/max, а остальные поля
-// декодируются во встроенную LlamaCppModelProfile.
-func TestProfileUpdateJSON_DecodesAutoMaxPointers(t *testing.T) {
+// TestProfilePresenceJSON_DecodesAutoMaxPointers — profilePresence различает
+// «не передано» (nil) и «передано false/0», а обычные поля идут в
+// types.LlamaCppModelProfile (тело декодируется дважды).
+func TestProfilePresenceJSON_DecodesAutoMaxPointers(t *testing.T) {
 	body := `{"contextLength":32768,"batchSize":512,"numGpuLayers":-1,
 	          "contextLengthAuto":true,"contextLengthMax":131072,
 	          "kvCacheType":"q4_0","flashAttn":true,
 	          "streamingTimeoutSec":1800,"notes":"n"}`
 
-	var upd profileUpdate
+	var upd types.LlamaCppModelProfile
 	dec := json.NewDecoder(strings.NewReader(body))
 	dec.DisallowUnknownFields()
 	if err := dec.Decode(&upd); err != nil {
-		t.Fatalf("decode: %v", err)
+		t.Fatalf("decode values: %v", err)
+	}
+	var presence profilePresence
+	if err := json.Unmarshal([]byte(body), &presence); err != nil {
+		t.Fatalf("decode presence: %v", err)
 	}
 
-	if upd.ContextLengthAuto == nil || !*upd.ContextLengthAuto {
-		t.Errorf("ContextLengthAuto = %v, want true", upd.ContextLengthAuto)
+	if presence.ContextLengthAuto == nil || !*presence.ContextLengthAuto {
+		t.Errorf("presence ContextLengthAuto = %v, want true", presence.ContextLengthAuto)
 	}
-	if upd.ContextLengthMax == nil || *upd.ContextLengthMax != 131072 {
-		t.Errorf("ContextLengthMax = %v, want 131072", upd.ContextLengthMax)
+	if presence.ContextLengthMax == nil || *presence.ContextLengthMax != 131072 {
+		t.Errorf("presence ContextLengthMax = %v, want 131072", presence.ContextLengthMax)
 	}
 	if upd.ContextLength != 32768 {
-		t.Errorf("embedded ContextLength = %d, want 32768", upd.ContextLength)
+		t.Errorf("ContextLength = %d, want 32768", upd.ContextLength)
+	}
+	if upd.BatchSize != 512 {
+		t.Errorf("BatchSize = %d, want 512", upd.BatchSize)
 	}
 	if upd.KVCacheType != "q4_0" {
-		t.Errorf("embedded KVCacheType = %q, want q4_0", upd.KVCacheType)
+		t.Errorf("KVCacheType = %q, want q4_0", upd.KVCacheType)
 	}
 	if upd.FlashAttn == nil || !*upd.FlashAttn {
-		t.Errorf("embedded FlashAttn = %v, want true", upd.FlashAttn)
+		t.Errorf("FlashAttn = %v, want true", upd.FlashAttn)
 	}
 	if upd.StreamingTimeoutSec != 1800 {
-		t.Errorf("embedded StreamingTimeoutSec = %d, want 1800", upd.StreamingTimeoutSec)
+		t.Errorf("StreamingTimeoutSec = %d, want 1800", upd.StreamingTimeoutSec)
 	}
 }
 
-// TestProfileUpdateJSON_AbsentAutoMaxAreNil — если поля не переданы, указатели
-// остаются nil, то есть мерж их не трогает.
-func TestProfileUpdateJSON_AbsentAutoMaxAreNil(t *testing.T) {
-	var upd profileUpdate
-	if err := json.Unmarshal([]byte(`{"contextLength":8192}`), &upd); err != nil {
+// TestProfilePresenceJSON_AbsentFieldsAreNil — если поля не переданы, указатели
+// остаются nil, то есть мерж их не трогает (прежнее значение сохраняется).
+func TestProfilePresenceJSON_AbsentFieldsAreNil(t *testing.T) {
+	var presence profilePresence
+	if err := json.Unmarshal([]byte(`{"contextLength":8192}`), &presence); err != nil {
 		t.Fatalf("decode: %v", err)
 	}
-	if upd.ContextLengthAuto != nil {
-		t.Errorf("ContextLengthAuto = %v, want nil (не передано)", *upd.ContextLengthAuto)
+	if presence.ContextLengthAuto != nil {
+		t.Errorf("ContextLengthAuto = %v, want nil (не передано)", *presence.ContextLengthAuto)
 	}
-	if upd.ContextLengthMax != nil {
-		t.Errorf("ContextLengthMax = %v, want nil (не передано)", *upd.ContextLengthMax)
+	if presence.ContextLengthMax != nil {
+		t.Errorf("ContextLengthMax = %v, want nil (не передано)", *presence.ContextLengthMax)
+	}
+	if presence.Disabled != nil {
+		t.Errorf("Disabled = %v, want nil (не передано)", *presence.Disabled)
+	}
+}
+
+// TestMergeProfileUpdate_NewProfileKeepsTimeouts — СОЗДАНИЕ профиля (existing
+// нулевой) не должно терять поля: раньше create шёл через mergeModelProfile,
+// который не знал про таймауты/maxTokens, и они пропадали (живая проверка:
+// streamingTimeoutSec=1800 после PUT отдавал 0).
+func TestMergeProfileUpdate_NewProfileKeepsTimeouts(t *testing.T) {
+	created := mergeProfileUpdate(types.LlamaCppModelProfile{}, types.LlamaCppModelProfile{
+		ContextLength:       32768,
+		StreamingTimeoutSec: 1800,
+		MaxTokens:           4096,
+		FirstByteTimeoutSec: 300,
+	}, profilePresence{ContextLengthAuto: boolPtrR67a(true)})
+
+	if created.StreamingTimeoutSec != 1800 || created.MaxTokens != 4096 || created.FirstByteTimeoutSec != 300 {
+		t.Fatalf("создание профиля теряет таймауты/maxTokens: %d/%d/%d",
+			created.StreamingTimeoutSec, created.MaxTokens, created.FirstByteTimeoutSec)
+	}
+	if !created.ContextLengthAuto {
+		t.Error("contextLengthAuto не применился при создании профиля")
 	}
 }
 
@@ -87,21 +118,6 @@ func TestProfileUpdateJSON_AbsentAutoMaxAreNil(t *testing.T) {
 // сохранение из UI (только ctx/batch/gpu/notes) не должно обнулять
 // contextLengthAuto/Max, kvCacheType, flashAttn, numa, useMmap и таймауты.
 func TestMergeProfileUpdate_WebUISaveKeepsEverythingElse(t *testing.T) {
-	// Отдельно проверяем СОЗДАНИЕ (existing — нулевой): раньше create шёл через
-	// mergeModelProfile, который не знал про таймауты/maxTokens, и они терялись
-	// (живая проверка: streamingTimeoutSec=1800 после PUT отдавал 0).
-	if created := mergeProfileUpdate(types.LlamaCppModelProfile{}, profileUpdate{
-		LlamaCppModelProfile: types.LlamaCppModelProfile{
-			ContextLength:       32768,
-			StreamingTimeoutSec: 1800,
-			MaxTokens:           4096,
-			FirstByteTimeoutSec: 300,
-		},
-	}); created.StreamingTimeoutSec != 1800 || created.MaxTokens != 4096 || created.FirstByteTimeoutSec != 300 {
-		t.Fatalf("создание профиля теряет таймауты/maxTokens: %d/%d/%d",
-			created.StreamingTimeoutSec, created.MaxTokens, created.FirstByteTimeoutSec)
-	}
-
 	existing := types.LlamaCppModelProfile{
 		ContextLength:           32768,
 		BatchSize:               512,
@@ -119,16 +135,14 @@ func TestMergeProfileUpdate_WebUISaveKeepsEverythingElse(t *testing.T) {
 		Notes:                   "старый",
 	}
 	// Ровно то, что отправляет webui/js/modules/cppworker-params.js.
-	upd := profileUpdate{
-		LlamaCppModelProfile: types.LlamaCppModelProfile{
-			ContextLength: 32768,
-			BatchSize:     256,
-			NumGPULayers:  -1,
-			Notes:         "edited in UI",
-		},
+	values := types.LlamaCppModelProfile{
+		ContextLength: 32768,
+		BatchSize:     256,
+		NumGPULayers:  -1,
+		Notes:         "edited in UI",
 	}
 
-	got := mergeProfileUpdate(existing, upd)
+	got := mergeProfileUpdate(existing, values, profilePresence{})
 
 	if !got.ContextLengthAuto {
 		t.Error("contextLengthAuto потерян: профиль снова станет ЖЁСТКИМ потолком n_ctx")
@@ -155,7 +169,6 @@ func TestMergeProfileUpdate_WebUISaveKeepsEverythingElse(t *testing.T) {
 		t.Errorf("per-model таймауты потеряны: %d/%d/%d",
 			got.StreamingTimeoutSec, got.StreamingIdleTimeoutSec, got.RequestTimeoutSec)
 	}
-	// Изменённые поля применились.
 	if got.BatchSize != 256 || got.NumGPULayers != -1 || got.Notes != "edited in UI" {
 		t.Errorf("изменённые поля не применились: batch=%d gpu=%d notes=%q",
 			got.BatchSize, got.NumGPULayers, got.Notes)
@@ -164,15 +177,14 @@ func TestMergeProfileUpdate_WebUISaveKeepsEverythingElse(t *testing.T) {
 
 // TestMergeProfileUpdate_CanEnableAutoOnExisting — раньше было НЕВОЗМОЖНО
 // включить авто-режим у существующего профиля: PUT заменял профиль телом, а
-// чаcтичное обновление отклонялось 400.
+// частичное обновление отклонялось 400.
 func TestMergeProfileUpdate_CanEnableAutoOnExisting(t *testing.T) {
 	existing := types.LlamaCppModelProfile{ContextLength: 32768, BatchSize: 512}
-	upd := profileUpdate{
+	got := mergeProfileUpdate(existing, types.LlamaCppModelProfile{}, profilePresence{
 		ContextLengthAuto: boolPtrR67a(true),
 		ContextLengthMax:  intPtrR67a(131072),
-	}
+	})
 
-	got := mergeProfileUpdate(existing, upd)
 	if !got.ContextLengthAuto || got.ContextLengthMax != 131072 {
 		t.Fatalf("не удалось включить auto-режим: auto=%v max=%d", got.ContextLengthAuto, got.ContextLengthMax)
 	}
@@ -182,34 +194,37 @@ func TestMergeProfileUpdate_CanEnableAutoOnExisting(t *testing.T) {
 }
 
 // TestMergeProfileUpdate_ExplicitFalseAndZeroClear — «передано false/0» должно
-// ОЧИЩАТЬ значения (оператор может снять потолок и выключить auto).
+// ОЧИЩАТЬ значения (оператор может снять потолок, выключить auto и снять disabled).
 func TestMergeProfileUpdate_ExplicitFalseAndZeroClear(t *testing.T) {
 	existing := types.LlamaCppModelProfile{
 		ContextLength:     32768,
 		ContextLengthAuto: true,
 		ContextLengthMax:  131072,
+		Disabled:          true,
 	}
-	upd := profileUpdate{
+	got := mergeProfileUpdate(existing, types.LlamaCppModelProfile{}, profilePresence{
 		ContextLengthAuto: boolPtrR67a(false),
 		ContextLengthMax:  intPtrR67a(0),
-	}
+		Disabled:          boolPtrR67a(false),
+	})
 
-	got := mergeProfileUpdate(existing, upd)
 	if got.ContextLengthAuto {
 		t.Error("contextLengthAuto=false не применился")
 	}
 	if got.ContextLengthMax != 0 {
 		t.Errorf("contextLengthMax=0 не применился: %d", got.ContextLengthMax)
 	}
+	if got.Disabled {
+		t.Error("disabled=false не применился (модель осталась заблокированной)")
+	}
 }
 
 // TestMergeProfileUpdate_NewProfileRequiresContextLength — для нового профиля
-// contextLength по-прежнему обязателен (это контракт API: 400 с понятным
-// сообщением), но частичное обновление существующего больше не падает.
+// contextLength по-прежнему обязателен (400 с понятным сообщением), но частичное
+// обновление существующего больше не падает.
 func TestMergeProfileUpdate_NewProfileRequiresContextLength(t *testing.T) {
-	merged := mergeProfileUpdate(types.LlamaCppModelProfile{}, profileUpdate{
-		ContextLengthAuto: boolPtrR67a(true),
-	})
+	merged := mergeProfileUpdate(types.LlamaCppModelProfile{}, types.LlamaCppModelProfile{},
+		profilePresence{ContextLengthAuto: boolPtrR67a(true)})
 	if err := validateModelProfile(merged); err == nil {
 		t.Fatal("новый профиль без contextLength должен быть отклонён")
 	}
@@ -219,8 +234,8 @@ func TestMergeProfileUpdate_NewProfileRequiresContextLength(t *testing.T) {
 }
 
 // TestMergeProfileUpdate_BoolPointerFieldsPreserved — указательные поля профиля
-// (AutoTune/FlashAttn/NUMA/UseMmap) не должны теряться при частичном обновлении,
-// иначе UI-сохранение снова начнёт «обнулять» настройки.
+// (AutoTune/FlashAttn) не должны теряться при частичном обновлении, иначе
+// UI-сохранение снова начнёт «обнулять» настройки.
 func TestMergeProfileUpdate_BoolPointerFieldsPreserved(t *testing.T) {
 	existing := types.LlamaCppModelProfile{
 		ContextLength: 8192,
@@ -228,9 +243,8 @@ func TestMergeProfileUpdate_BoolPointerFieldsPreserved(t *testing.T) {
 		FlashAttn:     boolPtrR67a(true),
 		MaxTokens:     4096,
 	}
-	got := mergeProfileUpdate(existing, profileUpdate{
-		LlamaCppModelProfile: types.LlamaCppModelProfile{ContextLength: 8192, Notes: "x"},
-	})
+	got := mergeProfileUpdate(existing, types.LlamaCppModelProfile{ContextLength: 8192, Notes: "x"}, profilePresence{})
+
 	if got.AutoTune == nil || *got.AutoTune {
 		t.Errorf("AutoTune потерян/изменён: %v", got.AutoTune)
 	}

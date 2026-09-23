@@ -66,7 +66,7 @@ services:
     # Round 35 (r35): reload→load fallback + idleUnload disabled.
     # Round 35c (r35c): env-tunable polling timeouts (LB_NCTX_PREFLIGHT_*)
     # для моделей с auto-offload (22GB+ Qwen3.6 на 8GB VRAM, 12-15 min load).
-    image: ollama-legion/balancer:r66-submodule-v15  # R66a (2026-09-21, ba2291c): native Ollama /api/chat response passthrough fix (pre-R66a the balancer re-translated the already-native Ollama body → synthetic 502 "upstream returned empty response"). Supersedes r66-submodule-v1 (Round 66 / R65d consolidated, 15ea588 + eee0e3e + 120ba02).
+    image: ollama-legion/balancer:r66-submodule-v20  # R66d (2026-09-23): длина ответа >60s больше не режется WriteTimeout'ом (load/apply/reload), HTTP-слой не теряет batchSize/flashAttn/useMmap/kvCacheType, профиль модели применяется при первой загрузке, apply профиля шлёт в cppworker токен+gpuLayers+force. R66a (2026-09-21, ba2291c): native Ollama /api/chat response passthrough fix (pre-R66a the balancer re-translated the already-native Ollama body → synthetic 502 "upstream returned empty response"). Supersedes r66-submodule-v1 (Round 66 / R65d consolidated, 15ea588 + eee0e3e + 120ba02).
     #   R54.2: AutoTune master switch (Balancing.AutoTune, default true) +
     #          per-model "autoTune": false override (LlamaCppModelProfile.AutoTune).
     #          Manual control: user can disable AutoTune globally or per-model.
@@ -345,7 +345,7 @@ services:
         VERSION: ${WEBUI_VERSION:-dev}
         GIT_COMMIT: ${WEBUI_GIT_COMMIT:-unknown}
         BUILD_DATE: ${WEBUI_BUILD_DATE:-unknown}
-    image: ollama-legion/webui:r66-submodule-v11  # R66b: UI-фиксы, уникальные id визарда (wiz-*), мёртвые typeof-ветки убраны. Требует ?v=R66c.
+    image: ollama-legion/webui:r66-submodule-v13  # R66d (2026-09-23): load через балансер с настройками формы (ctx/batch/flash/mmap/kv), рабочие Apply профиля / Delete / Cancel download, runtime-параметры загруженной модели + бейдж CPU-offload на вкладке загруженных. Требует ?v=R66g (см. webui/index.html).
     container_name: ol-bundled-webui
     restart: unless-stopped
     ports:

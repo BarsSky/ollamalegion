@@ -74,6 +74,28 @@ downgrade ниже клиентского запроса не планирует
 трекер максимума и окна 30 минут, запись из `ResolveNumCtx`). Регрессии:
 `./internal/... -race` ok, `./cmd/...` ok.
 
+#### Изоляция тестов от реального порта Ollama (11434)
+
+Побочно вскрылась причина «зависаний» пакетов на машине разработчика и в
+self-hosted CI-джобе: тестовые бэкенды были жёстко привязаны к
+`localhost:11434`/`11435` — стандартным портам Ollama. Если на 11434 слушает
+`scripts/forward_11434.js` (форвардер на балансер, его запускают для проверки
+реального Cline), тесты, ожидающие мгновенный «connection refused», уходили в
+живой стек:
+
+* `internal/balancer` — `panic: test timed out after 5m0s` на
+  `TestProxyServeHTTP_VirtualRouter_StandardMode_DoesNotIntercept` (проверено:
+  висит и без правок R69);
+* `internal/agent` — `TestCollectMetrics` падал на
+  `assert.WithinDuration(…, 10s)`, diff 63 s (сбор метрик блокировался на
+  `/api/ps` через форвардер).
+
+Фикс: `freeTestPorts()` выделяет у ОС свободные порты для тестовых бэкендов
+(`createTestConfig`), а агентский тестовый конфиг ходит на закрытый
+`http://127.0.0.1:1` вместо дефолтного 11434. Пакеты снова проходят за
+обычное время: `internal/balancer` 96 s (было 403 s → timeout),
+`internal/agent` 22 s (было 140 s с падением).
+
 ## [0.5.26 — Round 68 (2026-09-23)]
 
 ### 🐛 Bug fix

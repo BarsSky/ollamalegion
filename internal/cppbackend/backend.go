@@ -1094,6 +1094,35 @@ func (d *DiagnosticsInfo) Error() string {
 	return d.Recomendation
 }
 
+// refreshGPUDeviceVRAM — R66d (2026-09-23): обновляет свободную/полную VRAM
+// каждого устройства из C-bridge (NVML).
+//
+// Зачем отдельный метод: b.gpuDevices заполняется один раз при инициализации и
+// больше не обновляется, а от его VRAMFreeMB зависит решение
+// CalculateOptimalGPULayers о числе слоёв на GPU. Устаревший снимок приводил к
+// ложному «не хватает VRAM» и частичному CPU-offload сразу после reload
+// (подробности — в комментарии в CalculateOptimalGPULayers).
+//
+// В stub-сборке (--tags llama_stub) bridge.GetGPUInfo всегда возвращает ошибку,
+// поэтому инжектированные в тестах значения gpuDevices остаются нетронутыми.
+func (b *Backend) refreshGPUDeviceVRAM() {
+	if b == nil || b.gpuCount <= 0 {
+		return
+	}
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	for i := 0; i < b.gpuCount; i++ {
+		dev, err := bridge.GetGPUInfo(i)
+		if err != nil || dev == nil {
+			continue
+		}
+		if i < len(b.gpuDevices) {
+			b.gpuDevices[i].VRAMFreeMB = dev.VRAMFreeMB
+			b.gpuDevices[i].VRAMTotalMB = dev.VRAMTotalMB
+		}
+	}
+}
+
 // CalculateOptimalGPULayers вычисляет оптимальное количество GPU-слоёв
 // на основе доступной VRAM и RAM.
 // Параметры:
@@ -1118,6 +1147,23 @@ func (b *Backend) CalculateOptimalGPULayers(modelSizeBytes int64, totalLayers, n
 	kvCacheMB := estimateKVCacheMB(totalLayers, nHeads, nKvHeads, nEmbd, requestedCtxSize)
 
 	// Собираем доступную VRAM
+	//
+	// R66d (2026-09-23): ПЕРЕД решением о числе GPU-слоёв обновляем снимок
+	// свободной VRAM из C-bridge. Раньше здесь читался снапшот, снятый при
+	// инициализации backend'а (backend.go:506-520) и обновляемый лишь побочно в
+	// GetLimits() — к моменту reload он был устаревшим.
+	//
+	// ЖИВОЙ СЛУЧАЙ (жалоба «модель работает очень медленно, хотя VRAM свободна»):
+	// «Применить профиль» → reload gemma-4-E4B-it-Q4_K_M. Старая копия модели
+	// (4.2 GB) ещё числилась в снапшоте, эстиматор видел free≈2.5 GB, не смог
+	// уложить 42 слоя (нужно 4.7 GB), ушёл в ветку «RAM fallback» и загрузил
+	// модель с gpu_layers=18 (24 слоя на CPU, cfg kvCPUFraction=0.5). Сразу после
+	// reload фактически свободной VRAM было 5.3 GB, и обычный /api/models/load с
+	// теми же параметрами снова ставил все 42 слоя на GPU.
+	// Итог: после любого reload модель оставалась частично на CPU (медленно) до
+	// следующей явной загрузки.
+	b.refreshGPUDeviceVRAM()
+
 	b.mu.RLock()
 	var totalFreeVRAM uint64
 	for _, dev := range b.gpuDevices {

@@ -401,8 +401,12 @@ func (p *Proxy) ResolveNumCtx(modelName string, body []byte, backendID string) R
 		if maxCtx := p.maxNumCtxForModel(modelName, backendID); maxCtx > 0 && n > maxCtx {
 			logger.Get().Warnw("ResolveNumCtx: clamping request num_ctx to profile max",
 				"model", modelName, "requested", n, "clamped_to", maxCtx, "source", NumCtxSourceRequest)
+			p.recordDesiredNCtx(backendID, modelName, maxCtx)
 			return ResolvedNumCtx{Value: maxCtx, Source: NumCtxSourceRequest}
 		}
+		// R69: помним, что клиент просит такой n_ctx — AutoTune не должен
+		// «оптимизировать» контекст вниз и запускать ping-pong reload.
+		p.recordDesiredNCtx(backendID, modelName, n)
 		return ResolvedNumCtx{Value: n, Source: NumCtxSourceRequest}
 	}
 
@@ -438,6 +442,15 @@ func (p *Proxy) ResolveNumCtx(modelName string, body []byte, backendID string) R
 	}
 
 	return ResolvedNumCtx{Value: 0, Source: NumCtxSourceNone}
+}
+
+// recordDesiredNCtx — R69: запомнить клиентский n_ctx в координаторе reload'а
+// (AutoTune не должен уменьшать контекст ниже него). nil-safe.
+func (p *Proxy) recordDesiredNCtx(backendID, modelName string, nCtx int) {
+	if p == nil || p.nctxReload == nil || nCtx <= 0 {
+		return
+	}
+	p.nctxReload.RecordRequestedNCtx(backendID, modelName, nCtx)
 }
 
 // ApplyCppCtxHeader — резолвит num_ctx через 3-tier resolver и устанавливает

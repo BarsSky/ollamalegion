@@ -58,6 +58,12 @@ func normalizeGenerateRequest(req *generateRequest) {
 	if req.MaxTokens == 0 && req.Options.NumPredict > 0 {
 		req.MaxTokens = req.Options.NumPredict
 	}
+	// R69: max_output_tokens (Cline) — алиас num_predict, если явных значений нет.
+	if req.MaxTokens == 0 && req.MaxOutputTokens != nil && *req.MaxOutputTokens > 0 {
+		logger.Get().Infow("normalizeGenerateRequest: max_output_tokens (Cline) → maxTokens",
+			"model", req.Model, "max_output_tokens", *req.MaxOutputTokens)
+		req.MaxTokens = *req.MaxOutputTokens
+	}
 	if req.RepeatPenalty == nil && req.Options.RepeatPenalty != 0 {
 		v := req.Options.RepeatPenalty
 		req.RepeatPenalty = &v

@@ -5,6 +5,75 @@
 Формат ведётся в соответствии с [Keep a Changelog](https://keepachangelog.com/ru/1.0.0/),
 и этот проект придерживается [Semantic Versioning](https://semver.org/lang/ru/).
 
+## [0.5.27 — Round 69 (2026-09-23)]
+
+### 🐛 Bug fix
+
+#### Реальный Cline: `max_output_tokens` и «качели» AutoTune вокруг n_ctx
+
+После R68 пользователь прислал новый скриншот Cline (VS Code, провайдер
+«ollama», модель `gemma-4-E4B-it-Q4_K_M`):
+
+```
+preflight: prompt + n_predict exceeds n_ctx for this backend
+invalid JSON: json: unknown field "max_output_tokens"
+```
+
+Первый дефект — совместимость: строгий декодер cppworker
+(`types.DecodeJSONRequest` → `DisallowUnknownFields`) отвечал **400** на КАЖДЫЙ
+запрос Cline, потому что в теле есть `max_output_tokens` (поле OpenAI Responses
+API; Ollama-протокол его не знает — у него `options.num_predict`). Прецедент —
+`tool_choice` в R66b: тогда Cline тоже был полностью неработоспособен против
+cppworker.
+
+Второй дефект нашёлся в логах живого стенда — **AutoTune устраивал ping-pong
+reload**:
+
+```
+[nctx_reload] reload successful, new n_ctx=65536
+autotune: triggering async reload  reason="R54.4: n_ctx 65536 → 38385 (over-allocation fix)"
+cppworker: requested n_ctx=65536 exceeds model's effective n_ctx=32768
+nctx_reload: R60.47 async reload kicked off, returning 503+Retry-After
+```
+
+Клиент просит 65536 → модель грузится на 65536 → AutoTune «оптимизирует» её до
+38385 («слишком много для текущего feasible») → следующий запрос клиента снова
+требует 65536 → reload → 503. Ни один запрос не доходил до ответа.
+
+**Что исправлено:**
+
+1. **`max_output_tokens` принимается и используется** (cppworker):
+   `chatRequest` (/api/chat), `generateRequest` (/api/generate) и
+   `openAIChatCompletionRequest`/`openAICompletionRequest`
+   (/v1/chat/completions, /v1/completions) — поле читается как алиас
+   `num_predict`/`max_tokens`; явные Ollama-поля остаются приоритетными.
+2. **Preflight видит `max_output_tokens`** (балансер, `ExtractRequestMeta`):
+   раньше n_predict считался нулевым и подставлялся дефолт 2048 — требуемый
+   контекст недооценивался (в логах живого стенда `n_predict=0`).
+3. **AutoTune больше не уменьшает n_ctx ниже клиентского запроса**
+   (`NCtxReloadCoordinator.RecordRequestedNCtx`/`DesiredNCtx`, окно 30 минут;
+   `PlanApplyAutoTuneWithMinContext`). Рекомендация «over-allocation» строится по
+   текущему feasible и не знает про запросы клиента; теперь она пропускается,
+   если ниже запрошенного (в API-ответе AutoTune это видно как
+   `skipped_reason: "client requested n_ctx=… over-allocation downgrade skipped"`).
+
+**Живая проверка (тело как у Cline: `max_output_tokens`, `tool_choice`,
+`tools[]`, `options.num_ctx=65536`):**
+
+| | до (r68-submodule-v3 + gpu-r66-submodule-v23) | после (r69-submodule-v1 + gpu-r69-submodule-v1) |
+|---|---|---|
+| HTTP | **400** `invalid JSON: json: unknown field "max_output_tokens"` | **200** за 47 c |
+| ответ | — | tool_call: `read_file {"path":"README.md"}` |
+| n_ctx модели | 65536 → 38385 → 32768 (качели AutoTune) | 65536 стабильно, `kv=q4_0` |
+
+Тесты: `cmd/cppworker/max_output_tokens_r69_test.go` (5 тестов: HTTP 200 на трёх
+эндпоинтах вместо 400, значение доезжает до GenerationParams, приоритет
+num_predict/max_tokens), `internal/balancer/max_output_tokens_r69_test.go`
+(парсинг meta), `internal/balancer/autotune_min_ctx_r69_test.go` (5 тестов:
+downgrade ниже клиентского запроса не планируется, legacy-поведение сохранено,
+трекер максимума и окна 30 минут, запись из `ResolveNumCtx`). Регрессии:
+`./internal/... -race` ok, `./cmd/...` ok.
+
 ## [0.5.26 — Round 68 (2026-09-23)]
 
 ### 🐛 Bug fix

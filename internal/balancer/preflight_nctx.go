@@ -94,13 +94,13 @@ func EstimatePromptTokens(prompt string) int {
 // ollamaChatRequestRaw — минимальная структура для парсинга Ollama chat body.
 // Не импортируем openai_types, чтобы не плодить зависимости.
 type ollamaChatRequestRaw struct {
-	Model     string `json:"model"`
-	Messages  []struct {
+	Model    string `json:"model"`
+	Messages []struct {
 		Role    string `json:"role"`
 		Content string `json:"content"`
 	} `json:"messages"`
-	Tools     []json.RawMessage `json:"tools"`
-	Options   struct {
+	Tools   []json.RawMessage `json:"tools"`
+	Options struct {
 		NumCtx      int    `json:"num_ctx"`
 		NumPredict  int    `json:"num_predict"`
 		KVCacheType string `json:"kv_cache_type"` // Round 34: profile mismatch
@@ -108,22 +108,27 @@ type ollamaChatRequestRaw struct {
 		UseMmap     *bool  `json:"use_mmap"`      // Round 34: profile mismatch
 	} `json:"options"`
 	// R60.55 (2026-09-13): top-level max_tokens (OpenAI-style alias for num_predict).
-	MaxTokens int  `json:"max_tokens"`
-	Stream    bool `json:"stream"`
+	MaxTokens int `json:"max_tokens"`
+	// R69 (2026-09-23): max_output_tokens — ещё один алиас, который шлёт реальный
+	// клиент Cline (наблюдалось на Ollama-провайдере вместе с tools[]).
+	MaxOutputTokens *int `json:"max_output_tokens"`
+	Stream          bool `json:"stream"`
 }
 
 // ollamaGenerateRequestRaw — минимальная структура для /api/generate.
 type ollamaGenerateRequestRaw struct {
-	Model     string `json:"model"`
-	Prompt    string `json:"prompt"`
-	System    string `json:"system"`
-	Options   struct {
+	Model   string `json:"model"`
+	Prompt  string `json:"prompt"`
+	System  string `json:"system"`
+	Options struct {
 		NumCtx     int `json:"num_ctx"`
 		NumPredict int `json:"num_predict"`
 	} `json:"options"`
-	Tools     []json.RawMessage `json:"tools"`
+	Tools []json.RawMessage `json:"tools"`
 	// R60.55 (2026-09-13): top-level max_tokens (OpenAI-style alias for num_predict).
 	MaxTokens int `json:"max_tokens"`
+	// R69 (2026-09-23): max_output_tokens (Cline) — ещё один алиас num_predict.
+	MaxOutputTokens *int `json:"max_output_tokens"`
 }
 
 // openAIChatRequestRaw — для /v1/chat/completions.
@@ -135,6 +140,8 @@ type openAIChatRequestRaw struct {
 	} `json:"messages"`
 	Tools     []json.RawMessage `json:"tools"`
 	MaxTokens int               `json:"max_tokens"`
+	// R69 (2026-09-23): max_output_tokens (Cline) — алиас max_tokens.
+	MaxOutputTokens *int `json:"max_output_tokens"`
 	// Round 34 follow-up: добавил OpenAI num_ctx (top-level). Без этого
 	// preflight не видел requested n_ctx для OpenAI клиентов (Cline,
 	// Open WebUI OpenAI-compat mode) → проксировал напрямую в cppworker →
@@ -166,6 +173,12 @@ func ExtractRequestMeta(body []byte, path string) *RequestMeta {
 		if meta.RequestedNPredict <= 0 {
 			meta.RequestedNPredict = req.MaxTokens
 		}
+		// R69 (2026-09-23): Cline шлёт max_output_tokens вместо num_predict/
+		// max_tokens — без этого preflight считал n_predict=0 (дефолт 2048) и
+		// недооценивал требуемый контекст.
+		if meta.RequestedNPredict <= 0 && req.MaxOutputTokens != nil {
+			meta.RequestedNPredict = *req.MaxOutputTokens
+		}
 		meta.HasTools = len(req.Tools) > 0
 		// Round 34 (2026-08-12) Phase 2: profile mismatch detection.
 		// Только Ollama /api/chat парсит options.* — для OpenAI эти поля остаются нулевыми.
@@ -194,6 +207,9 @@ func ExtractRequestMeta(body []byte, path string) *RequestMeta {
 		if meta.RequestedNPredict <= 0 {
 			meta.RequestedNPredict = req.MaxTokens
 		}
+		if meta.RequestedNPredict <= 0 && req.MaxOutputTokens != nil {
+			meta.RequestedNPredict = *req.MaxOutputTokens
+		}
 		meta.HasTools = len(req.Tools) > 0
 		meta.EstimatedPromptTokens = EstimatePromptTokens(req.Prompt + req.System)
 
@@ -205,6 +221,10 @@ func ExtractRequestMeta(body []byte, path string) *RequestMeta {
 		meta.ModelName = req.Model
 		meta.RequestedNCtxOverride = req.NumCtx // Round 34 follow-up
 		meta.RequestedNPredict = req.MaxTokens
+		// R69 (2026-09-23): max_output_tokens (Cline) — алиас max_tokens.
+		if meta.RequestedNPredict <= 0 && req.MaxOutputTokens != nil {
+			meta.RequestedNPredict = *req.MaxOutputTokens
+		}
 		meta.HasTools = len(req.Tools) > 0
 		var sb strings.Builder
 		for _, m := range req.Messages {
@@ -301,7 +321,7 @@ type NCtxBackendState struct {
 	// оператор должен видеть, что 8192 — это hint профиля, а не предел модели).
 	ProfileHintNCtx int
 	// AutoReloadMaxNCtx — operator cap (LB_NCTX_RELOAD_MAX_N_CTX).
-	AutoReloadMaxNCtx int
+	AutoReloadMaxNCtx    int
 	CurrentFlashAttnType int // -1/0/1, 0 = unknown
 	CurrentUseMmap       bool
 }

@@ -786,9 +786,21 @@ func (p *Proxy) triggerAutoTuneReload(backendID, modelName string, freeVRAM, fre
 	}
 
 	// 4) Plan
-	plan := PlanApplyAutoTune(analysis, loadedModel)
+	// R69: не «оптимизируем» n_ctx ниже того, что просил клиент — иначе
+	// ping-pong reload (65536 → 38385 → 65536 …) и клиент получает 503.
+	minContext := 0
+	if p.nctxReload != nil {
+		minContext = p.nctxReload.DesiredNCtx(backendID, modelName)
+	}
+	plan := PlanApplyAutoTuneWithMinContext(analysis, loadedModel, minContext)
 	if plan == nil {
-		res.SkippedReason = "no actionable recommendations (sub-optimal detected but no plan)"
+		if minContext > 0 {
+			res.SkippedReason = fmt.Sprintf(
+				"client requested n_ctx=%d (within %s): over-allocation downgrade skipped",
+				minContext, desiredNCtxTTL)
+		} else {
+			res.SkippedReason = "no actionable recommendations (sub-optimal detected but no plan)"
+		}
 		return res
 	}
 	res.Plan = plan
@@ -1114,6 +1126,18 @@ func (p *Proxy) executeLlamaCppUnload(host string, port int, modelName string) *
 //
 // Параметр currentLoaded — текущее состояние модели (для diff).
 func PlanApplyAutoTune(analysis *AutoTuneAnalysis, currentLoaded types.LlamaCppModel) *AutoTuneReloadPlan {
+	return PlanApplyAutoTuneWithMinContext(analysis, currentLoaded, 0)
+}
+
+// PlanApplyAutoTuneWithMinContext — R69 (2026-09-23): то же, но с учётом
+// минимально необходимого n_ctx (сколько просил клиент).
+//
+// minContext > 0 запрещает «over-allocation fix» вниз: на живом стенде Cline с
+// num_ctx=65536 получал reload 65536 → 38385 (AutoTune) → снова 65536 → …,
+// каждый запрос завершался 503 «n_ctx auto-reload in progress».
+func PlanApplyAutoTuneWithMinContext(
+	analysis *AutoTuneAnalysis, currentLoaded types.LlamaCppModel, minContext int,
+) *AutoTuneReloadPlan {
 	if analysis == nil || !analysis.IsSubOptimal {
 		return nil
 	}
@@ -1126,11 +1150,22 @@ func PlanApplyAutoTune(analysis *AutoTuneAnalysis, currentLoaded types.LlamaCppM
 		switch rec.Category {
 		case "context":
 			// R53.2: currentLoaded.ContextLength → recommendedNumCtx
-			if rec.RecommendedNumCtx > 0 && rec.RecommendedNumCtx != currentLoaded.ContextLength {
-				plan.ContextSize = rec.RecommendedNumCtx
-				plan.Reason = fmt.Sprintf("R54.4: n_ctx %d → %d (over-allocation fix)",
-					currentLoaded.ContextLength, rec.RecommendedNumCtx)
+			if rec.RecommendedNumCtx <= 0 || rec.RecommendedNumCtx == currentLoaded.ContextLength {
+				continue
 			}
+			// R69: уменьшать ниже клиентского запроса нельзя — рекомендация
+			// построена на текущем feasible и не знает про запросы клиента.
+			if minContext > 0 && rec.RecommendedNumCtx < minContext {
+				logger.Get().Infow("autotune: skipping n_ctx downgrade below client request",
+					"model", currentLoaded.Name,
+					"current_n_ctx", currentLoaded.ContextLength,
+					"recommended_n_ctx", rec.RecommendedNumCtx,
+					"client_requested_n_ctx", minContext)
+				continue
+			}
+			plan.ContextSize = rec.RecommendedNumCtx
+			plan.Reason = fmt.Sprintf("R54.4: n_ctx %d → %d (over-allocation fix)",
+				currentLoaded.ContextLength, rec.RecommendedNumCtx)
 		case "kv_cache":
 			// Если recommendedKVCache отличается от current — план
 			if rec.RecommendedKVCache != "" && rec.RecommendedKVCache != currentLoaded.KvCacheType {

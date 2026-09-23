@@ -295,6 +295,24 @@ type NCtxReloadCoordinator struct {
 
 	// ensureModelLoadedOnBackend. nil-safe.
 	reloadDedup *reloadDedupRegistry
+
+	// R69 (2026-09-23): сколько n_ctx просил КЛИЕНТ (max за окно
+	// desiredNCtxTTL). Нужно, чтобы AutoTune (R54.4 over-allocation fix) не
+	// «оптимизировал» n_ctx вниз под запрос клиента: на живом стенде это давало
+	// пинг-понг reload 65536 → 38385 → 65536 → … и клиент (Cline) получал 503
+	// «reload in progress» на каждом запросе.
+	desiredMu sync.Mutex
+	desired   map[string]desiredNCtxEntry
+}
+
+// desiredNCtxTTL — окно, в течение которого запрос клиента считается актуальным.
+// 30 минут: сессия Cline/OpenWebUI живёт часами, но держать «желание» вечно
+// нельзя — иначе AutoTune никогда не сможет освободить VRAM.
+const desiredNCtxTTL = 30 * time.Minute
+
+type desiredNCtxEntry struct {
+	nCtx int
+	at   time.Time
 }
 
 type backendReloadState struct {
@@ -318,7 +336,50 @@ func NewNCtxReloadCoordinator(cfg NCtxReloadConfig) *NCtxReloadCoordinator {
 		config:      cfg,
 		perBackend:  make(map[string]*backendReloadState),
 		reloadDedup: newReloadDedupRegistry(),
+		desired:     make(map[string]desiredNCtxEntry),
 	}
+}
+
+// RecordRequestedNCtx — R69: запомнить n_ctx, который запросил клиент
+// (num_ctx из тела запроса). Хранится максимум за desiredNCtxTTL.
+func (c *NCtxReloadCoordinator) RecordRequestedNCtx(backendID, modelName string, nCtx int) {
+	if c == nil || nCtx <= 0 || backendID == "" || modelName == "" {
+		return
+	}
+	c.desiredMu.Lock()
+	defer c.desiredMu.Unlock()
+	if c.desired == nil {
+		c.desired = make(map[string]desiredNCtxEntry)
+	}
+	key := backendID + "\x00" + modelName
+	cur, ok := c.desired[key]
+	if !ok || nCtx > cur.nCtx || time.Since(cur.at) > desiredNCtxTTL {
+		c.desired[key] = desiredNCtxEntry{nCtx: nCtx, at: time.Now()}
+		return
+	}
+	// Освежаем отметку времени, значение оставляем максимальным.
+	cur.at = time.Now()
+	c.desired[key] = cur
+}
+
+// DesiredNCtx — R69: максимальный n_ctx, который клиент просил за последние
+// desiredNCtxTTL. 0 = неизвестно (AutoTune не ограничивается).
+func (c *NCtxReloadCoordinator) DesiredNCtx(backendID, modelName string) int {
+	if c == nil || backendID == "" || modelName == "" {
+		return 0
+	}
+	c.desiredMu.Lock()
+	defer c.desiredMu.Unlock()
+	key := backendID + "\x00" + modelName
+	entry, ok := c.desired[key]
+	if !ok {
+		return 0
+	}
+	if time.Since(entry.at) > desiredNCtxTTL {
+		delete(c.desired, key)
+		return 0
+	}
+	return entry.nCtx
 }
 
 func (c *NCtxReloadCoordinator) IsReloadPending(backendID, modelName string) bool {

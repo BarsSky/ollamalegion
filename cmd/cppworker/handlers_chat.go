@@ -126,6 +126,18 @@ type chatRequest struct {
 	// OpenAI-путь /v1/chat/completions уже принимал это поле (handlers_openai.go:99).
 	ToolChoice json.RawMessage `json:"tool_choice,omitempty"`
 
+	// MaxOutputTokens — R69 (2026-09-23): реальный Cline (VS Code extension +
+	// CLI, провайдер "ollama") шлёт ЭТО поле вместе с tools[] — как и
+	// tool_choice в R66b. Ollama-протокол такого поля не знает (у него
+	// options.num_predict), но строгий декодер отвечал
+	//   400 {"error":"invalid JSON: json: unknown field \"max_output_tokens\""}
+	// на каждом запросе: клиент показывал ошибку и не мог выполнить ни одного
+	// действия (скриншот пользователя 2026-09-23).
+	//
+	// Принимаем как алиас: используется, если клиент НЕ задал num_predict
+	// (options.num_predict) и max_tokens (top-level).
+	MaxOutputTokens *int `json:"max_output_tokens,omitempty"`
+
 	// _keepAliveDuration — результат parseKeepAlive(req.KeepAliveRaw); не из JSON.
 	_keepAliveDuration time.Duration `json:"-"`
 }
@@ -456,6 +468,15 @@ func buildGenerateRequestFromChat(req chatRequest, prompt string) generateReques
 	if req.MaxTokens != nil {
 		genReq.MaxTokens = *req.MaxTokens
 	}
+	// R69: max_output_tokens (Cline) — алиас num_predict/max_tokens. Применяем
+	// только если клиент не задал ни num_predict (options), ни max_tokens:
+	// явные Ollama-поля остаются приоритетными.
+	if req.MaxOutputTokens != nil && *req.MaxOutputTokens > 0 &&
+		genReq.MaxTokens <= 0 && genReq.Options.NumPredict <= 0 {
+		logger.Get().Infow("buildGenerateRequestFromChat: max_output_tokens (Cline) → num_predict",
+			"model", req.Model, "max_output_tokens", *req.MaxOutputTokens)
+		genReq.MaxTokens = *req.MaxOutputTokens
+	}
 	if req.NumCtx != nil && *req.NumCtx > 0 {
 		genReq.NumCtx = *req.NumCtx
 	} else if genReq.NumCtx == 0 && genReq.Options.NumCtx > 0 {
@@ -725,6 +746,7 @@ func buildChatPromptWithOptions(msgs []chatMessage, modelName string, opts chatP
 //   - Soft prompt просит `<reasoning>` напрямую (более широкая совместимость)
 //   - Parser (cmd/cppworker/reasoning_content.go) поддерживает ОБА варианта
 //     (плюс `<thinking>`, `<analysis>`) для других custom fine-tunes
+//
 // Round 32 #12 (2026-08-11): DEPRECATED thin wrapper — use
 // injectThinkingInstructionWithLang instead. This keeps backward
 // compat for external callers; all internal cppworker callsites

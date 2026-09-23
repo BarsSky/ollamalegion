@@ -33,6 +33,9 @@ type openAICompletionRequest struct {
 	Prompt    string `json:"prompt"`
 	Suffix    string `json:"suffix,omitempty"`
 	MaxTokens int    `json:"max_tokens,omitempty"`
+	// MaxOutputTokens — R69 (2026-09-23): алиас max_tokens (Cline и другие
+	// клиенты, использующие один код для разных API).
+	MaxOutputTokens *int `json:"max_output_tokens,omitempty"`
 	// Sampling params — *float64 для различения "unset" vs "explicit 0".
 	Temperature      *float64 `json:"temperature,omitempty"`
 	TopP             *float64 `json:"top_p,omitempty"`
@@ -134,6 +137,11 @@ type openAIChatCompletionRequest struct {
 	MinP          *float64 `json:"min_p,omitempty"`
 	// NumPredict — Ollama-алиас max_tokens на верхнем уровне.
 	NumPredict *int `json:"num_predict,omitempty"`
+	// MaxOutputTokens — R69 (2026-09-23): ещё один алиас max_tokens, который
+	// шлёт реальный клиент Cline (наблюдалось на Ollama-провайдере; в
+	// OpenAI-совместимом режиме поле тоже встречается). Без него строгий
+	// декодер отвечал 400 `invalid JSON: json: unknown field "max_output_tokens"`.
+	MaxOutputTokens *int `json:"max_output_tokens,omitempty"`
 	// ResponseFormat — {"type":"json_object"} / {"type":"json_schema",...}.
 	ResponseFormat json.RawMessage `json:"response_format,omitempty"`
 	// ParallelToolCalls — OpenWebUI/OpenAI SDK шлют его вместе с tools.
@@ -394,11 +402,19 @@ func handleV1ChatCompletions(w http.ResponseWriter, r *http.Request) {
 	if req.TopP != nil {
 		params.TopP = float32(*req.TopP)
 	}
-	if req.MaxTokens > 0 {
+	// R69 (2026-09-23): max_output_tokens (Cline) — алиас max_tokens.
+	// Применяем только если клиент не задал max_tokens/num_predict.
+	effectiveMaxTokens := req.MaxTokens
+	if effectiveMaxTokens <= 0 && req.MaxOutputTokens != nil && *req.MaxOutputTokens > 0 {
+		logger.Get().Infow("buildOpenAIChatParams: max_output_tokens (Cline) → max_tokens",
+			"model", actualModel, "max_output_tokens", *req.MaxOutputTokens)
+		effectiveMaxTokens = *req.MaxOutputTokens
+	}
+	if effectiveMaxTokens > 0 {
 		// 2026-07-01: для reasoning-моделей (qwen3.5, deepseek-r1, gemma-4) поднимаем
 		// дефолт n_predict до DefaultNPredictReasoning, иначе модель обрывает генерацию
 		// сразу после <think>...</think> (completion_tokens=0).
-		params.NPredict = ResolveNPredict(req.MaxTokens, actualModel)
+		params.NPredict = ResolveNPredict(effectiveMaxTokens, actualModel)
 	} else {
 		// 2026-07-01: req.MaxTokens==0 → используем дефолт cppworker (2048), но для
 		// reasoning-моделей повышаем до DefaultNPredictReasoning (8192).
@@ -1430,11 +1446,18 @@ func handleV1Completions(w http.ResponseWriter, r *http.Request) {
 	if req.TopP != nil {
 		params.TopP = float32(*req.TopP)
 	}
-	if req.MaxTokens > 0 {
+	// R69 (2026-09-23): max_output_tokens (Cline) — алиас max_tokens.
+	effectiveMaxTokens2 := req.MaxTokens
+	if effectiveMaxTokens2 <= 0 && req.MaxOutputTokens != nil && *req.MaxOutputTokens > 0 {
+		logger.Get().Infow("handleOpenAICompletions: max_output_tokens (Cline) → max_tokens",
+			"model", modelName, "max_output_tokens", *req.MaxOutputTokens)
+		effectiveMaxTokens2 = *req.MaxOutputTokens
+	}
+	if effectiveMaxTokens2 > 0 {
 		// 2026-07-01: для reasoning-моделей (qwen3.5, deepseek-r1, gemma-4) поднимаем
 		// дефолт n_predict до DefaultNPredictReasoning, иначе модель обрывает генерацию
 		// сразу после <think>...</think> (completion_tokens=0).
-		params.NPredict = ResolveNPredict(req.MaxTokens, modelName)
+		params.NPredict = ResolveNPredict(effectiveMaxTokens2, modelName)
 	} else {
 		// 2026-07-01: req.MaxTokens==0 → дефолт cppworker (2048), для reasoning-моделей
 		// повышаем до DefaultNPredictReasoning (8192).

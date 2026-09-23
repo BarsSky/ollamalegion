@@ -54,10 +54,10 @@ const (
 
 // HFModelRepo — информация о репозитории модели на HuggingFace
 type HFModelRepo struct {
-	ID          string       `json:"id"`              // e.g. "TheBloke/Llama-2-7B-GGUF"
-	Name        string       `json:"name"`            // e.g. "Llama-2-7B-GGUF"
-	Author      string       `json:"author"`          // e.g. "TheBloke"
-	LastUpdated string       `json:"lastUpdated"`     // ISO 8601
+	ID          string       `json:"id"`          // e.g. "TheBloke/Llama-2-7B-GGUF"
+	Name        string       `json:"name"`        // e.g. "Llama-2-7B-GGUF"
+	Author      string       `json:"author"`      // e.g. "TheBloke"
+	LastUpdated string       `json:"lastUpdated"` // ISO 8601
 	Downloads   int          `json:"downloads"`
 	Likes       int          `json:"likes"`
 	PipelineTag string       `json:"pipelineTag"`     // e.g. "text-generation"
@@ -77,24 +77,24 @@ type HFFileInfo struct {
 
 // HFDownloadProgress — прогресс загрузки
 type HFDownloadProgress struct {
-	ModelID      string  `json:"modelId"`      // e.g. "TheBloke/Llama-2-7B-GGUF"
-	Filename     string  `json:"filename"`     // имя файла
-	TotalBytes   int64   `json:"totalBytes"`   // общий размер
-	Downloaded   int64   `json:"downloaded"`   // загружено байт
-	ProgressPct  float64 `json:"progressPct"`  // процент
-	SpeedBps     int64   `json:"speedBps"`     // скорость байт/сек
-	Status       string  `json:"status"`       // "downloading", "completed", "failed", "cancelled", "interrupted"
+	ModelID      string  `json:"modelId"`     // e.g. "TheBloke/Llama-2-7B-GGUF"
+	Filename     string  `json:"filename"`    // имя файла
+	TotalBytes   int64   `json:"totalBytes"`  // общий размер
+	Downloaded   int64   `json:"downloaded"`  // загружено байт
+	ProgressPct  float64 `json:"progressPct"` // процент
+	SpeedBps     int64   `json:"speedBps"`    // скорость байт/сек
+	Status       string  `json:"status"`      // "downloading", "completed", "failed", "cancelled", "interrupted"
 	ErrorMessage string  `json:"errorMessage,omitempty"`
-	StartedAt    string  `json:"startedAt"`    // ISO 8601
+	StartedAt    string  `json:"startedAt"` // ISO 8601
 	CompletedAt  string  `json:"completedAt,omitempty"`
 	// Round 17.3 (2026-08-03): пути и resume support.
 	// TempPath = где сейчас лежит частично скачанный .download файл.
 	// FinalPath = куда переедет файл после успешного завершения.
 	// Resumable = true если есть .download файл с N байт и можно
 	//   продолжить через HTTP Range request.
-	TempPath   string `json:"tempPath,omitempty"`
-	FinalPath  string `json:"finalPath,omitempty"`
-	Resumable  bool   `json:"resumable"`
+	TempPath    string `json:"tempPath,omitempty"`
+	FinalPath   string `json:"finalPath,omitempty"`
+	Resumable   bool   `json:"resumable"`
 	ResumedFrom int64  `json:"resumedFrom,omitempty"` // байт с которого продолжили (0 если fresh)
 }
 
@@ -123,6 +123,32 @@ type HuggingFaceDownloader struct {
 	downloadHistory []HFDownloadProgress
 	maxConcurrent   int
 	semaphore       chan struct{}
+
+	// onDownloadComplete — R66d (2026-09-23): вызывается после успешной
+	// загрузки файла в modelsDir. Backend подписывается на него, чтобы
+	// пересканировать каталог моделей: ListModels()/GetModelMeta() читают кэш
+	// ggufFiles, который наполняется только в ScanModels(), поэтому без этого
+	// вызова скачанная модель не появлялась ни в /api/models/files (вкладка GGUF
+	// в WebUI), ни в FindModelByPath — «скачали, а модели нет» до рестарта
+	// cppworker. Тот же класс бага, что чинили в R66c для вкладки GGUF.
+	onDownloadComplete func(filename string)
+}
+
+// SetOnDownloadComplete — подписка на успешное завершение загрузки.
+func (d *HuggingFaceDownloader) SetOnDownloadComplete(fn func(filename string)) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	d.onDownloadComplete = fn
+}
+
+// notifyDownloadComplete — дергает подписчика (если он есть) вне лока.
+func (d *HuggingFaceDownloader) notifyDownloadComplete(filename string) {
+	d.mu.RLock()
+	fn := d.onDownloadComplete
+	d.mu.RUnlock()
+	if fn != nil {
+		fn(filename)
+	}
 }
 
 // downloadTask — внутренняя задача загрузки
@@ -140,16 +166,16 @@ func NewHuggingFaceDownloader(token, mirror, downloadsDir, modelsDir string) *Hu
 	}
 
 	return &HuggingFaceDownloader{
-		token:           token,
-		mirror:          mirror,
-		downloadsDir:    downloadsDir,
-		modelsDir:       modelsDir,
+		token:        token,
+		mirror:       mirror,
+		downloadsDir: downloadsDir,
+		modelsDir:    modelsDir,
 		httpClient: &http.Client{
 			Timeout: DefaultDownloadTimeout,
 			Transport: &http.Transport{
-				MaxIdleConns:        10,
-				IdleConnTimeout:     30 * time.Second,
-				DisableCompression:  false,
+				MaxIdleConns:       10,
+				IdleConnTimeout:    30 * time.Second,
+				DisableCompression: false,
 			},
 		},
 		activeDownloads: make(map[string]*downloadTask),
@@ -673,8 +699,8 @@ func (d *HuggingFaceDownloader) StartDownload(req HFDownloadRequest) (*HFDownloa
 		Filename:    filename,
 		Status:      "downloading",
 		StartedAt:   time.Now().UTC().Format(time.RFC3339),
-		TempPath:    tmpPath,    // UI: "Currently at: /app/downloads/foo.gguf.download"
-		FinalPath:   finalPath,  // UI: "Will end up at: /app/models/foo.gguf"
+		TempPath:    tmpPath,   // UI: "Currently at: /app/downloads/foo.gguf.download"
+		FinalPath:   finalPath, // UI: "Will end up at: /app/models/foo.gguf"
 		Resumable:   resumable,
 		ResumedFrom: resumedFrom,
 	}
@@ -1067,6 +1093,10 @@ func (d *HuggingFaceDownloader) moveTempToFinalWithProgress(
 		"downloadedThisRun", downloaded,
 		"duration", duration.String(),
 		"speed", formatSpeed(downloaded, duration))
+
+	// R66d: сообщаем Backend'у, что каталог моделей изменился — иначе свежая
+	// модель не появится в /api/models/files (вкладка GGUF) до рестарта.
+	d.notifyDownloadComplete(filenameFromPath(finalPath))
 }
 
 // ============================================================
@@ -1181,7 +1211,7 @@ func (d *HuggingFaceDownloader) DeleteDownload(modelID, filename string) (*Delet
 	for i := range d.downloadHistory {
 		if d.downloadHistory[i].ModelID == modelID && d.downloadHistory[i].Filename == filename {
 			d.downloadHistory[i].Resumable = false
-			d.downloadHistory[i].TempPath = ""   // пути уже неактуальны
+			d.downloadHistory[i].TempPath = "" // пути уже неактуальны
 			d.downloadHistory[i].FinalPath = ""
 			d.downloadHistory[i].ErrorMessage = "deleted by user"
 		}

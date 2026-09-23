@@ -437,6 +437,22 @@ func NewBackend(cfg Config) *Backend {
 		cfg.DownloadsDir,
 		cfg.ModelsDir,
 	)
+	// R66d (2026-09-23): после успешной загрузки пересканируем каталог моделей.
+	// ListModels()/GetModelMeta()/FindModelByPath() работают по кэшу ggufFiles,
+	// который заполняется только в ScanModels(), поэтому без этого скачанная
+	// модель не появлялась ни в /api/models/files (вкладка GGUF в WebUI), ни в
+	// списке доступных для загрузки — до рестарта cppworker.
+	b.hfDownloader.SetOnDownloadComplete(func(filename string) {
+		if b.modelManager == nil {
+			return
+		}
+		if _, err := b.modelManager.ScanModels(); err != nil {
+			logger.Get().Warnw("rescan after HF download failed",
+				"filename", filename, "error", err)
+			return
+		}
+		logger.Get().Infow("rescan after HF download complete", "filename", filename)
+	})
 
 	// Round 18 P0.2 (2026-08-03): ActiveGenerations tracker для /api/cancel.
 	// Инициализируется здесь (не в Init) потому что не требует GPU/bridge.

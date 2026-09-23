@@ -255,7 +255,14 @@ type PreflightResult struct {
 // NCtxBackendState — состояние n_ctx на бэкенде (для preflight-расчётов).
 // Заполняется из cluster state + cppworker metrics.
 type NCtxBackendState struct {
-	BackendID       string
+	// Строковые поля — первыми (pointer data prefix, govet fieldalignment).
+	BackendID string
+	// === Round 34 (2026-08-12) Phase 2: profile mismatch detection ===
+	// Текущие параметры загруженной модели (из cppworker /api/models callback
+	// + llamaCppMetricsPoller). Используются в DecidePreflight для проверки
+	// совпадения с requested* полями в RequestMeta.
+	CurrentKvCacheType string // "f16"/"q8_0"/"q4_0" — "" = unknown
+
 	CurrentNCtx     int // lastKnownNCtx из координатора
 	MaxVRAMNCtx     int // из cppworker metrics (0 = unknown)
 	ModelMaxContext int // из GGUF metadata (0 = unknown)
@@ -295,12 +302,7 @@ type NCtxBackendState struct {
 	ProfileHintNCtx int
 	// AutoReloadMaxNCtx — operator cap (LB_NCTX_RELOAD_MAX_N_CTX).
 	AutoReloadMaxNCtx int
-	// === Round 34 (2026-08-12) Phase 2: profile mismatch detection ===
-	// Текущие параметры загруженной модели (из cppworker /api/models callback
-	// + llamaCppMetricsPoller). Используются в DecidePreflight для проверки
-	// совпадения с requested* полями в RequestMeta.
-	CurrentKvCacheType   string // "f16"/"q8_0"/"q4_0" — "" = unknown
-	CurrentFlashAttnType int    // -1/0/1, 0 = unknown
+	CurrentFlashAttnType int // -1/0/1, 0 = unknown
 	CurrentUseMmap       bool
 }
 

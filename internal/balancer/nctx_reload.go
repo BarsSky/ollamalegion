@@ -287,22 +287,21 @@ type ReloadPlan struct {
 
 // ? llamacpp_transport.go.
 type NCtxReloadCoordinator struct {
-	mu         sync.RWMutex
-	config     NCtxReloadConfig
-	perBackend map[string]*backendReloadState
-
-	metricsByBackend sync.Map
-
-	// ensureModelLoadedOnBackend. nil-safe.
+	// Поля с указателями — первыми (govet fieldalignment: GC scan prefix).
+	perBackend  map[string]*backendReloadState
 	reloadDedup *reloadDedupRegistry
-
 	// R69 (2026-09-23): сколько n_ctx просил КЛИЕНТ (max за окно
 	// desiredNCtxTTL). Нужно, чтобы AutoTune (R54.4 over-allocation fix) не
 	// «оптимизировал» n_ctx вниз под запрос клиента: на живом стенде это давало
 	// пинг-понг reload 65536 → 38385 → 65536 → … и клиент (Cline) получал 503
 	// «reload in progress» на каждом запросе.
+	desired map[string]desiredNCtxEntry
+
+	metricsByBackend sync.Map
+
+	mu        sync.RWMutex
 	desiredMu sync.Mutex
-	desired   map[string]desiredNCtxEntry
+	config    NCtxReloadConfig
 }
 
 // desiredNCtxTTL — окно, в течение которого запрос клиента считается актуальным.
@@ -310,9 +309,11 @@ type NCtxReloadCoordinator struct {
 // нельзя — иначе AutoTune никогда не сможет освободить VRAM.
 const desiredNCtxTTL = 30 * time.Minute
 
+// desiredNCtxEntry — запомненный клиентский n_ctx. Порядок полей — под
+// fieldalignment (time.Time несёт указатель на Location).
 type desiredNCtxEntry struct {
-	nCtx int
 	at   time.Time
+	nCtx int
 }
 
 type backendReloadState struct {

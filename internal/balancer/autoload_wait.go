@@ -222,8 +222,126 @@ func (lr *LlamaCppRouter) waitForModelLoad(
 	}
 }
 
-// RequestSessionKey — R67a: идентификатор пользователя/сессии клиента.
+// waitForBackendNCtx — R68 (2026-09-23): дождаться, пока cppworker сообщит
+// context_size >= want для модели (после reload'а n_ctx).
 //
+// Нужен transport-level пути preflightNCtxReloadIfNeeded: раньше он всегда
+// отвечал клиенту 503 «being reloaded, retry in 30s», и Cline/OpenWebUI
+// показывали ошибку, хотя reload занимал десятки секунд — то есть
+// «проходил только повторный запрос». Теперь запрос ждёт готовности модели
+// (как R67a делает для авто-загрузки) и обслуживается сразу.
+//
+// Возвращает true, если модель загружена с нужным n_ctx; false при таймауте,
+// отмене или ошибке опроса.
+func (p *Proxy) waitForBackendNCtx(
+	ctx context.Context, backendID, modelName string, want int, timeout time.Duration,
+) bool {
+	if p == nil || timeout <= 0 || want <= 0 {
+		return false
+	}
+	baseURL := p.backendHTTPAddrByID(backendID)
+	if baseURL == "" {
+		return false
+	}
+	client := &http.Client{Timeout: 5 * time.Second}
+	deadline := time.Now().Add(timeout)
+	for {
+		if ctx != nil && ctx.Err() != nil {
+			return false
+		}
+		if nctx, loaded := p.fetchBackendModelNCtx(ctx, client, baseURL, modelName); loaded && nctx >= want {
+			return true
+		}
+		remaining := time.Until(deadline)
+		if remaining <= 0 {
+			return false
+		}
+		nap := autoLoadPollInterval
+		if remaining < nap {
+			nap = remaining
+		}
+		select {
+		case <-time.After(nap):
+		case <-ctxDone(ctx):
+			return false
+		}
+	}
+}
+
+// ctxDone — nil-safe ctx.Done() (ctx может быть nil в вызовах без контекста).
+func ctxDone(ctx context.Context) <-chan struct{} {
+	if ctx == nil {
+		return nil
+	}
+	return ctx.Done()
+}
+
+// fetchBackendModelNCtx — один опрос /api/models: возвращает (context_size, найден).
+func (p *Proxy) fetchBackendModelNCtx(
+	ctx context.Context, client *http.Client, baseURL, modelName string,
+) (int, bool) {
+	req, err := http.NewRequestWithContext(ctxOrBackground(ctx), http.MethodGet, baseURL+"/api/models", nil)
+	if err != nil {
+		return 0, false
+	}
+	resp, err := client.Do(req)
+	if err != nil {
+		return 0, false
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return 0, false
+	}
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	if err != nil {
+		return 0, false
+	}
+	type modelEntry struct {
+		Name          string `json:"name"`
+		ID            string `json:"id"`
+		State         string `json:"state"`
+		ContextSize   int    `json:"context_size"`
+		ContextLength int    `json:"contextLength"`
+	}
+	var parsed struct {
+		Models []modelEntry `json:"models"`
+		// loaded_models — ключ старых сборок cppworker (и тестовых моков).
+		LoadedModels []modelEntry `json:"loaded_models"`
+	}
+	if err := json.Unmarshal(body, &parsed); err != nil {
+		return 0, false
+	}
+	entries := append(parsed.Models, parsed.LoadedModels...)
+	for _, m := range entries {
+		name := m.Name
+		if name == "" {
+			name = m.ID
+		}
+		if !modelNameMatches(name, modelName) {
+			continue
+		}
+		if !strings.EqualFold(m.State, "loaded") {
+			return 0, true // найдена, но ещё грузится
+		}
+		// Живой cppworker отдаёт snake_case context_size, старые сборки/моки —
+		// camelCase contextLength: поддерживаем оба.
+		if m.ContextSize > 0 {
+			return m.ContextSize, true
+		}
+		return m.ContextLength, true
+	}
+	return 0, false
+}
+
+// ctxOrBackground — nil-safe context.
+func ctxOrBackground(ctx context.Context) context.Context {
+	if ctx == nil {
+		return context.Background()
+	}
+	return ctx
+}
+
+// RequestSessionKey — R67a: идентификатор пользователя/сессии клиента.
 // Нужен, чтобы различать разных пользователей OpenWebUI (одна модель может
 // обслуживать нескольких человек одновременно) в логах, метриках и в
 // admission-очереди (R67b). Порядок источников:

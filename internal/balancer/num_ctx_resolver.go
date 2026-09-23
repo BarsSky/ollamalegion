@@ -188,6 +188,52 @@ func (p *Proxy) GetBackendDefaultNumCtx(backendID string) int {
 	return 0
 }
 
+// profileHintCtx — contextLength профиля модели (HINT первичной загрузки):
+// точное совпадение, затем case-insensitive substring (профиль "gemma-4" для
+// модели "gemma-4-E4B-it-Q4_K_M"). ok=false — профиля нет.
+func (p *Proxy) profileHintCtx(modelName string) (int, bool) {
+	if p == nil || p.config == nil {
+		return 0, false
+	}
+	if mp, ok := p.config.LlamaCppModelProfiles[modelName]; ok && mp.ContextLength > 0 {
+		return mp.ContextLength, true
+	}
+	for name, mp := range p.config.LlamaCppModelProfiles {
+		if (containsFold(name, modelName) || containsFold(modelName, name)) && mp.ContextLength > 0 {
+			return mp.ContextLength, true
+		}
+	}
+	return 0, false
+}
+
+// physicalNumCtxCeiling — R68: физический потолок n_ctx для КЛИЕНТСКИХ запросов:
+// min(GGUF max из метаданных модели, operator cap). Operator cap —
+// contextLengthMax модели из профиля, иначе глобальный LB_NCTX_RELOAD_MAX_N_CTX.
+// 0 = неизвестен (clamping не производится).
+func (p *Proxy) physicalNumCtxCeiling(modelName, backendID string) int {
+	if p == nil || backendID == "" {
+		return 0
+	}
+	ggufMax := p.getGGUFMaxContext(backendID)
+	ctxMax := 0
+	if p.config != nil {
+		if mp, ok := p.config.LlamaCppModelProfiles[modelName]; ok {
+			ctxMax = mp.ContextLengthMax
+		} else {
+			for name, mp := range p.config.LlamaCppModelProfiles {
+				if containsFold(name, modelName) || containsFold(modelName, name) {
+					ctxMax = mp.ContextLengthMax
+					break
+				}
+			}
+		}
+	}
+	if ctxMax <= 0 && p.nctxReload != nil {
+		ctxMax = p.nctxReload.Config().AutoReloadMaxNCtx
+	}
+	return resolvePhysicalMaxContext(ggufMax, ctxMax, 0)
+}
+
 // maxNumCtxForModel — эффективный потолок для модели ДЛЯ CLAMPING (Round 43).
 //
 // Round 43 (2026-08-19) CONCEPTUAL FIX:
@@ -215,6 +261,25 @@ func (p *Proxy) GetBackendDefaultNumCtx(backendID string) int {
 func (p *Proxy) maxNumCtxForModel(modelName string, backendID string) int {
 	if p == nil || p.config == nil {
 		return 0
+	}
+
+	// R68 (2026-09-23): профиль — HINT первичной загрузки, а НЕ предел запроса.
+	//
+	// Потолок для CLAMPING = физический: min(GGUF max из метаданных,
+	// contextLengthMax профиля либо LB_NCTX_RELOAD_MAX_N_CTX).
+	//
+	// Раньше здесь возвращался profile.ContextLength (Tier 1 при auto=false):
+	// Cline с num_ctx=65536 на профиле gemma (contextLength=8192) получал
+	// X-Cpp-Ctx=8192 → cppworker клампил запрос до 8192 → 413 «prompt exceeds
+	// n_ctx» → обработчик 413 запускал ВТОРОЙ reload (16384) → клиент видел
+	// 503 «reload in progress» уже после того, как дождался 65536.
+	if ceil := p.physicalNumCtxCeiling(modelName, backendID); ceil > 0 {
+		if hint, ok := p.profileHintCtx(modelName); ok && hint > 0 && ceil > hint {
+			logger.Get().Infow("maxNumCtxForModel: profile is a load hint, clamping to physical ceiling",
+				"model", modelName, "backend", backendID,
+				"profile_hint_n_ctx", hint, "physical_ceiling", ceil)
+		}
+		return ceil
 	}
 
 	// Tier 1: per-model profile (auto-aware via resolveModelMaxContext v3)

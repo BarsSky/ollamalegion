@@ -5,6 +5,87 @@
 Формат ведётся в соответствии с [Keep a Changelog](https://keepachangelog.com/ru/1.0.0/),
 и этот проект придерживается [Semantic Versioning](https://semver.org/lang/ru/).
 
+## [0.5.26 — Round 68 (2026-09-23)]
+
+### 🐛 Bug fix
+
+#### Cline с «Model Context Window = 65536»: балансер выделяет модели контекст, а не отбивает запрос
+
+Пользователь прислал скриншоты реального клиента Cline: в настройках
+«Model Context Window = 65536», base URL = балансер, модель
+`gemma-4-E4B-it-Q4_K_M`. Ответ — красная ошибка
+
+```
+preflight: prompt + n_predict exceeds n_ctx for this backend
+```
+
+Из логов балансера причина была видна явно:
+
+```
+body_n_ctx=65536, loaded_n_ctx=8192, model_max_n_ctx=8192,
+max_vram_n_ctx=66125, estimated_prompt_tokens=25507
+→ reject: "requested n_ctx=65536 exceeds model max context=8192"
+```
+
+то есть **«максимум модели» брался из `contextLength` профиля** (8192 — hint для
+первичной загрузки, когда-то поставленный в обход старого upstream
+GGML_ASSERT), хотя GGUF держит 131072, а cppworker сообщал, что 66K влезает.
+Дополнительно два пути в балансере спорили друг с другом: preflight отбивал
+413, а transport-level `preflightNCtxReload` в той же ситуации честно запускал
+reload и отдавал 503 «retry in 30s» — и запрос проходил только со второй попытки.
+
+**Что исправлено (R68):**
+
+1. **Потолок для клиента — физический, а не профильный.**
+   `NCtxBackendState.PhysicalMaxContext = min(GGUF max, operator cap
+   (contextLengthMax / LB_NCTX_RELOAD_MAX_N_CTX))`; `profile.contextLength`
+   больше не участвует в решении «отказать клиенту» и попадает в тело отказа как
+   `profile_hint_n_ctx` (вместе с `gguf_max_context`, `auto_reload_max_n_ctx`,
+   `physical_max_context`). Отказ (413) остаётся только когда запрос выше
+   физического потолка.
+2. **Тот же потолок — для clamp'а `num_ctx` в запросе** (`ResolveNumCtx` →
+   `maxNumCtxForModel`). Это был ГЛАВНЫЙ скрытый дефект: балансер ставил
+   `X-Cpp-Ctx: 8192` из `contextLength` профиля, cppworker клампил запрос до
+   8192, отвечал 413 «prompt exceeds n_ctx», обработчик 413 запускал ВТОРОЙ
+   reload (16384) и клиент получал 503 уже после того, как дождался 65536.
+   Теперь clamp идёт по физическому потолку (в логах:
+   `profile is a load hint, clamping to physical ceiling, profile_hint_n_ctx=8192,
+   physical_ceiling=131072`).
+3. **Reload дожидается, а не отбивает.** `LB_NCTX_PREFLIGHT_WAIT_SEC`
+   (default 240 c, `0` = прежнее поведение): и preflight-путь, и
+   transport-level путь ждут завершения reload и обслуживают **первый же**
+   запрос клиента (как R67a делает для авто-загрузки). Дольше 240 c — прежний
+   503 + Retry-After / stream-dialog с keepalive.
+4. **Кэш n_ctx обновляется сразу после reload** (`cacheLoadedContextLength`), а
+   transport-level чек берёт более свежее значение из координатора
+   (`lastKnownNCtxFor`), иначе metrics poller (~30 c) отдавал устаревший
+   меньший n_ctx и запускал второй reload.
+5. **Профиль gemma-4-E4B-it-Q4_K_M: `kvCacheType: "q4_0"`.** Без него
+   cppworker при загрузке на 65536 использовал f16 KV (~7 GB на 65K) →
+   `AutoTuneNCtx` не влезал в 8 GB VRAM и молча урезал n_ctx обратно до 8192
+   (клиент снова получал 413). С q4_0 KV на 65K занимает 720 MiB
+   (`llama_kv_cache: size = 720.00 MiB (65536 cells ... K (q4_0) 360 MiB, V (q4_0) 360 MiB)`),
+   модель грузится на GPU (42/43 слоя) — ровно то, что рекомендует сам
+   cppworker в warning'е адаптивной стратегии.
+
+**Воспроизведение на живом стенде (тело как у Cline: ~42 KB системного промпта
++ tools, `options.num_ctx=65536`, модель загружена с контекстом 16384):**
+
+| | до (r67-submodule-v2) | после (r68-submodule-v3) |
+|---|---|---|
+| HTTP | **413** `reason: requested n_ctx=65536 exceeds model max context=8192` (`current_n_ctx=32768`, `max_vram_n_ctx=91230`) | **200** — ответ модели (tool_call `read_file`) за 96 c |
+| что делал балансер | отбил запрос по `contextLength` профиля | перезагрузил модель 16384 → **65536** (`waited_ms=84080`), поднял `X-Cpp-Ctx` до физического потолка и обслужил запрос |
+| состояние модели | 32768 / 8192 после отката | `ctx=65536`, `kv=q4_0`, 42/43 слоя на GPU |
+
+Проверено локально: `go test -tags llama_stub -run R68 ./internal/balancer/` —
+11 новых тестов (profile hint → Reload вместо Reject; legacy-состояние всё ещё
+Reject; отказ выше физического потолка с честными полями;
+`resolvePhysicalMaxContext`; парсинг `LB_NCTX_PREFLIGHT_WAIT_SEC`; ожидание
+reload'а в preflight и в transport-level пути; `waitForBackendNCtx`;
+`cacheLoadedContextLength`; `maxNumCtxForModel` больше не клампит по профилю),
+плюс `TestMain` пакета выключает три «ждём вместо ошибки» ручки (R67a/R67b/R68) —
+пакет с `-race` снова 79-95 c вместо 250 c.
+
 ## [0.5.25 — Round 67 (2026-09-23)]
 
 ### 🐛 Bug fix

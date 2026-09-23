@@ -261,8 +261,14 @@ func TestMaxNumCtxForModel_R43_AutoMode_NoClampBelowCap(t *testing.T) {
 	}
 }
 
-// TestMaxNumCtxForModel_R43_HardCap_StaysCap — backward compat:
-// auto=false → profile.ContextLength is hard cap (Cline 65536 clamped to 32768).
+// TestMaxNumCtxForModel_R43_HardCap_StaysCap — ИСТОРИЧЕСКИЙ тест R43.
+//
+// R68 (2026-09-23) ИЗМЕНИЛ контракт: profile.contextLength — HINT первичной
+// загрузки, а не предел КЛИЕНТСКОГО запроса. Раньше при auto=false он клампил
+// num_ctx клиента: Cline с 65536 на профиле gemma (contextLength=8192) получал
+// X-Cpp-Ctx=8192 → cppworker клампил запрос → 413 «prompt exceeds n_ctx» →
+// второй reload → 503. Теперь потолок для clamping = min(GGUF max, operator cap),
+// то есть здесь ggufMax=262144.
 func TestMaxNumCtxForModel_R43_HardCap_StaysCap(t *testing.T) {
 	p := &Proxy{
 		metricsMgr: &MetricsManager{
@@ -276,16 +282,25 @@ func TestMaxNumCtxForModel_R43_HardCap_StaysCap(t *testing.T) {
 			LlamaCppModelProfiles: map[string]types.LlamaCppModelProfile{
 				"old-model": {
 					ContextLength:     32768,
-					ContextLengthAuto: false, // backward compat: hard cap
+					ContextLengthAuto: false, // hint (R68), больше не hard cap запроса
 					ContextLengthMax:  0,
 				},
 			},
 		},
 	}
 	got := p.maxNumCtxForModel("old-model", "b1")
-	if got != 32768 {
-		t.Errorf("R43 maxNumCtxForModel hard cap: got %d, want 32768 (auto=false → profile is hard cap, backward compat)",
+	if got != 262144 {
+		t.Errorf("R68 maxNumCtxForModel: got %d, want 262144 (profile — hint, потолок = GGUF max)",
 			got)
+	}
+	// А при заданном operator cap (contextLengthMax) он уважается:
+	p.config.LlamaCppModelProfiles["old-model"] = types.LlamaCppModelProfile{
+		ContextLength:     32768,
+		ContextLengthAuto: false,
+		ContextLengthMax:  65536,
+	}
+	if got := p.maxNumCtxForModel("old-model", "b1"); got != 65536 {
+		t.Errorf("R68 maxNumCtxForModel с contextLengthMax: got %d, want 65536", got)
 	}
 }
 

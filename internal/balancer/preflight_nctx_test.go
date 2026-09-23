@@ -308,8 +308,10 @@ func TestDecidePreflight_Reject_ModelMaxLimit(t *testing.T) {
 	if res.Decision != PreflightReject {
 		t.Fatalf("expected PreflightReject, got %v", res.Decision)
 	}
-	if !strings.Contains(res.RejectBody, "model max context") {
-		t.Errorf("expected reason about model max context, got: %s", res.RejectBody)
+	// R68: потолок теперь называется «backend context ceiling» (GGUF/operator
+	// cap), а contextLength профиля попадает в тело как profile_hint_n_ctx.
+	if !strings.Contains(res.RejectBody, "backend context ceiling") {
+		t.Errorf("expected reason about backend context ceiling, got: %s", res.RejectBody)
 	}
 }
 

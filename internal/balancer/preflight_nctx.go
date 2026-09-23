@@ -28,7 +28,10 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"os"
+	"strconv"
 	"strings"
+	"time"
 
 	"ollama-loadbalancer/pkg/logger"
 	"ollama-loadbalancer/pkg/tokencount"
@@ -271,6 +274,27 @@ type NCtxBackendState struct {
 	//   3. fallback → ModelMaxContext (старое поведение, обратная совместимость)
 	MaxFeasibleContext int // min(VRAM, RAM, GGUF) для конкретной модели
 	GGUFMaxContext     int // GGUF training context (hard upper bound, e.g. 262144)
+	// === R68 (2026-09-23): profile — HINT, а не потолок для клиента ===
+	//
+	// PhysicalMaxContext — потолок, выше которого запрос клиента удовлетворить
+	// НЕЛЬЗЯ даже reload'ом: min(GGUF max из метаданных модели, operator cap
+	// contextLengthMax/AutoReloadMaxNCtx). profile.contextLength сюда НЕ входит:
+	// по доктрине R43 это значение для ПЕРВИЧНОЙ загрузки (hint), а не предел,
+	// который можно предъявлять клиенту.
+	//
+	// Зачем: жалоба R68 (Cline, Model Context Window = 65536). Профиль
+	// gemma-4-E4B-it-Q4_K_M имеет contextLength=8192 (обход старого upstream
+	// GGML_ASSERT) и не имеет contextLengthAuto → Tier 1 resolver возвращал
+	// ModelMaxContext=8192, и preflight отвечал 413 «requested n_ctx=65536
+	// exceeds model max context=8192», хотя GGUF держит 131072, а cppworker
+	// сообщал max_vram_n_ctx=66125. Клиент получал невнятную ошибку вместо
+	// выделения модели. 0 = unknown (fallback на ModelMaxContext).
+	PhysicalMaxContext int
+	// ProfileHintNCtx — contextLength из профиля (для честного текста отказа:
+	// оператор должен видеть, что 8192 — это hint профиля, а не предел модели).
+	ProfileHintNCtx int
+	// AutoReloadMaxNCtx — operator cap (LB_NCTX_RELOAD_MAX_N_CTX).
+	AutoReloadMaxNCtx int
 	// === Round 34 (2026-08-12) Phase 2: profile mismatch detection ===
 	// Текущие параметры загруженной модели (из cppworker /api/models callback
 	// + llamaCppMetricsPoller). Используются в DecidePreflight для проверки
@@ -278,6 +302,20 @@ type NCtxBackendState struct {
 	CurrentKvCacheType   string // "f16"/"q8_0"/"q4_0" — "" = unknown
 	CurrentFlashAttnType int    // -1/0/1, 0 = unknown
 	CurrentUseMmap       bool
+}
+
+// physicalCeiling — потолок, выше которого клиентский запрос удовлетворить
+// нельзя (R68). Если PhysicalMaxContext не заполнен (старые вызовы, юнит-тесты
+// с одним ModelMaxContext) — используется ModelMaxContext: прежнее поведение
+// сохраняется.
+func (s *NCtxBackendState) physicalCeiling() int {
+	if s == nil {
+		return 0
+	}
+	if s.PhysicalMaxContext > 0 {
+		return s.PhysicalMaxContext
+	}
+	return s.ModelMaxContext
 }
 
 // DecidePreflight решает, нужен ли reload ДО отправки запроса.
@@ -370,11 +408,17 @@ func DecidePreflight(meta *RequestMeta, state *NCtxBackendState, cfg NCtxReloadC
 		// R60.31: дополнительная проверка — loaded покрывает required?
 		// Если да, NoOp (stickiness), даже если client указал больше.
 		target := meta.RequestedNCtxOverride
-		if state.ModelMaxContext > 0 && target > state.ModelMaxContext {
-			// Запрошено больше чем модель поддерживает — reject.
+		// R68 (2026-09-23): сравниваем с ФИЗИЧЕСКИМ потолком, а не с profile
+		// hint. Раньше здесь стоял ModelMaxContext, который в Tier 1 равнялся
+		// contextLength профиля (8192 для gemma) — и запрос Cline с num_ctx=65536
+		// отбивался 413 «exceeds model max context=8192», хотя модель держит
+		// 131072 и VRAM позволяет 66K.
+		if ceil := state.physicalCeiling(); ceil > 0 && target > ceil {
+			// Запрошено больше, чем физически возможно — reject с честными
+			// цифрами (профиль/hint, GGUF, operator cap, VRAM).
 			return makePreflightReject(state, required, fmt.Sprintf(
-				"requested n_ctx=%d exceeds model max context=%d",
-				target, state.ModelMaxContext))
+				"requested n_ctx=%d exceeds backend context ceiling=%d (profile hint=%d, gguf max=%d, auto_reload_max_n_ctx=%d)",
+				target, ceil, state.ProfileHintNCtx, state.GGUFMaxContext, state.AutoReloadMaxNCtx))
 		}
 		if cfg.AutoReloadMaxNCtx > 0 && target > cfg.AutoReloadMaxNCtx {
 			return makePreflightReject(state, required, fmt.Sprintf(
@@ -400,11 +444,12 @@ func DecidePreflight(meta *RequestMeta, state *NCtxBackendState, cfg NCtxReloadC
 		return &PreflightResult{Decision: PreflightNoOp}
 	}
 
-	// Потолок модели (если известен) — найжестший потолок.
-	if state.ModelMaxContext > 0 && required > state.ModelMaxContext {
+	// Потолок модели/оператора (если известен) — найжестший потолок.
+	// R68: используем physicalCeiling() (GGUF/operator cap), а не profile hint.
+	if ceil := state.physicalCeiling(); ceil > 0 && required > ceil {
 		return makePreflightReject(state, required, fmt.Sprintf(
-			"required n_ctx=%d exceeds model max context=%d (gemma-4 supports 256K — save a profile with larger context_length)",
-			required, state.ModelMaxContext))
+			"required n_ctx=%d exceeds backend context ceiling=%d (profile hint=%d, gguf max=%d, auto_reload_max_n_ctx=%d)",
+			required, ceil, state.ProfileHintNCtx, state.GGUFMaxContext, state.AutoReloadMaxNCtx))
 	}
 
 	// Потолок VRAM — больше НЕ reject, а trigger reload.
@@ -449,8 +494,9 @@ func DecidePreflight(meta *RequestMeta, state *NCtxBackendState, cfg NCtxReloadC
 		target = cfg.AutoReloadMaxNCtx
 	}
 	// Не зажимаем по MaxVRAMNCtx — после partial offload оно изменится.
-	if state.ModelMaxContext > 0 && target > state.ModelMaxContext {
-		target = state.ModelMaxContext
+	// R68: зажимаем по ФИЗИЧЕСКОМУ потолку (GGUF/operator cap), не по profile hint.
+	if ceil := state.physicalCeiling(); ceil > 0 && target > ceil {
+		target = ceil
 	}
 	rounded := roundUpPow2(target)
 	if rounded < target {
@@ -517,8 +563,44 @@ func preflightDecisionFromCfg(cfg NCtxReloadConfig) PreflightDecision {
 	return PreflightReload
 }
 
-// paramsMatch — Round 34 (2026-08-12) Phase 2 helper для флаговой
-// profile mismatch detection. УДАЛЁН в Round 53.2 (2026-08-24) — флаговая
+// nctxPreflightWaitDefaultSec — R68 (2026-09-23): сколько ЖДАТЬ завершения
+// async reload, прежде чем ответить клиенту 503/stream-dialog.
+//
+// Жалоба R68 (Cline): клиент с Model Context Window = 65536 получал либо 413
+// (preflight reject по profile hint), либо 503 «retry in 30s» — и работал
+// только повторный запрос. Тот же принцип, что в R67a для авто-загрузки:
+// первый же запрос дожидается готовности модели и обслуживается.
+//
+// 240 c < типичного клиентского таймаута (Cline 300000 ms, OpenWebUI 300 c),
+// но с запасом больше реального reload'а (gemma-4 65K на 8 GB — 119 c).
+const nctxPreflightWaitDefaultSec = 240
+
+// nctxPreflightWaitTimeout — R68: предел ожидания async reload.
+//
+//	LB_NCTX_PREFLIGHT_WAIT_SEC=N — N секунд (0 = прежнее поведение: сразу
+//	503+Retry-After / stream-dialog с keepalive; отрицательное = ждать до
+//	отмены клиентом, но не дольше 30 минут).
+//	По умолчанию 240 c.
+func nctxPreflightWaitTimeout() time.Duration {
+	v := strings.TrimSpace(os.Getenv("LB_NCTX_PREFLIGHT_WAIT_SEC"))
+	if v == "" {
+		return nctxPreflightWaitDefaultSec * time.Second
+	}
+	n, err := strconv.Atoi(v)
+	if err != nil {
+		return nctxPreflightWaitDefaultSec * time.Second
+	}
+	switch {
+	case n == 0:
+		return 0
+	case n < 0:
+		return 30 * time.Minute
+	default:
+		return time.Duration(n) * time.Second
+	}
+}
+
+// paramsMatch — Round 34 (2026-08-12) Phase 2 helper для флаговой// profile mismatch detection. УДАЛЁН в Round 53.2 (2026-08-24) — флаговая
 // логика признана избыточной. Reload теперь ТОЛЬКО по n_ctx.
 //
 // Поля остались в RequestMeta (RequestedKvCacheType, RequestedFlashAttnType,
@@ -542,17 +624,26 @@ func reqStr(b *bool) string {
 
 // makePreflightReject формирует PreflightResult с HTTP 413 и JSON-телом,
 // понятным для клиента и оператора.
+//
+// R68 (2026-09-23): тело дополнено честными цифрами — profile hint, GGUF max,
+// operator cap и физический потолок. Раньше в поле model_max_context попадал
+// contextLength профиля (hint для первичной загрузки), и оператор видел
+// «exceeds model max context=8192» для модели, которая держит 131072.
 func makePreflightReject(state *NCtxBackendState, required int, reason string) *PreflightResult {
 	body := map[string]interface{}{
-		"error":             "preflight: prompt + n_predict exceeds n_ctx for this backend",
-		"reason":            reason,
-		"required_n_ctx":    required,
-		"current_n_ctx":     state.CurrentNCtx,
-		"max_vram_n_ctx":    state.MaxVRAMNCtx,
-		"model_max_context": state.ModelMaxContext,
-		"backend_id":        state.BackendID,
-		"suggestion":        "Reduce prompt/tools/n_predict, or save a model profile with larger context_length and reload via POST /api/v1/cppworker/model-profiles/{name}/apply",
-		"profile_endpoint":  "/api/v1/cppworker/model-profiles",
+		"error":                 "preflight: prompt + n_predict exceeds n_ctx for this backend",
+		"reason":                reason,
+		"required_n_ctx":        required,
+		"current_n_ctx":         state.CurrentNCtx,
+		"model_max_context":     state.ModelMaxContext,
+		"physical_max_context":  state.physicalCeiling(),
+		"profile_hint_n_ctx":    state.ProfileHintNCtx,
+		"gguf_max_context":      state.GGUFMaxContext,
+		"auto_reload_max_n_ctx": state.AutoReloadMaxNCtx,
+		"max_vram_n_ctx":        state.MaxVRAMNCtx,
+		"backend_id":            state.BackendID,
+		"suggestion":            "Increase the client's context window request, or raise contextLengthMax/LB_NCTX_RELOAD_MAX_N_CTX; a model profile's contextLength is only the initial-load hint",
+		"profile_endpoint":      "/api/v1/cppworker/model-profiles",
 	}
 	encoded, _ := json.Marshal(body)
 	return &PreflightResult{
@@ -723,6 +814,36 @@ func (c *NCtxReloadCoordinator) RunPreflight(
 						"backend_id", backendID, "new_n_ctx", decision.TargetNCtx)
 					c.ResetCycleCounter(backendID)
 				}()
+			}
+
+			// R68 (2026-09-23): дожидаемся reload'а и обслуживаем ПЕРВЫЙ же
+			// запрос клиента (как R67a делает для авто-загрузки). Reload уже
+			// зарегистрирован в dedup-реестре выше, поэтому WaitReloadDone
+			// дождётся именно его (или уже завершённого — тогда nil).
+			//
+			// Раньше: клиенту сразу уходил 503+Retry-After (non-stream) или
+			// stream-dialog с keepalive и финальным [DONE] БЕЗ ответа модели —
+			// Cline показывал пустой ответ, и проходил только повторный запрос.
+			if wait := nctxPreflightWaitTimeout(); wait > 0 {
+				waitStart := time.Now()
+				if waitErr := c.WaitReloadDone(backendID, modelName, wait); waitErr == nil {
+					c.SetLastKnownNCtx(backendID, decision.TargetNCtx)
+					c.ResetCycleCounter(backendID)
+					logger.Get().Infow("preflight: async reload finished while client waited, serving request",
+						"backend_id", backendID, "model", modelName,
+						"new_n_ctx", decision.TargetNCtx,
+						"waited_ms", time.Since(waitStart).Milliseconds(),
+						"wait_max_sec", int(wait.Seconds()))
+					// Тот же контракт, что у sync reload: caller продолжает
+					// проксирование запроса (round-trip один).
+					return &PreflightResult{Decision: PreflightReload, TargetNCtx: decision.TargetNCtx}, nil
+				} else {
+					logger.Get().Warnw("preflight: wait for async reload did not succeed, returning 503",
+						"backend_id", backendID, "model", modelName,
+						"target_n_ctx", decision.TargetNCtx,
+						"waited_ms", time.Since(waitStart).Milliseconds(),
+						"error", waitErr)
+				}
 			}
 
 			return &PreflightResult{

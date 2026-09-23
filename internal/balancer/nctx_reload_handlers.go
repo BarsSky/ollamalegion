@@ -690,6 +690,20 @@ func (p *Proxy) preflightNCtxReloadIfNeeded(
 	}
 	p.metricsMgr.mu.RUnlock()
 
+	// R68 (2026-09-23): координатор reload'а (NCtxReloadCoordinator) знает
+	// фактический n_ctx СРАЗУ после успешного reload'а, а metrics poller
+	// обновляется раз в ~30 c. Из-за рассинхрона здесь брался устаревший
+	// (меньший) n_ctx: transport-level smart-skip патчил body обратно на 8192 и
+	// ставил X-Cpp-Ctx=8192, cppworker отвечал 413 «prompt exceeds n_ctx», а
+	// обработчик 413 запускал ВТОРОЙ reload на 16384 — клиент (Cline) получал
+	// 503 «reload in progress» уже после того, как дождался 65536.
+	if lk := p.lastKnownNCtxFor(backendID); lk > loadedNCtx {
+		logger.Get().Infow("preflightNCtxReload: loaded n_ctx from coordinator is fresher than metrics cache",
+			"backend", backendID, "model", modelName,
+			"metrics_n_ctx", loadedNCtx, "coordinator_n_ctx", lk)
+		loadedNCtx = lk
+	}
+
 	// 3. R60.35: stickiness check с учётом `required` (prompt + n_predict).
 	//
 	// Симптом (R60.35): OpenWebUI шлёт num_ctx=2048 в body, модель loaded
@@ -866,28 +880,28 @@ func (p *Proxy) preflightNCtxReloadIfNeeded(
 	// Обновляем кэш метрик: ставим ContextLength = requestedNCtx,
 	// чтобы следующие preflight-чеки не запускали reload повторно.
 	// Реальное значение обновит metrics_poller через ~5 сек после успешного reload.
-	p.metricsMgr.mu.Lock()
-	if lm == nil {
-		lm = &types.LlamaCppMetrics{}
-		p.metricsMgr.llamaMetrics[backendID] = lm
-	}
-	found := false
-	for i := range lm.LoadedModels {
-		if lm.LoadedModels[i].Name == modelName ||
-			containsFold(lm.LoadedModels[i].Name, modelName) {
-			lm.LoadedModels[i].ContextLength = requestedNCtx
-			found = true
-			break
+	p.cacheLoadedContextLength(backendID, modelName, requestedNCtx)
+
+	// R68 (2026-09-23): ждём завершения reload'а и обслуживаем ПЕРВЫЙ же запрос.
+	// Раньше клиент получал 503 «being reloaded to n_ctx=…; retry in 30s» и
+	// (Cline/OpenWebUI) показывал ошибку — жалоба «проходит только повторный
+	// запрос». Ожидание ограничено LB_NCTX_PREFLIGHT_WAIT_SEC (default 240 c,
+	// 0 = прежнее поведение).
+	if wait := nctxPreflightWaitTimeout(); wait > 0 {
+		waitStart := time.Now()
+		if p.waitForBackendNCtx(context.Background(), backendID, modelName, requestedNCtx, wait) {
+			p.cacheLoadedContextLength(backendID, modelName, requestedNCtx)
+			logger.Get().Infow("preflightNCtxReload: reload finished while client waited, serving request",
+				"backend", backendID, "model", modelName,
+				"new_n_ctx", requestedNCtx,
+				"waited_ms", time.Since(waitStart).Milliseconds())
+			return bodyBuf, true, "", http.StatusOK
 		}
+		logger.Get().Warnw("preflightNCtxReload: wait for reload timed out, returning 503",
+			"backend", backendID, "model", modelName,
+			"requested_n_ctx", requestedNCtx,
+			"waited_ms", time.Since(waitStart).Milliseconds())
 	}
-	if !found {
-		lm.LoadedModels = append(lm.LoadedModels, types.LlamaCppModel{
-			Name:          modelName,
-			State:         "loaded",
-			ContextLength: requestedNCtx,
-		})
-	}
-	p.metricsMgr.mu.Unlock()
 
 	// Возвращаем клиенту 503 + Retry-After: 30. needsProxy=false — вызывающий код
 	// должен сам сформировать ответ (status, headers, body).
@@ -902,6 +916,47 @@ func (p *Proxy) preflightNCtxReloadIfNeeded(
 		fmt.Sprintf("model %q is being reloaded to n_ctx=%d (loaded=%d); retry in 30s",
 			modelName, requestedNCtx, loadedNCtx),
 		http.StatusServiceUnavailable
+}
+
+// lastKnownNCtxFor — R68: фактический n_ctx из координатора reload'а
+// (0 = неизвестен). Нужен как более свежий источник, чем кэш metrics poller.
+func (p *Proxy) lastKnownNCtxFor(backendID string) int {
+	if p == nil || p.nctxReload == nil || backendID == "" {
+		return 0
+	}
+	return p.nctxReload.LastKnownNCtx(backendID)
+}
+
+// cacheLoadedContextLength — R68 (2026-09-23): записать n_ctx загруженной модели
+// в кэш метрик СРАЗУ после reload'а.
+//
+// Зачем: transport-level preflight (preflightNCtxReloadIfNeeded) и
+// collectPreflightState читают loaded n_ctx из metricsMgr.llamaMetrics, который
+// обновляет poller раз в ~30 c. Без немедленного обновления кэша следующий
+// запрос видел бы старый n_ctx и запускал ВТОРОЙ reload (клиент получал 503
+// сразу после того, как дождался первого).
+func (p *Proxy) cacheLoadedContextLength(backendID, modelName string, nCtx int) {
+	if p == nil || p.metricsMgr == nil || nCtx <= 0 || modelName == "" {
+		return
+	}
+	p.metricsMgr.mu.Lock()
+	defer p.metricsMgr.mu.Unlock()
+	lm, ok := p.metricsMgr.llamaMetrics[backendID]
+	if !ok || lm == nil {
+		lm = &types.LlamaCppMetrics{}
+		p.metricsMgr.llamaMetrics[backendID] = lm
+	}
+	for i := range lm.LoadedModels {
+		if lm.LoadedModels[i].Name == modelName || containsFold(lm.LoadedModels[i].Name, modelName) {
+			lm.LoadedModels[i].ContextLength = nCtx
+			return
+		}
+	}
+	lm.LoadedModels = append(lm.LoadedModels, types.LlamaCppModel{
+		Name:          modelName,
+		State:         "loaded",
+		ContextLength: nCtx,
+	})
 }
 
 // patchNumCtxInBody — патчит options.num_ctx (Ollama) или top-level num_ctx

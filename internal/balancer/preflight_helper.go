@@ -113,6 +113,11 @@ func (lr *LlamaCppRouter) runInferencePreflight(args runInferencePreflightArgs) 
 		logger.Get().Infow("preflight: model reloaded before proxy (round-trip one)",
 			"backend", args.backendID, "model", meta.ModelName,
 			"new_n_ctx", res.TargetNCtx, "has_tools", meta.HasTools)
+		// R68 (2026-09-23): обновляем кэш n_ctx загруженной модели СРАЗУ, иначе
+		// следующий (transport-level) preflight-чек до обновления metrics poller
+		// (~30 c) увидит старый n_ctx и запустит ВТОРОЙ reload — клиент получит
+		// 503 уже после того, как дождался первого (в т.ч. в новом wait-режиме).
+		lr.proxy.cacheLoadedContextLength(args.backendID, meta.ModelName, res.TargetNCtx)
 		return false, res
 	case PreflightAsyncReload:
 		// Round 34 (2026-08-12) Phase 1: stream dialog с keepalives для streaming
@@ -220,6 +225,10 @@ func (lr *LlamaCppRouter) collectPreflightState(backendID, model string) *NCtxBa
 		CurrentNCtx:     currentNCtx,
 		MaxVRAMNCtx:     lr.proxy.getMaxVRAMNCtxFromMetrics(backendID), // из /api/models poller (ранее было 0 — не доступен)
 		ModelMaxContext: modelMaxContext,
+		// R68 (2026-09-23): profile.contextLength — HINT для первичной загрузки,
+		// а не потолок для клиента. Клиентский потолок = min(GGUF, operator cap).
+		ProfileHintNCtx:   profileMaxContext,
+		AutoReloadMaxNCtx: preflightAutoReloadMaxNCtx(lr.proxy),
 	}
 	// Round 37 (2026-08-18): заполняем feasible + GGUF из metrics (cppworker Round 37).
 	if mm := lr.proxy.GetMetricsManager(); mm != nil {
@@ -262,5 +271,47 @@ func (lr *LlamaCppRouter) collectPreflightState(backendID, model string) *NCtxBa
 			"current_n_ctx", state.CurrentNCtx,
 		)
 	}
+	// R68: физический потолок для клиентских запросов (GGUF / operator cap).
+	// profile.contextLength в него НЕ входит — иначе Cline с 65K получал 413 на
+	// модели, которая держит 131072 (жалоба R68).
+	state.PhysicalMaxContext = resolvePhysicalMaxContext(state.GGUFMaxContext, profileContextLengthMax, state.AutoReloadMaxNCtx)
+	if state.PhysicalMaxContext > 0 && state.PhysicalMaxContext < state.ModelMaxContext {
+		logger.Get().Infow("collectPreflightState: profile hint below physical ceiling — reload allowed",
+			"backend", backendID, "model", model,
+			"profile_hint_n_ctx", profileMaxContext,
+			"resolved_model_max_n_ctx", state.ModelMaxContext,
+			"physical_max_n_ctx", state.PhysicalMaxContext,
+			"gguf_max_n_ctx", state.GGUFMaxContext)
+	}
 	return state
+}
+
+// resolvePhysicalMaxContext — R68: потолок n_ctx, выше которого запрос клиента
+// удовлетворить нельзя (min из GGUF training context и operator cap'ов).
+// 0 = неизвестно (preflight fallback'ится на ModelMaxContext).
+func resolvePhysicalMaxContext(ggufMax, contextLengthMax, autoReloadMaxNCtx int) int {
+	cap := contextLengthMax
+	if cap <= 0 {
+		cap = autoReloadMaxNCtx
+	}
+	switch {
+	case ggufMax > 0 && cap > 0:
+		if cap < ggufMax {
+			return cap
+		}
+		return ggufMax
+	case ggufMax > 0:
+		return ggufMax
+	default:
+		return cap
+	}
+}
+
+// preflightAutoReloadMaxNCtx — operator cap (LB_NCTX_RELOAD_MAX_N_CTX) из
+// конфигурации координатора reload'а. 0 = не задан.
+func preflightAutoReloadMaxNCtx(p *Proxy) int {
+	if p == nil || p.nctxReload == nil {
+		return 0
+	}
+	return p.nctxReload.Config().AutoReloadMaxNCtx
 }

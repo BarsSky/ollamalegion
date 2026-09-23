@@ -19,6 +19,11 @@ import (
 // TestPreflightAsyncReload_RunPreflightReturnsAsyncDecision — coordinator
 // возвращает PreflightAsyncReload (не PreflightReload) при async-режиме.
 func TestPreflightAsyncReload_RunPreflightReturnsAsyncDecision(t *testing.T) {
+	// R68: по умолчанию балансер ЖДЁТ async reload (LB_NCTX_PREFLIGHT_WAIT_SEC=240)
+	// и обслуживает первый же запрос. Этот тест проверяет legacy-контракт «сразу
+	// AsyncReload» — выключаем ожидание явно.
+	t.Setenv("LB_NCTX_PREFLIGHT_WAIT_SEC", "0")
+
 	var reloadCalls int32
 	reloadStarted := make(chan struct{}, 1)
 	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

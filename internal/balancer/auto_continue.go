@@ -439,6 +439,137 @@ func IsContinuationARegeneration(originalContent, continuationContent string) bo
 			return true
 		}
 	}
+	// R66d (2026-09-23): similarity-проверка, ОБЕЩАННАЯ в docstring R60.55
+	// («suppress the continuation if it's >85% similar to the original»), но так
+	// и не реализованная — до этого проверялись только приветствия/преамбулы/
+	// ChatML-утечка. Из-за этого проходил дубликат «слово-в-слово»: модель
+	// (Qwen3.8-27B на A10, reasoning выключен) перегенерировала ответ с ТОГО ЖЕ
+	// текста, без приветствия, и клиент (OpenWebUI) показывал ответ дважды.
+	//
+	// Признаки регенерации:
+	//  1) длинный общий префикс с оригиналом — настоящий continue начинается
+	//     там, где оригинал оборвался, а не с его начала;
+	//  2) начало continuation уже присутствует в оригинале (модель повторила
+	//     фрагмент);
+	//  3) оригинал целиком является префиксом continuation (модель начала
+	//     заново и продолжила дальше — симптом «A + (A+B)»).
+	return isRegenerationBySimilarity(originalContent, continuationContent)
+}
+
+// minRegenerationPrefixRunes — минимальная длина общего префикса (в рунах),
+// при которой continuation считается перегенерацией. 40 рун ≈ одна короткая
+// фраза: реальный continue почти никогда не повторяет начало ответа дословно.
+const minRegenerationPrefixRunes = 40
+
+// minRegenerationContainmentRunes — минимальная длина совпадающего фрагмента
+// для проверок «continuation уже есть в оригинале» / «оригинал — префикс
+// continuation». Порог защищает от ложных срабатываний на коротких строках:
+// 60 рун ≈ 8-10 слов дословного совпадения — это уже дубликат, а не случайное
+// совпадение формулировки.
+const minRegenerationContainmentRunes = 60
+
+// minRegenerationOriginalRunes — минимальная длина оригинала (в нормализованных
+// рунах), при которой вообще применяются similarity-проверки.
+//
+// Зачем порог: на КОРОТКИХ фрагментах кода/текста продолжение законно совпадает
+// с оригиналом по форме (например, оригинал оборвался на
+// «const height = parseFloat(document.getElementById('height').value);», а
+// continuation начинается с той же строки кода в другом месте). Подавлять такое
+// «продолжение» — значит молча терять контент, что хуже дубликата. Дубликат
+// слово-в-слово, из-за которого пришла жалоба (Qwen3.8-27B на A10), — это
+// длинный ответ, он порог проходит.
+const minRegenerationOriginalRunes = 120
+
+// normalizeForCompare — приводит текст к виду, устойчивому к форматированию:
+// нижний регистр + схлопывание любых пробельных последовательностей в один
+// пробел. Нужна, чтобы сравнение не зависело от переносов строк/отступов.
+func normalizeForCompare(s string) string {
+	return strings.Join(strings.Fields(strings.ToLower(s)), " ")
+}
+
+// commonPrefixRunes — длина общего префикса двух строк в рунах.
+func commonPrefixRunes(a, b string) int {
+	ar, br := []rune(a), []rune(b)
+	n := len(ar)
+	if len(br) < n {
+		n = len(br)
+	}
+	i := 0
+	for i < n && ar[i] == br[i] {
+		i++
+	}
+	return i
+}
+
+// longestPrefixPresentIn — длина самого длинного префикса cont (в рунах),
+// который целиком встречается в haystack. Возвращает 0, если даже minRunes рун
+// не найдены.
+//
+// Используется вместо фиксированного окна: continuation может повторять
+// предложение оригинала и уходить в новый текст уже в середине этого
+// предложения, поэтому проверяем префиксы убывающей длины (от всей доступной
+// длины до minRunes), а не одно «окно» фиксированного размера.
+func longestPrefixPresentIn(cont []rune, haystack string, minRunes int) int {
+	limit := len(cont)
+	if limit > maxRegenerationProbeRunes {
+		limit = maxRegenerationProbeRunes
+	}
+	// Убывающие длины: первая найденная — самая длинная.
+	for l := limit; l >= minRunes; l-- {
+		if strings.Contains(haystack, string(cont[:l])) {
+			return l
+		}
+	}
+	return 0
+}
+
+// maxRegenerationProbeRunes — верхняя граница окна поиска повторённого
+// фрагмента. Ограничение нужно, чтобы `strings.Contains` не гонялся по очень
+// длинному continuation.
+const maxRegenerationProbeRunes = 160
+
+// isRegenerationBySimilarity — R66d: определяет, что continuation является
+// повторной генерацией того же ответа, а не его продолжением.
+//
+// Работает на нормализованном тексте (регистр + пробелы), поэтому не зависит от
+// markdown-отступов и переносов строк.
+func isRegenerationBySimilarity(originalContent, continuationContent string) bool {
+	orig := normalizeForCompare(originalContent)
+	cont := normalizeForCompare(continuationContent)
+	if len(orig) == 0 || len(cont) == 0 {
+		return false
+	}
+	origRunes, contRunes := []rune(orig), []rune(cont)
+
+	// На коротких оригиналах similarity-проверки не применяем: продолжение
+	// законно повторяет форму короткого фрагмента (см. minRegenerationOriginalRunes).
+	if len(origRunes) < minRegenerationOriginalRunes {
+		return false
+	}
+
+	// 1) Длинный общий префикс.
+	if commonPrefixRunes(orig, cont) >= minRegenerationPrefixRunes {
+		return true
+	}
+
+	// 2) Начало continuation уже встречается в оригинале — модель повторила
+	// фрагмент, который клиент уже получил.
+	//
+	// Ищем самый длинный префикс continuation, который целиком есть в оригинале:
+	// сравнивать фиксированные 80 рун нельзя — continuation может повторять
+	// предложение оригинала и уже в его середине уходить в новый текст
+	// (пример: «...повторяется моделью. И дальше модель продолжает...»).
+	if shared := longestPrefixPresentIn(contRunes, orig, minRegenerationContainmentRunes); shared > 0 {
+		return true
+	}
+
+	// 3) Оригинал целиком повторён в начале continuation (A → A+B).
+	if len(origRunes) >= minRegenerationContainmentRunes && len(contRunes) > len(origRunes) {
+		if strings.HasPrefix(cont, orig) {
+			return true
+		}
+	}
+
 	return false
 }
 

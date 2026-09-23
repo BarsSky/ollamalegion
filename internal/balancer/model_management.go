@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/url"
 	"regexp"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -652,6 +653,42 @@ func (mm *ModelManager) getLoadTimeout() time.Duration {
 	return llamaCppLoadDefaultTimeout
 }
 
+// profileForLoad — per-model профиль для подстановки параметров загрузки.
+//
+// R66d (2026-09-23): поиск повторяет семантику GetModelProfileNumCtx
+// (num_ctx_resolver.go:99) — сначала точное совпадение ключа, затем
+// case-insensitive substring в обе стороны. Это нужно, потому что WebUI и
+// клиенты передают имя файла с расширением ("gemma-4-E4B-it-Q4_K_M.gguf"), а
+// профили в config.json записаны без него ("gemma-4-E4B-it-Q4_K_M").
+//
+// ВАЖНО: при нескольких совпадениях раньше возвращался первый из map-итерации
+// (порядок в Go случайный) — здесь сначала берём точное совпадение, и только
+// потом substring (по отсортированным ключам, чтобы результат был
+// детерминированным).
+func (mm *ModelManager) profileForLoad(modelName string) (types.LlamaCppModelProfile, bool) {
+	if mm == nil || mm.proxy == nil || modelName == "" {
+		return types.LlamaCppModelProfile{}, false
+	}
+	if prof, ok := mm.proxy.GetModelProfile(modelName); ok {
+		return prof, true
+	}
+	// Точного совпадения нет — ищем substring-совпадение детерминированно.
+	if mm.proxy.config == nil || mm.proxy.config.LlamaCppModelProfiles == nil {
+		return types.LlamaCppModelProfile{}, false
+	}
+	keys := make([]string, 0, len(mm.proxy.config.LlamaCppModelProfiles))
+	for k := range mm.proxy.config.LlamaCppModelProfiles {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	for _, k := range keys {
+		if containsFold(k, modelName) || containsFold(modelName, k) {
+			return mm.proxy.config.LlamaCppModelProfiles[k], true
+		}
+	}
+	return types.LlamaCppModelProfile{}, false
+}
+
 // resolveOverrideTensors — резолвит per-tensor override для load.
 // Приоритет: явные поля req.OverrideTensors > сохранённый LlamaCppModelProfile.
 // Возвращает согласованные по длине parallel arrays или пустые slices.
@@ -901,6 +938,60 @@ func (mm *ModelManager) executeLlamaCppLoad(host string, port int, backendID str
 			ModelName: req.ModelName,
 			BackendID: backendID,
 			Error:     msg,
+		}
+	}
+
+	// R66d (2026-09-23): профиль модели — источник параметров загрузки, если
+	// запрос их не задал.
+	//
+	// БЫЛО (баг): профиль использовался ТОЛЬКО для override-tensors, а
+	// contextLength / batchSize / numGpuLayers / flashAttn / useMmap /
+	// kvCacheType из него при загрузке игнорировались. При этом n_ctx-resolver
+	// (GetModelProfileNumCtx, num_ctx_resolver.go:99) уже считает
+	// profile.ContextLength истиной и отдаёт его в UI и в preflight — то есть
+	// UI показывал n_ctx=8192 (профиль gemma-4-E4B-it-Q4_K_M), а cppworker
+	// грузил модель со своим дефолтом. Отсюда две жалобы сразу:
+	//   * «в WebUI не видно реальной конфигурации загруженной модели»;
+	//   * «профиль не применяется при загрузке (preload)» — профиль действовал
+	//     только через POST .../apply, который делает reload.
+	//
+	// Приоритет: явные поля запроса > профиль > дефолт cppworker.
+	// Явные поля важнее, потому что WebUI/клиент видят их в форме и ждут
+	// ровно этих значений.
+	//
+	// NumGPULayers: 0 трактуем как «не задано» (в типе профиля нет признака
+	// «поле отсутствует», а 0 = CPU-only на практике не использовался;
+	// ValidateProfile допускает 0).
+	if prof, ok := mm.profileForLoad(req.ModelName); ok {
+		if req.ContextSize == nil && prof.ContextLength > 0 {
+			cs := prof.ContextLength
+			req.ContextSize = &cs
+		}
+		if req.BatchSize == nil && prof.BatchSize > 0 {
+			bs := prof.BatchSize
+			req.BatchSize = &bs
+		}
+		if req.GPULayers == nil && prof.NumGPULayers != 0 {
+			gl := prof.NumGPULayers
+			req.GPULayers = &gl
+		}
+		if req.FlashAttn == nil && prof.FlashAttn != nil {
+			// profile.FlashAttn — *bool (человекочитаемый JSON), cppworker ждёт
+			// *int (-1=auto, 0=off, 1=on). Та же конверсия, что в
+			// handlers_cppworker_profiles.go:483 (apply path).
+			fa := 0
+			if *prof.FlashAttn {
+				fa = 1
+			}
+			req.FlashAttn = &fa
+		}
+		if req.UseMmap == nil && prof.UseMmap != nil {
+			um := *prof.UseMmap
+			req.UseMmap = &um
+		}
+		if req.KVCacheType == nil && prof.KVCacheType != "" {
+			kv := prof.KVCacheType
+			req.KVCacheType = &kv
 		}
 	}
 

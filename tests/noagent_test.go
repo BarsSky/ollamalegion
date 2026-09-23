@@ -599,7 +599,15 @@ func TestNoAgent_HealthCheckDirect(t *testing.T) {
 	status := hc.GetStatus("noagent-1")
 	require.NotNil(t, status)
 	assert.True(t, status.Healthy, "Backend should be healthy via direct Ollama /api/tags check")
-	assert.Greater(t, status.LastLatency, time.Duration(0), "Should have measured latency")
+
+	// R66d (2026-09-22): раньше здесь было assert.Greater(status.LastLatency, 0),
+	// и тест падал на self-hosted Windows-раннере с «"0s" is not greater than "0s"»:
+	// локальный httptest-мок отвечает быстрее разрешения таймера Windows
+	// (~0.5-15 мс), поэтому time.Since(start) округляется в 0. Это флейк
+	// ассерта, а не дефект health-чекера: проверяем, что проверка реально
+	// выполнилась (LastCheck выставлен) и что latency неотрицательна.
+	assert.False(t, status.LastCheck.IsZero(), "Should have recorded LastCheck — health check must have run")
+	assert.GreaterOrEqual(t, status.LastLatency, time.Duration(0), "Latency must not be negative")
 }
 
 // ============================================================

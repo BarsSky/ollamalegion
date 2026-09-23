@@ -116,7 +116,9 @@ func (mm *MetricsManager) IsModelRunningOnBackend(backendID, modelName string, e
 			return false
 		}
 		for _, m := range lm.LoadedModels {
-			if m.Name == modelName {
+			// R66d: .gguf/путь/регистр нормализуются (cppworker отдаёт имя без
+			// расширения, клиент может запросить с ним).
+			if modelNameMatches(m.Name, modelName) {
 				return true
 			}
 		}

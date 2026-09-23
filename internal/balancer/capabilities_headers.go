@@ -53,7 +53,9 @@ func (p *Proxy) findModelCapabilities(modelName string) *types.ModelCapabilities
 
 	for i := range snapshot {
 		m := &snapshot[i]
-		if m.Name == modelName && m.Capabilities != nil {
+		// R66d: нормализация .gguf/пути/регистра — иначе клиент (Cline/OpenWebUI),
+		// запросивший "X.gguf", не получал X-Model-* заголовки способностей.
+		if modelNameMatches(m.Name, modelName) && m.Capabilities != nil {
 			logger.Get().Debugw("addModelCapabilitiesHeaders: using cppworker capabilities",
 				"model", modelName, "caps", m.Capabilities)
 			return m.Capabilities

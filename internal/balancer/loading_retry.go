@@ -303,8 +303,13 @@ func (p *Proxy) checkOllamaModelLoaded(
 	// Ollama возвращает имя модели с тегами (например, "llama3:latest").
 	// Сравниваем по точному совпадению И по префиксу (модель без тегов
 	// должна матчить "model:latest" и "model").
+	//
+	// R66d (2026-09-23): для llama.cpp добавлена нормализация расширения .gguf.
+	// Клиент (Cline/OpenWebUI) запрашивает "X.gguf", cppworker держит "X";
+	// без нормализации балансер считал модель незагруженной и уходил в
+	// ожидание/перезагрузку на каждом запросе.
 	for _, m := range ps.Models {
-		if m.Name == modelName {
+		if m.Name == modelName || modelNameMatches(m.Name, modelName) {
 			return true, nil
 		}
 		if strings.HasPrefix(m.Name, modelName+":") {

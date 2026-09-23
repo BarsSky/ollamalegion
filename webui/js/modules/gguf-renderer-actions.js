@@ -132,6 +132,16 @@
         // Mark as loading immediately
         M.markLoadingModel(handle, modelName, modelPath);
 
+        // R66d (2026-09-23): в API уходит КАНОНИЧЕСКОЕ имя модели — без
+        // расширения .gguf. cppworker регистрирует загруженную модель как
+        // basename(path) без ".gguf", поэтому запрос с расширением приводил к
+        // рассинхрону имён: балансер 5 поллов подряд не находил модель в
+        // /api/models и объявлял загрузку провалившейся («Ошибка загрузки» в
+        // WebUI), хотя cppworker её реально загрузил. Для показа (тосты,
+        // карточка) оставляем прежнее имя с расширением.
+        var apiModelName = (typeof M.stripGGUF === 'function') ? M.stripGGUF(modelName) : modelName;
+        if (!apiModelName) apiModelName = modelName;
+
         var api = window.GgufApi || window.Api;
         var opts = (typeof M.buildLoadOptions === 'function') ? M.buildLoadOptions(handle) : {};
 
@@ -148,7 +158,7 @@
         //   * возвращает {success:false, error} вместо throw — сообщение об
         //     ошибке попадает в UI как есть.
         if (api && typeof api.manageModel === 'function') {
-            api.manageModel(handle, 'load', modelName, opts)
+            api.manageModel(handle, 'load', apiModelName, opts)
                 .then(function (result) {
                     if (result && result.success === false) {
                         onFail(result.error || 'unknown error');
@@ -174,7 +184,7 @@
             M.markLoadFailed(handle, modelName, 'API not available');
             return;
         }
-        api.loadModel(modelName, {
+        api.loadModel(apiModelName, {
             path: modelPath || '',
             ctxSize: opts.contextSize,
             batchSize: opts.batchSize,

@@ -439,11 +439,12 @@ func (p *Proxy) IsLlamaCppModelLoaded(backendID, modelName string) bool {
 		return false
 	}
 	for _, m := range lm.LoadedModels {
-		if m.Name == modelName {
-			return true
-		}
-		// Также принимаем partial match (e.g. "gemma-4" matches "gemma-4-E4B-it-Q4_K_M.gguf")
-		if modelName != "" && containsFold(m.Name, modelName) {
+		// R66d: нормализация расширения .gguf/пути/регистра. Раньше было точное
+		// сравнение + containsFold в одну сторону, поэтому запрос
+		// "Qwen3-Instruct-2507-q4km.gguf" не находил загруженную
+		// "Qwen3-Instruct-2507-q4km" (needle длиннее haystack) → apply профиля
+		// отвечал «model not currently loaded» и reload пропускался.
+		if modelNameMatches(m.Name, modelName) {
 			return true
 		}
 	}

@@ -46,35 +46,27 @@ func (s *Server) modelManageHandler(w http.ResponseWriter, r *http.Request) {
 // модели» сохранялась, но при загрузке на cppworker уходили только
 // contextSize/gpuLayers. Такой тест ловит именно этот класс расхождений
 // (поле добавлено в ModelOpRequest, но не в HTTP-слой).
+//
+// Порядок полей — как требует govet fieldalignment (enable-all в .golangci.yml):
+// указатели, затем строки, затем слайсы, затем bool.
 type backendModelOpRequest struct {
-	Operation string `json:"operation"` // pull, push, delete, load, unload
-	ModelName string `json:"modelName"`
-	// Round 19 (2026-07-10): WebUI GGUF tab sends these fields when the user
-	// sets gpuLayers/ctxSize/overrideTensors in the load dialog. Before this
-	// change they were silently dropped here, then resolveOverrideTensors()
-	// (which prefers explicit > profile > none) couldn't see them — only the
-	// saved profile (which was a dead config block until Round 19 fix #2) was
-	// consulted. For MoE models with override-tensors profiles this caused
-	// /api/models/load to be used (no per-tensor routing) instead of
-	// /api/models/load-with-params, which OOM'd the 21GB Qwen3-A3B on 24GB A10.
-	ContextSize         *int     `json:"contextSize,omitempty"`
-	GPULayers           *int     `json:"gpuLayers,omitempty"`
-	OverrideTensors     []string `json:"overrideTensors,omitempty"`
-	OverrideTensorBufts []string `json:"overrideTensorBufts,omitempty"`
-	Insecure            bool     `json:"insecure,omitempty"`
-	Stream              bool     `json:"stream,omitempty"`
-	// Force — R66c (2026-09-22): выгрузка ЗАНЯТОЙ модели (cppworker
-	// ?force=true). Без него unload модели с активными запросами
-	// возвращал 409 и модель оставалась в памяти без выхода из UI.
-	Force *bool `json:"force,omitempty"`
 	// R66d (2026-09-23): расширенные параметры загрузки. Раньше здесь их не
 	// было — WebUI отправлял их (loadOnSelectedBackend → manageModel), а
 	// cppworker до них не доходил: значения сбрасывались при декодировании.
 	// Ключи совпадают с balancer.ModelOpRequest и cppworker /api/models/load.
-	KVCacheType *string `json:"kvCacheType,omitempty"` // f16 | q8_0 | q4_0
-	UseMmap     *bool   `json:"useMmap,omitempty"`
-	FlashAttn   *int    `json:"flashAttn,omitempty"` // -1=auto, 0=off, 1=on
-	BatchSize   *int    `json:"batchSize,omitempty"`
+	KVCacheType         *string  `json:"kvCacheType,omitempty"` // f16 | q8_0 | q4_0
+	ContextSize         *int     `json:"contextSize,omitempty"`
+	GPULayers           *int     `json:"gpuLayers,omitempty"`
+	Force               *bool    `json:"force,omitempty"`
+	UseMmap             *bool    `json:"useMmap,omitempty"`
+	FlashAttn           *int     `json:"flashAttn,omitempty"` // -1=auto, 0=off, 1=on
+	BatchSize           *int     `json:"batchSize,omitempty"`
+	ModelName           string   `json:"modelName"`
+	Operation           string   `json:"operation"` // pull, push, delete, load, unload
+	OverrideTensors     []string `json:"overrideTensors,omitempty"`
+	OverrideTensorBufts []string `json:"overrideTensorBufts,omitempty"`
+	Insecure            bool     `json:"insecure,omitempty"`
+	Stream              bool     `json:"stream,omitempty"`
 }
 
 // toModelOpRequest — маппинг тела HTTP-запроса в ModelOpRequest.
@@ -119,10 +111,10 @@ func (s *Server) listBackendModels(w http.ResponseWriter, r *http.Request, backe
 	}
 
 	s.writeJSON(w, http.StatusOK, map[string]interface{}{
-		"success":  true,
-		"backend":  backendID,
-		"models":   models,
-		"total":    len(models),
+		"success": true,
+		"backend": backendID,
+		"models":  models,
+		"total":   len(models),
 	})
 }
 

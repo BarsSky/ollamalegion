@@ -739,7 +739,8 @@ func (p *Proxy) triggerAutoTuneReload(backendID, modelName string, freeVRAM, fre
 	}
 	var loadedModel types.LlamaCppModel
 	for _, m := range lm.LoadedModels {
-		if m.Name == modelName && m.State == "loaded" {
+		// R66d: нормализация .gguf/пути/регистра (cppworker отдаёт имя без расширения).
+		if modelNameMatches(m.Name, modelName) && m.State == "loaded" {
 			loadedModel = m
 			break
 		}

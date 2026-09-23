@@ -47,6 +47,12 @@ window.GgufModule = {
     },
     showToast: function () {},
     _: function (k, d) { return d || k; },
+    // R66d: тот же хелпер, что даёт gguf-renderer-helpers.js (модуль берёт его
+    // из M.stripGGUF) — нужен для перевода имени файла в каноническое имя модели.
+    stripGGUF: function (name) {
+        if (!name) return '';
+        return (name.length > 5 && name.slice(-5).toLowerCase() === '.gguf') ? name.slice(0, -5) : name;
+    },
 };
 
 // Захватываем вызовы, которые уходят в API.
@@ -110,8 +116,12 @@ assert.ok(done, 'loadOnSelectedBackend должен выполняться си�
 assert.ok(calls.manageModel, 'загрузка должна идти через GgufApi.manageModel (балансер), а не напрямую в cppworker');
 assert.strictEqual(calls.manageModel.operation, 'load', 'operation должен быть load');
 assert.strictEqual(calls.manageModel.backendId, 'cppworker-gpu-bundled-agent', 'backendId — выбранный бэкенд');
-assert.strictEqual(calls.manageModel.modelName, 'gemma-4-E4B-it-Q4_K_M.gguf',
-    'в API должно уходить ИМЯ МОДЕЛИ, а не id бэкенда (это была основная ошибка)');
+// R66d: в API уходит КАНОНИЧЕСКОЕ имя без .gguf — cppworker регистрирует модель
+// как basename(path) без расширения. С расширением балансер не находил модель в
+// /api/models и объявлял загрузку провалившейся («Ошибка загрузки» при успешно
+// загруженной модели).
+assert.strictEqual(calls.manageModel.modelName, 'gemma-4-E4B-it-Q4_K_M',
+    'в API должно уходить имя модели БЕЗ .gguf (иначе ложная ошибка загрузки)');
 assert.strictEqual(calls.manageModel.options.contextSize, 32768, 'ctxSize должен доехать до balancer API');
 assert.strictEqual(calls.manageModel.options.batchSize, 1024, 'batchSize должен доехать до balancer API');
 assert.strictEqual(calls.manageModel.options.flashAttn, 1, 'flashAttn должен доехать до balancer API');

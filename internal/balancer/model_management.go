@@ -796,7 +796,11 @@ func (mm *ModelManager) pollLoadCompletionUntilLoaded(
 
 		seen := false
 		for _, m := range modelsResp.Models {
-			if m.Name != modelName {
+			// R66d: cppworker регистрирует модель БЕЗ расширения .gguf, а клиент
+			// (WebUI-карточка файла, Cline) присылает имя С расширением. Точное
+			// сравнение объявляло успешную загрузку провалившейся (5 miss-поллов)
+			// и WebUI показывал «Ошибка загрузки» при загруженной модели.
+			if !modelNameMatches(m.Name, modelName) {
 				continue
 			}
 			seen = true

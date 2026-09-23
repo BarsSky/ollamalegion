@@ -32,15 +32,15 @@ type aggregateLoadedModel struct {
 
 // aggregateLoadingModel — модель, которая сейчас загружается/перезагружается.
 type aggregateLoadingModel struct {
-	Name             string  `json:"name"`
-	BackendID        string  `json:"backendId"`
-	StartedAt        string  `json:"startedAt,omitempty"` // RFC3339Nano, если задан
-	ContextLength    int     `json:"contextLength,omitempty"`
-	BatchSize        int     `json:"batchSize,omitempty"`
-	NumGPULayers     int     `json:"numGpuLayers,omitempty"`
-	Quantization     string  `json:"quantization,omitempty"`
-	LoadingError     string  `json:"loadingError,omitempty"`
-	LoadingSizeBytes int64   `json:"loadingSizeBytes,omitempty"`
+	Name             string `json:"name"`
+	BackendID        string `json:"backendId"`
+	StartedAt        string `json:"startedAt,omitempty"` // RFC3339Nano, если задан
+	ContextLength    int    `json:"contextLength,omitempty"`
+	BatchSize        int    `json:"batchSize,omitempty"`
+	NumGPULayers     int    `json:"numGpuLayers,omitempty"`
+	Quantization     string `json:"quantization,omitempty"`
+	LoadingError     string `json:"loadingError,omitempty"`
+	LoadingSizeBytes int64  `json:"loadingSizeBytes,omitempty"`
 }
 
 // clusterLoadedModelsResponse — агрегированный список загруженных моделей по всему кластеру.
@@ -52,7 +52,7 @@ type clusterLoadedModelsResponse struct {
 
 // clusterLoadingModelsResponse — список моделей в процессе загрузки.
 type clusterLoadingModelsResponse struct {
-	Count  int                    `json:"count"`
+	Count  int                     `json:"count"`
 	Models []aggregateLoadingModel `json:"models"`
 }
 
@@ -199,27 +199,24 @@ func (s *Server) clusterLoadingModelsHandler(w http.ResponseWriter, r *http.Requ
 //   - "load"   — загрузить модель (по умолчанию, если Operation пусто).
 //   - "unload" — выгрузить модель.
 //   - "reload" — выгрузить и затем загрузить с новыми параметрами
-//                (синоним "all" для обратной совместимости с предыдущей версией API).
+//     (синоним "all" для обратной совместимости с предыдущей версией API).
 //
 // Параметры загрузки:
 //   - contextSize, gpuLayers — опциональные overrides (если не заданы,
-//                              берутся из профиля модели в config.bundled.json).
+//     берутся из профиля модели в config.bundled.json).
 //   - insecure, stream        — проксируются в ModelOpRequest.
+//
+// Порядок полей — как требует govet fieldalignment (enable-all в .golangci.yml):
+// указатели, затем строки, затем bool (иначе struct тратит лишние байты на
+// выравнивание).
 type clusterReloadModelRequest struct {
-	Operation   string `json:"operation,omitempty"`   // "load" | "unload" | "reload" (default: "load")
-	BackendID   string `json:"backendId,omitempty"`   // "" = все llama_cpp бэкенды
-	ContextSize *int   `json:"contextSize,omitempty"` // n_ctx override
-	GPULayers   *int   `json:"gpuLayers,omitempty"`   // gpu_layers override (-1=auto)
-	Insecure    bool   `json:"insecure,omitempty"`
-	Stream      bool   `json:"stream,omitempty"`
-	Reason      string `json:"reason,omitempty"` // комментарий для логов
-
+	ContextSize *int `json:"contextSize,omitempty"` // n_ctx override
+	GPULayers   *int `json:"gpuLayers,omitempty"`   // gpu_layers override (-1=auto)
 	// Force — R66c (2026-09-22): принудительная выгрузка занятой модели.
 	// Прокидывается в cppworker как ?force=true (обрывает активные генерации).
 	// Без него unload занятой модели возвращал 409 и выгрузить её из WebUI было
 	// невозможно.
 	Force *bool `json:"force,omitempty"`
-
 	// R66d (2026-09-23): расширенные параметры загрузки — те же, что принимает
 	// balancer.ModelOpRequest и cppworker /api/models/load. Раньше HTTP-слой их
 	// не декодировал, поэтому reload «с новыми настройками» терял batch/flash/
@@ -228,6 +225,13 @@ type clusterReloadModelRequest struct {
 	UseMmap     *bool   `json:"useMmap,omitempty"`
 	FlashAttn   *int    `json:"flashAttn,omitempty"` // -1=auto, 0=off, 1=on
 	BatchSize   *int    `json:"batchSize,omitempty"`
+
+	Operation string `json:"operation,omitempty"` // "load" | "unload" | "reload" (default: "load")
+	BackendID string `json:"backendId,omitempty"` // "" = все llama_cpp бэкенды
+	Reason    string `json:"reason,omitempty"`    // комментарий для логов
+
+	Insecure bool `json:"insecure,omitempty"`
+	Stream   bool `json:"stream,omitempty"`
 }
 
 // toModelOpRequest — маппинг reload-запроса в ModelOpRequest.
@@ -235,17 +239,17 @@ type clusterReloadModelRequest struct {
 // "load"), поэтому передаётся параметром.
 func (req clusterReloadModelRequest) toModelOpRequest(modelName, operation string) balancer.ModelOpRequest {
 	return balancer.ModelOpRequest{
-		Operation:           operation,
-		ModelName:           modelName,
-		ContextSize:         req.ContextSize,
-		GPULayers:           req.GPULayers,
-		Insecure:            req.Insecure,
-		Stream:              req.Stream,
-		Force:               req.Force,
-		KVCacheType:         req.KVCacheType,
-		UseMmap:             req.UseMmap,
-		FlashAttn:           req.FlashAttn,
-		BatchSize:           req.BatchSize,
+		Operation:   operation,
+		ModelName:   modelName,
+		ContextSize: req.ContextSize,
+		GPULayers:   req.GPULayers,
+		Insecure:    req.Insecure,
+		Stream:      req.Stream,
+		Force:       req.Force,
+		KVCacheType: req.KVCacheType,
+		UseMmap:     req.UseMmap,
+		FlashAttn:   req.FlashAttn,
+		BatchSize:   req.BatchSize,
 	}
 }
 
@@ -491,7 +495,7 @@ func (s *Server) selectReloadTargets(backendID string) []string {
 //
 // Семантика operation:
 //   - "load"   → одна операция load. Если на бэкенде уже загружена ДРУГАЯ модель
-//                 (не запрошенная) — автоматически выгружает её перед load.
+//     (не запрошенная) — автоматически выгружает её перед load.
 //   - "unload" → одна операция unload.
 //   - "reload" → сначала unload (если модель загружена), затем load.
 func (s *Server) executeReloadOnBackend(backendID, modelName string, req *clusterReloadModelRequest) clusterReloadModelBackendResult {
@@ -706,18 +710,18 @@ func forceForItem(item *bulkModelItem, req *clusterBulkModelsRequest) *bool {
 // clusterBulkModelsRequest — тело POST /api/v1/cluster/models/bulk.
 //
 // Поддерживает два режима:
-//   1. **Явный список моделей** (Models != nil && len > 0) — для multi-select UI
-//      (Load/Unload/Delete Selected). Каждый элемент может переопределить
-//      BackendID/ContextSize/GPULayers глобально или оставить их пустыми.
-//   2. **Операция без списка** (Models == nil или пустой массив) — для командных
-//      сценариев типа "Load All Available" / "Unload All Loaded". В этом случае:
-//      - "unload" без списка → выгружаются все загруженные модели из cluster state.
-//      - "load" без списка → 400 (опасно: нет списка моделей для загрузки).
+//  1. **Явный список моделей** (Models != nil && len > 0) — для multi-select UI
+//     (Load/Unload/Delete Selected). Каждый элемент может переопределить
+//     BackendID/ContextSize/GPULayers глобально или оставить их пустыми.
+//  2. **Операция без списка** (Models == nil или пустой массив) — для командных
+//     сценариев типа "Load All Available" / "Unload All Loaded". В этом случае:
+//     - "unload" без списка → выгружаются все загруженные модели из cluster state.
+//     - "load" без списка → 400 (опасно: нет списка моделей для загрузки).
 //
 // Приоритет параметров (от высшего к низшему):
-//   1. Per-model override в BulkOperation.
-//   2. Глобальный BackendID/ContextSize/GPULayers/Operation в запросе.
-//   3. Значения по умолчанию ("load", n_ctx из профиля, gpu_layers=-1=auto).
+//  1. Per-model override в BulkOperation.
+//  2. Глобальный BackendID/ContextSize/GPULayers/Operation в запросе.
+//  3. Значения по умолчанию ("load", n_ctx из профиля, gpu_layers=-1=auto).
 type clusterBulkModelsRequest struct {
 	Operation   string          `json:"operation,omitempty"`   // "load" | "unload" | "reload" (default: "load")
 	Models      []bulkModelItem `json:"models"`                // список моделей (опционально для unload)

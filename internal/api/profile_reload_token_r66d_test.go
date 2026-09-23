@@ -3,8 +3,10 @@
 // profile_reload_token_r66d_test.go — R66d (2026-09-23).
 //
 // РЕГРЕСС: «применить профиль из WebUI» не работало — apply возвращал
-//   200 {"backends":[{"status":"error",
-//        "message":"cppworker reload returned 401: {\"error\":\"invalid or missing API token\"}"}]}
+//
+//	200 {"backends":[{"status":"error",
+//	     "message":"cppworker reload returned 401: {\"error\":\"invalid or missing API token\"}"}]}
+//
 // потому что балансер слал POST /api/models/reload БЕЗ токена, если в записи
 // бэкенда CppWorkerApiToken пуст. А в bundled-стеке он пуст: бэкенд регистрируют
 // cppworker (с токеном), shell-скрипт и sidecar-агент (без токена), и после
@@ -147,7 +149,9 @@ func TestReloadModelOnCppWorker_PrefersBackendToken(t *testing.T) {
 // TestReloadModelOnCppWorker_BodyUsesCppworkerFieldNames — тело reload-запроса
 // должно использовать имена полей cppworker (gpuLayers, а не numGpuLayers):
 // cppworker декодирует с DisallowUnknownFields и отвечал
-//   400 {"error":"invalid JSON: json: unknown field \"numGpuLayers\""}
+//
+//	400 {"error":"invalid JSON: json: unknown field \"numGpuLayers\""}
+//
 // из-за чего «применить профиль» в WebUI не работало.
 func TestReloadModelOnCppWorker_BodyUsesCppworkerFieldNames(t *testing.T) {
 	t.Setenv("LB_API_TOKEN", "t")

@@ -456,7 +456,9 @@ func (p *Proxy) getModelSizeBytes(modelName string) int64 {
 				continue
 			}
 			for _, m := range lm.LoadedModels {
-				if m.Name == modelName && m.Size > 0 {
+				// R66d: нормализация .gguf/пути/регистра — иначе оценка таймаутов
+				// не находит размер модели по имени с расширением.
+				if modelNameMatches(m.Name, modelName) && m.Size > 0 {
 					p.metricsMgr.mu.RUnlock()
 					return int64(m.Size)
 				}

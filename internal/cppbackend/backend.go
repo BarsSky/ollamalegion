@@ -1138,13 +1138,14 @@ func (b *Backend) refreshGPUDeviceVRAM() {
 //   - optimalGPULayers: оптимальное число GPU-слоёв
 //   - useMmap: true если требуется mmap (часть модели CPU-based)
 //   - diagnostics: детальная диагностика (nil если успешно, иначе с ошибкой)
-func (b *Backend) CalculateOptimalGPULayers(modelSizeBytes int64, totalLayers, nHeads, nKvHeads, nEmbd, requestedGPULayers, requestedCtxSize int) (optimalGPULayers int, useMmap bool, diagnostics *DiagnosticsInfo) {
+func (b *Backend) CalculateOptimalGPULayers(modelSizeBytes int64, totalLayers, nHeads, nKvHeads, nEmbd, requestedGPULayers, requestedCtxSize int, kvCacheType string) (optimalGPULayers int, useMmap bool, diagnostics *DiagnosticsInfo) {
 	if totalLayers <= 0 {
 		totalLayers = 40 // fallback: предполагаем ~40 слоёв если неизвестно
 	}
 
 	modelSizeMB := float64(modelSizeBytes) / 1024 / 1024
-	kvCacheMB := estimateKVCacheMB(totalLayers, nHeads, nKvHeads, nEmbd, requestedCtxSize)
+	// R67a: тип KV-cache влияет на требования к VRAM (q8_0 ≈ ×0.53, q4_0 ≈ ×0.28 от f16).
+	kvCacheMB := estimateKVCacheMB(totalLayers, nHeads, nKvHeads, nEmbd, requestedCtxSize, kvCacheType)
 
 	// Собираем доступную VRAM
 	//
@@ -1325,7 +1326,7 @@ func (b *Backend) CalculateOptimalGPULayers(modelSizeBytes int64, totalLayers, n
 // Для GQA моделей n_kv_heads < n_heads, для MHA n_kv_heads = n_heads.
 //
 // Добавляет 10% буфера безопасности для избежания граничных OOM.
-func estimateKVCacheMB(nLayers, nHeads, nKvHeads, nEmbd, nCtx int) uint64 {
+func estimateKVCacheMB(nLayers, nHeads, nKvHeads, nEmbd, nCtx int, kvCacheType string) uint64 {
 	if nLayers <= 0 || nCtx <= 0 {
 		return 0
 	}
@@ -1351,10 +1352,14 @@ func estimateKVCacheMB(nLayers, nHeads, nKvHeads, nEmbd, nCtx int) uint64 {
 	}
 
 	// KV Cache = 2 (K+V) × n_layers × n_ctx × n_kv_heads × head_dim × bytes_per_elem
-	// Стандартный KV cache тип fp16 = 2 bytes per element
-	const bytesPerElem = 2
-
-	kvBytes := uint64(2) * uint64(nLayers) * uint64(nCtx) * uint64(nKvHeads) * uint64(headDim) * uint64(bytesPerElem)
+	//
+	// R67a (2026-09-23): bytes_per_elem зависит от kvCacheType (f16 → 2 байта,
+	// q8_0 → 34/32, q4_0 → 18/32). Раньше всегда было 2 (fp16), из-за чего при
+	// q8_0/q4_0 требования к VRAM завышались в 2-4 раза и n_ctx упирался в
+	// заниженный потолок даже на GPU с большим запасом VRAM.
+	num, den := kvCacheBytesPerElem(kvCacheType)
+	elements := uint64(2) * uint64(nLayers) * uint64(nCtx) * uint64(nKvHeads) * uint64(headDim)
+	kvBytes := elements * num / den
 
 	// Конвертируем в MB и добавляем 10% безопасности
 	kvMB := kvBytes / (1024 * 1024)
@@ -1424,10 +1429,19 @@ func (b *Backend) checkVRAMForModel(name string, path string, opts LoadModelOpts
 		}
 	}
 
+	// R67a: в оценке VRAM учитываем фактический тип KV-cache (из запроса/профиля,
+	// иначе дефолт cppworker). Без этого при q8_0/q4_0 требования завышались в
+	// 2-4 раза и модель уходила в частичный CPU-offload при свободной VRAM.
+	effectiveKV := effectiveKVCacheType(opts.KVCacheType, b.cfg.DefaultKVCacheType)
 	optGPULayers, useMmap, diagnostics := b.CalculateOptimalGPULayers(
 		fi.Size(), totalLayers, nHeads, nKvHeads, nEmbd,
-		opts.GPULayers, opts.ContextSize,
+		opts.GPULayers, opts.ContextSize, effectiveKV,
 	)
+	if logger.Get() != nil {
+		logger.Get().Debugw("checkVRAMForModel: KV-cache type used for VRAM estimate",
+			"model", name, "kv_cache_type", effectiveKV,
+			"requested", opts.KVCacheType, "config_default", b.cfg.DefaultKVCacheType)
+	}
 
 	// 2026-06-26 BUGFIX: для больших моделей (model_size > 70% VRAM) принудительно
 	// включаем useMmap=true. Без mmap все 20 GB весов модели форсируются в VRAM,
@@ -1563,11 +1577,15 @@ func (b *Backend) CalculateResourceLimits(name string) ResourceLimits {
 
 	// 1. Метаданные модели: сначала из загруженной, потом из GGUF header.
 	var nLayers, nHeads, nKvHeads, nEmbd, modelCtx int
+	// loadedKVType — фактический тип KV-cache загруженной модели (R67a).
+	// Пустая строка = модель не загружена → используем дефолт конфига.
+	var loadedKVType string
 	if info, err := b.GetModel(name); err == nil {
 		nLayers = info.NLayers
 		nHeads = info.NHeads
 		nKvHeads = info.NKvHeads
 		nEmbd = info.NEmbd
+		loadedKVType = info.KVCacheType
 		if info.GGUFContextLength > 0 {
 			modelCtx = info.GGUFContextLength
 		}
@@ -1597,7 +1615,15 @@ func (b *Backend) CalculateResourceLimits(name string) ResourceLimits {
 
 	limits.ModelMaxContext = modelCtx
 
-	// 2. KV-cache per token = 4 * NLayers * NKvHeads * headDim (в байтах, fp16).
+	// 2. KV-cache per token = 2 (K+V) * NLayers * NKvHeads * headDim * bytes/elem.
+	//
+	// R67a (2026-09-23): bytes/elem зависит от типа квантования KV (f16 → 2,
+	// q8_0 → 34/32, q4_0 → 18/32). Берём фактический тип загруженной модели, а
+	// если модель не загружена — дефолт конфига cppworker. Раньше здесь всегда
+	// был fp16 (множитель 4 = K+V по 2 байта), из-за чего max_vram_n_ctx и
+	// feasible_max_context — а это и есть потолок n_ctx для балансера —
+	// занижались в 2-4 раза при q8_0/q4_0. Отсюда жалоба «n_ctx жёстко 32768
+	// при свободной VRAM» на мощном GPU.
 	if nLayers > 0 && nEmbd > 0 {
 		if nHeads <= 0 {
 			nHeads = 1
@@ -1606,7 +1632,10 @@ func (b *Backend) CalculateResourceLimits(name string) ResourceLimits {
 			nKvHeads = nHeads // GQA fallback
 		}
 		headDim := nEmbd / nHeads
-		kvPerToken := uint64(4) * uint64(nLayers) * uint64(nKvHeads) * uint64(headDim)
+		kvType := effectiveKVCacheType(loadedKVType, b.cfg.DefaultKVCacheType)
+		kvNum, kvDen := kvCacheBytesPerElem(kvType)
+		// 2 = K+V, далее умножаем на байт-на-элемент (дробь num/den).
+		kvPerToken := uint64(2) * uint64(nLayers) * uint64(nKvHeads) * uint64(headDim) * kvNum / kvDen
 		if kvPerToken > 0 {
 			// 3. VRAM: суммируем свободную VRAM по всем GPU.
 			// Live refresh b.gpuDevices from C-bridge (was snapshot from init, not updated runtime).
@@ -1625,11 +1654,21 @@ func (b *Backend) CalculateResourceLimits(name string) ResourceLimits {
 			}
 			b.mu.Unlock()
 
-			// Резервируем 2 GB на overhead/weights (KV-cache для n_ctx считается отдельно).
-			const vramOverheadMB = uint64(2048)
+			// Резервируем overhead на runtime/фрагментацию. По умолчанию 2 GB, но
+			// R67a: значение настраивается через CPPWORKER_VRAM_OVERHEAD_MB —
+			// на картах с большим объёмом VRAM фиксированные 2 GB искусственно
+			// занижали max_vram_n_ctx (потолок n_ctx у балансера).
+			vramOverheadMB := vramOverheadMBConfig()
 			if limits.AvailableVRAMMB > vramOverheadMB {
 				usableBytes := (limits.AvailableVRAMMB - vramOverheadMB) * 1024 * 1024
 				limits.MaxVRAMNCtx = int(usableBytes / kvPerToken)
+				logger.Get().Debugw("CalculateResourceLimits: VRAM-based n_ctx ceiling",
+					"model", name,
+					"kv_cache_type", kvType,
+					"kv_per_token_bytes", kvPerToken,
+					"vram_free_mb", limits.AvailableVRAMMB,
+					"vram_overhead_mb", vramOverheadMB,
+					"max_vram_n_ctx", limits.MaxVRAMNCtx)
 			}
 
 			// 4. RAM: вся доступная системная память (на Linux читаем /proc/meminfo,

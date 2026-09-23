@@ -1282,6 +1282,13 @@ window.I18N_EN = {
   "settings.profiles.model_name_required": "Model name is required",
   "settings.profiles.n_ctx": "Context Length (n_ctx)",
   "settings.profiles.ctx_help": "From 256 to 262144 (256K). 256K = gemma-4 max context.",
+  // R67a (2026-09-23): n_ctx ceiling. Without auto mode contextLength is a HARD
+  // cap: a client asking for a larger num_ctx gets exactly this value no matter
+  // how much VRAM is free ("stuck at 32768 on A10 with free VRAM").
+  "settings.profiles.ctx_auto": "Auto-adapt context (do not cap by profile)",
+  "settings.profiles.ctx_auto_help": "Enabled: n_ctx is chosen from free VRAM and the GGUF maximum (the value above is a hint). Disabled: the value above becomes a HARD cap, and clients cannot exceed it even with free VRAM.",
+  "settings.profiles.ctx_max": "Maximum context, tokens (0 = up to GGUF limit)",
+  "settings.profiles.ctx_max_help": "Works together with auto-adapt: an operator policy upper bound. 0 = unlimited, up to the model's GGUF maximum.",
   "settings.profiles.batch_size": "Batch Size (optional)",
   "settings.profiles.num_gpu_layers": "Num GPU Layers (optional)",
   "settings.profiles.notes": "Notes",

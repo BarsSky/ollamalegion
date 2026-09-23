@@ -154,10 +154,12 @@ func (s *Server) upsertModelProfile(w http.ResponseWriter, r *http.Request, mode
 	// Ограничим размер body чтобы не класть большие файлы
 	r.Body = http.MaxBytesReader(w, r.Body, 64*1024)
 
-	var incoming types.LlamaCppModelProfile
+	// R67a: декодируем в profileUpdate, чтобы различать «не передано» и
+	// «передано false/0» для contextLengthAuto/contextLengthMax.
+	var upd profileUpdate
 	dec := json.NewDecoder(r.Body)
 	dec.DisallowUnknownFields()
-	if err := dec.Decode(&incoming); err != nil {
+	if err := dec.Decode(&upd); err != nil {
 		s.writeJSON(w, http.StatusBadRequest, map[string]string{
 			"error":   "invalid JSON body",
 			"message": err.Error(),
@@ -165,11 +167,27 @@ func (s *Server) upsertModelProfile(w http.ResponseWriter, r *http.Request, mode
 		return
 	}
 
-	// Валидация (балансировщик и cppworker имеют одинаковые границы)
+	// R67a: МЕРЖ С СУЩЕСТВУЮЩИМ ПРОФИЛЕМ, а не замена.
+	//
+	// Раньше здесь профиль заменялся телом запроса, поэтому сохранение из WebUI
+	// (форма отправляет только contextLength/batchSize/numGpuLayers/notes) молча
+	// обнуляло contextLengthAuto, contextLengthMax, kvCacheType, flashAttn, numa,
+	// useMmap, parallel и per-model таймауты. Без contextLengthAuto профиль
+	// становится жёстким потолком n_ctx → «ограничение жёстко 32768 при свободной
+	// VRAM»; сброшенный kvCacheType завышал KV-cache и занижал feasible n_ctx.
+	existing, hasExisting := s.proxy.GetModelProfile(modelName)
+	incoming := mergeProfileUpdate(existing, upd)
+
+	// Валидация смерженного профиля (балансировщик и cppworker имеют одинаковые
+	// границы). Для НОВОГО профиля contextLength обязателен — сообщаем явно.
 	if err := validateModelProfile(incoming); err != nil {
+		msg := err.Error()
+		if !hasExisting && incoming.ContextLength == 0 {
+			msg = "contextLength is required for a new profile (нет существующего профиля, который можно дomerge'ить)"
+		}
 		s.writeJSON(w, http.StatusBadRequest, map[string]string{
 			"error":   "invalid profile",
-			"message": err.Error(),
+			"message": msg,
 		})
 		return
 	}
@@ -296,9 +314,11 @@ func (s *Server) applyModelProfile(w http.ResponseWriter, r *http.Request, model
 		return
 	}
 
-	// Шаг 1: прочитать body (опционально) и смержить с текущим профилем
+	// Шаг 1: прочитать body (опционально) и смержить с текущим профилем.
+	// R67a: profileUpdate (а не types.LlamaCppModelProfile), чтобы можно было
+	// явно включить contextLengthAuto и задать/снять contextLengthMax.
 	r.Body = http.MaxBytesReader(w, r.Body, 64*1024)
-	var bodyUpdate types.LlamaCppModelProfile
+	var bodyUpdate profileUpdate
 	hasBody := false
 	if r.ContentLength != 0 {
 		dec := json.NewDecoder(r.Body)
@@ -317,7 +337,7 @@ func (s *Server) applyModelProfile(w http.ResponseWriter, r *http.Request, model
 	currentProfile, hasCurrent := s.proxy.GetModelProfile(modelName)
 	merged := currentProfile
 	if hasBody {
-		merged = mergeModelProfile(currentProfile, bodyUpdate)
+		merged = mergeProfileUpdate(currentProfile, bodyUpdate)
 	}
 
 	if !hasCurrent && !hasBody {
@@ -629,9 +649,50 @@ func (s *Server) reloadModelOnCppWorker(backend types.Backend, modelName string,
 	return "reloaded", nil
 }
 
+// profileUpdate — тело PUT /model-profiles/{name} (и body у .../apply).
+//
+// R67a (2026-09-23): нужен, чтобы различать «поле не передано» и «передано
+// false/0» для contextLengthAuto/contextLengthMax. В types.LlamaCppModelProfile
+// это bool/int с omitempty, поэтому по нулевому значению нельзя понять, что имел
+// в виду клиент. Остальные поля промотируются из встроенной структуры (её теги
+// JSON сохраняются, а поля с теми же именами во внешней структуре имеют
+// приоритет при декодировании).
+type profileUpdate struct {
+	types.LlamaCppModelProfile
+	ContextLengthAuto *bool `json:"contextLengthAuto"`
+	ContextLengthMax  *int  `json:"contextLengthMax"`
+}
+
+// mergeProfileUpdate — R67a: полный мерж обновления профиля.
+//
+// Отличие от mergeModelProfile: поля contextLengthAuto/contextLengthMax
+// применяются по ФАКТУ ПЕРЕДАЧИ (указатель != nil), а не по ненулевому
+// значению. Это закрывает два дефекта, воспроизведённых на живом стеке:
+//
+//  1. НЕЛЬЗЯ ВКЛЮЧИТЬ auto-режим и поднять/снять потолок n_ctx через API/WebUI.
+//     Раньше PUT профиля просто ЗАМЕНЯЛ его телом запроса, а WebUI-форма шлёт
+//     только contextLength/batchSize/numGpuLayers/notes. Итог: сохранение
+//     профиля из UI молча обнуляло contextLengthAuto, contextLengthMax,
+//     kvCacheType, flashAttn, numa, useMmap, parallel и per-model таймауты.
+//     А без contextLengthAuto профиль снова становится ЖЁСТКИМ потолком
+//     (resolveModelMaxContext tier 2) — отсюда жалоба «n_ctx жёстко 32768, хотя
+//     VRAM с запасом» на мощном GPU; сброшенный kvCacheType удваивал-учетверял
+//     KV-cache и занижал feasible n_ctx.
+//
+//  2. Частичное обновление (PATCH-like) отклонялось с 400 «contextLength is
+//     required» — теперь валидируется уже смерженный профиль.
+func mergeProfileUpdate(existing types.LlamaCppModelProfile, upd profileUpdate) types.LlamaCppModelProfile {
+	out := mergeModelProfile(existing, upd.LlamaCppModelProfile)
+	if upd.ContextLengthAuto != nil {
+		out.ContextLengthAuto = *upd.ContextLengthAuto
+	}
+	if upd.ContextLengthMax != nil {
+		out.ContextLengthMax = *upd.ContextLengthMax
+	}
+	return out
+}
+
 // mergeModelProfile — мерж body update поверх existing. Zero-value поля
-// в update НЕ перезаписывают поля в existing (это позволяет PATCH-like
-// частичные обновления).
 func mergeModelProfile(existing, update types.LlamaCppModelProfile) types.LlamaCppModelProfile {
 	out := existing
 	if update.ContextLength != 0 {

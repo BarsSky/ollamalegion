@@ -149,7 +149,7 @@ func TestEstimateKVCacheMB_RealisticSizes(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := estimateKVCacheMB(tt.nLayers, tt.nHeads, tt.nKvHeads, tt.nEmbd, tt.nCtx)
+			got := estimateKVCacheMB(tt.nLayers, tt.nHeads, tt.nKvHeads, tt.nEmbd, tt.nCtx, "f16")
 			if got < tt.minMB || got > tt.maxMB {
 				t.Errorf("estimateKVCacheMB(%d, %d, %d, %d, %d) = %d MB, want [%d, %d] MB",
 					tt.nLayers, tt.nHeads, tt.nKvHeads, tt.nEmbd, tt.nCtx,
@@ -179,7 +179,7 @@ func TestEstimateKVCacheMB_ZeroInputs(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := estimateKVCacheMB(tt.nLayers, tt.nHeads, tt.nKvHeads, tt.nEmbd, tt.nCtx)
+			got := estimateKVCacheMB(tt.nLayers, tt.nHeads, tt.nKvHeads, tt.nEmbd, tt.nCtx, "f16")
 			if got != 0 {
 				t.Errorf("estimateKVCacheMB(%d, %d, %d, %d, %d) = %d, want 0 (safe-fail)",
 					tt.nLayers, tt.nHeads, tt.nKvHeads, tt.nEmbd, tt.nCtx, got)

@@ -252,6 +252,11 @@
             streamingIdleTimeoutSec: profile.streamingIdleTimeoutSec || 0,
             requestTimeoutSec: profile.requestTimeoutSec || 0,
             firstByteTimeoutSec: profile.firstByteTimeoutSec || 0,
+            // R67a: потолок n_ctx. Раньше эти поля не переносились и не
+            // отправлялись — сохранение профиля из UI теряло авто-режим, и
+            // профиль превращался в жёсткий потолок contextLength (32768).
+            contextLengthAuto: !!profile.contextLengthAuto,
+            contextLengthMax: profile.contextLengthMax || 0,
             // Round 32 #10 (2026-08-10): reasoning mode toggle. UI-only — не
             // отправляется в API. На save конвертируется в ×3 таймауты.
             reasoningMode: false
@@ -281,6 +286,11 @@
         if (state.streamingIdleTimeoutSec > 0) body.streamingIdleTimeoutSec = state.streamingIdleTimeoutSec;
         if (state.requestTimeoutSec > 0) body.requestTimeoutSec = state.requestTimeoutSec;
         if (state.firstByteTimeoutSec > 0) body.firstByteTimeoutSec = state.firstByteTimeoutSec;
+        // R67a: auto/max отправляем ВСЕГДА (в т.ч. false/0) — сервер применяет их
+        // по факту передачи, поэтому явное «выключить авто» и «снять потолок»
+        // работают, а частичные обновления больше не обнуляют остальные поля.
+        body.contextLengthAuto = !!state.contextLengthAuto;
+        body.contextLengthMax = parseInt(state.contextLengthMax, 10) || 0;
         return body;
     }
 
@@ -338,6 +348,22 @@
                             <span class="ctx-value" id="wizCtxValue">${formatCtx(state.contextLength)}</span>
                         </div>
                         <div class="ctx-help">${escapeHtml(I18N.t('settings.profiles.ctx_help', 'От 256 до 262144 (256K). 256K = gemma-4 max context.'))}</div>
+                    </div>
+                    <!-- R67a (2026-09-23): управление потолком n_ctx.
+                         Без contextLengthAuto профиль — ЖЁСТКИЙ потолок: клиент с
+                         num_ctx больше этого значения получает ровно contextLength
+                         независимо от свободной VRAM (жалоба «жёстко 32768 на A10»). -->
+                    <div class="wizard-field">
+                        <label>
+                            <input type="checkbox" id="wizCtxAuto" ${state.contextLengthAuto ? 'checked' : ''}>
+                            ${escapeHtml(I18N.t('settings.profiles.ctx_auto', 'Авто-адаптация контекста (не ограничивать профилем)'))}
+                        </label>
+                        <div class="ctx-help">${escapeHtml(I18N.t('settings.profiles.ctx_auto_help', 'Включено: n_ctx подбирается по свободной VRAM/GGUF (профиль — подсказка). Выключено: contextLength становится ЖЁСТКИМ потолком (например 32768), и больший контекст клиент не получит даже при свободной VRAM.'))}</div>
+                    </div>
+                    <div class="wizard-field">
+                        <label>${escapeHtml(I18N.t('settings.profiles.ctx_max', 'Максимальный контекст, токенов (0 = до предела GGUF)'))}</label>
+                        <input type="number" id="wizCtxMax" value="${state.contextLengthMax || 0}" min="0" max="${CTX_MAX}" step="1024" placeholder="0 = unlimited (до GGUF max)">
+                        <div class="ctx-help">${escapeHtml(I18N.t('settings.profiles.ctx_max_help', 'Работает вместе с авто-адаптацией: верхняя граница (политика оператора). 0 = без ограничения, вплоть до максимума GGUF.'))}</div>
                     </div>
                     <div class="wizard-field">
                         <label>${escapeHtml(I18N.t('settings.profiles.batch_size', 'Batch Size (опционально)'))}</label>
@@ -594,7 +620,10 @@
             streamingTimeoutSec: parseInt(overlay.querySelector('#wizStreamingTimeout').value, 10) || 0,
             streamingIdleTimeoutSec: parseInt(overlay.querySelector('#wizStreamingIdleTimeout').value, 10) || 0,
             requestTimeoutSec: parseInt(overlay.querySelector('#wizRequestTimeout').value, 10) || 0,
-            firstByteTimeoutSec: parseInt(overlay.querySelector('#wizFirstByteTimeout').value, 10) || 0
+            firstByteTimeoutSec: parseInt(overlay.querySelector('#wizFirstByteTimeout').value, 10) || 0,
+            // R67a: потолок n_ctx (авто-режим + максимум).
+            contextLengthAuto: !!(overlay.querySelector('#wizCtxAuto') && overlay.querySelector('#wizCtxAuto').checked),
+            contextLengthMax: parseInt((overlay.querySelector('#wizCtxMax') || {}).value, 10) || 0
         };
     }
 

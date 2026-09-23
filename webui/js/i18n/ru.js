@@ -1158,6 +1158,13 @@ window.I18N_RU = {
   "settings.profiles.model_name_required": "Имя модели обязательно",
   "settings.profiles.n_ctx": "Context Length (n_ctx)",
   "settings.profiles.ctx_help": "От 256 до 262144 (256K). 256K = gemma-4 max context.",
+  // R67a (2026-09-23): потолок n_ctx. Без авто-режима contextLength — ЖЁСТКИЙ
+  // потолок: клиент с большим num_ctx получит ровно это значение независимо от
+  // свободной VRAM (жалоба «жёстко 32768 на A10 при свободной VRAM»).
+  "settings.profiles.ctx_auto": "Авто-адаптация контекста (не ограничивать профилем)",
+  "settings.profiles.ctx_auto_help": "Включено: n_ctx подбирается по свободной VRAM и максимуму GGUF (значение выше — подсказка). Выключено: значение выше становится ЖЁСТКИМ потолком, и больший контекст клиент не получит даже при свободной VRAM.",
+  "settings.profiles.ctx_max": "Максимальный контекст, токенов (0 = до предела GGUF)",
+  "settings.profiles.ctx_max_help": "Работает вместе с авто-адаптацией: верхняя граница (политика оператора). 0 = без ограничения, вплоть до максимума GGUF модели.",
   "settings.profiles.batch_size": "Batch Size (опционально)",
   "settings.profiles.num_gpu_layers": "Num GPU Layers (опционально)",
   "settings.profiles.notes": "Заметки",

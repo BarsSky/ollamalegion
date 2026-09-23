@@ -37,6 +37,7 @@ func TestCalculateOptimalGPULayers_NoVRAMData_NoMmap(t *testing.T) {
 		19*1024*1024*1024, 48, 32, 8, 2560,
 		48, // wanted = 48 (all layers), -2 would be normalized to 48 internally
 		32768,
+		"f16", // R67a: тип KV-cache (тест воспроизводит поведение до R67a)
 	)
 	if diag != nil && diag.Recomendation != "" {
 		t.Errorf("unexpected error diagnostic: %+v", diag)
@@ -58,6 +59,7 @@ func TestCalculateOptimalGPULayers_22GB_VRAM_19GB_Model_32KCtx(t *testing.T) {
 		19*1024*1024*1024, 48, 32, 8, 2560, // Qwen3.6-35B-A3B Q4_K_M
 		-2, // auto
 		32768,
+		"f16", // R67a: тип KV-cache
 	)
 	// For 19GB/22GB/20GB with 32K ctx, the function should return
 	// EITHER a successful strategy (gpuLayers=43+, all on GPU) OR

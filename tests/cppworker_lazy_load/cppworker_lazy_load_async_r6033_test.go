@@ -3,11 +3,16 @@ package cppworker_lazy_load
 // cppworker_lazy_load_async_r6033_test.go — R60.33 (2026-09-10) контракт
 // АСИНХРОННОЙ авто-загрузки + R66b (2026-09-22) регрессия env-переключателя.
 //
-// Контракт (default с R60.33):
+// Контракт (default с R60.33, R67a: только при LB_AUTO_LOAD_WAIT_SEC=0):
 //  1. Клиент на cold start НЕ ждёт загрузку: балансер отвечает 503 +
 //     Retry-After + телом, объясняющим что загрузка уже запущена.
 //  2. Загрузка реально уходит в cppworker (POST /api/models/load) — в фоне.
 //  3. Параллельные запросы одной модели дедуплицируются: ровно ОДНА загрузка.
+//
+// R67a (2026-09-23) изменил DEFAULT: async-балансер больше не отбивает первый
+// запрос 503-й, а ждёт загрузку до LB_AUTO_LOAD_WAIT_SEC (default 180). Этот
+// файл проверяет legacy-ветку явным LB_AUTO_LOAD_WAIT_SEC=0; новый контракт —
+// cppworker_lazy_load_autoload_wait_r67a_test.go.
 //
 // Отдельно проверяется, что LB_AUTO_LOAD_ASYNC=0 действительно переключает
 // балансер в legacy sync-режим — до R66b переменная читалась только в
@@ -28,8 +33,13 @@ import (
 
 // TestCppWorker_LazyLoad_Async_Returns503WithRetryAfter — cold start в
 // async-режиме: клиент получает быстрый 503 + Retry-After, а не ждёт загрузку.
+//
+// R67a: «быстрый 503» теперь только при LB_AUTO_LOAD_WAIT_SEC=0. По умолчанию
+// балансер ЖДЁТ загрузку (см. cppworker_lazy_load_autoload_wait_r67a_test.go),
+// поэтому legacy-контракт проверяется с явно выключенным ожиданием.
 func TestCppWorker_LazyLoad_Async_Returns503WithRetryAfter(t *testing.T) {
 	t.Setenv("LB_AUTO_LOAD_ASYNC", "1")
+	t.Setenv("LB_AUTO_LOAD_WAIT_SEC", "0")
 
 	const loadDelay = 700 * time.Millisecond
 	worker := newMockCppWorkerLazy(loadDelay)
@@ -90,6 +100,10 @@ func TestCppWorker_LazyLoad_Async_Returns503WithRetryAfter(t *testing.T) {
 // одной модели в async-режиме → ровно одна фоновая загрузка (mm.tryAcquireOp).
 func TestCppWorker_LazyLoad_Async_DedupsConcurrentLoads(t *testing.T) {
 	t.Setenv("LB_AUTO_LOAD_ASYNC", "1")
+	// R67a: с включённым ожиданием клиенты тоже дедуплицируются, но тест держит
+	// дедлайн 5s — оставляем legacy-режим, чтобы он мерял дедупликацию, а не
+	// ожидание загрузки.
+	t.Setenv("LB_AUTO_LOAD_WAIT_SEC", "0")
 
 	// loadDelay намеренно большой: все три клиента обязаны попасть в окно
 	// ОДНОЙ загрузки, иначе тест меряет не дедупликацию, а планировщик Go

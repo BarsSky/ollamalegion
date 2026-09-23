@@ -255,9 +255,14 @@ func runAsyncLoad(modelName, modelPath string, opts cppbackend.LoadModelOpts,
 	if loadErr != nil {
 		logger.Get().Errorw("runAsyncLoad: background load failed",
 			"name", modelName, "error", loadErr, "duration_ms", duration.Milliseconds())
+		// R66d: запоминаем причину — иначе провалившаяся async-загрузка
+		// неотличима от «ещё грузится» (см. load_failures.go), и клиент
+		// получает бесконечное «подожди 90 секунд».
+		loadFailures.record(modelName, loadErr)
 		// Backend already cleaned up b.models[name] in LoadModelWithOpts error path
 		// (line ~646 in backend.go). The instance is removed.
 	} else {
+		loadFailures.clear(modelName)
 		logger.Get().Infow("runAsyncLoad: background load complete",
 			"name", modelName, "duration_ms", duration.Milliseconds())
 		// Notify balancer so the model becomes "ready" for routing.
@@ -333,6 +338,8 @@ func runAsyncReload(modelName, modelPath string, opts cppbackend.LoadModelOpts,
 	if loadErr != nil {
 		logger.Get().Errorw("runAsyncReload: load with new params failed",
 			"name", modelName, "error", loadErr)
+		// R66d: помним причину провала reload (см. load_failures.go).
+		loadFailures.record(modelName, loadErr)
 		// Rollback: try to reload with old params.
 		oldOpts := cppbackend.LoadModelOpts{
 			GPULayers:     current.GPULayers,
@@ -353,6 +360,8 @@ func runAsyncReload(modelName, modelPath string, opts cppbackend.LoadModelOpts,
 
 	logger.Get().Infow("runAsyncReload: background reload complete",
 		"name", modelName, "duration_ms", duration.Milliseconds())
+	// R66d: успешный reload снимает запись о провале.
+	loadFailures.clear(modelName)
 
 	if balancerReg != nil {
 		if info, err := backend.GetModel(modelName); err == nil {

@@ -846,6 +846,16 @@ func handleLoadProgress(w http.ResponseWriter, r *http.Request) {
 				"error":            m.LoadingError,
 			})
 		}
+		// R66d: добавляем провалившиеся загрузки. Без этого «failed» был
+		// неотличим от «ничего не происходит» (см. load_failures.go).
+		for failedName, fe := range loadFailures.list() {
+			out = append(out, map[string]interface{}{
+				"name":     failedName,
+				"state":    "failed",
+				"error":    fe.Err,
+				"failedAt": fe.At.UTC().Format(time.RFC3339Nano),
+			})
+		}
 		writeJSON(w, http.StatusOK, map[string]interface{}{"models": out, "count": len(out)})
 		return
 	}
@@ -866,6 +876,19 @@ func handleLoadProgress(w http.ResponseWriter, r *http.Request) {
 				})
 				return
 			}
+		}
+		// R66d: модель не загружена и не грузится. Если есть запись о провале —
+		// отдаём 200 со state="failed" и настоящей причиной (раньше здесь был
+		// 404 «model not found and not loading», из-за чего балансер продолжал
+		// поллинг до maxWait и кормил клиента «подожди 90 секунд»).
+		if fe, ok := loadFailures.get(name); ok {
+			writeJSON(w, http.StatusOK, map[string]interface{}{
+				"name":     name,
+				"state":    "failed",
+				"error":    fe.Err,
+				"failedAt": fe.At.UTC().Format(time.RFC3339Nano),
+			})
+			return
 		}
 		writeError(w, http.StatusNotFound, "model not found and not loading: "+name)
 		return
@@ -1089,9 +1112,9 @@ func handleListModels(w http.ResponseWriter, r *http.Request) {
 			"context_size":        m.ContextSize,
 			"gguf_context_length": m.GGUFContextLength,
 			"size_bytes":          effectiveSize,
-			"size":                effectiveSize,             // R60.4: alias (webui gguf-renderer-detail.js:232)
+			"size":                effectiveSize,                                           // R60.4: alias (webui gguf-renderer-detail.js:232)
 			"size_vram":           estimateVRAMSize(m.NLayers, m.GPULayers, effectiveSize), // R66.5: VRAM estimate для balancer poller
-			"quantization":        parseQuantization(m.Path), // R60.4
+			"quantization":        parseQuantization(m.Path),                               // R60.4
 			"loaded_at":           m.LoadedAt,
 			"gpu_count":           m.GPUCount,
 			"kv_cache_type":       m.KVCacheType,
@@ -1940,21 +1963,22 @@ func modelParameterSize(nLayers, nEmbd int) string {
 //   - nLayers          — общее число слоёв
 //
 // Логика:
-//   1. GGUF Q4_K_M на диске ≈ 0.55 байт/параметр, а в VRAM те же веса
-//      занимают ≈ 1.8 байт/параметр (fp16) → file→VRAM ≈ 1.8/0.55 ≈ 3.27.
-//      В коде взят консервативный множитель 3.0.
-//   2. Если только часть слоёв в GPU — пропорционально (gpuLayers/nLayers).
-//   3. KV cache здесь НЕ учитывается (в реальном VRAM он добавляет ещё
-//      ~10-30% на больших n_ctx).
+//  1. GGUF Q4_K_M на диске ≈ 0.55 байт/параметр, а в VRAM те же веса
+//     занимают ≈ 1.8 байт/параметр (fp16) → file→VRAM ≈ 1.8/0.55 ≈ 3.27.
+//     В коде взят консервативный множитель 3.0.
+//  2. Если только часть слоёв в GPU — пропорционально (gpuLayers/nLayers).
+//  3. KV cache здесь НЕ учитывается (в реальном VRAM он добавляет ещё
+//     ~10-30% на больших n_ctx).
 //
 // Это ГРУБАЯ ВЕРХНЯЯ ОЦЕНКА, а не измерение: NVML не даёт per-model VRAM.
 // Погрешность на практике до +50-60% (пример ниже), поэтому значение годится
 // только для UI/индикации, но НЕ для решений о влезаемости модели.
 //
 // Примеры:
-//   Qwen3-Instruct-2507-q4km (2.5 GB файл, 36/36 слоёв в GPU):
-//     estimate = 2497281120 * 3.0 * (36/36) ≈ 7.5 GB
-//     (реально ≈ 4.2 GB весов + 0.5 GB KV ≈ 4.7 GB — т.е. переоценка ~1.6x)
+//
+//	Qwen3-Instruct-2507-q4km (2.5 GB файл, 36/36 слоёв в GPU):
+//	  estimate = 2497281120 * 3.0 * (36/36) ≈ 7.5 GB
+//	  (реально ≈ 4.2 GB весов + 0.5 GB KV ≈ 4.7 GB — т.е. переоценка ~1.6x)
 func estimateVRAMSize(nLayers, gpuLayers int, sizeBytes uint64) uint64 {
 	if sizeBytes == 0 || nLayers == 0 {
 		return 0

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"regexp"
 	"strings"
 	"sync"
@@ -715,10 +716,24 @@ func (mm *ModelManager) pollLoadCompletionUntilLoaded(
 		"backend", backendID, "model", modelName,
 		"max_wait", maxWait, "poll_interval", pollInterval)
 
+	// R66d (2026-09-22): сколько поллов подряд модель не появляется ни в
+	// /api/models, ни в /api/models/load/progress. Раньше провалившаяся загрузка
+	// была неотличима от «ещё грузится»: cppworker удалял запись о модели и
+	// нигде не хранил причину, поэтому поллинг шёл до maxWait (3-15 минут),
+	// операция висела в статусе running, а клиент получал 503 «подожди 90с».
+	//
+	// 5 поллов × 2 с = 10 с «льготного окна»: за это время cppworker успевает
+	// создать запись state=loading (она появляется в начале LoadModelWithOpts, но
+	// между 202 Accepted и созданием записи есть окно на планировщик и проверку
+	// ресурсов/чтение GGUF-заголовка). Если запись так и не появилась — загрузка
+	// не идёт, и врать клиенту «жди 90с» смысла нет.
+	const missPollsBeforeFail = 5
+	missPolls := 0
+
 	for time.Now().Before(deadline) {
 		time.Sleep(pollInterval)
 
-		// Проверяем /api/models — там state="loaded"/"loading"
+		// 1. /api/models — там state="loaded"/"loading".
 		modelsURL := fmt.Sprintf("http://%s:%d/api/models", host, port)
 		resp, err := pollClient.Get(modelsURL)
 		if err != nil {
@@ -732,7 +747,6 @@ func (mm *ModelManager) pollLoadCompletionUntilLoaded(
 			continue
 		}
 
-		// Парсим models[].state — ищем нашу модель
 		var modelsResp struct {
 			Models []struct {
 				Name  string `json:"name"`
@@ -742,8 +756,14 @@ func (mm *ModelManager) pollLoadCompletionUntilLoaded(
 		if json.Unmarshal(body, &modelsResp) != nil {
 			continue
 		}
+
+		seen := false
 		for _, m := range modelsResp.Models {
-			if m.Name == modelName && m.State == "loaded" {
+			if m.Name != modelName {
+				continue
+			}
+			seen = true
+			if m.State == "loaded" {
 				logger.Get().Infow("executeLlamaCppLoad: model loaded successfully (recovered from HTTP timeout)",
 					"backend", backendID, "model", modelName,
 					"elapsed", maxWait-time.Until(deadline))
@@ -756,11 +776,98 @@ func (mm *ModelManager) pollLoadCompletionUntilLoaded(
 				}
 			}
 		}
+
+		// 2. /api/models/load/progress — там state="failed" + error (R66d).
+		// Это основной сигнал: cppworker теперь помнит причину провала.
+		state, errText, fromProgress := mm.fetchLoadProgress(pollClient, host, port, backendID, modelName)
+		if state == "failed" {
+			logger.Get().Errorw("executeLlamaCppLoad: load reported failed by cppworker, stop polling",
+				"backend", backendID, "model", modelName, "error", errText,
+				"elapsed_ms", int(time.Since(deadline.Add(-maxWait)).Milliseconds()))
+			return &ModelOpResult{
+				Success:   false,
+				Operation: "load",
+				ModelName: modelName,
+				BackendID: backendID,
+				Error:     fmt.Sprintf("auto-load failed: %s", errText),
+			}
+		}
+
+		// 3. Страховка: модель не видна ни как loading, ни как loaded.
+		// Успешная загрузка сразу появляется в /api/models со state=loading,
+		// поэтому несколько «пустых» поллов подряд означают, что загрузка
+		// не идёт (файла нет / упала до создания записи).
+		loading := state == "loading"
+		if !seen && !loading && !fromProgress {
+			missPolls++
+			if missPolls >= missPollsBeforeFail {
+				logger.Get().Errorw("executeLlamaCppLoad: model never appeared in cppworker list/progress, stop polling",
+					"backend", backendID, "model", modelName, "miss_polls", missPolls)
+				return &ModelOpResult{
+					Success:   false,
+					Operation: "load",
+					ModelName: modelName,
+					BackendID: backendID,
+					Error: fmt.Sprintf("auto-load failed: model %q did not appear in cppworker model list or load progress "+
+						"for %d consecutive polls — load did not start (проверь наличие GGUF-файла и логи cppworker)",
+						modelName, missPolls),
+				}
+			}
+		} else {
+			missPolls = 0
+		}
 	}
 
 	logger.Get().Warnw("executeLlamaCppLoad: poll for load completion exceeded max_wait",
 		"backend", backendID, "model", modelName, "max_wait", maxWait)
 	return nil
+}
+
+// fetchLoadProgress — состояние загрузки модели из /api/models/load/progress.
+//
+// R66d: возвращает state ("loading"/"loaded"/"failed"), текст ошибки (для
+// failed) и признак того, что cppworker вообще знает про эту модель
+// (loaded/loading/failed). Пустой state + false = cppworker ничего не знает.
+func (mm *ModelManager) fetchLoadProgress(
+	client *http.Client, host string, port int, backendID, modelName string,
+) (state string, errText string, known bool) {
+	url := fmt.Sprintf("http://%s:%d/api/models/load/progress?model=%s", host, port, urlQueryEscape(modelName))
+	resp, err := client.Get(url)
+	if err != nil {
+		logger.Get().Debugw("pollLoadCompletion: load/progress poll failed",
+			"backend", backendID, "model", modelName, "error", err)
+		return "", "", false
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode == http.StatusNotFound {
+		// «model not found and not loading» — cppworker не знает про модель.
+		return "", "", false
+	}
+	body, readErr := io.ReadAll(resp.Body)
+	if readErr != nil {
+		return "", "", false
+	}
+	var pr struct {
+		State string `json:"state"`
+		Error string `json:"error"`
+	}
+	if json.Unmarshal(body, &pr) != nil {
+		return "", "", false
+	}
+	switch pr.State {
+	case "failed":
+		return "failed", pr.Error, true
+	case "loading", "loaded":
+		return pr.State, pr.Error, true
+	default:
+		return "", pr.Error, false
+	}
+}
+
+// urlQueryEscape — минимальное экранирование имени модели для query-параметра.
+// Имена моделей у нас обычно [A-Za-z0-9._:-], но бывают и со слэшами (HF).
+func urlQueryEscape(s string) string {
+	return strings.ReplaceAll(url.QueryEscape(s), "+", "%20")
 }
 
 // executeLlamaCppLoad — загрузка модели в память на cppworker-бэкенде.

@@ -36,18 +36,18 @@ type fileStub struct {
 }
 
 type stubFileEntry struct {
+	ModifiedAt string `json:"modifiedAt"`
 	Name       string `json:"name"`
 	SizeBytes  int64  `json:"sizeBytes"`
-	ModifiedAt string `json:"modifiedAt"`
 }
 
 // stubAliasEntry — алиас модели в ответе /api/models/files (R66d).
 type stubAliasEntry struct {
+	CreatedAt       string `json:"createdAt"`
 	Name            string `json:"name"`
 	Source          string `json:"source"`
 	ParentModel     string `json:"parentModel"`
 	SourceSizeBytes int64  `json:"sourceSizeBytes"`
-	CreatedAt       string `json:"createdAt"`
 }
 
 func (f *fileStub) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -251,10 +251,10 @@ func TestR66d_HandleTags_IncludesAliases(t *testing.T) {
 
 	var resp struct {
 		Models []struct {
-			Name    string                 `json:"name"`
-			Size    int64                  `json:"size"`
-			Digest  string                 `json:"digest"`
 			Details map[string]interface{} `json:"details"`
+			Name    string                 `json:"name"`
+			Digest  string                 `json:"digest"`
+			Size    int64                  `json:"size"`
 		} `json:"models"`
 	}
 	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {

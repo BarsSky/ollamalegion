@@ -28,14 +28,17 @@ import (
 // ListModels/ListAliases, ни в /api/tags, ни в resolveModelPath — созданная
 // «модель» была невидимой и незагружаемой.
 type GGUFAlias struct {
-	Name            string    `json:"name"`            // имя модели для клиента
-	Source          string    `json:"source"`          // как записано в modelfile (обычно <file>.gguf)
-	SourcePath      string    `json:"sourcePath"`      // абсолютный путь к .gguf
-	SourceExists    bool      `json:"sourceExists"`    // файл-источник на месте?
-	SourceSizeBytes int64     `json:"sourceSizeBytes"` // размер источника (для /api/tags)
-	Modelfile       string    `json:"modelfile,omitempty"`
+	// Порядок полей — по требованию govet fieldalignment (govet.enable-all):
+	// сначала поля с указателями (time.Time хранит *Location), затем строки,
+	// затем числовые скаляры.
 	CreatedAt       time.Time `json:"createdAt,omitempty"`
-	AliasPath       string    `json:"aliasPath"` // путь к самому .gguf.json
+	Name            string    `json:"name"`       // имя модели для клиента
+	Source          string    `json:"source"`     // как записано в modelfile (обычно <file>.gguf)
+	SourcePath      string    `json:"sourcePath"` // абсолютный путь к .gguf
+	Modelfile       string    `json:"modelfile,omitempty"`
+	AliasPath       string    `json:"aliasPath"`       // путь к самому .gguf.json
+	SourceSizeBytes int64     `json:"sourceSizeBytes"` // размер источника (для /api/tags)
+	SourceExists    bool      `json:"sourceExists"`    // файл-источник на месте?
 }
 
 // GGUFModelMeta — информация о GGUF файле (извлекается из header)

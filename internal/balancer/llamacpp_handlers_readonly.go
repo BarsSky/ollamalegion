@@ -386,11 +386,13 @@ type llamaCppFileEntry struct {
 // без слияния алиасов созданная модель не доезжала до клиентов (Cline/OpenWebUI
 // её просто не видели в списке моделей).
 type llamaCppAliasEntry struct {
+	// Порядок полей — по требованию govet fieldalignment: сначала time.Time,
+	// затем строки, затем скаляры.
+	CreatedAt       time.Time
 	Name            string
 	Source          string
 	ParentModel     string
 	SourceSizeBytes int64
-	CreatedAt       time.Time
 }
 
 // fetchLlamaCppFilesWithAliases — файлы + алиасы с бэкенда одним запросом.
@@ -409,16 +411,16 @@ func (lr *LlamaCppRouter) fetchLlamaCppFilesWithAliases(host string, port int) (
 
 	var result struct {
 		Files []struct {
+			ModifiedAt string `json:"modifiedAt"`
 			Name       string `json:"name"`
 			SizeBytes  int64  `json:"sizeBytes"`
-			ModifiedAt string `json:"modifiedAt"`
 		} `json:"files"`
 		Aliases []struct {
+			CreatedAt       string `json:"createdAt"`
 			Name            string `json:"name"`
 			Source          string `json:"source"`
 			ParentModel     string `json:"parentModel"`
 			SourceSizeBytes int64  `json:"sourceSizeBytes"`
-			CreatedAt       string `json:"createdAt"`
 		} `json:"aliases"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {

@@ -98,10 +98,10 @@ func TestHandleOllamaTags_IncludesAlias_R66d(t *testing.T) {
 	}
 	var body struct {
 		Models []struct {
-			Name    string                 `json:"name"`
-			Size    int64                  `json:"size"`
-			Digest  string                 `json:"digest"`
 			Details map[string]interface{} `json:"details"`
+			Name    string                 `json:"name"`
+			Digest  string                 `json:"digest"`
+			Size    int64                  `json:"size"`
 		} `json:"models"`
 	}
 	if err := json.Unmarshal(rr.Body.Bytes(), &body); err != nil {

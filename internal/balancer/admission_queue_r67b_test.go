@@ -46,7 +46,7 @@ func TestHandleChat_QueuesWhenSlotsBusy_R67b(t *testing.T) {
 
 	p, router, cleanup := makeTestLlamaProxy(t, upstream.URL)
 	defer cleanup()
-	p.admissionWait = 3 * time.Second
+	p.setAdmissionWait(3 * time.Second)
 
 	// Лимит параллелизма: 1 слот (как cppworker с n_parallel=1). В конфиге
 	// тестового бэкенда maxConcurrentReqs=0 («без лимита»), поэтому выставляем явно.
@@ -142,19 +142,19 @@ func waitForAdmissionWaiters(t *testing.T, p *Proxy, want int) {
 	t.Helper()
 	deadline := time.Now().Add(3 * time.Second)
 	for time.Now().Before(deadline) {
-		if p.admission.stats(p.admissionWait).Waiting >= want {
+		if p.admission.stats(p.admissionWaitTimeout()).Waiting >= want {
 			return
 		}
 		time.Sleep(5 * time.Millisecond)
 	}
 	t.Fatalf("в очереди не появилось %d ожидающих (stats=%+v)",
-		want, p.admission.stats(p.admissionWait))
+		want, p.admission.stats(p.admissionWaitTimeout()))
 }
 
 type admissionResult struct {
+	err   error
 	lease *admissionLease
 	pos   int
-	err   error
 }
 
 // TestAdmission_WaitsInsteadOfRejecting_R67b — главный сценарий жалобы:
@@ -162,7 +162,7 @@ type admissionResult struct {
 // (до R67b такой запрос мгновенно получал 503).
 func TestAdmission_WaitsInsteadOfRejecting_R67b(t *testing.T) {
 	p := admissionTestProxy(t, 1)
-	p.admissionWait = 5 * time.Second
+	p.setAdmissionWait(5 * time.Second)
 
 	// Занимаем единственный слот — как будто другой пользователь уже генерирует.
 	if !p.tryAcquireSlot("llama_adm") {
@@ -176,7 +176,7 @@ func TestAdmission_WaitsInsteadOfRejecting_R67b(t *testing.T) {
 	}()
 
 	waitForAdmissionWaiters(t, p, 1)
-	if got := p.admission.stats(p.admissionWait).Waiting; got != 1 {
+	if got := p.admission.stats(p.admissionWaitTimeout()).Waiting; got != 1 {
 		t.Fatalf("ожидался 1 ожидающий, получено %d", got)
 	}
 
@@ -203,14 +203,14 @@ func TestAdmission_WaitsInsteadOfRejecting_R67b(t *testing.T) {
 	if res.pos != 1 {
 		t.Errorf("позиция в очереди = %d, ожидалась 1", res.pos)
 	}
-	if st := p.admission.stats(p.admissionWait); st.Served != 1 || st.WaitedTotal != 1 {
+	if st := p.admission.stats(p.admissionWaitTimeout()); st.Served != 1 || st.WaitedTotal != 1 {
 		t.Errorf("статистика очереди: served=%d waited=%d (ожидалось 1/1)", st.Served, st.WaitedTotal)
 	}
 	t.Logf("✅ admission: запрос прождал %v и получил слот (без 503)", res.lease.Waited)
 
 	// После Release слот снова свободен.
 	res.lease.Release()
-	if st := p.admission.stats(p.admissionWait); st.ActiveByUser != 0 {
+	if st := p.admission.stats(p.admissionWaitTimeout()); st.ActiveByUser != 0 {
 		t.Errorf("после Release активных сессий %d, ожидалось 0", st.ActiveByUser)
 	}
 	if !p.tryAcquireSlot("llama_adm") {
@@ -223,7 +223,7 @@ func TestAdmission_WaitsInsteadOfRejecting_R67b(t *testing.T) {
 // сохраняет поведение до R67b: слотов нет → вызывающий код отдаёт быстрый 503.
 func TestAdmission_DisabledKeepsLegacyBehaviour_R67b(t *testing.T) {
 	p := admissionTestProxy(t, 1)
-	p.admissionWait = 0
+	p.setAdmissionWait(0)
 
 	if !p.tryAcquireSlot("llama_adm") {
 		t.Fatal("не удалось занять единственный слот")
@@ -236,7 +236,7 @@ func TestAdmission_DisabledKeepsLegacyBehaviour_R67b(t *testing.T) {
 	if lease != nil {
 		t.Fatal("lease должен быть nil при выключенном ожидании")
 	}
-	if st := p.admission.stats(p.admissionWait); st.Enabled {
+	if st := p.admission.stats(p.admissionWaitTimeout()); st.Enabled {
 		t.Error("stats.Enabled должен быть false при LB_ADMISSION_WAIT_SEC=0")
 	}
 }
@@ -246,7 +246,7 @@ func TestAdmission_DisabledKeepsLegacyBehaviour_R67b(t *testing.T) {
 // таймаутов растёт, слот не «утекает».
 func TestAdmission_WaitTimeout_R67b(t *testing.T) {
 	p := admissionTestProxy(t, 1)
-	p.admissionWait = 250 * time.Millisecond
+	p.setAdmissionWait(250 * time.Millisecond)
 
 	if !p.tryAcquireSlot("llama_adm") {
 		t.Fatal("не удалось занять единственный слот")
@@ -268,14 +268,14 @@ func TestAdmission_WaitTimeout_R67b(t *testing.T) {
 	if elapsed < 200*time.Millisecond {
 		t.Errorf("таймаут наступил за %v — ожидание не отработало", elapsed)
 	}
-	if st := p.admission.stats(p.admissionWait); st.Timeouts != 1 {
+	if st := p.admission.stats(p.admissionWaitTimeout()); st.Timeouts != 1 {
 		t.Errorf("stats.Timeouts = %d, ожидалось 1", st.Timeouts)
 	}
-	if st := p.admission.stats(p.admissionWait); st.Waiting != 0 {
+	if st := p.admission.stats(p.admissionWaitTimeout()); st.Waiting != 0 {
 		t.Errorf("после таймаута в очереди осталось %d ожидающих", st.Waiting)
 	}
 	// Слот по-прежнему занят ровно один раз (таймаут не «съел» чужой слот).
-	if st := p.admission.stats(p.admissionWait); st.ActiveByUser != 0 {
+	if st := p.admission.stats(p.admissionWaitTimeout()); st.ActiveByUser != 0 {
 		t.Errorf("таймаут не должен создавать активную сессию, получено %d", st.ActiveByUser)
 	}
 	p.releaseSlot("llama_adm")
@@ -295,7 +295,7 @@ func TestAdmission_WaitTimeout_R67b(t *testing.T) {
 // который ещё не обслуживался («не забивает очередь целиком»).
 func TestAdmission_SameSessionYieldsToNewSession_R67b(t *testing.T) {
 	p := admissionTestProxy(t, 1)
-	p.admissionWait = 5 * time.Second
+	p.setAdmissionWait(5 * time.Second)
 
 	// A1 уже обслуживается (держит единственный слот).
 	a1, _, err := p.acquireInferenceSlot(context.Background(), "llama_adm", "X-User-Id:A")

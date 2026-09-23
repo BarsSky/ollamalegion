@@ -91,7 +91,15 @@ jobs:
       # cppworker'а шаг бесполезен — build выше уже доказывает, что код линкуется.
 
       - name: Test internal/... (-race)
-        run: scripts/run_go_test.sh "internal/..." -race -tags llama_stub -timeout 180s -v ./internal/...
+        # R67b (2026-09-23): -timeout 180s → 300s.
+        #
+        # Пакет internal/balancer с -race идёт ~90s на быстрой машине
+        # разработчика (проверено локально: 90.0s) и упирался в 180-секундный
+        # бюджет на ubuntu-latest: 'panic: test timed out after 3m0s',
+        # 'FAIL ollama-legion/internal/balancer 180.049s' (прогон
+        # 35872569511). В ci.yml для того же пакета бюджет давно 300s —
+        # приводим к одному значению (см. .github/workflows/ci.yml:436).
+        run: scripts/run_go_test.sh "internal/..." -race -tags llama_stub -timeout 300s -v ./internal/...
 
       - name: Test cmd/... (no race)
         run: scripts/run_go_test.sh "cmd/..." -tags llama_stub -timeout 60s -v ./cmd/...

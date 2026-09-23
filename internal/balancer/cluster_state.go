@@ -290,7 +290,7 @@ func (p *Proxy) GetQueueStats() QueueStats {
 	p.queueMgr.historyMu.RUnlock()
 
 	return QueueStats{
-		Admission:          p.admission.stats(p.admissionWait),
+		Admission:          p.admission.stats(p.admissionWaitTimeout()),
 		CurrentSize:        len(p.queueMgr.queue),
 		MaxSize:            p.queueMgr.maxSize,
 		Processed:          processed,

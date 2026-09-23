@@ -106,19 +106,21 @@ var (
 )
 
 // admissionWaiter — ожидающий слот запрос.
+// Порядок полей — под fieldalignment (time.Time несёт указатель на Location).
 type admissionWaiter struct {
-	session  string
 	enqueued time.Time
+	session  string
 	seq      uint64
 }
 
 // queueAdmissionStats — R67b: срез admission-очереди для /api/v1/queue/stats.
 //
 // Порядок полей — от «тяжёлых» к лёгким: golangci-lint включает govet
-// fieldalignment, поэтому []string/map идут первыми.
+// fieldalignment, поэтому map/slice (единственные поля с указателями) идут
+// первыми — иначе анализатор требует переставить их (pointer data prefix).
 type queueAdmissionStats struct {
-	Sessions     []string       `json:"sessions,omitempty"`
 	ByBackend    map[string]int `json:"waiting_by_backend,omitempty"`
+	Sessions     []string       `json:"sessions,omitempty"`
 	Served       int64          `json:"served_total"`
 	Timeouts     int64          `json:"timeout_total"`
 	WaitedTotal  int64          `json:"waited_total"`
@@ -135,12 +137,16 @@ type queueAdmissionStats struct {
 // запросов по сессии. Право «попробовать взять слот» выдаётся ровно одному
 // ожидающему (самому приоритетному), остальные спят на broadcast-канале.
 type admissionQueue struct {
-	mu         sync.Mutex
 	waiters    map[string][]*admissionWaiter
 	inflight   map[string]int
 	lastServed map[string]time.Time
-	seq        uint64
 	notify     chan struct{}
+	mu         sync.Mutex
+	seq        uint64
+	// wait — предел ожидания слота (LB_ADMISSION_WAIT_SEC). Хранится здесь, а не
+	// в Proxy: так структура Proxy не растёт (allocator size class, см. govet
+	// fieldalignment) — очередь и её настройка живут одним указателем.
+	wait time.Duration
 	// стата
 	waitedTotal  int64
 	timeoutTotal int64
@@ -148,12 +154,13 @@ type admissionQueue struct {
 	servedTotal  int64
 }
 
-func newAdmissionQueue() *admissionQueue {
+func newAdmissionQueue(wait time.Duration) *admissionQueue {
 	return &admissionQueue{
 		waiters:    make(map[string][]*admissionWaiter),
 		inflight:   make(map[string]int),
 		lastServed: make(map[string]time.Time),
 		notify:     make(chan struct{}),
+		wait:       wait,
 	}
 }
 
@@ -354,12 +361,13 @@ func (aq *admissionQueue) recordTimeout() {
 }
 
 // admissionLease — выданный слот (то же, что слот tryAcquireSlot).
+// Порядок полей — под fieldalignment (release-функция и строки несут указатели).
 type admissionLease struct {
+	release   func()
 	BackendID string
 	Session   string
 	Waited    time.Duration
 	Position  int
-	release   func()
 }
 
 // Release — освободить слот. Идемпотентно (sync.Once внутри release).
@@ -372,7 +380,26 @@ func (l *admissionLease) Release() {
 
 // admissionEnabled — включено ли ожидание (для метрик/WebUI).
 func (p *Proxy) admissionEnabled() bool {
-	return p != nil && p.admission != nil && p.admissionWait > 0
+	return p.admissionWaitTimeout() > 0
+}
+
+// admissionWaitTimeout — предел ожидания слота (0 = ожидание выключено).
+// nil-safe: Proxy без admission-очереди (юнит-тесты) → 0.
+func (p *Proxy) admissionWaitTimeout() time.Duration {
+	if p == nil || p.admission == nil {
+		return 0
+	}
+	return p.admission.wait
+}
+
+// setAdmissionWait — изменить предел ожидания (используется тестами и Shutdown).
+func (p *Proxy) setAdmissionWait(wait time.Duration) {
+	if p == nil || p.admission == nil {
+		return
+	}
+	p.admission.mu.Lock()
+	p.admission.wait = wait
+	p.admission.mu.Unlock()
 }
 
 // acquireInferenceSlot — R67b: получить слот бэкенда, при необходимости встав в
@@ -389,7 +416,7 @@ func (p *Proxy) acquireInferenceSlot(
 	if p == nil || backendID == "" {
 		return nil, 0, errAdmissionDisabled
 	}
-	wait := p.admissionWait
+	wait := p.admissionWaitTimeout()
 
 	if p.tryAcquireSlot(backendID) {
 		return p.newAdmissionLease(backendID, session, 0, 0), 0, nil
@@ -503,8 +530,10 @@ func (lr *LlamaCppRouter) acquireInferenceAdmission(
 		// Ожидание выключено — сохраняем поведение до R67b (без гейта).
 		return nil, true
 	case errors.Is(err, errAdmissionTimeout):
-		writeAdmissionUnavailable(w, model, session, position,
-			lr.proxy.admissionWait, lr.proxy.admissionWait)
+		// waited == предела ожидания: запрос действительно стоял в очереди
+		// весь разрешённый интервал и только потом получил 503.
+		maxWait := lr.proxy.admissionWaitTimeout()
+		writeAdmissionUnavailable(w, model, session, position, maxWait, maxWait)
 		return nil, false
 	default:
 		// Клиент отменил запрос, пока ждал слот: отвечать уже некому.

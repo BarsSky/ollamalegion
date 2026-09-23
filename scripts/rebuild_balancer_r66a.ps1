@@ -66,9 +66,22 @@ finally {
 
 Start-Sleep -Seconds 8
 docker ps --filter name=ol-bundled-balancer --format '{{.Names}}\t{{.Status}}\t{{.Image}}'
-Write-Host "[balancer] Проверка API (нужен X-API-Token из deployments/.env.bundled-with-agent):" -ForegroundColor Cyan
+Write-Host "[balancer] Проверка API (токен берётся из deployments/.env — единый источник):" -ForegroundColor Cyan
 try {
-    $token = (Select-String -Path (Join-Path $repoRoot "deployments\.env.bundled-with-agent") -Pattern '^CPPWORKER_API_TOKEN=(.*)$').Matches[0].Groups[1].Value
+    # R66d (2026-09-23): раньше токен читался из .env.bundled-with-agent. Теперь
+    # это НЕ источник: `environment:` в compose переопределяет `env_file`, а
+    # `${CPPWORKER_API_TOKEN:-...}` интерполируется только из `.env`. В живом
+    # .env.bundled-with-agent строка закомментирована, поэтому старая версия
+    # вернула бы $null и проверка падала с 401. Сначала .env, потом — как
+    # fallback — .env.bundled-with-agent (для старых развёртываний).
+    $token = $null
+    foreach ($envFile in @("deployments\.env", "deployments\.env.bundled-with-agent")) {
+        $envPath = Join-Path $repoRoot $envFile
+        if (-not (Test-Path $envPath)) { continue }
+        $m = Select-String -Path $envPath -Pattern '^\s*CPPWORKER_API_TOKEN=(.+)$'
+        if ($m) { $token = $m.Matches[0].Groups[1].Value.Trim(); break }
+    }
+    if (-not $token) { throw "CPPWORKER_API_TOKEN не найден ни в deployments/.env, ни в .env.bundled-with-agent" }
     $r = Invoke-WebRequest -Uri "http://127.0.0.1:18081/api/v1/cluster/config" -Headers @{ "X-API-Token" = $token } -TimeoutSec 15 -UseBasicParsing
     $cfg = $r.Content | ConvertFrom-Json
     Write-Host ("  backendEngine={0} operatingMode={1}" -f $cfg.backendEngine, $cfg.operatingMode)

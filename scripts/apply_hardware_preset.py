@@ -112,9 +112,20 @@ def main():
         print()
         print("# --dry-run: no changes written")
     else:
+        # R66d (2026-09-23): build/interpolation-переменные читаются compose'ом
+        # ТОЛЬКО из deployments/.env. Значения из .env.bundled-with-agent
+        # (env_file:) в `${VAR:-default}` не участвуют, поэтому CUDA_ARCH там
+        # игнорируется → сборка по дефолту `all` (9 архитектур, ~40 мин).
+        build_vars = [k for k in ('CUDA_ARCH', 'CPPWORKER_GPU_TAG') if k in env_vars]
         print()
         print("# To apply: append these lines to deployments/.env.bundled-with-agent")
         print("# (or eval the above in your shell after backing up the file)")
+        if build_vars:
+            print("#")
+            print("# ⚠️  ВНИМАНИЕ: " + ", ".join(build_vars) + " — build/interpolation-переменные.")
+            print("#     Их видит ТОЛЬКО deployments/.env (compose интерполирует ${VAR:-...}")
+            print("#     исключительно из него). Продублируйте эти строки в deployments/.env,")
+            print("#     иначе CUDA_ARCH останется дефолтным (all = 9 архитектур, ~40 мин сборки).")
 
 
 if __name__ == '__main__':

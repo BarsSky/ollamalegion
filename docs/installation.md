@@ -96,23 +96,30 @@ cp deployments/.env.bundled.example deployments/.env.bundled  # опционал
 ```bash
 # 1) Один раз — скопировать .env
 cd deployments
-cp .env.bundled-with-agent.example .env.bundled-with-agent
-# Отредактируйте .env.bundled-with-agent: смените CPPWORKER_API_TOKEN
+cp .env.example .env                          # интерполяция compose (порты, теги, ТОКЕН)
+cp .env.bundled-with-agent.example .env.bundled-with-agent   # env_file (модели, GPU, лимиты)
+
+# R66d (2026-09-23): API-токен задаётся ТОЛЬКО в .env (CPPWORKER_API_TOKEN) —
+# он один на balancer/cppworker/agent/webui. Строка CPPWORKER_API_TOKEN в
+# .env.bundled-with-agent на сервисы НЕ влияет (`environment:` переопределяет
+# `env_file`), её изменение даёт 401 в WebUI. Подробности — в .env.example.
 
 # 2) Linux/macOS/WSL
 export DOCKER_BUILDKIT=1
 export CUDA_ARCH=86    # sm_86 (RTX 30xx), sm_89 (RTX 40xx), sm_90 (RTX 50xx)
-docker compose -f docker-compose.cppworker-bundled-with-agent.yml \
-  --env-file .env.bundled-with-agent \
-  up -d --build
+docker compose -f docker-compose.cppworker-bundled-with-agent.yml up -d --build
 
 #    Windows PowerShell
 $env:DOCKER_BUILDKIT=1
 $env:CUDA_ARCH=86
-docker compose -f docker-compose.cppworker-bundled-with-agent.yml `
-               --env-file .env.bundled-with-agent `
-               up -d --build
+docker compose -f docker-compose.cppworker-bundled-with-agent.yml up -d --build
 ```
+
+> **`--env-file` больше не нужен** (и вреден): все сервисы уже подключают
+> `.env.bundled-with-agent` через `env_file:`, а `.env` compose читает сам.
+> Флаг `--env-file` заменял `.env` целиком, из-за чего терялись `CUDA_ARCH`,
+> `CPPWORKER_GPU_TAG` и `CPPWORKER_API_TOKEN` — отсюда «токен менял, а 401
+> оставался».
 
 **Вариант B: без агента (проще, но без GPU/VRAM метрик в WebUI)**
 
@@ -142,11 +149,14 @@ Smoke-check:
 # Балансер
 curl http://localhost:18081/api/v1/ping
 
+# Токен берём из единственного источника — deployments/.env
+export CPPWORKER_API_TOKEN=$(grep -E '^\s*CPPWORKER_API_TOKEN=' deployments/.env | cut -d= -f2)
+
 # Бэкенды
-curl -H 'X-API-Token: $CPPWORKER_API_TOKEN' http://localhost:18081/api/v1/backends
+curl -H "X-API-Token: $CPPWORKER_API_TOKEN" http://localhost:18081/api/v1/backends
 
 # CppWorker info
-curl -H 'X-API-Token: $CPPWORKER_API_TOKEN' http://localhost:18092/api/info
+curl -H "X-API-Token: $CPPWORKER_API_TOKEN" http://localhost:18092/api/info
 ```
 
 ### 2.4 Альтернативные compose
@@ -170,8 +180,10 @@ docker compose -f docker-compose.cppworker-bundled.yml \
   --env-file .env.bundled up -d --build
 
 # Bundled с sidecar-агентом (Вариант A из 2.3, рекомендуется)
-docker compose -f docker-compose.cppworker-bundled-with-agent.yml \
-  --env-file .env.bundled-with-agent up -d --build
+# R66d: БЕЗ --env-file — compose сам читает .env, а .env.bundled-with-agent
+# подключён через env_file:. С --env-file теряются CUDA_ARCH/CPPWORKER_GPU_TAG/
+# CPPWORKER_API_TOKEN из .env (9 архитектур вместо одной, рассинхрон токена → 401).
+docker compose -f docker-compose.cppworker-bundled-with-agent.yml up -d --build
 
 # Агент на отдельном сервере
 docker compose -f docker-compose.agent.yml --env-file .env up -d --build

@@ -100,5 +100,59 @@ if [ -z "$API_TOKEN" ]; then
     echo "============================================================"
 fi
 
+# === R66d (2026-09-23): проверка, что токен ПРИНИМАЕТСЯ балансером ===
+#
+# Зачем: токен задаётся в compose (`environment:`) из `deployments/.env`, а
+# значения-дубликаты лежали в `.env.bundled-with-agent` (env_file). `environment:`
+# переопределяет env_file, поэтому смена токена НЕ в том файле давала молчаливый
+# рассинхрон: WebUI шлёт один токен, балансер ждёт другой — и любое действие в UI
+# (загрузка модели, сохранение настроек, профили) падало с
+#   HTTP 401 {"error":"Unauthorized: valid API token required"}.
+# Проба ниже делает проблему видимой сразу в логах контейнера.
+#
+# ВАЖНО (проверено в контейнере nginx:alpine): wget здесь — BusyBox, у него НЕТ
+# длинных флагов GNU: `--server-response` и `--timeout` дают usage-ошибку. Нужны
+# короткие `-S` (показать заголовки) и `-T SEC` (таймаут). Заголовки идут в
+# stderr, поэтому 2>&1. В ответе BusyBox две строки содержат "HTTP/", вторая —
+# диагностика `wget: server returned error: HTTP/1.1 401 ...`; чтобы взять код из
+# заголовка, а не из текста ошибки, сравниваем именно первое поле ($1 ~ /^HTTP/).
+# Без этой проверки разбор давал "server" вместо "401" и 401 не распознавался.
+if [ -n "$API_TOKEN" ]; then
+    probe_host="${API_HOST:-loadbalancer}"
+    probe_port="${API_PORT:-18081}"
+    if command -v wget >/dev/null 2>&1; then
+        probe_code=$(wget -S -O /dev/null -T 5 \
+            --header "X-API-Token: $API_TOKEN" \
+            "http://${probe_host}:${probe_port}/api/v1/backends" 2>&1 \
+            | awk '$1 ~ /^HTTP\//{c=$2} END{print c}')
+        case "$probe_code" in
+            200)
+                echo "[entrypoint] API token check: OK (balancer accepts API_TOKEN)"
+                ;;
+            401)
+                echo ""
+                echo "============================================================"
+                echo "  ERROR: balancer rejected API_TOKEN (HTTP 401)"
+                echo "  WebUI будет получать 401 на всех действиях:"
+                echo "  загрузка/выгрузка модели, настройки, профили, GGUF."
+                echo "  Причина: рассинхрон токена. Единый источник —"
+                echo "  deployments/.env (переменная CPPWORKER_API_TOKEN);"
+                echo "  она подставляется в environment: всех сервисов."
+                echo "  Значение в deployments/.env.bundled-with-agent НЕ влияет"
+                echo "  (environment: переопределяет env_file) — там токен"
+                echo "  закомментирован, второго источника быть не должно."
+                echo "  После правки: docker compose up -d --force-recreate"
+                echo "============================================================"
+                ;;
+            "")
+                echo "[entrypoint] API token check: balancer unreachable at http://${probe_host}:${probe_port} (пропускаю)"
+                ;;
+            *)
+                echo "[entrypoint] API token check: неожиданный ответ $probe_code от балансера"
+                ;;
+        esac
+    fi
+fi
+
 # 3. Запуск nginx (передаём аргументы CMD)
 exec "$@"

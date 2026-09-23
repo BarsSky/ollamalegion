@@ -10,18 +10,33 @@
 # Использование (Round 51.6, 2026-08-20):
 #   cd deployments
 #   cp .env.bundled-with-agent.example .env.bundled-with-agent
-#   # отредактируйте .env.bundled-with-agent: выставьте CPPWORKER_API_TOKEN
-#   # (тот же, что и в bundled-сборке) и остальные параметры.
+#   # R66d: токен задаётся в deployments/.env (CPPWORKER_API_TOKEN), а НЕ в
+#   # .env.bundled-with-agent — см. блок "ПРО ТОКЕН" ниже. В .env.bundled-with-agent
+#   # остаются остальные параметры (модели, GPU, порты, лимиты).
 #   docker compose -f docker-compose.cppworker-bundled-with-agent.yml up -d --build
 #
-# ⚠️ Round 51.6: ВСЕ сервисы используют `env_file: .env.bundled-with-agent`.
-# Это АВТОМАТИЧЕСКИ загружает .env.bundled-with-agent в контейнеры — флаг
-# `--env-file` БОЛЬШЕ НЕ НУЖЕН. До R51.6 docker compose auto-loads только
-# `.env` (без суффикса), и если в нём нет `CPPWORKER_API_TOKEN` — WebUI
-# получал HTTP 401 от балансера (env-значения в контейнерах расходились).
-# Теперь: даже если `.env` содержит старые/чужие значения, .env.bundled-with-agent
-# переопределяет их на уровне контейнера через env_file (приоритет env_file
-# > .env в compose >= 2.24).
+# ⚠️ R66d (2026-09-23): ПРО ТОКЕН (исправление прежней неверной инструкции).
+#
+# Токен стека ОДИН и задаётся в `deployments/.env` (рядом с этим файлом):
+# CPPWORKER_API_TOKEN=<token>. Он подставляется compose'ом во все четыре сервиса:
+#   balancer   -> LB_API_TOKEN
+#   cppworker  -> API_TOKEN + CPPWORKER_BALANCER_TOKEN
+#   agent      -> BALANCER_TOKEN
+#   webui      -> API_TOKEN
+#
+# ПОЧЕМУ НЕ В .env.bundled-with-agent: `env_file:` только ДОБАВЛЯЕТ переменные в
+# контейнер, а `environment:` в compose их ПЕРЕОПРЕДЕЛЯЕТ. Плюс `${VAR:-default}`
+# интерполируется ТОЛЬКО из `.env`. Значит значение CPPWORKER_API_TOKEN из
+# .env.bundled-with-agent не влияет ни на один сервис — в живом файле эта строка
+# закомментирована с пояснением. Раньше инструкция говорила править именно её;
+# оператор менял токен там, сервисы продолжали работать со старым значением, и
+# WebUI отдавал 401 "invalid or missing API token" на load/unload и профили.
+#
+# Проверка согласованности (все четыре должны напечатать один и тот же хэш):
+#   docker exec ol-bundled-balancer          printenv LB_API_TOKEN | sha256sum
+#   docker exec ol-bundled-cppworker-gpu     printenv API_TOKEN | sha256sum
+#   docker exec ol-bundled-cppworker-gpu-agent printenv BALANCER_TOKEN | sha256sum
+#   docker exec ol-bundled-webui             printenv API_TOKEN | sha256sum
 #
 # ⚠️ Если .env.bundled-with-agent НЕ существует — `docker compose up` упадёт
 # с понятной ошибкой ("env_file: .env.bundled-with-agent not found").
@@ -69,6 +84,10 @@ services:
       - GIN_MODE=release
       - LOG_LEVEL=${LB_LOG_LEVEL:-info}
       - LB_CONFIG_PATH=/app/config/config.json
+      # R66d: единственный источник токена — CPPWORKER_API_TOKEN в
+      # deployments/.env (см. блок "ПРО ТОКЕН" в шапке файла). Значение ниже
+      # обязано совпадать с API_TOKEN/CPPWORKER_BALANCER_TOKEN/BALANCER_TOKEN
+      # остальных сервисов — все пять мест читают одну переменную.
       - LB_API_TOKEN=${CPPWORKER_API_TOKEN:-changeme-bundled-with-agent-token}
       - LB_NCTX_RELOAD_ENABLED=${LB_NCTX_RELOAD_ENABLED:-true}
       - LB_NCTX_RELOAD_MAX_N_CTX=${LB_NCTX_RELOAD_MAX_N_CTX:-131072}
@@ -174,9 +193,12 @@ services:
       # Round 15.1: opt-in flag для true parallel llama_decode через
       # BatchedScheduler. Default = false (Round 13 multi-slot path).
       - CPPWORKER_ENABLE_BATCHED_PARALLEL=${CPPWORKER_ENABLE_BATCHED_PARALLEL:-false}
+      # R66d: токен #2 из 5. Входящая аутентификация cppworker. Одно значение
+      # с балансером/агентом/WebUI (см. "ПРО ТОКЕН" в шапке).
       - API_TOKEN=${CPPWORKER_API_TOKEN:-changeme-bundled-with-agent-token}
       # Регистрация бэкенда в балансер.
       - CPPWORKER_BALANCER_URL=${BALANCER_URL:-http://loadbalancer:18081}
+      # R66d: токен #3 из 5. Исходящие вызовы cppworker -> balancer.
       - CPPWORKER_BALANCER_TOKEN=${CPPWORKER_API_TOKEN:-changeme-bundled-with-agent-token}
       - CPPWORKER_ADVERTISE_HOST=cppworker-gpu
       - CPPWORKER_ADVERTISE_PORT=18092
@@ -261,6 +283,7 @@ services:
       # (не AGENT_BALANCER_URL) — иначе используется дефолт http://localhost:18081,
       # который внутри compose указывает на сам контейнер agent и connection refused.
       - BALANCER_URL=${BALANCER_URL:-http://loadbalancer:18081}
+      # R66d: токен #4 из 5. Агент -> balancer (регистрация + метрики).
       - BALANCER_TOKEN=${CPPWORKER_API_TOKEN:-changeme-bundled-with-agent-token}
       # 2026-06-30: BACKEND_TYPE=llama_cpp обязательно — иначе баннер показывает
       # "Engine: Ollama" и весь смысл llama.cpp-агента теряется.
@@ -322,7 +345,7 @@ services:
         VERSION: ${WEBUI_VERSION:-dev}
         GIT_COMMIT: ${WEBUI_GIT_COMMIT:-unknown}
         BUILD_DATE: ${WEBUI_BUILD_DATE:-unknown}
-    image: ollama-legion/webui:r66-submodule-v10  # R66b: UI-фиксы, уникальные id визарда (wiz-*), мёртвые typeof-ветки убраны. Требует ?v=R66c.
+    image: ollama-legion/webui:r66-submodule-v11  # R66b: UI-фиксы, уникальные id визарда (wiz-*), мёртвые typeof-ветки убраны. Требует ?v=R66c.
     container_name: ol-bundled-webui
     restart: unless-stopped
     ports:
@@ -334,13 +357,15 @@ services:
       # Session 18 Round 15 (2026-07-29): API_TOKEN обязателен — иначе WebUI
       # шлёт X-API-Token: "" → cppworker возвращает 401 на per-backend save
       # (config update). Используем тот же токен что у cppworker и balancer.
+      # R66d: токен #5 из 5. WebUI -> balancer/cppworker. entrypoint.sh WebUI
+      # проверяет его против балансера при старте контейнера и печатает
+      # "API token check: OK" или ERROR с инструкцией (см. шапку файла).
       - API_TOKEN=${CPPWORKER_API_TOKEN:-changeme-bundled-with-agent-token}
-    # Round 51.6: env_file — auto-loads .env.bundled-with-agent. Без этого
-    # на свежем деплое WebUI получает 401 от балансера, потому что
-    # .env (auto-loaded) не содержит CPPWORKER_API_TOKEN, и все падают
-    # на дефолт `changeme-bundled-with-agent-token`. Если пользователь
-    # сменил токен в .env.bundled-with-agent — старый путь без --env-file
-    # приводил к расхождению токенов и 401.
+    # R66d: env_file ДОБАВЛЯЕТ переменные в контейнер, но НЕ переопределяет
+    # `environment:` выше, и НЕ участвует в интерполяции `${VAR:-default}`.
+    # Токен из этого env_file на сервисы НЕ влияет — источник deployments/.env.
+    # ВАЖНО: .env.bundled-with-agent НЕ содержит CPPWORKER_API_TOKEN (строка
+    # закомментирована), чтобы не создавать иллюзию второго источника.
     env_file:
       - .env.bundled-with-agent
     networks:

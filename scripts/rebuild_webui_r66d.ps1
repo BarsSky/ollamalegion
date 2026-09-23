@@ -1,6 +1,15 @@
 #!/usr/bin/env pwsh
 # rebuild_webui_r66d.ps1 — пересборка и раскатка webui-контейнера.
 #
+# R66d (2026-09-23): тег по умолчанию r66-submodule-v11. Что изменилось в образе:
+#   1) webui/nginx.conf: `location = /js/modules/config.js` с no-store. config.js
+#      генерируется entrypoint'ом и содержит API_TOKEN; раньше он попадал под
+#      `expires 1y` для *.js, браузер держал СТАРЫЙ токен до года и после смены
+#      токена получал 401 на всех действиях — это и был «token problem»;
+#   2) docker/webui/entrypoint.sh: при старте пробит балансер тем же токеном и
+#      печатает "API token check: OK" или ERROR+инструкцию при 401.
+#      Проба на BusyBox-флагах (-S -T), не GNU (--server-response/--timeout).
+#
 # Зачем отдельный скрипт: у webui нет своего rebuild-скрипта (были только для
 # balancer и cppworker), а руками легко забыть две вещи, которые уже приводили
 # к «пустым вкладкам»:
@@ -11,11 +20,11 @@
 #
 # Использование:
 #   pwsh -File scripts/rebuild_webui_r66d.ps1
-#   pwsh -File scripts/rebuild_webui_r66d.ps1 -Tag r66-submodule-v9
+#   pwsh -File scripts/rebuild_webui_r66d.ps1 -Tag r66-submodule-v11
 #   pwsh -File scripts/rebuild_webui_r66d.ps1 -SkipBuild      # только пересоздать
 
 param(
-    [string]$Tag = "r66-submodule-v8",
+    [string]$Tag = "r66-submodule-v11",
     [switch]$SkipBuild
 )
 

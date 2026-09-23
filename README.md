@@ -189,9 +189,12 @@ cd ollamalegion
 #   git submodule update --init --recursive
 
 # 2. Подготовить .env (один раз)
-cp deployments/.env.bundled-with-agent.example deployments/.env.bundled-with-agent
-# отредактируйте deployments/.env.bundled-with-agent под свою машину
-# (минимум — замените CPPWORKER_API_TOKEN на свой)
+cp deployments/.env.example deployments/.env                                  # интерполяция compose
+cp deployments/.env.bundled-with-agent.example deployments/.env.bundled-with-agent   # env_file: модели/GPU/лимиты
+# R66d: API-токен задаётся ТОЛЬКО в deployments/.env (CPPWORKER_API_TOKEN) —
+# один на balancer/cppworker/agent/webui. В .env.bundled-with-agent он НЕ влияет
+# (`environment:` переопределяет `env_file`) — смените его там и получите 401.
+# Остальное в .env.bundled-with-agent правьте под свою машину как раньше.
 
 # 3. Запустить стек
 ```
@@ -201,9 +204,10 @@ cp deployments/.env.bundled-with-agent.example deployments/.env.bundled-with-age
 ```powershell
 $env:DOCKER_BUILDKIT=1
 $env:CUDA_ARCH=86        # sm_86 для RTX 30xx, sm_89 для RTX 40xx, sm_90 для RTX 50xx
-docker compose -f deployments/docker-compose.cppworker-bundled-with-agent.yml `
-               --env-file  deployments/.env.bundled-with-agent `
-               up -d --build
+# --env-file НЕ нужен: composer сам читает deployments/.env, а .env.bundled-with-agent
+# подключён через env_file:. Флаг --env-file ПОДМЕНЯЛ .env целиком, из-за чего
+# терялись CUDA_ARCH (сборка под 9 архитектур ~40 мин вместо ~3) и токен.
+docker compose -f deployments/docker-compose.cppworker-bundled-with-agent.yml up -d --build
 ```
 
 **Linux / macOS / WSL2:**
@@ -211,9 +215,7 @@ docker compose -f deployments/docker-compose.cppworker-bundled-with-agent.yml `
 ```bash
 export DOCKER_BUILDKIT=1
 export CUDA_ARCH=86
-docker compose -f deployments/docker-compose.cppworker-bundled-with-agent.yml \
-               --env-file  deployments/.env.bundled-with-agent \
-               up -d --build
+docker compose -f deployments/docker-compose.cppworker-bundled-with-agent.yml up -d --build
 ```
 
 После запуска:
@@ -266,21 +268,17 @@ docker compose -f deployments/docker-compose.cppworker-bundled-with-agent.yml \
 ```powershell
 $env:DOCKER_BUILDKIT=1
 $env:CUDA_ARCH=86     # подставьте своё значение: 86/89/90/120
+# CUDA_ARCH читается compose'ом из deployments/.env — флаг --env-file его ПОДМЕНЯЛ,
+# и сборка уходила на 9 архитектур (~40 мин вместо ~3). Задайте CUDA_ARCH в .env.
 
 # cppworker GPU (cuda 12.x, sm_86)
-docker compose -f deployments/docker-compose.cppworker-bundled-with-agent.yml `
-               --env-file  deployments/.env.bundled-with-agent `
-               build cppworker-gpu
+docker compose -f deployments/docker-compose.cppworker-bundled-with-agent.yml build cppworker-gpu
 
 # Только balancer
-docker compose -f deployments/docker-compose.cppworker-bundled-with-agent.yml `
-               --env-file  deployments/.env.bundled-with-agent `
-               build loadbalancer
+docker compose -f deployments/docker-compose.cppworker-bundled-with-agent.yml build loadbalancer
 
 # Всё вместе
-docker compose -f deployments/docker-compose.cppworker-bundled-with-agent.yml `
-               --env-file  deployments/.env.bundled-with-agent `
-               build
+docker compose -f deployments/docker-compose.cppworker-bundled-with-agent.yml build
 ```
 
 **Linux / macOS / WSL2:**
@@ -289,17 +287,11 @@ docker compose -f deployments/docker-compose.cppworker-bundled-with-agent.yml `
 export DOCKER_BUILDKIT=1
 export CUDA_ARCH=86
 
-docker compose -f deployments/docker-compose.cppworker-bundled-with-agent.yml \
-               --env-file  deployments/.env.bundled-with-agent \
-               build cppworker-gpu
+docker compose -f deployments/docker-compose.cppworker-bundled-with-agent.yml build cppworker-gpu
 
-docker compose -f deployments/docker-compose.cppworker-bundled-with-agent.yml \
-               --env-file  deployments/.env.bundled-with-agent \
-               build loadbalancer
+docker compose -f deployments/docker-compose.cppworker-bundled-with-agent.yml build loadbalancer
 
-docker compose -f deployments/docker-compose.cppworker-bundled-with-agent.yml \
-               --env-file  deployments/.env.bundled-with-agent \
-               build
+docker compose -f deployments/docker-compose.cppworker-bundled-with-agent.yml build
 ```
 
 BuildKit=1 обязателен — с ним Go-only изменения собираются за ~30 сек (cached CUDA layers).

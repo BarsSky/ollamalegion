@@ -19,6 +19,13 @@
 Откройте `config/hardware-presets/<preset>.json`, скопируйте значения в
 ваш `deployments/.env.bundled-with-agent` (или в свой `.env`):
 
+> **R66d (2026-09-23):** `CUDA_ARCH` и `CPPWORKER_GPU_TAG` — это build/interpolation
+> переменные. Их читает ТОЛЬКО `deployments/.env` (`${VAR:-default}` в compose),
+> а значения из `.env.bundled-with-agent` (`env_file:`) на них НЕ влияют.
+> Если положить `CUDA_ARCH` только в `.env.bundled-with-agent`, сборка уйдёт по
+> дефолту `all` (9 архитектур, ~40 мин вместо ~3). Дублируйте эти два ключа в
+> `deployments/.env`.
+
 ```bash
 # Пример для RTX 30xx 8GB:
 cat config/hardware-presets/rtx30-8gb.json | \
@@ -26,16 +33,15 @@ cat config/hardware-presets/rtx30-8gb.json | \
     >> deployments/.env.bundled-with-agent
 
 # Потом пересоберите образ если менялся CUDA_ARCH:
-cd deployments && docker compose -f docker-compose.cppworker-bundled-with-agent.yml \
-    --env-file .env.bundled-with-agent build cppworker
-docker compose -f docker-compose.cppworker-bundled-with-agent.yml \
-    --env-file .env.bundled-with-agent up -d
+# ВАЖНО: --env-file не нужен и вреден (подменяет .env целиком).
+cd deployments && docker compose -f docker-compose.cppworker-bundled-with-agent.yml build cppworker-gpu
+docker compose -f docker-compose.cppworker-bundled-with-agent.yml up -d
 ```
 
-### Вариант 2 — через `scripts/apply-hardware-preset.py` (1 минута)
+### Вариант 2 — через `scripts/apply_hardware_preset.py` (1 минута)
 
 ```bash
-python scripts/apply-hardware-preset.py rtx30-8gb
+python scripts/apply_hardware_preset.py rtx30-8gb
 # Generated deployments/.env.bundled-with-agent from rtx30-8gb.json
 #   CUDA_ARCH=86
 #   CPPWORKER_GPU_TAG=86-abort-r35
@@ -43,8 +49,7 @@ python scripts/apply-hardware-preset.py rtx30-8gb
 #   ... 15 lines
 #
 # Next: rebuild cppworker if CUDA_ARCH changed:
-#   cd deployments && docker compose -f docker-compose.cppworker-bundled-with-agent.yml \
-#       --env-file .env.bundled-with-agent build cppworker
+#   cd deployments && docker compose -f docker-compose.cppworker-bundled-with-agent.yml build cppworker-gpu
 ```
 
 ### Вариант 3 — через WebUI (Phase 1.3b, ещё не реализовано)

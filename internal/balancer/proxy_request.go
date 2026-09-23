@@ -975,6 +975,13 @@ func (p *Proxy) recordRequest(backendID string) {
 type warmupOptions struct {
 	NumCtx    int // optional: override n_ctx (0 = not set, cppworker использует default)
 	GPULayers int // optional: override gpu_layers (0 = not set, cppworker использует default)
+
+	// R67a (2026-09-23): контекст запроса клиента и ключ сессии/пользователя.
+	// Нужны, чтобы ожидание авто-загрузки прерывалось при отмене клиентом
+	// (Ctx) и чтобы в логах/очереди различать разных пользователей OpenWebUI
+	// (SessionKey). Пустые значения = прежнее поведение.
+	Ctx        context.Context
+	SessionKey string
 }
 
 // warmupModel — загрузка модели в VRAM:

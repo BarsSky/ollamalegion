@@ -109,7 +109,7 @@ func (lr *LlamaCppRouter) handleOpenAIChatCompletions(w http.ResponseWriter, r *
 				loadOpts.NumCtx = resolved.Value
 			}
 		}
-		if _, loadErr := lr.ensureModelLoadedOnBackend(backendID, model, loadOpts); loadErr != nil {
+		if _, loadErr := lr.ensureModelLoadedOnBackend(backendID, model, warmupOptions{NumCtx: loadOpts.NumCtx, GPULayers: loadOpts.GPULayers, Ctx: r.Context(), SessionKey: RequestSessionKey(r, bodyBuf)}); loadErr != nil {
 			logger.Get().Errorw("handleOpenAIChatCompletions: auto-load failed",
 				"backend", backendID, "model", model, "error", loadErr)
 			// R60.16: include Retry-After so clients (Cline/Roo/openai-python)
@@ -349,7 +349,7 @@ func (lr *LlamaCppRouter) handleOpenAICompletion(w http.ResponseWriter, r *http.
 				loadOpts.NumCtx = resolved.Value
 			}
 		}
-		if _, loadErr := lr.ensureModelLoadedOnBackend(backendID, model, loadOpts); loadErr != nil {
+		if _, loadErr := lr.ensureModelLoadedOnBackend(backendID, model, warmupOptions{NumCtx: loadOpts.NumCtx, GPULayers: loadOpts.GPULayers, Ctx: r.Context(), SessionKey: RequestSessionKey(r, bodyBuf)}); loadErr != nil {
 			logger.Get().Errorw("handleOpenAICompletion: auto-load failed",
 				"backend", backendID, "model", model, "error", loadErr)
 			// R60.16: include Retry-After so clients back off (see chat completions).
@@ -508,7 +508,7 @@ func (lr *LlamaCppRouter) handleOpenAIEmbeddings(w http.ResponseWriter, r *http.
 
 	// Auto-load (если модель ещё не загружена).
 	if model != "" {
-		if _, loadErr := lr.ensureModelLoadedOnBackend(backendID, model, warmupOptions{}); loadErr != nil {
+		if _, loadErr := lr.ensureModelLoadedOnBackend(backendID, model, warmupOptions{Ctx: r.Context(), SessionKey: RequestSessionKey(r, bodyBuf)}); loadErr != nil {
 			logger.Get().Errorw("handleOpenAIEmbeddings: auto-load failed",
 				"backend", backendID, "model", model, "error", loadErr)
 			// R60.16: include Retry-After so clients back off (see chat completions).
@@ -637,7 +637,7 @@ func (lr *LlamaCppRouter) handleChat(w http.ResponseWriter, r *http.Request) {
 	if resolvedLoad.Value > 0 {
 		loadOpts.NumCtx = resolvedLoad.Value
 	}
-	if _, loadErr := lr.ensureModelLoadedOnBackend(backendID, model, loadOpts); loadErr != nil {
+	if _, loadErr := lr.ensureModelLoadedOnBackend(backendID, model, warmupOptions{NumCtx: loadOpts.NumCtx, GPULayers: loadOpts.GPULayers, Ctx: r.Context(), SessionKey: RequestSessionKey(r, bodyBuf)}); loadErr != nil {
 		// R60.41: downgraded to Info — это не "error" в обычном смысле, это
 		// просто "load стартовал async, клиенту надо подождать". Реальная
 		// ошибка была бы только если load полностью провалился (sync path,
@@ -771,7 +771,7 @@ func (lr *LlamaCppRouter) handleGenerate(w http.ResponseWriter, r *http.Request)
 	if resolvedLoad.Value > 0 {
 		loadOpts.NumCtx = resolvedLoad.Value
 	}
-	if _, loadErr := lr.ensureModelLoadedOnBackend(backendID, model, loadOpts); loadErr != nil {
+	if _, loadErr := lr.ensureModelLoadedOnBackend(backendID, model, warmupOptions{NumCtx: loadOpts.NumCtx, GPULayers: loadOpts.GPULayers, Ctx: r.Context(), SessionKey: RequestSessionKey(r, bodyBuf)}); loadErr != nil {
 		logger.Get().Errorw("handleGenerate: auto-load failed",
 			"backend", backendID, "model", model, "error", loadErr)
 		// R60.16: include Retry-After so clients back off (see chat completions).

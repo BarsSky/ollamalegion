@@ -74,6 +74,12 @@ type Proxy struct {
 	// → legacy sync.
 	lbAutoLoadAsync bool
 
+	// lbAutoLoadWait — R67a (2026-09-23): сколько ждать завершения авто-загрузки
+	// модели в async-режиме, прежде чем вернуть клиенту 503+Retry-After.
+	// env LB_AUTO_LOAD_WAIT_SEC (0 = прежнее поведение «сразу 503»).
+	// default 180s. См. autoload_wait.go.
+	lbAutoLoadWait time.Duration
+
 	// lbNCtxReloadAsync — R60.47 (2026-09-11): если true, n_ctx auto-reload
 	// (triggered by cppworker 400 prompt_too_long) запускается в goroutine и
 	// balancer СРАЗУ возвращает 503+Retry-After. default=true. env
@@ -267,6 +273,12 @@ func NewProxy(config *types.LoadBalancerConfig) *Proxy {
 		// hatch LB_AUTO_LOAD_ASYNC=0 не работал вообще: оператор выставлял
 		// переменную, а балансер всё равно отвечал 503+Retry-After.
 		lbAutoLoadAsync: IsAutoLoadAsyncEnabled(),
+
+		// R67a (2026-09-23): сколько ждать завершения авто-загрузки перед 503.
+		// В async-режиме раньше клиент получал ошибку сразу («загрузится через
+		// 30-180с»), и проходил только повторный запрос. Теперь ждём
+		// LB_AUTO_LOAD_WAIT_SEC (default 180s) — первый же запрос обслуживается.
+		lbAutoLoadWait: AutoLoadWaitTimeout(),
 
 		// R60.47 (2026-09-11): default async n_ctx reload. Sync mode (legacy)
 		// доступен через env LB_NCTX_RELOAD_ASYNC=0. Async mode решает

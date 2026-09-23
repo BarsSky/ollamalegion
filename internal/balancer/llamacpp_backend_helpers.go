@@ -1,6 +1,7 @@
 package balancer
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -337,6 +338,18 @@ func basenameOfPath(p string) string {
 //   - loaded=true если модель уже загружена или успешно загружена
 //   - loaded=false + err != nil если не удалось загрузить
 func (lr *LlamaCppRouter) ensureModelLoadedOnBackend(backendID, modelName string, extraOpts ...warmupOptions) (bool, error) {
+	// R67a: контекст запроса клиента (для ожидания авто-загрузки) и ключ
+	// сессии/пользователя (для логов и будущей очереди).
+	reqCtx := context.Background()
+	var sessionKey string
+	if len(extraOpts) > 0 {
+		if o := extraOpts[0]; o.Ctx != nil {
+			reqCtx = o.Ctx
+		}
+		if len(extraOpts) > 0 {
+			sessionKey = extraOpts[0].SessionKey
+		}
+	}
 
 	ridLog(lr_recentCtx()).Debugw("ensureModelLoadedOnBackend: enter",
 		"backend", backendID, "model", modelName, "step", "enter")
@@ -524,6 +537,29 @@ func (lr *LlamaCppRouter) ensureModelLoadedOnBackend(backendID, modelName string
 					"backend", backendID, "model", modelName)
 			}
 		}()
+		// R67a (2026-09-23): вместо немедленного 503 «загрузится через 30-180с»
+		// ждём завершения загрузки ограниченное время (LB_AUTO_LOAD_WAIT_SEC,
+		// default 180). На нормальном железе загрузка укладывается в это окно, и
+		// ПЕРВЫЙ же запрос клиента обслуживается — раньше клиент получал ошибку и
+		// проходил только повторный запрос. Если не успели — отдаём прежний
+		// 503+Retry-After (модель продолжает грузиться, retry пройдёт).
+		if wait := lr.proxy.lbAutoLoadWait; wait > 0 {
+			if waitErr := lr.waitForModelLoad(reqCtx, backendID, modelName, wait); waitErr == nil {
+				ridLog(lr_recentCtx()).Infow("ensureModelLoadedOnBackend: async auto-load finished, serving request",
+					"backend", backendID, "model", modelName, "waited_max", wait, "session", sessionKey)
+				lr.loadBackoff.recordSuccess(backendID, modelName)
+				return true, nil
+			} else {
+				ridLog(lr_recentCtx()).Warnw("ensureModelLoadedOnBackend: async auto-load not finished in time, returning 503",
+					"backend", backendID, "model", modelName, "wait", wait,
+					"error", waitErr, "session", sessionKey)
+				if strings.Contains(waitErr.Error(), "model load failed") {
+					// Реальная ошибка загрузки — отдаём её текст клиенту, он
+					// actionable (файла нет / n_ctx не влезает и т.п.).
+					return false, waitErr
+				}
+			}
+		}
 		// R60.41 (2026-09-11): не говорим "failed" — мы только что kickнули
 		// load, не дождавшись результата. Сообщение "auto-load in progress,
 		// retry in 30s" вводит пользователя в заблуждение: он видит "failed"

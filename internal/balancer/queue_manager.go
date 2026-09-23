@@ -63,15 +63,16 @@ type QueuedRequest struct {
 
 // QueueStats - статистика очереди
 type QueueStats struct {
-	CurrentSize        int   `json:"current_size"`
-	MaxSize            int   `json:"max_size"`
-	Processed          int64 `json:"processed_total"`
-	WaitTimeAvgMs      int64 `json:"avg_wait_time_ms"`
-	Workers            int   `json:"workers"`
-	TimeoutSec         int   `json:"timeout_sec"`
-	DispatchByAffinity int64 `json:"dispatch_by_affinity"`
-	DispatchByLoad     int64 `json:"dispatch_by_load"`
-	DispatchByConfig   int64 `json:"dispatch_by_config"`
+	Admission          queueAdmissionStats `json:"admission"`
+	CurrentSize        int                 `json:"current_size"`
+	MaxSize            int                 `json:"max_size"`
+	Processed          int64               `json:"processed_total"`
+	WaitTimeAvgMs      int64               `json:"avg_wait_time_ms"`
+	Workers            int                 `json:"workers"`
+	TimeoutSec         int                 `json:"timeout_sec"`
+	DispatchByAffinity int64               `json:"dispatch_by_affinity"`
+	DispatchByLoad     int64               `json:"dispatch_by_load"`
+	DispatchByConfig   int64               `json:"dispatch_by_config"`
 }
 
 // NewQueueManager - создание менеджера очереди с pool workers

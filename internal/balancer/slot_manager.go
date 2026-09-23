@@ -80,6 +80,10 @@ func (p *Proxy) releaseSlot(backendID string) {
 		state.ActiveReqs--
 	}
 	state.mu.Unlock()
+
+	// R67b (2026-09-23): слот освободился — будим admission-очередь, иначе
+	// ожидающие запросы просыпались бы только по poll-интервалу (250 мс).
+	p.admission.broadcast()
 }
 
 // checkResourceLimits - проверка лимитов ресурсов (SOFT-режим)

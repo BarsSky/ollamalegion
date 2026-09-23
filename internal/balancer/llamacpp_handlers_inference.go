@@ -149,8 +149,17 @@ func (lr *LlamaCppRouter) handleOpenAIChatCompletions(w http.ResponseWriter, r *
 			"resolved_n_ctx", resolved.Value, "source", resolved.Source)
 	}
 
-	targetURL := fmt.Sprintf("http://%s:%d/v1/chat/completions", state.Backend.Host, lr.proxy.getBackendPort(state.Backend))
+	// R67b (2026-09-23): admission-очередь. Если все слоты бэкенда заняты
+	// (maxConcurrentReqs), запрос ждёт освобождения вместо немедленного 503 —
+	// жалоба «резко отбивает повторный запрос выдавая 503, а не поставляет в
+	// очередь». Освобождается в defer после завершения генерации.
+	if release, admitted := lr.acquireInferenceAdmission(w, r, backendID, model, bodyBuf); !admitted {
+		return
+	} else if release != nil {
+		defer release()
+	}
 
+	targetURL := fmt.Sprintf("http://%s:%d/v1/chat/completions", state.Backend.Host, lr.proxy.getBackendPort(state.Backend))
 	logger.Get().Infow("handleOpenAIChatCompletions: proxying to cppworker",
 		"backend", backendID, "url", targetURL, "model", model)
 
@@ -669,6 +678,13 @@ func (lr *LlamaCppRouter) handleChat(w http.ResponseWriter, r *http.Request) {
 			"resolved_n_ctx", resolved.Value, "source", resolved.Source)
 	}
 
+	// R67b (2026-09-23): admission-очередь — ждём свободный слот вместо 503.
+	if release, admitted := lr.acquireInferenceAdmission(w, r, backendID, model, bodyBuf); !admitted {
+		return
+	} else if release != nil {
+		defer release()
+	}
+
 	var err error
 	if isStreamingFromBody(r.URL.Path, bodyBuf) {
 		logger.Get().Debugw("handleChat: streaming mode", "backend", backendID)
@@ -793,6 +809,13 @@ func (lr *LlamaCppRouter) handleGenerate(w http.ResponseWriter, r *http.Request)
 		logger.Get().Debugw("handleGenerate: 3-tier resolver applied num_ctx override",
 			"model", model, "backend", backendID,
 			"resolved_n_ctx", resolved.Value, "source", resolved.Source)
+	}
+
+	// R67b (2026-09-23): admission-очередь — ждём свободный слот вместо 503.
+	if release, admitted := lr.acquireInferenceAdmission(w, r, backendID, model, bodyBuf); !admitted {
+		return
+	} else if release != nil {
+		defer release()
 	}
 
 	var err error

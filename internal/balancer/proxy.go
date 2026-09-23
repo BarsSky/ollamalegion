@@ -80,6 +80,15 @@ type Proxy struct {
 	// default 180s. См. autoload_wait.go.
 	lbAutoLoadWait time.Duration
 
+	// admission — R67b (2026-09-23): очередь ожидания свободного слота для
+	// inference-запросов llama.cpp (см. admission_queue.go). Устраняет «резкий
+	// 503» при занятых слотах и даёт per-session справедливость.
+	admission *admissionQueue
+
+	// admissionWait — R67b: предел ожидания слота в admission-очереди.
+	// env LB_ADMISSION_WAIT_SEC (0 = прежнее поведение «сразу 503»), default 300s.
+	admissionWait time.Duration
+
 	// lbNCtxReloadAsync — R60.47 (2026-09-11): если true, n_ctx auto-reload
 	// (triggered by cppworker 400 prompt_too_long) запускается в goroutine и
 	// balancer СРАЗУ возвращает 503+Retry-After. default=true. env
@@ -279,6 +288,11 @@ func NewProxy(config *types.LoadBalancerConfig) *Proxy {
 		// 30-180с»), и проходил только повторный запрос. Теперь ждём
 		// LB_AUTO_LOAD_WAIT_SEC (default 180s) — первый же запрос обслуживается.
 		lbAutoLoadWait: AutoLoadWaitTimeout(),
+
+		// R67b (2026-09-23): admission-очередь вместо «резкого 503» на занятых
+		// слотах. LB_ADMISSION_WAIT_SEC=0 возвращает прежнее поведение.
+		admission:     newAdmissionQueue(),
+		admissionWait: AdmissionWaitTimeout(),
 
 		// R60.47 (2026-09-11): default async n_ctx reload. Sync mode (legacy)
 		// доступен через env LB_NCTX_RELOAD_ASYNC=0. Async mode решает

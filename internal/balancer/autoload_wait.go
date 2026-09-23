@@ -222,20 +222,26 @@ func (lr *LlamaCppRouter) waitForModelLoad(
 	}
 }
 
-// requestSessionKey — R67a: идентификатор пользователя/сессии клиента.
+// RequestSessionKey — R67a: идентификатор пользователя/сессии клиента.
 //
 // Нужен, чтобы различать разных пользователей OpenWebUI (одна модель может
-// обслуживать нескольких человек одновременно) в логах, метриках и — в
-// следующем шаге — в очереди запросов. Порядок источников:
-//  1. X-User-Id / X-OpenWebUI-User-Id — явный пользователь (прокси OpenWebUI);
+// обслуживать нескольких человек одновременно) в логах, метриках и в
+// admission-очереди (R67b). Порядок источников:
+//  1. X-User-Id / X-OpenWebUI-User-Id / X-User-Email — явный пользователь;
 //  2. X-Session-Id / X-Chat-Id — идентификатор сессии/чата;
-//  3. поле "user" в теле запроса (стандарт OpenAI) или "session_id" (Ollama);
+//  3. поле "user"/"user_id" в теле запроса (стандарт OpenAI) или "chat_id"/
+//     "session_id" (Ollama), в том числе внутри metadata (OpenWebUI);
 //  4. "" — анонимный клиент (Cline и подобные не передают ни того, ни другого).
 //
 // Значение не аутентифицирует запрос — это только ключ группировки/справедливости.
 func RequestSessionKey(r *http.Request, body []byte) string {
 	if r != nil {
-		for _, h := range []string{"X-User-Id", "X-OpenWebUI-User-Id", "X-Session-Id", "X-Chat-Id"} {
+		for _, h := range []string{"X-User-Id", "X-OpenWebUI-User-Id", "X-User-Email"} {
+			if v := strings.TrimSpace(r.Header.Get(h)); v != "" {
+				return h + ":" + v
+			}
+		}
+		for _, h := range []string{"X-Session-Id", "X-Chat-Id", "X-Conversation-Id"} {
 			if v := strings.TrimSpace(r.Header.Get(h)); v != "" {
 				return h + ":" + v
 			}
@@ -244,14 +250,30 @@ func RequestSessionKey(r *http.Request, body []byte) string {
 	if len(body) > 0 {
 		var parsed struct {
 			User      string `json:"user"`
+			UserID    string `json:"user_id"`
 			SessionID string `json:"session_id"`
+			ChatID    string `json:"chat_id"`
+			Metadata  struct {
+				UserID    string `json:"user_id"`
+				ChatID    string `json:"chat_id"`
+				SessionID string `json:"session_id"`
+			} `json:"metadata"`
 		}
 		if err := json.Unmarshal(body, &parsed); err == nil {
-			if v := strings.TrimSpace(parsed.User); v != "" {
-				return "user:" + v
+			for _, v := range []string{parsed.User, parsed.UserID, parsed.Metadata.UserID} {
+				if v = strings.TrimSpace(v); v != "" {
+					return "user:" + v
+				}
 			}
-			if v := strings.TrimSpace(parsed.SessionID); v != "" {
-				return "session:" + v
+			for _, v := range []string{parsed.SessionID, parsed.Metadata.SessionID} {
+				if v = strings.TrimSpace(v); v != "" {
+					return "session:" + v
+				}
+			}
+			for _, v := range []string{parsed.ChatID, parsed.Metadata.ChatID} {
+				if v = strings.TrimSpace(v); v != "" {
+					return "chat:" + v
+				}
 			}
 		}
 	}

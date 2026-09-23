@@ -12,11 +12,77 @@ import (
 	"ollama-loadbalancer/pkg/logger"
 )
 
+// requestUserIdentity — R67b (2026-09-23): идентификатор пользователя из
+// заголовков. OpenWebUI (и любой прокси перед ним) может передавать
+// X-User-Id / X-OpenWebUI-User-Id / X-User-Email; балансер обязан их учитывать,
+// иначе все пользователи OpenWebUI (один IP, один Authorization-токен)
+// сливаются в одну сессию. См. r67b_session_identity_test.go.
+func requestUserIdentity(r *http.Request) string {
+	if r == nil {
+		return ""
+	}
+	for _, h := range []string{"X-User-Id", "X-OpenWebUI-User-Id", "X-User-Email"} {
+		if v := strings.TrimSpace(r.Header.Get(h)); v != "" {
+			return v
+		}
+	}
+	return ""
+}
+
+// firstStringField — первое непустое строковое поле из набора ключей.
+func firstStringField(obj map[string]interface{}, keys ...string) string {
+	for _, k := range keys {
+		if v, ok := obj[k].(string); ok && strings.TrimSpace(v) != "" {
+			return strings.TrimSpace(v)
+		}
+	}
+	return ""
+}
+
+// requestBodyIdentity — R67b: user/chat идентификаторы из тела запроса.
+//
+// Источники (по убыванию приоритета):
+//   - top-level: user / user_id, chat_id / conversation_id / session_id;
+//   - nested metadata: metadata.user_id, metadata.chat_id, metadata.session_id —
+//     именно так OpenWebUI (OpenAI-совместимый режим) помечает запрос.
+//
+// Тело читается один раз (до 1 MiB) и ВОССТАНАВЛИВАЕТСЯ через io.NopCloser,
+// так что вызывающий код может читать его снова.
+func requestBodyIdentity(r *http.Request) (user, chat string) {
+	if r == nil || r.Body == nil || r.Method != http.MethodPost {
+		return "", ""
+	}
+	body, err := io.ReadAll(r.Body)
+	if err != nil {
+		return "", ""
+	}
+	r.Body = io.NopCloser(strings.NewReader(string(body)))
+	if len(body) == 0 || len(body) > 1<<20 {
+		return "", ""
+	}
+	var req map[string]interface{}
+	if err := json.Unmarshal(body, &req); err != nil {
+		return "", ""
+	}
+	user = firstStringField(req, "user", "user_id", "userId", "user_email")
+	chat = firstStringField(req, "chat_id", "chatId", "conversation_id", "conversationId", "session_id")
+	if md, ok := req["metadata"].(map[string]interface{}); ok {
+		if user == "" {
+			user = firstStringField(md, "user_id", "userId", "user", "user_email")
+		}
+		if chat == "" {
+			chat = firstStringField(md, "chat_id", "chatId", "conversation_id", "conversationId", "session_id")
+		}
+	}
+	return user, chat
+}
+
 // extractChatIDFromBody — пытается извлечь идентификатор чата из запроса.
 // Используется в первую очередь для OpenWebUI, который может передавать
 // chat_id в заголовке (X-Chat-Id / X-Conversation-Id) или в теле запроса
-// (chat_id / conversation_id). Это позволяет балансеру различать разные
-// чаты одного пользователя, которые иначе имели бы одинаковый sessionID.
+// (chat_id / conversation_id / session_id, в т.ч. внутри metadata).
+// Это позволяет балансеру различать разные чаты одного пользователя, которые
+// иначе имели бы одинаковый sessionID.
 //
 // Функция читает тело через io.ReadAll и ВОССТАНАВЛИВАЕТ r.Body
 // через io.NopCloser — вызывающий код может перечитать тело без проблем.
@@ -31,25 +97,8 @@ func extractChatIDFromBody(r *http.Request) string {
 			return v
 		}
 	}
-	// Затем — тело (если оно не слишком большое).
-	body, err := io.ReadAll(r.Body)
-	if err != nil {
-		return ""
-	}
-	r.Body = io.NopCloser(strings.NewReader(string(body)))
-	if len(body) == 0 || len(body) > 1<<20 { // 1 MiB — выше не имеет смысла
-		return ""
-	}
-	var req map[string]interface{}
-	if err := json.Unmarshal(body, &req); err != nil {
-		return ""
-	}
-	for _, key := range []string{"chat_id", "conversation_id", "chatId", "conversationId"} {
-		if v, ok := req[key].(string); ok && v != "" {
-			return v
-		}
-	}
-	return ""
+	_, chat := requestBodyIdentity(r)
+	return chat
 }
 
 // defaultTrustedProxies — стандартные доверенные сети: loopback, Docker bridge, RFC1918
@@ -186,6 +235,15 @@ func (p *Proxy) getClientRealIP(r *http.Request) string {
 // за одним IP (NAT/прокси). Использует X-Client-ID, Authorization header,
 // X-Session-ID, или генерирует fingerprint из комбинации IP + User-Agent.
 func (p *Proxy) getClientFingerprint(r *http.Request) string {
+	// Приоритет 0 (R67b, 2026-09-23): явный пользователь из заголовков.
+	// OpenWebUI проксирует всех пользователей с одного IP, с одним User-Agent и
+	// одним Authorization-токеном, поэтому без этого все они получали один и
+	// тот же fingerprint (в живом стенде 3 запроса от 3 пользователей дали одну
+	// сессию с requestCount=3).
+	if user := requestUserIdentity(r); user != "" {
+		h := sha256.Sum256([]byte("user:" + user))
+		return "usr:" + hex.EncodeToString(h[:8])
+	}
 	// Приоритет 1: X-Client-ID — явный идентификатор клиента (Cline передаёт)
 	if clientID := r.Header.Get("X-Client-ID"); clientID != "" {
 		h := sha256.Sum256([]byte(clientID))
@@ -263,6 +321,26 @@ func (p *Proxy) getSessionIDWithModel(r *http.Request, clientName, model string)
 	}
 	if cookie, err := r.Cookie("session_id"); err == nil {
 		return cookie.Value + "::" + model + "::" + endpointType
+	}
+
+	// R67b (2026-09-23): явный пользователь (заголовок или тело/metadata) —
+	// РАНЬШЕ chat_id и fingerprint. Иначе несколько пользователей OpenWebUI
+	// (один IP, один Authorization-токен, разные чаты) либо сливались в одну
+	// сессию, либо «разделялись» только по чату, и жалоба «балансер не
+	// различает разных пользователей OpenWebUI» оставалась в силе.
+	// Порядок: заголовок X-User-Id → user в теле → metadata.user_id.
+	bodyUser, _ := requestBodyIdentity(r)
+	userID := requestUserIdentity(r)
+	if userID == "" {
+		userID = bodyUser
+	}
+	if userID != "" {
+		composite := "user:" + userID + "::" + model + "::" + endpointType
+		if chatID := extractChatIDFromBody(r); chatID != "" {
+			composite += "::chat:" + chatID
+		}
+		h := sha256.Sum256([]byte(composite))
+		return "usr:" + hex.EncodeToString(h[:16]) + "::" + model
 	}
 
 	// Приоритет 3: chat_id из заголовка или тела запроса (OpenWebUI / LiteLLM).

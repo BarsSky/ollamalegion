@@ -142,7 +142,14 @@
             ],
             "kvCacheType": "q4_0"
         },
-        "gemma-4": {
+        "gemma-4-E4B-it-Q4_K_M": {
+            "_note": "R66d (2026-09-23): профиль для модели из конфига Cline (actModeOllamaModelId). Файл: gemma-4-E4B-it-qat-UD-Q4_K_XL.gguf из unsloth/gemma-4-E4B-it-qat-GGUF, переименован в gemma-4-E4B-it-Q4_K_M.gguf (см. models/*.source.json). n_ctx=8192 — как рекомендует scripts/fix-gemma4-retry-loop.ps1: на больших ctx у gemma-4 был upstream GGML_ASSERT/дедлок KV-cache на 8GB VRAM. numGpuLayers=-1 = все слои на GPU.",
+            "contextLength": 8192,
+            "batchSize": 512,
+            "numGpuLayers": -1,
+            "flashAttn": true,
+            "useMmap": true
+        },        "gemma-4": {
             "_note": "2026-06-25: numCtx снижен 131072 → 32768 для стабильной работы на 8GB VRAM. При 131072 cppworker зависал в KV-cache allocation (deadlock) — для gemma-4-E4B-it (n_embd=2560, 42 layers, FP16 KV) нужно ~13GB под KV-cache, что не влезает в 8GB VRAM даже с mmap в RAM. 32768 — помещается с auto_offload + partial GPU offload (gemma-4 numCtx=32768, gpuLayers=-2/AUTO, flash_attn=1, mmap=true). При необходимости большего контекста Cline должен задать меньший n_ctx в body или использовать ollama-native (без этого профиля).",
             "contextLength": 32768,
             "batchSize": 256,

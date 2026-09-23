@@ -32,17 +32,21 @@ import (
 const loadFailureTTL = 10 * time.Minute
 
 // loadFailureEntry — одна запись о провале загрузки.
+//
+// Порядок полей — по требованию govet fieldalignment (в .golangci.yml включён
+// govet.enable-all): первым идёт поле с указателем (time.Time хранит
+// *Location), за ним строка.
 type loadFailureEntry struct {
-	Err string
 	At  time.Time
+	Err string
 }
 
 // loadFailureRegistry — потокобезопасный реестр последних провалов загрузки.
 type loadFailureRegistry struct {
-	mu  sync.Mutex
 	m   map[string]loadFailureEntry
-	ttl time.Duration
 	now func() time.Time // подмена времени в тестах
+	ttl time.Duration
+	mu  sync.Mutex
 }
 
 func newLoadFailureRegistry(ttl time.Duration) *loadFailureRegistry {

@@ -15,8 +15,16 @@ import (
 // createTestAgentConfig - создание тестовой конфигурации агента
 func createTestAgentConfig() *types.AgentConfig {
 	return &types.AgentConfig{
-		AgentID:           "test-agent-1",
-		BalancerURL:       "http://localhost:8080",
+		AgentID:     "test-agent-1",
+		BalancerURL: "http://localhost:8080",
+		// R69 (2026-09-23): НЕ оставляем OllamaURL пустым — тогда агент падал на
+		// дефолт http://localhost:11434. На машине разработчика на 11434 может
+		// слушать scripts/forward_11434.js (форвардер на балансер, запускают для
+		// проверки реального Cline): тесты вместо мгновенного «connection refused»
+		// уходили в живой стек и висели десятками секунд — TestCollectMetrics
+		// падал на assert.WithinDuration(…, 10s) с diff 63s.
+		// Порт 1 на loopback закрыт всегда → отказ мгновенный.
+		OllamaURL:         "http://127.0.0.1:1",
 		MetricsPort:       9090,
 		CollectInterval:   5,
 		HeartbeatInterval: 3,

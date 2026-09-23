@@ -12,6 +12,7 @@
 
 | План | Файл | Сессия | Статус |
 |------|------|--------|--------|
+| **[Admission-очередь и per-user сессии](2026-09-23-admission-queue-and-sessions.md)** | `plans/2026-09-23-admission-queue-and-sessions.md` | R67a/R67b (сентябрь 2026) | 🟡 **ПЛАН**: балансер отбивает 503 при занятых слотах вместо очереди (`acquireSlotWithRetry` → все заняты → 503), `QueueManager` не подключён к inference-пути, пользователи OpenWebUI не различаются для admission. План: admission-очередь (`LB_ADMISSION_WAIT_SEC`), keepalive для streaming-клиентов, per-session справедливость, связь `maxConcurrentReqs` ↔ `n_parallel`. В R67a уже сделаны `RequestSessionKey` и ожидание авто-загрузки (`LB_AUTO_LOAD_WAIT_SEC`) |
 | [Session F — UI/UX quick wins (5.3, 5.4, 5.5, 5.7)](2026-q3-session-f-quick-wins.md) | `plans/2026-q3-session-f-quick-wins.md` | Session F (июнь 2026) | ✅ Session F ПОЛНОСТЬЮ ЗАКРЫТ (F.0a/b/α/β/γ + F.4) |
 | **[7.1a — Self-hosted CI runner](2026-q3-roadmap.md#7-cicd-и-тестирование)** | `scripts/setup-runner.ps1` + `scripts/check-runner.ps1` + `docs/ci/self-hosted-runner.md` | Месяц 1 (июль 2026) | ✅ DONE 2026-06-28 (commit `01b2afc`) |
 | **[7.1 — GitHub Actions CI workflow](2026-q3-roadmap.md#7-cicd-и-тестирование)** | `.github/workflows/ci.yml` + `.golangci.yml` | Месяц 1 (июль 2026) | ✅ DONE 2026-06-28 (commit `64e100d`) |

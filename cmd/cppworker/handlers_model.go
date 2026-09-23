@@ -2475,6 +2475,16 @@ func handleOllamaCreate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// R66d (2026-09-23): пересканируем каталог, иначе созданный алиас не попадёт
+	// в реестр ModelManager, и клиент не увидит модель в /api/tags до рестарта
+	// (та же причина, что у HF-загрузки: ListModels/ListAliases читают кэш).
+	if _, scanErr := mm.ScanModels(); scanErr != nil {
+		logger.Get().Warnw("create: rescan after alias creation failed",
+			"alias", modelName, "error", scanErr)
+	} else {
+		logger.Get().Infow("create: model alias created", "alias", modelName, "source", sourceName)
+	}
+
 	writeJSON(w, http.StatusOK, map[string]interface{}{"status": "created", "name": modelName})
 }
 

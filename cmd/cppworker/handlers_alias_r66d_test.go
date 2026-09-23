@@ -181,3 +181,56 @@ func TestHandleDeleteModel_RegularModelStillWorks_R66d(t *testing.T) {
 		t.Errorf("обычный .gguf должен удаляться, stat err=%v", err)
 	}
 }
+
+// TestHandleOllamaCreate_ThenTags_R66d — полный цикл: создание алиаса через
+// Ollama-совместимый POST /api/create должно сразу (без рестарта и без ручного
+// скана) делать модель видимой в /api/tags. Раньше ScanModels после создания не
+// вызывался, реестр оставался пустым, и «создали, а её нет».
+func TestHandleOllamaCreate_ThenTags_R66d(t *testing.T) {
+	dir := t.TempDir()
+	oldDir := *modelsDir
+	*modelsDir = dir
+	t.Cleanup(func() { *modelsDir = oldDir })
+
+	oldBackend := backend
+	t.Cleanup(func() { backend = oldBackend })
+
+	const source = "Qwen3-Instruct-2507-q4km.gguf"
+	if err := os.WriteFile(filepath.Join(dir, source), make([]byte, 4096), 0o600); err != nil {
+		t.Fatalf("write gguf: %v", err)
+	}
+	// Второй файл — чтобы fallback «единственный .gguf» не вмешивался.
+	if err := os.WriteFile(filepath.Join(dir, "extra-model.gguf"), make([]byte, 2048), 0o600); err != nil {
+		t.Fatalf("write second gguf: %v", err)
+	}
+	backend = cppbackend.NewBackend(cppbackend.Config{ModelsDir: dir, DefaultCtxSize: 512, DefaultBatchSize: 64})
+	backend.ModelManager().ScanModels()
+
+	createReq := httptest.NewRequest(http.MethodPost, "/api/create",
+		strings.NewReader(`{"name":"my-short-name","from":"`+source+`"}`))
+	createReq.Header.Set("Content-Type", "application/json")
+	createRR := httptest.NewRecorder()
+	handleOllamaCreate(createRR, createReq)
+	if createRR.Code != http.StatusOK {
+		t.Fatalf("create status=%d body=%s", createRR.Code, createRR.Body.String())
+	}
+
+	tagsReq := httptest.NewRequest(http.MethodGet, "/api/tags", nil)
+	tagsRR := httptest.NewRecorder()
+	handleOllamaTags(tagsRR, tagsReq)
+
+	var body struct {
+		Models []struct {
+			Name string `json:"name"`
+		} `json:"models"`
+	}
+	if err := json.Unmarshal(tagsRR.Body.Bytes(), &body); err != nil {
+		t.Fatalf("tags не JSON: %v", err)
+	}
+	for _, m := range body.Models {
+		if m.Name == "my-short-name" {
+			return
+		}
+	}
+	t.Fatalf("после /api/create алиас не виден в /api/tags: %+v", body.Models)
+}

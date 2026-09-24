@@ -5,6 +5,69 @@
 Формат ведётся в соответствии с [Keep a Changelog](https://keepachangelog.com/ru/1.0.0/),
 и этот проект придерживается [Semantic Versioning](https://semver.org/lang/ru/).
 
+## [0.5.28 — Round 70 (2026-09-24)]
+
+### 🐛 Bug fix
+
+#### KV-хинт для адаптивной стратегии cppworker (reload больше не выбирает CPU-only)
+
+Наблюдение на живом стенде (Cline с `num_ctx=65536`, RTX 3070 8 GB): балансер
+запрашивал адаптивную стратегию без указания типа KV-cache, cppworker считал по
+f16 (KV на 65K ≈ 7 GB) и отвечал
+
+```
+queryAdaptiveStrategy: got strategy stage=cpu_only gpuLayers=0 kvCacheType=f16 nCtx=65536
+queryAdaptiveStrategy: CPU-only strategy selected (R60.12)
+  recommendation="for 8GB VRAM, use n_ctx <= 65536 with kvCacheType=q4_0"
+```
+
+Рекомендация противоречила самому ответу: cppworker советовал q4_0, но отдавал
+стратегию под f16 → балансер применял `gpuLayers=0` (CPU-only): reload ~2 минуты,
+генерация на CPU, хотя с q4_0 (тип из профиля модели) та же модель влезает на GPU
+(в логе cppworker — 42/43 слоя, `llama_kv_cache: 720 MiB (65536 cells, K/V q4_0)`).
+
+**Что сделано:**
+
+* **cppworker**: `SelectStrategyWithKV(...)` + `kvCacheOrderWithHint()` — перебор
+  `kvCacheType` начинается с переданного хинта (остальные остаются fallback'ом);
+  `SelectStrategy` сохранён как обёртка (все прежние вызовы/тесты не изменились).
+  Эндпоинт `/api/v1/cppworker/adaptive/strategy` принимает
+  `?kv_cache_type=f16|q8_0|q4_0` (невалидное значение игнорируется с warn) и
+  учитывает хинт также в fallback-ветке без архитектурных метаданных.
+* **balancer**: `ReloadHints{KVCacheType}` + `NCtxReloadCoordinator.
+  SetReloadHintsProvider/ReloadHintsFor`; `Proxy.reloadHintsFor()` берёт тип из
+  профиля модели (в т.ч. по substring-совпадению имени: `gemma-4` →
+  `gemma-4-E4B-it-Q4_K_M`), иначе — из фактического `kv_cache_type` загруженной
+  модели; `DoReload` передаёт его как `&kv_cache_type=…`.
+
+**Живая проверка (до/после, один и тот же запрос: `num_ctx=65536`, модель
+загружена на 8192 → preflight reload):**
+
+| | до (r69) | после (r70) |
+|---|---|---|
+| стратегия | `stage=cpu_only, gpuLayers=0, kvCacheType=f16` | `stage=exact_fit, gpuLayers=42/42, kvCacheType=q4_0` |
+| лог балансера | — | `nctx_reload: passing kv_cache_type hint to adaptive strategy kv_cache_type=q4_0` |
+| результат | reload ~2 мин, генерация на CPU | `preflight: async reload finished while client waited, new_n_ctx=65536, waited_ms=77858` → **HTTP 200**, ответ модели за 97 с |
+
+**Тесты:** `cmd/cppworker/adaptive_loader_r70_test.go` (3: с хинтом q4_0 —
+`partial_offload`, gpuLayers>0, kv=q4_0; без хинта — прежний `cpu_only/f16`;
+порядок перебора типов), `internal/balancer/reload_hints_r70_test.go` (5: хинт из
+профиля/из загруженной модели/пустой при неизвестности, провайдер установлен в
+`NewProxy`, `queryAdaptiveStrategy` добавляет `kv_cache_type` только при хинте).
+Регрессии: `./internal/balancer -race` ok (84 с), `./cmd/...` ok.
+
+### 🧹 Прочее
+
+* **Тесты не пачкают рабочее дерево**: `tests/testdata/state.json` (трекаемая
+  фикстура) больше не перезаписывается прогонами — тесты `./tests` копируют её во
+  временный каталог (`testStatePath(t)`); `git status` после прогона чистый.
+* **plans/README.md** актуализирован (HEAD/образы, таблица текущего раунда).
+* **Self-hosted CI-раннер `skyworker-ci`**: сервис запущен, но связь с GitHub
+  отвалилась (`SocketException 995`, backoff ~3.2 ч), поэтому джоба
+  «Test (self-hosted Windows)» висит в очереди. Нужен перезапуск от
+  администратора: `Restart-Service actions.runner.skyworker-ci` (без прав
+  администратора перезапуск невозможен — проверено).
+
 ## [0.5.27 — Round 69 (2026-09-23)]
 
 ### 🐛 Bug fix

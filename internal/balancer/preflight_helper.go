@@ -307,6 +307,44 @@ func resolvePhysicalMaxContext(ggufMax, contextLengthMax, autoReloadMaxNCtx int)
 	}
 }
 
+// reloadHintsFor — R70 (2026-09-24): хинты для reload'а модели.
+//
+// Приоритет:
+//  1. kvCacheType из профиля модели (намерение оператора; для gemma-4 на 8 GB
+//     это q4_0 — с ним 65K влезает в VRAM);
+//  2. фактический kv_cache_type уже загруженной модели (cppworker /api/models);
+//  3. "" — неизвестно (стратегия посчитает как раньше, по f16).
+func (p *Proxy) reloadHintsFor(backendID, modelName string) ReloadHints {
+	if p == nil || p.config == nil {
+		return ReloadHints{}
+	}
+	if p.config.LlamaCppModelProfiles != nil {
+		if mp, ok := p.config.LlamaCppModelProfiles[modelName]; ok && mp.KVCacheType != "" {
+			return ReloadHints{KVCacheType: mp.KVCacheType}
+		}
+		for name, mp := range p.config.LlamaCppModelProfiles {
+			if (containsFold(name, modelName) || containsFold(modelName, name)) && mp.KVCacheType != "" {
+				return ReloadHints{KVCacheType: mp.KVCacheType}
+			}
+		}
+	}
+	if p.metricsMgr != nil && backendID != "" {
+		p.metricsMgr.mu.RLock()
+		defer p.metricsMgr.mu.RUnlock()
+		if lm := p.metricsMgr.llamaMetrics[backendID]; lm != nil {
+			for _, m := range lm.LoadedModels {
+				if m.Name == modelName || containsFold(m.Name, modelName) || containsFold(modelName, m.Name) {
+					if m.KvCacheType != "" {
+						return ReloadHints{KVCacheType: m.KvCacheType}
+					}
+					break
+				}
+			}
+		}
+	}
+	return ReloadHints{}
+}
+
 // preflightAutoReloadMaxNCtx — operator cap (LB_NCTX_RELOAD_MAX_N_CTX) из
 // конфигурации координатора reload'а. 0 = не задан.
 func preflightAutoReloadMaxNCtx(p *Proxy) int {

@@ -40,13 +40,22 @@ type AdaptiveStrategy struct {
 // queryAdaptiveStrategy запрашивает у cppworker оптимальную стратегию загрузки
 // через GET /api/v1/cppworker/adaptive/strategy?name=...&n_ctx=...&gpu_layers=-2
 //
+// kvHint (R70, 2026-09-24) — известный рабочий тип KV-cache ("f16"/"q8_0"/
+// "q4_0"): профиль модели или фактический тип загруженной модели. Без хинта
+// cppworker считает по f16 и на 8 GB VRAM для 65K отдаёт cpu_only
+// (gpu_layers=0), хотя с q4_0 та же модель влезает на GPU. "" = прежнее
+// поведение.
+//
 // Возвращает стратегию или nil при ошибке (caller использует fallback).
-func queryAdaptiveStrategy(backendAddr, modelName string, targetNCtx int, httpClient *http.Client) *AdaptiveStrategy {
+func queryAdaptiveStrategy(backendAddr, modelName string, targetNCtx int, kvHint string, httpClient *http.Client) *AdaptiveStrategy {
 	if httpClient == nil {
 		httpClient = &http.Client{Timeout: 5 * time.Second}
 	}
 	url := fmt.Sprintf("%s/api/v1/cppworker/adaptive/strategy?name=%s&n_ctx=%d&gpu_layers=-2",
 		backendAddr, modelName, targetNCtx)
+	if kvHint != "" {
+		url += "&kv_cache_type=" + urlQueryEscape(kvHint)
+	}
 
 	req, err := http.NewRequest(http.MethodGet, url, nil)
 	if err != nil {

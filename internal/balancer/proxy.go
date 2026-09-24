@@ -411,6 +411,10 @@ func NewProxy(config *types.LoadBalancerConfig) *Proxy {
 	// Загружает конфиг из BalancingSettings.NCtxReload (см. internal/config).
 	// Если конфиг не задан — использует безопасные defaults (AutoReloadNCtx=false).
 	p.nctxReload = NewNCtxReloadCoordinator(loadNCtxReloadConfig(p.config))
+	// R70 (2026-09-24): координатор получает от Proxy хинты для reload'а —
+	// рабочий kvCacheType (профиль/загруженная модель), чтобы адаптивная
+	// стратегия cppworker считала по реальному типу, а не по f16.
+	p.nctxReload.SetReloadHintsProvider(p.reloadHintsFor)
 	logger.Get().Infow("nctx reload coordinator initialized",
 		"auto_reload", p.nctxReload.Config().AutoReloadNCtx)
 

@@ -15,7 +15,7 @@ package main
 
 import (
 	"context"
-		"fmt"
+	"fmt"
 	"net/http"
 	"os"
 	"os/exec"
@@ -356,6 +356,42 @@ func SelectStrategy(
 	requestedGPULayers int,
 	defaults *cppbackend.Config,
 ) LoadStrategyResult {
+	return SelectStrategyWithKV(env, modelName, meta, requestedNCtx, requestedGPULayers, defaults, "")
+}
+
+// kvCacheOrderWithHint — R70: порядок перебора kvCacheType с учётом хинта.
+//
+// Хинт приходит из балансера (`?kv_cache_type=…`): это профиль модели или
+// фактический тип KV-cache уже загруженной модели. Без хинта стратегия всегда
+// начинала с f16 — на 8 GB VRAM для 65K это ~7 GB KV и приговор `cpu_only`
+// (`gpu_layers=0`), хотя с q4_0 та же модель влезает на GPU (ровно то, что
+// рекомендует собственный warning cppworker'а). С хинтом перебор начинается с
+// рабочего типа, а остальные остаются как fallback.
+func kvCacheOrderWithHint(preferred string) []string {
+	if _, ok := bytesPerKVCacheType[preferred]; !ok {
+		return KVCacheTypeOrder
+	}
+	order := make([]string, 0, len(KVCacheTypeOrder)+1)
+	order = append(order, preferred)
+	for _, kv := range KVCacheTypeOrder {
+		if kv != preferred {
+			order = append(order, kv)
+		}
+	}
+	return order
+}
+
+// SelectStrategyWithKV — SelectStrategy с явным предпочтением kvCacheType
+// (R70). preferredKV: "f16"/"q8_0"/"q4_0" или "" (прежнее поведение).
+func SelectStrategyWithKV(
+	env *EnvironmentProfile,
+	modelName string,
+	meta cppbackend.GGUFModelMeta,
+	requestedNCtx int,
+	requestedGPULayers int,
+	defaults *cppbackend.Config,
+	preferredKV string,
+) LoadStrategyResult {
 	// Round 7: MoE override-tensors (parallel arrays). When isMOE, route
 	// expert tensors to CPU and keep attention on GPU. Pattern matches Qwen3-A3B /
 	// Mixtral routed-experts (GGUF: blk.N.ffn_*.exps.weight/bias). Declared
@@ -368,7 +404,11 @@ func SelectStrategy(
 		// With f16 at 65K context on 8GB GPU, KV-cache alone is ~6.7GB → guaranteed OOM.
 		// q4_0 reduces this to ~1.7GB, freeing VRAM for more GPU layers.
 		kvType := "f16"
-		if autoKVCacheEnabled && env != nil && env.FreeVRAM > 0 && requestedNCtx > 32768 {
+		if _, hinted := bytesPerKVCacheType[preferredKV]; hinted {
+			// R70: хинт от балансера (профиль модели / фактический тип KV-cache
+			// загруженной модели) важнее авто-выбора.
+			kvType = preferredKV
+		} else if autoKVCacheEnabled && env != nil && env.FreeVRAM > 0 && requestedNCtx > 32768 {
 			// Estimate KV-cache for each type and pick the best that leaves room for model weights.
 			// Conservative model estimate: ~5GB for 7-9B Q4_K_M models.
 			const conservativeModelMB = 5120
@@ -539,7 +579,8 @@ func SelectStrategy(
 	overhead := env.OverheadBytes
 
 	// ??????? ?????? kvCacheType ?? ??????? ? ???????
-	for _, kvType := range KVCacheTypeOrder {
+	// R70: при наличии хинта начинаем с него (см. kvCacheOrderWithHint).
+	for _, kvType := range kvCacheOrderWithHint(preferredKV) {
 		bytesPerToken := int64(4) // f16 default
 		if b, ok := bytesPerKVCacheType[kvType]; ok {
 			bytesPerToken = b
@@ -906,6 +947,18 @@ func handleAdaptiveStrategy(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// R70 (2026-09-24): kv_cache_type — хинт от балансера (профиль модели или
+	// фактический тип KV-cache загруженной модели). Без него стратегия считает
+	// по f16 и на 8 GB VRAM для 65K выдаёт cpu_only (gpu_layers=0), хотя с q4_0
+	// та же модель влезает на GPU. Невалидное значение игнорируем.
+	preferredKV := r.URL.Query().Get("kv_cache_type")
+	if preferredKV != "" && !isValidKVCacheType(preferredKV) {
+		logger.Get().Warnw("handleAdaptiveStrategy: ignoring invalid kv_cache_type hint",
+			"model", modelName, "kv_cache_type", preferredKV,
+			"valid", []string{"f16", "q8_0", "q4_0"})
+		preferredKV = ""
+	}
+
 	// ???????? ?????????? GGUF
 	mm := backend.ModelManager()
 	if mm == nil {
@@ -922,13 +975,14 @@ func handleAdaptiveStrategy(w http.ResponseWriter, r *http.Request) {
 	}
 
 	env := globalEnv.Get()
-	strategy := SelectStrategy(
+	strategy := SelectStrategyWithKV(
 		&env,
 		modelName,
 		*meta,
 		nCtx,
 		gpuLayers,
 		currentConfig,
+		preferredKV,
 	)
 
 	writeJSON(w, http.StatusOK, strategy)

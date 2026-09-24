@@ -296,6 +296,9 @@ type NCtxReloadCoordinator struct {
 	// пинг-понг reload 65536 → 38385 → 65536 → … и клиент (Cline) получал 503
 	// «reload in progress» на каждом запросе.
 	desired map[string]desiredNCtxEntry
+	// R70 (2026-09-24): поставщик «хинтов» для reload'а (тип KV-cache и т.п.).
+	// Ставится Proxy'ем после создания координатора; см. ReloadHints.
+	reloadHints func(backendID, modelName string) ReloadHints
 
 	metricsByBackend sync.Map
 
@@ -339,6 +342,40 @@ func NewNCtxReloadCoordinator(cfg NCtxReloadConfig) *NCtxReloadCoordinator {
 		reloadDedup: newReloadDedupRegistry(),
 		desired:     make(map[string]desiredNCtxEntry),
 	}
+}
+
+// ReloadHints — R70 (2026-09-24): подсказки для reload'а, которые знает только
+// Proxy (профиль модели, фактическое состояние загруженной модели).
+type ReloadHints struct {
+	// KVCacheType — рабочий тип KV-cache ("f16"/"q8_0"/"q4_0"), "" = неизвестен.
+	// Передаётся cppworker'у как ?kv_cache_type=…, чтобы адаптивная стратегия
+	// считала по реальному типу, а не по f16 (иначе для 65K на 8 GB она выбирает
+	// cpu_only/gpu_layers=0, хотя с q4_0 модель влезает на GPU).
+	KVCacheType string
+}
+
+// SetReloadHintsProvider — установка поставщика хинтов (вызывается Proxy'ем).
+func (c *NCtxReloadCoordinator) SetReloadHintsProvider(fn func(backendID, modelName string) ReloadHints) {
+	if c == nil {
+		return
+	}
+	c.mu.Lock()
+	c.reloadHints = fn
+	c.mu.Unlock()
+}
+
+// ReloadHintsFor — хинты для reload'а конкретной модели (nil-safe).
+func (c *NCtxReloadCoordinator) ReloadHintsFor(backendID, modelName string) ReloadHints {
+	if c == nil {
+		return ReloadHints{}
+	}
+	c.mu.RLock()
+	fn := c.reloadHints
+	c.mu.RUnlock()
+	if fn == nil {
+		return ReloadHints{}
+	}
+	return fn(backendID, modelName)
 }
 
 // StartModelReloadIfNotPending — R69 (2026-09-23): ЕДИНЫЙ gate для всех
@@ -852,8 +889,16 @@ func (c *NCtxReloadCoordinator) DoReload(
 	logger.Get().Infof("[nctx_reload] backend %s: reloading with n_ctx=%d (model=%s, reason=%s)",
 		backendID, plan.NewNCtx, modelName, plan.Reason)
 
-	// Query adaptive strategy from cppworker (kvCacheType, gpuLayers, n_ctx)
-	strategy := queryAdaptiveStrategy(backendAddr, modelName, plan.NewNCtx, nil)
+	// Query adaptive strategy from cppworker (kvCacheType, gpuLayers, n_ctx).
+	// R70: передаём известный рабочий тип KV-cache (профиль/загруженная модель),
+	// иначе стратегия считает по f16 и может выбрать cpu_only там, где с q4_0
+	// модель влезает на GPU.
+	hints := c.ReloadHintsFor(backendID, modelName)
+	if hints.KVCacheType != "" {
+		logger.Get().Infow("nctx_reload: passing kv_cache_type hint to adaptive strategy",
+			"backend", backendID, "model", modelName, "kv_cache_type", hints.KVCacheType)
+	}
+	strategy := queryAdaptiveStrategy(backendAddr, modelName, plan.NewNCtx, hints.KVCacheType, nil)
 
 	// Cap target n_ctx to MaxViableNCtx from adaptive strategy.
 	// This prevents auto-reload from escalating to unusable context sizes

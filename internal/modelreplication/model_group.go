@@ -15,14 +15,14 @@ import (
 // ModelGroupManager управляет группами репликации моделей.
 // Каждая группа — это одна модель, загруженная на N бэкендов.
 type ModelGroupManager struct {
-	mu       sync.RWMutex
-	groups   map[string]*ModelGroup // modelName → group
-	enabled  bool
+	mu      sync.RWMutex
+	groups  map[string]*ModelGroup // modelName → group
+	enabled bool
 
 	// Callbacks для взаимодействия с Balancer
-	loadFn    func(backendID string) float64     // получение загрузки бэкенда (0.0-1.0)
+	loadFn    func(backendID string) float64                    // получение загрузки бэкенда (0.0-1.0)
 	backendFn func(modelName string, targets []string) []string // поиск свободных бэкендов
-	warmupFn  func(backendID, modelName string) error // запуск warmup модели
+	warmupFn  func(backendID, modelName string) error           // запуск warmup модели
 }
 
 // ModelGroup представляет группу реплик одной модели.
@@ -214,6 +214,10 @@ func (mgr *ModelGroupManager) UpdateGroup(cfg types.ModelGroupConfig) error {
 // --- State ---
 
 // GetInstanceStates возвращает состояние инстансов для группы.
+//
+// ВНИМАНИЕ: возвращаются УКАЗАТЕЛИ на объекты группы — читать/менять их поля
+// вне блокировки g.mu нельзя (гонка с warmup-горутинами scaleUpGroup). Для
+// чтения «снаружи» используйте GetInstanceStatesSnapshot.
 func (mgr *ModelGroupManager) GetInstanceStates(modelName string) []*types.ModelInstanceState {
 	mgr.mu.RLock()
 	g, ok := mgr.groups[modelName]
@@ -231,9 +235,35 @@ func (mgr *ModelGroupManager) GetInstanceStates(modelName string) []*types.Model
 	return result
 }
 
+// GetInstanceStatesSnapshot — R74: копии состояний инстансов под блокировкой
+// группы. Возвращённые значения можно безопасно читать после возврата (гонки с
+// warmup-горутинами нет): именно так читают состояние селектор и API.
+func (mgr *ModelGroupManager) GetInstanceStatesSnapshot(modelName string) []types.ModelInstanceState {
+	mgr.mu.RLock()
+	g, ok := mgr.groups[modelName]
+	mgr.mu.RUnlock()
+	if !ok {
+		return nil
+	}
+
+	g.mu.RLock()
+	defer g.mu.RUnlock()
+	result := make([]types.ModelInstanceState, 0, len(g.Instances))
+	for _, inst := range g.Instances {
+		if inst == nil {
+			continue
+		}
+		result = append(result, *inst)
+	}
+	return result
+}
+
 // GetGroupStats возвращает расширенную статистику для группы.
+//
+// R74: состояния читаются через снимок (см. GetInstanceStatesSnapshot) — так
+// вызовы из API/placement не гоняют с warmup-горутинами.
 func (mgr *ModelGroupManager) GetGroupStats(modelName string) map[string]interface{} {
-	states := mgr.GetInstanceStates(modelName)
+	states := mgr.GetInstanceStatesSnapshot(modelName)
 	if states == nil {
 		return nil
 	}
@@ -265,12 +295,12 @@ func (mgr *ModelGroupManager) GetGroupStats(modelName string) map[string]interfa
 	}
 
 	return map[string]interface{}{
-		"modelName":  modelName,
-		"total":      len(states),
-		"loaded":     loaded,
-		"loading":    loading,
-		"idle":       idle,
-		"totalUses":  totalUseCount,
+		"modelName":    modelName,
+		"total":        len(states),
+		"loaded":       loaded,
+		"loading":      loading,
+		"idle":         idle,
+		"totalUses":    totalUseCount,
 		"minInstances": minInst,
 		"maxInstances": maxInst,
 	}
@@ -504,4 +534,3 @@ func (mgr *ModelGroupManager) Warmup(modelName, backendID string) error {
 	}
 	return nil
 }
-

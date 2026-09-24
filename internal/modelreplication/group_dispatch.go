@@ -55,12 +55,16 @@ func (s *GroupAwareSelector) IsGroupModel(modelName string) bool {
 
 // GetGroupCandidates возвращает список бэкендов из группы для модели.
 // Если модель не в группе, возвращает nil.
+//
+// R74: состояния читаются через снимок (GetInstanceStatesSnapshot) — иначе
+// чтение Status на общих указателях гоняло с warmup-горутинами scaleUpGroup
+// (ловилось -race при вызове из GET /api/v1/placement).
 func (s *GroupAwareSelector) GetGroupCandidates(modelName string) []string {
 	if !s.manager.IsEnabled() {
 		return nil
 	}
 
-	states := s.manager.GetInstanceStates(modelName)
+	states := s.manager.GetInstanceStatesSnapshot(modelName)
 	if states == nil {
 		return nil
 	}

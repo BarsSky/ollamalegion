@@ -13,6 +13,7 @@ import (
 	"net/http/httputil"
 	"net/url"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -915,7 +916,17 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// Используем указатель на строку чтобы корректно обрабатывать
 	// освобождение слота в defer без двойного освобождения.
 	var acquiredBackend string
+	// R73: release-функция lease единой очереди (admission). Если она задана —
+	// освобождение слота и учёт per-session inflight делает именно она, чтобы
+	// не было двойного releaseSlot.
+	var releaseLease func()
 	releaseAcquired := func() {
+		if releaseLease != nil {
+			releaseLease()
+			releaseLease = nil
+			acquiredBackend = ""
+			return
+		}
 		if acquiredBackend != "" {
 			p.releaseSlot(acquiredBackend)
 			acquiredBackend = ""
@@ -976,10 +987,57 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "Service unavailable - no healthy backends for read endpoint", http.StatusServiceUnavailable)
 			return
 		}
-		if !p.queueRequest(w, r, model) {
-			http.Error(w, "Service unavailable - all backends busy", http.StatusServiceUnavailable)
+
+		// R73 (2026-09-24): ЕДИНАЯ ОЧЕРЕДЬ. До R73 здесь был legacy QueueManager
+		// (пул worker'ов + канал), то есть у Ollama-пути и llama.cpp-пути были
+		// РАЗНЫЕ очереди: разные лимиты (queueTimeout против
+		// LB_ADMISSION_WAIT_SEC), разная справедливость (у legacy её не было) и
+		// разная наблюдаемость. Теперь Ollama-путь ждёт слот в той же
+		// admission-очереди и с теми же заголовками X-Queue-*.
+		sessionKey := sessionID
+		if sessionKey == "" {
+			sessionKey = RequestSessionKey(r, nil)
 		}
-		return
+		waited, position := time.Duration(0), 0
+		unifiedBackend, unifiedRelease, unifiedWaited, unifiedPosition, waitErr :=
+			p.waitForInferenceBackend(ctxWithRID, model, bt, sessionKey)
+		if waitErr == nil {
+			acquiredBackend = unifiedBackend
+			targetBackend = unifiedBackend
+			releaseLease = unifiedRelease
+			waited, position = unifiedWaited, unifiedPosition
+			if waited > 0 {
+				w.Header().Set("X-Queue-Wait-Ms", strconv.FormatInt(waited.Milliseconds(), 10))
+				if position > 0 {
+					w.Header().Set("X-Queue-Position", strconv.Itoa(position))
+				}
+			}
+			if sessionID != "" && p.config.Balancing.SessionStickiness && !isEmbeddingsRequest(path) {
+				p.sessionMgr.Set(sessionID, targetBackend, model, clientName, p.getClientRealIP(r), r.UserAgent())
+			}
+			logger.Get().Infow("unified queue: слот получен, продолжаем без legacy-очереди",
+				"backend", acquiredBackend, "model", model,
+				"waited_ms", waited.Milliseconds(), "position", position)
+		} else {
+			switch {
+			case errors.Is(waitErr, errAdmissionOverloaded):
+				// Backpressure: очередь переполнена — быстрый 503 (прежнее
+				// поведение queueRequest при заполнении > highWatermark).
+				w.Header().Set("Retry-After", "5")
+				http.Error(w, "Service overloaded", http.StatusServiceUnavailable)
+			case errors.Is(waitErr, errAdmissionTimeout):
+				writeAdmissionUnavailable(w, model, sessionKey, position, waited, p.admissionWaitTimeout())
+			case errors.Is(waitErr, errAdmissionDisabled):
+				http.Error(w, "Service unavailable - all backends busy", http.StatusServiceUnavailable)
+			default:
+				// Клиент отменил запрос, пока ждал слот: отвечать уже некому.
+				logger.Get().Infow("unified queue: запрос отменён до получения слота",
+					"model", model, "session", sessionKey, "error", waitErr)
+			}
+			// Слот не получен — выполняем запрос нечем: выходим (как и раньше
+			// при неудачной постановке в legacy-очередь).
+			return
+		}
 	}
 
 	// Выполняем запрос
@@ -1534,64 +1592,5 @@ func (r *statusRecorder) Hijack() (net.Conn, *bufio.ReadWriter, error) {
 func (r *statusRecorder) Flush() {
 	if f, ok := r.ResponseWriter.(http.Flusher); ok {
 		f.Flush()
-	}
-}
-
-// queueRequest - постановка запроса в очередь
-func (p *Proxy) queueRequest(w http.ResponseWriter, r *http.Request, model string) bool {
-
-	// Backpressure: проверяем fill rate очереди
-	queueLen := len(p.queueMgr.queue)
-	maxSize := p.queueMgr.maxSize
-	queueFillPct := float64(queueLen) / float64(maxSize)
-	if queueFillPct > 0.90 {
-		logger.Get().Warnw("queue overflow, rejecting request with 503",
-			"model", model, "queue_fill_pct", queueFillPct, "queue_size", queueLen)
-		w.Header().Set("Retry-After", "5")
-		http.Error(w, "Service overloaded", http.StatusServiceUnavailable)
-		return false
-	}
-
-	// Информируем клиента о позиции в очереди и ожидаемом времени
-	// Заголовки будут доступны клиенту вместе с финальным ответом
-	w.Header().Set("X-Queue-Position", fmt.Sprintf("%d", queueLen))
-	estimatedWaitSec := queueLen * 2 // грубая оценка: ~2 сек на запрос
-	if estimatedWaitSec < 1 {
-		estimatedWaitSec = 1
-	}
-	queueTimeoutSec := p.config.Balancing.QueueTimeout
-	if queueTimeoutSec > 0 && estimatedWaitSec > queueTimeoutSec {
-		estimatedWaitSec = queueTimeoutSec
-	}
-	w.Header().Set("Retry-After", fmt.Sprintf("%d", estimatedWaitSec))
-
-	done := make(chan bool, 1)
-	queuedReq := &QueuedRequest{
-		Request:  r,
-		Writer:   w,
-		Model:    model,
-		Enqueued: time.Now(),
-		Done:     done,
-	}
-
-	p.queueMgr.addPending(queuedReq)
-
-	select {
-	case p.queueMgr.queue <- queuedReq:
-	case <-p.queueMgr.ctx.Done():
-		p.queueMgr.removePending(queuedReq)
-		return false
-	default:
-		p.queueMgr.removePending(queuedReq)
-		return false
-	}
-
-	select {
-	case success := <-done:
-		return success
-	case <-time.After(p.queueMgr.timeout):
-		return false
-	case <-p.queueMgr.ctx.Done():
-		return false
 	}
 }

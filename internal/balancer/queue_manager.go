@@ -436,6 +436,36 @@ func (qm *QueueManager) removeProcessing(req *QueuedRequest) {
 	qm.processingMu.Unlock()
 }
 
+// RecordUnified — R73: запись запроса, обслуженного ЕДИНОЙ (admission-)очередью.
+//
+// Legacy QueueManager больше не обслуживает запросы (Ollama-путь ждёт слот в
+// admission-очереди), но его счётчики и история остаются частью API
+// (`/api/v1/queue/stats`, `/api/v1/queue/history`, скор-панель WebUI). Чтобы
+// `processed_total` и история не «замерзали», Ollama-путь отмечает здесь каждый
+// обслуженный запрос.
+func (qm *QueueManager) RecordUnified(model, target string, enqueued time.Time) {
+	if qm == nil {
+		return
+	}
+	now := time.Now()
+	// R66d: processed — атомарный (читается из cluster_state без блокировки).
+	atomic.AddInt64(&qm.processed, 1)
+
+	qm.historyMu.Lock()
+	qm.completedHistory = append(qm.completedHistory, &CompletedRequest{
+		Model:       model,
+		Target:      target,
+		Enqueued:    enqueued,
+		CompletedAt: now,
+		WaitTimeMs:  now.Sub(enqueued).Milliseconds(),
+	})
+	const maxHistory = 100
+	if len(qm.completedHistory) > maxHistory {
+		qm.completedHistory = qm.completedHistory[len(qm.completedHistory)-maxHistory:]
+	}
+	qm.historyMu.Unlock()
+}
+
 // recordCompleted - запись завершённого запроса в историю и обновление счётчиков
 func (qm *QueueManager) recordCompleted(req *QueuedRequest, dispatchType string, workerID int) {
 	now := time.Now()

@@ -167,6 +167,11 @@ func TestTwoClientsSameIP_DifferentSessions(t *testing.T) {
 }
 
 func TestLoadBalancing_MultipleClients(t *testing.T) {
+	// R73 (2026-09-24): Ollama-путь ждёт слот в admission-очереди, а TestMain
+	// этого пакета выставляет LB_ADMISSION_WAIT_SEC=0 (быстрые тесты) — с нулём
+	// балансер отвечает быстрым 503. Сценарий проверяет ожидание, поэтому
+	// включаем его явно.
+	t.Setenv("LB_ADMISSION_WAIT_SEC", "30")
 	// Mock backends with semaphore (maxConcurrent enforcement check).
 	// Это R55.3 update от TestLoadBalancing_MultipleClients: оригинальный
 	// тест проверял только "all 12 succeed", не проверял:
@@ -376,6 +381,9 @@ func TestLoadBalancing_MultipleClients(t *testing.T) {
 // Проверяет user's scenario "если бекенд не может отработать в параллель
 // (при этом сам клиент не теряет коннект и ждет своей очереди)".
 func TestLoadBalancing_SameClientQueueFIFO(t *testing.T) {
+	// R73: единая очередь — ожидание слота включаем явно (см. комментарий в
+	// TestLoadBalancing_MultipleClients).
+	t.Setenv("LB_ADMISSION_WAIT_SEC", "30")
 	const maxConcurrent = 1
 	const N = 6
 	const requestWork = 100 * time.Millisecond

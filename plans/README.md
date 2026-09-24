@@ -1,11 +1,11 @@
 # OllamaLegion — Roadmap (живой документ)
 
-> **Дата обновления:** 2026-09-24 (Round 72 — placement policy, этап P0: резолв стратегии размещения и его наблюдаемость)
+> **Дата обновления:** 2026-09-24 (Round 73 — единая очередь: Ollama-путь переведён на admission-очередь)
 > **Назначение:** единственный источник правды по реализованному и оставшемуся в проекте OllamaLegion.
 > Все устаревшие/завершённые планы — в `plans/archive/`.
-> **HEAD:** `bbf0af1` on branch `centurion` + R72 (placement policy P0: `balancing.placement`, `/api/v1/placement`, заголовки `X-LB-Placement*`).
-> **Live stack:** `ol-bundled-balancer:r72-submodule-v9` + `ol-bundled-cppworker-gpu:gpu-r70-submodule-v3` + `ol-bundled-webui:r70-submodule-v1` + `ol-bundled-cppworker-gpu-agent:cppworker-bundled-r41-agent-x-api-token` (4 healthy).
-> **Проверено на живом стенде (R68/R69/R71):** Cline (VS Code, провайдер ollama, Model Context Window = 65536) получает 200 и ответ модели; модель грузится на `ctx=65536, kv=q4_0` на RTX 3070 8 GB; агент применяет `maxConcurrentRequests=1` (реальный `n_parallel`) вместо устаревшей константы 4.
+> **HEAD:** `d30c5ae` on branch `centurion` + R73 (единая очередь: `waitForInferenceBackend`, legacy `queueRequest` удалён).
+> **Live stack:** `ol-bundled-balancer:r72-submodule-v10` (R73-образ `r73-submodule-v11` проверен на throwaway-стенде) + `ol-bundled-cppworker-gpu:gpu-r70-submodule-v3` + `ol-bundled-webui:r70-submodule-v1` + `ol-bundled-cppworker-gpu-agent:cppworker-bundled-r41-agent-x-api-token` (4 healthy).
+> **Проверено на живом стенде (R68/R69/R71/R72/R73):** Cline (VS Code, провайдер ollama, Model Context Window = 65536) получает 200 и ответ модели; модель грузится на `ctx=65536, kv=q4_0` на RTX 3070 8 GB; агент применяет `maxConcurrentRequests=1` (реальный `n_parallel`) вместо устаревшей константы 4; placement-политика резолвится и видна в `/api/v1/placement`; единая очередь отдаёт `X-Queue-Position`/`X-Queue-Wait-Ms` и держит вместимость.
 
 ---
 
@@ -32,8 +32,24 @@ keepalive ожидающих streaming-клиентов, карточку admiss
 «`maxConcurrentReqs` ↔ `n_parallel`». R71 закрыл этот хвост полностью:
 вместимость бэкенда больше не переписывается «эхом» heartbeat агента.
 R72 открыл placement policy (этап P0: resolution + наблюдаемость).
+R73 свёл Ollama-путь в admission-очередь (единая очередь, хвост R70/R71 закрыт).
 
-### R72 (2026-09-24) — текущий раунд
+### R73 (2026-09-24) — текущий раунд
+
+Единая очередь (`plans/2026-09-23-admission-queue-and-sessions.md`):
+
+| # | Направление | Статус |
+|---|-------------|--------|
+| 1 | `waitForInferenceBackend`: ожидание слота на любом бэкенде в admission-очереди (ключ `any`, per-session приоритеты) | ✅ сделано |
+| 2 | `ServeHTTP` больше не использует legacy `queueRequest`/`QueueManager`; `503 + Retry-After + X-Queue-*` при таймауте | ✅ сделано |
+| 3 | Backpressure (`≥90% queueMaxSize`) перенесён на admission-очередь | ✅ сделано |
+| 4 | `QueueManager.RecordUnified` — `processed_total` и `/api/v1/queue/history` не «замерзают» | ✅ сделано |
+| 5 | Живая проверка до/после (throwaway-стенд, вместимость 1, 4 параллельных запроса) | ✅ проверено (образ `r73-submodule-v11`, CHANGELOG 0.5.31) |
+| 6 | P1 placement policy: исполнение `pool`/`replicated`/`auto` | ⏳ следующий этап |
+| 7 | P2 placement policy: `sharded`/`rpc` на реальном транспорте | ⏳ нужен выбор (llama.cpp RPC vs B8.7) |
+| 8 | Гигиена: self-hosted CI-раннер `skyworker-ci` | ⏳ **нужен админ**: `Restart-Service actions.runner.skyworker-ci` |
+
+### R72 (2026-09-24) — закрытый раунд
 
 Placement policy, этап P0 (`plans/2026-09-23-multi-backend-placement-policy.md`):
 
@@ -44,10 +60,8 @@ Placement policy, этап P0 (`plans/2026-09-23-multi-backend-placement-policy.
 | 3 | Валидация с понятными ошибками (`ValidateConfigOnLoad` + лог при старте) | ✅ сделано |
 | 4 | Наблюдаемость: `GET /api/v1/placement`, заголовки `X-LB-Placement*`, лог решения | ✅ сделано (образ `r72-submodule-v9`) |
 | 5 | Живая проверка P0 (endpoint + заголовки + временная политика на стенде) | ✅ проверено (см. CHANGELOG 0.5.30) |
-| 6 | P1: исполнение `pool`/`replicated`/`auto` из политики (сейчас — `operatingMode`) | ⏳ следующий этап |
-| 7 | P2: `sharded`/`rpc` на реальном транспорте (открытый вопрос: llama.cpp RPC vs B8.7) | ⏳ нужен выбор |
-| 8 | Свести `QueueManager` (Ollama-путь) с admission-очередью | ⏳ осталось (хвост R70/R71) |
-| 9 | Гигиена: self-hosted CI-раннер `skyworker-ci` | ⏳ **нужен админ**: `Restart-Service actions.runner.skyworker-ci` |
+| 6 | Гигиена окружения: entrypoint предупреждает о рассинхроне `config/config.json` ↔ `/app/data/config.json`, `LB_CONFIG_SYNC=1` | ✅ сделано (образ `r72-submodule-v10`) |
+| 7 | Свести `QueueManager` (Ollama-путь) с admission-очередью | ✅ закрыто в R73 |
 
 ### R71 (2026-09-24) — закрытый раунд
 

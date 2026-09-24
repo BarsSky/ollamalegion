@@ -531,8 +531,16 @@ func TestScenario_ModelAffinity_Threshold(t *testing.T) {
 	}
 }
 
-// TestScenario_Queue_FIFO_Dispatch — проверка FIFO очереди: запрос → pending → dispatch при освобождении.
+// TestScenario_Queue_FIFO_Dispatch — FIFO-очередь: запрос ждёт слот и
+// обслуживается при освобождении.
+//
+// R73 (2026-09-24): Ollama-путь больше не использует legacy QueueManager —
+// ожидание идёт в admission-очереди (единой для обоих путей), поэтому
+// включаем ожидание явно: TestMain этого пакета выставляет
+// LB_ADMISSION_WAIT_SEC=0 (быстрые тесты), а с нулём балансер отвечает
+// быстрым 503 вместо ожидания.
 func TestScenario_Queue_FIFO_Dispatch(t *testing.T) {
+	t.Setenv("LB_ADMISSION_WAIT_SEC", "10")
 	b := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		// Симулируем долгий запрос
 		time.Sleep(200 * time.Millisecond)

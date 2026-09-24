@@ -126,11 +126,44 @@ CHANGELOG 0.5.29, образ балансера `r71-submodule-v8`):
   (для `llama_cpp` runtime > `n_parallel` приводится к вместимости ноды);
 * повторная регистрация агента больше не обнуляет runtime-поля бэкенда.
 
-## Осталось после R71
+## R73 (2026-09-24): единая очередь — Ollama-путь переведён на admission-очередь
 
-1. **Единая очередь для Ollama-пути** (хвост 4): `Proxy.ServeHTTP` использует
-   старый `QueueManager` (workers + pending/processing) — вторая независимая
-   очередь; свести её с admission-очередью.
+Хвост 4 из списка ниже закрыт. Коммит `R73: единая очередь`, образ балансера
+`r73-submodule-v11` (подробности и живая проверка до/после — CHANGELOG 0.5.31):
+
+* `Proxy.waitForInferenceBackend` (`unified_queue_r73.go`): ожидание слота на
+  любом подходящем бэкенде в admission-очереди (ключ `any`) — те же
+  per-session приоритеты, тот же `LB_ADMISSION_WAIT_SEC`, те же заголовки
+  `X-Queue-*`, что и на llama.cpp-пути;
+* `ServeHTTP` больше не использует legacy `queueRequest`/`QueueManager` для
+  ожидания: после получения слота запрос идёт обычным `proxyRequest`;
+* backpressure (`≥90% queueMaxSize`) сохранён;
+* `QueueManager.RecordUnified` держит `processed_total` и историю
+  `/api/v1/queue/history` осмысленными, хотя worker'ы в обслуживании не
+  участвуют;
+* живая проверка (throwaway-стенд, вместимость 1, 4 параллельных запроса):
+  до R73 — 4/4 200 без заголовков очереди и `admission.served=0` (11.8–15.4 с
+  на клиента); после — 4/4 200, у 3 из 4 позиции 1/2/3 и ожидание 1.4–3.2 с,
+  `admission.served=3, waited=3, avg_wait_ms=2133`, на бэкенде не больше одного
+  запроса одновременно, клиентские задержки 1.5–4.8 с.
+
+## Осталось после R73
+
+1. **Placement policy** для 2+ бэкендов — P1 (исполнение
+   `pool`/`replicated`/`auto` из политики) и P2 (`sharded`/`rpc` на реальном
+   транспорте; открытый вопрос: llama.cpp RPC vs B8.7) —
+   `plans/2026-09-23-multi-backend-placement-policy.md`.
+2. **Self-hosted CI-раннер** `skyworker-ci` — нужен админ:
+   `Restart-Service actions.runner.skyworker-ci` (сервис запущен, связь с
+   GitHub потеряна, `SocketException 995`, backoff).
+3. Возможное упрощение: legacy `QueueManager` после R73 обслуживает только
+   статистику/историю (`/api/v1/queue/*`) — можно заменить его тонким
+   хранилищем метрик и убрать пул worker'ов и канал целиком.
+
+## Осталось после R71 (закрыто в R73/R72)
+
+1. ~~**Единая очередь для Ollama-пути** (хвост 4): `Proxy.ServeHTTP` использует
+   старый `QueueManager`~~ → ✅ закрыто в R73.
 2. **Placement policy** для 2+ бэкендов —
    `plans/2026-09-23-multi-backend-placement-policy.md` (открытый вопрос:
    транспорт раскладки, llama.cpp RPC vs B8.7).

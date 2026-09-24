@@ -226,6 +226,21 @@ func (aq *admissionQueue) position(backendID string, w *admissionWaiter) int {
 	return 0
 }
 
+// waitingCount — R73: сколько запросов ждут слот (по всем бэкендам, включая
+// ключ «any» единой очереди). Нужен для backpressure (см. admissionOverloaded).
+func (aq *admissionQueue) waitingCount() int {
+	if aq == nil {
+		return 0
+	}
+	aq.mu.Lock()
+	defer aq.mu.Unlock()
+	total := 0
+	for _, list := range aq.waiters {
+		total += len(list)
+	}
+	return total
+}
+
 // markInflight — изменить счётчик активных запросов сессии.
 func (aq *admissionQueue) markInflight(session string, delta int) {
 	if aq == nil || session == "" {

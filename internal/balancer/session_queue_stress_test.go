@@ -31,6 +31,9 @@ import (
 )
 
 func TestLoadBalancing_DetailedStressReport(t *testing.T) {
+	// R73: единая очередь — ожидание слота включаем явно (TestMain пакета
+	// выставляет LB_ADMISSION_WAIT_SEC=0, а сценарий проверяет ожидание).
+	t.Setenv("LB_ADMISSION_WAIT_SEC", "30")
 	// 2 mock backends, каждый с max 3 параллельно (через channel semaphore).
 	mk := func(id string, maxConcurrent int) (*httptest.Server, *atomic.Int64, *atomic.Int64) {
 		sem := make(chan struct{}, maxConcurrent)

@@ -5,6 +5,72 @@
 Формат ведётся в соответствии с [Keep a Changelog](https://keepachangelog.com/ru/1.0.0/),
 и этот проект придерживается [Semantic Versioning](https://semver.org/lang/ru/).
 
+## [0.5.31 — Round 73 (2026-09-24)]
+
+### ✨ Единая очередь: Ollama-путь переведён на admission-очередь
+
+Последний хвост направления «единая очередь»: в балансере жили **две
+независимые очереди**.
+
+* **admission-очередь** (`admission_queue.go`, R67b/R70) — ждёт слот на
+  конкретном бэкенде; работает на llama.cpp-пути; несёт per-session
+  справедливость, `X-Queue-Position`/`X-Queue-Wait-Ms`, keepalive для
+  streaming-клиентов и блок `admission` в `/api/v1/queue/stats`.
+* **legacy `QueueManager`** (`queue_manager.go`) — канал + пул worker'ов;
+  работал на Ollama-пути: если ни на одном бэкенде не было свободного слота,
+  `Proxy.ServeHTTP` клал запрос в канал, а worker позже пробовал его
+  обслужить (`dispatchRequest`).
+
+У очередей были разные лимиты (`queueTimeout` против `LB_ADMISSION_WAIT_SEC`),
+разная справедливость (у legacy её не было) и разная наблюдаемость.
+
+**Что сделано:**
+
+* **`Proxy.waitForInferenceBackend`** (`internal/balancer/unified_queue_r73.go`) —
+  ожидание слота на любом подходящем бэкенде в admission-очереди (ключ `any`):
+  быстрый путь `tryAcquireAnyBackendSlot` (тот же выбор, что в `ServeHTTP`),
+  затем очередь с приоритетами по сессиям, `position`, пределом
+  `LB_ADMISSION_WAIT_SEC` и отменой по контексту клиента.
+* **`ServeHTTP`**: ветка «все бэкенды заняты» больше не уходит в legacy
+  `queueRequest` — она ждёт слот в единой очереди и продолжает обычный
+  `proxyRequest` (заголовки `X-Queue-Position`/`X-Queue-Wait-Ms` при ожидании,
+  `503 + Retry-After + X-Queue-Wait-Max-Sec` при таймауте через
+  `writeAdmissionUnavailable`). Legacy-функция `queueRequest` удалена.
+* **Backpressure сохранён**: `admissionOverloaded()` — быстрый 503, когда
+  ожидающих ≥ 90% от `queueMaxSize` (тот же порог, что был у legacy-канала).
+* **Статистика не «замерзает»**: `QueueManager.RecordUnified` пополняет
+  `processed_total` и историю (`/api/v1/queue/history`), поэтому панели, которые
+  читают legacy-поля, продолжают показывать данные; сами worker'ы в
+  обслуживании не участвуют.
+* **Один knob на оба пути**: `LB_ADMISSION_WAIT_SEC` теперь управляет ожиданием
+  и на Ollama-пути. Следствие: при `LB_ADMISSION_WAIT_SEC=0` Ollama-путь
+  отвечает быстрым 503 вместо ожидания в legacy-канале (раньше ожидание
+  регулировалось `queueTimeout`). Тесты, которые проверяют ожидание
+  (`TestLoadBalancing_MultipleClients`, `TestLoadBalancing_SameClientQueueFIFO`,
+  `TestLoadBalancing_DetailedStressReport`, `TestScenario_Queue_FIFO_Dispatch`),
+  включают ожидание явно через `t.Setenv("LB_ADMISSION_WAIT_SEC", …)`.
+
+**Живая проверка (throwaway-стенд: балансер + ollama-заглушка
+`_diag/r73_stub.js` на хосте, один бэкенд, `maxConcurrentRequests=1`,
+4 параллельных `/api/chat`):**
+
+| | до (r72-submodule-v10, legacy QueueManager) | после (r73-submodule-v11, единая очередь) |
+|---|---|---|
+| HTTP 200 | 4/4 | 4/4 |
+| заголовки очереди | нет (`X-Queue-Position: 0`, `X-Queue-Wait-Ms` пусто) | у 3 из 4: позиции 1/2/3, ожидание 1.4/1.7/3.2 с |
+| `admission` в `/api/v1/queue/stats` | `served=0, waited=0` (очередь не участвовала) | `served=3, waited=3, avg_wait_ms=2133` |
+| legacy-поля | `processed_total=4` (вся работа через legacy) | `processed_total=3` (только статистика) |
+| справедливость по сессиям | нет | есть (приоритеты admission-очереди) |
+| максимум одновременных запросов на бэкенде | 1 | 1 |
+| задержки клиентов | 11.8–15.4 с | 1.5–4.8 с |
+
+**Тесты:** `internal/balancer/unified_queue_r73_test.go` (7: быстрый путь,
+ожидание слота, таймаут, отключённое ожидание, переполнение (backpressure),
+отмена контекста, HTTP e2e с двумя параллельными запросами — оба 200, у
+ожидавшего есть `X-Queue-Wait-Ms`, на бэкенде не больше одного запроса
+одновременно, `processed_total` и история пополняются). Регрессии:
+`./internal/... -race` ok, `./cmd/...` ok, `./tests/... -short` ok.
+
 ## [0.5.30 — Round 72 (2026-09-24)]
 
 ### ✨ Placement policy (этап P0: resolution + наблюдаемость)

@@ -1,11 +1,11 @@
 # OllamaLegion — Roadmap (живой документ)
 
-> **Дата обновления:** 2026-09-24 (Round 70 — гигиена тестов после R69)
+> **Дата обновления:** 2026-09-24 (Round 71 — вместимость бэкенда = n_parallel ноды, heartbeat агента её больше не перекрывает)
 > **Назначение:** единственный источник правды по реализованному и оставшемуся в проекте OllamaLegion.
 > Все устаревшие/завершённые планы — в `plans/archive/`.
-> **HEAD:** `3b1e049` on branch `centurion` (R70; до него R69 — совместимость с Cline, единый gate reload'ов, AutoTune не режет клиентский n_ctx).
-> **Live stack:** `ol-bundled-balancer:r69-submodule-v2` + `ol-bundled-cppworker-gpu:gpu-r69-submodule-v1` + `ol-bundled-webui:r66-submodule-v16` + `ol-bundled-cppworker-gpu-agent:cppworker-bundled-r41-agent-x-api-token` (4 healthy).
-> **Проверено на живом стенде (R68/R69):** Cline (VS Code, провайдер ollama, Model Context Window = 65536) получает 200 и ответ модели; модель грузится на `ctx=65536, kv=q4_0` на RTX 3070 8 GB.
+> **HEAD:** `2e3cf0b` on branch `centurion` + R71 (вместимость/слоты: `EffectiveMaxConcurrentRequests`, персистентный признак «вместимость от ноды»).
+> **Live stack:** `ol-bundled-balancer:r71-submodule-v8` + `ol-bundled-cppworker-gpu:gpu-r70-submodule-v3` + `ol-bundled-webui:r70-submodule-v1` + `ol-bundled-cppworker-gpu-agent:cppworker-bundled-r41-agent-x-api-token` (4 healthy).
+> **Проверено на живом стенде (R68/R69/R71):** Cline (VS Code, провайдер ollama, Model Context Window = 65536) получает 200 и ответ модели; модель грузится на `ctx=65536, kv=q4_0` на RTX 3070 8 GB; агент применяет `maxConcurrentRequests=1` (реальный `n_parallel`) вместо устаревшей константы 4.
 
 ---
 
@@ -26,21 +26,39 @@
 `CHANGELOG.md`): R67a/b — потолок n_ctx по KV-cache/VRAM, ожидание авто-загрузки,
 admission-очередь и per-user сессии; R68 — профиль модели больше не потолок для
 клиента, reload дожидается; R69 — реальный Cline (`max_output_tokens`), единый
-gate reload'ов, AutoTune не режет клиентский n_ctx. Запущен R70 (гигиена +
-очередь + placement policy, см. таблицу ниже).
+gate reload'ов, AutoTune не режет клиентский n_ctx. R70 закрыл гигиену тестов,
+keepalive ожидающих streaming-клиентов, карточку admission-очереди в
+`/monitor`, KV-хинт в адаптивную стратегию и первую половину хвоста
+«`maxConcurrentReqs` ↔ `n_parallel`». R71 закрыл этот хвост полностью:
+вместимость бэкенда больше не переписывается «эхом» heartbeat агента.
 
-### R70 (2026-09-24) — текущий раунд
+### R71 (2026-09-24) — текущий раунд
+
+Продолжение R70 (направления 6 и 7 из таблицы ниже):
+
+| # | Направление | Статус |
+|---|-------------|--------|
+| 1 | Heartbeat агента не пишет вместимость; агент получает эффективную вместимость (`EffectiveMaxConcurrentRequests`) | ✅ сделано (образ `r71-submodule-v8`) |
+| 2 | Персистентный признак «вместимость от ноды» + восстановление runtime-лимитов в `LoadState` + самоисцеление старого `state.json` | ✅ сделано |
+| 3 | Единое правило вместимости вместо 4 копий (slot manager, `tryAcquireSlot`, least-loaded, метрики, `/api/v1/backends`) | ✅ сделано |
+| 4 | Повторная регистрация агента больше не обнуляет runtime-поля бэкенда | ✅ сделано |
+| 5 | Живая проверка: лимит оператора не откатывается, очередь считает слоты по нему | ✅ проверено (см. CHANGELOG 0.5.29) |
+| 6 | Свести `QueueManager` (Ollama-путь) с admission-очередью | ⏳ осталось |
+| 7 | Placement policy (мультибэкенд) | ⏳ план (`2026-09-23-multi-backend-placement-policy.md`) |
+| 8 | Гигиена: self-hosted CI-раннер `skyworker-ci` | ⏳ **нужен админ**: `Restart-Service actions.runner.skyworker-ci` (сервис запущен, связь с GitHub потеряна, `SocketException 995`, backoff) |
+
+### R70 (2026-09-24) — закрытый раунд
 
 Выбранные направления (по запросу пользователя после проверки Cline):
 
 | # | Направление | Статус |
 |---|-------------|--------|
 | 1 | Гигиена: тесты не пачкают `tests/testdata/state.json` | ✅ сделано (`3b1e049`) |
-| 2 | Гигиена: self-hosted CI-раннер `skyworker-ci` | ⏳ **нужен админ**: сервис запущен, но связь с GitHub отвалилась (`SocketException 995`, backoff ~3.2 ч) → джоба «Test (self-hosted Windows)» висит в очереди. Команда: `Restart-Service actions.runner.skyworker-ci` от администратора |
-| 3 | KV-хинт в адаптивную стратегию cppworker | ⏳ в работе |
-| 4 | Keepalive для streaming-ожидающих (`LB_ADMISSION_KEEPALIVE_SEC`) | ⏳ план |
-| 5 | Карточка очереди (`admission`) в WebUI `/monitor` | ⏳ план |
-| 6 | Единая очередь: `maxConcurrentReqs` ↔ `n_parallel`, свести `QueueManager` | ⏳ план |
+| 2 | Гигиена: self-hosted CI-раннер `skyworker-ci` | ⏳ **нужен админ** (перенесено в R71) |
+| 3 | KV-хинт в адаптивную стратегию cppworker | ✅ сделано (образ `r70-submodule-v7`, CHANGELOG 0.5.28) |
+| 4 | Keepalive для streaming-ожидающих (`LB_ADMISSION_KEEPALIVE_SEC`) | ✅ сделано (`395e301`) |
+| 5 | Карточка очереди (`admission`) в WebUI `/monitor` | ✅ сделано (`721dead`) |
+| 6 | Единая очередь: `maxConcurrentReqs` ↔ `n_parallel`, свести `QueueManager` | 🟡 вместимость = `n_parallel` ✅ (`2e3cf0b`) + эхо heartbeat ✅ (R71); свести `QueueManager` ⏳ |
 | 7 | Placement policy (мультибэкенд) | ⏳ план (`2026-09-23-multi-backend-placement-policy.md`) |
 ### Phase 8 deliverables (полный список, 2026-07-11)
 

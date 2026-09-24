@@ -27,11 +27,7 @@ func (p *Proxy) tryAcquireSlot(backendID string) bool {
 		return false
 	}
 
-	maxReqs := state.Backend.MaxConcurrentReqs
-	// Используем RuntimeMaxConcurrentRequests если задан
-	if state.Backend.RuntimeMaxConcurrentRequests > 0 {
-		maxReqs = state.Backend.RuntimeMaxConcurrentRequests
-	}
+	maxReqs := state.Backend.EffectiveMaxConcurrentRequests()
 
 	if maxReqs > 0 && state.ActiveReqs >= maxReqs {
 		// Все слоты заняты — проверяем, не заняты ли они зомби-сессиями.

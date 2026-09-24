@@ -156,18 +156,36 @@ func (s *Server) agentRegisterHandler(w http.ResponseWriter, r *http.Request) {
 	if s.proxy.BackendExists(req.AgentID) {
 		// Обновляем существующий
 		existing := s.proxy.GetBackend(req.AgentID)
+		// R71 (2026-09-24): сохраняем всё, чего нет в payload регистрации.
+		// Раньше структура собиралась с нуля, и повторная регистрация агента
+		// обнуляла runtime-лимиты (операторский PUT /limits) и признак
+		// «вместимость от ноды» — после чего heartbeat-«эхо» агента снова
+		// перекрывало реальный n_parallel (наблюдалось на живой стойке:
+		// runtime 1 → 0 при рестарте агента).
 		updated := types.Backend{
-			ID:                req.AgentID,
-			Name:              req.Name,
-			Host:              host,
-			OllamaPort:        ollamaPort,
-			AgentPort:         agentPort,
-			CppWorkerPort:     req.CppWorkerPort,
-			Weight:            weight,
-			MaxConcurrentReqs: existing.MaxConcurrentReqs,
-			Labels:            req.Labels,
-			Status:            types.StatusHealthy,
-			Type:              backendType,
+			ID:                           req.AgentID,
+			Name:                         req.Name,
+			Host:                         host,
+			OllamaPort:                   ollamaPort,
+			AgentPort:                    agentPort,
+			CppWorkerPort:                req.CppWorkerPort,
+			Weight:                       weight,
+			MaxConcurrentReqs:            existing.MaxConcurrentReqs,
+			Labels:                       req.Labels,
+			Status:                       types.StatusHealthy,
+			Type:                         backendType,
+			RuntimeMaxModels:             existing.RuntimeMaxModels,
+			RuntimeMaxConcurrentRequests: existing.RuntimeMaxConcurrentRequests,
+			RuntimeCapacityFromNode:      existing.RuntimeCapacityFromNode,
+			RuntimeRequestTimeout:        existing.RuntimeRequestTimeout,
+			CppWorkerApiToken:            existing.CppWorkerApiToken,
+			Engine:                       existing.Engine,
+			ApiStyle:                     existing.ApiStyle,
+			GPUMode:                      existing.GPUMode,
+			AgentID:                      existing.AgentID,
+			HasAgent:                     existing.HasAgent,
+			CppWorkerConfig:              existing.CppWorkerConfig,
+			OllamaConfig:                 existing.OllamaConfig,
 		}
 		s.proxy.UpdateBackend(req.AgentID, updated)
 
@@ -339,17 +357,23 @@ func (s *Server) agentHeartbeatHandler(w http.ResponseWriter, r *http.Request) {
 			updated.Weight = hbPayload.Weight
 			needUpdate = true
 		}
-		if hbPayload.MaxConcurrentRequests > 0 && updated.RuntimeMaxConcurrentRequests != hbPayload.MaxConcurrentRequests &&
-			!updated.RuntimeCapacityFromNode {
-			// R70 (2026-09-24): не перекрываем вместимость, которую нода сообщила
-			// саморегистрацией (cppworker шлёт реальный n_parallel). Значение из
-			// heartbeat — эхо: балансер отдаёт агенту runtimeMaxConcurrentRequests
-			// в ответе, агент возвращает его же, и старая константа 4 жила вечно,
-			// хотя cppworker обслуживает 1 запрос. Сбрасывается при изменении
-			// бэкенда через WebUI (UpdateBackend).
-			updated.RuntimeMaxConcurrentRequests = hbPayload.MaxConcurrentRequests
-			needUpdate = true
-		}
+		// R71 (2026-09-24): heartbeat БОЛЬШЕ НЕ пишет вместимость.
+		//
+		// Найденный дефект (живая стойка): балансер отдаёт агенту
+		// config.maxConcurrentRequests = runtimeMaxConcurrentRequests, агент
+		// применяет его локально и в следующем heartbeat возвращает то же число
+		// обратно — балансер записывал «эхо» как новую вместимость. Узел с
+		// n_parallel=1 (cppworker присылает maxConcurrentRequests=1 при
+		// саморегистрации) жил с порогом admission-очереди 4: устаревшая
+		// константа агента (4) возвращалась быстрее, чем нода успевала её
+		// исправить (heartbeat раз в ~3 с, PUT /limits откатывался за 3 с).
+		//
+		// Источники вместимости теперь ровно два, и оба не эхо:
+		//   - нода: саморегистрация cppworker'а (MaxConcurrentReqs = n_parallel,
+		//     RuntimeCapacityFromNode=true);
+		//   - оператор: PUT /limits или правка бэкенда в WebUI.
+		// Ниже (config) мы по-прежнему отдаём агенту эффективную вместимость,
+		// чтобы его локальное значение сходилось к реальному n_parallel.
 		if hbPayload.MaxModels > 0 && updated.RuntimeMaxModels != hbPayload.MaxModels {
 			updated.RuntimeMaxModels = hbPayload.MaxModels
 			needUpdate = true
@@ -375,10 +399,14 @@ func (s *Server) agentHeartbeatHandler(w http.ResponseWriter, r *http.Request) {
 		} else if backend.MaxModels != 0 {
 			config["maxModels"] = backend.MaxModels
 		}
-		if backend.RuntimeMaxConcurrentRequests != 0 {
-			config["maxConcurrentRequests"] = backend.RuntimeMaxConcurrentRequests
-		} else if backend.MaxConcurrentReqs != 0 {
-			config["maxConcurrentRequests"] = backend.MaxConcurrentReqs
+		// R71 (2026-09-24): вместимость отдаём по единому правилу
+		// (EffectiveMaxConcurrentRequests): для саморегистрировавшейся ноды —
+		// её n_parallel, иначе операторский runtime-лимит, иначе статический
+		// max из конфига. Так локальное значение агента сходится к реальной
+		// вместимости узла вместо того, чтобы жить собственной жизнью.
+		// <= 0 означает «не менять локальное значение» на стороне агента.
+		if effective := backend.EffectiveMaxConcurrentRequests(); effective > 0 {
+			config["maxConcurrentRequests"] = effective
 		}
 		// RequestTimeout: приоритет — runtime-значение (адаптивный), затем статический
 		if backend.RuntimeRequestTimeout != 0 {
@@ -798,13 +826,9 @@ func (s *Server) agentBackendHeartbeatHandler(w http.ResponseWriter, r *http.Req
 		updated.Weight = hbPayload.Weight
 		needUpdate = true
 	}
-	if hbPayload.MaxConcurrentRequests > 0 && updated.RuntimeMaxConcurrentRequests != hbPayload.MaxConcurrentRequests &&
-		!updated.RuntimeCapacityFromNode {
-		// R70 (2026-09-24): см. комментарий в первом heartbeat-обработчике —
-		// значение от ноды (саморегистрация cppworker'а) приоритетнее «эха» агента.
-		updated.RuntimeMaxConcurrentRequests = hbPayload.MaxConcurrentRequests
-		needUpdate = true
-	}
+	// R71 (2026-09-24): см. комментарий в первом heartbeat-обработчике —
+	// heartbeat не пишет вместимость (это было «эхо» собственного ответа
+	// балансера и держало порог очереди на устаревшем 4 при n_parallel=1).
 	if hbPayload.MaxModels > 0 && updated.RuntimeMaxModels != hbPayload.MaxModels {
 		updated.RuntimeMaxModels = hbPayload.MaxModels
 		needUpdate = true
@@ -817,11 +841,20 @@ func (s *Server) agentBackendHeartbeatHandler(w http.ResponseWriter, r *http.Req
 		"backend", backendID, "agent", agentID,
 		"weight", hbPayload.Weight, "maxConcurrent", hbPayload.MaxConcurrentRequests)
 
+	// R71: отдаём агенту эффективную вместимость (нода-саморегистрация →
+	// её n_parallel, иначе операторский лимит), чтобы его локальное значение
+	// сходилось с реальной вместимостью узла. Раньше здесь всегда было -1
+	// («не меняем»), и агент мог держать локальный лимит, разошедшийся с нодой.
+	capacity := -1
+	if effective := backend.EffectiveMaxConcurrentRequests(); effective > 0 {
+		capacity = effective
+	}
+
 	// Возвращаем runtime-лимиты от балансера
 	s.writeJSON(w, http.StatusOK, map[string]interface{}{
 		"success": true,
 		"config": map[string]interface{}{
-			"maxConcurrentRequests": -1, // не меняем
+			"maxConcurrentRequests": capacity,
 			"maxModels":             -1,
 		},
 	})

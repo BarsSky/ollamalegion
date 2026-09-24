@@ -51,11 +51,9 @@ func (p *Proxy) GetClusterState() *types.ClusterState {
 			state.HealthyBackends++
 		}
 
-		// Приоритет: RuntimeMaxConcurrentRequests > MaxConcurrentReqs
-		maxConcurrent := backendConfig.MaxConcurrentReqs
-		if backendConfig.RuntimeMaxConcurrentRequests > 0 {
-			maxConcurrent = backendConfig.RuntimeMaxConcurrentRequests
-		}
+		// R71: единое правило вместимости (нода-саморегистрация → n_parallel,
+		// иначе операторский runtime-лимит, иначе статический max).
+		maxConcurrent := backendConfig.EffectiveMaxConcurrentRequests()
 		// Адаптивный таймаут
 		effectiveTimeout := getEffectiveTimeout(backendState, p.config.Balancing.RequestTimeout)
 		runtimeTimeout := getRuntimeRequestTimeout(backendState)

@@ -82,6 +82,15 @@ func (p *Proxy) LoadState() error {
 			p.config.Backends[i].HasAgent = saved.HasAgent
 			p.config.Backends[i].LastAgentContact = saved.LastAgentContact
 			p.config.Backends[i].RuntimeRequestTimeout = saved.RuntimeRequestTimeout
+			// R71 (2026-09-24): восстанавливаем runtime-лимиты и признак
+			// «вместимость от ноды». До этого LoadState переносил из state.json
+			// только статус/метрики, а runtimeMaxConcurrentRequests и
+			// RuntimeCapacityFromNode терялись: после перезапуска балансера
+			// операторский лимит исчезал, признак сбрасывался, и «эхо» агента
+			// снова перекрывало реальный n_parallel узла.
+			p.config.Backends[i].RuntimeMaxModels = saved.RuntimeMaxModels
+			p.config.Backends[i].RuntimeMaxConcurrentRequests = saved.RuntimeMaxConcurrentRequests
+			p.config.Backends[i].RuntimeCapacityFromNode = saved.RuntimeCapacityFromNode
 			// Round 13 (2026-07-10): restore AgentID — нужен для dedup migration
 			// (canonical = hasAgent && agentId!=""). Без этого LoadState
 			// восстанавливал hasAgent=true, но терял agentId → миграция
@@ -162,7 +171,39 @@ func (p *Proxy) LoadState() error {
 	}
 
 	logger.Get().Infow("state loaded", "path", p.statePath, "backends", len(state.Backends))
+
+	// R71 (2026-09-24): самоисцеление вместимости.
+	//
+	// Признак «вместимость от ноды» появился в R70 и до R71 не сериализовался,
+	// поэтому state.json мог содержать «эхо» агента: у cppworker с n_parallel=1
+	// (MaxConcurrentReqs=1) стояло runtimeMaxConcurrentRequests=4, из-за чего
+	// admission-очередь пускала 4 запроса на узел, обслуживающий 1.
+	// Для llama_cpp runtime-значение больше n_parallel смысла не имеет —
+	// приводим его к вместимости ноды и помечаем владельца. Значение МЕНЬШЕ
+	// n_parallel не трогаем: это осознанный лимит оператора (троттлинг).
+	for _, bs := range p.backends {
+		reconcileNodeCapacity(bs.Backend)
+	}
+
 	return nil
+}
+
+// reconcileNodeCapacity — R71: привести runtime-вместимость к реальной
+// вместимости узла, если она её превышает (см. вызов в LoadState).
+func reconcileNodeCapacity(backend *types.Backend) {
+	if backend == nil || backend.Type != types.BackendTypeLlamaCpp || backend.MaxConcurrentReqs <= 0 {
+		return
+	}
+	if backend.RuntimeMaxConcurrentRequests > backend.MaxConcurrentReqs {
+		logger.Get().Infow("R71: runtime-вместимость выше n_parallel узла — приведена к вместимости ноды",
+			"backend", backend.ID,
+			"runtime_max_concurrent_requests", backend.RuntimeMaxConcurrentRequests,
+			"max_concurrent_requests", backend.MaxConcurrentReqs)
+		backend.RuntimeMaxConcurrentRequests = backend.MaxConcurrentReqs
+	}
+	if backend.RuntimeMaxConcurrentRequests == backend.MaxConcurrentReqs {
+		backend.RuntimeCapacityFromNode = true
+	}
 }
 
 // scheduleSave - debounced autosave через 5 секунд

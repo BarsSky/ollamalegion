@@ -3,11 +3,39 @@ package balancer
 import (
 	"fmt"
 	"os"
+	"strings"
 	"time"
 
 	"ollama-loadbalancer/pkg/logger"
 	"ollama-loadbalancer/pkg/types"
 )
+
+// hasLabelFold — R71: есть ли метка (без учёта регистра и пробелов).
+// Локальная копия одноимённого хелпера из internal/api: пакет balancer не
+// должен зависеть от API-слоя.
+func hasLabelFold(labels []string, want string) bool {
+	for _, l := range labels {
+		if strings.EqualFold(strings.TrimSpace(l), want) {
+			return true
+		}
+	}
+	return false
+}
+
+// markCapacityFromNode — R71: если бэкенд саморегистрировался (метка
+// auto-registered, её ставит cppworker/agent), то вместимость принадлежит ноде:
+// MaxConcurrentReqs = её n_parallel, а runtime-значение — историческое «эхо».
+// Единая точка, чтобы признак не зависел от того, какой путь создал запись.
+func markCapacityFromNode(backend *types.Backend) {
+	if backend == nil || !hasLabelFold(backend.Labels, "auto-registered") {
+		return
+	}
+	if backend.MaxConcurrentReqs <= 0 {
+		return
+	}
+	backend.RuntimeCapacityFromNode = true
+	backend.RuntimeMaxConcurrentRequests = backend.MaxConcurrentReqs
+}
 
 // AddBackend - добавление нового бэкенда
 func (p *Proxy) AddBackend(backend types.Backend) error {
@@ -62,6 +90,9 @@ func (p *Proxy) AddBackend(backend types.Backend) error {
 	if backend.Status == "" {
 		backend.Status = types.StatusStarting
 	}
+
+	// R71: саморегистрация ноды → вместимость принадлежит ноде (её n_parallel).
+	markCapacityFromNode(&backend)
 
 	p.backends[backend.ID] = &BackendState{
 		Backend:         &backend,
@@ -201,10 +232,7 @@ func (p *Proxy) findHealthyBackendForModel(model, excludeID string) string {
 			}
 		}
 
-		maxReqs := state.Backend.MaxConcurrentReqs
-		if state.Backend.RuntimeMaxConcurrentRequests > 0 {
-			maxReqs = state.Backend.RuntimeMaxConcurrentRequests
-		}
+		maxReqs := state.Backend.EffectiveMaxConcurrentRequests()
 		if maxReqs <= 0 {
 			continue
 		}
@@ -497,6 +525,10 @@ func (p *Proxy) UpdateBackendLimits(backendID string, maxModels, maxConcurrentRe
 
 	state.Backend.RuntimeMaxModels = maxModels
 	state.Backend.RuntimeMaxConcurrentRequests = maxConcurrentRequests
+	// R71 (2026-09-24): оператор явно задал лимит — снимаем признак «вместимость
+	// от ноды», иначе EffectiveMaxConcurrentRequests() продолжил бы брать
+	// MaxConcurrentReqs (n_parallel) и лимит оператора не действовал бы.
+	state.Backend.RuntimeCapacityFromNode = false
 
 	p.PublishEvent(types.Event{
 		Type:      types.EventLimitsChange,

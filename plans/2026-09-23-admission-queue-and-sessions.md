@@ -83,29 +83,60 @@ cppworker `gpu-r69-submodule-v1`):
   по-прежнему *рекомендует* f16 — это её эвристика без учёта профиля; менять
   контракт стратегии не стали (см. «Осталось»).
 
-Осталось (хвосты R67b/R69, не влияют на сценарий Cline):
+## R70 (2026-09-24): закрыты хвосты 1, 3, 5 и первая половина хвоста 2
 
-1. **Keepalive для streaming-клиентов во время ожидания** (`LB_ADMISSION_KEEPALIVE_SEC`).
-   Сейчас ожидающий запрос молчит до получения слота (максимум
-   `LB_ADMISSION_WAIT_SEC`). Для очередей длиннее клиентского таймаута
-   (OpenWebUI 300 с) нужен hijack + SSE-комментарии/пустые строки NDJSON —
-   реализация отложена: сначала нужно понять, что важнее для Cline/Roo (они
-   переиспользуют соединение и не любят преамбулу).
-2. **Связь `maxConcurrentReqs` ↔ `n_parallel` cppworker.** Сейчас значение
-   приходит из конфига бэкенда (default 1 для llama_cpp, в живом стеке 4 от
-   агента). План: если cppworker сообщает `parallel`/`slots` в метриках —
-   использовать его как default `maxConcurrentReqs`, чтобы очередь балансера
-   совпадала с реальной вместимостью модели.
-3. **Карточка очереди в WebUI** (monitor): блок `admission` уже отдаётся API,
-   осталось отрисовать ожидающих и их сессии в `/monitor` (`renderDispatchStats`
-   рядом) — вместе с i18n-ключами и `scripts/check_webui_assets.py`.
-4. **Единая очередь для Ollama-пути**: `Proxy.ServeHTTP` использует старый
-   `QueueManager` (workers + pending/processing). Он работает, но это вторая
-   независимая очередь; имеет смысл свести обе к admission-очереди.
-5. **KV-хинт в запросе к адаптивной стратегии cppworker**: `queryAdaptiveStrategy`
-   не передаёт известный KV-тип, поэтому стратегия считает по f16 и может
-   выбрать `gpu_layers=0` (CPU-only) там, где с q4_0 модель влезает на GPU.
-   Рабочий обход — `kvCacheType` в профиле (сделано для gemma); системное
-   решение — добавить параметр `kv_cache_type` в strategy-endpoint cppworker.
+Коммиты `395e301` (keepalive), `721dead` (карточка WebUI), `2e3cf0b`
+(вместимость = n_parallel cppworker), образы балансера `r70-submodule-v7`,
+cppworker `gpu-r70-submodule-v3`, webui `r70-submodule-v1`:
+
+* **Keepalive для streaming-ожидающих** (хвост 1) — `LB_ADMISSION_KEEPALIVE_SEC`
+  (default 5, 0 = выключено). Ожидающий streaming-запрос сразу получает
+  `200` + `X-Queue-Keepalive: 1` и пустые строки-keepalive: для SSE
+  (`/v1/*`) — `: keepalive\n\n`, для NDJSON (`/api/*`) — `"\n"`; не-streaming
+  путь не изменился. Живая проверка: 8 streaming-запросов при 4 слотах → 3
+  ждали, у всех `X-Queue-Keepalive: 1`, 3–6 ведущих LF, все **200**.
+* **Карточка очереди в `/monitor`** (хвост 3) — строка admission-статистики
+  (`admWaiting`, `admActive`, `admServed`, `admTimeouts`, `admAvgWait`,
+  `admWaitMax`, список `admSessions`), `?v=R70`, паритет i18n ru/en
+  (`monitor.admission.*`, 1247/1247).
+* **KV-хинт в адаптивную стратегию** (хвост 5) — см. CHANGELOG 0.5.28.
+* **Хвост 2 (часть 1)**: `maxConcurrentReqs` бэкенда теперь берётся из реального
+  `n_parallel` cppworker. `cmd/cppworker/balancer_register.go` →
+  `effectiveNParallel()` (вместо константы 4), `docker/cppworker/
+  register-with-balancer.sh` резолвит `CPPWORKER_MAX_CONCURRENT` из
+  `/app/config/cppworker-defaults.json` (`defaultNParallel`), повторная
+  саморегистрация стала идемпотентной (`isSameBackendRegistration` +
+  `refreshRegisteredBackend`, 200 + `updated: true` вместо 409).
+
+## R71 (2026-09-24): хвост 2 закрыт полностью — heartbeat агента больше не перекрывает n_parallel
+
+Хвост 2 оказался не только про источник значения: на живом стенде вместимость
+оставалась **4** при `n_parallel=1`, потому что балансер писал в неё «эхо»
+собственного ответа агенту (подробный разбор и живая диагностика — в
+CHANGELOG 0.5.29, образ балансера `r71-submodule-v8`):
+
+* heartbeat (оба эндпоинта) **не пишет** `runtimeMaxConcurrentRequests`;
+  источники вместимости — саморегистрация ноды и оператор (`PUT /limits`);
+* агенту отдаётся **эффективная** вместимость (`EffectiveMaxConcurrentRequests`),
+  поэтому его локальное значение сходится к `n_parallel` (`applied
+  maxConcurrentRequests=1` вместо 4);
+* единое правило вместимости вместо 4 копий «runtime > 0 ? runtime : max»;
+* признак «вместимость от ноды» персистентен и восстанавливается в `LoadState`
+  вместе с runtime-лимитами; старое «испорченное» состояние самоисцеляется
+  (для `llama_cpp` runtime > `n_parallel` приводится к вместимости ноды);
+* повторная регистрация агента больше не обнуляет runtime-поля бэкенда.
+
+## Осталось после R71
+
+1. **Единая очередь для Ollama-пути** (хвост 4): `Proxy.ServeHTTP` использует
+   старый `QueueManager` (workers + pending/processing) — вторая независимая
+   очередь; свести её с admission-очередью.
+2. **Placement policy** для 2+ бэкендов —
+   `plans/2026-09-23-multi-backend-placement-policy.md` (открытый вопрос:
+   транспорт раскладки, llama.cpp RPC vs B8.7).
+3. **Self-hosted CI-раннер** `skyworker-ci` — нужен админ:
+   `Restart-Service actions.runner.skyworker-ci` (сервис запущен, связь с
+   GitHub потеряна, `SocketException 995`, backoff).
+
 
 

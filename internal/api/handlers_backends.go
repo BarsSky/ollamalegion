@@ -175,11 +175,10 @@ func (s *Server) listBackends(w http.ResponseWriter, r *http.Request) {
 		if !includeUnhealthy && unhealthyStatuses[backend.Status] {
 			continue
 		}
-		// Приоритет: RuntimeMaxConcurrentRequests > MaxConcurrentReqs
-		maxConcurrent := backend.MaxConcurrentReqs
-		if backend.RuntimeMaxConcurrentRequests > 0 {
-			maxConcurrent = backend.RuntimeMaxConcurrentRequests
-		}
+		// R71: вместимость по единому правилу (нода-саморегистрация → n_parallel,
+		// иначе операторский runtime-лимит, иначе статический max). Отчёт должен
+		// совпадать с тем, на что реально встаёт admission-очередь.
+		maxConcurrent := backend.EffectiveMaxConcurrentRequests()
 		// Приоритет: RuntimeMaxModels > MaxModels
 		maxModels := backend.MaxModels
 		if backend.RuntimeMaxModels != 0 {

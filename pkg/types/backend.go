@@ -65,12 +65,12 @@ type Backend struct {
 
 	// RuntimeCapacityFromNode — R70 (2026-09-24): вместимость пришла от самой
 	// ноды (саморегистрация cppworker'а: реальный n_parallel). Пока true,
-	// heartbeat агента не перекрывает RuntimeMaxConcurrentRequests своим «эхом»
-	// (балансер отдаёт агенту это значение в ответе, агент возвращает его же —
-	// из-за чего старая константа 4 жила и после смены реального параллелизма).
-	// Сбрасывается при изменении бэкенда через WebUI. Не сериализуется:
-	// это состояние процесса, а не конфигурация.
-	RuntimeCapacityFromNode bool `json:"-"`
+	// вместимостью считается MaxConcurrentReqs ноды
+	// (см. EffectiveMaxConcurrentRequests), а не runtime-значение.
+	// R71 (2026-09-24): сериализуется — иначе после перезапуска балансера
+	// признак терялся и «эхо» агента снова перекрывало реальный n_parallel.
+	// Сбрасывается оператором: PUT /limits или правка бэкенда из WebUI.
+	RuntimeCapacityFromNode bool `json:"runtimeCapacityFromNode,omitempty"`
 
 	// OllamaConfig — желаемые runtime-флаги Ollama, передаваемые агенту (только для ollama-типа)
 	OllamaConfig *OllamaDesiredConfig `json:"ollamaConfig,omitempty"`
@@ -92,6 +92,34 @@ type Backend struct {
 	RequestTimeout int `json:"requestTimeout"`
 	// RuntimeRequestTimeout — runtime-значение таймаута от балансера (меняется адаптивно, сохраняется в state.json)
 	RuntimeRequestTimeout int `json:"runtimeRequestTimeout"`
+}
+
+// EffectiveMaxConcurrentRequests — R71 (2026-09-24): единое правило вместимости
+// бэкенда для admission-очереди, слотов и отчётов.
+//
+// Приоритет:
+//  1. RuntimeCapacityFromNode && MaxConcurrentReqs > 0 — вместимость сообщила
+//     сама нода (cppworker: реальный n_parallel). Runtime-значение в этом случае
+//     историческое: агент получал его в ответе на heartbeat и возвращал обратно
+//     («эхо»), из-за чего узел с n_parallel=1 жил с порогом очереди 4.
+//  2. RuntimeMaxConcurrentRequests > 0 — операторский лимит
+//     (PUT /api/v1/backends/{id}/limits или правка из WebUI; эти пути снимают
+//     RuntimeCapacityFromNode).
+//  3. MaxConcurrentReqs — статический лимит из конфига.
+//
+// 0 или -1 означают «лимит не задан» — как и в прежней логике
+// «runtime > 0 ? runtime : max».
+func (b *Backend) EffectiveMaxConcurrentRequests() int {
+	if b == nil {
+		return 0
+	}
+	if b.RuntimeCapacityFromNode && b.MaxConcurrentReqs > 0 {
+		return b.MaxConcurrentReqs
+	}
+	if b.RuntimeMaxConcurrentRequests > 0 {
+		return b.RuntimeMaxConcurrentRequests
+	}
+	return b.MaxConcurrentReqs
 }
 
 // OllamaDesiredConfig — желаемая конфигурация Ollama, передаваемая агенту через heartbeat

@@ -5,6 +5,79 @@
 Формат ведётся в соответствии с [Keep a Changelog](https://keepachangelog.com/ru/1.0.0/),
 и этот проект придерживается [Semantic Versioning](https://semver.org/lang/ru/).
 
+## [0.5.29 — Round 71 (2026-09-24)]
+
+### 🐛 Bug fix
+
+#### Вместимость бэкенда: heartbeat агента больше не перекрывает реальный n_parallel
+
+R70 научил cppworker присылать при саморегистрации честную вместимость
+(`maxConcurrentRequests = n_parallel`), но на живой стойке значение оставалось
+**4** при `n_parallel=1`. Разбор показал петлю:
+
+1. балансер в ответе на heartbeat отдавал агенту
+   `config.maxConcurrentRequests = runtimeMaxConcurrentRequests` (значение
+   `4` — историческая константа `cmd/cppworker/balancer_register.go` до R70);
+2. агент применял его локально (`Heartbeat response: applied
+   maxConcurrentRequests=4 from balancer`) и в следующем heartbeat возвращал
+   то же число обратно;
+3. балансер записывал это «эхо» как новую вместимость.
+
+Так как живой агент шлёт heartbeat **раз в ~3 с**, значение было
+самоподдерживающимся: операторский `PUT /limits` откатывался за 3 с, а
+admission-очередь пускала 4 запроса на узел, обслуживающий 1.
+
+**Живая диагностика (до фикса, один и тот же стенд):**
+
+| шаг | наблюдение |
+|---|---|
+| `PUT /api/v1/backends/{id}/limits {maxConcurrentRequests: 1}` | HTTP 200, в ответе `runtime.runtimeMaxConcurrentRequests: 1` |
+| опрос каждые 500 мс | через < 5 с снова `runtime=4`, `maxConcurrentRequests=4` |
+| лог агента | `Heartbeat response: applied maxConcurrentRequests=4 from balancer` каждые 3 с |
+| агент остановлен (`docker stop`) → `PUT /limits 1` | `runtime=1` держится все 10 с |
+| агент запущен (`docker start`) | `runtime: 1 → 0 → 1` — регистрация агента обнуляла runtime-поля, heartbeat возвращал своё значение |
+
+**Что сделано:**
+
+* **Вместимость больше не приходит из heartbeat.** Оба обработчика
+  (`/api/v1/agents/heartbeat` и `/api/v1/backends/{id}/agent/heartbeat`) не
+  пишут `RuntimeMaxConcurrentRequests` — источников вместимости ровно два, и
+  оба не «эхо»: саморегистрация ноды (`MaxConcurrentReqs = n_parallel`) и
+  оператор (`PUT /limits`, правка из WebUI).
+* **Агенту отдаётся эффективная вместимость** (`config.maxConcurrentRequests`),
+  поэтому его локальное значение сходится к реальному `n_parallel` (в логе
+  агента после фикса — `applied maxConcurrentRequests=1`), а не живёт своей
+  жизнью. Второй обработчик раньше всегда отвечал `-1` («не меняем»).
+* **Единое правило вместимости** — `types.Backend.EffectiveMaxConcurrentRequests()`:
+  нода-саморегистрация → её `n_parallel`; иначе операторский runtime-лимит;
+  иначе статический `max`. Используется в slot manager, `tryAcquireSlot`,
+  выборе least-loaded, метриках и в отчёте `/api/v1/backends` — раньше это
+  правило было скопировано в 4 местах и в каждом своё.
+* **Признак «вместимость от ноды» стал персистентным**
+  (`runtimeCapacityFromNode` в state.json) и **восстанавливается в `LoadState`**
+  вместе с `runtimeMaxModels` / `runtimeMaxConcurrentRequests` — до R71
+  `LoadState` их вообще не переносил, поэтому после перезапуска балансера
+  операторский лимит исчезал, признак сбрасывался и «эхо» снова побеждало.
+* **Самоисцеление старого state.json**: для `llama_cpp` runtime-значение
+  больше `n_parallel` смысла не имеет (cppworker обслуживает не больше
+  `n_parallel` одновременно) — при загрузке оно приводится к вместимости ноды и
+  запись помечается как «от ноды». Значение **меньше** `n_parallel` не
+  трогается: это осознанный троттлинг оператора.
+* **Повторная регистрация агента не обнуляет поля**: структура в
+  `agentRegisterHandler` собиралась с нуля и теряла runtime-лимиты, признак
+  «от ноды», `agentId`, GPU-режим, engine, api-style, токен и конфиги — теперь
+  они сохраняются (именно это обнуление видно в диагностике выше).
+* **`PUT /limits` снимает признак «от ноды»** — лимит оператора имеет приоритет
+  над `n_parallel` и отдаётся агенту.
+
+**Тесты:** `internal/balancer/capacity_r71_test.go` (9: правило приоритета
+включая крайние случаи, `AddBackend` помечает `auto-registered`, `PUT /limits`
+снимает признак, `LoadState` восстанавливает лимиты/признак, самоисцеление
+старого state, сохранение троттлинга), `internal/api/heartbeat_capacity_r71_test.go`
+(4: heartbeat не пишет и не создаёт вместимость на обоих эндпоинтах, агенту
+отдаётся `n_parallel` ноды, лимит оператора приоритетен). Регрессии:
+`./internal/... -race` ok, `./cmd/...` ok, `./tests/... -short` ok.
+
 ## [0.5.28 — Round 70 (2026-09-24)]
 
 ### 🐛 Bug fix

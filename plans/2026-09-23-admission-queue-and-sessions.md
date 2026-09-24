@@ -62,7 +62,28 @@
   `503 + Retry-After: 15 + X-Queue-Position: 3 + X-Queue-Wait-Max-Sec: 2 +
   X-Queue-Wait-Ms: 2000`, `timeouts=1`.
 
-## Осталось (не входит в жалобу R67, отдельные задачи)
+## R69 (2026-09-23): что закрыто по хвостам и что осталось
+
+Закрыто (коммиты `8be78bc`, `82a480f`, образ балансера `r69-submodule-v2`,
+cppworker `gpu-r69-submodule-v1`):
+
+* **Гонка reload'ов** — единый gate `StartModelReloadIfNotPending` (ключ только
+  backend+model) для ВСЕХ триггеров: preflight, R60.47-обработчик 413,
+  R60.35/44 `executeAsyncReload`. До этого два последних лаунчера работали без
+  дедупликации → cppworker отменял загрузку («model load aborted by user»),
+  rollback падал и модель оставалась выгруженной.
+* **Обработчик 413 больше не планирует reload «вниз»**, если координатор уже
+  знает больший n_ctx (иначе качели 65536 → 16384 → 65536).
+* **AutoTune не уменьшает n_ctx ниже клиентского запроса** (окно 30 минут) —
+  именно это давало ping-pong reload и 503 на каждом запросе Cline.
+* **KV-cache type**: профиль `gemma-4-E4B-it-Q4_K_M` получил `kvCacheType: q4_0`;
+  cppworker при reload'е уважает выбор пользователя/профиля
+  (`reload: SelectStrategy kvCacheType differs from user choice, honoring user`),
+  поэтому 65K влезает в 8 GB VRAM (KV 720 MiB) и грузится на GPU. Стратегия
+  по-прежнему *рекомендует* f16 — это её эвристика без учёта профиля; менять
+  контракт стратегии не стали (см. «Осталось»).
+
+Осталось (хвосты R67b/R69, не влияют на сценарий Cline):
 
 1. **Keepalive для streaming-клиентов во время ожидания** (`LB_ADMISSION_KEEPALIVE_SEC`).
    Сейчас ожидающий запрос молчит до получения слота (максимум
@@ -81,4 +102,10 @@
 4. **Единая очередь для Ollama-пути**: `Proxy.ServeHTTP` использует старый
    `QueueManager` (workers + pending/processing). Он работает, но это вторая
    независимая очередь; имеет смысл свести обе к admission-очереди.
+5. **KV-хинт в запросе к адаптивной стратегии cppworker**: `queryAdaptiveStrategy`
+   не передаёт известный KV-тип, поэтому стратегия считает по f16 и может
+   выбрать `gpu_layers=0` (CPU-only) там, где с q4_0 модель влезает на GPU.
+   Рабочий обход — `kvCacheType` в профиле (сделано для gemma); системное
+   решение — добавить параметр `kv_cache_type` в strategy-endpoint cppworker.
+
 

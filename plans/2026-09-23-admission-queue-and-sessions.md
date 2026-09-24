@@ -153,9 +153,10 @@ CHANGELOG 0.5.29, образ балансера `r71-submodule-v8`):
    `pool`/`replicated`/`auto` из политики) и P2 (`sharded`/`rpc` на реальном
    транспорте; открытый вопрос: llama.cpp RPC vs B8.7) —
    `plans/2026-09-23-multi-backend-placement-policy.md`.
-2. **Self-hosted CI-раннер** `skyworker-ci` — нужен админ:
-   `Restart-Service actions.runner.skyworker-ci` (сервис запущен, связь с
-   GitHub потеряна, `SocketException 995`, backoff).
+2. **Self-hosted CI-раннер** `skyworker-ci` — ✅ **закрыто**: раннер снова
+   `online` (`gh api repos/BarsSky/ollamalegion/actions/runners`), джоба
+   «Test (self-hosted Windows)» — success на коммите R73, все 7 проверок CI
+   зелёные. (`Restart-Service actions.runner.skyworker-ci` больше не требуется.)
 3. Возможное упрощение: legacy `QueueManager` после R73 обслуживает только
    статистику/историю (`/api/v1/queue/*`) — можно заменить его тонким
    хранилищем метрик и убрать пул worker'ов и канал целиком.
@@ -167,9 +168,8 @@ CHANGELOG 0.5.29, образ балансера `r71-submodule-v8`):
 2. **Placement policy** для 2+ бэкендов —
    `plans/2026-09-23-multi-backend-placement-policy.md` (открытый вопрос:
    транспорт раскладки, llama.cpp RPC vs B8.7).
-3. **Self-hosted CI-раннер** `skyworker-ci` — нужен админ:
-   `Restart-Service actions.runner.skyworker-ci` (сервис запущен, связь с
-   GitHub потеряна, `SocketException 995`, backoff).
+3. **Self-hosted CI-раннер** `skyworker-ci` — ✅ закрыто (раннер online,
+   джоба success на R73; см. выше).
 
 
 

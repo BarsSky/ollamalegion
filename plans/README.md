@@ -47,7 +47,7 @@ R73 свёл Ollama-путь в admission-очередь (единая очер�
 | 5 | Живая проверка до/после (throwaway-стенд, вместимость 1, 4 параллельных запроса) | ✅ проверено (образ `r73-submodule-v11`, CHANGELOG 0.5.31) |
 | 6 | P1 placement policy: исполнение `pool`/`replicated`/`auto` | ⏳ следующий этап |
 | 7 | P2 placement policy: `sharded`/`rpc` на реальном транспорте | ⏳ нужен выбор (llama.cpp RPC vs B8.7) |
-| 8 | Гигиена: self-hosted CI-раннер `skyworker-ci` | ⏳ **нужен админ**: `Restart-Service actions.runner.skyworker-ci` |
+| 8 | Гигиена: self-hosted CI-раннер `skyworker-ci` | ✅ **раннер снова online** (`gh api .../actions/runners` → `online`), джоба «Test (self-hosted Windows)» — success на коммите R73; все 7 проверок CI зелёные |
 
 ### R72 (2026-09-24) — закрытый раунд
 
@@ -84,7 +84,7 @@ Placement policy, этап P0 (`plans/2026-09-23-multi-backend-placement-policy.
 | # | Направление | Статус |
 |---|-------------|--------|
 | 1 | Гигиена: тесты не пачкают `tests/testdata/state.json` | ✅ сделано (`3b1e049`) |
-| 2 | Гигиена: self-hosted CI-раннер `skyworker-ci` | ⏳ **нужен админ** (перенесено в R71) |
+| 2 | Гигиена: self-hosted CI-раннер `skyworker-ci` | ✅ **закрыто в R73**: раннер снова `online`, джоба «Test (self-hosted Windows)» — success |
 | 3 | KV-хинт в адаптивную стратегию cppworker | ✅ сделано (образ `r70-submodule-v7`, CHANGELOG 0.5.28) |
 | 4 | Keepalive для streaming-ожидающих (`LB_ADMISSION_KEEPALIVE_SEC`) | ✅ сделано (`395e301`) |
 | 5 | Карточка очереди (`admission`) в WebUI `/monitor` | ✅ сделано (`721dead`) |

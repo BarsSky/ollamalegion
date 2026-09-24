@@ -1,10 +1,10 @@
 # OllamaLegion — Roadmap (живой документ)
 
-> **Дата обновления:** 2026-09-24 (Round 71 — вместимость бэкенда = n_parallel ноды, heartbeat агента её больше не перекрывает)
+> **Дата обновления:** 2026-09-24 (Round 72 — placement policy, этап P0: резолв стратегии размещения и его наблюдаемость)
 > **Назначение:** единственный источник правды по реализованному и оставшемуся в проекте OllamaLegion.
 > Все устаревшие/завершённые планы — в `plans/archive/`.
-> **HEAD:** `2e3cf0b` on branch `centurion` + R71 (вместимость/слоты: `EffectiveMaxConcurrentRequests`, персистентный признак «вместимость от ноды»).
-> **Live stack:** `ol-bundled-balancer:r71-submodule-v8` + `ol-bundled-cppworker-gpu:gpu-r70-submodule-v3` + `ol-bundled-webui:r70-submodule-v1` + `ol-bundled-cppworker-gpu-agent:cppworker-bundled-r41-agent-x-api-token` (4 healthy).
+> **HEAD:** `bbf0af1` on branch `centurion` + R72 (placement policy P0: `balancing.placement`, `/api/v1/placement`, заголовки `X-LB-Placement*`).
+> **Live stack:** `ol-bundled-balancer:r72-submodule-v9` + `ol-bundled-cppworker-gpu:gpu-r70-submodule-v3` + `ol-bundled-webui:r70-submodule-v1` + `ol-bundled-cppworker-gpu-agent:cppworker-bundled-r41-agent-x-api-token` (4 healthy).
 > **Проверено на живом стенде (R68/R69/R71):** Cline (VS Code, провайдер ollama, Model Context Window = 65536) получает 200 и ответ модели; модель грузится на `ctx=65536, kv=q4_0` на RTX 3070 8 GB; агент применяет `maxConcurrentRequests=1` (реальный `n_parallel`) вместо устаревшей константы 4.
 
 ---
@@ -31,8 +31,25 @@ keepalive ожидающих streaming-клиентов, карточку admiss
 `/monitor`, KV-хинт в адаптивную стратегию и первую половину хвоста
 «`maxConcurrentReqs` ↔ `n_parallel`». R71 закрыл этот хвост полностью:
 вместимость бэкенда больше не переписывается «эхом» heartbeat агента.
+R72 открыл placement policy (этап P0: resolution + наблюдаемость).
 
-### R71 (2026-09-24) — текущий раунд
+### R72 (2026-09-24) — текущий раунд
+
+Placement policy, этап P0 (`plans/2026-09-23-multi-backend-placement-policy.md`):
+
+| # | Направление | Статус |
+|---|-------------|--------|
+| 1 | Типы и разбор `balancing.placement` (models/classes/fallback/override), маски имён, выражения размера | ✅ сделано |
+| 2 | Резолвер `ResolvePlacement` с приоритетом запрос → модель → класс → глобальный дефолт + `reason`/`source`/`executable` | ✅ сделано |
+| 3 | Валидация с понятными ошибками (`ValidateConfigOnLoad` + лог при старте) | ✅ сделано |
+| 4 | Наблюдаемость: `GET /api/v1/placement`, заголовки `X-LB-Placement*`, лог решения | ✅ сделано (образ `r72-submodule-v9`) |
+| 5 | Живая проверка P0 (endpoint + заголовки + временная политика на стенде) | ✅ проверено (см. CHANGELOG 0.5.30) |
+| 6 | P1: исполнение `pool`/`replicated`/`auto` из политики (сейчас — `operatingMode`) | ⏳ следующий этап |
+| 7 | P2: `sharded`/`rpc` на реальном транспорте (открытый вопрос: llama.cpp RPC vs B8.7) | ⏳ нужен выбор |
+| 8 | Свести `QueueManager` (Ollama-путь) с admission-очередью | ⏳ осталось (хвост R70/R71) |
+| 9 | Гигиена: self-hosted CI-раннер `skyworker-ci` | ⏳ **нужен админ**: `Restart-Service actions.runner.skyworker-ci` |
+
+### R71 (2026-09-24) — закрытый раунд
 
 Продолжение R70 (направления 6 и 7 из таблицы ниже):
 
@@ -43,9 +60,8 @@ keepalive ожидающих streaming-клиентов, карточку admiss
 | 3 | Единое правило вместимости вместо 4 копий (slot manager, `tryAcquireSlot`, least-loaded, метрики, `/api/v1/backends`) | ✅ сделано |
 | 4 | Повторная регистрация агента больше не обнуляет runtime-поля бэкенда | ✅ сделано |
 | 5 | Живая проверка: лимит оператора не откатывается, очередь считает слоты по нему | ✅ проверено (см. CHANGELOG 0.5.29) |
-| 6 | Свести `QueueManager` (Ollama-путь) с admission-очередью | ⏳ осталось |
-| 7 | Placement policy (мультибэкенд) | ⏳ план (`2026-09-23-multi-backend-placement-policy.md`) |
-| 8 | Гигиена: self-hosted CI-раннер `skyworker-ci` | ⏳ **нужен админ**: `Restart-Service actions.runner.skyworker-ci` (сервис запущен, связь с GitHub потеряна, `SocketException 995`, backoff) |
+| 6 | Свести `QueueManager` (Ollama-путь) с admission-очередью | ⏳ перенесено в R72 |
+| 7 | Placement policy (мультибэкенд) | ✅ P0 в R72 (`2026-09-23-multi-backend-placement-policy.md`) |
 
 ### R70 (2026-09-24) — закрытый раунд
 

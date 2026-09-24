@@ -41,5 +41,32 @@ else
     fi
 fi
 
+# R72 (2026-09-24): предупреждение о рассинхроне конфига.
+#
+# Найденный на живом стенде сценарий: балансер запускается с writable-копией
+# /app/data/config.json (её же правит WebUI/overrides), а смонтированный
+# /app/config/config.json копируется в неё ТОЛЬКО при первом старте. Поэтому
+# правки смонтированного конфига (например новая секция balancing.placement)
+# молча не доезжают до процесса: оператор видит старые настройки и не понимает
+# почему. Если смонтированный конфиг новее рабочей копии — говорим об этом
+# громко, а с LB_CONFIG_SYNC=1 обновляем рабочую копию (с бэкапом).
+if [ -f "$CONFIG_WRITABLE" ] && [ -f "$CONFIG_SOURCE" ] && [ "$CONFIG_SOURCE" != "$CONFIG_WRITABLE" ] \
+    && [ "$CONFIG_SOURCE" -nt "$CONFIG_WRITABLE" ]; then
+    case "$(echo "$LB_CONFIG_SYNC" | tr '[:upper:]' '[:lower:]')" in
+        1|true|yes)
+            BACKUP="${CONFIG_WRITABLE}.bak.$(date +%s)"
+            cp "$CONFIG_WRITABLE" "$BACKUP"
+            cp "$CONFIG_SOURCE" "$CONFIG_WRITABLE"
+            echo "[entrypoint] LB_CONFIG_SYNC: рабочая копия обновлена из $CONFIG_SOURCE (бэкап: $BACKUP)"
+            ;;
+        *)
+            echo "[entrypoint] WARNING: $CONFIG_SOURCE новее рабочей копии $CONFIG_WRITABLE —"
+            echo "[entrypoint] WARNING: балансер стартует со СТАРЫМ конфигом, правки смонтированного файла НЕ применены."
+            echo "[entrypoint] WARNING: варианты: LB_CONFIG_SYNC=1 (обновить рабочую копию с бэкапом) или"
+            echo "[entrypoint] WARNING: пересоздать volume данных (docker compose rm -sf loadbalancer)."
+            ;;
+    esac
+fi
+
 # Запускаем балансер с writable-конфигом
 exec ./balancer -config "$CONFIG_WRITABLE" "$@"

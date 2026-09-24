@@ -5,6 +5,64 @@
 Формат ведётся в соответствии с [Keep a Changelog](https://keepachangelog.com/ru/1.0.0/),
 и этот проект придерживается [Semantic Versioning](https://semver.org/lang/ru/).
 
+## [0.5.30 — Round 72 (2026-09-24)]
+
+### ✨ Placement policy (этап P0: resolution + наблюдаемость)
+
+Продолжение направления «placement policy для мультибэкенда»
+(`plans/2026-09-23-multi-backend-placement-policy.md`). Проблема: режим работы
+балансера — **один глобальный переключатель** `balancing.operatingMode`
+(`standard` / `replication` / `rpc_coordinator` / `virtual_router` /
+`distributed_inference`), который обслуживает **все** модели одинаково, а
+специфичные режимы взаимоисключающие: включив `virtual_router`, теряем
+`replication`, и наоборот.
+
+**Что сделано (P0 — поведение маршрутизации НЕ меняется):**
+
+* **Секция `balancing.placement`** (`pkg/types/placement.go`): стратегии
+  `single` / `pool` / `replicated` / `sharded` / `rpc` / `auto`, правила по
+  модели (`models[]`, точное имя или маска `Qwen3*`), правила по классу
+  (`classes[]`: `match.model` + `match.sizeGB` вида `>12`, `<=8`, `4-8`),
+  `fallback` (`error` | `single`) и `allowRequestOverride` (заголовок
+  `X-LB-Placement`).
+* **Резолвер** `internal/balancer/placement.go`: приоритет по §3.1 плана —
+  запрос → модель → класс → глобальный дефолт (`operatingMode`), с причиной
+  (`reason`), источником (`request|model|class|global|disabled`), ссылкой на
+  сработавшее правило и признаком `executable` (`sharded`/`rpc` пока не
+  исполняются — это честная граница этапа P2, а не тихая деградация).
+  При `placement.enabled=false` (default) резолвер всегда возвращает стратегию
+  текущего `operatingMode` — обратная совместимость.
+* **Валидация с понятными ошибками** (`PlacementSettings.Validate()`),
+  подключена к `ValidateConfigOnLoad` и логируется при старте: неизвестная
+  стратегия, пустое имя модели, `pool` без списка, битое выражение размера,
+  пустой `match`, неизвестный `selection`, `enabled=true` без правил,
+  неисполнимые `sharded`/`rpc`. Ошибки не блокируют запуск.
+* **Наблюдаемость**: `GET /api/v1/placement` (требует `X-API-Token`) отдаёт
+  конфигурацию, предупреждения, список исполнимых стратегий и решения по всем
+  описанным моделям + глобальный дефолт `*`; `?model=…&sizeGB=…&strategy=…`
+  резолвит одну модель (отладка конфига); каждый запрос с известной моделью
+  получает заголовки `X-LB-Placement` / `X-LB-Placement-Source` и (при
+  включённой политике) строку решения в логе.
+* **Маски имён моделей** — собственный матчер `*`/`?` без спецсмысла `/`
+  (имена вида `hf.co/Qwen3.8-27B`), регистр не важен, `.gguf` отбрасывается.
+
+**Тесты:** `pkg/types/placement_r72_test.go` (6: маппинг operatingMode →
+стратегия, валидность/исполнимость, парсер выражений размера с ошибками,
+валидация конфига), `internal/balancer/placement_r72_test.go` (7: таблица
+приоритетов, disabled-режим по всем operatingMode, gating override, флаг
+`executable`, матчер масок, поведение класса при неизвестном размере, отчёт
+`PlacementDecisions` + `SetPlacementSettings`),
+`internal/api/placement_endpoint_r72_test.go` (4: сводка, решение по одной
+модели с override, выключенная политика, предупреждения + 405),
+`internal/config/placement_validation_r72_test.go` (3: предупреждения при
+загрузке, корректный конфиг без предупреждений, конфиг без секции placement).
+Регрессии: `./internal/... -race` ok, `./cmd/...` ok, `./tests/... -short` ok.
+
+**Этапы дальше:** P1 — исполнение `pool`/`replicated`/`auto` из политики
+(сейчас они по-прежнему управляются глобальным `operatingMode`), P2 —
+`sharded`/`rpc` на реальном транспорте раскладки (открытый вопрос плана:
+llama.cpp RPC или собственный B8.7).
+
 ## [0.5.29 — Round 71 (2026-09-24)]
 
 ### 🐛 Bug fix

@@ -62,6 +62,10 @@ type Proxy struct {
 	// API /api/v1/gguf/backends, когда модели загружены в обход балансера.
 	llamaCppMetricsPoller *llamaCppMetricsPoller
 
+	// R72 (P0): placement policy — решение о размещении модели.
+	// Состояния в Proxy нет: политика читается из конфига
+	// (p.config.Balancing.Placement), см. placement.go.
+
 	// nctxReload — координатор adaptive n_ctx auto-reload (Stage 3, 5).
 	// Решает, можно ли перезагрузить модель с большим n_ctx (если VRAM
 	// позволяет), или вернуть клиенту 413. Вызывается из llamacpp_transport.go
@@ -431,6 +435,20 @@ func NewProxy(config *types.LoadBalancerConfig) *Proxy {
 	p.modelLatencyTracker = NewModelLatencyTracker()
 	logger.Get().Infow("model latency tracker initialized")
 
+	// R72 (P0): placement policy — предупреждения валидации в лог при старте.
+	// Ошибки не блокируют запуск: политика выключена по умолчанию, а решения
+	// видны в GET /api/v1/placement. План:
+	// plans/2026-09-23-multi-backend-placement-policy.md
+	if cfg := config.Balancing.Placement; cfg.Enabled || len(cfg.Models) > 0 || len(cfg.Classes) > 0 {
+		warnings := cfg.Validate()
+		logger.Get().Infow("placement policy initialized",
+			"enabled", cfg.Enabled, "models", len(cfg.Models), "classes", len(cfg.Classes),
+			"allow_request_override", cfg.AllowRequestOverride, "warnings", len(warnings))
+		for _, w := range warnings {
+			logger.Get().Warnw("placement policy config needs attention", "warning", w)
+		}
+	}
+
 	return p
 
 }
@@ -671,6 +689,28 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	// Трекинг всех клиентов для монитора (использует уже распарсенные данные)
 	p.recordRecentClientParsed(r, parsed)
+
+	// R72 (P0): placement policy — решение о размещении модели.
+	//
+	// Пока это ТОЛЬКО наблюдаемость (этап P0 плана
+	// plans/2026-09-23-multi-backend-placement-policy.md): маршрутизация не
+	// меняется, но решение видно в логах, в счётчиках GET /api/v1/placement и
+	// в заголовках ответа — так оператор может проверить конфиг политики на
+	// живом стенде до включения исполнения стратегий (P1).
+	if model != "" {
+		sizeGB := float64(p.getModelSizeBytes(model)) / (1024 * 1024 * 1024)
+		decision := p.ResolvePlacement(model, sizeGB, r.Header.Get("X-LB-Placement"))
+		p.recordPlacementDecision(decision)
+		w.Header().Set("X-LB-Placement", string(decision.Strategy))
+		w.Header().Set("X-LB-Placement-Source", string(decision.Source))
+		if decision.Source != PlacementSourceDisabled {
+			ridLog(ctxWithRID).Debugw("placement: решение о размещении",
+				"model", model, "strategy", decision.Strategy,
+				"source", decision.Source, "reason", decision.Reason,
+				"rule", decision.MatchedRule, "model_size_gb", sizeGB,
+				"executable", decision.Executable)
+		}
+	}
 
 	// Round 27 follow-up (v0.5.15): disabled-profile check на самом раннем
 	// этапе ServeHTTP — до routeRequest, до selectBackend, до любого proxy.

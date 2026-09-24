@@ -109,6 +109,15 @@ type BalancingSettings struct {
 
 	// OperatingMode — текущий вариант работы балансера для метрик и UI
 	OperatingMode string `json:"operatingMode"` // "standard"|"replication"|"rpc_coordinator"|"virtual_router"|"distributed_inference"
+
+	// Placement — политика размещения моделей (R72, план
+	// plans/2026-09-23-multi-backend-placement-policy.md).
+	//
+	// Позволяет задавать стратегию (single/pool/replicated/sharded/rpc/auto)
+	// ДЛЯ КОНКРЕТНОЙ МОДЕЛИ, а не глобально: operatingMode остаётся дефолтом
+	// для моделей, не попавших ни в одно правило. При `enabled=false`
+	// (default) поведение полностью прежнее.
+	Placement PlacementSettings `json:"placement"`
 }
 
 // NCtxReloadSettings — фич-флаги и лимиты для n_ctx auto-reload (см.

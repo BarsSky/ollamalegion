@@ -1,11 +1,15 @@
 # Совместная работа режимов при нескольких бэкендах — Placement Policy
 
-**Статус:** Proposal (R66d, 2026-09-23)
+**Статус:** P0 РЕАЛИЗОВАН (R72, 2026-09-24, коммит `R72: placement policy (P0)`);
+P1+ — в работе
 **Автор:** сессия R66d
 **Связанные документы:** `plans/b8-tensor-parallelism-plan.md` (TP: этапы B8.1-B8.9),
 `plans/rpc-model-distribution-plan.md` (варианты B и C), `plans/README.md`,
 `docs/rpc-coordinator.md`, `docs/backend-type-isolation.md`
-**Связанный код:** `internal/balancer/proxy.go` (интерцепторы режимов),
+**Связанный код:** `internal/balancer/placement.go` (R72: резолвер),
+`pkg/types/placement.go` (R72: конфиг и валидация),
+`internal/api/handlers_placement.go` (R72: `/api/v1/placement`),
+`internal/balancer/proxy.go` (интерцепторы режимов + хук решения),
 `internal/balancer/operating_modes.go`, `internal/virtualmodel`,
 `internal/modelreplication`, `internal/rpccoordinator`, `internal/rpcworker`,
 `internal/rptensor`, `internal/cppbackend/batched_scheduler.go`,
@@ -225,7 +229,7 @@ else:
 
 ## 7. Этапы работ и критерии готовности
 
-### P0 — Resolution + observability (1-2 дня, поведение не меняется)
+### P0 — Resolution + observability (1-2 дня, поведение не меняется) — ✅ СДЕЛАНО (R72)
 * Типы и парсинг `balancing.placement` (модели/классы/дефолт), валидация с
   понятными ошибками.
 * Функция `ResolvePlacement(model) → {strategy, reason, source}`; по умолчанию
@@ -235,6 +239,30 @@ else:
   обратная совместимость конфигов без `placement`.
 * **Готово, когда:** на стенде в метриках видно стратегию и причину для каждой
   модели, а поведение маршрутизации не изменилось ни на одном существующем тесте.
+
+**Факт по R72 (2026-09-24, `pkg/types/placement.go`,
+`internal/balancer/placement.go`, `internal/api/handlers_placement.go`):**
+
+* конфиг `balancing.placement` (models/classes/fallback/allowRequestOverride),
+  стратегии `single|pool|replicated|sharded|rpc|auto`, маски имён `*`/`?`,
+  выражения размера `>12` / `<=8` / `4-8`;
+* `ResolvePlacement` (чистое ядро `ResolvePlacementDecision`) с приоритетом
+  запрос → модель → класс → глобальный дефолт и признаком `executable`
+  (`sharded`/`rpc` — этап P2);
+* валидация в `ValidateConfigOnLoad` + лог предупреждений при старте
+  (`NewProxy`), ошибки не блокируют запуск;
+* наблюдаемость: `GET /api/v1/placement` (сводка/предупреждения/решения,
+  `?model=&sizeGB=&strategy=` для отладки), заголовки `X-LB-Placement` /
+  `X-LB-Placement-Source` в ответе, Debug-лог решения при включённой политике;
+* вместо блока `placement` в `/api/v1/metrics` (P0-формулировка) выбран
+  отдельный endpoint: `/api/v1/metrics` имеет контрактные тесты на точный
+  набор полей (`tests/api_monitor_test.go`), а решение по конкретной модели
+  там не помещается без ломки контракта. Требование «стратегия и причина
+  видны оператору» выполнено endpoint'ом + логом + заголовками;
+* счётчики решений не вводились (в P0 решение ещё не влияет на маршрутизацию) —
+  они появятся в P1 вместе с исполнением стратегий;
+* тесты: 20 (4 файла), регрессии `./internal/... -race`, `./cmd/...`,
+  `./tests/... -short` — зелёные.
 
 ### P1 — `pool` и `replicated` из политики + `auto` для однородного случая (3-5 дней)
 * Перенос `virtual_router` и `modelreplication` под решение политики (сейчас они

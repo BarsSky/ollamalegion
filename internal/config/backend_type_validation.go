@@ -215,5 +215,9 @@ func ValidateConfigOnLoad(config *types.LoadBalancerConfig) []string {
 		}
 	}
 
+	// R72 (P0): валидация placement-политики. Ошибки не блокируют запуск:
+	// они видны в предупреждениях при загрузке и в GET /api/v1/placement.
+	warnings = append(warnings, config.Balancing.Placement.Validate()...)
+
 	return warnings
 }

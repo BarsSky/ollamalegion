@@ -364,6 +364,7 @@
     renderAutoPullPanel(data.autoPullConfig || null, data.autoPullStatus || null);
     renderModelOps(data.modelOps || null);
     renderDispatchStats(data.queueStats || {});
+    renderAdmissionStats(data.queueStats || {});
     renderCandidateBackends(data.candidates || null);
     renderVirtualModels(data.virtualModels || null);
     diagnose(data);
@@ -682,6 +683,30 @@
       }).join(' ');
       return '<tr data-backend-type="' + MA.esc(btType) + '"><td><strong>' + MA.esc(b.id) + '</strong>' + typeBadge + '</td><td><span class="badge ' + scs + '">' + b.status + '</span></td><td>' + MA.bar(gu) + ' ' + gu.toFixed(0) + '%' + gpuHidden + '<div class="sl-cell">' + sl(b.id, 'gpu', 'var(--accent)') + '</div></td><td>' + MA.bar(vu) + ' ' + vu.toFixed(0) + '%<div class="sl-cell">' + sl(b.id, 'vram', 'var(--purple-accent)') + '</div></td><td title="' + cpuHint + '">' + MA.bar(cu) + ' ' + cu.toFixed(0) + '%<div class="sl-cell">' + sl(b.id, 'cpu', 'var(--success)') + '</div></td><td>' + MA.bar(ru) + ' ' + ru.toFixed(0) + '%<div class="sl-cell">' + sl(b.id, 'ram', 'var(--warning)') + '</div></td><td class="col-right">' + a + '/' + mr + '</td><td class="col-right">' + (rps > 0 ? rps.toFixed(1) : '-') + '<div class="sl-cell">' + sl(b.id, 'rps', 'var(--info)') + '</div></td><td class="col-right">' + avgRT + '<div class="sl-cell">' + sl(b.id, 'avgRt', 'var(--text-secondary)') + '</div></td><td class="col-right">' + reqCap + '</td><td class="col-right">' + sc + '</td><td style="font-size:11px">' + loadingCell + '</td><td>' + modelsCell + '</td><td class="col-right">' + up + '</td></tr>';
     }).join('');
+  }
+
+  // renderAdmissionStats — R70: admission-очередь (кто ждёт свободный слот).
+  // Данные — GET /api/v1/queue/stats → поле "admission" (LB_ADMISSION_WAIT_SEC,
+  // per-session справедливость, keepalive для streaming-ожидающих).
+  function renderAdmissionStats(qs) {
+    var a = (qs && qs.admission) || {};
+    var enabled = a.enabled !== false;
+    updateText('admWaiting', a.waiting || 0);
+    updateText('admActive', a.active_sessions || 0);
+    updateText('admServed', a.served_total || 0);
+    updateText('admTimeouts', a.timeout_total || 0);
+    var avg = a.avg_wait_ms || 0;
+    updateText('admAvgWait', avg > 0 ? MA.fmtDur(avg) : '—');
+    var waitMax = a.wait_max_sec || 0;
+    updateText('admWaitMax', enabled ? (waitMax > 0 ? waitMax + T('monitor.admission.secSuffix') : '∞') : T('monitor.admission.off'));
+
+    var sessions = a.sessions || [];
+    var el = document.getElementById('admSessions');
+    if (el) {
+      el.textContent = sessions.length
+        ? T('monitor.admission.sessions') + ': ' + sessions.join(', ')
+        : '';
+    }
   }
 
   function renderQueue(q) {

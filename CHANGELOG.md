@@ -95,6 +95,22 @@ r70k-user-6 => 200|113.7s  keepalive_hdr='X-Queue-Keepalive: 1' leading_lf=3
 keepalive по пути/телу, парсинг env, HTTP-уровень — streaming-запрос получает
 keepalive и затем обычный ответ; non-stream получает честный 503 + Retry-After).
 
+### ✨ Улучшения
+
+#### Карточка admission-очереди в WebUI `/monitor`
+
+Оператор не видел, кто ждёт свободный слот. В панель «📋 Очередь» добавлен блок
+admission (данные из `GET /api/v1/queue/stats` → поле `admission`, появилось в
+R67b): сколько запросов ждёт слот, сколько сессий активно, сколько обслужено
+после ожидания, таймауты, среднее ожидание и предел ожидания
+(`LB_ADMISSION_WAIT_SEC`), а также список сессий в очереди. 8 новых i18n-ключей
+(en+ru, паритет 1247/1247), кэш-версия `?v=R70` для `ui-renderer.js` и i18n.
+
+Проверено: `scripts/check_webui_assets.py` — «89 локальных ассетов в HTML +
+20 url() в CSS, внешних CDN нет»; `node scripts/i18n_diff.js` — 1247=1247, пустых
+нет; на живом стенде образ `webui:r70-submodule-v1` отдаёт разметку с блоком
+admission и `ui-renderer.js?v=R70`, а `/api/v1/queue/stats` — реальные цифры
+(`served_total=3, avg_wait_ms=23418`).
 ### 🧹 Прочее
 
 * **Тесты не пачкают рабочее дерево**: `tests/testdata/state.json` (трекаемая

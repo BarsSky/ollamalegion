@@ -362,6 +362,18 @@ window.I18N_EN = {
   "monitor.stats.vram": "VRAM",
   "monitor.stats.models": "Models",
 
+  // R70: admission queue (waiting for a free slot)
+  "monitor.admission.title": "Admission queue (slots)",
+  "monitor.admission.waiting": "Waiting for slot",
+  "monitor.admission.activeSessions": "Active sessions",
+  "monitor.admission.served": "Served after wait",
+  "monitor.admission.timeouts": "Timeouts",
+  "monitor.admission.avgWait": "Avg wait",
+  "monitor.admission.waitMax": "Wait limit",
+  "monitor.admission.sessions": "Queued sessions",
+  "monitor.admission.secSuffix": " s",
+  "monitor.admission.off": "off",
+
 
 
   "monitor.panel.clusterResources": "📊 Cluster Resources",

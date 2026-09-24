@@ -14,9 +14,9 @@
   <link rel="stylesheet" href="css/base.css?v=R66d">
   <link rel="stylesheet" href="css/monitor-app.css?v=R66d">
   <link rel="stylesheet" href="css/monitor.css?v=R66d">
-  <script src="js/i18n/ru.js?v=R66d"></script>
-  <script src="js/i18n/en.js?v=R66d"></script>
-  <script src="js/i18n/index.js?v=R66d"></script>
+  <script src="js/i18n/ru.js?v=R70"></script>
+  <script src="js/i18n/en.js?v=R70"></script>
+  <script src="js/i18n/index.js?v=R70"></script>
   <script src="js/monitor/backend-type-badges.js?v=R66d"></script>
   <!-- R59.3 (2026-09-03): WEBUI_CONFIG содержит API_TOKEN, инжектированный
        entrypoint.sh из Docker --env API_TOKEN. Нужен для monitor/api.js
@@ -209,6 +209,18 @@
         <span class="chevron">▼</span>
       </div>
       <div class="panel-body">
+        <!-- R70: admission-очередь — сколько запросов ждёт свободный слот,
+             пер-сессионная справедливость и таймауты (данные из
+             GET /api/v1/queue/stats → поле "admission"). -->
+        <div class="stat-row" id="admissionStats" style="margin-bottom:12px">
+          <div class="stat-item"><div id="admWaiting" class="stat-val">—</div><div class="stat-label" data-i18n="monitor.admission.waiting">Waiting for slot</div></div>
+          <div class="stat-item"><div id="admActive" class="stat-val">—</div><div class="stat-label" data-i18n="monitor.admission.activeSessions">Active sessions</div></div>
+          <div class="stat-item"><div id="admServed" class="stat-val">—</div><div class="stat-label" data-i18n="monitor.admission.served">Served after wait</div></div>
+          <div class="stat-item"><div id="admTimeouts" class="stat-val">—</div><div class="stat-label" data-i18n="monitor.admission.timeouts">Timeouts</div></div>
+          <div class="stat-item"><div id="admAvgWait" class="stat-val">—</div><div class="stat-label" data-i18n="monitor.admission.avgWait">Avg wait</div></div>
+          <div class="stat-item"><div id="admWaitMax" class="stat-val">—</div><div class="stat-label" data-i18n="monitor.admission.waitMax">Wait limit</div></div>
+        </div>
+        <div id="admSessions" style="font-size:11px;color:var(--text-secondary);margin-bottom:8px;word-break:break-all"></div>
         <div style="overflow-x:auto">
           <table id="queueTable">
             <thead>
@@ -498,7 +510,7 @@
   <script defer src="js/modules/monitor-backends.js?v=R66d"></script>
   <script defer src="js/monitor/state.js?v=R66d"></script>
   <script defer src="js/monitor/api.js?v=R66d"></script>
-  <script defer src="js/monitor/ui-renderer.js?v=R66d"></script>
+  <script defer src="js/monitor/ui-renderer.js?v=R70"></script>
   <script defer src="js/monitor/sparkline.js?v=R66d"></script>
   <script defer src="js/monitor/canvas-topology.js?v=R66d"></script>
   <script defer src="js/monitor/canvas-conveyor.js?v=R66d"></script>

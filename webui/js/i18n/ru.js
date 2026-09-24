@@ -468,6 +468,18 @@ window.I18N_RU = {
   "monitor.stats.vram": "VRAM",
   "monitor.stats.models": "Моделей",
 
+  // R70: admission-очередь (ожидание свободного слота)
+  "monitor.admission.title": "Очередь допуска (слоты)",
+  "monitor.admission.waiting": "Ждут слот",
+  "monitor.admission.activeSessions": "Активных сессий",
+  "monitor.admission.served": "Обслужено после ожидания",
+  "monitor.admission.timeouts": "Таймаутов",
+  "monitor.admission.avgWait": "Среднее ожидание",
+  "monitor.admission.waitMax": "Предел ожидания",
+  "monitor.admission.sessions": "Сессии в очереди",
+  "monitor.admission.secSuffix": " с",
+  "monitor.admission.off": "выключена",
+
   "monitor.panel.clusterResources": "📊 Ресурсы кластера",
   "monitor.panel.modelsInMemory": "🧠 Модели в памяти",
   "monitor.panel.backends": "🖥️ Бэкенды",

@@ -38,7 +38,14 @@ import (
 // занят, холодный /api/chat НЕ получает 503, а ждёт освобождения слота и
 // обслуживается (в ответе — X-Queue-Wait-Ms). До R67b такой запрос отбивался
 // «all backends busy»/«no free slot».
+//
+// R70: keepalive для streaming-ожидающих выключаем явно — при нём заголовки
+// коммитятся ДО выдачи слота (X-Queue-Keepalive вместо X-Queue-*), а этот тест
+// проверяет именно «очередь видна в заголовках». Поведение с keepalive —
+// admission_keepalive_r70_test.go.
 func TestHandleChat_QueuesWhenSlotsBusy_R67b(t *testing.T) {
+	t.Setenv("LB_ADMISSION_KEEPALIVE_SEC", "0")
+
 	var received []byte
 	var mu sync.Mutex
 	upstream := makeUpstreamForOllamaTest(t, &received, &mu)

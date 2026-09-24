@@ -56,6 +56,45 @@ queryAdaptiveStrategy: CPU-only strategy selected (R60.12)
 `NewProxy`, `queryAdaptiveStrategy` добавляет `kv_cache_type` только при хинте).
 Регрессии: `./internal/balancer -race` ok (84 с), `./cmd/...` ok.
 
+### ✨ Улучшения
+
+#### Keepalive для streaming-клиентов в admission-очереди (`LB_ADMISSION_KEEPALIVE_SEC`)
+
+Пока запрос ждёт свободный слот (до `LB_ADMISSION_WAIT_SEC`, default 300 c),
+балансер не отправлял клиенту ни одного байта — OpenWebUI/Cline с таймаутом 300 c
+могли закрыть соединение и показать ошибку вместо ответа.
+
+Теперь для streaming-запросов заголовки коммитятся сразу (200 + Content-Type
+формата) и во время ожидания шлются keepalive'ы:
+
+* SSE (`/v1/chat/completions`, `/v1/completions`) — комментарий `: keepalive`
+  (парсеры SSE его игнорируют);
+* NDJSON (`/api/chat`, `/api/generate`) — пустая строка (построчные парсеры её
+  пропускают; `: …` туда писать нельзя — сломает JSON-строки).
+
+`LB_ADMISSION_KEEPALIVE_SEC` — период (default 5 c, `0` = выключить, тогда
+прежнее поведение «молча ждём и отдаём X-Queue-Wait-Ms/X-Queue-Position»).
+Non-stream запросы keepalive не получают: статус ещё может стать 503 (иначе
+заголовки были бы уже отправлены, и честный `503 + Retry-After` стал бы
+невозможен). Если ожидание всё же истекло, начатый стрим корректно завершается
+финальным чанком с ошибкой (как в остальных mid-stream ошибках).
+
+**Живая проверка (8 одновременных streaming-запросов, лимит слотов 4):**
+
+```
+r70k-user-2 => 200|123.6s  keepalive_hdr='X-Queue-Keepalive: 1' leading_lf=6
+r70k-user-4 => 200|115.7s  keepalive_hdr='X-Queue-Keepalive: 1' leading_lf=4
+r70k-user-6 => 200|113.7s  keepalive_hdr='X-Queue-Keepalive: 1' leading_lf=3
+остальные    => 200 без ожидания (слот был свободен)
+```
+
+`leading_lf` — количество пустых строк-keepalive'ов в начале NDJSON-потока: клиент
+видит трафик каждые 5 c вместо мёртвой тишины.
+
+**Тесты:** `internal/balancer/admission_keepalive_r70_test.go` (4: выбор формата
+keepalive по пути/телу, парсинг env, HTTP-уровень — streaming-запрос получает
+keepalive и затем обычный ответ; non-stream получает честный 503 + Retry-After).
+
 ### 🧹 Прочее
 
 * **Тесты не пачкают рабочее дерево**: `tests/testdata/state.json` (трекаемая

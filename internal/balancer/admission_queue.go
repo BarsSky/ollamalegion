@@ -40,6 +40,7 @@ package balancer
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
 	"os"
 	"strconv"
@@ -402,6 +403,20 @@ func (p *Proxy) setAdmissionWait(wait time.Duration) {
 	p.admission.mu.Unlock()
 }
 
+// acquireInferenceSlotNow — R70: быстрый путь без очереди (слот свободен?).
+// Нужен вызывающему коду, чтобы решить, включать ли keepalive для streaming-
+// клиента ДО того, как заголовки будут отправлены.
+// Возвращает (nil, errAdmissionDisabled), если слот занят.
+func (p *Proxy) acquireInferenceSlotNow(backendID, session string) (*admissionLease, error) {
+	if p == nil || backendID == "" {
+		return nil, errAdmissionDisabled
+	}
+	if p.tryAcquireSlot(backendID) {
+		return p.newAdmissionLease(backendID, session, 0, 0), nil
+	}
+	return nil, errAdmissionDisabled
+}
+
 // acquireInferenceSlot — R67b: получить слот бэкенда, при необходимости встав в
 // admission-очередь. Возвращает lease (release обязателен), позицию в очереди на
 // момент постановки и ошибку:
@@ -498,6 +513,91 @@ func (p *Proxy) newAdmissionLease(backendID, session string, waited time.Duratio
 	}
 }
 
+// admissionKeepaliveDefaultSec — R70: период keepalive для streaming-клиента,
+// который ждёт свободный слот (0 = выключить).
+const admissionKeepaliveDefaultSec = 5
+
+// AdmissionKeepaliveInterval — R70 (2026-09-24): период keepalive при ожидании
+// слота в admission-очереди.
+//
+//	LB_ADMISSION_KEEPALIVE_SEC=N — раз в N секунд; 0 = выключено (прежнее
+//	поведение: клиент ждёт молча и может отвалиться по своему таймауту).
+//	По умолчанию 5 c.
+func AdmissionKeepaliveInterval() time.Duration {
+	v := strings.TrimSpace(os.Getenv("LB_ADMISSION_KEEPALIVE_SEC"))
+	if v == "" {
+		return admissionKeepaliveDefaultSec * time.Second
+	}
+	n, err := strconv.Atoi(v)
+	if err != nil || n < 0 {
+		return admissionKeepaliveDefaultSec * time.Second
+	}
+	return time.Duration(n) * time.Second
+}
+
+// admissionStreamKind — определяет, какой keepalive безопасен для этого
+// streaming-запроса.
+//
+//   - OpenAI-пути (/v1/chat/completions, /v1/completions) отдают SSE:
+//     keepalive = комментарий `: keepalive` (парсеры SSE его игнорируют);
+//   - нативные Ollama-пути (/api/chat, /api/generate) отдают NDJSON: keepalive =
+//     пустая строка (построчные парсеры её пропускают), писать туда `: …`
+//     нельзя — это сломает JSON-строки;
+//   - non-stream запросы keepalive не получают (клиенту нужен цельный ответ,
+//     а заголовки/статус ещё могут измениться на 503).
+//
+// Возвращает ("", nil, false), если keepalive неприменим.
+func admissionStreamKind(path string, body []byte) (contentType string, keepalive []byte, ok bool) {
+	if !isStreamingFromBody(path, body) {
+		return "", nil, false
+	}
+	switch {
+	case strings.HasPrefix(path, "/v1/"):
+		return "text/event-stream", []byte(": keepalive\n\n"), true
+	case strings.HasPrefix(path, "/api/"):
+		return "application/x-ndjson", []byte("\n"), true
+	default:
+		return "", nil, false
+	}
+}
+
+// startAdmissionKeepalive — R70: пока запрос ждёт слот, шлём keepalive, чтобы
+// клиент (OpenWebUI/Cline, таймаут 300 c) не закрыл соединение. Возвращает
+// stop-функцию (идемпотентную).
+func startAdmissionKeepalive(w http.ResponseWriter, keepalive []byte, period time.Duration) func() {
+	if period <= 0 {
+		return func() {}
+	}
+	done := make(chan struct{})
+	var once sync.Once
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		ticker := time.NewTicker(period)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-done:
+				return
+			case <-ticker.C:
+				if _, err := w.Write(keepalive); err != nil {
+					return
+				}
+				if f, okFlush := w.(http.Flusher); okFlush {
+					f.Flush()
+				}
+			}
+		}
+	}()
+	return func() {
+		once.Do(func() {
+			close(done)
+			wg.Wait()
+		})
+	}
+}
+
 // acquireInferenceAdmission — R67b: точка входа для inference-хендлеров
 // llama.cpp. Берёт слот бэкенда через admission-очередь (с ожиданием) и
 // возвращает release-функцию.
@@ -511,6 +611,12 @@ func (p *Proxy) newAdmissionLease(backendID, session string, waited time.Duratio
 //
 // Заголовки X-Queue-Wait-Ms / X-Queue-Position выставляются ДО того, как
 // транспорт пишет свои заголовки, поэтому клиент видит факт ожидания в очереди.
+//
+// R70 (2026-09-24): если слот занят и клиент streaming — заголовки коммитятся
+// сразу (200 + Content-Type формата) и во время ожидания шлются keepalive'ы
+// (`: keepalive` для SSE, пустая строка для NDJSON Ollama). Для таких запросов
+// X-Queue-* заголовки выставить уже нельзя (заголовки отправлены) — это
+// осознанный компромисс: клиент получает ответ вместо таймаута.
 func (lr *LlamaCppRouter) acquireInferenceAdmission(
 	w http.ResponseWriter, r *http.Request, backendID, model string, body []byte,
 ) (func(), bool) {
@@ -518,22 +624,65 @@ func (lr *LlamaCppRouter) acquireInferenceAdmission(
 		return nil, true
 	}
 	session := RequestSessionKey(r, body)
+
+	// Быстрый путь: слот свободен — keepalive не нужен.
+	if lease, err := lr.proxy.acquireInferenceSlotNow(backendID, session); err == nil {
+		return lease.Release, true
+	}
+
+	// Слот занят: для streaming-клиентов держим соединение живым, пока ждём.
+	keepalivePeriod := AdmissionKeepaliveInterval()
+	contentType, keepalive, streaming := admissionStreamKind(r.URL.Path, body)
+	var stopKeepalive func()
+	if streaming && keepalivePeriod > 0 {
+		w.Header().Set("X-Queue-Keepalive", "1")
+		w.Header().Set("Content-Type", contentType)
+		w.WriteHeader(http.StatusOK)
+		if f, okFlush := w.(http.Flusher); okFlush {
+			f.Flush()
+		}
+		stopKeepalive = startAdmissionKeepalive(w, keepalive, keepalivePeriod)
+		logger.Get().Infow("admission: streaming client waits for slot, sending keepalives",
+			"backend", backendID, "model", model, "session", session,
+			"content_type", contentType, "period_sec", int(keepalivePeriod.Seconds()))
+	}
+
 	lease, position, err := lr.proxy.acquireInferenceSlot(r.Context(), backendID, session)
+	if stopKeepalive != nil {
+		stopKeepalive()
+	}
 	switch {
 	case err == nil:
-		if lease.Waited > 0 {
+		if lease.Waited > 0 && stopKeepalive == nil {
 			w.Header().Set("X-Queue-Wait-Ms", strconv.FormatInt(lease.Waited.Milliseconds(), 10))
 			w.Header().Set("X-Queue-Position", strconv.Itoa(position))
+		}
+		if lease.Waited > 0 {
+			logger.Get().Infow("admission: slot granted after waiting",
+				"backend", backendID, "model", model, "session", session,
+				"waited_ms", lease.Waited.Milliseconds(), "streaming_keepalive", stopKeepalive != nil)
 		}
 		return lease.Release, true
 	case errors.Is(err, errAdmissionDisabled):
 		// Ожидание выключено — сохраняем поведение до R67b (без гейта).
-		return nil, true
+		if stopKeepalive == nil {
+			return nil, true
+		}
+		// Заголовки уже отправлены (streaming keepalive) — завершаем стрим.
+		writeStreamErrorChunk(w, r.URL.Path, model, "admission queue disabled while streaming; retry the request")
+		return nil, false
 	case errors.Is(err, errAdmissionTimeout):
-		// waited == предела ожидания: запрос действительно стоял в очереди
-		// весь разрешённый интервал и только потом получил 503.
 		maxWait := lr.proxy.admissionWaitTimeout()
-		writeAdmissionUnavailable(w, model, session, position, maxWait, maxWait)
+		if stopKeepalive == nil {
+			// waited == предела ожидания: запрос действительно стоял в очереди
+			// весь разрешённый интервал и только потом получил 503.
+			writeAdmissionUnavailable(w, model, session, position, maxWait, maxWait)
+			return nil, false
+		}
+		// Стрим уже начат: корректно завершаем его (клиент увидит done + ошибку).
+		writeStreamErrorChunk(w, r.URL.Path, model, fmt.Sprintf(
+			"all inference slots are busy: request waited %s in queue (position %d) and timed out; retry",
+			maxWait, position))
 		return nil, false
 	default:
 		// Клиент отменил запрос, пока ждал слот: отвечать уже некому.

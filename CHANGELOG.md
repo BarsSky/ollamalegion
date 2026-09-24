@@ -111,6 +111,32 @@ R67b): сколько запросов ждёт слот, сколько сес�
 нет; на живом стенде образ `webui:r70-submodule-v1` отдаёт разметку с блоком
 admission и `ui-renderer.js?v=R70`, а `/api/v1/queue/stats` — реальные цифры
 (`served_total=3, avg_wait_ms=23418`).
+#### Единая вместимость: `maxConcurrentReqs` = реальный `n_parallel` cppworker
+
+`maxConcurrentRequests` бэкенда был **константой 4** (`docker/cppworker/register-with-balancer.sh`), а cppworker в этом стеке работает с `n_parallel=1` (`config/cppworker-defaults.json: defaultNParallel: 1`, slot manager `maxSlots=1`). Из-за расхождения балансер пускал 4 одновременных запроса туда, где cppworker обслуживает один: остальные три блокировались внутри cppworker (`SlotManager.Acquire`) — клиент ждал молча, без позиции в admission-очереди, без keepalive и без отражения в метриках балансера.
+
+Что сделано:
+
+* **entrypoint cppworker** (`register-with-balancer.sh`): `maxConcurrentRequests` больше не константа — берётся из смонтированного конфига (`defaultNParallel`), с безопасным минимумом 1 и явным override `CPPWORKER_MAX_CONCURRENT`; в лог пишется резолвнутое значение. Проверено в alpine-контейнере: `defaultNParallel: 1` → 1, `CPPWORKER_MAX_CONCURRENT=4` → 4, мусор → 1.
+* **идемпотентная саморегистрация** (`internal/api/handlers_backends.go`): повторный `POST /api/v1/backends` от той же ноды (метка `auto-registered` + совпадение host/порта) теперь **обновляет** параметры (200 + `updated: true`), а не отбивается 409 — иначе после перезапуска cppworker со сменой вместимости балансер оставался со старым значением. Чужой бэкенд с тем же ID по-прежнему 409.
+* **сброс runtime-override** (`pkg/types.Backend.RuntimeCapacityFromNode`, `handlers_agents.go`): значение, пришедшее саморегистрацией, heartbeat агента больше не перекрывает своим «эхом» (балансер отдаёт агенту это число в ответе, агент возвращает его же — из-за чего старая 4 жила вечно). Изменение бэкенда через WebUI снимает признак.
+
+Тесты: `internal/api/backend_reregister_r70_test.go` (3: обновление вместимости и runtime-override, 409 для чужого host, отсутствие ложной перезаписи при обычном POST-дубликате — существующий `TestBackendsHandler_Post_Duplicate`), `cmd/cppworker/balancer_register_r70_test.go` (`effectiveNParallel`).
+
+**Статус живой проверки (честно):** в персистентном состоянии балансера
+(`data/state.json`) после перезапуска cppworker'а теперь `maxConcurrentRequests: 1`
+(резолв n_parallel из конфига) и в логе видно
+`[register] maxConcurrentRequests=1 (n_parallel из конфига cppworker)` +
+`backend re-registered: parameters refreshed … max_concurrent_requests: 1`.
+Но `runtimeMaxConcurrentRequests` по-прежнему показывает 4: значение перезаписывает
+heartbeat агента (агент держит 4 и присылает его в каждом heartbeat; в
+`tryAcquireSlot` runtime-значение имеет приоритет). Две защиты в heartbeat-путях
+добавлены (`RuntimeCapacityFromNode` + перечитывание бэкенда перед применением
+лимитов), однако на живом стенде значение всё ещё возвращается к 4 — путь, который
+его перезаписывает, не локализован. Пока это так, admission-очередь включается на
+пороге 4, а не 1. Следующий шаг — трассировка `runtimeMaxConcurrentRequests` в
+heartbeat-обработчиках/агенте (или явный приоритет `MaxConcurrentReqs` для
+`llama_cpp` в `tryAcquireSlot`).
 ### 🧹 Прочее
 
 * **Тесты не пачкают рабочее дерево**: `tests/testdata/state.json` (трекаемая

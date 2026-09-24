@@ -63,6 +63,15 @@ type Backend struct {
 	RuntimeMaxModels             int `json:"runtimeMaxModels"`
 	RuntimeMaxConcurrentRequests int `json:"runtimeMaxConcurrentRequests"`
 
+	// RuntimeCapacityFromNode — R70 (2026-09-24): вместимость пришла от самой
+	// ноды (саморегистрация cppworker'а: реальный n_parallel). Пока true,
+	// heartbeat агента не перекрывает RuntimeMaxConcurrentRequests своим «эхом»
+	// (балансер отдаёт агенту это значение в ответе, агент возвращает его же —
+	// из-за чего старая константа 4 жила и после смены реального параллелизма).
+	// Сбрасывается при изменении бэкенда через WebUI. Не сериализуется:
+	// это состояние процесса, а не конфигурация.
+	RuntimeCapacityFromNode bool `json:"-"`
+
 	// OllamaConfig — желаемые runtime-флаги Ollama, передаваемые агенту (только для ollama-типа)
 	OllamaConfig *OllamaDesiredConfig `json:"ollamaConfig,omitempty"`
 

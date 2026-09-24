@@ -20,7 +20,32 @@ CPPWORKER_PORT="${CPPWORKER_PORT:-18092}"
 CPPWORKER_ADVERTISED_PORT="${CPPWORKER_ADVERTISED_PORT:-${CPPWORKER_PORT}}"
 CPPWORKER_NAME="${CPPWORKER_NAME:-CppWorker GPU}"
 CPPWORKER_BACKEND_ID="${CPPWORKER_BACKEND_ID:-cppworker-gpu}"
-CPPWORKER_MAX_CONCURRENT="${CPPWORKER_MAX_CONCURRENT:-4}"
+# R70 (2026-09-24): реальная параллельная вместимость (n_seq_max / n_parallel).
+#
+# Раньше здесь стояла КОНСТАНТА 4: балансер считал, что бэкенд держит 4
+# одновременных запроса, и пускал их — а cppworker с n_parallel=1 (slot manager
+# maxSlots=1) сериализовал их внутри себя (SlotManager.Acquire блокирует
+# остальные): клиент ждал молча, без позиции в admission-очереди, keepalive и
+# метрик балансера. Теперь берём n_parallel из смонтированного конфига
+# cppworker (defaultNParallel), а если его нет — 1 (дефолт cppworker).
+# Явное переопределение: CPPWORKER_MAX_CONCURRENT=N.
+if [ -z "${CPPWORKER_MAX_CONCURRENT}" ]; then
+    _np=""
+    for _cfg in "${CPPWORKER_DEFAULTS_PATH:-/app/config/cppworker-defaults.json}" /app/config/config.json; do
+        if [ -f "${_cfg}" ]; then
+            _np=$(sed -n 's/.*"defaultNParallel"[[:space:]]*:[[:space:]]*\([0-9][0-9]*\).*/\1/p' "${_cfg}" | head -n1)
+            [ -n "${_np}" ] && break
+        fi
+    done
+    CPPWORKER_MAX_CONCURRENT="${_np:-1}"
+fi
+case "${CPPWORKER_MAX_CONCURRENT}" in
+    ''|*[!0-9]*) CPPWORKER_MAX_CONCURRENT=1 ;;
+esac
+if [ "${CPPWORKER_MAX_CONCURRENT}" -lt 1 ]; then
+    CPPWORKER_MAX_CONCURRENT=1
+fi
+echo "[register] maxConcurrentRequests=${CPPWORKER_MAX_CONCURRENT} (n_parallel из конфига cppworker)"
 CPPWORKER_MAX_MODELS="${CPPWORKER_MAX_MODELS:-3}"
 CPPWORKER_GPU_MODE="${CPPWORKER_GPU_MODE:-gpu}"
 CPPWORKER_LABELS="${CPPWORKER_LABELS:-linux,amd64,llamacpp,gpu,sm_86}"

@@ -140,13 +140,13 @@ func (s *Server) agentRegisterHandler(w http.ResponseWriter, r *http.Request) {
 
 			existing := s.proxy.GetBackend(existingID)
 			s.writeJSON(w, http.StatusOK, map[string]interface{}{
-				"success":         true,
-				"action":          "attached",
-				"agentId":         req.AgentID,
-				"backendId":       existingID,
-				"backend":         existing,
-				"hasAgent":        true,
-				"message":         "Agent attached to existing cppworker backend (dedup).",
+				"success":   true,
+				"action":    "attached",
+				"agentId":   req.AgentID,
+				"backendId": existingID,
+				"backend":   existing,
+				"hasAgent":  true,
+				"message":   "Agent attached to existing cppworker backend (dedup).",
 			})
 			return
 		}
@@ -325,6 +325,11 @@ func (s *Server) agentHeartbeatHandler(w http.ResponseWriter, r *http.Request) {
 	s.proxy.UpdateBackendAgentStatus(agentID, true)
 
 	// Применяем лимиты из heartbeat агента (если > 0 — агент явно задал лимит)
+	//
+	// R70: бэкенд перечитываем ПРЯМО ЗДЕСЬ, а не используем снимок, взятый выше
+	// по функции: иначе локальная копия могла быть снята до саморегистрации
+	// cppworker'а (которая помечает вместимость как «от ноды») и heartbeat
+	// перекрывал её старым «эхом» (4 вместо реального n_parallel=1).
 	backend := s.proxy.GetBackend(agentID)
 	if backend != nil {
 		needUpdate := false
@@ -334,7 +339,14 @@ func (s *Server) agentHeartbeatHandler(w http.ResponseWriter, r *http.Request) {
 			updated.Weight = hbPayload.Weight
 			needUpdate = true
 		}
-		if hbPayload.MaxConcurrentRequests > 0 && updated.RuntimeMaxConcurrentRequests != hbPayload.MaxConcurrentRequests {
+		if hbPayload.MaxConcurrentRequests > 0 && updated.RuntimeMaxConcurrentRequests != hbPayload.MaxConcurrentRequests &&
+			!updated.RuntimeCapacityFromNode {
+			// R70 (2026-09-24): не перекрываем вместимость, которую нода сообщила
+			// саморегистрацией (cppworker шлёт реальный n_parallel). Значение из
+			// heartbeat — эхо: балансер отдаёт агенту runtimeMaxConcurrentRequests
+			// в ответе, агент возвращает его же, и старая константа 4 жила вечно,
+			// хотя cppworker обслуживает 1 запрос. Сбрасывается при изменении
+			// бэкенда через WebUI (UpdateBackend).
 			updated.RuntimeMaxConcurrentRequests = hbPayload.MaxConcurrentRequests
 			needUpdate = true
 		}
@@ -543,6 +555,7 @@ func (s *Server) proxyAgentRequest(w http.ResponseWriter, r *http.Request, targe
 	w.WriteHeader(resp.StatusCode)
 	w.Write(respBody)
 }
+
 // ============================================================
 // Agent V2 handlers — metrics-only agent, no duplicate backend
 // ============================================================
@@ -558,12 +571,12 @@ func (s *Server) agentV2RegisterHandler(w http.ResponseWriter, r *http.Request) 
 	}
 
 	var req struct {
-		AgentID       string `json:"agentId"`
-		BackendID     string `json:"backendId"`     // ID существующего cppworker-бэкенда
-		Host          string `json:"host"`           // host cppworker (если backendID не указан)
-		CppWorkerPort int    `json:"cppWorkerPort"`  // порт cppworker
-		AgentPort     int    `json:"agentPort"`      // порт агента
-		Name          string `json:"name"`
+		AgentID       string   `json:"agentId"`
+		BackendID     string   `json:"backendId"`     // ID существующего cppworker-бэкенда
+		Host          string   `json:"host"`          // host cppworker (если backendID не указан)
+		CppWorkerPort int      `json:"cppWorkerPort"` // порт cppworker
+		AgentPort     int      `json:"agentPort"`     // порт агента
+		Name          string   `json:"name"`
 		Labels        []string `json:"labels"`
 	}
 
@@ -692,9 +705,9 @@ func (s *Server) agentV2HeartbeatHandler(w http.ResponseWriter, r *http.Request)
 
 	// Возвращаем конфигурационные параметры
 	s.writeJSON(w, http.StatusOK, map[string]interface{}{
-		"success":                true,
-		"maxConcurrentRequests":  -1,
-		"maxModels":              -1,
+		"success":               true,
+		"maxConcurrentRequests": -1,
+		"maxModels":             -1,
 	})
 }
 
@@ -746,7 +759,7 @@ func (s *Server) agentBackendHeartbeatHandler(w http.ResponseWriter, r *http.Req
 		// (который не знал про agent при создании) получил правильный port.
 		// Раньше AttachAgentToBackend использовал backend.AgentPort=0, что было
 		// бесполезно для UI/API.
-		AgentPort             int    `json:"agentPort"`
+		AgentPort int `json:"agentPort"`
 	}
 	_ = json.Unmarshal(body, &hbPayload)
 
@@ -773,14 +786,22 @@ func (s *Server) agentBackendHeartbeatHandler(w http.ResponseWriter, r *http.Req
 		}
 	}
 
-	// Применяем runtime-лимиты из heartbeat
+	// Применяем runtime-лимиты из heartbeat.
+	// R70: перечитываем бэкенд (снимок выше мог быть снят до саморегистрации,
+	// которая помечает вместимость как «от ноды» — см. первый heartbeat-обработчик).
+	if fresh := s.proxy.GetBackend(backendID); fresh != nil {
+		backend = fresh
+	}
 	updated := *backend
 	needUpdate := false
 	if hbPayload.Weight > 0 && updated.Weight != hbPayload.Weight {
 		updated.Weight = hbPayload.Weight
 		needUpdate = true
 	}
-	if hbPayload.MaxConcurrentRequests > 0 && updated.RuntimeMaxConcurrentRequests != hbPayload.MaxConcurrentRequests {
+	if hbPayload.MaxConcurrentRequests > 0 && updated.RuntimeMaxConcurrentRequests != hbPayload.MaxConcurrentRequests &&
+		!updated.RuntimeCapacityFromNode {
+		// R70 (2026-09-24): см. комментарий в первом heartbeat-обработчике —
+		// значение от ноды (саморегистрация cppworker'а) приоритетнее «эха» агента.
 		updated.RuntimeMaxConcurrentRequests = hbPayload.MaxConcurrentRequests
 		needUpdate = true
 	}

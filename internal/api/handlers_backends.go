@@ -370,30 +370,136 @@ func (s *Server) getBackend(w http.ResponseWriter, r *http.Request, backendID st
 }
 
 // addBackend - добавление бэкенда
-func (s *Server) addBackend(w http.ResponseWriter, r *http.Request) {
-	var req struct {
-		ID                string   `json:"id"`
-		Name              string   `json:"name"`
-		Host              string   `json:"host"`
-		OllamaPort        int      `json:"ollamaPort"`
-		AgentPort         int      `json:"agentPort"`
-		CppWorkerPort     int      `json:"cppWorkerPort"`
-		Weight            int      `json:"weight"`
-		MaxConcurrentReqs int      `json:"maxConcurrentRequests"`
-		MaxModels         int      `json:"maxModels"`
-		GPUMode           string   `json:"gpuMode"`
-		Labels            []string `json:"labels"`
-		BackendType       string   `json:"backendType"`
-		BackendEngine     string   `json:"backendEngine"`
-		// Round 51.2 (2026-08-20): явный API-стиль бэкенда (ollama-native/openai-compatible).
-		// Если пусто — Backend.EffectiveAPIStyle() выводит из Type.
-		ApiStyle string `json:"apiStyle"`
-		// Round 7 (2026-07-09): cppworker пробрасывает свой API_TOKEN при
-		// регистрации, чтобы balancer мог авторизоваться на /api/models/reload
-		// (authMiddleware). В bundled-режиме устраняет необходимость ручной
-		// настройки CppWorkerApiToken в конфиге.
-		CppWorkerApiToken string `json:"cppWorkerApiToken,omitempty"`
+// isSameBackendRegistration — R70: это повторная САМОРЕГИСТРАЦИЯ того же бэкенда?
+//
+// Признаки (оба обязательны):
+//   - метка "auto-registered" (её ставит cppworker/agent при саморегистрации;
+//     ручное создание бэкенда из WebUI такой метки не имеет — для него остаётся
+//     409, чтобы случайный POST не перезаписал чужую запись);
+//   - совпадение host и порта с уже зарегистрированным бэкендом.
+func (s *Server) isSameBackendRegistration(req backendRequest) bool {
+	existing := s.proxy.GetBackend(req.ID)
+	if existing == nil {
+		return false
 	}
+	if !hasLabelFold(req.Labels, "auto-registered") {
+		return false
+	}
+	host := req.Host
+	port := req.CppWorkerPort
+	if port == 0 {
+		port = req.OllamaPort
+	}
+	if host == "" || port == 0 {
+		return false
+	}
+	sameHost := host == existing.Host
+	samePort := port == existing.CppWorkerPort || port == existing.OllamaPort
+	return sameHost && samePort
+}
+
+// hasLabelFold — есть ли метка (без учёта регистра).
+func hasLabelFold(labels []string, want string) bool {
+	for _, l := range labels {
+		if strings.EqualFold(strings.TrimSpace(l), want) {
+			return true
+		}
+	}
+	return false
+}
+
+// refreshRegisteredBackend — R70: обновить параметры повторно зарегистрированного
+// бэкенда (идемпотентная саморегистрация cppworker'а после перезапуска).
+//
+// Обновляем только то, что сообщает сама нода: вместимость (maxConcurrentReqs —
+// она равна реальному n_parallel), лимит моделей, тип движка, GPU-режим, вес,
+// метки и токен для внутренних вызовов. Хост/порт — из той же проверки
+// isSameBackendRegistration (иначе сюда бы не попали).
+func (s *Server) refreshRegisteredBackend(w http.ResponseWriter, req backendRequest) {
+	existing := s.proxy.GetBackend(req.ID)
+	if existing == nil {
+		s.writeJSON(w, http.StatusConflict, map[string]interface{}{
+			"success": false,
+			"error":   fmt.Sprintf("Backend with ID %s disappeared during update", req.ID),
+		})
+		return
+	}
+	updated := *existing
+	if req.MaxConcurrentReqs > 0 {
+		updated.MaxConcurrentReqs = req.MaxConcurrentReqs
+		// R70: сбрасываем runtime-override — иначе он (значение, которое агент
+		// получает обратно в ответе на heartbeat) продолжит перекрывать реальную
+		// вместимость ноды, и admission-очередь останется на старом пороге.
+		updated.RuntimeMaxConcurrentRequests = req.MaxConcurrentReqs
+		// R70: помечаем, что вместимость пришла от ноды — heartbeat агента её
+		// больше не перекрывает (см. handlers_agents.go).
+		updated.RuntimeCapacityFromNode = true
+	}
+	if req.MaxModels > 0 {
+		updated.MaxModels = req.MaxModels
+	}
+	if req.Weight > 0 {
+		updated.Weight = req.Weight
+	}
+	if req.BackendType != "" {
+		updated.Type = types.BackendType(req.BackendType)
+	}
+	if req.GPUMode != "" {
+		updated.GPUMode = types.PlatformMode(req.GPUMode)
+	}
+	if len(req.Labels) > 0 {
+		updated.Labels = req.Labels
+	}
+	if req.CppWorkerApiToken != "" {
+		updated.CppWorkerApiToken = req.CppWorkerApiToken
+	}
+	if err := s.proxy.UpdateBackend(req.ID, updated); err != nil {
+		s.writeJSON(w, http.StatusInternalServerError, map[string]interface{}{
+			"success": false,
+			"error":   err.Error(),
+		})
+		return
+	}
+	logger.Get().Infow("backend re-registered: parameters refreshed (R70)",
+		"backend", req.ID, "max_concurrent_requests", updated.MaxConcurrentReqs,
+		"max_models", updated.MaxModels, "host", updated.Host)
+	s.writeJSON(w, http.StatusOK, map[string]interface{}{
+		"success": true,
+		"updated": true,
+		"backend": updated,
+	})
+}
+
+// backendRequest — тело POST /api/v1/backends (создание/саморегистрация бэкенда).
+// R70: вынесено из addBackend в именованный тип, чтобы логика идемпотентной
+// повторной регистрации (isSameBackendRegistration / refreshRegisteredBackend)
+// работала с тем же типом.
+type backendRequest struct {
+	ID                string   `json:"id"`
+	Name              string   `json:"name"`
+	Host              string   `json:"host"`
+	OllamaPort        int      `json:"ollamaPort"`
+	AgentPort         int      `json:"agentPort"`
+	CppWorkerPort     int      `json:"cppWorkerPort"`
+	Weight            int      `json:"weight"`
+	MaxConcurrentReqs int      `json:"maxConcurrentRequests"`
+	MaxModels         int      `json:"maxModels"`
+	GPUMode           string   `json:"gpuMode"`
+	Labels            []string `json:"labels"`
+	BackendType       string   `json:"backendType"`
+	BackendEngine     string   `json:"backendEngine"`
+	// Round 51.2 (2026-08-20): явный API-стиль бэкенда (ollama-native/openai-compatible).
+	// Если пусто — Backend.EffectiveAPIStyle() выводит из Type.
+	ApiStyle string `json:"apiStyle"`
+	// Round 7 (2026-07-09): cppworker пробрасывает свой API_TOKEN при
+	// регистрации, чтобы balancer мог авторизоваться на /api/models/reload
+	// (authMiddleware). В bundled-режиме устраняет необходимость ручной
+	// настройки CppWorkerApiToken в конфиге.
+	CppWorkerApiToken string `json:"cppWorkerApiToken,omitempty"`
+}
+
+func (s *Server) addBackend(w http.ResponseWriter, r *http.Request) {
+	var req backendRequest
 
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		s.writeJSON(w, http.StatusBadRequest, map[string]interface{}{
@@ -419,12 +525,26 @@ func (s *Server) addBackend(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Проверка на дубликат
+	// Проверка на дубликат.
+	//
+	// R70 (2026-09-24): саморегистрация cppworker'а (`POST /api/v1/backends` при
+	// старте) должна быть ИДЕМПОТЕНТНОЙ. Раньше на существующий ID возвращался
+	// 409, и после перезапуска cppworker'а с изменённой вместимостью (например
+	// n_parallel=1 вместо старой константы 4) балансер продолжал держать старые
+	// параметры: admission-очередь включалась на неверном пороге, а «лишние»
+	// запросы блокировались внутри cppworker без позиции в очереди и keepalive.
+	//
+	// Обновляем ТОЛЬКО если это тот же бэкенд (совпадают host и cppWorkerPort) —
+	// иначе 409, чтобы WebUI не перезаписал чужой бэкенд по ошибке.
 	if s.proxy.BackendExists(req.ID) {
-		s.writeJSON(w, http.StatusConflict, map[string]interface{}{
-			"success": false,
-			"error":   fmt.Sprintf("Backend with ID %s already exists", req.ID),
-		})
+		if !s.isSameBackendRegistration(req) {
+			s.writeJSON(w, http.StatusConflict, map[string]interface{}{
+				"success": false,
+				"error":   fmt.Sprintf("Backend with ID %s already exists", req.ID),
+			})
+			return
+		}
+		s.refreshRegisteredBackend(w, req)
 		return
 	}
 
@@ -773,9 +893,12 @@ func (s *Server) updateBackend(w http.ResponseWriter, r *http.Request, backendID
 		ActiveRequests:               existing.ActiveRequests,
 		RuntimeMaxModels:             existing.RuntimeMaxModels,
 		RuntimeMaxConcurrentRequests: existing.RuntimeMaxConcurrentRequests,
-		GPUMode:                      gpuMode,
-		Type:                         backendType,
-		ApiStyle:                     apiStyle,
+		// R70: оператор меняет бэкенд из WebUI — снимаем признак «вместимость
+		// от ноды», чтобы heartbeat агента снова мог её обновлять.
+		RuntimeCapacityFromNode: false,
+		GPUMode:                 gpuMode,
+		Type:                    backendType,
+		ApiStyle:                apiStyle,
 		// Engine тоже не отправляется из WebUI (в request-структуре его нет).
 		// Без этого он обнулялся при каждом сохранении, и бэкенд терял признак
 		// движка (используется в /api/v1/backends и при выборе стратегии запуска).

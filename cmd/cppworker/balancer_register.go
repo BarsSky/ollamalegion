@@ -181,8 +181,38 @@ type registerPayload struct {
 	CppWorkerApiToken string `json:"cppWorkerApiToken,omitempty"`
 }
 
+// effectiveNParallel — R70 (2026-09-24): сколько inference-запросов cppworker
+// реально обслуживает параллельно (n_seq_max / slot manager).
+//
+// Источник — currentConfig.DefaultNParallel (Round 12, «n_parallel для batched
+// generation»; 0/отрицательное = наследовать 1). Per-model `parallel` из профиля
+// может отличаться — регистрация описывает бэкенд, поэтому берём конфиг.
+//
+// Значение уходит в POST /api/v1/backends → балансер использует его как
+// maxConcurrentRequests, то есть его admission-очередь включается ровно тогда,
+// когда cppworker действительно занят (раньше там была константа 4).
+func effectiveNParallel() int {
+	if currentConfig != nil && currentConfig.DefaultNParallel > 0 {
+		return currentConfig.DefaultNParallel
+	}
+	return 1
+}
+
 // register отправляет POST /api/v1/backends.
 func (r *balancerRegistration) register(ctx context.Context, log *zap.SugaredLogger) (int, error) {
+	// R70 (2026-09-24): в регистрацию уходит РЕАЛЬНОЕ число параллельных
+	// inference-запросов, а не константа 4.
+	//
+	// Раньше здесь стояло MaxConcurrentReqs: 4, из-за чего балансер считал, что
+	// бэкенд держит 4 одновременных запроса, и пускал их — а cppworker с
+	// n_parallel=1 (slot manager: maxSlots=1) сериализовал их внутри себя
+	// (SlotManager.Acquire блокирует остальные): клиент ждал молча, без позиции в
+	// очереди, keepalive и метрик балансера. Теперь балансер видит ту же
+	// вместимость, что и cppworker, и его admission-очередь включается на
+	// правильном пороге.
+	concurrent := effectiveNParallel()
+	log.Infow("register: reporting parallel capacity to balancer",
+		"backend_id", r.backendID, "max_concurrent_requests", concurrent)
 	payload := registerPayload{
 		ID:                r.backendID,
 		Name:              r.backendID,
@@ -191,7 +221,7 @@ func (r *balancerRegistration) register(ctx context.Context, log *zap.SugaredLog
 		BackendType:       "llama_cpp",
 		GPUMode:           r.gpuMode,
 		Weight:            100,
-		MaxConcurrentReqs: 4,
+		MaxConcurrentReqs: concurrent,
 		MaxModels:         4,
 		Labels:            []string{"cppworker", "auto-registered"},
 		// Round 7: cppworker отдаёт свой API_TOKEN balancer'у для последующего
@@ -330,7 +360,7 @@ func (r *balancerRegistration) notifyModelLoaded(
 			"model":         modelName,
 			"path":          modelPath,
 			"sizeBytes":     effectiveSize,
-			"size":          effectiveSize, // R60.4: alias for webui gguf-renderer-detail.js:232
+			"size":          effectiveSize,                // R60.4: alias for webui gguf-renderer-detail.js:232
 			"quantization":  parseQuantization(modelPath), // R60.4
 			"contextSize":   contextSize,
 			"gpuLayers":     gpuLayers,

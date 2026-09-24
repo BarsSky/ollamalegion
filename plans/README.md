@@ -1,10 +1,11 @@
 # OllamaLegion — Roadmap (живой документ)
 
-> **Дата обновления:** 2026-08-13 (Round 35c deployed)
+> **Дата обновления:** 2026-09-24 (Round 70 — гигиена тестов после R69)
 > **Назначение:** единственный источник правды по реализованному и оставшемуся в проекте OllamaLegion.
 > Все устаревшие/завершённые планы — в `plans/archive/`.
-> **HEAD:** `b178216` on branch `centurion` (Round 35c — env-tunable async load polling).
-> **Live binary:** `ol-bundled-cppworker-gpu:gpu-86-abort-r35` + `ol-bundled-balancer:cppworker-bundled-r35c` (5 healthy containers).
+> **HEAD:** `3b1e049` on branch `centurion` (R70; до него R69 — совместимость с Cline, единый gate reload'ов, AutoTune не режет клиентский n_ctx).
+> **Live stack:** `ol-bundled-balancer:r69-submodule-v2` + `ol-bundled-cppworker-gpu:gpu-r69-submodule-v1` + `ol-bundled-webui:r66-submodule-v16` + `ol-bundled-cppworker-gpu-agent:cppworker-bundled-r41-agent-x-api-token` (4 healthy).
+> **Проверено на живом стенде (R68/R69):** Cline (VS Code, провайдер ollama, Model Context Window = 65536) получает 200 и ответ модели; модель грузится на `ctx=65536, kv=q4_0` на RTX 3070 8 GB.
 
 ---
 
@@ -21,11 +22,26 @@
 | **[Round 35c — env-tunable async load polling (2026-08-13)](round-35c-env-tunable-polling.md)** | `plans/round-35c-env-tunable-polling.md` | Round 35c (август 2026) | ✅ **DONE 2026-08-13**: 22GB Qwen3.6 на 3070 hit 8m7s timeout. Fix: `LB_NCTX_PREFLIGHT_MAX_WAIT_SEC` / `_WAIT_MULTIPLIER` / `_WAIT_BUFFER_SEC` env vars. Image r35c. |
 | **[Placement Policy — совместная работа режимов при 2+ бэкендах](2026-09-23-multi-backend-placement-policy.md)** | `plans/2026-09-23-multi-backend-placement-policy.md` | R66d (сентябрь 2026) | 🟡 **PROPOSAL**: per-model политика размещения (`single`/`pool`/`replicated`/`sharded`/`rpc` + `auto`) вместо глобального `operatingMode`; стандартная балансировка остаётся дефолтом, каждый нынешний режим выражается политикой. Открытый вопрос — транспорт раскладки (llama.cpp RPC vs B8.7) |
 
-**Все планы Q3 W3-4 + Phase 8 + Round 35 реализованы.** Round 35 закрывает
-crash-loop "Cline 65K → balancer preflight → cppworker SIGSEGV".
-Текущая цель — следующие раунды (Round 36+) с дополнительными
-bugfix и фичами (см. `CHANGELOG.md`).
+**Все планы Q3 W3-4 + Phase 8 + Round 35 реализованы; далее R36…R70** (см.
+`CHANGELOG.md`): R67a/b — потолок n_ctx по KV-cache/VRAM, ожидание авто-загрузки,
+admission-очередь и per-user сессии; R68 — профиль модели больше не потолок для
+клиента, reload дожидается; R69 — реальный Cline (`max_output_tokens`), единый
+gate reload'ов, AutoTune не режет клиентский n_ctx. Запущен R70 (гигиена +
+очередь + placement policy, см. таблицу ниже).
 
+### R70 (2026-09-24) — текущий раунд
+
+Выбранные направления (по запросу пользователя после проверки Cline):
+
+| # | Направление | Статус |
+|---|-------------|--------|
+| 1 | Гигиена: тесты не пачкают `tests/testdata/state.json` | ✅ сделано (`3b1e049`) |
+| 2 | Гигиена: self-hosted CI-раннер `skyworker-ci` | ⏳ **нужен админ**: сервис запущен, но связь с GitHub отвалилась (`SocketException 995`, backoff ~3.2 ч) → джоба «Test (self-hosted Windows)» висит в очереди. Команда: `Restart-Service actions.runner.skyworker-ci` от администратора |
+| 3 | KV-хинт в адаптивную стратегию cppworker | ⏳ в работе |
+| 4 | Keepalive для streaming-ожидающих (`LB_ADMISSION_KEEPALIVE_SEC`) | ⏳ план |
+| 5 | Карточка очереди (`admission`) в WebUI `/monitor` | ⏳ план |
+| 6 | Единая очередь: `maxConcurrentReqs` ↔ `n_parallel`, свести `QueueManager` | ⏳ план |
+| 7 | Placement policy (мультибэкенд) | ⏳ план (`2026-09-23-multi-backend-placement-policy.md`) |
 ### Phase 8 deliverables (полный список, 2026-07-11)
 
 | Компонент | Коммиты | Статус |

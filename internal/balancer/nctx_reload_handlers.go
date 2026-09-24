@@ -284,8 +284,7 @@ func (p *Proxy) handleNCtxReloadActualAsync(
 	// чтобы client cancellation не abort'ил наш reload (user cancel после
 	// timeout не должен отменять многоминутный reload).
 	p.nctxReload.RecordDecision(backendID, "reload-async-start", plan.Reason)
-	go func() {
-		start := time.Now()
+	doReload := func(start time.Time) {
 		// detached context — НЕ cancel-ится при client disconnect
 		reloadErr := p.nctxReload.DoReload(context.Background(), backendID, backendAddr, modelName, plan, p.newNCtxReloadHTTPClient())
 		duration := time.Since(start)
@@ -303,7 +302,20 @@ func (p *Proxy) handleNCtxReloadActualAsync(
 				"new_n_ctx", plan.NewNCtx,
 				"duration_ms", duration.Milliseconds())
 		}
-	}()
+	}
+	// R69 (2026-09-23): запускаем reload через ТОТ ЖЕ dedup-реестр, что и
+	// preflight-путь. Раньше R60.47-путь стартовал загрузку «как есть»: если
+	// параллельно шёл preflight-reload (или второй 413 от другого запроса),
+	// cppworker получал две команды загрузки, отменял первую
+	// («load cancelled: model load aborted by user»), rollback падал
+	// («reload rollback failed: model is no longer loaded») и модель оставалась
+	// выгруженной. Теперь вторая загрузка к той же модели не стартует.
+	if !p.nctxReload.StartModelReloadIfNotPending(backendID, modelName, func(_ *reloadEntry) {
+		doReload(time.Now())
+	}) {
+		logger.Get().Infow("nctx_reload: reload already pending for this model, reusing it (R69 dedup)",
+			"backend", backendID, "model", modelName, "target_n_ctx", plan.NewNCtx)
+	}
 
 	// Write 503+Retry-After immediately. Это главное отличие R60.47:
 	// handler завершается за <50ms с actionable JSON.
@@ -875,7 +887,17 @@ func (p *Proxy) preflightNCtxReloadIfNeeded(
 
 	// Запускаем reload в горутине. Неблокирующий режим: клиент сразу
 	// получит 503 + Retry-After, а reload идёт параллельно.
-	go p.executeAsyncReload(backendID, modelName, requestedNCtx, backendState.Backend)
+	//
+	// R69 (2026-09-23): через единый gate — если для этой модели reload уже идёт
+	// (preflight-путь или обработчик 413), вторую загрузку не стартуем: cppworker
+	// отменяет предыдущую («model load aborted by user»), rollback падает и модель
+	// остаётся выгруженной.
+	if !p.nctxReload.StartModelReloadIfNotPending(backendID, modelName, func(_ *reloadEntry) {
+		p.executeAsyncReload(backendID, modelName, requestedNCtx, backendState.Backend)
+	}) {
+		logger.Get().Infow("preflightNCtxReload: reload already pending for this model, reusing it (R69 dedup)",
+			"backend", backendID, "model", modelName, "requested_n_ctx", requestedNCtx)
+	}
 
 	// Обновляем кэш метрик: ставим ContextLength = requestedNCtx,
 	// чтобы следующие preflight-чеки не запускали reload повторно.

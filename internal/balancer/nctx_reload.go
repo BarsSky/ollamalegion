@@ -341,6 +341,31 @@ func NewNCtxReloadCoordinator(cfg NCtxReloadConfig) *NCtxReloadCoordinator {
 	}
 }
 
+// StartModelReloadIfNotPending — R69 (2026-09-23): ЕДИНЫЙ gate для всех
+// триггеров reload (preflight, R60.47-обработчик 413, R60.35/44
+// executeAsyncReload). Ключ — только (backend, model), целевой n_ctx не важен:
+// cppworker не умеет вести две загрузки одной модели, вторую он отменяет
+// («load cancelled: model load aborted by user»), после чего rollback падает
+// («reload rollback failed: model is no longer loaded») и модель остаётся
+// выгруженной.
+//
+// Возвращает true, если загрузка запущена этим вызовом; false — если для этой
+// модели reload уже идёт (fn НЕ вызывается).
+func (c *NCtxReloadCoordinator) StartModelReloadIfNotPending(
+	backendID, modelName string, fn func(entry *reloadEntry),
+) bool {
+	if c == nil || c.reloadDedup == nil {
+		go fn(nil)
+		return true
+	}
+	// Проверяем ЛЮБОЙ уже идущий reload этой модели (в т.ч. с другим target).
+	if c.reloadDedup.IsReloadPending(backendID, modelName) {
+		return false
+	}
+	_, started := c.reloadDedup.StartReloadIfNotPending(backendID, modelName, 0, fn)
+	return started
+}
+
 // RecordRequestedNCtx — R69: запомнить n_ctx, который запросил клиент
 // (num_ctx из тела запроса). Хранится максимум за desiredNCtxTTL.
 func (c *NCtxReloadCoordinator) RecordRequestedNCtx(backendID, modelName string, nCtx int) {

@@ -42,15 +42,27 @@ nctx_reload: R60.47 async reload kicked off, returning 503+Retry-After
 
 **Что исправлено:**
 
-1. **`max_output_tokens` принимается и используется** (cppworker):
+1. **Единый gate для всех триггеров reload'а** (`NCtxReloadCoordinator.
+   StartModelReloadIfNotPending`, ключ — только backend+model). До этого у
+   балансера было ТРИ независимых лаунчера загрузки одной модели: preflight
+   async reload (дедупликация по target), R60.47-обработчик 413 от cppworker и
+   R60.35/44 `executeAsyncReload` — последние два вообще без дедупликации. На
+   живом стенде это давало:
+   `reload rollback failed (model is no longer loaded!)`,
+   `load cancelled: model load aborted by user (R60.57 checkpoint A)`,
+   `POST /api/models/reload → 500 за 2m49s`, после чего модель оставалась
+   выгруженной и клиент получал 503 на каждый следующий запрос. Теперь вторая
+   загрузка той же модели не стартует: запрос либо ждёт уже идущую (ожидание R68),
+   либо получает 503+Retry-After без гонки.
+2. **`max_output_tokens` принимается и используется** (cppworker):
    `chatRequest` (/api/chat), `generateRequest` (/api/generate) и
    `openAIChatCompletionRequest`/`openAICompletionRequest`
    (/v1/chat/completions, /v1/completions) — поле читается как алиас
    `num_predict`/`max_tokens`; явные Ollama-поля остаются приоритетными.
-2. **Preflight видит `max_output_tokens`** (балансер, `ExtractRequestMeta`):
+3. **Preflight видит `max_output_tokens`** (балансер, `ExtractRequestMeta`):
    раньше n_predict считался нулевым и подставлялся дефолт 2048 — требуемый
    контекст недооценивался (в логах живого стенда `n_predict=0`).
-3. **AutoTune больше не уменьшает n_ctx ниже клиентского запроса**
+4. **AutoTune больше не уменьшает n_ctx ниже клиентского запроса**
    (`NCtxReloadCoordinator.RecordRequestedNCtx`/`DesiredNCtx`, окно 30 минут;
    `PlanApplyAutoTuneWithMinContext`). Рекомендация «over-allocation» строится по
    текущему feasible и не знает про запросы клиента; теперь она пропускается,

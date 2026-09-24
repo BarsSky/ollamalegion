@@ -14,9 +14,9 @@
   <link rel="stylesheet" href="css/base.css?v=R66d">
   <link rel="stylesheet" href="css/monitor-app.css?v=R66d">
   <link rel="stylesheet" href="css/monitor.css?v=R66d">
-  <script src="js/i18n/ru.js?v=R70"></script>
-  <script src="js/i18n/en.js?v=R70"></script>
-  <script src="js/i18n/index.js?v=R70"></script>
+  <script src="js/i18n/ru.js?v=R77"></script>
+  <script src="js/i18n/en.js?v=R77"></script>
+  <script src="js/i18n/index.js?v=R77"></script>
   <script src="js/monitor/backend-type-badges.js?v=R66d"></script>
   <!-- R59.3 (2026-09-03): WEBUI_CONFIG содержит API_TOKEN, инжектированный
        entrypoint.sh из Docker --env API_TOKEN. Нужен для monitor/api.js
@@ -272,6 +272,50 @@
         </div>
       </div>
     </div>
+
+    <div class="panel" id="panelPlacement">
+      <div class="panel-header" onclick="togglePanel('panelPlacement')">
+        <span class="panel-title-group">
+          <span data-i18n="monitor.panel.placement">🧩 Placement Policy</span>
+          <span class="panel-badge" id="plModels">0</span>
+        </span>
+        <span class="chevron">▼</span>
+      </div>
+      <div class="panel-body">
+        <!-- R77: placement policy — per-model стратегия размещения (single/pool/
+             replicated/sharded/rpc/auto), источник решения и причина.
+             Данные: GET /api/v1/placement (enabled, fallback, operatingMode,
+             decisions[], replication, warnings). -->
+        <div class="stat-row" id="placementStats" style="margin-bottom:12px">
+          <div class="stat-item"><div id="plEnabled" class="stat-val">—</div><div class="stat-label" data-i18n="monitor.placement.enabled">Policy</div></div>
+          <div class="stat-item"><div id="plFallback" class="stat-val">—</div><div class="stat-label" data-i18n="monitor.placement.fallback">Fallback</div></div>
+          <div class="stat-item"><div id="plMode" class="stat-val">—</div><div class="stat-label" data-i18n="monitor.placement.mode">Operating mode</div></div>
+          <div class="stat-item"><div id="plWarnings" class="stat-val">—</div><div class="stat-label" data-i18n="monitor.placement.warningsCount">Config warnings</div></div>
+          <div class="stat-item"><div id="plManager" class="stat-val">—</div><div class="stat-label" data-i18n="monitor.placement.replication">Replication</div></div>
+        </div>
+        <div id="plGroups" style="font-size:11px;color:var(--text-secondary);margin-bottom:6px;word-break:break-all"></div>
+        <div id="plWarnList" style="font-size:11px;color:var(--warning);margin-bottom:8px;word-break:break-all"></div>
+        <div style="overflow-x:auto">
+          <table id="placementTable">
+            <thead>
+              <tr>
+                <th data-i18n="monitor.table.model">Model</th>
+                <th data-i18n="monitor.placement.colStrategy">Strategy</th>
+                <th data-i18n="monitor.placement.colSource">Source</th>
+                <th data-i18n="monitor.placement.colFallback">Fallback</th>
+                <th data-i18n="monitor.placement.colReason">Reason</th>
+              </tr>
+            </thead>
+            <tbody></tbody>
+          </table>
+        </div>
+        <div style="padding:8px 4px;font-size:11px;color:var(--text-secondary);line-height:1.6">
+          <strong data-i18n="monitor.placement.howItWorks">💡 How placement works:</strong><br>
+          <span data-i18n="monitor.placement.howItWorksDesc">strategy is resolved per model (request → model → class → global default); pool/replicated/single are executed, sharded/rpc require stage P2, auto picks by VRAM fit; with fallback=error an unservable strategy returns 503 instead of silently switching.</span>
+        </div>
+      </div>
+    </div>
+
     <div class="panel" id="panelDispatch">
       <div class="panel-header" onclick="togglePanel('panelDispatch')">
         <span data-i18n="monitor.panel.dispatch">⚡ Dispatch Stats</span><span class="chevron">▼</span>
@@ -509,8 +553,8 @@
   <script defer src="js/modules/monitor-metrics.js?v=R66d"></script>
   <script defer src="js/modules/monitor-backends.js?v=R66d"></script>
   <script defer src="js/monitor/state.js?v=R66d"></script>
-  <script defer src="js/monitor/api.js?v=R66d"></script>
-  <script defer src="js/monitor/ui-renderer.js?v=R70"></script>
+  <script defer src="js/monitor/api.js?v=R77"></script>
+  <script defer src="js/monitor/ui-renderer.js?v=R77"></script>
   <script defer src="js/monitor/sparkline.js?v=R66d"></script>
   <script defer src="js/monitor/canvas-topology.js?v=R66d"></script>
   <script defer src="js/monitor/canvas-conveyor.js?v=R66d"></script>

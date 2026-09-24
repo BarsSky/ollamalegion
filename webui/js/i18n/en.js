@@ -374,6 +374,31 @@ window.I18N_EN = {
   "monitor.admission.secSuffix": " s",
   "monitor.admission.off": "off",
 
+  // R77: placement policy (per-model placement strategy)
+  "monitor.panel.placement": "🧩 Placement Policy",
+  "monitor.placement.enabled": "Policy",
+  "monitor.placement.on": "on",
+  "monitor.placement.off": "off",
+  "monitor.placement.fallback": "Fallback",
+  "monitor.placement.mode": "Mode",
+  "monitor.placement.warningsCount": "Config warnings",
+  "monitor.placement.replication": "Replication",
+  "monitor.placement.ready": "ready",
+  "monitor.placement.absent": "absent",
+  "monitor.placement.groups": "Groups",
+  "monitor.placement.groupYes": "present",
+  "monitor.placement.groupNo": "absent",
+  "monitor.placement.warnings": "Config needs attention",
+  "monitor.placement.colStrategy": "Strategy",
+  "monitor.placement.colSource": "Source",
+  "monitor.placement.colFallback": "Fallback",
+  "monitor.placement.colReason": "Reason",
+  "monitor.placement.degraded": "degraded",
+  "monitor.placement.notExecutable": "not executable (P2)",
+  "monitor.placement.autoResolved": "auto",
+  "monitor.placement.howItWorks": "💡 How placement works:",
+  "monitor.placement.howItWorksDesc": "the strategy is resolved per model (request → model → class → global default); pool/replicated/single are executed, sharded/rpc require stage P2, auto picks by free VRAM; with fallback=error an unservable strategy returns 503 instead of silently switching.",
+
 
 
   "monitor.panel.clusterResources": "📊 Cluster Resources",

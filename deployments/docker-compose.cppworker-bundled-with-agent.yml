@@ -345,7 +345,7 @@ services:
         VERSION: ${WEBUI_VERSION:-dev}
         GIT_COMMIT: ${WEBUI_GIT_COMMIT:-unknown}
         BUILD_DATE: ${WEBUI_BUILD_DATE:-unknown}
-    image: ollama-legion/webui:r70-submodule-v1  # R66d (2026-09-23): load через балансер с настройками формы (ctx/batch/flash/mmap/kv), рабочие Apply профиля / Delete / Cancel download, runtime-параметры загруженной модели + бейдж CPU-offload на вкладке загруженных. Требует ?v=R66g (см. webui/index.html).
+    image: ollama-legion/webui:r77-submodule-v2  # R77 (2026-09-24): карточка «Размещение моделей» на /monitor — данные GET /api/v1/placement (enabled/fallback/operatingMode, решения по моделям со стратегией/источником/причиной, пометки degraded и «не исполняется (P2)», группы репликации с кандидатами, предупреждения валидации конфига). Требует ?v=R77 для i18n/api.js/ui-renderer.js. R66d (2026-09-23): load через балансер с настройками формы (ctx/batch/flash/mmap/kv), рабочие Apply профиля / Delete / Cancel download, runtime-параметры загруженной модели + бейдж CPU-offload на вкладке загруженных. Требует ?v=R66g (см. webui/index.html).
     container_name: ol-bundled-webui
     restart: unless-stopped
     ports:

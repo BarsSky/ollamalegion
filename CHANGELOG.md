@@ -5,6 +5,51 @@
 Формат ведётся в соответствии с [Keep a Changelog](https://keepachangelog.com/ru/1.0.0/),
 и этот проект придерживается [Semantic Versioning](https://semver.org/lang/ru/).
 
+## [0.5.35 — Round 77 (2026-09-24)]
+
+### ✨ WebUI: карточка «Размещение моделей» на /monitor (P3, §5 плана)
+
+Последний пункт наблюдаемости placement policy: оператор видит не только строку
+в логе, но и **что именно** политика делает с каждой моделью и почему.
+
+**Что сделано:**
+
+* `webui/monitor.html`: новая панель `panelPlacement` — строка статистики
+  (политика вкл/выкл, `fallback`, `operatingMode`, число моделей с правилами,
+  число предупреждений конфига, готовность менеджера репликации), строка групп
+  репликации с кандидатами, строка предупреждений валидации и таблица решений:
+  модель · стратегия (бейдж) · источник (`request|model|class|global|disabled`)
+  · fallback · причина (с числами VRAM из auto) и сработавшее правило.
+  Пометки в таблице: `деградация`, `не исполняется (P2)`, `auto`.
+* `webui/js/monitor/api.js`: в общий опрос добавлен `GET /api/v1/placement`
+  (девятый элемент `Promise.all`), результат прокинут в `updateUI` как
+  `data.placement`.
+* `webui/js/monitor/ui-renderer.js`: `renderPlacementPolicy(pl)` — рендер
+  карточки (экранирование через `MA.esc`, бейджи `badge-green/blue/red`).
+* `webui/js/i18n/{ru,en}.js`: 23 новых ключа `monitor.placement.*` +
+  `monitor.panel.placement` (паритет 1270/1270, проверено `i18n_diff --strict`).
+* Бамп версий ассетов `?v=R77` (i18n, `api.js`, `ui-renderer.js`) — иначе
+  браузер отдаёт старые файлы из кеша.
+
+**Проверка:**
+
+* `node scripts/i18n_diff.js … --strict` — 1270/1270 ключей, пустых нет;
+* `python scripts/check_iife_exports.py` — PASS (50 файлов);
+* рендер-проверка без браузера (`_diag/r77_render_check.js`: `vm` + DOM-стабы
+  загружают `ui-renderer.js` и вызывают `renderPlacementPolicy` на фикстуре
+  ответа `/api/v1/placement`) — PASS: 4 строки таблицы, `plModels=3`,
+  `plWarnings=1`, `plManager=ready`, группы `auto-big: есть [r75-a, r75-b]`,
+  пометки деградации и «не исполняется (P2)», причина с числами (`need≈37.5 ГБ`);
+* живая проверка: webui-образ `r77-submodule-v2` отдаёт `/monitor.html` с
+  панелью и `?v=R77`, `js/i18n/ru.js` содержит новые ключи, `ui-renderer.js` —
+  `renderPlacementPolicy`, `api.js` — запрос `/api/v1/placement`; сам endpoint на
+  живом балансере отвечает `enabled=false, fallback=error, operatingMode=standard,
+  decisions=1, warnings=0`.
+
+**Осталось по P3:** автопересборка раскладки при изменении состава бэкендов
+(группы реконсилит `GroupController` каждые 10 с) и `degraded` в общих метриках
+`/api/v1/metrics` (сейчас — в решении, логе и карточке WebUI).
+
 ## [0.5.34 — Round 76 (2026-09-24)]
 
 ### ✨ Placement policy, этап P3: честный отказ вместо тихой подмены стратегии (§6)

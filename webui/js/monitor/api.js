@@ -243,15 +243,16 @@
       api('/api/v1/autopull/status').catch(function(e) { if (!isAbortError(e)) console.warn('[monitor] autopull status:', e.message); return null; }),
       api('/api/v1/virtualmodels').catch(function(e) { if (!isAbortError(e)) console.debug('[monitor] virtualmodels:', e.message); return null; }),
       api('/api/v1/candidates').catch(function(e) { if (!isAbortError(e)) console.warn('[monitor] candidates:', e.message); return null; }),
-      api('/api/v1/models/operations').catch(function(e) { if (!isAbortError(e)) console.warn('[monitor] model ops:', e.message); return null; })
+      api('/api/v1/models/operations').catch(function(e) { if (!isAbortError(e)) console.warn('[monitor] model ops:', e.message); return null; }),
+      api('/api/v1/placement').catch(function(e) { if (!isAbortError(e)) console.warn('[monitor] placement:', e.message); return null; })
     ]).then(function(r) {
-      var cluster = r[0], qd = r[1], qs = r[2], sess = r[3], apCfg = r[4], apStatus = r[5], vm = r[6], cand = r[7], modelOps = r[8];
+      var cluster = r[0], qd = r[1], qs = r[2], sess = r[3], apCfg = r[4], apStatus = r[5], vm = r[6], cand = r[7], modelOps = r[8], placement = r[9];
       var data;
       if (cluster && (!cluster.backends || cluster.backends.length === 0)) {
         MA.lastData = null;
         data = null;
       } else {
-        data = { cluster: cluster, queueDetails: qd, queueStats: qs, sessions: sess, autoPullConfig: apCfg, autoPullStatus: apStatus, virtualModels: vm, candidates: cand, modelOps: modelOps };
+        data = { cluster: cluster, queueDetails: qd, queueStats: qs, sessions: sess, autoPullConfig: apCfg, autoPullStatus: apStatus, virtualModels: vm, candidates: cand, modelOps: modelOps, placement: placement };
         MA.lastData = data;
       }
 

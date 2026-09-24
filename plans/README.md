@@ -1,10 +1,10 @@
 # OllamaLegion — Roadmap (живой документ)
 
-> **Дата обновления:** 2026-09-24 (Round 76 — placement policy P3: честный отказ §6, requireHomogeneous)
+> **Дата обновления:** 2026-09-24 (Round 77 — WebUI: карточка «Размещение моделей» на /monitor)
 > **Назначение:** единственный источник правды по реализованному и оставшемуся в проекте OllamaLegion.
 > Все устаревшие/завершённые планы — в `plans/archive/`.
-> **HEAD:** `5f86189` on branch `centurion` + R76 (503 при `fallback=error`, `X-LB-Placement-Fallback`, `auto.requireHomogeneous`).
-> **Live stack:** `ol-bundled-balancer:r75-submodule-v13` (R76-образ `r76-submodule-v14` проверен на throwaway-стенде) + `ol-bundled-cppworker-gpu:gpu-r70-submodule-v3` + `ol-bundled-webui:r70-submodule-v1` + `ol-bundled-cppworker-gpu-agent:cppworker-bundled-r41-agent-x-api-token` (4 healthy).
+> **HEAD:** `b9f6c2d` on branch `centurion` + R77 (карточка размещения в WebUI, `?v=R77`).
+> **Live stack:** `ol-bundled-balancer:r76-submodule-v14` + `ol-bundled-cppworker-gpu:gpu-r70-submodule-v3` + `ol-bundled-webui:r77-submodule-v2` + `ol-bundled-cppworker-gpu-agent:cppworker-bundled-r41-agent-x-api-token` (4 healthy).
 > **Проверено на живом стенде (R68/R69/R71/R72/R73/R74):** Cline (VS Code, провайдер ollama, Model Context Window = 65536) получает 200 и ответ модели; модель грузится на `ctx=65536, kv=q4_0` на RTX 3070 8 GB; агент применяет `maxConcurrentRequests=1`; placement-политика резолвится и видна в `/api/v1/placement`; единая очередь отдаёт `X-Queue-*`; при `operatingMode=standard` политика обслуживает алиас через пул и модель через реплики.
 
 ---
@@ -40,8 +40,23 @@ R75 закрыл P1.5: `auto` выбирает стратегию по VRAM-fit 
 R76 закрыл часть P3: §6 «не уходить в другую стратегию молча» (503 при
 `fallback=error`), `fallback=single` с заголовком `X-LB-Placement-Fallback`,
 `auto.requireHomogeneous`.
+R77 добавил карточку «Размещение моделей» на `/monitor` (P3/§5).
 
-### R76 (2026-09-24) — текущий раунд
+### R77 (2026-09-24) — текущий раунд
+
+Placement policy, этап P3/§5 (`plans/2026-09-23-multi-backend-placement-policy.md`):
+
+| # | Направление | Статус |
+|---|-------------|--------|
+| 1 | Панель `panelPlacement` на `/monitor`: статистика политики, группы репликации, предупреждения конфига, таблица решений (модель · стратегия · источник · fallback · причина) | ✅ сделано |
+| 2 | Пометки в таблице: `деградация`, `не исполняется (P2)`, `auto`; бейджи по фактически исполненной стратегии | ✅ сделано |
+| 3 | `api.js`: `GET /api/v1/placement` в общем опросе; `ui-renderer.js`: `renderPlacementPolicy` | ✅ сделано |
+| 4 | i18n ru/en (23 ключа, паритет 1270/1270) + бамп `?v=R77` | ✅ сделано (образ `webui:r77-submodule-v2`) |
+| 5 | Проверки: `i18n_diff --strict`, `check_iife_exports.py`, рендер-проверка `_diag/r77_render_check.js`, живая отдача ассетов | ✅ проверено (CHANGELOG 0.5.35) |
+| 6 | Осталось по P3: автопересборка раскладки при смене состава бэкендов (группы реконсилит `GroupController` каждые 10 с), `degraded` в общих метриках | ⏳ следующий этап |
+| 7 | P2 placement policy: `sharded`/`rpc` на реальном транспорте | ⏳ нужен выбор (llama.cpp RPC vs B8.7) |
+
+### R76 (2026-09-24) — закрытый раунд
 
 Placement policy, этап P3 (`plans/2026-09-23-multi-backend-placement-policy.md`):
 
@@ -50,9 +65,7 @@ Placement policy, этап P3 (`plans/2026-09-23-multi-backend-placement-policy.
 | 1 | §6: при `fallback=error` неисполнимая стратегия (sharded/rpc) и degraded без `allowDegraded` → 503 с причиной и блоком `placement`, отказ до маршрутизации | ✅ сделано |
 | 2 | `fallback=single` → обслуживание + `X-LB-Placement-Fallback` (заявленная стратегия), `X-LB-Placement` = фактически исполненная | ✅ сделано |
 | 3 | `auto.requireHomogeneous`: сужение набора до группы с одинаковой «личностью» GPU (метка `gpu:*`/`sm_*`, иначе объём VRAM) + объяснение в reason | ✅ сделано |
-| 4 | Живая проверка в двух режимах (error → 503/200-отказы; single → 200 + fallback-заголовки), отказ до маршрутизации подтверждён статистикой заглушек | ✅ проверено (образ `r76-submodule-v14`, CHANGELOG 0.5.34) |
-| 5 | Осталось по P3: WebUI-колонка «Размещение», автопересборка раскладки при смене состава бэкендов, `degraded` в общих метриках | ⏳ следующий этап |
-| 6 | P2 placement policy: `sharded`/`rpc` на реальном транспорте | ⏳ нужен выбор (llama.cpp RPC vs B8.7) |
+| 4 | Живая проверка в двух режимах (error → 503; single → 200 + fallback-заголовки), отказ до маршрутизации подтверждён статистикой заглушек | ✅ проверено (образ `r76-submodule-v14`, CHANGELOG 0.5.34) |
 
 ### R75 (2026-09-24) — закрытый раунд
 

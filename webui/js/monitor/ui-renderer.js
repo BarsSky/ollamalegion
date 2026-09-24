@@ -365,6 +365,7 @@
     renderModelOps(data.modelOps || null);
     renderDispatchStats(data.queueStats || {});
     renderAdmissionStats(data.queueStats || {});
+    renderPlacementPolicy(data.placement || {});
     renderCandidateBackends(data.candidates || null);
     renderVirtualModels(data.virtualModels || null);
     diagnose(data);
@@ -709,8 +710,73 @@
     }
   }
 
-  function renderQueue(q) {
-    var all = q.all || [];
+  // renderPlacementPolicy — R77: placement policy (стратегия размещения по
+  // моделям). Данные — GET /api/v1/placement: enabled/fallback/operatingMode,
+  // decisions[] (strategy/source/degraded/reason/matchedRule), replication
+  // (managerReady/groups/candidates) и warnings валидации конфига.
+  function renderPlacementPolicy(pl) {
+    if (!document.getElementById('placementPanel') && !document.getElementById('placementStats')) return;
+    var enabled = !!(pl && pl.enabled === true);
+    updateText('plEnabled', enabled ? T('monitor.placement.on') : T('monitor.placement.off'));
+    updateText('plFallback', (pl && pl.fallback) || 'error');
+    updateText('plMode', (pl && pl.operatingMode) || 'standard');
+    var decisions = (pl && pl.decisions) || [];
+    // Первая строка отчёта — глобальный дефолт («*»), отдельно её не считаем.
+    var modelCount = decisions.filter(function(d) { return d && d.model !== '*'; }).length;
+    updateText('plModels', modelCount);
+
+    var warns = (pl && pl.warnings) || [];
+    updateText('plWarnings', warns.length);
+
+    var repl = (pl && pl.replication) || {};
+    updateText('plManager', repl.managerReady ? T('monitor.placement.ready') : T('monitor.placement.absent'));
+
+    var groups = repl.groups || {};
+    var groupLines = Object.keys(groups).map(function(name) {
+      var g = groups[name] || {};
+      var cand = (g.candidates || []).join(', ') || '—';
+      return name + ': ' + (g.hasGroup ? T('monitor.placement.groupYes') : T('monitor.placement.groupNo')) + ' [' + cand + ']';
+    });
+    var gl = document.getElementById('plGroups');
+    if (gl) {
+      gl.textContent = groupLines.length ? T('monitor.placement.groups') + ': ' + groupLines.join(' · ') : '';
+    }
+    var wl = document.getElementById('plWarnList');
+    if (wl) {
+      wl.textContent = warns.length ? T('monitor.placement.warnings') + ': ' + warns.join(' · ') : '';
+    }
+
+    var tb = document.querySelector('#placementTable tbody');
+    if (!tb) return;
+    if (!decisions.length) {
+      tb.innerHTML = '<tr><td colspan="5" style="color:var(--text-secondary);text-align:center;padding:16px">' + T('monitor.common.noData') + '</td></tr>';
+      return;
+    }
+    tb.innerHTML = decisions.map(function(d) {
+      var strat = (d && d.strategy) || '-';
+      var badge = 'badge-yellow';
+      if (d && d.degraded) badge = 'badge-red';
+      else if (d && d.executable === false) badge = 'badge-red';
+      else if (strat === 'single') badge = 'badge-green';
+      else if (strat === 'pool' || strat === 'replicated' || strat === 'auto') badge = 'badge-blue';
+      var flags = [];
+      if (d && d.degraded) flags.push(T('monitor.placement.degraded'));
+      if (d && d.executable === false) flags.push(T('monitor.placement.notExecutable'));
+      if (d && d.refined) flags.push(T('monitor.placement.autoResolved'));
+      var reason = MA.esc((d && d.reason) || '');
+      if (d && d.matchedRule) {
+        reason += '<br><span style="color:var(--text-secondary)">' + MA.esc(d.matchedRule) + '</span>';
+      }
+      return '<tr><td><strong>' + MA.esc((d && d.model) || '*') + '</strong></td>' +
+        '<td><span class="badge ' + badge + '">' + MA.esc(strat) + '</span>' +
+        (flags.length ? '<div style="font-size:10px;color:var(--text-secondary);margin-top:2px">' + flags.join(', ') + '</div>' : '') + '</td>' +
+        '<td>' + MA.esc((d && d.source) || '-') + '</td>' +
+        '<td>' + MA.esc((d && d.fallback) || '-') + '</td>' +
+        '<td style="font-size:11px">' + reason + '</td></tr>';
+    }).join('');
+  }
+
+  function renderQueue(q) {    var all = q.all || [];
     document.getElementById('queueCount').textContent = all.length;
     var tb = document.querySelector('#queueTable tbody');
     if (!all.length) { tb.innerHTML = '<tr><td colspan="6" style="color:var(--text-secondary);text-align:center;padding:16px">' + T('monitor.common.noData') + '</td></tr>'; return; }

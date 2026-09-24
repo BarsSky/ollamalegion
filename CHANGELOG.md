@@ -68,6 +68,11 @@ nctx_reload: R60.47 async reload kicked off, returning 503+Retry-After
    текущему feasible и не знает про запросы клиента; теперь она пропускается,
    если ниже запрошенного (в API-ответе AutoTune это видно как
    `skipped_reason: "client requested n_ctx=… over-allocation downgrade skipped"`).
+5. **Обработчик 413 больше не планирует reload «вниз»** (R69): если координатор
+   уже знает фактический n_ctx (`LastKnownNCtx`) и он покрывает цель плана,
+   загрузка не запускается — клиент получает понятный 503 с фактическим n_ctx
+   вместо бессмысленной перезагрузки (`known_n_ctx=65536, target_n_ctx=16384`
+   из bridge_info устаревшего запроса).
 
 **Живая проверка (тело как у Cline: `max_output_tokens`, `tool_choice`,
 `tools[]`, `options.num_ctx=65536`):**

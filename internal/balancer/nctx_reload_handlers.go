@@ -280,6 +280,28 @@ func (p *Proxy) handleNCtxReloadActualAsync(
 		"retry_after_sec", retryAfter,
 		"estimated_load_ms", estimatedLoadMs)
 
+	// R69 (2026-09-23): не планируем reload МЕНЬШЕ уже известного n_ctx.
+	//
+	// План строится из bridge_info текущего запроса (cppworker сообщает
+	// current_n_ctx из effective n_ctx ЭТОГО запроса) — после ручного/профильного
+	// reload'а это значение устаревает, и балансер запускал «reload вниз»
+	// (наблюдалось на живом стенде: модель на 65536, а план — 16384 → качели
+	// reload'ов и 503 у клиента). Координатор знает фактический n_ctx
+	// (LastKnownNCtx) — если он уже покрывает цель, загрузка бессмысленна.
+	if known := p.lastKnownNCtxFor(backendID); known > 0 && known >= plan.NewNCtx {
+		logger.Get().Warnw("nctx_reload: skipping pointless reload — known n_ctx already covers target (R69)",
+			"backend", backendID, "model", modelName,
+			"known_n_ctx", known,
+			"target_n_ctx", plan.NewNCtx,
+			"bridge_current_n_ctx", diag.CurrentNCtx)
+		diag.TargetNCtx = known
+		diag.Error = fmt.Sprintf("model '%s' rejected the request with its effective n_ctx=%d (model is loaded with n_ctx=%d); retry the request or reduce num_predict",
+			modelName, diag.CurrentNCtx, known)
+		diag.Suggestion = fmt.Sprintf("balancer already has n_ctx=%d loaded — reload skipped; retry the request", known)
+		writeServiceUnavailableWithDiagnostics(w, diag)
+		return
+	}
+
 	// Kick off reload in detached goroutine. Используем context.Background()
 	// чтобы client cancellation не abort'ил наш reload (user cancel после
 	// timeout не должен отменять многоминутный reload).

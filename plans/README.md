@@ -1,10 +1,10 @@
 # OllamaLegion — Roadmap (живой документ)
 
-> **Дата обновления:** 2026-09-24 (Round 75 — placement policy P1.5: auto по VRAM-fit)
+> **Дата обновления:** 2026-09-24 (Round 76 — placement policy P3: честный отказ §6, requireHomogeneous)
 > **Назначение:** единственный источник правды по реализованному и оставшемуся в проекте OllamaLegion.
 > Все устаревшие/завершённые планы — в `plans/archive/`.
-> **HEAD:** `38b35a4` on branch `centurion` + R75 (placement P1.5: VRAM-fit для auto, degraded с числами, группы для auto-правил).
-> **Live stack:** `ol-bundled-balancer:r74-submodule-v12` (R75-образ `r75-submodule-v13` проверен на throwaway-стенде) + `ol-bundled-cppworker-gpu:gpu-r70-submodule-v3` + `ol-bundled-webui:r70-submodule-v1` + `ol-bundled-cppworker-gpu-agent:cppworker-bundled-r41-agent-x-api-token` (4 healthy).
+> **HEAD:** `5f86189` on branch `centurion` + R76 (503 при `fallback=error`, `X-LB-Placement-Fallback`, `auto.requireHomogeneous`).
+> **Live stack:** `ol-bundled-balancer:r75-submodule-v13` (R76-образ `r76-submodule-v14` проверен на throwaway-стенде) + `ol-bundled-cppworker-gpu:gpu-r70-submodule-v3` + `ol-bundled-webui:r70-submodule-v1` + `ol-bundled-cppworker-gpu-agent:cppworker-bundled-r41-agent-x-api-token` (4 healthy).
 > **Проверено на живом стенде (R68/R69/R71/R72/R73/R74):** Cline (VS Code, провайдер ollama, Model Context Window = 65536) получает 200 и ответ модели; модель грузится на `ctx=65536, kv=q4_0` на RTX 3070 8 GB; агент применяет `maxConcurrentRequests=1`; placement-политика резолвится и видна в `/api/v1/placement`; единая очередь отдаёт `X-Queue-*`; при `operatingMode=standard` политика обслуживает алиас через пул и модель через реплики.
 
 ---
@@ -37,8 +37,24 @@ R74 реализовал placement policy P1: `pool`/`replicated` исполня
 `auto` — детерминированное подмножество §4.
 R75 закрыл P1.5: `auto` выбирает стратегию по VRAM-fit (need ≈ веса × 1.25) с
 честной деградацией и числами в причине.
+R76 закрыл часть P3: §6 «не уходить в другую стратегию молча» (503 при
+`fallback=error`), `fallback=single` с заголовком `X-LB-Placement-Fallback`,
+`auto.requireHomogeneous`.
 
-### R75 (2026-09-24) — текущий раунд
+### R76 (2026-09-24) — текущий раунд
+
+Placement policy, этап P3 (`plans/2026-09-23-multi-backend-placement-policy.md`):
+
+| # | Направление | Статус |
+|---|-------------|--------|
+| 1 | §6: при `fallback=error` неисполнимая стратегия (sharded/rpc) и degraded без `allowDegraded` → 503 с причиной и блоком `placement`, отказ до маршрутизации | ✅ сделано |
+| 2 | `fallback=single` → обслуживание + `X-LB-Placement-Fallback` (заявленная стратегия), `X-LB-Placement` = фактически исполненная | ✅ сделано |
+| 3 | `auto.requireHomogeneous`: сужение набора до группы с одинаковой «личностью» GPU (метка `gpu:*`/`sm_*`, иначе объём VRAM) + объяснение в reason | ✅ сделано |
+| 4 | Живая проверка в двух режимах (error → 503/200-отказы; single → 200 + fallback-заголовки), отказ до маршрутизации подтверждён статистикой заглушек | ✅ проверено (образ `r76-submodule-v14`, CHANGELOG 0.5.34) |
+| 5 | Осталось по P3: WebUI-колонка «Размещение», автопересборка раскладки при смене состава бэкендов, `degraded` в общих метриках | ⏳ следующий этап |
+| 6 | P2 placement policy: `sharded`/`rpc` на реальном транспорте | ⏳ нужен выбор (llama.cpp RPC vs B8.7) |
+
+### R75 (2026-09-24) — закрытый раунд
 
 Placement policy, этап P1.5 (`plans/2026-09-23-multi-backend-placement-policy.md`):
 
@@ -48,8 +64,6 @@ Placement policy, этап P1.5 (`plans/2026-09-23-multi-backend-placement-polic
 | 2 | `auto` по `auto.prefer`: single → replicated → (sharded/rpc помечены как P2); провал → `degraded: true` + числа в причине | ✅ сделано |
 | 3 | Группы репликации для `auto`-правил с `prefer=replicated` (minInstances ≥ 2) | ✅ сделано |
 | 4 | Живая проверка в 2 фазы (без метрик VRAM → single/replicated; с 512 МБ → degraded с числами) | ✅ проверено (образ `r75-submodule-v13`, CHANGELOG 0.5.33) |
-| 5 | P3 (осталось): `requireHomogeneous`, жёсткий отказ при `fallback=error` вместо degraded, WebUI-колонка «Размещение» | ⏳ следующий этап |
-| 6 | P2 placement policy: `sharded`/`rpc` на реальном транспорте | ⏳ нужен выбор (llama.cpp RPC vs B8.7) |
 
 ### R74 (2026-09-24) — закрытый раунд
 

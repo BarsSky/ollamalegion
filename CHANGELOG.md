@@ -5,6 +5,58 @@
 Формат ведётся в соответствии с [Keep a Changelog](https://keepachangelog.com/ru/1.0.0/),
 и этот проект придерживается [Semantic Versioning](https://semver.org/lang/ru/).
 
+## [0.5.34 — Round 76 (2026-09-24)]
+
+### ✨ Placement policy, этап P3: честный отказ вместо тихой подмены стратегии (§6)
+
+План `plans/2026-09-23-multi-backend-placement-policy.md` §6 требует: «никогда не
+выдавать 200 с неполным/чужим ответом и не уходить в другую стратегию молча».
+До R76 политика, которую нельзя было исполнить, молча обслуживалась обычным
+путём (single) — оператор видел только строку в логе.
+
+**Что сделано:**
+
+* `internal/balancer/placement_reject_r76.go` — `placementRejection`:
+  запрос отклоняется (503 + JSON с причиной и блоком `placement`) если
+  * стратегия не исполняется этой сборкой (`sharded`/`rpc` — этап P2), либо
+  * `auto` деградировала, а правило не разрешает деградацию
+    (`auto.allowDegraded=false`),
+  и при этом `placement.fallback = "error"` (default).
+  При `fallback = "single"` запрос обслуживается обычным путём, а в ответе
+  появляется заголовок `X-LB-Placement-Fallback` с заявленной стратегией
+  (`X-LB-Placement` при этом показывает фактически исполненную — `single`).
+  Отклонение происходит **до** маршрутизации (upstream не получает запрос).
+* `auto.requireHomogeneous` (P3): `filterHomogeneousFit` сужает набор бэкендов
+  до самой большой группы с одинаковой «личностью» GPU — метка `gpu:*`/`sm_*`,
+  иначе объём VRAM (`vram:<МБ>`), иначе «неизвестно» (такие совместимы между
+  собой). Ограничение попадает в `reason` («однородность: подходящих 2 → 1»).
+* Опция `auto.allowDegraded` теперь реально управляет отказом (раньше только
+  описывалась в плане).
+
+**Живая проверка (throwaway-стенд: 2 ollama-заглушки с разными метками GPU
+`gpu:sm_86`/`gpu:sm_90`, `operatingMode=standard`):**
+
+| запрос | `fallback=error` (default) | `fallback=single` |
+|---|---|---|
+| `p3-sharded` (`strategy=sharded`) | **503**: «стратегия размещения sharded не исполняется этой сборкой (sharded/rpc — этап P2 плана), а placement.fallback=error: запрос не будет обслужен другой стратегией молча» | 200, `X-LB-Placement: single`, `X-LB-Placement-Fallback: sharded` |
+| `p3-degraded` (auto, 40 ГБ, свободно 20 ГБ) | **503**: «auto не смогла выбрать стратегию… need≈50.0 ГБ (веса 40.0 ГБ + запас 25%), свободно максимум 20.0 ГБ» | 200, `X-LB-Placement: single` |
+| `p3-homog` (auto, 8 ГБ, `requireHomogeneous`, разные GPU) | 200 `single`; в решении: «влезает на 1 бэкенд(ах) из 2 (need≈10.0 ГБ); однородность: подходящих 2 → 1 (одинаковые GPU)» | 200 `single` |
+
+Статистика заглушек подтвердила, что при отказе запрос не доходит до бэкендов
+(`served=0`), а при `fallback=single` — доходит.
+
+**Тесты:** `internal/balancer/placement_p3_r76_test.go` (6: отказ при sharded с
+`fallback=error` и проверкой блока `placement`; обслуживание при
+`fallback=single` с заголовками; `allowDegraded=true` → 200; degraded без
+allowDegraded → 503 с числами; `requireHomogeneous` сужает набор и объясняет
+это; выключенная политика ничего не отклоняет). Регрессии: `./internal/... -race`,
+`./cmd/...`, `./tests/... -short` — зелёные.
+
+**Изменение поведения:** при `placement.enabled=true` и стратегии, которую сборка
+не исполняет (`sharded`/`rpc`), запросы теперь получают 503 вместо молчаливого
+обслуживания по single — это и есть требование §6. Вернуть прежнее «мягкое»
+поведение можно через `fallback=single` или `auto.allowDegraded=true`.
+
 ## [0.5.33 — Round 75 (2026-09-24)]
 
 ### ✨ Placement policy, этап P1.5: auto выбирает стратегию по VRAM-fit (§4)

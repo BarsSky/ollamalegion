@@ -22,6 +22,7 @@ package balancer
 import (
 	"fmt"
 	"sort"
+	"strings"
 
 	"ollama-loadbalancer/pkg/logger"
 	"ollama-loadbalancer/pkg/types"
@@ -152,6 +153,18 @@ func (p *Proxy) resolveAutoStrategy(d PlacementDecision, rule types.PlacementMod
 	prefer := autoPreferOrder(rule)
 	var skipped []string
 
+	// R76 (P3): однородность — если правило требует одинаковые GPU, репликацию
+	// (и раскладку) считаем допустимой только внутри одной группы бэкендов.
+	homogeneousNote := ""
+	if rule.Auto != nil && rule.Auto.RequireHomogeneous {
+		before := len(fit.FitBackends)
+		fit = p.filterHomogeneousFit(fit)
+		if len(fit.FitBackends) < before {
+			homogeneousNote = fmt.Sprintf("однородность: подходящих %d → %d (одинаковые GPU)",
+				before, len(fit.FitBackends))
+		}
+	}
+
 	for _, strategy := range prefer {
 		need, ok, note := p.autoStrategyAllowed(strategy, rule)
 		if !ok {
@@ -175,6 +188,9 @@ func (p *Proxy) resolveAutoStrategy(d PlacementDecision, rule types.PlacementMod
 			}
 			if strategy == types.PlacementReplicated {
 				reason += fmt.Sprintf(", minBackends=%d", need)
+			}
+			if homogeneousNote != "" {
+				reason += "; " + homogeneousNote
 			}
 			if len(skipped) > 0 {
 				// R75: сообщаем и о пропущенных вариантах (например sharded до P2),
@@ -200,6 +216,55 @@ func (p *Proxy) resolveAutoStrategy(d PlacementDecision, rule types.PlacementMod
 	logger.Get().Warnw("placement auto: не удалось выбрать стратегию по VRAM, деградация на single",
 		"model", d.Model, "reason", reason, "fit_backends", fit.FitBackends)
 	return types.PlacementSingle, true, reason
+}
+
+// backendGPUIdentity — R76 (P3): приблизительная «личность» GPU бэкенда для
+// requireHomogeneous. Точного имени модели GPU в метриках балансера нет, поэтому:
+//  1. метка вида `gpu:*` или `sm_*` (её проставляют cppworker/агент);
+//  2. иначе — объём VRAM (`vram:<МБ>`): одинаковая память ⇒ скорее всего
+//     одинаковая карта;
+//  3. иначе — "" (неизвестно; такие бэкенды считаются совместимыми между собой).
+func (p *Proxy) backendGPUIdentity(backendID string) string {
+	p.mu.RLock()
+	state, exists := p.backends[backendID]
+	p.mu.RUnlock()
+	if !exists || state == nil || state.Backend == nil {
+		return ""
+	}
+	for _, label := range state.Backend.Labels {
+		l := strings.ToLower(strings.TrimSpace(label))
+		if strings.HasPrefix(l, "gpu:") || strings.HasPrefix(l, "sm_") || strings.HasPrefix(l, "sm") {
+			return l
+		}
+	}
+	if metrics, ok := p.metricsMgr.SnapshotBackendMetrics(backendID); ok && metrics.GPU.MemoryTotal > 0 {
+		return fmt.Sprintf("vram:%d", metrics.GPU.MemoryTotal)
+	}
+	return ""
+}
+
+// filterHomogeneousFit — оставить только самую большую группу бэкендов с
+// одинаковой «личностью» GPU (при равенстве — лексикографически первую, чтобы
+// решение было детерминированным).
+func (p *Proxy) filterHomogeneousFit(fit placementFit) placementFit {
+	if len(fit.FitBackends) <= 1 {
+		return fit
+	}
+	groups := map[string][]string{}
+	for _, id := range fit.FitBackends {
+		identity := p.backendGPUIdentity(id)
+		groups[identity] = append(groups[identity], id)
+	}
+	bestKey := ""
+	bestLen := 0
+	for key, ids := range groups {
+		if len(ids) > bestLen || (len(ids) == bestLen && key < bestKey) {
+			bestKey, bestLen = key, len(ids)
+		}
+	}
+	fit.FitBackends = groups[bestKey]
+	sort.Strings(fit.FitBackends)
+	return fit
 }
 
 func maxFreeR75(fit placementFit) uint64 {

@@ -717,25 +717,39 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// Трекинг всех клиентов для монитора (использует уже распарсенные данные)
 	p.recordRecentClientParsed(r, parsed)
 
-	// R72 (P0): placement policy — решение о размещении модели.
+	// R72 (P0) + R76 (P3): placement policy — решение о размещении модели.
 	//
-	// Пока это ТОЛЬКО наблюдаемость (этап P0 плана
-	// plans/2026-09-23-multi-backend-placement-policy.md): маршрутизация не
-	// меняется, но решение видно в логах, в счётчиках GET /api/v1/placement и
-	// в заголовках ответа — так оператор может проверить конфиг политики на
-	// живом стенде до включения исполнения стратегий (P1).
+	// Решение видно в логах, в счётчиках GET /api/v1/placement и в заголовках
+	// ответа. R76 добавил §6 плана: если политика не может обслужить
+	// заявленную стратегию, а `placement.fallback=error` (default) — отвечаем
+	// явной 503 с причиной, а не подменяем стратегию молча. При `fallback=single`
+	// запрос обслуживается обычным путём, но деградация видна в заголовке
+	// X-LB-Placement-Fallback.
 	if model != "" {
 		sizeGB := float64(p.getModelSizeBytes(model)) / (1024 * 1024 * 1024)
 		decision := p.ResolvePlacement(model, sizeGB, r.Header.Get("X-LB-Placement"))
 		p.recordPlacementDecision(decision)
+
+		if reason, reject := p.placementRejection(decision); reject {
+			writePlacementUnavailable(w, decision, reason)
+			return
+		}
+
+		declaredStrategy := decision.Strategy
+		if !decision.Executable {
+			// fallback=single (иначе мы бы уже отказали): исполняем обычный путь.
+			w.Header().Set("X-LB-Placement-Fallback", string(declaredStrategy))
+			decision.Strategy = types.PlacementSingle
+		}
 		w.Header().Set("X-LB-Placement", string(decision.Strategy))
 		w.Header().Set("X-LB-Placement-Source", string(decision.Source))
 		if decision.Source != PlacementSourceDisabled {
 			ridLog(ctxWithRID).Debugw("placement: решение о размещении",
 				"model", model, "strategy", decision.Strategy,
+				"declared_strategy", declaredStrategy,
 				"source", decision.Source, "reason", decision.Reason,
 				"rule", decision.MatchedRule, "model_size_gb", sizeGB,
-				"executable", decision.Executable)
+				"executable", decision.Executable, "degraded", decision.Degraded)
 		}
 	}
 

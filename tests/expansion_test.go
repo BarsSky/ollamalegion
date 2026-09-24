@@ -36,7 +36,7 @@ func TestExpandCandidates_EmptyBackends(t *testing.T) {
 
 func TestExpandCandidates_ModelLoaded(t *testing.T) {
 	cfg := &types.LoadBalancerConfig{
-		LoadBalancer: types.LoadBalancerSettings{Host: "127.0.0.1", Port: 18081, StatePath: "testdata/state.json"},
+		LoadBalancer: types.LoadBalancerSettings{Host: "127.0.0.1", Port: 18081, StatePath: testStatePath(t)},
 		Backends: []types.Backend{
 			{ID: "b1", Host: "10.0.0.1", OllamaPort: 11434, MaxConcurrentReqs: 8, Status: types.StatusHealthy, Weight: 1},
 			{ID: "b2", Host: "10.0.0.2", OllamaPort: 11434, MaxConcurrentReqs: 8, Status: types.StatusHealthy, Weight: 1},
@@ -102,7 +102,7 @@ func TestExpandCandidates_ModelLoaded(t *testing.T) {
 
 func TestExpandCandidates_WarmingModel(t *testing.T) {
 	cfg := &types.LoadBalancerConfig{
-		LoadBalancer: types.LoadBalancerSettings{Host: "127.0.0.1", Port: 18081, StatePath: "testdata/state.json"},
+		LoadBalancer: types.LoadBalancerSettings{Host: "127.0.0.1", Port: 18081, StatePath: testStatePath(t)},
 		Backends: []types.Backend{
 			{ID: "b1", Host: "10.0.0.1", OllamaPort: 11434, MaxConcurrentReqs: 8, Status: types.StatusHealthy, Weight: 1},
 		},
@@ -147,7 +147,7 @@ func TestExpandCandidates_WarmingModel(t *testing.T) {
 
 func TestExpandCandidates_FreeBackend(t *testing.T) {
 	cfg := &types.LoadBalancerConfig{
-		LoadBalancer: types.LoadBalancerSettings{Host: "127.0.0.1", Port: 18081, StatePath: "testdata/state.json"},
+		LoadBalancer: types.LoadBalancerSettings{Host: "127.0.0.1", Port: 18081, StatePath: testStatePath(t)},
 		Backends: []types.Backend{
 			{ID: "b1", Host: "10.0.0.1", OllamaPort: 11434, MaxConcurrentReqs: 8, Status: types.StatusHealthy, Weight: 1},
 		},
@@ -189,7 +189,7 @@ func TestExpandCandidates_FreeBackend(t *testing.T) {
 
 func TestExpandCandidates_UnhealthyExcluded(t *testing.T) {
 	cfg := &types.LoadBalancerConfig{
-		LoadBalancer: types.LoadBalancerSettings{Host: "127.0.0.1", Port: 18081, StatePath: "testdata/state.json"},
+		LoadBalancer: types.LoadBalancerSettings{Host: "127.0.0.1", Port: 18081, StatePath: testStatePath(t)},
 		Backends: []types.Backend{
 			{ID: "b1", Host: "10.0.0.1", OllamaPort: 11434, MaxConcurrentReqs: 8, Status: types.StatusUnhealthy, Weight: 1},
 			{ID: "b2", Host: "10.0.0.2", OllamaPort: 11434, MaxConcurrentReqs: 8, Status: types.StatusHealthy, Weight: 1},
@@ -232,7 +232,7 @@ func TestExpandCandidates_UnhealthyExcluded(t *testing.T) {
 
 func TestDispatchWithModelLoad_NoFreeBackend(t *testing.T) {
 	cfg := &types.LoadBalancerConfig{
-		LoadBalancer: types.LoadBalancerSettings{Host: "127.0.0.1", Port: 18081, StatePath: "testdata/state.json"},
+		LoadBalancer: types.LoadBalancerSettings{Host: "127.0.0.1", Port: 18081, StatePath: testStatePath(t)},
 		Backends:     []types.Backend{},
 		Balancing: types.BalancingSettings{
 			Prewarm:         types.PrewarmConfig{TriggerLoadThreshold: 0.80},

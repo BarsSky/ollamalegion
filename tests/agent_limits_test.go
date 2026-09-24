@@ -12,7 +12,7 @@ import (
 func newTestProxySimple(t *testing.T) *balancer.Proxy {
 	t.Helper()
 	cfg := &types.LoadBalancerConfig{
-		LoadBalancer: types.LoadBalancerSettings{Host: "127.0.0.1", Port: 18081, StatePath: "testdata/state.json"},
+		LoadBalancer: types.LoadBalancerSettings{Host: "127.0.0.1", Port: 18081, StatePath: testStatePath(t)},
 		Backends: []types.Backend{
 			{ID: "test-agent-1", Name: "test-agent-1", Host: "192.0.2.100", OllamaPort: 11434, AgentPort: 9090, Weight: 100, MaxConcurrentReqs: 8, Status: types.StatusHealthy, HasAgent: true},
 		},

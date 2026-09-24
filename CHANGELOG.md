@@ -5,6 +5,57 @@
 Формат ведётся в соответствии с [Keep a Changelog](https://keepachangelog.com/ru/1.0.0/),
 и этот проект придерживается [Semantic Versioning](https://semver.org/lang/ru/).
 
+## [0.5.33 — Round 75 (2026-09-24)]
+
+### ✨ Placement policy, этап P1.5: auto выбирает стратегию по VRAM-fit (§4)
+
+Завершение правила `auto` из `plans/2026-09-23-multi-backend-placement-policy.md`
+(§4): раньше auto различала только «алиас → pool» и «prefer=replicated +
+достаточно бэкендов → replicated», теперь учитывается **вместимость по VRAM**.
+
+**Что сделано:**
+
+* `internal/balancer/placement_fit_r75.go` — `placementFitForModel(model)`:
+  считает `need ≈ размер модели × 1.25` (запас на KV-cache и накладные) и
+  проверяет каждый healthy-бэкенд:
+  * модель уже загружена на бэкенде → влезает по определению
+    (`getModelLoadedCtxFromMetrics`);
+  * есть метрики VRAM (`gpu.memoryTotal > 0`) → влезает, если
+    `gpu.memoryFree ≥ need` (метрики в МБ — конвертируются в байты);
+  * метрик VRAM нет (CPU-only, ollama без агента) → бэкенд считается
+    «неизвестным» и **не блокирует** выбор: деградация объявляется только когда
+    точно известно, что не вмещается.
+* `auto` перебирает `auto.prefer` (по умолчанию `[single]`): `single` — если
+  влезает хотя бы на один бэкенд, `replicated` — если влезает на
+  `auto.minBackends`; `sharded`/`rpc` помечаются как пропущенные (этап P2) и
+  попадают в причину. Ничего не подошло → `single` + **`degraded: true`** и
+  причина с числами: `need≈10.0 ГБ (веса 8.0 ГБ + запас 25%), свободно максимум
+  512 МБ`. Размер модели неизвестен → `single` с пометкой «VRAM-fit не
+  проверен» (это не деградация: нет данных, а не «не влезает»).
+* Группы репликации создаются и для `auto`-правил, у которых `prefer` содержит
+  `replicated` (R74 создавал только для явного `strategy=replicated`), с
+  `minInstances ≥ 2` — чтобы выбранная авто-стратегия была подкреплена репликами.
+
+**Живая проверка (throwaway-стенд: 2 ollama-заглушки, профили размеров
+4/8/30 ГБ, `operatingMode=standard`):**
+
+| фаза | `auto-small` (4 ГБ) | `auto-big` (8 ГБ, prefer replicated) | `auto-huge` (30 ГБ) |
+|---|---|---|---|
+| 1. метрик VRAM нет («неизвестно») | `single` (need≈5.0 ГБ; без метрик VRAM: 2) | `replicated` (need≈10.0 ГБ, minBackends=2), группа с кандидатами r75-a,r75-b | `replicated` |
+| 2. сообщили 512 МБ свободного VRAM | `single` **degraded** | `single` **degraded**: `need≈10.0 ГБ (веса 8.0 ГБ + запас 25%), свободно максимум 512 МБ` | `single` **degraded**: `need≈37.5 ГБ … свободно максимум 512 МБ` |
+
+Запросы при этом обслуживаются (HTTP 200) с заголовком `X-LB-Placement`,
+соответствующим решению: `auto-small` → `single`, `auto-big` → `replicated`,
+`auto-huge` в фазе 2 → `single` (деградация видна в `/api/v1/placement` и логе
+WARN).
+
+**Тесты:** `internal/balancer/placement_auto_r75_test.go` (6: single при fit;
+replicated при prefer+fit и созданная группа; degraded с числами, когда не
+влезает никуда; размер неизвестен → single с пометкой; sharded пропущен (P2);
+модель уже загружена → fit без метрик VRAM), обновлены тесты R74 под новую
+семантику auto. Регрессии: `./internal/... -race`, `./cmd/...`,
+`./tests/... -short` — зелёные (в т.ч. прогон в Linux-контейнере, как в CI).
+
 ## [0.5.32 — Round 74 (2026-09-24)]
 
 ### ✨ Placement policy, этап P1: pool и replicated исполняются политикой

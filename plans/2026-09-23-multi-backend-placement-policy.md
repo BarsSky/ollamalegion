@@ -1,7 +1,7 @@
 # Совместная работа режимов при нескольких бэкендах — Placement Policy
 
-**Статус:** P0 РЕАЛИЗОВАН (R72, 2026-09-24, коммит `R72: placement policy (P0)`);
-P1+ — в работе
+**Статус:** P0 (R72), P1 (R74) и P1.5 (R75) РЕАЛИЗОВАНЫ; открыт P2 (`sharded`/`rpc`
+на реальном транспорте — нужен выбор: llama.cpp RPC vs собственный B8.7)
 **Автор:** сессия R66d
 **Связанные документы:** `plans/b8-tensor-parallelism-plan.md` (TP: этапы B8.1-B8.9),
 `plans/rpc-model-distribution-plan.md` (варианты B и C), `plans/README.md`,
@@ -286,14 +286,35 @@ else:
   `SetPlacementSettings`), менеджер репликации поднимается по требованию;
   далее работает штатный `replicationSelector`. Живая проверка: `r74-repl`
   обслуживают реплики A/B/A, `X-LB-Placement: replicated`.
-* `auto`: реализовано детерминированное подмножество §4 — алиас → pool;
-  `prefer` содержит replicated и здоровых бэкендов ≥ `minBackends` → replicated;
-  иначе → single (в `reason` указано, что VRAM-уточнение — P1.5).
+* `auto`: детерминированное подмножество §4 — алиас → pool; `prefer` содержит
+  replicated и здоровых бэкендов ≥ `minBackends` → replicated; иначе → single.
+  (VRAM-fit добавлен в R75/P1.5 — см. ниже.)
 * Наблюдаемость: блок `replication` (`managerReady`, `hasGroup`, `candidates`)
   в `GET /api/v1/placement`; заголовки `X-LB-Placement*` отражают исполненную
   стратегию.
-* **Вынесено в P1.5:** полное правило `auto` по свободному VRAM и размеру модели
-  (сейчас auto без prefer/бэкендов выбирает single с честной причиной).
+
+### P1.5 — `auto` по свободному VRAM и размеру модели — ✅ СДЕЛАНО (R75)
+
+**Факт по R75 (2026-09-24, коммит `R75: placement P1.5`, образ
+`r75-submodule-v13`):**
+
+* `placementFitForModel` (`internal/balancer/placement_fit_r75.go`):
+  `need ≈ размер модели × 1.25` (KV и накладные), проверка каждого healthy
+  бэкенда — «загружена» (влезает по определению) / «метрики VRAM известны и
+  `memoryFree ≥ need`» (МБ → байты) / «метрик нет» (CPU-only, ollama без агента →
+  неизвестно, выбор не блокируется);
+* `auto` перебирает `auto.prefer` (по умолчанию `[single]`): single →
+  replicated → (sharded/rpc помечаются как пропущенные, этап P2); при провале —
+  `single` + `degraded: true` и числа в причине (`need≈…, свободно максимум …`);
+  при неизвестном размере — single с пометкой «VRAM-fit не проверен»;
+* группы репликации создаются и для `auto`-правил с `prefer`, содержащим
+  replicated (`minInstances ≥ 2`);
+* живая проверка (2 заглушки, профили 4/8/30 ГБ): без метрик VRAM —
+  `single` / `replicated` / `replicated`; после сообщения 512 МБ свободного VRAM
+  — все три `single` с `degraded: true` и точными числами (см. CHANGELOG 0.5.33);
+* тесты: `placement_auto_r75_test.go` (6);
+* осталось: `requireHomogeneous` (однородность GPU) и `fallback=error`
+  (жёсткий отказ вместо degraded) — вынесены в P3 (отказоустойчивость и UX).
 
 ### P2 — `sharded` на реальном транспорте (1-2 недели, главный открытый вопрос)
 Два варианта, нужно выбрать:

@@ -63,6 +63,9 @@ type PlacementDecision struct {
 	Executable bool `json:"executable"`
 	// Refined — R74 (P1): strategy=auto превращена в конкретную стратегию.
 	Refined bool `json:"refined,omitempty"`
+	// Degraded — R75 (P1.5): auto не смогла выбрать стратегию (ни один вариант
+	// не подошёл) и деградировала на single — причина в Reason.
+	Degraded bool `json:"degraded,omitempty"`
 }
 
 // placementCounters — счётчики решений (наблюдаемость P0).
@@ -139,56 +142,32 @@ func (p *Proxy) ResolvePlacement(model string, sizeGB float64, override string) 
 // refinePlacementDecision — R74 (P1): превратить strategy=auto в конкретную
 // стратегию, используя то, что известно самому процессу.
 //
-// Реализованное подмножество §4 плана (детерминированное, без гадания):
+// R75 (P1.5): выбор идёт по правилу §4 плана — VRAM-fit:
 //  1. модель — виртуальный алиас (registry, alias-on-pool) → pool;
-//  2. правило разрешает replicated (`auto.prefer` содержит replicated) и
-//     здоровых бэкендов не меньше `auto.minBackends` → replicated;
-//  3. иначе → single.
+//  2. иначе перебираем `auto.prefer` (по умолчанию только single):
+//     single — если модель влезает хотя бы на один бэкенд;
+//     replicated — если влезает на `auto.minBackends` бэкендов;
+//     sharded/rpc — пропускаются (этап P2);
+//  3. если ничего не подошло — деградация: single + `degraded=true` и причина
+//     с числами (need ≈ веса × 1.25, максимум свободного VRAM).
 //
-// Уточнение по свободному VRAM/размеру модели (полное правило §4) — этап P1.5:
-// в reason честно указывается, что выбор сделан без VRAM-fit.
+// «Влезает» = модель уже загружена на бэкенде ИЛИ свободный VRAM ≥ need
+// (см. placementFitForModel). Точный расчёт KV под конкретный n_ctx остаётся в
+// cppworker — здесь грубая, но консервативная оценка.
 func (p *Proxy) refinePlacementDecision(d PlacementDecision) PlacementDecision {
 	if d.Strategy != types.PlacementAuto {
 		return d
 	}
 	d.Refined = true
 
-	if p.virtualRouter != nil && p.virtualRouter.IsVirtualModelPath(d.Model) {
-		d.Strategy = types.PlacementPool
-		d.Executable = types.IsExecutablePlacementStrategy(d.Strategy)
-		d.Reason = strings.TrimSpace(d.Reason + "; auto → pool: модель — виртуальный алиас (registry, alias-on-pool)")
-		return d
-	}
-
-	rule, ok := p.matchingModelRule(d.Model)
-	if ok && rule.Auto != nil {
-		prefersReplicated := false
-		for _, pref := range rule.Auto.Prefer {
-			if types.ParsePlacementStrategy(pref) == types.PlacementReplicated {
-				prefersReplicated = true
-				break
-			}
-		}
-		if prefersReplicated {
-			minBackends := rule.Auto.MinBackends
-			if minBackends <= 0 {
-				minBackends = 2
-			}
-			if healthy := p.healthyBackendCount(); healthy >= minBackends {
-				d.Strategy = types.PlacementReplicated
-				d.Executable = types.IsExecutablePlacementStrategy(d.Strategy)
-				d.Reason = strings.TrimSpace(d.Reason + "; " + "auto → replicated: " +
-					itoaR74(healthy) + " здоровых бэкендов ≥ minBackends=" + itoaR74(minBackends))
-				return d
-			}
-		}
-	}
-
-	d.Strategy = types.PlacementSingle
+	rule, ruleFound := p.matchingModelRule(d.Model)
+	strategy, degraded, autoReason := p.resolveAutoStrategy(d, rule, ruleFound)
+	d.Strategy = strategy
+	d.Degraded = degraded
 	d.Executable = types.IsExecutablePlacementStrategy(d.Strategy)
-	d.Reason = strings.TrimSpace(d.Reason +
-		"; auto → single (не виртуальный алиас и replicated не разрешён/не хватает бэкендов;" +
-		" уточнение по свободному VRAM — этап P1.5)")
+	if autoReason != "" {
+		d.Reason = strings.TrimSpace(d.Reason + "; " + autoReason)
+	}
 	return d
 }
 

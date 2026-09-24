@@ -1,10 +1,10 @@
 # OllamaLegion — Roadmap (живой документ)
 
-> **Дата обновления:** 2026-09-24 (Round 74 — placement policy P1: pool/replicated исполняются политикой)
+> **Дата обновления:** 2026-09-24 (Round 75 — placement policy P1.5: auto по VRAM-fit)
 > **Назначение:** единственный источник правды по реализованному и оставшемуся в проекте OllamaLegion.
 > Все устаревшие/завершённые планы — в `plans/archive/`.
-> **HEAD:** `19fed24` on branch `centurion` + R74 (placement P1: `MatchVirtualRequest`, группы репликации по политике, auto-подмножество §4).
-> **Live stack:** `ol-bundled-balancer:r73-submodule-v11` (R74-образ `r74-submodule-v12` проверен на throwaway-стенде) + `ol-bundled-cppworker-gpu:gpu-r70-submodule-v3` + `ol-bundled-webui:r70-submodule-v1` + `ol-bundled-cppworker-gpu-agent:cppworker-bundled-r41-agent-x-api-token` (4 healthy).
+> **HEAD:** `38b35a4` on branch `centurion` + R75 (placement P1.5: VRAM-fit для auto, degraded с числами, группы для auto-правил).
+> **Live stack:** `ol-bundled-balancer:r74-submodule-v12` (R75-образ `r75-submodule-v13` проверен на throwaway-стенде) + `ol-bundled-cppworker-gpu:gpu-r70-submodule-v3` + `ol-bundled-webui:r70-submodule-v1` + `ol-bundled-cppworker-gpu-agent:cppworker-bundled-r41-agent-x-api-token` (4 healthy).
 > **Проверено на живом стенде (R68/R69/R71/R72/R73/R74):** Cline (VS Code, провайдер ollama, Model Context Window = 65536) получает 200 и ответ модели; модель грузится на `ctx=65536, kv=q4_0` на RTX 3070 8 GB; агент применяет `maxConcurrentRequests=1`; placement-политика резолвится и видна в `/api/v1/placement`; единая очередь отдаёт `X-Queue-*`; при `operatingMode=standard` политика обслуживает алиас через пул и модель через реплики.
 
 ---
@@ -35,8 +35,23 @@ R72 открыл placement policy (этап P0: resolution + наблюдаем�
 R73 свёл Ollama-путь в admission-очередь (единая очередь, хвост R70/R71 закрыт).
 R74 реализовал placement policy P1: `pool`/`replicated` исполняются политикой,
 `auto` — детерминированное подмножество §4.
+R75 закрыл P1.5: `auto` выбирает стратегию по VRAM-fit (need ≈ веса × 1.25) с
+честной деградацией и числами в причине.
 
-### R74 (2026-09-24) — текущий раунд
+### R75 (2026-09-24) — текущий раунд
+
+Placement policy, этап P1.5 (`plans/2026-09-23-multi-backend-placement-policy.md`):
+
+| # | Направление | Статус |
+|---|-------------|--------|
+| 1 | `placementFitForModel`: need ≈ размер × 1.25; «загружена» / «memoryFree ≥ need» / «метрик нет → неизвестно, не блокирует» | ✅ сделано |
+| 2 | `auto` по `auto.prefer`: single → replicated → (sharded/rpc помечены как P2); провал → `degraded: true` + числа в причине | ✅ сделано |
+| 3 | Группы репликации для `auto`-правил с `prefer=replicated` (minInstances ≥ 2) | ✅ сделано |
+| 4 | Живая проверка в 2 фазы (без метрик VRAM → single/replicated; с 512 МБ → degraded с числами) | ✅ проверено (образ `r75-submodule-v13`, CHANGELOG 0.5.33) |
+| 5 | P3 (осталось): `requireHomogeneous`, жёсткий отказ при `fallback=error` вместо degraded, WebUI-колонка «Размещение» | ⏳ следующий этап |
+| 6 | P2 placement policy: `sharded`/`rpc` на реальном транспорте | ⏳ нужен выбор (llama.cpp RPC vs B8.7) |
+
+### R74 (2026-09-24) — закрытый раунд
 
 Placement policy, этап P1 (`plans/2026-09-23-multi-backend-placement-policy.md`):
 
@@ -44,12 +59,10 @@ Placement policy, этап P1 (`plans/2026-09-23-multi-backend-placement-policy.
 |---|-------------|--------|
 | 1 | `pool` по политике: `VirtualRouter` включается для конкретной модели без `operatingMode=virtual_router` (`MatchVirtualRequest`, роутер при `virtualModels.enabled`) | ✅ сделано |
 | 2 | `replicated` по политике: группа репликации создаётся политикой (идемпотентно), менеджер поднимается по требованию, работает штатный `replicationSelector` | ✅ сделано |
-| 3 | `auto`: алиас → pool, `prefer=replicated` + хватает бэкендов → replicated, иначе single (флаг `refined`, причина в `reason`) | ✅ сделано |
+| 3 | `auto`: алиас → pool, `prefer=replicated` + хватает бэкендов → replicated, иначе single (флаг `refined`, причина в `reason`) | ✅ сделано (в R75 заменено на VRAM-fit) |
 | 4 | Наблюдаемость: блок `replication` в `GET /api/v1/placement`, `X-LB-Placement*` = исполненная стратегия | ✅ сделано (образ `r74-submodule-v12`) |
 | 5 | Живая проверка до/после (2 заглушки, `operatingMode=standard`): алиас → `r74-physical` через пул, `r74-repl` → реплики A/B/A | ✅ проверено (CHANGELOG 0.5.32) |
-| 6 | P1.5: полное правило `auto` по свободному VRAM/размеру модели | ⏳ следующий этап |
-| 7 | P2 placement policy: `sharded`/`rpc` на реальном транспорте | ⏳ нужен выбор (llama.cpp RPC vs B8.7) |
-| 8 | Гигиена: self-hosted CI-раннер `skyworker-ci` | ✅ раннер online, джоба success (R73) |
+| 6 | Найдена и исправлена гонка чтения состояния инстансов репликации (снимок под локом) | ✅ сделано (`38b35a4`) |
 
 ### R73 (2026-09-24) — закрытый раунд
 

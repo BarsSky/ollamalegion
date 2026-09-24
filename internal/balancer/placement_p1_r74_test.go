@@ -246,8 +246,13 @@ func TestPlacementP1_AutoRefinement_R74(t *testing.T) {
 		t.Error("Refined должен быть true для auto")
 	}
 
-	// 2) auto с prefer=replicated и достаточным числом бэкендов → replicated.
+	// 2) auto с prefer=replicated и достаточным VRAM на двух бэкендах →
+	// replicated (R75: выбор теперь по VRAM-fit, поэтому задаём размер модели
+	// профилем и свободный VRAM метриками).
 	cfg := createTestConfig() // два healthy бэкенда
+	cfg.LlamaCppModelProfiles = map[string]types.LlamaCppModelProfile{
+		"big-model": {SizeBytes: 8 << 30}, // 8 ГБ весов → need ≈ 10 ГБ
+	}
 	cfg.Balancing.Placement = types.PlacementSettings{
 		Enabled: true,
 		Models: []types.PlacementModelRule{{
@@ -257,12 +262,21 @@ func TestPlacementP1_AutoRefinement_R74(t *testing.T) {
 		}},
 	}
 	proxy2 := newProxyWithCleanup(t, cfg)
+	for _, b := range proxy2.GetAllBackends() {
+		proxy2.UpdateMetrics(b.ID, &types.BackendMetrics{
+			GPU: types.GPUMetrics{MemoryTotal: 24 << 30, MemoryFree: 20 << 30},
+		})
+	}
 	d = proxy2.ResolvePlacement("big-model", 30, "")
 	if d.Strategy != types.PlacementReplicated {
 		t.Errorf("auto с prefer=replicated → %q, ожидалось replicated (reason=%s)", d.Strategy, d.Reason)
 	}
+	if d.Degraded {
+		t.Errorf("решение не должно быть degraded: %s", d.Reason)
+	}
 
-	// 3) auto без условий → single (с честной причиной про P1.5).
+	// 3) auto без условий и без данных о размере модели → single с пометкой в
+	// причине (R75: VRAM-fit проверить нельзя, деградацией это не считаем).
 	proxy2.SetPlacementSettings(types.PlacementSettings{
 		Enabled: true,
 		Models: []types.PlacementModelRule{{
@@ -274,8 +288,8 @@ func TestPlacementP1_AutoRefinement_R74(t *testing.T) {
 	if d.Strategy != types.PlacementSingle {
 		t.Errorf("auto без условий → %q, ожидалось single", d.Strategy)
 	}
-	if !strings.Contains(d.Reason, "P1.5") {
-		t.Errorf("в reason должно быть указано, что VRAM-уточнение — P1.5: %s", d.Reason)
+	if !strings.Contains(d.Reason, "размер модели неизвестен") {
+		t.Errorf("в reason должно быть указано, что размер модели неизвестен: %s", d.Reason)
 	}
 	if !d.Executable {
 		t.Error("single исполним — Executable должен быть true")

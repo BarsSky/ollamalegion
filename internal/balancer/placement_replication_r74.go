@@ -133,7 +133,9 @@ func (p *Proxy) ensureReplicationManager() bool {
 }
 
 // syncPlacementReplicationGroups — R74 (P1): создать группы репликации для
-// моделей, у которых политика требует strategy=replicated.
+// моделей, у которых политика требует strategy=replicated, а также для
+// strategy=auto с `auto.prefer`, содержащим replicated (R75: чтобы выбранная
+// авто-стратегия replicated была подкреплена реальными репликами).
 //
 // Идемпотентно: существующие группы не трогаем (их состояние ведёт
 // GroupController). Маски имён (`Qwen3*`) пропускаем: группе нужно конкретное
@@ -146,7 +148,8 @@ func (p *Proxy) syncPlacementReplicationGroups() []string {
 
 	var actions []string
 	for _, rule := range cfg.Models {
-		if types.ParsePlacementStrategy(rule.Strategy) != types.PlacementReplicated {
+		strategy := types.ParsePlacementStrategy(rule.Strategy)
+		if strategy != types.PlacementReplicated && !autoPrefersReplicatedR75(rule) {
 			continue
 		}
 		name := rule.Model
@@ -173,6 +176,11 @@ func (p *Proxy) syncPlacementReplicationGroups() []string {
 			if rule.Auto.MaxShardCount > 0 {
 				maxInstances = rule.Auto.MaxShardCount
 			}
+		}
+		// Для auto-правил, предпочитающих replicated, репликация осмысленна
+		// минимум с двух инстансов (как и в autoStrategyAllowed).
+		if strategy == types.PlacementAuto && minInstances < 2 {
+			minInstances = 2
 		}
 		// maxInstances выводим из контекста: список бэкендов правила, дефолт
 		// из конфига репликации, иначе min+1. CreateGroup требует
@@ -219,6 +227,20 @@ func maskOrName(name string) (string, bool) {
 		}
 	}
 	return name, false
+}
+
+// autoPrefersReplicatedR75 — правило auto, у которого в prefer есть replicated
+// (для таких правил R75 заранее создаёт группу репликации).
+func autoPrefersReplicatedR75(rule types.PlacementModelRule) bool {
+	if types.ParsePlacementStrategy(rule.Strategy) != types.PlacementAuto || rule.Auto == nil {
+		return false
+	}
+	for _, pref := range rule.Auto.Prefer {
+		if types.ParsePlacementStrategy(pref) == types.PlacementReplicated {
+			return true
+		}
+	}
+	return false
 }
 
 // PlacementReplicationStatus — состояние репликации для отчёта

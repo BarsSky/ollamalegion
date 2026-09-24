@@ -49,8 +49,8 @@ func (s *Server) placementHandler(w http.ResponseWriter, r *http.Request) {
 		"warnings":             warningsOrEmpty(s.proxy.PlacementWarnings()),
 		"replication":          s.proxy.PlacementReplicationStatus(),
 		"plan":                 "plans/2026-09-23-multi-backend-placement-policy.md",
-		"stage": "P1 (исполняются single/pool/replicated; auto — детерминированное подмножество §4;" +
-			" sharded/rpc — этап P2, уточнение auto по VRAM — P1.5)",
+		"stage": "P1.5 (исполняются single/pool/replicated; auto выбирает стратегию по VRAM-fit — §4;" +
+			" sharded/rpc — этап P2)",
 	}
 
 	// Решение для конкретной модели (для отладки конфига и тестов).

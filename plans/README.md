@@ -1,11 +1,11 @@
 # OllamaLegion — Roadmap (живой документ)
 
-> **Дата обновления:** 2026-09-24 (Round 73 — единая очередь: Ollama-путь переведён на admission-очередь)
+> **Дата обновления:** 2026-09-24 (Round 74 — placement policy P1: pool/replicated исполняются политикой)
 > **Назначение:** единственный источник правды по реализованному и оставшемуся в проекте OllamaLegion.
 > Все устаревшие/завершённые планы — в `plans/archive/`.
-> **HEAD:** `d30c5ae` on branch `centurion` + R73 (единая очередь: `waitForInferenceBackend`, legacy `queueRequest` удалён).
-> **Live stack:** `ol-bundled-balancer:r72-submodule-v10` (R73-образ `r73-submodule-v11` проверен на throwaway-стенде) + `ol-bundled-cppworker-gpu:gpu-r70-submodule-v3` + `ol-bundled-webui:r70-submodule-v1` + `ol-bundled-cppworker-gpu-agent:cppworker-bundled-r41-agent-x-api-token` (4 healthy).
-> **Проверено на живом стенде (R68/R69/R71/R72/R73):** Cline (VS Code, провайдер ollama, Model Context Window = 65536) получает 200 и ответ модели; модель грузится на `ctx=65536, kv=q4_0` на RTX 3070 8 GB; агент применяет `maxConcurrentRequests=1` (реальный `n_parallel`) вместо устаревшей константы 4; placement-политика резолвится и видна в `/api/v1/placement`; единая очередь отдаёт `X-Queue-Position`/`X-Queue-Wait-Ms` и держит вместимость.
+> **HEAD:** `19fed24` on branch `centurion` + R74 (placement P1: `MatchVirtualRequest`, группы репликации по политике, auto-подмножество §4).
+> **Live stack:** `ol-bundled-balancer:r73-submodule-v11` (R74-образ `r74-submodule-v12` проверен на throwaway-стенде) + `ol-bundled-cppworker-gpu:gpu-r70-submodule-v3` + `ol-bundled-webui:r70-submodule-v1` + `ol-bundled-cppworker-gpu-agent:cppworker-bundled-r41-agent-x-api-token` (4 healthy).
+> **Проверено на живом стенде (R68/R69/R71/R72/R73/R74):** Cline (VS Code, провайдер ollama, Model Context Window = 65536) получает 200 и ответ модели; модель грузится на `ctx=65536, kv=q4_0` на RTX 3070 8 GB; агент применяет `maxConcurrentRequests=1`; placement-политика резолвится и видна в `/api/v1/placement`; единая очередь отдаёт `X-Queue-*`; при `operatingMode=standard` политика обслуживает алиас через пул и модель через реплики.
 
 ---
 
@@ -33,8 +33,25 @@ keepalive ожидающих streaming-клиентов, карточку admiss
 вместимость бэкенда больше не переписывается «эхом» heartbeat агента.
 R72 открыл placement policy (этап P0: resolution + наблюдаемость).
 R73 свёл Ollama-путь в admission-очередь (единая очередь, хвост R70/R71 закрыт).
+R74 реализовал placement policy P1: `pool`/`replicated` исполняются политикой,
+`auto` — детерминированное подмножество §4.
 
-### R73 (2026-09-24) — текущий раунд
+### R74 (2026-09-24) — текущий раунд
+
+Placement policy, этап P1 (`plans/2026-09-23-multi-backend-placement-policy.md`):
+
+| # | Направление | Статус |
+|---|-------------|--------|
+| 1 | `pool` по политике: `VirtualRouter` включается для конкретной модели без `operatingMode=virtual_router` (`MatchVirtualRequest`, роутер при `virtualModels.enabled`) | ✅ сделано |
+| 2 | `replicated` по политике: группа репликации создаётся политикой (идемпотентно), менеджер поднимается по требованию, работает штатный `replicationSelector` | ✅ сделано |
+| 3 | `auto`: алиас → pool, `prefer=replicated` + хватает бэкендов → replicated, иначе single (флаг `refined`, причина в `reason`) | ✅ сделано |
+| 4 | Наблюдаемость: блок `replication` в `GET /api/v1/placement`, `X-LB-Placement*` = исполненная стратегия | ✅ сделано (образ `r74-submodule-v12`) |
+| 5 | Живая проверка до/после (2 заглушки, `operatingMode=standard`): алиас → `r74-physical` через пул, `r74-repl` → реплики A/B/A | ✅ проверено (CHANGELOG 0.5.32) |
+| 6 | P1.5: полное правило `auto` по свободному VRAM/размеру модели | ⏳ следующий этап |
+| 7 | P2 placement policy: `sharded`/`rpc` на реальном транспорте | ⏳ нужен выбор (llama.cpp RPC vs B8.7) |
+| 8 | Гигиена: self-hosted CI-раннер `skyworker-ci` | ✅ раннер online, джоба success (R73) |
+
+### R73 (2026-09-24) — закрытый раунд
 
 Единая очередь (`plans/2026-09-23-admission-queue-and-sessions.md`):
 
@@ -45,7 +62,7 @@ R73 свёл Ollama-путь в admission-очередь (единая очер�
 | 3 | Backpressure (`≥90% queueMaxSize`) перенесён на admission-очередь | ✅ сделано |
 | 4 | `QueueManager.RecordUnified` — `processed_total` и `/api/v1/queue/history` не «замерзают» | ✅ сделано |
 | 5 | Живая проверка до/после (throwaway-стенд, вместимость 1, 4 параллельных запроса) | ✅ проверено (образ `r73-submodule-v11`, CHANGELOG 0.5.31) |
-| 6 | P1 placement policy: исполнение `pool`/`replicated`/`auto` | ⏳ следующий этап |
+| 6 | P1 placement policy: исполнение `pool`/`replicated`/`auto` | ✅ сделано в R74 |
 | 7 | P2 placement policy: `sharded`/`rpc` на реальном транспорте | ⏳ нужен выбор (llama.cpp RPC vs B8.7) |
 | 8 | Гигиена: self-hosted CI-раннер `skyworker-ci` | ✅ **раннер снова online** (`gh api .../actions/runners` → `online`), джоба «Test (self-hosted Windows)» — success на коммите R73; все 7 проверок CI зелёные |
 

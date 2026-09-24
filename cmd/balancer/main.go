@@ -30,7 +30,7 @@ var (
 
 func main() {
 	flag.Parse()
-	
+
 	// Round 40 (2026-08-18): Loud config-fail via config.LoadOrFail().
 	// Раньше: при ЛЮБОЙ ошибке Load() silently падали в LoadFromEnv() —
 	// это маскировало баги вроде auth.tokens schema mismatch (balancer
@@ -45,7 +45,7 @@ func main() {
 		// CONFIG_BOTH_FAILED: both file and env failed — fail loud.
 		log.Fatalf("[CONFIG] FATAL: cannot start balancer: %v", err)
 	}
-	
+
 	conf := cfg.Get()
 
 	// Применение переопределений из командной строки
@@ -86,7 +86,7 @@ func main() {
 	// Также включаем auth.Enabled=true если env задан и config.json был
 	// выключен — иначе фикс не сработает.
 	applyEnvAuthTokens(&conf.Auth)
-	
+
 	// Инициализация structured logger (после всех переопределений)
 	logger.Init(conf.Logging.Level)
 	defer logger.Sync()
@@ -120,17 +120,17 @@ func main() {
 	if os.Getenv("LB_SESSION_STICKINESS") != "" {
 		conf.Balancing.SessionStickiness = os.Getenv("LB_SESSION_STICKINESS") == "true"
 	}
-	
+
 	// Проверка и настройка TLS
 	if conf.TLS.Enabled {
 		fmt.Printf("[TLS]    TLS is enabled (AutoCert: %v)\n", conf.TLS.AutoCert)
-		
+
 		// Проверка/генерация сертификатов
 		if err := api.EnsureTLSCertificates(&conf.TLS); err != nil {
 			log.Fatalf("Failed to setup TLS certificates: %v", err)
 		}
 	}
-	
+
 	fmt.Printf("╔═══════════════════════════════════════════════════════════╗\n")
 	fmt.Printf("║         Ollama Load Balancer - Starting                   ║\n")
 	fmt.Printf("╠═══════════════════════════════════════════════════════════╣\n")
@@ -142,7 +142,7 @@ func main() {
 	fmt.Printf("║ Algorithm:   %-46s║\n", conf.Balancing.Algorithm)
 	fmt.Printf("║ Backends:    %-46d║\n", len(conf.Backends))
 	fmt.Printf("╚═══════════════════════════════════════════════════════════╝\n")
-	
+
 	// Создание прокси
 	proxy := balancer.NewProxy(conf)
 
@@ -167,7 +167,7 @@ func main() {
 	// Round 8 (2026-07-10): wire HealthChecker в Proxy чтобы markBackendConnectionFailed
 	// мог помечать backend unhealthy при persistent connection failures.
 	proxy.SetHealthChecker(healthChecker)
-	
+
 	// Создание API сервера
 	apiServer := api.NewServer(proxy, conf, healthChecker)
 
@@ -279,7 +279,14 @@ func main() {
 	//   2. balancing.virtualModels.enabled = true
 	//   3. В конфиге есть хотя бы одна VirtualModel в alias-on-pool mode
 	//      (BackendPool + ModelName заданы).
-	if balancer.IsVirtualRouterMode(conf.Balancing.OperatingMode) {
+	//
+	// R74 (P1, placement policy): роутер создаётся и при
+	// `virtualModels.enabled=true` без глобального virtual_router — иначе
+	// политика не может включить pool для конкретной модели
+	// (balancing.placement.models[].strategy=pool). Перехват по-прежнему
+	// происходит только для моделей-алиасов из registry, а решение о pool
+	// принимает placement-политика (см. Proxy.ServeHTTP).
+	if balancer.IsVirtualRouterMode(conf.Balancing.OperatingMode) || conf.Balancing.VirtualModels.Enabled {
 		vmRegistry := proxy.GetVirtualModelRegistry()
 		if vmRegistry != nil {
 			vmRegistry.SetEnabled(true)
@@ -313,7 +320,6 @@ func main() {
 		}
 	}
 
-
 	// Запуск health checker
 	healthChecker.Start()
 
@@ -338,9 +344,9 @@ func main() {
 	// Это критично для AbortWatcher — нужен быстрый r.Context().Done() trigger
 	// чтобы cppworker AbortWatcher вызвал bridge.RequestAbort ASAP.
 	proxyServer := &http.Server{
-		Addr:         fmt.Sprintf("%s:%d", conf.LoadBalancer.Host, conf.LoadBalancer.Port),
-		Handler:      mux,
-		ConnContext:  enableTCPKeepAlive,
+		Addr:        fmt.Sprintf("%s:%d", conf.LoadBalancer.Host, conf.LoadBalancer.Port),
+		Handler:     mux,
+		ConnContext: enableTCPKeepAlive,
 		// Round 31 #6 sub-bug fix (2026-08-09): ReadTimeout 30s → 5s.
 		// При FIN-only client close (без RST) Go's net/http detect'ит через
 		// ReadTimeout. Default 30s → cancel latency до 30s.
@@ -383,18 +389,18 @@ func main() {
 		WriteTimeout: 60 * time.Second,
 		IdleTimeout:  120 * time.Second,
 	}
-	
+
 	// HTTPS сервера (если TLS включен)
 	var proxyTLSServer *http.Server
 	var apiTLSServer *http.Server
-	
+
 	if conf.TLS.Enabled {
 		// Загрузка TLS конфигурации
 		tlsConfig, err := api.LoadTLSConfig(&conf.TLS)
 		if err != nil {
 			log.Fatalf("Failed to load TLS configuration: %v", err)
 		}
-		
+
 		// HTTPS прокси сервер
 		proxyTLSServer = &http.Server{
 			Addr:         fmt.Sprintf("%s:%d", conf.LoadBalancer.Host, conf.LoadBalancer.TLSPort),
@@ -404,7 +410,7 @@ func main() {
 			WriteTimeout: time.Duration(conf.Balancing.RequestTimeout+30) * time.Second,
 			IdleTimeout:  120 * time.Second,
 		}
-		
+
 		// HTTPS API сервер
 		apiTLSServer = &http.Server{
 			Addr:         fmt.Sprintf("%s:%d", conf.LoadBalancer.Host, conf.LoadBalancer.TLSPort+1),
@@ -414,28 +420,28 @@ func main() {
 			WriteTimeout: 60 * time.Second,
 			IdleTimeout:  120 * time.Second,
 		}
-		
+
 		// Добавление middleware для редиректа HTTP -> HTTPS (опционально)
 		// mux = api.HTTPSRedirectMiddleware(mux)
 	}
-	
+
 	// Каналы для graceful shutdown
 	proxyErr := make(chan error, 1)
 	apiErr := make(chan error, 1)
 	proxyTLSErr := make(chan error, 1)
 	apiTLSErr := make(chan error, 1)
-	
+
 	// Запуск серверов
 	go func() {
 		fmt.Printf("\n[Proxy]  Listening on %s:%d\n", conf.LoadBalancer.Host, conf.LoadBalancer.Port)
 		proxyErr <- proxyServer.ListenAndServe()
 	}()
-	
+
 	go func() {
 		fmt.Printf("[API]    Listening on %s:%d\n", conf.LoadBalancer.Host, conf.LoadBalancer.APIPort)
 		apiErr <- apiHTTPServer.ListenAndServe()
 	}()
-	
+
 	// Запуск HTTPS серверов если TLS включен
 	if conf.TLS.Enabled {
 		go func() {
@@ -444,7 +450,7 @@ func main() {
 			fmt.Printf("[Proxy]  HTTPS Listening on %s:%d (cert: %s)\n", conf.LoadBalancer.Host, conf.LoadBalancer.TLSPort, certFile)
 			proxyTLSErr <- proxyTLSServer.ListenAndServeTLS(certFile, keyFile)
 		}()
-		
+
 		go func() {
 			certFile := conf.TLS.CertFile
 			keyFile := conf.TLS.KeyFile
@@ -452,11 +458,11 @@ func main() {
 			apiTLSErr <- apiTLSServer.ListenAndServeTLS(certFile, keyFile)
 		}()
 	}
-	
+
 	// Ожидание сигнала завершения
 	quit := make(chan os.Signal, 1)
 	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
-	
+
 	// Ожидание ошибки от любого сервера или сигнала завершения
 	select {
 	case err := <-proxyErr:

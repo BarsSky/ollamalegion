@@ -5,6 +5,64 @@
 Формат ведётся в соответствии с [Keep a Changelog](https://keepachangelog.com/ru/1.0.0/),
 и этот проект придерживается [Semantic Versioning](https://semver.org/lang/ru/).
 
+## [0.5.32 — Round 74 (2026-09-24)]
+
+### ✨ Placement policy, этап P1: pool и replicated исполняются политикой
+
+Продолжение `plans/2026-09-23-multi-backend-placement-policy.md`. В P0 (R72)
+политика только резолвила стратегию и показывала её оператору — маршрутизацию
+определял глобальный `operatingMode`. P1 подключает исполнение.
+
+**Что сделано:**
+
+* **`pool` (виртуальный алиас → пул бэкендов)**: перехват `VirtualRouter`
+  больше не требует `operatingMode=virtual_router`. Решение принимает политика
+  для конкретной модели (`placement.models[].strategy=pool` или `auto` для
+  алиаса). Роутер создаётся и при `balancing.virtualModels.enabled=true`
+  (`cmd/balancer/main.go`), а в `ServeHTTP` добавлен `MatchVirtualRequest`,
+  который возвращает имя модели, — по нему и резолвится политика.
+  В ответе видны `X-LB-Placement: pool` и источник (`X-LB-Placement-Source`).
+* **`replicated` (реплики модели)**: группа репликации создаётся **по
+  политике** (`placement.models[].strategy=replicated`), идемпотентно, при
+  старте и при смене политики (`SetPlacementSettings`). Менеджер репликации
+  поднимается по требованию, даже если `modelReplication.enabled=false`
+  (wiring вынесен в `setupReplicationManager`, `placement_replication_r74.go`).
+  Дальше работает штатный `replicationSelector` в `selectBackend`, то есть
+  replicated-модель обслуживается репликами **без**
+  `operatingMode=replication`. `maxInstances` выводится из `pool[]`/дефолта
+  конфига, маски имён (`Qwen3*`) пропускаются (группе нужно точное имя).
+* **`auto` (детерминированное подмножество §4)**: алиас → `pool`;
+  `auto.prefer` содержит `replicated` и здоровых бэкендов ≥ `minBackends` →
+  `replicated`; иначе → `single`. В `reason` честно указано, что уточнение по
+  свободному VRAM — этап P1.5, а в решении есть флаг `refined`.
+* **Наблюдаемость**: `GET /api/v1/placement` отдаёт блок `replication`
+  (`managerReady`, по каждой модели `hasGroup`/`candidates`) и этап `P1`;
+  предупреждение валидации для `pool` без `pool[]` переформулировано (пул может
+  браться из `virtualModels[].backendPool`).
+
+**Живая проверка (throwaway-стенд: балансер + две ollama-заглушки
+`_diag/r74_stub.js`, `operatingMode=standard` — оба режима включает ТОЛЬКО
+политика):**
+
+| | до (r73-submodule-v11) | после (r74-submodule-v12) |
+|---|---|---|
+| `virtual:r74pool` → бэкенды | алиас уходил на бэкенд как есть (`model=virtual:r74pool`) | `model=r74-physical` (алиас разрешён пулом), ответы по кругу A/B/A |
+| `r74-repl` | обычный выбор бэкенда, группы нет | реплики: A/B/A, `X-LB-Placement: replicated` |
+| `replication` в `/api/v1/placement` | нет блока | `managerReady=true`, `r74-repl: hasGroup=true, candidates=r74-a,r74-b` |
+| заголовок `X-LB-Placement` | выставлен как «наблюдаемость» P0 | соответствует фактически исполненной стратегии |
+
+**Тесты:** `internal/balancer/placement_p1_r74_test.go` (5: pool по политике с
+разворотом алиаса в физическое имя, «без политики pool не включается», группа
+репликации из политики + идемпотентность + выбор реплики, auto-подмножество
+(алиас → pool / prefer=replicated → replicated / иначе single), пропуск масок),
+`internal/api` (блок `replication` в ответе endpoint'а). Регрессии:
+`./internal/... -race` ok, `./cmd/...` ok, `./tests/... -short` ok;
+fieldalignment для новых структур чист.
+
+**Осталось по плану:** P1.5 — уточнение `auto` по свободному VRAM/размеру
+модели (полное правило §4); P2 — `sharded`/`rpc` на реальном транспорте
+(открытый вопрос: llama.cpp RPC vs B8.7).
+
 ## [0.5.31 — Round 73 (2026-09-24)]
 
 ### ✨ Единая очередь: Ollama-путь переведён на admission-очередь

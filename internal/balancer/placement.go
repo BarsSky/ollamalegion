@@ -21,6 +21,7 @@ import (
 	"strconv"
 	"strings"
 
+	"ollama-loadbalancer/pkg/logger"
 	"ollama-loadbalancer/pkg/types"
 )
 
@@ -60,6 +61,8 @@ type PlacementDecision struct {
 	RuleIndex int `json:"ruleIndex"`
 	// Executable — реализована ли стратегия в этой версии (sharded/rpc — нет).
 	Executable bool `json:"executable"`
+	// Refined — R74 (P1): strategy=auto превращена в конкретную стратегию.
+	Refined bool `json:"refined,omitempty"`
 }
 
 // placementCounters — счётчики решений (наблюдаемость P0).
@@ -85,6 +88,10 @@ func (p *Proxy) SetPlacementSettings(cfg types.PlacementSettings) {
 		return
 	}
 	p.config.Balancing.Placement = cfg
+	// R74 (P1): после смены политики приводим группы репликации в соответствие.
+	for _, action := range p.syncPlacementReplicationGroups() {
+		logger.Get().Infow("placement: replication sync", "action", action)
+	}
 }
 
 // OperatingMode возвращает текущий глобальный режим балансера
@@ -122,12 +129,100 @@ func (p *Proxy) ResolvePlacement(model string, sizeGB float64, override string) 
 			Fallback:   types.PlacementFallbackError,
 		}
 	}
-	return ResolvePlacementDecision(
+	return p.refinePlacementDecision(ResolvePlacementDecision(
 		p.PlacementSettings(),
 		p.config.Balancing.OperatingMode,
 		model, sizeGB, override,
-	)
+	))
 }
+
+// refinePlacementDecision — R74 (P1): превратить strategy=auto в конкретную
+// стратегию, используя то, что известно самому процессу.
+//
+// Реализованное подмножество §4 плана (детерминированное, без гадания):
+//  1. модель — виртуальный алиас (registry, alias-on-pool) → pool;
+//  2. правило разрешает replicated (`auto.prefer` содержит replicated) и
+//     здоровых бэкендов не меньше `auto.minBackends` → replicated;
+//  3. иначе → single.
+//
+// Уточнение по свободному VRAM/размеру модели (полное правило §4) — этап P1.5:
+// в reason честно указывается, что выбор сделан без VRAM-fit.
+func (p *Proxy) refinePlacementDecision(d PlacementDecision) PlacementDecision {
+	if d.Strategy != types.PlacementAuto {
+		return d
+	}
+	d.Refined = true
+
+	if p.virtualRouter != nil && p.virtualRouter.IsVirtualModelPath(d.Model) {
+		d.Strategy = types.PlacementPool
+		d.Executable = types.IsExecutablePlacementStrategy(d.Strategy)
+		d.Reason = strings.TrimSpace(d.Reason + "; auto → pool: модель — виртуальный алиас (registry, alias-on-pool)")
+		return d
+	}
+
+	rule, ok := p.matchingModelRule(d.Model)
+	if ok && rule.Auto != nil {
+		prefersReplicated := false
+		for _, pref := range rule.Auto.Prefer {
+			if types.ParsePlacementStrategy(pref) == types.PlacementReplicated {
+				prefersReplicated = true
+				break
+			}
+		}
+		if prefersReplicated {
+			minBackends := rule.Auto.MinBackends
+			if minBackends <= 0 {
+				minBackends = 2
+			}
+			if healthy := p.healthyBackendCount(); healthy >= minBackends {
+				d.Strategy = types.PlacementReplicated
+				d.Executable = types.IsExecutablePlacementStrategy(d.Strategy)
+				d.Reason = strings.TrimSpace(d.Reason + "; " + "auto → replicated: " +
+					itoaR74(healthy) + " здоровых бэкендов ≥ minBackends=" + itoaR74(minBackends))
+				return d
+			}
+		}
+	}
+
+	d.Strategy = types.PlacementSingle
+	d.Executable = types.IsExecutablePlacementStrategy(d.Strategy)
+	d.Reason = strings.TrimSpace(d.Reason +
+		"; auto → single (не виртуальный алиас и replicated не разрешён/не хватает бэкендов;" +
+		" уточнение по свободному VRAM — этап P1.5)")
+	return d
+}
+
+// matchingModelRule — правило модели, которое сработало бы для этого имени
+// (нужно refinement'у auto: там лежат auto.prefer/minBackends).
+func (p *Proxy) matchingModelRule(model string) (types.PlacementModelRule, bool) {
+	for _, rule := range p.PlacementSettings().Models {
+		if matchModelMask(rule.Model, model) {
+			return rule, true
+		}
+	}
+	return types.PlacementModelRule{}, false
+}
+
+// healthyBackendCount — сколько бэкендов сейчас healthy (для auto).
+func (p *Proxy) healthyBackendCount() int {
+	if p == nil {
+		return 0
+	}
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	n := 0
+	for _, state := range p.backends {
+		if state == nil || state.Backend == nil {
+			continue
+		}
+		if state.Backend.Status == types.StatusHealthy {
+			n++
+		}
+	}
+	return n
+}
+
+func itoaR74(v int) string { return strconv.Itoa(v) }
 
 // ResolvePlacementDecision — чистая функция resolution (без Proxy):
 // приоритет по §3.1 плана: запрос → модель → класс → глобальный дефолт.

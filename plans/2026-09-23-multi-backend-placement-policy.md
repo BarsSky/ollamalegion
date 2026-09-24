@@ -264,7 +264,7 @@ else:
 * тесты: 20 (4 файла), регрессии `./internal/... -race`, `./cmd/...`,
   `./tests/... -short` — зелёные.
 
-### P1 — `pool` и `replicated` из политики + `auto` для однородного случая (3-5 дней)
+### P1 — `pool` и `replicated` из политики + `auto` для однородного случая (3-5 дней) — ✅ СДЕЛАНО (R74)
 * Перенос `virtual_router` и `modelreplication` под решение политики (сейчас они
   управляются глобальным `operatingMode`).
 * `auto`: single ↔ replicated по свободному VRAM и требуемому контексту.
@@ -272,6 +272,28 @@ else:
   replicated(2)», «воркеров нет → error/degraded по конфигу».
 * **Готово, когда:** `operatingMode=standard` больше не мешает репликации
   конкретной модели, а счётчики `selections`/групп видны в метриках.
+
+**Факт по R74 (2026-09-24, коммит `R74: placement policy P1`, образ
+`r74-submodule-v12`):**
+
+* `pool`: перехват `VirtualRouter` включается политикой для конкретной модели
+  (`strategy=pool`, в т.ч. через `auto` для алиаса) — `operatingMode` остаётся
+  `standard`. Добавлен `MatchVirtualRequest` (возвращает имя модели); роутер
+  создаётся и при `virtualModels.enabled=true` (`cmd/balancer/main.go`). Живая
+  проверка: алиас `virtual:r74pool` уходит в пул, на бэкенды доезжает физическое
+  имя `r74-physical`, ответы по кругу A/B/A.
+* `replicated`: группа создаётся политикой (идемпотентно, при старте и при
+  `SetPlacementSettings`), менеджер репликации поднимается по требованию;
+  далее работает штатный `replicationSelector`. Живая проверка: `r74-repl`
+  обслуживают реплики A/B/A, `X-LB-Placement: replicated`.
+* `auto`: реализовано детерминированное подмножество §4 — алиас → pool;
+  `prefer` содержит replicated и здоровых бэкендов ≥ `minBackends` → replicated;
+  иначе → single (в `reason` указано, что VRAM-уточнение — P1.5).
+* Наблюдаемость: блок `replication` (`managerReady`, `hasGroup`, `candidates`)
+  в `GET /api/v1/placement`; заголовки `X-LB-Placement*` отражают исполненную
+  стратегию.
+* **Вынесено в P1.5:** полное правило `auto` по свободному VRAM и размеру модели
+  (сейчас auto без prefer/бэкендов выбирает single с честной причиной).
 
 ### P2 — `sharded` на реальном транспорте (1-2 недели, главный открытый вопрос)
 Два варианта, нужно выбрать:

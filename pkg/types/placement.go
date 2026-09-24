@@ -228,7 +228,12 @@ func (p *PlacementSettings) Validate() []string {
 		switch ParsePlacementStrategy(rule.Strategy) {
 		case PlacementPool:
 			if len(rule.Pool) == 0 {
-				errs = append(errs, prefix+": strategy=pool требует непустой список pool[]")
+				// R74: для виртуального алиаса пул берётся из registry
+				// (balancing.virtualModels[].backendPool), поэтому pool[] в
+				// правиле не обязателен — это предупреждение, а не ошибка.
+				errs = append(errs, prefix+": strategy=pool без списка pool[] — "+
+					"пул будет взят из balancing.virtualModels[].backendPool, если модель "+
+					"зарегистрирована как виртуальный алиас (alias-on-pool)")
 			}
 		case PlacementSharded, PlacementRPC:
 			errs = append(errs, fmt.Sprintf(

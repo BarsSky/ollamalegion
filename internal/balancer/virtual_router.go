@@ -216,16 +216,24 @@ func (r *VirtualRouter) IsVirtualPathRequest(r2 *http.Request) bool {
 // Использует peek-then-rewind: читает body, парсит, потом восстанавливает
 // r.Body чтобы downstream handler тоже мог читать.
 func (r *VirtualRouter) MatchesVirtualRequest(req *http.Request) bool {
+	_, ok := r.MatchVirtualRequest(req)
+	return ok
+}
+
+// MatchVirtualRequest — R74 (P1, placement policy): тот же peek-then-rewind,
+// но возвращает ещё и имя модели. Нужно, чтобы решить, разрешает ли политика
+// strategy=pool для КОНКРЕТНОЙ модели (а не только глобальный operatingMode).
+func (r *VirtualRouter) MatchVirtualRequest(req *http.Request) (string, bool) {
 	if !r.IsActive() {
-		return false
+		return "", false
 	}
 	if !r.IsVirtualPathRequest(req) {
-		return false
+		return "", false
 	}
 	// Peek body.
 	body, err := io.ReadAll(req.Body)
 	if err != nil {
-		return false
+		return "", false
 	}
 	req.Body.Close()
 	// Restore body для downstream consumer.
@@ -236,9 +244,12 @@ func (r *VirtualRouter) MatchesVirtualRequest(req *http.Request) bool {
 		Model string `json:"model"`
 	}
 	if err := json.Unmarshal(body, &env); err != nil {
-		return false
+		return "", false
 	}
-	return r.IsVirtualModelPath(env.Model)
+	if !r.IsVirtualModelPath(env.Model) {
+		return "", false
+	}
+	return env.Model, true
 }
 
 // ServeHTTP — Phase 8 P.2: перехватывает request, выбирает backend, проксирует.

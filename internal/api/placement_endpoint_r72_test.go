@@ -145,6 +145,45 @@ func TestPlacementEndpoint_DisabledPolicy_R72(t *testing.T) {
 	}
 }
 
+// R74 (P1): endpoint показывает состояние репликации по политике.
+func TestPlacementEndpoint_ReplicationStatus_R74(t *testing.T) {
+	s, cleanup := setupTestServerWithBackends(t, []types.Backend{{
+		ID: "b1", Host: "localhost", CppWorkerPort: 18092, Type: types.BackendTypeLlamaCpp, Status: types.StatusHealthy,
+	}})
+	defer cleanup()
+
+	// Политика с replicated → менеджер репликации поднимается по требованию,
+	// группа создаётся, endpoint отдаёт её состояние.
+	s.proxy.SetPlacementSettings(types.PlacementSettings{
+		Enabled: true,
+		Models: []types.PlacementModelRule{{
+			Model:    "repl-model",
+			Strategy: "replicated",
+			Auto:     &types.PlacementAutoRule{MinBackends: 1},
+		}},
+	})
+
+	resp := getPlacementJSON(t, s, "")
+	repl, ok := resp["replication"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("в ответе нет блока replication: %T", resp["replication"])
+	}
+	if repl["managerReady"] != true {
+		t.Errorf("managerReady = %v, ожидалось true", repl["managerReady"])
+	}
+	groups, ok := repl["groups"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("groups отсутствует: %T", repl["groups"])
+	}
+	entry, ok := groups["repl-model"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("нет записи о repl-model: %v", groups)
+	}
+	if entry["hasGroup"] != true {
+		t.Errorf("hasGroup = %v, ожидалось true", entry["hasGroup"])
+	}
+}
+
 func TestPlacementEndpoint_WarningsAndMethod_R72(t *testing.T) {
 	s, cleanup := setupTestServerWithBackends(t, []types.Backend{{
 		ID: "b1", Host: "localhost", CppWorkerPort: 18092, Type: types.BackendTypeLlamaCpp, Status: types.StatusHealthy,

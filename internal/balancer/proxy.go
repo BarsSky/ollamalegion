@@ -448,6 +448,11 @@ func NewProxy(config *types.LoadBalancerConfig) *Proxy {
 		for _, w := range warnings {
 			logger.Get().Warnw("placement policy config needs attention", "warning", w)
 		}
+		// R74 (P1): strategy=replicated исполняется группами репликации —
+		// создаём их по политике (идемпотентно) сразу при старте.
+		for _, action := range p.syncPlacementReplicationGroups() {
+			logger.Get().Infow("placement: replication sync", "action", action)
+		}
 	}
 
 	return p
@@ -665,17 +670,38 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// ВАЖНО: VirtualRouter парсит body сам (нужно для extract model name).
 	// Если model не в registry — falls through к стандартному flow без изменений.
 	// Default bundled config (OperatingMode="standard" или "") → не срабатывает.
-	if IsVirtualRouterMode(p.config.Balancing.OperatingMode) &&
-		p.virtualRouter != nil &&
+	//
+	// R74 (P1, placement policy): pool для КОНКРЕТНОЙ модели решает политика —
+	// `balancing.placement.models[].strategy=pool` (или `auto` для алиаса)
+	// включает тот же путь БЕЗ глобального operatingMode=virtual_router.
+	if p.virtualRouter != nil &&
 		p.virtualRouter.IsActive() &&
 		p.virtualRouter.IsVirtualPathRequest(r) {
-		// Quick check: read body to extract model. Если model in registry +
-		// alias-on-pool mode → forward to VirtualRouter. Иначе — fall through.
-		if p.virtualRouter.MatchesVirtualRequest(r) {
-			logger.Get().Debugw("virtual_router: intercepting request",
-				"path", r.URL.Path, "method", r.Method)
-			p.virtualRouter.ServeHTTP(w, r)
-			return
+		if virtualModel, matched := p.virtualRouter.MatchVirtualRequest(r); matched {
+			poolEnabled := IsVirtualRouterMode(p.config.Balancing.OperatingMode)
+			poolSource := "operatingMode"
+			if !poolEnabled {
+				sizeGB := float64(p.getModelSizeBytes(virtualModel)) / (1024 * 1024 * 1024)
+				decision := p.ResolvePlacement(virtualModel, sizeGB, r.Header.Get("X-LB-Placement"))
+				p.recordPlacementDecision(decision)
+				if decision.Strategy == types.PlacementPool {
+					poolEnabled = true
+					poolSource = string(decision.Source)
+				}
+			}
+			if poolEnabled {
+				w.Header().Set("X-LB-Placement", string(types.PlacementPool))
+				w.Header().Set("X-LB-Placement-Source", poolSource)
+				logger.Get().Infow("virtual_router: intercepting request (pool)",
+					"path", r.URL.Path, "method", r.Method,
+					"model", virtualModel, "pool_source", poolSource)
+				p.virtualRouter.ServeHTTP(w, r)
+				return
+			}
+			logger.Get().Warnw("virtual_router: модель — виртуальный алиас, но pool не разрешён "+
+				"(operatingMode != virtual_router и placement-стратегия != pool); идём стандартным путём",
+				"path", r.URL.Path, "model", virtualModel,
+				"operating_mode", p.config.Balancing.OperatingMode)
 		}
 	}
 

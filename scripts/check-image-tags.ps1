@@ -23,7 +23,9 @@
 #>
 param(
     [string]$ComposeFile = "docker-compose.cppworker-bundled-with-agent.yml",
-    [string]$EnvFile = ".env",
+    # Пусто = автоопределение: deployments/.env, если он есть, иначе
+    # deployments/.env.example (см. пояснение ниже).
+    [string]$EnvFile = "",
     [string]$ManifestFile = "release-manifest.json"
 )
 
@@ -31,15 +33,32 @@ $ErrorActionPreference = "Continue"
 $repoRoot = Split-Path -Parent $PSScriptRoot
 $deploymentsDir = Join-Path $repoRoot "deployments"
 $composePath = Join-Path $deploymentsDir $ComposeFile
-$envPath = Join-Path $deploymentsDir $EnvFile
 $manifestPath = Join-Path $deploymentsDir $ManifestFile
+
+# ВАЖНО про выбор файла: `deployments/.env` — ЛОКАЛЬНЫЙ файл (он в .gitignore),
+# поэтому в CI его нет. Отслеживаемый контракт — `deployments/.env.example`
+# (его копируют в .env). Проверяем .env, если он есть (локально — фактические
+# значения), иначе .env.example (в CI — что контракт объявляет все переменные).
+$envCandidates = if ($EnvFile) { @($EnvFile) } else { @(".env", ".env.example") }
+$envPath = $null
+$usedEnvName = ""
+foreach ($cand in $envCandidates) {
+    $candidatePath = Join-Path $deploymentsDir $cand
+    if (Test-Path $candidatePath) {
+        $envPath = $candidatePath
+        $usedEnvName = $cand
+        break
+    }
+}
 
 $problems = New-Object System.Collections.Generic.List[string]
 
 if (-not (Test-Path $composePath)) { throw "нет файла $composePath" }
-if (-not (Test-Path $envPath)) { throw "нет файла $envPath" }
+if (-not $envPath) {
+    throw "нет ни deployments/.env, ни deployments/.env.example — не с чем сверять теги образов"
+}
 
-Write-Host "check-image-tags: $ComposeFile" -ForegroundColor Cyan
+Write-Host "check-image-tags: $ComposeFile (переменные: $usedEnvName)" -ForegroundColor Cyan
 
 # --- читаем .env -----------------------------------------------------------
 $envMap = @{}
@@ -78,7 +97,7 @@ foreach ($m in $imageLines) {
         if ($envMap.ContainsKey($name) -and $envMap[$name] -ne "") {
             $value = $envMap[$name]
         } elseif (-not $envMap.ContainsKey($name)) {
-            $problems.Add("строка ${lineNo}: в $EnvFile нет переменной $name — compose возьмёт default '$default'. Добавьте '$name=$default' в deployments/$EnvFile.")
+            $problems.Add("строка ${lineNo}: в $usedEnvName нет переменной $name — compose возьмёт default '$default'. Добавьте '$name=$default' в deployments/$usedEnvName.")
         }
         $resolved = $resolved.Replace($v.Value, $value)
     }

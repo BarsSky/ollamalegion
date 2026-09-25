@@ -35,7 +35,7 @@ function Set-ImageTagVar {
 
     $content = Get-Content $envPath
     if (-not ($content | Where-Object { $_ -match "^$VariableName=" })) {
-        throw "в $envPath нет строки '$VariableName='. Добавьте её (см. комментарий R83 в .env) — иначе тег не запишется и compose возьмёт default."
+        throw "в $envPath нет строки '$VariableName='. Скопируйте её из deployments/.env.example (раздел R83 «теги образов») — иначе тег не запишется, и compose возьмёт default из compose-файла."
     }
     $content = $content -replace "^$VariableName=.*", "$VariableName=$Value"
     Set-Content -Path $envPath -Value $content

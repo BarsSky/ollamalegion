@@ -1296,11 +1296,25 @@ func (p *Proxy) proxyRequestLlamaCpp(w http.ResponseWriter, r *http.Request, bac
 				fullURL, translatedBody, finalContent, reason,
 				&http.Client{Timeout: autoContTimeout}, autoContTimeout)
 			if contErr == nil && continuation != "" {
+				// R83 (2026-09-25, D3): политика != smart ОТКЛЮЧАЕТ подавление
+				// перегенерации, то есть при `always` дубли ответа гарантированы.
+				// Раньше это было видно только по отсутствию строки «suppressing
+				// duplicate» в логе — теперь есть явное предупреждение и счётчик,
+				// который уходит в /api/v1/metrics (см. auto_continue_stats.go).
+				if policy := GetAutoContinueChatPolicy(); policy != "smart" {
+					recordAutoContinuePolicyDisabled()
+					logger.Get().Warnw("proxyRequestLlamaCpp: R83 подавление перегенерации выключено политикой — "+
+						"дубли ответа в клиенте ВОЗМОЖНЫ",
+						"backend", backendID, "model", modelFromCtx,
+						"api_path", originalPath, "policy", policy,
+						"hint", "LB_AUTO_CONTINUE_CHAT_POLICY=smart (дефолт) включает подавление")
+				}
 				// R60.55 (2026-09-13): if "smart" chat-policy and continuation
 				// looks like a regeneration (model restarted with greeting),
 				// SUPPRESS the continuation. Sending it would create a duplicate
 				// response in OpenWebUI.
 				if GetAutoContinueChatPolicy() == "smart" && IsContinuationARegeneration(finalContent, continuation) {
+					recordAutoContinueSuppressed()
 					logger.Get().Warnw("proxyRequestLlamaCpp: R60.55 continuation looks like regeneration (chat model antipattern); suppressing duplicate",
 						"backend", backendID, "model", modelFromCtx,
 						"api_path", originalPath,
@@ -1312,6 +1326,7 @@ func (p *Proxy) proxyRequestLlamaCpp(w http.ResponseWriter, r *http.Request, bac
 					// truncation alert (we did our best).
 					streamCompleted = true
 				} else {
+					recordAutoContinueEmitted()
 					logger.Get().Infow("proxyRequestLlamaCpp: R60.21 auto-continue succeeded",
 						"backend", backendID, "model", modelFromCtx,
 						"api_path", originalPath,
@@ -1340,6 +1355,7 @@ func (p *Proxy) proxyRequestLlamaCpp(w http.ResponseWriter, r *http.Request, bac
 					streamCompleted = true
 				}
 			} else {
+				recordAutoContinueFailed()
 				logger.Get().Warnw("proxyRequestLlamaCpp: R60.21 auto-continue failed (emitting truncated as-is)",
 					"backend", backendID, "model", modelFromCtx,
 					"reason", reason, "error", contErr,

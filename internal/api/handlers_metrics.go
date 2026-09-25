@@ -30,6 +30,11 @@ func (s *Server) metricsHandler(w http.ResponseWriter, r *http.Request) {
 		// что политика активна и не деградирует молча (полные решения —
 		// GET /api/v1/placement).
 		"placement": s.proxy.PlacementMetricsSummary(),
+		// R83 (D4): счётчики авто-продолжения. Защита от дубликата ответа
+		// (перегенерация при авто-продолжении) раньше оставляла след ТОЛЬКО
+		// строкой в логе — по метрикам нельзя было понять, работает ли она.
+		// `duplicateRisk: true` означает, что политика выключила подавление.
+		"autoContinue": s.proxy.AutoContinueMetricsSummary(),
 	})
 }
 

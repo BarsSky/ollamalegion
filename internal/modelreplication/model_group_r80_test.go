@@ -16,9 +16,11 @@ import (
 
 // warmRecorder — потокобезопасный список вызовов warmup (загрузка в
 // scaleUpGroup идёт асинхронно, поэтому без мьютекса тест ловит гонку).
+//
+// Порядок полей — под fieldalignment (слайс первым: указателей меньше).
 type warmRecorder struct {
-	mu  sync.Mutex
 	ids []string
+	mu  sync.Mutex
 }
 
 func (w *warmRecorder) add(backendID string) {
@@ -35,9 +37,11 @@ func (w *warmRecorder) snapshot() []string {
 
 // loadedState — потокобезопасный «ответ метрик» на вопрос, где модель загружена
 // (в тесте его можно менять, имитируя завершение загрузки).
+//
+// Порядок полей — под fieldalignment (слайс первым: указателей меньше).
 type loadedState struct {
-	mu  sync.Mutex
 	ids []string
+	mu  sync.Mutex
 	set bool
 }
 

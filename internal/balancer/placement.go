@@ -156,7 +156,10 @@ func (p *Proxy) ResolvePlacement(model string, sizeGB float64, override string) 
 // cppworker — здесь грубая, но консервативная оценка.
 func (p *Proxy) refinePlacementDecision(d PlacementDecision) PlacementDecision {
 	if d.Strategy != types.PlacementAuto {
-		return d
+		// R79 (P3 §6, хвост): явная стратегия тоже проверяется на исполнимость
+		// здесь и сейчас (replicated с одним подходящим бэкендом — деградация,
+		// а не тихая выдача одной копией).
+		return p.checkExplicitStrategyFeasibilityR79(d)
 	}
 	d.Refined = true
 

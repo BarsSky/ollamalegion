@@ -182,6 +182,14 @@ func (p *Proxy) syncPlacementReplicationGroups() []string {
 		if strategy == types.PlacementAuto && minInstances < 2 {
 			minInstances = 2
 		}
+		// R79: явное `strategy: replicated` без auto.minBackends тоже означает
+		// «N копий» (N≥2). Раньше группа создавалась с minInstances=1, то есть
+		// заявленный replicated молча вырождался в single. Явный
+		// auto.minBackends=1 — операторский выбор, его не переопределяем.
+		if strategy == types.PlacementReplicated &&
+			(rule.Auto == nil || rule.Auto.MinBackends <= 0) && minInstances < 2 {
+			minInstances = 2
+		}
 		// maxInstances выводим из контекста: список бэкендов правила, дефолт
 		// из конфига репликации, иначе min+1. CreateGroup требует
 		// maxInstances >= minInstances.

@@ -5,6 +5,60 @@
 Формат ведётся в соответствии с [Keep a Changelog](https://keepachangelog.com/ru/1.0.0/),
 и этот проект придерживается [Semantic Versioning](https://semver.org/lang/ru/).
 
+## [0.5.37 — Round 79 (2026-09-25)]
+
+### 🐛 Placement: явная стратегия больше не деградирует молча (хвост §6) + подготовка P4
+
+R79 закрывает последнюю дыру §6 плана размещения и готовит нагрузочные KPI (P4).
+
+**1. `strategy: replicated` проверяется на исполнимость (было — нет)**
+
+R76 закрыл §6 только для `auto` и для стратегий, которых нет в сборке
+(`sharded`/`rpc`). Явное правило `strategy: replicated` с одним подходящим
+бэкендом не проверялось вообще: группа репликации создавалась с
+`minInstances=1`, ответ отдавала одна копия, а `X-LB-Placement` рапортовал
+`replicated` — ровно тот «тихий уход в другую стратегию», который §6 запрещает.
+
+Теперь решение по явному правилу (source = `model`/`class`) проверяется тем же
+VRAM-fit, что и `auto` (`placementFitForModel`): если подходящих бэкендов меньше,
+чем нужно копий (по умолчанию 2, либо явный `auto.minBackends`), решение
+помечается `degraded` с числами в причине. Дальше работает общий механизм §6:
+
+* `fallback=error` (default) → **503** с причиной (`подходящих бэкендов 1, нужно 2`)
+  и блоком `placement` — отказ происходит ДО маршрутизации;
+* `fallback=single` → запрос обслуживается, но заголовки перестали врать:
+  `X-LB-Placement: single` (фактически исполненная стратегия) +
+  `X-LB-Placement-Fallback: replicated` (заявленная политикой);
+* `auto.allowDegraded=true` → обслуживается, деградация видна в
+  `GET /api/v1/metrics` (`placement.degraded`) и в `GET /api/v1/placement`.
+
+Глобальный дефолт (`operatingMode`, source=`global`) и per-request override
+намеренно не проверяются: `operatingMode=replication` на одном бэкенде —
+легальная конфигурация до политики, ломать обратную совместимость нельзя.
+
+**2. Явный `replicated` создаёт группу на две копии**
+
+`syncPlacementReplicationGroups` для `strategy: replicated` без
+`auto.minBackends` поднимает `minInstances` до 2 (`replicated` = «N копий модели
+на N бэкендах», N≥2). Явный `auto.minBackends=1` остаётся операторским выбором и
+не переопределяется.
+
+**3. Заголовок ответа для деградировавшей, но исполнимой стратегии**
+
+Раньше `X-LB-Placement-Fallback` выставлялся только когда стратегия вообще не
+исполняется сборкой (`sharded`/`rpc`); деградация исполнимой стратегии
+(`replicated` → одна копия) отдавала `X-LB-Placement: replicated`. Теперь при
+деградации заголовки показывают и заявленную, и фактически исполненную
+стратегию (для `auto`→`single` поведение прежнее: `X-LB-Placement: single`).
+
+**Тесты:** `internal/balancer/placement_feasible_r79_test.go` (7: отказ 503 при
+одном бэкенде; `fallback=single` → 200 + оба заголовка; `allowDegraded` → 200 +
+`degraded=1` в метриках; два бэкенда → без деградации и без fallback-заголовка;
+нехватка VRAM (8 ГБ весов, 1 ГБ свободно) → `подходящих бэкендов 0` с объёмами;
+`operatingMode=replication` на одном бэкенде не затрагивается;
+`minInstances=2` у группы явного `replicated` + уважение явного `auto.minBackends=1`).
+Регрессии: `./internal/... -race`, `./cmd/...`, `./tests/... -short` — зелёные.
+
 ## [0.5.36 — Round 78 (2026-09-24)]
 
 ### ✨ Placement policy P3 закрыт; legacy-очередь выведена из эксплуатации

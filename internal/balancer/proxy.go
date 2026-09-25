@@ -736,7 +736,13 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 
 		declaredStrategy := decision.Strategy
-		if !decision.Executable {
+		// R79: деградировавшая стратегия (не хватает бэкендов для копий)
+		// исполняется как single — клиент не должен видеть X-LB-Placement:
+		// replicated, если фактически отвечает одна копия. При fallback=single
+		// (или auto.allowDegraded=true) запрос обслуживается, но подмена видна
+		// в заголовках: X-LB-Placement = фактически исполненная стратегия,
+		// X-LB-Placement-Fallback = заявленная политикой.
+		if !decision.Executable || (decision.Degraded && decision.Strategy != types.PlacementSingle) {
 			// fallback=single (иначе мы бы уже отказали): исполняем обычный путь.
 			w.Header().Set("X-LB-Placement-Fallback", string(declaredStrategy))
 			decision.Strategy = types.PlacementSingle

@@ -125,6 +125,147 @@ func (lr *LlamaCppRouter) findModelOnLlamaCppBackend(model string) string {
 	return ""
 }
 
+// backendUnavailable — R82: бэкенд выпал из обслуживания (удалён из пула или
+// не healthy). Нужен, чтобы не ждать загрузку модели на мёртвом узле и
+// переехать на живую копию.
+func (lr *LlamaCppRouter) backendUnavailable(backendID string) bool {
+	if lr == nil || lr.proxy == nil || backendID == "" {
+		return true
+	}
+	b := lr.proxy.GetBackend(backendID)
+	if b == nil {
+		return true
+	}
+	switch b.Status {
+	case types.StatusHealthy:
+		return false
+	case types.StatusStarting:
+		// Стартующий узел — не «мёртвый», но и не обслуживает: считаем
+		// недоступным для переезда (переезд выберет здоровую копию).
+		return true
+	case types.StatusDraining:
+		return true
+	case types.StatusOffline:
+		return true
+	case types.StatusUnhealthy:
+		return true
+	case types.StatusOllamaUnavailable:
+		return true
+	default:
+		// Неизвестный/legacy-статус: если не пул-статус, лучше не рисковать.
+		return b.Status != types.BackendStatus("degraded")
+	}
+}
+
+// selectLlamaCppBackendExcluding — R82: альтернативный бэкенд для переезда.
+//
+// Порядок: копии из группы репликации → бэкенд с загруженной моделью (кроме
+// исключённых) → любой healthy llama.cpp-бэкенд.
+func (lr *LlamaCppRouter) selectLlamaCppBackendExcluding(model string, exclude map[string]bool) string {
+	if lr == nil || lr.proxy == nil {
+		return ""
+	}
+	if model != "" && lr.proxy.replicationSelector != nil {
+		for _, id := range lr.proxy.replicationSelector.GetGroupCandidates(model) {
+			if !exclude[id] && !lr.backendUnavailable(id) {
+				return id
+			}
+		}
+	}
+	if id := lr.proxy.findBackendWithModelExcluding(model, exclude, lr.proxy.getAllowedTypesList(types.BackendTypeLlamaCpp)); id != "" {
+		return id
+	}
+	for _, b := range lr.proxy.GetAllBackends() {
+		if exclude[b.ID] {
+			continue
+		}
+		if normalizeBackendType(b.Type) != types.BackendTypeLlamaCpp {
+			continue
+		}
+		if b.Status == types.StatusHealthy {
+			return b.ID
+		}
+	}
+	return ""
+}
+
+// maxBackendFailoverAttempts — сколько альтернативных копий пробуем, прежде чем
+// вернуть ошибку клиенту.
+const maxBackendFailoverAttempts = 3
+
+// ensureModelLoadedWithFailover — R82: загрузить модель на выбранном бэкенде, а
+// если он выпал (недоступен/ошибка транспортного уровня) — переехать на другую
+// копию модели вместо 503.
+//
+// Возвращает (backendID, err); backendID может отличаться от исходного —
+// вызывающий обязан обновить заголовок X-Backend-ID.
+func (lr *LlamaCppRouter) ensureModelLoadedWithFailover(
+	backendID, modelName string, opts warmupOptions,
+) (string, error) {
+	_, err := lr.ensureModelLoadedOnBackend(backendID, modelName, opts)
+	if err == nil {
+		return backendID, nil
+	}
+
+	exclude := map[string]bool{backendID: true}
+
+	// (1) Бэкенд выпал: статус не healthy или ошибка транспортного уровня —
+	// переезжаем на любую другую подходящую копию/узел (с загрузкой при
+	// необходимости).
+	if lr.backendUnavailable(backendID) || IsConnectionLevelError(err) {
+		if alt := lr.loadOnAlternativeWithFailover(backendID, modelName, opts, exclude); alt != "" {
+			return alt, nil
+		}
+		return backendID, err
+	}
+
+	// (2) Загрузка не удалась/не уложилась в окно ожидания, но рядом есть ГОТОВАЯ
+	// копия модели — обслуживаем с неё, а не заставляем клиента ждать и ретраить.
+	if alt := lr.selectReadyModelCopyExcluding(modelName, exclude); alt != "" {
+		logger.Get().Warnw("R82: переезд на готовую копию модели (загрузка не удалась)",
+			"model", modelName, "from", backendID, "to", alt, "error", err)
+		return alt, nil
+	}
+	return backendID, err
+}
+
+// loadOnAlternativeWithFailover — попытка загрузить модель на альтернативных
+// бэкендах (до maxBackendFailoverAttempts). Возвращает ID бэкенда, на котором
+// модель готова, либо "".
+func (lr *LlamaCppRouter) loadOnAlternativeWithFailover(
+	backendID, modelName string, opts warmupOptions, exclude map[string]bool,
+) string {
+	for attempt := 0; attempt < maxBackendFailoverAttempts; attempt++ {
+		alt := lr.selectLlamaCppBackendExcluding(modelName, exclude)
+		if alt == "" {
+			return ""
+		}
+		if _, altErr := lr.ensureModelLoadedOnBackend(alt, modelName, opts); altErr == nil {
+			logger.Get().Warnw("R82: переезд на живую копию после отказа бэкенда",
+				"model", modelName, "from", backendID, "to", alt)
+			return alt
+		}
+		exclude[alt] = true
+	}
+	return ""
+}
+
+// selectReadyModelCopyExcluding — R82: бэкенд, на котором модель УЖЕ загружена
+// (переезд без ожидания загрузки).
+func (lr *LlamaCppRouter) selectReadyModelCopyExcluding(model string, exclude map[string]bool) string {
+	if lr == nil || lr.proxy == nil || model == "" {
+		return ""
+	}
+	if lr.proxy.replicationSelector != nil {
+		for _, id := range lr.proxy.replicationSelector.GetGroupCandidates(model) {
+			if !exclude[id] && !lr.backendUnavailable(id) {
+				return id
+			}
+		}
+	}
+	return lr.proxy.findBackendWithModelExcluding(model, exclude, lr.proxy.getAllowedTypesList(types.BackendTypeLlamaCpp))
+}
+
 // selectLlamaCppBackendForModel — R81: выбор бэкенда для llama.cpp-путей.
 //
 // Порядок:
@@ -526,6 +667,10 @@ func (lr *LlamaCppRouter) ensureModelLoadedOnBackend(backendID, modelName string
 		// sentinel error that the HTTP handler maps to 503+Retry-After.
 		ridLog(lr_recentCtx()).Infow("ensureModelLoadedOnBackend: async auto-load (R60.33)",
 			"backend", backendID, "model", modelName, "mode", "async")
+		// R82: сигнал ожидающему запросу о том, чем закончилась загрузка.
+		// Раньше провал (например, DNS «no such host» у выпавшего бэкенда) видел
+		// только лог, а запрос ждал полный LB_AUTO_LOAD_WAIT_SEC.
+		loadDone := make(chan error, 1)
 		go func() {
 			result := mm.ExecuteOperation(backendID, opReq)
 			if !result.Success {
@@ -559,10 +704,12 @@ func (lr *LlamaCppRouter) ensureModelLoadedOnBackend(backendID, modelName string
 				}
 				ridLog(lr_recentCtx()).Warnw("ensureModelLoadedOnBackend: async load failed",
 					"backend", backendID, "model", modelName, "error", result.Error)
+				loadDone <- fmt.Errorf("%s", result.Error)
 			} else {
 				lr.loadBackoff.recordSuccess(backendID, modelName)
 				ridLog(lr_recentCtx()).Infow("ensureModelLoadedOnBackend: async load complete",
 					"backend", backendID, "model", modelName)
+				loadDone <- nil
 			}
 		}()
 		// R67a (2026-09-23): вместо немедленного 503 «загрузится через 30-180с»
@@ -572,7 +719,7 @@ func (lr *LlamaCppRouter) ensureModelLoadedOnBackend(backendID, modelName string
 		// проходил только повторный запрос. Если не успели — отдаём прежний
 		// 503+Retry-After (модель продолжает грузиться, retry пройдёт).
 		if wait := lr.proxy.lbAutoLoadWait; wait > 0 {
-			if waitErr := lr.waitForModelLoad(reqCtx, backendID, modelName, wait); waitErr == nil {
+			if waitErr := lr.waitForModelLoad(reqCtx, backendID, modelName, wait, loadDone); waitErr == nil {
 				ridLog(lr_recentCtx()).Infow("ensureModelLoadedOnBackend: async auto-load finished, serving request",
 					"backend", backendID, "model", modelName, "waited_max", wait, "session", sessionKey)
 				lr.loadBackoff.recordSuccess(backendID, modelName)
@@ -585,6 +732,12 @@ func (lr *LlamaCppRouter) ensureModelLoadedOnBackend(backendID, modelName string
 					// Реальная ошибка загрузки — отдаём её текст клиенту, он
 					// actionable (файла нет / n_ctx не влезает и т.п.).
 					return false, waitErr
+				}
+				// R82: ожидание истекло, но загрузка могла уже провалиться
+				// (например, DNS «no such host» у выпавшего бэкенда) — отдаём
+				// actionable причину вместо «подожди 30-180 с».
+				if loadErr := drainLoadFailure(loadDone); loadErr != nil {
+					return false, loadErr
 				}
 			}
 		}

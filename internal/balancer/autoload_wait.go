@@ -153,15 +153,22 @@ func (lr *LlamaCppRouter) isModelPresentOnBackend(
 	return false, false
 }
 
-// waitForModelLoad — ждёт готовности модели после запущенной авто-загрузки.
+// waitForModelLoad — R67a: дождаться загрузки модели на конкретном бэкенде.
 //
 // Возвращает nil, когда модель загружена. Если cppworker сообщил об ошибке
 // загрузки — возвращает её текст (клиент получит actionable причину вместо
 // общего 503). Если истёк timeout/контекст — возвращает соответствующую ошибку,
 // и вызывающий код отдаёт прежний 503+Retry-After (модель при этом продолжает
 // грузиться, повторный запрос пройдёт).
+//
+// R82: добавлены сигнал о провале async-загрузки (`loadDone`) и проверка
+// доступности бэкенда. До этого запрос, выбранный на реплику, которая умерла
+// между выбором и запросом, ждал ПОЛНЫЙ бюджет LB_AUTO_LOAD_WAIT_SEC (в замере
+// P4 — 300 с, клиент отваливался по своему таймауту на 120 с), хотя:
+//   - async-загрузка провалилась за 30 мс (DNS: «no such host»), и
+//   - живая копия модели на другом бэкенде была доступна.
 func (lr *LlamaCppRouter) waitForModelLoad(
-	ctx context.Context, backendID, modelName string, timeout time.Duration,
+	ctx context.Context, backendID, modelName string, timeout time.Duration, loadDone ...<-chan error,
 ) error {
 	if lr == nil || lr.proxy == nil || timeout <= 0 {
 		return fmt.Errorf("wait disabled")
@@ -173,9 +180,22 @@ func (lr *LlamaCppRouter) waitForModelLoad(
 	client := &http.Client{Timeout: 5 * time.Second}
 	deadline := time.Now().Add(timeout)
 
+	var loadDoneChan <-chan error
+	if len(loadDone) > 0 {
+		loadDoneChan = loadDone[0]
+	}
+
 	for {
 		if err := ctx.Err(); err != nil {
 			return fmt.Errorf("client canceled while waiting for model load: %w", err)
+		}
+		// R82: async-загрузка уже провалилась — незачем ждать таймаут.
+		if err := drainLoadFailure(loadDoneChan); err != nil {
+			return err
+		}
+		// R82: бэкенд выпал из пула (недоступен/нездоров) — ждать бессмысленно.
+		if lr.backendUnavailable(backendID) {
+			return fmt.Errorf("backend %s is unavailable (not healthy or removed from pool) while waiting for model load", backendID)
 		}
 
 		st := lr.fetchModelLoadState(ctx, client, baseURL, modelName)
@@ -217,8 +237,28 @@ func (lr *LlamaCppRouter) waitForModelLoad(
 		select {
 		case <-ctx.Done():
 			return fmt.Errorf("client canceled while waiting for model load: %w", ctx.Err())
+		case err := <-loadDoneChan:
+			if err != nil {
+				return err
+			}
 		case <-time.After(nap):
 		}
+	}
+}
+
+// drainLoadFailure — неблокирующая проверка сигнала о провале async-загрузки.
+func drainLoadFailure(ch <-chan error) error {
+	if ch == nil {
+		return nil
+	}
+	select {
+	case err := <-ch:
+		if err != nil {
+			return fmt.Errorf("model load failed: %w", err)
+		}
+		return nil
+	default:
+		return nil
 	}
 }
 

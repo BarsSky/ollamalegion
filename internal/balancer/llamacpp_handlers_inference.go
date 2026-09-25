@@ -107,7 +107,7 @@ func (lr *LlamaCppRouter) handleOpenAIChatCompletions(w http.ResponseWriter, r *
 				loadOpts.NumCtx = resolved.Value
 			}
 		}
-		if _, loadErr := lr.ensureModelLoadedOnBackend(backendID, model, warmupOptions{NumCtx: loadOpts.NumCtx, GPULayers: loadOpts.GPULayers, Ctx: r.Context(), SessionKey: RequestSessionKey(r, bodyBuf)}); loadErr != nil {
+		if newBackend, loadErr := lr.ensureModelLoadedWithFailover(backendID, model, warmupOptions{NumCtx: loadOpts.NumCtx, GPULayers: loadOpts.GPULayers, Ctx: r.Context(), SessionKey: RequestSessionKey(r, bodyBuf)}); loadErr != nil {
 			logger.Get().Errorw("handleOpenAIChatCompletions: auto-load failed",
 				"backend", backendID, "model", model, "error", loadErr)
 			// R60.16: include Retry-After so clients (Cline/Roo/openai-python)
@@ -117,6 +117,16 @@ func (lr *LlamaCppRouter) handleOpenAIChatCompletions(w http.ResponseWriter, r *
 				fmt.Sprintf("model '%s' is not loaded and auto-load failed: %v", model, loadErr),
 				writeAutoLoadRetryAfter(loadErr))
 			return
+		} else if newBackend != backendID {
+			// R82: исходный бэкенд выпал — обслуживаем с живой копии. Обновляем и
+			// снапшот state: targetURL ниже строится из state.Backend.Host.
+			backendID = newBackend
+			w.Header().Set("X-Backend-ID", backendID)
+			if st, ok := lr.proxy.backends[backendID]; ok {
+				state = st
+			}
+			logger.Get().Infow("handleOpenAIChatCompletions: R82 переезд на другую копию модели",
+				"backend", backendID, "model", model)
 		}
 	}
 
@@ -354,7 +364,7 @@ func (lr *LlamaCppRouter) handleOpenAICompletion(w http.ResponseWriter, r *http.
 				loadOpts.NumCtx = resolved.Value
 			}
 		}
-		if _, loadErr := lr.ensureModelLoadedOnBackend(backendID, model, warmupOptions{NumCtx: loadOpts.NumCtx, GPULayers: loadOpts.GPULayers, Ctx: r.Context(), SessionKey: RequestSessionKey(r, bodyBuf)}); loadErr != nil {
+		if newBackend, loadErr := lr.ensureModelLoadedWithFailover(backendID, model, warmupOptions{NumCtx: loadOpts.NumCtx, GPULayers: loadOpts.GPULayers, Ctx: r.Context(), SessionKey: RequestSessionKey(r, bodyBuf)}); loadErr != nil {
 			logger.Get().Errorw("handleOpenAICompletion: auto-load failed",
 				"backend", backendID, "model", model, "error", loadErr)
 			// R60.16: include Retry-After so clients back off (see chat completions).
@@ -362,6 +372,16 @@ func (lr *LlamaCppRouter) handleOpenAICompletion(w http.ResponseWriter, r *http.
 				fmt.Sprintf("model '%s' is not loaded and auto-load failed: %v", model, loadErr),
 				0)
 			return
+		} else if newBackend != backendID {
+			// R82: переезд — обновляем и backendID, и снапшот state (ниже из него
+			// берётся URL апстрима).
+			backendID = newBackend
+			w.Header().Set("X-Backend-ID", backendID)
+			if st, ok := lr.proxy.backends[backendID]; ok {
+				state = st
+			}
+			logger.Get().Infow("handleOpenAICompletion: R82 переезд на другую копию модели",
+				"backend", backendID, "model", model)
 		}
 	}
 
@@ -511,7 +531,7 @@ func (lr *LlamaCppRouter) handleOpenAIEmbeddings(w http.ResponseWriter, r *http.
 
 	// Auto-load (если модель ещё не загружена).
 	if model != "" {
-		if _, loadErr := lr.ensureModelLoadedOnBackend(backendID, model, warmupOptions{Ctx: r.Context(), SessionKey: RequestSessionKey(r, bodyBuf)}); loadErr != nil {
+		if newBackend, loadErr := lr.ensureModelLoadedWithFailover(backendID, model, warmupOptions{Ctx: r.Context(), SessionKey: RequestSessionKey(r, bodyBuf)}); loadErr != nil {
 			logger.Get().Errorw("handleOpenAIEmbeddings: auto-load failed",
 				"backend", backendID, "model", model, "error", loadErr)
 			// R60.16: include Retry-After so clients back off (see chat completions).
@@ -519,6 +539,15 @@ func (lr *LlamaCppRouter) handleOpenAIEmbeddings(w http.ResponseWriter, r *http.
 				fmt.Sprintf("model '%s' is not loaded and auto-load failed: %v", model, loadErr),
 				0)
 			return
+		} else if newBackend != backendID {
+			// R82: переезд на живую копию (URL ниже берётся из state).
+			backendID = newBackend
+			w.Header().Set("X-Backend-ID", backendID)
+			if st, ok := lr.proxy.backends[backendID]; ok {
+				state = st
+			}
+			logger.Get().Infow("handleOpenAIEmbeddings: R82 переезд на другую копию модели",
+				"backend", backendID, "model", model)
 		}
 	}
 
@@ -638,7 +667,7 @@ func (lr *LlamaCppRouter) handleChat(w http.ResponseWriter, r *http.Request) {
 	if resolvedLoad.Value > 0 {
 		loadOpts.NumCtx = resolvedLoad.Value
 	}
-	if _, loadErr := lr.ensureModelLoadedOnBackend(backendID, model, warmupOptions{NumCtx: loadOpts.NumCtx, GPULayers: loadOpts.GPULayers, Ctx: r.Context(), SessionKey: RequestSessionKey(r, bodyBuf)}); loadErr != nil {
+	if newBackend, loadErr := lr.ensureModelLoadedWithFailover(backendID, model, warmupOptions{NumCtx: loadOpts.NumCtx, GPULayers: loadOpts.GPULayers, Ctx: r.Context(), SessionKey: RequestSessionKey(r, bodyBuf)}); loadErr != nil {
 		// R60.41: downgraded to Info — это не "error" в обычном смысле, это
 		// просто "load стартовал async, клиенту надо подождать". Реальная
 		// ошибка была бы только если load полностью провалился (sync path,
@@ -654,6 +683,12 @@ func (lr *LlamaCppRouter) handleChat(w http.ResponseWriter, r *http.Request) {
 		diag := buildAutoLoadDiagnosticWithProxy(lr.proxy, backendID, model, resolvedLoad.Value, loadErr)
 		writeServiceUnavailableWithDiagnostics(w, diag)
 		return
+	} else if newBackend != backendID {
+		// R82: исходный бэкенд выпал — обслуживаем с живой копии.
+		backendID = newBackend
+		w.Header().Set("X-Backend-ID", backendID)
+		logger.Get().Infow("handleChat: R82 переезд на другую копию модели",
+			"backend", backendID, "model", model)
 	}
 
 	// Update LastKnownNCtx after model load.
@@ -777,7 +812,7 @@ func (lr *LlamaCppRouter) handleGenerate(w http.ResponseWriter, r *http.Request)
 	if resolvedLoad.Value > 0 {
 		loadOpts.NumCtx = resolvedLoad.Value
 	}
-	if _, loadErr := lr.ensureModelLoadedOnBackend(backendID, model, warmupOptions{NumCtx: loadOpts.NumCtx, GPULayers: loadOpts.GPULayers, Ctx: r.Context(), SessionKey: RequestSessionKey(r, bodyBuf)}); loadErr != nil {
+	if newBackend, loadErr := lr.ensureModelLoadedWithFailover(backendID, model, warmupOptions{NumCtx: loadOpts.NumCtx, GPULayers: loadOpts.GPULayers, Ctx: r.Context(), SessionKey: RequestSessionKey(r, bodyBuf)}); loadErr != nil {
 		logger.Get().Errorw("handleGenerate: auto-load failed",
 			"backend", backendID, "model", model, "error", loadErr)
 		// R60.16: include Retry-After so clients back off (see chat completions).
@@ -785,6 +820,12 @@ func (lr *LlamaCppRouter) handleGenerate(w http.ResponseWriter, r *http.Request)
 			fmt.Sprintf("model '%s' is not loaded and auto-load failed: %v", model, loadErr),
 			0)
 		return
+	} else if newBackend != backendID {
+		// R82: исходный бэкенд выпал — обслуживаем с живой копии.
+		backendID = newBackend
+		w.Header().Set("X-Backend-ID", backendID)
+		logger.Get().Infow("handleGenerate: R82 переезд на другую копию модели",
+			"backend", backendID, "model", model)
 	}
 
 	// Update LastKnownNCtx after model load.

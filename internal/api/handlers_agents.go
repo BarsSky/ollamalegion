@@ -336,10 +336,19 @@ func (s *Server) agentHeartbeatHandler(w http.ResponseWriter, r *http.Request) {
 	}
 	_ = json.Unmarshal(body, &hbPayload)
 
-	// Обновление статуса
-	s.proxy.UpdateBackendStatus(agentID, types.StatusHealthy)
-
-	// Обновляем флаг активного агента
+	// R81: heartbeat агента НЕ трогает health-статус бэкенда.
+	//
+	// Раньше здесь безусловно стояло UpdateBackendStatus(agentID, StatusHealthy),
+	// и агент «воскрешал» бэкенд, чей cppworker уже мёртв: агент — отдельный
+	// контейнер, он продолжает слать heartbeat, а health-check балансера в это же
+	// время помечает бэкенд unhealthy. Итог (замер P4, R80): статус мигал
+	// healthy/unhealthy, часть запросов уходила на мёртвую копию и висела до
+	// клиентского таймаута (1 из 3 запросов, 120 с).
+	//
+	// Статусом владеет health-check (internal/balancer/health.go): он ставит
+	// healthy только после успешной проверки cppworker'а и unhealthy после
+	// провала. Агент отмечает лишь факт контакта (HasAgent/LastAgentContact) —
+	// это делает UpdateBackendAgentStatus ниже.
 	s.proxy.UpdateBackendAgentStatus(agentID, true)
 
 	// Применяем лимиты из heartbeat агента (если > 0 — агент явно задал лимит)
@@ -791,8 +800,10 @@ func (s *Server) agentBackendHeartbeatHandler(w http.ResponseWriter, r *http.Req
 	}
 	_ = json.Unmarshal(body, &hbPayload)
 
-	// Обновление статуса бэкенда
-	s.proxy.UpdateBackendStatus(backendID, types.StatusHealthy)
+	// R81: heartbeat агента НЕ трогает health-статус (см. подробный комментарий в
+	// agentHeartbeatHandler). Раньше безусловный UpdateBackendStatus(..., Healthy)
+	// возвращал в пул бэкенд с мёртвым cppworker'ом. Контакт агента отмечают
+	// AttachAgentToBackend / MarkAgentContact ниже.
 
 	// Определяем agentPort: из payload (новый способ, agent шлёт свой порт)
 	// или fallback на текущий backend.AgentPort. Это решает проблему "agentPort=0"

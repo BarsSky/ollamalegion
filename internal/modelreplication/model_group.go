@@ -485,6 +485,74 @@ func (mgr *ModelGroupManager) syncLoadedInstances(g *ModelGroup) {
 	}
 }
 
+// AdoptLoadedInstance — R81: событийно подтвердить инстанс группы.
+//
+// Вызывается, когда cppworker сам сообщил, что модель загружена
+// (POST /api/v1/internal/llama-model-loaded): инстанс создаётся/повышается до
+// LOADED немедленно, не дожидаясь опроса метрик (поллер ходит раз в 30 с —
+// ровно столько раньше занимало «подтверждение» реплики).
+func (mgr *ModelGroupManager) AdoptLoadedInstance(modelName, backendID string) bool {
+	if mgr == nil || modelName == "" || backendID == "" {
+		return false
+	}
+	mgr.mu.RLock()
+	g, ok := mgr.groups[modelName]
+	mgr.mu.RUnlock()
+	if !ok {
+		return false
+	}
+
+	now := time.Now()
+	g.mu.Lock()
+	inst, exists := g.Instances[backendID]
+	if exists && inst.Status == types.ModelStateLoaded {
+		g.mu.Unlock()
+		return false
+	}
+	if !exists {
+		g.Instances[backendID] = &types.ModelInstanceState{
+			BackendID:  backendID,
+			Status:     types.ModelStateLoaded,
+			LoadedAt:   now,
+			LastUsedAt: now,
+		}
+	} else {
+		inst.Status = types.ModelStateLoaded
+		inst.LoadedAt = now
+		inst.LastUsedAt = now
+	}
+	g.mu.Unlock()
+
+	logger.Get().Infow("group instance confirmed loaded by backend event",
+		"model", modelName, "backend", backendID)
+	return true
+}
+
+// DropInstance — R81: событийно убрать инстанс группы (cppworker сообщил о
+// выгрузке модели или бэкенд отвалился). Возвращает true, если инстанс был.
+func (mgr *ModelGroupManager) DropInstance(modelName, backendID string) bool {
+	if mgr == nil || modelName == "" || backendID == "" {
+		return false
+	}
+	mgr.mu.RLock()
+	g, ok := mgr.groups[modelName]
+	mgr.mu.RUnlock()
+	if !ok {
+		return false
+	}
+	g.mu.Lock()
+	_, exists := g.Instances[backendID]
+	if exists {
+		delete(g.Instances, backendID)
+	}
+	g.mu.Unlock()
+	if exists {
+		logger.Get().Infow("group instance dropped by backend event",
+			"model", modelName, "backend", backendID)
+	}
+	return exists
+}
+
 // scaleUpGroup загружает модель на свободных бэкендах.
 func (mgr *ModelGroupManager) scaleUpGroup(g *ModelGroup, needed int) {
 	g.mu.RLock()
@@ -611,7 +679,14 @@ func (mgr *ModelGroupManager) scaleDownGroup(g *ModelGroup, excess int) {
 
 // --- Selection ---
 
-// selectInstance выбирает наименее загруженный инстанс из группы.
+// selectInstance выбирает инстанс группы для следующего запроса.
+//
+// R81: обход строгий — сначала наименьшая загрузка (active/max), при равной
+// загрузке побеждает инстанс с меньшим UseCount, при равенстве и его — меньший
+// ID. Раньше при равной загрузке (частый случай: оба инстанса свободны)
+// результат зависел от порядка обхода map, и распределение уезжало (в замере P4
+// 6:2 и 7:1 при двух равных репликах). Выбранный инстанс сразу учитывается
+// (UseCount++), поэтому следующий запрос уйдёт на другую копию.
 func (mgr *ModelGroupManager) selectInstance(modelName string) string {
 	mgr.mu.RLock()
 	g, ok := mgr.groups[modelName]
@@ -628,22 +703,38 @@ func (mgr *ModelGroupManager) selectInstance(modelName string) string {
 		return ""
 	}
 
-	g.mu.RLock()
-	defer g.mu.RUnlock()
+	g.mu.Lock()
+	defer g.mu.Unlock()
 
 	var bestID string
 	var bestLoad float64 = 2.0
+	var bestUse int64 = -1
 
 	for backendID, inst := range g.Instances {
 		if inst.Status != types.ModelStateLoaded {
 			continue
 		}
 		load := loadFn(backendID)
-		if load < bestLoad {
-			bestLoad = load
+		better := false
+		switch {
+		case load < bestLoad:
+			better = true
+		case load == bestLoad && bestID != "" && inst.UseCount < bestUse:
+			better = true
+		case load == bestLoad && bestID != "" && inst.UseCount == bestUse && backendID < bestID:
+			better = true
+		}
+		if better || bestID == "" {
 			bestID = backendID
+			bestLoad = load
+			bestUse = inst.UseCount
 		}
 	}
+	if bestID == "" {
+		return ""
+	}
+	g.Instances[bestID].UseCount++
+	g.Instances[bestID].LastUsedAt = time.Now()
 	return bestID
 }
 

@@ -1,11 +1,11 @@
 # OllamaLegion — Roadmap (живой документ)
 
-> **Дата обновления:** 2026-09-25 (Round 79/R80 — хвост §6 для явных стратегий + нагрузочные KPI P4)
+> **Дата обновления:** 2026-09-25 (Round 81 — хвосты P4: health-статус, усыновление реплик, обход копий)
 > **Назначение:** единственный источник правды по реализованному и оставшемуся в проекте OllamaLegion.
 > Все устаревшие/завершённые планы — в `plans/archive/`.
-> **HEAD:** `centurion` + R79 (`checkExplicitStrategyFeasibilityR79`) и R80 (усыновление реплик, честный `LOADING`, HA при падении копии) + отчёт P4 `plans/2026-09-25-placement-p4-load-kpi.md`.
-> **Live stack:** `ol-bundled-balancer:r80-submodule-v17` (R80) + `ol-bundled-cppworker-gpu:gpu-r70-submodule-v3` + `ol-bundled-webui:r77-submodule-v2` + `ol-bundled-cppworker-gpu-agent:cppworker-bundled-r41-agent-x-api-token`.
-> **Проверено на живом стенде (R68/R69/R71/R72/R73/R74/R80):** Cline (VS Code, провайдер ollama, Model Context Window = 65536) получает 200 и ответ модели; модель грузится на `ctx=65536, kv=q4_0` на RTX 3070 8 GB; агент применяет `maxConcurrentRequests=1`; placement-политика резолвится и видна в `/api/v1/placement`; единая очередь отдаёт `X-Queue-*`; при `operatingMode=standard` политика обслуживает алиас через пул и модель через реплики; стенд P4 (2×cppworker) — 2 копии в VRAM, `replication total=2 loaded=2`, падение одной копии обслуживается живой без 503 (R80).
+> **HEAD:** `centurion` + R79/R80 (placement: явные стратегии, усыновление реплик, HA) и R81 (health-статус не у агента, обход копий через группу, событийные подтверждения) + отчёт P4 `plans/2026-09-25-placement-p4-load-kpi.md`.
+> **Live stack:** `ol-bundled-balancer:r81-submodule-v18` (R81) + `ol-bundled-cppworker-gpu:gpu-r70-submodule-v3` + `ol-bundled-webui:r77-submodule-v2` + `ol-bundled-cppworker-gpu-agent:cppworker-bundled-r41-agent-x-api-token`.
+> **Проверено на живом стенде (R68/R69/R71/R72/R73/R74/R80):** Cline (VS Code, провайдер ollama, Model Context Window = 65536) получает 200 и ответ модели; модель грузится на `ctx=65536, kv=q4_0` на RTX 3070 8 GB; агент применяет `maxConcurrentRequests=1`; placement-политика резолвится и видна в `/api/v1/placement`; единая очередь отдаёт `X-Queue-*`; при `operatingMode=standard` политика обслуживает алиас через пул и модель через реплики; стенд P4 (2×cppworker) — 2 копии в VRAM, `replication total=2 loaded=2`, падение одной копии обслуживается живой без 503 (R80); распределение реплик 4:4 при 4 параллельных запросах и aggregate 42.5 tok/s (R81).
 
 ---
 
@@ -51,7 +51,20 @@ R80 провёл нагрузочные KPI (P4) на стенде из 2×cppwo
 `LOADING` до подтверждения метриками, а падение одной реплики не превращается
 в 503 на всё (обслуживает живая копия).
 
-### R79/R80 (2026-09-25) — текущий раунд
+### R81 (2026-09-25) — закрытый раунд
+
+Хвосты P4: health-статус, усыновление реплик, обход копий, событийные подтверждения.
+
+| # | Направление | Статус |
+|---|-------------|--------|
+| 1 | Heartbeat агента (по `X-Agent-ID` и по `backendID`) больше не ставит `healthy`: статусом владеет health-check, агент отмечает только `HasAgent`/`LastAgentContact` | ✅ сделано |
+| 2 | `backendHasModelByID` проверяет все источники метрик (агент, `metrics[id].Models`, `llamaMetrics` поллера) — группа видит уже загруженные копии | ✅ сделано |
+| 3 | `selectInstance`: загрузка → `UseCount` → ID (+`UseCount++`); `selectLlamaCppBackendForModel` подключает группу к inference-пути llama.cpp | ✅ сделано |
+| 4 | `llama-model-loaded`/`llama-model-unloaded` событийно подтверждают/снимают инстанс группы | ✅ сделано |
+| 5 | Тесты: `model_group_r81_test.go` (5), `agent_health_r81_test.go` (3), обновлён `tests/integration_test.go`; регрессии `-race`/cmd/tests — зелёные | ✅ зелёные |
+| 6 | Failover запроса, выбранного на упавшую реплику (ждёт авто-загрузку вместо переезда на живую копию) | 📋 следующий этап |
+
+### R79/R80 (2026-09-25) — закрытый раунд
 
 Хвост §6 для явных стратегий (R79) + нагрузочные KPI P4 (R80).
 
@@ -64,7 +77,10 @@ R80 провёл нагрузочные KPI (P4) на стенде из 2×cppwo
 | 5 | R80: §6 «один из бэкендов реплик unhealthy» — обслуживание с живой копии вместо 503 | ✅ сделано |
 | 6 | P4: замеры tok/s (single 38.6 / replicated 32.8 / n_parallel=4 34.6), VRAM (4.6 / 7.6 / 4.4 ГБ), failover (2 из 3 запросов на живой копии, восстановление 21.6–31.7 с) — отчёт `plans/2026-09-25-placement-p4-load-kpi.md` | ✅ сделано |
 | 7 | P2 placement policy: `sharded`/`rpc` на реальном транспорте | ⏸ отложено решением пользователя (нужен выбор: llama.cpp RPC vs B8.7) |
-| 8 | Открытые пункты P4: агент не должен владеть health-статусом (замер поймал зависший запрос на мёртвой копии), строгий обход реплик, событийное `LOADING→LOADED` | 📋 следующий этап |
+| 8 | R81: heartbeat агента не владеет health-статусом бэкенда (статусом владеет health-check) | ✅ сделано |
+| 9 | R81: группа усыновляет реплики по всем источникам метрик; событийное `LOADING → LOADED` по `llama-model-loaded` | ✅ сделано |
+| 10 | R81: строгий обход реплик + подключение группового селектора к inference-пути llama.cpp (живой замер 4:4, aggregate 42.5 tok/s) | ✅ сделано |
+| 11 | R81: открытый пункт — failover запроса, выбранного на упавшую реплику (ждёт авто-загрузку до `LB_AUTO_LOAD_WAIT_SEC` вместо переезда на живую копию) | 📋 следующий этап |
 
 ### R78 (2026-09-24) — закрытый раунд
 

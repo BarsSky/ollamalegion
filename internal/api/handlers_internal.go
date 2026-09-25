@@ -26,7 +26,7 @@ import (
 type llamaModelLoadedRequest struct {
 	BackendID     string `json:"backendId"`
 	Model         string `json:"model"`
-	Path          string `json:"path,omitempty"`         // R60.4
+	Path          string `json:"path,omitempty"` // R60.4
 	SizeBytes     uint64 `json:"sizeBytes,omitempty"`
 	Quantization  string `json:"quantization,omitempty"` // R60.4
 	ContextSize   int    `json:"contextSize,omitempty"`
@@ -102,6 +102,11 @@ func (s *Server) handleLlamaModelLoaded(w http.ResponseWriter, r *http.Request) 
 		}
 	}
 
+	// R81: событийное подтверждение реплики — если модель в группе репликации,
+	// инстанс переводится LOADING→LOADED сразу (иначе ждали бы 30-секундного
+	// тика поллера метрик; замер P4 показывал восстановление копии ~32 с).
+	s.proxy.MarkReplicationInstanceLoaded(req.Model, req.BackendID)
+
 	logger.Get().Debugw("internal/llama-model-loaded: processed",
 		"backend", req.BackendID,
 		"model", req.Model,
@@ -161,6 +166,10 @@ func (s *Server) handleLlamaModelUnloaded(w http.ResponseWriter, r *http.Request
 	if nctxReload := s.proxy.GetNCtxReloadCoordinator(); nctxReload != nil {
 		nctxReload.SetLastKnownNCtx(req.BackendID, 0)
 	}
+
+	// R81: событийная выгрузка реплики — инстанс группы убираем сразу, а не
+	// ждём, пока это заметит VRAM-fit по метрикам.
+	s.proxy.MarkReplicationInstanceUnloaded(req.Model, req.BackendID)
 
 	logger.Get().Debugw("internal/llama-model-unloaded: processed",
 		"backend", req.BackendID,

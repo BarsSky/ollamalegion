@@ -125,6 +125,34 @@ func (lr *LlamaCppRouter) findModelOnLlamaCppBackend(model string) string {
 	return ""
 }
 
+// selectLlamaCppBackendForModel — R81: выбор бэкенда для llama.cpp-путей.
+//
+// Порядок:
+//  1. группа репликации (если модель описана политикой как replicated/auto с
+//     репликами) — строгий обход копий (наименее загруженная, затем меньший
+//     UseCount);
+//  2. любой бэкенд с уже загруженной моделью (прежнее поведение);
+//  3. любой healthy llama.cpp-бэкенд (ленивая загрузка на первом запросе).
+//
+// Почему это важно: inference-путь llama.cpp раньше звал только
+// findModelOnLlamaCppBackend, который возвращает ПЕРВЫЙ бэкенд с моделью из
+// обхода map — распределение реплик зависело от порядка обхода (в замере P4
+// 7:1 и 8:4 при двух равных копиях), а группа репликации в выборе не
+// участвовала вовсе.
+func (lr *LlamaCppRouter) selectLlamaCppBackendForModel(model string) string {
+	if lr != nil && lr.proxy != nil && model != "" && lr.proxy.replicationSelector != nil {
+		if id := lr.proxy.replicationSelector.Select(model); id != "" {
+			logger.Get().Debugw("llama.cpp: реплика выбрана группой",
+				"model", model, "backend", id)
+			return id
+		}
+	}
+	if id := lr.findModelOnLlamaCppBackend(model); id != "" {
+		return id
+	}
+	return lr.selectAnyLlamaCppHealthy()
+}
+
 // selectAnyLlamaCppHealthy выбирает любой healthy llama.cpp бэкенд
 func (lr *LlamaCppRouter) selectAnyLlamaCppHealthy() string {
 	backends := lr.proxy.GetAllBackends()

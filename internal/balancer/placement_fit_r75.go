@@ -82,13 +82,12 @@ func (p *Proxy) placementFitForModel(model string) placementFit {
 	fit.TotalBackends = len(backends)
 
 	for _, id := range backends {
-		// Модель уже загружена на этом бэкенде — влезает по определению.
-		// R80: проверяем и по снапшоту метрик (Ollama/llama.cpp LoadedModels), а
-		// не только по context_length из llamaMetrics: иначе, когда обе копии
-		// реплики уже загружены и свободного VRAM почти нет, фит-проверка
-		// объявляла «подходящих бэкендов 0» и политика отклоняла запросы 503-й,
-		// хотя копии на месте.
-		if p.getModelLoadedCtxFromMetrics(id, model) > 0 || p.backendHasModelByID(id, model) {
+		// R80/R81: «загружена» проверяется по всем снапшотам метрик
+		// (backendHasModelByID), а не только по context_length из llamaMetrics —
+		// иначе, когда обе копии реплики уже загружены и свободного VRAM почти
+		// нет, фит-проверка объявляла «подходящих бэкендов 0» и политика
+		// отклоняла запросы 503-й, хотя копии на месте.
+		if p.backendHasModelByID(id, model) {
 			fit.FitBackends = append(fit.FitBackends, id)
 			continue
 		}

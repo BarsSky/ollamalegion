@@ -52,10 +52,8 @@ func (lr *LlamaCppRouter) handleOpenAIChatCompletions(w http.ResponseWriter, r *
 		bodyBuf = normalized
 	}
 
-	backendID := lr.findModelOnLlamaCppBackend(model)
-	if backendID == "" {
-		backendID = lr.selectAnyLlamaCppHealthy()
-	}
+	// R81: сначала группа репликации (строгий обход копий), затем — как раньше.
+	backendID := lr.selectLlamaCppBackendForModel(model)
 	if backendID == "" {
 		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "no llama.cpp backend available"})
 		return
@@ -301,10 +299,8 @@ func (lr *LlamaCppRouter) handleOpenAICompletion(w http.ResponseWriter, r *http.
 	}
 	model, _ := req["model"].(string)
 
-	backendID := lr.findModelOnLlamaCppBackend(model)
-	if backendID == "" {
-		backendID = lr.selectAnyLlamaCppHealthy()
-	}
+	// R81: сначала группа репликации (строгий обход копий), затем — как раньше.
+	backendID := lr.selectLlamaCppBackendForModel(model)
 	if backendID == "" {
 		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "no llama.cpp backend available"})
 		return
@@ -500,10 +496,8 @@ func (lr *LlamaCppRouter) handleOpenAIEmbeddings(w http.ResponseWriter, r *http.
 	}
 	model, _ := req["model"].(string)
 
-	backendID := lr.findModelOnLlamaCppBackend(model)
-	if backendID == "" {
-		backendID = lr.selectAnyLlamaCppHealthy()
-	}
+	// R81: сначала группа репликации (строгий обход копий), затем — как раньше.
+	backendID := lr.selectLlamaCppBackendForModel(model)
 	if backendID == "" {
 		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "no llama.cpp backend available"})
 		return
@@ -603,10 +597,8 @@ func (lr *LlamaCppRouter) handleChat(w http.ResponseWriter, r *http.Request) {
 		bodyBuf = normalized
 	}
 
-	backendID := lr.findModelOnLlamaCppBackend(model)
-	if backendID == "" {
-		backendID = lr.selectAnyLlamaCppHealthy()
-	}
+	// R81: сначала группа репликации (строгий обход копий), затем — как раньше.
+	backendID := lr.selectLlamaCppBackendForModel(model)
 	if backendID == "" {
 		logger.Get().Errorw("handleChat: no llama.cpp backend available",
 			"model", model)
@@ -744,10 +736,8 @@ func (lr *LlamaCppRouter) handleGenerate(w http.ResponseWriter, r *http.Request)
 		bodyBuf = normalized
 	}
 
-	backendID := lr.findModelOnLlamaCppBackend(model)
-	if backendID == "" {
-		backendID = lr.selectAnyLlamaCppHealthy()
-	}
+	// R81: сначала группа репликации (строгий обход копий), затем — как раньше.
+	backendID := lr.selectLlamaCppBackendForModel(model)
 	if backendID == "" {
 		logger.Get().Errorw("handleGenerate: no llama.cpp backend available",
 			"model", model)

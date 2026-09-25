@@ -18,21 +18,69 @@ package balancer
 
 import "ollama-loadbalancer/pkg/types"
 
-// backendHasModelByID — загружена ли модель на бэкенде по снапшоту его метрик.
+// MarkReplicationInstanceLoaded — R81: событийное подтверждение реплики.
 //
-// Отличие от getModelLoadedCtxFromMetrics: тот читает только llamaMetrics
-// (данные cppworker-поллера с context_length) и требует ContextLength > 0;
-// здесь используется общий путь backendHasModel, который видит и Ollama
-// RunningModels, и llama.cpp LoadedModels.
+// cppworker после успешной загрузки модели сам зовёт
+// POST /api/v1/internal/llama-model-loaded; подтверждаем инстанс группы сразу,
+// не дожидаясь опроса метрик (иначе восстановление реплики ждало тика поллера).
+func (p *Proxy) MarkReplicationInstanceLoaded(model, backendID string) {
+	if p == nil || p.modelReplication == nil {
+		return
+	}
+	p.modelReplication.AdoptLoadedInstance(model, backendID)
+}
+
+// MarkReplicationInstanceUnloaded — R81: событийная выгрузка реплики.
+//
+// Модель выгружена (idle unload, ручной unload, рестарт cppworker) — инстанс
+// группы убираем сразу; если группе не хватает копий, контроллер запросит
+// загрузку на следующем тике.
+func (p *Proxy) MarkReplicationInstanceUnloaded(model, backendID string) {
+	if p == nil || p.modelReplication == nil {
+		return
+	}
+	if p.modelReplication.DropInstance(model, backendID) {
+		go p.ensurePlacementInstances()
+	}
+}
+
+// backendHasModelByID — загружена ли модель на бэкенде по снапшотам метрик.
+//
+// R80/R81: проверяем ВСЕ доступные источники, потому что «где модель загружена»
+// в балансере живёт в трёх местах:
+//
+//  1. metrics[id].Ollama.RunningModels / .LlamaCpp.LoadedModels (метрики агента);
+//  2. metrics[id].Models — объединённый список имён (R32 доклеивает туда
+//     LlamaCpp.LoadedModels, см. cluster_state.go);
+//  3. llamaMetrics[id].LoadedModels — то, что наполняет поллер cppworker
+//     (/api/models, раз в 30 с).
+//
+// Раньше проверялись только (1) и getModelLoadedCtxFromMetrics (3, но с
+// требованием ContextLength > 0). Поллер может отдать загруженную модель без
+// context_length — и группа репликации не видела уже загруженную копию
+// (замер: два cppworker с моделью в VRAM, группа показывала loading=2/loaded=0).
 func (p *Proxy) backendHasModelByID(backendID, modelName string) bool {
 	if p == nil || p.metricsMgr == nil || backendID == "" || modelName == "" {
 		return false
 	}
-	metrics, ok := p.metricsMgr.SnapshotBackendMetrics(backendID)
-	if !ok || metrics == nil {
-		return false
+	if metrics, ok := p.metricsMgr.SnapshotBackendMetrics(backendID); ok && metrics != nil {
+		if p.backendHasModel(metrics, modelName) {
+			return true
+		}
+		for _, name := range metrics.Models {
+			if name == modelName || containsFold(name, modelName) {
+				return true
+			}
+		}
 	}
-	return p.backendHasModel(metrics, modelName)
+	if lm, ok := p.metricsMgr.SnapshotLlamaCppMetrics(backendID); ok && lm != nil {
+		for _, m := range lm.LoadedModels {
+			if m.Name == modelName || containsFold(m.Name, modelName) {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // backendsWithModelLoaded — ID healthy-бэкендов, на которых модель загружена
@@ -68,7 +116,7 @@ func (p *Proxy) backendsWithModelLoadedFiltered(modelName string, healthyOnly bo
 
 	out := make([]string, 0, len(ids))
 	for _, id := range ids {
-		if p.getModelLoadedCtxFromMetrics(id, modelName) > 0 || p.backendHasModelByID(id, modelName) {
+		if p.backendHasModelByID(id, modelName) {
 			out = append(out, id)
 		}
 	}

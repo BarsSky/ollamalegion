@@ -177,13 +177,13 @@ func TestE2E_FullWorkflow(t *testing.T) {
 		metrics := types.BackendMetrics{
 			ID: "agent-1",
 			GPU: types.GPUMetrics{
-				UsagePercent:    65.5,
-				MemoryTotal:     24576,
-				MemoryUsed:      12000,
-				MemoryFree:      12576,
-				Temperature:     72,
-				PowerUsage:      250,
-				GPUClock:        1800,
+				UsagePercent: 65.5,
+				MemoryTotal:  24576,
+				MemoryUsed:   12000,
+				MemoryFree:   12576,
+				Temperature:  72,
+				PowerUsage:   250,
+				GPUClock:     1800,
 			},
 			System: types.SystemMetrics{
 				CPUUsagePercent: 45.2,
@@ -192,10 +192,10 @@ func TestE2E_FullWorkflow(t *testing.T) {
 				MemoryFree:      33536,
 			},
 			Ollama: types.OllamaMetrics{
-				ActiveRequests:        3,
-				TotalRequests:           150,
-				RequestsPerSecond:     2.5,
-				AvgResponseTime:       1200,
+				ActiveRequests:    3,
+				TotalRequests:     150,
+				RequestsPerSecond: 2.5,
+				AvgResponseTime:   1200,
 				RunningModels: []types.RunningModel{
 					{
 						Name:      "llama3:8b",
@@ -227,7 +227,11 @@ func TestE2E_FullWorkflow(t *testing.T) {
 	})
 
 	t.Run("5. Send Heartbeat", func(t *testing.T) {
-		// Сначала обновим статус на unhealthy для проверки
+		// R81: heartbeat агента НЕ владеет health-статусом бэкенда — он отмечает
+		// только факт контакта (HasAgent/LastAgentContact). Раньше безусловный
+		// UpdateBackendStatus(..., Healthy) возвращал в пул бэкенд с мёртвым
+		// cppworker'ом: замер P4 поймал запрос, который ушёл на мёртвую копию и
+		// висел до клиентского таймаута. Статусом владеет health-check.
 		proxy.UpdateBackendStatus("agent-2", types.StatusUnhealthy)
 
 		req, _ := http.NewRequest(http.MethodPost, baseURL+"/api/v1/agents/heartbeat", nil)
@@ -239,9 +243,13 @@ func TestE2E_FullWorkflow(t *testing.T) {
 
 		assert.Equal(t, http.StatusOK, resp.StatusCode)
 
-		// Проверяем, что статус обновился
 		backend := proxy.GetBackend("agent-2")
-		assert.Equal(t, types.StatusHealthy, backend.Status)
+		assert.Equal(t, types.StatusUnhealthy, backend.Status,
+			"heartbeat не должен менять health-статус")
+		assert.True(t, backend.HasAgent, "heartbeat должен отметить контакт агента")
+
+		// Возврат в пул — за health-check'ом.
+		proxy.UpdateBackendStatus("agent-2", types.StatusHealthy)
 	})
 
 	t.Run("6. Agent Stats", func(t *testing.T) {
@@ -283,13 +291,13 @@ func TestE2E_FullWorkflow(t *testing.T) {
 
 	t.Run("8. Update Backend", func(t *testing.T) {
 		updateData := map[string]interface{}{
-			"name":                "Updated Agent 1",
-			"host":                "localhost",
-			"ollamaPort":          11434,
-			"agentPort":           9090,
-			"weight":              3,
+			"name":                  "Updated Agent 1",
+			"host":                  "localhost",
+			"ollamaPort":            11434,
+			"agentPort":             9090,
+			"weight":                3,
 			"maxConcurrentRequests": 25,
-			"labels":              []string{"gpu:nvidia", "zone:east", "updated"},
+			"labels":                []string{"gpu:nvidia", "zone:east", "updated"},
 		}
 		body, _ := json.Marshal(updateData)
 
@@ -626,9 +634,9 @@ func TestE2E_ClusterStateAggregation(t *testing.T) {
 
 	// Отправляем различные метрики
 	testCases := []struct {
-		agentID string
-		gpuUsage float64
-		rps      float64
+		agentID    string
+		gpuUsage   float64
+		rps        float64
 		activeReqs int
 	}{
 		{"agent-1", 30.0, 1.0, 2},
@@ -710,13 +718,13 @@ func TestE2E_ProxyStreaming(t *testing.T) {
 			{ID: "ollama-1", Host: host, OllamaPort: port, Weight: 1, MaxConcurrentReqs: 10, Status: types.StatusHealthy},
 		},
 		Balancing: types.BalancingSettings{
-			Algorithm:           "resource-aware",
-			FirstByteTimeout:    30,
-			RequestTimeout:      30,
+			Algorithm:            "resource-aware",
+			FirstByteTimeout:     30,
+			RequestTimeout:       30,
 			StreamingIdleTimeout: 60,
-			QueueMaxSize:        50,
-			QueueWorkers:        4,
-			QueueTimeout:        60,
+			QueueMaxSize:         50,
+			QueueWorkers:         4,
+			QueueTimeout:         60,
 		},
 	}
 

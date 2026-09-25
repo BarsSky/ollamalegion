@@ -9,86 +9,12 @@ package cppbackend
 import (
 	"os"
 	"path/filepath"
-	"strings"
 	"testing"
 )
 
-func TestR83_StripOllamaTag(t *testing.T) {
-	cases := []struct {
-		name string
-		in   string
-		want string
-	}{
-		{"тег latest", "qwen3.8:latest", "qwen3.8"},
-		{"тег квантования", "qwen3.8:q4_k_m", "qwen3.8"},
-		{"тег с версией", "gemma-4:q4_k_m", "gemma-4"},
-		{"тега нет", "qwen3.8", "qwen3.8"},
-		{"пробелы по краям", "  qwen3.8:latest  ", "qwen3.8"},
-		{"точка в теге", "model:v1.2.3", "model"},
-		// Пути НЕ трогаем: у Windows-пути своё двоеточие.
-		{"windows-путь", `C:\models\Qwen3.8.gguf`, `C:\models\Qwen3.8.gguf`},
-		{"unix-путь", "models/qwen3.8:latest.gguf", "models/qwen3.8:latest.gguf"},
-		{"относительный путь", "./models/x.gguf", "./models/x.gguf"},
-		// Неправдоподобный «тег» оставляем как есть — лучше честный 404,
-		// чем молча обрезанное настоящее имя.
-		{"тег с пробелом", "модель: последняя", "модель: последняя"},
-		{"двоеточие в конце", "model:", "model:"},
-		{"только двоеточие", ":", ":"},
-		{"длинный хвост", "model:" + strings.Repeat("x", maxOllamaTagLen+1), "model:" + strings.Repeat("x", maxOllamaTagLen+1)},
-		{"пустая строка", "", ""},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			if got := StripOllamaTag(tc.in); got != tc.want {
-				t.Errorf("StripOllamaTag(%q) = %q, want %q", tc.in, got, tc.want)
-			}
-		})
-	}
-}
-
-func TestR83_ModelNameVariants(t *testing.T) {
-	got := ModelNameVariants("qwen3.8:latest")
-	// Первым идёт ТОЧНЫЙ вариант: нормализация не должна перебивать точное имя.
-	if len(got) == 0 || got[0] != "qwen3.8:latest" {
-		t.Fatalf("первым должен идти точный вариант, got %v", got)
-	}
-	for _, want := range []string{"qwen3.8:latest", "qwen3.8", "qwen3.8.gguf"} {
-		if !containsStr(got, want) {
-			t.Errorf("нет варианта %q в %v", want, got)
-		}
-	}
-	// Имя с расширением тоже должно давать форму без него — иначе
-	// "qwen3.8.gguf" не найдёт "Qwen3.8-27B-UD-Q4_K_M.gguf" по вхождению.
-	gotExt := ModelNameVariants("qwen3.8.gguf")
-	for _, want := range []string{"qwen3.8.gguf", "qwen3.8"} {
-		if !containsStr(gotExt, want) {
-			t.Errorf("для имени с расширением нет варианта %q в %v", want, gotExt)
-		}
-	}
-	// Дубликатов быть не должно: список идёт в цикл поиска по файлам.
-	seen := map[string]bool{}
-	for _, v := range got {
-		if seen[v] {
-			t.Errorf("дубликат варианта %q", v)
-		}
-		if strings.TrimSpace(v) == "" {
-			t.Errorf("пустой вариант в %v", got)
-		}
-		seen[v] = true
-	}
-	if ModelNameVariants("   ") != nil {
-		t.Error("пустое имя не должно давать вариантов")
-	}
-}
-
-func containsStr(list []string, want string) bool {
-	for _, v := range list {
-		if v == want {
-			return true
-		}
-	}
-	return false
-}
+// Чистая логика нормализации (StripTag/Variants/Matches) тестируется в самом
+// пакете pkg/modelname — здесь только интеграция с каталогом моделей, чтобы не
+// дублировать те же таблицы в двух местах.
 
 // TestR83_FindModelByPath_OllamaTag — главный регресс: внешнее имя с тегом
 // должно находить реальный файл, а не уходить в llama.cpp несуществующим путём.

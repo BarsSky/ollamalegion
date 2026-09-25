@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"ollama-loadbalancer/pkg/logger"
+	"ollama-loadbalancer/pkg/modelname"
 	"ollama-loadbalancer/pkg/types"
 )
 
@@ -468,23 +469,38 @@ func (lr *LlamaCppRouter) queryCppWorkerModels(backendID string) []cppWorkerMode
 }
 
 // matchCppWorkerModel проверяет совпадение имени модели на cppworker.
-// Поддерживает три варианта: точное имя, basename пути без .gguf, basename пути с .gguf.
+// Поддерживает: точное имя, basename пути, basename с/без .gguf и — R83 —
+// нормализованное сравнение с учётом Ollama-тега и регистра.
+//
+// ЗАЧЕМ R83. Живой кейс: клиент (Cline, Ollama-провайдер) просит "qwen3.8:latest",
+// на бэкенде загружена "Qwen3.8-27B-UD-Q4_K_M". Строгое сравнение не находило
+// совпадения, балансер считал модель НЕЗАГРУЖЕННОЙ и инициировал загрузку
+// несуществующего имени — cppworker шёл открывать "models/qwen3.8:latest.gguf"
+// и падал в llama.cpp ("failed to open GGUF file ...", HTTP 500), хотя нужная
+// модель уже была в VRAM. Семантика вынесена в pkg/modelname и совпадает с
+// резолвом cppworker, чтобы стороны не расходились.
 func matchCppWorkerModel(modelName string, m cppWorkerModelState) bool {
 	if m.Name == modelName {
+		return true
+	}
+	if modelname.Equal(m.Name, modelName) {
 		return true
 	}
 	if m.Path == "" {
 		return false
 	}
-	modelNameLower := strings.ToLower(modelName)
-	baseLower := strings.ToLower(basenameOfPath(m.Path))
-	if modelNameLower == baseLower {
+	base := basenameOfPath(m.Path)
+	if strings.EqualFold(base, modelName) {
 		return true
 	}
-	if strings.ToLower(modelNameLower+".gguf") == baseLower {
+	if strings.EqualFold(strings.TrimSuffix(base, ".gguf"), strings.TrimSuffix(modelName, ".gguf")) {
 		return true
 	}
-	return false
+	// «Прощающее» сравнение: "qwen3.8:latest" ↔ "Qwen3.8-27B-UD-Q4_K_M.gguf".
+	if modelname.Matches(modelName, base) {
+		return true
+	}
+	return modelname.Matches(modelName, m.Name)
 }
 
 // isModelLoadedOnBackend проверяет, загружена ли модель в VRAM на cppworker-бэкенде.

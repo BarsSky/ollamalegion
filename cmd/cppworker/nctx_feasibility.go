@@ -195,6 +195,29 @@ func checkNCtxBeforeLoad(w http.ResponseWriter, modelName string, requestedNCtx 
 	f := evaluateNCtxFeasibility(
 		modelName, backend.CalculateResourceLimits(modelName), requestedNCtx)
 	logNCtxFeasibility(f)
+
+	// R83 (C1): предупреждаем, если ПОТОЛОК ИЗ КОНФИГА недостижим на этом железе.
+	//
+	// Живой случай: CPPWORKER_RAM_FALLBACK_MAX_N_CTX=128000 и
+	// LB_NCTX_RELOAD_MAX_N_CTX=131072 при том, что для 27B Q4_K_M на A10 24 GB
+	// физический предел заметно ниже. Конфиг обещал то, чего железо не даёт, и
+	// оператор не понимал, почему 65536/128000 «не работают».
+	//
+	// Отказ при этом выдаётся по ФАКТИЧЕСКОМУ feasible (выше в этой функции),
+	// а не по конфигу — значение из .env остаётся верхней границей, но перестаёт
+	// молча обещать невозможное.
+	if *ramFallbackMaxNCtx > 0 && f.HardMaxNCtx > 0 && *ramFallbackMaxNCtx > f.HardMaxNCtx {
+		logger.Get().Warnw("R83 потолок n_ctx из конфига недостижим на этом железе: "+
+			"CPPWORKER_RAM_FALLBACK_MAX_N_CTX больше физического предела — "+
+			"уменьшите его, иначе конфиг обещает то, чего не будет",
+			"model", f.Model,
+			"configured_max_n_ctx", *ramFallbackMaxNCtx,
+			"hard_max_n_ctx", f.HardMaxNCtx,
+			"feasible_max_context", f.FeasibleMaxNCtx,
+			"max_vram_n_ctx", f.MaxVRAMNCtx,
+			"max_ram_n_ctx", f.MaxRAMNCtx)
+	}
+
 	if f.Stage == nctxStageInfeasible {
 		writeNCtxInfeasibleResponse(w, f)
 		return false

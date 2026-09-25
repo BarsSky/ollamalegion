@@ -1099,6 +1099,14 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			"failed_backend", acquiredBackend, "model", model)
 		// Освобождаем слот на текущем бэкенде и пробуем другие
 		releaseAcquired()
+		// R83: если клиенту уже отдана часть ответа, повтор дописал бы ВТОРОЙ
+		// ответ в тот же стрим — именно так выглядит жалоба «OpenWebUI показывает
+		// ответ дважды». Повторяем только когда ответ ещё не начат.
+		if clientAlreadyCommitted(w) {
+			logger.Get().Warnw("alternate-backend retry skipped: response already partially sent",
+				"failed_backend", acquiredBackend, "model", model, "error", err)
+			return
+		}
 		attemptedBackends := map[string]bool{targetBackend: true}
 		for attempt := 1; attempt < 3; attempt++ {
 			altBackend := p.selectBackendExcluding(model, attemptedBackends, bt)
@@ -1148,6 +1156,13 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 			// Освобождаем старый слот и захватываем новый
 			releaseAcquired()
+			// R83: тот же гард, что и в alternate-backend циклах ниже —
+			// auto-pull не должен дописывать второй ответ поверх начатого.
+			if clientAlreadyCommitted(w) {
+				logger.Get().Warnw("auto-pull retry skipped: response already partially sent",
+					"backend", acquiredBackend, "model", model, "error", err)
+				return
+			}
 			if p.tryAcquireSlot(newBackendID) {
 				acquiredBackend = newBackendID
 				err = p.proxyRequest(w, r, newBackendID)
@@ -1179,6 +1194,13 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	// Освобождаем проблемный бэкенд и пробуем другие
 	releaseAcquired()
+	// R83: см. комментарий в ветке backend-busy — повтор после частичной отдачи
+	// клиенту даёт дубль ответа, поэтому не повторяем.
+	if clientAlreadyCommitted(w) {
+		logger.Get().Warnw("backend-failure retry skipped: response already partially sent",
+			"failed_backend", acquiredBackend, "model", model, "error", err)
+		return
+	}
 	attemptedBackends := map[string]bool{targetBackend: true}
 	for attempt := 1; attempt < 3; attempt++ {
 		altBackend := p.selectBackendExcluding(model, attemptedBackends, bt)
@@ -1585,6 +1607,27 @@ type statusRecorder struct {
 	// errBody — накопленный body response (для 4xx/5xx). Round 16 (2026-07-10).
 	// Только первые 1 KB чтобы не раздувать лог.
 	errBody string
+	// R83 (2026-09-25): сколько байт тела реально ушло клиенту и был ли connection
+	// hijack'нут (hijack-путь пишет в сокет напрямую, минуя Write).
+	//
+	// Зачем: перед повторной попыткой на другом бэкенде нужно знать, не отдали ли
+	// мы клиенту часть ответа. WriteHeader повторно не сыграть, но Write ДОПИШЕТ
+	// тело — и клиент получит второй ответ в том же стриме (жалоба «OpenWebUI
+	// показывает ответ дважды», см. clientAlreadyCommitted).
+	bytesWritten int64
+	hijacked     bool
+}
+
+// clientAlreadyCommitted — отправлено ли клиенту что-то необратимое.
+//
+// true означает: повторять запрос НЕЛЬЗЯ. Раньше повторяли всегда (proxy.go,
+// циклы alternate-backend), и при обрыве уже начатого стрима второй ответ
+// дописывался в тот же response.
+func clientAlreadyCommitted(w http.ResponseWriter) bool {
+	if sr, ok := w.(*statusRecorder); ok {
+		return sr.bytesWritten > 0 || sr.hijacked
+	}
+	return false
 }
 
 func (r *statusRecorder) WriteHeader(code int) {
@@ -1617,7 +1660,11 @@ func (r *statusRecorder) Write(b []byte) (int, error) {
 			r.errBody += string(b[:take])
 		}
 	}
-	return r.ResponseWriter.Write(b)
+	n, err := r.ResponseWriter.Write(b)
+	// R83: считаем РЕАЛЬНО записанные байты (n), а не длину b — при ошибке
+	// клиент мог получить только часть, и это тоже означает «уже отдали».
+	r.bytesWritten += int64(n)
+	return n, err
 }
 
 // Round 31 #6 real fix (2026-08-09): hijack support на statusRecorder.
@@ -1629,7 +1676,13 @@ func (r *statusRecorder) Hijack() (net.Conn, *bufio.ReadWriter, error) {
 	if !ok {
 		return nil, nil, fmt.Errorf("statusRecorder: underlying ResponseWriter %T does not support hijack", r.ResponseWriter)
 	}
-	return hj.Hijack()
+	conn, bufrw, err := hj.Hijack()
+	if err == nil {
+		// R83: соединение ушло из-под управления Go — повторять запрос нельзя,
+		// даже если байты шли не через Write.
+		r.hijacked = true
+	}
+	return conn, bufrw, err
 }
 
 // Round 31 #6 real fix: Flush support (для случая если statusRecorder используется

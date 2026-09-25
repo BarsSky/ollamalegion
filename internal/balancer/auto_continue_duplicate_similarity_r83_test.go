@@ -85,6 +85,33 @@ func TestR83_ShortCodeFragment_StillNotDetected(t *testing.T) {
 	}
 }
 
+// TestR83_RedundantContinuation_Suppressed — D1 (безопасная часть «fail-closed»):
+// если continuation целиком уже содержится в отправленном клиенту тексте, то
+// нового контента в нём нет по определению — отправлять нельзя, это чистый дубль.
+func TestR83_RedundantContinuation_Suppressed(t *testing.T) {
+	original := longAnswerR83
+	// Дословный кусок уже отправленного текста.
+	continuation := "Климат умеренный, зимы мягкие, лето тёплое и влажное."
+
+	if !isRedundantContinuation(original, continuation) {
+		t.Error("повтор уже отправленного фрагмента не распознан — дубль уйдёт клиенту")
+	}
+	if !IsContinuationARegeneration(original, continuation) {
+		t.Error("IsContinuationARegeneration не подавил дубль")
+	}
+
+	// На КОРОТКОМ оригинале правило обязано молчать: регресс-тест R60.55 требует
+	// не помечать дублем законное продолжение, дословно повторяющее строку кода.
+	shortOrig := "const height = parseFloat(document.getElementById('height').value);\n"
+	shortCont := "  const height = parseFloat(document.getElementById('height').value);"
+	if isRedundantContinuation(shortOrig, shortCont) {
+		t.Error("правило сработало на коротком фрагменте — противоречит компромиссу R60.55")
+	}
+	if IsContinuationARegeneration(shortOrig, shortCont) {
+		t.Error("короткий фрагмент помечен дублем — потеря контента")
+	}
+}
+
 // TestR83_LongestCommonSubstringRunes — юнит-проверка DP-хелпера.
 func TestR83_LongestCommonSubstringRunes(t *testing.T) {
 	cases := []struct {

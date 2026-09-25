@@ -390,6 +390,17 @@ func IsContinuationARegeneration(originalContent, continuationContent string) bo
 	if isDuplicateBySimilarity(originalContent, continuationContent) {
 		return true
 	}
+	// R83 (2026-09-25, D1 «fail-closed», безопасная часть): если continuation не
+	// добавляет НИЧЕГО нового — он целиком уже содержится в отправленном клиенту
+	// тексте, — отправлять его нельзя ни при какой эвристике.
+	//
+	// Это единственная форма fail-closed, которая НЕ может потерять контент: тут
+	// по определению нечего терять. Полный отказ от отправки «пока не докажем,
+	// что это продолжение» реализовать нельзя: по комментарию к
+	// minRegenerationOriginalRunes молчаливая потеря контента хуже дубликата.
+	if isRedundantContinuation(originalContent, continuationContent) {
+		return true
+	}
 	// Strip common chat-model preamble patterns first.
 	preambles := []string{
 		"Sure, here's the continuation:",
@@ -520,6 +531,32 @@ const (
 	// продублированный слово-в-слово, — это сотни рун.
 	minDuplicateOriginalRunes = 160
 )
+
+// isRedundantContinuation — R83: continuation не добавляет ничего нового, то
+// есть целиком (после нормализации) уже содержится в отправленном тексте.
+//
+// Это самая безопасная форма «fail-closed» подавления: отбрасывая такой
+// continuation, мы не теряем НИ ОДНОГО нового символа — отправка добавила бы
+// только дубль. Поэтому проверка не требует эвристик и не может сработать
+// ложно «во вред».
+//
+// ПОРОГ ПО ДЛИНЕ ОБЯЗАТЕЛЕН, и это выяснилось на тестах: регресс-тест R60.55
+// (TestR6055_..._NoFalsePositiveOnCommonCode) требует НЕ помечать дублем
+// законное продолжение кода, которое дословно повторяет строку оригинала
+// (69 рун). То есть для коротких фрагментов репозиторий сознательно выбирает
+// «лучше возможный дубль, чем потеря контента». Для содержательных ответов
+// (≥160 рун) такой выбор не нужен: повтор внутри длинного текста — это дубль.
+func isRedundantContinuation(originalContent, continuationContent string) bool {
+	cont := normalizeForCompare(continuationContent)
+	if cont == "" {
+		return false
+	}
+	orig := normalizeForCompare(originalContent)
+	if len([]rune(orig)) < minDuplicateOriginalRunes {
+		return false
+	}
+	return strings.Contains(orig, cont)
+}
 
 // isDuplicateBySimilarity — continuation содержит почти весь оригинал дословно
 // (≥85% его длины), то есть это повторная генерация, а не продолжение.

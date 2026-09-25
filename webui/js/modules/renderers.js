@@ -454,7 +454,14 @@ const Renderers = (function () {
                         loaded: lm.state === 'loaded' || !lm.state,
                         contextLength: lm.contextLength || 0,
                         numGpuLayers: lm.numGpuLayers || 0,
-                        quantization: quant
+                        quantization: quant,
+                        // R83 (2026-09-25): пробрасываем границы контекста.
+                        // Раньше здесь собирался НОВЫЙ объект только из перечисленных
+                        // полей, поэтому feasibleMaxContext/ggufMaxContext (которые
+                        // балансер уже отдаёт в cluster state) до карточки не
+                        // доходили — и оператор не видел, влезает ли n_ctx в VRAM.
+                        feasibleMaxContext: lm.feasibleMaxContext || 0,
+                        ggufMaxContext: lm.ggufMaxContext || lm.maxContext || 0
                     });
                     totalLoadable++;
                 });
@@ -1329,9 +1336,42 @@ const Renderers = (function () {
             var gpu = model.numGpuLayers === -1 ? 'GPU:all' :
                       (model.numGpuLayers ? 'GPU:' + model.numGpuLayers : '');
             var runtime = [ctx, gpu].filter(Boolean).join(' ');
+
+            // R83 (2026-09-25): показываем границу VRAM рядом с фактическим n_ctx.
+            //
+            // ЗАЧЕМ. В карточке были только `C:<n_ctx>` и (на вкладке агента)
+            // `gguf_max=262144`. Оператор читал 262144 как «можно 128k/256k» и
+            // пробовал 65536/128000 — а на A10 24 GB для 27B Q4_K_M граница
+            // exact_fit около 32K, выше неё стратегия уходит в partial_offload
+            // (часть слоёв в RAM) и ответ перестаёт укладываться в таймаут клиента.
+            // Отсюда «32768 работает, 65536 нет» без объяснения в интерфейсе.
+            var feas = model.feasibleMaxContext || 0;
+            var ggufMax = model.ggufMaxContext || 0;
+            var feasDetails = '';
+            if (feas > 0 || ggufMax > 0) {
+                if (feas > 0) {
+                    feasDetails += modelDetail('Feasible n_ctx', formatNumber(feas),
+                        'Максимум n_ctx, который влезает в VRAM целиком (режим exact_fit)');
+                }
+                if (ggufMax > 0) {
+                    feasDetails += modelDetail('GGUF max n_ctx', formatNumber(ggufMax),
+                        'Обучающий контекст модели — жёсткий верх, а не рекомендация');
+                }
+                if (feas > 0 && model.contextLength > feas) {
+                    feasDetails += '<div class="model-detail">' +
+                        '<div class="model-detail-label">Режим</div>' +
+                        '<div class="model-detail-value" style="color:var(--warning,#f0ad4e)">' +
+                        'partial offload: n_ctx ' + escapeHtml(formatNumber(model.contextLength)) +
+                        ' выше границы VRAM ' + escapeHtml(formatNumber(feas)) +
+                        ' — часть слоёв в RAM, ответ медленнее' +
+                        '</div></div>';
+                }
+            }
+
             return modelDetail('GGUF Path', ggufPath) +
                 modelDetail('Quantization', ggufQuant) +
-                (runtime ? modelDetail('Runtime', runtime) : '');
+                (runtime ? modelDetail('Runtime', runtime) : '') +
+                feasDetails;
         }
         // Ollama-специфичные поля
         return modelDetail('Family', model.family || '-') +

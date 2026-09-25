@@ -23,7 +23,22 @@ type ModelGroupManager struct {
 	loadFn    func(backendID string) float64                    // получение загрузки бэкенда (0.0-1.0)
 	backendFn func(modelName string, targets []string) []string // поиск свободных бэкендов
 	warmupFn  func(backendID, modelName string) error           // запуск warmup модели
+	// R80: реальный список бэкендов, на которых модель УЖЕ загружена
+	// (метрики cppworker/агента). Нужен, чтобы группа усыновляла копии,
+	// загруженные вне менеджера (до рестарта балансера, авто-загрузкой по
+	// запросу, через WebUI) и не плодила лишние загрузки.
+	loadedFn func(modelName string) []string
 }
+
+// loadedGracePeriod — сколько ждать подтверждения моделью в метриках, прежде
+// чем считать инстанс протухшим. Должен превышать интервал опроса метрик
+// (cppworker-поллер 30 с, агент 10 с), но быть достаточно коротким, чтобы
+// восстановление реплики после падения/рестарта бэкенда не занимало минуты.
+const loadedGracePeriod = 60 * time.Second
+
+// loadingTimeout — сколько инстанс может висеть в LOADING, прежде чем его
+// состояние считается протухшим (cppworker упал/загрузка не состоялась).
+const loadingTimeout = 15 * time.Minute
 
 // ModelGroup представляет группу реплик одной модели.
 type ModelGroup struct {
@@ -61,6 +76,19 @@ func (mgr *ModelGroupManager) SetWarmupFn(fn func(string, string) error) {
 	mgr.mu.Lock()
 	defer mgr.mu.Unlock()
 	mgr.warmupFn = fn
+}
+
+// SetLoadedBackendsFn — R80: callback «на каких бэкендах модель реально
+// загружена прямо сейчас» (по метрикам cppworker/агента).
+//
+// Без него менеджер знает только про копии, которые загрузил сам: после
+// рестарта балансера группа оставалась пустой (0 инстансов) при двух реально
+// загруженных копиях, а контроллер группы грузил лишнюю копию на «свободный»
+// бэкенд, хотя копии уже были готовы.
+func (mgr *ModelGroupManager) SetLoadedBackendsFn(fn func(string) []string) {
+	mgr.mu.Lock()
+	defer mgr.mu.Unlock()
+	mgr.loadedFn = fn
 }
 
 // --- Lifecycle ---
@@ -328,14 +356,25 @@ func (mgr *ModelGroupManager) EnsureInstances() {
 
 // ensureGroupInstances проверяет конкретную группу.
 func (mgr *ModelGroupManager) ensureGroupInstances(g *ModelGroup) {
+	// R80: сначала сверяем состав инстансов с реальностью (метрики бэкендов) —
+	// усыновляем уже загруженные копии и убираем протухшие.
+	mgr.syncLoadedInstances(g)
+
 	g.mu.RLock()
 	cfg := g.Config
 	instanceCount := len(g.Instances)
 	loaded := 0
+	inFlight := 0
 	now := time.Now()
 	for _, inst := range g.Instances {
-		if inst.Status == types.ModelStateLoaded {
+		switch inst.Status {
+		case types.ModelStateLoaded:
 			loaded++
+		case types.ModelStateLoading:
+			// R80: загрузка запрошена, но модель ещё не подтверждена метриками.
+			// Считаем её «в пути», иначе контроллер запросит вторую загрузку на
+			// тот же дефицит.
+			inFlight++
 		}
 		// Проверка idle unload
 		if inst.Status == types.ModelStateLoaded && cfg.IdleUnloadAfter != "" {
@@ -347,14 +386,102 @@ func (mgr *ModelGroupManager) ensureGroupInstances(g *ModelGroup) {
 	}
 	g.mu.RUnlock()
 
-	// Если loaded < minInstances → запускаем warmup
-	if loaded < cfg.MinInstances {
-		mgr.scaleUpGroup(g, cfg.MinInstances-loaded)
+	// Если loaded (+ уже запрошенные загрузки) < minInstances → запускаем warmup
+	if loaded+inFlight < cfg.MinInstances {
+		mgr.scaleUpGroup(g, cfg.MinInstances-loaded-inFlight)
 	}
 
 	// Если loaded > maxInstances → выгружаем LRU
 	if loaded > cfg.MaxInstances {
 		mgr.scaleDownGroup(g, loaded-cfg.MaxInstances)
+	}
+}
+
+// syncLoadedInstances — R80: привести состав инстансов группы к тому, что
+// реально загружено на бэкендах.
+//
+//   - бэкенд, на котором модель уже загружена, но которого нет в группе, —
+//     усыновляется (LOADED), иначе «replicated» исполняется одной копией;
+//   - инстанс, помеченный LOADED, но без модели на бэкенде, — сбрасывается,
+//     чтобы контроллер перезагрузил его (например, cppworker перезапустили);
+//     внутри loadedGracePeriod инстанс не трогаем: загрузка асинхронная и
+//     модель появляется в метриках не сразу.
+func (mgr *ModelGroupManager) syncLoadedInstances(g *ModelGroup) {
+	mgr.mu.RLock()
+	loadedFn := mgr.loadedFn
+	mgr.mu.RUnlock()
+	if loadedFn == nil {
+		return
+	}
+
+	g.mu.RLock()
+	modelName := g.Config.ModelName
+	g.mu.RUnlock()
+	if modelName == "" {
+		return
+	}
+
+	loadedNow := map[string]bool{}
+	for _, id := range loadedFn(modelName) {
+		if id != "" {
+			loadedNow[id] = true
+		}
+	}
+
+	now := time.Now()
+	adopted := make([]string, 0, len(loadedNow))
+	dropped := make([]string, 0)
+
+	g.mu.Lock()
+	for backendID := range loadedNow {
+		inst, exists := g.Instances[backendID]
+		if exists && inst.Status == types.ModelStateLoaded {
+			continue
+		}
+		if !exists {
+			g.Instances[backendID] = &types.ModelInstanceState{
+				BackendID:  backendID,
+				Status:     types.ModelStateLoaded,
+				LoadedAt:   now,
+				LastUsedAt: now,
+			}
+		} else {
+			// R80: загрузка, которую мы запросили, подтверждена метриками —
+			// только теперь инстанс честно LOADED (до этого он LOADING).
+			inst.Status = types.ModelStateLoaded
+			inst.LoadedAt = now
+			inst.LastUsedAt = now
+		}
+		adopted = append(adopted, backendID)
+	}
+
+	for backendID, inst := range g.Instances {
+		if loadedNow[backendID] {
+			continue
+		}
+		switch inst.Status {
+		case types.ModelStateLoaded:
+			if now.Sub(inst.LoadedAt) < loadedGracePeriod {
+				continue // загрузка ещё идёт: тёплое окно
+			}
+			delete(g.Instances, backendID)
+			dropped = append(dropped, backendID)
+		case types.ModelStateLoading:
+			if now.Sub(inst.LoadedAt) > loadingTimeout {
+				delete(g.Instances, backendID)
+				dropped = append(dropped, backendID)
+			}
+		}
+	}
+	g.mu.Unlock()
+
+	if len(adopted) > 0 {
+		logger.Get().Infow("group instances adopted from backends",
+			"model", modelName, "backends", adopted)
+	}
+	if len(dropped) > 0 {
+		logger.Get().Infow("group instances dropped (model not loaded on backend)",
+			"model", modelName, "backends", dropped)
 	}
 }
 
@@ -399,7 +526,11 @@ func (mgr *ModelGroupManager) scaleUpGroup(g *ModelGroup, needed int) {
 		}
 		g.mu.Unlock()
 
-		// Запускаем warmup асинхронно
+		// Запускаем warmup асинхронно. R80: успешный вызов warmup = «загрузка
+		// запрошена», а НЕ «модель загружена» (cppworker грузит модель минуты, а
+		// callback балансера лишь принимает запрос). Инстанс переводится в
+		// LOADED только когда модель подтверждена метриками бэкенда
+		// (syncLoadedInstances).
 		go func(bID string) {
 			if err := warmupFn(bID, cfg.ModelName); err != nil {
 				logger.Get().Errorw("group warmup failed",
@@ -412,14 +543,7 @@ func (mgr *ModelGroupManager) scaleUpGroup(g *ModelGroup, needed int) {
 				g.mu.Unlock()
 				return
 			}
-			// Успешно загружено
-			g.mu.Lock()
-			if inst, ok := g.Instances[bID]; ok {
-				inst.Status = types.ModelStateLoaded
-				inst.LoadedAt = time.Now()
-			}
-			g.mu.Unlock()
-			logger.Get().Infow("group instance loaded",
+			logger.Get().Infow("group instance load requested",
 				"backend", bID, "model", cfg.ModelName)
 		}(backendID)
 		loaded++

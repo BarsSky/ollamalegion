@@ -94,7 +94,13 @@ func TestPlacementResync_NewBackendGetsReplica_R78(t *testing.T) {
 		Models: []types.PlacementModelRule{{
 			Model:    "m-repl",
 			Strategy: string(types.PlacementReplicated),
-			Auto:     &types.PlacementAutoRule{MinBackends: 1, MaxShardCount: 3},
+			// R80: minBackends=2 — «replicated = две копии». Раньше здесь стояло
+			// minBackends=1, и второй инстанс появлялся только за счёт гонки:
+			// первый инстанс ещё числился LOADING (не LOADED), поэтому контроллер
+			// видел дефицит и добирал копию на новом бэкенде. После R80 (инстансы
+			// честно LOADING до подтверждения метриками) такое поведение
+			// недетерминировано — проверяем реальный сценарий replicated.
+			Auto: &types.PlacementAutoRule{MinBackends: 2, MaxShardCount: 3},
 		}},
 	}
 	proxy := newProxyWithCleanup(t, cfg)

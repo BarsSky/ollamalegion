@@ -84,6 +84,18 @@ func (p *Proxy) checkExplicitStrategyFeasibilityR79(d PlacementDecision) Placeme
 		return d
 	}
 
+	// R80 (§6, строка «один из бэкендов реплик unhealthy»): если хотя бы одна
+	// копия модели уже загружена, её и обслуживаем — падение/выгрузка второй
+	// копии не повод отказывать клиенту 503-й. Снижение избыточности видно в
+	// /api/v1/placement (replication.groups) и в статистике группы.
+	live := p.backendsWithModelLoadedIncludingUnhealthy(d.Model)
+	if len(live) >= 1 {
+		d.Reason = fmt.Sprintf(
+			"%s: готовых копий %d из %d (нужно %d) — обслуживаем с живой копии %v, избыточность снижена; %s",
+			d.Strategy, len(live), len(fit.FitBackends), need, live, d.Reason)
+		return d
+	}
+
 	reason := fmt.Sprintf("%s: подходящих бэкендов %d, нужно %d (копий модели)",
 		d.Strategy, len(fit.FitBackends), need)
 	if fit.SizeKnown {

@@ -94,6 +94,11 @@ func (p *Proxy) setupReplicationManager() {
 		return nil
 	})
 
+	// R80: реальный список бэкендов с загруженной моделью — группа усыновляет
+	// уже готовые копии вместо загрузки лишних (и вместо пустой группы после
+	// рестарта балансера).
+	p.modelReplication.SetLoadedBackendsFn(p.backendsWithModelLoaded)
+
 	p.replicationSelector = modelreplication.NewGroupAwareSelector(p.modelReplication)
 	p.replicationCtrl = modelreplication.NewGroupController(p.modelReplication)
 	if err := p.replicationCtrl.Start(); err != nil {

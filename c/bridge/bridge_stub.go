@@ -286,6 +286,13 @@ func GetGPUInfo(index int) (*GPUDevice, error) {
 	return nil, fmt.Errorf("GPU not available in stub mode (llama_stub)")
 }
 
+// GetLastGPULayers — R83 §3.2 (2026-09-26): stub-аналог реальной bridge.go
+// функции. В stub-режиме реального offload нет, поэтому всегда -1
+// («неизвестно») — cppworker не должен логировать расхождение плана.
+func GetLastGPULayers() int {
+	return -1
+}
+
 // ============================================================
 // Model management (stub)
 // ============================================================

@@ -23,6 +23,7 @@
 #include <math.h>
 #include <stdatomic.h>  // Round 31 #6 (2026-08-09): atomic_int abort_requested
 #include <time.h>  // для time() — time-based RNG seed (для seed=0)
+#include <sys/stat.h>  // R83 §3.2: размер файла модели (нижняя оценка весов)
 
 // Отключаем буферизацию stdout для Docker-логов — все printf выводятся немедленно.
 // Без этого [bridge] сообщения могут не появляться в `docker compose logs`
@@ -613,6 +614,12 @@ static BridgeErrorInfo g_last_error_info = {
 // Оценочный максимум n_ctx, доступный текущей VRAM. Заполняется из bridge_load_model,
 // читается bridge_check_ctx_capacity для поля max_vram_n_ctx. 0 = unknown.
 static int g_max_vram_n_ctx = 0;
+// R83 §3.2 (2026-09-26): сколько слоёв РЕАЛЬНО ушло на GPU в последнем
+// bridge_load_model (= model_params.n_gpu_layers после возможного клампа
+// из-за VRAM). -1 = неизвестно (load ещё не выполнялся / CUDA отсутствует).
+// Читается bridge_get_last_gpu_layers — Go-сторона делает по этому числу
+// emit warning о расхождении с запрошенным планом.
+static int g_last_loaded_gpu_layers = -1;
 
 static void set_error_info(int code, const char* msg,
                            int current_n_ctx, int required_n_ctx,
@@ -768,6 +775,12 @@ void bridge_init(void) {
 #include <cuda.h>
 #endif
 
+// R83 §3.2: сколько слоёв фактически ушло на GPU в последнем
+// bridge_load_model. -1 = неизвестно (load не выполнялся).
+int bridge_get_last_gpu_layers(void) {
+    return g_last_loaded_gpu_layers;
+}
+
 int bridge_get_gpu_count(void) {
 #ifdef GGML_USE_CUDA
     int count = 0;
@@ -846,6 +859,68 @@ struct ggml_backend_buffer_type * resolve_buft_by_name(const char *name) {
         }
     }
     return NULL;
+}
+
+// ============================================================
+// R83 §3.2 (2026-09-26): кламп gpu_layers по свободной VRAM
+// ============================================================
+//
+// ЗАЧЕМ. До R83 bridge_load_model отвечал на «VRAM кончилась» только
+// предупреждением в лог ([bridge] WARNING: VRAM insufficient ...) — план
+// всё равно уходил в llama.cpp, и веса + KV-cache аллоцировались в
+// переподписке. Наблюдённый исход: `malloc(): unaligned tcache chunk
+// detected` → glibc abort() → SIGABRT → рестарт контейнера
+// (OOMKilled=false, см. plans/2026-09-25-handoff-r83-next-session.md §1).
+//
+// ПРИНЦИП (страховка, а не замена планировщика):
+//   * основной расчёт лимитов — Go-сторона (internal/memfit);
+//   * C-сторона обязана не отдавать в llama.cpp заведомо непомещающийся
+//     план. Срабатывает ровно один узкий случай: размер файла весов
+//     больше свободной VRAM, то есть модель не влезает на GPU целиком
+//     даже без KV-cache. Тогда n_gpu_layers понижается до 0 (модель на
+//     CPU). Любая помещающаяся раскладка проходит без изменений —
+//     C-оценка не «съедает» корректно спланированные 22-24 слоя;
+//   * неточность безопасна в одну сторону: размер файла — оценка СВЕРХУ
+//     для split-GGUF (учитывает только один шард), поэтому кламп может
+//     не сработать там, где сработал бы, но не может сработать на
+//     помещающейся модели;
+//   * per-tensor размеры (и, значит, «сколько слоёв влезет») до загрузки
+//     неизвестны: llama.cpp отдаёт их только через llama_model_* после
+//     llama_model_load_from_file. Поэтому решение «сколько слоёв» остаётся
+//     за memfit, а у C-стороны — только грубый отказ от заведомо
+//     непомещающегося плана.
+
+// R83 §3.2: получить свободную VRAM текущего CUDA-устройства в байтах.
+// Возвращает false, если CUDA недоступна или запрос не удался.
+static bool r83_cuda_free_vram_bytes(unsigned long long* out_free) {
+#ifdef GGML_USE_CUDA
+    size_t free_bytes = 0, total_bytes = 0;
+    if (cuMemGetInfo(&free_bytes, &total_bytes) != CUDA_SUCCESS) {
+        return false;
+    }
+    if (out_free != NULL) *out_free = (unsigned long long)free_bytes;
+    return true;
+#else
+    (void)out_free;
+    return false;
+#endif
+}
+
+// R83 §3.2: размер файла модели в байтах — нижняя оценка объёма весов.
+// Возвращает 0, если файл недоступен.
+static unsigned long long r83_file_size_bytes(const char* path) {
+    if (path == NULL || path[0] == '\0') return 0;
+#ifdef _WIN32
+    // MinGW: _stat64 / _wstat64. Используем stat() из <sys/stat.h> —
+    // для размеров > 2 GiB берём _stati64-совместимый вариант.
+    struct _stati64 st;
+    if (_stati64(path, &st) != 0) return 0;
+    return (unsigned long long)st.st_size;
+#else
+    struct stat st;
+    if (stat(path, &st) != 0) return 0;
+    return (unsigned long long)st.st_size;
+#endif
 }
 
 // 
@@ -997,6 +1072,33 @@ ModelHandle bridge_load_model(const ModelConfig* config, char** error_msg, Model
     }
 
 
+    // R83 §3.2 (2026-09-26): кламп n_gpu_layers, если запрошенный GPU-offload
+    // заведомо не помещается в свободную VRAM. См. подробный комментарий у
+    // r83_cuda_free_vram_bytes. Проверяем ДО llama_model_load_from_file:
+    // после загрузки веса уже аллоцированы, и «уменьшить слои» без
+    // unload+reload невозможно.
+    //
+    // Условие срабатывания узкое: размер файла весов (нижняя оценка объёма
+    // модели) больше свободной VRAM. То есть модель не влезает на GPU
+    // целиком даже без KV-cache — отдавать такой план в llama.cpp значит
+    // аллоцировать в переподписке (инцидент SIGABRT, §1 хендоффа).
+    // Частичные раскладки (веса влезают, не влезает KV) НЕ трогаем здесь —
+    // их проверяет пост-загрузочный блок оценки KV ниже, а планирует memfit.
+    if (model_params.n_gpu_layers != 0) {
+        unsigned long long free_vram = 0;
+        unsigned long long file_bytes = r83_file_size_bytes(config->model_path);
+        if (r83_cuda_free_vram_bytes(&free_vram) && file_bytes > 0 &&
+            free_vram < file_bytes) {
+            printf("[bridge] R83 §3.2: clamping gpu_layers %d -> 0 "
+                   "(free VRAM=%llu MB < model file=%llu MB; weights cannot "
+                   "fit on GPU at all)\n",
+                   model_params.n_gpu_layers,
+                   free_vram / (1024ULL * 1024ULL),
+                   file_bytes / (1024ULL * 1024ULL));
+            model_params.n_gpu_layers = 0;
+        }
+    }
+
     // Загружаем модель
     struct llama_model *model = llama_model_load_from_file(config->model_path, model_params);
     if (model == NULL) {
@@ -1011,6 +1113,12 @@ ModelHandle bridge_load_model(const ModelConfig* config, char** error_msg, Model
         free(im);
         return NULL;
     }
+
+    // R83 §3.2: запоминаем фактически применённый GPU-offload (после
+    // возможного клампа выше). Go-сторона читает его через
+    // bridge_get_last_gpu_layers() и логирует расхождение с запрошенным.
+    g_last_loaded_gpu_layers = model_params.n_gpu_layers;
+    if (g_last_loaded_gpu_layers < 0) g_last_loaded_gpu_layers = 0;
 
     // R60.57: CHECKPOINT A — model loaded into memory, но context ещё не создан.
     // Самое ценное место для отмены: после того как тензоры и метаданные
@@ -1097,6 +1205,130 @@ ModelHandle bridge_load_model(const ModelConfig* config, char** error_msg, Model
     // Флаг embeddings включает запись логов в KV-cache для всех токенов prompt.
     ctx_params.embeddings = true;
 
+    // ============================================================
+    // R83 §3.2 (2026-09-26): проверка KV-cache ДО создания контекста
+    // ============================================================
+    // Раньше этот расчёт выполнялся ПОСЛЕ llama_init_from_model и только
+    // логировал предупреждение. Проблема: KV-cache аллоцируется внутри
+    // llama_init_from_model, то есть «модель не влезает» обнаруживалось
+    // уже после того, как память выделена в переподписке — наблюдаемый
+    // исход `malloc(): unaligned tcache chunk detected` → SIGABRT (§1).
+    //
+    // Теперь считаем ДО создания контекста и, если в свободной VRAM не
+    // помещается даже один токен KV, отказываем: освобождаем уже
+    // загруженную модель и возвращаем ошибку. Go-сторона получит
+    // структурированный отказ вместо аллокации в переподписке; в
+    // BridgeErrorInfo попадает max_vram_n_ctx=0.
+    //
+    // ВАЖНО: если KV помещается — решение не трогаем. Кламп gpu_layers
+    // уже сделан memfit'ом на Go-стороне, а его оценка точнее C-оценки.
+    //
+    // Формула (GQA): per_token = 2 (K+V) * n_kv_layers * n_kv_heads * head_dim * type_size
+    //   head_dim = n_embd / n_heads  (для Qwen3.8/KV256 это attention.key_length,
+    //   которое llama_model_n_embd/n_head не воспроизводит — см. R83 §1 хендоффа)
+    // Если данных нет (CPU-only, не CUDA) — оставляем 0 (unknown).
+    // ============================================================
+#ifdef GGML_USE_CUDA
+    {
+        size_t free_bytes = 0, total_bytes = 0;
+        CUresult cu_err = cuMemGetInfo(&free_bytes, &total_bytes);
+        if (cu_err == CUDA_SUCCESS) {
+            int n_layers      = (int)llama_model_n_layer(model);
+            int n_embd        = (int)llama_model_n_embd(model);
+            int n_heads       = (int)llama_model_n_head(model);
+            int n_kv_heads    = (int)llama_model_n_head_kv(model);
+            uint64_t model_size_bytes = llama_model_size(model);
+            int gpu_layers = model_params.n_gpu_layers;
+            if (gpu_layers < 0 || gpu_layers > n_layers) gpu_layers = n_layers;
+
+            // После загрузки модели free_bytes (cuMemGetInfo) УЖЕ отражает
+            // свободную VRAM за вычетом потребления модели и начального KV-cache.
+            // НЕ вычитаем модель повторно — это double-counting, который даёт
+            // free_for_kv ≈ 0 на A10 (24GB) с Qwen 35B Q4_K_M (~24GB).
+            int64_t free_for_kv = (int64_t)free_bytes;
+            if (free_for_kv < 0) free_for_kv = 0;
+
+            int head_dim = (n_heads > 0) ? (n_embd / n_heads) : n_embd;
+            if (n_kv_heads <= 0) {
+                n_kv_heads = n_heads; // fallback для MHA
+            }
+            if (head_dim <= 0) head_dim = 1;
+
+            // Тип KV-кэша влияет на per-token размер в 2-3 раза
+            // (R83 §3.4: тип обязан совпадать с тем, что видит гейт).
+            unsigned long long type_size = 2; // f16 default
+            switch (ctx_params.type_k) {
+                case GGML_TYPE_Q8_0: type_size = 34; break; // 32 элемента + 2B scale
+                case GGML_TYPE_Q4_0: type_size = 18; break; // 32 элемента + 2B scale
+                default:             type_size = 32; break; // f16: 32 * 2B
+            }
+            // kv_per_token — байты НА ТОКЕН для K+V.
+            //   row_bytes = n_kv_heads * head_dim * (type_size / elements_per_block)
+            // Для f16 elements_per_block=1, для q8_0/q4_0 = 32.
+            unsigned long long elems_per_block = (type_size == 32) ? 1 : 32;
+            unsigned long long row_bytes =
+                (unsigned long long)n_kv_heads * (unsigned long long)head_dim *
+                type_size / elems_per_block;
+            int64_t kv_per_token = 2 * (int64_t)n_layers * (int64_t)row_bytes;
+
+            // estimated_max — оценка БЕЗ clamp'а. 0 если
+            // free_for_kv < kv_per_token (модель не влезает в VRAM).
+            int estimated_max = 0;
+            if (kv_per_token > 0) {
+                estimated_max = (int)(free_for_kv / kv_per_token);
+            }
+            // Верхний предел (8M токенов) для защиты от вырожденных
+            // случаев (e.g. модель 1B на H100 80GB).
+            if (estimated_max > 8388608) estimated_max = 8388608;
+
+            err_mutex_lock();
+            g_max_vram_n_ctx = estimated_max;
+            g_last_error_info.max_vram_n_ctx = estimated_max;
+            err_mutex_unlock();
+
+            if (estimated_max == 0 && gpu_layers > 0) {
+                // Свободной VRAM не хватает даже на один токен KV-cache.
+                // R83 §3.2: НЕ отдаём план в llama_init_from_model — иначе
+                // аллокация уходит в переподписку (SIGABRT, §1).
+                // gpu_layers == 0 означает CPU-only раскладку: KV-cache тоже
+                // на CPU, дефицита VRAM здесь нет и отказывать не за что.
+                char buf[512];
+                snprintf(buf, sizeof(buf),
+                         "VRAM insufficient for KV-cache: requested n_ctx=%u with "
+                         "gpu_layers=%d does not fit in %.0f MB free VRAM "
+                         "(gpu_model=%llu MB, kv_per_token=%lld bytes) — "
+                         "reduce n_gpu_layers or n_ctx",
+                         ctx_params.n_ctx, gpu_layers,
+                         (double)free_bytes / (1024.0 * 1024.0),
+                         (unsigned long long)(model_size_bytes / (1024 * 1024)),
+                         (long long)kv_per_token);
+                printf("[bridge] R83 §3.2 (pre-init): %s\n", buf);
+                set_error_info(BRIDGE_ERR_GPU_OOM, buf, (int)ctx_params.n_ctx, 0,
+                               0, 0, 0, 0);
+                if (out_handle) *out_handle = NULL;
+                llama_model_free(model);
+                free(im);
+                if (error_msg) *error_msg = strdup(buf);
+                return NULL;
+            }
+
+            printf("[bridge] VRAM-estimated max n_ctx = %d "
+                   "(free=%lld MB, gpu_model=%llu MB, "
+                   "n_layers=%d n_embd=%d n_heads=%d n_kv_heads=%d "
+                   "head_dim=%d kv_per_token=%lld bytes, requested n_ctx=%u)\n",
+                   estimated_max,
+                   (long long)(free_bytes / (1024 * 1024)),
+                   (unsigned long long)(model_size_bytes / (1024 * 1024)),
+                   n_layers, n_embd, n_heads, n_kv_heads,
+                   head_dim, (long long)kv_per_token, ctx_params.n_ctx);
+        } else {
+            printf("[bridge] cuMemGetInfo failed — cannot estimate VRAM-based n_ctx\n");
+        }
+    }
+#else
+    printf("[bridge] GGML_USE_CUDA not defined — VRAM estimation skipped, max_vram_n_ctx=0\n");
+#endif
+
     // Создаём контекст. В новой llama.cpp `llama_new_context_with_model` deprecated;
     // используем `llama_init_from_model`.
     struct llama_context *context = llama_init_from_model(model, ctx_params);
@@ -1170,134 +1402,6 @@ ModelHandle bridge_load_model(const ModelConfig* config, char** error_msg, Model
         if (error_msg) *error_msg = strdup(last_error);
         return NULL;
     }
-
-    // ============================================================
-    // Оценка максимального n_ctx, доступного текущей VRAM
-    // ============================================================
-    // Нужна для поля max_vram_n_ctx в BridgeErrorInfo — Go-сторона
-    // использует её в decideNCtx() (см. internal/balancer/nctx_reload.go)
-    // чтобы понять, можно ли auto-reload с большим n_ctx.
-    //
-    // Формула: free_vram_after_model = free_vram - (model_size * n_gpu_layers / n_layers)
-    //   (грубо: занятая VRAM ≈ вес модели * доля GPU-слоёв)
-    // max_n_ctx = free_vram_after_model / kv_cache_per_token
-    //
-    // KV Cache per token (f16):
-    //   K  cache: n_layers * n_kv_heads * head_dim * 2 bytes
-    //   V  cache: n_layers * n_kv_heads * head_dim * 2 bytes
-    //   head_dim = n_embd / n_heads
-    //   Total per token = 4 * n_layers * n_kv_heads * (n_embd / n_heads)
-    //
-    // Для MHA (n_kv_heads == n_heads): 4 * n_layers * n_embd (pre-GQA формула)
-    // Для GQA (n_kv_heads < n_heads): значительно меньше — правильно учитываем GQA.
-    // Пример: Llama 70B (n_layers=80, n_embd=8192, n_heads=64, n_kv_heads=8):
-    //   Без GQA: 4*80*8192 = 2,621,440 bytes/token (ЗАВЫШЕНИЕ в 8 раз!)
-    //   С  GQA:  4*80*8*128 =   327,680 bytes/token (корректно)
-    // Если данных нет (CPU-only, не CUDA) — оставляем 0 (unknown).
-    // Go-сторона может пересчитать max_vram_n_ctx самостоятельно через GGUF-парсер
-    // и estimateKVCacheMB() (см. internal/cppbackend/backend.go).
-    // "Грубую ошибку оставлять нельзя" — формула корректна для GQA моделей.
-    // ============================================================
-    // ВАЖНО: Clamp на ctx_params.n_ctx применяется ТОЛЬКО если
-    // estimated_max > 0. Если estimated_max == 0 (модель не влезает
-    // в VRAM полностью), clamp на 4096 скрывает дефицит и Go-сторона
-    // думает «VRAM позволяет 4096 токенов» — но на самом деле
-    // модель едва поместилась, KV-cache некуда выделять.
-    //
-    // Проблема на A10 (24GB) с Qwen 35B Q4_K_M (~24GB):
-    //   free_for_kv ≈ 0 → estimated_max = 0 → старый clamp давал 4096
-    //   → Go думает «max_vram_n_ctx=4096» → reject на любой num_ctx > 3481
-    //   → пользователь видит "requested n_ctx=128000 exceeds safe VRAM limit"
-    //
-    // Решение: не прятать estimated_max=0. Go-сторона получит 0,
-    // поймёт «VRAM не хватает» и сможет предложить CPU-offload
-    // (уменьшить n_gpu_layers) вместо reject'а с ложным max_vram_n_ctx.
-    // ============================================================
-#ifdef GGML_USE_CUDA
-    {
-        size_t free_bytes = 0, total_bytes = 0;
-        CUresult cu_err = cuMemGetInfo(&free_bytes, &total_bytes);
-        if (cu_err == CUDA_SUCCESS) {
-            int n_layers      = (int)llama_model_n_layer(model);
-            int n_embd        = (int)llama_model_n_embd(model);
-            int n_heads       = (int)llama_model_n_head(model);
-            int n_kv_heads    = (int)llama_model_n_head_kv(model);
-            uint64_t model_size_bytes = llama_model_size(model);
-            int gpu_layers = config->n_gpu_layers;
-            if (gpu_layers < 0 || gpu_layers > n_layers) gpu_layers = n_layers;
-            // После загрузки модели free_bytes (cuMemGetInfo) УЖЕ отражает
-            // свободную VRAM за вычетом потребления модели и начального KV-cache.
-            // НЕ вычитаем модель повторно — это double-counting, который даёт
-            // free_for_kv ≈ 0 на A10 (24GB) с Qwen 35B Q4_K_M (~24GB).
-            //
-            // ВНИМАНИЕ: model_size_bytes и gpu_model_bytes вычисляются только
-            // для диагностического вывода (log). Для расчёта KV-cache используем
-            // free_bytes напрямую — оно уже корректно отражает остаток.
-            int64_t free_for_kv = (int64_t)free_bytes;
-            if (free_for_kv < 0) free_for_kv = 0;
-
-            // KV Cache per token (f16) — GQA-формула:
-            //   head_dim = n_embd / n_heads
-            //   per_token = 4 * n_layers * n_kv_heads * head_dim
-            int head_dim = (n_heads > 0) ? (n_embd / n_heads) : n_embd;
-            if (n_kv_heads <= 0) {
-                n_kv_heads = n_heads; // fallback для MHA
-            }
-            if (head_dim <= 0) head_dim = 1;
-            int64_t kv_per_token = (int64_t)4 * (int64_t)n_layers *
-                                   (int64_t)n_kv_heads * (int64_t)head_dim;
-
-            // raw_estimated — оценка БЕЗ clamp'а. Может быть 0 если
-            // free_for_kv < kv_per_token (модель не влезает в VRAM).
-            int estimated_max = 0;
-            if (kv_per_token > 0) {
-                estimated_max = (int)(free_for_kv / kv_per_token);
-            }
-
-            // Clamp только если estimated_max > 0.
-            // ВАЖНО: не поднимаем estimated_max до ctx_params.n_ctx
-            // (старый опасный clamp, который маскировал дефицит VRAM).
-            // На A10 (24GB) с Qwen 35B Q4_K_M (~24GB) после загрузки
-            // модели может остаться 0.5-2GB → estimated_max=2000-8000.
-            // Подъём до 4096 даёт ложную уверенность Go-стороне,
-            // что VRAM хватает — auto-reload на 4096 вызовет OOM.
-            // Верхний предел (8M токенов) для защиты от вырожденных
-            // случаев (e.g. модель 1B на H100 80GB).
-            if (estimated_max > 0) {
-                if (estimated_max > 8388608) estimated_max = 8388608;
-            } else {
-                // estimated_max == 0 — модель не влезает в VRAM.
-                // Не маскируем это значение! Go-сторона увидит 0
-                // и сможет принять информированное решение
-                // (CPU-offload, уменьшение gpu_layers и т.п.).
-                printf("[bridge] WARNING: VRAM insufficient for KV-cache with current gpu_layers=%d "
-                       "(free=%lld MB, gpu_model=%llu MB) — max_vram_n_ctx=0, "
-                       "client should reduce n_gpu_layers or increase VRAM\n",
-                       gpu_layers,
-                       (long long)(free_bytes / (1024 * 1024)),
-                       (unsigned long long)(model_size_bytes / (1024 * 1024)));
-            }
-
-            err_mutex_lock();
-            g_max_vram_n_ctx = estimated_max;
-            g_last_error_info.max_vram_n_ctx = estimated_max;
-            err_mutex_unlock();
-            printf("[bridge] VRAM-estimated max n_ctx = %d "
-                   "(free=%lld MB, gpu_model=%llu MB, "
-                   "n_layers=%d n_embd=%d n_heads=%d n_kv_heads=%d "
-                   "head_dim=%d kv_per_token=%lld bytes)\n",
-                   estimated_max,
-                   (long long)(free_bytes / (1024 * 1024)),
-                   (unsigned long long)(model_size_bytes / (1024 * 1024)),
-                   n_layers, n_embd, n_heads, n_kv_heads,
-                   head_dim, (long long)kv_per_token);
-        } else {
-            printf("[bridge] cuMemGetInfo failed — cannot estimate VRAM-based n_ctx\n");
-        }
-    }
-#else
-    printf("[bridge] GGML_USE_CUDA not defined — VRAM estimation skipped, max_vram_n_ctx=0\n");
-#endif
 
     printf("[bridge] model loaded successfully: %s (effective n_ctx=%u, n_batch=%u)\n",
            config->model_path, im->ctx_n_ctx, im->ctx_n_batch);

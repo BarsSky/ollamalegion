@@ -5,7 +5,50 @@
 Формат ведётся в соответствии с [Keep a Changelog](https://keepachangelog.com/ru/1.0.0/),
 и этот проект придерживается [Semantic Versioning](https://semver.org/lang/ru/).
 
-## [0.5.42 — R83: живая верификация (2026-09-25)]
+## [0.5.43 — R83 §3.2: C-bridge не отдаёт в llama.cpp непомещающийся план (2026-09-26)]
+
+### 🔒 Кламп `gpu_layers` вместо предупреждения в лог
+
+`bridge_load_model` отвечал на «VRAM кончилась» только строкой
+`[bridge] WARNING: VRAM insufficient for KV-cache with current gpu_layers=…` —
+план всё равно уходил в llama.cpp, веса и KV-cache аллоцировались в
+переподписке. Наблюдённый исход — `malloc(): unaligned tcache chunk detected`
+→ glibc `abort()` → **SIGABRT** → рестарт контейнера с `OOMKilled=false`
+(инцидент §1 хендоффа).
+
+- **До загрузки модели** (`c/bridge/bridge.c`): если свободная VRAM меньше
+  размера файла весов, `n_gpu_layers` понижается до 0 — модель уходит на CPU,
+  а не в переподписку. Условие узкое намеренно: любая частичная раскладка
+  (веса влезают, не влезает KV) проходит без изменений, потому что её уже
+  спланировал `memfit` на Go-стороне, и его оценка точнее средней по файлу.
+- **Проверка KV-cache перенесена ДО `llama_init_from_model`**: KV-cache
+  аллоцируется именно там, поэтому прежний расчёт «после» мог только
+  констатировать факт. Если в свободной VRAM не помещается даже один токен
+  KV, загрузка завершается структурированной ошибкой
+  `BRIDGE_ERR_GPU_OOM` с числами (`n_ctx`, `gpu_layers`, свободная VRAM,
+  `kv_per_token`), а модель освобождается — без аллокации в переподписке.
+- **Тип KV учитывается** в per-token оценке (f16 / q8_0 / q4_0), поэтому
+  «помещается ли» больше не зависит от догадки о типе.
+- Новая функция `bridge_get_last_gpu_layers()` (bridge.c + bridge.h + Go и
+  stub-биндинги) отдаёт фактически применённый offload;
+  `backend.LoadModelWithOpts` логирует расхождение с планом
+  (`C-bridge clamped gpu_layers (R83 §3.2)`), чтобы молчаливая деградация до
+  CPU-only не оставалась незамеченной.
+
+**Проверка:** `gcc -fsyntax-only -std=c11 -DGGML_USE_CUDA` по `bridge.c` с
+реальными заголовками llama.cpp — чисто; `go build -tags llama_stub ./cmd/...`
+зелёный. Страховка: после single-flight (§2.5 хендоффа) путь на живом стеке
+больше не воспроизводится.
+
+### 📦 Выпуск `r83-submodule-v3`
+
+Правки §2.1–2.4 хендоффа (guard автотюна, top-level `vram_known`, single-flight,
+ожидание по прогрессу) раскатаны отдельным тегом `r83-submodule-v3`:
+`scripts/release-all.ps1 -Tag r83-submodule-v3` — в `deployments/.env` тег
+пишется без префикса `gpu-` (compose добавляет его сам, `gpu-gpu-<tag>` больше
+не появляется), `scripts/check-image-tags.ps1` — согласованность подтверждена.
+
+
 
 ### 🧱 Подсистема решений о памяти: `internal/memfit` + shadow-режим
 

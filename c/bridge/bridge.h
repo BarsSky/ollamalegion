@@ -180,6 +180,15 @@ int bridge_get_gpu_info(int gpu_index, GPUDeviceInfo* info);
 // платформах Go (x86-64, ARM64). На других платформах Go не работает.
 ModelHandle bridge_load_model(const ModelConfig* config, char** error_msg, ModelHandle* out_handle);
 
+// R83 §3.2 (2026-09-26): сколько слоёв фактически ушло на GPU в последнем
+// успешном bridge_load_model — то есть model_params.n_gpu_layers ПОСЛЕ
+// клампа по свободной VRAM (см. bridge.c: r83_cuda_free_vram_bytes).
+//
+// Возвращает -1, если загрузки ещё не было (или сборка без CUDA).
+// Go-сторона сравнивает с запрошенным планом и логирует расхождение:
+// молчаливое понижение gpu_layers скрывало бы деградацию до CPU-only.
+int bridge_get_last_gpu_layers(void);
+
 // Выгрузка модели
 void bridge_free_model(ModelHandle model);
 

@@ -939,6 +939,17 @@ func (b *Backend) LoadModelWithOpts(ctx context.Context, name string, path strin
 		return fmt.Errorf("load model %s: %w", name, err)
 	}
 
+	// R83 §3.2 (2026-09-26): C-bridge клампит gpu_layers, если запрошенный
+	// план заведомо не помещается в VRAM (см. c/bridge/bridge.c). Проверяем,
+	// что фактический offload совпал с планом: молчаливое понижение до
+	// CPU-only нельзя оставлять незамеченным в логах.
+	if applied := bridge.GetLastGPULayers(); applied >= 0 && applied != gpuLayers {
+		logger.Get().Warnw("C-bridge clamped gpu_layers (R83 §3.2): VRAM check rejected the planned offload",
+			"name", name,
+			"requestedGpuLayers", gpuLayers,
+			"appliedGpuLayers", applied)
+	}
+
 	// Получаем метаданные
 	meta, err := handle.GetMetadata()
 	if err != nil {

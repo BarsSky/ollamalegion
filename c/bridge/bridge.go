@@ -379,6 +379,17 @@ func GetGPUCount() int {
 	return int(C.bridge_get_gpu_count())
 }
 
+// GetLastGPULayers — R83 §3.2 (2026-09-26): сколько слоёв фактически ушло на
+// GPU в последнем успешном LoadModel/LoadModelWithEarlyHandle (после клампа
+// C-стороны по свободной VRAM). -1 = загрузки ещё не было.
+//
+// Зачем: C-bridge может понизить n_gpu_layers, если запрошенный план заведомо
+// не помещается в VRAM (модель на CPU). Без чтения этого значения Go-сторона
+// не увидела бы подмену плана и логировала бы несуществующий offload.
+func GetLastGPULayers() int {
+	return int(C.bridge_get_last_gpu_layers())
+}
+
 // GetGPUInfo возвращает информацию о GPU
 func GetGPUInfo(index int) (*GPUDevice, error) {
 	var info C.GPUDeviceInfo

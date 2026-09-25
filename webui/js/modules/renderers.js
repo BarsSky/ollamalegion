@@ -67,10 +67,17 @@ const Renderers = (function () {
     function dashboard(backends, sessions, queue, loadedModels) {
         const healthy = backends.filter(b => b.status === 'healthy');
         // Если извне передан cluster-loaded count (рекомендуемый путь) — используем его.
-        // Иначе fallback на ollama.runningModels (учитывает только ollama-бэкенды).
+        // Иначе считаем сами по бэкендам.
+        //
+        // R83 (2026-09-25): раньше fallback учитывал ТОЛЬКО ollama.runningModels,
+        // поэтому на чисто llama.cpp-стенде дашборд показывал «ЗАГРУЖЕНО МОДЕЛЕЙ 0»,
+        // хотя карточка Ollama Runtime на той же странице рисовала модель из
+        // backend.llamaCpp.loadedModels (см. runtimeCluster ниже). Живой скрин с A10:
+        // счётчик 0 при загруженной Qwen3.8-27B-UD-Q4_K_M (C-65.5K).
         const totalModels = (typeof loadedModels === 'number')
             ? loadedModels
-            : backends.reduce((sum, b) => sum + (b.ollama?.runningModels?.length || 0), 0);
+            : backends.reduce((sum, b) =>
+                sum + (b.ollama?.runningModels?.length || 0) + (b.llamaCpp?.loadedModels?.length || 0), 0);
         const activeSessions = (sessions || []).filter(s => s.active).length;
         const totalRequests = (sessions || []).reduce((sum, s) => sum + (s.requestCount || 0), 0);
         const queueSize = queue?.current_size || 0;

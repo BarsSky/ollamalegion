@@ -237,6 +237,9 @@ window.I18N_RU = {
 
   // Common
   "common.loading": "Загрузка...",
+  // R83: ключ запрашивался из renderers.js (placeholder поиска в логах прокси),
+  // но отсутствовал — консоль выдавала «Missing translation key: common.search».
+  "common.search": "Поиск...",
   "common.in": "за",
   "common.error": "Ошибка",
   "common.success": "Успешно",

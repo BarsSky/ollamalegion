@@ -253,6 +253,8 @@ window.I18N_EN = {
 
   // Common
   "common.loading": "Loading...",
+  // R83: см. ru.js — ключ использовался, но отсутствовал в словаре.
+  "common.search": "Search...",
   "common.in": "in",
   "common.error": "Error",
   "common.success": "Success",

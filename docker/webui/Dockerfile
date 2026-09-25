@@ -58,6 +58,24 @@ COPY webui/favicon-16x16.png .
 COPY webui/favicon-32x32.png .
 COPY webui/favicon.ico .
 
+# === R83 (2026-09-25): единый токен cache-busting на образ ===
+#
+# ЗАЧЕМ. В репозитории ?v= проставлен литералом (это нужно, чтобы страницу можно
+# было отдавать прямо из webui/ без сборки), и исторически он был ПЕР-ФАЙЛОВЫМ:
+# monitor.html тянул monitor-metrics.js?v=R66d рядом с ui-renderer.js?v=R77,
+# index.html — сразу R66e/R66g/R66i. Следствие: частичный релиз давал СМЕШАННЫЕ
+# поколения JS в одной странице, а забытый бамп версии оставлял у клиента старый
+# файл из кэша (именно так правка R70 не доехала до оператора).
+#
+# Теперь в образе токен один на всю сборку и берётся из того же VERSION, что
+# уходит в js/modules/config.js (window.WEBUI_CONFIG.VERSION). VERSION
+# прокидывается compose'ом: `args: VERSION: ${WEBUI_VERSION:-dev}`,
+# а rebuild_webui_*.ps1 выставляет WEBUI_VERSION=$Tag — руками править HTML
+# при выпуске больше не нужно.
+#
+# Все *.html лежат в корне WORKDIR (COPY webui/*.html ./), поэтому glob достаточен.
+RUN sed -i "s/?v=[A-Za-z0-9._-]*/?v=${VERSION}/g" *.html
+
 # Копирование nginx шаблона конфига (будет обработан envsubst при старте)
 COPY webui/nginx.conf /etc/nginx/conf.d/default.conf.template
 

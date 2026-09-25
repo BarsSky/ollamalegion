@@ -48,6 +48,29 @@
 здоровый бэкенд не переезжает; таблица статусов `backendUnavailable`).
 Регрессии: `./internal/... -race` — зелёный.
 
+**Fix после CI (R82b):** job `Test (self-hosted Windows)` упал на
+`TestLlamaCppProxy_ErrorHandling_CppWorkerUnavailable`: ответ **502** через 7 с
+вместо переезда на живую копию. Причина — устаревший снапшот метрик:
+`queryCppWorkerModels` при недоступном узле отдаёт последний известный ответ
+(«using last known snapshot»), из-за чего `isModelReadyOnBackend` считал модель
+загруженной на мёртвом бэкенде, failover не срабатывал, и запрос уходил на
+мёртвый узел. Плюс на Windows текст ошибки — «…actively refused it», который не
+распознавался как connection refused (`error_type=unknown`). Исправлено:
+
+* `backendReachable` (живой GET `/api/models`, без снапшота) — при недоступном
+  узле `ensureModelLoadedOnBackend` возвращает `errBackendUnreachableR82`, а не
+  «модель готова»; failover срабатывает и на эту ошибку;
+* `backendReadyWithModelByMetrics` — при переезде готовая копия принимается без
+  загрузки/ожидания (узел отвечает + метрики говорят «загружена»);
+* `determineErrorType`/`isConnectionLevelError` распознают Windows-формулировку
+  «actively refused» (`connection_refused` вместо `unknown`), так что мёртвый
+  узел корректно помечается unhealthy и на Windows;
+* тест-регрессия `TestBackendUnreachableR82_RefusesStaleSnapshot`.
+
+Проверено: тот же integration-тест `-count=3 -race` — зелёный;
+`tests/... (-race, -short)` — зелёный; живой стенд — 4×200 за 0.4–1.6 с
+(переехавшие запросы быстрее прежнего: 1.6 с вместо 3.7 с).
+
 ## [0.5.39 — Round 81 (2026-09-25)]
 
 ### 🐛 Хвосты P4: health-статус, усыновление реплик по всем метрикам, честный обход копий

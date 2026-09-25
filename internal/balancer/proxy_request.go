@@ -31,7 +31,12 @@ func determineErrorType(err error, reqCtx context.Context) string {
 	if reqCtx.Err() == context.Canceled {
 		return "context_canceled"
 	}
-	if strings.Contains(errDetail, "connection refused") {
+	if strings.Contains(errDetail, "connection refused") ||
+		// R82: Windows-формулировка WSAECONNREFUSED — «...actively refused it».
+		// Без неё на Windows error_type уходил в "unknown", backend не помечался
+		// unhealthy и запрос не ретраился/не переезжал (замер P4: 502 через 7 с
+		// вместо переезда на живую копию).
+		strings.Contains(errDetail, "actively refused") {
 		return "connection_refused"
 	}
 	if strings.Contains(errDetail, "connection reset") {
@@ -89,6 +94,8 @@ func isConnectionLevelError(err error) bool {
 	}
 	s := err.Error()
 	return strings.Contains(s, "connection refused") ||
+		// R82: Windows-формулировка WSAECONNREFUSED (см. determineErrorType).
+		strings.Contains(s, "actively refused") ||
 		strings.Contains(s, "connection reset") ||
 		strings.Contains(s, "no such host") ||
 		strings.Contains(s, "server misbehaving") || // R55.11

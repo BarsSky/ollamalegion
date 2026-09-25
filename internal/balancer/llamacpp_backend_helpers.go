@@ -3,6 +3,7 @@ package balancer
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"strings"
@@ -209,10 +210,10 @@ func (lr *LlamaCppRouter) ensureModelLoadedWithFailover(
 
 	exclude := map[string]bool{backendID: true}
 
-	// (1) Бэкенд выпал: статус не healthy или ошибка транспортного уровня —
-	// переезжаем на любую другую подходящую копию/узел (с загрузкой при
-	// необходимости).
-	if lr.backendUnavailable(backendID) || IsConnectionLevelError(err) {
+	// (1) Бэкенд выпал: статус не healthy, узел не отвечает или ошибка
+	// транспортного уровня — переезжаем на любую другую подходящую копию/узел
+	// (с загрузкой при необходимости).
+	if lr.backendUnavailable(backendID) || IsConnectionLevelError(err) || errors.Is(err, errBackendUnreachableR82) {
 		if alt := lr.loadOnAlternativeWithFailover(backendID, modelName, opts, exclude); alt != "" {
 			return alt, nil
 		}
@@ -240,6 +241,13 @@ func (lr *LlamaCppRouter) loadOnAlternativeWithFailover(
 		if alt == "" {
 			return ""
 		}
+		// R82: копия уже готова (узел отвечает, метрики говорят «модель
+		// загружена») — обслуживаем без загрузки и ожидания.
+		if lr.backendReadyWithModelByMetrics(alt, modelName) {
+			logger.Get().Warnw("R82: переезд на готовую копию после отказа бэкенда",
+				"model", modelName, "from", backendID, "to", alt)
+			return alt
+		}
 		if _, altErr := lr.ensureModelLoadedOnBackend(alt, modelName, opts); altErr == nil {
 			logger.Get().Warnw("R82: переезд на живую копию после отказа бэкенда",
 				"model", modelName, "from", backendID, "to", alt)
@@ -264,6 +272,46 @@ func (lr *LlamaCppRouter) selectReadyModelCopyExcluding(model string, exclude ma
 		}
 	}
 	return lr.proxy.findBackendWithModelExcluding(model, exclude, lr.proxy.getAllowedTypesList(types.BackendTypeLlamaCpp))
+}
+
+// errBackendUnreachableR82 — cppworker не отвечает (порт закрыт/DNS/таймаут).
+// Отдельная ошибка нужна, чтобы failover отличил «узел мёртв» от «модель не
+// загрузилась».
+var errBackendUnreachableR82 = errors.New("backend unreachable")
+
+// backendReachable — R82: быстрая проверка, отвечает ли cppworker бэкенда.
+//
+// Нужна потому, что queryCppWorkerModels при недоступном узле отдаёт ПОСЛЕДНИЙ
+// ИЗВЕСТНЫЙ снапшот («using last known snapshot»), и isModelReadyOnBackend мог
+// решить «модель загружена» для уже мёртвого бэкенда. Тогда запрос уходил на
+// мёртвый узел и падал 502 после retry (7 с), вместо переезда на живую копию —
+// ровно это поймал CI на TestLlamaCppProxy_ErrorHandling_CppWorkerUnavailable.
+func (lr *LlamaCppRouter) backendReachable(backendID string) bool {
+	if lr == nil || lr.proxy == nil || backendID == "" {
+		return false
+	}
+	baseURL := lr.proxy.backendHTTPAddrByID(backendID)
+	if baseURL == "" {
+		return false
+	}
+	client := &http.Client{Timeout: 2 * time.Second}
+	resp, err := client.Get(baseURL + "/api/models")
+	if err != nil {
+		return false
+	}
+	defer func() { _ = resp.Body.Close() }()
+	return resp.StatusCode == http.StatusOK
+}
+
+// backendReadyWithModelByMetrics — R82: бэкенд доступен и по метрикам модель на
+// нём загружена. Используется при переезде: не гоняем загрузку/ожидание, если
+// копия уже готова (cppworker может не отдавать /api/models в ожидаемом формате,
+// метрики агента/поллера — источник истины).
+func (lr *LlamaCppRouter) backendReadyWithModelByMetrics(backendID, modelName string) bool {
+	if lr == nil || lr.proxy == nil || !lr.backendReachable(backendID) {
+		return false
+	}
+	return lr.proxy.backendHasModelByID(backendID, modelName)
 }
 
 // selectLlamaCppBackendForModel — R81: выбор бэкенда для llama.cpp-путей.
@@ -544,6 +592,14 @@ func (lr *LlamaCppRouter) ensureModelLoadedOnBackend(backendID, modelName string
 		ridLog(lr_recentCtx()).Warnw("ensureModelLoadedOnBackend: model disabled in profile, refusing request (no breaker touch)",
 			"backend", backendID, "model", modelName, "profileNotes", prof.Notes)
 		return false, fmt.Errorf("%s", msg)
+	}
+	// R82: cppworker недоступен — не доверяем устаревшему снапшоту метрик
+	// (он может говорить «модель загружена», хотя узел уже мёртв) и отдаём
+	// управление failover'у.
+	if !lr.backendReachable(backendID) {
+		ridLog(lr_recentCtx()).Warnw("ensureModelLoadedOnBackend: backend unreachable, refusing to trust stale snapshot",
+			"backend", backendID, "model", modelName)
+		return false, fmt.Errorf("%w: %s (cppworker did not answer /api/models)", errBackendUnreachableR82, backendID)
 	}
 	// Быстрая проверка — может модель уже загружена
 	if lr.isModelReadyOnBackend(backendID, modelName) {

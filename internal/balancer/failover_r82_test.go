@@ -18,6 +18,7 @@ package balancer
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -185,6 +186,37 @@ func TestBackendUnavailableR82_Statuses(t *testing.T) {
 	}
 	if !lr.backendUnavailable("no-such-backend") {
 		t.Error("неизвестный бэкенд должен считаться недоступным")
+	}
+}
+
+func TestBackendUnreachableR82_RefusesStaleSnapshot(t *testing.T) {
+	// Регрессия из CI: метрики говорили «модель загружена» (устаревший снапшот
+	// после падения узла), а cppworker не отвечал. Раньше
+	// ensureModelLoadedOnBackend возвращал nil (модель «готова»), запрос уходил
+	// на мёртвый узел и падал 502 после 7 с ретраев вместо переезда.
+	lr, _ := newFailoverHarnessR82(t)
+
+	if lr.backendReachable("dead-bk") {
+		t.Fatal("dead-bk (закрытый порт) не должен считаться доступным")
+	}
+	if !lr.proxy.backendHasModelByID("dead-bk", "m") {
+		t.Fatal("предусловие теста: метрики dead-bk должны числить модель загруженной")
+	}
+	_, err := lr.ensureModelLoadedOnBackend("dead-bk", "m")
+	if err == nil {
+		t.Fatal("ensureModelLoadedOnBackend вернул nil для недоступного узла — устаревший снапшот снова вводит в заблуждение")
+	}
+	if !errors.Is(err, errBackendUnreachableR82) {
+		t.Errorf("ошибка %v не помечена как unreachable", err)
+	}
+
+	// И failover на этом основании переезжает на живую копию.
+	got, err := lr.ensureModelLoadedWithFailover("dead-bk", "m", warmupOptions{})
+	if err != nil {
+		t.Fatalf("переезд не сработал: %v", err)
+	}
+	if got != "live-bk" {
+		t.Errorf("выбран %q, ожидался live-bk", got)
 	}
 }
 

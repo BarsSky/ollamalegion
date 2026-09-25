@@ -25,7 +25,9 @@
 
 param(
     [string]$Tag = "r66-submodule-v11",
-    [switch]$SkipBuild
+    [switch]$SkipBuild,
+    # R83: не вешать «последний» тег-алиас (latest).
+    [switch]$NoAlias
 )
 
 # R66c: НЕ 'Stop' — в Windows PowerShell 5.1 docker пишет прогресс в stderr,
@@ -41,19 +43,23 @@ $composePath = Join-Path $repoRoot "deployments\$composeFile"
 $gitCommit = (git rev-parse --short HEAD)
 $buildDate = (Get-Date).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ")
 
-# R66c (2026-09-22): тег пиним ДО сборки. Раньше порядок был обратный, и
-# `docker compose build` собирал образ под СТАРЫМ тегом из compose-файла
-# (docker compose build использует image: из файла, а не -t), после чего
-# `up -d` не находил нужный тег локально, пытался его pull'ить (pull access
-# denied для локального имени) и пересобирал образ второй раз. Побочный эффект:
-# старый тег молча начинал указывать на новое содержимое.
-# Образ в compose прописан строкой (не через ${VAR}) — поэтому и правим файл.
-Write-Host "[webui] Pinning image tag in $composeFile ..." -ForegroundColor Cyan
-$content = Get-Content $composePath -Raw
-$pattern = '(?m)^(\s*image:\s*ollama-legion/webui:)\S+'
-if ($content -notmatch $pattern) { throw "не нашёл строку 'image: ollama-legion/webui:...' в $composePath" }
-$content = [regex]::Replace($content, $pattern, "`${1}$Tag")
-Set-Content -Path $composePath -Value $content -NoNewline
+# R83 (2026-09-25): тег больше НЕ правится в compose-файле.
+#
+# Было: `image: ollama-legion/webui:<tag>` стоял ЛИТЕРАЛОМ, и скрипт заменял его
+# регуляркой (комментарий R66c ниже объяснял, почему это делалось ДО сборки).
+# Теперь в compose `${WEBUI_TAG:-...}`, значение — в deployments/.env.
+# Правка compose регуляркой после этой замены затронула бы сам `${...}` и вернула
+# литерал, поэтому пишем переменную.
+#
+# ПОРЯДОК ВАЖЕН и сохранён: тег фиксируется ДО сборки. `docker compose build`
+# берёт `image:` из файла, поэтому при обратном порядке образ собирался под старым
+# тегом, `up -d` не находил его локально, пытался pull'ить (pull access denied для
+# локального имени) и пересобирал образ второй раз.
+. (Join-Path $PSScriptRoot 'lib-image-tags.ps1')
+Set-ImageTagVar -VariableName 'WEBUI_TAG' -Value $Tag -EnvDir (Join-Path $repoRoot "deployments")
+if (-not $NoAlias) {
+    Add-ImageAlias -ImageRef "${imageName}:${Tag}" -AliasRef "${imageName}:latest"
+}
 
 if (-not $SkipBuild) {
     Write-Host "[webui] Building ${imageName}:${Tag} (commit $gitCommit) ..." -ForegroundColor Cyan

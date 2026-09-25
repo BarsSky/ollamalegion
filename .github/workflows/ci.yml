@@ -195,6 +195,18 @@ jobs:
           & $go build -tags llama_stub -v -o bin\cppworker-stub.exe    .\cmd\cppworker\
           & $go build -tags llama_stub -v -o bin\agent-stub.exe        .\cmd\agent\
 
+      - name: Check image tag consistency (no docker needed)
+        run: |
+          # R83 (2026-09-25): теги образов продового стека вынесены в переменные
+          # deployments/.env (`${VAR:-default}` в compose). Проверка ловит два
+          # класса поломок, которые раньше находились уже на стенде:
+          #   1) кто-то вернул в compose литерал вместо ${VAR} — выпуск снова
+          #      требует правки compose;
+          #   2) манифест выпуска расходится с .env — «пересобрали один
+          #      компонент, остальные остались на старых версиях».
+          # Docker не нужен: проверка чисто текстовая.
+          & .\scripts\check-image-tags.ps1
+
       - name: Verify healthcheck (stub) — start server, probe, stop
         run: |
           # R66c (2026-09-22): раньше шаг состоял из одной строки

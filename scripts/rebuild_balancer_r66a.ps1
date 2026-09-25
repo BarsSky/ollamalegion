@@ -21,7 +21,9 @@
 
 param(
     [string]$Tag = "r66-submodule-v5",
-    [switch]$SkipBuild
+    [switch]$SkipBuild,
+    # R83: не вешать «последний» тег-алиас (latest).
+    [switch]$NoAlias
 )
 
 # R66c (2026-09-22): НЕ 'Stop'. В Windows PowerShell 5.1 (в котором этот скрипт
@@ -44,15 +46,20 @@ if (-not $SkipBuild) {
     if ($LASTEXITCODE -ne 0) { throw "docker build failed (exit $LASTEXITCODE)" }
 }
 
-# Образ балансера в compose прописан строкой (не через ${VAR}), поэтому тег
-# обновляем прямо в compose-файле — иначе compose пересоздаст контейнер на
-# СТАРОМ образе и фиксы не доедут.
-Write-Host "[balancer] Pinning image tag in $composeFile ..." -ForegroundColor Cyan
-$content = Get-Content $composePath -Raw
-$pattern = '(?m)^(\s*image:\s*ollama-legion/balancer:)\S+'
-if ($content -notmatch $pattern) { throw "не нашёл строку 'image: ollama-legion/balancer:...' в $composePath" }
-$content = [regex]::Replace($content, $pattern, "`${1}$Tag")
-Set-Content -Path $composePath -Value $content -NoNewline
+# R83 (2026-09-25): тег больше НЕ правится в compose-файле.
+#
+# Было: `image: ollama-legion/balancer:<tag>` стоял ЛИТЕРАЛОМ, и скрипт заменял
+# его регуляркой. Теперь в compose `${BALANCER_TAG:-...}`, а значение живёт в
+# deployments/.env — там его и меняем. Правка compose регуляркой после этой
+# замены ЗАТЁРЛА бы параметризацию и вернула литерал (то есть каждый выпуск снова
+# требовал бы правки compose — ровно то, от чего уходим).
+. (Join-Path $PSScriptRoot 'lib-image-tags.ps1')
+Set-ImageTagVar -VariableName 'BALANCER_TAG' -Value $Tag -EnvDir (Join-Path $repoRoot "deployments")
+if (-not $NoAlias) {
+    # У балансера нет взаимоисключающих вариантов, поэтому plain `latest` однозначен
+    # и нужен dev-конфигам (docker-compose.yml, docker-compose.full.yml).
+    Add-ImageAlias -ImageRef "${imageName}:${Tag}" -AliasRef "${imageName}:latest"
+}
 
 Push-Location (Join-Path $repoRoot "deployments")
 try {

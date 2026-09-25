@@ -174,3 +174,47 @@ Env vars оставлены только для:
 3. **Проверить** config.json на наличие `streamingMaxDuration` — поле удалено, JSON парсер silently проигнорирует (no error).
 
 Никаких breaking changes для существующих конфигов.
+
+---
+
+## Теги образов (deployments/.env) — R83
+
+**R83 (2026-09-25)**: теги образов продового стека
+(`docker-compose.cppworker-bundled-with-agent.yml`) вынесены в переменные. Compose
+подставляет `${VAR:-default}` **из `deployments/.env`** — `env_file`
+(`.env.bundled-with-agent`) на подстановку НЕ влияет, там те же переменные
+дублируются только для синхронности.
+
+| Переменная | Образ | Значение по умолчанию в compose |
+|---|---|---|
+| `BALANCER_TAG` | `ollama-legion/balancer` | `r82-submodule-v19` |
+| `CPPWORKER_GPU_TAG` | `ollama-legion/cppworker:gpu-<значение>` | `86-r60.4-webui-meta` |
+| `AGENT_TAG` | `ollama-legion/agent` | `cppworker-bundled-r41-agent-x-api-token` |
+| `WEBUI_TAG` | `ollama-legion/webui` | `r77-submodule-v2` |
+
+> **Внимание**: значение из `.env` ПЕРЕОПРЕДЕЛЯЕТ default из compose. Если строка
+> `VAR=` в `.env` есть — compose возьмёт её, а не default.
+
+### Выпуск
+
+```powershell
+# один выпуск на все четыре компонента: сборка + простановка тегов + манифест
+powershell -File scripts/release-all.ps1 -Tag r83-submodule-v1
+# только перепин тегов (без сборки и деплоя)
+powershell -File scripts/release-all.ps1 -Tag r83 -SkipBuild -NoDeploy
+# проверка согласованности (docker не нужен, запускается в CI)
+powershell -File scripts/check-image-tags.ps1
+```
+
+`scripts/release-all.ps1` пишет `deployments/release-manifest.json`
+(компонент → тег + image id + git commit). Откат: вернуть теги в
+`deployments/.env` и выполнить `docker compose up -d`.
+
+### Почему не `latest` везде
+
+`ollama-legion/cppworker` содержит **взаимоисключающие** варианты
+(`cpu` / `stub` / `gpu-86` / `gpu-arch_all` / `gpu-llamacpp`), а `latest` — один
+тег на репозиторий: его перезапишет последняя сборка. Поэтому у cppworker алиас
+вариантный (`latest-gpu-86`), а plain `latest` вешают только те компоненты, у
+которых вариантов нет (balancer, agent, webui). Именно из-за этого ограничения в
+репозитории исторически появились `latest-cpu` и `latest-gpu`.

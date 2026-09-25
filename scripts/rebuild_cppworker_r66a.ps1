@@ -30,7 +30,9 @@
 param(
     # Тег БЕЗ префикса "gpu-": compose собирает имя как ollama-legion/cppworker:gpu-<Tag>.
     [string]$Tag = "r66-submodule-v5",
-    [switch]$SkipBuild
+    [switch]$SkipBuild,
+    # R83: не вешать вариантный «последний» тег-алиас (latest-gpu-86).
+    [switch]$NoAlias
 )
 
 # R66d (2026-09-22): НЕ 'Stop'. В Windows PowerShell 5.1 (pwsh на машине нет)
@@ -56,17 +58,23 @@ if (-not $SkipBuild) {
     if ($LASTEXITCODE -ne 0) { throw "docker build failed (exit $LASTEXITCODE)" }
 }
 
-# ВАЖНО: `image: ollama-legion/cppworker:gpu-${CPPWORKER_GPU_TAG}` в compose
-# подставляется из deployments/.env (интерполяция compose), а НЕ из env_file
-# .env.bundled-with-agent. Держим оба файла синхронными, иначе compose возьмёт
-# (или начнёт собирать) не тот образ, который мы только что собрали.
+# R83 (2026-09-25): запись тега вынесена в общий helper (lib-image-tags.ps1),
+# чтобы все скрипты выпуска делали это ОДИНАКОВО. Логика прежняя: compose
+# интерполирует `gpu-${CPPWORKER_GPU_TAG}` из deployments/.env, а не из env_file
+# .env.bundled-with-agent, поэтому держим оба файла синхронными.
+. (Join-Path $PSScriptRoot 'lib-image-tags.ps1')
+Set-ImageTagVar -VariableName 'CPPWORKER_GPU_TAG' -Value $Tag -EnvDir $envDir
+if (-not $NoAlias) {
+    # ВАЖНО: алиас ВАРИАНТНЫЙ, а не plain `latest`.
+    # В репозитории ollama-legion/cppworker лежат взаимоисключающие варианты
+    # (cpu / stub / gpu-86 / gpu-arch_all / gpu-llamacpp), а `latest` — один тег на
+    # репозиторий: его перезапишет последняя сборка, и `latest` может начать
+    # указывать на CPU- или arch_all-сборку. Этот скрипт собирает CUDA_ARCH=86.
+    Add-ImageAlias -ImageRef "${imageName}:${imageTag}" -AliasRef "${imageName}:latest-gpu-86"
+}
+
 Push-Location $envDir
 try {
-    $tagLine = "CPPWORKER_GPU_TAG=$Tag"
-    (Get-Content ".env") -replace '^CPPWORKER_GPU_TAG=.*', $tagLine | Set-Content ".env"
-    (Get-Content ".env.bundled-with-agent") -replace '^CPPWORKER_GPU_TAG=.*', $tagLine | Set-Content ".env.bundled-with-agent"
-    Write-Host "[cppworker] CPPWORKER_GPU_TAG=$Tag записан в deployments/.env и deployments/.env.bundled-with-agent" -ForegroundColor Cyan
-
     Write-Host "[cppworker] Recreating service cppworker-gpu via compose (aliases + env + volumes + nvidia runtime) ..." -ForegroundColor Cyan
     docker compose -f $composeFile up -d --no-deps --force-recreate cppworker-gpu
     if ($LASTEXITCODE -ne 0) { throw "docker compose up failed (exit $LASTEXITCODE)" }

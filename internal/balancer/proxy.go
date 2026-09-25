@@ -125,6 +125,17 @@ type Proxy struct {
 	// EventBus (вынесен в eventbus.go)
 	eventBus *EventBus
 
+	// R83 (2026-09-25): дедупликация уведомлений о провале загрузки модели.
+	//
+	// Agent присылает метрики каждые ~10 с, и причина провала живёт в cppworker
+	// 10 минут — без дедупликации это ~60 одинаковых уведомлений на один провал,
+	// а SSE ring buffer вмещает всего 100 событий, то есть полезное было бы
+	// вытеснено (см. internal/api/handlers_events.go). Публикуем только СМЕНУ
+	// причины (backendID → key) и одно info-событие при восстановлении.
+	// Ключ — LoadFailureInfo.Key() (модель + код причины).
+	loadFailureMu   sync.Mutex
+	loadFailureSeen map[string]string
+
 	// Round 40 #3 (2026-08-18): apiReverseProxy пересылает /api/v1/*
 	// запросы с proxy-порта (18080) на локальный API-сервер (18081).
 	// Без этого balancer не знает про /api/v1/* пути и они падают

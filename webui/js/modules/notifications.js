@@ -27,6 +27,24 @@
         critical: '🔥',
     };
 
+    // R83 (2026-09-25): экранирование для innerHTML.
+    //
+    // ЗАЧЕМ. Раньше ev.message / ev.source / ev.model подставлялись в innerHTML
+    // КАК ЕСТЬ. А приходит туда внешний текст: сообщения cppworker/llama.cpp
+    // (включая пути и сырые ошибки) и имя модели ИЗ ЗАПРОСА КЛИЕНТА. То есть
+    // клиент мог прислать имя вида `<img src=x onerror=...>` и получить
+    // исполнение скрипта в браузере оператора — хранимый XSS в панели
+    // мониторинга. С появлением уведомлений о провале загрузки (туда попадает
+    // raw_error от llama.cpp) это стало ещё актуальнее.
+    function escapeHtml(value) {
+        return String(value == null ? '' : value)
+            .replace(/&/g, '&amp;')
+            .replace(/</g, '&lt;')
+            .replace(/>/g, '&gt;')
+            .replace(/"/g, '&quot;')
+            .replace(/'/g, '&#39;');
+    }
+
     class NotificationsManager {
         constructor() {
             this.eventSource = null;
@@ -206,25 +224,65 @@
 
             this.buffer.forEach(ev => {
                 const li = document.createElement('li');
-                li.className = `notifications-item severity-${ev.severity || 'info'}`;
+                // severity попадает в ИМЯ CSS-класса, поэтому пропускаем только
+                // известные значения — иначе значение из события ломает разметку.
+                const severity = SEVERITY_ICONS[ev.severity] ? ev.severity : 'info';
+                li.className = `notifications-item severity-${severity}`;
 
-                const icon = SEVERITY_ICONS[ev.severity] || SEVERITY_ICONS.info;
+                const icon = SEVERITY_ICONS[severity] || SEVERITY_ICONS.info;
                 const ts = ev.timestamp ? new Date(ev.timestamp).toLocaleString() : '';
-                const source = ev.source ? `[${ev.source}]` : '';
-                const model = ev.model ? ` (${ev.model})` : '';
+                // R83: всё внешнее — через escapeHtml (см. комментарий выше).
+                const source = ev.source ? `[${escapeHtml(ev.source)}]` : '';
+                const model = ev.model ? ` (${escapeHtml(ev.model)})` : '';
 
                 li.innerHTML = `
                     <span class="notifications-icon">${icon}</span>
                     <div class="notifications-content">
                         <div class="notifications-header">
                             <strong>${source}${model}</strong>
-                            <span class="notifications-time">${ts}</span>
+                            <span class="notifications-time">${escapeHtml(ts)}</span>
                         </div>
-                        <div class="notifications-message">${ev.message || ''}</div>
+                        <div class="notifications-message">${escapeHtml(ev.message || '')}</div>
+                        ${this._renderDetails(ev)}
                     </div>
                 `;
                 container.appendChild(li);
             });
+        }
+
+        // _renderDetails — «подробности» уведомления: числа из data.diagnostics.
+        //
+        // R83 (2026-09-25): уведомление о провале загрузки должно быть
+        // actionable без похода в логи. Для отказа по n_ctx это запрошенное
+        // значение против границ VRAM/RAM и обучающего контекста; для «модель не
+        // найдена» — список доступных. Всё экранируется.
+        _renderDetails(ev) {
+            const data = ev && ev.data;
+            const d = data && data.diagnostics;
+            if (!d || typeof d !== 'object') return '';
+
+            const rows = [];
+            const add = (label, value) => {
+                if (value === undefined || value === null || value === '') return;
+                rows.push(
+                    '<div style="display:flex;gap:6px;font-size:11px;color:var(--text-secondary)">' +
+                    (label ? `<span style="min-width:96px">${escapeHtml(label)}</span>` : '<span></span>') +
+                    `<span>${escapeHtml(String(value))}</span></div>`
+                );
+            };
+
+            add('n_ctx запрошен', d.requested_n_ctx);
+            add('влезает в VRAM', d.max_vram_n_ctx);
+            add('предел RAM', d.hard_max_n_ctx);
+            add('gguf max', d.gguf_max_context);
+            if (Array.isArray(d.available_models) && d.available_models.length) {
+                add('доступны', d.available_models.slice(0, 8).join(', '));
+            }
+            add('', d.suggestion);
+
+            if (!rows.length) return '';
+            return '<div style="margin-top:4px;display:flex;flex-direction:column;gap:2px">' +
+                rows.join('') + '</div>';
         }
     }
 

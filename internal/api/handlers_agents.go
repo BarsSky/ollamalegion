@@ -922,6 +922,15 @@ func (s *Server) agentBackendMetricsHandler(w http.ResponseWriter, r *http.Reque
 	// Обновляем метрики для правильного backendID
 	s.proxy.UpdateMetrics(backendID, &metrics)
 
+	// R83 (2026-09-25): провал загрузки → уведомление в WebUI (bell-меню).
+	//
+	// Цепочка: cppworker /api/models → agent (уже опрашивает) → этот push →
+	// EventBus → SSE → notifications.js. Балансер здесь ничего не опрашивает и не
+	// агрегирует: только одно сравнение на полученный push. Дедупликация внутри
+	// PublishLoadFailureTransition обязательна — agent шлёт метрики каждые ~10 с,
+	// а запись о провале живёт 10 минут (SSE-буфер вмещает всего 100 событий).
+	s.proxy.PublishLoadFailureTransition(backendID, metrics.LoadFailure)
+
 	// Обновляем флаг активного агента
 	s.proxy.UpdateBackendAgentStatus(backendID, true)
 

@@ -34,6 +34,14 @@ type BackendMetrics struct {
 	// llama.cpp метрики (только для llama_cpp-бэкендов)
 	LlamaCpp LlamaCppMetrics `json:"llamaCpp,omitempty"`
 
+	// LoadFailure — причина последнего провала загрузки модели (R83).
+	//
+	// Заполняет agent из cppworker /api/models (поле load_failure) и пересылает
+	// в этом же push'е. Балансер публикует уведомление только на СМЕНУ причины
+	// (см. LoadFailureInfo.Key), поэтому поток событий не зависит от частоты
+	// опроса и не забивает SSE-буфер (в нём всего 100 событий).
+	LoadFailure *LoadFailureInfo `json:"loadFailure,omitempty"`
+
 	// Прогноз критического состояния
 	Prediction Prediction `json:"prediction"`
 

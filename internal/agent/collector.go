@@ -744,7 +744,32 @@ func (a *Agent) collectLlamaMetrics(base *types.BackendMetrics) *types.BackendMe
 	base.BackendType = types.BackendTypeLlamaCpp
 	base.Engine = types.EngineLlamaCPP
 
+	// R83 (2026-09-25): причина последнего провала загрузки уезжает в этом же
+	// push'е — балансер опубликует уведомление, WebUI покажет его оператору
+	// (связка cppworker → agent → webui). Данные уже получены из /api/models,
+	// дополнительных запросов нет.
+	base.LoadFailure = toBackendLoadFailure(llamaMetrics.LoadFailure)
+
 	return base
+}
+
+// toBackendLoadFailure — конвертация причины провала из формата cppworker
+// (/api/models → load_failure) в формат метрик бэкенда.
+//
+// nil означает «провалов нет»: балансер не публикует ни уведомление, ни
+// «восстановление» (восстановлением считается только переход «провал → нет»).
+func toBackendLoadFailure(lm *llamaLoadFailure) *types.LoadFailureInfo {
+	if lm == nil || (lm.Reason == "" && lm.Model == "" && lm.Error == "") {
+		return nil
+	}
+	return &types.LoadFailureInfo{
+		Model:       lm.Model,
+		Reason:      lm.Reason,
+		Error:       lm.Error,
+		At:          lm.At,
+		Severity:    lm.Severity,
+		Diagnostics: lm.Diagnostics,
+	}
 }
 
 // mapLlamaGPUMetrics конвертирует Llama LlamaGPUInfo → types.GPUMetrics

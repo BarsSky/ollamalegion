@@ -28,6 +28,20 @@ type LlamaMetrics struct {
 	Version     string         `json:"version"`
 	GPUCount    int            `json:"gpuCount"`
 	RequestsRPS float64        `json:"requestsRps"`
+	// R83 (2026-09-25): причина последнего провала загрузки из /api/models.
+	// Берём из того же ответа, который агент и так опрашивает, поэтому новых
+	// HTTP-запросов в связке cppworker → agent → webui не появляется.
+	LoadFailure *llamaLoadFailure `json:"loadFailure,omitempty"`
+}
+
+// llamaLoadFailure — причина провала в терминах cppworker /api/models.
+type llamaLoadFailure struct {
+	Model       string                 `json:"model"`
+	Reason      string                 `json:"reason"`
+	Error       string                 `json:"error"`
+	At          string                 `json:"at"`
+	Severity    string                 `json:"severity"`
+	Diagnostics map[string]interface{} `json:"diagnostics"`
 }
 
 // LlamaGPUInfo — информация о GPU из llama.cpp CppWorker
@@ -115,6 +129,7 @@ func (lc *LlamaCollector) Collect(ctx context.Context) (*LlamaMetrics, error) {
 	if modR != nil {
 		metrics.Models = modR.Models
 		metrics.ModelCount = modR.Count
+		metrics.LoadFailure = modR.LoadFailure
 	}
 	if infoR != nil {
 		metrics.Uptime = infoR.Uptime
@@ -194,6 +209,8 @@ func (lc *LlamaCollector) collectModels(ctx context.Context) (*modelsResponse, e
 type modelsResponse struct {
 	Models []ModelInfo `json:"models"`
 	Count  int         `json:"count"`
+	// R83: причина последнего провала загрузки (cppworker /api/models).
+	LoadFailure *llamaLoadFailure `json:"load_failure"`
 }
 
 // collectInfo собирает общую информацию с /api/info

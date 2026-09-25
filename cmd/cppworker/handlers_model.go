@@ -1025,6 +1025,9 @@ func handleListModels(w http.ResponseWriter, r *http.Request) {
 	type feasibleAgg struct {
 		feasibleMax int
 		ggufMax     int
+		// R83 (2026-09-25): граница «влезает в VRAM» — нужна, чтобы показать
+		// оператору, что загруженный n_ctx выше неё (режим partial_offload).
+		vramMax int
 	}
 	perModelFeasible := make(map[string]feasibleAgg, len(models))
 
@@ -1066,6 +1069,7 @@ func handleListModels(w http.ResponseWriter, r *http.Request) {
 		perModelFeasible[m.Name] = feasibleAgg{
 			feasibleMax: feasibleI,
 			ggufMax:     m.GGUFContextLength,
+			vramMax:     limits.MaxVRAMNCtx,
 		}
 	}
 
@@ -1145,12 +1149,20 @@ func handleListModels(w http.ResponseWriter, r *http.Request) {
 		if inflight := backend.InFlight(); inflight != nil {
 			entry["active_queries"] = inflight.Get(m.Name)
 		}
+		// R83 (2026-09-25): показываем РЕЖИМ загрузки, а не только факт загрузки.
+		// context_size — фактический n_ctx, с которым работает модель;
+		// max_vram_n_ctx — граница exact_fit (всё в VRAM). Если фактический выше,
+		// модель в partial_offload/cpu_only: часть слоёв в RAM, ответ заметно
+		// медленнее, и клиент легко упирается в таймаут. Раньше этот факт нигде
+		// не отражался — отсюда «32768 работает, 65536 нет» без объяснения.
+		vramMax, feasibleMax, ggufMax := 0, 0, m.GGUFContextLength
 		if fa, ok := perModelFeasible[m.Name]; ok {
-			entry["gguf_max_context"] = fa.ggufMax
-			entry["feasible_max_context"] = fa.feasibleMax
-		} else {
-			entry["gguf_max_context"] = m.GGUFContextLength
-			entry["feasible_max_context"] = 0
+			feasibleMax = fa.feasibleMax
+			ggufMax = fa.ggufMax
+			vramMax = fa.vramMax
+		}
+		for k, v := range nctxModeFields(vramMax, ggufMax, feasibleMax, m.ContextSize) {
+			entry[k] = v
 		}
 		enrichedModels = append(enrichedModels, entry)
 	}

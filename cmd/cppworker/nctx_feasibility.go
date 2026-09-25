@@ -201,3 +201,26 @@ func checkNCtxBeforeLoad(w http.ResponseWriter, modelName string, requestedNCtx 
 	}
 	return true
 }
+
+// nctxModeFields — поля РЕЖИМА загрузки для одной модели в /api/models.
+//
+// Зачем: context_size модели уже отдавался, но не было видно, ВЛЕЗ ли он в VRAM.
+// При 32768 стратегия выбирает exact_fit, при 65536 — partial_offload (часть
+// слоёв в RAM, ответ медленнее), и наружу это никак не сообщалось: оператор
+// видел «загружено» в обоих случаях. Здесь режим становится машинночитаемым,
+// чтобы WebUI показал его, а не только лог.
+//
+// vramMax <= 0 означает «граница неизвестна» (нет GPU-метрик) — тогда
+// n_ctx_degraded = false и n_ctx_headroom не отдаётся: утверждать нечего.
+func nctxModeFields(vramMax, ggufMax, feasibleMax, contextSize int) map[string]interface{} {
+	fields := map[string]interface{}{
+		"gguf_max_context":     ggufMax,
+		"feasible_max_context": feasibleMax,
+		"max_vram_n_ctx":       vramMax,
+		"n_ctx_degraded":       vramMax > 0 && contextSize > vramMax,
+	}
+	if vramMax > 0 {
+		fields["n_ctx_headroom"] = vramMax - contextSize
+	}
+	return fields
+}

@@ -250,3 +250,44 @@ func TestR83_NctxSuggestion(t *testing.T) {
 		t.Errorf("при упоре в память подсказка не даёт чисел: %q", s)
 	}
 }
+
+// TestR83_NctxModeFields — поля режима в /api/models. Это то, что читает WebUI,
+// чтобы показать оператору «модель работает в partial_offload», а не только
+// «загружено». Живой случай: A10, ctx=65536 при границе VRAM 40000.
+func TestR83_NctxModeFields(t *testing.T) {
+	t.Run("после границы VRAM — degraded", func(t *testing.T) {
+		f := nctxModeFields(40000, 262144, 40000, 65536)
+		if got, _ := f["n_ctx_degraded"].(bool); !got {
+			t.Error("n_ctx_degraded = false, want true (65536 > 40000)")
+		}
+		if got, _ := f["n_ctx_headroom"].(int); got != -25536 {
+			t.Errorf("n_ctx_headroom = %v, want -25536", got)
+		}
+		if got, _ := f["max_vram_n_ctx"].(int); got != 40000 {
+			t.Errorf("max_vram_n_ctx = %v, want 40000", got)
+		}
+	})
+
+	t.Run("в пределах VRAM — не degraded", func(t *testing.T) {
+		f := nctxModeFields(40000, 262144, 40000, 32768)
+		if got, _ := f["n_ctx_degraded"].(bool); got {
+			t.Error("n_ctx_degraded = true, want false (32768 <= 40000)")
+		}
+		if got, _ := f["n_ctx_headroom"].(int); got != 7232 {
+			t.Errorf("n_ctx_headroom = %v, want 7232", got)
+		}
+	})
+
+	t.Run("граница VRAM неизвестна — не утверждаем ничего", func(t *testing.T) {
+		f := nctxModeFields(0, 262144, 200000, 131072)
+		if got, _ := f["n_ctx_degraded"].(bool); got {
+			t.Error("n_ctx_degraded = true при неизвестной границе VRAM")
+		}
+		if _, ok := f["n_ctx_headroom"]; ok {
+			t.Error("n_ctx_headroom отдан при неизвестной границе VRAM")
+		}
+		if f["feasible_max_context"] != 200000 {
+			t.Errorf("feasible_max_context = %v, want 200000", f["feasible_max_context"])
+		}
+	})
+}

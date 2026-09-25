@@ -1,11 +1,11 @@
 # OllamaLegion — Roadmap (живой документ)
 
-> **Дата обновления:** 2026-09-24 (Round 78 — P3 закрыт: метрики размещения, автопересборка раскладки, legacy-очередь убрана)
+> **Дата обновления:** 2026-09-25 (Round 79/R80 — хвост §6 для явных стратегий + нагрузочные KPI P4)
 > **Назначение:** единственный источник правды по реализованному и оставшемуся в проекте OllamaLegion.
 > Все устаревшие/завершённые планы — в `plans/archive/`.
-> **HEAD:** `fe10c73` on branch `centurion` + R78 (`PlacementMetricsSummary`, `schedulePlacementResync`, удаление канала/worker'ов `QueueManager`).
-> **Live stack:** `ol-bundled-balancer:r78-submodule-v15` (R78) + `ol-bundled-cppworker-gpu:gpu-r70-submodule-v3` + `ol-bundled-webui:r77-submodule-v2` + `ol-bundled-cppworker-gpu-agent:cppworker-bundled-r41-agent-x-api-token`.
-> **Проверено на живом стенде (R68/R69/R71/R72/R73/R74):** Cline (VS Code, провайдер ollama, Model Context Window = 65536) получает 200 и ответ модели; модель грузится на `ctx=65536, kv=q4_0` на RTX 3070 8 GB; агент применяет `maxConcurrentRequests=1`; placement-политика резолвится и видна в `/api/v1/placement`; единая очередь отдаёт `X-Queue-*`; при `operatingMode=standard` политика обслуживает алиас через пул и модель через реплики.
+> **HEAD:** `centurion` + R79 (`checkExplicitStrategyFeasibilityR79`) и R80 (усыновление реплик, честный `LOADING`, HA при падении копии) + отчёт P4 `plans/2026-09-25-placement-p4-load-kpi.md`.
+> **Live stack:** `ol-bundled-balancer:r80-submodule-v17` (R80) + `ol-bundled-cppworker-gpu:gpu-r70-submodule-v3` + `ol-bundled-webui:r77-submodule-v2` + `ol-bundled-cppworker-gpu-agent:cppworker-bundled-r41-agent-x-api-token`.
+> **Проверено на живом стенде (R68/R69/R71/R72/R73/R74/R80):** Cline (VS Code, провайдер ollama, Model Context Window = 65536) получает 200 и ответ модели; модель грузится на `ctx=65536, kv=q4_0` на RTX 3070 8 GB; агент применяет `maxConcurrentRequests=1`; placement-политика резолвится и видна в `/api/v1/placement`; единая очередь отдаёт `X-Queue-*`; при `operatingMode=standard` политика обслуживает алиас через пул и модель через реплики; стенд P4 (2×cppworker) — 2 копии в VRAM, `replication total=2 loaded=2`, падение одной копии обслуживается живой без 503 (R80).
 
 ---
 
@@ -43,8 +43,30 @@ R76 закрыл часть P3: §6 «не уходить в другую стр
 R77 добавил карточку «Размещение моделей» на `/monitor` (P3/§5).
 R78 закрыл P3 полностью (§6 + метрики + автопересборка) и вывел legacy
 `QueueManager` из эксплуатации (канал/worker'ы/`dispatchRequest` удалены).
+R79 закрыл хвост §6 для ЯВНЫХ стратегий (replicated при одном подходящем
+бэкенде больше не деградирует молча: 503/`X-LB-Placement-Fallback`, группа
+поднимается минимум на две копии).
+R80 провёл нагрузочные KPI (P4) на стенде из 2×cppworker и по их итогам
+починил репликацию: группа усыновляет уже загруженные копии, инстанс честно
+`LOADING` до подтверждения метриками, а падение одной реплики не превращается
+в 503 на всё (обслуживает живая копия).
 
-### R78 (2026-09-24) — текущий раунд
+### R79/R80 (2026-09-25) — текущий раунд
+
+Хвост §6 для явных стратегий (R79) + нагрузочные KPI P4 (R80).
+
+| # | Направление | Статус |
+|---|-------------|--------|
+| 1 | R79: явный `replicated` проверяется на исполнимость (VRAM-fit + число копий): `fallback=error` → 503 с числами, `fallback=single` → `X-LB-Placement: single` + `X-LB-Placement-Fallback: replicated`, `auto.allowDegraded` → обслуживание с `degraded` в метриках | ✅ сделано |
+| 2 | R79: явный `replicated` без `auto.minBackends` поднимает группу до двух инстансов | ✅ сделано |
+| 3 | R80: группа репликации усыновляет реально загруженные копии (`SetLoadedBackendsFn`), сбрасывает протухшие инстансы, `LOADED` только после подтверждения метриками | ✅ сделано |
+| 4 | R80: VRAM-fit считает «модель уже загружена» по снапшоту метрик (иначе 503 при заполненной VRAM, хотя копии на месте) | ✅ сделано |
+| 5 | R80: §6 «один из бэкендов реплик unhealthy» — обслуживание с живой копии вместо 503 | ✅ сделано |
+| 6 | P4: замеры tok/s (single 38.6 / replicated 32.8 / n_parallel=4 34.6), VRAM (4.6 / 7.6 / 4.4 ГБ), failover (2 из 3 запросов на живой копии, восстановление 21.6–31.7 с) — отчёт `plans/2026-09-25-placement-p4-load-kpi.md` | ✅ сделано |
+| 7 | P2 placement policy: `sharded`/`rpc` на реальном транспорте | ⏸ отложено решением пользователя (нужен выбор: llama.cpp RPC vs B8.7) |
+| 8 | Открытые пункты P4: агент не должен владеть health-статусом (замер поймал зависший запрос на мёртвой копии), строгий обход реплик, событийное `LOADING→LOADED` | 📋 следующий этап |
+
+### R78 (2026-09-24) — закрытый раунд
 
 Вариант C, выбранный пользователем: P2 отложен, хвосты P3 закрыты, legacy-очередь убрана.
 
